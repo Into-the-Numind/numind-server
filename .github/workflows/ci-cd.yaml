@@ -1,4 +1,4 @@
-name: Numind CI/CD Pipeline
+name: Numind
 
 on:
   push:
@@ -23,6 +23,9 @@ env:
   DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
   SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
   DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+  DEV_HOST: ${{ secrets.DEV_HOST }}
+  QA_HOST: ${{ secrets.QA_HOST }}
+  PROD_HOST: ${{ secrets.PROD_HOST }}
 
 jobs:
   code_build:
@@ -54,8 +57,7 @@ jobs:
   image_build:
     needs: code_build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' ||
-      github.ref == 'refs/heads/develop' ||
+    if: github.ref == 'refs/heads/develop' ||
       github.ref == 'refs/heads/release' ||
       github.ref == 'refs/heads/product'
     steps:
@@ -108,10 +110,39 @@ jobs:
             cp /home/${{ env.DEPLOY_USER }}/numind /usr/local/bin/
             sudo systemctl start numind-service
 
+
+
+  deploy_qa:
+    needs: image_build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/release'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: numind-binary
+          path: ./bin
+
+      - name: Deploy to QA Environment
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.DEV_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ env.SSH_PRIVATE_KEY }}
+          script: |
+            cd /path/to/deployment
+            sudo systemctl stop numind-service
+            cp /home/${{ env.DEPLOY_USER }}/numind /usr/local/bin/
+            sudo systemctl start numind-service
+
+
   deploy_product:
     needs: image_build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/release' || github.ref == 'refs/heads/product'
+    if: github.ref == 'refs/heads/product'
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
