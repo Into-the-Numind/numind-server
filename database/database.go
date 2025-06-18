@@ -3,7 +3,6 @@ package database
 import (
 	"fmt"
 	"log"
-	"time"
 
 	"numind-server/config"
 	"numind-server/models"
@@ -16,7 +15,7 @@ import (
 var DB *gorm.DB
 
 func InitDB(cfg *config.Config) (*gorm.DB, error) {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
 		cfg.Database.User,
 		cfg.Database.Password,
 		cfg.Database.Host,
@@ -44,9 +43,9 @@ func InitDB(cfg *config.Config) (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to get underlying sql.DB: %v", err)
 	}
 
-	sqlDB.SetMaxIdleConns(10)
-	sqlDB.SetMaxOpenConns(100)
-	sqlDB.SetConnMaxLifetime(time.Hour)
+	sqlDB.SetMaxIdleConns(cfg.Database.MaxIdleConns)
+	sqlDB.SetMaxOpenConns(cfg.Database.MaxOpenConns)
+	sqlDB.SetConnMaxLifetime(cfg.Database.ConnMaxLifetime)
 
 	DB = db
 	return db, nil
