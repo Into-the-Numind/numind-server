@@ -239,14 +239,12 @@ tasks:
     desc: 生成配置模板
     cmds:
       - cp config.yaml config.yaml.template
-      - echo "配置模板已生成: config.yaml.template"
 
   # 配置备份
   config-backup:
     desc: 备份配置文件
     cmds:
       - cp config.yaml config.yaml.backup.$(date +%Y%m%d_%H%M%S)
-      - echo "配置文件已备份"
 
   # 配置恢复
   config-restore:

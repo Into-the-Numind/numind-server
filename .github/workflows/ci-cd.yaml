@@ -135,14 +135,11 @@ jobs:
           path: ./bin/numind-linux-amd64
           retention-days: 30
 
-  # Docker 镜像构建
+  # Docker 镜像构建 - 只在特定分支触发
   image_build:
     needs: code_build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/develop' ||
-      github.ref == 'refs/heads/release' ||
-      github.ref == 'refs/heads/product' ||
-      github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/release' || github.ref == 'refs/heads/product'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -197,7 +194,7 @@ jobs:
         with:
           sarif_file: 'trivy-results.sarif'
 
-  # 开发环境部署
+  # 开发环境部署 - 只在 develop 分支触发
   deploy_dev:
     needs: image_build
     runs-on: ubuntu-latest
@@ -294,7 +291,7 @@ jobs:
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
-  # QA 环境部署
+  # QA 环境部署 - 只在 release 分支触发
   deploy_qa:
     needs: image_build
     runs-on: ubuntu-latest
@@ -381,7 +378,7 @@ jobs:
               exit 1
             fi
 
-  # 生产环境部署
+  # 生产环境部署 - 只在 product 分支触发
   deploy_product:
     needs: image_build
     runs-on: ubuntu-latest
