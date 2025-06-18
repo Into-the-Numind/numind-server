@@ -78,7 +78,7 @@ func main() {
 	// 根路由
 	r.GET("/", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
-			"message": "欢迎使用微信文章检索系统API",
+			"message": "欢迎使用Numind API",
 		})
 	})
 

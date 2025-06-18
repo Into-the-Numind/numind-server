@@ -1,4 +1,4 @@
-name: Numind
+name: Numind CI/CD
 
 on:
   push:
@@ -28,41 +28,184 @@ env:
   PROD_HOST: ${{ secrets.PROD_HOST }}
 
 jobs:
-  code_build:
+  # 代码质量检查
+  code-quality:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 获取完整历史用于版本信息
 
       - name: Setup Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v4
         with:
           go-version: 1.24.2
+          cache: true
 
-      - name: Get dependencies
-        run: go mod download
+      - name: Install Task
+        uses: arduino/setup-task@v1
+        with:
+          version: '3.x'
 
-      - name: Build
-        run: go build -o ./bin/numind ./cmd/numind/main.go
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Install dependencies
+        run: task deps
+
+      - name: Code formatting check
+        run: task fmt
+
+      - name: Lint code
+        run: task lint
 
       - name: Run tests
-        run: go test -v ./...
+        run: task test
 
-      - name: Upload build artifact
+      - name: Security scan
+        run: task security
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.out
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+
+  # 代码构建
+  code_build:
+    runs-on: ubuntu-latest
+    needs: code-quality
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.24.2
+          cache: true
+
+      - name: Install Task
+        uses: arduino/setup-task@v1
+        with:
+          version: '3.x'
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Get dependencies
+        run: task deps
+
+      - name: Build application
+        run: task build-prod
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: numind-binaries
+          path: |
+            ./bin/numind-linux-amd64
+            ./bin/numind-darwin-amd64
+            ./bin/numind-darwin-arm64
+          retention-days: 30
+
+      - name: Upload binary for deployment
         uses: actions/upload-artifact@v4
         with:
           name: numind-binary
-          path: ./bin/numind
+          path: ./bin/numind-linux-amd64
+          retention-days: 30
 
+  # Docker 镜像构建
   image_build:
     needs: code_build
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/develop' ||
       github.ref == 'refs/heads/release' ||
-      github.ref == 'refs/heads/product'
+      github.ref == 'refs/heads/product' ||
+      github.ref == 'refs/heads/main'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # 开发环境部署
+  deploy_dev:
+    needs: image_build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop'
+    environment: development
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Download build artifact
         uses: actions/download-artifact@v4
@@ -70,103 +213,267 @@ jobs:
           name: numind-binary
           path: ./bin
 
-      - name: Login to DockerHub
-        uses: docker/login-action@v2
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.8.0
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v3
-        with:
-          context: .
-          push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-          file: ./Dockerfile
-
-  deploy_dev:
-    needs: image_build
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/develop'
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Download build artifact
-        uses: actions/download-artifact@v3
-        with:
-          name: numind-binary
-          path: ./bin
-
-      - name: Deploy to Dev Environment
-        uses: appleboy/ssh-action@master
+      - name: Deploy to Development Environment
+        uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.DEV_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ env.SSH_PRIVATE_KEY }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd /path/to/deployment
-            sudo systemctl stop numind-service
-            cp /home/${{ env.DEPLOY_USER }}/numind /usr/local/bin/
+            # 创建部署目录
+            sudo mkdir -p /opt/numind
+            sudo mkdir -p /opt/numind/logs
+            sudo mkdir -p /opt/numind/config
+            
+            # 停止现有服务
+            sudo systemctl stop numind-service || true
+            
+            # 备份当前版本
+            if [ -f /opt/numind/numind ]; then
+              sudo cp /opt/numind/numind /opt/numind/numind.backup.$(date +%Y%m%d_%H%M%S)
+            fi
+            
+            # 复制新版本
+            sudo cp /home/${{ secrets.DEPLOY_USER }}/numind /opt/numind/
+            sudo chmod +x /opt/numind/numind
+            sudo chown -R ${{ secrets.DEPLOY_USER }}:${{ secrets.DEPLOY_USER }} /opt/numind
+            
+            # 创建或更新 systemd 服务文件
+            sudo tee /etc/systemd/system/numind-service.service > /dev/null <<EOF
+            [Unit]
+            Description=Numind Server
+            After=network.target
+            
+            [Service]
+            Type=simple
+            User=${{ secrets.DEPLOY_USER }}
+            WorkingDirectory=/opt/numind
+            ExecStart=/opt/numind/numind
+            Restart=always
+            RestartSec=5
+            Environment=ENVIRONMENT=development
+            Environment=PORT=8000
+            
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+            
+            # 重新加载 systemd 配置
+            sudo systemctl daemon-reload
+            
+            # 启动服务
             sudo systemctl start numind-service
+            sudo systemctl enable numind-service
+            
+            # 检查服务状态
+            sudo systemctl status numind-service --no-pager
+            
+            # 等待服务启动
+            sleep 10
+            
+            # 健康检查
+            if curl -f http://localhost:8000/; then
+              echo "Deployment successful!"
+            else
+              echo "Deployment failed - health check failed"
+              exit 1
+            fi
 
+      - name: Notify deployment status
+        if: always()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
-
+  # QA 环境部署
   deploy_qa:
     needs: image_build
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/release'
+    environment: qa
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Download build artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: numind-binary
           path: ./bin
 
-      - name: Deploy to QA Environment
-        uses: appleboy/ssh-action@master
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.8.0
         with:
-          host: ${{ secrets.DEV_HOST }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Deploy to QA Environment
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.QA_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ env.SSH_PRIVATE_KEY }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd /path/to/deployment
-            sudo systemctl stop numind-service
-            cp /home/${{ env.DEPLOY_USER }}/numind /usr/local/bin/
+            # 创建部署目录
+            sudo mkdir -p /opt/numind
+            sudo mkdir -p /opt/numind/logs
+            sudo mkdir -p /opt/numind/config
+            
+            # 停止现有服务
+            sudo systemctl stop numind-service || true
+            
+            # 备份当前版本
+            if [ -f /opt/numind/numind ]; then
+              sudo cp /opt/numind/numind /opt/numind/numind.backup.$(date +%Y%m%d_%H%M%S)
+            fi
+            
+            # 复制新版本
+            sudo cp /home/${{ secrets.DEPLOY_USER }}/numind /opt/numind/
+            sudo chmod +x /opt/numind/numind
+            sudo chown -R ${{ secrets.DEPLOY_USER }}:${{ secrets.DEPLOY_USER }} /opt/numind
+            
+            # 创建或更新 systemd 服务文件
+            sudo tee /etc/systemd/system/numind-service.service > /dev/null <<EOF
+            [Unit]
+            Description=Numind Server
+            After=network.target
+            
+            [Service]
+            Type=simple
+            User=${{ secrets.DEPLOY_USER }}
+            WorkingDirectory=/opt/numind
+            ExecStart=/opt/numind/numind
+            Restart=always
+            RestartSec=5
+            Environment=ENVIRONMENT=qa
+            Environment=PORT=8000
+            
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+            
+            # 重新加载 systemd 配置
+            sudo systemctl daemon-reload
+            
+            # 启动服务
             sudo systemctl start numind-service
+            sudo systemctl enable numind-service
+            
+            # 检查服务状态
+            sudo systemctl status numind-service --no-pager
+            
+            # 等待服务启动
+            sleep 10
+            
+            # 健康检查
+            if curl -f http://localhost:8000/; then
+              echo "QA deployment successful!"
+            else
+              echo "QA deployment failed - health check failed"
+              exit 1
+            fi
 
-
+  # 生产环境部署
   deploy_product:
     needs: image_build
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/product'
+    environment: production
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Download build artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: numind-binary
           path: ./bin
 
-      - name: Login to DockerHub
-        uses: docker/login-action@v2
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.8.0
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
       - name: Deploy to Production Environment
-        uses: appleboy/ssh-action@master
+        uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.PROD_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ env.SSH_PRIVATE_KEY }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd /path/to/deployment
-            sudo systemctl stop numind-service
-            cp /home/${{ env.DEPLOY_USER }}/numind /usr/local/bin/
+            # 创建部署目录
+            sudo mkdir -p /opt/numind
+            sudo mkdir -p /opt/numind/logs
+            sudo mkdir -p /opt/numind/config
+            
+            # 停止现有服务
+            sudo systemctl stop numind-service || true
+            
+            # 备份当前版本
+            if [ -f /opt/numind/numind ]; then
+              sudo cp /opt/numind/numind /opt/numind/numind.backup.$(date +%Y%m%d_%H%M%S)
+            fi
+            
+            # 复制新版本
+            sudo cp /home/${{ secrets.DEPLOY_USER }}/numind /opt/numind/
+            sudo chmod +x /opt/numind/numind
+            sudo chown -R ${{ secrets.DEPLOY_USER }}:${{ secrets.DEPLOY_USER }} /opt/numind
+            
+            # 创建或更新 systemd 服务文件
+            sudo tee /etc/systemd/system/numind-service.service > /dev/null <<EOF
+            [Unit]
+            Description=Numind Server
+            After=network.target
+            
+            [Service]
+            Type=simple
+            User=${{ secrets.DEPLOY_USER }}
+            WorkingDirectory=/opt/numind
+            ExecStart=/opt/numind/numind
+            Restart=always
+            RestartSec=5
+            Environment=ENVIRONMENT=production
+            Environment=PORT=8000
+            
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+            
+            # 重新加载 systemd 配置
+            sudo systemctl daemon-reload
+            
+            # 启动服务
             sudo systemctl start numind-service
+            sudo systemctl enable numind-service
+            
+            # 检查服务状态
+            sudo systemctl status numind-service --no-pager
+            
+            # 等待服务启动
+            sleep 10
+            
+            # 健康检查
+            if curl -f http://localhost:8000/; then
+              echo "Production deployment successful!"
+            else
+              echo "Production deployment failed - health check failed"
+              exit 1
+            fi
+
+      - name: Notify production deployment
+        if: success()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          channel: '#production-deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
