@@ -187,18 +187,22 @@ func startBackgroundTasks(adminService *services.AdminService) {
 	c := cron.New()
 
 	// 每小时更新代理池
-	c.AddFunc("0 * * * *", func() {
+	if _, err := c.AddFunc("0 * * * *", func() {
 		if err := adminService.FetchNewProxies(); err != nil {
 			log.Printf("Failed to fetch new proxies: %v", err)
 		}
-	})
+	}); err != nil {
+		log.Printf("Failed to add proxy fetch cron job: %v", err)
+	}
 
 	// 每天凌晨2点清理过期数据
-	c.AddFunc("0 2 * * *", func() {
+	if _, err := c.AddFunc("0 2 * * *", func() {
 		if err := adminService.CleanupExpiredData(); err != nil {
 			log.Printf("Failed to cleanup expired data: %v", err)
 		}
-	})
+	}); err != nil {
+		log.Printf("Failed to add cleanup cron job: %v", err)
+	}
 
 	c.Start()
 }
