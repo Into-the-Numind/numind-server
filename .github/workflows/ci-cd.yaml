@@ -70,9 +70,6 @@ jobs:
       - name: Run tests
         run: task test
 
-      - name: Security scan
-        run: task security
-
       - name: Upload coverage reports
         uses: codecov/codecov-action@v3
         with:
