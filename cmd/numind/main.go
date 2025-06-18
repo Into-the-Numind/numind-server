@@ -152,7 +152,7 @@ func main() {
 
 	// 启动服务器
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%s", cfg.Port),
+		Addr:    fmt.Sprintf(":%s", cfg.Server.Port),
 		Handler: r,
 	}
 
@@ -163,7 +163,7 @@ func main() {
 		}
 	}()
 
-	log.Printf("Server started on port %s", cfg.Port)
+	log.Printf("Server started on port %s", cfg.Server.Port)
 
 	// 等待中断信号
 	quit := make(chan os.Signal, 1)

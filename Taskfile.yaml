@@ -250,5 +250,4 @@ tasks:
   config-restore:
     desc: 恢复配置文件
     cmds:
-      - echo "请手动执行: ls -la config.yaml.backup.* | tail -1 | awk '{print $9}' | xargs -I {} cp {} config.yaml"
-      - echo "或使用最新的备份文件: cp config.yaml.backup.YYYYMMDD_HHMMSS config.yaml"
+      - echo "请手动恢复配置文件"
