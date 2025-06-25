@@ -10,11 +10,11 @@ import (
 	"syscall"
 	"time"
 
-	"numind-server/config"
-	"numind-server/database"
-	"numind-server/handlers"
-	"numind-server/middleware"
-	"numind-server/services"
+	"numind-server/configs/config"
+	"numind-server/internal/database"
+	"numind-server/internal/handlers"
+	"numind-server/internal/middleware"
+	"numind-server/internal/services"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"

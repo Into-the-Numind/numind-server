@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"numind-server/models"
-	"numind-server/services"
+	"numind-server/internal/models"
+	"numind-server/internal/services"
 
 	"github.com/gin-gonic/gin"
 )

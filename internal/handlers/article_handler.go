@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"numind-server/middleware"
-	"numind-server/services"
+	"numind-server/internal/middleware"
+	"numind-server/internal/services"
 
 	"github.com/gin-gonic/gin"
 )

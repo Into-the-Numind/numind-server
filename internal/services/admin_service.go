@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"numind-server/config"
-	"numind-server/models"
+	"numind-server/configs/config"
+	"numind-server/internal/models"
 
 	"gorm.io/gorm"
 )

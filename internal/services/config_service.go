@@ -3,7 +3,7 @@ package services
 import (
 	"time"
 
-	"numind-server/models"
+	"numind-server/internal/models"
 
 	"gorm.io/gorm"
 )

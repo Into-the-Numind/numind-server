@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"numind-server/config"
+	"numind-server/configs/config"
 )
 
 func main() {

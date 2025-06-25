@@ -3,7 +3,7 @@ package handlers
 import (
 	"net/http"
 
-	"numind-server/services"
+	"numind-server/internal/services"
 
 	"github.com/gin-gonic/gin"
 )

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"log"
 
-	"numind-server/config"
-	"numind-server/models"
+	"numind-server/configs/config"
+	"numind-server/internal/models"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"

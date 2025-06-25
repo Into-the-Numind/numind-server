@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"numind-server/config"
-	"numind-server/models"
+	"numind-server/configs/config"
+	"numind-server/internal/models"
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
