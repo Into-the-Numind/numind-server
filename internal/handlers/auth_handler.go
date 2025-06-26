@@ -2,10 +2,10 @@ package handlers
 
 import (
 	"net/http"
+	"numind-server/internal/pkg/middleware"
 	"strconv"
 	"time"
 
-	"numind-server/internal/middleware"
 	"numind-server/internal/services"
 
 	"github.com/gin-gonic/gin"

@@ -5,14 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"numind-server/internal/pkg/model"
 	"time"
-
-	"numind-server/configs/config"
-	"numind-server/internal/models"
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"numind-server/configs/config"
 )
 
 type AuthService struct {
@@ -26,9 +25,9 @@ type WechatLoginRequest struct {
 }
 
 type WechatLoginResponse struct {
-	AccessToken string       `json:"access_token"`
-	TokenType   string       `json:"token_type"`
-	User        *models.User `json:"user"`
+	AccessToken string      `json:"access_token"`
+	TokenType   string      `json:"token_type"`
+	User        *model.User `json:"user"`
 }
 
 type WechatTokenResponse struct {
@@ -103,7 +102,7 @@ func (s *AuthService) WechatLogin(req *WechatLoginRequest) (*WechatLoginResponse
 
 // AdminLogin 管理员登录
 func (s *AuthService) AdminLogin(req *AdminLoginRequest) (*WechatLoginResponse, error) {
-	var user models.User
+	var user model.User
 	if err := s.db.Where("username = ?", req.Username).First(&user).Error; err != nil {
 		return nil, fmt.Errorf("用户不存在")
 	}
@@ -135,7 +134,7 @@ func (s *AuthService) AdminLogin(req *AdminLoginRequest) (*WechatLoginResponse, 
 }
 
 // ValidateToken 验证token
-func (s *AuthService) ValidateToken(tokenString string) (*models.User, error) {
+func (s *AuthService) ValidateToken(tokenString string) (*model.User, error) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -150,7 +149,7 @@ func (s *AuthService) ValidateToken(tokenString string) (*models.User, error) {
 	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
 		userID := uint(claims["user_id"].(float64))
 
-		var user models.User
+		var user model.User
 		if err := s.db.First(&user, userID).Error; err != nil {
 			return nil, err
 		}
@@ -163,7 +162,7 @@ func (s *AuthService) ValidateToken(tokenString string) (*models.User, error) {
 
 // ChangePassword 修改密码
 func (s *AuthService) ChangePassword(userID uint, req *ChangePasswordRequest) error {
-	var user models.User
+	var user model.User
 	if err := s.db.First(&user, userID).Error; err != nil {
 		return fmt.Errorf("用户不存在")
 	}
@@ -228,13 +227,13 @@ func (s *AuthService) getWechatPhone(phoneCode, accessToken string) (*WechatPhon
 }
 
 // findOrCreateUser 查找或创建用户
-func (s *AuthService) findOrCreateUser(openID string) (*models.User, error) {
-	var user models.User
+func (s *AuthService) findOrCreateUser(openID string) (*model.User, error) {
+	var user model.User
 	err := s.db.Where("openid = ?", openID).First(&user).Error
 
 	if err == gorm.ErrRecordNotFound {
 		// 创建新用户
-		user = models.User{
+		user = model.User{
 			OpenID:    openID,
 			IsActive:  true,
 			CreatedAt: time.Now(),
@@ -251,7 +250,7 @@ func (s *AuthService) findOrCreateUser(openID string) (*models.User, error) {
 }
 
 // generateToken 生成JWT token
-func (s *AuthService) generateToken(user *models.User) (string, error) {
+func (s *AuthService) generateToken(user *model.User) (string, error) {
 	claims := jwt.MapClaims{
 		"user_id": user.ID,
 		"openid":  user.OpenID,

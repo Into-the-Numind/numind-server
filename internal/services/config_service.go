@@ -1,9 +1,8 @@
 package services
 
 import (
+	"numind-server/internal/pkg/model"
 	"time"
-
-	"numind-server/internal/models"
 
 	"gorm.io/gorm"
 )
@@ -24,26 +23,26 @@ func NewConfigService(db *gorm.DB) *ConfigService {
 }
 
 // GetConfigs 获取所有配置
-func (s *ConfigService) GetConfigs() ([]models.SystemConfig, error) {
-	var configs []models.SystemConfig
+func (s *ConfigService) GetConfigs() ([]model.SystemConfig, error) {
+	var configs []model.SystemConfig
 	err := s.db.Find(&configs).Error
 	return configs, err
 }
 
 // GetConfig 获取单个配置
-func (s *ConfigService) GetConfig(key string) (*models.SystemConfig, error) {
-	var config models.SystemConfig
+func (s *ConfigService) GetConfig(key string) (*model.SystemConfig, error) {
+	var config model.SystemConfig
 	err := s.db.Where("key = ?", key).First(&config).Error
 	return &config, err
 }
 
 // UpdateConfig 更新配置
 func (s *ConfigService) UpdateConfig(key string, req *ConfigUpdateRequest) error {
-	var config models.SystemConfig
+	var config model.SystemConfig
 	err := s.db.Where("key = ?", key).First(&config).Error
 	if err == gorm.ErrRecordNotFound {
 		// 创建新配置
-		config = models.SystemConfig{
+		config = model.SystemConfig{
 			Key:         key,
 			Value:       req.Value,
 			Description: req.Description,
@@ -65,12 +64,12 @@ func (s *ConfigService) UpdateConfig(key string, req *ConfigUpdateRequest) error
 
 // DeleteConfig 删除配置
 func (s *ConfigService) DeleteConfig(key string) error {
-	return s.db.Where("key = ?", key).Delete(&models.SystemConfig{}).Error
+	return s.db.Where("key = ?", key).Delete(&model.SystemConfig{}).Error
 }
 
 // InitDefaultConfigs 初始化默认配置
 func (s *ConfigService) InitDefaultConfigs() error {
-	defaultConfigs := []models.SystemConfig{
+	defaultConfigs := []model.SystemConfig{
 		{
 			Key:         "ai_prompt",
 			Value:       "请对以下文章进行总结和分析：",
@@ -95,7 +94,7 @@ func (s *ConfigService) InitDefaultConfigs() error {
 	}
 
 	for _, config := range defaultConfigs {
-		var existing models.SystemConfig
+		var existing model.SystemConfig
 		err := s.db.Where("key = ?", config.Key).First(&existing).Error
 		if err == gorm.ErrRecordNotFound {
 			s.db.Create(&config)

@@ -3,12 +3,11 @@ package services
 import (
 	"encoding/json"
 	"fmt"
+	"numind-server/internal/pkg/model"
 	"time"
 
-	"numind-server/configs/config"
-	"numind-server/internal/models"
-
 	"gorm.io/gorm"
+	"numind-server/configs/config"
 )
 
 type ArticleService struct {
@@ -48,11 +47,11 @@ type ArticleListRequest struct {
 }
 
 type ArticleListResponse struct {
-	Items []models.Article `json:"items"`
-	Total int64            `json:"total"`
-	Page  int              `json:"page"`
-	Limit int              `json:"limit"`
-	Pages int              `json:"pages"`
+	Items []model.Article `json:"items"`
+	Total int64           `json:"total"`
+	Page  int             `json:"page"`
+	Limit int             `json:"limit"`
+	Pages int             `json:"pages"`
 }
 
 type ParaphraseRequest struct {
@@ -67,9 +66,9 @@ func NewArticleService(db *gorm.DB, cfg *config.Config) *ArticleService {
 }
 
 // FetchArticle 获取文章内容
-func (s *ArticleService) FetchArticle(userID uint, req *ArticleFetchRequest) (*models.Article, error) {
+func (s *ArticleService) FetchArticle(userID uint, req *ArticleFetchRequest) (*model.Article, error) {
 	// 检查文章是否已存在
-	var existingArticle models.Article
+	var existingArticle model.Article
 	err := s.db.Where("url = ?", req.URL).First(&existingArticle).Error
 	if err == nil {
 		// 文章已存在，返回现有文章
@@ -89,13 +88,13 @@ func (s *ArticleService) FetchArticle(userID uint, req *ArticleFetchRequest) (*m
 	}
 
 	// 创建新文章
-	article := models.Article{
+	article := model.Article{
 		UserID:      userID,
 		URL:         req.URL,
 		Title:       articleData.Title,
 		AccountName: articleData.AccountName,
 		PublishTime: articleData.PublishTime,
-		Content:     models.JSON(contentJSON),
+		Content:     model.JSON(contentJSON),
 		ContentTxt:  articleData.ContentTxt,
 		CreatedAt:   time.Now(),
 		CategoryAt:  time.Now(),
@@ -110,7 +109,7 @@ func (s *ArticleService) FetchArticle(userID uint, req *ArticleFetchRequest) (*m
 
 // GetArticles 获取文章列表
 func (s *ArticleService) GetArticles(req *ArticleListRequest) (*ArticleListResponse, error) {
-	query := s.db.Model(&models.Article{}).Preload("User").Preload("Category")
+	query := s.db.Model(&model.Article{}).Preload("User").Preload("Category")
 
 	// 应用过滤条件
 	if req.CategoryID != nil {
@@ -131,7 +130,7 @@ func (s *ArticleService) GetArticles(req *ArticleListRequest) (*ArticleListRespo
 
 	// 分页
 	offset := (req.Page - 1) * req.Limit
-	var articles []models.Article
+	var articles []model.Article
 	if err := query.Offset(offset).Limit(req.Limit).Order("created_at DESC").Find(&articles).Error; err != nil {
 		return nil, err
 	}
@@ -148,8 +147,8 @@ func (s *ArticleService) GetArticles(req *ArticleListRequest) (*ArticleListRespo
 }
 
 // GetArticle 获取单个文章
-func (s *ArticleService) GetArticle(articleID uint) (*models.Article, error) {
-	var article models.Article
+func (s *ArticleService) GetArticle(articleID uint) (*model.Article, error) {
+	var article model.Article
 	err := s.db.Preload("User").Preload("Category").First(&article, articleID).Error
 	if err != nil {
 		return nil, err
@@ -159,7 +158,7 @@ func (s *ArticleService) GetArticle(articleID uint) (*models.Article, error) {
 
 // UpdateArticleCategory 更新文章分类
 func (s *ArticleService) UpdateArticleCategory(articleID, userID uint, categoryID *uint) error {
-	var article models.Article
+	var article model.Article
 	if err := s.db.Where("id = ? AND user_id = ?", articleID, userID).First(&article).Error; err != nil {
 		return fmt.Errorf("文章不存在或无权限")
 	}
@@ -172,19 +171,19 @@ func (s *ArticleService) UpdateArticleCategory(articleID, userID uint, categoryI
 
 // DeleteArticle 删除文章
 func (s *ArticleService) DeleteArticle(articleID, userID uint) error {
-	return s.db.Where("id = ? AND user_id = ?", articleID, userID).Delete(&models.Article{}).Error
+	return s.db.Where("id = ? AND user_id = ?", articleID, userID).Delete(&model.Article{}).Error
 }
 
 // AddFavorite 添加收藏
 func (s *ArticleService) AddFavorite(userID, articleID uint) error {
 	// 检查是否已收藏
-	var existing models.Favorite
+	var existing model.Favorite
 	err := s.db.Where("user_id = ? AND article_id = ?", userID, articleID).First(&existing).Error
 	if err == nil {
 		return fmt.Errorf("文章已收藏")
 	}
 
-	favorite := models.Favorite{
+	favorite := model.Favorite{
 		UserID:    userID,
 		ArticleID: articleID,
 		CreatedAt: time.Now(),
@@ -195,12 +194,12 @@ func (s *ArticleService) AddFavorite(userID, articleID uint) error {
 
 // RemoveFavorite 移除收藏
 func (s *ArticleService) RemoveFavorite(userID, articleID uint) error {
-	return s.db.Where("user_id = ? AND article_id = ?", userID, articleID).Delete(&models.Favorite{}).Error
+	return s.db.Where("user_id = ? AND article_id = ?", userID, articleID).Delete(&model.Favorite{}).Error
 }
 
 // GetFavorites 获取用户收藏列表
 func (s *ArticleService) GetFavorites(userID uint, page, limit int) (*ArticleListResponse, error) {
-	query := s.db.Model(&models.Favorite{}).
+	query := s.db.Model(&model.Favorite{}).
 		Joins("JOIN articles ON favorites.article_id = articles.id").
 		Where("favorites.user_id = ?", userID).
 		Preload("Article.User").
@@ -214,13 +213,13 @@ func (s *ArticleService) GetFavorites(userID uint, page, limit int) (*ArticleLis
 
 	// 分页
 	offset := (page - 1) * limit
-	var favorites []models.Favorite
+	var favorites []model.Favorite
 	if err := query.Offset(offset).Limit(limit).Order("favorites.created_at DESC").Find(&favorites).Error; err != nil {
 		return nil, err
 	}
 
 	// 转换为文章列表
-	var articles []models.Article
+	var articles []model.Article
 	for _, fav := range favorites {
 		articles = append(articles, fav.Article)
 	}

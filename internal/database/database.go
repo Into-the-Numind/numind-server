@@ -3,13 +3,12 @@ package database
 import (
 	"fmt"
 	"log"
-
-	"numind-server/configs/config"
-	"numind-server/internal/models"
+	"numind-server/internal/pkg/model"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+	"numind-server/configs/config"
 )
 
 var DB *gorm.DB
@@ -56,15 +55,15 @@ func AutoMigrate(db *gorm.DB) error {
 
 	// 自动迁移所有模型
 	err := db.AutoMigrate(
-		&models.User{},
-		&models.Category{},
-		&models.Article{},
-		&models.Favorite{},
-		&models.SystemConfig{},
-		&models.ProxyServer{},
-		&models.Feedback{},
-		&models.AboutUs{},
-		&models.Agreement{},
+		&model.User{},
+		&model.Category{},
+		&model.Article{},
+		&model.Favorite{},
+		&model.SystemConfig{},
+		&model.ProxyServer{},
+		&model.Feedback{},
+		&model.AboutUs{},
+		&model.Agreement{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate database: %v", err)
