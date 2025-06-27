@@ -39,6 +39,7 @@ COPY --from=builder /app/bin/numind /app/numind
 
 # 复制配置文件（如果有的话）
 COPY --from=builder /app/config.yaml /app/config.yaml
+COPY config_dev.yaml /app/config_dev.yaml
 
 # 设置正确的权限
 RUN chown -R numind:numind /app && \
@@ -48,15 +49,15 @@ RUN chown -R numind:numind /app && \
 USER numind
 
 # 暴露端口
-EXPOSE 8000
+EXPOSE 9091
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/ || exit 1
+    CMD curl -f http://localhost:9091/ || exit 1
 
 # 设置环境变量
 ENV GIN_MODE=release
-ENV PORT=8000
+ENV PORT=9091
 
 # 启动应用
 ENTRYPOINT ["/app/numind"]
