@@ -1,8 +1,9 @@
-package main
+package numindadmin
 
 import (
-	"numind-server/internal/numind"
 	"os"
+
+	"numind-server/internal/numind"
 )
 
 func main() {

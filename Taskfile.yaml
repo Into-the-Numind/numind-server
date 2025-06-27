@@ -1,0 +1,244 @@
+version: '3'
+
+vars:
+  BINARY_NAME: numind
+  MAIN_PATH: ./cmd/numind
+  BUILD_DIR: ./bin
+  DOCKER_IMAGE: numind/numind-server
+  DOCKER_TAG: latest
+
+tasks:
+  # 安装依赖
+  deps:
+    desc: 安装 Go 依赖
+    cmds:
+      - go mod download
+      - go mod tidy
+
+  # 代码格式化
+  fmt:
+    desc: 格式化 Go 代码
+    cmds:
+      - go fmt ./...
+    sources:
+      - "**/*.go"
+    generates:
+      - "**/*.go"
+
+  # 代码检查
+  lint:
+    desc: 运行代码检查
+    deps: [deps]
+    cmds:
+      - go vet ./...
+      - go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+      - golangci-lint run ./...
+
+  # 运行测试
+  test:
+    desc: 运行测试
+    deps: [deps]
+    cmds:
+      - go test -v ./...
+      - go test -v -race ./...
+      - go test -v -coverprofile=coverage.out ./...
+      - go tool cover -html=coverage.out -o coverage.html
+
+  # 构建应用
+  build:
+    desc: 构建应用
+    deps: [deps, fmt]
+    cmds:
+      - mkdir -p {{.BUILD_DIR}}
+      - go build -ldflags="-s -w" -o {{.BUILD_DIR}}/{{.BINARY_NAME}} {{.MAIN_PATH}}
+    sources:
+      - "**/*.go"
+      - go.mod
+      - go.sum
+    generates:
+      - "{{.BUILD_DIR}}/{{.BINARY_NAME}}"
+
+  # 构建生产版本
+  build-prod:
+    desc: 构建生产版本
+    deps: [deps, fmt]
+    cmds:
+      - mkdir -p {{.BUILD_DIR}}
+      - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o {{.BUILD_DIR}}/{{.BINARY_NAME}}-linux-amd64 {{.MAIN_PATH}}
+      - CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o {{.BUILD_DIR}}/{{.BINARY_NAME}}-darwin-amd64 {{.MAIN_PATH}}
+      - CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o {{.BUILD_DIR}}/{{.BINARY_NAME}}-darwin-arm64 {{.MAIN_PATH}}
+
+  # 运行应用
+  run:
+    desc: 运行应用
+    deps: [build]
+    cmds:
+      - ./{{.BUILD_DIR}}/{{.BINARY_NAME}}
+
+  # 开发模式运行
+  dev:
+    desc: 开发模式运行
+    deps: [deps]
+    cmds:
+      - go run {{.MAIN_PATH}}
+
+  # 清理构建文件
+  clean:
+    desc: 清理构建文件
+    cmds:
+      - rm -rf {{.BUILD_DIR}}
+      - rm -f coverage.out coverage.html
+
+  # Docker 构建
+  docker-build:
+    desc: 构建 Docker 镜像
+    deps: [build-prod]
+    cmds:
+      - docker build -t {{.DOCKER_IMAGE}}:{{.DOCKER_TAG}} .
+      - docker tag {{.DOCKER_IMAGE}}:{{.DOCKER_TAG}} {{.DOCKER_IMAGE}}:latest
+
+  # Docker 运行
+  docker-run:
+    desc: 运行 Docker 容器
+    cmds:
+      - docker run -d --name numind-server -p 8000:8000 --env-file .env {{.DOCKER_IMAGE}}:{{.DOCKER_TAG}}
+
+  # Docker 停止
+  docker-stop:
+    desc: 停止 Docker 容器
+    cmds:
+      - docker stop numind-server || true
+      - docker rm numind-server || true
+
+  # Docker 清理
+  docker-clean:
+    desc: 清理 Docker 镜像
+    cmds:
+      - docker rmi {{.DOCKER_IMAGE}}:{{.DOCKER_TAG}} || true
+      - docker rmi {{.DOCKER_IMAGE}}:latest || true
+
+  # 完整构建流程
+  all:
+    desc: 完整构建流程
+    deps: [clean, lint, test, build-prod]
+
+  # 开发环境准备
+  setup-dev:
+    desc: 设置开发环境
+    cmds:
+      - go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+      - go install golang.org/x/tools/cmd/goimports@latest
+      - cp .env.example .env || echo "请创建 .env 文件"
+
+  # 生成 API 文档
+  docs:
+    desc: 生成 API 文档
+    cmds:
+      - swag init -g {{.MAIN_PATH}} -o ./docs
+
+  # 数据库迁移
+  migrate:
+    desc: 运行数据库迁移
+    deps: [build]
+    cmds:
+      - ./{{.BUILD_DIR}}/{{.BINARY_NAME}} migrate
+
+  # 性能测试
+  bench:
+    desc: 运行性能测试
+    deps: [deps]
+    cmds:
+      - go test -bench=. -benchmem ./...
+
+  # 配置验证
+  config-validate:
+    desc: 验证配置文件
+    deps: [deps]
+    cmds:
+      - go run ./cmd/config-validator
+
+  # 配置验证 (JSON 输出)
+  config-validate-json:
+    desc: 验证配置文件并输出 JSON
+    deps: [deps]
+    cmds:
+      - go run ./cmd/config-validator --json
+
+  # 构建配置验证工具
+  build-config-validator:
+    desc: 构建配置验证工具
+    deps: [deps]
+    cmds:
+      - mkdir -p {{.BUILD_DIR}}
+      - go build -o {{.BUILD_DIR}}/config-validator ./cmd/config-validator
+
+  # 测试不同环境配置
+  test-config-dev:
+    desc: 测试开发环境配置
+    cmds:
+      - ENVIRONMENT=development go run ./cmd/config-validator
+
+  test-config-qa:
+    desc: 测试 QA 环境配置
+    cmds:
+      - ENVIRONMENT=qa go run ./cmd/config-validator
+
+  test-config-prod:
+    desc: 测试生产环境配置
+    cmds:
+      - ENVIRONMENT=production go run ./cmd/config-validator
+
+  # Docker Compose 相关任务
+  docker-compose-up:
+    desc: 启动 Docker Compose 服务
+    cmds:
+      - docker-compose up -d
+
+  docker-compose-down:
+    desc: 停止 Docker Compose 服务
+    cmds:
+      - docker-compose down
+
+  docker-compose-logs:
+    desc: 查看 Docker Compose 日志
+    cmds:
+      - docker-compose logs -f
+
+  docker-compose-restart:
+    desc: 重启 Docker Compose 服务
+    cmds:
+      - docker-compose restart
+
+  # 环境管理
+  env-dev:
+    desc: 切换到开发环境
+    cmds:
+      - echo "ENVIRONMENT=development" > .env.current
+
+  env-qa:
+    desc: 切换到 QA 环境
+    cmds:
+      - echo "ENVIRONMENT=qa" > .env.current
+
+  env-prod:
+    desc: 切换到生产环境
+    cmds:
+      - echo "ENVIRONMENT=production" > .env.current
+
+  # 配置模板生成
+  config-template:
+    desc: 生成配置模板
+    cmds:
+      - cp config.yaml config.yaml.template
+
+  # 配置备份
+  config-backup:
+    desc: 备份配置文件
+    cmds:
+      - cp config.yaml config.yaml.backup.$(date +%Y%m%d_%H%M%S)
+
+  # 配置恢复
+  config-restore:
+    desc: 恢复配置文件
+    cmds:
+      - echo "请手动恢复配置文件"

@@ -6,14 +6,13 @@
 - 提取微信公众号文章内容
 - 文章收藏功能
 - 用户管理
-- RESTful API接口
+- RESTFUL API接口
 
 ## 技术栈
 
 - Gin (Web框架)
-- SQLAlchemy (ORM)
+- Gorm (ORM)
 - MySQL (数据库)
-- Pydantic (数据验证)
 - JWT (认证)
 - BeautifulSoup (HTML解析)
 
