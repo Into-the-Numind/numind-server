@@ -183,7 +183,7 @@ jobs:
             docker pull ghcr.io/into-the-numind/numind-server:develop
             docker stop numind-server || true
             docker rm numind-server || true
-            docker run -d --name numind-server -p 9091:9091 --restart always ghcr.io/into-the-numind/numind-server:develop numind -c /app/config_dev.yaml
+            docker run -d --name numind-server -p 9091:9091 --restart always ghcr.io/into-the-numind/numind-server:develop -c /app/config_dev.yaml
 
   # QA 环境部署 - 只在 release 分支触发
   deploy_qa:
