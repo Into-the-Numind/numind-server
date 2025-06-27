@@ -18,7 +18,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: Into-the-Numind/numind-server
+  IMAGE_NAME: into-the-numind/numind-server
   GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
   DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
   SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -152,7 +152,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -180,20 +180,10 @@ jobs:
           port: 22
           script: |
             echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            docker pull ghcr.io/Into-the-Numind/numind-server:develop
+            docker pull ghcr.io/into-the-numind/numind-server:develop
             docker stop numind-server || true
             docker rm numind-server || true
-            docker run -d --name numind-server -p 9091:9091 --restart always ghcr.io/Into-the-Numind/numind-server:develop numind -c /app/config_dev.yaml
-
-      - name: Notify deployment status
-        if: always()
-        uses: 8398a7/action-slack@v3
-        with:
-          status: ${{ job.status }}
-          channel: '#deployments'
-          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+            docker run -d --name numind-server -p 9091:9091 --restart always ghcr.io/into-the-numind/numind-server:develop numind -c /app/config_dev.yaml
 
   # QA 环境部署 - 只在 release 分支触发
   deploy_qa:
@@ -368,13 +358,3 @@ jobs:
               echo "Production deployment failed - health check failed"
               exit 1
             fi
-
-      - name: Notify production deployment
-        if: success()
-        uses: 8398a7/action-slack@v3
-        with:
-          status: success
-          channel: '#production-deployments'
-          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
