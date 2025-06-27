@@ -4,8 +4,8 @@ import (
 	"time"
 )
 
-// Article 文章表
-type Article struct {
+// ArticleM 文章表
+type ArticleM struct {
 	ID               uint      `gorm:"primaryKey" json:"id"`
 	UserID           uint      `gorm:"index;not null" json:"user_id"`
 	URL              string    `gorm:"size:255;index" json:"url"`
@@ -22,10 +22,10 @@ type Article struct {
 
 	// 关联关系
 	User      User       `gorm:"foreignKey:UserID" json:"user,omitempty"`
-	Category  *Category  `gorm:"foreignKey:CategoryID" json:"category,omitempty"`
+	Category  *CategoryM `gorm:"foreignKey:CategoryID" json:"category,omitempty"`
 	Favorites []Favorite `gorm:"foreignKey:ArticleID" json:"favorites,omitempty"`
 }
 
-func (Article) TableName() string {
+func (ArticleM) TableName() string {
 	return "articles"
 }

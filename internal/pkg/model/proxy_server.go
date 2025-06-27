@@ -2,8 +2,8 @@ package model
 
 import "time"
 
-// ProxyServer 代理服务器表
-type ProxyServer struct {
+// ProxyServerM 代理服务器表
+type ProxyServerM struct {
 	ID            uint       `gorm:"primaryKey" json:"id"`
 	IPAddress     string     `gorm:"size:50;index;not null" json:"ip_address"`
 	Port          int        `gorm:"not null" json:"port"`
@@ -22,6 +22,6 @@ type ProxyServer struct {
 	Remarks       string     `gorm:"size:255" json:"remarks"`
 }
 
-func (ProxyServer) TableName() string {
-	return "proxy_servers"
+func (ProxyServerM) TableName() string {
+	return "proxy_server"
 }

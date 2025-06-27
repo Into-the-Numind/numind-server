@@ -23,26 +23,26 @@ func NewConfigService(db *gorm.DB) *ConfigService {
 }
 
 // GetConfigs 获取所有配置
-func (s *ConfigService) GetConfigs() ([]model.SystemConfig, error) {
-	var configs []model.SystemConfig
+func (s *ConfigService) GetConfigs() ([]model.SystemConfigM, error) {
+	var configs []model.SystemConfigM
 	err := s.db.Find(&configs).Error
 	return configs, err
 }
 
 // GetConfig 获取单个配置
-func (s *ConfigService) GetConfig(key string) (*model.SystemConfig, error) {
-	var config model.SystemConfig
+func (s *ConfigService) GetConfig(key string) (*model.SystemConfigM, error) {
+	var config model.SystemConfigM
 	err := s.db.Where("key = ?", key).First(&config).Error
 	return &config, err
 }
 
 // UpdateConfig 更新配置
 func (s *ConfigService) UpdateConfig(key string, req *ConfigUpdateRequest) error {
-	var config model.SystemConfig
+	var config model.SystemConfigM
 	err := s.db.Where("key = ?", key).First(&config).Error
 	if err == gorm.ErrRecordNotFound {
 		// 创建新配置
-		config = model.SystemConfig{
+		config = model.SystemConfigM{
 			Key:         key,
 			Value:       req.Value,
 			Description: req.Description,
@@ -64,12 +64,12 @@ func (s *ConfigService) UpdateConfig(key string, req *ConfigUpdateRequest) error
 
 // DeleteConfig 删除配置
 func (s *ConfigService) DeleteConfig(key string) error {
-	return s.db.Where("key = ?", key).Delete(&model.SystemConfig{}).Error
+	return s.db.Where("key = ?", key).Delete(&model.SystemConfigM{}).Error
 }
 
 // InitDefaultConfigs 初始化默认配置
 func (s *ConfigService) InitDefaultConfigs() error {
-	defaultConfigs := []model.SystemConfig{
+	defaultConfigs := []model.SystemConfigM{
 		{
 			Key:         "ai_prompt",
 			Value:       "请对以下文章进行总结和分析：",
@@ -94,7 +94,7 @@ func (s *ConfigService) InitDefaultConfigs() error {
 	}
 
 	for _, config := range defaultConfigs {
-		var existing model.SystemConfig
+		var existing model.SystemConfigM
 		err := s.db.Where("key = ?", config.Key).First(&existing).Error
 		if err == gorm.ErrRecordNotFound {
 			s.db.Create(&config)

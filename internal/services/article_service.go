@@ -47,11 +47,11 @@ type ArticleListRequest struct {
 }
 
 type ArticleListResponse struct {
-	Items []model.Article `json:"items"`
-	Total int64           `json:"total"`
-	Page  int             `json:"page"`
-	Limit int             `json:"limit"`
-	Pages int             `json:"pages"`
+	Items []model.ArticleM `json:"items"`
+	Total int64            `json:"total"`
+	Page  int              `json:"page"`
+	Limit int              `json:"limit"`
+	Pages int              `json:"pages"`
 }
 
 type ParaphraseRequest struct {
@@ -66,9 +66,9 @@ func NewArticleService(db *gorm.DB, cfg *config.Config) *ArticleService {
 }
 
 // FetchArticle 获取文章内容
-func (s *ArticleService) FetchArticle(userID uint, req *ArticleFetchRequest) (*model.Article, error) {
+func (s *ArticleService) FetchArticle(userID uint, req *ArticleFetchRequest) (*model.ArticleM, error) {
 	// 检查文章是否已存在
-	var existingArticle model.Article
+	var existingArticle model.ArticleM
 	err := s.db.Where("url = ?", req.URL).First(&existingArticle).Error
 	if err == nil {
 		// 文章已存在，返回现有文章
@@ -88,7 +88,7 @@ func (s *ArticleService) FetchArticle(userID uint, req *ArticleFetchRequest) (*m
 	}
 
 	// 创建新文章
-	article := model.Article{
+	article := model.ArticleM{
 		UserID:      userID,
 		URL:         req.URL,
 		Title:       articleData.Title,
@@ -109,7 +109,7 @@ func (s *ArticleService) FetchArticle(userID uint, req *ArticleFetchRequest) (*m
 
 // GetArticles 获取文章列表
 func (s *ArticleService) GetArticles(req *ArticleListRequest) (*ArticleListResponse, error) {
-	query := s.db.Model(&model.Article{}).Preload("User").Preload("Category")
+	query := s.db.Model(&model.ArticleM{}).Preload("User").Preload("Category")
 
 	// 应用过滤条件
 	if req.CategoryID != nil {
@@ -130,7 +130,7 @@ func (s *ArticleService) GetArticles(req *ArticleListRequest) (*ArticleListRespo
 
 	// 分页
 	offset := (req.Page - 1) * req.Limit
-	var articles []model.Article
+	var articles []model.ArticleM
 	if err := query.Offset(offset).Limit(req.Limit).Order("created_at DESC").Find(&articles).Error; err != nil {
 		return nil, err
 	}
@@ -147,8 +147,8 @@ func (s *ArticleService) GetArticles(req *ArticleListRequest) (*ArticleListRespo
 }
 
 // GetArticle 获取单个文章
-func (s *ArticleService) GetArticle(articleID uint) (*model.Article, error) {
-	var article model.Article
+func (s *ArticleService) GetArticle(articleID uint) (*model.ArticleM, error) {
+	var article model.ArticleM
 	err := s.db.Preload("User").Preload("Category").First(&article, articleID).Error
 	if err != nil {
 		return nil, err
@@ -158,7 +158,7 @@ func (s *ArticleService) GetArticle(articleID uint) (*model.Article, error) {
 
 // UpdateArticleCategory 更新文章分类
 func (s *ArticleService) UpdateArticleCategory(articleID, userID uint, categoryID *uint) error {
-	var article model.Article
+	var article model.ArticleM
 	if err := s.db.Where("id = ? AND user_id = ?", articleID, userID).First(&article).Error; err != nil {
 		return fmt.Errorf("文章不存在或无权限")
 	}
@@ -171,7 +171,7 @@ func (s *ArticleService) UpdateArticleCategory(articleID, userID uint, categoryI
 
 // DeleteArticle 删除文章
 func (s *ArticleService) DeleteArticle(articleID, userID uint) error {
-	return s.db.Where("id = ? AND user_id = ?", articleID, userID).Delete(&model.Article{}).Error
+	return s.db.Where("id = ? AND user_id = ?", articleID, userID).Delete(&model.ArticleM{}).Error
 }
 
 // AddFavorite 添加收藏
@@ -219,7 +219,7 @@ func (s *ArticleService) GetFavorites(userID uint, page, limit int) (*ArticleLis
 	}
 
 	// 转换为文章列表
-	var articles []model.Article
+	var articles []model.ArticleM
 	for _, fav := range favorites {
 		articles = append(articles, fav.Article)
 	}

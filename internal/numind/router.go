@@ -36,8 +36,10 @@ func installNumindRouters(g *gin.Engine) error {
 
 	uc := user.New(store.S, authz)
 
+	v1Group := g.Group("/v1")
+
 	//g.POST("/login", uc.Login)
-	g.POST("/wechat/login", uc.WechatLogin)
+	v1Group.POST("/wechat/login", uc.WechatLogin)
 
 	return nil
 }

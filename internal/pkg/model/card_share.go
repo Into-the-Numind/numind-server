@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-type CardShare struct {
+type CardShareM struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	CardID    uint      `gorm:"index" json:"card_id"`
 	UserID    uint      `gorm:"index" json:"user_id"`
@@ -10,6 +10,6 @@ type CardShare struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func (CardShare) TableName() string {
-	return "card_shares"
+func (CardShareM) TableName() string {
+	return "card_share"
 }

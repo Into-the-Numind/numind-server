@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-type CardImage struct {
+type CardRelImageM struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	CardID    uint      `gorm:"index" json:"card_id"`
 	URL       string    `gorm:"size:512;not null" json:"url"`
@@ -10,6 +10,6 @@ type CardImage struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func (CardImage) TableName() string {
-	return "card_images"
+func (CardRelImageM) TableName() string {
+	return "card_rel_image"
 }

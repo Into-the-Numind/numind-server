@@ -19,9 +19,9 @@ type ArticleListRequest struct {
 }
 
 type ArticleListResponse struct {
-	Items []model.Article `json:"items"`
-	Total int64           `json:"total"`
-	Page  int             `json:"page"`
-	Limit int             `json:"limit"`
-	Pages int             `json:"pages"`
+	Items []model.ArticleM `json:"items"`
+	Total int64            `json:"total"`
+	Page  int              `json:"page"`
+	Limit int              `json:"limit"`
+	Pages int              `json:"pages"`
 }

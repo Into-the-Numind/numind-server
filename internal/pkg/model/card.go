@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-type Card struct {
+type CardM struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	UserID    uint      `gorm:"index" json:"user_id"`
 	Title     string    `gorm:"size:255" json:"title"`
@@ -14,6 +14,6 @@ type Card struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-func (Card) TableName() string {
+func (CardM) TableName() string {
 	return "cards"
 }

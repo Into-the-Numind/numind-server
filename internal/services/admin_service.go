@@ -24,11 +24,11 @@ type AdminArticleListRequest struct {
 }
 
 type AdminArticleListResponse struct {
-	Items []model.Article `json:"items"`
-	Total int64           `json:"total"`
-	Page  int             `json:"page"`
-	Limit int             `json:"limit"`
-	Pages int             `json:"pages"`
+	Items []model.ArticleM `json:"items"`
+	Total int64            `json:"total"`
+	Page  int              `json:"page"`
+	Limit int              `json:"limit"`
+	Pages int              `json:"pages"`
 }
 
 type AdminArticleCreateRequest struct {
@@ -120,7 +120,7 @@ func NewAdminService(db *gorm.DB, cfg *config.Config) *AdminService {
 
 // GetArticles 获取文章列表（管理员）
 func (s *AdminService) GetArticles(req *AdminArticleListRequest) (*AdminArticleListResponse, error) {
-	query := s.db.Model(&model.Article{}).Preload("User").Preload("Category")
+	query := s.db.Model(&model.ArticleM{}).Preload("User").Preload("Category")
 
 	// 应用过滤条件
 	if req.CategoryID != nil {
@@ -141,7 +141,7 @@ func (s *AdminService) GetArticles(req *AdminArticleListRequest) (*AdminArticleL
 
 	// 分页
 	offset := (req.Page - 1) * req.Limit
-	var articles []model.Article
+	var articles []model.ArticleM
 	if err := query.Offset(offset).Limit(req.Limit).Order("created_at DESC").Find(&articles).Error; err != nil {
 		return nil, err
 	}
@@ -158,8 +158,8 @@ func (s *AdminService) GetArticles(req *AdminArticleListRequest) (*AdminArticleL
 }
 
 // GetArticle 获取单个文章（管理员）
-func (s *AdminService) GetArticle(articleID uint) (*model.Article, error) {
-	var article model.Article
+func (s *AdminService) GetArticle(articleID uint) (*model.ArticleM, error) {
+	var article model.ArticleM
 	err := s.db.Preload("User").Preload("Category").First(&article, articleID).Error
 	if err != nil {
 		return nil, err
@@ -168,8 +168,8 @@ func (s *AdminService) GetArticle(articleID uint) (*model.Article, error) {
 }
 
 // CreateArticle 创建文章（管理员）
-func (s *AdminService) CreateArticle(req *AdminArticleCreateRequest) (*model.Article, error) {
-	article := model.Article{
+func (s *AdminService) CreateArticle(req *AdminArticleCreateRequest) (*model.ArticleM, error) {
+	article := model.ArticleM{
 		Title:       req.Title,
 		CategoryID:  req.CategoryID,
 		Summary:     req.Summary,
@@ -188,7 +188,7 @@ func (s *AdminService) CreateArticle(req *AdminArticleCreateRequest) (*model.Art
 
 // UpdateArticle 更新文章（管理员）
 func (s *AdminService) UpdateArticle(articleID uint, req *AdminArticleUpdateRequest) error {
-	var article model.Article
+	var article model.ArticleM
 	if err := s.db.First(&article, articleID).Error; err != nil {
 		return err
 	}
@@ -215,12 +215,12 @@ func (s *AdminService) UpdateArticle(articleID uint, req *AdminArticleUpdateRequ
 
 // DeleteArticle 删除文章（管理员）
 func (s *AdminService) DeleteArticle(articleID uint) error {
-	return s.db.Delete(&model.Article{}, articleID).Error
+	return s.db.Delete(&model.ArticleM{}, articleID).Error
 }
 
 // BulkDeleteArticles 批量删除文章
 func (s *AdminService) BulkDeleteArticles(articleIDs []uint) error {
-	return s.db.Delete(&model.Article{}, articleIDs).Error
+	return s.db.Delete(&model.ArticleM{}, articleIDs).Error
 }
 
 // GetUsers 获取用户列表
@@ -241,7 +241,7 @@ func (s *AdminService) GetUsers(page, limit int) (*ArticleListResponse, error) {
 	}
 
 	// 转换为文章列表格式（复用结构）
-	var articles []model.Article
+	var articles []model.ArticleM
 	for _, user := range users {
 		// 这里需要转换，暂时返回空
 		fmt.Println(user)
@@ -288,15 +288,15 @@ func (s *AdminService) DeleteUser(userID uint) error {
 }
 
 // GetCategories 获取分类列表
-func (s *AdminService) GetCategories() ([]model.Category, error) {
-	var categories []model.Category
+func (s *AdminService) GetCategories() ([]model.CategoryM, error) {
+	var categories []model.CategoryM
 	err := s.db.Find(&categories).Error
 	return categories, err
 }
 
 // CreateCategory 创建分类
-func (s *AdminService) CreateCategory(req *AdminCategoryCreateRequest) (*model.Category, error) {
-	category := model.Category{
+func (s *AdminService) CreateCategory(req *AdminCategoryCreateRequest) (*model.CategoryM, error) {
+	category := model.CategoryM{
 		Name:        req.Name,
 		Description: req.Description,
 		CreatedAt:   time.Now(),
@@ -311,7 +311,7 @@ func (s *AdminService) CreateCategory(req *AdminCategoryCreateRequest) (*model.C
 
 // UpdateCategory 更新分类
 func (s *AdminService) UpdateCategory(categoryID uint, req *AdminCategoryUpdateRequest) error {
-	var category model.Category
+	var category model.CategoryM
 	if err := s.db.First(&category, categoryID).Error; err != nil {
 		return err
 	}
@@ -328,12 +328,12 @@ func (s *AdminService) UpdateCategory(categoryID uint, req *AdminCategoryUpdateR
 
 // DeleteCategory 删除分类
 func (s *AdminService) DeleteCategory(categoryID uint) error {
-	return s.db.Delete(&model.Category{}, categoryID).Error
+	return s.db.Delete(&model.CategoryM{}, categoryID).Error
 }
 
 // GetProxies 获取代理列表
 func (s *AdminService) GetProxies(page, limit int) (*ArticleListResponse, error) {
-	query := s.db.Model(&model.ProxyServer{})
+	query := s.db.Model(&model.ProxyServerM{})
 
 	// 获取总数
 	var total int64
@@ -343,13 +343,13 @@ func (s *AdminService) GetProxies(page, limit int) (*ArticleListResponse, error)
 
 	// 分页
 	offset := (page - 1) * limit
-	var proxies []model.ProxyServer
+	var proxies []model.ProxyServerM
 	if err := query.Offset(offset).Limit(limit).Order("created_at DESC").Find(&proxies).Error; err != nil {
 		return nil, err
 	}
 
 	// 转换为文章列表格式（复用结构）
-	var articles []model.Article
+	var articles []model.ArticleM
 
 	pages := int((total + int64(limit) - 1) / int64(limit))
 
@@ -363,8 +363,8 @@ func (s *AdminService) GetProxies(page, limit int) (*ArticleListResponse, error)
 }
 
 // CreateProxy 创建代理
-func (s *AdminService) CreateProxy(req *AdminProxyCreateRequest) (*model.ProxyServer, error) {
-	proxy := model.ProxyServer{
+func (s *AdminService) CreateProxy(req *AdminProxyCreateRequest) (*model.ProxyServerM, error) {
+	proxy := model.ProxyServerM{
 		IPAddress:   req.IPAddress,
 		Port:        req.Port,
 		Protocol:    req.Protocol,
@@ -387,7 +387,7 @@ func (s *AdminService) CreateProxy(req *AdminProxyCreateRequest) (*model.ProxySe
 
 // UpdateProxy 更新代理
 func (s *AdminService) UpdateProxy(proxyID uint, req *AdminProxyUpdateRequest) error {
-	var proxy model.ProxyServer
+	var proxy model.ProxyServerM
 	if err := s.db.First(&proxy, proxyID).Error; err != nil {
 		return err
 	}
@@ -423,12 +423,12 @@ func (s *AdminService) UpdateProxy(proxyID uint, req *AdminProxyUpdateRequest) e
 
 // DeleteProxy 删除代理
 func (s *AdminService) DeleteProxy(proxyID uint) error {
-	return s.db.Delete(&model.ProxyServer{}, proxyID).Error
+	return s.db.Delete(&model.ProxyServerM{}, proxyID).Error
 }
 
 // BulkDeleteProxies 批量删除代理
 func (s *AdminService) BulkDeleteProxies(proxyIDs []uint) error {
-	return s.db.Delete(&model.ProxyServer{}, proxyIDs).Error
+	return s.db.Delete(&model.ProxyServerM{}, proxyIDs).Error
 }
 
 // GetFeedbacks 获取反馈列表
@@ -449,7 +449,7 @@ func (s *AdminService) GetFeedbacks(page, limit int) (*ArticleListResponse, erro
 	}
 
 	// 转换为文章列表格式（复用结构）
-	var articles []model.Article
+	var articles []model.ArticleM
 
 	pages := int((total + int64(limit) - 1) / int64(limit))
 
@@ -491,12 +491,12 @@ func (s *AdminService) BulkDeleteFeedbacks(feedbackIDs []uint) error {
 }
 
 // GetAboutUs 获取关于我们
-func (s *AdminService) GetAboutUs() (*model.AboutUs, error) {
-	var aboutUs model.AboutUs
+func (s *AdminService) GetAboutUs() (*model.AboutUsM, error) {
+	var aboutUs model.AboutUsM
 	err := s.db.First(&aboutUs).Error
 	if err == gorm.ErrRecordNotFound {
 		// 创建默认记录
-		aboutUs = model.AboutUs{
+		aboutUs = model.AboutUsM{
 			Content:   "关于我们的内容",
 			UpdatedAt: time.Now(),
 		}
@@ -507,10 +507,10 @@ func (s *AdminService) GetAboutUs() (*model.AboutUs, error) {
 
 // UpdateAboutUs 更新关于我们
 func (s *AdminService) UpdateAboutUs(req *AdminAboutUsUpdateRequest) error {
-	var aboutUs model.AboutUs
+	var aboutUs model.AboutUsM
 	err := s.db.First(&aboutUs).Error
 	if err == gorm.ErrRecordNotFound {
-		aboutUs = model.AboutUs{
+		aboutUs = model.AboutUsM{
 			Content:   req.Content,
 			UpdatedAt: time.Now(),
 		}
@@ -556,13 +556,13 @@ func (s *AdminService) GetStats() (*AdminStatsResponse, error) {
 	s.db.Model(&model.User{}).Count(&stats.TotalUsers)
 
 	// 统计文章数
-	s.db.Model(&model.Article{}).Count(&stats.TotalArticles)
+	s.db.Model(&model.ArticleM{}).Count(&stats.TotalArticles)
 
 	// 统计分类数
-	s.db.Model(&model.Category{}).Count(&stats.TotalCategories)
+	s.db.Model(&model.CategoryM{}).Count(&stats.TotalCategories)
 
 	// 统计代理数
-	s.db.Model(&model.ProxyServer{}).Count(&stats.TotalProxies)
+	s.db.Model(&model.ProxyServerM{}).Count(&stats.TotalProxies)
 
 	// 统计反馈数
 	s.db.Model(&model.Feedback{}).Count(&stats.TotalFeedbacks)

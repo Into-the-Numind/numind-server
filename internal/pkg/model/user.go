@@ -25,7 +25,7 @@ type User struct {
 	LastLogin *time.Time `json:"last_login"`
 
 	// 关联关系
-	Articles  []Article  `gorm:"foreignKey:UserID" json:"articles,omitempty"`
+	Articles  []ArticleM `gorm:"foreignKey:UserID" json:"articles,omitempty"`
 	Favorites []Favorite `gorm:"foreignKey:UserID" json:"favorites,omitempty"`
 	Feedbacks []Feedback `gorm:"foreignKey:UserID" json:"feedbacks,omitempty"`
 }

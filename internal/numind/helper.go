@@ -1,6 +1,9 @@
 package numind
 
 import (
+	"fmt"
+	"gorm.io/gorm"
+	"numind-server/internal/pkg/model"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,10 +18,10 @@ import (
 
 const (
 	// recommendedHomeDir 定义放置 miniblog 服务配置的默认目录.
-	recommendedHomeDir = ".miniblog"
+	recommendedHomeDir = ".numind"
 
 	// defaultConfigName 指定了 miniblog 服务的默认配置文件名.
-	defaultConfigName = "miniblog.yaml"
+	defaultConfigName = "config.yaml"
 )
 
 // initConfig 设置需要读取的配置文件名、环境变量，并读取配置文件内容到 viper 中.
@@ -49,7 +52,7 @@ func initConfig() {
 	viper.AutomaticEnv()
 
 	// 读取环境变量的前缀为 MINIBLOG，如果是 miniblog，将自动转变为大写。
-	viper.SetEnvPrefix("MINIBLOG")
+	viper.SetEnvPrefix("NUMIND")
 
 	// 以下 2 行，将 viper.Get(key) key 字符串中 '.' 和 '-' 替换为 '_'
 	replacer := strings.NewReplacer(".", "_")
@@ -94,7 +97,35 @@ func initStore() error {
 		return err
 	}
 
+	err = autoMigrate(ins)
+	if err != nil {
+		return err
+	}
+
 	_ = store.NewStore(ins)
 
+	return nil
+}
+
+func autoMigrate(db *gorm.DB) error {
+	log.Infow("Migrating database...")
+
+	// 自动迁移所有模型
+	err := db.AutoMigrate(
+		&model.User{},
+		&model.CategoryM{},
+		&model.ArticleM{},
+		&model.Favorite{},
+		&model.SystemConfigM{},
+		&model.ProxyServerM{},
+		&model.Feedback{},
+		&model.AboutUsM{},
+		&model.Agreement{},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to migrate database: %v", err)
+	}
+
+	log.Infow("Database migration completed successfully")
 	return nil
 }

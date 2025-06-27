@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-type ActionLog struct {
+type ActionLogM struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	UserID    uint      `gorm:"index" json:"user_id"`
 	Action    string    `gorm:"size:100;not null" json:"action"`
@@ -12,6 +12,6 @@ type ActionLog struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func (ActionLog) TableName() string {
-	return "action_logs"
+func (ActionLogM) TableName() string {
+	return "action_log"
 }

@@ -16,9 +16,9 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/likexian/gokit/assert"
 
-	"github.com/marmotedu/miniblog/internal/miniblog/biz"
-	"github.com/marmotedu/miniblog/internal/miniblog/biz/post"
-	v1 "github.com/marmotedu/miniblog/pkg/api/miniblog/v1"
+	"numind-server/internal/numind/biz"
+	"numind-server/internal/numind/biz/post"
+	v1 "numind-server/pkg/api/numind/v1"
 )
 
 type bodyLogWriter struct {

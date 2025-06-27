@@ -1,7 +1,13 @@
 package main
 
-import "numind-server/internal/numind"
+import (
+	"numind-server/internal/numind"
+	"os"
+)
 
 func main() {
-	numind.Execute()
+	command := numind.NewNumindCommand()
+	if err := command.Execute(); err != nil {
+		os.Exit(2)
+	}
 }

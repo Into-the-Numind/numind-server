@@ -2,8 +2,8 @@ package model
 
 import "time"
 
-// SystemConfig 系统配置表
-type SystemConfig struct {
+// SystemConfigM 系统配置表
+type SystemConfigM struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
 	Key         string    `gorm:"size:100;uniqueIndex" json:"key"`
 	Value       string    `gorm:"type:text" json:"value"`
@@ -12,6 +12,6 @@ type SystemConfig struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-func (SystemConfig) TableName() string {
-	return "system_configs"
+func (SystemConfigM) TableName() string {
+	return "system_config"
 }
