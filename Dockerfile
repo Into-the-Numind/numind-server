@@ -38,7 +38,6 @@ WORKDIR /app
 COPY --from=builder /app/bin/numind /app/numind
 
 # 复制配置文件（如果有的话）
-COPY --from=builder /app/config.yaml /app/config.yaml
 COPY config_dev.yaml /app/config_dev.yaml
 
 # 设置正确的权限
