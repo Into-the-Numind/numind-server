@@ -1,10 +1,14 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 // SystemConfigM 系统配置表
 type SystemConfigM struct {
-	ID          uint      `gorm:"primaryKey" json:"id"`
+	gorm.Model
 	Key         string    `gorm:"size:100;uniqueIndex" json:"key"`
 	Value       string    `gorm:"type:text" json:"value"`
 	Description string    `gorm:"size:255" json:"description"`

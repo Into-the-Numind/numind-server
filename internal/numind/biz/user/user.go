@@ -13,6 +13,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/jinzhu/copier"
+	"github.com/spf13/viper"
 	"golang.org/x/sync/errgroup"
 	"gorm.io/gorm"
 
@@ -279,7 +280,10 @@ func (s *userBiz) getWechatPhone(phoneCode, accessToken string) (*wechat.WechatP
 // getWechatToken 获取微信access_token
 func (s *userBiz) getWechatToken(code string) (*wechat.WechatTokenResponse, error) {
 	url := fmt.Sprintf("https://api.weixin.qq.com/sns/oauth2/access_token?appid=%s&secret=%s&code=%s&grant_type=authorization_code",
-		"", "", code)
+		viper.GetString("wechat.appid"),
+		viper.GetString("wechat.secret"),
+		code,
+	)
 
 	resp, err := http.Get(url)
 	if err != nil {

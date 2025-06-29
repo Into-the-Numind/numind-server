@@ -42,8 +42,8 @@ redis:
     min_idle_conns: 5
 
 wechat:
-    app_id: ""
-    app_secret: ""
+    app_id: "wxad0aec8b3d3b2ef4"
+    app_secret: "cd5e2a2a919fd6a06c52ae2a15286a36"
 
 oss:
   endpoint: ""
@@ -52,7 +52,10 @@ oss:
   bucket_name: ""
 
 openai:
-  api_key: ""
-  base_url: "https://api.openai.com/v1"
+  api_key: "60dbceec-5407-45c3-8d29-c26a47b77884"
+  base_url: "https://ark.cn-beijing.volces.com/api/v3"
+  model: "deepseek-v3-250324"  # 使用的AI模型
+  temperature: 0.5 # 生成文本的随机性，值越高随机性越大
+  tokens: 2000 # 生成文本的最大长度
   timeout: 30s
   max_retries: 3

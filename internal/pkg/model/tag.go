@@ -6,7 +6,7 @@ type Tag struct {
 }
 
 func (Tag) TableName() string {
-	return "tags"
+	return "tag"
 }
 
 type CardTag struct {
@@ -15,5 +15,5 @@ type CardTag struct {
 }
 
 func (CardTag) TableName() string {
-	return "card_tags"
+	return "card_tag"
 }
