@@ -24,11 +24,5 @@ func (ctrl *UserController) Delete(c *gin.Context) {
 		return
 	}
 
-	if _, err := ctrl.a.RemoveNamedPolicy("p", username, "", ""); err != nil {
-		core.WriteResponse(c, err, nil)
-
-		return
-	}
-
 	core.WriteResponse(c, nil, nil)
 }

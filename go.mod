@@ -3,10 +3,7 @@ module numind-server
 go 1.24.2
 
 require (
-	github.com/AlekSi/pointer v1.2.0
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2
-	github.com/casbin/casbin/v2 v2.108.0
-	github.com/casbin/gorm-adapter/v3 v3.21.1
 	github.com/common-nighthawk/go-figure v0.0.0-20210622060536-734e95fb86be
 	github.com/gin-contrib/pprof v1.5.3
 	github.com/gin-gonic/gin v1.10.1
@@ -32,10 +29,11 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
-	github.com/bmatcuk/doublestar/v4 v4.6.1 // indirect
+	github.com/Knetic/govaluate v3.0.1-0.20171022003610-9aa49832a739+incompatible // indirect
 	github.com/bytedance/sonic v1.13.3 // indirect
 	github.com/bytedance/sonic/loader v0.2.4 // indirect
-	github.com/casbin/govaluate v1.3.0 // indirect
+	github.com/casbin/casbin/v2 v2.58.0 // indirect
+	github.com/casbin/gorm-adapter/v3 v3.13.0 // indirect
 	github.com/cloudwego/base64x v0.1.5 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect

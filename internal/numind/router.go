@@ -10,7 +10,6 @@ import (
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
-	"numind-server/pkg/auth"
 
 	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
@@ -33,12 +32,12 @@ func installNumindRouters(g *gin.Engine) error {
 	// 注册 pprof 路由
 	pprof.Register(g)
 
-	authz, err := auth.NewAuthz(store.S.DB())
-	if err != nil {
-		return err
-	}
+	// authz, err := auth.NewAuthz(store.S.DB())
+	// if err != nil {
+	// 	return err
+	// }
 
-	uc := user.New(store.S, authz)
+	uc := user.New(store.S)
 	b := biz.NewBiz(store.S)
 	ic := image.New(b)
 	cc := card.New(b)
