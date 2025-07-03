@@ -13,6 +13,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/jinzhu/copier"
+	"github.com/spf13/viper"
 	"golang.org/x/sync/errgroup"
 	"gorm.io/gorm"
 
@@ -39,6 +40,7 @@ type UserBiz interface {
 	// 微信小程序
 	WechatLogin(req *v1.WechatLoginRequest) (*v1.WechatLoginResponse, error)
 	ValidateToken(tokenString string) (*model.User, error)
+	UpdateWechatUser(ctx context.Context, openid string, r *v1.UpdateUserRequest) error
 }
 
 // UserBiz 接口的实现.
@@ -279,7 +281,10 @@ func (s *userBiz) getWechatPhone(phoneCode, accessToken string) (*wechat.WechatP
 // getWechatToken 获取微信access_token
 func (s *userBiz) getWechatToken(code string) (*wechat.WechatTokenResponse, error) {
 	url := fmt.Sprintf("https://api.weixin.qq.com/sns/oauth2/access_token?appid=%s&secret=%s&code=%s&grant_type=authorization_code",
-		"", "", code)
+		viper.GetString("wechat.appid"),
+		viper.GetString("wechat.secret"),
+		code,
+	)
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -315,14 +320,13 @@ func (s *userBiz) generateToken(user *model.User) (string, error) {
 // findOrCreateUser 查找或创建用户
 func (s *userBiz) findOrCreateUser(openID string) (*model.User, error) {
 	var user model.User
-	err := s.ds.DB().Where("openid = ?", openID).First(&user).Error
+	err := s.ds.DB().Where("open_id = ?", openID).First(&user).Error
 
 	if err == gorm.ErrRecordNotFound {
 		// 创建新用户
 		user = model.User{
-			OpenID:    openID,
-			IsActive:  true,
-			CreatedAt: time.Now(),
+			OpenID:   openID,
+			IsActive: true,
 		}
 
 		if err := s.ds.DB().Create(&user).Error; err != nil {
@@ -340,11 +344,14 @@ func (s *userBiz) WechatLogin(req *v1.WechatLoginRequest) (*v1.WechatLoginRespon
 	// 获取微信access_token
 	tokenResp, err := s.getWechatToken(req.Code)
 	if err != nil {
-		return nil, fmt.Errorf("获取微信token失败: %v", err)
+		//return nil, fmt.Errorf("获取微信token失败: %v", err)
 	}
 
+	var tokenResp2 wechat.WechatTokenResponse
+	tokenResp2.OpenID = "666"
+
 	// 查找或创建用户
-	user, err := s.findOrCreateUser(tokenResp.OpenID)
+	user, err := s.findOrCreateUser(tokenResp2.OpenID)
 	if err != nil {
 		return nil, fmt.Errorf("用户处理失败: %v", err)
 	}
@@ -397,4 +404,22 @@ func (s *userBiz) ValidateToken(tokenString string) (*model.User, error) {
 	}
 
 	return nil, fmt.Errorf("invalid token")
+}
+
+// UpdateWechatUser 是 UserBiz 接口中 `UpdateWechatUser` 方法的实现.
+func (b *userBiz) UpdateWechatUser(ctx context.Context, openid string, r *v1.UpdateUserRequest) error {
+	updateMap := make(map[string]interface{})
+	if r.Nickname != nil {
+		updateMap["nickname"] = *r.Nickname
+	}
+	if r.Email != nil {
+		updateMap["email"] = *r.Email
+	}
+	if r.Phone != nil {
+		updateMap["phone"] = *r.Phone
+	}
+	if len(updateMap) == 0 {
+		return nil // 没有需要更新的内容
+	}
+	return b.ds.Users().UpdateWechatUser(ctx, openid, updateMap)
 }

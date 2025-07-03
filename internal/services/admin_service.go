@@ -374,8 +374,6 @@ func (s *AdminService) CreateProxy(req *AdminProxyCreateRequest) (*model.ProxySe
 		Remarks:     req.Remarks,
 		Status:      1,
 		IsAutoAdded: 0,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
 	}
 
 	if err := s.db.Create(&proxy).Error; err != nil {

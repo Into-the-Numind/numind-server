@@ -27,3 +27,11 @@ go.work.sum
 
 .idea/
 .vscode/
+
+*.log
+
+cmd/numind/uploads
+
+cmd/numind/numind.log
+cmd/numind/__debug_bin*
+

@@ -3,6 +3,9 @@ package biz
 //go:generate mockgen -destination mock_biz.go -package biz github.com/marmotedu/miniblog/internal/miniblog/biz IBiz
 
 import (
+	"numind-server/internal/numind/biz/book"
+	"numind-server/internal/numind/biz/card"
+	"numind-server/internal/numind/biz/image"
 	"numind-server/internal/numind/biz/post"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/store"
@@ -12,6 +15,9 @@ import (
 type IBiz interface {
 	Users() user.UserBiz
 	Posts() post.PostBiz
+	Images() image.ImageBiz
+	Cards() card.CardBiz
+	Books() book.BookBiz
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -38,4 +44,16 @@ func (b *biz) Users() user.UserBiz {
 // Posts 返回一个实现了 PostBiz 接口的实例.
 func (b *biz) Posts() post.PostBiz {
 	return post.New(b.ds)
+}
+
+func (b *biz) Images() image.ImageBiz {
+	return image.New(b.ds)
+}
+
+func (b *biz) Cards() card.CardBiz {
+	return card.New(b.ds)
+}
+
+func (b *biz) Books() book.BookBiz {
+	return book.New(b.ds)
 }

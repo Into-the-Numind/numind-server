@@ -1,10 +1,14 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 // ProxyServerM 代理服务器表
 type ProxyServerM struct {
-	ID            uint       `gorm:"primaryKey" json:"id"`
+	gorm.Model
 	IPAddress     string     `gorm:"size:50;index;not null" json:"ip_address"`
 	Port          int        `gorm:"not null" json:"port"`
 	Protocol      string     `gorm:"size:10;default:http" json:"protocol"`
@@ -17,8 +21,6 @@ type ProxyServerM struct {
 	CheckCount    int        `gorm:"default:0" json:"check_count"`
 	SuccessCount  int        `gorm:"default:0" json:"success_count"`
 	IsAutoAdded   int        `gorm:"default:0" json:"is_auto_added"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `gorm:"autoUpdateTime" json:"updated_at"`
 	Remarks       string     `gorm:"size:255" json:"remarks"`
 }
 

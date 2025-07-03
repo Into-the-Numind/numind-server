@@ -46,8 +46,6 @@ func (s *ConfigService) UpdateConfig(key string, req *ConfigUpdateRequest) error
 			Key:         key,
 			Value:       req.Value,
 			Description: req.Description,
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
 		}
 		return s.db.Create(&config).Error
 	}
@@ -74,22 +72,16 @@ func (s *ConfigService) InitDefaultConfigs() error {
 			Key:         "ai_prompt",
 			Value:       "请对以下文章进行总结和分析：",
 			Description: "AI分析文章的提示词",
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
 		},
 		{
 			Key:         "max_articles_per_user",
 			Value:       "1000",
 			Description: "每个用户最大文章数量",
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
 		},
 		{
 			Key:         "article_retention_days",
 			Value:       "365",
 			Description: "文章保留天数",
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
 		},
 	}
 

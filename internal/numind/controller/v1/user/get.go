@@ -19,7 +19,19 @@ func (ctrl *UserController) Get(c *gin.Context) {
 	user, err := ctrl.b.Users().Get(c, c.Param("name"))
 	if err != nil {
 		core.WriteResponse(c, err, nil)
+		return
+	}
 
+	core.WriteResponse(c, nil, user)
+}
+
+// GetUserV2 独立的用户信息获取接口
+func (ctrl *UserController) GetUserV2(c *gin.Context) {
+	log.C(c).Infow("Get user v2 function called")
+
+	user, err := ctrl.b.Users().Get(c, c.Param("username"))
+	if err != nil {
+		core.WriteResponse(c, err, nil)
 		return
 	}
 

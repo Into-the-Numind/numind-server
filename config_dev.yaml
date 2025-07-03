@@ -2,13 +2,15 @@
 # 通用配置
 runmode: debug               # Gin 开发模式, 可选值有：debug, release, test
 addr: :9091                  # HTTP 服务器监听地址
-jwt-secret: Rtg8BPKNEf2mB4mgvKONGPZZQSaJWNLijxR42qRgq0iBb5 # JWT 签发密钥
+jwt:
+  secret: Rtg8BPKNEf2mB4mgvKONGPZZQSaJWNLijxR42qRgq0iBb5 # JWT 签发密钥
+  expire-hours: 24 # JWT 过期时间，单位：小时
 
 # HTTPS 服务器相关配置
 tls:
-  addr: :8443 # HTTPS 服务器监听地址
-  cert: ./_output/cert/server.crt # 证书
-  key: ./_output/cert/server.key # 证书 Key 文件
+  addr: :9092 # HTTPS 服务器监听地址
+  cert: /etc/ssl/certimate/youshu.asia/cert.crt # 证书
+  key: /etc/ssl/certimate/youshu.asia/cert.key # 证书 Key 文件
 
 # GRPC 相关配置
 grpc:
@@ -42,8 +44,8 @@ redis:
     min_idle_conns: 5
 
 wechat:
-    app_id: ""
-    app_secret: ""
+    app_id: "wxad0aec8b3d3b2ef4"
+    app_secret: "cd5e2a2a919fd6a06c52ae2a15286a36"
 
 oss:
   endpoint: ""
@@ -52,7 +54,13 @@ oss:
   bucket_name: ""
 
 openai:
-  api_key: ""
-  base_url: "https://api.openai.com/v1"
+  api_key: "60dbceec-5407-45c3-8d29-c26a47b77884"
+  base_url: "https://ark.cn-beijing.volces.com/api/v3"
+  model: "deepseek-v3-250324"  # 使用的AI模型
+  temperature: 0.5 # 生成文本的随机性，值越高随机性越大
+  tokens: 2000 # 生成文本的最大长度
   timeout: 30s
   max_retries: 3
+
+resource:
+  image_path: /data/numind/images

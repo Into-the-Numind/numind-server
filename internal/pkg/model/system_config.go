@@ -1,15 +1,15 @@
 package model
 
-import "time"
+import (
+	"gorm.io/gorm"
+)
 
 // SystemConfigM 系统配置表
 type SystemConfigM struct {
-	ID          uint      `gorm:"primaryKey" json:"id"`
-	Key         string    `gorm:"size:100;uniqueIndex" json:"key"`
-	Value       string    `gorm:"type:text" json:"value"`
-	Description string    `gorm:"size:255" json:"description"`
-	UpdatedAt   time.Time `gorm:"autoUpdateTime" json:"updated_at"`
-	CreatedAt   time.Time `json:"created_at"`
+	gorm.Model
+	Key         string `gorm:"size:100;uniqueIndex" json:"key"`
+	Value       string `gorm:"type:text" json:"value"`
+	Description string `gorm:"size:255" json:"description"`
 }
 
 func (SystemConfigM) TableName() string {

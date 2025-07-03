@@ -8,10 +8,12 @@ import (
 	"numind-server/internal/pkg/model"
 	"time"
 
+	"numind-server/configs/config"
+
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/spf13/viper"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
-	"numind-server/configs/config"
 )
 
 type AuthService struct {
@@ -57,10 +59,9 @@ type ChangePasswordRequest struct {
 	NewPassword string `json:"new_password" binding:"required"`
 }
 
-func NewAuthService(db *gorm.DB, cfg *config.Config) *AuthService {
+func NewAuthService(db *gorm.DB) *AuthService {
 	return &AuthService{
-		db:  db,
-		cfg: cfg,
+		db: db,
 	}
 }
 
@@ -139,7 +140,7 @@ func (s *AuthService) ValidateToken(tokenString string) (*model.User, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return []byte(s.cfg.JWT.Secret), nil
+		return []byte(viper.GetString("jwt.secret")), nil
 	})
 
 	if err != nil {
@@ -185,7 +186,9 @@ func (s *AuthService) ChangePassword(userID uint, req *ChangePasswordRequest) er
 // getWechatToken 获取微信access_token
 func (s *AuthService) getWechatToken(code string) (*WechatTokenResponse, error) {
 	url := fmt.Sprintf("https://api.weixin.qq.com/sns/oauth2/access_token?appid=%s&secret=%s&code=%s&grant_type=authorization_code",
-		s.cfg.Wechat.AppID, s.cfg.Wechat.AppSecret, code)
+		viper.GetString("wechat.app_id"),
+		viper.GetString("wechat.app_secret"),
+		code)
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -229,14 +232,13 @@ func (s *AuthService) getWechatPhone(phoneCode, accessToken string) (*WechatPhon
 // findOrCreateUser 查找或创建用户
 func (s *AuthService) findOrCreateUser(openID string) (*model.User, error) {
 	var user model.User
-	err := s.db.Where("openid = ?", openID).First(&user).Error
+	err := s.db.Where("open_id = ?", openID).First(&user).Error
 
 	if err == gorm.ErrRecordNotFound {
 		// 创建新用户
 		user = model.User{
-			OpenID:    openID,
-			IsActive:  true,
-			CreatedAt: time.Now(),
+			OpenID:   openID,
+			IsActive: true,
 		}
 
 		if err := s.db.Create(&user).Error; err != nil {
@@ -254,9 +256,9 @@ func (s *AuthService) generateToken(user *model.User) (string, error) {
 	claims := jwt.MapClaims{
 		"user_id": user.ID,
 		"openid":  user.OpenID,
-		"exp":     time.Now().Add(time.Duration(s.cfg.Security.JWTExpireHours) * time.Hour).Unix(),
+		"exp":     time.Now().Add(time.Duration(viper.GetInt64("jwt.expire-hours")) * time.Hour).Unix(),
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(s.cfg.JWT.Secret))
+	return token.SignedString([]byte(viper.GetString("jwt.secret")))
 }

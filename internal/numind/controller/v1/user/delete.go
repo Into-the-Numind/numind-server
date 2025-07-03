@@ -20,13 +20,6 @@ func (ctrl *UserController) Delete(c *gin.Context) {
 
 	if err := ctrl.b.Users().Delete(c, username); err != nil {
 		core.WriteResponse(c, err, nil)
-
-		return
-	}
-
-	if _, err := ctrl.a.RemoveNamedPolicy("p", username, "", ""); err != nil {
-		core.WriteResponse(c, err, nil)
-
 		return
 	}
 

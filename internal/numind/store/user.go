@@ -17,6 +17,7 @@ type UserStore interface {
 	List(ctx context.Context, offset, limit int) (int64, []*model.UserM, error)
 	Delete(ctx context.Context, username string) error
 	GetUser(userID uint) (*model.User, error)
+	UpdateWechatUser(ctx context.Context, openid string, update map[string]interface{}) error
 }
 
 // UserStore 接口的实现.
@@ -75,6 +76,10 @@ func (u *users) Delete(ctx context.Context, username string) error {
 func (u *users) GetUser(userID uint) (*model.User, error) {
 	// TODO: 迁移自原 User 相关数据库操作
 	return nil, nil
+}
+
+func (u *users) UpdateWechatUser(ctx context.Context, openid string, update map[string]interface{}) error {
+	return u.db.Model(&model.UserM{}).Where("open_id = ?", openid).Updates(update).Error
 }
 
 func NewUserStore(db *gorm.DB) UserStore {
