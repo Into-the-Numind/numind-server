@@ -10,6 +10,7 @@ import (
 )
 
 type ListCardRequest struct {
+	UserID uint `form:"user_id"`
 	BookID uint `form:"book_id"`
 	Offset int  `form:"offset"`
 	Limit  int  `form:"limit"`

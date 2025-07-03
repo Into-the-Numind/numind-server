@@ -37,6 +37,10 @@ func (b *cardBiz) ListByBook(ctx context.Context, bookID uint, offset, limit int
 	return b.ds.Cards().ListByBook(ctx, bookID, offset, limit)
 }
 
+func (b *cardBiz) ListByUser(ctx context.Context, userID uint, offset, limit int) (int64, []*model.CardM, error) {
+	return b.ds.Cards().ListByUser(ctx, userID, offset, limit)
+}
+
 func (b *cardBiz) Update(ctx context.Context, card *model.CardM) error {
 	return b.ds.Cards().Update(ctx, card)
 }

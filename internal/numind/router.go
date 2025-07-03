@@ -13,6 +13,11 @@ import (
 
 	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
+
+	// 初始化 AuthService
+
+	importMw "numind-server/internal/pkg/middleware"
+	importServices "numind-server/internal/services"
 )
 
 // installNumindRouters 注册所有 Numind 小程序业务路由
@@ -32,10 +37,9 @@ func installNumindRouters(g *gin.Engine) error {
 	// 注册 pprof 路由
 	pprof.Register(g)
 
-	// authz, err := auth.NewAuthz(store.S.DB())
-	// if err != nil {
-	// 	return err
-	// }
+	// 初始化 AuthService
+	db := store.S.DB()
+	authService := importServices.NewAuthService(db)
 
 	uc := user.New(store.S)
 	b := biz.NewBiz(store.S)
@@ -45,30 +49,41 @@ func installNumindRouters(g *gin.Engine) error {
 
 	v1Group := g.Group("/v1")
 
-	//g.POST("/login", uc.Login)
+	// 登录接口不需要鉴权
 	v1Group.POST("/wechat/login", uc.WechatLogin)
+	v1Group.POST("/admin/login", uc.Login)
+
+	// 需要鉴权的接口
+	authGroup := v1Group.Group("")
+	authGroup.Use(importMw.AuthMiddleware(authService))
 
 	// 图片相关
-	v1Group.POST("/images", ic.Create)
-	v1Group.POST("/images/batch", ic.BatchCreate)
-	v1Group.GET("/images", ic.List)
-	v1Group.GET("/images/:id", ic.Get)
-	v1Group.PUT("/images/:id", ic.Update)
-	v1Group.DELETE("/images/:id", ic.Delete)
+	authGroup.POST("/images", ic.Create)
+	authGroup.POST("/images/batch", ic.BatchUpload)
+	authGroup.GET("/images", ic.List)
+	authGroup.GET("/images/:id", ic.Get)
+	authGroup.PUT("/images/:id", ic.Update)
+	authGroup.DELETE("/images/:id", ic.Delete)
 
 	// 卡片相关
-	v1Group.POST("/cards", cc.Create)
-	v1Group.GET("/cards", cc.List)
-	v1Group.GET("/cards/:id", cc.Get)
-	v1Group.PUT("/cards/:id", cc.Update)
-	v1Group.DELETE("/cards/:id", cc.Delete)
+	authGroup.POST("/cards", cc.Create)
+	authGroup.GET("/cards", cc.List)
+	authGroup.GET("/cards/:id", cc.Get)
+	authGroup.PUT("/cards/:id", cc.Update)
+	authGroup.DELETE("/cards/:id", cc.Delete)
 
 	// 卡册相关
-	v1Group.POST("/books", bc.Create)
-	v1Group.GET("/books", bc.List)
-	v1Group.GET("/books/:id", bc.Get)
-	v1Group.PUT("/books/:id", bc.Update)
-	v1Group.DELETE("/books/:id", bc.Delete)
+	authGroup.POST("/books", bc.Create)       // 创建卡册
+	authGroup.GET("/books", bc.List)          // 获取卡册列表
+	authGroup.GET("/books/:id", bc.Get)       // 获取卡册详情
+	authGroup.PUT("/books/:id", bc.Update)    // 更新卡册
+	authGroup.DELETE("/books/:id", bc.Delete) // 删除卡册
+
+	// 用户相关
+	authGroup.GET("/users", uc.List)            // 查询用户列表
+	authGroup.GET("/users/:name", uc.Get)       // 查询用户详情
+	authGroup.PUT("/users/:name", uc.Update)    // 更改用户
+	authGroup.DELETE("/users/:name", uc.Delete) // 删除用户
 
 	return nil
 }

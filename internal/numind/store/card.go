@@ -13,6 +13,7 @@ type CardStore interface {
 	Create(ctx context.Context, card *model.CardM) error
 	GetByID(ctx context.Context, id uint) (*model.CardM, error)
 	ListByBook(ctx context.Context, bookID uint, offset, limit int) (int64, []*model.CardM, error)
+	ListByUser(ctx context.Context, userID uint, offset, limit int) (count int64, ret []*model.CardM, err error)
 	Update(ctx context.Context, card *model.CardM) error
 	Delete(ctx context.Context, id uint) error
 }
@@ -42,6 +43,13 @@ func (s *cards) GetByID(ctx context.Context, id uint) (*model.CardM, error) {
 
 func (s *cards) ListByBook(ctx context.Context, bookID uint, offset, limit int) (count int64, ret []*model.CardM, err error) {
 	err = s.db.WithContext(ctx).Where("book_id = ?", bookID).
+		Offset(offset).Limit(defaultLimit(limit)).Order("id desc").Find(&ret).
+		Offset(-1).Limit(-1).Count(&count).Error
+	return
+}
+
+func (s *cards) ListByUser(ctx context.Context, userID uint, offset, limit int) (count int64, ret []*model.CardM, err error) {
+	err = s.db.WithContext(ctx).Where("user_id = ?", userID).
 		Offset(offset).Limit(defaultLimit(limit)).Order("id desc").Find(&ret).
 		Offset(-1).Limit(-1).Count(&count).Error
 	return

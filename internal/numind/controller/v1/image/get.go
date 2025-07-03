@@ -24,6 +24,5 @@ func (ctrl *ImageController) Get(c *gin.Context) {
 		core.WriteResponse(c, err, nil)
 		return
 	}
-
 	core.WriteResponse(c, nil, image)
 }

@@ -2,11 +2,12 @@ package numind
 
 import (
 	"fmt"
-	"gorm.io/gorm"
 	"numind-server/internal/pkg/model"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"gorm.io/gorm"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -121,6 +122,9 @@ func autoMigrate(db *gorm.DB) error {
 		&model.Feedback{},
 		&model.AboutUsM{},
 		&model.Agreement{},
+		&model.BookM{},
+		&model.CardM{},
+		&model.ImageM{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate database: %v", err)

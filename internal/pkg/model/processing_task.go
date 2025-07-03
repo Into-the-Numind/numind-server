@@ -20,8 +20,6 @@ type ProcessingTaskM struct {
 	ErrorMsg    string     `gorm:"size:500" json:"error_msg"`               // 错误信息
 	StartedAt   *time.Time `json:"started_at"`                              // 开始时间
 	CompletedAt *time.Time `json:"completed_at"`                            // 完成时间
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
 
 	// 关联关系
 	User  User   `gorm:"foreignKey:UserID" json:"user,omitempty"`
