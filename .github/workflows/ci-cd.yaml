@@ -179,11 +179,84 @@ jobs:
           password: Numind2025
           port: 22
           script: |
-            echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            # 设置环境变量
+            export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
+            export GITHUB_ACTOR="${{ github.actor }}"
+            
+            # 登录到 GHCR
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            
+            # 拉取最新镜像
             docker pull ghcr.io/into-the-numind/numind-server:develop
-            docker stop numind-server || true
-            docker rm numind-server || true
-            docker run -d --name numind-server -p 9091:9091 --restart always ghcr.io/into-the-numind/numind-server:develop -c /app/config_dev.yaml
+            
+            # 检查并停止运行中的容器
+            if docker ps -q -f name=numind-server | grep -q .; then
+              echo "Container numind-server is running, stopping it..."
+              docker stop numind-server
+            fi
+            
+            # 检查并删除存在的容器
+            if docker ps -aq -f name=numind-server | grep -q .; then
+              echo "Container numind-server exists, removing it..."
+              docker rm numind-server
+            fi
+            
+            # 启动新容器
+            echo "Starting new container..."
+            docker run -d \
+              --name numind-server \
+              -p 9091:9091 \
+              --restart always \
+              --health-cmd="curl -f http://localhost:9091/healthz || exit 1" \
+              --health-interval=30s \
+              --health-timeout=10s \
+              --health-retries=3 \
+              ghcr.io/into-the-numind/numind-server:develop \
+              -c /app/config_dev.yaml
+            
+            # 等待容器启动
+            echo "Waiting for container to start..."
+            sleep 15
+            
+            # 检查容器状态
+            if docker ps -q -f name=numind-server | grep -q .; then
+              echo "Container started successfully!"
+              
+              # 等待健康检查通过
+              echo "Waiting for health check..."
+              timeout=90
+              while [ $timeout -gt 0 ]; do
+                # 检查Docker健康状态
+                if docker inspect --format='{{.State.Health.Status}}' numind-server 2>/dev/null | grep -q "healthy"; then
+                  echo "Docker health check passed!"
+                  break
+                fi
+                
+                # 检查HTTP健康端点
+                if curl -f http://localhost:9091/healthz > /dev/null 2>&1; then
+                  echo "HTTP health check passed!"
+                  break
+                fi
+                
+                echo "Health check failed, retrying in 5s... (${timeout}s remaining)"
+                sleep 5
+                timeout=$((timeout - 5))
+              done
+              
+              if [ $timeout -le 0 ]; then
+                echo "Warning: Health check timeout, but container is running"
+                echo "Container logs:"
+                docker logs --tail 20 numind-server || true
+              else
+                echo "Deployment completed successfully!"
+                echo "Container status:"
+                docker ps -f name=numind-server --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+              fi
+            else
+              echo "Error: Container failed to start"
+              docker logs numind-server || true
+              exit 1
+            fi
 
   # QA 环境部署 - 只在 release 分支触发
   deploy_qa:
