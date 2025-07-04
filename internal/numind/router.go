@@ -16,6 +16,7 @@ import (
 
 	// 初始化 AuthService
 
+	importPayController "numind-server/internal/numind/controller/v1/pay"
 	importMw "numind-server/internal/pkg/middleware"
 	importServices "numind-server/internal/services"
 )
@@ -84,6 +85,11 @@ func installNumindRouters(g *gin.Engine) error {
 	authGroup.GET("/users/:name", uc.Get)       // 查询用户详情
 	authGroup.PUT("/users/:name", uc.Update)    // 更改用户
 	authGroup.DELETE("/users/:name", uc.Delete) // 删除用户
+
+	// 微信支付下单接口（无需鉴权）
+	v1Group.POST("/pay/wechat/native", importPayController.WechatNativePay)
+	// 微信支付回调接口（无需鉴权）
+	g.POST("/api/pay/wechat/notify", importPayController.WechatPayNotify)
 
 	return nil
 }
