@@ -140,6 +140,7 @@ func (s *AuthService) ValidateToken(tokenString string) (*model.User, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
+		fmt.Println("jwt.secret:", viper.GetString("jwt.secret"))
 		return []byte(viper.GetString("jwt.secret")), nil
 	})
 
