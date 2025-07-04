@@ -313,8 +313,7 @@ func (s *userBiz) generateToken(user *model.User) (string, error) {
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	// TODO:
-	return token.SignedString([]byte(""))
+	return token.SignedString([]byte(viper.GetString("jwt.secret")))
 }
 
 // findOrCreateUser 查找或创建用户
@@ -347,6 +346,7 @@ func (s *userBiz) WechatLogin(req *v1.WechatLoginRequest) (*v1.WechatLoginRespon
 		//return nil, fmt.Errorf("获取微信token失败: %v", err)
 	}
 
+	// TODO: 测试用
 	var tokenResp2 wechat.WechatTokenResponse
 	tokenResp2.OpenID = "666"
 

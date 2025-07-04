@@ -2,6 +2,7 @@ package image
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -57,14 +58,34 @@ func (ctrl *ImageController) BatchUpload(c *gin.Context) {
 	}
 
 	var urls []string
-	for _, file := range files {
-		filename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), file.Filename)
+	for _, fileHeader := range files {
+		filename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), fileHeader.Filename)
 		savePath := filepath.Join("uploads", filename)
+
+		// baidu ocr
+		file, err := fileHeader.Open()
+		if err != nil {
+			core.WriteResponse(c, errno.InternalServerError.SetMessage("Open file failed: "+err.Error()), nil)
+			return
+		}
+		data, err := io.ReadAll(file)
+		file.Close()
+		if err != nil {
+			core.WriteResponse(c, errno.InternalServerError.SetMessage("Read file failed: "+err.Error()), nil)
+			return
+		}
+
+		ocrResult, err := ctrl.b.Baidu().OCRImage(data)
+		if err != nil {
+			core.WriteResponse(c, errno.InternalServerError.SetMessage("OCR failed: "+err.Error()), nil)
+			return
+		}
+		fmt.Println(ocrResult)
 
 		// 确保目录存在
 		os.MkdirAll("uploads", os.ModePerm)
 
-		if err := c.SaveUploadedFile(file, savePath); err != nil {
+		if err := c.SaveUploadedFile(fileHeader, savePath); err != nil {
 			core.WriteResponse(c, errno.InternalServerError.SetMessage("Upload failed: "+err.Error()), nil)
 			return
 		}

@@ -18,9 +18,9 @@ grpc:
 
 # MySQL 数据库相关配置
 db:
-  host: 49.233.219.254:13306  # MySQL 机器 IP 和端口，默认 127.0.0.1:3306
-  username: numind # MySQL 用户名(建议授权最小权限集)
-  password: Numind2025 # MySQL 用户密码
+  host: 127.0.0.1:3306  # MySQL 机器 IP 和端口，默认 127.0.0.1:3306
+  username: root # MySQL 用户名(建议授权最小权限集)
+  password: 123456 # MySQL 用户密码
   database: numind # 系统所用的数据库名
   max-idle-connections: 100 # MySQL 最大空闲连接数，默认 100
   max-open-connections: 100 # MySQL 最大打开的连接数，默认 100
@@ -46,6 +46,12 @@ redis:
 wechat:
     app_id: "wxad0aec8b3d3b2ef4"
     app_secret: "cd5e2a2a919fd6a06c52ae2a15286a36"
+    mch_id: "你的商户号"
+    mch_cert_serial_no: "你的商户证书序列号"
+    mch_api_v3_key: "你的APIv3密钥"
+    mch_private_key_path: "/path/to/你的商户私钥.pem"
+    wechatpay_cert_path: "/path/to/微信支付平台证书.pem"
+    notify_url: "https://你的域名/api/pay/wechat/notify"
 
 oss:
   endpoint: ""
@@ -64,3 +70,7 @@ openai:
 
 resource:
   image_path: /data/numind/images
+
+baidu:
+  api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
+  secret_key: "nH84dnA8SRK5WL1dASJxxumI9eOcj2dO"

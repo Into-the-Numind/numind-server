@@ -3,12 +3,16 @@ package biz
 //go:generate mockgen -destination mock_biz.go -package biz github.com/marmotedu/miniblog/internal/miniblog/biz IBiz
 
 import (
+	"numind-server/internal/numind/biz/baidu"
 	"numind-server/internal/numind/biz/book"
 	"numind-server/internal/numind/biz/card"
 	"numind-server/internal/numind/biz/image"
 	"numind-server/internal/numind/biz/post"
 	"numind-server/internal/numind/biz/user"
+	"numind-server/internal/numind/biz/wechat"
 	"numind-server/internal/numind/store"
+
+	"github.com/spf13/viper"
 )
 
 // IBiz 定义了 Biz 层需要实现的方法.
@@ -18,6 +22,8 @@ type IBiz interface {
 	Images() image.ImageBiz
 	Cards() card.CardBiz
 	Books() book.BookBiz
+	Baidu() baidu.BaiduBiz
+	Wechat() wechat.WechatBiz
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -56,4 +62,15 @@ func (b *biz) Cards() card.CardBiz {
 
 func (b *biz) Books() book.BookBiz {
 	return book.New(b.ds)
+}
+
+func (b *biz) Baidu() baidu.BaiduBiz {
+	return baidu.New(
+		viper.GetString("baidu.api_key"),
+		viper.GetString("baidu.secret_key"),
+	)
+}
+
+func (b *biz) Wechat() wechat.WechatBiz {
+	return wechat.New(b.ds)
 }
