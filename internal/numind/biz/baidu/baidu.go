@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
@@ -65,10 +66,11 @@ func (b *baiduBiz) OCRImage(imageData []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	url := "https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic?access_token=" + token
+	urlStr := "https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic?access_token=" + token
 	imgBase64 := base64.StdEncoding.EncodeToString(imageData)
-	data := "image=" + imgBase64
-	req, _ := http.NewRequest("POST", url, bytes.NewBufferString(data))
+	imgEncoded := url.QueryEscape(imgBase64)
+	data := "image=" + imgEncoded
+	req, _ := http.NewRequest("POST", urlStr, bytes.NewBufferString(data))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	client := &http.Client{}
 	resp, err := client.Do(req)
