@@ -59,8 +59,8 @@ oss:
   access_key_secret: ""
   bucket_name: ""
 
-openai:
-  api_key: "60dbceec-5407-45c3-8d29-c26a47b77884"
+volc:
+  api_key: "f434efdd-6553-42fc-8c14-c1322475845f"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
   model: "deepseek-v3-250324"  # 使用的AI模型
   temperature: 0.5 # 生成文本的随机性，值越高随机性越大
@@ -74,3 +74,11 @@ resource:
 baidu:
   api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
   secret_key: "nH84dnA8SRK5WL1dASJxxumI9eOcj2dO"
+
+ali:
+  access_key_id: "你的阿里云AccessKeyId"
+  access_key_secret: "你的阿里云AccessKeySecret"
+  endpoint: "bailian.cn-beijing.aliyuncs.com"
+  api_version: "2023-12-29"
+  model: "qwen-turbo" # 默认模型，可根据实际需求调整
+  

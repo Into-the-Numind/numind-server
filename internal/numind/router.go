@@ -86,8 +86,8 @@ func installNumindRouters(g *gin.Engine) error {
 	authGroup.PUT("/users/:name", uc.Update)    // 更改用户
 	authGroup.DELETE("/users/:name", uc.Delete) // 删除用户
 
-	// 微信支付下单接口（无需鉴权）
-	v1Group.POST("/pay/wechat/native", importPayController.WechatNativePay)
+	// 微信支付下单接口（需鉴权）
+	authGroup.POST("/pay/wechat/native", importPayController.WechatNativePay)
 	// 微信支付回调接口（无需鉴权）
 	g.POST("/api/pay/wechat/notify", importPayController.WechatPayNotify)
 

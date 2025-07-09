@@ -3,12 +3,14 @@ package biz
 //go:generate mockgen -destination mock_biz.go -package biz github.com/marmotedu/miniblog/internal/miniblog/biz IBiz
 
 import (
+	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/biz/baidu"
 	"numind-server/internal/numind/biz/book"
 	"numind-server/internal/numind/biz/card"
 	"numind-server/internal/numind/biz/image"
 	"numind-server/internal/numind/biz/post"
 	"numind-server/internal/numind/biz/user"
+	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/biz/wechat"
 	"numind-server/internal/numind/store"
 
@@ -73,4 +75,12 @@ func (b *biz) Baidu() baidu.BaiduBiz {
 
 func (b *biz) Wechat() wechat.WechatBiz {
 	return wechat.New(b.ds)
+}
+
+func (b *biz) Ali() ali.AliBiz {
+	return ali.NewAliBiz(b.ds)
+}
+
+func (b *biz) Volc() volc.VolcBiz {
+	return volc.NewVolcBiz(b.ds)
 }
