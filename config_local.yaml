@@ -69,16 +69,19 @@ volc:
   max_retries: 3
 
 resource:
-  image_path: /data/numind/images
+  image_path: ./images/upload
 
 baidu:
   api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
   secret_key: "nH84dnA8SRK5WL1dASJxxumI9eOcj2dO"
 
 ali:
-  access_key_id: "你的阿里云AccessKeyId"
-  access_key_secret: "你的阿里云AccessKeySecret"
-  endpoint: "bailian.cn-beijing.aliyuncs.com"
-  api_version: "2023-12-29"
-  model: "qwen-turbo" # 默认模型，可根据实际需求调整
+  text:
+    api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"
+    api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
+    model: "qwq-plus"
+  image:
+    api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"
+    api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
+    model: "wanx2.1-t2i-turbo"
   

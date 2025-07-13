@@ -26,6 +26,8 @@ type IBiz interface {
 	Books() book.BookBiz
 	Baidu() baidu.BaiduBiz
 	Wechat() wechat.WechatBiz
+	Ali() ali.AliBiz
+	Volc() volc.VolcBiz
 }
 
 // 确保 biz 实现了 IBiz 接口.

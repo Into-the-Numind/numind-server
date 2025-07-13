@@ -20,12 +20,12 @@ func main() {
 	}
 
 	// 万象图像模型流式调用示例
-	imgUrl, err := biz.WanxiangImageStream("一只可爱的猫咪，卡通风格", "cartoon", "1024*1024")
-	if err != nil {
-		fmt.Println("万象流式调用失败:", err)
-	} else {
-		fmt.Println("万象流式生成图片URL:", imgUrl)
-	}
+	// imgUrl, err := biz.WanxiangImageStream("一只可爱的猫咪，卡通风格", "cartoon", "1024*1024")
+	// if err != nil {
+	// 	fmt.Println("万象流式调用失败:", err)
+	// } else {
+	// 	fmt.Println("万象流式生成图片URL:", imgUrl)
+	// }
 
 	// 万象图像模型异步调用示例
 	imgUrlAsync, err := biz.WanxiangImageAsync("一间有着精致窗户的花店，漂亮的木质门，摆放着花朵", "", "1024*1024")

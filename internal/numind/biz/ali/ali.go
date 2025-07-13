@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/spf13/viper"
 )
 
 type BailianConfig struct {
@@ -101,7 +103,7 @@ func (a *aliBiz) GenerateContent(messages []map[string]string, cfg *BailianConfi
 func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error) {
 	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 	bodyMap := map[string]interface{}{
-		"model":       "qwq-plus",
+		"model":       viper.GetString("ali.text.model"),
 		"messages":    messages,
 		"max_tokens":  maxTokens,
 		"temperature": temperature,
@@ -110,7 +112,7 @@ func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, 
 	bodyBytes, _ := json.Marshal(bodyMap)
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer sk-634923fe0bba4cb199c3f17eb9e7e749")
+	req.Header.Set("Authorization", "Bearer "+viper.GetString("ali.text.api_key"))
 
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
@@ -208,11 +210,13 @@ func (a *aliBiz) WanxiangImageStream(prompt string, style string, size string) (
 
 // WanxiangImageAsync 异步生成图片，自动轮询获取结果
 func (a *aliBiz) WanxiangImageAsync(prompt, style, size string) (string, error) {
+
+	model := viper.GetString("ali.image.model")
+	apiKey := viper.GetString("ali.image.api_key")
+
 	const (
 		createURL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
 		getURL    = "https://dashscope.aliyuncs.com/api/v1/tasks/"
-		model     = "wanx2.1-t2i-turbo"
-		apiKey    = "sk-4b081bdaaa14454ca19d1ed5d031cd10" // TODO: 建议从配置读取
 		maxTries  = 20
 		interval  = 3 * time.Second
 	)

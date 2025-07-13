@@ -10,6 +10,7 @@ type BookM struct {
 	UserID      uint   `gorm:"index;not null" json:"user_id"`         // 创建用户ID
 	Title       string `gorm:"size:255;not null" json:"title"`        // 卡册标题
 	Description string `gorm:"type:text" json:"description"`          // 卡册描述
+	Content     string `gorm:"type:text" json:"content"`              // 卡册内容
 	CoverURL    string `gorm:"size:512" json:"cover_url"`             // 封面图片URL
 	Category    string `gorm:"size:100" json:"category"`              // 分类
 	Tags        string `gorm:"size:255" json:"tags"`                  // 标签，逗号分隔
