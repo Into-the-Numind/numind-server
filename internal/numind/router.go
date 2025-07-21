@@ -2,9 +2,11 @@ package numind
 
 import (
 	"numind-server/internal/numind/biz"
+	orderbiz "numind-server/internal/numind/biz/order"
 	"numind-server/internal/numind/controller/v1/book"
 	"numind-server/internal/numind/controller/v1/card"
 	"numind-server/internal/numind/controller/v1/image"
+	"numind-server/internal/numind/controller/v1/order"
 	"numind-server/internal/numind/controller/v1/user"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/core"
@@ -13,8 +15,6 @@ import (
 
 	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
-
-	// 初始化 AuthService
 
 	importPayController "numind-server/internal/numind/controller/v1/pay"
 	importMw "numind-server/internal/pkg/middleware"
@@ -90,6 +90,13 @@ func installNumindRouters(g *gin.Engine) error {
 	authGroup.POST("/pay/wechat/native", importPayController.WechatNativePay)
 	// 微信支付回调接口（无需鉴权）
 	g.POST("/api/pay/wechat/notify", importPayController.WechatPayNotify)
+
+	// 订单相关
+	orderBiz := orderbiz.NewOrderBiz(store.S)
+	orderCtrl := order.New(orderBiz)
+	authGroup.POST("/order/create", orderCtrl.Create)
+	authGroup.GET("/order/list", orderCtrl.ListByUser)
+	g.POST("/api/v1/order/wechat_notify", orderCtrl.WechatNotify)
 
 	return nil
 }

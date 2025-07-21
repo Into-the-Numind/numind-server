@@ -8,6 +8,7 @@ import (
 	"numind-server/internal/numind/biz/book"
 	"numind-server/internal/numind/biz/card"
 	"numind-server/internal/numind/biz/image"
+	"numind-server/internal/numind/biz/order"
 	"numind-server/internal/numind/biz/post"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
@@ -85,4 +86,8 @@ func (b *biz) Ali() ali.AliBiz {
 
 func (b *biz) Volc() volc.VolcBiz {
 	return volc.NewVolcBiz(b.ds)
+}
+
+func (b *biz) Order() order.OrderBiz {
+	return order.NewOrderBiz(b.ds)
 }
