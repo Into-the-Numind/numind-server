@@ -129,9 +129,13 @@ func (ctrl *ImageController) BatchUpload(c *gin.Context) {
 	// 使用channel收集结果
 	resultChan := make(chan ProcessResult, len(files))
 
-	// 并发处理每个文件
+	// 使用信号量控制最多2个并发OCR
+	ocrSem := make(chan struct{}, 2)
+
 	for _, fileHeader := range files {
+		ocrSem <- struct{}{} // 占用一个槽位
 		go func(fh *multipart.FileHeader) {
+			defer func() { <-ocrSem }() // 释放槽位
 			result := ProcessResult{
 				Filename: fmt.Sprintf("%d_%s", time.Now().UnixNano(), fh.Filename),
 			}
@@ -152,7 +156,7 @@ func (ctrl *ImageController) BatchUpload(c *gin.Context) {
 				return
 			}
 
-			// 并发调用百度OCR
+			// 只允许2个协程并发调用百度OCR
 			ocrResultStr, err := ctrl.b.Baidu().OCRImage(data)
 			if err != nil {
 				result.Error = fmt.Errorf("OCR failed: %w", err)
@@ -161,6 +165,9 @@ func (ctrl *ImageController) BatchUpload(c *gin.Context) {
 			}
 
 			log.C(c).Infow("ocrResult", "filename", result.Filename, "ocrResult", ocrResultStr)
+
+			// 新增：记录原始OCR字符串
+			log.C(c).Infow("ocrResultStr", "filename", result.Filename, "ocrResultStr", ocrResultStr)
 
 			// 保存文件
 			savePath := filepath.Join("uploads", result.Filename)
@@ -194,10 +201,16 @@ func (ctrl *ImageController) BatchUpload(c *gin.Context) {
 				return
 			}
 
+			// 新增：记录wordsResult内容
+			log.C(c).Infow("ocrResult.WordsResult", "filename", result.Filename, "wordsResult", ocrResult.WordsResult)
+
 			// 提取words内容并拼接成字符串
 			var wordsList []string
 			for _, word := range ocrResult.WordsResult {
 				wordsList = append(wordsList, word.Words)
+			}
+			if len(wordsList) == 0 {
+				log.C(c).Warnw("No words recognized in image", "filename", result.Filename)
 			}
 			result.CombinedText = strings.Join(wordsList, "")
 
