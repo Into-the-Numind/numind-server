@@ -46,12 +46,12 @@ redis:
 wechat:
     app_id: "wxad0aec8b3d3b2ef4"
     app_secret: "cd5e2a2a919fd6a06c52ae2a15286a36"
-    mch_id: "你的商户号"
-    mch_cert_serial_no: "你的商户证书序列号"
-    mch_api_v3_key: "你的APIv3密钥"
-    mch_private_key_path: "/path/to/你的商户私钥.pem"
-    wechatpay_cert_path: "/path/to/微信支付平台证书.pem"
-    notify_url: "https://你的域名/api/pay/wechat/notify"
+    mch_id: "1722456639"
+    mch_cert_serial_no: "3130F6892209F6D9F8FBB98350A3F6180E0602C4"
+    mch_api_v3_key: "fT6vGq3sR2wP9kY7hN4bZ5cX1jM8aE0d"
+    mch_private_key_path: "/Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/configs/cert/apiclient_cert.pem"
+    wechatpay_cert_path: "/Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/configs/cert/apiclient_key.pem"
+    notify_url: "http://localhost:9091/api/pay/wechat/notify"
 
 oss:
   endpoint: ""
@@ -84,4 +84,12 @@ ali:
     api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"
     api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
     model: "wanx2.1-t2i-turbo"
+
+# MQTT 配置
+mqtt:
+  broker: "49.233.219.254" # MQTT 服务器地址
+  port: 1883 # MQTT 服务器端口
+  client_id: "numind-server-local-1" # MQTT 客户端ID
+  username: "admin" # MQTT 用户名
+  password: "public" # MQTT 密码
   
