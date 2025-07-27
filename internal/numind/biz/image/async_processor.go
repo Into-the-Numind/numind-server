@@ -327,10 +327,10 @@ func (p *AsyncImageProcessor) processImagesInBackground(ctx context.Context, tas
 				Description: "基于OCR识别内容生成的书籍",
 				Content:     finalCombinedText,
 				CoverURL:    wanxiangResult,
-				Category:    "AI生成",
-				Status:      "published",
-				IsPublic:    false,
-				CardCount:   len(allCombinedTexts), // 使用处理的图片数量作为卡片数量
+				//Category:    "AI生成",
+				Status:    "published",
+				IsPublic:  false,
+				CardCount: len(allCombinedTexts), // 使用处理的图片数量作为卡片数量
 			}
 
 			if err := p.biz.Books().Create(ctx, bookRecord); err != nil {

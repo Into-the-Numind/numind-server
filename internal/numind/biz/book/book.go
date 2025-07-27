@@ -11,6 +11,7 @@ type BookBiz interface {
 	Create(ctx context.Context, book *model.BookM) error
 	GetByID(ctx context.Context, id uint) (*model.BookM, error)
 	ListByUser(ctx context.Context, userID uint, offset, limit int) (int64, []*model.BookM, error)
+	ListByCategory(ctx context.Context, categoryID uint, offset, limit int) (int64, []*model.BookM, error)
 	Update(ctx context.Context, book *model.BookM) error
 	Delete(ctx context.Context, id uint) error
 }
@@ -35,6 +36,10 @@ func (b *bookBiz) GetByID(ctx context.Context, id uint) (*model.BookM, error) {
 
 func (b *bookBiz) ListByUser(ctx context.Context, userID uint, offset, limit int) (int64, []*model.BookM, error) {
 	return b.ds.Books().ListByUser(ctx, userID, offset, limit)
+}
+
+func (b *bookBiz) ListByCategory(ctx context.Context, categoryID uint, offset, limit int) (int64, []*model.BookM, error) {
+	return b.ds.Books().ListByCategory(ctx, categoryID, offset, limit)
 }
 
 func (b *bookBiz) Update(ctx context.Context, book *model.BookM) error {

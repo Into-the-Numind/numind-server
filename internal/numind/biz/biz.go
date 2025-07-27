@@ -7,6 +7,7 @@ import (
 	"numind-server/internal/numind/biz/baidu"
 	"numind-server/internal/numind/biz/book"
 	"numind-server/internal/numind/biz/card"
+	"numind-server/internal/numind/biz/category"
 	"numind-server/internal/numind/biz/image"
 	"numind-server/internal/numind/biz/mqtt"
 	"numind-server/internal/numind/biz/order"
@@ -27,6 +28,7 @@ type IBiz interface {
 	Images() image.ImageBiz
 	Cards() card.CardBiz
 	Books() book.BookBiz
+	Categories() category.CategoryBiz
 	Baidu() baidu.BaiduBiz
 	Wechat() wechat.WechatBiz
 	Ali() ali.AliBiz
@@ -80,6 +82,10 @@ func (b *biz) Cards() card.CardBiz {
 
 func (b *biz) Books() book.BookBiz {
 	return book.New(b.ds)
+}
+
+func (b *biz) Categories() category.CategoryBiz {
+	return category.New(b.ds)
 }
 
 func (b *biz) Baidu() baidu.BaiduBiz {
