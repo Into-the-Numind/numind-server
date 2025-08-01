@@ -27,6 +27,8 @@ type IStore interface {
 	Images() ImageStore
 	Cards() CardStore
 	Books() BookStore
+	Orders() OrderStore
+	Categories() CategoryStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -72,4 +74,12 @@ func (ds *datastore) Cards() CardStore {
 
 func (ds *datastore) Books() BookStore {
 	return NewBookStore(ds.db)
+}
+
+func (ds *datastore) Orders() OrderStore {
+	return NewOrderStore(ds.db)
+}
+
+func (ds *datastore) Categories() CategoryStore {
+	return NewCategoryStore(ds.db)
 }

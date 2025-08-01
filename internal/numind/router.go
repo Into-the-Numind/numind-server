@@ -2,9 +2,12 @@ package numind
 
 import (
 	"numind-server/internal/numind/biz"
+	orderbiz "numind-server/internal/numind/biz/order"
 	"numind-server/internal/numind/controller/v1/book"
 	"numind-server/internal/numind/controller/v1/card"
+	"numind-server/internal/numind/controller/v1/category"
 	"numind-server/internal/numind/controller/v1/image"
+	"numind-server/internal/numind/controller/v1/order"
 	"numind-server/internal/numind/controller/v1/user"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/core"
@@ -13,8 +16,6 @@ import (
 
 	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
-
-	// 初始化 AuthService
 
 	importPayController "numind-server/internal/numind/controller/v1/pay"
 	importMw "numind-server/internal/pkg/middleware"
@@ -47,6 +48,7 @@ func installNumindRouters(g *gin.Engine) error {
 	ic := image.New(b)
 	cc := card.New(b)
 	bc := book.New(b)
+	catc := category.New(b)
 
 	v1Group := g.Group("/v1")
 
@@ -80,16 +82,30 @@ func installNumindRouters(g *gin.Engine) error {
 	authGroup.PUT("/books/:id", bc.Update)    // 更新卡册
 	authGroup.DELETE("/books/:id", bc.Delete) // 删除卡册
 
+	// 分类相关
+	authGroup.POST("/categories", catc.Create)       // 创建分类
+	authGroup.GET("/categories", catc.List)          // 获取分类列表
+	authGroup.GET("/categories/:id", catc.Get)       // 获取分类详情
+	authGroup.PUT("/categories/:id", catc.Update)    // 更新分类
+	authGroup.DELETE("/categories/:id", catc.Delete) // 删除分类
+
 	// 用户相关
 	authGroup.GET("/users", uc.List)            // 查询用户列表
 	authGroup.GET("/users/:name", uc.Get)       // 查询用户详情
 	authGroup.PUT("/users/:name", uc.Update)    // 更改用户
 	authGroup.DELETE("/users/:name", uc.Delete) // 删除用户
 
-	// 微信支付下单接口（无需鉴权）
-	v1Group.POST("/pay/wechat/native", importPayController.WechatNativePay)
+	// 微信支付下单接口（需鉴权）
+	authGroup.POST("/pay/wechat/native", importPayController.WechatNativePay)
 	// 微信支付回调接口（无需鉴权）
 	g.POST("/api/pay/wechat/notify", importPayController.WechatPayNotify)
+
+	// 订单相关
+	orderBiz := orderbiz.NewOrderBiz(store.S)
+	orderCtrl := order.New(orderBiz)
+	authGroup.POST("/order/create", orderCtrl.Create)
+	authGroup.GET("/order/list", orderCtrl.ListByUser)
+	g.POST("/api/v1/order/wechat_notify", orderCtrl.WechatNotify)
 
 	return nil
 }

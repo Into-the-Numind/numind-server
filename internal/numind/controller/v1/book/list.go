@@ -10,9 +10,10 @@ import (
 )
 
 type ListBookRequest struct {
-	UserID uint `form:"user_id"`
-	Offset int  `form:"offset"`
-	Limit  int  `form:"limit"`
+	UserID     uint `form:"user_id"`
+	CategoryID uint `form:"category_id"`
+	Offset     int  `form:"offset"`
+	Limit      int  `form:"limit"`
 }
 
 type ListBookResponse struct {
@@ -30,7 +31,17 @@ func (ctrl *BookController) List(c *gin.Context) {
 		return
 	}
 
-	total, books, err := ctrl.b.Books().ListByUser(c, r.UserID, r.Offset, r.Limit)
+	var total int64
+	var books []*model.BookM
+	var err error
+
+	// 如果指定了分类ID，按分类查询；否则按用户查询
+	if r.CategoryID > 0 {
+		total, books, err = ctrl.b.Books().ListByCategory(c, r.CategoryID, r.Offset, r.Limit)
+	} else {
+		total, books, err = ctrl.b.Books().ListByUser(c, r.UserID, r.Offset, r.Limit)
+	}
+
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return

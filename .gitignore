@@ -35,3 +35,6 @@ cmd/numind/uploads
 cmd/numind/numind.log
 cmd/numind/__debug_bin*
 
+configs/cert/
+
+numind-server

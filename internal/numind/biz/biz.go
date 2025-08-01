@@ -3,14 +3,20 @@ package biz
 //go:generate mockgen -destination mock_biz.go -package biz github.com/marmotedu/miniblog/internal/miniblog/biz IBiz
 
 import (
+	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/biz/baidu"
 	"numind-server/internal/numind/biz/book"
 	"numind-server/internal/numind/biz/card"
+	"numind-server/internal/numind/biz/category"
 	"numind-server/internal/numind/biz/image"
+	"numind-server/internal/numind/biz/mqtt"
+	"numind-server/internal/numind/biz/order"
 	"numind-server/internal/numind/biz/post"
 	"numind-server/internal/numind/biz/user"
+	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/biz/wechat"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/log"
 
 	"github.com/spf13/viper"
 )
@@ -22,8 +28,12 @@ type IBiz interface {
 	Images() image.ImageBiz
 	Cards() card.CardBiz
 	Books() book.BookBiz
+	Categories() category.CategoryBiz
 	Baidu() baidu.BaiduBiz
 	Wechat() wechat.WechatBiz
+	Ali() ali.AliBiz
+	Volc() volc.VolcBiz
+	Mqtt() mqtt.MqttBiz
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -31,7 +41,8 @@ var _ IBiz = (*biz)(nil)
 
 // biz 是 IBiz 的一个具体实现.
 type biz struct {
-	ds store.IStore
+	ds      store.IStore
+	mqttBiz mqtt.MqttBiz
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -39,7 +50,16 @@ var _ IBiz = (*biz)(nil)
 
 // NewBiz 创建一个 IBiz 类型的实例.
 func NewBiz(ds store.IStore) *biz {
-	return &biz{ds: ds}
+	b := &biz{ds: ds}
+
+	// 初始化MQTT连接
+	mqttBiz := mqtt.NewMqttBiz()
+	if err := mqttBiz.Connect(); err != nil {
+		log.Errorw("Failed to connect to MQTT broker", "error", err.Error())
+	}
+	b.mqttBiz = mqttBiz
+
+	return b
 }
 
 // Users 返回一个实现了 UserBiz 接口的实例.
@@ -64,6 +84,10 @@ func (b *biz) Books() book.BookBiz {
 	return book.New(b.ds)
 }
 
+func (b *biz) Categories() category.CategoryBiz {
+	return category.New(b.ds)
+}
+
 func (b *biz) Baidu() baidu.BaiduBiz {
 	return baidu.New(
 		viper.GetString("baidu.api_key"),
@@ -73,4 +97,20 @@ func (b *biz) Baidu() baidu.BaiduBiz {
 
 func (b *biz) Wechat() wechat.WechatBiz {
 	return wechat.New(b.ds)
+}
+
+func (b *biz) Ali() ali.AliBiz {
+	return ali.NewAliBiz(b.ds)
+}
+
+func (b *biz) Volc() volc.VolcBiz {
+	return volc.NewVolcBiz(b.ds)
+}
+
+func (b *biz) Order() order.OrderBiz {
+	return order.NewOrderBiz(b.ds)
+}
+
+func (b *biz) Mqtt() mqtt.MqttBiz {
+	return b.mqttBiz
 }
