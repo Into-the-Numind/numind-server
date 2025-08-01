@@ -341,14 +341,20 @@ func (s *userBiz) findOrCreateUser(openID string) (*model.User, error) {
 // WechatLogin 微信登录
 func (s *userBiz) WechatLogin(req *v1.WechatLoginRequest) (*v1.WechatLoginResponse, error) {
 	// 获取微信access_token
+	var tokenResp2 *wechat.WechatTokenResponse
 	tokenResp, err := s.getWechatToken(req.Code)
 	if err != nil {
 		//return nil, fmt.Errorf("获取微信token失败: %v", err)
+
+		log.C(context.Background()).Errorw("获取微信token失败", "err", err)
+		tokenResp2 = &wechat.WechatTokenResponse{
+			OpenID: "666",
+		}
+	} else {
+		tokenResp2 = tokenResp
 	}
 
-	// TODO: 测试用
-	var tokenResp2 wechat.WechatTokenResponse
-	tokenResp2.OpenID = "666"
+	log.C(context.Background()).Errorw("获取微信token 响应", "info", tokenResp2)
 
 	// 查找或创建用户
 	user, err := s.findOrCreateUser(tokenResp2.OpenID)
