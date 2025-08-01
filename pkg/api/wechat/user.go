@@ -7,6 +7,8 @@ type WechatTokenResponse struct {
 	OpenID       string `json:"openid"`
 	Scope        string `json:"scope"`
 	UnionID      string `json:"unionid"`
+	ErrCode      int    `json:"errcode"`
+	ErrMsg       string `json:"errmsg"`
 }
 
 type WechatPhoneResponse struct {

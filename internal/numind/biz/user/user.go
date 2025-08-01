@@ -314,7 +314,7 @@ func (s *userBiz) getWechatPhone(phoneCode, accessToken string) (*wechat.WechatP
 
 // getWechatToken 获取微信access_token
 func (s *userBiz) getWechatToken(code string) (*wechat.WechatTokenResponse, error) {
-	url := fmt.Sprintf("https://api.weixin.qq.com/sns/oauth2/access_token?appid=%s&secret=%s&code=%s&grant_type=authorization_code",
+	url := fmt.Sprintf("https://api.weixin.qq.com/sns/jscode2session?appid=%s&secret=%s&js_code=%s&grant_type=authorization_code",
 		viper.GetString("wechat.app_id"),
 		viper.GetString("wechat.app_secret"),
 		code,
@@ -347,15 +347,11 @@ func (s *userBiz) getWechatToken(code string) (*wechat.WechatTokenResponse, erro
 	}
 
 	// 检查微信API错误
-	if tokenResp.AccessToken == "" {
-		// 尝试解析错误信息
-		var errorResp struct {
-			ErrCode int    `json:"errcode"`
-			ErrMsg  string `json:"errmsg"`
-		}
-		if err := json.Unmarshal(body, &errorResp); err == nil && errorResp.ErrCode != 0 {
-			return nil, fmt.Errorf("微信API错误: %d - %s", errorResp.ErrCode, errorResp.ErrMsg)
-		}
+	if tokenResp.ErrCode != 0 {
+		return nil, fmt.Errorf("微信API错误: %d - %s", tokenResp.ErrCode, tokenResp.ErrMsg)
+	}
+
+	if tokenResp.OpenID == "" {
 		return nil, fmt.Errorf("获取微信token失败，响应: %s", string(body))
 	}
 
@@ -382,14 +378,15 @@ func (s *userBiz) findOrCreateUser(openID string) (*model.User, error) {
 	err := s.ds.DB().Where("open_id = ?", openID).First(&user).Error
 
 	if err == gorm.ErrRecordNotFound {
-		// 创建新用户
+		// 创建新用户，设置唯一的username
 		user = model.User{
 			OpenID:   openID,
+			Username: fmt.Sprintf("user_%s", openID), // 使用openid生成唯一username
 			IsActive: true,
 		}
 
 		if err := s.ds.DB().Create(&user).Error; err != nil {
-			return nil, err
+			return nil, fmt.Errorf("创建用户失败: %v", err)
 		}
 	} else if err != nil {
 		return nil, err
