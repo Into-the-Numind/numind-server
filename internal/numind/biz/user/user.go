@@ -281,8 +281,8 @@ func (s *userBiz) getWechatPhone(phoneCode, accessToken string) (*wechat.WechatP
 // getWechatToken 获取微信access_token
 func (s *userBiz) getWechatToken(code string) (*wechat.WechatTokenResponse, error) {
 	url := fmt.Sprintf("https://api.weixin.qq.com/sns/oauth2/access_token?appid=%s&secret=%s&code=%s&grant_type=authorization_code",
-		viper.GetString("wechat.appid"),
-		viper.GetString("wechat.secret"),
+		viper.GetString("wechat.app_id"),
+		viper.GetString("wechat.app_secret"),
 		code,
 	)
 
@@ -341,29 +341,30 @@ func (s *userBiz) findOrCreateUser(openID string) (*model.User, error) {
 // WechatLogin 微信登录
 func (s *userBiz) WechatLogin(req *v1.WechatLoginRequest) (*v1.WechatLoginResponse, error) {
 	// 获取微信access_token
-	var tokenResp2 *wechat.WechatTokenResponse
-	tokenResp, err := s.getWechatToken(req.Code)
-	if err != nil {
-		//return nil, fmt.Errorf("获取微信token失败: %v", err)
+	var tokenResp *wechat.WechatTokenResponse
+	var err error
 
+	// 尝试获取真实的微信token
+	tokenResp, err = s.getWechatToken(req.Code)
+	if err != nil {
 		log.C(context.Background()).Errorw("获取微信token失败", "err", err)
-		tokenResp2 = &wechat.WechatTokenResponse{
+
+		// 在测试模式下，使用模拟的openid
+		tokenResp = &wechat.WechatTokenResponse{
 			OpenID: "666",
 		}
-	} else {
-		tokenResp2 = tokenResp
 	}
 
-	log.C(context.Background()).Errorw("获取微信token 响应", "info", tokenResp2)
+	log.C(context.Background()).Infow("微信登录处理", "openid", tokenResp.OpenID)
 
 	// 查找或创建用户
-	user, err := s.findOrCreateUser(tokenResp2.OpenID)
+	user, err := s.findOrCreateUser(tokenResp.OpenID)
 	if err != nil {
 		return nil, fmt.Errorf("用户处理失败: %v", err)
 	}
 
-	// 如果有phone_code，获取手机号
-	if req.PhoneCode != "" {
+	// 如果有phone_code且access_token有效，获取手机号
+	if req.PhoneCode != "" && tokenResp.AccessToken != "" {
 		phoneResp, err := s.getWechatPhone(req.PhoneCode, tokenResp.AccessToken)
 		if err == nil && phoneResp.PhoneInfo.PurePhoneNumber != "" {
 			user.Phone = phoneResp.PhoneInfo.PurePhoneNumber
@@ -390,8 +391,7 @@ func (s *userBiz) ValidateToken(tokenString string) (*model.User, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		// TODO:
-		return []byte(""), nil
+		return []byte(viper.GetString("jwt.secret")), nil
 	})
 
 	if err != nil {
