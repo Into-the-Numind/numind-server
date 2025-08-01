@@ -9,8 +9,9 @@ jwt:
 # HTTPS 服务器相关配置
 tls:
   addr: :9092 # HTTPS 服务器监听地址
-  cert: /etc/ssl/certimate/youshu.asia/cert.crt # 证书
-  key: /etc/ssl/certimate/youshu.asia/cert.key # 证书 Key 文件
+  cert: /Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/configs/ssl/cert.crt # 证书
+  key: /Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/configs/ssl/cert.key # 证书 Key 文件
+
 
 # GRPC 相关配置
 grpc:
@@ -47,11 +48,13 @@ wechat:
     app_id: "wxad0aec8b3d3b2ef4"
     app_secret: "cd5e2a2a919fd6a06c52ae2a15286a36"
     mch_id: "1722456639"
-    mch_cert_serial_no: "3130F6892209F6D9F8FBB98350A3F6180E0602C4"
+    mch_cert_serial_no: "6D2DCAC8D07269DB7B19F4B644F2BDB1772B983B"
     mch_api_v3_key: "fT6vGq3sR2wP9kY7hN4bZ5cX1jM8aE0d"
-    mch_private_key_path: "/Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/configs/cert/apiclient_cert.pem"
-    wechatpay_cert_path: "/Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/configs/cert/apiclient_key.pem"
-    notify_url: "http://localhost:9091/api/pay/wechat/notify"
+    mch_private_key_path: "/Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/configs/cert/apiclient_key.pem"
+    wechatpay_cert_path: "/Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/configs/cert/apiclient_cert.pem"
+    notify_url: "https://49.233.219.254:9092/api/pay/wechat/notify"
+    # 使用微信支付公钥模式（推荐，避免证书过期问题）
+    use_wechatpay_public_key: "true"
 
 oss:
   endpoint: ""
@@ -89,7 +92,7 @@ ali:
 mqtt:
   broker: "49.233.219.254" # MQTT 服务器地址
   port: 1883 # MQTT 服务器端口
-  client_id: "numind-server-local-1" # MQTT 客户端ID
+  client_id: "numind-server-local-2" # MQTT 客户端ID
   username: "admin" # MQTT 用户名
   password: "public" # MQTT 密码
   

@@ -36,5 +36,6 @@ cmd/numind/numind.log
 cmd/numind/__debug_bin*
 
 configs/cert/
+configs/ssl/
 
 numind-server

@@ -1,1 +1,94 @@
-# 正式环境
+# 生产环境
+# 通用配置
+runmode: release               # Gin 生产模式
+addr: :9091                  # HTTP 服务器监听地址
+jwt:
+  secret: Rtg8BPKNEf2mB4mgvKONGPZZQSaJWNLijxR42qRgq0iBb5 # JWT 签发密钥
+  expire-hours: 24 # JWT 过期时间，单位：小时
+
+# HTTPS 服务器相关配置
+tls:
+  addr: :9092 # HTTPS 服务器监听地址
+  cert: /etc/ssl/certimate/youshu.asia/cert.crt # 证书
+  key: /etc/ssl/certimate/youshu.asia/cert.key # 证书 Key 文件
+
+# GRPC 相关配置
+grpc:
+  addr: :9090 # GRPC 服务器监听地址
+
+# MySQL 数据库相关配置
+db:
+  host: 49.233.219.254:13306  # MySQL 机器 IP 和端口
+  username: root # MySQL 用户名
+  password: Numind2025 # MySQL 用户密码
+  database: numind # 数据库名
+  max-idle-connections: 100 # MySQL 最大空闲连接数
+  max-open-connections: 100 # MySQL 最大打开的连接数
+  max-connection-life-time: 10s # 空闲连接最大存活时间
+  log-level: 2 # GORM log level, 生产环境使用较低级别
+
+# 日志配置
+log:
+  disable-caller: false # 是否开启 caller
+  disable-stacktrace: false # 是否禁止在 panic 及以上级别打印堆栈信息
+  level: info # 生产环境使用 info 级别
+  format: json # 生产环境使用 json 格式
+  output-paths: [./numind.log, stdout] # 日志输出位置
+
+redis:
+    host: "localhost"
+    port: 6379
+    password: ""
+    db: 0
+    pool_size: 10
+    min_idle_conns: 5
+
+wechat:
+    app_id: "wxad0aec8b3d3b2ef4"
+    app_secret: "cd5e2a2a919fd6a06c52ae2a15286a36"
+    mch_id: "1722456639"
+    mch_cert_serial_no: "513185B719CCD112F19C8E8F3F77B7F8CFE07FE3"
+    mch_api_v3_key: "fT6vGq3sR2wP9kY7hN4bZ5cX1jM8aE0d"
+    mch_private_key_path: "/opt/numind/config/cert/apiclient_key.pem"
+    wechatpay_cert_path: "/opt/numind/config/cert/wechatpay_cert.pem"
+    notify_url: "http://49.233.219.254:9091/api/pay/wechat/notify"
+
+oss:
+  endpoint: ""
+  access_key_id: ""
+  access_key_secret: ""
+  bucket_name: ""
+
+volc:
+  api_key: "f434efdd-6553-42fc-8c14-c1322475845f"
+  base_url: "https://ark.cn-beijing.volces.com/api/v3"
+  model: "deepseek-v3-250324"  # 使用的AI模型
+  temperature: 0.5 # 生成文本的随机性
+  tokens: 2000 # 生成文本的最大长度
+  timeout: 30s
+  max_retries: 3
+
+resource:
+  image_path: ./images/upload
+
+baidu:
+  api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
+  secret_key: "nH84dnA8SRK5WL1dASJxxumI9eOcj2dO"
+
+ali:
+  text:
+    api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"
+    api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
+    model: "qwq-plus"
+  image:
+    api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"
+    api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
+    model: "wanx2.1-t2i-turbo"
+
+# MQTT 配置
+mqtt:
+  broker: "49.233.219.254" # MQTT 服务器地址
+  port: 1883 # MQTT 服务器端口
+  client_id: "numind-server-prod-1" # MQTT 客户端ID
+  username: "admin" # MQTT 用户名
+  password: "public" # MQTT 密码

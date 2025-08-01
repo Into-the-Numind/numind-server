@@ -47,11 +47,11 @@ wechat:
     app_id: "wxad0aec8b3d3b2ef4"
     app_secret: "cd5e2a2a919fd6a06c52ae2a15286a36"
     mch_id: "1722456639"
-    mch_cert_serial_no: "3130F6892209F6D9F8FBB98350A3F6180E0602C4"
+    mch_cert_serial_no: "513185B719CCD112F19C8E8F3F77B7F8CFE07FE3"
     mch_api_v3_key: "fT6vGq3sR2wP9kY7hN4bZ5cX1jM8aE0d"
-    mch_private_key_path: "/Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/configs/cert/apiclient_cert.pem"
-    wechatpay_cert_path: "/Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/configs/cert/apiclient_key.pem"
-    notify_url: "http://49.233.219.254:9091/api/pay/wechat/notify"
+    mch_private_key_path: "/opt/numind/config/cert/apiclient_key.pem"
+    wechatpay_cert_path: "/opt/numind/config/cert/wechatpay_cert.pem"
+    notify_url: "https://49.233.219.254:9092/api/pay/wechat/notify"
 
 oss:
   endpoint: ""
@@ -69,7 +69,7 @@ volc:
   max_retries: 3
 
 resource:
-  image_path: ./images/upload
+  image_path: "/opt/numind/image/upload"
 
 baidu:
   api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"

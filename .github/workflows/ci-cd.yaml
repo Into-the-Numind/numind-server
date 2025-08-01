@@ -198,6 +198,9 @@ jobs:
             docker run -d \
               --name numind-server \
               -p 9091:9091 \
+              -p 9092:9092 \
+              -v /opt/numind:/opt/numind:ro \
+              -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
               --health-cmd="curl -f http://localhost:9091/healthz || exit 1" \
               --health-interval=30s \
@@ -282,6 +285,7 @@ jobs:
             sudo mkdir -p /opt/numind
             sudo mkdir -p /opt/numind/logs
             sudo mkdir -p /opt/numind/config
+            sudo mkdir -p /opt/numind/config/cert
             
             # 停止现有服务
             sudo systemctl stop numind-service || true
@@ -369,6 +373,7 @@ jobs:
             sudo mkdir -p /opt/numind
             sudo mkdir -p /opt/numind/logs
             sudo mkdir -p /opt/numind/config
+            sudo mkdir -p /opt/numind/config/cert
             
             # 停止现有服务
             sudo systemctl stop numind-service || true
