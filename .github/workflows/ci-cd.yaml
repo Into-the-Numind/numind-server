@@ -101,22 +101,14 @@ jobs:
       - name: Build application
         run: task build-prod
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: numind-binaries
-          path: |
-            ./bin/numind-linux-amd64
-            ./bin/numind-darwin-amd64
-            ./bin/numind-darwin-arm64
-          retention-days: 30
-
+      # Only upload artifacts for branches that need deployment
       - name: Upload binary for deployment
+        if: github.ref == 'refs/heads/release' || github.ref == 'refs/heads/product'
         uses: actions/upload-artifact@v4
         with:
           name: numind-binary
           path: ./bin/numind-linux-amd64
-          retention-days: 30
+          retention-days: 7
 
   # Docker 镜像构建 - 只在特定分支触发
   image_build:
@@ -260,7 +252,7 @@ jobs:
 
   # QA 环境部署 - 只在 release 分支触发
   deploy_qa:
-    needs: image_build
+    needs: [code_build, image_build]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/release'
     environment: qa
@@ -347,7 +339,7 @@ jobs:
 
   # 生产环境部署 - 只在 product 分支触发
   deploy_product:
-    needs: image_build
+    needs: [code_build, image_build]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/product'
     environment: production
