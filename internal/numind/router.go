@@ -106,6 +106,7 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 微信支付下单接口（需鉴权）
 	authGroup.POST("/pay/wechat/native", importPayController.WechatNativePay)
+	authGroup.POST("/pay/wechat/miniprogram", importPayController.WechatMiniProgramPay)
 	// 微信支付回调接口（无需鉴权）
 	g.POST("/api/pay/wechat/notify", importPayController.WechatPayNotify)
 

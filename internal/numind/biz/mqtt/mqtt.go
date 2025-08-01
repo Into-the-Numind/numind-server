@@ -17,6 +17,7 @@ type MqttBiz interface {
 	Publish(topic string, payload interface{}) error
 	Subscribe(topic string, callback func(topic string, payload []byte)) error
 	IsConnected() bool
+	HealthCheck() error
 }
 
 type mqttBiz struct {
@@ -97,13 +98,17 @@ func (m *mqttBiz) Connect() error {
 	}
 
 	// 连接稳定性设置
-	opts.SetConnectTimeout(30 * time.Second)      // 连接超时
-	opts.SetKeepAlive(60 * time.Second)           // 心跳间隔
-	opts.SetPingTimeout(10 * time.Second)         // Ping超时
-	opts.SetAutoReconnect(true)                   // 自动重连
-	opts.SetMaxReconnectInterval(1 * time.Minute) // 最大重连间隔
-	opts.SetConnectRetry(true)                    // 连接重试
-	opts.SetConnectRetryInterval(5 * time.Second) // 重连间隔
+	opts.SetConnectTimeout(60 * time.Second)       // 增加连接超时时间
+	opts.SetKeepAlive(60 * time.Second)            // 增加心跳间隔到60秒
+	opts.SetPingTimeout(30 * time.Second)          // 增加Ping超时时间
+	opts.SetAutoReconnect(true)                    // 自动重连
+	opts.SetMaxReconnectInterval(60 * time.Second) // 增加最大重连间隔
+	opts.SetConnectRetry(true)                     // 连接重试
+	opts.SetConnectRetryInterval(10 * time.Second) // 增加重连间隔
+	opts.SetCleanSession(false)                    // 保持会话状态
+	opts.SetOrderMatters(false)                    // 消息顺序不重要，提高性能
+	opts.SetResumeSubs(true)                       // 重连时恢复订阅
+	opts.SetWriteTimeout(30 * time.Second)         // 设置写超时
 
 	// 设置消息处理器
 	opts.SetDefaultPublishHandler(func(client mqtt.Client, msg mqtt.Message) {
@@ -112,12 +117,24 @@ func (m *mqttBiz) Connect() error {
 
 	// 连接成功回调
 	opts.SetOnConnectHandler(func(client mqtt.Client) {
-		log.Infow("Successfully connected to MQTT broker", "broker", m.config.Broker)
+		log.Infow("Successfully connected to MQTT broker",
+			"broker", m.config.Broker,
+			"client_id", m.config.ClientID,
+			"keepalive", "60s",
+			"timestamp", time.Now().Format("2006-01-02 15:04:05"))
 	})
 
 	// 连接丢失回调
 	opts.SetConnectionLostHandler(func(client mqtt.Client, err error) {
-		log.Errorw("Connection to MQTT broker lost", "error", err.Error())
+		log.Errorw("Connection to MQTT broker lost",
+			"broker", m.config.Broker,
+			"client_id", m.config.ClientID,
+			"error", err.Error())
+
+		// 记录连接丢失的统计信息
+		log.Infow("MQTT connection lost, auto-reconnect will be attempted",
+			"broker", m.config.Broker,
+			"client_id", m.config.ClientID)
 	})
 
 	m.client = mqtt.NewClient(opts)
@@ -219,6 +236,31 @@ func (m *mqttBiz) Subscribe(topic string, callback func(topic string, payload []
 
 func (m *mqttBiz) IsConnected() bool {
 	return m.client != nil && m.client.IsConnected()
+}
+
+// HealthCheck 检查MQTT连接健康状态
+func (m *mqttBiz) HealthCheck() error {
+	if m.client == nil {
+		return fmt.Errorf("MQTT client is nil")
+	}
+
+	if !m.client.IsConnected() {
+		return fmt.Errorf("MQTT client is not connected")
+	}
+
+	// 尝试发布一个测试消息来验证连接
+	testTopic := fmt.Sprintf("numind/health/check/%s", m.config.ClientID)
+	testPayload := map[string]interface{}{
+		"timestamp": time.Now().Unix(),
+		"client_id": m.config.ClientID,
+		"status":    "health_check",
+	}
+
+	if err := m.Publish(testTopic, testPayload); err != nil {
+		return fmt.Errorf("MQTT health check failed: %w", err)
+	}
+
+	return nil
 }
 
 // PublishImageProcessingResult 发布图片处理结果到MQTT
