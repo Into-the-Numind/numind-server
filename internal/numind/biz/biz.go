@@ -12,6 +12,7 @@ import (
 	"numind-server/internal/numind/biz/mqtt"
 	"numind-server/internal/numind/biz/order"
 	"numind-server/internal/numind/biz/post"
+	"numind-server/internal/numind/biz/template"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/biz/wechat"
@@ -29,6 +30,7 @@ type IBiz interface {
 	Cards() card.CardBiz
 	Books() book.BookBiz
 	Categories() category.CategoryBiz
+	Templates() template.TemplateBiz
 	Baidu() baidu.BaiduBiz
 	Wechat() wechat.WechatBiz
 	Ali() ali.AliBiz
@@ -86,6 +88,10 @@ func (b *biz) Books() book.BookBiz {
 
 func (b *biz) Categories() category.CategoryBiz {
 	return category.New(b.ds)
+}
+
+func (b *biz) Templates() template.TemplateBiz {
+	return template.New(b.ds)
 }
 
 func (b *biz) Baidu() baidu.BaiduBiz {

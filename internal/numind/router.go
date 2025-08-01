@@ -8,6 +8,7 @@ import (
 	"numind-server/internal/numind/controller/v1/category"
 	"numind-server/internal/numind/controller/v1/image"
 	"numind-server/internal/numind/controller/v1/order"
+	"numind-server/internal/numind/controller/v1/template"
 	"numind-server/internal/numind/controller/v1/user"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/core"
@@ -49,6 +50,7 @@ func installNumindRouters(g *gin.Engine) error {
 	cc := card.New(b)
 	bc := book.New(b)
 	catc := category.New(b)
+	tc := template.New(b)
 
 	v1Group := g.Group("/v1")
 
@@ -88,6 +90,13 @@ func installNumindRouters(g *gin.Engine) error {
 	authGroup.GET("/categories/:id", catc.Get)       // 获取分类详情
 	authGroup.PUT("/categories/:id", catc.Update)    // 更新分类
 	authGroup.DELETE("/categories/:id", catc.Delete) // 删除分类
+
+	// 模板相关
+	authGroup.POST("/templates", tc.Create)       // 创建模板
+	authGroup.GET("/templates", tc.List)          // 获取模板列表
+	authGroup.GET("/templates/:id", tc.Get)       // 获取模板详情
+	authGroup.PUT("/templates/:id", tc.Update)    // 更新模板
+	authGroup.DELETE("/templates/:id", tc.Delete) // 删除模板
 
 	// 用户相关
 	authGroup.GET("/users", uc.List)            // 查询用户列表
