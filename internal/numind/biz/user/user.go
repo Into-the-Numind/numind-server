@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"sync"
@@ -262,18 +263,51 @@ func (s *userBiz) getWechatPhone(phoneCode, accessToken string) (*wechat.WechatP
 	url := fmt.Sprintf("https://api.weixin.qq.com/wxa/business/getuserphonenumber?access_token=%s", accessToken)
 
 	reqBody := map[string]string{"code": phoneCode}
-	jsonBody, _ := json.Marshal(reqBody)
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("序列化请求体失败: %v", err)
+	}
+
+	log.C(context.Background()).Infow("请求微信手机号API", "url", url, "phone_code", phoneCode)
 
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonBody))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("请求微信手机号API失败: %v", err)
 	}
 	defer resp.Body.Close()
 
-	var phoneResp wechat.WechatPhoneResponse
-	if err := json.NewDecoder(resp.Body).Decode(&phoneResp); err != nil {
-		return nil, err
+	// 读取响应体
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取响应体失败: %v", err)
 	}
+
+	log.C(context.Background()).Infow("微信手机号API响应", "status", resp.StatusCode, "body", string(body))
+
+	// 检查HTTP状态码
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("微信手机号API返回错误状态码: %d, 响应: %s", resp.StatusCode, string(body))
+	}
+
+	var phoneResp wechat.WechatPhoneResponse
+	if err := json.Unmarshal(body, &phoneResp); err != nil {
+		return nil, fmt.Errorf("解析微信手机号API响应失败: %v, 响应体: %s", err, string(body))
+	}
+
+	// 检查微信API错误
+	if phoneResp.PhoneInfo.PurePhoneNumber == "" {
+		// 尝试解析错误信息
+		var errorResp struct {
+			ErrCode int    `json:"errcode"`
+			ErrMsg  string `json:"errmsg"`
+		}
+		if err := json.Unmarshal(body, &errorResp); err == nil && errorResp.ErrCode != 0 {
+			return nil, fmt.Errorf("微信手机号API错误: %d - %s", errorResp.ErrCode, errorResp.ErrMsg)
+		}
+		return nil, fmt.Errorf("获取微信手机号失败，响应: %s", string(body))
+	}
+
+	log.C(context.Background()).Infow("成功获取微信手机号", "phone", phoneResp.PhoneInfo.PurePhoneNumber)
 
 	return &phoneResp, nil
 }
@@ -286,20 +320,46 @@ func (s *userBiz) getWechatToken(code string) (*wechat.WechatTokenResponse, erro
 		code,
 	)
 
+	log.C(context.Background()).Infow("请求微信API", "url", url, "code", code)
+
 	resp, err := http.Get(url)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("请求微信API失败: %v", err)
 	}
 	defer resp.Body.Close()
 
-	var tokenResp wechat.WechatTokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return nil, err
+	// 读取响应体
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取响应体失败: %v", err)
 	}
 
-	if tokenResp.AccessToken == "" {
-		return nil, fmt.Errorf("获取微信token失败")
+	log.C(context.Background()).Infow("微信API响应", "status", resp.StatusCode, "body", string(body))
+
+	// 检查HTTP状态码
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("微信API返回错误状态码: %d, 响应: %s", resp.StatusCode, string(body))
 	}
+
+	var tokenResp wechat.WechatTokenResponse
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return nil, fmt.Errorf("解析微信API响应失败: %v, 响应体: %s", err, string(body))
+	}
+
+	// 检查微信API错误
+	if tokenResp.AccessToken == "" {
+		// 尝试解析错误信息
+		var errorResp struct {
+			ErrCode int    `json:"errcode"`
+			ErrMsg  string `json:"errmsg"`
+		}
+		if err := json.Unmarshal(body, &errorResp); err == nil && errorResp.ErrCode != 0 {
+			return nil, fmt.Errorf("微信API错误: %d - %s", errorResp.ErrCode, errorResp.ErrMsg)
+		}
+		return nil, fmt.Errorf("获取微信token失败，响应: %s", string(body))
+	}
+
+	log.C(context.Background()).Infow("成功获取微信token", "openid", tokenResp.OpenID, "expires_in", tokenResp.ExpiresIn)
 
 	return &tokenResp, nil
 }

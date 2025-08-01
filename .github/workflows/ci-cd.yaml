@@ -48,14 +48,6 @@ jobs:
         with:
           version: '3.x'
 
-      - name: Clean workspace
-        run: |
-          # 清理工作空间
-          rm -rf ~/.cache/go-build
-          rm -rf ~/go/pkg/mod
-          rm -rf ./bin
-          mkdir -p ./bin
-
       - name: Cache Go modules
         uses: actions/cache@v3
         with:
@@ -92,14 +84,6 @@ jobs:
         uses: arduino/setup-task@v1
         with:
           version: '3.x'
-
-      - name: Clean workspace
-        run: |
-          # 清理工作空间
-          rm -rf ~/.cache/go-build
-          rm -rf ~/go/pkg/mod
-          rm -rf ./bin
-          mkdir -p ./bin
 
       - name: Cache Go modules
         uses: actions/cache@v3
