@@ -64,6 +64,12 @@ type UpdateUserRequest struct {
 	Phone    *string `json:"phone" valid:"stringlength(11|11)"`
 }
 
+// UpdateUserProfileRequest 指定了修改用户个人信息的请求参数
+type UpdateUserProfileRequest struct {
+	Nickname  *string `json:"nickname" valid:"stringlength(1|100)"`
+	AvatarURL *string `json:"avatar_url" valid:"stringlength(1|255)"`
+}
+
 type WechatLoginRequest struct {
 	Code      string `json:"code" binding:"required"`
 	PhoneCode string `json:"phone_code"`

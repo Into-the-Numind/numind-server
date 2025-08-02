@@ -7,6 +7,7 @@ import (
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/middleware"
 	v1 "numind-server/pkg/api/numind/v1"
 )
 
@@ -31,6 +32,37 @@ func (ctrl *UserController) Update(c *gin.Context) {
 		core.WriteResponse(c, err, nil)
 		return
 	}
+	core.WriteResponse(c, nil, nil)
+}
+
+// UpdateProfile 更新当前用户的个人信息
+func (ctrl *UserController) UpdateProfile(c *gin.Context) {
+	log.C(c).Infow("Update current user profile function called")
+
+	var r v1.UpdateUserProfileRequest
+	if err := c.ShouldBindJSON(&r); err != nil {
+		core.WriteResponse(c, errno.ErrBind, nil)
+		return
+	}
+
+	if _, err := govalidator.ValidateStruct(r); err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(err.Error()), nil)
+		return
+	}
+
+	// 从中间件中获取当前用户
+	currentUser := middleware.GetCurrentUser(c)
+	if currentUser == nil {
+		core.WriteResponse(c, errno.ErrUnauthorized, nil)
+		return
+	}
+
+	// 更新用户个人信息
+	if err := ctrl.b.Users().UpdateUserProfile(c, currentUser.ID, &r); err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
 	core.WriteResponse(c, nil, nil)
 }
 

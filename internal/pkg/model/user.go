@@ -20,11 +20,11 @@ type User struct {
 	ChatNum   int    `gorm:"default:0" json:"chat_num"`
 
 	// 管理员相关字段
-	Username  string     `gorm:"size:50;uniqueIndex" json:"username"`
+	Username  string     `gorm:"size:50;uniqueIndex" json:"username,omitempty"`
 	Password  string     `gorm:"size:255" json:"-"`
-	IsAdmin   bool       `gorm:"default:false" json:"is_admin"`
-	Status    int        `gorm:"default:0" json:"status"`
-	LastLogin *time.Time `json:"last_login"`
+	IsAdmin   bool       `gorm:"default:false" json:"is_admin,omitempty"`
+	Status    int        `gorm:"default:0" json:"status,omitempty"`
+	LastLogin *time.Time `json:"last_login,omitempty"`
 
 	// 关联关系
 	//Articles        []ArticleM        `gorm:"foreignKey:UserID" json:"articles,omitempty"`

@@ -34,9 +34,14 @@ type UserBiz interface {
 	Login(ctx context.Context, r *v1.LoginRequest) (*v1.LoginResponse, error)
 	Create(ctx context.Context, r *v1.CreateUserRequest) error
 	Get(ctx context.Context, username string) (*v1.GetUserResponse, error)
+	GetByID(ctx context.Context, userID uint) (*v1.GetUserResponse, error)
 	List(ctx context.Context, offset, limit int) (*v1.ListUserResponse, error)
 	Update(ctx context.Context, username string, r *v1.UpdateUserRequest) error
 	Delete(ctx context.Context, username string) error
+
+	// 基于 User model 的方法
+	GetCurrentUser(ctx context.Context, userID uint) (*model.User, error)
+	UpdateUserProfile(ctx context.Context, userID uint, req *v1.UpdateUserProfileRequest) error
 
 	// 微信小程序
 	WechatLogin(req *v1.WechatLoginRequest) (*v1.WechatLoginResponse, error)
@@ -132,6 +137,61 @@ func (b *userBiz) Get(ctx context.Context, username string) (*v1.GetUserResponse
 	resp.UpdatedAt = user.UpdatedAt.Format("2006-01-02 15:04:05")
 
 	return &resp, nil
+}
+
+// GetByID 是 UserBiz 接口中 `GetByID` 方法的实现.
+func (b *userBiz) GetByID(ctx context.Context, userID uint) (*v1.GetUserResponse, error) {
+	user, err := b.ds.Users().GetByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errno.ErrUserNotFound
+		}
+		return nil, err
+	}
+
+	var resp v1.GetUserResponse
+	_ = copier.Copy(&resp, user)
+
+	resp.CreatedAt = user.CreatedAt.Format("2006-01-02 15:04:05")
+	resp.UpdatedAt = user.UpdatedAt.Format("2006-01-02 15:04:05")
+
+	return &resp, nil
+}
+
+// GetCurrentUser 获取当前用户信息（基于 User model）
+func (b *userBiz) GetCurrentUser(ctx context.Context, userID uint) (*model.User, error) {
+	user, err := b.ds.Users().GetUserByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errno.ErrUserNotFound
+		}
+		return nil, err
+	}
+
+	return user, nil
+}
+
+// UpdateUserProfile 是 UserBiz 接口中 `UpdateUserProfile` 方法的实现.
+func (b *userBiz) UpdateUserProfile(ctx context.Context, userID uint, req *v1.UpdateUserProfileRequest) error {
+	user, err := b.ds.Users().GetUserByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+
+	// 只更新允许的字段
+	if req.Nickname != nil {
+		user.Nickname = *req.Nickname
+	}
+	if req.AvatarURL != nil {
+		user.AvatarURL = *req.AvatarURL
+	}
+
+	// 需要添加一个基于 User model 的更新方法
+	if err := b.ds.Users().UpdateUser(ctx, user); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // List 是 UserBiz 接口中 `List` 方法的实现.
