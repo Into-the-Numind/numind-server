@@ -1,4 +1,4 @@
-package category
+package feedback
 
 import (
 	"strconv"
@@ -11,9 +11,9 @@ import (
 	"numind-server/internal/pkg/middleware"
 )
 
-// Delete 删除分类
-func (ctrl *CategoryController) Delete(c *gin.Context) {
-	log.C(c).Infow("Delete category function called")
+// Delete 删除反馈
+func (ctrl *FeedbackController) Delete(c *gin.Context) {
+	log.C(c).Infow("Delete feedback function called")
 
 	// 从中间件中获取当前用户
 	currentUser := middleware.GetCurrentUser(c)
@@ -23,14 +23,14 @@ func (ctrl *CategoryController) Delete(c *gin.Context) {
 	}
 
 	idStr := c.Param("id")
-	categoryID, err := strconv.ParseUint(idStr, 10, 64)
+	feedbackID, err := strconv.ParseUint(idStr, 10, 64)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
 		return
 	}
 
-	// 删除分类（只能删除自己的分类）
-	if err := ctrl.b.Categories().Delete(c, currentUser.ID, uint(categoryID)); err != nil {
+	// 删除反馈（只能删除自己的反馈）
+	if err := ctrl.b.Feedbacks().Delete(c, currentUser.ID, uint(feedbackID)); err != nil {
 		core.WriteResponse(c, err, nil)
 		return
 	}

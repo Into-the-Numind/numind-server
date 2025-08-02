@@ -1,6 +1,8 @@
 package book
 
 import (
+	"time"
+
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
@@ -18,6 +20,10 @@ func (ctrl *BookController) Update(c *gin.Context) {
 		core.WriteResponse(c, errno.ErrBind, nil)
 		return
 	}
+
+	// Update the ViewTime field to current time
+	now := time.Now()
+	r.ViewTime = &now
 
 	if err := ctrl.b.Books().Update(c, &r); err != nil {
 		core.WriteResponse(c, err, nil)

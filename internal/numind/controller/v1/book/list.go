@@ -1,23 +1,19 @@
 package book
 
 import (
+	"strconv"
+
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 
 	"github.com/gin-gonic/gin"
 )
 
-type ListBookRequest struct {
-	UserID     uint `form:"user_id"`
-	CategoryID uint `form:"category_id"`
-	Offset     int  `form:"offset"`
-	Limit      int  `form:"limit"`
-}
-
 type ListBookResponse struct {
-	TotalCount int64          `json:"totalCount"`
+	TotalCount int64          `json:"total_count"`
 	Books      []*model.BookM `json:"books"`
 }
 
@@ -25,21 +21,43 @@ type ListBookResponse struct {
 func (ctrl *BookController) List(c *gin.Context) {
 	log.C(c).Infow("List book function called")
 
-	var r ListBookRequest
-	if err := c.ShouldBindQuery(&r); err != nil {
-		core.WriteResponse(c, errno.ErrBind, nil)
+	// 从中间件中获取当前用户
+	currentUser := middleware.GetCurrentUser(c)
+	if currentUser == nil {
+		core.WriteResponse(c, errno.ErrUnauthorized, nil)
+		return
+	}
+
+	// 获取分页参数
+	offsetStr := c.DefaultQuery("offset", "0")
+	limitStr := c.DefaultQuery("limit", "10")
+	categoryIDStr := c.Query("category_id")
+
+	offset, err := strconv.Atoi(offsetStr)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
 		return
 	}
 
 	var total int64
 	var books []*model.BookM
-	var err error
 
 	// 如果指定了分类ID，按分类查询；否则按用户查询
-	if r.CategoryID > 0 {
-		total, books, err = ctrl.b.Books().ListByCategory(c, r.CategoryID, r.Offset, r.Limit)
+	if categoryIDStr != "" {
+		categoryID, err := strconv.ParseUint(categoryIDStr, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+			return
+		}
+		total, books, err = ctrl.b.Books().ListByCategory(c, uint(categoryID), offset, limit)
 	} else {
-		total, books, err = ctrl.b.Books().ListByUser(c, r.UserID, r.Offset, r.Limit)
+		total, books, err = ctrl.b.Books().ListByUser(c, currentUser.ID, offset, limit)
 	}
 
 	if err != nil {

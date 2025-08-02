@@ -1,4 +1,4 @@
-package category
+package feedback
 
 import (
 	"strconv"
@@ -11,9 +11,9 @@ import (
 	"numind-server/internal/pkg/middleware"
 )
 
-// List 获取当前用户的分类列表
-func (ctrl *CategoryController) List(c *gin.Context) {
-	log.C(c).Infow("List categories function called")
+// List 获取当前用户的反馈列表
+func (ctrl *FeedbackController) List(c *gin.Context) {
+	log.C(c).Infow("List feedbacks function called")
 
 	// 从中间件中获取当前用户
 	currentUser := middleware.GetCurrentUser(c)
@@ -38,12 +38,12 @@ func (ctrl *CategoryController) List(c *gin.Context) {
 		return
 	}
 
-	// 获取当前用户的分类列表
-	categories, err := ctrl.b.Categories().GetByUserID(c, currentUser.ID, offset, limit)
+	// 获取反馈列表
+	feedbacks, err := ctrl.b.Feedbacks().GetByUserID(c, currentUser.ID, offset, limit)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
 	}
 
-	core.WriteResponse(c, nil, categories)
+	core.WriteResponse(c, nil, feedbacks)
 }

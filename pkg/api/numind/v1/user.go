@@ -64,6 +64,12 @@ type UpdateUserRequest struct {
 	Phone    *string `json:"phone" valid:"stringlength(11|11)"`
 }
 
+// UpdateUserProfileRequest 指定了修改用户个人信息的请求参数
+type UpdateUserProfileRequest struct {
+	Nickname  *string `json:"nickname" valid:"stringlength(1|100)"`
+	AvatarURL *string `json:"avatar_url" valid:"stringlength(1|255)"`
+}
+
 type WechatLoginRequest struct {
 	Code      string `json:"code" binding:"required"`
 	PhoneCode string `json:"phone_code"`
@@ -73,4 +79,87 @@ type WechatLoginResponse struct {
 	AccessToken string      `json:"access_token"`
 	TokenType   string      `json:"token_type"`
 	User        *model.User `json:"user"`
+}
+
+// CreateFeedbackRequest 创建反馈的请求参数
+type CreateFeedbackRequest struct {
+	Content string `json:"content" binding:"required" valid:"required,stringlength(1|1000)"`
+	Type    string `json:"type"`
+}
+
+// FeedbackResponse 反馈的响应参数
+type FeedbackResponse struct {
+	ID        uint      `json:"id"`
+	UserID    uint      `json:"user_id"`
+	Content   string    `json:"content"`
+	Type      string    `json:"type"`
+	Status    int       `json:"status"`
+	Reply     string    `json:"reply"`
+	CreatedAt string    `json:"created_at"`
+	UpdatedAt string    `json:"updated_at"`
+	User      *UserInfo `json:"user,omitempty"`
+}
+
+// ListFeedbackResponse 反馈列表的响应参数
+type ListFeedbackResponse struct {
+	TotalCount int64               `json:"total_count"`
+	Feedbacks  []*FeedbackResponse `json:"feedbacks"`
+}
+
+// CreateTemplateRequest 创建模板的请求参数
+type CreateTemplateRequest struct {
+	Name string `json:"name" binding:"required" valid:"required,stringlength(1|50)"`
+	File string `json:"file" binding:"required" valid:"required"`
+}
+
+// UpdateTemplateRequest 更新模板的请求参数
+type UpdateTemplateRequest struct {
+	Name *string `json:"name" valid:"stringlength(1|50)"`
+	File *string `json:"file"`
+}
+
+// TemplateResponse 模板的响应参数
+type TemplateResponse struct {
+	ID        uint   `json:"id"`
+	Name      string `json:"name"`
+	File      string `json:"file"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// ListTemplateResponse 模板列表的响应参数
+type ListTemplateResponse struct {
+	TotalCount int64               `json:"total_count"`
+	Templates  []*TemplateResponse `json:"templates"`
+}
+
+// CreateCategoryRequest 创建分类的请求参数
+type CreateCategoryRequest struct {
+	Name  string `json:"name" binding:"required" valid:"required,stringlength(1|50)"`
+	Color string `json:"color" valid:"stringlength(1|20)"`
+	Sort  int    `json:"sort"`
+}
+
+// UpdateCategoryRequest 更新分类的请求参数
+type UpdateCategoryRequest struct {
+	Name  *string `json:"name" valid:"stringlength(1|50)"`
+	Color *string `json:"color" valid:"stringlength(1|20)"`
+	Sort  *int    `json:"sort"`
+}
+
+// CategoryResponse 分类的响应参数
+type CategoryResponse struct {
+	ID        uint   `json:"id"`
+	UserID    uint   `json:"user_id"`
+	Name      string `json:"name"`
+	Color     string `json:"color"`
+	Sort      int    `json:"sort"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// ListCategoryResponse 分类列表的响应参数
+type ListCategoryResponse struct {
+	TotalCount int64               `json:"total_count"`
+	Categories []*CategoryResponse `json:"categories"`
 }

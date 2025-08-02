@@ -13,10 +13,13 @@ import (
 type UserStore interface {
 	Create(ctx context.Context, user *model.UserM) error
 	Get(ctx context.Context, username string) (*model.UserM, error)
+	GetByID(ctx context.Context, userID uint) (*model.UserM, error)
 	Update(ctx context.Context, user *model.UserM) error
 	List(ctx context.Context, offset, limit int) (int64, []*model.UserM, error)
 	Delete(ctx context.Context, username string) error
 	GetUser(userID uint) (*model.User, error)
+	GetUserByID(ctx context.Context, userID uint) (*model.User, error)
+	UpdateUser(ctx context.Context, user *model.User) error
 	UpdateWechatUser(ctx context.Context, openid string, update map[string]interface{}) error
 }
 
@@ -41,6 +44,16 @@ func (u *users) Create(ctx context.Context, user *model.UserM) error {
 func (u *users) Get(ctx context.Context, username string) (*model.UserM, error) {
 	var user model.UserM
 	if err := u.db.Where("username = ?", username).First(&user).Error; err != nil {
+		return nil, err
+	}
+
+	return &user, nil
+}
+
+// GetByID 根据用户ID查询指定 user 的数据库记录.
+func (u *users) GetByID(ctx context.Context, userID uint) (*model.UserM, error) {
+	var user model.UserM
+	if err := u.db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return nil, err
 	}
 
@@ -74,8 +87,23 @@ func (u *users) Delete(ctx context.Context, username string) error {
 }
 
 func (u *users) GetUser(userID uint) (*model.User, error) {
-	// TODO: 迁移自原 User 相关数据库操作
-	return nil, nil
+	var user model.User
+	if err := u.db.Where("id = ?", userID).First(&user).Error; err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+func (u *users) GetUserByID(ctx context.Context, userID uint) (*model.User, error) {
+	var user model.User
+	if err := u.db.Where("id = ?", userID).First(&user).Error; err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+func (u *users) UpdateUser(ctx context.Context, user *model.User) error {
+	return u.db.Save(user).Error
 }
 
 func (u *users) UpdateWechatUser(ctx context.Context, openid string, update map[string]interface{}) error {

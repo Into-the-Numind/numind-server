@@ -1,16 +1,20 @@
 package model
 
-import "time"
+import (
+	"gorm.io/gorm"
+)
 
-// CategoryM 文章分类表
+// CategoryM 分类表
 type CategoryM struct {
-	ID          uint      `gorm:"primaryKey" json:"id"`
-	Name        string    `gorm:"size:50;uniqueIndex;not null" json:"name"`
-	Description string    `gorm:"size:255" json:"description"`
-	CreatedAt   time.Time `json:"created_at"`
+	gorm.Model
+	UserID uint   `gorm:"index;not null" json:"user_id"`          // 用户ID
+	Name   string `gorm:"size:50;not null" json:"name"`           // 分类名称
+	Color  string `gorm:"size:20;default:'#1890ff'" json:"color"` // 分类颜色
+	Sort   int    `gorm:"default:0" json:"sort"`                  // 排序
 
 	// 关联关系
-	Articles []ArticleM `gorm:"foreignKey:CategoryID" json:"articles,omitempty"`
+	User  User    `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	Books []BookM `gorm:"foreignKey:CategoryID" json:"books,omitempty"`
 }
 
 func (CategoryM) TableName() string {

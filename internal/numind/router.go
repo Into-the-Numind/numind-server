@@ -18,6 +18,7 @@ import (
 	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
 
+	"numind-server/internal/numind/controller/v1/feedback"
 	importPayController "numind-server/internal/numind/controller/v1/pay"
 	importMw "numind-server/internal/pkg/middleware"
 	importServices "numind-server/internal/services"
@@ -51,6 +52,7 @@ func installNumindRouters(g *gin.Engine) error {
 	bc := book.New(b)
 	catc := category.New(b)
 	tc := template.New(b)
+	fc := feedback.New(b)
 
 	v1Group := g.Group("/v1")
 
@@ -98,11 +100,19 @@ func installNumindRouters(g *gin.Engine) error {
 	authGroup.PUT("/templates/:id", tc.Update)    // 更新模板
 	authGroup.DELETE("/templates/:id", tc.Delete) // 删除模板
 
+	// 反馈相关
+	authGroup.POST("/feedbacks", fc.Create)       // 创建反馈
+	authGroup.GET("/feedbacks", fc.List)          // 获取反馈列表
+	authGroup.GET("/feedbacks/:id", fc.Get)       // 获取反馈详情
+	authGroup.DELETE("/feedbacks/:id", fc.Delete) // 删除反馈
+
 	// 用户相关
-	authGroup.GET("/users", uc.List)            // 查询用户列表
-	authGroup.GET("/users/:name", uc.Get)       // 查询用户详情
-	authGroup.PUT("/users/:name", uc.Update)    // 更改用户
-	authGroup.DELETE("/users/:name", uc.Delete) // 删除用户
+	//authGroup.GET("/users", uc.List)              // 查询用户列表
+	authGroup.GET("/users/me", uc.GetCurrentUser) // 获取当前用户信息
+	authGroup.PUT("/users/me", uc.UpdateProfile)  // 更新当前用户个人信息
+	//authGroup.GET("/users/:name", uc.Get)         // 查询用户详情
+	//authGroup.PUT("/users/:name", uc.Update)      // 更改用户
+	//authGroup.DELETE("/users/:name", uc.Delete)   // 删除用户
 
 	// 微信支付下单接口（需鉴权）
 	authGroup.POST("/pay/wechat/native", importPayController.WechatNativePay)
