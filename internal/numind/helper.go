@@ -125,6 +125,7 @@ func autoMigrate(db *gorm.DB) error {
 		&model.BookM{},
 		&model.CardM{},
 		&model.ImageM{},
+		&model.Template{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate database: %v", err)

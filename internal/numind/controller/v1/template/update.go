@@ -9,36 +9,50 @@ import (
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
-	"numind-server/internal/pkg/model"
+	v1 "numind-server/pkg/api/numind/v1"
 )
 
 // Update 更新模板
 func (ctrl *TemplateController) Update(c *gin.Context) {
 	log.C(c).Infow("Update template function called")
 
-	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
-	if err != nil {
-		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
-		return
-	}
-
-	var r model.Template
+	var r v1.UpdateTemplateRequest
 	if err := c.ShouldBindJSON(&r); err != nil {
 		core.WriteResponse(c, errno.ErrBind, nil)
 		return
 	}
-
-	r.ID = uint(id)
 
 	if _, err := govalidator.ValidateStruct(r); err != nil {
 		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(err.Error()), nil)
 		return
 	}
 
-	if err := ctrl.b.Templates().Update(c, &r); err != nil {
+	idStr := c.Param("id")
+	templateID, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	// 获取现有模板
+	template, err := ctrl.b.Templates().GetByID(c, uint(templateID))
+	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
 	}
 
-	core.WriteResponse(c, nil, r)
+	// 更新字段
+	if r.Name != nil {
+		template.Name = *r.Name
+	}
+	if r.File != nil {
+		template.File = *r.File
+	}
+
+	if err := ctrl.b.Templates().Update(c, template); err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, nil)
 }

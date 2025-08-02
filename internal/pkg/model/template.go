@@ -4,7 +4,8 @@ import "gorm.io/gorm"
 
 type Template struct {
 	gorm.Model
-	File string `gorm:"type:text" json:"file" valid:"required"`
+	Name string `gorm:"size:50;not null;uniqueIndex" json:"name" valid:"required"`
+	File string `gorm:"type:text;not null" json:"file" valid:"required"`
 }
 
 func (Template) TableName() string {

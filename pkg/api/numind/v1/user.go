@@ -84,7 +84,7 @@ type WechatLoginResponse struct {
 // CreateFeedbackRequest 创建反馈的请求参数
 type CreateFeedbackRequest struct {
 	Content string `json:"content" binding:"required" valid:"required,stringlength(1|1000)"`
-	Type    string `json:"type" binding:"required" valid:"required,stringlength(1|50)"`
+	Type    string `json:"type"`
 }
 
 // FeedbackResponse 反馈的响应参数
@@ -104,4 +104,31 @@ type FeedbackResponse struct {
 type ListFeedbackResponse struct {
 	TotalCount int64               `json:"total_count"`
 	Feedbacks  []*FeedbackResponse `json:"feedbacks"`
+}
+
+// CreateTemplateRequest 创建模板的请求参数
+type CreateTemplateRequest struct {
+	Name string `json:"name" binding:"required" valid:"required,stringlength(1|50)"`
+	File string `json:"file" binding:"required" valid:"required"`
+}
+
+// UpdateTemplateRequest 更新模板的请求参数
+type UpdateTemplateRequest struct {
+	Name *string `json:"name" valid:"stringlength(1|50)"`
+	File *string `json:"file"`
+}
+
+// TemplateResponse 模板的响应参数
+type TemplateResponse struct {
+	ID        uint   `json:"id"`
+	Name      string `json:"name"`
+	File      string `json:"file"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// ListTemplateResponse 模板列表的响应参数
+type ListTemplateResponse struct {
+	TotalCount int64               `json:"total_count"`
+	Templates  []*TemplateResponse `json:"templates"`
 }
