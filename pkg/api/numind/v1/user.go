@@ -132,3 +132,34 @@ type ListTemplateResponse struct {
 	TotalCount int64               `json:"total_count"`
 	Templates  []*TemplateResponse `json:"templates"`
 }
+
+// CreateCategoryRequest 创建分类的请求参数
+type CreateCategoryRequest struct {
+	Name  string `json:"name" binding:"required" valid:"required,stringlength(1|50)"`
+	Color string `json:"color" valid:"stringlength(1|20)"`
+	Sort  int    `json:"sort"`
+}
+
+// UpdateCategoryRequest 更新分类的请求参数
+type UpdateCategoryRequest struct {
+	Name  *string `json:"name" valid:"stringlength(1|50)"`
+	Color *string `json:"color" valid:"stringlength(1|20)"`
+	Sort  *int    `json:"sort"`
+}
+
+// CategoryResponse 分类的响应参数
+type CategoryResponse struct {
+	ID        uint   `json:"id"`
+	UserID    uint   `json:"user_id"`
+	Name      string `json:"name"`
+	Color     string `json:"color"`
+	Sort      int    `json:"sort"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// ListCategoryResponse 分类列表的响应参数
+type ListCategoryResponse struct {
+	TotalCount int64               `json:"total_count"`
+	Categories []*CategoryResponse `json:"categories"`
+}

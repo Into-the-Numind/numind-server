@@ -1,43 +1,49 @@
 package category
 
 import (
+	"strconv"
+
+	"github.com/gin-gonic/gin"
+
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
-	"numind-server/internal/pkg/model"
-
-	"github.com/gin-gonic/gin"
+	"numind-server/internal/pkg/middleware"
 )
 
-type ListCategoryRequest struct {
-	Offset int `form:"offset"`
-	Limit  int `form:"limit"`
-}
-
-type ListCategoryResponse struct {
-	TotalCount int64              `json:"totalCount"`
-	Categories []*model.CategoryM `json:"categories"`
-}
-
-// List 返回分类列表
+// List 获取当前用户的分类列表
 func (ctrl *CategoryController) List(c *gin.Context) {
-	log.C(c).Infow("List category function called")
+	log.C(c).Infow("List categories function called")
 
-	var r ListCategoryRequest
-	if err := c.ShouldBindQuery(&r); err != nil {
-		core.WriteResponse(c, errno.ErrBind, nil)
+	// 从中间件中获取当前用户
+	currentUser := middleware.GetCurrentUser(c)
+	if currentUser == nil {
+		core.WriteResponse(c, errno.ErrUnauthorized, nil)
 		return
 	}
 
-	total, categories, err := ctrl.b.Categories().List(c, r.Offset, r.Limit)
+	// 获取分页参数
+	offsetStr := c.DefaultQuery("offset", "0")
+	limitStr := c.DefaultQuery("limit", "10")
+
+	offset, err := strconv.Atoi(offsetStr)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	// 获取当前用户的分类列表
+	categories, err := ctrl.b.Categories().GetByUserID(c, currentUser.ID, offset, limit)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
 	}
 
-	resp := &ListCategoryResponse{
-		TotalCount: total,
-		Categories: categories,
-	}
-	core.WriteResponse(c, nil, resp)
+	core.WriteResponse(c, nil, categories)
 }
