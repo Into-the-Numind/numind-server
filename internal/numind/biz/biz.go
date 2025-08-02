@@ -12,6 +12,7 @@ import (
 	"numind-server/internal/numind/biz/image"
 	"numind-server/internal/numind/biz/mqtt"
 	"numind-server/internal/numind/biz/order"
+	"numind-server/internal/numind/biz/pagination"
 	"numind-server/internal/numind/biz/post"
 	"numind-server/internal/numind/biz/template"
 	"numind-server/internal/numind/biz/user"
@@ -38,6 +39,7 @@ type IBiz interface {
 	Ali() ali.AliBiz
 	Volc() volc.VolcBiz
 	Mqtt() mqtt.MqttBiz
+	Pagination() pagination.PaginationBiz
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -125,4 +127,8 @@ func (b *biz) Order() order.OrderBiz {
 
 func (b *biz) Mqtt() mqtt.MqttBiz {
 	return b.mqttBiz
+}
+
+func (b *biz) Pagination() pagination.PaginationBiz {
+	return pagination.NewPaginationBiz()
 }
