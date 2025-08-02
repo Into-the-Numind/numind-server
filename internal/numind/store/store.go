@@ -30,6 +30,7 @@ type IStore interface {
 	Orders() OrderStore
 	Categories() CategoryStore
 	Templates() TemplateStore
+	Feedbacks() FeedbackStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -87,4 +88,8 @@ func (ds *datastore) Categories() CategoryStore {
 
 func (ds *datastore) Templates() TemplateStore {
 	return NewTemplateStore(ds.db)
+}
+
+func (ds *datastore) Feedbacks() FeedbackStore {
+	return newFeedbacks(ds.db)
 }

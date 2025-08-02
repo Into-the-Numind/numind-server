@@ -80,3 +80,28 @@ type WechatLoginResponse struct {
 	TokenType   string      `json:"token_type"`
 	User        *model.User `json:"user"`
 }
+
+// CreateFeedbackRequest 创建反馈的请求参数
+type CreateFeedbackRequest struct {
+	Content string `json:"content" binding:"required" valid:"required,stringlength(1|1000)"`
+	Type    string `json:"type" binding:"required" valid:"required,stringlength(1|50)"`
+}
+
+// FeedbackResponse 反馈的响应参数
+type FeedbackResponse struct {
+	ID        uint      `json:"id"`
+	UserID    uint      `json:"user_id"`
+	Content   string    `json:"content"`
+	Type      string    `json:"type"`
+	Status    int       `json:"status"`
+	Reply     string    `json:"reply"`
+	CreatedAt string    `json:"created_at"`
+	UpdatedAt string    `json:"updated_at"`
+	User      *UserInfo `json:"user,omitempty"`
+}
+
+// ListFeedbackResponse 反馈列表的响应参数
+type ListFeedbackResponse struct {
+	TotalCount int64               `json:"total_count"`
+	Feedbacks  []*FeedbackResponse `json:"feedbacks"`
+}
