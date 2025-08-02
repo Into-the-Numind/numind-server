@@ -238,8 +238,7 @@ func (s *AuthService) findOrCreateUser(openID string) (*model.User, error) {
 	if err == gorm.ErrRecordNotFound {
 		// 创建新用户
 		user = model.User{
-			OpenID:   openID,
-			IsActive: true,
+			OpenID: openID,
 		}
 
 		if err := s.db.Create(&user).Error; err != nil {

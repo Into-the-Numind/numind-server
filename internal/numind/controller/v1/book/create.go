@@ -1,6 +1,8 @@
 package book
 
 import (
+	"time"
+
 	"github.com/asaskevich/govalidator"
 	"github.com/gin-gonic/gin"
 
@@ -24,6 +26,10 @@ func (ctrl *BookController) Create(c *gin.Context) {
 		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(err.Error()), nil)
 		return
 	}
+
+	// Set the current time for ViewTime field
+	now := time.Now()
+	r.ViewTime = &now
 
 	if err := ctrl.b.Books().Create(c, &r); err != nil {
 		core.WriteResponse(c, err, nil)

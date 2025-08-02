@@ -382,7 +382,6 @@ func (s *userBiz) findOrCreateUser(openID string) (*model.User, error) {
 		user = model.User{
 			OpenID:   openID,
 			Username: fmt.Sprintf("user_%s", openID), // 使用openid生成唯一username
-			IsActive: true,
 		}
 
 		if err := s.ds.DB().Create(&user).Error; err != nil {

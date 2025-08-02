@@ -322,14 +322,8 @@ func (p *AsyncImageProcessor) processImagesInBackground(ctx context.Context, tas
 
 			// 万象模型调用成功，创建书籍记录
 			bookRecord := &model.BookM{
-				UserID:      userID,
-				Title:       "AI生成的书籍",
-				Description: "基于OCR识别内容生成的书籍",
-				Content:     finalCombinedText,
-				CoverURL:    wanxiangResult,
-				//Category:    "AI生成",
-				Status:    "published",
-				IsPublic:  false,
+				UserID:    userID,
+				Title:     "AI生成的书籍",
 				CardCount: len(allCombinedTexts), // 使用处理的图片数量作为卡片数量
 			}
 

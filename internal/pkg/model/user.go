@@ -14,9 +14,10 @@ type User struct {
 	Phone     string `gorm:"size:20;index" json:"phone"`
 	Nickname  string `gorm:"size:100" json:"nickname"`
 	AvatarURL string `gorm:"size:255" json:"avatar_url"`
-	IsActive  bool   `gorm:"default:true" json:"is_active"`
 	IsPro     bool   `gorm:"default:false" json:"is_pro"`
 	BookNum   int    `gorm:"default:0" json:"book_num"`
+	CardNum   int    `gorm:"default:0" json:"card_num"`
+	ChatNum   int    `gorm:"default:0" json:"chat_num"`
 
 	// 管理员相关字段
 	Username  string     `gorm:"size:50;uniqueIndex" json:"username"`
@@ -27,11 +28,10 @@ type User struct {
 
 	// 关联关系
 	//Articles        []ArticleM        `gorm:"foreignKey:UserID" json:"articles,omitempty"`
-	Favorites       []Favorite        `gorm:"foreignKey:UserID" json:"favorites,omitempty"`
-	Feedbacks       []Feedback        `gorm:"foreignKey:UserID" json:"feedbacks,omitempty"`
-	Images          []ImageM          `gorm:"foreignKey:UserID" json:"images,omitempty"`
-	Books           []BookM           `gorm:"foreignKey:UserID" json:"books,omitempty"`
-	ProcessingTasks []ProcessingTaskM `gorm:"foreignKey:UserID" json:"processing_tasks,omitempty"`
+	Favorites []Favorite `gorm:"foreignKey:UserID" json:"favorites,omitempty"`
+	Feedbacks []Feedback `gorm:"foreignKey:UserID" json:"feedbacks,omitempty"`
+	Images    []ImageM   `gorm:"foreignKey:UserID" json:"images,omitempty"`
+	Books     []BookM    `gorm:"foreignKey:UserID" json:"books,omitempty"`
 }
 
 func (User) TableName() string {
