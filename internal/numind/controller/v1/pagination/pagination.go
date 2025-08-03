@@ -103,14 +103,14 @@ func (pc *PaginationController) TestPagination(c *gin.Context) {
 			Content: "为什么高价值的信息几乎从不流向普通人？",
 		},
 		{
-			Type: pagination.ElementTypeBody,
-			Content: "因为流不动，容易被误解，甚至被"拒收"。价值越高的东西，越考验人的理解能力。",
+			Type:    pagination.ElementTypeBody,
+			Content: "因为流不动，容易被误解，甚至被拒收。价值越高的东西，越考验人的理解能力。",
 		},
 		{
 			Type: pagination.ElementTypeList,
 			Content: []string{
-				"《道德经》中的"无为"被解读成"什么都不做"。",
-				""以德报怨"，被误解为"被人欺负要用爱心感化"。",
+				"《道德经》中的无为被解读成什么都不做。",
+				"以德报怨，被误解为被人欺负要用爱心感化。",
 			},
 		},
 	}
@@ -126,4 +126,4 @@ func (pc *PaginationController) TestPagination(c *gin.Context) {
 	}
 
 	core.WriteResponse(c, nil, response)
-} 
+}

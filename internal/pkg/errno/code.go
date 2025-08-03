@@ -24,4 +24,7 @@ var (
 
 	// ErrUnauthorized 表示请求没有被授权.
 	ErrUnauthorized = &Errno{HTTP: 401, Code: "AuthFailure.Unauthorized", Message: "Unauthorized."}
+
+	// ErrInternalServer 表示内部服务器错误.
+	ErrInternalServer = &Errno{HTTP: 500, Code: "InternalError", Message: "Internal server error."}
 )
