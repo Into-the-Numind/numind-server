@@ -10,6 +10,7 @@ import (
 
 	"github.com/asaskevich/govalidator"
 	"github.com/gin-gonic/gin"
+	"github.com/spf13/viper"
 
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
@@ -117,10 +118,16 @@ func (ctrl *UserController) handleAvatarUpload(c *gin.Context, file *multipart.F
 		return "", errno.ErrInvalidParameter.SetMessage(err.Error())
 	}
 
+	// 获取配置的图片上传路径
+	imagePath := viper.GetString("resource.image_path")
+	if imagePath == "" {
+		imagePath = "./images/upload" // 默认路径
+	}
+
 	// 创建用户头像目录
-	userDir := fmt.Sprintf("/opt/numind/image/upload/avatars/%d", user.ID)
+	userDir := filepath.Join(imagePath, "avatars", fmt.Sprintf("%d", user.ID))
 	if err := os.MkdirAll(userDir, 0755); err != nil {
-		log.C(c).Errorw("Failed to create user avatar directory", "user_id", user.ID, "error", err.Error())
+		log.C(c).Errorw("Failed to create user avatar directory", "user_id", user.ID, "path", userDir, "error", err.Error())
 		return "", errno.InternalServerError.SetMessage("创建用户头像目录失败")
 	}
 
