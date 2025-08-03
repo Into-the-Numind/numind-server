@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang-jwt/jwt/v4"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/jinzhu/copier"
 	"github.com/spf13/viper"
 	"golang.org/x/sync/errgroup"
@@ -439,10 +439,15 @@ func (s *userBiz) getWechatToken(code string) (*wechat.WechatTokenResponse, erro
 
 // generateToken 生成JWT token
 func (s *userBiz) generateToken(user *model.User) (string, error) {
+	expireHours := viper.GetInt("jwt.expire-hours")
+	if expireHours == 0 {
+		expireHours = 24 // 默认24小时
+	}
+
 	claims := jwt.MapClaims{
 		"user_id": user.ID,
 		"openid":  user.OpenID,
-		"exp":     time.Now().Add(time.Duration(24) * time.Hour).Unix(),
+		"exp":     time.Now().Add(time.Duration(expireHours) * time.Hour).Unix(),
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
