@@ -41,3 +41,5 @@ configs/ssl/
 numind-server
 
 *.DS_Store
+
+res/

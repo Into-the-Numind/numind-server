@@ -42,6 +42,7 @@ type UserBiz interface {
 	// 基于 User model 的方法
 	GetCurrentUser(ctx context.Context, userID uint) (*model.User, error)
 	UpdateUserProfile(ctx context.Context, userID uint, req *v1.UpdateUserProfileRequest) error
+	UpdateUserAvatar(ctx context.Context, userID uint, avatarURL string) error
 
 	// 微信小程序
 	WechatLogin(req *v1.WechatLoginRequest) (*v1.WechatLoginResponse, error)
@@ -187,6 +188,22 @@ func (b *userBiz) UpdateUserProfile(ctx context.Context, userID uint, req *v1.Up
 	}
 
 	// 需要添加一个基于 User model 的更新方法
+	if err := b.ds.Users().UpdateUser(ctx, user); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// UpdateUserAvatar 是 UserBiz 接口中 `UpdateUserAvatar` 方法的实现.
+func (b *userBiz) UpdateUserAvatar(ctx context.Context, userID uint, avatarURL string) error {
+	user, err := b.ds.Users().GetUserByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+
+	user.AvatarURL = avatarURL
+
 	if err := b.ds.Users().UpdateUser(ctx, user); err != nil {
 		return err
 	}
