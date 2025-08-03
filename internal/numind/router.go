@@ -108,8 +108,9 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 用户相关
 	//authGroup.GET("/users", uc.List)              // 查询用户列表
-	authGroup.GET("/users/me", uc.GetCurrentUser) // 获取当前用户信息
-	authGroup.PUT("/users/me", uc.UpdateProfile)  // 更新当前用户个人信息
+	authGroup.GET("/users/me", uc.GetCurrentUser)    // 获取当前用户信息
+	authGroup.PUT("/users/me", uc.UpdateProfile)     // 更新当前用户个人信息
+	authGroup.POST("/users/avatar", uc.UploadAvatar) // 上传用户头像
 	//authGroup.GET("/users/:name", uc.Get)         // 查询用户详情
 	//authGroup.PUT("/users/:name", uc.Update)      // 更改用户
 	//authGroup.DELETE("/users/:name", uc.Delete)   // 删除用户
