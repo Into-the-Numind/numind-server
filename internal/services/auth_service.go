@@ -253,10 +253,15 @@ func (s *AuthService) findOrCreateUser(openID string) (*model.User, error) {
 
 // generateToken 生成JWT token
 func (s *AuthService) generateToken(user *model.User) (string, error) {
+	expireHours := viper.GetInt("jwt.expire-hours")
+	if expireHours == 0 {
+		expireHours = 24 // 默认24小时
+	}
+
 	claims := jwt.MapClaims{
 		"user_id": user.ID,
 		"openid":  user.OpenID,
-		"exp":     time.Now().Add(time.Duration(viper.GetInt64("jwt.expire-hours")) * time.Hour).Unix(),
+		"exp":     time.Now().Add(time.Duration(expireHours) * time.Hour).Unix(),
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
