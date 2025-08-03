@@ -223,6 +223,13 @@ jobs:
             if docker ps -q -f name=numind-server | grep -q .; then
               echo "Container started successfully!"
               
+              # 在容器内设置上传目录权限
+              echo "Setting up upload directories in container..."
+              docker exec numind-server mkdir -p /opt/numind/image/upload/avatars
+              docker exec numind-server chmod -R 777 /opt/numind/image/upload
+              docker exec numind-server chown -R 1001:1001 /opt/numind/image/upload
+              echo "Upload directories setup completed!"
+              
               # 等待健康检查通过
               echo "Waiting for health check..."
               timeout=90

@@ -144,7 +144,7 @@ func (ctrl *UserController) handleAvatarUpload(c *gin.Context, file *multipart.F
 	}
 
 	// 返回相对路径URL
-	avatarURL := fmt.Sprintf("/static/avatars/%d/%s", user.ID, fileName)
+	avatarURL := fmt.Sprintf("/numind/image/upload/avatars/%d/%s", user.ID, fileName)
 
 	log.C(c).Infow("Avatar uploaded successfully", "user_id", user.ID, "file_path", filePath, "avatar_url", avatarURL)
 
