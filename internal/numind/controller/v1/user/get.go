@@ -9,7 +9,9 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"numind-server/internal/pkg/core"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/middleware"
 )
 
 // Get 获取一个用户的详细信息.
@@ -17,6 +19,27 @@ func (ctrl *UserController) Get(c *gin.Context) {
 	log.C(c).Infow("Get user function called")
 
 	user, err := ctrl.b.Users().Get(c, c.Param("name"))
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, user)
+}
+
+// GetCurrentUser 获取当前登录用户的详细信息
+func (ctrl *UserController) GetCurrentUser(c *gin.Context) {
+	log.C(c).Infow("Get current user function called")
+
+	// 从中间件中获取当前用户
+	currentUser := middleware.GetCurrentUser(c)
+	if currentUser == nil {
+		core.WriteResponse(c, errno.ErrUnauthorized, nil)
+		return
+	}
+
+	// 通过用户ID获取完整的用户信息（基于 User model）
+	user, err := ctrl.b.Users().GetCurrentUser(c, currentUser.ID)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return

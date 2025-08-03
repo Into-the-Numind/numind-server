@@ -68,10 +68,17 @@ type JWTConfig struct {
 	Secret string `mapstructure:"secret"`
 }
 
-// WechatConfig 微信小程序配置
+// WechatConfig 微信小程序及支付配置
+// 扩展以支持微信支付
 type WechatConfig struct {
-	AppID     string `mapstructure:"app_id"`
-	AppSecret string `mapstructure:"app_secret"`
+	AppID             string `mapstructure:"app_id"`
+	AppSecret         string `mapstructure:"app_secret"`
+	MchID             string `mapstructure:"mch_id"`
+	MchCertSerialNo   string `mapstructure:"mch_cert_serial_no"`
+	MchAPIv3Key       string `mapstructure:"mch_api_v3_key"`
+	MchPrivateKeyPath string `mapstructure:"mch_private_key_path"`
+	WechatPayCertPath string `mapstructure:"wechatpay_cert_path"`
+	NotifyURL         string `mapstructure:"notify_url"`
 }
 
 // OSSConfig 对象存储配置

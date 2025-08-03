@@ -113,10 +113,15 @@ start_container() {
     local tag=$1
     log_info "Starting new container: $CONTAINER_NAME"
     
+    # 创建证书目录（如果不存在）
+    sudo mkdir -p /opt/numind/config/cert
+    sudo chown $USER:$USER /opt/numind/config/cert
+    
     if docker run -d \
         --name "$CONTAINER_NAME" \
         -p "$PORT:$PORT" \
         --restart always \
+        -v /opt/numind:/opt/numind:ro \
         --health-cmd="curl -f http://localhost:$PORT$HEALTH_ENDPOINT || exit 1" \
         --health-interval=30s \
         --health-timeout=10s \

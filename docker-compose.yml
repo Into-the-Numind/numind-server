@@ -123,6 +123,7 @@ services:
       - ./logs:/app/logs
       - ./config:/app/config
       - ./config.yaml:/app/config.yaml:ro
+      - ./images:/app/images
     depends_on:
       mysql:
         condition: service_healthy

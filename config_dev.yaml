@@ -36,9 +36,9 @@ log:
   output-paths: [./numind.log, stdout] # 指定日志输出位置，多个输出，用 `逗号 + 空格` 分开。stdout：标准输出，
 
 redis:
-    host: "49.233.219.254"
+    host: "localhost"
     port: 6379
-    password: "Numind2025"
+    password: ""
     db: 0
     pool_size: 10
     min_idle_conns: 5
@@ -46,6 +46,14 @@ redis:
 wechat:
     app_id: "wxad0aec8b3d3b2ef4"
     app_secret: "cd5e2a2a919fd6a06c52ae2a15286a36"
+    mch_id: "1722456639"
+    mch_cert_serial_no: "6D2DCAC8D07269DB7B19F4B644F2BDB1772B983B"
+    mch_api_v3_key: "fT6vGq3sR2wP9kY7hN4bZ5cX1jM8aE0d"
+    mch_private_key_path: "/opt/numind/config/cert/apiclient_key.pem"
+    wechatpay_cert_path: "/opt/numind/config/cert/wechatpay_cert.pem"
+    notify_url: "https://49.233.219.254:9092/api/pay/wechat/notify"
+    # 使用微信支付公钥模式（推荐，避免证书过期问题）
+    use_wechatpay_public_key: "true"
 
 oss:
   endpoint: ""
@@ -53,8 +61,8 @@ oss:
   access_key_secret: ""
   bucket_name: ""
 
-openai:
-  api_key: "60dbceec-5407-45c3-8d29-c26a47b77884"
+volc:
+  api_key: "f434efdd-6553-42fc-8c14-c1322475845f"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
   model: "deepseek-v3-250324"  # 使用的AI模型
   temperature: 0.5 # 生成文本的随机性，值越高随机性越大
@@ -63,4 +71,27 @@ openai:
   max_retries: 3
 
 resource:
-  image_path: /data/numind/images
+  image_path: "/opt/numind/image/upload"
+
+baidu:
+  api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
+  secret_key: "nH84dnA8SRK5WL1dASJxxumI9eOcj2dO"
+
+ali:
+  text:
+    api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"
+    api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
+    model: "qwq-plus"
+  image:
+    api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"
+    api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
+    model: "wanx2.1-t2i-turbo"
+
+# MQTT 配置
+mqtt:
+  broker: "49.233.219.254" # MQTT 服务器地址
+  port: 1883 # MQTT 服务器端口
+  client_id: "numind-server-local-1" # MQTT 客户端ID
+  username: "admin" # MQTT 用户名
+  password: "public" # MQTT 密码
+  

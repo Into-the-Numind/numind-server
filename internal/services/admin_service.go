@@ -297,9 +297,7 @@ func (s *AdminService) GetCategories() ([]model.CategoryM, error) {
 // CreateCategory 创建分类
 func (s *AdminService) CreateCategory(req *AdminCategoryCreateRequest) (*model.CategoryM, error) {
 	category := model.CategoryM{
-		Name:        req.Name,
-		Description: req.Description,
-		CreatedAt:   time.Now(),
+		Name: req.Name,
 	}
 
 	if err := s.db.Create(&category).Error; err != nil {
@@ -318,9 +316,6 @@ func (s *AdminService) UpdateCategory(categoryID uint, req *AdminCategoryUpdateR
 
 	if req.Name != nil {
 		category.Name = *req.Name
-	}
-	if req.Description != nil {
-		category.Description = *req.Description
 	}
 
 	return s.db.Save(&category).Error

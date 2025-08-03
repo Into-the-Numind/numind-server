@@ -140,6 +140,7 @@ func (s *AuthService) ValidateToken(tokenString string) (*model.User, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
+		fmt.Println("jwt.secret:", viper.GetString("jwt.secret"))
 		return []byte(viper.GetString("jwt.secret")), nil
 	})
 
@@ -237,8 +238,7 @@ func (s *AuthService) findOrCreateUser(openID string) (*model.User, error) {
 	if err == gorm.ErrRecordNotFound {
 		// 创建新用户
 		user = model.User{
-			OpenID:   openID,
-			IsActive: true,
+			OpenID: openID,
 		}
 
 		if err := s.db.Create(&user).Error; err != nil {
@@ -253,10 +253,15 @@ func (s *AuthService) findOrCreateUser(openID string) (*model.User, error) {
 
 // generateToken 生成JWT token
 func (s *AuthService) generateToken(user *model.User) (string, error) {
+	expireHours := viper.GetInt("jwt.expire-hours")
+	if expireHours == 0 {
+		expireHours = 24 // 默认24小时
+	}
+
 	claims := jwt.MapClaims{
 		"user_id": user.ID,
 		"openid":  user.OpenID,
-		"exp":     time.Now().Add(time.Duration(viper.GetInt64("jwt.expire-hours")) * time.Hour).Unix(),
+		"exp":     time.Now().Add(time.Duration(expireHours) * time.Hour).Unix(),
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

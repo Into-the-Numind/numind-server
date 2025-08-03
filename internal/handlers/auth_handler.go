@@ -151,7 +151,6 @@ func (h *AuthHandler) GetProfile(c *gin.Context) {
 		"avatar_url": user.AvatarURL,
 		"phone":      user.Phone,
 		"created_at": user.CreatedAt,
-		"is_active":  user.IsActive,
 		"stats":      stats,
 	}
 
