@@ -193,13 +193,19 @@ jobs:
               docker rm numind-server
             fi
             
+            # 创建必要的目录并设置权限
+            echo "Creating necessary directories..."
+            sudo mkdir -p /opt/numind/image/upload/avatars
+            sudo chmod -R 755 /opt/numind/image/upload
+            sudo chown -R 1000:1000 /opt/numind/image/upload || true
+            
             # 启动新容器
             echo "Starting new container..."
             docker run -d \
               --name numind-server \
               -p 9091:9091 \
               -p 9092:9092 \
-              -v /opt/numind:/opt/numind:ro \
+              -v /opt/numind:/opt/numind \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
               --health-cmd="curl -f http://localhost:9091/healthz || exit 1" \

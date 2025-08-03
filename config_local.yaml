@@ -72,7 +72,7 @@ volc:
   max_retries: 3
 
 resource:
-  image_path: ./images/upload
+  image_path: /Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/res/upload
 
 baidu:
   api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
