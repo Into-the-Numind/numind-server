@@ -34,7 +34,7 @@ func (s *books) Create(ctx context.Context, book *model.BookM) error {
 
 func (s *books) GetByID(ctx context.Context, id uint) (*model.BookM, error) {
 	var book model.BookM
-	err := s.db.WithContext(ctx).Preload("Category").First(&book, id).Error
+	err := s.db.WithContext(ctx).First(&book, id).Error
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package book
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -148,7 +149,7 @@ func (ctrl *BookController) Create(c *gin.Context) {
 
 	// 调用万相生成图片
 	imagePrompt := fmt.Sprintf("基于以下文本生成一张精美的配图：%s", qianwenResult)
-	imageURL, err := ctrl.b.Ali().WanxiangImageAsync(imagePrompt, "", "1024*1024")
+	_, err = ctrl.b.Ali().WanxiangImageAsync(imagePrompt, "", "1024*1024")
 	if err != nil {
 		log.C(c).Errorw("WanxiangImageAsync failed", "error", err.Error())
 		// 图片生成失败不影响整体流程
@@ -160,7 +161,7 @@ func (ctrl *BookController) Create(c *gin.Context) {
 	// 将文本转换为分页元素
 	elements := []pagination.Element{
 		{
-			Type:    pagination.ElementTypeTitle,
+			Type:    pagination.ElementTypeNumber, // 使用number类型作为标题
 			Content: "AI处理结果",
 		},
 		{
@@ -191,16 +192,69 @@ func (ctrl *BookController) Create(c *gin.Context) {
 		return
 	}
 
-	// 返回处理结果
-	response := gin.H{
-		"book_id":         book.ID,
-		"user_id":         userID,
-		"processed_text":  qianwenResult,
-		"image_url":       imageURL,
-		"paginated_cards": paginatedContent.Cards,
-		"template_id":     req.TemplateID,
-		"status":          "completed",
+	// 将分页卡片数据转换为JSON格式
+	var cardsJSON []interface{}
+	for _, card := range paginatedContent.Cards {
+		var cardElements []map[string]interface{}
+		for _, element := range card.Elements {
+			cardElements = append(cardElements, map[string]interface{}{
+				"type":    element.Type,
+				"content": element.Content,
+			})
+		}
+		cardsJSON = append(cardsJSON, cardElements)
 	}
 
-	core.WriteResponse(c, nil, response)
+	// 将JSON数据转换为字符串
+	cardsJSONStr, err := json.Marshal(cardsJSON)
+	if err != nil {
+		log.C(c).Errorw("Failed to marshal cards JSON", "error", err.Error())
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to process cards data: "+err.Error()), nil)
+		return
+	}
+
+	// 创建卡片记录，将分页数据存储到ProcessedText字段
+	card := &model.CardM{
+		UserID:        userID,
+		BookID:        book.ID,
+		ImageID:       nil,                  // AI生成的卡片不需要关联特定图片
+		ProcessedText: string(cardsJSONStr), // 将JSON数据存储到ProcessedText字段
+		SortOrder:     0,
+	}
+
+	if err := ctrl.b.Cards().Create(c, card); err != nil {
+		log.C(c).Errorw("Failed to create card", "error", err.Error())
+		// 卡片创建失败不影响整体流程，但记录错误
+	}
+
+	// 更新书籍的卡片数量
+	book.CardCount = len(paginatedContent.Cards)
+	if err := ctrl.b.Books().Update(c, book); err != nil {
+		log.C(c).Errorw("Failed to update book card count", "error", err.Error())
+	}
+
+	// 获取更新后的书籍信息
+	updatedBook, err := ctrl.b.Books().GetByID(c, book.ID)
+	if err != nil {
+		log.C(c).Errorw("Failed to get updated book", "error", err.Error())
+		// 如果获取失败，返回原始书籍信息
+		core.WriteResponse(c, nil, book)
+		return
+	}
+
+	// 获取该书籍的所有卡片
+	_, cards, err := ctrl.b.Cards().ListByBook(c, book.ID, 0, 1000)
+	if err != nil {
+		log.C(c).Errorw("Failed to get book cards", "error", err.Error())
+		// 卡片获取失败不影响整体流程
+	}
+
+	// 创建BookResponse
+	bookResponse := model.NewBookResponse(updatedBook)
+	if len(cards) > 0 {
+		bookResponse.AddCards(cards)
+	}
+
+	// 返回BookResponse结构
+	core.WriteResponse(c, nil, bookResponse)
 }

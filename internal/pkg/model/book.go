@@ -19,9 +19,9 @@ type BookM struct {
 	ViewTime     *time.Time `gorm:"type:datetime(3)" json:"view_time"` // 查看时间
 
 	// 关联关系
-	User     User       `gorm:"foreignKey:UserID" json:"user,omitempty"`
-	Category *CategoryM `gorm:"foreignKey:CategoryID" json:"category_info,omitempty"`
-	Cards    []CardM    `gorm:"foreignKey:BookID" json:"cards,omitempty"`
+	//User     User       `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	// Category *CategoryM `gorm:"foreignKey:CategoryID" json:"category_info,omitempty"`
+	// Cards    []CardM    `gorm:"foreignKey:BookID" json:"cards,omitempty"`
 }
 
 func (BookM) TableName() string {
