@@ -20,6 +20,7 @@ type BookResponse struct {
 	Tags         string     `json:"tags"`
 	CardCount    int        `json:"card_count"`
 	ViewTime     *time.Time `json:"view_time,omitempty"`
+	ImageUrl     string     `json:"image_url"`
 
 	// 分页后的卡片信息
 	Cards []CardResponse `json:"cards,omitempty"`
@@ -59,6 +60,7 @@ func NewBookResponse(book *BookM) *BookResponse {
 		Tags:         book.Tags,
 		CardCount:    book.CardCount,
 		ViewTime:     book.ViewTime,
+		ImageUrl:     book.ImageUrl,
 		Cards:        []CardResponse{},
 	}
 }
