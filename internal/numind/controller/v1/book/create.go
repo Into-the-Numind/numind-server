@@ -139,6 +139,12 @@ func (ctrl *BookController) Create(c *gin.Context) {
 		return
 	}
 
+	// 更新用户的书籍数量统计
+	if err := ctrl.b.Users().IncrementUserBookNum(c, userID); err != nil {
+		log.C(c).Errorw("Failed to increment user book num", "error", err.Error())
+		// 统计更新失败不影响主要流程，但记录错误
+	}
+
 	// 将分页卡片数据转换为JSON格式
 	var cardsJSON []interface{}
 	for _, card := range paginatedContent.Cards {
@@ -171,6 +177,12 @@ func (ctrl *BookController) Create(c *gin.Context) {
 	if err := ctrl.b.Cards().Create(c, card); err != nil {
 		log.C(c).Errorw("Failed to create card", "error", err.Error())
 		// 卡片创建失败不影响整体流程，但记录错误
+	} else {
+		// 卡片创建成功后，更新用户的卡片数量统计
+		if err := ctrl.b.Users().IncrementUserCardNum(c, userID); err != nil {
+			log.C(c).Errorw("Failed to increment user card num", "error", err.Error())
+			// 统计更新失败不影响主要流程，但记录错误
+		}
 	}
 
 	// 更新书籍的卡片数量
