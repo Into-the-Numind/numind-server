@@ -17,6 +17,7 @@ type BookM struct {
 	Tags         string     `gorm:"size:255" json:"tags"`              // 标签，逗号分隔
 	CardCount    int        `gorm:"default:0" json:"card_count"`       // 卡片数量
 	ViewTime     *time.Time `gorm:"type:datetime(3)" json:"view_time"` // 查看时间
+	ImageUrl     string     `gorm:"size:255" json:"image_url"`         // 封面图片URL
 
 	// 关联关系
 	//User     User       `gorm:"foreignKey:UserID" json:"user,omitempty"`
