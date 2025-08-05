@@ -165,9 +165,13 @@ func (m *mqttBiz) Disconnect() {
 }
 
 func (m *mqttBiz) Publish(topic string, payload interface{}) error {
+	// 如果客户端为nil，先尝试连接
 	if m.client == nil {
-		log.Errorw("MQTT client is nil")
-		return fmt.Errorf("MQTT client not initialized")
+		log.Infow("MQTT client is nil, attempting to connect", "broker", m.config.Broker, "client_id", m.config.ClientID)
+		if err := m.Connect(); err != nil {
+			log.Errorw("Failed to connect to MQTT broker", "error", err)
+			return fmt.Errorf("MQTT client not initialized and connection failed: %w", err)
+		}
 	}
 
 	// 检查连接状态，如果未连接则尝试重连
@@ -218,8 +222,22 @@ func (m *mqttBiz) Publish(topic string, payload interface{}) error {
 }
 
 func (m *mqttBiz) Subscribe(topic string, callback func(topic string, payload []byte)) error {
-	if m.client == nil || !m.client.IsConnected() {
-		return fmt.Errorf("MQTT client not connected")
+	// 如果客户端为nil，先尝试连接
+	if m.client == nil {
+		log.Infow("MQTT client is nil, attempting to connect", "broker", m.config.Broker, "client_id", m.config.ClientID)
+		if err := m.Connect(); err != nil {
+			log.Errorw("Failed to connect to MQTT broker", "error", err)
+			return fmt.Errorf("MQTT client not initialized and connection failed: %w", err)
+		}
+	}
+
+	// 检查连接状态
+	if !m.client.IsConnected() {
+		log.Warnw("MQTT client not connected, attempting to reconnect", "broker", m.config.Broker, "client_id", m.config.ClientID)
+		if err := m.Connect(); err != nil {
+			log.Errorw("Failed to reconnect to MQTT broker", "error", err)
+			return fmt.Errorf("MQTT client not connected and reconnection failed: %w", err)
+		}
 	}
 
 	token := m.client.Subscribe(topic, 0, func(client mqtt.Client, msg mqtt.Message) {

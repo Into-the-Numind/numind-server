@@ -3,6 +3,7 @@ package book
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -20,6 +21,18 @@ import (
 type CreateBookRequest struct {
 	Text       string `json:"text" binding:"required"`
 	TemplateID string `json:"template_id" binding:"required"`
+}
+
+// QianwenResponse 通义千问返回的结构化数据
+type QianwenResponse struct {
+	StructuredTextArray []StructuredTextItem `json:"structured_text_array"`
+	ImagePrompt         string               `json:"image_prompt"`
+}
+
+// StructuredTextItem 结构化文本项
+type StructuredTextItem struct {
+	Type    string      `json:"type"`
+	Content interface{} `json:"content"`
 }
 
 // getUserIDFromToken 从JWT token中获取用户ID
@@ -58,6 +71,31 @@ func getUserIDFromToken(c *gin.Context) (uint, error) {
 	return 0, fmt.Errorf("invalid token or missing user_id")
 }
 
+// extractJSONFromResponse 从通义千问的响应中提取JSON内容
+// 处理可能的Markdown代码块格式（```json ... ```）
+func extractJSONFromResponse(response string) string {
+	// 去除首尾空白字符
+	response = strings.TrimSpace(response)
+
+	// 检查是否被Markdown代码块包围
+	if strings.HasPrefix(response, "```json") {
+		// 找到代码块的结束位置
+		endIndex := strings.LastIndex(response, "```")
+		if endIndex > 7 { // 7是"```json"的长度
+			return strings.TrimSpace(response[7:endIndex])
+		}
+	} else if strings.HasPrefix(response, "```") {
+		// 处理没有语言标识的代码块
+		endIndex := strings.LastIndex(response, "```")
+		if endIndex > 3 { // 3是"```"的长度
+			return strings.TrimSpace(response[3:endIndex])
+		}
+	}
+
+	// 如果不是代码块格式，直接返回原内容
+	return response
+}
+
 // Create 创建一本卡册
 func (ctrl *BookController) Create(c *gin.Context) {
 	log.C(c).Infow("Create book function called")
@@ -93,27 +131,75 @@ func (ctrl *BookController) Create(c *gin.Context) {
 
 	log.C(c).Infow("QianwenTextStream result", "result", qianwenResult)
 
-	// 调用万相生成图片
-	imagePrompt := ctrl.b.Ali().GetPromptManager().FormatImagePrompt(qianwenResult)
-	imageUrl, err := ctrl.b.Ali().WanxiangImageAsync(imagePrompt, "", "1024*1024")
-	if err != nil {
-		log.C(c).Errorw("WanxiangImageAsync failed", "error", err.Error())
-		// 图片生成失败不影响整体流程
+	// 提取JSON内容（处理可能的Markdown代码块格式）
+	jsonContent := extractJSONFromResponse(qianwenResult)
+	log.C(c).Infow("Extracted JSON content", "content", jsonContent)
+
+	// 解析通义千问返回的JSON结果
+	var qianwenResponse QianwenResponse
+	if err := json.Unmarshal([]byte(jsonContent), &qianwenResponse); err != nil {
+		log.C(c).Errorw("Failed to parse Qianwen response", "error", err.Error(), "original", qianwenResult, "extracted", jsonContent)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to parse AI response: "+err.Error()), nil)
+		return
+	}
+
+	// 使用解析出的image_prompt调用万相生成图片
+	var imageUrl string
+	if qianwenResponse.ImagePrompt != "" {
+		imageUrl, err = ctrl.b.Ali().WanxiangImageAsync(qianwenResponse.ImagePrompt, "", "1024*1024")
+		if err != nil {
+			log.C(c).Errorw("WanxiangImageAsync failed", "error", err.Error())
+			// 图片生成失败不影响整体流程
+		}
 	}
 
 	// 使用分页引擎处理文本
 	paginationBiz := pagination.NewPaginationBiz()
 
-	// 将文本转换为分页元素
-	elements := []pagination.Element{
-		{
-			Type:    pagination.ElementTypeNumber, // 使用number类型作为标题
-			Content: "AI处理结果",
-		},
-		{
-			Type:    pagination.ElementTypeBody,
-			Content: qianwenResult,
-		},
+	// 将结构化文本转换为分页元素，排除title类型
+	var elements []pagination.Element
+	for _, item := range qianwenResponse.StructuredTextArray {
+		if item.Type == "title" {
+			continue // 跳过title类型
+		}
+
+		// 根据类型映射到分页引擎的元素类型
+		var elementType pagination.ElementType
+		switch item.Type {
+		case "body":
+			elementType = pagination.ElementTypeBody
+		case "subtitle":
+			elementType = pagination.ElementTypeSubtitle
+		case "list":
+			elementType = pagination.ElementTypeList
+		case "quote":
+			elementType = pagination.ElementTypeQuote
+		default:
+			elementType = pagination.ElementTypeBody // 默认使用body类型
+		}
+
+		// 处理content内容
+		var content interface{}
+		switch v := item.Content.(type) {
+		case string:
+			content = v
+		case []interface{}:
+			// 如果是列表，保持为字符串数组格式
+			var listItems []string
+			for _, listItem := range v {
+				if str, ok := listItem.(string); ok {
+					listItems = append(listItems, str)
+				}
+			}
+			content = listItems
+		default:
+			content = fmt.Sprintf("%v", v)
+		}
+
+		elements = append(elements, pagination.Element{
+			Type:    elementType,
+			Content: content,
+		})
 	}
 
 	paginatedContent, err := paginationBiz.PaginateElements(elements)

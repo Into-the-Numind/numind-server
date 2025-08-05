@@ -20,7 +20,6 @@ import (
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/biz/wechat"
 	"numind-server/internal/numind/store"
-	"numind-server/internal/pkg/log"
 
 	"github.com/spf13/viper"
 )
@@ -60,11 +59,12 @@ var _ IBiz = (*biz)(nil)
 func NewBiz(ds store.IStore) *biz {
 	b := &biz{ds: ds}
 
-	// 初始化MQTT连接
+	// 初始化MQTT连接（可选，不强制连接）
 	mqttBiz := mqtt.NewMqttBiz()
-	if err := mqttBiz.Connect(); err != nil {
-		log.Errorw("Failed to connect to MQTT broker", "error", err.Error())
-	}
+	// 注释掉强制连接，改为按需连接
+	// if err := mqttBiz.Connect(); err != nil {
+	// 	log.Errorw("Failed to connect to MQTT broker", "error", err.Error())
+	// }
 	b.mqttBiz = mqttBiz
 
 	return b
