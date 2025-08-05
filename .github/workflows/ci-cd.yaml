@@ -75,44 +75,9 @@ jobs:
           go mod download
           go mod tidy
           go mod verify
-          go mod graph | head -20
-
-      - name: Debug - Check files and Go modules
-        run: |
-          echo "=== Checking Go version ==="
-          go version
-          echo "=== Checking Go environment ==="
-          go env | grep -E "(GOOS|GOARCH|CGO|GOROOT|GOPATH)"
-          echo "=== Checking Go modules ==="
-          go mod graph | head -10
-          echo "=== Checking book controller files ==="
-          ls -la internal/numind/controller/v1/book/
-          echo "=== Checking if SetCategory method exists ==="
-          grep -r "SetCategory" internal/numind/controller/v1/book/ || echo "SetCategory not found in book controller"
-          echo "=== Checking BookController methods ==="
-          go doc ./internal/numind/controller/v1/book/ BookController || echo "BookController not found"
-          echo "=== Checking package files ==="
-          go list -f '{{.GoFiles}}' ./internal/numind/controller/v1/book/
-
-      - name: Test individual package builds
-        run: |
-          echo "=== Testing book controller package ==="
-          go build -v ./internal/numind/controller/v1/book/
-          echo "=== Testing numind package ==="
-          go build -v ./internal/numind/
-          echo "=== Testing router specifically ==="
-          go build -v ./internal/numind/router.go
-          echo "=== Checking router.go content ==="
-          grep -n "SetCategory" internal/numind/router.go || echo "SetCategory not found in router.go"
-          echo "=== Checking book controller methods ==="
-          go doc ./internal/numind/controller/v1/book/ BookController || echo "BookController not found"
 
       - name: Build (compile check)
-        run: |
-          go clean -cache
-          go build -v ./internal/numind/controller/v1/book/
-          go build -v ./internal/numind/
-          go build ./...
+        run: go build ./...
 
       - name: Build application
         run: task build-prod
