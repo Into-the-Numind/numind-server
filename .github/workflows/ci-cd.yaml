@@ -60,20 +60,33 @@ jobs:
       - name: Get dependencies
         run: |
           go clean -modcache
+          go clean -cache
           go mod download
           go mod tidy
           go mod verify
+          go mod graph | head -20
 
       - name: Debug - Check files and Go modules
         run: |
           echo "=== Checking Go version ==="
           go version
+          echo "=== Checking Go environment ==="
+          go env | grep -E "(GOOS|GOARCH|CGO|GOROOT|GOPATH)"
           echo "=== Checking Go modules ==="
           go mod graph | head -10
           echo "=== Checking book controller files ==="
           ls -la internal/numind/controller/v1/book/
           echo "=== Checking if SetCategory method exists ==="
           grep -r "SetCategory" internal/numind/controller/v1/book/ || echo "SetCategory not found in book controller"
+
+      - name: Test individual package builds
+        run: |
+          echo "=== Testing book controller package ==="
+          go build -v ./internal/numind/controller/v1/book/
+          echo "=== Testing numind package ==="
+          go build -v ./internal/numind/
+          echo "=== Testing router specifically ==="
+          go build -v ./internal/numind/router.go
 
       - name: Build (compile check)
         run: |
