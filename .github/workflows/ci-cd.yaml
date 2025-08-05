@@ -58,10 +58,29 @@ jobs:
             ${{ runner.os }}-go-
 
       - name: Get dependencies
-        run: task deps
+        run: |
+          go clean -modcache
+          go mod download
+          go mod tidy
+          go mod verify
+
+      - name: Debug - Check files and Go modules
+        run: |
+          echo "=== Checking Go version ==="
+          go version
+          echo "=== Checking Go modules ==="
+          go mod graph | head -10
+          echo "=== Checking book controller files ==="
+          ls -la internal/numind/controller/v1/book/
+          echo "=== Checking if SetCategory method exists ==="
+          grep -r "SetCategory" internal/numind/controller/v1/book/ || echo "SetCategory not found in book controller"
 
       - name: Build (compile check)
-        run: go build ./...
+        run: |
+          go clean -cache
+          go build -v ./internal/numind/controller/v1/book/
+          go build -v ./internal/numind/
+          go build ./...
 
       - name: Build application
         run: task build-prod
