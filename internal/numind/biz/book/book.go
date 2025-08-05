@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
 
@@ -14,6 +15,7 @@ type BookBiz interface {
 	ListByCategory(ctx context.Context, categoryID uint, offset, limit int) (int64, []*model.BookM, error)
 	Update(ctx context.Context, book *model.BookM) error
 	Delete(ctx context.Context, id uint) error
+	SetCategory(ctx context.Context, bookID, userID uint, categoryID *uint) error
 }
 
 type bookBiz struct {
@@ -48,4 +50,37 @@ func (b *bookBiz) Update(ctx context.Context, book *model.BookM) error {
 
 func (b *bookBiz) Delete(ctx context.Context, id uint) error {
 	return b.ds.Books().Delete(ctx, id)
+}
+
+func (b *bookBiz) SetCategory(ctx context.Context, bookID, userID uint, categoryID *uint) error {
+	// 获取book
+	book, err := b.ds.Books().GetByID(ctx, bookID)
+	if err != nil {
+		return err
+	}
+
+	// 检查book是否属于当前用户
+	if book.UserID != userID {
+		return errno.ErrUnauthorized
+	}
+
+	// 如果指定了分类ID，验证分类是否存在
+	if categoryID != nil {
+		category, err := b.ds.Categories().GetByID(ctx, *categoryID)
+		if err != nil {
+			return errno.ErrInvalidParameter.SetMessage("分类不存在")
+		}
+		// 检查分类是否属于当前用户
+		if category.UserID != userID {
+			return errno.ErrUnauthorized
+		}
+		book.CategoryName = category.Name
+	} else {
+		book.CategoryName = ""
+	}
+
+	// 更新分类ID
+	book.CategoryID = categoryID
+
+	return b.ds.Books().Update(ctx, book)
 }

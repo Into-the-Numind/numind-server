@@ -21,10 +21,18 @@ type BookM struct {
 
 	// 关联关系
 	//User     User       `gorm:"foreignKey:UserID" json:"user,omitempty"`
-	// Category *CategoryM `gorm:"foreignKey:CategoryID" json:"category_info,omitempty"`
+	Category *CategoryM `gorm:"foreignKey:CategoryID" json:"category,omitempty"`
 	// Cards    []CardM    `gorm:"foreignKey:BookID" json:"cards,omitempty"`
 }
 
 func (BookM) TableName() string {
 	return "book"
+}
+
+// GetCategoryName 获取分类名称
+func (b *BookM) GetCategoryName() string {
+	if b.Category != nil {
+		return b.Category.Name
+	}
+	return b.CategoryName
 }

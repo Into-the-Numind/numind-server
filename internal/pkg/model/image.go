@@ -19,8 +19,7 @@ type ImageM struct {
 	OCResult    string `gorm:"type:text" json:"ocr_result"`              // OCR识别结果
 
 	// 关联关系
-	User  User    `gorm:"foreignKey:UserID" json:"user,omitempty"`
-	Cards []CardM `gorm:"foreignKey:ImageID" json:"cards,omitempty"`
+	User User `gorm:"foreignKey:UserID" json:"user,omitempty"`
 }
 
 func (ImageM) TableName() string {

@@ -36,7 +36,7 @@ func (s *categories) Create(ctx context.Context, category *model.CategoryM) erro
 
 func (s *categories) GetByID(ctx context.Context, id uint) (*model.CategoryM, error) {
 	var category model.CategoryM
-	err := s.db.WithContext(ctx).Preload("User").First(&category, id).Error
+	err := s.db.WithContext(ctx).First(&category, id).Error
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +52,7 @@ func (s *categories) GetByUserID(ctx context.Context, userID uint, offset, limit
 	}
 
 	// 分页查询
-	err = query.Preload("User").Offset(offset).Limit(defaultLimit(limit)).Order("sort ASC, created_at DESC").Find(&ret).Error
+	err = query.Offset(offset).Limit(defaultLimit(limit)).Order("sort ASC, created_at DESC").Find(&ret).Error
 	return
 }
 

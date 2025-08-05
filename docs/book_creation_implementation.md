@@ -161,7 +161,7 @@ func (ctrl *BookController) Create(c *gin.Context) {
         BookID:        book.ID,
         ImageID:       0,
         ProcessedText: string(cardsJSONStr), // 将JSON数据存储到ProcessedText字段
-        SortOrder:     0,
+        SortOrder:     1, // 从1开始计数
     }
     
     if err := ctrl.b.Cards().Create(c, card); err != nil {
