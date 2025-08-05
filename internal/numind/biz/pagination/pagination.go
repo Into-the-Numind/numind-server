@@ -16,6 +16,7 @@ const (
 	ElementTypeList     ElementType = "list"
 	ElementTypeQuote    ElementType = "quote"
 	ElementTypeTag      ElementType = "tag"
+	ElementTypeNumber   ElementType = "number"
 )
 
 // Element 定义内容元素

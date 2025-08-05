@@ -6,6 +6,7 @@ import (
 	"numind-server/internal/numind/controller/v1/book"
 	"numind-server/internal/numind/controller/v1/card"
 	"numind-server/internal/numind/controller/v1/category"
+	"numind-server/internal/numind/controller/v1/chat"
 	"numind-server/internal/numind/controller/v1/image"
 	"numind-server/internal/numind/controller/v1/order"
 	"numind-server/internal/numind/controller/v1/template"
@@ -53,6 +54,7 @@ func installNumindRouters(g *gin.Engine) error {
 	catc := category.New(b)
 	tc := template.New(b)
 	fc := feedback.New(b)
+	chatc := chat.New(store.S)
 
 	v1Group := g.Group("/v1")
 
@@ -105,6 +107,16 @@ func installNumindRouters(g *gin.Engine) error {
 	authGroup.GET("/feedbacks", fc.List)          // 获取反馈列表
 	authGroup.GET("/feedbacks/:id", fc.Get)       // 获取反馈详情
 	authGroup.DELETE("/feedbacks/:id", fc.Delete) // 删除反馈
+
+	// 对话相关
+	authGroup.GET("/chat/ws", chatc.WebSocket)                                      // WebSocket连接
+	authGroup.POST("/chat/sessions", chatc.CreateSession)                           // 创建对话会话
+	authGroup.GET("/chat/sessions", chatc.ListSessions)                             // 获取会话列表
+	authGroup.GET("/chat/sessions/:id", chatc.GetSession)                           // 获取会话详情
+	authGroup.PUT("/chat/sessions/:id", chatc.UpdateSession)                        // 更新会话
+	authGroup.DELETE("/chat/sessions/:id", chatc.DeleteSession)                     // 删除会话
+	authGroup.GET("/chat/sessions/:id/messages", chatc.ListMessages)                // 获取会话消息
+	authGroup.GET("/chat/sessions/:id/with-messages", chatc.GetSessionWithMessages) // 获取会话及消息
 
 	// 用户相关
 	//authGroup.GET("/users", uc.List)              // 查询用户列表

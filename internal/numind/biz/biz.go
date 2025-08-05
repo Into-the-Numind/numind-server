@@ -8,6 +8,7 @@ import (
 	"numind-server/internal/numind/biz/book"
 	"numind-server/internal/numind/biz/card"
 	"numind-server/internal/numind/biz/category"
+	"numind-server/internal/numind/biz/chat"
 	"numind-server/internal/numind/biz/feedback"
 	"numind-server/internal/numind/biz/image"
 	"numind-server/internal/numind/biz/mqtt"
@@ -19,7 +20,6 @@ import (
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/biz/wechat"
 	"numind-server/internal/numind/store"
-	"numind-server/internal/pkg/log"
 
 	"github.com/spf13/viper"
 )
@@ -40,6 +40,7 @@ type IBiz interface {
 	Volc() volc.VolcBiz
 	Mqtt() mqtt.MqttBiz
 	Pagination() pagination.PaginationBiz
+	Chats() chat.ChatBiz
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -58,11 +59,12 @@ var _ IBiz = (*biz)(nil)
 func NewBiz(ds store.IStore) *biz {
 	b := &biz{ds: ds}
 
-	// 初始化MQTT连接
+	// 初始化MQTT连接（可选，不强制连接）
 	mqttBiz := mqtt.NewMqttBiz()
-	if err := mqttBiz.Connect(); err != nil {
-		log.Errorw("Failed to connect to MQTT broker", "error", err.Error())
-	}
+	// 注释掉强制连接，改为按需连接
+	// if err := mqttBiz.Connect(); err != nil {
+	// 	log.Errorw("Failed to connect to MQTT broker", "error", err.Error())
+	// }
 	b.mqttBiz = mqttBiz
 
 	return b
@@ -131,4 +133,8 @@ func (b *biz) Mqtt() mqtt.MqttBiz {
 
 func (b *biz) Pagination() pagination.PaginationBiz {
 	return pagination.NewPaginationBiz()
+}
+
+func (b *biz) Chats() chat.ChatBiz {
+	return chat.New(b.ds)
 }

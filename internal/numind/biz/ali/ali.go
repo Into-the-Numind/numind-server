@@ -30,14 +30,19 @@ type AliBiz interface {
 	QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error)
 	WanxiangImageStream(prompt string, style string, size string) (string, error)
 	WanxiangImageAsync(prompt, style, size string) (string, error)
+	GetPromptManager() *PromptManager
 }
 
 type aliBiz struct {
 	ds store.IStore
+	pm *PromptManager
 }
 
 func NewAliBiz(ds store.IStore) AliBiz {
-	return &aliBiz{ds: ds}
+	return &aliBiz{
+		ds: ds,
+		pm: NewPromptManager(),
+	}
 }
 
 // GenerateContent 支持多轮对话和参数扩展
@@ -297,4 +302,8 @@ func (a *aliBiz) WanxiangImageAsync(prompt, style, size string) (string, error) 
 		return "", fmt.Errorf("超时未获取到图片URL，请稍后重试")
 	}
 	return imgUrl, nil
+}
+
+func (a *aliBiz) GetPromptManager() *PromptManager {
+	return a.pm
 }

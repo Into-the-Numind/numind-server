@@ -43,3 +43,5 @@ numind-server
 *.DS_Store
 
 res/
+
+numind

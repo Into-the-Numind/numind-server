@@ -48,6 +48,10 @@ type UserBiz interface {
 	WechatLogin(req *v1.WechatLoginRequest) (*v1.WechatLoginResponse, error)
 	ValidateToken(tokenString string) (*model.User, error)
 	UpdateWechatUser(ctx context.Context, openid string, r *v1.UpdateUserRequest) error
+
+	// 用户统计更新
+	IncrementUserBookNum(ctx context.Context, userID uint) error
+	IncrementUserCardNum(ctx context.Context, userID uint) error
 }
 
 // UserBiz 接口的实现.
@@ -566,4 +570,18 @@ func (b *userBiz) UpdateWechatUser(ctx context.Context, openid string, r *v1.Upd
 		return nil // 没有需要更新的内容
 	}
 	return b.ds.Users().UpdateWechatUser(ctx, openid, updateMap)
+}
+
+// IncrementUserBookNum 增加用户的书籍数量
+func (b *userBiz) IncrementUserBookNum(ctx context.Context, userID uint) error {
+	// 使用数据库的原子操作来增加BookNum字段
+	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
+		UpdateColumn("book_num", gorm.Expr("book_num + ?", 1)).Error
+}
+
+// IncrementUserCardNum 增加用户的卡片数量
+func (b *userBiz) IncrementUserCardNum(ctx context.Context, userID uint) error {
+	// 使用数据库的原子操作来增加CardNum字段
+	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
+		UpdateColumn("card_num", gorm.Expr("card_num + ?", 1)).Error
 }

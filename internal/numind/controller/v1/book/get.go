@@ -5,6 +5,7 @@ import (
 
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/model"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -35,5 +36,18 @@ func (ctrl *BookController) Get(c *gin.Context) {
 		// Don't return error here as the main operation (getting book) succeeded
 	}
 
-	core.WriteResponse(c, nil, book)
+	// 获取该书籍的所有卡片
+	_, cards, err := ctrl.b.Cards().ListByBook(c, uint(bookID), 0, 1000) // 获取所有卡片
+	if err != nil {
+		log.C(c).Errorw("Failed to get book cards", "error", err)
+		// 不返回错误，因为主要操作（获取书籍）成功了
+	}
+
+	// 创建BookResponse
+	bookResponse := model.NewBookResponse(book)
+	if len(cards) > 0 {
+		bookResponse.AddCards(cards)
+	}
+
+	core.WriteResponse(c, nil, bookResponse)
 }

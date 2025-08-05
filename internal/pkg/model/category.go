@@ -13,8 +13,8 @@ type CategoryM struct {
 	Sort   int    `gorm:"default:0" json:"sort"`                  // 排序
 
 	// 关联关系
-	User  User    `gorm:"foreignKey:UserID" json:"user,omitempty"`
-	Books []BookM `gorm:"foreignKey:CategoryID" json:"books,omitempty"`
+	//User  User    `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	//Books []BookM `gorm:"foreignKey:CategoryID" json:"books,omitempty"`
 }
 
 func (CategoryM) TableName() string {
