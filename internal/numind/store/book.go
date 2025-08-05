@@ -34,7 +34,7 @@ func (s *books) Create(ctx context.Context, book *model.BookM) error {
 
 func (s *books) GetByID(ctx context.Context, id uint) (*model.BookM, error) {
 	var book model.BookM
-	err := s.db.WithContext(ctx).First(&book, id).Error
+	err := s.db.WithContext(ctx).Preload("Category").First(&book, id).Error
 	if err != nil {
 		return nil, err
 	}
@@ -43,6 +43,7 @@ func (s *books) GetByID(ctx context.Context, id uint) (*model.BookM, error) {
 
 func (s *books) ListByUser(ctx context.Context, userID uint, offset, limit int) (count int64, ret []*model.BookM, err error) {
 	err = s.db.WithContext(ctx).Where("user_id = ?", userID).
+		Preload("Category").
 		Offset(offset).Limit(defaultLimit(limit)).Order("id desc").Find(&ret).
 		Offset(-1).Limit(-1).Count(&count).Error
 	return
@@ -50,6 +51,7 @@ func (s *books) ListByUser(ctx context.Context, userID uint, offset, limit int) 
 
 func (s *books) ListByCategory(ctx context.Context, categoryID uint, offset, limit int) (count int64, ret []*model.BookM, err error) {
 	err = s.db.WithContext(ctx).Where("category_id = ?", categoryID).
+		Preload("Category").
 		Offset(offset).Limit(defaultLimit(limit)).Order("id desc").Find(&ret).
 		Offset(-1).Limit(-1).Count(&count).Error
 	return

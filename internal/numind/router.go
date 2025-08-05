@@ -83,11 +83,12 @@ func installNumindRouters(g *gin.Engine) error {
 	authGroup.DELETE("/cards/:id", cc.Delete)
 
 	// 卡册相关
-	authGroup.POST("/books", bc.Create)       // 创建卡册
-	authGroup.GET("/books", bc.List)          // 获取卡册列表
-	authGroup.GET("/books/:id", bc.Get)       // 获取卡册详情
-	authGroup.PUT("/books/:id", bc.Update)    // 更新卡册
-	authGroup.DELETE("/books/:id", bc.Delete) // 删除卡册
+	authGroup.POST("/books", bc.Create)                  // 创建卡册
+	authGroup.GET("/books", bc.List)                     // 获取卡册列表
+	authGroup.GET("/books/:id", bc.Get)                  // 获取卡册详情
+	authGroup.PUT("/books/:id", bc.Update)               // 更新卡册
+	authGroup.DELETE("/books/:id", bc.Delete)            // 删除卡册
+	authGroup.PUT("/books/:id/category", bc.SetCategory) // 设置卡册分类
 
 	// 分类相关
 	authGroup.POST("/categories", catc.Create)       // 创建分类

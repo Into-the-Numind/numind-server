@@ -270,7 +270,7 @@ func (ctrl *BookController) Create(c *gin.Context) {
 			UserID:        userID,
 			BookID:        book.ID,
 			ProcessedText: string(cardJSONStr), // 将当前卡片数据存储到ProcessedText字段
-			SortOrder:     i,                   // 使用索引作为排序顺序
+			SortOrder:     i + 1,               // 使用索引+1作为排序顺序，从1开始
 		}
 
 		if err := ctrl.b.Cards().Create(c, cardRecord); err != nil {
