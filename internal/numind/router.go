@@ -9,6 +9,7 @@ import (
 	"numind-server/internal/numind/controller/v1/chat"
 	"numind-server/internal/numind/controller/v1/image"
 	"numind-server/internal/numind/controller/v1/order"
+	"numind-server/internal/numind/controller/v1/pagination"
 	"numind-server/internal/numind/controller/v1/template"
 	"numind-server/internal/numind/controller/v1/user"
 	"numind-server/internal/numind/store"
@@ -117,6 +118,15 @@ func installNumindRouters(g *gin.Engine) error {
 	authGroup.DELETE("/chat/sessions/:id", chatc.DeleteSession)                     // 删除会话
 	authGroup.GET("/chat/sessions/:id/messages", chatc.ListMessages)                // 获取会话消息
 	authGroup.GET("/chat/sessions/:id/with-messages", chatc.GetSessionWithMessages) // 获取会话及消息
+
+	// 分页相关
+	paginationController := pagination.NewPaginationController(b.Pagination())
+	authGroup.POST("/pagination/paginate", paginationController.Paginate)              // 执行分页
+	authGroup.POST("/pagination/paginate-json", paginationController.PaginateFromJSON) // 从JSON字符串分页
+	authGroup.GET("/pagination/config", paginationController.GetConfig)                // 获取配置
+	authGroup.GET("/pagination/style-config", paginationController.GetStyleConfig)     // 获取样式配置
+	authGroup.PUT("/pagination/config", paginationController.UpdateConfig)             // 更新配置
+	authGroup.GET("/pagination/test", paginationController.TestPagination)             // 测试分页功能
 
 	// 用户相关
 	//authGroup.GET("/users", uc.List)              // 查询用户列表
