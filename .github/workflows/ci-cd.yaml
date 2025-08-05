@@ -30,6 +30,7 @@ jobs:
   # 代码构建
   code_build:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -103,6 +104,7 @@ jobs:
   image_build:
     needs: code_build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/release' || github.ref == 'refs/heads/product'
     steps:
       - name: Checkout code
@@ -147,6 +149,7 @@ jobs:
   deploy_dev:
     needs: image_build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: github.ref == 'refs/heads/develop'
     environment: development
     steps:
@@ -244,6 +247,7 @@ jobs:
   deploy_qa:
     needs: image_build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: github.ref == 'refs/heads/release'
     environment: qa
     steps:
@@ -340,6 +344,7 @@ jobs:
   deploy_product:
     needs: image_build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: github.ref == 'refs/heads/product'
     environment: production
     steps:
