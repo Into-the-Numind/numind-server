@@ -141,6 +141,7 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             BUILDKIT_INLINE_CACHE=1
+            ENV=${{ github.ref_name == 'develop' && 'dev' || github.ref_name == 'release' && 'qa' || github.ref_name == 'product' && 'prod' || 'dev' }}
 
   # 开发环境部署 - 只在 develop 分支触发
   deploy_dev:
