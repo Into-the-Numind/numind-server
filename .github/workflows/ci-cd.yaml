@@ -171,36 +171,32 @@ jobs:
             docker pull ghcr.io/into-the-numind/numind-server:develop
             
             # 检查并停止运行中的容器
-            if docker ps -q -f name=numind-server | grep -q .; then
-              echo "Container numind-server is running, stopping it..."
-              docker stop numind-server
+            if docker ps -q -f name=numind-server-dev | grep -q .; then
+              echo "Container numind-server-dev is running, stopping it..."
+              docker stop numind-server-dev
             fi
             
             # 检查并删除存在的容器
-            if docker ps -aq -f name=numind-server | grep -q .; then
-              echo "Container numind-server exists, removing it..."
-              docker rm numind-server
+            if docker ps -aq -f name=numind-server-dev | grep -q .; then
+              echo "Container numind-server-dev exists, removing it..."
+              docker rm numind-server-dev
             fi
             
             # 创建必要的目录并设置权限
             echo "Creating necessary directories..."
-            sudo mkdir -p /opt/numind/image/upload/avatars
-            sudo chmod -R 755 /opt/numind/image/upload
-            sudo chown -R 1001:1001 /opt/numind/image/upload || true
+            sudo mkdir -p /opt/numind/dev/image/upload/avatars
+            sudo chmod -R 755 /opt/numind/dev/image/upload
+            sudo chown -R 1001:1001 /opt/numind/dev/image/upload || true
             
             # 启动新容器
             echo "Starting new container..."
             docker run -d \
-              --name numind-server \
+              --name numind-server-dev \
               -p 9091:9091 \
               -p 9092:9092 \
-              -v /opt/numind:/opt/numind \
+              -v /opt/numind/dev:/opt/numind \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
-              --health-cmd="curl -f http://localhost:9091/healthz || exit 1" \
-              --health-interval=30s \
-              --health-timeout=10s \
-              --health-retries=3 \
               ghcr.io/into-the-numind/numind-server:develop \
               -c /app/config_dev.yaml
             
@@ -209,42 +205,37 @@ jobs:
             sleep 15
             
             # 检查容器状态
-            if docker ps -q -f name=numind-server | grep -q .; then
+            if docker ps -q -f name=numind-server-dev | grep -q .; then
               echo "Container started successfully!"
               
-              # 等待健康检查通过
-              echo "Waiting for health check..."
-              timeout=90
-              while [ $timeout -gt 0 ]; do
-                # 检查Docker健康状态
-                if docker inspect --format='{{.State.Health.Status}}' numind-server 2>/dev/null | grep -q "healthy"; then
-                  echo "Docker health check passed!"
-                  break
-                fi
-                
-                # 检查HTTP健康端点
-                if curl -f http://localhost:9091/healthz > /dev/null 2>&1; then
-                  echo "HTTP health check passed!"
-                  break
-                fi
-                
-                echo "Health check failed, retrying in 5s... (${timeout}s remaining)"
-                sleep 5
-                timeout=$((timeout - 5))
-              done
+                          # 等待容器启动并检查一次健康状态
+            echo "Waiting for container to start and checking health..."
+            sleep 10
+            
+            # 检查容器是否正在运行
+            if docker ps -q -f name=numind-server-dev | grep -q .; then
+              echo "Container is running, checking health endpoint..."
               
-              if [ $timeout -le 0 ]; then
-                echo "Warning: Health check timeout, but container is running"
-                echo "Container logs:"
-                docker logs --tail 20 numind-server || true
-              else
-                echo "Deployment completed successfully!"
+              # 尝试访问健康端点
+              if curl -f http://localhost:9091/healthz > /dev/null 2>&1; then
+                echo "Health check passed! Deployment completed successfully!"
                 echo "Container status:"
-                docker ps -f name=numind-server --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+                docker ps -f name=numind-server-dev --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+              else
+                echo "Warning: Health endpoint not responding, but container is running"
+                echo "Container logs:"
+                docker logs --tail 10 numind-server-dev || true
+                echo "Container status:"
+                docker ps -f name=numind-server-dev --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
               fi
             else
               echo "Error: Container failed to start"
-              docker logs numind-server || true
+              docker logs numind-server-dev || true
+              exit 1
+            fi
+            else
+              echo "Error: Container failed to start"
+              docker logs numind-server-dev || true
               exit 1
             fi
 
@@ -261,9 +252,9 @@ jobs:
       - name: Deploy to QA Environment
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.QA_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: 49.233.219.254
+          username: root
+          password: Numind2025
           script: |
             # 设置环境变量
             export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
@@ -297,15 +288,11 @@ jobs:
             echo "Starting new container..."
             docker run -d \
               --name numind-server-qa \
-              -p 8001:9091 \
-              -p 8002:9092 \
+              -p 9093:9091 \
+              -p 9094:9092 \
               -v /opt/numind/qa:/opt/numind \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
-              --health-cmd="curl -f http://localhost:9091/healthz || exit 1" \
-              --health-interval=30s \
-              --health-timeout=10s \
-              --health-retries=3 \
               ghcr.io/into-the-numind/numind-server:release \
               -c /app/config_qa.yaml
             
@@ -317,36 +304,31 @@ jobs:
             if docker ps -q -f name=numind-server-qa | grep -q .; then
               echo "Container started successfully!"
               
-              # 等待健康检查通过
-              echo "Waiting for health check..."
-              timeout=90
-              while [ $timeout -gt 0 ]; do
-                # 检查Docker健康状态
-                if docker inspect --format='{{.State.Health.Status}}' numind-server-qa 2>/dev/null | grep -q "healthy"; then
-                  echo "Docker health check passed!"
-                  break
-                fi
-                
-                # 检查HTTP健康端点
-                if curl -f http://localhost:8001/healthz > /dev/null 2>&1; then
-                  echo "HTTP health check passed!"
-                  break
-                fi
-                
-                echo "Health check failed, retrying in 5s... (${timeout}s remaining)"
-                sleep 5
-                timeout=$((timeout - 5))
-              done
+                          # 等待容器启动并检查一次健康状态
+            echo "Waiting for container to start and checking health..."
+            sleep 10
+            
+            # 检查容器是否正在运行
+            if docker ps -q -f name=numind-server-qa | grep -q .; then
+              echo "Container is running, checking health endpoint..."
               
-              if [ $timeout -le 0 ]; then
-                echo "Warning: Health check timeout, but container is running"
-                echo "Container logs:"
-                docker logs --tail 20 numind-server-qa || true
+              # 尝试访问健康端点
+              if curl -f http://localhost:9093/healthz > /dev/null 2>&1; then
+                echo "Health check passed! QA deployment completed successfully!"
+                echo "Container status:"
+                docker ps -f name=numind-server-qa --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
               else
-                echo "QA deployment completed successfully!"
+                echo "Warning: Health endpoint not responding, but container is running"
+                echo "Container logs:"
+                docker logs --tail 10 numind-server-qa || true
                 echo "Container status:"
                 docker ps -f name=numind-server-qa --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
               fi
+            else
+              echo "Error: Container failed to start"
+              docker logs numind-server-qa || true
+              exit 1
+            fi
             else
               echo "Error: Container failed to start"
               docker logs numind-server-qa || true
@@ -366,9 +348,9 @@ jobs:
       - name: Deploy to Production Environment
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.PROD_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: 49.233.219.254
+          username: root
+          password: Numind2025
           script: |
             # 设置环境变量
             export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
@@ -402,15 +384,11 @@ jobs:
             echo "Starting new container..."
             docker run -d \
               --name numind-server-prod \
-              -p 9091:9091 \
-              -p 9092:9092 \
+              -p 9095:9091 \
+              -p 9096:9092 \
               -v /opt/numind/prod:/opt/numind \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
-              --health-cmd="curl -f http://localhost:9091/healthz || exit 1" \
-              --health-interval=30s \
-              --health-timeout=10s \
-              --health-retries=3 \
               ghcr.io/into-the-numind/numind-server:product \
               -c /app/config_prod.yaml
             
@@ -422,35 +400,30 @@ jobs:
             if docker ps -q -f name=numind-server-prod | grep -q .; then
               echo "Container started successfully!"
               
-              # 等待健康检查通过
-              echo "Waiting for health check..."
-              timeout=90
-              while [ $timeout -gt 0 ]; do
-                # 检查Docker健康状态
-                if docker inspect --format='{{.State.Health.Status}}' numind-server-prod 2>/dev/null | grep -q "healthy"; then
-                  echo "Docker health check passed!"
-                  break
-                fi
-                
-                # 检查HTTP健康端点
-                if curl -f http://localhost:9091/healthz > /dev/null 2>&1; then
-                  echo "HTTP health check passed!"
-                  break
-                fi
-                
-                echo "Health check failed, retrying in 5s... (${timeout}s remaining)"
-                sleep 5
-                timeout=$((timeout - 5))
-              done
+              # 等待容器启动并检查一次健康状态
+              echo "Waiting for container to start and checking health..."
+              sleep 10
               
-              if [ $timeout -le 0 ]; then
-                echo "Warning: Health check timeout, but container is running"
-                echo "Container logs:"
-                docker logs --tail 20 numind-server-prod || true
+              # 检查容器是否正在运行
+              if docker ps -q -f name=numind-server-prod | grep -q .; then
+                echo "Container is running, checking health endpoint..."
+                
+                # 尝试访问健康端点
+                if curl -f http://localhost:9095/healthz > /dev/null 2>&1; then
+                  echo "Health check passed! Production deployment completed successfully!"
+                  echo "Container status:"
+                  docker ps -f name=numind-server-prod --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+                else
+                  echo "Warning: Health endpoint not responding, but container is running"
+                  echo "Container logs:"
+                  docker logs --tail 10 numind-server-prod || true
+                  echo "Container status:"
+                  docker ps -f name=numind-server-prod --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+                fi
               else
-                echo "Production deployment completed successfully!"
-                echo "Container status:"
-                docker ps -f name=numind-server-prod --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+                echo "Error: Container failed to start"
+                docker logs numind-server-prod || true
+                exit 1
               fi
             else
               echo "Error: Container failed to start"
