@@ -57,6 +57,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-
 
+      - name: Force clean and reset
+        run: |
+          echo "=== Force cleaning all caches ==="
+          go clean -modcache
+          go clean -cache
+          go clean -testcache
+          rm -rf ~/.cache/go-build
+          rm -rf ~/go/pkg/mod
+          echo "=== Go environment ==="
+          go env | grep -E "(GOOS|GOARCH|CGO|GOROOT|GOPATH)"
+
       - name: Get dependencies
         run: |
           go clean -modcache
@@ -78,6 +89,10 @@ jobs:
           ls -la internal/numind/controller/v1/book/
           echo "=== Checking if SetCategory method exists ==="
           grep -r "SetCategory" internal/numind/controller/v1/book/ || echo "SetCategory not found in book controller"
+          echo "=== Checking BookController methods ==="
+          go doc ./internal/numind/controller/v1/book/ BookController || echo "BookController not found"
+          echo "=== Checking package files ==="
+          go list -f '{{.GoFiles}}' ./internal/numind/controller/v1/book/
 
       - name: Test individual package builds
         run: |
@@ -87,6 +102,10 @@ jobs:
           go build -v ./internal/numind/
           echo "=== Testing router specifically ==="
           go build -v ./internal/numind/router.go
+          echo "=== Checking router.go content ==="
+          grep -n "SetCategory" internal/numind/router.go || echo "SetCategory not found in router.go"
+          echo "=== Checking book controller methods ==="
+          go doc ./internal/numind/controller/v1/book/ BookController || echo "BookController not found"
 
       - name: Build (compile check)
         run: |
