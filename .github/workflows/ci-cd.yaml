@@ -277,17 +277,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: numind-binary
-          path: ./bin
-
-      - name: Setup SSH
-        uses: webfactory/ssh-agent@v0.8.0
-        with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-
       - name: Deploy to QA Environment
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -295,62 +284,91 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            # 创建部署目录
-            sudo mkdir -p /opt/numind
-            sudo mkdir -p /opt/numind/logs
-            sudo mkdir -p /opt/numind/config
+            # 设置环境变量
+            export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
+            export GITHUB_ACTOR="${{ github.actor }}"
             
-            # 停止现有服务
-            sudo systemctl stop numind-service || true
+            # 登录到 GHCR
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
             
-            # 备份当前版本
-            if [ -f /opt/numind/numind ]; then
-              sudo cp /opt/numind/numind /opt/numind/numind.backup.$(date +%Y%m%d_%H%M%S)
+            # 拉取最新镜像
+            docker pull ghcr.io/into-the-numind/numind-server:release
+            
+            # 检查并停止运行中的容器
+            if docker ps -q -f name=numind-server-qa | grep -q .; then
+              echo "Container numind-server-qa is running, stopping it..."
+              docker stop numind-server-qa
             fi
             
-            # 复制新版本
-            sudo cp /home/${{ secrets.DEPLOY_USER }}/numind /opt/numind/
-            sudo chmod +x /opt/numind/numind
-            sudo chown -R ${{ secrets.DEPLOY_USER }}:${{ secrets.DEPLOY_USER }} /opt/numind
+            # 检查并删除存在的容器
+            if docker ps -aq -f name=numind-server-qa | grep -q .; then
+              echo "Container numind-server-qa exists, removing it..."
+              docker rm numind-server-qa
+            fi
             
-            # 创建或更新 systemd 服务文件
-            sudo tee /etc/systemd/system/numind-service.service > /dev/null <<EOF
-            [Unit]
-            Description=Numind Server
-            After=network.target
+            # 创建必要的目录并设置权限
+            echo "Creating necessary directories..."
+            sudo mkdir -p /opt/numind/qa/image/upload/avatars
+            sudo chmod -R 755 /opt/numind/qa/image/upload
+            sudo chown -R 1001:1001 /opt/numind/qa/image/upload || true
             
-            [Service]
-            Type=simple
-            User=${{ secrets.DEPLOY_USER }}
-            WorkingDirectory=/opt/numind
-            ExecStart=/opt/numind/numind
-            Restart=always
-            RestartSec=5
-            Environment=ENVIRONMENT=qa
-            Environment=PORT=8000
+            # 启动新容器
+            echo "Starting new container..."
+            docker run -d \
+              --name numind-server-qa \
+              -p 8001:9091 \
+              -p 8002:9092 \
+              -v /opt/numind/qa:/opt/numind \
+              -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
+              --restart always \
+              --health-cmd="curl -f http://localhost:9091/healthz || exit 1" \
+              --health-interval=30s \
+              --health-timeout=10s \
+              --health-retries=3 \
+              ghcr.io/into-the-numind/numind-server:release \
+              -c /app/config_qa.yaml
             
-            [Install]
-            WantedBy=multi-user.target
-            EOF
+            # 等待容器启动
+            echo "Waiting for container to start..."
+            sleep 15
             
-            # 重新加载 systemd 配置
-            sudo systemctl daemon-reload
-            
-            # 启动服务
-            sudo systemctl start numind-service
-            sudo systemctl enable numind-service
-            
-            # 检查服务状态
-            sudo systemctl status numind-service --no-pager
-            
-            # 等待服务启动
-            sleep 10
-            
-            # 健康检查
-            if curl -f http://localhost:8000/; then
-              echo "QA deployment successful!"
+            # 检查容器状态
+            if docker ps -q -f name=numind-server-qa | grep -q .; then
+              echo "Container started successfully!"
+              
+              # 等待健康检查通过
+              echo "Waiting for health check..."
+              timeout=90
+              while [ $timeout -gt 0 ]; do
+                # 检查Docker健康状态
+                if docker inspect --format='{{.State.Health.Status}}' numind-server-qa 2>/dev/null | grep -q "healthy"; then
+                  echo "Docker health check passed!"
+                  break
+                fi
+                
+                # 检查HTTP健康端点
+                if curl -f http://localhost:8001/healthz > /dev/null 2>&1; then
+                  echo "HTTP health check passed!"
+                  break
+                fi
+                
+                echo "Health check failed, retrying in 5s... (${timeout}s remaining)"
+                sleep 5
+                timeout=$((timeout - 5))
+              done
+              
+              if [ $timeout -le 0 ]; then
+                echo "Warning: Health check timeout, but container is running"
+                echo "Container logs:"
+                docker logs --tail 20 numind-server-qa || true
+              else
+                echo "QA deployment completed successfully!"
+                echo "Container status:"
+                docker ps -f name=numind-server-qa --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+              fi
             else
-              echo "QA deployment failed - health check failed"
+              echo "Error: Container failed to start"
+              docker logs numind-server-qa || true
               exit 1
             fi
 
@@ -364,17 +382,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: numind-binary
-          path: ./bin
-
-      - name: Setup SSH
-        uses: webfactory/ssh-agent@v0.8.0
-        with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-
       - name: Deploy to Production Environment
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -382,61 +389,90 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            # 创建部署目录
-            sudo mkdir -p /opt/numind
-            sudo mkdir -p /opt/numind/logs
-            sudo mkdir -p /opt/numind/config
+            # 设置环境变量
+            export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
+            export GITHUB_ACTOR="${{ github.actor }}"
             
-            # 停止现有服务
-            sudo systemctl stop numind-service || true
+            # 登录到 GHCR
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
             
-            # 备份当前版本
-            if [ -f /opt/numind/numind ]; then
-              sudo cp /opt/numind/numind /opt/numind/numind.backup.$(date +%Y%m%d_%H%M%S)
+            # 拉取最新镜像
+            docker pull ghcr.io/into-the-numind/numind-server:product
+            
+            # 检查并停止运行中的容器
+            if docker ps -q -f name=numind-server-prod | grep -q .; then
+              echo "Container numind-server-prod is running, stopping it..."
+              docker stop numind-server-prod
             fi
             
-            # 复制新版本
-            sudo cp /home/${{ secrets.DEPLOY_USER }}/numind /opt/numind/
-            sudo chmod +x /opt/numind/numind
-            sudo chown -R ${{ secrets.DEPLOY_USER }}:${{ secrets.DEPLOY_USER }} /opt/numind
+            # 检查并删除存在的容器
+            if docker ps -aq -f name=numind-server-prod | grep -q .; then
+              echo "Container numind-server-prod exists, removing it..."
+              docker rm numind-server-prod
+            fi
             
-            # 创建或更新 systemd 服务文件
-            sudo tee /etc/systemd/system/numind-service.service > /dev/null <<EOF
-            [Unit]
-            Description=Numind Server
-            After=network.target
+            # 创建必要的目录并设置权限
+            echo "Creating necessary directories..."
+            sudo mkdir -p /opt/numind/prod/image/upload/avatars
+            sudo chmod -R 755 /opt/numind/prod/image/upload
+            sudo chown -R 1001:1001 /opt/numind/prod/image/upload || true
             
-            [Service]
-            Type=simple
-            User=${{ secrets.DEPLOY_USER }}
-            WorkingDirectory=/opt/numind
-            ExecStart=/opt/numind/numind
-            Restart=always
-            RestartSec=5
-            Environment=ENVIRONMENT=production
-            Environment=PORT=8000
+            # 启动新容器
+            echo "Starting new container..."
+            docker run -d \
+              --name numind-server-prod \
+              -p 9091:9091 \
+              -p 9092:9092 \
+              -v /opt/numind/prod:/opt/numind \
+              -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
+              --restart always \
+              --health-cmd="curl -f http://localhost:9091/healthz || exit 1" \
+              --health-interval=30s \
+              --health-timeout=10s \
+              --health-retries=3 \
+              ghcr.io/into-the-numind/numind-server:product \
+              -c /app/config_prod.yaml
             
-            [Install]
-            WantedBy=multi-user.target
-            EOF
+            # 等待容器启动
+            echo "Waiting for container to start..."
+            sleep 15
             
-            # 重新加载 systemd 配置
-            sudo systemctl daemon-reload
-            
-            # 启动服务
-            sudo systemctl start numind-service
-            sudo systemctl enable numind-service
-            
-            # 检查服务状态
-            sudo systemctl status numind-service --no-pager
-            
-            # 等待服务启动
-            sleep 10
-            
-            # 健康检查
-            if curl -f http://localhost:8000/; then
-              echo "Production deployment successful!"
+            # 检查容器状态
+            if docker ps -q -f name=numind-server-prod | grep -q .; then
+              echo "Container started successfully!"
+              
+              # 等待健康检查通过
+              echo "Waiting for health check..."
+              timeout=90
+              while [ $timeout -gt 0 ]; do
+                # 检查Docker健康状态
+                if docker inspect --format='{{.State.Health.Status}}' numind-server-prod 2>/dev/null | grep -q "healthy"; then
+                  echo "Docker health check passed!"
+                  break
+                fi
+                
+                # 检查HTTP健康端点
+                if curl -f http://localhost:9091/healthz > /dev/null 2>&1; then
+                  echo "HTTP health check passed!"
+                  break
+                fi
+                
+                echo "Health check failed, retrying in 5s... (${timeout}s remaining)"
+                sleep 5
+                timeout=$((timeout - 5))
+              done
+              
+              if [ $timeout -le 0 ]; then
+                echo "Warning: Health check timeout, but container is running"
+                echo "Container logs:"
+                docker logs --tail 20 numind-server-prod || true
+              else
+                echo "Production deployment completed successfully!"
+                echo "Container status:"
+                docker ps -f name=numind-server-prod --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+              fi
             else
-              echo "Production deployment failed - health check failed"
+              echo "Error: Container failed to start"
+              docker logs numind-server-prod || true
               exit 1
             fi
