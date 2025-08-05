@@ -156,6 +156,22 @@ func (ctrl *BookController) Create(c *gin.Context) {
 	// 使用分页引擎处理文本
 	paginationBiz := pagination.NewPaginationBiz()
 
+	// 提取title作为book的标题
+	var bookTitle string
+	for _, item := range qianwenResponse.StructuredTextArray {
+		if item.Type == "title" {
+			if titleContent, ok := item.Content.(string); ok {
+				bookTitle = titleContent
+				break // 找到第一个title就使用
+			}
+		}
+	}
+
+	// 如果没有找到title，使用默认标题
+	if bookTitle == "" {
+		bookTitle = fmt.Sprintf("AI生成卡册 - %s", time.Now().Format("2006-01-02 15:04:05"))
+	}
+
 	// 将结构化文本转换为分页元素，排除title类型
 	var elements []pagination.Element
 	for _, item := range qianwenResponse.StructuredTextArray {
@@ -213,7 +229,7 @@ func (ctrl *BookController) Create(c *gin.Context) {
 	now := time.Now()
 	book := &model.BookM{
 		UserID:     userID,
-		Title:      fmt.Sprintf("AI生成卡册 - %s", time.Now().Format("2006-01-02 15:04:05")),
+		Title:      bookTitle, // 使用从千问返回的title
 		TemplateID: req.TemplateID,
 		ViewTime:   &now,
 		ImageUrl:   imageUrl, // 保存生成的图片URL
@@ -231,9 +247,9 @@ func (ctrl *BookController) Create(c *gin.Context) {
 		// 统计更新失败不影响主要流程，但记录错误
 	}
 
-	// 将分页卡片数据转换为JSON格式
-	var cardsJSON []interface{}
-	for _, card := range paginatedContent.Cards {
+	// 为每个分页后的卡片创建单独的CardM记录
+	for i, card := range paginatedContent.Cards {
+		// 将当前卡片的数据转换为JSON格式
 		var cardElements []map[string]interface{}
 		for _, element := range card.Elements {
 			cardElements = append(cardElements, map[string]interface{}{
@@ -241,33 +257,31 @@ func (ctrl *BookController) Create(c *gin.Context) {
 				"content": element.Content,
 			})
 		}
-		cardsJSON = append(cardsJSON, cardElements)
-	}
 
-	// 将JSON数据转换为字符串
-	cardsJSONStr, err := json.Marshal(cardsJSON)
-	if err != nil {
-		log.C(c).Errorw("Failed to marshal cards JSON", "error", err.Error())
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to process cards data: "+err.Error()), nil)
-		return
-	}
+		// 将当前卡片数据转换为JSON字符串
+		cardJSONStr, err := json.Marshal(cardElements)
+		if err != nil {
+			log.C(c).Errorw("Failed to marshal card JSON", "error", err.Error(), "card_index", i)
+			continue // 跳过这个卡片，继续处理下一个
+		}
 
-	// 创建卡片记录，将分页数据存储到ProcessedText字段
-	card := &model.CardM{
-		UserID:        userID,
-		BookID:        book.ID,
-		ProcessedText: string(cardsJSONStr), // 将JSON数据存储到ProcessedText字段
-		SortOrder:     0,
-	}
+		// 创建卡片记录，将当前卡片数据存储到ProcessedText字段
+		cardRecord := &model.CardM{
+			UserID:        userID,
+			BookID:        book.ID,
+			ProcessedText: string(cardJSONStr), // 将当前卡片数据存储到ProcessedText字段
+			SortOrder:     i,                   // 使用索引作为排序顺序
+		}
 
-	if err := ctrl.b.Cards().Create(c, card); err != nil {
-		log.C(c).Errorw("Failed to create card", "error", err.Error())
-		// 卡片创建失败不影响整体流程，但记录错误
-	} else {
-		// 卡片创建成功后，更新用户的卡片数量统计
-		if err := ctrl.b.Users().IncrementUserCardNum(c, userID); err != nil {
-			log.C(c).Errorw("Failed to increment user card num", "error", err.Error())
-			// 统计更新失败不影响主要流程，但记录错误
+		if err := ctrl.b.Cards().Create(c, cardRecord); err != nil {
+			log.C(c).Errorw("Failed to create card", "error", err.Error(), "card_index", i)
+			// 卡片创建失败不影响整体流程，但记录错误
+		} else {
+			// 卡片创建成功后，更新用户的卡片数量统计
+			if err := ctrl.b.Users().IncrementUserCardNum(c, userID); err != nil {
+				log.C(c).Errorw("Failed to increment user card num", "error", err.Error())
+				// 统计更新失败不影响主要流程，但记录错误
+			}
 		}
 	}
 

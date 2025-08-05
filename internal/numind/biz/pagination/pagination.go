@@ -148,28 +148,47 @@ func (p *PaginationEngine) calculateElementHeight(element Element) int {
 	return textHeight + style.MarginTop + style.MarginBottom
 }
 
+// calculateElementCharCount 计算元素字符数
+func (p *PaginationEngine) calculateElementCharCount(element Element) int {
+	switch v := element.Content.(type) {
+	case string:
+		return len([]rune(v)) // 使用rune来正确计算中文字符
+	case []string:
+		// 列表类型，计算所有项目的总字符数
+		totalChars := 0
+		for _, item := range v {
+			totalChars += len([]rune(item))
+		}
+		return totalChars
+	default:
+		// 其他类型，转换为字符串计算
+		text := fmt.Sprintf("%v", v)
+		return len([]rune(text))
+	}
+}
+
 // Paginate 执行分页
 func (p *PaginationEngine) Paginate(elements []Element) (*PaginatedContent, error) {
 	var cards []Card
 	var currentCardElements []Element
-	currentHeight := p.config.Card.Padding.Top
-	availableHeight := p.config.Card.Height - p.config.Card.Padding.Top - p.config.Card.Padding.Bottom
+	currentCharCount := 0
+	maxCharsPerCard := 50 // 每个卡片最多50个字符
 
 	for _, element := range elements {
-		elementHeight := p.calculateElementHeight(element)
+		elementCharCount := p.calculateElementCharCount(element)
 
 		// 检查是否需要新卡片
-		if currentHeight+elementHeight > availableHeight && len(currentCardElements) > 0 {
+		if currentCharCount+elementCharCount > maxCharsPerCard && len(currentCardElements) > 0 {
 			// 保存当前卡片
 			cards = append(cards, Card{Elements: currentCardElements})
 
 			// 重置当前卡片
 			currentCardElements = []Element{element}
-			currentHeight = p.config.Card.Padding.Top + elementHeight
+			currentCharCount = elementCharCount
 		} else {
 			// 添加到当前卡片
 			currentCardElements = append(currentCardElements, element)
-			currentHeight += elementHeight
+			currentCharCount += elementCharCount
 		}
 	}
 

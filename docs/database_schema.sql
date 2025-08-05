@@ -76,28 +76,17 @@ CREATE TABLE cards (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     user_id BIGINT UNSIGNED NOT NULL,
     book_id BIGINT UNSIGNED,
-    image_id BIGINT UNSIGNED NOT NULL,
-    title VARCHAR(255),
-    content TEXT,
-    ocr_text TEXT,
     processed_text TEXT,
-    card_type VARCHAR(50) DEFAULT 'text',
-    status VARCHAR(20) DEFAULT 'processing',
     sort_order INT DEFAULT 0,
     tags VARCHAR(255),
-    source VARCHAR(255),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     
     INDEX idx_user_id (user_id),
     INDEX idx_book_id (book_id),
-    INDEX idx_image_id (image_id),
-    INDEX idx_status (status),
-    INDEX idx_card_type (card_type),
     INDEX idx_sort_order (sort_order),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE SET NULL,
-    FOREIGN KEY (image_id) REFERENCES images(id) ON DELETE CASCADE
+    FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE SET NULL
 );
 
 -- AI处理任务表

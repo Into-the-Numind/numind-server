@@ -1,21 +1,20 @@
 #!/bin/bash
 
-# 测试卡册创建接口
-echo "测试卡册创建接口..."
+# 测试卡片创建功能
+echo "测试卡片创建功能..."
 
-# 设置测试参数
-TEXT="velit"
-TEMPLATE_ID="92"
+# 设置测试数据
+TEST_DATA='{
+  "text": "未来竞争力：独立思考者的进化之路\n\n你可以在联机游戏，看人家写的游戏通关攻略，但还是需要独立地玩这一关，达成你自己玩游戏的期待。就像跨国企业都在做的glocal（global-local）——全球本土化战略，有全球视野，但是保存当地特色。如果你有独立思考能力，联机思考会让思想质量变得更高、迭代更快。这个时代，每个人都需要学会如何成为一个联机的独立思考者。\n\n未来职业竞争力的关键要素\n\n在人工智能盛行、行业无边界的时代，未来最有竞争力的人，是能够用机器学习和处理信息，用大脑整合和创新思想，用系统思维思考问题的人。\n\n我今天做的事，机器能做吗？\n我今天做的事，会被外包吗？\n我今天做的事，明天会做得更好吗？",
+  "template_id": "1"
+}'
 
-# 发送POST请求到卡册创建接口
-curl -X POST "http://localhost:8080/v1/books" \
+# 发送请求到创建卡册接口
+echo "发送创建卡册请求..."
+curl -X POST http://localhost:9091/v1/book/create \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN_HERE" \
-  -d "{
-    \"text\": \"$TEXT\",
-    \"template_id\": \"$TEMPLATE_ID\"
-  }" \
-  -v
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -d "$TEST_DATA" \
+  | jq '.'
 
-echo ""
-echo "测试完成" 
+echo "测试完成！" 
