@@ -6,6 +6,7 @@ on:
       - main
       - develop
       - release
+      - product
       - '**'
   pull_request:
     branches:
@@ -13,8 +14,6 @@ on:
       - develop
       - release
       - product
-  tags:
-    - 'v*'
 
 env:
   REGISTRY: ghcr.io
@@ -372,11 +371,11 @@ jobs:
               exit 1
             fi
 
-  # 生产环境部署 - 只在 tag 触发时部署
+  # 生产环境部署 - 只在 product 分支触发
   deploy_product:
     needs: image_build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/product'
     environment: production
     steps:
       - name: Checkout code
