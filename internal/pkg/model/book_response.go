@@ -34,7 +34,8 @@ type CardResponse struct {
 	DeletedAt     *time.Time  `json:"deleted_at,omitempty"`
 	UserID        uint        `json:"user_id"`
 	BookID        uint        `json:"book_id"`
-	ProcessedText interface{} `json:"process_text"` // 解析后的分页数据，JSON字段名为process_text
+	ProcessedText interface{} `json:"process_text"`   // 解析后的分页数据，JSON字段名为process_text
+	RenderedImage string      `json:"rendered_image"` // 渲染后的图片URL
 	SortOrder     int         `json:"sort_order"`
 	Tags          string      `json:"tags"`
 }
@@ -72,14 +73,15 @@ func (br *BookResponse) AddCard(card *CardM) {
 	}
 
 	cardResp := CardResponse{
-		ID:        card.ID,
-		CreatedAt: card.CreatedAt,
-		UpdatedAt: card.UpdatedAt,
-		DeletedAt: deletedAt,
-		UserID:    card.UserID,
-		BookID:    card.BookID,
-		SortOrder: card.SortOrder,
-		Tags:      card.Tags,
+		ID:            card.ID,
+		CreatedAt:     card.CreatedAt,
+		UpdatedAt:     card.UpdatedAt,
+		DeletedAt:     deletedAt,
+		UserID:        card.UserID,
+		BookID:        card.BookID,
+		SortOrder:     card.SortOrder,
+		Tags:          card.Tags,
+		RenderedImage: card.RenderedImage, // 包含渲染后的图片URL
 	}
 
 	// 解析ProcessedText字段中的JSON数据
