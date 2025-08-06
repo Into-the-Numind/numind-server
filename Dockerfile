@@ -37,8 +37,11 @@ WORKDIR /app
 # 从构建阶段复制二进制文件
 COPY --from=builder /app/bin/numind /app/numind
 
-# 复制配置文件（如果有的话）
-COPY config_dev.yaml /app/config_dev.yaml
+# 定义构建参数，默认为dev环境
+ARG ENV=dev
+
+# 根据环境复制对应的配置文件
+COPY config_${ENV}.yaml /app/config_${ENV}.yaml
 
 # 设置正确的权限
 RUN chown -R numind:numind /app && \
