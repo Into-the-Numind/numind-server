@@ -43,8 +43,8 @@ func (ctrl *CardController) RenderCard(c *gin.Context) {
 		return
 	}
 
-	// 创建渲染器
-	renderer := cardRenderer.NewRenderer(pagination.GetDefaultConfig())
+	// 创建无头浏览器渲染器
+	renderer := cardRenderer.NewSimpleHeadlessRenderer(pagination.GetDefaultConfig())
 
 	// 渲染卡片
 	renderedCard, err := renderer.RenderCardToImage(card)
@@ -91,8 +91,8 @@ func (ctrl *CardController) RenderBookCards(c *gin.Context) {
 		return
 	}
 
-	// 创建渲染器
-	renderer := cardRenderer.NewRenderer(pagination.GetDefaultConfig())
+	// 创建无头浏览器渲染器
+	renderer := cardRenderer.NewSimpleHeadlessRenderer(pagination.GetDefaultConfig())
 
 	var renderedCards []*RenderCardResponse
 

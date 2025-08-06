@@ -248,8 +248,8 @@ func (ctrl *BookController) Create(c *gin.Context) {
 		// 统计更新失败不影响主要流程，但记录错误
 	}
 
-	// 创建卡片渲染器
-	renderer := card.NewRenderer(paginationBiz.GetConfig())
+	// 创建无头浏览器渲染器
+	renderer := card.NewSimpleHeadlessRenderer(paginationBiz.GetConfig())
 
 	// 为每个分页后的卡片创建单独的CardM记录
 	for i, card := range paginatedContent.Cards {
