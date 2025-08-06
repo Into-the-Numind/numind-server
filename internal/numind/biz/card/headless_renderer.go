@@ -70,24 +70,60 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
     <style>
         body {
             margin: 0;
-            padding: 40px;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei';
+            padding: 60px 50px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
             background: #ffffff;
             color: #333333;
             line-height: 1.6;
-            width: 720px;
-            height: 520px;
+            width: 1000px;
+            height: 1333px;
+            box-sizing: border-box;
+            overflow: hidden;
         }
         .title {
             font-size: 64px;
             font-weight: bold;
             color: #333333;
             margin-bottom: 30px;
+            text-align: justify;
+            line-height: 1.4;
+        }
+        .subtitle {
+            font-size: 48px;
+            font-weight: normal;
+            color: #666666;
+            margin-bottom: 25px;
+            text-align: justify;
+            line-height: 1.5;
         }
         .body {
             font-size: 36px;
             color: #333333;
-            margin-bottom: 20px;
+            margin-bottom: 30px;
+            text-align: justify;
+            line-height: 1.6;
+        }
+        .list {
+            font-size: 36px;
+            color: #333333;
+            margin-bottom: 8px;
+            text-align: justify;
+            line-height: 1.6;
+            padding-left: 20px;
+        }
+        .list-item {
+            margin-bottom: 8px;
+        }
+        .quote {
+            font-size: 36px;
+            color: #1E90FF;
+            margin-bottom: 30px;
+            text-align: justify;
+            line-height: 1.5;
+            padding: 20px;
+            background: linear-gradient(to right, #EAF2FF, #FAFCFF);
+            border-left: 4px solid #1E90FF;
+            font-style: italic;
         }
     </style>
 </head>
@@ -98,8 +134,24 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
 		switch element.Type {
 		case pagination.ElementTypeTitle:
 			html += fmt.Sprintf(`<div class="title">%s</div>`, content)
+		case pagination.ElementTypeSubtitle:
+			html += fmt.Sprintf(`<div class="subtitle">%s</div>`, content)
 		case pagination.ElementTypeBody:
 			html += fmt.Sprintf(`<div class="body">%s</div>`, content)
+		case pagination.ElementTypeList:
+			// 处理列表内容
+			if listItems, ok := element.Content.([]interface{}); ok {
+				html += `<div class="list">`
+				for _, item := range listItems {
+					itemText := fmt.Sprintf("%v", item)
+					html += fmt.Sprintf(`<div class="list-item">• %s</div>`, itemText)
+				}
+				html += `</div>`
+			} else {
+				html += fmt.Sprintf(`<div class="list">• %s</div>`, content)
+			}
+		case pagination.ElementTypeQuote:
+			html += fmt.Sprintf(`<div class="quote">%s</div>`, content)
 		default:
 			html += fmt.Sprintf(`<div class="body">%s</div>`, content)
 		}

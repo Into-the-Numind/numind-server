@@ -50,7 +50,6 @@ func installNumindRouters(g *gin.Engine) error {
 	uc := user.New(store.S)
 	b := biz.NewBiz(store.S)
 	ic := image.New(b)
-	cc := card.New(b)
 	bc := book.New(b)
 	catc := category.New(b)
 	tc := template.New(b)
@@ -75,19 +74,14 @@ func installNumindRouters(g *gin.Engine) error {
 	authGroup.PUT("/images/:id", ic.Update)
 	authGroup.DELETE("/images/:id", ic.Delete)
 
-	// 卡片相关
-	authGroup.POST("/cards", cc.Create)
-	authGroup.GET("/cards", cc.List)
-	authGroup.GET("/cards/:id", cc.Get)
-	authGroup.PUT("/cards/:id", cc.Update)
-	authGroup.DELETE("/cards/:id", cc.Delete)
+	// 卡片相关（注释掉，避免重复注册）
+	// authGroup.POST("/cards", cc.Create)
+	// authGroup.GET("/cards", cc.List)
+	// authGroup.GET("/cards/:id", cc.Get)
+	// authGroup.PUT("/cards/:id", cc.Update)
+	// authGroup.DELETE("/cards/:id", cc.Delete)
 
 	// 卡册相关
-	authGroup.POST("/books", bc.Create)                  // 创建卡册
-	authGroup.GET("/books", bc.List)                     // 获取卡册列表
-	authGroup.GET("/books/:id", bc.Get)                  // 获取卡册详情
-	authGroup.PUT("/books/:id", bc.Update)               // 更新卡册
-	authGroup.DELETE("/books/:id", bc.Delete)            // 删除卡册
 	authGroup.PUT("/books/:id/category", bc.SetCategory) // 设置卡册分类
 
 	// 分类相关
@@ -150,6 +144,35 @@ func installNumindRouters(g *gin.Engine) error {
 	authGroup.POST("/order/create", orderCtrl.Create)
 	authGroup.GET("/order/list", orderCtrl.ListByUser)
 	g.POST("/api/v1/order/wechat_notify", orderCtrl.WechatNotify)
+
+	// 书籍相关路由
+	books := v1Group.Group("/books")
+	{
+		books.POST("", book.New(b).Create)
+		books.GET("", book.New(b).List)
+		books.GET("/:id", book.New(b).Get)
+		books.PUT("/:id", book.New(b).Update)
+		books.DELETE("/:id", book.New(b).Delete)
+
+		// 新增HTML查看端点
+		books.GET("/:id/html", book.New(b).ViewBookHTML)
+		books.GET("/:id/image", book.New(b).ViewBookImage)
+	}
+
+	// 卡片相关路由
+	cards := v1Group.Group("/cards")
+	{
+		cards.POST("", card.New(b).Create)
+		cards.GET("", card.New(b).List)
+		cards.GET("/:id", card.New(b).Get)
+		cards.PUT("/:id", card.New(b).Update)
+		cards.DELETE("/:id", card.New(b).Delete)
+		cards.POST("/:id/render", card.New(b).RenderCard)
+		cards.POST("/book/:bookId/render", card.New(b).RenderBookCards)
+
+		// 新增HTML查看端点
+		// cards.GET("/:id/html", card.New(b).ViewCardHTML)
+	}
 
 	return nil
 }
