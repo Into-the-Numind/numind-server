@@ -131,13 +131,12 @@ services:
         condition: service_healthy
     networks:
       - numind-network
-    # 移除定时健康检查，避免频繁请求 /healthz
-    # healthcheck:
-    #   test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
-    #   interval: 0
-    #   timeout: 10s
-    #   retries: 1
-    #   start_period: 0s
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   # Nginx 反向代理
   nginx:
