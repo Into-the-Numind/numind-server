@@ -11,6 +11,7 @@ type CardM struct {
 	UserID        uint   `gorm:"index;not null" json:"user_id"`   // 创建用户ID
 	BookID        uint   `gorm:"index" json:"book_id"`            // 所属卡册ID
 	ProcessedText string `gorm:"type:text" json:"processed_text"` // AI处理后的文本
+	RenderedImage string `gorm:"size:255" json:"rendered_image"`  // 渲染后的图片URL
 	SortOrder     int    `gorm:"default:1" json:"sort_order"`     // 在卡册中的排序，从1开始
 	Tags          string `gorm:"size:255" json:"tags"`            // 标签，逗号分隔
 

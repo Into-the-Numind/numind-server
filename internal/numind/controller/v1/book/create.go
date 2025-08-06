@@ -10,6 +10,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/spf13/viper"
 
+	"numind-server/internal/numind/biz/card"
 	"numind-server/internal/numind/biz/pagination"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
@@ -247,6 +248,9 @@ func (ctrl *BookController) Create(c *gin.Context) {
 		// 统计更新失败不影响主要流程，但记录错误
 	}
 
+	// 创建卡片渲染器
+	renderer := card.NewRenderer(paginationBiz.GetConfig())
+
 	// 为每个分页后的卡片创建单独的CardM记录
 	for i, card := range paginatedContent.Cards {
 		// 将当前卡片的数据转换为JSON格式
@@ -273,15 +277,29 @@ func (ctrl *BookController) Create(c *gin.Context) {
 			SortOrder:     i + 1,               // 使用索引+1作为排序顺序，从1开始
 		}
 
+		// 先创建卡片记录
 		if err := ctrl.b.Cards().Create(c, cardRecord); err != nil {
 			log.C(c).Errorw("Failed to create card", "error", err.Error(), "card_index", i)
-			// 卡片创建失败不影响整体流程，但记录错误
+			continue // 跳过这个卡片，继续处理下一个
+		}
+
+		// 渲染卡片为图片
+		renderedCard, err := renderer.RenderCardToImage(cardRecord)
+		if err != nil {
+			log.C(c).Errorw("Failed to render card to image", "error", err.Error(), "card_index", i)
+			// 渲染失败不影响主要流程，但记录错误
 		} else {
-			// 卡片创建成功后，更新用户的卡片数量统计
-			if err := ctrl.b.Users().IncrementUserCardNum(c, userID); err != nil {
-				log.C(c).Errorw("Failed to increment user card num", "error", err.Error())
-				// 统计更新失败不影响主要流程，但记录错误
+			// 更新卡片记录，保存渲染后的图片URL
+			cardRecord.RenderedImage = renderedCard.ImageURL
+			if err := ctrl.b.Cards().Update(c, cardRecord); err != nil {
+				log.C(c).Errorw("Failed to update card with rendered image", "error", err.Error(), "card_index", i)
 			}
+		}
+
+		// 更新用户的卡片数量统计
+		if err := ctrl.b.Users().IncrementUserCardNum(c, userID); err != nil {
+			log.C(c).Errorw("Failed to increment user card num", "error", err.Error())
+			// 统计更新失败不影响主要流程，但记录错误
 		}
 	}
 
