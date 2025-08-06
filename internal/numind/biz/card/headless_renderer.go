@@ -176,14 +176,21 @@ func (r *SimpleHeadlessRenderer) renderWithHeadlessBrowser(htmlContent string) (
 		return nil, fmt.Errorf("failed to get absolute path: %v", err)
 	}
 
-	// 创建Chrome选项
+	// 创建Chrome选项 - 针对容器环境优化
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
 		chromedp.Flag("disable-gpu", true),
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.Flag("disable-web-security", true),
+		chromedp.Flag("disable-features", "VizDisplayCompositor"),
 		chromedp.Flag("window-size", fmt.Sprintf("%d,%d", r.config.Card.Width, r.config.Card.Height)),
+		chromedp.Flag("disable-extensions", true),
+		chromedp.Flag("disable-plugins", true),
+		chromedp.Flag("disable-images", false),     // 保持图片渲染
+		chromedp.Flag("disable-javascript", false), // 保持JS支持
+		chromedp.Flag("font-render-hinting", "none"),
+		chromedp.Flag("disable-font-subpixel-positioning", true),
 	)
 
 	// 创建Chrome实例

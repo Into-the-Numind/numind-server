@@ -24,8 +24,19 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 # 运行阶段
 FROM alpine:3.19
 
-# 安装必要的运行时依赖
-RUN apk add --no-cache ca-certificates tzdata curl
+# 安装必要的运行时依赖，包括Chrome for headless rendering
+RUN apk add --no-cache \
+    ca-certificates \
+    tzdata \
+    curl \
+    chromium \
+    nss \
+    freetype \
+    freetype-dev \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont \
+    && rm -rf /var/cache/apk/*
 
 # 创建非 root 用户
 RUN addgroup -g 1001 -S numind && \
@@ -60,6 +71,10 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 # 设置环境变量
 ENV GIN_MODE=release
 ENV PORT=9091
+# Chrome headless环境变量
+ENV CHROME_BIN=/usr/bin/chromium-browser
+ENV CHROME_PATH=/usr/bin/chromium-browser
+ENV CHROMIUM_FLAGS="--headless --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-web-security --disable-features=VizDisplayCompositor"
 
 # 启动应用
 ENTRYPOINT ["/app/numind"]
