@@ -11,6 +11,7 @@ import (
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 
 	"github.com/gin-gonic/gin"
@@ -36,18 +37,14 @@ var upgrader = websocket.Upgrader{
 
 // WebSocket 处理WebSocket连接
 func (ctrl *ChatController) WebSocket(c *gin.Context) {
-	// 从JWT token中获取用户ID
-	userID, exists := c.Get("user_id")
-	if !exists {
+	// 从认证中间件中获取用户信息
+	currentUser := middleware.GetCurrentUser(c)
+	if currentUser == nil {
 		core.WriteResponse(c, errno.ErrUnauthorized, nil)
 		return
 	}
 
-	userIDUint, ok := userID.(uint)
-	if !ok {
-		core.WriteResponse(c, errno.ErrUnauthorized, nil)
-		return
-	}
+	userID := currentUser.ID
 
 	// 升级HTTP连接为WebSocket
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
@@ -57,7 +54,7 @@ func (ctrl *ChatController) WebSocket(c *gin.Context) {
 	}
 	defer conn.Close()
 
-	log.Infow("WebSocket connection established", "user_id", userIDUint)
+	log.Infow("WebSocket connection established", "user_id", userID)
 
 	// 处理WebSocket消息
 	for {
@@ -79,7 +76,7 @@ func (ctrl *ChatController) WebSocket(c *gin.Context) {
 		wsMsg.Timestamp = time.Now()
 
 		// 处理消息
-		response, err := ctrl.b.Chats().ProcessWebSocketMessage(c.Request.Context(), userIDUint, &wsMsg)
+		response, err := ctrl.b.Chats().ProcessWebSocketMessage(c.Request.Context(), userID, &wsMsg)
 		if err != nil {
 			log.Errorw("Failed to process WebSocket message", "error", err)
 			response = &model.WebSocketMessage{
@@ -102,13 +99,14 @@ func (ctrl *ChatController) WebSocket(c *gin.Context) {
 		}
 	}
 
-	log.Infow("WebSocket connection closed", "user_id", userIDUint)
+	log.Infow("WebSocket connection closed", "user_id", userID)
 }
 
 // CreateSession 创建新的对话会话
 func (ctrl *ChatController) CreateSession(c *gin.Context) {
-	userID, exists := c.Get("user_id")
-	if !exists {
+	// 从认证中间件中获取用户信息
+	currentUser := middleware.GetCurrentUser(c)
+	if currentUser == nil {
 		core.WriteResponse(c, errno.ErrUnauthorized, nil)
 		return
 	}
@@ -122,13 +120,7 @@ func (ctrl *ChatController) CreateSession(c *gin.Context) {
 		return
 	}
 
-	userIDUint, ok := userID.(uint)
-	if !ok {
-		core.WriteResponse(c, errno.ErrUnauthorized, nil)
-		return
-	}
-
-	session, err := ctrl.b.Chats().CreateSession(c.Request.Context(), userIDUint, req.Title)
+	session, err := ctrl.b.Chats().CreateSession(c.Request.Context(), currentUser.ID, req.Title)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInternalServer, nil)
 		return
@@ -139,8 +131,9 @@ func (ctrl *ChatController) CreateSession(c *gin.Context) {
 
 // GetSession 获取对话会话
 func (ctrl *ChatController) GetSession(c *gin.Context) {
-	userID, exists := c.Get("user_id")
-	if !exists {
+	// 从认证中间件中获取用户信息
+	currentUser := middleware.GetCurrentUser(c)
+	if currentUser == nil {
 		core.WriteResponse(c, errno.ErrUnauthorized, nil)
 		return
 	}
@@ -152,13 +145,7 @@ func (ctrl *ChatController) GetSession(c *gin.Context) {
 		return
 	}
 
-	userIDUint, ok := userID.(uint)
-	if !ok {
-		core.WriteResponse(c, errno.ErrUnauthorized, nil)
-		return
-	}
-
-	session, err := ctrl.b.Chats().GetSession(c.Request.Context(), uint(sessionID), userIDUint)
+	session, err := ctrl.b.Chats().GetSession(c.Request.Context(), uint(sessionID), currentUser.ID)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInternalServer, nil)
 		return
@@ -169,8 +156,9 @@ func (ctrl *ChatController) GetSession(c *gin.Context) {
 
 // ListSessions 获取用户的对话会话列表
 func (ctrl *ChatController) ListSessions(c *gin.Context) {
-	userID, exists := c.Get("user_id")
-	if !exists {
+	// 从认证中间件中获取用户信息
+	currentUser := middleware.GetCurrentUser(c)
+	if currentUser == nil {
 		core.WriteResponse(c, errno.ErrUnauthorized, nil)
 		return
 	}
@@ -178,13 +166,7 @@ func (ctrl *ChatController) ListSessions(c *gin.Context) {
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
 
-	userIDUint, ok := userID.(uint)
-	if !ok {
-		core.WriteResponse(c, errno.ErrUnauthorized, nil)
-		return
-	}
-
-	sessions, total, err := ctrl.b.Chats().ListSessions(c.Request.Context(), userIDUint, offset, limit)
+	sessions, total, err := ctrl.b.Chats().ListSessions(c.Request.Context(), currentUser.ID, offset, limit)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInternalServer, nil)
 		return
@@ -198,8 +180,9 @@ func (ctrl *ChatController) ListSessions(c *gin.Context) {
 
 // UpdateSession 更新对话会话
 func (ctrl *ChatController) UpdateSession(c *gin.Context) {
-	userID, exists := c.Get("user_id")
-	if !exists {
+	// 从认证中间件中获取用户信息
+	currentUser := middleware.GetCurrentUser(c)
+	if currentUser == nil {
 		core.WriteResponse(c, errno.ErrUnauthorized, nil)
 		return
 	}
@@ -220,13 +203,7 @@ func (ctrl *ChatController) UpdateSession(c *gin.Context) {
 		return
 	}
 
-	userIDUint, ok := userID.(uint)
-	if !ok {
-		core.WriteResponse(c, errno.ErrUnauthorized, nil)
-		return
-	}
-
-	err = ctrl.b.Chats().UpdateSession(c.Request.Context(), uint(sessionID), userIDUint, req.Title)
+	err = ctrl.b.Chats().UpdateSession(c.Request.Context(), uint(sessionID), currentUser.ID, req.Title)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInternalServer, nil)
 		return
@@ -237,8 +214,9 @@ func (ctrl *ChatController) UpdateSession(c *gin.Context) {
 
 // DeleteSession 删除对话会话
 func (ctrl *ChatController) DeleteSession(c *gin.Context) {
-	userID, exists := c.Get("user_id")
-	if !exists {
+	// 从认证中间件中获取用户信息
+	currentUser := middleware.GetCurrentUser(c)
+	if currentUser == nil {
 		core.WriteResponse(c, errno.ErrUnauthorized, nil)
 		return
 	}
@@ -250,13 +228,7 @@ func (ctrl *ChatController) DeleteSession(c *gin.Context) {
 		return
 	}
 
-	userIDUint, ok := userID.(uint)
-	if !ok {
-		core.WriteResponse(c, errno.ErrUnauthorized, nil)
-		return
-	}
-
-	err = ctrl.b.Chats().DeleteSession(c.Request.Context(), uint(sessionID), userIDUint)
+	err = ctrl.b.Chats().DeleteSession(c.Request.Context(), uint(sessionID), currentUser.ID)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInternalServer, nil)
 		return
@@ -267,8 +239,9 @@ func (ctrl *ChatController) DeleteSession(c *gin.Context) {
 
 // ListMessages 获取会话的消息列表
 func (ctrl *ChatController) ListMessages(c *gin.Context) {
-	userID, exists := c.Get("user_id")
-	if !exists {
+	// 从认证中间件中获取用户信息
+	currentUser := middleware.GetCurrentUser(c)
+	if currentUser == nil {
 		core.WriteResponse(c, errno.ErrUnauthorized, nil)
 		return
 	}
@@ -283,13 +256,7 @@ func (ctrl *ChatController) ListMessages(c *gin.Context) {
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 
-	userIDUint, ok := userID.(uint)
-	if !ok {
-		core.WriteResponse(c, errno.ErrUnauthorized, nil)
-		return
-	}
-
-	messages, total, err := ctrl.b.Chats().ListMessages(c.Request.Context(), uint(sessionID), userIDUint, offset, limit)
+	messages, total, err := ctrl.b.Chats().ListMessages(c.Request.Context(), uint(sessionID), currentUser.ID, offset, limit)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInternalServer, nil)
 		return
@@ -303,8 +270,9 @@ func (ctrl *ChatController) ListMessages(c *gin.Context) {
 
 // GetSessionWithMessages 获取会话及其消息
 func (ctrl *ChatController) GetSessionWithMessages(c *gin.Context) {
-	userID, exists := c.Get("user_id")
-	if !exists {
+	// 从认证中间件中获取用户信息
+	currentUser := middleware.GetCurrentUser(c)
+	if currentUser == nil {
 		core.WriteResponse(c, errno.ErrUnauthorized, nil)
 		return
 	}
@@ -316,13 +284,7 @@ func (ctrl *ChatController) GetSessionWithMessages(c *gin.Context) {
 		return
 	}
 
-	userIDUint, ok := userID.(uint)
-	if !ok {
-		core.WriteResponse(c, errno.ErrUnauthorized, nil)
-		return
-	}
-
-	session, err := ctrl.b.Chats().GetSessionWithMessages(c.Request.Context(), uint(sessionID), userIDUint)
+	session, err := ctrl.b.Chats().GetSessionWithMessages(c.Request.Context(), uint(sessionID), currentUser.ID)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInternalServer, nil)
 		return
