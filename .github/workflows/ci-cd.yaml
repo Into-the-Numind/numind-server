@@ -16,8 +16,10 @@ on:
       - product
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: into-the-numind/numind-server
+  GHCR_REGISTRY: ghcr.io
+  LOCAL_REGISTRY: 49.233.219.254:5000
+  GHCR_IMAGE_NAME: into-the-numind/numind-server
+  LOCAL_IMAGE_NAME: numind-server
   GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
   DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
   SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -118,11 +120,14 @@ jobs:
       - name: Login to GHCR
         run: echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Extract metadata
-        id: meta
+      - name: Login to Local Registry
+        run: echo ${{ secrets.GHCR_TOKEN }} | docker login 49.233.219.254:5000 -u ${{ github.actor }} --password-stdin
+
+      - name: Extract metadata for GHCR
+        id: meta-ghcr
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -131,14 +136,41 @@ jobs:
             type=sha,prefix={{branch}}-
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push Docker image
+      - name: Extract metadata for Local Registry
+        id: meta-local
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.LOCAL_REGISTRY }}/${{ env.LOCAL_IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image to GHCR
         uses: docker/build-push-action@v5
         with:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta-ghcr.outputs.tags }}
+          labels: ${{ steps.meta-ghcr.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+            ENV=${{ github.ref_name == 'develop' && 'dev' || github.ref_name == 'release' && 'qa' || github.ref_name == 'product' && 'prod' || 'dev' }}
+
+      - name: Build and push Docker image to Local Registry
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta-local.outputs.tags }}
+          labels: ${{ steps.meta-local.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
@@ -168,11 +200,11 @@ jobs:
             export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
             export GITHUB_ACTOR="${{ github.actor }}"
             
-            # 登录到 GHCR
-            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            # 登录到本地Registry
+            echo "$GHCR_TOKEN" | docker login 49.233.219.254:5000 -u "$GITHUB_ACTOR" --password-stdin
             
             # 拉取最新镜像
-            docker pull ghcr.io/into-the-numind/numind-server:develop
+            docker pull 49.233.219.254:5000/numind-server:develop
             
             # 检查并停止运行中的容器
             if docker ps -q -f name=numind-server-dev | grep -q .; then
@@ -201,7 +233,7 @@ jobs:
               -v /opt/numind/dev:/opt/numind \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
-              ghcr.io/into-the-numind/numind-server:develop \
+              49.233.219.254:5000/numind-server:develop \
               -c /app/config_dev.yaml
             
             # 等待容器启动
@@ -265,11 +297,11 @@ jobs:
             export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
             export GITHUB_ACTOR="${{ github.actor }}"
             
-            # 登录到 GHCR
-            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            # 登录到本地Registry
+            echo "$GHCR_TOKEN" | docker login 49.233.219.254:5000 -u "$GITHUB_ACTOR" --password-stdin
             
             # 拉取最新镜像
-            docker pull ghcr.io/into-the-numind/numind-server:release
+            docker pull 49.233.219.254:5000/numind-server:release
             
             # 检查并停止运行中的容器
             if docker ps -q -f name=numind-server-qa | grep -q .; then
@@ -298,7 +330,7 @@ jobs:
               -v /opt/numind/qa:/opt/numind \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
-              ghcr.io/into-the-numind/numind-server:release \
+              49.233.219.254:5000/numind-server:release \
               -c /app/config_qa.yaml
             
             # 等待容器启动
@@ -362,11 +394,11 @@ jobs:
             export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
             export GITHUB_ACTOR="${{ github.actor }}"
             
-            # 登录到 GHCR
-            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+            # 登录到本地Registry
+            echo "$GHCR_TOKEN" | docker login 49.233.219.254:5000 -u "$GITHUB_ACTOR" --password-stdin
             
             # 拉取最新镜像
-            docker pull ghcr.io/into-the-numind/numind-server:product
+            docker pull 49.233.219.254:5000/numind-server:product
             
             # 检查并停止运行中的容器
             if docker ps -q -f name=numind-server-prod | grep -q .; then
@@ -395,7 +427,7 @@ jobs:
               -v /opt/numind/prod:/opt/numind \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
-              ghcr.io/into-the-numind/numind-server:product \
+              49.233.219.254:5000/numind-server:product \
               -c /app/config_prod.yaml
             
             # 等待容器启动
