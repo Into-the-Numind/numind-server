@@ -3,6 +3,10 @@ package book
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -16,6 +20,7 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/util"
 )
 
 // CreateBookRequest 创建卡册的请求结构
@@ -97,7 +102,48 @@ func extractJSONFromResponse(response string) string {
 	return response
 }
 
-// Create 创建一本卡册
+// downloadAndSaveImage 下载图片并保存到本地
+func downloadAndSaveImage(imageURL string, bookID uint) (string, error) {
+	// 获取本地保存路径
+	localPath := util.GetBookImagePath(bookID)
+
+	// 确保目录存在
+	if err := os.MkdirAll(localPath, 0755); err != nil {
+		return "", fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	// 生成文件名
+	filename := fmt.Sprintf("book_%d_%d.jpg", bookID, time.Now().Unix())
+	localFilePath := filepath.Join(localPath, filename)
+
+	// 下载图片
+	resp, err := http.Get(imageURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to download image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download image, status: %d", resp.StatusCode)
+	}
+
+	// 创建本地文件
+	file, err := os.Create(localFilePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create local file: %w", err)
+	}
+	defer file.Close()
+
+	// 复制内容到本地文件
+	_, err = io.Copy(file, resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to save image: %w", err)
+	}
+
+	// 返回本地文件路径
+	return localFilePath, nil
+}
+
 func (ctrl *BookController) Create(c *gin.Context) {
 	log.C(c).Infow("Create book function called")
 
@@ -144,16 +190,6 @@ func (ctrl *BookController) Create(c *gin.Context) {
 		return
 	}
 
-	// 使用解析出的image_prompt调用万相生成图片
-	var imageUrl string
-	if qianwenResponse.ImagePrompt != "" {
-		imageUrl, err = ctrl.b.Ali().WanxiangImageAsync(qianwenResponse.ImagePrompt, "", "1024*1024")
-		if err != nil {
-			log.C(c).Errorw("WanxiangImageAsync failed", "error", err.Error())
-			// 图片生成失败不影响整体流程
-		}
-	}
-
 	// 使用分页引擎处理文本
 	paginationBiz := pagination.NewPaginationBiz()
 
@@ -171,6 +207,46 @@ func (ctrl *BookController) Create(c *gin.Context) {
 	// 如果没有找到title，使用默认标题
 	if bookTitle == "" {
 		bookTitle = fmt.Sprintf("AI生成卡册 - %s", time.Now().Format("2006-01-02 15:04:05"))
+	}
+
+	// 使用解析出的image_prompt调用万相生成图片
+	var imageUrl string
+	var book *model.BookM
+
+	if qianwenResponse.ImagePrompt != "" {
+		remoteImageUrl, err := ctrl.b.Ali().WanxiangImageAsync(qianwenResponse.ImagePrompt, "", "1024*1024")
+		if err != nil {
+			log.C(c).Errorw("WanxiangImageAsync failed", "error", err.Error())
+			// 图片生成失败不影响整体流程
+		} else {
+			// 先创建book记录以获取ID
+			now := time.Now()
+			book = &model.BookM{
+				UserID:     userID,
+				Title:      bookTitle, // 使用从千问返回的title
+				TemplateID: req.TemplateID,
+				ViewTime:   &now,
+			}
+
+			if err := ctrl.b.Books().Create(c, book); err != nil {
+				log.C(c).Errorw("Failed to create book", "error", err.Error())
+				core.WriteResponse(c, err, nil)
+				return
+			}
+
+			// 下载并保存图片到本地
+			localImagePath, err := downloadAndSaveImage(remoteImageUrl, book.ID)
+			if err != nil {
+				log.C(c).Errorw("Failed to download and save image", "error", err.Error())
+				// 图片保存失败不影响整体流程，但记录错误
+			} else {
+				// 更新book记录的ImageUrl为本地路径
+				book.ImageUrl = localImagePath
+				if err := ctrl.b.Books().Update(c, book); err != nil {
+					log.C(c).Errorw("Failed to update book with local image path", "error", err.Error())
+				}
+			}
+		}
 	}
 
 	// 将结构化文本转换为分页元素，排除title类型
@@ -226,20 +302,22 @@ func (ctrl *BookController) Create(c *gin.Context) {
 		return
 	}
 
-	// 创建卡册，关联template_id
-	now := time.Now()
-	book := &model.BookM{
-		UserID:     userID,
-		Title:      bookTitle, // 使用从千问返回的title
-		TemplateID: req.TemplateID,
-		ViewTime:   &now,
-		ImageUrl:   imageUrl, // 保存生成的图片URL
-	}
+	// 如果没有图片生成，创建book记录
+	if book == nil {
+		now := time.Now()
+		book = &model.BookM{
+			UserID:     userID,
+			Title:      bookTitle, // 使用从千问返回的title
+			TemplateID: req.TemplateID,
+			ViewTime:   &now,
+			ImageUrl:   imageUrl, // 保存生成的图片URL
+		}
 
-	if err := ctrl.b.Books().Create(c, book); err != nil {
-		log.C(c).Errorw("Failed to create book", "error", err.Error())
-		core.WriteResponse(c, err, nil)
-		return
+		if err := ctrl.b.Books().Create(c, book); err != nil {
+			log.C(c).Errorw("Failed to create book", "error", err.Error())
+			core.WriteResponse(c, err, nil)
+			return
+		}
 	}
 
 	// 更新用户的书籍数量统计
@@ -250,6 +328,39 @@ func (ctrl *BookController) Create(c *gin.Context) {
 
 	// 创建无头浏览器渲染器
 	renderer := card.NewSimpleHeadlessRenderer(paginationBiz.GetConfig())
+	coverRenderer := card.NewCoverRenderer(paginationBiz.GetConfig())
+
+	// 首先创建封面卡片 (sort_order = 0)
+	if book.ImageUrl != "" {
+		// 创建封面卡片记录
+		coverCardRecord := &model.CardM{
+			UserID:    userID,
+			BookID:    book.ID,
+			SortOrder: 0, // 封面卡片排序为0
+		}
+
+		// 先创建封面卡片记录
+		if err := ctrl.b.Cards().Create(c, coverCardRecord); err != nil {
+			log.C(c).Errorw("Failed to create cover card", "error", err.Error())
+		} else {
+			// 渲染封面卡片为图片
+			renderedCoverCard, err := coverRenderer.RenderCoverCardFromBook(coverCardRecord, bookTitle, book.ImageUrl)
+			if err != nil {
+				log.C(c).Errorw("Failed to render cover card to image", "error", err.Error())
+			} else {
+				// 更新封面卡片记录，保存渲染后的图片URL
+				coverCardRecord.RenderedImage = renderedCoverCard.ImageURL
+				if err := ctrl.b.Cards().Update(c, coverCardRecord); err != nil {
+					log.C(c).Errorw("Failed to update cover card with rendered image", "error", err.Error())
+				}
+			}
+
+			// 更新用户的卡片数量统计
+			if err := ctrl.b.Users().IncrementUserCardNum(c, userID); err != nil {
+				log.C(c).Errorw("Failed to increment user card num for cover card", "error", err.Error())
+			}
+		}
+	}
 
 	// 为每个分页后的卡片创建单独的CardM记录
 	for i, card := range paginatedContent.Cards {

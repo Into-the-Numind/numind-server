@@ -145,7 +145,7 @@ func installNumindRouters(g *gin.Engine) error {
 	authGroup.GET("/order/list", orderCtrl.ListByUser)
 	g.POST("/api/v1/order/wechat_notify", orderCtrl.WechatNotify)
 
-	// 书籍相关路由
+	// 卡册相关路由
 	books := v1Group.Group("/books")
 	{
 		books.POST("", book.New(b).Create)
