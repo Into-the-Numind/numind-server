@@ -328,6 +328,39 @@ func (ctrl *BookController) Create(c *gin.Context) {
 
 	// 创建无头浏览器渲染器
 	renderer := card.NewSimpleHeadlessRenderer(paginationBiz.GetConfig())
+	coverRenderer := card.NewCoverRenderer(paginationBiz.GetConfig())
+
+	// 首先创建封面卡片 (sort_order = 0)
+	if book.ImageUrl != "" {
+		// 创建封面卡片记录
+		coverCardRecord := &model.CardM{
+			UserID:    userID,
+			BookID:    book.ID,
+			SortOrder: 0, // 封面卡片排序为0
+		}
+
+		// 先创建封面卡片记录
+		if err := ctrl.b.Cards().Create(c, coverCardRecord); err != nil {
+			log.C(c).Errorw("Failed to create cover card", "error", err.Error())
+		} else {
+			// 渲染封面卡片为图片
+			renderedCoverCard, err := coverRenderer.RenderCoverCardFromBook(coverCardRecord, bookTitle, book.ImageUrl)
+			if err != nil {
+				log.C(c).Errorw("Failed to render cover card to image", "error", err.Error())
+			} else {
+				// 更新封面卡片记录，保存渲染后的图片URL
+				coverCardRecord.RenderedImage = renderedCoverCard.ImageURL
+				if err := ctrl.b.Cards().Update(c, coverCardRecord); err != nil {
+					log.C(c).Errorw("Failed to update cover card with rendered image", "error", err.Error())
+				}
+			}
+
+			// 更新用户的卡片数量统计
+			if err := ctrl.b.Users().IncrementUserCardNum(c, userID); err != nil {
+				log.C(c).Errorw("Failed to increment user card num for cover card", "error", err.Error())
+			}
+		}
+	}
 
 	// 为每个分页后的卡片创建单独的CardM记录
 	for i, card := range paginatedContent.Cards {
