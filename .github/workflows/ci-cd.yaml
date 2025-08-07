@@ -16,10 +16,9 @@ on:
       - product
 
 env:
-  REGISTRY: 49.233.219.254:5000
-  IMAGE_NAME: numind-server
-  GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-  DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+  DOCKERHUB_USERNAME: neozhang96
+  DOCKERHUB_PASSWORD: Docker1234
+  IMAGE_NAME: neozhang96/numind-server
   SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
   DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
   DEV_HOST: ${{ secrets.DEV_HOST }}
@@ -119,39 +118,22 @@ jobs:
             image=moby/buildkit:latest
           buildkitd-flags: --allow-insecure-entitlement security.insecure --registry.insecure 49.233.219.254:5000
 
-      - name: Configure Docker and Login
+      - name: Login to Docker Hub
         run: |
-          # 配置Docker允许不安全的HTTP连接
-          echo '{"insecure-registries": ["49.233.219.254:5000"]}' | sudo tee /etc/docker/daemon.json
-          # 重新加载Docker守护进程配置并重启
-          sudo systemctl daemon-reload
-          sudo systemctl restart docker
-          # 等待Docker重启
-          sleep 15
-          # 验证insecure-registries配置是否生效
-          echo "验证Docker insecure-registries配置..."
-          docker info | grep "Insecure Registries" || echo "警告: insecure-registries配置可能未生效！"
-          # 测试Registry连接
-          echo "测试Registry连接..."
-          curl -f http://49.233.219.254:5000/v2/ || echo "Registry连接测试失败，继续执行..."
-          # 登录到本地Registry（HTTP）
-          echo ${{ secrets.GHCR_TOKEN }} | docker login 49.233.219.254:5000 -u ${{ github.actor }} --password-stdin
-          # 强制配置Buildx使用HTTP
-          echo "配置Buildx使用HTTP..."
-          docker buildx create --use --name insecure-builder --driver docker-container --driver-opt network=host
-          docker buildx inspect --bootstrap
+          # 登录到Docker Hub
+          echo ${{ env.DOCKERHUB_PASSWORD }} | docker login -u ${{ env.DOCKERHUB_USERNAME }} --password-stdin
 
 
 
       - name: Build and push Docker image
         run: |
           # 构建镜像
-          docker build -t 49.233.219.254:5000/numind-server:${{ github.ref_name }} .
+          docker build -t ${{ env.IMAGE_NAME }}:${{ github.ref_name }} .
           # 推送镜像
-          docker push 49.233.219.254:5000/numind-server:${{ github.ref_name }}
+          docker push ${{ env.IMAGE_NAME }}:${{ github.ref_name }}
           # 推送latest标签
-          docker tag 49.233.219.254:5000/numind-server:${{ github.ref_name }} 49.233.219.254:5000/numind-server:latest
-          docker push 49.233.219.254:5000/numind-server:latest
+          docker tag ${{ env.IMAGE_NAME }}:${{ github.ref_name }} ${{ env.IMAGE_NAME }}:latest
+          docker push ${{ env.IMAGE_NAME }}:latest
 
   # 开发环境部署 - 只在 develop 分支触发
   deploy_dev:
@@ -173,23 +155,13 @@ jobs:
           port: 22
           script: |
             # 设置环境变量
-            export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
             export GITHUB_ACTOR="${{ github.actor }}"
             
-            # 配置Docker允许不安全的HTTP连接
-            echo '{"insecure-registries": ["49.233.219.254:5000"]}' | sudo tee /etc/docker/daemon.json
-            # 重新加载Docker守护进程配置并重启
-            sudo systemctl daemon-reload
-            sudo systemctl restart docker
-            sleep 15
-            # 验证insecure-registries配置是否生效
-            echo "验证Docker insecure-registries配置..."
-            docker info | grep "Insecure Registries" || echo "警告: insecure-registries配置可能未生效！"
-            # 登录到本地Registry（HTTP）
-            echo "$GHCR_TOKEN" | docker login 49.233.219.254:5000 -u "$GITHUB_ACTOR" --password-stdin
+            # 登录到Docker Hub
+            echo "Docker1234" | docker login -u neozhang96 --password-stdin
             
             # 拉取最新镜像
-            docker pull 49.233.219.254:5000/numind-server:develop
+            docker pull neozhang96/numind-server:develop
             
             # 检查并停止运行中的容器
             if docker ps -q -f name=numind-server-dev | grep -q .; then
@@ -218,7 +190,7 @@ jobs:
               -v /opt/numind/dev:/opt/numind \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
-              49.233.219.254:5000/numind-server:develop \
+              neozhang96/numind-server:develop \
               -c /app/config_dev.yaml
             
             # 等待容器启动
@@ -279,23 +251,13 @@ jobs:
           password: Numind2025
           script: |
             # 设置环境变量
-            export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
             export GITHUB_ACTOR="${{ github.actor }}"
             
-            # 配置Docker允许不安全的HTTP连接
-            echo '{"insecure-registries": ["49.233.219.254:5000"]}' | sudo tee /etc/docker/daemon.json
-            # 重新加载Docker守护进程配置并重启
-            sudo systemctl daemon-reload
-            sudo systemctl restart docker
-            sleep 15
-            # 验证insecure-registries配置是否生效
-            echo "验证Docker insecure-registries配置..."
-            docker info | grep "Insecure Registries" || echo "警告: insecure-registries配置可能未生效！"
-            # 登录到本地Registry（HTTP）
-            echo "$GHCR_TOKEN" | docker login 49.233.219.254:5000 -u "$GITHUB_ACTOR" --password-stdin
+            # 登录到Docker Hub
+            echo "Docker1234" | docker login -u neozhang96 --password-stdin
             
             # 拉取最新镜像
-            docker pull 49.233.219.254:5000/numind-server:release
+            docker pull neozhang96/numind-server:release
             
             # 检查并停止运行中的容器
             if docker ps -q -f name=numind-server-qa | grep -q .; then
@@ -324,7 +286,7 @@ jobs:
               -v /opt/numind/qa:/opt/numind \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
-              49.233.219.254:5000/numind-server:release \
+              neozhang96/numind-server:release \
               -c /app/config_qa.yaml
             
             # 等待容器启动
@@ -385,23 +347,13 @@ jobs:
           password: Numind2025
           script: |
             # 设置环境变量
-            export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
             export GITHUB_ACTOR="${{ github.actor }}"
             
-            # 配置Docker允许不安全的HTTP连接
-            echo '{"insecure-registries": ["49.233.219.254:5000"]}' | sudo tee /etc/docker/daemon.json
-            # 重新加载Docker守护进程配置并重启
-            sudo systemctl daemon-reload
-            sudo systemctl restart docker
-            sleep 15
-            # 验证insecure-registries配置是否生效
-            echo "验证Docker insecure-registries配置..."
-            docker info | grep "Insecure Registries" || echo "警告: insecure-registries配置可能未生效！"
-            # 登录到本地Registry（HTTP）
-            echo "$GHCR_TOKEN" | docker login 49.233.219.254:5000 -u "$GITHUB_ACTOR" --password-stdin
+            # 登录到Docker Hub
+            echo "Docker1234" | docker login -u neozhang96 --password-stdin
             
             # 拉取最新镜像
-            docker pull 49.233.219.254:5000/numind-server:product
+            docker pull neozhang96/numind-server:product
             
             # 检查并停止运行中的容器
             if docker ps -q -f name=numind-server-prod | grep -q .; then
@@ -430,7 +382,7 @@ jobs:
               -v /opt/numind/prod:/opt/numind \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
-              49.233.219.254:5000/numind-server:product \
+              neozhang96/numind-server:product \
               -c /app/config_prod.yaml
             
             # 等待容器启动
