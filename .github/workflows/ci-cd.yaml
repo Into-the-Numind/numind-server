@@ -124,9 +124,14 @@ jobs:
         run: |
           # 配置Docker允许不安全的HTTP连接
           echo '{"insecure-registries": ["49.233.219.254:5000"]}' | sudo tee /etc/docker/daemon.json
-          sudo systemctl restart docker || true
+          # 重新加载Docker守护进程配置并重启
+          sudo systemctl daemon-reload
+          sudo systemctl restart docker
           # 等待Docker重启
-          sleep 10
+          sleep 15
+          # 验证insecure-registries配置是否生效
+          echo "验证Docker insecure-registries配置..."
+          docker info | grep "Insecure Registries" || echo "警告: insecure-registries配置可能未生效！"
           # 测试Registry连接
           echo "测试Registry连接..."
           curl -f http://49.233.219.254:5000/v2/ || echo "Registry连接测试失败，继续执行..."
@@ -210,6 +215,15 @@ jobs:
             export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
             export GITHUB_ACTOR="${{ github.actor }}"
             
+            # 配置Docker允许不安全的HTTP连接
+            echo '{"insecure-registries": ["49.233.219.254:5000"]}' | sudo tee /etc/docker/daemon.json
+            # 重新加载Docker守护进程配置并重启
+            sudo systemctl daemon-reload
+            sudo systemctl restart docker
+            sleep 15
+            # 验证insecure-registries配置是否生效
+            echo "验证Docker insecure-registries配置..."
+            docker info | grep "Insecure Registries" || echo "警告: insecure-registries配置可能未生效！"
             # 登录到本地Registry（HTTP）
             echo "$GHCR_TOKEN" | docker login 49.233.219.254:5000 -u "$GITHUB_ACTOR" --password-stdin
             
@@ -307,6 +321,15 @@ jobs:
             export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
             export GITHUB_ACTOR="${{ github.actor }}"
             
+            # 配置Docker允许不安全的HTTP连接
+            echo '{"insecure-registries": ["49.233.219.254:5000"]}' | sudo tee /etc/docker/daemon.json
+            # 重新加载Docker守护进程配置并重启
+            sudo systemctl daemon-reload
+            sudo systemctl restart docker
+            sleep 15
+            # 验证insecure-registries配置是否生效
+            echo "验证Docker insecure-registries配置..."
+            docker info | grep "Insecure Registries" || echo "警告: insecure-registries配置可能未生效！"
             # 登录到本地Registry（HTTP）
             echo "$GHCR_TOKEN" | docker login 49.233.219.254:5000 -u "$GITHUB_ACTOR" --password-stdin
             
@@ -404,6 +427,15 @@ jobs:
             export GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}"
             export GITHUB_ACTOR="${{ github.actor }}"
             
+            # 配置Docker允许不安全的HTTP连接
+            echo '{"insecure-registries": ["49.233.219.254:5000"]}' | sudo tee /etc/docker/daemon.json
+            # 重新加载Docker守护进程配置并重启
+            sudo systemctl daemon-reload
+            sudo systemctl restart docker
+            sleep 15
+            # 验证insecure-registries配置是否生效
+            echo "验证Docker insecure-registries配置..."
+            docker info | grep "Insecure Registries" || echo "警告: insecure-registries配置可能未生效！"
             # 登录到本地Registry（HTTP）
             echo "$GHCR_TOKEN" | docker login 49.233.219.254:5000 -u "$GITHUB_ACTOR" --password-stdin
             
