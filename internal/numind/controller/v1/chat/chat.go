@@ -2,8 +2,10 @@ package chat
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"numind-server/internal/numind/biz"
@@ -15,7 +17,9 @@ import (
 	"numind-server/internal/pkg/model"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
+	"github.com/spf13/viper"
 )
 
 // ChatController 是 chat 模块在 Controller 层的实现
@@ -35,16 +39,102 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// parseTokenFromString 从token字符串中解析用户ID
+func parseTokenFromString(tokenString string) (uint, error) {
+	log.Infow("Parsing token", "token_length", len(tokenString))
+
+	// 使用viper获取JWT密钥
+	jwtSecret := viper.GetString("jwt.secret")
+	if jwtSecret == "" {
+		log.Errorw("JWT secret not configured")
+		return 0, fmt.Errorf("jwt secret not configured")
+	}
+
+	log.Infow("JWT secret configured", "secret_length", len(jwtSecret))
+
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(jwtSecret), nil
+	})
+
+	if err != nil {
+		log.Errorw("Failed to parse JWT token", "error", err)
+		return 0, err
+	}
+
+	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+		log.Infow("Token claims", "claims", claims)
+		if userID, exists := claims["user_id"]; exists {
+			switch v := userID.(type) {
+			case float64:
+				log.Infow("User ID from token", "user_id", uint(v))
+				return uint(v), nil
+			case int:
+				log.Infow("User ID from token", "user_id", uint(v))
+				return uint(v), nil
+			case uint:
+				log.Infow("User ID from token", "user_id", v)
+				return v, nil
+			default:
+				log.Errorw("Invalid user_id type in token", "type", fmt.Sprintf("%T", userID))
+				return 0, fmt.Errorf("invalid user_id type in token")
+			}
+		}
+		log.Errorw("user_id not found in token claims")
+		return 0, fmt.Errorf("user_id not found in token")
+	}
+
+	log.Errorw("Invalid token or claims")
+	return 0, fmt.Errorf("invalid token")
+}
+
 // WebSocket 处理WebSocket连接
 func (ctrl *ChatController) WebSocket(c *gin.Context) {
-	// 从认证中间件中获取用户信息
-	currentUser := middleware.GetCurrentUser(c)
-	if currentUser == nil {
-		core.WriteResponse(c, errno.ErrUnauthorized, nil)
+	// 检查是否是WebSocket升级请求
+	if !websocket.IsWebSocketUpgrade(c.Request) {
+		// 如果是普通HTTP请求，返回错误
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("此端点仅支持WebSocket连接"), nil)
 		return
 	}
 
-	userID := currentUser.ID
+	var userID uint
+	var currentUser *model.User
+
+	// 首先尝试从认证中间件中获取用户信息（HTTP header方式）
+	currentUser = middleware.GetCurrentUser(c)
+	if currentUser != nil {
+		userID = currentUser.ID
+		log.Infow("WebSocket authentication via HTTP header", "user_id", userID)
+	} else {
+		// 如果HTTP header认证失败，尝试从URL参数中获取token
+		tokenParam := c.Query("token")
+		if tokenParam == "" {
+			// 尝试从Authorization header中获取token
+			authHeader := c.GetHeader("Authorization")
+			if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
+				tokenParam = strings.TrimPrefix(authHeader, "Bearer ")
+			}
+		}
+
+		if tokenParam != "" {
+			// 验证token并获取用户信息
+			var err error
+			userID, err = parseTokenFromString(tokenParam)
+			if err != nil {
+				log.Errorw("Failed to parse token from URL parameter", "error", err)
+				core.WriteResponse(c, errno.ErrUnauthorized, nil)
+				return
+			}
+
+			log.Infow("WebSocket authentication via URL parameter", "user_id", userID)
+		} else {
+			log.Errorw("No valid authentication found for WebSocket connection")
+			core.WriteResponse(c, errno.ErrUnauthorized, nil)
+			return
+		}
+	}
 
 	// 升级HTTP连接为WebSocket
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
