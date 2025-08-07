@@ -111,15 +111,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            image=moby/buildkit:latest
-          buildkitd-flags: --allow-insecure-entitlement security.insecure --registry.insecure 49.233.219.254:5000
+
 
       - name: Login to Docker Hub
         run: |
+          # 检查Docker环境
+          echo "检查Docker环境..."
+          docker --version
+          docker info
           # 登录到Docker Hub
           echo ${{ env.DOCKERHUB_PASSWORD }} | docker login -u ${{ env.DOCKERHUB_USERNAME }} --password-stdin
 
@@ -127,6 +126,9 @@ jobs:
 
       - name: Build and push Docker image
         run: |
+          # 显示构建信息
+          echo "构建镜像: ${{ env.IMAGE_NAME }}:${{ github.ref_name }}"
+          echo "当前分支: ${{ github.ref_name }}"
           # 构建镜像
           docker build -t ${{ env.IMAGE_NAME }}:${{ github.ref_name }} .
           # 推送镜像
