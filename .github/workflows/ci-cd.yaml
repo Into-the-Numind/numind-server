@@ -17,7 +17,7 @@ on:
 
 env:
   GHCR_REGISTRY: ghcr.io
-  LOCAL_REGISTRY: http://49.233.219.254:5000
+  LOCAL_REGISTRY: 49.233.219.254:5000
   GHCR_IMAGE_NAME: into-the-numind/numind-server
   LOCAL_IMAGE_NAME: numind-server
   GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
@@ -131,7 +131,7 @@ jobs:
           echo "测试Registry连接..."
           curl -f http://49.233.219.254:5000/v2/ || echo "Registry连接测试失败，继续执行..."
           # 登录到本地Registry（HTTP）
-          echo ${{ secrets.GHCR_TOKEN }} | docker login http://49.233.219.254:5000 -u ${{ github.actor }} --password-stdin
+          echo ${{ secrets.GHCR_TOKEN }} | docker login 49.233.219.254:5000 -u ${{ github.actor }} --password-stdin
 
       - name: Extract metadata for GHCR
         id: meta-ghcr
@@ -211,10 +211,10 @@ jobs:
             export GITHUB_ACTOR="${{ github.actor }}"
             
             # 登录到本地Registry（HTTP）
-            echo "$GHCR_TOKEN" | docker login http://49.233.219.254:5000 -u "$GITHUB_ACTOR" --password-stdin
+            echo "$GHCR_TOKEN" | docker login 49.233.219.254:5000 -u "$GITHUB_ACTOR" --password-stdin
             
             # 拉取最新镜像
-            docker pull http://49.233.219.254:5000/numind-server:develop
+            docker pull 49.233.219.254:5000/numind-server:develop
             
             # 检查并停止运行中的容器
             if docker ps -q -f name=numind-server-dev | grep -q .; then
@@ -243,7 +243,7 @@ jobs:
               -v /opt/numind/dev:/opt/numind \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
-              http://49.233.219.254:5000/numind-server:develop \
+              49.233.219.254:5000/numind-server:develop \
               -c /app/config_dev.yaml
             
             # 等待容器启动
@@ -308,10 +308,10 @@ jobs:
             export GITHUB_ACTOR="${{ github.actor }}"
             
             # 登录到本地Registry（HTTP）
-            echo "$GHCR_TOKEN" | docker login http://49.233.219.254:5000 -u "$GITHUB_ACTOR" --password-stdin
+            echo "$GHCR_TOKEN" | docker login 49.233.219.254:5000 -u "$GITHUB_ACTOR" --password-stdin
             
             # 拉取最新镜像
-            docker pull http://49.233.219.254:5000/numind-server:release
+            docker pull 49.233.219.254:5000/numind-server:release
             
             # 检查并停止运行中的容器
             if docker ps -q -f name=numind-server-qa | grep -q .; then
@@ -340,7 +340,7 @@ jobs:
               -v /opt/numind/qa:/opt/numind \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
-              http://49.233.219.254:5000/numind-server:release \
+              49.233.219.254:5000/numind-server:release \
               -c /app/config_qa.yaml
             
             # 等待容器启动
@@ -405,10 +405,10 @@ jobs:
             export GITHUB_ACTOR="${{ github.actor }}"
             
             # 登录到本地Registry（HTTP）
-            echo "$GHCR_TOKEN" | docker login http://49.233.219.254:5000 -u "$GITHUB_ACTOR" --password-stdin
+            echo "$GHCR_TOKEN" | docker login 49.233.219.254:5000 -u "$GITHUB_ACTOR" --password-stdin
             
             # 拉取最新镜像
-            docker pull http://49.233.219.254:5000/numind-server:product
+            docker pull 49.233.219.254:5000/numind-server:product
             
             # 检查并停止运行中的容器
             if docker ps -q -f name=numind-server-prod | grep -q .; then
@@ -437,7 +437,7 @@ jobs:
               -v /opt/numind/prod:/opt/numind \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
-              http://49.233.219.254:5000/numind-server:product \
+              49.233.219.254:5000/numind-server:product \
               -c /app/config_prod.yaml
             
             # 等待容器启动
