@@ -16,10 +16,8 @@ on:
       - product
 
 env:
-  GHCR_REGISTRY: ghcr.io
-  LOCAL_REGISTRY: 49.233.219.254:5000
-  GHCR_IMAGE_NAME: into-the-numind/numind-server
-  LOCAL_IMAGE_NAME: numind-server
+  REGISTRY: 49.233.219.254:5000
+  IMAGE_NAME: numind-server
   GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
   DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
   SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -117,9 +115,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to GHCR
-        run: echo ${{ secrets.GHCR_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-
       - name: Login to Local Registry
         run: |
           # 配置Docker允许不安全的HTTP连接
@@ -138,11 +133,11 @@ jobs:
           # 登录到本地Registry（HTTP）
           echo ${{ secrets.GHCR_TOKEN }} | docker login 49.233.219.254:5000 -u ${{ github.actor }} --password-stdin
 
-      - name: Extract metadata for GHCR
-        id: meta-ghcr
+      - name: Extract metadata
+        id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.GHCR_REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -151,41 +146,14 @@ jobs:
             type=sha,prefix={{branch}}-
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Extract metadata for Local Registry
-        id: meta-local
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.LOCAL_REGISTRY }}/${{ env.LOCAL_IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix={{branch}}-
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push Docker image to GHCR
+      - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta-ghcr.outputs.tags }}
-          labels: ${{ steps.meta-ghcr.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            BUILDKIT_INLINE_CACHE=1
-            ENV=${{ github.ref_name == 'develop' && 'dev' || github.ref_name == 'release' && 'qa' || github.ref_name == 'product' && 'prod' || 'dev' }}
-
-      - name: Build and push Docker image to Local Registry
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta-local.outputs.tags }}
-          labels: ${{ steps.meta-local.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
