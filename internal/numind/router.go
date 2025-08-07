@@ -62,6 +62,9 @@ func installNumindRouters(g *gin.Engine) error {
 	v1Group.POST("/wechat/login", uc.WechatLogin)
 	v1Group.POST("/admin/login", uc.Login)
 
+	// WebSocket连接不需要鉴权，因为它在内部处理认证
+	v1Group.GET("/chat/ws", chatc.WebSocket)
+
 	// 需要鉴权的接口
 	authGroup := v1Group.Group("")
 	authGroup.Use(importMw.AuthMiddleware(authService))
@@ -121,7 +124,6 @@ func installNumindRouters(g *gin.Engine) error {
 	authGroup.DELETE("/feedbacks/:id", fc.Delete) // 删除反馈
 
 	// 对话相关
-	authGroup.GET("/chat/ws", chatc.WebSocket)                                      // WebSocket连接
 	authGroup.POST("/chat/sessions", chatc.CreateSession)                           // 创建对话会话
 	authGroup.GET("/chat/sessions", chatc.ListSessions)                             // 获取会话列表
 	authGroup.GET("/chat/sessions/:id", chatc.GetSession)                           // 获取会话详情
