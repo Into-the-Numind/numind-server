@@ -73,11 +73,9 @@ RUN chown -R numind:numind /app && \
 USER numind
 
 # 暴露端口
-EXPOSE 9091
+EXPOSE 9091 9092
 
-# 健康检查
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:9091/healthz || exit 1
+
 
 # 设置环境变量
 ENV GIN_MODE=release
