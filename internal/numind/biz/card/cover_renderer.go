@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"numind-server/internal/numind/biz/pagination"
@@ -305,12 +306,31 @@ func (r *CoverRenderer) renderWithHeadlessBrowser(htmlContent string) ([]byte, e
 	if chromeBin == "" {
 		chromeBin = "/usr/bin/chromium-browser"
 	}
-	cmd := exec.Command(chromeBin,
+
+	// 读取额外的 flags（例如 Dockerfile 中的 CHROMIUM_FLAGS）
+	extraFlags := os.Getenv("CHROMIUM_FLAGS")
+	args := []string{}
+	if extraFlags != "" {
+		// 简单按空白分割
+		for _, f := range strings.Fields(extraFlags) {
+			args = append(args, f)
+		}
+	}
+
+	// 追加默认稳定 flags（容器无权限启用 sandbox，会导致失败）
+	args = append(args,
 		"--headless",
+		"--no-sandbox",
+		"--disable-dev-shm-usage",
 		"--disable-gpu",
-		"--screenshot="+outputFile,
+		"--disable-web-security",
+		"--disable-features=VizDisplayCompositor",
+		fmt.Sprintf("--screenshot=%s", outputFile),
 		fmt.Sprintf("--window-size=%d,%d", coverConfig.Card.Width, coverConfig.Card.Height),
-		debugFile)
+		debugFile,
+	)
+
+	cmd := exec.Command(chromeBin, args...)
 
 	// 捕获命令输出
 	var stderr bytes.Buffer
