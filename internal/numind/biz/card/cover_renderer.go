@@ -297,7 +297,15 @@ func (r *CoverRenderer) renderWithHeadlessBrowser(htmlContent string) ([]byte, e
 
 	// 使用Chrome命令行工具渲染，确保正确的尺寸
 	outputFile := fmt.Sprintf("temp_cover_%d.png", time.Now().Unix())
-	cmd := exec.Command("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+	// 优先从环境变量读取浏览器路径，其次回退到常见二进制（容器里通常是 chromium-browser）
+	chromeBin := os.Getenv("CHROME_BIN")
+	if chromeBin == "" {
+		chromeBin = os.Getenv("CHROME_PATH")
+	}
+	if chromeBin == "" {
+		chromeBin = "/usr/bin/chromium-browser"
+	}
+	cmd := exec.Command(chromeBin,
 		"--headless",
 		"--disable-gpu",
 		"--screenshot="+outputFile,
