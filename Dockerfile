@@ -36,6 +36,8 @@ RUN apk add --no-cache \
     harfbuzz \
     ca-certificates \
     ttf-freefont \
+    fontconfig \
+    font-noto-cjk \
     && rm -rf /var/cache/apk/*
 
 # 创建非 root 用户
@@ -75,6 +77,9 @@ ENV PORT=9091
 ENV CHROME_BIN=/usr/bin/chromium-browser
 ENV CHROME_PATH=/usr/bin/chromium-browser
 ENV CHROMIUM_FLAGS="--headless --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-web-security --disable-features=VizDisplayCompositor"
+
+# 预创建图片输出目录，避免运行期权限问题
+RUN mkdir -p /opt/numind/image/upload && chown -R numind:numind /opt/numind
 
 # 启动应用
 ENTRYPOINT ["/app/numind"]

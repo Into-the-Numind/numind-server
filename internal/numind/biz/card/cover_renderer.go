@@ -267,22 +267,29 @@ func (r *CoverRenderer) generateImageHTML(imageURL string) string {
 		return `<div class="image-placeholder">万相生成的图片</div>`
 	}
 
-	// 将相对路径转换为绝对路径
-	absolutePath := imageURL
-	if !filepath.IsAbs(imageURL) {
-		// 如果是相对路径，转换为绝对路径
-		if absPath, err := filepath.Abs(imageURL); err == nil {
-			absolutePath = "file://" + absPath
-		} else {
-			// 如果转换失败，使用相对路径
-			absolutePath = imageURL
-		}
+	// 根据 URL 类型决定如何拼接：
+	// 1) http/https/data URL：直接使用
+	// 2) 绝对文件路径：加上 file:// 前缀
+	// 3) 相对文件路径：转为绝对路径再加 file://
+	absoluteSrc := imageURL
+	lower := strings.ToLower(imageURL)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "data:") {
+		// 远程或 data URL，保持原样
+		absoluteSrc = imageURL
+	} else if filepath.IsAbs(imageURL) {
+		// 本地绝对路径，添加 file:// 前缀
+		absoluteSrc = "file://" + imageURL
 	} else {
-		// 如果是绝对路径，添加file://前缀
-		absolutePath = "file://" + imageURL
+		// 相对路径，转换为绝对路径
+		if absPath, err := filepath.Abs(imageURL); err == nil {
+			absoluteSrc = "file://" + absPath
+		} else {
+			// 回退到原值
+			absoluteSrc = imageURL
+		}
 	}
 
-	return fmt.Sprintf(`<img src="%s" class="cover-image" alt="封面图片">`, absolutePath)
+	return fmt.Sprintf(`<img src="%s" class="cover-image" alt="封面图片">`, absoluteSrc)
 }
 
 // renderWithHeadlessBrowser 使用无头浏览器渲染HTML
