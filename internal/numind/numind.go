@@ -86,10 +86,10 @@ func run() error {
 		return err
 	}
 
-	// 初始化上传目录
-	if err := initUploadDirectories(); err != nil {
-		return err
-	}
+	// 初始化上传目录 - 暂时注释掉，避免权限问题
+	// if err := initUploadDirectories(); err != nil {
+	// 	return err
+	// }
 
 	// 设置 token 包的签发密钥，用于 token 包 token 的签发和解析
 	//token.Init(viper.GetString("jwt.secret"), known.XUsernameKey)
