@@ -327,15 +327,18 @@ func (r *CoverRenderer) renderWithHeadlessBrowser(htmlContent string) ([]byte, e
 func (r *CoverRenderer) saveImageFromData(imageData []byte, cardID uint) (string, error) {
 	// 获取卡片图片保存路径
 	cardDir := util.GetCardImagePath(cardID)
+	fmt.Printf("调试：卡片保存目录: %s\n", cardDir)
 
 	// 确保目录存在
 	if err := os.MkdirAll(cardDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create card directory: %v", err)
 	}
+	fmt.Printf("调试：目录创建成功或已存在\n")
 
 	// 生成文件名
 	filename := fmt.Sprintf("card_%d.png", cardID)
 	filepath := filepath.Join(cardDir, filename)
+	fmt.Printf("调试：文件完整路径: %s\n", filepath)
 
 	// 创建文件
 	file, err := os.Create(filepath)
@@ -343,18 +346,22 @@ func (r *CoverRenderer) saveImageFromData(imageData []byte, cardID uint) (string
 		return "", fmt.Errorf("failed to create image file: %v", err)
 	}
 	defer file.Close()
+	fmt.Printf("调试：文件创建成功\n")
 
 	// 写入图片数据
 	if _, err := file.Write(imageData); err != nil {
 		return "", fmt.Errorf("failed to write image data: %v", err)
 	}
+	fmt.Printf("调试：图片数据写入成功，大小: %d bytes\n", len(imageData))
 
 	// 确保数据写入磁盘
 	if err := file.Sync(); err != nil {
 		return "", fmt.Errorf("failed to sync image file: %v", err)
 	}
+	fmt.Printf("调试：文件同步到磁盘成功\n")
 
 	// 返回图片URL
 	imageURL := util.GetCardImageURL(cardID, filename)
+	fmt.Printf("调试：返回的图片URL: %s\n", imageURL)
 	return imageURL, nil
 }
