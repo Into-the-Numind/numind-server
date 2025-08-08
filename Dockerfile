@@ -63,7 +63,8 @@ RUN chmod 755 /opt && \
     mkdir -p /opt/numind/prod/image/upload && \
     mkdir -p /opt/numind/qa/image/upload && \
     mkdir -p /opt/numind/image/upload && \
-    chown -R numind:numind /opt/numind
+    chown -R numind:numind /opt/numind && \
+    chmod -R 777 /opt/numind
 
 # 设置应用目录权限
 RUN chown -R numind:numind /app && \
