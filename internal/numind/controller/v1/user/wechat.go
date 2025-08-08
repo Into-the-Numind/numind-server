@@ -3,6 +3,7 @@ package user
 import (
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/util"
 	v1 "numind-server/pkg/api/numind/v1"
 
 	"github.com/gin-gonic/gin"
@@ -19,6 +20,11 @@ func (ctrl *UserController) WechatLogin(c *gin.Context) {
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
 		return
+	}
+
+	// 转换头像URL用于展示（去掉/opt前缀）
+	if result.User != nil && result.User.AvatarURL != "" {
+		result.User.AvatarURL = util.GetAvatarDisplayURL(result.User.AvatarURL)
 	}
 
 	core.WriteResponse(c, nil, result)

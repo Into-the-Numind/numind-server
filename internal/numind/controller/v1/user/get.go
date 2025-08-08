@@ -12,6 +12,7 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
+	"numind-server/internal/pkg/util"
 )
 
 // Get 获取一个用户的详细信息.
@@ -43,6 +44,11 @@ func (ctrl *UserController) GetCurrentUser(c *gin.Context) {
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
+	}
+
+	// 转换头像URL用于展示（去掉/opt前缀）
+	if user.AvatarURL != "" {
+		user.AvatarURL = util.GetAvatarDisplayURL(user.AvatarURL)
 	}
 
 	core.WriteResponse(c, nil, user)

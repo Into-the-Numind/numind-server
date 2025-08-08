@@ -3,6 +3,7 @@ package util
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -41,3 +42,17 @@ func GetBookImageURL(bookID uint, filename string) string {
 }
 
 // 旧的 extractBasePath 已移除。
+
+// GetAvatarDisplayURL 获取头像展示URL（去掉/opt前缀）
+func GetAvatarDisplayURL(avatarPath string) string {
+	if avatarPath == "" {
+		return ""
+	}
+
+	// 如果路径以/opt开头，去掉/opt前缀
+	if strings.HasPrefix(avatarPath, "/opt/") {
+		return strings.TrimPrefix(avatarPath, "/opt")
+	}
+
+	return avatarPath
+}
