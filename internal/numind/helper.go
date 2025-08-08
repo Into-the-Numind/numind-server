@@ -134,3 +134,29 @@ func autoMigrate(db *gorm.DB) error {
 	log.Infow("Database migration completed successfully")
 	return nil
 }
+
+// initUploadDirectories 初始化上传目录
+func initUploadDirectories() error {
+	imagePath := viper.GetString("resource.image_path")
+	if imagePath == "" {
+		imagePath = "/opt/numind/image/upload" // 默认路径
+	}
+
+	// 创建图片上传目录
+	uploadDirs := []string{
+		imagePath,
+		filepath.Join(imagePath, "avatars"),
+		filepath.Join(imagePath, "card"),
+		filepath.Join(imagePath, "book"),
+	}
+
+	for _, dir := range uploadDirs {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			log.Errorw("Failed to create upload directory", "dir", dir, "error", err.Error())
+			return fmt.Errorf("failed to create upload directory %s: %v", dir, err)
+		}
+		log.Infow("Created upload directory", "dir", dir)
+	}
+
+	return nil
+}

@@ -56,6 +56,14 @@ ARG ENV=dev
 # 根据环境复制对应的配置文件
 COPY config_${ENV}.yaml /app/config_${ENV}.yaml
 
+# 预创建图片输出目录，避免运行期权限问题
+# 创建所有可能的目录结构
+RUN mkdir -p /opt/numind/dev/image/upload && \
+    mkdir -p /opt/numind/prod/image/upload && \
+    mkdir -p /opt/numind/qa/image/upload && \
+    mkdir -p /opt/numind/image/upload && \
+    chown -R numind:numind /opt/numind
+
 # 设置正确的权限
 RUN chown -R numind:numind /app && \
     chmod +x /app/numind
@@ -77,9 +85,6 @@ ENV PORT=9091
 ENV CHROME_BIN=/usr/bin/chromium-browser
 ENV CHROME_PATH=/usr/bin/chromium-browser
 ENV CHROMIUM_FLAGS="--headless --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-web-security --disable-features=VizDisplayCompositor"
-
-# 预创建图片输出目录，避免运行期权限问题
-RUN mkdir -p /opt/numind/image/upload && chown -R numind:numind /opt/numind
 
 # 启动应用
 ENTRYPOINT ["/app/numind"]

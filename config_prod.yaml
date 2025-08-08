@@ -69,7 +69,7 @@ volc:
   max_retries: 3
 
 resource:
-  image_path: /opt/numind/product/image/upload
+  image_path: /opt/numind/prod/image/upload
 
 baidu:
   api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
