@@ -34,12 +34,12 @@ type CoverCardData struct {
 	Background string `json:"background,omitempty"`
 }
 
-// GetCoverConfig 获取封面专用配置（4:3比例）
+// GetCoverConfig 获取封面专用配置（3:4比例，与内容页保持一致）
 func GetCoverConfig() *pagination.PaginationConfig {
 	config := pagination.GetDefaultConfig()
-	// 修改为4:3比例
-	config.Card.Width = 1200 // 4:3比例，宽度1200
-	config.Card.Height = 900 // 高度900
+	// 严格保持与内容页一致的3:4比例（1080x1440）
+	config.Card.Width = 1080
+	config.Card.Height = 1440
 	return config
 }
 
@@ -173,20 +173,20 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
         }
         
         .image-section {
-            flex: 1;
+            height: 50%%;
             display: flex;
             align-items: center;
             justify-content: center;
             background: #f5f5f5;
             position: relative;
-            min-height: 50%%;
+            overflow: hidden;
         }
         
         .cover-image {
-            max-width: 90%%;
-            max-height: 90%%;
-            object-fit: contain;
-            border-radius: 8px;
+            width: 100%%;
+            height: 100%%;
+            object-fit: cover;
+            object-position: center;
         }
         
         .image-placeholder {
@@ -217,7 +217,7 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
         }
         
         .title {
-            font-size: 48px;
+            font-size: 64px;
             font-weight: bold;
             color: #333333;
             line-height: 1.4;
@@ -233,11 +233,6 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
             border-radius: 2px;
         }
         
-        .divider {
-            height: 2px;
-            background: linear-gradient(90deg, transparent, #e0e0e0, transparent);
-            margin: 0;
-        }
     </style>
 </head>
 <body>
@@ -245,7 +240,6 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
         <div class="image-section">
             %s
         </div>
-        <div class="divider"></div>
         <div class="title-section">
             <div class="title-container">
                 <h1 class="title">%s</h1>
@@ -305,13 +299,11 @@ func (r *CoverRenderer) renderWithHeadlessBrowser(htmlContent string) ([]byte, e
 
 	// 使用Chrome命令行工具渲染，确保正确的尺寸
 	outputFile := fmt.Sprintf("temp_cover_%d.png", time.Now().Unix())
-	// 优先从环境变量读取浏览器路径，其次回退到常见二进制（容器里通常是 chromium-browser）
-	chromeBin := os.Getenv("CHROME_BIN")
+
+	// 查找可用的浏览器可执行文件（兼容 macOS 与 Linux）
+	chromeBin := findChromeExecutable()
 	if chromeBin == "" {
-		chromeBin = os.Getenv("CHROME_PATH")
-	}
-	if chromeBin == "" {
-		chromeBin = "/usr/bin/chromium-browser"
+		return nil, fmt.Errorf("chrome executable not found. Please set CHROME_BIN or install Google Chrome/Chromium")
 	}
 
 	// 读取额外的 flags（例如 Dockerfile 中的 CHROMIUM_FLAGS）
@@ -356,6 +348,48 @@ func (r *CoverRenderer) renderWithHeadlessBrowser(htmlContent string) ([]byte, e
 	// 删除临时文件
 	os.Remove(outputFile)
 	return imageData, nil
+}
+
+// findChromeExecutable 返回一个可用的 Chrome/Chromium 可执行路径
+func findChromeExecutable() string {
+	// 1) 环境变量优先
+	if v := os.Getenv("CHROME_BIN"); v != "" && fileExists(v) {
+		return v
+	}
+	if v := os.Getenv("CHROME_PATH"); v != "" && fileExists(v) {
+		return v
+	}
+
+	// 2) 常见路径（macOS + Homebrew + Linux）
+	candidates := []string{
+		// macOS 常见安装路径
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+		"/Applications/Chromium.app/Contents/MacOS/Chromium",
+		"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+		// Homebrew（可能是 shim 脚本）
+		"/opt/homebrew/bin/chromium",
+		"/usr/local/bin/chromium",
+		"/usr/local/bin/google-chrome",
+		// Linux 常见路径
+		"/usr/bin/chromium-browser",
+		"/usr/bin/chromium",
+		"/usr/bin/google-chrome",
+		"/usr/bin/google-chrome-stable",
+	}
+	for _, p := range candidates {
+		if fileExists(p) {
+			return p
+		}
+	}
+	return ""
+}
+
+func fileExists(p string) bool {
+	info, err := os.Stat(p)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
 }
 
 // saveImageFromData 从数据保存图片
