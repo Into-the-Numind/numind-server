@@ -8,6 +8,7 @@ import (
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -63,6 +64,13 @@ func (ctrl *BookController) List(c *gin.Context) {
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
+	}
+
+	// 统一展示规则：列表中的 image_url 也去掉 /opt 前缀
+	for _, b := range books {
+		if b != nil {
+			b.ImageUrl = util.GetDisplayURL(b.ImageUrl)
+		}
 	}
 
 	resp := &ListBookResponse{

@@ -62,7 +62,7 @@ func NewBookResponse(book *BookM) *BookResponse {
 		Tags:         book.Tags,
 		CardCount:    book.CardCount,
 		ViewTime:     book.ViewTime,
-		ImageUrl:     book.ImageUrl,
+		ImageUrl:     util.GetDisplayURL(book.ImageUrl),
 		Cards:        []CardResponse{},
 	}
 }
