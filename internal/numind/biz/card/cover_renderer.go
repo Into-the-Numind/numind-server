@@ -221,16 +221,8 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
             font-weight: bold;
             color: #333333;
             line-height: 1.4;
-            margin: 0 0 20px 0;
+            margin: 0;
             text-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        
-        .decorative-line {
-            width: 120px;
-            height: 3px;
-            background: linear-gradient(90deg, #333333, #666666);
-            margin: 0 auto;
-            border-radius: 2px;
         }
         
     </style>
@@ -243,7 +235,6 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
         <div class="title-section">
             <div class="title-container">
                 <h1 class="title">%s</h1>
-                <div class="decorative-line"></div>
             </div>
         </div>
     </div>
