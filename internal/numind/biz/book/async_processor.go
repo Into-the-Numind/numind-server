@@ -257,6 +257,13 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 				if err := p.biz.Cards().Update(ctx, coverCardRecord); err != nil {
 					log.C(ctx).Errorw("Failed to update cover card with rendered image", "book_id", bookID, "error", err.Error())
 				}
+
+				// 使用封面卡片的rendered_image更新book的image_url
+				// 业务要求：book.image_url 取该book对应、processed_text为null的卡片（封面卡）rendered_image
+				book.ImageUrl = coverCardRecord.RenderedImage
+				if err := p.biz.Books().Update(ctx, book); err != nil {
+					log.C(ctx).Errorw("Failed to update book image_url from cover card rendered image", "book_id", bookID, "error", err.Error())
+				}
 			}
 
 			// 更新用户的卡片数量统计

@@ -43,16 +43,18 @@ func GetBookImageURL(bookID uint, filename string) string {
 
 // 旧的 extractBasePath 已移除。
 
+// GetDisplayURL 返回用于对外展示的图片URL（去掉/opt前缀）
+func GetDisplayURL(path string) string {
+    if path == "" {
+        return ""
+    }
+    if strings.HasPrefix(path, "/opt/") {
+        return strings.TrimPrefix(path, "/opt")
+    }
+    return path
+}
+
 // GetAvatarDisplayURL 获取头像展示URL（去掉/opt前缀）
 func GetAvatarDisplayURL(avatarPath string) string {
-	if avatarPath == "" {
-		return ""
-	}
-
-	// 如果路径以/opt开头，去掉/opt前缀
-	if strings.HasPrefix(avatarPath, "/opt/") {
-		return strings.TrimPrefix(avatarPath, "/opt")
-	}
-
-	return avatarPath
+    return GetDisplayURL(avatarPath)
 }

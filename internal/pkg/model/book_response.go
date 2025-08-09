@@ -3,6 +3,8 @@ package model
 import (
 	"encoding/json"
 	"time"
+
+	"numind-server/internal/pkg/util"
 )
 
 // BookResponse 书籍响应结构体，包含书籍基本信息和分页后的卡片信息
@@ -81,7 +83,7 @@ func (br *BookResponse) AddCard(card *CardM) {
 		BookID:        card.BookID,
 		SortOrder:     card.SortOrder,
 		Tags:          card.Tags,
-		RenderedImage: card.RenderedImage, // 包含渲染后的图片URL
+		RenderedImage: util.GetDisplayURL(card.RenderedImage), // 去掉/opt前缀用于展示
 	}
 
 	// 解析ProcessedText字段中的JSON数据
