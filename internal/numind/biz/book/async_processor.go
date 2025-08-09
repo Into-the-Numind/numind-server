@@ -4,12 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"numind-server/internal/numind/biz/card"
 	"numind-server/internal/numind/biz/pagination"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/util"
 )
 
 // AsyncBookProcessor 异步book处理器
@@ -381,7 +386,39 @@ func extractJSONFromResponse(response string) string {
 
 // downloadAndSaveImage 下载并保存图片
 func downloadAndSaveImage(remoteURL string, bookID uint) (string, error) {
-	// 这里实现图片下载和保存逻辑
-	// 为了简化，这里返回一个占位符
-	return fmt.Sprintf("/images/book_%d_cover.jpg", bookID), nil
+	// 计算本地保存目录：{image_path}/book/{book_id}
+	localDir := util.GetBookImagePath(bookID)
+
+	// 确保目录存在
+	if err := os.MkdirAll(localDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create directory %s: %w", localDir, err)
+	}
+
+	// 固定文件名：book_{id}.png
+	localFilePath := filepath.Join(localDir, fmt.Sprintf("book_%d.png", bookID))
+
+	// 下载远程图片
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(remoteURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to download image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download image, status: %d", resp.StatusCode)
+	}
+
+	// 创建本地文件并写入
+	file, err := os.Create(localFilePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create local file: %w", err)
+	}
+	defer file.Close()
+
+	if _, err := io.Copy(file, resp.Body); err != nil {
+		return "", fmt.Errorf("failed to save image: %w", err)
+	}
+
+	return localFilePath, nil
 }
