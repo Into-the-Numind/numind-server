@@ -177,11 +177,11 @@ jobs:
               docker rm numind-server-dev
             fi
             
-            # 创建必要的目录并设置权限
+            # 创建必要的目录并设置权限（确保容器内 UID 1001 可写）
             echo "Creating necessary directories..."
-            sudo mkdir -p /opt/numind/dev/image/upload/avatars
-            sudo chmod -R 755 /opt/numind/dev/image/upload
-            sudo chown -R 1001:1001 /opt/numind/dev/image/upload || true
+            sudo mkdir -p /opt/numind/dev/image/upload/{avatars,card,book}
+            sudo chown -R 1001:1001 /opt/numind/dev || true
+            sudo chmod -R 775 /opt/numind/dev
             
             # 启动新容器
             echo "Starting new container..."
@@ -273,11 +273,11 @@ jobs:
               docker rm numind-server-qa
             fi
             
-            # 创建必要的目录并设置权限
+            # 创建必要的目录并设置权限（确保容器内 UID 1001 可写）
             echo "Creating necessary directories..."
-            sudo mkdir -p /opt/numind/qa/image/upload/avatars
-            sudo chmod -R 755 /opt/numind/qa/image/upload
-            sudo chown -R 1001:1001 /opt/numind/qa/image/upload || true
+            sudo mkdir -p /opt/numind/qa/image/upload/{avatars,card,book}
+            sudo chown -R 1001:1001 /opt/numind/qa || true
+            sudo chmod -R 775 /opt/numind/qa
             
             # 启动新容器
             echo "Starting new container..."
@@ -369,11 +369,11 @@ jobs:
               docker rm numind-server-prod
             fi
             
-            # 创建必要的目录并设置权限
+            # 创建必要的目录并设置权限（确保容器内 UID 1001 可写）
             echo "Creating necessary directories..."
-            sudo mkdir -p /opt/numind/prod/image/upload/avatars
-            sudo chmod -R 755 /opt/numind/prod/image/upload
-            sudo chown -R 1001:1001 /opt/numind/prod/image/upload || true
+            sudo mkdir -p /opt/numind/prod/image/upload/{avatars,card,book}
+            sudo chown -R 1001:1001 /opt/numind/prod || true
+            sudo chmod -R 775 /opt/numind/prod
             
             # 启动新容器
             echo "Starting new container..."
