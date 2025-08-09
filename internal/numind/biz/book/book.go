@@ -15,6 +15,7 @@ type BookBiz interface {
 	ListByCategory(ctx context.Context, categoryID uint, offset, limit int) (int64, []*model.BookM, error)
 	Update(ctx context.Context, book *model.BookM) error
 	Delete(ctx context.Context, id uint) error
+	DeleteBatch(ctx context.Context, ids []uint) error
 	SetCategory(ctx context.Context, bookID, userID uint, categoryID *uint) error
 }
 
@@ -50,6 +51,10 @@ func (b *bookBiz) Update(ctx context.Context, book *model.BookM) error {
 
 func (b *bookBiz) Delete(ctx context.Context, id uint) error {
 	return b.ds.Books().Delete(ctx, id)
+}
+
+func (b *bookBiz) DeleteBatch(ctx context.Context, ids []uint) error {
+	return b.ds.Books().DeleteBatch(ctx, ids)
 }
 
 func (b *bookBiz) SetCategory(ctx context.Context, bookID, userID uint, categoryID *uint) error {

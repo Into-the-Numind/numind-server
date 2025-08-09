@@ -16,6 +16,7 @@ type BookStore interface {
 	ListByCategory(ctx context.Context, categoryID uint, offset, limit int) (int64, []*model.BookM, error)
 	Update(ctx context.Context, book *model.BookM) error
 	Delete(ctx context.Context, id uint) error
+	DeleteBatch(ctx context.Context, ids []uint) error
 }
 
 type books struct {
@@ -63,6 +64,17 @@ func (s *books) Update(ctx context.Context, book *model.BookM) error {
 
 func (s *books) Delete(ctx context.Context, id uint) error {
 	err := s.db.WithContext(ctx).Delete(&model.BookM{}, id).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	return nil
+}
+
+func (s *books) DeleteBatch(ctx context.Context, ids []uint) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	err := s.db.WithContext(ctx).Where("id IN (?)", ids).Delete(&model.BookM{}).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}

@@ -91,6 +91,7 @@ func installNumindRouters(g *gin.Engine) error {
 	authGroup.GET("/books/:id", bc.Get)                  // 获取卡册详情
 	authGroup.PUT("/books/:id", bc.Update)               // 更新卡册
 	authGroup.DELETE("/books/:id", bc.Delete)            // 删除卡册
+	authGroup.DELETE("/books", bc.DeleteBatch)           // 批量删除卡册，query: bookID=1&bookID=2
 	authGroup.GET("/books/:id/html", bc.ViewBookHTML)    // 查看卡册HTML
 	authGroup.GET("/books/:id/image", bc.ViewBookImage)  // 查看卡册图片
 
