@@ -156,9 +156,15 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
             box-sizing: border-box;
         }
         
+        html {
+            width: %dpx;
+            height: %dpx;
+            margin: 0;
+            padding: 0;
+        }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-            background: #ffffff;
+            %s
             color: #333333;
             width: %dpx;
             height: %dpx;
@@ -168,18 +174,21 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
         .cover-container {
             width: 100%%;
             height: 100%%;
-            display: flex;
-            flex-direction: column;
+            display: grid;
+            grid-template-rows: 1fr 1fr; /* 上下等分，避免像素取整缝隙 */
+            gap: 0;
+            %s
         }
         
         .image-section {
-            height: 50%%;
             display: flex;
             align-items: center;
             justify-content: center;
-            background: #f5f5f5;
+            %s
             position: relative;
             overflow: hidden;
+            width: 100%%;
+            height: 100%%;
         }
         
         .cover-image {
@@ -203,13 +212,14 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
         }
         
         .title-section {
-            height: 50%%;
             display: flex;
             align-items: center;
             justify-content: center;
-            background: #ffffff;
+            %s
             padding: 40px;
             box-sizing: border-box;
+            width: 100%%;
+            height: 100%%;
         }
         
         .title-container {
@@ -240,6 +250,11 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
     </div>
 </body>
 </html>`, config.Card.Width, config.Card.Height,
+		formatBackgroundStyle(coverData.Background),
+		config.Card.Width, config.Card.Height,
+		formatBackgroundStyle(coverData.Background),
+		sectionBackgroundStyle(coverData.Background, true),
+		sectionBackgroundStyle(coverData.Background, false),
 		r.generateImageHTML(coverData.ImageURL),
 		coverData.Title)
 
@@ -275,6 +290,50 @@ func (r *CoverRenderer) generateImageHTML(imageURL string) string {
 	}
 
 	return fmt.Sprintf(`<img src="%s" class="cover-image" alt="封面图片">`, absoluteSrc)
+}
+
+// formatBackgroundStyle 将背景图路径转为内联 CSS 样式，支持 http(s)、data、本地绝对/相对路径
+func formatBackgroundStyle(background string) string {
+	if strings.TrimSpace(background) == "" {
+		return ""
+	}
+	src := background
+	lower := strings.ToLower(background)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "data:") {
+		// remote or data url
+		src = background
+	} else if filepath.IsAbs(background) {
+		src = "file://" + background
+	} else {
+		if absPath, err := filepath.Abs(background); err == nil {
+			src = "file://" + absPath
+		}
+	}
+	// 背景图居中、cover 铺满
+	return fmt.Sprintf("background: url('%s') center center / cover no-repeat;", src)
+}
+
+// sectionBackgroundStyle 如果提供了背景图，将其作为对应半区的背景（image 上半区 / title 下半区）
+func sectionBackgroundStyle(background string, isImageSection bool) string {
+	if strings.TrimSpace(background) == "" {
+		// 无背景图，保持默认（上半灰色、下半白色）
+		if isImageSection {
+			return "background: #f5f5f5;"
+		}
+		return "background: #ffffff;"
+	}
+	src := background
+	lower := strings.ToLower(background)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "data:") {
+		src = background
+	} else if filepath.IsAbs(background) {
+		src = "file://" + background
+	} else {
+		if absPath, err := filepath.Abs(background); err == nil {
+			src = "file://" + absPath
+		}
+	}
+	return fmt.Sprintf("background: url('%s') center center / cover no-repeat;", src)
 }
 
 // renderWithHeadlessBrowser 使用无头浏览器渲染HTML

@@ -18,7 +18,8 @@ import (
 
 // SimpleHeadlessRenderer 简化版无头浏览器渲染器
 type SimpleHeadlessRenderer struct {
-	config *pagination.PaginationConfig
+	config     *pagination.PaginationConfig
+	background string
 }
 
 // NewSimpleHeadlessRenderer 创建新的简化版渲染器
@@ -26,6 +27,11 @@ func NewSimpleHeadlessRenderer(config *pagination.PaginationConfig) *SimpleHeadl
 	return &SimpleHeadlessRenderer{
 		config: config,
 	}
+}
+
+// SetBackground 设置全局背景图（模板 file 字段）。为空则默认白色
+func (r *SimpleHeadlessRenderer) SetBackground(background string) {
+	r.background = background
 }
 
 // RenderCardToImage 将卡片渲染为图片
@@ -62,22 +68,33 @@ func (r *SimpleHeadlessRenderer) RenderCardToImage(card *model.CardM) (*Rendered
 
 // generateSimpleHTML 生成简单的HTML内容
 func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Element) string {
-	html := `<!DOCTYPE html>
+	bgStyle := formatBackgroundStyle(r.background)
+	if bgStyle == "" {
+		bgStyle = "background: #ffffff;"
+	}
+	html := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <title>Card Render</title>
     <style>
+        html {
+            width: %[1]dpx;
+            height: %[2]dpx;
+            margin: 0;
+            padding: 0;
+        }
         body {
             margin: 0;
             padding: 60px 50px;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-            background: #ffffff;
+            %s
             color: #333333;
             line-height: 1.6;
-            width: 1000px;
-            height: 1333px;
+            width: %[1]dpx;
+            height: %[2]dpx;
             box-sizing: border-box;
+            background-clip: border-box;
             overflow: hidden;
         }
         .title {
@@ -127,7 +144,7 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
         }
     </style>
 </head>
-<body>`
+<body>`, r.config.Card.Width, r.config.Card.Height, bgStyle, r.config.Card.Width, r.config.Card.Height)
 
 	for _, element := range elements {
 		content := fmt.Sprintf("%v", element.Content)

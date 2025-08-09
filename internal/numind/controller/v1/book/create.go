@@ -168,6 +168,10 @@ func (a *BookBizAdapter) Ali() book.AsyncAliBiz {
 	return &AsyncAliBizAdapter{biz: a.biz}
 }
 
+func (a *BookBizAdapter) Templates() book.AsyncTemplateBiz {
+	return &AsyncTemplateBizAdapter{biz: a.biz}
+}
+
 // AsyncBookBizAdapter 书籍业务适配器
 type AsyncBookBizAdapter struct {
 	biz biz.IBiz
@@ -237,4 +241,13 @@ type AsyncPromptManagerAdapter struct {
 
 func (a *AsyncPromptManagerAdapter) GetTextProcessingPrompt() string {
 	return a.promptManager.GetTextProcessingPrompt()
+}
+
+// AsyncTemplateBizAdapter 模板业务适配器
+type AsyncTemplateBizAdapter struct {
+	biz biz.IBiz
+}
+
+func (a *AsyncTemplateBizAdapter) GetByID(ctx context.Context, id uint) (*model.Template, error) {
+	return a.biz.Templates().GetByID(ctx, id)
 }
