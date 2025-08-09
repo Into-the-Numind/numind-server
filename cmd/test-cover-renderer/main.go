@@ -19,11 +19,11 @@ func main() {
 	viper.SetConfigName("config_local")
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath(".")
-	
+
 	if err := viper.ReadInConfig(); err != nil {
 		log.Fatalf("Failed to read config: %v", err)
 	}
-	
+
 	// 创建测试数据
 	testData := []map[string]interface{}{
 		{
@@ -62,7 +62,7 @@ func main() {
 	fmt.Printf("封面渲染成功！\n")
 	fmt.Printf("卡片ID: %d\n", renderedCard.CardID)
 	fmt.Printf("图片URL: %s\n", renderedCard.ImageURL)
-	fmt.Printf("尺寸: %dx%d (4:3比例)\n", renderedCard.Width, renderedCard.Height)
+	fmt.Printf("尺寸: %dx%d (3:4比例)\n", renderedCard.Width, renderedCard.Height)
 	fmt.Printf("排序: %d\n", renderedCard.SortOrder)
 
 	// 检查生成的图片文件是否存在

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"numind-server/internal/numind/biz/card"
@@ -28,6 +29,7 @@ type BizInterface interface {
 	Cards() AsyncCardBiz
 	Users() AsyncUserBiz
 	Ali() AsyncAliBiz
+	Templates() AsyncTemplateBiz
 }
 
 // AsyncBookBiz 书籍业务接口
@@ -54,6 +56,11 @@ type AsyncAliBiz interface {
 	QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error)
 	WanxiangImageAsync(prompt, style, size string) (string, error)
 	GetPromptManager() AsyncPromptManager
+}
+
+// AsyncTemplateBiz 模板业务接口
+type AsyncTemplateBiz interface {
+	GetByID(ctx context.Context, id uint) (*model.Template, error)
 }
 
 // AsyncPromptManager 提示词管理器接口
@@ -232,10 +239,29 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 
 	// 创建无头浏览器渲染器
 	renderer := card.NewSimpleHeadlessRenderer(paginationBiz.GetConfig())
+	// 若有模板背景图，设置给所有内容页
+	if templateID != "" {
+		if tid, err := strconv.ParseUint(templateID, 10, 64); err == nil {
+			if tmpl, err := p.biz.Templates().GetByID(ctx, uint(tid)); err == nil && tmpl != nil {
+				renderer.SetBackground(tmpl.File)
+			}
+		}
+	}
 	coverRenderer := card.NewCoverRenderer(paginationBiz.GetConfig())
 
 	// 首先创建封面卡片 (sort_order = 0)
-	if book.ImageUrl != "" {
+	// 背景图：如果传入了 template_id，则尝试从模板中读取背景图绝对路径
+	var coverBackground string
+	if templateID != "" {
+		if tid, err := strconv.ParseUint(templateID, 10, 64); err == nil {
+			if tmpl, err := p.biz.Templates().GetByID(ctx, uint(tid)); err == nil && tmpl != nil {
+				// 这里假设 template.File 字段保存的是背景图的绝对路径
+				coverBackground = tmpl.File
+			}
+		}
+	}
+
+	if book.ImageUrl != "" || coverBackground != "" {
 		// 创建封面卡片记录
 		coverCardRecord := &model.CardM{
 			UserID:    userID,
@@ -247,8 +273,23 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		if err := p.biz.Cards().Create(ctx, coverCardRecord); err != nil {
 			log.C(ctx).Errorw("Failed to create cover card", "book_id", bookID, "error", err.Error())
 		} else {
-			// 渲染封面卡片为图片
-			renderedCoverCard, err := coverRenderer.RenderCoverCardFromBook(coverCardRecord, bookTitle, book.ImageUrl)
+			// 构造封面数据（包含可选的背景图）
+			// 封面卡片 RenderCoverCardFromBook 仅接收标题和图片，这里改用通用入口 RenderCoverCardToImage：
+			// 将封面数据写入 coverCardRecord.ProcessedText
+			var coverElements []map[string]interface{}
+			coverElements = append(coverElements, map[string]interface{}{"type": "title", "content": bookTitle})
+			if book.ImageUrl != "" {
+				coverElements = append(coverElements, map[string]interface{}{"type": "image", "content": book.ImageUrl})
+			}
+			if coverBackground != "" {
+				coverElements = append(coverElements, map[string]interface{}{"type": "background", "content": coverBackground})
+			}
+			if b, err := json.Marshal(coverElements); err == nil {
+				coverCardRecord.ProcessedText = string(b)
+			}
+
+			// 渲染封面卡片为图片（支持背景图）
+			renderedCoverCard, err := coverRenderer.RenderCoverCardToImage(coverCardRecord)
 			if err != nil {
 				log.C(ctx).Errorw("Failed to render cover card to image", "book_id", bookID, "error", err.Error())
 			} else {

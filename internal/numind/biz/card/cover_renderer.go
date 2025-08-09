@@ -34,12 +34,12 @@ type CoverCardData struct {
 	Background string `json:"background,omitempty"`
 }
 
-// GetCoverConfig 获取封面专用配置（4:3比例）
+// GetCoverConfig 获取封面专用配置（3:4比例，与内容页保持一致）
 func GetCoverConfig() *pagination.PaginationConfig {
 	config := pagination.GetDefaultConfig()
-	// 修改为4:3比例
-	config.Card.Width = 1200 // 4:3比例，宽度1200
-	config.Card.Height = 900 // 高度900
+	// 严格保持与内容页一致的3:4比例（1080x1440）
+	config.Card.Width = 1080
+	config.Card.Height = 1440
 	return config
 }
 
@@ -156,9 +156,15 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
             box-sizing: border-box;
         }
         
+        html {
+            width: %dpx;
+            height: %dpx;
+            margin: 0;
+            padding: 0;
+        }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-            background: #ffffff;
+            %s
             color: #333333;
             width: %dpx;
             height: %dpx;
@@ -168,25 +174,28 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
         .cover-container {
             width: 100%%;
             height: 100%%;
-            display: flex;
-            flex-direction: column;
+            display: grid;
+            grid-template-rows: 1fr 1fr; /* 上下等分，避免像素取整缝隙 */
+            gap: 0;
+            %s
         }
         
         .image-section {
-            flex: 1;
             display: flex;
             align-items: center;
             justify-content: center;
-            background: #f5f5f5;
+            %s
             position: relative;
-            min-height: 50%%;
+            overflow: hidden;
+            width: 100%%;
+            height: 100%%;
         }
         
         .cover-image {
-            max-width: 90%%;
-            max-height: 90%%;
-            object-fit: contain;
-            border-radius: 8px;
+            width: 100%%;
+            height: 100%%;
+            object-fit: cover;
+            object-position: center;
         }
         
         .image-placeholder {
@@ -203,13 +212,14 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
         }
         
         .title-section {
-            height: 50%%;
             display: flex;
             align-items: center;
             justify-content: center;
-            background: #ffffff;
+            %s
             padding: 40px;
             box-sizing: border-box;
+            width: 100%%;
+            height: 100%%;
         }
         
         .title-container {
@@ -217,27 +227,14 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
         }
         
         .title {
-            font-size: 48px;
+            font-size: 64px;
             font-weight: bold;
             color: #333333;
             line-height: 1.4;
-            margin: 0 0 20px 0;
+            margin: 0;
             text-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         
-        .decorative-line {
-            width: 120px;
-            height: 3px;
-            background: linear-gradient(90deg, #333333, #666666);
-            margin: 0 auto;
-            border-radius: 2px;
-        }
-        
-        .divider {
-            height: 2px;
-            background: linear-gradient(90deg, transparent, #e0e0e0, transparent);
-            margin: 0;
-        }
     </style>
 </head>
 <body>
@@ -245,16 +242,19 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
         <div class="image-section">
             %s
         </div>
-        <div class="divider"></div>
         <div class="title-section">
             <div class="title-container">
                 <h1 class="title">%s</h1>
-                <div class="decorative-line"></div>
             </div>
         </div>
     </div>
 </body>
 </html>`, config.Card.Width, config.Card.Height,
+		formatBackgroundStyle(coverData.Background),
+		config.Card.Width, config.Card.Height,
+		formatBackgroundStyle(coverData.Background),
+		sectionBackgroundStyle(coverData.Background, true),
+		sectionBackgroundStyle(coverData.Background, false),
 		r.generateImageHTML(coverData.ImageURL),
 		coverData.Title)
 
@@ -292,6 +292,50 @@ func (r *CoverRenderer) generateImageHTML(imageURL string) string {
 	return fmt.Sprintf(`<img src="%s" class="cover-image" alt="封面图片">`, absoluteSrc)
 }
 
+// formatBackgroundStyle 将背景图路径转为内联 CSS 样式，支持 http(s)、data、本地绝对/相对路径
+func formatBackgroundStyle(background string) string {
+	if strings.TrimSpace(background) == "" {
+		return ""
+	}
+	src := background
+	lower := strings.ToLower(background)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "data:") {
+		// remote or data url
+		src = background
+	} else if filepath.IsAbs(background) {
+		src = "file://" + background
+	} else {
+		if absPath, err := filepath.Abs(background); err == nil {
+			src = "file://" + absPath
+		}
+	}
+	// 背景图居中、cover 铺满
+	return fmt.Sprintf("background: url('%s') center center / cover no-repeat;", src)
+}
+
+// sectionBackgroundStyle 如果提供了背景图，将其作为对应半区的背景（image 上半区 / title 下半区）
+func sectionBackgroundStyle(background string, isImageSection bool) string {
+	if strings.TrimSpace(background) == "" {
+		// 无背景图，保持默认（上半灰色、下半白色）
+		if isImageSection {
+			return "background: #f5f5f5;"
+		}
+		return "background: #ffffff;"
+	}
+	src := background
+	lower := strings.ToLower(background)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "data:") {
+		src = background
+	} else if filepath.IsAbs(background) {
+		src = "file://" + background
+	} else {
+		if absPath, err := filepath.Abs(background); err == nil {
+			src = "file://" + absPath
+		}
+	}
+	return fmt.Sprintf("background: url('%s') center center / cover no-repeat;", src)
+}
+
 // renderWithHeadlessBrowser 使用无头浏览器渲染HTML
 func (r *CoverRenderer) renderWithHeadlessBrowser(htmlContent string) ([]byte, error) {
 	// 保存HTML内容到文件
@@ -305,13 +349,11 @@ func (r *CoverRenderer) renderWithHeadlessBrowser(htmlContent string) ([]byte, e
 
 	// 使用Chrome命令行工具渲染，确保正确的尺寸
 	outputFile := fmt.Sprintf("temp_cover_%d.png", time.Now().Unix())
-	// 优先从环境变量读取浏览器路径，其次回退到常见二进制（容器里通常是 chromium-browser）
-	chromeBin := os.Getenv("CHROME_BIN")
+
+	// 查找可用的浏览器可执行文件（兼容 macOS 与 Linux）
+	chromeBin := findChromeExecutable()
 	if chromeBin == "" {
-		chromeBin = os.Getenv("CHROME_PATH")
-	}
-	if chromeBin == "" {
-		chromeBin = "/usr/bin/chromium-browser"
+		return nil, fmt.Errorf("chrome executable not found. Please set CHROME_BIN or install Google Chrome/Chromium")
 	}
 
 	// 读取额外的 flags（例如 Dockerfile 中的 CHROMIUM_FLAGS）
@@ -356,6 +398,48 @@ func (r *CoverRenderer) renderWithHeadlessBrowser(htmlContent string) ([]byte, e
 	// 删除临时文件
 	os.Remove(outputFile)
 	return imageData, nil
+}
+
+// findChromeExecutable 返回一个可用的 Chrome/Chromium 可执行路径
+func findChromeExecutable() string {
+	// 1) 环境变量优先
+	if v := os.Getenv("CHROME_BIN"); v != "" && fileExists(v) {
+		return v
+	}
+	if v := os.Getenv("CHROME_PATH"); v != "" && fileExists(v) {
+		return v
+	}
+
+	// 2) 常见路径（macOS + Homebrew + Linux）
+	candidates := []string{
+		// macOS 常见安装路径
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+		"/Applications/Chromium.app/Contents/MacOS/Chromium",
+		"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+		// Homebrew（可能是 shim 脚本）
+		"/opt/homebrew/bin/chromium",
+		"/usr/local/bin/chromium",
+		"/usr/local/bin/google-chrome",
+		// Linux 常见路径
+		"/usr/bin/chromium-browser",
+		"/usr/bin/chromium",
+		"/usr/bin/google-chrome",
+		"/usr/bin/google-chrome-stable",
+	}
+	for _, p := range candidates {
+		if fileExists(p) {
+			return p
+		}
+	}
+	return ""
+}
+
+func fileExists(p string) bool {
+	info, err := os.Stat(p)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
 }
 
 // saveImageFromData 从数据保存图片
