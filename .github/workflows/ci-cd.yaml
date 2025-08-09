@@ -164,6 +164,10 @@ jobs:
             
             # 拉取最新镜像
             docker pull neozhang96/numind-server:develop
+
+            # 清理 dangling (<none>) 镜像，避免磁盘膨胀
+            echo "Pruning dangling images..."
+            docker image prune -f || true
             
             # 检查并停止运行中的容器
             if docker ps -q -f name=numind-server-dev | grep -q .; then
@@ -189,7 +193,7 @@ jobs:
               --name numind-server-dev \
               -p 9091:9091 \
               -p 9092:9092 \
-              -v /opt/numind/dev:/opt/numind \
+              -v /opt/numind/dev:/opt/numind/dev \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
               neozhang96/numind-server:develop \
@@ -260,6 +264,10 @@ jobs:
             
             # 拉取最新镜像
             docker pull neozhang96/numind-server:release
+
+            # 清理 dangling (<none>) 镜像，避免磁盘膨胀
+            echo "Pruning dangling images..."
+            docker image prune -f || true
             
             # 检查并停止运行中的容器
             if docker ps -q -f name=numind-server-qa | grep -q .; then
@@ -285,7 +293,7 @@ jobs:
               --name numind-server-qa \
               -p 9093:9091 \
               -p 9094:9092 \
-              -v /opt/numind/qa:/opt/numind \
+              -v /opt/numind/qa:/opt/numind/qa \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
               neozhang96/numind-server:release \
@@ -356,6 +364,10 @@ jobs:
             
             # 拉取最新镜像
             docker pull neozhang96/numind-server:product
+
+            # 清理 dangling (<none>) 镜像，避免磁盘膨胀
+            echo "Pruning dangling images..."
+            docker image prune -f || true
             
             # 检查并停止运行中的容器
             if docker ps -q -f name=numind-server-prod | grep -q .; then
@@ -381,7 +393,7 @@ jobs:
               --name numind-server-prod \
               -p 9095:9091 \
               -p 9096:9092 \
-              -v /opt/numind/prod:/opt/numind \
+              -v /opt/numind/prod:/opt/numind/prod \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
               neozhang96/numind-server:product \
