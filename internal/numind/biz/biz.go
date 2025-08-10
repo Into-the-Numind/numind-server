@@ -124,7 +124,7 @@ func (b *biz) Volc() volc.VolcBiz {
 }
 
 func (b *biz) Order() order.OrderBiz {
-	return order.NewOrderBiz(b.ds)
+	return order.NewOrderBiz(b.ds, b.Users())
 }
 
 func (b *biz) Mqtt() mqtt.MqttBiz {

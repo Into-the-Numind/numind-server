@@ -52,6 +52,9 @@ type UserBiz interface {
 	// 用户统计更新
 	IncrementUserBookNum(ctx context.Context, userID uint) error
 	IncrementUserCardNum(ctx context.Context, userID uint) error
+
+	// 用户权限更新
+	SetUserPro(ctx context.Context, userID uint, isPro bool) error
 }
 
 // UserBiz 接口的实现.
@@ -584,4 +587,10 @@ func (b *userBiz) IncrementUserCardNum(ctx context.Context, userID uint) error {
 	// 使用数据库的原子操作来增加CardNum字段
 	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
 		UpdateColumn("card_num", gorm.Expr("card_num + ?", 1)).Error
+}
+
+// SetUserPro 设置用户的付费状态
+func (b *userBiz) SetUserPro(ctx context.Context, userID uint, isPro bool) error {
+	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
+		UpdateColumn("is_pro", isPro).Error
 }

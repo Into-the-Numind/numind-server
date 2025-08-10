@@ -158,7 +158,7 @@ func installNumindRouters(g *gin.Engine) error {
 	g.POST("/api/pay/wechat/notify", importPayController.WechatPayNotify)
 
 	// 订单相关
-	orderBiz := orderbiz.NewOrderBiz(store.S)
+	orderBiz := orderbiz.NewOrderBiz(store.S, b.Users())
 	orderCtrl := order.New(orderBiz)
 	authGroup.POST("/order/create", orderCtrl.Create)
 	authGroup.GET("/order/list", orderCtrl.ListByUser)
