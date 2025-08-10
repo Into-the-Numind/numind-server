@@ -93,17 +93,13 @@ func (ctrl *OrderController) Create(c *gin.Context) {
 // 微信支付回调
 func (ctrl *OrderController) WechatNotify(c *gin.Context) {
 	outTradeNo := c.PostForm("out_trade_no") // 实际应从微信回调体解析
-	order, err := ctrl.b.GetByOutTradeNo(c, outTradeNo)
-	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("订单不存在"), nil)
+
+	// 使用新的支付成功处理方法
+	if err := ctrl.b.HandlePaymentSuccess(c, outTradeNo); err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("处理支付成功失败: "+err.Error()), nil)
 		return
 	}
-	order.Status = "paid"
-	order.PaidAt = time.Now()
-	if err := ctrl.b.Update(c, order); err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("更新订单失败: "+err.Error()), nil)
-		return
-	}
+
 	core.WriteResponse(c, nil, gin.H{"code": "SUCCESS", "message": "成功"})
 }
 

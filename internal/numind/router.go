@@ -1,6 +1,7 @@
 package numind
 
 import (
+	"fmt"
 	"numind-server/internal/numind/biz"
 	orderbiz "numind-server/internal/numind/biz/order"
 	"numind-server/internal/numind/controller/v1/book"
@@ -16,9 +17,12 @@ import (
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
+	"strconv"
 
 	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/spf13/viper"
 
 	"numind-server/internal/numind/controller/v1/feedback"
 	importPayController "numind-server/internal/numind/controller/v1/pay"
@@ -158,13 +162,102 @@ func installNumindRouters(g *gin.Engine) error {
 	g.POST("/api/pay/wechat/notify", importPayController.WechatPayNotify)
 
 	// 订单相关
-	orderBiz := orderbiz.NewOrderBiz(store.S)
+	orderBiz := orderbiz.NewOrderBiz(store.S, b.Users(), b.AccountRecords())
 	orderCtrl := order.New(orderBiz)
 	authGroup.POST("/order/create", orderCtrl.Create)
 	authGroup.GET("/order/list", orderCtrl.ListByUser)
 	g.POST("/api/v1/order/wechat_notify", orderCtrl.WechatNotify)
 
+	// 账户记录相关
+	authGroup.GET("/account/records", func(c *gin.Context) {
+		// 获取当前用户ID
+		userID, err := getUserIDFromToken(c)
+		if err != nil {
+			core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("用户未登录"), nil)
+			return
+		}
+
+		// 获取查询参数
+		offset := 0
+		limit := 20
+		if offsetStr := c.Query("offset"); offsetStr != "" {
+			if offsetVal, err := strconv.Atoi(offsetStr); err == nil {
+				offset = offsetVal
+			}
+		}
+		if limitStr := c.Query("limit"); limitStr != "" {
+			if limitVal, err := strconv.Atoi(limitStr); err == nil {
+				limit = limitVal
+			}
+		}
+
+		// 获取用户支付历史
+		records, err := b.AccountRecords().GetUserPaymentHistory(c, userID, offset, limit)
+		if err != nil {
+			core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败: "+err.Error()), nil)
+			return
+		}
+
+		core.WriteResponse(c, nil, records)
+	})
+
+	// 获取用户总消费金额
+	authGroup.GET("/account/total", func(c *gin.Context) {
+		userID, err := getUserIDFromToken(c)
+		if err != nil {
+			core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("用户未登录"), nil)
+			return
+		}
+
+		total, err := b.AccountRecords().GetUserTotalAmount(c, userID, "payment")
+		if err != nil {
+			core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败: "+err.Error()), nil)
+			return
+		}
+
+		core.WriteResponse(c, nil, gin.H{
+			"total_amount":      total,
+			"total_amount_yuan": float64(total) / 100.0,
+		})
+	})
+
 	return nil
+}
+
+// getUserIDFromToken 从JWT token中获取用户ID
+func getUserIDFromToken(c *gin.Context) (uint, error) {
+	header := c.Request.Header.Get("Authorization")
+	if len(header) == 0 {
+		return 0, fmt.Errorf("missing authorization header")
+	}
+
+	var tokenString string
+	fmt.Sscanf(header, "Bearer %s", &tokenString)
+
+	// 使用viper获取JWT密钥
+	jwtSecret := viper.GetString("jwt.secret")
+	if jwtSecret == "" {
+		return 0, fmt.Errorf("jwt secret not configured")
+	}
+
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(jwtSecret), nil
+	})
+
+	if err != nil {
+		return 0, err
+	}
+
+	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+		if userID, exists := claims["user_id"]; exists {
+			return uint(userID.(float64)), nil
+		}
+	}
+
+	return 0, fmt.Errorf("invalid token or missing user_id")
 }
 
 // installNumindAdminRouters 注册所有 Numind 业务路由

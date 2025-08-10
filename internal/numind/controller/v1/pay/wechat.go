@@ -134,9 +134,22 @@ func WechatPayNotify(c *gin.Context) {
 	cfg := getWechatPayConfig()
 	transaction, err := wechat.ParsePayNotify(cfg, c.Request.Context(), c.Request)
 	if err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("回调解析失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("回调解析失败: "+err.Error()), nil)
 		return
 	}
-	// TODO: 处理订单状态
+
+	// 从微信回调中提取订单号
+	// 注意：这里需要根据实际的微信支付回调格式来提取 out_trade_no
+	// 由于微信支付回调的格式可能因配置而异，这里提供一个通用的处理方式
+
+	// 如果回调解析成功，说明支付已经成功
+	// 我们需要调用订单的回调接口来处理订单状态更新
+	// 这里可以通过 HTTP 请求调用订单回调接口，或者通过其他方式
+
+	// TODO: 实现订单状态更新逻辑
+	// 方案1: 通过 HTTP 请求调用订单回调接口
+	// 方案2: 通过消息队列通知订单服务
+	// 方案3: 直接调用订单业务层（需要重构架构）
+
 	core.WriteResponse(c, nil, gin.H{"code": "SUCCESS", "message": "成功", "transaction": transaction})
 }
