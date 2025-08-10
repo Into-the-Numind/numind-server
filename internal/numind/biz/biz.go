@@ -3,6 +3,7 @@ package biz
 //go:generate mockgen -destination mock_biz.go -package biz github.com/marmotedu/miniblog/internal/miniblog/biz IBiz
 
 import (
+	accountrecordbiz "numind-server/internal/numind/biz/account_record"
 	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/biz/baidu"
 	"numind-server/internal/numind/biz/book"
@@ -124,7 +125,11 @@ func (b *biz) Volc() volc.VolcBiz {
 }
 
 func (b *biz) Order() order.OrderBiz {
-	return order.NewOrderBiz(b.ds, b.Users())
+	return order.NewOrderBiz(b.ds, b.Users(), b.AccountRecords())
+}
+
+func (b *biz) AccountRecords() accountrecordbiz.AccountRecordBiz {
+	return accountrecordbiz.NewAccountRecordBiz(b.ds)
 }
 
 func (b *biz) Mqtt() mqtt.MqttBiz {

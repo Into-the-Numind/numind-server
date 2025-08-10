@@ -2,6 +2,7 @@ package order
 
 import (
 	"context"
+	accountrecordbiz "numind-server/internal/numind/biz/account_record"
 	userbiz "numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/log"
@@ -20,12 +21,13 @@ type OrderBiz interface {
 }
 
 type orderBiz struct {
-	ds      store.IStore
-	userBiz userbiz.UserBiz
+	ds               store.IStore
+	userBiz          userbiz.UserBiz
+	accountRecordBiz accountrecordbiz.AccountRecordBiz
 }
 
-func NewOrderBiz(ds store.IStore, userBiz userbiz.UserBiz) OrderBiz {
-	return &orderBiz{ds: ds, userBiz: userBiz}
+func NewOrderBiz(ds store.IStore, userBiz userbiz.UserBiz, accountRecordBiz accountrecordbiz.AccountRecordBiz) OrderBiz {
+	return &orderBiz{ds: ds, userBiz: userBiz, accountRecordBiz: accountRecordBiz}
 }
 
 func (b *orderBiz) Create(ctx context.Context, order *model.Order) error {
@@ -64,6 +66,12 @@ func (b *orderBiz) HandlePaymentSuccess(ctx context.Context, outTradeNo string) 
 		log.C(ctx).Errorw("Failed to set user pro status", "user_id", order.UserID, "error", err.Error())
 		// 返回错误，因为这是关键操作
 		return err
+	}
+
+	// 创建账户支付记录
+	if err := b.accountRecordBiz.CreatePaymentRecord(ctx, order, "wechat"); err != nil {
+		log.C(ctx).Errorw("Failed to create account record", "user_id", order.UserID, "order_id", order.ID, "error", err.Error())
+		// 记录失败但不影响主要流程，只记录日志
 	}
 
 	return nil

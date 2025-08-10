@@ -128,6 +128,7 @@ func autoMigrate(db *gorm.DB) error {
 		&model.Template{},
 		&model.ChatSession{},
 		&model.ChatMessage{},
+		&model.AccountRecord{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate database: %v", err)
