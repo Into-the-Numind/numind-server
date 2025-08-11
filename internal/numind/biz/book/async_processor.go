@@ -123,31 +123,9 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	// 调用火山引擎文字模型处理文本（替换原来的千问）
 	prompt := p.biz.Ali().GetPromptManager().GetTextProcessingPrompt() + "\n\n" + text
 
-	// 压缩提示词，减少带宽占用
-	compressedPrompt, err := util.CompressPrompt(prompt)
-	if err != nil {
-		log.C(ctx).Warnw("Failed to compress prompt, using original", "book_id", bookID, "error", err.Error())
-		compressedPrompt = []byte(prompt)
-	}
-
-	// 记录压缩统计信息
-	compressionStats := util.GetCompressionStats([]byte(prompt), compressedPrompt)
-	log.C(ctx).Infow("Prompt compression stats", "book_id", bookID, "stats", compressionStats)
-
 	messages := []map[string]string{
-		{"role": "user", "content": string(compressedPrompt)},
+		{"role": "user", "content": prompt},
 	}
-
-	// 压缩消息数组，进一步减少带宽
-	compressedMessages, err := util.CompressMessages(messages)
-	if err != nil {
-		log.C(ctx).Warnw("Failed to compress messages, using original", "book_id", bookID, "error", err.Error())
-		compressedMessages, _ = json.Marshal(messages)
-	}
-
-	// 记录消息压缩统计信息
-	compressedMessagesStats := util.GetCompressionStats([]byte(messages[0]["content"]), compressedMessages)
-	log.C(ctx).Infow("Messages compression stats", "book_id", bookID, "stats", compressedMessagesStats)
 
 	// 首先尝试调用volc
 	volcResult, err := p.biz.Volc().VolcTextStream(ctx, messages, 1024, 0.5)
@@ -202,19 +180,8 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	// 使用解析出的image_prompt调用万相生成图片
 	var imageUrl string
 	if volcResponse.ImagePrompt != "" {
-		// 压缩图片生成提示词，减少带宽占用
-		compressedImagePrompt, err := util.CompressPrompt(volcResponse.ImagePrompt)
-		if err != nil {
-			log.C(ctx).Warnw("Failed to compress image prompt, using original", "book_id", bookID, "error", err.Error())
-			compressedImagePrompt = []byte(volcResponse.ImagePrompt)
-		}
-
-		// 记录图片提示词压缩统计信息
-		imagePromptStats := util.GetCompressionStats([]byte(volcResponse.ImagePrompt), compressedImagePrompt)
-		log.C(ctx).Infow("Image prompt compression stats", "book_id", bookID, "stats", imagePromptStats)
-
-		// 使用压缩后的提示词调用万相API
-		remoteImageUrl, err := p.biz.Ali().WanxiangImageAsync(string(compressedImagePrompt), "", "1024*1024")
+		// 直接使用原始提示词调用万相API
+		remoteImageUrl, err := p.biz.Ali().WanxiangImageAsync(volcResponse.ImagePrompt, "", "1024*1024")
 		if err != nil {
 			log.C(ctx).Errorw("WanxiangImageAsync failed", "book_id", bookID, "error", err.Error())
 			// 图片生成失败不影响整体流程
