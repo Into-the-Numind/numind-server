@@ -67,7 +67,7 @@ volc:
   model: "deepseek-v3-250324"  # 使用的AI模型
   temperature: 0.5 # 生成文本的随机性，值越高随机性越大
   tokens: 2000 # 生成文本的最大长度
-  timeout: 30s
+  timeout: 120s  # 超时时间，从30s改为120s
   max_retries: 3
 
 resource:
@@ -82,10 +82,12 @@ ali:
     api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"
     api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
     model: "qwq-plus"
+    timeout: 120s  # 千问文本生成超时时间
   image:
     api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"
     api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
     model: "wanx2.1-t2i-turbo"
+    timeout: 180s  # 万象图像生成超时时间
 
 # MQTT 配置
 mqtt:

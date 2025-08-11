@@ -130,17 +130,17 @@ func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, 
 				Timeout:   30 * time.Second, // 连接超时
 				KeepAlive: 30 * time.Second, // 保持连接
 			}).DialContext,
-			MaxIdleConns:        100,               // 最大空闲连接数
-			IdleConnTimeout:     90 * time.Second,  // 空闲连接超时
-			TLSHandshakeTimeout: 10 * time.Second, // TLS握手超时
-			ResponseHeaderTimeout: 30 * time.Second, // 响应头超时
+			MaxIdleConns:          100,               // 最大空闲连接数
+			IdleConnTimeout:       90 * time.Second,  // 空闲连接超时
+			TLSHandshakeTimeout:   10 * time.Second,  // TLS握手超时
+			ResponseHeaderTimeout: 120 * time.Second, // 响应头超时设为与整体超时一致
 		},
 	}
 
 	// 使用带超时的context
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	
+
 	req = req.WithContext(ctx)
 
 	resp, err := client.Do(req)

@@ -5,6 +5,9 @@ import (
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
+	"strings"
+
+	"numind-server/internal/pkg/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -72,16 +75,33 @@ func (ctrl *ConfigController) Get(c *gin.Context) {
 
 // List 获取所有配置
 func (ctrl *ConfigController) List(c *gin.Context) {
-	log.C(c).Infow("List configs function called")
+	// 获取字段过滤参数
+	fieldsStr := c.Query("fields")
+	var fields []string
+	if fieldsStr != "" {
+		fields = strings.Split(fieldsStr, ",")
+		// 清理字段名，移除空格
+		for i, field := range fields {
+			fields[i] = strings.TrimSpace(field)
+		}
+	}
 
 	configs, err := ctrl.b.Configs().GetAll(c)
 	if err != nil {
-		log.C(c).Errorw("Failed to get configs", "error", err.Error())
 		core.WriteResponse(c, err, nil)
 		return
 	}
 
-	core.WriteResponse(c, nil, configs)
+	// 如果指定了字段过滤，则过滤响应数据
+	var responseData interface{}
+	if len(fields) > 0 {
+		responseData = util.FilterSliceFields(configs, fields)
+	} else {
+		responseData = configs
+	}
+
+	// 使用压缩响应以减少带宽使用
+	core.WriteCompressedResponse(c, nil, responseData)
 }
 
 // Update 更新配置

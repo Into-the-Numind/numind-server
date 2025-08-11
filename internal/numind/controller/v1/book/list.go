@@ -2,6 +2,7 @@ package book
 
 import (
 	"strconv"
+	"strings"
 
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
@@ -33,6 +34,17 @@ func (ctrl *BookController) List(c *gin.Context) {
 	offsetStr := c.DefaultQuery("offset", "0")
 	limitStr := c.DefaultQuery("limit", "10")
 	categoryIDStr := c.Query("category_id")
+	
+	// 获取字段过滤参数，用逗号分隔
+	fieldsStr := c.Query("fields")
+	var fields []string
+	if fieldsStr != "" {
+		fields = strings.Split(fieldsStr, ",")
+		// 清理字段名，移除空格
+		for i, field := range fields {
+			fields[i] = strings.TrimSpace(field)
+		}
+	}
 
 	offset, err := strconv.Atoi(offsetStr)
 	if err != nil {
@@ -77,5 +89,13 @@ func (ctrl *BookController) List(c *gin.Context) {
 		TotalCount: total,
 		Books:      books,
 	}
-	core.WriteResponse(c, nil, resp)
+	
+	// 如果指定了字段过滤，则过滤响应数据
+	if len(fields) > 0 {
+		filteredBooks := util.FilterSliceFields(books, fields)
+		resp.Books = filteredBooks.([]*model.BookM)
+	}
+	
+	// 使用压缩响应以减少带宽使用
+	core.WriteCompressedResponse(c, nil, resp)
 }
