@@ -40,6 +40,10 @@ RUN apk add --no-cache \
     font-noto-cjk \
     && rm -rf /var/cache/apk/*
 
+# 设置时区为东八区
+ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
 # 创建非 root 用户
 RUN addgroup -g 1001 -S numind && \
     adduser -u 1001 -S numind -G numind
