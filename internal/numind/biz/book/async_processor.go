@@ -414,7 +414,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		return
 	}
 
-	log.C(ctx).Infow("Async book creation completed", "book_id", bookID, "duration", time.Since(startTime))
+	log.C(ctx).Infow("Async book creation completed", "book_id", bookID, "duration", time.Since(startTime).Seconds())
 }
 
 // updateBookStatus 更新book状态

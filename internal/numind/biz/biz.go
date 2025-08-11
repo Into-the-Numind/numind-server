@@ -23,6 +23,7 @@ import (
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/biz/wechat"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/numind/biz/config"
 
 	"github.com/spf13/viper"
 )
@@ -46,6 +47,7 @@ type IBiz interface {
 	Chats() chat.ChatBiz
 	Article() article.IArticleBiz
 	Admin() admin.IAdminBiz
+	Configs() config.ConfigBiz
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -154,4 +156,8 @@ func (b *biz) Article() article.IArticleBiz {
 
 func (b *biz) Admin() admin.IAdminBiz {
 	return admin.NewAdminBiz(b.ds.Admin())
+}
+
+func (b *biz) Configs() config.ConfigBiz {
+	return config.New(b.ds)
 }

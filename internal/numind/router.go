@@ -26,6 +26,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/spf13/viper"
 
+	"numind-server/internal/numind/controller/v1/config"
 	"numind-server/internal/numind/controller/v1/feedback"
 	importPayController "numind-server/internal/numind/controller/v1/pay"
 	importMw "numind-server/internal/pkg/middleware"
@@ -177,6 +178,15 @@ func installNumindRouters(g *gin.Engine) error {
 	adminGroup.PUT("/categories/:id", adminc.UpdateCategory)            // 更新分类
 	adminGroup.DELETE("/categories/:id", adminc.DeleteCategory)         // 删除分类
 	adminGroup.GET("/stats", adminc.GetStats)                           // 获取统计信息
+
+	// 配置相关（管理员权限）
+	configc := config.New(b)
+	adminGroup.POST("/configs", configc.Create)           // 创建配置
+	adminGroup.GET("/configs", configc.List)              // 获取所有配置
+	adminGroup.GET("/configs/:key", configc.Get)          // 获取单个配置
+	adminGroup.PUT("/configs/:key", configc.Update)       // 更新配置
+	adminGroup.DELETE("/configs/:key", configc.Delete)    // 删除配置
+	adminGroup.POST("/configs/init", configc.InitDefault) // 初始化默认配置
 
 	// 用户相关
 	//authGroup.GET("/users", uc.List)              // 查询用户列表
