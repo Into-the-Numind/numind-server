@@ -4,7 +4,9 @@ package biz
 
 import (
 	accountrecordbiz "numind-server/internal/numind/biz/account_record"
+	"numind-server/internal/numind/biz/admin"
 	"numind-server/internal/numind/biz/ali"
+	"numind-server/internal/numind/biz/article"
 	"numind-server/internal/numind/biz/baidu"
 	"numind-server/internal/numind/biz/book"
 	"numind-server/internal/numind/biz/card"
@@ -42,6 +44,8 @@ type IBiz interface {
 	Mqtt() mqtt.MqttBiz
 	Pagination() pagination.PaginationBiz
 	Chats() chat.ChatBiz
+	Article() article.IArticleBiz
+	Admin() admin.IAdminBiz
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -142,4 +146,12 @@ func (b *biz) Pagination() pagination.PaginationBiz {
 
 func (b *biz) Chats() chat.ChatBiz {
 	return chat.New(b.ds)
+}
+
+func (b *biz) Article() article.IArticleBiz {
+	return article.NewArticleBiz(b.ds.Article())
+}
+
+func (b *biz) Admin() admin.IAdminBiz {
+	return admin.NewAdminBiz(b.ds.Admin())
 }

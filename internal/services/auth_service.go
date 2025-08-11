@@ -8,8 +8,6 @@ import (
 	"numind-server/internal/pkg/model"
 	"time"
 
-	"numind-server/configs/config"
-
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/spf13/viper"
 	"golang.org/x/crypto/bcrypt"
@@ -17,8 +15,7 @@ import (
 )
 
 type AuthService struct {
-	db  *gorm.DB
-	cfg *config.Config
+	db *gorm.DB
 }
 
 type WechatLoginRequest struct {

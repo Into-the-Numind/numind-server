@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"numind-server/internal/numind/biz"
 	orderbiz "numind-server/internal/numind/biz/order"
+	"numind-server/internal/numind/controller/v1/admin"
+	"numind-server/internal/numind/controller/v1/article"
 	"numind-server/internal/numind/controller/v1/book"
 	"numind-server/internal/numind/controller/v1/card"
 	"numind-server/internal/numind/controller/v1/category"
@@ -59,6 +61,8 @@ func installNumindRouters(g *gin.Engine) error {
 	tc := template.New(b)
 	fc := feedback.New(b)
 	chatc := chat.New(store.S)
+	ac := article.NewArticleController(b.Article())
+	adminc := admin.NewAdminController(b.Admin())
 
 	v1Group := g.Group("/v1")
 
@@ -145,6 +149,34 @@ func installNumindRouters(g *gin.Engine) error {
 	authGroup.GET("/pagination/style-config", paginationController.GetStyleConfig)     // 获取样式配置
 	authGroup.PUT("/pagination/config", paginationController.UpdateConfig)             // 更新配置
 	authGroup.GET("/pagination/test", paginationController.TestPagination)             // 测试分页功能
+
+	// 文章相关
+	authGroup.POST("/articles/fetch", ac.FetchArticle)                // 获取文章内容
+	authGroup.GET("/articles", ac.GetArticles)                        // 获取文章列表
+	authGroup.GET("/articles/:id", ac.GetArticle)                     // 获取单个文章
+	authGroup.PUT("/articles/:id/category", ac.UpdateArticleCategory) // 更新文章分类
+	authGroup.DELETE("/articles/:id", ac.DeleteArticle)               // 删除文章
+	authGroup.POST("/articles/:id/favorite", ac.AddFavorite)          // 添加收藏
+	authGroup.DELETE("/articles/:id/favorite", ac.RemoveFavorite)     // 移除收藏
+	authGroup.GET("/articles/favorites", ac.GetFavorites)             // 获取收藏列表
+	authGroup.POST("/articles/paraphrase", ac.ParaphraseText)         // 文本释义
+
+	// 管理员相关
+	adminGroup := v1Group.Group("/admin", importMw.AuthMiddleware(authService))
+	adminGroup.GET("/articles", adminc.GetArticles)                     // 获取文章列表（管理员）
+	adminGroup.GET("/articles/:id", adminc.GetArticle)                  // 获取单个文章（管理员）
+	adminGroup.POST("/articles", adminc.CreateArticle)                  // 创建文章（管理员）
+	adminGroup.PUT("/articles/:id", adminc.UpdateArticle)               // 更新文章（管理员）
+	adminGroup.DELETE("/articles/:id", adminc.DeleteArticle)            // 删除文章（管理员）
+	adminGroup.POST("/articles/bulk-delete", adminc.BulkDeleteArticles) // 批量删除文章
+	adminGroup.GET("/users", adminc.GetUsers)                           // 获取用户列表
+	adminGroup.PUT("/users/:id", adminc.UpdateUser)                     // 更新用户
+	adminGroup.DELETE("/users/:id", adminc.DeleteUser)                  // 删除用户
+	adminGroup.GET("/categories", adminc.GetCategories)                 // 获取分类列表
+	adminGroup.POST("/categories", adminc.CreateCategory)               // 创建分类
+	adminGroup.PUT("/categories/:id", adminc.UpdateCategory)            // 更新分类
+	adminGroup.DELETE("/categories/:id", adminc.DeleteCategory)         // 删除分类
+	adminGroup.GET("/stats", adminc.GetStats)                           // 获取统计信息
 
 	// 用户相关
 	//authGroup.GET("/users", uc.List)              // 查询用户列表

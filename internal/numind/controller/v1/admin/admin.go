@@ -1,31 +1,29 @@
-package handlers
+package admin
 
 import (
 	"net/http"
 	"strconv"
 
-	"numind-server/internal/services"
-
 	"github.com/gin-gonic/gin"
+	"numind-server/internal/numind/biz/admin"
+	"numind-server/internal/numind/store"
 )
 
-type AdminHandler struct {
-	adminService *services.AdminService
+type AdminController struct {
+	biz admin.IAdminBiz
 }
 
-func NewAdminHandler(adminService *services.AdminService) *AdminHandler {
-	return &AdminHandler{
-		adminService: adminService,
-	}
+func NewAdminController(biz admin.IAdminBiz) *AdminController {
+	return &AdminController{biz: biz}
 }
 
 // GetArticles 获取文章列表（管理员）
-func (h *AdminHandler) GetArticles(c *gin.Context) {
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
-	categoryIDStr := c.Query("category_id")
-	keyword := c.Query("keyword")
-	userIDStr := c.Query("user_id")
+func (c *AdminController) GetArticles(ctx *gin.Context) {
+	page, _ := strconv.Atoi(ctx.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(ctx.DefaultQuery("limit", "10"))
+	categoryIDStr := ctx.Query("category_id")
+	keyword := ctx.Query("keyword")
+	userIDStr := ctx.Query("user_id")
 
 	var categoryID *uint
 	if categoryIDStr != "" {
@@ -43,7 +41,7 @@ func (h *AdminHandler) GetArticles(c *gin.Context) {
 		}
 	}
 
-	req := &services.AdminArticleListRequest{
+	req := &store.AdminArticleListRequest{
 		Page:       page,
 		Limit:      limit,
 		CategoryID: categoryID,
@@ -51,9 +49,9 @@ func (h *AdminHandler) GetArticles(c *gin.Context) {
 		UserID:     userID,
 	}
 
-	result, err := h.adminService.GetArticles(req)
+	articles, total, err := c.biz.GetArticles(ctx, req)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		ctx.JSON(http.StatusInternalServerError, gin.H{
 			"code":    1,
 			"message": err.Error(),
 			"data":    nil,
@@ -61,19 +59,27 @@ func (h *AdminHandler) GetArticles(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	pages := int((total + int64(req.Limit) - 1) / int64(req.Limit))
+
+	ctx.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "获取文章列表成功",
-		"data":    result,
+		"data": gin.H{
+			"items": articles,
+			"total": total,
+			"page":  req.Page,
+			"limit": req.Limit,
+			"pages": pages,
+		},
 	})
 }
 
 // GetArticle 获取单个文章（管理员）
-func (h *AdminHandler) GetArticle(c *gin.Context) {
-	articleIDStr := c.Param("id")
+func (c *AdminController) GetArticle(ctx *gin.Context) {
+	articleIDStr := ctx.Param("id")
 	articleID, err := strconv.ParseUint(articleIDStr, 10, 32)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": "文章ID格式错误",
 			"data":    nil,
@@ -81,9 +87,9 @@ func (h *AdminHandler) GetArticle(c *gin.Context) {
 		return
 	}
 
-	article, err := h.adminService.GetArticle(uint(articleID))
+	article, err := c.biz.GetArticle(ctx, uint(articleID))
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
+		ctx.JSON(http.StatusNotFound, gin.H{
 			"code":    1,
 			"message": "文章不存在",
 			"data":    nil,
@@ -91,7 +97,7 @@ func (h *AdminHandler) GetArticle(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	ctx.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "获取文章成功",
 		"data":    article,
@@ -99,10 +105,10 @@ func (h *AdminHandler) GetArticle(c *gin.Context) {
 }
 
 // CreateArticle 创建文章（管理员）
-func (h *AdminHandler) CreateArticle(c *gin.Context) {
-	var req services.AdminArticleCreateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+func (c *AdminController) CreateArticle(ctx *gin.Context) {
+	var req admin.AdminArticleCreateRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": "请求参数错误: " + err.Error(),
 			"data":    nil,
@@ -110,9 +116,9 @@ func (h *AdminHandler) CreateArticle(c *gin.Context) {
 		return
 	}
 
-	article, err := h.adminService.CreateArticle(&req)
+	article, err := c.biz.CreateArticle(ctx, &req)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		ctx.JSON(http.StatusInternalServerError, gin.H{
 			"code":    1,
 			"message": err.Error(),
 			"data":    nil,
@@ -120,7 +126,7 @@ func (h *AdminHandler) CreateArticle(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	ctx.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "创建文章成功",
 		"data":    article,
@@ -128,11 +134,11 @@ func (h *AdminHandler) CreateArticle(c *gin.Context) {
 }
 
 // UpdateArticle 更新文章（管理员）
-func (h *AdminHandler) UpdateArticle(c *gin.Context) {
-	articleIDStr := c.Param("id")
+func (c *AdminController) UpdateArticle(ctx *gin.Context) {
+	articleIDStr := ctx.Param("id")
 	articleID, err := strconv.ParseUint(articleIDStr, 10, 32)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": "文章ID格式错误",
 			"data":    nil,
@@ -140,9 +146,9 @@ func (h *AdminHandler) UpdateArticle(c *gin.Context) {
 		return
 	}
 
-	var req services.AdminArticleUpdateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+	var req admin.AdminArticleUpdateRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": "请求参数错误: " + err.Error(),
 			"data":    nil,
@@ -150,9 +156,9 @@ func (h *AdminHandler) UpdateArticle(c *gin.Context) {
 		return
 	}
 
-	err = h.adminService.UpdateArticle(uint(articleID), &req)
+	err = c.biz.UpdateArticle(ctx, uint(articleID), &req)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": err.Error(),
 			"data":    nil,
@@ -160,7 +166,7 @@ func (h *AdminHandler) UpdateArticle(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	ctx.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "更新文章成功",
 		"data":    nil,
@@ -168,11 +174,11 @@ func (h *AdminHandler) UpdateArticle(c *gin.Context) {
 }
 
 // DeleteArticle 删除文章（管理员）
-func (h *AdminHandler) DeleteArticle(c *gin.Context) {
-	articleIDStr := c.Param("id")
+func (c *AdminController) DeleteArticle(ctx *gin.Context) {
+	articleIDStr := ctx.Param("id")
 	articleID, err := strconv.ParseUint(articleIDStr, 10, 32)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": "文章ID格式错误",
 			"data":    nil,
@@ -180,9 +186,9 @@ func (h *AdminHandler) DeleteArticle(c *gin.Context) {
 		return
 	}
 
-	err = h.adminService.DeleteArticle(uint(articleID))
+	err = c.biz.DeleteArticle(ctx, uint(articleID))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": err.Error(),
 			"data":    nil,
@@ -190,7 +196,7 @@ func (h *AdminHandler) DeleteArticle(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	ctx.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "删除文章成功",
 		"data":    nil,
@@ -198,13 +204,13 @@ func (h *AdminHandler) DeleteArticle(c *gin.Context) {
 }
 
 // BulkDeleteArticles 批量删除文章
-func (h *AdminHandler) BulkDeleteArticles(c *gin.Context) {
+func (c *AdminController) BulkDeleteArticles(ctx *gin.Context) {
 	var req struct {
 		ArticleIDs []uint `json:"article_ids" binding:"required"`
 	}
 
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": "请求参数错误: " + err.Error(),
 			"data":    nil,
@@ -212,9 +218,9 @@ func (h *AdminHandler) BulkDeleteArticles(c *gin.Context) {
 		return
 	}
 
-	err := h.adminService.BulkDeleteArticles(req.ArticleIDs)
+	err := c.biz.BulkDeleteArticles(ctx, req.ArticleIDs)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": err.Error(),
 			"data":    nil,
@@ -222,7 +228,7 @@ func (h *AdminHandler) BulkDeleteArticles(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	ctx.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "批量删除文章成功",
 		"data":    nil,
@@ -230,13 +236,13 @@ func (h *AdminHandler) BulkDeleteArticles(c *gin.Context) {
 }
 
 // GetUsers 获取用户列表
-func (h *AdminHandler) GetUsers(c *gin.Context) {
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+func (c *AdminController) GetUsers(ctx *gin.Context) {
+	page, _ := strconv.Atoi(ctx.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(ctx.DefaultQuery("limit", "10"))
 
-	result, err := h.adminService.GetUsers(page, limit)
+	users, total, err := c.biz.GetUsers(ctx, page, limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		ctx.JSON(http.StatusInternalServerError, gin.H{
 			"code":    1,
 			"message": err.Error(),
 			"data":    nil,
@@ -244,19 +250,27 @@ func (h *AdminHandler) GetUsers(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	pages := int((total + int64(limit) - 1) / int64(limit))
+
+	ctx.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "获取用户列表成功",
-		"data":    result,
+		"data": gin.H{
+			"items": users,
+			"total": total,
+			"page":  page,
+			"limit": limit,
+			"pages": pages,
+		},
 	})
 }
 
 // UpdateUser 更新用户
-func (h *AdminHandler) UpdateUser(c *gin.Context) {
-	userIDStr := c.Param("id")
+func (c *AdminController) UpdateUser(ctx *gin.Context) {
+	userIDStr := ctx.Param("id")
 	userID, err := strconv.ParseUint(userIDStr, 10, 32)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": "用户ID格式错误",
 			"data":    nil,
@@ -264,9 +278,9 @@ func (h *AdminHandler) UpdateUser(c *gin.Context) {
 		return
 	}
 
-	var req services.AdminUserUpdateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+	var req admin.AdminUserUpdateRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": "请求参数错误: " + err.Error(),
 			"data":    nil,
@@ -274,9 +288,9 @@ func (h *AdminHandler) UpdateUser(c *gin.Context) {
 		return
 	}
 
-	err = h.adminService.UpdateUser(uint(userID), &req)
+	err = c.biz.UpdateUser(ctx, uint(userID), &req)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": err.Error(),
 			"data":    nil,
@@ -284,7 +298,7 @@ func (h *AdminHandler) UpdateUser(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	ctx.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "更新用户成功",
 		"data":    nil,
@@ -292,11 +306,11 @@ func (h *AdminHandler) UpdateUser(c *gin.Context) {
 }
 
 // DeleteUser 删除用户
-func (h *AdminHandler) DeleteUser(c *gin.Context) {
-	userIDStr := c.Param("id")
+func (c *AdminController) DeleteUser(ctx *gin.Context) {
+	userIDStr := ctx.Param("id")
 	userID, err := strconv.ParseUint(userIDStr, 10, 32)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": "用户ID格式错误",
 			"data":    nil,
@@ -304,9 +318,9 @@ func (h *AdminHandler) DeleteUser(c *gin.Context) {
 		return
 	}
 
-	err = h.adminService.DeleteUser(uint(userID))
+	err = c.biz.DeleteUser(ctx, uint(userID))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": err.Error(),
 			"data":    nil,
@@ -314,7 +328,7 @@ func (h *AdminHandler) DeleteUser(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	ctx.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "删除用户成功",
 		"data":    nil,
@@ -322,10 +336,10 @@ func (h *AdminHandler) DeleteUser(c *gin.Context) {
 }
 
 // GetCategories 获取分类列表
-func (h *AdminHandler) GetCategories(c *gin.Context) {
-	categories, err := h.adminService.GetCategories()
+func (c *AdminController) GetCategories(ctx *gin.Context) {
+	categories, err := c.biz.GetCategories(ctx)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		ctx.JSON(http.StatusInternalServerError, gin.H{
 			"code":    1,
 			"message": err.Error(),
 			"data":    nil,
@@ -333,7 +347,7 @@ func (h *AdminHandler) GetCategories(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	ctx.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "获取分类列表成功",
 		"data":    categories,
@@ -341,10 +355,10 @@ func (h *AdminHandler) GetCategories(c *gin.Context) {
 }
 
 // CreateCategory 创建分类
-func (h *AdminHandler) CreateCategory(c *gin.Context) {
-	var req services.AdminCategoryCreateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+func (c *AdminController) CreateCategory(ctx *gin.Context) {
+	var req admin.AdminCategoryCreateRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": "请求参数错误: " + err.Error(),
 			"data":    nil,
@@ -352,9 +366,9 @@ func (h *AdminHandler) CreateCategory(c *gin.Context) {
 		return
 	}
 
-	category, err := h.adminService.CreateCategory(&req)
+	category, err := c.biz.CreateCategory(ctx, &req)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		ctx.JSON(http.StatusInternalServerError, gin.H{
 			"code":    1,
 			"message": err.Error(),
 			"data":    nil,
@@ -362,7 +376,7 @@ func (h *AdminHandler) CreateCategory(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	ctx.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "创建分类成功",
 		"data":    category,
@@ -370,11 +384,11 @@ func (h *AdminHandler) CreateCategory(c *gin.Context) {
 }
 
 // UpdateCategory 更新分类
-func (h *AdminHandler) UpdateCategory(c *gin.Context) {
-	categoryIDStr := c.Param("id")
+func (c *AdminController) UpdateCategory(ctx *gin.Context) {
+	categoryIDStr := ctx.Param("id")
 	categoryID, err := strconv.ParseUint(categoryIDStr, 10, 32)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": "分类ID格式错误",
 			"data":    nil,
@@ -382,9 +396,9 @@ func (h *AdminHandler) UpdateCategory(c *gin.Context) {
 		return
 	}
 
-	var req services.AdminCategoryUpdateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+	var req admin.AdminCategoryUpdateRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": "请求参数错误: " + err.Error(),
 			"data":    nil,
@@ -392,9 +406,9 @@ func (h *AdminHandler) UpdateCategory(c *gin.Context) {
 		return
 	}
 
-	err = h.adminService.UpdateCategory(uint(categoryID), &req)
+	err = c.biz.UpdateCategory(ctx, uint(categoryID), &req)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": err.Error(),
 			"data":    nil,
@@ -402,7 +416,7 @@ func (h *AdminHandler) UpdateCategory(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	ctx.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "更新分类成功",
 		"data":    nil,
@@ -410,11 +424,11 @@ func (h *AdminHandler) UpdateCategory(c *gin.Context) {
 }
 
 // DeleteCategory 删除分类
-func (h *AdminHandler) DeleteCategory(c *gin.Context) {
-	categoryIDStr := c.Param("id")
+func (c *AdminController) DeleteCategory(ctx *gin.Context) {
+	categoryIDStr := ctx.Param("id")
 	categoryID, err := strconv.ParseUint(categoryIDStr, 10, 32)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": "分类ID格式错误",
 			"data":    nil,
@@ -422,9 +436,9 @@ func (h *AdminHandler) DeleteCategory(c *gin.Context) {
 		return
 	}
 
-	err = h.adminService.DeleteCategory(uint(categoryID))
+	err = c.biz.DeleteCategory(ctx, uint(categoryID))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
+		ctx.JSON(http.StatusBadRequest, gin.H{
 			"code":    1,
 			"message": err.Error(),
 			"data":    nil,
@@ -432,7 +446,7 @@ func (h *AdminHandler) DeleteCategory(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	ctx.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "删除分类成功",
 		"data":    nil,
@@ -440,10 +454,10 @@ func (h *AdminHandler) DeleteCategory(c *gin.Context) {
 }
 
 // GetStats 获取统计信息
-func (h *AdminHandler) GetStats(c *gin.Context) {
-	stats, err := h.adminService.GetStats()
+func (c *AdminController) GetStats(ctx *gin.Context) {
+	stats, err := c.biz.GetStats(ctx)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
+		ctx.JSON(http.StatusInternalServerError, gin.H{
 			"code":    1,
 			"message": err.Error(),
 			"data":    nil,
@@ -451,7 +465,7 @@ func (h *AdminHandler) GetStats(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	ctx.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "获取统计信息成功",
 		"data":    stats,

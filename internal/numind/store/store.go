@@ -33,6 +33,8 @@ type IStore interface {
 	Feedbacks() FeedbackStore
 	Chats() ChatStore
 	AccountRecords() AccountRecordStore
+	Article() IArticleStore
+	Admin() IAdminStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -102,4 +104,12 @@ func (ds *datastore) Chats() ChatStore {
 
 func (ds *datastore) AccountRecords() AccountRecordStore {
 	return NewAccountRecordStore(ds.db)
+}
+
+func (ds *datastore) Article() IArticleStore {
+	return NewArticleStore(ds.db)
+}
+
+func (ds *datastore) Admin() IAdminStore {
+	return NewAdminStore(ds.db)
 }
