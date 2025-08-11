@@ -1,8 +1,6 @@
 package core
 
 import (
-	"compress/gzip"
-	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -56,16 +54,10 @@ func WriteCompressedResponse(c *gin.Context, err error, data interface{}) {
 			Message: message,
 			Data:    nil,
 		}
-		
+
+		// 修复：使用c.JSON而不是手动设置状态码和写入
 		c.Header("Content-Encoding", "gzip")
-		c.Header("Content-Type", "application/json")
-		c.Status(httpCode)
-		
-		gw := gzip.NewWriter(c.Writer)
-		defer gw.Close()
-		
-		responseBytes, _ := json.Marshal(response)
-		gw.Write(responseBytes)
+		c.JSON(httpCode, response)
 		return
 	}
 
@@ -74,16 +66,10 @@ func WriteCompressedResponse(c *gin.Context, err error, data interface{}) {
 		Message: "",
 		Data:    data,
 	}
-	
+
+	// 修复：使用c.JSON而不是手动压缩
 	c.Header("Content-Encoding", "gzip")
-	c.Header("Content-Type", "application/json")
-	c.Status(http.StatusOK)
-	
-	gw := gzip.NewWriter(c.Writer)
-	defer gw.Close()
-	
-	responseBytes, _ := json.Marshal(response)
-	gw.Write(responseBytes)
+	c.JSON(http.StatusOK, response)
 }
 
 // WriteMinimalResponse 返回最小化的响应，只包含必要字段

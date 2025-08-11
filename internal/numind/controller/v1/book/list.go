@@ -96,6 +96,6 @@ func (ctrl *BookController) List(c *gin.Context) {
 		resp.Books = filteredBooks.([]*model.BookM)
 	}
 	
-	// 使用压缩响应以减少带宽使用
-	core.WriteCompressedResponse(c, nil, resp)
+	// 使用标准响应，避免压缩导致的乱码问题
+	core.WriteResponse(c, nil, resp)
 }

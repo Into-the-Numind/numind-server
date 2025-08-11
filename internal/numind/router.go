@@ -50,8 +50,8 @@ func installNumindRouters(g *gin.Engine) error {
 	// 注册 pprof 路由
 	pprof.Register(g)
 
-	// 添加gzip压缩中间件以减少带宽使用
-	g.Use(importMw.GzipCompression())
+	// 暂时禁用gzip压缩中间件，排查乱码问题
+	// g.Use(importMw.GzipCompression())
 
 	// 初始化 AuthService
 	db := store.S.DB()

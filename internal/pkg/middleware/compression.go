@@ -43,11 +43,19 @@ type gzipWriter struct {
 }
 
 func (g *gzipWriter) Write(data []byte) (int, error) {
-	return g.gzipWriter.Write(data)
+	n, err := g.gzipWriter.Write(data)
+	if err == nil {
+		g.gzipWriter.Flush() // 确保数据完全写入
+	}
+	return n, err
 }
 
 func (g *gzipWriter) WriteString(s string) (int, error) {
-	return g.gzipWriter.Write([]byte(s))
+	n, err := g.gzipWriter.Write([]byte(s))
+	if err == nil {
+		g.gzipWriter.Flush() // 确保数据完全写入
+	}
+	return n, err
 }
 
 func (g *gzipWriter) WriteHeader(code int) {
