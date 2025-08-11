@@ -14,6 +14,7 @@ type AccountRecordBiz interface {
 	ListByUserAndType(ctx context.Context, userID uint, recordType string, offset, limit int) ([]*model.AccountRecord, error)
 	GetUserTotalAmount(ctx context.Context, userID uint, recordType string) (int64, error)
 	GetUserPaymentHistory(ctx context.Context, userID uint, offset, limit int) ([]*model.AccountRecord, error)
+	GetUserAccountSummary(ctx context.Context, userID uint) (map[string]interface{}, error)
 }
 
 type accountRecordBiz struct {
@@ -69,4 +70,55 @@ func (b *accountRecordBiz) GetUserTotalAmount(ctx context.Context, userID uint, 
 // GetUserPaymentHistory 获取用户支付历史
 func (b *accountRecordBiz) GetUserPaymentHistory(ctx context.Context, userID uint, offset, limit int) ([]*model.AccountRecord, error) {
 	return b.ds.AccountRecords().ListByUserAndType(ctx, userID, "payment", offset, limit)
+}
+
+// GetUserAccountSummary 获取用户账户摘要信息
+func (b *accountRecordBiz) GetUserAccountSummary(ctx context.Context, userID uint) (map[string]interface{}, error) {
+	// 获取用户总消费金额
+	totalPayment, err := b.GetUserTotalAmount(ctx, userID, "payment")
+	if err != nil {
+		return nil, err
+	}
+
+	// 获取用户记录总数
+	records, err := b.ListByUser(ctx, userID, 0, 1000) // 获取所有记录用于统计
+	if err != nil {
+		return nil, err
+	}
+
+	// 统计不同类型的记录数量
+	typeCounts := make(map[string]int)
+	for _, record := range records {
+		typeCounts[record.Type]++
+	}
+
+	summary := map[string]interface{}{
+		"total_payment":        totalPayment,
+		"total_payment_yuan":   float64(totalPayment) / 100.0,
+		"total_records":        len(records),
+		"type_distribution":    typeCounts,
+		"last_payment_at":      nil,
+		"last_payment_amount":  0,
+	}
+
+	// 获取最后一次支付信息
+	if len(records) > 0 {
+		// 按时间排序，获取最新的支付记录
+		latestPayment := records[0]
+		for _, record := range records {
+			if record.Type == "payment" && !record.PaymentAt.IsZero() {
+				if latestPayment.PaymentAt.IsZero() || record.PaymentAt.After(latestPayment.PaymentAt) {
+					latestPayment = record
+				}
+			}
+		}
+		
+		if latestPayment.Type == "payment" && !latestPayment.PaymentAt.IsZero() {
+			summary["last_payment_at"] = latestPayment.PaymentAt
+			summary["last_payment_amount"] = latestPayment.Amount
+			summary["last_payment_amount_yuan"] = latestPayment.AmountYuan
+		}
+	}
+
+	return summary, nil
 }

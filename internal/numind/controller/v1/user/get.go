@@ -39,19 +39,19 @@ func (ctrl *UserController) GetCurrentUser(c *gin.Context) {
 		return
 	}
 
-	// 通过用户ID获取完整的用户信息（基于 User model）
-	user, err := ctrl.b.Users().GetCurrentUser(c, currentUser.ID)
+	// 通过用户ID获取完整的用户信息（包含统计信息）
+	userWithStats, err := ctrl.b.Users().GetCurrentUserWithStats(c, currentUser.ID)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
 	}
 
 	// 转换头像URL用于展示（去掉/opt前缀）
-	if user.AvatarURL != "" {
-		user.AvatarURL = util.GetAvatarDisplayURL(user.AvatarURL)
+	if userWithStats.AvatarURL != "" {
+		userWithStats.AvatarURL = util.GetAvatarDisplayURL(userWithStats.AvatarURL)
 	}
 
-	core.WriteResponse(c, nil, user)
+	core.WriteResponse(c, nil, userWithStats)
 }
 
 // GetUserV2 独立的用户信息获取接口

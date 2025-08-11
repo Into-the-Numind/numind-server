@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"numind-server/internal/numind/biz"
 	orderbiz "numind-server/internal/numind/biz/order"
+	"numind-server/internal/numind/controller/v1/account"
 	"numind-server/internal/numind/controller/v1/admin"
 	"numind-server/internal/numind/controller/v1/article"
 	"numind-server/internal/numind/controller/v1/book"
@@ -19,7 +20,6 @@ import (
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
-	"strconv"
 
 	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
@@ -82,189 +82,167 @@ func installNumindRouters(g *gin.Engine) error {
 	authGroup.Use(importMw.AuthMiddleware(authService))
 
 	// 图片相关
-	authGroup.POST("/images", ic.Create)
-	authGroup.POST("/images/batch", ic.BatchUpload)
-	authGroup.GET("/images", ic.List)
-	authGroup.GET("/images/:id", ic.Get)
-	authGroup.PUT("/images/:id", ic.Update)
-	authGroup.DELETE("/images/:id", ic.Delete)
-
-	// 卡片相关（注释掉，避免重复注册）
-	// authGroup.POST("/cards", cc.Create)
-	// authGroup.GET("/cards", cc.List)
-	// authGroup.GET("/cards/:id", cc.Get)
-	// authGroup.PUT("/cards/:id", cc.Update)
-	// authGroup.DELETE("/cards/:id", cc.Delete)
+	{
+		authGroup.POST("/images", ic.Create)
+		authGroup.POST("/images/batch", ic.BatchUpload)
+		authGroup.GET("/images", ic.List)
+		authGroup.GET("/images/:id", ic.Get)
+		authGroup.PUT("/images/:id", ic.Update)
+		authGroup.DELETE("/images/:id", ic.Delete)
+	}
 
 	// 卡册相关
-	authGroup.PUT("/books/:id/category", bc.SetCategory) // 设置卡册分类
-	authGroup.POST("/books", bc.Create)                  // 创建卡册
-	authGroup.GET("/books", bc.List)                     // 获取卡册列表
-	authGroup.GET("/books/:id", bc.Get)                  // 获取卡册详情
-	authGroup.PUT("/books/:id", bc.Update)               // 更新卡册
-	authGroup.DELETE("/books/:id", bc.Delete)            // 删除卡册
-	authGroup.DELETE("/books", bc.DeleteBatch)           // 批量删除卡册，query: bookID=1&bookID=2
-	authGroup.GET("/books/:id/html", bc.ViewBookHTML)    // 查看卡册HTML
-	authGroup.GET("/books/:id/image", bc.ViewBookImage)  // 查看卡册图片
+	{
+		authGroup.PUT("/books/:id/category", bc.SetCategory) // 设置卡册分类
+		authGroup.POST("/books", bc.Create)                  // 创建卡册
+		authGroup.GET("/books", bc.List)                     // 获取卡册列表
+		authGroup.GET("/books/:id", bc.Get)                  // 获取卡册详情
+		authGroup.PUT("/books/:id", bc.Update)               // 更新卡册
+		authGroup.DELETE("/books/:id", bc.Delete)            // 删除卡册
+		authGroup.DELETE("/books", bc.DeleteBatch)           // 批量删除卡册，query: bookID=1&bookID=2
+		authGroup.GET("/books/:id/html", bc.ViewBookHTML)    // 查看卡册HTML
+		authGroup.GET("/books/:id/image", bc.ViewBookImage)  // 查看卡册图片
+	}
 
 	// 卡片相关
-	authGroup.POST("/cards", card.New(b).Create)                              // 创建卡片
-	authGroup.GET("/cards", card.New(b).List)                                 // 获取卡片列表
-	authGroup.GET("/cards/:id", card.New(b).Get)                              // 获取卡片详情
-	authGroup.PUT("/cards/:id", card.New(b).Update)                           // 更新卡片
-	authGroup.DELETE("/cards/:id", card.New(b).Delete)                        // 删除卡片
-	authGroup.POST("/cards/:id/render", card.New(b).RenderCard)               // 渲染卡片
-	authGroup.POST("/cards/book/:bookId/render", card.New(b).RenderBookCards) // 渲染书籍卡片
+	{
+		cardController := card.New(b)
+		authGroup.POST("/cards", cardController.Create)                              // 创建卡片
+		authGroup.GET("/cards", cardController.List)                                 // 获取卡片列表
+		authGroup.GET("/cards/:id", cardController.Get)                              // 获取卡片详情
+		authGroup.PUT("/cards/:id", cardController.Update)                           // 更新卡片
+		authGroup.DELETE("/cards/:id", cardController.Delete)                        // 删除卡片
+		authGroup.POST("/cards/:id/render", cardController.RenderCard)               // 渲染卡片
+		authGroup.POST("/cards/book/:bookId/render", cardController.RenderBookCards) // 渲染书籍卡片
+	}
 
 	// 分类相关
-	authGroup.POST("/categories", catc.Create)       // 创建分类
-	authGroup.GET("/categories", catc.List)          // 获取分类列表
-	authGroup.GET("/categories/:id", catc.Get)       // 获取分类详情
-	authGroup.PUT("/categories/:id", catc.Update)    // 更新分类
-	authGroup.DELETE("/categories/:id", catc.Delete) // 删除分类
+	{
+		authGroup.POST("/categories", catc.Create)       // 创建分类
+		authGroup.GET("/categories", catc.List)          // 获取分类列表
+		authGroup.GET("/categories/:id", catc.Get)       // 获取分类详情
+		authGroup.PUT("/categories/:id", catc.Update)    // 更新分类
+		authGroup.DELETE("/categories/:id", catc.Delete) // 删除分类
+	}
 
 	// 模板相关
-	authGroup.POST("/templates", tc.Create)       // 创建模板
-	authGroup.GET("/templates", tc.List)          // 获取模板列表
-	authGroup.GET("/templates/:id", tc.Get)       // 获取模板详情
-	authGroup.PUT("/templates/:id", tc.Update)    // 更新模板
-	authGroup.DELETE("/templates/:id", tc.Delete) // 删除模板
+	{
+		authGroup.POST("/templates", tc.Create)       // 创建模板
+		authGroup.GET("/templates", tc.List)          // 获取模板列表
+		authGroup.GET("/templates/:id", tc.Get)       // 获取模板详情
+		authGroup.PUT("/templates/:id", tc.Update)    // 更新模板
+		authGroup.DELETE("/templates/:id", tc.Delete) // 删除模板
+	}
 
 	// 反馈相关
-	authGroup.POST("/feedbacks", fc.Create)       // 创建反馈
-	authGroup.GET("/feedbacks", fc.List)          // 获取反馈列表
-	authGroup.GET("/feedbacks/:id", fc.Get)       // 获取反馈详情
-	authGroup.DELETE("/feedbacks/:id", fc.Delete) // 删除反馈
+	{
+		authGroup.POST("/feedbacks", fc.Create)       // 创建反馈
+		authGroup.GET("/feedbacks", fc.List)          // 获取反馈列表
+		authGroup.GET("/feedbacks/:id", fc.Get)       // 获取反馈详情
+		authGroup.DELETE("/feedbacks/:id", fc.Delete) // 删除反馈
+	}
 
 	// 对话相关
-	authGroup.POST("/chat/sessions", chatc.CreateSession)                           // 创建对话会话
-	authGroup.GET("/chat/sessions", chatc.ListSessions)                             // 获取会话列表
-	authGroup.GET("/chat/sessions/:id", chatc.GetSession)                           // 获取会话详情
-	authGroup.PUT("/chat/sessions/:id", chatc.UpdateSession)                        // 更新会话
-	authGroup.DELETE("/chat/sessions/:id", chatc.DeleteSession)                     // 删除会话
-	authGroup.GET("/chat/sessions/:id/messages", chatc.ListMessages)                // 获取会话消息
-	authGroup.GET("/chat/sessions/:id/with-messages", chatc.GetSessionWithMessages) // 获取会话及消息
+	{
+		authGroup.POST("/chat/sessions", chatc.CreateSession)                           // 创建对话会话
+		authGroup.GET("/chat/sessions", chatc.ListSessions)                             // 获取会话列表
+		authGroup.GET("/chat/sessions/:id", chatc.GetSession)                           // 获取会话详情
+		authGroup.PUT("/chat/sessions/:id", chatc.UpdateSession)                        // 更新会话
+		authGroup.DELETE("/chat/sessions/:id", chatc.DeleteSession)                     // 删除会话
+		authGroup.GET("/chat/sessions/:id/messages", chatc.ListMessages)                // 获取会话消息
+		authGroup.GET("/chat/sessions/:id/with-messages", chatc.GetSessionWithMessages) // 获取会话及消息
+	}
 
 	// 分页相关
-	paginationController := pagination.NewPaginationController(b.Pagination())
-	authGroup.POST("/pagination/paginate", paginationController.Paginate)              // 执行分页
-	authGroup.POST("/pagination/paginate-json", paginationController.PaginateFromJSON) // 从JSON字符串分页
-	authGroup.GET("/pagination/config", paginationController.GetConfig)                // 获取配置
-	authGroup.GET("/pagination/style-config", paginationController.GetStyleConfig)     // 获取样式配置
-	authGroup.PUT("/pagination/config", paginationController.UpdateConfig)             // 更新配置
-	authGroup.GET("/pagination/test", paginationController.TestPagination)             // 测试分页功能
+	{
+		paginationController := pagination.NewPaginationController(b.Pagination())
+		authGroup.POST("/pagination/paginate", paginationController.Paginate)              // 执行分页
+		authGroup.POST("/pagination/paginate-json", paginationController.PaginateFromJSON) // 从JSON字符串分页
+		authGroup.GET("/pagination/config", paginationController.GetConfig)                // 获取配置
+		authGroup.GET("/pagination/style-config", paginationController.GetStyleConfig)     // 获取样式配置
+		authGroup.PUT("/pagination/config", paginationController.UpdateConfig)             // 更新配置
+		authGroup.GET("/pagination/test", paginationController.TestPagination)             // 测试分页功能
+	}
 
 	// 文章相关
-	authGroup.POST("/articles/fetch", ac.FetchArticle)                // 获取文章内容
-	authGroup.GET("/articles", ac.GetArticles)                        // 获取文章列表
-	authGroup.GET("/articles/:id", ac.GetArticle)                     // 获取单个文章
-	authGroup.PUT("/articles/:id/category", ac.UpdateArticleCategory) // 更新文章分类
-	authGroup.DELETE("/articles/:id", ac.DeleteArticle)               // 删除文章
-	authGroup.POST("/articles/:id/favorite", ac.AddFavorite)          // 添加收藏
-	authGroup.DELETE("/articles/:id/favorite", ac.RemoveFavorite)     // 移除收藏
-	authGroup.GET("/articles/favorites", ac.GetFavorites)             // 获取收藏列表
-	authGroup.POST("/articles/paraphrase", ac.ParaphraseText)         // 文本释义
+	{
+		authGroup.POST("/articles/fetch", ac.FetchArticle)                // 获取文章内容
+		authGroup.GET("/articles", ac.GetArticles)                        // 获取文章列表
+		authGroup.GET("/articles/:id", ac.GetArticle)                     // 获取单个文章
+		authGroup.PUT("/articles/:id/category", ac.UpdateArticleCategory) // 更新文章分类
+		authGroup.DELETE("/articles/:id", ac.DeleteArticle)               // 删除文章
+		authGroup.POST("/articles/:id/favorite", ac.AddFavorite)          // 添加收藏
+		authGroup.DELETE("/articles/:id/favorite", ac.RemoveFavorite)     // 移除收藏
+		authGroup.GET("/articles/favorites", ac.GetFavorites)             // 获取收藏列表
+		authGroup.POST("/articles/paraphrase", ac.ParaphraseText)         // 文本释义
+	}
 
 	// 管理员相关
 	adminGroup := v1Group.Group("/admin", importMw.AuthMiddleware(authService))
-	adminGroup.GET("/articles", adminc.GetArticles)                     // 获取文章列表（管理员）
-	adminGroup.GET("/articles/:id", adminc.GetArticle)                  // 获取单个文章（管理员）
-	adminGroup.POST("/articles", adminc.CreateArticle)                  // 创建文章（管理员）
-	adminGroup.PUT("/articles/:id", adminc.UpdateArticle)               // 更新文章（管理员）
-	adminGroup.DELETE("/articles/:id", adminc.DeleteArticle)            // 删除文章（管理员）
-	adminGroup.POST("/articles/bulk-delete", adminc.BulkDeleteArticles) // 批量删除文章
-	adminGroup.GET("/users", adminc.GetUsers)                           // 获取用户列表
-	adminGroup.PUT("/users/:id", adminc.UpdateUser)                     // 更新用户
-	adminGroup.DELETE("/users/:id", adminc.DeleteUser)                  // 删除用户
-	adminGroup.GET("/categories", adminc.GetCategories)                 // 获取分类列表
-	adminGroup.POST("/categories", adminc.CreateCategory)               // 创建分类
-	adminGroup.PUT("/categories/:id", adminc.UpdateCategory)            // 更新分类
-	adminGroup.DELETE("/categories/:id", adminc.DeleteCategory)         // 删除分类
-	adminGroup.GET("/stats", adminc.GetStats)                           // 获取统计信息
+	{
+		adminGroup.GET("/articles", adminc.GetArticles)                     // 获取文章列表（管理员）
+		adminGroup.GET("/articles/:id", adminc.GetArticle)                  // 获取单个文章（管理员）
+		adminGroup.POST("/articles", adminc.CreateArticle)                  // 创建文章（管理员）
+		adminGroup.PUT("/articles/:id", adminc.UpdateArticle)               // 更新文章（管理员）
+		adminGroup.DELETE("/articles/:id", adminc.DeleteArticle)            // 删除文章（管理员）
+		adminGroup.POST("/articles/bulk-delete", adminc.BulkDeleteArticles) // 批量删除文章
+		adminGroup.GET("/users", adminc.GetUsers)                           // 获取用户列表
+		adminGroup.PUT("/users/:id", adminc.UpdateUser)                     // 更新用户
+		adminGroup.DELETE("/users/:id", adminc.DeleteUser)                  // 删除用户
+		adminGroup.GET("/categories", adminc.GetCategories)                 // 获取分类列表
+		adminGroup.POST("/categories", adminc.CreateCategory)               // 创建分类
+		adminGroup.PUT("/categories/:id", adminc.UpdateCategory)            // 更新分类
+		adminGroup.DELETE("/categories/:id", adminc.DeleteCategory)         // 删除分类
+		adminGroup.GET("/stats", adminc.GetStats)                           // 获取统计信息
+	}
 
 	// 配置相关（管理员权限）
-	configc := config.New(b)
-	adminGroup.POST("/configs", configc.Create)           // 创建配置
-	adminGroup.GET("/configs", configc.List)              // 获取所有配置
-	adminGroup.GET("/configs/:key", configc.Get)          // 获取单个配置
-	adminGroup.PUT("/configs/:key", configc.Update)       // 更新配置
-	adminGroup.DELETE("/configs/:key", configc.Delete)    // 删除配置
-	adminGroup.POST("/configs/init", configc.InitDefault) // 初始化默认配置
+	{
+		configc := config.New(b)
+		adminGroup.POST("/configs", configc.Create)           // 创建配置
+		adminGroup.GET("/configs", configc.List)              // 获取所有配置
+		adminGroup.GET("/configs/:key", configc.Get)          // 获取单个配置
+		adminGroup.PUT("/configs/:key", configc.Update)       // 更新配置
+		adminGroup.DELETE("/configs/:key", configc.Delete)    // 删除配置
+		adminGroup.POST("/configs/init", configc.InitDefault) // 初始化默认配置
+	}
 
 	// 用户相关
-	//authGroup.GET("/users", uc.List)              // 查询用户列表
-	authGroup.GET("/users/me", uc.GetCurrentUser)    // 获取当前用户信息
-	authGroup.PUT("/users/me", uc.UpdateProfile)     // 更新当前用户个人信息
-	authGroup.POST("/users/avatar", uc.UploadAvatar) // 上传用户头像
-	//authGroup.GET("/users/:name", uc.Get)         // 查询用户详情
-	//authGroup.PUT("/users/:name", uc.Update)      // 更改用户
-	//authGroup.DELETE("/users/:name", uc.Delete)   // 删除用户
+	{
+		//authGroup.GET("/users", uc.List)              // 查询用户列表
+		authGroup.GET("/users/me", uc.GetCurrentUser)    // 获取当前用户信息
+		authGroup.PUT("/users/me", uc.UpdateProfile)     // 更新当前用户个人信息
+		authGroup.POST("/users/avatar", uc.UploadAvatar) // 上传用户头像
+		//authGroup.GET("/users/:name", uc.Get)         // 查询用户详情
+		//authGroup.PUT("/users/:name", uc.Update)      // 更改用户
+		//authGroup.DELETE("/users/:name", uc.Delete)   // 删除用户
+	}
 
-	// 微信支付下单接口（需鉴权）
-	authGroup.POST("/pay/wechat/native", importPayController.WechatNativePay)
-	authGroup.POST("/pay/wechat/miniprogram", importPayController.WechatMiniProgramPay)
-	// 微信支付回调接口（无需鉴权）
-	g.POST("/api/pay/wechat/notify", importPayController.WechatPayNotify)
+	// 微信支付相关
+	{
+		// 微信支付下单接口（需鉴权）
+		authGroup.POST("/pay/wechat/native", importPayController.WechatNativePay)
+		authGroup.POST("/pay/wechat/miniprogram", importPayController.WechatMiniProgramPay)
+		// 微信支付回调接口（无需鉴权）
+		g.POST("/api/pay/wechat/notify", importPayController.WechatPayNotify)
+	}
 
 	// 订单相关
-	orderBiz := orderbiz.NewOrderBiz(store.S, b.Users(), b.AccountRecords())
-	orderCtrl := order.New(orderBiz)
-	authGroup.POST("/order/create", orderCtrl.Create)
-	authGroup.GET("/order/list", orderCtrl.ListByUser)
-	g.POST("/api/v1/order/wechat_notify", orderCtrl.WechatNotify)
+	{
+		orderBiz := orderbiz.NewOrderBiz(store.S, b.Users(), b.AccountRecords())
+		orderCtrl := order.New(orderBiz)
+		authGroup.POST("/order/create", orderCtrl.Create)
+		authGroup.GET("/order/list", orderCtrl.ListByUser)
+		g.POST("/api/v1/order/wechat_notify", orderCtrl.WechatNotify)
+	}
 
 	// 账户记录相关
-	authGroup.GET("/account/records", func(c *gin.Context) {
-		// 获取当前用户ID
-		userID, err := getUserIDFromToken(c)
-		if err != nil {
-			core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("用户未登录"), nil)
-			return
-		}
-
-		// 获取查询参数
-		offset := 0
-		limit := 20
-		if offsetStr := c.Query("offset"); offsetStr != "" {
-			if offsetVal, err := strconv.Atoi(offsetStr); err == nil {
-				offset = offsetVal
-			}
-		}
-		if limitStr := c.Query("limit"); limitStr != "" {
-			if limitVal, err := strconv.Atoi(limitStr); err == nil {
-				limit = limitVal
-			}
-		}
-
-		// 获取用户支付历史
-		records, err := b.AccountRecords().GetUserPaymentHistory(c, userID, offset, limit)
-		if err != nil {
-			core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败: "+err.Error()), nil)
-			return
-		}
-
-		core.WriteResponse(c, nil, records)
-	})
-
-	// 获取用户总消费金额
-	authGroup.GET("/account/total", func(c *gin.Context) {
-		userID, err := getUserIDFromToken(c)
-		if err != nil {
-			core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("用户未登录"), nil)
-			return
-		}
-
-		total, err := b.AccountRecords().GetUserTotalAmount(c, userID, "payment")
-		if err != nil {
-			core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败: "+err.Error()), nil)
-			return
-		}
-
-		core.WriteResponse(c, nil, gin.H{
-			"total_amount":      total,
-			"total_amount_yuan": float64(total) / 100.0,
-		})
-	})
+	{
+		accountCtrl := account.NewAccountController(b)
+		authGroup.GET("/account/records", accountCtrl.GetUserPaymentHistory) // 获取用户支付历史
+		authGroup.GET("/account/total", accountCtrl.GetUserTotalAmount)      // 获取用户总消费金额
+		authGroup.GET("/account/summary", accountCtrl.GetUserAccountSummary) // 获取用户账户摘要
+	}
 
 	return nil
 }
@@ -303,10 +281,4 @@ func getUserIDFromToken(c *gin.Context) (uint, error) {
 	}
 
 	return 0, fmt.Errorf("invalid token or missing user_id")
-}
-
-// installNumindAdminRouters 注册所有 Numind 业务路由
-func installNumindAdminRouters(g *gin.Engine) error {
-
-	return nil
 }

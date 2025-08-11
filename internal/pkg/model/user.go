@@ -37,3 +37,10 @@ type User struct {
 func (User) TableName() string {
 	return "user"
 }
+
+// UserWithStats 用户信息（包含统计信息）
+type UserWithStats struct {
+	*User
+	BookAllNum int64 `json:"book_all_num"` // 状态为非failed的书本数量
+	BookNum    int64 `json:"book_num"`      // 状态为非failed且deleteAt为null的书本数量
+}

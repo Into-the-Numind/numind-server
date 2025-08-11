@@ -17,6 +17,8 @@ type BookStore interface {
 	Update(ctx context.Context, book *model.BookM) error
 	Delete(ctx context.Context, id uint) error
 	DeleteBatch(ctx context.Context, ids []uint) error
+	CountByUserAndStatus(ctx context.Context, userID uint, excludeStatus string, exclude bool) (int64, error)
+	CountByUserAndStatusAndDeleted(ctx context.Context, userID uint, excludeStatus string, exclude bool) (int64, error)
 }
 
 type books struct {
@@ -79,4 +81,35 @@ func (s *books) DeleteBatch(ctx context.Context, ids []uint) error {
 		return err
 	}
 	return nil
+}
+
+// CountByUserAndStatus 统计用户指定状态的书本数量
+func (s *books) CountByUserAndStatus(ctx context.Context, userID uint, excludeStatus string, exclude bool) (int64, error) {
+	var count int64
+	query := s.db.WithContext(ctx).Model(&model.BookM{}).Where("user_id = ?", userID)
+
+	if exclude {
+		query = query.Where("status != ?", excludeStatus)
+	} else {
+		query = query.Where("status = ?", excludeStatus)
+	}
+
+	err := query.Count(&count).Error
+	return count, err
+}
+
+// CountByUserAndStatusAndDeleted 统计用户指定状态且未删除的书本数量
+func (s *books) CountByUserAndStatusAndDeleted(ctx context.Context, userID uint, excludeStatus string, exclude bool) (int64, error) {
+	var count int64
+	query := s.db.WithContext(ctx).Model(&model.BookM{}).Where("user_id = ?", userID)
+
+	if exclude {
+		query = query.Where("status != ?", excludeStatus)
+	} else {
+		query = query.Where("status = ?", excludeStatus)
+	}
+
+	// 只统计未删除的记录（deleted_at IS NULL）
+	err := query.Where("deleted_at IS NULL").Count(&count).Error
+	return count, err
 }

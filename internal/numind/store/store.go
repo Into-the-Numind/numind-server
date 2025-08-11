@@ -36,6 +36,7 @@ type IStore interface {
 	Article() IArticleStore
 	Admin() IAdminStore
 	Configs() ConfigStore
+	Payments() PaymentStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -117,4 +118,8 @@ func (ds *datastore) Admin() IAdminStore {
 
 func (ds *datastore) Configs() ConfigStore {
 	return NewConfigStore(ds.db)
+}
+
+func (ds *datastore) Payments() PaymentStore {
+	return NewPaymentStore(ds.db)
 }

@@ -12,18 +12,19 @@ import (
 	"numind-server/internal/numind/biz/card"
 	"numind-server/internal/numind/biz/category"
 	"numind-server/internal/numind/biz/chat"
+	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/numind/biz/feedback"
 	"numind-server/internal/numind/biz/image"
 	"numind-server/internal/numind/biz/mqtt"
 	"numind-server/internal/numind/biz/order"
 	"numind-server/internal/numind/biz/pagination"
+	"numind-server/internal/numind/biz/payment"
 	"numind-server/internal/numind/biz/post"
 	"numind-server/internal/numind/biz/template"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/biz/wechat"
 	"numind-server/internal/numind/store"
-	"numind-server/internal/numind/biz/config"
 
 	"github.com/spf13/viper"
 )
@@ -48,6 +49,8 @@ type IBiz interface {
 	Article() article.IArticleBiz
 	Admin() admin.IAdminBiz
 	Configs() config.ConfigBiz
+	Payments() payment.PaymentBiz
+	AccountRecords() accountrecordbiz.AccountRecordBiz
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -160,4 +163,8 @@ func (b *biz) Admin() admin.IAdminBiz {
 
 func (b *biz) Configs() config.ConfigBiz {
 	return config.New(b.ds)
+}
+
+func (b *biz) Payments() payment.PaymentBiz {
+	return payment.NewPaymentBiz(b.ds)
 }

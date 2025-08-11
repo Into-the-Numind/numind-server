@@ -41,6 +41,7 @@ type UserBiz interface {
 
 	// 基于 User model 的方法
 	GetCurrentUser(ctx context.Context, userID uint) (*model.User, error)
+	GetCurrentUserWithStats(ctx context.Context, userID uint) (*model.UserWithStats, error)
 	UpdateUserProfile(ctx context.Context, userID uint, req *v1.UpdateUserProfileRequest) error
 	UpdateUserAvatar(ctx context.Context, userID uint, avatarURL string) error
 
@@ -177,6 +178,38 @@ func (b *userBiz) GetCurrentUser(ctx context.Context, userID uint) (*model.User,
 	}
 
 	return user, nil
+}
+
+// GetCurrentUserWithStats 获取当前用户信息（包含统计信息）
+func (b *userBiz) GetCurrentUserWithStats(ctx context.Context, userID uint) (*model.UserWithStats, error) {
+	user, err := b.ds.Users().GetUserByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errno.ErrUserNotFound
+		}
+		return nil, err
+	}
+
+	// 获取用户书本统计信息
+	bookAllNum, err := b.ds.Books().CountByUserAndStatus(ctx, userID, "failed", true) // 排除failed状态
+	if err != nil {
+		log.C(ctx).Errorw("Failed to count user books", "userID", userID, "error", err)
+		bookAllNum = 0
+	}
+
+	bookNum, err := b.ds.Books().CountByUserAndStatusAndDeleted(ctx, userID, "failed", true) // 排除failed状态且未删除
+	if err != nil {
+		log.C(ctx).Errorw("Failed to count user active books", "userID", userID, "error", err)
+		bookNum = 0
+	}
+
+	userWithStats := &model.UserWithStats{
+		User:       user,
+		BookAllNum: bookAllNum,
+		BookNum:    bookNum,
+	}
+
+	return userWithStats, nil
 }
 
 // UpdateUserProfile 是 UserBiz 接口中 `UpdateUserProfile` 方法的实现.
