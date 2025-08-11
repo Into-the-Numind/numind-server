@@ -346,10 +346,28 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		}
 
 		// 渲染卡片为图片
+		log.C(ctx).Infow("Starting to render card", "book_id", bookID, "card_id", cardRecord.ID, "card_index", i)
+
 		renderedCard, err := renderer.RenderCardToImage(cardRecord)
 		if err != nil {
-			log.C(ctx).Errorw("Failed to render card to image", "book_id", bookID, "card_id", cardRecord.ID, "error", err.Error())
+			log.C(ctx).Errorw("Failed to render card to image",
+				"book_id", bookID,
+				"card_id", cardRecord.ID,
+				"card_index", i,
+				"error", err.Error(),
+				"card_content_length", len(cardRecord.ProcessedText),
+				"card_content_preview", string(cardRecord.ProcessedText[:min(100, len(cardRecord.ProcessedText))]))
+
+			// 修复：卡片渲染失败时，将整个 book 标记为失败
+			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, fmt.Sprintf("Failed to render card %d to image: %v", cardRecord.ID, err.Error()))
+			return
 		} else {
+			log.C(ctx).Infow("Card rendered successfully",
+				"book_id", bookID,
+				"card_id", cardRecord.ID,
+				"image_url", renderedCard.ImageURL,
+				"image_size", fmt.Sprintf("%dx%d", renderedCard.Width, renderedCard.Height))
+
 			// 更新卡片记录，保存渲染后的图片URL
 			cardRecord.RenderedImage = renderedCard.ImageURL
 			if err := p.biz.Cards().Update(ctx, cardRecord); err != nil {
@@ -469,4 +487,12 @@ func downloadAndSaveImage(remoteURL string, bookID uint) (string, error) {
 	}
 
 	return localFilePath, nil
+}
+
+// min 返回两个整数中的较小值
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
