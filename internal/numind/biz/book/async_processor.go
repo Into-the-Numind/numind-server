@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"numind-server/internal/numind/biz/card"
@@ -121,9 +122,32 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 
 	// 调用火山引擎文字模型处理文本（替换原来的千问）
 	prompt := p.biz.Ali().GetPromptManager().GetTextProcessingPrompt() + "\n\n" + text
-	messages := []map[string]string{
-		{"role": "user", "content": prompt},
+
+	// 压缩提示词，减少带宽占用
+	compressedPrompt, err := util.CompressPrompt(prompt)
+	if err != nil {
+		log.C(ctx).Warnw("Failed to compress prompt, using original", "book_id", bookID, "error", err.Error())
+		compressedPrompt = []byte(prompt)
 	}
+
+	// 记录压缩统计信息
+	compressionStats := util.GetCompressionStats([]byte(prompt), compressedPrompt)
+	log.C(ctx).Infow("Prompt compression stats", "book_id", bookID, "stats", compressionStats)
+
+	messages := []map[string]string{
+		{"role": "user", "content": string(compressedPrompt)},
+	}
+
+	// 压缩消息数组，进一步减少带宽
+	compressedMessages, err := util.CompressMessages(messages)
+	if err != nil {
+		log.C(ctx).Warnw("Failed to compress messages, using original", "book_id", bookID, "error", err.Error())
+		compressedMessages, _ = json.Marshal(messages)
+	}
+
+	// 记录消息压缩统计信息
+	compressedMessagesStats := util.GetCompressionStats([]byte(messages[0]["content"]), compressedMessages)
+	log.C(ctx).Infow("Messages compression stats", "book_id", bookID, "stats", compressedMessagesStats)
 
 	// 首先尝试调用volc
 	volcResult, err := p.biz.Volc().VolcTextStream(ctx, messages, 1024, 0.5)
@@ -178,7 +202,19 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	// 使用解析出的image_prompt调用万相生成图片
 	var imageUrl string
 	if volcResponse.ImagePrompt != "" {
-		remoteImageUrl, err := p.biz.Ali().WanxiangImageAsync(volcResponse.ImagePrompt, "", "1024*1024")
+		// 压缩图片生成提示词，减少带宽占用
+		compressedImagePrompt, err := util.CompressPrompt(volcResponse.ImagePrompt)
+		if err != nil {
+			log.C(ctx).Warnw("Failed to compress image prompt, using original", "book_id", bookID, "error", err.Error())
+			compressedImagePrompt = []byte(volcResponse.ImagePrompt)
+		}
+
+		// 记录图片提示词压缩统计信息
+		imagePromptStats := util.GetCompressionStats([]byte(volcResponse.ImagePrompt), compressedImagePrompt)
+		log.C(ctx).Infow("Image prompt compression stats", "book_id", bookID, "stats", imagePromptStats)
+
+		// 使用压缩后的提示词调用万相API
+		remoteImageUrl, err := p.biz.Ali().WanxiangImageAsync(string(compressedImagePrompt), "", "1024*1024")
 		if err != nil {
 			log.C(ctx).Errorw("WanxiangImageAsync failed", "book_id", bookID, "error", err.Error())
 			// 图片生成失败不影响整体流程
@@ -442,12 +478,15 @@ type StructuredTextItem struct {
 
 // extractJSONFromResponse 从响应中提取JSON内容
 func extractJSONFromResponse(response string) string {
+	// 清理响应内容，移除可能的HTML标签和额外内容
+	cleanedResponse := cleanResponse(response)
+
 	// 查找JSON内容的开始和结束位置
 	start := 0
-	end := len(response)
+	end := len(cleanedResponse)
 
 	// 查找第一个 { 或 [
-	for i, char := range response {
+	for i, char := range cleanedResponse {
 		if char == '{' || char == '[' {
 			start = i
 			break
@@ -455,15 +494,180 @@ func extractJSONFromResponse(response string) string {
 	}
 
 	// 从后往前查找最后一个 } 或 ]
-	for i := len(response) - 1; i >= 0; i-- {
-		char := response[i]
+	for i := len(cleanedResponse) - 1; i >= 0; i-- {
+		char := cleanedResponse[i]
 		if char == '}' || char == ']' {
 			end = i + 1
 			break
 		}
 	}
 
-	return response[start:end]
+	extractedJSON := cleanedResponse[start:end]
+
+	// 验证提取的JSON是否有效
+	if isValidJSON(extractedJSON) {
+		return extractedJSON
+	}
+
+	// 如果提取的JSON无效，尝试更智能的提取
+	return smartExtractJSON(response)
+}
+
+// cleanResponse 清理响应内容，移除HTML标签和额外内容
+func cleanResponse(response string) string {
+	// 移除常见的HTML标签
+	cleaned := response
+
+	// 移除 <think> 标签及其内容
+	cleaned = removeTagContent(cleaned, "think")
+
+	// 移除其他可能的HTML标签
+	cleaned = removeTagContent(cleaned, "html")
+	cleaned = removeTagContent(cleaned, "body")
+	cleaned = removeTagContent(cleaned, "div")
+	cleaned = removeTagContent(cleaned, "p")
+	cleaned = removeTagContent(cleaned, "span")
+
+	// 移除多余的换行和空格
+	cleaned = strings.ReplaceAll(cleaned, "\n\n", "\n")
+	cleaned = strings.TrimSpace(cleaned)
+
+	return cleaned
+}
+
+// removeTagContent 移除指定标签及其内容
+func removeTagContent(content, tagName string) string {
+	// 移除开始标签
+	startTag := fmt.Sprintf("<%s", tagName)
+	endTag := fmt.Sprintf("</%s>", tagName)
+
+	// 查找开始标签位置
+	startPos := strings.Index(content, startTag)
+	if startPos == -1 {
+		return content
+	}
+
+	// 查找结束标签位置
+	endPos := strings.Index(content, endTag)
+	if endPos == -1 {
+		// 如果没有结束标签，只移除开始标签
+		return content[:startPos] + content[startPos+len(startTag):]
+	}
+
+	// 移除整个标签及其内容
+	return content[:startPos] + content[endPos+len(endTag):]
+}
+
+// isValidJSON 验证字符串是否为有效的JSON
+func isValidJSON(s string) bool {
+	var js json.RawMessage
+	return json.Unmarshal([]byte(s), &js) == nil
+}
+
+// smartExtractJSON 智能提取JSON内容
+func smartExtractJSON(response string) string {
+	// 尝试多种提取策略
+
+	// 策略1: 查找最长的JSON对象
+	longestJSON := findLongestJSON(response)
+	if longestJSON != "" {
+		return longestJSON
+	}
+
+	// 策略2: 查找包含特定字段的JSON
+	fieldBasedJSON := findJSONByFields(response)
+	if fieldBasedJSON != "" {
+		return fieldBasedJSON
+	}
+
+	// 策略3: 回退到原始提取方法
+	return fallbackExtractJSON(response)
+}
+
+// findLongestJSON 查找最长的有效JSON对象
+func findLongestJSON(response string) string {
+	var longestJSON string
+	maxLength := 0
+
+	// 查找所有可能的JSON对象
+	braceCount := 0
+	start := -1
+
+	for i, char := range response {
+		if char == '{' {
+			if braceCount == 0 {
+				start = i
+			}
+			braceCount++
+		} else if char == '}' {
+			braceCount--
+			if braceCount == 0 && start != -1 {
+				// 找到一个完整的JSON对象
+				jsonCandidate := response[start : i+1]
+				if isValidJSON(jsonCandidate) && len(jsonCandidate) > maxLength {
+					longestJSON = jsonCandidate
+					maxLength = len(jsonCandidate)
+				}
+				start = -1
+			}
+		}
+	}
+
+	return longestJSON
+}
+
+// findJSONByFields 根据字段查找JSON
+func findJSONByFields(response string) string {
+	// 查找包含关键字段的JSON
+	keyFields := []string{"structured_text_array", "image_prompt"}
+
+	// 查找包含所有关键字段的JSON对象
+	braceCount := 0
+	start := -1
+
+	for i, char := range response {
+		if char == '{' {
+			if braceCount == 0 {
+				start = i
+			}
+			braceCount++
+		} else if char == '}' {
+			braceCount--
+			if braceCount == 0 && start != -1 {
+				// 检查是否包含所有关键字段
+				jsonCandidate := response[start : i+1]
+				if containsAllFields(jsonCandidate, keyFields) && isValidJSON(jsonCandidate) {
+					return jsonCandidate
+				}
+				start = -1
+			}
+		}
+	}
+
+	return ""
+}
+
+// containsAllFields 检查JSON字符串是否包含所有指定字段
+func containsAllFields(jsonStr string, fields []string) bool {
+	for _, field := range fields {
+		if !strings.Contains(jsonStr, fmt.Sprintf(`"%s"`, field)) {
+			return false
+		}
+	}
+	return true
+}
+
+// fallbackExtractJSON 回退提取方法
+func fallbackExtractJSON(response string) string {
+	// 查找第一个 { 和最后一个 }
+	start := strings.Index(response, "{")
+	end := strings.LastIndex(response, "}")
+
+	if start != -1 && end != -1 && end > start {
+		return response[start : end+1]
+	}
+
+	return ""
 }
 
 // downloadAndSaveImage 下载并保存图片
