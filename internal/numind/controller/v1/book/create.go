@@ -168,6 +168,10 @@ func (a *BookBizAdapter) Ali() book.AsyncAliBiz {
 	return &AsyncAliBizAdapter{biz: a.biz}
 }
 
+func (a *BookBizAdapter) Volc() book.AsyncVolcBiz {
+	return &AsyncVolcBizAdapter{biz: a.biz}
+}
+
 func (a *BookBizAdapter) Templates() book.AsyncTemplateBiz {
 	return &AsyncTemplateBizAdapter{biz: a.biz}
 }
@@ -250,4 +254,13 @@ type AsyncTemplateBizAdapter struct {
 
 func (a *AsyncTemplateBizAdapter) GetByID(ctx context.Context, id uint) (*model.Template, error) {
 	return a.biz.Templates().GetByID(ctx, id)
+}
+
+// AsyncVolcBizAdapter 火山引擎业务适配器
+type AsyncVolcBizAdapter struct {
+	biz biz.IBiz
+}
+
+func (a *AsyncVolcBizAdapter) VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error) {
+	return a.biz.Volc().VolcTextStream(ctx, messages, maxTokens, temperature)
 }

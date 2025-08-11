@@ -29,6 +29,7 @@ type BizInterface interface {
 	Cards() AsyncCardBiz
 	Users() AsyncUserBiz
 	Ali() AsyncAliBiz
+	Volc() AsyncVolcBiz // 新增volc支持
 	Templates() AsyncTemplateBiz
 }
 
@@ -56,6 +57,11 @@ type AsyncAliBiz interface {
 	QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error)
 	WanxiangImageAsync(prompt, style, size string) (string, error)
 	GetPromptManager() AsyncPromptManager
+}
+
+// AsyncVolcBiz 火山引擎业务接口
+type AsyncVolcBiz interface {
+	VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error)
 }
 
 // AsyncTemplateBiz 模板业务接口
@@ -113,29 +119,39 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		return
 	}
 
-	// 调用阿里千问文字模型处理文本
+	// 调用火山引擎文字模型处理文本（替换原来的千问）
 	prompt := p.biz.Ali().GetPromptManager().GetTextProcessingPrompt() + "\n\n" + text
 	messages := []map[string]string{
 		{"role": "user", "content": prompt},
 	}
 
-	qianwenResult, err := p.biz.Ali().QianwenTextStream(messages, 1024, 0.5)
+	// 首先尝试调用volc
+	volcResult, err := p.biz.Volc().VolcTextStream(ctx, messages, 1024, 0.5)
 	if err != nil {
-		log.C(ctx).Errorw("QianwenTextStream failed", "book_id", bookID, "error", err.Error())
-		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "AI text processing failed: "+err.Error())
-		return
+		log.C(ctx).Warnw("VolcTextStream failed, falling back to Qianwen", "book_id", bookID, "error", err.Error())
+
+		// Fallback到qianwen
+		qianwenResult, err := p.biz.Ali().QianwenTextStream(messages, 1024, 0.5)
+		if err != nil {
+			log.C(ctx).Errorw("Both Volc and Qianwen failed", "book_id", bookID, "volc_error", err.Error(), "qianwen_error", err.Error())
+			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "AI text processing failed: both volc and qianwen failed")
+			return
+		}
+
+		log.C(ctx).Infow("QianwenTextStream fallback result", "book_id", bookID, "result", qianwenResult)
+		volcResult = qianwenResult
+	} else {
+		log.C(ctx).Infow("VolcTextStream result", "book_id", bookID, "result", volcResult)
 	}
 
-	log.C(ctx).Infow("QianwenTextStream result", "book_id", bookID, "result", qianwenResult)
-
 	// 提取JSON内容（处理可能的Markdown代码块格式）
-	jsonContent := extractJSONFromResponse(qianwenResult)
+	jsonContent := extractJSONFromResponse(volcResult)
 	log.C(ctx).Infow("Extracted JSON content", "book_id", bookID, "content", jsonContent)
 
-	// 解析通义千问返回的JSON结果
-	var qianwenResponse QianwenResponse
-	if err := json.Unmarshal([]byte(jsonContent), &qianwenResponse); err != nil {
-		log.C(ctx).Errorw("Failed to parse Qianwen response", "book_id", bookID, "error", err.Error())
+	// 解析火山引擎返回的JSON结果
+	var volcResponse QianwenResponse
+	if err := json.Unmarshal([]byte(jsonContent), &volcResponse); err != nil {
+		log.C(ctx).Errorw("Failed to parse Volc response", "book_id", bookID, "error", err.Error())
 		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to parse AI response: "+err.Error())
 		return
 	}
@@ -145,7 +161,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 
 	// 提取title作为book的标题
 	var bookTitle string
-	for _, item := range qianwenResponse.StructuredTextArray {
+	for _, item := range volcResponse.StructuredTextArray {
 		if item.Type == "title" {
 			if titleContent, ok := item.Content.(string); ok {
 				bookTitle = titleContent
@@ -161,8 +177,8 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 
 	// 使用解析出的image_prompt调用万相生成图片
 	var imageUrl string
-	if qianwenResponse.ImagePrompt != "" {
-		remoteImageUrl, err := p.biz.Ali().WanxiangImageAsync(qianwenResponse.ImagePrompt, "", "1024*1024")
+	if volcResponse.ImagePrompt != "" {
+		remoteImageUrl, err := p.biz.Ali().WanxiangImageAsync(volcResponse.ImagePrompt, "", "1024*1024")
 		if err != nil {
 			log.C(ctx).Errorw("WanxiangImageAsync failed", "book_id", bookID, "error", err.Error())
 			// 图片生成失败不影响整体流程
@@ -186,7 +202,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 
 	// 将结构化文本转换为分页元素，排除title类型
 	var elements []pagination.Element
-	for _, item := range qianwenResponse.StructuredTextArray {
+	for _, item := range volcResponse.StructuredTextArray {
 		if item.Type == "title" {
 			continue // 跳过title类型
 		}

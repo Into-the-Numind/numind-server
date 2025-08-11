@@ -63,9 +63,9 @@ oss:
   bucket_name: ""
 
 volc:
-  api_key: "f434efdd-6553-42fc-8c14-c1322475845f"
+  api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "deepseek-v3-250324"  # 使用的AI模型
+  model: "doubao-seed-1-6-250615"  # 使用的AI模型
   temperature: 0.5 # 生成文本的随机性，值越高随机性越大
   tokens: 2000 # 生成文本的最大长度
   timeout: 30s

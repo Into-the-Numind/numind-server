@@ -2,11 +2,13 @@ package volc
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/log"
 	"time"
 
 	"github.com/spf13/viper"
@@ -22,6 +24,8 @@ type OpenAIConfig struct {
 
 type VolcBiz interface {
 	GenerateArticleContent(content string, contentType string, maxLength int, cfg *OpenAIConfig, prompt string) (string, error)
+	// 新增流式文本生成方法，与ali的QianwenTextStream保持一致
+	VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error)
 }
 
 type volcBiz struct {
@@ -120,4 +124,89 @@ func (v *volcBiz) GenerateArticleContent(content string, contentType string, max
 		return "", fmt.Errorf("API无返回内容: %s", string(respBody))
 	}
 	return result.Choices[0].Message.Content, nil
+}
+
+// VolcTextStream 火山引擎文字模型API（兼容模式，非流式）
+func (v *volcBiz) VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error) {
+	url := viper.GetString("volc.base_url") + "/chat/completions"
+	bodyMap := map[string]interface{}{
+		"model":       viper.GetString("volc.model"),
+		"messages":    messages,
+		"max_tokens":  maxTokens,
+		"temperature": temperature,
+		// 移除stream参数，使用非流式调用
+	}
+	bodyBytes, _ := json.Marshal(bodyMap)
+
+	// 添加调试日志
+	log.C(ctx).Debugw("调用volc API", "url", url, "request_params", string(bodyBytes))
+
+	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+viper.GetString("volc.api_key"))
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.C(ctx).Debugw("HTTP请求失败", "error", err.Error())
+		return "", fmt.Errorf("HTTP请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 检查HTTP状态码
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		log.C(ctx).Debugw("API调用失败", "status_code", resp.StatusCode, "response", string(respBody))
+		return "", fmt.Errorf("API调用失败，状态码: %d, 响应: %s", resp.StatusCode, string(respBody))
+	}
+
+	// 读取响应体
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.C(ctx).Debugw("读取响应体失败", "error", err.Error())
+		return "", fmt.Errorf("读取响应体失败: %w", err)
+	}
+
+	log.C(ctx).Debugw("API响应", "response", string(respBody))
+
+	// 解析响应JSON
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Error *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error,omitempty"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		log.C(ctx).Debugw("JSON解析失败", "error", err.Error(), "response", string(respBody))
+		return "", fmt.Errorf("JSON解析失败: %w, 响应: %s", err, string(respBody))
+	}
+
+	// 检查是否有错误
+	if result.Error != nil {
+		log.C(ctx).Debugw("API返回错误", "error_code", result.Error.Code, "error_message", result.Error.Message, "error_type", result.Error.Type)
+		return "", fmt.Errorf("API错误: %s - %s", result.Error.Code, result.Error.Message)
+	}
+
+	// 检查是否有choices
+	if len(result.Choices) == 0 {
+		log.C(ctx).Debugw("没有返回choices")
+		return "", fmt.Errorf("API未返回choices")
+	}
+
+	// 提取内容
+	content := result.Choices[0].Message.Content
+	if content == "" {
+		log.C(ctx).Debugw("返回内容为空")
+		return "", fmt.Errorf("API返回内容为空")
+	}
+
+	log.C(ctx).Debugw("成功获取内容", "content_length", len(content))
+	return content, nil
 }
