@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/log"
@@ -144,11 +145,43 @@ func (v *volcBiz) VolcTextStream(ctx context.Context, messages []map[string]stri
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+viper.GetString("volc.api_key"))
+	req.Header.Set("User-Agent", "numind-server/1.0")
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	// 增加超时时间，腾讯云网络可能需要更长时间
+	client := &http.Client{
+		Timeout: 120 * time.Second, // 从60秒增加到120秒
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second, // 连接超时
+				KeepAlive: 30 * time.Second, // 保持连接
+			}).DialContext,
+			MaxIdleConns:          100,              // 最大空闲连接数
+			IdleConnTimeout:       90 * time.Second, // 空闲连接超时
+			TLSHandshakeTimeout:   10 * time.Second, // TLS握手超时
+			ResponseHeaderTimeout: 30 * time.Second, // 响应头超时
+		},
+	}
+
+	// 使用带超时的context
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
+	req = req.WithContext(ctxWithTimeout)
+
+	log.C(ctx).Debugw("开始HTTP请求", "timeout", "120s")
 	resp, err := client.Do(req)
 	if err != nil {
-		log.C(ctx).Debugw("HTTP请求失败", "error", err.Error())
+		log.C(ctx).Debugw("HTTP请求失败", "error", err.Error(), "error_type", fmt.Sprintf("%T", err))
+
+		// 网络诊断信息
+		if netErr, ok := err.(net.Error); ok {
+			if netErr.Timeout() {
+				log.C(ctx).Errorw("网络超时错误", "timeout", netErr.Error(), "url", url)
+			} else if netErr.Temporary() {
+				log.C(ctx).Errorw("临时网络错误", "error", netErr.Error(), "url", url)
+			}
+		}
+
 		return "", fmt.Errorf("HTTP请求失败: %w", err)
 	}
 	defer resp.Body.Close()

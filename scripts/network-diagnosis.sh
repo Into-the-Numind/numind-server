@@ -1,130 +1,131 @@
 #!/bin/bash
 
-# 网络诊断脚本 - 用于分析 MQTT 连接问题
+echo "=== 腾讯云网络诊断脚本 ==="
+echo "时间: $(date)"
+echo ""
 
-set -e
+# 检查网络连通性
+echo "1. 检查网络连通性"
+echo "------------------------"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# 检查DNS解析
+echo "DNS解析测试:"
+echo "火山引擎API:"
+nslookup ark.cn-beijing.volces.com
+echo ""
 
-echo -e "${BLUE}网络诊断脚本${NC}"
-echo "=============="
+echo "千问API:"
+nslookup dashscope.aliyuncs.com
+echo ""
 
-# 目标服务器
-TARGET_HOST="49.233.219.254"
-MQTT_PORT="1883"
-HTTP_PORT="80"
+# 检查HTTP连接
+echo "2. HTTP连接测试"
+echo "------------------------"
 
-echo -e "\n${YELLOW}1. 基础网络连接测试${NC}"
-echo "========================"
+# 测试火山引擎API
+echo "测试火山引擎API连接:"
+curl -v --connect-timeout 30 --max-time 60 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer test-key" \
+  -d '{"test": "connection"}' \
+  "https://ark.cn-beijing.volces.com/api/v3/chat/completions" 2>&1 | head -20
+echo ""
 
-# Ping 测试
-echo -e "\n${GREEN}Ping 测试:${NC}"
-if ping -c 5 "$TARGET_HOST" > /dev/null 2>&1; then
-    echo -e "${GREEN}✓ Ping 成功${NC}"
-    ping -c 5 "$TARGET_HOST" | tail -3
+# 测试千问API
+echo "测试千问API连接:"
+curl -v --connect-timeout 30 --max-time 60 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer test-key" \
+  -d '{"test": "connection"}' \
+  "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions" 2>&1 | head -20
+echo ""
+
+# 检查网络延迟
+echo "3. 网络延迟测试"
+echo "------------------------"
+
+echo "火山引擎API延迟:"
+ping -c 5 ark.cn-beijing.volces.com 2>/dev/null || echo "ping失败，可能被防火墙阻止"
+echo ""
+
+echo "千问API延迟:"
+ping -c 5 dashscope.aliyuncs.com 2>/dev/null || echo "ping失败，可能被防火墙阻止"
+echo ""
+
+# 检查端口连通性
+echo "4. 端口连通性测试"
+echo "------------------------"
+
+echo "测试HTTPS端口(443):"
+echo "火山引擎:"
+nc -zv ark.cn-beijing.volces.com 443 2>&1 || echo "端口测试失败"
+echo ""
+
+echo "千问:"
+nc -zv dashscope.aliyuncs.com 443 2>&1 || echo "端口测试失败"
+echo ""
+
+# 检查系统网络配置
+echo "5. 系统网络配置"
+echo "------------------------"
+
+echo "网络接口:"
+ip addr show | grep -E "inet.*scope global" | head -5
+echo ""
+
+echo "路由表:"
+ip route show | head -10
+echo ""
+
+echo "DNS配置:"
+cat /etc/resolv.conf 2>/dev/null || echo "无法读取DNS配置"
+echo ""
+
+# 检查防火墙状态
+echo "6. 防火墙状态"
+echo "------------------------"
+
+if command -v ufw >/dev/null 2>&1; then
+    echo "UFW状态:"
+    ufw status
+elif command -v iptables >/dev/null 2>&1; then
+    echo "iptables规则数量:"
+    iptables -L | wc -l
 else
-    echo -e "${RED}✗ Ping 失败${NC}"
+    echo "未检测到常见防火墙"
 fi
+echo ""
 
-# Traceroute 测试
-echo -e "\n${GREEN}Traceroute 测试:${NC}"
-if command -v traceroute &> /dev/null; then
-    traceroute -m 15 "$TARGET_HOST" 2>/dev/null | head -10
+# 检查容器网络
+echo "7. 容器网络检查"
+echo "------------------------"
+
+if [ -f /.dockerenv ]; then
+    echo "运行在Docker容器中"
+    echo "容器网络模式:"
+    ip route show | grep default
+    echo ""
+    echo "容器DNS:"
+    cat /etc/resolv.conf 2>/dev/null || echo "无法读取DNS配置"
 else
-    echo -e "${YELLOW}traceroute 命令不可用${NC}"
+    echo "未运行在Docker容器中"
 fi
+echo ""
 
-echo -e "\n${YELLOW}2. 端口连接测试${NC}"
-echo "=================="
+# 检查代理设置
+echo "8. 代理设置检查"
+echo "------------------------"
 
-# MQTT 端口测试
-echo -e "\n${GREEN}MQTT 端口 ($MQTT_PORT) 测试:${NC}"
-if nc -z -w 5 "$TARGET_HOST" "$MQTT_PORT" 2>/dev/null; then
-    echo -e "${GREEN}✓ MQTT 端口开放${NC}"
-else
-    echo -e "${RED}✗ MQTT 端口不可访问${NC}"
-fi
+echo "HTTP代理环境变量:"
+echo "HTTP_PROXY: ${HTTP_PROXY:-未设置}"
+echo "HTTPS_PROXY: ${HTTPS_PROXY:-未设置}"
+echo "NO_PROXY: ${NO_PROXY:-未设置}"
+echo ""
 
-# HTTP 端口测试
-echo -e "\n${GREEN}HTTP 端口 ($HTTP_PORT) 测试:${NC}"
-if nc -z -w 5 "$TARGET_HOST" "$HTTP_PORT" 2>/dev/null; then
-    echo -e "${GREEN}✓ HTTP 端口开放${NC}"
-else
-    echo -e "${YELLOW}⚠ HTTP 端口不可访问${NC}"
-fi
-
-echo -e "\n${YELLOW}3. 网络延迟和丢包测试${NC}"
-echo "========================"
-
-# 使用 mtr 进行网络质量测试
-if command -v mtr &> /dev/null; then
-    echo -e "\n${GREEN}网络质量测试 (mtr):${NC}"
-    mtr --report --report-cycles 10 "$TARGET_HOST" 2>/dev/null | head -15
-else
-    echo -e "\n${GREEN}网络延迟测试:${NC}"
-    for i in {1..10}; do
-        if ping -c 1 "$TARGET_HOST" > /dev/null 2>&1; then
-            ping -c 1 "$TARGET_HOST" | grep "time=" | sed 's/.*time=\([0-9.]*\) ms.*/延迟: \1 ms/'
-        else
-            echo -e "${RED}第 $i 次 ping 失败${NC}"
-        fi
-        sleep 1
-    done
-fi
-
-echo -e "\n${YELLOW}4. DNS 解析测试${NC}"
-echo "=================="
-
-# DNS 解析测试
-echo -e "\n${GREEN}DNS 解析测试:${NC}"
-if nslookup "$TARGET_HOST" > /dev/null 2>&1; then
-    echo -e "${GREEN}✓ DNS 解析正常${NC}"
-    nslookup "$TARGET_HOST" | grep -A 2 "Name:"
-else
-    echo -e "${RED}✗ DNS 解析失败${NC}"
-fi
-
-echo -e "\n${YELLOW}5. 网络接口信息${NC}"
-echo "=================="
-
-# 显示网络接口信息
-echo -e "\n${GREEN}本地网络接口:${NC}"
-if command -v ip &> /dev/null; then
-    ip addr show | grep -E "inet.*scope global" | head -3
-else
-    ifconfig | grep -E "inet.*netmask" | head -3
-fi
-
-echo -e "\n${YELLOW}6. 网络连接统计${NC}"
-echo "=================="
-
-# 显示到目标主机的连接统计
-echo -e "\n${GREEN}到目标主机的连接:${NC}"
-if command -v ss &> /dev/null; then
-    ss -tuln | grep "$TARGET_HOST" || echo "当前没有到目标主机的连接"
-else
-    netstat -an | grep "$TARGET_HOST" || echo "当前没有到目标主机的连接"
-fi
-
-echo -e "\n${YELLOW}7. 建议和解决方案${NC}"
-echo "=================="
-
-echo -e "\n${BLUE}如果网络测试正常但 MQTT 连接不稳定，建议:${NC}"
-echo "1. 检查 MQTT broker 配置 (mosquitto.conf)"
-echo "2. 增加 keepalive 时间到 60-120 秒"
-echo "3. 检查防火墙设置"
-echo "4. 考虑使用 MQTT over TLS"
-echo "5. 监控 MQTT broker 的资源使用情况"
-
-echo -e "\n${BLUE}如果网络测试异常，建议:${NC}"
-echo "1. 联系网络管理员"
-echo "2. 检查路由器/交换机配置"
-echo "3. 考虑更换网络线路"
-echo "4. 使用 VPN 或代理"
-
-echo -e "\n${GREEN}诊断完成${NC}" 
+echo "=== 诊断完成 ==="
+echo "如果发现网络问题，请检查："
+echo "1. 腾讯云安全组设置"
+echo "2. 容器网络配置"
+echo "3. DNS服务器设置"
+echo "4. 防火墙规则"
+echo "5. 代理设置" 

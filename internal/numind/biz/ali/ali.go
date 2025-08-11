@@ -3,9 +3,11 @@ package ali
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"numind-server/internal/numind/store"
 	"os"
@@ -118,11 +120,40 @@ func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, 
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+viper.GetString("ali.text.api_key"))
+	req.Header.Set("User-Agent", "numind-server/1.0")
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	// 增加超时时间，腾讯云网络可能需要更长时间
+	client := &http.Client{
+		Timeout: 120 * time.Second, // 从60秒增加到120秒
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second, // 连接超时
+				KeepAlive: 30 * time.Second, // 保持连接
+			}).DialContext,
+			MaxIdleConns:        100,               // 最大空闲连接数
+			IdleConnTimeout:     90 * time.Second,  // 空闲连接超时
+			TLSHandshakeTimeout: 10 * time.Second, // TLS握手超时
+			ResponseHeaderTimeout: 30 * time.Second, // 响应头超时
+		},
+	}
+
+	// 使用带超时的context
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	
+	req = req.WithContext(ctx)
+
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		// 网络诊断信息
+		if netErr, ok := err.(net.Error); ok {
+			if netErr.Timeout() {
+				return "", fmt.Errorf("网络超时错误: %w", err)
+			} else if netErr.Temporary() {
+				return "", fmt.Errorf("临时网络错误: %w", err)
+			}
+		}
+		return "", fmt.Errorf("HTTP请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
