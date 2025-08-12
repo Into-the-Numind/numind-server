@@ -32,6 +32,7 @@ type BizInterface interface {
 	Ali() AsyncAliBiz
 	Volc() AsyncVolcBiz // 新增volc支持
 	Templates() AsyncTemplateBiz
+	Store() AsyncStoreBiz // 新增store层访问
 }
 
 // AsyncBookBiz 书籍业务接口
@@ -39,6 +40,7 @@ type AsyncBookBiz interface {
 	Create(ctx context.Context, book *model.BookM) error
 	Update(ctx context.Context, book *model.BookM) error
 	GetByID(ctx context.Context, id uint) (*model.BookM, error)
+	UpdateUserBookStatsOnStatusChange(ctx context.Context, userID uint, oldStatus, newStatus string) error
 }
 
 // AsyncCardBiz 卡片业务接口
@@ -75,6 +77,11 @@ type AsyncPromptManager interface {
 	GetTextProcessingPrompt() string
 }
 
+// AsyncStoreBiz store层业务接口
+type AsyncStoreBiz interface {
+	UpdateUserBookStatsOnStatusChange(ctx context.Context, userID uint, oldStatus, newStatus string) error
+}
+
 // NewAsyncBookProcessor 创建异步book处理器
 func NewAsyncBookProcessor(biz BizInterface) *AsyncBookProcessor {
 	return &AsyncBookProcessor{
@@ -97,6 +104,12 @@ func (p *AsyncBookProcessor) CreateBookAsync(ctx context.Context, userID uint, t
 	if err := p.biz.Books().Create(ctx, book); err != nil {
 		log.C(ctx).Errorw("Failed to create initial book record", "error", err.Error())
 		return nil, err
+	}
+
+	// 创建book后立即更新用户统计
+	if err := p.biz.Users().IncrementUserBookNum(ctx, userID); err != nil {
+		log.C(ctx).Errorw("Failed to increment user book num", "error", err.Error())
+		// 统计更新失败不影响主要流程，但记录错误
 	}
 
 	// 在后台异步处理book创建
@@ -406,10 +419,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		log.C(ctx).Errorw("Failed to update book card count", "book_id", bookID, "error", err.Error())
 	}
 
-	// 更新用户的书籍数量统计
-	if err := p.biz.Users().IncrementUserBookNum(ctx, userID); err != nil {
-		log.C(ctx).Errorw("Failed to increment user book num", "book_id", bookID, "error", err.Error())
-	}
+	// 注意：用户统计已在创建book时更新，这里不需要再次更新
 
 	// 更新book状态为成功
 	if err := p.updateBookStatus(ctx, bookID, model.BookStatusSuccess, ""); err != nil {
@@ -427,8 +437,23 @@ func (p *AsyncBookProcessor) updateBookStatus(ctx context.Context, bookID uint, 
 		return err
 	}
 
+	oldStatus := book.Status
 	book.Status = status
-	return p.biz.Books().Update(ctx, book)
+
+	if err := p.biz.Books().Update(ctx, book); err != nil {
+		return err
+	}
+
+	// 如果状态发生变化，需要更新用户统计
+	if oldStatus != status {
+		// 调用store层的方法来更新用户统计
+		if err := p.biz.Store().UpdateUserBookStatsOnStatusChange(ctx, book.UserID, oldStatus, status); err != nil {
+			// 记录错误但不影响状态更新操作
+			// 这里可以考虑记录日志
+		}
+	}
+
+	return nil
 }
 
 // QianwenResponse 通义千问返回的结构化数据

@@ -176,6 +176,10 @@ func (a *BookBizAdapter) Templates() book.AsyncTemplateBiz {
 	return &AsyncTemplateBizAdapter{biz: a.biz}
 }
 
+func (a *BookBizAdapter) Store() book.AsyncStoreBiz {
+	return &AsyncStoreBizAdapter{biz: a.biz}
+}
+
 // AsyncBookBizAdapter 书籍业务适配器
 type AsyncBookBizAdapter struct {
 	biz biz.IBiz
@@ -191,6 +195,12 @@ func (a *AsyncBookBizAdapter) Update(ctx context.Context, book *model.BookM) err
 
 func (a *AsyncBookBizAdapter) GetByID(ctx context.Context, id uint) (*model.BookM, error) {
 	return a.biz.Books().GetByID(ctx, id)
+}
+
+func (a *AsyncBookBizAdapter) UpdateUserBookStatsOnStatusChange(ctx context.Context, userID uint, oldStatus, newStatus string) error {
+	// 这里需要调用store层的方法，但由于适配器的限制，我们需要通过其他方式处理
+	// 可以考虑在store层添加一个方法来直接更新用户统计
+	return nil
 }
 
 // AsyncCardBizAdapter 卡片业务适配器
@@ -263,4 +273,14 @@ type AsyncVolcBizAdapter struct {
 
 func (a *AsyncVolcBizAdapter) VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error) {
 	return a.biz.Volc().VolcTextStream(ctx, messages, maxTokens, temperature)
+}
+
+// AsyncStoreBizAdapter store层业务适配器
+type AsyncStoreBizAdapter struct {
+	biz biz.IBiz
+}
+
+func (a *AsyncStoreBizAdapter) UpdateUserBookStatsOnStatusChange(ctx context.Context, userID uint, oldStatus, newStatus string) error {
+	// 通过store层直接更新用户统计
+	return a.biz.Books().UpdateUserBookStatsOnStatusChange(ctx, userID, oldStatus, newStatus)
 }

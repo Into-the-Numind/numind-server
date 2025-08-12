@@ -19,6 +19,8 @@ type BookStore interface {
 	DeleteBatch(ctx context.Context, ids []uint) error
 	CountByUserAndStatus(ctx context.Context, userID uint, excludeStatus string, exclude bool) (int64, error)
 	CountByUserAndStatusAndDeleted(ctx context.Context, userID uint, excludeStatus string, exclude bool) (int64, error)
+	UpdateUserBookStatsOnDelete(ctx context.Context, userID uint, bookStatus string) error
+	UpdateUserBookStatsOnStatusChange(ctx context.Context, userID uint, oldStatus, newStatus string) error
 }
 
 type books struct {
@@ -112,4 +114,35 @@ func (s *books) CountByUserAndStatusAndDeleted(ctx context.Context, userID uint,
 	// 只统计未删除的记录（deleted_at IS NULL）
 	err := query.Where("deleted_at IS NULL").Count(&count).Error
 	return count, err
+}
+
+// UpdateUserBookStatsOnDelete 删除book时更新用户统计
+func (s *books) UpdateUserBookStatsOnDelete(ctx context.Context, userID uint, bookStatus string) error {
+	// 如果book状态不是failed，需要减少用户的book_num统计
+	if bookStatus != model.BookStatusFailed {
+		// 使用数据库的原子操作来减少book_num字段
+		return s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
+			UpdateColumn("book_num", gorm.Expr("book_num - ?", 1)).Error
+	}
+	return nil
+}
+
+// UpdateUserBookStatsOnStatusChange 当book状态变化时更新用户统计
+func (s *books) UpdateUserBookStatsOnStatusChange(ctx context.Context, userID uint, oldStatus, newStatus string) error {
+	// 如果状态从非failed变为failed，需要减少book_num和book_all_num
+	if oldStatus != model.BookStatusFailed && newStatus == model.BookStatusFailed {
+		return s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
+			UpdateColumns(map[string]interface{}{
+				"book_num":     gorm.Expr("book_num - ?", 1),
+				"book_all_num": gorm.Expr("book_all_num - ?", 1),
+			}).Error
+	}
+
+	// 如果状态从failed变为非failed，需要增加book_all_num
+	if oldStatus == model.BookStatusFailed && newStatus != model.BookStatusFailed {
+		return s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
+			UpdateColumn("book_all_num", gorm.Expr("book_all_num + ?", 1)).Error
+	}
+
+	return nil
 }

@@ -10,14 +10,15 @@ import (
 type User struct {
 	// 用户相关字段
 	gorm.Model
-	OpenID    string `gorm:"uniqueIndex;size:50" json:"openid"`
-	Phone     string `gorm:"size:20;index" json:"phone"`
-	Nickname  string `gorm:"size:100" json:"nickname"`
-	AvatarURL string `gorm:"size:255" json:"avatar_url"`
-	IsPro     bool   `gorm:"default:false" json:"is_pro"`
-	BookNum   int    `gorm:"default:0" json:"book_num"`
-	CardNum   int    `gorm:"default:0" json:"card_num"`
-	ChatNum   int    `gorm:"default:0" json:"chat_num"`
+	OpenID     string `gorm:"uniqueIndex;size:50" json:"openid"`
+	Phone      string `gorm:"size:20;index" json:"phone"`
+	Nickname   string `gorm:"size:100" json:"nickname"`
+	AvatarURL  string `gorm:"size:255" json:"avatar_url"`
+	IsPro      bool   `gorm:"default:false" json:"is_pro"`
+	BookNum    int    `gorm:"default:0" json:"book_num"`
+	BookAllNum int64  `gorm:"default:0" json:"book_all_num"` // 状态为非failed的书本数量
+	CardNum    int    `gorm:"default:0" json:"card_num"`
+	ChatNum    int    `gorm:"default:0" json:"chat_num"`
 
 	// 管理员相关字段
 	Username  string     `gorm:"size:50;uniqueIndex" json:"username,omitempty"`
@@ -36,11 +37,4 @@ type User struct {
 
 func (User) TableName() string {
 	return "user"
-}
-
-// UserWithStats 用户信息（包含统计信息）
-type UserWithStats struct {
-	*User
-	BookAllNum int64 `json:"book_all_num"` // 状态为非failed的书本数量
-	BookNum    int64 `json:"book_num"`      // 状态为非failed且deleteAt为null的书本数量
 }
