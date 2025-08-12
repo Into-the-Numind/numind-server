@@ -186,9 +186,6 @@ func installNumindRouters(g *gin.Engine) error {
 		adminGroup.PUT("/articles/:id", adminc.UpdateArticle)               // 更新文章（管理员）
 		adminGroup.DELETE("/articles/:id", adminc.DeleteArticle)            // 删除文章（管理员）
 		adminGroup.POST("/articles/bulk-delete", adminc.BulkDeleteArticles) // 批量删除文章
-		adminGroup.GET("/users", adminc.GetUsers)                           // 获取用户列表
-		adminGroup.PUT("/users/:id", adminc.UpdateUser)                     // 更新用户
-		adminGroup.DELETE("/users/:id", adminc.DeleteUser)                  // 删除用户
 		adminGroup.GET("/categories", adminc.GetCategories)                 // 获取分类列表
 		adminGroup.POST("/categories", adminc.CreateCategory)               // 创建分类
 		adminGroup.PUT("/categories/:id", adminc.UpdateCategory)            // 更新分类

@@ -20,6 +20,7 @@ type BookStore interface {
 	CountByUserAndStatus(ctx context.Context, userID uint, excludeStatus string, exclude bool) (int64, error)
 	CountByUserAndStatusAndDeleted(ctx context.Context, userID uint, excludeStatus string, exclude bool) (int64, error)
 	UpdateUserBookStatsOnDelete(ctx context.Context, userID uint, bookStatus string) error
+	UpdateUserBookStatsOnBatchDelete(ctx context.Context, books []*model.BookM) error
 	UpdateUserBookStatsOnStatusChange(ctx context.Context, userID uint, oldStatus, newStatus string) error
 }
 
@@ -78,10 +79,24 @@ func (s *books) DeleteBatch(ctx context.Context, ids []uint) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	err := s.db.WithContext(ctx).Where("id IN (?)", ids).Delete(&model.BookM{}).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+
+	// 先获取要删除的books信息，用于更新用户统计
+	var books []*model.BookM
+	if err := s.db.WithContext(ctx).Where("id IN (?)", ids).Find(&books).Error; err != nil {
 		return err
 	}
+
+	// 删除books
+	if err := s.db.WithContext(ctx).Where("id IN (?)", ids).Delete(&model.BookM{}).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+
+	// 更新用户统计
+	if err := s.UpdateUserBookStatsOnBatchDelete(ctx, books); err != nil {
+		// 记录错误但不影响删除操作
+		// 这里可以考虑记录日志
+	}
+
 	return nil
 }
 
@@ -124,6 +139,30 @@ func (s *books) UpdateUserBookStatsOnDelete(ctx context.Context, userID uint, bo
 		return s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
 			UpdateColumn("book_num", gorm.Expr("book_num - ?", 1)).Error
 	}
+	return nil
+}
+
+// UpdateUserBookStatsOnBatchDelete 批量删除book时更新用户统计
+func (s *books) UpdateUserBookStatsOnBatchDelete(ctx context.Context, books []*model.BookM) error {
+	// 按用户ID分组统计需要减少的book数量
+	userBookCounts := make(map[uint]int)
+	for _, book := range books {
+		// 只统计非failed状态的book，因为failed状态的book不影响book_num
+		if book.Status != model.BookStatusFailed {
+			userBookCounts[book.UserID]++
+		}
+	}
+
+	// 批量更新每个用户的book_num统计
+	for userID, count := range userBookCounts {
+		if count > 0 {
+			if err := s.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).
+				UpdateColumn("book_num", gorm.Expr("book_num - ?", count)).Error; err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 

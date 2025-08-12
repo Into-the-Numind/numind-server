@@ -192,23 +192,7 @@ func (b *userBiz) GetCurrentUserWithStats(ctx context.Context, userID uint) (*mo
 		return nil, err
 	}
 
-	// 获取用户书本统计信息并更新到user结构体中
-	bookAllNum, err := b.ds.Books().CountByUserAndStatus(ctx, userID, "failed", true) // 排除failed状态
-	if err != nil {
-		log.C(ctx).Errorw("Failed to count user books", "userID", userID, "error", err)
-		bookAllNum = 0
-	}
-
-	bookNum, err := b.ds.Books().CountByUserAndStatusAndDeleted(ctx, userID, "failed", true) // 排除failed状态且未删除
-	if err != nil {
-		log.C(ctx).Errorw("Failed to count user active books", "userID", userID, "error", err)
-		bookNum = 0
-	}
-
-	// 更新user结构体中的统计字段
-	user.BookAllNum = bookAllNum
-	user.BookNum = int(bookNum)
-
+	// 直接从user结构体中获取book_num和book_all_num，这些字段在创建、状态变更、删除时已经实时更新
 	return user, nil
 }
 
