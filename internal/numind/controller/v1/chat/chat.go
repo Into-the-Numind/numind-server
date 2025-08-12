@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz"
-	"numind-server/internal/numind/store"
+	"numind-server/internal/numind/biz/chat"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
@@ -25,11 +25,12 @@ import (
 // ChatController 是 chat 模块在 Controller 层的实现
 type ChatController struct {
 	b biz.IBiz
+	chatBiz chat.ChatBiz
 }
 
 // New 创建一个 chat controller
-func New(ds store.IStore) *ChatController {
-	return &ChatController{b: biz.NewBiz(ds)}
+func New(chatBiz chat.ChatBiz) *ChatController {
+	return &ChatController{chatBiz: chatBiz}
 }
 
 // WebSocket升级器
@@ -166,7 +167,7 @@ func (ctrl *ChatController) WebSocket(c *gin.Context) {
 		wsMsg.Timestamp = time.Now()
 
 		// 处理消息
-		response, err := ctrl.b.Chats().ProcessWebSocketMessage(c.Request.Context(), userID, &wsMsg)
+		response, err := ctrl.chatBiz.ProcessWebSocketMessage(c.Request.Context(), userID, &wsMsg)
 		if err != nil {
 			log.Errorw("Failed to process WebSocket message", "error", err)
 			response = &model.WebSocketMessage{
@@ -210,7 +211,7 @@ func (ctrl *ChatController) CreateSession(c *gin.Context) {
 		return
 	}
 
-	session, err := ctrl.b.Chats().CreateSession(c.Request.Context(), currentUser.ID, req.Title)
+	session, err := ctrl.chatBiz.CreateSession(c.Request.Context(), currentUser.ID, req.Title)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInternalServer, nil)
 		return
@@ -235,7 +236,7 @@ func (ctrl *ChatController) GetSession(c *gin.Context) {
 		return
 	}
 
-	session, err := ctrl.b.Chats().GetSession(c.Request.Context(), uint(sessionID), currentUser.ID)
+	session, err := ctrl.chatBiz.GetSession(c.Request.Context(), uint(sessionID), currentUser.ID)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInternalServer, nil)
 		return
@@ -256,7 +257,7 @@ func (ctrl *ChatController) ListSessions(c *gin.Context) {
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
 
-	sessions, total, err := ctrl.b.Chats().ListSessions(c.Request.Context(), currentUser.ID, offset, limit)
+	sessions, total, err := ctrl.chatBiz.ListSessions(c.Request.Context(), currentUser.ID, offset, limit)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInternalServer, nil)
 		return
@@ -293,7 +294,7 @@ func (ctrl *ChatController) UpdateSession(c *gin.Context) {
 		return
 	}
 
-	err = ctrl.b.Chats().UpdateSession(c.Request.Context(), uint(sessionID), currentUser.ID, req.Title)
+	err = ctrl.chatBiz.UpdateSession(c.Request.Context(), uint(sessionID), currentUser.ID, req.Title)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInternalServer, nil)
 		return
@@ -318,7 +319,7 @@ func (ctrl *ChatController) DeleteSession(c *gin.Context) {
 		return
 	}
 
-	err = ctrl.b.Chats().DeleteSession(c.Request.Context(), uint(sessionID), currentUser.ID)
+	err = ctrl.chatBiz.DeleteSession(c.Request.Context(), uint(sessionID), currentUser.ID)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInternalServer, nil)
 		return
@@ -346,7 +347,7 @@ func (ctrl *ChatController) ListMessages(c *gin.Context) {
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 
-	messages, total, err := ctrl.b.Chats().ListMessages(c.Request.Context(), uint(sessionID), currentUser.ID, offset, limit)
+	messages, total, err := ctrl.chatBiz.ListMessages(c.Request.Context(), uint(sessionID), currentUser.ID, offset, limit)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInternalServer, nil)
 		return
@@ -374,7 +375,7 @@ func (ctrl *ChatController) GetSessionWithMessages(c *gin.Context) {
 		return
 	}
 
-	session, err := ctrl.b.Chats().GetSessionWithMessages(c.Request.Context(), uint(sessionID), currentUser.ID)
+	session, err := ctrl.chatBiz.GetSessionWithMessages(c.Request.Context(), uint(sessionID), currentUser.ID)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInternalServer, nil)
 		return

@@ -150,7 +150,7 @@ func (b *biz) Pagination() pagination.PaginationBiz {
 }
 
 func (b *biz) Chats() chat.ChatBiz {
-	return chat.New(b.ds)
+	return chat.New(b.ds, b.Users())
 }
 
 func (b *biz) Article() article.IArticleBiz {

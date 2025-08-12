@@ -64,7 +64,7 @@ func installNumindRouters(g *gin.Engine) error {
 	catc := category.New(b)
 	tc := template.New(b)
 	fc := feedback.New(b)
-	chatc := chat.New(store.S)
+	chatc := chat.New(b.Chats())
 	ac := article.NewArticleController(b.Article())
 	adminc := admin.NewAdminController(b.Admin())
 

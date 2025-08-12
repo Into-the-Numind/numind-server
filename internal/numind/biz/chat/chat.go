@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
@@ -33,12 +34,13 @@ type ChatBiz interface {
 
 // chatBiz 是 ChatBiz 的具体实现
 type chatBiz struct {
-	ds store.IStore
+	ds      store.IStore
+	userBiz user.UserBiz // 添加用户业务逻辑引用
 }
 
 // New 创建一个新的 ChatBiz 实例
-func New(ds store.IStore) ChatBiz {
-	return &chatBiz{ds: ds}
+func New(ds store.IStore, userBiz user.UserBiz) ChatBiz {
+	return &chatBiz{ds: ds, userBiz: userBiz}
 }
 
 // CreateSession 创建新的对话会话
@@ -242,6 +244,12 @@ func (b *chatBiz) handleChatMessage(ctx context.Context, userID uint, msg *model
 	assistantMessage, err := b.CreateMessage(ctx, sessionID, userID, assistantContent, "assistant")
 	if err != nil {
 		return nil, err
+	}
+
+	// AI对话成功后，增加用户的聊天数量
+	if err := b.userBiz.IncrementUserChatNum(ctx, userID); err != nil {
+		// 记录错误但不影响对话流程
+		log.C(ctx).Errorw("Failed to increment user chat num", "userID", userID, "error", err)
 	}
 
 	return &model.WebSocketMessage{
