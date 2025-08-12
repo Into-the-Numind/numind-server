@@ -227,14 +227,14 @@ func GetDefaultConfig() *PaginationConfig {
 				FontSize:     64, // 标题: 64rpx（最大）
 				LineHeight:   90, // 1.4倍行高
 				MarginTop:    0,
-				MarginBottom: 30,        // 标题下方: 30rpx
+				MarginBottom: 30,        // 标题下方间距，与副标题上间距保持一致
 				Color:        "#333333", // 主标题: #333333（深灰）
 				Align:        "justify", // 两端对齐
 			},
 			ElementTypeSubtitle: {
 				FontSize:     48, // 副标题: 48rpx（中等）
 				LineHeight:   72, // 1.5倍行高
-				MarginTop:    0,
+				MarginTop:    30,        // 副标题上间距: 30rpx（标准间距）
 				MarginBottom: 25,        // 副标题下方: 25rpx
 				Color:        "#666666", // 副标题: #666666（中灰）
 				Align:        "justify", // 两端对齐
@@ -243,7 +243,7 @@ func GetDefaultConfig() *PaginationConfig {
 				FontSize:     36, // 正文: 36rpx（标准）
 				LineHeight:   58, // 1.6倍行高（标准行高）
 				MarginTop:    0,
-				MarginBottom: 30,        // 正文下方: 30rpx
+				MarginBottom: 30,        // 正文下方间距，与副标题上间距保持一致
 				Color:        "#333333", // 正文: #333333（深灰）
 				Align:        "justify", // 两端对齐
 			},
@@ -251,7 +251,7 @@ func GetDefaultConfig() *PaginationConfig {
 				FontSize:     36, // 列表: 36rpx（标准）
 				LineHeight:   58, // 1.6倍行高（标准行高）
 				MarginTop:    0,
-				MarginBottom: 8,         // 列表项间距: 8rpx
+				MarginBottom: 30,        // 列表下方间距，与副标题上间距保持一致
 				Indent:       20,        // 缩进
 				Color:        "#333333", // 正文: #333333（深灰）
 				Align:        "justify", // 两端对齐
@@ -260,7 +260,7 @@ func GetDefaultConfig() *PaginationConfig {
 				FontSize:     36, // 引用: 36rpx（强调）
 				LineHeight:   54, // 1.5倍行高（紧凑行高）
 				MarginTop:    0,
-				MarginBottom: 30,        // 正文下方: 30rpx
+				MarginBottom: 30,        // 引用下方间距，与副标题上间距保持一致
 				Color:        "#1E90FF", // 引用: #1E90FF（蓝色）
 				Align:        "justify", // 两端对齐
 			},
@@ -268,7 +268,7 @@ func GetDefaultConfig() *PaginationConfig {
 				FontSize:     28, // 标签: 28rpx（最小）
 				LineHeight:   42, // 1.5倍行高
 				MarginTop:    0,
-				MarginBottom: 20,
+				MarginBottom: 30,        // 标签下方间距，与副标题上间距保持一致
 				Color:        "#1E90FF", // 标签: #1E90FF（蓝色）
 				Align:        "left",    // 左对齐
 			},

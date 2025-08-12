@@ -86,19 +86,25 @@ func (r *SimpleRenderer) renderElement(img *image.RGBA, element pagination.Eleme
 // renderTitle 渲染标题
 func (r *SimpleRenderer) renderTitle(img *image.RGBA, content interface{}, y int, style *ElementStyle) int {
 	text := fmt.Sprintf("%v", content)
-	return r.renderText(img, text, y, style.FontSize, style.Color, style.LineHeight)
+	// 应用上边距
+	actualY := y + style.MarginTop
+	return r.renderText(img, text, actualY, style.FontSize, style.Color, style.LineHeight)
 }
 
 // renderSubtitle 渲染副标题
 func (r *SimpleRenderer) renderSubtitle(img *image.RGBA, content interface{}, y int, style *ElementStyle) int {
 	text := fmt.Sprintf("%v", content)
-	return r.renderText(img, text, y, style.FontSize, style.Color, style.LineHeight)
+	// 应用上边距
+	actualY := y + style.MarginTop
+	return r.renderText(img, text, actualY, style.FontSize, style.Color, style.LineHeight)
 }
 
 // renderBody 渲染正文
 func (r *SimpleRenderer) renderBody(img *image.RGBA, content interface{}, y int, style *ElementStyle) int {
 	text := fmt.Sprintf("%v", content)
-	return r.renderText(img, text, y, style.FontSize, style.Color, style.LineHeight)
+	// 应用上边距
+	actualY := y + style.MarginTop
+	return r.renderText(img, text, actualY, style.FontSize, style.Color, style.LineHeight)
 }
 
 // renderList 渲染列表
@@ -115,30 +121,36 @@ func (r *SimpleRenderer) renderList(img *image.RGBA, content interface{}, y int,
 		items = []string{fmt.Sprintf("%v", content)}
 	}
 
-	currentY := y
+	// 应用上边距
+	actualY := y + style.MarginTop
+	currentY := actualY
+
 	for _, item := range items {
 		text := fmt.Sprintf("• %s", item)
 		height := r.renderText(img, text, currentY, style.FontSize, style.Color, style.LineHeight)
 		currentY += height + 8 // 列表项间距
 	}
 
-	return currentY - y
+	return currentY - actualY
 }
 
 // renderQuote 渲染引用
 func (r *SimpleRenderer) renderQuote(img *image.RGBA, content interface{}, y int, style *ElementStyle) int {
 	text := fmt.Sprintf("「%v」", content)
 
+	// 应用上边距
+	actualY := y + style.MarginTop
+
 	// 绘制左边框
 	borderRect := image.Rect(
 		r.config.Card.Padding.Left,
-		y,
+		actualY,
 		r.config.Card.Padding.Left+4,
-		y+100,
+		actualY+100,
 	)
 	draw.Draw(img, borderRect, &image.Uniform{color.RGBA{30, 144, 255, 255}}, image.Point{}, draw.Src)
 
-	return r.renderText(img, text, y+20, style.FontSize, style.Color, style.LineHeight) + 40
+	return r.renderText(img, text, actualY+20, style.FontSize, style.Color, style.LineHeight) + 40
 }
 
 // renderText 渲染文本

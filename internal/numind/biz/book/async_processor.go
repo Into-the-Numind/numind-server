@@ -163,11 +163,34 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	jsonContent := extractJSONFromResponse(volcResult)
 	log.C(ctx).Infow("Extracted JSON content", "book_id", bookID, "content", jsonContent)
 
+	// 检查提取的JSON是否为空
+	if jsonContent == "" {
+		log.C(ctx).Errorw("Failed to extract JSON content from Volc response",
+			"book_id", bookID,
+			"volc_response_length", len(volcResult),
+			"volc_response_preview", volcResult[:min(len(volcResult), 200)])
+		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to extract JSON content from AI response")
+		return
+	}
+
 	// 解析火山引擎返回的JSON结果
 	var volcResponse QianwenResponse
 	if err := json.Unmarshal([]byte(jsonContent), &volcResponse); err != nil {
-		log.C(ctx).Errorw("Failed to parse Volc response", "book_id", bookID, "error", err.Error())
+		log.C(ctx).Errorw("Failed to parse Volc response",
+			"book_id", bookID,
+			"error", err.Error(),
+			"json_content_length", len(jsonContent),
+			"json_content_preview", jsonContent[:min(len(jsonContent), 200)])
 		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to parse AI response: "+err.Error())
+		return
+	}
+
+	// 验证解析后的数据结构
+	if volcResponse.StructuredTextArray == nil || len(volcResponse.StructuredTextArray) == 0 {
+		log.C(ctx).Errorw("Volc response has no structured text array",
+			"book_id", bookID,
+			"response", volcResponse)
+		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "AI response has no structured content")
 		return
 	}
 
@@ -470,39 +493,48 @@ type StructuredTextItem struct {
 
 // extractJSONFromResponse 从响应中提取JSON内容
 func extractJSONFromResponse(response string) string {
-	// 清理响应内容，移除可能的HTML标签和额外内容
+	// 记录原始响应用于调试
+	fmt.Printf("Raw response length: %d\n", len(response))
+	if len(response) > 1000 {
+		fmt.Printf("Raw response preview (first 500 chars): %q\n", response[:500])
+		fmt.Printf("Raw response preview (last 500 chars): %q\n", response[len(response)-500:])
+	} else {
+		fmt.Printf("Raw response: %q\n", response)
+	}
+
+	// 策略1: 尝试直接解析（如果响应本身就是有效的JSON）
+	if isValidJSON(response) {
+		fmt.Printf("Response is already valid JSON\n")
+		return response
+	}
+
+	// 策略2: 清理响应内容，移除可能的HTML标签和额外内容
 	cleanedResponse := cleanResponse(response)
+	fmt.Printf("Cleaned response length: %d\n", len(cleanedResponse))
 
-	// 查找JSON内容的开始和结束位置
-	start := 0
-	end := len(cleanedResponse)
-
-	// 查找第一个 { 或 [
-	for i, char := range cleanedResponse {
-		if char == '{' || char == '[' {
-			start = i
-			break
-		}
+	// 尝试解析清理后的响应
+	if isValidJSON(cleanedResponse) {
+		fmt.Printf("Cleaned response is valid JSON\n")
+		return cleanedResponse
 	}
 
-	// 从后往前查找最后一个 } 或 ]
-	for i := len(cleanedResponse) - 1; i >= 0; i-- {
-		char := cleanedResponse[i]
-		if char == '}' || char == ']' {
-			end = i + 1
-			break
-		}
-	}
-
-	extractedJSON := cleanedResponse[start:end]
-
-	// 验证提取的JSON是否有效
-	if isValidJSON(extractedJSON) {
+	// 策略3: 智能提取JSON内容
+	extractedJSON := smartExtractJSON(response)
+	if extractedJSON != "" && isValidJSON(extractedJSON) {
+		fmt.Printf("Successfully extracted valid JSON, length: %d\n", len(extractedJSON))
 		return extractedJSON
 	}
 
-	// 如果提取的JSON无效，尝试更智能的提取
-	return smartExtractJSON(response)
+	// 策略4: 回退到最基础的提取方法
+	fallbackJSON := fallbackExtractJSON(response)
+	if fallbackJSON != "" {
+		fmt.Printf("Using fallback JSON extraction, length: %d\n", len(fallbackJSON))
+		return fallbackJSON
+	}
+
+	// 如果所有方法都失败，记录错误并返回空字符串
+	fmt.Printf("All JSON extraction methods failed\n")
+	return ""
 }
 
 // cleanResponse 清理响应内容，移除HTML标签和额外内容
@@ -519,12 +551,29 @@ func cleanResponse(response string) string {
 	cleaned = removeTagContent(cleaned, "div")
 	cleaned = removeTagContent(cleaned, "p")
 	cleaned = removeTagContent(cleaned, "span")
+	cleaned = removeTagContent(cleaned, "script")
+	cleaned = removeTagContent(cleaned, "style")
 
 	// 移除多余的换行和空格
 	cleaned = strings.ReplaceAll(cleaned, "\n\n", "\n")
+	cleaned = strings.ReplaceAll(cleaned, "\r\n", "\n")
+	cleaned = strings.ReplaceAll(cleaned, "\r", "\n")
 	cleaned = strings.TrimSpace(cleaned)
 
-	return cleaned
+	// 移除可能的BOM标记
+	if len(cleaned) > 3 && cleaned[0] == 0xEF && cleaned[1] == 0xBB && cleaned[2] == 0xBF {
+		cleaned = cleaned[3:]
+	}
+
+	// 移除可能的控制字符
+	var result strings.Builder
+	for _, r := range cleaned {
+		if r >= 32 || r == '\n' || r == '\t' {
+			result.WriteRune(r)
+		}
+	}
+
+	return result.String()
 }
 
 // removeTagContent 移除指定标签及其内容
@@ -552,27 +601,43 @@ func removeTagContent(content, tagName string) string {
 
 // isValidJSON 验证字符串是否为有效的JSON
 func isValidJSON(s string) bool {
+	if strings.TrimSpace(s) == "" {
+		return false
+	}
+
 	var js json.RawMessage
-	return json.Unmarshal([]byte(s), &js) == nil
+	err := json.Unmarshal([]byte(s), &js)
+	if err != nil {
+		fmt.Printf("JSON validation failed: %v\n", err)
+		return false
+	}
+	return true
 }
 
 // smartExtractJSON 智能提取JSON内容
 func smartExtractJSON(response string) string {
-	// 尝试多种提取策略
-
 	// 策略1: 查找最长的JSON对象
 	longestJSON := findLongestJSON(response)
 	if longestJSON != "" {
+		fmt.Printf("Found longest JSON object, length: %d\n", len(longestJSON))
 		return longestJSON
 	}
 
 	// 策略2: 查找包含特定字段的JSON
 	fieldBasedJSON := findJSONByFields(response)
 	if fieldBasedJSON != "" {
+		fmt.Printf("Found JSON by fields, length: %d\n", len(fieldBasedJSON))
 		return fieldBasedJSON
 	}
 
-	// 策略3: 回退到原始提取方法
+	// 策略3: 查找JSON数组
+	arrayJSON := findJSONArray(response)
+	if arrayJSON != "" {
+		fmt.Printf("Found JSON array, length: %d\n", len(arrayJSON))
+		return arrayJSON
+	}
+
+	// 策略4: 回退到原始提取方法
 	return fallbackExtractJSON(response)
 }
 
@@ -606,6 +671,38 @@ func findLongestJSON(response string) string {
 	}
 
 	return longestJSON
+}
+
+// findJSONArray 查找JSON数组
+func findJSONArray(response string) string {
+	var longestArray string
+	maxLength := 0
+
+	// 查找所有可能的JSON数组
+	bracketCount := 0
+	start := -1
+
+	for i, char := range response {
+		if char == '[' {
+			if bracketCount == 0 {
+				start = i
+			}
+			bracketCount++
+		} else if char == ']' {
+			bracketCount--
+			if bracketCount == 0 && start != -1 {
+				// 找到一个完整的JSON数组
+				jsonCandidate := response[start : i+1]
+				if isValidJSON(jsonCandidate) && len(jsonCandidate) > maxLength {
+					longestArray = jsonCandidate
+					maxLength = len(jsonCandidate)
+				}
+				start = -1
+			}
+		}
+	}
+
+	return longestArray
 }
 
 // findJSONByFields 根据字段查找JSON
@@ -656,9 +753,22 @@ func fallbackExtractJSON(response string) string {
 	end := strings.LastIndex(response, "}")
 
 	if start != -1 && end != -1 && end > start {
-		return response[start : end+1]
+		candidate := response[start : end+1]
+		fmt.Printf("Fallback extraction: found JSON candidate from %d to %d\n", start, end)
+		return candidate
 	}
 
+	// 如果没有找到 { }，尝试查找 [ ]
+	start = strings.Index(response, "[")
+	end = strings.LastIndex(response, "]")
+
+	if start != -1 && end != -1 && end > start {
+		candidate := response[start : end+1]
+		fmt.Printf("Fallback extraction: found JSON array candidate from %d to %d\n", start, end)
+		return candidate
+	}
+
+	fmt.Printf("Fallback extraction: no JSON structure found\n")
 	return ""
 }
 

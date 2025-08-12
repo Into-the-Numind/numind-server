@@ -90,19 +90,25 @@ func (r *AdvancedRenderer) renderElement(img *image.RGBA, element pagination.Ele
 // renderTitle 渲染标题
 func (r *AdvancedRenderer) renderTitle(img *image.RGBA, content interface{}, y int, style *pagination.StyleConfig) int {
 	text := fmt.Sprintf("%v", content)
-	return r.renderText(img, text, y, style.FontSize, style.Color, style.LineHeight, style.MarginBottom)
+	// 应用上边距
+	actualY := y + style.MarginTop
+	return r.renderText(img, text, actualY, style.FontSize, style.Color, style.LineHeight, style.MarginBottom)
 }
 
 // renderSubtitle 渲染副标题
 func (r *AdvancedRenderer) renderSubtitle(img *image.RGBA, content interface{}, y int, style *pagination.StyleConfig) int {
 	text := fmt.Sprintf("%v", content)
-	return r.renderText(img, text, y, style.FontSize, style.Color, style.LineHeight, style.MarginBottom)
+	// 应用上边距
+	actualY := y + style.MarginTop
+	return r.renderText(img, text, actualY, style.FontSize, style.Color, style.LineHeight, style.MarginBottom)
 }
 
 // renderBody 渲染正文
 func (r *AdvancedRenderer) renderBody(img *image.RGBA, content interface{}, y int, style *pagination.StyleConfig) int {
 	text := fmt.Sprintf("%v", content)
-	return r.renderText(img, text, y, style.FontSize, style.Color, style.LineHeight, style.MarginBottom)
+	// 应用上边距
+	actualY := y + style.MarginTop
+	return r.renderText(img, text, actualY, style.FontSize, style.Color, style.LineHeight, style.MarginBottom)
 }
 
 // renderList 渲染列表
@@ -119,7 +125,10 @@ func (r *AdvancedRenderer) renderList(img *image.RGBA, content interface{}, y in
 		items = []string{fmt.Sprintf("%v", content)}
 	}
 
-	currentY := y
+	// 应用上边距
+	actualY := y + style.MarginTop
+	currentY := actualY
+
 	for _, item := range items {
 		// 添加项目符号
 		text := fmt.Sprintf("• %s", item)
@@ -127,12 +136,15 @@ func (r *AdvancedRenderer) renderList(img *image.RGBA, content interface{}, y in
 		currentY += height + 8
 	}
 
-	return currentY - y + style.MarginBottom
+	return currentY - actualY + style.MarginBottom
 }
 
 // renderQuote 渲染引用
 func (r *AdvancedRenderer) renderQuote(img *image.RGBA, content interface{}, y int, style *pagination.StyleConfig) int {
 	text := fmt.Sprintf("%v", content)
+
+	// 应用上边距
+	actualY := y + style.MarginTop
 
 	// 计算引用区域
 	quotePadding := 20
@@ -142,23 +154,23 @@ func (r *AdvancedRenderer) renderQuote(img *image.RGBA, content interface{}, y i
 	// 绘制渐变背景
 	quoteRect := image.Rect(
 		r.config.Card.Padding.Left,
-		y,
+		actualY,
 		r.config.Card.Padding.Left+quoteWidth,
-		y+quoteHeight,
+		actualY+quoteHeight,
 	)
 	r.drawGradientBackground(img, quoteRect)
 
 	// 绘制左边框
 	borderRect := image.Rect(
 		r.config.Card.Padding.Left,
-		y,
+		actualY,
 		r.config.Card.Padding.Left+4,
-		y+quoteHeight,
+		actualY+quoteHeight,
 	)
 	draw.Draw(img, borderRect, &image.Uniform{r.parseColor("#1E90FF")}, image.Point{}, draw.Src)
 
 	// 渲染文本（斜体效果通过颜色和样式实现）
-	height := r.renderText(img, text, y+quotePadding, style.FontSize, "#1E90FF", style.LineHeight, style.MarginBottom)
+	height := r.renderText(img, text, actualY+quotePadding, style.FontSize, "#1E90FF", style.LineHeight, style.MarginBottom)
 
 	return height + quotePadding*2
 }
