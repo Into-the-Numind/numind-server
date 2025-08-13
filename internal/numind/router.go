@@ -30,7 +30,6 @@ import (
 	"numind-server/internal/numind/controller/v1/feedback"
 	importPayController "numind-server/internal/numind/controller/v1/pay"
 	importMw "numind-server/internal/pkg/middleware"
-	importServices "numind-server/internal/services"
 )
 
 // installNumindRouters 注册所有 Numind 小程序业务路由
@@ -52,10 +51,6 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 暂时禁用gzip压缩中间件，排查乱码问题
 	// g.Use(importMw.GzipCompression())
-
-	// 初始化 AuthService
-	db := store.S.DB()
-	authService := importServices.NewAuthService(db)
 
 	uc := user.New(store.S)
 	b := biz.NewBiz(store.S)
@@ -79,7 +74,7 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 需要鉴权的接口
 	authGroup := v1Group.Group("")
-	authGroup.Use(importMw.AuthMiddleware(authService))
+	authGroup.Use(importMw.AuthMiddleware())
 
 	// 图片相关
 	{
@@ -178,7 +173,7 @@ func installNumindRouters(g *gin.Engine) error {
 	}
 
 	// 管理员相关
-	adminGroup := v1Group.Group("/admin", importMw.AuthMiddleware(authService))
+	adminGroup := v1Group.Group("/admin", importMw.AuthMiddleware())
 	{
 		adminGroup.GET("/articles", adminc.GetArticles)                     // 获取文章列表（管理员）
 		adminGroup.GET("/articles/:id", adminc.GetArticle)                  // 获取单个文章（管理员）
