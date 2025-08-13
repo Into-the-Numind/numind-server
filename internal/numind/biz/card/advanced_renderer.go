@@ -196,22 +196,47 @@ func (r *AdvancedRenderer) renderText(img *image.RGBA, text string, y int, fontS
 
 // wrapText 文本换行
 func (r *AdvancedRenderer) wrapText(text string, maxWidth int, fontSize int) []string {
-	// 基于字符宽度计算换行
-	charWidth := fontSize // 中文字符宽度约等于字体大小
-	charsPerLine := maxWidth / charWidth
+	// 使用与分页算法一致的文本换行逻辑
+	// 中文字符宽度约为字体大小的1.05倍，英文字符约为0.6倍
+	charWidth := float64(fontSize) * 1.05 // 以中文字符为准
+	charsPerLine := int(float64(maxWidth) / charWidth)
+
 	if charsPerLine <= 0 {
 		charsPerLine = 20
 	}
 
 	var lines []string
 	runes := []rune(text)
+	currentLine := ""
+	currentLineLength := 0.0
 
-	for i := 0; i < len(runes); i += charsPerLine {
-		end := i + charsPerLine
-		if end > len(runes) {
-			end = len(runes)
+	for i := 0; i < len(runes); i++ {
+		char := runes[i]
+		charWidth := 1.0 // 默认中文字符宽度为1
+
+		// 英文字符宽度约为中文字符的0.6倍
+		if char < 128 {
+			charWidth = 0.6
 		}
-		lines = append(lines, string(runes[i:end]))
+
+		// 检查添加这个字符是否会超出行宽
+		if currentLineLength+charWidth > float64(charsPerLine) {
+			// 当前行已满，保存并开始新行
+			if currentLine != "" {
+				lines = append(lines, currentLine)
+			}
+			currentLine = string(char)
+			currentLineLength = charWidth
+		} else {
+			// 添加到当前行
+			currentLine += string(char)
+			currentLineLength += charWidth
+		}
+	}
+
+	// 添加最后一行
+	if currentLine != "" {
+		lines = append(lines, currentLine)
 	}
 
 	return lines

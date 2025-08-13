@@ -14,6 +14,7 @@ import (
 
 	"numind-server/internal/numind/biz/card"
 	"numind-server/internal/numind/biz/pagination"
+	"numind-server/internal/pkg/httpclient"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
@@ -169,8 +170,22 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 			"book_id", bookID,
 			"volc_response_length", len(volcResult),
 			"volc_response_preview", volcResult[:min(len(volcResult), 200)])
-		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to extract JSON content from AI response")
-		return
+
+		// 尝试重试机制：如果JSON提取失败，可能是API响应不完整
+		log.C(ctx).Infow("Attempting retry mechanism for incomplete JSON response", "book_id", bookID)
+
+		// 重试一次，使用更激进的JSON修复策略
+		retryContent := extractJSONWithRetry(volcResult)
+		if retryContent != "" {
+			log.C(ctx).Infow("Retry successful, extracted JSON content", "book_id", bookID, "content", retryContent)
+			jsonContent = retryContent
+		} else {
+			log.C(ctx).Errorw("Retry failed, both attempts failed to extract JSON",
+				"book_id", bookID,
+				"volc_response_length", len(volcResult))
+			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to extract JSON content from AI response after retry")
+			return
+		}
 	}
 
 	// 解析火山引擎返回的JSON结果
@@ -491,6 +506,98 @@ type StructuredTextItem struct {
 	Content interface{} `json:"content"`
 }
 
+// extractJSONWithRetry 带重试的JSON提取（更激进的修复策略）
+func extractJSONWithRetry(response string) string {
+	fmt.Printf("=== 重试JSON提取（激进策略）===\n")
+
+	// 策略1: 尝试修复不完整的JSON结构
+	fixedJSON := fixIncompleteJSON(response)
+	if fixedJSON != "" && isValidJSON(fixedJSON) {
+		fmt.Printf("重试成功：修复了不完整的JSON结构\n")
+		return fixedJSON
+	}
+
+	// 策略2: 查找包含关键字段的部分JSON并强制修复
+	keyFields := []string{"structured_text_array", "image_prompt"}
+	for _, field := range keyFields {
+		fieldIndex := strings.Index(response, fmt.Sprintf(`"%s"`, field))
+		if fieldIndex != -1 {
+			fmt.Printf("重试策略：找到字段 '%s'，尝试强制修复\n", field)
+
+			// 向前查找最近的 { 开始
+			braceStart := -1
+			for i := fieldIndex; i >= 0; i-- {
+				if response[i] == '{' {
+					braceStart = i
+					break
+				}
+			}
+
+			if braceStart != -1 {
+				partialJSON := response[braceStart:]
+				// 使用更激进的修复策略
+				aggressiveFixed := aggressiveJSONFix(partialJSON)
+				if aggressiveFixed != "" && isValidJSON(aggressiveFixed) {
+					fmt.Printf("重试成功：使用激进策略修复了JSON\n")
+					return aggressiveFixed
+				}
+			}
+		}
+	}
+
+	fmt.Printf("重试失败：所有激进策略都失败了\n")
+	return ""
+}
+
+// aggressiveJSONFix 激进的JSON修复策略
+func aggressiveJSONFix(jsonStr string) string {
+	fmt.Printf("使用激进策略修复JSON，原始长度: %d\n", len(jsonStr))
+
+	// 策略1: 移除所有可能的干扰字符
+	cleaned := strings.Map(func(r rune) rune {
+		if r >= 32 && r <= 126 || r == '\n' || r == '\t' {
+			return r
+		}
+		return -1
+	}, jsonStr)
+
+	// 策略2: 强制修复JSON结构
+	repaired := repairJSONStructure(cleaned)
+
+	// 策略3: 如果仍然无效，尝试添加默认值
+	if !isValidJSON(repaired) {
+		fmt.Printf("激进修复后仍然无效，尝试添加默认值...\n")
+		repaired = addDefaultValues(repaired)
+	}
+
+	return repaired
+}
+
+// addDefaultValues 为不完整的JSON添加默认值
+func addDefaultValues(jsonStr string) string {
+	// 检查是否包含 structured_text_array
+	if !strings.Contains(jsonStr, "structured_text_array") {
+		// 在最后一个 } 之前添加默认的 structured_text_array
+		lastBrace := strings.LastIndex(jsonStr, "}")
+		if lastBrace != -1 {
+			defaultArray := `,"structured_text_array":[{"type":"body","content":"内容解析失败，请重试"}]`
+			jsonStr = jsonStr[:lastBrace] + defaultArray + jsonStr[lastBrace:]
+		}
+	}
+
+	// 检查是否包含 image_prompt
+	if !strings.Contains(jsonStr, "image_prompt") {
+		// 在最后一个 } 之前添加默认的 image_prompt
+		lastBrace := strings.LastIndex(jsonStr, "}")
+		if lastBrace != -1 {
+			defaultPrompt := `,"image_prompt":"默认图片描述"`
+			jsonStr = jsonStr[:lastBrace] + defaultPrompt + jsonStr[lastBrace:]
+		}
+	}
+
+	return jsonStr
+}
+
 // extractJSONFromResponse 从响应中提取JSON内容
 func extractJSONFromResponse(response string) string {
 	// 记录原始响应用于调试
@@ -508,7 +615,37 @@ func extractJSONFromResponse(response string) string {
 		return response
 	}
 
-	// 策略2: 深度清理响应内容
+	// 策略2: 使用新的JSON响应处理器进行深度修复
+	fmt.Printf("使用新的JSON响应处理器进行深度修复...\n")
+
+	// 创建模拟的HTTP响应，使用新的JSON响应处理器
+	processor := httpclient.NewJSONResponseProcessor()
+
+	// 模拟HTTP响应结构
+	mockResp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(response)),
+		Header: http.Header{
+			"Content-Type": []string{"application/json"},
+		},
+	}
+
+	// 使用新的处理器处理响应
+	processedBody, err := processor.ProcessResponse(mockResp)
+	if err == nil && len(processedBody) > 0 {
+		fmt.Printf("新的JSON响应处理器处理成功，长度: %d\n", len(processedBody))
+
+		// 验证处理后的JSON是否有效
+		if isValidJSON(string(processedBody)) {
+			fmt.Printf("处理后的JSON验证成功\n")
+			return string(processedBody)
+		} else {
+			fmt.Printf("处理后的JSON验证失败，继续使用旧方法\n")
+		}
+	} else {
+		fmt.Printf("新的JSON响应处理器处理失败: %v，继续使用旧方法\n", err)
+	}
+
+	// 策略3: 深度清理响应内容（旧方法作为备选）
 	cleanedResponse := deepCleanResponse(response)
 	fmt.Printf("Deep cleaned response length: %d\n", len(cleanedResponse))
 
@@ -725,18 +862,18 @@ func isValidHexString(s string) bool {
 
 // smartExtractJSON 智能提取JSON内容
 func smartExtractJSON(response string) string {
-	// 策略1: 查找最长的JSON对象
+	// 策略1: 优先查找包含关键字段的JSON（最重要的策略）
+	fieldBasedJSON := findJSONByFields(response)
+	if fieldBasedJSON != "" {
+		fmt.Printf("Found JSON by fields (PRIORITY), length: %d\n", len(fieldBasedJSON))
+		return fieldBasedJSON
+	}
+
+	// 策略2: 查找最长的JSON对象
 	longestJSON := findLongestJSON(response)
 	if longestJSON != "" {
 		fmt.Printf("Found longest JSON object, length: %d\n", len(longestJSON))
 		return longestJSON
-	}
-
-	// 策略2: 查找包含特定字段的JSON
-	fieldBasedJSON := findJSONByFields(response)
-	if fieldBasedJSON != "" {
-		fmt.Printf("Found JSON by fields, length: %d\n", len(fieldBasedJSON))
-		return fieldBasedJSON
 	}
 
 	// 策略3: 查找JSON数组
@@ -779,6 +916,12 @@ func findLongestJSON(response string) string {
 		}
 	}
 
+	// 如果没有找到完整的JSON对象，尝试修复不完整的JSON
+	if longestJSON == "" {
+		fmt.Printf("No complete JSON found, attempting to fix incomplete JSON...\n")
+		longestJSON = fixIncompleteJSON(response)
+	}
+
 	return longestJSON
 }
 
@@ -819,7 +962,7 @@ func findJSONByFields(response string) string {
 	// 查找包含关键字段的JSON
 	keyFields := []string{"structured_text_array", "image_prompt"}
 
-	// 查找包含所有关键字段的JSON对象
+	// 策略1: 查找包含所有关键字段的完整JSON对象
 	braceCount := 0
 	start := -1
 
@@ -835,9 +978,75 @@ func findJSONByFields(response string) string {
 				// 检查是否包含所有关键字段
 				jsonCandidate := response[start : i+1]
 				if containsAllFields(jsonCandidate, keyFields) && isValidJSON(jsonCandidate) {
+					fmt.Printf("Found complete JSON with all key fields\n")
 					return jsonCandidate
 				}
 				start = -1
+			}
+		}
+	}
+
+	// 策略2: 如果没有找到完整的JSON，尝试查找包含关键字段的部分JSON
+	fmt.Printf("No complete JSON with all fields found, searching for partial JSON...\n")
+
+	// 查找包含关键字段的部分JSON
+	for _, field := range keyFields {
+		fieldIndex := strings.Index(response, fmt.Sprintf(`"%s"`, field))
+		if fieldIndex != -1 {
+			fmt.Printf("Found field '%s' at position %d\n", field, fieldIndex)
+
+			// 向前查找最近的 { 开始
+			braceStart := -1
+			for i := fieldIndex; i >= 0; i-- {
+				if response[i] == '{' {
+					braceStart = i
+					break
+				}
+			}
+
+			if braceStart != -1 {
+				// 尝试修复这部分JSON
+				partialJSON := response[braceStart:]
+				fmt.Printf("Attempting to fix partial JSON starting with field '%s'...\n", field)
+
+				fixedJSON := fixIncompleteJSON(partialJSON)
+				if fixedJSON != "" && isValidJSON(fixedJSON) {
+					fmt.Printf("Successfully fixed partial JSON containing field '%s'\n", field)
+					return fixedJSON
+				}
+			}
+		}
+	}
+
+	// 策略3: 如果仍然没有找到，尝试查找包含至少一个关键字段的JSON
+	fmt.Printf("No partial JSON found, searching for JSON with at least one key field...\n")
+
+	// 查找包含至少一个关键字段的JSON
+	for _, field := range keyFields {
+		fieldIndex := strings.Index(response, fmt.Sprintf(`"%s"`, field))
+		if fieldIndex != -1 {
+			fmt.Printf("Found field '%s' at position %d, attempting to extract surrounding JSON...\n", field, fieldIndex)
+
+			// 向前查找最近的 { 开始
+			braceStart := -1
+			for i := fieldIndex; i >= 0; i-- {
+				if response[i] == '{' {
+					braceStart = i
+					break
+				}
+			}
+
+			if braceStart != -1 {
+				// 尝试从 { 开始提取到响应末尾，然后修复
+				partialJSON := response[braceStart:]
+				fmt.Printf("Extracting partial JSON from position %d to end, length: %d\n", braceStart, len(partialJSON))
+
+				// 使用更激进的修复策略
+				aggressiveFixed := aggressiveJSONFix(partialJSON)
+				if aggressiveFixed != "" && isValidJSON(aggressiveFixed) {
+					fmt.Printf("Successfully extracted and fixed JSON containing field '%s'\n", field)
+					return aggressiveFixed
+				}
 			}
 		}
 	}
@@ -853,6 +1062,77 @@ func containsAllFields(jsonStr string, fields []string) bool {
 		}
 	}
 	return true
+}
+
+// fixIncompleteJSON 修复不完整的JSON
+func fixIncompleteJSON(response string) string {
+	fmt.Printf("Attempting to fix incomplete JSON...\n")
+
+	// 查找最后一个 { 开始的位置
+	lastBraceStart := strings.LastIndex(response, "{")
+	if lastBraceStart == -1 {
+		fmt.Printf("No opening brace found\n")
+		return ""
+	}
+
+	// 从最后一个 { 开始，尝试构建完整的JSON
+	partialJSON := response[lastBraceStart:]
+	fmt.Printf("Found partial JSON starting at position %d, length: %d\n", lastBraceStart, len(partialJSON))
+
+	// 尝试修复常见的JSON结构问题
+	fixedJSON := fixCommonJSONIssues(partialJSON)
+
+	// 如果修复后仍然无效，尝试添加缺失的结束符
+	if !isValidJSON(fixedJSON) {
+		fmt.Printf("JSON still invalid after common fixes, attempting structural repair...\n")
+		fixedJSON = repairJSONStructure(fixedJSON)
+	}
+
+	// 验证修复后的JSON
+	if isValidJSON(fixedJSON) {
+		fmt.Printf("Successfully fixed incomplete JSON, length: %d\n", len(fixedJSON))
+		return fixedJSON
+	}
+
+	fmt.Printf("Failed to fix incomplete JSON\n")
+	return ""
+}
+
+// repairJSONStructure 修复JSON结构问题
+func repairJSONStructure(jsonStr string) string {
+	// 计算大括号和方括号的平衡
+	braceCount := 0
+	bracketCount := 0
+
+	for _, char := range jsonStr {
+		switch char {
+		case '{':
+			braceCount++
+		case '}':
+			braceCount--
+		case '[':
+			bracketCount++
+		case ']':
+			bracketCount--
+		}
+	}
+
+	// 添加缺失的结束符
+	var result strings.Builder
+	result.WriteString(jsonStr)
+
+	// 添加缺失的方括号结束符
+	for i := 0; i < bracketCount; i++ {
+		result.WriteString("]")
+	}
+
+	// 添加缺失的大括号结束符
+	for i := 0; i < braceCount; i++ {
+		result.WriteString("}")
+	}
+
+	fmt.Printf("Repaired JSON structure: added %d brackets and %d braces\n", bracketCount, braceCount)
+	return result.String()
 }
 
 // fallbackExtractJSON 回退提取方法

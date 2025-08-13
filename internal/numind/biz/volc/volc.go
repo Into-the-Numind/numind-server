@@ -5,11 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/httpclient"
 	"numind-server/internal/pkg/log"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -98,17 +97,33 @@ func (v *volcBiz) GenerateArticleContent(content string, contentType string, max
 
 	bodyBytes, _ := json.Marshal(params)
 	url := cfg.APIBase + "/chat/completions"
-	request, _ := http.NewRequest("POST", url, bytes.NewBuffer(bodyBytes))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(request)
-	if err != nil {
-		return "", err
+	// 使用优化的HTTP客户端
+	client := httpclient.NewClientFromConfig("volc")
+	defer client.Close()
+
+	// 创建请求
+	httpReq := &httpclient.Request{
+		Method:  "POST",
+		URL:     url,
+		Body:    bytes.NewBuffer(bodyBytes),
+		Context: context.Background(),
+		Headers: map[string]string{
+			"Content-Type":  "application/json",
+			"Authorization": "Bearer " + cfg.APIKey,
+		},
+		RetryPolicy: &httpclient.RetryPolicy{
+			MaxRetries:   3,
+			RetryDelay:   1 * time.Second,
+			RetryBackoff: 2.0,
+		},
 	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
+
+	// 使用新的JSON响应处理方法，从根源上解决JSON解析失败问题
+	respBody, err := client.DoWithJSONResponse(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("HTTP请求或JSON处理失败: %w", err)
+	}
 
 	// 解析返回
 	var result struct {
@@ -119,7 +134,7 @@ func (v *volcBiz) GenerateArticleContent(content string, contentType string, max
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("API返回解析失败: %v, 原始: %s", err, string(respBody))
+		return "", fmt.Errorf("API返回解析失败: %v, 响应长度: %d", err, len(respBody))
 	}
 	if len(result.Choices) == 0 {
 		return "", fmt.Errorf("API无返回内容: %s", string(respBody))
@@ -142,65 +157,52 @@ func (v *volcBiz) VolcTextStream(ctx context.Context, messages []map[string]stri
 	// 添加调试日志
 	log.C(ctx).Debugw("调用volc API", "url", url, "request_params", string(bodyBytes))
 
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(bodyBytes))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+viper.GetString("volc.api_key"))
-	req.Header.Set("User-Agent", "numind-server/1.0")
+	// 使用优化的HTTP客户端
+	client := httpclient.NewClientFromConfig("volc")
+	defer client.Close()
 
-	// 增加超时时间，腾讯云网络可能需要更长时间
-	client := &http.Client{
-		Timeout: 120 * time.Second, // 从60秒增加到120秒
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second, // 连接超时
-				KeepAlive: 30 * time.Second, // 保持连接
-			}).DialContext,
-			MaxIdleConns:          100,               // 最大空闲连接数
-			IdleConnTimeout:       90 * time.Second,  // 空闲连接超时
-			TLSHandshakeTimeout:   10 * time.Second,  // TLS握手超时
-			ResponseHeaderTimeout: 120 * time.Second, // 响应头超时设为与整体超时一致
+	// 创建请求
+	httpReq := &httpclient.Request{
+		Method:  "POST",
+		URL:     url,
+		Body:    bytes.NewBuffer(bodyBytes),
+		Context: ctx,
+		Headers: map[string]string{
+			"Content-Type":  "application/json",
+			"Authorization": "Bearer " + viper.GetString("volc.api_key"),
+			"User-Agent":    "numind-server/1.0",
+		},
+		RetryPolicy: &httpclient.RetryPolicy{
+			MaxRetries:   viper.GetInt("volc.max_retries"),
+			RetryDelay:   1 * time.Second,
+			RetryBackoff: 2.0,
 		},
 	}
 
-	// 使用带超时的context
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, 120*time.Second)
-	defer cancel()
-
-	req = req.WithContext(ctxWithTimeout)
-
 	log.C(ctx).Debugw("开始HTTP请求", "timeout", "120s")
-	resp, err := client.Do(req)
+
+	// 使用新的JSON响应处理方法，从根源上解决JSON解析失败问题
+	respBody, err := client.DoWithJSONResponse(httpReq)
 	if err != nil {
-		log.C(ctx).Debugw("HTTP请求失败", "error", err.Error(), "error_type", fmt.Sprintf("%T", err))
-
-		// 网络诊断信息
-		if netErr, ok := err.(net.Error); ok {
-			if netErr.Timeout() {
-				log.C(ctx).Errorw("网络超时错误", "timeout", netErr.Error(), "url", url)
-			} else if netErr.Temporary() {
-				log.C(ctx).Errorw("临时网络错误", "error", netErr.Error(), "url", url)
-			}
-		}
-
-		return "", fmt.Errorf("HTTP请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// 检查HTTP状态码
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		log.C(ctx).Debugw("API调用失败", "status_code", resp.StatusCode, "response", string(respBody))
-		return "", fmt.Errorf("API调用失败，状态码: %d, 响应: %s", resp.StatusCode, string(respBody))
+		log.C(ctx).Errorw("HTTP请求或JSON处理失败", "error", err.Error())
+		return "", fmt.Errorf("HTTP请求或JSON处理失败: %w", err)
 	}
 
-	// 读取响应体
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.C(ctx).Debugw("读取响应体失败", "error", err.Error())
-		return "", fmt.Errorf("读取响应体失败: %w", err)
+	// 检查响应完整性
+	respLength := len(respBody)
+	log.C(ctx).Debugw("处理后的响应体长度", "length", respLength)
+
+	// 检查响应是否为空
+	if respLength == 0 {
+		log.C(ctx).Errorw("响应体为空")
+		return "", fmt.Errorf("API响应体为空")
 	}
 
-	log.C(ctx).Debugw("API响应", "response", string(respBody))
+	previewLength := respLength
+	if previewLength > 500 {
+		previewLength = 500
+	}
+	log.C(ctx).Debugw("API响应", "response_length", respLength, "response_preview", string(respBody[:previewLength]))
 
 	// 解析响应JSON
 	var result struct {
@@ -217,8 +219,15 @@ func (v *volcBiz) VolcTextStream(ctx context.Context, messages []map[string]stri
 	}
 
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		log.C(ctx).Debugw("JSON解析失败", "error", err.Error(), "response", string(respBody))
-		return "", fmt.Errorf("JSON解析失败: %w, 响应: %s", err, string(respBody))
+		log.C(ctx).Warnw("JSON解析失败，尝试清理响应", "error", err.Error())
+
+		// 尝试清理响应并重新解析
+		cleanedResp := cleanJSONResponse(string(respBody))
+		if err := json.Unmarshal([]byte(cleanedResp), &result); err != nil {
+			log.C(ctx).Errorw("清理后JSON解析仍然失败", "error", err.Error(), "cleaned_response", cleanedResp)
+			return "", fmt.Errorf("JSON解析失败: %w, 原始响应长度: %d, 清理后响应: %s", err, respLength, cleanedResp)
+		}
+		log.C(ctx).Infow("JSON解析成功（经过清理）")
 	}
 
 	// 检查是否有错误
@@ -242,4 +251,59 @@ func (v *volcBiz) VolcTextStream(ctx context.Context, messages []map[string]stri
 
 	log.C(ctx).Debugw("成功获取内容", "content_length", len(content))
 	return content, nil
+}
+
+// cleanJSONResponse 清理JSON响应，尝试修复截断的JSON
+func cleanJSONResponse(response string) string {
+	// 移除前后空白字符
+	cleaned := strings.TrimSpace(response)
+
+	// 如果响应为空，返回空字符串
+	if cleaned == "" {
+		return cleaned
+	}
+
+	// 尝试找到最后一个完整的JSON对象或数组
+	// 查找最后一个完整的 } 或 ]
+	lastBrace := strings.LastIndex(cleaned, "}")
+	lastBracket := strings.LastIndex(cleaned, "]")
+
+	var endIndex int
+	if lastBrace > lastBracket {
+		endIndex = lastBrace + 1
+	} else if lastBracket > lastBrace {
+		endIndex = lastBracket + 1
+	} else {
+		// 都没有找到，返回原始响应
+		return cleaned
+	}
+
+	// 截取到最后一个完整结构
+	cleaned = cleaned[:endIndex]
+
+	// 尝试找到对应的开始位置
+	// 简单策略：从后往前找到匹配的开始括号
+	braceCount := 0
+	bracketCount := 0
+
+	for i := len(cleaned) - 1; i >= 0; i-- {
+		switch cleaned[i] {
+		case '}':
+			braceCount++
+		case '{':
+			braceCount--
+		case ']':
+			bracketCount++
+		case '[':
+			bracketCount--
+		}
+
+		// 如果找到匹配的开始位置
+		if braceCount == 0 && bracketCount == 0 {
+			cleaned = cleaned[i:]
+			break
+		}
+	}
+
+	return cleaned
 }
