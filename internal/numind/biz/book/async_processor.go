@@ -508,28 +508,35 @@ func extractJSONFromResponse(response string) string {
 		return response
 	}
 
-	// 策略2: 清理响应内容，移除可能的HTML标签和额外内容
-	cleanedResponse := cleanResponse(response)
-	fmt.Printf("Cleaned response length: %d\n", len(cleanedResponse))
+	// 策略2: 深度清理响应内容
+	cleanedResponse := deepCleanResponse(response)
+	fmt.Printf("Deep cleaned response length: %d\n", len(cleanedResponse))
 
-	// 尝试解析清理后的响应
+	// 尝试解析深度清理后的响应
 	if isValidJSON(cleanedResponse) {
-		fmt.Printf("Cleaned response is valid JSON\n")
+		fmt.Printf("Deep cleaned response is valid JSON\n")
 		return cleanedResponse
 	}
 
 	// 策略3: 智能提取JSON内容
-	extractedJSON := smartExtractJSON(response)
+	extractedJSON := smartExtractJSON(cleanedResponse)
 	if extractedJSON != "" && isValidJSON(extractedJSON) {
 		fmt.Printf("Successfully extracted valid JSON, length: %d\n", len(extractedJSON))
 		return extractedJSON
 	}
 
 	// 策略4: 回退到最基础的提取方法
-	fallbackJSON := fallbackExtractJSON(response)
-	if fallbackJSON != "" {
+	fallbackJSON := fallbackExtractJSON(cleanedResponse)
+	if fallbackJSON != "" && isValidJSON(fallbackJSON) {
 		fmt.Printf("Using fallback JSON extraction, length: %d\n", len(fallbackJSON))
 		return fallbackJSON
+	}
+
+	// 策略5: 最后尝试修复常见问题
+	fixedJSON := fixCommonJSONIssues(response)
+	if fixedJSON != "" && isValidJSON(fixedJSON) {
+		fmt.Printf("Fixed common JSON issues, length: %d\n", len(fixedJSON))
+		return fixedJSON
 	}
 
 	// 如果所有方法都失败，记录错误并返回空字符串
@@ -537,9 +544,9 @@ func extractJSONFromResponse(response string) string {
 	return ""
 }
 
-// cleanResponse 清理响应内容，移除HTML标签和额外内容
-func cleanResponse(response string) string {
-	// 移除常见的HTML标签
+// deepCleanResponse 深度清理响应内容
+func deepCleanResponse(response string) string {
+	// 第一步：移除所有HTML标签及其内容
 	cleaned := response
 
 	// 移除 <think> 标签及其内容
@@ -553,27 +560,39 @@ func cleanResponse(response string) string {
 	cleaned = removeTagContent(cleaned, "span")
 	cleaned = removeTagContent(cleaned, "script")
 	cleaned = removeTagContent(cleaned, "style")
+	cleaned = removeTagContent(cleaned, "head")
+	cleaned = removeTagContent(cleaned, "title")
+	cleaned = removeTagContent(cleaned, "meta")
+	cleaned = removeTagContent(cleaned, "link")
 
-	// 移除多余的换行和空格
-	cleaned = strings.ReplaceAll(cleaned, "\n\n", "\n")
+	// 第二步：标准化换行符和空格
 	cleaned = strings.ReplaceAll(cleaned, "\r\n", "\n")
 	cleaned = strings.ReplaceAll(cleaned, "\r", "\n")
+	cleaned = strings.ReplaceAll(cleaned, "\n\n", "\n")
 	cleaned = strings.TrimSpace(cleaned)
 
-	// 移除可能的BOM标记
+	// 第三步：移除BOM标记
 	if len(cleaned) > 3 && cleaned[0] == 0xEF && cleaned[1] == 0xBB && cleaned[2] == 0xBF {
 		cleaned = cleaned[3:]
 	}
 
-	// 移除可能的控制字符
+	// 第四步：移除控制字符，但保留必要的字符
 	var result strings.Builder
 	for _, r := range cleaned {
-		if r >= 32 || r == '\n' || r == '\t' {
+		// 保留：字母、数字、标点符号、空格、换行、制表符
+		// 移除：控制字符、零宽字符、其他不可见字符
+		if (r >= 32 && r <= 126) || r == '\n' || r == '\t' || r == '\r' {
 			result.WriteRune(r)
 		}
 	}
 
-	return result.String()
+	// 第五步：移除多余的空白字符
+	cleaned = result.String()
+	cleaned = strings.ReplaceAll(cleaned, "  ", " ")    // 双空格变单空格
+	cleaned = strings.ReplaceAll(cleaned, "\n\n", "\n") // 双换行变单换行
+	cleaned = strings.TrimSpace(cleaned)
+
+	return cleaned
 }
 
 // removeTagContent 移除指定标签及其内容
@@ -610,6 +629,96 @@ func isValidJSON(s string) bool {
 	if err != nil {
 		fmt.Printf("JSON validation failed: %v\n", err)
 		return false
+	}
+	return true
+}
+
+// fixCommonJSONIssues 修复常见的JSON问题
+func fixCommonJSONIssues(response string) string {
+	cleaned := response
+
+	// 修复1: 移除JSON末尾的额外内容
+	// 查找最后一个有效的 } 或 ]
+	lastBrace := strings.LastIndex(cleaned, "}")
+	lastBracket := strings.LastIndex(cleaned, "]")
+
+	var endPos int
+	if lastBrace > lastBracket {
+		endPos = lastBrace + 1
+	} else if lastBracket > lastBrace {
+		endPos = lastBracket + 1
+	} else {
+		return cleaned // 没有找到结束符
+	}
+
+	// 移除JSON末尾的额外内容
+	cleaned = cleaned[:endPos]
+
+	// 修复2: 处理可能的编码问题
+	// 移除常见的无效字符序列
+	cleaned = strings.ReplaceAll(cleaned, "\\'", "'")
+	cleaned = strings.ReplaceAll(cleaned, "\\\"", "\"")
+
+	// 修复3: 确保JSON结构完整
+	// 如果以 { 开始但没有对应的 }，尝试添加
+	if strings.HasPrefix(cleaned, "{") && !strings.HasSuffix(cleaned, "}") {
+		// 计算大括号的平衡
+		braceCount := 0
+		for _, char := range cleaned {
+			if char == '{' {
+				braceCount++
+			} else if char == '}' {
+				braceCount--
+			}
+		}
+
+		// 如果缺少结束大括号，添加它们
+		for i := 0; i < braceCount; i++ {
+			cleaned += "}"
+		}
+	}
+
+	// 修复4: 处理可能的Unicode转义问题
+	// 移除无效的Unicode转义序列
+	cleaned = removeInvalidUnicodeEscapes(cleaned)
+
+	return cleaned
+}
+
+// removeInvalidUnicodeEscapes 移除无效的Unicode转义序列
+func removeInvalidUnicodeEscapes(s string) string {
+	// 查找并移除无效的 \u 转义序列
+	var result strings.Builder
+	i := 0
+	for i < len(s) {
+		if i+5 < len(s) && s[i] == '\\' && s[i+1] == 'u' {
+			// 检查接下来的4个字符是否为有效的十六进制
+			hexStr := s[i+2 : i+6]
+			if isValidHexString(hexStr) {
+				result.WriteString(s[i : i+6])
+				i += 6
+			} else {
+				// 无效的Unicode转义，跳过
+				result.WriteByte(s[i])
+				i++
+			}
+		} else {
+			result.WriteByte(s[i])
+			i++
+		}
+	}
+	return result.String()
+}
+
+// isValidHexString 检查字符串是否为有效的十六进制
+func isValidHexString(s string) bool {
+	if len(s) != 4 {
+		return false
+	}
+	for _, char := range s {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+			return false
+		}
 	}
 	return true
 }
