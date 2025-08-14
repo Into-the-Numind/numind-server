@@ -19,6 +19,11 @@ import (
 	"numind-server/internal/pkg/util"
 )
 
+// RendererInterface 渲染器接口
+type RendererInterface interface {
+	RenderCardToImage(card *model.CardM) (*RenderedCard, error)
+}
+
 // Renderer 卡片渲染器
 type Renderer struct {
 	config *pagination.PaginationConfig
@@ -56,34 +61,34 @@ func (r *Renderer) RenderCardToImage(card *model.CardM) (*RenderedCard, error) {
 
 	// 计算可用高度，确保内容不会超出边界
 	availableHeight := r.config.Card.Height - r.config.Card.Padding.Top - r.config.Card.Padding.Bottom
-	
+
 	// 调试信息
-	fmt.Printf("渲染卡片 - 卡片高度: %d, 上边距: %d, 下边距: %d, 可用高度: %d\n", 
+	fmt.Printf("渲染卡片 - 卡片高度: %d, 上边距: %d, 下边距: %d, 可用高度: %d\n",
 		r.config.Card.Height, r.config.Card.Padding.Top, r.config.Card.Padding.Bottom, availableHeight)
 
 	// 渲染元素，添加边界检查
 	currentY := r.config.Card.Padding.Top
 	renderedElements := 0
-	
+
 	for i, element := range elements {
 		// 预计算元素高度
 		elementHeight := r.calculateElementHeight(element)
-		
+
 		// 检查是否会超出边界
-		if currentY + elementHeight > r.config.Card.Height - r.config.Card.Padding.Bottom {
+		if currentY+elementHeight > r.config.Card.Height-r.config.Card.Padding.Bottom {
 			fmt.Printf("⚠️  元素 %d [%s] 会超出卡片边界，停止渲染\n", i+1, element.Type)
-			fmt.Printf("   当前Y位置: %d, 元素高度: %d, 剩余空间: %d\n", 
-				currentY, elementHeight, r.config.Card.Height - r.config.Card.Padding.Bottom - currentY)
+			fmt.Printf("   当前Y位置: %d, 元素高度: %d, 剩余空间: %d\n",
+				currentY, elementHeight, r.config.Card.Height-r.config.Card.Padding.Bottom-currentY)
 			break
 		}
-		
+
 		// 渲染元素
 		actualHeight := r.renderElement(img, element, currentY)
 		currentY += actualHeight
 		renderedElements++
-		
-		fmt.Printf("渲染元素 %d [%s]: Y位置=%d, 高度=%d, 剩余空间=%d\n", 
-			i+1, element.Type, currentY, actualHeight, r.config.Card.Height - currentY)
+
+		fmt.Printf("渲染元素 %d [%s]: Y位置=%d, 高度=%d, 剩余空间=%d\n",
+			i+1, element.Type, currentY, actualHeight, r.config.Card.Height-currentY)
 	}
 
 	fmt.Printf("渲染完成 - 共渲染 %d 个元素，最终Y位置: %d\n", renderedElements, currentY)
@@ -106,13 +111,13 @@ func (r *Renderer) RenderCardToImage(card *model.CardM) (*RenderedCard, error) {
 // calculateElementHeight 计算元素高度（与分页算法保持一致）
 func (r *Renderer) calculateElementHeight(element pagination.Element) int {
 	style := r.getElementStyle(element.Type)
-	
+
 	switch element.Type {
 	case pagination.ElementTypeTitle, pagination.ElementTypeSubtitle, pagination.ElementTypeBody, pagination.ElementTypeQuote:
 		text := fmt.Sprintf("%v", element.Content)
 		lines := r.wrapText(text, r.config.Card.Width-r.config.Card.Padding.Left-r.config.Card.Padding.Right, style.FontSize)
 		lineHeight := int(float64(style.FontSize) * 1.6)
-		return len(lines) * lineHeight + style.MarginTop + style.MarginBottom
+		return len(lines)*lineHeight + style.MarginTop + style.MarginBottom
 	case pagination.ElementTypeList:
 		var items []string
 		switch v := element.Content.(type) {
@@ -125,13 +130,13 @@ func (r *Renderer) calculateElementHeight(element pagination.Element) int {
 		default:
 			items = []string{fmt.Sprintf("%v", element.Content)}
 		}
-		
+
 		totalHeight := style.MarginTop
 		for _, item := range items {
 			text := fmt.Sprintf("• %s", item)
 			lines := r.wrapText(text, r.config.Card.Width-r.config.Card.Padding.Left-r.config.Card.Padding.Right, style.FontSize)
 			lineHeight := int(float64(style.FontSize) * 1.6)
-			totalHeight += len(lines) * lineHeight + 8 // 8像素的列表项间距
+			totalHeight += len(lines)*lineHeight + 8 // 8像素的列表项间距
 		}
 		return totalHeight + style.MarginBottom
 	default:
@@ -243,7 +248,7 @@ func (r *Renderer) wrapText(text string, maxWidth int, fontSize int) []string {
 	// 中文字符宽度约为字体大小的1.05倍，英文字符约为0.6倍
 	charWidth := float64(fontSize) * 1.05 // 以中文字符为准
 	charsPerLine := int(float64(maxWidth) / charWidth)
-	
+
 	if charsPerLine <= 0 {
 		charsPerLine = 20
 	}
@@ -381,8 +386,8 @@ func (r *Renderer) getDefaultStyle(elementType pagination.ElementType) *ElementS
 			LineHeight:   1.4,
 			Color:        "#333333",
 			Align:        "justify",
-			MarginTop:    30,        // 统一标准：30rpx
-			MarginBottom: 30,        // 统一标准：30rpx
+			MarginTop:    30, // 统一标准：30rpx
+			MarginBottom: 30, // 统一标准：30rpx
 		}
 	case pagination.ElementTypeSubtitle:
 		return &ElementStyle{
@@ -390,8 +395,8 @@ func (r *Renderer) getDefaultStyle(elementType pagination.ElementType) *ElementS
 			LineHeight:   1.5,
 			Color:        "#666666",
 			Align:        "justify",
-			MarginTop:    30,        // 统一标准：30rpx
-			MarginBottom: 30,        // 统一标准：30rpx
+			MarginTop:    30, // 统一标准：30rpx
+			MarginBottom: 30, // 统一标准：30rpx
 		}
 	case pagination.ElementTypeBody:
 		return &ElementStyle{
@@ -399,8 +404,8 @@ func (r *Renderer) getDefaultStyle(elementType pagination.ElementType) *ElementS
 			LineHeight:   1.6,
 			Color:        "#333333",
 			Align:        "justify",
-			MarginTop:    30,        // 统一标准：30rpx
-			MarginBottom: 30,        // 统一标准：30rpx
+			MarginTop:    30, // 统一标准：30rpx
+			MarginBottom: 30, // 统一标准：30rpx
 		}
 	case pagination.ElementTypeList:
 		return &ElementStyle{
@@ -408,8 +413,8 @@ func (r *Renderer) getDefaultStyle(elementType pagination.ElementType) *ElementS
 			LineHeight:   1.6,
 			Color:        "#333333",
 			Align:        "justify",
-			MarginTop:    30,        // 统一标准：30rpx
-			MarginBottom: 30,        // 统一标准：30rpx
+			MarginTop:    30, // 统一标准：30rpx
+			MarginBottom: 30, // 统一标准：30rpx
 			Indent:       20,
 		}
 	case pagination.ElementTypeQuote:
@@ -418,8 +423,8 @@ func (r *Renderer) getDefaultStyle(elementType pagination.ElementType) *ElementS
 			LineHeight:   1.5,
 			Color:        "#1E90FF",
 			Align:        "justify",
-			MarginTop:    30,        // 统一标准：30rpx
-			MarginBottom: 30,        // 统一标准：30rpx
+			MarginTop:    30, // 统一标准：30rpx
+			MarginBottom: 30, // 统一标准：30rpx
 		}
 	default:
 		return &ElementStyle{

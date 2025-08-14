@@ -50,3 +50,5 @@ res/
 *.png
 
 /test_*
+
+*.html

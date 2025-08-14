@@ -20,6 +20,9 @@ type SimpleRenderer struct {
 	config *pagination.PaginationConfig
 }
 
+// 确保SimpleRenderer实现了RendererInterface接口
+var _ RendererInterface = (*SimpleRenderer)(nil)
+
 // NewSimpleRenderer 创建新的简单渲染器
 func NewSimpleRenderer(config *pagination.PaginationConfig) *SimpleRenderer {
 	return &SimpleRenderer{

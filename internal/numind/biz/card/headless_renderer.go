@@ -23,6 +23,9 @@ type SimpleHeadlessRenderer struct {
 	background string
 }
 
+// 确保SimpleHeadlessRenderer实现了RendererInterface接口
+var _ RendererInterface = (*SimpleRenderer)(nil)
+
 // NewSimpleHeadlessRenderer 创建新的简化版渲染器
 func NewSimpleHeadlessRenderer(config *pagination.PaginationConfig) *SimpleHeadlessRenderer {
 	return &SimpleHeadlessRenderer{

@@ -24,6 +24,9 @@ type AdvancedRenderer struct {
 	config *pagination.PaginationConfig
 }
 
+// 确保AdvancedRenderer实现了RendererInterface接口
+var _ RendererInterface = (*AdvancedRenderer)(nil)
+
 // NewAdvancedRenderer 创建新的高级渲染器
 func NewAdvancedRenderer(config *pagination.PaginationConfig) *AdvancedRenderer {
 	return &AdvancedRenderer{
