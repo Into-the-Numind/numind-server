@@ -37,9 +37,15 @@ func NewPaginationBiz() PaginationBiz {
 	}
 }
 
-// PaginateElements 对元素数组进行分页
+// PaginateElements 分页元素
 func (p *paginationBiz) PaginateElements(elements []Element) (*PaginatedContent, error) {
-	return p.engine.Paginate(elements)
+	return p.engine.PaginateElements(elements)
+}
+
+// PaginateElementsWithConfig 使用指定配置分页元素
+func (p *paginationBiz) PaginateElementsWithConfig(elements []Element, config *PaginationConfig) (*PaginatedContent, error) {
+	engine := NewPaginationEngine(config)
+	return engine.PaginateElements(elements)
 }
 
 // PaginateFromJSON 从JSON字符串进行分页
@@ -49,7 +55,7 @@ func (p *paginationBiz) PaginateFromJSON(jsonStr string) (*PaginatedContent, err
 		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
 	}
 
-	return p.engine.Paginate(elements)
+	return p.engine.PaginateElements(elements)
 }
 
 // GetConfig 获取当前配置

@@ -112,6 +112,7 @@ func (r *ChromeHeadlessRenderer) startChromeHeadless() (*exec.Cmd, error) {
 		"--disable-web-security",
 		"--disable-features=VizDisplayCompositor",
 		fmt.Sprintf("--remote-debugging-port=%d", r.debugPort),
+		fmt.Sprintf("--window-size=%d,%d", r.config.Card.Width, r.config.Card.Height),
 		"--user-data-dir=/tmp/chrome-headless",
 		"--data-path=/tmp/chrome-headless-data",
 		"--homedir=/tmp/chrome-headless-home",
@@ -506,63 +507,63 @@ func (r *ChromeHeadlessRenderer) generateBookHTMLTemplate(data BookTemplateData)
         }
         
         .element-title {
-            font-size: 64rpx;
+            font-size: 64px;
             color: #333333;
             line-height: 1.4;
             text-align: justify;
-            margin: 0 0 30rpx 0;
+            margin: 0 0 30px 0;
             font-weight: bold;
         }
         
         .element-subtitle {
-            font-size: 48rpx;
+            font-size: 48px;
             color: #666666;
             line-height: 1.5;
             text-align: justify;
-            margin: 0 0 25rpx 0;
+            margin: 0 0 25px 0;
             font-weight: normal;
         }
         
         .element-body {
-            font-size: 36rpx;
+            font-size: 36px;
             color: #333333;
             line-height: 1.6;
             text-align: justify;
-            margin: 0 0 30rpx 0;
+            margin: 0 0 30px 0;
         }
         
         .element-quote {
-            font-size: 36rpx;
+            font-size: 36px;
             color: #1E90FF;
             line-height: 1.5;
             text-align: justify;
-            margin: 0 0 30rpx 0;
+            margin: 0 0 30px 0;
             font-style: italic;
-            padding: 20rpx;
+            padding: 20px;
             background: linear-gradient(to right, #EAF2FF, #FAFCFF);
-            border-left: 4rpx solid #1E90FF;
-            border-radius: 0 8rpx 8rpx 0;
+            border-left: 4px solid #1E90FF;
+            border-radius: 0 8px 8px 0;
         }
         
         .element-list {
-            font-size: 36rpx;
+            font-size: 36px;
             color: #333333;
             line-height: 1.6;
             text-align: justify;
-            margin: 0 0 30rpx 0;
-            padding-left: 40rpx;
+            margin: 0 0 30px 0;
+            padding-left: 40px;
             list-style: none;
         }
         
         .list-item { 
-            margin-bottom: 8rpx; 
+            margin-bottom: 8px; 
             position: relative; 
         }
         
         .list-item:before {
             content: "•";
             position: absolute;
-            left: -20rpx;
+            left: -20px;
             color: #333333;
         }
         
@@ -574,42 +575,77 @@ func (r *ChromeHeadlessRenderer) generateBookHTMLTemplate(data BookTemplateData)
         .font-loaded {
             font-family: 'Source Han Sans CN', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei';
         }
+        
+        /* 卡片容器样式 - 确保所有内容卡片都有正确的边距 */
+        .card-container {
+            width: 100%;
+            height: 100%;
+            padding: 60px 50px; /* 上右下左边距：60px 50px 60px 50px */
+            box-sizing: border-box;
+            background: #ffffff;
+            /* 确保边距完全一致 */
+            margin: 0;
+        }
+        
+        /* 内容区域样式 */
+        .content-area {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            /* 确保内容在边距范围内 */
+            padding: 0;
+            margin: 0;
+        }
+        
+        /* 第一个元素的特殊处理 - 确保上边距一致 */
+        .content-element:first-child {
+            margin-top: 0;
+        }
+        
+        /* 最后一个元素的特殊处理 - 确保下边距一致 */
+        .content-element:last-child {
+            margin-bottom: 0;
+        }
     </style>
 </head>
 <body>
     <div class="book-container">
         <!-- 所有内容元素，没有固定高度限制 -->
-        {{range .Elements}}
-            {{if eq .Type "title"}}
-                <div class="content-element element-title">
-                    <h2 class="element-title">{{.Content}}</h2>
-                </div>
-            {{else if eq .Type "subtitle"}}
-                <div class="content-element element-subtitle">
-                    <h3 class="element-subtitle">{{.Content}}</h3>
-                </div>
-            {{else if eq .Type "body"}}
-                <div class="content-element element-body">
-                    <p class="element-body">{{.Content}}</p>
-                </div>
-            {{else if eq .Type "list"}}
-                <div class="content-element element-list">
-                    <ul class="element-list">
-                        {{range .Items}}
-                            <li class="list-item">{{.}}</li>
-                        {{end}}
-                    </ul>
-                </div>
-            {{else if eq .Type "quote"}}
-                <div class="content-element element-quote">
-                    <blockquote class="element-quote">{{.Content}}</blockquote>
-                </div>
-            {{else}}
-                <div class="content-element element-body">
-                    <p class="element-body">{{.Content}}</p>
-                </div>
-            {{end}}
-        {{end}}
+        <div class="card-container">
+            <div class="content-area">
+                {{range .Elements}}
+                    {{if eq .Type "title"}}
+                        <div class="content-element element-title">
+                            <h2 class="element-title">{{.Content}}</h2>
+                        </div>
+                    {{else if eq .Type "subtitle"}}
+                        <div class="content-element element-subtitle">
+                            <h3 class="element-subtitle">{{.Content}}</h3>
+                        </div>
+                    {{else if eq .Type "body"}}
+                        <div class="content-element element-body">
+                            <p class="element-body">{{.Content}}</p>
+                        </div>
+                    {{else if eq .Type "list"}}
+                        <div class="content-element element-list">
+                            <ul class="element-list">
+                                {{range .Items}}
+                                    <li class="list-item">{{.}}</li>
+                                {{end}}
+                            </ul>
+                        </div>
+                    {{else if eq .Type "quote"}}
+                        <div class="content-element element-quote">
+                            <blockquote class="element-quote">{{.Content}}</blockquote>
+                        </div>
+                    {{else}}
+                        <div class="content-element element-body">
+                            <p class="element-body">{{.Content}}</p>
+                        </div>
+                    {{end}}
+                {{end}}
+            </div>
+        </div>
     </div>
     
     <script>
@@ -678,7 +714,6 @@ func (r *ChromeHeadlessRenderer) generateBookHTMLTemplate(data BookTemplateData)
 		return "", fmt.Errorf("解析模板失败: %v", err)
 	}
 
-	// 执行模板
 	var buf strings.Builder
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("执行模板失败: %v", err)

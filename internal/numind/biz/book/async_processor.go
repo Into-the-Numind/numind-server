@@ -257,48 +257,77 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 
 	// 将结构化文本转换为分页元素，排除title类型
 	var elements []pagination.Element
-	for _, item := range volcResponse.StructuredTextArray {
-		if item.Type == "title" {
-			continue // 跳过title类型
-		}
-
-		// 根据类型映射到分页引擎的元素类型
-		var elementType pagination.ElementType
-		switch item.Type {
-		case "body":
-			elementType = pagination.ElementTypeBody
-		case "subtitle":
-			elementType = pagination.ElementTypeSubtitle
-		case "list":
-			elementType = pagination.ElementTypeList
-		case "quote":
-			elementType = pagination.ElementTypeQuote
-		default:
-			elementType = pagination.ElementTypeBody // 默认使用body类型
-		}
-
-		// 处理content内容
-		var content interface{}
-		switch v := item.Content.(type) {
-		case string:
-			content = v
-		case []interface{}:
-			// 如果是列表，保持为字符串数组格式
-			var listItems []string
-			for _, listItem := range v {
-				if str, ok := listItem.(string); ok {
-					listItems = append(listItems, str)
-				}
+	
+	// 检查是否有结构化内容
+	if volcResponse.StructuredTextArray != nil && len(volcResponse.StructuredTextArray) > 0 {
+		log.C(ctx).Infow("使用AI返回的结构化内容", "book_id", bookID, "element_count", len(volcResponse.StructuredTextArray))
+		
+		for _, item := range volcResponse.StructuredTextArray {
+			if item.Type == "title" {
+				continue // 跳过title类型
 			}
-			content = listItems
-		default:
-			content = fmt.Sprintf("%v", v)
-		}
 
-		elements = append(elements, pagination.Element{
-			Type:    elementType,
-			Content: content,
-		})
+			// 根据类型映射到分页引擎的元素类型
+			var elementType pagination.ElementType
+			switch item.Type {
+			case "body":
+				elementType = pagination.ElementTypeBody
+			case "subtitle":
+				elementType = pagination.ElementTypeSubtitle
+			case "list":
+				elementType = pagination.ElementTypeList
+			case "quote":
+				elementType = pagination.ElementTypeQuote
+			default:
+				elementType = pagination.ElementTypeBody // 默认使用body类型
+			}
+
+			// 处理content内容
+			var content interface{}
+			switch v := item.Content.(type) {
+			case string:
+				content = v
+			case []interface{}:
+				// 如果是列表，保持为字符串数组格式
+				var listItems []string
+				for _, listItem := range v {
+					if str, ok := listItem.(string); ok {
+						listItems = append(listItems, str)
+					}
+				}
+				content = listItems
+			default:
+				content = fmt.Sprintf("%v", v)
+			}
+
+			elements = append(elements, pagination.Element{
+				Type:    elementType,
+				Content: content,
+			})
+		}
+	} else {
+		// 如果没有结构化内容，将原始文本按段落分割并转换为body元素
+		log.C(ctx).Infow("AI未返回结构化内容，使用原始文本作为后备方案", "book_id", bookID, "original_text_length", len(text))
+		
+		// 按段落分割文本
+		paragraphs := strings.Split(text, "\n\n")
+		for _, paragraph := range paragraphs {
+			paragraph = strings.TrimSpace(paragraph)
+			if paragraph != "" {
+				elements = append(elements, pagination.Element{
+					Type:    pagination.ElementTypeBody,
+					Content: paragraph,
+				})
+			}
+		}
+		
+		// 如果段落分割后仍然没有内容，将整个文本作为一个元素
+		if len(elements) == 0 {
+			elements = append(elements, pagination.Element{
+				Type:    pagination.ElementTypeBody,
+				Content: text,
+			})
+		}
 	}
 
 	paginatedContent, err := paginationBiz.PaginateElements(elements)
@@ -308,10 +337,10 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		return
 	}
 
-		// 根据配置创建渲染器
+	// 根据配置创建渲染器
 	var renderer card.RendererInterface
 	var useRenderAndMeasure bool
-	
+
 	// 检查配置是否启用渲染-测量方案
 	if card.IsRenderAndMeasureEnabled() {
 		// 优先使用渲染-测量方案
@@ -328,11 +357,11 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		log.C(ctx).Infow("配置禁用渲染-测量方案，使用传统渲染器", "book_id", bookID)
 		useRenderAndMeasure = false
 	}
-	
+
 	// 如果渲染-测量方案不可用，使用传统渲染器
 	if !useRenderAndMeasure {
 		renderer = card.NewSimpleHeadlessRenderer(paginationBiz.GetConfig())
-		
+
 		// 若有模板背景图，设置给传统渲染器
 		if templateID != "" {
 			if tid, err := strconv.ParseUint(templateID, 10, 64); err == nil {
@@ -355,60 +384,58 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 			if tmpl, err := p.biz.Templates().GetByID(ctx, uint(tid)); err == nil && tmpl != nil {
 				// 这里假设 template.File 字段保存的是背景图的绝对路径
 				coverBackground = tmpl.File
+				log.C(ctx).Infow("获取到模板背景图", "book_id", bookID, "template_id", templateID, "background_path", coverBackground)
 			}
 		}
 	}
 
-	if book.ImageUrl != "" || coverBackground != "" {
-		// 创建封面卡片记录
-		coverCardRecord := &model.CardM{
-			UserID:    userID,
-			BookID:    book.ID,
-			SortOrder: 0, // 封面卡片排序为0
+	// 总是创建封面卡片，即使没有图片或背景
+	// 创建封面卡片记录
+	coverCardRecord := &model.CardM{
+		UserID:    userID,
+		BookID:    book.ID,
+		SortOrder: 0, // 封面卡片排序为0
+	}
+
+	// 先创建封面卡片记录
+	if err := p.biz.Cards().Create(ctx, coverCardRecord); err != nil {
+		log.C(ctx).Errorw("Failed to create cover card", "book_id", bookID, "error", err.Error())
+	} else {
+		// 构造封面数据（包含可选的背景图）
+		var coverElements []map[string]interface{}
+		coverElements = append(coverElements, map[string]interface{}{"type": "title", "content": bookTitle})
+		if book.ImageUrl != "" {
+			coverElements = append(coverElements, map[string]interface{}{"type": "image", "content": book.ImageUrl})
+		}
+		if coverBackground != "" {
+			coverElements = append(coverElements, map[string]interface{}{"type": "background", "content": coverBackground})
+		}
+		if b, err := json.Marshal(coverElements); err == nil {
+			coverCardRecord.ProcessedText = string(b)
 		}
 
-		// 先创建封面卡片记录
-		if err := p.biz.Cards().Create(ctx, coverCardRecord); err != nil {
-			log.C(ctx).Errorw("Failed to create cover card", "book_id", bookID, "error", err.Error())
+		// 渲染封面卡片为图片（支持背景图）
+		renderedCoverCard, err := coverRenderer.RenderCoverCardToImage(coverCardRecord)
+		if err != nil {
+			log.C(ctx).Errorw("Failed to render cover card to image", "book_id", bookID, "error", err.Error())
 		} else {
-			// 构造封面数据（包含可选的背景图）
-			// 封面卡片 RenderCoverCardFromBook 仅接收标题和图片，这里改用通用入口 RenderCoverCardToImage：
-			// 将封面数据写入 coverCardRecord.ProcessedText
-			var coverElements []map[string]interface{}
-			coverElements = append(coverElements, map[string]interface{}{"type": "title", "content": bookTitle})
-			if book.ImageUrl != "" {
-				coverElements = append(coverElements, map[string]interface{}{"type": "image", "content": book.ImageUrl})
-			}
-			if coverBackground != "" {
-				coverElements = append(coverElements, map[string]interface{}{"type": "background", "content": coverBackground})
-			}
-			if b, err := json.Marshal(coverElements); err == nil {
-				coverCardRecord.ProcessedText = string(b)
+			// 更新封面卡片记录，保存渲染后的图片URL
+			coverCardRecord.RenderedImage = renderedCoverCard.ImageURL
+			if err := p.biz.Cards().Update(ctx, coverCardRecord); err != nil {
+				log.C(ctx).Errorw("Failed to update cover card with rendered image", "book_id", bookID, "error", err.Error())
 			}
 
-			// 渲染封面卡片为图片（支持背景图）
-			renderedCoverCard, err := coverRenderer.RenderCoverCardToImage(coverCardRecord)
-			if err != nil {
-				log.C(ctx).Errorw("Failed to render cover card to image", "book_id", bookID, "error", err.Error())
-			} else {
-				// 更新封面卡片记录，保存渲染后的图片URL
-				coverCardRecord.RenderedImage = renderedCoverCard.ImageURL
-				if err := p.biz.Cards().Update(ctx, coverCardRecord); err != nil {
-					log.C(ctx).Errorw("Failed to update cover card with rendered image", "book_id", bookID, "error", err.Error())
-				}
-
-				// 使用封面卡片的rendered_image更新book的image_url
-				// 业务要求：book.image_url 取该book对应、processed_text为null的卡片（封面卡）rendered_image
-				book.ImageUrl = coverCardRecord.RenderedImage
-				if err := p.biz.Books().Update(ctx, book); err != nil {
-					log.C(ctx).Errorw("Failed to update book image_url from cover card rendered image", "book_id", bookID, "error", err.Error())
-				}
+			// 使用封面卡片的rendered_image更新book的image_url
+			// 业务要求：book.image_url 取该book对应、processed_text为null的卡片（封面卡）rendered_image
+			book.ImageUrl = coverCardRecord.RenderedImage
+			if err := p.biz.Books().Update(ctx, book); err != nil {
+				log.C(ctx).Errorw("Failed to update book image_url from cover card rendered image", "book_id", bookID, "error", err.Error())
 			}
+		}
 
-			// 更新用户的卡片数量统计
-			if err := p.biz.Users().IncrementUserCardNum(ctx, userID); err != nil {
-				log.C(ctx).Errorw("Failed to increment user card num for cover card", "book_id", bookID, "error", err.Error())
-			}
+		// 更新用户的卡片数量统计
+		if err := p.biz.Users().IncrementUserCardNum(ctx, userID); err != nil {
+			log.C(ctx).Errorw("Failed to increment user card num for cover card", "book_id", bookID, "error", err.Error())
 		}
 	}
 
@@ -416,7 +443,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	if useRenderAndMeasure {
 		// 使用渲染-测量方案：批量渲染所有卡片
 		log.C(ctx).Infow("使用渲染-测量方案批量渲染", "book_id", bookID, "card_count", len(paginatedContent.Cards))
-		
+
 		// 为每个分页后的卡片创建单独的CardM记录
 		var allCards []*model.CardM
 		for i, cardContent := range paginatedContent.Cards {
@@ -478,7 +505,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	} else {
 		// 使用传统方案：逐张卡片渲染
 		log.C(ctx).Infow("使用传统方案逐张渲染", "book_id", bookID, "card_count", len(paginatedContent.Cards))
-		
+
 		for i, cardContent := range paginatedContent.Cards {
 			// 将卡片内容转换为JSON格式
 			var cardElements []map[string]interface{}
@@ -648,9 +675,9 @@ func extractJSONWithRetry(response string) string {
 func cleanJSONWithSmartFilter(jsonStr string) string {
 	var result strings.Builder
 	removedCount := 0
-	
+
 	fmt.Printf("开始智能字符过滤，原始长度: %d\n", len(jsonStr))
-	
+
 	for i, char := range jsonStr {
 		// 1. 检查是否是无效的Unicode字符
 		if char == utf8.RuneError || char == 0xFFFD {
@@ -658,35 +685,35 @@ func cleanJSONWithSmartFilter(jsonStr string) string {
 			removedCount++
 			continue
 		}
-		
+
 		// 2. 检查是否是控制字符（除了换行符和制表符）
 		if char >= 0 && char <= 31 && char != '\n' && char != '\t' {
 			fmt.Printf("移除控制字符，位置: %d, 字符: 0x%02x (rune: %q)\n", i, char, char)
 			removedCount++
 			continue
 		}
-		
+
 		// 3. 检查是否是扩展ASCII字符（128-255）
 		if char >= 128 && char <= 255 {
 			fmt.Printf("移除扩展ASCII字符，位置: %d, 字符: 0x%02x (rune: %q)\n", i, char, char)
 			removedCount++
 			continue
 		}
-		
+
 		// 4. 检查是否是JSON结构中的问题字符
 		if isJSONStructureProblemChar(char, jsonStr, i) {
 			fmt.Printf("移除JSON结构问题字符，位置: %d, 字符: 0x%02x (rune: %q)\n", i, char, char)
 			removedCount++
 			continue
 		}
-		
+
 		// 5. 保留所有其他字符（包括中文字符）
 		result.WriteRune(char)
 	}
-	
+
 	cleaned := result.String()
 	fmt.Printf("智能字符过滤完成: %d -> %d 字符，移除了 %d 个字符\n", len(jsonStr), len(cleaned), removedCount)
-	
+
 	if removedCount > 0 {
 		// 显示清理后的预览
 		if len(cleaned) > 0 {
@@ -697,7 +724,7 @@ func cleanJSONWithSmartFilter(jsonStr string) string {
 			fmt.Printf("清理后预览: %q\n", preview)
 		}
 	}
-	
+
 	return cleaned
 }
 
@@ -705,7 +732,7 @@ func cleanJSONWithSmartFilter(jsonStr string) string {
 func isJSONStructureProblemChar(char rune, jsonStr string, position int) bool {
 	// 检查是否是JSON结构中的常见问题字符
 	problemChars := []rune{'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z'}
-	
+
 	// 检查是否是问题字符
 	for _, problemChar := range problemChars {
 		if char == problemChar {
@@ -713,7 +740,7 @@ func isJSONStructureProblemChar(char rune, jsonStr string, position int) bool {
 			return isContextuallyProblematicChar(jsonStr, position, char)
 		}
 	}
-	
+
 	return false
 }
 
@@ -722,36 +749,36 @@ func isContextuallyProblematicChar(jsonStr string, position int, char rune) bool
 	// 检查字符前后的上下文
 	before := ""
 	after := ""
-	
+
 	if position > 0 {
 		before = string(jsonStr[position-1])
 	}
 	if position < len(jsonStr)-1 {
 		after = string(jsonStr[position+1])
 	}
-	
+
 	// 如果字符前后都是有效的JSON字符，那么它可能不是问题字符
 	validBefore := isValidJSONContextChar(before)
 	validAfter := isValidJSONContextChar(after)
-	
+
 	// 如果前后都是有效的，那么这个字符可能不是问题
 	if validBefore && validAfter {
 		return false
 	}
-	
+
 	// 检查是否在JSON字符串中
 	inString := isInJSONString(jsonStr, position)
 	if inString {
 		// 在JSON字符串中的字符通常是有效的
 		return false
 	}
-	
+
 	// 检查是否在JSON对象或数组的键值对中
 	if isInJSONKeyValue(jsonStr, position) {
 		// 在键值对中的字符可能是问题字符
 		return true
 	}
-	
+
 	return false
 }
 
@@ -760,14 +787,14 @@ func isValidJSONContextChar(char string) bool {
 	if char == "" {
 		return true
 	}
-	
+
 	validChars := []string{`"`, `{`, `}`, `[`, `]`, `:`, `,`, ` `, `\n`, `\t`}
 	for _, valid := range validChars {
 		if char == valid {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -776,20 +803,20 @@ func isInJSONString(jsonStr string, position int) bool {
 	// 计算当前位置之前的引号数量
 	quoteCount := 0
 	escaped := false
-	
+
 	for i := 0; i < position; i++ {
 		if jsonStr[i] == '\\' && !escaped {
 			escaped = true
 			continue
 		}
-		
+
 		if jsonStr[i] == '"' && !escaped {
 			quoteCount++
 		}
-		
+
 		escaped = false
 	}
-	
+
 	// 如果引号数量是奇数，说明在字符串中
 	return quoteCount%2 == 1
 }
@@ -804,11 +831,11 @@ func isInJSONKeyValue(jsonStr string, position int) bool {
 			break
 		}
 	}
-	
+
 	if colonPos == -1 {
 		return false
 	}
-	
+
 	// 查找冒号后的下一个引号或大括号
 	for i := colonPos + 1; i < len(jsonStr); i++ {
 		if jsonStr[i] == '"' || jsonStr[i] == '{' || jsonStr[i] == '[' {
@@ -816,7 +843,7 @@ func isInJSONKeyValue(jsonStr string, position int) bool {
 			return position > colonPos && position < i
 		}
 	}
-	
+
 	return false
 }
 
@@ -1098,18 +1125,18 @@ func fixJSONStructureIssues(jsonStr string) string {
 	jsonStr = strings.ReplaceAll(jsonStr, "}\n \"", "},\n \"")
 	jsonStr = strings.ReplaceAll(jsonStr, "]\n{", "],\n{")
 	jsonStr = strings.ReplaceAll(jsonStr, "]\n \"", "],\n \"")
-	
+
 	// 修复缺失的引号
 	jsonStr = strings.ReplaceAll(jsonStr, "content\": \"", "content\": \"")
 	jsonStr = strings.ReplaceAll(jsonStr, "type\": \"", "type\": \"")
-	
+
 	// 修复数组元素之间的分隔
 	jsonStr = strings.ReplaceAll(jsonStr, "\"}\n{", "\"},\n{")
 	jsonStr = strings.ReplaceAll(jsonStr, "\"]\n[", "\"],\n[")
-	
+
 	// 修复对象属性之间的分隔
 	jsonStr = strings.ReplaceAll(jsonStr, "\"\n \"", "\",\n \"")
-	
+
 	fmt.Printf("修复了常见的JSON结构问题\n")
 	return jsonStr
 }
@@ -1394,10 +1421,10 @@ func fixIncompleteJSON(response string) string {
 func repairJSONStructure(jsonStr string) string {
 	// 首先清理JSON字符串，移除无效字符
 	cleaned := cleanJSONStringForStructure(jsonStr)
-	
+
 	// 尝试修复常见的JSON结构问题
 	cleaned = fixCommonJSONIssues(cleaned)
-	
+
 	// 计算大括号和方括号的平衡
 	braceCount := 0
 	bracketCount := 0
@@ -1433,55 +1460,53 @@ func repairJSONStructure(jsonStr string) string {
 	return result.String()
 }
 
-
-
 // cleanJSONStringForStructure 清理JSON字符串，专门用于结构修复
 func cleanJSONStringForStructure(jsonStr string) string {
 	var result strings.Builder
 	removedCount := 0
-	
+
 	fmt.Printf("开始清理JSON结构，原始长度: %d\n", len(jsonStr))
-	
+
 	for i, char := range jsonStr {
 		// 1. 保留所有有效的JSON结构字符
 		if char == '{' || char == '}' || char == '[' || char == ']' || char == ':' || char == ',' || char == '"' {
 			result.WriteRune(char)
 			continue
 		}
-		
+
 		// 2. 保留所有空白字符
 		if char == ' ' || char == '\n' || char == '\t' || char == '\r' {
 			result.WriteRune(char)
 			continue
 		}
-		
+
 		// 3. 保留所有字母数字字符和常用符号（用于键名和字符串值）
-		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || 
-		   char == '_' || char == '-' || char == '.' || char == '!' || char == '?' || char == ';' || char == '(' || char == ')' {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') ||
+			char == '_' || char == '-' || char == '.' || char == '!' || char == '?' || char == ';' || char == '(' || char == ')' {
 			result.WriteRune(char)
 			continue
 		}
-		
+
 		// 4. 保留中文字符和其他Unicode字符
 		if char > 127 {
 			result.WriteRune(char)
 			continue
 		}
-		
+
 		// 5. 只移除真正有问题的控制字符
 		if char >= 0 && char <= 31 && char != '\n' && char != '\t' && char != '\r' {
 			fmt.Printf("移除控制字符，位置: %d, 字符: 0x%02x (rune: %q)\n", i, char, char)
 			removedCount++
 			continue
 		}
-		
+
 		// 6. 保留其他字符（包括下划线、感叹号等）
 		result.WriteRune(char)
 	}
-	
+
 	cleaned := result.String()
 	fmt.Printf("JSON结构清理完成: %d -> %d 字符，移除了 %d 个字符\n", len(jsonStr), len(cleaned), removedCount)
-	
+
 	return cleaned
 }
 

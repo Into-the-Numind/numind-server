@@ -84,7 +84,7 @@ func (r *CoverRenderer) RenderCoverCardToImage(card *model.CardM) (*RenderedCard
 	coverConfig := GetCoverConfig()
 
 	// 生成HTML内容
-	htmlContent := r.generateCoverHTML(coverData, coverConfig)
+	htmlContent := r.GenerateCoverHTML(coverData, coverConfig)
 
 	// 使用无头浏览器渲染
 	imageData, err := r.renderWithHeadlessBrowser(htmlContent)
@@ -119,7 +119,7 @@ func (r *CoverRenderer) RenderCoverCardFromBook(card *model.CardM, bookTitle str
 	coverConfig := GetCoverConfig()
 
 	// 生成HTML内容
-	htmlContent := r.generateCoverHTML(coverData, coverConfig)
+	htmlContent := r.GenerateCoverHTML(coverData, coverConfig)
 
 	// 使用无头浏览器渲染
 	imageData, err := r.renderWithHeadlessBrowser(htmlContent)
@@ -142,8 +142,46 @@ func (r *CoverRenderer) RenderCoverCardFromBook(card *model.CardM, bookTitle str
 	}, nil
 }
 
-// generateCoverHTML 生成封面HTML内容
-func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagination.PaginationConfig) string {
+// GenerateCoverHTML 生成封面HTML内容
+func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagination.PaginationConfig) string {
+	// 处理背景样式 - 确保背景完全覆盖整个卡片
+	backgroundStyle := ""
+	if coverData.Background != "" {
+		backgroundStyle = fmt.Sprintf("background: url('%s') center center / cover no-repeat;", coverData.Background)
+	}
+
+	// 处理图片区域背景 - 上半部分，使用center top确保顶部对齐
+	imageSectionBg := ""
+	if coverData.Background != "" {
+		// 使用绝对路径确保背景图片能正确加载
+		absPath := coverData.Background
+		if !filepath.IsAbs(absPath) {
+			if abs, err := filepath.Abs(absPath); err == nil {
+				absPath = abs
+			}
+		}
+		imageSectionBg = fmt.Sprintf("background: url('file://%s') center top / cover no-repeat;", absPath)
+	} else {
+		imageSectionBg = "background: #f5f5f5;"
+	}
+
+	// 处理标题区域背景 - 下半部分，使用center bottom确保底部对齐，避免白色间隙
+	titleSectionBg := ""
+	if coverData.Background != "" {
+		// 使用绝对路径确保背景图片能正确加载
+		absPath := coverData.Background
+		if !filepath.IsAbs(absPath) {
+			if abs, err := filepath.Abs(absPath); err == nil {
+				absPath = abs
+			}
+		}
+		// 使用center bottom确保背景图片的底部部分显示在标题区域
+		// 这样可以避免底部出现白色间隙
+		titleSectionBg = fmt.Sprintf("background: url('file://%s') center bottom / cover no-repeat;", absPath)
+	} else {
+		titleSectionBg = "background: #ffffff;"
+	}
+
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -174,13 +212,13 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
         .cover-container {
             width: 100%%;
             height: 100%%;
-            display: grid;
-            grid-template-rows: 1fr 1fr; /* 上下等分，避免像素取整缝隙 */
-            gap: 0;
+            display: flex;
+            flex-direction: column;
             %s
         }
         
         .image-section {
+            flex: 1;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -188,7 +226,7 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
             position: relative;
             overflow: hidden;
             width: 100%%;
-            height: 100%%;
+            min-height: 50%%;
         }
         
         .cover-image {
@@ -212,14 +250,18 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
         }
         
         .title-section {
+            flex: 1;
             display: flex;
             align-items: center;
             justify-content: center;
             %s
-            padding: 40px;
+            padding: 20px;
             box-sizing: border-box;
             width: 100%%;
-            height: 100%%;
+            min-height: 50%%;
+            /* 确保背景完全覆盖，避免白色间隙 */
+            background-size: cover !important;
+            background-position: center bottom !important;
         }
         
         .title-container {
@@ -250,11 +292,11 @@ func (r *CoverRenderer) generateCoverHTML(coverData CoverCardData, config *pagin
     </div>
 </body>
 </html>`, config.Card.Width, config.Card.Height,
-		formatBackgroundStyle(coverData.Background),
+		backgroundStyle,
 		config.Card.Width, config.Card.Height,
-		formatBackgroundStyle(coverData.Background),
-		sectionBackgroundStyle(coverData.Background, true),
-		sectionBackgroundStyle(coverData.Background, false),
+		backgroundStyle,
+		imageSectionBg,
+		titleSectionBg,
 		r.generateImageHTML(coverData.ImageURL),
 		coverData.Title)
 

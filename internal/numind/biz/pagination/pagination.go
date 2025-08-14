@@ -206,94 +206,38 @@ func (p *PaginationEngine) calculateElementCharCount(element Element) int {
 	}
 }
 
-// Paginate 执行分页
-func (p *PaginationEngine) Paginate(elements []Element) (*PaginatedContent, error) {
+// PaginateElements 分页元素
+func (p *PaginationEngine) PaginateElements(elements []Element) (*PaginatedContent, error) {
+	if len(elements) == 0 {
+		return &PaginatedContent{Cards: []Card{}}, nil
+	}
+
+	// 计算可用高度
+	availableHeight := p.config.Card.Height - p.config.Card.Padding.Top - p.config.Card.Padding.Bottom
+
+	fmt.Printf("分页开始 - 卡片高度: %d, 上边距: %d, 下边距: %d, 可用高度: %d\n",
+		p.config.Card.Height, p.config.Card.Padding.Top, p.config.Card.Padding.Bottom, availableHeight)
+
 	var cards []Card
 	var currentCardElements []Element
 	currentHeight := 0
-	
-	// 确保上下边距一致
-	topMargin := p.config.Card.Padding.Top
-	bottomMargin := p.config.Card.Padding.Bottom
-	
-	// 计算可用高度，确保上下边距完全一致
-	availableHeight := p.config.Card.Height - topMargin - bottomMargin
-	
-	// 调试信息
-	fmt.Printf("分页开始 - 卡片高度: %d, 上边距: %d, 下边距: %d, 可用高度: %d\n", 
-		p.config.Card.Height, topMargin, bottomMargin, availableHeight)
-
-	// 预计算所有元素的高度，用于智能分页
-	elementHeights := make([]int, len(elements))
-	for i, element := range elements {
-		elementHeights[i] = p.calculateElementHeight(element)
-	}
 
 	for i, element := range elements {
-		elementHeight := elementHeights[i]
+		// 计算元素高度
+		elementHeight := p.calculateElementHeight(element)
 		
-		// 调试信息
 		fmt.Printf("元素 %d [%s]: 高度=%d, 当前总高度=%d, 可用高度=%d\n", 
 			i+1, element.Type, elementHeight, currentHeight, availableHeight)
 
-		// 智能分页逻辑：考虑内容平衡性
-		shouldStartNewCard := false
-		
-		// 情况1：当前元素会超出可用高度
-		if currentHeight+elementHeight > availableHeight {
-			shouldStartNewCard = true
-		}
-		
-		// 情况2：当前卡片已有内容，且添加当前元素后剩余空间过少（少于20%）
-		remainingSpace := availableHeight - (currentHeight + elementHeight)
-		if len(currentCardElements) > 0 && remainingSpace > 0 && 
-		   float64(remainingSpace)/float64(availableHeight) < 0.2 {
-			// 检查下一个元素是否更适合当前卡片
-			if i+1 < len(elements) {
-				nextElementHeight := elementHeights[i+1]
-				if currentHeight+elementHeight+nextElementHeight <= availableHeight {
-					// 下一个元素更适合，先添加当前元素
-					shouldStartNewCard = false
-				} else {
-					// 当前元素更适合当前卡片
-					shouldStartNewCard = true
-				}
-			} else {
-				// 最后一个元素，添加到当前卡片
-				shouldStartNewCard = false
-			}
-		}
-
-		if shouldStartNewCard {
-			// 如果当前卡片已有内容，保存它
-			if len(currentCardElements) > 0 {
-				cards = append(cards, Card{Elements: currentCardElements})
-				fmt.Printf("创建新卡片，当前卡片元素数: %d, 总高度: %d, 边距: 上%d下%d\n", 
-					len(currentCardElements), currentHeight, topMargin, bottomMargin)
-			}
+		// 检查是否需要创建新卡片
+		if currentHeight+elementHeight > availableHeight && len(currentCardElements) > 0 {
+			// 创建新卡片
+			cards = append(cards, Card{Elements: currentCardElements})
+			fmt.Printf("创建新卡片，元素数: %d, 总高度: %d\n", len(currentCardElements), currentHeight)
 			
-			// 如果单个元素就超过可用高度，必须分割
-			if elementHeight > availableHeight {
-				fmt.Printf("元素 %d 高度超出卡片边界，开始智能分割...\n", i+1)
-				
-				// 智能分割长文本元素
-				splitElements := p.splitLongElement(element, availableHeight)
-				if len(splitElements) > 0 {
-					// 将分割后的元素添加到新卡片
-					currentCardElements = splitElements
-					currentHeight = p.calculateTotalHeight(splitElements)
-					fmt.Printf("分割成功，创建 %d 个子元素，总高度: %d\n", len(splitElements), currentHeight)
-				} else {
-					// 如果无法分割，创建新卡片并强制添加
-					currentCardElements = []Element{element}
-					currentHeight = elementHeight
-					fmt.Printf("⚠️  无法分割元素 %d，强制添加到新卡片\n", i+1)
-				}
-			} else {
-				// 正常情况：开始新卡片
-				currentCardElements = []Element{element}
-				currentHeight = elementHeight
-			}
+			// 重置当前卡片
+			currentCardElements = []Element{element}
+			currentHeight = elementHeight
 		} else {
 			// 添加到当前卡片
 			currentCardElements = append(currentCardElements, element)
@@ -301,11 +245,38 @@ func (p *PaginationEngine) Paginate(elements []Element) (*PaginatedContent, erro
 		}
 	}
 
-	// 添加最后一页（如果非空）
+	// 处理最后一个卡片
 	if len(currentCardElements) > 0 {
-		cards = append(cards, Card{Elements: currentCardElements})
+		// 检查最后一个卡片是否超出边界
+		if currentHeight > availableHeight {
+			// 如果超出边界，尝试分割最后一个元素
+			lastElement := currentCardElements[len(currentCardElements)-1]
+			remainingElements := currentCardElements[:len(currentCardElements)-1]
+			
+			if len(remainingElements) > 0 {
+				// 先添加前面的元素
+				cards = append(cards, Card{Elements: remainingElements})
+				fmt.Printf("创建卡片（分割前），元素数: %d\n", len(remainingElements))
+			}
+			
+			// 尝试分割最后一个元素
+			splitElements := p.splitLongElement(lastElement, availableHeight)
+			if len(splitElements) > 0 {
+				// 分割成功，创建新卡片
+				cards = append(cards, Card{Elements: splitElements})
+				fmt.Printf("创建卡片（分割后），元素数: %d\n", len(splitElements))
+			} else {
+				// 分割失败，强制创建新卡片
+				fmt.Printf("▲ 无法分割元素%d,强制添加到新卡片\n", len(elements))
+				cards = append(cards, Card{Elements: []Element{lastElement}})
+			}
+		} else {
+			// 正常添加最后一个卡片
+			cards = append(cards, Card{Elements: currentCardElements})
+		}
+		
 		fmt.Printf("最后一页，元素数: %d, 总高度: %d, 边距: 上%d下%d\n", 
-			len(currentCardElements), currentHeight, topMargin, bottomMargin)
+			len(currentCardElements), currentHeight, p.config.Card.Padding.Top, p.config.Card.Padding.Bottom)
 	}
 
 	fmt.Printf("分页完成 - 总卡片数: %d\n", len(cards))
@@ -429,7 +400,7 @@ func GetDefaultConfig() *PaginationConfig {
 				Bottom int `json:"bottom"`
 				Left   int `json:"left"`
 			}{
-				Top:    60, // 标准内边距: 60rpx 50rpx
+				Top:    60, // 标准内边距: 60px 50px
 				Right:  50,
 				Bottom: 60,
 				Left:   50,
@@ -437,53 +408,60 @@ func GetDefaultConfig() *PaginationConfig {
 		},
 		Styles: map[ElementType]StyleConfig{
 			ElementTypeTitle: {
-				FontSize:     64, // 标题: 64rpx（最大）
+				FontSize:     64, // 标题: 64px（最大）
 				LineHeight:   90, // 1.4倍行高
-				MarginTop:    30,        // 标题上间距: 30rpx（统一标准）
-				MarginBottom: 30,        // 标题下方间距: 30rpx（统一标准）
+				MarginTop:    30,        // 标题上间距: 30px（统一标准）
+				MarginBottom: 30,        // 标题下方间距: 30px（统一标准）
 				Color:        "#333333", // 主标题: #333333（深灰）
 				Align:        "justify", // 两端对齐
 			},
 			ElementTypeSubtitle: {
-				FontSize:     48, // 副标题: 48rpx（中等）
+				FontSize:     48, // 副标题: 48px（中等）
 				LineHeight:   72, // 1.5倍行高
-				MarginTop:    30,        // 副标题上间距: 30rpx（统一标准）
-				MarginBottom: 30,        // 副标题下方: 30rpx（统一标准）
+				MarginTop:    30,        // 副标题上间距: 30px（统一标准）
+				MarginBottom: 25,        // 副标题下方: 25px（标准下间距）
 				Color:        "#666666", // 副标题: #666666（中灰）
 				Align:        "justify", // 两端对齐
 			},
 			ElementTypeBody: {
-				FontSize:     36, // 正文: 36rpx（标准）
+				FontSize:     36, // 正文: 36px（标准）
 				LineHeight:   58, // 1.6倍行高（标准行高）
-				MarginTop:    30,        // 正文上间距: 30rpx（统一标准）
-				MarginBottom: 30,        // 正文下方间距: 30rpx（统一标准）
+				MarginTop:    30,        // 正文上间距: 30px（统一标准）
+				MarginBottom: 30,        // 正文下方间距: 30px（统一标准）
 				Color:        "#333333", // 正文: #333333（深灰）
 				Align:        "justify", // 两端对齐
 			},
 			ElementTypeList: {
-				FontSize:     36, // 列表: 36rpx（标准）
+				FontSize:     36, // 列表: 36px（标准）
 				LineHeight:   58, // 1.6倍行高（标准行高）
-				MarginTop:    30,        // 列表上间距: 30rpx（统一标准）
-				MarginBottom: 30,        // 列表下方间距: 30rpx（统一标准）
-				Indent:       20,        // 缩进
-				Color:        "#333333", // 正文: #333333（深灰）
+				MarginTop:    30,        // 列表上间距: 30px（统一标准）
+				MarginBottom: 30,        // 列表下方间距: 30px（统一标准）
+				Color:        "#333333", // 列表: #333333（深灰）
 				Align:        "justify", // 两端对齐
 			},
 			ElementTypeQuote: {
-				FontSize:     36, // 引用: 36rpx（强调）
+				FontSize:     36, // 引用: 36px（强调）
 				LineHeight:   54, // 1.5倍行高（紧凑行高）
-				MarginTop:    30,        // 引用上间距: 30rpx（统一标准）
-				MarginBottom: 30,        // 引用下方间距: 30rpx（统一标准）
+				MarginTop:    30,        // 引用上间距: 30px（统一标准）
+				MarginBottom: 30,        // 引用下方间距: 30px（统一标准）
 				Color:        "#1E90FF", // 引用: #1E90FF（蓝色）
 				Align:        "justify", // 两端对齐
 			},
 			ElementTypeTag: {
-				FontSize:     28, // 标签: 28rpx（最小）
+				FontSize:     28, // 标签: 28px（最小）
 				LineHeight:   42, // 1.5倍行高
-				MarginTop:    30,        // 标签上间距: 30rpx（统一标准）
-				MarginBottom: 30,        // 标签下方间距: 30rpx（统一标准）
+				MarginTop:    30,        // 标签上间距: 30px（统一标准）
+				MarginBottom: 30,        // 标签下方间距: 30px（统一标准）
 				Color:        "#1E90FF", // 标签: #1E90FF（蓝色）
 				Align:        "left",    // 左对齐
+			},
+			ElementTypeNumber: {
+				FontSize:     28, // 数字: 28px（最小）
+				LineHeight:   42, // 1.5倍行高
+				MarginTop:    30,        // 数字上间距: 30px（统一标准）
+				MarginBottom: 30,        // 数字下方间距: 30px（统一标准）
+				Color:        "#1E90FF", // 数字: #1E90FF（蓝色）
+				Align:        "center",  // 居中对齐
 			},
 		},
 	}
@@ -497,5 +475,5 @@ func PaginateFromJSON(jsonStr string) (*PaginatedContent, error) {
 	}
 
 	engine := NewPaginationEngine(GetDefaultConfig())
-	return engine.Paginate(elements)
+	return engine.PaginateElements(elements)
 }

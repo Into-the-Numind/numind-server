@@ -208,10 +208,20 @@ func (r *RenderAndMeasureRenderer) captureImagesByPageBreaks(htmlContent string,
 		}
 	}
 
-	// 如果没有有效的分页点，至少包含第一个卡片
-	if len(validPageBreaks) == 0 && len(cards) > 0 {
-		validPageBreaks = []int{0}
-		fmt.Printf("📝 没有有效分页点，使用默认分页点: [0]\n")
+	// 如果没有有效的分页点，根据卡片数量生成合理的分页点
+	if len(validPageBreaks) == 0 {
+		if len(cards) == 1 {
+			validPageBreaks = []int{0}
+		} else if len(cards) <= 3 {
+			// 少量卡片，每张一页
+			for i := 0; i < len(cards); i++ {
+				validPageBreaks = append(validPageBreaks, i)
+			}
+		} else {
+			// 多张卡片，智能分页
+			validPageBreaks = r.generateReasonablePageBreaks(len(cards))
+		}
+		fmt.Printf("📝 生成合理分页点: %v (卡片总数: %d)\n", validPageBreaks, len(cards))
 	}
 
 	fmt.Printf("📏 有效分页点: %v (总数: %d)\n", validPageBreaks, len(validPageBreaks))
@@ -408,7 +418,7 @@ func (r *RenderAndMeasureRenderer) fallbackImageGeneration(htmlContent string) (
 
 	// 解析HTML内容，提取文本信息
 	textContent := r.extractTextFromHTML(htmlContent)
-	
+
 	// 在图片上绘制文本内容
 	r.drawTextOnImage(img, textContent)
 
@@ -696,63 +706,63 @@ func (r *RenderAndMeasureRenderer) generateSuperLongHTMLTemplate(data SuperLongH
         }
         
         .element-title {
-            font-size: 32px;
+            font-size: 64px;
             color: #333333;
             line-height: 1.4;
             text-align: justify;
-            margin: 0 0 15px 0;
+            margin: 0 0 30px 0;
             font-weight: bold;
         }
         
         .element-subtitle {
-            font-size: 24px;
+            font-size: 48px;
             color: #666666;
             line-height: 1.5;
             text-align: justify;
-            margin: 0 0 12px 0;
+            margin: 0 0 25px 0;
             font-weight: normal;
         }
         
         .element-body {
-            font-size: 18px;
+            font-size: 36px;
             color: #333333;
             line-height: 1.6;
             text-align: justify;
-            margin: 0 0 15px 0;
+            margin: 0 0 30px 0;
         }
         
         .element-quote {
-            font-size: 18px;
+            font-size: 36px;
             color: #1E90FF;
             line-height: 1.5;
             text-align: justify;
-            margin: 0 0 15px 0;
+            margin: 0 0 30px 0;
             font-style: italic;
-            padding: 10px;
+            padding: 20px;
             background: linear-gradient(to right, #EAF2FF, #FAFCFF);
-            border-left: 2px solid #1E90FF;
-            border-radius: 0 4px 4px 0;
+            border-left: 4px solid #1E90FF;
+            border-radius: 0 8px 8px 0;
         }
         
         .element-list {
-            font-size: 18px;
+            font-size: 36px;
             color: #333333;
             line-height: 1.6;
             text-align: justify;
-            margin: 0 0 15px 0;
-            padding-left: 20px;
+            margin: 0 0 30px 0;
+            padding-left: 40px;
             list-style: none;
         }
         
         .list-item { 
-            margin-bottom: 4px; 
+            margin-bottom: 8px; 
             position: relative; 
         }
         
         .list-item:before {
             content: "•";
             position: absolute;
-            left: -10px;
+            left: -20px;
             color: #333333;
         }
         
@@ -764,42 +774,77 @@ func (r *RenderAndMeasureRenderer) generateSuperLongHTMLTemplate(data SuperLongH
         .font-loaded {
             font-family: 'Source Han Sans CN', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei';
         }
+        
+        /* 卡片容器样式 - 确保所有内容卡片都有正确的边距 */
+        .card-container {
+            width: 100%;
+            height: 100%;
+            padding: 60px 50px; /* 上右下左边距：60px 50px 60px 50px */
+            box-sizing: border-box;
+            background: #ffffff;
+            /* 确保边距完全一致 */
+            margin: 0;
+        }
+        
+        /* 内容区域样式 */
+        .content-area {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            /* 确保内容在边距范围内 */
+            padding: 0;
+            margin: 0;
+        }
+        
+        /* 第一个元素的特殊处理 - 确保上边距一致 */
+        .content-element:first-child {
+            margin-top: 0;
+        }
+        
+        /* 最后一个元素的特殊处理 - 确保下边距一致 */
+        .content-element:last-child {
+            margin-bottom: 0;
+        }
     </style>
 </head>
 <body>
     <div class="book-container">
         <!-- 所有内容元素，没有固定高度限制 -->
-        {{range .Elements}}
-            {{if eq .Type "title"}}
-                <div class="content-element element-title">
-                    <h2 class="element-title">{{.Content}}</h2>
-                </div>
-            {{else if eq .Type "subtitle"}}
-                <div class="content-element element-subtitle">
-                    <h3 class="element-subtitle">{{.Content}}</h3>
-                </div>
-            {{else if eq .Type "body"}}
-                <div class="content-element element-body">
-                    <p class="element-body">{{.Content}}</p>
-                </div>
-            {{else if eq .Type "list"}}
-                <div class="content-element element-list">
-                    <ul class="element-list">
-                        {{range .Items}}
-                            <li class="list-item">{{.}}</li>
-                        {{end}}
-                    </ul>
-                </div>
-            {{else if eq .Type "quote"}}
-                <div class="content-element element-quote">
-                    <blockquote class="element-quote">{{.Content}}</blockquote>
-                </div>
-            {{else}}
-                <div class="content-element element-body">
-                    <p class="element-body">{{.Content}}</p>
-                </div>
-            {{end}}
-        {{end}}
+        <div class="card-container">
+            <div class="content-area">
+                {{range .Elements}}
+                    {{if eq .Type "title"}}
+                        <div class="content-element element-title">
+                            <h2 class="element-title">{{.Content}}</h2>
+                        </div>
+                    {{else if eq .Type "subtitle"}}
+                        <div class="content-element element-subtitle">
+                            <h3 class="element-subtitle">{{.Content}}</h3>
+                        </div>
+                    {{else if eq .Type "body"}}
+                        <div class="content-element element-body">
+                            <p class="element-body">{{.Content}}</p>
+                        </div>
+                    {{else if eq .Type "list"}}
+                        <div class="content-element element-list">
+                            <ul class="element-list">
+                                {{range .Items}}
+                                    <li class="list-item">{{.}}</li>
+                                {{end}}
+                            </ul>
+                        </div>
+                    {{else if eq .Type "quote"}}
+                        <div class="content-element element-quote">
+                            <blockquote class="element-quote">{{.Content}}</blockquote>
+                        </div>
+                    {{else}}
+                        <div class="content-element element-body">
+                            <p class="element-body">{{.Content}}</p>
+                        </div>
+                    {{end}}
+                {{end}}
+            </div>
+        </div>
     </div>
     
     <script>
@@ -821,7 +866,7 @@ func (r *RenderAndMeasureRenderer) generateSuperLongHTMLTemplate(data SuperLongH
             }
         });
         
-        // 测量页面分页点的函数
+        // 测量页面分页点的函数 - 改进版本，确保文字不超出边界
         function measurePageBreaks() {
             const cardHeight = {{.Config.Card.Height}};
             const topMargin = {{.Config.Card.Padding.Top}};
@@ -841,6 +886,7 @@ func (r *RenderAndMeasureRenderer) generateSuperLongHTMLTemplate(data SuperLongH
                 
                 console.log('元素', i, '高度:', elementHeight, '当前累计高度:', currentHeight);
                 
+                // 改进的分页逻辑：如果当前元素会超出边界，立即分页
                 if (currentHeight + elementHeight > availableHeight) {
                     // 记录分页点
                     pageBreaks.push(currentPageStart);
@@ -850,6 +896,11 @@ func (r *RenderAndMeasureRenderer) generateSuperLongHTMLTemplate(data SuperLongH
                 } else {
                     currentHeight += elementHeight;
                 }
+            }
+            
+            // 确保最后一个分页点被记录
+            if (currentPageStart < elements.length) {
+                pageBreaks.push(currentPageStart);
             }
             
             console.log('分页测量完成，分页点:', pageBreaks);
@@ -877,23 +928,61 @@ func (r *RenderAndMeasureRenderer) generateSuperLongHTMLTemplate(data SuperLongH
 
 // generateSmartPageBreaks 根据内容长度智能生成分页点
 func (r *RenderAndMeasureRenderer) generateSmartPageBreaks(contentLength int) []int {
+	// 基于内容长度和卡片数量智能生成分页点
+	// 目标是让每页内容均衡，避免空白过多
+
 	// 如果内容很短，不需要分页
 	if contentLength <= 1000 {
 		return []int{0}
 	}
 
-	// 如果内容中等长度，分2页
-	if contentLength <= 3000 {
-		return []int{0, 1}
+	// 根据内容长度动态计算分页点
+	// 每页大约包含2000-3000字符的内容
+	charsPerPage := 2500
+
+	// 计算需要的页数
+	totalPages := (contentLength + charsPerPage - 1) / charsPerPage
+
+	// 限制最大页数，避免过度分页
+	if totalPages > 10 {
+		totalPages = 10
 	}
 
-	// 如果内容很长，分3页
-	if contentLength <= 6000 {
-		return []int{0, 1, 2}
+	// 生成分页点
+	var pageBreaks []int
+	for i := 0; i < totalPages; i++ {
+		pageBreaks = append(pageBreaks, i)
 	}
 
-	// 超长内容，最多分5页
-	return []int{0, 1, 2, 3, 4}
+	return pageBreaks
+}
+
+// generateReasonablePageBreaks 生成合理的分页点
+func (r *RenderAndMeasureRenderer) generateReasonablePageBreaks(cardCount int) []int {
+	// 根据卡片数量生成合理的分页点
+	// 例如，如果卡片数量是5，可以生成 [0, 2, 4]
+	// 如果卡片数量是10，可以生成 [0, 3, 6, 9]
+	// 如果卡片数量是15，可以生成 [0, 5, 10, 14]
+
+	var pageBreaks []int
+	if cardCount == 0 {
+		return []int{0}
+	}
+
+	// 计算每页的卡片数量
+	itemsPerPage := 3 // 每页大约3张卡片
+
+	// 确保分页点不超过卡片总数
+	for i := 0; i < cardCount; i += itemsPerPage {
+		pageBreaks = append(pageBreaks, i)
+	}
+
+	// 确保最后一个分页点是最后一个卡片
+	if pageBreaks[len(pageBreaks)-1] != cardCount-1 {
+		pageBreaks = append(pageBreaks, cardCount-1)
+	}
+
+	return pageBreaks
 }
 
 // RenderCardToImage 实现RendererInterface接口

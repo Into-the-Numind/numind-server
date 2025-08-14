@@ -114,7 +114,7 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
         }
         body {
             margin: 0;
-            padding: 60px 50px;
+            padding: 60px 50px; /* 上右下左边距：60px 50px 60px 50px */
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
             %s
             color: #333333;
@@ -125,6 +125,37 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
             background-clip: border-box;
             overflow: hidden;
         }
+        
+        /* 卡片容器样式 - 确保所有内容卡片都有正确的边距 */
+        .card-container {
+            width: 100%%;
+            height: 100%%;
+            padding: 0; /* 重置内边距，因为body已经有了 */
+            box-sizing: border-box;
+            /* 确保边距完全一致 */
+            margin: 0;
+        }
+        
+        /* 内容区域样式 */
+        .content-area {
+            width: 100%%;
+            height: 100%%;
+            overflow: hidden;
+            /* 确保内容在边距范围内 */
+            padding: 0;
+            margin: 0;
+        }
+        
+        /* 第一个元素的特殊处理 - 确保上边距一致 */
+        .content-element:first-child {
+            margin-top: 0;
+        }
+        
+        /* 最后一个元素的特殊处理 - 确保下边距一致 */
+        .content-element:last-child {
+            margin-bottom: 0;
+        }
+        
         .title {
             font-size: 64px;
             font-weight: bold;
@@ -151,13 +182,24 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
         .list {
             font-size: 36px;
             color: #333333;
-            margin-bottom: 8px;
+            margin-bottom: 30px;
             text-align: justify;
             line-height: 1.6;
-            padding-left: 20px;
+            padding-left: 40px;
+            list-style: none;
         }
         .list-item {
             margin-bottom: 8px;
+            position: relative;
+        }
+        .list-item:before {
+            content: "•";
+            position: absolute;
+            left: -20px;
+            color: #333333;
+        }
+        .list-item:last-child {
+            margin-bottom: 0;
         }
         .quote {
             font-size: 36px;
@@ -168,47 +210,48 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
             padding: 20px;
             background: linear-gradient(to right, #EAF2FF, #FAFCFF);
             border-left: 4px solid #1E90FF;
+            border-radius: 0 8px 8px 0;
             font-style: italic;
         }
     </style>
 </head>
-<body>`, r.config.Card.Width, r.config.Card.Height, bgStyle, r.config.Card.Width, r.config.Card.Height)
+<body>
+    <div class="card-container">
+        <div class="content-area">`, r.config.Card.Width, r.config.Card.Height, bgStyle, r.config.Card.Width, r.config.Card.Height)
 
 	fmt.Printf("🔍 调试：HTML头部生成完成，长度=%d bytes\n", len(html))
 
+	// 生成元素内容
 	for i, element := range elements {
-		content := fmt.Sprintf("%v", element.Content)
-		fmt.Printf("🔍 调试：处理元素[%d]，类型=%s，内容长度=%d\n", i, element.Type, len(content))
+		fmt.Printf("🔍 调试：处理元素 %d，类型=%s，内容长度=%d\n", i, element.Type, len(fmt.Sprintf("%v", element.Content)))
 
 		switch element.Type {
 		case pagination.ElementTypeTitle:
-			html += fmt.Sprintf(`<div class="title">%s</div>`, content)
+			html += fmt.Sprintf(`<div class="title">%s</div>`, element.Content)
 		case pagination.ElementTypeSubtitle:
-			html += fmt.Sprintf(`<div class="subtitle">%s</div>`, content)
+			html += fmt.Sprintf(`<div class="subtitle">%s</div>`, element.Content)
 		case pagination.ElementTypeBody:
-			html += fmt.Sprintf(`<div class="body">%s</div>`, content)
+			html += fmt.Sprintf(`<div class="body">%s</div>`, element.Content)
 		case pagination.ElementTypeList:
-			// 处理列表内容
-			if listItems, ok := element.Content.([]interface{}); ok {
+			if items, ok := element.Content.([]string); ok {
 				html += `<div class="list">`
-				for j, item := range listItems {
-					itemText := fmt.Sprintf("%v", item)
-					html += fmt.Sprintf(`<div class="list-item">• %s</div>`, itemText)
-					fmt.Printf("🔍 调试：列表项[%d]：%s\n", j, itemText)
+				for _, item := range items {
+					html += fmt.Sprintf(`<div class="list-item">%s</div>`, item)
 				}
 				html += `</div>`
 			} else {
-				html += fmt.Sprintf(`<div class="list">• %s</div>`, content)
+				html += fmt.Sprintf(`<div class="body">%s</div>`, element.Content)
 			}
 		case pagination.ElementTypeQuote:
-			html += fmt.Sprintf(`<div class="quote">%s</div>`, content)
+			html += fmt.Sprintf(`<div class="quote">%s</div>`, element.Content)
 		default:
-			html += fmt.Sprintf(`<div class="body">%s</div>`, content)
+			html += fmt.Sprintf(`<div class="body">%s</div>`, element.Content)
 		}
 	}
 
-	html += `</body></html>`
+	html += `</div></div></body></html>`
 	fmt.Printf("🔍 调试：HTML生成完成，总长度=%d bytes\n", len(html))
+
 	return html
 }
 

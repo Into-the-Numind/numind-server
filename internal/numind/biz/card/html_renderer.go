@@ -333,9 +333,9 @@ func (r *HTMLRenderer) generateCardHTML(card CardData) (string, error) {
             background: #ffffff;
             color: #333333;
             line-height: 1.6;
-            width: 100vw;
-            height: 133.33vw;
-            padding: 60rpx 50rpx;
+            width: 1080px; /* 固定宽度，与右边图片保持一致 */
+            height: 1440px; /* 固定高度，与右边图片保持一致 */
+            padding: 60px 50px; /* 统一使用px单位 */
             overflow: hidden;
         }
         
@@ -353,63 +353,63 @@ func (r *HTMLRenderer) generateCardHTML(card CardData) (string, error) {
         }
         
         .element-title {
-            font-size: 64rpx;
+            font-size: 64px; /* 统一使用px单位 */
             color: #333333;
             line-height: 1.4;
             text-align: justify;
-            margin: 0 0 30rpx 0;
+            margin: 0 0 30px 0; /* 统一使用px单位 */
             font-weight: bold;
         }
         
         .element-subtitle {
-            font-size: 48rpx;
+            font-size: 48px; /* 统一使用px单位 */
             color: #666666;
             line-height: 1.5;
             text-align: justify;
-            margin: 0 0 25rpx 0;
+            margin: 0 0 25px 0; /* 统一使用px单位 */
             font-weight: normal;
         }
         
         .element-body {
-            font-size: 36rpx;
+            font-size: 36px; /* 统一使用px单位 */
             color: #333333;
             line-height: 1.6;
             text-align: justify;
-            margin: 0 0 30rpx 0;
+            margin: 0 0 30px 0; /* 统一使用px单位 */
         }
         
         .element-quote {
-            font-size: 36rpx;
+            font-size: 36px; /* 统一使用px单位 */
             color: #1E90FF;
             line-height: 1.5;
             text-align: justify;
-            margin: 0 0 30rpx 0;
+            margin: 0 0 30px 0; /* 统一使用px单位 */
             font-style: italic;
-            padding: 20rpx;
+            padding: 20px; /* 统一使用px单位 */
             background: linear-gradient(to right, #EAF2FF, #FAFCFF);
-            border-left: 4rpx solid #1E90FF;
-            border-radius: 0 8rpx 8rpx 0;
+            border-left: 4px solid #1E90FF; /* 统一使用px单位 */
+            border-radius: 0 8px 8px 0; /* 统一使用px单位 */
         }
         
         .element-list {
-            font-size: 36rpx;
+            font-size: 36px; /* 统一使用px单位 */
             color: #333333;
             line-height: 1.6;
             text-align: justify;
-            margin: 0 0 30rpx 0;
-            padding-left: 40rpx;
+            margin: 0 0 30px 0; /* 统一使用px单位 */
+            padding-left: 40px; /* 统一使用px单位 */
             list-style: none;
         }
         
         .list-item {
-            margin-bottom: 8rpx;
+            margin-bottom: 8px; /* 统一使用px单位 */
             position: relative;
         }
         
         .list-item:before {
             content: "•";
             position: absolute;
-            left: -20rpx;
+            left: -20px; /* 统一使用px单位 */
             color: #333333;
         }
         
