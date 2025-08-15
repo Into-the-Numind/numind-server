@@ -364,11 +364,11 @@ func (b *chatBiz) GenerateAssistantResponse(ctx context.Context, userMessage str
 
 // shouldSearchBooks 判断用户消息是否需要搜索卡册
 func (b *chatBiz) shouldSearchBooks(userMessage string) bool {
-	// 定义搜索相关的关键词
-	searchKeywords := []string{
-		"搜索", "查找", "找", "推荐", "建议", "有什么", "哪些", "卡册", "相册", "照片", "图片",
-		"旅行", "美食", "摄影", "艺术", "设计", "技术", "学习", "工作", "生活", "回忆",
-		"关于", "相关", "类似", "这种", "那种", "想要", "需要", "喜欢", "感兴趣",
+	// 搜索关键词配置
+	var searchKeywords = []string{
+		"找", "搜索", "查找", "推荐", "有什么", "哪些", "书", "书籍", "卡册", "卡片",
+		"推荐", "建议", "喜欢", "感兴趣", "想看", "想读", "想了解", "想学习",
+		"关于", "有关", "相关", "类似", "相似", "推荐", "介绍", "推荐", "推荐",
 	}
 
 	// 检查用户消息是否包含搜索关键词
