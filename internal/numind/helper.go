@@ -179,9 +179,17 @@ func autoMigrate(db *gorm.DB) error {
 
 // forceEnsureDatabaseCharset 强制确保数据库使用正确的字符集
 func forceEnsureDatabaseCharset(db *gorm.DB, charsetConfig *config.DatabaseCharsetConfig) error {
-	log.Infow("Force ensuring database charset...",
+	log.Infow("Force ensuring database charset...", 
 		"target_charset", charsetConfig.TargetCharset,
 		"target_collation", charsetConfig.TargetCollation)
+
+	// 强制设置连接的字符集（每次操作前都设置）
+	log.Infow("Setting connection charset...")
+	if err := db.Exec("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci").Error; err != nil {
+		log.Warnw("Failed to set connection charset", "error", err)
+	} else {
+		log.Infow("Connection charset set successfully")
+	}
 
 	// 强制修复数据库字符集
 	log.Infow("Force updating database charset...")
@@ -217,14 +225,19 @@ func forceFixTableCharset(db *gorm.DB, tableName string, charsetConfig *config.D
 		return nil
 	}
 
-	log.Infow("Force fixing table charset", "table", tableName)
+	// 强制设置连接的字符集（每次操作前都设置）
+	if err := db.Exec("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci").Error; err != nil {
+		log.Warnw("Failed to set connection charset for table operation", "table", tableName, "error", err)
+	}
 
+	log.Infow("Force fixing table charset", "table", tableName)
+	
 	// 强制修复表字符集
 	alterSQL := charsetConfig.GetAlterTableSQL(tableName)
 	if err := db.Exec(alterSQL).Error; err != nil {
 		return fmt.Errorf("failed to force update table charset: %v", err)
 	}
-
+	
 	log.Infow("Table charset force updated successfully", "table", tableName)
 
 	// 特别处理chat_message表的content字段
@@ -240,13 +253,18 @@ func forceFixTableCharset(db *gorm.DB, tableName string, charsetConfig *config.D
 // forceFixContentField 强制修复content字段字符集
 func forceFixContentField(db *gorm.DB, charsetConfig *config.DatabaseCharsetConfig) error {
 	log.Infow("Force fixing content field charset...")
-
+	
+	// 强制设置连接的字符集（每次操作前都设置）
+	if err := db.Exec("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci").Error; err != nil {
+		log.Warnw("Failed to set connection charset for content field operation", "error", err)
+	}
+	
 	// 强制修复字段字符集
 	alterSQL := charsetConfig.GetAlterColumnSQL("chat_message", "content", "TEXT")
 	if err := db.Exec(alterSQL).Error; err != nil {
 		return fmt.Errorf("failed to force update content field charset: %v", err)
 	}
-
+	
 	log.Infow("Content field charset force updated successfully")
 	return nil
 }
@@ -254,7 +272,12 @@ func forceFixContentField(db *gorm.DB, charsetConfig *config.DatabaseCharsetConf
 // forceFixChatMessageTable 特别强制修复chat_message表
 func forceFixChatMessageTable(db *gorm.DB, charsetConfig *config.DatabaseCharsetConfig) error {
 	log.Infow("Force fixing chat_message table with multiple approaches...")
-
+	
+	// 强制设置连接的字符集（每次操作前都设置）
+	if err := db.Exec("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci").Error; err != nil {
+		log.Warnw("Failed to set connection charset for chat_message table operation", "error", err)
+	}
+	
 	// 方法1: 强制转换表字符集
 	alterTableSQL := charsetConfig.GetAlterTableSQL("chat_message")
 	if err := db.Exec(alterTableSQL).Error; err != nil {
@@ -262,7 +285,7 @@ func forceFixChatMessageTable(db *gorm.DB, charsetConfig *config.DatabaseCharset
 	} else {
 		log.Infow("Method 1 completed: table charset updated")
 	}
-
+	
 	// 方法2: 强制修改content字段
 	alterColumnSQL := charsetConfig.GetAlterColumnSQL("chat_message", "content", "TEXT")
 	if err := db.Exec(alterColumnSQL).Error; err != nil {
@@ -270,7 +293,7 @@ func forceFixChatMessageTable(db *gorm.DB, charsetConfig *config.DatabaseCharset
 	} else {
 		log.Infow("Method 2 completed: content column charset updated")
 	}
-
+	
 	// 方法3: 强制修改所有TEXT字段
 	textFields := []string{"content", "title", "description", "tags"}
 	for _, field := range textFields {
@@ -281,7 +304,7 @@ func forceFixChatMessageTable(db *gorm.DB, charsetConfig *config.DatabaseCharset
 			log.Infow("Field charset updated", "field", field)
 		}
 	}
-
+	
 	return nil
 }
 

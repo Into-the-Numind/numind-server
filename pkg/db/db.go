@@ -28,7 +28,7 @@ type MySQLOptions struct {
 
 // DSN 从 MySQLOptions 返回 DSN.
 func (o *MySQLOptions) DSN() string {
-	return fmt.Sprintf(`%s:%s@tcp(%s)/%s?charset=utf8&parseTime=%t&loc=%s`,
+	return fmt.Sprintf(`%s:%s@tcp(%s)/%s?charset=utf8mb4&collation=utf8mb4_unicode_ci&parseTime=%t&loc=%s`,
 		o.Username,
 		o.Password,
 		o.Host,
@@ -48,6 +48,21 @@ func NewMySQL(opts *MySQLOptions) (*gorm.DB, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// 强制设置数据库字符集
+	if err := db.Exec("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci").Error; err != nil {
+		return nil, fmt.Errorf("failed to set database charset: %v", err)
+	}
+
+	// 强制设置连接的字符集
+	if err := db.Exec("SET CHARACTER SET utf8mb4").Error; err != nil {
+		return nil, fmt.Errorf("failed to set connection charset: %v", err)
+	}
+
+	// 强制设置连接的排序规则
+	if err := db.Exec("SET collation_connection = 'utf8mb4_unicode_ci'").Error; err != nil {
+		return nil, fmt.Errorf("failed to set connection collation: %v", err)
 	}
 
 	sqlDB, err := db.DB()

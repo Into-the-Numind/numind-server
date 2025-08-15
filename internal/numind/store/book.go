@@ -14,6 +14,7 @@ type BookStore interface {
 	GetByID(ctx context.Context, id uint) (*model.BookM, error)
 	ListByUser(ctx context.Context, userID uint, offset, limit int) (int64, []*model.BookM, error)
 	ListByCategory(ctx context.Context, categoryID uint, offset, limit int) (int64, []*model.BookM, error)
+	ListAll(ctx context.Context, offset, limit int) (int64, []*model.BookM, error) // 新增：获取所有书籍
 	Update(ctx context.Context, book *model.BookM) error
 	Delete(ctx context.Context, id uint) error
 	DeleteBatch(ctx context.Context, ids []uint) error
@@ -57,6 +58,15 @@ func (s *books) ListByUser(ctx context.Context, userID uint, offset, limit int) 
 
 func (s *books) ListByCategory(ctx context.Context, categoryID uint, offset, limit int) (count int64, ret []*model.BookM, err error) {
 	err = s.db.WithContext(ctx).Where("category_id = ? AND status != ?", categoryID, model.BookStatusFailed).
+		Preload("Category").
+		Offset(offset).Limit(defaultLimit(limit)).Order("id desc").Find(&ret).
+		Offset(-1).Limit(-1).Count(&count).Error
+	return
+}
+
+// ListAll 获取所有书籍（用于搜索功能）
+func (s *books) ListAll(ctx context.Context, offset, limit int) (count int64, ret []*model.BookM, err error) {
+	err = s.db.WithContext(ctx).Where("status != ?", model.BookStatusFailed).
 		Preload("Category").
 		Offset(offset).Limit(defaultLimit(limit)).Order("id desc").Find(&ret).
 		Offset(-1).Limit(-1).Count(&count).Error

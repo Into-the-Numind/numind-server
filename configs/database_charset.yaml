@@ -1,0 +1,48 @@
+# 数据库字符集配置
+# 该配置文件用于控制数据库字符集的自动检查和修复
+
+database:
+  charset:
+    # 目标字符集
+    target_charset: "utf8mb4"
+    
+    # 目标排序规则
+    target_collation: "utf8mb4_unicode_ci"
+    
+    # 是否自动修复字符集
+    auto_fix: true
+    
+    # 是否在启动时检查
+    check_on_startup: true
+    
+    # 是否在迁移后检查
+    check_after_migration: true
+    
+    # 关键表列表（这些表的字符集会被优先检查和修复）
+    critical_tables:
+      - "chat_message"      # 聊天消息表（重要：存储中文内容）
+      - "chat_session"      # 聊天会话表
+      - "book"              # 卡册表
+      - "user"              # 用户表
+      - "card"              # 卡片表
+      - "category"          # 分类表
+      - "image"             # 图片表
+      - "template"          # 模板表
+      - "feedback"          # 反馈表
+      - "article"           # 文章表
+      - "admin"             # 管理员表
+      - "account_record"    # 账户记录表
+
+# 说明：
+# 1. target_charset: 目标字符集，推荐使用 utf8mb4 支持完整的Unicode字符
+# 2. target_collation: 目标排序规则，推荐使用 utf8mb4_unicode_ci 支持中文排序
+# 3. auto_fix: 是否自动修复不匹配的字符集
+# 4. check_on_startup: 是否在服务启动时检查字符集
+# 5. check_after_migration: 是否在数据库迁移后检查字符集
+# 6. critical_tables: 需要优先检查和修复字符集的关键表列表
+#
+# 注意事项：
+# - 修改字符集可能需要较长时间，建议在低峰期执行
+# - 确保数据库用户有足够的权限执行ALTER语句
+# - 建议在修改前备份数据库
+# - 如果表很大，转换过程可能需要几分钟到几小时

@@ -3,8 +3,10 @@ package chat
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"numind-server/internal/numind/biz/book"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/log"
@@ -34,13 +36,18 @@ type ChatBiz interface {
 
 // chatBiz 是 ChatBiz 的具体实现
 type chatBiz struct {
-	ds      store.IStore
-	userBiz user.UserBiz // 添加用户业务逻辑引用
+	ds            store.IStore
+	userBiz       user.UserBiz
+	searchService *book.SearchService
 }
 
 // New 创建一个新的 ChatBiz 实例
 func New(ds store.IStore, userBiz user.UserBiz) ChatBiz {
-	return &chatBiz{ds: ds, userBiz: userBiz}
+	return &chatBiz{
+		ds:            ds,
+		userBiz:       userBiz,
+		searchService: book.NewSearchService(),
+	}
 }
 
 // CreateSession 创建新的对话会话
@@ -194,6 +201,8 @@ func (b *chatBiz) ProcessWebSocketMessage(ctx context.Context, userID uint, msg 
 		return b.handleChatMessage(ctx, userID, msg)
 	case "session":
 		return b.handleSessionMessage(ctx, userID, msg)
+	case "search_books":
+		return b.handleBookSearch(ctx, userID, msg)
 	case "ping":
 		return &model.WebSocketMessage{
 			Type:      "pong",
@@ -272,10 +281,186 @@ func (b *chatBiz) handleSessionMessage(ctx context.Context, userID uint, msg *mo
 	}, nil
 }
 
+// handleBookSearch 处理书籍搜索消息
+func (b *chatBiz) handleBookSearch(ctx context.Context, userID uint, msg *model.WebSocketMessage) (*model.WebSocketMessage, error) {
+	log.C(ctx).Infow("Handling book search request", "user_id", userID, "content", msg.Content)
+
+	// 假设我们有一个函数来获取所有书籍
+	// 这里需要根据实际的数据库查询来实现
+	books, err := b.findAllBooks(ctx)
+	if err != nil {
+		log.C(ctx).Errorw("Failed to find books", "error", err)
+		return &model.WebSocketMessage{
+			Type:      "error",
+			Error:     "Failed to search books",
+			Timestamp: time.Now(),
+		}, nil
+	}
+
+	// 使用搜索服务进行关键词匹配
+	searchResults := b.searchService.SearchBooks(ctx, msg.Content, books, 5)
+
+	// 构建搜索结果响应
+	var searchData []map[string]interface{}
+	for _, book := range searchResults {
+		searchData = append(searchData, map[string]interface{}{
+			"id":          book.ID,
+			"title":       book.Title,
+			"tags":        book.Tags,
+			"keywords":    book.Keywords,  // 添加关键词信息
+			"category_id": book.CategoryID,
+			"image_url":   book.ImageUrl,
+			"card_count":  book.CardCount,
+		})
+	}
+
+	return &model.WebSocketMessage{
+		Type:      "search_books_result",
+		Content:   fmt.Sprintf("找到 %d 本相关书籍", len(searchResults)),
+		Data:      searchData,
+		Timestamp: time.Now(),
+	}, nil
+}
+
+// findAllBooks 获取所有书籍（这里需要根据实际的数据库查询来实现）
+func (b *chatBiz) findAllBooks(ctx context.Context) ([]*model.BookM, error) {
+	// 使用store层的新方法获取所有书籍
+	// 在实际生产环境中，可能需要实现分页查询或者专门的搜索接口
+
+	// 获取所有状态不为failed的书籍作为搜索范围
+	// 这里可以根据实际需求调整，比如搜索所有公开的书籍
+	_, books, err := b.ds.Books().ListAll(ctx, 0, 1000) // 获取前1000本书
+	if err != nil {
+		log.C(ctx).Errorw("Failed to get books from database", "error", err)
+		return nil, err
+	}
+
+	// 自动为所有书籍生成关键词（如果还没有的话）
+	b.searchService.BatchUpdateKeywords(books)
+
+	log.C(ctx).Infow("Retrieved books for search", "count", len(books))
+	return books, nil
+}
+
 // GenerateAssistantResponse 生成助手回复
 func (b *chatBiz) GenerateAssistantResponse(ctx context.Context, userMessage string) (string, error) {
-	// 这里可以集成AI服务，比如调用OpenAI API
-	// 目前返回一个简单的回复
-	response := fmt.Sprintf("我收到了你的消息：%s。这是一个简单的回复，你可以在这里集成AI服务。", userMessage)
-	return response, nil
+	// 智能分析用户消息，判断是否需要搜索卡册
+	if b.shouldSearchBooks(userMessage) {
+		// 进行卡册搜索
+		searchResults, err := b.performBookSearch(ctx, userMessage)
+		if err != nil {
+			log.C(ctx).Errorw("Failed to perform book search", "error", err, "query", userMessage)
+			// 搜索失败时返回友好提示
+			return "抱歉，我在搜索卡册时遇到了一些问题。请稍后再试，或者直接告诉我您想要什么类型的卡册。", nil
+		}
+
+		// 根据搜索结果生成回复
+		return b.generateSearchResponse(userMessage, searchResults), nil
+	}
+
+	// 如果不是搜索相关的消息，返回默认回复
+	return b.generateDefaultResponse(userMessage), nil
+}
+
+// shouldSearchBooks 判断用户消息是否需要搜索卡册
+func (b *chatBiz) shouldSearchBooks(userMessage string) bool {
+	// 定义搜索相关的关键词
+	searchKeywords := []string{
+		"搜索", "查找", "找", "推荐", "建议", "有什么", "哪些", "卡册", "相册", "照片", "图片",
+		"旅行", "美食", "摄影", "艺术", "设计", "技术", "学习", "工作", "生活", "回忆",
+		"关于", "相关", "类似", "这种", "那种", "想要", "需要", "喜欢", "感兴趣",
+	}
+
+	// 检查用户消息是否包含搜索关键词
+	for _, keyword := range searchKeywords {
+		if strings.Contains(userMessage, keyword) {
+			return true
+		}
+	}
+
+	// 检查消息长度，较长的消息更可能是搜索请求
+	if len(userMessage) > 10 {
+		return true
+	}
+
+	return false
+}
+
+// performBookSearch 执行卡册搜索
+func (b *chatBiz) performBookSearch(ctx context.Context, userMessage string) ([]*model.BookM, error) {
+	// 获取所有书籍
+	books, err := b.findAllBooks(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// 使用搜索服务进行关键词匹配
+	searchResults := b.searchService.SearchBooks(ctx, userMessage, books, 5)
+
+	return searchResults, nil
+}
+
+// generateSearchResponse 根据搜索结果生成回复
+func (b *chatBiz) generateSearchResponse(userMessage string, searchResults []*model.BookM) string {
+	if len(searchResults) == 0 {
+		return fmt.Sprintf("抱歉，我没有找到与\"%s\"相关的卡册。您可以尝试使用其他关键词，或者告诉我您具体想要什么类型的卡册。", userMessage)
+	}
+
+	// 生成个性化回复
+	var response strings.Builder
+	response.WriteString(fmt.Sprintf("根据您的查询\"%s\"，我为您找到了 %d 本相关卡册：\n\n", userMessage, len(searchResults)))
+
+	for i, book := range searchResults {
+		response.WriteString(fmt.Sprintf("%d. **%s**\n", i+1, book.Title))
+
+		// 添加标签信息
+		if book.Tags != "" {
+			response.WriteString(fmt.Sprintf("   标签: %s\n", book.Tags))
+		}
+
+		// 添加关键词信息
+		if len(book.Keywords) > 0 {
+			response.WriteString(fmt.Sprintf("   关键词: %s\n", strings.Join(book.Keywords, ", ")))
+		}
+
+		// 添加卡片数量信息
+		if book.CardCount > 0 {
+			response.WriteString(fmt.Sprintf("   包含 %d 张卡片\n", book.CardCount))
+		}
+
+		// 添加分类信息
+		if book.CategoryName != "" {
+			response.WriteString(fmt.Sprintf("   分类: %s\n", book.CategoryName))
+		}
+
+		response.WriteString("\n")
+	}
+
+	// 添加建议
+	response.WriteString("💡 **小贴士**: 您可以点击任意卡册查看详情，或者告诉我您想要什么特定类型的卡册，我可以为您提供更精准的推荐。")
+
+	return response.String()
+}
+
+// generateDefaultResponse 生成默认回复
+func (b *chatBiz) generateDefaultResponse(userMessage string) string {
+	// 根据消息内容生成智能回复
+	if strings.Contains(userMessage, "你好") || strings.Contains(userMessage, "hello") || strings.Contains(userMessage, "hi") {
+		return "你好！我是您的智能卡册助手。我可以帮您搜索和推荐各种类型的卡册，包括旅行照片、美食记录、艺术创作等。请告诉我您想要什么类型的卡册，或者有什么其他问题需要帮助。"
+	}
+
+	if strings.Contains(userMessage, "谢谢") || strings.Contains(userMessage, "感谢") {
+		return "不客气！很高兴能帮到您。如果您还需要其他帮助，比如搜索特定类型的卡册、了解卡册功能等，随时告诉我。"
+	}
+
+	if strings.Contains(userMessage, "帮助") || strings.Contains(userMessage, "怎么用") || strings.Contains(userMessage, "功能") {
+		return "我可以帮您：\n\n" +
+			"🔍 **搜索卡册**: 告诉我您想要什么类型的卡册，比如\"旅行照片\"、\"美食记录\"等\n" +
+			"📚 **推荐卡册**: 根据您的兴趣推荐相关卡册\n" +
+			"💡 **使用建议**: 提供卡册使用和创作的建议\n\n" +
+			"试试告诉我您想要什么类型的卡册吧！"
+	}
+
+	// 通用回复
+	return fmt.Sprintf("我收到了您的消息：%s\n\n我可以帮您搜索和推荐各种类型的卡册。请告诉我您想要什么类型的卡册，比如旅行照片、美食记录、艺术创作等，我会为您找到最相关的内容。", userMessage)
 }
