@@ -1,0 +1,167 @@
+name: Emergency Artifact Cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      cleanup_type:
+        description: '清理类型'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - binaries
+          - binary
+          - old
+      force_cleanup:
+        description: '强制清理（包括较新的产物）'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  emergency-cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Install GitHub CLI
+        run: |
+          echo "🔧 安装 GitHub CLI..."
+          
+          # 添加 GitHub CLI 仓库
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          
+          # 更新包列表并安装
+          sudo apt-get update
+          sudo apt-get install -y gh
+          
+          echo "✅ GitHub CLI 安装完成: $(gh --version)"
+          
+          # 配置认证
+          echo "${{ github.token }}" | gh auth login --with-token
+          
+      - name: Emergency Cleanup
+        run: |
+          echo "🚨 紧急清理模式启动"
+          echo "================================"
+          
+          REPO="${{ github.repository }}"
+          CLEANUP_TYPE="${{ github.event.inputs.cleanup_type }}"
+          FORCE_CLEANUP="${{ github.event.inputs.force_cleanup }}"
+          
+          echo "📦 目标仓库: $REPO"
+          echo "🧹 清理类型: $CLEANUP_TYPE"
+          echo "💥 强制清理: $FORCE_CLEANUP"
+          
+          # 显示当前状态
+          echo ""
+          echo "📊 清理前的状态:"
+          gh api repos/$REPO/actions/artifacts --jq '.artifacts | length' | xargs -I {} echo "总产物数量: {}"
+          
+          echo ""
+          echo "📋 各类型产物详情:"
+          gh api repos/$REPO/actions/artifacts --jq '.artifacts | group_by(.name) | map({name: .[0].name, count: length, total_size: map(.size_in_bytes // 0) | add}) | .[] | "  \(.name): \(.count) 个, 总大小: \(.total_size) bytes"' || echo "无法获取详情"
+          
+          # 执行清理
+          case "$CLEANUP_TYPE" in
+            "all")
+              echo ""
+              echo "🗑️  清理所有构建产物..."
+              if [ "$FORCE_CLEANUP" = "true" ]; then
+                echo "💥 强制清理模式：删除所有产物"
+                gh api repos/$REPO/actions/artifacts --jq '.artifacts[].id' | while read -r artifact_id; do
+                  if [ ! -z "$artifact_id" ] && [ "$artifact_id" != "null" ]; then
+                    echo "🗑️  删除产物 ID: $artifact_id"
+                    gh api repos/$REPO/actions/artifacts/$artifact_id -X DELETE || echo "⚠️  删除失败"
+                  fi
+                done
+              else
+                echo "🧹 智能清理模式：保留最新的产物"
+                # 保留最新的2个产物
+                gh api repos/$REPO/actions/artifacts --jq '.artifacts | sort_by(.created_at) | reverse | .[2:] | .[].id' | while read -r artifact_id; do
+                  if [ ! -z "$artifact_id" ] && [ "$artifact_id" != "null" ]; then
+                    echo "🗑️  删除旧产物 ID: $artifact_id"
+                    gh api repos/$REPO/actions/artifacts/$artifact_id -X DELETE || echo "⚠️  删除失败"
+                  fi
+                done
+              fi
+              ;;
+              
+            "binaries")
+              echo ""
+              echo "🧹 清理 numind-binaries 产物..."
+              if [ "$FORCE_CLEANUP" = "true" ]; then
+                echo "💥 强制清理：删除所有 numind-binaries"
+                gh api repos/$REPO/actions/artifacts --jq '.artifacts[] | select(.name == "numind-binaries") | .id' | while read -r artifact_id; do
+                  if [ ! -z "$artifact_id" ] && [ "$artifact_id" != "null" ]; then
+                    echo "🗑️  删除产物 ID: $artifact_id"
+                    gh api repos/$REPO/actions/artifacts/$artifact_id -X DELETE || echo "⚠️  删除失败"
+                  fi
+                done
+              else
+                echo "🧹 智能清理：保留最新3个"
+                gh api repos/$REPO/actions/artifacts --jq '.artifacts[] | select(.name == "numind-binaries") | {id: .id, created_at: .created_at}' | \
+                  jq -s 'sort_by(.created_at) | reverse | .[3:] | .[].id' | while read -r artifact_id; do
+                    if [ ! -z "$artifact_id" ] && [ "$artifact_id" != "null" ]; then
+                      echo "🗑️  删除旧产物 ID: $artifact_id"
+                      gh api repos/$REPO/actions/artifacts/$artifact_id -X DELETE || echo "⚠️  删除失败"
+                    fi
+                  done
+              fi
+              ;;
+              
+            "binary")
+              echo ""
+              echo "🧹 清理 numind-binary 产物..."
+              if [ "$FORCE_CLEANUP" = "true" ]; then
+                echo "💥 强制清理：删除所有 numind-binary"
+                gh api repos/$REPO/actions/artifacts --jq '.artifacts[] | select(.name == "numind-binary") | .id' | while read -r artifact_id; do
+                  if [ ! -z "$artifact_id" ] && [ "$artifact_id" != "null" ]; then
+                    echo "🗑️  删除产物 ID: $artifact_id"
+                    gh api repos/$REPO/actions/artifacts/$artifact_id -X DELETE || echo "⚠️  删除失败"
+                  fi
+                done
+              else
+                echo "🧹 智能清理：保留最新2个"
+                gh api repos/$REPO/actions/artifacts --jq '.artifacts[] | select(.name == "numind-binary") | {id: .id, created_at: .created_at}' | \
+                  jq -s 'sort_by(.created_at) | reverse | .[2:] | .[].id' | while read -r artifact_id; do
+                    if [ ! -z "$artifact_id" ] && [ "$artifact_id" != "null" ]; then
+                      echo "🗑️  删除旧产物 ID: $artifact_id"
+                      gh api repos/$REPO/actions/artifacts/$artifact_id -X DELETE || echo "⚠️  删除失败"
+                    fi
+                  done
+              fi
+              ;;
+              
+            "old")
+              echo ""
+              echo "🧹 清理超过7天的旧产物..."
+              SEVEN_DAYS_AGO=$(date -d '7 days ago' -u +"%Y-%m-%dT%H:%M:%SZ")
+              echo "📅 清理阈值: $SEVEN_DAYS_AGO"
+              
+              gh api repos/$REPO/actions/artifacts --jq '.artifacts[] | select(.created_at < "'$SEVEN_DAYS_AGO'") | .id' | while read -r artifact_id; do
+                if [ ! -z "$artifact_id" ] && [ "$artifact_id" != "null" ]; then
+                  echo "🗑️  删除旧产物 ID: $artifact_id"
+                  gh api repos/$REPO/actions/artifacts/$artifact_id -X DELETE || echo "⚠️  删除失败"
+                fi
+              done
+              ;;
+              
+            *)
+              echo "❌ 未知的清理类型: $CLEANUP_TYPE"
+              exit 1
+              ;;
+          esac
+          
+          # 显示清理后的状态
+          echo ""
+          echo "📊 清理后的状态:"
+          gh api repos/$REPO/actions/artifacts --jq '.artifacts | length' | xargs -I {} echo "剩余产物数量: {}"
+          
+          echo ""
+          echo "🎉 紧急清理完成！"

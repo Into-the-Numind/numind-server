@@ -92,6 +92,48 @@ jobs:
           echo "=== Go environment ==="
           go env | grep -E "(GOOS|GOARCH|CGO|GOROOT|GOPATH)"
 
+      - name: Setup Go environment
+        run: |
+          # 设置Go环境变量
+          echo "=== Go环境配置 ==="
+          go env -w CGO_ENABLED=1
+          go env -w CC=gcc
+          go env -w CXX=g++
+          
+          # 验证环境变量
+          echo "CGO_ENABLED: $(go env CGO_ENABLED)"
+          echo "CC: $(go env CC)"
+          echo "CXX: $(go env CXX)"
+          echo "================================"
+
+      - name: Install GitHub CLI
+        run: |
+          echo "🔧 安装 GitHub CLI..."
+          
+          # 检查是否已安装
+          if command -v gh &> /dev/null; then
+            echo "✅ GitHub CLI 已安装: $(gh --version)"
+          else
+            echo "📦 安装 GitHub CLI..."
+            
+            # 添加 GitHub CLI 仓库
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            
+            # 更新包列表并安装
+            sudo apt-get update
+            sudo apt-get install -y gh
+            
+            echo "✅ GitHub CLI 安装完成: $(gh --version)"
+          fi
+          
+          # 配置 GitHub CLI 认证（使用 GITHUB_TOKEN）
+          echo "🔐 配置 GitHub CLI 认证..."
+          echo "${{ github.token }}" | gh auth login --with-token
+          
+          # 验证认证状态
+          gh auth status || echo "⚠️  认证状态检查失败，但可能仍然可用"
+
       - name: Get dependencies
         run: |
           go clean -modcache
@@ -114,23 +156,93 @@ jobs:
             ./bin/numind-linux-amd64
             ./bin/numind-darwin-amd64
             ./bin/numind-darwin-arm64
-          retention-days: 7
+          retention-days: 5  # 减少到5天
 
       - name: Upload binary for deployment
         uses: actions/upload-artifact@v4
         with:
           name: numind-binary
           path: ./bin/numind-linux-amd64
-          retention-days: 3
+          retention-days: 2  # 减少到2天
 
       - name: Clean up old artifacts
         run: |
-          echo "Cleaning up old artifacts to save storage space..."
-          # 列出当前artifacts
-          gh api repos/${{ github.repository }}/actions/artifacts --jq '.artifacts[] | select(.expired == false) | {id: .id, name: .name, created_at: .created_at, size: .size_in_bytes}' || true
+          echo "🧹 开始清理旧的构建产物..."
           
-          # 清理超过7天的artifacts（除了最新的）
-          echo "Artifacts will be automatically cleaned up by retention policy"
+          # 检查 GitHub CLI 是否可用
+          if command -v gh &> /dev/null; then
+            echo "✅ GitHub CLI 可用，开始清理..."
+            
+            # 获取仓库信息
+            REPO="${{ github.repository }}"
+            echo "📦 清理仓库: $REPO"
+            
+            # 列出当前所有构建产物
+            echo "📋 当前构建产物列表:"
+            gh api repos/$REPO/actions/artifacts --jq '.artifacts[] | {id: .id, name: .name, created_at: .created_at, size: .size_in_bytes}' || true
+            
+            # 智能清理策略：保留最新的几个，删除旧的
+            echo "🧠 执行智能清理策略..."
+            
+            # 清理 numind-binaries 产物：保留最新的3个，删除其余的
+            echo "🧹 清理 numind-binaries 产物（保留最新3个）..."
+            BINARIES_TO_KEEP=3
+            BINARIES_COUNT=$(gh api repos/$REPO/actions/artifacts --jq '.artifacts[] | select(.name == "numind-binaries") | .id' | wc -l)
+            
+            if [ "$BINARIES_COUNT" -gt "$BINARIES_TO_KEEP" ]; then
+              echo "📊 当前有 $BINARIES_COUNT 个产物，保留 $BINARIES_TO_KEEP 个"
+              
+              # 获取需要删除的产物ID（按创建时间排序，保留最新的）
+              gh api repos/$REPO/actions/artifacts --jq '.artifacts[] | select(.name == "numind-binaries") | {id: .id, created_at: .created_at}' | \
+                jq -s 'sort_by(.created_at) | reverse | .['$BINARIES_TO_KEEP':] | .[].id' | \
+                while read -r artifact_id; do
+                  if [ ! -z "$artifact_id" ] && [ "$artifact_id" != "null" ]; then
+                    echo "🗑️  删除旧产物 ID: $artifact_id"
+                    gh api repos/$REPO/actions/artifacts/$artifact_id -X DELETE || echo "⚠️  删除产物 $artifact_id 失败"
+                  fi
+                done
+            else
+              echo "✅ numind-binaries 产物数量在合理范围内，无需清理"
+            fi
+            
+            # 清理 numind-binary 产物：保留最新的2个，删除其余的
+            echo "🧹 清理 numind-binary 产物（保留最新2个）..."
+            BINARY_TO_KEEP=2
+            BINARY_COUNT=$(gh api repos/$REPO/actions/artifacts --jq '.artifacts[] | select(.name == "numind-binary") | .id' | wc -l)
+            
+            if [ "$BINARY_COUNT" -gt "$BINARY_TO_KEEP" ]; then
+              echo "📊 当前有 $BINARY_COUNT 个产物，保留 $BINARY_TO_KEEP 个"
+              
+              # 获取需要删除的产物ID（按创建时间排序，保留最新的）
+              gh api repos/$REPO/actions/artifacts --jq '.artifacts[] | select(.name == "numind-binary") | {id: .id, created_at: .created_at}' | \
+                jq -s 'sort_by(.created_at) | reverse | .['$BINARY_TO_KEEP':] | .[].id' | \
+                while read -r artifact_id; do
+                  if [ ! -z "$artifact_id" ] && [ "$artifact_id" != "null" ]; then
+                    echo "🗑️  删除旧产物 ID: $artifact_id"
+                    gh api repos/$REPO/actions/artifacts/$artifact_id -X DELETE || echo "⚠️  删除产物 $artifact_id 失败"
+                  fi
+                done
+            else
+              echo "✅ numind-binary 产物数量在合理范围内，无需清理"
+            fi
+            
+            echo "✅ 智能清理完成"
+          else
+            echo "⚠️  GitHub CLI 不可用，跳过自动清理"
+            echo "💡 请手动清理旧的构建产物，或安装 GitHub CLI"
+          fi
+          
+          # 显示清理后的存储使用情况
+          echo "📊 清理完成后的存储状态:"
+          if command -v gh &> /dev/null; then
+            gh api repos/$REPO/actions/artifacts --jq '.artifacts | length' | xargs -I {} echo "当前构建产物数量: {}" || echo "无法获取存储状态"
+            
+            # 显示各类型产物的数量
+            echo "📋 各类型产物统计:"
+            gh api repos/$REPO/actions/artifacts --jq '.artifacts | group_by(.name) | map({name: .[0].name, count: length}) | .[] | "  \(.name): \(.count) 个"' || echo "无法获取产物统计"
+          else
+            echo "无法获取存储状态（GitHub CLI 不可用）"
+          fi
 
   # Docker 镜像构建 - 只在特定分支触发
   image_build:
