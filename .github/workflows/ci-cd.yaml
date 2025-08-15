@@ -80,8 +80,6 @@ jobs:
           key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
             ${{ runner.os }}-go-
-          # 减少缓存占用，只保留最近2次构建
-          retention-days: 2
 
       - name: Force clean and reset
         run: |
