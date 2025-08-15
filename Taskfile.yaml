@@ -58,15 +58,27 @@ tasks:
     generates:
       - "{{.BUILD_DIR}}/{{.BINARY_NAME}}"
 
-  # 构建生产版本
-  build-prod:
-    desc: 构建生产版本
+  # 构建 Linux 版本
+  build-linux:
+    desc: 构建 Linux 版本
     deps: [deps, fmt]
     cmds:
       - mkdir -p {{.BUILD_DIR}}
-      - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o {{.BUILD_DIR}}/{{.BINARY_NAME}}-linux-amd64 {{.MAIN_PATH}}
-      - CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o {{.BUILD_DIR}}/{{.BINARY_NAME}}-darwin-amd64 {{.MAIN_PATH}}
-      - CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o {{.BUILD_DIR}}/{{.BINARY_NAME}}-darwin-arm64 {{.MAIN_PATH}}
+      - CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o {{.BUILD_DIR}}/{{.BINARY_NAME}}-linux-amd64 {{.MAIN_PATH}}
+    sources:
+      - "**/*.go"
+      - go.mod
+      - go.sum
+    generates:
+      - "{{.BUILD_DIR}}/{{.BINARY_NAME}}-linux-amd64"
+
+  # 构建生产版本
+  build-prod:
+    desc: 构建生产版本 (仅 Linux)
+    deps: [deps, fmt]
+    cmds:
+      - mkdir -p {{.BUILD_DIR}}
+      - CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o {{.BUILD_DIR}}/{{.BINARY_NAME}}-linux-amd64 {{.MAIN_PATH}}
 
   # 运行应用
   run:
@@ -92,7 +104,7 @@ tasks:
   # Docker 构建
   docker-build:
     desc: 构建 Docker 镜像
-    deps: [build-prod]
+    deps: [build-linux]
     cmds:
       - docker build -t {{.DOCKER_IMAGE}}:{{.DOCKER_TAG}} .
       - docker tag {{.DOCKER_IMAGE}}:{{.DOCKER_TAG}} {{.DOCKER_IMAGE}}:latest
@@ -120,7 +132,7 @@ tasks:
   # 完整构建流程
   all:
     desc: 完整构建流程
-    deps: [clean, lint, test, build-prod]
+    deps: [clean, lint, test, build-linux]
 
   # 开发环境准备
   setup-dev:

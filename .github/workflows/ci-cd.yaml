@@ -153,30 +153,38 @@ jobs:
           echo "工作目录: $(pwd)"
           echo "================================"
           
-          # 检查构建脚本是否存在
-          if [ ! -f "scripts/ci-build.sh" ]; then
-            echo "❌ CI构建脚本不存在: scripts/ci-build.sh"
+          # 创建输出目录
+          mkdir -p ./bin
+          
+          # 直接构建 Linux 版本
+          echo "🐧 开始构建 numind-linux-amd64..."
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+            -ldflags="-s -w" \
+            -o ./bin/numind-linux-amd64 \
+            ./cmd/numind
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ Linux 版本构建成功"
+          else
+            echo "❌ Linux 版本构建失败"
             exit 1
           fi
           
-          # 确保脚本有执行权限
-          chmod +x scripts/ci-build.sh
-          
-          # 使用CI专用构建脚本
-          echo "🚀 开始执行CI构建脚本..."
-          ./scripts/ci-build.sh
+          # 创建符号链接（用于后续步骤）
+          ln -sf ./bin/numind-linux-amd64 ./bin/numind-binary
+          echo "🔗 创建符号链接: ./bin/numind-binary"
           
           # 验证构建结果
           echo "=== 构建结果验证 ==="
           ls -la ./bin/
           
-          # 检查关键文件
-          if [ -f "./bin/numind-linux-amd64" ]; then
-            echo "✅ 主要构建文件存在"
-          else
-            echo "❌ 主要构建文件不存在"
-            exit 1
-          fi
+          # 检查文件大小
+          file_size=$(stat -c%s "./bin/numind-linux-amd64" 2>/dev/null || echo "unknown")
+          echo "📏 主要文件大小: $file_size bytes"
+          
+          # 检查文件类型
+          file_type=$(file "./bin/numind-linux-amd64" 2>/dev/null || echo "unknown")
+          echo "📋 文件类型: $file_type"
           
           echo "================================"
 
