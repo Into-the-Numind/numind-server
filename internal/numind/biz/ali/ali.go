@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"numind-server/internal/numind/store"
@@ -34,6 +35,7 @@ type AliBiz interface {
 	QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error)
 	WanxiangImageStream(prompt string, style string, size string) (string, error)
 	WanxiangImageAsync(prompt, style, size string) (string, error)
+	StableDiffusionImageAsync(prompt, size string) (string, error)
 	GetPromptManager() *PromptManager
 }
 
@@ -334,6 +336,126 @@ func (a *aliBiz) WanxiangImageAsync(prompt, style, size string) (string, error) 
 	if imgUrl == "" {
 		return "", fmt.Errorf("超时未获取到图片URL，请稍后重试")
 	}
+	return imgUrl, nil
+}
+
+// StableDiffusionImageAsync 使用stable-diffusion-3.5-large-turbo模型异步生成图片
+func (a *aliBiz) StableDiffusionImageAsync(prompt, size string) (string, error) {
+	apiKey := viper.GetString("ali.stable_diffusion.api_key")
+
+	const (
+		createURL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
+		getURL    = "https://dashscope.aliyuncs.com/api/v1/tasks/"
+		maxTries  = 30
+		interval  = 3 * time.Second
+	)
+
+	// 1. 提交异步任务
+	bodyMap := map[string]interface{}{
+		"model": "stable-diffusion-3.5-large-turbo",
+		"input": map[string]interface{}{
+			"prompt": prompt,
+		},
+		"parameters": map[string]interface{}{
+			"size":  size,
+			"n":     1,
+			"steps": 40,
+			"cfg":   4.5,
+			"seed":  42,
+			"shift": 3.0,
+		},
+	}
+
+	bodyBytes, _ := json.Marshal(bodyMap)
+	req, _ := http.NewRequest("POST", createURL, bytes.NewBuffer(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("X-DashScope-Async", "enable")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("提交stable-diffusion任务失败: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	var createResp struct {
+		Output struct {
+			TaskID     string `json:"task_id"`
+			TaskStatus string `json:"task_status"`
+		} `json:"output"`
+		RequestID string `json:"request_id"`
+	}
+
+	if err := json.Unmarshal(respBody, &createResp); err != nil {
+		return "", fmt.Errorf("提交任务解析失败: %v, 原始: %s", err, string(respBody))
+	}
+
+	if createResp.Output.TaskID == "" {
+		return "", fmt.Errorf("未获取到任务ID: %s", string(respBody))
+	}
+
+	taskID := createResp.Output.TaskID
+	log.Printf("Stable-diffusion任务已提交，任务ID: %s", taskID)
+
+	// 2. 轮询查询任务状态
+	var imgUrl string
+	for i := 0; i < maxTries; i++ {
+		getReq, _ := http.NewRequest("GET", getURL+taskID, nil)
+		getReq.Header.Set("Authorization", "Bearer "+apiKey)
+		getResp, err := client.Do(getReq)
+		if err != nil {
+			return "", fmt.Errorf("查询任务状态失败: %w", err)
+		}
+		getRespBody, _ := io.ReadAll(getResp.Body)
+		getResp.Body.Close()
+
+		var getResult struct {
+			Output struct {
+				TaskID        string `json:"task_id"`
+				TaskStatus    string `json:"task_status"`
+				SubmitTime    string `json:"submit_time"`
+				ScheduledTime string `json:"scheduled_time"`
+				EndTime       string `json:"end_time"`
+				Results       []struct {
+					URL string `json:"url"`
+				} `json:"results"`
+				TaskMetrics struct {
+					TOTAL     int `json:"TOTAL"`
+					SUCCEEDED int `json:"SUCCEEDED"`
+					FAILED    int `json:"FAILED"`
+				} `json:"task_metrics"`
+			} `json:"output"`
+			Usage struct {
+				ImageCount int `json:"image_count"`
+			} `json:"usage"`
+			RequestID string `json:"request_id"`
+		}
+
+		if err := json.Unmarshal(getRespBody, &getResult); err != nil {
+			return "", fmt.Errorf("查询任务解析失败: %v, 原始: %s", err, string(getRespBody))
+		}
+
+		log.Printf("任务状态: %s, 进度: %d/%d", getResult.Output.TaskStatus, getResult.Output.TaskMetrics.SUCCEEDED, getResult.Output.TaskMetrics.TOTAL)
+
+		if getResult.Output.TaskStatus == "SUCCEEDED" && len(getResult.Output.Results) > 0 {
+			imgUrl = getResult.Output.Results[0].URL
+			log.Printf("Stable-diffusion图片生成成功: %s", imgUrl)
+			break
+		} else if getResult.Output.TaskStatus == "FAILED" {
+			return "", fmt.Errorf("stable-diffusion图片生成失败: %s", string(getRespBody))
+		} else if getResult.Output.TaskStatus == "UNKNOWN" {
+			return "", fmt.Errorf("任务不存在或状态未知: %s", taskID)
+		}
+
+		time.Sleep(interval)
+	}
+
+	if imgUrl == "" {
+		return "", fmt.Errorf("超时未获取到stable-diffusion图片URL，请稍后重试")
+	}
+
 	return imgUrl, nil
 }
 

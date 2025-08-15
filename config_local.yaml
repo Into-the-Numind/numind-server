@@ -89,6 +89,11 @@ ali:
     api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
     model: "wanx2.1-t2i-turbo"
     timeout: 180s  # 万象图像生成超时时间
+  stable_diffusion:
+    api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"  # 使用相同的API key
+    api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
+    model: "stable-diffusion-3.5-large-turbo"
+    timeout: 300s  # stable-diffusion图像生成超时时间，设置为5分钟
 
 # MQTT 配置
 mqtt:

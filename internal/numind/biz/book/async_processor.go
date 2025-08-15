@@ -61,6 +61,7 @@ type AsyncUserBiz interface {
 type AsyncAliBiz interface {
 	QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error)
 	WanxiangImageAsync(prompt, style, size string) (string, error)
+	StableDiffusionImageAsync(prompt, size string) (string, error)
 	GetPromptManager() AsyncPromptManager
 }
 
@@ -229,13 +230,13 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		bookTitle = fmt.Sprintf("AI生成卡册 - %s", time.Now().Format("2006-01-02 15:04:05"))
 	}
 
-	// 使用解析出的image_prompt调用万相生成图片
+	// 使用解析出的image_prompt调用stable-diffusion生成图片
 	var imageUrl string
 	if volcResponse.ImagePrompt != "" {
-		// 直接使用原始提示词调用万相API
-		remoteImageUrl, err := p.biz.Ali().WanxiangImageAsync(volcResponse.ImagePrompt, "", "1024*1024")
+		// 直接使用原始提示词调用stable-diffusion API
+		remoteImageUrl, err := p.biz.Ali().StableDiffusionImageAsync(volcResponse.ImagePrompt, "1024*1024")
 		if err != nil {
-			log.C(ctx).Errorw("WanxiangImageAsync failed", "book_id", bookID, "error", err.Error())
+			log.C(ctx).Errorw("StableDiffusionImageAsync failed", "book_id", bookID, "error", err.Error())
 			// 图片生成失败不影响整体流程
 		} else {
 			// 下载并保存图片到本地
@@ -257,11 +258,11 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 
 	// 将结构化文本转换为分页元素，排除title类型
 	var elements []pagination.Element
-	
+
 	// 检查是否有结构化内容
 	if volcResponse.StructuredTextArray != nil && len(volcResponse.StructuredTextArray) > 0 {
 		log.C(ctx).Infow("使用AI返回的结构化内容", "book_id", bookID, "element_count", len(volcResponse.StructuredTextArray))
-		
+
 		for _, item := range volcResponse.StructuredTextArray {
 			if item.Type == "title" {
 				continue // 跳过title类型
@@ -308,7 +309,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	} else {
 		// 如果没有结构化内容，将原始文本按段落分割并转换为body元素
 		log.C(ctx).Infow("AI未返回结构化内容，使用原始文本作为后备方案", "book_id", bookID, "original_text_length", len(text))
-		
+
 		// 按段落分割文本
 		paragraphs := strings.Split(text, "\n\n")
 		for _, paragraph := range paragraphs {
@@ -320,7 +321,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 				})
 			}
 		}
-		
+
 		// 如果段落分割后仍然没有内容，将整个文本作为一个元素
 		if len(elements) == 0 {
 			elements = append(elements, pagination.Element{

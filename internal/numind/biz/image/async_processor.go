@@ -51,6 +51,7 @@ type BaiduBiz interface {
 type AliBiz interface {
 	QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error)
 	WanxiangImageAsync(prompt, style, size string) (string, error)
+	StableDiffusionImageAsync(prompt, size string) (string, error)
 }
 
 // VolcBiz 火山引擎业务接口
@@ -257,16 +258,16 @@ func (p *AsyncImageProcessor) processImagesInBackground(ctx context.Context, tas
 		finalCombinedText := strings.Join(allCombinedTexts, "\n\n")
 		log.C(ctx).Infow("Final combined text for image generation", "text", finalCombinedText)
 
-		// 调用阿里万象图像模型生成图片
-		wanxiangResult, err := p.aliBiz.WanxiangImageAsync("基于以下所有文本内容生成一张综合图片："+finalCombinedText, "", "1024*1024")
+		// 调用阿里stable-diffusion图像模型生成图片
+		stableDiffusionResult, err := p.aliBiz.StableDiffusionImageAsync("基于以下所有文本内容生成一张综合图片："+finalCombinedText, "1024*1024")
 		if err != nil {
-			log.C(ctx).Errorw("WanxiangImageAsync failed", "error", err.Error())
+			log.C(ctx).Errorw("StableDiffusionImageAsync failed", "error", err.Error())
 			p.publishStatus(taskID, userID, "failed", "图片生成失败: "+err.Error())
 			return
 		} else {
-			log.C(ctx).Infow("WanxiangImageAsync result", "result", wanxiangResult)
+			log.C(ctx).Infow("StableDiffusionImageAsync result", "result", stableDiffusionResult)
 
-			// 万象模型调用成功，创建书籍记录
+			// stable-diffusion模型调用成功，创建书籍记录
 			bookRecord := &model.BookM{
 				UserID:    userID,
 				Title:     "AI生成的书籍",
@@ -280,7 +281,7 @@ func (p *AsyncImageProcessor) processImagesInBackground(ctx context.Context, tas
 			}
 
 			finalResult = &FinalProcessingResult{
-				WanxiangResult: wanxiangResult,
+				WanxiangResult: stableDiffusionResult,
 				BookID:         bookRecord.ID,
 				TotalTexts:     len(allCombinedTexts),
 			}

@@ -242,6 +242,10 @@ func (a *AsyncAliBizAdapter) WanxiangImageAsync(prompt, style, size string) (str
 	return a.biz.Ali().WanxiangImageAsync(prompt, style, size)
 }
 
+func (a *AsyncAliBizAdapter) StableDiffusionImageAsync(prompt, size string) (string, error) {
+	return a.biz.Ali().StableDiffusionImageAsync(prompt, size)
+}
+
 func (a *AsyncAliBizAdapter) GetPromptManager() book.AsyncPromptManager {
 	return &AsyncPromptManagerAdapter{promptManager: a.biz.Ali().GetPromptManager()}
 }
