@@ -7,17 +7,17 @@ import (
 // PaymentM 支付记录模型
 type PaymentM struct {
 	ID            uint      `json:"id" gorm:"primaryKey"`
-	OutTradeNo   string    `json:"out_trade_no" gorm:"uniqueIndex;not null;comment:商户订单号"`
-	TransactionID string   `json:"transaction_id" gorm:"comment:微信支付订单号"`
-	UserID       uint      `json:"user_id" gorm:"not null;comment:用户ID"`
+	OutTradeNo   string    `json:"out_trade_no" gorm:"uniqueIndex:idx_out_trade_no,length:100;not null;comment:商户订单号"`
+	TransactionID string   `json:"transaction_id" gorm:"index:idx_transaction_id,length:100;comment:微信支付订单号"`
+	UserID       uint      `json:"user_id" gorm:"index;not null;comment:用户ID"`
 	Amount       int64     `json:"amount" gorm:"not null;comment:支付金额(分)"`
-	Description  string    `json:"description" gorm:"comment:商品描述"`
-	Channel      string    `json:"channel" gorm:"not null;comment:支付渠道(wechat,alipay)"`
-	Status       string    `json:"status" gorm:"not null;default:pending;comment:支付状态(pending,success,failed,cancelled)"`
-	PayMethod    string    `json:"pay_method" gorm:"comment:支付方式(native,miniprogram,jsapi)"`
-	OpenID       string    `json:"openid" gorm:"comment:用户openid"`
-	PrepayID    string    `json:"prepay_id" gorm:"comment:预支付ID"`
-	CodeURL     string    `json:"code_url" gorm:"comment:二维码链接"`
+	Description  string    `json:"description" gorm:"type:varchar(500);comment:商品描述"`
+	Channel      string    `json:"channel" gorm:"type:varchar(20);not null;comment:支付渠道(wechat,alipay)"`
+	Status       string    `json:"status" gorm:"type:varchar(20);not null;default:pending;comment:支付状态(pending,success,failed,cancelled)"`
+	PayMethod    string    `json:"pay_method" gorm:"type:varchar(20);comment:支付方式(native,miniprogram,jsapi)"`
+	OpenID       string    `json:"openid" gorm:"type:varchar(100);comment:用户openid"`
+	PrepayID    string    `json:"prepay_id" gorm:"type:varchar(100);comment:预支付ID"`
+	CodeURL     string    `json:"code_url" gorm:"type:varchar(500);comment:二维码链接"`
 	NotifyData  string    `json:"notify_data" gorm:"type:text;comment:回调数据"`
 	PaidAt      *time.Time `json:"paid_at" gorm:"comment:支付时间"`
 	ExpireAt    *time.Time `json:"expire_at" gorm:"comment:过期时间"`
