@@ -10,8 +10,9 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
-      - '.github/**'
       - 'scripts/**'
+      # 允许修改CI/CD配置时触发构建
+      # - '.github/**'
   pull_request:
     branches:
       - main
@@ -21,8 +22,9 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
-      - '.github/**'
       - 'scripts/**'
+      # 允许修改CI/CD配置时触发构建
+      # - '.github/**'
 
 env:
   DOCKERHUB_USERNAME: neozhang96
@@ -40,6 +42,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Debug build trigger
+        run: |
+          echo "=== Build Trigger Information ==="
+          echo "Event: ${{ github.event_name }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "SHA: ${{ github.sha }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Repository: ${{ github.repository }}"
+          echo "Workflow: ${{ github.workflow }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "================================="
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
