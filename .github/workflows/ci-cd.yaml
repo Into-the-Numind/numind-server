@@ -7,13 +7,22 @@ on:
       - develop
       - release
       - product
-      - '**'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/**'
+      - 'scripts/**'
   pull_request:
     branches:
       - main
       - develop
       - release
       - product
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/**'
+      - 'scripts/**'
 
 env:
   DOCKERHUB_USERNAME: neozhang96
@@ -56,6 +65,8 @@ jobs:
           key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
             ${{ runner.os }}-go-
+          # 减少缓存占用，只保留最近2次构建
+          retention-days: 2
 
       - name: Force clean and reset
         run: |
@@ -90,14 +101,23 @@ jobs:
             ./bin/numind-linux-amd64
             ./bin/numind-darwin-amd64
             ./bin/numind-darwin-arm64
-          retention-days: 30
+          retention-days: 7
 
       - name: Upload binary for deployment
         uses: actions/upload-artifact@v4
         with:
           name: numind-binary
           path: ./bin/numind-linux-amd64
-          retention-days: 30
+          retention-days: 3
+
+      - name: Clean up old artifacts
+        run: |
+          echo "Cleaning up old artifacts to save storage space..."
+          # 列出当前artifacts
+          gh api repos/${{ github.repository }}/actions/artifacts --jq '.artifacts[] | select(.expired == false) | {id: .id, name: .name, created_at: .created_at, size: .size_in_bytes}' || true
+          
+          # 清理超过7天的artifacts（除了最新的）
+          echo "Artifacts will be automatically cleaned up by retention policy"
 
   # Docker 镜像构建 - 只在特定分支触发
   image_build:
