@@ -142,20 +142,49 @@ jobs:
           go mod tidy
           go mod verify
 
-      - name: Build (compile check)
-        run: go build ./...
-
       - name: Build application
-        run: task build-prod
+        run: |
+          # 显示构建环境信息
+          echo "=== CI/CD 构建环境信息 ==="
+          echo "操作系统: $(go env GOOS)"
+          echo "架构: $(go env GOARCH)"
+          echo "CGO: $(go env CGO_ENABLED)"
+          echo "Go版本: $(go version)"
+          echo "工作目录: $(pwd)"
+          echo "================================"
+          
+          # 检查构建脚本是否存在
+          if [ ! -f "scripts/ci-build.sh" ]; then
+            echo "❌ CI构建脚本不存在: scripts/ci-build.sh"
+            exit 1
+          fi
+          
+          # 确保脚本有执行权限
+          chmod +x scripts/ci-build.sh
+          
+          # 使用CI专用构建脚本
+          echo "🚀 开始执行CI构建脚本..."
+          ./scripts/ci-build.sh
+          
+          # 验证构建结果
+          echo "=== 构建结果验证 ==="
+          ls -la ./bin/
+          
+          # 检查关键文件
+          if [ -f "./bin/numind-linux-amd64" ]; then
+            echo "✅ 主要构建文件存在"
+          else
+            echo "❌ 主要构建文件不存在"
+            exit 1
+          fi
+          
+          echo "================================"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: numind-binaries
-          path: |
-            ./bin/numind-linux-amd64
-            ./bin/numind-darwin-amd64
-            ./bin/numind-darwin-arm64
+          path: ./bin/numind-linux-amd64
           retention-days: 5  # 减少到5天
 
       - name: Upload binary for deployment
@@ -184,9 +213,9 @@ jobs:
             # 智能清理策略：保留最新的几个，删除旧的
             echo "🧠 执行智能清理策略..."
             
-            # 清理 numind-binaries 产物：保留最新的3个，删除其余的
-            echo "🧹 清理 numind-binaries 产物（保留最新3个）..."
-            BINARIES_TO_KEEP=3
+            # 清理 numind-binaries 产物：保留最新的2个，删除其余的
+            echo "🧹 清理 numind-binaries 产物（保留最新2个）..."
+            BINARIES_TO_KEEP=2
             BINARIES_COUNT=$(gh api repos/$REPO/actions/artifacts --jq '.artifacts[] | select(.name == "numind-binaries") | .id' | wc -l)
             
             if [ "$BINARIES_COUNT" -gt "$BINARIES_TO_KEEP" ]; then
