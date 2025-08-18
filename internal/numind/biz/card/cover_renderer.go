@@ -419,8 +419,8 @@ func (r *CoverRenderer) renderWithHeadlessBrowser(htmlContent string) ([]byte, e
 		return nil, fmt.Errorf("failed to read screenshot file %s: %v", outputFile, err)
 	}
 
-	// 删除临时文件
-	os.Remove(outputFile)
+	// TODO:删除临时文件
+	//os.Remove(outputFile)
 	return imageData, nil
 }
 

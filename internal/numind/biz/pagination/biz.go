@@ -28,7 +28,8 @@ type paginationBiz struct {
 
 // NewPaginationBiz 创建新的分页业务实例
 func NewPaginationBiz() PaginationBiz {
-	config := GetDefaultConfig()
+	// 尝试从Viper配置加载，如果失败则使用默认配置
+	config := LoadConfigFromViper()
 	engine := NewPaginationEngine(config)
 
 	return &paginationBiz{

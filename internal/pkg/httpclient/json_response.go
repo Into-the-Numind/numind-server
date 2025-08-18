@@ -12,122 +12,115 @@ import (
 
 // JSONResponseProcessor JSON响应处理器
 type JSONResponseProcessor struct {
-	// 配置选项
-	MaxResponseSize int64  // 最大响应大小
-	EnableLogging   bool   // 是否启用日志
-	LogPrefix       string // 日志前缀
+	EnableLogging bool
+	LogPrefix     string
+	Config        *JSONProcessingConfig
 }
 
 // NewJSONResponseProcessor 创建新的JSON响应处理器
 func NewJSONResponseProcessor() *JSONResponseProcessor {
+	config := LoadJSONProcessingConfig()
 	return &JSONResponseProcessor{
-		MaxResponseSize: 10 * 1024 * 1024, // 10MB
-		EnableLogging:   true,
-		LogPrefix:       "[JSONProcessor]",
+		EnableLogging: config.JSONRepair.EnableLogging,
+		LogPrefix:     "[JSONProcessor]",
+		Config:        config,
 	}
 }
 
-// ProcessResponse 处理HTTP响应，确保返回完整的JSON
+// ProcessResponse 处理HTTP响应，提取有效的JSON
 func (p *JSONResponseProcessor) ProcessResponse(resp *http.Response) ([]byte, error) {
 	if resp == nil {
 		return nil, fmt.Errorf("response is nil")
 	}
 
-	// 1. 检查Content-Length
-	expectedLength := resp.ContentLength
-	if p.EnableLogging {
-		fmt.Printf("%s Expected content length: %d\n", p.LogPrefix, expectedLength)
+	// 检查Content-Length（如果配置启用）
+	if p.Config.ResponseProcessing.CheckContentLength {
+		contentLength := resp.ContentLength
+		if contentLength > 0 && contentLength > p.Config.ResponseProcessing.MaxResponseSize {
+			return nil, fmt.Errorf("response too large: %d bytes (max: %d)", contentLength, p.Config.ResponseProcessing.MaxResponseSize)
+		}
 	}
 
-	// 2. 读取响应体
-	body, err := p.readResponseBody(resp.Body, expectedLength)
+	// 读取响应体
+	body, err := p.readResponseBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	if p.EnableLogging {
-		fmt.Printf("%s Actual response length: %d\n", p.LogPrefix, len(body))
-	}
-
-	// 3. 验证响应完整性
-	if !p.isResponseComplete(body, expectedLength) {
+	// 检查响应是否完整
+	if p.Config.ResponseProcessing.EnableResponseRecovery && !p.isResponseComplete(resp, body) {
 		if p.EnableLogging {
-			fmt.Printf("%s Response appears to be incomplete, attempting recovery...\n", p.LogPrefix)
+			fmt.Printf("%s Response appears incomplete, attempting recovery\n", p.LogPrefix)
 		}
-		
-		// 尝试恢复不完整的响应
-		recoveredBody, err := p.recoverIncompleteResponse(body, resp)
-		if err != nil {
-			return nil, fmt.Errorf("failed to recover incomplete response: %w", err)
-		}
-		body = recoveredBody
+		body = p.recoverIncompleteResponse(resp, body)
 	}
 
-	// 4. 清理和修复JSON
-	cleanedBody, err := p.cleanAndFixJSON(body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to clean and fix JSON: %w", err)
-	}
-
-	// 5. 最终验证
-	if !p.isValidJSON(cleanedBody) {
+	// 尝试直接解析JSON
+	if p.isValidJSON(body) {
 		if p.EnableLogging {
-			fmt.Printf("%s Final JSON validation failed, attempting smart extraction...\n", p.LogPrefix)
+			fmt.Printf("%s Response is valid JSON, no processing needed\n", p.LogPrefix)
 		}
-		
-		// 如果清理和修复失败，尝试智能提取
-		extractedBody := p.extractValidJSON(body)
-		if extractedBody != nil {
+		return body, nil
+	}
+
+	// 尝试修复和提取JSON
+	if p.Config.JSONRepair.EnableDeepRepair {
+		if p.EnableLogging {
+			fmt.Printf("%s Attempting deep JSON repair\n", p.LogPrefix)
+		}
+		repaired := p.cleanAndFixJSON(string(body))
+		if p.isValidJSON([]byte(repaired)) {
 			if p.EnableLogging {
-				fmt.Printf("%s Smart extraction successful, length: %d\n", p.LogPrefix, len(extractedBody))
+				fmt.Printf("%s Deep repair successful\n", p.LogPrefix)
 			}
-			return extractedBody, nil
+			return []byte(repaired), nil
 		}
-		
-		return nil, fmt.Errorf("failed to produce valid JSON after processing")
 	}
 
+	// 尝试智能提取
 	if p.EnableLogging {
-		fmt.Printf("%s Final JSON validation successful, length: %d\n", p.LogPrefix, len(cleanedBody))
+		fmt.Printf("%s Attempting intelligent JSON extraction\n", p.LogPrefix)
+	}
+	extracted := p.extractValidJSON(body)
+	if extracted != nil {
+		if p.EnableLogging {
+			fmt.Printf("%s JSON extraction successful\n", p.LogPrefix)
+		}
+		return extracted, nil
 	}
 
-	return cleanedBody, nil
+	return nil, fmt.Errorf("failed to extract valid JSON from response")
 }
 
 // readResponseBody 读取响应体，确保完整性
-func (p *JSONResponseProcessor) readResponseBody(body io.ReadCloser, expectedLength int64) ([]byte, error) {
+func (p *JSONResponseProcessor) readResponseBody(body io.ReadCloser) ([]byte, error) {
 	defer body.Close()
 
 	// 使用bytes.Buffer来构建响应
 	var buffer bytes.Buffer
-	
-	// 如果知道预期长度，预分配缓冲区
-	if expectedLength > 0 {
-		buffer.Grow(int(expectedLength))
-	}
 
 	// 分块读取，避免内存问题
 	chunkSize := 32 * 1024 // 32KB chunks
 	chunk := make([]byte, chunkSize)
-	
+
 	totalRead := int64(0)
-	
+
 	for {
 		n, err := body.Read(chunk)
 		if n > 0 {
 			buffer.Write(chunk[:n])
 			totalRead += int64(n)
-			
+
 			// 检查是否超过最大响应大小
-			if totalRead > p.MaxResponseSize {
-				return nil, fmt.Errorf("response too large: %d bytes (max: %d)", totalRead, p.MaxResponseSize)
+			if totalRead > p.Config.ResponseProcessing.MaxResponseSize {
+				return nil, fmt.Errorf("response too large: %d bytes (max: %d)", totalRead, p.Config.ResponseProcessing.MaxResponseSize)
 			}
 		}
-		
+
 		if err == io.EOF {
 			break
 		}
-		
+
 		if err != nil {
 			return nil, fmt.Errorf("error reading response body: %w", err)
 		}
@@ -137,29 +130,29 @@ func (p *JSONResponseProcessor) readResponseBody(body io.ReadCloser, expectedLen
 }
 
 // isResponseComplete 检查响应是否完整
-func (p *JSONResponseProcessor) isResponseComplete(body []byte, expectedLength int64) bool {
+func (p *JSONResponseProcessor) isResponseComplete(resp *http.Response, body []byte) bool {
 	// 如果不知道预期长度，尝试通过JSON结构判断
-	if expectedLength <= 0 {
+	if resp.ContentLength <= 0 {
 		return p.isJSONStructurallyComplete(body)
 	}
-	
+
 	// 检查实际长度是否匹配预期长度
 	actualLength := int64(len(body))
 	if p.EnableLogging {
-		fmt.Printf("%s Length check: actual=%d, expected=%d\n", p.LogPrefix, actualLength, expectedLength)
+		fmt.Printf("%s Length check: actual=%d, expected=%d\n", p.LogPrefix, actualLength, resp.ContentLength)
 	}
-	
+
 	// 允许一定的误差（比如压缩、编码等）
-	lengthDiff := actualLength - expectedLength
+	lengthDiff := actualLength - resp.ContentLength
 	if lengthDiff < 0 {
 		lengthDiff = -lengthDiff
 	}
-	
+
 	// 如果差异超过1%，认为可能不完整
-	if expectedLength > 0 && float64(lengthDiff)/float64(expectedLength) > 0.01 {
+	if resp.ContentLength > 0 && float64(lengthDiff)/float64(resp.ContentLength) > 0.01 {
 		return false
 	}
-	
+
 	return true
 }
 
@@ -167,16 +160,16 @@ func (p *JSONResponseProcessor) isResponseComplete(body []byte, expectedLength i
 func (p *JSONResponseProcessor) isJSONStructurallyComplete(body []byte) bool {
 	// 检查是否以完整的JSON结构结束
 	trimmed := strings.TrimSpace(string(body))
-	
+
 	// 检查基本结构
 	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
 		return false
 	}
-	
+
 	// 检查括号平衡
 	braceCount := 0
 	bracketCount := 0
-	
+
 	for _, char := range trimmed {
 		switch char {
 		case '{':
@@ -189,7 +182,7 @@ func (p *JSONResponseProcessor) isJSONStructurallyComplete(body []byte) bool {
 			bracketCount--
 		}
 	}
-	
+
 	// 检查是否平衡
 	if braceCount != 0 || bracketCount != 0 {
 		if p.EnableLogging {
@@ -197,21 +190,21 @@ func (p *JSONResponseProcessor) isJSONStructurallyComplete(body []byte) bool {
 		}
 		return false
 	}
-	
+
 	return true
 }
 
 // recoverIncompleteResponse 尝试恢复不完整的响应
-func (p *JSONResponseProcessor) recoverIncompleteResponse(body []byte, resp *http.Response) ([]byte, error) {
+func (p *JSONResponseProcessor) recoverIncompleteResponse(resp *http.Response, body []byte) []byte {
 	// 1. 尝试从响应头获取更多信息
 	contentEncoding := resp.Header.Get("Content-Encoding")
 	transferEncoding := resp.Header.Get("Transfer-Encoding")
-	
+
 	if p.EnableLogging {
 		fmt.Printf("%s Content-Encoding: %s\n", p.LogPrefix, contentEncoding)
 		fmt.Printf("%s Transfer-Encoding: %s\n", p.LogPrefix, transferEncoding)
 	}
-	
+
 	// 2. 检查是否是分块传输
 	if transferEncoding == "chunked" {
 		if p.EnableLogging {
@@ -220,37 +213,37 @@ func (p *JSONResponseProcessor) recoverIncompleteResponse(body []byte, resp *htt
 		// 分块传输应该已经由HTTP客户端处理
 		// 如果仍然不完整，可能是服务器端问题
 	}
-	
+
 	// 3. 尝试修复JSON结构
 	repairedBody := p.repairJSONStructure(body)
-	
+
 	// 4. 如果修复失败，尝试智能提取
 	if !p.isValidJSON(repairedBody) {
 		extractedBody := p.extractValidJSON(body)
 		if extractedBody != nil {
-			return extractedBody, nil
+			return extractedBody
 		}
 	}
-	
-	return repairedBody, nil
+
+	return repairedBody
 }
 
 // repairJSONStructure 修复JSON结构
 func (p *JSONResponseProcessor) repairJSONStructure(body []byte) []byte {
 	content := string(body)
-	
+
 	// 1. 移除无效的Unicode序列
 	content = p.removeInvalidUnicode(content)
-	
+
 	// 2. 移除HTML标签
 	content = p.removeHTMLTags(content)
-	
+
 	// 3. 修复常见的JSON问题
 	content = p.fixCommonJSONIssues(content)
-	
+
 	// 4. 确保结构完整
 	content = p.ensureJSONCompleteness(content)
-	
+
 	return []byte(content)
 }
 
@@ -258,7 +251,7 @@ func (p *JSONResponseProcessor) repairJSONStructure(body []byte) []byte {
 func (p *JSONResponseProcessor) removeInvalidUnicode(content string) string {
 	var result strings.Builder
 	i := 0
-	
+
 	for i < len(content) {
 		r, size := utf8.DecodeRuneInString(content[i:])
 		if r == utf8.RuneError {
@@ -269,20 +262,20 @@ func (p *JSONResponseProcessor) removeInvalidUnicode(content string) string {
 		result.WriteRune(r)
 		i += size
 	}
-	
+
 	return result.String()
 }
 
 // removeHTMLTags 移除HTML标签
 func (p *JSONResponseProcessor) removeHTMLTags(content string) string {
 	// 移除常见的HTML标签
-	tags := []string{"<think>", "</think>", "<html>", "</html>", "<body>", "</body>", 
+	tags := []string{"<think>", "</think>", "<html>", "</html>", "<body>", "</body>",
 		"<div>", "</div>", "<p>", "</p>", "<span>", "</span>", "<script>", "</script>"}
-	
+
 	for _, tag := range tags {
 		content = strings.ReplaceAll(content, tag, "")
 	}
-	
+
 	return content
 }
 
@@ -291,11 +284,11 @@ func (p *JSONResponseProcessor) fixCommonJSONIssues(content string) string {
 	// 1. 修复转义字符
 	content = strings.ReplaceAll(content, "\\'", "'")
 	content = strings.ReplaceAll(content, "\\\"", "\"")
-	
+
 	// 2. 修复换行符
 	content = strings.ReplaceAll(content, "\r\n", "\n")
 	content = strings.ReplaceAll(content, "\r", "\n")
-	
+
 	// 3. 移除控制字符（保留换行符和制表符）
 	var result strings.Builder
 	for _, char := range content {
@@ -303,7 +296,7 @@ func (p *JSONResponseProcessor) fixCommonJSONIssues(content string) string {
 			result.WriteRune(char)
 		}
 	}
-	
+
 	return result.String()
 }
 
@@ -315,13 +308,15 @@ func (p *JSONResponseProcessor) ensureJSONCompleteness(content string) string {
 			fmt.Printf("%s Found structured_text_array, protecting content\n", p.LogPrefix)
 		}
 		// 对于包含关键字段的内容，使用更保守的修复策略
-		return p.conservativeJSONFix(content)
+		if p.Config.JSONRepair.EnableConservativeFix {
+			return p.conservativeJSONFix(content)
+		}
 	}
-	
+
 	// 2. 查找最后一个完整的JSON结构
 	lastBrace := strings.LastIndex(content, "}")
 	lastBracket := strings.LastIndex(content, "]")
-	
+
 	var endPos int
 	if lastBrace > lastBracket {
 		endPos = lastBrace + 1
@@ -330,14 +325,14 @@ func (p *JSONResponseProcessor) ensureJSONCompleteness(content string) string {
 	} else {
 		return content
 	}
-	
+
 	// 截取到最后一个完整结构
 	content = content[:endPos]
-	
+
 	// 3. 查找对应的开始位置
 	braceCount := 0
 	bracketCount := 0
-	
+
 	for i := len(content) - 1; i >= 0; i-- {
 		switch content[i] {
 		case '}':
@@ -349,13 +344,13 @@ func (p *JSONResponseProcessor) ensureJSONCompleteness(content string) string {
 		case '[':
 			bracketCount--
 		}
-		
+
 		if braceCount == 0 && bracketCount == 0 {
 			content = content[i:]
 			break
 		}
 	}
-	
+
 	return content
 }
 
@@ -364,7 +359,7 @@ func (p *JSONResponseProcessor) conservativeJSONFix(content string) string {
 	if p.EnableLogging {
 		fmt.Printf("%s Using conservative JSON fix strategy\n", p.LogPrefix)
 	}
-	
+
 	// 1. 查找structured_text_array字段的开始位置
 	fieldStart := strings.Index(content, `"structured_text_array"`)
 	if fieldStart == -1 {
@@ -373,7 +368,7 @@ func (p *JSONResponseProcessor) conservativeJSONFix(content string) string {
 		}
 		return content
 	}
-	
+
 	// 2. 向前查找最近的 { 开始
 	braceStart := -1
 	for i := fieldStart; i >= 0; i-- {
@@ -382,18 +377,18 @@ func (p *JSONResponseProcessor) conservativeJSONFix(content string) string {
 			break
 		}
 	}
-	
+
 	if braceStart == -1 {
 		if p.EnableLogging {
 			fmt.Printf("%s No opening brace found before structured_text_array\n", p.LogPrefix)
 		}
 		return content
 	}
-	
+
 	// 3. 向后查找对应的结束大括号
 	braceCount := 0
 	braceEnd := -1
-	
+
 	for i := braceStart; i < len(content); i++ {
 		switch content[i] {
 		case '{':
@@ -406,7 +401,7 @@ func (p *JSONResponseProcessor) conservativeJSONFix(content string) string {
 			}
 		}
 	}
-	
+
 	if braceEnd == -1 {
 		if p.EnableLogging {
 			fmt.Printf("%s No matching closing brace found\n", p.LogPrefix)
@@ -415,23 +410,23 @@ func (p *JSONResponseProcessor) conservativeJSONFix(content string) string {
 		content += "}"
 		return content
 	}
-	
+
 	// 4. 提取完整的JSON对象
-	extractedJSON := content[braceStart:braceEnd+1]
-	
+	extractedJSON := content[braceStart : braceEnd+1]
+
 	if p.EnableLogging {
 		fmt.Printf("%s Extracted JSON length: %d\n", p.LogPrefix, len(extractedJSON))
 	}
-	
+
 	return extractedJSON
 }
 
 // extractValidJSON 智能提取有效的JSON
 func (p *JSONResponseProcessor) extractValidJSON(body []byte) []byte {
 	content := string(body)
-	
+
 	// 1. 优先查找包含关键字段的JSON（最重要的策略）
-	if strings.Contains(content, "structured_text_array") {
+	if p.Config.JSONRepair.EnableFieldBasedExtraction && strings.Contains(content, "structured_text_array") {
 		if p.EnableLogging {
 			fmt.Printf("%s Found structured_text_array, using field-based extraction\n", p.LogPrefix)
 		}
@@ -443,7 +438,7 @@ func (p *JSONResponseProcessor) extractValidJSON(body []byte) []byte {
 			return []byte(fieldBasedJSON)
 		}
 	}
-	
+
 	// 2. 查找最长的有效JSON对象
 	longestJSON := p.findLongestValidJSON(content)
 	if longestJSON != "" {
@@ -452,7 +447,7 @@ func (p *JSONResponseProcessor) extractValidJSON(body []byte) []byte {
 		}
 		return []byte(longestJSON)
 	}
-	
+
 	// 3. 回退到基础提取
 	fallbackJSON := p.fallbackExtractJSON(content)
 	if fallbackJSON != "" {
@@ -461,7 +456,7 @@ func (p *JSONResponseProcessor) extractValidJSON(body []byte) []byte {
 		}
 		return []byte(fallbackJSON)
 	}
-	
+
 	return nil
 }
 
@@ -469,10 +464,10 @@ func (p *JSONResponseProcessor) extractValidJSON(body []byte) []byte {
 func (p *JSONResponseProcessor) findLongestValidJSON(content string) string {
 	var longestJSON string
 	maxLength := 0
-	
+
 	braceCount := 0
 	start := -1
-	
+
 	for i, char := range content {
 		if char == '{' {
 			if braceCount == 0 {
@@ -491,7 +486,7 @@ func (p *JSONResponseProcessor) findLongestValidJSON(content string) string {
 			}
 		}
 	}
-	
+
 	return longestJSON
 }
 
@@ -499,13 +494,13 @@ func (p *JSONResponseProcessor) findLongestValidJSON(content string) string {
 func (p *JSONResponseProcessor) findJSONByFields(content string) string {
 	// 查找包含关键字段的JSON
 	keyFields := []string{"structured_text_array", "image_prompt", "choices", "content"}
-	
+
 	// 优先查找包含structured_text_array的JSON
 	if strings.Contains(content, "structured_text_array") {
 		if p.EnableLogging {
 			fmt.Printf("%s Searching for JSON with structured_text_array\n", p.LogPrefix)
 		}
-		
+
 		// 查找structured_text_array字段的位置
 		fieldStart := strings.Index(content, `"structured_text_array"`)
 		if fieldStart != -1 {
@@ -517,12 +512,12 @@ func (p *JSONResponseProcessor) findJSONByFields(content string) string {
 					break
 				}
 			}
-			
+
 			if braceStart != -1 {
 				// 向后查找对应的结束大括号
 				braceCount := 0
 				braceEnd := -1
-				
+
 				for i := braceStart; i < len(content); i++ {
 					switch content[i] {
 					case '{':
@@ -535,9 +530,9 @@ func (p *JSONResponseProcessor) findJSONByFields(content string) string {
 						}
 					}
 				}
-				
+
 				if braceEnd != -1 {
-					jsonCandidate := content[braceStart:braceEnd+1]
+					jsonCandidate := content[braceStart : braceEnd+1]
 					if p.isValidJSON([]byte(jsonCandidate)) {
 						if p.EnableLogging {
 							fmt.Printf("%s Found valid JSON with structured_text_array, length: %d\n", p.LogPrefix, len(jsonCandidate))
@@ -548,11 +543,11 @@ func (p *JSONResponseProcessor) findJSONByFields(content string) string {
 			}
 		}
 	}
-	
+
 	// 通用字段查找逻辑
 	braceCount := 0
 	start := -1
-	
+
 	for i, char := range content {
 		if char == '{' {
 			if braceCount == 0 {
@@ -570,7 +565,7 @@ func (p *JSONResponseProcessor) findJSONByFields(content string) string {
 			}
 		}
 	}
-	
+
 	return ""
 }
 
@@ -585,7 +580,7 @@ func (p *JSONResponseProcessor) containsAllFields(jsonStr string, fields []strin
 			}
 			return false
 		}
-		
+
 		// 检查structured_text_array是否有内容
 		if strings.Contains(jsonStr, `"structured_text_array":[]`) {
 			if p.EnableLogging {
@@ -593,21 +588,21 @@ func (p *JSONResponseProcessor) containsAllFields(jsonStr string, fields []strin
 			}
 			return false
 		}
-		
+
 		// 如果structured_text_array有内容，认为这是有效的JSON
 		if p.EnableLogging {
 			fmt.Printf("%s structured_text_array has content, accepting\n", p.LogPrefix)
 		}
 		return true
 	}
-	
+
 	// 对于其他字段，检查是否包含
 	for _, field := range fields {
 		if !strings.Contains(jsonStr, fmt.Sprintf(`"%s"`, field)) {
 			return false
 		}
 	}
-	
+
 	return true
 }
 
@@ -616,20 +611,20 @@ func (p *JSONResponseProcessor) fallbackExtractJSON(content string) string {
 	// 查找第一个 { 和最后一个 }
 	start := strings.Index(content, "{")
 	end := strings.LastIndex(content, "}")
-	
+
 	if start != -1 && end != -1 && end > start {
 		extracted := content[start : end+1]
-		
+
 		// 对提取的JSON进行编码清理
 		cleaned := p.cleanExtractedJSON(extracted)
-		
+
 		if p.EnableLogging {
 			fmt.Printf("%s Fallback extraction: %d -> %d characters\n", p.LogPrefix, len(extracted), len(cleaned))
 		}
-		
+
 		return cleaned
 	}
-	
+
 	return ""
 }
 
@@ -637,50 +632,14 @@ func (p *JSONResponseProcessor) fallbackExtractJSON(content string) string {
 func (p *JSONResponseProcessor) cleanExtractedJSON(jsonStr string) string {
 	var result strings.Builder
 	removedCount := 0
-	
+
 	if p.EnableLogging {
 		fmt.Printf("%s Starting JSON cleaning, original length: %d\n", p.LogPrefix, len(jsonStr))
 	}
-	
-	// 更严格的JSON字符过滤
+
+	// 使用配置的字符过滤规则
 	for i, char := range jsonStr {
-		// 1. 检查是否是无效的Unicode字符
-		if char == utf8.RuneError || char == 0xFFFD {
-			if p.EnableLogging {
-				fmt.Printf("%s Removing invalid Unicode at position %d: 0x%02x\n", p.LogPrefix, i, char)
-			}
-			removedCount++
-			continue
-		}
-		
-		// 2. 检查是否是控制字符（除了换行符和制表符）
-		if char >= 0 && char <= 31 && char != '\n' && char != '\t' {
-			if p.EnableLogging {
-				fmt.Printf("%s Removing control character at position %d: 0x%02x (rune: %q)\n", p.LogPrefix, i, char, char)
-			}
-			removedCount++
-			continue
-		}
-		
-		// 3. 检查是否是扩展ASCII字符（128-255）
-		if char >= 128 && char <= 255 {
-			if p.EnableLogging {
-				fmt.Printf("%s Removing extended ASCII at position %d: 0x%02x (rune: %q)\n", p.LogPrefix, i, char, char)
-			}
-			removedCount++
-			continue
-		}
-		
-		// 4. 检查是否是JSON结构中的问题字符
-		if p.isJSONStructureProblem(char, jsonStr, i) {
-			if p.EnableLogging {
-				fmt.Printf("%s Removing JSON structure problem character at position %d: 0x%02x (rune: %q)\n", p.LogPrefix, i, char, char)
-			}
-			removedCount++
-			continue
-		}
-		
-		// 5. 检查是否是有效的字符
+		// 检查是否是有效的字符
 		if p.isValidCharacter(char) {
 			result.WriteRune(char)
 		} else {
@@ -691,18 +650,18 @@ func (p *JSONResponseProcessor) cleanExtractedJSON(jsonStr string) string {
 			continue
 		}
 	}
-	
+
 	cleaned := result.String()
 	if p.EnableLogging {
 		fmt.Printf("%s JSON cleaning completed: %d -> %d characters, removed %d characters\n", p.LogPrefix, len(jsonStr), len(cleaned), removedCount)
-		
+
 		// 如果移除了字符，显示清理前后的对比
 		if removedCount > 0 {
 			fmt.Printf("%s Cleaning summary:\n", p.LogPrefix)
 			fmt.Printf("%s   - Original length: %d\n", p.LogPrefix, len(jsonStr))
 			fmt.Printf("%s   - Cleaned length: %d\n", p.LogPrefix, len(cleaned))
 			fmt.Printf("%s   - Characters removed: %d\n", p.LogPrefix, removedCount)
-			
+
 			// 显示清理后的前100个字符作为预览
 			if len(cleaned) > 0 {
 				preview := cleaned
@@ -713,7 +672,7 @@ func (p *JSONResponseProcessor) cleanExtractedJSON(jsonStr string) string {
 			}
 		}
 	}
-	
+
 	return cleaned
 }
 
@@ -721,7 +680,7 @@ func (p *JSONResponseProcessor) cleanExtractedJSON(jsonStr string) string {
 func (p *JSONResponseProcessor) isJSONStructureProblem(char rune, jsonStr string, position int) bool {
 	// 检查是否是JSON结构中的常见问题字符
 	problemChars := []rune{'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z'}
-	
+
 	// 检查是否是问题字符
 	for _, problemChar := range problemChars {
 		if char == problemChar {
@@ -729,7 +688,7 @@ func (p *JSONResponseProcessor) isJSONStructureProblem(char rune, jsonStr string
 			return p.isContextuallyProblematic(jsonStr, position, char)
 		}
 	}
-	
+
 	return false
 }
 
@@ -738,36 +697,36 @@ func (p *JSONResponseProcessor) isContextuallyProblematic(jsonStr string, positi
 	// 检查字符前后的上下文
 	before := ""
 	after := ""
-	
+
 	if position > 0 {
 		before = string(jsonStr[position-1])
 	}
 	if position < len(jsonStr)-1 {
 		after = string(jsonStr[position+1])
 	}
-	
+
 	// 如果字符前后都是有效的JSON字符，那么它可能不是问题字符
 	validBefore := p.isValidJSONContext(before)
 	validAfter := p.isValidJSONContext(after)
-	
+
 	// 如果前后都是有效的，那么这个字符可能不是问题
 	if validBefore && validAfter {
 		return false
 	}
-	
+
 	// 检查是否在JSON字符串中
 	inString := p.isInJSONString(jsonStr, position)
 	if inString {
 		// 在JSON字符串中的字符通常是有效的
 		return false
 	}
-	
+
 	// 检查是否在JSON对象或数组的键值对中
 	if p.isInJSONKeyValue(jsonStr, position) {
 		// 在键值对中的字符可能是问题字符
 		return true
 	}
-	
+
 	return false
 }
 
@@ -776,14 +735,14 @@ func (p *JSONResponseProcessor) isValidJSONContext(char string) bool {
 	if char == "" {
 		return true
 	}
-	
+
 	validChars := []string{`"`, `{`, `}`, `[`, `]`, `:`, `,`, ` `, `\n`, `\t`}
 	for _, valid := range validChars {
 		if char == valid {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -792,20 +751,20 @@ func (p *JSONResponseProcessor) isInJSONString(jsonStr string, position int) boo
 	// 计算当前位置之前的引号数量
 	quoteCount := 0
 	escaped := false
-	
+
 	for i := 0; i < position; i++ {
 		if jsonStr[i] == '\\' && !escaped {
 			escaped = true
 			continue
 		}
-		
+
 		if jsonStr[i] == '"' && !escaped {
 			quoteCount++
 		}
-		
+
 		escaped = false
 	}
-	
+
 	// 如果引号数量是奇数，说明在字符串中
 	return quoteCount%2 == 1
 }
@@ -820,11 +779,11 @@ func (p *JSONResponseProcessor) isInJSONKeyValue(jsonStr string, position int) b
 			break
 		}
 	}
-	
+
 	if colonPos == -1 {
 		return false
 	}
-	
+
 	// 查找冒号后的下一个引号或大括号
 	for i := colonPos + 1; i < len(jsonStr); i++ {
 		if jsonStr[i] == '"' || jsonStr[i] == '{' || jsonStr[i] == '[' {
@@ -832,168 +791,178 @@ func (p *JSONResponseProcessor) isInJSONKeyValue(jsonStr string, position int) b
 			return position > colonPos && position < i
 		}
 	}
-	
+
 	return false
 }
 
 // isValidCharacter 判断字符是否有效
 func (p *JSONResponseProcessor) isValidCharacter(char rune) bool {
-	// 1. 严格过滤控制字符（0-31，除了换行符和制表符）
-	if char >= 0 && char <= 31 {
-		// 只允许换行符和制表符
-		if char == '\n' || char == '\t' {
-			return true
-		}
-		// 其他控制字符都是无效的
+	config := p.Config.CharacterFiltering
+
+	// 1. 检查是否是无效的Unicode字符
+	if config.FilterUnicodeReplacement && (char == utf8.RuneError || char == 0xFFFD) {
 		return false
 	}
-	
-	// 2. ASCII可打印字符（32-126）
+
+	// 2. 检查是否是控制字符
+	if config.StrictControlChars {
+		if char >= 0 && char <= 31 {
+			// 检查是否在允许的控制字符列表中
+			for _, allowedChar := range config.AllowedControlChars {
+				if string(char) == allowedChar {
+					return true
+				}
+			}
+			// 其他控制字符都是无效的
+			return false
+		}
+	}
+
+	// 3. 检查是否是扩展ASCII字符
+	if config.FilterExtendedASCII && char >= 128 && char <= 255 {
+		return false
+	}
+
+	// 4. ASCII可打印字符（32-126）
 	if char >= 32 && char <= 126 {
 		return true
 	}
-	
-	// 3. 换行符和制表符（已在上面的控制字符检查中处理）
-	// 这里作为双重保险
-	if char == '\n' || char == '\t' {
+
+	// 5. 检查是否在允许的Unicode范围内
+	return p.isInAllowedUnicodeRange(char, config.AllowedUnicodeRanges)
+}
+
+// isInAllowedUnicodeRange 检查字符是否在允许的Unicode范围内
+func (p *JSONResponseProcessor) isInAllowedUnicodeRange(char rune, ranges UnicodeRangesConfig) bool {
+	charCode := int(char)
+
+	// 检查中文字符范围
+	if len(ranges.Chinese) == 2 && charCode >= ranges.Chinese[0] && charCode <= ranges.Chinese[1] {
 		return true
 	}
-	
-	// 4. 中文字符（Unicode范围：4E00-9FFF）
-	if char >= 0x4E00 && char <= 0x9FFF {
+
+	// 检查中文标点符号范围
+	if len(ranges.ChinesePunctuation) == 2 && charCode >= ranges.ChinesePunctuation[0] && charCode <= ranges.ChinesePunctuation[1] {
 		return true
 	}
-	
-	// 5. 中文标点符号（3000-303F）
-	if char >= 0x3000 && char <= 0x303F {
+
+	// 检查全角字符范围
+	if len(ranges.Fullwidth) == 2 && charCode >= ranges.Fullwidth[0] && charCode <= ranges.Fullwidth[1] {
 		return true
 	}
-	
-	// 6. 全角字符（FF00-FFEF）
-	if char >= 0xFF00 && char <= 0xFFEF {
+
+	// 检查拉丁字母扩展范围
+	for _, rangePair := range ranges.LatinExtended {
+		if len(rangePair) == 2 && charCode >= rangePair[0] && charCode <= rangePair[1] {
+			return true
+		}
+	}
+
+	// 检查阿拉伯文范围
+	if len(ranges.Arabic) == 2 && charCode >= ranges.Arabic[0] && charCode <= ranges.Arabic[1] {
 		return true
 	}
-	
-	// 7. 其他常见的Unicode字符
-	// 拉丁字母扩展（00C0-00FF, 0100-017F, 0180-024F）
-	if (char >= 0x00C0 && char <= 0x00FF) ||
-	   (char >= 0x0100 && char <= 0x017F) ||
-	   (char >= 0x0180 && char <= 0x024F) {
+
+	// 检查西里尔文范围
+	if len(ranges.Cyrillic) == 2 && charCode >= ranges.Cyrillic[0] && charCode <= ranges.Cyrillic[1] {
 		return true
 	}
-	
-	// 8. 其他有效的Unicode字符（大于255但有效的字符）
-	// 这些字符在JSON中通常是有效的
+
+	// 检查希腊文范围
+	if len(ranges.Greek) == 2 && charCode >= ranges.Greek[0] && charCode <= ranges.Greek[1] {
+		return true
+	}
+
+	// 检查希伯来文范围
+	if len(ranges.Hebrew) == 2 && charCode >= ranges.Hebrew[0] && charCode <= ranges.Hebrew[1] {
+		return true
+	}
+
+	// 检查泰文范围
+	if len(ranges.Thai) == 2 && charCode >= ranges.Thai[0] && charCode <= ranges.Thai[1] {
+		return true
+	}
+
+	// 检查韩文范围
+	if len(ranges.Korean) == 2 && charCode >= ranges.Korean[0] && charCode <= ranges.Korean[1] {
+		return true
+	}
+
+	// 检查日文平假名范围
+	if len(ranges.JapaneseHiragana) == 2 && charCode >= ranges.JapaneseHiragana[0] && charCode <= ranges.JapaneseHiragana[1] {
+		return true
+	}
+
+	// 检查日文片假名范围
+	if len(ranges.JapaneseKatakana) == 2 && charCode >= ranges.JapaneseKatakana[0] && charCode <= ranges.JapaneseKatakana[1] {
+		return true
+	}
+
+	// 如果不在已知范围内，但大于255，通常也是有效的
 	if char > 255 {
-		// 检查是否是其他常见的Unicode范围
-		// 阿拉伯文（0600-06FF）
-		if char >= 0x0600 && char <= 0x06FF {
-			return true
-		}
-		// 西里尔文（0400-04FF）
-		if char >= 0x0400 && char <= 0x04FF {
-			return true
-		}
-		// 希腊文（0370-03FF）
-		if char >= 0x0370 && char <= 0x03FF {
-			return true
-		}
-		// 希伯来文（0590-05FF）
-		if char >= 0x0590 && char <= 0x05FF {
-			return true
-		}
-		// 泰文（0E00-0E7F）
-		if char >= 0x0E00 && char <= 0x0E7F {
-			return true
-		}
-		// 韩文（AC00-D7AF）
-		if char >= 0xAC00 && char <= 0xD7AF {
-			return true
-		}
-		// 日文平假名（3040-309F）
-		if char >= 0x3040 && char <= 0x309F {
-			return true
-		}
-		// 日文片假名（30A0-30FF）
-		if char >= 0x30A0 && char <= 0x30FF {
-			return true
-		}
-		// 日文汉字（4E00-9FFF，已包含在中文字符中）
-		
-		// 如果不在已知范围内，但大于255，通常也是有效的
 		return true
 	}
-	
-	// 9. 严格过滤扩展ASCII字符（128-255）
-	// 这些字符在JSON中通常是有问题的，特别是控制字符
-	if char >= 128 && char <= 255 {
-		// 严格移除所有扩展ASCII字符，包括：
-		// - 控制字符（0x80-0x9F）
-		// - 扩展字符（0xA0-0xFF）
-		// 这些字符在JSON中通常会导致解析问题
-		return false
-	}
-	
-	// 10. 默认情况下，只允许明确有效的字符
+
+	// 默认情况下，只允许明确有效的字符
 	return false
 }
 
 // cleanAndFixJSON 清理和修复JSON
-func (p *JSONResponseProcessor) cleanAndFixJSON(body []byte) ([]byte, error) {
+func (p *JSONResponseProcessor) cleanAndFixJSON(body string) string {
 	// 1. 基本清理
 	cleaned := p.basicCleanup(body)
-	
+
 	// 2. 尝试解析
-	if p.isValidJSON(cleaned) {
+	if p.isValidJSON([]byte(cleaned)) {
 		if p.EnableLogging {
 			fmt.Printf("%s Basic cleanup successful\n", p.LogPrefix)
 		}
-		return cleaned, nil
+		return cleaned
 	}
-	
+
 	// 3. 深度修复
 	fixed := p.deepFixJSON(cleaned)
-	
+
 	// 4. 尝试解析修复后的内容
-	if p.isValidJSON(fixed) {
+	if p.isValidJSON([]byte(fixed)) {
 		if p.EnableLogging {
 			fmt.Printf("%s Deep fix successful\n", p.LogPrefix)
 		}
-		return fixed, nil
+		return fixed
 	}
-	
+
 	// 5. 如果深度修复失败，尝试智能提取
 	if p.EnableLogging {
 		fmt.Printf("%s Deep fix failed, attempting smart extraction\n", p.LogPrefix)
 	}
-	
-	extracted := p.extractValidJSON(body)
+
+	extracted := p.extractValidJSON([]byte(body))
 	if extracted != nil {
 		if p.EnableLogging {
 			fmt.Printf("%s Smart extraction successful, length: %d\n", p.LogPrefix, len(extracted))
 		}
-		return extracted, nil
+		return string(extracted)
 	}
-	
+
 	// 6. 如果所有方法都失败，返回错误
-	return nil, fmt.Errorf("failed to clean and fix JSON")
+	return ""
 }
 
 // basicCleanup 基本清理
-func (p *JSONResponseProcessor) basicCleanup(body []byte) []byte {
-	content := string(body)
-	
+func (p *JSONResponseProcessor) basicCleanup(body string) string {
+	content := body
+
 	// 移除BOM
 	if strings.HasPrefix(content, "\uFEFF") {
 		content = content[3:]
 	}
-	
+
 	// 移除前后空白
 	content = strings.TrimSpace(content)
-	
+
 	// 移除多余的换行
 	content = strings.ReplaceAll(content, "\n\n", "\n")
-	
+
 	// 移除无效的Unicode字符
 	var result strings.Builder
 	for _, char := range content {
@@ -1006,24 +975,24 @@ func (p *JSONResponseProcessor) basicCleanup(body []byte) []byte {
 			result.WriteRune(char)
 		}
 	}
-	
-	return []byte(result.String())
+
+	return result.String()
 }
 
 // deepFixJSON 深度修复JSON
-func (p *JSONResponseProcessor) deepFixJSON(body []byte) []byte {
-	content := string(body)
-	
+func (p *JSONResponseProcessor) deepFixJSON(body string) string {
+	content := body
+
 	// 1. 修复编码问题
 	content = p.fixEncodingIssues(content)
-	
+
 	// 2. 修复结构问题
 	content = p.fixStructuralIssues(content)
-	
+
 	// 3. 修复语法问题
 	content = p.fixSyntaxIssues(content)
-	
-	return []byte(content)
+
+	return content
 }
 
 // fixEncodingIssues 修复编码问题
@@ -1051,11 +1020,11 @@ func (p *JSONResponseProcessor) fixEncodingIssues(content string) string {
 		"\\x9e": "ž",
 		"\\x9f": "Ÿ",
 	}
-	
+
 	for old, new := range replacements {
 		content = strings.ReplaceAll(content, old, new)
 	}
-	
+
 	// 修复无效的Unicode字符
 	var result strings.Builder
 	for _, char := range content {
@@ -1065,7 +1034,7 @@ func (p *JSONResponseProcessor) fixEncodingIssues(content string) string {
 		}
 		result.WriteRune(char)
 	}
-	
+
 	return result.String()
 }
 
@@ -1082,27 +1051,27 @@ func (p *JSONResponseProcessor) fixStructuralIssues(content string) string {
 				braceCount--
 			}
 		}
-		
+
 		// 添加缺失的结束大括号
 		for i := 0; i < braceCount; i++ {
 			content += "}"
 		}
 	}
-	
+
 	return content
 }
 
 // fixSyntaxIssues 修复语法问题
 func (p *JSONResponseProcessor) fixSyntaxIssues(content string) string {
 	// 修复常见的语法问题
-	
+
 	// 1. 修复多余的逗号
 	content = strings.ReplaceAll(content, ",}", "}")
 	content = strings.ReplaceAll(content, ",]", "]")
-	
+
 	// 2. 修复缺失的引号
 	// 这里可以添加更复杂的引号修复逻辑
-	
+
 	return content
 }
 
@@ -1111,8 +1080,7 @@ func (p *JSONResponseProcessor) isValidJSON(data []byte) bool {
 	if len(data) == 0 {
 		return false
 	}
-	
+
 	var js json.RawMessage
 	return json.Unmarshal(data, &js) == nil
 }
-
