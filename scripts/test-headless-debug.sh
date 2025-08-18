@@ -95,7 +95,7 @@ func main() {
 	fmt.Printf("排序: %d\n", renderedCard.SortOrder)
 
 	// 检查生成的图片文件
-	imagePath := fmt.Sprintf("./images/upload/card/%d/card_%d.png", renderedCard.CardID, renderedCard.CardID)
+	imagePath := fmt.Sprintf("./images/upload/card/%d/card_%d.webp", renderedCard.CardID, renderedCard.CardID)
 	if _, err := os.Stat(imagePath); err == nil {
 		fmt.Printf("✅ 图片文件存在: %s\n", imagePath)
 		// 获取文件大小

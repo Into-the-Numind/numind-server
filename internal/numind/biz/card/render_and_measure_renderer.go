@@ -606,8 +606,8 @@ func (r *RenderAndMeasureRenderer) saveImage(imageData []byte, cardID uint) (str
 	}
 	fmt.Printf("🔍 渲染-测量方案：目录创建成功或已存在\n")
 
-	// 生成文件名
-	filename := fmt.Sprintf("card_%d.png", cardID)
+	// 生成文件名 - 改为WebP格式
+	filename := fmt.Sprintf("card_%d.webp", cardID)
 	filepath := filepath.Join(cardDir, filename)
 	fmt.Printf("🔍 渲染-测量方案：文件完整路径=%s\n", filepath)
 

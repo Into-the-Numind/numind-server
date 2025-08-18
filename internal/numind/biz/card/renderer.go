@@ -330,8 +330,8 @@ func (r *Renderer) saveImage(img *image.RGBA, cardID uint) (string, error) {
 	}
 	fmt.Printf("调试：目录创建成功或已存在\n")
 
-	// 生成文件名
-	filename := fmt.Sprintf("card_%d.png", cardID)
+	// 生成文件名 - 改为WebP格式
+	filename := fmt.Sprintf("card_%d.webp", cardID)
 	filepath := filepath.Join(cardDir, filename)
 	fmt.Printf("调试：文件完整路径: %s\n", filepath)
 

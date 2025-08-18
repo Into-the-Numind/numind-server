@@ -66,7 +66,7 @@ func main() {
 	fmt.Printf("排序: %d\n", renderedCard.SortOrder)
 
 	// 检查生成的图片文件是否存在
-	actualPath := fmt.Sprintf("images/upload/card/%d/card_%d.png", renderedCard.CardID, renderedCard.CardID)
+	actualPath := fmt.Sprintf("images/upload/card/%d/card_%d.webp", renderedCard.CardID, renderedCard.CardID)
 	if _, err := os.Stat(actualPath); os.IsNotExist(err) {
 		fmt.Printf("警告: 生成的图片文件不存在: %s\n", actualPath)
 	} else {

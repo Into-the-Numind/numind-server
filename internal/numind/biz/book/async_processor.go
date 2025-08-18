@@ -1574,8 +1574,8 @@ func downloadAndSaveImage(remoteURL string, bookID uint) (string, error) {
 		return "", fmt.Errorf("failed to create directory %s: %w", localDir, err)
 	}
 
-	// 固定文件名：book_{id}.png
-	localFilePath := filepath.Join(localDir, fmt.Sprintf("book_%d.png", bookID))
+	// 固定文件名：book_{id}.webp
+	localFilePath := filepath.Join(localDir, fmt.Sprintf("book_%d.webp", bookID))
 
 	// 下载远程图片
 	client := &http.Client{Timeout: 30 * time.Second}

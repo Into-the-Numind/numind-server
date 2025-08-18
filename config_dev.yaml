@@ -81,18 +81,18 @@ ali:
   text:
     api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"
     api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
-    model: "qwq-plus"
-    timeout: 120s  # 千问文本生成超时时间
+    model: "baichuan2-turbo"
+    timeout: 120s
   image:
     api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"
     api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
     model: "wanx2.1-t2i-turbo"
-    timeout: 180s  # 万象图像生成超时时间
+    timeout: 180s
   stable_diffusion:
     api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"  # 使用相同的API key
     api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
     model: "stable-diffusion-3.5-large-turbo"
-    timeout: 300s  # stable-diffusion图像生成超时时间，设置为5分钟
+    timeout: 300s
 
 # MQTT 配置
 mqtt:
