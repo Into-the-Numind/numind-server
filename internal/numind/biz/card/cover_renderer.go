@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,7 +19,8 @@ import (
 
 // CoverRenderer 封面卡片渲染器
 type CoverRenderer struct {
-	config *pagination.PaginationConfig
+	config             *pagination.PaginationConfig
+	templateBackground string
 }
 
 // NewCoverRenderer 创建新的封面渲染器
@@ -25,6 +28,12 @@ func NewCoverRenderer(config *pagination.PaginationConfig) *CoverRenderer {
 	return &CoverRenderer{
 		config: config,
 	}
+}
+
+// SetTemplateBackground 设置模板背景
+func (r *CoverRenderer) SetTemplateBackground(background string) error {
+	r.templateBackground = background
+	return nil
 }
 
 // CoverCardData 封面卡片数据结构
@@ -144,42 +153,30 @@ func (r *CoverRenderer) RenderCoverCardFromBook(card *model.CardM, bookTitle str
 
 // GenerateCoverHTML 生成封面HTML内容
 func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagination.PaginationConfig) string {
-	// 处理背景样式 - 确保背景完全覆盖整个卡片
+	// 处理背景样式 - 优先使用模板背景，确保背景完全覆盖整个卡片
 	backgroundStyle := ""
-	if coverData.Background != "" {
-		backgroundStyle = fmt.Sprintf("background: url('%s') center center / cover no-repeat;", coverData.Background)
-	}
-
-	// 处理图片区域背景 - 上半部分，使用center top确保顶部对齐
-	imageSectionBg := ""
-	if coverData.Background != "" {
+	if r.templateBackground != "" {
 		// 使用绝对路径确保背景图片能正确加载
+		absPath := r.templateBackground
+		if !filepath.IsAbs(absPath) {
+			if abs, err := filepath.Abs(absPath); err == nil {
+				absPath = abs
+			}
+		}
+		// 关键修复：使用单一背景覆盖整个容器，确保完全填充
+		backgroundStyle = fmt.Sprintf("background: url('file://%s') center center / cover no-repeat;", absPath)
+	} else if coverData.Background != "" {
+		// 如果没有模板背景，使用封面数据中的背景
 		absPath := coverData.Background
 		if !filepath.IsAbs(absPath) {
 			if abs, err := filepath.Abs(absPath); err == nil {
 				absPath = abs
 			}
 		}
-		imageSectionBg = fmt.Sprintf("background: url('file://%s') center top / cover no-repeat;", absPath)
+		backgroundStyle = fmt.Sprintf("background: url('file://%s') center center / cover no-repeat;", absPath)
 	} else {
-		imageSectionBg = "background: #f5f5f5;"
-	}
-
-	// 处理标题区域背景 - 下半部分，使用center bottom确保底部对齐，避免白色间隙
-	titleSectionBg := ""
-	if coverData.Background != "" {
-		// 使用绝对路径确保背景图片能正确加载
-		absPath := coverData.Background
-		if !filepath.IsAbs(absPath) {
-			if abs, err := filepath.Abs(absPath); err == nil {
-				absPath = abs
-			}
-		}
-		// 使用center bottom确保背景图片的底部部分显示在标题区域
-		// 这样可以避免底部出现白色间隙
-		titleSectionBg = fmt.Sprintf("background: url('file://%s') center bottom / cover no-repeat;", absPath)
-	} else {
-		titleSectionBg = "background: #ffffff;"
+		// 使用纯白色背景作为默认模板
+		backgroundStyle = "background: #ffffff;"
 	}
 
 	html := fmt.Sprintf(`<!DOCTYPE html>
@@ -194,39 +191,57 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             box-sizing: border-box;
         }
         
-        html {
+        html, body {
             width: %dpx;
             height: %dpx;
             margin: 0;
             padding: 0;
-        }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-            %s
-            color: #333333;
-            width: %dpx;
-            height: %dpx;
             overflow: hidden;
         }
         
+        /* 关键修复：确保背景图片完全覆盖整个容器 */
         .cover-container {
             width: 100%%;
             height: 100%%;
             display: flex;
             flex-direction: column;
             %s
+            position: relative;
+            background-size: cover !important;
+            background-position: center center !important;
+            background-repeat: no-repeat !important;
         }
         
-        .image-section {
+        /* 移除分段背景，使用单一背景覆盖 */
+        .image-section, .title-section {
             flex: 1;
             display: flex;
             align-items: center;
             justify-content: center;
-            %s
             position: relative;
             overflow: hidden;
             width: 100%%;
             min-height: 50%%;
+            /* 确保背景完全覆盖，避免白条 */
+            background: inherit;
+        }
+        
+        .title-container {
+            text-align: center;
+            background: rgba(255, 255, 255, 0.9); /* 半透明白色背景确保文字可读 */
+            padding: 20px;
+            border-radius: 8px;
+            backdrop-filter: blur(5px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        
+        .title {
+            font-size: 64px;
+            font-weight: bold;
+            color: #333333;
+            line-height: 1.4;
+            margin: 0;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
         }
         
         .cover-image {
@@ -248,35 +263,6 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             font-size: 24px;
             font-weight: bold;
         }
-        
-        .title-section {
-            flex: 1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            %s
-            padding: 20px;
-            box-sizing: border-box;
-            width: 100%%;
-            min-height: 50%%;
-            /* 确保背景完全覆盖，避免白色间隙 */
-            background-size: cover !important;
-            background-position: center bottom !important;
-        }
-        
-        .title-container {
-            text-align: center;
-        }
-        
-        .title {
-            font-size: 64px;
-            font-weight: bold;
-            color: #333333;
-            line-height: 1.4;
-            margin: 0;
-            text-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        
     </style>
 </head>
 <body>
@@ -293,10 +279,6 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
 </body>
 </html>`, config.Card.Width, config.Card.Height,
 		backgroundStyle,
-		config.Card.Width, config.Card.Height,
-		backgroundStyle,
-		imageSectionBg,
-		titleSectionBg,
 		r.generateImageHTML(coverData.ImageURL),
 		coverData.Title)
 
@@ -496,8 +478,8 @@ func (r *CoverRenderer) saveImageFromData(imageData []byte, cardID uint) (string
 	}
 	fmt.Printf("调试：目录创建成功或已存在\n")
 
-	// 生成文件名
-	filename := fmt.Sprintf("card_%d.png", cardID)
+	// 生成文件名 - 改为webp格式
+	filename := fmt.Sprintf("card_%d.webp", cardID)
 	filepath := filepath.Join(cardDir, filename)
 	fmt.Printf("调试：文件完整路径: %s\n", filepath)
 
@@ -509,20 +491,64 @@ func (r *CoverRenderer) saveImageFromData(imageData []byte, cardID uint) (string
 	defer file.Close()
 	fmt.Printf("调试：文件创建成功\n")
 
-	// 写入图片数据
-	if _, err := file.Write(imageData); err != nil {
-		return "", fmt.Errorf("failed to write image data: %v", err)
+	// 将PNG数据转换为webp格式
+	if err := r.convertToWebP(imageData, file); err != nil {
+		return "", fmt.Errorf("failed to convert to webp: %v", err)
 	}
-	fmt.Printf("调试：图片数据写入成功，大小: %d bytes\n", len(imageData))
-
-	// 确保数据写入磁盘
-	if err := file.Sync(); err != nil {
-		return "", fmt.Errorf("failed to sync image file: %v", err)
-	}
-	fmt.Printf("调试：文件同步到磁盘成功\n")
+	fmt.Printf("调试：webp转换成功\n")
 
 	// 返回图片URL
 	imageURL := util.GetCardImageURL(cardID, filename)
 	fmt.Printf("调试：返回的图片URL: %s\n", imageURL)
 	return imageURL, nil
+}
+
+// convertToWebP 将PNG数据转换为webp格式
+func (r *CoverRenderer) convertToWebP(pngData []byte, outputFile *os.File) error {
+	// 解码PNG数据
+	img, _, err := image.Decode(bytes.NewReader(pngData))
+	if err != nil {
+		return fmt.Errorf("failed to decode PNG data: %v", err)
+	}
+
+	// 使用cwebp命令行工具转换为webp格式，确保高质量输出
+	// 创建临时PNG文件
+	tempPNG := fmt.Sprintf("/tmp/temp_%d.png", time.Now().UnixNano())
+	tempFile, err := os.Create(tempPNG)
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %v", err)
+	}
+
+	// 将图片保存为临时PNG文件
+	if err := png.Encode(tempFile, img); err != nil {
+		tempFile.Close()
+		os.Remove(tempPNG)
+		return fmt.Errorf("failed to encode temp PNG: %v", err)
+	}
+
+	// 关闭临时文件，确保数据写入
+	tempFile.Close()
+
+	// 验证临时PNG文件是否创建成功
+	if info, err := os.Stat(tempPNG); err != nil || info.Size() == 0 {
+		os.Remove(tempPNG)
+		return fmt.Errorf("temp PNG file creation failed or is empty: %v", err)
+	}
+
+	// 使用cwebp转换，设置高质量参数
+	// 直接输出到目标文件路径
+	outputPath := outputFile.Name()
+	cmd := exec.Command("cwebp", "-q", "95", "-m", "6", "-af", "-f", "50", "-sharpness", "0", tempPNG, "-o", outputPath)
+
+	// 捕获命令输出用于调试
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		os.Remove(tempPNG)
+		return fmt.Errorf("failed to convert to webp: %v, output: %s", err, string(output))
+	}
+
+	// 清理临时文件
+	os.Remove(tempPNG)
+
+	return nil
 }

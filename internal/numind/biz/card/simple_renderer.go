@@ -8,7 +8,9 @@ import (
 	"image/draw"
 	"image/png"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"time"
 
 	"numind-server/internal/numind/biz/pagination"
 	"numind-server/internal/pkg/model"
@@ -17,7 +19,8 @@ import (
 
 // SimpleRenderer 简单文本渲染器
 type SimpleRenderer struct {
-	config *pagination.PaginationConfig
+	config             *pagination.PaginationConfig
+	templateBackground string
 }
 
 // 确保SimpleRenderer实现了RendererInterface接口
@@ -28,6 +31,12 @@ func NewSimpleRenderer(config *pagination.PaginationConfig) *SimpleRenderer {
 	return &SimpleRenderer{
 		config: config,
 	}
+}
+
+// SetTemplateBackground 设置模板背景
+func (r *SimpleRenderer) SetTemplateBackground(background string) error {
+	r.templateBackground = background
+	return nil
 }
 
 // RenderCardToImage 将卡片渲染为图片
@@ -41,8 +50,17 @@ func (r *SimpleRenderer) RenderCardToImage(card *model.CardM) (*RenderedCard, er
 	// 创建图片
 	img := image.NewRGBA(image.Rect(0, 0, r.config.Card.Width, r.config.Card.Height))
 
-	// 设置背景色
-	draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{255, 255, 255, 255}}, image.Point{}, draw.Src)
+	// 设置背景 - 优先使用模板背景
+	if r.templateBackground != "" {
+		// 加载模板背景图片
+		if err := r.drawTemplateBackground(img); err != nil {
+			// 如果模板背景加载失败，使用白色背景
+			draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{255, 255, 255, 255}}, image.Point{}, draw.Src)
+		}
+	} else {
+		// 使用白色背景
+		draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{255, 255, 255, 255}}, image.Point{}, draw.Src)
+	}
 
 	// 渲染元素
 	currentY := r.config.Card.Padding.Top
@@ -51,8 +69,8 @@ func (r *SimpleRenderer) RenderCardToImage(card *model.CardM) (*RenderedCard, er
 		currentY += elementHeight
 	}
 
-	// 保存图片
-	imageURL, err := r.saveImage(img, card.ID)
+	// 保存图片 - 改为webp格式
+	imageURL, err := r.saveImageAsWebP(img, card.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -267,8 +285,28 @@ func (r *SimpleRenderer) parseColor(colorStr string) color.Color {
 	}
 }
 
-// saveImage 保存图片
-func (r *SimpleRenderer) saveImage(img *image.RGBA, cardID uint) (string, error) {
+// drawTemplateBackground 绘制模板背景
+func (r *SimpleRenderer) drawTemplateBackground(img *image.RGBA) error {
+	// 打开模板背景图片
+	file, err := os.Open(r.templateBackground)
+	if err != nil {
+		return fmt.Errorf("failed to open template background: %v", err)
+	}
+	defer file.Close()
+
+	// 解码背景图片
+	bgImg, _, err := image.Decode(file)
+	if err != nil {
+		return fmt.Errorf("failed to decode template background: %v", err)
+	}
+
+	// 将背景图片缩放到卡片尺寸并绘制
+	draw.Draw(img, img.Bounds(), bgImg, image.Point{}, draw.Src)
+	return nil
+}
+
+// saveImageAsWebP 保存图片为webp格式
+func (r *SimpleRenderer) saveImageAsWebP(img *image.RGBA, cardID uint) (string, error) {
 	// 获取卡片图片保存路径
 	cardDir := util.GetCardImagePath(cardID)
 
@@ -277,21 +315,45 @@ func (r *SimpleRenderer) saveImage(img *image.RGBA, cardID uint) (string, error)
 		return "", fmt.Errorf("failed to create card directory: %v", err)
 	}
 
-	// 生成文件名
-	filename := fmt.Sprintf("card_%d.png", cardID)
+	// 生成文件名 - 改为webp格式
+	filename := fmt.Sprintf("card_%d.webp", cardID)
 	filepath := filepath.Join(cardDir, filename)
 
-	// 创建文件
-	file, err := os.Create(filepath)
+	// 创建临时PNG文件
+	tempPNG := fmt.Sprintf("/tmp/temp_%d.png", time.Now().UnixNano())
+	tempFile, err := os.Create(tempPNG)
 	if err != nil {
-		return "", fmt.Errorf("failed to create image file: %v", err)
+		return "", fmt.Errorf("failed to create temp file: %v", err)
 	}
-	defer file.Close()
 
-	// 编码为PNG
-	if err := png.Encode(file, img); err != nil {
-		return "", fmt.Errorf("failed to encode image: %v", err)
+	// 将图片编码为临时PNG文件
+	if err := png.Encode(tempFile, img); err != nil {
+		tempFile.Close()
+		os.Remove(tempPNG)
+		return "", fmt.Errorf("failed to encode temp PNG: %v", err)
 	}
+
+	// 关闭临时文件，确保数据写入
+	tempFile.Close()
+
+	// 验证临时PNG文件是否创建成功
+	if info, err := os.Stat(tempPNG); err != nil || info.Size() == 0 {
+		os.Remove(tempPNG)
+		return "", fmt.Errorf("temp PNG file creation failed or is empty: %v", err)
+	}
+
+	// 使用cwebp转换，设置高质量参数
+	cmd := exec.Command("cwebp", "-q", "95", "-m", "6", "-af", "-f", "50", "-sharpness", "0", tempPNG, "-o", filepath)
+
+	// 捕获命令输出用于调试
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		os.Remove(tempPNG)
+		return "", fmt.Errorf("failed to convert to webp: %v, output: %s", err, string(output))
+	}
+
+	// 清理临时文件
+	os.Remove(tempPNG)
 
 	// 返回图片URL
 	imageURL := util.GetCardImageURL(cardID, filename)

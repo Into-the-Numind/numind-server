@@ -136,6 +136,31 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		return
 	}
 
+	// 获取模板背景信息
+	var templateBackground string
+	if templateID != "" {
+		// 将string类型的templateID转换为uint
+		if tid, err := strconv.ParseUint(templateID, 10, 64); err == nil {
+			template, err := p.biz.Templates().GetByID(ctx, uint(tid))
+			if err != nil {
+				log.C(ctx).Warnw("Failed to get template, using default white background", "template_id", templateID, "error", err.Error())
+				templateBackground = "" // 使用默认白色背景
+			} else if template.File != "" {
+				templateBackground = template.File
+				log.C(ctx).Infow("Template background loaded", "template_id", templateID, "background", templateBackground)
+			} else {
+				log.C(ctx).Warnw("Template has no file, using default white background", "template_id", templateID)
+				templateBackground = "" // 使用默认白色背景
+			}
+		} else {
+			log.C(ctx).Warnw("Invalid template ID format, using default white background", "template_id", templateID, "error", err.Error())
+			templateBackground = "" // 使用默认白色背景
+		}
+	} else {
+		log.C(ctx).Infow("No template ID provided, using default white background")
+		templateBackground = "" // 使用默认白色背景
+	}
+
 	// 调用火山引擎文字模型处理文本（替换原来的千问）
 	prompt := p.biz.Ali().GetPromptManager().GetTextProcessingPrompt() + "\n\n" + text
 
@@ -363,19 +388,21 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	if !useRenderAndMeasure {
 		renderer = card.NewSimpleHeadlessRenderer(paginationBiz.GetConfig())
 
-		// 若有模板背景图，设置给传统渲染器
-		if templateID != "" {
-			if tid, err := strconv.ParseUint(templateID, 10, 64); err == nil {
-				if tmpl, err := p.biz.Templates().GetByID(ctx, uint(tid)); err == nil && tmpl != nil {
-					if simpleRenderer, ok := renderer.(*card.SimpleHeadlessRenderer); ok {
-						simpleRenderer.SetBackground(tmpl.File)
-					}
-				}
+		// 设置模板背景
+		if simpleRenderer, ok := renderer.(*card.SimpleHeadlessRenderer); ok {
+			if err := simpleRenderer.SetTemplateBackground(templateBackground); err != nil {
+				log.C(ctx).Warnw("Failed to set template background for content cards", "template_background", templateBackground, "error", err.Error())
 			}
 		}
 	}
 
 	coverRenderer := card.NewCoverRenderer(paginationBiz.GetConfig())
+
+	// 设置模板背景
+	if err := coverRenderer.SetTemplateBackground(templateBackground); err != nil {
+		log.C(ctx).Warnw("Failed to set template background for cover", "template_background", templateBackground, "error", err.Error())
+		// 继续处理，使用默认背景
+	}
 
 	// 首先创建封面卡片 (sort_order = 0)
 	// 背景图：如果传入了 template_id，则尝试从模板中读取背景图绝对路径

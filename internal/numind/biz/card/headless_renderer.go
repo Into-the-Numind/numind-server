@@ -13,14 +13,20 @@ import (
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
 
+	"bytes"
+	"image"
+	"image/png"
+	"os/exec"
+
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 )
 
 // SimpleHeadlessRenderer 简化版无头浏览器渲染器
 type SimpleHeadlessRenderer struct {
-	config     *pagination.PaginationConfig
-	background string
+	config             *pagination.PaginationConfig
+	background         string
+	templateBackground string
 }
 
 // 确保SimpleHeadlessRenderer实现了RendererInterface接口
@@ -33,9 +39,15 @@ func NewSimpleHeadlessRenderer(config *pagination.PaginationConfig) *SimpleHeadl
 	}
 }
 
-// SetBackground 设置全局背景图（模板 file 字段）。为空则默认白色
+// SetBackground 设置背景
 func (r *SimpleHeadlessRenderer) SetBackground(background string) {
 	r.background = background
+}
+
+// SetTemplateBackground 设置模板背景
+func (r *SimpleHeadlessRenderer) SetTemplateBackground(background string) error {
+	r.templateBackground = background
+	return nil
 }
 
 // RenderCardToImage 将卡片渲染为图片
@@ -94,10 +106,22 @@ func (r *SimpleHeadlessRenderer) RenderCardToImage(card *model.CardM) (*Rendered
 func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Element) string {
 	fmt.Printf("🔍 调试：开始生成HTML，元素数量=%d\n", len(elements))
 
-	bgStyle := formatBackgroundStyle(r.background)
-	if bgStyle == "" {
+	// 优先使用模板背景，如果没有则使用普通背景
+	var bgStyle string
+	if r.templateBackground != "" {
+		// 使用模板背景，确保完全覆盖
+		bgStyle = fmt.Sprintf("background: url('file://%s') center center / cover no-repeat;", r.templateBackground)
+		fmt.Printf("🔍 使用模板背景: %s\n", r.templateBackground)
+	} else if r.background != "" {
+		// 使用普通背景
+		bgStyle = formatBackgroundStyle(r.background)
+		fmt.Printf("🔍 使用普通背景: %s\n", r.background)
+	} else {
+		// 默认白色背景
 		bgStyle = "background: #ffffff;"
+		fmt.Printf("🔍 使用默认白色背景\n")
 	}
+
 	fmt.Printf("🔍 调试：背景样式=%s\n", bgStyle)
 
 	html := fmt.Sprintf(`<!DOCTYPE html>
@@ -124,6 +148,10 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
             box-sizing: border-box;
             background-clip: border-box;
             overflow: hidden;
+            /* 确保背景完全覆盖 */
+            background-size: cover !important;
+            background-position: center center !important;
+            background-repeat: no-repeat !important;
         }
         
         /* 卡片容器样式 - 确保所有内容卡片都有正确的边距 */
@@ -134,6 +162,8 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
             box-sizing: border-box;
             /* 确保边距完全一致 */
             margin: 0;
+            /* 继承body的背景 */
+            background: inherit;
         }
         
         /* 内容区域样式 */
@@ -144,6 +174,8 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
             /* 确保内容在边距范围内 */
             padding: 0;
             margin: 0;
+            /* 继承背景 */
+            background: inherit;
         }
         
         /* 第一个元素的特殊处理 - 确保上边距一致 */
@@ -378,8 +410,8 @@ func (r *SimpleHeadlessRenderer) saveImage(imageData []byte, cardID uint) (strin
 	}
 	fmt.Printf("🔍 调试：目录创建成功或已存在\n")
 
-	// 生成文件名
-	filename := fmt.Sprintf("card_%d.png", cardID)
+	// 生成文件名 - 改为webp格式
+	filename := fmt.Sprintf("card_%d.webp", cardID)
 	filepath := filepath.Join(cardDir, filename)
 	fmt.Printf("🔍 调试：文件完整路径=%s\n", filepath)
 
@@ -397,30 +429,73 @@ func (r *SimpleHeadlessRenderer) saveImage(imageData []byte, cardID uint) (strin
 	defer file.Close()
 	fmt.Printf("🔍 调试：文件创建成功\n")
 
-	// 写入图片数据
-	bytesWritten, err := file.Write(imageData)
-	if err != nil {
-		fmt.Printf("❌ 调试：写入图片数据失败 - %v\n", err)
-		return "", fmt.Errorf("failed to write image data: %v", err)
+	// 将PNG数据转换为webp格式
+	if err := r.convertToWebP(imageData, file); err != nil {
+		fmt.Printf("❌ 调试：webp转换失败 - %v\n", err)
+		return "", fmt.Errorf("failed to convert to webp: %v", err)
 	}
-	fmt.Printf("🔍 调试：图片数据写入成功，写入字节数=%d，预期字节数=%d\n", bytesWritten, len(imageData))
-
-	// 同步到磁盘
-	if err := file.Sync(); err != nil {
-		fmt.Printf("⚠️ 调试：同步到磁盘失败 - %v\n", err)
-	} else {
-		fmt.Printf("🔍 调试：数据已同步到磁盘\n")
-	}
+	fmt.Printf("🔍 调试：webp转换成功\n")
 
 	// 验证文件是否真的被创建
-	if info, err := os.Stat(filepath); err == nil {
-		fmt.Printf("🔍 调试：文件验证成功，大小=%d bytes，权限=%s\n", info.Size(), info.Mode())
+	if info, err := os.Stat(filepath); err != nil {
+		fmt.Printf("❌ 调试：文件验证失败 - %v\n", err)
+		return "", fmt.Errorf("failed to verify created file: %v", err)
 	} else {
-		fmt.Printf("⚠️ 调试：文件验证失败 - %v\n", err)
+		fmt.Printf("🔍 调试：文件创建验证成功，大小=%d bytes\n", info.Size())
 	}
 
 	// 返回图片URL
 	imageURL := util.GetCardImageURL(cardID, filename)
 	fmt.Printf("🔍 调试：返回的图片URL=%s\n", imageURL)
 	return imageURL, nil
+}
+
+// convertToWebP 将图片数据转换为webp格式
+func (r *SimpleHeadlessRenderer) convertToWebP(imageData []byte, outputFile *os.File) error {
+	// 解码图片数据
+	img, _, err := image.Decode(bytes.NewReader(imageData))
+	if err != nil {
+		return fmt.Errorf("failed to decode image data: %v", err)
+	}
+
+	// 使用cwebp命令行工具转换为webp格式，确保高质量输出
+	// 创建临时PNG文件
+	tempPNG := fmt.Sprintf("/tmp/temp_%d.png", time.Now().UnixNano())
+	tempFile, err := os.Create(tempPNG)
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %v", err)
+	}
+
+	// 将图片保存为临时PNG文件
+	if err := png.Encode(tempFile, img); err != nil {
+		tempFile.Close()
+		os.Remove(tempPNG)
+		return fmt.Errorf("failed to encode temp PNG: %v", err)
+	}
+
+	// 关闭临时文件，确保数据写入
+	tempFile.Close()
+
+	// 验证临时PNG文件是否创建成功
+	if info, err := os.Stat(tempPNG); err != nil || info.Size() == 0 {
+		os.Remove(tempPNG)
+		return fmt.Errorf("temp PNG file creation failed or is empty: %v", err)
+	}
+
+	// 使用cwebp转换，设置高质量参数
+	// 直接输出到目标文件路径
+	outputPath := outputFile.Name()
+	cmd := exec.Command("cwebp", "-q", "95", "-m", "6", "-af", "-f", "50", "-sharpness", "0", tempPNG, "-o", outputPath)
+
+	// 捕获命令输出用于调试
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		os.Remove(tempPNG)
+		return fmt.Errorf("failed to convert to webp: %v, output: %s", err, string(output))
+	}
+
+	// 清理临时文件
+	os.Remove(tempPNG)
+
+	return nil
 }
