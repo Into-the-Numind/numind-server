@@ -24,7 +24,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 # 运行阶段
 FROM alpine:3.19
 
-# 安装必要的运行时依赖，包括Chrome for headless rendering
+# 安装必要的运行时依赖，包括Chrome for headless rendering和WebP工具
 RUN apk add --no-cache \
     ca-certificates \
     tzdata \
@@ -38,11 +38,15 @@ RUN apk add --no-cache \
     ttf-freefont \
     fontconfig \
     font-noto-cjk \
+    libwebp-tools \
     && rm -rf /var/cache/apk/*
 
 # 设置时区为东八区
 ENV TZ=Asia/Shanghai
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+# 验证WebP工具安装
+RUN cwebp -version && echo "✅ WebP工具安装成功"
 
 # 创建非 root 用户
 RUN addgroup -g 1001 -S numind && \
