@@ -100,20 +100,6 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
 	}
 	fmt.Printf("🔍 调试：背景样式=%s\n", bgStyle)
 
-	// 修复：计算一致的垂直边距
-	paddingTop := r.config.Card.Padding.Top
-	paddingBottom := r.config.Card.Padding.Bottom
-	paddingLeft := r.config.Card.Padding.Left
-	paddingRight := r.config.Card.Padding.Right
-
-	// 确保垂直边距平衡
-	if paddingTop != paddingBottom {
-		avgPadding := (paddingTop + paddingBottom) / 2
-		paddingTop = avgPadding
-		paddingBottom = avgPadding
-		fmt.Printf("🔍 修复：统一垂直边距为 %dpx\n", avgPadding)
-	}
-
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -128,7 +114,7 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
         }
         body {
             margin: 0;
-            padding: %[3]dpx %[4]dpx %[5]dpx %[6]dpx; /* 上右下左边距：统一垂直边距 */
+            padding: 60px 50px; /* 上右下左边距：60px 50px 60px 50px */
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
             %s
             color: #333333;
@@ -140,7 +126,7 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
             overflow: hidden;
         }
         
-        /* 确保内容不会超出边界 */
+        /* 卡片容器样式 - 确保所有内容卡片都有正确的边距 */
         .card-container {
             width: 100%%;
             height: 100%%;
@@ -148,10 +134,9 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
             box-sizing: border-box;
             /* 确保边距完全一致 */
             margin: 0;
-            overflow: hidden; /* 关键：防止内容溢出 */
         }
         
-        /* 内容区域样式 - 使用安全的绘制区域 */
+        /* 内容区域样式 */
         .content-area {
             width: 100%%;
             height: 100%%;
@@ -159,10 +144,6 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
             /* 确保内容在边距范围内 */
             padding: 0;
             margin: 0;
-            /* 修复：确保内容垂直居中 */
-            display: flex;
-            flex-direction: column;
-            justify-content: flex-start;
         }
         
         /* 第一个元素的特殊处理 - 确保上边距一致 */
@@ -175,71 +156,55 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
             margin-bottom: 0;
         }
         
-        /* 修复：确保元素高度计算准确，使用一致的边距 */
         .title {
             font-size: 64px;
             font-weight: bold;
             color: #333333;
-            margin: 0 0 30px 0; /* 上右下左 */
+            margin-bottom: 30px;
             text-align: justify;
             line-height: 1.4;
-            max-height: calc(100%% - 30px); /* 防止超出边界 */
-            overflow: hidden;
         }
-        
         .subtitle {
             font-size: 48px;
             font-weight: normal;
             color: #666666;
-            margin: 0 0 25px 0;
+            margin-bottom: 25px;
             text-align: justify;
             line-height: 1.5;
-            max-height: calc(100%% - 25px);
-            overflow: hidden;
         }
-        
         .body {
             font-size: 36px;
             color: #333333;
-            margin: 0 0 30px 0;
+            margin-bottom: 30px;
             text-align: justify;
             line-height: 1.6;
-            max-height: calc(100%% - 30px);
-            overflow: hidden;
         }
-        
         .list {
             font-size: 36px;
             color: #333333;
-            margin: 0 0 30px 0;
+            margin-bottom: 30px;
             text-align: justify;
             line-height: 1.6;
             padding-left: 40px;
             list-style: none;
-            max-height: calc(100%% - 30px);
-            overflow: hidden;
         }
-        
         .list-item {
             margin-bottom: 8px;
             position: relative;
         }
-        
         .list-item:before {
             content: "•";
             position: absolute;
             left: -20px;
             color: #333333;
         }
-        
         .list-item:last-child {
             margin-bottom: 0;
         }
-        
         .quote {
             font-size: 36px;
             color: #1E90FF;
-            margin: 0 0 30px 0;
+            margin-bottom: 30px;
             text-align: justify;
             line-height: 1.5;
             padding: 20px;
@@ -247,14 +212,12 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
             border-left: 4px solid #1E90FF;
             border-radius: 0 8px 8px 0;
             font-style: italic;
-            max-height: calc(100%% - 30px);
-            overflow: hidden;
         }
     </style>
 </head>
 <body>
     <div class="card-container">
-        <div class="content-area">`, r.config.Card.Width, r.config.Card.Height, paddingTop, paddingRight, paddingBottom, paddingLeft, bgStyle, r.config.Card.Width, r.config.Card.Height)
+        <div class="content-area">`, r.config.Card.Width, r.config.Card.Height, bgStyle, r.config.Card.Width, r.config.Card.Height)
 
 	fmt.Printf("🔍 调试：HTML头部生成完成，长度=%d bytes\n", len(html))
 

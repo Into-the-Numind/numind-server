@@ -83,18 +83,6 @@ func (r *CoverRenderer) RenderCoverCardToImage(card *model.CardM) (*RenderedCard
 	// 使用封面专用配置
 	coverConfig := GetCoverConfig()
 
-	// 关键修复：确保背景图片路径正确
-	if coverData.Background != "" {
-		// 验证背景图片文件是否存在
-		if _, err := os.Stat(coverData.Background); err != nil {
-			fmt.Printf("⚠️ 警告：背景图片文件不存在: %s, 错误: %v\n", coverData.Background, err)
-			// 如果背景图片不存在，清空背景设置
-			coverData.Background = ""
-		} else {
-			fmt.Printf("✅ 背景图片文件验证通过: %s\n", coverData.Background)
-		}
-	}
-
 	// 生成HTML内容
 	htmlContent := r.GenerateCoverHTML(coverData, coverConfig)
 
@@ -159,6 +147,12 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
 	// 处理背景样式 - 确保背景完全覆盖整个卡片
 	backgroundStyle := ""
 	if coverData.Background != "" {
+		backgroundStyle = fmt.Sprintf("background: url('%s') center center / cover no-repeat;", coverData.Background)
+	}
+
+	// 处理图片区域背景 - 上半部分，使用center top确保顶部对齐
+	imageSectionBg := ""
+	if coverData.Background != "" {
 		// 使用绝对路径确保背景图片能正确加载
 		absPath := coverData.Background
 		if !filepath.IsAbs(absPath) {
@@ -166,8 +160,26 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
 				absPath = abs
 			}
 		}
-		// 关键修复：使用单一背景覆盖整个容器，确保完全填充
-		backgroundStyle = fmt.Sprintf("background: url('file://%s') center center / cover no-repeat;", absPath)
+		imageSectionBg = fmt.Sprintf("background: url('file://%s') center top / cover no-repeat;", absPath)
+	} else {
+		imageSectionBg = "background: #f5f5f5;"
+	}
+
+	// 处理标题区域背景 - 下半部分，使用center bottom确保底部对齐，避免白色间隙
+	titleSectionBg := ""
+	if coverData.Background != "" {
+		// 使用绝对路径确保背景图片能正确加载
+		absPath := coverData.Background
+		if !filepath.IsAbs(absPath) {
+			if abs, err := filepath.Abs(absPath); err == nil {
+				absPath = abs
+			}
+		}
+		// 使用center bottom确保背景图片的底部部分显示在标题区域
+		// 这样可以避免底部出现白色间隙
+		titleSectionBg = fmt.Sprintf("background: url('file://%s') center bottom / cover no-repeat;", absPath)
+	} else {
+		titleSectionBg = "background: #ffffff;"
 	}
 
 	html := fmt.Sprintf(`<!DOCTYPE html>
@@ -182,57 +194,39 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             box-sizing: border-box;
         }
         
-        html, body {
+        html {
             width: %dpx;
             height: %dpx;
             margin: 0;
             padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            %s
+            color: #333333;
+            width: %dpx;
+            height: %dpx;
             overflow: hidden;
         }
         
-        /* 关键修复：确保背景图片完全覆盖整个容器 */
         .cover-container {
             width: 100%%;
             height: 100%%;
             display: flex;
             flex-direction: column;
             %s
-            position: relative;
-            background-size: cover !important;
-            background-position: center center !important;
-            background-repeat: no-repeat !important;
         }
         
-        /* 移除分段背景，使用单一背景覆盖 */
-        .image-section, .title-section {
+        .image-section {
             flex: 1;
             display: flex;
             align-items: center;
             justify-content: center;
+            %s
             position: relative;
             overflow: hidden;
             width: 100%%;
             min-height: 50%%;
-            /* 确保背景完全覆盖，避免白条 */
-            background: inherit;
-        }
-        
-        .title-container {
-            text-align: center;
-            background: rgba(255, 255, 255, 0.9); /* 半透明白色背景确保文字可读 */
-            padding: 20px;
-            border-radius: 8px;
-            backdrop-filter: blur(5px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-        }
-        
-        .title {
-            font-size: 64px;
-            font-weight: bold;
-            color: #333333;
-            line-height: 1.4;
-            margin: 0;
-            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
         }
         
         .cover-image {
@@ -254,6 +248,35 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             font-size: 24px;
             font-weight: bold;
         }
+        
+        .title-section {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            %s
+            padding: 20px;
+            box-sizing: border-box;
+            width: 100%%;
+            min-height: 50%%;
+            /* 确保背景完全覆盖，避免白色间隙 */
+            background-size: cover !important;
+            background-position: center bottom !important;
+        }
+        
+        .title-container {
+            text-align: center;
+        }
+        
+        .title {
+            font-size: 64px;
+            font-weight: bold;
+            color: #333333;
+            line-height: 1.4;
+            margin: 0;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
     </style>
 </head>
 <body>
@@ -270,6 +293,10 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
 </body>
 </html>`, config.Card.Width, config.Card.Height,
 		backgroundStyle,
+		config.Card.Width, config.Card.Height,
+		backgroundStyle,
+		imageSectionBg,
+		titleSectionBg,
 		r.generateImageHTML(coverData.ImageURL),
 		coverData.Title)
 
