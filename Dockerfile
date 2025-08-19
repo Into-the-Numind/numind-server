@@ -105,16 +105,20 @@ ARG ENV=dev
 COPY config_${ENV}.yaml /app/config_${ENV}.yaml
 
 # 预创建图片输出目录，避免运行期权限问题
-RUN mkdir -p /opt/numind/dev/image/upload \
-    && mkdir -p /opt/numind/prod/image/upload \
-    && mkdir -p /opt/numind/qa/image/upload \
-    && mkdir -p /opt/numind/image/upload \
-    && mkdir -p /app/logs \
-    && mkdir -p /app/temp \
-    && chown -R numind:numind /opt/numind \
-    && chown -R numind:numind /app \
-    && chmod -R 777 /opt/numind \
-    && chmod +x /app/numind
+# 确保/opt目录权限正确，然后创建子目录
+RUN chmod 755 /opt && \
+    mkdir -p /opt/numind/dev/image/upload && \
+    mkdir -p /opt/numind/prod/image/upload && \
+    mkdir -p /opt/numind/qa/image/upload && \
+    mkdir -p /opt/numind/image/upload && \
+    mkdir -p /app/logs && \
+    mkdir -p /app/temp && \
+    chown -R numind:numind /opt/numind && \
+    chmod -R 777 /opt/numind
+
+# 设置应用目录权限
+RUN chown -R numind:numind /app && \
+    chmod +x /app/numind
 
 # 切换到非 root 用户
 USER numind
