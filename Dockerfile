@@ -127,6 +127,14 @@ RUN chmod 755 /opt && \
 RUN chown -R numind:numind /app && \
     chmod +x /app/numind
 
+# 确保numind用户可以写入所有必要的目录
+RUN chmod -R 777 /opt/numind && \
+    chmod -R 777 /app/logs && \
+    chmod -R 777 /app/temp && \
+    chmod 777 /opt/numind/dev/image/upload && \
+    chmod 777 /opt/numind/dev/image/upload/card && \
+    chmod 777 /opt/numind/dev/image/upload/book
+
 # 切换到非 root 用户
 USER numind
 
