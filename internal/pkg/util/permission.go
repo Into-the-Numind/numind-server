@@ -18,6 +18,14 @@ func EnsureDirectoryPermissions(dirPath string) error {
 		return fmt.Errorf("failed to set permissions for %s: %v", dirPath, err)
 	}
 
+	// 确保父目录也有正确权限
+	parentDir := filepath.Dir(dirPath)
+	if parentDir != "." && parentDir != "/" {
+		if err := os.Chmod(parentDir, 0777); err != nil {
+			fmt.Printf("⚠️ 警告：无法设置父目录权限 %s: %v\n", parentDir, err)
+		}
+	}
+
 	// 验证目录权限
 	if info, err := os.Stat(dirPath); err != nil {
 		return fmt.Errorf("failed to stat directory %s: %v", dirPath, err)

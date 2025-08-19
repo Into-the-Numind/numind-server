@@ -116,21 +116,18 @@ RUN chmod 755 /opt && \
     mkdir -p /opt/numind/image/upload/card && \
     mkdir -p /opt/numind/image/upload/book && \
     mkdir -p /app/logs && \
-    mkdir -p /app/temp && \
-    chown -R numind:numind /opt/numind && \
+    mkdir -p /app/temp
+
+# 设置所有权和权限 - 确保numind用户有完全控制权
+RUN chown -R numind:numind /opt/numind && \
     chown -R numind:numind /app && \
     chmod -R 777 /opt/numind && \
     chmod -R 777 /app/logs && \
-    chmod -R 777 /app/temp
-
-# 设置应用目录权限
-RUN chown -R numind:numind /app && \
-    chmod +x /app/numind
-
-# 确保numind用户可以写入所有必要的目录
-RUN chmod -R 777 /opt/numind && \
-    chmod -R 777 /app/logs && \
     chmod -R 777 /app/temp && \
+    chmod +x /app/numind && \
+    # 确保父目录也有正确权限
+    chmod 777 /opt/numind/dev && \
+    chmod 777 /opt/numind/dev/image && \
     chmod 777 /opt/numind/dev/image/upload && \
     chmod 777 /opt/numind/dev/image/upload/card && \
     chmod 777 /opt/numind/dev/image/upload/book
