@@ -85,8 +85,8 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 RUN google-chrome --version && echo "✅ Chrome安装成功" \
     && cwebp -version && echo "✅ WebP工具安装成功"
 
-# 创建非 root 用户
-RUN groupadd -r numind && useradd -r -g numind -G audio,video numind
+# 创建非 root 用户 - 确保UID为1001，与CI/CD配置一致
+RUN groupadd -g 1001 numind && useradd -u 1001 -g numind -G audio,video numind
 
 # 创建Chrome数据目录并设置权限
 RUN mkdir -p /home/numind/.config/google-chrome \
@@ -118,19 +118,19 @@ RUN chmod 755 /opt && \
     mkdir -p /app/logs && \
     mkdir -p /app/temp
 
-# 设置所有权和权限 - 确保numind用户有完全控制权
+# 设置所有权和权限 - 与CI/CD配置保持一致
 RUN chown -R numind:numind /opt/numind && \
     chown -R numind:numind /app && \
-    chmod -R 777 /opt/numind && \
-    chmod -R 777 /app/logs && \
-    chmod -R 777 /app/temp && \
+    chmod -R 775 /opt/numind && \
+    chmod -R 775 /app/logs && \
+    chmod -R 775 /app/temp && \
     chmod +x /app/numind && \
     # 确保父目录也有正确权限
-    chmod 777 /opt/numind/dev && \
-    chmod 777 /opt/numind/dev/image && \
-    chmod 777 /opt/numind/dev/image/upload && \
-    chmod 777 /opt/numind/dev/image/upload/card && \
-    chmod 777 /opt/numind/dev/image/upload/book
+    chmod 775 /opt/numind/dev && \
+    chmod 775 /opt/numind/dev/image && \
+    chmod 775 /opt/numind/dev/image/upload && \
+    chmod 775 /opt/numind/dev/image/upload/card && \
+    chmod 775 /opt/numind/dev/image/upload/book
 
 # 切换到非 root 用户
 USER numind

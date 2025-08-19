@@ -9,19 +9,19 @@ import (
 // EnsureDirectoryPermissions 确保目录存在且有正确的权限
 func EnsureDirectoryPermissions(dirPath string) error {
 	// 创建目录（如果不存在）
-	if err := os.MkdirAll(dirPath, 0777); err != nil {
+	if err := os.MkdirAll(dirPath, 0775); err != nil {
 		return fmt.Errorf("failed to create directory %s: %v", dirPath, err)
 	}
 
 	// 设置目录权限
-	if err := os.Chmod(dirPath, 0777); err != nil {
+	if err := os.Chmod(dirPath, 0775); err != nil {
 		return fmt.Errorf("failed to set permissions for %s: %v", dirPath, err)
 	}
 
 	// 确保父目录也有正确权限
 	parentDir := filepath.Dir(dirPath)
 	if parentDir != "." && parentDir != "/" {
-		if err := os.Chmod(parentDir, 0777); err != nil {
+		if err := os.Chmod(parentDir, 0775); err != nil {
 			fmt.Printf("⚠️ 警告：无法设置父目录权限 %s: %v\n", parentDir, err)
 		}
 	}
