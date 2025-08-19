@@ -21,36 +21,76 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -ldflags="-s -w -X main.Version=$(git describe --tags --always --dirty)" \
     -o /app/bin/numind ./cmd/numind
 
-# 运行阶段
-FROM alpine:3.19
+# 运行阶段 - 基于Ubuntu以获得更好的Chrome支持
+FROM ubuntu:22.04
 
-# 安装必要的运行时依赖，包括Chrome for headless rendering和WebP工具
-RUN apk add --no-cache \
-    ca-certificates \
-    tzdata \
-    curl \
-    chromium \
-    nss \
-    freetype \
-    freetype-dev \
-    harfbuzz \
-    ca-certificates \
-    ttf-freefont \
-    fontconfig \
-    font-noto-cjk \
-    libwebp-tools \
-    && rm -rf /var/cache/apk/*
-
-# 设置时区为东八区
+# 设置环境变量避免交互式安装
+ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
+
+# 安装系统依赖和Chrome
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    curl \
+    wget \
+    gnupg \
+    software-properties-common \
+    fonts-noto-cjk \
+    fonts-noto-cjk-extra \
+    fonts-wqy-microhei \
+    fonts-wqy-zenhei \
+    xfonts-wqy \
+    libfontconfig1 \
+    libfreetype6 \
+    libjpeg8 \
+    libpng16-16 \
+    libx11-6 \
+    libxcb1 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    libxi6 \
+    libxrandr2 \
+    libxrender1 \
+    libxss1 \
+    libxtst6 \
+    libnss3 \
+    libcups2 \
+    libdbus-1-3 \
+    libatk1.0-0 \
+    libgtk-3-0 \
+    libasound2 \
+    libxss1 \
+    libdrm2 \
+    libgbm1 \
+    libxkbcommon0 \
+    libatspi2.0-0 \
+    libxshmfence1 \
+    webp \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装Google Chrome
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+
+# 设置时区
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# 验证WebP工具安装
-RUN cwebp -version && echo "✅ WebP工具安装成功"
+# 验证Chrome和WebP工具安装
+RUN google-chrome --version && echo "✅ Chrome安装成功" \
+    && cwebp -version && echo "✅ WebP工具安装成功"
 
 # 创建非 root 用户
-RUN addgroup -g 1001 -S numind && \
-    adduser -u 1001 -S numind -G numind
+RUN groupadd -r numind && useradd -r -g numind -G audio,video numind
+
+# 创建Chrome数据目录并设置权限
+RUN mkdir -p /home/numind/.config/google-chrome \
+    && chown -R numind:numind /home/numind
 
 # 设置工作目录
 WORKDIR /app
@@ -65,18 +105,16 @@ ARG ENV=dev
 COPY config_${ENV}.yaml /app/config_${ENV}.yaml
 
 # 预创建图片输出目录，避免运行期权限问题
-# 确保/opt目录权限正确，然后创建子目录
-RUN chmod 755 /opt && \
-    mkdir -p /opt/numind/dev/image/upload && \
-    mkdir -p /opt/numind/prod/image/upload && \
-    mkdir -p /opt/numind/qa/image/upload && \
-    mkdir -p /opt/numind/image/upload && \
-    chown -R numind:numind /opt/numind && \
-    chmod -R 777 /opt/numind
-
-# 设置应用目录权限
-RUN chown -R numind:numind /app && \
-    chmod +x /app/numind
+RUN mkdir -p /opt/numind/dev/image/upload \
+    && mkdir -p /opt/numind/prod/image/upload \
+    && mkdir -p /opt/numind/qa/image/upload \
+    && mkdir -p /opt/numind/image/upload \
+    && mkdir -p /app/logs \
+    && mkdir -p /app/temp \
+    && chown -R numind:numind /opt/numind \
+    && chown -R numind:numind /app \
+    && chmod -R 777 /opt/numind \
+    && chmod +x /app/numind
 
 # 切换到非 root 用户
 USER numind
@@ -84,15 +122,23 @@ USER numind
 # 暴露端口
 EXPOSE 9091 9092
 
-
-
 # 设置环境变量
 ENV GIN_MODE=release
 ENV PORT=9091
-# Chrome headless环境变量
-ENV CHROME_BIN=/usr/bin/chromium-browser
-ENV CHROME_PATH=/usr/bin/chromium-browser
-ENV CHROMIUM_FLAGS="--headless --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-web-security --disable-features=VizDisplayCompositor"
+
+# Chrome headless环境变量 - 针对分页渲染优化
+ENV CHROME_BIN=/usr/bin/google-chrome
+ENV CHROME_PATH=/usr/bin/google-chrome
+ENV CHROMIUM_FLAGS="--headless --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-web-security --disable-features=VizDisplayCompositor,Translate,BackForwardCache --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --disable-ipc-flooding-protection --max_old_space_size=16384 --memory-pressure-off --disable-background-networking --disable-default-apps --disable-extensions --disable-sync --metrics-recording-only --no-first-run --disable-logging --disable-breakpad --disable-plugins --disable-component-extensions-with-background-pages --disable-client-side-phishing-detection --disable-hang-monitor --disable-prompt-on-repost --disable-domain-reliability --disable-field-trial-config --disable-background-mode --disable-software-rasterizer --disable-canvas-aa --disable-2d-canvas-clip-aa --disable-gl-drawing-for-tests --disable-features=AudioServiceOutOfProcess --disable-blink-features=AutomationControlled"
+
+# 设置内存限制和性能优化
+ENV NODE_OPTIONS="--max-old-space-size=16384"
+ENV GOGC=50
+ENV GOMEMLIMIT=16GiB
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:9091/healthz || exit 1
 
 # 启动应用
 ENTRYPOINT ["/app/numind"]
