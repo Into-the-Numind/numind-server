@@ -47,28 +47,113 @@ func (r *RenderAndMeasureRenderer) RenderBookToImages(book *model.BookM, cards [
 	fmt.Printf("🚀 开始渲染-测量方案渲染书籍: %s\n", book.Title)
 	fmt.Printf("📚 总卡片数: %d\n", len(cards))
 
-	// 步骤1: 生成包含所有内容的"超长"HTML页面
-	htmlContent, err := r.generateSuperLongHTML(book, cards)
-	if err != nil {
-		return nil, fmt.Errorf("生成HTML失败: %v", err)
+	if len(cards) == 0 {
+		return []*RenderedCard{}, nil
 	}
 
-	// 步骤2: 使用无头浏览器渲染并测量
-	pageBreakPoints, err := r.renderAndMeasure(htmlContent)
-	if err != nil {
-		return nil, fmt.Errorf("渲染测量失败: %v", err)
-	}
+	// 关键修复：直接使用已分页的卡片，为每张卡片单独渲染图片
+	// 这样可以利用之前修复的分页逻辑（包括列表分割功能）
+	var renderedCards []*RenderedCard
 
-	fmt.Printf("📏 测量完成，分页点数量: %d\n", len(pageBreakPoints))
+	for i, card := range cards {
+		fmt.Printf("🖼️  渲染页面 %d: 起始索引=%d, 结束索引=%d\n", i+1, i, i+1)
 
-	// 步骤3: 根据分页点进行区域截图
-	renderedCards, err := r.captureImagesByPageBreaks(htmlContent, pageBreakPoints, cards)
-	if err != nil {
-		return nil, fmt.Errorf("区域截图失败: %v", err)
+		// 为单张卡片生成HTML
+		htmlContent, err := r.generateSingleCardHTML(book, card)
+		if err != nil {
+			fmt.Printf("⚠️  生成卡片 %d HTML失败: %v\n", i+1, err)
+			continue
+		}
+
+		// 使用无头浏览器渲染当前卡片
+		imageData, err := r.renderPageWithHeadlessBrowser(htmlContent)
+		if err != nil {
+			fmt.Printf("⚠️  渲染卡片 %d 失败: %v\n", i+1, err)
+			continue
+		}
+
+		// 保存图片
+		imageURL, err := r.saveImage(imageData, card.ID)
+		if err != nil {
+			fmt.Printf("⚠️  保存卡片 %d 图片失败: %v\n", i+1, err)
+			continue
+		}
+
+		// 创建渲染结果
+		renderedCard := &RenderedCard{
+			CardID:    card.ID,
+			ImageURL:  imageURL,
+			Width:     r.config.Card.Width,
+			Height:    r.config.Card.Height,
+			SortOrder: i + 1,
+		}
+
+		renderedCards = append(renderedCards, renderedCard)
+		fmt.Printf("✅ 页面 %d 渲染完成: %s\n", i+1, imageURL)
 	}
 
 	fmt.Printf("✅ 渲染完成，生成 %d 张图片\n", len(renderedCards))
 	return renderedCards, nil
+}
+
+// generateSingleCardHTML 为单张卡片生成HTML
+func (r *RenderAndMeasureRenderer) generateSingleCardHTML(book *model.BookM, card *model.CardM) (string, error) {
+	// 解析卡片数据
+	var elements []RenderAndMeasureElementData
+	if err := json.Unmarshal([]byte(card.ProcessedText), &elements); err != nil {
+		return "", fmt.Errorf("解析卡片 %d 数据失败: %v", card.ID, err)
+	}
+
+	fmt.Printf("🔍 卡片 %d 包含 %d 个元素\n", card.ID, len(elements))
+
+	// 处理和验证元素数据
+	for i, element := range elements {
+		fmt.Printf("🔍 元素 %d: 类型=%s\n", i, element.Type)
+
+		// 特殊处理列表类型
+		if element.Type == "list" {
+			if items, ok := element.Content.([]interface{}); ok {
+				// 转换为字符串数组
+				var stringItems []string
+				for _, item := range items {
+					if str, ok := item.(string); ok {
+						stringItems = append(stringItems, str)
+					}
+				}
+				elements[i].Items = stringItems
+				elements[i].Content = "" // 清空Content，使用Items
+				fmt.Printf("🔍 列表元素包含 %d 项\n", len(stringItems))
+			}
+		}
+	}
+
+	// 构造模板数据
+	data := struct {
+		Book     *model.BookM
+		Elements []RenderAndMeasureElementData
+		Config   *pagination.PaginationConfig
+	}{
+		Book:     book,
+		Elements: elements,
+		Config:   r.config,
+	}
+
+	// 使用单卡片模板生成HTML
+	htmlContent, err := r.generateSingleCardHTMLTemplate(data)
+	if err != nil {
+		return "", fmt.Errorf("生成卡片 %d HTML失败: %v", card.ID, err)
+	}
+
+	// 保存调试用的HTML文件
+	debugFileName := fmt.Sprintf("debug_render_measure_%d.html", time.Now().Unix())
+	debugPath := fmt.Sprintf("/Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/cmd/numind/%s", debugFileName)
+	if err := os.WriteFile(debugPath, []byte(htmlContent), 0644); err != nil {
+		fmt.Printf("⚠️ 保存调试HTML文件失败: %v\n", err)
+	} else {
+		fmt.Printf("🔍 HTML文件绝对路径=%s\n", debugPath)
+	}
+
+	return htmlContent, nil
 }
 
 // generateSuperLongHTML 生成包含所有内容的"超长"HTML页面
@@ -664,9 +749,9 @@ type RenderAndMeasureBookData struct {
 }
 
 type RenderAndMeasureElementData struct {
-	Type    string   `json:"type"`
-	Content string   `json:"content"`
-	Items   []string `json:"items,omitempty"`
+	Type    string      `json:"type"`
+	Content interface{} `json:"content"`
+	Items   []string    `json:"items,omitempty"`
 }
 
 // generateSuperLongHTMLTemplate 生成超长HTML模板
@@ -921,6 +1006,153 @@ func (r *RenderAndMeasureRenderer) generateSuperLongHTMLTemplate(data SuperLongH
 	var buf strings.Builder
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("执行模板失败: %v", err)
+	}
+
+	return buf.String(), nil
+}
+
+// generateSingleCardHTMLTemplate 生成单卡片HTML模板
+func (r *RenderAndMeasureRenderer) generateSingleCardHTMLTemplate(data interface{}) (string, error) {
+	// 单卡片模板（基于原有模板简化）
+	const htmlTemplate = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Book.Title}}</title>
+    <style>
+        * { 
+            margin: 0; 
+            padding: 0; 
+            box-sizing: border-box; 
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Source Han Sans CN';
+            background: #ffffff;
+            color: #333333;
+            line-height: 1.6;
+            width: 1080px;
+            height: 1440px;
+            margin: 0;
+            padding: 60px 50px;
+            overflow: hidden;
+        }
+        
+        .content-element {
+            margin-bottom: 0;
+            page-break-inside: avoid;
+        }
+        
+        .element-title {
+            font-size: 64px;
+            color: #333333;
+            line-height: 1.4;
+            text-align: justify;
+            margin: 0 0 30px 0;
+            font-weight: bold;
+        }
+        
+        .element-subtitle {
+            font-size: 48px;
+            color: #666666;
+            line-height: 1.5;
+            text-align: justify;
+            margin: 0 0 25px 0;
+            font-weight: normal;
+        }
+        
+        .element-body {
+            font-size: 36px;
+            color: #333333;
+            line-height: 1.6;
+            text-align: justify;
+            margin: 0 0 30px 0;
+        }
+        
+        .element-quote {
+            font-size: 36px;
+            color: #1E90FF;
+            line-height: 1.5;
+            text-align: justify;
+            margin: 0 0 30px 0;
+            font-style: italic;
+            padding: 20px;
+            background: linear-gradient(to right, #EAF2FF, #FAFCFF);
+            border-left: 4px solid #1E90FF;
+            border-radius: 0 8px 8px 0;
+        }
+        
+        .element-list {
+            font-size: 36px;
+            color: #333333;
+            line-height: 1.6;
+            text-align: justify;
+            margin: 0 0 30px 0;
+            padding-left: 40px;
+            list-style: none;
+        }
+        
+        .list-item { 
+            margin-bottom: 8px; 
+            position: relative; 
+        }
+        
+        .list-item:before {
+            content: "•";
+            position: absolute;
+            left: -20px;
+            color: #333333;
+        }
+        
+        .list-item:last-child { 
+            margin-bottom: 0; 
+        }
+    </style>
+</head>
+<body>
+    {{range .Elements}}
+        {{if eq .Type "title"}}
+            <div class="content-element">
+                <h2 class="element-title">{{.Content}}</h2>
+            </div>
+        {{else if eq .Type "subtitle"}}
+            <div class="content-element">
+                <h3 class="element-subtitle">{{.Content}}</h3>
+            </div>
+        {{else if eq .Type "body"}}
+            <div class="content-element">
+                <p class="element-body">{{.Content}}</p>
+            </div>
+        {{else if eq .Type "list"}}
+            <div class="content-element">
+                <ul class="element-list">
+                    {{range .Items}}
+                        <li class="list-item">{{.}}</li>
+                    {{end}}
+                </ul>
+            </div>
+        {{else if eq .Type "quote"}}
+            <div class="content-element">
+                <blockquote class="element-quote">{{.Content}}</blockquote>
+            </div>
+        {{else}}
+            <div class="content-element">
+                <p class="element-body">{{.Content}}</p>
+            </div>
+        {{end}}
+    {{end}}
+</body>
+</html>`
+
+	tmpl, err := template.New("singleCard").Parse(htmlTemplate)
+	if err != nil {
+		return "", fmt.Errorf("解析单卡片模板失败: %v", err)
+	}
+
+	var buf strings.Builder
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("执行单卡片模板失败: %v", err)
 	}
 
 	return buf.String(), nil

@@ -13,6 +13,8 @@ type RendererConfig struct {
 	EnableChromeHeadless bool
 	// 是否启用传统渲染器作为备用
 	EnableTraditionalRenderer bool
+	// 是否启用增强版渲染器（新实现）
+	EnableEnhancedRenderer bool
 	// Chrome调试端口
 	ChromeDebugPort int
 	// 渲染超时时间（秒）
@@ -22,11 +24,12 @@ type RendererConfig struct {
 // GetRendererConfig 获取渲染器配置
 func GetRendererConfig() *RendererConfig {
 	config := &RendererConfig{
-		EnableRenderAndMeasure:   true,  // 默认启用渲染-测量方案
-		EnableChromeHeadless:     true,  // 默认启用Chrome无头浏览器
-		EnableTraditionalRenderer: true,  // 默认启用传统渲染器作为备用
-		ChromeDebugPort:          9222,  // 默认Chrome调试端口
-		RenderTimeout:            300,   // 默认5分钟超时
+		EnableRenderAndMeasure:    true, // 默认启用渲染-测量方案
+		EnableChromeHeadless:      true, // 默认启用Chrome无头浏览器
+		EnableTraditionalRenderer: true, // 默认启用传统渲染器作为备用
+		EnableEnhancedRenderer:    true, // 默认启用增强版渲染器
+		ChromeDebugPort:           9222, // 默认Chrome调试端口
+		RenderTimeout:             300,  // 默认5分钟超时
 	}
 
 	// 从环境变量读取配置
@@ -45,6 +48,12 @@ func GetRendererConfig() *RendererConfig {
 	if env := os.Getenv("ENABLE_TRADITIONAL_RENDERER"); env != "" {
 		if enabled, err := strconv.ParseBool(env); err == nil {
 			config.EnableTraditionalRenderer = enabled
+		}
+	}
+
+	if env := os.Getenv("ENABLE_ENHANCED_RENDERER"); env != "" {
+		if enabled, err := strconv.ParseBool(env); err == nil {
+			config.EnableEnhancedRenderer = enabled
 		}
 	}
 
@@ -76,4 +85,11 @@ func IsChromeHeadlessEnabled() bool {
 // IsTraditionalRendererEnabled 检查是否启用传统渲染器
 func IsTraditionalRendererEnabled() bool {
 	return GetRendererConfig().EnableTraditionalRenderer
+}
+
+// IsEnhancedRendererEnabled 检查是否启用增强版渲染器
+func IsEnhancedRendererEnabled() bool {
+	// 暂时禁用增强版渲染器，优先使用修复后的传统渲染器
+	// return GetRendererConfig().EnableEnhancedRenderer
+	return false
 }

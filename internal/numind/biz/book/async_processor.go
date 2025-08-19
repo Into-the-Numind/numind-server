@@ -168,23 +168,26 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		{"role": "user", "content": prompt},
 	}
 
-	// 首先尝试调用volc
-	volcResult, err := p.biz.Volc().VolcTextStream(ctx, messages, 1024, 0.5)
-	if err != nil {
-		log.C(ctx).Warnw("VolcTextStream failed, falling back to Qianwen", "book_id", bookID, "error", err.Error())
+	// 使用改进的API调用流程（增强版错误处理和重试）
+	log.C(ctx).Infow("开始改进的API调用流程", "book_id", bookID)
 
-		// Fallback到qianwen
-		qianwenResult, err := p.biz.Ali().QianwenTextStream(messages, 1024, 0.5)
-		if err != nil {
-			log.C(ctx).Errorw("Both Volc and Qianwen failed", "book_id", bookID, "volc_error", err.Error(), "qianwen_error", err.Error())
-			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "AI text processing failed: both volc and qianwen failed")
+	// 尝试火山引擎API（最多重试5次，指数退避）
+	volcResult, err := p.callVolcWithRetry(ctx, messages, 1024, 0.5, bookID)
+	if err != nil {
+		log.C(ctx).Warnw("火山引擎API重试后失败，尝试阿里千问降级", "book_id", bookID, "error", err.Error())
+
+		// 降级到阿里千问API（最多重试3次）
+		qianwenResult, qianwenErr := p.callQianwenWithRetry(ctx, messages, 1024, 0.5, bookID)
+		if qianwenErr != nil {
+			log.C(ctx).Errorw("所有API调用都失败", "book_id", bookID, "volc_error", err.Error(), "qianwen_error", qianwenErr.Error())
+			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, fmt.Sprintf("AI text processing failed: volc error: %v, qianwen error: %v", err, qianwenErr))
 			return
 		}
 
-		log.C(ctx).Infow("QianwenTextStream fallback result", "book_id", bookID, "result", qianwenResult)
+		log.C(ctx).Infow("阿里千问API降级成功", "book_id", bookID, "result_length", len(qianwenResult))
 		volcResult = qianwenResult
 	} else {
-		log.C(ctx).Infow("VolcTextStream result", "book_id", bookID, "result", volcResult)
+		log.C(ctx).Infow("火山引擎API调用成功", "book_id", bookID, "result_length", len(volcResult))
 	}
 
 	// 提取JSON内容（处理可能的Markdown代码块格式）
@@ -288,8 +291,24 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	if volcResponse.StructuredTextArray != nil && len(volcResponse.StructuredTextArray) > 0 {
 		log.C(ctx).Infow("使用AI返回的结构化内容", "book_id", bookID, "element_count", len(volcResponse.StructuredTextArray))
 
-		for _, item := range volcResponse.StructuredTextArray {
+		// 🔍 调试：打印原始结构化数据
+		for i, item := range volcResponse.StructuredTextArray {
+			log.C(ctx).Infow("🔍 调试：原始元素", "book_id", bookID, "index", i, "type", item.Type, "content_type", fmt.Sprintf("%T", item.Content))
+			if item.Type == "list" {
+				if listContent, ok := item.Content.([]interface{}); ok {
+					log.C(ctx).Infow("🔍 调试：list原始内容", "book_id", bookID, "index", i, "list_length", len(listContent))
+					for j, listItem := range listContent {
+						log.C(ctx).Infow("🔍 调试：list项目", "book_id", bookID, "element_index", i, "item_index", j, "item_content", fmt.Sprintf("%v", listItem))
+					}
+				}
+			}
+		}
+
+		for i, item := range volcResponse.StructuredTextArray {
+			log.C(ctx).Infow("🔍 调试：处理元素", "book_id", bookID, "index", i, "type", item.Type)
+
 			if item.Type == "title" {
+				log.C(ctx).Infow("🔍 调试：跳过title类型", "book_id", bookID, "index", i)
 				continue // 跳过title类型
 			}
 
@@ -313,23 +332,32 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 			switch v := item.Content.(type) {
 			case string:
 				content = v
+				log.C(ctx).Infow("🔍 调试：字符串内容", "book_id", bookID, "index", i, "content_length", len(v))
 			case []interface{}:
 				// 如果是列表，保持为字符串数组格式
 				var listItems []string
-				for _, listItem := range v {
+				log.C(ctx).Infow("🔍 调试：列表内容开始处理", "book_id", bookID, "index", i, "original_length", len(v))
+				for j, listItem := range v {
+					log.C(ctx).Infow("🔍 调试：处理列表项", "book_id", bookID, "element_index", i, "item_index", j, "item_value", fmt.Sprintf("%v", listItem))
 					if str, ok := listItem.(string); ok {
 						listItems = append(listItems, str)
+						log.C(ctx).Infow("🔍 调试：列表项转换成功", "book_id", bookID, "element_index", i, "item_index", j, "converted_content", str)
+					} else {
+						log.C(ctx).Warnw("🔍 调试：列表项转换失败", "book_id", bookID, "element_index", i, "item_index", j, "item_type", fmt.Sprintf("%T", listItem))
 					}
 				}
 				content = listItems
+				log.C(ctx).Infow("🔍 调试：列表内容处理完成", "book_id", bookID, "index", i, "final_length", len(listItems))
 			default:
 				content = fmt.Sprintf("%v", v)
+				log.C(ctx).Infow("🔍 调试：默认内容处理", "book_id", bookID, "index", i, "content_type", fmt.Sprintf("%T", v))
 			}
 
 			elements = append(elements, pagination.Element{
 				Type:    elementType,
 				Content: content,
 			})
+			log.C(ctx).Infow("🔍 调试：元素添加到列表", "book_id", bookID, "index", i, "total_elements", len(elements))
 		}
 	} else {
 		// 如果没有结构化内容，将原始文本按段落分割并转换为body元素
@@ -363,11 +391,56 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		return
 	}
 
-	// 根据配置创建渲染器
+	// 首先获取模板背景信息（增强版渲染器也需要）
+	var coverBackground string
+	if templateID != "" {
+		if tid, err := strconv.ParseUint(templateID, 10, 64); err == nil {
+			if tmpl, err := p.biz.Templates().GetByID(ctx, uint(tid)); err == nil && tmpl != nil {
+				// 这里假设 template.File 字段保存的是背景图的绝对路径
+				coverBackground = tmpl.File
+				log.C(ctx).Infow("获取到模板背景图", "book_id", bookID, "template_id", templateID, "background_path", coverBackground)
+			}
+		}
+	}
+
+	// 根据配置创建渲染器，优先级：增强版 > 渲染-测量 > 传统渲染器
 	var renderer card.RendererInterface
 	var useRenderAndMeasure bool
+	var useEnhancedRenderer bool
 
-	// 检查配置是否启用渲染-测量方案
+	// 首先检查是否启用增强版渲染器（新实现）
+	if card.IsEnhancedRendererEnabled() {
+		log.C(ctx).Infow("尝试使用增强版渲染器", "book_id", bookID)
+
+		// 创建增强版渲染器集成器
+		enhancedIntegration := NewEnhancedRendererIntegration(p.biz, paginationBiz.GetConfig())
+
+		// 使用增强版渲染器进行整体处理（包含封面创建）
+		if err := enhancedIntegration.ProcessBookWithEnhancedRendering(ctx, book, userID, elements, imageUrl); err != nil {
+			log.C(ctx).Errorw("增强版渲染器处理失败，降级到传统方案", "book_id", bookID, "error", err.Error())
+			useEnhancedRenderer = false
+		} else {
+			log.C(ctx).Infow("增强版渲染器处理完成", "book_id", bookID)
+			useEnhancedRenderer = true
+			// 创建封面卡片（增强版渲染器完成后创建）
+			_, err := enhancedIntegration.CreateCoverCardWithEnhanced(ctx, book, userID, coverBackground)
+			if err != nil {
+				log.C(ctx).Errorw("增强版封面卡片创建失败", "book_id", bookID, "error", err.Error())
+			} else {
+				log.C(ctx).Infow("增强版封面卡片创建成功", "book_id", bookID)
+			}
+		}
+	}
+
+	// 如果增强版渲染器处理成功，直接跳过后续传统渲染流程
+	if useEnhancedRenderer {
+		log.C(ctx).Infow("增强版渲染完成，跳过传统渲染流程", "book_id", bookID)
+		// 直接进行最后的状态更新并返回
+		p.finalizeBookCreation(ctx, bookID, startTime)
+		return
+	}
+
+	// 检查配置是否启用渲染-测量方案（降级方案）
 	if card.IsRenderAndMeasureEnabled() {
 		// 优先使用渲染-测量方案
 		renderAndMeasureRenderer := card.NewRenderAndMeasureRenderer(paginationBiz.GetConfig())
@@ -404,18 +477,8 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		// 继续处理，使用默认背景
 	}
 
-	// 首先创建封面卡片 (sort_order = 0)
-	// 背景图：如果传入了 template_id，则尝试从模板中读取背景图绝对路径
-	var coverBackground string
-	if templateID != "" {
-		if tid, err := strconv.ParseUint(templateID, 10, 64); err == nil {
-			if tmpl, err := p.biz.Templates().GetByID(ctx, uint(tid)); err == nil && tmpl != nil {
-				// 这里假设 template.File 字段保存的是背景图的绝对路径
-				coverBackground = tmpl.File
-				log.C(ctx).Infow("获取到模板背景图", "book_id", bookID, "template_id", templateID, "background_path", coverBackground)
-			}
-		}
-	}
+	// 创建封面卡片 (sort_order = 0)
+	// 背景图已在前面获取
 
 	// 总是创建封面卡片，即使没有图片或背景
 	// 创建封面卡片记录
@@ -609,13 +672,8 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 
 	// 注意：用户统计已在创建book时更新，这里不需要再次更新
 
-	// 更新book状态为成功
-	if err := p.updateBookStatus(ctx, bookID, model.BookStatusSuccess, ""); err != nil {
-		log.C(ctx).Errorw("Failed to update book status to success", "book_id", bookID, "error", err.Error())
-		return
-	}
-
-	log.C(ctx).Infow("Async book creation completed", "book_id", bookID, "duration", time.Since(startTime).Seconds())
+	// 最终完成book创建
+	p.finalizeBookCreation(ctx, bookID, startTime)
 }
 
 // updateBookStatus 更新book状态
@@ -1601,6 +1659,93 @@ func downloadAndSaveImage(remoteURL string, bookID uint) (string, error) {
 	}
 
 	return localFilePath, nil
+}
+
+// finalizeBookCreation 完成book创建的最终步骤
+func (p *AsyncBookProcessor) finalizeBookCreation(ctx context.Context, bookID uint, startTime time.Time) {
+	// 更新book状态为成功
+	if err := p.updateBookStatus(ctx, bookID, model.BookStatusSuccess, ""); err != nil {
+		log.C(ctx).Errorw("Failed to update book status to success", "book_id", bookID, "error", err.Error())
+		return
+	}
+
+	log.C(ctx).Infow("Async book creation completed", "book_id", bookID, "duration", time.Since(startTime).Seconds())
+}
+
+// callVolcWithRetry 带重试的火山引擎API调用
+func (p *AsyncBookProcessor) callVolcWithRetry(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, bookID uint) (string, error) {
+	maxRetries := 5
+	baseDelay := 2 * time.Second
+	maxDelay := 30 * time.Second
+
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		log.C(ctx).Infow("🔄 尝试火山引擎API", "book_id", bookID, "attempt", attempt, "max_attempts", maxRetries)
+
+		result, err := p.biz.Volc().VolcTextStream(ctx, messages, maxTokens, temperature)
+		if err == nil {
+			log.C(ctx).Infow("✅ 火山引擎API成功", "book_id", bookID, "attempt", attempt)
+			return result, nil
+		}
+
+		lastErr = err
+		log.C(ctx).Warnw("⚠️ 火山引擎API失败", "book_id", bookID, "attempt", attempt, "error", err.Error())
+
+		// 如果不是最后一次尝试，等待后重试
+		if attempt < maxRetries {
+			delay := time.Duration(attempt-1) * baseDelay
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+
+			log.C(ctx).Infow("等待重试", "book_id", bookID, "delay", delay, "next_attempt", attempt+1)
+
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(delay):
+				// 继续重试
+			}
+		}
+	}
+
+	return "", fmt.Errorf("火山引擎API重试%d次后仍失败: %v", maxRetries, lastErr)
+}
+
+// callQianwenWithRetry 带重试的阿里千问API调用
+func (p *AsyncBookProcessor) callQianwenWithRetry(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, bookID uint) (string, error) {
+	maxRetries := 3
+	baseDelay := 2 * time.Second
+
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		log.C(ctx).Infow("🔄 尝试阿里千问API", "book_id", bookID, "attempt", attempt, "max_attempts", maxRetries)
+
+		result, err := p.biz.Ali().QianwenTextStream(messages, maxTokens, temperature)
+		if err == nil {
+			log.C(ctx).Infow("✅ 阿里千问API成功", "book_id", bookID, "attempt", attempt)
+			return result, nil
+		}
+
+		lastErr = err
+		log.C(ctx).Warnw("⚠️ 阿里千问API失败", "book_id", bookID, "attempt", attempt, "error", err.Error())
+
+		// 如果不是最后一次尝试，等待后重试
+		if attempt < maxRetries {
+			delay := time.Duration(attempt) * baseDelay
+
+			log.C(ctx).Infow("等待重试", "book_id", bookID, "delay", delay, "next_attempt", attempt+1)
+
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(delay):
+				// 继续重试
+			}
+		}
+	}
+
+	return "", fmt.Errorf("阿里千问API重试%d次后仍失败: %v", maxRetries, lastErr)
 }
 
 // min 返回两个整数中的较小值

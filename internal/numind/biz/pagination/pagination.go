@@ -170,15 +170,20 @@ func (p *PaginationEngine) calculateElementHeight(element Element) int {
 	case []string:
 		// 列表类型，每个项目单独计算高度
 		totalHeight := 0
+		fmt.Printf("🔍 调试：计算列表元素高度，项目数: %d\n", len(v))
 		for i, item := range v {
 			itemHeight := p.calculateTextHeight(item, style)
 			totalHeight += itemHeight
+			fmt.Printf("🔍 调试：列表项 %d 高度: %d，累计: %d，内容: %s\n", i, itemHeight, totalHeight, item[:min(len(item), 50)]+"...")
 			// 列表项之间添加间距（除了最后一项）
 			if i < len(v)-1 {
 				totalHeight += 8 // 列表项间距
+				fmt.Printf("🔍 调试：添加列表项间距，新累计: %d\n", totalHeight)
 			}
 		}
-		return totalHeight + style.MarginTop + style.MarginBottom
+		finalHeight := totalHeight + style.MarginTop + style.MarginBottom
+		fmt.Printf("🔍 调试：列表元素最终高度: %d (内容: %d + 边距: %d)\n", finalHeight, totalHeight, style.MarginTop+style.MarginBottom)
+		return finalHeight
 	default:
 		content = fmt.Sprintf("%v", v)
 	}
@@ -223,60 +228,103 @@ func (p *PaginationEngine) PaginateElements(elements []Element) (*PaginatedConte
 	currentHeight := 0
 
 	for i, element := range elements {
+		fmt.Printf("🔍 调试：开始处理元素 %d，类型: %s\n", i+1, element.Type)
+
+		// 如果是列表类型，打印列表内容
+		if element.Type == ElementTypeList {
+			if items, ok := element.Content.([]string); ok {
+				fmt.Printf("🔍 调试：列表元素包含 %d 项\n", len(items))
+				for j, item := range items {
+					fmt.Printf("🔍 调试：列表项 %d: %s\n", j, item[:min(len(item), 50)]+"...")
+				}
+			}
+		}
+
 		// 计算元素高度
 		elementHeight := p.calculateElementHeight(element)
-		
-		fmt.Printf("元素 %d [%s]: 高度=%d, 当前总高度=%d, 可用高度=%d\n", 
+
+		fmt.Printf("🔍 调试：元素 %d [%s]: 高度=%d, 当前总高度=%d, 可用高度=%d\n",
 			i+1, element.Type, elementHeight, currentHeight, availableHeight)
 
-		// 检查是否需要创建新卡片
-		if currentHeight+elementHeight > availableHeight && len(currentCardElements) > 0 {
-			// 创建新卡片
-			cards = append(cards, Card{Elements: currentCardElements})
-			fmt.Printf("创建新卡片，元素数: %d, 总高度: %d\n", len(currentCardElements), currentHeight)
-			
-			// 重置当前卡片
-			currentCardElements = []Element{element}
-			currentHeight = elementHeight
+		// 检查是否需要创建新卡片或分割元素
+		if currentHeight+elementHeight > availableHeight {
+			if len(currentCardElements) > 0 {
+				// 当前卡片有元素，先保存当前卡片
+				cards = append(cards, Card{Elements: currentCardElements})
+				fmt.Printf("🔍 调试：创建新卡片 %d，元素数: %d, 总高度: %d\n", len(cards), len(currentCardElements), currentHeight)
+
+				// 重置当前卡片
+				currentCardElements = []Element{}
+				currentHeight = 0
+				fmt.Printf("🔍 调试：重置当前卡片\n")
+			}
+
+			// 检查当前元素是否需要分割
+			if elementHeight > availableHeight {
+				fmt.Printf("🔍 调试：元素 %d 高度 %d 超出可用高度 %d，尝试分割\n", i+1, elementHeight, availableHeight)
+				splitElements := p.splitLongElement(element, availableHeight)
+				if len(splitElements) > 0 {
+					fmt.Printf("🔍 调试：元素分割成功，产生 %d 个子元素\n", len(splitElements))
+					// 分割成功，将分割后的元素按顺序处理
+					for j, splitElement := range splitElements {
+						splitHeight := p.calculateElementHeight(splitElement)
+						fmt.Printf("🔍 调试：处理分割元素 %d/%d，高度: %d\n", j+1, len(splitElements), splitHeight)
+
+						if currentHeight+splitHeight > availableHeight && len(currentCardElements) > 0 {
+							// 需要新卡片
+							cards = append(cards, Card{Elements: currentCardElements})
+							fmt.Printf("🔍 调试：分割元素创建新卡片 %d\n", len(cards))
+							currentCardElements = []Element{splitElement}
+							currentHeight = splitHeight
+						} else {
+							// 添加到当前卡片
+							currentCardElements = append(currentCardElements, splitElement)
+							currentHeight += splitHeight
+						}
+					}
+				} else {
+					// 分割失败，强制添加
+					fmt.Printf("🔍 调试：元素分割失败，强制添加到新卡片\n")
+					currentCardElements = []Element{element}
+					currentHeight = elementHeight
+				}
+			} else {
+				// 元素不需要分割，直接添加到新卡片
+				fmt.Printf("🔍 调试：添加元素 %d 到新卡片\n", i+1)
+				currentCardElements = []Element{element}
+				currentHeight = elementHeight
+			}
 		} else {
 			// 添加到当前卡片
 			currentCardElements = append(currentCardElements, element)
 			currentHeight += elementHeight
+			fmt.Printf("🔍 调试：添加元素 %d 到当前卡片，当前卡片元素数: %d，新总高度: %d\n", i+1, len(currentCardElements), currentHeight)
 		}
 	}
 
 	// 处理最后一个卡片
+	fmt.Printf("🔍 调试：开始处理最后一个卡片，剩余元素数: %d，当前高度: %d\n", len(currentCardElements), currentHeight)
+
 	if len(currentCardElements) > 0 {
-		// 检查最后一个卡片是否超出边界
-		if currentHeight > availableHeight {
-			// 如果超出边界，尝试分割最后一个元素
-			lastElement := currentCardElements[len(currentCardElements)-1]
-			remainingElements := currentCardElements[:len(currentCardElements)-1]
-			
-			if len(remainingElements) > 0 {
-				// 先添加前面的元素
-				cards = append(cards, Card{Elements: remainingElements})
-				fmt.Printf("创建卡片（分割前），元素数: %d\n", len(remainingElements))
+		// 打印最后一个卡片中的所有元素
+		fmt.Printf("🔍 调试：最后一个卡片包含的元素:\n")
+		for j, elem := range currentCardElements {
+			fmt.Printf("🔍 调试：  元素 %d: 类型=%s\n", j, elem.Type)
+			if elem.Type == ElementTypeList {
+				if items, ok := elem.Content.([]string); ok {
+					fmt.Printf("🔍 调试：    列表包含 %d 项\n", len(items))
+					for k, item := range items {
+						fmt.Printf("🔍 调试：      项 %d: %s\n", k, item[:min(len(item), 30)]+"...")
+					}
+				}
 			}
-			
-			// 尝试分割最后一个元素
-			splitElements := p.splitLongElement(lastElement, availableHeight)
-			if len(splitElements) > 0 {
-				// 分割成功，创建新卡片
-				cards = append(cards, Card{Elements: splitElements})
-				fmt.Printf("创建卡片（分割后），元素数: %d\n", len(splitElements))
-			} else {
-				// 分割失败，强制创建新卡片
-				fmt.Printf("▲ 无法分割元素%d,强制添加到新卡片\n", len(elements))
-				cards = append(cards, Card{Elements: []Element{lastElement}})
-			}
-		} else {
-			// 正常添加最后一个卡片
-			cards = append(cards, Card{Elements: currentCardElements})
 		}
-		
-		fmt.Printf("最后一页，元素数: %d, 总高度: %d, 边距: 上%d下%d\n", 
-			len(currentCardElements), currentHeight, p.config.Card.Padding.Top, p.config.Card.Padding.Bottom)
+
+		// 直接添加最后一个卡片（分页逻辑已在循环中处理）
+		cards = append(cards, Card{Elements: currentCardElements})
+		fmt.Printf("🔍 调试：最后一个卡片已添加，元素数: %d, 总高度: %d\n", len(currentCardElements), currentHeight)
+	} else {
+		fmt.Printf("🔍 调试：没有剩余元素需要处理\n")
 	}
 
 	fmt.Printf("分页完成 - 总卡片数: %d\n", len(cards))
@@ -285,9 +333,14 @@ func (p *PaginationEngine) PaginateElements(elements []Element) (*PaginatedConte
 
 // splitLongElement 分割长文本元素
 func (p *PaginationEngine) splitLongElement(element Element, maxHeight int) []Element {
+	// 处理列表类型
+	if element.Type == ElementTypeList {
+		return p.splitListElement(element, maxHeight)
+	}
+
 	// 只处理文本类型的元素
-	if element.Type != ElementTypeBody && element.Type != ElementTypeTitle && 
-	   element.Type != ElementTypeSubtitle && element.Type != ElementTypeQuote {
+	if element.Type != ElementTypeBody && element.Type != ElementTypeTitle &&
+		element.Type != ElementTypeSubtitle && element.Type != ElementTypeQuote {
 		return nil // 无法分割
 	}
 
@@ -302,7 +355,7 @@ func (p *PaginationEngine) splitLongElement(element Element, maxHeight int) []El
 		style = StyleConfig{
 			FontSize:     36,
 			LineHeight:   58,
-			MarginTop:    30,        // 修复：使用正确的边距
+			MarginTop:    30, // 修复：使用正确的边距
 			MarginBottom: 30,
 		}
 	}
@@ -314,22 +367,22 @@ func (p *PaginationEngine) splitLongElement(element Element, maxHeight int) []El
 
 	// 计算每行的高度
 	lineHeight := int(float64(style.FontSize) * 1.6)
-	
+
 	// 计算最大行数，考虑边距
 	maxLines := (maxHeight - style.MarginTop - style.MarginBottom) / lineHeight
 	if maxLines <= 0 {
-		fmt.Printf("高度太小，无法分割: maxHeight=%d, margins=%d, lineHeight=%d, maxLines=%d\n", 
+		fmt.Printf("高度太小，无法分割: maxHeight=%d, margins=%d, lineHeight=%d, maxLines=%d\n",
 			maxHeight, style.MarginTop+style.MarginBottom, lineHeight, maxLines)
 		return nil
 	}
 
-	fmt.Printf("分割参数: 内容长度=%d, 每行字符数=%d, 每行高度=%d, 最大行数=%d\n", 
+	fmt.Printf("分割参数: 内容长度=%d, 每行字符数=%d, 每行高度=%d, 最大行数=%d\n",
 		len(content), charsPerLine, lineHeight, maxLines)
 
 	// 分割文本
 	lines := p.splitTextIntoLines(content, charsPerLine)
 	fmt.Printf("分割后行数: %d\n", len(lines))
-	
+
 	if len(lines) <= maxLines {
 		fmt.Printf("不需要分割，行数 %d <= 最大行数 %d\n", len(lines), maxLines)
 		return nil
@@ -349,7 +402,7 @@ func (p *PaginationEngine) splitLongElement(element Element, maxHeight int) []El
 					Type:    element.Type,
 					Content: strings.TrimSpace(currentContent),
 				})
-				fmt.Printf("创建分割元素 %d: 行数=%d, 内容长度=%d\n", 
+				fmt.Printf("创建分割元素 %d: 行数=%d, 内容长度=%d\n",
 					partIndex, currentLines, len(currentContent))
 				partIndex++
 			}
@@ -363,14 +416,14 @@ func (p *PaginationEngine) splitLongElement(element Element, maxHeight int) []El
 			}
 			currentLines++
 		}
-		
+
 		// 最后一行特殊处理
 		if i == len(lines)-1 && currentContent != "" {
 			splitElements = append(splitElements, Element{
 				Type:    element.Type,
 				Content: strings.TrimSpace(currentContent),
 			})
-			fmt.Printf("创建最后分割元素 %d: 行数=%d, 内容长度=%d\n", 
+			fmt.Printf("创建最后分割元素 %d: 行数=%d, 内容长度=%d\n",
 				partIndex, currentLines, len(currentContent))
 		}
 	}
@@ -386,6 +439,14 @@ func (p *PaginationEngine) calculateTotalHeight(elements []Element) int {
 		totalHeight += p.calculateElementHeight(element)
 	}
 	return totalHeight
+}
+
+// min 返回两个整数中的较小值
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // GetDefaultConfig 获取默认配置
@@ -408,56 +469,56 @@ func GetDefaultConfig() *PaginationConfig {
 		},
 		Styles: map[ElementType]StyleConfig{
 			ElementTypeTitle: {
-				FontSize:     64, // 标题: 64px（最大）
-				LineHeight:   90, // 1.4倍行高
+				FontSize:     64,        // 标题: 64px（最大）
+				LineHeight:   90,        // 1.4倍行高
 				MarginTop:    30,        // 标题上间距: 30px（统一标准）
 				MarginBottom: 30,        // 标题下方间距: 30px（统一标准）
 				Color:        "#333333", // 主标题: #333333（深灰）
 				Align:        "justify", // 两端对齐
 			},
 			ElementTypeSubtitle: {
-				FontSize:     48, // 副标题: 48px（中等）
-				LineHeight:   72, // 1.5倍行高
+				FontSize:     48,        // 副标题: 48px（中等）
+				LineHeight:   72,        // 1.5倍行高
 				MarginTop:    30,        // 副标题上间距: 30px（统一标准）
 				MarginBottom: 25,        // 副标题下方: 25px（标准下间距）
 				Color:        "#666666", // 副标题: #666666（中灰）
 				Align:        "justify", // 两端对齐
 			},
 			ElementTypeBody: {
-				FontSize:     36, // 正文: 36px（标准）
-				LineHeight:   58, // 1.6倍行高（标准行高）
+				FontSize:     36,        // 正文: 36px（标准）
+				LineHeight:   58,        // 1.6倍行高（标准行高）
 				MarginTop:    30,        // 正文上间距: 30px（统一标准）
 				MarginBottom: 30,        // 正文下方间距: 30px（统一标准）
 				Color:        "#333333", // 正文: #333333（深灰）
 				Align:        "justify", // 两端对齐
 			},
 			ElementTypeList: {
-				FontSize:     36, // 列表: 36px（标准）
-				LineHeight:   58, // 1.6倍行高（标准行高）
+				FontSize:     36,        // 列表: 36px（标准）
+				LineHeight:   58,        // 1.6倍行高（标准行高）
 				MarginTop:    30,        // 列表上间距: 30px（统一标准）
 				MarginBottom: 30,        // 列表下方间距: 30px（统一标准）
 				Color:        "#333333", // 列表: #333333（深灰）
 				Align:        "justify", // 两端对齐
 			},
 			ElementTypeQuote: {
-				FontSize:     36, // 引用: 36px（强调）
-				LineHeight:   54, // 1.5倍行高（紧凑行高）
+				FontSize:     36,        // 引用: 36px（强调）
+				LineHeight:   54,        // 1.5倍行高（紧凑行高）
 				MarginTop:    30,        // 引用上间距: 30px（统一标准）
 				MarginBottom: 30,        // 引用下方间距: 30px（统一标准）
 				Color:        "#1E90FF", // 引用: #1E90FF（蓝色）
 				Align:        "justify", // 两端对齐
 			},
 			ElementTypeTag: {
-				FontSize:     28, // 标签: 28px（最小）
-				LineHeight:   42, // 1.5倍行高
+				FontSize:     28,        // 标签: 28px（最小）
+				LineHeight:   42,        // 1.5倍行高
 				MarginTop:    30,        // 标签上间距: 30px（统一标准）
 				MarginBottom: 30,        // 标签下方间距: 30px（统一标准）
 				Color:        "#1E90FF", // 标签: #1E90FF（蓝色）
 				Align:        "left",    // 左对齐
 			},
 			ElementTypeNumber: {
-				FontSize:     28, // 数字: 28px（最小）
-				LineHeight:   42, // 1.5倍行高
+				FontSize:     28,        // 数字: 28px（最小）
+				LineHeight:   42,        // 1.5倍行高
 				MarginTop:    30,        // 数字上间距: 30px（统一标准）
 				MarginBottom: 30,        // 数字下方间距: 30px（统一标准）
 				Color:        "#1E90FF", // 数字: #1E90FF（蓝色）
@@ -476,4 +537,147 @@ func PaginateFromJSON(jsonStr string) (*PaginatedContent, error) {
 
 	engine := NewPaginationEngine(GetDefaultConfig())
 	return engine.PaginateElements(elements)
+}
+
+// splitListElement 分割列表元素
+func (p *PaginationEngine) splitListElement(element Element, maxHeight int) []Element {
+	fmt.Printf("🔧 开始分割列表元素，最大高度: %d\n", maxHeight)
+
+	// 确保是列表类型
+	if element.Type != ElementTypeList {
+		fmt.Printf("❌ 不是列表类型，无法分割: %s\n", element.Type)
+		return nil
+	}
+
+	// 获取列表内容
+	var items []string
+	switch v := element.Content.(type) {
+	case []string:
+		items = v
+		fmt.Printf("📝 列表内容([]string)，项目数: %d\n", len(items))
+	case []interface{}:
+		fmt.Printf("📝 列表内容([]interface{})，项目数: %d\n", len(v))
+		for i, item := range v {
+			if str, ok := item.(string); ok {
+				items = append(items, str)
+				fmt.Printf("🔄 转换项目 %d: %s\n", i, str[:min(len(str), 30)]+"...")
+			} else {
+				fmt.Printf("⚠️ 项目 %d 类型不匹配: %T\n", i, item)
+			}
+		}
+	default:
+		fmt.Printf("❌ 列表内容类型不支持: %T\n", v)
+		return nil
+	}
+
+	if len(items) == 0 {
+		fmt.Printf("❌ 列表为空，无法分割\n")
+		return nil
+	}
+
+	// 获取列表样式配置
+	style, exists := p.config.Styles[ElementTypeList]
+	if !exists {
+		style = StyleConfig{
+			FontSize:     36,
+			LineHeight:   58,
+			MarginTop:    30,
+			MarginBottom: 30,
+		}
+	}
+
+	fmt.Printf("🎨 使用样式: 字体=%dpx, 行高=%dpx, 边距=%d+%d\n",
+		style.FontSize, style.LineHeight, style.MarginTop, style.MarginBottom)
+
+	// 计算每个列表项的高度
+	var itemHeights []int
+	totalContentHeight := 0
+
+	for i, item := range items {
+		itemHeight := p.calculateTextHeight(item, style)
+		itemHeights = append(itemHeights, itemHeight)
+		totalContentHeight += itemHeight
+
+		// 添加列表项间距（除了最后一项）
+		if i < len(items)-1 {
+			totalContentHeight += 8 // 列表项间距
+		}
+
+		fmt.Printf("📏 项目 %d 高度: %dpx，累计: %dpx\n", i, itemHeight, totalContentHeight)
+	}
+
+	// 计算总高度（包含边距）
+	totalHeight := totalContentHeight + style.MarginTop + style.MarginBottom
+	fmt.Printf("📐 列表总高度: %dpx (内容: %dpx + 边距: %dpx)\n",
+		totalHeight, totalContentHeight, style.MarginTop+style.MarginBottom)
+
+	// 如果总高度不超过限制，不需要分割
+	if totalHeight <= maxHeight {
+		fmt.Printf("✅ 列表高度未超限，无需分割\n")
+		return nil
+	}
+
+	// 计算可用内容高度
+	availableContentHeight := maxHeight - style.MarginTop - style.MarginBottom
+	fmt.Printf("📊 可用内容高度: %dpx\n", availableContentHeight)
+
+	// 开始分割：计算第一个卡片能容纳多少项
+	var firstCardItems []string
+	currentHeight := 0
+	splitIndex := 0
+
+	for i, item := range items {
+		itemHeight := itemHeights[i]
+
+		// 检查加入这一项后是否超出限制
+		testHeight := currentHeight + itemHeight
+		if i < len(items)-1 {
+			testHeight += 8 // 下一项的间距
+		}
+
+		if testHeight <= availableContentHeight {
+			// 可以容纳
+			firstCardItems = append(firstCardItems, item)
+			currentHeight = testHeight
+			splitIndex = i + 1
+			fmt.Printf("✅ 第一卡片包含项目 %d，当前高度: %dpx\n", i, currentHeight)
+		} else {
+			// 不能容纳，停止
+			fmt.Printf("🛑 项目 %d 会导致超出限制，停止添加\n", i)
+			break
+		}
+	}
+
+	fmt.Printf("📋 第一卡片包含 %d 项，剩余 %d 项\n", len(firstCardItems), len(items)-splitIndex)
+
+	// 如果第一卡片至少包含一项，创建分割结果
+	if len(firstCardItems) > 0 && splitIndex < len(items) {
+		var result []Element
+
+		// 第一个卡片（部分列表项）
+		firstCard := Element{
+			Type:    ElementTypeList,
+			Content: firstCardItems,
+		}
+		result = append(result, firstCard)
+
+		// 剩余项目作为第二个卡片
+		remainingItems := items[splitIndex:]
+		if len(remainingItems) > 0 {
+			secondCard := Element{
+				Type:    ElementTypeList,
+				Content: remainingItems,
+			}
+			result = append(result, secondCard)
+		}
+
+		fmt.Printf("🎯 分割完成: 第一卡片 %d 项，第二卡片 %d 项\n",
+			len(firstCardItems), len(remainingItems))
+
+		return result
+	}
+
+	// 如果第一个项目就超出限制，无法分割
+	fmt.Printf("❌ 无法分割：第一个项目就超出限制\n")
+	return nil
 }
