@@ -105,15 +105,23 @@ mqtt:
 
 # 分页配置 - 卡片渲染和分页的样式与布局规则
 pagination:
-  # 卡片基础配置
+  # 卡片基础配置（支持动态高度）
   card:
     width: 1080   # 标准尺寸: 1080×1440（3:4比例）
-    height: 1440
+    height: 1440  # 基础高度，实际使用动态高度
     padding:
       top: 60     # 标准内边距: 60px 50px
       right: 50
-      bottom: 60
+      bottom: 10  # 优化：减少底部留白从60px到10px
       left: 50
+  
+  # 动态分页优化配置
+  dynamic:
+    min_height: 720          # 最小卡片高度
+    max_height: 4320         # 最大卡片高度（3倍标准高度）
+    min_bottom_padding: 10   # 最小底部留白
+    max_images_per_card: 5   # 每张卡片最大图片数
+    max_text_length: 2000    # 每张卡片最大文本长度
   
   # 元素样式配置
   styles:
