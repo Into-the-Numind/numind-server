@@ -107,14 +107,21 @@ COPY config_${ENV}.yaml /app/config_${ENV}.yaml
 # 预创建图片输出目录，避免运行期权限问题
 # 确保/opt目录权限正确，然后创建子目录
 RUN chmod 755 /opt && \
-    mkdir -p /opt/numind/dev/image/upload && \
-    mkdir -p /opt/numind/prod/image/upload && \
-    mkdir -p /opt/numind/qa/image/upload && \
-    mkdir -p /opt/numind/image/upload && \
+    mkdir -p /opt/numind/dev/image/upload/card && \
+    mkdir -p /opt/numind/dev/image/upload/book && \
+    mkdir -p /opt/numind/prod/image/upload/card && \
+    mkdir -p /opt/numind/prod/image/upload/book && \
+    mkdir -p /opt/numind/qa/image/upload/card && \
+    mkdir -p /opt/numind/qa/image/upload/book && \
+    mkdir -p /opt/numind/image/upload/card && \
+    mkdir -p /opt/numind/image/upload/book && \
     mkdir -p /app/logs && \
     mkdir -p /app/temp && \
     chown -R numind:numind /opt/numind && \
-    chmod -R 777 /opt/numind
+    chown -R numind:numind /app && \
+    chmod -R 777 /opt/numind && \
+    chmod -R 777 /app/logs && \
+    chmod -R 777 /app/temp
 
 # 设置应用目录权限
 RUN chown -R numind:numind /app && \

@@ -684,12 +684,12 @@ func (r *RenderAndMeasureRenderer) saveImage(imageData []byte, cardID uint) (str
 	cardDir := util.GetCardImagePath(cardID)
 	fmt.Printf("🔍 渲染-测量方案：卡片保存目录=%s\n", cardDir)
 
-	// 确保目录存在
-	if err := os.MkdirAll(cardDir, 0755); err != nil {
-		fmt.Printf("❌ 渲染-测量方案：创建目录失败 - %v\n", err)
-		return "", fmt.Errorf("failed to create card directory: %v", err)
+	// 使用权限修复工具函数
+	if err := util.EnsureCardDirectory(cardID); err != nil {
+		fmt.Printf("❌ 渲染-测量方案：权限修复失败 - %v\n", err)
+		return "", fmt.Errorf("failed to ensure card directory permissions: %v", err)
 	}
-	fmt.Printf("🔍 渲染-测量方案：目录创建成功或已存在\n")
+	fmt.Printf("🔍 渲染-测量方案：目录权限修复完成\n")
 
 	// 生成文件名 - 改为WebP格式
 	filename := fmt.Sprintf("card_%d.webp", cardID)
