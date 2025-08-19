@@ -161,80 +161,110 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		templateBackground = "" // 使用默认白色背景
 	}
 
-	// 调用火山引擎文字模型处理文本（替换原来的千问）
-	prompt := p.biz.Ali().GetPromptManager().GetTextProcessingPrompt() + "\n\n" + text
+	// 🚀 使用增强文本处理器处理长文本（解决JSON截断问题）
+	log.C(ctx).Infow("🚀 启动增强文本处理流程", "book_id", bookID, "text_length", len(text))
 
-	messages := []map[string]string{
-		{"role": "user", "content": prompt},
+	// 创建增强文本处理器
+	enhancedProcessor := NewEnhancedTextProcessor()
+
+	// 记录处理器配置
+	processorStats := enhancedProcessor.GetProcessorStats()
+	log.C(ctx).Infow("📊 增强处理器配置", "book_id", bookID, "config", processorStats)
+
+	// 定义API调用函数（阿里千问优先，火山引擎降级）
+	apiCaller := func(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, bookID uint) (string, error) {
+		// 优先尝试阿里千问API
+		result, err := p.callQianwenWithRetry(ctx, messages, maxTokens, temperature, bookID)
+		if err != nil {
+			log.C(ctx).Warnw("⚠️ 阿里千问API失败，尝试火山引擎降级", "book_id", bookID, "error", err.Error())
+
+			// 降级到火山引擎API
+			volcResult, volcErr := p.callVolcWithRetry(ctx, messages, maxTokens, temperature, bookID)
+			if volcErr != nil {
+				return "", fmt.Errorf("所有API都失败: qianwen=%w, volc=%w", err, volcErr)
+			}
+
+			log.C(ctx).Infow("✅ 火山引擎API降级成功", "book_id", bookID)
+			return volcResult, nil
+		}
+
+		log.C(ctx).Infow("✅ 阿里千问API调用成功", "book_id", bookID)
+		return result, nil
 	}
 
-	// 使用改进的API调用流程（增强版错误处理和重试）
-	log.C(ctx).Infow("开始改进的API调用流程", "book_id", bookID)
-
-	// 尝试火山引擎API（最多重试5次，指数退避）
-	volcResult, err := p.callVolcWithRetry(ctx, messages, 1024, 0.5, bookID)
+	// 使用增强处理器处理长文本
+	result, err := enhancedProcessor.ProcessLongText(ctx, text, apiCaller, bookID)
 	if err != nil {
-		log.C(ctx).Warnw("火山引擎API重试后失败，尝试阿里千问降级", "book_id", bookID, "error", err.Error())
-
-		// 降级到阿里千问API（最多重试3次）
-		qianwenResult, qianwenErr := p.callQianwenWithRetry(ctx, messages, 1024, 0.5, bookID)
-		if qianwenErr != nil {
-			log.C(ctx).Errorw("所有API调用都失败", "book_id", bookID, "volc_error", err.Error(), "qianwen_error", qianwenErr.Error())
-			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, fmt.Sprintf("AI text processing failed: volc error: %v, qianwen error: %v", err, qianwenErr))
-			return
-		}
-
-		log.C(ctx).Infow("阿里千问API降级成功", "book_id", bookID, "result_length", len(qianwenResult))
-		volcResult = qianwenResult
-	} else {
-		log.C(ctx).Infow("火山引擎API调用成功", "book_id", bookID, "result_length", len(volcResult))
-	}
-
-	// 提取JSON内容（处理可能的Markdown代码块格式）
-	jsonContent := extractJSONFromResponse(volcResult)
-	log.C(ctx).Infow("Extracted JSON content", "book_id", bookID, "content", jsonContent)
-
-	// 检查提取的JSON是否为空
-	if jsonContent == "" {
-		log.C(ctx).Errorw("Failed to extract JSON content from Volc response",
-			"book_id", bookID,
-			"volc_response_length", len(volcResult),
-			"volc_response_preview", volcResult[:min(len(volcResult), 200)])
-
-		// 尝试重试机制：如果JSON提取失败，可能是API响应不完整
-		log.C(ctx).Infow("Attempting retry mechanism for incomplete JSON response", "book_id", bookID)
-
-		// 重试一次，使用更激进的JSON修复策略
-		retryContent := extractJSONWithRetry(volcResult)
-		if retryContent != "" {
-			log.C(ctx).Infow("Retry successful, extracted JSON content", "book_id", bookID, "content", retryContent)
-			jsonContent = retryContent
-		} else {
-			log.C(ctx).Errorw("Retry failed, both attempts failed to extract JSON",
-				"book_id", bookID,
-				"volc_response_length", len(volcResult))
-			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to extract JSON content from AI response after retry")
-			return
-		}
-	}
-
-	// 解析火山引擎返回的JSON结果
-	var volcResponse QianwenResponse
-	if err := json.Unmarshal([]byte(jsonContent), &volcResponse); err != nil {
-		log.C(ctx).Errorw("Failed to parse Volc response",
-			"book_id", bookID,
-			"error", err.Error(),
-			"json_content_length", len(jsonContent),
-			"json_content_preview", jsonContent[:min(len(jsonContent), 200)])
-		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to parse AI response: "+err.Error())
+		log.C(ctx).Errorw("❌ 增强文本处理失败", "book_id", bookID, "error", err.Error())
+		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, fmt.Sprintf("Enhanced text processing failed: %v", err))
 		return
 	}
 
-	// 验证解析后的数据结构
-	if volcResponse.StructuredTextArray == nil || len(volcResponse.StructuredTextArray) == 0 {
-		log.C(ctx).Errorw("Volc response has no structured text array",
+	// 记录处理结果统计
+	log.C(ctx).Infow("📈 增强处理完成",
+		"book_id", bookID,
+		"total_time", result.TotalTime,
+		"total_chunks", result.MergeStats.TotalChunks,
+		"success_chunks", result.MergeStats.SuccessChunks,
+		"failed_chunks", result.MergeStats.FailedChunks,
+		"total_retries", result.MergeStats.TotalRetries,
+		"required_merge", result.MergeStats.RequiredMerge,
+		"final_json_length", len(result.FinalJSON))
+
+	// 使用处理结果
+	jsonContent := result.FinalJSON
+
+	// 验证最终JSON
+	if jsonContent == "" {
+		log.C(ctx).Errorw("❌ 增强处理器返回空JSON", "book_id", bookID)
+		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Enhanced processor returned empty JSON")
+		return
+	}
+
+	// 解析AI返回的JSON结果
+	var aiResponse QianwenResponse
+	if err := json.Unmarshal([]byte(jsonContent), &aiResponse); err != nil {
+		log.C(ctx).Warnw("AI response JSON解析失败，尝试使用高级修复引擎",
 			"book_id", bookID,
-			"response", volcResponse)
+			"error", err.Error(),
+			"json_content_length", len(jsonContent))
+
+		// 使用高级JSON修复引擎
+		extractor := httpclient.NewAdvancedJSONExtractor()
+		repairedJSON, repairErr := extractor.ExtractValidJSON([]byte(jsonContent))
+
+		if repairErr != nil {
+			log.C(ctx).Errorw("JSON修复也失败",
+				"book_id", bookID,
+				"original_error", err.Error(),
+				"repair_error", repairErr.Error(),
+				"json_content_preview", jsonContent[:min(len(jsonContent), 500)])
+			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to parse AI response after repair: "+repairErr.Error())
+			return
+		}
+
+		// 尝试解析修复后的JSON
+		if err := json.Unmarshal(repairedJSON, &aiResponse); err != nil {
+			log.C(ctx).Errorw("修复后JSON解析仍然失败",
+				"book_id", bookID,
+				"error", err.Error(),
+				"repaired_json_length", len(repairedJSON),
+				"repaired_json_preview", string(repairedJSON[:min(len(repairedJSON), 500)]))
+			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to parse repaired AI response: "+err.Error())
+			return
+		}
+
+		log.C(ctx).Infow("JSON解析成功（经过高级修复）",
+			"book_id", bookID,
+			"original_length", len(jsonContent),
+			"repaired_length", len(repairedJSON))
+	}
+
+	// 验证解析后的数据结构
+	if len(aiResponse.StructuredTextArray) == 0 {
+		log.C(ctx).Errorw("AI response has no structured text array",
+			"book_id", bookID,
+			"response", aiResponse)
 		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "AI response has no structured content")
 		return
 	}
@@ -244,7 +274,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 
 	// 提取title作为book的标题
 	var bookTitle string
-	for _, item := range volcResponse.StructuredTextArray {
+	for _, item := range aiResponse.StructuredTextArray {
 		if item.Type == "title" {
 			if titleContent, ok := item.Content.(string); ok {
 				bookTitle = titleContent
@@ -260,9 +290,9 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 
 	// 使用解析出的image_prompt调用stable-diffusion生成图片
 	var imageUrl string
-	if volcResponse.ImagePrompt != "" {
+	if aiResponse.ImagePrompt != "" {
 		// 直接使用原始提示词调用stable-diffusion API
-		remoteImageUrl, err := p.biz.Ali().StableDiffusionImageAsync(volcResponse.ImagePrompt, "1024*1024")
+		remoteImageUrl, err := p.biz.Ali().StableDiffusionImageAsync(aiResponse.ImagePrompt, "1024*1024")
 		if err != nil {
 			log.C(ctx).Errorw("StableDiffusionImageAsync failed", "book_id", bookID, "error", err.Error())
 			// 图片生成失败不影响整体流程
@@ -288,11 +318,11 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	var elements []pagination.Element
 
 	// 检查是否有结构化内容
-	if volcResponse.StructuredTextArray != nil && len(volcResponse.StructuredTextArray) > 0 {
-		log.C(ctx).Infow("使用AI返回的结构化内容", "book_id", bookID, "element_count", len(volcResponse.StructuredTextArray))
+	if len(aiResponse.StructuredTextArray) > 0 {
+		log.C(ctx).Infow("使用AI返回的结构化内容", "book_id", bookID, "element_count", len(aiResponse.StructuredTextArray))
 
 		// 🔍 调试：打印原始结构化数据
-		for i, item := range volcResponse.StructuredTextArray {
+		for i, item := range aiResponse.StructuredTextArray {
 			log.C(ctx).Infow("🔍 调试：原始元素", "book_id", bookID, "index", i, "type", item.Type, "content_type", fmt.Sprintf("%T", item.Content))
 			if item.Type == "list" {
 				if listContent, ok := item.Content.([]interface{}); ok {
@@ -304,7 +334,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 			}
 		}
 
-		for i, item := range volcResponse.StructuredTextArray {
+		for i, item := range aiResponse.StructuredTextArray {
 			log.C(ctx).Infow("🔍 调试：处理元素", "book_id", bookID, "index", i, "type", item.Type)
 
 			if item.Type == "title" {
@@ -1672,17 +1702,26 @@ func (p *AsyncBookProcessor) finalizeBookCreation(ctx context.Context, bookID ui
 	log.C(ctx).Infow("Async book creation completed", "book_id", bookID, "duration", time.Since(startTime).Seconds())
 }
 
-// callVolcWithRetry 带重试的火山引擎API调用
+// callVolcWithRetry 带重试的火山引擎API调用（支持动态参数调整）
 func (p *AsyncBookProcessor) callVolcWithRetry(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, bookID uint) (string, error) {
 	maxRetries := 5
 	baseDelay := 2 * time.Second
 	maxDelay := 30 * time.Second
 
+	// 动态参数
+	currentMaxTokens := maxTokens
+	currentTemperature := temperature
+
 	var lastErr error
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		log.C(ctx).Infow("🔄 尝试火山引擎API", "book_id", bookID, "attempt", attempt, "max_attempts", maxRetries)
+		log.C(ctx).Infow("🔄 尝试火山引擎API",
+			"book_id", bookID,
+			"attempt", attempt,
+			"max_attempts", maxRetries,
+			"max_tokens", currentMaxTokens,
+			"temperature", currentTemperature)
 
-		result, err := p.biz.Volc().VolcTextStream(ctx, messages, maxTokens, temperature)
+		result, err := p.biz.Volc().VolcTextStream(ctx, messages, currentMaxTokens, currentTemperature)
 		if err == nil {
 			log.C(ctx).Infow("✅ 火山引擎API成功", "book_id", bookID, "attempt", attempt)
 			return result, nil
@@ -1691,14 +1730,34 @@ func (p *AsyncBookProcessor) callVolcWithRetry(ctx context.Context, messages []m
 		lastErr = err
 		log.C(ctx).Warnw("⚠️ 火山引擎API失败", "book_id", bookID, "attempt", attempt, "error", err.Error())
 
-		// 如果不是最后一次尝试，等待后重试
+		// 动态调整参数（在重试时）
 		if attempt < maxRetries {
+			// 增加max_tokens以应对长文本
+			if strings.Contains(err.Error(), "token") || strings.Contains(err.Error(), "length") {
+				currentMaxTokens = int(float64(currentMaxTokens) * 1.5)
+				log.C(ctx).Infow("🔧 检测到token相关错误，增加max_tokens",
+					"book_id", bookID,
+					"old_tokens", maxTokens,
+					"new_tokens", currentMaxTokens)
+			}
+
+			// 降低temperature提高稳定性
+			currentTemperature = currentTemperature * 0.8
+			if currentTemperature < 0.1 {
+				currentTemperature = 0.1
+			}
+
 			delay := time.Duration(attempt-1) * baseDelay
 			if delay > maxDelay {
 				delay = maxDelay
 			}
 
-			log.C(ctx).Infow("等待重试", "book_id", bookID, "delay", delay, "next_attempt", attempt+1)
+			log.C(ctx).Infow("⏳ 等待重试",
+				"book_id", bookID,
+				"delay", delay,
+				"next_attempt", attempt+1,
+				"adjusted_tokens", currentMaxTokens,
+				"adjusted_temperature", currentTemperature)
 
 			select {
 			case <-ctx.Done():
@@ -1712,16 +1771,25 @@ func (p *AsyncBookProcessor) callVolcWithRetry(ctx context.Context, messages []m
 	return "", fmt.Errorf("火山引擎API重试%d次后仍失败: %v", maxRetries, lastErr)
 }
 
-// callQianwenWithRetry 带重试的阿里千问API调用
+// callQianwenWithRetry 带重试的阿里千问API调用（支持动态参数调整）
 func (p *AsyncBookProcessor) callQianwenWithRetry(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, bookID uint) (string, error) {
 	maxRetries := 3
 	baseDelay := 2 * time.Second
 
+	// 动态参数
+	currentMaxTokens := maxTokens
+	currentTemperature := temperature
+
 	var lastErr error
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		log.C(ctx).Infow("🔄 尝试阿里千问API", "book_id", bookID, "attempt", attempt, "max_attempts", maxRetries)
+		log.C(ctx).Infow("🔄 尝试阿里千问API",
+			"book_id", bookID,
+			"attempt", attempt,
+			"max_attempts", maxRetries,
+			"max_tokens", currentMaxTokens,
+			"temperature", currentTemperature)
 
-		result, err := p.biz.Ali().QianwenTextStream(messages, maxTokens, temperature)
+		result, err := p.biz.Ali().QianwenTextStream(messages, currentMaxTokens, currentTemperature)
 		if err == nil {
 			log.C(ctx).Infow("✅ 阿里千问API成功", "book_id", bookID, "attempt", attempt)
 			return result, nil
@@ -1730,11 +1798,31 @@ func (p *AsyncBookProcessor) callQianwenWithRetry(ctx context.Context, messages 
 		lastErr = err
 		log.C(ctx).Warnw("⚠️ 阿里千问API失败", "book_id", bookID, "attempt", attempt, "error", err.Error())
 
-		// 如果不是最后一次尝试，等待后重试
+		// 动态调整参数（在重试时）
 		if attempt < maxRetries {
+			// 增加max_tokens以应对长文本
+			if strings.Contains(err.Error(), "token") || strings.Contains(err.Error(), "length") || strings.Contains(err.Error(), "too long") {
+				currentMaxTokens = int(float64(currentMaxTokens) * 1.5)
+				log.C(ctx).Infow("🔧 检测到token相关错误，增加max_tokens",
+					"book_id", bookID,
+					"old_tokens", maxTokens,
+					"new_tokens", currentMaxTokens)
+			}
+
+			// 降低temperature提高稳定性
+			currentTemperature = currentTemperature * 0.8
+			if currentTemperature < 0.1 {
+				currentTemperature = 0.1
+			}
+
 			delay := time.Duration(attempt) * baseDelay
 
-			log.C(ctx).Infow("等待重试", "book_id", bookID, "delay", delay, "next_attempt", attempt+1)
+			log.C(ctx).Infow("⏳ 等待重试",
+				"book_id", bookID,
+				"delay", delay,
+				"next_attempt", attempt+1,
+				"adjusted_tokens", currentMaxTokens,
+				"adjusted_temperature", currentTemperature)
 
 			select {
 			case <-ctx.Done():

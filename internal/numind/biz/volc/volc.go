@@ -8,7 +8,6 @@ import (
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/httpclient"
 	"numind-server/internal/pkg/log"
-	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -134,7 +133,18 @@ func (v *volcBiz) GenerateArticleContent(content string, contentType string, max
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("API返回解析失败: %v, 响应长度: %d", err, len(respBody))
+		// 使用高级JSON修复引擎
+		extractor := httpclient.NewAdvancedJSONExtractor()
+		repairedBody, repairErr := extractor.ExtractValidJSON(respBody)
+		
+		if repairErr != nil {
+			return "", fmt.Errorf("JSON解析和修复都失败: 原始错误=%w, 修复错误=%v, 响应长度=%d", err, repairErr, len(respBody))
+		}
+
+		// 尝试解析修复后的JSON
+		if err := json.Unmarshal(repairedBody, &result); err != nil {
+			return "", fmt.Errorf("修复后JSON解析失败: %w, 修复后响应长度: %d", err, len(repairedBody))
+		}
 	}
 	if len(result.Choices) == 0 {
 		return "", fmt.Errorf("API无返回内容: %s", string(respBody))
@@ -219,15 +229,32 @@ func (v *volcBiz) VolcTextStream(ctx context.Context, messages []map[string]stri
 	}
 
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		log.C(ctx).Warnw("JSON解析失败，尝试清理响应", "error", err.Error())
+		log.C(ctx).Warnw("JSON解析失败，尝试使用高级修复引擎", "error", err.Error())
 
-		// 尝试清理响应并重新解析
-		cleanedResp := cleanJSONResponse(string(respBody))
-		if err := json.Unmarshal([]byte(cleanedResp), &result); err != nil {
-			log.C(ctx).Errorw("清理后JSON解析仍然失败", "error", err.Error(), "cleaned_response", cleanedResp)
-			return "", fmt.Errorf("JSON解析失败: %w, 原始响应长度: %d, 清理后响应: %s", err, respLength, cleanedResp)
+		// 使用高级JSON修复引擎
+		extractor := httpclient.NewAdvancedJSONExtractor()
+		repairedBody, repairErr := extractor.ExtractValidJSON(respBody)
+		
+		if repairErr != nil {
+			log.C(ctx).Errorw("JSON修复失败", "repair_error", repairErr.Error(), "original_error", err.Error())
+			return "", fmt.Errorf("JSON解析和修复都失败: 原始错误=%w, 修复错误=%v, 响应长度=%d", err, repairErr, respLength)
 		}
-		log.C(ctx).Infow("JSON解析成功（经过清理）")
+
+		// 尝试解析修复后的JSON
+		if err := json.Unmarshal(repairedBody, &result); err != nil {
+			log.C(ctx).Errorw("修复后JSON解析仍然失败", "error", err.Error(), "repaired_length", len(repairedBody))
+			// 输出修复后的响应的前后部分用于调试
+			debugLen := 200
+			if len(repairedBody) > debugLen*2 {
+				log.C(ctx).Debugw("修复后响应调试信息", 
+					"repaired_start", string(repairedBody[:debugLen]),
+					"repaired_end", string(repairedBody[len(repairedBody)-debugLen:]))
+			} else {
+				log.C(ctx).Debugw("修复后响应", "repaired_response", string(repairedBody))
+			}
+			return "", fmt.Errorf("修复后JSON解析失败: %w, 修复后响应长度: %d", err, len(repairedBody))
+		}
+		log.C(ctx).Infow("JSON解析成功（经过高级修复）", "repaired_length", len(repairedBody))
 	}
 
 	// 检查是否有错误
@@ -253,57 +280,4 @@ func (v *volcBiz) VolcTextStream(ctx context.Context, messages []map[string]stri
 	return content, nil
 }
 
-// cleanJSONResponse 清理JSON响应，尝试修复截断的JSON
-func cleanJSONResponse(response string) string {
-	// 移除前后空白字符
-	cleaned := strings.TrimSpace(response)
-
-	// 如果响应为空，返回空字符串
-	if cleaned == "" {
-		return cleaned
-	}
-
-	// 尝试找到最后一个完整的JSON对象或数组
-	// 查找最后一个完整的 } 或 ]
-	lastBrace := strings.LastIndex(cleaned, "}")
-	lastBracket := strings.LastIndex(cleaned, "]")
-
-	var endIndex int
-	if lastBrace > lastBracket {
-		endIndex = lastBrace + 1
-	} else if lastBracket > lastBrace {
-		endIndex = lastBracket + 1
-	} else {
-		// 都没有找到，返回原始响应
-		return cleaned
-	}
-
-	// 截取到最后一个完整结构
-	cleaned = cleaned[:endIndex]
-
-	// 尝试找到对应的开始位置
-	// 简单策略：从后往前找到匹配的开始括号
-	braceCount := 0
-	bracketCount := 0
-
-	for i := len(cleaned) - 1; i >= 0; i-- {
-		switch cleaned[i] {
-		case '}':
-			braceCount++
-		case '{':
-			braceCount--
-		case ']':
-			bracketCount++
-		case '[':
-			bracketCount--
-		}
-
-		// 如果找到匹配的开始位置
-		if braceCount == 0 && bracketCount == 0 {
-			cleaned = cleaned[i:]
-			break
-		}
-	}
-
-	return cleaned
-}
+// 注意：原来的cleanJSONResponse函数已被弃用，现在使用更强大的httpclient.AdvancedJSONExtractor
