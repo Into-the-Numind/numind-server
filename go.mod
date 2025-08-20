@@ -33,6 +33,8 @@ require (
 	gorm.io/gorm v1.25.12
 )
 
+require github.com/disintegration/imaging v1.6.2
+
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/Knetic/govaluate v3.0.1-0.20171022003610-9aa49832a739+incompatible // indirect

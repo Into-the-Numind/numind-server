@@ -65,7 +65,7 @@ oss:
 volc:
   api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "qwen-turbo-latest"  # 使用的AI模型
+  model: "deepseek-v3"  # 使用的AI模型 - 修复：使用正确的火山引擎模型
   temperature: 0.5 # 生成文本的随机性，值越高随机性越大
   tokens: 2000 # 生成文本的最大长度
   timeout: 120s  # 超时时间
@@ -82,7 +82,7 @@ ali:
   text:
     api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"
     api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
-    model: "baichuan2-turbo"
+    model: "qwen-turbo"  # 修复：使用正确的阿里千问模型
     timeout: 180s  # 千问文本生成超时时间
   image:
     api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"

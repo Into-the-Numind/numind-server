@@ -15,6 +15,8 @@ type RendererConfig struct {
 	EnableTraditionalRenderer bool
 	// 是否启用增强版渲染器（新实现）
 	EnableEnhancedRenderer bool
+	// 是否启用轻量级渲染器（无浏览器依赖）
+	EnableLightweightRenderer bool
 	// Chrome调试端口
 	ChromeDebugPort int
 	// 渲染超时时间（秒）
@@ -28,6 +30,7 @@ func GetRendererConfig() *RendererConfig {
 		EnableChromeHeadless:      true, // 默认启用Chrome无头浏览器
 		EnableTraditionalRenderer: true, // 默认启用传统渲染器作为备用
 		EnableEnhancedRenderer:    true, // 默认启用增强版渲染器
+		EnableLightweightRenderer: true, // 默认启用轻量级渲染器
 		ChromeDebugPort:           9222, // 默认Chrome调试端口
 		RenderTimeout:             300,  // 默认5分钟超时
 	}
@@ -54,6 +57,12 @@ func GetRendererConfig() *RendererConfig {
 	if env := os.Getenv("ENABLE_ENHANCED_RENDERER"); env != "" {
 		if enabled, err := strconv.ParseBool(env); err == nil {
 			config.EnableEnhancedRenderer = enabled
+		}
+	}
+
+	if env := os.Getenv("ENABLE_LIGHTWEIGHT_RENDERER"); env != "" {
+		if enabled, err := strconv.ParseBool(env); err == nil {
+			config.EnableLightweightRenderer = enabled
 		}
 	}
 
@@ -92,4 +101,9 @@ func IsEnhancedRendererEnabled() bool {
 	// 暂时禁用增强版渲染器，优先使用修复后的传统渲染器
 	// return GetRendererConfig().EnableEnhancedRenderer
 	return false
+}
+
+// IsLightweightRendererEnabled 检查是否启用轻量级渲染器
+func IsLightweightRendererEnabled() bool {
+	return GetRendererConfig().EnableLightweightRenderer
 }

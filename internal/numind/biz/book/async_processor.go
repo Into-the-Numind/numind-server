@@ -171,15 +171,23 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	processorStats := enhancedProcessor.GetProcessorStats()
 	log.C(ctx).Infow("📊 增强处理器配置", "book_id", bookID, "config", processorStats)
 
-	// 定义API调用函数（阿里千问优先，火山引擎降级）
+	// 定义API调用函数（增强版，支持参数优化和空响应快速检测）
 	apiCaller := func(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, bookID uint) (string, error) {
+		log.C(ctx).Debugw("🚀 开始API调用",
+			"book_id", bookID,
+			"requested_max_tokens", maxTokens,
+			"requested_temperature", temperature)
+
+		// 创建参数优化器
+		paramOptimizer := NewAPIParametersOptimizer()
+
 		// 优先尝试阿里千问API
-		result, err := p.callQianwenWithRetry(ctx, messages, maxTokens, temperature, bookID)
+		result, err := p.callQianwenWithEnhancedRetry(ctx, messages, maxTokens, temperature, bookID, paramOptimizer)
 		if err != nil {
 			log.C(ctx).Warnw("⚠️ 阿里千问API失败，尝试火山引擎降级", "book_id", bookID, "error", err.Error())
 
 			// 降级到火山引擎API
-			volcResult, volcErr := p.callVolcWithRetry(ctx, messages, maxTokens, temperature, bookID)
+			volcResult, volcErr := p.callVolcWithEnhancedRetry(ctx, messages, maxTokens, temperature, bookID, paramOptimizer)
 			if volcErr != nil {
 				return "", fmt.Errorf("所有API都失败: qianwen=%w, volc=%w", err, volcErr)
 			}
@@ -238,7 +246,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 				"book_id", bookID,
 				"original_error", err.Error(),
 				"repair_error", repairErr.Error(),
-				"json_content_preview", jsonContent[:min(len(jsonContent), 500)])
+				"json_content_preview", jsonContent[:minInt(len(jsonContent), 500)])
 			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to parse AI response after repair: "+repairErr.Error())
 			return
 		}
@@ -249,7 +257,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 				"book_id", bookID,
 				"error", err.Error(),
 				"repaired_json_length", len(repairedJSON),
-				"repaired_json_preview", string(repairedJSON[:min(len(repairedJSON), 500)]))
+				"repaired_json_preview", string(repairedJSON[:minInt(len(repairedJSON), 500)]))
 			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to parse repaired AI response: "+err.Error())
 			return
 		}
@@ -433,12 +441,54 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		}
 	}
 
-	// 根据配置创建渲染器，优先级：增强版 > 渲染-测量 > 传统渲染器
+	// 根据配置创建渲染器，优先级：轻量级 > 增强版 > 渲染-测量 > 传统渲染器
 	var renderer card.RendererInterface
 	var useRenderAndMeasure bool
 	var useEnhancedRenderer bool
+	var useLightweightRenderer bool
 
-	// 首先检查是否启用增强版渲染器（新实现）
+	// 首先检查是否启用轻量级渲染器（最高优先级）
+	if card.IsLightweightRendererEnabled() {
+		log.C(ctx).Infow("🚀 尝试使用轻量级渲染器", "book_id", bookID)
+
+		// 创建轻量级渲染器集成器
+		lightweightIntegration, err := NewLightweightRendererIntegration(p.biz, paginationBiz.GetConfig())
+		if err != nil {
+			log.C(ctx).Errorw("轻量级渲染器创建失败，降级到下一方案", "book_id", bookID, "error", err.Error())
+			useLightweightRenderer = false
+		} else {
+			// 使用轻量级渲染器进行整体处理
+			if err := lightweightIntegration.ProcessBookWithLightweightRendering(ctx, book, userID, elements, imageUrl); err != nil {
+				log.C(ctx).Errorw("轻量级渲染器处理失败，降级到下一方案", "book_id", bookID, "error", err.Error())
+				useLightweightRenderer = false
+				lightweightIntegration.Cleanup()
+			} else {
+				log.C(ctx).Infow("✅ 轻量级渲染器处理完成", "book_id", bookID)
+				useLightweightRenderer = true
+
+				// 创建封面卡片
+				_, err := lightweightIntegration.CreateCoverCardWithLightweight(ctx, book, userID, coverBackground)
+				if err != nil {
+					log.C(ctx).Errorw("轻量级封面卡片创建失败", "book_id", bookID, "error", err.Error())
+				} else {
+					log.C(ctx).Infow("📚 轻量级封面卡片创建成功", "book_id", bookID)
+				}
+
+				// 清理资源
+				defer lightweightIntegration.Cleanup()
+			}
+		}
+	}
+
+	// 如果轻量级渲染器处理成功，直接跳过后续渲染流程
+	if useLightweightRenderer {
+		log.C(ctx).Infow("🎉 轻量级渲染完成，跳过其他渲染流程", "book_id", bookID)
+		// 直接进行最后的状态更新并返回
+		p.finalizeBookCreation(ctx, bookID, startTime)
+		return
+	}
+
+	// 检查是否启用增强版渲染器（降级方案）
 	if card.IsEnhancedRendererEnabled() {
 		log.C(ctx).Infow("尝试使用增强版渲染器", "book_id", bookID)
 
@@ -1834,12 +1884,4 @@ func (p *AsyncBookProcessor) callQianwenWithRetry(ctx context.Context, messages 
 	}
 
 	return "", fmt.Errorf("阿里千问API重试%d次后仍失败: %v", maxRetries, lastErr)
-}
-
-// min 返回两个整数中的较小值
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

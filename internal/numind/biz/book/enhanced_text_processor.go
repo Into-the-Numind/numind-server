@@ -9,7 +9,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"numind-server/internal/pkg/httpclient"
 	"numind-server/internal/pkg/log"
 )
 
@@ -367,16 +366,40 @@ func (etp *EnhancedTextProcessor) callAPIWithEnhancedRetry(
 	startTime := time.Now()
 	var lastErr error
 
+	// 创建API参数优化器和响应处理器
+	paramOptimizer := NewAPIParametersOptimizer()
+	responseProcessor := NewEnhancedResponseProcessor()
+
+	// 估算输入文本长度
+	inputLength := 0
+	for _, msg := range messages {
+		if content, exists := msg["content"]; exists {
+			inputLength += len(content)
+		}
+	}
+
 	for attempt := 1; attempt <= etp.maxRetries; attempt++ {
+		// 🔧 优化API参数（根据重试次数动态调整）
+		optimizedMaxTokens, optimizedTemperature, paramErr := paramOptimizer.OptimizeParametersForAPI(
+			ctx, "ali", inputLength, attempt, bookID) // 假设优先使用阿里API
+
+		if paramErr != nil {
+			log.C(ctx).Warnw("⚠️ 参数优化失败，使用默认值", "error", paramErr.Error())
+			optimizedMaxTokens = 4096
+			optimizedTemperature = 0.5
+		}
+
 		log.C(ctx).Infow("🔄 API调用尝试",
 			"book_id", bookID,
 			"chunk_index", chunkIndex,
 			"attempt", attempt,
 			"max_attempts", etp.maxRetries,
-			"max_tokens", etp.maxTokens)
+			"optimized_max_tokens", optimizedMaxTokens,
+			"optimized_temperature", optimizedTemperature,
+			"input_length", inputLength)
 
-		// 调用API
-		response, err := apiCaller(ctx, messages, etp.maxTokens, etp.temperature, bookID)
+		// 调用API（使用优化后的参数）
+		response, err := apiCaller(ctx, messages, optimizedMaxTokens, optimizedTemperature, bookID)
 		if err != nil {
 			lastErr = err
 			log.C(ctx).Warnw("⚠️ API调用失败",
@@ -387,30 +410,69 @@ func (etp *EnhancedTextProcessor) callAPIWithEnhancedRetry(
 
 			// 如果不是最后一次尝试，等待后重试
 			if attempt < etp.maxRetries {
-				waitTime := time.Duration(attempt) * 2 * time.Second
+				waitTime := time.Duration(paramOptimizer.GetRecommendedRetryDelay(attempt, "ali")) * time.Second
 				log.C(ctx).Infow("⏳ 等待重试", "wait_time", waitTime)
 				time.Sleep(waitTime)
 			}
 			continue
 		}
 
-		// 处理响应
+		// 📊 记录响应统计
 		stats := ResponseStats{
 			RawLength: len(response),
 		}
 
-		// 提取JSON
-		jsonContent := etp.extractAndRepairJSON(ctx, response, bookID, chunkIndex)
-		stats.ExtractedLength = len(jsonContent)
-		stats.IsValidJSON = etp.isValidJSON(jsonContent)
+		// 🚨 快速检测空响应
+		if stats.RawLength == 0 {
+			lastErr = fmt.Errorf("API返回空响应")
+			log.C(ctx).Warnw("🚨 检测到空响应，立即重试",
+				"book_id", bookID,
+				"chunk_index", chunkIndex,
+				"attempt", attempt)
 
-		if jsonContent != "" && stats.IsValidJSON {
-			log.C(ctx).Infow("✅ API调用成功",
+			// 空响应直接重试，不进入JSON修复流程
+			if attempt < etp.maxRetries {
+				waitTime := time.Duration(2*attempt) * time.Second
+				log.C(ctx).Infow("⏳ 空响应快速重试", "wait_time", waitTime)
+				time.Sleep(waitTime)
+			}
+			continue
+		}
+
+		// ✅ 响应有效性验证
+		isValid, reason := paramOptimizer.ValidateAPIResponse(ctx, response, "ali", bookID)
+		if !isValid {
+			lastErr = fmt.Errorf("API响应无效: %s", reason)
+			log.C(ctx).Warnw("⚠️ API响应验证失败",
+				"book_id", bookID,
+				"chunk_index", chunkIndex,
+				"attempt", attempt,
+				"reason", reason,
+				"response_preview", etp.truncateString(response, 200))
+
+			// 无效响应也直接重试
+			if attempt < etp.maxRetries {
+				waitTime := time.Duration(2*attempt) * time.Second
+				time.Sleep(waitTime)
+			}
+			continue
+		}
+
+		// 🔄 使用增强响应处理器处理JSON
+		jsonContent, jsonErr := responseProcessor.ProcessAPIResponse(ctx, response, "ali", bookID, chunkIndex)
+
+		stats.ExtractedLength = len(jsonContent)
+		stats.IsValidJSON = (jsonErr == nil && jsonContent != "")
+		stats.RequiredRepair = (jsonContent != response) // 是否需要修复
+
+		if jsonErr == nil && jsonContent != "" && stats.IsValidJSON {
+			log.C(ctx).Infow("✅ API调用和JSON处理成功",
 				"book_id", bookID,
 				"chunk_index", chunkIndex,
 				"attempt", attempt,
 				"response_length", stats.RawLength,
-				"json_length", stats.ExtractedLength)
+				"json_length", stats.ExtractedLength,
+				"required_repair", stats.RequiredRepair)
 
 			return &ChunkProcessResult{
 				ChunkIndex:    chunkIndex,
@@ -422,67 +484,44 @@ func (etp *EnhancedTextProcessor) callAPIWithEnhancedRetry(
 			}, nil
 		}
 
-		// JSON无效，记录错误并重试
-		lastErr = fmt.Errorf("extracted JSON is invalid")
-		log.C(ctx).Warnw("⚠️ 提取的JSON无效",
+		// JSON处理失败，记录详细错误信息
+		lastErr = fmt.Errorf("JSON处理失败: %v", jsonErr)
+		log.C(ctx).Warnw("⚠️ JSON处理失败",
 			"book_id", bookID,
 			"chunk_index", chunkIndex,
 			"attempt", attempt,
-			"json_preview", etp.truncateString(jsonContent, 200))
+			"json_error", jsonErr,
+			"response_length", stats.RawLength,
+			"response_preview", etp.truncateString(response, 300))
 
-		// 调整参数重试
+		// 如果不是最后一次尝试，等待后重试
 		if attempt < etp.maxRetries {
-			// 增加max_tokens
-			etp.maxTokens = int(float64(etp.maxTokens) * 1.2)
-			// 降低temperature
-			etp.temperature = etp.temperature * 0.8
-
-			log.C(ctx).Infow("🔧 调整参数重试",
-				"new_max_tokens", etp.maxTokens,
-				"new_temperature", etp.temperature)
+			waitTime := time.Duration(paramOptimizer.GetRecommendedRetryDelay(attempt, "ali")) * time.Second
+			log.C(ctx).Infow("⏳ 等待JSON重试", "wait_time", waitTime)
+			time.Sleep(waitTime)
 		}
 	}
 
 	return nil, fmt.Errorf("所有重试都失败: %w", lastErr)
 }
 
-// extractAndRepairJSON 提取和修复JSON
+// extractAndRepairJSON 提取和修复JSON（保留向后兼容性）
 func (etp *EnhancedTextProcessor) extractAndRepairJSON(ctx context.Context, response string, bookID uint, chunkIndex int) string {
-	log.C(ctx).Debugw("🔍 开始JSON提取和修复",
+	log.C(ctx).Debugw("🔍 开始JSON提取和修复（兼容模式）",
 		"book_id", bookID,
 		"chunk_index", chunkIndex,
 		"response_length", len(response))
 
-	// 1. 尝试直接解析
-	if etp.isValidJSON(response) {
-		log.C(ctx).Debugw("✅ 响应已是有效JSON", "book_id", bookID)
-		return response
+	// 使用新的增强响应处理器
+	processor := NewEnhancedResponseProcessor()
+	result, err := processor.ProcessAPIResponse(ctx, response, "unknown", bookID, chunkIndex)
+
+	if err != nil {
+		log.C(ctx).Warnw("❌ 增强响应处理失败", "book_id", bookID, "error", err.Error())
+		return ""
 	}
 
-	// 2. 基础清理
-	cleaned := etp.basicJSONClean(response)
-	if etp.isValidJSON(cleaned) {
-		log.C(ctx).Debugw("✅ 基础清理成功", "book_id", bookID)
-		return cleaned
-	}
-
-	// 3. 使用高级修复引擎
-	extractor := httpclient.NewAdvancedJSONExtractor()
-	repaired, err := extractor.ExtractValidJSON([]byte(cleaned))
-	if err == nil && len(repaired) > 0 && etp.isValidJSON(string(repaired)) {
-		log.C(ctx).Debugw("✅ 高级修复成功", "book_id", bookID)
-		return string(repaired)
-	}
-
-	// 4. 手动修复
-	manually := etp.manualJSONRepair(cleaned)
-	if etp.isValidJSON(manually) {
-		log.C(ctx).Debugw("✅ 手动修复成功", "book_id", bookID)
-		return manually
-	}
-
-	log.C(ctx).Warnw("❌ 所有JSON修复方法都失败", "book_id", bookID)
-	return ""
+	return result
 }
 
 // basicJSONClean 基础JSON清理
