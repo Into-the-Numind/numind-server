@@ -42,6 +42,7 @@ require (
 	github.com/bytedance/sonic/loader v0.2.4 // indirect
 	github.com/casbin/casbin/v2 v2.58.0 // indirect
 	github.com/casbin/gorm-adapter/v3 v3.13.0 // indirect
+	github.com/chai2010/webp v1.4.0 // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/cloudwego/base64x v0.1.5 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
@@ -94,6 +95,7 @@ require (
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.0 // indirect
 	github.com/vcaesar/cedar v0.20.2 // indirect
+	github.com/yuin/goldmark v1.7.13 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/arch v0.18.0 // indirect
 	golang.org/x/net v0.41.0 // indirect

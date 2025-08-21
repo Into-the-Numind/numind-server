@@ -269,29 +269,18 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	}
 
 	// 验证解析后的数据结构
-	if len(aiResponse.StructuredTextArray) == 0 {
-		log.C(ctx).Errorw("AI response has no structured text array",
+	if aiResponse.Text == "" {
+		log.C(ctx).Errorw("AI response has no text content",
 			"book_id", bookID,
 			"response", aiResponse)
-		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "AI response has no structured content")
+		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "AI response has no text content")
 		return
 	}
 
-	// 使用分页引擎处理文本
-	paginationBiz := pagination.NewPaginationBiz()
+	// 分页引擎将在processBookWithMarkdownRenderer中使用
 
-	// 提取title作为book的标题
-	var bookTitle string
-	for _, item := range aiResponse.StructuredTextArray {
-		if item.Type == "title" {
-			if titleContent, ok := item.Content.(string); ok {
-				bookTitle = titleContent
-				break
-			}
-		}
-	}
-
-	// 如果没有找到title，使用默认标题
+	// 从markdown文本中提取title作为book的标题
+	bookTitle := p.extractTitleFromMarkdown(aiResponse.Text)
 	if bookTitle == "" {
 		bookTitle = fmt.Sprintf("AI生成卡册 - %s", time.Now().Format("2006-01-02 15:04:05"))
 	}
@@ -322,114 +311,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		log.C(ctx).Errorw("Failed to update book with title and image", "book_id", bookID, "error", err.Error())
 	}
 
-	// 将结构化文本转换为分页元素，排除title类型
-	var elements []pagination.Element
-
-	// 检查是否有结构化内容
-	if len(aiResponse.StructuredTextArray) > 0 {
-		log.C(ctx).Infow("使用AI返回的结构化内容", "book_id", bookID, "element_count", len(aiResponse.StructuredTextArray))
-
-		// 🔍 调试：打印原始结构化数据
-		for i, item := range aiResponse.StructuredTextArray {
-			log.C(ctx).Infow("🔍 调试：原始元素", "book_id", bookID, "index", i, "type", item.Type, "content_type", fmt.Sprintf("%T", item.Content))
-			if item.Type == "list" {
-				if listContent, ok := item.Content.([]interface{}); ok {
-					log.C(ctx).Infow("🔍 调试：list原始内容", "book_id", bookID, "index", i, "list_length", len(listContent))
-					for j, listItem := range listContent {
-						log.C(ctx).Infow("🔍 调试：list项目", "book_id", bookID, "element_index", i, "item_index", j, "item_content", fmt.Sprintf("%v", listItem))
-					}
-				}
-			}
-		}
-
-		for i, item := range aiResponse.StructuredTextArray {
-			log.C(ctx).Infow("🔍 调试：处理元素", "book_id", bookID, "index", i, "type", item.Type)
-
-			if item.Type == "title" {
-				log.C(ctx).Infow("🔍 调试：跳过title类型", "book_id", bookID, "index", i)
-				continue // 跳过title类型
-			}
-
-			// 根据类型映射到分页引擎的元素类型
-			var elementType pagination.ElementType
-			switch item.Type {
-			case "body":
-				elementType = pagination.ElementTypeBody
-			case "subtitle":
-				elementType = pagination.ElementTypeSubtitle
-			case "list":
-				elementType = pagination.ElementTypeList
-			case "quote":
-				elementType = pagination.ElementTypeQuote
-			default:
-				elementType = pagination.ElementTypeBody // 默认使用body类型
-			}
-
-			// 处理content内容
-			var content interface{}
-			switch v := item.Content.(type) {
-			case string:
-				content = v
-				log.C(ctx).Infow("🔍 调试：字符串内容", "book_id", bookID, "index", i, "content_length", len(v))
-			case []interface{}:
-				// 如果是列表，保持为字符串数组格式
-				var listItems []string
-				log.C(ctx).Infow("🔍 调试：列表内容开始处理", "book_id", bookID, "index", i, "original_length", len(v))
-				for j, listItem := range v {
-					log.C(ctx).Infow("🔍 调试：处理列表项", "book_id", bookID, "element_index", i, "item_index", j, "item_value", fmt.Sprintf("%v", listItem))
-					if str, ok := listItem.(string); ok {
-						listItems = append(listItems, str)
-						log.C(ctx).Infow("🔍 调试：列表项转换成功", "book_id", bookID, "element_index", i, "item_index", j, "converted_content", str)
-					} else {
-						log.C(ctx).Warnw("🔍 调试：列表项转换失败", "book_id", bookID, "element_index", i, "item_index", j, "item_type", fmt.Sprintf("%T", listItem))
-					}
-				}
-				content = listItems
-				log.C(ctx).Infow("🔍 调试：列表内容处理完成", "book_id", bookID, "index", i, "final_length", len(listItems))
-			default:
-				content = fmt.Sprintf("%v", v)
-				log.C(ctx).Infow("🔍 调试：默认内容处理", "book_id", bookID, "index", i, "content_type", fmt.Sprintf("%T", v))
-			}
-
-			elements = append(elements, pagination.Element{
-				Type:    elementType,
-				Content: content,
-			})
-			log.C(ctx).Infow("🔍 调试：元素添加到列表", "book_id", bookID, "index", i, "total_elements", len(elements))
-		}
-	} else {
-		// 如果没有结构化内容，将原始文本按段落分割并转换为body元素
-		log.C(ctx).Infow("AI未返回结构化内容，使用原始文本作为后备方案", "book_id", bookID, "original_text_length", len(text))
-
-		// 按段落分割文本
-		paragraphs := strings.Split(text, "\n\n")
-		for _, paragraph := range paragraphs {
-			paragraph = strings.TrimSpace(paragraph)
-			if paragraph != "" {
-				elements = append(elements, pagination.Element{
-					Type:    pagination.ElementTypeBody,
-					Content: paragraph,
-				})
-			}
-		}
-
-		// 如果段落分割后仍然没有内容，将整个文本作为一个元素
-		if len(elements) == 0 {
-			elements = append(elements, pagination.Element{
-				Type:    pagination.ElementTypeBody,
-				Content: text,
-			})
-		}
-	}
-
-	paginatedContent, err := paginationBiz.PaginateElements(elements)
-	if err != nil {
-		log.C(ctx).Errorw("Pagination failed", "book_id", bookID, "error", err.Error())
-		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to paginate content: "+err.Error())
-		return
-	}
-
-	// 首先获取模板背景信息（增强版渲染器也需要）
+	// 获取模板背景信息
 	var coverBackground string
 	if templateID != "" {
 		if tid, err := strconv.ParseUint(templateID, 10, 64); err == nil {
@@ -441,319 +323,33 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		}
 	}
 
-	// 根据配置创建渲染器，优先级：轻量级 > 增强版 > 渲染-测量 > 传统渲染器
-	var renderer card.RendererInterface
-	var useRenderAndMeasure bool
-	var useEnhancedRenderer bool
-	var useLightweightRenderer bool
+	// 使用简化的markdown渲染器处理
+	// 直接使用aiResponse.Text作为markdown内容，自动分页和渲染
+	if aiResponse.Text != "" {
+		log.C(ctx).Infow("使用AI返回的markdown文本", "book_id", bookID, "text_length", len(aiResponse.Text))
 
-	// 首先检查是否启用轻量级渲染器（最高优先级）
-	if card.IsLightweightRendererEnabled() {
-		log.C(ctx).Infow("🚀 尝试使用轻量级渲染器", "book_id", bookID)
-
-		// 创建轻量级渲染器集成器
-		lightweightIntegration, err := NewLightweightRendererIntegration(p.biz, paginationBiz.GetConfig())
-		if err != nil {
-			log.C(ctx).Errorw("轻量级渲染器创建失败，降级到下一方案", "book_id", bookID, "error", err.Error())
-			useLightweightRenderer = false
-		} else {
-			// 使用轻量级渲染器进行整体处理
-			if err := lightweightIntegration.ProcessBookWithLightweightRendering(ctx, book, userID, elements, imageUrl); err != nil {
-				log.C(ctx).Errorw("轻量级渲染器处理失败，降级到下一方案", "book_id", bookID, "error", err.Error())
-				useLightweightRenderer = false
-				lightweightIntegration.Cleanup()
-			} else {
-				log.C(ctx).Infow("✅ 轻量级渲染器处理完成", "book_id", bookID)
-				useLightweightRenderer = true
-
-				// 创建封面卡片
-				_, err := lightweightIntegration.CreateCoverCardWithLightweight(ctx, book, userID, coverBackground)
-				if err != nil {
-					log.C(ctx).Errorw("轻量级封面卡片创建失败", "book_id", bookID, "error", err.Error())
-				} else {
-					log.C(ctx).Infow("📚 轻量级封面卡片创建成功", "book_id", bookID)
-				}
-
-				// 清理资源
-				defer lightweightIntegration.Cleanup()
-			}
-		}
-	}
-
-	// 如果轻量级渲染器处理成功，直接跳过后续渲染流程
-	if useLightweightRenderer {
-		log.C(ctx).Infow("🎉 轻量级渲染完成，跳过其他渲染流程", "book_id", bookID)
-		// 直接进行最后的状态更新并返回
-		p.finalizeBookCreation(ctx, bookID, startTime)
-		return
-	}
-
-	// 检查是否启用增强版渲染器（降级方案）
-	if card.IsEnhancedRendererEnabled() {
-		log.C(ctx).Infow("尝试使用增强版渲染器", "book_id", bookID)
-
-		// 创建增强版渲染器集成器
-		enhancedIntegration := NewEnhancedRendererIntegration(p.biz, paginationBiz.GetConfig())
-
-		// 使用增强版渲染器进行整体处理（包含封面创建）
-		if err := enhancedIntegration.ProcessBookWithEnhancedRendering(ctx, book, userID, elements, imageUrl); err != nil {
-			log.C(ctx).Errorw("增强版渲染器处理失败，降级到传统方案", "book_id", bookID, "error", err.Error())
-			useEnhancedRenderer = false
-		} else {
-			log.C(ctx).Infow("增强版渲染器处理完成", "book_id", bookID)
-			useEnhancedRenderer = true
-			// 创建封面卡片（增强版渲染器完成后创建）
-			_, err := enhancedIntegration.CreateCoverCardWithEnhanced(ctx, book, userID, coverBackground)
-			if err != nil {
-				log.C(ctx).Errorw("增强版封面卡片创建失败", "book_id", bookID, "error", err.Error())
-			} else {
-				log.C(ctx).Infow("增强版封面卡片创建成功", "book_id", bookID)
-			}
-		}
-	}
-
-	// 如果增强版渲染器处理成功，直接跳过后续传统渲染流程
-	if useEnhancedRenderer {
-		log.C(ctx).Infow("增强版渲染完成，跳过传统渲染流程", "book_id", bookID)
-		// 直接进行最后的状态更新并返回
-		p.finalizeBookCreation(ctx, bookID, startTime)
-		return
-	}
-
-	// 检查配置是否启用渲染-测量方案（降级方案）
-	if card.IsRenderAndMeasureEnabled() {
-		// 优先使用渲染-测量方案
-		renderAndMeasureRenderer := card.NewRenderAndMeasureRenderer(paginationBiz.GetConfig())
-		if renderAndMeasureRenderer != nil {
-			renderer = renderAndMeasureRenderer
-			useRenderAndMeasure = true
-			log.C(ctx).Infow("使用渲染-测量方案", "book_id", bookID)
-		} else {
-			log.C(ctx).Warnw("渲染-测量渲染器创建失败，降级到传统渲染器", "book_id", bookID)
-			useRenderAndMeasure = false
+		// 直接使用markdown渲染器处理
+		if err := p.processBookWithMarkdownRenderer(ctx, book, userID, aiResponse.Text, coverBackground); err != nil {
+			log.C(ctx).Errorw("markdown渲染器处理失败", "book_id", bookID, "error", err.Error())
+			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "markdown渲染器处理失败: "+err.Error())
+			return
 		}
 	} else {
-		log.C(ctx).Infow("配置禁用渲染-测量方案，使用传统渲染器", "book_id", bookID)
-		useRenderAndMeasure = false
-	}
+		// 后备方案：使用原始文本
+		log.C(ctx).Infow("AI未返回markdown内容，使用原始文本作为后备方案", "book_id", bookID, "original_text_length", len(text))
 
-	// 如果渲染-测量方案不可用，使用传统渲染器
-	if !useRenderAndMeasure {
-		renderer = card.NewSimpleHeadlessRenderer(paginationBiz.GetConfig())
-
-		// 设置模板背景
-		if simpleRenderer, ok := renderer.(*card.SimpleHeadlessRenderer); ok {
-			if err := simpleRenderer.SetTemplateBackground(templateBackground); err != nil {
-				log.C(ctx).Warnw("Failed to set template background for content cards", "template_background", templateBackground, "error", err.Error())
-			}
+		if err := p.processBookWithMarkdownRenderer(ctx, book, userID, text, coverBackground); err != nil {
+			log.C(ctx).Errorw("markdown渲染器处理失败", "book_id", bookID, "error", err.Error())
+			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "markdown渲染器处理失败: "+err.Error())
+			return
 		}
 	}
 
-	coverRenderer := card.NewCoverRenderer(paginationBiz.GetConfig())
-
-	// 设置模板背景
-	if err := coverRenderer.SetTemplateBackground(templateBackground); err != nil {
-		log.C(ctx).Warnw("Failed to set template background for cover", "template_background", templateBackground, "error", err.Error())
-		// 继续处理，使用默认背景
-	}
-
-	// 创建封面卡片 (sort_order = 0)
-	// 背景图已在前面获取
-
-	// 总是创建封面卡片，即使没有图片或背景
-	// 创建封面卡片记录
-	coverCardRecord := &model.CardM{
-		UserID:    userID,
-		BookID:    book.ID,
-		SortOrder: 0, // 封面卡片排序为0
-	}
-
-	// 先创建封面卡片记录
-	if err := p.biz.Cards().Create(ctx, coverCardRecord); err != nil {
-		log.C(ctx).Errorw("Failed to create cover card", "book_id", bookID, "error", err.Error())
-	} else {
-		// 构造封面数据（包含可选的背景图）
-		var coverElements []map[string]interface{}
-		coverElements = append(coverElements, map[string]interface{}{"type": "title", "content": bookTitle})
-		if book.ImageUrl != "" {
-			coverElements = append(coverElements, map[string]interface{}{"type": "image", "content": book.ImageUrl})
-		}
-		if coverBackground != "" {
-			coverElements = append(coverElements, map[string]interface{}{"type": "background", "content": coverBackground})
-		}
-		if b, err := json.Marshal(coverElements); err == nil {
-			coverCardRecord.ProcessedText = string(b)
-		}
-
-		// 渲染封面卡片为图片（支持背景图）
-		renderedCoverCard, err := coverRenderer.RenderCoverCardToImage(coverCardRecord)
-		if err != nil {
-			log.C(ctx).Errorw("Failed to render cover card to image", "book_id", bookID, "error", err.Error())
-		} else {
-			// 更新封面卡片记录，保存渲染后的图片URL
-			coverCardRecord.RenderedImage = renderedCoverCard.ImageURL
-			if err := p.biz.Cards().Update(ctx, coverCardRecord); err != nil {
-				log.C(ctx).Errorw("Failed to update cover card with rendered image", "book_id", bookID, "error", err.Error())
-			}
-
-			// 使用封面卡片的rendered_image更新book的image_url
-			// 业务要求：book.image_url 取该book对应、processed_text为null的卡片（封面卡）rendered_image
-			book.ImageUrl = coverCardRecord.RenderedImage
-			if err := p.biz.Books().Update(ctx, book); err != nil {
-				log.C(ctx).Errorw("Failed to update book image_url from cover card rendered image", "book_id", bookID, "error", err.Error())
-			}
-		}
-
-		// 更新用户的卡片数量统计
-		if err := p.biz.Users().IncrementUserCardNum(ctx, userID); err != nil {
-			log.C(ctx).Errorw("Failed to increment user card num for cover card", "book_id", bookID, "error", err.Error())
-		}
-	}
-
-	// 根据渲染器类型选择不同的渲染策略
-	if useRenderAndMeasure {
-		// 使用渲染-测量方案：批量渲染所有卡片
-		log.C(ctx).Infow("使用渲染-测量方案批量渲染", "book_id", bookID, "card_count", len(paginatedContent.Cards))
-
-		// 为每个分页后的卡片创建单独的CardM记录
-		var allCards []*model.CardM
-		for i, cardContent := range paginatedContent.Cards {
-			// 将卡片内容转换为JSON格式
-			var cardElements []map[string]interface{}
-			for _, element := range cardContent.Elements {
-				cardElements = append(cardElements, map[string]interface{}{
-					"type":    element.Type,
-					"content": element.Content,
-				})
-			}
-
-			// 将JSON数据转换为字符串
-			cardJSONStr, err := json.Marshal(cardElements)
-			if err != nil {
-				log.C(ctx).Errorw("Failed to marshal card JSON", "book_id", bookID, "card_index", i, "error", err.Error())
-				continue
-			}
-
-			// 创建卡片记录
-			cardRecord := &model.CardM{
-				UserID:        userID,
-				BookID:        book.ID,
-				ProcessedText: string(cardJSONStr),
-				SortOrder:     i + 1, // 从1开始计数，0是封面卡片
-			}
-
-			if err := p.biz.Cards().Create(ctx, cardRecord); err != nil {
-				log.C(ctx).Errorw("Failed to create card", "book_id", bookID, "card_index", i, "error", err.Error())
-				continue
-			}
-
-			allCards = append(allCards, cardRecord)
-		}
-
-		// 批量渲染所有卡片
-		if len(allCards) > 0 {
-			renderedCards, err := renderer.(*card.RenderAndMeasureRenderer).RenderBookToImages(book, allCards)
-			if err != nil {
-				log.C(ctx).Errorw("Failed to batch render cards", "book_id", bookID, "error", err.Error())
-			} else {
-				// 更新所有卡片的渲染图片
-				for i, renderedCard := range renderedCards {
-					if i < len(allCards) {
-						allCards[i].RenderedImage = renderedCard.ImageURL
-						if err := p.biz.Cards().Update(ctx, allCards[i]); err != nil {
-							log.C(ctx).Errorw("Failed to update card with rendered image", "book_id", bookID, "card_id", allCards[i].ID, "error", err.Error())
-						}
-					}
-				}
-			}
-		}
-
-		// 更新用户卡片统计
-		if err := p.biz.Users().IncrementUserCardNum(ctx, userID); err != nil {
-			log.C(ctx).Errorw("Failed to increment user card num", "book_id", bookID, "error", err.Error())
-			// 统计更新失败不影响主要流程
-		}
-	} else {
-		// 使用传统方案：逐张卡片渲染
-		log.C(ctx).Infow("使用传统方案逐张渲染", "book_id", bookID, "card_count", len(paginatedContent.Cards))
-
-		for i, cardContent := range paginatedContent.Cards {
-			// 将卡片内容转换为JSON格式
-			var cardElements []map[string]interface{}
-			for _, element := range cardContent.Elements {
-				cardElements = append(cardElements, map[string]interface{}{
-					"type":    element.Type,
-					"content": element.Content,
-				})
-			}
-
-			// 将JSON数据转换为字符串
-			cardJSONStr, err := json.Marshal(cardElements)
-			if err != nil {
-				log.C(ctx).Errorw("Failed to marshal card JSON", "book_id", bookID, "card_index", i, "error", err.Error())
-				continue
-			}
-
-			// 创建卡片记录
-			cardRecord := &model.CardM{
-				UserID:        userID,
-				BookID:        book.ID,
-				ProcessedText: string(cardJSONStr),
-				SortOrder:     i + 1, // 从1开始计数，0是封面卡片
-			}
-
-			if err := p.biz.Cards().Create(ctx, cardRecord); err != nil {
-				log.C(ctx).Errorw("Failed to create card", "book_id", bookID, "card_index", i, "error", err.Error())
-				continue
-			}
-
-			// 渲染卡片为图片
-			log.C(ctx).Infow("Starting to render card", "book_id", bookID, "card_id", cardRecord.ID, "card_index", i)
-
-			renderedCard, err := renderer.RenderCardToImage(cardRecord)
-			if err != nil {
-				log.C(ctx).Errorw("Failed to render card to image",
-					"book_id", bookID,
-					"card_id", cardRecord.ID,
-					"card_index", i,
-					"error", err.Error(),
-					"card_content_length", len(cardRecord.ProcessedText),
-					"card_content_preview", string(cardRecord.ProcessedText[:min(100, len(cardRecord.ProcessedText))]))
-
-				// 修复：卡片渲染失败时，将整个 book 标记为失败
-				p.updateBookStatus(ctx, bookID, model.BookStatusFailed, fmt.Sprintf("Failed to render card %d to image: %v", cardRecord.ID, err.Error()))
-				return
-			} else {
-				log.C(ctx).Infow("Card rendered successfully",
-					"book_id", bookID,
-					"card_id", cardRecord.ID,
-					"image_url", renderedCard.ImageURL,
-					"image_size", fmt.Sprintf("%dx%d", renderedCard.Width, renderedCard.Height))
-
-				// 更新卡片记录，保存渲染后的图片URL
-				cardRecord.RenderedImage = renderedCard.ImageURL
-				if err := p.biz.Cards().Update(ctx, cardRecord); err != nil {
-					log.C(ctx).Errorw("Failed to update card with rendered image", "book_id", bookID, "card_id", cardRecord.ID, "error", err.Error())
-				}
-			}
-
-			// 更新用户的卡片数量统计
-			if err := p.biz.Users().IncrementUserCardNum(ctx, userID); err != nil {
-				log.C(ctx).Errorw("Failed to increment user card num", "book_id", bookID, "card_id", cardRecord.ID, "error", err.Error())
-			}
-		}
-	}
-
-	// 更新书籍的卡片数量
-	book.CardCount = len(paginatedContent.Cards)
-	if err := p.biz.Books().Update(ctx, book); err != nil {
-		log.C(ctx).Errorw("Failed to update book card count", "book_id", bookID, "error", err.Error())
-	}
-
-	// 注意：用户统计已在创建book时更新，这里不需要再次更新
-
-	// 最终完成book创建
+	// 直接完成，不需要其他渲染流程
+	log.C(ctx).Infow("🎉 markdown渲染器处理完成，跳过其他渲染流程", "book_id", bookID)
+	// 直接进行最后的状态更新并返回
 	p.finalizeBookCreation(ctx, bookID, startTime)
+	return
 }
 
 // updateBookStatus 更新book状态
@@ -784,14 +380,8 @@ func (p *AsyncBookProcessor) updateBookStatus(ctx context.Context, bookID uint, 
 
 // QianwenResponse 通义千问返回的结构化数据
 type QianwenResponse struct {
-	StructuredTextArray []StructuredTextItem `json:"structured_text_array"`
-	ImagePrompt         string               `json:"image_prompt"`
-}
-
-// StructuredTextItem 结构化文本项
-type StructuredTextItem struct {
-	Type    string      `json:"type"`
-	Content interface{} `json:"content"`
+	Text        string `json:"text"`         // 带markdown格式的文字内容
+	ImagePrompt string `json:"image_prompt"` // 文生图提示词
 }
 
 // extractJSONWithRetry 带重试的JSON提取（更激进的修复策略）
@@ -1884,4 +1474,282 @@ func (p *AsyncBookProcessor) callQianwenWithRetry(ctx context.Context, messages 
 	}
 
 	return "", fmt.Errorf("阿里千问API重试%d次后仍失败: %v", maxRetries, lastErr)
+}
+
+// extractTitleFromMarkdown 从markdown文本中提取标题
+func (p *AsyncBookProcessor) extractTitleFromMarkdown(markdown string) string {
+	lines := strings.Split(markdown, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "# ") {
+			// 找到一级标题，返回标题内容（去掉# 前缀）
+			return strings.TrimSpace(strings.TrimPrefix(line, "# "))
+		}
+	}
+	return ""
+}
+
+// convertMarkdownToElements 将markdown文本转换为分页元素
+func (p *AsyncBookProcessor) convertMarkdownToElements(markdown string) []pagination.Element {
+	var elements []pagination.Element
+	lines := strings.Split(markdown, "\n")
+
+	var currentContent strings.Builder
+	var currentType pagination.ElementType = pagination.ElementTypeBody
+
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+
+		// 跳过空行
+		if line == "" {
+			// 如果当前有内容，先保存当前元素
+			if currentContent.Len() > 0 {
+				content := strings.TrimSpace(currentContent.String())
+				if content != "" {
+					elements = append(elements, pagination.Element{
+						Type:    currentType,
+						Content: content,
+					})
+				}
+				currentContent.Reset()
+			}
+			continue
+		}
+
+		// 检查是否是标题
+		if strings.HasPrefix(line, "# ") {
+			// 保存之前的内容
+			if currentContent.Len() > 0 {
+				content := strings.TrimSpace(currentContent.String())
+				if content != "" {
+					elements = append(elements, pagination.Element{
+						Type:    currentType,
+						Content: content,
+					})
+				}
+				currentContent.Reset()
+			}
+
+			// 跳过一级标题（已经在book title中处理）
+			if !strings.HasPrefix(line, "# ") {
+				// 二级标题
+				title := strings.TrimSpace(strings.TrimPrefix(line, "## "))
+				if title != "" {
+					elements = append(elements, pagination.Element{
+						Type:    pagination.ElementTypeSubtitle,
+						Content: title,
+					})
+				}
+			}
+			continue
+		}
+
+		// 检查是否是列表项
+		if strings.HasPrefix(line, "- ") {
+			// 保存之前的内容
+			if currentContent.Len() > 0 {
+				content := strings.TrimSpace(currentContent.String())
+				if content != "" {
+					elements = append(elements, pagination.Element{
+						Type:    currentType,
+						Content: content,
+					})
+				}
+				currentContent.Reset()
+			}
+
+			// 收集列表项
+			var listItems []string
+			listItems = append(listItems, strings.TrimSpace(strings.TrimPrefix(line, "- ")))
+
+			// 继续收集后续的列表项
+			for j := i + 1; j < len(lines); j++ {
+				nextLine := strings.TrimSpace(lines[j])
+				if strings.HasPrefix(nextLine, "- ") {
+					listItems = append(listItems, strings.TrimSpace(strings.TrimPrefix(nextLine, "- ")))
+				} else if nextLine == "" {
+					// 空行表示列表结束
+					break
+				} else {
+					// 非列表项，停止收集
+					break
+				}
+			}
+
+			if len(listItems) > 0 {
+				elements = append(elements, pagination.Element{
+					Type:    pagination.ElementTypeList,
+					Content: listItems,
+				})
+			}
+			continue
+		}
+
+		// 检查是否是引用
+		if strings.HasPrefix(line, "> ") {
+			// 保存之前的内容
+			if currentContent.Len() > 0 {
+				content := strings.TrimSpace(currentContent.String())
+				if content != "" {
+					elements = append(elements, pagination.Element{
+						Type:    currentType,
+						Content: content,
+					})
+				}
+				currentContent.Reset()
+			}
+
+			// 收集引用内容
+			quote := strings.TrimSpace(strings.TrimPrefix(line, "> "))
+			if quote != "" {
+				elements = append(elements, pagination.Element{
+					Type:    pagination.ElementTypeQuote,
+					Content: quote,
+				})
+			}
+			continue
+		}
+
+		// 普通段落内容
+		if currentContent.Len() > 0 {
+			currentContent.WriteString("\n")
+		}
+		currentContent.WriteString(line)
+	}
+
+	// 保存最后的内容
+	if currentContent.Len() > 0 {
+		content := strings.TrimSpace(currentContent.String())
+		if content != "" {
+			elements = append(elements, pagination.Element{
+				Type:    currentType,
+				Content: content,
+			})
+		}
+	}
+
+	return elements
+}
+
+// processBookWithMarkdownRenderer 使用markdown渲染器处理书籍
+// 直接使用aiResponse.Text作为markdown内容，自动分页和渲染
+func (p *AsyncBookProcessor) processBookWithMarkdownRenderer(
+	ctx context.Context,
+	book *model.BookM,
+	userID uint,
+	markdownText string,
+	coverBackground string,
+) error {
+	log.C(ctx).Infow("开始使用markdown渲染器处理", "book_id", book.ID, "text_length", len(markdownText))
+
+	// 1. 直接使用markdown文本创建单个卡片记录
+	cardRecord := &model.CardM{
+		UserID:        userID,
+		BookID:        book.ID,
+		ProcessedText: markdownText, // 直接存储markdown内容
+		SortOrder:     1,            // 内容卡片排序为1
+	}
+
+	// 2. 保存卡片记录
+	if err := p.biz.Cards().Create(ctx, cardRecord); err != nil {
+		return fmt.Errorf("创建卡片记录失败: %v", err)
+	}
+
+	log.C(ctx).Infow("卡片记录创建成功", "book_id", book.ID, "card_id", cardRecord.ID, "content_length", len(markdownText))
+
+	// 3. 使用现有的轻量级渲染器进行渲染
+	// 这里我们使用现有的渲染流程，但传入markdown文本
+	if card.IsLightweightRendererEnabled() {
+		log.C(ctx).Infow("🚀 使用轻量级渲染器渲染markdown内容", "book_id", book.ID)
+
+		// 创建轻量级渲染器集成器
+		paginationBiz := pagination.NewPaginationBiz()
+		lightweightIntegration, err := NewLightweightRendererIntegration(p.biz, paginationBiz.GetConfig())
+		if err != nil {
+			log.C(ctx).Errorw("轻量级渲染器创建失败", "book_id", book.ID, "error", err.Error())
+			return fmt.Errorf("轻量级渲染器创建失败: %v", err)
+		}
+		defer lightweightIntegration.Cleanup()
+
+		// 将markdown文本转换为分页元素
+		elements := p.convertMarkdownToElements(markdownText)
+
+		// 使用轻量级渲染器进行整体处理
+		if err := lightweightIntegration.ProcessBookWithLightweightRendering(ctx, book, userID, elements, book.ImageUrl); err != nil {
+			log.C(ctx).Errorw("轻量级渲染器处理失败", "book_id", book.ID, "error", err.Error())
+			return fmt.Errorf("轻量级渲染器处理失败: %v", err)
+		}
+
+		// 创建封面卡片
+		_, err = lightweightIntegration.CreateCoverCardWithLightweight(ctx, book, userID, coverBackground)
+		if err != nil {
+			log.C(ctx).Errorw("轻量级封面卡片创建失败", "book_id", book.ID, "error", err.Error())
+		} else {
+			log.C(ctx).Infow("📚 轻量级封面卡片创建成功", "book_id", book.ID)
+		}
+
+		log.C(ctx).Infow("✅ 轻量级渲染器处理完成", "book_id", book.ID)
+	} else {
+		// 如果没有启用轻量级渲染器，使用传统渲染流程
+		log.C(ctx).Infow("使用传统渲染流程", "book_id", book.ID)
+
+		// 将markdown文本转换为分页元素
+		elements := p.convertMarkdownToElements(markdownText)
+
+		// 使用传统分页和渲染流程
+		paginationBiz := pagination.NewPaginationBiz()
+		paginatedContent, err := paginationBiz.PaginateElements(elements)
+		if err != nil {
+			return fmt.Errorf("分页处理失败: %v", err)
+		}
+
+		// 为每个分页后的卡片创建数据库记录
+		for i, cardContent := range paginatedContent.Cards {
+			// 将卡片内容转换为JSON格式
+			var cardElements []map[string]interface{}
+			for _, element := range cardContent.Elements {
+				cardElements = append(cardElements, map[string]interface{}{
+					"type":    element.Type,
+					"content": element.Content,
+				})
+			}
+
+			// 将JSON数据转换为字符串
+			cardJSONStr, err := json.Marshal(cardElements)
+			if err != nil {
+				log.C(ctx).Errorw("Failed to marshal card JSON", "book_id", book.ID, "card_index", i, "error", err.Error())
+				continue
+			}
+
+			// 创建卡片记录
+			contentCardRecord := &model.CardM{
+				UserID:        userID,
+				BookID:        book.ID,
+				ProcessedText: string(cardJSONStr),
+				SortOrder:     i + 1, // 从1开始计数，0是封面卡片
+			}
+
+			if err := p.biz.Cards().Create(ctx, contentCardRecord); err != nil {
+				log.C(ctx).Errorw("Failed to create content card", "book_id", book.ID, "card_index", i, "error", err.Error())
+				continue
+			}
+
+			log.C(ctx).Infow("内容卡片创建成功", "book_id", book.ID, "card_id", contentCardRecord.ID, "sort_order", contentCardRecord.SortOrder)
+		}
+
+		// 更新用户卡片统计
+		for range paginatedContent.Cards {
+			if err := p.biz.Users().IncrementUserCardNum(ctx, userID); err != nil {
+				log.C(ctx).Errorw("更新用户卡片统计失败", "book_id", book.ID, "user_id", userID, "error", err.Error())
+			}
+		}
+	}
+
+	// 4. 更新用户卡片统计
+	if err := p.biz.Users().IncrementUserCardNum(ctx, userID); err != nil {
+		log.C(ctx).Errorw("更新用户卡片统计失败", "book_id", book.ID, "user_id", userID, "error", err.Error())
+	}
+
+	log.C(ctx).Infow("markdown渲染器处理完成", "book_id", book.ID)
+	return nil
 }

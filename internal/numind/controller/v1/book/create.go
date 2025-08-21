@@ -10,6 +10,7 @@ import (
 
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/book"
+	"numind-server/internal/numind/biz/markdown"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
@@ -24,14 +25,8 @@ type CreateBookRequest struct {
 
 // QianwenResponse 通义千问返回的结构化数据
 type QianwenResponse struct {
-	StructuredTextArray []StructuredTextItem `json:"structured_text_array"`
-	ImagePrompt         string               `json:"image_prompt"`
-}
-
-// StructuredTextItem 结构化文本项
-type StructuredTextItem struct {
-	Type    string      `json:"type"`
-	Content interface{} `json:"content"`
+	Text        string `json:"text"`         // 带markdown格式的文字内容
+	ImagePrompt string `json:"image_prompt"` // 文生图提示词
 }
 
 // getUserIDFromToken 从JWT token中获取用户ID
@@ -129,22 +124,18 @@ func (ctrl *BookController) Create(c *gin.Context) {
 		return
 	}
 
-	// 创建适配器来包装biz接口
-	bizAdapter := &BookBizAdapter{biz: ctrl.b}
+	// 将 TemplateID 转换为字符串
+	templateID := fmt.Sprintf("%v", req.TemplateID)
 
-	// 创建异步处理器
-	asyncProcessor := book.NewAsyncBookProcessor(bizAdapter)
-
-	// 异步创建book
-	book, err := asyncProcessor.CreateBookAsync(c, userID, req.Text, req.TemplateID)
-	if err != nil {
-		log.C(c).Errorw("Failed to create book async", "error", err.Error())
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: "+err.Error()), nil)
-		return
+	// 检查是否启用 Markdown 处理模式
+	useMarkdown := viper.GetBool("book.use_markdown_processing")
+	if useMarkdown {
+		log.C(c).Infow("Using Markdown processing mode")
+		ctrl.createWithMarkdownProcessor(c, userID, req.Text, templateID)
+	} else {
+		log.C(c).Infow("Using legacy JSON processing mode")
+		ctrl.createWithJSONProcessor(c, userID, req.Text, templateID)
 	}
-
-	// 立即返回成功响应
-	core.WriteResponse(c, nil, book)
 }
 
 // BookBizAdapter 适配器，用于包装biz接口
@@ -287,4 +278,45 @@ type AsyncStoreBizAdapter struct {
 func (a *AsyncStoreBizAdapter) UpdateUserBookStatsOnStatusChange(ctx context.Context, userID uint, oldStatus, newStatus string) error {
 	// 通过store层直接更新用户统计
 	return a.biz.Books().UpdateUserBookStatsOnStatusChange(ctx, userID, oldStatus, newStatus)
+}
+
+// createWithMarkdownProcessor 使用 Markdown 处理器创建书籍
+func (ctrl *BookController) createWithMarkdownProcessor(c *gin.Context, userID uint, text, templateID string) {
+	// 创建 Markdown 集成适配器
+	markdownAdapter := markdown.NewMarkdownIntegrationAdapter(ctrl.b)
+
+	// 异步创建book
+	book, err := markdownAdapter.CreateBookAsync(c, userID, text, templateID)
+	if err != nil {
+		log.C(c).Errorw("Failed to create book with Markdown processor", "error", err.Error())
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: "+err.Error()), nil)
+		return
+	}
+
+	log.C(c).Infow("Book created successfully with Markdown processor",
+		"book_id", book.ID,
+		"title", book.Title)
+
+	// 立即返回成功响应
+	core.WriteResponse(c, nil, book)
+}
+
+// createWithJSONProcessor 使用传统 JSON 处理器创建书籍（保持兼容性）
+func (ctrl *BookController) createWithJSONProcessor(c *gin.Context, userID uint, text, templateID string) {
+	// 创建适配器来包装biz接口
+	bizAdapter := &BookBizAdapter{biz: ctrl.b}
+
+	// 创建异步处理器
+	asyncProcessor := book.NewAsyncBookProcessor(bizAdapter)
+
+	// 异步创建book
+	book, err := asyncProcessor.CreateBookAsync(c, userID, text, templateID)
+	if err != nil {
+		log.C(c).Errorw("Failed to create book async", "error", err.Error())
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: "+err.Error()), nil)
+		return
+	}
+
+	// 立即返回成功响应
+	core.WriteResponse(c, nil, book)
 }

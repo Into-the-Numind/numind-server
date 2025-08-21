@@ -307,7 +307,7 @@ func (b *chatBiz) handleBookSearch(ctx context.Context, userID uint, msg *model.
 			"id":          book.ID,
 			"title":       book.Title,
 			"tags":        book.Tags,
-			"keywords":    book.Keywords,  // 添加关键词信息
+			"keywords":    book.Keywords, // 添加关键词信息
 			"category_id": book.CategoryID,
 			"image_url":   book.ImageUrl,
 			"card_count":  book.CardCount,
