@@ -64,14 +64,18 @@ oss:
 volc:
   api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "deepseek-v3"  # 修复：使用正确的火山引擎模型
+  model: "doubao-seed-1-6-250615"  # 使用的AI模型 - 修复：使用正确的火山引擎模型
   temperature: 0.5 # 生成文本的随机性，值越高随机性越大
   tokens: 2000 # 生成文本的最大长度
-  timeout: 120s  # 超时时间，从30s改为120s
+  timeout: 120s  # 超时时间
   max_retries: 3
 
 resource:
   image_path: "/opt/numind/dev/image/upload"
+
+# 书籍处理配置
+book:
+    use_simplified_processing: true  # 启用简化处理模式
 
 baidu:
   api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
