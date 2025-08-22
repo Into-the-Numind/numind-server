@@ -7,18 +7,23 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
-	"numind-server/internal/numind/biz/card"
+	"numind-server/internal/numind/biz/markdown"
 	"numind-server/internal/numind/biz/pagination"
 	"numind-server/internal/pkg/httpclient"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
+	utilpkg "numind-server/pkg/util"
+
+	"github.com/spf13/viper"
 )
 
 // AsyncBookProcessor 异步book处理器
@@ -49,6 +54,7 @@ type AsyncBookBiz interface {
 type AsyncCardBiz interface {
 	Create(ctx context.Context, card *model.CardM) error
 	Update(ctx context.Context, card *model.CardM) error
+	GetByID(ctx context.Context, id uint) (*model.CardM, error)
 }
 
 // AsyncUserBiz 用户业务接口
@@ -161,147 +167,90 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		templateBackground = "" // 使用默认白色背景
 	}
 
-	// 🚀 使用增强文本处理器处理长文本（解决JSON截断问题）
-	log.C(ctx).Infow("🚀 启动增强文本处理流程", "book_id", bookID, "text_length", len(text))
+	// 🚀 第一步：调用文字大模型，获取返回的 markdown 格式内容
+	log.C(ctx).Infow("🚀 第一步：调用文字大模型处理文本", "book_id", bookID, "text_length", len(text))
 
-	// 创建增强文本处理器
-	enhancedProcessor := NewEnhancedTextProcessor()
-
-	// 记录处理器配置
-	processorStats := enhancedProcessor.GetProcessorStats()
-	log.C(ctx).Infow("📊 增强处理器配置", "book_id", bookID, "config", processorStats)
-
-	// 定义API调用函数（增强版，支持参数优化和空响应快速检测）
-	apiCaller := func(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, bookID uint) (string, error) {
-		log.C(ctx).Debugw("🚀 开始API调用",
-			"book_id", bookID,
-			"requested_max_tokens", maxTokens,
-			"requested_temperature", temperature)
-
-		// 创建参数优化器
-		paramOptimizer := NewAPIParametersOptimizer()
-
-		// 优先尝试阿里千问API
-		result, err := p.callQianwenWithEnhancedRetry(ctx, messages, maxTokens, temperature, bookID, paramOptimizer)
-		if err != nil {
-			log.C(ctx).Warnw("⚠️ 阿里千问API失败，尝试火山引擎降级", "book_id", bookID, "error", err.Error())
-
-			// 降级到火山引擎API
-			volcResult, volcErr := p.callVolcWithEnhancedRetry(ctx, messages, maxTokens, temperature, bookID, paramOptimizer)
-			if volcErr != nil {
-				return "", fmt.Errorf("所有API都失败: qianwen=%w, volc=%w", err, volcErr)
-			}
-
-			log.C(ctx).Infow("✅ 火山引擎API降级成功", "book_id", bookID)
-			return volcResult, nil
-		}
-
-		log.C(ctx).Infow("✅ 阿里千问API调用成功", "book_id", bookID)
-		return result, nil
+	// 获取配置文件中的提示词
+	textProcessingPrompt := viper.GetString("ai_prompts.text_processing")
+	if textProcessingPrompt == "" {
+		log.C(ctx).Errorw("❌ 配置文件中未找到ai_prompts.text_processing", "book_id", bookID)
+		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Missing text_processing prompt in config")
+		return
 	}
 
-	// 使用增强处理器处理长文本
-	result, err := enhancedProcessor.ProcessLongText(ctx, text, apiCaller, bookID)
+	// 构建消息
+	messages := []map[string]string{
+		{"role": "user", "content": strings.ReplaceAll(textProcessingPrompt, "{content}", text)},
+	}
+
+	// 调用AI模型处理文本
+	aiResponse, err := p.biz.Ali().QianwenTextStream(messages, 4000, 0.7)
 	if err != nil {
-		log.C(ctx).Errorw("❌ 增强文本处理失败", "book_id", bookID, "error", err.Error())
-		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, fmt.Sprintf("Enhanced text processing failed: %v", err))
-		return
-	}
+		log.C(ctx).Warnw("⚠️ 阿里千问API失败，尝试火山引擎降级", "book_id", bookID, "error", err.Error())
 
-	// 记录处理结果统计
-	log.C(ctx).Infow("📈 增强处理完成",
-		"book_id", bookID,
-		"total_time", result.TotalTime,
-		"total_chunks", result.MergeStats.TotalChunks,
-		"success_chunks", result.MergeStats.SuccessChunks,
-		"failed_chunks", result.MergeStats.FailedChunks,
-		"total_retries", result.MergeStats.TotalRetries,
-		"required_merge", result.MergeStats.RequiredMerge,
-		"final_json_length", len(result.FinalJSON))
-
-	// 使用处理结果
-	jsonContent := result.FinalJSON
-
-	// 验证最终JSON
-	if jsonContent == "" {
-		log.C(ctx).Errorw("❌ 增强处理器返回空JSON", "book_id", bookID)
-		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Enhanced processor returned empty JSON")
-		return
-	}
-
-	// 解析AI返回的JSON结果
-	var aiResponse QianwenResponse
-	if err := json.Unmarshal([]byte(jsonContent), &aiResponse); err != nil {
-		log.C(ctx).Warnw("AI response JSON解析失败，尝试使用高级修复引擎",
-			"book_id", bookID,
-			"error", err.Error(),
-			"json_content_length", len(jsonContent))
-
-		// 使用高级JSON修复引擎
-		extractor := httpclient.NewAdvancedJSONExtractor()
-		repairedJSON, repairErr := extractor.ExtractValidJSON([]byte(jsonContent))
-
-		if repairErr != nil {
-			log.C(ctx).Errorw("JSON修复也失败",
-				"book_id", bookID,
-				"original_error", err.Error(),
-				"repair_error", repairErr.Error(),
-				"json_content_preview", jsonContent[:minInt(len(jsonContent), 500)])
-			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to parse AI response after repair: "+repairErr.Error())
+		// 降级到火山引擎API
+		aiResponse, err = p.biz.Volc().VolcTextStream(ctx, messages, 4000, 0.7)
+		if err != nil {
+			log.C(ctx).Errorw("❌ 所有AI API都失败", "book_id", bookID, "error", err.Error())
+			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, fmt.Sprintf("All AI APIs failed: %v", err))
 			return
 		}
-
-		// 尝试解析修复后的JSON
-		if err := json.Unmarshal(repairedJSON, &aiResponse); err != nil {
-			log.C(ctx).Errorw("修复后JSON解析仍然失败",
-				"book_id", bookID,
-				"error", err.Error(),
-				"repaired_json_length", len(repairedJSON),
-				"repaired_json_preview", string(repairedJSON[:minInt(len(repairedJSON), 500)]))
-			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to parse repaired AI response: "+err.Error())
-			return
-		}
-
-		log.C(ctx).Infow("JSON解析成功（经过高级修复）",
-			"book_id", bookID,
-			"original_length", len(jsonContent),
-			"repaired_length", len(repairedJSON))
+		log.C(ctx).Infow("✅ 火山引擎API降级成功", "book_id", bookID)
+	} else {
+		log.C(ctx).Infow("✅ 阿里千问API调用成功", "book_id", bookID)
 	}
 
-	// 验证解析后的数据结构
-	if aiResponse.Text == "" {
-		log.C(ctx).Errorw("AI response has no text content",
-			"book_id", bookID,
-			"response", aiResponse)
-		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "AI response has no text content")
+	// 验证AI响应
+	if aiResponse == "" {
+		log.C(ctx).Errorw("❌ AI返回空响应", "book_id", bookID)
+		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "AI returned empty response")
 		return
 	}
 
-	// 分页引擎将在processBookWithMarkdownRenderer中使用
+	log.C(ctx).Infow("📈 AI处理完成", "book_id", bookID, "response_length", len(aiResponse))
+
+	// 解析AI返回的markdown内容
+	markdownContent, imagePrompt := p.parseMarkdownResponse(aiResponse)
+	if markdownContent == "" {
+		log.C(ctx).Errorw("❌ 无法解析markdown内容", "book_id", bookID)
+		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to parse markdown content")
+		return
+	}
 
 	// 从markdown文本中提取title作为book的标题
-	bookTitle := p.extractTitleFromMarkdown(aiResponse.Text)
+	bookTitle := p.extractTitleFromMarkdown(markdownContent)
 	if bookTitle == "" {
 		bookTitle = fmt.Sprintf("AI生成卡册 - %s", time.Now().Format("2006-01-02 15:04:05"))
 	}
 
-	// 使用解析出的image_prompt调用stable-diffusion生成图片
+	// 🎨 第二步：从解析结果中提取 image_prompt 字段，作为文生图大模型的提示词
+	log.C(ctx).Infow("🎨 第二步：提取image_prompt字段", "book_id", bookID, "image_prompt", imagePrompt)
+
+	// 🖼️ 第三步：调用文生图大模型生成图片
 	var imageUrl string
-	if aiResponse.ImagePrompt != "" {
-		// 直接使用原始提示词调用stable-diffusion API
-		remoteImageUrl, err := p.biz.Ali().StableDiffusionImageAsync(aiResponse.ImagePrompt, "1024*1024")
+	if imagePrompt != "" {
+		log.C(ctx).Infow("🖼️ 第三步：调用文生图大模型生成图片", "book_id", bookID, "image_prompt", imagePrompt)
+
+		// 调用stable-diffusion API生成图片
+		remoteImageUrl, err := p.biz.Ali().StableDiffusionImageAsync(imagePrompt, "1024*1024")
 		if err != nil {
 			log.C(ctx).Errorw("StableDiffusionImageAsync failed", "book_id", bookID, "error", err.Error())
-			// 图片生成失败不影响整体流程
+			// 图片生成失败不影响整体流程，但记录错误
 		} else {
-			// 下载并保存图片到本地
-			localImagePath, err := downloadAndSaveImage(remoteImageUrl, bookID)
+			log.C(ctx).Infow("✅ 文生图大模型生成图片成功", "book_id", bookID, "remote_image_url", remoteImageUrl)
+
+			// 📁 第四步：图片存储 - 按照指定路径规则存储
+			// 卡册封面图片路径：resource.image_path/{bookid}/book_{id}.webp
+			localImagePath, err := p.downloadAndSaveImageWithPath(remoteImageUrl, bookID)
 			if err != nil {
 				log.C(ctx).Errorw("Failed to download and save image", "book_id", bookID, "error", err.Error())
 			} else {
 				imageUrl = localImagePath
+				log.C(ctx).Infow("✅ 卡册封面图片存储成功", "book_id", bookID, "local_image_path", localImagePath)
 			}
 		}
+	} else {
+		log.C(ctx).Warnw("⚠️ 未找到image_prompt字段，跳过图片生成", "book_id", bookID)
 	}
 
 	// 更新book记录
@@ -311,25 +260,13 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		log.C(ctx).Errorw("Failed to update book with title and image", "book_id", bookID, "error", err.Error())
 	}
 
-	// 获取模板背景信息
-	var coverBackground string
-	if templateID != "" {
-		if tid, err := strconv.ParseUint(templateID, 10, 64); err == nil {
-			if tmpl, err := p.biz.Templates().GetByID(ctx, uint(tid)); err == nil && tmpl != nil {
-				// 这里假设 template.File 字段保存的是背景图的绝对路径
-				coverBackground = tmpl.File
-				log.C(ctx).Infow("获取到模板背景图", "book_id", bookID, "template_id", templateID, "background_path", coverBackground)
-			}
-		}
-	}
-
 	// 使用简化的markdown渲染器处理
-	// 直接使用aiResponse.Text作为markdown内容，自动分页和渲染
-	if aiResponse.Text != "" {
-		log.C(ctx).Infow("使用AI返回的markdown文本", "book_id", bookID, "text_length", len(aiResponse.Text))
+	// 直接使用markdownContent作为markdown内容，自动分页和渲染
+	if markdownContent != "" {
+		log.C(ctx).Infow("使用AI返回的markdown文本", "book_id", bookID, "text_length", len(markdownContent))
 
 		// 直接使用markdown渲染器处理
-		if err := p.processBookWithMarkdownRenderer(ctx, book, userID, aiResponse.Text, coverBackground); err != nil {
+		if err := p.processBookWithMarkdownRenderer(ctx, book, userID, markdownContent, templateBackground); err != nil {
 			log.C(ctx).Errorw("markdown渲染器处理失败", "book_id", bookID, "error", err.Error())
 			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "markdown渲染器处理失败: "+err.Error())
 			return
@@ -338,7 +275,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		// 后备方案：使用原始文本
 		log.C(ctx).Infow("AI未返回markdown内容，使用原始文本作为后备方案", "book_id", bookID, "original_text_length", len(text))
 
-		if err := p.processBookWithMarkdownRenderer(ctx, book, userID, text, coverBackground); err != nil {
+		if err := p.processBookWithMarkdownRenderer(ctx, book, userID, text, templateBackground); err != nil {
 			log.C(ctx).Errorw("markdown渲染器处理失败", "book_id", bookID, "error", err.Error())
 			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "markdown渲染器处理失败: "+err.Error())
 			return
@@ -1640,116 +1577,659 @@ func (p *AsyncBookProcessor) processBookWithMarkdownRenderer(
 	markdownText string,
 	coverBackground string,
 ) error {
-	log.C(ctx).Infow("开始使用markdown渲染器处理", "book_id", book.ID, "text_length", len(markdownText))
+	log.C(ctx).Infow("开始使用增强版markdown渲染器处理", "book_id", book.ID, "text_length", len(markdownText))
 
-	// 1. 直接使用markdown文本创建单个卡片记录
-	cardRecord := &model.CardM{
-		UserID:        userID,
-		BookID:        book.ID,
-		ProcessedText: markdownText, // 直接存储markdown内容
-		SortOrder:     1,            // 内容卡片排序为1
+	// 1. 首先创建封面卡片（使用上下布局）
+	if err := p.createEnhancedCoverCard(ctx, book, userID, coverBackground); err != nil {
+		log.C(ctx).Errorw("创建增强版封面卡片失败", "book_id", book.ID, "error", err.Error())
+		// 封面创建失败不影响主流程，继续处理内容卡片
 	}
 
-	// 2. 保存卡片记录
-	if err := p.biz.Cards().Create(ctx, cardRecord); err != nil {
-		return fmt.Errorf("创建卡片记录失败: %v", err)
+	// 2. 处理markdown内容，分割为多张卡片
+	markdownCards, err := p.splitAndCreateMarkdownCards(ctx, book, userID, markdownText)
+	if err != nil {
+		return fmt.Errorf("创建markdown内容卡片失败: %v", err)
 	}
 
-	log.C(ctx).Infow("卡片记录创建成功", "book_id", book.ID, "card_id", cardRecord.ID, "content_length", len(markdownText))
+	log.C(ctx).Infow("markdown内容卡片创建成功", "book_id", book.ID, "card_count", len(markdownCards))
 
-	// 3. 使用现有的轻量级渲染器进行渲染
-	// 这里我们使用现有的渲染流程，但传入markdown文本
-	if card.IsLightweightRendererEnabled() {
-		log.C(ctx).Infow("🚀 使用轻量级渲染器渲染markdown内容", "book_id", book.ID)
-
-		// 创建轻量级渲染器集成器
-		paginationBiz := pagination.NewPaginationBiz()
-		lightweightIntegration, err := NewLightweightRendererIntegration(p.biz, paginationBiz.GetConfig())
-		if err != nil {
-			log.C(ctx).Errorw("轻量级渲染器创建失败", "book_id", book.ID, "error", err.Error())
-			return fmt.Errorf("轻量级渲染器创建失败: %v", err)
-		}
-		defer lightweightIntegration.Cleanup()
-
-		// 将markdown文本转换为分页元素
-		elements := p.convertMarkdownToElements(markdownText)
-
-		// 使用轻量级渲染器进行整体处理
-		if err := lightweightIntegration.ProcessBookWithLightweightRendering(ctx, book, userID, elements, book.ImageUrl); err != nil {
-			log.C(ctx).Errorw("轻量级渲染器处理失败", "book_id", book.ID, "error", err.Error())
-			return fmt.Errorf("轻量级渲染器处理失败: %v", err)
-		}
-
-		// 创建封面卡片
-		_, err = lightweightIntegration.CreateCoverCardWithLightweight(ctx, book, userID, coverBackground)
-		if err != nil {
-			log.C(ctx).Errorw("轻量级封面卡片创建失败", "book_id", book.ID, "error", err.Error())
-		} else {
-			log.C(ctx).Infow("📚 轻量级封面卡片创建成功", "book_id", book.ID)
-		}
-
-		log.C(ctx).Infow("✅ 轻量级渲染器处理完成", "book_id", book.ID)
-	} else {
-		// 如果没有启用轻量级渲染器，使用传统渲染流程
-		log.C(ctx).Infow("使用传统渲染流程", "book_id", book.ID)
-
-		// 将markdown文本转换为分页元素
-		elements := p.convertMarkdownToElements(markdownText)
-
-		// 使用传统分页和渲染流程
-		paginationBiz := pagination.NewPaginationBiz()
-		paginatedContent, err := paginationBiz.PaginateElements(elements)
-		if err != nil {
-			return fmt.Errorf("分页处理失败: %v", err)
-		}
-
-		// 为每个分页后的卡片创建数据库记录
-		for i, cardContent := range paginatedContent.Cards {
-			// 将卡片内容转换为JSON格式
-			var cardElements []map[string]interface{}
-			for _, element := range cardContent.Elements {
-				cardElements = append(cardElements, map[string]interface{}{
-					"type":    element.Type,
-					"content": element.Content,
-				})
-			}
-
-			// 将JSON数据转换为字符串
-			cardJSONStr, err := json.Marshal(cardElements)
-			if err != nil {
-				log.C(ctx).Errorw("Failed to marshal card JSON", "book_id", book.ID, "card_index", i, "error", err.Error())
-				continue
-			}
-
-			// 创建卡片记录
-			contentCardRecord := &model.CardM{
-				UserID:        userID,
-				BookID:        book.ID,
-				ProcessedText: string(cardJSONStr),
-				SortOrder:     i + 1, // 从1开始计数，0是封面卡片
-			}
-
-			if err := p.biz.Cards().Create(ctx, contentCardRecord); err != nil {
-				log.C(ctx).Errorw("Failed to create content card", "book_id", book.ID, "card_index", i, "error", err.Error())
-				continue
-			}
-
-			log.C(ctx).Infow("内容卡片创建成功", "book_id", book.ID, "card_id", contentCardRecord.ID, "sort_order", contentCardRecord.SortOrder)
-		}
-
-		// 更新用户卡片统计
-		for range paginatedContent.Cards {
-			if err := p.biz.Users().IncrementUserCardNum(ctx, userID); err != nil {
-				log.C(ctx).Errorw("更新用户卡片统计失败", "book_id", book.ID, "user_id", userID, "error", err.Error())
-			}
-		}
+	// 3. 更新book统计信息
+	totalCards := 1 + len(markdownCards) // 1个封面卡片 + markdown内容卡片
+	book.CardCount = totalCards
+	if err := p.biz.Books().Update(ctx, book); err != nil {
+		log.C(ctx).Warnw("更新book卡片统计失败", "book_id", book.ID, "error", err.Error())
 	}
 
 	// 4. 更新用户卡片统计
-	if err := p.biz.Users().IncrementUserCardNum(ctx, userID); err != nil {
-		log.C(ctx).Errorw("更新用户卡片统计失败", "book_id", book.ID, "user_id", userID, "error", err.Error())
+	for i := 0; i < totalCards; i++ {
+		if err := p.biz.Users().IncrementUserCardNum(ctx, userID); err != nil {
+			log.C(ctx).Errorw("更新用户卡片统计失败", "book_id", book.ID, "user_id", userID, "error", err.Error())
+		}
 	}
 
 	log.C(ctx).Infow("markdown渲染器处理完成", "book_id", book.ID)
 	return nil
+}
+
+// createEnhancedCoverCard 创建增强版封面卡片（上下布局）
+func (p *AsyncBookProcessor) createEnhancedCoverCard(
+	ctx context.Context,
+	book *model.BookM,
+	userID uint,
+	coverBackground string,
+) error {
+	log.C(ctx).Infow("🎨 创建增强版封面卡片", "book_id", book.ID, "title", book.Title)
+
+	// 创建封面卡片记录
+	coverCard := &model.CardM{
+		UserID:    userID,
+		BookID:    book.ID,
+		SortOrder: 0, // 封面卡片排序为0
+	}
+
+	// 准备封面数据 - 使用JSON格式存储
+	coverData := map[string]interface{}{
+		"type":       "cover",
+		"title":      book.Title,
+		"image_url":  book.ImageUrl, // 如果有封面图片
+		"background": coverBackground,
+	}
+
+	// 将封面数据转换为JSON
+	coverJSON, err := json.Marshal(coverData)
+	if err != nil {
+		return fmt.Errorf("封面数据序列化失败: %v", err)
+	}
+	coverCard.ProcessedText = string(coverJSON)
+
+	// 创建封面卡片记录
+	if err := p.biz.Cards().Create(ctx, coverCard); err != nil {
+		return fmt.Errorf("创建封面卡片记录失败: %v", err)
+	}
+
+	log.C(ctx).Infow("✅ 增强版封面卡片创建成功", "book_id", book.ID, "card_id", coverCard.ID)
+
+	// TODO: 这里可以调用实际的封面渲染器进行图片生成
+	// 暂时跳过渲染，只创建记录
+
+	return nil
+}
+
+// splitAndCreateMarkdownCards 分割markdown内容并创建卡片
+func (p *AsyncBookProcessor) splitAndCreateMarkdownCards(
+	ctx context.Context,
+	book *model.BookM,
+	userID uint,
+	markdownText string,
+) ([]*model.CardM, error) {
+	log.C(ctx).Infow("📄 分割markdown内容为多张卡片", "book_id", book.ID, "text_length", len(markdownText))
+
+	// 分割markdown内容
+	cardContents := p.splitMarkdownIntoCards(markdownText)
+
+	var createdCards []*model.CardM
+
+	// 为每个分割后的内容创建卡片（从索引1开始，0是封面）
+	for i, content := range cardContents {
+		if strings.TrimSpace(content) == "" {
+			continue // 跳过空内容
+		}
+
+		// 创建卡片记录 - 存储原始markdown文本
+		cardRecord := &model.CardM{
+			UserID:        userID,
+			BookID:        book.ID,
+			ProcessedText: content, // 存储原始markdown文本
+			SortOrder:     i + 1,   // 从1开始，0是封面卡片
+		}
+
+		if err := p.biz.Cards().Create(ctx, cardRecord); err != nil {
+			log.C(ctx).Errorw("创建markdown卡片失败", "book_id", book.ID, "card_index", i+1, "error", err.Error())
+			continue
+		}
+
+		createdCards = append(createdCards, cardRecord)
+
+		// 为每个卡片生成图片和HTML文件
+		if err := p.generateCardImageAndHTML(ctx, cardRecord.ID, content); err != nil {
+			log.C(ctx).Errorw("卡片图片和HTML生成失败", "card_id", cardRecord.ID, "error", err.Error())
+		} else {
+			log.C(ctx).Infow("✅ 卡片图片和HTML生成成功", "card_id", cardRecord.ID)
+		}
+
+		log.C(ctx).Infow("📄 markdown卡片创建成功", "book_id", book.ID, "card_id", cardRecord.ID, "sort_order", cardRecord.SortOrder)
+	}
+
+	log.C(ctx).Infow("✅ 所有markdown卡片创建完成", "book_id", book.ID, "total_cards", len(createdCards))
+	return createdCards, nil
+}
+
+// splitMarkdownIntoCards 将markdown内容分割为多张卡片
+func (p *AsyncBookProcessor) splitMarkdownIntoCards(content string) []string {
+	lines := strings.Split(content, "\n")
+	var cards []string
+	var currentCard strings.Builder
+
+	const maxCardLength = 1000 // 每张卡片最大字符数
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+
+		// 检查是否是一级标题（新卡片的开始）
+		if strings.HasPrefix(line, "# ") && currentCard.Len() > 0 {
+			// 保存当前卡片
+			cards = append(cards, strings.TrimSpace(currentCard.String()))
+			currentCard.Reset()
+		}
+
+		// 检查是否是二级标题（可能的新卡片开始）
+		if strings.HasPrefix(line, "## ") && currentCard.Len() > maxCardLength {
+			// 如果当前卡片已经很长，开始新卡片
+			cards = append(cards, strings.TrimSpace(currentCard.String()))
+			currentCard.Reset()
+		}
+
+		// 添加当前行到卡片
+		if currentCard.Len() > 0 {
+			currentCard.WriteString("\n")
+		}
+		currentCard.WriteString(line)
+
+		// 如果当前卡片过长，在合适的地方分割
+		if currentCard.Len() > maxCardLength*1.5 {
+			cards = append(cards, strings.TrimSpace(currentCard.String()))
+			currentCard.Reset()
+		}
+	}
+
+	// 添加最后一张卡片
+	if currentCard.Len() > 0 {
+		cards = append(cards, strings.TrimSpace(currentCard.String()))
+	}
+
+	return cards
+}
+
+// getHTMLConverter 获取HTML转换器实例
+func (p *AsyncBookProcessor) getHTMLConverter() *markdown.HTMLConverter {
+	return markdown.NewHTMLConverter()
+}
+
+// downloadAndSaveImageWithPath 按照指定路径规则下载并保存图片
+func (p *AsyncBookProcessor) downloadAndSaveImageWithPath(remoteURL string, bookID uint) (string, error) {
+	// 计算本地保存目录：{image_path}/book/{book_id}
+	localDir := util.GetBookImagePath(bookID)
+
+	// 确保目录存在
+	if err := os.MkdirAll(localDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create directory %s: %w", localDir, err)
+	}
+
+	// 固定文件名：book_{id}.webp
+	localFilePath := filepath.Join(localDir, fmt.Sprintf("book_%d.webp", bookID))
+
+	// 下载远程图片
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(remoteURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to download image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download image, status: %d", resp.StatusCode)
+	}
+
+	// 创建本地文件并写入
+	file, err := os.Create(localFilePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create local file: %w", err)
+	}
+	defer file.Close()
+
+	if _, err := io.Copy(file, resp.Body); err != nil {
+		return "", fmt.Errorf("failed to save image: %w", err)
+	}
+
+	// 返回相对路径，用于数据库存储
+	imagePath := util.GetImagePath()
+	relativePath := strings.TrimPrefix(localFilePath, imagePath)
+	if !strings.HasPrefix(relativePath, "/") {
+		relativePath = "/" + relativePath
+	}
+
+	return relativePath, nil
+}
+
+// downloadAndSaveCardImageWithPath 按照指定路径规则下载并保存卡片图片
+func (p *AsyncBookProcessor) downloadAndSaveCardImageWithPath(remoteURL string, cardID uint) (string, error) {
+	// 计算本地保存目录：{image_path}/card/{card_id}
+	localDir := util.GetCardImagePath(cardID)
+
+	// 确保目录存在
+	if err := os.MkdirAll(localDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create directory %s: %w", localDir, err)
+	}
+
+	// 固定文件名：card_{id}.webp
+	localFilePath := filepath.Join(localDir, fmt.Sprintf("card_%d.webp", cardID))
+
+	// 下载远程图片
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(remoteURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to download image: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download image, status: %d", resp.StatusCode)
+	}
+
+	// 创建本地文件并写入
+	file, err := os.Create(localFilePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create local file: %w", err)
+	}
+	defer file.Close()
+
+	if _, err := io.Copy(file, resp.Body); err != nil {
+		return "", fmt.Errorf("failed to save image: %w", err)
+	}
+
+	// 返回相对路径，用于数据库存储
+	imagePath := util.GetImagePath()
+	relativePath := strings.TrimPrefix(localFilePath, imagePath)
+	if !strings.HasPrefix(relativePath, "/") {
+		relativePath = "/" + relativePath
+	}
+
+	return relativePath, nil
+}
+
+// createCardHTMLFile 创建卡片的临时HTML文件
+func (p *AsyncBookProcessor) createCardHTMLFile(cardID uint, htmlContent string) (string, error) {
+	// 计算本地保存目录：{image_path}/card/{card_id}
+	localDir := util.GetCardImagePath(cardID)
+
+	// 确保目录存在
+	if err := os.MkdirAll(localDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create directory %s: %w", localDir, err)
+	}
+
+	// 固定文件名：card_{id}.html
+	localFilePath := filepath.Join(localDir, fmt.Sprintf("card_%d.html", cardID))
+
+	// 创建HTML文件并写入
+	file, err := os.Create(localFilePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create HTML file: %w", err)
+	}
+	defer file.Close()
+
+	if _, err := file.WriteString(htmlContent); err != nil {
+		return "", fmt.Errorf("failed to write HTML content: %w", err)
+	}
+
+	// 返回相对路径，用于数据库存储
+	imagePath := util.GetImagePath()
+	relativePath := strings.TrimPrefix(localFilePath, imagePath)
+	if !strings.HasPrefix(relativePath, "/") {
+		relativePath = "/" + relativePath
+	}
+
+	return relativePath, nil
+}
+
+// generateCardImageAndHTML 为卡片生成图片和HTML文件
+func (p *AsyncBookProcessor) generateCardImageAndHTML(ctx context.Context, cardID uint, markdownContent string) error {
+	log.C(ctx).Infow("开始为卡片生成图片和HTML文件", "card_id", cardID, "content_length", len(markdownContent))
+
+	// 1. 获取卡片信息以确定排序和标题
+	card, err := p.biz.Cards().GetByID(ctx, cardID)
+	if err != nil {
+		return fmt.Errorf("获取卡片信息失败: %v", err)
+	}
+
+	// 2. 将markdown转换为HTML
+	htmlConverter := p.getHTMLConverter()
+	htmlContent := htmlConverter.ConvertMarkdownCardToHTML(markdownContent, "卡片内容", card.SortOrder)
+
+	// 3. 创建HTML文件
+	htmlFilePath, err := p.createCardHTMLFile(cardID, htmlContent)
+	if err != nil {
+		return fmt.Errorf("创建HTML文件失败: %v", err)
+	}
+	log.C(ctx).Infow("HTML文件创建成功", "card_id", cardID, "html_path", htmlFilePath)
+
+	// 4. 使用轻量级渲染器将HTML转换为图片
+	imagePath, err := p.renderHTMLToImage(ctx, cardID, htmlContent)
+	if err != nil {
+		log.C(ctx).Warnw("HTML转图片失败", "card_id", cardID, "error", err.Error())
+		// 图片生成失败不影响整体流程
+	} else {
+		log.C(ctx).Infow("✅ 卡片图片生成成功", "card_id", cardID, "image_path", imagePath)
+
+		// 5. 更新卡片记录，保存图片路径
+		card.RenderedImage = imagePath
+		if err := p.biz.Cards().Update(ctx, card); err != nil {
+			log.C(ctx).Warnw("更新卡片图片路径失败", "card_id", cardID, "error", err.Error())
+		}
+	}
+
+	log.C(ctx).Infow("✅ 卡片处理完成", "card_id", cardID, "html_path", htmlFilePath, "image_path", imagePath)
+	return nil
+}
+
+// renderHTMLToImage 将HTML转换为图片
+func (p *AsyncBookProcessor) renderHTMLToImage(ctx context.Context, cardID uint, htmlContent string) (string, error) {
+	log.C(ctx).Infow("开始将HTML转换为图片", "card_id", cardID)
+
+	// 获取图片输出路径配置
+	imagePath := viper.GetString("resource.image_path")
+	if imagePath == "" {
+		return "", fmt.Errorf("未配置resource.image_path")
+	}
+
+	// 创建卡片图片目录
+	cardImageDir := filepath.Join(imagePath, "card", fmt.Sprintf("%d", cardID))
+	if err := os.MkdirAll(cardImageDir, 0755); err != nil {
+		return "", fmt.Errorf("创建卡片图片目录失败: %v", err)
+	}
+
+	// 生成图片文件名和完整路径
+	imageFileName := fmt.Sprintf("card_%d.webp", cardID)
+	fullImagePath := filepath.Join(cardImageDir, imageFileName)
+
+	// 直接使用内部的wkhtmltoimage工具（总是可用）
+	return p.renderWithWkhtmltoimage(ctx, cardID, htmlContent, fullImagePath)
+}
+
+
+
+// renderWithWkhtmltoimage 使用wkhtmltoimage渲染
+func (p *AsyncBookProcessor) renderWithWkhtmltoimage(ctx context.Context, cardID uint, htmlContent, fullImagePath string) (string, error) {
+	log.C(ctx).Infow("使用wkhtmltoimage渲染", "card_id", cardID)
+
+	// 使用新的wkhtmltoimage工具
+	renderer := utilpkg.NewWkhtmltoimageRenderer(&utilpkg.WkhtmltoimageConfig{
+		Width:   1080,
+		Height:  1440,
+		Quality: 85,
+		Format:  "webp",
+		Zoom:    1.0,
+		Timeout: 30 * time.Second,
+	})
+
+	if err := renderer.RenderHTMLToImage(ctx, htmlContent, fullImagePath); err != nil {
+		log.C(ctx).Warnw("wkhtmltoimage转换失败", "card_id", cardID, "error", err.Error())
+		return "", fmt.Errorf("wkhtmltoimage转换失败: %v", err)
+	}
+
+	log.C(ctx).Infow("wkhtmltoimage渲染成功", "card_id", cardID, "image_path", fullImagePath)
+	return fullImagePath, nil
+}
+
+// renderWithAlternativeMethod 使用备选方案渲染
+func (p *AsyncBookProcessor) renderWithAlternativeMethod(ctx context.Context, cardID uint, htmlContent, fullImagePath string) (string, error) {
+	log.C(ctx).Infow("使用备选方案渲染", "card_id", cardID)
+
+	// 备选方案1: 使用chromedp（如果可用）
+	if p.isChromedpAvailable() {
+		return p.renderWithChromedp(ctx, cardID, htmlContent, fullImagePath)
+	}
+
+	// 备选方案2: 创建占位符图片
+	log.C(ctx).Infow("使用占位符图片方案", "card_id", cardID)
+	return p.createPlaceholderImage(ctx, cardID, fullImagePath)
+}
+
+// isChromedpAvailable 检查chromedp是否可用
+func (p *AsyncBookProcessor) isChromedpAvailable() bool {
+	// 检查Chrome是否可用
+	cmd := exec.Command("google-chrome", "--version")
+	if err := cmd.Run(); err != nil {
+		// 尝试其他Chrome路径
+		cmd = exec.Command("chromium", "--version")
+		if err := cmd.Run(); err != nil {
+			cmd = exec.Command("chrome", "--version")
+			if err := cmd.Run(); err != nil {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// renderWithChromedp 使用chromedp渲染（简化版）
+func (p *AsyncBookProcessor) renderWithChromedp(ctx context.Context, cardID uint, htmlContent, fullImagePath string) (string, error) {
+	log.C(ctx).Infow("使用chromedp渲染", "card_id", cardID)
+
+	// 这里可以集成chromedp的完整实现
+	// 暂时返回占位符，实际项目中应该实现完整的chromedp渲染
+	return p.createPlaceholderImage(ctx, cardID, fullImagePath)
+}
+
+// createPlaceholderImage 创建占位符图片
+func (p *AsyncBookProcessor) createPlaceholderImage(ctx context.Context, cardID uint, imagePath string) (string, error) {
+	log.C(ctx).Infow("创建占位符图片", "card_id", cardID, "image_path", imagePath)
+
+	// 确保目录存在
+	dir := filepath.Dir(imagePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("创建图片目录失败: %v", err)
+	}
+
+	// 创建一个简单的HTML占位符，然后使用wkhtmltoimage转换
+	placeholderHTML := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>卡片 %d 占位符</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            width: 1080px;
+            height: 1440px;
+            background: linear-gradient(135deg, #f5f7fa 0%%, #c3cfe2 100%%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Microsoft YaHei', Arial, sans-serif;
+        }
+        .placeholder {
+            text-align: center;
+            color: #666;
+        }
+        .placeholder-icon {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+        .placeholder-text {
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+        .placeholder-subtext {
+            font-size: 16px;
+            opacity: 0.7;
+        }
+    </style>
+</head>
+<body>
+    <div class="placeholder">
+        <div class="placeholder-icon">📄</div>
+        <div class="placeholder-text">卡片 %d</div>
+        <div class="placeholder-subtext">图片生成中...</div>
+    </div>
+</body>
+</html>`, cardID, cardID)
+
+	// 创建临时HTML文件
+	tempHTMLFile := filepath.Join(dir, "placeholder.html")
+	if err := os.WriteFile(tempHTMLFile, []byte(placeholderHTML), 0644); err != nil {
+		return "", fmt.Errorf("创建占位符HTML文件失败: %v", err)
+	}
+	defer os.Remove(tempHTMLFile) // 清理临时文件
+
+	// 使用内部的wkhtmltoimage工具生成占位符图片
+	renderer := utilpkg.NewWkhtmltoimageRenderer(&utilpkg.WkhtmltoimageConfig{
+		Width:   1080,
+		Height:  1440,
+		Quality: 85,
+		Format:  "webp",
+		Zoom:    1.0,
+		Timeout: 30 * time.Second,
+	})
+
+	if err := renderer.RenderHTMLToImage(ctx, placeholderHTML, imagePath); err != nil {
+		log.C(ctx).Warnw("占位符图片生成失败", "card_id", cardID, "error", err.Error())
+		// 如果内部工具也失败，创建一个简单的文本文件
+		placeholderContent := fmt.Sprintf("Placeholder for card %d", cardID)
+		if err := os.WriteFile(imagePath, []byte(placeholderContent), 0644); err != nil {
+			return "", fmt.Errorf("创建占位符文件失败: %v", err)
+		}
+	}
+
+	return imagePath, nil
+}
+
+// generateCardHTML 生成卡片的HTML内容
+func (p *AsyncBookProcessor) generateCardHTML(cardID uint, content string) string {
+	// 简单的HTML模板
+	htmlTemplate := `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>卡片 %d</title>
+    <style>
+        body {
+            font-family: 'Microsoft YaHei', Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .card {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 30px;
+        }
+        .content {
+            line-height: 1.6;
+            color: #333;
+            font-size: 16px;
+        }
+        .timestamp {
+            color: #666;
+            font-size: 12px;
+            text-align: center;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="content">
+            %s
+        </div>
+        <div class="timestamp">
+            生成时间: %s
+        </div>
+    </div>
+</body>
+</html>`
+
+	// 转义HTML内容
+	escapedContent := strings.ReplaceAll(content, "<", "&lt;")
+	escapedContent = strings.ReplaceAll(escapedContent, ">", "&gt;")
+	escapedContent = strings.ReplaceAll(escapedContent, "\n", "<br>")
+
+	return fmt.Sprintf(htmlTemplate, cardID, escapedContent, time.Now().Format("2006-01-02 15:04:05"))
+}
+
+// generateCardImagePrompt 为卡片内容生成图片提示词
+func (p *AsyncBookProcessor) generateCardImagePrompt(content string) string {
+	// 简单的提示词生成逻辑
+	// 可以根据内容类型生成不同的提示词
+
+	// 如果内容包含特定关键词，生成相应的图片提示词
+	if strings.Contains(content, "技术") || strings.Contains(content, "科技") {
+		return "现代科技办公环境，电脑屏幕显示代码，高科技感，蓝色调，专业商务风格"
+	} else if strings.Contains(content, "学习") || strings.Contains(content, "教育") {
+		return "温馨的学习环境，书本、笔记本、笔，温暖的灯光，知识氛围浓厚"
+	} else if strings.Contains(content, "思考") || strings.Contains(content, "思维") {
+		return "抽象思维概念图，大脑、灯泡、连接线，创意灵感迸发，现代简约风格"
+	} else if strings.Contains(content, "未来") || strings.Contains(content, "创新") {
+		return "未来科技城市，人工智能与人类协作，数字化世界，科幻风格"
+	} else {
+		// 默认提示词
+		return "现代简约办公环境，专业商务风格，蓝色调，高质量渲染"
+	}
+}
+
+// parseMarkdownResponse 解析AI返回的markdown格式响应
+func (p *AsyncBookProcessor) parseMarkdownResponse(response string) (string, string) {
+	// 尝试解析JSON格式的响应（如果AI返回的是JSON）
+	var jsonResponse struct {
+		Text        string `json:"text"`
+		ImagePrompt string `json:"image_prompt"`
+	}
+
+	if err := json.Unmarshal([]byte(response), &jsonResponse); err == nil {
+		// 成功解析JSON，返回解析结果
+		return jsonResponse.Text, jsonResponse.ImagePrompt
+	}
+
+	// 如果不是JSON格式，尝试从markdown中提取图片提示词
+	imagePrompt := p.extractImagePromptFromMarkdown(response)
+
+	// 如果没有找到图片提示词，使用默认的提示词生成逻辑
+	if imagePrompt == "" {
+		imagePrompt = p.generateDefaultImagePrompt(response)
+	}
+
+	// 返回markdown内容和图片提示词
+	return response, imagePrompt
+}
+
+// extractImagePromptFromMarkdown 从markdown中提取图片提示词
+func (p *AsyncBookProcessor) extractImagePromptFromMarkdown(markdown string) string {
+	// 查找可能的图片提示词标记
+	patterns := []string{
+		"图片提示词[:：]\\s*(.+)",
+		"image_prompt[:：]\\s*(.+)",
+		"图片描述[:：]\\s*(.+)",
+		"<!--\\s*image_prompt[:：]\\s*(.+?)\\s*-->",
+	}
+
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		matches := re.FindStringSubmatch(markdown)
+		if len(matches) > 1 {
+			return strings.TrimSpace(matches[1])
+		}
+	}
+
+	return ""
+}
+
+// generateDefaultImagePrompt 生成默认的图片提示词
+func (p *AsyncBookProcessor) generateDefaultImagePrompt(content string) string {
+	// 简单的提示词生成逻辑
+	if strings.Contains(content, "技术") || strings.Contains(content, "科技") {
+		return "现代科技办公环境，电脑屏幕显示代码，高科技感，蓝色调，专业商务风格"
+	} else if strings.Contains(content, "学习") || strings.Contains(content, "教育") {
+		return "温馨的学习环境，书本、笔记本、笔，温暖的灯光，知识氛围浓厚"
+	} else if strings.Contains(content, "思考") || strings.Contains(content, "思维") {
+		return "抽象思维概念图，大脑、灯泡、连接线，创意灵感迸发，现代简约风格"
+	} else if strings.Contains(content, "未来") || strings.Contains(content, "创新") {
+		return "未来科技城市，人工智能与人类协作，数字化世界，科幻风格"
+	} else {
+		// 默认提示词
+		return "现代简约办公环境，专业商务风格，蓝色调，高质量渲染"
+	}
 }

@@ -197,9 +197,10 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             margin: 0;
             padding: 0;
             overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
         }
         
-        /* 关键修复：确保背景图片完全覆盖整个容器 */
+        /* 封面容器 - 上下布局 */
         .cover-container {
             width: 100%%;
             height: 100%%;
@@ -212,36 +213,46 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             background-repeat: no-repeat !important;
         }
         
-        /* 移除分段背景，使用单一背景覆盖 */
-        .image-section, .title-section {
-            flex: 1;
+        /* 上半部分：图片区域 (65%%) */
+        .image-section {
+            flex: 0 0 65%%;
             display: flex;
             align-items: center;
             justify-content: center;
             position: relative;
             overflow: hidden;
             width: 100%%;
-            min-height: 50%%;
-            /* 确保背景完全覆盖，避免白条 */
             background: inherit;
+        }
+        
+        /* 下半部分：标题区域 (35%%) */
+        .title-section {
+            flex: 0 0 35%%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            width: 100%%;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
         }
         
         .title-container {
             text-align: center;
-            background: rgba(255, 255, 255, 0.9); /* 半透明白色背景确保文字可读 */
-            padding: 20px;
-            border-radius: 8px;
-            backdrop-filter: blur(5px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            padding: 30px 40px;
+            width: 100%%;
+            max-width: 90%%;
         }
         
         .title {
-            font-size: 64px;
+            font-size: 48px;
             font-weight: bold;
-            color: #333333;
-            line-height: 1.4;
+            color: #2c3e50;
+            line-height: 1.3;
             margin: 0;
-            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            word-wrap: break-word;
+            hyphens: auto;
         }
         
         .cover-image {
@@ -255,13 +266,34 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             width: 80%%;
             height: 80%%;
             background: linear-gradient(135deg, #667eea 0%%, #764ba2 100%%);
-            border-radius: 8px;
+            border-radius: 12px;
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: center;
             color: white;
             font-size: 24px;
             font-weight: bold;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+            text-align: center;
+        }
+        
+        .placeholder-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+            opacity: 0.8;
+        }
+        
+        .placeholder-text {
+            font-size: 18px;
+            opacity: 0.9;
+        }
+        
+        /* 响应式调整 */
+        @media (max-width: 768px) {
+            .title {
+                font-size: 36px;
+            }
         }
     </style>
 </head>
@@ -288,7 +320,10 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
 // generateImageHTML 生成图片HTML
 func (r *CoverRenderer) generateImageHTML(imageURL string) string {
 	if imageURL == "" {
-		return `<div class="image-placeholder">万相生成的图片</div>`
+		return `<div class="image-placeholder">
+            <div class="placeholder-icon">🖼️</div>
+            <div class="placeholder-text">封面图片</div>
+        </div>`
 	}
 
 	// 根据 URL 类型决定如何拼接：

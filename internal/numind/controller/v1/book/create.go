@@ -10,7 +10,6 @@ import (
 
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/book"
-	"numind-server/internal/numind/biz/markdown"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
@@ -127,15 +126,9 @@ func (ctrl *BookController) Create(c *gin.Context) {
 	// 将 TemplateID 转换为字符串
 	templateID := fmt.Sprintf("%v", req.TemplateID)
 
-	// 检查是否启用 Markdown 处理模式
-	useMarkdown := viper.GetBool("book.use_markdown_processing")
-	if useMarkdown {
-		log.C(c).Infow("Using Markdown processing mode")
-		ctrl.createWithMarkdownProcessor(c, userID, req.Text, templateID)
-	} else {
-		log.C(c).Infow("Using legacy JSON processing mode")
-		ctrl.createWithJSONProcessor(c, userID, req.Text, templateID)
-	}
+	// 使用简化的处理模式
+	log.C(c).Infow("Using simplified processing mode")
+	ctrl.createWithSimplifiedProcessor(c, userID, req.Text, templateID)
 }
 
 // BookBizAdapter 适配器，用于包装biz接口
@@ -205,6 +198,10 @@ func (a *AsyncCardBizAdapter) Create(ctx context.Context, card *model.CardM) err
 
 func (a *AsyncCardBizAdapter) Update(ctx context.Context, card *model.CardM) error {
 	return a.biz.Cards().Update(ctx, card)
+}
+
+func (a *AsyncCardBizAdapter) GetByID(ctx context.Context, id uint) (*model.CardM, error) {
+	return a.biz.Cards().GetByID(ctx, id)
 }
 
 // AsyncUserBizAdapter 用户业务适配器
@@ -280,20 +277,23 @@ func (a *AsyncStoreBizAdapter) UpdateUserBookStatsOnStatusChange(ctx context.Con
 	return a.biz.Books().UpdateUserBookStatsOnStatusChange(ctx, userID, oldStatus, newStatus)
 }
 
-// createWithMarkdownProcessor 使用 Markdown 处理器创建书籍
-func (ctrl *BookController) createWithMarkdownProcessor(c *gin.Context, userID uint, text, templateID string) {
-	// 创建 Markdown 集成适配器
-	markdownAdapter := markdown.NewMarkdownIntegrationAdapter(ctrl.b)
+// createWithSimplifiedProcessor 使用简化的处理器创建书籍
+func (ctrl *BookController) createWithSimplifiedProcessor(c *gin.Context, userID uint, text, templateID string) {
+	// 创建适配器来包装biz接口
+	bizAdapter := &BookBizAdapter{biz: ctrl.b}
+
+	// 创建异步处理器
+	asyncProcessor := book.NewAsyncBookProcessor(bizAdapter)
 
 	// 异步创建book
-	book, err := markdownAdapter.CreateBookAsync(c, userID, text, templateID)
+	book, err := asyncProcessor.CreateBookAsync(c, userID, text, templateID)
 	if err != nil {
-		log.C(c).Errorw("Failed to create book with Markdown processor", "error", err.Error())
+		log.C(c).Errorw("Failed to create book with simplified processor", "error", err.Error())
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: "+err.Error()), nil)
 		return
 	}
 
-	log.C(c).Infow("Book created successfully with Markdown processor",
+	log.C(c).Infow("Book created successfully with simplified processor",
 		"book_id", book.ID,
 		"title", book.Title)
 

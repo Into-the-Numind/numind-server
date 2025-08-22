@@ -37,6 +37,14 @@ type HTMLConfig struct {
 	TextColor           string  `json:"text_color"`           // 文字颜色
 }
 
+// MarkdownContentBlock Markdown 内容块
+type MarkdownContentBlock struct {
+	Type    string      `json:"type"`     // 块类型
+	Content interface{} `json:"content"`  // 内容
+	Level   int         `json:"level"`    // 层级（标题用）
+	RawText string      `json:"raw_text"` // 原始文本
+}
+
 // NewHTMLConverter 创建新的HTML转换器
 func NewHTMLConverter() *HTMLConverter {
 	config := &HTMLConfig{
@@ -324,6 +332,43 @@ func (hc *HTMLConverter) wrapWithStyles(contentHTML, title string, isCoverCard b
 </html>`, hc.escapeHTML(title), cssStyles, contentHTML)
 }
 
+// ConvertMarkdownCardToHTML 将Markdown内容转换为卡片HTML
+func (hc *HTMLConverter) ConvertMarkdownCardToHTML(markdownText, title string, cardIndex int) string {
+	// 转换markdown为HTML
+	contentHTML, err := hc.ConvertToHTML(markdownText)
+	if err != nil {
+		contentHTML = fmt.Sprintf("<p>%s</p>", hc.escapeHTML(markdownText))
+	}
+
+	// 包装为卡片HTML
+	return hc.wrapWithMarkdownCardStyles(contentHTML, title, cardIndex)
+}
+
+// wrapWithMarkdownCardStyles 为Markdown卡片包装样式
+func (hc *HTMLConverter) wrapWithMarkdownCardStyles(contentHTML, title string, cardIndex int) string {
+	cssStyles := hc.generateMarkdownCardCSS()
+
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>%s - 第%d页</title>
+    <style>%s</style>
+</head>
+<body>
+    <div class="markdown-card-container">
+        <div class="markdown-content">
+            %s
+        </div>
+        <div class="card-footer">
+            <span class="page-number">第 %d 页</span>
+        </div>
+    </div>
+</body>
+</html>`, hc.escapeHTML(title), cardIndex, cssStyles, contentHTML, cardIndex)
+}
+
 // generateCSS 生成 CSS 样式
 func (hc *HTMLConverter) generateCSS(isCoverCard bool) string {
 	baseCSS := fmt.Sprintf(`
@@ -582,4 +627,266 @@ func (hc *HTMLConverter) UpdateConfig(config *HTMLConfig) {
 // GetConfig 获取当前配置
 func (hc *HTMLConverter) GetConfig() *HTMLConfig {
 	return hc.config
+}
+
+// generateMarkdownCardCSS 生成Markdown卡片专用CSS
+func (hc *HTMLConverter) generateMarkdownCardCSS() string {
+	return fmt.Sprintf(`
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: %s;
+    font-size: %dpx;
+    line-height: %.1f;
+    color: %s;
+    background-color: %s;
+    overflow: visible;
+}
+
+.markdown-card-container {
+    width: %dpx;
+    min-height: %dpx;
+    padding: %dpx;
+    overflow: visible;
+    background-color: %s;
+    position: relative;
+}
+
+.markdown-content {
+    width: 100%%;
+    height: auto;
+    overflow: visible;
+}
+
+/* Markdown元素样式 */
+h1, h2, h3, h4, h5, h6 {
+    margin-top: 24px;
+    margin-bottom: 16px;
+    font-weight: bold;
+    line-height: 1.4;
+    word-wrap: break-word;
+}
+
+h1 { 
+    font-size: 28px; 
+    color: #2c3e50; 
+    border-bottom: 2px solid #3498db;
+    padding-bottom: 8px;
+}
+
+h2 { 
+    font-size: 24px; 
+    color: #34495e; 
+    border-bottom: 1px solid #bdc3c7;
+    padding-bottom: 6px;
+}
+
+h3 { 
+    font-size: 20px; 
+    color: #34495e; 
+}
+
+h4 { 
+    font-size: 18px; 
+    color: #34495e; 
+}
+
+h5 { 
+    font-size: 16px; 
+    color: #34495e; 
+}
+
+h6 { 
+    font-size: 14px; 
+    color: #34495e; 
+}
+
+p {
+    margin-bottom: 16px;
+    text-align: justify;
+    word-wrap: break-word;
+    hyphens: auto;
+}
+
+/* 列表样式 */
+ul, ol {
+    margin: 16px 0;
+    padding-left: 30px;
+}
+
+li {
+    margin-bottom: 8px;
+    line-height: 1.6;
+}
+
+ul li::marker {
+    color: #3498db;
+}
+
+/* 引用块样式 */
+blockquote {
+    margin: 20px 0;
+    padding: 16px 20px;
+    border-left: 4px solid #3498db;
+    background: #ecf0f1;
+    font-style: italic;
+    border-radius: 0 6px 6px 0;
+}
+
+blockquote p {
+    margin-bottom: 0;
+    color: #2c3e50;
+}
+
+/* 代码样式 */
+code {
+    background: #f8f9fa;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 14px;
+    color: #e74c3c;
+    border: 1px solid #e9ecef;
+}
+
+pre {
+    background: #2c3e50;
+    color: #ecf0f1;
+    border-radius: 6px;
+    padding: 16px;
+    overflow-x: auto;
+    margin: 20px 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+pre code {
+    background: transparent;
+    padding: 0;
+    border: none;
+    color: inherit;
+}
+
+/* 表格样式 */
+table {
+    width: 100%%;
+    border-collapse: collapse;
+    margin: 20px 0;
+    font-size: 14px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+th, td {
+    padding: 12px 16px;
+    text-align: left;
+    border-bottom: 1px solid #ddd;
+    word-wrap: break-word;
+}
+
+th {
+    background: #3498db;
+    color: white;
+    font-weight: bold;
+}
+
+tr:nth-child(even) {
+    background: #f8f9fa;
+}
+
+tr:hover {
+    background: #e8f4fd;
+}
+
+/* 链接样式 */
+a {
+    color: #3498db;
+    text-decoration: none;
+    border-bottom: 1px dotted #3498db;
+}
+
+a:hover {
+    background: #e8f4fd;
+    text-decoration: underline;
+}
+
+/* 强调文本 */
+strong {
+    color: #2c3e50;
+    font-weight: bold;
+}
+
+em {
+    color: #34495e;
+    font-style: italic;
+}
+
+/* 删除线 */
+del {
+    color: #7f8c8d;
+    text-decoration: line-through;
+}
+
+/* 分割线 */
+hr {
+    margin: 30px 0;
+    border: none;
+    border-top: 2px solid #bdc3c7;
+    border-radius: 1px;
+}
+
+/* 任务列表 */
+input[type="checkbox"] {
+    margin-right: 8px;
+    transform: scale(1.2);
+}
+
+/* 页脚样式 */
+.card-footer {
+    position: absolute;
+    bottom: 15px;
+    right: 25px;
+    font-size: 12px;
+    color: #7f8c8d;
+    opacity: 0.8;
+    background: rgba(255, 255, 255, 0.9);
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid #ddd;
+}
+
+/* 确保内容不与页脚重叠 */
+.markdown-content {
+    padding-bottom: 50px;
+}
+
+/* 防止文本溢出 */
+.markdown-card-container {
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    hyphens: auto;
+}
+`,
+		hc.config.FontFamily,
+		hc.config.FontSize,
+		hc.config.LineHeight,
+		hc.config.TextColor,
+		hc.config.BackgroundColor,
+		hc.config.CardWidth,
+		hc.config.CardHeight,
+		hc.config.Padding,
+		hc.config.BackgroundColor,
+	)
+}
+
+// truncateString 截断字符串
+func truncateString(s string, length int) string {
+	if len(s) <= length {
+		return s
+	}
+	return s[:length] + "..."
 }

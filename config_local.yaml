@@ -56,7 +56,7 @@ wechat:
 
 # 书籍处理配置
 book:
-    use_markdown_processing: false  # 禁用Markdown处理模式，使用新的简化逻辑
+    use_simplified_processing: true  # 启用简化处理模式
 
 oss:
   endpoint: ""

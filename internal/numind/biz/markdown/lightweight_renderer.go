@@ -3,6 +3,7 @@ package markdown
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"image/png"
 	"os"
@@ -57,6 +58,180 @@ type RenderedMarkdownCard struct {
 	SortOrder  int           `json:"sort_order"`
 	RenderTime time.Duration `json:"render_time"`
 	FileSize   int64         `json:"file_size"`
+}
+
+// MarkdownCardContent Markdown 卡片内容
+type MarkdownCardContent struct {
+	ContentBlocks []*MarkdownContentBlock `json:"content_blocks"`
+	IsCoverCard   bool                    `json:"is_cover_card"`
+	CardIndex     int                     `json:"card_index"`
+	Title         string                  `json:"title"`
+	TotalBlocks   int                     `json:"total_blocks"`
+}
+
+// MarkdownPaginationAdapter Markdown 分页适配器
+type MarkdownPaginationAdapter struct {
+	config *PaginationConfig
+}
+
+// PaginationConfig 分页配置
+type PaginationConfig struct {
+	MaxCardLength int `json:"max_card_length"` // 每张卡片最大字符数
+	MaxBlocks     int `json:"max_blocks"`      // 每张卡片最大块数
+}
+
+// NewMarkdownPaginationAdapter 创建新的 Markdown 分页适配器
+func NewMarkdownPaginationAdapter() *MarkdownPaginationAdapter {
+	return &MarkdownPaginationAdapter{
+		config: &PaginationConfig{
+			MaxCardLength: 1000,
+			MaxBlocks:     10,
+		},
+	}
+}
+
+// PaginateMarkdownContent 分页处理 Markdown 内容
+func (mpa *MarkdownPaginationAdapter) PaginateMarkdownContent(markdownText string) ([]*MarkdownCardContent, error) {
+	// 简单的分页逻辑：按行分割，每1000字符一张卡片
+	lines := strings.Split(markdownText, "\n")
+	var cards []*MarkdownCardContent
+	var currentCard strings.Builder
+	var currentBlocks []*MarkdownContentBlock
+	cardIndex := 1
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// 检查是否是一级标题（新卡片的开始）
+		if strings.HasPrefix(line, "# ") && currentCard.Len() > 0 {
+			// 保存当前卡片
+			if currentCard.Len() > 0 {
+				cards = append(cards, &MarkdownCardContent{
+					ContentBlocks: currentBlocks,
+					IsCoverCard:   false,
+					CardIndex:     cardIndex,
+					Title:         extractTitleFromContent(currentCard.String()),
+					TotalBlocks:   len(currentBlocks),
+				})
+				cardIndex++
+			}
+			currentCard.Reset()
+			currentBlocks = nil
+		}
+
+		// 添加当前行到卡片
+		if currentCard.Len() > 0 {
+			currentCard.WriteString("\n")
+		}
+		currentCard.WriteString(line)
+
+		// 创建内容块
+		block := &MarkdownContentBlock{
+			Type:    determineBlockType(line),
+			Content: line,
+			Level:   determineHeadingLevel(line),
+			RawText: line,
+		}
+		currentBlocks = append(currentBlocks, block)
+
+		// 如果当前卡片过长，在合适的地方分割
+		if currentCard.Len() > mpa.config.MaxCardLength {
+			cards = append(cards, &MarkdownCardContent{
+				ContentBlocks: currentBlocks,
+				IsCoverCard:   false,
+				CardIndex:     cardIndex,
+				Title:         extractTitleFromContent(currentCard.String()),
+				TotalBlocks:   len(currentBlocks),
+			})
+			cardIndex++
+			currentCard.Reset()
+			currentBlocks = nil
+		}
+	}
+
+	// 添加最后一张卡片
+	if currentCard.Len() > 0 {
+		cards = append(cards, &MarkdownCardContent{
+			ContentBlocks: currentBlocks,
+			IsCoverCard:   false,
+			CardIndex:     cardIndex,
+			Title:         extractTitleFromContent(currentCard.String()),
+			TotalBlocks:   len(currentBlocks),
+		})
+	}
+
+	return cards, nil
+}
+
+// determineBlockType 确定块类型
+func determineBlockType(line string) string {
+	if strings.HasPrefix(line, "# ") {
+		return "heading"
+	} else if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") {
+		return "list_item"
+	} else if strings.HasPrefix(line, "> ") {
+		return "quote"
+	} else if strings.HasPrefix(line, "```") {
+		return "code_block"
+	} else {
+		return "paragraph"
+	}
+}
+
+// determineHeadingLevel 确定标题层级
+func determineHeadingLevel(line string) int {
+	if strings.HasPrefix(line, "# ") {
+		return 1
+	} else if strings.HasPrefix(line, "## ") {
+		return 2
+	} else if strings.HasPrefix(line, "### ") {
+		return 3
+	} else if strings.HasPrefix(line, "#### ") {
+		return 4
+	} else if strings.HasPrefix(line, "##### ") {
+		return 5
+	} else if strings.HasPrefix(line, "###### ") {
+		return 6
+	}
+	return 0
+}
+
+// extractTitleFromContent 从内容中提取标题
+func extractTitleFromContent(content string) string {
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "# ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "# "))
+		}
+	}
+	return "无标题"
+}
+
+// ConvertToJsonString 将分页结果转换为JSON字符串
+func (mpa *MarkdownPaginationAdapter) ConvertToJsonString(cardContents []*MarkdownCardContent) (string, error) {
+	// 简化的JSON转换
+	var result []map[string]interface{}
+	for _, card := range cardContents {
+		cardData := map[string]interface{}{
+			"card_index":     card.CardIndex,
+			"title":          card.Title,
+			"is_cover_card":  card.IsCoverCard,
+			"total_blocks":   card.TotalBlocks,
+			"content_blocks": card.ContentBlocks,
+		}
+		result = append(result, cardData)
+	}
+
+	jsonData, err := json.Marshal(result)
+	if err != nil {
+		return "", err
+	}
+
+	return string(jsonData), nil
 }
 
 // NewLightweightMarkdownRenderer 创建新的轻量级 Markdown 渲染器
@@ -176,15 +351,21 @@ func (lmr *LightweightMarkdownRenderer) renderCoverCard(
 		"book_id", bookID,
 		"card_index", cardIndex)
 
+	// 转换指针切片为值切片
+	var blocks []MarkdownContentBlock
+	for _, block := range cardContent.ContentBlocks {
+		blocks = append(blocks, *block)
+	}
+
 	// 生成封面卡片的HTML
 	htmlContent := lmr.htmlConverter.ConvertCardBlocksToHTML(
-		cardContent.ContentBlocks,
+		blocks,
 		cardContent.Title,
 		true, // isCoverCard = true
 	)
 
 	// 如果有封面图片，替换占位符
-	if cardContent.CoverPrompt != "" {
+	if cardContent.Title != "" {
 		// 构建封面图片路径 - 使用相对路径
 		coverImagePath := fmt.Sprintf("/res/upload/book/%d/book_%d.webp", bookID, bookID)
 
@@ -248,9 +429,15 @@ func (lmr *LightweightMarkdownRenderer) renderContentCard(
 		"card_index", cardIndex,
 		"blocks_count", len(cardContent.ContentBlocks))
 
+	// 转换指针切片为值切片
+	var blocks []MarkdownContentBlock
+	for _, block := range cardContent.ContentBlocks {
+		blocks = append(blocks, *block)
+	}
+
 	// 生成内容卡片的HTML
 	htmlContent := lmr.htmlConverter.ConvertCardBlocksToHTML(
-		cardContent.ContentBlocks,
+		blocks,
 		cardContent.Title,
 		false, // isCoverCard = false
 	)
@@ -474,7 +661,7 @@ func (lmr *LightweightMarkdownRenderer) ConvertToCardModel(
 		content := cardContents[i]
 
 		// 将 Markdown 内容块转换为 JSON 字符串
-		jsonContent, err := lmr.paginationAdapter.ConvertToJsonString(content)
+		jsonContent, err := lmr.paginationAdapter.ConvertToJsonString([]*MarkdownCardContent{content})
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert content to JSON: %v", err)
 		}
