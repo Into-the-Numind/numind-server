@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/chai2010/webp"
+	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/chromedp"
 )
 
 // WkhtmltoimageConfig 配置选项
@@ -132,19 +134,96 @@ func (w *WkhtmltoimageRenderer) renderWithGoImplementation(ctx context.Context, 
 
 // renderWithSimpleGoImplementation 使用简化的Go实现
 func (w *WkhtmltoimageRenderer) renderWithSimpleGoImplementation(ctx context.Context, htmlFile, outputPath string) error {
-	// 创建一个简单的占位符图片
-	// 在实际项目中，这里应该使用更完整的HTML渲染引擎
-	img := w.createPlaceholderImage()
+	// 使用chromedp进行真正的HTML渲染
+	return w.renderWithChromedp(ctx, htmlFile, outputPath)
+}
 
-	// 根据格式保存图片
-	switch strings.ToLower(w.config.Format) {
-	case "webp":
-		return w.saveAsWebP(img, outputPath)
-	case "png":
-		return w.saveAsPNG(img, outputPath)
-	default:
-		return w.saveAsPNG(img, outputPath)
+// renderWithChromedp 使用chromedp进行HTML渲染
+func (w *WkhtmltoimageRenderer) renderWithChromedp(ctx context.Context, htmlFile, outputPath string) error {
+	// 创建Chrome选项
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", true),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("disable-web-security", true),
+		chromedp.Flag("window-size", fmt.Sprintf("%d,%d", w.config.Width, w.config.Height)),
+		chromedp.Flag("disable-extensions", true),
+		chromedp.Flag("disable-plugins", true),
+		chromedp.Flag("disable-images", false),
+		chromedp.Flag("disable-javascript", false),
+	)
+
+	// 创建Chrome实例
+	allocCtx, cancel := chromedp.NewExecAllocator(ctx, opts...)
+	defer cancel()
+
+	// 创建Chrome任务
+	taskCtx, cancel := chromedp.NewContext(allocCtx)
+	defer cancel()
+
+	// 设置超时
+	renderCtx, cancel := context.WithTimeout(taskCtx, w.config.Timeout)
+	defer cancel()
+
+	// 获取绝对路径
+	absPath, err := filepath.Abs(htmlFile)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %v", err)
 	}
+
+	fileURL := "file://" + absPath
+	var imageData []byte
+
+	// 执行渲染任务
+	err = chromedp.Run(renderCtx,
+		chromedp.EmulateViewport(int64(w.config.Width), int64(w.config.Height)),
+		chromedp.Navigate(fileURL),
+		chromedp.WaitReady("body"),
+		chromedp.Sleep(2*time.Second),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			// 等待字体加载
+			if err := chromedp.Evaluate(`document.fonts.ready`, nil).Do(ctx); err == nil {
+				// 字体加载完成
+			}
+
+			// 强制重绘页面
+			if err := chromedp.Evaluate(`document.body.style.display='none';document.body.offsetHeight;document.body.style.display=''`, nil).Do(ctx); err == nil {
+				// 页面重绘完成
+			}
+
+			// 截图
+			var screenshotErr error
+			if strings.ToLower(w.config.Format) == "webp" {
+				imageData, screenshotErr = page.CaptureScreenshot().
+					WithFormat(page.CaptureScreenshotFormatWebp).
+					WithQuality(int64(w.config.Quality)).
+					Do(ctx)
+			} else {
+				imageData, screenshotErr = page.CaptureScreenshot().
+					WithFormat(page.CaptureScreenshotFormatPng).
+					WithQuality(90).
+					Do(ctx)
+			}
+
+			if screenshotErr != nil {
+				return fmt.Errorf("screenshot failed: %v", screenshotErr)
+			}
+
+			return nil
+		}),
+	)
+
+	if err != nil {
+		return fmt.Errorf("chromedp rendering failed: %v", err)
+	}
+
+	// 保存图片文件
+	if err := os.WriteFile(outputPath, imageData, 0644); err != nil {
+		return fmt.Errorf("failed to save image: %v", err)
+	}
+
+	return nil
 }
 
 // createPlaceholderImage 创建占位符图片

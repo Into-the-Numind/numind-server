@@ -1945,11 +1945,28 @@ func (p *AsyncBookProcessor) renderHTMLToImage(ctx context.Context, cardID uint,
 	return p.renderWithWkhtmltoimage(ctx, cardID, htmlContent, fullImagePath)
 }
 
-
-
 // renderWithWkhtmltoimage 使用wkhtmltoimage渲染
 func (p *AsyncBookProcessor) renderWithWkhtmltoimage(ctx context.Context, cardID uint, htmlContent, fullImagePath string) (string, error) {
 	log.C(ctx).Infow("使用wkhtmltoimage渲染", "card_id", cardID)
+
+	// 检查原始HTML内容
+	originalOverflowCount := strings.Count(htmlContent, "overflow: visible")
+	log.C(ctx).Infow("原始HTML内容检查", "card_id", cardID, "overflow_visible_count", originalOverflowCount)
+
+	// 修复HTML内容中的CSS样式
+	fixedHTMLContent := p.fixHTMLContentForRendering(htmlContent)
+
+	// 检查修复后的HTML内容
+	fixedOverflowCount := strings.Count(fixedHTMLContent, "overflow: hidden !important")
+	log.C(ctx).Infow("修复后HTML内容检查", "card_id", cardID, "overflow_hidden_count", fixedOverflowCount)
+
+	// 保存修复后的HTML文件用于调试
+	debugHTMLPath := strings.Replace(fullImagePath, ".webp", "_fixed.html", 1)
+	if err := os.WriteFile(debugHTMLPath, []byte(fixedHTMLContent), 0644); err != nil {
+		log.C(ctx).Warnw("保存调试HTML文件失败", "card_id", cardID, "error", err.Error())
+	} else {
+		log.C(ctx).Infow("调试HTML文件已保存", "card_id", cardID, "debug_path", debugHTMLPath)
+	}
 
 	// 使用新的wkhtmltoimage工具
 	renderer := utilpkg.NewWkhtmltoimageRenderer(&utilpkg.WkhtmltoimageConfig{
@@ -1961,13 +1978,49 @@ func (p *AsyncBookProcessor) renderWithWkhtmltoimage(ctx context.Context, cardID
 		Timeout: 30 * time.Second,
 	})
 
-	if err := renderer.RenderHTMLToImage(ctx, htmlContent, fullImagePath); err != nil {
+	if err := renderer.RenderHTMLToImage(ctx, fixedHTMLContent, fullImagePath); err != nil {
 		log.C(ctx).Warnw("wkhtmltoimage转换失败", "card_id", cardID, "error", err.Error())
 		return "", fmt.Errorf("wkhtmltoimage转换失败: %v", err)
 	}
 
 	log.C(ctx).Infow("wkhtmltoimage渲染成功", "card_id", cardID, "image_path", fullImagePath)
 	return fullImagePath, nil
+}
+
+// fixHTMLContentForRendering 修复HTML内容以适配渲染
+func (p *AsyncBookProcessor) fixHTMLContentForRendering(htmlContent string) string {
+	// 直接替换有问题的CSS属性
+	htmlContent = strings.ReplaceAll(htmlContent, "overflow: visible;", "overflow: hidden !important;")
+	htmlContent = strings.ReplaceAll(htmlContent, "overflow: visible", "overflow: hidden !important")
+
+	// 添加固定尺寸的CSS
+	fixedCSS := `
+		body { 
+			width: 1080px !important; 
+			height: 1440px !important; 
+			overflow: hidden !important; 
+		}
+		.markdown-card-container { 
+			width: 1080px !important; 
+			height: 1440px !important; 
+			overflow: hidden !important; 
+		}
+		.markdown-content { 
+			overflow: hidden !important; 
+		}
+	`
+
+	// 在</style>标签前插入修复的CSS
+	if strings.Contains(htmlContent, "</style>") {
+		htmlContent = strings.Replace(htmlContent, "</style>", fixedCSS+"\n</style>", 1)
+	} else {
+		// 如果没有style标签，在head标签内添加
+		if strings.Contains(htmlContent, "</head>") {
+			htmlContent = strings.Replace(htmlContent, "</head>", "<style>"+fixedCSS+"</style>\n</head>", 1)
+		}
+	}
+
+	return htmlContent
 }
 
 // renderWithAlternativeMethod 使用备选方案渲染
