@@ -1627,20 +1627,11 @@ func (p *AsyncBookProcessor) createEnhancedCoverCard(
 		SortOrder: 0, // 封面卡片排序为0
 	}
 
-	// 准备封面数据 - 使用JSON格式存储
-	coverData := map[string]interface{}{
-		"type":       "cover",
-		"title":      book.Title,
-		"image_url":  book.ImageUrl, // 如果有封面图片
-		"background": coverBackground,
-	}
-
-	// 将封面数据转换为JSON
-	coverJSON, err := json.Marshal(coverData)
-	if err != nil {
-		return fmt.Errorf("封面数据序列化失败: %v", err)
-	}
-	coverCard.ProcessedText = string(coverJSON)
+	// 生成封面HTML内容
+	log.C(ctx).Infow("封面卡片信息", "book_id", book.ID, "title", book.Title, "image_url", book.ImageUrl, "background", coverBackground)
+	coverHTML := p.generateCoverHTML(book.Title, book.ImageUrl, coverBackground)
+	coverCard.ProcessedText = coverHTML
+	log.C(ctx).Infow("封面HTML生成完成", "book_id", book.ID, "html_length", len(coverHTML))
 
 	// 创建封面卡片记录
 	if err := p.biz.Cards().Create(ctx, coverCard); err != nil {
@@ -1649,8 +1640,12 @@ func (p *AsyncBookProcessor) createEnhancedCoverCard(
 
 	log.C(ctx).Infow("✅ 增强版封面卡片创建成功", "book_id", book.ID, "card_id", coverCard.ID)
 
-	// TODO: 这里可以调用实际的封面渲染器进行图片生成
-	// 暂时跳过渲染，只创建记录
+	// 生成封面图片（使用封面HTML，不重新生成）
+	if err := p.generateCoverImageOnly(ctx, coverCard.ID, coverHTML); err != nil {
+		log.C(ctx).Errorw("封面图片生成失败", "card_id", coverCard.ID, "error", err.Error())
+	} else {
+		log.C(ctx).Infow("✅ 封面图片生成成功", "card_id", coverCard.ID)
+	}
 
 	return nil
 }
@@ -2285,4 +2280,188 @@ func (p *AsyncBookProcessor) generateDefaultImagePrompt(content string) string {
 		// 默认提示词
 		return "现代简约办公环境，专业商务风格，蓝色调，高质量渲染"
 	}
+}
+
+// generateCoverHTML 生成封面HTML内容（上半部分图片，下半部分标题）
+func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background string) string {
+	var html strings.Builder
+
+	// 处理图片URL，如果为空或无效，使用默认渐变背景
+	var backgroundStyle string
+	if imageURL != "" && imageURL != "null" && imageURL != "undefined" {
+		// 构建完整的图片路径
+		imagePath := viper.GetString("resource.image_path")
+		if imagePath == "" {
+			imagePath = "res/upload" // 默认路径
+		}
+		
+		// 如果imageURL是相对路径，转换为完整路径
+		var fullImageURL string
+		if strings.HasPrefix(imageURL, "/") {
+			// 移除开头的斜杠，构建完整路径
+			fullImageURL = "file://" + filepath.Join(imagePath, strings.TrimPrefix(imageURL, "/"))
+		} else {
+			// 已经是完整路径或相对路径
+			fullImageURL = imageURL
+		}
+		
+		backgroundStyle = `background-image: url('` + fullImageURL + `');
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;`
+		
+		// 添加调试日志
+		log.C(context.Background()).Infow("封面图片路径转换", 
+			"original_url", imageURL, 
+			"image_path", imagePath, 
+			"full_url", fullImageURL)
+	} else {
+		// 使用默认的渐变背景
+		backgroundStyle = `background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);`
+	}
+
+	html.WriteString(`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>封面 - ` + title + `</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            width: 1080px;
+            height: 1440px;
+            overflow: hidden !important;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            position: relative;
+        }
+
+        .cover-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+        }
+
+        .image-section {
+            flex: 1;
+            ` + backgroundStyle + `
+            position: relative;
+            overflow: hidden;
+        }
+
+        .image-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.1);
+        }
+
+        .title-section {
+            height: 360px;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
+            position: relative;
+        }
+
+        .title-content {
+            text-align: center;
+            max-width: 800px;
+        }
+
+        .title-text {
+            font-size: 48px;
+            font-weight: 700;
+            color: #2c3e50;
+            line-height: 1.2;
+            margin-bottom: 20px;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .subtitle {
+            font-size: 24px;
+            color: #7f8c8d;
+            font-weight: 400;
+            line-height: 1.4;
+        }
+
+        .decoration {
+            position: absolute;
+            width: 100%;
+            height: 4px;
+            background: linear-gradient(90deg, #667eea, #764ba2, #667eea);
+            top: 0;
+        }
+
+        @media (max-width: 1080px) {
+            body {
+                width: 100vw;
+                height: 100vh;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="cover-container">
+        <div class="image-section">
+            <div class="image-overlay"></div>
+        </div>
+        <div class="title-section">
+            <div class="decoration"></div>
+            <div class="title-content">
+                <h1 class="title-text">` + title + `</h1>
+                <p class="subtitle">知识卡片集</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>`)
+
+	return html.String()
+}
+
+// generateCoverImageOnly 仅生成封面图片，不重新生成HTML
+func (p *AsyncBookProcessor) generateCoverImageOnly(ctx context.Context, cardID uint, coverHTML string) error {
+	log.C(ctx).Infow("开始生成封面图片", "card_id", cardID)
+
+	// 获取图片输出路径配置
+	imagePath := viper.GetString("resource.image_path")
+	if imagePath == "" {
+		return fmt.Errorf("未配置resource.image_path")
+	}
+
+	// 创建卡片图片目录
+	cardImageDir := filepath.Join(imagePath, "card", fmt.Sprintf("%d", cardID))
+	if err := os.MkdirAll(cardImageDir, 0755); err != nil {
+		return fmt.Errorf("创建卡片图片目录失败: %v", err)
+	}
+
+	// 生成图片文件名和完整路径
+	imageFileName := fmt.Sprintf("card_%d.webp", cardID)
+	fullImagePath := filepath.Join(cardImageDir, imageFileName)
+
+	// 保存封面HTML文件
+	htmlFilePath := filepath.Join(cardImageDir, fmt.Sprintf("card_%d.html", cardID))
+	if err := os.WriteFile(htmlFilePath, []byte(coverHTML), 0644); err != nil {
+		return fmt.Errorf("保存封面HTML文件失败: %v", err)
+	}
+
+	log.C(ctx).Infow("封面HTML文件保存成功", "card_id", cardID, "html_path", htmlFilePath)
+
+	// 使用修复后的HTML内容进行渲染
+	_, err := p.renderWithWkhtmltoimage(ctx, cardID, coverHTML, fullImagePath)
+	return err
 }
