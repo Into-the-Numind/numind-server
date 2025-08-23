@@ -5,7 +5,7 @@ FROM golang:1.24.2-alpine AS builder
 WORKDIR /app
 
 # 安装必要的系统依赖
-RUN apk add --no-cache git ca-certificates tzdata
+RUN apk add --no-cache git ca-certificates tzdata libwebp-dev gcc musl-dev
 
 # 复制 go mod 文件
 COPY go.mod go.sum ./
@@ -17,8 +17,8 @@ RUN go mod download
 COPY . .
 
 # 构建应用
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-s -w -X main.Version=$(git describe --tags --always --dirty)" \
+RUN CGO_ENABLED=1 go build \
+    -ldflags="-s -w -X main.Version=dev" \
     -o /app/bin/numind ./cmd/numind
 
 # 运行阶段 - 基于Ubuntu以获得更好的Chrome支持
