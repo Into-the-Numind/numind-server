@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf8"
+	"math"
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
@@ -111,6 +113,18 @@ func (hc *HTMLConverter) ConvertToStyledHTML(markdownText, title string) (string
 
 	// 包装为完整的 HTML 页面
 	return hc.wrapWithStyles(contentHTML, title, false), nil
+}
+
+// ConvertToStyledHTMLWithFixedMargins 将 Markdown 转换为带固定边距的完整 HTML 页面
+func (hc *HTMLConverter) ConvertToStyledHTMLWithFixedMargins(markdownText, title string) (string, error) {
+	// 先转换为基础 HTML
+	contentHTML, err := hc.ConvertToHTML(markdownText)
+	if err != nil {
+		return "", err
+	}
+
+	// 包装为带固定边距的完整 HTML 页面
+	return hc.wrapWithFixedMarginStyles(contentHTML, title), nil
 }
 
 // ConvertBlocksToHTML 将 Markdown 内容块转换为 HTML
@@ -881,6 +895,403 @@ input[type="checkbox"] {
 		hc.config.Padding,
 		hc.config.BackgroundColor,
 	)
+}
+
+// wrapWithFixedMarginStyles 包装 HTML 内容并添加固定边距样式
+func (hc *HTMLConverter) wrapWithFixedMarginStyles(contentHTML, title string) string {
+	cssStyles := hc.generateFixedMarginCSS()
+
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>%s</title>
+    <style>%s</style>
+</head>
+<body>
+    <div class="card-container">
+        %s
+    </div>
+</body>
+</html>`, hc.escapeHTML(title), cssStyles, contentHTML)
+}
+
+// generateFixedMarginCSS 生成带固定边距的 CSS 样式
+func (hc *HTMLConverter) generateFixedMarginCSS() string {
+	const fixedMargin = 20 // 固定上下边距为20px
+	
+	return fmt.Sprintf(`
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: %s;
+    font-size: %dpx;
+    line-height: %.1f;
+    color: %s;
+    background-color: %s;
+    overflow: visible;
+}
+
+.card-container {
+    width: %dpx;
+    height: %dpx;
+    padding: %dpx;
+    overflow: visible;
+    background-color: %s;
+    position: relative;
+    /* 强制固定上下边距 */
+    margin-top: %dpx !important;
+    margin-bottom: %dpx !important;
+}
+
+/* 内容区域样式 */
+.card-content {
+    /* 内容区域高度 = 卡片高度 - 上下边距 - 内边距 */
+    height: calc(%dpx - %dpx - %dpx);
+    overflow: hidden;
+    position: relative;
+}
+
+/* 标题样式 */
+h1 {
+    font-size: 28px;
+    font-weight: bold;
+    margin: 0 0 16px 0;
+    color: %s;
+    line-height: 1.4;
+}
+
+h2 {
+    font-size: 24px;
+    font-weight: bold;
+    margin: 24px 0 16px 0;
+    color: %s;
+    line-height: 1.4;
+}
+
+h3 {
+    font-size: 20px;
+    font-weight: bold;
+    margin: 24px 0 16px 0;
+    color: %s;
+    line-height: 1.4;
+}
+
+h4, h5, h6 {
+    font-size: 18px;
+    font-weight: bold;
+    margin: 24px 0 16px 0;
+    color: %s;
+    line-height: 1.4;
+}
+
+/* 段落样式 */
+p {
+    margin: 0 0 16px 0;
+    text-align: justify;
+    text-justify: inter-ideograph;
+    word-wrap: break-word;
+    hyphens: auto;
+    line-height: 1.6;
+}
+
+/* 列表样式 */
+ul, ol {
+    margin: 0 0 16px 0;
+    padding-left: 24px;
+}
+
+li {
+    margin-bottom: 8px;
+    word-wrap: break-word;
+    line-height: 1.6;
+}
+
+/* 引用样式 */
+blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-left: 4px solid #e0e0e0;
+    background-color: #f9f9f9;
+    font-style: italic;
+}
+
+blockquote p {
+    margin-bottom: 0;
+}
+
+/* 代码样式 */
+code {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 14px;
+    background-color: #f5f5f5;
+    padding: 2px 4px;
+    border-radius: 3px;
+}
+
+pre {
+    margin: 16px 0;
+    padding: 12px;
+    background-color: #f5f5f5;
+    border-radius: 4px;
+    overflow: hidden;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+}
+
+pre code {
+    background-color: transparent;
+    padding: 0;
+}
+
+/* 表格样式 */
+table {
+    width: 100%%;
+    margin: 16px 0;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+th, td {
+    padding: 8px 12px;
+    text-align: left;
+    border: 1px solid #e0e0e0;
+    word-wrap: break-word;
+}
+
+th {
+    background-color: #f5f5f5;
+    font-weight: bold;
+}
+
+/* 强制边距一致性 */
+.card-container::before {
+    content: '';
+    display: block;
+    height: %dpx;
+    width: 100%%;
+}
+
+.card-container::after {
+    content: '';
+    display: block;
+    height: %dpx;
+    width: 100%%;
+}
+`,
+		hc.config.FontFamily,
+		hc.config.FontSize,
+		hc.config.LineHeight,
+		hc.config.TextColor,
+		hc.config.BackgroundColor,
+		hc.config.CardWidth,
+		hc.config.CardHeight,
+		hc.config.Padding,
+		hc.config.BackgroundColor,
+		fixedMargin, fixedMargin,
+		hc.config.CardHeight, fixedMargin*2, hc.config.Padding*2,
+		hc.config.TextColor,
+		hc.config.TextColor,
+		hc.config.TextColor,
+		hc.config.TextColor,
+		fixedMargin, fixedMargin)
+}
+
+// SplitContentByHeight 根据内容高度和固定边距进行精准分页
+func (hc *HTMLConverter) SplitContentByHeight(markdownText string) ([]string, error) {
+	const CARD_HEIGHT = 1440
+	const FIXED_MARGIN = 20
+	const MAX_CONTENT_HEIGHT = CARD_HEIGHT - FIXED_MARGIN*2 // 1400px
+
+	// 先转换为HTML
+	contentHTML, err := hc.ConvertToHTML(markdownText)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert markdown to HTML: %v", err)
+	}
+
+	// 测量内容高度
+	contentHeight, err := hc.measureHTMLHeight(contentHTML)
+	if err != nil {
+		return nil, fmt.Errorf("failed to measure HTML height: %v", err)
+	}
+
+	// 检查是否需要分页
+	if contentHeight <= MAX_CONTENT_HEIGHT {
+		// 内容高度未超出，直接返回单张卡片
+		return []string{markdownText}, nil
+	}
+
+	// 内容高度超出，需要分页
+	return hc.splitContentByHeight(markdownText, MAX_CONTENT_HEIGHT)
+}
+
+// measureHTMLHeight 测量HTML内容高度（模拟实现）
+func (hc *HTMLConverter) measureHTMLHeight(html string) (int, error) {
+	// 这里应该使用实际的HTML高度测量方法
+	// 目前使用基于字符数的估算方法
+	// 实际项目中可以使用 html-to-image 或其他工具进行精确测量
+	
+	// 移除HTML标签，计算纯文本长度
+	textContent := hc.stripHTMLTags(html)
+	
+	// 基于字符数估算高度
+	// 假设每行平均50个字符，每行高度为字体大小 * 行高
+	charsPerLine := 50
+	lineHeight := float64(hc.config.FontSize) * hc.config.LineHeight
+	
+	lines := (len(textContent) + charsPerLine - 1) / charsPerLine
+	estimatedHeight := int(float64(lines) * lineHeight)
+	
+	return estimatedHeight, nil
+}
+
+// stripHTMLTags 移除HTML标签，获取纯文本内容
+func (hc *HTMLConverter) stripHTMLTags(html string) string {
+	// 简单的HTML标签移除
+	// 实际项目中可以使用更复杂的HTML解析器
+	html = strings.ReplaceAll(html, "<h1>", "")
+	html = strings.ReplaceAll(html, "</h1>", "\n")
+	html = strings.ReplaceAll(html, "<h2>", "")
+	html = strings.ReplaceAll(html, "</h2>", "\n")
+	html = strings.ReplaceAll(html, "<h3>", "")
+	html = strings.ReplaceAll(html, "</h3>", "\n")
+	html = strings.ReplaceAll(html, "<p>", "")
+	html = strings.ReplaceAll(html, "</p>", "\n")
+	html = strings.ReplaceAll(html, "<li>", "")
+	html = strings.ReplaceAll(html, "</li>", "\n")
+	html = strings.ReplaceAll(html, "<ul>", "")
+	html = strings.ReplaceAll(html, "</ul>", "\n")
+	html = strings.ReplaceAll(html, "<ol>", "")
+	html = strings.ReplaceAll(html, "</ol>", "\n")
+	html = strings.ReplaceAll(html, "<blockquote>", "")
+	html = strings.ReplaceAll(html, "</blockquote>", "\n")
+	html = strings.ReplaceAll(html, "<pre>", "")
+	html = strings.ReplaceAll(html, "</pre>", "\n")
+	html = strings.ReplaceAll(html, "<code>", "")
+	html = strings.ReplaceAll(html, "</code>", "")
+	
+	return html
+}
+
+// splitContentByHeight 根据高度拆分内容
+func (hc *HTMLConverter) splitContentByHeight(markdownText string, maxContentHeight int) ([]string, error) {
+	var cards []string
+	lines := strings.Split(markdownText, "\n")
+	var currentCard strings.Builder
+	var currentHeight int
+	
+	// 卡片配置
+	const titleFontSize = 28
+	const subtitleFontSize = 24
+	const bodyFontSize = 16
+	const availableWidth = 980 // 1080 - 100 (左右边距)
+	const titleLineHeight = 1.4
+	const bodyLineHeight = 1.6
+	const titleMarginBottom = 16
+	const bodyMarginBottom = 16
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// 计算当前行的高度
+		var lineHeight int
+		var marginBottom int
+
+		if strings.HasPrefix(line, "# ") {
+			// 一级标题
+			lineHeight = hc.calculateTextHeight(line[2:], titleFontSize, availableWidth, titleLineHeight)
+			marginBottom = titleMarginBottom
+		} else if strings.HasPrefix(line, "## ") {
+			// 二级标题
+			lineHeight = hc.calculateTextHeight(line[3:], subtitleFontSize, availableWidth, titleLineHeight)
+			marginBottom = titleMarginBottom
+		} else if strings.HasPrefix(line, "### ") {
+			// 三级标题
+			lineHeight = hc.calculateTextHeight(line[4:], subtitleFontSize, availableWidth, titleLineHeight)
+			marginBottom = titleMarginBottom
+		} else {
+			// 正文
+			lineHeight = hc.calculateTextHeight(line, bodyFontSize, availableWidth, bodyLineHeight)
+			marginBottom = bodyMarginBottom
+		}
+
+		totalElementHeight := lineHeight + marginBottom
+
+		// 检查是否需要新卡片
+		needNewCard := false
+
+		// 1. 如果是一级标题且当前卡片非空，强制新卡片
+		if strings.HasPrefix(line, "# ") && currentCard.Len() > 0 {
+			needNewCard = true
+		}
+
+		// 2. 如果添加当前行会超出最大内容高度，需要新卡片
+		if currentHeight+totalElementHeight > maxContentHeight {
+			needNewCard = true
+		}
+
+		// 3. 如果是二级标题且当前卡片已经比较满，考虑新卡片
+		if strings.HasPrefix(line, "## ") && currentHeight > int(float64(maxContentHeight)*0.8) {
+			needNewCard = true
+		}
+
+		if needNewCard && currentCard.Len() > 0 {
+			// 保存当前卡片
+			cards = append(cards, strings.TrimSpace(currentCard.String()))
+			currentCard.Reset()
+			currentHeight = 0
+		}
+
+		// 添加当前行到卡片
+		if currentCard.Len() > 0 {
+			currentCard.WriteString("\n")
+		}
+		currentCard.WriteString(line)
+		currentHeight += totalElementHeight
+	}
+
+	// 添加最后一张卡片
+	if currentCard.Len() > 0 {
+		cards = append(cards, strings.TrimSpace(currentCard.String()))
+	}
+
+	return cards, nil
+}
+
+// calculateTextHeight 计算文本高度
+func (hc *HTMLConverter) calculateTextHeight(text string, fontSize int, availableWidth int, lineHeightMultiplier float64) int {
+	if strings.TrimSpace(text) == "" {
+		return 0
+	}
+
+	// 计算字符宽度（中文字符约为字体大小的1.05倍）
+	charWidth := float64(fontSize) * 1.05
+	charsPerLine := int(float64(availableWidth) / charWidth)
+
+	if charsPerLine <= 0 {
+		charsPerLine = 1
+	}
+
+	// 计算行数
+	textLength := utf8.RuneCountInString(text)
+	lines := int(math.Ceil(float64(textLength) / float64(charsPerLine)))
+
+	if lines == 0 {
+		lines = 1
+	}
+
+	// 计算总高度：行数 × 字体大小 × 行高倍数
+	totalHeight := int(float64(lines) * float64(fontSize) * lineHeightMultiplier)
+
+	return totalHeight
 }
 
 // truncateString 截断字符串

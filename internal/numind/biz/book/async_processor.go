@@ -1702,36 +1702,48 @@ func (p *AsyncBookProcessor) splitAndCreateMarkdownCards(
 	return createdCards, nil
 }
 
-// splitMarkdownIntoCards 将markdown内容分割为多张卡片（基于高度计算的紧凑版本）
+// splitMarkdownIntoCards 将markdown内容分割为多张卡片（基于固定边距的精准分页版本）
 func (p *AsyncBookProcessor) splitMarkdownIntoCards(content string) []string {
+	// 使用HTML转换器的固定边距分页逻辑
+	htmlConverter := p.getHTMLConverter()
+	cards, err := htmlConverter.SplitContentByHeight(content)
+	if err != nil {
+		// 如果分页失败，回退到原有的分页逻辑
+		log.C(context.Background()).Warnw("固定边距分页失败，回退到原有逻辑", "error", err)
+		return p.splitMarkdownIntoCardsFallback(content)
+	}
+
+	log.C(context.Background()).Infow("固定边距分页完成", "original_content_length", len(content), "cards_count", len(cards))
+	return cards
+}
+
+// splitMarkdownIntoCardsFallback 回退的分页逻辑（原有实现）
+func (p *AsyncBookProcessor) splitMarkdownIntoCardsFallback(content string) []string {
 	lines := strings.Split(content, "\n")
 	var cards []string
 	var currentCard strings.Builder
 
-	// 卡片配置
-	const cardHeight = 1440                                                 // 卡片总高度
-	const cardPaddingTop = 40                                               // 顶部边距
-	const cardPaddingBottom = 40                                            // 底部边距
-	const availableHeight = cardHeight - cardPaddingTop - cardPaddingBottom // 可用高度：1360px
+	// 卡片配置 - 优化填充版本
+	const cardHeight = 1440                                            // 卡片总高度
+	const fixedMargin = 20                                             // 固定上下边距
+	const cardPadding = 40                                             // 内边距
+	const availableHeight = cardHeight - fixedMargin*2 - cardPadding*2 // 可用高度：1400px
+	const maxFillHeight = availableHeight - 30                         // 最大填充高度：1370px（留30px缓冲）
 
 	// 字体和行高配置
-	const titleFontSize = 28                                              // 标题字体大小
-	const subtitleFontSize = 24                                           // 副标题字体大小
-	const bodyFontSize = 16                                               // 正文字体大小
-	const cardWidth = 1080                                                // 卡片宽度
-	const cardPaddingLeft = 50                                            // 左边距
-	const cardPaddingRight = 50                                           // 右边距
-	const availableWidth = cardWidth - cardPaddingLeft - cardPaddingRight // 可用宽度：980px
+	const titleFontSize = 28               // 标题字体大小
+	const subtitleFontSize = 24            // 副标题字体大小
+	const bodyFontSize = 16                // 正文字体大小
+	const cardWidth = 1080                 // 卡片宽度
+	const availableWidth = cardWidth - 100 // 可用宽度：980px
 
 	// 行高倍数
-	const titleLineHeight = 1.4    // 标题行高倍数
-	const subtitleLineHeight = 1.5 // 副标题行高倍数
-	const bodyLineHeight = 1.6     // 正文行高倍数
+	const titleLineHeight = 1.4 // 标题行高倍数
+	const bodyLineHeight = 1.6  // 正文行高倍数
 
 	// 元素间距
-	const titleMarginBottom = 16    // 标题下方间距
-	const subtitleMarginBottom = 16 // 副标题下方间距
-	const bodyMarginBottom = 16     // 正文下方间距
+	const titleMarginBottom = 16 // 标题下方间距
+	const bodyMarginBottom = 16  // 正文下方间距
 
 	var currentHeight int
 
@@ -1751,12 +1763,12 @@ func (p *AsyncBookProcessor) splitMarkdownIntoCards(content string) []string {
 			marginBottom = titleMarginBottom
 		} else if strings.HasPrefix(line, "## ") {
 			// 二级标题
-			lineHeight = p.calculateTextHeight(line[3:], subtitleFontSize, availableWidth, subtitleLineHeight)
-			marginBottom = subtitleMarginBottom
+			lineHeight = p.calculateTextHeight(line[3:], subtitleFontSize, availableWidth, titleLineHeight)
+			marginBottom = titleMarginBottom
 		} else if strings.HasPrefix(line, "### ") {
-			// 三级标题（按副标题处理）
-			lineHeight = p.calculateTextHeight(line[4:], subtitleFontSize, availableWidth, subtitleLineHeight)
-			marginBottom = subtitleMarginBottom
+			// 三级标题
+			lineHeight = p.calculateTextHeight(line[4:], subtitleFontSize, availableWidth, titleLineHeight)
+			marginBottom = titleMarginBottom
 		} else {
 			// 正文
 			lineHeight = p.calculateTextHeight(line, bodyFontSize, availableWidth, bodyLineHeight)
@@ -1773,24 +1785,33 @@ func (p *AsyncBookProcessor) splitMarkdownIntoCards(content string) []string {
 			needNewCard = true
 		}
 
-		// 2. 如果添加当前行会超出可用高度，需要新卡片
-		if currentHeight+totalElementHeight > availableHeight {
+		// 2. 如果添加当前行会超出最大填充高度，需要新卡片
+		if currentHeight+totalElementHeight > maxFillHeight {
 			needNewCard = true
 		}
 
 		// 3. 如果是二级标题且当前卡片已经比较满，考虑新卡片
-		if strings.HasPrefix(line, "## ") && currentHeight > availableHeight*0.8 {
+		if strings.HasPrefix(line, "## ") && currentHeight > int(math.Ceil(float64(maxFillHeight)*0.85)) {
 			needNewCard = true
 		}
 
+		// 4. 如果是三级标题且当前卡片已经比较满，考虑新卡片
+		if strings.HasPrefix(line, "### ") && currentHeight > int(math.Ceil(float64(maxFillHeight)*0.9)) {
+			needNewCard = true
+		}
+
+		// 5. 如果是纯文本且当前卡片已经比较满，考虑新卡片
+		if !strings.HasPrefix(line, "#") && currentHeight > int(math.Ceil(float64(maxFillHeight)*0.7)) {
+			needNewCard = true
+		}
+
+		// 保存当前卡片
 		if needNewCard && currentCard.Len() > 0 {
 			// 保存当前卡片
 			cards = append(cards, strings.TrimSpace(currentCard.String()))
 			currentCard.Reset()
 			currentHeight = 0
-		}
-
-		// 添加当前行到卡片
+		} // 添加当前行到卡片
 		if currentCard.Len() > 0 {
 			currentCard.WriteString("\n")
 		}
@@ -1813,7 +1834,7 @@ func (p *AsyncBookProcessor) calculateTextHeight(text string, fontSize int, avai
 	}
 
 	// 计算字符宽度（中文字符约为字体大小的1.05倍，英文字符约为0.6倍）
-	charWidth := float64(fontSize) * 1.05 // 以中文字符为准
+	charWidth := float64(fontSize) * 0.8 // 更准确的字符宽度
 	charsPerLine := int(float64(availableWidth) / charWidth)
 
 	if charsPerLine <= 0 {
@@ -2512,7 +2533,6 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
             <div class="decoration"></div>
             <div class="title-content">
                 <h1 class="title-text">` + title + `</h1>
-                <p class="subtitle">知识卡片集</p>
             </div>
         </div>
     </div>
