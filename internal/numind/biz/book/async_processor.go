@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"math"
 	"time"
 	"unicode/utf8"
 
@@ -1699,29 +1700,92 @@ func (p *AsyncBookProcessor) splitAndCreateMarkdownCards(
 	return createdCards, nil
 }
 
-// splitMarkdownIntoCards 将markdown内容分割为多张卡片
+// splitMarkdownIntoCards 将markdown内容分割为多张卡片（基于高度计算的紧凑版本）
 func (p *AsyncBookProcessor) splitMarkdownIntoCards(content string) []string {
 	lines := strings.Split(content, "\n")
 	var cards []string
 	var currentCard strings.Builder
 
-	const maxCardLength = 1000 // 每张卡片最大字符数
+	// 卡片配置
+	const cardHeight = 1440        // 卡片总高度
+	const cardPaddingTop = 40      // 顶部边距
+	const cardPaddingBottom = 40   // 底部边距
+	const availableHeight = cardHeight - cardPaddingTop - cardPaddingBottom // 可用高度：1360px
+
+	// 字体和行高配置
+	const titleFontSize = 28       // 标题字体大小
+	const subtitleFontSize = 24    // 副标题字体大小
+	const bodyFontSize = 16        // 正文字体大小
+	const cardWidth = 1080         // 卡片宽度
+	const cardPaddingLeft = 50     // 左边距
+	const cardPaddingRight = 50    // 右边距
+	const availableWidth = cardWidth - cardPaddingLeft - cardPaddingRight // 可用宽度：980px
+
+	// 行高倍数
+	const titleLineHeight = 1.4    // 标题行高倍数
+	const subtitleLineHeight = 1.5 // 副标题行高倍数
+	const bodyLineHeight = 1.6     // 正文行高倍数
+
+	// 元素间距
+	const titleMarginBottom = 16   // 标题下方间距
+	const subtitleMarginBottom = 16 // 副标题下方间距
+	const bodyMarginBottom = 16    // 正文下方间距
+
+	var currentHeight int
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
 
-		// 检查是否是一级标题（新卡片的开始）
+		// 计算当前行的高度
+		var lineHeight int
+		var marginBottom int
+
+		if strings.HasPrefix(line, "# ") {
+			// 一级标题
+			lineHeight = p.calculateTextHeight(line[2:], titleFontSize, availableWidth, titleLineHeight)
+			marginBottom = titleMarginBottom
+		} else if strings.HasPrefix(line, "## ") {
+			// 二级标题
+			lineHeight = p.calculateTextHeight(line[3:], subtitleFontSize, availableWidth, subtitleLineHeight)
+			marginBottom = subtitleMarginBottom
+		} else if strings.HasPrefix(line, "### ") {
+			// 三级标题（按副标题处理）
+			lineHeight = p.calculateTextHeight(line[4:], subtitleFontSize, availableWidth, subtitleLineHeight)
+			marginBottom = subtitleMarginBottom
+		} else {
+			// 正文
+			lineHeight = p.calculateTextHeight(line, bodyFontSize, availableWidth, bodyLineHeight)
+			marginBottom = bodyMarginBottom
+		}
+
+		totalElementHeight := lineHeight + marginBottom
+
+		// 检查是否需要新卡片
+		needNewCard := false
+
+		// 1. 如果是一级标题且当前卡片非空，强制新卡片
 		if strings.HasPrefix(line, "# ") && currentCard.Len() > 0 {
+			needNewCard = true
+		}
+
+		// 2. 如果添加当前行会超出可用高度，需要新卡片
+		if currentHeight+totalElementHeight > availableHeight {
+			needNewCard = true
+		}
+
+		// 3. 如果是二级标题且当前卡片已经比较满，考虑新卡片
+		if strings.HasPrefix(line, "## ") && currentHeight > availableHeight*0.8 {
+			needNewCard = true
+		}
+
+		if needNewCard && currentCard.Len() > 0 {
 			// 保存当前卡片
 			cards = append(cards, strings.TrimSpace(currentCard.String()))
 			currentCard.Reset()
-		}
-
-		// 检查是否是二级标题（可能的新卡片开始）
-		if strings.HasPrefix(line, "## ") && currentCard.Len() > maxCardLength {
-			// 如果当前卡片已经很长，开始新卡片
-			cards = append(cards, strings.TrimSpace(currentCard.String()))
-			currentCard.Reset()
+			currentHeight = 0
 		}
 
 		// 添加当前行到卡片
@@ -1729,12 +1793,7 @@ func (p *AsyncBookProcessor) splitMarkdownIntoCards(content string) []string {
 			currentCard.WriteString("\n")
 		}
 		currentCard.WriteString(line)
-
-		// 如果当前卡片过长，在合适的地方分割
-		if currentCard.Len() > maxCardLength*1.5 {
-			cards = append(cards, strings.TrimSpace(currentCard.String()))
-			currentCard.Reset()
-		}
+		currentHeight += totalElementHeight
 	}
 
 	// 添加最后一张卡片
@@ -1745,6 +1804,33 @@ func (p *AsyncBookProcessor) splitMarkdownIntoCards(content string) []string {
 	return cards
 }
 
+// calculateTextHeight 计算文本高度
+func (p *AsyncBookProcessor) calculateTextHeight(text string, fontSize int, availableWidth int, lineHeightMultiplier float64) int {
+	if strings.TrimSpace(text) == "" {
+		return 0
+	}
+
+	// 计算字符宽度（中文字符约为字体大小的1.05倍，英文字符约为0.6倍）
+	charWidth := float64(fontSize) * 1.05 // 以中文字符为准
+	charsPerLine := int(float64(availableWidth) / charWidth)
+
+	if charsPerLine <= 0 {
+		charsPerLine = 1
+	}
+
+	// 计算行数
+	textLength := utf8.RuneCountInString(text)
+	lines := int(math.Ceil(float64(textLength) / float64(charsPerLine)))
+
+	if lines == 0 {
+		lines = 1
+	}
+
+	// 计算总高度：行数 × 字体大小 × 行高倍数
+	totalHeight := int(float64(lines) * float64(fontSize) * lineHeightMultiplier)
+
+	return totalHeight
+}
 // getHTMLConverter 获取HTML转换器实例
 func (p *AsyncBookProcessor) getHTMLConverter() *markdown.HTMLConverter {
 	return markdown.NewHTMLConverter()
