@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -12,7 +13,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"math"
 	"time"
 	"unicode/utf8"
 
@@ -217,6 +217,8 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to parse markdown content")
 		return
 	}
+
+	log.C(ctx).Infow("🎨 第一步：解析markdown内容", "book_id", bookID, "markdown_content", markdownContent)
 
 	// 从markdown文本中提取title作为book的标题
 	bookTitle := p.extractTitleFromMarkdown(markdownContent)
@@ -1707,18 +1709,18 @@ func (p *AsyncBookProcessor) splitMarkdownIntoCards(content string) []string {
 	var currentCard strings.Builder
 
 	// 卡片配置
-	const cardHeight = 1440        // 卡片总高度
-	const cardPaddingTop = 40      // 顶部边距
-	const cardPaddingBottom = 40   // 底部边距
+	const cardHeight = 1440                                                 // 卡片总高度
+	const cardPaddingTop = 40                                               // 顶部边距
+	const cardPaddingBottom = 40                                            // 底部边距
 	const availableHeight = cardHeight - cardPaddingTop - cardPaddingBottom // 可用高度：1360px
 
 	// 字体和行高配置
-	const titleFontSize = 28       // 标题字体大小
-	const subtitleFontSize = 24    // 副标题字体大小
-	const bodyFontSize = 16        // 正文字体大小
-	const cardWidth = 1080         // 卡片宽度
-	const cardPaddingLeft = 50     // 左边距
-	const cardPaddingRight = 50    // 右边距
+	const titleFontSize = 28                                              // 标题字体大小
+	const subtitleFontSize = 24                                           // 副标题字体大小
+	const bodyFontSize = 16                                               // 正文字体大小
+	const cardWidth = 1080                                                // 卡片宽度
+	const cardPaddingLeft = 50                                            // 左边距
+	const cardPaddingRight = 50                                           // 右边距
 	const availableWidth = cardWidth - cardPaddingLeft - cardPaddingRight // 可用宽度：980px
 
 	// 行高倍数
@@ -1727,9 +1729,9 @@ func (p *AsyncBookProcessor) splitMarkdownIntoCards(content string) []string {
 	const bodyLineHeight = 1.6     // 正文行高倍数
 
 	// 元素间距
-	const titleMarginBottom = 16   // 标题下方间距
+	const titleMarginBottom = 16    // 标题下方间距
 	const subtitleMarginBottom = 16 // 副标题下方间距
-	const bodyMarginBottom = 16    // 正文下方间距
+	const bodyMarginBottom = 16     // 正文下方间距
 
 	var currentHeight int
 
@@ -1831,6 +1833,7 @@ func (p *AsyncBookProcessor) calculateTextHeight(text string, fontSize int, avai
 
 	return totalHeight
 }
+
 // getHTMLConverter 获取HTML转换器实例
 func (p *AsyncBookProcessor) getHTMLConverter() *markdown.HTMLConverter {
 	return markdown.NewHTMLConverter()
@@ -2380,7 +2383,7 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
 		if imagePath == "" {
 			imagePath = "res/upload" // 默认路径
 		}
-		
+
 		// 如果imageURL是相对路径，转换为完整路径
 		var fullImageURL string
 		if strings.HasPrefix(imageURL, "/") {
@@ -2390,16 +2393,16 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
 			// 已经是完整路径或相对路径
 			fullImageURL = imageURL
 		}
-		
+
 		backgroundStyle = `background-image: url('` + fullImageURL + `');
             background-size: cover;
             background-position: center;
             background-repeat: no-repeat;`
-		
+
 		// 添加调试日志
-		log.C(context.Background()).Infow("封面图片路径转换", 
-			"original_url", imageURL, 
-			"image_path", imagePath, 
+		log.C(context.Background()).Infow("封面图片路径转换",
+			"original_url", imageURL,
+			"image_path", imagePath,
 			"full_url", fullImageURL)
 	} else {
 		// 使用默认的渐变背景
