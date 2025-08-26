@@ -153,29 +153,13 @@ func (r *CoverRenderer) RenderCoverCardFromBook(card *model.CardM, bookTitle str
 
 // GenerateCoverHTML 生成封面HTML内容
 func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagination.PaginationConfig) string {
-	// 处理背景样式 - 优先使用模板背景，确保背景完全覆盖整个卡片
+	// 处理背景样式 - 优先使用模板背景，如果没有则使用白色背景
 	backgroundStyle := ""
 	if r.templateBackground != "" {
-		// 使用绝对路径确保背景图片能正确加载
-		absPath := r.templateBackground
-		if !filepath.IsAbs(absPath) {
-			if abs, err := filepath.Abs(absPath); err == nil {
-				absPath = abs
-			}
-		}
-		// 关键修复：使用单一背景覆盖整个容器，确保完全填充
-		backgroundStyle = fmt.Sprintf("background: url('file://%s') center center / cover no-repeat;", absPath)
-	} else if coverData.Background != "" {
-		// 如果没有模板背景，使用封面数据中的背景
-		absPath := coverData.Background
-		if !filepath.IsAbs(absPath) {
-			if abs, err := filepath.Abs(absPath); err == nil {
-				absPath = abs
-			}
-		}
-		backgroundStyle = fmt.Sprintf("background: url('file://%s') center center / cover no-repeat;", absPath)
+		// 使用模板背景图片
+		backgroundStyle = fmt.Sprintf("background: url('file://%s') center center / cover no-repeat;", r.templateBackground)
 	} else {
-		// 使用纯白色背景作为默认模板
+		// 使用默认白色背景
 		backgroundStyle = "background: #ffffff;"
 	}
 
@@ -265,16 +249,16 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
         .image-placeholder {
             width: 80%%;
             height: 80%%;
-            background: linear-gradient(135deg, #667eea 0%%, #764ba2 100%%);
+            background: #f8f9fa;
+            border: 2px dashed #dee2e6;
             border-radius: 12px;
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            color: white;
+            color: #6c757d;
             font-size: 24px;
             font-weight: bold;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
             text-align: center;
         }
         

@@ -157,7 +157,7 @@ func (e *EnhancedRendererIntegration) saveRenderedCards(
 }
 
 // buildCardElementsMapping 构建卡片元素映射关系
-// 根据渲染策略和分页结果，将结构化文本正确分配到各张卡片
+// 使用按行分页引擎将结构化文本正确分配到各张卡片
 func (e *EnhancedRendererIntegration) buildCardElementsMapping(
 	structuredTextArray []pagination.Element,
 	totalCards int,
@@ -169,8 +169,29 @@ func (e *EnhancedRendererIntegration) buildCardElementsMapping(
 		return [][]pagination.Element{}
 	}
 
+	// 使用按行分页引擎进行精确分页
+	paginationBiz := pagination.NewPaginationBiz()
+	paginatedContent, err := paginationBiz.PaginateElementsByLines(remainingElements)
+	if err != nil {
+		// 如果按行分页失败，回退到简单分配策略
+		return e.fallbackCardElementsMapping(remainingElements, totalCards)
+	}
+
+	// 将分页结果转换为映射关系
+	var mapping [][]pagination.Element
+	for _, card := range paginatedContent.Cards {
+		mapping = append(mapping, card.Elements)
+	}
+
+	return mapping
+}
+
+// fallbackCardElementsMapping 回退的卡片元素映射策略
+func (e *EnhancedRendererIntegration) fallbackCardElementsMapping(
+	remainingElements []pagination.Element,
+	totalCards int,
+) [][]pagination.Element {
 	// 简单的平均分配策略
-	// 实际应该根据渲染器的分页算法来分配，但这里先用简单方法
 	elementsPerCard := (len(remainingElements) + totalCards - 2) / max(1, totalCards-1) // 减1是因为第一张卡片特殊处理
 
 	var mapping [][]pagination.Element

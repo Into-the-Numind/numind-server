@@ -1589,7 +1589,7 @@ func (p *AsyncBookProcessor) processBookWithMarkdownRenderer(
 	}
 
 	// 2. 处理markdown内容，分割为多张卡片
-	markdownCards, err := p.splitAndCreateMarkdownCards(ctx, book, userID, markdownText)
+	markdownCards, err := p.splitAndCreateMarkdownCards(ctx, book, userID, markdownText, coverBackground)
 	if err != nil {
 		return fmt.Errorf("创建markdown内容卡片失败: %v", err)
 	}
@@ -1659,6 +1659,7 @@ func (p *AsyncBookProcessor) splitAndCreateMarkdownCards(
 	book *model.BookM,
 	userID uint,
 	markdownText string,
+	templateBackground string,
 ) ([]*model.CardM, error) {
 	log.C(ctx).Infow("📄 分割markdown内容为多张卡片", "book_id", book.ID, "text_length", len(markdownText))
 
@@ -1689,7 +1690,7 @@ func (p *AsyncBookProcessor) splitAndCreateMarkdownCards(
 		createdCards = append(createdCards, cardRecord)
 
 		// 为每个卡片生成图片和HTML文件
-		if err := p.generateCardImageAndHTML(ctx, cardRecord.ID, content); err != nil {
+		if err := p.generateCardImageAndHTML(ctx, cardRecord.ID, content, templateBackground); err != nil {
 			log.C(ctx).Errorw("卡片图片和HTML生成失败", "card_id", cardRecord.ID, "error", err.Error())
 		} else {
 			log.C(ctx).Infow("✅ 卡片图片和HTML生成成功", "card_id", cardRecord.ID)
@@ -1860,6 +1861,15 @@ func (p *AsyncBookProcessor) getHTMLConverter() *markdown.HTMLConverter {
 	return markdown.NewHTMLConverter()
 }
 
+// getHTMLConverterWithBackground 获取带背景的HTML转换器实例
+func (p *AsyncBookProcessor) getHTMLConverterWithBackground(templateBackground string) *markdown.HTMLConverter {
+	converter := markdown.NewHTMLConverter()
+	if templateBackground != "" {
+		converter.SetBackgroundImage(templateBackground)
+	}
+	return converter
+}
+
 // downloadAndSaveImageWithPath 按照指定路径规则下载并保存图片
 func (p *AsyncBookProcessor) downloadAndSaveImageWithPath(remoteURL string, bookID uint) (string, error) {
 	// 计算本地保存目录：{image_path}/book/{book_id}
@@ -1987,7 +1997,7 @@ func (p *AsyncBookProcessor) createCardHTMLFile(cardID uint, htmlContent string)
 }
 
 // generateCardImageAndHTML 为卡片生成图片和HTML文件
-func (p *AsyncBookProcessor) generateCardImageAndHTML(ctx context.Context, cardID uint, markdownContent string) error {
+func (p *AsyncBookProcessor) generateCardImageAndHTML(ctx context.Context, cardID uint, markdownContent string, templateBackground string) error {
 	log.C(ctx).Infow("开始为卡片生成图片和HTML文件", "card_id", cardID, "content_length", len(markdownContent))
 
 	// 1. 获取卡片信息以确定排序和标题
@@ -1997,7 +2007,7 @@ func (p *AsyncBookProcessor) generateCardImageAndHTML(ctx context.Context, cardI
 	}
 
 	// 2. 将markdown转换为HTML
-	htmlConverter := p.getHTMLConverter()
+	htmlConverter := p.getHTMLConverterWithBackground(templateBackground)
 	htmlContent := htmlConverter.ConvertMarkdownCardToHTML(markdownContent, "卡片内容", card.SortOrder)
 
 	// 3. 创建HTML文件
@@ -2394,11 +2404,13 @@ func (p *AsyncBookProcessor) generateDefaultImagePrompt(content string) string {
 
 // generateCoverHTML 生成封面HTML内容（上半部分图片，下半部分标题）
 func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background string) string {
-	var html strings.Builder
-
-	// 处理图片URL，如果为空或无效，使用默认渐变背景
+	// 处理背景样式 - 优先使用模板背景，如果没有则使用默认背景
 	var backgroundStyle string
-	if imageURL != "" && imageURL != "null" && imageURL != "undefined" {
+	if background != "" {
+		// 使用模板背景图片，覆盖整个卡片
+		backgroundStyle = fmt.Sprintf("background: url('file://%s') center center / cover no-repeat;", background)
+		log.C(context.Background()).Infow("使用模板背景", "background", background)
+	} else if imageURL != "" && imageURL != "null" && imageURL != "undefined" {
 		// 构建完整的图片路径
 		imagePath := viper.GetString("resource.image_path")
 		if imagePath == "" {
@@ -2430,12 +2442,12 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
 		backgroundStyle = `background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);`
 	}
 
-	html.WriteString(`<!DOCTYPE html>
+	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>封面 - ` + title + `</title>
+    <title>封面 - %s</title>
     <style>
         * {
             margin: 0;
@@ -2448,7 +2460,7 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
             width: 1080px;
             height: 1440px;
             overflow: hidden !important;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            %s
             position: relative;
         }
 
@@ -2457,12 +2469,16 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
             height: 100%;
             display: flex;
             flex-direction: column;
+            %s
             position: relative;
+            background-size: cover !important;
+            background-position: center center !important;
+            background-repeat: no-repeat !important;
         }
 
         .image-section {
             flex: 1;
-            ` + backgroundStyle + `
+            %s
             position: relative;
             overflow: hidden;
         }
@@ -2532,14 +2548,12 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
         <div class="title-section">
             <div class="decoration"></div>
             <div class="title-content">
-                <h1 class="title-text">` + title + `</h1>
+                <h1 class="title-text">%s</h1>
             </div>
         </div>
     </div>
 </body>
-</html>`)
-
-	return html.String()
+</html>`, title, backgroundStyle, backgroundStyle, backgroundStyle, title)
 }
 
 // generateCoverImageOnly 仅生成封面图片，不重新生成HTML

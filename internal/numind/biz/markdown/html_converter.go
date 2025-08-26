@@ -426,7 +426,8 @@ func (hc *HTMLConverter) ConvertCardBlocksToHTML(blocks []MarkdownContentBlock, 
 
 	// 如果是封面卡片，使用特殊的封面布局
 	if isCoverCard {
-		return hc.generateCoverCardHTML(title)
+		coverContent := hc.generateCoverCardHTML(title)
+		return hc.wrapWithStyles(coverContent, title, true) // 封面卡片
 	}
 
 	// 普通内容卡片
@@ -556,6 +557,16 @@ func (hc *HTMLConverter) wrapWithMarkdownCardStyles(contentHTML, title string, c
 
 // generateCSS 生成 CSS 样式
 func (hc *HTMLConverter) generateCSS(isCoverCard bool) string {
+	// 处理背景样式 - 优先使用模板背景，如果没有则使用默认背景色
+	backgroundStyle := ""
+	if hc.config.BackgroundImage != "" {
+		// 使用模板背景图片，覆盖整个卡片
+		backgroundStyle = fmt.Sprintf("background: url('%s') center center / cover no-repeat;", hc.config.BackgroundImage)
+	} else {
+		// 使用默认背景色
+		backgroundStyle = fmt.Sprintf("background-color: %s;", hc.config.BackgroundColor)
+	}
+
 	baseCSS := fmt.Sprintf(`
 * {
     margin: 0;
@@ -568,8 +579,12 @@ body {
     font-size: %dpx;
     line-height: %.1f;
     color: %s;
-    background-color: %s;
+    %s
     overflow: visible;
+    width: %dpx;
+    height: %dpx;
+    margin: 0;
+    padding: 0;
 }
 
 .card-container {
@@ -577,21 +592,26 @@ body {
     height: %dpx;
     padding: %dpx %dpx %dpx %dpx; /* 上右下左内边距 */
     overflow: visible;
-    background-color: %s;
+    %s
     position: relative;
+    background-size: cover !important;
+    background-position: center center !important;
+    background-repeat: no-repeat !important;
 }`,
 		hc.config.FontFamily,
 		hc.config.FontSize,
 		hc.config.LineHeight,
 		hc.config.TextColor,
-		hc.config.BackgroundColor,
+		backgroundStyle,
+		hc.config.CardWidth,
+		hc.config.CardHeight,
 		hc.config.CardWidth,
 		hc.config.CardHeight,
 		hc.config.PaddingTop,
 		hc.config.PaddingRight,
 		hc.config.PaddingBottom,
 		hc.config.PaddingLeft,
-		hc.config.BackgroundColor,
+		backgroundStyle,
 	)
 
 	if isCoverCard {
@@ -601,7 +621,7 @@ body {
 .card-container {
     display: flex;
     flex-direction: row;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    %s
     color: white;
     padding: 0;
 }
@@ -1820,13 +1840,39 @@ func (hc *HTMLConverter) generateClearLargeFontCSS() string {
 
 	return fmt.Sprintf(`
 /* 全局基础样式 - 清晰大字号风格 */
+body {
+    font-family: "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+    font-size: 16px;          /* 基础字号 */
+    line-height: 1.8;         /* 增大行高，提升可读性 */
+    color: #333;              /* 深灰色文字，替代默认黑色 */
+    margin: 0;
+    padding: 0;
+    width: 1080px;
+    height: 1440px;
+    overflow: hidden;
+    %s
+    background-size: cover !important;
+    background-position: center center !important;
+    background-repeat: no-repeat !important;
+}
+
+.markdown-card-container {
+    width: 100%%;
+    height: 100%%;
+    padding: 60px 50px;       /* 上右下左内边距 */
+    box-sizing: border-box;
+    %s
+    background-size: cover !important;
+    background-position: center center !important;
+    background-repeat: no-repeat !important;
+}
+
 .markdown-body {
     font-family: "PingFang SC", "Helvetica Neue", Arial, sans-serif;
     font-size: %dpx;          /* 基础字号 */
     line-height: 1.8;         /* 增大行高，提升可读性 */
     color: #333;              /* 深灰色文字，替代默认黑色 */
     padding: 0;               /* 移除内边距，由容器控制 */
-    %s
     width: 100%%;
     height: auto;             /* 改为auto，避免固定高度导致截断 */
     overflow: visible;
@@ -2028,7 +2074,7 @@ func (hc *HTMLConverter) generateClearLargeFontCSS() string {
     word-wrap: break-word; /* 长单词自动换行 */
     word-break: break-word; /* 中文换行优化 */
 }
-`, hc.config.BodyFontSize, backgroundStyle,
+`, backgroundStyle, backgroundStyle, hc.config.BodyFontSize,
 		hc.config.TitleFontSize, hc.config.TitleMarginBottom,
 		hc.config.SubtitleFontSize, hc.config.TitleMarginBottom, hc.config.SubtitleMarginBottom,
 		hc.config.SubtitleFontSize, hc.config.TitleMarginBottom, hc.config.SubtitleMarginBottom,

@@ -55,11 +55,11 @@ func (l *LightweightRendererIntegration) ProcessBookWithLightweightRendering(
 		return fmt.Errorf("轻量级渲染器环境验证失败: %v", err)
 	}
 
-	// 2. 分页处理
+	// 2. 分页处理 - 使用按行分页引擎
 	paginationBiz := pagination.NewPaginationBiz()
-	paginatedContent, err := paginationBiz.PaginateElements(elements)
+	paginatedContent, err := paginationBiz.PaginateElementsByLines(elements)
 	if err != nil {
-		return fmt.Errorf("分页处理失败: %v", err)
+		return fmt.Errorf("按行分页处理失败: %v", err)
 	}
 
 	log.C(ctx).Infow("📄 分页完成", "book_id", book.ID, "pages", len(paginatedContent.Cards))
