@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"unicode/utf8"
-	"math"
 
+	"github.com/spf13/viper"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
@@ -37,6 +38,21 @@ type HTMLConfig struct {
 	Padding             int     `json:"padding"`              // 内边距
 	BackgroundColor     string  `json:"background_color"`     // 背景色
 	TextColor           string  `json:"text_color"`           // 文字颜色
+
+	// 新增配置字段 - 用于内容分页
+	TitleFontSize        int     `json:"title_font_size"`        // 标题字体大小
+	SubtitleFontSize     int     `json:"subtitle_font_size"`     // 副标题字体大小
+	BodyFontSize         int     `json:"body_font_size"`         // 正文字体大小
+	ListFontSize         int     `json:"list_font_size"`         // 列表字体大小
+	QuoteFontSize        int     `json:"quote_font_size"`        // 引用字体大小
+	TitleLineHeight      float64 `json:"title_line_height"`      // 标题行高倍数
+	SubtitleLineHeight   float64 `json:"subtitle_line_height"`   // 副标题行高倍数
+	BodyLineHeight       float64 `json:"body_line_height"`       // 正文行高倍数
+	TitleMarginBottom    int     `json:"title_margin_bottom"`    // 标题下边距
+	SubtitleMarginBottom int     `json:"subtitle_margin_bottom"` // 副标题下边距
+	BodyMarginBottom     int     `json:"body_margin_bottom"`     // 正文下边距
+	AvailableWidth       int     `json:"available_width"`        // 可用宽度
+	MaxContentHeight     int     `json:"max_content_height"`     // 最大内容高度
 }
 
 // MarkdownContentBlock Markdown 内容块
@@ -63,6 +79,85 @@ func NewHTMLConverter() *HTMLConverter {
 		Padding:             40,
 		BackgroundColor:     "#ffffff",
 		TextColor:           "#333333",
+	}
+
+	// 从配置文件加载分页相关配置
+	if viper.IsSet("html_converter.card.width") {
+		config.CardWidth = viper.GetInt("html_converter.card.width")
+	}
+	if viper.IsSet("html_converter.card.height") {
+		config.CardHeight = viper.GetInt("html_converter.card.height")
+	}
+	if viper.IsSet("html_converter.card.padding") {
+		config.Padding = viper.GetInt("html_converter.card.padding")
+	}
+	if viper.IsSet("html_converter.fonts.family") {
+		config.FontFamily = viper.GetString("html_converter.fonts.family")
+	}
+	if viper.IsSet("html_converter.fonts.title_size") {
+		config.TitleFontSize = viper.GetInt("html_converter.fonts.title_size")
+	} else {
+		config.TitleFontSize = 28 // 默认值
+	}
+	if viper.IsSet("html_converter.fonts.subtitle_size") {
+		config.SubtitleFontSize = viper.GetInt("html_converter.fonts.subtitle_size")
+	} else {
+		config.SubtitleFontSize = 24 // 默认值
+	}
+	if viper.IsSet("html_converter.fonts.body_size") {
+		config.BodyFontSize = viper.GetInt("html_converter.fonts.body_size")
+	} else {
+		config.BodyFontSize = 16 // 默认值
+	}
+	if viper.IsSet("html_converter.fonts.list_size") {
+		config.ListFontSize = viper.GetInt("html_converter.fonts.list_size")
+	} else {
+		config.ListFontSize = 16 // 默认值，与body相同
+	}
+	if viper.IsSet("html_converter.fonts.quote_size") {
+		config.QuoteFontSize = viper.GetInt("html_converter.fonts.quote_size")
+	} else {
+		config.QuoteFontSize = 16 // 默认值，与body相同
+	}
+	if viper.IsSet("html_converter.line_heights.title") {
+		config.TitleLineHeight = viper.GetFloat64("html_converter.line_heights.title")
+	} else {
+		config.TitleLineHeight = 1.4 // 默认值
+	}
+	if viper.IsSet("html_converter.line_heights.subtitle") {
+		config.SubtitleLineHeight = viper.GetFloat64("html_converter.line_heights.subtitle")
+	} else {
+		config.SubtitleLineHeight = 1.4 // 默认值
+	}
+	if viper.IsSet("html_converter.line_heights.body") {
+		config.BodyLineHeight = viper.GetFloat64("html_converter.line_heights.body")
+	} else {
+		config.BodyLineHeight = 1.6 // 默认值
+	}
+	if viper.IsSet("html_converter.margins.title_bottom") {
+		config.TitleMarginBottom = viper.GetInt("html_converter.margins.title_bottom")
+	} else {
+		config.TitleMarginBottom = 16 // 默认值
+	}
+	if viper.IsSet("html_converter.margins.subtitle_bottom") {
+		config.SubtitleMarginBottom = viper.GetInt("html_converter.margins.subtitle_bottom")
+	} else {
+		config.SubtitleMarginBottom = 16 // 默认值
+	}
+	if viper.IsSet("html_converter.margins.body_bottom") {
+		config.BodyMarginBottom = viper.GetInt("html_converter.margins.body_bottom")
+	} else {
+		config.BodyMarginBottom = 16 // 默认值
+	}
+	if viper.IsSet("html_converter.pagination.available_width") {
+		config.AvailableWidth = viper.GetInt("html_converter.pagination.available_width")
+	} else {
+		config.AvailableWidth = 980 // 默认值：1080 - 100 (左右边距)
+	}
+	if viper.IsSet("html_converter.pagination.max_content_height") {
+		config.MaxContentHeight = viper.GetInt("html_converter.pagination.max_content_height")
+	} else {
+		config.MaxContentHeight = 1200 // 默认值
 	}
 
 	// 配置 Goldmark 选项
@@ -113,6 +208,18 @@ func (hc *HTMLConverter) ConvertToStyledHTML(markdownText, title string) (string
 
 	// 包装为完整的 HTML 页面
 	return hc.wrapWithStyles(contentHTML, title, false), nil
+}
+
+// ConvertToStyledHTMLWithDynamicHeight 将 Markdown 转换为支持动态高度的 HTML 页面
+func (hc *HTMLConverter) ConvertToStyledHTMLWithDynamicHeight(markdownText, title string) (string, error) {
+	// 先转换为基础 HTML
+	contentHTML, err := hc.ConvertToHTML(markdownText)
+	if err != nil {
+		return "", err
+	}
+
+	// 包装为支持动态高度的 HTML 页面
+	return hc.wrapWithDynamicHeightStyles(contentHTML, title), nil
 }
 
 // ConvertToStyledHTMLWithFixedMargins 将 Markdown 转换为带固定边距的完整 HTML 页面
@@ -354,8 +461,42 @@ func (hc *HTMLConverter) ConvertMarkdownCardToHTML(markdownText, title string, c
 		contentHTML = fmt.Sprintf("<p>%s</p>", hc.escapeHTML(markdownText))
 	}
 
-	// 包装为卡片HTML
+	// 使用清晰大字号风格包装为卡片HTML
+	return hc.wrapWithClearLargeFontStyles(contentHTML, title, cardIndex)
+}
+
+// ConvertMarkdownCardToHTMLWithLegacyStyle 将Markdown内容转换为卡片HTML（使用旧样式）
+func (hc *HTMLConverter) ConvertMarkdownCardToHTMLWithLegacyStyle(markdownText, title string, cardIndex int) string {
+	// 转换markdown为HTML
+	contentHTML, err := hc.ConvertToHTML(markdownText)
+	if err != nil {
+		contentHTML = fmt.Sprintf("<p>%s</p>", hc.escapeHTML(markdownText))
+	}
+
+	// 包装为卡片HTML（使用旧样式）
 	return hc.wrapWithMarkdownCardStyles(contentHTML, title, cardIndex)
+}
+
+// wrapWithClearLargeFontStyles 为Markdown卡片包装清晰大字号样式
+func (hc *HTMLConverter) wrapWithClearLargeFontStyles(contentHTML, title string, cardIndex int) string {
+	cssStyles := hc.generateClearLargeFontCSS()
+
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>%s</title>
+    <style>%s</style>
+</head>
+<body>
+    <div class="markdown-card-container">
+        <div class="markdown-content markdown-body">
+            %s
+        </div>
+    </div>
+</body>
+</html>`, hc.escapeHTML(title), cssStyles, contentHTML)
 }
 
 // wrapWithMarkdownCardStyles 为Markdown卡片包装样式
@@ -367,7 +508,7 @@ func (hc *HTMLConverter) wrapWithMarkdownCardStyles(contentHTML, title string, c
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>%s - 第%d页</title>
+    <title>%s</title>
     <style>%s</style>
 </head>
 <body>
@@ -375,12 +516,9 @@ func (hc *HTMLConverter) wrapWithMarkdownCardStyles(contentHTML, title string, c
         <div class="markdown-content">
             %s
         </div>
-        <div class="card-footer">
-            <span class="page-number">第 %d 页</span>
-        </div>
     </div>
 </body>
-</html>`, hc.escapeHTML(title), cardIndex, cssStyles, contentHTML, cardIndex)
+</html>`, hc.escapeHTML(title), cssStyles, contentHTML)
 }
 
 // generateCSS 生成 CSS 样式
@@ -422,7 +560,7 @@ body {
 
 	if isCoverCard {
 		// 封面卡片特殊样式
-		coverCSS := `
+		coverCSS := fmt.Sprintf(`
 /* 封面卡片样式 */
 .card-container {
     display: flex;
@@ -451,7 +589,7 @@ body {
 }
 
 .cover-title {
-    font-size: 48px;
+    font-size: %dpx;
     font-weight: bold;
     text-align: center;
     text-shadow: 0 2px 8px rgba(0,0,0,0.5);
@@ -489,13 +627,13 @@ body {
 }
 
 .placeholder-icon {
-    font-size: 48px;
+    font-size: %dpx;
     margin-bottom: 16px;
     opacity: 0.7;
 }
 
 .placeholder-text {
-    font-size: 18px;
+    font-size: %dpx;
     color: rgba(255, 255, 255, 0.8);
     text-align: center;
 }
@@ -503,7 +641,7 @@ body {
 /* 隐藏封面卡片中的其他内容 */
 .card-container > *:not(.cover-card-container) {
     display: none;
-}`
+}`, hc.config.TitleFontSize, hc.config.TitleFontSize, hc.config.BodyFontSize)
 		return baseCSS + coverCSS
 	}
 
@@ -511,37 +649,38 @@ body {
 	normalCSS := fmt.Sprintf(`
 /* 标题样式 */
 h1 {
-    font-size: 24px;
+    font-size: %dpx;
     font-weight: bold;
-    margin-bottom: 16px;
+    margin-bottom: %dpx;
     color: %s;
     text-align: center;
 }
 
 h2 {
-    font-size: 20px;
+    font-size: %dpx;
     font-weight: bold;
-    margin: 16px 0 12px 0;
+    margin: %dpx 0 %dpx 0;
     color: %s;
 }
 
 h3 {
-    font-size: 18px;
+    font-size: %dpx;
     font-weight: bold;
-    margin: 14px 0 10px 0;
+    margin: %dpx 0 %dpx 0;
     color: %s;
 }
 
 h4, h5, h6 {
-    font-size: 16px;
+    font-size: %dpx;
     font-weight: bold;
-    margin: 12px 0 8px 0;
+    margin: %dpx 0 %dpx 0;
     color: %s;
 }
 
 /* 段落样式 */
 p {
-    margin-bottom: 12px;
+    font-size: %dpx;
+    margin-bottom: %dpx;
     text-align: justify;
     text-justify: inter-ideograph;
     word-wrap: break-word;
@@ -550,18 +689,21 @@ p {
 
 /* 列表样式 */
 ul, ol {
-    margin: 12px 0;
+    font-size: %dpx;
+    margin: %dpx 0;
     padding-left: 24px;
 }
 
 li {
+    font-size: %dpx;
     margin-bottom: 6px;
     word-wrap: break-word;
 }
 
 /* 引用样式 */
 blockquote {
-    margin: 16px 0;
+    font-size: %dpx;
+    margin: %dpx 0;
     padding: 12px 16px;
     border-left: 4px solid #e0e0e0;
     background-color: #f9f9f9;
@@ -569,20 +711,22 @@ blockquote {
 }
 
 blockquote p {
+    font-size: %dpx;
     margin-bottom: 0;
 }
 
 /* 代码样式 */
 code {
     font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-    font-size: 14px;
+    font-size: %dpx;
     background-color: #f5f5f5;
     padding: 2px 4px;
     border-radius: 3px;
 }
 
 pre {
-    margin: 16px 0;
+    font-size: %dpx;
+    margin: %dpx 0;
     padding: 12px;
     background-color: #f5f5f5;
     border-radius: 4px;
@@ -599,9 +743,9 @@ pre code {
 /* 表格样式 */
 table {
     width: 100%%;
-    margin: 16px 0;
+    margin: %dpx 0;
     border-collapse: collapse;
-    font-size: 14px;
+    font-size: %dpx;
 }
 
 th, td {
@@ -624,10 +768,32 @@ th {
         padding: 20px;
     }
 }`,
+		hc.config.TitleFontSize,
+		hc.config.TitleMarginBottom,
 		hc.config.TextColor,
+		hc.config.SubtitleFontSize,
+		hc.config.SubtitleMarginBottom,
+		hc.config.SubtitleMarginBottom,
 		hc.config.TextColor,
+		hc.config.SubtitleFontSize,
+		hc.config.SubtitleMarginBottom,
+		hc.config.SubtitleMarginBottom,
 		hc.config.TextColor,
+		hc.config.BodyFontSize,
+		hc.config.BodyFontSize,
+		hc.config.BodyMarginBottom,
 		hc.config.TextColor,
+		hc.config.ListFontSize,
+		hc.config.BodyMarginBottom,
+		hc.config.ListFontSize,
+		hc.config.QuoteFontSize,
+		hc.config.BodyMarginBottom,
+		hc.config.QuoteFontSize,
+		hc.config.BodyFontSize,
+		hc.config.BodyFontSize,
+		hc.config.BodyMarginBottom,
+		hc.config.BodyMarginBottom,
+		hc.config.BodyFontSize,
 	)
 
 	return baseCSS + normalCSS
@@ -678,49 +844,50 @@ body {
 
 /* Markdown元素样式 */
 h1, h2, h3, h4, h5, h6 {
-    margin-top: 24px;
-    margin-bottom: 16px;
+    margin-top: %dpx;
+    margin-bottom: %dpx;
     font-weight: bold;
     line-height: 1.4;
     word-wrap: break-word;
 }
 
 h1 { 
-    font-size: 28px; 
+    font-size: %dpx; 
     color: #2c3e50; 
     border-bottom: 2px solid #3498db;
     padding-bottom: 8px;
 }
 
 h2 { 
-    font-size: 24px; 
+    font-size: %dpx; 
     color: #34495e; 
     border-bottom: 1px solid #bdc3c7;
     padding-bottom: 6px;
 }
 
 h3 { 
-    font-size: 20px; 
+    font-size: %dpx; 
     color: #34495e; 
 }
 
 h4 { 
-    font-size: 18px; 
+    font-size: %dpx; 
     color: #34495e; 
 }
 
 h5 { 
-    font-size: 16px; 
+    font-size: %dpx; 
     color: #34495e; 
 }
 
 h6 { 
-    font-size: 14px; 
+    font-size: %dpx; 
     color: #34495e; 
 }
 
 p {
-    margin-bottom: 16px;
+    font-size: %dpx;
+    margin-bottom: %dpx;
     text-align: justify;
     word-wrap: break-word;
     hyphens: auto;
@@ -728,11 +895,13 @@ p {
 
 /* 列表样式 */
 ul, ol {
-    margin: 16px 0;
+    font-size: %dpx;
+    margin: %dpx 0;
     padding-left: 30px;
 }
 
 li {
+    font-size: %dpx;
     margin-bottom: 8px;
     line-height: 1.6;
 }
@@ -743,7 +912,8 @@ ul li::marker {
 
 /* 引用块样式 */
 blockquote {
-    margin: 20px 0;
+    font-size: %dpx;
+    margin: %dpx 0;
     padding: 16px 20px;
     border-left: 4px solid #3498db;
     background: #ecf0f1;
@@ -752,6 +922,7 @@ blockquote {
 }
 
 blockquote p {
+    font-size: %dpx;
     margin-bottom: 0;
     color: #2c3e50;
 }
@@ -762,7 +933,7 @@ code {
     padding: 2px 6px;
     border-radius: 3px;
     font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-    font-size: 14px;
+    font-size: %dpx;
     color: #e74c3c;
     border: 1px solid #e9ecef;
 }
@@ -859,23 +1030,11 @@ input[type="checkbox"] {
     transform: scale(1.2);
 }
 
-/* 页脚样式 */
-.card-footer {
-    position: absolute;
-    bottom: 15px;
-    right: 25px;
-    font-size: 12px;
-    color: #7f8c8d;
-    opacity: 0.8;
-    background: rgba(255, 255, 255, 0.9);
-    padding: 4px 8px;
-    border-radius: 4px;
-    border: 1px solid #ddd;
-}
-
-/* 确保内容不与页脚重叠 */
+/* 内容区域样式 */
 .markdown-content {
-    padding-bottom: 50px;
+    width: 100%;
+    height: auto;
+    overflow: visible;
 }
 
 /* 防止文本溢出 */
@@ -885,6 +1044,23 @@ input[type="checkbox"] {
     hyphens: auto;
 }
 `,
+		hc.config.TitleMarginBottom,
+		hc.config.TitleMarginBottom,
+		hc.config.TitleFontSize,
+		hc.config.SubtitleFontSize,
+		hc.config.SubtitleFontSize,
+		hc.config.BodyFontSize,
+		hc.config.BodyFontSize,
+		hc.config.BodyFontSize,
+		hc.config.BodyFontSize,
+		hc.config.BodyMarginBottom,
+		hc.config.ListFontSize,
+		hc.config.BodyMarginBottom,
+		hc.config.ListFontSize,
+		hc.config.QuoteFontSize,
+		hc.config.BodyMarginBottom,
+		hc.config.QuoteFontSize,
+		hc.config.BodyFontSize,
 		hc.config.FontFamily,
 		hc.config.FontSize,
 		hc.config.LineHeight,
@@ -920,7 +1096,7 @@ func (hc *HTMLConverter) wrapWithFixedMarginStyles(contentHTML, title string) st
 // generateFixedMarginCSS 生成带固定边距的 CSS 样式
 func (hc *HTMLConverter) generateFixedMarginCSS() string {
 	const fixedMargin = 20 // 固定上下边距为20px
-	
+
 	return fmt.Sprintf(`
 * {
     margin: 0;
@@ -959,40 +1135,41 @@ body {
 
 /* 标题样式 */
 h1 {
-    font-size: 28px;
+    font-size: %dpx;
     font-weight: bold;
-    margin: 0 0 16px 0;
+    margin: 0 0 %dpx 0;
     color: %s;
     line-height: 1.4;
 }
 
 h2 {
-    font-size: 24px;
+    font-size: %dpx;
     font-weight: bold;
-    margin: 24px 0 16px 0;
+    margin: %dpx 0 %dpx 0;
     color: %s;
     line-height: 1.4;
 }
 
 h3 {
-    font-size: 20px;
+    font-size: %dpx;
     font-weight: bold;
-    margin: 24px 0 16px 0;
+    margin: %dpx 0 %dpx 0;
     color: %s;
     line-height: 1.4;
 }
 
 h4, h5, h6 {
-    font-size: 18px;
+    font-size: %dpx;
     font-weight: bold;
-    margin: 24px 0 16px 0;
+    margin: %dpx 0 %dpx 0;
     color: %s;
     line-height: 1.4;
 }
 
 /* 段落样式 */
 p {
-    margin: 0 0 16px 0;
+    font-size: %dpx;
+    margin: 0 0 %dpx 0;
     text-align: justify;
     text-justify: inter-ideograph;
     word-wrap: break-word;
@@ -1002,11 +1179,13 @@ p {
 
 /* 列表样式 */
 ul, ol {
-    margin: 0 0 16px 0;
+    font-size: %dpx;
+    margin: 0 0 %dpx 0;
     padding-left: 24px;
 }
 
 li {
+    font-size: %dpx;
     margin-bottom: 8px;
     word-wrap: break-word;
     line-height: 1.6;
@@ -1014,7 +1193,8 @@ li {
 
 /* 引用样式 */
 blockquote {
-    margin: 16px 0;
+    font-size: %dpx;
+    margin: %dpx 0;
     padding: 12px 16px;
     border-left: 4px solid #e0e0e0;
     background-color: #f9f9f9;
@@ -1022,20 +1202,22 @@ blockquote {
 }
 
 blockquote p {
+    font-size: %dpx;
     margin-bottom: 0;
 }
 
 /* 代码样式 */
 code {
     font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-    font-size: 14px;
+    font-size: %dpx;
     background-color: #f5f5f5;
     padding: 2px 4px;
     border-radius: 3px;
 }
 
 pre {
-    margin: 16px 0;
+    font-size: %dpx;
+    margin: %dpx 0;
     padding: 12px;
     background-color: #f5f5f5;
     border-radius: 4px;
@@ -1052,9 +1234,9 @@ pre code {
 /* 表格样式 */
 table {
     width: 100%%;
-    margin: 16px 0;
+    margin: %dpx 0;
     border-collapse: collapse;
-    font-size: 14px;
+    font-size: %dpx;
 }
 
 th, td {
@@ -1095,18 +1277,41 @@ th {
 		hc.config.BackgroundColor,
 		fixedMargin, fixedMargin,
 		hc.config.CardHeight, fixedMargin*2, hc.config.Padding*2,
+		hc.config.TitleFontSize,
+		hc.config.TitleMarginBottom,
 		hc.config.TextColor,
+		hc.config.SubtitleFontSize,
+		hc.config.TitleMarginBottom,
+		hc.config.TitleMarginBottom,
 		hc.config.TextColor,
+		hc.config.SubtitleFontSize,
+		hc.config.TitleMarginBottom,
+		hc.config.TitleMarginBottom,
 		hc.config.TextColor,
+		hc.config.BodyFontSize,
+		hc.config.BodyFontSize,
+		hc.config.BodyMarginBottom,
 		hc.config.TextColor,
+		hc.config.ListFontSize,
+		hc.config.BodyMarginBottom,
+		hc.config.ListFontSize,
+		hc.config.QuoteFontSize,
+		hc.config.BodyMarginBottom,
+		hc.config.QuoteFontSize,
+		hc.config.BodyFontSize,
+		hc.config.BodyFontSize,
+		hc.config.BodyMarginBottom,
+		hc.config.BodyMarginBottom,
+		hc.config.BodyFontSize,
 		fixedMargin, fixedMargin)
 }
 
 // SplitContentByHeight 根据内容高度和固定边距进行精准分页
 func (hc *HTMLConverter) SplitContentByHeight(markdownText string) ([]string, error) {
-	const CARD_HEIGHT = 1440
-	const FIXED_MARGIN = 20
-	const MAX_CONTENT_HEIGHT = CARD_HEIGHT - FIXED_MARGIN*2 // 1400px
+	// 使用配置中的卡片高度和边距
+	cardHeight := hc.config.CardHeight
+	fixedMargin := hc.config.Padding
+	maxContentHeight := cardHeight - fixedMargin*2
 
 	// 先转换为HTML
 	contentHTML, err := hc.ConvertToHTML(markdownText)
@@ -1119,35 +1324,105 @@ func (hc *HTMLConverter) SplitContentByHeight(markdownText string) ([]string, er
 	if err != nil {
 		return nil, fmt.Errorf("failed to measure HTML height: %v", err)
 	}
+	log.C(context.Background()).Infow("🎨 第二步：测量内容高度",
+		"content_height", contentHeight,
+		"max_content_height", maxContentHeight,
+		"card_height", cardHeight,
+		"fixed_margin", fixedMargin)
 
 	// 检查是否需要分页
-	if contentHeight <= MAX_CONTENT_HEIGHT {
+	if contentHeight <= maxContentHeight {
 		// 内容高度未超出，直接返回单张卡片
 		return []string{markdownText}, nil
 	}
 
 	// 内容高度超出，需要分页
-	return hc.splitContentByHeight(markdownText, MAX_CONTENT_HEIGHT)
+	return hc.splitContentByHeight(markdownText, maxContentHeight)
 }
 
-// measureHTMLHeight 测量HTML内容高度（模拟实现）
+// measureHTMLHeight 测量HTML内容高度（改进版）
 func (hc *HTMLConverter) measureHTMLHeight(html string) (int, error) {
-	// 这里应该使用实际的HTML高度测量方法
-	// 目前使用基于字符数的估算方法
-	// 实际项目中可以使用 html-to-image 或其他工具进行精确测量
-	
-	// 移除HTML标签，计算纯文本长度
-	textContent := hc.stripHTMLTags(html)
-	
-	// 基于字符数估算高度
-	// 假设每行平均50个字符，每行高度为字体大小 * 行高
-	charsPerLine := 50
-	lineHeight := float64(hc.config.FontSize) * hc.config.LineHeight
-	
-	lines := (len(textContent) + charsPerLine - 1) / charsPerLine
-	estimatedHeight := int(float64(lines) * lineHeight)
-	
-	return estimatedHeight, nil
+	// 使用更精确的高度计算方法
+	// 考虑不同元素类型的字体大小和行高
+
+	// 解析HTML，计算不同类型元素的高度
+	totalHeight := 0
+	lines := strings.Split(html, "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		var elementHeight int
+		var marginBottom int
+
+		// 根据HTML标签类型计算高度
+		if strings.Contains(line, "<h1>") {
+			// 一级标题
+			text := hc.extractTextFromTag(line, "h1")
+			elementHeight = hc.calculateTextHeight(text, hc.config.TitleFontSize, hc.config.AvailableWidth, hc.config.TitleLineHeight)
+			marginBottom = hc.config.TitleMarginBottom
+		} else if strings.Contains(line, "<h2>") {
+			// 二级标题
+			text := hc.extractTextFromTag(line, "h2")
+			elementHeight = hc.calculateTextHeight(text, hc.config.SubtitleFontSize, hc.config.AvailableWidth, hc.config.SubtitleLineHeight)
+			marginBottom = hc.config.SubtitleMarginBottom
+		} else if strings.Contains(line, "<h3>") {
+			// 三级标题
+			text := hc.extractTextFromTag(line, "h3")
+			elementHeight = hc.calculateTextHeight(text, hc.config.SubtitleFontSize, hc.config.AvailableWidth, hc.config.SubtitleLineHeight)
+			marginBottom = hc.config.SubtitleMarginBottom
+		} else if strings.Contains(line, "<p>") {
+			// 段落
+			text := hc.extractTextFromTag(line, "p")
+			elementHeight = hc.calculateTextHeight(text, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
+			marginBottom = hc.config.BodyMarginBottom
+		} else if strings.Contains(line, "<li>") {
+			// 列表项
+			text := hc.extractTextFromTag(line, "li")
+			elementHeight = hc.calculateTextHeight(text, hc.config.ListFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
+			marginBottom = hc.config.BodyMarginBottom
+		} else if strings.Contains(line, "<blockquote>") {
+			// 引用
+			text := hc.extractTextFromTag(line, "blockquote")
+			elementHeight = hc.calculateTextHeight(text, hc.config.QuoteFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
+			marginBottom = hc.config.BodyMarginBottom
+		} else {
+			// 其他内容，使用正文字体
+			text := hc.stripHTMLTags(line)
+			elementHeight = hc.calculateTextHeight(text, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
+			marginBottom = hc.config.BodyMarginBottom
+		}
+
+		totalHeight += elementHeight + marginBottom
+	}
+
+	return totalHeight, nil
+}
+
+// extractTextFromTag 从HTML标签中提取文本内容
+func (hc *HTMLConverter) extractTextFromTag(htmlLine, tagName string) string {
+	startTag := "<" + tagName + ">"
+	endTag := "</" + tagName + ">"
+
+	startIndex := strings.Index(htmlLine, startTag)
+	if startIndex == -1 {
+		return ""
+	}
+
+	endIndex := strings.Index(htmlLine, endTag)
+	if endIndex == -1 {
+		return ""
+	}
+
+	startPos := startIndex + len(startTag)
+	if startPos >= endIndex {
+		return ""
+	}
+
+	return strings.TrimSpace(htmlLine[startPos:endIndex])
 }
 
 // stripHTMLTags 移除HTML标签，获取纯文本内容
@@ -1174,7 +1449,7 @@ func (hc *HTMLConverter) stripHTMLTags(html string) string {
 	html = strings.ReplaceAll(html, "</pre>", "\n")
 	html = strings.ReplaceAll(html, "<code>", "")
 	html = strings.ReplaceAll(html, "</code>", "")
-	
+
 	return html
 }
 
@@ -1184,16 +1459,18 @@ func (hc *HTMLConverter) splitContentByHeight(markdownText string, maxContentHei
 	lines := strings.Split(markdownText, "\n")
 	var currentCard strings.Builder
 	var currentHeight int
-	
-	// 卡片配置
-	const titleFontSize = 28
-	const subtitleFontSize = 24
-	const bodyFontSize = 16
-	const availableWidth = 980 // 1080 - 100 (左右边距)
-	const titleLineHeight = 1.4
-	const bodyLineHeight = 1.6
-	const titleMarginBottom = 16
-	const bodyMarginBottom = 16
+
+	// 使用配置中的值
+	titleFontSize := hc.config.TitleFontSize
+	subtitleFontSize := hc.config.SubtitleFontSize
+	bodyFontSize := hc.config.BodyFontSize
+	availableWidth := hc.config.AvailableWidth
+	titleLineHeight := hc.config.TitleLineHeight
+	subtitleLineHeight := hc.config.SubtitleLineHeight
+	bodyLineHeight := hc.config.BodyLineHeight
+	titleMarginBottom := hc.config.TitleMarginBottom
+	subtitleMarginBottom := hc.config.SubtitleMarginBottom
+	bodyMarginBottom := hc.config.BodyMarginBottom
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -1211,12 +1488,12 @@ func (hc *HTMLConverter) splitContentByHeight(markdownText string, maxContentHei
 			marginBottom = titleMarginBottom
 		} else if strings.HasPrefix(line, "## ") {
 			// 二级标题
-			lineHeight = hc.calculateTextHeight(line[3:], subtitleFontSize, availableWidth, titleLineHeight)
-			marginBottom = titleMarginBottom
+			lineHeight = hc.calculateTextHeight(line[3:], subtitleFontSize, availableWidth, subtitleLineHeight)
+			marginBottom = subtitleMarginBottom
 		} else if strings.HasPrefix(line, "### ") {
 			// 三级标题
-			lineHeight = hc.calculateTextHeight(line[4:], subtitleFontSize, availableWidth, titleLineHeight)
-			marginBottom = titleMarginBottom
+			lineHeight = hc.calculateTextHeight(line[4:], subtitleFontSize, availableWidth, subtitleLineHeight)
+			marginBottom = subtitleMarginBottom
 		} else {
 			// 正文
 			lineHeight = hc.calculateTextHeight(line, bodyFontSize, availableWidth, bodyLineHeight)
@@ -1300,4 +1577,464 @@ func truncateString(s string, length int) string {
 		return s
 	}
 	return s[:length] + "..."
+}
+
+// wrapWithDynamicHeightStyles 包装HTML内容为支持动态高度的HTML页面
+func (hc *HTMLConverter) wrapWithDynamicHeightStyles(contentHTML, title string) string {
+	// 使用CSS的 min-height 和 max-height 特性来支持动态高度
+	// 同时使用 overflow: auto 来处理内容溢出
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>%s</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: %s;
+            background-color: %s;
+            color: %s;
+            line-height: %f;
+            padding: %dpx;
+            min-height: %dpx;
+            max-height: %dpx;
+            overflow: auto;
+            word-wrap: break-word;
+            word-break: break-all;
+        }
+        
+        /* 动态高度容器 */
+        .content-container {
+            min-height: %dpx;
+            max-height: %dpx;
+            overflow: auto;
+            padding: %dpx;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        /* 标题样式 */
+        h1 {
+            font-size: %dpx;
+            line-height: %f;
+            margin-bottom: %dpx;
+            color: #333333;
+            font-weight: bold;
+        }
+        
+        h2 {
+            font-size: %dpx;
+            line-height: %f;
+            margin-bottom: %dpx;
+            color: #666666;
+            font-weight: bold;
+        }
+        
+        h3 {
+            font-size: %dpx;
+            line-height: %f;
+            margin-bottom: %dpx;
+            color: #666666;
+            font-weight: bold;
+        }
+        
+        /* 段落样式 */
+        p {
+            font-size: %dpx;
+            line-height: %f;
+            margin-bottom: %dpx;
+            text-align: justify;
+            word-wrap: break-word;
+        }
+        
+        /* 列表样式 */
+        ul, ol {
+            font-size: %dpx;
+            line-height: %f;
+            margin-bottom: %dpx;
+            padding-left: 20px;
+        }
+        
+        li {
+            margin-bottom: 8px;
+            font-size: %dpx;
+        }
+        
+        /* 引用样式 */
+        blockquote {
+            font-size: %dpx;
+            line-height: %f;
+            margin-bottom: %dpx;
+            padding: 10px 15px;
+            border-left: 4px solid #1E90FF;
+            background-color: #f8f9fa;
+            color: #1E90FF;
+        }
+        
+        /* 代码样式 */
+        code {
+            font-size: %dpx;
+            background-color: #f4f4f4;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+        
+        pre {
+            font-size: %dpx;
+            background-color: #f4f4f4;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+            margin-bottom: %dpx;
+        }
+        
+        /* 响应式设计 */
+        @media (max-width: 768px) {
+            body {
+                padding: 10px;
+                min-height: auto;
+                max-height: none;
+            }
+            
+            .content-container {
+                min-height: auto;
+                max-height: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="content-container">
+        %s
+    </div>
+</body>
+</html>`,
+		hc.escapeHTML(title),
+		hc.config.FontFamily,
+		hc.config.BackgroundColor,
+		hc.config.TextColor,
+		hc.config.LineHeight,
+		hc.config.Padding,
+		hc.config.CardHeight,
+		hc.config.CardHeight*2, // 最大高度为卡片高度的2倍
+		hc.config.CardHeight,
+		hc.config.CardHeight*2,
+		hc.config.Padding,
+		hc.config.TitleFontSize,
+		hc.config.TitleLineHeight,
+		hc.config.TitleMarginBottom,
+		hc.config.SubtitleFontSize,
+		hc.config.SubtitleLineHeight,
+		hc.config.SubtitleMarginBottom,
+		hc.config.SubtitleFontSize,
+		hc.config.SubtitleLineHeight,
+		hc.config.SubtitleMarginBottom,
+		hc.config.BodyFontSize,
+		hc.config.BodyLineHeight,
+		hc.config.BodyMarginBottom,
+		hc.config.ListFontSize,
+		hc.config.BodyLineHeight,
+		hc.config.BodyMarginBottom,
+		hc.config.ListFontSize,
+		hc.config.BodyLineHeight,
+		hc.config.BodyMarginBottom,
+		hc.config.QuoteFontSize,
+		hc.config.BodyLineHeight,
+		hc.config.BodyMarginBottom,
+		contentHTML)
+}
+
+// generateClearLargeFontCSS 生成清晰大字号风格的CSS样式
+func (hc *HTMLConverter) generateClearLargeFontCSS() string {
+	return fmt.Sprintf(`
+/* 全局基础样式 - 清晰大字号风格 */
+.markdown-body {
+    font-family: "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+    font-size: %dpx;          /* 基础字号 */
+    line-height: 1.8;         /* 增大行高，提升可读性 */
+    color: #333;              /* 深灰色文字，替代默认黑色 */
+    padding: 0;               /* 移除内边距，由容器控制 */
+    background-color: %s;
+    width: 100%%;
+    height: auto;             /* 改为auto，避免固定高度导致截断 */
+    overflow: visible;
+    word-wrap: break-word;
+    word-break: break-word;   /* 中文换行优化 */
+    hyphens: auto;
+    box-sizing: border-box;   /* 确保盒模型正确 */
+}
+
+/* 标题样式：参考目标案例的大字号、加粗 */
+.markdown-body h1 {
+    font-size: %dpx;          /* 大字号标题 */
+    font-weight: 700;         /* 加粗 */
+    margin: 0 0 %dpx 0;       /* 下边距 */
+    color: #2c3e50;           /* 深色标题 */
+    line-height: 1.3;         /* 标题行高 */
+    border-bottom: 2px solid #3498db; /* 标题下分割线 */
+    padding-bottom: 12px;
+    text-align: center;       /* 居中对齐 */
+}
+
+.markdown-body h2 {
+    font-size: %dpx;          /* 副标题字号 */
+    font-weight: 600;         /* 加粗 */
+    margin: %dpx 0 %dpx 0;    /* 上下边距 */
+    color: #34495e;           /* 深色副标题 */
+    line-height: 1.3;         /* 副标题行高 */
+    border-bottom: 1px solid #bdc3c7; /* 副标题下分割线 */
+    padding-bottom: 8px;
+}
+
+.markdown-body h3 {
+    font-size: %dpx;          /* 三级标题字号 */
+    font-weight: 600;         /* 加粗 */
+    margin: %dpx 0 %dpx 0;    /* 上下边距 */
+    color: #34495e;           /* 深色三级标题 */
+    line-height: 1.3;         /* 三级标题行高 */
+}
+
+.markdown-body h4, .markdown-body h5, .markdown-body h6 {
+    font-size: %dpx;          /* 小标题字号 */
+    font-weight: 600;         /* 加粗 */
+    margin: %dpx 0 %dpx 0;    /* 上下边距 */
+    color: #34495e;           /* 深色小标题 */
+    line-height: 1.3;         /* 小标题行高 */
+}
+
+/* 段落样式：避免过窄行宽，适配卡片宽度 */
+.markdown-body p {
+    font-size: %dpx;          /* 段落字号 */
+    margin: %dpx 0;           /* 段落间距 */
+    line-height: 1.8;         /* 段落行高 */
+    text-align: justify;      /* 两端对齐 */
+    word-wrap: break-word;    /* 自动换行 */
+    hyphens: auto;            /* 自动连字符 */
+    color: #333;              /* 段落文字颜色 */
+}
+
+/* 列表样式：优化符号与缩进 */
+.markdown-body ol, .markdown-body ul {
+    font-size: %dpx;          /* 列表字号 */
+    padding-left: 32px;       /* 增大列表缩进，使符号更清晰 */
+    margin: %dpx 0;           /* 列表间距 */
+}
+
+.markdown-body li {
+    font-size: %dpx;          /* 列表项字号 */
+    margin: 10px 0;           /* 列表项间距 */
+    line-height: 1.6;         /* 列表项行高 */
+    color: #333;              /* 列表项文字颜色 */
+}
+
+/* 有序列表：确保显示数字 */
+.markdown-body ol li {
+    list-style-type: decimal; /* 确保显示数字 */
+    padding-left: 8px;        /* 数字与文字间距 */
+}
+
+/* 无序列表：优化符号样式 */
+.markdown-body ul li {
+    list-style-type: disc;    /* 实心圆点 */
+    padding-left: 8px;        /* 符号与文字间距 */
+}
+
+.markdown-body ul li::marker {
+    color: #3498db;           /* 符号颜色 */
+    font-weight: bold;        /* 符号加粗 */
+}
+
+/* 引用样式 */
+.markdown-body blockquote {
+    font-size: %dpx;          /* 引用字号 */
+    margin: %dpx 0;           /* 引用间距 */
+    padding: 20px 24px;       /* 引用内边距 */
+    border-left: 5px solid #3498db; /* 引用左边框 */
+    background: #ecf0f1;      /* 引用背景色 */
+    font-style: italic;       /* 引用斜体 */
+    border-radius: 0 8px 8px 0; /* 引用圆角 */
+    color: #2c3e50;           /* 引用文字颜色 */
+}
+
+.markdown-body blockquote p {
+    font-size: %dpx;          /* 引用段落字号 */
+    margin: 0;                /* 引用段落无边距 */
+    line-height: 1.6;         /* 引用段落行高 */
+}
+
+/* 代码样式 */
+.markdown-body code {
+    background: #f8f9fa;      /* 代码背景色 */
+    padding: 4px 8px;         /* 代码内边距 */
+    border-radius: 4px;       /* 代码圆角 */
+    font-size: %dpx;          /* 代码字号 */
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    color: #e74c3c;           /* 代码文字颜色 */
+}
+
+.markdown-body pre {
+    background: #f8f9fa;      /* 代码块背景色 */
+    padding: 16px;            /* 代码块内边距 */
+    border-radius: 6px;       /* 代码块圆角 */
+    overflow: hidden;         /* 隐藏溢出 */
+    word-wrap: break-word;    /* 自动换行 */
+    white-space: pre-wrap;    /* 保留空格和换行 */
+    font-size: %dpx;          /* 代码块字号 */
+    margin: %dpx 0;           /* 代码块间距 */
+    border: 1px solid #e9ecef; /* 代码块边框 */
+}
+
+.markdown-body pre code {
+    background: transparent;  /* 代码块内代码无背景 */
+    padding: 0;               /* 代码块内代码无内边距 */
+    color: #333;              /* 代码块内代码颜色 */
+}
+
+/* 表格样式 */
+.markdown-body table {
+    width: 100%%;             /* 表格宽度 */
+    margin: %dpx 0;           /* 表格间距 */
+    border-collapse: collapse; /* 表格边框合并 */
+    font-size: %dpx;          /* 表格字号 */
+}
+
+.markdown-body th, .markdown-body td {
+    padding: 12px 16px;       /* 表格单元格内边距 */
+    text-align: left;         /* 表格文字左对齐 */
+    border: 1px solid #e0e0e0; /* 表格边框 */
+    word-wrap: break-word;    /* 表格文字自动换行 */
+}
+
+.markdown-body th {
+    background-color: #f5f5f5; /* 表头背景色 */
+    font-weight: bold;        /* 表头加粗 */
+    color: #2c3e50;           /* 表头文字颜色 */
+}
+
+/* 响应式适配 */
+@media (max-width: 768px) {
+    .markdown-body {
+        font-size: %dpx;      /* 移动端基础字号 */
+        padding: %dpx;        /* 移动端内边距 */
+    }
+    
+    .markdown-body h1 {
+        font-size: %dpx;      /* 移动端标题字号 */
+    }
+    
+    .markdown-body h2 {
+        font-size: %dpx;      /* 移动端副标题字号 */
+    }
+    
+    .markdown-body p {
+        font-size: %dpx;      /* 移动端段落字号 */
+        max-width: 100%%;     /* 移动端段落宽度 */
+    }
+    
+    .markdown-body ol, .markdown-body ul {
+        font-size: %dpx;      /* 移动端列表字号 */
+        padding-left: 24px;   /* 移动端列表缩进 */
+    }
+}
+
+/* 卡片容器样式 */
+.markdown-card-container {
+    width: %dpx;
+    min-height: %dpx;
+    padding: %dpx %dpx %dpx %dpx; /* 上右下左内边距，确保左右对称 */
+    overflow: visible;
+    background-color: %s;
+    position: relative;
+    box-sizing: border-box; /* 确保padding包含在宽度内 */
+}
+
+.markdown-content {
+    width: 100%%;
+    height: auto;
+    overflow: visible;
+    max-width: 100%%; /* 确保内容不超出容器 */
+    word-wrap: break-word; /* 长单词自动换行 */
+    word-break: break-word; /* 中文换行优化 */
+}
+`,
+		hc.config.BodyFontSize,         // 基础字号
+		hc.config.BackgroundColor,      // 背景色
+		hc.config.TitleFontSize,        // h1字号
+		hc.config.TitleMarginBottom,    // h1下边距
+		hc.config.SubtitleFontSize,     // h2字号
+		hc.config.TitleMarginBottom,    // h2上边距
+		hc.config.SubtitleMarginBottom, // h2下边距
+		hc.config.SubtitleFontSize,     // h3字号
+		hc.config.TitleMarginBottom,    // h3上边距
+		hc.config.SubtitleMarginBottom, // h3下边距
+		hc.config.BodyFontSize,         // h4-h6字号
+		hc.config.TitleMarginBottom,    // h4-h6上边距
+		hc.config.SubtitleMarginBottom, // h4-h6下边距
+		hc.config.BodyFontSize,         // 段落字号
+		hc.config.BodyMarginBottom,     // 段落间距
+		hc.config.ListFontSize,         // 列表字号
+		hc.config.BodyMarginBottom,     // 列表间距
+		hc.config.ListFontSize,         // 列表项字号
+		hc.config.QuoteFontSize,        // 引用字号
+		hc.config.BodyMarginBottom,     // 引用间距
+		hc.config.QuoteFontSize,        // 引用段落字号
+		hc.config.BodyFontSize,         // 代码字号
+		hc.config.BodyFontSize,         // 代码块字号
+		hc.config.BodyMarginBottom,     // 代码块间距
+		hc.config.BodyMarginBottom,     // 表格间距
+		hc.config.BodyFontSize,         // 表格字号
+		// 响应式字号（移动端）
+		int(float64(hc.config.BodyFontSize)*0.9),     // 移动端基础字号
+		hc.config.Padding/2,                          // 移动端内边距
+		int(float64(hc.config.TitleFontSize)*0.9),    // 移动端标题字号
+		int(float64(hc.config.SubtitleFontSize)*0.9), // 移动端副标题字号
+		int(float64(hc.config.BodyFontSize)*0.9),     // 移动端段落字号
+		int(float64(hc.config.ListFontSize)*0.9),     // 移动端列表字号
+		// 卡片容器
+		hc.config.CardWidth,       // 卡片宽度
+		hc.config.CardHeight,      // 卡片高度
+		hc.config.Padding,         // 上内边距
+		hc.config.Padding,         // 右内边距
+		hc.config.Padding,         // 下内边距
+		hc.config.Padding,         // 左内边距
+		hc.config.BackgroundColor) // 卡片背景色
+}
+
+// ConvertToClearLargeFontHTML 转换为清晰大字号风格的HTML
+func (hc *HTMLConverter) ConvertToClearLargeFontHTML(markdownText, title string) (string, error) {
+	// 先转换为HTML
+	contentHTML, err := hc.ConvertToHTML(markdownText)
+	if err != nil {
+		return "", fmt.Errorf("failed to convert markdown to HTML: %v", err)
+	}
+
+	// 生成清晰大字号风格的CSS
+	cssStyles := hc.generateClearLargeFontCSS()
+
+	// 构建完整的HTML文档
+	html := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>%s</title>
+    <style>%s</style>
+</head>
+<body>
+    <div class="markdown-card-container">
+        <div class="markdown-content markdown-body">
+            %s
+        </div>
+    </div>
+</body>
+</html>`, hc.escapeHTML(title), cssStyles, contentHTML)
+
+	return html, nil
 }
