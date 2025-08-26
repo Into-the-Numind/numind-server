@@ -1453,7 +1453,7 @@ func (hc *HTMLConverter) stripHTMLTags(html string) string {
 	return html
 }
 
-// splitContentByHeight 根据高度拆分内容
+// splitContentByHeight 根据高度拆分内容（优化版 - 按行精确截取）
 func (hc *HTMLConverter) splitContentByHeight(markdownText string, maxContentHeight int) ([]string, error) {
 	var cards []string
 	lines := strings.Split(markdownText, "\n")
@@ -1471,6 +1471,9 @@ func (hc *HTMLConverter) splitContentByHeight(markdownText string, maxContentHei
 	titleMarginBottom := hc.config.TitleMarginBottom
 	subtitleMarginBottom := hc.config.SubtitleMarginBottom
 	bodyMarginBottom := hc.config.BodyMarginBottom
+
+	// 优化参数：确保内容不超出边界
+	utilizationThreshold := 0.80 // 降低到80%利用率，确保有足够边距
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -1515,8 +1518,18 @@ func (hc *HTMLConverter) splitContentByHeight(markdownText string, maxContentHei
 			needNewCard = true
 		}
 
-		// 3. 如果是二级标题且当前卡片已经比较满，考虑新卡片
-		if strings.HasPrefix(line, "## ") && currentHeight > int(float64(maxContentHeight)*0.8) {
+		// 3. 如果是二级标题且当前卡片已经达到利用率阈值，考虑新卡片
+		if strings.HasPrefix(line, "## ") && currentHeight > int(float64(maxContentHeight)*utilizationThreshold) {
+			needNewCard = true
+		}
+
+		// 4. 如果是三级标题且当前卡片已经达到较高利用率，考虑新卡片
+		if strings.HasPrefix(line, "### ") && currentHeight > int(float64(maxContentHeight)*0.75) {
+			needNewCard = true
+		}
+
+		// 5. 如果是正文且当前卡片利用率很高，考虑新卡片
+		if !strings.HasPrefix(line, "#") && currentHeight > int(float64(maxContentHeight)*0.85) {
 			needNewCard = true
 		}
 
@@ -1948,17 +1961,21 @@ func (hc *HTMLConverter) generateClearLargeFontCSS() string {
 .markdown-card-container {
     width: %dpx;
     min-height: %dpx;
+    max-height: %dpx; /* 设置最大高度，避免过度拉伸 */
     padding: %dpx %dpx %dpx %dpx; /* 上右下左内边距，确保左右对称 */
-    overflow: visible;
+    overflow: hidden; /* 改为hidden，防止内容溢出 */
     background-color: %s;
     position: relative;
     box-sizing: border-box; /* 确保padding包含在宽度内 */
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start; /* 内容从顶部开始 */
 }
 
 .markdown-content {
     width: 100%%;
     height: auto;
-    overflow: visible;
+    overflow: hidden; /* 改为hidden，防止内容溢出 */
     max-width: 100%%; /* 确保内容不超出容器 */
     word-wrap: break-word; /* 长单词自动换行 */
     word-break: break-word; /* 中文换行优化 */
@@ -1999,7 +2016,8 @@ func (hc *HTMLConverter) generateClearLargeFontCSS() string {
 		int(float64(hc.config.ListFontSize)*0.9),     // 移动端列表字号
 		// 卡片容器
 		hc.config.CardWidth,       // 卡片宽度
-		hc.config.CardHeight,      // 卡片高度
+		hc.config.CardHeight,      // 最小高度
+		hc.config.CardHeight,      // 最大高度
 		hc.config.Padding,         // 上内边距
 		hc.config.Padding,         // 右内边距
 		hc.config.Padding,         // 下内边距
