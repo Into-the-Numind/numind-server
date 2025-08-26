@@ -35,9 +35,14 @@ type HTMLConfig struct {
 	FontFamily          string  `json:"font_family"`          // 字体系列
 	FontSize            int     `json:"font_size"`            // 字体大小
 	LineHeight          float64 `json:"line_height"`          // 行高
-	Padding             int     `json:"padding"`              // 内边距
+	Padding             int     `json:"padding"`              // 内边距（兼容性）
+	PaddingTop          int     `json:"padding_top"`          // 顶部内边距
+	PaddingRight        int     `json:"padding_right"`        // 右侧内边距
+	PaddingBottom       int     `json:"padding_bottom"`       // 底部内边距
+	PaddingLeft         int     `json:"padding_left"`         // 左侧内边距
 	BackgroundColor     string  `json:"background_color"`     // 背景色
 	TextColor           string  `json:"text_color"`           // 文字颜色
+	BackgroundImage     string  `json:"background_image"`     // 背景图片路径
 
 	// 新增配置字段 - 用于内容分页
 	TitleFontSize        int     `json:"title_font_size"`        // 标题字体大小
@@ -76,9 +81,14 @@ func NewHTMLConverter() *HTMLConverter {
 		FontFamily:          "'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif",
 		FontSize:            16,
 		LineHeight:          1.6,
-		Padding:             40,
+		Padding:             60,
+		PaddingTop:          60,
+		PaddingRight:        50,
+		PaddingBottom:       10, // 减少底部内边距
+		PaddingLeft:         50,
 		BackgroundColor:     "#ffffff",
 		TextColor:           "#333333",
+		BackgroundImage:     "", // 默认无背景图
 	}
 
 	// 从配置文件加载分页相关配置
@@ -90,6 +100,19 @@ func NewHTMLConverter() *HTMLConverter {
 	}
 	if viper.IsSet("html_converter.card.padding") {
 		config.Padding = viper.GetInt("html_converter.card.padding")
+	}
+	// 加载分页配置中的内边距设置
+	if viper.IsSet("pagination.card.padding.top") {
+		config.PaddingTop = viper.GetInt("pagination.card.padding.top")
+	}
+	if viper.IsSet("pagination.card.padding.right") {
+		config.PaddingRight = viper.GetInt("pagination.card.padding.right")
+	}
+	if viper.IsSet("pagination.card.padding.bottom") {
+		config.PaddingBottom = viper.GetInt("pagination.card.padding.bottom")
+	}
+	if viper.IsSet("pagination.card.padding.left") {
+		config.PaddingLeft = viper.GetInt("pagination.card.padding.left")
 	}
 	if viper.IsSet("html_converter.fonts.family") {
 		config.FontFamily = viper.GetString("html_converter.fonts.family")
@@ -453,6 +476,16 @@ func (hc *HTMLConverter) wrapWithStyles(contentHTML, title string, isCoverCard b
 </html>`, hc.escapeHTML(title), cssStyles, contentHTML)
 }
 
+// SetBackgroundImage 设置背景图片路径
+func (hc *HTMLConverter) SetBackgroundImage(backgroundImage string) {
+	hc.config.BackgroundImage = backgroundImage
+}
+
+// GetBackgroundImage 获取背景图片路径
+func (hc *HTMLConverter) GetBackgroundImage() string {
+	return hc.config.BackgroundImage
+}
+
 // ConvertMarkdownCardToHTML 将Markdown内容转换为卡片HTML
 func (hc *HTMLConverter) ConvertMarkdownCardToHTML(markdownText, title string, cardIndex int) string {
 	// 转换markdown为HTML
@@ -542,7 +575,7 @@ body {
 .card-container {
     width: %dpx;
     height: %dpx;
-    padding: %dpx;
+    padding: %dpx %dpx %dpx %dpx; /* 上右下左内边距 */
     overflow: visible;
     background-color: %s;
     position: relative;
@@ -554,7 +587,10 @@ body {
 		hc.config.BackgroundColor,
 		hc.config.CardWidth,
 		hc.config.CardHeight,
-		hc.config.Padding,
+		hc.config.PaddingTop,
+		hc.config.PaddingRight,
+		hc.config.PaddingBottom,
+		hc.config.PaddingLeft,
 		hc.config.BackgroundColor,
 	)
 
@@ -830,7 +866,7 @@ body {
 .markdown-card-container {
     width: %dpx;
     min-height: %dpx;
-    padding: %dpx;
+    padding: %dpx %dpx %dpx %dpx; /* 上右下左内边距 */
     overflow: visible;
     background-color: %s;
     position: relative;
@@ -1068,7 +1104,10 @@ input[type="checkbox"] {
 		hc.config.BackgroundColor,
 		hc.config.CardWidth,
 		hc.config.CardHeight,
-		hc.config.Padding,
+		hc.config.PaddingTop,
+		hc.config.PaddingRight,
+		hc.config.PaddingBottom,
+		hc.config.PaddingLeft,
 		hc.config.BackgroundColor,
 	)
 }
@@ -1116,7 +1155,7 @@ body {
 .card-container {
     width: %dpx;
     height: %dpx;
-    padding: %dpx;
+    padding: %dpx %dpx %dpx %dpx; /* 上右下左内边距 */
     overflow: visible;
     background-color: %s;
     position: relative;
@@ -1273,10 +1312,13 @@ th {
 		hc.config.BackgroundColor,
 		hc.config.CardWidth,
 		hc.config.CardHeight,
-		hc.config.Padding,
+		hc.config.PaddingTop,
+		hc.config.PaddingRight,
+		hc.config.PaddingBottom,
+		hc.config.PaddingLeft,
 		hc.config.BackgroundColor,
 		fixedMargin, fixedMargin,
-		hc.config.CardHeight, fixedMargin*2, hc.config.Padding*2,
+		hc.config.CardHeight, fixedMargin*2, hc.config.PaddingTop+hc.config.PaddingBottom,
 		hc.config.TitleFontSize,
 		hc.config.TitleMarginBottom,
 		hc.config.TextColor,
@@ -1310,8 +1352,8 @@ th {
 func (hc *HTMLConverter) SplitContentByHeight(markdownText string) ([]string, error) {
 	// 使用配置中的卡片高度和边距
 	cardHeight := hc.config.CardHeight
-	fixedMargin := hc.config.Padding
-	maxContentHeight := cardHeight - fixedMargin*2
+	fixedMargin := hc.config.PaddingTop + hc.config.PaddingBottom // 使用顶部和底部内边距
+	maxContentHeight := cardHeight - fixedMargin
 
 	// 先转换为HTML
 	contentHTML, err := hc.ConvertToHTML(markdownText)
@@ -1734,12 +1776,12 @@ func (hc *HTMLConverter) wrapWithDynamicHeightStyles(contentHTML, title string) 
 		hc.config.BackgroundColor,
 		hc.config.TextColor,
 		hc.config.LineHeight,
-		hc.config.Padding,
+		hc.config.PaddingTop+hc.config.PaddingBottom, // 使用顶部和底部内边距
 		hc.config.CardHeight,
 		hc.config.CardHeight*2, // 最大高度为卡片高度的2倍
 		hc.config.CardHeight,
 		hc.config.CardHeight*2,
-		hc.config.Padding,
+		hc.config.PaddingTop+hc.config.PaddingBottom, // 使用顶部和底部内边距
 		hc.config.TitleFontSize,
 		hc.config.TitleLineHeight,
 		hc.config.TitleMarginBottom,
@@ -1766,6 +1808,16 @@ func (hc *HTMLConverter) wrapWithDynamicHeightStyles(contentHTML, title string) 
 
 // generateClearLargeFontCSS 生成清晰大字号风格的CSS样式
 func (hc *HTMLConverter) generateClearLargeFontCSS() string {
+	// 处理背景样式
+	backgroundStyle := ""
+	if hc.config.BackgroundImage != "" {
+		// 如果有背景图，使用背景图
+		backgroundStyle = fmt.Sprintf("background: url('%s') center center / cover no-repeat;", hc.config.BackgroundImage)
+	} else {
+		// 否则使用背景色
+		backgroundStyle = fmt.Sprintf("background-color: %s;", hc.config.BackgroundColor)
+	}
+
 	return fmt.Sprintf(`
 /* 全局基础样式 - 清晰大字号风格 */
 .markdown-body {
@@ -1774,7 +1826,7 @@ func (hc *HTMLConverter) generateClearLargeFontCSS() string {
     line-height: 1.8;         /* 增大行高，提升可读性 */
     color: #333;              /* 深灰色文字，替代默认黑色 */
     padding: 0;               /* 移除内边距，由容器控制 */
-    background-color: %s;
+    %s
     width: 100%%;
     height: auto;             /* 改为auto，避免固定高度导致截断 */
     overflow: visible;
@@ -1976,48 +2028,33 @@ func (hc *HTMLConverter) generateClearLargeFontCSS() string {
     word-wrap: break-word; /* 长单词自动换行 */
     word-break: break-word; /* 中文换行优化 */
 }
-`,
-		hc.config.BodyFontSize,         // 基础字号
-		hc.config.BackgroundColor,      // 背景色
-		hc.config.TitleFontSize,        // h1字号
-		hc.config.TitleMarginBottom,    // h1下边距
-		hc.config.SubtitleFontSize,     // h2字号
-		hc.config.TitleMarginBottom,    // h2上边距
-		hc.config.SubtitleMarginBottom, // h2下边距
-		hc.config.SubtitleFontSize,     // h3字号
-		hc.config.TitleMarginBottom,    // h3上边距
-		hc.config.SubtitleMarginBottom, // h3下边距
-		hc.config.BodyFontSize,         // h4-h6字号
-		hc.config.TitleMarginBottom,    // h4-h6上边距
-		hc.config.SubtitleMarginBottom, // h4-h6下边距
-		hc.config.BodyFontSize,         // 段落字号
-		hc.config.BodyMarginBottom,     // 段落间距
-		hc.config.ListFontSize,         // 列表字号
-		hc.config.BodyMarginBottom,     // 列表间距
-		hc.config.ListFontSize,         // 列表项字号
-		hc.config.QuoteFontSize,        // 引用字号
-		hc.config.BodyMarginBottom,     // 引用间距
-		hc.config.QuoteFontSize,        // 引用段落字号
-		hc.config.BodyFontSize,         // 代码字号
-		hc.config.BodyFontSize,         // 代码块字号
-		hc.config.BodyMarginBottom,     // 代码块间距
-		hc.config.BodyMarginBottom,     // 表格间距
-		hc.config.BodyFontSize,         // 表格字号
-		// 响应式字号（移动端）
-		int(float64(hc.config.BodyFontSize)*0.9),     // 移动端基础字号
-		hc.config.Padding/2,                          // 移动端内边距
-		int(float64(hc.config.TitleFontSize)*0.9),    // 移动端标题字号
-		int(float64(hc.config.SubtitleFontSize)*0.9), // 移动端副标题字号
-		int(float64(hc.config.BodyFontSize)*0.9),     // 移动端段落字号
-		int(float64(hc.config.ListFontSize)*0.9),     // 移动端列表字号
+`, hc.config.BodyFontSize, backgroundStyle,
+		hc.config.TitleFontSize, hc.config.TitleMarginBottom,
+		hc.config.SubtitleFontSize, hc.config.TitleMarginBottom, hc.config.SubtitleMarginBottom,
+		hc.config.SubtitleFontSize, hc.config.TitleMarginBottom, hc.config.SubtitleMarginBottom,
+		hc.config.BodyFontSize, hc.config.TitleMarginBottom, hc.config.SubtitleMarginBottom,
+		hc.config.BodyFontSize, hc.config.BodyMarginBottom,
+		hc.config.ListFontSize, hc.config.BodyMarginBottom,
+		hc.config.ListFontSize,
+		hc.config.QuoteFontSize, hc.config.BodyMarginBottom,
+		hc.config.QuoteFontSize,
+		hc.config.BodyFontSize,
+		hc.config.BodyFontSize, hc.config.BodyMarginBottom,
+		hc.config.BodyMarginBottom, hc.config.BodyFontSize,
+		// 响应式设计参数
+		int(float64(hc.config.BodyFontSize)*0.9), hc.config.PaddingTop/2,
+		int(float64(hc.config.TitleFontSize)*0.9),
+		int(float64(hc.config.SubtitleFontSize)*0.9),
+		int(float64(hc.config.BodyFontSize)*0.9),
+		int(float64(hc.config.ListFontSize)*0.9),
 		// 卡片容器
 		hc.config.CardWidth,       // 卡片宽度
 		hc.config.CardHeight,      // 最小高度
 		hc.config.CardHeight,      // 最大高度
-		hc.config.Padding,         // 上内边距
-		hc.config.Padding,         // 右内边距
-		hc.config.Padding,         // 下内边距
-		hc.config.Padding,         // 左内边距
+		hc.config.PaddingTop,      // 上内边距
+		hc.config.PaddingRight,    // 右内边距
+		hc.config.PaddingBottom,   // 下内边距
+		hc.config.PaddingLeft,     // 左内边距
 		hc.config.BackgroundColor) // 卡片背景色
 }
 

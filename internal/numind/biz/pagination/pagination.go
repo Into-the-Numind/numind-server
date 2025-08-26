@@ -463,7 +463,7 @@ func GetDefaultConfig() *PaginationConfig {
 			}{
 				Top:    60, // 标准内边距: 60px 50px
 				Right:  50,
-				Bottom: 60,
+				Bottom: 10, // 减少底部边距，减少空白
 				Left:   50,
 			},
 		},

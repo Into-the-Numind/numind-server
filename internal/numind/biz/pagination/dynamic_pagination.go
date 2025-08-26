@@ -38,7 +38,7 @@ func GetDynamicConfig() *DynamicPaginationConfig {
 		PaginationConfig: baseConfig,
 		MinHeight:        720,  // 最小高度（1440的一半）
 		MaxHeight:        4320, // 最大高度（1440的3倍）
-		MinBottomPadding: 10,   // 最小底部留白10px
+		MinBottomPadding: 5,    // 最小底部留白5px（进一步减少空白）
 		ImageMaxWidth:    1080, // 图片最大宽度
 		ImageMaxHeight:   720,  // 图片最大高度
 		MaxImagesPerCard: 5,    // 每张卡片最多5张图片

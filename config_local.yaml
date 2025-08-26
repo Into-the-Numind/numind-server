@@ -287,7 +287,15 @@ html_converter:
   card:
     width: 1080          # 卡片宽度
     height: 1440         # 卡片高度
-    padding: 40          # 内边距（增加内边距，避免文字贴边）
+    padding: 60          # 内边距（与分页算法保持一致）
+  
+  # 分页配置
+  pagination:
+    available_width: 1000  # 可用宽度
+    max_content_height: 1360  # 最大内容高度
+    min_card_height: 800      # 最小卡片高度
+    max_card_height: 4320     # 最大卡片高度
+    min_bottom_padding: 10    # 最小底部留白（减少底部空白）
   
   # 字体配置 - 清晰大字号风格
   fonts:
@@ -309,11 +317,4 @@ html_converter:
     title_bottom: 32     # 标题下边距（增加间距）
     subtitle_bottom: 28  # 副标题下边距
     body_bottom: 20      # 正文下边距（增加间距）
-  
-  # 内容分页配置
-  pagination:
-    available_width: 1000  # 可用宽度
-    max_content_height: 1360  # 最大内容高度
-    min_card_height: 800      # 最小卡片高度
-    max_card_height: 4320     # 最大卡片高度
   

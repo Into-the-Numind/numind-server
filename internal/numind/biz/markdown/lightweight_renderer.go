@@ -357,6 +357,11 @@ func (lmr *LightweightMarkdownRenderer) renderCoverCard(
 		blocks = append(blocks, *block)
 	}
 
+	// 设置背景图（如果有）
+	if templateBackground != "" {
+		lmr.htmlConverter.SetBackgroundImage(templateBackground)
+	}
+
 	// 生成封面卡片的HTML
 	htmlContent := lmr.htmlConverter.ConvertCardBlocksToHTML(
 		blocks,
@@ -385,11 +390,6 @@ func (lmr *LightweightMarkdownRenderer) renderCoverCard(
 				"expected_path", absoluteImagePath,
 				"error", err)
 		}
-	}
-
-	// 应用模板背景（如果有）
-	if templateBackground != "" {
-		htmlContent = lmr.applyTemplateBackground(htmlContent, templateBackground)
 	}
 
 	// 渲染HTML为图片
@@ -435,17 +435,17 @@ func (lmr *LightweightMarkdownRenderer) renderContentCard(
 		blocks = append(blocks, *block)
 	}
 
+	// 设置背景图（如果有）
+	if templateBackground != "" {
+		lmr.htmlConverter.SetBackgroundImage(templateBackground)
+	}
+
 	// 生成内容卡片的HTML
 	htmlContent := lmr.htmlConverter.ConvertCardBlocksToHTML(
 		blocks,
 		cardContent.Title,
 		false, // isCoverCard = false
 	)
-
-	// 应用模板背景（如果有）
-	if templateBackground != "" {
-		htmlContent = lmr.applyTemplateBackground(htmlContent, templateBackground)
-	}
 
 	// 渲染HTML为图片
 	imageData, err := lmr.renderHTMLToImage(ctx, htmlContent)
