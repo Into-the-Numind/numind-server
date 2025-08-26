@@ -104,6 +104,10 @@ func (p *PaginationEngine) calculateTextHeight(text string, style StyleConfig) i
 	lineHeight := int(float64(style.FontSize) * 1.6) // 1.6倍行高
 	totalHeight := len(lines) * lineHeight
 
+	// 添加调试信息
+	fmt.Printf("🔍 文本高度计算: 文本长度=%d, 每行字符数=%d, 行数=%d, 行高=%d, 总高度=%d\n",
+		len(text), charsPerLine, len(lines), lineHeight, totalHeight)
+
 	return totalHeight
 }
 
@@ -247,58 +251,89 @@ func (p *PaginationEngine) PaginateElements(elements []Element) (*PaginatedConte
 			i+1, element.Type, elementHeight, currentHeight, availableHeight)
 
 		// 检查是否需要创建新卡片或分割元素
-		if currentHeight+elementHeight > availableHeight {
-			if len(currentCardElements) > 0 {
-				// 当前卡片有元素，先保存当前卡片
+		// 使用更精确的分页逻辑，尽量充分利用可用空间
+
+		// 计算当前利用率
+		currentUtilization := float64(currentHeight) / float64(availableHeight) * 100
+
+		// 预测添加当前元素后的利用率
+		predictedUtilization := float64(currentHeight+elementHeight) / float64(availableHeight) * 100
+
+		fmt.Printf("🔍 调试：元素 %d 利用率分析 - 当前: %.1f%%, 预测: %.1f%%\n",
+			i+1, currentUtilization, predictedUtilization)
+
+		// 检查是否需要创建新卡片
+		// 允许小幅度的超出（不超过5%），以便更好地利用空间
+		overflowTolerance := int(float64(availableHeight) * 0.05) // 5%的容错空间
+
+		if currentHeight+elementHeight > availableHeight+overflowTolerance {
+			// 检查是否可以尝试更精确的分页
+			if len(currentCardElements) > 0 && elementHeight <= availableHeight {
+				// 当前元素可以单独放入新卡片，先保存当前卡片
 				cards = append(cards, Card{Elements: currentCardElements})
-				fmt.Printf("🔍 调试：创建新卡片 %d，元素数: %d, 总高度: %d\n", len(cards), len(currentCardElements), currentHeight)
+				fmt.Printf("🔍 调试：创建新卡片 %d，元素数: %d, 总高度: %d (利用率: %.1f%%)\n",
+					len(cards), len(currentCardElements), currentHeight,
+					float64(currentHeight)/float64(availableHeight)*100)
 
-				// 重置当前卡片
-				currentCardElements = []Element{}
-				currentHeight = 0
-				fmt.Printf("🔍 调试：重置当前卡片\n")
-			}
+				// 重置当前卡片，添加当前元素
+				currentCardElements = []Element{element}
+				currentHeight = elementHeight
+				fmt.Printf("🔍 调试：重置当前卡片，添加元素 %d，新高度: %d\n", i+1, currentHeight)
+			} else if currentUtilization >= 85.0 && elementHeight <= availableHeight {
+				// 当前卡片利用率已经很高（>=85%），且当前元素可以单独放入新卡片
+				cards = append(cards, Card{Elements: currentCardElements})
+				fmt.Printf("🔍 调试：高利用率创建新卡片 %d，元素数: %d, 总高度: %d (利用率: %.1f%%)\n",
+					len(cards), len(currentCardElements), currentHeight, currentUtilization)
 
-			// 检查当前元素是否需要分割
-			if elementHeight > availableHeight {
-				fmt.Printf("🔍 调试：元素 %d 高度 %d 超出可用高度 %d，尝试分割\n", i+1, elementHeight, availableHeight)
-				splitElements := p.splitLongElement(element, availableHeight)
-				if len(splitElements) > 0 {
-					fmt.Printf("🔍 调试：元素分割成功，产生 %d 个子元素\n", len(splitElements))
-					// 分割成功，将分割后的元素按顺序处理
-					for j, splitElement := range splitElements {
-						splitHeight := p.calculateElementHeight(splitElement)
-						fmt.Printf("🔍 调试：处理分割元素 %d/%d，高度: %d\n", j+1, len(splitElements), splitHeight)
+				// 重置当前卡片，添加当前元素
+				currentCardElements = []Element{element}
+				currentHeight = elementHeight
+				fmt.Printf("🔍 调试：重置当前卡片，添加元素 %d，新高度: %d\n", i+1, currentHeight)
+			} else {
+				// 检查当前元素是否需要分割
+				if elementHeight > availableHeight {
+					fmt.Printf("🔍 调试：元素 %d 高度 %d 超出可用高度 %d，尝试分割\n", i+1, elementHeight, availableHeight)
+					splitElements := p.splitLongElement(element, availableHeight)
+					if len(splitElements) > 0 {
+						fmt.Printf("🔍 调试：元素分割成功，产生 %d 个子元素\n", len(splitElements))
+						// 分割成功，将分割后的元素按顺序处理
+						for j, splitElement := range splitElements {
+							splitHeight := p.calculateElementHeight(splitElement)
+							fmt.Printf("🔍 调试：处理分割元素 %d/%d，高度: %d\n", j+1, len(splitElements), splitHeight)
 
-						if currentHeight+splitHeight > availableHeight && len(currentCardElements) > 0 {
-							// 需要新卡片
-							cards = append(cards, Card{Elements: currentCardElements})
-							fmt.Printf("🔍 调试：分割元素创建新卡片 %d\n", len(cards))
-							currentCardElements = []Element{splitElement}
-							currentHeight = splitHeight
-						} else {
-							// 添加到当前卡片
-							currentCardElements = append(currentCardElements, splitElement)
-							currentHeight += splitHeight
+							if currentHeight+splitHeight > availableHeight && len(currentCardElements) > 0 {
+								// 需要新卡片
+								cards = append(cards, Card{Elements: currentCardElements})
+								fmt.Printf("🔍 调试：分割元素创建新卡片 %d，利用率: %.1f%%\n",
+									len(cards), float64(currentHeight)/float64(availableHeight)*100)
+								currentCardElements = []Element{splitElement}
+								currentHeight = splitHeight
+							} else {
+								// 添加到当前卡片
+								currentCardElements = append(currentCardElements, splitElement)
+								currentHeight += splitHeight
+							}
 						}
+					} else {
+						// 分割失败，强制添加
+						fmt.Printf("🔍 调试：元素分割失败，强制添加到新卡片\n")
+						currentCardElements = []Element{element}
+						currentHeight = elementHeight
 					}
 				} else {
-					// 分割失败，强制添加
-					fmt.Printf("🔍 调试：元素分割失败，强制添加到新卡片\n")
+					// 元素不需要分割，直接添加到新卡片
+					fmt.Printf("🔍 调试：添加元素 %d 到新卡片\n", i+1)
 					currentCardElements = []Element{element}
 					currentHeight = elementHeight
 				}
-			} else {
-				// 元素不需要分割，直接添加到新卡片
-				fmt.Printf("🔍 调试：添加元素 %d 到新卡片\n", i+1)
-				currentCardElements = []Element{element}
-				currentHeight = elementHeight
 			}
 		} else {
 			// 添加到当前卡片
 			currentCardElements = append(currentCardElements, element)
 			currentHeight += elementHeight
-			fmt.Printf("🔍 调试：添加元素 %d 到当前卡片，当前卡片元素数: %d，新总高度: %d\n", i+1, len(currentCardElements), currentHeight)
+			fmt.Printf("🔍 调试：添加元素 %d 到当前卡片，当前卡片元素数: %d，新总高度: %d (利用率: %.1f%%)\n",
+				i+1, len(currentCardElements), currentHeight,
+				float64(currentHeight)/float64(availableHeight)*100)
 		}
 	}
 
@@ -430,6 +465,55 @@ func (p *PaginationEngine) splitLongElement(element Element, maxHeight int) []El
 
 	fmt.Printf("分割完成，共创建 %d 个元素\n", len(splitElements))
 	return splitElements
+}
+
+// splitTextByLines 按行分割文本，用于更精确的分页
+func (p *PaginationEngine) splitTextByLines(text string, maxLines int, style StyleConfig) []string {
+	if maxLines <= 0 {
+		return []string{text}
+	}
+
+	// 计算可用宽度
+	availableWidth := p.config.Card.Width - p.config.Card.Padding.Left - p.config.Card.Padding.Right
+	charWidth := float64(style.FontSize) * 1.05
+	charsPerLine := int(float64(availableWidth) / charWidth)
+
+	// 分割文本为行
+	lines := p.splitTextIntoLines(text, charsPerLine)
+
+	if len(lines) <= maxLines {
+		return []string{text}
+	}
+
+	// 按最大行数分割
+	var result []string
+	currentLines := 0
+	currentContent := ""
+
+	for i, line := range lines {
+		if currentLines >= maxLines {
+			// 当前部分已满，保存并开始新部分
+			if currentContent != "" {
+				result = append(result, strings.TrimSpace(currentContent))
+			}
+			currentContent = line
+			currentLines = 1
+		} else {
+			if currentContent != "" {
+				currentContent += "\n" + line
+			} else {
+				currentContent = line
+			}
+			currentLines++
+		}
+
+		// 最后一行特殊处理
+		if i == len(lines)-1 && currentContent != "" {
+			result = append(result, strings.TrimSpace(currentContent))
+		}
+	}
+
+	return result
 }
 
 // calculateTotalHeight 计算多个元素的总高度
