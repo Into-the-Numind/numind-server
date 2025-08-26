@@ -1791,8 +1791,6 @@ func (hc *HTMLConverter) generateClearLargeFontCSS() string {
     margin: 0 0 %dpx 0;       /* 下边距 */
     color: #2c3e50;           /* 深色标题 */
     line-height: 1.3;         /* 标题行高 */
-    border-bottom: 2px solid #3498db; /* 标题下分割线 */
-    padding-bottom: 12px;
     text-align: center;       /* 居中对齐 */
 }
 
@@ -1802,8 +1800,6 @@ func (hc *HTMLConverter) generateClearLargeFontCSS() string {
     margin: %dpx 0 %dpx 0;    /* 上下边距 */
     color: #34495e;           /* 深色副标题 */
     line-height: 1.3;         /* 副标题行高 */
-    border-bottom: 1px solid #bdc3c7; /* 副标题下分割线 */
-    padding-bottom: 8px;
 }
 
 .markdown-body h3 {
