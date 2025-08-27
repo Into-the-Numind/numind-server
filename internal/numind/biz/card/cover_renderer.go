@@ -184,17 +184,39 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
         }
         
-        /* 封面容器 - 上下布局 */
+        /* 封面容器 - 背景图在底层，内容在上层 */
         .cover-container {
             width: 100%%;
             height: 100%%;
-            display: flex;
-            flex-direction: column;
-            %s
             position: relative;
+            %s
             background-size: cover !important;
             background-position: center center !important;
             background-repeat: no-repeat !important;
+        }
+        
+        /* 背景层：背景图在最后一层 */
+        .cover-background-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            background: inherit;
+            background-size: cover !important;
+            background-position: center center !important;
+            background-repeat: no-repeat !important;
+        }
+        
+        /* 内容层：图片和标题在上层 */
+        .cover-content-layer {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+            display: flex;
+            flex-direction: column;
         }
         
         /* 上半部分：图片区域 (65%%) */
@@ -206,7 +228,6 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             position: relative;
             overflow: hidden;
             width: 100%%;
-            background: inherit;
         }
         
         /* 下半部分：标题区域 (35%%) */
@@ -283,12 +304,18 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
 </head>
 <body>
     <div class="cover-container">
-        <div class="image-section">
-            %s
-        </div>
-        <div class="title-section">
-            <div class="title-container">
-                <h1 class="title">%s</h1>
+        <!-- 背景层：背景图在最后一层 -->
+        <div class="cover-background-layer"></div>
+        
+        <!-- 内容层：图片和标题在上层 -->
+        <div class="cover-content-layer">
+            <div class="image-section">
+                %s
+            </div>
+            <div class="title-section">
+                <div class="title-container">
+                    <h1 class="title">%s</h1>
+                </div>
             </div>
         </div>
     </div>

@@ -360,16 +360,22 @@ func (hc *HTMLConverter) convertBlockToHTML(block MarkdownContentBlock) (string,
 
 // generateCoverCardHTML 生成封面卡片的HTML结构
 func (hc *HTMLConverter) generateCoverCardHTML(title string) string {
-	// 封面卡片布局：左边标题，右边图片
+	// 封面卡片布局：背景图在底层，图片和标题在上层
 	return fmt.Sprintf(`
 <div class="cover-card-container">
-    <div class="cover-title-section">
-        <h1 class="cover-title">%s</h1>
-    </div>
-    <div class="cover-image-section">
-        <div class="cover-image-placeholder">
-            <div class="placeholder-icon">🖼️</div>
-            <div class="placeholder-text">封面图片</div>
+    <!-- 背景层：背景图在最后一层 -->
+    <div class="cover-background-layer"></div>
+    
+    <!-- 内容层：图片和标题在上层 -->
+    <div class="cover-content-layer">
+        <div class="cover-image-section">
+            <div class="cover-image-placeholder">
+                <div class="placeholder-icon">🖼️</div>
+                <div class="placeholder-text">封面图片</div>
+            </div>
+        </div>
+        <div class="cover-title-section">
+            <h1 class="cover-title">%s</h1>
         </div>
     </div>
 </div>`, title)
@@ -619,29 +625,61 @@ body {
 		coverCSS := fmt.Sprintf(`
 /* 封面卡片样式 */
 .card-container {
-    display: flex;
-    flex-direction: row;
+    position: relative;
     %s
     color: white;
     padding: 0;
+    overflow: hidden;
 }
 
 .cover-card-container {
-    width: 100%;
-    height: 100%;
-    display: flex;
-    flex-direction: row;
+    width: 100%%;
+    height: 100%%;
+    position: relative;
 }
 
-.cover-title-section {
-    flex: 1;
+/* 背景层：背景图在最后一层 */
+.cover-background-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%%;
+    height: 100%%;
+    z-index: 1;
+    background: inherit;
+    background-size: cover !important;
+    background-position: center center !important;
+    background-repeat: no-repeat !important;
+}
+
+/* 内容层：图片和标题在上层 */
+.cover-content-layer {
+    position: relative;
+    width: 100%%;
+    height: 100%%;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+}
+
+.cover-image-section {
+    flex: 0 0 65%%;
     display: flex;
     align-items: center;
     justify-content: center;
     padding: 40px;
-    background: rgba(255, 255, 255, 0.1);
+    position: relative;
+}
+
+.cover-title-section {
+    flex: 0 0 35%%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    background: rgba(255, 255, 255, 0.95);
     backdrop-filter: blur(10px);
-    border-right: 1px solid rgba(255, 255, 255, 0.2);
+    position: relative;
 }
 
 .cover-title {
@@ -651,20 +689,12 @@ body {
     text-shadow: 0 2px 8px rgba(0,0,0,0.5);
     line-height: 1.2;
     margin: 0;
-}
-
-.cover-image-section {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 40px;
-    position: relative;
+    color: #2c3e50;
 }
 
 .cover-image {
-    max-width: 100%;
-    max-height: 100%;
+    max-width: 100%%;
+    max-height: 100%%;
     border-radius: 12px;
     box-shadow: 0 12px 40px rgba(0,0,0,0.4);
     object-fit: cover;
@@ -675,29 +705,31 @@ body {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    width: 100%;
-    height: 100%;
-    background: rgba(255, 255, 255, 0.1);
+    width: 80%%;
+    height: 80%%;
+    background: rgba(255, 255, 255, 0.9);
     border-radius: 12px;
-    border: 2px dashed rgba(255, 255, 255, 0.3);
+    border: 2px dashed #dee2e6;
+    color: #6c757d;
 }
 
 .placeholder-icon {
-    font-size: %dpx;
+    font-size: 48px;
     margin-bottom: 16px;
-    opacity: 0.7;
+    opacity: 0.8;
 }
 
 .placeholder-text {
-    font-size: %dpx;
-    color: rgba(255, 255, 255, 0.8);
+    font-size: 18px;
+    color: #6c757d;
     text-align: center;
+    font-weight: bold;
 }
 
 /* 隐藏封面卡片中的其他内容 */
 .card-container > *:not(.cover-card-container) {
     display: none;
-}`, hc.config.TitleFontSize, hc.config.TitleFontSize, hc.config.BodyFontSize)
+}`, hc.config.TitleFontSize)
 		return baseCSS + coverCSS
 	}
 
