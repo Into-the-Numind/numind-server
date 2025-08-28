@@ -1718,33 +1718,41 @@ func (p *AsyncBookProcessor) splitMarkdownIntoCards(content string) []string {
 	return cards
 }
 
-// splitMarkdownIntoCardsFallback 回退的分页逻辑（原有实现）
+// splitMarkdownIntoCardsFallback 回退的分页逻辑（使用新的按行分页策略）
 func (p *AsyncBookProcessor) splitMarkdownIntoCardsFallback(content string) []string {
+	// 直接使用HTML转换器的新分页逻辑，确保一致性
+	htmlConverter := p.getHTMLConverter()
+	cards, err := htmlConverter.SplitContentByHeight(content)
+	if err != nil {
+		// 如果仍然失败，使用简化的分页逻辑
+		log.C(context.Background()).Warnw("HTML转换器分页也失败，使用简化分页逻辑", "error", err)
+		return p.splitMarkdownIntoCardsSimple(content)
+	}
+
+	log.C(context.Background()).Infow("回退分页使用新的按行分页逻辑", "cards_count", len(cards))
+	return cards
+}
+
+// splitMarkdownIntoCardsSimple 简化的分页逻辑（最后的回退方案）
+func (p *AsyncBookProcessor) splitMarkdownIntoCardsSimple(content string) []string {
 	lines := strings.Split(content, "\n")
 	var cards []string
 	var currentCard strings.Builder
 
-	// 卡片配置 - 优化填充版本
-	const cardHeight = 1440                                            // 卡片总高度
-	const fixedMargin = 20                                             // 固定上下边距
-	const cardPadding = 40                                             // 内边距
-	const availableHeight = cardHeight - fixedMargin*2 - cardPadding*2 // 可用高度：1400px
-	const maxFillHeight = availableHeight - 30                         // 最大填充高度：1370px（留30px缓冲）
-
-	// 字体和行高配置
-	const titleFontSize = 28               // 标题字体大小
-	const subtitleFontSize = 24            // 副标题字体大小
-	const bodyFontSize = 16                // 正文字体大小
-	const cardWidth = 1080                 // 卡片宽度
-	const availableWidth = cardWidth - 100 // 可用宽度：980px
+	// 简化的配置
+	const maxContentHeight = 1370 // 最大内容高度
+	const titleFontSize = 28
+	const subtitleFontSize = 24
+	const bodyFontSize = 16
+	const availableWidth = 980
 
 	// 行高倍数
-	const titleLineHeight = 1.4 // 标题行高倍数
-	const bodyLineHeight = 1.6  // 正文行高倍数
+	const titleLineHeight = 1.4
+	const bodyLineHeight = 1.6
 
 	// 元素间距
-	const titleMarginBottom = 16 // 标题下方间距
-	const bodyMarginBottom = 16  // 正文下方间距
+	const titleMarginBottom = 16
+	const bodyMarginBottom = 16
 
 	var currentHeight int
 
@@ -1778,41 +1786,40 @@ func (p *AsyncBookProcessor) splitMarkdownIntoCardsFallback(content string) []st
 
 		totalElementHeight := lineHeight + marginBottom
 
-		// 检查是否需要新卡片
+		// 检查是否需要新卡片 - 使用与html_converter.go一致的分页策略
 		needNewCard := false
 
-		// 1. 如果是一级标题且当前卡片非空，强制新卡片
-		if strings.HasPrefix(line, "# ") && currentCard.Len() > 0 {
+		// 1. 如果添加当前行会超出最大内容高度，需要新卡片（优先检查）
+		if currentHeight+totalElementHeight > maxContentHeight {
 			needNewCard = true
 		}
 
-		// 2. 如果添加当前行会超出最大填充高度，需要新卡片
-		if currentHeight+totalElementHeight > maxFillHeight {
+		// 2. 如果当前高度已经接近最大高度（超过90%），强制新卡片
+		if currentHeight > int(float64(maxContentHeight)*0.90) && currentCard.Len() > 0 {
 			needNewCard = true
 		}
 
-		// 3. 如果是二级标题且当前卡片已经比较满，考虑新卡片
-		if strings.HasPrefix(line, "## ") && currentHeight > int(math.Ceil(float64(maxFillHeight)*0.85)) {
-			needNewCard = true
-		}
-
-		// 4. 如果是三级标题且当前卡片已经比较满，考虑新卡片
-		if strings.HasPrefix(line, "### ") && currentHeight > int(math.Ceil(float64(maxFillHeight)*0.9)) {
-			needNewCard = true
-		}
-
-		// 5. 如果是纯文本且当前卡片已经比较满，考虑新卡片
-		if !strings.HasPrefix(line, "#") && currentHeight > int(math.Ceil(float64(maxFillHeight)*0.7)) {
-			needNewCard = true
+		// 3. 如果当前卡片已经有足够内容（超过5行），且当前高度超过80%，考虑分页
+		if currentCard.Len() > 0 && currentHeight > int(float64(maxContentHeight)*0.80) {
+			// 计算当前卡片包含的行数
+			currentLines := strings.Count(currentCard.String(), "\n") + 1
+			if currentLines >= 5 {
+				// 检查下一行是否会显著增加高度
+				if totalElementHeight > int(float64(maxContentHeight)*0.10) { // 如果下一行超过10%的高度
+					needNewCard = true
+				}
+			}
 		}
 
 		// 保存当前卡片
 		if needNewCard && currentCard.Len() > 0 {
-			// 保存当前卡片
-			cards = append(cards, strings.TrimSpace(currentCard.String()))
+			cardContent := strings.TrimSpace(currentCard.String())
+			cards = append(cards, cardContent)
 			currentCard.Reset()
 			currentHeight = 0
-		} // 添加当前行到卡片
+		}
+
+		// 添加当前行到卡片
 		if currentCard.Len() > 0 {
 			currentCard.WriteString("\n")
 		}
@@ -1822,7 +1829,8 @@ func (p *AsyncBookProcessor) splitMarkdownIntoCardsFallback(content string) []st
 
 	// 添加最后一张卡片
 	if currentCard.Len() > 0 {
-		cards = append(cards, strings.TrimSpace(currentCard.String()))
+		cardContent := strings.TrimSpace(currentCard.String())
+		cards = append(cards, cardContent)
 	}
 
 	return cards
