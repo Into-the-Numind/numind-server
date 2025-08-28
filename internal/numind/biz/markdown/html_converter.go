@@ -1579,31 +1579,23 @@ func (hc *HTMLConverter) splitContentWithInParagraphPagination(lines []string, e
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		// 跳过空行和无效行
-		if line == "" || line == "\"" || line == "'" {
+		// 跳过空行、无效行和一级标题
+		if line == "" || line == "\"" || line == "'" || strings.HasPrefix(line, "# ") {
 			continue
 		}
 
 		// 判断行类型和计算高度
 		var lineHeight, marginBottom int
 		var isTitle bool
-		var titleLevel int
 
-		if strings.HasPrefix(line, "# ") {
-			lineHeight = hc.calculateTextHeight(line[2:], hc.config.TitleFontSize, hc.config.AvailableWidth, hc.config.TitleLineHeight)
-			marginBottom = hc.config.TitleMarginBottom
-			isTitle = true
-			titleLevel = 1
-		} else if strings.HasPrefix(line, "## ") {
+		if strings.HasPrefix(line, "## ") {
 			lineHeight = hc.calculateTextHeight(line[3:], hc.config.SubtitleFontSize, hc.config.AvailableWidth, hc.config.SubtitleLineHeight)
 			marginBottom = hc.config.SubtitleMarginBottom
 			isTitle = true
-			titleLevel = 2
 		} else if strings.HasPrefix(line, "### ") {
 			lineHeight = hc.calculateTextHeight(line[4:], hc.config.SubtitleFontSize, hc.config.AvailableWidth, hc.config.SubtitleLineHeight)
 			marginBottom = hc.config.SubtitleMarginBottom
 			isTitle = true
-			titleLevel = 3
 		} else {
 			// 普通段落 - 这里是关键：支持段落内分页
 			lineHeight = hc.calculateTextHeight(line, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
@@ -1615,10 +1607,7 @@ func (hc *HTMLConverter) splitContentWithInParagraphPagination(lines []string, e
 		// 检查是否需要分页
 		needNewCard := false
 
-		// 1. 一级标题强制新卡片（除了第一行）
-		if isTitle && titleLevel == 1 && currentCard.Len() > 0 {
-			needNewCard = true
-		}
+		// 一级标题已被过滤，不再需要强制分页逻辑
 
 		// 2. 检查高度是否超限 - 使用真正的最大高度，不预留过多空间
 		willExceedHeight := currentHeight+totalLineHeight > maxContentHeight
