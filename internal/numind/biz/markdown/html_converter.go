@@ -1557,20 +1557,20 @@ func (hc *HTMLConverter) splitContentByHeightOptimized(markdownText string, maxC
 
 	lines := strings.Split(markdownText, "\n")
 
-	// 设置合理的底部边距限制（减少到80px，提高空间利用率）
-	bottomMarginLimit := 80
-	effectiveMaxHeight := maxContentHeight - bottomMarginLimit
+	// 完全移除安全边距限制，让内容精确填充到底边距临界点
+	// 使用真正的最大内容高度进行分页
+	effectiveMaxHeight := maxContentHeight
 
 	// 全新的段落内分页算法
-	return hc.splitContentWithInParagraphPagination(lines, effectiveMaxHeight, maxContentHeight, bottomMarginLimit)
+	return hc.splitContentWithInParagraphPagination(lines, effectiveMaxHeight, maxContentHeight, 0)
 }
 
 // splitContentWithInParagraphPagination 支持段落内分页的新算法
-func (hc *HTMLConverter) splitContentWithInParagraphPagination(lines []string, effectiveMaxHeight, maxContentHeight, bottomMarginLimit int) ([]string, error) {
-	log.C(context.Background()).Infow("🔄 开始段落内分页处理",
+func (hc *HTMLConverter) splitContentWithInParagraphPagination(lines []string, effectiveMaxHeight, maxContentHeight, _ int) ([]string, error) {
+	log.C(context.Background()).Infow("🔄 开始精确分页处理",
 		"total_lines", len(lines),
-		"effective_max_height", effectiveMaxHeight,
-		"bottom_margin_limit", bottomMarginLimit)
+		"max_content_height", maxContentHeight,
+		"fill_to_margin_boundary", true)
 
 	var cards []string
 	var currentCard strings.Builder
@@ -1620,39 +1620,42 @@ func (hc *HTMLConverter) splitContentWithInParagraphPagination(lines []string, e
 			needNewCard = true
 		}
 
-		// 2. 检查高度是否超限
-		if currentHeight+totalLineHeight > effectiveMaxHeight {
-			// 如果是长段落，尝试段落内分页
-			if !isTitle && len(line) > 100 { // 长段落（字符数超过100）
-				remainingHeight := effectiveMaxHeight - currentHeight - marginBottom
-				if remainingHeight > hc.config.BodyFontSize*3 { // 剩余空间足够放至少3行
-					// 执行段落内分页
-					firstPart, secondPart := hc.SplitLongParagraph(line, remainingHeight)
-					if firstPart != "" && secondPart != "" {
-						// 添加第一部分到当前卡片
-						if currentCard.Len() > 0 {
-							currentCard.WriteString("\n")
-						}
-						currentCard.WriteString(firstPart)
-						
-						// 结束当前卡片
-						cardContent := strings.TrimSpace(currentCard.String())
-						cards = append(cards, cardContent)
-						
-						log.C(context.Background()).Infow("📄 段落内分页卡片创建",
-							"card_index", cardIndex+1,
-							"card_height", currentHeight+hc.calculateTextHeight(firstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight),
-							"split_paragraph", true,
-							"first_part_chars", len(firstPart),
-							"second_part_chars", len(secondPart))
-
-						// 开始新卡片并添加第二部分
-						currentCard.Reset()
-						currentCard.WriteString(secondPart)
-						currentHeight = hc.calculateTextHeight(secondPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight) + marginBottom
-						cardIndex++
-						continue
+		// 2. 检查高度是否超限 - 使用真正的最大高度，不预留过多空间
+		willExceedHeight := currentHeight+totalLineHeight > maxContentHeight
+		
+		// 如果会超出高度限制
+		if willExceedHeight {
+			// 计算剩余可用高度 - 使用真正的剩余空间
+			remainingHeight := maxContentHeight - currentHeight
+			
+			// 超激进的段落分割策略：只要有剩余空间就尝试分割，最大化利用边距空间
+			if !isTitle && len(line) > 20 && remainingHeight > hc.config.BodyFontSize/3 { // 进一步降低阈值
+				// 执行段落内分页
+				firstPart, secondPart := hc.SplitLongParagraph(line, remainingHeight)
+				if firstPart != "" && secondPart != "" {
+					// 添加第一部分到当前卡片
+					if currentCard.Len() > 0 {
+						currentCard.WriteString("\n")
 					}
+					currentCard.WriteString(firstPart)
+					
+					// 结束当前卡片
+					cardContent := strings.TrimSpace(currentCard.String())
+					cards = append(cards, cardContent)
+					
+					log.C(context.Background()).Infow("📄 段落内分页卡片创建",
+						"card_index", cardIndex+1,
+						"card_height", currentHeight+hc.calculateTextHeight(firstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight),
+						"split_paragraph", true,
+						"first_part_chars", len(firstPart),
+						"second_part_chars", len(secondPart))
+
+					// 开始新卡片并添加第二部分
+					currentCard.Reset()
+					currentCard.WriteString(secondPart)
+					currentHeight = hc.calculateTextHeight(secondPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight) + marginBottom
+					cardIndex++
+					continue
 				}
 			}
 			needNewCard = true
@@ -1663,15 +1666,13 @@ func (hc *HTMLConverter) splitContentWithInParagraphPagination(lines []string, e
 			cardContent := strings.TrimSpace(currentCard.String())
 			cards = append(cards, cardContent)
 
-			effectiveUtilization := float64(currentHeight) / float64(effectiveMaxHeight) * 100
-			actualUtilization := float64(currentHeight) / float64(maxContentHeight) * 100
+			utilization := float64(currentHeight) / float64(maxContentHeight) * 100
 
 			log.C(context.Background()).Infow("📄 常规卡片创建",
 				"card_index", cardIndex+1,
 				"card_height", currentHeight,
-				"effective_utilization", fmt.Sprintf("%.1f%%", effectiveUtilization),
-				"actual_utilization", fmt.Sprintf("%.1f%%", actualUtilization),
-				"remaining_margin", maxContentHeight-currentHeight,
+				"utilization", fmt.Sprintf("%.1f%%", utilization),
+				"remaining_space", maxContentHeight-currentHeight,
 				"content_lines", strings.Count(cardContent, "\n")+1)
 
 			currentCard.Reset()
@@ -1693,15 +1694,13 @@ func (hc *HTMLConverter) splitContentWithInParagraphPagination(lines []string, e
 		if cardContent != "" && cardContent != "\"" && cardContent != "'" && len(cardContent) > 2 {
 			cards = append(cards, cardContent)
 
-			effectiveUtilization := float64(currentHeight) / float64(effectiveMaxHeight) * 100
-			actualUtilization := float64(currentHeight) / float64(maxContentHeight) * 100
+			utilization := float64(currentHeight) / float64(maxContentHeight) * 100
 
 			log.C(context.Background()).Infow("📄 最后卡片创建",
 				"card_index", cardIndex+1,
 				"card_height", currentHeight,
-				"effective_utilization", fmt.Sprintf("%.1f%%", effectiveUtilization),
-				"actual_utilization", fmt.Sprintf("%.1f%%", actualUtilization),
-				"remaining_margin", maxContentHeight-currentHeight,
+				"utilization", fmt.Sprintf("%.1f%%", utilization),
+				"remaining_space", maxContentHeight-currentHeight,
 				"content_lines", strings.Count(cardContent, "\n")+1)
 		}
 	}
@@ -1718,66 +1717,117 @@ func (hc *HTMLConverter) splitContentWithInParagraphPagination(lines []string, e
 	return cards, nil
 }
 
-// SplitLongParagraph 将长段落分割为两部分，第一部分填充剩余空间（导出用于测试）
+// SplitLongParagraph 精确分割段落，确保第一部分恰好填满到底部边距位置
 func (hc *HTMLConverter) SplitLongParagraph(paragraph string, remainingHeight int) (string, string) {
-	// 计算剩余空间可以容纳多少文字
+	// 精确计算参数
 	charHeight := float64(hc.config.BodyFontSize) * hc.config.BodyLineHeight
-	charsPerLine := hc.config.AvailableWidth / (hc.config.BodyFontSize)
+	charWidth := float64(hc.config.BodyFontSize) * 1.05 // 中文字符宽度约为字体大小的1.05倍
+	charsPerLine := int(float64(hc.config.AvailableWidth) / charWidth)
 	if charsPerLine <= 0 {
 		charsPerLine = 30 // 默认每行30字符
 	}
 	
-	availableLines := int(float64(remainingHeight) / charHeight)
-	if availableLines < 2 {
+	// 计算可用行数（精确到0.3行）- 更激进的空间利用
+	exactLines := float64(remainingHeight) / charHeight
+	if exactLines < 1.5 {
 		return "", paragraph // 空间不足，不分割
 	}
 	
-	maxCharsInFirstPart := availableLines * charsPerLine
+	// 计算理想的字符数（考虑行数的小数部分）
+	idealChars := int(exactLines * float64(charsPerLine))
 	
-	// 按字符分割，但尽量在句子边界分割
 	runes := []rune(paragraph)
-	if len(runes) <= maxCharsInFirstPart {
+	if len(runes) <= idealChars {
 		return paragraph, "" // 不需要分割
 	}
 	
-	// 寻找合适的分割点（句号、感叹号、问号）
-	splitPoint := maxCharsInFirstPart
-	for i := maxCharsInFirstPart - 50; i < maxCharsInFirstPart && i < len(runes); i++ {
-		if runes[i] == '。' || runes[i] == '！' || runes[i] == '？' {
-			splitPoint = i + 1
-			break
-		}
-	}
+	// 多步骤寻找最佳分割点
+	bestSplitPoint := idealChars
 	
-	// 如果找不到句子边界，寻找逗号
-	if splitPoint == maxCharsInFirstPart {
-		for i := maxCharsInFirstPart - 20; i < maxCharsInFirstPart && i < len(runes); i++ {
-			if runes[i] == '，' || runes[i] == '、' {
-				splitPoint = i + 1
+	// 第一优先级：在理想位置附近寻找句子结尾（。！？）
+	searchRange := min(idealChars/3, 100) // 搜索范围：理想位置前后1/3或100字符内
+	for i := idealChars - searchRange; i <= idealChars + searchRange/2 && i < len(runes); i++ {
+		if i > 0 && i < len(runes) && (runes[i] == '。' || runes[i] == '！' || runes[i] == '？') {
+			// 验证分割后第一部分的高度是否合适
+			candidateFirstPart := strings.TrimSpace(string(runes[:i+1]))
+			candidateHeight := hc.calculateTextHeight(candidateFirstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
+			
+			// 更激进的高度利用：允许95%-105%的剩余高度，精确填充到边距
+			heightRatio := float64(candidateHeight) / float64(remainingHeight)
+			if heightRatio >= 0.95 && heightRatio <= 1.05 {
+				bestSplitPoint = i + 1
 				break
 			}
 		}
 	}
 	
-	// 确保分割点不会超出范围
-	if splitPoint >= len(runes) {
-		splitPoint = maxCharsInFirstPart
+	// 第二优先级：如果没找到合适的句子结尾，寻找逗号分割点
+	if bestSplitPoint == idealChars {
+		for i := idealChars - searchRange/2; i <= idealChars + searchRange/3 && i < len(runes); i++ {
+			if i > 0 && i < len(runes) && (runes[i] == '，' || runes[i] == '、') {
+				candidateFirstPart := strings.TrimSpace(string(runes[:i+1]))
+				candidateHeight := hc.calculateTextHeight(candidateFirstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
+				
+				heightRatio := float64(candidateHeight) / float64(remainingHeight)
+				if heightRatio >= 0.90 && heightRatio <= 1.10 {
+					bestSplitPoint = i + 1
+					break
+				}
+			}
+		}
 	}
 	
-	firstPart := strings.TrimSpace(string(runes[:splitPoint]))
-	secondPart := strings.TrimSpace(string(runes[splitPoint:]))
+	// 第三优先级：如果还没找到，进行二分搜索找到最佳长度
+	if bestSplitPoint == idealChars {
+		left := idealChars - searchRange/2
+		right := idealChars + searchRange/2
+		if left < 0 { left = 0 }
+		if right >= len(runes) { right = len(runes) - 1 }
+		
+		bestDiff := float64(remainingHeight)
+		
+		for i := left; i <= right; i++ {
+			candidateFirstPart := strings.TrimSpace(string(runes[:i]))
+			candidateHeight := hc.calculateTextHeight(candidateFirstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
+			
+			diff := math.Abs(float64(candidateHeight) - float64(remainingHeight))
+			if diff < bestDiff {
+				bestDiff = diff
+				bestSplitPoint = i
+			}
+		}
+	}
 	
-	// 确保两部分都有内容
+	// 确保分割点不超出范围
+	if bestSplitPoint >= len(runes) {
+		bestSplitPoint = len(runes) - 1
+	}
+	if bestSplitPoint <= 0 {
+		bestSplitPoint = 1
+	}
+	
+	firstPart := strings.TrimSpace(string(runes[:bestSplitPoint]))
+	secondPart := strings.TrimSpace(string(runes[bestSplitPoint:]))
+	
+	// 验证分割结果
 	if len(firstPart) < 10 || len(secondPart) < 10 {
 		return "", paragraph // 分割结果太短，不分割
 	}
 	
-	log.C(context.Background()).Infow("📝 段落分割详情",
+	// 计算实际高度以验证效果
+	actualHeight := hc.calculateTextHeight(firstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
+	utilizationRatio := float64(actualHeight) / float64(remainingHeight)
+	
+	log.C(context.Background()).Infow("📝 精确段落分割",
 		"original_length", len(runes),
-		"split_point", splitPoint,
-		"first_part_length", len([]rune(firstPart)),
-		"second_part_length", len([]rune(secondPart)),
-		"available_lines", availableLines,
+		"ideal_chars", idealChars,
+		"actual_split_point", bestSplitPoint,
+		"first_part_chars", len([]rune(firstPart)),
+		"second_part_chars", len([]rune(secondPart)),
+		"remaining_height", remainingHeight,
+		"actual_height", actualHeight,
+		"space_utilization", fmt.Sprintf("%.1f%%", utilizationRatio*100),
+		"exact_lines_available", fmt.Sprintf("%.2f", exactLines),
 		"chars_per_line", charsPerLine)
 	
 	return firstPart, secondPart
