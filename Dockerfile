@@ -1,4 +1,4 @@
-# 多阶段构建 - 构建阶段
+# 多阶段构建 - 构建阶段 - 直接使用目标平台避免交叉编译问题
 FROM golang:1.24-alpine AS builder
 
 # 设置工作目录
@@ -17,7 +17,7 @@ RUN go mod download
 COPY . .
 
 # 构建应用
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+RUN CGO_ENABLED=1 GOOS=linux go build \
     -ldflags="-s -w -X main.Version=dev" \
     -o /app/numind ./cmd/numind
 
@@ -68,7 +68,6 @@ RUN apt-get update && apt-get install -y \
     libxkbcommon0 \
     libatspi2.0-0 \
     libxshmfence1 \
-    webp \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装Google Chrome
