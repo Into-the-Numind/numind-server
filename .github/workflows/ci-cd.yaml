@@ -84,11 +84,11 @@ jobs:
       - name: Force clean and reset
         run: |
           echo "=== Force cleaning all caches ==="
-          go clean -modcache
-          go clean -cache
-          go clean -testcache
-          rm -rf ~/.cache/go-build
-          rm -rf ~/go/pkg/mod
+          go clean -modcache || true
+          go clean -cache || true
+          go clean -testcache || true
+          sudo rm -rf ~/.cache/go-build || true
+          sudo rm -rf ~/go/pkg/mod || true
           echo "=== Go environment ==="
           go env | grep -E "(GOOS|GOARCH|CGO|GOROOT|GOPATH)"
 
@@ -136,8 +136,8 @@ jobs:
 
       - name: Get dependencies
         run: |
-          go clean -modcache
-          go clean -cache
+          go clean -modcache || true
+          go clean -cache || true
           go mod download
           go mod tidy
           go mod verify
