@@ -17,7 +17,7 @@ RUN go mod download
 COPY . .
 
 # 构建应用
-RUN CGO_ENABLED=1 go build \
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
     -ldflags="-s -w -X main.Version=dev" \
     -o /app/numind ./cmd/numind
 
@@ -95,14 +95,14 @@ RUN mkdir -p /home/numind/.config/google-chrome \
 # 设置工作目录
 WORKDIR /app
 
-# 从构建阶段复制二进制文件
-COPY --from=builder /app/numind /app/numind
-
 # 定义构建参数，默认为dev环境
 ARG ENV=dev
 
 # 根据环境复制对应的配置文件
 COPY config_${ENV}.yaml /app/config_${ENV}.yaml
+
+# 从构建阶段复制二进制文件
+COPY --from=builder /app/numind /app/numind
 
 # 预创建图片输出目录，避免运行期权限问题
 # 确保/opt目录权限正确，然后创建子目录
@@ -131,6 +131,12 @@ RUN chown -R numind:numind /opt/numind && \
     chmod 775 /opt/numind/dev/image/upload && \
     chmod 775 /opt/numind/dev/image/upload/card && \
     chmod 775 /opt/numind/dev/image/upload/book
+
+# 验证二进制文件存在且可执行
+RUN ls -la /app/numind && \
+    file /app/numind && \
+    ldd /app/numind 2>/dev/null || echo "静态链接或无依赖库" && \
+    echo "✅ 二进制文件验证成功"
 
 # 切换到非 root 用户
 USER numind

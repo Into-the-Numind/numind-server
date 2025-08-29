@@ -311,8 +311,23 @@ jobs:
           # 显示构建信息
           echo "构建镜像: ${{ env.IMAGE_NAME }}:${{ github.ref_name }}"
           echo "当前分支: ${{ github.ref_name }}"
-          # 构建镜像
-          docker build -t ${{ env.IMAGE_NAME }}:${{ github.ref_name }} .
+          
+          # 根据分支确定环境参数
+          if [ "${{ github.ref_name }}" = "develop" ]; then
+            BUILD_ENV="dev"
+          elif [ "${{ github.ref_name }}" = "release" ]; then
+            BUILD_ENV="qa"
+          elif [ "${{ github.ref_name }}" = "product" ]; then
+            BUILD_ENV="prod"
+          else
+            BUILD_ENV="dev"
+          fi
+          
+          echo "构建环境: $BUILD_ENV"
+          
+          # 构建镜像 - 指定构建参数和环境
+          docker build --build-arg ENV=$BUILD_ENV -t ${{ env.IMAGE_NAME }}:${{ github.ref_name }} .
+          
           # 推送镜像
           docker push ${{ env.IMAGE_NAME }}:${{ github.ref_name }}
           # 推送latest标签
@@ -379,7 +394,7 @@ jobs:
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
               neozhang96/numind-server:develop \
-              -c /app/config_dev.yaml
+              --config=/app/config_dev.yaml
             
             # 等待容器启动
             echo "Waiting for container to start..."
@@ -479,7 +494,7 @@ jobs:
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
               neozhang96/numind-server:release \
-              -c /app/config_qa.yaml
+              --config=/app/config_qa.yaml
             
             # 等待容器启动
             echo "Waiting for container to start..."
@@ -579,7 +594,7 @@ jobs:
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
               neozhang96/numind-server:product \
-              -c /app/config_prod.yaml
+              --config=/app/config_prod.yaml
             
             # 等待容器启动
             echo "Waiting for container to start..."
