@@ -19,7 +19,7 @@ COPY . .
 # 构建应用
 RUN CGO_ENABLED=1 go build \
     -ldflags="-s -w -X main.Version=dev" \
-    -o /app/bin/numind ./cmd/numind
+    -o /app/numind ./cmd/numind
 
 # 运行阶段 - 基于Ubuntu以获得更好的Chrome支持
 FROM ubuntu:22.04
@@ -96,7 +96,7 @@ RUN mkdir -p /home/numind/.config/google-chrome \
 WORKDIR /app
 
 # 从构建阶段复制二进制文件
-COPY --from=builder /app/bin/numind /app/numind
+COPY --from=builder /app/numind /app/numind
 
 # 定义构建参数，默认为dev环境
 ARG ENV=dev

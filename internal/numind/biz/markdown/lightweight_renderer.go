@@ -371,8 +371,8 @@ func (lmr *LightweightMarkdownRenderer) renderCoverCard(
 
 	// 如果有封面图片，替换占位符
 	if cardContent.Title != "" {
-		// 构建封面图片路径 - 使用相对路径
-		coverImagePath := fmt.Sprintf("/res/upload/book/%d/book_%d.webp", bookID, bookID)
+		// 构建封面图片路径 - 使用file://协议
+		coverImagePath := fmt.Sprintf("file://%s", filepath.Join(viper.GetString("resource.image_path"), "book", fmt.Sprintf("%d", bookID), fmt.Sprintf("book_%d.webp", bookID)))
 
 		// 检查封面图片文件是否存在
 		absoluteImagePath := filepath.Join(viper.GetString("resource.image_path"), "book", fmt.Sprintf("%d", bookID), fmt.Sprintf("book_%d.webp", bookID))
@@ -382,7 +382,16 @@ func (lmr *LightweightMarkdownRenderer) renderCoverCard(
 				"book_id", bookID,
 				"cover_image_path", coverImagePath,
 				"absolute_path", absoluteImagePath)
+
+			// 输出HTML内容的前500个字符用于调试
+			log.C(ctx).Infow("替换前的HTML内容预览",
+				"html_preview", truncateString(htmlContent, 500))
+
 			htmlContent = lmr.replaceCoverImagePlaceholder(htmlContent, coverImagePath)
+
+			// 输出替换后的HTML内容预览
+			log.C(ctx).Infow("替换后的HTML内容预览",
+				"html_preview", truncateString(htmlContent, 500))
 		} else {
 			// 文件不存在，保持占位符
 			log.C(ctx).Warnw("封面图片文件不存在，保持占位符",
@@ -472,18 +481,34 @@ func (lmr *LightweightMarkdownRenderer) renderContentCard(
 
 // replaceCoverImagePlaceholder 替换封面图片占位符
 func (lmr *LightweightMarkdownRenderer) replaceCoverImagePlaceholder(htmlContent, coverImagePath string) string {
+	// 确保占位符HTML结构与generateCoverCardHTML中生成的完全一致
 	placeholderHTML := `<div class="cover-image-placeholder">
-            <div class="placeholder-icon">🖼️</div>
-            <div class="placeholder-text">封面图片</div>
-        </div>`
+                <div class="placeholder-icon">🖼️</div>
+                <div class="placeholder-text">封面图片</div>
+            </div>`
 
 	imageHTML := fmt.Sprintf(`<img src="%s" class="cover-image" alt="封面图片" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-        <div class="cover-image-placeholder" style="display: none;">
-            <div class="placeholder-icon">🖼️</div>
-            <div class="placeholder-text">封面图片</div>
-        </div>`, coverImagePath)
+            <div class="cover-image-placeholder" style="display: none;">
+                <div class="placeholder-icon">🖼️</div>
+                <div class="placeholder-text">封面图片</div>
+            </div>`, coverImagePath)
 
-	return strings.Replace(htmlContent, placeholderHTML, imageHTML, 1)
+	// 添加调试日志
+	log.C(context.Background()).Infow("替换封面图片占位符",
+		"placeholder_html", placeholderHTML,
+		"image_html", imageHTML,
+		"cover_image_path", coverImagePath)
+
+	result := strings.Replace(htmlContent, placeholderHTML, imageHTML, 1)
+
+	// 检查是否成功替换
+	if result == htmlContent {
+		log.C(context.Background()).Warnw("占位符替换失败，未找到匹配的占位符")
+	} else {
+		log.C(context.Background()).Infow("占位符替换成功")
+	}
+
+	return result
 }
 
 // renderHTMLToImage 使用无头浏览器将 HTML 渲染为图片

@@ -1632,7 +1632,7 @@ func (p *AsyncBookProcessor) createEnhancedCoverCard(
 
 	// 生成封面HTML内容
 	log.C(ctx).Infow("封面卡片信息", "book_id", book.ID, "title", book.Title, "image_url", book.ImageUrl, "background", coverBackground)
-	coverHTML := p.generateCoverHTML(book.Title, book.ImageUrl, coverBackground)
+	coverHTML := p.generateCoverHTML(book.Title, book.ImageUrl, coverBackground, book.ID)
 	coverCard.ProcessedText = coverHTML
 	log.C(ctx).Infow("封面HTML生成完成", "book_id", book.ID, "html_length", len(coverHTML))
 
@@ -1718,111 +1718,179 @@ func (p *AsyncBookProcessor) splitMarkdownIntoCards(content string) []string {
 	return cards
 }
 
-// splitMarkdownIntoCardsFallback 回退的分页逻辑（原有实现）
+// splitMarkdownIntoCardsFallback 回退的分页逻辑（优化实现）
 func (p *AsyncBookProcessor) splitMarkdownIntoCardsFallback(content string) []string {
-	lines := strings.Split(content, "\n")
-	var cards []string
-	var currentCard strings.Builder
+	// 预处理：清理输入文本，移除无效内容
+	content = strings.TrimSpace(content)
+	if content == "" || content == "\"" || content == "'" {
+		return []string{}
+	}
 
-	// 卡片配置 - 优化填充版本
-	const cardHeight = 1440                                            // 卡片总高度
-	const fixedMargin = 20                                             // 固定上下边距
-	const cardPadding = 40                                             // 内边距
-	const availableHeight = cardHeight - fixedMargin*2 - cardPadding*2 // 可用高度：1400px
-	const maxFillHeight = availableHeight - 30                         // 最大填充高度：1370px（留30px缓冲）
+	lines := strings.Split(content, "\n")
+
+	// 卡片配置（与HTML转换器保持一致）
+	const cardHeight = 1440
+	const cardPadding = 110 // 上下内边距总和：上60px + 下50px  
+	const bottomMarginLimit = 80 // 优化的底部边距限制，与HTML转换器一致
+	const availableHeight = cardHeight - cardPadding
+	const maxFillHeight = availableHeight - bottomMarginLimit // 有效内容高度
 
 	// 字体和行高配置
-	const titleFontSize = 28               // 标题字体大小
-	const subtitleFontSize = 24            // 副标题字体大小
-	const bodyFontSize = 16                // 正文字体大小
-	const cardWidth = 1080                 // 卡片宽度
-	const availableWidth = cardWidth - 100 // 可用宽度：980px
+	const titleFontSize = 28
+	const subtitleFontSize = 24
+	const bodyFontSize = 16
+	const cardWidth = 1080
+	const availableWidth = cardWidth - 100
+	const titleLineHeight = 1.4
+	const bodyLineHeight = 1.6
+	const titleMarginBottom = 16
+	const bodyMarginBottom = 16
 
-	// 行高倍数
-	const titleLineHeight = 1.4 // 标题行高倍数
-	const bodyLineHeight = 1.6  // 正文行高倍数
+	// 第一步：预处理，计算所有行的高度
+	type LineInfo struct {
+		content      string
+		height       int
+		marginBottom int
+		totalHeight  int
+		isTitle      bool
+		titleLevel   int
+	}
 
-	// 元素间距
-	const titleMarginBottom = 16 // 标题下方间距
-	const bodyMarginBottom = 16  // 正文下方间距
-
-	var currentHeight int
+	var lineInfos []LineInfo
+	totalContentHeight := 0
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" {
+		// 过滤无效行
+		if line == "" || line == "\"" || line == "'" || len(line) < 2 {
 			continue
 		}
 
-		// 计算当前行的高度
-		var lineHeight int
-		var marginBottom int
+		lineInfo := LineInfo{content: line}
 
 		if strings.HasPrefix(line, "# ") {
-			// 一级标题
-			lineHeight = p.calculateTextHeight(line[2:], titleFontSize, availableWidth, titleLineHeight)
-			marginBottom = titleMarginBottom
+			lineInfo.height = p.calculateTextHeight(line[2:], titleFontSize, availableWidth, titleLineHeight)
+			lineInfo.marginBottom = titleMarginBottom
+			lineInfo.isTitle = true
+			lineInfo.titleLevel = 1
 		} else if strings.HasPrefix(line, "## ") {
-			// 二级标题
-			lineHeight = p.calculateTextHeight(line[3:], subtitleFontSize, availableWidth, titleLineHeight)
-			marginBottom = titleMarginBottom
+			lineInfo.height = p.calculateTextHeight(line[3:], subtitleFontSize, availableWidth, titleLineHeight)
+			lineInfo.marginBottom = titleMarginBottom
+			lineInfo.isTitle = true
+			lineInfo.titleLevel = 2
 		} else if strings.HasPrefix(line, "### ") {
-			// 三级标题
-			lineHeight = p.calculateTextHeight(line[4:], subtitleFontSize, availableWidth, titleLineHeight)
-			marginBottom = titleMarginBottom
+			lineInfo.height = p.calculateTextHeight(line[4:], subtitleFontSize, availableWidth, titleLineHeight)
+			lineInfo.marginBottom = titleMarginBottom
+			lineInfo.isTitle = true
+			lineInfo.titleLevel = 3
 		} else {
-			// 正文
-			lineHeight = p.calculateTextHeight(line, bodyFontSize, availableWidth, bodyLineHeight)
-			marginBottom = bodyMarginBottom
+			lineInfo.height = p.calculateTextHeight(line, bodyFontSize, availableWidth, bodyLineHeight)
+			lineInfo.marginBottom = bodyMarginBottom
 		}
 
-		totalElementHeight := lineHeight + marginBottom
+		lineInfo.totalHeight = lineInfo.height + lineInfo.marginBottom
+		totalContentHeight += lineInfo.totalHeight
+		lineInfos = append(lineInfos, lineInfo)
+	}
 
-		// 检查是否需要新卡片
+	// 第二步：估算需要的卡片数量
+	estimatedCards := int(math.Ceil(float64(totalContentHeight) / float64(maxFillHeight)))
+	targetHeightPerCard := float64(totalContentHeight) / float64(estimatedCards)
+
+	// 第三步：智能分页
+	var cards []string
+	var currentCard strings.Builder
+	currentHeight := 0
+	cardIndex := 0
+
+	for i, lineInfo := range lineInfos {
 		needNewCard := false
 
-		// 1. 如果是一级标题且当前卡片非空，强制新卡片
-		if strings.HasPrefix(line, "# ") && currentCard.Len() > 0 {
+		// 1. 一级标题强制新卡片（除了第一行）
+		if lineInfo.isTitle && lineInfo.titleLevel == 1 && currentCard.Len() > 0 {
 			needNewCard = true
 		}
 
-		// 2. 如果添加当前行会超出最大填充高度，需要新卡片
-		if currentHeight+totalElementHeight > maxFillHeight {
+		// 2. 硬性限制：超出最大高度
+		if currentHeight+lineInfo.totalHeight > maxFillHeight {
 			needNewCard = true
 		}
 
-		// 3. 如果是二级标题且当前卡片已经比较满，考虑新卡片
-		if strings.HasPrefix(line, "## ") && currentHeight > int(math.Ceil(float64(maxFillHeight)*0.85)) {
-			needNewCard = true
+		// 3. 平衡内容分布：避免第一张卡片过空，后续卡片过满
+		if !needNewCard && currentCard.Len() > 0 {
+			currentUtilization := float64(currentHeight) / float64(maxFillHeight)
+			remainingHeight := 0
+			for j := i; j < len(lineInfos); j++ {
+				remainingHeight += lineInfos[j].totalHeight
+			}
+			remainingCards := estimatedCards - cardIndex - 1
+			if remainingCards <= 0 {
+				remainingCards = 1
+			}
+			avgRemainingHeight := float64(remainingHeight) / float64(remainingCards)
+
+			if lineInfo.isTitle && lineInfo.titleLevel == 2 {
+				// 二级标题：动态阈值，如果是第一张卡片则要求更高的利用率才分页
+				threshold := 0.80
+				if cardIndex == 0 {
+					threshold = 0.85 // 第一张卡片要求更高利用率，避免过早分页
+				}
+				if currentUtilization > threshold && avgRemainingHeight > targetHeightPerCard*0.6 {
+					needNewCard = true
+				}
+			} else if lineInfo.isTitle && lineInfo.titleLevel == 3 {
+				// 三级标题：对第一张卡片要求更高利用率
+				threshold := 0.85
+				if cardIndex == 0 {
+					threshold = 0.90
+				}
+				if currentUtilization > threshold {
+					needNewCard = true
+				}
+			} else {
+				// 普通内容：对第一张卡片要求接近满载才分页
+				threshold := 0.90
+				if cardIndex == 0 {
+					threshold = 0.95
+				}
+				if currentUtilization > threshold && avgRemainingHeight > targetHeightPerCard*0.4 {
+					needNewCard = true
+				}
+			}
 		}
 
-		// 4. 如果是三级标题且当前卡片已经比较满，考虑新卡片
-		if strings.HasPrefix(line, "### ") && currentHeight > int(math.Ceil(float64(maxFillHeight)*0.9)) {
-			needNewCard = true
-		}
-
-		// 5. 如果是纯文本且当前卡片已经比较满，考虑新卡片
-		if !strings.HasPrefix(line, "#") && currentHeight > int(math.Ceil(float64(maxFillHeight)*0.7)) {
-			needNewCard = true
-		}
-
-		// 保存当前卡片
+		// 执行分页
 		if needNewCard && currentCard.Len() > 0 {
-			// 保存当前卡片
 			cards = append(cards, strings.TrimSpace(currentCard.String()))
 			currentCard.Reset()
 			currentHeight = 0
-		} // 添加当前行到卡片
+			cardIndex++
+		}
+
+		// 添加当前行
 		if currentCard.Len() > 0 {
 			currentCard.WriteString("\n")
 		}
-		currentCard.WriteString(line)
-		currentHeight += totalElementHeight
+		currentCard.WriteString(lineInfo.content)
+		currentHeight += lineInfo.totalHeight
 	}
 
 	// 添加最后一张卡片
 	if currentCard.Len() > 0 {
-		cards = append(cards, strings.TrimSpace(currentCard.String()))
+		cardContent := strings.TrimSpace(currentCard.String())
+		// 确保最后一张卡片也有有效内容
+		if cardContent != "" && cardContent != "\"" && cardContent != "'" && len(cardContent) > 2 {
+			cards = append(cards, cardContent)
+		}
+	}
+
+	// 确保至少有一张卡片
+	if len(cards) == 0 && content != "" {
+		// 如果没有有效卡片，将所有内容合并到一张卡片
+		fallbackContent := strings.TrimSpace(content)
+		if fallbackContent != "" && fallbackContent != "\"" && fallbackContent != "'" {
+			cards = append(cards, fallbackContent)
+		}
 	}
 
 	return cards
@@ -2402,8 +2470,8 @@ func (p *AsyncBookProcessor) generateDefaultImagePrompt(content string) string {
 	}
 }
 
-// generateCoverHTML 生成封面HTML内容（上半部分图片，下半部分标题）
-func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background string) string {
+// generateCoverHTML 生成封面HTML内容（背景图在底层，图片和标题在上层）
+func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background string, bookID uint) string {
 	// 处理背景样式 - 优先使用模板背景，如果没有则使用默认背景
 	var backgroundStyle string
 	if background != "" {
@@ -2427,10 +2495,7 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
 			fullImageURL = imageURL
 		}
 
-		backgroundStyle = `background-image: url('` + fullImageURL + `');
-            background-size: cover;
-            background-position: center;
-            background-repeat: no-repeat;`
+		backgroundStyle = fmt.Sprintf("background: url('%s') center center / cover no-repeat;", fullImageURL)
 
 		// 添加调试日志
 		log.C(context.Background()).Infow("封面图片路径转换",
@@ -2439,7 +2504,36 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
 			"full_url", fullImageURL)
 	} else {
 		// 使用默认的渐变背景
-		backgroundStyle = `background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);`
+		backgroundStyle = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);"
+	}
+
+	// 处理book图片
+	var imageHTML string
+	imagePath := viper.GetString("resource.image_path")
+	if imagePath == "" {
+		imagePath = "res/upload" // 默认路径
+	}
+
+	// 构建book图片路径
+	bookImagePath := filepath.Join(imagePath, "book", fmt.Sprintf("%d", bookID), fmt.Sprintf("book_%d.webp", bookID))
+	fullBookImagePath := fmt.Sprintf("file://%s", bookImagePath)
+
+	// 检查book图片文件是否存在
+	if _, err := os.Stat(bookImagePath); err == nil {
+		// 文件存在，使用实际图片
+		imageHTML = fmt.Sprintf(`<img src="%s" class="cover-image" alt="封面图片" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                <div class="cover-image-placeholder" style="display: none;">
+                    <div class="placeholder-icon">🖼️</div>
+                    <div class="placeholder-text">封面图片</div>
+                </div>`, fullBookImagePath)
+		log.C(context.Background()).Infow("Book图片文件存在，使用实际图片", "book_id", bookID, "image_path", fullBookImagePath)
+	} else {
+		// 文件不存在，使用占位符
+		imageHTML = `<div class="cover-image-placeholder">
+                <div class="placeholder-icon">🖼️</div>
+                <div class="placeholder-text">封面图片</div>
+            </div>`
+		log.C(context.Background()).Warnw("Book图片文件不存在，使用占位符", "book_id", bookID, "expected_path", bookImagePath, "error", err)
 	}
 
 	return fmt.Sprintf(`<!DOCTYPE html>
@@ -2464,43 +2558,91 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
             position: relative;
         }
 
+        /* 封面容器 - 背景图在底层，内容在上层 */
         .cover-container {
-            width: 100%;
-            height: 100%;
-            display: flex;
-            flex-direction: column;
-            %s
+            width: 100%%;
+            height: 100%%;
             position: relative;
+            %s
             background-size: cover !important;
             background-position: center center !important;
             background-repeat: no-repeat !important;
         }
 
-        .image-section {
-            flex: 1;
-            %s
-            position: relative;
-            overflow: hidden;
-        }
-
-        .image-overlay {
+        /* 背景层：背景图在最后一层 */
+        .cover-background-layer {
             position: absolute;
             top: 0;
             left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0, 0, 0, 0.1);
+            width: 100%%;
+            height: 100%%;
+            z-index: 1;
+            background: inherit;
+            background-size: cover !important;
+            background-position: center center !important;
+            background-repeat: no-repeat !important;
         }
 
+        /* 内容层：图片和标题在上层 */
+        .cover-content-layer {
+            position: relative;
+            width: 100%%;
+            height: 100%%;
+            z-index: 2;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* 上半部分：图片区域 (65%%) */
+        .image-section {
+            flex: 0 0 65%%;
+            position: relative;
+            overflow: hidden;
+            width: 100%%;
+        }
+
+        .cover-image {
+            width: 100%%;
+            height: 100%%;
+            object-fit: cover;
+            border-radius: 0;
+            box-shadow: none;
+        }
+
+        .cover-image-placeholder {
+            width: 100%%;
+            height: 100%%;
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: 0;
+            border: none;
+            color: #6c757d;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .placeholder-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+            opacity: 0.8;
+        }
+
+        .placeholder-text {
+            font-size: 18px;
+            color: #6c757d;
+            text-align: center;
+            font-weight: bold;
+        }
+
+        /* 下半部分：标题区域 (35%%) */
         .title-section {
-            height: 360px;
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
+            flex: 0 0 35%%;
             display: flex;
             align-items: center;
             justify-content: center;
-            padding: 40px;
             position: relative;
+            width: 100%%;
         }
 
         .title-content {
@@ -2511,10 +2653,10 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
         .title-text {
             font-size: 48px;
             font-weight: 700;
-            color: #2c3e50;
+            color: black;
             line-height: 1.2;
             margin-bottom: 20px;
-            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            text-shadow: none;
         }
 
         .subtitle {
@@ -2525,11 +2667,7 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
         }
 
         .decoration {
-            position: absolute;
-            width: 100%;
-            height: 4px;
-            background: linear-gradient(90deg, #667eea, #764ba2, #667eea);
-            top: 0;
+            display: none;
         }
 
         @media (max-width: 1080px) {
@@ -2542,18 +2680,24 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
 </head>
 <body>
     <div class="cover-container">
-        <div class="image-section">
-            <div class="image-overlay"></div>
-        </div>
-        <div class="title-section">
-            <div class="decoration"></div>
-            <div class="title-content">
-                <h1 class="title-text">%s</h1>
+        <!-- 背景层：背景图在最后一层 -->
+        <div class="cover-background-layer"></div>
+        
+        <!-- 内容层：图片和标题在上层 -->
+        <div class="cover-content-layer">
+            <div class="image-section">
+                %s
+            </div>
+            <div class="title-section">
+                <div class="decoration"></div>
+                <div class="title-content">
+                    <h1 class="title-text">%s</h1>
+                </div>
             </div>
         </div>
     </div>
 </body>
-</html>`, title, backgroundStyle, backgroundStyle, backgroundStyle, title)
+</html>`, title, backgroundStyle, backgroundStyle, imageHTML, title)
 }
 
 // generateCoverImageOnly 仅生成封面图片，不重新生成HTML
