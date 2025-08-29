@@ -1718,119 +1718,179 @@ func (p *AsyncBookProcessor) splitMarkdownIntoCards(content string) []string {
 	return cards
 }
 
-// splitMarkdownIntoCardsFallback 回退的分页逻辑（使用新的按行分页策略）
+// splitMarkdownIntoCardsFallback 回退的分页逻辑（优化实现）
 func (p *AsyncBookProcessor) splitMarkdownIntoCardsFallback(content string) []string {
-	// 直接使用HTML转换器的新分页逻辑，确保一致性
-	htmlConverter := p.getHTMLConverter()
-	cards, err := htmlConverter.SplitContentByHeight(content)
-	if err != nil {
-		// 如果仍然失败，使用简化的分页逻辑
-		log.C(context.Background()).Warnw("HTML转换器分页也失败，使用简化分页逻辑", "error", err)
-		return p.splitMarkdownIntoCardsSimple(content)
+	// 预处理：清理输入文本，移除无效内容
+	content = strings.TrimSpace(content)
+	if content == "" || content == "\"" || content == "'" {
+		return []string{}
 	}
 
-	log.C(context.Background()).Infow("回退分页使用新的按行分页逻辑", "cards_count", len(cards))
-	return cards
-}
-
-// splitMarkdownIntoCardsSimple 简化的分页逻辑（最后的回退方案）
-func (p *AsyncBookProcessor) splitMarkdownIntoCardsSimple(content string) []string {
 	lines := strings.Split(content, "\n")
-	var cards []string
-	var currentCard strings.Builder
 
-	// 简化的配置
-	const maxContentHeight = 1370 // 最大内容高度
+	// 卡片配置（与HTML转换器保持一致）
+	const cardHeight = 1440
+	const cardPadding = 110 // 上下内边距总和：上60px + 下50px  
+	const bottomMarginLimit = 80 // 优化的底部边距限制，与HTML转换器一致
+	const availableHeight = cardHeight - cardPadding
+	const maxFillHeight = availableHeight - bottomMarginLimit // 有效内容高度
+
+	// 字体和行高配置
 	const titleFontSize = 28
 	const subtitleFontSize = 24
 	const bodyFontSize = 16
-	const availableWidth = 980
-
-	// 行高倍数
+	const cardWidth = 1080
+	const availableWidth = cardWidth - 100
 	const titleLineHeight = 1.4
 	const bodyLineHeight = 1.6
-
-	// 元素间距
 	const titleMarginBottom = 16
 	const bodyMarginBottom = 16
 
-	var currentHeight int
+	// 第一步：预处理，计算所有行的高度
+	type LineInfo struct {
+		content      string
+		height       int
+		marginBottom int
+		totalHeight  int
+		isTitle      bool
+		titleLevel   int
+	}
+
+	var lineInfos []LineInfo
+	totalContentHeight := 0
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" {
+		// 过滤无效行
+		if line == "" || line == "\"" || line == "'" || len(line) < 2 {
 			continue
 		}
 
-		// 计算当前行的高度
-		var lineHeight int
-		var marginBottom int
+		lineInfo := LineInfo{content: line}
 
 		if strings.HasPrefix(line, "# ") {
-			// 一级标题
-			lineHeight = p.calculateTextHeight(line[2:], titleFontSize, availableWidth, titleLineHeight)
-			marginBottom = titleMarginBottom
+			lineInfo.height = p.calculateTextHeight(line[2:], titleFontSize, availableWidth, titleLineHeight)
+			lineInfo.marginBottom = titleMarginBottom
+			lineInfo.isTitle = true
+			lineInfo.titleLevel = 1
 		} else if strings.HasPrefix(line, "## ") {
-			// 二级标题
-			lineHeight = p.calculateTextHeight(line[3:], subtitleFontSize, availableWidth, titleLineHeight)
-			marginBottom = titleMarginBottom
+			lineInfo.height = p.calculateTextHeight(line[3:], subtitleFontSize, availableWidth, titleLineHeight)
+			lineInfo.marginBottom = titleMarginBottom
+			lineInfo.isTitle = true
+			lineInfo.titleLevel = 2
 		} else if strings.HasPrefix(line, "### ") {
-			// 三级标题
-			lineHeight = p.calculateTextHeight(line[4:], subtitleFontSize, availableWidth, titleLineHeight)
-			marginBottom = titleMarginBottom
+			lineInfo.height = p.calculateTextHeight(line[4:], subtitleFontSize, availableWidth, titleLineHeight)
+			lineInfo.marginBottom = titleMarginBottom
+			lineInfo.isTitle = true
+			lineInfo.titleLevel = 3
 		} else {
-			// 正文
-			lineHeight = p.calculateTextHeight(line, bodyFontSize, availableWidth, bodyLineHeight)
-			marginBottom = bodyMarginBottom
+			lineInfo.height = p.calculateTextHeight(line, bodyFontSize, availableWidth, bodyLineHeight)
+			lineInfo.marginBottom = bodyMarginBottom
 		}
 
-		totalElementHeight := lineHeight + marginBottom
+		lineInfo.totalHeight = lineInfo.height + lineInfo.marginBottom
+		totalContentHeight += lineInfo.totalHeight
+		lineInfos = append(lineInfos, lineInfo)
+	}
 
-		// 检查是否需要新卡片 - 使用与html_converter.go一致的分页策略
+	// 第二步：估算需要的卡片数量
+	estimatedCards := int(math.Ceil(float64(totalContentHeight) / float64(maxFillHeight)))
+	targetHeightPerCard := float64(totalContentHeight) / float64(estimatedCards)
+
+	// 第三步：智能分页
+	var cards []string
+	var currentCard strings.Builder
+	currentHeight := 0
+	cardIndex := 0
+
+	for i, lineInfo := range lineInfos {
 		needNewCard := false
 
-		// 1. 如果添加当前行会超出最大内容高度，需要新卡片（优先检查）
-		if currentHeight+totalElementHeight > maxContentHeight {
+		// 1. 一级标题强制新卡片（除了第一行）
+		if lineInfo.isTitle && lineInfo.titleLevel == 1 && currentCard.Len() > 0 {
 			needNewCard = true
 		}
 
-		// 2. 如果当前高度已经接近最大高度（超过90%），强制新卡片
-		if currentHeight > int(float64(maxContentHeight)*0.90) && currentCard.Len() > 0 {
+		// 2. 硬性限制：超出最大高度
+		if currentHeight+lineInfo.totalHeight > maxFillHeight {
 			needNewCard = true
 		}
 
-		// 3. 如果当前卡片已经有足够内容（超过5行），且当前高度超过80%，考虑分页
-		if currentCard.Len() > 0 && currentHeight > int(float64(maxContentHeight)*0.80) {
-			// 计算当前卡片包含的行数
-			currentLines := strings.Count(currentCard.String(), "\n") + 1
-			if currentLines >= 5 {
-				// 检查下一行是否会显著增加高度
-				if totalElementHeight > int(float64(maxContentHeight)*0.10) { // 如果下一行超过10%的高度
+		// 3. 平衡内容分布：避免第一张卡片过空，后续卡片过满
+		if !needNewCard && currentCard.Len() > 0 {
+			currentUtilization := float64(currentHeight) / float64(maxFillHeight)
+			remainingHeight := 0
+			for j := i; j < len(lineInfos); j++ {
+				remainingHeight += lineInfos[j].totalHeight
+			}
+			remainingCards := estimatedCards - cardIndex - 1
+			if remainingCards <= 0 {
+				remainingCards = 1
+			}
+			avgRemainingHeight := float64(remainingHeight) / float64(remainingCards)
+
+			if lineInfo.isTitle && lineInfo.titleLevel == 2 {
+				// 二级标题：动态阈值，如果是第一张卡片则要求更高的利用率才分页
+				threshold := 0.80
+				if cardIndex == 0 {
+					threshold = 0.85 // 第一张卡片要求更高利用率，避免过早分页
+				}
+				if currentUtilization > threshold && avgRemainingHeight > targetHeightPerCard*0.6 {
+					needNewCard = true
+				}
+			} else if lineInfo.isTitle && lineInfo.titleLevel == 3 {
+				// 三级标题：对第一张卡片要求更高利用率
+				threshold := 0.85
+				if cardIndex == 0 {
+					threshold = 0.90
+				}
+				if currentUtilization > threshold {
+					needNewCard = true
+				}
+			} else {
+				// 普通内容：对第一张卡片要求接近满载才分页
+				threshold := 0.90
+				if cardIndex == 0 {
+					threshold = 0.95
+				}
+				if currentUtilization > threshold && avgRemainingHeight > targetHeightPerCard*0.4 {
 					needNewCard = true
 				}
 			}
 		}
 
-		// 保存当前卡片
+		// 执行分页
 		if needNewCard && currentCard.Len() > 0 {
-			cardContent := strings.TrimSpace(currentCard.String())
-			cards = append(cards, cardContent)
+			cards = append(cards, strings.TrimSpace(currentCard.String()))
 			currentCard.Reset()
 			currentHeight = 0
+			cardIndex++
 		}
 
-		// 添加当前行到卡片
+		// 添加当前行
 		if currentCard.Len() > 0 {
 			currentCard.WriteString("\n")
 		}
-		currentCard.WriteString(line)
-		currentHeight += totalElementHeight
+		currentCard.WriteString(lineInfo.content)
+		currentHeight += lineInfo.totalHeight
 	}
 
 	// 添加最后一张卡片
 	if currentCard.Len() > 0 {
 		cardContent := strings.TrimSpace(currentCard.String())
-		cards = append(cards, cardContent)
+		// 确保最后一张卡片也有有效内容
+		if cardContent != "" && cardContent != "\"" && cardContent != "'" && len(cardContent) > 2 {
+			cards = append(cards, cardContent)
+		}
+	}
+
+	// 确保至少有一张卡片
+	if len(cards) == 0 && content != "" {
+		// 如果没有有效卡片，将所有内容合并到一张卡片
+		fallbackContent := strings.TrimSpace(content)
+		if fallbackContent != "" && fallbackContent != "\"" && fallbackContent != "'" {
+			cards = append(cards, fallbackContent)
+		}
 	}
 
 	return cards

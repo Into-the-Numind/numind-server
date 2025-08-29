@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/spf13/viper"
 	"github.com/yuin/goldmark"
@@ -82,7 +84,7 @@ func NewHTMLConverter() *HTMLConverter {
 		Padding:             60,
 		PaddingTop:          60,
 		PaddingRight:        50,
-		PaddingBottom:       60, // 与顶部内边距保持一致
+		PaddingBottom:       10, // 减少底部内边距
 		PaddingLeft:         50,
 		BackgroundColor:     "#ffffff",
 		TextColor:           "#333333",
@@ -366,10 +368,10 @@ func (hc *HTMLConverter) generateCoverCardHTML(title string) string {
     
     <!-- 内容层：图片和标题在上层 -->
     <div class="cover-content-layer">
-    <div class="cover-image-section">
-        <div class="cover-image-placeholder">
-            <div class="placeholder-icon">🖼️</div>
-            <div class="placeholder-text">封面图片</div>
+        <div class="cover-image-section">
+            <div class="cover-image-placeholder">
+                <div class="placeholder-icon">🖼️</div>
+                <div class="placeholder-text">封面图片</div>
             </div>
         </div>
         <div class="cover-title-section">
@@ -1374,10 +1376,10 @@ th {
 		hc.config.TextColor,
 		hc.config.SubtitleFontSize,
 		hc.config.TitleMarginBottom,
-		hc.config.SubtitleMarginBottom,
+		hc.config.TitleMarginBottom,
+		hc.config.TextColor,
 		hc.config.SubtitleFontSize,
 		hc.config.TitleMarginBottom,
-		hc.config.SubtitleMarginBottom,
 		hc.config.TitleMarginBottom,
 		hc.config.TextColor,
 		hc.config.BodyFontSize,
@@ -1398,11 +1400,11 @@ th {
 		fixedMargin, fixedMargin)
 }
 
-// SplitContentByHeight 根据内容高度和固定边距进行精准分页
+// SplitContentByHeight 根据内容高度和固定边距进行精准分页 - 优化版
 func (hc *HTMLConverter) SplitContentByHeight(markdownText string) ([]string, error) {
 	// 使用配置中的卡片高度和边距
 	cardHeight := hc.config.CardHeight
-	fixedMargin := hc.config.PaddingTop + hc.config.PaddingBottom // 使用顶部和底部内边距
+	fixedMargin := hc.config.PaddingTop + hc.config.PaddingBottom
 	maxContentHeight := cardHeight - fixedMargin
 
 	// 先转换为HTML
@@ -1422,242 +1424,14 @@ func (hc *HTMLConverter) SplitContentByHeight(markdownText string) ([]string, er
 		"card_height", cardHeight,
 		"fixed_margin", fixedMargin)
 
-	// 使用按行高度精确分页
-	return hc.splitContentByLineHeight(markdownText, maxContentHeight)
-}
-
-// splitContentByLineHeight 按行高度精确分页（重新实现）
-func (hc *HTMLConverter) splitContentByLineHeight(markdownText string, maxContentHeight int) ([]string, error) {
-	var cards []string
-	lines := strings.Split(markdownText, "\n")
-	var currentCard strings.Builder
-	var currentHeight int
-
-	// 使用配置中的值
-	titleFontSize := hc.config.TitleFontSize
-	subtitleFontSize := hc.config.SubtitleFontSize
-	bodyFontSize := hc.config.BodyFontSize
-	cardWidth := hc.config.CardWidth
-	titleLineHeight := hc.config.TitleLineHeight
-	subtitleLineHeight := hc.config.SubtitleLineHeight
-	bodyLineHeight := hc.config.BodyLineHeight
-	titleMarginBottom := hc.config.TitleMarginBottom
-	subtitleMarginBottom := hc.config.SubtitleMarginBottom
-	bodyMarginBottom := hc.config.BodyMarginBottom
-
-	log.C(context.Background()).Infow("📏 开始按行精确分页",
-		"max_content_height", maxContentHeight,
-		"total_lines", len(lines),
-		"title_font_size", titleFontSize,
-		"body_font_size", bodyFontSize)
-
-	// 跟踪当前卡片索引，用于判断是否跳过第一张卡片的一级标题
-	currentCardIndex := 0
-
-	for i, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		// 在第一张卡片中跳过一级标题
-		if strings.HasPrefix(line, "# ") && currentCardIndex == 0 {
-			log.C(context.Background()).Infow("🚫 第一张卡片跳过一级标题",
-				"line_index", i,
-				"line_preview", truncateString(line, 50))
-			continue // 跳过这一行，不添加到卡片中
-		}
-
-		// 获取当前行的文本内容和样式信息
-		var textContent string
-		var fontSize int
-		var lineHeightMultiplier float64
-		var marginBottom int
-
-		if strings.HasPrefix(line, "# ") {
-			textContent = line[2:]
-			fontSize = titleFontSize
-			lineHeightMultiplier = titleLineHeight
-			marginBottom = titleMarginBottom
-		} else if strings.HasPrefix(line, "## ") {
-			textContent = line[3:]
-			fontSize = subtitleFontSize
-			lineHeightMultiplier = subtitleLineHeight
-			marginBottom = subtitleMarginBottom
-		} else if strings.HasPrefix(line, "### ") {
-			textContent = line[4:]
-			fontSize = subtitleFontSize
-			lineHeightMultiplier = subtitleLineHeight
-			marginBottom = subtitleMarginBottom
-		} else {
-			textContent = line
-			fontSize = bodyFontSize
-			lineHeightMultiplier = bodyLineHeight
-			marginBottom = bodyMarginBottom
-		}
-
-		// 计算当前行的宽度
-		lineWidth := hc.CalculateTextWidth(textContent, fontSize)
-
-		// 如果当前行宽度超出卡片宽度，需要字符级分页
-		if lineWidth > cardWidth {
-			// 将长行分割成多个部分，找到合适的分页点
-			parts := hc.splitLongLine(textContent, fontSize, lineHeightMultiplier, cardWidth, maxContentHeight, currentHeight, marginBottom)
-
-			// 处理分割后的部分
-			for j, part := range parts {
-				partHeight := hc.CalculateTextHeight(part, fontSize, cardWidth, lineHeightMultiplier)
-				totalPartHeight := partHeight + marginBottom
-
-				// 检查是否需要新卡片 - 填充式分页策略
-				needNewCard := false
-				if currentHeight+totalPartHeight > maxContentHeight && currentCard.Len() > 0 {
-					needNewCard = true
-				}
-
-				if needNewCard {
-					// 保存当前卡片
-					cardContent := strings.TrimSpace(currentCard.String())
-					cards = append(cards, cardContent)
-
-					log.C(context.Background()).Infow("✅ 完成卡片（长行分割）",
-						"card_index", len(cards),
-						"card_height", currentHeight,
-						"utilization", fmt.Sprintf("%.1f%%", float64(currentHeight)/float64(maxContentHeight)*100),
-						"content_length", len(cardContent))
-
-					currentCard.Reset()
-					currentHeight = 0
-					currentCardIndex++
-				}
-
-				// 添加部分内容到当前卡片
-				if currentCard.Len() > 0 {
-					currentCard.WriteString("\n")
-				}
-				currentCard.WriteString(part)
-				currentHeight += totalPartHeight
-
-				log.C(context.Background()).Debugw("📝 添加长行部分到卡片",
-					"line_index", i,
-					"part_index", j,
-					"part_height", totalPartHeight,
-					"current_total_height", currentHeight,
-					"part_preview", truncateString(part, 30))
-			}
-		} else {
-			// 短行，直接处理
-			lineHeight := hc.CalculateTextHeight(textContent, fontSize, cardWidth, lineHeightMultiplier)
-			totalElementHeight := lineHeight + marginBottom
-
-			// 检查是否需要新卡片 - 填充式分页策略
-			needNewCard := false
-			if currentHeight+totalElementHeight > maxContentHeight && currentCard.Len() > 0 {
-				needNewCard = true
-			}
-
-			if needNewCard {
-				// 保存当前卡片
-				cardContent := strings.TrimSpace(currentCard.String())
-				cards = append(cards, cardContent)
-
-				log.C(context.Background()).Infow("✅ 完成卡片（短行）",
-					"card_index", len(cards),
-					"card_height", currentHeight,
-					"utilization", fmt.Sprintf("%.1f%%", float64(currentHeight)/float64(maxContentHeight)*100),
-					"content_length", len(cardContent))
-
-				currentCard.Reset()
-				currentHeight = 0
-				currentCardIndex++
-			}
-
-			// 添加当前行到卡片
-			if currentCard.Len() > 0 {
-				currentCard.WriteString("\n")
-			}
-			currentCard.WriteString(line)
-			currentHeight += totalElementHeight
-
-			log.C(context.Background()).Debugw("📝 添加短行到卡片",
-				"line_index", i,
-				"line_height", totalElementHeight,
-				"current_total_height", currentHeight,
-				"line_preview", truncateString(line, 30))
-		}
+	// 检查是否需要分页
+	if contentHeight <= maxContentHeight {
+		// 内容高度未超出，直接返回单张卡片
+		return []string{markdownText}, nil
 	}
 
-	// 添加最后一张卡片
-	if currentCard.Len() > 0 {
-		cardContent := strings.TrimSpace(currentCard.String())
-		cards = append(cards, cardContent)
-
-		log.C(context.Background()).Infow("✅ 完成最后卡片",
-			"card_index", len(cards),
-			"card_height", currentHeight,
-			"utilization", fmt.Sprintf("%.1f%%", float64(currentHeight)/float64(maxContentHeight)*100),
-			"content_length", len(cardContent))
-	}
-
-	log.C(context.Background()).Infow("🎉 按行精确分页完成",
-		"total_cards", len(cards),
-		"original_content_length", len(markdownText))
-
-	return cards, nil
-}
-
-// splitLongLine 分割长行，找到合适的分页点
-func (hc *HTMLConverter) splitLongLine(textContent string, fontSize int, lineHeightMultiplier float64, cardWidth int, maxContentHeight int, currentHeight int, marginBottom int) []string {
-	var parts []string
-	var currentPart strings.Builder
-	var currentPartWidth int
-	var currentPartHeight int
-
-	// 逐个字符处理
-	for _, char := range textContent {
-		charWidth := hc.CalculateTextWidth(string(char), fontSize)
-
-		// 如果添加当前字符会超出宽度，换行
-		if currentPartWidth+charWidth > cardWidth && currentPart.Len() > 0 {
-			// 完成当前部分
-			part := currentPart.String()
-			parts = append(parts, part)
-
-			// 计算当前部分的高度
-			partHeight := hc.CalculateTextHeight(part, fontSize, cardWidth, lineHeightMultiplier)
-			currentPartHeight += partHeight + marginBottom
-
-			// 检查是否需要分页
-			if currentHeight+currentPartHeight > maxContentHeight {
-				// 当前部分会导致超出，停止添加更多部分
-				break
-			}
-
-			// 重置当前部分
-			currentPart.Reset()
-			currentPartWidth = 0
-		}
-
-		// 添加字符到当前部分
-		currentPart.WriteRune(char)
-		currentPartWidth += charWidth
-	}
-
-	// 处理最后一部分
-	if currentPart.Len() > 0 {
-		part := currentPart.String()
-		parts = append(parts, part)
-	}
-
-	return parts
-}
-
-// truncateString 截断字符串用于日志显示
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
+	// 内容高度超出，使用优化的分页算法
+	return hc.splitContentByHeightOptimized(markdownText, maxContentHeight)
 }
 
 // measureHTMLHeight 测量HTML内容高度（改进版）
@@ -1682,37 +1456,37 @@ func (hc *HTMLConverter) measureHTMLHeight(html string) (int, error) {
 		if strings.Contains(line, "<h1>") {
 			// 一级标题
 			text := hc.extractTextFromTag(line, "h1")
-			elementHeight = hc.CalculateTextHeight(text, hc.config.TitleFontSize, hc.config.AvailableWidth, hc.config.TitleLineHeight)
+			elementHeight = hc.calculateTextHeight(text, hc.config.TitleFontSize, hc.config.AvailableWidth, hc.config.TitleLineHeight)
 			marginBottom = hc.config.TitleMarginBottom
 		} else if strings.Contains(line, "<h2>") {
 			// 二级标题
 			text := hc.extractTextFromTag(line, "h2")
-			elementHeight = hc.CalculateTextHeight(text, hc.config.SubtitleFontSize, hc.config.AvailableWidth, hc.config.SubtitleLineHeight)
+			elementHeight = hc.calculateTextHeight(text, hc.config.SubtitleFontSize, hc.config.AvailableWidth, hc.config.SubtitleLineHeight)
 			marginBottom = hc.config.SubtitleMarginBottom
 		} else if strings.Contains(line, "<h3>") {
 			// 三级标题
 			text := hc.extractTextFromTag(line, "h3")
-			elementHeight = hc.CalculateTextHeight(text, hc.config.SubtitleFontSize, hc.config.AvailableWidth, hc.config.SubtitleLineHeight)
+			elementHeight = hc.calculateTextHeight(text, hc.config.SubtitleFontSize, hc.config.AvailableWidth, hc.config.SubtitleLineHeight)
 			marginBottom = hc.config.SubtitleMarginBottom
 		} else if strings.Contains(line, "<p>") {
 			// 段落
 			text := hc.extractTextFromTag(line, "p")
-			elementHeight = hc.CalculateTextHeight(text, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
+			elementHeight = hc.calculateTextHeight(text, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
 			marginBottom = hc.config.BodyMarginBottom
 		} else if strings.Contains(line, "<li>") {
 			// 列表项
 			text := hc.extractTextFromTag(line, "li")
-			elementHeight = hc.CalculateTextHeight(text, hc.config.ListFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
+			elementHeight = hc.calculateTextHeight(text, hc.config.ListFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
 			marginBottom = hc.config.BodyMarginBottom
 		} else if strings.Contains(line, "<blockquote>") {
 			// 引用
 			text := hc.extractTextFromTag(line, "blockquote")
-			elementHeight = hc.CalculateTextHeight(text, hc.config.QuoteFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
+			elementHeight = hc.calculateTextHeight(text, hc.config.QuoteFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
 			marginBottom = hc.config.BodyMarginBottom
 		} else {
 			// 其他内容，使用正文字体
 			text := hc.stripHTMLTags(line)
-			elementHeight = hc.CalculateTextHeight(text, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
+			elementHeight = hc.calculateTextHeight(text, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
 			marginBottom = hc.config.BodyMarginBottom
 		}
 
@@ -1773,14 +1547,302 @@ func (hc *HTMLConverter) stripHTMLTags(html string) string {
 	return html
 }
 
-// CalculateTextHeight 计算文本高度（精确版本）
-func (hc *HTMLConverter) CalculateTextHeight(text string, fontSize int, availableWidth int, lineHeightMultiplier float64) int {
+// splitContentByHeightOptimized 优化的分页算法 - 支持段落内分页的智能内容分布
+func (hc *HTMLConverter) splitContentByHeightOptimized(markdownText string, maxContentHeight int) ([]string, error) {
+	// 预处理：清理输入文本，移除无效内容
+	markdownText = strings.TrimSpace(markdownText)
+	if markdownText == "" || markdownText == "\"" || markdownText == "'" {
+		return []string{}, fmt.Errorf("invalid or empty content")
+	}
+
+	lines := strings.Split(markdownText, "\n")
+
+	// 完全移除安全边距限制，让内容精确填充到底边距临界点
+	// 使用真正的最大内容高度进行分页
+	effectiveMaxHeight := maxContentHeight
+
+	// 全新的段落内分页算法
+	return hc.splitContentWithInParagraphPagination(lines, effectiveMaxHeight, maxContentHeight, 0)
+}
+
+// splitContentWithInParagraphPagination 支持段落内分页的新算法
+func (hc *HTMLConverter) splitContentWithInParagraphPagination(lines []string, effectiveMaxHeight, maxContentHeight, _ int) ([]string, error) {
+	log.C(context.Background()).Infow("🔄 开始精确分页处理",
+		"total_lines", len(lines),
+		"max_content_height", maxContentHeight,
+		"fill_to_margin_boundary", true)
+
+	var cards []string
+	var currentCard strings.Builder
+	currentHeight := 0
+	cardIndex := 0
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// 跳过空行、无效行和一级标题
+		if line == "" || line == "\"" || line == "'" || strings.HasPrefix(line, "# ") {
+			continue
+		}
+
+		// 判断行类型和计算高度
+		var lineHeight, marginBottom int
+		var isTitle bool
+
+		if strings.HasPrefix(line, "## ") {
+			lineHeight = hc.calculateTextHeight(line[3:], hc.config.SubtitleFontSize, hc.config.AvailableWidth, hc.config.SubtitleLineHeight)
+			marginBottom = hc.config.SubtitleMarginBottom
+			isTitle = true
+		} else if strings.HasPrefix(line, "### ") {
+			lineHeight = hc.calculateTextHeight(line[4:], hc.config.SubtitleFontSize, hc.config.AvailableWidth, hc.config.SubtitleLineHeight)
+			marginBottom = hc.config.SubtitleMarginBottom
+			isTitle = true
+		} else {
+			// 普通段落 - 这里是关键：支持段落内分页
+			lineHeight = hc.calculateTextHeight(line, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
+			marginBottom = hc.config.BodyMarginBottom
+		}
+
+		totalLineHeight := lineHeight + marginBottom
+
+		// 检查是否需要分页
+		needNewCard := false
+
+		// 一级标题已被过滤，不再需要强制分页逻辑
+
+		// 2. 检查高度是否超限 - 使用真正的最大高度，不预留过多空间
+		willExceedHeight := currentHeight+totalLineHeight > maxContentHeight
+		
+		// 如果会超出高度限制
+		if willExceedHeight {
+			// 计算剩余可用高度 - 使用真正的剩余空间
+			remainingHeight := maxContentHeight - currentHeight
+			
+			// 超激进的段落分割策略：只要有剩余空间就尝试分割，最大化利用边距空间
+			if !isTitle && len(line) > 20 && remainingHeight > hc.config.BodyFontSize/3 { // 进一步降低阈值
+				// 执行段落内分页
+				firstPart, secondPart := hc.SplitLongParagraph(line, remainingHeight)
+				if firstPart != "" && secondPart != "" {
+					// 添加第一部分到当前卡片
+					if currentCard.Len() > 0 {
+						currentCard.WriteString("\n")
+					}
+					currentCard.WriteString(firstPart)
+					
+					// 结束当前卡片
+					cardContent := strings.TrimSpace(currentCard.String())
+					cards = append(cards, cardContent)
+					
+					log.C(context.Background()).Infow("📄 段落内分页卡片创建",
+						"card_index", cardIndex+1,
+						"card_height", currentHeight+hc.calculateTextHeight(firstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight),
+						"split_paragraph", true,
+						"first_part_chars", len(firstPart),
+						"second_part_chars", len(secondPart))
+
+					// 开始新卡片并添加第二部分
+					currentCard.Reset()
+					currentCard.WriteString(secondPart)
+					currentHeight = hc.calculateTextHeight(secondPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight) + marginBottom
+					cardIndex++
+					continue
+				}
+			}
+			needNewCard = true
+		}
+
+		// 执行分页
+		if needNewCard && currentCard.Len() > 0 {
+			cardContent := strings.TrimSpace(currentCard.String())
+			cards = append(cards, cardContent)
+
+			utilization := float64(currentHeight) / float64(maxContentHeight) * 100
+
+			log.C(context.Background()).Infow("📄 常规卡片创建",
+				"card_index", cardIndex+1,
+				"card_height", currentHeight,
+				"utilization", fmt.Sprintf("%.1f%%", utilization),
+				"remaining_space", maxContentHeight-currentHeight,
+				"content_lines", strings.Count(cardContent, "\n")+1)
+
+			currentCard.Reset()
+			currentHeight = 0
+			cardIndex++
+		}
+
+		// 添加当前行到卡片
+		if currentCard.Len() > 0 {
+			currentCard.WriteString("\n")
+		}
+		currentCard.WriteString(line)
+		currentHeight += totalLineHeight
+	}
+
+	// 处理最后一张卡片
+	if currentCard.Len() > 0 {
+		cardContent := strings.TrimSpace(currentCard.String())
+		if cardContent != "" && cardContent != "\"" && cardContent != "'" && len(cardContent) > 2 {
+			cards = append(cards, cardContent)
+
+			utilization := float64(currentHeight) / float64(maxContentHeight) * 100
+
+			log.C(context.Background()).Infow("📄 最后卡片创建",
+				"card_index", cardIndex+1,
+				"card_height", currentHeight,
+				"utilization", fmt.Sprintf("%.1f%%", utilization),
+				"remaining_space", maxContentHeight-currentHeight,
+				"content_lines", strings.Count(cardContent, "\n")+1)
+		}
+	}
+
+	// 确保至少有一张卡片
+	if len(cards) == 0 {
+		cards = append(cards, strings.Join(lines, "\n"))
+	}
+
+	log.C(context.Background()).Infow("✅ 段落内分页完成",
+		"total_cards", len(cards),
+		"algorithm", "in-paragraph-pagination")
+
+	return cards, nil
+}
+
+// SplitLongParagraph 精确分割段落，确保第一部分恰好填满到底部边距位置
+func (hc *HTMLConverter) SplitLongParagraph(paragraph string, remainingHeight int) (string, string) {
+	// 精确计算参数
+	charHeight := float64(hc.config.BodyFontSize) * hc.config.BodyLineHeight
+	charWidth := float64(hc.config.BodyFontSize) * 1.05 // 中文字符宽度约为字体大小的1.05倍
+	charsPerLine := int(float64(hc.config.AvailableWidth) / charWidth)
+	if charsPerLine <= 0 {
+		charsPerLine = 30 // 默认每行30字符
+	}
+	
+	// 计算可用行数（精确到0.3行）- 更激进的空间利用
+	exactLines := float64(remainingHeight) / charHeight
+	if exactLines < 1.5 {
+		return "", paragraph // 空间不足，不分割
+	}
+	
+	// 计算理想的字符数（考虑行数的小数部分）
+	idealChars := int(exactLines * float64(charsPerLine))
+	
+	runes := []rune(paragraph)
+	if len(runes) <= idealChars {
+		return paragraph, "" // 不需要分割
+	}
+	
+	// 多步骤寻找最佳分割点
+	bestSplitPoint := idealChars
+	
+	// 第一优先级：在理想位置附近寻找句子结尾（。！？）
+	searchRange := min(idealChars/3, 100) // 搜索范围：理想位置前后1/3或100字符内
+	for i := idealChars - searchRange; i <= idealChars + searchRange/2 && i < len(runes); i++ {
+		if i > 0 && i < len(runes) && (runes[i] == '。' || runes[i] == '！' || runes[i] == '？') {
+			// 验证分割后第一部分的高度是否合适
+			candidateFirstPart := strings.TrimSpace(string(runes[:i+1]))
+			candidateHeight := hc.calculateTextHeight(candidateFirstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
+			
+			// 更激进的高度利用：允许95%-105%的剩余高度，精确填充到边距
+			heightRatio := float64(candidateHeight) / float64(remainingHeight)
+			if heightRatio >= 0.95 && heightRatio <= 1.05 {
+				bestSplitPoint = i + 1
+				break
+			}
+		}
+	}
+	
+	// 第二优先级：如果没找到合适的句子结尾，寻找逗号分割点
+	if bestSplitPoint == idealChars {
+		for i := idealChars - searchRange/2; i <= idealChars + searchRange/3 && i < len(runes); i++ {
+			if i > 0 && i < len(runes) && (runes[i] == '，' || runes[i] == '、') {
+				candidateFirstPart := strings.TrimSpace(string(runes[:i+1]))
+				candidateHeight := hc.calculateTextHeight(candidateFirstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
+				
+				heightRatio := float64(candidateHeight) / float64(remainingHeight)
+				if heightRatio >= 0.90 && heightRatio <= 1.10 {
+					bestSplitPoint = i + 1
+					break
+				}
+			}
+		}
+	}
+	
+	// 第三优先级：如果还没找到，进行二分搜索找到最佳长度
+	if bestSplitPoint == idealChars {
+		left := idealChars - searchRange/2
+		right := idealChars + searchRange/2
+		if left < 0 { left = 0 }
+		if right >= len(runes) { right = len(runes) - 1 }
+		
+		bestDiff := float64(remainingHeight)
+		
+		for i := left; i <= right; i++ {
+			candidateFirstPart := strings.TrimSpace(string(runes[:i]))
+			candidateHeight := hc.calculateTextHeight(candidateFirstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
+			
+			diff := math.Abs(float64(candidateHeight) - float64(remainingHeight))
+			if diff < bestDiff {
+				bestDiff = diff
+				bestSplitPoint = i
+			}
+		}
+	}
+	
+	// 确保分割点不超出范围
+	if bestSplitPoint >= len(runes) {
+		bestSplitPoint = len(runes) - 1
+	}
+	if bestSplitPoint <= 0 {
+		bestSplitPoint = 1
+	}
+	
+	firstPart := strings.TrimSpace(string(runes[:bestSplitPoint]))
+	secondPart := strings.TrimSpace(string(runes[bestSplitPoint:]))
+	
+	// 验证分割结果
+	if len(firstPart) < 10 || len(secondPart) < 10 {
+		return "", paragraph // 分割结果太短，不分割
+	}
+	
+	// 计算实际高度以验证效果
+	actualHeight := hc.calculateTextHeight(firstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
+	utilizationRatio := float64(actualHeight) / float64(remainingHeight)
+	
+	log.C(context.Background()).Infow("📝 精确段落分割",
+		"original_length", len(runes),
+		"ideal_chars", idealChars,
+		"actual_split_point", bestSplitPoint,
+		"first_part_chars", len([]rune(firstPart)),
+		"second_part_chars", len([]rune(secondPart)),
+		"remaining_height", remainingHeight,
+		"actual_height", actualHeight,
+		"space_utilization", fmt.Sprintf("%.1f%%", utilizationRatio*100),
+		"exact_lines_available", fmt.Sprintf("%.2f", exactLines),
+		"chars_per_line", charsPerLine)
+	
+	return firstPart, secondPart
+}
+
+// calculateTextHeight 计算文本高度
+func (hc *HTMLConverter) calculateTextHeight(text string, fontSize int, availableWidth int, lineHeightMultiplier float64) int {
 	if strings.TrimSpace(text) == "" {
 		return 0
 	}
 
-	// 精确计算每行能容纳的字符数和实际行数
-	lines := hc.CalculateTextLines(text, fontSize, availableWidth)
+	// 计算字符宽度（中文字符约为字体大小的1.05倍）
+	charWidth := float64(fontSize) * 1.05
+	charsPerLine := int(float64(availableWidth) / charWidth)
+
+	if charsPerLine <= 0 {
+		charsPerLine = 1
+	}
+
+	// 计算行数
+	textLength := utf8.RuneCountInString(text)
+	lines := int(math.Ceil(float64(textLength) / float64(charsPerLine)))
+
+	if lines == 0 {
+		lines = 1
+	}
 
 	// 计算总高度：行数 × 字体大小 × 行高倍数
 	totalHeight := int(float64(lines) * float64(fontSize) * lineHeightMultiplier)
@@ -1788,161 +1850,12 @@ func (hc *HTMLConverter) CalculateTextHeight(text string, fontSize int, availabl
 	return totalHeight
 }
 
-// CalculateTextWidth 计算文本的精确宽度
-func (hc *HTMLConverter) CalculateTextWidth(text string, fontSize int) int {
-	if strings.TrimSpace(text) == "" {
-		return 0
+// truncateString 截断字符串
+func truncateString(s string, length int) string {
+	if len(s) <= length {
+		return s
 	}
-
-	// 字符宽度配置（与CalculateTextLines保持一致）
-	const (
-		chineseCharRatio = 1.0 // 中文字符宽度比例（相对于字体大小）
-		englishCharRatio = 0.6 // 英文字符宽度比例
-		digitCharRatio   = 0.5 // 数字字符宽度比例
-		spaceCharRatio   = 0.3 // 空格字符宽度比例
-		punctuationRatio = 0.4 // 标点符号宽度比例
-		letterSpacing    = 0.1 // 字符间距（相对于字体大小）
-	)
-
-	totalWidth := 0.0
-
-	// 逐字符计算宽度
-	for _, char := range text {
-		charWidth := 0.0
-
-		// 根据字符类型计算宽度
-		switch {
-		case char >= 'a' && char <= 'z', char >= 'A' && char <= 'Z':
-			// 英文字母
-			charWidth = float64(fontSize) * englishCharRatio
-		case char >= '0' && char <= '9':
-			// 数字
-			charWidth = float64(fontSize) * digitCharRatio
-		case char == ' ':
-			// 空格
-			charWidth = float64(fontSize) * spaceCharRatio
-		case char >= 0x4E00 && char <= 0x9FFF:
-			// 中文字符（CJK统一汉字）
-			charWidth = float64(fontSize) * chineseCharRatio
-		case char >= 0x3400 && char <= 0x4DBF:
-			// 中文字符（CJK扩展A）
-			charWidth = float64(fontSize) * chineseCharRatio
-		case char >= 0x20000 && char <= 0x2A6DF:
-			// 中文字符（CJK扩展B）
-			charWidth = float64(fontSize) * chineseCharRatio
-		case char >= 0x2A700 && char <= 0x2B73F:
-			// 中文字符（CJK扩展C）
-			charWidth = float64(fontSize) * chineseCharRatio
-		case char >= 0x2B740 && char <= 0x2B81F:
-			// 中文字符（CJK扩展D）
-			charWidth = float64(fontSize) * chineseCharRatio
-		case char >= 0x2B820 && char <= 0x2CEAF:
-			// 中文字符（CJK扩展E）
-			charWidth = float64(fontSize) * chineseCharRatio
-		case char >= 0x2CEB0 && char <= 0x2EBEF:
-			// 中文字符（CJK扩展F）
-			charWidth = float64(fontSize) * chineseCharRatio
-		case char >= 0x30000 && char <= 0x3134F:
-			// 中文字符（CJK扩展G）
-			charWidth = float64(fontSize) * chineseCharRatio
-		case char >= 0x31350 && char <= 0x323AF:
-			// 中文字符（CJK扩展H）
-			charWidth = float64(fontSize) * chineseCharRatio
-		default:
-			// 其他字符（标点符号等）
-			charWidth = float64(fontSize) * punctuationRatio
-		}
-
-		// 添加字符间距
-		charWidth += float64(fontSize) * letterSpacing
-		totalWidth += charWidth
-	}
-
-	return int(totalWidth)
-}
-
-// CalculateTextLines 精确计算文本需要的行数
-func (hc *HTMLConverter) CalculateTextLines(text string, fontSize int, availableWidth int) int {
-	if strings.TrimSpace(text) == "" {
-		return 0
-	}
-
-	// 字符宽度配置（更精确的估算）
-	const (
-		chineseCharRatio = 1.0 // 中文字符宽度比例（相对于字体大小）
-		englishCharRatio = 0.6 // 英文字符宽度比例
-		digitCharRatio   = 0.5 // 数字字符宽度比例
-		spaceCharRatio   = 0.3 // 空格字符宽度比例
-		punctuationRatio = 0.4 // 标点符号宽度比例
-		letterSpacing    = 0.1 // 字符间距（相对于字体大小）
-	)
-
-	// 计算当前行的宽度
-	currentLineWidth := 0.0
-	lines := 1 // 至少需要1行
-
-	// 逐字符计算宽度
-	for _, char := range text {
-		charWidth := 0.0
-
-		// 根据字符类型计算宽度
-		switch {
-		case char >= 'a' && char <= 'z', char >= 'A' && char <= 'Z':
-			// 英文字母
-			charWidth = float64(fontSize) * englishCharRatio
-		case char >= '0' && char <= '9':
-			// 数字
-			charWidth = float64(fontSize) * digitCharRatio
-		case char == ' ':
-			// 空格
-			charWidth = float64(fontSize) * spaceCharRatio
-		case char >= 0x4E00 && char <= 0x9FFF:
-			// 中文字符（CJK统一汉字）
-			charWidth = float64(fontSize) * chineseCharRatio
-		case char >= 0x3400 && char <= 0x4DBF:
-			// 中文字符（CJK扩展A）
-			charWidth = float64(fontSize) * chineseCharRatio
-		case char >= 0x20000 && char <= 0x2A6DF:
-			// 中文字符（CJK扩展B）
-			charWidth = float64(fontSize) * chineseCharRatio
-		case char >= 0x2A700 && char <= 0x2B73F:
-			// 中文字符（CJK扩展C）
-			charWidth = float64(fontSize) * chineseCharRatio
-		case char >= 0x2B740 && char <= 0x2B81F:
-			// 中文字符（CJK扩展D）
-			charWidth = float64(fontSize) * chineseCharRatio
-		case char >= 0x2B820 && char <= 0x2CEAF:
-			// 中文字符（CJK扩展E）
-			charWidth = float64(fontSize) * chineseCharRatio
-		case char >= 0x2CEB0 && char <= 0x2EBEF:
-			// 中文字符（CJK扩展F）
-			charWidth = float64(fontSize) * chineseCharRatio
-		case char >= 0x30000 && char <= 0x3134F:
-			// 中文字符（CJK扩展G）
-			charWidth = float64(fontSize) * chineseCharRatio
-		case char >= 0x31350 && char <= 0x323AF:
-			// 中文字符（CJK扩展H）
-			charWidth = float64(fontSize) * chineseCharRatio
-		default:
-			// 其他字符（标点符号等）
-			charWidth = float64(fontSize) * punctuationRatio
-		}
-
-		// 添加字符间距
-		charWidth += float64(fontSize) * letterSpacing
-
-		// 检查是否需要换行
-		if currentLineWidth+charWidth > float64(availableWidth) {
-			// 需要换行
-			lines++
-			currentLineWidth = charWidth
-		} else {
-			// 继续当前行
-			currentLineWidth += charWidth
-		}
-	}
-
-	return lines
+	return s[:length] + "..."
 }
 
 // wrapWithDynamicHeightStyles 包装HTML内容为支持动态高度的HTML页面
@@ -2109,11 +2022,10 @@ func (hc *HTMLConverter) wrapWithDynamicHeightStyles(contentHTML, title string) 
 		hc.config.BodyLineHeight,
 		hc.config.BodyMarginBottom,
 		hc.config.ListFontSize,
-		hc.config.BodyLineHeight,
-		hc.config.BodyMarginBottom,
 		hc.config.QuoteFontSize,
 		hc.config.BodyLineHeight,
 		hc.config.BodyMarginBottom,
+		hc.config.QuoteFontSize,
 		contentHTML)
 }
 
@@ -2161,16 +2073,19 @@ body {
 .markdown-body {
     font-family: "PingFang SC", "Helvetica Neue", Arial, sans-serif;
     font-size: %dpx;          /* 基础字号 */
-    line-height: 1.8;         /* 增大行高，提升可读性 */
+    line-height: 1.6;         /* 优化行高，平衡可读性和空间利用 */
     color: #333;              /* 深灰色文字，替代默认黑色 */
     padding: 0;               /* 移除内边距，由容器控制 */
     width: 100%%;
-    height: auto;             /* 改为auto，避免固定高度导致截断 */
-    overflow: visible;
+    max-height: calc(100%% - 80px); /* 强制底部边距：容器高度减去80px底部边距 */
+    overflow: hidden;         /* 隐藏超出部分，强制执行边距限制 */
     word-wrap: break-word;
     word-break: break-word;   /* 中文换行优化 */
     hyphens: auto;
     box-sizing: border-box;   /* 确保盒模型正确 */
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start; /* 内容从顶部开始 */
 }
 
 /* 标题样式：参考目标案例的大字号、加粗 */
@@ -2210,12 +2125,13 @@ body {
 /* 段落样式：避免过窄行宽，适配卡片宽度 */
 .markdown-body p {
     font-size: %dpx;          /* 段落字号 */
-    margin: %dpx 0;           /* 段落间距 */
-    line-height: 1.8;         /* 段落行高 */
+    margin: %dpx 0;           /* 减少段落间距，提高空间利用率 */
+    line-height: 1.6;         /* 优化段落行高 */
     text-align: justify;      /* 两端对齐 */
     word-wrap: break-word;    /* 自动换行 */
     hyphens: auto;            /* 自动连字符 */
     color: #333;              /* 段落文字颜色 */
+    flex: 0 0 auto;           /* 不拉伸段落 */
 }
 
 /* 列表样式：优化符号与缩进 */
@@ -2345,10 +2261,9 @@ body {
 /* 卡片容器样式 */
 .markdown-card-container {
     width: %dpx;
-    min-height: %dpx;
-    max-height: %dpx; /* 设置最大高度，避免过度拉伸 */
-    padding: %dpx %dpx %dpx %dpx; /* 上右下左内边距，确保左右对称 */
-    overflow: hidden; /* 改为hidden，防止内容溢出 */
+    height: %dpx; /* 强制固定高度 */
+    padding: %dpx %dpx 80px %dpx; /* 优化内边距：上右(底部固定80px)左 */
+    overflow: hidden; /* 隐藏超出部分，确保边距限制 */
     background-color: %s;
     position: relative;
     box-sizing: border-box; /* 确保padding包含在宽度内 */
@@ -2357,20 +2272,33 @@ body {
     justify-content: flex-start; /* 内容从顶部开始 */
 }
 
+/* 底部边距线条（调试用，可在生产环境移除） */
+.markdown-card-container::after {
+    content: '';
+    position: absolute;
+    bottom: 80px;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: rgba(255, 0, 0, 0.2); /* 红色半透明线，标示底部边距边界 */
+    z-index: 1000;
+}
+
 .markdown-content {
     width: 100%%;
-    height: auto;
-    overflow: hidden; /* 改为hidden，防止内容溢出 */
+    height: 100%%; /* 填满容器 */
+    overflow: visible; /* 允许内容可见 */
     max-width: 100%%; /* 确保内容不超出容器 */
     word-wrap: break-word; /* 长单词自动换行 */
     word-break: break-word; /* 中文换行优化 */
+    flex: 1; /* 占用剩余空间 */
 }
 `, backgroundStyle, backgroundStyle, hc.config.BodyFontSize,
 		hc.config.TitleFontSize, hc.config.TitleMarginBottom,
 		hc.config.SubtitleFontSize, hc.config.TitleMarginBottom, hc.config.SubtitleMarginBottom,
 		hc.config.SubtitleFontSize, hc.config.TitleMarginBottom, hc.config.SubtitleMarginBottom,
 		hc.config.BodyFontSize, hc.config.TitleMarginBottom, hc.config.SubtitleMarginBottom,
-		hc.config.BodyFontSize, hc.config.BodyMarginBottom,
+		hc.config.BodyFontSize, int(float64(hc.config.BodyMarginBottom)*0.7), // 减少段落间距，提高空间利用
 		hc.config.ListFontSize, hc.config.BodyMarginBottom,
 		hc.config.ListFontSize,
 		hc.config.QuoteFontSize, hc.config.BodyMarginBottom,
@@ -2386,11 +2314,9 @@ body {
 		int(float64(hc.config.ListFontSize)*0.9),
 		// 卡片容器
 		hc.config.CardWidth,       // 卡片宽度
-		hc.config.CardHeight,      // 最小高度
-		hc.config.CardHeight,      // 最大高度
+		hc.config.CardHeight,      // 固定高度
 		hc.config.PaddingTop,      // 上内边距
 		hc.config.PaddingRight,    // 右内边距
-		hc.config.PaddingBottom,   // 下内边距
 		hc.config.PaddingLeft,     // 左内边距
 		hc.config.BackgroundColor) // 卡片背景色
 }
