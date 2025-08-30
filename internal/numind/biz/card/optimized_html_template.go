@@ -95,7 +95,7 @@ func (t *OptimizedHTMLTemplate) getOptimizedHTMLTemplate() string {
         @font-face {
             font-family: "SourceHanSansCN";
             src: local("Source Han Sans CN"),
-                 local("PingFang SC"),
+                 local("Noto Sans CJK SC"),
                  local("Hiragino Sans GB"),
                  local("Microsoft YaHei"),
                  local("SimHei"),
@@ -107,7 +107,7 @@ func (t *OptimizedHTMLTemplate) getOptimizedHTMLTemplate() string {
         @font-face {
             font-family: "SourceHanSansCN";
             src: local("Source Han Sans CN Bold"),
-                 local("PingFang SC Semibold"),
+                 local("Noto Sans CJK SC Semibold"),
                  local("Hiragino Sans GB W6"),
                  local("Microsoft YaHei Bold"),
                  local("SimHei"),
@@ -123,7 +123,7 @@ func (t *OptimizedHTMLTemplate) getOptimizedHTMLTemplate() string {
         }
         
         body {
-            font-family: "SourceHanSansCN", -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            font-family: "SourceHanSansCN", -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
             background: #ffffff;
             color: #333333;
             line-height: 1.6;

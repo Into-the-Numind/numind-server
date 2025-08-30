@@ -204,7 +204,7 @@ func (r *EnhancedDynamicRenderer) generateEnhancedHTML(elements []pagination.Ele
         }
         
         body {
-            font-family: 'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+            font-family: 'Noto Sans CJK SC', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
             font-weight: 400;
             color: #333;
             line-height: 1.6;

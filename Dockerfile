@@ -54,6 +54,9 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 # 安装Chrome依赖和字体
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     fonts-liberation \
+    fonts-noto-cjk \
+    fonts-wqy-microhei \
+    fonts-wqy-zenhei \
     libasound2 \
     libatk-bridge2.0-0 \
     libatk1.0-0 \

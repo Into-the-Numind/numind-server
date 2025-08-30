@@ -26,13 +26,13 @@ type RendererConfig struct {
 // GetRendererConfig 获取渲染器配置
 func GetRendererConfig() *RendererConfig {
 	config := &RendererConfig{
-		EnableRenderAndMeasure:    true, // 默认启用渲染-测量方案
-		EnableChromeHeadless:      true, // 默认启用Chrome无头浏览器
-		EnableTraditionalRenderer: true, // 默认启用传统渲染器作为备用
-		EnableEnhancedRenderer:    true, // 默认启用增强版渲染器
-		EnableLightweightRenderer: true, // 默认启用轻量级渲染器
-		ChromeDebugPort:           9222, // 默认Chrome调试端口
-		RenderTimeout:             300,  // 默认5分钟超时
+		EnableRenderAndMeasure:    false, // 禁用调试用的渲染-测量方案
+		EnableChromeHeadless:      true,  // 默认启用Chrome无头浏览器
+		EnableTraditionalRenderer: true,  // 默认启用传统渲染器作为备用
+		EnableEnhancedRenderer:    false, // 暂时禁用增强版渲染器
+		EnableLightweightRenderer: true,  // 默认启用轻量级渲染器
+		ChromeDebugPort:           9222,  // 默认Chrome调试端口
+		RenderTimeout:             300,   // 默认5分钟超时
 	}
 
 	// 从环境变量读取配置

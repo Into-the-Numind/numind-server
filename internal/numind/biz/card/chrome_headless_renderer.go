@@ -486,7 +486,7 @@ func (r *ChromeHeadlessRenderer) generateBookHTMLTemplate(data BookTemplateData)
         }
         
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Source Han Sans CN';
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Source Han Sans CN';
             background: #ffffff;
             color: #333333;
             line-height: 1.6;
@@ -573,7 +573,7 @@ func (r *ChromeHeadlessRenderer) generateBookHTMLTemplate(data BookTemplateData)
         
         /* 确保字体加载完成 */
         .font-loaded {
-            font-family: 'Source Han Sans CN', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei';
+            font-family: 'Source Han Sans CN', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei';
         }
         
         /* 卡片容器样式 - 确保所有内容卡片都有正确的边距 */

@@ -133,7 +133,7 @@ func (r *LightweightRenderer) generateFullBookHTML(book *model.BookM, cards []*m
         }
         
         body {
-            font-family: "SourceHanSansCN", -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            font-family: "SourceHanSansCN", -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
             background: #ffffff;
             color: #333333;
             line-height: 1.6;

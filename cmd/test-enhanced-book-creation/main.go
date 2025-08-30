@@ -73,7 +73,7 @@ func generateCoverHTML(title, imageURL string, width, height int) string {
             margin: 0;
             padding: 0;
             overflow: hidden;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
         }
         
         /* 封面容器 - 上下布局 */
@@ -246,7 +246,7 @@ func generateMarkdownCardHTML(markdown, title string, cardIndex int) string {
         }
 
         body {
-            font-family: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            font-family: 'Noto Sans SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
             font-size: 16px;
             line-height: 1.6;
             color: #333333;

@@ -78,7 +78,7 @@ func NewHTMLConverter() *HTMLConverter {
 		XHTML:               false,
 		CardWidth:           1080,
 		CardHeight:          1440,
-		FontFamily:          "'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif",
+		FontFamily:          "'Noto Sans SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif",
 		FontSize:            16,
 		LineHeight:          1.6,
 		Padding:             60,
@@ -2044,7 +2044,7 @@ func (hc *HTMLConverter) generateClearLargeFontCSS() string {
 	return fmt.Sprintf(`
 /* 全局基础样式 - 清晰大字号风格 */
 body {
-    font-family: "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+    font-family: "Noto Sans CJK SC", "Helvetica Neue", Arial, sans-serif;
     font-size: 16px;          /* 基础字号 */
     line-height: 1.8;         /* 增大行高，提升可读性 */
     color: #333;              /* 深灰色文字，替代默认黑色 */
@@ -2071,7 +2071,7 @@ body {
 }
 
 .markdown-body {
-    font-family: "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+    font-family: "Noto Sans CJK SC", "Helvetica Neue", Arial, sans-serif;
     font-size: %dpx;          /* 基础字号 */
     line-height: 1.6;         /* 优化行高，平衡可读性和空间利用 */
     color: #333;              /* 深灰色文字，替代默认黑色 */
