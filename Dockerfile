@@ -28,46 +28,37 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
 
-# 安装系统依赖和Chrome
-RUN apt-get update && apt-get install -y \
+# 安装系统依赖
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     wget \
     gnupg \
-    software-properties-common \
-    fonts-noto-cjk \
-    fonts-noto-cjk-extra \
-    fonts-wqy-microhei \
-    fonts-wqy-zenhei \
-    xfonts-wqy \
-    libfontconfig1 \
-    libfreetype6 \
-    libjpeg8 \
-    libpng16-16 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装Chrome依赖和字体
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    fonts-liberation \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libatspi2.0-0 \
+    libcups2 \
+    libdbus-1-3 \
+    libdrm2 \
+    libgbm1 \
+    libgtk-3-0 \
+    libnspr4 \
+    libnss3 \
     libx11-6 \
     libxcb1 \
     libxcomposite1 \
-    libxcursor1 \
     libxdamage1 \
     libxext6 \
     libxfixes3 \
-    libxi6 \
-    libxrandr2 \
-    libxrender1 \
-    libxss1 \
-    libxtst6 \
-    libnss3 \
-    libcups2 \
-    libdbus-1-3 \
-    libatk1.0-0 \
-    libgtk-3-0 \
-    libasound2 \
-    libxss1 \
-    libdrm2 \
-    libgbm1 \
     libxkbcommon0 \
-    libatspi2.0-0 \
-    libxshmfence1 \
+    libxrandr2 \
+    xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装Google Chrome
@@ -80,9 +71,8 @@ RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add
 # 设置时区
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# 验证Chrome和WebP工具安装
-RUN google-chrome --version && echo "✅ Chrome安装成功" \
-    && cwebp -version && echo "✅ WebP工具安装成功"
+# 验证Chrome安装
+RUN google-chrome --version && echo "Chrome installation successful"
 
 # 创建非 root 用户 - 确保UID为1001，与CI/CD配置一致
 RUN groupadd -g 1001 numind && useradd -u 1001 -g numind -G audio,video numind
@@ -133,9 +123,9 @@ RUN chown -R numind:numind /opt/numind && \
 
 # 验证二进制文件存在且可执行
 RUN ls -la /app/numind && \
-    file /app/numind && \
-    ldd /app/numind 2>/dev/null || echo "静态链接或无依赖库" && \
-    echo "✅ 二进制文件验证成功"
+    file /app/numind || true && \
+    ldd /app/numind 2>/dev/null || echo "Static linked or no dependencies" && \
+    echo "Binary verification successful"
 
 # 切换到非 root 用户
 USER numind
