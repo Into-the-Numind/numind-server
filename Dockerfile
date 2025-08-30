@@ -1,11 +1,18 @@
-# 多阶段构建 - 构建阶段 - 直接使用目标平台避免交叉编译问题
-FROM golang:1.24-alpine AS builder
+# 多阶段构建 - 构建阶段 - 使用Ubuntu确保架构一致性
+FROM golang:1.24.2 AS builder
 
 # 设置工作目录
 WORKDIR /app
 
 # 安装必要的系统依赖
-RUN apk add --no-cache git ca-certificates tzdata libwebp-dev gcc musl-dev
+RUN apt-get update && apt-get install -y \
+    git \
+    ca-certificates \
+    tzdata \
+    libwebp-dev \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
 
 # 复制 go mod 文件
 COPY go.mod go.sum ./
@@ -16,10 +23,15 @@ RUN go mod download
 # 复制源代码
 COPY . .
 
-# 构建应用
-RUN CGO_ENABLED=1 GOOS=linux go build \
+# 构建应用 - 明确指定目标架构
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
     -ldflags="-s -w -X main.Version=dev" \
     -o /app/numind ./cmd/numind
+
+# 验证构建结果
+RUN ls -la /app/numind && \
+    file /app/numind && \
+    echo "✅ 构建阶段验证成功"
 
 # 运行阶段 - 基于Ubuntu以获得更好的Chrome支持
 FROM ubuntu:22.04
@@ -34,6 +46,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     curl \
     wget \
     gnupg \
+    bash \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装Chrome依赖和字体
@@ -123,9 +136,9 @@ RUN chown -R numind:numind /opt/numind && \
 
 # 验证二进制文件存在且可执行
 RUN ls -la /app/numind && \
-    file /app/numind || true && \
+    file /app/numind && \
     ldd /app/numind 2>/dev/null || echo "Static linked or no dependencies" && \
-    echo "Binary verification successful"
+    echo "✅ 运行阶段二进制文件验证成功"
 
 # 切换到非 root 用户
 USER numind
@@ -151,5 +164,5 @@ ENV GOMEMLIMIT=16GiB
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:9091/healthz || exit 1
 
-# 启动应用
-ENTRYPOINT ["/app/numind"]
+# 启动应用 - 添加调试信息
+ENTRYPOINT ["/bin/bash", "-c", "echo '=== Container Startup Debug ===' && ls -la /app/ && echo 'Binary file info:' && file /app/numind && echo 'Starting application...' && exec /app/numind \"$@\""]
