@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     libwebp-dev \
     gcc \
     g++ \
+    file \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制 go mod 文件
@@ -47,6 +48,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     wget \
     gnupg \
     bash \
+    file \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装Chrome依赖和字体
