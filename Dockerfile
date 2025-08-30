@@ -48,7 +48,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     wget \
     gnupg \
     bash \
-    file \
+co    file \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装Chrome依赖和字体
@@ -108,6 +108,10 @@ COPY config_${ENV}.yaml /app/config_${ENV}.yaml
 # 从构建阶段复制二进制文件
 COPY --from=builder /app/numind /app/numind
 
+# 验证配置文件复制成功
+RUN ls -la /app/config_*.yaml && \
+    echo "✅ 配置文件复制成功"
+
 # 预创建图片输出目录，避免运行期权限问题
 # 确保/opt目录权限正确，然后创建子目录
 RUN chmod 755 /opt && \
@@ -166,5 +170,6 @@ ENV GOMEMLIMIT=16GiB
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:9091/healthz || exit 1
 
-# 启动应用 - 添加调试信息
-ENTRYPOINT ["/bin/bash", "-c", "echo '=== Container Startup Debug ===' && ls -la /app/ && echo 'Binary file info:' && file /app/numind && echo 'Starting application...' && exec /app/numind \"$@\""]
+# 启动应用
+ENTRYPOINT ["/app/numind"]
+CMD ["-c", "/app/config_dev.yaml"]

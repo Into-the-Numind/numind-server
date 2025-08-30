@@ -394,7 +394,7 @@ jobs:
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
               neozhang96/numind-server:develop \
-              --config=/app/config_dev.yaml
+              -c /app/config_dev.yaml
             
             # 等待容器启动
             echo "Waiting for container to start..."
@@ -494,7 +494,7 @@ jobs:
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
               neozhang96/numind-server:release \
-              --config=/app/config_qa.yaml
+              -c /app/config_qa.yaml
             
             # 等待容器启动
             echo "Waiting for container to start..."
@@ -594,7 +594,7 @@ jobs:
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
               neozhang96/numind-server:product \
-              --config=/app/config_prod.yaml
+              -c /app/config_prod.yaml
             
             # 等待容器启动
             echo "Waiting for container to start..."
