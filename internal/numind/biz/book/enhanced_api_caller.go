@@ -38,6 +38,15 @@ func (p *AsyncBookProcessor) callQianwenWithEnhancedRetry(
 			"optimized_max_tokens", optimizedMaxTokens,
 			"optimized_temperature", optimizedTemperature)
 
+		// 打印发送给阿里千问的提示词
+		if len(messages) > 0 {
+			log.C(ctx).Infow("📝 发送给阿里千问的提示词",
+				"book_id", bookID,
+				"attempt", attempt,
+				"prompt_length", len(messages[0]["content"]),
+				"full_prompt", messages[0]["content"])
+		}
+
 		// 调用阿里千问API
 		result, err := p.biz.Ali().QianwenTextStream(messages, optimizedMaxTokens, optimizedTemperature)
 		if err != nil {
@@ -114,6 +123,15 @@ func (p *AsyncBookProcessor) callVolcWithEnhancedRetry(
 			"max_attempts", maxAttempts,
 			"optimized_max_tokens", optimizedMaxTokens,
 			"optimized_temperature", optimizedTemperature)
+
+		// 打印发送给火山引擎的提示词
+		if len(messages) > 0 {
+			log.C(ctx).Infow("📝 发送给火山引擎的提示词",
+				"book_id", bookID,
+				"attempt", attempt,
+				"prompt_length", len(messages[0]["content"]),
+				"full_prompt", messages[0]["content"])
+		}
 
 		// 调用火山引擎API
 		result, err := p.biz.Volc().VolcTextStream(ctx, messages, optimizedMaxTokens, optimizedTemperature)

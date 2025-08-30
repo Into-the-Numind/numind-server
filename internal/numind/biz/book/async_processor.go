@@ -179,10 +179,18 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		return
 	}
 
-	// 构建消息
+	// 构建消息 - 将用户文本拼接到提示词的 # 待处理的OCR文本 后面
+	fullPrompt := textProcessingPrompt + "\n\n" + text
 	messages := []map[string]string{
-		{"role": "user", "content": strings.ReplaceAll(textProcessingPrompt, "{content}", text)},
+		{"role": "user", "content": fullPrompt},
 	}
+
+	// 打印发送给大模型的完整提示词
+	log.C(ctx).Infow("📝 发送给大模型的完整提示词",
+		"book_id", bookID,
+		"prompt_length", len(fullPrompt),
+		"user_text_length", len(text),
+		"full_prompt", fullPrompt)
 
 	// 调用AI模型处理文本
 	aiResponse, err := p.biz.Ali().QianwenTextStream(messages, 4000, 0.7)
@@ -233,6 +241,12 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	var imageUrl string
 	if imagePrompt != "" {
 		log.C(ctx).Infow("🖼️ 第三步：调用文生图大模型生成图片", "book_id", bookID, "image_prompt", imagePrompt)
+
+		// 打印发送给文生图模型的提示词
+		log.C(ctx).Infow("📝 发送给文生图模型的提示词", 
+			"book_id", bookID, 
+			"prompt_length", len(imagePrompt),
+			"full_prompt", imagePrompt)
 
 		// 调用stable-diffusion API生成图片
 		remoteImageUrl, err := p.biz.Ali().StableDiffusionImageAsync(imagePrompt, "1024*1024")
@@ -1730,7 +1744,7 @@ func (p *AsyncBookProcessor) splitMarkdownIntoCardsFallback(content string) []st
 
 	// 卡片配置（与HTML转换器保持一致）
 	const cardHeight = 1440
-	const cardPadding = 110 // 上下内边距总和：上60px + 下50px  
+	const cardPadding = 110      // 上下内边距总和：上60px + 下50px
 	const bottomMarginLimit = 80 // 优化的底部边距限制，与HTML转换器一致
 	const availableHeight = cardHeight - cardPadding
 	const maxFillHeight = availableHeight - bottomMarginLimit // 有效内容高度
