@@ -1611,12 +1611,12 @@ func (hc *HTMLConverter) splitContentWithInParagraphPagination(lines []string, e
 
 		// 2. 检查高度是否超限 - 使用真正的最大高度，不预留过多空间
 		willExceedHeight := currentHeight+totalLineHeight > maxContentHeight
-		
+
 		// 如果会超出高度限制
 		if willExceedHeight {
 			// 计算剩余可用高度 - 使用真正的剩余空间
 			remainingHeight := maxContentHeight - currentHeight
-			
+
 			// 超激进的段落分割策略：只要有剩余空间就尝试分割，最大化利用边距空间
 			if !isTitle && len(line) > 20 && remainingHeight > hc.config.BodyFontSize/3 { // 进一步降低阈值
 				// 执行段落内分页
@@ -1627,11 +1627,11 @@ func (hc *HTMLConverter) splitContentWithInParagraphPagination(lines []string, e
 						currentCard.WriteString("\n")
 					}
 					currentCard.WriteString(firstPart)
-					
+
 					// 结束当前卡片
 					cardContent := strings.TrimSpace(currentCard.String())
 					cards = append(cards, cardContent)
-					
+
 					log.C(context.Background()).Infow("📄 段落内分页卡片创建",
 						"card_index", cardIndex+1,
 						"card_height", currentHeight+hc.calculateTextHeight(firstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight),
@@ -1715,32 +1715,32 @@ func (hc *HTMLConverter) SplitLongParagraph(paragraph string, remainingHeight in
 	if charsPerLine <= 0 {
 		charsPerLine = 30 // 默认每行30字符
 	}
-	
+
 	// 计算可用行数（精确到0.3行）- 更激进的空间利用
 	exactLines := float64(remainingHeight) / charHeight
 	if exactLines < 1.5 {
 		return "", paragraph // 空间不足，不分割
 	}
-	
+
 	// 计算理想的字符数（考虑行数的小数部分）
 	idealChars := int(exactLines * float64(charsPerLine))
-	
+
 	runes := []rune(paragraph)
 	if len(runes) <= idealChars {
 		return paragraph, "" // 不需要分割
 	}
-	
+
 	// 多步骤寻找最佳分割点
 	bestSplitPoint := idealChars
-	
+
 	// 第一优先级：在理想位置附近寻找句子结尾（。！？）
 	searchRange := min(idealChars/3, 100) // 搜索范围：理想位置前后1/3或100字符内
-	for i := idealChars - searchRange; i <= idealChars + searchRange/2 && i < len(runes); i++ {
+	for i := idealChars - searchRange; i <= idealChars+searchRange/2 && i < len(runes); i++ {
 		if i > 0 && i < len(runes) && (runes[i] == '。' || runes[i] == '！' || runes[i] == '？') {
 			// 验证分割后第一部分的高度是否合适
 			candidateFirstPart := strings.TrimSpace(string(runes[:i+1]))
 			candidateHeight := hc.calculateTextHeight(candidateFirstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
-			
+
 			// 更激进的高度利用：允许95%-105%的剩余高度，精确填充到边距
 			heightRatio := float64(candidateHeight) / float64(remainingHeight)
 			if heightRatio >= 0.95 && heightRatio <= 1.05 {
@@ -1749,14 +1749,14 @@ func (hc *HTMLConverter) SplitLongParagraph(paragraph string, remainingHeight in
 			}
 		}
 	}
-	
+
 	// 第二优先级：如果没找到合适的句子结尾，寻找逗号分割点
 	if bestSplitPoint == idealChars {
-		for i := idealChars - searchRange/2; i <= idealChars + searchRange/3 && i < len(runes); i++ {
+		for i := idealChars - searchRange/2; i <= idealChars+searchRange/3 && i < len(runes); i++ {
 			if i > 0 && i < len(runes) && (runes[i] == '，' || runes[i] == '、') {
 				candidateFirstPart := strings.TrimSpace(string(runes[:i+1]))
 				candidateHeight := hc.calculateTextHeight(candidateFirstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
-				
+
 				heightRatio := float64(candidateHeight) / float64(remainingHeight)
 				if heightRatio >= 0.90 && heightRatio <= 1.10 {
 					bestSplitPoint = i + 1
@@ -1765,20 +1765,24 @@ func (hc *HTMLConverter) SplitLongParagraph(paragraph string, remainingHeight in
 			}
 		}
 	}
-	
+
 	// 第三优先级：如果还没找到，进行二分搜索找到最佳长度
 	if bestSplitPoint == idealChars {
 		left := idealChars - searchRange/2
 		right := idealChars + searchRange/2
-		if left < 0 { left = 0 }
-		if right >= len(runes) { right = len(runes) - 1 }
-		
+		if left < 0 {
+			left = 0
+		}
+		if right >= len(runes) {
+			right = len(runes) - 1
+		}
+
 		bestDiff := float64(remainingHeight)
-		
+
 		for i := left; i <= right; i++ {
 			candidateFirstPart := strings.TrimSpace(string(runes[:i]))
 			candidateHeight := hc.calculateTextHeight(candidateFirstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
-			
+
 			diff := math.Abs(float64(candidateHeight) - float64(remainingHeight))
 			if diff < bestDiff {
 				bestDiff = diff
@@ -1786,7 +1790,7 @@ func (hc *HTMLConverter) SplitLongParagraph(paragraph string, remainingHeight in
 			}
 		}
 	}
-	
+
 	// 确保分割点不超出范围
 	if bestSplitPoint >= len(runes) {
 		bestSplitPoint = len(runes) - 1
@@ -1794,19 +1798,19 @@ func (hc *HTMLConverter) SplitLongParagraph(paragraph string, remainingHeight in
 	if bestSplitPoint <= 0 {
 		bestSplitPoint = 1
 	}
-	
+
 	firstPart := strings.TrimSpace(string(runes[:bestSplitPoint]))
 	secondPart := strings.TrimSpace(string(runes[bestSplitPoint:]))
-	
+
 	// 验证分割结果
 	if len(firstPart) < 10 || len(secondPart) < 10 {
 		return "", paragraph // 分割结果太短，不分割
 	}
-	
+
 	// 计算实际高度以验证效果
 	actualHeight := hc.calculateTextHeight(firstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
 	utilizationRatio := float64(actualHeight) / float64(remainingHeight)
-	
+
 	log.C(context.Background()).Infow("📝 精确段落分割",
 		"original_length", len(runes),
 		"ideal_chars", idealChars,
@@ -1818,7 +1822,7 @@ func (hc *HTMLConverter) SplitLongParagraph(paragraph string, remainingHeight in
 		"space_utilization", fmt.Sprintf("%.1f%%", utilizationRatio*100),
 		"exact_lines_available", fmt.Sprintf("%.2f", exactLines),
 		"chars_per_line", charsPerLine)
-	
+
 	return firstPart, secondPart
 }
 
@@ -2137,7 +2141,7 @@ body {
 /* 列表样式：优化符号与缩进 */
 .markdown-body ol, .markdown-body ul {
     font-size: %dpx;          /* 列表字号 */
-    padding-left: 32px;       /* 增大列表缩进，使符号更清晰 */
+    padding-left: 60px;       /* 增大列表缩进，确保数字有足够空间 */
     margin: %dpx 0;           /* 列表间距 */
 }
 
@@ -2151,13 +2155,13 @@ body {
 /* 有序列表：确保显示数字 */
 .markdown-body ol li {
     list-style-type: decimal; /* 确保显示数字 */
-    padding-left: 8px;        /* 数字与文字间距 */
+    padding-left: 0;          /* 移除额外内边距，让数字自然显示 */
 }
 
 /* 无序列表：优化符号样式 */
 .markdown-body ul li {
     list-style-type: disc;    /* 实心圆点 */
-    padding-left: 8px;        /* 符号与文字间距 */
+    padding-left: 0;          /* 移除额外内边距，让符号自然显示 */
 }
 
 .markdown-body ul li::marker {
