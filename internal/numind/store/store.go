@@ -1,8 +1,3 @@
-// Copyright 2022 Innkeeper Belm(孔令飞) <nosbelm@qq.com>. All rights reserved.
-// Use of this source code is governed by a MIT style
-// license that can be found in the LICENSE file. The original repo for
-// this file is https://github.com/marmotedu/miniblog.
-
 package store
 
 //go:generate mockgen -destination mock_store.go -package store github.com/marmotedu/miniblog/internal/miniblog/store IStore,UserStore,PostStore
@@ -32,6 +27,11 @@ type IStore interface {
 	Templates() TemplateStore
 	Feedbacks() FeedbackStore
 	Chats() ChatStore
+	AccountRecords() AccountRecordStore
+	Article() IArticleStore
+	Admin() IAdminStore
+	Configs() ConfigStore
+	Payments() PaymentStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -97,4 +97,24 @@ func (ds *datastore) Feedbacks() FeedbackStore {
 
 func (ds *datastore) Chats() ChatStore {
 	return NewChatStore(ds.db)
+}
+
+func (ds *datastore) AccountRecords() AccountRecordStore {
+	return NewAccountRecordStore(ds.db)
+}
+
+func (ds *datastore) Article() IArticleStore {
+	return NewArticleStore(ds.db)
+}
+
+func (ds *datastore) Admin() IAdminStore {
+	return NewAdminStore(ds.db)
+}
+
+func (ds *datastore) Configs() ConfigStore {
+	return NewConfigStore(ds.db)
+}
+
+func (ds *datastore) Payments() PaymentStore {
+	return NewPaymentStore(ds.db)
 }

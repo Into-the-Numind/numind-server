@@ -130,6 +130,7 @@ func (ctrl *ImageController) BatchUpload(c *gin.Context) {
 		bizAdapter,
 		ctrl.b.Baidu(),
 		ctrl.b.Ali(),
+		ctrl.b.Volc(), // 添加volc参数
 		ctrl.b.Mqtt(),
 	)
 

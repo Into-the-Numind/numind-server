@@ -3,14 +3,15 @@ package middleware
 import (
 	"fmt"
 	"log"
-	"net/http"
+	"numind-server/internal/pkg/core"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 	"strings"
 	"time"
 
-	"numind-server/internal/services"
-
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/spf13/viper"
 )
 
 // Logger 日志中间件
@@ -41,52 +42,40 @@ func ErrorHandler() gin.HandlerFunc {
 			log.Printf("Error: %v", err.Error())
 
 			// 返回统一的错误响应
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"code":    1,
-				"message": "服务器内部错误",
-				"data":    nil,
-			})
+			core.WriteResponse(c, errno.ErrInternalServer, nil)
 		}
 	}
 }
 
 // AuthMiddleware 认证中间件
-func AuthMiddleware(authService *services.AuthService) gin.HandlerFunc {
+func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractToken(c)
 		if token == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"code":    1,
-				"message": "未提供认证令牌",
-				"data":    nil,
-			})
+			core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("未提供认证令牌"), nil)
 			c.Abort()
 			return
 		}
 
-		user, err := authService.ValidateToken(token)
+		user, err := validateToken(token)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"code":    1,
-				"message": "无效的认证令牌",
-				"data":    nil,
-			})
+			core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("无效的认证令牌"), nil)
 			c.Abort()
 			return
 		}
 
-		c.Set("user", user)
+		c.Set("current_user", user)
 		c.Next()
 	}
 }
 
 // OptionalAuthMiddleware 可选认证中间件
-func OptionalAuthMiddleware(authService *services.AuthService) gin.HandlerFunc {
+func OptionalAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractToken(c)
 		if token != "" {
-			if user, err := authService.ValidateToken(token); err == nil {
-				c.Set("user", user)
+			if user, err := validateToken(token); err == nil {
+				c.Set("current_user", user)
 			}
 		}
 		c.Next()
@@ -94,41 +83,29 @@ func OptionalAuthMiddleware(authService *services.AuthService) gin.HandlerFunc {
 }
 
 // AdminAuthMiddleware 管理员认证中间件
-func AdminAuthMiddleware(authService *services.AuthService) gin.HandlerFunc {
+func AdminAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractToken(c)
 		if token == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"code":    1,
-				"message": "未提供认证令牌",
-				"data":    nil,
-			})
+			core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("未提供认证令牌"), nil)
 			c.Abort()
 			return
 		}
 
-		user, err := authService.ValidateToken(token)
+		user, err := validateToken(token)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"code":    1,
-				"message": "无效的认证令牌",
-				"data":    nil,
-			})
+			core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("无效的认证令牌"), nil)
 			c.Abort()
 			return
 		}
 
 		if !user.IsAdmin {
-			c.JSON(http.StatusForbidden, gin.H{
-				"code":    1,
-				"message": "需要管理员权限",
-				"data":    nil,
-			})
+			core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("需要管理员权限"), nil)
 			c.Abort()
 			return
 		}
 
-		c.Set("user", user)
+		c.Set("current_user", user)
 		c.Next()
 	}
 }
@@ -148,9 +125,38 @@ func extractToken(c *gin.Context) string {
 	return parts[1]
 }
 
+// validateToken 验证JWT token并返回用户信息
+func validateToken(tokenString string) (*model.User, error) {
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(viper.GetString("jwt.secret")), nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+		userID := uint(claims["user_id"].(float64))
+		openID := claims["openid"].(string)
+
+		// 这里应该从数据库获取用户信息，暂时返回模拟数据
+		// 在实际使用中，应该通过依赖注入的方式获取数据库连接
+		user := &model.User{}
+		user.ID = userID
+		user.OpenID = openID
+
+		return user, nil
+	}
+
+	return nil, fmt.Errorf("invalid token")
+}
+
 // GetCurrentUser 获取当前用户
 func GetCurrentUser(c *gin.Context) *model.User {
-	user, exists := c.Get("user")
+	user, exists := c.Get("current_user")
 	if !exists {
 		return nil
 	}

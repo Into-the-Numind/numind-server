@@ -12,6 +12,7 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
+	"numind-server/internal/pkg/util"
 )
 
 // Get 获取一个用户的详细信息.
@@ -38,14 +39,19 @@ func (ctrl *UserController) GetCurrentUser(c *gin.Context) {
 		return
 	}
 
-	// 通过用户ID获取完整的用户信息（基于 User model）
-	user, err := ctrl.b.Users().GetCurrentUser(c, currentUser.ID)
+	// 通过用户ID获取完整的用户信息（包含统计信息）
+	userWithStats, err := ctrl.b.Users().GetCurrentUserWithStats(c, currentUser.ID)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
 	}
 
-	core.WriteResponse(c, nil, user)
+	// 转换头像URL用于展示（去掉/opt前缀）
+	if userWithStats.AvatarURL != "" {
+		userWithStats.AvatarURL = util.GetAvatarDisplayURL(userWithStats.AvatarURL)
+	}
+
+	core.WriteResponse(c, nil, userWithStats)
 }
 
 // GetUserV2 独立的用户信息获取接口

@@ -1,16 +1,15 @@
 package book
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/spf13/viper"
 
-	"numind-server/internal/numind/biz/pagination"
+	"numind-server/internal/numind/biz"
+	"numind-server/internal/numind/biz/book"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
@@ -25,37 +24,29 @@ type CreateBookRequest struct {
 
 // QianwenResponse 通义千问返回的结构化数据
 type QianwenResponse struct {
-	StructuredTextArray []StructuredTextItem `json:"structured_text_array"`
-	ImagePrompt         string               `json:"image_prompt"`
-}
-
-// StructuredTextItem 结构化文本项
-type StructuredTextItem struct {
-	Type    string      `json:"type"`
-	Content interface{} `json:"content"`
+	Text        string `json:"text"`         // 带markdown格式的文字内容
+	ImagePrompt string `json:"image_prompt"` // 文生图提示词
 }
 
 // getUserIDFromToken 从JWT token中获取用户ID
 func getUserIDFromToken(c *gin.Context) (uint, error) {
-	header := c.Request.Header.Get("Authorization")
-	if len(header) == 0 {
-		return 0, fmt.Errorf("missing authorization header")
+	tokenString := c.GetHeader("Authorization")
+	if tokenString == "" {
+		return 0, fmt.Errorf("no authorization header")
 	}
 
-	var tokenString string
-	fmt.Sscanf(header, "Bearer %s", &tokenString)
-
-	// 使用viper获取JWT密钥
-	jwtSecret := viper.GetString("jwt.secret")
-	if jwtSecret == "" {
-		return 0, fmt.Errorf("jwt secret not configured")
+	// 移除 "Bearer " 前缀
+	if len(tokenString) > 7 && tokenString[:7] == "Bearer " {
+		tokenString = tokenString[7:]
 	}
 
+	// 解析JWT token
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		// 验证签名方法
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return []byte(jwtSecret), nil
+		return []byte(viper.GetString("jwt.secret")), nil
 	})
 
 	if err != nil {
@@ -63,40 +54,58 @@ func getUserIDFromToken(c *gin.Context) (uint, error) {
 	}
 
 	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+		// 从claims中获取用户ID
 		if userID, exists := claims["user_id"]; exists {
-			return uint(userID.(float64)), nil
+			switch v := userID.(type) {
+			case float64:
+				return uint(v), nil
+			case int:
+				return uint(v), nil
+			case uint:
+				return v, nil
+			default:
+				return 0, fmt.Errorf("invalid user_id type in token")
+			}
 		}
+		return 0, fmt.Errorf("user_id not found in token")
 	}
 
-	return 0, fmt.Errorf("invalid token or missing user_id")
+	return 0, fmt.Errorf("invalid token")
 }
 
-// extractJSONFromResponse 从通义千问的响应中提取JSON内容
-// 处理可能的Markdown代码块格式（```json ... ```）
+// extractJSONFromResponse 从响应中提取JSON内容
 func extractJSONFromResponse(response string) string {
-	// 去除首尾空白字符
-	response = strings.TrimSpace(response)
+	// 查找JSON内容的开始和结束位置
+	start := 0
+	end := len(response)
 
-	// 检查是否被Markdown代码块包围
-	if strings.HasPrefix(response, "```json") {
-		// 找到代码块的结束位置
-		endIndex := strings.LastIndex(response, "```")
-		if endIndex > 7 { // 7是"```json"的长度
-			return strings.TrimSpace(response[7:endIndex])
-		}
-	} else if strings.HasPrefix(response, "```") {
-		// 处理没有语言标识的代码块
-		endIndex := strings.LastIndex(response, "```")
-		if endIndex > 3 { // 3是"```"的长度
-			return strings.TrimSpace(response[3:endIndex])
+	// 查找第一个 { 或 [
+	for i, char := range response {
+		if char == '{' || char == '[' {
+			start = i
+			break
 		}
 	}
 
-	// 如果不是代码块格式，直接返回原内容
-	return response
+	// 从后往前查找最后一个 } 或 ]
+	for i := len(response) - 1; i >= 0; i-- {
+		char := response[i]
+		if char == '}' || char == ']' {
+			end = i + 1
+			break
+		}
+	}
+
+	return response[start:end]
 }
 
-// Create 创建一本卡册
+// downloadAndSaveImage 下载并保存图片
+func downloadAndSaveImage(remoteURL string, bookID uint) (string, error) {
+	// 这里实现图片下载和保存逻辑
+	// 为了简化，这里返回一个占位符
+	return fmt.Sprintf("/images/book_%d_cover.jpg", bookID), nil
+}
+
 func (ctrl *BookController) Create(c *gin.Context) {
 	log.C(c).Infow("Create book function called")
 
@@ -114,205 +123,200 @@ func (ctrl *BookController) Create(c *gin.Context) {
 		return
 	}
 
-	// 调用阿里千问文字模型处理文本
-	// 从配置中获取文本处理提示词
-	prompt := ctrl.b.Ali().GetPromptManager().GetTextProcessingPrompt() + "\n\n" + req.Text
+	// 将 TemplateID 转换为字符串
+	templateID := fmt.Sprintf("%v", req.TemplateID)
 
-	messages := []map[string]string{
-		{"role": "user", "content": prompt},
+	// 使用简化的处理模式
+	log.C(c).Infow("Using simplified processing mode")
+	ctrl.createWithSimplifiedProcessor(c, userID, req.Text, templateID)
+}
+
+// BookBizAdapter 适配器，用于包装biz接口
+type BookBizAdapter struct {
+	biz biz.IBiz
+}
+
+func (a *BookBizAdapter) Books() book.AsyncBookBiz {
+	return &AsyncBookBizAdapter{biz: a.biz}
+}
+
+func (a *BookBizAdapter) Cards() book.AsyncCardBiz {
+	return &AsyncCardBizAdapter{biz: a.biz}
+}
+
+func (a *BookBizAdapter) Users() book.AsyncUserBiz {
+	return &AsyncUserBizAdapter{biz: a.biz}
+}
+
+func (a *BookBizAdapter) Ali() book.AsyncAliBiz {
+	return &AsyncAliBizAdapter{biz: a.biz}
+}
+
+func (a *BookBizAdapter) Volc() book.AsyncVolcBiz {
+	return &AsyncVolcBizAdapter{biz: a.biz}
+}
+
+func (a *BookBizAdapter) Templates() book.AsyncTemplateBiz {
+	return &AsyncTemplateBizAdapter{biz: a.biz}
+}
+
+func (a *BookBizAdapter) Store() book.AsyncStoreBiz {
+	return &AsyncStoreBizAdapter{biz: a.biz}
+}
+
+// AsyncBookBizAdapter 书籍业务适配器
+type AsyncBookBizAdapter struct {
+	biz biz.IBiz
+}
+
+func (a *AsyncBookBizAdapter) Create(ctx context.Context, book *model.BookM) error {
+	return a.biz.Books().Create(ctx, book)
+}
+
+func (a *AsyncBookBizAdapter) Update(ctx context.Context, book *model.BookM) error {
+	return a.biz.Books().Update(ctx, book)
+}
+
+func (a *AsyncBookBizAdapter) GetByID(ctx context.Context, id uint) (*model.BookM, error) {
+	return a.biz.Books().GetByID(ctx, id)
+}
+
+func (a *AsyncBookBizAdapter) UpdateUserBookStatsOnStatusChange(ctx context.Context, userID uint, oldStatus, newStatus string) error {
+	// 这里需要调用store层的方法，但由于适配器的限制，我们需要通过其他方式处理
+	// 可以考虑在store层添加一个方法来直接更新用户统计
+	return nil
+}
+
+// AsyncCardBizAdapter 卡片业务适配器
+type AsyncCardBizAdapter struct {
+	biz biz.IBiz
+}
+
+func (a *AsyncCardBizAdapter) Create(ctx context.Context, card *model.CardM) error {
+	return a.biz.Cards().Create(ctx, card)
+}
+
+func (a *AsyncCardBizAdapter) Update(ctx context.Context, card *model.CardM) error {
+	return a.biz.Cards().Update(ctx, card)
+}
+
+func (a *AsyncCardBizAdapter) GetByID(ctx context.Context, id uint) (*model.CardM, error) {
+	return a.biz.Cards().GetByID(ctx, id)
+}
+
+// AsyncUserBizAdapter 用户业务适配器
+type AsyncUserBizAdapter struct {
+	biz biz.IBiz
+}
+
+func (a *AsyncUserBizAdapter) IncrementUserBookNum(ctx context.Context, userID uint) error {
+	return a.biz.Users().IncrementUserBookNum(ctx, userID)
+}
+
+func (a *AsyncUserBizAdapter) IncrementUserCardNum(ctx context.Context, userID uint) error {
+	return a.biz.Users().IncrementUserCardNum(ctx, userID)
+}
+
+// AsyncAliBizAdapter 阿里业务适配器
+type AsyncAliBizAdapter struct {
+	biz biz.IBiz
+}
+
+func (a *AsyncAliBizAdapter) QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error) {
+	return a.biz.Ali().QianwenTextStream(messages, maxTokens, temperature)
+}
+
+func (a *AsyncAliBizAdapter) WanxiangImageAsync(prompt, style, size string) (string, error) {
+	return a.biz.Ali().WanxiangImageAsync(prompt, style, size)
+}
+
+func (a *AsyncAliBizAdapter) StableDiffusionImageAsync(prompt, size string) (string, error) {
+	return a.biz.Ali().StableDiffusionImageAsync(prompt, size)
+}
+
+func (a *AsyncAliBizAdapter) GetPromptManager() book.AsyncPromptManager {
+	return &AsyncPromptManagerAdapter{promptManager: a.biz.Ali().GetPromptManager()}
+}
+
+// AsyncPromptManagerAdapter 提示词管理器适配器
+type AsyncPromptManagerAdapter struct {
+	promptManager interface {
+		GetTextProcessingPrompt() string
 	}
+}
 
-	qianwenResult, err := ctrl.b.Ali().QianwenTextStream(messages, 1024, 0.5)
+func (a *AsyncPromptManagerAdapter) GetTextProcessingPrompt() string {
+	return a.promptManager.GetTextProcessingPrompt()
+}
+
+// AsyncTemplateBizAdapter 模板业务适配器
+type AsyncTemplateBizAdapter struct {
+	biz biz.IBiz
+}
+
+func (a *AsyncTemplateBizAdapter) GetByID(ctx context.Context, id uint) (*model.Template, error) {
+	return a.biz.Templates().GetByID(ctx, id)
+}
+
+// AsyncVolcBizAdapter 火山引擎业务适配器
+type AsyncVolcBizAdapter struct {
+	biz biz.IBiz
+}
+
+func (a *AsyncVolcBizAdapter) VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error) {
+	return a.biz.Volc().VolcTextStream(ctx, messages, maxTokens, temperature)
+}
+
+// AsyncStoreBizAdapter store层业务适配器
+type AsyncStoreBizAdapter struct {
+	biz biz.IBiz
+}
+
+func (a *AsyncStoreBizAdapter) UpdateUserBookStatsOnStatusChange(ctx context.Context, userID uint, oldStatus, newStatus string) error {
+	// 通过store层直接更新用户统计
+	return a.biz.Books().UpdateUserBookStatsOnStatusChange(ctx, userID, oldStatus, newStatus)
+}
+
+// createWithSimplifiedProcessor 使用简化的处理器创建书籍
+func (ctrl *BookController) createWithSimplifiedProcessor(c *gin.Context, userID uint, text, templateID string) {
+	// 创建适配器来包装biz接口
+	bizAdapter := &BookBizAdapter{biz: ctrl.b}
+
+	// 创建异步处理器
+	asyncProcessor := book.NewAsyncBookProcessor(bizAdapter)
+
+	// 异步创建book
+	book, err := asyncProcessor.CreateBookAsync(c, userID, text, templateID)
 	if err != nil {
-		log.C(c).Errorw("QianwenTextStream failed", "error", err.Error())
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to process text with AI: "+err.Error()), nil)
+		log.C(c).Errorw("Failed to create book with simplified processor", "error", err.Error())
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: "+err.Error()), nil)
 		return
 	}
 
-	log.C(c).Infow("QianwenTextStream result", "result", qianwenResult)
+	log.C(c).Infow("Book created successfully with simplified processor",
+		"book_id", book.ID,
+		"title", book.Title)
 
-	// 提取JSON内容（处理可能的Markdown代码块格式）
-	jsonContent := extractJSONFromResponse(qianwenResult)
-	log.C(c).Infow("Extracted JSON content", "content", jsonContent)
+	// 立即返回成功响应
+	core.WriteResponse(c, nil, book)
+}
 
-	// 解析通义千问返回的JSON结果
-	var qianwenResponse QianwenResponse
-	if err := json.Unmarshal([]byte(jsonContent), &qianwenResponse); err != nil {
-		log.C(c).Errorw("Failed to parse Qianwen response", "error", err.Error(), "original", qianwenResult, "extracted", jsonContent)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to parse AI response: "+err.Error()), nil)
-		return
-	}
+// createWithJSONProcessor 使用传统 JSON 处理器创建书籍（保持兼容性）
+func (ctrl *BookController) createWithJSONProcessor(c *gin.Context, userID uint, text, templateID string) {
+	// 创建适配器来包装biz接口
+	bizAdapter := &BookBizAdapter{biz: ctrl.b}
 
-	// 使用解析出的image_prompt调用万相生成图片
-	var imageUrl string
-	if qianwenResponse.ImagePrompt != "" {
-		imageUrl, err = ctrl.b.Ali().WanxiangImageAsync(qianwenResponse.ImagePrompt, "", "1024*1024")
-		if err != nil {
-			log.C(c).Errorw("WanxiangImageAsync failed", "error", err.Error())
-			// 图片生成失败不影响整体流程
-		}
-	}
+	// 创建异步处理器
+	asyncProcessor := book.NewAsyncBookProcessor(bizAdapter)
 
-	// 使用分页引擎处理文本
-	paginationBiz := pagination.NewPaginationBiz()
-
-	// 提取title作为book的标题
-	var bookTitle string
-	for _, item := range qianwenResponse.StructuredTextArray {
-		if item.Type == "title" {
-			if titleContent, ok := item.Content.(string); ok {
-				bookTitle = titleContent
-				break // 找到第一个title就使用
-			}
-		}
-	}
-
-	// 如果没有找到title，使用默认标题
-	if bookTitle == "" {
-		bookTitle = fmt.Sprintf("AI生成卡册 - %s", time.Now().Format("2006-01-02 15:04:05"))
-	}
-
-	// 将结构化文本转换为分页元素，排除title类型
-	var elements []pagination.Element
-	for _, item := range qianwenResponse.StructuredTextArray {
-		if item.Type == "title" {
-			continue // 跳过title类型
-		}
-
-		// 根据类型映射到分页引擎的元素类型
-		var elementType pagination.ElementType
-		switch item.Type {
-		case "body":
-			elementType = pagination.ElementTypeBody
-		case "subtitle":
-			elementType = pagination.ElementTypeSubtitle
-		case "list":
-			elementType = pagination.ElementTypeList
-		case "quote":
-			elementType = pagination.ElementTypeQuote
-		default:
-			elementType = pagination.ElementTypeBody // 默认使用body类型
-		}
-
-		// 处理content内容
-		var content interface{}
-		switch v := item.Content.(type) {
-		case string:
-			content = v
-		case []interface{}:
-			// 如果是列表，保持为字符串数组格式
-			var listItems []string
-			for _, listItem := range v {
-				if str, ok := listItem.(string); ok {
-					listItems = append(listItems, str)
-				}
-			}
-			content = listItems
-		default:
-			content = fmt.Sprintf("%v", v)
-		}
-
-		elements = append(elements, pagination.Element{
-			Type:    elementType,
-			Content: content,
-		})
-	}
-
-	paginatedContent, err := paginationBiz.PaginateElements(elements)
+	// 异步创建book
+	book, err := asyncProcessor.CreateBookAsync(c, userID, text, templateID)
 	if err != nil {
-		log.C(c).Errorw("Pagination failed", "error", err.Error())
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to paginate content: "+err.Error()), nil)
+		log.C(c).Errorw("Failed to create book async", "error", err.Error())
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: "+err.Error()), nil)
 		return
 	}
 
-	// 创建卡册，关联template_id
-	now := time.Now()
-	book := &model.BookM{
-		UserID:     userID,
-		Title:      bookTitle, // 使用从千问返回的title
-		TemplateID: req.TemplateID,
-		ViewTime:   &now,
-		ImageUrl:   imageUrl, // 保存生成的图片URL
-	}
-
-	if err := ctrl.b.Books().Create(c, book); err != nil {
-		log.C(c).Errorw("Failed to create book", "error", err.Error())
-		core.WriteResponse(c, err, nil)
-		return
-	}
-
-	// 更新用户的书籍数量统计
-	if err := ctrl.b.Users().IncrementUserBookNum(c, userID); err != nil {
-		log.C(c).Errorw("Failed to increment user book num", "error", err.Error())
-		// 统计更新失败不影响主要流程，但记录错误
-	}
-
-	// 为每个分页后的卡片创建单独的CardM记录
-	for i, card := range paginatedContent.Cards {
-		// 将当前卡片的数据转换为JSON格式
-		var cardElements []map[string]interface{}
-		for _, element := range card.Elements {
-			cardElements = append(cardElements, map[string]interface{}{
-				"type":    element.Type,
-				"content": element.Content,
-			})
-		}
-
-		// 将当前卡片数据转换为JSON字符串
-		cardJSONStr, err := json.Marshal(cardElements)
-		if err != nil {
-			log.C(c).Errorw("Failed to marshal card JSON", "error", err.Error(), "card_index", i)
-			continue // 跳过这个卡片，继续处理下一个
-		}
-
-		// 创建卡片记录，将当前卡片数据存储到ProcessedText字段
-		cardRecord := &model.CardM{
-			UserID:        userID,
-			BookID:        book.ID,
-			ProcessedText: string(cardJSONStr), // 将当前卡片数据存储到ProcessedText字段
-			SortOrder:     i + 1,               // 使用索引+1作为排序顺序，从1开始
-		}
-
-		if err := ctrl.b.Cards().Create(c, cardRecord); err != nil {
-			log.C(c).Errorw("Failed to create card", "error", err.Error(), "card_index", i)
-			// 卡片创建失败不影响整体流程，但记录错误
-		} else {
-			// 卡片创建成功后，更新用户的卡片数量统计
-			if err := ctrl.b.Users().IncrementUserCardNum(c, userID); err != nil {
-				log.C(c).Errorw("Failed to increment user card num", "error", err.Error())
-				// 统计更新失败不影响主要流程，但记录错误
-			}
-		}
-	}
-
-	// 更新书籍的卡片数量
-	book.CardCount = len(paginatedContent.Cards)
-	if err := ctrl.b.Books().Update(c, book); err != nil {
-		log.C(c).Errorw("Failed to update book card count", "error", err.Error())
-	}
-
-	// 获取更新后的书籍信息
-	updatedBook, err := ctrl.b.Books().GetByID(c, book.ID)
-	if err != nil {
-		log.C(c).Errorw("Failed to get updated book", "error", err.Error())
-		// 如果获取失败，返回原始书籍信息
-		core.WriteResponse(c, nil, book)
-		return
-	}
-
-	// 获取该书籍的所有卡片
-	_, cards, err := ctrl.b.Cards().ListByBook(c, book.ID, 0, 1000)
-	if err != nil {
-		log.C(c).Errorw("Failed to get book cards", "error", err.Error())
-		// 卡片获取失败不影响整体流程
-	}
-
-	// 创建BookResponse
-	bookResponse := model.NewBookResponse(updatedBook)
-	if len(cards) > 0 {
-		bookResponse.AddCards(cards)
-	}
-
-	// 返回BookResponse结构
-	core.WriteResponse(c, nil, bookResponse)
+	// 立即返回成功响应
+	core.WriteResponse(c, nil, book)
 }

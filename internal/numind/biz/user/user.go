@@ -41,6 +41,7 @@ type UserBiz interface {
 
 	// 基于 User model 的方法
 	GetCurrentUser(ctx context.Context, userID uint) (*model.User, error)
+	GetCurrentUserWithStats(ctx context.Context, userID uint) (*model.User, error)
 	UpdateUserProfile(ctx context.Context, userID uint, req *v1.UpdateUserProfileRequest) error
 	UpdateUserAvatar(ctx context.Context, userID uint, avatarURL string) error
 
@@ -52,6 +53,12 @@ type UserBiz interface {
 	// 用户统计更新
 	IncrementUserBookNum(ctx context.Context, userID uint) error
 	IncrementUserCardNum(ctx context.Context, userID uint) error
+	IncrementUserChatNum(ctx context.Context, userID uint) error
+	DecrementUserBookNum(ctx context.Context, userID uint) error
+	UpdateUserBookStatsOnStatusChange(ctx context.Context, userID uint, oldStatus, newStatus string) error
+
+	// 用户权限更新
+	SetUserPro(ctx context.Context, userID uint, isPro bool) error
 }
 
 // UserBiz 接口的实现.
@@ -173,6 +180,20 @@ func (b *userBiz) GetCurrentUser(ctx context.Context, userID uint) (*model.User,
 		return nil, err
 	}
 
+	return user, nil
+}
+
+// GetCurrentUserWithStats 获取当前用户信息（包含统计信息）
+func (b *userBiz) GetCurrentUserWithStats(ctx context.Context, userID uint) (*model.User, error) {
+	user, err := b.ds.Users().GetUserByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errno.ErrUserNotFound
+		}
+		return nil, err
+	}
+
+	// 直接从user结构体中获取book_num和book_all_num，这些字段在创建、状态变更、删除时已经实时更新
 	return user, nil
 }
 
@@ -572,11 +593,41 @@ func (b *userBiz) UpdateWechatUser(ctx context.Context, openid string, r *v1.Upd
 	return b.ds.Users().UpdateWechatUser(ctx, openid, updateMap)
 }
 
-// IncrementUserBookNum 增加用户的书籍数量
+// IncrementUserBookNum 增加用户的书籍数量（创建book时调用，状态为creating）
 func (b *userBiz) IncrementUserBookNum(ctx context.Context, userID uint) error {
-	// 使用数据库的原子操作来增加BookNum字段
+	// 使用数据库的原子操作来同时增加BookNum和BookAllNum字段
 	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
-		UpdateColumn("book_num", gorm.Expr("book_num + ?", 1)).Error
+		UpdateColumns(map[string]interface{}{
+			"book_num":     gorm.Expr("book_num + ?", 1),
+			"book_all_num": gorm.Expr("book_all_num + ?", 1),
+		}).Error
+}
+
+// DecrementUserBookNum 减少用户的书籍数量（删除book时调用）
+func (b *userBiz) DecrementUserBookNum(ctx context.Context, userID uint) error {
+	// 只减少book_num，book_all_num保持不变
+	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
+		UpdateColumn("book_num", gorm.Expr("book_num - ?", 1)).Error
+}
+
+// UpdateUserBookStatsOnStatusChange 当book状态变化时更新用户统计
+func (b *userBiz) UpdateUserBookStatsOnStatusChange(ctx context.Context, userID uint, oldStatus, newStatus string) error {
+	// 如果状态从非failed变为failed，需要减少book_num和book_all_num
+	if oldStatus != model.BookStatusFailed && newStatus == model.BookStatusFailed {
+		return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
+			UpdateColumns(map[string]interface{}{
+				"book_num":     gorm.Expr("book_num - ?", 1),
+				"book_all_num": gorm.Expr("book_all_num - ?", 1),
+			}).Error
+	}
+
+	// 如果状态从failed变为非failed，需要增加book_all_num
+	if oldStatus == model.BookStatusFailed && newStatus != model.BookStatusFailed {
+		return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
+			UpdateColumn("book_all_num", gorm.Expr("book_all_num + ?", 1)).Error
+	}
+
+	return nil
 }
 
 // IncrementUserCardNum 增加用户的卡片数量
@@ -584,4 +635,17 @@ func (b *userBiz) IncrementUserCardNum(ctx context.Context, userID uint) error {
 	// 使用数据库的原子操作来增加CardNum字段
 	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
 		UpdateColumn("card_num", gorm.Expr("card_num + ?", 1)).Error
+}
+
+// IncrementUserChatNum 增加用户的聊天数量
+func (b *userBiz) IncrementUserChatNum(ctx context.Context, userID uint) error {
+	// 使用数据库的原子操作来增加ChatNum字段
+	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
+		UpdateColumn("chat_num", gorm.Expr("chat_num + ?", 1)).Error
+}
+
+// SetUserPro 设置用户的付费状态
+func (b *userBiz) SetUserPro(ctx context.Context, userID uint, isPro bool) error {
+	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
+		UpdateColumn("is_pro", isPro).Error
 }

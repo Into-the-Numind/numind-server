@@ -34,4 +34,13 @@ func main() {
 	} else {
 		fmt.Println("万象异步生成图片URL:", imgUrlAsync)
 	}
+
+	// stable-diffusion图像模型异步调用示例
+	fmt.Println("\n开始测试stable-diffusion-3.5-large-turbo模型...")
+	stableDiffusionUrl, err := biz.StableDiffusionImageAsync("未来城市中，人类与人工智能共同处理数据流，象征联机思考与独立能力的结合。半透明的机械臂与人类双手协作筛选发光的信息粒子，背景是流动的二进制代码瀑布，高科技办公室环境采用冷色调蓝银配色，超现实主义风格", "1024*1024")
+	if err != nil {
+		fmt.Println("stable-diffusion异步调用失败:", err)
+	} else {
+		fmt.Println("stable-diffusion异步生成图片URL:", stableDiffusionUrl)
+	}
 }

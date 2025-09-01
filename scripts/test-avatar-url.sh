@@ -1,0 +1,56 @@
+#!/bin/bash
+
+# 测试头像URL处理逻辑
+echo "测试头像URL处理逻辑..."
+
+# 测试用例1：正常路径
+echo "测试用例1: /opt/numind/dev/image/upload/avatars/2/avatar_1754632654.png"
+expected1="/numind/dev/image/upload/avatars/2/avatar_1754632654.png"
+echo "期望结果: $expected1"
+
+# 测试用例2：没有/opt前缀的路径
+echo "测试用例2: /numind/image/upload/avatars/1/avatar_123.png"
+expected2="/numind/image/upload/avatars/1/avatar_123.png"
+echo "期望结果: $expected2"
+
+# 测试用例3：空路径
+echo "测试用例3: 空路径"
+expected3=""
+echo "期望结果: $expected3"
+
+echo ""
+echo "实际测试结果："
+echo "请运行以下Go代码来测试GetAvatarDisplayURL函数："
+echo ""
+echo "package main"
+echo ""
+echo "import ("
+echo "    \"fmt\""
+echo "    \"strings\""
+echo ")"
+echo ""
+echo "func GetAvatarDisplayURL(avatarPath string) string {"
+echo "    if avatarPath == \"\" {"
+echo "        return \"\""
+echo "    }"
+echo "    "
+echo "    if strings.HasPrefix(avatarPath, \"/opt/\") {"
+echo "        return strings.TrimPrefix(avatarPath, \"/opt\")"
+echo "    }"
+echo "    "
+echo "    return avatarPath"
+echo "}"
+echo ""
+echo "func main() {"
+echo "    test1 := \"/opt/numind/dev/image/upload/avatars/2/avatar_1754632654.png\""
+echo "    result1 := GetAvatarDisplayURL(test1)"
+echo "    fmt.Printf(\"测试1: %s -> %s\\n\", test1, result1)"
+echo ""
+echo "    test2 := \"/numind/image/upload/avatars/1/avatar_123.png\""
+echo "    result2 := GetAvatarDisplayURL(test2)"
+echo "    fmt.Printf(\"测试2: %s -> %s\\n\", test2, result2)"
+echo ""
+echo "    test3 := \"\""
+echo "    result3 := GetAvatarDisplayURL(test3)"
+echo "    fmt.Printf(\"测试3: %s -> %s\\n\", test3, result3)"
+echo "}"

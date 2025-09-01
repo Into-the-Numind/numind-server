@@ -3,6 +3,8 @@ package model
 import (
 	"encoding/json"
 	"time"
+
+	"numind-server/internal/pkg/util"
 )
 
 // BookResponse 书籍响应结构体，包含书籍基本信息和分页后的卡片信息
@@ -34,7 +36,8 @@ type CardResponse struct {
 	DeletedAt     *time.Time  `json:"deleted_at,omitempty"`
 	UserID        uint        `json:"user_id"`
 	BookID        uint        `json:"book_id"`
-	ProcessedText interface{} `json:"process_text"` // 解析后的分页数据，JSON字段名为process_text
+	ProcessedText interface{} `json:"process_text"`   // 解析后的分页数据，JSON字段名为process_text
+	RenderedImage string      `json:"rendered_image"` // 渲染后的图片URL
 	SortOrder     int         `json:"sort_order"`
 	Tags          string      `json:"tags"`
 }
@@ -59,7 +62,7 @@ func NewBookResponse(book *BookM) *BookResponse {
 		Tags:         book.Tags,
 		CardCount:    book.CardCount,
 		ViewTime:     book.ViewTime,
-		ImageUrl:     book.ImageUrl,
+		ImageUrl:     util.GetDisplayURL(book.ImageUrl),
 		Cards:        []CardResponse{},
 	}
 }
@@ -72,14 +75,15 @@ func (br *BookResponse) AddCard(card *CardM) {
 	}
 
 	cardResp := CardResponse{
-		ID:        card.ID,
-		CreatedAt: card.CreatedAt,
-		UpdatedAt: card.UpdatedAt,
-		DeletedAt: deletedAt,
-		UserID:    card.UserID,
-		BookID:    card.BookID,
-		SortOrder: card.SortOrder,
-		Tags:      card.Tags,
+		ID:            card.ID,
+		CreatedAt:     card.CreatedAt,
+		UpdatedAt:     card.UpdatedAt,
+		DeletedAt:     deletedAt,
+		UserID:        card.UserID,
+		BookID:        card.BookID,
+		SortOrder:     card.SortOrder,
+		Tags:          card.Tags,
+		RenderedImage: util.GetDisplayURL(card.RenderedImage), // 去掉/opt前缀用于展示
 	}
 
 	// 解析ProcessedText字段中的JSON数据

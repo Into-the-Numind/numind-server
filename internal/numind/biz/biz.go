@@ -3,17 +3,22 @@ package biz
 //go:generate mockgen -destination mock_biz.go -package biz github.com/marmotedu/miniblog/internal/miniblog/biz IBiz
 
 import (
+	accountrecordbiz "numind-server/internal/numind/biz/account_record"
+	"numind-server/internal/numind/biz/admin"
 	"numind-server/internal/numind/biz/ali"
+	"numind-server/internal/numind/biz/article"
 	"numind-server/internal/numind/biz/baidu"
 	"numind-server/internal/numind/biz/book"
 	"numind-server/internal/numind/biz/card"
 	"numind-server/internal/numind/biz/category"
 	"numind-server/internal/numind/biz/chat"
+	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/numind/biz/feedback"
 	"numind-server/internal/numind/biz/image"
 	"numind-server/internal/numind/biz/mqtt"
 	"numind-server/internal/numind/biz/order"
 	"numind-server/internal/numind/biz/pagination"
+	"numind-server/internal/numind/biz/payment"
 	"numind-server/internal/numind/biz/post"
 	"numind-server/internal/numind/biz/template"
 	"numind-server/internal/numind/biz/user"
@@ -41,6 +46,11 @@ type IBiz interface {
 	Mqtt() mqtt.MqttBiz
 	Pagination() pagination.PaginationBiz
 	Chats() chat.ChatBiz
+	Article() article.IArticleBiz
+	Admin() admin.IAdminBiz
+	Configs() config.ConfigBiz
+	Payments() payment.PaymentBiz
+	AccountRecords() accountrecordbiz.AccountRecordBiz
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -124,7 +134,11 @@ func (b *biz) Volc() volc.VolcBiz {
 }
 
 func (b *biz) Order() order.OrderBiz {
-	return order.NewOrderBiz(b.ds)
+	return order.NewOrderBiz(b.ds, b.Users(), b.AccountRecords())
+}
+
+func (b *biz) AccountRecords() accountrecordbiz.AccountRecordBiz {
+	return accountrecordbiz.NewAccountRecordBiz(b.ds)
 }
 
 func (b *biz) Mqtt() mqtt.MqttBiz {
@@ -136,5 +150,21 @@ func (b *biz) Pagination() pagination.PaginationBiz {
 }
 
 func (b *biz) Chats() chat.ChatBiz {
-	return chat.New(b.ds)
+	return chat.New(b.ds, b.Users())
+}
+
+func (b *biz) Article() article.IArticleBiz {
+	return article.NewArticleBiz(b.ds.Article())
+}
+
+func (b *biz) Admin() admin.IAdminBiz {
+	return admin.NewAdminBiz(b.ds.Admin())
+}
+
+func (b *biz) Configs() config.ConfigBiz {
+	return config.New(b.ds)
+}
+
+func (b *biz) Payments() payment.PaymentBiz {
+	return payment.NewPaymentBiz(b.ds)
 }

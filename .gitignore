@@ -46,3 +46,9 @@ res/
 
 # 只忽略根目录下的numind文件，不忽略包含numind路径的文件
 /numind
+
+*.png
+
+/test_*
+
+*.html

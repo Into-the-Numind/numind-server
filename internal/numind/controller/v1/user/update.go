@@ -143,8 +143,8 @@ func (ctrl *UserController) handleAvatarUpload(c *gin.Context, file *multipart.F
 		return "", errno.InternalServerError.SetMessage("保存头像文件失败")
 	}
 
-	// 返回相对路径URL
-	avatarURL := fmt.Sprintf("/numind/image/upload/avatars/%d/%s", user.ID, fileName)
+	// 返回完整路径URL（保存到数据库）
+	avatarURL := fmt.Sprintf("%s/avatars/%d/%s", imagePath, user.ID, fileName)
 
 	log.C(c).Infow("Avatar uploaded successfully", "user_id", user.ID, "file_path", filePath, "avatar_url", avatarURL)
 

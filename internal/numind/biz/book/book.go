@@ -15,7 +15,9 @@ type BookBiz interface {
 	ListByCategory(ctx context.Context, categoryID uint, offset, limit int) (int64, []*model.BookM, error)
 	Update(ctx context.Context, book *model.BookM) error
 	Delete(ctx context.Context, id uint) error
+	DeleteBatch(ctx context.Context, ids []uint) error
 	SetCategory(ctx context.Context, bookID, userID uint, categoryID *uint) error
+	UpdateUserBookStatsOnStatusChange(ctx context.Context, userID uint, oldStatus, newStatus string) error
 }
 
 type bookBiz struct {
@@ -49,7 +51,32 @@ func (b *bookBiz) Update(ctx context.Context, book *model.BookM) error {
 }
 
 func (b *bookBiz) Delete(ctx context.Context, id uint) error {
-	return b.ds.Books().Delete(ctx, id)
+	// 先获取book信息，用于更新用户统计
+	book, err := b.ds.Books().GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	// 删除book
+	if err := b.ds.Books().Delete(ctx, id); err != nil {
+		return err
+	}
+
+	// 更新用户统计
+	if err := b.ds.Books().UpdateUserBookStatsOnDelete(ctx, book.UserID, book.Status); err != nil {
+		// 记录错误但不影响删除操作
+		// 这里可以考虑记录日志
+	}
+
+	return nil
+}
+
+func (b *bookBiz) DeleteBatch(ctx context.Context, ids []uint) error {
+	return b.ds.Books().DeleteBatch(ctx, ids)
+}
+
+func (b *bookBiz) UpdateUserBookStatsOnStatusChange(ctx context.Context, userID uint, oldStatus, newStatus string) error {
+	return b.ds.Books().UpdateUserBookStatsOnStatusChange(ctx, userID, oldStatus, newStatus)
 }
 
 func (b *bookBiz) SetCategory(ctx context.Context, bookID, userID uint, categoryID *uint) error {

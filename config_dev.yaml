@@ -62,16 +62,20 @@ oss:
   bucket_name: ""
 
 volc:
-  api_key: "f434efdd-6553-42fc-8c14-c1322475845f"
+  api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "deepseek-v3-250324"  # 使用的AI模型
+  model: "doubao-seed-1-6-250615"  # 使用的AI模型 - 修复：使用正确的火山引擎模型
   temperature: 0.5 # 生成文本的随机性，值越高随机性越大
   tokens: 2000 # 生成文本的最大长度
-  timeout: 30s
+  timeout: 120s  # 超时时间
   max_retries: 3
 
 resource:
-  image_path: "/opt/numind/image/upload"
+  image_path: "/opt/numind/dev/image/upload"
+
+# 书籍处理配置
+book:
+    use_simplified_processing: true  # 启用简化处理模式
 
 baidu:
   api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
@@ -81,11 +85,18 @@ ali:
   text:
     api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"
     api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
-    model: "qwq-plus"
+    model: "qwen-turbo"  # 修复：使用正确的阿里千问模型
+    timeout: 180s
   image:
     api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"
     api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
     model: "wanx2.1-t2i-turbo"
+    timeout: 180s
+  stable_diffusion:
+    api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"  # 使用相同的API key
+    api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
+    model: "stable-diffusion-3.5-large-turbo"
+    timeout: 300s
 
 # MQTT 配置
 mqtt:
@@ -95,90 +106,252 @@ mqtt:
   username: "admin" # MQTT 用户名
   password: "public" # MQTT 密码
 
+# 分页配置 - 卡片渲染和分页的样式与布局规则（优化版）
+pagination:
+  # 卡片基础配置（支持动态高度）
+  card:
+    width: 1080   # 标准尺寸: 1080×1440（3:4比例）
+    height: 1440  # 基础高度，实际使用动态高度
+    padding:
+      top: 60     # 标准内边距: 60px 50px
+      right: 50
+      bottom: 10  # 优化：减少底部留白从60px到10px
+      left: 50
+  
+  # 动态分页优化配置
+  dynamic:
+    min_height: 720          # 最小卡片高度
+    max_height: 4320         # 最大卡片高度（3倍标准高度）
+    min_bottom_padding: 10   # 最小底部留白
+    max_images_per_card: 5   # 每张卡片最大图片数
+    max_text_length: 2000    # 每张卡片最大文本长度
+  
+  # 元素样式配置
+  styles:
+    title:
+      font_size: 64        # 标题: 64px（最大）
+      line_height: 90      # 1.4倍行高
+      margin_top: 30       # 标题上间距: 30px（统一标准）
+      margin_bottom: 30    # 标题下方间距: 30px（统一标准）
+      color: "#333333"     # 主标题: #333333（深灰）
+      align: "justify"     # 两端对齐
+    
+    subtitle:
+      font_size: 48        # 副标题: 48px（中等）
+      line_height: 72      # 1.5倍行高
+      margin_top: 30       # 副标题上间距: 30px（统一标准）
+      margin_bottom: 25    # 副标题下方: 25px（标准下间距）
+      color: "#666666"     # 副标题: #666666（中灰）
+      align: "justify"     # 两端对齐
+    
+    body:
+      font_size: 36        # 正文: 36px（标准）
+      line_height: 58      # 1.6倍行高（标准行高）
+      margin_top: 30       # 正文上间距: 30px（统一标准）
+      margin_bottom: 30    # 正文下方间距: 30px（统一标准）
+      color: "#333333"     # 正文: #333333（深灰）
+      align: "justify"     # 两端对齐
+    
+    list:
+      font_size: 36        # 列表: 36px（标准）
+      line_height: 58      # 1.6倍行高（标准行高）
+      margin_top: 30       # 列表上间距: 30px（统一标准）
+      margin_bottom: 30    # 列表下方间距: 30px（统一标准）
+      color: "#333333"     # 列表: #333333（深灰）
+      align: "justify"     # 两端对齐
+      indent: 20           # 列表缩进
+    
+    quote:
+      font_size: 36        # 引用: 36px（强调）
+      line_height: 54      # 1.5倍行高（紧凑行高）
+      margin_top: 30       # 引用上间距: 30px（统一标准）
+      margin_bottom: 30    # 引用下方间距: 30px（统一标准）
+      color: "#1E90FF"     # 引用: #1E90FF（蓝色）
+      align: "justify"     # 两端对齐
+    
+    tag:
+      font_size: 28        # 标签: 28px（最小）
+      line_height: 42      # 1.5倍行高
+      margin_top: 30       # 标签上间距: 30px（统一标准）
+      margin_bottom: 30    # 标签下方间距: 30px（统一标准）
+      color: "#1E90FF"     # 标签: #1E90FF（蓝色）
+      align: "left"        # 左对齐
+    
+    number:
+      font_size: 28        # 数字: 28px（最小）
+      line_height: 42      # 1.5倍行高
+      margin_top: 30       # 数字上间距: 30px（统一标准）
+      margin_bottom: 30    # 数字下方间距: 30px（统一标准）
+      color: "#1E90FF"     # 数字: #1E90FF（蓝色）
+      align: "center"      # 居中对齐
+  
+  # 特殊渲染规则配置
+  special_rules:
+    cover_card:
+      width: 1080          # 封面卡片宽度
+      height: 1440         # 封面卡片高度（3:4比例）
+      title_section:
+        background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
+        backdrop_filter: "blur(10px)"            # 背景模糊效果
+        box_shadow: "0 4px 20px rgba(0, 0, 0, 0.1)"  # 阴影效果
+      image_section:
+        background: "transparent"                # 图片区域透明背景
+    
+    content_card:
+      safe_area_margin: 30                      # 内容安全区域边距
+      max_content_height: 1200                  # 内容最大高度
+      overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
+
 # AI提示词配置
 ai_prompts:
   text_processing: |
-    # 角色 
-    你是一位顶级的内容策略师和信息设计师。你深刻理解"形式服务于内容"的原则。你的专长是将原始、无序的碎片化信息，转化为兼具逻辑深度与视觉美感的最终作品，同时为内容的核心意境构思视觉化身。
+    # 角色
+    你是一位资深的内容编辑与信息架构师，擅长将原始文本重构为结构清晰、逻辑严密、可读性强的文章，并为其构思核心视觉概念。
 
-    # 整体目标 
-    我将为你提供一段OCR文本。你的任务是并行完成"文本结构化"和"视觉概念提炼"两项核心工作，并将成果合并到一个单一的JSON对象中。你的所有操作都必须服务于一个最高目标：为最终读者创造最自然、最流畅、最舒适的阅读体验。
-
-    # 指导哲学："自然与逻辑流"
-    内容决定结构： 你输出的结构必须反映输入文本内在的、固有的逻辑，而不是强加一个外部的、预设的模板。
-    避免人为对称： 绝对不要为了格式上的工整或对称，而扭曲内容的自然分组。例如，如果一段核心论述后面紧跟着三个并列的例子，最自然的方式可能是一个subtitle加一个包含三项的list，而不是强行拆成三个subtitle加三个body。让结构跟随思想，而不是让思想去适应结构。
-    清晰易读为最高目标： 所有的润色和格式化，唯一评判标准就是"这样做是否能让读者更容易理解和吸收信息？"
+    # 整体目标
+    我将提供一段从图片中识别出的原始文本原始文本。你的任务是并行完成以下两项核心工作，并将两项工作的结果，合并为一个单一的、纯净的JSON对象作为最终输出。
+        工作一：文本结构化（输出为Markdown格式）
+        工作二：根据内容写一段文生图的提示词
 
     # 核心原则
-    忠于原文： 用户的原始文本是核心。
-    逻辑补全，而非内容创作： 补充比例必须极小（不超过原文10%），且仅限于必要的逻辑连接。
-    杜绝无关信息： 彻底清除"噪音"。
+    1.  忠于原文 : 用户的原始文本是核心和基础。
+    2.  处理残缺内容:  当语句不完整或内容不连贯时，你需要进行逻辑补全，而非内容创作。 补充比例必须很小，且只能是基于上下文的、必要的逻辑连接。在进行必要的逻辑连接或补全时，必须使用最简短直接的措辞。避免任何不必要的阐述或发挥。
+    3.  建立逻辑流: 为独立的文本块建立逻辑连接。如果无法建立自然流畅的联系，则使用`##`副标题来分隔主题。
+    4.  忠于核心主旨: 所有的编辑和修改，都必须服务于更清晰、更忠实地呈现原文作者的核心意图。
+    5.  杜绝无关信息: 清除原始文本中可能存在的广告、水印、页码、系统提示语等"噪音"。
 
     # 边缘情况处理规则
-    关于主标题： 最终输出中必须有且仅有一个title。如果原文无，则必须根据全文内容生成。
-    关于文本过短： 少于50字符，则结构化部分只返回一个"type": "body"或"type": "quote"的对象数组。
-    关于无明显结构（新增规则）： 如果文本是一整块连续的、没有明显逻辑转折或分论点的长篇大论，不要强行创造subtitle。输出可以只是一个title对象，后面跟着一个或多个body对象。
-    关于无法理解的文本： 返回{ "structured_text_array": [], "image_prompt": "" }。
-    关于文生图提示词： 在"文本过短"或"无法理解"时，image_prompt字段返回空字符串""。
+      * 主标题: 输出中必须有且仅有一个一级标题 (`#`)。原文无则必须根据核心内容生成。
+      * 无明显结构: 若文本是连续的长篇大论，不要强行创造`##`副标题。
+      * 无法理解: 若文本为无意义乱码，返回的JSON中`text`和`image_prompt`字段均为空字符串。
 
-    # 格式定义与选择规则 严格限定type字段： 该字段的值必须是以下5个字符串之一，绝对不允许创造任何新类型。
-    "type": "title": 全文唯一的、最高级别的概括。
-    "type": "subtitle": 仅当文本出现了明确的主题转换、或需要一个精炼的句子来引出接下来一个或多个段落的核心论点时，才使用。
-    "type": "body": 用于详细的叙述和解释。在同一个副标题下，可以也应该有连续多个body对象，如果它们在逻辑上是递进或并列的。
-    "type": "list": 当内容是多个并列的、结构相似的要点、案例或步骤时使用。
-    "type": "quote": 用于明确引述自他处的内容。
+    # 格式定义与语义解释
+      * `#` (一级标题): 全文灵魂，最高度的概括。
+      * `##` (二级标题): 逻辑路标，用于标记明确的主题转换。
+      * 普通段落: 内容的血肉，负责详细叙述。应尊重原文的段落划分。
+      * `-` (列表): 用于展示逻辑上并列、地位平等的要点。
+      * `>` (引用): 用于凸显"点睛之笔"，如核心结论或名言。此格式应谨慎使用，仅用于对全文理解至关重要的关键句。
+        ⠀【重要】 你必须保持格式的纯净性，例如，不要使用### (三级标题)或其他非约定的Markdown语法。
 
-    # 文生图提示词生成规则 文本和图片是最终产品的两个平等组成部分。图片必须达到最高的艺术质量。
-    语言结构： 中文描述主体内容，末尾追加英文关键词提升画质和风格。
-    目标画幅： 倾向于16:9的电影级宽屏横向构图。
-    禁止项： 不能包含任何要求生成文字的指令。
+    # 文生图提示词生成规则
+      * 语言结构: 中文描述主体内容，末尾追加英文关键词提升画质和风格。
+      * 目标画幅: 2:3的竖向构图。
+      * 目标风格: 简洁插画风
+      * 禁止项: 不能包含任何要求生成文字的指令。
 
-    # 最终输出格式 你的最终输出必须是一个单一的JSON对象，包含structured_text_array和image_prompt两个顶级键。structured_text_array的值必须是一个扁平化的对象数组 []。绝对不允许出现"introduction"或"sections"等多余的包裹性字段。请严格遵循以下这个正确的黄金标准案例：
-    JSON
+    # 最终输出格式
+    你的最终输出必须是一个**完整的、纯净的JSON对象**，包含`text`和`image_prompt`两个字段。`text`字段的值必须是一个包含了Markdown语法的、完整的字符串（换行请使用`\n`）。绝对不能在JSON之外添加任何解释性文字或代码块。
 
+    以下是标准案例：
+    ```json
     {
-      "structured_text_array": [
-        {
-          "type": "title",
-          "content": "未来竞争力：独立思考者的进化之路"
-        },
-        {
-          "type": "body",
-          "content": "你可以在联机游戏，看人家写的游戏通关，但是还需要独立地玩这么一次，还成你自己玩游戏的期待。就像跨国企业都在做的glocal（global-local）--'全球本土化'战略，有全球视野，但是保存当地特色。如果你有独立思考能力，联机思考会让思想质量变得更高、迭代更快。这个时代，每个人都需要学会如何成为一个'联机的独立思考者'。"
-        },
-        {
-          "type": "subtitle",
-          "content": "未来职业竞争力的关键要素"
-        },
-        {
-          "type": "body",
-          "content": "在人工智能盛行、行业无边界的时代，未来最有竞争力的人，是能够用机器学习和处理信息，用大脑整合和创新思想，用系统思维思考问题的人。"
-        },
-        {
-          "type": "list",
-          "content": [
-            "我今天做的事，机器能做吗？",
-            "我今天做的事，会被外包吗？",
-            "我今天做的事，明天会做得更好吗？"
-          ]
-        },
-        {
-          "type": "subtitle",
-          "content": "认知方式的革命性转变"
-        },
-        {
-          "type": "body",
-          "content": "读100本书并试图记住它们，就像非要背下整本电话簿才开始拨号。智慧不等于信息，记忆应交给电脑。未来世界的核心认知能力是：找到信息的搜索能力、运用信息的思考能力、从海量信息中抓取趋势的洞察能力。"
-        },
-        {
-          "type": "quote",
-          "content": "人类'记住知识'的方式持续了两千多年，而近20年内，新的认知方式突然成为主流——这种变化是不连续的、跳跃式的。"
-        }
-      ],
-      "image_prompt": "未来城市中，人类与人工智能共同处理数据流，象征联机思考与独立能力的结合。半透明的机械臂与人类双手协作筛选发光的信息粒子，背景是流动的二进制代码瀑布，高科技办公室环境采用冷色调蓝银配色，超现实主义风格，8k, ultra-detailed, cinematic lighting, digital art"
+      "text": "# 为什么高价值的信息几乎从不流向普通人？\n因为信息价值越高，越考验人的理解能力，无法理解便等于"接收不到"。几年前，一个好友劝我去做知识付费，我随口问了句"什么是知识付费？"，他当时就无语了。\n## 高深内容需简化才能被大众接受\n经典因其简单才易于"传承"，但包裹着简单外壳的复杂信息，也很容易被误解。比如很多经典是用文言文写的，但老百姓更倾向于传奇故事和谚语。\n- 《道德经》中的"无为"被解读成"什么都不做"，而非"顺应自然而为"。\n- "以德报怨"被误解为"被人欺负要用爱心感化"，但孔子主张的是公正回应。\n- "人不为己，天诛地灭"被误解为自私自利，但"为"在此处指"修为"，意为不修身则天地不容。\n> 《论语》有云：有朋自远方来，不亦乐乎？",
+      "image_prompt": "一个抽象的画面，无数发光的信息流像瀑布一样从上方涌下，但大部分都在半空中消散成迷雾，只有极少数几股精准地落入下方几个微小的人形轮廓中，简洁插画风, 2k, masterpiece"
     }
-
+    ```
 
     # 待处理的OCR文本
   image_generation: "基于以下文本生成一张精美的配图：{content}"
   
+# JSON处理配置 - 控制JSON响应解析和字符过滤行为
+json_processing:
+  # 字符过滤配置
+  character_filtering:
+    # 是否启用严格的控制字符过滤
+    strict_control_chars: true
+    # 是否启用扩展ASCII字符过滤
+    filter_extended_ascii: true
+    # 是否启用Unicode替换字符过滤
+    filter_unicode_replacement: true
+    # 允许的控制字符列表（除了换行符和制表符）
+    allowed_control_chars: ["\n", "\t"]
+    # 允许的Unicode范围
+    allowed_unicode_ranges:
+      # 中文字符范围
+      chinese: [0x4E00, 0x9FFF]
+      # 中文标点符号范围
+      chinese_punctuation: [0x3000, 0x303F]
+      # 全角字符范围
+      fullwidth: [0xFF00, 0xFFEF]
+      # 拉丁字母扩展范围
+      latin_extended: 
+        - [0x00C0, 0x00FF]
+        - [0x0100, 0x017F]
+        - [0x0180, 0x024F]
+      # 阿拉伯文范围
+      arabic: [0x0600, 0x06FF]
+      # 西里尔文范围
+      cyrillic: [0x0400, 0x04FF]
+      # 希腊文范围
+      greek: [0x0370, 0x03FF]
+      # 希伯来文范围
+      hebrew: [0x0590, 0x05FF]
+      # 泰文范围
+      thai: [0x0E00, 0x0E7F]
+      # 韩文范围
+      korean: [0xAC00, 0xD7AF]
+      # 日文平假名范围
+      japanese_hiragana: [0x3040, 0x309F]
+      # 日文片假名范围
+      japanese_katakana: [0x30A0, 0x30FF]
+  
+  # JSON修复配置
+  json_repair:
+    # 是否启用深度JSON修复
+    enable_deep_repair: true
+    # 是否启用字段优先提取
+    enable_field_based_extraction: true
+    # 是否启用保守修复策略
+    enable_conservative_fix: true
+    # 最大修复尝试次数
+    max_repair_attempts: 3
+    # 是否启用日志记录
+    enable_logging: true
+  
+  # 响应处理配置
+  response_processing:
+    # 是否检查Content-Length
+    check_content_length: true
+    # 是否尝试恢复不完整响应
+    enable_response_recovery: true
+    # 响应超时时间
+    timeout: "30s"
+    # 最大响应大小（字节）
+    max_response_size: 1048576  # 1MB
+
+# HTML转换器配置 - 控制Markdown到HTML转换和内容分页的样式参数
+html_converter:
+  # 基础配置
+  card:
+    width: 1080          # 卡片宽度
+    height: 1440         # 卡片高度
+    padding: 60          # 内边距（与分页算法保持一致）
+  
+  # 分页配置
+  pagination:
+    available_width: 1000  # 可用宽度
+    max_content_height: 1360  # 最大内容高度
+    min_card_height: 800      # 最小卡片高度
+    max_card_height: 4320     # 最大卡片高度
+    min_bottom_padding: 10    # 最小底部留白（减少底部空白）
+  
+  # 字体配置 - 清晰大字号风格
+  fonts:
+    family: "'Noto Sans CJK SC', 'WenQuanYi Micro Hei', 'Helvetica Neue', Arial, sans-serif"  # 字体系列
+    title_size: 48       # 标题字体大小（大字号，加粗）
+    subtitle_size: 40    # 副标题字体大小（大字号，加粗）
+    body_size: 36        # 正文字体大小（大字号，清晰易读）
+    list_size: 36        # 列表字体大小
+    quote_size: 34       # 引用字体大小
+  
+  # 行高配置 - 提升可读性
+  line_heights:
+    title: 1.3           # 标题行高倍数
+    subtitle: 1.3        # 副标题行高倍数
+    body: 1.8            # 正文行高倍数（增大行高，提升可读性）
+  
+  # 边距配置 - 优化间距
+  margins:
+    title_bottom: 32     # 标题下边距（增加间距）
+    subtitle_bottom: 28  # 副标题下边距
+    body_bottom: 20      # 正文下边距（增加间距）
