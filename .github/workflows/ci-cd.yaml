@@ -6,7 +6,8 @@ on:
       - main
       - develop
       - release
-      - product
+    tags:
+      - 'v*'
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -18,7 +19,6 @@ on:
       - main
       - develop
       - release
-      - product
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -281,12 +281,12 @@ jobs:
             echo "无法获取存储状态（GitHub CLI 不可用）"
           fi
 
-  # Docker 镜像构建 - 只在特定分支触发
+  # Docker 镜像构建 - 在特定分支或 tag 时触发
   image_build:
     needs: code_build
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/release' || github.ref == 'refs/heads/product'
+    if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/release' || startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -312,27 +312,42 @@ jobs:
           echo "构建镜像: ${{ env.IMAGE_NAME }}:${{ github.ref_name }}"
           echo "当前分支: ${{ github.ref_name }}"
           
-          # 根据分支确定环境参数
-          if [ "${{ github.ref_name }}" = "develop" ]; then
-            BUILD_ENV="dev"
-          elif [ "${{ github.ref_name }}" = "release" ]; then
-            BUILD_ENV="qa"
-          elif [ "${{ github.ref_name }}" = "product" ]; then
+          # 根据分支或tag确定环境参数和镜像标签
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            # 如果是 tag 触发
             BUILD_ENV="prod"
+            IMAGE_TAG="${{ github.ref_name }}"
+            echo "🚀 通过 TAG 触发构建: $IMAGE_TAG"
           else
-            BUILD_ENV="dev"
+            # 如果是分支触发
+            if [ "${{ github.ref_name }}" = "develop" ]; then
+              BUILD_ENV="dev"
+              IMAGE_TAG="develop"
+            elif [ "${{ github.ref_name }}" = "release" ]; then
+              BUILD_ENV="qa"
+              IMAGE_TAG="release"
+            else
+              BUILD_ENV="dev"
+              IMAGE_TAG="dev"
+            fi
+            echo "🚀 通过分支触发构建: $IMAGE_TAG"
           fi
           
           echo "构建环境: $BUILD_ENV"
+          echo "镜像标签: $IMAGE_TAG"
           
           # 构建镜像 - 指定构建参数和环境
-          docker build --build-arg ENV=$BUILD_ENV -t ${{ env.IMAGE_NAME }}:${{ github.ref_name }} .
+          docker build --build-arg ENV=$BUILD_ENV -t ${{ env.IMAGE_NAME }}:$IMAGE_TAG .
           
           # 推送镜像
-          docker push ${{ env.IMAGE_NAME }}:${{ github.ref_name }}
-          # 推送latest标签
-          docker tag ${{ env.IMAGE_NAME }}:${{ github.ref_name }} ${{ env.IMAGE_NAME }}:latest
-          docker push ${{ env.IMAGE_NAME }}:latest
+          docker push ${{ env.IMAGE_NAME }}:$IMAGE_TAG
+          
+          # 如果是 tag 构建，同时推送 latest 标签
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            docker tag ${{ env.IMAGE_NAME }}:$IMAGE_TAG ${{ env.IMAGE_NAME }}:latest
+            docker push ${{ env.IMAGE_NAME }}:latest
+            echo "✅ 已推送 latest 标签"
+          fi
 
   # 开发环境部署 - 只在 develop 分支触发
   deploy_dev:
@@ -535,12 +550,12 @@ jobs:
               exit 1
             fi
 
-  # 生产环境部署 - 只在 product 分支触发
+  # 生产环境部署 - 只通过版本 tag 触发
   deploy_product:
     needs: image_build
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: github.ref == 'refs/heads/product'
+    if: startsWith(github.ref, 'refs/tags/v')
     environment: production
     steps:
       - name: Checkout code
@@ -559,8 +574,13 @@ jobs:
             # 登录到Docker Hub
             echo "Docker1234" | docker login -u neozhang96 --password-stdin
             
+            # 确定镜像标签（现在只通过 tag 触发）
+            IMAGE_TAG="${{ github.ref_name }}"
+            echo "🚀 通过 TAG 触发部署: $IMAGE_TAG"
+            echo "📦 拉取镜像: neozhang96/numind-server:$IMAGE_TAG"
+            
             # 拉取最新镜像
-            docker pull neozhang96/numind-server:product
+            docker pull neozhang96/numind-server:$IMAGE_TAG
 
             # 清理 dangling (<none>) 镜像，避免磁盘膨胀
             echo "Pruning dangling images..."
@@ -593,7 +613,7 @@ jobs:
               -v /opt/numind/prod:/opt/numind/prod \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
-              neozhang96/numind-server:product \
+              neozhang96/numind-server:$IMAGE_TAG \
               -c /app/config_prod.yaml
             
             # 等待容器启动
