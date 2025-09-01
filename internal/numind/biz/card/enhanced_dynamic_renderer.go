@@ -11,6 +11,7 @@ import (
 
 	"numind-server/internal/numind/biz/pagination"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/util"
 
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
@@ -474,24 +475,29 @@ func (r *EnhancedDynamicRenderer) renderWithDynamicHeight(htmlContent string, he
 
 // saveImage 保存图片文件
 func (r *EnhancedDynamicRenderer) saveImage(imageData []byte, cardID uint) (string, error) {
-	// 创建目录
-	baseDir := "images/upload/card"
-	cardDir := fmt.Sprintf("%s/%d", baseDir, cardID)
+	// 使用配置的图片路径
+	baseDir := util.GetImagePath()
+	cardDir := filepath.Join(baseDir, "card", fmt.Sprintf("%d", cardID))
 
 	if err := os.MkdirAll(cardDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create directory: %v", err)
 	}
 
-	// 生成文件名
-	filename := fmt.Sprintf("enhanced_dynamic_%d_%d.png", cardID, time.Now().Unix())
-	filePath := fmt.Sprintf("%s/%s", cardDir, filename)
+	// 生成文件名 - 使用webp格式
+	filename := fmt.Sprintf("card_%d.webp", cardID)
+	filePath := filepath.Join(cardDir, filename)
 
 	// 保存文件
 	if err := os.WriteFile(filePath, imageData, 0644); err != nil {
 		return "", fmt.Errorf("failed to save image: %v", err)
 	}
 
-	// 返回相对URL
-	imageURL := fmt.Sprintf("/upload/card/%d/%s", cardID, filename)
+	// 返回相对URL，用于数据库存储
+	imageURL := util.GetCardImageURL(cardID, filename)
+
+	fmt.Printf("🔍 增强动态渲染器：图片保存成功\n")
+	fmt.Printf("   文件路径: %s\n", filePath)
+	fmt.Printf("   相对URL: %s\n", imageURL)
+
 	return imageURL, nil
 }

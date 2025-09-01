@@ -243,8 +243,8 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		log.C(ctx).Infow("🖼️ 第三步：调用文生图大模型生成图片", "book_id", bookID, "image_prompt", imagePrompt)
 
 		// 打印发送给文生图模型的提示词
-		log.C(ctx).Infow("📝 发送给文生图模型的提示词", 
-			"book_id", bookID, 
+		log.C(ctx).Infow("📝 发送给文生图模型的提示词",
+			"book_id", bookID,
 			"prompt_length", len(imagePrompt),
 			"full_prompt", imagePrompt)
 
@@ -1644,11 +1644,10 @@ func (p *AsyncBookProcessor) createEnhancedCoverCard(
 		SortOrder: 0, // 封面卡片排序为0
 	}
 
-	// 生成封面HTML内容
-	log.C(ctx).Infow("封面卡片信息", "book_id", book.ID, "title", book.Title, "image_url", book.ImageUrl, "background", coverBackground)
-	coverHTML := p.generateCoverHTML(book.Title, book.ImageUrl, coverBackground, book.ID)
-	coverCard.ProcessedText = coverHTML
-	log.C(ctx).Infow("封面HTML生成完成", "book_id", book.ID, "html_length", len(coverHTML))
+	// 设置简化的markdown格式内容，而不是完整的HTML
+	coverMarkdown := fmt.Sprintf("# %s", book.Title)
+	coverCard.ProcessedText = coverMarkdown
+	log.C(ctx).Infow("封面markdown内容设置完成", "book_id", book.ID, "markdown_length", len(coverMarkdown))
 
 	// 创建封面卡片记录
 	if err := p.biz.Cards().Create(ctx, coverCard); err != nil {
@@ -1656,6 +1655,9 @@ func (p *AsyncBookProcessor) createEnhancedCoverCard(
 	}
 
 	log.C(ctx).Infow("✅ 增强版封面卡片创建成功", "book_id", book.ID, "card_id", coverCard.ID)
+
+	// 生成封面HTML内容用于渲染
+	coverHTML := p.generateCoverHTML(book.Title, book.ImageUrl, coverBackground, book.ID)
 
 	// 生成封面图片（使用封面HTML，不重新生成）
 	if err := p.generateCoverImageOnly(ctx, coverCard.ID, coverHTML); err != nil {
@@ -1988,14 +1990,8 @@ func (p *AsyncBookProcessor) downloadAndSaveImageWithPath(remoteURL string, book
 		return "", fmt.Errorf("failed to save image: %w", err)
 	}
 
-	// 返回相对路径，用于数据库存储
-	imagePath := util.GetImagePath()
-	relativePath := strings.TrimPrefix(localFilePath, imagePath)
-	if !strings.HasPrefix(relativePath, "/") {
-		relativePath = "/" + relativePath
-	}
-
-	return relativePath, nil
+	// 返回绝对路径，用于数据库存储
+	return localFilePath, nil
 }
 
 // downloadAndSaveCardImageWithPath 按照指定路径规则下载并保存卡片图片
@@ -2744,5 +2740,26 @@ func (p *AsyncBookProcessor) generateCoverImageOnly(ctx context.Context, cardID 
 
 	// 使用修复后的HTML内容进行渲染
 	_, err := p.renderWithWkhtmltoimage(ctx, cardID, coverHTML, fullImagePath)
-	return err
+	if err != nil {
+		return fmt.Errorf("封面图片渲染失败: %v", err)
+	}
+
+	// 更新数据库中的RenderedImage字段
+	relativeImagePath := fmt.Sprintf("%s/card/%d/%s", imagePath, cardID, imageFileName)
+
+	// 获取卡片记录并更新
+	card, err := p.biz.Cards().GetByID(ctx, cardID)
+	if err != nil {
+		log.C(ctx).Errorw("获取卡片记录失败", "card_id", cardID, "error", err.Error())
+		return fmt.Errorf("获取卡片记录失败: %v", err)
+	}
+
+	card.RenderedImage = relativeImagePath
+	if err := p.biz.Cards().Update(ctx, card); err != nil {
+		log.C(ctx).Errorw("更新卡片RenderedImage字段失败", "card_id", cardID, "error", err.Error())
+		return fmt.Errorf("更新卡片RenderedImage字段失败: %v", err)
+	}
+
+	log.C(ctx).Infow("✅ 封面图片生成完成并更新数据库", "card_id", cardID, "image_path", relativeImagePath)
+	return nil
 }
