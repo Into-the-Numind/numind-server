@@ -2276,17 +2276,7 @@ body {
     justify-content: flex-start; /* 内容从顶部开始 */
 }
 
-/* 底部边距线条（调试用，可在生产环境移除） */
-.markdown-card-container::after {
-    content: '';
-    position: absolute;
-    bottom: 80px;
-    left: 0;
-    right: 0;
-    height: 1px;
-    background: rgba(255, 0, 0, 0.2); /* 红色半透明线，标示底部边距边界 */
-    z-index: 1000;
-}
+/* 底部边距线条已移除 */
 
 .markdown-content {
     width: 100%%;
