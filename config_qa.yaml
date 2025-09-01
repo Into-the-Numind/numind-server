@@ -98,10 +98,6 @@ ali:
     model: "stable-diffusion-3.5-large-turbo"
     timeout: 300s
 
-# 书籍处理配置
-book:
-    use_simplified_processing: true  # 启用简化处理模式
-
 # MQTT 配置
 mqtt:
   broker: "49.233.219.254" # MQTT 服务器地址
