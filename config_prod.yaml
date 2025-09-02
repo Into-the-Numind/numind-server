@@ -52,6 +52,8 @@ wechat:
     mch_private_key_path: "/opt/numind/config/cert/apiclient_key.pem"
     wechatpay_cert_path: "/opt/numind/config/cert/wechatpay_cert.pem"
     notify_url: "http://49.233.219.254:9091/api/pay/wechat/notify"
+    # 使用微信支付公钥模式（推荐，避免证书过期问题）
+    use_wechatpay_public_key: "true"
 
 oss:
   endpoint: ""
@@ -65,11 +67,15 @@ volc:
   model: "deepseek-v3-250324"  # 使用的AI模型
   temperature: 0.5 # 生成文本的随机性
   tokens: 2000 # 生成文本的最大长度
-  timeout: 120s  # 超时时间，从30s改为120s
+  timeout: 120s  # 超时时间
   max_retries: 3
 
 resource:
   image_path: /opt/numind/prod/image/upload
+
+# 书籍处理配置
+book:
+    use_simplified_processing: true  # 启用简化处理模式
 
 baidu:
   api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
@@ -79,13 +85,18 @@ ali:
   text:
     api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"
     api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
-    model: "qwq-plus"
-    timeout: 120s  # 千问文本生成超时时间
+    model: "qwq-plus"  # 生产环境使用更稳定的模型
+    timeout: 120s
   image:
     api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"
     api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
     model: "wanx2.1-t2i-turbo"
-    timeout: 180s  # 万象图像生成超时时间
+    timeout: 180s
+  stable_diffusion:
+    api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"
+    api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
+    model: "stable-diffusion-3.5-large-turbo"
+    timeout: 300s
 
 # MQTT 配置
 mqtt:
@@ -94,6 +105,102 @@ mqtt:
   client_id: "numind-server-prod-1" # MQTT 客户端ID
   username: "admin" # MQTT 用户名
   password: "public" # MQTT 密码
+
+# 分页配置 - 卡片渲染和分页的样式与布局规则（生产环境优化版）
+pagination:
+  # 卡片基础配置（支持动态高度）
+  card:
+    width: 1080   # 标准尺寸: 1080×1440（3:4比例）
+    height: 1440  # 基础高度，实际使用动态高度
+    padding:
+      top: 60     # 标准内边距: 60px 50px
+      right: 50
+      bottom: 10  # 优化：减少底部留白从60px到10px
+      left: 50
+  
+  # 动态分页优化配置
+  dynamic:
+    min_height: 720          # 最小卡片高度
+    max_height: 4320         # 最大卡片高度（3倍标准高度）
+    min_bottom_padding: 10   # 最小底部留白
+    max_images_per_card: 5   # 每张卡片最大图片数
+    max_text_length: 2000    # 每张卡片最大文本长度
+  
+  # 元素样式配置
+  styles:
+    title:
+      font_size: 64        # 标题: 64px（最大）
+      line_height: 90      # 1.4倍行高
+      margin_top: 30       # 标题上间距: 30px（统一标准）
+      margin_bottom: 30    # 标题下方间距: 30px（统一标准）
+      color: "#333333"     # 主标题: #333333（深灰）
+      align: "justify"     # 两端对齐
+    
+    subtitle:
+      font_size: 48        # 副标题: 48px（中等）
+      line_height: 72      # 1.5倍行高
+      margin_top: 30       # 副标题上间距: 30px（统一标准）
+      margin_bottom: 25    # 副标题下方: 25px（标准下间距）
+      color: "#666666"     # 副标题: #666666（中灰）
+      align: "justify"     # 两端对齐
+    
+    body:
+      font_size: 36        # 正文: 36px（标准）
+      line_height: 58      # 1.6倍行高（标准行高）
+      margin_top: 30       # 正文上间距: 30px（统一标准）
+      margin_bottom: 30    # 正文下方间距: 30px（统一标准）
+      color: "#333333"     # 正文: #333333（深灰）
+      align: "justify"     # 两端对齐
+    
+    list:
+      font_size: 36        # 列表: 36px（标准）
+      line_height: 58      # 1.6倍行高（标准行高）
+      margin_top: 30       # 列表上间距: 30px（统一标准）
+      margin_bottom: 30    # 列表下方间距: 30px（统一标准）
+      color: "#333333"     # 列表: #333333（深灰）
+      align: "justify"     # 两端对齐
+      indent: 20           # 列表缩进
+    
+    quote:
+      font_size: 36        # 引用: 36px（强调）
+      line_height: 54      # 1.5倍行高（紧凑行高）
+      margin_top: 30       # 引用上间距: 30px（统一标准）
+      margin_bottom: 30    # 引用下方间距: 30px（统一标准）
+      color: "#1E90FF"     # 引用: #1E90FF（蓝色）
+      align: "justify"     # 两端对齐
+    
+    tag:
+      font_size: 28        # 标签: 28px（最小）
+      line_height: 42      # 1.5倍行高
+      margin_top: 30       # 标签上间距: 30px（统一标准）
+      margin_bottom: 30    # 标签下方间距: 30px（统一标准）
+      color: "#1E90FF"     # 标签: #1E90FF（蓝色）
+      align: "left"        # 左对齐
+    
+    number:
+      font_size: 28        # 数字: 28px（最小）
+      line_height: 42      # 1.5倍行高
+      margin_top: 30       # 数字上间距: 30px（统一标准）
+      margin_bottom: 30    # 数字下方间距: 30px（统一标准）
+      color: "#1E90FF"     # 数字: #1E90FF（蓝色）
+      align: "center"      # 居中对齐
+  
+  # 特殊渲染规则配置
+  special_rules:
+    cover_card:
+      width: 1080          # 封面卡片宽度
+      height: 1440         # 封面卡片高度（3:4比例）
+      title_section:
+        background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
+        backdrop_filter: "blur(10px)"            # 背景模糊效果
+        box_shadow: "0 4px 20px rgba(0, 0, 0, 0.1)"  # 阴影效果
+      image_section:
+        background: "transparent"                # 图片区域透明背景
+    
+    content_card:
+      safe_area_margin: 30                      # 内容安全区域边距
+      max_content_height: 1200                  # 内容最大高度
+      overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
 
 # AI提示词配置
 ai_prompts:
@@ -150,3 +257,106 @@ ai_prompts:
 
     # 待处理的OCR文本: {content}
   image_generation: "基于以下文本生成一张精美的配图：{content}"
+
+# JSON处理配置 - 控制JSON响应解析和字符过滤行为
+json_processing:
+  # 字符过滤配置
+  character_filtering:
+    # 是否启用严格的控制字符过滤
+    strict_control_chars: true
+    # 是否启用扩展ASCII字符过滤
+    filter_extended_ascii: true
+    # 是否启用Unicode替换字符过滤
+    filter_unicode_replacement: true
+    # 允许的控制字符列表（除了换行符和制表符）
+    allowed_control_chars: ["\n", "\t"]
+    # 允许的Unicode范围
+    allowed_unicode_ranges:
+      # 中文字符范围
+      chinese: [0x4E00, 0x9FFF]
+      # 中文标点符号范围
+      chinese_punctuation: [0x3000, 0x303F]
+      # 全角字符范围
+      fullwidth: [0xFF00, 0xFFEF]
+      # 拉丁字母扩展范围
+      latin_extended: 
+        - [0x00C0, 0x00FF]
+        - [0x0100, 0x017F]
+        - [0x0180, 0x024F]
+      # 阿拉伯文范围
+      arabic: [0x0600, 0x06FF]
+      # 西里尔文范围
+      cyrillic: [0x0400, 0x04FF]
+      # 希腊文范围
+      greek: [0x0370, 0x03FF]
+      # 希伯来文范围
+      hebrew: [0x0590, 0x05FF]
+      # 泰文范围
+      thai: [0x0E00, 0x0E7F]
+      # 韩文范围
+      korean: [0xAC00, 0xD7AF]
+      # 日文平假名范围
+      japanese_hiragana: [0x3040, 0x309F]
+      # 日文片假名范围
+      japanese_katakana: [0x30A0, 0x30FF]
+  
+  # JSON修复配置
+  json_repair:
+    # 是否启用深度JSON修复
+    enable_deep_repair: true
+    # 是否启用字段优先提取
+    enable_field_based_extraction: true
+    # 是否启用保守修复策略
+    enable_conservative_fix: true
+    # 最大修复尝试次数
+    max_repair_attempts: 3
+    # 是否启用日志记录
+    enable_logging: true
+  
+  # 响应处理配置
+  response_processing:
+    # 是否检查Content-Length
+    check_content_length: true
+    # 是否尝试恢复不完整响应
+    enable_response_recovery: true
+    # 响应超时时间
+    timeout: "30s"
+    # 最大响应大小（字节）
+    max_response_size: 1048576  # 1MB
+
+# HTML转换器配置 - 控制Markdown到HTML转换和内容分页的样式参数
+html_converter:
+  # 基础配置
+  card:
+    width: 1080          # 卡片宽度
+    height: 1440         # 卡片高度
+    padding: 60          # 内边距（与分页算法保持一致）
+  
+  # 分页配置
+  pagination:
+    available_width: 1000  # 可用宽度
+    max_content_height: 1360  # 最大内容高度
+    min_card_height: 800      # 最小卡片高度
+    max_card_height: 4320     # 最大卡片高度
+    min_bottom_padding: 10    # 最小底部留白（减少底部空白）
+  
+  # 字体配置 - 清晰大字号风格
+  fonts:
+    family: "'Noto Sans CJK SC', 'WenQuanYi Micro Hei', 'Helvetica Neue', Arial, sans-serif"  # 字体系列
+    title_size: 48       # 标题字体大小（大字号，加粗）
+    subtitle_size: 40    # 副标题字体大小（大字号，加粗）
+    body_size: 36        # 正文字体大小（大字号，清晰易读）
+    list_size: 36        # 列表字体大小
+    quote_size: 34       # 引用字体大小
+  
+  # 行高配置 - 提升可读性
+  line_heights:
+    title: 1.3           # 标题行高倍数
+    subtitle: 1.3        # 副标题行高倍数
+    body: 1.8            # 正文行高倍数（增大行高，提升可读性）
+  
+  # 边距配置 - 优化间距
+  margins:
+    title_bottom: 32     # 标题下边距（增加间距）
+    subtitle_bottom: 28  # 副标题下边距
+    body_bottom: 20      # 正文下边距（增加间距）
