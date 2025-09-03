@@ -84,7 +84,7 @@ func NewHTMLConverter() *HTMLConverter {
 		Padding:             60,
 		PaddingTop:          60,
 		PaddingRight:        50,
-		PaddingBottom:       10, // 减少底部内边距
+		PaddingBottom:       40, // 增加底部内边距，确保文字不被遮挡
 		PaddingLeft:         50,
 		BackgroundColor:     "#ffffff",
 		TextColor:           "#333333",
@@ -1617,8 +1617,8 @@ func (hc *HTMLConverter) splitContentWithInParagraphPagination(lines []string, e
 			// 计算剩余可用高度 - 使用真正的剩余空间
 			remainingHeight := maxContentHeight - currentHeight
 
-			// 超激进的段落分割策略：只要有剩余空间就尝试分割，最大化利用边距空间
-			if !isTitle && len(line) > 20 && remainingHeight > hc.config.BodyFontSize/3 { // 进一步降低阈值
+			// 保守的段落分割策略：确保有足够空间显示完整内容
+			if !isTitle && len(line) > 20 && remainingHeight > hc.config.BodyFontSize*2 { // 确保至少两行文字的空间
 				// 执行段落内分页
 				firstPart, secondPart := hc.SplitLongParagraph(line, remainingHeight)
 				if firstPart != "" && secondPart != "" {
@@ -1741,9 +1741,9 @@ func (hc *HTMLConverter) SplitLongParagraph(paragraph string, remainingHeight in
 			candidateFirstPart := strings.TrimSpace(string(runes[:i+1]))
 			candidateHeight := hc.calculateTextHeight(candidateFirstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
 
-			// 更激进的高度利用：允许95%-105%的剩余高度，精确填充到边距
+			// 保守的高度利用：允许80%-90%的剩余高度，保留安全边距
 			heightRatio := float64(candidateHeight) / float64(remainingHeight)
-			if heightRatio >= 0.95 && heightRatio <= 1.05 {
+			if heightRatio >= 0.80 && heightRatio <= 0.90 {
 				bestSplitPoint = i + 1
 				break
 			}
@@ -1758,7 +1758,7 @@ func (hc *HTMLConverter) SplitLongParagraph(paragraph string, remainingHeight in
 				candidateHeight := hc.calculateTextHeight(candidateFirstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
 
 				heightRatio := float64(candidateHeight) / float64(remainingHeight)
-				if heightRatio >= 0.90 && heightRatio <= 1.10 {
+				if heightRatio >= 0.80 && heightRatio <= 0.90 {
 					bestSplitPoint = i + 1
 					break
 				}
@@ -2056,7 +2056,7 @@ body {
     padding: 0;
     width: 1080px;
     height: 1440px;
-    overflow: hidden;
+    overflow: visible;
     %s
     background-size: cover !important;
     background-position: center center !important;
@@ -2081,8 +2081,8 @@ body {
     color: #333;              /* 深灰色文字，替代默认黑色 */
     padding: 0;               /* 移除内边距，由容器控制 */
     width: 100%%;
-    max-height: calc(100%% - 80px); /* 强制底部边距：容器高度减去80px底部边距 */
-    overflow: hidden;         /* 隐藏超出部分，强制执行边距限制 */
+    /* 移除高度限制，允许内容完整显示 */
+    overflow: visible;        /* 允许内容可见，不隐藏超出部分 */
     word-wrap: break-word;
     word-break: break-word;   /* 中文换行优化 */
     hyphens: auto;
@@ -2267,7 +2267,7 @@ body {
     width: %dpx;
     height: %dpx; /* 强制固定高度 */
     padding: %dpx %dpx 80px %dpx; /* 优化内边距：上右(底部固定80px)左 */
-    overflow: hidden; /* 隐藏超出部分，确保边距限制 */
+    overflow: visible; /* 允许内容可见，不隐藏超出部分 */
     background-color: %s;
     position: relative;
     box-sizing: border-box; /* 确保padding包含在宽度内 */

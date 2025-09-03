@@ -115,7 +115,7 @@ pagination:
     padding:
       top: 60     # 标准内边距: 60px 50px
       right: 50
-      bottom: 10  # 优化：减少底部留白从60px到10px
+      bottom: 40  # 修复：增加底部留白，确保文字不被遮挡
       left: 50
   
   # 动态分页优化配置
