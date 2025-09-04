@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -493,13 +494,118 @@ func (hc *HTMLConverter) GetBackgroundImage() string {
 	return hc.config.BackgroundImage
 }
 
+// preprocessMarkdownForCorrectHeadingDetection 预处理markdown内容，确保只有真正以 ## 开头的内容才被识别为二级标题
+func (hc *HTMLConverter) preprocessMarkdownForCorrectHeadingDetection(markdownText string) string {
+	lines := strings.Split(markdownText, "\n")
+	var processedLines []string
+
+	for _, line := range lines {
+		// 检查是否是以 ## 开头的真正二级标题
+		if strings.HasPrefix(line, "## ") {
+			// 这是真正的二级标题，保持不变
+			processedLines = append(processedLines, line)
+		} else if strings.HasPrefix(line, "# ") {
+			// 这是一级标题，保持不变
+			processedLines = append(processedLines, line)
+		} else {
+			// 其他内容，确保不会被误识别为标题
+			// 特别处理：如果内容以冒号结尾且看起来像标题，但实际不是以 ## 开头，则强制转换为普通段落
+			trimmedLine := strings.TrimSpace(line)
+			if strings.HasSuffix(trimmedLine, ":") && len(trimmedLine) > 5 && len(trimmedLine) < 50 {
+				// 这可能是被误识别为标题的内容，强制添加段落标记
+				processedLines = append(processedLines, line)
+			} else {
+				processedLines = append(processedLines, line)
+			}
+		}
+	}
+
+	return strings.Join(processedLines, "\n")
+}
+
+// fixIncorrectHeadingDetection 修复被错误识别为标题的内容
+func (hc *HTMLConverter) fixIncorrectHeadingDetection(htmlContent, originalMarkdown string) string {
+	// 分析原始markdown内容，找出哪些内容被错误识别为标题
+	lines := strings.Split(originalMarkdown, "\n")
+
+	for _, line := range lines {
+		trimmedLine := strings.TrimSpace(line)
+
+		// 跳过空行和真正的标题
+		if trimmedLine == "" || strings.HasPrefix(trimmedLine, "# ") || strings.HasPrefix(trimmedLine, "## ") {
+			continue
+		}
+
+		// 检查这一行是否被错误识别为标题
+		// 如果原始内容没有标题前缀，但HTML中有对应的h2标签，则修复
+		if hc.isLineIncorrectlyIdentifiedAsHeading(trimmedLine, htmlContent) {
+			htmlContent = hc.fixSpecificIncorrectHeading(trimmedLine, htmlContent)
+		}
+	}
+
+	return htmlContent
+}
+
+// isLineIncorrectlyIdentifiedAsHeading 检查某一行是否被错误识别为标题
+func (hc *HTMLConverter) isLineIncorrectlyIdentifiedAsHeading(line, htmlContent string) bool {
+	// 如果原始行没有标题前缀，但HTML中包含对应的h2标签，则认为是错误识别
+	if !strings.HasPrefix(line, "## ") && !strings.HasPrefix(line, "# ") {
+		// 转义特殊字符用于正则表达式
+		escapedLine := regexp.QuoteMeta(line)
+		// 检查HTML中是否有对应的h2标签
+		pattern := fmt.Sprintf(`<h2[^>]*>%s`, escapedLine)
+		re := regexp.MustCompile(pattern)
+		return re.MatchString(htmlContent)
+	}
+	return false
+}
+
+// fixSpecificIncorrectHeading 修复特定被错误识别的标题
+func (hc *HTMLConverter) fixSpecificIncorrectHeading(line, htmlContent string) string {
+	// 转义特殊字符用于正则表达式
+	escapedLine := regexp.QuoteMeta(line)
+
+	// 匹配h2标签及其内容，直到遇到</h2>
+	pattern := fmt.Sprintf(`<h2[^>]*>%s([^<]*(?:<br>[^<]*)*)</h2>`, escapedLine)
+	re := regexp.MustCompile(pattern)
+
+	// 替换为段落标签
+	replacement := fmt.Sprintf(`<p>%s$1</p>`, line)
+
+	return re.ReplaceAllString(htmlContent, replacement)
+}
+
 // ConvertMarkdownCardToHTML 将Markdown内容转换为卡片HTML
 func (hc *HTMLConverter) ConvertMarkdownCardToHTML(markdownText, title string, cardIndex int) string {
+	// 添加调试日志，查看输入的markdown内容
+	log.C(context.Background()).Infow("🔍 ConvertMarkdownCardToHTML 输入内容",
+		"card_index", cardIndex,
+		"markdown_length", len(markdownText),
+		"markdown_content", markdownText)
+
+	// 预处理markdown内容，修复标题识别问题
+	processedMarkdown := hc.preprocessMarkdownForCorrectHeadingDetection(markdownText)
+
+	// 添加调试日志，查看预处理后的markdown内容
+	log.C(context.Background()).Infow("🔍 ConvertMarkdownCardToHTML 预处理后内容",
+		"card_index", cardIndex,
+		"processed_length", len(processedMarkdown),
+		"processed_content", processedMarkdown)
+
 	// 转换markdown为HTML
-	contentHTML, err := hc.ConvertToHTML(markdownText)
+	contentHTML, err := hc.ConvertToHTML(processedMarkdown)
 	if err != nil {
-		contentHTML = fmt.Sprintf("<p>%s</p>", hc.escapeHTML(markdownText))
+		contentHTML = fmt.Sprintf("<p>%s</p>", hc.escapeHTML(processedMarkdown))
 	}
+
+	// 后处理：修复被错误识别为标题的内容
+	contentHTML = hc.fixIncorrectHeadingDetection(contentHTML, markdownText)
+
+	// 添加调试日志，查看转换后的HTML内容
+	log.C(context.Background()).Infow("🔍 ConvertMarkdownCardToHTML 转换结果",
+		"card_index", cardIndex,
+		"html_length", len(contentHTML),
+		"html_content", contentHTML)
 
 	// 使用清晰大字号风格包装为卡片HTML
 	return hc.wrapWithClearLargeFontStyles(contentHTML, title, cardIndex)

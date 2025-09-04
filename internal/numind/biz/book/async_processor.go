@@ -1485,15 +1485,30 @@ func (p *AsyncBookProcessor) convertMarkdownToElements(markdown string) []pagina
 			}
 
 			// 跳过一级标题（已经在book title中处理）
-			if !strings.HasPrefix(line, "# ") {
-				// 二级标题
-				title := strings.TrimSpace(strings.TrimPrefix(line, "## "))
-				if title != "" {
+			continue
+		}
+
+		// 检查是否是二级标题
+		if strings.HasPrefix(line, "## ") {
+			// 保存之前的内容
+			if currentContent.Len() > 0 {
+				content := strings.TrimSpace(currentContent.String())
+				if content != "" {
 					elements = append(elements, pagination.Element{
-						Type:    pagination.ElementTypeSubtitle,
-						Content: title,
+						Type:    currentType,
+						Content: content,
 					})
 				}
+				currentContent.Reset()
+			}
+
+			// 二级标题
+			title := strings.TrimSpace(strings.TrimPrefix(line, "## "))
+			if title != "" {
+				elements = append(elements, pagination.Element{
+					Type:    pagination.ElementTypeSubtitle,
+					Content: title,
+				})
 			}
 			continue
 		}
