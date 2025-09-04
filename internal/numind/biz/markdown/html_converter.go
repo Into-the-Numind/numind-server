@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -84,7 +85,7 @@ func NewHTMLConverter() *HTMLConverter {
 		Padding:             60,
 		PaddingTop:          60,
 		PaddingRight:        50,
-		PaddingBottom:       10, // 减少底部内边距
+		PaddingBottom:       40, // 增加底部内边距，确保文字不被遮挡
 		PaddingLeft:         50,
 		BackgroundColor:     "#ffffff",
 		TextColor:           "#333333",
@@ -493,13 +494,118 @@ func (hc *HTMLConverter) GetBackgroundImage() string {
 	return hc.config.BackgroundImage
 }
 
+// preprocessMarkdownForCorrectHeadingDetection 预处理markdown内容，确保只有真正以 ## 开头的内容才被识别为二级标题
+func (hc *HTMLConverter) preprocessMarkdownForCorrectHeadingDetection(markdownText string) string {
+	lines := strings.Split(markdownText, "\n")
+	var processedLines []string
+
+	for _, line := range lines {
+		// 检查是否是以 ## 开头的真正二级标题
+		if strings.HasPrefix(line, "## ") {
+			// 这是真正的二级标题，保持不变
+			processedLines = append(processedLines, line)
+		} else if strings.HasPrefix(line, "# ") {
+			// 这是一级标题，保持不变
+			processedLines = append(processedLines, line)
+		} else {
+			// 其他内容，确保不会被误识别为标题
+			// 特别处理：如果内容以冒号结尾且看起来像标题，但实际不是以 ## 开头，则强制转换为普通段落
+			trimmedLine := strings.TrimSpace(line)
+			if strings.HasSuffix(trimmedLine, ":") && len(trimmedLine) > 5 && len(trimmedLine) < 50 {
+				// 这可能是被误识别为标题的内容，强制添加段落标记
+				processedLines = append(processedLines, line)
+			} else {
+				processedLines = append(processedLines, line)
+			}
+		}
+	}
+
+	return strings.Join(processedLines, "\n")
+}
+
+// fixIncorrectHeadingDetection 修复被错误识别为标题的内容
+func (hc *HTMLConverter) fixIncorrectHeadingDetection(htmlContent, originalMarkdown string) string {
+	// 分析原始markdown内容，找出哪些内容被错误识别为标题
+	lines := strings.Split(originalMarkdown, "\n")
+
+	for _, line := range lines {
+		trimmedLine := strings.TrimSpace(line)
+
+		// 跳过空行和真正的标题
+		if trimmedLine == "" || strings.HasPrefix(trimmedLine, "# ") || strings.HasPrefix(trimmedLine, "## ") {
+			continue
+		}
+
+		// 检查这一行是否被错误识别为标题
+		// 如果原始内容没有标题前缀，但HTML中有对应的h2标签，则修复
+		if hc.isLineIncorrectlyIdentifiedAsHeading(trimmedLine, htmlContent) {
+			htmlContent = hc.fixSpecificIncorrectHeading(trimmedLine, htmlContent)
+		}
+	}
+
+	return htmlContent
+}
+
+// isLineIncorrectlyIdentifiedAsHeading 检查某一行是否被错误识别为标题
+func (hc *HTMLConverter) isLineIncorrectlyIdentifiedAsHeading(line, htmlContent string) bool {
+	// 如果原始行没有标题前缀，但HTML中包含对应的h2标签，则认为是错误识别
+	if !strings.HasPrefix(line, "## ") && !strings.HasPrefix(line, "# ") {
+		// 转义特殊字符用于正则表达式
+		escapedLine := regexp.QuoteMeta(line)
+		// 检查HTML中是否有对应的h2标签
+		pattern := fmt.Sprintf(`<h2[^>]*>%s`, escapedLine)
+		re := regexp.MustCompile(pattern)
+		return re.MatchString(htmlContent)
+	}
+	return false
+}
+
+// fixSpecificIncorrectHeading 修复特定被错误识别的标题
+func (hc *HTMLConverter) fixSpecificIncorrectHeading(line, htmlContent string) string {
+	// 转义特殊字符用于正则表达式
+	escapedLine := regexp.QuoteMeta(line)
+
+	// 匹配h2标签及其内容，直到遇到</h2>
+	pattern := fmt.Sprintf(`<h2[^>]*>%s([^<]*(?:<br>[^<]*)*)</h2>`, escapedLine)
+	re := regexp.MustCompile(pattern)
+
+	// 替换为段落标签
+	replacement := fmt.Sprintf(`<p>%s$1</p>`, line)
+
+	return re.ReplaceAllString(htmlContent, replacement)
+}
+
 // ConvertMarkdownCardToHTML 将Markdown内容转换为卡片HTML
 func (hc *HTMLConverter) ConvertMarkdownCardToHTML(markdownText, title string, cardIndex int) string {
+	// 添加调试日志，查看输入的markdown内容
+	log.C(context.Background()).Infow("🔍 ConvertMarkdownCardToHTML 输入内容",
+		"card_index", cardIndex,
+		"markdown_length", len(markdownText),
+		"markdown_content", markdownText)
+
+	// 预处理markdown内容，修复标题识别问题
+	processedMarkdown := hc.preprocessMarkdownForCorrectHeadingDetection(markdownText)
+
+	// 添加调试日志，查看预处理后的markdown内容
+	log.C(context.Background()).Infow("🔍 ConvertMarkdownCardToHTML 预处理后内容",
+		"card_index", cardIndex,
+		"processed_length", len(processedMarkdown),
+		"processed_content", processedMarkdown)
+
 	// 转换markdown为HTML
-	contentHTML, err := hc.ConvertToHTML(markdownText)
+	contentHTML, err := hc.ConvertToHTML(processedMarkdown)
 	if err != nil {
-		contentHTML = fmt.Sprintf("<p>%s</p>", hc.escapeHTML(markdownText))
+		contentHTML = fmt.Sprintf("<p>%s</p>", hc.escapeHTML(processedMarkdown))
 	}
+
+	// 后处理：修复被错误识别为标题的内容
+	contentHTML = hc.fixIncorrectHeadingDetection(contentHTML, markdownText)
+
+	// 添加调试日志，查看转换后的HTML内容
+	log.C(context.Background()).Infow("🔍 ConvertMarkdownCardToHTML 转换结果",
+		"card_index", cardIndex,
+		"html_length", len(contentHTML),
+		"html_content", contentHTML)
 
 	// 使用清晰大字号风格包装为卡片HTML
 	return hc.wrapWithClearLargeFontStyles(contentHTML, title, cardIndex)
@@ -1617,8 +1723,8 @@ func (hc *HTMLConverter) splitContentWithInParagraphPagination(lines []string, e
 			// 计算剩余可用高度 - 使用真正的剩余空间
 			remainingHeight := maxContentHeight - currentHeight
 
-			// 超激进的段落分割策略：只要有剩余空间就尝试分割，最大化利用边距空间
-			if !isTitle && len(line) > 20 && remainingHeight > hc.config.BodyFontSize/3 { // 进一步降低阈值
+			// 保守的段落分割策略：确保有足够空间显示完整内容
+			if !isTitle && len(line) > 20 && remainingHeight > hc.config.BodyFontSize*2 { // 确保至少两行文字的空间
 				// 执行段落内分页
 				firstPart, secondPart := hc.SplitLongParagraph(line, remainingHeight)
 				if firstPart != "" && secondPart != "" {
@@ -1741,9 +1847,9 @@ func (hc *HTMLConverter) SplitLongParagraph(paragraph string, remainingHeight in
 			candidateFirstPart := strings.TrimSpace(string(runes[:i+1]))
 			candidateHeight := hc.calculateTextHeight(candidateFirstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
 
-			// 更激进的高度利用：允许95%-105%的剩余高度，精确填充到边距
+			// 保守的高度利用：允许80%-90%的剩余高度，保留安全边距
 			heightRatio := float64(candidateHeight) / float64(remainingHeight)
-			if heightRatio >= 0.95 && heightRatio <= 1.05 {
+			if heightRatio >= 0.80 && heightRatio <= 0.90 {
 				bestSplitPoint = i + 1
 				break
 			}
@@ -1758,7 +1864,7 @@ func (hc *HTMLConverter) SplitLongParagraph(paragraph string, remainingHeight in
 				candidateHeight := hc.calculateTextHeight(candidateFirstPart, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
 
 				heightRatio := float64(candidateHeight) / float64(remainingHeight)
-				if heightRatio >= 0.90 && heightRatio <= 1.10 {
+				if heightRatio >= 0.80 && heightRatio <= 0.90 {
 					bestSplitPoint = i + 1
 					break
 				}
@@ -2056,7 +2162,7 @@ body {
     padding: 0;
     width: 1080px;
     height: 1440px;
-    overflow: hidden;
+    overflow: visible;
     %s
     background-size: cover !important;
     background-position: center center !important;
@@ -2081,8 +2187,8 @@ body {
     color: #333;              /* 深灰色文字，替代默认黑色 */
     padding: 0;               /* 移除内边距，由容器控制 */
     width: 100%%;
-    max-height: calc(100%% - 80px); /* 强制底部边距：容器高度减去80px底部边距 */
-    overflow: hidden;         /* 隐藏超出部分，强制执行边距限制 */
+    /* 移除高度限制，允许内容完整显示 */
+    overflow: visible;        /* 允许内容可见，不隐藏超出部分 */
     word-wrap: break-word;
     word-break: break-word;   /* 中文换行优化 */
     hyphens: auto;
@@ -2267,7 +2373,7 @@ body {
     width: %dpx;
     height: %dpx; /* 强制固定高度 */
     padding: %dpx %dpx 80px %dpx; /* 优化内边距：上右(底部固定80px)左 */
-    overflow: hidden; /* 隐藏超出部分，确保边距限制 */
+    overflow: visible; /* 允许内容可见，不隐藏超出部分 */
     background-color: %s;
     position: relative;
     box-sizing: border-box; /* 确保padding包含在宽度内 */

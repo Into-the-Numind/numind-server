@@ -106,7 +106,7 @@ func (r *WebPRenderer) generateHTML(elements []pagination.Element) string {
             background-color: #ffffff;
             width: ` + fmt.Sprintf("%dpx", r.config.Card.Width) + `;
             height: ` + fmt.Sprintf("%dpx", r.config.Card.Height) + `;
-            overflow: hidden !important;
+            overflow: visible !important;
             padding: ` + fmt.Sprintf("%dpx", r.config.Card.Padding.Top) + ` ` + fmt.Sprintf("%dpx", r.config.Card.Padding.Right) + ` ` + fmt.Sprintf("%dpx", r.config.Card.Padding.Bottom) + ` ` + fmt.Sprintf("%dpx", r.config.Card.Padding.Left) + `;
         }
 

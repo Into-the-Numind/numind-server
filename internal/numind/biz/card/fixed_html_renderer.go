@@ -87,22 +87,22 @@ func (r *FixedHTMLRenderer) RenderHTMLFileToWebP(htmlFilePath string, outputPath
 
 // fixHTMLContent 修复HTML内容
 func (r *FixedHTMLRenderer) fixHTMLContent(htmlContent string) string {
-	// 修复CSS样式问题
+	// 修复CSS样式问题，保持overflow: visible以显示完整内容
 	fixedCSS := `
 		body {
-			overflow: hidden !important;
+			overflow: visible !important;
 			width: 1080px !important;
 			height: 1440px !important;
 			margin: 0 !important;
 			padding: 0 !important;
 		}
 		.markdown-card-container {
-			overflow: hidden !important;
+			overflow: visible !important;
 			width: 1080px !important;
 			height: 1440px !important;
 		}
 		.markdown-content {
-			overflow: hidden !important;
+			overflow: visible !important;
 		}
 	`
 

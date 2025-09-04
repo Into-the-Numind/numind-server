@@ -1485,15 +1485,30 @@ func (p *AsyncBookProcessor) convertMarkdownToElements(markdown string) []pagina
 			}
 
 			// 跳过一级标题（已经在book title中处理）
-			if !strings.HasPrefix(line, "# ") {
-				// 二级标题
-				title := strings.TrimSpace(strings.TrimPrefix(line, "## "))
-				if title != "" {
+			continue
+		}
+
+		// 检查是否是二级标题
+		if strings.HasPrefix(line, "## ") {
+			// 保存之前的内容
+			if currentContent.Len() > 0 {
+				content := strings.TrimSpace(currentContent.String())
+				if content != "" {
 					elements = append(elements, pagination.Element{
-						Type:    pagination.ElementTypeSubtitle,
-						Content: title,
+						Type:    currentType,
+						Content: content,
 					})
 				}
+				currentContent.Reset()
+			}
+
+			// 二级标题
+			title := strings.TrimSpace(strings.TrimPrefix(line, "## "))
+			if title != "" {
+				elements = append(elements, pagination.Element{
+					Type:    pagination.ElementTypeSubtitle,
+					Content: title,
+				})
 			}
 			continue
 		}
@@ -2150,8 +2165,8 @@ func (p *AsyncBookProcessor) renderWithWkhtmltoimage(ctx context.Context, cardID
 	fixedHTMLContent := p.fixHTMLContentForRendering(htmlContent)
 
 	// 检查修复后的HTML内容
-	fixedOverflowCount := strings.Count(fixedHTMLContent, "overflow: hidden !important")
-	log.C(ctx).Infow("修复后HTML内容检查", "card_id", cardID, "overflow_hidden_count", fixedOverflowCount)
+	fixedOverflowCount := strings.Count(fixedHTMLContent, "overflow: visible !important")
+	log.C(ctx).Infow("修复后HTML内容检查", "card_id", cardID, "overflow_visible_count", fixedOverflowCount)
 
 	// 保存修复后的HTML文件用于调试
 	debugHTMLPath := strings.Replace(fullImagePath, ".webp", "_fixed.html", 1)
@@ -2182,24 +2197,24 @@ func (p *AsyncBookProcessor) renderWithWkhtmltoimage(ctx context.Context, cardID
 
 // fixHTMLContentForRendering 修复HTML内容以适配渲染
 func (p *AsyncBookProcessor) fixHTMLContentForRendering(htmlContent string) string {
-	// 直接替换有问题的CSS属性
-	htmlContent = strings.ReplaceAll(htmlContent, "overflow: visible;", "overflow: hidden !important;")
-	htmlContent = strings.ReplaceAll(htmlContent, "overflow: visible", "overflow: hidden !important")
+	// 保持overflow: visible，不强制改为hidden，解决底部文字被遮盖问题
+	// htmlContent = strings.ReplaceAll(htmlContent, "overflow: visible;", "overflow: hidden !important;")
+	// htmlContent = strings.ReplaceAll(htmlContent, "overflow: visible", "overflow: hidden !important")
 
-	// 添加固定尺寸的CSS
+	// 添加固定尺寸的CSS，但保持overflow: visible以显示完整内容
 	fixedCSS := `
 		body { 
 			width: 1080px !important; 
 			height: 1440px !important; 
-			overflow: hidden !important; 
+			overflow: visible !important; 
 		}
 		.markdown-card-container { 
 			width: 1080px !important; 
 			height: 1440px !important; 
-			overflow: hidden !important; 
+			overflow: visible !important; 
 		}
 		.markdown-content { 
-			overflow: hidden !important; 
+			overflow: visible !important; 
 		}
 	`
 
@@ -2563,7 +2578,7 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
             width: 1080px;
             height: 1440px;
-            overflow: hidden !important;
+            overflow: visible !important;
             %s
             position: relative;
         }
