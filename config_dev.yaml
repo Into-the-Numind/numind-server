@@ -113,48 +113,48 @@ pagination:
     width: 1080   # 标准尺寸: 1080×1440（3:4比例）
     height: 1440  # 基础高度，实际使用动态高度
     padding:
-      top: 60     # 标准内边距: 60px 50px
-      right: 50
-      bottom: 40  # 修复：增加底部留白，确保文字不被遮挡
-      left: 50
+      top: 120     # 标准内边距: 60px 50px
+      right: 90
+      bottom: 100  # 修复：增加底部留白，确保文字不被遮挡
+      left: 90
   
   # 动态分页优化配置
   dynamic:
     min_height: 720          # 最小卡片高度
     max_height: 4320         # 最大卡片高度（3倍标准高度）
-    min_bottom_padding: 10   # 最小底部留白
-    max_images_per_card: 5   # 每张卡片最大图片数
-    max_text_length: 2000    # 每张卡片最大文本长度
+    min_bottom_padding: 50   # 最小底部留白
+    max_images_per_card: 2   # 每张卡片最大图片数
+    max_text_length: 1000    # 每张卡片最大文本长度
   
   # 元素样式配置
   styles:
     title:
-      font_size: 64        # 标题: 64px（最大）
+      font_size: 80        # 标题: 64px（最大）
       line_height: 90      # 1.4倍行高
-      margin_top: 30       # 标题上间距: 30px（统一标准）
-      margin_bottom: 30    # 标题下方间距: 30px（统一标准）
+      margin_top: 50       # 标题上间距: 30px（统一标准）
+      margin_bottom: 50    # 标题下方间距: 30px（统一标准）
       color: "#333333"     # 主标题: #333333（深灰）
       align: "justify"     # 两端对齐
     
     subtitle:
-      font_size: 48        # 副标题: 48px（中等）
-      line_height: 72      # 1.5倍行高
+      font_size: 65        # 副标题: 48px（中等）
+      line_height: 70      # 1.5倍行高
       margin_top: 30       # 副标题上间距: 30px（统一标准）
-      margin_bottom: 25    # 副标题下方: 25px（标准下间距）
+      margin_bottom: 30    # 副标题下方: 25px（标准下间距）
       color: "#666666"     # 副标题: #666666（中灰）
       align: "justify"     # 两端对齐
     
     body:
-      font_size: 36        # 正文: 36px（标准）
-      line_height: 58      # 1.6倍行高（标准行高）
+      font_size: 55        # 正文: 36px（标准）
+      line_height: 70      # 1.6倍行高（标准行高）
       margin_top: 30       # 正文上间距: 30px（统一标准）
       margin_bottom: 30    # 正文下方间距: 30px（统一标准）
       color: "#333333"     # 正文: #333333（深灰）
       align: "justify"     # 两端对齐
     
     list:
-      font_size: 36        # 列表: 36px（标准）
-      line_height: 58      # 1.6倍行高（标准行高）
+      font_size: 55        # 列表: 36px（标准）
+      line_height: 70      # 1.6倍行高（标准行高）
       margin_top: 30       # 列表上间距: 30px（统一标准）
       margin_bottom: 30    # 列表下方间距: 30px（统一标准）
       color: "#333333"     # 列表: #333333（深灰）
@@ -162,28 +162,28 @@ pagination:
       indent: 20           # 列表缩进
     
     quote:
-      font_size: 36        # 引用: 36px（强调）
-      line_height: 54      # 1.5倍行高（紧凑行高）
+      font_size: 55        # 引用: 36px（强调）
+      line_height: 70      # 1.5倍行高（紧凑行高）
       margin_top: 30       # 引用上间距: 30px（统一标准）
       margin_bottom: 30    # 引用下方间距: 30px（统一标准）
       color: "#1E90FF"     # 引用: #1E90FF（蓝色）
       align: "justify"     # 两端对齐
     
     tag:
-      font_size: 28        # 标签: 28px（最小）
-      line_height: 42      # 1.5倍行高
+      font_size: 35        # 标签: 28px（最小）
+      line_height: 50      # 1.5倍行高
       margin_top: 30       # 标签上间距: 30px（统一标准）
       margin_bottom: 30    # 标签下方间距: 30px（统一标准）
       color: "#1E90FF"     # 标签: #1E90FF（蓝色）
       align: "left"        # 左对齐
     
     number:
-      font_size: 28        # 数字: 28px（最小）
-      line_height: 42      # 1.5倍行高
+      font_size: 55        # 数字: 28px（最小）
+      line_height: 70      # 1.5倍行高
       margin_top: 30       # 数字上间距: 30px（统一标准）
       margin_bottom: 30    # 数字下方间距: 30px（统一标准）
-      color: "#1E90FF"     # 数字: #1E90FF（蓝色）
-      align: "center"      # 居中对齐
+      color: "#333333"     # 数字: #1E90FF（蓝色）
+      align: "justify"     # 两端对齐
   
   # 特殊渲染规则配置
   special_rules:
@@ -192,13 +192,13 @@ pagination:
       height: 1440         # 封面卡片高度（3:4比例）
       title_section:
         background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
-        backdrop_filter: "blur(10px)"            # 背景模糊效果
+        backdrop_filter: "blur(5px)"            # 背景模糊效果
         box_shadow: "0 4px 20px rgba(0, 0, 0, 0.1)"  # 阴影效果
       image_section:
         background: "transparent"                # 图片区域透明背景
     
     content_card:
-      safe_area_margin: 30                      # 内容安全区域边距
+      safe_area_margin: 50                      # 内容安全区域边距
       max_content_height: 1200                  # 内容最大高度
       overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
 
