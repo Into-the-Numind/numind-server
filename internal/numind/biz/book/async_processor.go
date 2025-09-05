@@ -168,7 +168,13 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		templateBackground = "" // 使用默认白色背景
 	}
 
-	// 🚀 第一步：调用文字大模型，获取返回的 markdown 格式内容
+	// 🚀 第一步：更新状态为AI处理中
+	log.C(ctx).Infow("🚀 更新状态为AI处理中", "book_id", bookID)
+	if err := p.updateBookStatus(ctx, bookID, model.BookStatusAI, ""); err != nil {
+		log.C(ctx).Errorw("Failed to update book status to AI processing", "book_id", bookID, "error", err.Error())
+	}
+
+	// 调用文字大模型，获取返回的 markdown 格式内容
 	log.C(ctx).Infow("🚀 第一步：调用文字大模型处理文本", "book_id", bookID, "text_length", len(text))
 
 	// 获取配置文件中的提示词
@@ -275,6 +281,12 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	book.ImageUrl = imageUrl
 	if err := p.biz.Books().Update(ctx, book); err != nil {
 		log.C(ctx).Errorw("Failed to update book with title and image", "book_id", bookID, "error", err.Error())
+	}
+
+	// 🎨 第四步：更新状态为渲染中
+	log.C(ctx).Infow("🎨 更新状态为渲染中", "book_id", bookID)
+	if err := p.updateBookStatus(ctx, bookID, model.BookStatusRender, ""); err != nil {
+		log.C(ctx).Errorw("Failed to update book status to rendering", "book_id", bookID, "error", err.Error())
 	}
 
 	// 使用简化的markdown渲染器处理

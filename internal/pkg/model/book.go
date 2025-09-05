@@ -92,6 +92,8 @@ func (b *BookM) GetID() uint {
 // BookStatus 定义book状态常量
 const (
 	BookStatusCreating = "creating" // 创建中
+	BookStatusAI       = "ai"       // 等待AI处理
+	BookStatusRender   = "render"   // 正在渲染
 	BookStatusSuccess  = "success"  // 创建成功
 	BookStatusFailed   = "failed"   // 创建失败
 )
