@@ -3,11 +3,13 @@ package payment
 import (
 	"context"
 	"fmt"
-	"numind-server/internal/pkg/model"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/model"
 	"time"
 
 	"numind-server/internal/pkg/log"
+
+	"gorm.io/gorm"
 )
 
 // PaymentBiz 支付业务接口
@@ -42,15 +44,17 @@ func (b *paymentBiz) CreatePayment(ctx context.Context, req *model.CreatePayment
 
 	// 创建支付记录
 	payment := &model.PaymentM{
-		OutTradeNo:  req.OutTradeNo,
-		UserID:      userID,
-		Amount:      req.Amount,
-		Description: req.Description,
-		Channel:     model.PaymentChannelWechat, // 默认微信支付
-		Status:      model.PaymentStatusPending,
-		PayMethod:   req.PayMethod,
-		OpenID:      req.OpenID,
-		ExpireAt:    &time.Time{}, // 设置过期时间
+		OutTradeNo:     req.OutTradeNo,
+		UserID:         userID,
+		Amount:         req.Amount,
+		Description:    req.Description,
+		Channel:        model.PaymentChannelWechat, // 默认微信支付
+		Status:         model.PaymentStatusPending,
+		PayMethod:      req.PayMethod,
+		OpenID:         req.OpenID,
+		MembershipType: req.MembershipType,
+		PackageCount:   req.PackageCount,
+		ExpireAt:       &time.Time{}, // 设置过期时间
 	}
 
 	// 设置过期时间为30分钟后
@@ -99,6 +103,11 @@ func (b *paymentBiz) UpdatePaymentStatus(ctx context.Context, outTradeNo, status
 	if status == model.PaymentStatusSuccess {
 		log.C(ctx).Infow("Payment successful", "out_trade_no", outTradeNo, "transaction_id", transactionID)
 		// 这里可以添加支付成功后的业务逻辑，比如更新订单状态、发送通知等
+		// 处理会员购买逻辑
+		if err := b.handleMembershipPurchase(ctx, payment); err != nil {
+			log.C(ctx).Errorw("Failed to handle membership purchase", "error", err.Error(), "out_trade_no", outTradeNo)
+			// 记录错误但不影响支付状态更新
+		}
 	}
 
 	return nil
@@ -160,4 +169,76 @@ func isValidStatusTransition(fromStatus, toStatus string) bool {
 	}
 
 	return false
+}
+
+// handleMembershipPurchase 处理会员购买
+func (b *paymentBiz) handleMembershipPurchase(ctx context.Context, payment *model.PaymentM) error {
+	// 获取用户信息
+	user, err := b.ds.Users().GetUserByID(ctx, payment.UserID)
+	if err != nil {
+		return fmt.Errorf("获取用户信息失败: %w", err)
+	}
+
+	// 根据会员类型更新用户状态
+	switch payment.MembershipType {
+	case model.MembershipTypeMonthly, model.MembershipTypeYearly:
+		// 月度或年度会员
+		now := time.Now()
+		var expiresAt *time.Time
+
+		if payment.MembershipType == model.MembershipTypeMonthly {
+			expires := now.AddDate(0, 1, 0) // 1个月后
+			expiresAt = &expires
+		} else if payment.MembershipType == model.MembershipTypeYearly {
+			expires := now.AddDate(1, 0, 0) // 1年后
+			expiresAt = &expires
+		}
+
+		// 更新用户会员信息
+		updateData := map[string]interface{}{
+			"membership_type":    payment.MembershipType,
+			"is_pro":             true,
+			"membership_expires": expiresAt,
+		}
+
+		// 如果用户已有会员且未过期，延长到期时间
+		if user.MembershipType != model.MembershipTypeFree &&
+			user.MembershipExpires != nil &&
+			user.MembershipExpires.After(now) {
+			// 在现有到期时间基础上延长
+			if payment.MembershipType == model.MembershipTypeMonthly {
+				newExpires := user.MembershipExpires.AddDate(0, 1, 0)
+				updateData["membership_expires"] = &newExpires
+			} else if payment.MembershipType == model.MembershipTypeYearly {
+				newExpires := user.MembershipExpires.AddDate(1, 0, 0)
+				updateData["membership_expires"] = &newExpires
+			}
+		}
+
+		if err := b.ds.DB().Model(&model.User{}).Where("id = ?", payment.UserID).
+			Updates(updateData).Error; err != nil {
+			return fmt.Errorf("更新用户会员状态失败: %w", err)
+		}
+
+	case model.MembershipTypePackage:
+		// 包次数类型，增加次数
+		if err := b.ds.DB().Model(&model.User{}).Where("id = ?", payment.UserID).
+			UpdateColumns(map[string]interface{}{
+				"membership_type": model.MembershipTypePackage,
+				"is_pro":          true,
+				"package_count":   gorm.Expr("package_count + ?", payment.PackageCount),
+			}).Error; err != nil {
+			return fmt.Errorf("更新用户包次数失败: %w", err)
+		}
+
+	default:
+		return fmt.Errorf("不支持的会员类型: %s", payment.MembershipType)
+	}
+
+	log.C(ctx).Infow("Membership purchase processed successfully",
+		"user_id", payment.UserID,
+		"membership_type", payment.MembershipType,
+		"package_count", payment.PackageCount)
+
+	return nil
 }

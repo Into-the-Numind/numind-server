@@ -59,6 +59,10 @@ type UserBiz interface {
 
 	// 用户权限更新
 	SetUserPro(ctx context.Context, userID uint, isPro bool) error
+
+	// 会员相关方法
+	UpdateUserMembership(ctx context.Context, userID uint, membershipType string, packageCount int) error
+	AddUserPackageCount(ctx context.Context, userID uint, count int) error
 }
 
 // UserBiz 接口的实现.
@@ -648,4 +652,49 @@ func (b *userBiz) IncrementUserChatNum(ctx context.Context, userID uint) error {
 func (b *userBiz) SetUserPro(ctx context.Context, userID uint, isPro bool) error {
 	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
 		UpdateColumn("is_pro", isPro).Error
+}
+
+// UpdateUserMembership 更新用户会员状态
+func (b *userBiz) UpdateUserMembership(ctx context.Context, userID uint, membershipType string, packageCount int) error {
+	now := time.Now()
+	var expiresAt *time.Time
+
+	// 根据会员类型设置到期时间
+	switch membershipType {
+	case model.MembershipTypeMonthly:
+		expires := now.AddDate(0, 1, 0) // 1个月后
+		expiresAt = &expires
+	case model.MembershipTypeYearly:
+		expires := now.AddDate(1, 0, 0) // 1年后
+		expiresAt = &expires
+	case model.MembershipTypePackage:
+		// 包次数类型不需要设置到期时间，只需要增加次数
+		expiresAt = nil
+	default:
+		return fmt.Errorf("不支持的会员类型: %s", membershipType)
+	}
+
+	// 更新用户会员信息
+	updateData := map[string]interface{}{
+		"membership_type": membershipType,
+		"is_pro":          true, // 购买会员后设置为付费用户
+	}
+
+	if expiresAt != nil {
+		updateData["membership_expires"] = expiresAt
+	}
+
+	if membershipType == model.MembershipTypePackage {
+		// 包次数类型，增加次数
+		updateData["package_count"] = gorm.Expr("package_count + ?", packageCount)
+	}
+
+	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
+		Updates(updateData).Error
+}
+
+// AddUserPackageCount 增加用户包次数
+func (b *userBiz) AddUserPackageCount(ctx context.Context, userID uint, count int) error {
+	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
+		UpdateColumn("package_count", gorm.Expr("package_count + ?", count)).Error
 }
