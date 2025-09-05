@@ -33,7 +33,7 @@ func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage(fmt.Sprintf("参数错误: %s", err.Error())), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("参数错误: %s", err.Error()), nil)
 		return
 	}
 
@@ -59,13 +59,14 @@ func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 
 	switch req.MembershipType {
 	case model.MembershipTypeMonthly:
-		amount = 3000 // 30元，单位分
+		amount = 2800 // 28元，单位分
 		description = "月度会员"
 	case model.MembershipTypeYearly:
-		amount = 30000 // 300元，单位分
+		amount = 19800 // 198元，单位分
 		description = "年度会员"
 	case model.MembershipTypePackage:
-		amount = int64(req.PackageCount * 100) // 1元/次，单位分
+		// 根据包次数计算价格，使用定价表
+		amount = mc.calculatePackagePrice(req.PackageCount)
 		description = fmt.Sprintf("资源包会员（%d次）", req.PackageCount)
 	}
 
@@ -83,7 +84,7 @@ func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 	// 创建支付记录
 	paymentResp, err := mc.b.Payments().CreatePayment(c, paymentReq, userID.ID)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(fmt.Sprintf("创建支付失败: %s", err.Error())), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("创建支付失败: %s", err.Error()), nil)
 		return
 	}
 
@@ -166,8 +167,24 @@ func (mc *MembershipController) GetMembershipInfo(c *gin.Context) {
 	// 获取用户信息
 	user, err := mc.b.Users().GetCurrentUser(c, userID.ID)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(fmt.Sprintf("获取用户信息失败: %s", err.Error())), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("获取用户信息失败: %s", err.Error()), nil)
 		return
+	}
+
+	// 计算package剩余次数信息
+	var packageInfo gin.H
+	if user.MembershipType == model.MembershipTypePackage {
+		packageInfo = gin.H{
+			"remaining_count": user.PackageCount,
+			"description":     fmt.Sprintf("资源包剩余%d次", user.PackageCount),
+			"can_use":         user.PackageCount > 0,
+		}
+	} else {
+		packageInfo = gin.H{
+			"remaining_count": 0,
+			"description":     "非资源包会员",
+			"can_use":         false,
+		}
 	}
 
 	// 返回会员信息
@@ -175,6 +192,7 @@ func (mc *MembershipController) GetMembershipInfo(c *gin.Context) {
 		"membership_type":    user.MembershipType,
 		"membership_expires": user.MembershipExpires,
 		"package_count":      user.PackageCount,
+		"package_info":       packageInfo,
 		"is_pro":             user.IsPro,
 		"membership_status":  user.GetMembershipStatus(),
 		"is_active":          user.IsMembershipActive(),
@@ -187,27 +205,153 @@ func (mc *MembershipController) GetMembershipPlans(c *gin.Context) {
 		{
 			"type":        "monthly",
 			"name":        "月度会员",
-			"price":       3000, // 30元，单位分
+			"price":       2800, // 28元，单位分
 			"description": "享受月度会员权益",
-			"features":    []string{"无限次生成", "高级模板", "优先客服"},
+			"features":    []string{"30次/月卡册创建", "无水印", "解锁全部模板", "高峰期优先处理"},
 		},
 		{
 			"type":        "yearly",
 			"name":        "年度会员",
-			"price":       30000, // 300元，单位分
-			"description": "享受年度会员权益，更优惠",
-			"features":    []string{"无限次生成", "高级模板", "优先客服", "专属功能"},
+			"price":       19800, // 198元，单位分
+			"description": "享受年度会员权益，约16.5元/月，立省40%",
+			"features":    []string{"30次/月卡册创建", "无水印", "解锁全部模板", "高峰期优先处理", "年度优惠价格"},
+		},
+		// 资源包选项 - 根据定价表
+		{
+			"type":        "package",
+			"name":        "1次创作包",
+			"price":       300, // 3元，单位分
+			"count":       1,
+			"unit_price":  300, // 3.0元/次，单位分
+			"description": "单次使用，适合偶尔使用",
+			"features":    []string{"按次计费", "灵活使用", "适合偶尔使用"},
 		},
 		{
 			"type":        "package",
-			"name":        "资源包",
-			"price":       100, // 1元/次，单位分
-			"description": "按次购买，灵活使用",
-			"features":    []string{"按需购买", "永久有效", "灵活使用"},
+			"name":        "5次创作包",
+			"price":       1200, // 12元，单位分
+			"count":       5,
+			"unit_price":  240, // 2.4元/次，单位分
+			"description": "5次使用，单次成本2.4元",
+			"features":    []string{"按次计费", "灵活使用", "单次成本优惠"},
+		},
+		{
+			"type":        "package",
+			"name":        "20次创作包",
+			"price":       3800, // 38元，单位分
+			"count":       20,
+			"unit_price":  190, // 1.9元/次，单位分
+			"description": "20次使用，单次成本1.9元",
+			"features":    []string{"按次计费", "灵活使用", "单次成本更优惠"},
+		},
+		{
+			"type":        "package",
+			"name":        "50次创作包",
+			"price":       5000, // 50元，单位分
+			"count":       50,
+			"unit_price":  100, // 1.0元/次，单位分
+			"description": "50次使用，单次成本1.0元",
+			"features":    []string{"按次计费", "灵活使用", "单次成本最优惠"},
 		},
 	}
 
 	core.WriteResponse(c, nil, gin.H{
 		"plans": plans,
 	})
+}
+
+// CheckCreatePermission 检查用户是否有创建卡册的权限
+func (mc *MembershipController) CheckCreatePermission(c *gin.Context) {
+	// 获取当前用户ID
+	userID := middleware.GetCurrentUser(c)
+	if userID == nil {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("用户未登录"), nil)
+		return
+	}
+
+	// 获取用户信息
+	user, err := mc.b.Users().GetCurrentUser(c, userID.ID)
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("获取用户信息失败: %s", err.Error()), nil)
+		return
+	}
+
+	// 计算权限
+	permission := mc.calculateCreatePermission(user)
+
+	core.WriteResponse(c, nil, gin.H{
+		"can_create":         permission.CanCreate,
+		"reason":             permission.Reason,
+		"membership_type":    user.MembershipType,
+		"is_pro":             user.IsPro,
+		"package_count":      user.PackageCount,
+		"book_all_num":       user.BookAllNum,
+		"membership_expires": user.MembershipExpires,
+	})
+}
+
+// CreatePermission 创建权限信息
+type CreatePermission struct {
+	CanCreate bool   `json:"can_create"`
+	Reason    string `json:"reason"`
+}
+
+// calculateCreatePermission 计算用户创建卡册权限
+func (mc *MembershipController) calculateCreatePermission(user *model.User) *CreatePermission {
+	// 检查会员状态
+	if user.IsMembershipActive() {
+		// 会员有效，可以创建
+		return &CreatePermission{
+			CanCreate: true,
+			Reason:    "会员有效，可以创建卡册",
+		}
+	}
+
+	// 检查包次数
+	if user.MembershipType == model.MembershipTypePackage && user.PackageCount > 0 {
+		return &CreatePermission{
+			CanCreate: true,
+			Reason:    fmt.Sprintf("资源包剩余%d次，可以创建卡册", user.PackageCount),
+		}
+	}
+
+	// 检查免费用户限制
+	if user.MembershipType == model.MembershipTypeFree {
+		// 免费用户限制：已创建的卡册数量不能超过一定限制
+		// 这里假设免费用户最多可以创建3个卡册
+		const freeUserMaxBooks = 3
+		if user.BookAllNum < freeUserMaxBooks {
+			return &CreatePermission{
+				CanCreate: true,
+				Reason:    fmt.Sprintf("免费用户，已创建%d个卡册，还可以创建%d个", user.BookAllNum, freeUserMaxBooks-user.BookAllNum),
+			}
+		}
+		return &CreatePermission{
+			CanCreate: false,
+			Reason:    fmt.Sprintf("免费用户最多只能创建%d个卡册，请升级会员或购买资源包", freeUserMaxBooks),
+		}
+	}
+
+	// 会员过期
+	return &CreatePermission{
+		CanCreate: false,
+		Reason:    "会员已过期，请续费或购买资源包",
+	}
+}
+
+// calculatePackagePrice 根据包次数计算价格（单位：分）
+func (mc *MembershipController) calculatePackagePrice(count int) int64 {
+	switch count {
+	case 1:
+		return 300 // 3元
+	case 5:
+		return 1200 // 12元
+	case 20:
+		return 3800 // 38元
+	case 50:
+		return 5000 // 50元
+	default:
+		// 如果不是标准包次数，按单次3元计算
+		return int64(count * 300)
+	}
 }

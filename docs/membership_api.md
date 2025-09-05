@@ -6,9 +6,15 @@
 
 ## 会员类型
 
-- `monthly`: 月度会员 (30元/月)
-- `yearly`: 年度会员 (300元/年)  
-- `package`: 资源包会员 (1元/次)
+- `monthly`: 月度会员 (28元/月)
+- `yearly`: 年度会员 (198元/年，约16.5元/月，立省40%)  
+- `package`: 资源包会员 (按次付费)
+
+### 资源包定价表
+- 1次创作包: 3元 (3.0元/次)
+- 5次创作包: 12元 (2.4元/次)
+- 20次创作包: 38元 (1.9元/次)
+- 50次创作包: 50元 (1.0元/次)
 
 ## API接口
 
@@ -60,15 +66,32 @@ Authorization: Bearer <token>
   "code": 0,
   "message": "success",
   "data": {
-    "membership_type": "monthly",
-    "membership_expires": "2024-02-01T00:00:00Z",
-    "package_count": 0,
+    "membership_type": "package",
+    "membership_expires": null,
+    "package_count": 15,
+    "package_info": {
+      "remaining_count": 15,
+      "description": "资源包剩余15次",
+      "can_use": true
+    },
     "is_pro": true,
-    "membership_status": "月度会员",
+    "membership_status": "资源包会员（剩余15次）",
     "is_active": true
   }
 }
 ```
+
+**字段说明**:
+- `membership_type`: 会员类型 (free/monthly/yearly/package)
+- `membership_expires`: 会员到期时间 (月度/年度会员有效，其他为null)
+- `package_count`: 资源包剩余次数
+- `package_info`: 资源包详细信息
+  - `remaining_count`: 剩余次数
+  - `description`: 描述信息
+  - `can_use`: 是否可以使用
+- `is_pro`: 是否为付费用户
+- `membership_status`: 会员状态描述
+- `is_active`: 会员是否有效
 
 ### 3. 获取会员套餐信息
 
@@ -86,28 +109,89 @@ Authorization: Bearer <token>
       {
         "type": "monthly",
         "name": "月度会员",
-        "price": 3000,
+        "price": 2800,
         "description": "享受月度会员权益",
-        "features": ["无限次生成", "高级模板", "优先客服"]
+        "features": ["30次/月卡册创建", "无水印", "解锁全部模板", "高峰期优先处理"]
       },
       {
         "type": "yearly", 
         "name": "年度会员",
-        "price": 30000,
-        "description": "享受年度会员权益，更优惠",
-        "features": ["无限次生成", "高级模板", "优先客服", "专属功能"]
+        "price": 19800,
+        "description": "享受年度会员权益，约16.5元/月，立省40%",
+        "features": ["30次/月卡册创建", "无水印", "解锁全部模板", "高峰期优先处理", "年度优惠价格"]
       },
       {
         "type": "package",
-        "name": "资源包",
-        "price": 100,
-        "description": "按次购买，灵活使用", 
-        "features": ["按需购买", "永久有效", "灵活使用"]
+        "name": "1次创作包",
+        "price": 300,
+        "count": 1,
+        "unit_price": 300,
+        "description": "单次使用，适合偶尔使用",
+        "features": ["按次计费", "灵活使用", "适合偶尔使用"]
+      },
+      {
+        "type": "package",
+        "name": "5次创作包",
+        "price": 1200,
+        "count": 5,
+        "unit_price": 240,
+        "description": "5次使用，单次成本2.4元",
+        "features": ["按次计费", "灵活使用", "单次成本优惠"]
+      },
+      {
+        "type": "package",
+        "name": "20次创作包",
+        "price": 3800,
+        "count": 20,
+        "unit_price": 190,
+        "description": "20次使用，单次成本1.9元",
+        "features": ["按次计费", "灵活使用", "单次成本更优惠"]
+      },
+      {
+        "type": "package",
+        "name": "50次创作包",
+        "price": 5000,
+        "count": 50,
+        "unit_price": 100,
+        "description": "50次使用，单次成本1.0元",
+        "features": ["按次计费", "灵活使用", "单次成本最优惠"]
       }
     ]
   }
 }
 ```
+
+### 4. 检查用户创建卡册权限
+
+**接口地址**: `GET /v1/membership/permission`
+
+**请求头**: 
+```
+Authorization: Bearer <token>
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "can_create": true,
+    "reason": "会员有效，可以创建卡册",
+    "membership_type": "monthly",
+    "is_pro": true,
+    "package_count": 0,
+    "book_all_num": 2,
+    "membership_expires": "2024-02-01T00:00:00Z"
+  }
+}
+```
+
+**权限判断逻辑**:
+1. **会员有效**: 月度/年度会员未过期，可以创建
+2. **资源包剩余**: 包次数会员有剩余次数，可以创建
+3. **免费用户限制**: 免费用户最多创建3个卡册
+4. **会员过期**: 会员过期且无剩余次数，不能创建
 
 ## 支付流程
 
