@@ -26,10 +26,11 @@ func NewMembershipController(b biz.IBiz) *MembershipController {
 // CreateMembershipPayment 创建会员购买支付
 func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 	var req struct {
-		MembershipType string `json:"membership_type" binding:"required,oneof=monthly yearly package"`
-		PackageCount   int    `json:"package_count,omitempty"` // 仅当membership_type为package时使用
-		PayMethod      string `json:"pay_method" binding:"required,oneof=native miniprogram jsapi"`
-		OpenID         string `json:"openid,omitempty"` // 小程序支付必填
+		MembershipType   string `json:"membership_type" binding:"required,oneof=subscription package"`
+		SubscriptionType string `json:"subscription_type,omitempty"` // 仅当membership_type为subscription时使用
+		PackageCount     int    `json:"package_count,omitempty"`     // 仅当membership_type为package时使用
+		PayMethod        string `json:"pay_method" binding:"required,oneof=native miniprogram jsapi"`
+		OpenID           string `json:"openid,omitempty"` // 小程序支付必填
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -44,10 +45,21 @@ func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 		return
 	}
 
-	// 验证包次数参数
-	if req.MembershipType == model.MembershipTypePackage && req.PackageCount <= 0 {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("包次数必须大于0"), nil)
-		return
+	// 验证参数
+	if req.MembershipType == model.MembershipTypeSubscription {
+		if req.SubscriptionType == "" {
+			core.WriteResponse(c, errno.ErrBind.SetMessage("订阅类型不能为空"), nil)
+			return
+		}
+		if req.SubscriptionType != model.SubscriptionTypeMonthly && req.SubscriptionType != model.SubscriptionTypeYearly {
+			core.WriteResponse(c, errno.ErrBind.SetMessage("无效的订阅类型"), nil)
+			return
+		}
+	} else if req.MembershipType == model.MembershipTypePackage {
+		if req.PackageCount <= 0 {
+			core.WriteResponse(c, errno.ErrBind.SetMessage("包次数必须大于0"), nil)
+			return
+		}
 	}
 
 	// 生成订单号
@@ -58,12 +70,14 @@ func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 	var description string
 
 	switch req.MembershipType {
-	case model.MembershipTypeMonthly:
-		amount = 2800 // 28元，单位分
-		description = "月度会员"
-	case model.MembershipTypeYearly:
-		amount = 19800 // 198元，单位分
-		description = "年度会员"
+	case model.MembershipTypeSubscription:
+		if req.SubscriptionType == model.SubscriptionTypeMonthly {
+			amount = 2800 // 28元，单位分
+			description = "月度订阅会员"
+		} else if req.SubscriptionType == model.SubscriptionTypeYearly {
+			amount = 19800 // 198元，单位分
+			description = "年度订阅会员"
+		}
 	case model.MembershipTypePackage:
 		// 根据包次数计算价格，使用定价表
 		amount = mc.calculatePackagePrice(req.PackageCount)
@@ -72,13 +86,14 @@ func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 
 	// 创建支付请求
 	paymentReq := &model.CreatePaymentRequest{
-		OutTradeNo:     outTradeNo,
-		Description:    description,
-		Amount:         amount,
-		OpenID:         req.OpenID,
-		PayMethod:      req.PayMethod,
-		MembershipType: req.MembershipType,
-		PackageCount:   req.PackageCount,
+		OutTradeNo:       outTradeNo,
+		Description:      description,
+		Amount:           amount,
+		OpenID:           req.OpenID,
+		PayMethod:        req.PayMethod,
+		MembershipType:   req.MembershipType,
+		SubscriptionType: req.SubscriptionType,
+		PackageCount:     req.PackageCount,
 	}
 
 	// 创建支付记录
@@ -203,18 +218,20 @@ func (mc *MembershipController) GetMembershipInfo(c *gin.Context) {
 func (mc *MembershipController) GetMembershipPlans(c *gin.Context) {
 	plans := []gin.H{
 		{
-			"type":        "monthly",
-			"name":        "月度会员",
-			"price":       2800, // 28元，单位分
-			"description": "享受月度会员权益",
-			"features":    []string{"30次/月卡册创建", "无水印", "解锁全部模板", "高峰期优先处理"},
+			"type":              "subscription",
+			"subscription_type": "monthly",
+			"name":              "月度订阅会员",
+			"price":             2800, // 28元，单位分
+			"description":       "享受月度订阅会员权益",
+			"features":          []string{"30次/月卡册创建", "无水印", "解锁全部模板", "高峰期优先处理"},
 		},
 		{
-			"type":        "yearly",
-			"name":        "年度会员",
-			"price":       19800, // 198元，单位分
-			"description": "享受年度会员权益，约16.5元/月，立省40%",
-			"features":    []string{"30次/月卡册创建", "无水印", "解锁全部模板", "高峰期优先处理", "年度优惠价格"},
+			"type":              "subscription",
+			"subscription_type": "yearly",
+			"name":              "年度订阅会员",
+			"price":             19800, // 198元，单位分
+			"description":       "享受年度订阅会员权益，约16.5元/月，立省40%",
+			"features":          []string{"30次/月卡册创建", "无水印", "解锁全部模板", "高峰期优先处理", "年度优惠价格"},
 		},
 		// 资源包选项 - 根据定价表
 		{
@@ -298,17 +315,16 @@ type CreatePermission struct {
 
 // calculateCreatePermission 计算用户创建卡册权限
 func (mc *MembershipController) calculateCreatePermission(user *model.User) *CreatePermission {
-	// 检查会员状态
-	if user.IsMembershipActive() {
-		// 会员有效，可以创建
+	// 优先检查订阅会员
+	if user.CanUseSubscription() {
 		return &CreatePermission{
 			CanCreate: true,
-			Reason:    "会员有效，可以创建卡册",
+			Reason:    fmt.Sprintf("%s有效，可以创建卡册", user.GetMembershipStatus()),
 		}
 	}
 
-	// 检查包次数
-	if user.MembershipType == model.MembershipTypePackage && user.PackageCount > 0 {
+	// 其次检查资源包
+	if user.CanUsePackage() {
 		return &CreatePermission{
 			CanCreate: true,
 			Reason:    fmt.Sprintf("资源包剩余%d次，可以创建卡册", user.PackageCount),
@@ -354,4 +370,62 @@ func (mc *MembershipController) calculatePackagePrice(count int) int64 {
 		// 如果不是标准包次数，按单次3元计算
 		return int64(count * 300)
 	}
+}
+
+// ConsumeUsage 消费使用次数（优先使用订阅会员，其次资源包）
+func (mc *MembershipController) ConsumeUsage(c *gin.Context) {
+	// 获取当前用户ID
+	userID := middleware.GetCurrentUser(c)
+	if userID == nil {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("用户未登录"), nil)
+		return
+	}
+
+	// 获取用户信息
+	user, err := mc.b.Users().GetCurrentUser(c, userID.ID)
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("获取用户信息失败: %s", err.Error()), nil)
+		return
+	}
+
+	// 检查权限
+	permission := mc.calculateCreatePermission(user)
+	if !permission.CanCreate {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage(permission.Reason), nil)
+		return
+	}
+
+	// 消费使用次数
+	usageType, err := mc.consumeUserUsage(c, user)
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("消费使用次数失败: %s", err.Error()), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"message":         "使用次数消费成功",
+		"usage_type":      usageType,
+		"remaining":       user.PackageCount,
+		"membership_type": user.MembershipType,
+	})
+}
+
+// consumeUserUsage 消费用户使用次数
+func (mc *MembershipController) consumeUserUsage(c *gin.Context, user *model.User) (string, error) {
+	// 优先使用订阅会员
+	if user.CanUseSubscription() {
+		// 订阅会员无限制，不需要扣除次数
+		return "subscription", nil
+	}
+
+	// 其次使用资源包
+	if user.CanUsePackage() {
+		// 扣除资源包次数
+		if err := mc.b.Users().ConsumePackageCount(c, user.ID, 1); err != nil {
+			return "", fmt.Errorf("扣除资源包次数失败: %w", err)
+		}
+		return "package", nil
+	}
+
+	return "", fmt.Errorf("没有可用的使用次数")
 }

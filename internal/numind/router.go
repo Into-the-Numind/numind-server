@@ -245,6 +245,7 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.POST("/membership/payment", membershipCtrl.CreateMembershipPayment) // 创建会员购买支付
 		authGroup.GET("/membership/info", membershipCtrl.GetMembershipInfo)           // 获取用户会员信息
 		authGroup.GET("/membership/permission", membershipCtrl.CheckCreatePermission) // 检查用户创建卡册权限
+		authGroup.POST("/membership/consume", membershipCtrl.ConsumeUsage)            // 消费使用次数
 		g.GET("/membership/plans", membershipCtrl.GetMembershipPlans)                 // 获取会员套餐信息（无需鉴权）
 	}
 

@@ -17,9 +17,10 @@ type User struct {
 	AvatarURL string `gorm:"size:255" json:"avatar_url"`
 	IsPro     bool   `gorm:"default:false" json:"is_pro"`
 	// 会员相关字段
-	MembershipType    string     `gorm:"size:20;default:'free';index" json:"membership_type"` // 会员类型：free, monthly, yearly, package
+	MembershipType    string     `gorm:"size:20;default:'free';index" json:"membership_type"` // 会员类型：free, subscription, package
 	MembershipExpires *time.Time `gorm:"index" json:"membership_expires"`                     // 会员到期时间
 	PackageCount      int        `gorm:"default:0" json:"package_count"`                      // 资源包剩余次数
+	SubscriptionType  string     `gorm:"size:20;default:''" json:"subscription_type"`         // 订阅类型：monthly, yearly（仅当membership_type为subscription时使用）
 	BookNum           int        `gorm:"default:0" json:"book_num"`
 	BookAllNum        int64      `gorm:"default:0" json:"book_all_num"` // 状态为非failed的书本数量
 	CardNum           int        `gorm:"default:0" json:"card_num"`
@@ -46,10 +47,15 @@ func (User) TableName() string {
 
 // MembershipType 定义会员类型常量
 const (
-	MembershipTypeFree    = "free"    // 免费用户
-	MembershipTypeMonthly = "monthly" // 月度会员
-	MembershipTypeYearly  = "yearly"  // 年度会员
-	MembershipTypePackage = "package" // 付费资源包（次数）
+	MembershipTypeFree         = "free"         // 免费用户
+	MembershipTypeSubscription = "subscription" // 订阅会员（包含月度和年度）
+	MembershipTypePackage      = "package"      // 付费资源包（次数）
+)
+
+// SubscriptionType 定义订阅类型常量
+const (
+	SubscriptionTypeMonthly = "monthly" // 月度订阅
+	SubscriptionTypeYearly  = "yearly"  // 年度订阅
 )
 
 // IsMembershipActive 检查会员是否有效
@@ -62,8 +68,8 @@ func (u *User) IsMembershipActive() bool {
 		return u.PackageCount > 0
 	}
 
-	// 月度或年度会员检查到期时间
-	if u.MembershipExpires != nil {
+	// 订阅会员检查到期时间
+	if u.MembershipType == MembershipTypeSubscription && u.MembershipExpires != nil {
 		return u.MembershipExpires.After(time.Now())
 	}
 
@@ -77,19 +83,57 @@ func (u *User) GetMembershipStatus() string {
 	}
 
 	switch u.MembershipType {
-	case MembershipTypeMonthly:
-		if u.MembershipExpires != nil {
-			return "月度会员"
+	case MembershipTypeSubscription:
+		if u.SubscriptionType == SubscriptionTypeMonthly {
+			return "月度订阅会员"
+		} else if u.SubscriptionType == SubscriptionTypeYearly {
+			return "年度订阅会员"
 		}
-		return "月度会员"
-	case MembershipTypeYearly:
-		if u.MembershipExpires != nil {
-			return "年度会员"
-		}
-		return "年度会员"
+		return "订阅会员"
 	case MembershipTypePackage:
 		return fmt.Sprintf("资源包会员（剩余%d次）", u.PackageCount)
 	default:
 		return "免费用户"
 	}
+}
+
+// GetSubscriptionType 获取订阅类型描述
+func (u *User) GetSubscriptionType() string {
+	if u.MembershipType != MembershipTypeSubscription {
+		return ""
+	}
+
+	switch u.SubscriptionType {
+	case SubscriptionTypeMonthly:
+		return "月度订阅"
+	case SubscriptionTypeYearly:
+		return "年度订阅"
+	default:
+		return "订阅会员"
+	}
+}
+
+// CanUseSubscription 检查是否可以使用订阅会员权益
+func (u *User) CanUseSubscription() bool {
+	return u.MembershipType == MembershipTypeSubscription && u.IsMembershipActive()
+}
+
+// CanUsePackage 检查是否可以使用资源包
+func (u *User) CanUsePackage() bool {
+	return u.MembershipType == MembershipTypePackage && u.PackageCount > 0
+}
+
+// GetAvailableUsageCount 获取可用次数（优先返回订阅会员，其次资源包）
+func (u *User) GetAvailableUsageCount() (int, string) {
+	// 优先使用订阅会员
+	if u.CanUseSubscription() {
+		return -1, "subscription" // -1 表示无限制
+	}
+
+	// 其次使用资源包
+	if u.CanUsePackage() {
+		return u.PackageCount, "package"
+	}
+
+	return 0, "none"
 }

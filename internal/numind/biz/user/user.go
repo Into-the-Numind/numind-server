@@ -63,6 +63,7 @@ type UserBiz interface {
 	// 会员相关方法
 	UpdateUserMembership(ctx context.Context, userID uint, membershipType string, packageCount int) error
 	AddUserPackageCount(ctx context.Context, userID uint, count int) error
+	ConsumePackageCount(ctx context.Context, userID uint, count int) error
 }
 
 // UserBiz 接口的实现.
@@ -661,11 +662,10 @@ func (b *userBiz) UpdateUserMembership(ctx context.Context, userID uint, members
 
 	// 根据会员类型设置到期时间
 	switch membershipType {
-	case model.MembershipTypeMonthly:
+	case model.MembershipTypeSubscription:
+		// 订阅会员需要根据订阅类型设置到期时间
+		// 这里假设传入的是月度订阅，实际应该传入订阅类型参数
 		expires := now.AddDate(0, 1, 0) // 1个月后
-		expiresAt = &expires
-	case model.MembershipTypeYearly:
-		expires := now.AddDate(1, 0, 0) // 1年后
 		expiresAt = &expires
 	case model.MembershipTypePackage:
 		// 包次数类型不需要设置到期时间，只需要增加次数
@@ -697,4 +697,21 @@ func (b *userBiz) UpdateUserMembership(ctx context.Context, userID uint, members
 func (b *userBiz) AddUserPackageCount(ctx context.Context, userID uint, count int) error {
 	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
 		UpdateColumn("package_count", gorm.Expr("package_count + ?", count)).Error
+}
+
+// ConsumePackageCount 消费用户包次数
+func (b *userBiz) ConsumePackageCount(ctx context.Context, userID uint, count int) error {
+	// 先检查用户是否有足够的包次数
+	var user model.User
+	if err := b.ds.DB().First(&user, userID).Error; err != nil {
+		return fmt.Errorf("获取用户信息失败: %w", err)
+	}
+
+	if user.PackageCount < count {
+		return fmt.Errorf("包次数不足，当前剩余%d次，需要%d次", user.PackageCount, count)
+	}
+
+	// 扣除包次数
+	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
+		UpdateColumn("package_count", gorm.Expr("package_count - ?", count)).Error
 }
