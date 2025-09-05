@@ -24,8 +24,8 @@ RUN go mod download
 # 复制源代码
 COPY . .
 
-# 构建应用 - 明确指定目标架构
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+# 构建应用 - 使用默认架构避免交叉编译问题
+RUN CGO_ENABLED=1 go build \
     -ldflags="-s -w -X main.Version=dev" \
     -o /app/numind ./cmd/numind
 
@@ -80,8 +80,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     && rm -rf /var/lib/apt/lists/*
 
 # 安装Google Chrome
-RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
