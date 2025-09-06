@@ -5,12 +5,14 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz"
+	"numind-server/internal/numind/biz/wechat"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 
 	"github.com/gin-gonic/gin"
+	"github.com/spf13/viper"
 )
 
 // MembershipController 会员控制器
@@ -23,13 +25,28 @@ func NewMembershipController(b biz.IBiz) *MembershipController {
 	return &MembershipController{b: b}
 }
 
+// getWechatPayConfig 获取微信支付配置
+func getWechatPayConfig() map[string]string {
+	return map[string]string{
+		"app_id":                   viper.GetString("wechat.app_id"),
+		"mch_id":                   viper.GetString("wechat.mch_id"),
+		"mch_cert_serial_no":       viper.GetString("wechat.mch_cert_serial_no"),
+		"mch_api_v3_key":           viper.GetString("wechat.mch_api_v3_key"),
+		"mch_private_key_path":     viper.GetString("wechat.mch_private_key_path"),
+		"wechatpay_cert_path":      viper.GetString("wechat.wechatpay_cert_path"),
+		"notify_url":               viper.GetString("wechat.notify_url"),
+		"use_wechatpay_public_key": viper.GetString("wechat.use_wechatpay_public_key"),
+	}
+}
+
 // CreateMembershipPayment 创建会员购买支付
 func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 	var req struct {
-		MembershipType string `json:"membership_type" binding:"required,oneof=subscription package"`
-		PackageCount   int    `json:"package_count,omitempty"` // 仅当membership_type为package时使用
-		PayMethod      string `json:"pay_method" binding:"required,oneof=native miniprogram jsapi"`
-		OpenID         string `json:"openid,omitempty"` // 小程序支付必填
+		MembershipType   string `json:"membership_type" binding:"required,oneof=subscription package"`
+		PackageCount     int    `json:"package_count,omitempty"`     // 仅当membership_type为package时使用
+		SubscriptionDays int    `json:"subscription_days,omitempty"` // 仅当membership_type为subscription时使用，30或365
+		PayMethod        string `json:"pay_method" binding:"required,oneof=native miniprogram jsapi"`
+		OpenID           string `json:"openid,omitempty"` // 小程序支付必填
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -50,36 +67,58 @@ func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 			core.WriteResponse(c, errno.ErrBind.SetMessage("包次数必须大于0"), nil)
 			return
 		}
+		// 验证包次数是否在允许的范围内
+		validCounts := []int{1, 5, 20, 50}
+		isValidCount := false
+		for _, count := range validCounts {
+			if req.PackageCount == count {
+				isValidCount = true
+				break
+			}
+		}
+		if !isValidCount {
+			core.WriteResponse(c, errno.ErrBind.SetMessage("包次数只支持1、5、20、50次"), nil)
+			return
+		}
+	} else if req.MembershipType == model.MembershipTypeSubscription {
+		if req.SubscriptionDays != 30 && req.SubscriptionDays != 365 {
+			core.WriteResponse(c, errno.ErrBind.SetMessage("订阅天数只支持30天和365天"), nil)
+			return
+		}
 	}
 
 	// 生成订单号
 	outTradeNo := fmt.Sprintf("membership_%d_%d", userID.ID, time.Now().UnixNano())
 
-	// 根据会员类型设置金额和描述
+	// 根据会员类型设置金额和描述（服务端计算价格，防止前端篡改）
 	var amount int64
 	var description string
 
 	switch req.MembershipType {
 	case model.MembershipTypeSubscription:
-		// 订阅会员需要前端指定是月度还是年度
-		// 这里提供两个选项，前端可以选择
-		amount = 2800 // 默认月度，前端可以修改
-		description = "订阅会员"
+		// 订阅会员：服务端根据天数计算价格
+		amount = mc.calculateSubscriptionPrice(req.SubscriptionDays)
+		if req.SubscriptionDays == 30 {
+			description = "月度订阅会员（30天）"
+		} else {
+			description = "年度订阅会员（365天）"
+		}
 	case model.MembershipTypePackage:
-		// 根据包次数计算价格，使用定价表
+		// 资源包：服务端根据次数计算价格
 		amount = mc.calculatePackagePrice(req.PackageCount)
 		description = fmt.Sprintf("资源包会员（%d次）", req.PackageCount)
 	}
 
 	// 创建支付请求
 	paymentReq := &model.CreatePaymentRequest{
-		OutTradeNo:     outTradeNo,
-		Description:    description,
-		Amount:         amount,
-		OpenID:         req.OpenID,
-		PayMethod:      req.PayMethod,
-		MembershipType: req.MembershipType,
-		PackageCount:   req.PackageCount,
+		OutTradeNo:       outTradeNo,
+		Description:      description,
+		Amount:           amount,
+		OpenID:           req.OpenID,
+		PayMethod:        req.PayMethod,
+		MembershipType:   req.MembershipType,
+		PackageCount:     req.PackageCount,
+		SubscriptionDays: req.SubscriptionDays,
 	}
 
 	// 创建支付记录
@@ -108,10 +147,32 @@ func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 
 // createNativePayment 创建扫码支付
 func (mc *MembershipController) createNativePayment(c *gin.Context, req model.CreatePaymentRequest, paymentResp *model.CreatePaymentResponse) {
-	// 这里需要调用微信支付API，暂时返回模拟数据
+	// 获取微信支付配置
+	config := getWechatPayConfig()
+
+	// 调用微信支付API创建Native支付订单
+	resp, err := wechat.CreateNativeOrder(config, req.OutTradeNo, req.Description, req.Amount)
+	if err != nil {
+		// 支付创建失败，更新支付状态为失败
+		mc.b.Payments().UpdatePaymentStatus(c, req.OutTradeNo, model.PaymentStatusFailed, "", nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("创建微信支付失败: %s", err.Error()), nil)
+		return
+	}
+
+	// 更新支付记录中的二维码链接等信息
+	if respMap, ok := resp.(map[string]interface{}); ok {
+		if codeURL, exists := respMap["code_url"]; exists {
+			paymentResp.CodeURL = codeURL.(string)
+		}
+		if prepayID, exists := respMap["prepay_id"]; exists {
+			paymentResp.PrepayID = prepayID.(string)
+		}
+	}
+
 	core.WriteResponse(c, nil, gin.H{
 		"out_trade_no": paymentResp.OutTradeNo,
-		"code_url":     "weixin://wxpay/bizpayurl?pr=example",
+		"code_url":     paymentResp.CodeURL,
+		"prepay_id":    paymentResp.PrepayID,
 		"message":      "请使用微信扫描二维码完成支付",
 	})
 }
@@ -123,17 +184,20 @@ func (mc *MembershipController) createMiniProgramPayment(c *gin.Context, req mod
 		return
 	}
 
-	// 这里需要调用微信小程序支付API，暂时返回模拟数据
-	core.WriteResponse(c, nil, gin.H{
-		"out_trade_no": paymentResp.OutTradeNo,
-		"prepay_id":    "wx123456789",
-		"pay_sign":     "example_sign",
-		"time_stamp":   "1234567890",
-		"nonce_str":    "example_nonce",
-		"package":      "prepay_id=wx123456789",
-		"sign_type":    "RSA",
-		"message":      "请调用微信支付完成支付",
-	})
+	// 获取微信支付配置
+	config := getWechatPayConfig()
+
+	// 调用微信支付API创建小程序支付订单
+	resp, err := wechat.CreateMiniProgramOrder(config, req.OutTradeNo, req.Description, req.Amount, req.OpenID)
+	if err != nil {
+		// 支付创建失败，更新支付状态为失败
+		mc.b.Payments().UpdatePaymentStatus(c, req.OutTradeNo, model.PaymentStatusFailed, "", nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("创建微信支付失败: %s", err.Error()), nil)
+		return
+	}
+
+	// 返回小程序支付参数
+	core.WriteResponse(c, nil, resp)
 }
 
 // createJSAPIPayment 创建JSAPI支付
@@ -143,17 +207,20 @@ func (mc *MembershipController) createJSAPIPayment(c *gin.Context, req model.Cre
 		return
 	}
 
-	// 这里需要调用微信JSAPI支付API，暂时返回模拟数据
-	core.WriteResponse(c, nil, gin.H{
-		"out_trade_no": paymentResp.OutTradeNo,
-		"prepay_id":    "wx123456789",
-		"pay_sign":     "example_sign",
-		"time_stamp":   "1234567890",
-		"nonce_str":    "example_nonce",
-		"package":      "prepay_id=wx123456789",
-		"sign_type":    "RSA",
-		"message":      "请调用微信支付完成支付",
-	})
+	// 获取微信支付配置
+	config := getWechatPayConfig()
+
+	// 调用微信支付API创建JSAPI支付订单（JSAPI和小程序支付使用相同的API）
+	resp, err := wechat.CreateMiniProgramOrder(config, req.OutTradeNo, req.Description, req.Amount, req.OpenID)
+	if err != nil {
+		// 支付创建失败，更新支付状态为失败
+		mc.b.Payments().UpdatePaymentStatus(c, req.OutTradeNo, model.PaymentStatusFailed, "", nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("创建微信支付失败: %s", err.Error()), nil)
+		return
+	}
+
+	// 返回JSAPI支付参数
+	core.WriteResponse(c, nil, resp)
 }
 
 // GetMembershipInfo 获取用户会员信息
@@ -207,15 +274,17 @@ func (mc *MembershipController) GetMembershipPlans(c *gin.Context) {
 			"type":        "subscription",
 			"name":        "月度订阅会员",
 			"price":       2800, // 28元，单位分
+			"days":        30,   // 订阅天数
 			"description": "享受月度订阅会员权益",
-			"features":    []string{"30次/月卡册创建", "无水印", "解锁全部模板", "高峰期优先处理"},
+			"features":    []string{"30天会员权益", "无水印", "解锁全部模板", "高峰期优先处理"},
 		},
 		{
 			"type":        "subscription",
 			"name":        "年度订阅会员",
 			"price":       19800, // 198元，单位分
+			"days":        365,   // 订阅天数
 			"description": "享受年度订阅会员权益，约16.5元/月，立省40%",
-			"features":    []string{"30次/月卡册创建", "无水印", "解锁全部模板", "高峰期优先处理", "年度优惠价格"},
+			"features":    []string{"365天会员权益", "无水印", "解锁全部模板", "高峰期优先处理", "年度优惠价格"},
 		},
 		// 资源包选项 - 根据定价表
 		{
@@ -339,6 +408,19 @@ func (mc *MembershipController) calculateCreatePermission(user *model.User) *Cre
 	}
 }
 
+// calculateSubscriptionPrice 根据订阅天数计算价格（单位：分）
+func (mc *MembershipController) calculateSubscriptionPrice(days int) int64 {
+	switch days {
+	case 30:
+		return 2800 // 28元
+	case 365:
+		return 19800 // 198元
+	default:
+		// 默认返回月度价格
+		return 2800
+	}
+}
+
 // calculatePackagePrice 根据包次数计算价格（单位：分）
 func (mc *MembershipController) calculatePackagePrice(count int) int64 {
 	switch count {
@@ -375,7 +457,7 @@ func (mc *MembershipController) ConsumeUsage(c *gin.Context) {
 	// 检查权限
 	permission := mc.calculateCreatePermission(user)
 	if !permission.CanCreate {
-		core.WriteResponse(c, errno.ErrForbidden.SetMessage(permission.Reason), nil)
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("%s", permission.Reason), nil)
 		return
 	}
 

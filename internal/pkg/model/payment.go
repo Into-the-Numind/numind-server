@@ -22,10 +22,11 @@ type PaymentM struct {
 	PaidAt        *time.Time `json:"paid_at" gorm:"comment:支付时间"`
 	ExpireAt      *time.Time `json:"expire_at" gorm:"comment:过期时间"`
 	// 会员相关字段
-	MembershipType string    `json:"membership_type" gorm:"type:varchar(20);comment:会员类型(subscription,package)"`
-	PackageCount   int       `json:"package_count" gorm:"default:0;comment:包次数"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	MembershipType   string    `json:"membership_type" gorm:"type:varchar(20);comment:会员类型(subscription,package)"`
+	PackageCount     int       `json:"package_count" gorm:"default:0;comment:包次数"`
+	SubscriptionDays int       `json:"subscription_days" gorm:"default:0;comment:订阅天数"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // TableName 指定表名
@@ -56,13 +57,14 @@ const (
 
 // CreatePaymentRequest 创建支付请求
 type CreatePaymentRequest struct {
-	OutTradeNo     string `json:"out_trade_no" binding:"required"`
-	Description    string `json:"description" binding:"required"`
-	Amount         int64  `json:"amount" binding:"required"`
-	OpenID         string `json:"openid,omitempty"` // 小程序支付必填
-	PayMethod      string `json:"pay_method" binding:"required,oneof=native miniprogram jsapi"`
-	MembershipType string `json:"membership_type" binding:"required,oneof=subscription package"` // 会员类型
-	PackageCount   int    `json:"package_count,omitempty"`                                       // 包次数（仅当membership_type为package时使用）
+	OutTradeNo       string `json:"out_trade_no" binding:"required"`
+	Description      string `json:"description" binding:"required"`
+	Amount           int64  `json:"amount" binding:"required"`
+	OpenID           string `json:"openid,omitempty"` // 小程序支付必填
+	PayMethod        string `json:"pay_method" binding:"required,oneof=native miniprogram jsapi"`
+	MembershipType   string `json:"membership_type" binding:"required,oneof=subscription package"` // 会员类型
+	PackageCount     int    `json:"package_count,omitempty"`                                       // 包次数（仅当membership_type为package时使用）
+	SubscriptionDays int    `json:"subscription_days,omitempty"`                                   // 订阅天数（仅当membership_type为subscription时使用）
 }
 
 // CreatePaymentResponse 创建支付响应
