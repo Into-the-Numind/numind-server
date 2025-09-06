@@ -129,7 +129,7 @@ pagination:
   # 元素样式配置
   styles:
     title:
-      font_size: 81        # 标题: 64px（最大）
+      font_size: 160        # 标题: 64px（最大）
       line_height: 90      # 1.4倍行高
       margin_top: 50       # 标题上间距: 30px（统一标准）
       margin_bottom: 50    # 标题下方间距: 30px（统一标准）
