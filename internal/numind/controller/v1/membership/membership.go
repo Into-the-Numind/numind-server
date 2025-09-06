@@ -87,8 +87,8 @@ func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 		}
 	}
 
-	// 生成订单号
-	outTradeNo := fmt.Sprintf("membership_%d_%d", userID.ID, time.Now().UnixNano())
+	// 生成订单号（确保不超过32字符）
+	outTradeNo := fmt.Sprintf("mem_%d_%d", userID.ID, time.Now().UnixNano())
 
 	// 根据会员类型设置金额和描述（服务端计算价格，防止前端篡改）
 	var amount int64

@@ -53,6 +53,8 @@ wechat:
     mch_private_key_path: "/Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/configs/cert/apiclient_key.pem"
     wechatpay_cert_path: "/Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/configs/cert/apiclient_cert.pem"
     notify_url: "https://49.233.219.254:9092/api/pay/wechat/notify"
+    # 使用微信支付公钥模式（推荐，避免证书过期问题）
+    use_wechatpay_public_key: "true"
 
 # 书籍处理配置
 book:
