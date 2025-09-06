@@ -26,11 +26,10 @@ func NewMembershipController(b biz.IBiz) *MembershipController {
 // CreateMembershipPayment 创建会员购买支付
 func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 	var req struct {
-		MembershipType   string `json:"membership_type" binding:"required,oneof=subscription package"`
-		SubscriptionType string `json:"subscription_type,omitempty"` // 仅当membership_type为subscription时使用
-		PackageCount     int    `json:"package_count,omitempty"`     // 仅当membership_type为package时使用
-		PayMethod        string `json:"pay_method" binding:"required,oneof=native miniprogram jsapi"`
-		OpenID           string `json:"openid,omitempty"` // 小程序支付必填
+		MembershipType string `json:"membership_type" binding:"required,oneof=subscription package"`
+		PackageCount   int    `json:"package_count,omitempty"` // 仅当membership_type为package时使用
+		PayMethod      string `json:"pay_method" binding:"required,oneof=native miniprogram jsapi"`
+		OpenID         string `json:"openid,omitempty"` // 小程序支付必填
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -46,16 +45,7 @@ func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 	}
 
 	// 验证参数
-	if req.MembershipType == model.MembershipTypeSubscription {
-		if req.SubscriptionType == "" {
-			core.WriteResponse(c, errno.ErrBind.SetMessage("订阅类型不能为空"), nil)
-			return
-		}
-		if req.SubscriptionType != model.SubscriptionTypeMonthly && req.SubscriptionType != model.SubscriptionTypeYearly {
-			core.WriteResponse(c, errno.ErrBind.SetMessage("无效的订阅类型"), nil)
-			return
-		}
-	} else if req.MembershipType == model.MembershipTypePackage {
+	if req.MembershipType == model.MembershipTypePackage {
 		if req.PackageCount <= 0 {
 			core.WriteResponse(c, errno.ErrBind.SetMessage("包次数必须大于0"), nil)
 			return
@@ -71,13 +61,10 @@ func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 
 	switch req.MembershipType {
 	case model.MembershipTypeSubscription:
-		if req.SubscriptionType == model.SubscriptionTypeMonthly {
-			amount = 2800 // 28元，单位分
-			description = "月度订阅会员"
-		} else if req.SubscriptionType == model.SubscriptionTypeYearly {
-			amount = 19800 // 198元，单位分
-			description = "年度订阅会员"
-		}
+		// 订阅会员需要前端指定是月度还是年度
+		// 这里提供两个选项，前端可以选择
+		amount = 2800 // 默认月度，前端可以修改
+		description = "订阅会员"
 	case model.MembershipTypePackage:
 		// 根据包次数计算价格，使用定价表
 		amount = mc.calculatePackagePrice(req.PackageCount)
@@ -86,14 +73,13 @@ func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 
 	// 创建支付请求
 	paymentReq := &model.CreatePaymentRequest{
-		OutTradeNo:       outTradeNo,
-		Description:      description,
-		Amount:           amount,
-		OpenID:           req.OpenID,
-		PayMethod:        req.PayMethod,
-		MembershipType:   req.MembershipType,
-		SubscriptionType: req.SubscriptionType,
-		PackageCount:     req.PackageCount,
+		OutTradeNo:     outTradeNo,
+		Description:    description,
+		Amount:         amount,
+		OpenID:         req.OpenID,
+		PayMethod:      req.PayMethod,
+		MembershipType: req.MembershipType,
+		PackageCount:   req.PackageCount,
 	}
 
 	// 创建支付记录
@@ -218,20 +204,18 @@ func (mc *MembershipController) GetMembershipInfo(c *gin.Context) {
 func (mc *MembershipController) GetMembershipPlans(c *gin.Context) {
 	plans := []gin.H{
 		{
-			"type":              "subscription",
-			"subscription_type": "monthly",
-			"name":              "月度订阅会员",
-			"price":             2800, // 28元，单位分
-			"description":       "享受月度订阅会员权益",
-			"features":          []string{"30次/月卡册创建", "无水印", "解锁全部模板", "高峰期优先处理"},
+			"type":        "subscription",
+			"name":        "月度订阅会员",
+			"price":       2800, // 28元，单位分
+			"description": "享受月度订阅会员权益",
+			"features":    []string{"30次/月卡册创建", "无水印", "解锁全部模板", "高峰期优先处理"},
 		},
 		{
-			"type":              "subscription",
-			"subscription_type": "yearly",
-			"name":              "年度订阅会员",
-			"price":             19800, // 198元，单位分
-			"description":       "享受年度订阅会员权益，约16.5元/月，立省40%",
-			"features":          []string{"30次/月卡册创建", "无水印", "解锁全部模板", "高峰期优先处理", "年度优惠价格"},
+			"type":        "subscription",
+			"name":        "年度订阅会员",
+			"price":       19800, // 198元，单位分
+			"description": "享受年度订阅会员权益，约16.5元/月，立省40%",
+			"features":    []string{"30次/月卡册创建", "无水印", "解锁全部模板", "高峰期优先处理", "年度优惠价格"},
 		},
 		// 资源包选项 - 根据定价表
 		{

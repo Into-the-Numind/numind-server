@@ -20,7 +20,6 @@ type User struct {
 	MembershipType    string     `gorm:"size:20;default:'free';index" json:"membership_type"` // 会员类型：free, subscription, package
 	MembershipExpires *time.Time `gorm:"index" json:"membership_expires"`                     // 会员到期时间
 	PackageCount      int        `gorm:"default:0" json:"package_count"`                      // 资源包剩余次数
-	SubscriptionType  string     `gorm:"size:20;default:''" json:"subscription_type"`         // 订阅类型：monthly, yearly（仅当membership_type为subscription时使用）
 	BookNum           int        `gorm:"default:0" json:"book_num"`
 	BookAllNum        int64      `gorm:"default:0" json:"book_all_num"` // 状态为非failed的书本数量
 	CardNum           int        `gorm:"default:0" json:"card_num"`
@@ -48,14 +47,8 @@ func (User) TableName() string {
 // MembershipType 定义会员类型常量
 const (
 	MembershipTypeFree         = "free"         // 免费用户
-	MembershipTypeSubscription = "subscription" // 订阅会员（包含月度和年度）
+	MembershipTypeSubscription = "subscription" // 订阅会员
 	MembershipTypePackage      = "package"      // 付费资源包（次数）
-)
-
-// SubscriptionType 定义订阅类型常量
-const (
-	SubscriptionTypeMonthly = "monthly" // 月度订阅
-	SubscriptionTypeYearly  = "yearly"  // 年度订阅
 )
 
 // IsMembershipActive 检查会员是否有效
@@ -84,32 +77,11 @@ func (u *User) GetMembershipStatus() string {
 
 	switch u.MembershipType {
 	case MembershipTypeSubscription:
-		if u.SubscriptionType == SubscriptionTypeMonthly {
-			return "月度订阅会员"
-		} else if u.SubscriptionType == SubscriptionTypeYearly {
-			return "年度订阅会员"
-		}
 		return "订阅会员"
 	case MembershipTypePackage:
 		return fmt.Sprintf("资源包会员（剩余%d次）", u.PackageCount)
 	default:
 		return "免费用户"
-	}
-}
-
-// GetSubscriptionType 获取订阅类型描述
-func (u *User) GetSubscriptionType() string {
-	if u.MembershipType != MembershipTypeSubscription {
-		return ""
-	}
-
-	switch u.SubscriptionType {
-	case SubscriptionTypeMonthly:
-		return "月度订阅"
-	case SubscriptionTypeYearly:
-		return "年度订阅"
-	default:
-		return "订阅会员"
 	}
 }
 

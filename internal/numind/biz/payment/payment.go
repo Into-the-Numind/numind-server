@@ -44,18 +44,17 @@ func (b *paymentBiz) CreatePayment(ctx context.Context, req *model.CreatePayment
 
 	// 创建支付记录
 	payment := &model.PaymentM{
-		OutTradeNo:       req.OutTradeNo,
-		UserID:           userID,
-		Amount:           req.Amount,
-		Description:      req.Description,
-		Channel:          model.PaymentChannelWechat, // 默认微信支付
-		Status:           model.PaymentStatusPending,
-		PayMethod:        req.PayMethod,
-		OpenID:           req.OpenID,
-		MembershipType:   req.MembershipType,
-		SubscriptionType: req.SubscriptionType,
-		PackageCount:     req.PackageCount,
-		ExpireAt:         &time.Time{}, // 设置过期时间
+		OutTradeNo:     req.OutTradeNo,
+		UserID:         userID,
+		Amount:         req.Amount,
+		Description:    req.Description,
+		Channel:        model.PaymentChannelWechat, // 默认微信支付
+		Status:         model.PaymentStatusPending,
+		PayMethod:      req.PayMethod,
+		OpenID:         req.OpenID,
+		MembershipType: req.MembershipType,
+		PackageCount:   req.PackageCount,
+		ExpireAt:       &time.Time{}, // 设置过期时间
 	}
 
 	// 设置过期时间为30分钟后
@@ -183,25 +182,29 @@ func (b *paymentBiz) handleMembershipPurchase(ctx context.Context, payment *mode
 	// 根据会员类型更新用户状态
 	switch payment.MembershipType {
 	case model.MembershipTypeSubscription:
-		// 订阅会员（月度或年度）
+		// 订阅会员
 		now := time.Now()
 		var expiresAt *time.Time
 
-		// 根据订阅类型计算到期时间
-		if payment.SubscriptionType == model.SubscriptionTypeMonthly {
+		// 根据支付金额判断是月度还是年度订阅
+		// 月度订阅：2800分（28元），年度订阅：19800分（198元）
+		if payment.Amount == 2800 {
+			// 月度订阅
 			expires := now.AddDate(0, 1, 0) // 1个月后
 			expiresAt = &expires
-		} else if payment.SubscriptionType == model.SubscriptionTypeYearly {
+		} else if payment.Amount == 19800 {
+			// 年度订阅
 			expires := now.AddDate(1, 0, 0) // 1年后
 			expiresAt = &expires
 		} else {
-			return fmt.Errorf("无效的订阅类型: %s", payment.SubscriptionType)
+			// 默认按月度处理
+			expires := now.AddDate(0, 1, 0)
+			expiresAt = &expires
 		}
 
 		// 更新用户会员信息
 		updateData := map[string]interface{}{
 			"membership_type":    model.MembershipTypeSubscription,
-			"subscription_type":  payment.SubscriptionType,
 			"is_pro":             true,
 			"membership_expires": expiresAt,
 		}
@@ -211,10 +214,10 @@ func (b *paymentBiz) handleMembershipPurchase(ctx context.Context, payment *mode
 			user.MembershipExpires != nil &&
 			user.MembershipExpires.After(now) {
 			// 在现有到期时间基础上延长
-			if payment.SubscriptionType == model.SubscriptionTypeMonthly {
+			if payment.Amount == 2800 {
 				newExpires := user.MembershipExpires.AddDate(0, 1, 0)
 				updateData["membership_expires"] = &newExpires
-			} else if payment.SubscriptionType == model.SubscriptionTypeYearly {
+			} else if payment.Amount == 19800 {
 				newExpires := user.MembershipExpires.AddDate(1, 0, 0)
 				updateData["membership_expires"] = &newExpires
 			}
@@ -243,7 +246,7 @@ func (b *paymentBiz) handleMembershipPurchase(ctx context.Context, payment *mode
 	log.C(ctx).Infow("Membership purchase processed successfully",
 		"user_id", payment.UserID,
 		"membership_type", payment.MembershipType,
-		"subscription_type", payment.SubscriptionType,
+		"amount", payment.Amount,
 		"package_count", payment.PackageCount)
 
 	return nil
