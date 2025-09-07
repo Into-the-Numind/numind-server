@@ -237,6 +237,12 @@ func (b *paymentBiz) handleMembershipPurchase(ctx context.Context, payment *mode
 			"membership_expires": expiresAt,
 		}
 
+		// 如果是新订阅用户，设置会员开始时间
+		if user.MembershipType != model.MembershipTypeSubscription && user.MembershipType != model.MembershipTypeBoth {
+			updateData["membership_start_date"] = &now
+			updateData["monthly_book_count"] = 0 // 重置月度计数
+		}
+
 		// 如果用户已有订阅会员且未过期，在现有到期时间基础上累加天数
 		if (user.MembershipType == model.MembershipTypeSubscription || user.MembershipType == model.MembershipTypeBoth) &&
 			user.MembershipExpires != nil &&

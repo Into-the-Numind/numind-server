@@ -64,6 +64,8 @@ type UserBiz interface {
 	UpdateUserMembership(ctx context.Context, userID uint, membershipType string, packageCount int) error
 	AddUserPackageCount(ctx context.Context, userID uint, count int) error
 	ConsumePackageCount(ctx context.Context, userID uint, count int) error
+	UpdateMonthlyBookCount(ctx context.Context, userID uint, count int) error
+	IncrementMonthlyBookCount(ctx context.Context, userID uint) error
 }
 
 // UserBiz 接口的实现.
@@ -714,4 +716,16 @@ func (b *userBiz) ConsumePackageCount(ctx context.Context, userID uint, count in
 	// 扣除包次数
 	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
 		UpdateColumn("package_count", gorm.Expr("package_count - ?", count)).Error
+}
+
+// UpdateMonthlyBookCount 更新用户月度卡册计数
+func (b *userBiz) UpdateMonthlyBookCount(ctx context.Context, userID uint, count int) error {
+	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
+		UpdateColumn("monthly_book_count", count).Error
+}
+
+// IncrementMonthlyBookCount 增加用户月度卡册计数
+func (b *userBiz) IncrementMonthlyBookCount(ctx context.Context, userID uint) error {
+	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
+		UpdateColumn("monthly_book_count", gorm.Expr("monthly_book_count + 1")).Error
 }

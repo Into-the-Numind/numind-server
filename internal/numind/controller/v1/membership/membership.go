@@ -1,6 +1,7 @@
 package membership
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 	"numind-server/internal/numind/biz/wechat"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 
@@ -255,12 +257,36 @@ func (mc *MembershipController) GetMembershipInfo(c *gin.Context) {
 		}
 	}
 
+	// 计算月度卡册信息
+	var monthlyBookInfo gin.H
+	if user.MembershipType == model.MembershipTypeSubscription || user.MembershipType == model.MembershipTypeBoth {
+		monthStart := user.GetCurrentMembershipMonthStart()
+		monthlyBookInfo = gin.H{
+			"current_count":   user.MonthlyBookCount,
+			"remaining_count": user.GetRemainingMonthlyBooks(),
+			"month_start":     &monthStart,
+			"month_end":       user.GetCurrentMembershipMonthEnd(),
+			"can_create":      user.CanCreateBookInCurrentMonth(),
+			"description":     fmt.Sprintf("本月已创建%d个卡册，还可以创建%d个", user.MonthlyBookCount, user.GetRemainingMonthlyBooks()),
+		}
+	} else {
+		monthlyBookInfo = gin.H{
+			"current_count":   0,
+			"remaining_count": -1, // 无限制
+			"month_start":     nil,
+			"month_end":       nil,
+			"can_create":      true,
+			"description":     "非订阅会员，无月度限制",
+		}
+	}
+
 	// 返回会员信息
 	core.WriteResponse(c, nil, gin.H{
 		"membership_type":    user.MembershipType,
 		"membership_expires": user.MembershipExpires,
 		"package_count":      user.PackageCount,
 		"package_info":       packageInfo,
+		"monthly_book_info":  monthlyBookInfo,
 		"is_pro":             user.IsPro,
 		"membership_status":  user.GetMembershipStatus(),
 		"is_active":          user.IsMembershipActive(),
@@ -368,11 +394,28 @@ type CreatePermission struct {
 
 // calculateCreatePermission 计算用户创建卡册权限
 func (mc *MembershipController) calculateCreatePermission(user *model.User) *CreatePermission {
+	// 检查是否需要重置月度计数
+	if user.IsInNewMembershipMonth() {
+		// 重置月度计数
+		if err := mc.resetMonthlyBookCount(user); err != nil {
+			log.C(context.Background()).Errorw("Failed to reset monthly book count", "user_id", user.ID, "error", err.Error())
+		}
+	}
+
 	// 优先检查订阅会员
 	if user.CanUseSubscription() {
+		// 检查月度限制
+		if !user.CanCreateBookInCurrentMonth() {
+			remaining := user.GetRemainingMonthlyBooks()
+			return &CreatePermission{
+				CanCreate: false,
+				Reason:    fmt.Sprintf("本月已创建%d个卡册，达到月度限制30个，剩余%d个", user.MonthlyBookCount, remaining),
+			}
+		}
+
 		return &CreatePermission{
 			CanCreate: true,
-			Reason:    fmt.Sprintf("%s有效，可以创建卡册", user.GetMembershipStatus()),
+			Reason:    fmt.Sprintf("%s有效，本月已创建%d个卡册，还可以创建%d个", user.GetMembershipStatus(), user.MonthlyBookCount, user.GetRemainingMonthlyBooks()),
 		}
 	}
 
@@ -474,6 +517,20 @@ func (mc *MembershipController) ConsumeUsage(c *gin.Context) {
 		"remaining":       user.PackageCount,
 		"membership_type": user.MembershipType,
 	})
+}
+
+// resetMonthlyBookCount 重置用户月度卡册计数
+func (mc *MembershipController) resetMonthlyBookCount(user *model.User) error {
+	// 更新用户的月度计数为0
+	if err := mc.b.Users().UpdateMonthlyBookCount(context.Background(), user.ID, 0); err != nil {
+		return fmt.Errorf("重置月度卡册计数失败: %w", err)
+	}
+
+	// 更新本地用户对象
+	user.MonthlyBookCount = 0
+
+	log.C(context.Background()).Infow("Monthly book count reset", "user_id", user.ID, "membership_start_date", user.MembershipStartDate)
+	return nil
 }
 
 // consumeUserUsage 消费用户使用次数
