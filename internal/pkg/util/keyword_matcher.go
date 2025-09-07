@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/go-ego/gse"
+	"github.com/spf13/viper"
 )
 
 // KeywordMatcher 关键词匹配器
@@ -13,6 +14,14 @@ type KeywordMatcher struct {
 
 // NewKeywordMatcher 创建新的关键词匹配器
 func NewKeywordMatcher() *KeywordMatcher {
+	// 检查是否启用GSE分词功能
+	if !isGSEEnabled() {
+		// 如果未启用GSE，返回一个空的匹配器
+		return &KeywordMatcher{
+			segmenter: gse.Segmenter{},
+		}
+	}
+
 	// 创建 gse 分词器并加载默认词典
 	seg, err := gse.New("zh", "dict")
 	if err != nil {
@@ -26,6 +35,13 @@ func NewKeywordMatcher() *KeywordMatcher {
 	return &KeywordMatcher{
 		segmenter: seg,
 	}
+}
+
+// isGSEEnabled 检查是否启用GSE分词功能
+func isGSEEnabled() bool {
+	// 从配置文件读取是否启用GSE
+	// 默认返回false，避免每次启动都加载字典
+	return viper.GetBool("gse.enabled")
 }
 
 // Close 关闭分词器，释放资源

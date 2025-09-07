@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -10,15 +11,21 @@ import (
 type User struct {
 	// 用户相关字段
 	gorm.Model
-	OpenID     string `gorm:"uniqueIndex;size:50" json:"openid"`
-	Phone      string `gorm:"size:20;index" json:"phone"`
-	Nickname   string `gorm:"size:100" json:"nickname"`
-	AvatarURL  string `gorm:"size:255" json:"avatar_url"`
-	IsPro      bool   `gorm:"default:false" json:"is_pro"`
-	BookNum    int    `gorm:"default:0" json:"book_num"`
-	BookAllNum int64  `gorm:"default:0" json:"book_all_num"` // 状态为非failed的书本数量
-	CardNum    int    `gorm:"default:0" json:"card_num"`
-	ChatNum    int    `gorm:"default:0" json:"chat_num"`
+	OpenID    string `gorm:"uniqueIndex;size:50" json:"openid"`
+	Phone     string `gorm:"size:20;index" json:"phone"`
+	Nickname  string `gorm:"size:100" json:"nickname"`
+	AvatarURL string `gorm:"size:255" json:"avatar_url"`
+	IsPro     bool   `gorm:"default:false" json:"is_pro"`
+	// 会员相关字段
+	MembershipType      string     `gorm:"size:20;default:'free';index" json:"membership_type"` // 会员类型：free, subscription, package
+	MembershipExpires   *time.Time `gorm:"index" json:"membership_expires"`                     // 会员到期时间
+	MembershipStartDate *time.Time `gorm:"index" json:"membership_start_date"`                  // 会员开始时间（用于计算会员月）
+	PackageCount        int        `gorm:"default:0" json:"package_count"`                      // 资源包剩余次数
+	BookNum             int        `gorm:"default:0" json:"book_num"`
+	BookAllNum          int64      `gorm:"default:0" json:"book_all_num"`       // 状态为非failed的书本数量
+	MonthlyBookCount    int        `gorm:"default:0" json:"monthly_book_count"` // 当前会员月内创建的卡册数量
+	CardNum             int        `gorm:"default:0" json:"card_num"`
+	ChatNum             int        `gorm:"default:0" json:"chat_num"`
 
 	// 管理员相关字段
 	Username  string     `gorm:"size:50;uniqueIndex" json:"username,omitempty"`
@@ -37,4 +44,163 @@ type User struct {
 
 func (User) TableName() string {
 	return "user"
+}
+
+// MembershipType 定义会员类型常量
+const (
+	MembershipTypeFree         = "free"         // 免费用户
+	MembershipTypeSubscription = "subscription" // 订阅会员
+	MembershipTypePackage      = "package"      // 付费资源包（次数）
+	MembershipTypeBoth         = "both"         // 同时拥有订阅会员和资源包
+)
+
+// IsMembershipActive 检查会员是否有效
+func (u *User) IsMembershipActive() bool {
+	if u.MembershipType == MembershipTypeFree {
+		return false
+	}
+
+	if u.MembershipType == MembershipTypePackage {
+		return u.PackageCount > 0
+	}
+
+	// 订阅会员检查到期时间
+	if u.MembershipType == MembershipTypeSubscription && u.MembershipExpires != nil {
+		return u.MembershipExpires.After(time.Now())
+	}
+
+	// both类型：需要同时满足订阅会员和资源包的条件
+	if u.MembershipType == MembershipTypeBoth {
+		subscriptionActive := u.MembershipExpires != nil && u.MembershipExpires.After(time.Now())
+		packageActive := u.PackageCount > 0
+		return subscriptionActive || packageActive // 只要其中一个有效就算有效
+	}
+
+	return false
+}
+
+// GetMembershipStatus 获取会员状态描述
+func (u *User) GetMembershipStatus() string {
+	if !u.IsMembershipActive() {
+		return "免费用户"
+	}
+
+	switch u.MembershipType {
+	case MembershipTypeSubscription:
+		return "订阅会员"
+	case MembershipTypePackage:
+		return fmt.Sprintf("资源包会员（剩余%d次）", u.PackageCount)
+	case MembershipTypeBoth:
+		subscriptionActive := u.MembershipExpires != nil && u.MembershipExpires.After(time.Now())
+		packageActive := u.PackageCount > 0
+		if subscriptionActive && packageActive {
+			return fmt.Sprintf("订阅会员+资源包（剩余%d次）", u.PackageCount)
+		} else if subscriptionActive {
+			return "订阅会员"
+		} else if packageActive {
+			return fmt.Sprintf("资源包会员（剩余%d次）", u.PackageCount)
+		}
+		return "免费用户"
+	default:
+		return "免费用户"
+	}
+}
+
+// CanUseSubscription 检查是否可以使用订阅会员权益
+func (u *User) CanUseSubscription() bool {
+	if u.MembershipType == MembershipTypeSubscription || u.MembershipType == MembershipTypeBoth {
+		return u.MembershipExpires != nil && u.MembershipExpires.After(time.Now())
+	}
+	return false
+}
+
+// CanUsePackage 检查是否可以使用资源包
+func (u *User) CanUsePackage() bool {
+	if u.MembershipType == MembershipTypePackage || u.MembershipType == MembershipTypeBoth {
+		return u.PackageCount > 0
+	}
+	return false
+}
+
+// GetAvailableUsageCount 获取可用次数（优先返回订阅会员，其次资源包）
+func (u *User) GetAvailableUsageCount() (int, string) {
+	// 优先使用订阅会员
+	if u.CanUseSubscription() {
+		return -1, "subscription" // -1 表示无限制
+	}
+
+	// 其次使用资源包
+	if u.CanUsePackage() {
+		return u.PackageCount, "package"
+	}
+
+	return 0, "none"
+}
+
+// IsInNewMembershipMonth 检查是否进入新的会员月
+func (u *User) IsInNewMembershipMonth() bool {
+	if u.MembershipStartDate == nil {
+		return false
+	}
+
+	now := time.Now()
+	// 计算当前会员月的开始时间
+	currentMonthStart := u.GetCurrentMembershipMonthStart()
+
+	// 如果当前时间已经超过当前会员月，说明进入了新的会员月
+	return now.After(currentMonthStart.AddDate(0, 0, 30))
+}
+
+// GetCurrentMembershipMonthStart 获取当前会员月的开始时间
+func (u *User) GetCurrentMembershipMonthStart() time.Time {
+	if u.MembershipStartDate == nil {
+		return time.Time{}
+	}
+
+	now := time.Now()
+	startDate := *u.MembershipStartDate
+
+	// 计算从开始时间到现在过了多少个30天周期
+	daysDiff := int(now.Sub(startDate).Hours() / 24)
+	monthsPassed := daysDiff / 30
+
+	// 返回当前会员月的开始时间
+	return startDate.AddDate(0, 0, monthsPassed*30)
+}
+
+// GetCurrentMembershipMonthEnd 获取当前会员月的结束时间
+func (u *User) GetCurrentMembershipMonthEnd() time.Time {
+	monthStart := u.GetCurrentMembershipMonthStart()
+	return monthStart.AddDate(0, 0, 30)
+}
+
+// CanCreateBookInCurrentMonth 检查当前会员月内是否可以创建卡册
+func (u *User) CanCreateBookInCurrentMonth() bool {
+	// 只有订阅会员和both类型才需要检查月度限制
+	if u.MembershipType != MembershipTypeSubscription && u.MembershipType != MembershipTypeBoth {
+		return true
+	}
+
+	// 检查是否在会员月内
+	if !u.IsMembershipActive() {
+		return false
+	}
+
+	// 检查月度创建数量限制
+	const monthlyBookLimit = 30
+	return u.MonthlyBookCount < monthlyBookLimit
+}
+
+// GetRemainingMonthlyBooks 获取当前会员月内剩余可创建的卡册数量
+func (u *User) GetRemainingMonthlyBooks() int {
+	if u.MembershipType != MembershipTypeSubscription && u.MembershipType != MembershipTypeBoth {
+		return -1 // 无限制
+	}
+
+	const monthlyBookLimit = 30
+	remaining := monthlyBookLimit - u.MonthlyBookCount
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }

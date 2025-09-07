@@ -217,6 +217,10 @@ func (a *AsyncUserBizAdapter) IncrementUserCardNum(ctx context.Context, userID u
 	return a.biz.Users().IncrementUserCardNum(ctx, userID)
 }
 
+func (a *AsyncUserBizAdapter) IncrementMonthlyBookCount(ctx context.Context, userID uint) error {
+	return a.biz.Users().IncrementMonthlyBookCount(ctx, userID)
+}
+
 // AsyncAliBizAdapter 阿里业务适配器
 type AsyncAliBizAdapter struct {
 	biz biz.IBiz

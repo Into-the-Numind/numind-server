@@ -1,6 +1,8 @@
 package payment
 
 import (
+	"time"
+
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/wechat"
 	"numind-server/internal/pkg/core"
@@ -277,15 +279,58 @@ func (pc *PaymentController) CancelPayment(c *gin.Context) {
 // WechatPayNotify 微信支付回调
 func (pc *PaymentController) WechatPayNotify(c *gin.Context) {
 	cfg := getWechatPayConfig()
-	_, err := wechat.ParsePayNotify(cfg, c.Request.Context(), c.Request)
+	transaction, err := wechat.ParsePayNotify(cfg, c.Request.Context(), c.Request)
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("回调解析失败: "+err.Error()), nil)
 		return
 	}
 
-	// 解析回调数据，提取订单信息
-	// 这里需要根据实际的微信支付回调格式来提取信息
-	// 暂时返回成功响应
+	// 从微信支付回调中提取订单信息
+	// 根据微信支付官方文档，Transaction结构包含以下字段：
+	// - OutTradeNo: 商户订单号
+	// - TransactionId: 微信支付订单号
+	// - TradeState: 交易状态
+	// - SuccessTime: 支付成功时间
+	// - Amount: 订单金额信息
+
+	// 直接使用Transaction对象
+	trans := transaction
+
+	// 检查交易状态
+	if trans.TradeState == nil || *trans.TradeState != "SUCCESS" {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("支付未成功"), nil)
+		return
+	}
+
+	// 提取订单信息
+	var outTradeNo, transactionID string
+	var paidAt *time.Time
+
+	if trans.OutTradeNo != nil {
+		outTradeNo = *trans.OutTradeNo
+	}
+	if trans.TransactionId != nil {
+		transactionID = *trans.TransactionId
+	}
+	if trans.SuccessTime != nil {
+		// 解析微信支付的时间格式 "2023-12-01T12:00:00+08:00"
+		if t, err := time.Parse(time.RFC3339, *trans.SuccessTime); err == nil {
+			paidAt = &t
+		}
+	}
+
+	// 验证必要字段
+	if outTradeNo == "" {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("订单号为空"), nil)
+		return
+	}
+
+	// 更新支付状态
+	if err := pc.b.Payments().UpdatePaymentStatus(c, outTradeNo, model.PaymentStatusSuccess, transactionID, paidAt); err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("更新支付状态失败: "+err.Error()), nil)
+		return
+	}
+
 	core.WriteResponse(c, nil, gin.H{"code": "SUCCESS", "message": "成功"})
 }
 

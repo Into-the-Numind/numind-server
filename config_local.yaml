@@ -53,6 +53,8 @@ wechat:
     mch_private_key_path: "/Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/configs/cert/apiclient_key.pem"
     wechatpay_cert_path: "/Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/configs/cert/apiclient_cert.pem"
     notify_url: "https://49.233.219.254:9092/api/pay/wechat/notify"
+    # 使用微信支付公钥模式（推荐，避免证书过期问题）
+    use_wechatpay_public_key: "true"
 
 # 书籍处理配置
 book:
@@ -124,6 +126,22 @@ pagination:
     min_bottom_padding: 40   # 最小底部留白，确保文字不被遮挡
     max_images_per_card: 5   # 每张卡片最大图片数
     max_text_length: 2000    # 每张卡片最大文本长度
+    base_height: 1440        # 基础高度（用于规范化）
+    char_width_factor: 1.05  # 字符宽度系数
+    overflow_tolerance: 0.05 # 溢出容错比例（5%）
+    high_utilization_threshold: 85.0 # 高利用率阈值（85%）
+    base_image_height: 400   # 基础图片高度
+    image_margin_top: 20     # 图片上边距
+    image_margin_bottom: 20  # 图片下边距
+    min_chars_per_line: 20   # 最小每行字符数
+    list_item_spacing: 8     # 列表项间距
+  
+  # 新增可配置参数
+  char_width_factor: 1.05            # 字符宽度系数
+  overflow_tolerance: 0.05           # 溢出容错比例（5%）
+  high_utilization_threshold: 85.0   # 高利用率阈值（85%）
+  min_chars_per_line: 20             # 最小每行字符数
+  list_item_spacing: 8               # 列表项间距
   
   # 元素样式配置
   styles:
@@ -348,6 +366,19 @@ html_converter:
     title: 1.3           # 标题行高倍数
     subtitle: 1.3        # 副标题行高倍数
     body: 1.8            # 正文行高倍数（增大行高，提升可读性）
+
+# 渲染器配置
+renderer:
+  width: 1080            # 渲染器宽度
+  height: 1440           # 渲染器高度
+  quality: 85            # 图片质量（1-100）
+  format: "webp"         # 图片格式
+  zoom: 1.0              # 缩放比例
+  timeout_seconds: 30    # 超时时间（秒）
+
+# GSE分词库配置
+gse:
+  enabled: false         # 是否启用GSE分词功能（默认关闭，避免启动时加载字典）
   
   # 边距配置 - 优化间距
   margins:

@@ -22,3 +22,11 @@ type Feedback struct {
 func (Feedback) TableName() string {
 	return "feedbacks"
 }
+
+// FeedbackType 定义feedback类型常量
+const (
+	FeedbackTypeBug         = "bug"         // 问题反馈
+	FeedbackTypeFeature     = "feature"     // 功能建议
+	FeedbackTypeImprovement = "improvement" // 改进建议
+	FeedbackTypeOther       = "other"       // 其他
+)

@@ -12,6 +12,7 @@ import (
 	"numind-server/internal/numind/controller/v1/category"
 	"numind-server/internal/numind/controller/v1/chat"
 	"numind-server/internal/numind/controller/v1/image"
+	"numind-server/internal/numind/controller/v1/membership"
 	"numind-server/internal/numind/controller/v1/order"
 	"numind-server/internal/numind/controller/v1/pagination"
 	"numind-server/internal/numind/controller/v1/template"
@@ -236,6 +237,16 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/account/records", accountCtrl.GetUserPaymentHistory) // 获取用户支付历史
 		authGroup.GET("/account/total", accountCtrl.GetUserTotalAmount)      // 获取用户总消费金额
 		authGroup.GET("/account/summary", accountCtrl.GetUserAccountSummary) // 获取用户账户摘要
+	}
+
+	// 会员相关
+	{
+		membershipCtrl := membership.NewMembershipController(b)
+		authGroup.POST("/membership/payment", membershipCtrl.CreateMembershipPayment) // 创建会员购买支付
+		authGroup.GET("/membership/info", membershipCtrl.GetMembershipInfo)           // 获取用户会员信息
+		authGroup.GET("/membership/permission", membershipCtrl.CheckCreatePermission) // 检查用户创建卡册权限
+		//authGroup.POST("/membership/consume", membershipCtrl.ConsumeUsage)            // 消费使用次数
+		g.GET("/v1/membership/plans", membershipCtrl.GetMembershipPlans) // 获取会员套餐信息（无需鉴权）
 	}
 
 	return nil

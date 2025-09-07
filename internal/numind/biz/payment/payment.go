@@ -3,11 +3,13 @@ package payment
 import (
 	"context"
 	"fmt"
-	"numind-server/internal/pkg/model"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/model"
 	"time"
 
 	"numind-server/internal/pkg/log"
+
+	"gorm.io/gorm"
 )
 
 // PaymentBiz 支付业务接口
@@ -24,12 +26,16 @@ type PaymentBiz interface {
 
 // paymentBiz 支付业务实现
 type paymentBiz struct {
-	ds store.IStore
+	ds             store.IStore
+	priceValidator *PriceValidator
 }
 
 // NewPaymentBiz 创建支付业务实例
 func NewPaymentBiz(ds store.IStore) PaymentBiz {
-	return &paymentBiz{ds: ds}
+	return &paymentBiz{
+		ds:             ds,
+		priceValidator: NewPriceValidator(),
+	}
 }
 
 // CreatePayment 创建支付记录
@@ -40,17 +46,26 @@ func (b *paymentBiz) CreatePayment(ctx context.Context, req *model.CreatePayment
 		return nil, fmt.Errorf("订单号 %s 已存在", req.OutTradeNo)
 	}
 
+	// 严格验证价格和会员类型的对应关系
+	if err := b.validatePaymentRequest(req); err != nil {
+		log.C(ctx).Warnw("支付请求验证失败", "error", err.Error(), "user_id", userID, "amount", req.Amount, "membership_type", req.MembershipType)
+		return nil, fmt.Errorf("支付请求验证失败: %w", err)
+	}
+
 	// 创建支付记录
 	payment := &model.PaymentM{
-		OutTradeNo:  req.OutTradeNo,
-		UserID:      userID,
-		Amount:      req.Amount,
-		Description: req.Description,
-		Channel:     model.PaymentChannelWechat, // 默认微信支付
-		Status:      model.PaymentStatusPending,
-		PayMethod:   req.PayMethod,
-		OpenID:      req.OpenID,
-		ExpireAt:    &time.Time{}, // 设置过期时间
+		OutTradeNo:       req.OutTradeNo,
+		UserID:           userID,
+		Amount:           req.Amount,
+		Description:      req.Description,
+		Channel:          model.PaymentChannelWechat, // 默认微信支付
+		Status:           model.PaymentStatusPending,
+		PayMethod:        req.PayMethod,
+		OpenID:           req.OpenID,
+		MembershipType:   req.MembershipType,
+		PackageCount:     req.PackageCount,
+		SubscriptionDays: req.SubscriptionDays,
+		ExpireAt:         &time.Time{}, // 设置过期时间
 	}
 
 	// 设置过期时间为30分钟后
@@ -95,10 +110,21 @@ func (b *paymentBiz) UpdatePaymentStatus(ctx context.Context, outTradeNo, status
 		return fmt.Errorf("更新支付状态失败: %w", err)
 	}
 
+	// 记录支付状态变更审计日志
+	if err := b.logPaymentAudit(ctx, payment, status, transactionID, paidAt); err != nil {
+		log.C(ctx).Errorw("Failed to log payment audit", "error", err.Error(), "out_trade_no", outTradeNo)
+		// 审计日志记录失败不影响支付流程
+	}
+
 	// 如果支付成功，可以在这里添加其他业务逻辑
 	if status == model.PaymentStatusSuccess {
 		log.C(ctx).Infow("Payment successful", "out_trade_no", outTradeNo, "transaction_id", transactionID)
 		// 这里可以添加支付成功后的业务逻辑，比如更新订单状态、发送通知等
+		// 处理会员购买逻辑
+		if err := b.handleMembershipPurchase(ctx, payment); err != nil {
+			log.C(ctx).Errorw("Failed to handle membership purchase", "error", err.Error(), "out_trade_no", outTradeNo)
+			// 记录错误但不影响支付状态更新
+		}
 	}
 
 	return nil
@@ -160,4 +186,191 @@ func isValidStatusTransition(fromStatus, toStatus string) bool {
 	}
 
 	return false
+}
+
+// handleMembershipPurchase 处理会员购买
+func (b *paymentBiz) handleMembershipPurchase(ctx context.Context, payment *model.PaymentM) error {
+	// 获取用户信息
+	user, err := b.ds.Users().GetUserByID(ctx, payment.UserID)
+	if err != nil {
+		return fmt.Errorf("获取用户信息失败: %w", err)
+	}
+
+	// 根据会员类型更新用户状态
+	switch payment.MembershipType {
+	case model.MembershipTypeSubscription:
+		// 订阅会员 - 使用天数累加
+		now := time.Now()
+		var expiresAt *time.Time
+
+		// 根据订阅天数计算到期时间
+		days := payment.SubscriptionDays
+		if days <= 0 {
+			// 如果没有传递天数，根据金额判断（兼容旧逻辑）
+			if payment.Amount == 2800 {
+				days = 30
+			} else if payment.Amount == 19800 {
+				days = 365
+			} else {
+				days = 30 // 默认30天
+			}
+		}
+
+		// 计算新的到期时间
+		expires := now.AddDate(0, 0, days) // 添加指定天数
+		expiresAt = &expires
+
+		// 确定新的会员类型
+		var newMembershipType string
+		if user.MembershipType == model.MembershipTypePackage || user.MembershipType == model.MembershipTypeBoth {
+			// 如果用户已有资源包，则设为both
+			newMembershipType = model.MembershipTypeBoth
+		} else {
+			// 否则设为订阅会员
+			newMembershipType = model.MembershipTypeSubscription
+		}
+
+		// 更新用户会员信息
+		updateData := map[string]interface{}{
+			"membership_type":    newMembershipType,
+			"is_pro":             true,
+			"membership_expires": expiresAt,
+		}
+
+		// 如果是新订阅用户，设置会员开始时间
+		if user.MembershipType != model.MembershipTypeSubscription && user.MembershipType != model.MembershipTypeBoth {
+			updateData["membership_start_date"] = &now
+			updateData["monthly_book_count"] = 0 // 重置月度计数
+		}
+
+		// 如果用户已有订阅会员且未过期，在现有到期时间基础上累加天数
+		if (user.MembershipType == model.MembershipTypeSubscription || user.MembershipType == model.MembershipTypeBoth) &&
+			user.MembershipExpires != nil &&
+			user.MembershipExpires.After(now) {
+			// 在现有到期时间基础上累加天数
+			newExpires := user.MembershipExpires.AddDate(0, 0, days)
+			updateData["membership_expires"] = &newExpires
+		}
+
+		if err := b.ds.DB().Model(&model.User{}).Where("id = ?", payment.UserID).
+			Updates(updateData).Error; err != nil {
+			return fmt.Errorf("更新用户会员状态失败: %w", err)
+		}
+
+	case model.MembershipTypePackage:
+		// 确定新的会员类型
+		var newMembershipType string
+		if user.MembershipType == model.MembershipTypeSubscription || user.MembershipType == model.MembershipTypeBoth {
+			// 如果用户已有订阅会员，则设为both
+			newMembershipType = model.MembershipTypeBoth
+		} else {
+			// 否则设为资源包
+			newMembershipType = model.MembershipTypePackage
+		}
+
+		// 包次数类型，增加次数
+		if err := b.ds.DB().Model(&model.User{}).Where("id = ?", payment.UserID).
+			UpdateColumns(map[string]interface{}{
+				"membership_type": newMembershipType,
+				"is_pro":          true,
+				"package_count":   gorm.Expr("package_count + ?", payment.PackageCount),
+			}).Error; err != nil {
+			return fmt.Errorf("更新用户包次数失败: %w", err)
+		}
+
+	default:
+		return fmt.Errorf("不支持的会员类型: %s", payment.MembershipType)
+	}
+
+	log.C(ctx).Infow("Membership purchase processed successfully",
+		"user_id", payment.UserID,
+		"membership_type", payment.MembershipType,
+		"amount", payment.Amount,
+		"package_count", payment.PackageCount)
+
+	return nil
+}
+
+// validatePaymentRequest 验证支付请求的价格和参数
+func (b *paymentBiz) validatePaymentRequest(req *model.CreatePaymentRequest) error {
+	switch req.MembershipType {
+	case model.MembershipTypeSubscription:
+		// 验证订阅会员价格和天数
+		log.C(context.Background()).Infow("支付验证订阅天数", "subscription_days", req.SubscriptionDays, "type", fmt.Sprintf("%T", req.SubscriptionDays))
+		if req.SubscriptionDays <= 0 {
+			return fmt.Errorf("订阅天数必须大于0")
+		}
+		if req.SubscriptionDays != 30 && req.SubscriptionDays != 365 {
+			return fmt.Errorf("订阅天数只支持30天和365天，当前值: %d", req.SubscriptionDays)
+		}
+
+		// 验证价格是否与天数匹配
+		expectedPrice, err := b.priceValidator.GetSubscriptionPrice(req.SubscriptionDays)
+		if err != nil {
+			b.priceValidator.LogPriceValidation(context.Background(), req.MembershipType, req.Amount, req.SubscriptionDays, false, err)
+			return err
+		}
+		if req.Amount != expectedPrice {
+			return fmt.Errorf("订阅价格不匹配: 期望%d分，实际%d分", expectedPrice, req.Amount)
+		}
+
+		b.priceValidator.LogPriceValidation(context.Background(), req.MembershipType, req.Amount, req.SubscriptionDays, true, nil)
+
+	case model.MembershipTypePackage:
+		// 验证资源包价格
+		if req.PackageCount <= 0 {
+			return fmt.Errorf("资源包次数必须大于0")
+		}
+		if err := b.priceValidator.ValidatePackagePrice(req.PackageCount, req.Amount); err != nil {
+			b.priceValidator.LogPriceValidation(context.Background(), req.MembershipType, req.Amount, req.PackageCount, false, err)
+			return err
+		}
+		b.priceValidator.LogPriceValidation(context.Background(), req.MembershipType, req.Amount, req.PackageCount, true, nil)
+
+	default:
+		return fmt.Errorf("不支持的会员类型: %s", req.MembershipType)
+	}
+
+	return nil
+}
+
+// logPaymentAudit 记录支付审计日志
+func (b *paymentBiz) logPaymentAudit(ctx context.Context, payment *model.PaymentM, status, transactionID string, paidAt *time.Time) error {
+	// 使用支付记录中的订阅天数
+	subscriptionDays := payment.SubscriptionDays
+	if subscriptionDays <= 0 && payment.MembershipType == model.MembershipTypeSubscription {
+		// 如果没有记录天数，根据金额计算（兼容旧逻辑）
+		if payment.Amount == 2800 {
+			subscriptionDays = 30
+		} else if payment.Amount == 19800 {
+			subscriptionDays = 365
+		}
+	}
+
+	auditLog := &model.PaymentAuditLog{
+		OutTradeNo:       payment.OutTradeNo,
+		UserID:           payment.UserID,
+		Amount:           payment.Amount,
+		MembershipType:   payment.MembershipType,
+		PackageCount:     payment.PackageCount,
+		SubscriptionDays: subscriptionDays,
+		Status:           status,
+		TransactionID:    transactionID,
+		PaidAt:           paidAt,
+	}
+
+	// 这里应该调用数据存储层的方法来保存审计日志
+	// 由于当前没有对应的存储方法，我们先用日志记录
+	log.C(ctx).Infow("Payment audit log",
+		"out_trade_no", auditLog.OutTradeNo,
+		"user_id", auditLog.UserID,
+		"amount", auditLog.Amount,
+		"membership_type", auditLog.MembershipType,
+		"package_count", auditLog.PackageCount,
+		"subscription_days", auditLog.SubscriptionDays,
+		"status", auditLog.Status,
+		"transaction_id", auditLog.TransactionID,
+		"paid_at", auditLog.PaidAt)
+
+	return nil
 }

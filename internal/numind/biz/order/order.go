@@ -68,6 +68,16 @@ func (b *orderBiz) HandlePaymentSuccess(ctx context.Context, outTradeNo string) 
 		return err
 	}
 
+	// 如果订单描述包含会员信息，处理会员购买
+	if order.Description != "" {
+		// 这里可以根据订单描述或其他字段来判断会员类型
+		// 暂时使用默认的订阅会员（月度）
+		if err := b.userBiz.UpdateUserMembership(ctx, order.UserID, model.MembershipTypeSubscription, 0); err != nil {
+			log.C(ctx).Errorw("Failed to update user membership", "user_id", order.UserID, "error", err.Error())
+			// 记录错误但不影响主要流程
+		}
+	}
+
 	// 创建账户支付记录
 	if err := b.accountRecordBiz.CreatePaymentRecord(ctx, order, "wechat"); err != nil {
 		log.C(ctx).Errorw("Failed to create account record", "user_id", order.UserID, "order_id", order.ID, "error", err.Error())

@@ -23,7 +23,8 @@ Template API 提供了模板管理的完整功能，包括创建、查询、更�
 ```json
 {
   "name": "模板名称",
-  "file": "模板文件内容"
+  "file": "模板文件内容",
+  "is_member_only": false
 }
 ```
 
@@ -37,6 +38,7 @@ Template API 提供了模板管理的完整功能，包括创建、查询、更�
     "id": 1,
     "name": "模板名称",
     "file": "模板文件内容",
+    "is_member_only": false,
     "created_at": "2024-01-01T00:00:00Z",
     "updated_at": "2024-01-01T00:00:00Z"
   }
@@ -73,6 +75,7 @@ GET /v1/templates?offset=0&limit=10
         "id": 1,
         "name": "模板名称1",
         "file": "模板文件内容1",
+        "is_member_only": false,
         "created_at": "2024-01-01T00:00:00Z",
         "updated_at": "2024-01-01T00:00:00Z"
       },
@@ -80,6 +83,7 @@ GET /v1/templates?offset=0&limit=10
         "id": 2,
         "name": "模板名称2",
         "file": "模板文件内容2",
+        "is_member_only": true,
         "created_at": "2024-01-01T00:00:00Z",
         "updated_at": "2024-01-01T00:00:00Z"
       }
@@ -114,6 +118,7 @@ GET /v1/templates/1
     "id": 1,
     "name": "模板名称",
     "file": "模板文件内容",
+    "is_member_only": false,
     "created_at": "2024-01-01T00:00:00Z",
     "updated_at": "2024-01-01T00:00:00Z"
   }
@@ -135,7 +140,8 @@ GET /v1/templates/1
 ```json
 {
   "name": "更新后的模板名称",
-  "file": "更新后的模板文件内容"
+  "file": "更新后的模板文件内容",
+  "is_member_only": true
 }
 ```
 
@@ -199,8 +205,9 @@ DELETE /v1/templates/1
 ```go
 type Template struct {
     gorm.Model
-    Name string `gorm:"size:50;uniqueIndex" json:"name" valid:"required,length(1|50)"`
-    File string `gorm:"type:text" json:"file" valid:"required"`
+    Name         string `gorm:"size:50;uniqueIndex" json:"name" valid:"required,length(1|50)"`
+    File         string `gorm:"type:text" json:"file" valid:"required"`
+    IsMemberOnly bool   `gorm:"default:false;not null" json:"is_member_only"`
 }
 ```
 
@@ -209,6 +216,7 @@ type Template struct {
 - `id`: 主键 ID
 - `name`: 模板名称，必填，最大长度 50 字符，唯一
 - `file`: 模板文件内容，必填，文本类型
+- `is_member_only`: 是否仅会员可用，布尔类型，默认false
 - `created_at`: 创建时间
 - `updated_at`: 更新时间
 - `deleted_at`: 删除时间（软删除）
@@ -219,4 +227,5 @@ type Template struct {
 2. 模板名称必须唯一
 3. 模板名称长度限制为 1-50 字符
 4. 模板文件内容为必填项
-5. 删除操作为软删除，不会真正从数据库中删除记录 
+5. `is_member_only` 字段用于区分模板是否仅会员可用，默认为 `false`
+6. 删除操作为软删除，不会真正从数据库中删除记录 
