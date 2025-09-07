@@ -296,11 +296,12 @@ func (b *paymentBiz) validatePaymentRequest(req *model.CreatePaymentRequest) err
 	switch req.MembershipType {
 	case model.MembershipTypeSubscription:
 		// 验证订阅会员价格和天数
+		log.C(context.Background()).Infow("支付验证订阅天数", "subscription_days", req.SubscriptionDays, "type", fmt.Sprintf("%T", req.SubscriptionDays))
 		if req.SubscriptionDays <= 0 {
 			return fmt.Errorf("订阅天数必须大于0")
 		}
 		if req.SubscriptionDays != 30 && req.SubscriptionDays != 365 {
-			return fmt.Errorf("订阅天数只支持30天和365天")
+			return fmt.Errorf("订阅天数只支持30天和365天，当前值: %d", req.SubscriptionDays)
 		}
 
 		// 验证价格是否与天数匹配

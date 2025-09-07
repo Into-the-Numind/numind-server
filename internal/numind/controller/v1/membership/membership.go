@@ -83,8 +83,10 @@ func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 			return
 		}
 	} else if req.MembershipType == model.MembershipTypeSubscription {
+		// 添加调试日志
+		log.C(c).Infow("订阅天数验证", "subscription_days", req.SubscriptionDays, "type", fmt.Sprintf("%T", req.SubscriptionDays))
 		if req.SubscriptionDays != 30 && req.SubscriptionDays != 365 {
-			core.WriteResponse(c, errno.ErrBind.SetMessage("订阅天数只支持30天和365天"), nil)
+			core.WriteResponse(c, errno.ErrBind.SetMessage("订阅天数只支持30天和365天，当前值: %d", req.SubscriptionDays), nil)
 			return
 		}
 	}
