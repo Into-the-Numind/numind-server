@@ -31,6 +31,7 @@
 | 最小卡片高度 | `pagination.dynamic.min_height` | 720px | 最小卡片高度（标准高度的一半） |
 | 最大卡片高度 | `pagination.dynamic.max_height` | 4320px | 最大卡片高度（3倍标准高度） |
 | 最小底部留白 | `pagination.dynamic.min_bottom_padding` | 40px | 最小底部留白，确保文字不被遮挡 |
+| 基础高度 | `pagination.dynamic.base_height` | 1440px | 基础高度（用于规范化） |
 
 ### 2.2 内容限制参数
 
@@ -38,6 +39,14 @@
 |--------|----------|--------|------|
 | 每张卡片最大图片数 | `pagination.dynamic.max_images_per_card` | 5 | 单张卡片允许的最大图片数量 |
 | 每张卡片最大文本长度 | `pagination.dynamic.max_text_length` | 2000字符 | 单张卡片允许的最大文本字符数 |
+
+### 2.3 图片渲染参数
+
+| 参数名 | 配置路径 | 默认值 | 说明 |
+|--------|----------|--------|------|
+| 基础图片高度 | `pagination.dynamic.base_image_height` | 400px | 基础图片高度 |
+| 图片上边距 | `pagination.dynamic.image_margin_top` | 20px | 图片上边距 |
+| 图片下边距 | `pagination.dynamic.image_margin_bottom` | 20px | 图片下边距 |
 
 ## 3. 元素样式配置参数
 
@@ -119,9 +128,32 @@
 | 文字颜色 | `pagination.styles.number.color` | #1E90FF | 数字文字颜色（蓝色） |
 | 对齐方式 | `pagination.styles.number.align` | center | 居中对齐 |
 
-## 4. 渲染策略参数
+## 4. 高级配置参数
 
-### 4.1 渲染策略类型
+### 4.1 字符宽度和文本处理参数
+
+| 参数名 | 配置路径 | 默认值 | 说明 |
+|--------|----------|--------|------|
+| 字符宽度系数 | `pagination.char_width_factor` | 1.05 | 中文字符宽度系数，用于文本换行计算 |
+| 溢出容错比例 | `pagination.overflow_tolerance` | 0.05 | 允许内容超出可用高度的比例（5%） |
+| 高利用率阈值 | `pagination.high_utilization_threshold` | 85.0 | 高利用率阈值，达到此值时创建新卡片 |
+| 最小每行字符数 | `pagination.min_chars_per_line` | 20 | 最小每行字符数，防止除零错误 |
+| 列表项间距 | `pagination.list_item_spacing` | 8px | 列表项之间的间距 |
+
+### 4.2 渲染器配置参数
+
+| 参数名 | 配置路径 | 默认值 | 说明 |
+|--------|----------|--------|------|
+| 渲染器宽度 | `renderer.width` | 1080px | 渲染器输出图片宽度 |
+| 渲染器高度 | `renderer.height` | 1440px | 渲染器输出图片高度 |
+| 图片质量 | `renderer.quality` | 85 | 图片质量（1-100） |
+| 图片格式 | `renderer.format` | "webp" | 输出图片格式 |
+| 缩放比例 | `renderer.zoom` | 1.0 | 渲染缩放比例 |
+| 超时时间 | `renderer.timeout_seconds` | 30秒 | 渲染超时时间 |
+
+## 5. 渲染策略参数
+
+### 5.1 渲染策略类型
 
 | 策略名称 | 枚举值 | 说明 |
 |----------|--------|------|
@@ -129,7 +161,7 @@
 | 超长图渲染策略 | `StrategySuperLongImage` | 先拼接后切分策略 |
 | 精确测量策略 | `StrategyPreciseMeasurement` | 先测量后渲染策略 |
 
-### 4.2 渲染选项参数
+### 5.2 渲染选项参数
 
 | 参数名 | 类型 | 说明 |
 |--------|------|------|
@@ -236,6 +268,34 @@ pagination:
     min_bottom_padding: 40
     max_images_per_card: 5
     max_text_length: 2000
+    base_height: 1440
+    char_width_factor: 1.05
+    overflow_tolerance: 0.05
+    high_utilization_threshold: 85.0
+    base_image_height: 400
+    image_margin_top: 20
+    image_margin_bottom: 20
+    min_chars_per_line: 20
+    list_item_spacing: 8
+```
+
+### 8.4 高级配置示例
+
+```yaml
+pagination:
+  char_width_factor: 1.05
+  overflow_tolerance: 0.05
+  high_utilization_threshold: 85.0
+  min_chars_per_line: 20
+  list_item_spacing: 8
+
+renderer:
+  width: 1080
+  height: 1440
+  quality: 85
+  format: "webp"
+  zoom: 1.0
+  timeout_seconds: 30
 ```
 
 ## 9. 注意事项
@@ -245,6 +305,11 @@ pagination:
 3. **容错机制**：允许5%的溢出容错，提高空间利用率
 4. **环境配置**：不同环境使用不同的配置文件（config_local.yaml, config_dev.yaml等）
 5. **渲染策略**：支持多种渲染策略，可根据内容特点选择最优策略
+6. **硬编码参数已移除**：所有之前硬编码的参数现在都可以通过配置文件调整
+7. **字符宽度系数**：影响文本换行和分页的准确性，建议根据实际字体调整
+8. **渲染器配置**：可以通过配置文件调整输出图片的尺寸、质量和格式
+9. **动态分页参数**：所有动态分页相关的参数都可以独立配置
+10. **配置加载顺序**：系统会先加载默认配置，然后用配置文件中的值覆盖
 
 ---
 

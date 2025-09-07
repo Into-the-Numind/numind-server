@@ -10,13 +10,22 @@ import (
 // DynamicPaginationConfig 动态分页配置
 type DynamicPaginationConfig struct {
 	*PaginationConfig
-	MinHeight        int `json:"min_height"`          // 最小卡片高度
-	MaxHeight        int `json:"max_height"`          // 最大卡片高度
-	MinBottomPadding int `json:"min_bottom_padding"`  // 最小底部留白
-	ImageMaxWidth    int `json:"image_max_width"`     // 图片最大宽度
-	ImageMaxHeight   int `json:"image_max_height"`    // 图片最大高度
-	MaxImagesPerCard int `json:"max_images_per_card"` // 每张卡片最大图片数
-	MaxTextLength    int `json:"max_text_length"`     // 每张卡片最大文本长度
+	MinHeight                int     `json:"min_height"`                 // 最小卡片高度
+	MaxHeight                int     `json:"max_height"`                 // 最大卡片高度
+	MinBottomPadding         int     `json:"min_bottom_padding"`         // 最小底部留白
+	ImageMaxWidth            int     `json:"image_max_width"`            // 图片最大宽度
+	ImageMaxHeight           int     `json:"image_max_height"`           // 图片最大高度
+	MaxImagesPerCard         int     `json:"max_images_per_card"`        // 每张卡片最大图片数
+	MaxTextLength            int     `json:"max_text_length"`            // 每张卡片最大文本长度
+	BaseHeight               int     `json:"base_height"`                // 基础高度（用于规范化）
+	CharWidthFactor          float64 `json:"char_width_factor"`          // 字符宽度系数
+	OverflowTolerance        float64 `json:"overflow_tolerance"`         // 溢出容错比例
+	HighUtilizationThreshold float64 `json:"high_utilization_threshold"` // 高利用率阈值
+	BaseImageHeight          int     `json:"base_image_height"`          // 基础图片高度
+	ImageMarginTop           int     `json:"image_margin_top"`           // 图片上边距
+	ImageMarginBottom        int     `json:"image_margin_bottom"`        // 图片下边距
+	MinCharsPerLine          int     `json:"min_chars_per_line"`         // 最小每行字符数
+	ListItemSpacing          int     `json:"list_item_spacing"`          // 列表项间距
 }
 
 // DynamicPaginationEngine 动态分页引擎
@@ -35,14 +44,23 @@ func NewDynamicPaginationEngine(config *DynamicPaginationConfig) *DynamicPaginat
 func GetDynamicConfig() *DynamicPaginationConfig {
 	baseConfig := GetDefaultConfig()
 	return &DynamicPaginationConfig{
-		PaginationConfig: baseConfig,
-		MinHeight:        720,  // 最小高度（1440的一半）
-		MaxHeight:        4320, // 最大高度（1440的3倍）
-		MinBottomPadding: 5,    // 最小底部留白5px（进一步减少空白）
-		ImageMaxWidth:    1080, // 图片最大宽度
-		ImageMaxHeight:   720,  // 图片最大高度
-		MaxImagesPerCard: 5,    // 每张卡片最多5张图片
-		MaxTextLength:    2000, // 每张卡片最多2000字符
+		PaginationConfig:         baseConfig,
+		MinHeight:                720,  // 最小高度（1440的一半）
+		MaxHeight:                4320, // 最大高度（1440的3倍）
+		MinBottomPadding:         5,    // 最小底部留白5px（进一步减少空白）
+		ImageMaxWidth:            1080, // 图片最大宽度
+		ImageMaxHeight:           720,  // 图片最大高度
+		MaxImagesPerCard:         5,    // 每张卡片最多5张图片
+		MaxTextLength:            2000, // 每张卡片最多2000字符
+		BaseHeight:               1440, // 基础高度（用于规范化）
+		CharWidthFactor:          1.05, // 字符宽度系数
+		OverflowTolerance:        0.05, // 溢出容错比例（5%）
+		HighUtilizationThreshold: 85.0, // 高利用率阈值（85%）
+		BaseImageHeight:          400,  // 基础图片高度
+		ImageMarginTop:           20,   // 图片上边距
+		ImageMarginBottom:        20,   // 图片下边距
+		MinCharsPerLine:          20,   // 最小每行字符数
+		ListItemSpacing:          8,    // 列表项间距
 	}
 }
 
@@ -90,9 +108,9 @@ func (d *DynamicPaginationEngine) calculateElementHeight(element Element) int {
 func (d *DynamicPaginationEngine) calculateImageHeight(content interface{}) int {
 	// 图片高度计算：假设图片按比例缩放到卡片宽度，计算对应高度
 	// 这里使用一个合理的默认高度，实际项目中可以根据图片实际尺寸计算
-	baseImageHeight := 400 // 基础图片高度
-	marginTop := 20        // 图片上边距
-	marginBottom := 20     // 图片下边距
+	baseImageHeight := d.config.BaseImageHeight // 基础图片高度
+	marginTop := d.config.ImageMarginTop        // 图片上边距
+	marginBottom := d.config.ImageMarginBottom  // 图片下边距
 
 	return baseImageHeight + marginTop + marginBottom
 }
@@ -106,12 +124,12 @@ func (d *DynamicPaginationEngine) calculateTextHeight(text string, style StyleCo
 	// 计算可用宽度（卡片宽度减去左右边距）
 	availableWidth := d.config.Card.Width - d.config.Card.Padding.Left - d.config.Card.Padding.Right
 
-	// 计算字符宽度（粗略估算：中文字符宽度约等于字体大小，英文字符约为字体大小的0.6倍）
-	charWidth := float64(style.FontSize) * 0.8 // 平均字符宽度
+	// 计算字符宽度（使用配置的字符宽度系数）
+	charWidth := float64(style.FontSize) * d.config.CharWidthFactor
 	charsPerLine := int(float64(availableWidth) / charWidth)
 
 	if charsPerLine <= 0 {
-		charsPerLine = 1 // 防止除零错误
+		charsPerLine = d.config.MinCharsPerLine // 使用配置的最小每行字符数
 	}
 
 	// 计算行数
@@ -221,9 +239,9 @@ func (d *DynamicPaginationEngine) CreateOptimizedPages(elements []Element) (*Pag
 	return &PaginatedContent{Cards: cards}, nil
 }
 
-// normalizeHeight 规范化高度到1440的整数倍
+// normalizeHeight 规范化高度到基础高度的整数倍
 func (d *DynamicPaginationEngine) normalizeHeight(height int) int {
-	baseHeight := 1440
+	baseHeight := d.config.BaseHeight
 
 	// 如果高度小于最小高度，使用最小高度
 	if height < d.config.MinHeight {
@@ -239,8 +257,8 @@ func (d *DynamicPaginationEngine) normalizeHeight(height int) int {
 		normalizedHeight = d.config.MaxHeight
 	}
 
-	fmt.Printf("🔧 高度规范化：原始高度=%d, 规范化高度=%d (倍数=%d)\n",
-		height, normalizedHeight, multiplier)
+	fmt.Printf("🔧 高度规范化：原始高度=%d, 规范化高度=%d (倍数=%d, 基础高度=%d)\n",
+		height, normalizedHeight, multiplier, baseHeight)
 
 	return normalizedHeight
 }

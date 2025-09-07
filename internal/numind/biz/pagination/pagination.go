@@ -62,6 +62,12 @@ type CardConfig struct {
 type PaginationConfig struct {
 	Card   CardConfig                  `json:"card"`
 	Styles map[ElementType]StyleConfig `json:"styles"`
+	// 新增可配置参数
+	CharWidthFactor          float64 `json:"char_width_factor"`          // 字符宽度系数
+	OverflowTolerance        float64 `json:"overflow_tolerance"`         // 溢出容错比例
+	HighUtilizationThreshold float64 `json:"high_utilization_threshold"` // 高利用率阈值
+	MinCharsPerLine          int     `json:"min_chars_per_line"`         // 最小每行字符数
+	ListItemSpacing          int     `json:"list_item_spacing"`          // 列表项间距
 }
 
 // PaginationEngine 分页引擎
@@ -93,7 +99,7 @@ func (p *PaginationEngine) calculateTextHeight(text string, style StyleConfig) i
 	// 更精确的字符宽度计算
 	// 中文字符宽度约为字体大小的1.0倍，英文字符约为0.6倍
 	// 为了安全起见，我们使用更保守的估计
-	charWidth := float64(style.FontSize) * 1.05 // 稍微保守的估计
+	charWidth := float64(style.FontSize) * p.config.CharWidthFactor // 使用配置的字符宽度系数
 	charsPerLine := int(float64(availableWidth) / charWidth)
 
 	// 计算行数
@@ -181,7 +187,7 @@ func (p *PaginationEngine) calculateElementHeight(element Element) int {
 			fmt.Printf("🔍 调试：列表项 %d 高度: %d，累计: %d，内容: %s\n", i, itemHeight, totalHeight, item[:min(len(item), 50)]+"...")
 			// 列表项之间添加间距（除了最后一项）
 			if i < len(v)-1 {
-				totalHeight += 8 // 列表项间距
+				totalHeight += p.config.ListItemSpacing // 使用配置的列表项间距
 				fmt.Printf("🔍 调试：添加列表项间距，新累计: %d\n", totalHeight)
 			}
 		}
@@ -263,8 +269,8 @@ func (p *PaginationEngine) PaginateElements(elements []Element) (*PaginatedConte
 			i+1, currentUtilization, predictedUtilization)
 
 		// 检查是否需要创建新卡片
-		// 允许小幅度的超出（不超过5%），以便更好地利用空间
-		overflowTolerance := int(float64(availableHeight) * 0.05) // 5%的容错空间
+		// 允许小幅度的超出，以便更好地利用空间
+		overflowTolerance := int(float64(availableHeight) * p.config.OverflowTolerance) // 使用配置的容错比例
 
 		if currentHeight+elementHeight > availableHeight+overflowTolerance {
 			// 检查是否可以尝试更精确的分页
@@ -279,7 +285,7 @@ func (p *PaginationEngine) PaginateElements(elements []Element) (*PaginatedConte
 				currentCardElements = []Element{element}
 				currentHeight = elementHeight
 				fmt.Printf("🔍 调试：重置当前卡片，添加元素 %d，新高度: %d\n", i+1, currentHeight)
-			} else if currentUtilization >= 85.0 && elementHeight <= availableHeight {
+			} else if currentUtilization >= p.config.HighUtilizationThreshold && elementHeight <= availableHeight {
 				// 当前卡片利用率已经很高（>=85%），且当前元素可以单独放入新卡片
 				cards = append(cards, Card{Elements: currentCardElements})
 				fmt.Printf("🔍 调试：高利用率创建新卡片 %d，元素数: %d, 总高度: %d (利用率: %.1f%%)\n",
@@ -397,7 +403,7 @@ func (p *PaginationEngine) splitLongElement(element Element, maxHeight int) []El
 
 	// 计算可用宽度
 	availableWidth := p.config.Card.Width - p.config.Card.Padding.Left - p.config.Card.Padding.Right
-	charWidth := float64(style.FontSize) * 1.05
+	charWidth := float64(style.FontSize) * p.config.CharWidthFactor
 	charsPerLine := int(float64(availableWidth) / charWidth)
 
 	// 计算每行的高度
@@ -475,7 +481,7 @@ func (p *PaginationEngine) splitTextByLines(text string, maxLines int, style Sty
 
 	// 计算可用宽度
 	availableWidth := p.config.Card.Width - p.config.Card.Padding.Left - p.config.Card.Padding.Right
-	charWidth := float64(style.FontSize) * 1.05
+	charWidth := float64(style.FontSize) * p.config.CharWidthFactor
 	charsPerLine := int(float64(availableWidth) / charWidth)
 
 	// 分割文本为行
@@ -551,6 +557,12 @@ func GetDefaultConfig() *PaginationConfig {
 				Left:   50,
 			},
 		},
+		// 新增可配置参数的默认值
+		CharWidthFactor:          1.05, // 字符宽度系数
+		OverflowTolerance:        0.05, // 溢出容错比例（5%）
+		HighUtilizationThreshold: 85.0, // 高利用率阈值（85%）
+		MinCharsPerLine:          20,   // 最小每行字符数
+		ListItemSpacing:          8,    // 列表项间距
 		Styles: map[ElementType]StyleConfig{
 			ElementTypeTitle: {
 				FontSize:     64,        // 标题: 64px（最大）
@@ -684,7 +696,7 @@ func (p *PaginationEngine) splitListElement(element Element, maxHeight int) []El
 
 		// 添加列表项间距（除了最后一项）
 		if i < len(items)-1 {
-			totalContentHeight += 8 // 列表项间距
+			totalContentHeight += p.config.ListItemSpacing // 使用配置的列表项间距
 		}
 
 		fmt.Printf("📏 项目 %d 高度: %dpx，累计: %dpx\n", i, itemHeight, totalContentHeight)

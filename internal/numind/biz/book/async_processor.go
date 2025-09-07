@@ -322,7 +322,6 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	log.C(ctx).Infow("🎉 markdown渲染器处理完成，跳过其他渲染流程", "book_id", bookID)
 	// 直接进行最后的状态更新并返回
 	p.finalizeBookCreation(ctx, bookID, startTime)
-	return
 }
 
 // updateBookStatus 更新book状态
@@ -2196,14 +2195,8 @@ func (p *AsyncBookProcessor) renderWithWkhtmltoimage(ctx context.Context, cardID
 	}
 
 	// 使用新的wkhtmltoimage工具
-	renderer := utilpkg.NewWkhtmltoimageRenderer(&utilpkg.WkhtmltoimageConfig{
-		Width:   1080,
-		Height:  1440,
-		Quality: 85,
-		Format:  "webp",
-		Zoom:    1.0,
-		Timeout: 30 * time.Second,
-	})
+	rendererConfig := p.getRendererConfig()
+	renderer := utilpkg.NewWkhtmltoimageRenderer(rendererConfig)
 
 	if err := renderer.RenderHTMLToImage(ctx, fixedHTMLContent, fullImagePath); err != nil {
 		log.C(ctx).Warnw("wkhtmltoimage转换失败", "card_id", cardID, "error", err.Error())
@@ -2221,31 +2214,27 @@ func (p *AsyncBookProcessor) fixHTMLContentForRendering(htmlContent string) stri
 	// htmlContent = strings.ReplaceAll(htmlContent, "overflow: visible", "overflow: hidden !important")
 
 	// 添加固定尺寸的CSS，但保持overflow: visible以显示完整内容
-	fixedCSS := `
+	rendererConfig := p.getRendererConfig()
+	fixedCSS := fmt.Sprintf(`
 		body { 
-			width: 1080px !important; 
-			height: 1440px !important; 
+			width: %dpx !important; 
+			height: %dpx !important; 
 			overflow: visible !important; 
 		}
 		.markdown-card-container { 
-			width: 1080px !important; 
-			height: 1440px !important; 
+			width: %dpx !important; 
+			height: %dpx !important; 
 			overflow: visible !important; 
 		}
 		.markdown-content { 
 			overflow: visible !important; 
 		}
-	`
+	`, rendererConfig.Width, rendererConfig.Height, rendererConfig.Width, rendererConfig.Height)
 
 	// 在</style>标签前插入修复的CSS
-	if strings.Contains(htmlContent, "</style>") {
-		htmlContent = strings.Replace(htmlContent, "</style>", fixedCSS+"\n</style>", 1)
-	} else {
-		// 如果没有style标签，在head标签内添加
-		if strings.Contains(htmlContent, "</head>") {
-			htmlContent = strings.Replace(htmlContent, "</head>", "<style>"+fixedCSS+"</style>\n</head>", 1)
-		}
-	}
+	htmlContent = strings.Replace(htmlContent, "</style>", fixedCSS+"\n</style>", 1)
+	// 如果没有style标签，在head标签内添加
+	htmlContent = strings.Replace(htmlContent, "</head>", "<style>"+fixedCSS+"</style>\n</head>", 1)
 
 	return htmlContent
 }
@@ -2353,14 +2342,8 @@ func (p *AsyncBookProcessor) createPlaceholderImage(ctx context.Context, cardID 
 	defer os.Remove(tempHTMLFile) // 清理临时文件
 
 	// 使用内部的wkhtmltoimage工具生成占位符图片
-	renderer := utilpkg.NewWkhtmltoimageRenderer(&utilpkg.WkhtmltoimageConfig{
-		Width:   1080,
-		Height:  1440,
-		Quality: 85,
-		Format:  "webp",
-		Zoom:    1.0,
-		Timeout: 30 * time.Second,
-	})
+	rendererConfig := p.getRendererConfig()
+	renderer := utilpkg.NewWkhtmltoimageRenderer(rendererConfig)
 
 	if err := renderer.RenderHTMLToImage(ctx, placeholderHTML, imagePath); err != nil {
 		log.C(ctx).Warnw("占位符图片生成失败", "card_id", cardID, "error", err.Error())
@@ -2796,4 +2779,45 @@ func (p *AsyncBookProcessor) generateCoverImageOnly(ctx context.Context, cardID 
 
 	log.C(ctx).Infow("✅ 封面图片生成完成并更新数据库", "card_id", cardID, "image_path", relativeImagePath)
 	return nil
+}
+
+// getRendererConfig 获取渲染器配置
+func (p *AsyncBookProcessor) getRendererConfig() *utilpkg.WkhtmltoimageConfig {
+	// 从配置中获取渲染器参数，如果没有配置则使用默认值
+	width := 1080
+	height := 1440
+	quality := 85
+	format := "webp"
+	zoom := 1.0
+	timeout := 30 * time.Second
+
+	// 尝试从viper配置中读取
+	if viper.IsSet("renderer.width") {
+		width = viper.GetInt("renderer.width")
+	}
+	if viper.IsSet("renderer.height") {
+		height = viper.GetInt("renderer.height")
+	}
+	if viper.IsSet("renderer.quality") {
+		quality = viper.GetInt("renderer.quality")
+	}
+	if viper.IsSet("renderer.format") {
+		format = viper.GetString("renderer.format")
+	}
+	if viper.IsSet("renderer.zoom") {
+		zoom = viper.GetFloat64("renderer.zoom")
+	}
+	if viper.IsSet("renderer.timeout_seconds") {
+		timeoutSeconds := viper.GetInt("renderer.timeout_seconds")
+		timeout = time.Duration(timeoutSeconds) * time.Second
+	}
+
+	return &utilpkg.WkhtmltoimageConfig{
+		Width:   width,
+		Height:  height,
+		Quality: quality,
+		Format:  format,
+		Zoom:    zoom,
+		Timeout: timeout,
+	}
 }
