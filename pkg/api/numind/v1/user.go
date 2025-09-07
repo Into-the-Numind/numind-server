@@ -108,23 +108,26 @@ type ListFeedbackResponse struct {
 
 // CreateTemplateRequest 创建模板的请求参数
 type CreateTemplateRequest struct {
-	Name string `json:"name" binding:"required" valid:"required,stringlength(1|50)"`
-	File string `json:"file" binding:"required" valid:"required"`
+	Name         string `json:"name" binding:"required" valid:"required,stringlength(1|50)"`
+	File         string `json:"file" binding:"required" valid:"required"`
+	IsMemberOnly bool   `json:"is_member_only"` // 是否仅会员可用
 }
 
 // UpdateTemplateRequest 更新模板的请求参数
 type UpdateTemplateRequest struct {
-	Name *string `json:"name" valid:"stringlength(1|50)"`
-	File *string `json:"file"`
+	Name         *string `json:"name" valid:"stringlength(1|50)"`
+	File         *string `json:"file"`
+	IsMemberOnly *bool   `json:"is_member_only"` // 是否仅会员可用
 }
 
 // TemplateResponse 模板的响应参数
 type TemplateResponse struct {
-	ID        uint   `json:"id"`
-	Name      string `json:"name"`
-	File      string `json:"file"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID           uint   `json:"id"`
+	Name         string `json:"name"`
+	File         string `json:"file"`
+	IsMemberOnly bool   `json:"is_member_only"` // 是否仅会员可用
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
 }
 
 // ListTemplateResponse 模板列表的响应参数

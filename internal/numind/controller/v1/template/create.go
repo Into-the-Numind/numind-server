@@ -29,8 +29,9 @@ func (ctrl *TemplateController) Create(c *gin.Context) {
 
 	// 转换为模型
 	template := &model.Template{
-		Name: r.Name,
-		File: r.File,
+		Name:         r.Name,
+		File:         r.File,
+		IsMemberOnly: r.IsMemberOnly,
 	}
 
 	if err := ctrl.b.Templates().Create(c, template); err != nil {

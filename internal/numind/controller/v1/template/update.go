@@ -48,6 +48,9 @@ func (ctrl *TemplateController) Update(c *gin.Context) {
 	if r.File != nil {
 		template.File = *r.File
 	}
+	if r.IsMemberOnly != nil {
+		template.IsMemberOnly = *r.IsMemberOnly
+	}
 
 	if err := ctrl.b.Templates().Update(c, template); err != nil {
 		core.WriteResponse(c, err, nil)
