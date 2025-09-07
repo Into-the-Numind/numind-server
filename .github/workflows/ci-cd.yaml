@@ -396,8 +396,22 @@ jobs:
             # 创建必要的目录并设置权限（确保容器内 UID 1001 可写）
             echo "Creating necessary directories..."
             sudo mkdir -p /opt/numind/dev/image/upload/{avatars,card,book}
+            sudo mkdir -p /opt/numind/config/cert
             sudo chown -R 1001:1001 /opt/numind/dev || true
+            sudo chown -R 1001:1001 /opt/numind/config || true
             sudo chmod -R 775 /opt/numind/dev
+            sudo chmod -R 755 /opt/numind/config
+            
+            # 检查证书文件是否存在
+            if [ ! -f "/opt/numind/config/cert/apiclient_key.pem" ]; then
+              echo "Warning: 微信支付私钥文件不存在: /opt/numind/config/cert/apiclient_key.pem"
+              echo "请确保证书文件已正确放置到服务器上"
+            fi
+            
+            if [ ! -f "/opt/numind/config/cert/wechatpay_cert.pem" ]; then
+              echo "Warning: 微信支付证书文件不存在: /opt/numind/config/cert/wechatpay_cert.pem"
+              echo "请确保证书文件已正确放置到服务器上"
+            fi
             
             # 启动新容器
             echo "Starting new container..."
@@ -406,6 +420,7 @@ jobs:
               -p 9091:9091 \
               -p 9092:9092 \
               -v /opt/numind/dev:/opt/numind/dev \
+              -v /opt/numind/config:/opt/numind/config:ro \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
               neozhang96/numind-server:develop \
@@ -496,8 +511,22 @@ jobs:
             # 创建必要的目录并设置权限（确保容器内 UID 1001 可写）
             echo "Creating necessary directories..."
             sudo mkdir -p /opt/numind/qa/image/upload/{avatars,card,book}
+            sudo mkdir -p /opt/numind/config/cert
             sudo chown -R 1001:1001 /opt/numind/qa || true
+            sudo chown -R 1001:1001 /opt/numind/config || true
             sudo chmod -R 775 /opt/numind/qa
+            sudo chmod -R 755 /opt/numind/config
+            
+            # 检查证书文件是否存在
+            if [ ! -f "/opt/numind/config/cert/apiclient_key.pem" ]; then
+              echo "Warning: 微信支付私钥文件不存在: /opt/numind/config/cert/apiclient_key.pem"
+              echo "请确保证书文件已正确放置到服务器上"
+            fi
+            
+            if [ ! -f "/opt/numind/config/cert/wechatpay_cert.pem" ]; then
+              echo "Warning: 微信支付证书文件不存在: /opt/numind/config/cert/wechatpay_cert.pem"
+              echo "请确保证书文件已正确放置到服务器上"
+            fi
             
             # 启动新容器
             echo "Starting new container..."
@@ -506,6 +535,7 @@ jobs:
               -p 9093:9091 \
               -p 9094:9092 \
               -v /opt/numind/qa:/opt/numind/qa \
+              -v /opt/numind/config:/opt/numind/config:ro \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
               neozhang96/numind-server:release \
@@ -601,8 +631,22 @@ jobs:
             # 创建必要的目录并设置权限（确保容器内 UID 1001 可写）
             echo "Creating necessary directories..."
             sudo mkdir -p /opt/numind/prod/image/upload/{avatars,card,book}
+            sudo mkdir -p /opt/numind/config/cert
             sudo chown -R 1001:1001 /opt/numind/prod || true
+            sudo chown -R 1001:1001 /opt/numind/config || true
             sudo chmod -R 775 /opt/numind/prod
+            sudo chmod -R 755 /opt/numind/config
+            
+            # 检查证书文件是否存在
+            if [ ! -f "/opt/numind/config/cert/apiclient_key.pem" ]; then
+              echo "Warning: 微信支付私钥文件不存在: /opt/numind/config/cert/apiclient_key.pem"
+              echo "请确保证书文件已正确放置到服务器上"
+            fi
+            
+            if [ ! -f "/opt/numind/config/cert/wechatpay_cert.pem" ]; then
+              echo "Warning: 微信支付证书文件不存在: /opt/numind/config/cert/wechatpay_cert.pem"
+              echo "请确保证书文件已正确放置到服务器上"
+            fi
             
             # 启动新容器
             echo "Starting new container..."
@@ -611,6 +655,7 @@ jobs:
               -p 9095:9091 \
               -p 9096:9092 \
               -v /opt/numind/prod:/opt/numind/prod \
+              -v /opt/numind/config:/opt/numind/config:ro \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
               neozhang96/numind-server:$IMAGE_TAG \
