@@ -220,15 +220,25 @@ func (b *paymentBiz) handleMembershipPurchase(ctx context.Context, payment *mode
 		expires := now.AddDate(0, 0, days) // 添加指定天数
 		expiresAt = &expires
 
+		// 确定新的会员类型
+		var newMembershipType string
+		if user.MembershipType == model.MembershipTypePackage || user.MembershipType == model.MembershipTypeBoth {
+			// 如果用户已有资源包，则设为both
+			newMembershipType = model.MembershipTypeBoth
+		} else {
+			// 否则设为订阅会员
+			newMembershipType = model.MembershipTypeSubscription
+		}
+
 		// 更新用户会员信息
 		updateData := map[string]interface{}{
-			"membership_type":    model.MembershipTypeSubscription,
+			"membership_type":    newMembershipType,
 			"is_pro":             true,
 			"membership_expires": expiresAt,
 		}
 
 		// 如果用户已有订阅会员且未过期，在现有到期时间基础上累加天数
-		if user.MembershipType == model.MembershipTypeSubscription &&
+		if (user.MembershipType == model.MembershipTypeSubscription || user.MembershipType == model.MembershipTypeBoth) &&
 			user.MembershipExpires != nil &&
 			user.MembershipExpires.After(now) {
 			// 在现有到期时间基础上累加天数
@@ -242,10 +252,20 @@ func (b *paymentBiz) handleMembershipPurchase(ctx context.Context, payment *mode
 		}
 
 	case model.MembershipTypePackage:
+		// 确定新的会员类型
+		var newMembershipType string
+		if user.MembershipType == model.MembershipTypeSubscription || user.MembershipType == model.MembershipTypeBoth {
+			// 如果用户已有订阅会员，则设为both
+			newMembershipType = model.MembershipTypeBoth
+		} else {
+			// 否则设为资源包
+			newMembershipType = model.MembershipTypePackage
+		}
+
 		// 包次数类型，增加次数
 		if err := b.ds.DB().Model(&model.User{}).Where("id = ?", payment.UserID).
 			UpdateColumns(map[string]interface{}{
-				"membership_type": model.MembershipTypePackage,
+				"membership_type": newMembershipType,
 				"is_pro":          true,
 				"package_count":   gorm.Expr("package_count + ?", payment.PackageCount),
 			}).Error; err != nil {

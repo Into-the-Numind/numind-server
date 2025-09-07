@@ -49,6 +49,7 @@ const (
 	MembershipTypeFree         = "free"         // 免费用户
 	MembershipTypeSubscription = "subscription" // 订阅会员
 	MembershipTypePackage      = "package"      // 付费资源包（次数）
+	MembershipTypeBoth         = "both"         // 同时拥有订阅会员和资源包
 )
 
 // IsMembershipActive 检查会员是否有效
@@ -66,6 +67,13 @@ func (u *User) IsMembershipActive() bool {
 		return u.MembershipExpires.After(time.Now())
 	}
 
+	// both类型：需要同时满足订阅会员和资源包的条件
+	if u.MembershipType == MembershipTypeBoth {
+		subscriptionActive := u.MembershipExpires != nil && u.MembershipExpires.After(time.Now())
+		packageActive := u.PackageCount > 0
+		return subscriptionActive || packageActive // 只要其中一个有效就算有效
+	}
+
 	return false
 }
 
@@ -80,6 +88,17 @@ func (u *User) GetMembershipStatus() string {
 		return "订阅会员"
 	case MembershipTypePackage:
 		return fmt.Sprintf("资源包会员（剩余%d次）", u.PackageCount)
+	case MembershipTypeBoth:
+		subscriptionActive := u.MembershipExpires != nil && u.MembershipExpires.After(time.Now())
+		packageActive := u.PackageCount > 0
+		if subscriptionActive && packageActive {
+			return fmt.Sprintf("订阅会员+资源包（剩余%d次）", u.PackageCount)
+		} else if subscriptionActive {
+			return "订阅会员"
+		} else if packageActive {
+			return fmt.Sprintf("资源包会员（剩余%d次）", u.PackageCount)
+		}
+		return "免费用户"
 	default:
 		return "免费用户"
 	}
@@ -87,12 +106,18 @@ func (u *User) GetMembershipStatus() string {
 
 // CanUseSubscription 检查是否可以使用订阅会员权益
 func (u *User) CanUseSubscription() bool {
-	return u.MembershipType == MembershipTypeSubscription && u.IsMembershipActive()
+	if u.MembershipType == MembershipTypeSubscription || u.MembershipType == MembershipTypeBoth {
+		return u.MembershipExpires != nil && u.MembershipExpires.After(time.Now())
+	}
+	return false
 }
 
 // CanUsePackage 检查是否可以使用资源包
 func (u *User) CanUsePackage() bool {
-	return u.MembershipType == MembershipTypePackage && u.PackageCount > 0
+	if u.MembershipType == MembershipTypePackage || u.MembershipType == MembershipTypeBoth {
+		return u.PackageCount > 0
+	}
+	return false
 }
 
 // GetAvailableUsageCount 获取可用次数（优先返回订阅会员，其次资源包）

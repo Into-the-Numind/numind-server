@@ -241,7 +241,7 @@ func (mc *MembershipController) GetMembershipInfo(c *gin.Context) {
 
 	// 计算package剩余次数信息
 	var packageInfo gin.H
-	if user.MembershipType == model.MembershipTypePackage {
+	if user.MembershipType == model.MembershipTypePackage || user.MembershipType == model.MembershipTypeBoth {
 		packageInfo = gin.H{
 			"remaining_count": user.PackageCount,
 			"description":     fmt.Sprintf("资源包剩余%d次", user.PackageCount),
