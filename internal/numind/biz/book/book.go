@@ -5,7 +5,10 @@ import (
 
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+
+	"gorm.io/gorm"
 )
 
 type BookBiz interface {
@@ -57,6 +60,13 @@ func (b *bookBiz) Delete(ctx context.Context, id uint) error {
 		return err
 	}
 
+	// 删除book相关的所有card
+	cardCount, err := b.ds.Cards().DeleteByBookID(ctx, id)
+	if err != nil {
+		// 记录错误但不影响删除操作
+		log.C(ctx).Errorw("Failed to delete cards for book", "book_id", id, "error", err.Error())
+	}
+
 	// 删除book
 	if err := b.ds.Books().Delete(ctx, id); err != nil {
 		return err
@@ -65,14 +75,59 @@ func (b *bookBiz) Delete(ctx context.Context, id uint) error {
 	// 更新用户统计
 	if err := b.ds.Books().UpdateUserBookStatsOnDelete(ctx, book.UserID, book.Status); err != nil {
 		// 记录错误但不影响删除操作
-		// 这里可以考虑记录日志
+		log.C(ctx).Errorw("Failed to update user book stats on delete", "user_id", book.UserID, "error", err.Error())
+	}
+
+	// 更新用户card统计
+	if cardCount > 0 {
+		if err := b.ds.DB().Model(&model.User{}).Where("id = ?", book.UserID).
+			UpdateColumn("card_num", gorm.Expr("card_num - ?", cardCount)).Error; err != nil {
+			// 记录错误但不影响删除操作
+			log.C(ctx).Errorw("Failed to decrement user card num", "user_id", book.UserID, "card_count", cardCount, "error", err.Error())
+		}
 	}
 
 	return nil
 }
 
 func (b *bookBiz) DeleteBatch(ctx context.Context, ids []uint) error {
-	return b.ds.Books().DeleteBatch(ctx, ids)
+	// 先获取所有要删除的book信息
+	var books []*model.BookM
+	if err := b.ds.Books().GetByIDs(ctx, ids, &books); err != nil {
+		return err
+	}
+
+	// 统计每个用户的card数量
+	userCardCounts := make(map[uint]int64)
+
+	// 删除每个book相关的card
+	for _, book := range books {
+		cardCount, err := b.ds.Cards().DeleteByBookID(ctx, book.ID)
+		if err != nil {
+			// 记录错误但不影响删除操作
+			log.C(ctx).Errorw("Failed to delete cards for book", "book_id", book.ID, "error", err.Error())
+		} else {
+			userCardCounts[book.UserID] += cardCount
+		}
+	}
+
+	// 批量删除books
+	if err := b.ds.Books().DeleteBatch(ctx, ids); err != nil {
+		return err
+	}
+
+	// 更新每个用户的card统计
+	for userID, cardCount := range userCardCounts {
+		if cardCount > 0 {
+			if err := b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
+				UpdateColumn("card_num", gorm.Expr("card_num - ?", cardCount)).Error; err != nil {
+				// 记录错误但不影响删除操作
+				log.C(ctx).Errorw("Failed to decrement user card num", "user_id", userID, "card_count", cardCount, "error", err.Error())
+			}
+		}
+	}
+
+	return nil
 }
 
 func (b *bookBiz) UpdateUserBookStatsOnStatusChange(ctx context.Context, userID uint, oldStatus, newStatus string) error {

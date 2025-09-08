@@ -16,6 +16,8 @@ type CardStore interface {
 	ListByUser(ctx context.Context, userID uint, offset, limit int) (count int64, ret []*model.CardM, err error)
 	Update(ctx context.Context, card *model.CardM) error
 	Delete(ctx context.Context, id uint) error
+	DeleteByBookID(ctx context.Context, bookID uint) (int64, error) // 根据bookID删除所有相关card，返回删除数量
+	CountByBookID(ctx context.Context, bookID uint) (int64, error)  // 统计指定book的card数量
 }
 
 type cards struct {
@@ -65,4 +67,20 @@ func (s *cards) Delete(ctx context.Context, id uint) error {
 		return err
 	}
 	return nil
+}
+
+// DeleteByBookID 根据bookID删除所有相关card，返回删除数量
+func (s *cards) DeleteByBookID(ctx context.Context, bookID uint) (int64, error) {
+	result := s.db.WithContext(ctx).Where("book_id = ?", bookID).Delete(&model.CardM{})
+	if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return 0, result.Error
+	}
+	return result.RowsAffected, nil
+}
+
+// CountByBookID 统计指定book的card数量
+func (s *cards) CountByBookID(ctx context.Context, bookID uint) (int64, error) {
+	var count int64
+	err := s.db.WithContext(ctx).Model(&model.CardM{}).Where("book_id = ?", bookID).Count(&count).Error
+	return count, err
 }
