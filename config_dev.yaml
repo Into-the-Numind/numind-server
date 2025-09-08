@@ -64,7 +64,7 @@ oss:
 volc:
   api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "doubao-seed-1-6-250615"  # 使用的AI模型 - 修复：使用正确的火山引擎模型
+  model: "doubao-seed-1-6-thinking-250715"  # 使用的AI模型 - 修复：使用正确的火山引擎模型
   temperature: 0.5 # 生成文本的随机性，值越高随机性越大
   tokens: 2000 # 生成文本的最大长度
   timeout: 120s  # 超时时间
@@ -85,7 +85,7 @@ ali:
   text:
     api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"
     api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
-    model: "qwen-turbo"  # 修复：使用正确的阿里千问模型
+    model: "qwen-plus"  # 修复：使用正确的阿里千问模型
     timeout: 180s
   image:
     api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"
@@ -235,6 +235,7 @@ ai_prompts:
     3.  建立逻辑流: 为独立的文本块建立逻辑连接。如果无法建立自然流畅的联系，则使用`##`副标题来分隔主题。
     4.  忠于核心主旨: 所有的编辑和修改，都必须服务于更清晰、更忠实地呈现原文作者的核心意图。
     5.  杜绝无关信息: 清除原始文本中可能存在的广告、水印、页码、系统提示语等"噪音"。
+    6.  保证句子和标点的完整性。
 
     # 边缘情况处理规则
       * 主标题: 输出中必须有且仅有一个一级标题 (`#`)。原文无则必须根据核心内容生成。
