@@ -355,17 +355,17 @@ html_converter:
   # 字体配置 - 清晰大字号风格
   fonts:
     family: "'Noto Sans CJK SC', 'WenQuanYi Micro Hei', 'Helvetica Neue', Arial, sans-serif"  # 字体系列
-    title_size: 48       # 标题字体大小（大字号，加粗）
-    subtitle_size: 40    # 副标题字体大小（大字号，加粗）
-    body_size: 36        # 正文字体大小（大字号，清晰易读）
-    list_size: 36        # 列表字体大小
-    quote_size: 34       # 引用字体大小
+    title_size: 70       # 标题字体大小（大字号，加粗）
+    subtitle_size: 50    # 副标题字体大小（大字号，加粗）
+    body_size: 40        # 正文字体大小（大字号，清晰易读）
+    list_size: 40        # 列表字体大小
+    quote_size: 40       # 引用字体大小
   
   # 行高配置 - 提升可读性
   line_heights:
     title: 1.3           # 标题行高倍数
-    subtitle: 1.3        # 副标题行高倍数
-    body: 1.8            # 正文行高倍数（增大行高，提升可读性）
+    subtitle: 1.7        # 副标题行高倍数
+    body: 2.5            # 正文行高倍数（增大行高，提升可读性）
 
 # 渲染器配置
 renderer:
@@ -382,6 +382,6 @@ gse:
   
   # 边距配置 - 优化间距
   margins:
-    title_bottom: 32     # 标题下边距（增加间距）
-    subtitle_bottom: 28  # 副标题下边距
-    body_bottom: 20      # 正文下边距（增加间距）
+    title_bottom: 30     # 标题下边距（增加间距）
+    subtitle_bottom: 40  # 副标题下边距
+    body_bottom: 40      # 正文下边距（增加间距）
