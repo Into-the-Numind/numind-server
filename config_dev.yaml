@@ -114,9 +114,9 @@ pagination:
     height: 1440  # 基础高度，实际使用动态高度
     padding:
       top: 80     # 标准内边距: 60px 50px
-      right: 50
+      right: 70
       bottom: 40  # 修复：增加底部留白，确保文字不被遮挡
-      left: 50
+      left: 70
   
   # 动态分页优化配置
   dynamic:
@@ -146,58 +146,58 @@ pagination:
   styles:
     title:
       font_size: 65        # 标题: 64px（最大）
-      line_height: 97.5      # 1.5倍行高
-      margin_top: 30       # 标题上间距: 30px（统一标准）
-      margin_bottom: 30    # 标题下方间距: 30px（统一标准）
+      line_height: 117      # 1.5倍行高
+      margin_top: 60       # 标题上间距: 30px（统一标准）
+      margin_bottom: 60    # 标题下方间距: 30px（统一标准）
       color: "#333333"     # 主标题: #333333（深灰）
       align: "justify"     # 两端对齐
     
     subtitle:
-      font_size: 40        # 副标题: 48px（中等）
-      line_height: 60      # 1.5倍行高
-      margin_top: 30       # 副标题上间距: 30px（统一标准）
-      margin_bottom: 30    # 副标题下方: 25px（标准下间距）
+      font_size: 42        # 副标题: 48px（中等）
+      line_height: 75.6      # 1.5倍行高
+      margin_top: 60       # 副标题上间距: 30px（统一标准）
+      margin_bottom: 60    # 副标题下方: 25px（标准下间距）
       color: "#666666"     # 副标题: #666666（中灰）
       align: "justify"     # 两端对齐
     
     body:
-      font_size: 40        # 正文: 36px（标准）
-      line_height: 60      # 1.5倍行高（标准行高）
-      margin_top: 90       # 正文上间距: 30px（统一标准）
-      margin_bottom: 90    # 正文下方间距: 30px（统一标准）
+      font_size: 42        # 正文: 36px（标准）
+      line_height: 75.6      # 1.5倍行高（标准行高）
+      margin_top: 60       # 正文上间距: 30px（统一标准）
+      margin_bottom: 60    # 正文下方间距: 30px（统一标准）
       color: "#333333"     # 正文: #333333（深灰）
       align: "justify"     # 两端对齐
     
     list:
-      font_size: 40        # 列表: 36px（标准）
-      line_height: 60      # 1.5倍行高（标准行高）
-      margin_top: 30       # 列表上间距: 30px（统一标准）
-      margin_bottom: 30    # 列表下方间距: 30px（统一标准）
+      font_size: 42        # 列表: 36px（标准）
+      line_height: 75.6      # 1.5倍行高（标准行高）
+      margin_top: 60       # 列表上间距: 30px（统一标准）
+      margin_bottom: 60    # 列表下方间距: 30px（统一标准）
       color: "#333333"     # 列表: #333333（深灰）
       align: "justify"     # 两端对齐
       indent: 20           # 列表缩进
     
     quote:
-      font_size: 40        # 引用: 36px（强调）
-      line_height: 60      # 1.5倍行高（紧凑行高）
-      margin_top: 30       # 引用上间距: 30px（统一标准）
-      margin_bottom: 30    # 引用下方间距: 30px（统一标准）
+      font_size: 42        # 引用: 36px（强调）
+      line_height: 75.6      # 1.5倍行高（紧凑行高）
+      margin_top: 60       # 引用上间距: 30px（统一标准）
+      margin_bottom: 60    # 引用下方间距: 30px（统一标准）
       color: "#1E90FF"     # 引用: #1E90FF（蓝色）
       align: "justify"     # 两端对齐
     
     tag:
-      font_size: 40        # 标签: 28px（最小）
-      line_height: 60      # 1.5倍行高
-      margin_top: 30       # 标签上间距: 30px（统一标准）
-      margin_bottom: 30    # 标签下方间距: 30px（统一标准）
+      font_size: 42        # 标签: 28px（最小）
+      line_height: 75.6      # 1.5倍行高
+      margin_top: 60       # 标签上间距: 30px（统一标准）
+      margin_bottom: 60    # 标签下方间距: 30px（统一标准）
       color: "#1E90FF"     # 标签: #1E90FF（蓝色）
       align: "left"        # 左对齐
     
     number:
-      font_size: 40        # 数字: 28px（最小）
-      line_height: 60      # 1.5倍行高
-      margin_top: 30       # 数字上间距: 30px（统一标准）
-      margin_bottom: 30    # 数字下方间距: 30px（统一标准）
+      font_size: 42        # 数字: 28px（最小）
+      line_height: 75.6      # 1.5倍行高
+      margin_top: 60       # 数字上间距: 30px（统一标准）
+      margin_bottom: 60    # 数字下方间距: 30px（统一标准）
       color: "#1E90FF"     # 数字: #1E90FF（蓝色）
       align: "center"      # 居中对齐
   
@@ -350,7 +350,7 @@ html_converter:
   
   # 分页配置
   pagination:
-    available_width: 1000  # 可用宽度
+    available_width: 900  # 可用宽度
     max_content_height: 1360  # 最大内容高度
     min_card_height: 800      # 最小卡片高度
     max_card_height: 4320     # 最大卡片高度
@@ -360,16 +360,16 @@ html_converter:
   fonts:
     family: "'Noto Sans CJK SC', 'WenQuanYi Micro Hei', 'Helvetica Neue', Arial, sans-serif"  # 字体系列
     title_size: 65       # 标题字体大小（大字号，加粗）
-    subtitle_size: 40    # 副标题字体大小（大字号，加粗）
-    body_size: 40        # 正文字体大小（大字号，清晰易读）
-    list_size: 40        # 列表字体大小
-    quote_size: 40       # 引用字体大小
+    subtitle_size: 42    # 副标题字体大小（大字号，加粗）
+    body_size: 42        # 正文字体大小（大字号，清晰易读）
+    list_size: 42        # 列表字体大小
+    quote_size: 42       # 引用字体大小
   
   # 行高配置 - 提升可读性
   line_heights:
-    title: 1.5           # 标题行高倍数
-    subtitle: 1.5        # 副标题行高倍数
-    body: 1.5            # 正文行高倍数（增大行高，提升可读性）
+    title: 1.8           # 标题行高倍数
+    subtitle: 1.8        # 副标题行高倍数
+    body: 1.8            # 正文行高倍数（增大行高，提升可读性）
 
 # 渲染器配置
 renderer:
@@ -387,5 +387,5 @@ gse:
   # 边距配置 - 优化间距
   margins:
     title_bottom: 30     # 标题下边距（增加间距）
-    subtitle_bottom: 30  # 副标题下边距
-    body_bottom: 90      # 正文下边距（增加间距）
+    subtitle_bottom: 60  # 副标题下边距
+    body_bottom: 60      # 正文下边距（增加间距）
