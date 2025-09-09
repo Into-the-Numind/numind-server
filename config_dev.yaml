@@ -114,9 +114,9 @@ pagination:
     height: 1440  # 基础高度，实际使用动态高度
     padding:
       top: 120     # 标准内边距: 60px 50px
-      right: 90
-      bottom: 100  # 修复：增加底部留白，确保文字不被遮挡
-      left: 90
+      right: 100
+      bottom: 20  # 修复：增加底部留白，确保文字不被遮挡
+      left: 100
   
   # 动态分页优化配置
   dynamic:
@@ -163,8 +163,8 @@ pagination:
     body:
       font_size: 100        # 正文: 36px（标准）
       line_height: 70      # 1.6倍行高（标准行高）
-      margin_top: 30       # 正文上间距: 30px（统一标准）
-      margin_bottom: 30    # 正文下方间距: 30px（统一标准）
+      margin_top: 60       # 正文上间距: 30px（统一标准）
+      margin_bottom: 60    # 正文下方间距: 30px（统一标准）
       color: "#333333"     # 正文: #333333（深灰）
       align: "justify"     # 两端对齐
     
