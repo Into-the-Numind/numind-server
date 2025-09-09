@@ -346,7 +346,7 @@ html_converter:
   card:
     width: 1080          # 卡片宽度
     height: 1440         # 卡片高度
-    padding: 90          # 内边距（与分页算法保持一致）
+    padding: 40          # 内边距（与分页算法保持一致）
   
   # 分页配置
   pagination:
