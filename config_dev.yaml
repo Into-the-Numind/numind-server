@@ -113,17 +113,17 @@ pagination:
     width: 1080   # 标准尺寸: 1080×1440（3:4比例）
     height: 1440  # 基础高度，实际使用动态高度
     padding:
-      top: 80     # 标准内边距: 60px 50px
-      right: 70
-      bottom: 40  # 修复：增加底部留白，确保文字不被遮挡
-      left: 70
+      top: 100     # 标准内边距: 60px 50px
+      right: 90
+      bottom: 70  # 修复：增加底部留白，确保文字不被遮挡
+      left: 90
   
   # 动态分页优化配置
   dynamic:
     min_height: 720          # 最小卡片高度
     max_height: 4320         # 最大卡片高度（3倍标准高度）
     min_bottom_padding: 40   # 最小底部留白，确保文字不被遮挡
-    max_images_per_card: 5   # 每张卡片最大图片数
+    max_images_per_card: 2   # 每张卡片最大图片数
     max_text_length: 2000    # 每张卡片最大文本长度
     base_height: 1440        # 基础高度（用于规范化）
     char_width_factor: 1.05  # 字符宽度系数
@@ -368,7 +368,7 @@ html_converter:
   # 行高配置 - 提升可读性
   line_heights:
     title: 1.8           # 标题行高倍数
-    subtitle: 1.8        # 副标题行高倍数
+    subtitle: 1.5        # 副标题行高倍数
     body: 1.8            # 正文行高倍数（增大行高，提升可读性）
 
 # 渲染器配置
@@ -387,5 +387,5 @@ gse:
   # 边距配置 - 优化间距
   margins:
     title_bottom: 30     # 标题下边距（增加间距）
-    subtitle_bottom: 60  # 副标题下边距
-    body_bottom: 60      # 正文下边距（增加间距）
+    subtitle_bottom: 160  # 副标题下边距
+    body_bottom: 160      # 正文下边距（增加间距）
