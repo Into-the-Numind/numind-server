@@ -386,6 +386,6 @@ gse:
   
   # 边距配置 - 优化间距
   margins:
-    title_bottom: 30     # 标题下边距（增加间距）
-    subtitle_bottom: 160  # 副标题下边距
-    body_bottom: 160      # 正文下边距（增加间距）
+    title_bottom: 20     # 标题下边距（增加间距）
+    subtitle_bottom: 20  # 副标题下边距
+    body_bottom: 20      # 正文下边距（增加间距）
