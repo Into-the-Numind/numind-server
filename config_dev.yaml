@@ -265,8 +265,8 @@ ai_prompts:
     ## 文生图规则
     - 构图要求：
         -   目标画幅： 4:5竖向构图
-        -   目标风格： architectural blueprint style
-        -   语言结构： 中文描述主体内容，末尾追加英文关键词提升画质和风格（例如：4:5, architectural blueprint style, masterpiece, high detail）
+        -   目标风格： woodcut print style
+        -   语言结构： 中文描述主体内容，末尾追加英文关键词提升画质和风格（例如：4:5, woodcut print style, masterpiece, high detail）
         -   禁止项： 不能包含任何要求生成文字的指令
 
     # 绝对规则
