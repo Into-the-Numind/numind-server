@@ -49,6 +49,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     gnupg \
     bash \
     file \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装Chrome依赖和字体
@@ -88,6 +89,9 @@ RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearm
 
 # 设置时区
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+# 验证时区设置
+RUN date && echo "当前时区: $(cat /etc/timezone)" && echo "✅ 时区设置验证成功"
 
 # 验证Chrome安装
 RUN google-chrome --version && echo "Chrome installation successful"
@@ -158,6 +162,7 @@ EXPOSE 9091 9092
 # 设置环境变量
 ENV GIN_MODE=release
 ENV PORT=9091
+ENV TZ=Asia/Shanghai
 
 # Chrome headless环境变量 - 针对分页渲染优化
 ENV CHROME_BIN=/usr/bin/google-chrome
