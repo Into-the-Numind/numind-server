@@ -12,6 +12,7 @@ import (
 type BookStore interface {
 	Create(ctx context.Context, book *model.BookM) error
 	GetByID(ctx context.Context, id uint) (*model.BookM, error)
+	GetByIDs(ctx context.Context, ids []uint, books *[]*model.BookM) error // 根据ID列表获取books
 	ListByUser(ctx context.Context, userID uint, offset, limit int) (int64, []*model.BookM, error)
 	ListByCategory(ctx context.Context, categoryID uint, offset, limit int) (int64, []*model.BookM, error)
 	ListAll(ctx context.Context, offset, limit int) (int64, []*model.BookM, error) // 新增：获取所有书籍
@@ -46,6 +47,13 @@ func (s *books) GetByID(ctx context.Context, id uint) (*model.BookM, error) {
 		return nil, err
 	}
 	return &book, nil
+}
+
+func (s *books) GetByIDs(ctx context.Context, ids []uint, books *[]*model.BookM) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).Where("id IN (?)", ids).Find(books).Error
 }
 
 func (s *books) ListByUser(ctx context.Context, userID uint, offset, limit int) (count int64, ret []*model.BookM, err error) {

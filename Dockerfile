@@ -49,6 +49,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     gnupg \
     bash \
     file \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装Chrome依赖和字体
@@ -88,6 +89,9 @@ RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearm
 
 # 设置时区
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+# 验证时区设置
+RUN date && echo "当前时区: $(cat /etc/timezone)" && echo "✅ 时区设置验证成功"
 
 # 验证Chrome安装
 RUN google-chrome --version && echo "Chrome installation successful"
@@ -158,6 +162,7 @@ EXPOSE 9091 9092
 # 设置环境变量
 ENV GIN_MODE=release
 ENV PORT=9091
+ENV TZ=Asia/Shanghai
 
 # Chrome headless环境变量 - 针对分页渲染优化
 ENV CHROME_BIN=/usr/bin/google-chrome
@@ -173,6 +178,27 @@ ENV GOMEMLIMIT=16GiB
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:9091/healthz || exit 1
 
+# 创建启动脚本
+RUN echo '#!/bin/bash\n\
+# 根据环境变量选择配置文件\n\
+if [ -n "$APP_ENV" ]; then\n\
+    CONFIG_FILE="/app/config_${APP_ENV}.yaml"\n\
+else\n\
+    CONFIG_FILE="/app/config_dev.yaml"\n\
+fi\n\
+\n\
+# 检查配置文件是否存在\n\
+if [ ! -f "$CONFIG_FILE" ]; then\n\
+    echo "错误: 配置文件不存在: $CONFIG_FILE"\n\
+    echo "可用的配置文件:"\n\
+    ls -la /app/config_*.yaml\n\
+    exit 1\n\
+fi\n\
+\n\
+echo "使用配置文件: $CONFIG_FILE"\n\
+exec /app/numind -c "$CONFIG_FILE" "$@"' > /app/start.sh && \
+    chmod +x /app/start.sh
+
 # 启动应用
-ENTRYPOINT ["/app/numind"]
-CMD ["-c", "/app/config_dev.yaml"]
+ENTRYPOINT ["/app/start.sh"]
+CMD []

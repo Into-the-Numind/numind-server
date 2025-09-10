@@ -404,24 +404,33 @@ func (mc *MembershipController) calculateCreatePermission(user *model.User) *Cre
 		}
 	}
 
-	// 优先检查订阅会员
+	// 检查订阅会员月度限制
 	if user.CanUseSubscription() {
 		// 检查月度限制
 		if !user.CanCreateBookInCurrentMonth() {
 			remaining := user.GetRemainingMonthlyBooks()
+			// 如果还有资源包，可以使用资源包创建
+			if user.CanUsePackage() && user.PackageCount > 0 {
+				return &CreatePermission{
+					CanCreate: true,
+					Reason:    fmt.Sprintf("本月已创建%d个卡册，达到月度限制30个，但资源包剩余%d次，可以继续创建", user.MonthlyBookCount, user.PackageCount),
+				}
+			}
+			// 没有资源包或资源包用完了
 			return &CreatePermission{
 				CanCreate: false,
 				Reason:    fmt.Sprintf("本月已创建%d个卡册，达到月度限制30个，剩余%d个", user.MonthlyBookCount, remaining),
 			}
 		}
 
+		// 月度限制未达到，可以创建
 		return &CreatePermission{
 			CanCreate: true,
 			Reason:    fmt.Sprintf("%s有效，本月已创建%d个卡册，还可以创建%d个", user.GetMembershipStatus(), user.MonthlyBookCount, user.GetRemainingMonthlyBooks()),
 		}
 	}
 
-	// 其次检查资源包
+	// 检查资源包
 	if user.CanUsePackage() {
 		return &CreatePermission{
 			CanCreate: true,

@@ -644,6 +644,16 @@ func (b *userBiz) IncrementUserCardNum(ctx context.Context, userID uint) error {
 		UpdateColumn("card_num", gorm.Expr("card_num + ?", 1)).Error
 }
 
+// DecrementUserCardNum 减少用户的卡片数量
+func (b *userBiz) DecrementUserCardNum(ctx context.Context, userID uint, count int64) error {
+	// 使用数据库的原子操作来减少CardNum字段
+	if count <= 0 {
+		return nil
+	}
+	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
+		UpdateColumn("card_num", gorm.Expr("card_num - ?", count)).Error
+}
+
 // IncrementUserChatNum 增加用户的聊天数量
 func (b *userBiz) IncrementUserChatNum(ctx context.Context, userID uint) error {
 	// 使用数据库的原子操作来增加ChatNum字段
