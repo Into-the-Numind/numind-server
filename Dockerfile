@@ -178,6 +178,27 @@ ENV GOMEMLIMIT=16GiB
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:9091/healthz || exit 1
 
+# 创建启动脚本
+RUN echo '#!/bin/bash\n\
+# 根据环境变量选择配置文件\n\
+if [ -n "$APP_ENV" ]; then\n\
+    CONFIG_FILE="/app/config_${APP_ENV}.yaml"\n\
+else\n\
+    CONFIG_FILE="/app/config_dev.yaml"\n\
+fi\n\
+\n\
+# 检查配置文件是否存在\n\
+if [ ! -f "$CONFIG_FILE" ]; then\n\
+    echo "错误: 配置文件不存在: $CONFIG_FILE"\n\
+    echo "可用的配置文件:"\n\
+    ls -la /app/config_*.yaml\n\
+    exit 1\n\
+fi\n\
+\n\
+echo "使用配置文件: $CONFIG_FILE"\n\
+exec /app/numind -c "$CONFIG_FILE" "$@"' > /app/start.sh && \
+    chmod +x /app/start.sh
+
 # 启动应用
-ENTRYPOINT ["/app/numind"]
-CMD ["-c", "/app/config_dev.yaml"]
+ENTRYPOINT ["/app/start.sh"]
+CMD []

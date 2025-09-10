@@ -419,12 +419,12 @@ jobs:
               --name numind-server-dev \
               -p 9091:9091 \
               -p 9092:9092 \
+              -e APP_ENV=dev \
               -v /opt/numind/dev:/opt/numind/dev \
               -v /opt/numind/config:/opt/numind/config:ro \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
-              neozhang96/numind-server:develop \
-              -c /app/config_dev.yaml
+              neozhang96/numind-server:develop
             
             # 等待容器启动
             echo "Waiting for container to start..."
@@ -534,12 +534,12 @@ jobs:
               --name numind-server-qa \
               -p 9093:9091 \
               -p 9094:9092 \
+              -e APP_ENV=qa \
               -v /opt/numind/qa:/opt/numind/qa \
               -v /opt/numind/config:/opt/numind/config:ro \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
-              neozhang96/numind-server:release \
-              -c /app/config_qa.yaml
+              neozhang96/numind-server:release
             
             # 等待容器启动
             echo "Waiting for container to start..."
@@ -654,12 +654,12 @@ jobs:
               --name numind-server-prod \
               -p 9095:9091 \
               -p 9096:9092 \
+              -e APP_ENV=prod \
               -v /opt/numind/prod:/opt/numind/prod \
               -v /opt/numind/config:/opt/numind/config:ro \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
               --restart always \
-              neozhang96/numind-server:$IMAGE_TAG \
-              -c /app/config_prod.yaml
+              neozhang96/numind-server:$IMAGE_TAG
             
             # 等待容器启动
             echo "Waiting for container to start..."
