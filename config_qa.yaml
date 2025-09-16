@@ -372,7 +372,7 @@ html_converter:
   
   # 字体配置 - 清晰大字号风格
   fonts:
-    family: "'点字简宋', 'Noto Sans CJK SC', 'WenQuanYi Micro Hei', 'Helvetica Neue', Arial, sans-serif"  # 字体系列
+    family: "'DianziJianSong', 'Noto Sans CJK SC', 'WenQuanYi Micro Hei', 'Helvetica Neue', Arial, sans-serif"  # 字体系列
     title_size: 70       # 标题字体大小（大字号，加粗）
     subtitle_size: 45    # 副标题字体大小（大字号，加粗）
     body_size: 45        # 正文字体大小（大字号，清晰易读）
