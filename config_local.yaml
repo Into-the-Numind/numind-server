@@ -142,6 +142,39 @@ pagination:
   high_utilization_threshold: 85.0   # 高利用率阈值（85%）
   min_chars_per_line: 20             # 最小每行字符数
   list_item_spacing: 8               # 列表项间距
+
+  # 段间距配置 - 可以手动调整各种元素的段间距
+  spacing:
+    # 全局段间距调整（可选，用于快速调整所有元素）
+    global_multiplier: 4.0           # 全局段间距倍数，1.0为默认值，>1.0增加间距，<1.0减少间距
+    
+    # 各元素类型的段间距调整（可选，用于精确控制）
+    # 注释掉特定元素的倍数设置，让全局倍数生效
+    # adjustments:
+    #   title:
+    #     margin_top_multiplier: 1.0    # 标题上边距倍数
+    #     margin_bottom_multiplier: 1.0 # 标题下边距倍数
+    #     line_height_multiplier: 1.0   # 标题行高倍数
+    #   subtitle:
+    #     margin_top_multiplier: 1.0    # 副标题上边距倍数
+    #     margin_bottom_multiplier: 1.0 # 副标题下边距倍数
+    #     line_height_multiplier: 1.0   # 副标题行高倍数
+    #   body:
+    #     margin_top_multiplier: 1.0    # 正文上边距倍数
+    #     margin_bottom_multiplier: 1.0 # 正文下边距倍数
+    #     line_height_multiplier: 1.0   # 正文行高倍数
+    #   list:
+    #     margin_top_multiplier: 1.0    # 列表上边距倍数
+    #     margin_bottom_multiplier: 1.0 # 列表下边距倍数
+    #     line_height_multiplier: 1.0   # 列表行高倍数
+    #   quote:
+    #     margin_top_multiplier: 1.0    # 引用上边距倍数
+    #     margin_bottom_multiplier: 1.0 # 引用下边距倍数
+    #     line_height_multiplier: 1.0   # 引用行高倍数
+    #   tag:
+    #     margin_top_multiplier: 1.0    # 标签上边距倍数
+    #     margin_bottom_multiplier: 1.0 # 标签下边距倍数
+    #     line_height_multiplier: 1.0   # 标签行高倍数
   
   # 元素样式配置
   styles:
@@ -208,8 +241,8 @@ special_rules:
     width: 1080          # 封面卡片宽度
     height: 1440         # 封面卡片高度（3:4比例）
     title_section:
-      font_size: 80            # 封面标题字体大小
-      line_height: 96          # 封面标题行高
+      font_size: 100            # 封面标题字体大小
+      line_height: 100          # 封面标题行高
       color: "#2c3e50"         # 封面标题颜色
       background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
       backdrop_filter: "blur(10px)"            # 背景模糊效果

@@ -23,7 +23,7 @@ func startServer() error {
 
 	port := viper.GetString("server.port")
 	if port == "" {
-		port = "8000"
+		port = "9091"
 	}
 	srv := &http.Server{
 		Addr:    ":" + port,

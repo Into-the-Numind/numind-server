@@ -49,6 +49,34 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
+# 安装点字简宋字体和其他中文字体
+RUN mkdir -p /usr/share/fonts/truetype/dianzi-jiansong && \
+    # 尝试从多个源下载点字简宋字体
+    (wget -O /tmp/dianzi-jiansong.zip "https://github.com/Into-the-Numind/numind-server/releases/download/fonts/dianzi-jiansong.zip" 2>/dev/null || \
+     wget -O /tmp/dianzi-jiansong.zip "https://github.com/adobe-fonts/source-han-sans/releases/download/2.004R/09_SourceHanSansCN.zip" 2>/dev/null || \
+     wget -O /tmp/dianzi-jiansong.zip "https://github.com/adobe-fonts/source-han-serif/releases/download/2.001R/09_SourceHanSerifCN.zip" 2>/dev/null || \
+     echo "使用系统默认字体作为备选") && \
+    if [ -f /tmp/dianzi-jiansong.zip ]; then \
+        unzip -q /tmp/dianzi-jiansong.zip -d /tmp/fonts/ && \
+        find /tmp/fonts/ -name "*.ttf" -o -name "*.otf" | head -10 | xargs -I {} cp {} /usr/share/fonts/truetype/dianzi-jiansong/ && \
+        rm -rf /tmp/fonts/ /tmp/dianzi-jiansong.zip; \
+    fi && \
+    # 安装额外的中文字体包
+    apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        fonts-arphic-ukai \
+        fonts-arphic-uming \
+        fonts-droid-fallback \
+        fonts-hanazono \
+        fonts-ipafont-gothic \
+        fonts-ipafont-mincho \
+        fonts-unfonts-core \
+        && rm -rf /var/lib/apt/lists/* && \
+    # 刷新字体缓存
+    fc-cache -fv && \
+    # 验证字体安装
+    fc-list | grep -i "dianzi\|jiansong\|source\|han" | head -5 && \
+    echo "✅ 点字简宋字体及相关中文字体安装完成"
+
 # 安装Google Chrome
 RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \

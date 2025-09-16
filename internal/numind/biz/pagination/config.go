@@ -57,6 +57,9 @@ func LoadConfigFromViper() *PaginationConfig {
 	loadStyleConfig(config, ElementTypeTag, "pagination.styles.tag")
 	loadStyleConfig(config, ElementTypeNumber, "pagination.styles.number")
 
+	// 应用段间距调整
+	applySpacingAdjustments(config)
+
 	return config
 }
 
@@ -91,6 +94,57 @@ func loadStyleConfig(config *PaginationConfig, elementType ElementType, configPa
 	}
 
 	config.Styles[elementType] = style
+}
+
+// applySpacingAdjustments 应用段间距调整
+func applySpacingAdjustments(config *PaginationConfig) {
+	// 获取全局段间距倍数
+	globalMultiplier := 1.0
+	if viper.IsSet("pagination.spacing.global_multiplier") {
+		globalMultiplier = viper.GetFloat64("pagination.spacing.global_multiplier")
+	}
+
+	// 定义元素类型映射
+	elementTypes := map[string]ElementType{
+		"title":    ElementTypeTitle,
+		"subtitle": ElementTypeSubtitle,
+		"body":     ElementTypeBody,
+		"list":     ElementTypeList,
+		"quote":    ElementTypeQuote,
+		"tag":      ElementTypeTag,
+	}
+
+	// 为每个元素类型应用段间距调整
+	for elementName, elementType := range elementTypes {
+		style := config.Styles[elementType]
+
+		// 获取该元素类型的段间距倍数
+		marginTopMultiplier := globalMultiplier
+		marginBottomMultiplier := globalMultiplier
+		lineHeightMultiplier := globalMultiplier
+
+		// 检查是否有特定元素的段间距调整
+		adjustmentPath := "pagination.spacing.adjustments." + elementName
+		if viper.IsSet(adjustmentPath) {
+			if viper.IsSet(adjustmentPath + ".margin_top_multiplier") {
+				marginTopMultiplier = viper.GetFloat64(adjustmentPath + ".margin_top_multiplier")
+			}
+			if viper.IsSet(adjustmentPath + ".margin_bottom_multiplier") {
+				marginBottomMultiplier = viper.GetFloat64(adjustmentPath + ".margin_bottom_multiplier")
+			}
+			if viper.IsSet(adjustmentPath + ".line_height_multiplier") {
+				lineHeightMultiplier = viper.GetFloat64(adjustmentPath + ".line_height_multiplier")
+			}
+		}
+
+		// 应用倍数调整
+		style.MarginTop = int(float64(style.MarginTop) * marginTopMultiplier)
+		style.MarginBottom = int(float64(style.MarginBottom) * marginBottomMultiplier)
+		style.LineHeight = int(float64(style.LineHeight) * lineHeightMultiplier)
+
+		// 更新配置
+		config.Styles[elementType] = style
+	}
 }
 
 // LoadConfigFromYAML 从YAML文件加载配置
@@ -135,6 +189,9 @@ func LoadConfigFromYAML(configPath string) (*PaginationConfig, error) {
 	loadStyleConfigFromViper(config, ElementTypeTag, "pagination.styles.tag", v)
 	loadStyleConfigFromViper(config, ElementTypeNumber, "pagination.styles.number", v)
 
+	// 应用段间距调整
+	applySpacingAdjustmentsFromViper(config, v)
+
 	return config, nil
 }
 
@@ -169,6 +226,57 @@ func loadStyleConfigFromViper(config *PaginationConfig, elementType ElementType,
 	}
 
 	config.Styles[elementType] = style
+}
+
+// applySpacingAdjustmentsFromViper 从指定的viper实例应用段间距调整
+func applySpacingAdjustmentsFromViper(config *PaginationConfig, v *viper.Viper) {
+	// 获取全局段间距倍数
+	globalMultiplier := 1.0
+	if v.IsSet("pagination.spacing.global_multiplier") {
+		globalMultiplier = v.GetFloat64("pagination.spacing.global_multiplier")
+	}
+
+	// 定义元素类型映射
+	elementTypes := map[string]ElementType{
+		"title":    ElementTypeTitle,
+		"subtitle": ElementTypeSubtitle,
+		"body":     ElementTypeBody,
+		"list":     ElementTypeList,
+		"quote":    ElementTypeQuote,
+		"tag":      ElementTypeTag,
+	}
+
+	// 为每个元素类型应用段间距调整
+	for elementName, elementType := range elementTypes {
+		style := config.Styles[elementType]
+
+		// 获取该元素类型的段间距倍数
+		marginTopMultiplier := globalMultiplier
+		marginBottomMultiplier := globalMultiplier
+		lineHeightMultiplier := globalMultiplier
+
+		// 检查是否有特定元素的段间距调整
+		adjustmentPath := "pagination.spacing.adjustments." + elementName
+		if v.IsSet(adjustmentPath) {
+			if v.IsSet(adjustmentPath + ".margin_top_multiplier") {
+				marginTopMultiplier = v.GetFloat64(adjustmentPath + ".margin_top_multiplier")
+			}
+			if v.IsSet(adjustmentPath + ".margin_bottom_multiplier") {
+				marginBottomMultiplier = v.GetFloat64(adjustmentPath + ".margin_bottom_multiplier")
+			}
+			if v.IsSet(adjustmentPath + ".line_height_multiplier") {
+				lineHeightMultiplier = v.GetFloat64(adjustmentPath + ".line_height_multiplier")
+			}
+		}
+
+		// 应用倍数调整
+		style.MarginTop = int(float64(style.MarginTop) * marginTopMultiplier)
+		style.MarginBottom = int(float64(style.MarginBottom) * marginBottomMultiplier)
+		style.LineHeight = int(float64(style.LineHeight) * lineHeightMultiplier)
+
+		// 更新配置
+		config.Styles[elementType] = style
+	}
 }
 
 // GetConfigSummary 获取配置摘要信息
