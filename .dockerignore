@@ -19,14 +19,17 @@ docs/
 .DS_Store
 Thumbs.db
 
-# Build artifacts
-bin/
+# Build artifacts (but allow pre-built binaries for CI/CD)
+# bin/  # Commented out to allow pre-built binaries
 dist/
 build/
 *.exe
 *.dll
 *.so
 *.dylib
+
+# Allow specific pre-built binary for CI/CD
+!bin/numind-linux-amd64
 
 # Test files
 *_test.go
