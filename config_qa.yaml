@@ -268,9 +268,9 @@ ai_prompts:
     ## 文生图规则
     - 构图要求：
         -   目标画幅： 4:5竖向构图
-        -   目标风格： Torben Kuhlmann style, watercolor + colored pencil texture, delicate textures, cozy, gentle
+        -   目标风格： Torben Kuhlmann style, watercolor + colored pencil texture, delicate textures, cozy
         -   目标色调： 不限于任何颜色，但要适合文字内容，并且颜色搭配要协调
-        -   语言结构： 中文描述详细的主体内容，末尾追加英文关键词提升画质和风格（例如：4:5, Torben Kuhlmann style, watercolor + colored pencil texture, delicate textures, cozy, gentle, masterpiece, high detail）。你不需要和示例一模一样，示例仅为参考
+        -   语言结构： 中文描述详细的主体内容，末尾追加英文关键词提升画质和风格（例如：4:5, Torben Kuhlmann style, watercolor + colored pencil texture, delicate textures, cozy, masterpiece, high detail）。你不需要和示例一模一样，示例仅为参考
         -   禁止项： 不能包含任何要求生成文字的指令
 
     # 绝对规则
