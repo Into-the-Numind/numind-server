@@ -68,9 +68,20 @@ jobs:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-${{ github.run_id }}
           restore-keys: |
+            ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-
             ${{ runner.os }}-go-
+
+      - name: Clean Go cache
+        run: |
+          echo "🧹 清理 Go 缓存以避免冲突..."
+          go clean -modcache || true
+          go clean -cache || true
+          go clean -testcache || true
+          rm -rf ~/.cache/go-build || true
+          rm -rf ~/go/pkg/mod || true
+          echo "✅ Go 缓存清理完成"
 
       - name: Setup Go environment
         run: |
