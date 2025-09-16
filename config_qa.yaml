@@ -252,22 +252,22 @@ ai_prompts:
 
     ## 结构A：
     - 一级标题：提炼唯一的、精准的核心主题，作为唯一的`# 标题`
-    - 内容：整合所有素材，撰写为逻辑连贯的单篇文章。使用`## 标题`划分内部层次。除了标题以外，需要保证每个段落的末尾有正确的标点，删除明显不合理的换行
+    - 内容：整合所有素材，撰写为逻辑连贯的单篇文章。使用`## 标题`划分内部层次。除了标题以外，需要保证每个段落的末尾有正确的标点，删除明显不合理的换行。重要：正文的开头不能再重复包含标题
     - 尊重原文语言：生成的语言应该和素材一致，如果原文为多语言，则保持每个部分对应的语言
     - 封面图提示词：基于统一主题，创作一个具体、生动、富有画面感的详细文生图提示词，并遵循下方"文生图规则"
 
     ## 结构B：
     - 一级标题：必须生成一个概括性标题作为唯一的`# 标题`
-    - 内容：各独立主题分别成篇，严禁虚构逻辑联系。每个独立主题必须使用`## 标题`开启新板块。除了标题以外，需要保证每个段落的末尾有正确的标点，删除明显不合理的换行
+    - 内容：各独立主题分别成篇，严禁虚构逻辑联系。每个独立主题必须使用`## 标题`开启新板块。除了标题以外，需要保证每个段落的末尾有正确的标点，删除明显不合理的换行。重要：正文的开头不能再重复包含标题
     - 尊重原文语言：生成的语言应该和素材一致，如果原文为多语言，则保持每个部分对应的语言
     - 封面图提示词：基于主要内容，创作一个具体、生动、富有画面感的详细文生图提示词，并遵循下方"文生图规则"
 
     ## 文生图规则
     - 构图要求：
         -   目标画幅： 4:5竖向构图
-        -   目标风格： architectural blueprint style
+        -   目标风格： Torben Kuhlmann style, watercolor + colored pencil texture, delicate textures, cozy, gentle
         -   目标色调： 不限于任何颜色，但要适合文字内容，并且颜色搭配要协调
-        -   语言结构： 中文描述详细的主体内容，末尾追加英文关键词提升画质和风格（例如：4:5, architectural blueprint style, masterpiece, high detail）
+        -   语言结构： 中文描述详细的主体内容，末尾追加英文关键词提升画质和风格（例如：4:5, Torben Kuhlmann style, watercolor + colored pencil texture, delicate textures, cozy, gentle, masterpiece, high detail）。你不需要和示例一模一样，示例仅为参考
         -   禁止项： 不能包含任何要求生成文字的指令
 
     # 绝对规则
@@ -372,7 +372,7 @@ html_converter:
   
   # 字体配置 - 清晰大字号风格
   fonts:
-    family: "'Noto Sans CJK SC', 'WenQuanYi Micro Hei', 'Helvetica Neue', Arial, sans-serif"  # 字体系列
+    family: "'点字简宋', 'Noto Sans CJK SC', 'WenQuanYi Micro Hei', 'Helvetica Neue', Arial, sans-serif"  # 字体系列
     title_size: 70       # 标题字体大小（大字号，加粗）
     subtitle_size: 45    # 副标题字体大小（大字号，加粗）
     body_size: 45        # 正文字体大小（大字号，清晰易读）
