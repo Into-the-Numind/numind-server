@@ -55,7 +55,7 @@ jobs:
         uses: actions/setup-go@v4
         with:
           go-version: 1.24.2
-          cache: true
+          cache: false  # 禁用内置缓存，使用自定义缓存
 
       - name: Install Task
         uses: arduino/setup-task@v1
@@ -68,20 +68,25 @@ jobs:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-${{ github.run_id }}
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-
             ${{ runner.os }}-go-
 
-      - name: Clean Go cache
+      - name: Verify cache restoration
         run: |
-          echo "🧹 清理 Go 缓存以避免冲突..."
-          go clean -modcache || true
-          go clean -cache || true
-          go clean -testcache || true
-          rm -rf ~/.cache/go-build || true
-          rm -rf ~/go/pkg/mod || true
-          echo "✅ Go 缓存清理完成"
+          echo "🔍 验证缓存恢复状态..."
+          if [ -d "$HOME/.cache/go-build" ]; then
+            echo "✅ Go build cache 已恢复: $(du -sh $HOME/.cache/go-build | cut -f1)"
+          else
+            echo "ℹ️  Go build cache 未找到，将重新构建"
+          fi
+          
+          if [ -d "$HOME/go/pkg/mod" ]; then
+            echo "✅ Go modules cache 已恢复: $(du -sh $HOME/go/pkg/mod | cut -f1)"
+          else
+            echo "ℹ️  Go modules cache 未找到，将重新下载"
+          fi
 
       - name: Setup Go environment
         run: |
