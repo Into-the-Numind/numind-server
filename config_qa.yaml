@@ -207,8 +207,8 @@ special_rules:
     width: 1080          # 封面卡片宽度
     height: 1440         # 封面卡片高度（3:4比例）
     title_section:
-      font_size: 48            # 封面标题字体大小
-      line_height: 62          # 封面标题行高
+      font_size: 70            # 封面标题字体大小
+      line_height: 80          # 封面标题行高
       color: "#2c3e50"         # 封面标题颜色
       background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
       backdrop_filter: "blur(10px)"            # 背景模糊效果
@@ -384,7 +384,7 @@ html_converter:
 
   # 行高配置 - 提升可读性
   line_heights:
-    title: 1.5           # 标题行高倍数
+    title: 1.2           # 标题行高倍数
     subtitle: 1.5        # 副标题行高倍数
     body: 1.8            # 正文行高倍数（增大行高，提升可读性）
 
