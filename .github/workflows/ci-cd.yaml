@@ -37,24 +37,15 @@ env:
   PROD_HOST: ${{ secrets.PROD_HOST }}
 
 jobs:
-  # 代码构建
-  code_build:
+  # Docker 镜像构建 - 在特定分支或 tag 时触发
+  image_build:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20  # 增加超时时间，因为包含代码构建
+    if: |
+      github.ref == 'refs/heads/develop' || 
+      github.ref == 'refs/heads/release' || 
+      startsWith(github.ref, 'refs/tags/v')
     steps:
-      - name: Debug build trigger
-        run: |
-          echo "=== Build Trigger Information ==="
-          echo "Event: ${{ github.event_name }}"
-          echo "Ref: ${{ github.ref }}"
-          echo "Branch: ${{ github.ref_name }}"
-          echo "SHA: ${{ github.sha }}"
-          echo "Actor: ${{ github.actor }}"
-          echo "Repository: ${{ github.repository }}"
-          echo "Workflow: ${{ github.workflow }}"
-          echo "Run ID: ${{ github.run_id }}"
-          echo "================================="
-
       - name: Checkout code
         uses: actions/checkout@v4
         with:
@@ -64,7 +55,7 @@ jobs:
         uses: actions/setup-go@v4
         with:
           go-version: 1.24.2
-          cache: true
+          cache: false  # 禁用内置缓存，使用自定义缓存
 
       - name: Install Task
         uses: arduino/setup-task@v1
@@ -77,20 +68,25 @@ jobs:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
           restore-keys: |
+            ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-
             ${{ runner.os }}-go-
 
-      - name: Force clean and reset
+      - name: Verify cache restoration
         run: |
-          echo "=== Force cleaning all caches ==="
-          go clean -modcache || true
-          go clean -cache || true
-          go clean -testcache || true
-          sudo rm -rf ~/.cache/go-build || true
-          sudo rm -rf ~/go/pkg/mod || true
-          echo "=== Go environment ==="
-          go env | grep -E "(GOOS|GOARCH|CGO|GOROOT|GOPATH)"
+          echo "🔍 验证缓存恢复状态..."
+          if [ -d "$HOME/.cache/go-build" ]; then
+            echo "✅ Go build cache 已恢复: $(du -sh $HOME/.cache/go-build | cut -f1)"
+          else
+            echo "ℹ️  Go build cache 未找到，将重新构建"
+          fi
+          
+          if [ -d "$HOME/go/pkg/mod" ]; then
+            echo "✅ Go modules cache 已恢复: $(du -sh $HOME/go/pkg/mod | cut -f1)"
+          else
+            echo "ℹ️  Go modules cache 未找到，将重新下载"
+          fi
 
       - name: Setup Go environment
         run: |
@@ -105,34 +101,6 @@ jobs:
           echo "CC: $(go env CC)"
           echo "CXX: $(go env CXX)"
           echo "================================"
-
-      - name: Install GitHub CLI
-        run: |
-          echo "🔧 安装 GitHub CLI..."
-          
-          # 检查是否已安装
-          if command -v gh &> /dev/null; then
-            echo "✅ GitHub CLI 已安装: $(gh --version)"
-          else
-            echo "📦 安装 GitHub CLI..."
-            
-            # 添加 GitHub CLI 仓库
-            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-            
-            # 更新包列表并安装
-            sudo apt-get update
-            sudo apt-get install -y gh
-            
-            echo "✅ GitHub CLI 安装完成: $(gh --version)"
-          fi
-          
-          # 配置 GitHub CLI 认证（使用 GITHUB_TOKEN）
-          echo "🔐 配置 GitHub CLI 认证..."
-          echo "${{ github.token }}" | gh auth login --with-token
-          
-          # 验证认证状态
-          gh auth status || echo "⚠️  认证状态检查失败，但可能仍然可用"
 
       - name: Get dependencies
         run: |
@@ -170,10 +138,6 @@ jobs:
             exit 1
           fi
           
-          # 创建符号链接（用于后续步骤）
-          ln -sf ./bin/numind-linux-amd64 ./bin/numind-binary
-          echo "🔗 创建符号链接: ./bin/numind-binary"
-          
           # 验证构建结果
           echo "=== 构建结果验证 ==="
           ls -la ./bin/
@@ -187,113 +151,6 @@ jobs:
           echo "📋 文件类型: $file_type"
           
           echo "================================"
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: numind-binaries
-          path: ./bin/numind-linux-amd64
-          retention-days: 5  # 减少到5天
-
-      - name: Upload binary for deployment
-        uses: actions/upload-artifact@v4
-        with:
-          name: numind-binary
-          path: ./bin/numind-linux-amd64
-          retention-days: 2  # 减少到2天
-
-      - name: Clean up old artifacts
-        run: |
-          echo "🧹 开始清理旧的构建产物..."
-          
-          # 检查 GitHub CLI 是否可用
-          if command -v gh &> /dev/null; then
-            echo "✅ GitHub CLI 可用，开始清理..."
-            
-            # 获取仓库信息
-            REPO="${{ github.repository }}"
-            echo "📦 清理仓库: $REPO"
-            
-            # 列出当前所有构建产物
-            echo "📋 当前构建产物列表:"
-            gh api repos/$REPO/actions/artifacts --jq '.artifacts[] | {id: .id, name: .name, created_at: .created_at, size: .size_in_bytes}' || true
-            
-            # 智能清理策略：保留最新的几个，删除旧的
-            echo "🧠 执行智能清理策略..."
-            
-            # 清理 numind-binaries 产物：保留最新的2个，删除其余的
-            echo "🧹 清理 numind-binaries 产物（保留最新2个）..."
-            BINARIES_TO_KEEP=2
-            BINARIES_COUNT=$(gh api repos/$REPO/actions/artifacts --jq '.artifacts[] | select(.name == "numind-binaries") | .id' | wc -l)
-            
-            if [ "$BINARIES_COUNT" -gt "$BINARIES_TO_KEEP" ]; then
-              echo "📊 当前有 $BINARIES_COUNT 个产物，保留 $BINARIES_TO_KEEP 个"
-              
-              # 获取需要删除的产物ID（按创建时间排序，保留最新的）
-              gh api repos/$REPO/actions/artifacts --jq '.artifacts[] | select(.name == "numind-binaries") | {id: .id, created_at: .created_at}' | \
-                jq -s 'sort_by(.created_at) | reverse | .['$BINARIES_TO_KEEP':] | .[].id' | \
-                while read -r artifact_id; do
-                  if [ ! -z "$artifact_id" ] && [ "$artifact_id" != "null" ]; then
-                    echo "🗑️  删除旧产物 ID: $artifact_id"
-                    gh api repos/$REPO/actions/artifacts/$artifact_id -X DELETE || echo "⚠️  删除产物 $artifact_id 失败"
-                  fi
-                done
-            else
-              echo "✅ numind-binaries 产物数量在合理范围内，无需清理"
-            fi
-            
-            # 清理 numind-binary 产物：保留最新的2个，删除其余的
-            echo "🧹 清理 numind-binary 产物（保留最新2个）..."
-            BINARY_TO_KEEP=2
-            BINARY_COUNT=$(gh api repos/$REPO/actions/artifacts --jq '.artifacts[] | select(.name == "numind-binary") | .id' | wc -l)
-            
-            if [ "$BINARY_COUNT" -gt "$BINARY_TO_KEEP" ]; then
-              echo "📊 当前有 $BINARY_COUNT 个产物，保留 $BINARY_TO_KEEP 个"
-              
-              # 获取需要删除的产物ID（按创建时间排序，保留最新的）
-              gh api repos/$REPO/actions/artifacts --jq '.artifacts[] | select(.name == "numind-binary") | {id: .id, created_at: .created_at}' | \
-                jq -s 'sort_by(.created_at) | reverse | .['$BINARY_TO_KEEP':] | .[].id' | \
-                while read -r artifact_id; do
-                  if [ ! -z "$artifact_id" ] && [ "$artifact_id" != "null" ]; then
-                    echo "🗑️  删除旧产物 ID: $artifact_id"
-                    gh api repos/$REPO/actions/artifacts/$artifact_id -X DELETE || echo "⚠️  删除产物 $artifact_id 失败"
-                  fi
-                done
-            else
-              echo "✅ numind-binary 产物数量在合理范围内，无需清理"
-            fi
-            
-            echo "✅ 智能清理完成"
-          else
-            echo "⚠️  GitHub CLI 不可用，跳过自动清理"
-            echo "💡 请手动清理旧的构建产物，或安装 GitHub CLI"
-          fi
-          
-          # 显示清理后的存储使用情况
-          echo "📊 清理完成后的存储状态:"
-          if command -v gh &> /dev/null; then
-            gh api repos/$REPO/actions/artifacts --jq '.artifacts | length' | xargs -I {} echo "当前构建产物数量: {}" || echo "无法获取存储状态"
-            
-            # 显示各类型产物的数量
-            echo "📋 各类型产物统计:"
-            gh api repos/$REPO/actions/artifacts --jq '.artifacts | group_by(.name) | map({name: .[0].name, count: length}) | .[] | "  \(.name): \(.count) 个"' || echo "无法获取产物统计"
-          else
-            echo "无法获取存储状态（GitHub CLI 不可用）"
-          fi
-
-  # Docker 镜像构建 - 在特定分支或 tag 时触发
-  image_build:
-    needs: code_build
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/release' || startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-
 
       - name: Login to Docker Hub
         run: |
@@ -336,8 +193,8 @@ jobs:
           echo "构建环境: $BUILD_ENV"
           echo "镜像标签: $IMAGE_TAG"
           
-          # 构建镜像 - 指定构建参数和环境
-          docker build --build-arg ENV=$BUILD_ENV -t ${{ env.IMAGE_NAME }}:$IMAGE_TAG .
+          # 构建镜像 - 使用预构建的二进制文件
+          docker build --build-arg ENV=$BUILD_ENV --build-arg BINARY_PATH=./bin/numind-linux-amd64 -t ${{ env.IMAGE_NAME }}:$IMAGE_TAG .
           
           # 推送镜像
           docker push ${{ env.IMAGE_NAME }}:$IMAGE_TAG
@@ -348,6 +205,11 @@ jobs:
             docker push ${{ env.IMAGE_NAME }}:latest
             echo "✅ 已推送 latest 标签"
           fi
+
+      - name: Clean up old Docker images
+        run: |
+          echo "ℹ️  镜像存储在 Docker Hub 上，无需清理 GitHub Packages"
+          echo "✅ Docker 镜像构建和推送完成"
 
   # 开发环境部署 - 只在 develop 分支触发
   deploy_dev:

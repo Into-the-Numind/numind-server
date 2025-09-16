@@ -1,38 +1,7 @@
-# 多阶段构建 - 构建阶段 - 使用Ubuntu确保架构一致性
-FROM golang:1.24.2 AS builder
-
-# 设置工作目录
-WORKDIR /app
-
-# 安装必要的系统依赖
-RUN apt-get update && apt-get install -y \
-    git \
-    ca-certificates \
-    tzdata \
-    libwebp-dev \
-    gcc \
-    g++ \
-    file \
-    && rm -rf /var/lib/apt/lists/*
-
-# 复制 go mod 文件
-COPY go.mod go.sum ./
-
-# 下载依赖
-RUN go mod download
-
-# 复制源代码
-COPY . .
-
-# 构建应用 - 使用默认架构避免交叉编译问题
-RUN CGO_ENABLED=1 go build \
-    -ldflags="-s -w -X main.Version=dev" \
-    -o /app/numind ./cmd/numind
-
-# 验证构建结果
-RUN ls -la /app/numind && \
-    file /app/numind && \
-    echo "✅ 构建阶段验证成功"
+# 外部构建阶段 - 用于 CI/CD 中使用预构建的二进制文件
+FROM scratch AS external-binary
+ARG BINARY_PATH
+COPY $BINARY_PATH /app/numind
 
 # 运行阶段 - 基于Ubuntu以获得更好的Chrome支持
 FROM ubuntu:22.04
@@ -112,8 +81,10 @@ ARG ENV=dev
 # 根据环境复制对应的配置文件
 COPY config_${ENV}.yaml /app/config_${ENV}.yaml
 
-# 从构建阶段复制二进制文件
-COPY --from=builder /app/numind /app/numind
+# 根据构建参数选择二进制文件来源
+ARG BINARY_SOURCE=external-binary
+# 使用条件复制，根据 BINARY_SOURCE 参数选择来源
+COPY --from=external-binary /app/numind /app/numind
 
 # 验证配置文件复制成功
 RUN ls -la /app/config_*.yaml && \

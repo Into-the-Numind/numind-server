@@ -200,23 +200,26 @@ pagination:
       margin_bottom: 30    # 数字下方间距: 30px（统一标准）
       color: "#1E90FF"     # 数字: #1E90FF（蓝色）
       align: "center"      # 居中对齐
+
+# 特殊渲染规则配置
+special_rules:
+  cover_card:
+    width: 1080          # 封面卡片宽度
+    height: 1440         # 封面卡片高度（3:4比例）
+    title_section:
+      font_size: 48            # 封面标题字体大小
+      line_height: 62          # 封面标题行高
+      color: "#2c3e50"         # 封面标题颜色
+      background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
+      backdrop_filter: "blur(10px)"            # 背景模糊效果
+      box_shadow: "0 4px 20px rgba(0, 0, 0, 0.1)"  # 阴影效果
+    image_section:
+      background: "transparent"                # 图片区域透明背景
   
-  # 特殊渲染规则配置
-  special_rules:
-    cover_card:
-      width: 1080          # 封面卡片宽度
-      height: 1440         # 封面卡片高度（3:4比例）
-      title_section:
-        background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
-        backdrop_filter: "blur(10px)"            # 背景模糊效果
-        box_shadow: "0 4px 20px rgba(0, 0, 0, 0.1)"  # 阴影效果
-      image_section:
-        background: "transparent"                # 图片区域透明背景
-    
-    content_card:
-      safe_area_margin: 30                      # 内容安全区域边距
-      max_content_height: 1200                  # 内容最大高度
-      overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
+  content_card:
+    safe_area_margin: 30                      # 内容安全区域边距
+    max_content_height: 1200                  # 内容最大高度
+    overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
 
 # AI提示词配置
 ai_prompts:

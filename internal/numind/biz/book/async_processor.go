@@ -32,6 +32,27 @@ type AsyncBookProcessor struct {
 	biz BizInterface
 }
 
+// getCoverTitleConfig 获取封面标题配置
+func getCoverTitleConfig() (fontSize int, lineHeight int, color string) {
+	// 默认值
+	fontSize = 48
+	lineHeight = 62
+	color = "#2c3e50"
+
+	// 从配置中读取
+	if viper.IsSet("special_rules.cover_card.title_section.font_size") {
+		fontSize = viper.GetInt("special_rules.cover_card.title_section.font_size")
+	}
+	if viper.IsSet("special_rules.cover_card.title_section.line_height") {
+		lineHeight = viper.GetInt("special_rules.cover_card.title_section.line_height")
+	}
+	if viper.IsSet("special_rules.cover_card.title_section.color") {
+		color = viper.GetString("special_rules.cover_card.title_section.color")
+	}
+
+	return fontSize, lineHeight, color
+}
+
 // BizInterface 业务接口
 type BizInterface interface {
 	Books() AsyncBookBiz
@@ -2499,6 +2520,9 @@ func (p *AsyncBookProcessor) generateDefaultImagePrompt(content string) string {
 
 // generateCoverHTML 生成封面HTML内容（背景图在底层，图片和标题在上层）
 func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background string, bookID uint) string {
+	// 获取封面标题配置
+	fontSize, lineHeight, color := getCoverTitleConfig()
+
 	// 处理背景样式 - 优先使用模板背景，如果没有则使用默认背景
 	var backgroundStyle string
 	if background != "" {
@@ -2678,10 +2702,10 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
         }
 
         .title-text {
-            font-size: 48px;
+            font-size: %dpx;
             font-weight: 700;
-            color: black;
-            line-height: 1.2;
+            color: %s;
+            line-height: %dpx;
             margin-bottom: 20px;
             text-shadow: none;
         }
@@ -2724,7 +2748,7 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
         </div>
     </div>
 </body>
-</html>`, title, backgroundStyle, backgroundStyle, imageHTML, title)
+</html>`, title, backgroundStyle, backgroundStyle, fontSize, color, lineHeight, imageHTML, title)
 }
 
 // generateCoverImageOnly 仅生成封面图片，不重新生成HTML
