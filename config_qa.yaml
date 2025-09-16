@@ -145,7 +145,7 @@ pagination:
   # 元素样式配置
   styles:
     title:
-      font_size: 65        # 标题: 64px（最大）
+      font_size: 100        # 标题: 64px（最大）
       line_height: 97.5      # 1.5倍行高
       margin_top: 20       # 标题上间距: 30px（统一标准）
       margin_bottom: 20    # 标题下方间距: 30px（统一标准）
@@ -207,8 +207,8 @@ special_rules:
     width: 1080          # 封面卡片宽度
     height: 1440         # 封面卡片高度（3:4比例）
     title_section:
-      font_size: 70            # 封面标题字体大小
-      line_height: 80          # 封面标题行高
+      font_size: 100            # 封面标题字体大小
+      line_height: 110          # 封面标题行高
       color: "#2c3e50"         # 封面标题颜色
       background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
       backdrop_filter: "blur(10px)"            # 背景模糊效果
@@ -268,9 +268,9 @@ ai_prompts:
     ## 文生图规则
     - 构图要求：
         -   目标画幅： 4:5竖向构图
-        -   目标风格： Torben Kuhlmann style, watercolor + colored pencil texture, delicate textures, cozy
+        -   目标风格： Torben Kuhlmann style, watercolor + colored pencil texture, muted earth tones /low-saturation brown/beige/olive, delicate textures, cozy
         -   目标色调： 不限于任何颜色，但要适合文字内容，并且颜色搭配要协调
-        -   语言结构： 中文描述详细的主体内容，末尾追加英文关键词提升画质和风格（例如：4:5, Torben Kuhlmann style, watercolor + colored pencil texture, delicate textures, cozy, masterpiece, high detail）。你不需要和示例一模一样，示例仅为参考
+        -   语言结构： 中文描述详细的主体内容，末尾追加英文关键词提升画质和风格（例如：4:5, Torben Kuhlmann style, watercolor + colored pencil texture, delicate textures, muted earth tones /low-saturation brown/beige/olive, cozy, masterpiece, high detail）。你不需要和示例一模一样，示例仅为参考，但需要尽量达到目标风格
         -   禁止项： 不能包含任何要求生成文字的指令
 
     # 绝对规则
@@ -376,7 +376,7 @@ html_converter:
   # 字体配置 - 清晰大字号风格
   fonts:
     family: "'DianziJianSong', 'Noto Sans CJK SC', 'WenQuanYi Micro Hei', 'Helvetica Neue', Arial, sans-serif"  # 字体系列
-    title_size: 70       # 标题字体大小（大字号，加粗）
+    title_size: 100       # 标题字体大小（大字号，加粗）
     subtitle_size: 45    # 副标题字体大小（大字号，加粗）
     body_size: 45        # 正文字体大小（大字号，清晰易读）
     list_size: 45        # 列表字体大小
