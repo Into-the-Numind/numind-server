@@ -192,39 +192,8 @@ jobs:
 
       - name: Clean up old Docker images
         run: |
-          echo "🧹 开始清理旧的 Docker 镜像..."
-          
-          # 检查 GitHub CLI 是否可用
-          if command -v gh &> /dev/null; then
-            echo "✅ GitHub CLI 可用，开始清理 Docker 包..."
-            
-            # 获取仓库信息
-            REPO="${{ github.repository }}"
-            echo "📦 清理仓库: $REPO"
-            
-            # 获取 Docker 包 ID
-            PACKAGE_ID=$(gh api repos/$REPO/packages --jq '.[] | select(.name == "neozhang96/numind-server") | .id')
-            
-            if [ ! -z "$PACKAGE_ID" ] && [ "$PACKAGE_ID" != "null" ]; then
-              echo "📦 找到 Docker 包 ID: $PACKAGE_ID"
-              
-              # 删除超过7天的版本
-              echo "🗑️  删除超过7天的 Docker 镜像版本..."
-              gh api packages/$PACKAGE_ID/versions --jq '.[] | select(.created_at < "'$(date -d "7 days ago" -Iseconds)'") | .id' | \
-              while read -r version_id; do
-                if [ ! -z "$version_id" ] && [ "$version_id" != "null" ]; then
-                  echo "🗑️  删除旧版本 ID: $version_id"
-                  gh api packages/$PACKAGE_ID/versions/$version_id -X DELETE || echo "⚠️  删除版本 $version_id 失败"
-                fi
-              done
-              
-              echo "✅ Docker 包清理完成"
-            else
-              echo "⚠️  未找到 Docker 包，跳过清理"
-            fi
-          else
-            echo "⚠️  GitHub CLI 不可用，跳过 Docker 包清理"
-          fi
+          echo "ℹ️  镜像存储在 Docker Hub 上，无需清理 GitHub Packages"
+          echo "✅ Docker 镜像构建和推送完成"
 
   # 开发环境部署 - 只在 develop 分支触发
   deploy_dev:
