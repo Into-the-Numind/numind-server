@@ -15,6 +15,8 @@ import (
 	"numind-server/internal/numind/biz/pagination"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
+
+	"github.com/spf13/viper"
 )
 
 // CoverRenderer 封面卡片渲染器
@@ -50,6 +52,27 @@ func GetCoverConfig() *pagination.PaginationConfig {
 	config.Card.Width = 1080
 	config.Card.Height = 1440
 	return config
+}
+
+// GetCoverTitleConfig 获取封面标题配置
+func GetCoverTitleConfig() (fontSize int, lineHeight int, color string) {
+	// 默认值
+	fontSize = 48
+	lineHeight = 62
+	color = "#2c3e50"
+
+	// 从配置中读取
+	if viper.IsSet("special_rules.cover_card.title_section.font_size") {
+		fontSize = viper.GetInt("special_rules.cover_card.title_section.font_size")
+	}
+	if viper.IsSet("special_rules.cover_card.title_section.line_height") {
+		lineHeight = viper.GetInt("special_rules.cover_card.title_section.line_height")
+	}
+	if viper.IsSet("special_rules.cover_card.title_section.color") {
+		color = viper.GetString("special_rules.cover_card.title_section.color")
+	}
+
+	return fontSize, lineHeight, color
 }
 
 // RenderCoverCardToImage 将封面卡片渲染为图片
@@ -163,6 +186,9 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
 		backgroundStyle = "background: #ffffff;"
 	}
 
+	// 获取封面标题配置
+	fontSize, lineHeight, color := GetCoverTitleConfig()
+
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -186,8 +212,8 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
         
         /* 封面容器 - 背景图在底层，内容在上层 */
         .cover-container {
-            width: 100%%;
-            height: 100%%;
+            width: 100%;
+            height: 100%;
             position: relative;
             %s
             background-size: cover !important;
@@ -227,7 +253,7 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             justify-content: center;
             position: relative;
             overflow: hidden;
-            width: 100%%;
+            width: 100%;
         }
         
         /* 下半部分：标题区域 (35%%) */
@@ -237,7 +263,7 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             align-items: center;
             justify-content: center;
             position: relative;
-            width: 100%%;
+            width: 100%;
             background: rgba(255, 255, 255, 0.95);
             backdrop-filter: blur(10px);
         }
@@ -245,15 +271,15 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
         .title-container {
             text-align: center;
             padding: 30px 40px;
-            width: 100%%;
+            width: 100%;
             max-width: 90%%;
         }
         
         .title {
-            font-size: 48px;
+            font-size: %dpx;
             font-weight: bold;
-            color: #2c3e50;
-            line-height: 1.3;
+            color: %s;
+            line-height: %dpx;
             margin: 0;
             text-shadow: 0 2px 4px rgba(0,0,0,0.1);
             word-wrap: break-word;
@@ -261,8 +287,8 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
         }
         
         .cover-image {
-            width: 100%%;
-            height: 100%%;
+            width: 100%;
+            height: 100%;
             object-fit: cover;
             object-position: center;
         }
@@ -297,7 +323,7 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
         /* 响应式调整 */
         @media (max-width: 768px) {
             .title {
-                font-size: 36px;
+                font-size: %dpx;
             }
         }
     </style>
@@ -322,6 +348,7 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
 </body>
 </html>`, config.Card.Width, config.Card.Height,
 		backgroundStyle,
+		fontSize, color, lineHeight, fontSize*3/4, // 字体大小、颜色、行高、响应式字体大小（75%）
 		r.generateImageHTML(coverData.ImageURL),
 		coverData.Title)
 

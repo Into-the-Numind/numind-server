@@ -113,10 +113,10 @@ pagination:
     width: 1080   # 标准尺寸: 1080×1440（3:4比例）
     height: 1440  # 基础高度，实际使用动态高度
     padding:
-      top: 60     # 标准内边距: 60px 50px
-      right: 50
-      bottom: 40  # 修复：增加底部留白，确保文字不被遮挡
-      left: 50
+    top: 60     # 标准内边距: 60px 50px
+    right: 50
+    bottom: 40  # 修复：增加底部留白，确保文字不被遮挡
+    left: 50
   
   # 动态分页优化配置
   dynamic:
@@ -145,78 +145,81 @@ pagination:
   # 元素样式配置
   styles:
     title:
-      font_size: 64        # 标题: 64px（最大）
-      line_height: 90      # 1.4倍行高
-      margin_top: 30       # 标题上间距: 30px（统一标准）
-      margin_bottom: 30    # 标题下方间距: 30px（统一标准）
-      color: "#333333"     # 主标题: #333333（深灰）
-      align: "justify"     # 两端对齐
+    font_size: 64        # 标题: 64px（最大）
+    line_height: 90      # 1.4倍行高
+    margin_top: 30       # 标题上间距: 30px（统一标准）
+    margin_bottom: 30    # 标题下方间距: 30px（统一标准）
+    color: "#333333"     # 主标题: #333333（深灰）
+    align: "justify"     # 两端对齐
     
     subtitle:
-      font_size: 48        # 副标题: 48px（中等）
-      line_height: 72      # 1.5倍行高
-      margin_top: 30       # 副标题上间距: 30px（统一标准）
-      margin_bottom: 25    # 副标题下方: 25px（标准下间距）
-      color: "#666666"     # 副标题: #666666（中灰）
-      align: "justify"     # 两端对齐
+    font_size: 48        # 副标题: 48px（中等）
+    line_height: 72      # 1.5倍行高
+    margin_top: 30       # 副标题上间距: 30px（统一标准）
+    margin_bottom: 25    # 副标题下方: 25px（标准下间距）
+    color: "#666666"     # 副标题: #666666（中灰）
+    align: "justify"     # 两端对齐
     
     body:
-      font_size: 36        # 正文: 36px（标准）
-      line_height: 58      # 1.6倍行高（标准行高）
-      margin_top: 30       # 正文上间距: 30px（统一标准）
-      margin_bottom: 30    # 正文下方间距: 30px（统一标准）
-      color: "#333333"     # 正文: #333333（深灰）
-      align: "justify"     # 两端对齐
+    font_size: 36        # 正文: 36px（标准）
+    line_height: 58      # 1.6倍行高（标准行高）
+    margin_top: 30       # 正文上间距: 30px（统一标准）
+    margin_bottom: 30    # 正文下方间距: 30px（统一标准）
+    color: "#333333"     # 正文: #333333（深灰）
+    align: "justify"     # 两端对齐
     
     list:
-      font_size: 36        # 列表: 36px（标准）
-      line_height: 58      # 1.6倍行高（标准行高）
-      margin_top: 30       # 列表上间距: 30px（统一标准）
-      margin_bottom: 30    # 列表下方间距: 30px（统一标准）
-      color: "#333333"     # 列表: #333333（深灰）
-      align: "justify"     # 两端对齐
-      indent: 20           # 列表缩进
+    font_size: 36        # 列表: 36px（标准）
+    line_height: 58      # 1.6倍行高（标准行高）
+    margin_top: 30       # 列表上间距: 30px（统一标准）
+    margin_bottom: 30    # 列表下方间距: 30px（统一标准）
+    color: "#333333"     # 列表: #333333（深灰）
+    align: "justify"     # 两端对齐
+    indent: 20           # 列表缩进
     
     quote:
-      font_size: 36        # 引用: 36px（强调）
-      line_height: 54      # 1.5倍行高（紧凑行高）
-      margin_top: 30       # 引用上间距: 30px（统一标准）
-      margin_bottom: 30    # 引用下方间距: 30px（统一标准）
-      color: "#1E90FF"     # 引用: #1E90FF（蓝色）
-      align: "justify"     # 两端对齐
+    font_size: 36        # 引用: 36px（强调）
+    line_height: 54      # 1.5倍行高（紧凑行高）
+    margin_top: 30       # 引用上间距: 30px（统一标准）
+    margin_bottom: 30    # 引用下方间距: 30px（统一标准）
+    color: "#1E90FF"     # 引用: #1E90FF（蓝色）
+    align: "justify"     # 两端对齐
     
     tag:
-      font_size: 28        # 标签: 28px（最小）
-      line_height: 42      # 1.5倍行高
-      margin_top: 30       # 标签上间距: 30px（统一标准）
-      margin_bottom: 30    # 标签下方间距: 30px（统一标准）
-      color: "#1E90FF"     # 标签: #1E90FF（蓝色）
-      align: "left"        # 左对齐
+    font_size: 28        # 标签: 28px（最小）
+    line_height: 42      # 1.5倍行高
+    margin_top: 30       # 标签上间距: 30px（统一标准）
+    margin_bottom: 30    # 标签下方间距: 30px（统一标准）
+    color: "#1E90FF"     # 标签: #1E90FF（蓝色）
+    align: "left"        # 左对齐
     
     number:
-      font_size: 28        # 数字: 28px（最小）
-      line_height: 42      # 1.5倍行高
-      margin_top: 30       # 数字上间距: 30px（统一标准）
-      margin_bottom: 30    # 数字下方间距: 30px（统一标准）
-      color: "#1E90FF"     # 数字: #1E90FF（蓝色）
-      align: "center"      # 居中对齐
+    font_size: 28        # 数字: 28px（最小）
+    line_height: 42      # 1.5倍行高
+    margin_top: 30       # 数字上间距: 30px（统一标准）
+    margin_bottom: 30    # 数字下方间距: 30px（统一标准）
+    color: "#1E90FF"     # 数字: #1E90FF（蓝色）
+    align: "center"      # 居中对齐
   
-  # 特殊渲染规则配置
-  special_rules:
-    cover_card:
-      width: 1080          # 封面卡片宽度
-      height: 1440         # 封面卡片高度（3:4比例）
-      title_section:
-        background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
-        backdrop_filter: "blur(10px)"            # 背景模糊效果
-        box_shadow: "0 4px 20px rgba(0, 0, 0, 0.1)"  # 阴影效果
-      image_section:
-        background: "transparent"                # 图片区域透明背景
+# 特殊渲染规则配置
+special_rules:
+  cover_card:
+    width: 1080          # 封面卡片宽度
+    height: 1440         # 封面卡片高度（3:4比例）
+    title_section:
+      font_size: 48            # 封面标题字体大小
+      line_height: 62          # 封面标题行高
+      color: "#2c3e50"         # 封面标题颜色
+      background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
+      backdrop_filter: "blur(10px)"            # 背景模糊效果
+      box_shadow: "0 4px 20px rgba(0, 0, 0, 0.1)"  # 阴影效果
+    image_section:
+      background: "transparent"                # 图片区域透明背景
     
     content_card:
-      safe_area_margin: 30                      # 内容安全区域边距
-      max_content_height: 1200                  # 内容最大高度
-      overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
+    safe_area_margin: 30                      # 内容安全区域边距
+    max_content_height: 1200                  # 内容最大高度
+    overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
 
 # AI提示词配置
 ai_prompts:
@@ -226,8 +229,8 @@ ai_prompts:
 
     # 整体目标
     我将提供一段从图片中识别出的原始文本原始文本。你的任务是并行完成以下两项核心工作，并将两项工作的结果，合并为一个单一的、纯净的JSON对象作为最终输出。
-        工作一：文本结构化（输出为Markdown格式）
-        工作二：根据内容写一段文生图的提示词
+      工作一：文本结构化（输出为Markdown格式）
+      工作二：根据内容写一段文生图的提示词
 
     # 核心原则
     1.  忠于原文 : 用户的原始文本是核心和基础。
@@ -237,23 +240,23 @@ ai_prompts:
     5.  杜绝无关信息: 清除原始文本中可能存在的广告、水印、页码、系统提示语等"噪音"。
 
     # 边缘情况处理规则
-      * 主标题: 输出中必须有且仅有一个一级标题 (`#`)。原文无则必须根据核心内容生成。
-      * 无明显结构: 若文本是连续的长篇大论，不要强行创造`##`副标题。
-      * 无法理解: 若文本为无意义乱码，返回的JSON中`text`和`image_prompt`字段均为空字符串。
+    * 主标题: 输出中必须有且仅有一个一级标题 (`#`)。原文无则必须根据核心内容生成。
+    * 无明显结构: 若文本是连续的长篇大论，不要强行创造`##`副标题。
+    * 无法理解: 若文本为无意义乱码，返回的JSON中`text`和`image_prompt`字段均为空字符串。
 
     # 格式定义与语义解释
-      * `#` (一级标题): 全文灵魂，最高度的概括。
-      * `##` (二级标题): 逻辑路标，用于标记明确的主题转换。
-      * 普通段落: 内容的血肉，负责详细叙述。应尊重原文的段落划分。
-      * `-` (列表): 用于展示逻辑上并列、地位平等的要点。
-      * `>` (引用): 用于凸显"点睛之笔"，如核心结论或名言。此格式应谨慎使用，仅用于对全文理解至关重要的关键句。
-        ⠀【重要】 你必须保持格式的纯净性，例如，不要使用### (三级标题)或其他非约定的Markdown语法。
+    * `#` (一级标题): 全文灵魂，最高度的概括。
+    * `##` (二级标题): 逻辑路标，用于标记明确的主题转换。
+    * 普通段落: 内容的血肉，负责详细叙述。应尊重原文的段落划分。
+    * `-` (列表): 用于展示逻辑上并列、地位平等的要点。
+    * `>` (引用): 用于凸显"点睛之笔"，如核心结论或名言。此格式应谨慎使用，仅用于对全文理解至关重要的关键句。
+      ⠀【重要】 你必须保持格式的纯净性，例如，不要使用### (三级标题)或其他非约定的Markdown语法。
 
     # 文生图提示词生成规则
-      * 语言结构: 中文描述主体内容，末尾追加英文关键词提升画质和风格。
-      * 目标画幅: 2:3的竖向构图。
-      * 目标风格: 简洁插画风
-      * 禁止项: 不能包含任何要求生成文字的指令。
+    * 语言结构: 中文描述主体内容，末尾追加英文关键词提升画质和风格。
+    * 目标画幅: 2:3的竖向构图。
+    * 目标风格: 简洁插画风
+    * 禁止项: 不能包含任何要求生成文字的指令。
 
     # 最终输出格式
     你的最终输出必须是一个**完整的、纯净的JSON对象**，包含`text`和`image_prompt`两个字段。`text`字段的值必须是一个包含了Markdown语法的、完整的字符串（换行请使用`\n`）。绝对不能在JSON之外添加任何解释性文字或代码块。
@@ -261,8 +264,8 @@ ai_prompts:
     以下是标准案例：
     ```json
     {
-      "text": "# 为什么高价值的信息几乎从不流向普通人？\n因为信息价值越高，越考验人的理解能力，无法理解便等于"接收不到"。几年前，一个好友劝我去做知识付费，我随口问了句"什么是知识付费？"，他当时就无语了。\n## 高深内容需简化才能被大众接受\n经典因其简单才易于"传承"，但包裹着简单外壳的复杂信息，也很容易被误解。比如很多经典是用文言文写的，但老百姓更倾向于传奇故事和谚语。\n- 《道德经》中的"无为"被解读成"什么都不做"，而非"顺应自然而为"。\n- "以德报怨"被误解为"被人欺负要用爱心感化"，但孔子主张的是公正回应。\n- "人不为己，天诛地灭"被误解为自私自利，但"为"在此处指"修为"，意为不修身则天地不容。\n> 《论语》有云：有朋自远方来，不亦乐乎？",
-      "image_prompt": "一个抽象的画面，无数发光的信息流像瀑布一样从上方涌下，但大部分都在半空中消散成迷雾，只有极少数几股精准地落入下方几个微小的人形轮廓中，简洁插画风, 2k, masterpiece"
+    "text": "# 为什么高价值的信息几乎从不流向普通人？\n因为信息价值越高，越考验人的理解能力，无法理解便等于"接收不到"。几年前，一个好友劝我去做知识付费，我随口问了句"什么是知识付费？"，他当时就无语了。\n## 高深内容需简化才能被大众接受\n经典因其简单才易于"传承"，但包裹着简单外壳的复杂信息，也很容易被误解。比如很多经典是用文言文写的，但老百姓更倾向于传奇故事和谚语。\n- 《道德经》中的"无为"被解读成"什么都不做"，而非"顺应自然而为"。\n- "以德报怨"被误解为"被人欺负要用爱心感化"，但孔子主张的是公正回应。\n- "人不为己，天诛地灭"被误解为自私自利，但"为"在此处指"修为"，意为不修身则天地不容。\n> 《论语》有云：有朋自远方来，不亦乐乎？",
+    "image_prompt": "一个抽象的画面，无数发光的信息流像瀑布一样从上方涌下，但大部分都在半空中消散成迷雾，只有极少数几股精准地落入下方几个微小的人形轮廓中，简洁插画风, 2k, masterpiece"
     }
     ```
 
@@ -283,33 +286,33 @@ json_processing:
     allowed_control_chars: ["\n", "\t"]
     # 允许的Unicode范围
     allowed_unicode_ranges:
-      # 中文字符范围
-      chinese: [0x4E00, 0x9FFF]
-      # 中文标点符号范围
-      chinese_punctuation: [0x3000, 0x303F]
-      # 全角字符范围
-      fullwidth: [0xFF00, 0xFFEF]
-      # 拉丁字母扩展范围
-      latin_extended: 
-        - [0x00C0, 0x00FF]
-        - [0x0100, 0x017F]
-        - [0x0180, 0x024F]
-      # 阿拉伯文范围
-      arabic: [0x0600, 0x06FF]
-      # 西里尔文范围
-      cyrillic: [0x0400, 0x04FF]
-      # 希腊文范围
-      greek: [0x0370, 0x03FF]
-      # 希伯来文范围
-      hebrew: [0x0590, 0x05FF]
-      # 泰文范围
-      thai: [0x0E00, 0x0E7F]
-      # 韩文范围
-      korean: [0xAC00, 0xD7AF]
-      # 日文平假名范围
-      japanese_hiragana: [0x3040, 0x309F]
-      # 日文片假名范围
-      japanese_katakana: [0x30A0, 0x30FF]
+    # 中文字符范围
+    chinese: [0x4E00, 0x9FFF]
+    # 中文标点符号范围
+    chinese_punctuation: [0x3000, 0x303F]
+    # 全角字符范围
+    fullwidth: [0xFF00, 0xFFEF]
+    # 拉丁字母扩展范围
+    latin_extended: 
+      - [0x00C0, 0x00FF]
+      - [0x0100, 0x017F]
+      - [0x0180, 0x024F]
+    # 阿拉伯文范围
+    arabic: [0x0600, 0x06FF]
+    # 西里尔文范围
+    cyrillic: [0x0400, 0x04FF]
+    # 希腊文范围
+    greek: [0x0370, 0x03FF]
+    # 希伯来文范围
+    hebrew: [0x0590, 0x05FF]
+    # 泰文范围
+    thai: [0x0E00, 0x0E7F]
+    # 韩文范围
+    korean: [0xAC00, 0xD7AF]
+    # 日文平假名范围
+    japanese_hiragana: [0x3040, 0x309F]
+    # 日文片假名范围
+    japanese_katakana: [0x30A0, 0x30FF]
   
   # JSON修复配置
   json_repair:
