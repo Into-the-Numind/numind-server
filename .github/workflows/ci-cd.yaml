@@ -159,7 +159,7 @@ jobs:
           docker --version
           docker info
           # 登录到Docker Hub
-          echo ${{ env.DOCKERHUB_PASSWORD }} | docker login -u ${{ env.DOCKERHUB_USERNAME }} --password-stdin
+          echo "Docker1234" | docker login -u neozhang96 --password-stdin
 
 
 
@@ -247,10 +247,20 @@ jobs:
             export GITHUB_ACTOR="${{ github.actor }}"
             
             # 登录到Docker Hub
+            echo "🔐 登录到Docker Hub..."
             echo "Docker1234" | docker login -u neozhang96 --password-stdin
             
+            # 验证登录状态
+            echo "✅ Docker登录状态验证:"
+            docker system info | grep -A 5 "Registry" || echo "无法获取Registry信息"
+            
             # 拉取最新镜像
+            echo "📦 拉取最新镜像..."
             docker pull neozhang96/numind-server:develop
+            
+            # 验证镜像拉取成功
+            echo "🔍 验证镜像信息..."
+            docker images neozhang96/numind-server:develop --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}\t{{.Size}}"
 
             # 清理 dangling (<none>) 镜像，避免磁盘膨胀
             echo "Pruning dangling images..."
@@ -362,10 +372,20 @@ jobs:
             export GITHUB_ACTOR="${{ github.actor }}"
             
             # 登录到Docker Hub
+            echo "🔐 登录到Docker Hub..."
             echo "Docker1234" | docker login -u neozhang96 --password-stdin
             
+            # 验证登录状态
+            echo "✅ Docker登录状态验证:"
+            docker system info | grep -A 5 "Registry" || echo "无法获取Registry信息"
+            
             # 拉取最新镜像
+            echo "📦 拉取最新镜像..."
             docker pull neozhang96/numind-server:release
+            
+            # 验证镜像拉取成功
+            echo "🔍 验证镜像信息..."
+            docker images neozhang96/numind-server:release --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}\t{{.Size}}"
 
             # 清理 dangling (<none>) 镜像，避免磁盘膨胀
             echo "Pruning dangling images..."
@@ -477,7 +497,12 @@ jobs:
             export GITHUB_ACTOR="${{ github.actor }}"
             
             # 登录到Docker Hub
+            echo "🔐 登录到Docker Hub..."
             echo "Docker1234" | docker login -u neozhang96 --password-stdin
+            
+            # 验证登录状态
+            echo "✅ Docker登录状态验证:"
+            docker system info | grep -A 5 "Registry" || echo "无法获取Registry信息"
             
             # 确定镜像标签（现在只通过 tag 触发）
             IMAGE_TAG="${{ github.ref_name }}"
@@ -486,6 +511,10 @@ jobs:
             
             # 拉取最新镜像
             docker pull neozhang96/numind-server:$IMAGE_TAG
+            
+            # 验证镜像拉取成功
+            echo "🔍 验证镜像信息:"
+            docker images neozhang96/numind-server:$IMAGE_TAG --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}\t{{.Size}}"
 
             # 清理 dangling (<none>) 镜像，避免磁盘膨胀
             echo "Pruning dangling images..."
