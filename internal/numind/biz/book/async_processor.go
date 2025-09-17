@@ -84,6 +84,7 @@ type AsyncUserBiz interface {
 	IncrementUserBookNum(ctx context.Context, userID uint) error
 	IncrementUserCardNum(ctx context.Context, userID uint) error
 	IncrementMonthlyBookCount(ctx context.Context, userID uint) error
+	IncrementFreeUserMonthlyBookCount(ctx context.Context, userID uint) error
 }
 
 // AsyncAliBiz 阿里业务接口
@@ -147,6 +148,12 @@ func (p *AsyncBookProcessor) CreateBookAsync(ctx context.Context, userID uint, t
 	// 增加月度卡册计数（仅对订阅会员和both类型）
 	if err := p.biz.Users().IncrementMonthlyBookCount(ctx, userID); err != nil {
 		log.C(ctx).Errorw("Failed to increment monthly book count", "error", err.Error())
+		// 统计更新失败不影响主要流程，但记录错误
+	}
+
+	// 增加免费用户月度卡册计数（仅对免费用户）
+	if err := p.biz.Users().IncrementFreeUserMonthlyBookCount(ctx, userID); err != nil {
+		log.C(ctx).Errorw("Failed to increment free user monthly book count", "error", err.Error())
 		// 统计更新失败不影响主要流程，但记录错误
 	}
 

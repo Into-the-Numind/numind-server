@@ -221,6 +221,10 @@ func (a *AsyncUserBizAdapter) IncrementMonthlyBookCount(ctx context.Context, use
 	return a.biz.Users().IncrementMonthlyBookCount(ctx, userID)
 }
 
+func (a *AsyncUserBizAdapter) IncrementFreeUserMonthlyBookCount(ctx context.Context, userID uint) error {
+	return a.biz.Users().IncrementFreeUserMonthlyBookCount(ctx, userID)
+}
+
 // AsyncAliBizAdapter 阿里业务适配器
 type AsyncAliBizAdapter struct {
 	biz biz.IBiz

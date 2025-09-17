@@ -17,15 +17,17 @@ type User struct {
 	AvatarURL string `gorm:"size:255" json:"avatar_url"`
 	IsPro     bool   `gorm:"default:false" json:"is_pro"`
 	// 会员相关字段
-	MembershipType      string     `gorm:"size:20;default:'free';index" json:"membership_type"` // 会员类型：free, subscription, package
-	MembershipExpires   *time.Time `gorm:"index" json:"membership_expires"`                     // 会员到期时间
-	MembershipStartDate *time.Time `gorm:"index" json:"membership_start_date"`                  // 会员开始时间（用于计算会员月）
-	PackageCount        int        `gorm:"default:0" json:"package_count"`                      // 资源包剩余次数
-	BookNum             int        `gorm:"default:0" json:"book_num"`
-	BookAllNum          int64      `gorm:"default:0" json:"book_all_num"`       // 状态为非failed的书本数量
-	MonthlyBookCount    int        `gorm:"default:0" json:"monthly_book_count"` // 当前会员月内创建的卡册数量
-	CardNum             int        `gorm:"default:0" json:"card_num"`
-	ChatNum             int        `gorm:"default:0" json:"chat_num"`
+	MembershipType           string     `gorm:"size:20;default:'free';index" json:"membership_type"` // 会员类型：free, subscription, package
+	MembershipExpires        *time.Time `gorm:"index" json:"membership_expires"`                     // 会员到期时间
+	MembershipStartDate      *time.Time `gorm:"index" json:"membership_start_date"`                  // 会员开始时间（用于计算会员月）
+	PackageCount             int        `gorm:"default:0" json:"package_count"`                      // 资源包剩余次数
+	BookNum                  int        `gorm:"default:0" json:"book_num"`
+	BookAllNum               int64      `gorm:"default:0" json:"book_all_num"`                 // 状态为非failed的书本数量
+	MonthlyBookCount         int        `gorm:"default:0" json:"monthly_book_count"`           // 当前会员月内创建的卡册数量
+	FreeUserMonthlyBookCount int        `gorm:"default:0" json:"free_user_monthly_book_count"` // 免费用户本月创建的卡册数量
+	FreeUserLastResetDate    *time.Time `gorm:"index" json:"free_user_last_reset_date"`        // 免费用户上次重置时间
+	CardNum                  int        `gorm:"default:0" json:"card_num"`
+	ChatNum                  int        `gorm:"default:0" json:"chat_num"`
 
 	// 管理员相关字段
 	Username  string     `gorm:"size:50;uniqueIndex" json:"username,omitempty"`
@@ -199,6 +201,64 @@ func (u *User) GetRemainingMonthlyBooks() int {
 
 	const monthlyBookLimit = 30
 	remaining := monthlyBookLimit - u.MonthlyBookCount
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+// IsInNewFreeUserMonth 检查免费用户是否进入新的日历月
+func (u *User) IsInNewFreeUserMonth() bool {
+	if u.FreeUserLastResetDate == nil {
+		// 如果从未重置过，需要重置
+		return true
+	}
+
+	now := time.Now()
+	lastReset := *u.FreeUserLastResetDate
+
+	// 检查是否跨月了（比较年月）
+	return now.Year() != lastReset.Year() || now.Month() != lastReset.Month()
+}
+
+// GetCurrentFreeUserMonthStart 获取免费用户当前月的开始时间（每月1号0点）
+func (u *User) GetCurrentFreeUserMonthStart() time.Time {
+	now := time.Now()
+	return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+}
+
+// GetCurrentFreeUserMonthEnd 获取免费用户当前月的结束时间（下月1号0点）
+func (u *User) GetCurrentFreeUserMonthEnd() time.Time {
+	monthStart := u.GetCurrentFreeUserMonthStart()
+	return monthStart.AddDate(0, 1, 0)
+}
+
+// CanCreateBookAsFreeUser 检查免费用户是否可以创建卡册（月度限制）
+func (u *User) CanCreateBookAsFreeUser() bool {
+	// 只有免费用户才需要检查月度限制
+	if u.MembershipType != MembershipTypeFree {
+		return true
+	}
+
+	// 检查是否在免费用户月内
+	if u.IsInNewFreeUserMonth() {
+		// 需要重置计数
+		return true
+	}
+
+	// 检查月度创建数量限制
+	const freeUserMonthlyBookLimit = 5
+	return u.FreeUserMonthlyBookCount < freeUserMonthlyBookLimit
+}
+
+// GetRemainingFreeUserMonthlyBooks 获取免费用户当前月内剩余可创建的卡册数量
+func (u *User) GetRemainingFreeUserMonthlyBooks() int {
+	if u.MembershipType != MembershipTypeFree {
+		return -1 // 无限制
+	}
+
+	const freeUserMonthlyBookLimit = 5
+	remaining := freeUserMonthlyBookLimit - u.FreeUserMonthlyBookCount
 	if remaining < 0 {
 		return 0
 	}

@@ -66,6 +66,10 @@ type UserBiz interface {
 	ConsumePackageCount(ctx context.Context, userID uint, count int) error
 	UpdateMonthlyBookCount(ctx context.Context, userID uint, count int) error
 	IncrementMonthlyBookCount(ctx context.Context, userID uint) error
+
+	// 免费用户月度限制相关方法
+	ResetFreeUserMonthlyBookCount(ctx context.Context, userID uint) error
+	IncrementFreeUserMonthlyBookCount(ctx context.Context, userID uint) error
 }
 
 // UserBiz 接口的实现.
@@ -738,4 +742,20 @@ func (b *userBiz) UpdateMonthlyBookCount(ctx context.Context, userID uint, count
 func (b *userBiz) IncrementMonthlyBookCount(ctx context.Context, userID uint) error {
 	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
 		UpdateColumn("monthly_book_count", gorm.Expr("monthly_book_count + 1")).Error
+}
+
+// ResetFreeUserMonthlyBookCount 重置免费用户月度卡册计数
+func (b *userBiz) ResetFreeUserMonthlyBookCount(ctx context.Context, userID uint) error {
+	now := time.Now()
+	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
+		Updates(map[string]interface{}{
+			"free_user_monthly_book_count": 0,
+			"free_user_last_reset_date":    now,
+		}).Error
+}
+
+// IncrementFreeUserMonthlyBookCount 增加免费用户月度卡册计数
+func (b *userBiz) IncrementFreeUserMonthlyBookCount(ctx context.Context, userID uint) error {
+	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
+		UpdateColumn("free_user_monthly_book_count", gorm.Expr("free_user_monthly_book_count + 1")).Error
 }
