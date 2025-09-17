@@ -64,7 +64,7 @@ oss:
 volc:
   api_key: "f434efdd-6553-42fc-8c14-c1322475845f"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "doubao-seed-1-6-thinking-250715"  # 使用的AI模型
+  model: "doubao-seed-1-6-flash-250828"  # 使用的AI模型
   temperature: 0.5 # 生成文本的随机性，值越高随机性越大
   tokens: 2000 # 生成文本的最大长度
   timeout: 120s  # 超时时间，从30s改为120s
@@ -95,7 +95,7 @@ ali:
   stable_diffusion:
     api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"  # 使用相同的API key
     api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
-    model: "stable-diffusion-3.5-large-turbo"
+    model: "wan2.2-t2i-flash"
     timeout: 300s
 
 # MQTT 配置
@@ -298,16 +298,8 @@ ai_prompts:
     - 尊重原文语言：生成的语言应该和素材一致，如果原文为多语言，则保持每个部分对应的语言
     - 封面图提示词：基于主要内容，创作一个具体、生动、富有画面感的详细文生图提示词，并遵循下方"文生图规则"
 
-    ## 文生图规则
-    - 构图要求：
-        -   目标画幅： 4:5竖向构图
-        -   目标风格： Torben Kuhlmann style, watercolor + colored pencil texture, delicate textures, cozy, gentle
-        -   目标色调： 不限于任何颜色，但要适合文字内容，并且颜色搭配要协调
-        -   语言结构： 中文描述详细的主体内容，末尾追加英文关键词提升画质和风格（例如：4:5, Torben Kuhlmann style, watercolor + colored pencil texture, delicate textures, cozy, gentle, masterpiece, high detail）。你不需要和示例一模一样，示例仅为参考
-        -   禁止项： 不能包含任何要求生成文字的指令
-
-    # 绝对规则
-    1. 边缘情况-乱码处理：若文本为无意义乱码，返回的JSON中`text`为`上传内容有误`，`image_prompt`字段为空字符串
+    # "text"绝对规则
+    1. 乱码处理：若文本为无意义乱码，返回的JSON中`text`为`上传内容有误`，`image_prompt`字段为空字符串
     2. 格式与结构规则：
         * 所有输出有且仅有一个`#`一级标题，且字数不超过25个字符
         * 只允许使用`#`、`##`、`-`、`>` 四种格式
@@ -319,6 +311,15 @@ ai_prompts:
       "text": "此处放入严格遵循路径和规则生成的Markdown字符串",
       "image_prompt": "此处放入遵循文生图规则生成的提示词"
     }
+    
+    ## "image_prompt"规则
+    - 构图要求：
+        -   目标画幅： 4:5竖向构图
+        -   目标风格： Torben Kuhlmann style, watercolor + colored pencil texture, delicate textures, cozy, gentle
+        -   目标色调： 不限于任何颜色，但要适合文字内容，并且颜色搭配要协调
+        -   语言结构： 中文描述详细的主体内容，末尾追加英文关键词提升画质和风格（例如：4:5, Torben Kuhlmann style, watercolor + colored pencil texture, delicate textures, cozy, gentle, masterpiece, high detail）。你不需要和示例一模一样，示例仅为参考
+        -   禁止项： 不能包含任何要求生成文字的指令
+
 
     # 待处理的文本片段：{content}
 
