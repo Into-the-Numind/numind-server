@@ -193,21 +193,21 @@ func (p *AsyncImageProcessor) processImagesInBackground(ctx context.Context, tas
 				{"role": "user", "content": prompt},
 			}
 
-			// 首先尝试调用volc
+			// 首先尝试调用火山方舟
 			volcResult, err := p.volcBiz.VolcTextStream(ctx, messages, 1024, 0.5)
 			if err != nil {
-				log.C(ctx).Warnw("VolcTextStream failed, falling back to Qianwen", "filename", result.Filename, "error", err.Error())
+				log.C(ctx).Warnw("⚠️ 火山方舟API失败，尝试阿里百炼降级", "filename", result.Filename, "error", err.Error())
 
-				// Fallback到qianwen
+				// 降级到阿里百炼
 				qianwenResult, err := p.aliBiz.QianwenTextStream(messages, 1024, 0.5)
 				if err != nil {
-					log.C(ctx).Errorw("Both Volc and Qianwen failed", "filename", result.Filename, "volc_error", err.Error(), "qianwen_error", err.Error())
+					log.C(ctx).Errorw("❌ 所有AI API都失败", "filename", result.Filename, "volc_error", err.Error(), "qianwen_error", err.Error())
 				} else {
-					log.C(ctx).Infow("QianwenTextStream fallback result", "filename", result.Filename, "result", qianwenResult)
+					log.C(ctx).Infow("✅ 阿里百炼API降级成功", "filename", result.Filename, "result", qianwenResult)
 					volcResult = qianwenResult
 				}
 			} else {
-				log.C(ctx).Infow("VolcTextStream result", "filename", result.Filename, "result", volcResult)
+				log.C(ctx).Infow("✅ 火山方舟API调用成功", "filename", result.Filename, "result", volcResult)
 			}
 
 			if volcResult != "" {

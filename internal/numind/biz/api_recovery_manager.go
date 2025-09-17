@@ -46,23 +46,23 @@ func (rm *APIRecoveryManager) RecoverTextGeneration(
 ) (string, error) {
 	log.C(ctx).Infow("🚀 开始文本生成API恢复流程")
 
-	// 第一步：尝试火山引擎API（主要方案）
+	// 第一步：尝试火山方舟API（主要方案）
 	result, err := rm.tryVolcWithRecovery(ctx, messages, maxTokens, temperature)
 	if err == nil {
-		log.C(ctx).Infow("✅ 火山引擎API调用成功")
+		log.C(ctx).Infow("✅ 火山方舟API调用成功")
 		return result, nil
 	}
-	log.C(ctx).Errorw("❌ 火山引擎API失败", "error", err.Error())
+	log.C(ctx).Errorw("❌ 火山方舟API失败", "error", err.Error())
 
-	// 第二步：尝试阿里千问API（降级方案）
+	// 第二步：尝试阿里百炼API（降级方案）
 	if rm.enableFallback {
-		log.C(ctx).Infow("🔄 开始降级到阿里千问API")
+		log.C(ctx).Infow("🔄 开始降级到阿里百炼API")
 		result, err := rm.tryAliWithRecovery(ctx, messages, maxTokens, temperature)
 		if err == nil {
-			log.C(ctx).Infow("✅ 阿里千问API调用成功（降级）")
+			log.C(ctx).Infow("✅ 阿里百炼API调用成功（降级）")
 			return result, nil
 		}
-		log.C(ctx).Errorw("❌ 阿里千问API也失败", "error", err.Error())
+		log.C(ctx).Errorw("❌ 阿里百炼API也失败", "error", err.Error())
 	}
 
 	// 第三步：进行网络诊断
