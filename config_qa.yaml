@@ -95,7 +95,7 @@ ali:
   stable_diffusion:
     api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"  # 使用相同的API key
     api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
-    model: "stable-diffusion-3.5-large-turbo"
+    model: "wan2.2-t2i-flash"
     timeout: 300s
 
 # MQTT 配置
