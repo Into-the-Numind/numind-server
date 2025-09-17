@@ -226,21 +226,21 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		"user_text_length", len(text),
 		"full_prompt", fullPrompt)
 
-	// 调用AI模型处理文本
-	aiResponse, err := p.biz.Ali().QianwenTextStream(messages, 4000, 0.7)
+	// 调用AI模型处理文本 - 先尝试火山方舟，失败后降级到阿里百炼
+	aiResponse, err := p.biz.Volc().VolcTextStream(ctx, messages, 4000, 0.7)
 	if err != nil {
-		log.C(ctx).Warnw("⚠️ 阿里千问API失败，尝试火山引擎降级", "book_id", bookID, "error", err.Error())
+		log.C(ctx).Warnw("⚠️ 火山方舟API失败，尝试阿里百炼降级", "book_id", bookID, "error", err.Error())
 
-		// 降级到火山引擎API
-		aiResponse, err = p.biz.Volc().VolcTextStream(ctx, messages, 4000, 0.7)
+		// 降级到阿里百炼API
+		aiResponse, err = p.biz.Ali().QianwenTextStream(messages, 4000, 0.7)
 		if err != nil {
 			log.C(ctx).Errorw("❌ 所有AI API都失败", "book_id", bookID, "error", err.Error())
 			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, fmt.Sprintf("All AI APIs failed: %v", err))
 			return
 		}
-		log.C(ctx).Infow("✅ 火山引擎API降级成功", "book_id", bookID)
+		log.C(ctx).Infow("✅ 阿里百炼API降级成功", "book_id", bookID)
 	} else {
-		log.C(ctx).Infow("✅ 阿里千问API调用成功", "book_id", bookID)
+		log.C(ctx).Infow("✅ 火山方舟API调用成功", "book_id", bookID)
 	}
 
 	// 验证AI响应
