@@ -89,7 +89,16 @@ COPY --from=external-binary /app/numind /app/numind
 
 # 验证配置文件复制成功
 RUN ls -la /app/config_*.yaml && \
-    echo "✅ 配置文件复制成功"
+    echo "✅ 配置文件复制成功" && \
+    echo "=== 验证特殊渲染规则配置 ===" && \
+    if [ -f "/app/config_${ENV}.yaml" ]; then \
+        echo "✅ 目标配置文件存在: /app/config_${ENV}.yaml"; \
+        echo "特殊渲染规则配置:"; \
+        grep -A 10 "special_rules:" "/app/config_${ENV}.yaml" || echo "未找到special_rules配置"; \
+    else \
+        echo "❌ 目标配置文件不存在: /app/config_${ENV}.yaml"; \
+    fi && \
+    echo "================================"
 
 # 预创建图片输出目录，避免运行期权限问题
 # 确保/opt目录权限正确，然后创建子目录
