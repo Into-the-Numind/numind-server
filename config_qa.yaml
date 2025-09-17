@@ -241,7 +241,7 @@ special_rules:
     height: 1440         # 封面卡片高度（3:4比例）
     title_section:
       font_size: 105            # 封面标题字体大小
-      line_height: 95          # 封面标题行高
+      line_height: 115          # 封面标题行高
       color: "#2c3e50"         # 封面标题颜色
       background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
       backdrop_filter: "blur(10px)"            # 背景模糊效果
