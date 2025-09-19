@@ -79,7 +79,7 @@ func NewHTMLConverter() *HTMLConverter {
 		XHTML:               false,
 		CardWidth:           1080,
 		CardHeight:          1440,
-		FontFamily:          "'Noto Sans SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif",
+		FontFamily:          "'SourceHanSerifSC', 'STFangsong', 'Noto Sans SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif",
 		FontSize:            16,
 		LineHeight:          1.6,
 		Padding:             60,
@@ -2152,9 +2152,42 @@ func (hc *HTMLConverter) generateClearLargeFontCSS() string {
 	}
 
 	return fmt.Sprintf(`
+/* 思源宋体字体定义 - 标题用Bold，正文用Regular */
+@font-face {
+    font-family: "SourceHanSerifSC";
+    src: url("https://github.com/adobe-fonts/source-han-serif/raw/release/OTF/SimplifiedChinese/SourceHanSerifSC-Regular.otf") format("opentype"),
+         local("Source Han Serif SC"),
+         local("SourceHanSerifSC"),
+         local("STFangsong"),
+         local("Source Han Sans CN"),
+         local("Noto Sans CJK SC"),
+         local("PingFang SC"),
+         local("Hiragino Sans GB"),
+         local("Microsoft YaHei"),
+         local("sans-serif");
+    font-weight: normal;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "SourceHanSerifSC";
+    src: url("https://github.com/adobe-fonts/source-han-serif/raw/release/OTF/SimplifiedChinese/SourceHanSerifSC-Bold.otf") format("opentype"),
+         local("Source Han Serif SC Bold"),
+         local("SourceHanSerifSC-Bold"),
+         local("STFangsong"),
+         local("Source Han Sans CN Bold"),
+         local("Noto Sans CJK SC Semibold"),
+         local("PingFang SC"),
+         local("Hiragino Sans GB"),
+         local("Microsoft YaHei Bold"),
+         local("sans-serif");
+    font-weight: bold;
+    font-style: normal;
+}
+
 /* 全局基础样式 - 清晰大字号风格 */
 body {
-    font-family: "Noto Sans CJK SC", "Helvetica Neue", Arial, sans-serif;
+    font-family: "SourceHanSerifSC", "STFangsong", "Noto Sans CJK SC", "Helvetica Neue", Arial, sans-serif;
     font-size: 16px;          /* 基础字号 */
     line-height: 1.8;         /* 增大行高，提升可读性 */
     color: #333;              /* 深灰色文字，替代默认黑色 */
@@ -2181,7 +2214,7 @@ body {
 }
 
 .markdown-body {
-    font-family: "Noto Sans CJK SC", "Helvetica Neue", Arial, sans-serif;
+    font-family: "SourceHanSerifSC", "STFangsong", "Noto Sans CJK SC", "Helvetica Neue", Arial, sans-serif;
     font-size: %dpx;          /* 基础字号 */
     line-height: 1.6;         /* 优化行高，平衡可读性和空间利用 */
     color: #333;              /* 深灰色文字，替代默认黑色 */

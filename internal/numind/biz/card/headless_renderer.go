@@ -139,7 +139,7 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
         body {
             margin: 0;
             padding: 60px 50px; /* 上右下左边距：60px 50px 60px 50px */
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            font-family: "SourceHanSerifSC", "STFangsong", -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
             %s
             color: #333333;
             line-height: 1.6;

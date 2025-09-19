@@ -770,7 +770,7 @@ func (r *RenderAndMeasureRenderer) generateSuperLongHTMLTemplate(data SuperLongH
         }
         
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Source Han Sans CN';
+            font-family: "SourceHanSerifSC", "STFangsong", -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Source Han Sans CN';
             background: #ffffff;
             color: #333333;
             line-height: 1.6;
@@ -1028,7 +1028,7 @@ func (r *RenderAndMeasureRenderer) generateSingleCardHTMLTemplate(data interface
         }
         
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Source Han Sans CN';
+            font-family: "SourceHanSerifSC", "STFangsong", -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Source Han Sans CN';
             background: #ffffff;
             color: #333333;
             line-height: 1.6;

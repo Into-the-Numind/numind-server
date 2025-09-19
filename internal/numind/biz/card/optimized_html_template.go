@@ -116,6 +116,39 @@ func (t *OptimizedHTMLTemplate) getOptimizedHTMLTemplate() string {
             font-style: normal;
         }
         
+        /* 思源宋体字体定义 - 标题用Bold，正文用Regular */
+        @font-face {
+            font-family: "SourceHanSerifSC";
+            src: url("https://github.com/adobe-fonts/source-han-serif/raw/release/OTF/SimplifiedChinese/SourceHanSerifSC-Regular.otf") format("opentype"),
+                 local("Source Han Serif SC"),
+                 local("SourceHanSerifSC"),
+                 local("STFangsong"),
+                 local("Source Han Sans CN"),
+                 local("Noto Sans CJK SC"),
+                 local("PingFang SC"),
+                 local("Hiragino Sans GB"),
+                 local("Microsoft YaHei"),
+                 local("sans-serif");
+            font-weight: normal;
+            font-style: normal;
+        }
+        
+        @font-face {
+            font-family: "SourceHanSerifSC";
+            src: url("https://github.com/adobe-fonts/source-han-serif/raw/release/OTF/SimplifiedChinese/SourceHanSerifSC-Bold.otf") format("opentype"),
+                 local("Source Han Serif SC Bold"),
+                 local("SourceHanSerifSC-Bold"),
+                 local("STFangsong"),
+                 local("Source Han Sans CN Bold"),
+                 local("Noto Sans CJK SC Semibold"),
+                 local("PingFang SC"),
+                 local("Hiragino Sans GB"),
+                 local("Microsoft YaHei Bold"),
+                 local("sans-serif");
+            font-weight: bold;
+            font-style: normal;
+        }
+        
         /* 根元素配置 */
         html {
             font-size: 16px;  /* 基础字体大小 */
@@ -123,7 +156,7 @@ func (t *OptimizedHTMLTemplate) getOptimizedHTMLTemplate() string {
         }
         
         body {
-            font-family: "SourceHanSansCN", -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            font-family: "SourceHanSerifSC", "STFangsong", "SourceHanSansCN", -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
             background: #ffffff;
             color: #333333;
             line-height: 1.6;

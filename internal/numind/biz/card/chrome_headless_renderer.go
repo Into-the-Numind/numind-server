@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz/pagination"
-	"numind-server/internal/pkg/util"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/util"
 )
 
 // ChromeHeadlessRenderer Chrome无头浏览器渲染器
@@ -486,7 +486,7 @@ func (r *ChromeHeadlessRenderer) generateBookHTMLTemplate(data BookTemplateData)
         }
         
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Source Han Sans CN';
+            font-family: "SourceHanSerifSC", "STFangsong", -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Source Han Sans CN';
             background: #ffffff;
             color: #333333;
             line-height: 1.6;

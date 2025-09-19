@@ -15,6 +15,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     ca-certificates \
     curl \
     wget \
+    unzip \
     gnupg \
     bash \
     file \
@@ -49,12 +50,26 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
+# 下载并安装思源宋体（开源替代方正书宋）
+# 使用多个CDN源确保下载成功
+RUN (wget -O /tmp/source-han-serif.zip "https://github.com/adobe-fonts/source-han-serif/releases/download/2.001/SourceHanSerifSC.zip" || \
+     wget -O /tmp/source-han-serif.zip "https://github.com/adobe-fonts/source-han-serif/archive/refs/tags/2.001.zip") && \
+    unzip -q /tmp/source-han-serif.zip -d /tmp/source-han-serif && \
+    (cp /tmp/source-han-serif/OTF/SimplifiedChinese/SourceHanSerifSC-Regular.otf /usr/share/fonts/truetype/ || \
+     cp /tmp/source-han-serif/source-han-serif-2.001/OTF/SimplifiedChinese/SourceHanSerifSC-Regular.otf /usr/share/fonts/truetype/) && \
+    (cp /tmp/source-han-serif/OTF/SimplifiedChinese/SourceHanSerifSC-Bold.otf /usr/share/fonts/truetype/ || \
+     cp /tmp/source-han-serif/source-han-serif-2.001/OTF/SimplifiedChinese/SourceHanSerifSC-Bold.otf /usr/share/fonts/truetype/) && \
+    rm -rf /tmp/source-han-serif* && \
+    fc-cache -fv && \
+    echo "✅ 思源宋体字体安装完成" && \
+    fc-list | grep -i "SourceHanSerif\|思源" || echo "字体列表中没有找到思源宋体"
 
-# 安装Google Chrome
+
+# 安装Google Chrome (支持多架构)
 RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
-    && apt-get install -y google-chrome-stable \
+    && (apt-get install -y google-chrome-stable || apt-get install -y chromium-browser) \
     && rm -rf /var/lib/apt/lists/*
 
 # 设置时区

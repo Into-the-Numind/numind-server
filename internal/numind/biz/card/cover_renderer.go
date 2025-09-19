@@ -201,13 +201,46 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             box-sizing: border-box;
         }
         
+        /* 思源宋体字体定义 - 标题用Bold，正文用Regular */
+        @font-face {
+            font-family: "SourceHanSerifSC";
+            src: url("https://github.com/adobe-fonts/source-han-serif/raw/release/OTF/SimplifiedChinese/SourceHanSerifSC-Regular.otf") format("opentype"),
+                 local("Source Han Serif SC"),
+                 local("SourceHanSerifSC"),
+                 local("STFangsong"),
+                 local("Source Han Sans CN"),
+                 local("Noto Sans CJK SC"),
+                 local("PingFang SC"),
+                 local("Hiragino Sans GB"),
+                 local("Microsoft YaHei"),
+                 local("sans-serif");
+            font-weight: normal;
+            font-style: normal;
+        }
+        
+        @font-face {
+            font-family: "SourceHanSerifSC";
+            src: url("https://github.com/adobe-fonts/source-han-serif/raw/release/OTF/SimplifiedChinese/SourceHanSerifSC-Bold.otf") format("opentype"),
+                 local("Source Han Serif SC Bold"),
+                 local("SourceHanSerifSC-Bold"),
+                 local("STFangsong"),
+                 local("Source Han Sans CN Bold"),
+                 local("Noto Sans CJK SC Semibold"),
+                 local("PingFang SC"),
+                 local("Hiragino Sans GB"),
+                 local("Microsoft YaHei Bold"),
+                 local("sans-serif");
+            font-weight: bold;
+            font-style: normal;
+        }
+        
         html, body {
             width: %dpx;
             height: %dpx;
             margin: 0;
             padding: 0;
             overflow: hidden;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            font-family: "SourceHanSerifSC", "STFangsong", -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
         }
         
         /* 封面容器 - 背景图在底层，内容在上层 */
@@ -257,7 +290,7 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
         }
         
         .title-container {
-            text-align: center;
+            text-align: justify;
             padding: 40px;
             width: 100%;
             max-width: 90%;
