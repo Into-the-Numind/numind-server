@@ -114,9 +114,9 @@ pagination:
     height: 1440  # 基础高度，实际使用动态高度
     padding:
       top: 100     # 标准内边距: 60px 50px
-      right: 90
+      right: 60
       bottom: 70  # 修复：增加底部留白，确保文字不被遮挡
-      left: 90
+      left: 60
 
   # 动态分页优化配置
   dynamic:
@@ -397,7 +397,7 @@ html_converter:
   card:
     width: 1080          # 卡片宽度
     height: 1440         # 卡片高度
-    padding: 40          # 内边距（与分页算法保持一致）
+    padding: 20          # 内边距（与分页算法保持一致）
 
   # 分页配置
   pagination:
