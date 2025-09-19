@@ -120,9 +120,32 @@ func (r *LightweightRenderer) generateFullBookHTML(book *model.BookM, cards []*m
     <title>%s</title>
     <style>
         @font-face {
-            font-family: "SourceHanSansCN";
-            src: url("data:font/truetype;base64,%s") format("truetype");
+            font-family: "SourceHanSerifSC";
+            src: url("file:///usr/share/fonts/truetype/SourceHanSerifSC-Regular.otf") format("opentype"),
+                 local("Source Han Serif SC"),
+                 local("SourceHanSerifSC"),
+                 local("STFangsong"),
+                 local("Noto Sans CJK SC"),
+                 local("PingFang SC"),
+                 local("Hiragino Sans GB"),
+                 local("Microsoft YaHei"),
+                 local("sans-serif");
             font-weight: normal;
+            font-style: normal;
+        }
+        
+        @font-face {
+            font-family: "SourceHanSerifSC";
+            src: url("file:///usr/share/fonts/truetype/SourceHanSerifSC-Bold.otf") format("opentype"),
+                 local("Source Han Serif SC Bold"),
+                 local("SourceHanSerifSC-Bold"),
+                 local("STFangsong"),
+                 local("Noto Sans CJK SC Semibold"),
+                 local("PingFang SC"),
+                 local("Hiragino Sans GB"),
+                 local("Microsoft YaHei Bold"),
+                 local("sans-serif");
+            font-weight: bold;
             font-style: normal;
         }
         
@@ -133,7 +156,7 @@ func (r *LightweightRenderer) generateFullBookHTML(book *model.BookM, cards []*m
         }
         
         body {
-            font-family: "SourceHanSerifSC", "STFangsong", "SourceHanSansCN", -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            font-family: "SourceHanSerifSC", "STFangsong", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
             background: #ffffff;
             color: #333333;
             line-height: 1.6;

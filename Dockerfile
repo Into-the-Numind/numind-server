@@ -50,18 +50,16 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# 下载并安装思源宋体（开源替代方正书宋）
-# 使用多个CDN源确保下载成功
-RUN (wget -O /tmp/source-han-serif.zip "https://github.com/adobe-fonts/source-han-serif/releases/download/2.001/SourceHanSerifSC.zip" || \
-     wget -O /tmp/source-han-serif.zip "https://github.com/adobe-fonts/source-han-serif/archive/refs/tags/2.001.zip") && \
-    unzip -q /tmp/source-han-serif.zip -d /tmp/source-han-serif && \
-    (cp /tmp/source-han-serif/OTF/SimplifiedChinese/SourceHanSerifSC-Regular.otf /usr/share/fonts/truetype/ || \
-     cp /tmp/source-han-serif/source-han-serif-2.001/OTF/SimplifiedChinese/SourceHanSerifSC-Regular.otf /usr/share/fonts/truetype/) && \
-    (cp /tmp/source-han-serif/OTF/SimplifiedChinese/SourceHanSerifSC-Bold.otf /usr/share/fonts/truetype/ || \
-     cp /tmp/source-han-serif/source-han-serif-2.001/OTF/SimplifiedChinese/SourceHanSerifSC-Bold.otf /usr/share/fonts/truetype/) && \
-    rm -rf /tmp/source-han-serif* && \
+# 只下载必要的思源宋体文件（不下载整个包）
+RUN wget -O /tmp/SourceHanSerifSC-Regular.otf "https://github.com/adobe-fonts/source-han-serif/raw/release/OTF/SimplifiedChinese/SourceHanSerifSC-Regular.otf" && \
+    wget -O /tmp/SourceHanSerifSC-Bold.otf "https://github.com/adobe-fonts/source-han-serif/raw/release/OTF/SimplifiedChinese/SourceHanSerifSC-Bold.otf" && \
+    cp /tmp/SourceHanSerifSC-Regular.otf /usr/share/fonts/truetype/ && \
+    cp /tmp/SourceHanSerifSC-Bold.otf /usr/share/fonts/truetype/ && \
+    rm -f /tmp/SourceHanSerifSC-*.otf && \
     fc-cache -fv && \
     echo "✅ 思源宋体字体安装完成" && \
+    echo "字体文件位置验证:" && \
+    ls -la /usr/share/fonts/truetype/SourceHanSerifSC-*.otf && \
     fc-list | grep -i "SourceHanSerif\|思源" || echo "字体列表中没有找到思源宋体"
 
 
@@ -69,7 +67,7 @@ RUN (wget -O /tmp/source-han-serif.zip "https://github.com/adobe-fonts/source-ha
 RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
-    && (apt-get install -y google-chrome-stable || apt-get install -y chromium-browser) \
+    && (apt-get install -y --no-install-recommends google-chrome-stable || apt-get install -y --no-install-recommends chromium-browser) \
     && rm -rf /var/lib/apt/lists/*
 
 # 设置时区
@@ -194,6 +192,17 @@ fi\n\
 echo "使用配置文件: $CONFIG_FILE"\n\
 exec /app/numind -c "$CONFIG_FILE" "$@"' > /app/start.sh && \
     chmod +x /app/start.sh
+
+# 清理缓存和临时文件，进一步减少镜像大小
+RUN apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
+    rm -rf /var/cache/apt/archives/* && \
+    rm -rf /usr/share/doc/* && \
+    rm -rf /usr/share/man/* && \
+    rm -rf /usr/share/locale/* && \
+    find /usr -name "*.pyc" -delete && \
+    find /usr -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true && \
+    echo "✅ 系统清理完成"
 
 # 启动应用
 ENTRYPOINT ["/app/start.sh"]

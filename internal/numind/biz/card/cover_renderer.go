@@ -201,14 +201,13 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             box-sizing: border-box;
         }
         
-        /* 思源宋体字体定义 - 标题用Bold，正文用Regular */
+        /* 思源宋体字体定义 - 使用本地字体文件 */
         @font-face {
             font-family: "SourceHanSerifSC";
-            src: url("https://github.com/adobe-fonts/source-han-serif/raw/release/OTF/SimplifiedChinese/SourceHanSerifSC-Regular.otf") format("opentype"),
+            src: url("file:///usr/share/fonts/truetype/SourceHanSerifSC-Regular.otf") format("opentype"),
                  local("Source Han Serif SC"),
                  local("SourceHanSerifSC"),
                  local("STFangsong"),
-                 local("Source Han Sans CN"),
                  local("Noto Sans CJK SC"),
                  local("PingFang SC"),
                  local("Hiragino Sans GB"),
@@ -220,11 +219,10 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
         
         @font-face {
             font-family: "SourceHanSerifSC";
-            src: url("https://github.com/adobe-fonts/source-han-serif/raw/release/OTF/SimplifiedChinese/SourceHanSerifSC-Bold.otf") format("opentype"),
+            src: url("file:///usr/share/fonts/truetype/SourceHanSerifSC-Bold.otf") format("opentype"),
                  local("Source Han Serif SC Bold"),
                  local("SourceHanSerifSC-Bold"),
                  local("STFangsong"),
-                 local("Source Han Sans CN Bold"),
                  local("Noto Sans CJK SC Semibold"),
                  local("PingFang SC"),
                  local("Hiragino Sans GB"),
@@ -240,7 +238,7 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             margin: 0;
             padding: 0;
             overflow: hidden;
-            font-family: "SourceHanSerifSC", "STFangsong", -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            font-family: "SourceHanSerifSC", "STFangsong", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
         }
         
         /* 封面容器 - 背景图在底层，内容在上层 */
