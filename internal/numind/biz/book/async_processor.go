@@ -278,38 +278,41 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	// 🎨 第二步：从解析结果中提取 image_prompt 字段，作为文生图大模型的提示词
 	log.C(ctx).Infow("🎨 第二步：提取image_prompt字段", "book_id", bookID, "image_prompt", imagePrompt)
 
-	// 🖼️ 第三步：调用文生图大模型生成图片
+	// 🖼️ 第三步：调用文生图大模型生成图片 - 已注释，不需要生成图片
 	var imageUrl string
-	if imagePrompt != "" {
-		log.C(ctx).Infow("🖼️ 第三步：调用文生图大模型生成图片", "book_id", bookID, "image_prompt", imagePrompt)
+	// if imagePrompt != "" {
+	// 	log.C(ctx).Infow("🖼️ 第三步：调用文生图大模型生成图片", "book_id", bookID, "image_prompt", imagePrompt)
 
-		// 打印发送给文生图模型的提示词
-		log.C(ctx).Infow("📝 发送给文生图模型的提示词",
-			"book_id", bookID,
-			"prompt_length", len(imagePrompt),
-			"full_prompt", imagePrompt)
+	// 	// 打印发送给文生图模型的提示词
+	// 	log.C(ctx).Infow("📝 发送给文生图模型的提示词",
+	// 		"book_id", bookID,
+	// 		"prompt_length", len(imagePrompt),
+	// 		"full_prompt", imagePrompt)
 
-		// 调用stable-diffusion API生成图片
-		remoteImageUrl, err := p.biz.Ali().StableDiffusionImageAsync(imagePrompt, "1024*1024")
-		if err != nil {
-			log.C(ctx).Errorw("StableDiffusionImageAsync failed", "book_id", bookID, "error", err.Error())
-			// 图片生成失败不影响整体流程，但记录错误
-		} else {
-			log.C(ctx).Infow("✅ 文生图大模型生成图片成功", "book_id", bookID, "remote_image_url", remoteImageUrl)
+	// 	// 调用stable-diffusion API生成图片
+	// 	remoteImageUrl, err := p.biz.Ali().StableDiffusionImageAsync(imagePrompt, "1024*1024")
+	// 	if err != nil {
+	// 		log.C(ctx).Errorw("StableDiffusionImageAsync failed", "book_id", bookID, "error", err.Error())
+	// 		// 图片生成失败不影响整体流程，但记录错误
+	// 	} else {
+	// 		log.C(ctx).Infow("✅ 文生图大模型生成图片成功", "book_id", bookID, "remote_image_url", remoteImageUrl)
 
-			// 📁 第四步：图片存储 - 按照指定路径规则存储
-			// 卡册封面图片路径：resource.image_path/{bookid}/book_{id}.webp
-			localImagePath, err := p.downloadAndSaveImageWithPath(remoteImageUrl, bookID)
-			if err != nil {
-				log.C(ctx).Errorw("Failed to download and save image", "book_id", bookID, "error", err.Error())
-			} else {
-				imageUrl = localImagePath
-				log.C(ctx).Infow("✅ 卡册封面图片存储成功", "book_id", bookID, "local_image_path", localImagePath)
-			}
-		}
-	} else {
-		log.C(ctx).Warnw("⚠️ 未找到image_prompt字段，跳过图片生成", "book_id", bookID)
-	}
+	// 		// 📁 第四步：图片存储 - 按照指定路径规则存储
+	// 		// 卡册封面图片路径：resource.image_path/{bookid}/book_{id}.webp
+	// 		localImagePath, err := p.downloadAndSaveImageWithPath(remoteImageUrl, bookID)
+	// 		if err != nil {
+	// 			log.C(ctx).Errorw("Failed to download and save image", "book_id", bookID, "error", err.Error())
+	// 		} else {
+	// 			imageUrl = localImagePath
+	// 			log.C(ctx).Infow("✅ 卡册封面图片存储成功", "book_id", bookID, "local_image_path", localImagePath)
+	// 		}
+	// 	}
+	// } else {
+	// 	log.C(ctx).Warnw("⚠️ 未找到image_prompt字段，跳过图片生成", "book_id", bookID)
+	// }
+
+	// 跳过图片生成，直接设置为空
+	log.C(ctx).Infow("⚠️ 跳过图片生成步骤，imageUrl设置为空", "book_id", bookID)
 
 	// 更新book记录
 	book.Title = bookTitle
@@ -2565,34 +2568,37 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
 		backgroundStyle = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);"
 	}
 
-	// 处理book图片
-	var imageHTML string
-	imagePath := viper.GetString("resource.image_path")
-	if imagePath == "" {
-		imagePath = "res/upload" // 默认路径
-	}
+	// 处理book图片 - 已注释，不需要图片
+	// var imageHTML string
+	// imagePath := viper.GetString("resource.image_path")
+	// if imagePath == "" {
+	// 	imagePath = "res/upload" // 默认路径
+	// }
 
-	// 构建book图片路径
-	bookImagePath := filepath.Join(imagePath, "book", fmt.Sprintf("%d", bookID), fmt.Sprintf("book_%d.webp", bookID))
-	fullBookImagePath := fmt.Sprintf("file://%s", bookImagePath)
+	// // 构建book图片路径
+	// bookImagePath := filepath.Join(imagePath, "book", fmt.Sprintf("%d", bookID), fmt.Sprintf("book_%d.webp", bookID))
+	// fullBookImagePath := fmt.Sprintf("file://%s", bookImagePath)
 
-	// 检查book图片文件是否存在
-	if _, err := os.Stat(bookImagePath); err == nil {
-		// 文件存在，使用实际图片
-		imageHTML = fmt.Sprintf(`<img src="%s" class="cover-image" alt="封面图片" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-                <div class="cover-image-placeholder" style="display: none;">
-                    <div class="placeholder-icon">🖼️</div>
-                    <div class="placeholder-text">封面图片</div>
-                </div>`, fullBookImagePath)
-		log.C(context.Background()).Infow("Book图片文件存在，使用实际图片", "book_id", bookID, "image_path", fullBookImagePath)
-	} else {
-		// 文件不存在，使用占位符
-		imageHTML = `<div class="cover-image-placeholder">
-                <div class="placeholder-icon">🖼️</div>
-                <div class="placeholder-text">封面图片</div>
-            </div>`
-		log.C(context.Background()).Warnw("Book图片文件不存在，使用占位符", "book_id", bookID, "expected_path", bookImagePath, "error", err)
-	}
+	// // 检查book图片文件是否存在
+	// if _, err := os.Stat(bookImagePath); err == nil {
+	// 	// 文件存在，使用实际图片
+	// 	imageHTML = fmt.Sprintf(`<img src="%s" class="cover-image" alt="封面图片" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+	//             <div class="cover-image-placeholder" style="display: none;">
+	//                 <div class="placeholder-icon">🖼️</div>
+	//                 <div class="placeholder-text">封面图片</div>
+	//             </div>`, fullBookImagePath)
+	// 	log.C(context.Background()).Infow("Book图片文件存在，使用实际图片", "book_id", bookID, "image_path", fullBookImagePath)
+	// } else {
+	// 	// 文件不存在，使用占位符
+	// 	imageHTML = `<div class="cover-image-placeholder">
+	//             <div class="placeholder-icon">🖼️</div>
+	//             <div class="placeholder-text">封面图片</div>
+	//         </div>`
+	// 	log.C(context.Background()).Warnw("Book图片文件不存在，使用占位符", "book_id", bookID, "expected_path", bookImagePath, "error", err)
+	// }
+
+	// 跳过图片处理，直接使用空字符串
+	log.C(context.Background()).Infow("⚠️ 跳过图片处理，封面只显示标题", "book_id", bookID)
 
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="zh-CN">
@@ -2641,71 +2647,31 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
             background-repeat: no-repeat !important;
         }
 
-        /* 内容层：图片和标题在上层 */
+        /* 内容层：只显示标题 */
         .cover-content-layer {
             position: relative;
             width: 100%%;
             height: 100%%;
             z-index: 2;
             display: flex;
-            flex-direction: column;
-        }
-
-        /* 上半部分：图片区域 (65%%) */
-        .image-section {
-            flex: 0 0 65%%;
-            position: relative;
-            overflow: hidden;
-            width: 100%%;
-        }
-
-        .cover-image {
-            width: 100%%;
-            height: 100%%;
-            object-fit: cover;
-            border-radius: 0;
-            box-shadow: none;
-        }
-
-        .cover-image-placeholder {
-            width: 100%%;
-            height: 100%%;
-            background: rgba(255, 255, 255, 0.9);
-            border-radius: 0;
-            border: none;
-            color: #6c757d;
-            display: flex;
-            flex-direction: column;
             align-items: center;
             justify-content: center;
         }
 
-        .placeholder-icon {
-            font-size: 48px;
-            margin-bottom: 16px;
-            opacity: 0.8;
-        }
-
-        .placeholder-text {
-            font-size: 18px;
-            color: #6c757d;
-            text-align: center;
-            font-weight: bold;
-        }
-
-        /* 下半部分：标题区域 (35%%) */
+        /* 标题区域 - 完全居中 */
         .title-section {
-            flex: 0 0 35%%;
             display: flex;
             align-items: center;
             justify-content: center;
             position: relative;
             width: 100%%;
+            height: 100%%;
         }
 
         .title-content {
             text-align: center;
             max-width: 800px;
+            padding: 40px;
         }
 
         .title-text {
@@ -2741,13 +2707,9 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
         <!-- 背景层：背景图在最后一层 -->
         <div class="cover-background-layer"></div>
         
-        <!-- 内容层：图片和标题在上层 -->
+        <!-- 内容层：只显示标题 -->
         <div class="cover-content-layer">
-            <div class="image-section">
-                %s
-            </div>
             <div class="title-section">
-                <div class="decoration"></div>
                 <div class="title-content">
                     <h1 class="title-text">%s</h1>
                 </div>
@@ -2755,7 +2717,7 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
         </div>
     </div>
 </body>
-</html>`, title, backgroundStyle, backgroundStyle, fontSize, color, lineHeight, imageHTML, title)
+</html>`, title, backgroundStyle, backgroundStyle, fontSize, color, lineHeight, title)
 }
 
 // generateCoverImageOnly 仅生成封面图片，不重新生成HTML

@@ -235,44 +235,32 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             background-repeat: no-repeat !important;
         }
         
-        /* 内容层：图片和标题在上层 */
+        /* 内容层：只显示标题 */
         .cover-content-layer {
             position: relative;
             width: 100%;
             height: 100%;
             z-index: 2;
             display: flex;
-            flex-direction: column;
-        }
-        
-        /* 上半部分：图片区域 (65%%) */
-        .image-section {
-            flex: 0 0 65%%;
-            display: flex;
             align-items: center;
             justify-content: center;
-            position: relative;
-            overflow: hidden;
-            width: 100%;
         }
         
-        /* 下半部分：标题区域 (35%%) */
+        /* 标题区域 - 完全居中 */
         .title-section {
-            flex: 0 0 35%%;
             display: flex;
             align-items: center;
             justify-content: center;
             position: relative;
             width: 100%;
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
+            height: 100%;
         }
         
         .title-container {
             text-align: center;
-            padding: 30px 40px;
+            padding: 40px;
             width: 100%;
-            max-width: 90%%;
+            max-width: 90%;
         }
         
         .title {
@@ -294,8 +282,8 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
         }
         
         .image-placeholder {
-            width: 80%%;
-            height: 80%%;
+            width: 80%;
+            height: 80%;
             background: #f8f9fa;
             border: 2px dashed #dee2e6;
             border-radius: 12px;
@@ -333,11 +321,8 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
         <!-- 背景层：背景图在最后一层 -->
         <div class="cover-background-layer"></div>
         
-        <!-- 内容层：图片和标题在上层 -->
+        <!-- 内容层：只显示标题 -->
         <div class="cover-content-layer">
-            <div class="image-section">
-                %s
-            </div>
             <div class="title-section">
                 <div class="title-container">
                     <h1 class="title">%s</h1>
@@ -349,7 +334,6 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
 </html>`, config.Card.Width, config.Card.Height,
 		backgroundStyle,
 		fontSize, color, lineHeight, fontSize*3/4, // 字体大小、颜色、行高、响应式字体大小（75%）
-		r.generateImageHTML(coverData.ImageURL),
 		coverData.Title)
 
 	return html
