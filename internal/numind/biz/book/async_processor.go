@@ -2564,8 +2564,8 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
 			"image_path", imagePath,
 			"full_url", fullImageURL)
 	} else {
-		// 使用默认的渐变背景
-		backgroundStyle = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);"
+		// 使用默认的白色背景
+		backgroundStyle = "background: #ffffff;"
 	}
 
 	// 处理book图片 - 已注释，不需要图片
