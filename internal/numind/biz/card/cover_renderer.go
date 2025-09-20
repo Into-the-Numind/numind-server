@@ -257,7 +257,7 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
         }
         
         .title-container {
-            text-align: center;
+            text-align: justify;
             padding: 40px;
             width: 100%;
             max-width: 90%;

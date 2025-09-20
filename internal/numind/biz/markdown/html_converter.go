@@ -791,7 +791,7 @@ body {
 .cover-title {
     font-size: %dpx;
     font-weight: bold;
-    text-align: center;
+    text-align: justify;
     text-shadow: 0 2px 8px rgba(0,0,0,0.5);
     line-height: 1.2;
     margin: 0;
