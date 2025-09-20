@@ -407,7 +407,7 @@ func (r *RenderAndMeasureRenderer) renderPageWithHeadlessBrowser(htmlContent str
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.Flag("disable-web-security", true),
-		chromedp.Flag("disable-features", "VizDisplayCompositor"),
+		chromedp.Flag("disable-features", "VizDisplayCompositor,Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints,AudioServiceOutOfProcess"),
 		chromedp.Flag("window-size", fmt.Sprintf("%d,%d", r.config.Card.Width, r.config.Card.Height)),
 		chromedp.Flag("disable-extensions", true),
 		chromedp.Flag("disable-plugins", true),
@@ -415,6 +415,29 @@ func (r *RenderAndMeasureRenderer) renderPageWithHeadlessBrowser(htmlContent str
 		chromedp.Flag("disable-javascript", false), // 保持JS支持
 		chromedp.Flag("font-render-hinting", "none"),
 		chromedp.Flag("disable-font-subpixel-positioning", true),
+		// 容器环境优化参数
+		chromedp.Flag("disable-background-timer-throttling", true),
+		chromedp.Flag("disable-renderer-backgrounding", true),
+		chromedp.Flag("disable-backgrounding-occluded-windows", true),
+		chromedp.Flag("disable-ipc-flooding-protection", true),
+		chromedp.Flag("max_old_space_size", "4096"), // 增加内存限制
+		chromedp.Flag("memory-pressure-off", true),
+		chromedp.Flag("disable-background-networking", true),
+		chromedp.Flag("disable-default-apps", true),
+		chromedp.Flag("disable-sync", true),
+		chromedp.Flag("no-first-run", true),
+		chromedp.Flag("disable-logging", true),
+		chromedp.Flag("disable-breakpad", true),
+		chromedp.Flag("disable-hang-monitor", true),
+		chromedp.Flag("disable-prompt-on-repost", true),
+		chromedp.Flag("disable-domain-reliability", true),
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.Flag("disable-field-trial-config", true),
+		chromedp.Flag("disable-background-mode", true),
+		chromedp.Flag("disable-software-rasterizer", true),
+		chromedp.Flag("disable-canvas-aa", true),
+		chromedp.Flag("disable-2d-canvas-clip-aa", true),
+		chromedp.Flag("disable-gl-drawing-for-tests", true),
 	)
 	fmt.Printf("🔍 Chrome选项创建完成，窗口尺寸=%dx%d\n", r.config.Card.Width, r.config.Card.Height)
 
@@ -428,10 +451,10 @@ func (r *RenderAndMeasureRenderer) renderPageWithHeadlessBrowser(htmlContent str
 	defer cancel()
 	fmt.Printf("🔍 Chrome任务创建成功\n")
 
-	// 设置超时
-	ctx, cancel := context.WithTimeout(taskCtx, 30*time.Second)
+	// 设置超时 - 容器环境需要更长时间
+	ctx, cancel := context.WithTimeout(taskCtx, 120*time.Second)
 	defer cancel()
-	fmt.Printf("🔍 设置30秒超时\n")
+	fmt.Printf("🔍 设置120秒超时（容器环境优化）\n")
 
 	var imageData []byte
 
@@ -477,6 +500,11 @@ func (r *RenderAndMeasureRenderer) renderPageWithHeadlessBrowser(htmlContent str
 
 	if err != nil {
 		fmt.Printf("❌ 渲染任务执行失败 - %v\n", err)
+		// 检查是否为超时错误，如果是则重试
+		if strings.Contains(err.Error(), "context deadline exceeded") || strings.Contains(err.Error(), "timeout") {
+			fmt.Printf("🔄 检测到超时错误，尝试重试...\n")
+			return r.retryRenderWithHeadlessBrowser(htmlContent, 1)
+		}
 		// 如果无头浏览器渲染失败，回退到Go图片生成
 		fmt.Printf("⚠️ 回退到Go图片生成...\n")
 		return r.fallbackImageGeneration(htmlContent)
@@ -488,6 +516,31 @@ func (r *RenderAndMeasureRenderer) renderPageWithHeadlessBrowser(htmlContent str
 	// 清理临时文件
 	os.Remove(debugFile)
 
+	return imageData, nil
+}
+
+// retryRenderWithHeadlessBrowser 重试渲染（最多3次）
+func (r *RenderAndMeasureRenderer) retryRenderWithHeadlessBrowser(htmlContent string, attempt int) ([]byte, error) {
+	const maxRetries = 3
+	if attempt > maxRetries {
+		fmt.Printf("❌ 重试次数已达上限 (%d次)，回退到Go图片生成\n", maxRetries)
+		return r.fallbackImageGeneration(htmlContent)
+	}
+
+	fmt.Printf("🔄 第 %d 次重试渲染 (共%d次机会)...\n", attempt, maxRetries)
+
+	// 增加重试间隔
+	time.Sleep(time.Duration(attempt) * 5 * time.Second)
+
+	// 重新尝试渲染
+	imageData, err := r.renderPageWithHeadlessBrowser(htmlContent)
+	if err != nil {
+		fmt.Printf("❌ 第 %d 次重试失败 - %v\n", attempt, err)
+		// 递归重试
+		return r.retryRenderWithHeadlessBrowser(htmlContent, attempt+1)
+	}
+
+	fmt.Printf("✅ 第 %d 次重试成功\n", attempt)
 	return imageData, nil
 }
 

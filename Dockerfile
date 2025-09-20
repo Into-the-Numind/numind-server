@@ -79,6 +79,23 @@ RUN date && echo "当前时区: $(cat /etc/timezone)" && echo "✅ 时区设置�
 # 验证Chrome安装
 RUN google-chrome --version && echo "Chrome installation successful"
 
+# 预加载字体，避免运行时加载延迟
+RUN fc-cache -fv && \
+    echo "✅ 字体预加载完成" && \
+    fc-list | head -20 && \
+    echo "✅ 字体缓存验证成功"
+
+# 创建Chrome优化启动脚本
+RUN echo '#!/bin/bash\n\
+# Chrome容器环境优化启动脚本\n\
+export CHROME_FLAGS="--headless --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-web-security --disable-features=VizDisplayCompositor,Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints,AudioServiceOutOfProcess --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --disable-ipc-flooding-protection --max_old_space_size=4096 --memory-pressure-off --disable-background-networking --disable-default-apps --disable-sync --no-first-run --disable-logging --disable-breakpad --disable-hang-monitor --disable-prompt-on-repost --disable-domain-reliability --disable-blink-features=AutomationControlled --disable-field-trial-config --disable-background-mode --disable-software-rasterizer --disable-canvas-aa --disable-2d-canvas-clip-aa --disable-gl-drawing-for-tests --window-size=1920,1080 --remote-debugging-port=9222"\n\
+# 启动Chrome\ngoogle-chrome $CHROME_FLAGS "$@"' > /usr/local/bin/chrome-headless && \
+    chmod +x /usr/local/bin/chrome-headless && \
+    echo "✅ Chrome优化启动脚本创建成功"
+
+# 设置Chrome环境变量
+ENV CHROME_BIN=/usr/local/bin/chrome-headless\nENV CHROME_FLAGS="--headless --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-web-security --disable-features=VizDisplayCompositor,Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints,AudioServiceOutOfProcess --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --disable-ipc-flooding-protection --max_old_space_size=4096 --memory-pressure-off --disable-background-networking --disable-default-apps --disable-sync --no-first-run --disable-logging --disable-breakpad --disable-hang-monitor --disable-prompt-on-repost --disable-domain-reliability --disable-blink-features=AutomationControlled --disable-field-trial-config --disable-background-mode --disable-software-rasterizer --disable-canvas-aa --disable-2d-canvas-clip-aa --disable-gl-drawing-for-tests --window-size=1920,1080 --remote-debugging-port=9222"
+
 # 创建非 root 用户 - 确保UID为1001，与CI/CD配置一致
 RUN groupadd -g 1001 numind && useradd -u 1001 -g numind -G audio,video numind
 
