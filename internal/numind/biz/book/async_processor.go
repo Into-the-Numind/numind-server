@@ -2669,7 +2669,7 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
         }
 
         .title-content {
-            text-align: center;
+            text-align: justify;
             max-width: 800px;
             padding: 40px;
         }
