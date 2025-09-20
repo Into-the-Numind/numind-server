@@ -201,7 +201,7 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             box-sizing: border-box;
         }
         
-        /* 思源宋体字体定义 - 使用本地字体文件 */
+        /* 思源宋体字体定义 - 容器环境优化 */
         @font-face {
             font-family: "SourceHanSerifSC";
             src: url("file:///usr/share/fonts/truetype/SourceHanSerifSC-Regular.otf") format("opentype"),
@@ -364,7 +364,7 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
 </body>
 </html>`, config.Card.Width, config.Card.Height,
 		backgroundStyle,
-		fontSize, color, lineHeight, fontSize*3/4, // 字体大小、颜色、行高、响应式字体大小（75%）
+		fontSize, color, lineHeight, fontSize*3/4, fontSize*3/4, // 字体大小、颜色、行高、响应式字体大小（75%）
 		coverData.Title)
 
 	return html

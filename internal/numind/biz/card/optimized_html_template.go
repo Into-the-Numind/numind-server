@@ -91,7 +91,7 @@ func (t *OptimizedHTMLTemplate) getOptimizedHTMLTemplate() string {
             box-sizing: border-box;
         }
         
-        /* 思源宋体字体定义 - 使用本地字体文件 */
+        /* 思源宋体字体定义 - 容器环境优化 */
         @font-face {
             font-family: "SourceHanSerifSC";
             src: url("file:///usr/share/fonts/truetype/SourceHanSerifSC-Regular.otf") format("opentype"),

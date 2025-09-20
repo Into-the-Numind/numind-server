@@ -356,10 +356,13 @@ func (r *WebPRenderer) renderWithHeadlessBrowser(htmlContent string) ([]byte, er
 				log.C(context.Background()).Infow("页面内容检查", "has_content", hasContent)
 			}
 
-			// 等待字体加载
+			// 等待字体加载 - 增加超时时间
 			if err := chromedp.Evaluate(`document.fonts.ready`, nil).Do(ctx); err == nil {
 				log.C(context.Background()).Infow("字体加载完成")
 			}
+
+			// 额外等待时间确保字体完全加载
+			time.Sleep(3 * time.Second)
 
 			// 强制重绘页面
 			if err := chromedp.Evaluate(`document.body.style.display='none';document.body.offsetHeight;document.body.style.display=''`, nil).Do(ctx); err == nil {

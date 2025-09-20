@@ -308,7 +308,7 @@ func (r *SimpleHeadlessRenderer) renderWithHeadlessBrowser(htmlContent string) (
 	}
 	fmt.Printf("🔍 调试：HTML文件绝对路径=%s\n", absPath)
 
-	// 创建Chrome选项 - 针对容器环境优化
+	// 创建Chrome选项 - 容器环境优化
 	fmt.Printf("🔍 调试：创建Chrome选项...\n")
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
@@ -322,9 +322,10 @@ func (r *SimpleHeadlessRenderer) renderWithHeadlessBrowser(htmlContent string) (
 		chromedp.Flag("disable-plugins", true),
 		chromedp.Flag("disable-images", false),     // 保持图片渲染
 		chromedp.Flag("disable-javascript", false), // 保持JS支持
+		// 字体渲染优化 - 容器环境
 		chromedp.Flag("font-render-hinting", "none"),
 		chromedp.Flag("disable-font-subpixel-positioning", true),
-		// 容器环境优化参数
+		// 容器环境特定优化
 		chromedp.Flag("disable-background-timer-throttling", true),
 		chromedp.Flag("disable-renderer-backgrounding", true),
 		chromedp.Flag("disable-backgrounding-occluded-windows", true),
@@ -347,6 +348,8 @@ func (r *SimpleHeadlessRenderer) renderWithHeadlessBrowser(htmlContent string) (
 		chromedp.Flag("disable-canvas-aa", true),
 		chromedp.Flag("disable-2d-canvas-clip-aa", true),
 		chromedp.Flag("disable-gl-drawing-for-tests", true),
+		// 字体加载优化
+		chromedp.Flag("disable-font-subpixel-positioning", true),
 	)
 	fmt.Printf("🔍 调试：Chrome选项创建完成，窗口尺寸=%dx%d\n", r.config.Card.Width, r.config.Card.Height)
 
@@ -378,6 +381,14 @@ func (r *SimpleHeadlessRenderer) renderWithHeadlessBrowser(htmlContent string) (
 		chromedp.Sleep(2*time.Second),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			fmt.Printf("🔍 调试：页面加载完成，开始截图...\n")
+
+			// 等待字体加载 - 增加超时时间
+			if err := chromedp.Evaluate(`document.fonts.ready`, nil).Do(ctx); err == nil {
+				fmt.Printf("🔍 调试：字体加载完成\n")
+			}
+
+			// 额外等待时间确保字体完全加载
+			time.Sleep(3 * time.Second)
 
 			// 调试：检查页面内容
 			var bodyText string

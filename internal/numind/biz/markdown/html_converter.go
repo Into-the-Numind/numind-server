@@ -2152,10 +2152,10 @@ func (hc *HTMLConverter) generateClearLargeFontCSS() string {
 	}
 
 	return fmt.Sprintf(`
-/* 思源宋体字体定义 - 标题用Bold，正文用Regular */
+/* 思源宋体字体定义 - 容器环境优化 */
 @font-face {
     font-family: "SourceHanSerifSC";
-    src: url("https://github.com/adobe-fonts/source-han-serif/raw/release/OTF/SimplifiedChinese/SourceHanSerifSC-Regular.otf") format("opentype"),
+    src: url("file:///usr/share/fonts/truetype/SourceHanSerifSC-Regular.otf") format("opentype"),
          local("Source Han Serif SC"),
          local("SourceHanSerifSC"),
          local("STFangsong"),
@@ -2171,7 +2171,7 @@ func (hc *HTMLConverter) generateClearLargeFontCSS() string {
 
 @font-face {
     font-family: "SourceHanSerifSC";
-    src: url("https://github.com/adobe-fonts/source-han-serif/raw/release/OTF/SimplifiedChinese/SourceHanSerifSC-Bold.otf") format("opentype"),
+    src: url("file:///usr/share/fonts/truetype/SourceHanSerifSC-Bold.otf") format("opentype"),
          local("Source Han Serif SC Bold"),
          local("SourceHanSerifSC-Bold"),
          local("STFangsong"),
