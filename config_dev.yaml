@@ -113,9 +113,9 @@ pagination:
     width: 1080   # 标准尺寸: 1080×1440（3:4比例）
     height: 1440  # 基础高度，实际使用动态高度
     padding:
-    top: 100     # 标准内边距: 60px 50px
+    top: 90      # 标准内边距: 60px 50px
     right: 90
-    bottom: 70  # 修复：增加底部留白，确保文字不被遮挡
+    bottom: 90    # 修复：增加底部留白，确保文字不被遮挡
     left: 90
   
   # 动态分页优化配置
@@ -125,10 +125,10 @@ pagination:
     min_bottom_padding: 40   # 最小底部留白，确保文字不被遮挡
     max_images_per_card: 2   # 每张卡片最大图片数
     max_text_length: 2000    # 每张卡片最大文本长度
-    base_height: 1440        # 基础高度（用于规范化）
-    char_width_factor: 1.05  # 字符宽度系数
-    overflow_tolerance: 0.05 # 溢出容错比例（5%）
-    high_utilization_threshold: 85.0 # 高利用率阈值（85%）
+    base_height: 1240        # 基础高度（用于规范化）
+    char_width_factor: 1.0   # 字符宽度系数
+    overflow_tolerance: 0.02 # 溢出容错比例（2%）
+    high_utilization_threshold: 90.0 # 高利用率阈值（90%）
     base_image_height: 400   # 基础图片高度
     image_margin_top: 20     # 图片上边距
     image_margin_bottom: 20  # 图片下边距
@@ -136,9 +136,9 @@ pagination:
     list_item_spacing: 8     # 列表项间距
   
   # 新增可配置参数
-  char_width_factor: 1.05            # 字符宽度系数
-  overflow_tolerance: 0.05           # 溢出容错比例（5%）
-  high_utilization_threshold: 85.0   # 高利用率阈值（85%）
+  char_width_factor: 1.00            # 字符宽度系数
+  overflow_tolerance: 0.02           # 溢出容错比例（2%）
+  high_utilization_threshold: 90.0   # 高利用率阈值（90%）
   min_chars_per_line: 20             # 最小每行字符数
   list_item_spacing: 8               # 列表项间距
 
@@ -178,8 +178,8 @@ pagination:
   # 元素样式配置
   styles:
     title:
-      font_size: 65        # 标题: 64px（最大）
-      line_height: 97.5    # 1.5倍行高
+      font_size: 110        # 标题: 64px（最大）
+      line_height: 105    # 1.5倍行高
       margin_top: 20       # 标题上间距: 30px（统一标准）
       margin_bottom: 20    # 标题下方间距: 30px（统一标准）
       color: "#333333"     # 主标题: #333333（深灰）
@@ -195,7 +195,7 @@ pagination:
     
     body:
       font_size: 42        # 正文: 36px（标准）
-      line_height: 75.6    # 1.5倍行高（标准行高）
+      line_height: 63    # 1.5倍行高（标准行高）
       margin_top: 20       # 正文上间距: 30px（统一标准）
       margin_bottom: 20    # 正文下方间距: 30px（统一标准）
       color: "#333333"     # 正文: #333333（深灰）
@@ -203,7 +203,7 @@ pagination:
     
     list:
       font_size: 42        # 列表: 36px（标准）
-      line_height: 75.6    # 1.5倍行高（标准行高）
+      line_height: 63    # 1.5倍行高（标准行高）
       margin_top: 20       # 列表上间距: 30px（统一标准）
       margin_bottom: 20    # 列表下方间距: 30px（统一标准）
       color: "#333333"     # 列表: #333333（深灰）
@@ -212,7 +212,7 @@ pagination:
     
     quote:
       font_size: 42        # 引用: 36px（强调）
-      line_height: 75.6    # 1.5倍行高（紧凑行高）
+      line_height: 63    # 1.5倍行高（紧凑行高）
       margin_top: 20       # 引用上间距: 30px（统一标准）
       margin_bottom: 20    # 引用下方间距: 30px（统一标准）
       color: "#1E90FF"     # 引用: #1E90FF（蓝色）
@@ -220,7 +220,7 @@ pagination:
     
     tag:
       font_size: 42        # 标签: 28px（最小）
-      line_height: 75.6    # 1.5倍行高
+      line_height: 63    # 1.5倍行高
       margin_top: 20       # 标签上间距: 30px（统一标准）
       margin_bottom: 20    # 标签下方间距: 30px（统一标准）
       color: "#1E90FF"     # 标签: #1E90FF（蓝色）
@@ -228,7 +228,7 @@ pagination:
     
     number:
       font_size: 42        # 数字: 28px（最小）
-      line_height: 75.6    # 1.5倍行高
+      line_height: 63    # 1.5倍行高
       margin_top: 20       # 数字上间距: 30px（统一标准）
       margin_bottom: 20    # 数字下方间距: 30px（统一标准）
       color: "#1E90FF"     # 数字: #1E90FF（蓝色）
@@ -240,7 +240,7 @@ special_rules:
     width: 1080          # 封面卡片宽度
     height: 1440         # 封面卡片高度（3:4比例）
     title_section:
-      font_size: 120            # 封面标题字体大小
+      font_size: 110            # 封面标题字体大小
       line_height: 140          # 封面标题行高
       color: "#2c3e50"         # 封面标题颜色
       background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
@@ -250,9 +250,9 @@ special_rules:
       background: "transparent"                # 图片区域透明背景
     
     content_card:
-    safe_area_margin: 30                      # 内容安全区域边距
-    max_content_height: 1200                  # 内容最大高度
-    overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
+      safe_area_margin: 30                      # 内容安全区域边距
+      max_content_height: 1200                  # 内容最大高度
+      overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
 
 # AI提示词配置
 ai_prompts:
@@ -396,12 +396,12 @@ html_converter:
   card:
     width: 1080          # 卡片宽度
     height: 1440         # 卡片高度
-    padding: 40          # 内边距（与分页算法保持一致）
+    padding: 90          # 内边距（与分页算法保持一致）
   
   # 分页配置
   pagination:
     available_width: 900  # 可用宽度
-    max_content_height: 1400  # 最大内容高度
+    max_content_height: 1240  # 最大内容高度
     min_card_height: 800      # 最小卡片高度
     max_card_height: 4320     # 最大卡片高度
     min_bottom_padding: 40    # 最小底部留白，确保文字不被遮挡
@@ -409,17 +409,17 @@ html_converter:
   # 字体配置 - 统一使用思源宋体
   fonts:
     family: "'SourceHanSerifSC', 'STFangsong', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif"  # 字体系列，优先使用思源宋体
-    title_size: 70       # 标题字体大小（大字号，加粗）
-    subtitle_size: 45    # 副标题字体大小（大字号，加粗）
-    body_size: 45        # 正文字体大小（大字号，清晰易读）
-    list_size: 45        # 列表字体大小
-    quote_size: 45       # 引用字体大小
+    title_size: 110       # 标题字体大小（大字号，加粗）
+    subtitle_size: 42    # 副标题字体大小（大字号，加粗）
+    body_size: 42        # 正文字体大小（大字号，清晰易读）
+    list_size: 42        # 列表字体大小
+    quote_size: 42       # 引用字体大小
   
   # 行高配置 - 提升可读性
   line_heights:
     title: 1.5           # 标题行高倍数
     subtitle: 1.5        # 副标题行高倍数
-    body: 1.8            # 正文行高倍数（增大行高，提升可读性）
+    body: 1.5            # 正文行高倍数（增大行高，提升可读性）
 
 # 渲染器配置
 renderer:
