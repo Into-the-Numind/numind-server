@@ -789,6 +789,7 @@ body {
 }
 
 .cover-title {
+    font-family: "SourceHanSerifSC", "STFangsong", "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
     font-size: %dpx;
     font-weight: bold;
     text-align: justify;
