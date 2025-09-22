@@ -256,7 +256,7 @@ special_rules:
 
 # AI提示词配置
 ai_prompts:
-  text_processing:
+  text_processing: |
     # 角色
     资深内容策展编辑，具备精准识别不同内容类型并采取差异化处理策略的卓越能力
 
