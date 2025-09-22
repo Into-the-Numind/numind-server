@@ -178,8 +178,8 @@ pagination:
   # 元素样式配置
   styles:
     title:
-      font_size: 120       # 标题: 64px（最大）
-      line_height: 140     # 1倍行高
+      font_size: 120        # 标题: 64px（最大）
+      line_height: 180    # 1.5倍行高
       margin_top: 20       # 标题上间距: 30px（统一标准）
       margin_bottom: 20    # 标题下方间距: 30px（统一标准）
       color: "#333333"     # 主标题: #333333（深灰）
@@ -195,7 +195,7 @@ pagination:
     
     body:
       font_size: 42        # 正文: 36px（标准）
-      line_height: 63      # 1.5倍行高（标准行高）
+      line_height: 63    # 1.5倍行高（标准行高）
       margin_top: 20       # 正文上间距: 30px（统一标准）
       margin_bottom: 20    # 正文下方间距: 30px（统一标准）
       color: "#333333"     # 正文: #333333（深灰）
@@ -203,7 +203,7 @@ pagination:
     
     list:
       font_size: 42        # 列表: 36px（标准）
-      line_height: 63      # 1.5倍行高（标准行高）
+      line_height: 63    # 1.5倍行高（标准行高）
       margin_top: 20       # 列表上间距: 30px（统一标准）
       margin_bottom: 20    # 列表下方间距: 30px（统一标准）
       color: "#333333"     # 列表: #333333（深灰）
@@ -212,7 +212,7 @@ pagination:
     
     quote:
       font_size: 42        # 引用: 36px（强调）
-      line_height: 63      # 1.5倍行高（紧凑行高）
+      line_height: 63    # 1.5倍行高（紧凑行高）
       margin_top: 20       # 引用上间距: 30px（统一标准）
       margin_bottom: 20    # 引用下方间距: 30px（统一标准）
       color: "#1E90FF"     # 引用: #1E90FF（蓝色）
@@ -220,7 +220,7 @@ pagination:
     
     tag:
       font_size: 42        # 标签: 28px（最小）
-      line_height: 63      # 1.5倍行高
+      line_height: 63    # 1.5倍行高
       margin_top: 20       # 标签上间距: 30px（统一标准）
       margin_bottom: 20    # 标签下方间距: 30px（统一标准）
       color: "#1E90FF"     # 标签: #1E90FF（蓝色）
@@ -228,7 +228,7 @@ pagination:
     
     number:
       font_size: 42        # 数字: 28px（最小）
-      line_height: 63      # 1.5倍行高
+      line_height: 63    # 1.5倍行高
       margin_top: 20       # 数字上间距: 30px（统一标准）
       margin_bottom: 20    # 数字下方间距: 30px（统一标准）
       color: "#1E90FF"     # 数字: #1E90FF（蓝色）
@@ -241,7 +241,7 @@ special_rules:
     height: 1440         # 封面卡片高度（3:4比例）
     title_section:
       font_size: 120            # 封面标题字体大小
-      line_height: 140          # 封面标题行高
+      line_height: 180          # 封面标题行高
       color: "#2c3e50"         # 封面标题颜色
       background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
       backdrop_filter: "blur(10px)"            # 背景模糊效果
@@ -256,7 +256,7 @@ special_rules:
 
 # AI提示词配置
 ai_prompts:
-  text_processing: 
+  text_processing:
     # 角色
     资深内容策展编辑，具备精准识别不同内容类型并采取差异化处理策略的卓越能力
 
@@ -306,7 +306,7 @@ ai_prompts:
     4. 输出格式：最终输出必须是且仅是一个纯净JSON对象，并且不要使用```符号进行包裹，也不要说明是JSON结构，直接从大括号"{"开始生成
     5. 以下是JSON结构：
     {
-      "text": "此处放入严格遵循路径和规则生成的Markdown字符串",
+      "text": "此处放入严格遵循路径和规则生成的Markdown字符串"
     }
 
     # 待处理的文本片段：{content}
@@ -406,7 +406,7 @@ html_converter:
   
   # 行高配置 - 提升可读性
   line_heights:
-    title: 1.17          # 标题行高倍数
+    title: 1.5           # 标题行高倍数
     subtitle: 1.5        # 副标题行高倍数
     body: 1.5            # 正文行高倍数（增大行高，提升可读性）
 
