@@ -2188,7 +2188,7 @@ func (hc *HTMLConverter) generateClearLargeFontCSS() string {
 
 /* 全局基础样式 - 清晰大字号风格 */
 body {
-    font-family: "SourceHanSerifSC", "STFangsong", "Noto Sans CJK SC", "Helvetica Neue", Arial, sans-serif;
+    font-family: "SourceHanSerifSC", "STFangsong", "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
     font-size: 16px;          /* 基础字号 */
     line-height: 1.8;         /* 增大行高，提升可读性 */
     color: #333;              /* 深灰色文字，替代默认黑色 */
@@ -2215,7 +2215,7 @@ body {
 }
 
 .markdown-body {
-    font-family: "SourceHanSerifSC", "STFangsong", "Noto Sans CJK SC", "Helvetica Neue", Arial, sans-serif;
+    font-family: "SourceHanSerifSC", "STFangsong", "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
     font-size: %dpx;          /* 基础字号 */
     line-height: 1.6;         /* 优化行高，平衡可读性和空间利用 */
     color: #333;              /* 深灰色文字，替代默认黑色 */

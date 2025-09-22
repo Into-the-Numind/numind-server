@@ -156,7 +156,7 @@ func (r *LightweightRenderer) generateFullBookHTML(book *model.BookM, cards []*m
         }
         
         body {
-            font-family: "SourceHanSerifSC", "STFangsong", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+            font-family: "SourceHanSerifSC", "STFangsong", "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
             background: #ffffff;
             color: #333333;
             line-height: 1.6;

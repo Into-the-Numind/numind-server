@@ -295,9 +295,10 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
         }
         
         .title {
+            font-family: "SourceHanSerifSC", "STFangsong", "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
             font-size: %dpx;
             font-weight: bold;
-            color: %s;
+            color: %s
             line-height: %dpx;
             margin: 0;
             text-shadow: 0 2px 4px rgba(0,0,0,0.1);
