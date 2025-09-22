@@ -2,7 +2,7 @@
 
 ## 功能概述
 
-实现了订阅会员的月度卡册创建限制功能，用户在成为订阅会员后的每个30天周期内最多只能创建30本卡册，超过限制后将无法创建新卡册，直到下个月重置。
+实现了订阅会员的月度卡册创建限制功能，用户在成为订阅会员后的每个30天周期内最多只能创建100本卡册，超过限制后将无法创建新卡册，直到下个月重置。
 
 ## 实现的功能
 
@@ -34,8 +34,8 @@ type User struct {
 ### 3. 月度限制检查
 
 #### 限制规则
-- **订阅会员** (`subscription`): 每月最多30本卡册
-- **both类型** (`both`): 每月最多30本卡册
+- **订阅会员** (`subscription`): 每月最多100本卡册
+- **both类型** (`both`): 每月最多100本卡册
 - **资源包用户** (`package`): 无月度限制
 - **免费用户** (`free`): 无月度限制
 
@@ -97,7 +97,7 @@ if user.CanUseSubscription() {
         remaining := user.GetRemainingMonthlyBooks()
         return &CreatePermission{
             CanCreate: false,
-            Reason:    fmt.Sprintf("本月已创建%d个卡册，达到月度限制30个，剩余%d个", user.MonthlyBookCount, remaining),
+            Reason:    fmt.Sprintf("本月已创建%d个卡册，达到月度限制100个，剩余%d个", user.MonthlyBookCount, remaining),
         }
     }
     
@@ -132,7 +132,7 @@ if user.CanUseSubscription() {
 1. 用户购买订阅会员
 2. 系统设置 `MembershipStartDate` 为当前时间
 3. 重置 `MonthlyBookCount` 为 0
-4. 用户开始享受月度30本卡册限制
+4. 用户开始享受月度100本卡册限制
 
 ### 场景2：月度限制检查
 1. 用户尝试创建卡册
@@ -144,7 +144,7 @@ if user.CanUseSubscription() {
 1. 用户进入新的会员月（30天周期）
 2. 系统检测到 `IsInNewMembershipMonth()` 返回 true
 3. 自动重置 `MonthlyBookCount` 为 0
-4. 用户重新获得30本卡册的创建权限
+4. 用户重新获得100本卡册的创建权限
 
 ## 测试验证
 
@@ -210,7 +210,7 @@ if user.CanUseSubscription() {
     "reason": "本月已创建30个卡册，达到月度限制30个，剩余0个",
     "membership_type": "subscription",
     "is_pro": true,
-    "monthly_book_count": 30
+    "monthly_book_count": 100
   }
 }
 ```
@@ -241,7 +241,7 @@ AND membership_start_date IS NULL;
 ### 可配置的限制参数
 ```go
 const (
-    MonthlyBookLimit = 30  // 每月最大卡册数量
+    MonthlyBookLimit = 100  // 每月最大卡册数量
     MembershipMonthDays = 30  // 会员月天数
 )
 ```
@@ -262,7 +262,7 @@ const (
 
 月度卡册限制功能已完全实现，支持：
 
-1. ✅ 订阅会员月度30本卡册限制
+1. ✅ 订阅会员月度100本卡册限制
 2. ✅ 自动月度重置机制
 3. ✅ 智能权限检查
 4. ✅ 完整的API支持

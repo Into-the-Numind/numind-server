@@ -35,8 +35,8 @@ type User struct {
 
 #### 限制规则
 - **免费用户** (`free`): 每月最多5本卡册
-- **订阅会员** (`subscription`): 每月最多30本卡册（原有功能）
-- **both类型** (`both`): 每月最多30本卡册（原有功能）
+- **订阅会员** (`subscription`): 每月最多100本卡册（原有功能）
+- **both类型** (`both`): 每月最多100本卡册（原有功能）
 - **资源包用户** (`package`): 无月度限制（原有功能）
 
 #### 核心方法
@@ -190,7 +190,7 @@ AND (free_user_monthly_book_count IS NULL OR free_user_last_reset_date IS NULL);
 ```go
 const (
     FreeUserMonthlyBookLimit = 5  // 免费用户每月最大卡册数量
-    SubscriptionMonthlyBookLimit = 30  // 订阅会员每月最大卡册数量
+    SubscriptionMonthlyBookLimit = 100  // 订阅会员每月最大卡册数量
 )
 ```
 

@@ -189,7 +189,7 @@ func (u *User) CanCreateBookInCurrentMonth() bool {
 	}
 
 	// 检查月度创建数量限制
-	const monthlyBookLimit = 30
+	const monthlyBookLimit = 100
 	return u.MonthlyBookCount < monthlyBookLimit
 }
 
@@ -199,7 +199,7 @@ func (u *User) GetRemainingMonthlyBooks() int {
 		return -1 // 无限制
 	}
 
-	const monthlyBookLimit = 30
+	const monthlyBookLimit = 100
 	remaining := monthlyBookLimit - u.MonthlyBookCount
 	if remaining < 0 {
 		return 0

@@ -421,13 +421,13 @@ func (mc *MembershipController) calculateCreatePermission(user *model.User) *Cre
 			if user.CanUsePackage() && user.PackageCount > 0 {
 				return &CreatePermission{
 					CanCreate: true,
-					Reason:    fmt.Sprintf("本月已创建%d个卡册，达到月度限制30个，但资源包剩余%d次，可以继续创建", user.MonthlyBookCount, user.PackageCount),
+					Reason:    fmt.Sprintf("本月已创建%d个卡册，达到月度限制100个，但资源包剩余%d次，可以继续创建", user.MonthlyBookCount, user.PackageCount),
 				}
 			}
 			// 没有资源包或资源包用完了
 			return &CreatePermission{
 				CanCreate: false,
-				Reason:    fmt.Sprintf("本月已创建%d个卡册，达到月度限制30个，剩余%d个", user.MonthlyBookCount, remaining),
+				Reason:    fmt.Sprintf("本月已创建%d个卡册，达到月度限制100个，剩余%d个", user.MonthlyBookCount, remaining),
 			}
 		}
 
