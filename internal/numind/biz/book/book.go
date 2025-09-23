@@ -157,8 +157,11 @@ func (b *bookBiz) SetCategory(ctx context.Context, bookID, userID uint, category
 			return errno.ErrUnauthorized
 		}
 		book.CategoryName = category.Name
+		book.Category = category
 	} else {
+		// 移除分类时，清空相关字段
 		book.CategoryName = ""
+		book.Category = nil
 	}
 
 	// 更新分类ID
