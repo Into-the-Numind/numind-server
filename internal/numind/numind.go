@@ -94,6 +94,9 @@ func run() error {
 	// 设置 token 包的签发密钥，用于 token 包 token 的签发和解析
 	//token.Init(viper.GetString("jwt.secret"), known.XUsernameKey)
 
+	// 初始化 COS（如果已配置）
+	InitCOS()
+
 	// 设置 Gin 模式
 	gin.SetMode(viper.GetString("runmode"))
 

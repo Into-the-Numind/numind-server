@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"numind-server/internal/numind/config"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/util"
 	"os"
 	"path/filepath"
 	"strings"
@@ -551,4 +552,13 @@ func initUploadDirectories() error {
 	}
 
 	return nil
+}
+
+// InitCOS prints COS status on startup for visibility
+func InitCOS() {
+	if util.IsCOSEnabled() {
+		log.Infow("Tencent COS enabled", "bucket", viper.GetString("cos.bucket"), "region", viper.GetString("cos.region"))
+	} else {
+		log.Infow("Tencent COS disabled or not configured")
+	}
 }

@@ -2,12 +2,14 @@ package card
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"image"
 	"image/png"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -586,8 +588,23 @@ func (r *CoverRenderer) saveImageFromData(imageData []byte, cardID uint) (string
 	}
 	fmt.Printf("调试：webp转换成功\n")
 
-	// 返回图片URL
+	// 构建本地URL
 	imageURL := util.GetCardImageURL(cardID, filename)
+
+	// 备份上传到腾讯云 COS（忽略错误）
+	if util.IsCOSEnabled() {
+		objectKey := path.Join("card", fmt.Sprintf("%d", cardID), filename)
+		if data, err := os.ReadFile(filepath); err == nil {
+			if cosURL, err := util.UploadBytesToCOS(context.Background(), objectKey, "image/webp", data); err == nil && cosURL != "" {
+				if signed, err := util.GenerateSignedURL(context.Background(), objectKey, 600); err == nil && signed != "" {
+					imageURL = signed
+				} else {
+					imageURL = cosURL
+				}
+			}
+		}
+	}
+
 	fmt.Printf("调试：返回的图片URL: %s\n", imageURL)
 	return imageURL, nil
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -509,8 +510,24 @@ func (r *SimpleHeadlessRenderer) saveImage(imageData []byte, cardID uint) (strin
 		fmt.Printf("🔍 调试：文件创建验证成功，大小=%d bytes\n", info.Size())
 	}
 
-	// 返回图片URL
+	// 构建本地URL
 	imageURL := util.GetCardImageURL(cardID, filename)
+
+	// 备份上传到腾讯云 COS（忽略错误，失败则使用本地路径）
+	if util.IsCOSEnabled() {
+		objectKey := path.Join("card", fmt.Sprintf("%d", cardID), filename)
+		if data, err := os.ReadFile(filepath); err == nil {
+			if cosURL, err := util.UploadBytesToCOS(context.Background(), objectKey, "image/webp", data); err == nil && cosURL != "" {
+				// 尝试生成短期签名 URL 以支持私有桶读取
+				if signed, err := util.GenerateSignedURL(context.Background(), objectKey, 600); err == nil && signed != "" {
+					imageURL = signed
+				} else {
+					imageURL = cosURL
+				}
+			}
+		}
+	}
+
 	fmt.Printf("🔍 调试：返回的图片URL=%s\n", imageURL)
 	return imageURL, nil
 }

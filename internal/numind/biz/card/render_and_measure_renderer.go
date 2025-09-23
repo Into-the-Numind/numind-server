@@ -11,6 +11,7 @@ import (
 	"image/draw"
 	"image/png"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -780,8 +781,23 @@ func (r *RenderAndMeasureRenderer) saveImage(imageData []byte, cardID uint) (str
 		fmt.Printf("⚠️ 渲染-测量方案：文件验证失败 - %v\n", err)
 	}
 
-	// 返回图片URL
+	// 构建本地URL
 	imageURL := util.GetCardImageURL(cardID, filename)
+
+	// 备份上传到腾讯云 COS（忽略错误）
+	if util.IsCOSEnabled() {
+		objectKey := path.Join("card", fmt.Sprintf("%d", cardID), filename)
+		if data, err := os.ReadFile(filepath); err == nil {
+			if cosURL, err := util.UploadBytesToCOS(context.Background(), objectKey, "image/webp", data); err == nil && cosURL != "" {
+				if signed, err := util.GenerateSignedURL(context.Background(), objectKey, 600); err == nil && signed != "" {
+					imageURL = signed
+				} else {
+					imageURL = cosURL
+				}
+			}
+		}
+	}
+
 	fmt.Printf("🔍 渲染-测量方案：返回的图片URL=%s\n", imageURL)
 	return imageURL, nil
 }
