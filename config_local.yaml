@@ -97,10 +97,10 @@ ali:
     model: "stable-diffusion-3.5-large-turbo"  # SD模型
     timeout: 300s        # SD生成超时时间（5分钟）
 
-# 分页配置 - 卡片渲染和分页的样式与布局规则
-pagination:
-  # 卡片基础配置（支持动态高度）
-  card:
+# 卡片渲染和分页配置 - 统一的卡片配置中心
+card_rendering:
+  # 卡片基础尺寸配置（所有渲染器共用）
+  dimensions:
     width: 1080   # 标准尺寸: 1080×1440（3:4比例）
     height: 1440  # 基础高度，实际使用动态高度
     padding:
@@ -108,6 +108,16 @@ pagination:
       right: 50
       bottom: 40
       left: 50
+  
+  # 渲染器配置
+  renderer:
+    quality: 85            # 图片质量（1-100）
+    format: "webp"         # 图片格式
+    zoom: 1.0              # 缩放比例
+    timeout_seconds: 30    # 超时时间（秒）
+
+# 分页配置 - 继承卡片基础配置
+pagination:
   
   # 动态分页优化配置
   dynamic:
@@ -380,14 +390,8 @@ json_processing:
     # 最大响应大小（字节）
     max_response_size: 1048576  # 1MB
 
-# HTML转换器配置 - 控制Markdown到HTML转换和内容分页的样式参数
+# HTML转换器配置 - 控制Markdown到HTML转换（引用统一配置）
 html_converter:
-  # 基础配置
-  card:
-    width: 1080          # 卡片宽度
-    height: 1440         # 卡片高度
-    padding: 60          # 内边距（与分页算法保持一致）
-  
   # 分页配置
   pagination:
     available_width: 1000  # 可用宽度
@@ -410,15 +414,6 @@ html_converter:
     title: 1.3           # 标题行高倍数
     subtitle: 1.3        # 副标题行高倍数
     body: 1.8            # 正文行高倍数（增大行高，提升可读性）
-
-# 渲染器配置
-renderer:
-  width: 1080            # 渲染器宽度
-  height: 1440           # 渲染器高度
-  quality: 85            # 图片质量（1-100）
-  format: "webp"         # 图片格式
-  zoom: 1.0              # 缩放比例
-  timeout_seconds: 30    # 超时时间（秒）
 
 # GSE分词库配置
 gse:

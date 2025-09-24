@@ -1808,21 +1808,24 @@ func (p *AsyncBookProcessor) splitMarkdownIntoCardsFallback(content string) []st
 
 	lines := strings.Split(content, "\n")
 
-	// 卡片配置（与HTML转换器保持一致）
-	const cardHeight = 1440
-	const cardPadding = 110      // 上下内边距总和：上60px + 下50px
+	// 使用统一的配置读取
+	cardConfig := util.GetCardRenderingConfig()
+	fontConfig := util.GetFontConfig()
+
+	// 卡片配置
+	cardHeight := cardConfig.Height
+	cardPadding := cardConfig.GetTotalPadding()
 	const bottomMarginLimit = 80 // 优化的底部边距限制，与HTML转换器一致
-	const availableHeight = cardHeight - cardPadding
-	const maxFillHeight = availableHeight - bottomMarginLimit // 有效内容高度
+	availableHeight := cardHeight - cardPadding
+	maxFillHeight := availableHeight - bottomMarginLimit // 有效内容高度
 
 	// 字体和行高配置
-	const titleFontSize = 28
-	const subtitleFontSize = 24
-	const bodyFontSize = 16
-	const cardWidth = 1080
-	const availableWidth = cardWidth - 100
-	const titleLineHeight = 1.4
-	const bodyLineHeight = 1.6
+	titleFontSize := fontConfig.TitleSize
+	subtitleFontSize := fontConfig.SubtitleSize
+	bodyFontSize := fontConfig.BodySize
+	availableWidth := cardConfig.GetAvailableWidth()
+	titleLineHeight := fontConfig.TitleLineHeight
+	bodyLineHeight := fontConfig.BodyLineHeight
 	const titleMarginBottom = 16
 	const bodyMarginBottom = 16
 
@@ -2173,14 +2176,14 @@ func (p *AsyncBookProcessor) generateCardImageAndHTML(ctx context.Context, cardI
 			if imageData, err := os.ReadFile(imagePath); err == nil {
 				// 构建COS对象键：card/{card_id}/card_{card_id}.webp
 				objectKey := fmt.Sprintf("card/%d/card_%d.webp", cardID, cardID)
-				
+
 				// 上传到COS
 				cosURL, uploadErr := util.UploadBytesToCOS(ctx, objectKey, "image/webp", imageData)
 				if uploadErr != nil {
 					log.C(ctx).Warnw("上传图片到COS失败", "card_id", cardID, "error", uploadErr.Error())
 				} else if cosURL != "" {
 					log.C(ctx).Infow("✅ 卡片图片已上传到COS", "card_id", cardID, "cos_url", cosURL)
-					
+
 					// 生成签名URL（可选，如果需要的话）
 					if signedURL, err := util.GenerateSignedURL(ctx, objectKey, 600); err == nil && signedURL != "" {
 						log.C(ctx).Infow("COS签名URL生成成功", "card_id", cardID, "signed_url", signedURL)
@@ -2788,14 +2791,14 @@ func (p *AsyncBookProcessor) generateCoverImageOnly(ctx context.Context, cardID 
 		if imageData, err := os.ReadFile(fullImagePath); err == nil {
 			// 构建COS对象键：card/{card_id}/card_{card_id}.webp
 			objectKey := fmt.Sprintf("card/%d/card_%d.webp", cardID, cardID)
-			
+
 			// 上传到COS
 			cosURL, uploadErr := util.UploadBytesToCOS(ctx, objectKey, "image/webp", imageData)
 			if uploadErr != nil {
 				log.C(ctx).Warnw("上传封面图片到COS失败", "card_id", cardID, "error", uploadErr.Error())
 			} else if cosURL != "" {
 				log.C(ctx).Infow("✅ 封面图片已上传到COS", "card_id", cardID, "cos_url", cosURL)
-				
+
 				// 生成签名URL（可选，如果需要的话）
 				if signedURL, err := util.GenerateSignedURL(ctx, objectKey, 600); err == nil && signedURL != "" {
 					log.C(ctx).Infow("封面COS签名URL生成成功", "card_id", cardID, "signed_url", signedURL)
@@ -2825,41 +2828,16 @@ func (p *AsyncBookProcessor) generateCoverImageOnly(ctx context.Context, cardID 
 
 // getRendererConfig 获取渲染器配置
 func (p *AsyncBookProcessor) getRendererConfig() *utilpkg.WkhtmltoimageConfig {
-	// 从配置中获取渲染器参数，如果没有配置则使用默认值
-	width := 1080
-	height := 1440
-	quality := 85
-	format := "webp"
-	zoom := 1.0
-	timeout := 30 * time.Second
-
-	// 尝试从viper配置中读取
-	if viper.IsSet("renderer.width") {
-		width = viper.GetInt("renderer.width")
-	}
-	if viper.IsSet("renderer.height") {
-		height = viper.GetInt("renderer.height")
-	}
-	if viper.IsSet("renderer.quality") {
-		quality = viper.GetInt("renderer.quality")
-	}
-	if viper.IsSet("renderer.format") {
-		format = viper.GetString("renderer.format")
-	}
-	if viper.IsSet("renderer.zoom") {
-		zoom = viper.GetFloat64("renderer.zoom")
-	}
-	if viper.IsSet("renderer.timeout_seconds") {
-		timeoutSeconds := viper.GetInt("renderer.timeout_seconds")
-		timeout = time.Duration(timeoutSeconds) * time.Second
-	}
+	// 使用统一的配置读取
+	cardConfig := util.GetCardRenderingConfig()
+	timeout := time.Duration(cardConfig.TimeoutSeconds) * time.Second
 
 	return &utilpkg.WkhtmltoimageConfig{
-		Width:   width,
-		Height:  height,
-		Quality: quality,
-		Format:  format,
-		Zoom:    zoom,
+		Width:   cardConfig.Width,
+		Height:  cardConfig.Height,
+		Quality: cardConfig.Quality,
+		Format:  cardConfig.Format,
+		Zoom:    cardConfig.Zoom,
 		Timeout: timeout,
 	}
 }

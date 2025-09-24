@@ -35,14 +35,6 @@ log:
   format: console # 指定日志显示格式，可选值：console, json
   output-paths: [./numind.log, stdout] # 指定日志输出位置，多个输出，用 `逗号 + 空格` 分开。stdout：标准输出，
 
-redis:
-    host: "localhost"
-    port: 6379
-    password: ""
-    db: 0
-    pool_size: 10
-    min_idle_conns: 5
-
 wechat:
     app_id: "wxad0aec8b3d3b2ef4"
     app_secret: "cd5e2a2a919fd6a06c52ae2a15286a36"
@@ -54,12 +46,6 @@ wechat:
     notify_url: "https://youshu.asia/dev/api/pay/wechat/notify"
     # 使用微信支付公钥模式（推荐，避免证书过期问题）
     use_wechatpay_public_key: "true"
-
-oss:
-  endpoint: ""
-  access_key_id: ""
-  access_key_secret: ""
-  bucket_name: ""
 
 volc:
   api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
@@ -89,47 +75,61 @@ baidu:
   api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
   secret_key: "nH84dnA8SRK5WL1dASJxxumI9eOcj2dO"
 
+# 阿里云配置 - 优化后的统一配置
 ali:
+  # 通用配置（所有服务共用）
+  api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"  # 文本服务API密钥
+  api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"  # 统一API地址
+  
+  # 文本生成服务
   text:
-    api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"
-    api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
-    model: "qwen-plus"  # 修复：使用正确的阿里千问模型
-    timeout: 180s
+    model: "qwen-turbo"  # 千问文本模型
+    timeout: 180s        # 文本生成超时时间
+  
+  # 图像生成服务
   image:
-    api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"
-    api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
-    model: "wanx2.1-t2i-turbo"
-    timeout: 180s
+    api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"  # 图像服务专用API密钥
+    model: "wanx2.1-t2i-turbo"  # 万象图像模型
+    timeout: 180s        # 图像生成超时时间
+  
+  # Stable Diffusion服务
   stable_diffusion:
-    api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"  # 使用相同的API key
-    api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
-    model: "stable-diffusion-3.5-large-turbo"
-    timeout: 300s
+    model: "stable-diffusion-3.5-large-turbo"  # SD模型
+    timeout: 300s        # SD生成超时时间（5分钟）
 
-
-# 分页配置 - 卡片渲染和分页的样式与布局规则（生产环境优化版）
-pagination:
-  # 卡片基础配置（支持动态高度）
-  card:
+# 卡片渲染和分页配置 - 统一的卡片配置中心
+card_rendering:
+  # 卡片基础尺寸配置（所有渲染器共用）
+  dimensions:
     width: 1080   # 标准尺寸: 1080×1440（3:4比例）
     height: 1440  # 基础高度，实际使用动态高度
     padding:
-    top: 90      # 标准内边距: 60px 50px
-    right: 90
-    bottom: 90    # 修复：增加底部留白，确保文字不被遮挡
-    left: 90
+      top: 60     # 标准内边距: 60px 50px
+      right: 50
+      bottom: 40
+      left: 50
+  
+  # 渲染器配置
+  renderer:
+    quality: 85            # 图片质量（1-100）
+    format: "webp"         # 图片格式
+    zoom: 1.0              # 缩放比例
+    timeout_seconds: 30    # 超时时间（秒）
+
+# 分页配置 - 继承卡片基础配置
+pagination:
   
   # 动态分页优化配置
   dynamic:
     min_height: 720          # 最小卡片高度
     max_height: 4320         # 最大卡片高度（3倍标准高度）
     min_bottom_padding: 40   # 最小底部留白，确保文字不被遮挡
-    max_images_per_card: 2   # 每张卡片最大图片数
+    max_images_per_card: 5   # 每张卡片最大图片数
     max_text_length: 2000    # 每张卡片最大文本长度
-    base_height: 1240        # 基础高度（用于规范化）
-    char_width_factor: 1.0   # 字符宽度系数
-    overflow_tolerance: 0.02 # 溢出容错比例（2%）
-    high_utilization_threshold: 90.0 # 高利用率阈值（90%）
+    base_height: 1440        # 基础高度（用于规范化）
+    char_width_factor: 1.05  # 字符宽度系数
+    overflow_tolerance: 0.05 # 溢出容错比例（5%）
+    high_utilization_threshold: 85.0 # 高利用率阈值（85%）
     base_image_height: 400   # 基础图片高度
     image_margin_top: 20     # 图片上边距
     image_margin_bottom: 20  # 图片下边距
@@ -137,16 +137,16 @@ pagination:
     list_item_spacing: 8     # 列表项间距
   
   # 新增可配置参数
-  char_width_factor: 1.00            # 字符宽度系数
-  overflow_tolerance: 0.02           # 溢出容错比例（2%）
-  high_utilization_threshold: 90.0   # 高利用率阈值（90%）
+  char_width_factor: 1.05            # 字符宽度系数
+  overflow_tolerance: 0.05           # 溢出容错比例（5%）
+  high_utilization_threshold: 85.0   # 高利用率阈值（85%）
   min_chars_per_line: 20             # 最小每行字符数
   list_item_spacing: 8               # 列表项间距
 
   # 段间距配置 - 可以手动调整各种元素的段间距
   spacing:
     # 全局段间距调整（可选，用于快速调整所有元素）
-    global_multiplier: 1.0           # 全局段间距倍数，1.0为默认值，>1.0增加间距，<1.0减少间距
+    global_multiplier: 4.0           # 全局段间距倍数，1.0为默认值，>1.0增加间距，<1.0减少间距
     
     # 各元素类型的段间距调整（可选，用于精确控制）
     # 注释掉特定元素的倍数设置，让全局倍数生效
@@ -179,87 +179,87 @@ pagination:
   # 元素样式配置
   styles:
     title:
-      font_size: 120        # 标题: 64px（最大）
-      line_height: 180    # 1.5倍行高
-      margin_top: 20       # 标题上间距: 30px（统一标准）
-      margin_bottom: 20    # 标题下方间距: 30px（统一标准）
+      font_size: 84        # 标题: 84px（增大两个位数：64+20）
+      line_height: 118     # 1.4倍行高
+      margin_top: 30       # 标题上间距: 30px（统一标准）
+      margin_bottom: 30    # 标题下方间距: 30px（统一标准）
       color: "#333333"     # 主标题: #333333（深灰）
       align: "justify"     # 两端对齐
     
     subtitle:
-      font_size: 42        # 副标题: 48px（中等）
-      line_height: 63      # 1.5倍行高
-      margin_top: 20       # 副标题上间距: 30px（统一标准）
-      margin_bottom: 20    # 副标题下方: 25px（标准下间距）
+      font_size: 68        # 副标题: 68px（增大两个位数：48+20）
+      line_height: 102     # 1.5倍行高
+      margin_top: 30       # 副标题上间距: 30px（统一标准）
+      margin_bottom: 25    # 副标题下方: 25px（标准下间距）
       color: "#666666"     # 副标题: #666666（中灰）
       align: "justify"     # 两端对齐
     
     body:
-      font_size: 42        # 正文: 36px（标准）
-      line_height: 63    # 1.5倍行高（标准行高）
-      margin_top: 20       # 正文上间距: 30px（统一标准）
-      margin_bottom: 20    # 正文下方间距: 30px（统一标准）
+      font_size: 56        # 正文: 56px（增大两个位数：36+20）
+      line_height: 90      # 1.6倍行高（标准行高）
+      margin_top: 30       # 正文上间距: 30px（统一标准）
+      margin_bottom: 30    # 正文下方间距: 30px（统一标准）
       color: "#333333"     # 正文: #333333（深灰）
       align: "justify"     # 两端对齐
     
     list:
-      font_size: 42        # 列表: 36px（标准）
-      line_height: 63    # 1.5倍行高（标准行高）
-      margin_top: 20       # 列表上间距: 30px（统一标准）
-      margin_bottom: 20    # 列表下方间距: 30px（统一标准）
+      font_size: 56        # 列表: 56px（增大两个位数：36+20）
+      line_height: 90      # 1.6倍行高（标准行高）
+      margin_top: 30       # 列表上间距: 30px（统一标准）
+      margin_bottom: 30    # 列表下方间距: 30px（统一标准）
       color: "#333333"     # 列表: #333333（深灰）
       align: "justify"     # 两端对齐
       indent: 20           # 列表缩进
     
     quote:
-      font_size: 42        # 引用: 36px（强调）
-      line_height: 63    # 1.5倍行高（紧凑行高）
-      margin_top: 20       # 引用上间距: 30px（统一标准）
-      margin_bottom: 20    # 引用下方间距: 30px（统一标准）
+      font_size: 46        # 引用: 46px（增大两个位数：36+20）
+      line_height: 74      # 1.5倍行高（紧凑行高）
+      margin_top: 30       # 引用上间距: 30px（统一标准）
+      margin_bottom: 30    # 引用下方间距: 30px（统一标准）
       color: "#1E90FF"     # 引用: #1E90FF（蓝色）
       align: "justify"     # 两端对齐
     
     tag:
-      font_size: 42        # 标签: 28px（最小）
-      line_height: 63    # 1.5倍行高
-      margin_top: 20       # 标签上间距: 30px（统一标准）
-      margin_bottom: 20    # 标签下方间距: 30px（统一标准）
+      font_size: 38        # 标签: 38px（增大两个位数：28+20）
+      line_height: 62      # 1.5倍行高
+      margin_top: 30       # 标签上间距: 30px（统一标准）
+      margin_bottom: 30    # 标签下方间距: 30px（统一标准）
       color: "#1E90FF"     # 标签: #1E90FF（蓝色）
       align: "left"        # 左对齐
     
     number:
-      font_size: 42        # 数字: 28px（最小）
-      line_height: 63    # 1.5倍行高
-      margin_top: 20       # 数字上间距: 30px（统一标准）
-      margin_bottom: 20    # 数字下方间距: 30px（统一标准）
+      font_size: 48        # 数字: 48px（增大两个位数：28+20）
+      line_height: 72      # 1.5倍行高
+      margin_top: 30       # 数字上间距: 30px（统一标准）
+      margin_bottom: 30    # 数字下方间距: 30px（统一标准）
       color: "#1E90FF"     # 数字: #1E90FF（蓝色）
       align: "center"      # 居中对齐
-  
+
 # 特殊渲染规则配置
 special_rules:
   cover_card:
     width: 1080          # 封面卡片宽度
     height: 1440         # 封面卡片高度（3:4比例）
     title_section:
-      font_size: 120            # 封面标题字体大小
-      line_height: 180          # 封面标题行高
+      font_size: 100            # 封面标题字体大小
+      line_height: 100          # 封面标题行高
       color: "#2c3e50"         # 封面标题颜色
       background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
       backdrop_filter: "blur(10px)"            # 背景模糊效果
       box_shadow: "0 4px 20px rgba(0, 0, 0, 0.1)"  # 阴影效果
     image_section:
       background: "transparent"                # 图片区域透明背景
-    
-    content_card:
-      safe_area_margin: 30                      # 内容安全区域边距
-      max_content_height: 1200                  # 内容最大高度
-      overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
+  
+  content_card:
+    safe_area_margin: 30                      # 内容安全区域边距
+    max_content_height: 1200                  # 内容最大高度
+    overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
 
 # AI提示词配置
 ai_prompts:
   text_processing: |
     # 角色
-    资深内容策展编辑，具备精准识别不同内容类型并采取差异化处理策略的卓越能力
+    资深内容策展编辑与视觉设计师，具备精准识别不同内容类型并采取差异化处理策略的卓越能力
 
     # 核心任务：内容甄别与差异化处理
 
@@ -268,7 +268,7 @@ ai_prompts:
     ## 步骤一：内容甄别
     首先，通读并理解每一个文本段落，将其准确地归类为以下两种类型之一：
     - 类型1，纯净内容：提供事实、观点、知识或情感分享，不含任何商业推广意图的文本
-    - 类型2，混合内容：将有价值的信息与具体的商业产品/品牌进行捆绑推广的文本
+    - 类型2，混合内容：将有价值的信息与具体的商业产品/品牌进行捆绑推广的文本（即"软广"）
 
     ## 步骤二：差异化处理
     根据上一步的甄别结果，对不同类型的内容执行完全不同的处理策略：
@@ -279,7 +279,7 @@ ai_prompts:
 
     - 针对2类的处理策略：【提炼与转述】
         - 第一步（提炼）：识别出作者通过产品想要传达的、那个与产品本身无关的"核心理念"或"生活方式"。例如，从洗发水广告中提炼出"通过精致的日常仪式提升幸福感"的理念
-        - 第二步（转述）：完全抛开原文中与产品相关的具体描述，用你自己的、流畅自然的语言，将提炼出的"核心理念"重新转述出来，使其成为一段普适性的、能引发共鸣的独立观点。目标是保留广告背后的思想火花，并使其上下文通顺、自然
+        - 第二步（转述）：完全抛开原文中与产品相关的具体描述，用你自己的、流畅自然的语言，将提炼出的"核心理念"重新转述出来，使其成为一段普适性的、能引发共鸣的独立观点。目标是保留广告背後の思想火花，并使其上下文通顺、自然
 
     2. 诊断：分析处理完毕的片段的主题关联度，将其归类为以下两类之一：
         - 结构A：主题连贯
@@ -291,14 +291,24 @@ ai_prompts:
     - 一级标题：提炼唯一的、精准的核心主题，作为唯一的`# 标题`
     - 内容：整合所有素材，撰写为逻辑连贯的单篇文章。使用`## 标题`划分内部层次。除了标题以外，需要保证每个段落的末尾有正确的标点，删除明显不合理的换行。重要：正文的开头不能再重复包含标题
     - 尊重原文语言：生成的语言应该和素材一致，如果原文为多语言，则保持每个部分对应的语言
+    - 封面图提示词：基于统一主题，创作一个具体、生动、富有画面感的详细文生图提示词，并遵循下方"文生图规则"
 
     ## 结构B：
     - 一级标题：必须生成一个概括性标题作为唯一的`# 标题`
     - 内容：各独立主题分别成篇，严禁虚构逻辑联系。每个独立主题必须使用`## 标题`开启新板块。除了标题以外，需要保证每个段落的末尾有正确的标点，删除明显不合理的换行。重要：正文的开头不能再重复包含标题
     - 尊重原文语言：生成的语言应该和素材一致，如果原文为多语言，则保持每个部分对应的语言
+    - 封面图提示词：基于主要内容，创作一个具体、生动、富有画面感的详细文生图提示词，并遵循下方"文生图规则"
 
-    # "text"绝对规则
-    1. 乱码处理：若文本为无意义乱码，返回的JSON中`text`为`上传内容有误`，`image_prompt`字段为空字符串
+    ## 文生图规则
+    - 构图要求：
+        -   目标画幅： 4:5竖向构图
+        -   目标风格： Torben Kuhlmann style, watercolor + colored pencil texture, delicate textures, cozy, gentle
+        -   目标色调： 不限于任何颜色，但要适合文字内容，并且颜色搭配要协调
+        -   语言结构： 中文描述详细的主体内容，末尾追加英文关键词提升画质和风格（例如：4:5, Torben Kuhlmann style, watercolor + colored pencil texture, delicate textures, cozy, gentle, masterpiece, high detail）。你不需要和示例一模一样，示例仅为参考
+        -   禁止项： 不能包含任何要求生成文字的指令
+
+    # 绝对规则
+    1. 边缘情况-乱码处理：若文本为无意义乱码，返回的JSON中`text`为`上传内容有误`，`image_prompt`字段为空字符串
     2. 格式与结构规则：
         * 所有输出有且仅有一个`#`一级标题，且字数不超过25个字符
         * 只允许使用`#`、`##`、`-`、`>` 四种格式
@@ -307,11 +317,11 @@ ai_prompts:
     4. 输出格式：最终输出必须是且仅是一个纯净JSON对象，并且不要使用```符号进行包裹，也不要说明是JSON结构，直接从大括号"{"开始生成
     5. 以下是JSON结构：
     {
-      "text": "此处放入严格遵循路径和规则生成的Markdown字符串"
+      "text": "此处放入严格遵循路径和规则生成的Markdown字符串",
+      "image_prompt": "此处放入遵循文生图规则生成的提示词"
     }
 
     # 待处理的文本片段：{content}
-
   image_generation: "基于以下文本生成一张精美的配图：{content}"
 
 # JSON处理配置 - 控制JSON响应解析和字符过滤行为
@@ -328,33 +338,33 @@ json_processing:
     allowed_control_chars: ["\n", "\t"]
     # 允许的Unicode范围
     allowed_unicode_ranges:
-    # 中文字符范围
-    chinese: [0x4E00, 0x9FFF]
-    # 中文标点符号范围
-    chinese_punctuation: [0x3000, 0x303F]
-    # 全角字符范围
-    fullwidth: [0xFF00, 0xFFEF]
-    # 拉丁字母扩展范围
-    latin_extended: 
-      - [0x00C0, 0x00FF]
-      - [0x0100, 0x017F]
-      - [0x0180, 0x024F]
-    # 阿拉伯文范围
-    arabic: [0x0600, 0x06FF]
-    # 西里尔文范围
-    cyrillic: [0x0400, 0x04FF]
-    # 希腊文范围
-    greek: [0x0370, 0x03FF]
-    # 希伯来文范围
-    hebrew: [0x0590, 0x05FF]
-    # 泰文范围
-    thai: [0x0E00, 0x0E7F]
-    # 韩文范围
-    korean: [0xAC00, 0xD7AF]
-    # 日文平假名范围
-    japanese_hiragana: [0x3040, 0x309F]
-    # 日文片假名范围
-    japanese_katakana: [0x30A0, 0x30FF]
+      # 中文字符范围
+      chinese: [0x4E00, 0x9FFF]
+      # 中文标点符号范围
+      chinese_punctuation: [0x3000, 0x303F]
+      # 全角字符范围
+      fullwidth: [0xFF00, 0xFFEF]
+      # 拉丁字母扩展范围
+      latin_extended: 
+        - [0x00C0, 0x00FF]
+        - [0x0100, 0x017F]
+        - [0x0180, 0x024F]
+      # 阿拉伯文范围
+      arabic: [0x0600, 0x06FF]
+      # 西里尔文范围
+      cyrillic: [0x0400, 0x04FF]
+      # 希腊文范围
+      greek: [0x0370, 0x03FF]
+      # 希伯来文范围
+      hebrew: [0x0590, 0x05FF]
+      # 泰文范围
+      thai: [0x0E00, 0x0E7F]
+      # 韩文范围
+      korean: [0xAC00, 0xD7AF]
+      # 日文平假名范围
+      japanese_hiragana: [0x3040, 0x309F]
+      # 日文片假名范围
+      japanese_katakana: [0x30A0, 0x30FF]
   
   # JSON修复配置
   json_repair:
@@ -380,45 +390,30 @@ json_processing:
     # 最大响应大小（字节）
     max_response_size: 1048576  # 1MB
 
-# HTML转换器配置 - 控制Markdown到HTML转换和内容分页的样式参数
+# HTML转换器配置 - 控制Markdown到HTML转换（引用统一配置）
 html_converter:
-  # 基础配置
-  card:
-    width: 1080          # 卡片宽度
-    height: 1440         # 卡片高度
-    padding: 90          # 内边距（与分页算法保持一致）
-  
   # 分页配置
   pagination:
-    available_width: 900  # 可用宽度
-    max_content_height: 1240  # 最大内容高度
+    available_width: 1000  # 可用宽度
+    max_content_height: 1360  # 最大内容高度
     min_card_height: 800      # 最小卡片高度
     max_card_height: 4320     # 最大卡片高度
     min_bottom_padding: 40    # 最小底部留白，确保文字不被遮挡
   
-  # 字体配置 - 统一使用思源宋体
+  # 字体配置 - 清晰大字号风格
   fonts:
     family: "'SourceHanSerifSC', 'STFangsong', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif"  # 字体系列，优先使用思源宋体
-    title_size: 120       # 标题字体大小（大字号，加粗）
-    subtitle_size: 42    # 副标题字体大小（大字号，加粗）
-    body_size: 42        # 正文字体大小（大字号，清晰易读）
-    list_size: 42        # 列表字体大小
-    quote_size: 42       # 引用字体大小
+    title_size: 48       # 标题字体大小（大字号，加粗）
+    subtitle_size: 40    # 副标题字体大小（大字号，加粗）
+    body_size: 36        # 正文字体大小（大字号，清晰易读）
+    list_size: 36        # 列表字体大小
+    quote_size: 34       # 引用字体大小
   
   # 行高配置 - 提升可读性
   line_heights:
-    title: 1.5           # 标题行高倍数
-    subtitle: 1.5        # 副标题行高倍数
-    body: 1.5            # 正文行高倍数（增大行高，提升可读性）
-
-# 渲染器配置
-renderer:
-  width: 1080            # 渲染器宽度
-  height: 1440           # 渲染器高度
-  quality: 85            # 图片质量（1-100）
-  format: "webp"         # 图片格式
-  zoom: 1.0              # 缩放比例
-  timeout_seconds: 30    # 超时时间（秒）
+    title: 1.3           # 标题行高倍数
+    subtitle: 1.3        # 副标题行高倍数
+    body: 1.8            # 正文行高倍数（增大行高，提升可读性）
 
 # GSE分词库配置
 gse:
@@ -426,6 +421,6 @@ gse:
   
   # 边距配置 - 优化间距
   margins:
-    title_bottom: 20     # 标题下边距（增加间距）
-    subtitle_bottom: 15  # 副标题下边距
+    title_bottom: 32     # 标题下边距（增加间距）
+    subtitle_bottom: 28  # 副标题下边距
     body_bottom: 20      # 正文下边距（增加间距）
