@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 
@@ -62,7 +63,8 @@ func NewBookResponse(book *BookM) *BookResponse {
 		Tags:         book.Tags,
 		CardCount:    book.CardCount,
 		ViewTime:     book.ViewTime,
-		ImageUrl:     util.GetDisplayURL(book.ImageUrl),
+		// 优先使用COS链接，如果获取失败则使用本地路径
+		ImageUrl:     util.GetBookImageWithCOS(context.Background(), book.ID, book.ImageUrl),
 		Cards:        []CardResponse{},
 	}
 }
@@ -83,7 +85,8 @@ func (br *BookResponse) AddCard(card *CardM) {
 		BookID:        card.BookID,
 		SortOrder:     card.SortOrder,
 		Tags:          card.Tags,
-		RenderedImage: util.GetDisplayURL(card.RenderedImage), // 去掉/opt前缀用于展示
+		// 优先使用COS链接，如果获取失败则使用本地路径
+		RenderedImage: util.GetCardImageWithCOS(context.Background(), card.ID, card.RenderedImage),
 	}
 
 	// 解析ProcessedText字段中的JSON数据

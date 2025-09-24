@@ -2167,7 +2167,31 @@ func (p *AsyncBookProcessor) generateCardImageAndHTML(ctx context.Context, cardI
 	} else {
 		log.C(ctx).Infow("✅ 卡片图片生成成功", "card_id", cardID, "image_path", imagePath)
 
-		// 5. 更新卡片记录，保存图片路径
+		// 5. 上传图片到COS
+		if util.IsCOSEnabled() && imagePath != "" {
+			// 读取生成的图片文件
+			if imageData, err := os.ReadFile(imagePath); err == nil {
+				// 构建COS对象键：card/{card_id}/card_{card_id}.webp
+				objectKey := fmt.Sprintf("card/%d/card_%d.webp", cardID, cardID)
+				
+				// 上传到COS
+				cosURL, uploadErr := util.UploadBytesToCOS(ctx, objectKey, "image/webp", imageData)
+				if uploadErr != nil {
+					log.C(ctx).Warnw("上传图片到COS失败", "card_id", cardID, "error", uploadErr.Error())
+				} else if cosURL != "" {
+					log.C(ctx).Infow("✅ 卡片图片已上传到COS", "card_id", cardID, "cos_url", cosURL)
+					
+					// 生成签名URL（可选，如果需要的话）
+					if signedURL, err := util.GenerateSignedURL(ctx, objectKey, 600); err == nil && signedURL != "" {
+						log.C(ctx).Infow("COS签名URL生成成功", "card_id", cardID, "signed_url", signedURL)
+					}
+				}
+			} else {
+				log.C(ctx).Warnw("读取图片文件失败", "card_id", cardID, "path", imagePath, "error", err.Error())
+			}
+		}
+
+		// 6. 更新卡片记录，保存图片路径
 		card.RenderedImage = imagePath
 		if err := p.biz.Cards().Update(ctx, card); err != nil {
 			log.C(ctx).Warnw("更新卡片图片路径失败", "card_id", cardID, "error", err.Error())
@@ -2757,6 +2781,30 @@ func (p *AsyncBookProcessor) generateCoverImageOnly(ctx context.Context, cardID 
 
 	// 更新数据库中的RenderedImage字段
 	relativeImagePath := fmt.Sprintf("%s/card/%d/%s", imagePath, cardID, imageFileName)
+
+	// 上传封面图片到COS
+	if util.IsCOSEnabled() && fullImagePath != "" {
+		// 读取生成的图片文件
+		if imageData, err := os.ReadFile(fullImagePath); err == nil {
+			// 构建COS对象键：card/{card_id}/card_{card_id}.webp
+			objectKey := fmt.Sprintf("card/%d/card_%d.webp", cardID, cardID)
+			
+			// 上传到COS
+			cosURL, uploadErr := util.UploadBytesToCOS(ctx, objectKey, "image/webp", imageData)
+			if uploadErr != nil {
+				log.C(ctx).Warnw("上传封面图片到COS失败", "card_id", cardID, "error", uploadErr.Error())
+			} else if cosURL != "" {
+				log.C(ctx).Infow("✅ 封面图片已上传到COS", "card_id", cardID, "cos_url", cosURL)
+				
+				// 生成签名URL（可选，如果需要的话）
+				if signedURL, err := util.GenerateSignedURL(ctx, objectKey, 600); err == nil && signedURL != "" {
+					log.C(ctx).Infow("封面COS签名URL生成成功", "card_id", cardID, "signed_url", signedURL)
+				}
+			}
+		} else {
+			log.C(ctx).Warnw("读取封面图片文件失败", "card_id", cardID, "path", fullImagePath, "error", err.Error())
+		}
+	}
 
 	// 获取卡片记录并更新
 	card, err := p.biz.Cards().GetByID(ctx, cardID)

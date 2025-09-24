@@ -155,3 +155,23 @@ func timeDurationSeconds(sec int64) time.Duration {
 	}
 	return time.Duration(sec) * time.Second
 }
+
+// CheckObjectExists checks if an object exists in COS
+func CheckObjectExists(ctx context.Context, objectKey string) bool {
+	cosClient, err := getCOSClient()
+	if err != nil {
+		return false
+	}
+	if !cosClient.enabled || cosClient.client == nil {
+		return false
+	}
+	
+	if strings.HasPrefix(objectKey, "/") {
+		objectKey = strings.TrimPrefix(objectKey, "/")
+	}
+	objectKey = path.Clean(objectKey)
+	
+	// Use HEAD request to check if object exists
+	_, err = cosClient.client.Object.Head(ctx, objectKey, nil)
+	return err == nil
+}
