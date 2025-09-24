@@ -51,6 +51,24 @@ func NewAliBiz(ds store.IStore) AliBiz {
 	}
 }
 
+// getAliConfig 获取Ali配置，支持服务特定配置和通用配置回退
+func getAliConfig(service string, key string) string {
+	// 先尝试服务特定配置
+	serviceKey := fmt.Sprintf("ali.%s.%s", service, key)
+	if viper.IsSet(serviceKey) {
+		return viper.GetString(serviceKey)
+	}
+
+	// 回退到通用配置
+	commonKey := fmt.Sprintf("ali.%s", key)
+	if viper.IsSet(commonKey) {
+		return viper.GetString(commonKey)
+	}
+
+	// 如果都没有，返回空字符串
+	return ""
+}
+
 // GenerateContent 支持多轮对话和参数扩展
 func (a *aliBiz) GenerateContent(messages []map[string]string, cfg *BailianConfig) (string, error) {
 	if cfg == nil {
@@ -114,7 +132,7 @@ func (a *aliBiz) GenerateContent(messages []map[string]string, cfg *BailianConfi
 func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error) {
 	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 	bodyMap := map[string]interface{}{
-		"model":       viper.GetString("ali.text.model"),
+		"model":       getAliConfig("text", "model"),
 		"messages":    messages,
 		"max_tokens":  maxTokens,
 		"temperature": temperature,
@@ -123,7 +141,7 @@ func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, 
 	bodyBytes, _ := json.Marshal(bodyMap)
 	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+viper.GetString("ali.text.api_key"))
+	req.Header.Set("Authorization", "Bearer "+getAliConfig("text", "api_key"))
 	req.Header.Set("User-Agent", "numind-server/1.0")
 
 	// 使用优化的HTTP客户端
@@ -138,7 +156,7 @@ func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, 
 		Context: context.Background(),
 		Headers: map[string]string{
 			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + viper.GetString("ali.text.api_key"),
+			"Authorization": "Bearer " + getAliConfig("text", "api_key"),
 		},
 		RetryPolicy: &httpclient.RetryPolicy{
 			MaxRetries:   3,
@@ -251,8 +269,8 @@ func (a *aliBiz) WanxiangImageStream(prompt string, style string, size string) (
 // WanxiangImageAsync 异步生成图片，自动轮询获取结果
 func (a *aliBiz) WanxiangImageAsync(prompt, style, size string) (string, error) {
 
-	model := viper.GetString("ali.image.model")
-	apiKey := viper.GetString("ali.image.api_key")
+	model := getAliConfig("image", "model")
+	apiKey := getAliConfig("image", "api_key")
 
 	const (
 		createURL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
@@ -341,8 +359,8 @@ func (a *aliBiz) WanxiangImageAsync(prompt, style, size string) (string, error) 
 
 // StableDiffusionImageAsync 使用stable-diffusion-3.5-large-turbo模型异步生成图片
 func (a *aliBiz) StableDiffusionImageAsync(prompt, size string) (string, error) {
-	apiKey := viper.GetString("ali.stable_diffusion.api_key")
-	model := viper.GetString("ali.stable_diffusion.model")
+	apiKey := getAliConfig("stable_diffusion", "api_key")
+	model := getAliConfig("stable_diffusion", "model")
 
 	// 修复size参数格式，确保使用乘号分隔的格式
 	// API期望的是 "1024*1024" 格式，而不是 "1024x1024"

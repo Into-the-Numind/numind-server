@@ -106,13 +106,6 @@ ali:
     model: "wan2.2-t2i-flash"
     timeout: 300s
 
-# MQTT 配置
-mqtt:
-  broker: "49.233.219.254" # MQTT 服务器地址
-  port: 1883 # MQTT 服务器端口
-  client_id: "numind-server-qa-1" # MQTT 客户端ID
-  username: "admin" # MQTT 用户名
-  password: "public" # MQTT 密码
 
 # 分页配置 - 卡片渲染和分页的样式与布局规则（优化版）
 pagination:

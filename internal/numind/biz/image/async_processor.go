@@ -23,7 +23,6 @@ type AsyncImageProcessor struct {
 	baiduBiz BaiduBiz
 	aliBiz   AliBiz
 	volcBiz  VolcBiz // 新增volc支持
-	mqttBiz  MqttBiz
 }
 
 // BizInterface 业务接口
@@ -59,19 +58,13 @@ type VolcBiz interface {
 	VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error)
 }
 
-// MqttBiz MQTT业务接口
-type MqttBiz interface {
-	Publish(topic string, payload interface{}) error
-}
-
 // NewAsyncImageProcessor 创建异步图片处理器
-func NewAsyncImageProcessor(biz BizInterface, baiduBiz BaiduBiz, aliBiz AliBiz, volcBiz VolcBiz, mqttBiz MqttBiz) *AsyncImageProcessor {
+func NewAsyncImageProcessor(biz BizInterface, baiduBiz BaiduBiz, aliBiz AliBiz, volcBiz VolcBiz) *AsyncImageProcessor {
 	return &AsyncImageProcessor{
 		biz:      biz,
 		baiduBiz: baiduBiz,
 		aliBiz:   aliBiz,
 		volcBiz:  volcBiz,
-		mqttBiz:  mqttBiz,
 	}
 }
 
@@ -91,9 +84,6 @@ func (p *AsyncImageProcessor) ProcessImagesAsync(ctx context.Context, userID uin
 // processImagesInBackground 在后台处理图片
 func (p *AsyncImageProcessor) processImagesInBackground(ctx context.Context, taskID string, userID uint, files []*multipart.FileHeader) {
 	startTime := time.Now()
-
-	// 发布开始处理状态
-	p.publishStatus(taskID, userID, "processing", "开始处理图片")
 
 	// 确保目录存在
 	os.MkdirAll("uploads", os.ModePerm)
@@ -245,47 +235,17 @@ func (p *AsyncImageProcessor) processImagesInBackground(ctx context.Context, tas
 		processedImages = append(processedImages, processedImage)
 	}
 
-	// 如果所有文件都处理失败，发布错误状态
+	// 如果所有文件都处理失败
 	if hasError && len(processedImages) == 0 {
-		p.publishStatus(taskID, userID, "failed", "所有图片处理失败")
+		log.C(ctx).Errorw("All images processing failed")
 		return
 	}
 
-	// 所有图片处理完成后，整合所有文本并调用万象模型
-	var finalResult *FinalProcessingResult
+	// 所有图片处理完成后，整合所有文本并创建书籍记录
 	if len(allCombinedTexts) > 0 {
 		// 将所有文本整合成一个完整的文本
 		finalCombinedText := strings.Join(allCombinedTexts, "\n\n")
-		log.C(ctx).Infow("Final combined text for image generation", "text", finalCombinedText)
-
-		// 调用阿里stable-diffusion图像模型生成图片 - 已注释，不需要生成图片
-		// stableDiffusionResult, err := p.aliBiz.StableDiffusionImageAsync("基于以下所有文本内容生成一张综合图片："+finalCombinedText, "1024*1024")
-		// if err != nil {
-		// 	log.C(ctx).Errorw("StableDiffusionImageAsync failed", "error", err.Error())
-		// 	p.publishStatus(taskID, userID, "failed", "图片生成失败: "+err.Error())
-		// 	return
-		// } else {
-		// 	log.C(ctx).Infow("StableDiffusionImageAsync result", "result", stableDiffusionResult)
-
-		// 	// stable-diffusion模型调用成功，创建书籍记录
-		// 	bookRecord := &model.BookM{
-		// 		UserID:    userID,
-		// 		Title:     "AI生成的书籍",
-		// 		CardCount: len(allCombinedTexts), // 使用处理的图片数量作为卡片数量
-		// 	}
-
-		// 	if err := p.biz.Books().Create(ctx, bookRecord); err != nil {
-		// 		log.C(ctx).Errorw("Failed to create book record", "error", err.Error())
-		// 	} else {
-		// 		log.C(ctx).Infow("Book created successfully", "book_id", bookRecord.ID, "user_id", userID)
-		// 	}
-
-		// 	finalResult = &FinalProcessingResult{
-		// 		WanxiangResult: stableDiffusionResult,
-		// 		BookID:         bookRecord.ID,
-		// 		TotalTexts:     len(allCombinedTexts),
-		// 	}
-		// }
+		log.C(ctx).Infow("Final combined text for book creation", "text", finalCombinedText)
 
 		// 跳过图片生成，直接创建书籍记录
 		log.C(ctx).Infow("⚠️ 跳过图片生成步骤，直接创建书籍记录", "task_id", taskID, "user_id", userID)
@@ -302,31 +262,15 @@ func (p *AsyncImageProcessor) processImagesInBackground(ctx context.Context, tas
 		} else {
 			log.C(ctx).Infow("Book created successfully", "book_id", bookRecord.ID, "user_id", userID)
 		}
-
-		finalResult = &FinalProcessingResult{
-			WanxiangResult: "", // 设置为空，因为没有生成图片
-			BookID:         bookRecord.ID,
-			TotalTexts:     len(allCombinedTexts),
-		}
 	}
 
-	// 发布处理完成结果
+	// 记录处理完成
 	processingTime := time.Since(startTime)
-	result := &ImageProcessingResult{
-		TaskID:          taskID,
-		UserID:          userID,
-		Status:          "completed",
-		ProcessedImages: processedImages,
-		FinalResult:     finalResult,
-		ProcessingTime:  processingTime,
-		CreatedAt:       time.Now(),
-	}
-
-	if err := p.publishResult(result); err != nil {
-		log.C(ctx).Errorw("Failed to publish result to MQTT", "error", err.Error())
-	}
-
-	p.publishStatus(taskID, userID, "completed", "图片处理完成")
+	log.C(ctx).Infow("Image processing completed",
+		"task_id", taskID,
+		"user_id", userID,
+		"processed_count", len(processedImages),
+		"processing_time", processingTime)
 }
 
 // ProcessedImage 处理后的图片信息
@@ -354,28 +298,6 @@ type ImageProcessingResult struct {
 	ErrorMessage    string                 `json:"error_message,omitempty"`
 	ProcessingTime  time.Duration          `json:"processing_time"`
 	CreatedAt       time.Time              `json:"created_at"`
-}
-
-// publishStatus 发布处理状态
-func (p *AsyncImageProcessor) publishStatus(taskID string, userID uint, status string, message string) {
-	statusMsg := map[string]interface{}{
-		"task_id":   taskID,
-		"user_id":   userID,
-		"status":    status,
-		"message":   message,
-		"timestamp": time.Now().Unix(),
-	}
-
-	topic := fmt.Sprintf("numind/image/processing/status/%d", userID)
-	if err := p.mqttBiz.Publish(topic, statusMsg); err != nil {
-		log.Errorw("Failed to publish status to MQTT", "error", err.Error())
-	}
-}
-
-// publishResult 发布处理结果
-func (p *AsyncImageProcessor) publishResult(result *ImageProcessingResult) error {
-	topic := fmt.Sprintf("numind/image/processing/result/%d", result.UserID)
-	return p.mqttBiz.Publish(topic, result)
 }
 
 // saveUploadedFile 保存上传的文件

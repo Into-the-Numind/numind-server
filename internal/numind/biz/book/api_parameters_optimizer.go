@@ -10,6 +10,24 @@ import (
 	"github.com/spf13/viper"
 )
 
+// getAliConfig 获取Ali配置，支持服务特定配置和通用配置回退
+func getAliConfig(service string, key string) string {
+	// 先尝试服务特定配置
+	serviceKey := fmt.Sprintf("ali.%s.%s", service, key)
+	if viper.IsSet(serviceKey) {
+		return viper.GetString(serviceKey)
+	}
+
+	// 回退到通用配置
+	commonKey := fmt.Sprintf("ali.%s", key)
+	if viper.IsSet(commonKey) {
+		return viper.GetString(commonKey)
+	}
+
+	// 如果都没有，返回空字符串
+	return ""
+}
+
 // APIParametersOptimizer API参数优化器
 type APIParametersOptimizer struct {
 	// 不同API的最大token限制
@@ -61,7 +79,7 @@ func (opt *APIParametersOptimizer) OptimizeParametersForAPI(
 
 	switch apiType {
 	case "ali":
-		modelName = viper.GetString("ali.text.model")
+		modelName = getAliConfig("text", "model")
 		if modelName == "" {
 			modelName = "qwen-turbo" // 默认模型
 		}

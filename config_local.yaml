@@ -12,7 +12,6 @@ tls:
   cert: /Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/configs/ssl/cert.crt # 证书
   key: /Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/configs/ssl/cert.key # 证书 Key 文件
 
-
 # GRPC 相关配置
 grpc:
   addr: :9090 # GRPC 服务器监听地址
@@ -36,14 +35,6 @@ log:
   format: console # 指定日志显示格式，可选值：console, json
   output-paths: [./numind.log, stdout] # 指定日志输出位置，多个输出，用 `逗号 + 空格` 分开。stdout：标准输出，
 
-redis:
-    host: "localhost"
-    port: 6379
-    password: ""
-    db: 0
-    pool_size: 10
-    min_idle_conns: 5
-
 wechat:
     app_id: "wxad0aec8b3d3b2ef4"
     app_secret: "cd5e2a2a919fd6a06c52ae2a15286a36"
@@ -59,12 +50,6 @@ wechat:
 # 书籍处理配置
 book:
     use_simplified_processing: true  # 启用简化处理模式
-
-oss:
-  endpoint: ""
-  access_key_id: ""
-  access_key_secret: ""
-  bucket_name: ""
 
 volc:
   api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
@@ -90,30 +75,27 @@ baidu:
   api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
   secret_key: "nH84dnA8SRK5WL1dASJxxumI9eOcj2dO"
 
+# 阿里云配置 - 优化后的统一配置
 ali:
+  # 通用配置（所有服务共用）
+  api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"  # 文本服务API密钥
+  api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"  # 统一API地址
+  
+  # 文本生成服务
   text:
-    api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"
-    api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
-    model: "qwen-turbo"  # 修复：使用正确的阿里千问模型
-    timeout: 180s  # 千问文本生成超时时间
+    model: "qwen-turbo"  # 千问文本模型
+    timeout: 180s        # 文本生成超时时间
+  
+  # 图像生成服务
   image:
-    api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"
-    api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
-    model: "wanx2.1-t2i-turbo"
-    timeout: 180s  # 万象图像生成超时时间
+    api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"  # 图像服务专用API密钥
+    model: "wanx2.1-t2i-turbo"  # 万象图像模型
+    timeout: 180s        # 图像生成超时时间
+  
+  # Stable Diffusion服务
   stable_diffusion:
-    api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"  # 使用相同的API key
-    api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
-    model: "stable-diffusion-3.5-large-turbo"
-    timeout: 300s  # stable-diffusion图像生成超时时间，设置为5分钟
-
-# MQTT 配置
-mqtt:
-  broker: "49.233.219.254" # MQTT 服务器地址
-  port: 1883 # MQTT 服务器端口
-  client_id: "numind-server-local-2" # MQTT 客户端ID
-  username: "admin" # MQTT 用户名
-  password: "public" # MQTT 密码
+    model: "stable-diffusion-3.5-large-turbo"  # SD模型
+    timeout: 300s        # SD生成超时时间（5分钟）
 
 # 分页配置 - 卡片渲染和分页的样式与布局规则
 pagination:
@@ -220,7 +202,7 @@ pagination:
       indent: 20           # 列表缩进
     
     quote:
-      font_size: 46        # 引用: 56px（增大两个位数：36+20）
+      font_size: 46        # 引用: 46px（增大两个位数：36+20）
       line_height: 74      # 1.5倍行高（紧凑行高）
       margin_top: 30       # 引用上间距: 30px（统一标准）
       margin_bottom: 30    # 引用下方间距: 30px（统一标准）
@@ -228,7 +210,7 @@ pagination:
       align: "justify"     # 两端对齐
     
     tag:
-      font_size: 38        # 标签: 48px（增大两个位数：28+20）
+      font_size: 38        # 标签: 38px（增大两个位数：28+20）
       line_height: 62      # 1.5倍行高
       margin_top: 30       # 标签上间距: 30px（统一标准）
       margin_bottom: 30    # 标签下方间距: 30px（统一标准）
@@ -447,4 +429,3 @@ gse:
     title_bottom: 32     # 标题下边距（增加间距）
     subtitle_bottom: 28  # 副标题下边距
     body_bottom: 20      # 正文下边距（增加间距）
-  
