@@ -84,6 +84,7 @@ type AsyncUserBiz interface {
 	IncrementUserBookNum(ctx context.Context, userID uint) error
 	IncrementUserCardNum(ctx context.Context, userID uint) error
 	IncrementMonthlyBookCount(ctx context.Context, userID uint) error
+	IncrementFreeUserMonthlyBookCount(ctx context.Context, userID uint) error
 }
 
 // AsyncAliBiz 阿里业务接口
@@ -147,6 +148,12 @@ func (p *AsyncBookProcessor) CreateBookAsync(ctx context.Context, userID uint, t
 	// 增加月度卡册计数（仅对订阅会员和both类型）
 	if err := p.biz.Users().IncrementMonthlyBookCount(ctx, userID); err != nil {
 		log.C(ctx).Errorw("Failed to increment monthly book count", "error", err.Error())
+		// 统计更新失败不影响主要流程，但记录错误
+	}
+
+	// 增加免费用户月度卡册计数（仅对免费用户）
+	if err := p.biz.Users().IncrementFreeUserMonthlyBookCount(ctx, userID); err != nil {
+		log.C(ctx).Errorw("Failed to increment free user monthly book count", "error", err.Error())
 		// 统计更新失败不影响主要流程，但记录错误
 	}
 
@@ -271,38 +278,41 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	// 🎨 第二步：从解析结果中提取 image_prompt 字段，作为文生图大模型的提示词
 	log.C(ctx).Infow("🎨 第二步：提取image_prompt字段", "book_id", bookID, "image_prompt", imagePrompt)
 
-	// 🖼️ 第三步：调用文生图大模型生成图片
+	// 🖼️ 第三步：调用文生图大模型生成图片 - 已注释，不需要生成图片
 	var imageUrl string
-	if imagePrompt != "" {
-		log.C(ctx).Infow("🖼️ 第三步：调用文生图大模型生成图片", "book_id", bookID, "image_prompt", imagePrompt)
+	// if imagePrompt != "" {
+	// 	log.C(ctx).Infow("🖼️ 第三步：调用文生图大模型生成图片", "book_id", bookID, "image_prompt", imagePrompt)
 
-		// 打印发送给文生图模型的提示词
-		log.C(ctx).Infow("📝 发送给文生图模型的提示词",
-			"book_id", bookID,
-			"prompt_length", len(imagePrompt),
-			"full_prompt", imagePrompt)
+	// 	// 打印发送给文生图模型的提示词
+	// 	log.C(ctx).Infow("📝 发送给文生图模型的提示词",
+	// 		"book_id", bookID,
+	// 		"prompt_length", len(imagePrompt),
+	// 		"full_prompt", imagePrompt)
 
-		// 调用stable-diffusion API生成图片
-		remoteImageUrl, err := p.biz.Ali().StableDiffusionImageAsync(imagePrompt, "1024*1024")
-		if err != nil {
-			log.C(ctx).Errorw("StableDiffusionImageAsync failed", "book_id", bookID, "error", err.Error())
-			// 图片生成失败不影响整体流程，但记录错误
-		} else {
-			log.C(ctx).Infow("✅ 文生图大模型生成图片成功", "book_id", bookID, "remote_image_url", remoteImageUrl)
+	// 	// 调用stable-diffusion API生成图片
+	// 	remoteImageUrl, err := p.biz.Ali().StableDiffusionImageAsync(imagePrompt, "1024*1024")
+	// 	if err != nil {
+	// 		log.C(ctx).Errorw("StableDiffusionImageAsync failed", "book_id", bookID, "error", err.Error())
+	// 		// 图片生成失败不影响整体流程，但记录错误
+	// 	} else {
+	// 		log.C(ctx).Infow("✅ 文生图大模型生成图片成功", "book_id", bookID, "remote_image_url", remoteImageUrl)
 
-			// 📁 第四步：图片存储 - 按照指定路径规则存储
-			// 卡册封面图片路径：resource.image_path/{bookid}/book_{id}.webp
-			localImagePath, err := p.downloadAndSaveImageWithPath(remoteImageUrl, bookID)
-			if err != nil {
-				log.C(ctx).Errorw("Failed to download and save image", "book_id", bookID, "error", err.Error())
-			} else {
-				imageUrl = localImagePath
-				log.C(ctx).Infow("✅ 卡册封面图片存储成功", "book_id", bookID, "local_image_path", localImagePath)
-			}
-		}
-	} else {
-		log.C(ctx).Warnw("⚠️ 未找到image_prompt字段，跳过图片生成", "book_id", bookID)
-	}
+	// 		// 📁 第四步：图片存储 - 按照指定路径规则存储
+	// 		// 卡册封面图片路径：resource.image_path/{bookid}/book_{id}.webp
+	// 		localImagePath, err := p.downloadAndSaveImageWithPath(remoteImageUrl, bookID)
+	// 		if err != nil {
+	// 			log.C(ctx).Errorw("Failed to download and save image", "book_id", bookID, "error", err.Error())
+	// 		} else {
+	// 			imageUrl = localImagePath
+	// 			log.C(ctx).Infow("✅ 卡册封面图片存储成功", "book_id", bookID, "local_image_path", localImagePath)
+	// 		}
+	// 	}
+	// } else {
+	// 	log.C(ctx).Warnw("⚠️ 未找到image_prompt字段，跳过图片生成", "book_id", bookID)
+	// }
+
+	// 跳过图片生成，直接设置为空
+	log.C(ctx).Infow("⚠️ 跳过图片生成步骤，imageUrl设置为空", "book_id", bookID)
 
 	// 更新book记录
 	book.Title = bookTitle
@@ -2157,7 +2167,31 @@ func (p *AsyncBookProcessor) generateCardImageAndHTML(ctx context.Context, cardI
 	} else {
 		log.C(ctx).Infow("✅ 卡片图片生成成功", "card_id", cardID, "image_path", imagePath)
 
-		// 5. 更新卡片记录，保存图片路径
+		// 5. 上传图片到COS
+		if util.IsCOSEnabled() && imagePath != "" {
+			// 读取生成的图片文件
+			if imageData, err := os.ReadFile(imagePath); err == nil {
+				// 构建COS对象键：card/{card_id}/card_{card_id}.webp
+				objectKey := fmt.Sprintf("card/%d/card_%d.webp", cardID, cardID)
+				
+				// 上传到COS
+				cosURL, uploadErr := util.UploadBytesToCOS(ctx, objectKey, "image/webp", imageData)
+				if uploadErr != nil {
+					log.C(ctx).Warnw("上传图片到COS失败", "card_id", cardID, "error", uploadErr.Error())
+				} else if cosURL != "" {
+					log.C(ctx).Infow("✅ 卡片图片已上传到COS", "card_id", cardID, "cos_url", cosURL)
+					
+					// 生成签名URL（可选，如果需要的话）
+					if signedURL, err := util.GenerateSignedURL(ctx, objectKey, 600); err == nil && signedURL != "" {
+						log.C(ctx).Infow("COS签名URL生成成功", "card_id", cardID, "signed_url", signedURL)
+					}
+				}
+			} else {
+				log.C(ctx).Warnw("读取图片文件失败", "card_id", cardID, "path", imagePath, "error", err.Error())
+			}
+		}
+
+		// 6. 更新卡片记录，保存图片路径
 		card.RenderedImage = imagePath
 		if err := p.biz.Cards().Update(ctx, card); err != nil {
 			log.C(ctx).Warnw("更新卡片图片路径失败", "card_id", cardID, "error", err.Error())
@@ -2554,38 +2588,41 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
 			"image_path", imagePath,
 			"full_url", fullImageURL)
 	} else {
-		// 使用默认的渐变背景
-		backgroundStyle = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);"
+		// 使用默认的白色背景
+		backgroundStyle = "background: #ffffff;"
 	}
 
-	// 处理book图片
-	var imageHTML string
-	imagePath := viper.GetString("resource.image_path")
-	if imagePath == "" {
-		imagePath = "res/upload" // 默认路径
-	}
+	// 处理book图片 - 已注释，不需要图片
+	// var imageHTML string
+	// imagePath := viper.GetString("resource.image_path")
+	// if imagePath == "" {
+	// 	imagePath = "res/upload" // 默认路径
+	// }
 
-	// 构建book图片路径
-	bookImagePath := filepath.Join(imagePath, "book", fmt.Sprintf("%d", bookID), fmt.Sprintf("book_%d.webp", bookID))
-	fullBookImagePath := fmt.Sprintf("file://%s", bookImagePath)
+	// // 构建book图片路径
+	// bookImagePath := filepath.Join(imagePath, "book", fmt.Sprintf("%d", bookID), fmt.Sprintf("book_%d.webp", bookID))
+	// fullBookImagePath := fmt.Sprintf("file://%s", bookImagePath)
 
-	// 检查book图片文件是否存在
-	if _, err := os.Stat(bookImagePath); err == nil {
-		// 文件存在，使用实际图片
-		imageHTML = fmt.Sprintf(`<img src="%s" class="cover-image" alt="封面图片" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-                <div class="cover-image-placeholder" style="display: none;">
-                    <div class="placeholder-icon">🖼️</div>
-                    <div class="placeholder-text">封面图片</div>
-                </div>`, fullBookImagePath)
-		log.C(context.Background()).Infow("Book图片文件存在，使用实际图片", "book_id", bookID, "image_path", fullBookImagePath)
-	} else {
-		// 文件不存在，使用占位符
-		imageHTML = `<div class="cover-image-placeholder">
-                <div class="placeholder-icon">🖼️</div>
-                <div class="placeholder-text">封面图片</div>
-            </div>`
-		log.C(context.Background()).Warnw("Book图片文件不存在，使用占位符", "book_id", bookID, "expected_path", bookImagePath, "error", err)
-	}
+	// // 检查book图片文件是否存在
+	// if _, err := os.Stat(bookImagePath); err == nil {
+	// 	// 文件存在，使用实际图片
+	// 	imageHTML = fmt.Sprintf(`<img src="%s" class="cover-image" alt="封面图片" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+	//             <div class="cover-image-placeholder" style="display: none;">
+	//                 <div class="placeholder-icon">🖼️</div>
+	//                 <div class="placeholder-text">封面图片</div>
+	//             </div>`, fullBookImagePath)
+	// 	log.C(context.Background()).Infow("Book图片文件存在，使用实际图片", "book_id", bookID, "image_path", fullBookImagePath)
+	// } else {
+	// 	// 文件不存在，使用占位符
+	// 	imageHTML = `<div class="cover-image-placeholder">
+	//             <div class="placeholder-icon">🖼️</div>
+	//             <div class="placeholder-text">封面图片</div>
+	//         </div>`
+	// 	log.C(context.Background()).Warnw("Book图片文件不存在，使用占位符", "book_id", bookID, "expected_path", bookImagePath, "error", err)
+	// }
+
+	// 跳过图片处理，直接使用空字符串
+	log.C(context.Background()).Infow("⚠️ 跳过图片处理，封面只显示标题", "book_id", bookID)
 
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="zh-CN">
@@ -2601,7 +2638,7 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            font-family: "SourceHanSerifSC", "STFangsong", "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
             width: 1080px;
             height: 1440px;
             overflow: visible !important;
@@ -2634,74 +2671,35 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
             background-repeat: no-repeat !important;
         }
 
-        /* 内容层：图片和标题在上层 */
+        /* 内容层：只显示标题 */
         .cover-content-layer {
             position: relative;
             width: 100%%;
             height: 100%%;
             z-index: 2;
             display: flex;
-            flex-direction: column;
-        }
-
-        /* 上半部分：图片区域 (65%%) */
-        .image-section {
-            flex: 0 0 65%%;
-            position: relative;
-            overflow: hidden;
-            width: 100%%;
-        }
-
-        .cover-image {
-            width: 100%%;
-            height: 100%%;
-            object-fit: cover;
-            border-radius: 0;
-            box-shadow: none;
-        }
-
-        .cover-image-placeholder {
-            width: 100%%;
-            height: 100%%;
-            background: rgba(255, 255, 255, 0.9);
-            border-radius: 0;
-            border: none;
-            color: #6c757d;
-            display: flex;
-            flex-direction: column;
             align-items: center;
             justify-content: center;
         }
 
-        .placeholder-icon {
-            font-size: 48px;
-            margin-bottom: 16px;
-            opacity: 0.8;
-        }
-
-        .placeholder-text {
-            font-size: 18px;
-            color: #6c757d;
-            text-align: center;
-            font-weight: bold;
-        }
-
-        /* 下半部分：标题区域 (35%%) */
+        /* 标题区域 - 完全居中 */
         .title-section {
-            flex: 0 0 35%%;
             display: flex;
             align-items: center;
             justify-content: center;
             position: relative;
             width: 100%%;
+            height: 100%%;
         }
 
         .title-content {
-            text-align: center;
+            text-align: justify;
             max-width: 800px;
+            padding: 40px;
         }
 
         .title-text {
+            font-family: "SourceHanSerifSC", "STFangsong", "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
             font-size: %dpx;
             font-weight: 700;
             color: %s;
@@ -2734,13 +2732,9 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
         <!-- 背景层：背景图在最后一层 -->
         <div class="cover-background-layer"></div>
         
-        <!-- 内容层：图片和标题在上层 -->
+        <!-- 内容层：只显示标题 -->
         <div class="cover-content-layer">
-            <div class="image-section">
-                %s
-            </div>
             <div class="title-section">
-                <div class="decoration"></div>
                 <div class="title-content">
                     <h1 class="title-text">%s</h1>
                 </div>
@@ -2748,7 +2742,7 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
         </div>
     </div>
 </body>
-</html>`, title, backgroundStyle, backgroundStyle, fontSize, color, lineHeight, imageHTML, title)
+</html>`, title, backgroundStyle, backgroundStyle, fontSize, color, lineHeight, title)
 }
 
 // generateCoverImageOnly 仅生成封面图片，不重新生成HTML
@@ -2787,6 +2781,30 @@ func (p *AsyncBookProcessor) generateCoverImageOnly(ctx context.Context, cardID 
 
 	// 更新数据库中的RenderedImage字段
 	relativeImagePath := fmt.Sprintf("%s/card/%d/%s", imagePath, cardID, imageFileName)
+
+	// 上传封面图片到COS
+	if util.IsCOSEnabled() && fullImagePath != "" {
+		// 读取生成的图片文件
+		if imageData, err := os.ReadFile(fullImagePath); err == nil {
+			// 构建COS对象键：card/{card_id}/card_{card_id}.webp
+			objectKey := fmt.Sprintf("card/%d/card_%d.webp", cardID, cardID)
+			
+			// 上传到COS
+			cosURL, uploadErr := util.UploadBytesToCOS(ctx, objectKey, "image/webp", imageData)
+			if uploadErr != nil {
+				log.C(ctx).Warnw("上传封面图片到COS失败", "card_id", cardID, "error", uploadErr.Error())
+			} else if cosURL != "" {
+				log.C(ctx).Infow("✅ 封面图片已上传到COS", "card_id", cardID, "cos_url", cosURL)
+				
+				// 生成签名URL（可选，如果需要的话）
+				if signedURL, err := util.GenerateSignedURL(ctx, objectKey, 600); err == nil && signedURL != "" {
+					log.C(ctx).Infow("封面COS签名URL生成成功", "card_id", cardID, "signed_url", signedURL)
+				}
+			}
+		} else {
+			log.C(ctx).Warnw("读取封面图片文件失败", "card_id", cardID, "path", fullImagePath, "error", err.Error())
+		}
+	}
 
 	// 获取卡片记录并更新
 	card, err := p.biz.Cards().GetByID(ctx, cardID)

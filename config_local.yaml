@@ -78,6 +78,14 @@ volc:
 resource:
   image_path: /Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/res/upload
 
+# 腾讯云 COS 配置
+cos:
+  enabled: true           # 本地默认关闭，改为 true 启用
+  secret_id: "AKID26xnQq2ziEYeVAh3B6oIbwHh06zf7LMA"           # API 密钥 SecretId
+  secret_key: "e4FNTPI90jNzQfjbFgHk3CRaYMxRuFP5"          # API 密钥 SecretKey
+  bucket: "numind-dev-1334169463" # BucketName-APPID 形式
+  region: "ap-chengdu"    # 地域，如 ap-chengdu（成都）
+
 baidu:
   api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
   secret_key: "nH84dnA8SRK5WL1dASJxxumI9eOcj2dO"
@@ -408,7 +416,7 @@ html_converter:
   
   # 字体配置 - 清晰大字号风格
   fonts:
-    family: "'PingFang SC', 'Helvetica Neue', Arial, sans-serif"  # 字体系列
+    family: "'SourceHanSerifSC', 'STFangsong', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif"  # 字体系列，优先使用思源宋体
     title_size: 48       # 标题字体大小（大字号，加粗）
     subtitle_size: 40    # 副标题字体大小（大字号，加粗）
     body_size: 36        # 正文字体大小（大字号，清晰易读）

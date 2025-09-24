@@ -10,6 +10,7 @@ import (
 	"image/png"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 
 	"numind-server/internal/numind/biz/pagination"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/util"
 
 	"github.com/disintegration/imaging"
 )
@@ -120,9 +122,32 @@ func (r *LightweightRenderer) generateFullBookHTML(book *model.BookM, cards []*m
     <title>%s</title>
     <style>
         @font-face {
-            font-family: "SourceHanSansCN";
-            src: url("data:font/truetype;base64,%s") format("truetype");
+            font-family: "SourceHanSerifSC";
+            src: url("file:///usr/share/fonts/truetype/SourceHanSerifSC-Regular.otf") format("opentype"),
+                 local("Source Han Serif SC"),
+                 local("SourceHanSerifSC"),
+                 local("STFangsong"),
+                 local("Noto Sans CJK SC"),
+                 local("PingFang SC"),
+                 local("Hiragino Sans GB"),
+                 local("Microsoft YaHei"),
+                 local("sans-serif");
             font-weight: normal;
+            font-style: normal;
+        }
+        
+        @font-face {
+            font-family: "SourceHanSerifSC";
+            src: url("file:///usr/share/fonts/truetype/SourceHanSerifSC-Bold.otf") format("opentype"),
+                 local("Source Han Serif SC Bold"),
+                 local("SourceHanSerifSC-Bold"),
+                 local("STFangsong"),
+                 local("Noto Sans CJK SC Semibold"),
+                 local("PingFang SC"),
+                 local("Hiragino Sans GB"),
+                 local("Microsoft YaHei Bold"),
+                 local("sans-serif");
+            font-weight: bold;
             font-style: normal;
         }
         
@@ -133,7 +158,7 @@ func (r *LightweightRenderer) generateFullBookHTML(book *model.BookM, cards []*m
         }
         
         body {
-            font-family: "SourceHanSansCN", -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            font-family: "SourceHanSerifSC", "STFangsong", "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
             background: #ffffff;
             color: #333333;
             line-height: 1.6;
@@ -529,8 +554,23 @@ func (r *LightweightRenderer) saveImage(imageData []byte, cardID uint) (string, 
 		return "", fmt.Errorf("保存图片文件失败: %v", err)
 	}
 
-	// 返回访问URL
+	// 构建本地URL（沿用原逻辑）
 	url := fmt.Sprintf("/upload/card/%d/%s", cardID, filename)
+
+	// 备份上传到腾讯云 COS（忽略错误）
+	if util.IsCOSEnabled() {
+		objectKey := path.Join("card", fmt.Sprintf("%d", cardID), filename)
+		if data, err := os.ReadFile(filePath); err == nil {
+			if cosURL, err := util.UploadBytesToCOS(context.Background(), objectKey, "image/png", data); err == nil && cosURL != "" {
+				if signed, err := util.GenerateSignedURL(context.Background(), objectKey, 600); err == nil && signed != "" {
+					url = signed
+				} else {
+					url = cosURL
+				}
+			}
+		}
+	}
+
 	fmt.Printf("💾 图片保存成功: %s\n", url)
 	return url, nil
 }

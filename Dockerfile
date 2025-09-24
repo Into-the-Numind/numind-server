@@ -15,6 +15,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     ca-certificates \
     curl \
     wget \
+    unzip \
     gnupg \
     bash \
     file \
@@ -49,12 +50,24 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
+# 只下载必要的思源宋体文件（不下载整个包）
+RUN wget -O /tmp/SourceHanSerifSC-Regular.otf "https://github.com/adobe-fonts/source-han-serif/raw/release/OTF/SimplifiedChinese/SourceHanSerifSC-Regular.otf" && \
+    wget -O /tmp/SourceHanSerifSC-Bold.otf "https://github.com/adobe-fonts/source-han-serif/raw/release/OTF/SimplifiedChinese/SourceHanSerifSC-Bold.otf" && \
+    cp /tmp/SourceHanSerifSC-Regular.otf /usr/share/fonts/truetype/ && \
+    cp /tmp/SourceHanSerifSC-Bold.otf /usr/share/fonts/truetype/ && \
+    rm -f /tmp/SourceHanSerifSC-*.otf && \
+    fc-cache -fv && \
+    echo "✅ 思源宋体字体安装完成" && \
+    echo "字体文件位置验证:" && \
+    ls -la /usr/share/fonts/truetype/SourceHanSerifSC-*.otf && \
+    fc-list | grep -i "SourceHanSerif\|思源" || echo "字体列表中没有找到思源宋体"
 
-# 安装Google Chrome
+
+# 安装Google Chrome (支持多架构)
 RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
-    && apt-get install -y google-chrome-stable \
+    && (apt-get install -y --no-install-recommends google-chrome-stable || apt-get install -y --no-install-recommends chromium-browser) \
     && rm -rf /var/lib/apt/lists/*
 
 # 设置时区
@@ -65,6 +78,21 @@ RUN date && echo "当前时区: $(cat /etc/timezone)" && echo "✅ 时区设置�
 
 # 验证Chrome安装
 RUN google-chrome --version && echo "Chrome installation successful"
+
+# 预加载字体，避免运行时加载延迟
+RUN fc-cache -fv && \
+    echo "✅ 字体预加载完成" && \
+    fc-list | head -20 && \
+    echo "✅ 字体缓存验证成功"
+
+# 创建Chrome优化启动脚本
+RUN echo '#!/bin/bash' > /usr/local/bin/chrome-headless
+RUN echo 'google-chrome --headless --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-web-security --disable-features=VizDisplayCompositor,Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints,AudioServiceOutOfProcess --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --disable-ipc-flooding-protection --max_old_space_size=4096 --memory-pressure-off --disable-background-networking --disable-default-apps --disable-sync --no-first-run --disable-logging --disable-breakpad --disable-hang-monitor --disable-prompt-on-repost --disable-domain-reliability --disable-blink-features=AutomationControlled --disable-field-trial-config --disable-background-mode --disable-software-rasterizer --disable-canvas-aa --disable-2d-canvas-clip-aa --disable-gl-drawing-for-tests --window-size=1920,1080 --remote-debugging-port=9222 "$@"' >> /usr/local/bin/chrome-headless
+RUN chmod +x /usr/local/bin/chrome-headless
+RUN echo "✅ Chrome优化启动脚本创建成功"
+
+# 设置Chrome环境变量
+ENV CHROME_BIN=/usr/local/bin/chrome-headless
 
 # 创建非 root 用户 - 确保UID为1001，与CI/CD配置一致
 RUN groupadd -g 1001 numind && useradd -u 1001 -g numind -G audio,video numind
@@ -179,6 +207,17 @@ fi\n\
 echo "使用配置文件: $CONFIG_FILE"\n\
 exec /app/numind -c "$CONFIG_FILE" "$@"' > /app/start.sh && \
     chmod +x /app/start.sh
+
+# 清理缓存和临时文件，进一步减少镜像大小
+RUN apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
+    rm -rf /var/cache/apt/archives/* && \
+    rm -rf /usr/share/doc/* && \
+    rm -rf /usr/share/man/* && \
+    rm -rf /usr/share/locale/* && \
+    find /usr -name "*.pyc" -delete && \
+    find /usr -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true && \
+    echo "✅ 系统清理完成"
 
 # 启动应用
 ENTRYPOINT ["/app/start.sh"]

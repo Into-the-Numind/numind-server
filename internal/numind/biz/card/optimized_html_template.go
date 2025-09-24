@@ -91,30 +91,37 @@ func (t *OptimizedHTMLTemplate) getOptimizedHTMLTemplate() string {
             box-sizing: border-box;
         }
         
-        /* 字体定义 - 优化中文字体显示 */
+        /* 思源宋体字体定义 - 容器环境优化 */
         @font-face {
-            font-family: "SourceHanSansCN";
-            src: local("Source Han Sans CN"),
+            font-family: "SourceHanSerifSC";
+            src: url("file:///usr/share/fonts/truetype/SourceHanSerifSC-Regular.otf") format("opentype"),
+                 local("Source Han Serif SC"),
+                 local("SourceHanSerifSC"),
+                 local("STFangsong"),
                  local("Noto Sans CJK SC"),
+                 local("PingFang SC"),
                  local("Hiragino Sans GB"),
                  local("Microsoft YaHei"),
-                 local("SimHei"),
                  local("sans-serif");
             font-weight: normal;
             font-style: normal;
         }
         
         @font-face {
-            font-family: "SourceHanSansCN";
-            src: local("Source Han Sans CN Bold"),
+            font-family: "SourceHanSerifSC";
+            src: url("file:///usr/share/fonts/truetype/SourceHanSerifSC-Bold.otf") format("opentype"),
+                 local("Source Han Serif SC Bold"),
+                 local("SourceHanSerifSC-Bold"),
+                 local("STFangsong"),
                  local("Noto Sans CJK SC Semibold"),
-                 local("Hiragino Sans GB W6"),
+                 local("PingFang SC"),
+                 local("Hiragino Sans GB"),
                  local("Microsoft YaHei Bold"),
-                 local("SimHei"),
                  local("sans-serif");
             font-weight: bold;
             font-style: normal;
         }
+        
         
         /* 根元素配置 */
         html {
@@ -123,7 +130,7 @@ func (t *OptimizedHTMLTemplate) getOptimizedHTMLTemplate() string {
         }
         
         body {
-            font-family: "SourceHanSansCN", -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            font-family: "SourceHanSerifSC", "STFangsong", "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
             background: #ffffff;
             color: #333333;
             line-height: 1.6;

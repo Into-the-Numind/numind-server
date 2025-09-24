@@ -1,18 +1,20 @@
 package card
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"numind-server/internal/numind/biz/pagination"
-	"numind-server/internal/pkg/util"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/util"
 )
 
 // ChromeHeadlessRenderer Chrome无头浏览器渲染器
@@ -464,8 +466,23 @@ func (r *ChromeHeadlessRenderer) saveImageFromData(imageData []byte, cardID uint
 		fmt.Printf("⚠️ Chrome渲染器：文件验证失败 - %v\n", err)
 	}
 
-	// 返回图片URL
+	// 构建本地URL
 	imageURL := util.GetCardImageURL(cardID, filename)
+
+	// 备份上传到腾讯云 COS（忽略错误）
+	if util.IsCOSEnabled() {
+		objectKey := path.Join("card", fmt.Sprintf("%d", cardID), filename)
+		if data, err := os.ReadFile(filepath); err == nil {
+			if cosURL, err := util.UploadBytesToCOS(context.Background(), objectKey, "image/webp", data); err == nil && cosURL != "" {
+				if signed, err := util.GenerateSignedURL(context.Background(), objectKey, 600); err == nil && signed != "" {
+					imageURL = signed
+				} else {
+					imageURL = cosURL
+				}
+			}
+		}
+	}
+
 	fmt.Printf("🔍 Chrome渲染器：返回的图片URL=%s\n", imageURL)
 	return imageURL, nil
 }
@@ -485,8 +502,39 @@ func (r *ChromeHeadlessRenderer) generateBookHTMLTemplate(data BookTemplateData)
             box-sizing: border-box; 
         }
         
+        /* 思源宋体字体定义 - 使用本地字体文件 */
+        @font-face {
+            font-family: "SourceHanSerifSC";
+            src: url("file:///usr/share/fonts/truetype/SourceHanSerifSC-Regular.otf") format("opentype"),
+                 local("Source Han Serif SC"),
+                 local("SourceHanSerifSC"),
+                 local("STFangsong"),
+                 local("Noto Sans CJK SC"),
+                 local("PingFang SC"),
+                 local("Hiragino Sans GB"),
+                 local("Microsoft YaHei"),
+                 local("sans-serif");
+            font-weight: normal;
+            font-style: normal;
+        }
+        
+        @font-face {
+            font-family: "SourceHanSerifSC";
+            src: url("file:///usr/share/fonts/truetype/SourceHanSerifSC-Bold.otf") format("opentype"),
+                 local("Source Han Serif SC Bold"),
+                 local("SourceHanSerifSC-Bold"),
+                 local("STFangsong"),
+                 local("Noto Sans CJK SC Semibold"),
+                 local("PingFang SC"),
+                 local("Hiragino Sans GB"),
+                 local("Microsoft YaHei Bold"),
+                 local("sans-serif");
+            font-weight: bold;
+            font-style: normal;
+        }
+        
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Source Han Sans CN';
+            font-family: "SourceHanSerifSC", "STFangsong", "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
             background: #ffffff;
             color: #333333;
             line-height: 1.6;
@@ -573,7 +621,7 @@ func (r *ChromeHeadlessRenderer) generateBookHTMLTemplate(data BookTemplateData)
         
         /* 确保字体加载完成 */
         .font-loaded {
-            font-family: 'Source Han Sans CN', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei';
+            font-family: 'SourceHanSerifSC', 'STFangsong', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif;
         }
         
         /* 卡片容器样式 - 确保所有内容卡片都有正确的边距 */

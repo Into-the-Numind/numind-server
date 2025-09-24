@@ -73,6 +73,14 @@ volc:
 resource:
   image_path: "/opt/numind/dev/image/upload"
 
+# 腾讯云 COS 配置
+cos:
+  enabled: true           # 本地默认关闭，改为 true 启用
+  secret_id: "AKID26xnQq2ziEYeVAh3B6oIbwHh06zf7LMA"           # API 密钥 SecretId
+  secret_key: "e4FNTPI90jNzQfjbFgHk3CRaYMxRuFP5"          # API 密钥 SecretKey
+  bucket: "numind-dev-1334169463" # BucketName-APPID 形式
+  region: "ap-chengdu" 
+
 # 书籍处理配置
 book:
     use_simplified_processing: true  # 启用简化处理模式
@@ -113,9 +121,9 @@ pagination:
     width: 1080   # 标准尺寸: 1080×1440（3:4比例）
     height: 1440  # 基础高度，实际使用动态高度
     padding:
-    top: 100     # 标准内边距: 60px 50px
+    top: 90      # 标准内边距: 60px 50px
     right: 90
-    bottom: 70  # 修复：增加底部留白，确保文字不被遮挡
+    bottom: 90    # 修复：增加底部留白，确保文字不被遮挡
     left: 90
   
   # 动态分页优化配置
@@ -125,10 +133,10 @@ pagination:
     min_bottom_padding: 40   # 最小底部留白，确保文字不被遮挡
     max_images_per_card: 2   # 每张卡片最大图片数
     max_text_length: 2000    # 每张卡片最大文本长度
-    base_height: 1440        # 基础高度（用于规范化）
-    char_width_factor: 1.05  # 字符宽度系数
-    overflow_tolerance: 0.05 # 溢出容错比例（5%）
-    high_utilization_threshold: 85.0 # 高利用率阈值（85%）
+    base_height: 1240        # 基础高度（用于规范化）
+    char_width_factor: 1.0   # 字符宽度系数
+    overflow_tolerance: 0.02 # 溢出容错比例（2%）
+    high_utilization_threshold: 90.0 # 高利用率阈值（90%）
     base_image_height: 400   # 基础图片高度
     image_margin_top: 20     # 图片上边距
     image_margin_bottom: 20  # 图片下边距
@@ -136,9 +144,9 @@ pagination:
     list_item_spacing: 8     # 列表项间距
   
   # 新增可配置参数
-  char_width_factor: 1.05            # 字符宽度系数
-  overflow_tolerance: 0.05           # 溢出容错比例（5%）
-  high_utilization_threshold: 85.0   # 高利用率阈值（85%）
+  char_width_factor: 1.00            # 字符宽度系数
+  overflow_tolerance: 0.02           # 溢出容错比例（2%）
+  high_utilization_threshold: 90.0   # 高利用率阈值（90%）
   min_chars_per_line: 20             # 最小每行字符数
   list_item_spacing: 8               # 列表项间距
 
@@ -178,8 +186,8 @@ pagination:
   # 元素样式配置
   styles:
     title:
-      font_size: 65        # 标题: 64px（最大）
-      line_height: 97.5    # 1.5倍行高
+      font_size: 120        # 标题: 64px（最大）
+      line_height: 180    # 1.5倍行高
       margin_top: 20       # 标题上间距: 30px（统一标准）
       margin_bottom: 20    # 标题下方间距: 30px（统一标准）
       color: "#333333"     # 主标题: #333333（深灰）
@@ -195,7 +203,7 @@ pagination:
     
     body:
       font_size: 42        # 正文: 36px（标准）
-      line_height: 75.6    # 1.5倍行高（标准行高）
+      line_height: 63    # 1.5倍行高（标准行高）
       margin_top: 20       # 正文上间距: 30px（统一标准）
       margin_bottom: 20    # 正文下方间距: 30px（统一标准）
       color: "#333333"     # 正文: #333333（深灰）
@@ -203,7 +211,7 @@ pagination:
     
     list:
       font_size: 42        # 列表: 36px（标准）
-      line_height: 75.6    # 1.5倍行高（标准行高）
+      line_height: 63    # 1.5倍行高（标准行高）
       margin_top: 20       # 列表上间距: 30px（统一标准）
       margin_bottom: 20    # 列表下方间距: 30px（统一标准）
       color: "#333333"     # 列表: #333333（深灰）
@@ -212,7 +220,7 @@ pagination:
     
     quote:
       font_size: 42        # 引用: 36px（强调）
-      line_height: 75.6    # 1.5倍行高（紧凑行高）
+      line_height: 63    # 1.5倍行高（紧凑行高）
       margin_top: 20       # 引用上间距: 30px（统一标准）
       margin_bottom: 20    # 引用下方间距: 30px（统一标准）
       color: "#1E90FF"     # 引用: #1E90FF（蓝色）
@@ -220,7 +228,7 @@ pagination:
     
     tag:
       font_size: 42        # 标签: 28px（最小）
-      line_height: 75.6    # 1.5倍行高
+      line_height: 63    # 1.5倍行高
       margin_top: 20       # 标签上间距: 30px（统一标准）
       margin_bottom: 20    # 标签下方间距: 30px（统一标准）
       color: "#1E90FF"     # 标签: #1E90FF（蓝色）
@@ -228,7 +236,7 @@ pagination:
     
     number:
       font_size: 42        # 数字: 28px（最小）
-      line_height: 75.6    # 1.5倍行高
+      line_height: 63    # 1.5倍行高
       margin_top: 20       # 数字上间距: 30px（统一标准）
       margin_bottom: 20    # 数字下方间距: 30px（统一标准）
       color: "#1E90FF"     # 数字: #1E90FF（蓝色）
@@ -240,8 +248,8 @@ special_rules:
     width: 1080          # 封面卡片宽度
     height: 1440         # 封面卡片高度（3:4比例）
     title_section:
-      font_size: 55            # 封面标题字体大小
-      line_height: 55          # 封面标题行高
+      font_size: 120            # 封面标题字体大小
+      line_height: 180          # 封面标题行高
       color: "#2c3e50"         # 封面标题颜色
       background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
       backdrop_filter: "blur(10px)"            # 背景模糊效果
@@ -250,15 +258,15 @@ special_rules:
       background: "transparent"                # 图片区域透明背景
     
     content_card:
-    safe_area_margin: 30                      # 内容安全区域边距
-    max_content_height: 1200                  # 内容最大高度
-    overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
+      safe_area_margin: 30                      # 内容安全区域边距
+      max_content_height: 1200                  # 内容最大高度
+      overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
 
 # AI提示词配置
 ai_prompts:
   text_processing: |
     # 角色
-    资深内容策展编辑与视觉设计师，具备精准识别不同内容类型并采取差异化处理策略的卓越能力
+    资深内容策展编辑，具备精准识别不同内容类型并采取差异化处理策略的卓越能力
 
     # 核心任务：内容甄别与差异化处理
 
@@ -267,57 +275,46 @@ ai_prompts:
     ## 步骤一：内容甄别
     首先，通读并理解每一个文本段落，将其准确地归类为以下两种类型之一：
     - 类型1，纯净内容：提供事实、观点、知识或情感分享，不含任何商业推广意图的文本
-    - 类型2，混合内容：将有价值的信息与具体的商业产品/品牌进行捆绑推广的文本（即"软广"）
+    - 类型2，混合内容：将有价值的信息与具体的商业产品/品牌进行捆绑推广的文本
 
     ## 步骤二：差异化处理
     根据上一步的甄别结果，对不同类型的内容执行完全不同的处理策略：
 
     - 针对1类的处理策略：【整理与保留】
-      - 绝对禁止进行任何形式的总结、提炼或大规模改写
-      - 唯一任务是最大程度地保留原文的结构、语句和作者的原意，只进行最基础的标点修正或排序。目标是100%忠于原文
+        - 绝对禁止进行任何形式的总结、提炼或大规模改写
+        - 唯一任务是最大程度地保留原文的结构、语句和作者的原意，只进行最基础的标点修正或排序。目标是100%忠于原文
 
     - 针对2类的处理策略：【提炼与转述】
-      - 第一步（提炼）：识别出作者通过产品想要传达的、那个与产品本身无关的"核心理念"或"生活方式"。例如，从洗发水广告中提炼出"通过精致的日常仪式提升幸福感"的理念
-      - 第二步（转述）：完全抛开原文中与产品相关的具体描述，用你自己的、流畅自然的语言，将提炼出的"核心理念"重新转述出来，使其成为一段普适性的、能引发共鸣的独立观点。目标是保留广告背後の思想火花，并使其上下文通顺、自然
+        - 第一步（提炼）：识别出作者通过产品想要传达的、那个与产品本身无关的"核心理念"或"生活方式"。例如，从洗发水广告中提炼出"通过精致的日常仪式提升幸福感"的理念
+        - 第二步（转述）：完全抛开原文中与产品相关的具体描述，用你自己的、流畅自然的语言，将提炼出的"核心理念"重新转述出来，使其成为一段普适性的、能引发共鸣的独立观点。目标是保留广告背后的思想火花，并使其上下文通顺、自然
 
     2. 诊断：分析处理完毕的片段的主题关联度，将其归类为以下两类之一：
-      - 结构A：主题连贯
-      - 结构B：主题发散
+        - 结构A：主题连贯
+        - 结构B：主题发散
 
     3. 执行：根据诊断结果，严格执行对应路径
 
     ## 结构A：
     - 一级标题：提炼唯一的、精准的核心主题，作为唯一的`# 标题`
-    - 内容：整合所有素材，撰写为逻辑连贯的单篇文章。使用`## 标题`划分内部层次。除了标题以外，需要保证每个段落的末尾有正确的标点
+    - 内容：整合所有素材，撰写为逻辑连贯的单篇文章。使用`## 标题`划分内部层次。除了标题以外，需要保证每个段落的末尾有正确的标点，删除明显不合理的换行。重要：正文的开头不能再重复包含标题
     - 尊重原文语言：生成的语言应该和素材一致，如果原文为多语言，则保持每个部分对应的语言
-    - 封面图提示词：基于统一主题，创作一个具体、生动、富有画面感的详细文生图提示词，并遵循下方"文生图规则"
 
     ## 结构B：
     - 一级标题：必须生成一个概括性标题作为唯一的`# 标题`
-    - 内容：各独立主题分别成篇，严禁虚构逻辑联系。每个独立主题必须使用`## 标题`开启新板块。除了标题以外，需要保证每个段落的末尾有正确的标点
+    - 内容：各独立主题分别成篇，严禁虚构逻辑联系。每个独立主题必须使用`## 标题`开启新板块。除了标题以外，需要保证每个段落的末尾有正确的标点，删除明显不合理的换行。重要：正文的开头不能再重复包含标题
     - 尊重原文语言：生成的语言应该和素材一致，如果原文为多语言，则保持每个部分对应的语言
-    - 封面图提示词：基于主要内容，创作一个具体、生动、富有画面感的详细文生图提示词，并遵循下方"文生图规则"
 
-    ## 文生图规则
-    - 构图要求：
-      -   目标画幅： 4:5竖向构图
-      -   目标风格： architectural blueprint style
-      -   目标色调： 不限于任何颜色，但要适合文字内容，并且颜色搭配要协调
-      -   语言结构： 中文描述详细的主体内容，末尾追加英文关键词提升画质和风格（例如：4:5, architectural blueprint style, masterpiece, high detail）
-      -   禁止项： 不能包含任何要求生成文字的指令
-
-    # 绝对规则
-    1. 边缘情况-乱码处理：若文本为无意义乱码，返回的JSON中`text`为`上传内容有误`，`image_prompt`字段为空字符串
+    # "text"绝对规则
+    1. 乱码处理：若文本为无意义乱码，返回的JSON中`text`为`上传内容有误`，`image_prompt`字段为空字符串
     2. 格式与结构规则：
-      * 所有输出有且仅有一个`#`一级标题，且字数不超过25个字符
-      * 只允许使用`#`、`##`、`-`、`>` 四种格式
-      * 若文本内容是连续整体，无清晰主题转换，则不强行创造`##`副标题。若原文有明显的副标题格式则遵循使用`##`副标题
+        * 所有输出有且仅有一个`#`一级标题，且字数不超过25个字符
+        * 只允许使用`#`、`##`、`-`、`>` 四种格式
+        * 若文本内容是连续整体，无清晰主题转换，则不强行创造`##`副标题。若原文有明显的副标题格式则遵循使用`##`副标题
     3. 内容限制：严禁添加原文外的任何评论、摘要、索引、目录
     4. 输出格式：最终输出必须是且仅是一个纯净JSON对象，并且不要使用```符号进行包裹，也不要说明是JSON结构，直接从大括号"{"开始生成
     5. 以下是JSON结构：
     {
-    "text": "此处放入严格遵循路径和规则生成的Markdown字符串",
-    "image_prompt": "此处放入遵循文生图规则生成的提示词"
+      "text": "此处放入严格遵循路径和规则生成的Markdown字符串"
     }
 
     # 待处理的文本片段：{content}
@@ -396,30 +393,30 @@ html_converter:
   card:
     width: 1080          # 卡片宽度
     height: 1440         # 卡片高度
-    padding: 40          # 内边距（与分页算法保持一致）
+    padding: 90          # 内边距（与分页算法保持一致）
   
   # 分页配置
   pagination:
     available_width: 900  # 可用宽度
-    max_content_height: 1400  # 最大内容高度
+    max_content_height: 1240  # 最大内容高度
     min_card_height: 800      # 最小卡片高度
     max_card_height: 4320     # 最大卡片高度
     min_bottom_padding: 40    # 最小底部留白，确保文字不被遮挡
   
-  # 字体配置 - 清晰大字号风格
+  # 字体配置 - 统一使用思源宋体
   fonts:
-    family: "'Noto Sans CJK SC', 'WenQuanYi Micro Hei', 'Helvetica Neue', Arial, sans-serif"  # 字体系列
-    title_size: 70       # 标题字体大小（大字号，加粗）
-    subtitle_size: 45    # 副标题字体大小（大字号，加粗）
-    body_size: 45        # 正文字体大小（大字号，清晰易读）
-    list_size: 45        # 列表字体大小
-    quote_size: 45       # 引用字体大小
+    family: "'SourceHanSerifSC', 'STFangsong', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif"  # 字体系列，优先使用思源宋体
+    title_size: 120       # 标题字体大小（大字号，加粗）
+    subtitle_size: 42    # 副标题字体大小（大字号，加粗）
+    body_size: 42        # 正文字体大小（大字号，清晰易读）
+    list_size: 42        # 列表字体大小
+    quote_size: 42       # 引用字体大小
   
   # 行高配置 - 提升可读性
   line_heights:
     title: 1.5           # 标题行高倍数
     subtitle: 1.5        # 副标题行高倍数
-    body: 1.8            # 正文行高倍数（增大行高，提升可读性）
+    body: 1.5            # 正文行高倍数（增大行高，提升可读性）
 
 # 渲染器配置
 renderer:

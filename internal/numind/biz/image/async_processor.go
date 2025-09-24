@@ -258,33 +258,55 @@ func (p *AsyncImageProcessor) processImagesInBackground(ctx context.Context, tas
 		finalCombinedText := strings.Join(allCombinedTexts, "\n\n")
 		log.C(ctx).Infow("Final combined text for image generation", "text", finalCombinedText)
 
-		// 调用阿里stable-diffusion图像模型生成图片
-		stableDiffusionResult, err := p.aliBiz.StableDiffusionImageAsync("基于以下所有文本内容生成一张综合图片："+finalCombinedText, "1024*1024")
-		if err != nil {
-			log.C(ctx).Errorw("StableDiffusionImageAsync failed", "error", err.Error())
-			p.publishStatus(taskID, userID, "failed", "图片生成失败: "+err.Error())
-			return
+		// 调用阿里stable-diffusion图像模型生成图片 - 已注释，不需要生成图片
+		// stableDiffusionResult, err := p.aliBiz.StableDiffusionImageAsync("基于以下所有文本内容生成一张综合图片："+finalCombinedText, "1024*1024")
+		// if err != nil {
+		// 	log.C(ctx).Errorw("StableDiffusionImageAsync failed", "error", err.Error())
+		// 	p.publishStatus(taskID, userID, "failed", "图片生成失败: "+err.Error())
+		// 	return
+		// } else {
+		// 	log.C(ctx).Infow("StableDiffusionImageAsync result", "result", stableDiffusionResult)
+
+		// 	// stable-diffusion模型调用成功，创建书籍记录
+		// 	bookRecord := &model.BookM{
+		// 		UserID:    userID,
+		// 		Title:     "AI生成的书籍",
+		// 		CardCount: len(allCombinedTexts), // 使用处理的图片数量作为卡片数量
+		// 	}
+
+		// 	if err := p.biz.Books().Create(ctx, bookRecord); err != nil {
+		// 		log.C(ctx).Errorw("Failed to create book record", "error", err.Error())
+		// 	} else {
+		// 		log.C(ctx).Infow("Book created successfully", "book_id", bookRecord.ID, "user_id", userID)
+		// 	}
+
+		// 	finalResult = &FinalProcessingResult{
+		// 		WanxiangResult: stableDiffusionResult,
+		// 		BookID:         bookRecord.ID,
+		// 		TotalTexts:     len(allCombinedTexts),
+		// 	}
+		// }
+
+		// 跳过图片生成，直接创建书籍记录
+		log.C(ctx).Infow("⚠️ 跳过图片生成步骤，直接创建书籍记录", "task_id", taskID, "user_id", userID)
+
+		// 创建书籍记录
+		bookRecord := &model.BookM{
+			UserID:    userID,
+			Title:     "AI生成的书籍",
+			CardCount: len(allCombinedTexts), // 使用处理的图片数量作为卡片数量
+		}
+
+		if err := p.biz.Books().Create(ctx, bookRecord); err != nil {
+			log.C(ctx).Errorw("Failed to create book record", "error", err.Error())
 		} else {
-			log.C(ctx).Infow("StableDiffusionImageAsync result", "result", stableDiffusionResult)
+			log.C(ctx).Infow("Book created successfully", "book_id", bookRecord.ID, "user_id", userID)
+		}
 
-			// stable-diffusion模型调用成功，创建书籍记录
-			bookRecord := &model.BookM{
-				UserID:    userID,
-				Title:     "AI生成的书籍",
-				CardCount: len(allCombinedTexts), // 使用处理的图片数量作为卡片数量
-			}
-
-			if err := p.biz.Books().Create(ctx, bookRecord); err != nil {
-				log.C(ctx).Errorw("Failed to create book record", "error", err.Error())
-			} else {
-				log.C(ctx).Infow("Book created successfully", "book_id", bookRecord.ID, "user_id", userID)
-			}
-
-			finalResult = &FinalProcessingResult{
-				WanxiangResult: stableDiffusionResult,
-				BookID:         bookRecord.ID,
-				TotalTexts:     len(allCombinedTexts),
-			}
+		finalResult = &FinalProcessingResult{
+			WanxiangResult: "", // 设置为空，因为没有生成图片
+			BookID:         bookRecord.ID,
+			TotalTexts:     len(allCombinedTexts),
 		}
 	}
 

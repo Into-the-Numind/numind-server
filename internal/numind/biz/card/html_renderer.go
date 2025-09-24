@@ -144,7 +144,7 @@ func (r *HTMLRenderer) generateBookHTML(data BookTemplateData) (string, error) {
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei';
+            font-family: "SourceHanSerifSC", "STFangsong", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
             background: #f5f5f5;
             color: #333333;
             line-height: 1.6;
@@ -329,7 +329,7 @@ func (r *HTMLRenderer) generateCardHTML(card CardData) (string, error) {
         }
         
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei';
+            font-family: "SourceHanSerifSC", "STFangsong", -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei';
             background: #ffffff;
             color: #333333;
             line-height: 1.6;

@@ -73,6 +73,14 @@ volc:
 resource:
   image_path: "/opt/numind/qa/image/upload"
 
+# 腾讯云 COS 配置
+cos:
+  enabled: true           # 本地默认关闭，改为 true 启用
+  secret_id: "AKID26xnQq2ziEYeVAh3B6oIbwHh06zf7LMA"           # API 密钥 SecretId
+  secret_key: "e4FNTPI90jNzQfjbFgHk3CRaYMxRuFP5"          # API 密钥 SecretKey
+  bucket: "numind-qa-1334169463" # BucketName-APPID 形式
+  region: "ap-chengdu"    # 地域，如 ap-chengdu（成都）
+
 # 书籍处理配置
 book:
     use_simplified_processing: true  # 启用简化处理模式
@@ -407,9 +415,9 @@ html_converter:
     max_card_height: 4320     # 最大卡片高度
     min_bottom_padding: 40    # 最小底部留白，确保文字不被遮挡
 
-  # 字体配置 - 清晰大字号风格
+  # 字体配置 - 统一使用思源宋体
   fonts:
-    family: "'DianziJianSong', 'Noto Sans CJK SC', 'WenQuanYi Micro Hei', 'Helvetica Neue', Arial, sans-serif"  # 字体系列
+    family: "'SourceHanSerifSC', 'STFangsong', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif"  # 字体系列，优先使用思源宋体
     title_size: 70       # 标题字体大小（大字号，加粗）
     subtitle_size: 45    # 副标题字体大小（大字号，加粗）
     body_size: 45        # 正文字体大小（大字号，清晰易读）

@@ -99,7 +99,7 @@ func (r *WebPRenderer) generateHTML(elements []pagination.Element) string {
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            font-family: "SourceHanSerifSC", "STFangsong", -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
             font-size: 16px;
             line-height: 1.6;
             color: #333333;
@@ -356,10 +356,13 @@ func (r *WebPRenderer) renderWithHeadlessBrowser(htmlContent string) ([]byte, er
 				log.C(context.Background()).Infow("页面内容检查", "has_content", hasContent)
 			}
 
-			// 等待字体加载
+			// 等待字体加载 - 增加超时时间
 			if err := chromedp.Evaluate(`document.fonts.ready`, nil).Do(ctx); err == nil {
 				log.C(context.Background()).Infow("字体加载完成")
 			}
+
+			// 额外等待时间确保字体完全加载
+			time.Sleep(3 * time.Second)
 
 			// 强制重绘页面
 			if err := chromedp.Evaluate(`document.body.style.display='none';document.body.offsetHeight;document.body.style.display=''`, nil).Do(ctx); err == nil {

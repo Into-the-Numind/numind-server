@@ -140,7 +140,7 @@ func (w *WkhtmltoimageRenderer) renderWithSimpleGoImplementation(ctx context.Con
 
 // renderWithChromedp 使用chromedp进行HTML渲染
 func (w *WkhtmltoimageRenderer) renderWithChromedp(ctx context.Context, htmlFile, outputPath string) error {
-	// 创建Chrome选项
+	// 创建Chrome选项 - 容器环境优化
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
 		chromedp.Flag("disable-gpu", true),
@@ -152,6 +152,27 @@ func (w *WkhtmltoimageRenderer) renderWithChromedp(ctx context.Context, htmlFile
 		chromedp.Flag("disable-plugins", true),
 		chromedp.Flag("disable-images", false),
 		chromedp.Flag("disable-javascript", false),
+		// 容器环境特定优化
+		chromedp.Flag("disable-background-timer-throttling", true),
+		chromedp.Flag("disable-renderer-backgrounding", true),
+		chromedp.Flag("disable-backgrounding-occluded-windows", true),
+		chromedp.Flag("disable-ipc-flooding-protection", true),
+		chromedp.Flag("disable-hang-monitor", true),
+		chromedp.Flag("disable-prompt-on-repost", true),
+		chromedp.Flag("disable-domain-reliability", true),
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.Flag("disable-field-trial-config", true),
+		chromedp.Flag("disable-background-mode", true),
+		chromedp.Flag("disable-software-rasterizer", true),
+		chromedp.Flag("disable-canvas-aa", true),
+		chromedp.Flag("disable-2d-canvas-clip-aa", true),
+		chromedp.Flag("disable-gl-drawing-for-tests", true),
+		// 字体渲染优化
+		chromedp.Flag("font-render-hinting", "none"),
+		chromedp.Flag("disable-font-subpixel-positioning", true),
+		// 内存优化
+		chromedp.Flag("max_old_space_size", "4096"),
+		chromedp.Flag("memory-pressure-off", true),
 	)
 
 	// 创建Chrome实例
@@ -182,10 +203,23 @@ func (w *WkhtmltoimageRenderer) renderWithChromedp(ctx context.Context, htmlFile
 		chromedp.WaitReady("body"),
 		chromedp.Sleep(2*time.Second),
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			// 等待字体加载
+			// 等待字体加载 - 容器环境优化
 			if err := chromedp.Evaluate(`document.fonts.ready`, nil).Do(ctx); err == nil {
 				// 字体加载完成
 			}
+
+			// 检查思源宋体是否加载成功
+			var fontLoaded bool
+			if err := chromedp.Evaluate(`
+				document.fonts.check('16px "SourceHanSerifSC"') || 
+				document.fonts.check('16px "STFangsong"') ||
+				document.fonts.check('16px "Noto Sans CJK SC"')
+			`, &fontLoaded).Do(ctx); err == nil && fontLoaded {
+				// 字体已加载
+			}
+
+			// 额外等待时间确保字体完全加载 - 容器环境需要更长时间
+			time.Sleep(5 * time.Second)
 
 			// 强制重绘页面
 			if err := chromedp.Evaluate(`document.body.style.display='none';document.body.offsetHeight;document.body.style.display=''`, nil).Do(ctx); err == nil {

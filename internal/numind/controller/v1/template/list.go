@@ -22,7 +22,7 @@ func (ctrl *TemplateController) List(c *gin.Context) {
 		return
 	}
 
-	limit, err := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	limit, err := strconv.Atoi(c.DefaultQuery("limit", "10000"))
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
 		return

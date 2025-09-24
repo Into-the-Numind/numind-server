@@ -404,6 +404,14 @@ func (mc *MembershipController) calculateCreatePermission(user *model.User) *Cre
 		}
 	}
 
+	// 检查免费用户是否需要重置月度计数
+	if user.MembershipType == model.MembershipTypeFree && user.IsInNewFreeUserMonth() {
+		// 重置免费用户月度计数
+		if err := mc.resetFreeUserMonthlyBookCount(user); err != nil {
+			log.C(context.Background()).Errorw("Failed to reset free user monthly book count", "user_id", user.ID, "error", err.Error())
+		}
+	}
+
 	// 检查订阅会员月度限制
 	if user.CanUseSubscription() {
 		// 检查月度限制
@@ -413,13 +421,13 @@ func (mc *MembershipController) calculateCreatePermission(user *model.User) *Cre
 			if user.CanUsePackage() && user.PackageCount > 0 {
 				return &CreatePermission{
 					CanCreate: true,
-					Reason:    fmt.Sprintf("本月已创建%d个卡册，达到月度限制30个，但资源包剩余%d次，可以继续创建", user.MonthlyBookCount, user.PackageCount),
+					Reason:    fmt.Sprintf("本月已创建%d个卡册，达到月度限制100个，但资源包剩余%d次，可以继续创建", user.MonthlyBookCount, user.PackageCount),
 				}
 			}
 			// 没有资源包或资源包用完了
 			return &CreatePermission{
 				CanCreate: false,
-				Reason:    fmt.Sprintf("本月已创建%d个卡册，达到月度限制30个，剩余%d个", user.MonthlyBookCount, remaining),
+				Reason:    fmt.Sprintf("本月已创建%d个卡册，达到月度限制100个，剩余%d个", user.MonthlyBookCount, remaining),
 			}
 		}
 
@@ -440,18 +448,20 @@ func (mc *MembershipController) calculateCreatePermission(user *model.User) *Cre
 
 	// 检查免费用户限制
 	if user.MembershipType == model.MembershipTypeFree {
-		// 免费用户限制：已创建的卡册数量不能超过一定限制
-		// 这里假设免费用户最多可以创建3个卡册
-		const freeUserMaxBooks = 3
-		if user.BookAllNum < freeUserMaxBooks {
+		// 检查免费用户月度限制
+		if !user.CanCreateBookAsFreeUser() {
+			remaining := user.GetRemainingFreeUserMonthlyBooks()
 			return &CreatePermission{
-				CanCreate: true,
-				Reason:    fmt.Sprintf("免费用户，已创建%d个卡册，还可以创建%d个", user.BookAllNum, freeUserMaxBooks-user.BookAllNum),
+				CanCreate: false,
+				Reason:    fmt.Sprintf("免费用户本月已创建%d个卡册，达到月度限制5个，剩余%d个，下月1号重置", user.FreeUserMonthlyBookCount, remaining),
 			}
 		}
+
+		// 免费用户月度限制未达到，可以创建
+		remaining := user.GetRemainingFreeUserMonthlyBooks()
 		return &CreatePermission{
-			CanCreate: false,
-			Reason:    fmt.Sprintf("免费用户最多只能创建%d个卡册，请升级会员或购买资源包", freeUserMaxBooks),
+			CanCreate: true,
+			Reason:    fmt.Sprintf("免费用户，本月已创建%d个卡册，还可以创建%d个", user.FreeUserMonthlyBookCount, remaining),
 		}
 	}
 
@@ -541,6 +551,22 @@ func (mc *MembershipController) resetMonthlyBookCount(user *model.User) error {
 	user.MonthlyBookCount = 0
 
 	log.C(context.Background()).Infow("Monthly book count reset", "user_id", user.ID, "membership_start_date", user.MembershipStartDate)
+	return nil
+}
+
+// resetFreeUserMonthlyBookCount 重置免费用户月度卡册计数
+func (mc *MembershipController) resetFreeUserMonthlyBookCount(user *model.User) error {
+	// 更新免费用户的月度计数为0
+	if err := mc.b.Users().ResetFreeUserMonthlyBookCount(context.Background(), user.ID); err != nil {
+		return fmt.Errorf("重置免费用户月度卡册计数失败: %w", err)
+	}
+
+	// 更新本地用户对象
+	user.FreeUserMonthlyBookCount = 0
+	now := time.Now()
+	user.FreeUserLastResetDate = &now
+
+	log.C(context.Background()).Infow("Free user monthly book count reset", "user_id", user.ID, "reset_date", now)
 	return nil
 }
 

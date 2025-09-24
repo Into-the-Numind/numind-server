@@ -2,12 +2,14 @@ package card
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"image"
 	"image/png"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -201,13 +203,44 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             box-sizing: border-box;
         }
         
+        /* 思源宋体字体定义 - 容器环境优化 */
+        @font-face {
+            font-family: "SourceHanSerifSC";
+            src: url("file:///usr/share/fonts/truetype/SourceHanSerifSC-Regular.otf") format("opentype"),
+                 local("Source Han Serif SC"),
+                 local("SourceHanSerifSC"),
+                 local("STFangsong"),
+                 local("Noto Sans CJK SC"),
+                 local("PingFang SC"),
+                 local("Hiragino Sans GB"),
+                 local("Microsoft YaHei"),
+                 local("sans-serif");
+            font-weight: normal;
+            font-style: normal;
+        }
+        
+        @font-face {
+            font-family: "SourceHanSerifSC";
+            src: url("file:///usr/share/fonts/truetype/SourceHanSerifSC-Bold.otf") format("opentype"),
+                 local("Source Han Serif SC Bold"),
+                 local("SourceHanSerifSC-Bold"),
+                 local("STFangsong"),
+                 local("Noto Sans CJK SC Semibold"),
+                 local("PingFang SC"),
+                 local("Hiragino Sans GB"),
+                 local("Microsoft YaHei Bold"),
+                 local("sans-serif");
+            font-weight: bold;
+            font-style: normal;
+        }
+        
         html, body {
             width: %dpx;
             height: %dpx;
             margin: 0;
             padding: 0;
             overflow: hidden;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            font-family: "SourceHanSerifSC", "STFangsong", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
         }
         
         /* 封面容器 - 背景图在底层，内容在上层 */
@@ -235,50 +268,39 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             background-repeat: no-repeat !important;
         }
         
-        /* 内容层：图片和标题在上层 */
+        /* 内容层：只显示标题 */
         .cover-content-layer {
             position: relative;
             width: 100%;
             height: 100%;
             z-index: 2;
             display: flex;
-            flex-direction: column;
-        }
-        
-        /* 上半部分：图片区域 (65%%) */
-        .image-section {
-            flex: 0 0 65%%;
-            display: flex;
             align-items: center;
             justify-content: center;
-            position: relative;
-            overflow: hidden;
-            width: 100%;
         }
         
-        /* 下半部分：标题区域 (35%%) */
+        /* 标题区域 - 完全居中 */
         .title-section {
-            flex: 0 0 35%%;
             display: flex;
             align-items: center;
             justify-content: center;
             position: relative;
             width: 100%;
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
+            height: 100%;
         }
         
         .title-container {
-            text-align: center;
-            padding: 30px 40px;
+            text-align: justify;
+            padding: 40px;
             width: 100%;
-            max-width: 90%%;
+            max-width: 90%;
         }
         
         .title {
+            font-family: "SourceHanSerifSC", "STFangsong", "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
             font-size: %dpx;
             font-weight: bold;
-            color: %s;
+            color: %s
             line-height: %dpx;
             margin: 0;
             text-shadow: 0 2px 4px rgba(0,0,0,0.1);
@@ -294,8 +316,8 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
         }
         
         .image-placeholder {
-            width: 80%%;
-            height: 80%%;
+            width: 80%;
+            height: 80%;
             background: #f8f9fa;
             border: 2px dashed #dee2e6;
             border-radius: 12px;
@@ -333,11 +355,8 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
         <!-- 背景层：背景图在最后一层 -->
         <div class="cover-background-layer"></div>
         
-        <!-- 内容层：图片和标题在上层 -->
+        <!-- 内容层：只显示标题 -->
         <div class="cover-content-layer">
-            <div class="image-section">
-                %s
-            </div>
             <div class="title-section">
                 <div class="title-container">
                     <h1 class="title">%s</h1>
@@ -348,8 +367,7 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
 </body>
 </html>`, config.Card.Width, config.Card.Height,
 		backgroundStyle,
-		fontSize, color, lineHeight, fontSize*3/4, // 字体大小、颜色、行高、响应式字体大小（75%）
-		r.generateImageHTML(coverData.ImageURL),
+		fontSize, color, lineHeight, fontSize*3/4, fontSize*3/4, // 字体大小、颜色、行高、响应式字体大小（75%）
 		coverData.Title)
 
 	return html
@@ -570,8 +588,23 @@ func (r *CoverRenderer) saveImageFromData(imageData []byte, cardID uint) (string
 	}
 	fmt.Printf("调试：webp转换成功\n")
 
-	// 返回图片URL
+	// 构建本地URL
 	imageURL := util.GetCardImageURL(cardID, filename)
+
+	// 备份上传到腾讯云 COS（忽略错误）
+	if util.IsCOSEnabled() {
+		objectKey := path.Join("card", fmt.Sprintf("%d", cardID), filename)
+		if data, err := os.ReadFile(filepath); err == nil {
+			if cosURL, err := util.UploadBytesToCOS(context.Background(), objectKey, "image/webp", data); err == nil && cosURL != "" {
+				if signed, err := util.GenerateSignedURL(context.Background(), objectKey, 600); err == nil && signed != "" {
+					imageURL = signed
+				} else {
+					imageURL = cosURL
+				}
+			}
+		}
+	}
+
 	fmt.Printf("调试：返回的图片URL: %s\n", imageURL)
 	return imageURL, nil
 }

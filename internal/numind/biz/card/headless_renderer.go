@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -139,7 +141,7 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
         body {
             margin: 0;
             padding: 60px 50px; /* 上右下左边距：60px 50px 60px 50px */
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            font-family: "SourceHanSerifSC", "STFangsong", -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
             %s
             color: #333333;
             line-height: 1.6;
@@ -307,7 +309,7 @@ func (r *SimpleHeadlessRenderer) renderWithHeadlessBrowser(htmlContent string) (
 	}
 	fmt.Printf("🔍 调试：HTML文件绝对路径=%s\n", absPath)
 
-	// 创建Chrome选项 - 针对容器环境优化
+	// 创建Chrome选项 - 容器环境优化
 	fmt.Printf("🔍 调试：创建Chrome选项...\n")
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
@@ -315,13 +317,39 @@ func (r *SimpleHeadlessRenderer) renderWithHeadlessBrowser(htmlContent string) (
 		chromedp.Flag("no-sandbox", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.Flag("disable-web-security", true),
-		chromedp.Flag("disable-features", "VizDisplayCompositor"),
+		chromedp.Flag("disable-features", "VizDisplayCompositor,Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints,AudioServiceOutOfProcess"),
 		chromedp.Flag("window-size", fmt.Sprintf("%d,%d", r.config.Card.Width, r.config.Card.Height)),
 		chromedp.Flag("disable-extensions", true),
 		chromedp.Flag("disable-plugins", true),
 		chromedp.Flag("disable-images", false),     // 保持图片渲染
 		chromedp.Flag("disable-javascript", false), // 保持JS支持
+		// 字体渲染优化 - 容器环境
 		chromedp.Flag("font-render-hinting", "none"),
+		chromedp.Flag("disable-font-subpixel-positioning", true),
+		// 容器环境特定优化
+		chromedp.Flag("disable-background-timer-throttling", true),
+		chromedp.Flag("disable-renderer-backgrounding", true),
+		chromedp.Flag("disable-backgrounding-occluded-windows", true),
+		chromedp.Flag("disable-ipc-flooding-protection", true),
+		chromedp.Flag("max_old_space_size", "4096"), // 增加内存限制
+		chromedp.Flag("memory-pressure-off", true),
+		chromedp.Flag("disable-background-networking", true),
+		chromedp.Flag("disable-default-apps", true),
+		chromedp.Flag("disable-sync", true),
+		chromedp.Flag("no-first-run", true),
+		chromedp.Flag("disable-logging", true),
+		chromedp.Flag("disable-breakpad", true),
+		chromedp.Flag("disable-hang-monitor", true),
+		chromedp.Flag("disable-prompt-on-repost", true),
+		chromedp.Flag("disable-domain-reliability", true),
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.Flag("disable-field-trial-config", true),
+		chromedp.Flag("disable-background-mode", true),
+		chromedp.Flag("disable-software-rasterizer", true),
+		chromedp.Flag("disable-canvas-aa", true),
+		chromedp.Flag("disable-2d-canvas-clip-aa", true),
+		chromedp.Flag("disable-gl-drawing-for-tests", true),
+		// 字体加载优化
 		chromedp.Flag("disable-font-subpixel-positioning", true),
 	)
 	fmt.Printf("🔍 调试：Chrome选项创建完成，窗口尺寸=%dx%d\n", r.config.Card.Width, r.config.Card.Height)
@@ -338,10 +366,10 @@ func (r *SimpleHeadlessRenderer) renderWithHeadlessBrowser(htmlContent string) (
 	defer cancel()
 	fmt.Printf("🔍 调试：Chrome任务创建成功\n")
 
-	// 设置超时
-	ctx, cancel := context.WithTimeout(taskCtx, 30*time.Second)
+	// 设置超时 - 容器环境需要更长时间
+	ctx, cancel := context.WithTimeout(taskCtx, 120*time.Second)
 	defer cancel()
-	fmt.Printf("🔍 调试：设置30秒超时\n")
+	fmt.Printf("🔍 调试：设置120秒超时（容器环境优化）\n")
 
 	var imageData []byte
 
@@ -354,6 +382,14 @@ func (r *SimpleHeadlessRenderer) renderWithHeadlessBrowser(htmlContent string) (
 		chromedp.Sleep(2*time.Second),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			fmt.Printf("🔍 调试：页面加载完成，开始截图...\n")
+
+			// 等待字体加载 - 增加超时时间
+			if err := chromedp.Evaluate(`document.fonts.ready`, nil).Do(ctx); err == nil {
+				fmt.Printf("🔍 调试：字体加载完成\n")
+			}
+
+			// 额外等待时间确保字体完全加载
+			time.Sleep(3 * time.Second)
 
 			// 调试：检查页面内容
 			var bodyText string
@@ -387,11 +423,41 @@ func (r *SimpleHeadlessRenderer) renderWithHeadlessBrowser(htmlContent string) (
 
 	if err != nil {
 		fmt.Printf("❌ 调试：渲染任务执行失败 - %v\n", err)
+		// 检查是否为超时错误，如果是则重试
+		if strings.Contains(err.Error(), "context deadline exceeded") || strings.Contains(err.Error(), "timeout") {
+			fmt.Printf("🔄 检测到超时错误，尝试重试...\n")
+			return r.retryRenderWithHeadlessBrowser(htmlContent, 1)
+		}
 		return nil, fmt.Errorf("failed to render with headless browser: %v", err)
 	}
 
 	fmt.Printf("🔍 调试：渲染任务执行成功\n")
 	fmt.Printf("🔍 调试：生成的图片大小: %d bytes\n", len(imageData))
+	return imageData, nil
+}
+
+// retryRenderWithHeadlessBrowser 重试渲染（最多3次）
+func (r *SimpleHeadlessRenderer) retryRenderWithHeadlessBrowser(htmlContent string, attempt int) ([]byte, error) {
+	const maxRetries = 3
+	if attempt > maxRetries {
+		fmt.Printf("❌ 重试次数已达上限 (%d次)\n", maxRetries)
+		return nil, fmt.Errorf("max retries exceeded")
+	}
+
+	fmt.Printf("🔄 第 %d 次重试渲染 (共%d次机会)...\n", attempt, maxRetries)
+
+	// 增加重试间隔
+	time.Sleep(time.Duration(attempt) * 5 * time.Second)
+
+	// 重新尝试渲染
+	imageData, err := r.renderWithHeadlessBrowser(htmlContent)
+	if err != nil {
+		fmt.Printf("❌ 第 %d 次重试失败 - %v\n", attempt, err)
+		// 递归重试
+		return r.retryRenderWithHeadlessBrowser(htmlContent, attempt+1)
+	}
+
+	fmt.Printf("✅ 第 %d 次重试成功\n", attempt)
 	return imageData, nil
 }
 
@@ -444,8 +510,24 @@ func (r *SimpleHeadlessRenderer) saveImage(imageData []byte, cardID uint) (strin
 		fmt.Printf("🔍 调试：文件创建验证成功，大小=%d bytes\n", info.Size())
 	}
 
-	// 返回图片URL
+	// 构建本地URL
 	imageURL := util.GetCardImageURL(cardID, filename)
+
+	// 备份上传到腾讯云 COS（忽略错误，失败则使用本地路径）
+	if util.IsCOSEnabled() {
+		objectKey := path.Join("card", fmt.Sprintf("%d", cardID), filename)
+		if data, err := os.ReadFile(filepath); err == nil {
+			if cosURL, err := util.UploadBytesToCOS(context.Background(), objectKey, "image/webp", data); err == nil && cosURL != "" {
+				// 尝试生成短期签名 URL 以支持私有桶读取
+				if signed, err := util.GenerateSignedURL(context.Background(), objectKey, 600); err == nil && signed != "" {
+					imageURL = signed
+				} else {
+					imageURL = cosURL
+				}
+			}
+		}
+	}
+
 	fmt.Printf("🔍 调试：返回的图片URL=%s\n", imageURL)
 	return imageURL, nil
 }
