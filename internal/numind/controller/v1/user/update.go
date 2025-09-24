@@ -17,6 +17,7 @@ import (
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/util"
 	v1 "numind-server/pkg/api/numind/v1"
 )
 
@@ -145,6 +146,30 @@ func (ctrl *UserController) handleAvatarUpload(c *gin.Context, file *multipart.F
 
 	// 返回完整路径URL（保存到数据库）
 	avatarURL := fmt.Sprintf("%s/avatars/%d/%s", imagePath, user.ID, fileName)
+
+	// 上传到COS（如果启用）
+	if util.IsCOSEnabled() {
+		// 读取上传的文件
+		if imageData, err := os.ReadFile(filePath); err == nil {
+			// 构建COS对象键：avatars/{user_id}/avatar_{timestamp}.{ext}
+			objectKey := fmt.Sprintf("avatars/%d/%s", user.ID, fileName)
+
+			// 上传到COS
+			cosURL, uploadErr := util.UploadBytesToCOS(c, objectKey, file.Header.Get("Content-Type"), imageData)
+			if uploadErr != nil {
+				log.C(c).Warnw("上传头像到COS失败", "user_id", user.ID, "error", uploadErr.Error())
+			} else if cosURL != "" {
+				log.C(c).Infow("✅ 用户头像已上传到COS", "user_id", user.ID, "cos_url", cosURL)
+
+				// 生成签名URL（可选，如果需要的话）
+				if signedURL, err := util.GenerateSignedURL(c, objectKey, 600); err == nil && signedURL != "" {
+					log.C(c).Infow("头像COS签名URL生成成功", "user_id", user.ID, "signed_url", signedURL)
+				}
+			}
+		} else {
+			log.C(c).Warnw("读取头像文件失败", "user_id", user.ID, "path", filePath, "error", err.Error())
+		}
+	}
 
 	log.C(c).Infow("Avatar uploaded successfully", "user_id", user.ID, "file_path", filePath, "avatar_url", avatarURL)
 

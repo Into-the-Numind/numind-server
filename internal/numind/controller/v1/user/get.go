@@ -46,9 +46,9 @@ func (ctrl *UserController) GetCurrentUser(c *gin.Context) {
 		return
 	}
 
-	// 转换头像URL用于展示（去掉/opt前缀）
+	// 转换头像URL用于展示（优先使用COS链接）
 	if userWithStats.AvatarURL != "" {
-		userWithStats.AvatarURL = util.GetAvatarDisplayURL(userWithStats.AvatarURL)
+		userWithStats.AvatarURL = util.GetAvatarWithCOS(c, userWithStats.ID, userWithStats.AvatarURL)
 	}
 
 	core.WriteResponse(c, nil, userWithStats)

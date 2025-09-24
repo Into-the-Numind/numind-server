@@ -22,9 +22,9 @@ func (ctrl *UserController) WechatLogin(c *gin.Context) {
 		return
 	}
 
-	// 转换头像URL用于展示（去掉/opt前缀）
+	// 转换头像URL用于展示（优先使用COS链接）
 	if result.User != nil && result.User.AvatarURL != "" {
-		result.User.AvatarURL = util.GetAvatarDisplayURL(result.User.AvatarURL)
+		result.User.AvatarURL = util.GetAvatarWithCOS(c, result.User.ID, result.User.AvatarURL)
 	}
 
 	core.WriteResponse(c, nil, result)

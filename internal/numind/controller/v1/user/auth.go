@@ -8,6 +8,7 @@ import (
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/middleware"
+	"numind-server/internal/pkg/util"
 )
 
 // GetProfile 获取用户资料
@@ -25,11 +26,17 @@ func (ctrl *UserController) GetProfile(c *gin.Context) {
 		"used_days":      0, // 这里需要计算
 	}
 
+	// 转换头像URL用于展示（优先使用COS链接）
+	avatarURL := user.AvatarURL
+	if avatarURL != "" {
+		avatarURL = util.GetAvatarWithCOS(c, user.ID, avatarURL)
+	}
+
 	userData := gin.H{
 		"id":         user.ID,
 		"openid":     user.OpenID,
 		"nickname":   user.Nickname,
-		"avatar_url": user.AvatarURL,
+		"avatar_url": avatarURL,
 		"phone":      user.Phone,
 		"created_at": user.CreatedAt,
 		"stats":      stats,
