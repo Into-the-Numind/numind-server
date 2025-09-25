@@ -2595,6 +2595,27 @@ func (p *AsyncBookProcessor) extractImagePromptFromMarkdown(markdown string) str
 	return ""
 }
 
+// formatBackgroundStyle 将背景图路径转为内联 CSS 样式，支持 http(s)、data、本地绝对/相对路径
+func formatBackgroundStyle(background string) string {
+	if strings.TrimSpace(background) == "" {
+		return ""
+	}
+	src := background
+	lower := strings.ToLower(background)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "data:") {
+		// remote or data url
+		src = background
+	} else if filepath.IsAbs(background) {
+		src = "file://" + background
+	} else {
+		if absPath, err := filepath.Abs(background); err == nil {
+			src = "file://" + absPath
+		}
+	}
+	// 背景图居中、cover 铺满
+	return fmt.Sprintf("background: url('%s') center center / cover no-repeat;", src)
+}
+
 // generateDefaultImagePrompt 生成默认的图片提示词
 func (p *AsyncBookProcessor) generateDefaultImagePrompt(content string) string {
 	// 简单的提示词生成逻辑
@@ -2623,8 +2644,8 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
 	// 处理背景样式 - 优先使用模板背景，如果没有则使用默认模板背景
 	var backgroundStyle string
 	if background != "" {
-		// 使用模板背景图片，覆盖整个卡片
-		backgroundStyle = fmt.Sprintf("background: url('file://%s') center center / cover no-repeat;", background)
+		// 使用模板背景图片，覆盖整个卡片 - 使用正确的URL处理逻辑
+		backgroundStyle = formatBackgroundStyle(background)
 		log.C(context.Background()).Infow("使用指定模板背景", "background", background)
 	} else if imageURL != "" && imageURL != "null" && imageURL != "undefined" {
 		// 构建完整的图片路径

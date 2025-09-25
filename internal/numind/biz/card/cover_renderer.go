@@ -181,8 +181,8 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
 	// 处理背景样式 - 优先使用模板背景，如果没有则使用白色背景
 	backgroundStyle := ""
 	if r.templateBackground != "" {
-		// 使用模板背景图片
-		backgroundStyle = fmt.Sprintf("background: url('file://%s') center center / cover no-repeat;", r.templateBackground)
+		// 使用模板背景图片 - 使用正确的URL处理逻辑
+		backgroundStyle = formatBackgroundStyle(r.templateBackground)
 	} else {
 		// 使用默认白色背景
 		backgroundStyle = "background: #ffffff;"

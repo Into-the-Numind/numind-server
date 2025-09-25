@@ -111,8 +111,8 @@ func (r *SimpleHeadlessRenderer) generateSimpleHTML(elements []pagination.Elemen
 	// 优先使用模板背景，如果没有则使用普通背景
 	var bgStyle string
 	if r.templateBackground != "" {
-		// 使用模板背景，确保完全覆盖
-		bgStyle = fmt.Sprintf("background: url('file://%s') center center / cover no-repeat;", r.templateBackground)
+		// 使用模板背景，确保完全覆盖 - 使用正确的URL处理逻辑
+		bgStyle = formatBackgroundStyle(r.templateBackground)
 		fmt.Printf("🔍 使用模板背景: %s\n", r.templateBackground)
 	} else if r.background != "" {
 		// 使用普通背景
