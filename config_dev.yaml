@@ -122,7 +122,7 @@ pagination:
   # 动态分页优化配置
   dynamic:
     min_height: 720          # 最小卡片高度
-    max_height: 4320         # 最大卡片高度（3倍标准高度）
+    max_height: 1440         # 最大卡片高度
     min_bottom_padding: 40   # 最小底部留白，确保文字不被遮挡
     max_images_per_card: 5   # 每张卡片最大图片数
     max_text_length: 2000    # 每张卡片最大文本长度
@@ -179,32 +179,32 @@ pagination:
   # 元素样式配置
   styles:
     title:
-      font_size: 84        # 标题: 84px（增大两个位数：64+20）
-      line_height: 118     # 1.4倍行高
+      font_size: 110       # 标题: 84px（增大两个位数：64+20）
+      line_height: 165     # 1.5倍行高
       margin_top: 30       # 标题上间距: 30px（统一标准）
       margin_bottom: 30    # 标题下方间距: 30px（统一标准）
       color: "#333333"     # 主标题: #333333（深灰）
       align: "justify"     # 两端对齐
     
     subtitle:
-      font_size: 68        # 副标题: 68px（增大两个位数：48+20）
-      line_height: 102     # 1.5倍行高
+      font_size: 50        # 副标题: 68px（增大两个位数：48+20）
+      line_height: 75      # 1.5倍行高
       margin_top: 30       # 副标题上间距: 30px（统一标准）
       margin_bottom: 25    # 副标题下方: 25px（标准下间距）
       color: "#666666"     # 副标题: #666666（中灰）
       align: "justify"     # 两端对齐
     
     body:
-      font_size: 56        # 正文: 56px（增大两个位数：36+20）
-      line_height: 90      # 1.6倍行高（标准行高）
+      font_size: 42        # 正文: 56px（增大两个位数：36+20）
+      line_height: 63      # 1.5倍行高（标准行高）
       margin_top: 30       # 正文上间距: 30px（统一标准）
       margin_bottom: 30    # 正文下方间距: 30px（统一标准）
       color: "#333333"     # 正文: #333333（深灰）
       align: "justify"     # 两端对齐
     
     list:
-      font_size: 56        # 列表: 56px（增大两个位数：36+20）
-      line_height: 90      # 1.6倍行高（标准行高）
+      font_size: 42        # 列表: 56px（增大两个位数：36+20）
+      line_height: 63      # 1.6倍行高（标准行高）
       margin_top: 30       # 列表上间距: 30px（统一标准）
       margin_bottom: 30    # 列表下方间距: 30px（统一标准）
       color: "#333333"     # 列表: #333333（深灰）
@@ -212,24 +212,24 @@ pagination:
       indent: 20           # 列表缩进
     
     quote:
-      font_size: 46        # 引用: 46px（增大两个位数：36+20）
-      line_height: 74      # 1.5倍行高（紧凑行高）
+      font_size: 42        # 引用: 46px（增大两个位数：36+20）
+      line_height: 63      # 1.5倍行高（紧凑行高）
       margin_top: 30       # 引用上间距: 30px（统一标准）
       margin_bottom: 30    # 引用下方间距: 30px（统一标准）
       color: "#1E90FF"     # 引用: #1E90FF（蓝色）
       align: "justify"     # 两端对齐
     
     tag:
-      font_size: 38        # 标签: 38px（增大两个位数：28+20）
-      line_height: 62      # 1.5倍行高
+      font_size: 42        # 标签: 38px（增大两个位数：28+20）
+      line_height: 63      # 1.5倍行高
       margin_top: 30       # 标签上间距: 30px（统一标准）
       margin_bottom: 30    # 标签下方间距: 30px（统一标准）
       color: "#1E90FF"     # 标签: #1E90FF（蓝色）
       align: "left"        # 左对齐
     
     number:
-      font_size: 48        # 数字: 48px（增大两个位数：28+20）
-      line_height: 72      # 1.5倍行高
+      font_size: 42        # 数字: 48px（增大两个位数：28+20）
+      line_height: 63      # 1.5倍行高
       margin_top: 30       # 数字上间距: 30px（统一标准）
       margin_bottom: 30    # 数字下方间距: 30px（统一标准）
       color: "#1E90FF"     # 数字: #1E90FF（蓝色）
@@ -252,7 +252,7 @@ special_rules:
   
   content_card:
     safe_area_margin: 30                      # 内容安全区域边距
-    max_content_height: 1200                  # 内容最大高度
+    max_content_height: 1440                  # 内容最大高度
     overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
 
 # AI提示词配置
@@ -395,7 +395,7 @@ html_converter:
   # 分页配置
   pagination:
     available_width: 1000  # 可用宽度
-    max_content_height: 1360  # 最大内容高度
+    max_content_height: 1440  # 最大内容高度
     min_card_height: 800      # 最小卡片高度
     max_card_height: 4320     # 最大卡片高度
     min_bottom_padding: 40    # 最小底部留白，确保文字不被遮挡
@@ -403,17 +403,17 @@ html_converter:
   # 字体配置 - 清晰大字号风格（与pagination.styles保持一致）
   fonts:
     family: "'SourceHanSerifSC', 'STFangsong', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif"  # 字体系列，优先使用思源宋体
-    title_size: 84       # 标题字体大小（与pagination.styles.title.font_size一致）
-    subtitle_size: 68    # 副标题字体大小（与pagination.styles.subtitle.font_size一致）
-    body_size: 56        # 正文字体大小（与pagination.styles.body.font_size一致）
-    list_size: 56        # 列表字体大小（与pagination.styles.list.font_size一致）
-    quote_size: 46       # 引用字体大小（与pagination.styles.quote.font_size一致）
+    title_size: 110       # 标题字体大小（与pagination.styles.title.font_size一致）
+    subtitle_size: 50     # 副标题字体大小（与pagination.styles.subtitle.font_size一致）
+    body_size: 42         # 正文字体大小（与pagination.styles.body.font_size一致）
+    list_size: 42         # 列表字体大小（与pagination.styles.list.font_size一致）
+    quote_size: 42        # 引用字体大小（与pagination.styles.quote.font_size一致）
   
   # 行高配置 - 提升可读性
   line_heights:
-    title: 1.3           # 标题行高倍数
-    subtitle: 1.3        # 副标题行高倍数
-    body: 1.8            # 正文行高倍数（增大行高，提升可读性）
+    title: 1.5           # 标题行高倍数
+    subtitle: 1.5        # 副标题行高倍数
+    body: 1.5            # 正文行高倍数（增大行高，提升可读性）
 
 # GSE分词库配置
 gse:
