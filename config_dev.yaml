@@ -104,7 +104,7 @@ card_rendering:
     width: 1080   # 标准尺寸: 1080×1440（3:4比例）
     height: 1440  # 基础高度，实际使用动态高度
     padding:
-      top: 60     # 标准内边距: 60px 50px
+      top: 70     # 标准内边距: 60px 50px
       right: 50
       bottom: 40
       left: 50
@@ -124,10 +124,10 @@ pagination:
     min_height: 720          # 最小卡片高度
     max_height: 1200         # 最大卡片高度
     min_bottom_padding: 40   # 最小底部留白，确保文字不被遮挡
-    max_images_per_card: 5   # 每张卡片最大图片数
+    max_images_per_card: 2   # 每张卡片最大图片数
     max_text_length: 2000    # 每张卡片最大文本长度
-    base_height: 1440        # 基础高度（用于规范化）
-    char_width_factor: 1.05  # 字符宽度系数
+    base_height: 1240        # 基础高度（用于规范化）
+    char_width_factor: 1     # 字符宽度系数
     overflow_tolerance: 0.05 # 溢出容错比例（5%）
     high_utilization_threshold: 85.0 # 高利用率阈值（85%）
     base_image_height: 400   # 基础图片高度
@@ -137,9 +137,9 @@ pagination:
     list_item_spacing: 8     # 列表项间距
   
   # 新增可配置参数
-  char_width_factor: 1.05            # 字符宽度系数
-  overflow_tolerance: 0.05           # 溢出容错比例（5%）
-  high_utilization_threshold: 85.0   # 高利用率阈值（85%）
+  char_width_factor: 1.00            # 字符宽度系数
+  overflow_tolerance: 0.02           # 溢出容错比例（5%）
+  high_utilization_threshold: 90.0   # 高利用率阈值（85%）
   min_chars_per_line: 20             # 最小每行字符数
   list_item_spacing: 8               # 列表项间距
 
@@ -181,16 +181,16 @@ pagination:
     title:
       font_size: 110       # 标题: 84px（增大两个位数：64+20）
       line_height: 165     # 1.5倍行高
-      margin_top: 30       # 标题上间距: 30px（统一标准）
-      margin_bottom: 130    # 标题下方间距: 30px（统一标准）
+      margin_top: 0        # 标题上间距: 30px（统一标准）
+      margin_bottom: 130   # 标题下方间距: 30px（统一标准）
       color: "#333333"     # 主标题: #333333（深灰）
       align: "justify"     # 两端对齐
     
     subtitle:
-      font_size: 50        # 副标题: 68px（增大两个位数：48+20）
-      line_height: 75      # 1.5倍行高
-      margin_top: 0       # 副标题上间距: 30px（统一标准）
-      margin_bottom: 130    # 副标题下方: 25px（标准下间距）
+      font_size: 42        # 副标题: 68px（增大两个位数：48+20）
+      line_height: 63      # 1.5倍行高
+      margin_top: 0        # 副标题上间距: 30px（统一标准）
+      margin_bottom: 130   # 副标题下方: 25px（标准下间距）
       color: "#666666"     # 副标题: #666666（中灰）
       align: "justify"     # 两端对齐
     
@@ -395,9 +395,9 @@ html_converter:
   # 分页配置
   pagination:
     available_width: 1000  # 可用宽度
-    max_content_height: 1440  # 最大内容高度
+    max_content_height: 1240  # 最大内容高度
     min_card_height: 800      # 最小卡片高度
-    max_card_height: 4320     # 最大卡片高度
+    max_card_height: 1240     # 最大卡片高度
     min_bottom_padding: 40    # 最小底部留白，确保文字不被遮挡
   
   # 字体配置 - 清晰大字号风格（与pagination.styles保持一致）
