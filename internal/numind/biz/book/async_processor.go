@@ -2620,12 +2620,12 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
 	// 获取字体路径（根据环境动态调整）
 	regularFontPath, boldFontPath := getFontPaths()
 
-	// 处理背景样式 - 优先使用模板背景，如果没有则使用默认背景
+	// 处理背景样式 - 优先使用模板背景，如果没有则使用默认模板背景
 	var backgroundStyle string
 	if background != "" {
 		// 使用模板背景图片，覆盖整个卡片
 		backgroundStyle = fmt.Sprintf("background: url('file://%s') center center / cover no-repeat;", background)
-		log.C(context.Background()).Infow("使用模板背景", "background", background)
+		log.C(context.Background()).Infow("使用指定模板背景", "background", background)
 	} else if imageURL != "" && imageURL != "null" && imageURL != "undefined" {
 		// 构建完整的图片路径
 		imagePath := viper.GetString("resource.image_path")
@@ -2646,13 +2646,25 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
 		backgroundStyle = fmt.Sprintf("background: url('%s') center center / cover no-repeat;", fullImageURL)
 
 		// 添加调试日志
-		log.C(context.Background()).Infow("封面图片路径转换",
+		log.C(context.Background()).Infow("使用book图片作为背景",
 			"original_url", imageURL,
 			"image_path", imagePath,
 			"full_url", fullImageURL)
 	} else {
-		// 使用默认的白色背景
-		backgroundStyle = "background: #ffffff;"
+		// 使用默认模板背景 - 从数据库获取ID为1的模板
+		defaultTemplateURL := ""
+		if defaultTemplate, err := p.biz.Templates().GetByID(context.Background(), 1); err == nil && defaultTemplate != nil && defaultTemplate.File != "" {
+			defaultTemplateURL = defaultTemplate.File
+			log.C(context.Background()).Infow("使用数据库默认模板", "template_id", 1, "file", defaultTemplateURL)
+		} else {
+			// 如果数据库获取失败，使用本地默认路径
+			defaultTemplatePath := "res/template/default.webp"
+			currentDir, _ := os.Getwd()
+			fullDefaultPath := filepath.Join(currentDir, defaultTemplatePath)
+			defaultTemplateURL = "file://" + fullDefaultPath
+			log.C(context.Background()).Infow("数据库模板获取失败，使用本地默认模板", "local_path", fullDefaultPath, "error", err)
+		}
+		backgroundStyle = fmt.Sprintf("background: url('%s') center center / cover no-repeat;", defaultTemplateURL)
 	}
 
 	// 处理book图片 - 已注释，不需要图片
