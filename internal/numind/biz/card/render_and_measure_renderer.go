@@ -842,7 +842,7 @@ func (r *RenderAndMeasureRenderer) generateSuperLongHTMLTemplate(data SuperLongH
             font-family: "SourceHanSerifSC", "STFangsong", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
             background: #ffffff;
             color: #333333;
-            line-height: 1.6;
+            line-height: {{div (index .Config.Styles "body" "LineHeight") (index .Config.Styles "body" "FontSize")}};
             width: 100%;
             margin: 0;
             padding: 0;
@@ -860,37 +860,37 @@ func (r *RenderAndMeasureRenderer) generateSuperLongHTMLTemplate(data SuperLongH
         }
         
         .element-title {
-            font-size: 64px;
+            font-size: {{index .Config.Styles "title" "FontSize"}}px;
             color: #333333;
-            line-height: 1.4;
+            line-height: {{div (index .Config.Styles "title" "LineHeight") (index .Config.Styles "title" "FontSize")}};
             text-align: justify;
-            margin: 0 0 30px 0;
+            margin: {{index .Config.Styles "body" "MarginTop"}}px 0 {{index .Config.Styles "body" "MarginBottom"}}px 0;
             font-weight: bold;
         }
         
         .element-subtitle {
-            font-size: 48px;
+            font-size: {{index .Config.Styles "subtitle" "FontSize"}}px;
             color: #666666;
-            line-height: 1.5;
+            line-height: {{div (index .Config.Styles "subtitle" "LineHeight") (index .Config.Styles "subtitle" "FontSize")}};
             text-align: justify;
             margin: 0 0 25px 0;
             font-weight: normal;
         }
         
         .element-body {
-            font-size: 36px;
+            font-size: {{index .Config.Styles "body" "FontSize"}}px;
             color: #333333;
-            line-height: 1.6;
+            line-height: {{div (index .Config.Styles "body" "LineHeight") (index .Config.Styles "body" "FontSize")}};
             text-align: justify;
-            margin: 0 0 30px 0;
+            margin: {{index .Config.Styles "body" "MarginTop"}}px 0 {{index .Config.Styles "body" "MarginBottom"}}px 0;
         }
         
         .element-quote {
-            font-size: 36px;
+            font-size: {{index .Config.Styles "body" "FontSize"}}px;
             color: #1E90FF;
-            line-height: 1.5;
+            line-height: {{div (index .Config.Styles "subtitle" "LineHeight") (index .Config.Styles "subtitle" "FontSize")}};
             text-align: justify;
-            margin: 0 0 30px 0;
+            margin: {{index .Config.Styles "body" "MarginTop"}}px 0 {{index .Config.Styles "body" "MarginBottom"}}px 0;
             font-style: italic;
             padding: 20px;
             background: linear-gradient(to right, #EAF2FF, #FAFCFF);
@@ -899,11 +899,11 @@ func (r *RenderAndMeasureRenderer) generateSuperLongHTMLTemplate(data SuperLongH
         }
         
         .element-list {
-            font-size: 36px;
+            font-size: {{index .Config.Styles "body" "FontSize"}}px;
             color: #333333;
-            line-height: 1.6;
+            line-height: {{div (index .Config.Styles "body" "LineHeight") (index .Config.Styles "body" "FontSize")}};
             text-align: justify;
-            margin: 0 0 30px 0;
+            margin: {{index .Config.Styles "body" "MarginTop"}}px 0 {{index .Config.Styles "body" "MarginBottom"}}px 0;
             padding-left: 40px;
             list-style: none;
         }
@@ -1131,7 +1131,7 @@ func (r *RenderAndMeasureRenderer) generateSingleCardHTMLTemplate(data interface
             font-family: "SourceHanSerifSC", "STFangsong", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
             background: #ffffff;
             color: #333333;
-            line-height: 1.6;
+            line-height: {{div (index .Config.Styles "body" "LineHeight") (index .Config.Styles "body" "FontSize")}};
             width: 1080px;
             height: 1440px;
             margin: 0;
@@ -1145,37 +1145,37 @@ func (r *RenderAndMeasureRenderer) generateSingleCardHTMLTemplate(data interface
         }
         
         .element-title {
-            font-size: 64px;
+            font-size: {{index .Config.Styles "title" "FontSize"}}px;
             color: #333333;
-            line-height: 1.4;
+            line-height: {{div (index .Config.Styles "title" "LineHeight") (index .Config.Styles "title" "FontSize")}};
             text-align: justify;
-            margin: 0 0 30px 0;
+            margin: {{index .Config.Styles "body" "MarginTop"}}px 0 {{index .Config.Styles "body" "MarginBottom"}}px 0;
             font-weight: bold;
         }
         
         .element-subtitle {
-            font-size: 48px;
+            font-size: {{index .Config.Styles "subtitle" "FontSize"}}px;
             color: #666666;
-            line-height: 1.5;
+            line-height: {{div (index .Config.Styles "subtitle" "LineHeight") (index .Config.Styles "subtitle" "FontSize")}};
             text-align: justify;
             margin: 0 0 25px 0;
             font-weight: normal;
         }
         
         .element-body {
-            font-size: 36px;
+            font-size: {{index .Config.Styles "body" "FontSize"}}px;
             color: #333333;
-            line-height: 1.6;
+            line-height: {{div (index .Config.Styles "body" "LineHeight") (index .Config.Styles "body" "FontSize")}};
             text-align: justify;
-            margin: 0 0 30px 0;
+            margin: {{index .Config.Styles "body" "MarginTop"}}px 0 {{index .Config.Styles "body" "MarginBottom"}}px 0;
         }
         
         .element-quote {
-            font-size: 36px;
+            font-size: {{index .Config.Styles "body" "FontSize"}}px;
             color: #1E90FF;
-            line-height: 1.5;
+            line-height: {{div (index .Config.Styles "subtitle" "LineHeight") (index .Config.Styles "subtitle" "FontSize")}};
             text-align: justify;
-            margin: 0 0 30px 0;
+            margin: {{index .Config.Styles "body" "MarginTop"}}px 0 {{index .Config.Styles "body" "MarginBottom"}}px 0;
             font-style: italic;
             padding: 20px;
             background: linear-gradient(to right, #EAF2FF, #FAFCFF);
@@ -1184,11 +1184,11 @@ func (r *RenderAndMeasureRenderer) generateSingleCardHTMLTemplate(data interface
         }
         
         .element-list {
-            font-size: 36px;
+            font-size: {{index .Config.Styles "body" "FontSize"}}px;
             color: #333333;
-            line-height: 1.6;
+            line-height: {{div (index .Config.Styles "body" "LineHeight") (index .Config.Styles "body" "FontSize")}};
             text-align: justify;
-            margin: 0 0 30px 0;
+            margin: {{index .Config.Styles "body" "MarginTop"}}px 0 {{index .Config.Styles "body" "MarginBottom"}}px 0;
             padding-left: 40px;
             list-style: none;
         }

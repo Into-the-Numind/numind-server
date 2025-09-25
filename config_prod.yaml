@@ -388,11 +388,11 @@ html_converter:
   # 字体配置 - 统一使用思源宋体
   fonts:
     family: "'SourceHanSerifSC', 'STFangsong', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif"  # 字体系列，优先使用思源宋体
-    title_size: 48       # 标题字体大小（大字号，加粗）
-    subtitle_size: 40    # 副标题字体大小（大字号，加粗）
-    body_size: 36        # 正文字体大小（大字号，清晰易读）
-    list_size: 36        # 列表字体大小
-    quote_size: 34       # 引用字体大小
+    title_size: 84       # 标题字体大小（与pagination.styles.title.font_size一致）
+    subtitle_size: 68    # 副标题字体大小（与pagination.styles.subtitle.font_size一致）
+    body_size: 56        # 正文字体大小（与pagination.styles.body.font_size一致）
+    list_size: 56        # 列表字体大小（与pagination.styles.list.font_size一致）
+    quote_size: 46       # 引用字体大小（与pagination.styles.quote.font_size一致）
   
   # 行高配置 - 提升可读性
   line_heights:

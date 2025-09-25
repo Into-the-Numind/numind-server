@@ -258,39 +258,39 @@ func (r *EnhancedDynamicRenderer) generateEnhancedHTML(elements []pagination.Ele
         }
         
         .title {
-            font-size: 64px;
+            font-size: {{index .Config.Styles "title" "FontSize"}}px;
             font-weight: 700;
-            line-height: 90px;
+            line-height: {{index .Config.Styles "title" "LineHeight"}}px;
             color: #ffffff;
             text-align: center;
-            margin: 30px 0;
+            margin: {{index .Config.Styles "title" "MarginTop"}}px 0 {{index .Config.Styles "title" "MarginBottom"}}px 0;
             text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
         }
         
         .subtitle {
-            font-size: 48px;
+            font-size: {{index .Config.Styles "subtitle" "FontSize"}}px;
             font-weight: 600;
-            line-height: 72px;
+            line-height: {{index .Config.Styles "subtitle" "LineHeight"}}px;
             color: #f0f0f0;
-            text-align: justify;
-            margin: 30px 0 25px 0;
+            text-align: {{index .Config.Styles "subtitle" "Align"}};
+            margin: {{index .Config.Styles "subtitle" "MarginTop"}}px 0 {{index .Config.Styles "subtitle" "MarginBottom"}}px 0;
         }
         
         .body {
-            font-size: 36px;
+            font-size: {{index .Config.Styles "body" "FontSize"}}px;
             font-weight: 400;
-            line-height: 58px;
+            line-height: {{index .Config.Styles "body" "LineHeight"}}px;
             color: #ffffff;
-            text-align: justify;
-            margin: 30px 0;
+            text-align: {{index .Config.Styles "body" "Align"}};
+            margin: {{index .Config.Styles "body" "MarginTop"}}px 0 {{index .Config.Styles "body" "MarginBottom"}}px 0;
             text-shadow: 1px 1px 2px rgba(0,0,0,0.2);
         }
         
         .list {
-            font-size: 36px;
-            line-height: 58px;
+            font-size: {{index .Config.Styles "list" "FontSize"}}px;
+            line-height: {{index .Config.Styles "list" "LineHeight"}}px;
             color: #ffffff;
-            margin: 30px 0;
+            margin: {{index .Config.Styles "list" "MarginTop"}}px 0 {{index .Config.Styles "list" "MarginBottom"}}px 0;
         }
         
         .list-item {
@@ -308,13 +308,13 @@ func (r *EnhancedDynamicRenderer) generateEnhancedHTML(elements []pagination.Ele
         }
         
         .quote {
-            font-size: 36px;
-            line-height: 58px;
+            font-size: {{index .Config.Styles "quote" "FontSize"}}px;
+            line-height: {{index .Config.Styles "quote" "LineHeight"}}px;
             color: #e0e0e0;
             font-style: italic;
             border-left: 4px solid #ffffff;
             padding-left: 20px;
-            margin: 30px 0;
+            margin: {{index .Config.Styles "quote" "MarginTop"}}px 0 {{index .Config.Styles "quote" "MarginBottom"}}px 0;
             background: rgba(255,255,255,0.1);
             padding: 20px;
             border-radius: 8px;
