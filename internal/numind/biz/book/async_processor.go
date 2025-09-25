@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -51,6 +52,62 @@ func getCoverTitleConfig() (fontSize int, lineHeight int, color string) {
 	}
 
 	return fontSize, lineHeight, color
+}
+
+// getFontPaths 获取字体文件路径（根据运行环境动态调整）
+func getFontPaths() (regularPath, boldPath string) {
+	// 检测是否在Docker容器中运行
+	if isRunningInDocker() {
+		// Docker容器环境：使用容器内的字体路径
+		regularPath = "file:///usr/share/fonts/truetype/SourceHanSerifSC-Regular.otf"
+		boldPath = "file:///usr/share/fonts/truetype/SourceHanSerifSC-Bold.otf"
+	} else {
+		// 本地开发环境：根据操作系统检测
+		if runtime.GOOS == "darwin" {
+			// macOS
+			regularPath = "file:///Users/" + os.Getenv("USER") + "/Library/Fonts/SourceHanSerifSC-Regular.otf"
+			boldPath = "file:///Users/" + os.Getenv("USER") + "/Library/Fonts/SourceHanSerifSC-Bold.otf"
+		} else if runtime.GOOS == "linux" {
+			// Linux本地环境
+			if homeDir, err := os.UserHomeDir(); err == nil {
+				regularPath = "file://" + homeDir + "/.local/share/fonts/SourceHanSerifSC-Regular.otf"
+				boldPath = "file://" + homeDir + "/.local/share/fonts/SourceHanSerifSC-Bold.otf"
+			} else {
+				// 回退到容器路径
+				regularPath = "file:///usr/share/fonts/truetype/SourceHanSerifSC-Regular.otf"
+				boldPath = "file:///usr/share/fonts/truetype/SourceHanSerifSC-Bold.otf"
+			}
+		} else {
+			// Windows或其他系统，使用回退方案
+			regularPath = "file:///usr/share/fonts/truetype/SourceHanSerifSC-Regular.otf"
+			boldPath = "file:///usr/share/fonts/truetype/SourceHanSerifSC-Bold.otf"
+		}
+	}
+
+	return regularPath, boldPath
+}
+
+// isRunningInDocker 检测是否在Docker容器中运行
+func isRunningInDocker() bool {
+	// 检查 /.dockerenv 文件（Docker容器的标准标识）
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+
+	// 检查容器化环境变量
+	if os.Getenv("DOCKER_CONTAINER") == "true" || os.Getenv("container") != "" {
+		return true
+	}
+
+	// 检查cgroup信息
+	if data, err := os.ReadFile("/proc/1/cgroup"); err == nil {
+		content := string(data)
+		if strings.Contains(content, "docker") || strings.Contains(content, "containerd") {
+			return true
+		}
+	}
+
+	return false
 }
 
 // BizInterface 业务接口
@@ -2560,6 +2617,9 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
 	// 获取封面标题配置
 	fontSize, lineHeight, color := getCoverTitleConfig()
 
+	// 获取字体路径（根据环境动态调整）
+	regularFontPath, boldFontPath := getFontPaths()
+
 	// 处理背景样式 - 优先使用模板背景，如果没有则使用默认背景
 	var backgroundStyle string
 	if background != "" {
@@ -2634,6 +2694,39 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>封面 - %s</title>
     <style>
+        /* 思源宋体字体定义 - 环境自适应 */
+        @font-face {
+            font-family: "SourceHanSerifSC";
+            src: url("%s") format("opentype"),
+                 local("Source Han Serif SC"),
+                 local("SourceHanSerifSC"),
+                 local("STFangsong"),
+                 local("Source Han Sans CN"),
+                 local("Noto Sans CJK SC"),
+                 local("PingFang SC"),
+                 local("Hiragino Sans GB"),
+                 local("Microsoft YaHei"),
+                 local("sans-serif");
+            font-weight: normal;
+            font-style: normal;
+        }
+
+        @font-face {
+            font-family: "SourceHanSerifSC";
+            src: url("%s") format("opentype"),
+                 local("Source Han Serif SC Bold"),
+                 local("SourceHanSerifSC-Bold"),
+                 local("STFangsong"),
+                 local("Source Han Sans CN Bold"),
+                 local("Noto Sans CJK SC Semibold"),
+                 local("PingFang SC"),
+                 local("Hiragino Sans GB"),
+                 local("Microsoft YaHei Bold"),
+                 local("sans-serif");
+            font-weight: 700;
+            font-style: normal;
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -2745,7 +2838,7 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
         </div>
     </div>
 </body>
-</html>`, title, backgroundStyle, backgroundStyle, fontSize, color, lineHeight, title)
+</html>`, title, regularFontPath, boldFontPath, backgroundStyle, backgroundStyle, fontSize, color, lineHeight, title)
 }
 
 // generateCoverImageOnly 仅生成封面图片，不重新生成HTML
