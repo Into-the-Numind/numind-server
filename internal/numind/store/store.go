@@ -18,7 +18,6 @@ var (
 type IStore interface {
 	DB() *gorm.DB
 	Users() UserStore
-	Posts() PostStore
 	Images() ImageStore
 	Cards() CardStore
 	Books() BookStore
@@ -60,11 +59,6 @@ func (ds *datastore) DB() *gorm.DB {
 // Users 返回一个实现了 UserStore 接口的实例.
 func (ds *datastore) Users() UserStore {
 	return newUsers(ds.db)
-}
-
-// Posts 返回一个实现了 PostStore 接口的实例.
-func (ds *datastore) Posts() PostStore {
-	return newPosts(ds.db)
 }
 
 func (ds *datastore) Images() ImageStore {

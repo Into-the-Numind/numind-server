@@ -265,18 +265,13 @@ func (b *userBiz) List(ctx context.Context, offset, limit int) (*v1.ListUserResp
 			case <-ctx.Done():
 				return nil
 			default:
-				count, _, err := b.ds.Posts().List(ctx, user.Username, 0, 0)
-				if err != nil {
-					log.C(ctx).Errorw("Failed to list posts", "err", err)
-					return err
-				}
 
 				m.Store(user.ID, &v1.UserInfo{
 					Username:  user.Username,
 					Nickname:  user.Nickname,
 					Email:     user.Email,
 					Phone:     user.Email,
-					PostCount: count,
+					PostCount: 0,
 					CreatedAt: user.CreatedAt.Format("2006-01-02 15:04:05"),
 					UpdatedAt: user.UpdatedAt.Format("2006-01-02 15:04:05"),
 				})
@@ -295,40 +290,6 @@ func (b *userBiz) List(ctx context.Context, offset, limit int) (*v1.ListUserResp
 	for _, item := range list {
 		user, _ := m.Load(item.ID)
 		users = append(users, user.(*v1.UserInfo))
-	}
-
-	log.C(ctx).Debugw("Get users from backend storage", "count", len(users))
-
-	return &v1.ListUserResponse{TotalCount: count, Users: users}, nil
-}
-
-// ListWithBadPerformance 是一个性能较差的实现方式（已废弃）.
-func (b *userBiz) ListWithBadPerformance(ctx context.Context, offset, limit int) (*v1.ListUserResponse, error) {
-	count, list, err := b.ds.Users().List(ctx, offset, limit)
-	if err != nil {
-		log.C(ctx).Errorw("Failed to list users from storage", "err", err)
-		return nil, err
-	}
-
-	users := make([]*v1.UserInfo, 0, len(list))
-	for _, item := range list {
-		user := item
-
-		count, _, err := b.ds.Posts().List(ctx, user.Username, 0, 0)
-		if err != nil {
-			log.C(ctx).Errorw("Failed to list posts", "err", err)
-			return nil, err
-		}
-
-		users = append(users, &v1.UserInfo{
-			Username:  user.Username,
-			Nickname:  user.Nickname,
-			Email:     user.Email,
-			Phone:     user.Email,
-			PostCount: count,
-			CreatedAt: user.CreatedAt.Format("2006-01-02 15:04:05"),
-			UpdatedAt: user.UpdatedAt.Format("2006-01-02 15:04:05"),
-		})
 	}
 
 	log.C(ctx).Debugw("Get users from backend storage", "count", len(users))

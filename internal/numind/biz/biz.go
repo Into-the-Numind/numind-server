@@ -18,7 +18,6 @@ import (
 	"numind-server/internal/numind/biz/order"
 	"numind-server/internal/numind/biz/pagination"
 	"numind-server/internal/numind/biz/payment"
-	"numind-server/internal/numind/biz/post"
 	"numind-server/internal/numind/biz/template"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
@@ -31,7 +30,6 @@ import (
 // IBiz 定义了 Biz 层需要实现的方法.
 type IBiz interface {
 	Users() user.UserBiz
-	Posts() post.PostBiz
 	Images() image.ImageBiz
 	Cards() card.CardBiz
 	Books() book.BookBiz
@@ -70,11 +68,6 @@ func NewBiz(ds store.IStore) *biz {
 // Users 返回一个实现了 UserBiz 接口的实例.
 func (b *biz) Users() user.UserBiz {
 	return user.New(b.ds)
-}
-
-// Posts 返回一个实现了 PostBiz 接口的实例.
-func (b *biz) Posts() post.PostBiz {
-	return post.New(b.ds)
 }
 
 func (b *biz) Images() image.ImageBiz {
