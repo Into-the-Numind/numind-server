@@ -174,6 +174,11 @@ card:
       #     margin_top_multiplier: 1.0    # 标题上边距倍数
       #     margin_bottom_multiplier: 1.0 # 标题下边距倍数
       #     line_height_multiplier: 1.0   # 标题行高倍数
+      # 边距配置 - 优化间距
+      margins:
+        title_bottom: 32     # 标题下边距（增加间距）
+        subtitle_bottom: 28  # 副标题下边距
+        body_bottom: 20      # 正文下边距（增加间距）
     
     # 颜色配置
     colors:
@@ -360,9 +365,3 @@ html_converter:
 # GSE分词库配置
 gse:
   enabled: false         # 是否启用GSE分词功能（默认关闭，避免启动时加载字典）
-  
-  # 边距配置 - 优化间距
-  margins:
-    title_bottom: 32     # 标题下边距（增加间距）
-    subtitle_bottom: 28  # 副标题下边距
-    body_bottom: 20      # 正文下边距（增加间距）
