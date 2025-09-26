@@ -97,9 +97,9 @@ ali:
     model: "stable-diffusion-3.5-large-turbo"  # SD模型
     timeout: 300s        # SD生成超时时间（5分钟）
 
-# 卡片渲染和分页配置 - 统一的卡片配置中心
-card_rendering:
-  # 卡片基础尺寸配置（所有渲染器共用）
+# 卡片配置 - 统一的卡片渲染和分页配置中心
+card:
+  # 基础尺寸配置（所有组件共用）
   dimensions:
     width: 1080   # 标准尺寸: 1080×1440（3:4比例）
     height: 1440  # 基础高度，实际使用动态高度
@@ -110,130 +110,90 @@ card_rendering:
       left: 50
   
   # 渲染器配置
-  renderer:
+  rendering:
     quality: 85            # 图片质量（1-100）
     format: "webp"         # 图片格式
     zoom: 1.0              # 缩放比例
-    timeout_seconds: 30    # 超时时间（秒）
-
-# 分页配置 - 继承卡片基础配置
-pagination:
-  
-  # 动态分页优化配置
-  dynamic:
+    timeout: 30            # 超时时间（秒）
+    
+  # 分页算法参数
+  pagination:
+    algorithm: "line_based"         # 分页算法：line_based 或 dynamic
+    char_width_factor: 1.00         # 字符宽度系数
+    overflow_tolerance: 0.02        # 溢出容错比例（2%）
+    high_utilization_threshold: 90.0 # 高利用率阈值（90%）
+    min_chars_per_line: 20          # 最小每行字符数
+    list_item_spacing: 8            # 列表项间距
+    
+  # 动态分页特有参数
+  dynamic_pagination:
     min_height: 720          # 最小卡片高度
     max_height: 1200         # 最大卡片高度
     min_bottom_padding: 40   # 最小底部留白，确保文字不被遮挡
     max_images_per_card: 2   # 每张卡片最大图片数
     max_text_length: 2000    # 每张卡片最大文本长度
     base_height: 1240        # 基础高度（用于规范化）
-    char_width_factor: 1     # 字符宽度系数
-    overflow_tolerance: 0.05 # 溢出容错比例（5%）
-    high_utilization_threshold: 85.0 # 高利用率阈值（85%）
     base_image_height: 400   # 基础图片高度
     image_margin_top: 20     # 图片上边距
     image_margin_bottom: 20  # 图片下边距
-    min_chars_per_line: 20   # 最小每行字符数
-    list_item_spacing: 8     # 列表项间距
-  
-  # 新增可配置参数
-  char_width_factor: 1.00            # 字符宽度系数
-  overflow_tolerance: 0.02           # 溢出容错比例（5%）
-  high_utilization_threshold: 90.0   # 高利用率阈值（85%）
-  min_chars_per_line: 20             # 最小每行字符数
-  list_item_spacing: 8               # 列表项间距
 
-  # 段间距配置 - 可以手动调整各种元素的段间距
-  spacing:
-    # 全局段间距调整（可选，用于快速调整所有元素）
-    global_multiplier: 1.0           # 全局段间距倍数，1.0为默认值，>1.0增加间距，<1.0减少间距
+  # 统一的字体和样式配置
+  typography:
+    # 字体族配置
+    font_family: "'SourceHanSerifSC', 'STFangsong', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif"
+    base_font_size: 42       # 基础字体大小
+    line_height_ratio: 1.5   # 基础行高比例
     
-    # 各元素类型的段间距调整（可选，用于精确控制）
-    # 注释掉特定元素的倍数设置，让全局倍数生效
-    # adjustments:
-    #   title:
-    #     margin_top_multiplier: 1.0    # 标题上边距倍数
-    #     margin_bottom_multiplier: 1.0 # 标题下边距倍数
-    #     line_height_multiplier: 1.0   # 标题行高倍数
-    #   subtitle:
-    #     margin_top_multiplier: 1.0    # 副标题上边距倍数
-    #     margin_bottom_multiplier: 1.0 # 副标题下边距倍数
-    #     line_height_multiplier: 1.0   # 副标题行高倍数
-    #   body:
-    #     margin_top_multiplier: 1.0    # 正文上边距倍数
-    #     margin_bottom_multiplier: 1.0 # 正文下边距倍数
-    #     line_height_multiplier: 1.0   # 正文行高倍数
-    #   list:
-    #     margin_top_multiplier: 1.0    # 列表上边距倍数
-    #     margin_bottom_multiplier: 1.0 # 列表下边距倍数
-    #     line_height_multiplier: 1.0   # 列表行高倍数
-    #   quote:
-    #     margin_top_multiplier: 1.0    # 引用上边距倍数
-    #     margin_bottom_multiplier: 1.0 # 引用下边距倍数
-    #     line_height_multiplier: 1.0   # 引用行高倍数
-    #   tag:
-    #     margin_top_multiplier: 1.0    # 标签上边距倍数
-    #     margin_bottom_multiplier: 1.0 # 标签下边距倍数
-    #     line_height_multiplier: 1.0   # 标签行高倍数
-  
-  # 元素样式配置
-  styles:
-    title:
-      font_size: 110       # 标题: 84px（增大两个位数：64+20）
-      line_height: 165     # 1.5倍行高
-      margin_top: 0        # 标题上间距: 30px（统一标准）
-      margin_bottom: 130   # 标题下方间距: 30px（统一标准）
-      color: "#333333"     # 主标题: #333333（深灰）
-      align: "justify"     # 两端对齐
+    # 字体大小配置
+    sizes:
+      title: 110             # 标题字体大小
+      subtitle: 42           # 副标题字体大小
+      body: 42               # 正文字体大小
+      list: 42               # 列表字体大小
+      quote: 42              # 引用字体大小
+      tag: 42                # 标签字体大小
+      number: 42             # 数字字体大小
     
-    subtitle:
-      font_size: 42        # 副标题: 68px（增大两个位数：48+20）
-      line_height: 63      # 1.5倍行高
-      margin_top: 0        # 副标题上间距: 30px（统一标准）
-      margin_bottom: 130   # 副标题下方: 25px（标准下间距）
-      color: "#666666"     # 副标题: #666666（中灰）
-      align: "justify"     # 两端对齐
+    # 行高配置
+    line_heights:
+      title: 165             # 标题行高
+      subtitle: 63           # 副标题行高
+      body: 63               # 正文行高
+      list: 63               # 列表行高
+      quote: 63              # 引用行高
+      tag: 63                # 标签行高
+      number: 63             # 数字行高
     
-    body:
-      font_size: 42        # 正文: 56px（增大两个位数：36+20）
-      line_height: 63      # 1.5倍行高（标准行高）
-      margin_top: 0       # 正文上间距: 30px（统一标准）
-      margin_bottom: 130    # 正文下方间距: 30px（统一标准）
-      color: "#333333"     # 正文: #333333（深灰）
-      align: "justify"     # 两端对齐
+    # 间距配置
+    spacing:
+      base_margin: 0         # 基础边距
+      global_multiplier: 1.0 # 全局间距倍数
+      # 各元素类型的间距调整（可选，用于精确控制）
+      # adjustments:
+      #   title:
+      #     margin_top_multiplier: 1.0    # 标题上边距倍数
+      #     margin_bottom_multiplier: 1.0 # 标题下边距倍数
+      #     line_height_multiplier: 1.0   # 标题行高倍数
     
-    list:
-      font_size: 42        # 列表: 56px（增大两个位数：36+20）
-      line_height: 63      # 1.6倍行高（标准行高）
-      margin_top: 0       # 列表上间距: 30px（统一标准）
-      margin_bottom: 130    # 列表下方间距: 30px（统一标准）
-      color: "#333333"     # 列表: #333333（深灰）
-      align: "justify"     # 两端对齐
-      indent: 20           # 列表缩进
-    
-    quote:
-      font_size: 42        # 引用: 46px（增大两个位数：36+20）
-      line_height: 63      # 1.5倍行高（紧凑行高）
-      margin_top: 0       # 引用上间距: 30px（统一标准）
-      margin_bottom: 130    # 引用下方间距: 30px（统一标准）
-      color: "#1E90FF"     # 引用: #1E90FF（蓝色）
-      align: "justify"     # 两端对齐
-    
-    tag:
-      font_size: 42        # 标签: 38px（增大两个位数：28+20）
-      line_height: 63      # 1.5倍行高
-      margin_top: 0       # 标签上间距: 30px（统一标准）
-      margin_bottom: 130    # 标签下方间距: 30px（统一标准）
-      color: "#1E90FF"     # 标签: #1E90FF（蓝色）
-      align: "left"        # 左对齐
-    
-    number:
-      font_size: 42        # 数字: 48px（增大两个位数：28+20）
-      line_height: 63      # 1.5倍行高
-      margin_top: 0       # 数字上间距: 30px（统一标准）
-      margin_bottom: 130    # 数字下方间距: 30px（统一标准）
-      color: "#1E90FF"     # 数字: #1E90FF（蓝色）
-      align: "center"      # 居中对齐
+    # 颜色配置
+    colors:
+      text: "#333333"        # 主文本颜色（深灰）
+      secondary: "#666666"   # 次要文本颜色（中灰）
+      accent: "#1E90FF"      # 强调色（蓝色）
+      
+    # 对齐配置
+    alignments:
+      title: "justify"       # 标题对齐
+      subtitle: "justify"    # 副标题对齐
+      body: "justify"        # 正文对齐
+      list: "justify"        # 列表对齐
+      quote: "justify"       # 引用对齐
+      tag: "left"            # 标签对齐
+      number: "center"       # 数字对齐
+      
+    # 其他样式配置
+    styles:
+      list_indent: 20        # 列表缩进
 
 # 特殊渲染规则配置
 special_rules:

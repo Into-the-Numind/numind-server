@@ -93,96 +93,11 @@ func NewHTMLConverter() *HTMLConverter {
 	}
 
 	// 从配置文件加载分页相关配置
-	if viper.IsSet("html_converter.card.width") {
-		config.CardWidth = viper.GetInt("html_converter.card.width")
-	}
-	if viper.IsSet("html_converter.card.height") {
-		config.CardHeight = viper.GetInt("html_converter.card.height")
-	}
-	if viper.IsSet("html_converter.card.padding") {
-		config.Padding = viper.GetInt("html_converter.card.padding")
-	}
-	// 加载分页配置中的内边距设置
-	if viper.IsSet("pagination.card.padding.top") {
-		config.PaddingTop = viper.GetInt("pagination.card.padding.top")
-	}
-	if viper.IsSet("pagination.card.padding.right") {
-		config.PaddingRight = viper.GetInt("pagination.card.padding.right")
-	}
-	if viper.IsSet("pagination.card.padding.bottom") {
-		config.PaddingBottom = viper.GetInt("pagination.card.padding.bottom")
-	}
-	if viper.IsSet("pagination.card.padding.left") {
-		config.PaddingLeft = viper.GetInt("pagination.card.padding.left")
-	}
-	if viper.IsSet("html_converter.fonts.family") {
-		config.FontFamily = viper.GetString("html_converter.fonts.family")
-	}
-	if viper.IsSet("html_converter.fonts.title_size") {
-		config.TitleFontSize = viper.GetInt("html_converter.fonts.title_size")
-	} else {
-		config.TitleFontSize = 28 // 默认值
-	}
-	if viper.IsSet("html_converter.fonts.subtitle_size") {
-		config.SubtitleFontSize = viper.GetInt("html_converter.fonts.subtitle_size")
-	} else {
-		config.SubtitleFontSize = 24 // 默认值
-	}
-	if viper.IsSet("html_converter.fonts.body_size") {
-		config.BodyFontSize = viper.GetInt("html_converter.fonts.body_size")
-	} else {
-		config.BodyFontSize = 16 // 默认值
-	}
-	if viper.IsSet("html_converter.fonts.list_size") {
-		config.ListFontSize = viper.GetInt("html_converter.fonts.list_size")
-	} else {
-		config.ListFontSize = 16 // 默认值，与body相同
-	}
-	if viper.IsSet("html_converter.fonts.quote_size") {
-		config.QuoteFontSize = viper.GetInt("html_converter.fonts.quote_size")
-	} else {
-		config.QuoteFontSize = 16 // 默认值，与body相同
-	}
-	if viper.IsSet("html_converter.line_heights.title") {
-		config.TitleLineHeight = viper.GetFloat64("html_converter.line_heights.title")
-	} else {
-		config.TitleLineHeight = 1.4 // 默认值
-	}
-	if viper.IsSet("html_converter.line_heights.subtitle") {
-		config.SubtitleLineHeight = viper.GetFloat64("html_converter.line_heights.subtitle")
-	} else {
-		config.SubtitleLineHeight = 1.4 // 默认值
-	}
-	if viper.IsSet("html_converter.line_heights.body") {
-		config.BodyLineHeight = viper.GetFloat64("html_converter.line_heights.body")
-	} else {
-		config.BodyLineHeight = 1.6 // 默认值
-	}
-	if viper.IsSet("html_converter.margins.title_bottom") {
-		config.TitleMarginBottom = viper.GetInt("html_converter.margins.title_bottom")
-	} else {
-		config.TitleMarginBottom = 16 // 默认值
-	}
-	if viper.IsSet("html_converter.margins.subtitle_bottom") {
-		config.SubtitleMarginBottom = viper.GetInt("html_converter.margins.subtitle_bottom")
-	} else {
-		config.SubtitleMarginBottom = 16 // 默认值
-	}
-	if viper.IsSet("html_converter.margins.body_bottom") {
-		config.BodyMarginBottom = viper.GetInt("html_converter.margins.body_bottom")
-	} else {
-		config.BodyMarginBottom = 16 // 默认值
-	}
-	if viper.IsSet("html_converter.pagination.available_width") {
-		config.AvailableWidth = viper.GetInt("html_converter.pagination.available_width")
-	} else {
-		config.AvailableWidth = 980 // 默认值：1080 - 100 (左右边距)
-	}
-	if viper.IsSet("html_converter.pagination.max_content_height") {
-		config.MaxContentHeight = viper.GetInt("html_converter.pagination.max_content_height")
-	} else {
-		config.MaxContentHeight = 1200 // 默认值
-	}
+	// 优先从新的card配置结构加载
+	loadHTMLConfigFromCard(config)
+
+	// 向后兼容：从旧的配置结构加载
+	loadHTMLConfigFromLegacy(config)
 
 	// 配置 Goldmark 选项
 	extensions := []goldmark.Extender{}
@@ -210,6 +125,166 @@ func NewHTMLConverter() *HTMLConverter {
 	return &HTMLConverter{
 		markdown: md,
 		config:   config,
+	}
+}
+
+// loadHTMLConfigFromCard 从新的card配置结构加载HTML转换器配置
+func loadHTMLConfigFromCard(config *HTMLConfig) {
+	// 加载卡片尺寸配置
+	if viper.IsSet("card.dimensions.width") {
+		config.CardWidth = viper.GetInt("card.dimensions.width")
+	}
+	if viper.IsSet("card.dimensions.height") {
+		config.CardHeight = viper.GetInt("card.dimensions.height")
+	}
+
+	// 加载内边距配置
+	if viper.IsSet("card.dimensions.padding.top") {
+		config.PaddingTop = viper.GetInt("card.dimensions.padding.top")
+	}
+	if viper.IsSet("card.dimensions.padding.right") {
+		config.PaddingRight = viper.GetInt("card.dimensions.padding.right")
+	}
+	if viper.IsSet("card.dimensions.padding.bottom") {
+		config.PaddingBottom = viper.GetInt("card.dimensions.padding.bottom")
+	}
+	if viper.IsSet("card.dimensions.padding.left") {
+		config.PaddingLeft = viper.GetInt("card.dimensions.padding.left")
+	}
+
+	// 加载字体配置
+	if viper.IsSet("card.typography.font_family") {
+		config.FontFamily = viper.GetString("card.typography.font_family")
+	}
+
+	// 加载字体大小配置
+	if viper.IsSet("card.typography.sizes.title") {
+		config.TitleFontSize = viper.GetInt("card.typography.sizes.title")
+	}
+	if viper.IsSet("card.typography.sizes.subtitle") {
+		config.SubtitleFontSize = viper.GetInt("card.typography.sizes.subtitle")
+	}
+	if viper.IsSet("card.typography.sizes.body") {
+		config.BodyFontSize = viper.GetInt("card.typography.sizes.body")
+	}
+	if viper.IsSet("card.typography.sizes.list") {
+		config.ListFontSize = viper.GetInt("card.typography.sizes.list")
+	}
+	if viper.IsSet("card.typography.sizes.quote") {
+		config.QuoteFontSize = viper.GetInt("card.typography.sizes.quote")
+	}
+
+	// 加载行高配置（将像素值转换为倍数）
+	if viper.IsSet("card.typography.line_heights.title") && viper.IsSet("card.typography.sizes.title") {
+		lineHeight := viper.GetInt("card.typography.line_heights.title")
+		fontSize := viper.GetInt("card.typography.sizes.title")
+		if fontSize > 0 {
+			config.TitleLineHeight = float64(lineHeight) / float64(fontSize)
+		}
+	}
+	if viper.IsSet("card.typography.line_heights.subtitle") && viper.IsSet("card.typography.sizes.subtitle") {
+		lineHeight := viper.GetInt("card.typography.line_heights.subtitle")
+		fontSize := viper.GetInt("card.typography.sizes.subtitle")
+		if fontSize > 0 {
+			config.SubtitleLineHeight = float64(lineHeight) / float64(fontSize)
+		}
+	}
+	if viper.IsSet("card.typography.line_heights.body") && viper.IsSet("card.typography.sizes.body") {
+		lineHeight := viper.GetInt("card.typography.line_heights.body")
+		fontSize := viper.GetInt("card.typography.sizes.body")
+		if fontSize > 0 {
+			config.BodyLineHeight = float64(lineHeight) / float64(fontSize)
+		}
+	}
+
+	// 加载边距配置
+	if viper.IsSet("card.typography.spacing.base_margin") {
+		baseMargin := viper.GetInt("card.typography.spacing.base_margin")
+		config.TitleMarginBottom = baseMargin
+		config.SubtitleMarginBottom = baseMargin
+		config.BodyMarginBottom = baseMargin
+	}
+
+	// 加载HTML转换特有配置（从html_converter节点）
+	if viper.IsSet("html_converter.available_width") {
+		config.AvailableWidth = viper.GetInt("html_converter.available_width")
+	}
+	if viper.IsSet("html_converter.max_content_height") {
+		config.MaxContentHeight = viper.GetInt("html_converter.max_content_height")
+	}
+}
+
+// loadHTMLConfigFromLegacy 从旧配置结构加载HTML转换器配置（向后兼容）
+func loadHTMLConfigFromLegacy(config *HTMLConfig) {
+	// 从html_converter配置加载
+	if viper.IsSet("html_converter.card.width") {
+		config.CardWidth = viper.GetInt("html_converter.card.width")
+	}
+	if viper.IsSet("html_converter.card.height") {
+		config.CardHeight = viper.GetInt("html_converter.card.height")
+	}
+	if viper.IsSet("html_converter.card.padding") {
+		config.Padding = viper.GetInt("html_converter.card.padding")
+	}
+
+	// 从pagination配置中加载内边距设置
+	if viper.IsSet("pagination.card.padding.top") {
+		config.PaddingTop = viper.GetInt("pagination.card.padding.top")
+	}
+	if viper.IsSet("pagination.card.padding.right") {
+		config.PaddingRight = viper.GetInt("pagination.card.padding.right")
+	}
+	if viper.IsSet("pagination.card.padding.bottom") {
+		config.PaddingBottom = viper.GetInt("pagination.card.padding.bottom")
+	}
+	if viper.IsSet("pagination.card.padding.left") {
+		config.PaddingLeft = viper.GetInt("pagination.card.padding.left")
+	}
+
+	if viper.IsSet("html_converter.fonts.family") {
+		config.FontFamily = viper.GetString("html_converter.fonts.family")
+	}
+	if viper.IsSet("html_converter.fonts.title_size") {
+		config.TitleFontSize = viper.GetInt("html_converter.fonts.title_size")
+	}
+	if viper.IsSet("html_converter.fonts.subtitle_size") {
+		config.SubtitleFontSize = viper.GetInt("html_converter.fonts.subtitle_size")
+	}
+	if viper.IsSet("html_converter.fonts.body_size") {
+		config.BodyFontSize = viper.GetInt("html_converter.fonts.body_size")
+	}
+	if viper.IsSet("html_converter.fonts.list_size") {
+		config.ListFontSize = viper.GetInt("html_converter.fonts.list_size")
+	}
+	if viper.IsSet("html_converter.fonts.quote_size") {
+		config.QuoteFontSize = viper.GetInt("html_converter.fonts.quote_size")
+	}
+
+	if viper.IsSet("html_converter.line_heights.title") {
+		config.TitleLineHeight = viper.GetFloat64("html_converter.line_heights.title")
+	}
+	if viper.IsSet("html_converter.line_heights.subtitle") {
+		config.SubtitleLineHeight = viper.GetFloat64("html_converter.line_heights.subtitle")
+	}
+	if viper.IsSet("html_converter.line_heights.body") {
+		config.BodyLineHeight = viper.GetFloat64("html_converter.line_heights.body")
+	}
+
+	if viper.IsSet("html_converter.margins.title_bottom") {
+		config.TitleMarginBottom = viper.GetInt("html_converter.margins.title_bottom")
+	}
+	if viper.IsSet("html_converter.margins.subtitle_bottom") {
+		config.SubtitleMarginBottom = viper.GetInt("html_converter.margins.subtitle_bottom")
+	}
+	if viper.IsSet("html_converter.margins.body_bottom") {
+		config.BodyMarginBottom = viper.GetInt("html_converter.margins.body_bottom")
+	}
+
+	if viper.IsSet("html_converter.pagination.available_width") {
+		config.AvailableWidth = viper.GetInt("html_converter.pagination.available_width")
+	}
+	if viper.IsSet("html_converter.pagination.max_content_height") {
+		config.MaxContentHeight = viper.GetInt("html_converter.pagination.max_content_height")
 	}
 }
 
@@ -732,7 +807,6 @@ body {
 /* 封面卡片样式 */
 .card-container {
     position: relative;
-    %s
     color: white;
     padding: 0;
     overflow: hidden;
