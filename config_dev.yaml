@@ -104,7 +104,7 @@ card:
     width: 1080   # 标准尺寸: 1080×1440（3:4比例）
     height: 1440  # 基础高度，实际使用动态高度
     padding:
-      top: 70     # 标准内边距: 60px 50px
+      top: 60     # 标准内边距: 60px 50px
       right: 50
       bottom: 40
       left: 50
@@ -119,20 +119,20 @@ card:
   # 分页算法参数
   pagination:
     algorithm: "line_based"         # 分页算法：line_based 或 dynamic
-    char_width_factor: 1.00         # 字符宽度系数
-    overflow_tolerance: 0.02        # 溢出容错比例（2%）
-    high_utilization_threshold: 90.0 # 高利用率阈值（90%）
+    char_width_factor: 1.05         # 字符宽度系数
+    overflow_tolerance: 0.05        # 溢出容错比例（5%）
+    high_utilization_threshold: 85.0 # 高利用率阈值（85%）
     min_chars_per_line: 20          # 最小每行字符数
     list_item_spacing: 8            # 列表项间距
     
   # 动态分页特有参数
   dynamic_pagination:
     min_height: 720          # 最小卡片高度
-    max_height: 1200         # 最大卡片高度
+    max_height: 4320         # 最大卡片高度（3倍标准高度）
     min_bottom_padding: 40   # 最小底部留白，确保文字不被遮挡
-    max_images_per_card: 2   # 每张卡片最大图片数
+    max_images_per_card: 5   # 每张卡片最大图片数
     max_text_length: 2000    # 每张卡片最大文本长度
-    base_height: 1240        # 基础高度（用于规范化）
+    base_height: 1440        # 基础高度（用于规范化）
     base_image_height: 400   # 基础图片高度
     image_margin_top: 20     # 图片上边距
     image_margin_bottom: 20  # 图片下边距
@@ -141,39 +141,44 @@ card:
   typography:
     # 字体族配置
     font_family: "'SourceHanSerifSC', 'STFangsong', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif"
-    base_font_size: 42       # 基础字体大小
-    line_height_ratio: 1.5   # 基础行高比例
+    base_font_size: 56       # 基础字体大小
+    line_height_ratio: 1.6   # 基础行高比例
     
     # 字体大小配置
     sizes:
-      title: 110             # 标题字体大小
-      subtitle: 42           # 副标题字体大小
-      body: 42               # 正文字体大小
-      list: 42               # 列表字体大小
-      quote: 42              # 引用字体大小
-      tag: 42                # 标签字体大小
-      number: 42             # 数字字体大小
+      title: 84              # 标题字体大小
+      subtitle: 68           # 副标题字体大小
+      body: 56               # 正文字体大小
+      list: 56               # 列表字体大小
+      quote: 46              # 引用字体大小
+      tag: 38                # 标签字体大小
+      number: 48             # 数字字体大小
     
     # 行高配置
     line_heights:
-      title: 165             # 标题行高
-      subtitle: 63           # 副标题行高
-      body: 63               # 正文行高
-      list: 63               # 列表行高
-      quote: 63              # 引用行高
-      tag: 63                # 标签行高
-      number: 63             # 数字行高
+      title: 100             # 标题行高
+      subtitle: 80          # 副标题行高
+      body: 50               # 正文行高
+      list: 50               # 列表行高
+      quote: 50              # 引用行高
+      tag: 50                # 标签行高
+      number: 50             # 数字行高
     
     # 间距配置
     spacing:
-      base_margin: 0         # 基础边距
-      global_multiplier: 1.0 # 全局间距倍数
+      base_margin: 30        # 基础边距
+      global_multiplier: 4.0 # 全局间距倍数
       # 各元素类型的间距调整（可选，用于精确控制）
       # adjustments:
       #   title:
       #     margin_top_multiplier: 1.0    # 标题上边距倍数
       #     margin_bottom_multiplier: 1.0 # 标题下边距倍数
       #     line_height_multiplier: 1.0   # 标题行高倍数
+      # 边距配置 - 优化间距
+      margins:
+        title_bottom: 32     # 标题下边距（增加间距）
+        subtitle_bottom: 28  # 副标题下边距
+        body_bottom: 20      # 正文下边距（增加间距）
     
     # 颜色配置
     colors:
@@ -201,8 +206,8 @@ special_rules:
     width: 1080          # 封面卡片宽度
     height: 1440         # 封面卡片高度（3:4比例）
     title_section:
-      font_size: 110            # 封面标题字体大小
-      line_height: 165          # 封面标题行高
+      font_size: 100            # 封面标题字体大小
+      line_height: 100          # 封面标题行高
       color: "#2c3e50"         # 封面标题颜色
       background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
       backdrop_filter: "blur(10px)"            # 背景模糊效果
@@ -350,37 +355,13 @@ json_processing:
     # 最大响应大小（字节）
     max_response_size: 1048576  # 1MB
 
-# HTML转换器配置 - 控制Markdown到HTML转换（引用统一配置）
+# HTML转换器配置 - 现在从card配置中继承，保留特定配置项
 html_converter:
-  # 分页配置
-  pagination:
-    available_width: 1000  # 可用宽度
-    max_content_height: 1240  # 最大内容高度
-    min_card_height: 800      # 最小卡片高度
-    max_card_height: 1240     # 最大卡片高度
-    min_bottom_padding: 40    # 最小底部留白，确保文字不被遮挡
-  
-  # 字体配置 - 清晰大字号风格（与pagination.styles保持一致）
-  fonts:
-    family: "'SourceHanSerifSC', 'STFangsong', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif"  # 字体系列，优先使用思源宋体
-    title_size: 110       # 标题字体大小（与pagination.styles.title.font_size一致）
-    subtitle_size: 50     # 副标题字体大小（与pagination.styles.subtitle.font_size一致）
-    body_size: 42         # 正文字体大小（与pagination.styles.body.font_size一致）
-    list_size: 42         # 列表字体大小（与pagination.styles.list.font_size一致）
-    quote_size: 42        # 引用字体大小（与pagination.styles.quote.font_size一致）
-  
-  # 行高配置 - 提升可读性
-  line_heights:
-    title: 1.5           # 标题行高倍数
-    subtitle: 1.5        # 副标题行高倍数
-    body: 1.5            # 正文行高倍数（增大行高，提升可读性）
+  # HTML转换特有配置
+  available_width: 1000          # 可用宽度
+  max_content_height: 1360       # 最大内容高度
+  # 注意：其他配置项（字体、行高、边距等）现在从card配置中继承
 
 # GSE分词库配置
 gse:
   enabled: false         # 是否启用GSE分词功能（默认关闭，避免启动时加载字典）
-  
-  # 边距配置 - 优化间距
-  margins:
-    title_bottom: 32     # 标题下边距（增加间距）
-    subtitle_bottom: 28  # 副标题下边距
-    body_bottom: 20      # 正文下边距（增加间距）
