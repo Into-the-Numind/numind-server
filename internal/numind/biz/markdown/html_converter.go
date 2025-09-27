@@ -681,6 +681,11 @@ func (hc *HTMLConverter) ConvertMarkdownCardToHTML(markdownText, title string, c
 	// 预处理markdown内容，修复标题识别问题
 	processedMarkdown := hc.preprocessMarkdownForCorrectHeadingDetection(markdownText)
 
+	// 正文卡片：移除所有 H1 行，确保 H1 仅出现在封面
+	if cardIndex > 0 {
+		processedMarkdown = hc.stripH1Only(processedMarkdown)
+	}
+
 	// 添加调试日志，查看预处理后的markdown内容
 	log.C(context.Background()).Infow("🔍 ConvertMarkdownCardToHTML 预处理后内容",
 		"card_index", cardIndex,
@@ -704,6 +709,20 @@ func (hc *HTMLConverter) ConvertMarkdownCardToHTML(markdownText, title string, c
 
 	// 使用清晰大字号风格包装为卡片HTML
 	return hc.wrapWithClearLargeFontStyles(contentHTML, title, cardIndex)
+}
+
+// stripH1Only 去除所有以 "# " 开头的一级标题行
+func (hc *HTMLConverter) stripH1Only(markdown string) string {
+	lines := strings.Split(markdown, "\n")
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, "# ") {
+			continue
+		}
+		out = append(out, l)
+	}
+	return strings.Join(out, "\n")
 }
 
 // ConvertMarkdownCardToHTMLWithLegacyStyle 将Markdown内容转换为卡片HTML（使用旧样式）
@@ -1800,6 +1819,11 @@ func (hc *HTMLConverter) splitContentGreedyLineWrap(lines []string, _, maxConten
 			continue
 		}
 
+		// 非首页：彻底跳过所有 H1 行，避免生成“只含H1”的空内容卡
+		if !isFirstCard && strings.HasPrefix(line, "# ") {
+			continue
+		}
+
 		prefix, text, fontSize, lineH, marginBottom, isH1 := hc.classifyLineAndStyle(line)
 		if text == "" {
 			continue
@@ -1841,6 +1865,11 @@ func (hc *HTMLConverter) splitContentGreedyLineWrap(lines []string, _, maxConten
 				currentHeight = 0
 				if isFirstCard {
 					isFirstCard = false
+				}
+
+				// 如果当前处理的是 H1，则不把该 H1 的剩余行写入新卡片
+				if isH1 {
+					break
 				}
 			}
 

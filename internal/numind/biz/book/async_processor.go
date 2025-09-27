@@ -1842,6 +1842,9 @@ func (p *AsyncBookProcessor) splitAndCreateMarkdownCards(
 
 // splitMarkdownIntoCards 将markdown内容分割为多张卡片（基于固定边距的精准分页版本）
 func (p *AsyncBookProcessor) splitMarkdownIntoCards(content string) []string {
+	// 在分页前移除所有一级标题行，避免生成只含H1的空白内容卡
+	content = stripH1OnlyFromMarkdown(content)
+
 	// 使用HTML转换器的固定边距分页逻辑
 	htmlConverter := p.getHTMLConverter()
 	cards, err := htmlConverter.SplitContentByHeight(content)
@@ -1853,6 +1856,20 @@ func (p *AsyncBookProcessor) splitMarkdownIntoCards(content string) []string {
 
 	log.C(context.Background()).Infow("固定边距分页完成", "original_content_length", len(content), "cards_count", len(cards))
 	return cards
+}
+
+// stripH1OnlyFromMarkdown 去除所有以 "# " 开头的一级标题行
+func stripH1OnlyFromMarkdown(markdown string) string {
+	lines := strings.Split(markdown, "\n")
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, "# ") {
+			continue
+		}
+		out = append(out, l)
+	}
+	return strings.Join(out, "\n")
 }
 
 // splitMarkdownIntoCardsFallback 回退的分页逻辑（优化实现）
