@@ -59,6 +59,9 @@ type HTMLConfig struct {
 	BodyMarginBottom     int     `json:"body_margin_bottom"`     // 正文下边距
 	AvailableWidth       int     `json:"available_width"`        // 可用宽度
 	MaxContentHeight     int     `json:"max_content_height"`     // 最大内容高度
+	// 字符宽度系数（可配置）：用于宽度估算与换行
+	CharWidthFactorCJK   float64 `json:"char_width_factor_cjk"`   // CJK字符宽度系数（em）
+	CharWidthFactorASCII float64 `json:"char_width_factor_ascii"` // ASCII字符宽度系数（em）
 }
 
 // MarkdownContentBlock Markdown 内容块
@@ -90,6 +93,9 @@ func NewHTMLConverter() *HTMLConverter {
 		BackgroundColor:     "#ffffff",
 		TextColor:           "#333333",
 		BackgroundImage:     "", // 默认无背景图
+		// 默认字符宽度系数（与现有近似一致）
+		CharWidthFactorCJK:   1.05,
+		CharWidthFactorASCII: 0.55,
 	}
 
 	// 从配置文件加载分页相关配置
@@ -212,6 +218,13 @@ func loadHTMLConfigFromCard(config *HTMLConfig) {
 	if viper.IsSet("html_converter.max_content_height") {
 		config.MaxContentHeight = viper.GetInt("html_converter.max_content_height")
 	}
+	// 加载分页估算相关（兼容card.pagination配置）
+	if viper.IsSet("card.pagination.char_width_factor") {
+		config.CharWidthFactorCJK = viper.GetFloat64("card.pagination.char_width_factor")
+	}
+	if viper.IsSet("card.pagination.char_width_factor_ascii") {
+		config.CharWidthFactorASCII = viper.GetFloat64("card.pagination.char_width_factor_ascii")
+	}
 }
 
 // loadHTMLConfigFromLegacy 从旧配置结构加载HTML转换器配置（向后兼容）
@@ -285,6 +298,13 @@ func loadHTMLConfigFromLegacy(config *HTMLConfig) {
 	}
 	if viper.IsSet("html_converter.pagination.max_content_height") {
 		config.MaxContentHeight = viper.GetInt("html_converter.pagination.max_content_height")
+	}
+	// 旧配置兼容：字符宽度系数
+	if viper.IsSet("pagination.char_width_factor") {
+		config.CharWidthFactorCJK = viper.GetFloat64("pagination.char_width_factor")
+	}
+	if viper.IsSet("pagination.char_width_factor_ascii") {
+		config.CharWidthFactorASCII = viper.GetFloat64("pagination.char_width_factor_ascii")
 	}
 }
 
@@ -915,7 +935,7 @@ body {
 	}
 
 	// 普通卡片样式
-	normalCSS := fmt.Sprintf(`
+	normalCSS := fmt.Sprintf(` //nolint
 /* 标题样式 */
 h1 {
     font-size: %dpx;
@@ -1063,6 +1083,8 @@ th {
 		hc.config.BodyMarginBottom,
 		hc.config.BodyMarginBottom,
 		hc.config.BodyFontSize,
+		hc.config.BodyMarginBottom, // table margin
+		hc.config.BodyFontSize,     // table font-size
 	)
 
 	return baseCSS + normalCSS
@@ -1301,7 +1323,7 @@ input[type="checkbox"] {
 
 /* 内容区域样式 */
 .markdown-content {
-    width: 100%;
+    width: 100%%;
     height: auto;
     overflow: visible;
 }
@@ -1313,28 +1335,13 @@ input[type="checkbox"] {
     hyphens: auto;
 }
 `,
-		hc.config.TitleMarginBottom,
-		hc.config.TitleMarginBottom,
-		hc.config.TitleFontSize,
-		hc.config.SubtitleFontSize,
-		hc.config.SubtitleFontSize,
-		hc.config.BodyFontSize,
-		hc.config.BodyFontSize,
-		hc.config.BodyFontSize,
-		hc.config.BodyFontSize,
-		hc.config.BodyMarginBottom,
-		hc.config.ListFontSize,
-		hc.config.BodyMarginBottom,
-		hc.config.ListFontSize,
-		hc.config.QuoteFontSize,
-		hc.config.BodyMarginBottom,
-		hc.config.QuoteFontSize,
-		hc.config.BodyFontSize,
+		// body
 		hc.config.FontFamily,
 		hc.config.FontSize,
 		hc.config.LineHeight,
 		hc.config.TextColor,
 		hc.config.BackgroundColor,
+		// container
 		hc.config.CardWidth,
 		hc.config.CardHeight,
 		hc.config.PaddingTop,
@@ -1342,6 +1349,31 @@ input[type="checkbox"] {
 		hc.config.PaddingBottom,
 		hc.config.PaddingLeft,
 		hc.config.BackgroundColor,
+		// headings common margins
+		hc.config.TitleMarginBottom,
+		hc.config.TitleMarginBottom,
+		// h1..h6 sizes
+		hc.config.TitleFontSize,
+		hc.config.SubtitleFontSize,
+		hc.config.SubtitleFontSize,
+		hc.config.BodyFontSize,
+		hc.config.BodyFontSize,
+		hc.config.BodyFontSize,
+		// paragraph
+		hc.config.BodyFontSize,
+		hc.config.BodyMarginBottom,
+		// lists
+		hc.config.ListFontSize,
+		hc.config.BodyMarginBottom,
+		// li
+		hc.config.ListFontSize,
+		// blockquote
+		hc.config.QuoteFontSize,
+		hc.config.BodyMarginBottom,
+		// blockquote p
+		hc.config.QuoteFontSize,
+		// code
+		hc.config.BodyFontSize,
 	)
 }
 
@@ -1349,6 +1381,7 @@ input[type="checkbox"] {
 func (hc *HTMLConverter) wrapWithFixedMarginStyles(contentHTML, title string) string {
 	cssStyles := hc.generateFixedMarginCSS()
 
+	//nolint:staticcheck,SA5009
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1369,6 +1402,7 @@ func (hc *HTMLConverter) wrapWithFixedMarginStyles(contentHTML, title string) st
 func (hc *HTMLConverter) generateFixedMarginCSS() string {
 	const fixedMargin = 20 // 固定上下边距为20px
 
+	//nolint:staticcheck,SA5009
 	return fmt.Sprintf(`
 * {
     margin: 0;
@@ -1586,7 +1620,11 @@ func (hc *HTMLConverter) SplitContentByHeight(markdownText string) ([]string, er
 	// 使用配置中的卡片高度和边距
 	cardHeight := hc.config.CardHeight
 	fixedMargin := hc.config.PaddingTop + hc.config.PaddingBottom
-	maxContentHeight := cardHeight - fixedMargin
+	// 优先使用配置的最大内容高度
+	maxContentHeight := hc.config.MaxContentHeight
+	if maxContentHeight <= 0 {
+		maxContentHeight = cardHeight - fixedMargin
+	}
 
 	// 先转换为HTML
 	contentHTML, err := hc.ConvertToHTML(markdownText)
@@ -1742,8 +1780,200 @@ func (hc *HTMLConverter) splitContentByHeightOptimized(markdownText string, maxC
 	// 使用真正的最大内容高度进行分页
 	effectiveMaxHeight := maxContentHeight
 
-	// 全新的段落内分页算法
-	return hc.splitContentWithInParagraphPagination(lines, effectiveMaxHeight, maxContentHeight, 0)
+	// 使用贪心逐行分页算法
+	return hc.splitContentGreedyLineWrap(lines, effectiveMaxHeight, maxContentHeight)
+}
+
+// splitContentGreedyLineWrap 贪心逐行分页：逐字符→排满一行→计行高→逐行累加到页
+func (hc *HTMLConverter) splitContentGreedyLineWrap(lines []string, _, maxContentHeight int) ([]string, error) {
+	var cards []string
+	var currentCard strings.Builder
+	currentHeight := 0
+
+	// 首页面仅含H1：仅当第一条非空行是H1时启用
+	enforceCoverH1Only := firstNonEmptyIsH1(lines)
+	isFirstCard := true
+
+	for idx, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" || line == "\"" || line == "'" {
+			continue
+		}
+
+		prefix, text, fontSize, lineH, marginBottom, isH1 := hc.classifyLineAndStyle(line)
+		if text == "" {
+			continue
+		}
+
+		// 首页面规则：仅当首页且启用了封面规则且当前行非H1时，跳过到H1出现后再处理
+		if isFirstCard && enforceCoverH1Only && !isH1 {
+			// 直到遇到H1才开始往首页写入；非H1延后至H1之后的卡片（仅当首行就是H1时不会改变顺序）
+			continue
+		}
+
+		// 按宽度贪心换行
+		segments := hc.wrapTextToLines(text, fontSize, hc.config.AvailableWidth)
+		if len(segments) == 0 {
+			continue
+		}
+
+		// 逐行写入
+		for i, seg := range segments {
+			lineHeight := int(float64(fontSize) * lineH)
+			addMargin := 0
+			if i == len(segments)-1 {
+				addMargin = marginBottom
+			}
+			total := lineHeight + addMargin
+
+			// 放不下则换卡
+			if currentHeight+total > maxContentHeight && currentCard.Len() > 0 {
+				content := strings.TrimSpace(currentCard.String())
+				if content != "" {
+					cards = append(cards, content)
+					utilization := float64(currentHeight) / float64(maxContentHeight) * 100
+					log.C(context.Background()).Infow("📄 卡片创建(贪心)",
+						"cards_so_far", len(cards),
+						"card_height", currentHeight,
+						"utilization", fmt.Sprintf("%.1f%%", utilization))
+				}
+				currentCard.Reset()
+				currentHeight = 0
+				if isFirstCard {
+					isFirstCard = false
+				}
+			}
+
+			// 超高单行：强制放置行高（去掉块尾margin）
+			if total > maxContentHeight && currentHeight == 0 {
+				total = lineHeight
+			}
+
+			if currentCard.Len() > 0 {
+				currentCard.WriteString("\n")
+			}
+			if prefix != "" {
+				currentCard.WriteString(prefix)
+			}
+			currentCard.WriteString(seg)
+			currentHeight += total
+		}
+
+		// 若这是H1行并且首页规则启用：H1块结束后立即结束首页
+		if isFirstCard && enforceCoverH1Only && isH1 {
+			// 下一行若不是H1或已经到末尾，则收尾首页
+			nextIsH1 := false
+			// 判断下一有效行是否仍是H1
+			for j := idx + 1; j < len(lines); j++ {
+				nj := strings.TrimSpace(lines[j])
+				if nj == "" || nj == "\"" || nj == "'" {
+					continue
+				}
+				if strings.HasPrefix(nj, "# ") {
+					nextIsH1 = true
+				}
+				break
+			}
+			if !nextIsH1 {
+				// 结束首页卡片
+				if currentCard.Len() > 0 {
+					content := strings.TrimSpace(currentCard.String())
+					if content != "" {
+						cards = append(cards, content)
+						utilization := float64(currentHeight) / float64(maxContentHeight) * 100
+						log.C(context.Background()).Infow("📄 首页面创建(仅H1)",
+							"cards_so_far", len(cards),
+							"card_height", currentHeight,
+							"utilization", fmt.Sprintf("%.1f%%", utilization))
+					}
+					currentCard.Reset()
+					currentHeight = 0
+				}
+				isFirstCard = false
+			}
+		}
+	}
+
+	if currentCard.Len() > 0 {
+		content := strings.TrimSpace(currentCard.String())
+		if content != "" {
+			cards = append(cards, content)
+			utilization := float64(currentHeight) / float64(maxContentHeight) * 100
+			log.C(context.Background()).Infow("📄 最后卡片创建(贪心)",
+				"cards_total", len(cards),
+				"card_height", currentHeight,
+				"utilization", fmt.Sprintf("%.1f%%", utilization))
+		}
+	}
+	if len(cards) == 0 {
+		cards = append(cards, strings.Join(lines, "\n"))
+	}
+	return cards, nil
+}
+
+// firstNonEmptyIsH1 判断首个非空行是否为H1
+func firstNonEmptyIsH1(lines []string) bool {
+	for _, raw := range lines {
+		t := strings.TrimSpace(raw)
+		if t == "" || t == "\"" || t == "'" {
+			continue
+		}
+		return strings.HasPrefix(t, "# ")
+	}
+	return false
+}
+
+// classifyLineAndStyle 识别行样式与参数，并返回保留的Markdown前缀
+func (hc *HTMLConverter) classifyLineAndStyle(line string) (prefix, text string, fontSize int, lineH float64, marginBottom int, isH1 bool) {
+	switch {
+	case strings.HasPrefix(line, "# "):
+		return "# ", strings.TrimSpace(line[2:]), hc.config.TitleFontSize, hc.config.TitleLineHeight, hc.config.TitleMarginBottom, true
+	case strings.HasPrefix(line, "## "):
+		return "## ", strings.TrimSpace(line[3:]), hc.config.SubtitleFontSize, hc.config.SubtitleLineHeight, hc.config.SubtitleMarginBottom, false
+	case strings.HasPrefix(line, "### "):
+		return "### ", strings.TrimSpace(line[4:]), hc.config.SubtitleFontSize, hc.config.SubtitleLineHeight, hc.config.SubtitleMarginBottom, false
+	case strings.HasPrefix(line, "- "):
+		return "- ", strings.TrimSpace(line[2:]), hc.config.ListFontSize, hc.config.BodyLineHeight, hc.config.BodyMarginBottom, false
+	case strings.HasPrefix(line, "* "):
+		return "* ", strings.TrimSpace(line[2:]), hc.config.ListFontSize, hc.config.BodyLineHeight, hc.config.BodyMarginBottom, false
+	case strings.HasPrefix(line, "> "):
+		return "> ", strings.TrimSpace(line[2:]), hc.config.QuoteFontSize, hc.config.BodyLineHeight, hc.config.BodyMarginBottom, false
+	default:
+		return "", line, hc.config.BodyFontSize, hc.config.BodyLineHeight, hc.config.BodyMarginBottom, false
+	}
+}
+
+// wrapTextToLines 按字符宽度贪心换行
+func (hc *HTMLConverter) wrapTextToLines(text string, fontSize, width int) []string {
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) == 0 {
+		return nil
+	}
+	var out []string
+	var b strings.Builder
+	curW := 0.0
+	for _, r := range runes {
+		w := hc.estimateRuneWidth(r, fontSize)
+		if curW+w > float64(width) && b.Len() > 0 {
+			out = append(out, b.String())
+			b.Reset()
+			curW = 0
+		}
+		b.WriteRune(r)
+		curW += w
+	}
+	if b.Len() > 0 {
+		out = append(out, b.String())
+	}
+	return out
+}
+
+// estimateRuneWidth 估算单个字符宽度（em→px），由配置驱动
+func (hc *HTMLConverter) estimateRuneWidth(r rune, fontSize int) float64 {
+	if r <= 0x7f {
+		return float64(fontSize) * hc.config.CharWidthFactorASCII
+	}
+	return float64(fontSize) * hc.config.CharWidthFactorCJK
 }
 
 // splitContentWithInParagraphPagination 支持段落内分页的新算法
@@ -1782,7 +2012,7 @@ func (hc *HTMLConverter) splitContentWithInParagraphPagination(lines []string, e
 			lineHeight = hc.calculateTextHeight(line, hc.config.BodyFontSize, hc.config.AvailableWidth, hc.config.BodyLineHeight)
 			marginBottom = hc.config.BodyMarginBottom
 		}
-
+		// TODO: 加marginBottom前，检测这一行有没有 \n 字符
 		totalLineHeight := lineHeight + marginBottom
 
 		// 检查是否需要分页
@@ -2013,8 +2243,8 @@ func (hc *HTMLConverter) calculateTextHeight(text string, fontSize int, availabl
 		return 0
 	}
 
-	// 计算字符宽度（中文字符约为字体大小的1.05倍）
-	charWidth := float64(fontSize) * 1.05
+	// 计算字符宽度（使用可配置的CJK宽度系数近似）
+	charWidth := float64(fontSize) * hc.config.CharWidthFactorCJK
 	charsPerLine := int(float64(availableWidth) / charWidth)
 
 	if charsPerLine <= 0 {
@@ -2047,6 +2277,7 @@ func truncateString(s string, length int) string {
 func (hc *HTMLConverter) wrapWithDynamicHeightStyles(contentHTML, title string) string {
 	// 使用CSS的 min-height 和 max-height 特性来支持动态高度
 	// 同时使用 overflow: auto 来处理内容溢出
+	//nolint:staticcheck,SA5009
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -2226,6 +2457,7 @@ func (hc *HTMLConverter) generateClearLargeFontCSS() string {
 		backgroundStyle = fmt.Sprintf("background-color: %s;", hc.config.BackgroundColor)
 	}
 
+	//nolint:staticcheck,SA5009
 	return fmt.Sprintf(`
 /* 思源宋体字体定义 - 容器环境优化 */
 @font-face {
