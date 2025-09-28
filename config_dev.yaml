@@ -105,9 +105,9 @@ card:
     height: 1440  # 基础高度，实际使用动态高度
     padding:
       top: 50     # 标准内边距: 60px 50px
-      right: 50
-      bottom: 25
-      left: 80
+      right: 20
+      bottom: 35
+      left: 50
   
   # 渲染器配置
   rendering:
@@ -129,7 +129,7 @@ card:
   dynamic_pagination:
     min_height: 1440          # 最小卡片高度
     max_height: 4320         # 最大卡片高度（3倍标准高度）
-    min_bottom_padding: 25   # 最小底部留白，确保文字不被遮挡
+    min_bottom_padding: 35   # 最小底部留白，确保文字不被遮挡
     max_images_per_card: 5   # 每张卡片最大图片数
     max_text_length: 5000    # 每张卡片最大文本长度
     base_height: 1440        # 基础高度（用于规范化）
@@ -166,7 +166,7 @@ card:
     
     # 间距配置
     spacing:
-      base_margin: 30        # 基础边距
+      base_margin: 0         # 基础边距
       global_multiplier: 1.0 # 全局间距倍数
       # 各元素类型的间距调整（可选，用于精确控制）
       # adjustments:
@@ -178,7 +178,7 @@ card:
       margins:
         title_bottom: 0       # 标题下边距（增加间距）
         subtitle_bottom: 0    # 副标题下边距
-        body_bottom: 160      # 正文下边距（增加间距）
+        body_bottom: 0        # 正文下边距（增加间距）
     
     # 颜色配置
     colors:
@@ -217,7 +217,7 @@ special_rules:
   
   content_card:
     safe_area_margin: 50                      # 内容安全区域边距
-    max_content_height: 1340                  # 内容最大高度
+    max_content_height: 1355                  # 内容最大高度
     overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
 
 # AI提示词配置
@@ -345,8 +345,8 @@ json_processing:
 # HTML转换器配置 - 现在从card配置中继承，保留特定配置项
 html_converter:
   # HTML转换特有配置
-  available_width: 950          # 可用宽度
-  max_content_height: 1340       # 最大内容高度
+  available_width: 1010          # 可用宽度
+  max_content_height: 1355       # 最大内容高度
   # 注意：其他配置项（字体、行高、边距等）现在从card配置中继承
 
 # GSE分词库配置
