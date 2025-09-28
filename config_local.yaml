@@ -118,12 +118,12 @@ card:
     
   # 分页算法参数
   pagination:
-    algorithm: "line_based"         # 分页算法：line_based 或 dynamic
-    char_width_factor: 1.05         # 字符宽度系数
-    overflow_tolerance: 0.05        # 溢出容错比例（5%）
-    high_utilization_threshold: 85.0 # 高利用率阈值（85%）
-    min_chars_per_line: 20          # 最小每行字符数
-    list_item_spacing: 8            # 列表项间距
+    algorithm: "line_based"         # 分页算法：line_based（逐字符→逐行→逐页）或 dynamic
+    char_width_factor: 1.05         # 字符宽度系数（估算每个字符的像素宽度，影响换行与行数）
+    overflow_tolerance: 0.05        # 溢出容错比例（保留配置；当前贪心分页未使用，可后续接入）
+    high_utilization_threshold: 85.0 # 高利用率阈值（保留配置；当前贪心分页未使用，可后续接入）
+    min_chars_per_line: 20          # 最少每行字符数下限（仅作为安全兜底）
+    list_item_spacing: 8            # 列表项额外行距（渲染细节，分页按正文行高估算）
     
   # 动态分页特有参数
   dynamic_pagination:
@@ -146,9 +146,9 @@ card:
     
     # 字体大小配置
     sizes:
-      title: 84              # 标题字体大小
-      subtitle: 68           # 副标题字体大小
-      body: 56               # 正文字体大小
+      title: 120             # 标题字号（仅封面H1使用；正文卡片不渲染H1）
+      subtitle: 36           # 副标题字号（##/###）
+      body: 36               # 正文字号
       list: 56               # 列表字体大小
       quote: 46              # 引用字体大小
       tag: 38                # 标签字体大小
@@ -156,9 +156,9 @@ card:
     
     # 行高配置
     line_heights:
-      title: 118             # 标题行高
-      subtitle: 102          # 副标题行高
-      body: 90               # 正文行高
+      title: 160             # 标题行高（像素）。分页按：行高倍数=160/120 计算
+      subtitle: 60           # 副标题行高（像素）。分页与渲染同源
+      body: 60               # 正文行高（像素）。分页与渲染同源
       list: 90               # 列表行高
       quote: 74              # 引用行高
       tag: 62                # 标签行高
@@ -166,8 +166,8 @@ card:
     
     # 间距配置
     spacing:
-      base_margin: 30        # 基础边距
-      global_multiplier: 4.0 # 全局间距倍数
+      base_margin: 30        # 基础段后距（默认应用到 title/subtitle/body，下面的 margins 可覆盖）
+      global_multiplier: 1.0 # 统一设为 1.0，避免旧路径的倍数干扰，确保分页=渲染
       # 各元素类型的间距调整（可选，用于精确控制）
       # adjustments:
       #   title:
@@ -176,9 +176,9 @@ card:
       #     line_height_multiplier: 1.0   # 标题行高倍数
       # 边距配置 - 优化间距
       margins:
-        title_bottom: 32     # 标题下边距（增加间距）
-        subtitle_bottom: 28  # 副标题下边距
-        body_bottom: 20      # 正文下边距（增加间距）
+        title_bottom: 32     # 标题段后距（像素，仅封面H1卡片有效）
+        subtitle_bottom: 20  # 副标题段后距（像素，分页最后一行才计入）
+        body_bottom: 60      # 正文段后距（像素，分页最后一行才计入）
     
     # 颜色配置
     colors:
@@ -198,7 +198,7 @@ card:
       
     # 其他样式配置
     styles:
-      list_indent: 20        # 列表缩进
+      list_indent: 20        # 列表缩进（渲染用的左缩进；不改变分页可用宽度）
 
 # 特殊渲染规则配置
 special_rules:
