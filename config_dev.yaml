@@ -104,8 +104,8 @@ card:
     width: 1080   # 标准尺寸: 1080×1440（3:4比例）
     height: 1440  # 基础高度，实际使用动态高度
     padding:
-      top: 50     # 标准内边距: 60px 50px
-      right: 20
+      top: 80     # 标准内边距: 60px 50px
+      right: 50
       bottom: 0
       left: 50
   
@@ -119,7 +119,7 @@ card:
   # 分页算法参数
   pagination:
     algorithm: "line_based"         # 分页算法：line_based 或 dynamic
-    char_width_factor: 1            # 字符宽度系数
+    char_width_factor: 1.05            # 字符宽度系数
     overflow_tolerance: 0.05        # 溢出容错比例（5%）
     high_utilization_threshold: 90.0 # 高利用率阈值（85%）
     min_chars_per_line: 0            # 最小每行字符数
@@ -166,7 +166,7 @@ card:
     
     # 间距配置
     spacing:
-      base_margin: 0         # 基础边距
+      base_margin: 60         # 基础边距
       global_multiplier: 1.0 # 全局间距倍数
       # 各元素类型的间距调整（可选，用于精确控制）
       # adjustments:
@@ -217,7 +217,7 @@ special_rules:
   
   content_card:
     safe_area_margin: 0                      # 内容安全区域边距
-    max_content_height: 1390                  # 内容最大高度
+    max_content_height: 1360                  # 内容最大高度
     overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
 
 # AI提示词配置
@@ -345,8 +345,8 @@ json_processing:
 # HTML转换器配置 - 现在从card配置中继承，保留特定配置项
 html_converter:
   # HTML转换特有配置
-  available_width: 1010          # 可用宽度
-  max_content_height: 1390       # 最大内容高度
+  available_width: 980          # 可用宽度
+  max_content_height: 1360       # 最大内容高度
   # 注意：其他配置项（字体、行高、边距等）现在从card配置中继承
 
 # GSE分词库配置
