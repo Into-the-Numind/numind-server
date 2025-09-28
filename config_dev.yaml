@@ -104,10 +104,10 @@ card:
     width: 1080   # 标准尺寸: 1080×1440（3:4比例）
     height: 1440  # 基础高度，实际使用动态高度
     padding:
-      top: 60     # 标准内边距: 60px 50px
+      top: 50     # 标准内边距: 60px 50px
       right: 50
-      bottom: 40
-      left: 50
+      bottom: 50
+      left: 60
   
   # 渲染器配置
   rendering:
@@ -118,20 +118,20 @@ card:
     
   # 分页算法参数
   pagination:
-    algorithm: "line_based"         # 分页算法：line_based 或 dynamic
-    char_width_factor: 1.05         # 字符宽度系数
-    overflow_tolerance: 0.05        # 溢出容错比例（5%）
+    algorithm: "line_based"          # 分页算法：line_based 或 dynamic
+    char_width_factor: 1.05          # 字符宽度系数
+    overflow_tolerance: 0.05         # 溢出容错比例（5%）
     high_utilization_threshold: 85.0 # 高利用率阈值（85%）
-    min_chars_per_line: 20          # 最小每行字符数
-    list_item_spacing: 8            # 列表项间距
+    min_chars_per_line: 0            # 最小每行字符数
+    list_item_spacing: 5             # 列表项间距
     
   # 动态分页特有参数
   dynamic_pagination:
     min_height: 720          # 最小卡片高度
     max_height: 4320         # 最大卡片高度（3倍标准高度）
-    min_bottom_padding: 40   # 最小底部留白，确保文字不被遮挡
+    min_bottom_padding: 50   # 最小底部留白，确保文字不被遮挡
     max_images_per_card: 5   # 每张卡片最大图片数
-    max_text_length: 2000    # 每张卡片最大文本长度
+    max_text_length: 5000    # 每张卡片最大文本长度
     base_height: 1440        # 基础高度（用于规范化）
     base_image_height: 400   # 基础图片高度
     image_margin_top: 20     # 图片上边距
@@ -141,33 +141,33 @@ card:
   typography:
     # 字体族配置
     font_family: "'SourceHanSerifSC', 'STFangsong', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif"
-    base_font_size: 56       # 基础字体大小
-    line_height_ratio: 1.6   # 基础行高比例
+    base_font_size: 36        # 基础字体大小
+    line_height_ratio: 1.5   # 基础行高比例
     
     # 字体大小配置
     sizes:
-      title: 84              # 标题字体大小
-      subtitle: 68           # 副标题字体大小
-      body: 56               # 正文字体大小
-      list: 56               # 列表字体大小
-      quote: 46              # 引用字体大小
-      tag: 38                # 标签字体大小
-      number: 48             # 数字字体大小
+      title: 120             # 标题字体大小
+      subtitle: 36           # 副标题字体大小
+      body: 36               # 正文字体大小
+      list: 36               # 列表字体大小
+      quote: 36              # 引用字体大小
+      tag: 36                # 标签字体大小
+      number: 36             # 数字字体大小
     
     # 行高配置
     line_heights:
-      title: 118
-      subtitle: 102
-      body: 90
-      list: 90
-      quote: 74
-      tag: 62
-      number: 72
+      title: 160
+      subtitle: 60
+      body: 65
+      list: 65
+      quote: 65
+      tag: 65
+      number: 65
     
     # 间距配置
     spacing:
       base_margin: 30        # 基础边距
-      global_multiplier: 4.0 # 全局间距倍数
+      global_multiplier: 1.0 # 全局间距倍数
       # 各元素类型的间距调整（可选，用于精确控制）
       # adjustments:
       #   title:
@@ -176,9 +176,9 @@ card:
       #     line_height_multiplier: 1.0   # 标题行高倍数
       # 边距配置 - 优化间距
       margins:
-        title_bottom: 32     # 标题下边距（增加间距）
-        subtitle_bottom: 28  # 副标题下边距
-        body_bottom: 20      # 正文下边距（增加间距）
+        title_bottom: 0       # 标题下边距（增加间距）
+        subtitle_bottom: 20   # 副标题下边距
+        body_bottom: 160      # 正文下边距（增加间距）
     
     # 颜色配置
     colors:
@@ -194,11 +194,11 @@ card:
       list: "justify"        # 列表对齐
       quote: "justify"       # 引用对齐
       tag: "left"            # 标签对齐
-      number: "center"       # 数字对齐
+      number: "justify"       # 数字对齐
       
     # 其他样式配置
     styles:
-      list_indent: 20        # 列表缩进
+      list_indent: 30        # 列表缩进
 
 # 特殊渲染规则配置
 special_rules:
@@ -206,18 +206,18 @@ special_rules:
     width: 1080          # 封面卡片宽度
     height: 1440         # 封面卡片高度（3:4比例）
     title_section:
-      font_size: 100            # 封面标题字体大小
-      line_height: 100          # 封面标题行高
-      color: "#2c3e50"         # 封面标题颜色
+      font_size: 120            # 封面标题字体大小
+      line_height: 160          # 封面标题行高
+      color: "#000000"         # 封面标题颜色
       background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
-      backdrop_filter: "blur(10px)"            # 背景模糊效果
+      backdrop_filter: "blur(0px)"            # 背景模糊效果
       box_shadow: "0 4px 20px rgba(0, 0, 0, 0.1)"  # 阴影效果
     image_section:
       background: "transparent"                # 图片区域透明背景
   
   content_card:
-    safe_area_margin: 30                      # 内容安全区域边距
-    max_content_height: 1200                  # 内容最大高度
+    safe_area_margin: 50                      # 内容安全区域边距
+    max_content_height: 1340                  # 内容最大高度
     overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
 
 # AI提示词配置
@@ -358,8 +358,8 @@ json_processing:
 # HTML转换器配置 - 现在从card配置中继承，保留特定配置项
 html_converter:
   # HTML转换特有配置
-  available_width: 1000          # 可用宽度
-  max_content_height: 1360       # 最大内容高度
+  available_width: 970          # 可用宽度
+  max_content_height: 1340       # 最大内容高度
   # 注意：其他配置项（字体、行高、边距等）现在从card配置中继承
 
 # GSE分词库配置
