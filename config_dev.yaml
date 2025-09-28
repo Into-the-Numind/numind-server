@@ -121,15 +121,15 @@ card:
     algorithm: "line_based"         # 分页算法：line_based 或 dynamic
     char_width_factor: 1            # 字符宽度系数
     overflow_tolerance: 0.05        # 溢出容错比例（5%）
-    high_utilization_threshold: 85.0 # 高利用率阈值（85%）
+    high_utilization_threshold: 90.0 # 高利用率阈值（85%）
     min_chars_per_line: 0            # 最小每行字符数
     list_item_spacing: 5             # 列表项间距
     
   # 动态分页特有参数
   dynamic_pagination:
-    min_height: 1440          # 最小卡片高度
+    min_height: 720          # 最小卡片高度
     max_height: 4320         # 最大卡片高度（3倍标准高度）
-    min_bottom_padding: 35   # 最小底部留白，确保文字不被遮挡
+    min_bottom_padding: 0    # 最小底部留白，确保文字不被遮挡
     max_images_per_card: 5   # 每张卡片最大图片数
     max_text_length: 5000    # 每张卡片最大文本长度
     base_height: 1440        # 基础高度（用于规范化）
@@ -216,8 +216,8 @@ special_rules:
       background: "transparent"                # 图片区域透明背景
   
   content_card:
-    safe_area_margin: 50                      # 内容安全区域边距
-    max_content_height: 1355                  # 内容最大高度
+    safe_area_margin: 0                      # 内容安全区域边距
+    max_content_height: 1390                  # 内容最大高度
     overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
 
 # AI提示词配置
@@ -346,7 +346,7 @@ json_processing:
 html_converter:
   # HTML转换特有配置
   available_width: 1010          # 可用宽度
-  max_content_height: 1355       # 最大内容高度
+  max_content_height: 1390       # 最大内容高度
   # 注意：其他配置项（字体、行高、边距等）现在从card配置中继承
 
 # GSE分词库配置
