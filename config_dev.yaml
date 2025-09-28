@@ -47,6 +47,10 @@ wechat:
     # 使用微信支付公钥模式（推荐，避免证书过期问题）
     use_wechatpay_public_key: "true"
 
+# 书籍处理配置
+book:
+    use_simplified_processing: true  # 启用简化处理模式
+
 volc:
   api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
@@ -65,11 +69,7 @@ cos:
   secret_id: "AKID26xnQq2ziEYeVAh3B6oIbwHh06zf7LMA"           # API 密钥 SecretId
   secret_key: "e4FNTPI90jNzQfjbFgHk3CRaYMxRuFP5"          # API 密钥 SecretKey
   bucket: "numind-dev-1334169463" # BucketName-APPID 形式
-  region: "ap-chengdu" 
-
-# 书籍处理配置
-book:
-    use_simplified_processing: true  # 启用简化处理模式
+  region: "ap-chengdu"    # 地域，如 ap-chengdu（成都）
 
 baidu:
   api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
@@ -156,13 +156,13 @@ card:
     
     # 行高配置
     line_heights:
-      title: 118
-      subtitle: 102
-      body: 90
-      list: 90
-      quote: 74
-      tag: 62
-      number: 72
+      title: 118             # 标题行高
+      subtitle: 102          # 副标题行高
+      body: 90               # 正文行高
+      list: 90               # 列表行高
+      quote: 74              # 引用行高
+      tag: 62                # 标签行高
+      number: 72             # 数字行高
     
     # 间距配置
     spacing:
