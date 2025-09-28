@@ -105,9 +105,9 @@ card:
     height: 1440  # 基础高度，实际使用动态高度
     padding:
       top: 80     # 标准内边距: 60px 50px
-      right: 50
+      right: 30
       bottom: 0
-      left: 50
+      left: 70
   
   # 渲染器配置
   rendering:
@@ -121,7 +121,7 @@ card:
     algorithm: "line_based"         # 分页算法：line_based 或 dynamic
     char_width_factor: 1.05            # 字符宽度系数
     overflow_tolerance: 0.05        # 溢出容错比例（5%）
-    high_utilization_threshold: 90.0 # 高利用率阈值（85%）
+    high_utilization_threshold: 95.0 # 高利用率阈值（85%）
     min_chars_per_line: 0            # 最小每行字符数
     list_item_spacing: 5             # 列表项间距
     
@@ -166,7 +166,7 @@ card:
     
     # 间距配置
     spacing:
-      base_margin: 60         # 基础边距
+      base_margin: 0         # 基础边距
       global_multiplier: 1.0 # 全局间距倍数
       # 各元素类型的间距调整（可选，用于精确控制）
       # adjustments:
@@ -177,7 +177,7 @@ card:
       # 边距配置 - 优化间距
       margins:
         title_bottom: 0       # 标题下边距（增加间距）
-        subtitle_bottom: 0    # 副标题下边距
+        subtitle_bottom: 20    # 副标题下边距
         body_bottom: 0        # 正文下边距（增加间距）
     
     # 颜色配置
