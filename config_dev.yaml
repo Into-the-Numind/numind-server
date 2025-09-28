@@ -177,7 +177,7 @@ card:
       # 边距配置 - 优化间距
       margins:
         title_bottom: 0       # 标题下边距（增加间距）
-        subtitle_bottom: 20    # 副标题下边距
+        subtitle_bottom: 60    # 副标题下边距
         body_bottom: 60        # 正文下边距（增加间距）
     
     # 颜色配置
@@ -216,7 +216,7 @@ special_rules:
       background: "transparent"                # 图片区域透明背景
   
   content_card:
-    safe_area_margin: 0                      # 内容安全区域边距
+    safe_area_margin: 0                       # 内容安全区域边距
     max_content_height: 1360                  # 内容最大高度
     overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
 
