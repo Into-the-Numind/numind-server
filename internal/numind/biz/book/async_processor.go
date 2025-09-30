@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	cardbiz "numind-server/internal/numind/biz/card"
 	"numind-server/internal/numind/biz/markdown"
 	"numind-server/internal/numind/biz/pagination"
 	"numind-server/internal/pkg/httpclient"
@@ -1800,42 +1801,72 @@ func (p *AsyncBookProcessor) splitAndCreateMarkdownCards(
 ) ([]*model.CardM, error) {
 	log.C(ctx).Infow("📄 分割markdown内容为多张卡片", "book_id", book.ID, "text_length", len(markdownText))
 
-	// 分割markdown内容
+	// 优先使用流式分页渲染器：多页 -> 多卡
+	if cardbiz.IsFlowRendererEnabled() {
+		flow := cardbiz.NewFlowRenderer(pagination.GetDefaultConfig())
+		pages, err := flow.PaginateMarkdownWithBackground(ctx, markdownText, templateBackground)
+		if err != nil || len(pages) == 0 {
+			log.C(ctx).Warnw("流式分页失败，回退到按文本切分", "book_id", book.ID, "error", err)
+		} else {
+			var createdCards []*model.CardM
+			// 为每一页创建一条卡片记录（从1开始，0为封面）
+			for i, inner := range pages {
+				// 生成完整页面HTML（带背景图）
+				pageHTML := p.wrapFlowPageHTMLWithBackground(inner, templateBackground)
+				// 先创建卡片记录
+				cardRecord := &model.CardM{
+					UserID:        userID,
+					BookID:        book.ID,
+					ProcessedText: markdownText, // 保留原文本，图片为准
+					SortOrder:     i + 1,
+				}
+				if err := p.biz.Cards().Create(ctx, cardRecord); err != nil {
+					log.C(ctx).Errorw("创建分页卡片失败", "book_id", book.ID, "page", i+1, "error", err.Error())
+					continue
+				}
+
+				// 渲染图片
+				imagePath, rErr := p.renderHTMLToImage(ctx, cardRecord.ID, pageHTML)
+				if rErr != nil {
+					log.C(ctx).Warnw("分页卡片渲染失败", "card_id", cardRecord.ID, "error", rErr.Error())
+				} else {
+					cardRecord.RenderedImage = imagePath
+					if uErr := p.biz.Cards().Update(ctx, cardRecord); uErr != nil {
+						log.C(ctx).Warnw("更新分页卡片图片路径失败", "card_id", cardRecord.ID, "error", uErr.Error())
+					}
+				}
+
+				createdCards = append(createdCards, cardRecord)
+				log.C(ctx).Infow("✅ 分页卡片创建成功", "book_id", book.ID, "card_id", cardRecord.ID, "sort_order", cardRecord.SortOrder)
+			}
+			log.C(ctx).Infow("✅ 流式分页多卡创建完成", "book_id", book.ID, "total_cards", len(createdCards))
+			return createdCards, nil
+		}
+	}
+
+	// 回退：仍按文本估算切分
 	cardContents := p.splitMarkdownIntoCards(markdownText)
-
 	var createdCards []*model.CardM
-
-	// 为每个分割后的内容创建卡片（从索引1开始，0是封面）
 	for i, content := range cardContents {
 		if strings.TrimSpace(content) == "" {
-			continue // 跳过空内容
+			continue
 		}
-
-		// 创建卡片记录 - 存储原始markdown文本
 		cardRecord := &model.CardM{
 			UserID:        userID,
 			BookID:        book.ID,
-			ProcessedText: content, // 存储原始markdown文本
-			SortOrder:     i + 1,   // 从1开始，0是封面卡片
+			ProcessedText: content,
+			SortOrder:     i + 1,
 		}
-
 		if err := p.biz.Cards().Create(ctx, cardRecord); err != nil {
 			log.C(ctx).Errorw("创建markdown卡片失败", "book_id", book.ID, "card_index", i+1, "error", err.Error())
 			continue
 		}
-
 		createdCards = append(createdCards, cardRecord)
-
-		// 为每个卡片生成图片和HTML文件
 		if err := p.generateCardImageAndHTML(ctx, cardRecord.ID, content, templateBackground); err != nil {
 			log.C(ctx).Errorw("卡片图片和HTML生成失败", "card_id", cardRecord.ID, "error", err.Error())
-		} else {
-			log.C(ctx).Infow("✅ 卡片图片和HTML生成成功", "card_id", cardRecord.ID)
 		}
-
 		log.C(ctx).Infow("📄 markdown卡片创建成功", "book_id", book.ID, "card_id", cardRecord.ID, "sort_order", cardRecord.SortOrder)
 	}
-
 	log.C(ctx).Infow("✅ 所有markdown卡片创建完成", "book_id", book.ID, "total_cards", len(createdCards))
 	return createdCards, nil
 }
@@ -2225,18 +2256,46 @@ func (p *AsyncBookProcessor) generateCardImageAndHTML(ctx context.Context, cardI
 		return fmt.Errorf("获取卡片信息失败: %v", err)
 	}
 
-	// 2. 将markdown转换为HTML
-	htmlConverter := p.getHTMLConverterWithBackground(templateBackground)
-	htmlContent := htmlConverter.ConvertMarkdownCardToHTML(markdownContent, "卡片内容", card.SortOrder)
-
-	// 3. 创建HTML文件
-	htmlFilePath, err := p.createCardHTMLFile(cardID, htmlContent)
-	if err != nil {
-		return fmt.Errorf("创建HTML文件失败: %v", err)
+	// 2. 将markdown转换为HTML 或使用流式分页渲染器生成分页HTML片段
+	var pages []string
+	useFlow := cardbiz.IsFlowRendererEnabled()
+	if useFlow {
+		// 使用流式分页：得到每页的 innerHTML 片段
+		flow := cardbiz.NewFlowRenderer(pagination.GetDefaultConfig())
+		var errFlow error
+		pages, errFlow = flow.PaginateMarkdown(ctx, markdownContent)
+		if errFlow != nil || len(pages) == 0 {
+			log.C(ctx).Warnw("流式分页失败，回退到旧渲染", "card_id", cardID, "error", errFlow)
+			useFlow = false
+		}
 	}
-	log.C(ctx).Infow("HTML文件创建成功", "card_id", cardID, "html_path", htmlFilePath)
 
-	// 4. 使用轻量级渲染器将HTML转换为图片
+	var htmlContent string
+	if !useFlow {
+		htmlConverter := p.getHTMLConverterWithBackground(templateBackground)
+		htmlContent = htmlConverter.ConvertMarkdownCardToHTML(markdownContent, "卡片内容", card.SortOrder)
+	}
+
+	// 3. 渲染为图片
+	if useFlow {
+		// 对于流式分页：逐页渲染，当前 cardID 对应第一页；如需扩展为多张卡，需要在上游创建多条卡记录。
+		// 这里保持单卡单页输出：渲染第一页
+		first := pages[0]
+		pageHTML := p.wrapFlowPageHTML(first)
+		imagePath, err := p.renderHTMLToImage(ctx, cardID, pageHTML)
+		if err != nil {
+			log.C(ctx).Warnw("HTML转图片失败", "card_id", cardID, "error", err.Error())
+		} else {
+			log.C(ctx).Infow("✅ 卡片图片生成成功", "card_id", cardID, "image_path", imagePath)
+			card.RenderedImage = imagePath
+			if err := p.biz.Cards().Update(ctx, card); err != nil {
+				log.C(ctx).Warnw("更新卡片图片路径失败", "card_id", cardID, "error", err.Error())
+			}
+		}
+		return nil
+	}
+
+	// 使用轻量级渲染器将HTML转换为图片
 	imagePath, err := p.renderHTMLToImage(ctx, cardID, htmlContent)
 	if err != nil {
 		log.C(ctx).Warnw("HTML转图片失败", "card_id", cardID, "error", err.Error())
@@ -2275,7 +2334,7 @@ func (p *AsyncBookProcessor) generateCardImageAndHTML(ctx context.Context, cardI
 		}
 	}
 
-	log.C(ctx).Infow("✅ 卡片处理完成", "card_id", cardID, "html_path", htmlFilePath, "image_path", imagePath)
+	log.C(ctx).Infow("✅ 卡片处理完成", "card_id", cardID, "image_path", imagePath)
 	return nil
 }
 
@@ -2301,6 +2360,44 @@ func (p *AsyncBookProcessor) renderHTMLToImage(ctx context.Context, cardID uint,
 
 	// 直接使用内部的wkhtmltoimage工具（总是可用）
 	return p.renderWithWkhtmltoimage(ctx, cardID, htmlContent, fullImagePath)
+}
+
+// wrapFlowPageHTML 将流式分页得到的单页 innerHTML 包装为完整的固定尺寸HTML（无背景）
+func (p *AsyncBookProcessor) wrapFlowPageHTML(inner string) string {
+	return p.wrapFlowPageHTMLWithBackground(inner, "")
+}
+
+// wrapFlowPageHTMLWithBackground 将流式分页得到的单页 innerHTML 包装为完整的固定尺寸HTML（带背景支持）
+func (p *AsyncBookProcessor) wrapFlowPageHTMLWithBackground(inner, backgroundImage string) string {
+	cfg := p.getRendererConfig()
+	// 格式化背景样式
+	bgStyle := formatBackgroundStyle(backgroundImage)
+	// 基础样式：固定1080x1440，内容区全覆盖但由渲染器在上层设定边距
+	// 这里使用与 util 渲染器一致的页面尺寸，避免缩放误差
+	doc := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Flow Page</title>
+  <style>
+    @font-face {
+      font-family: "SourceHanSerifSC";
+      src: local("Source Han Serif SC"), local("SourceHanSerifSC"), local("Noto Sans CJK SC"), local("PingFang SC"), local("Hiragino Sans GB"), local("Microsoft YaHei"), local("sans-serif");
+      font-weight: normal; font-style: normal;
+    }
+    html, body { margin:0; padding:0; width:%dpx; height:%dpx; overflow:hidden; font-family: "SourceHanSerifSC", "Noto Sans CJK SC", "PingFang SC", Arial, sans-serif; }
+    .page { position:relative; width:%dpx; height:%dpx; box-sizing:border-box; %s overflow:hidden; background-size: cover !important; background-position: center center !important; background-repeat: no-repeat !important; }
+    .content { position:absolute; inset:0; box-sizing:border-box; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="content">%s</div>
+  </div>
+</body>
+</html>`, cfg.Width, cfg.Height, cfg.Width, cfg.Height, bgStyle, inner)
+	return doc
 }
 
 // renderWithWkhtmltoimage 使用wkhtmltoimage渲染
