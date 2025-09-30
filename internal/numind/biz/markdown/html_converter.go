@@ -105,6 +105,20 @@ func NewHTMLConverter() *HTMLConverter {
 	// 向后兼容：从旧的配置结构加载
 	loadHTMLConfigFromLegacy(config)
 
+	// 规范化派生尺寸：统一以卡片宽高与内边距推导可用宽度/高度，避免分页与渲染不一致
+	if config.CardWidth > 0 {
+		derivedWidth := config.CardWidth - config.PaddingLeft - config.PaddingRight
+		if derivedWidth > 0 {
+			config.AvailableWidth = derivedWidth
+		}
+	}
+	if config.CardHeight > 0 {
+		derivedHeight := config.CardHeight - config.PaddingTop - config.PaddingBottom
+		if derivedHeight > 0 {
+			config.MaxContentHeight = derivedHeight
+		}
+	}
+
 	// 配置 Goldmark 选项
 	extensions := []goldmark.Extender{}
 
@@ -2538,10 +2552,10 @@ body {
     background-repeat: no-repeat !important;
 }
 
-.markdown-card-container {
-    width: 100%%;
-    height: 100%%;
-    padding: 60px 50px;       /* 上右下左内边距 */
+    .markdown-card-container {
+        width: 100%%;
+        height: 100%%;
+        padding: %dpx %dpx %dpx %dpx;       /* 上右下左内边距（来自配置，左右对称） */
     box-sizing: border-box;
     %s
     background-size: cover !important;
@@ -2602,12 +2616,12 @@ body {
 }
 
 /* 段落样式：避免过窄行宽，适配卡片宽度 */
-.markdown-body p {
+    .markdown-body p {
     font-size: %dpx;          /* 段落字号 */
-    margin: %dpx 0;           /* 减少段落间距，提高空间利用率 */
-    line-height: 1.6;         /* 优化段落行高 */
-    text-align: justify;      /* 两端对齐 */
-    word-wrap: break-word;    /* 自动换行 */
+        margin: %dpx 0;           /* 段落间距：与分页使用的段后距一致 */
+        line-height: 1.6;         /* 优化段落行高 */
+        text-align: justify;      /* 两端对齐 */
+            word-wrap: break-word;    /* 自动换行 */
     hyphens: auto;            /* 自动连字符 */
     color: #333;              /* 段落文字颜色 */
     flex: 0 0 auto;           /* 不拉伸段落 */
@@ -2738,10 +2752,10 @@ body {
 }
 
 /* 卡片容器样式 */
-.markdown-card-container {
-    width: %dpx;
-    height: %dpx; /* 强制固定高度 */
-    padding: %dpx %dpx 80px %dpx; /* 优化内边距：上右(底部固定80px)左 */
+    .markdown-card-container {
+        width: %dpx;
+        height: %dpx; /* 固定高度 */
+        padding: %dpx %dpx %dpx %dpx; /* 上右下左：来自配置，底部不再强制80，避免过多留空 */
     overflow: visible; /* 允许内容可见，不隐藏超出部分 */
     background-color: %s;
     position: relative;
@@ -2762,12 +2776,15 @@ body {
     word-break: break-word; /* 中文换行优化 */
     flex: 1; /* 占用剩余空间 */
 }
-`, backgroundStyle, backgroundStyle, hc.config.BodyFontSize,
+`, backgroundStyle,
+		hc.config.PaddingTop, hc.config.PaddingRight, hc.config.PaddingBottom, hc.config.PaddingLeft,
+		backgroundStyle,
+		hc.config.BodyFontSize,
 		hc.config.TitleFontSize, hc.config.TitleMarginBottom,
-		hc.config.SubtitleFontSize, hc.config.TitleMarginBottom, hc.config.SubtitleMarginBottom,
-		hc.config.SubtitleFontSize, hc.config.TitleMarginBottom, hc.config.SubtitleMarginBottom,
-		hc.config.BodyFontSize, hc.config.TitleMarginBottom, hc.config.SubtitleMarginBottom,
-		hc.config.BodyFontSize, int(float64(hc.config.BodyMarginBottom)*0.7), // 减少段落间距，提高空间利用
+		hc.config.SubtitleFontSize, hc.config.SubtitleMarginBottom, hc.config.SubtitleMarginBottom,
+		hc.config.SubtitleFontSize, hc.config.SubtitleMarginBottom, hc.config.SubtitleMarginBottom,
+		hc.config.BodyFontSize, hc.config.BodyMarginBottom, hc.config.BodyMarginBottom,
+		hc.config.BodyFontSize, hc.config.BodyMarginBottom,
 		hc.config.ListFontSize, hc.config.BodyMarginBottom,
 		hc.config.ListFontSize,
 		hc.config.QuoteFontSize, hc.config.BodyMarginBottom,
@@ -2786,6 +2803,7 @@ body {
 		hc.config.CardHeight,      // 固定高度
 		hc.config.PaddingTop,      // 上内边距
 		hc.config.PaddingRight,    // 右内边距
+		hc.config.PaddingBottom,   // 底内边距（使用配置值，避免过多留空）
 		hc.config.PaddingLeft,     // 左内边距
 		hc.config.BackgroundColor) // 卡片背景色
 }
