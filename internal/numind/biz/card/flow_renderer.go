@@ -15,6 +15,64 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
+// GenerateUnifiedCSS 生成统一的分页和渲染CSS，确保两个环境完全一致
+func GenerateUnifiedCSS(config *pagination.PaginationConfig, backgroundImage string) string {
+	// Card and padding
+	w := config.Card.Width
+	h := config.Card.Height
+	padTop := config.Card.Padding.Top
+	padRight := config.Card.Padding.Right
+	padBottom := config.Card.Padding.Bottom
+	padLeft := config.Card.Padding.Left
+
+	// Typography
+	title := config.Styles[pagination.ElementTypeTitle]
+	subtitle := config.Styles[pagination.ElementTypeSubtitle]
+	body := config.Styles[pagination.ElementTypeBody]
+	list := config.Styles[pagination.ElementTypeList]
+	quote := config.Styles[pagination.ElementTypeQuote]
+
+	// Format background style
+	bgStyle := formatBackgroundStyleSimple(backgroundImage)
+
+	return fmt.Sprintf(`
+        @font-face {
+            font-family: "SourceHanSerifSC";
+            src: local("Source Han Serif SC"), local("SourceHanSerifSC"), local("Noto Sans CJK SC"), local("PingFang SC"), local("Hiragino Sans GB"), local("Microsoft YaHei"), local("sans-serif");
+            font-weight: normal; font-style: normal;
+        }
+        html, body { margin:0; padding:0; width:%dpx; height:%dpx; overflow:hidden; font-family: "SourceHanSerifSC", "Noto Sans CJK SC", "PingFang SC", Arial, sans-serif; }
+        .page { position:relative; width:%dpx; height:%dpx; box-sizing:border-box; %s overflow:hidden; background-size: cover !important; background-position: center center !important; background-repeat: no-repeat !important; }
+        .content { position:absolute; inset:0; box-sizing:border-box; top:%dpx; left:%dpx; right:%dpx; bottom:%dpx; overflow:hidden; }
+        /* styles for content */
+        h1 { font-size:%dpx; line-height:%dpx; color:%s; margin:%dpx 0 %dpx 0; text-align:%s; font-weight:700; }
+        h2 { font-size:%dpx; line-height:%dpx; color:%s; margin:%dpx 0 %dpx 0; text-align:%s; font-weight:700; }
+        p  { font-size:%dpx; line-height:%dpx; color:%s; margin:%dpx 0 %dpx 0; text-align:%s; text-indent:%dpx; }
+        ul { margin:%dpx 0 %dpx 0; padding-left:%dpx; }
+        li { font-size:%dpx; line-height:%dpx; color:%s; text-align:%s; list-style-type:none; position:relative; }
+        li::before { content:"•"; position:absolute; left:-%dpx; }
+        blockquote { font-size:%dpx; line-height:%dpx; color:%s; margin:%dpx 0 %dpx 0; padding-left:20px; border-left:4px solid %s; text-align:%s; }
+    `,
+		w, h, w, h,
+		bgStyle,
+		padTop, padLeft, padRight, padBottom,
+		title.FontSize, title.LineHeight, nz(title.Color, "#333333"), title.MarginTop, title.MarginBottom, nz(title.Align, "justify"),
+		subtitle.FontSize, subtitle.LineHeight, nz(subtitle.Color, "#666666"), subtitle.MarginTop, subtitle.MarginBottom, nz(subtitle.Align, "justify"),
+		body.FontSize, body.LineHeight, nz(body.Color, "#333333"), body.MarginTop, body.MarginBottom, nz(body.Align, "justify"), maxInt(body.FirstLineIndent, 0),
+		list.MarginTop, list.MarginBottom, maxInt(list.Indent, 40),
+		list.FontSize, list.LineHeight, nz(list.Color, "#333333"), nz(list.Align, "justify"), maxInt(list.Indent, 20),
+		quote.FontSize, quote.LineHeight, nz(quote.Color, "#1E90FF"), quote.MarginTop, quote.MarginBottom, nz(quote.Color, "#1E90FF"), nz(quote.Align, "justify"),
+	)
+}
+
+// formatBackgroundStyleSimple 格式化背景样式（简化版，用于统一CSS生成）
+func formatBackgroundStyleSimple(backgroundImage string) string {
+	if backgroundImage == "" {
+		return ""
+	}
+	return fmt.Sprintf("background-image: url('%s');", backgroundImage)
+}
+
 // FlowRenderer implements flow-based pagination using real browser layout.
 // It does NOT pre-split by blocks nor by lines. Instead, it incrementally appends
 // content and measures overflow, with binary search rollback to find the largest
@@ -25,7 +83,8 @@ type FlowRenderer struct {
 
 func NewFlowRenderer(config *pagination.PaginationConfig) *FlowRenderer {
 	if config == nil {
-		config = pagination.GetDefaultConfig()
+		// Prefer loading from Viper to honor config_dev.yaml and other envs
+		config = pagination.LoadConfigFromViper()
 	}
 	return &FlowRenderer{config: config}
 }
@@ -60,66 +119,13 @@ func (r *FlowRenderer) PaginateMarkdownWithBackground(ctx context.Context, markd
 }
 
 func (r *FlowRenderer) buildFlowPagingHTML(contentHTML, backgroundImage string) string {
-	// Card and padding
+	// 使用统一的CSS生成函数，确保与渲染环境完全一致
+	css := GenerateUnifiedCSS(r.config, backgroundImage)
+
+	// 获取页面尺寸用于隐藏源容器
 	w := r.config.Card.Width
-	h := r.config.Card.Height
-	padTop := r.config.Card.Padding.Top
-	padRight := r.config.Card.Padding.Right
-	padBottom := r.config.Card.Padding.Bottom
 	padLeft := r.config.Card.Padding.Left
-
-	// Typography (basic)
-	title := r.config.Styles[pagination.ElementTypeTitle]
-	subtitle := r.config.Styles[pagination.ElementTypeSubtitle]
-	body := r.config.Styles[pagination.ElementTypeBody]
-	list := r.config.Styles[pagination.ElementTypeList]
-	quote := r.config.Styles[pagination.ElementTypeQuote]
-
-	// Format background style
-	bgStyle := r.formatBackgroundStyle(backgroundImage)
-
-	css := fmt.Sprintf(`
-        @font-face {
-            font-family: "SourceHanSerifSC";
-            src: local("Source Han Serif SC"), local("SourceHanSerifSC"), local("STFangsong"), local("Noto Sans CJK SC"), local("PingFang SC"), local("Hiragino Sans GB"), local("Microsoft YaHei"), local("sans-serif");
-            font-weight: normal;
-            font-style: normal;
-        }
-        html, body {
-            margin: 0; padding: 0;
-            font-family: "SourceHanSerifSC", "STFangsong", "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
-        }
-        .page {
-            width: %dpx; height: %dpx;
-            box-sizing: border-box;
-            position: relative;
-            overflow: hidden;
-            %s
-        }
-        .content {
-            position: absolute;
-            top: %dpx; left: %dpx; right: %dpx; bottom: %dpx;
-            overflow: hidden;
-        }
-        /* styles for content */
-        h1 { font-size: %dpx; line-height: %dpx; color: %s; margin: %dpx 0 %dpx 0; text-align: justify; font-weight: 700; }
-        h2 { font-size: %dpx; line-height: %dpx; color: %s; margin: %dpx 0 %dpx 0; text-align: justify; font-weight: 700; }
-        p  { font-size: %dpx; line-height: %dpx; color: %s; margin: %dpx 0 %dpx 0; text-align: justify; }
-        ul { margin: %dpx 0 %dpx 0; padding-left: %dpx; }
-        li { font-size: %dpx; line-height: %dpx; color: %s; text-align: justify; list-style-type: none; position: relative; }
-        li::before { content: "•"; position: absolute; left: -%dpx; }
-        blockquote { font-size: %dpx; line-height: %dpx; color: %s; margin: %dpx 0 %dpx 0; padding-left: 20px; border-left: 4px solid %s; text-align: justify; }
-    `,
-		w, h,
-		bgStyle,
-		padTop, padLeft, padRight, padBottom,
-		title.FontSize, title.LineHeight, nz(title.Color, "#333333"), title.MarginTop, title.MarginBottom,
-		subtitle.FontSize, subtitle.LineHeight, nz(subtitle.Color, "#666666"), subtitle.MarginTop, subtitle.MarginBottom,
-		body.FontSize, body.LineHeight, nz(body.Color, "#333333"), body.MarginTop, body.MarginBottom,
-		list.MarginTop, list.MarginBottom, maxInt(list.Indent, 40),
-		list.FontSize, list.LineHeight, nz(list.Color, "#333333"), maxInt(list.Indent, 20),
-		quote.FontSize, quote.LineHeight, nz(quote.Color, "#1E90FF"), quote.MarginTop, quote.MarginBottom, nz(quote.Color, "#1E90FF"),
-	)
+	padRight := r.config.Card.Padding.Right
 
 	// JS pagination using flow-based packing
 	// We maintain a hidden source container (#src) with the full HTML, and iteratively create .page/.content containers,
@@ -134,7 +140,40 @@ func (r *FlowRenderer) buildFlowPagingHTML(contentHTML, backgroundImage string) 
         }
 
         function fits(contentEl) {
-            return contentEl.scrollHeight <= contentEl.clientHeight + 1; // tolerance
+            // 精确计算：需要考虑所有元素的实际高度，包括中间段落的margin-bottom
+            // 但最后一个元素的margin-bottom不计入（因为页面有bottom padding）
+            
+            const children = Array.from(contentEl.children);
+            if (children.length === 0) {
+                return contentEl.scrollHeight <= contentEl.clientHeight;
+            }
+            
+            let totalHeight = 0;
+            for (let i = 0; i < children.length; i++) {
+                const child = children[i];
+                const rect = child.getBoundingClientRect();
+                const style = window.getComputedStyle(child);
+                
+                // 元素自身高度（包括padding和border）
+                const elementHeight = rect.height;
+                totalHeight += elementHeight;
+                
+                // 如果不是最后一个元素，需要加上margin-bottom
+                if (i < children.length - 1) {
+                    const marginBottom = parseFloat(style.marginBottom) || 0;
+                    totalHeight += marginBottom;
+                }
+                
+                // 加上margin-top（第一个元素除外，因为容器顶部已有padding）
+                if (i > 0) {
+                    const marginTop = parseFloat(style.marginTop) || 0;
+                    // 注意：margin collapse，如果前一个元素有margin-bottom，可能会折叠
+                    // 这里简化处理，因为我们的CSS设置了margin-top为0
+                    totalHeight += marginTop;
+                }
+            }
+            
+            return totalHeight <= contentEl.clientHeight;
         }
 
         function textLen(node) {
@@ -154,7 +193,6 @@ func (r *FlowRenderer) buildFlowPagingHTML(contentHTML, backgroundImage string) 
             const total = textLen(node);
             if (total === 0) return { fit: null, rest: node };
             let lo = 1, hi = total, best = 0;
-            let bestNode = null;
             while (lo <= hi) {
                 const mid = (lo + hi) >> 1;
                 const clone = cloneShallowKeepAttrs(node);
@@ -163,9 +201,10 @@ func (r *FlowRenderer) buildFlowPagingHTML(contentHTML, backgroundImage string) 
                 span.textContent = (node.textContent || '').slice(0, mid);
                 clone.appendChild(span);
                 contentEl.appendChild(clone);
-                if (fits(contentEl)) { best = mid; bestNode = clone; } 
+                const ok = fits(contentEl);
+                if (ok) { best = mid; }
                 contentEl.removeChild(clone);
-                if (fits(contentEl)) { lo = mid + 1; } else { hi = mid - 1; }
+                if (ok) { lo = mid + 1; } else { hi = mid - 1; }
             }
             if (best === 0) return { fit: null, rest: node };
             // Build final fit/rest nodes
@@ -203,9 +242,10 @@ func (r *FlowRenderer) buildFlowPagingHTML(contentHTML, backgroundImage string) 
                     const mid = (lo + hi) >> 1;
                     const left = document.createTextNode((node.textContent || '').slice(0, mid));
                     contentEl.appendChild(left);
-                    if (fits(contentEl)) { best = mid; }
+                    const ok = fits(contentEl);
+                    if (ok) { best = mid; }
                     contentEl.removeChild(left);
-                    if (fits(contentEl)) lo = mid + 1; else hi = mid - 1;
+                    if (ok) lo = mid + 1; else hi = mid - 1;
                 }
                 if (best > 0) {
                     const left = document.createTextNode((node.textContent || '').slice(0, best));
@@ -280,6 +320,8 @@ func (r *FlowRenderer) buildFlowPagingHTML(contentHTML, backgroundImage string) 
         function paginate() {
             const pages = [];
             const src = document.getElementById('src');
+            let isFirstPage = true;
+            
             while (src.childNodes.length > 0) {
                 const page = document.createElement('div');
                 page.className = 'page';
@@ -295,6 +337,13 @@ func (r *FlowRenderer) buildFlowPagingHTML(contentHTML, backgroundImage string) 
                     let moved = 0;
                     while (moved < step && src.childNodes.length > 0) {
                         const node = src.removeChild(src.firstChild);
+                        
+                        // 特殊处理H1：只在第一页显示，后续页面跳过
+                        if (node.nodeType === Node.ELEMENT_NODE && node.tagName === 'H1' && !isFirstPage) {
+                            // 跳过H1，不添加到内容中
+                            continue;
+                        }
+                        
                         content.appendChild(node);
                         if (!fits(content)) {
                             // rollback this node and split
@@ -313,6 +362,13 @@ func (r *FlowRenderer) buildFlowPagingHTML(contentHTML, backgroundImage string) 
                     // safety: if next single node cannot fit at all, stop to finalize page
                     const probe = src.firstChild;
                     if (probe) {
+                        // 检查probe是否为H1且不是第一页
+                        if (probe.nodeType === Node.ELEMENT_NODE && probe.tagName === 'H1' && !isFirstPage) {
+                            // 跳过H1，直接移除
+                            src.removeChild(probe);
+                            continue;
+                        }
+                        
                         content.appendChild(probe.cloneNode(true));
                         const ok = fits(content);
                         content.removeChild(content.lastChild);
@@ -326,6 +382,7 @@ func (r *FlowRenderer) buildFlowPagingHTML(contentHTML, backgroundImage string) 
 
                 pages.push(content.innerHTML);
                 document.body.removeChild(page);
+                isFirstPage = false; // 标记第一页已完成
             }
             return pages;
         }

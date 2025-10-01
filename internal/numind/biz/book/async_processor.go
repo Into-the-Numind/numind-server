@@ -1803,14 +1803,17 @@ func (p *AsyncBookProcessor) splitAndCreateMarkdownCards(
 
 	// 优先使用流式分页渲染器：多页 -> 多卡
 	if cardbiz.IsFlowRendererEnabled() {
-		flow := cardbiz.NewFlowRenderer(pagination.GetDefaultConfig())
+		flow := cardbiz.NewFlowRenderer(pagination.LoadConfigFromViper())
+		log.C(ctx).Infow("🔍 调用FlowRenderer分页", "book_id", book.ID, "markdown_preview", markdownText[:min(len(markdownText), 200)])
 		pages, err := flow.PaginateMarkdownWithBackground(ctx, markdownText, templateBackground)
 		if err != nil || len(pages) == 0 {
 			log.C(ctx).Warnw("流式分页失败，回退到按文本切分", "book_id", book.ID, "error", err)
 		} else {
+			log.C(ctx).Infow("✅ FlowRenderer分页成功", "book_id", book.ID, "pages_count", len(pages))
 			var createdCards []*model.CardM
 			// 为每一页创建一条卡片记录（从1开始，0为封面）
 			for i, inner := range pages {
+				log.C(ctx).Infow("🔍 FlowRenderer返回的页面HTML片段", "book_id", book.ID, "page", i+1, "html_preview", inner[:min(len(inner), 200)])
 				// 生成完整页面HTML（带背景图）
 				pageHTML := p.wrapFlowPageHTMLWithBackground(inner, templateBackground)
 				// 先创建卡片记录
@@ -2261,7 +2264,7 @@ func (p *AsyncBookProcessor) generateCardImageAndHTML(ctx context.Context, cardI
 	useFlow := cardbiz.IsFlowRendererEnabled()
 	if useFlow {
 		// 使用流式分页：得到每页的 innerHTML 片段
-		flow := cardbiz.NewFlowRenderer(pagination.GetDefaultConfig())
+		flow := cardbiz.NewFlowRenderer(pagination.LoadConfigFromViper())
 		var errFlow error
 		pages, errFlow = flow.PaginateMarkdown(ctx, markdownContent)
 		if errFlow != nil || len(pages) == 0 {
@@ -2281,7 +2284,7 @@ func (p *AsyncBookProcessor) generateCardImageAndHTML(ctx context.Context, cardI
 		// 对于流式分页：逐页渲染，当前 cardID 对应第一页；如需扩展为多张卡，需要在上游创建多条卡记录。
 		// 这里保持单卡单页输出：渲染第一页
 		first := pages[0]
-		pageHTML := p.wrapFlowPageHTML(first)
+		pageHTML := p.wrapFlowPageHTMLWithBackground(first, templateBackground)
 		imagePath, err := p.renderHTMLToImage(ctx, cardID, pageHTML)
 		if err != nil {
 			log.C(ctx).Warnw("HTML转图片失败", "card_id", cardID, "error", err.Error())
@@ -2369,35 +2372,47 @@ func (p *AsyncBookProcessor) wrapFlowPageHTML(inner string) string {
 
 // wrapFlowPageHTMLWithBackground 将流式分页得到的单页 innerHTML 包装为完整的固定尺寸HTML（带背景支持）
 func (p *AsyncBookProcessor) wrapFlowPageHTMLWithBackground(inner, backgroundImage string) string {
-	cfg := p.getRendererConfig()
-	// 格式化背景样式
-	bgStyle := formatBackgroundStyle(backgroundImage)
-	// 基础样式：固定1080x1440，内容区全覆盖但由渲染器在上层设定边距
-	// 这里使用与 util 渲染器一致的页面尺寸，避免缩放误差
+	// 从分页配置读取排版（与 FlowRenderer 同源）
+	pg := pagination.LoadConfigFromViper()
+	// 使用统一的CSS生成函数，确保与分页环境完全一致
+	css := cardbiz.GenerateUnifiedCSS(pg, backgroundImage)
+
 	doc := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Flow Page</title>
-  <style>
-    @font-face {
-      font-family: "SourceHanSerifSC";
-      src: local("Source Han Serif SC"), local("SourceHanSerifSC"), local("Noto Sans CJK SC"), local("PingFang SC"), local("Hiragino Sans GB"), local("Microsoft YaHei"), local("sans-serif");
-      font-weight: normal; font-style: normal;
-    }
-    html, body { margin:0; padding:0; width:%dpx; height:%dpx; overflow:hidden; font-family: "SourceHanSerifSC", "Noto Sans CJK SC", "PingFang SC", Arial, sans-serif; }
-    .page { position:relative; width:%dpx; height:%dpx; box-sizing:border-box; %s overflow:hidden; background-size: cover !important; background-position: center center !important; background-repeat: no-repeat !important; }
-    .content { position:absolute; inset:0; box-sizing:border-box; }
-  </style>
+  <style>%s</style>
 </head>
 <body>
   <div class="page">
     <div class="content">%s</div>
   </div>
 </body>
-</html>`, cfg.Width, cfg.Height, cfg.Width, cfg.Height, bgStyle, inner)
+</html>`, css, inner)
 	return doc
+}
+
+func colorOrDefault(s, def string) string {
+	if strings.TrimSpace(s) == "" {
+		return def
+	}
+	return s
+}
+
+func alignOrDefault(s, def string) string {
+	if strings.TrimSpace(s) == "" {
+		return def
+	}
+	return s
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // renderWithWkhtmltoimage 使用wkhtmltoimage渲染

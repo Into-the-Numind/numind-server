@@ -175,11 +175,18 @@ func loadStyleConfigFromTypography(config *PaginationConfig, elementType Element
 		style.LineHeight = viper.GetInt(typographyPath + ".line_heights." + elementName)
 	}
 
-	// 从spacing配置加载边距
+	// 从spacing配置加载边距（基础 + 精细化覆盖）
 	if viper.IsSet(typographyPath + ".spacing.base_margin") {
 		baseMargin := viper.GetInt(typographyPath + ".spacing.base_margin")
 		style.MarginTop = baseMargin
 		style.MarginBottom = baseMargin
+	}
+	// 精细化：card.typography.spacing.margins.{element}_top / {element}_bottom
+	if viper.IsSet(typographyPath + ".spacing.margins." + elementName + "_top") {
+		style.MarginTop = viper.GetInt(typographyPath + ".spacing.margins." + elementName + "_top")
+	}
+	if viper.IsSet(typographyPath + ".spacing.margins." + elementName + "_bottom") {
+		style.MarginBottom = viper.GetInt(typographyPath + ".spacing.margins." + elementName + "_bottom")
 	}
 
 	// 从colors配置加载颜色
@@ -203,9 +210,16 @@ func loadStyleConfigFromTypography(config *PaginationConfig, elementType Element
 		style.Align = viper.GetString(typographyPath + ".alignments." + elementName)
 	}
 
-	// 特殊处理列表缩进
+	// 列表缩进
 	if elementType == ElementTypeList && viper.IsSet(typographyPath+".styles.list_indent") {
 		style.Indent = viper.GetInt(typographyPath + ".styles.list_indent")
+	}
+
+	// 首行缩进（像素），可配置：card.typography.first_line_indent 或 per-element：card.typography.styles.{element}.first_line_indent
+	if viper.IsSet(typographyPath + ".styles." + elementName + ".first_line_indent") {
+		style.FirstLineIndent = viper.GetInt(typographyPath + ".styles." + elementName + ".first_line_indent")
+	} else if viper.IsSet(typographyPath + ".first_line_indent") {
+		style.FirstLineIndent = viper.GetInt(typographyPath + ".first_line_indent")
 	}
 
 	config.Styles[elementType] = style
