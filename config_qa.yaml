@@ -154,6 +154,8 @@ card:
 
   # 统一的字体和样式配置
   typography:
+    # 段落处理策略配置
+    paragraph_strategy: "markdown"  # "markdown"(默认，空行分段) 或 "single_newline"(单换行即段落)
     # 字体族配置
     font_family: "'SourceHanSerifSC', 'STFangsong', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif"
     base_font_size: 56       # 基础字体大小
