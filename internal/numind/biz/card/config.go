@@ -30,10 +30,10 @@ func GetRendererConfig() *RendererConfig {
 	config := &RendererConfig{
 		EnableRenderAndMeasure:    false, // 禁用调试用的渲染-测量方案
 		EnableChromeHeadless:      true,  // 默认启用Chrome无头浏览器
-		EnableTraditionalRenderer: true,  // 默认启用传统渲染器作为备用
+		EnableTraditionalRenderer: false, // 禁用传统渲染器，使用FlowRenderer
 		EnableEnhancedRenderer:    false, // 暂时禁用增强版渲染器
-		EnableLightweightRenderer: true,  // 默认启用轻量级渲染器
-		EnableFlowRenderer:        false, // 默认关闭，逐步灰度
+		EnableLightweightRenderer: false, // 禁用轻量级渲染器，使用FlowRenderer
+		EnableFlowRenderer:        true,  // 启用流式分页渲染器作为主要渲染方案
 		ChromeDebugPort:           9222,  // 默认Chrome调试端口
 		RenderTimeout:             300,   // 默认5分钟超时
 	}

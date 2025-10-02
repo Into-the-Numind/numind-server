@@ -1820,7 +1820,7 @@ func (p *AsyncBookProcessor) splitAndCreateMarkdownCards(
 				cardRecord := &model.CardM{
 					UserID:        userID,
 					BookID:        book.ID,
-					ProcessedText: markdownText, // 保留原文本，图片为准
+					ProcessedText: inner, // 使用FlowRenderer分页后的HTML内容
 					SortOrder:     i + 1,
 				}
 				if err := p.biz.Cards().Create(ctx, cardRecord); err != nil {

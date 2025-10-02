@@ -5,11 +5,13 @@ import (
 	"encoding/base64"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"numind-server/internal/numind/biz/markdown"
 	"numind-server/internal/numind/biz/pagination"
+	"numind-server/internal/pkg/log"
 
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
@@ -97,25 +99,70 @@ func (r *FlowRenderer) PaginateMarkdown(ctx context.Context, markdownText string
 
 // PaginateMarkdownWithBackground returns a list of per-page HTML fragments with background support.
 func (r *FlowRenderer) PaginateMarkdownWithBackground(ctx context.Context, markdownText, backgroundImage string) ([]string, error) {
-	// 1) Convert markdown to styled HTML content (without full page wrapper)
+	// 1) 预处理：移除所有H1标题，只保留第一个
+	processedMarkdown := r.preprocessMarkdownForH1Handling(markdownText)
+
+	// 2) Convert markdown to styled HTML content (without full page wrapper)
 	conv := markdown.NewHTMLConverter()
-	contentHTML, err := conv.ConvertToHTML(markdownText)
+	contentHTML, err := conv.ConvertToHTML(processedMarkdown)
 	if err != nil {
 		// Fallback: wrap as paragraph
-		contentHTML = fmt.Sprintf("<p>%s</p>", markdownEscape(markdownText))
+		contentHTML = fmt.Sprintf("<p>%s</p>", markdownEscape(processedMarkdown))
 	}
 
-	// 2) Build a minimal HTML document that contains both the source content and the pagination script
+	// 3) 后处理：确保HTML中只有一个H1元素
+	contentHTML = r.postProcessHTMLForH1Handling(contentHTML)
+
+	// 3) Build a minimal HTML document that contains both the source content and the pagination script
 	// The page size and paddings follow r.config
 	doc := r.buildFlowPagingHTML(contentHTML, backgroundImage)
 
-	// 3) Run in headless Chrome and execute pagination, returning array of page HTML fragments
+	// 4) Run in headless Chrome and execute pagination, returning array of page HTML fragments
 	pages, err := r.runPaginationInChrome(ctx, doc)
 	if err != nil {
 		return nil, err
 	}
 
 	return pages, nil
+}
+
+// preprocessMarkdownForH1Handling 预处理markdown内容，完全移除所有H1标题
+func (r *FlowRenderer) preprocessMarkdownForH1Handling(markdownText string) string {
+	lines := strings.Split(markdownText, "\n")
+	var processedLines []string
+	h1Count := 0
+
+	for _, line := range lines {
+		trimmedLine := strings.TrimSpace(line)
+
+		// 检查是否是H1标题
+		if strings.HasPrefix(trimmedLine, "# ") {
+			h1Count++
+			// 完全跳过所有H1标题，不保留任何H1
+			continue
+		}
+
+		// 保留其他所有内容
+		processedLines = append(processedLines, line)
+	}
+
+	result := strings.Join(processedLines, "\n")
+	log.Infow("🔍 FlowRenderer预处理", "原始H1数量", h1Count, "处理后长度", len(result))
+	return result
+}
+
+// postProcessHTMLForH1Handling 后处理HTML内容，完全移除所有H1元素
+func (r *FlowRenderer) postProcessHTMLForH1Handling(htmlContent string) string {
+	// 使用正则表达式找到所有H1标签
+	h1Regex := regexp.MustCompile(`<h1[^>]*>.*?</h1>`)
+	h1Matches := h1Regex.FindAllString(htmlContent, -1)
+
+	log.Infow("🔍 FlowRenderer后处理", "发现H1数量", len(h1Matches))
+
+	// 完全移除所有H1标签
+	result := h1Regex.ReplaceAllString(htmlContent, "")
+	log.Infow("🔍 FlowRenderer后处理", "处理后长度", len(result))
+	return result
 }
 
 func (r *FlowRenderer) buildFlowPagingHTML(contentHTML, backgroundImage string) string {
@@ -230,6 +277,9 @@ func (r *FlowRenderer) buildFlowPagingHTML(contentHTML, backgroundImage string) 
 
         function appendMaxFit(node, contentEl, srcEl) {
             if (!node) return false;
+            
+            // H1已在Go端预处理中完全移除，无需特殊处理
+            
             contentEl.appendChild(node);
             if (fits(contentEl)) return true;
             contentEl.removeChild(node);
@@ -338,11 +388,7 @@ func (r *FlowRenderer) buildFlowPagingHTML(contentHTML, backgroundImage string) 
                     while (moved < step && src.childNodes.length > 0) {
                         const node = src.removeChild(src.firstChild);
                         
-                        // 特殊处理H1：只在第一页显示，后续页面跳过
-                        if (node.nodeType === Node.ELEMENT_NODE && node.tagName === 'H1' && !isFirstPage) {
-                            // 跳过H1，不添加到内容中
-                            continue;
-                        }
+                        // H1已在Go端预处理中完全移除，无需特殊处理
                         
                         content.appendChild(node);
                         if (!fits(content)) {
@@ -362,12 +408,7 @@ func (r *FlowRenderer) buildFlowPagingHTML(contentHTML, backgroundImage string) 
                     // safety: if next single node cannot fit at all, stop to finalize page
                     const probe = src.firstChild;
                     if (probe) {
-                        // 检查probe是否为H1且不是第一页
-                        if (probe.nodeType === Node.ELEMENT_NODE && probe.tagName === 'H1' && !isFirstPage) {
-                            // 跳过H1，直接移除
-                            src.removeChild(probe);
-                            continue;
-                        }
+                        // H1已在Go端预处理中完全移除，无需特殊处理
                         
                         content.appendChild(probe.cloneNode(true));
                         const ok = fits(content);
