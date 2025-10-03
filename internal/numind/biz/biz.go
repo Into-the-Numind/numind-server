@@ -15,11 +15,9 @@ import (
 	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/numind/biz/feedback"
 	"numind-server/internal/numind/biz/image"
-	"numind-server/internal/numind/biz/mqtt"
 	"numind-server/internal/numind/biz/order"
 	"numind-server/internal/numind/biz/pagination"
 	"numind-server/internal/numind/biz/payment"
-	"numind-server/internal/numind/biz/post"
 	"numind-server/internal/numind/biz/template"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
@@ -32,7 +30,6 @@ import (
 // IBiz 定义了 Biz 层需要实现的方法.
 type IBiz interface {
 	Users() user.UserBiz
-	Posts() post.PostBiz
 	Images() image.ImageBiz
 	Cards() card.CardBiz
 	Books() book.BookBiz
@@ -43,7 +40,6 @@ type IBiz interface {
 	Wechat() wechat.WechatBiz
 	Ali() ali.AliBiz
 	Volc() volc.VolcBiz
-	Mqtt() mqtt.MqttBiz
 	Pagination() pagination.PaginationBiz
 	Chats() chat.ChatBiz
 	Article() article.IArticleBiz
@@ -58,8 +54,7 @@ var _ IBiz = (*biz)(nil)
 
 // biz 是 IBiz 的一个具体实现.
 type biz struct {
-	ds      store.IStore
-	mqttBiz mqtt.MqttBiz
+	ds store.IStore
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -67,27 +62,12 @@ var _ IBiz = (*biz)(nil)
 
 // NewBiz 创建一个 IBiz 类型的实例.
 func NewBiz(ds store.IStore) *biz {
-	b := &biz{ds: ds}
-
-	// 初始化MQTT连接（可选，不强制连接）
-	mqttBiz := mqtt.NewMqttBiz()
-	// 注释掉强制连接，改为按需连接
-	// if err := mqttBiz.Connect(); err != nil {
-	// 	log.Errorw("Failed to connect to MQTT broker", "error", err.Error())
-	// }
-	b.mqttBiz = mqttBiz
-
-	return b
+	return &biz{ds: ds}
 }
 
 // Users 返回一个实现了 UserBiz 接口的实例.
 func (b *biz) Users() user.UserBiz {
 	return user.New(b.ds)
-}
-
-// Posts 返回一个实现了 PostBiz 接口的实例.
-func (b *biz) Posts() post.PostBiz {
-	return post.New(b.ds)
 }
 
 func (b *biz) Images() image.ImageBiz {
@@ -139,10 +119,6 @@ func (b *biz) Order() order.OrderBiz {
 
 func (b *biz) AccountRecords() accountrecordbiz.AccountRecordBiz {
 	return accountrecordbiz.NewAccountRecordBiz(b.ds)
-}
-
-func (b *biz) Mqtt() mqtt.MqttBiz {
-	return b.mqttBiz
 }
 
 func (b *biz) Pagination() pagination.PaginationBiz {

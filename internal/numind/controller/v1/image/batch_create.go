@@ -131,7 +131,6 @@ func (ctrl *ImageController) BatchUpload(c *gin.Context) {
 		ctrl.b.Baidu(),
 		ctrl.b.Ali(),
 		ctrl.b.Volc(), // 添加volc参数
-		ctrl.b.Mqtt(),
 	)
 
 	// 异步处理图片
@@ -143,12 +142,10 @@ func (ctrl *ImageController) BatchUpload(c *gin.Context) {
 
 	// 立即返回任务ID
 	core.WriteResponse(c, nil, gin.H{
-		"task_id":      taskID,
-		"user_id":      userID,
-		"status":       "processing",
-		"message":      "图片处理已开始，请通过MQTT监听处理结果",
-		"mqtt_topic":   fmt.Sprintf("numind/image/processing/status/%d", userID),
-		"result_topic": fmt.Sprintf("numind/image/processing/result/%d", userID),
+		"task_id": taskID,
+		"user_id": userID,
+		"status":  "processing",
+		"message": "图片处理已开始，请通过日志查看处理结果",
 	})
 }
 

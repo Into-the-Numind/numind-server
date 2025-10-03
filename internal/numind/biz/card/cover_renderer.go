@@ -181,8 +181,8 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
 	// 处理背景样式 - 优先使用模板背景，如果没有则使用白色背景
 	backgroundStyle := ""
 	if r.templateBackground != "" {
-		// 使用模板背景图片
-		backgroundStyle = fmt.Sprintf("background: url('file://%s') center center / cover no-repeat;", r.templateBackground)
+		// 使用模板背景图片 - 使用正确的URL处理逻辑
+		backgroundStyle = formatBackgroundStyle(r.templateBackground)
 	} else {
 		// 使用默认白色背景
 		backgroundStyle = "background: #ffffff;"
@@ -245,8 +245,8 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
         
         /* 封面容器 - 背景图在底层，内容在上层 */
         .cover-container {
-            width: 100%;
-            height: 100%;
+            width: 100%%;
+            height: 100%%;
             position: relative;
             %s
             background-size: cover !important;
@@ -259,8 +259,8 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             position: absolute;
             top: 0;
             left: 0;
-            width: 100%;
-            height: 100%;
+            width: 100%%;
+            height: 100%%;
             z-index: 1;
             background: inherit;
             background-size: cover !important;
@@ -271,8 +271,8 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
         /* 内容层：只显示标题 */
         .cover-content-layer {
             position: relative;
-            width: 100%;
-            height: 100%;
+            width: 100%%;
+            height: 100%%;
             z-index: 2;
             display: flex;
             align-items: center;
@@ -285,23 +285,23 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
             align-items: center;
             justify-content: center;
             position: relative;
-            width: 100%;
-            height: 100%;
+            width: 100%%;
+            height: 100%%;
         }
         
         .title-container {
             text-align: justify;
             padding: 40px;
-            width: 100%;
-            max-width: 90%;
+            width: 100%%;
+            max-width: 90%%;
         }
         
         .title {
             font-family: "SourceHanSerifSC", "STFangsong", "Noto Sans CJK SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
             font-size: %dpx;
             font-weight: bold;
-            color: %s
             line-height: %dpx;
+            color: %s
             margin: 0;
             text-shadow: 0 2px 4px rgba(0,0,0,0.1);
             word-wrap: break-word;
@@ -309,15 +309,15 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
         }
         
         .cover-image {
-            width: 100%;
-            height: 100%;
+            width: 100%%;
+            height: 100%%;
             object-fit: cover;
             object-position: center;
         }
         
         .image-placeholder {
-            width: 80%;
-            height: 80%;
+            width: 80%%;
+            height: 80%%;
             background: #f8f9fa;
             border: 2px dashed #dee2e6;
             border-radius: 12px;
@@ -367,7 +367,7 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
 </body>
 </html>`, config.Card.Width, config.Card.Height,
 		backgroundStyle,
-		fontSize, color, lineHeight, fontSize*3/4, fontSize*3/4, // 字体大小、颜色、行高、响应式字体大小（75%）
+		fontSize, lineHeight, color+";", fontSize*3/4, // 字体大小、行高、颜色（带分号）、响应式字体大小（75%）
 		coverData.Title)
 
 	return html

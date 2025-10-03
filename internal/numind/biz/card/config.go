@@ -17,6 +17,8 @@ type RendererConfig struct {
 	EnableEnhancedRenderer bool
 	// 是否启用轻量级渲染器（无浏览器依赖）
 	EnableLightweightRenderer bool
+	// 是否启用流式分页渲染器（真实排版 + 实时测量 + 二分回退）
+	EnableFlowRenderer bool
 	// Chrome调试端口
 	ChromeDebugPort int
 	// 渲染超时时间（秒）
@@ -28,9 +30,10 @@ func GetRendererConfig() *RendererConfig {
 	config := &RendererConfig{
 		EnableRenderAndMeasure:    false, // 禁用调试用的渲染-测量方案
 		EnableChromeHeadless:      true,  // 默认启用Chrome无头浏览器
-		EnableTraditionalRenderer: true,  // 默认启用传统渲染器作为备用
+		EnableTraditionalRenderer: false, // 禁用传统渲染器，使用FlowRenderer
 		EnableEnhancedRenderer:    false, // 暂时禁用增强版渲染器
-		EnableLightweightRenderer: true,  // 默认启用轻量级渲染器
+		EnableLightweightRenderer: false, // 禁用轻量级渲染器，使用FlowRenderer
+		EnableFlowRenderer:        true,  // 启用流式分页渲染器作为主要渲染方案
 		ChromeDebugPort:           9222,  // 默认Chrome调试端口
 		RenderTimeout:             300,   // 默认5分钟超时
 	}
@@ -63,6 +66,12 @@ func GetRendererConfig() *RendererConfig {
 	if env := os.Getenv("ENABLE_LIGHTWEIGHT_RENDERER"); env != "" {
 		if enabled, err := strconv.ParseBool(env); err == nil {
 			config.EnableLightweightRenderer = enabled
+		}
+	}
+
+	if env := os.Getenv("ENABLE_FLOW_RENDERER"); env != "" {
+		if enabled, err := strconv.ParseBool(env); err == nil {
+			config.EnableFlowRenderer = enabled
 		}
 	}
 
@@ -106,4 +115,9 @@ func IsEnhancedRendererEnabled() bool {
 // IsLightweightRendererEnabled 检查是否启用轻量级渲染器
 func IsLightweightRendererEnabled() bool {
 	return GetRendererConfig().EnableLightweightRenderer
+}
+
+// IsFlowRendererEnabled 检查是否启用流式分页渲染器
+func IsFlowRendererEnabled() bool {
+	return GetRendererConfig().EnableFlowRenderer
 }

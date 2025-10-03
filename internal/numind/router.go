@@ -96,20 +96,16 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.PUT("/books/:id", bc.Update)               // 更新卡册
 		authGroup.DELETE("/books/:id", bc.Delete)            // 删除卡册
 		authGroup.DELETE("/books", bc.DeleteBatch)           // 批量删除卡册，query: bookID=1&bookID=2
-		authGroup.GET("/books/:id/html", bc.ViewBookHTML)    // 查看卡册HTML
-		authGroup.GET("/books/:id/image", bc.ViewBookImage)  // 查看卡册图片
 	}
 
 	// 卡片相关
 	{
 		cardController := card.New(b)
-		authGroup.POST("/cards", cardController.Create)                              // 创建卡片
-		authGroup.GET("/cards", cardController.List)                                 // 获取卡片列表
-		authGroup.GET("/cards/:id", cardController.Get)                              // 获取卡片详情
-		authGroup.PUT("/cards/:id", cardController.Update)                           // 更新卡片
-		authGroup.DELETE("/cards/:id", cardController.Delete)                        // 删除卡片
-		authGroup.POST("/cards/:id/render", cardController.RenderCard)               // 渲染卡片
-		authGroup.POST("/cards/book/:bookId/render", cardController.RenderBookCards) // 渲染书籍卡片
+		authGroup.POST("/cards", cardController.Create)       // 创建卡片
+		authGroup.GET("/cards", cardController.List)          // 获取卡片列表
+		authGroup.GET("/cards/:id", cardController.Get)       // 获取卡片详情
+		authGroup.PUT("/cards/:id", cardController.Update)    // 更新卡片
+		authGroup.DELETE("/cards/:id", cardController.Delete) // 删除卡片
 	}
 
 	// 分类相关

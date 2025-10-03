@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"numind-server/internal/pkg/log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,6 +64,7 @@ func (w *WkhtmltoimageRenderer) RenderHTMLToImage(ctx context.Context, htmlConte
 		return w.renderWithExternalBinary(ctx, htmlContent, outputPath)
 	}
 
+	log.C(ctx).Infow("使用内置的Go实现渲染", "output_path", outputPath)
 	// 使用内置的Go实现
 	return w.renderWithGoImplementation(ctx, htmlContent, outputPath)
 }

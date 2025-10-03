@@ -37,13 +37,14 @@ type PaginatedContent struct {
 
 // StyleConfig 定义样式配置
 type StyleConfig struct {
-	FontSize     int    `json:"fontSize"`
-	LineHeight   int    `json:"lineHeight"`
-	MarginTop    int    `json:"marginTop"`
-	MarginBottom int    `json:"marginBottom"`
-	Indent       int    `json:"indent,omitempty"`
-	Color        string `json:"color,omitempty"`
-	Align        string `json:"align,omitempty"`
+	FontSize        int    `json:"fontSize"`
+	LineHeight      int    `json:"lineHeight"`
+	MarginTop       int    `json:"marginTop"`
+	MarginBottom    int    `json:"marginBottom"`
+	Indent          int    `json:"indent,omitempty"`
+	Color           string `json:"color,omitempty"`
+	Align           string `json:"align,omitempty"`
+	FirstLineIndent int    `json:"firstLineIndent,omitempty"`
 }
 
 // CardConfig 定义卡片配置

@@ -11,11 +11,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	cardbiz "numind-server/internal/numind/biz/card"
 	"numind-server/internal/numind/biz/markdown"
 	"numind-server/internal/numind/biz/pagination"
 	"numind-server/internal/pkg/httpclient"
@@ -51,6 +53,62 @@ func getCoverTitleConfig() (fontSize int, lineHeight int, color string) {
 	}
 
 	return fontSize, lineHeight, color
+}
+
+// getFontPaths 获取字体文件路径（根据运行环境动态调整）
+func getFontPaths() (regularPath, boldPath string) {
+	// 检测是否在Docker容器中运行
+	if isRunningInDocker() {
+		// Docker容器环境：使用容器内的字体路径
+		regularPath = "file:///usr/share/fonts/truetype/SourceHanSerifSC-Regular.otf"
+		boldPath = "file:///usr/share/fonts/truetype/SourceHanSerifSC-Bold.otf"
+	} else {
+		// 本地开发环境：根据操作系统检测
+		if runtime.GOOS == "darwin" {
+			// macOS
+			regularPath = "file:///Users/" + os.Getenv("USER") + "/Library/Fonts/SourceHanSerifSC-Regular.otf"
+			boldPath = "file:///Users/" + os.Getenv("USER") + "/Library/Fonts/SourceHanSerifSC-Bold.otf"
+		} else if runtime.GOOS == "linux" {
+			// Linux本地环境
+			if homeDir, err := os.UserHomeDir(); err == nil {
+				regularPath = "file://" + homeDir + "/.local/share/fonts/SourceHanSerifSC-Regular.otf"
+				boldPath = "file://" + homeDir + "/.local/share/fonts/SourceHanSerifSC-Bold.otf"
+			} else {
+				// 回退到容器路径
+				regularPath = "file:///usr/share/fonts/truetype/SourceHanSerifSC-Regular.otf"
+				boldPath = "file:///usr/share/fonts/truetype/SourceHanSerifSC-Bold.otf"
+			}
+		} else {
+			// Windows或其他系统，使用回退方案
+			regularPath = "file:///usr/share/fonts/truetype/SourceHanSerifSC-Regular.otf"
+			boldPath = "file:///usr/share/fonts/truetype/SourceHanSerifSC-Bold.otf"
+		}
+	}
+
+	return regularPath, boldPath
+}
+
+// isRunningInDocker 检测是否在Docker容器中运行
+func isRunningInDocker() bool {
+	// 检查 /.dockerenv 文件（Docker容器的标准标识）
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+
+	// 检查容器化环境变量
+	if os.Getenv("DOCKER_CONTAINER") == "true" || os.Getenv("container") != "" {
+		return true
+	}
+
+	// 检查cgroup信息
+	if data, err := os.ReadFile("/proc/1/cgroup"); err == nil {
+		content := string(data)
+		if strings.Contains(content, "docker") || strings.Contains(content, "containerd") {
+			return true
+		}
+	}
+
+	return false
 }
 
 // BizInterface 业务接口
@@ -1743,48 +1801,84 @@ func (p *AsyncBookProcessor) splitAndCreateMarkdownCards(
 ) ([]*model.CardM, error) {
 	log.C(ctx).Infow("📄 分割markdown内容为多张卡片", "book_id", book.ID, "text_length", len(markdownText))
 
-	// 分割markdown内容
+	// 优先使用流式分页渲染器：多页 -> 多卡
+	if cardbiz.IsFlowRendererEnabled() {
+		flow := cardbiz.NewFlowRenderer(pagination.LoadConfigFromViper())
+		log.C(ctx).Infow("🔍 调用FlowRenderer分页", "book_id", book.ID, "markdown_preview", markdownText[:min(len(markdownText), 200)])
+		pages, err := flow.PaginateMarkdownWithBackground(ctx, markdownText, templateBackground)
+		if err != nil || len(pages) == 0 {
+			log.C(ctx).Warnw("流式分页失败，回退到按文本切分", "book_id", book.ID, "error", err)
+		} else {
+			log.C(ctx).Infow("✅ FlowRenderer分页成功", "book_id", book.ID, "pages_count", len(pages))
+			var createdCards []*model.CardM
+			// 为每一页创建一条卡片记录（从1开始，0为封面）
+			for i, inner := range pages {
+				log.C(ctx).Infow("🔍 FlowRenderer返回的页面HTML片段", "book_id", book.ID, "page", i+1, "html_preview", inner[:min(len(inner), 200)])
+				// 生成完整页面HTML（带背景图）
+				pageHTML := p.wrapFlowPageHTMLWithBackground(inner, templateBackground)
+				// 先创建卡片记录
+				cardRecord := &model.CardM{
+					UserID:        userID,
+					BookID:        book.ID,
+					ProcessedText: inner, // 使用FlowRenderer分页后的HTML内容
+					SortOrder:     i + 1,
+				}
+				if err := p.biz.Cards().Create(ctx, cardRecord); err != nil {
+					log.C(ctx).Errorw("创建分页卡片失败", "book_id", book.ID, "page", i+1, "error", err.Error())
+					continue
+				}
+
+				// 渲染图片
+				imagePath, rErr := p.renderHTMLToImage(ctx, cardRecord.ID, pageHTML)
+				if rErr != nil {
+					log.C(ctx).Warnw("分页卡片渲染失败", "card_id", cardRecord.ID, "error", rErr.Error())
+				} else {
+					cardRecord.RenderedImage = imagePath
+					if uErr := p.biz.Cards().Update(ctx, cardRecord); uErr != nil {
+						log.C(ctx).Warnw("更新分页卡片图片路径失败", "card_id", cardRecord.ID, "error", uErr.Error())
+					}
+				}
+
+				createdCards = append(createdCards, cardRecord)
+				log.C(ctx).Infow("✅ 分页卡片创建成功", "book_id", book.ID, "card_id", cardRecord.ID, "sort_order", cardRecord.SortOrder)
+			}
+			log.C(ctx).Infow("✅ 流式分页多卡创建完成", "book_id", book.ID, "total_cards", len(createdCards))
+			return createdCards, nil
+		}
+	}
+
+	// 回退：仍按文本估算切分
 	cardContents := p.splitMarkdownIntoCards(markdownText)
-
 	var createdCards []*model.CardM
-
-	// 为每个分割后的内容创建卡片（从索引1开始，0是封面）
 	for i, content := range cardContents {
 		if strings.TrimSpace(content) == "" {
-			continue // 跳过空内容
+			continue
 		}
-
-		// 创建卡片记录 - 存储原始markdown文本
 		cardRecord := &model.CardM{
 			UserID:        userID,
 			BookID:        book.ID,
-			ProcessedText: content, // 存储原始markdown文本
-			SortOrder:     i + 1,   // 从1开始，0是封面卡片
+			ProcessedText: content,
+			SortOrder:     i + 1,
 		}
-
 		if err := p.biz.Cards().Create(ctx, cardRecord); err != nil {
 			log.C(ctx).Errorw("创建markdown卡片失败", "book_id", book.ID, "card_index", i+1, "error", err.Error())
 			continue
 		}
-
 		createdCards = append(createdCards, cardRecord)
-
-		// 为每个卡片生成图片和HTML文件
 		if err := p.generateCardImageAndHTML(ctx, cardRecord.ID, content, templateBackground); err != nil {
 			log.C(ctx).Errorw("卡片图片和HTML生成失败", "card_id", cardRecord.ID, "error", err.Error())
-		} else {
-			log.C(ctx).Infow("✅ 卡片图片和HTML生成成功", "card_id", cardRecord.ID)
 		}
-
 		log.C(ctx).Infow("📄 markdown卡片创建成功", "book_id", book.ID, "card_id", cardRecord.ID, "sort_order", cardRecord.SortOrder)
 	}
-
 	log.C(ctx).Infow("✅ 所有markdown卡片创建完成", "book_id", book.ID, "total_cards", len(createdCards))
 	return createdCards, nil
 }
 
 // splitMarkdownIntoCards 将markdown内容分割为多张卡片（基于固定边距的精准分页版本）
 func (p *AsyncBookProcessor) splitMarkdownIntoCards(content string) []string {
+	// 在分页前移除所有一级标题行，避免生成只含H1的空白内容卡
+	content = stripH1OnlyFromMarkdown(content)
+
 	// 使用HTML转换器的固定边距分页逻辑
 	htmlConverter := p.getHTMLConverter()
 	cards, err := htmlConverter.SplitContentByHeight(content)
@@ -1798,6 +1892,20 @@ func (p *AsyncBookProcessor) splitMarkdownIntoCards(content string) []string {
 	return cards
 }
 
+// stripH1OnlyFromMarkdown 去除所有以 "# " 开头的一级标题行
+func stripH1OnlyFromMarkdown(markdown string) string {
+	lines := strings.Split(markdown, "\n")
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, "# ") {
+			continue
+		}
+		out = append(out, l)
+	}
+	return strings.Join(out, "\n")
+}
+
 // splitMarkdownIntoCardsFallback 回退的分页逻辑（优化实现）
 func (p *AsyncBookProcessor) splitMarkdownIntoCardsFallback(content string) []string {
 	// 预处理：清理输入文本，移除无效内容
@@ -1808,21 +1916,24 @@ func (p *AsyncBookProcessor) splitMarkdownIntoCardsFallback(content string) []st
 
 	lines := strings.Split(content, "\n")
 
-	// 卡片配置（与HTML转换器保持一致）
-	const cardHeight = 1440
-	const cardPadding = 110      // 上下内边距总和：上60px + 下50px
+	// 使用统一的配置读取
+	cardConfig := util.GetCardRenderingConfig()
+	fontConfig := util.GetFontConfig()
+
+	// 卡片配置
+	cardHeight := cardConfig.Height
+	cardPadding := cardConfig.GetTotalPadding()
 	const bottomMarginLimit = 80 // 优化的底部边距限制，与HTML转换器一致
-	const availableHeight = cardHeight - cardPadding
-	const maxFillHeight = availableHeight - bottomMarginLimit // 有效内容高度
+	availableHeight := cardHeight - cardPadding
+	maxFillHeight := availableHeight - bottomMarginLimit // 有效内容高度
 
 	// 字体和行高配置
-	const titleFontSize = 28
-	const subtitleFontSize = 24
-	const bodyFontSize = 16
-	const cardWidth = 1080
-	const availableWidth = cardWidth - 100
-	const titleLineHeight = 1.4
-	const bodyLineHeight = 1.6
+	titleFontSize := fontConfig.TitleSize
+	subtitleFontSize := fontConfig.SubtitleSize
+	bodyFontSize := fontConfig.BodySize
+	availableWidth := cardConfig.GetAvailableWidth()
+	titleLineHeight := fontConfig.TitleLineHeight
+	bodyLineHeight := fontConfig.BodyLineHeight
 	const titleMarginBottom = 16
 	const bodyMarginBottom = 16
 
@@ -2148,18 +2259,46 @@ func (p *AsyncBookProcessor) generateCardImageAndHTML(ctx context.Context, cardI
 		return fmt.Errorf("获取卡片信息失败: %v", err)
 	}
 
-	// 2. 将markdown转换为HTML
-	htmlConverter := p.getHTMLConverterWithBackground(templateBackground)
-	htmlContent := htmlConverter.ConvertMarkdownCardToHTML(markdownContent, "卡片内容", card.SortOrder)
-
-	// 3. 创建HTML文件
-	htmlFilePath, err := p.createCardHTMLFile(cardID, htmlContent)
-	if err != nil {
-		return fmt.Errorf("创建HTML文件失败: %v", err)
+	// 2. 将markdown转换为HTML 或使用流式分页渲染器生成分页HTML片段
+	var pages []string
+	useFlow := cardbiz.IsFlowRendererEnabled()
+	if useFlow {
+		// 使用流式分页：得到每页的 innerHTML 片段
+		flow := cardbiz.NewFlowRenderer(pagination.LoadConfigFromViper())
+		var errFlow error
+		pages, errFlow = flow.PaginateMarkdown(ctx, markdownContent)
+		if errFlow != nil || len(pages) == 0 {
+			log.C(ctx).Warnw("流式分页失败，回退到旧渲染", "card_id", cardID, "error", errFlow)
+			useFlow = false
+		}
 	}
-	log.C(ctx).Infow("HTML文件创建成功", "card_id", cardID, "html_path", htmlFilePath)
 
-	// 4. 使用轻量级渲染器将HTML转换为图片
+	var htmlContent string
+	if !useFlow {
+		htmlConverter := p.getHTMLConverterWithBackground(templateBackground)
+		htmlContent = htmlConverter.ConvertMarkdownCardToHTML(markdownContent, "卡片内容", card.SortOrder)
+	}
+
+	// 3. 渲染为图片
+	if useFlow {
+		// 对于流式分页：逐页渲染，当前 cardID 对应第一页；如需扩展为多张卡，需要在上游创建多条卡记录。
+		// 这里保持单卡单页输出：渲染第一页
+		first := pages[0]
+		pageHTML := p.wrapFlowPageHTMLWithBackground(first, templateBackground)
+		imagePath, err := p.renderHTMLToImage(ctx, cardID, pageHTML)
+		if err != nil {
+			log.C(ctx).Warnw("HTML转图片失败", "card_id", cardID, "error", err.Error())
+		} else {
+			log.C(ctx).Infow("✅ 卡片图片生成成功", "card_id", cardID, "image_path", imagePath)
+			card.RenderedImage = imagePath
+			if err := p.biz.Cards().Update(ctx, card); err != nil {
+				log.C(ctx).Warnw("更新卡片图片路径失败", "card_id", cardID, "error", err.Error())
+			}
+		}
+		return nil
+	}
+
+	// 使用轻量级渲染器将HTML转换为图片
 	imagePath, err := p.renderHTMLToImage(ctx, cardID, htmlContent)
 	if err != nil {
 		log.C(ctx).Warnw("HTML转图片失败", "card_id", cardID, "error", err.Error())
@@ -2173,14 +2312,14 @@ func (p *AsyncBookProcessor) generateCardImageAndHTML(ctx context.Context, cardI
 			if imageData, err := os.ReadFile(imagePath); err == nil {
 				// 构建COS对象键：card/{card_id}/card_{card_id}.webp
 				objectKey := fmt.Sprintf("card/%d/card_%d.webp", cardID, cardID)
-				
+
 				// 上传到COS
 				cosURL, uploadErr := util.UploadBytesToCOS(ctx, objectKey, "image/webp", imageData)
 				if uploadErr != nil {
 					log.C(ctx).Warnw("上传图片到COS失败", "card_id", cardID, "error", uploadErr.Error())
 				} else if cosURL != "" {
 					log.C(ctx).Infow("✅ 卡片图片已上传到COS", "card_id", cardID, "cos_url", cosURL)
-					
+
 					// 生成签名URL（可选，如果需要的话）
 					if signedURL, err := util.GenerateSignedURL(ctx, objectKey, 600); err == nil && signedURL != "" {
 						log.C(ctx).Infow("COS签名URL生成成功", "card_id", cardID, "signed_url", signedURL)
@@ -2198,7 +2337,7 @@ func (p *AsyncBookProcessor) generateCardImageAndHTML(ctx context.Context, cardI
 		}
 	}
 
-	log.C(ctx).Infow("✅ 卡片处理完成", "card_id", cardID, "html_path", htmlFilePath, "image_path", imagePath)
+	log.C(ctx).Infow("✅ 卡片处理完成", "card_id", cardID, "image_path", imagePath)
 	return nil
 }
 
@@ -2224,6 +2363,56 @@ func (p *AsyncBookProcessor) renderHTMLToImage(ctx context.Context, cardID uint,
 
 	// 直接使用内部的wkhtmltoimage工具（总是可用）
 	return p.renderWithWkhtmltoimage(ctx, cardID, htmlContent, fullImagePath)
+}
+
+// wrapFlowPageHTML 将流式分页得到的单页 innerHTML 包装为完整的固定尺寸HTML（无背景）
+func (p *AsyncBookProcessor) wrapFlowPageHTML(inner string) string {
+	return p.wrapFlowPageHTMLWithBackground(inner, "")
+}
+
+// wrapFlowPageHTMLWithBackground 将流式分页得到的单页 innerHTML 包装为完整的固定尺寸HTML（带背景支持）
+func (p *AsyncBookProcessor) wrapFlowPageHTMLWithBackground(inner, backgroundImage string) string {
+	// 从分页配置读取排版（与 FlowRenderer 同源）
+	pg := pagination.LoadConfigFromViper()
+	// 使用统一的CSS生成函数，确保与分页环境完全一致
+	css := cardbiz.GenerateUnifiedCSS(pg, backgroundImage)
+
+	doc := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Flow Page</title>
+  <style>%s</style>
+</head>
+<body>
+  <div class="page">
+    <div class="content">%s</div>
+  </div>
+</body>
+</html>`, css, inner)
+	return doc
+}
+
+func colorOrDefault(s, def string) string {
+	if strings.TrimSpace(s) == "" {
+		return def
+	}
+	return s
+}
+
+func alignOrDefault(s, def string) string {
+	if strings.TrimSpace(s) == "" {
+		return def
+	}
+	return s
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // renderWithWkhtmltoimage 使用wkhtmltoimage渲染
@@ -2535,6 +2724,27 @@ func (p *AsyncBookProcessor) extractImagePromptFromMarkdown(markdown string) str
 	return ""
 }
 
+// formatBackgroundStyle 将背景图路径转为内联 CSS 样式，支持 http(s)、data、本地绝对/相对路径
+func formatBackgroundStyle(background string) string {
+	if strings.TrimSpace(background) == "" {
+		return ""
+	}
+	src := background
+	lower := strings.ToLower(background)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "data:") {
+		// remote or data url
+		src = background
+	} else if filepath.IsAbs(background) {
+		src = "file://" + background
+	} else {
+		if absPath, err := filepath.Abs(background); err == nil {
+			src = "file://" + absPath
+		}
+	}
+	// 背景图居中、cover 铺满
+	return fmt.Sprintf("background: url('%s') center center / cover no-repeat;", src)
+}
+
 // generateDefaultImagePrompt 生成默认的图片提示词
 func (p *AsyncBookProcessor) generateDefaultImagePrompt(content string) string {
 	// 简单的提示词生成逻辑
@@ -2557,12 +2767,15 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
 	// 获取封面标题配置
 	fontSize, lineHeight, color := getCoverTitleConfig()
 
-	// 处理背景样式 - 优先使用模板背景，如果没有则使用默认背景
+	// 获取字体路径（根据环境动态调整）
+	regularFontPath, boldFontPath := getFontPaths()
+
+	// 处理背景样式 - 优先使用模板背景，如果没有则使用默认模板背景
 	var backgroundStyle string
 	if background != "" {
-		// 使用模板背景图片，覆盖整个卡片
-		backgroundStyle = fmt.Sprintf("background: url('file://%s') center center / cover no-repeat;", background)
-		log.C(context.Background()).Infow("使用模板背景", "background", background)
+		// 使用模板背景图片，覆盖整个卡片 - 使用正确的URL处理逻辑
+		backgroundStyle = formatBackgroundStyle(background)
+		log.C(context.Background()).Infow("使用指定模板背景", "background", background)
 	} else if imageURL != "" && imageURL != "null" && imageURL != "undefined" {
 		// 构建完整的图片路径
 		imagePath := viper.GetString("resource.image_path")
@@ -2583,13 +2796,25 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
 		backgroundStyle = fmt.Sprintf("background: url('%s') center center / cover no-repeat;", fullImageURL)
 
 		// 添加调试日志
-		log.C(context.Background()).Infow("封面图片路径转换",
+		log.C(context.Background()).Infow("使用book图片作为背景",
 			"original_url", imageURL,
 			"image_path", imagePath,
 			"full_url", fullImageURL)
 	} else {
-		// 使用默认的白色背景
-		backgroundStyle = "background: #ffffff;"
+		// 使用默认模板背景 - 从数据库获取ID为1的模板
+		defaultTemplateURL := ""
+		if defaultTemplate, err := p.biz.Templates().GetByID(context.Background(), 1); err == nil && defaultTemplate != nil && defaultTemplate.File != "" {
+			defaultTemplateURL = defaultTemplate.File
+			log.C(context.Background()).Infow("使用数据库默认模板", "template_id", 1, "file", defaultTemplateURL)
+		} else {
+			// 如果数据库获取失败，使用本地默认路径
+			defaultTemplatePath := "res/template/default.webp"
+			currentDir, _ := os.Getwd()
+			fullDefaultPath := filepath.Join(currentDir, defaultTemplatePath)
+			defaultTemplateURL = "file://" + fullDefaultPath
+			log.C(context.Background()).Infow("数据库模板获取失败，使用本地默认模板", "local_path", fullDefaultPath, "error", err)
+		}
+		backgroundStyle = fmt.Sprintf("background: url('%s') center center / cover no-repeat;", defaultTemplateURL)
 	}
 
 	// 处理book图片 - 已注释，不需要图片
@@ -2631,6 +2856,39 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>封面 - %s</title>
     <style>
+        /* 思源宋体字体定义 - 环境自适应 */
+        @font-face {
+            font-family: "SourceHanSerifSC";
+            src: url("%s") format("opentype"),
+                 local("Source Han Serif SC"),
+                 local("SourceHanSerifSC"),
+                 local("STFangsong"),
+                 local("Source Han Sans CN"),
+                 local("Noto Sans CJK SC"),
+                 local("PingFang SC"),
+                 local("Hiragino Sans GB"),
+                 local("Microsoft YaHei"),
+                 local("sans-serif");
+            font-weight: normal;
+            font-style: normal;
+        }
+
+        @font-face {
+            font-family: "SourceHanSerifSC";
+            src: url("%s") format("opentype"),
+                 local("Source Han Serif SC Bold"),
+                 local("SourceHanSerifSC-Bold"),
+                 local("STFangsong"),
+                 local("Source Han Sans CN Bold"),
+                 local("Noto Sans CJK SC Semibold"),
+                 local("PingFang SC"),
+                 local("Hiragino Sans GB"),
+                 local("Microsoft YaHei Bold"),
+                 local("sans-serif");
+            font-weight: 700;
+            font-style: normal;
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -2742,7 +3000,7 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
         </div>
     </div>
 </body>
-</html>`, title, backgroundStyle, backgroundStyle, fontSize, color, lineHeight, title)
+</html>`, title, regularFontPath, boldFontPath, backgroundStyle, backgroundStyle, fontSize, color, lineHeight, title)
 }
 
 // generateCoverImageOnly 仅生成封面图片，不重新生成HTML
@@ -2788,14 +3046,14 @@ func (p *AsyncBookProcessor) generateCoverImageOnly(ctx context.Context, cardID 
 		if imageData, err := os.ReadFile(fullImagePath); err == nil {
 			// 构建COS对象键：card/{card_id}/card_{card_id}.webp
 			objectKey := fmt.Sprintf("card/%d/card_%d.webp", cardID, cardID)
-			
+
 			// 上传到COS
 			cosURL, uploadErr := util.UploadBytesToCOS(ctx, objectKey, "image/webp", imageData)
 			if uploadErr != nil {
 				log.C(ctx).Warnw("上传封面图片到COS失败", "card_id", cardID, "error", uploadErr.Error())
 			} else if cosURL != "" {
 				log.C(ctx).Infow("✅ 封面图片已上传到COS", "card_id", cardID, "cos_url", cosURL)
-				
+
 				// 生成签名URL（可选，如果需要的话）
 				if signedURL, err := util.GenerateSignedURL(ctx, objectKey, 600); err == nil && signedURL != "" {
 					log.C(ctx).Infow("封面COS签名URL生成成功", "card_id", cardID, "signed_url", signedURL)
@@ -2825,41 +3083,16 @@ func (p *AsyncBookProcessor) generateCoverImageOnly(ctx context.Context, cardID 
 
 // getRendererConfig 获取渲染器配置
 func (p *AsyncBookProcessor) getRendererConfig() *utilpkg.WkhtmltoimageConfig {
-	// 从配置中获取渲染器参数，如果没有配置则使用默认值
-	width := 1080
-	height := 1440
-	quality := 85
-	format := "webp"
-	zoom := 1.0
-	timeout := 30 * time.Second
-
-	// 尝试从viper配置中读取
-	if viper.IsSet("renderer.width") {
-		width = viper.GetInt("renderer.width")
-	}
-	if viper.IsSet("renderer.height") {
-		height = viper.GetInt("renderer.height")
-	}
-	if viper.IsSet("renderer.quality") {
-		quality = viper.GetInt("renderer.quality")
-	}
-	if viper.IsSet("renderer.format") {
-		format = viper.GetString("renderer.format")
-	}
-	if viper.IsSet("renderer.zoom") {
-		zoom = viper.GetFloat64("renderer.zoom")
-	}
-	if viper.IsSet("renderer.timeout_seconds") {
-		timeoutSeconds := viper.GetInt("renderer.timeout_seconds")
-		timeout = time.Duration(timeoutSeconds) * time.Second
-	}
+	// 使用统一的配置读取
+	cardConfig := util.GetCardRenderingConfig()
+	timeout := time.Duration(cardConfig.TimeoutSeconds) * time.Second
 
 	return &utilpkg.WkhtmltoimageConfig{
-		Width:   width,
-		Height:  height,
-		Quality: quality,
-		Format:  format,
-		Zoom:    zoom,
+		Width:   cardConfig.Width,
+		Height:  cardConfig.Height,
+		Quality: cardConfig.Quality,
+		Format:  cardConfig.Format,
+		Zoom:    cardConfig.Zoom,
 		Timeout: timeout,
 	}
 }

@@ -11,7 +11,70 @@ import (
 func LoadConfigFromViper() *PaginationConfig {
 	config := GetDefaultConfig()
 
+	// 首先尝试从新的card配置结构加载
+	loadFromCardConfig(config)
+
+	// 然后尝试从旧的pagination配置结构加载（向后兼容）
+	loadFromLegacyPaginationConfig(config)
+
+	// 应用段间距调整
+	applySpacingAdjustments(config)
+
+	return config
+}
+
+// loadFromCardConfig 从新的card配置结构加载配置
+func loadFromCardConfig(config *PaginationConfig) {
 	// 加载卡片基础配置
+	if viper.IsSet("card.dimensions.width") {
+		config.Card.Width = viper.GetInt("card.dimensions.width")
+	}
+	if viper.IsSet("card.dimensions.height") {
+		config.Card.Height = viper.GetInt("card.dimensions.height")
+	}
+	if viper.IsSet("card.dimensions.padding.top") {
+		config.Card.Padding.Top = viper.GetInt("card.dimensions.padding.top")
+	}
+	if viper.IsSet("card.dimensions.padding.right") {
+		config.Card.Padding.Right = viper.GetInt("card.dimensions.padding.right")
+	}
+	if viper.IsSet("card.dimensions.padding.bottom") {
+		config.Card.Padding.Bottom = viper.GetInt("card.dimensions.padding.bottom")
+	}
+	if viper.IsSet("card.dimensions.padding.left") {
+		config.Card.Padding.Left = viper.GetInt("card.dimensions.padding.left")
+	}
+
+	// 加载分页算法参数
+	if viper.IsSet("card.pagination.char_width_factor") {
+		config.CharWidthFactor = viper.GetFloat64("card.pagination.char_width_factor")
+	}
+	if viper.IsSet("card.pagination.overflow_tolerance") {
+		config.OverflowTolerance = viper.GetFloat64("card.pagination.overflow_tolerance")
+	}
+	if viper.IsSet("card.pagination.high_utilization_threshold") {
+		config.HighUtilizationThreshold = viper.GetFloat64("card.pagination.high_utilization_threshold")
+	}
+	if viper.IsSet("card.pagination.min_chars_per_line") {
+		config.MinCharsPerLine = viper.GetInt("card.pagination.min_chars_per_line")
+	}
+	if viper.IsSet("card.pagination.list_item_spacing") {
+		config.ListItemSpacing = viper.GetInt("card.pagination.list_item_spacing")
+	}
+
+	// 加载样式配置（从新的typography结构）
+	loadStyleConfigFromTypography(config, ElementTypeTitle, "card.typography")
+	loadStyleConfigFromTypography(config, ElementTypeSubtitle, "card.typography")
+	loadStyleConfigFromTypography(config, ElementTypeBody, "card.typography")
+	loadStyleConfigFromTypography(config, ElementTypeList, "card.typography")
+	loadStyleConfigFromTypography(config, ElementTypeQuote, "card.typography")
+	loadStyleConfigFromTypography(config, ElementTypeTag, "card.typography")
+	loadStyleConfigFromTypography(config, ElementTypeNumber, "card.typography")
+}
+
+// loadFromLegacyPaginationConfig 从旧的pagination配置结构加载配置（向后兼容）
+func loadFromLegacyPaginationConfig(config *PaginationConfig) {
+	// 加载卡片基础配置（旧格式）
 	if viper.IsSet("pagination.card.width") {
 		config.Card.Width = viper.GetInt("pagination.card.width")
 	}
@@ -31,7 +94,7 @@ func LoadConfigFromViper() *PaginationConfig {
 		config.Card.Padding.Left = viper.GetInt("pagination.card.padding.left")
 	}
 
-	// 加载新增的可配置参数
+	// 加载新增的可配置参数（旧格式）
 	if viper.IsSet("pagination.char_width_factor") {
 		config.CharWidthFactor = viper.GetFloat64("pagination.char_width_factor")
 	}
@@ -48,7 +111,7 @@ func LoadConfigFromViper() *PaginationConfig {
 		config.ListItemSpacing = viper.GetInt("pagination.list_item_spacing")
 	}
 
-	// 加载样式配置
+	// 加载样式配置（旧格式）
 	loadStyleConfig(config, ElementTypeTitle, "pagination.styles.title")
 	loadStyleConfig(config, ElementTypeSubtitle, "pagination.styles.subtitle")
 	loadStyleConfig(config, ElementTypeBody, "pagination.styles.body")
@@ -56,11 +119,6 @@ func LoadConfigFromViper() *PaginationConfig {
 	loadStyleConfig(config, ElementTypeQuote, "pagination.styles.quote")
 	loadStyleConfig(config, ElementTypeTag, "pagination.styles.tag")
 	loadStyleConfig(config, ElementTypeNumber, "pagination.styles.number")
-
-	// 应用段间距调整
-	applySpacingAdjustments(config)
-
-	return config
 }
 
 // loadStyleConfig 加载特定元素类型的样式配置
@@ -96,11 +154,84 @@ func loadStyleConfig(config *PaginationConfig, elementType ElementType, configPa
 	config.Styles[elementType] = style
 }
 
+// loadStyleConfigFromTypography 从新的typography配置结构加载样式配置
+func loadStyleConfigFromTypography(config *PaginationConfig, elementType ElementType, typographyPath string) {
+	elementName := strings.ToLower(string(elementType))
+
+	// 如果没有typography配置，跳过
+	if !viper.IsSet(typographyPath) {
+		return
+	}
+
+	style := config.Styles[elementType]
+
+	// 从sizes配置加载字体大小
+	if viper.IsSet(typographyPath + ".sizes." + elementName) {
+		style.FontSize = viper.GetInt(typographyPath + ".sizes." + elementName)
+	}
+
+	// 从line_heights配置加载行高
+	if viper.IsSet(typographyPath + ".line_heights." + elementName) {
+		style.LineHeight = viper.GetInt(typographyPath + ".line_heights." + elementName)
+	}
+
+	// 从spacing配置加载边距（基础 + 精细化覆盖）
+	if viper.IsSet(typographyPath + ".spacing.base_margin") {
+		baseMargin := viper.GetInt(typographyPath + ".spacing.base_margin")
+		style.MarginTop = baseMargin
+		style.MarginBottom = baseMargin
+	}
+	// 精细化：card.typography.spacing.margins.{element}_top / {element}_bottom
+	if viper.IsSet(typographyPath + ".spacing.margins." + elementName + "_top") {
+		style.MarginTop = viper.GetInt(typographyPath + ".spacing.margins." + elementName + "_top")
+	}
+	if viper.IsSet(typographyPath + ".spacing.margins." + elementName + "_bottom") {
+		style.MarginBottom = viper.GetInt(typographyPath + ".spacing.margins." + elementName + "_bottom")
+	}
+
+	// 从colors配置加载颜色
+	if elementType == ElementTypeTitle || elementType == ElementTypeSubtitle || elementType == ElementTypeBody || elementType == ElementTypeList {
+		if viper.IsSet(typographyPath + ".colors.text") {
+			style.Color = viper.GetString(typographyPath + ".colors.text")
+		}
+	} else if elementType == ElementTypeQuote || elementType == ElementTypeTag || elementType == ElementTypeNumber {
+		if viper.IsSet(typographyPath + ".colors.accent") {
+			style.Color = viper.GetString(typographyPath + ".colors.accent")
+		}
+	}
+
+	// 特殊处理副标题颜色
+	if elementType == ElementTypeSubtitle && viper.IsSet(typographyPath+".colors.secondary") {
+		style.Color = viper.GetString(typographyPath + ".colors.secondary")
+	}
+
+	// 从alignments配置加载对齐方式
+	if viper.IsSet(typographyPath + ".alignments." + elementName) {
+		style.Align = viper.GetString(typographyPath + ".alignments." + elementName)
+	}
+
+	// 列表缩进
+	if elementType == ElementTypeList && viper.IsSet(typographyPath+".styles.list_indent") {
+		style.Indent = viper.GetInt(typographyPath + ".styles.list_indent")
+	}
+
+	// 首行缩进（像素），可配置：card.typography.first_line_indent 或 per-element：card.typography.styles.{element}.first_line_indent
+	if viper.IsSet(typographyPath + ".styles." + elementName + ".first_line_indent") {
+		style.FirstLineIndent = viper.GetInt(typographyPath + ".styles." + elementName + ".first_line_indent")
+	} else if viper.IsSet(typographyPath + ".first_line_indent") {
+		style.FirstLineIndent = viper.GetInt(typographyPath + ".first_line_indent")
+	}
+
+	config.Styles[elementType] = style
+}
+
 // applySpacingAdjustments 应用段间距调整
 func applySpacingAdjustments(config *PaginationConfig) {
-	// 获取全局段间距倍数
+	// 获取全局段间距倍数，优先使用新配置，然后是旧配置
 	globalMultiplier := 1.0
-	if viper.IsSet("pagination.spacing.global_multiplier") {
+	if viper.IsSet("card.typography.spacing.global_multiplier") {
+		globalMultiplier = viper.GetFloat64("card.typography.spacing.global_multiplier")
+	} else if viper.IsSet("pagination.spacing.global_multiplier") {
 		globalMultiplier = viper.GetFloat64("pagination.spacing.global_multiplier")
 	}
 
