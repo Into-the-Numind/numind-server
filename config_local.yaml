@@ -104,9 +104,9 @@ card:
     width: 1080   # 标准尺寸: 1080×1440（3:4比例）
     height: 1440  # 基础高度，实际使用动态高度
     padding:
-      top: 60     # 标准内边距: 60px 50px
+      top: 50     # 标准内边距: 60px 50px
       right: 50
-      bottom: 40
+      bottom: 50
       left: 50
   
   # 渲染器配置
@@ -143,32 +143,32 @@ card:
     paragraph_strategy: "markdown"  # "markdown"(默认，空行分段) 或 "single_newline"(单换行即段落)
     # 字体族配置
     font_family: "'SourceHanSerifSC', 'STFangsong', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif"
-    base_font_size: 56       # 基础字体大小
-    line_height_ratio: 1.6   # 基础行高比例
+    base_font_size: 36        # 基础字体大小（全局 body 备用，内容按下方 sizes/line_heights）
+    line_height_ratio: 1.1   # 基础行高比例（全局 body 备用）
     
     # 字体大小配置
     sizes:
       title: 120             # 标题字号（仅封面H1使用；正文卡片不渲染H1）
       subtitle: 36           # 副标题字号（##/###）
       body: 36               # 正文字号
-      list: 56               # 列表字体大小
-      quote: 46              # 引用字体大小
-      tag: 38                # 标签字体大小
-      number: 48             # 数字字体大小
+      list: 36               # 列表字号
+      quote: 36              # 引用字号
+      tag: 36                # 标签字号
+      number: 36             # 数字字号
     
     # 行高配置
     line_heights:
       title: 160             # 标题行高（像素）。分页按：行高倍数=160/120 计算
       subtitle: 60           # 副标题行高（像素）。分页与渲染同源
       body: 60               # 正文行高（像素）。分页与渲染同源
-      list: 90               # 列表行高
-      quote: 74              # 引用行高
-      tag: 62                # 标签行高
-      number: 72             # 数字行高
+      list: 60               # 列表行高（像素）
+      quote: 60              # 引用行高（像素）
+      tag: 60                # 标签行高（像素）
+      number: 60             # 数字行高（像素）
     
     # 间距配置
     spacing:
-      base_margin: 30        # 基础段后距（默认应用到 title/subtitle/body，下面的 margins 可覆盖）
+      base_margin: 0         # 基础段后距（默认应用到 title/subtitle/body，下面的 margins 可覆盖）
       global_multiplier: 1.0 # 统一设为 1.0，避免旧路径的倍数干扰，确保分页=渲染
       # 各元素类型的间距调整（可选，用于精确控制）
       # adjustments:
@@ -178,8 +178,8 @@ card:
       #     line_height_multiplier: 1.0   # 标题行高倍数
       # 边距配置 - 优化间距
       margins:
-        title_bottom: 32     # 标题段后距（像素，仅封面H1卡片有效）
-        subtitle_bottom: 20  # 副标题段后距（像素，分页最后一行才计入）
+        title_bottom: 40     # 标题段后距（像素，仅封面H1卡片有效）
+        subtitle_bottom: 0   # 副标题段后距（像素，分页最后一行才计入）
         body_bottom: 60      # 正文段后距（像素，分页最后一行才计入）
     
     # 颜色配置
@@ -196,7 +196,7 @@ card:
       list: "justify"        # 列表对齐
       quote: "justify"       # 引用对齐
       tag: "left"            # 标签对齐
-      number: "center"       # 数字对齐
+      number: "justify"       # 数字对齐
       
     # 其他样式配置
     styles:
@@ -208,25 +208,25 @@ special_rules:
     width: 1080          # 封面卡片宽度
     height: 1440         # 封面卡片高度（3:4比例）
     title_section:
-      font_size: 100            # 封面标题字体大小
-      line_height: 100          # 封面标题行高
-      color: "#2c3e50"         # 封面标题颜色
+      font_size: 120            # 封面标题字体大小
+      line_height: 160          # 封面标题行高
+      color: "#000000"         # 封面标题颜色
       background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
-      backdrop_filter: "blur(10px)"            # 背景模糊效果
+      backdrop_filter: "blur(0px)"            # 背景模糊效果
       box_shadow: "0 4px 20px rgba(0, 0, 0, 0.1)"  # 阴影效果
     image_section:
       background: "transparent"                # 图片区域透明背景
   
   content_card:
-    safe_area_margin: 30                      # 内容安全区域边距
-    max_content_height: 1200                  # 内容最大高度
+    safe_area_margin: 0                       # 内容安全区域边距
+    max_content_height: 1360                  # 内容最大高度
     overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
 
 # AI提示词配置
 ai_prompts:
   text_processing: |
     # 角色
-    资深内容策展编辑与视觉设计师，具备精准识别不同内容类型并采取差异化处理策略的卓越能力
+    资深内容策展编辑，具备精准识别不同内容类型并采取差异化处理策略的卓越能力
 
     # 核心任务：内容甄别与差异化处理
 
@@ -235,7 +235,7 @@ ai_prompts:
     ## 步骤一：内容甄别
     首先，通读并理解每一个文本段落，将其准确地归类为以下两种类型之一：
     - 类型1，纯净内容：提供事实、观点、知识或情感分享，不含任何商业推广意图的文本
-    - 类型2，混合内容：将有价值的信息与具体的商业产品/品牌进行捆绑推广的文本（即"软广"）
+    - 类型2，混合内容：将有价值的信息与具体的商业产品/品牌进行捆绑推广的文本
 
     ## 步骤二：差异化处理
     根据上一步的甄别结果，对不同类型的内容执行完全不同的处理策略：
@@ -258,35 +258,23 @@ ai_prompts:
     - 一级标题：提炼唯一的、精准的核心主题，作为唯一的`# 标题`
     - 内容：整合所有素材，撰写为逻辑连贯的单篇文章。使用`## 标题`划分内部层次。除了标题以外，需要保证每个段落的末尾有正确的标点，删除明显不合理的换行。重要：正文的开头不能再重复包含标题
     - 尊重原文语言：生成的语言应该和素材一致，如果原文为多语言，则保持每个部分对应的语言
-    - 封面图提示词：基于统一主题，创作一个具体、生动、富有画面感的详细文生图提示词，并遵循下方"文生图规则"
+    
 
     ## 结构B：
     - 一级标题：必须生成一个概括性标题作为唯一的`# 标题`
     - 内容：各独立主题分别成篇，严禁虚构逻辑联系。每个独立主题必须使用`## 标题`开启新板块。除了标题以外，需要保证每个段落的末尾有正确的标点，删除明显不合理的换行。重要：正文的开头不能再重复包含标题
     - 尊重原文语言：生成的语言应该和素材一致，如果原文为多语言，则保持每个部分对应的语言
-    - 封面图提示词：基于主要内容，创作一个具体、生动、富有画面感的详细文生图提示词，并遵循下方"文生图规则"
-
-    ## 文生图规则
-    - 构图要求：
-        -   目标画幅： 4:5竖向构图
-        -   目标风格： Torben Kuhlmann style, watercolor + colored pencil texture, delicate textures, cozy, gentle
-        -   目标色调： 不限于任何颜色，但要适合文字内容，并且颜色搭配要协调
-        -   语言结构： 中文描述详细的主体内容，末尾追加英文关键词提升画质和风格（例如：4:5, Torben Kuhlmann style, watercolor + colored pencil texture, delicate textures, cozy, gentle, masterpiece, high detail）。你不需要和示例一模一样，示例仅为参考
-        -   禁止项： 不能包含任何要求生成文字的指令
+    
 
     # 绝对规则
-    1. 边缘情况-乱码处理：若文本为无意义乱码，返回的JSON中`text`为`上传内容有误`，`image_prompt`字段为空字符串
+    1. 乱码处理: 若文本为无意义乱码或文本量极少（不超过100字符），则输出原文本不做任何修改。
     2. 格式与结构规则：
-        * 所有输出有且仅有一个`#`一级标题，且字数不超过25个字符
-        * 只允许使用`#`、`##`、`-`、`>` 四种格式
+        * 所有输出有且仅有一个`#`一级标题，且字数不超过30个字符
+        * 只允许使用`#`、`##`、`-`、`>` 四种格式，禁止使用其它任何markdown格式，比如禁止使用`###`三级标题
         * 若文本内容是连续整体，无清晰主题转换，则不强行创造`##`副标题。若原文有明显的副标题格式则遵循使用`##`副标题
     3. 内容限制：严禁添加原文外的任何评论、摘要、索引、目录
-    4. 输出格式：最终输出必须是且仅是一个纯净JSON对象，并且不要使用```符号进行包裹，也不要说明是JSON结构，直接从大括号"{"开始生成
-    5. 以下是JSON结构：
-    {
-      "text": "此处放入严格遵循路径和规则生成的Markdown字符串",
-      "image_prompt": "此处放入遵循文生图规则生成的提示词"
-    }
+    4. 输出格式: 直接生成markdown格式的文本。
+    5. 重要!: 生成markdown文本，换行必须要用两个空行符号`\n\n`来表示段落的换行，禁止只使用一个空行符号`\n`来表示段落的换行
 
     # 待处理的文本片段：{content}
   image_generation: "基于以下文本生成一张精美的配图：{content}"
