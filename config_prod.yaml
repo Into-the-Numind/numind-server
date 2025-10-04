@@ -209,6 +209,17 @@ card:
     styles:
       list_indent: 20        # 列表缩进（渲染用的左缩进；不改变分页可用宽度）
 
+  # 页码配置
+  page_number:
+    enabled: true            # 是否启用页码显示
+    font_size: 24           # 页码字号
+    color: "#666666"        # 页码颜色
+    font_weight: "normal"   # 页码粗细：normal, bold
+    position:
+      bottom: 30            # 距离底部边距
+      right: 30             # 距离右侧边距
+    format: "{current}/{total}"  # 页码格式：{current}当前页，{total}总页数
+
 # 特殊渲染规则配置
 special_rules:
   cover_card:

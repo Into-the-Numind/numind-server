@@ -2377,6 +2377,26 @@ func (p *AsyncBookProcessor) wrapFlowPageHTMLWithBackground(inner, backgroundIma
 	// 使用统一的CSS生成函数，确保与分页环境完全一致
 	css := cardbiz.GenerateUnifiedCSS(pg, backgroundImage)
 
+	// 提取页码HTML（如果存在）
+	var pageNumberHTML, contentHTML string
+	if strings.Contains(inner, "page-number") {
+		// 查找页码HTML
+		start := strings.Index(inner, `<div class="page-number">`)
+		if start >= 0 {
+			end := strings.Index(inner[start:], `</div>`) + start + 6
+			if end > start {
+				pageNumberHTML = inner[start:end]
+				contentHTML = strings.TrimSpace(inner[:start] + inner[end:])
+			} else {
+				contentHTML = inner
+			}
+		} else {
+			contentHTML = inner
+		}
+	} else {
+		contentHTML = inner
+	}
+
 	doc := fmt.Sprintf(`<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -2388,9 +2408,10 @@ func (p *AsyncBookProcessor) wrapFlowPageHTMLWithBackground(inner, backgroundIma
 <body>
   <div class="page">
     <div class="content">%s</div>
+    %s
   </div>
 </body>
-</html>`, css, inner)
+</html>`, css, contentHTML, pageNumberHTML)
 	return doc
 }
 

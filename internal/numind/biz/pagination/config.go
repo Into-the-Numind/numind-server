@@ -70,6 +70,9 @@ func loadFromCardConfig(config *PaginationConfig) {
 	loadStyleConfigFromTypography(config, ElementTypeQuote, "card.typography")
 	loadStyleConfigFromTypography(config, ElementTypeTag, "card.typography")
 	loadStyleConfigFromTypography(config, ElementTypeNumber, "card.typography")
+
+	// 加载页码配置
+	loadPageNumberConfig(config)
 }
 
 // loadFromLegacyPaginationConfig 从旧的pagination配置结构加载配置（向后兼容）
@@ -223,6 +226,31 @@ func loadStyleConfigFromTypography(config *PaginationConfig, elementType Element
 	}
 
 	config.Styles[elementType] = style
+}
+
+// loadPageNumberConfig 加载页码配置
+func loadPageNumberConfig(config *PaginationConfig) {
+	if viper.IsSet("card.typography.page_number.enabled") {
+		config.PageNumber.Enabled = viper.GetBool("card.typography.page_number.enabled")
+	}
+	if viper.IsSet("card.typography.page_number.font_size") {
+		config.PageNumber.FontSize = viper.GetInt("card.typography.page_number.font_size")
+	}
+	if viper.IsSet("card.typography.page_number.color") {
+		config.PageNumber.Color = viper.GetString("card.typography.page_number.color")
+	}
+	if viper.IsSet("card.typography.page_number.font_weight") {
+		config.PageNumber.FontWeight = viper.GetString("card.typography.page_number.font_weight")
+	}
+	if viper.IsSet("card.typography.page_number.position.bottom") {
+		config.PageNumber.Position.Bottom = viper.GetInt("card.typography.page_number.position.bottom")
+	}
+	if viper.IsSet("card.typography.page_number.position.right") {
+		config.PageNumber.Position.Right = viper.GetInt("card.typography.page_number.position.right")
+	}
+	if viper.IsSet("card.typography.page_number.format") {
+		config.PageNumber.Format = viper.GetString("card.typography.page_number.format")
+	}
 }
 
 // applySpacingAdjustments 应用段间距调整

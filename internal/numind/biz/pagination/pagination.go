@@ -59,10 +59,24 @@ type CardConfig struct {
 	} `json:"padding"`
 }
 
+// PageNumberConfig 定义页码配置
+type PageNumberConfig struct {
+	Enabled    bool   `json:"enabled"`     // 是否启用页码显示
+	FontSize   int    `json:"font_size"`   // 页码字号
+	Color      string `json:"color"`       // 页码颜色
+	FontWeight string `json:"font_weight"` // 页码粗细：normal, bold
+	Position   struct {
+		Bottom int `json:"bottom"` // 距离底部边距
+		Right  int `json:"right"`  // 距离右侧边距
+	} `json:"position"`
+	Format string `json:"format"` // 页码格式：{current}当前页，{total}总页数
+}
+
 // PaginationConfig 定义分页配置
 type PaginationConfig struct {
-	Card   CardConfig                  `json:"card"`
-	Styles map[ElementType]StyleConfig `json:"styles"`
+	Card       CardConfig                  `json:"card"`
+	Styles     map[ElementType]StyleConfig `json:"styles"`
+	PageNumber PageNumberConfig            `json:"page_number"` // 页码配置
 	// 新增可配置参数
 	CharWidthFactor          float64 `json:"char_width_factor"`          // 字符宽度系数
 	OverflowTolerance        float64 `json:"overflow_tolerance"`         // 溢出容错比例
@@ -557,6 +571,20 @@ func GetDefaultConfig() *PaginationConfig {
 				Bottom: 10, // 减少底部边距，减少空白
 				Left:   50,
 			},
+		},
+		PageNumber: PageNumberConfig{
+			Enabled:    true,      // 默认启用页码
+			FontSize:   24,        // 默认字号
+			Color:      "#666666", // 默认颜色
+			FontWeight: "normal",  // 默认粗细
+			Position: struct {
+				Bottom int `json:"bottom"`
+				Right  int `json:"right"`
+			}{
+				Bottom: 30, // 距离底部边距
+				Right:  30, // 距离右侧边距
+			},
+			Format: "{current}/{total}", // 默认格式
 		},
 		// 新增可配置参数的默认值
 		CharWidthFactor:          1.05, // 字符宽度系数
