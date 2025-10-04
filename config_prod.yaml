@@ -111,9 +111,9 @@ card:
     width: 1080   # 标准尺寸: 1080×1440（3:4比例）
     height: 1440  # 基础高度，实际使用动态高度
     padding:
-      top: 60     # 标准内边距: 60px 50px
+      top: 50     # 标准内边距: 60px 50px
       right: 50
-      bottom: 40  # 修复：增加底部留白，确保文字不被遮挡
+      bottom: 50
       left: 50
   
   # 渲染器配置
@@ -146,10 +146,12 @@ card:
 
   # 统一的字体和样式配置
   typography:
+    # 段落处理策略配置
+    paragraph_strategy: "markdown"  # "markdown"(默认，空行分段) 或 "single_newline"(单换行即段落)
     # 字体族配置
     font_family: "'SourceHanSerifSC', 'STFangsong', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif"
-    base_font_size: 56       # 基础字体大小
-    line_height_ratio: 1.6   # 基础行高比例
+    base_font_size: 36        # 基础字体大小（全局 body 备用，内容按下方 sizes/line_heights）
+    line_height_ratio: 1.1   # 基础行高比例（全局 body 备用）
     
     # 字体大小配置
     sizes:
@@ -173,7 +175,7 @@ card:
     
     # 间距配置
     spacing:
-      base_margin: 30        # 基础段后距（默认应用到 title/subtitle/body，下面的 margins 可覆盖）
+      base_margin: 0         # 基础段后距（默认应用到 title/subtitle/body，下面的 margins 可覆盖）
       global_multiplier: 1.0 # 统一设为 1.0，避免旧路径的倍数干扰，确保分页=渲染
       # 各元素类型的间距调整（可选，用于精确控制）
       # adjustments:
@@ -183,8 +185,8 @@ card:
       #     line_height_multiplier: 1.0   # 标题行高倍数
       # 边距配置 - 优化间距
       margins:
-        title_bottom: 32     # 标题段后距（像素，仅封面H1卡片有效）
-        subtitle_bottom: 20  # 副标题段后距（像素，分页最后一行才计入）
+        title_bottom: 40     # 标题段后距（像素，仅封面H1卡片有效）
+        subtitle_bottom: 0   # 副标题段后距（像素，分页最后一行才计入）
         body_bottom: 60      # 正文段后距（像素，分页最后一行才计入）
     
     # 颜色配置
@@ -201,7 +203,7 @@ card:
       list: "justify"        # 列表对齐
       quote: "justify"       # 引用对齐
       tag: "left"            # 标签对齐
-      number: "center"       # 数字对齐
+      number: "justify"       # 数字对齐
       
     # 其他样式配置
     styles:
@@ -224,18 +226,18 @@ special_rules:
     width: 1080          # 封面卡片宽度
     height: 1440         # 封面卡片高度（3:4比例）
     title_section:
-      font_size: 48            # 封面标题字体大小
-      line_height: 62          # 封面标题行高
-      color: "#2c3e50"         # 封面标题颜色
+      font_size: 120            # 封面标题字体大小
+      line_height: 160          # 封面标题行高
+      color: "#000000"         # 封面标题颜色
       background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
-      backdrop_filter: "blur(10px)"            # 背景模糊效果
+      backdrop_filter: "blur(0px)"            # 背景模糊效果
       box_shadow: "0 4px 20px rgba(0, 0, 0, 0.1)"  # 阴影效果
     image_section:
       background: "transparent"                # 图片区域透明背景
   
   content_card:
-    safe_area_margin: 30                      # 内容安全区域边距
-    max_content_height: 1200                  # 内容最大高度
+    safe_area_margin: 0                       # 内容安全区域边距
+    max_content_height: 1360                  # 内容最大高度
     overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
 
 # AI提示词配置

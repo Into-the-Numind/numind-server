@@ -61,7 +61,7 @@ volc:
   max_retries: 3
 
 resource:
-  image_path: "/Users/zhiyuchen/Desktop/Numind/Develop/testpic"
+  image_path: "/opt/numind/dev/image/upload"
 
 # 腾讯云 COS 配置
 cos:
