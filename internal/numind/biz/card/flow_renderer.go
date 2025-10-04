@@ -54,6 +54,7 @@ func GenerateUnifiedCSS(config *pagination.PaginationConfig, backgroundImage str
         li { font-size:%dpx; line-height:%dpx; color:%s; text-align:%s; list-style-type:none; position:relative; }
         li::before { content:"•"; position:absolute; left:-%dpx; }
         blockquote { font-size:%dpx; line-height:%dpx; color:%s; margin:%dpx 0 %dpx 0; padding-left:20px; border-left:4px solid %s; text-align:%s; }
+        .page-number { position:absolute; bottom:%dpx; right:%dpx; font-size:%dpx; color:%s; font-weight:%s; z-index:1000; pointer-events:none; user-select:none; }
     `,
 		w, h, w, h,
 		bgStyle,
@@ -64,6 +65,7 @@ func GenerateUnifiedCSS(config *pagination.PaginationConfig, backgroundImage str
 		list.MarginTop, list.MarginBottom, maxInt(list.Indent, 40),
 		list.FontSize, list.LineHeight, nz(list.Color, "#333333"), nz(list.Align, "justify"), maxInt(list.Indent, 20),
 		quote.FontSize, quote.LineHeight, nz(quote.Color, "#1E90FF"), quote.MarginTop, quote.MarginBottom, nz(quote.Color, "#1E90FF"), nz(quote.Align, "justify"),
+		config.PageNumber.Position.Bottom, config.PageNumber.Position.Right, config.PageNumber.FontSize, config.PageNumber.Color, config.PageNumber.FontWeight,
 	)
 }
 
@@ -91,10 +93,72 @@ func NewFlowRenderer(config *pagination.PaginationConfig) *FlowRenderer {
 	return &FlowRenderer{config: config}
 }
 
+// PaginatedPage 表示分页后的页面内容
+type PaginatedPage struct {
+	Content   string `json:"content"`    // 页面内容HTML
+	PageIndex int    `json:"page_index"` // 页面索引（从0开始，封面为-1）
+}
+
 // PaginateMarkdown returns a list of per-page HTML fragments (innerHTML of the page content).
 // The caller can then wrap each fragment in a fixed-size (1080x1440) HTML skeleton and render to WebP.
 func (r *FlowRenderer) PaginateMarkdown(ctx context.Context, markdownText string) ([]string, error) {
 	return r.PaginateMarkdownWithBackground(ctx, markdownText, "")
+}
+
+// PaginateMarkdownWithPageNumbers returns a list of PaginatedPage with page numbers
+func (r *FlowRenderer) PaginateMarkdownWithPageNumbers(ctx context.Context, markdownText string) ([]PaginatedPage, error) {
+	pages, err := r.PaginateMarkdownWithBackground(ctx, markdownText, "")
+	if err != nil {
+		return nil, err
+	}
+
+	var result []PaginatedPage
+	for i, content := range pages {
+		result = append(result, PaginatedPage{
+			Content:   content,
+			PageIndex: i, // 从0开始，封面为-1
+		})
+	}
+
+	return result, nil
+}
+
+// addPageNumbers 为页面内容添加页码
+func (r *FlowRenderer) addPageNumbers(pages []string) []string {
+	if !r.config.PageNumber.Enabled || len(pages) == 0 {
+		return pages
+	}
+
+	// 总页数不包括封面，所以就是内容页的数量
+	totalPages := len(pages)
+	var result []string
+
+	for i, content := range pages {
+		// 页码从1开始，封面不计入（封面SortOrder=0，内容页SortOrder从1开始）
+		currentPage := i + 1
+
+		// 生成页码HTML
+		pageNumberHTML := r.generatePageNumberHTML(currentPage, totalPages)
+
+		// 将页码添加到内容中
+		contentWithPageNumber := content + pageNumberHTML
+		result = append(result, contentWithPageNumber)
+	}
+
+	return result
+}
+
+// generatePageNumberHTML 生成页码HTML
+func (r *FlowRenderer) generatePageNumberHTML(currentPage, totalPages int) string {
+	if !r.config.PageNumber.Enabled {
+		return ""
+	}
+
+	// 格式化页码文本
+	pageNumberText := strings.ReplaceAll(r.config.PageNumber.Format, "{current}", fmt.Sprintf("%d", currentPage))
+	pageNumberText = strings.ReplaceAll(pageNumberText, "{total}", fmt.Sprintf("%d", totalPages))
+
+	return fmt.Sprintf(`<div class="page-number">%s</div>`, pageNumberText)
 }
 
 // PaginateMarkdownWithBackground returns a list of per-page HTML fragments with background support.
@@ -123,7 +187,8 @@ func (r *FlowRenderer) PaginateMarkdownWithBackground(ctx context.Context, markd
 		return nil, err
 	}
 
-	return pages, nil
+	// 5) 为每页添加页码
+	return r.addPageNumbers(pages), nil
 }
 
 // preprocessMarkdownForH1Handling 预处理markdown内容，完全移除所有H1标题
