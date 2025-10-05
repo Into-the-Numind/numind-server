@@ -225,7 +225,7 @@ card:
     font_weight: "normal"   # 页码粗细：normal, bold
     position:
       bottom: 30            # 距离底部边距
-      right: 30             # 距离右侧边距
+      right: 50             # 距离右侧边距
     format: "{current}/{total}"  # 页码格式：{current}当前页，{total}总页数
 
 # 特殊渲染规则配置
