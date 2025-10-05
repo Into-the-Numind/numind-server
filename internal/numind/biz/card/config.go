@@ -3,6 +3,8 @@ package card
 import (
 	"os"
 	"strconv"
+
+	"github.com/spf13/viper"
 )
 
 // RendererConfig 渲染器配置
@@ -38,7 +40,12 @@ func GetRendererConfig() *RendererConfig {
 		RenderTimeout:             300,   // 默认5分钟超时
 	}
 
-	// 从环境变量读取配置
+	// 从配置文件读取（优先级高于环境变量，用于废弃 .env.local）
+	if viper.IsSet("card.rendering.enable_flow_renderer") {
+		config.EnableFlowRenderer = viper.GetBool("card.rendering.enable_flow_renderer")
+	}
+
+	// 兼容环境变量作为后备（不再依赖 .env.local）
 	if env := os.Getenv("ENABLE_RENDER_AND_MEASURE"); env != "" {
 		if enabled, err := strconv.ParseBool(env); err == nil {
 			config.EnableRenderAndMeasure = enabled

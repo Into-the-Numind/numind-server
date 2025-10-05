@@ -49,14 +49,17 @@ type HTMLConfig struct {
 	// 新增配置字段 - 用于内容分页
 	TitleFontSize        int     `json:"title_font_size"`        // 标题字体大小
 	SubtitleFontSize     int     `json:"subtitle_font_size"`     // 副标题字体大小
+	H3FontSize           int     `json:"h3_font_size"`           // 三级标题字体大小
 	BodyFontSize         int     `json:"body_font_size"`         // 正文字体大小
 	ListFontSize         int     `json:"list_font_size"`         // 列表字体大小
 	QuoteFontSize        int     `json:"quote_font_size"`        // 引用字体大小
 	TitleLineHeight      float64 `json:"title_line_height"`      // 标题行高倍数
 	SubtitleLineHeight   float64 `json:"subtitle_line_height"`   // 副标题行高倍数
+	H3LineHeight         float64 `json:"h3_line_height"`         // 三级标题行高倍数
 	BodyLineHeight       float64 `json:"body_line_height"`       // 正文行高倍数
 	TitleMarginBottom    int     `json:"title_margin_bottom"`    // 标题下边距
 	SubtitleMarginBottom int     `json:"subtitle_margin_bottom"` // 副标题下边距
+	H3MarginBottom       int     `json:"h3_margin_bottom"`       // 三级标题下边距
 	BodyMarginBottom     int     `json:"body_margin_bottom"`     // 正文下边距
 	AvailableWidth       int     `json:"available_width"`        // 可用宽度
 	MaxContentHeight     int     `json:"max_content_height"`     // 最大内容高度
@@ -208,6 +211,12 @@ func loadHTMLConfigFromCard(config *HTMLConfig) {
 	if viper.IsSet("card.typography.sizes.subtitle") {
 		config.SubtitleFontSize = viper.GetInt("card.typography.sizes.subtitle")
 	}
+	// H3 默认跟随 subtitle，若提供 h3 配置则覆盖
+	if viper.IsSet("card.typography.sizes.h3") {
+		config.H3FontSize = viper.GetInt("card.typography.sizes.h3")
+	} else {
+		config.H3FontSize = config.SubtitleFontSize
+	}
 	if viper.IsSet("card.typography.sizes.body") {
 		config.BodyFontSize = viper.GetInt("card.typography.sizes.body")
 	}
@@ -233,6 +242,16 @@ func loadHTMLConfigFromCard(config *HTMLConfig) {
 			config.SubtitleLineHeight = float64(lineHeight) / float64(fontSize)
 		}
 	}
+	// H3 行高，默认跟随 subtitle，若提供 h3 配置则覆盖
+	if viper.IsSet("card.typography.line_heights.h3") && viper.IsSet("card.typography.sizes.h3") {
+		lineHeight := viper.GetInt("card.typography.line_heights.h3")
+		fontSize := viper.GetInt("card.typography.sizes.h3")
+		if fontSize > 0 {
+			config.H3LineHeight = float64(lineHeight) / float64(fontSize)
+		}
+	} else {
+		config.H3LineHeight = config.SubtitleLineHeight
+	}
 	if viper.IsSet("card.typography.line_heights.body") && viper.IsSet("card.typography.sizes.body") {
 		lineHeight := viper.GetInt("card.typography.line_heights.body")
 		fontSize := viper.GetInt("card.typography.sizes.body")
@@ -247,6 +266,12 @@ func loadHTMLConfigFromCard(config *HTMLConfig) {
 		config.TitleMarginBottom = baseMargin
 		config.SubtitleMarginBottom = baseMargin
 		config.BodyMarginBottom = baseMargin
+	}
+	// H3 下边距，默认跟随 subtitle，若提供 h3_bottom 则覆盖
+	if viper.IsSet("card.typography.spacing.margins.h3_bottom") {
+		config.H3MarginBottom = viper.GetInt("card.typography.spacing.margins.h3_bottom")
+	} else {
+		config.H3MarginBottom = config.SubtitleMarginBottom
 	}
 
 	// 加载HTML转换特有配置（从html_converter节点）
@@ -1133,9 +1158,9 @@ th {
 		hc.config.TitleFontSize,
 		hc.config.TitleMarginBottom,
 		hc.config.TextColor,
-		hc.config.SubtitleFontSize,
-		hc.config.SubtitleMarginBottom,
-		hc.config.SubtitleMarginBottom,
+		hc.config.H3FontSize,
+		hc.config.H3MarginBottom,
+		hc.config.H3MarginBottom,
 		hc.config.TextColor,
 		hc.config.SubtitleFontSize,
 		hc.config.SubtitleMarginBottom,
@@ -1760,8 +1785,8 @@ func (hc *HTMLConverter) measureHTMLHeight(html string) (int, error) {
 		} else if strings.Contains(line, "<h3>") {
 			// 三级标题
 			text := hc.extractTextFromTag(line, "h3")
-			elementHeight = hc.calculateTextHeight(text, hc.config.SubtitleFontSize, hc.config.AvailableWidth, hc.config.SubtitleLineHeight)
-			marginBottom = hc.config.SubtitleMarginBottom
+			elementHeight = hc.calculateTextHeight(text, hc.config.H3FontSize, hc.config.AvailableWidth, hc.config.H3LineHeight)
+			marginBottom = hc.config.H3MarginBottom
 		} else if strings.Contains(line, "<p>") {
 			// 段落
 			text := hc.extractTextFromTag(line, "p")
@@ -2057,8 +2082,8 @@ func (hc *HTMLConverter) calculateParagraphHeight(paragraph string) int {
 	} else if strings.HasPrefix(paragraph, "### ") {
 		// H3标题
 		text := strings.TrimSpace(paragraph[4:])
-		contentHeight := hc.calculateTextHeight(text, hc.config.SubtitleFontSize, hc.config.AvailableWidth, hc.config.SubtitleLineHeight)
-		return contentHeight + hc.config.SubtitleMarginBottom
+		contentHeight := hc.calculateTextHeight(text, hc.config.H3FontSize, hc.config.AvailableWidth, hc.config.H3LineHeight)
+		return contentHeight + hc.config.H3MarginBottom
 	} else if strings.HasPrefix(paragraph, "- ") || strings.HasPrefix(paragraph, "* ") {
 		// 列表项
 		text := strings.TrimSpace(paragraph[2:])
@@ -2095,7 +2120,7 @@ func (hc *HTMLConverter) calculateParagraphHeightWithoutMargin(paragraph string)
 	} else if strings.HasPrefix(paragraph, "### ") {
 		// H3标题
 		text := strings.TrimSpace(paragraph[4:])
-		return hc.calculateTextHeight(text, hc.config.SubtitleFontSize, hc.config.AvailableWidth, hc.config.SubtitleLineHeight)
+		return hc.calculateTextHeight(text, hc.config.H3FontSize, hc.config.AvailableWidth, hc.config.H3LineHeight)
 	} else if strings.HasPrefix(paragraph, "- ") || strings.HasPrefix(paragraph, "* ") {
 		// 列表项
 		text := strings.TrimSpace(paragraph[2:])
