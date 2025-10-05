@@ -118,6 +118,7 @@ card:
   
   # 渲染器配置
   rendering:
+    enable_flow_renderer: true      # 是否启用流式分页渲染器（优先于环境变量）
     quality: 85            # 图片质量（1-100）
     format: "webp"         # 图片格式
     zoom: 1.0              # 缩放比例
