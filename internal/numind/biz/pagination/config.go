@@ -230,26 +230,47 @@ func loadStyleConfigFromTypography(config *PaginationConfig, elementType Element
 
 // loadPageNumberConfig 加载页码配置
 func loadPageNumberConfig(config *PaginationConfig) {
+	// Preferred path under card.typography
 	if viper.IsSet("card.typography.page_number.enabled") {
 		config.PageNumber.Enabled = viper.GetBool("card.typography.page_number.enabled")
+	} else if viper.IsSet("card.page_number.enabled") { // fallback for legacy/location variant
+		config.PageNumber.Enabled = viper.GetBool("card.page_number.enabled")
 	}
+
 	if viper.IsSet("card.typography.page_number.font_size") {
 		config.PageNumber.FontSize = viper.GetInt("card.typography.page_number.font_size")
+	} else if viper.IsSet("card.page_number.font_size") {
+		config.PageNumber.FontSize = viper.GetInt("card.page_number.font_size")
 	}
+
 	if viper.IsSet("card.typography.page_number.color") {
 		config.PageNumber.Color = viper.GetString("card.typography.page_number.color")
+	} else if viper.IsSet("card.page_number.color") {
+		config.PageNumber.Color = viper.GetString("card.page_number.color")
 	}
+
 	if viper.IsSet("card.typography.page_number.font_weight") {
 		config.PageNumber.FontWeight = viper.GetString("card.typography.page_number.font_weight")
+	} else if viper.IsSet("card.page_number.font_weight") {
+		config.PageNumber.FontWeight = viper.GetString("card.page_number.font_weight")
 	}
+
 	if viper.IsSet("card.typography.page_number.position.bottom") {
 		config.PageNumber.Position.Bottom = viper.GetInt("card.typography.page_number.position.bottom")
+	} else if viper.IsSet("card.page_number.position.bottom") {
+		config.PageNumber.Position.Bottom = viper.GetInt("card.page_number.position.bottom")
 	}
+
 	if viper.IsSet("card.typography.page_number.position.right") {
 		config.PageNumber.Position.Right = viper.GetInt("card.typography.page_number.position.right")
+	} else if viper.IsSet("card.page_number.position.right") {
+		config.PageNumber.Position.Right = viper.GetInt("card.page_number.position.right")
 	}
+
 	if viper.IsSet("card.typography.page_number.format") {
 		config.PageNumber.Format = viper.GetString("card.typography.page_number.format")
+	} else if viper.IsSet("card.page_number.format") {
+		config.PageNumber.Format = viper.GetString("card.page_number.format")
 	}
 }
 
