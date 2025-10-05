@@ -152,6 +152,7 @@ card:
     sizes:
       title: 120             # 标题字号（仅封面H1使用；正文卡片不渲染H1）
       subtitle: 36           # 副标题字号（##/###）
+      h3: 36                 # 三级标题字号（###），默认与subtitle一致
       body: 36               # 正文字号
       list: 36               # 列表字号
       quote: 36              # 引用字号
@@ -162,6 +163,7 @@ card:
     line_heights:
       title: 160             # 标题行高（像素）。分页按：行高倍数=160/120
       subtitle: 60           # 副标题行高（像素）
+      h3: 60                 # 三级标题行高（像素），默认与subtitle一致
       body: 60               # 正文行高（像素）
       list: 60               # 列表行高（像素）
       quote: 60              # 引用行高（像素）
@@ -182,6 +184,7 @@ card:
       margins:
         title_bottom: 40     # 标题段后距（像素，仅封面H1卡片有效）
         subtitle_bottom: 0   # 副标题段后距（像素，分页最后一行才计入）
+        h3_bottom: 0         # 三级标题段后距（像素），默认与subtitle一致
         body_bottom: 60      # 正文段后距（像素，分页最后一行才计入）
     
     # 颜色配置

@@ -30,6 +30,8 @@ func GenerateUnifiedCSS(config *pagination.PaginationConfig, backgroundImage str
 	// Typography
 	title := config.Styles[pagination.ElementTypeTitle]
 	subtitle := config.Styles[pagination.ElementTypeSubtitle]
+	// 没有专门的H3元素类型，使用subtitle样式作为H3默认样式
+	h3 := subtitle
 	body := config.Styles[pagination.ElementTypeBody]
 	list := config.Styles[pagination.ElementTypeList]
 	quote := config.Styles[pagination.ElementTypeQuote]
@@ -49,6 +51,7 @@ func GenerateUnifiedCSS(config *pagination.PaginationConfig, backgroundImage str
         /* styles for content */
         h1 { font-size:%dpx; line-height:%dpx; color:%s; margin:%dpx 0 %dpx 0; text-align:%s; font-weight:700; }
         h2 { font-size:%dpx; line-height:%dpx; color:%s; margin:%dpx 0 %dpx 0; text-align:%s; font-weight:700; }
+        h3 { font-size:%dpx; line-height:%dpx; color:%s; margin:%dpx 0 %dpx 0; text-align:%s; font-weight:700; }
         p  { font-size:%dpx; line-height:%dpx; color:%s; margin:%dpx 0 %dpx 0; text-align:%s; text-indent:%dpx; }
         ul { margin:%dpx 0 %dpx 0; padding-left:%dpx; }
         li { font-size:%dpx; line-height:%dpx; color:%s; text-align:%s; list-style-type:none; position:relative; }
@@ -61,6 +64,7 @@ func GenerateUnifiedCSS(config *pagination.PaginationConfig, backgroundImage str
 		padTop, padLeft, padRight, padBottom,
 		title.FontSize, title.LineHeight, nz(title.Color, "#333333"), title.MarginTop, title.MarginBottom, nz(title.Align, "justify"),
 		subtitle.FontSize, subtitle.LineHeight, nz(subtitle.Color, "#666666"), subtitle.MarginTop, subtitle.MarginBottom, nz(subtitle.Align, "justify"),
+		h3.FontSize, h3.LineHeight, nz(h3.Color, "#666666"), h3.MarginTop, h3.MarginBottom, nz(h3.Align, "justify"),
 		body.FontSize, body.LineHeight, nz(body.Color, "#333333"), body.MarginTop, body.MarginBottom, nz(body.Align, "justify"), maxInt(body.FirstLineIndent, 0),
 		list.MarginTop, list.MarginBottom, maxInt(list.Indent, 40),
 		list.FontSize, list.LineHeight, nz(list.Color, "#333333"), nz(list.Align, "justify"), maxInt(list.Indent, 20),
