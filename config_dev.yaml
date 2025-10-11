@@ -116,6 +116,7 @@ card:
     format: "webp"         # 图片格式
     zoom: 1.0              # 缩放比例
     timeout: 90            # 超时时间（秒）- 压力测试时建议设置为90秒
+    max_concurrent: 3      # 最大并发渲染数（避免Chrome实例过多导致资源耗尽，建议2-5）
     
   # 分页算法参数
   pagination:

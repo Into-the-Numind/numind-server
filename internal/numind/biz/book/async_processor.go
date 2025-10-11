@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -28,6 +29,58 @@ import (
 
 	"github.com/spf13/viper"
 )
+
+// 全局渲染并发控制
+var (
+	// renderSemaphore 控制同时渲染的最大数量，避免资源耗尽
+	renderSemaphore chan struct{}
+	renderOnce      sync.Once
+)
+
+// initRenderSemaphore 初始化渲染并发控制信号量
+func initRenderSemaphore() {
+	renderOnce.Do(func() {
+		// 根据CPU核心数和系统配置动态设置并发数
+		// 每个Chrome实例消耗大量资源，建议并发数为 CPU核心数 / 2，最小2，最大10
+		maxConcurrent := runtime.NumCPU() / 2
+		if maxConcurrent < 2 {
+			maxConcurrent = 2
+		}
+		if maxConcurrent > 10 {
+			maxConcurrent = 10
+		}
+
+		// 从配置文件读取（如果存在）
+		if viper.IsSet("card.rendering.max_concurrent") {
+			configConcurrent := viper.GetInt("card.rendering.max_concurrent")
+			if configConcurrent > 0 && configConcurrent <= 20 {
+				maxConcurrent = configConcurrent
+			}
+		}
+
+		renderSemaphore = make(chan struct{}, maxConcurrent)
+		log.Infow("初始化渲染并发控制", "max_concurrent", maxConcurrent, "cpu_cores", runtime.NumCPU())
+	})
+}
+
+// acquireRenderSlot 获取渲染槽位（阻塞直到有可用槽位）
+func acquireRenderSlot(ctx context.Context) error {
+	initRenderSemaphore()
+	select {
+	case renderSemaphore <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// releaseRenderSlot 释放渲染槽位
+func releaseRenderSlot() {
+	select {
+	case <-renderSemaphore:
+	default:
+	}
+}
 
 // AsyncBookProcessor 异步book处理器
 type AsyncBookProcessor struct {
@@ -2438,7 +2491,13 @@ func max(a, b int) int {
 
 // renderWithWkhtmltoimage 使用wkhtmltoimage渲染
 func (p *AsyncBookProcessor) renderWithWkhtmltoimage(ctx context.Context, cardID uint, htmlContent, fullImagePath string) (string, error) {
-	log.C(ctx).Infow("使用wkhtmltoimage渲染", "card_id", cardID)
+	// 获取渲染槽位，避免同时启动过多Chrome实例导致资源耗尽
+	if err := acquireRenderSlot(ctx); err != nil {
+		return "", fmt.Errorf("获取渲染槽位失败: %v", err)
+	}
+	defer releaseRenderSlot()
+
+	log.C(ctx).Infow("使用wkhtmltoimage渲染（已获取渲染槽位）", "card_id", cardID)
 
 	// 检查原始HTML内容
 	originalOverflowCount := strings.Count(htmlContent, "overflow: visible")
