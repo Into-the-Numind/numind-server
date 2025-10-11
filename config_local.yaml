@@ -115,7 +115,8 @@ card:
     quality: 85            # 图片质量（1-100）
     format: "webp"         # 图片格式
     zoom: 1.0              # 缩放比例
-    timeout: 30            # 超时时间（秒）
+    timeout: 90            # 超时时间（秒）- 本地环境建议设置为90秒
+    max_concurrent: 3      # 最大并发渲染数（避免Chrome实例过多导致资源耗尽，建议2-5）
     
   # 分页算法参数
   pagination:
@@ -189,7 +190,7 @@ card:
     # 颜色配置
     colors:
       text: "#333333"        # 主文本颜色（深灰）
-      secondary: "#666666"   # 次要文本颜色（中灰）
+      secondary: "#1278B8"   # 次要文本颜色（蓝色）
       accent: "#1E90FF"      # 强调色（蓝色）
       
     # 对齐配置
@@ -214,7 +215,7 @@ card:
     font_weight: "normal"   # 页码粗细：normal, bold
     position:
       bottom: 30            # 距离底部边距
-      right: 30             # 距离右侧边距
+      right: 50             # 距离右侧边距
     format: "{current}/{total}"  # 页码格式：{current}当前页，{total}总页数
 
 # 特殊渲染规则配置

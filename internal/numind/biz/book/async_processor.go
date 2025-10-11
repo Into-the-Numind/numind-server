@@ -2522,13 +2522,49 @@ func (p *AsyncBookProcessor) renderWithWkhtmltoimage(ctx context.Context, cardID
 	rendererConfig := p.getRendererConfig()
 	renderer := utilpkg.NewWkhtmltoimageRenderer(rendererConfig)
 
-	if err := renderer.RenderHTMLToImage(ctx, fixedHTMLContent, fullImagePath); err != nil {
-		log.C(ctx).Warnw("wkhtmltoimage转换失败", "card_id", cardID, "error", err.Error())
-		return "", fmt.Errorf("wkhtmltoimage转换失败: %v", err)
+	// 添加重试机制（容器环境可能资源紧张）
+	maxRetries := 3
+	var lastErr error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		err := renderer.RenderHTMLToImage(ctx, fixedHTMLContent, fullImagePath)
+		if err == nil {
+			// 渲染成功
+			log.C(ctx).Infow("wkhtmltoimage渲染成功", "card_id", cardID, "image_path", fullImagePath, "attempt", attempt)
+			return fullImagePath, nil
+		}
+
+		lastErr = err
+		log.C(ctx).Warnw("wkhtmltoimage转换失败",
+			"card_id", cardID,
+			"attempt", attempt,
+			"max_retries", maxRetries,
+			"error", err.Error())
+
+		// 如果不是最后一次尝试，等待后重试
+		if attempt < maxRetries {
+			// 检查是否是可重试的错误
+			errStr := err.Error()
+			isRetryable := strings.Contains(errStr, "fork") ||
+				strings.Contains(errStr, "Resource temporarily unavailable") ||
+				strings.Contains(errStr, "failed to start") ||
+				strings.Contains(errStr, "context deadline exceeded")
+
+			if !isRetryable {
+				// 不可重试的错误，直接返回
+				log.C(ctx).Warnw("遇到不可重试的错误，停止重试", "card_id", cardID, "error", errStr)
+				return "", fmt.Errorf("wkhtmltoimage转换失败: %v", err)
+			}
+
+			// 等待后重试（指数退避：2s, 4s）
+			waitTime := time.Duration(attempt) * 2 * time.Second
+			log.C(ctx).Infow("等待后重试", "card_id", cardID, "wait_seconds", waitTime.Seconds())
+			time.Sleep(waitTime)
+		}
 	}
 
-	log.C(ctx).Infow("wkhtmltoimage渲染成功", "card_id", cardID, "image_path", fullImagePath)
-	return fullImagePath, nil
+	// 所有重试都失败
+	return "", fmt.Errorf("wkhtmltoimage转换失败，已重试%d次: %v", maxRetries, lastErr)
 }
 
 // fixHTMLContentForRendering 修复HTML内容以适配渲染
