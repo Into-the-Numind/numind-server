@@ -203,7 +203,7 @@ func (w *WkhtmltoimageRenderer) renderWithChromedp(ctx context.Context, htmlFile
 		chromedp.EmulateViewport(int64(w.config.Width), int64(w.config.Height)),
 		chromedp.Navigate(fileURL),
 		chromedp.WaitReady("body"),
-		chromedp.Sleep(2*time.Second),
+		chromedp.Sleep(1*time.Second), // 减少初始等待时间
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			// 等待字体加载 - 容器环境优化
 			if err := chromedp.Evaluate(`document.fonts.ready`, nil).Do(ctx); err == nil {
@@ -220,8 +220,13 @@ func (w *WkhtmltoimageRenderer) renderWithChromedp(ctx context.Context, htmlFile
 				// 字体已加载
 			}
 
-			// 额外等待时间确保字体完全加载 - 容器环境需要更长时间
-			time.Sleep(5 * time.Second)
+			// 根据字体加载状态动态等待 - 优化性能
+			// 如果字体已加载，减少等待时间；否则等待更长时间
+			if fontLoaded {
+				time.Sleep(2 * time.Second) // 字体已加载，短等待
+			} else {
+				time.Sleep(4 * time.Second) // 字体未加载，需要更多时间
+			}
 
 			// 强制重绘页面
 			if err := chromedp.Evaluate(`document.body.style.display='none';document.body.offsetHeight;document.body.style.display=''`, nil).Do(ctx); err == nil {
