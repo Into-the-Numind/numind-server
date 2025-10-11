@@ -190,7 +190,7 @@ card:
     # 颜色配置
     colors:
       text: "#333333"        # 主文本颜色（深灰）
-      secondary: "#666666"   # 次要文本颜色（中灰）
+      secondary: "#1278B8"   # 次要文本颜色（中灰）
       accent: "#1E90FF"      # 强调色（蓝色）
       
     # 对齐配置
@@ -215,7 +215,7 @@ card:
     font_weight: "normal"   # 页码粗细：normal, bold
     position:
       bottom: 30            # 距离底部边距
-      right: 30             # 距离右侧边距
+      right: 50             # 距离右侧边距
     format: "{current}/{total}"  # 页码格式：{current}当前页，{total}总页数
 
 # 特殊渲染规则配置
