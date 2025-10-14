@@ -1,0 +1,8 @@
+# 忽略编译后的二进制文件
+stress_test_book
+
+# 忽略测试结果文件（如果生成）
+*.log
+*.out
+results/
+
