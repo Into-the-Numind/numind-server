@@ -201,7 +201,6 @@ func (b *paymentBiz) handleMembershipPurchase(ctx context.Context, payment *mode
 	case model.MembershipTypeSubscription:
 		// 订阅会员 - 使用天数累加
 		now := time.Now()
-		var expiresAt *time.Time
 
 		// 根据订阅天数计算到期时间
 		days := payment.SubscriptionDays
@@ -216,18 +215,38 @@ func (b *paymentBiz) handleMembershipPurchase(ctx context.Context, payment *mode
 			}
 		}
 
-		// 计算新的到期时间
-		expires := now.AddDate(0, 0, days) // 添加指定天数
-		expiresAt = &expires
-
 		// 确定新的会员类型
 		var newMembershipType string
-		if user.MembershipType == model.MembershipTypePackage || user.MembershipType == model.MembershipTypeBoth {
+		// 检查用户是否有有效的资源包（PackageCount > 0）
+		if user.PackageCount > 0 {
 			// 如果用户已有资源包，则设为both
 			newMembershipType = model.MembershipTypeBoth
 		} else {
 			// 否则设为订阅会员
 			newMembershipType = model.MembershipTypeSubscription
+		}
+
+		// 计算新的到期时间
+		// 如果用户已有订阅会员且未过期，在现有到期时间基础上累加天数
+		// 否则从当前时间开始计算
+		var expiresAt *time.Time
+		if user.MembershipExpires != nil && user.MembershipExpires.After(now) {
+			// 在现有到期时间基础上累加天数（续费）
+			newExpires := user.MembershipExpires.AddDate(0, 0, days)
+			expiresAt = &newExpires
+			log.C(ctx).Infow("Renewing subscription",
+				"user_id", user.ID,
+				"old_expires", user.MembershipExpires,
+				"new_expires", newExpires,
+				"days_added", days)
+		} else {
+			// 从当前时间开始计算（新购买或已过期）
+			expires := now.AddDate(0, 0, days)
+			expiresAt = &expires
+			log.C(ctx).Infow("New subscription purchase",
+				"user_id", user.ID,
+				"new_expires", expires,
+				"days", days)
 		}
 
 		// 更新用户会员信息
@@ -237,19 +256,17 @@ func (b *paymentBiz) handleMembershipPurchase(ctx context.Context, payment *mode
 			"membership_expires": expiresAt,
 		}
 
-		// 如果是新订阅用户，设置会员开始时间
-		if user.MembershipType != model.MembershipTypeSubscription && user.MembershipType != model.MembershipTypeBoth {
+		// 如果是新订阅用户或订阅已过期，设置/重置会员开始时间和月度计数
+		isNewSubscription := user.MembershipType != model.MembershipTypeSubscription && user.MembershipType != model.MembershipTypeBoth
+		isExpired := user.MembershipExpires == nil || !user.MembershipExpires.After(now)
+
+		if isNewSubscription || isExpired {
 			updateData["membership_start_date"] = &now
 			updateData["monthly_book_count"] = 0 // 重置月度计数
-		}
-
-		// 如果用户已有订阅会员且未过期，在现有到期时间基础上累加天数
-		if (user.MembershipType == model.MembershipTypeSubscription || user.MembershipType == model.MembershipTypeBoth) &&
-			user.MembershipExpires != nil &&
-			user.MembershipExpires.After(now) {
-			// 在现有到期时间基础上累加天数
-			newExpires := user.MembershipExpires.AddDate(0, 0, days)
-			updateData["membership_expires"] = &newExpires
+			log.C(ctx).Infow("Reset membership start date and monthly count",
+				"user_id", user.ID,
+				"is_new", isNewSubscription,
+				"is_expired", isExpired)
 		}
 
 		if err := b.ds.DB().Model(&model.User{}).Where("id = ?", payment.UserID).
