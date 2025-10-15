@@ -115,7 +115,8 @@ card:
     quality: 85            # 图片质量（1-100）
     format: "webp"         # 图片格式
     zoom: 1.0              # 缩放比例
-    timeout: 30            # 超时时间（秒）
+    timeout: 90            # 超时时间（秒）- 压力测试时建议设置为90秒
+    max_concurrent: 2      # 最大并发渲染数（容器环境建议2，避免fork失败）
     
   # 分页算法参数
   pagination:

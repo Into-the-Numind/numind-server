@@ -142,11 +142,12 @@ func (w *WkhtmltoimageRenderer) renderWithSimpleGoImplementation(ctx context.Con
 
 // renderWithChromedp 使用chromedp进行HTML渲染
 func (w *WkhtmltoimageRenderer) renderWithChromedp(ctx context.Context, htmlFile, outputPath string) error {
-	// 创建Chrome选项 - 容器环境优化
+	// 创建Chrome选项 - 容器环境优化（重点：减少进程数）
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
 		chromedp.Flag("disable-gpu", true),
 		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("disable-setuid-sandbox", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
 		chromedp.Flag("disable-web-security", true),
 		chromedp.Flag("window-size", fmt.Sprintf("%d,%d", w.config.Width, w.config.Height)),
@@ -154,6 +155,7 @@ func (w *WkhtmltoimageRenderer) renderWithChromedp(ctx context.Context, htmlFile
 		chromedp.Flag("disable-plugins", true),
 		chromedp.Flag("disable-images", false),
 		chromedp.Flag("disable-javascript", false),
+
 		// 容器环境特定优化
 		chromedp.Flag("disable-background-timer-throttling", true),
 		chromedp.Flag("disable-renderer-backgrounding", true),
@@ -169,21 +171,33 @@ func (w *WkhtmltoimageRenderer) renderWithChromedp(ctx context.Context, htmlFile
 		chromedp.Flag("disable-canvas-aa", true),
 		chromedp.Flag("disable-2d-canvas-clip-aa", true),
 		chromedp.Flag("disable-gl-drawing-for-tests", true),
+
 		// 字体渲染优化
 		chromedp.Flag("font-render-hinting", "none"),
 		chromedp.Flag("disable-font-subpixel-positioning", true),
-		// 内存优化
-		chromedp.Flag("max_old_space_size", "4096"),
+
+		// 内存和进程优化（关键：减少子进程数量）
+		chromedp.Flag("max_old_space_size", "2048"), // 降低内存限制
 		chromedp.Flag("memory-pressure-off", true),
+		chromedp.Flag("renderer-process-limit", "1"), // 限制渲染进程数为1
+		chromedp.Flag("disable-breakpad", true),      // 禁用崩溃报告
+		chromedp.Flag("disable-client-side-phishing-detection", true),
+		chromedp.Flag("disable-default-apps", true),
+		chromedp.Flag("disable-sync", true),
+		chromedp.Flag("metrics-recording-only", true),
+		chromedp.Flag("mute-audio", true),
+		chromedp.Flag("no-first-run", true),
+		chromedp.Flag("no-zygote", true), // 禁用zygote进程（减少fork）
+		chromedp.Flag("disable-features", "TranslateUI,BlinkGenPropertyTrees"),
 	)
 
 	// 创建Chrome实例
-	allocCtx, cancel := chromedp.NewExecAllocator(ctx, opts...)
-	defer cancel()
+	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx, opts...)
+	defer allocCancel()
 
-	// 创建Chrome任务
-	taskCtx, cancel := chromedp.NewContext(allocCtx)
-	defer cancel()
+	// 创建Chrome任务上下文
+	taskCtx, taskCancel := chromedp.NewContext(allocCtx)
+	defer taskCancel()
 
 	// 设置超时
 	renderCtx, cancel := context.WithTimeout(taskCtx, w.config.Timeout)
@@ -203,7 +217,7 @@ func (w *WkhtmltoimageRenderer) renderWithChromedp(ctx context.Context, htmlFile
 		chromedp.EmulateViewport(int64(w.config.Width), int64(w.config.Height)),
 		chromedp.Navigate(fileURL),
 		chromedp.WaitReady("body"),
-		chromedp.Sleep(2*time.Second),
+		chromedp.Sleep(1*time.Second), // 减少初始等待时间
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			// 等待字体加载 - 容器环境优化
 			if err := chromedp.Evaluate(`document.fonts.ready`, nil).Do(ctx); err == nil {
@@ -220,8 +234,13 @@ func (w *WkhtmltoimageRenderer) renderWithChromedp(ctx context.Context, htmlFile
 				// 字体已加载
 			}
 
-			// 额外等待时间确保字体完全加载 - 容器环境需要更长时间
-			time.Sleep(5 * time.Second)
+			// 根据字体加载状态动态等待 - 优化性能
+			// 如果字体已加载，减少等待时间；否则等待更长时间
+			if fontLoaded {
+				time.Sleep(2 * time.Second) // 字体已加载，短等待
+			} else {
+				time.Sleep(4 * time.Second) // 字体未加载，需要更多时间
+			}
 
 			// 强制重绘页面
 			if err := chromedp.Evaluate(`document.body.style.display='none';document.body.offsetHeight;document.body.style.display=''`, nil).Do(ctx); err == nil {

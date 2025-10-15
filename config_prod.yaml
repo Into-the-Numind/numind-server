@@ -122,7 +122,8 @@ card:
     quality: 85            # 图片质量（1-100）
     format: "webp"         # 图片格式
     zoom: 1.0              # 缩放比例
-    timeout: 30            # 超时时间（秒）
+    timeout: 90            # 超时时间（秒）- 生产环境建议60-90秒，高并发场景可适当增加
+    max_concurrent: 4      # 最大并发渲染数（生产环境根据服务器配置调整，建议2-8）
     
   # 分页算法参数
   pagination:

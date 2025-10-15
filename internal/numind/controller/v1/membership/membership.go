@@ -396,6 +396,39 @@ type CreatePermission struct {
 
 // calculateCreatePermission 计算用户创建卡册权限
 func (mc *MembershipController) calculateCreatePermission(user *model.User) *CreatePermission {
+	// 首先检查并同步会员类型（处理过期情况）
+	actualType := user.GetActualMembershipType()
+	if actualType != user.MembershipType {
+		// 需要更新数据库中的会员类型
+		log.C(context.Background()).Infow("Membership type needs sync",
+			"user_id", user.ID,
+			"old_type", user.MembershipType,
+			"new_type", actualType)
+
+		// 判断是否需要重置月度计数
+		oldType := user.MembershipType
+		resetMonthly := (oldType == model.MembershipTypeSubscription || oldType == model.MembershipTypeBoth) &&
+			(actualType == model.MembershipTypeFree || actualType == model.MembershipTypePackage)
+
+		// 更新到数据库
+		if err := mc.b.Users().SyncMembershipType(context.Background(), user.ID, actualType, resetMonthly); err != nil {
+			log.C(context.Background()).Errorw("Failed to sync membership type",
+				"user_id", user.ID,
+				"error", err.Error())
+		} else {
+			// 更新本地用户对象
+			user.MembershipType = actualType
+			if resetMonthly {
+				user.MonthlyBookCount = 0
+				user.MembershipStartDate = nil
+			}
+			log.C(context.Background()).Infow("Membership type synced successfully",
+				"user_id", user.ID,
+				"new_type", actualType,
+				"reset_monthly", resetMonthly)
+		}
+	}
+
 	// 检查是否需要重置月度计数
 	if user.IsInNewMembershipMonth() {
 		// 重置月度计数

@@ -81,6 +81,51 @@ func (u *User) IsMembershipActive() bool {
 	return false
 }
 
+// GetActualMembershipType 获取实际的会员类型（考虑过期情况）
+// 这个方法会根据当前状态自动判断用户实际应该拥有的会员类型
+func (u *User) GetActualMembershipType() string {
+	if u.MembershipType == MembershipTypeFree {
+		return MembershipTypeFree
+	}
+
+	// 检查订阅是否有效
+	subscriptionActive := u.MembershipExpires != nil && u.MembershipExpires.After(time.Now())
+	// 检查资源包是否有效
+	packageActive := u.PackageCount > 0
+
+	if u.MembershipType == MembershipTypeBoth {
+		if subscriptionActive && packageActive {
+			return MembershipTypeBoth
+		} else if subscriptionActive {
+			return MembershipTypeSubscription
+		} else if packageActive {
+			return MembershipTypePackage
+		} else {
+			return MembershipTypeFree
+		}
+	}
+
+	if u.MembershipType == MembershipTypeSubscription {
+		if subscriptionActive {
+			return MembershipTypeSubscription
+		}
+		// 订阅过期，检查是否有资源包
+		if packageActive {
+			return MembershipTypePackage
+		}
+		return MembershipTypeFree
+	}
+
+	if u.MembershipType == MembershipTypePackage {
+		if packageActive {
+			return MembershipTypePackage
+		}
+		return MembershipTypeFree
+	}
+
+	return MembershipTypeFree
+}
+
 // GetMembershipStatus 获取会员状态描述
 func (u *User) GetMembershipStatus() string {
 	if !u.IsMembershipActive() {

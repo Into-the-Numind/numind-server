@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -28,6 +29,58 @@ import (
 
 	"github.com/spf13/viper"
 )
+
+// 全局渲染并发控制
+var (
+	// renderSemaphore 控制同时渲染的最大数量，避免资源耗尽
+	renderSemaphore chan struct{}
+	renderOnce      sync.Once
+)
+
+// initRenderSemaphore 初始化渲染并发控制信号量
+func initRenderSemaphore() {
+	renderOnce.Do(func() {
+		// 根据CPU核心数和系统配置动态设置并发数
+		// 每个Chrome实例消耗大量资源，建议并发数为 CPU核心数 / 2，最小2，最大10
+		maxConcurrent := runtime.NumCPU() / 2
+		if maxConcurrent < 2 {
+			maxConcurrent = 2
+		}
+		if maxConcurrent > 10 {
+			maxConcurrent = 10
+		}
+
+		// 从配置文件读取（如果存在）
+		if viper.IsSet("card.rendering.max_concurrent") {
+			configConcurrent := viper.GetInt("card.rendering.max_concurrent")
+			if configConcurrent > 0 && configConcurrent <= 20 {
+				maxConcurrent = configConcurrent
+			}
+		}
+
+		renderSemaphore = make(chan struct{}, maxConcurrent)
+		log.Infow("初始化渲染并发控制", "max_concurrent", maxConcurrent, "cpu_cores", runtime.NumCPU())
+	})
+}
+
+// acquireRenderSlot 获取渲染槽位（阻塞直到有可用槽位）
+func acquireRenderSlot(ctx context.Context) error {
+	initRenderSemaphore()
+	select {
+	case renderSemaphore <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// releaseRenderSlot 释放渲染槽位
+func releaseRenderSlot() {
+	select {
+	case <-renderSemaphore:
+	default:
+	}
+}
 
 // AsyncBookProcessor 异步book处理器
 type AsyncBookProcessor struct {
@@ -2438,7 +2491,13 @@ func max(a, b int) int {
 
 // renderWithWkhtmltoimage 使用wkhtmltoimage渲染
 func (p *AsyncBookProcessor) renderWithWkhtmltoimage(ctx context.Context, cardID uint, htmlContent, fullImagePath string) (string, error) {
-	log.C(ctx).Infow("使用wkhtmltoimage渲染", "card_id", cardID)
+	// 获取渲染槽位，避免同时启动过多Chrome实例导致资源耗尽
+	if err := acquireRenderSlot(ctx); err != nil {
+		return "", fmt.Errorf("获取渲染槽位失败: %v", err)
+	}
+	defer releaseRenderSlot()
+
+	log.C(ctx).Infow("使用wkhtmltoimage渲染（已获取渲染槽位）", "card_id", cardID)
 
 	// 检查原始HTML内容
 	originalOverflowCount := strings.Count(htmlContent, "overflow: visible")
@@ -2463,13 +2522,49 @@ func (p *AsyncBookProcessor) renderWithWkhtmltoimage(ctx context.Context, cardID
 	rendererConfig := p.getRendererConfig()
 	renderer := utilpkg.NewWkhtmltoimageRenderer(rendererConfig)
 
-	if err := renderer.RenderHTMLToImage(ctx, fixedHTMLContent, fullImagePath); err != nil {
-		log.C(ctx).Warnw("wkhtmltoimage转换失败", "card_id", cardID, "error", err.Error())
-		return "", fmt.Errorf("wkhtmltoimage转换失败: %v", err)
+	// 添加重试机制（容器环境可能资源紧张）
+	maxRetries := 3
+	var lastErr error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		err := renderer.RenderHTMLToImage(ctx, fixedHTMLContent, fullImagePath)
+		if err == nil {
+			// 渲染成功
+			log.C(ctx).Infow("wkhtmltoimage渲染成功", "card_id", cardID, "image_path", fullImagePath, "attempt", attempt)
+			return fullImagePath, nil
+		}
+
+		lastErr = err
+		log.C(ctx).Warnw("wkhtmltoimage转换失败",
+			"card_id", cardID,
+			"attempt", attempt,
+			"max_retries", maxRetries,
+			"error", err.Error())
+
+		// 如果不是最后一次尝试，等待后重试
+		if attempt < maxRetries {
+			// 检查是否是可重试的错误
+			errStr := err.Error()
+			isRetryable := strings.Contains(errStr, "fork") ||
+				strings.Contains(errStr, "Resource temporarily unavailable") ||
+				strings.Contains(errStr, "failed to start") ||
+				strings.Contains(errStr, "context deadline exceeded")
+
+			if !isRetryable {
+				// 不可重试的错误，直接返回
+				log.C(ctx).Warnw("遇到不可重试的错误，停止重试", "card_id", cardID, "error", errStr)
+				return "", fmt.Errorf("wkhtmltoimage转换失败: %v", err)
+			}
+
+			// 等待后重试（指数退避：2s, 4s）
+			waitTime := time.Duration(attempt) * 2 * time.Second
+			log.C(ctx).Infow("等待后重试", "card_id", cardID, "wait_seconds", waitTime.Seconds())
+			time.Sleep(waitTime)
+		}
 	}
 
-	log.C(ctx).Infow("wkhtmltoimage渲染成功", "card_id", cardID, "image_path", fullImagePath)
-	return fullImagePath, nil
+	// 所有重试都失败
+	return "", fmt.Errorf("wkhtmltoimage转换失败，已重试%d次: %v", maxRetries, lastErr)
 }
 
 // fixHTMLContentForRendering 修复HTML内容以适配渲染

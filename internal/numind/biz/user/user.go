@@ -70,6 +70,9 @@ type UserBiz interface {
 	// 免费用户月度限制相关方法
 	ResetFreeUserMonthlyBookCount(ctx context.Context, userID uint) error
 	IncrementFreeUserMonthlyBookCount(ctx context.Context, userID uint) error
+
+	// 会员类型同步方法
+	SyncMembershipType(ctx context.Context, userID uint, newType string, resetMonthly bool) error
 }
 
 // UserBiz 接口的实现.
@@ -719,4 +722,20 @@ func (b *userBiz) ResetFreeUserMonthlyBookCount(ctx context.Context, userID uint
 func (b *userBiz) IncrementFreeUserMonthlyBookCount(ctx context.Context, userID uint) error {
 	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
 		UpdateColumn("free_user_monthly_book_count", gorm.Expr("free_user_monthly_book_count + 1")).Error
+}
+
+// SyncMembershipType 同步会员类型（处理过期自动降级）
+func (b *userBiz) SyncMembershipType(ctx context.Context, userID uint, newType string, resetMonthly bool) error {
+	updateData := map[string]interface{}{
+		"membership_type": newType,
+	}
+
+	// 如果需要重置月度计数和订阅相关字段
+	if resetMonthly {
+		updateData["monthly_book_count"] = 0
+		updateData["membership_start_date"] = nil
+	}
+
+	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
+		Updates(updateData).Error
 }
