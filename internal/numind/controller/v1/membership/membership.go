@@ -70,7 +70,7 @@ func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 			return
 		}
 		// 验证包次数是否在允许的范围内
-		validCounts := []int{1, 5, 20, 50}
+		validCounts := []int{20, 50}
 		isValidCount := false
 		for _, count := range validCounts {
 			if req.PackageCount == count {
@@ -79,7 +79,7 @@ func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 			}
 		}
 		if !isValidCount {
-			core.WriteResponse(c, errno.ErrBind.SetMessage("包次数只支持1、5、20、50次"), nil)
+			core.WriteResponse(c, errno.ErrBind.SetMessage("包次数只支持20、50次"), nil)
 			return
 		}
 	} else if req.MembershipType == model.MembershipTypeSubscription {
@@ -301,7 +301,7 @@ func (mc *MembershipController) GetMembershipPlans(c *gin.Context) {
 		{
 			"type":        "subscription",
 			"name":        "月度订阅会员",
-			"price":       2800, // 28元，单位分
+			"price":       1900, // 19元，单位分
 			"days":        30,   // 订阅天数
 			"description": "享受月度订阅会员权益",
 			"features":    []string{"30天会员权益", "无水印", "解锁全部模板", "高峰期优先处理"},
@@ -309,46 +309,28 @@ func (mc *MembershipController) GetMembershipPlans(c *gin.Context) {
 		{
 			"type":        "subscription",
 			"name":        "年度订阅会员",
-			"price":       19800, // 198元，单位分
+			"price":       13700, // 137元，单位分
 			"days":        365,   // 订阅天数
-			"description": "享受年度订阅会员权益，约16.5元/月，立省40%",
+			"description": "享受年度订阅会员权益，约11.4元/月，立省40%",
 			"features":    []string{"365天会员权益", "无水印", "解锁全部模板", "高峰期优先处理", "年度优惠价格"},
 		},
 		// 资源包选项 - 根据定价表
 		{
 			"type":        "package",
-			"name":        "1次创作包",
-			"price":       300, // 3元，单位分
-			"count":       1,
-			"unit_price":  300, // 3.0元/次，单位分
-			"description": "单次使用，适合偶尔使用",
-			"features":    []string{"按次计费", "灵活使用", "适合偶尔使用"},
-		},
-		{
-			"type":        "package",
-			"name":        "5次创作包",
-			"price":       1200, // 12元，单位分
-			"count":       5,
-			"unit_price":  240, // 2.4元/次，单位分
-			"description": "5次使用，单次成本2.4元",
-			"features":    []string{"按次计费", "灵活使用", "单次成本优惠"},
-		},
-		{
-			"type":        "package",
 			"name":        "20次创作包",
-			"price":       3800, // 38元，单位分
+			"price":       1000, // 10元，单位分
 			"count":       20,
-			"unit_price":  190, // 1.9元/次，单位分
-			"description": "20次使用，单次成本1.9元",
+			"unit_price":  50, // 0.5元/次，单位分
+			"description": "20次使用，单次成本0.5元",
 			"features":    []string{"按次计费", "灵活使用", "单次成本更优惠"},
 		},
 		{
 			"type":        "package",
 			"name":        "50次创作包",
-			"price":       5000, // 50元，单位分
+			"price":       2000, // 20元，单位分
 			"count":       50,
-			"unit_price":  100, // 1.0元/次，单位分
-			"description": "50次使用，单次成本1.0元",
+			"unit_price":  40, // 0.4元/次，单位分
+			"description": "50次使用，单次成本0.4元",
 			"features":    []string{"按次计费", "灵活使用", "单次成本最优惠"},
 		},
 	}
@@ -509,29 +491,25 @@ func (mc *MembershipController) calculateCreatePermission(user *model.User) *Cre
 func (mc *MembershipController) calculateSubscriptionPrice(days int) int64 {
 	switch days {
 	case 30:
-		return 2800 // 28元
+		return 1900 // 19元
 	case 365:
-		return 19800 // 198元
+		return 13700 // 137元
 	default:
 		// 默认返回月度价格
-		return 2800
+		return 1900
 	}
 }
 
 // calculatePackagePrice 根据包次数计算价格（单位：分）
 func (mc *MembershipController) calculatePackagePrice(count int) int64 {
 	switch count {
-	case 1:
-		return 300 // 3元
-	case 5:
-		return 1200 // 12元
 	case 20:
-		return 3800 // 38元
+		return 1000 // 10元
 	case 50:
-		return 5000 // 50元
+		return 2000 // 20元
 	default:
-		// 如果不是标准包次数，按单次3元计算
-		return int64(count * 300)
+		// 如果不是标准包次数，按单次0.5元计算
+		return int64(count * 50)
 	}
 }
 
