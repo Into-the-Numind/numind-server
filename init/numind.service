@@ -1,0 +1,11 @@
+[Unit]
+Description=APIServer for Numind.
+
+[Service]
+ExecStart=/opt/numind/bin/numind --config=/etc/numind/numind.yaml
+Restart=always
+RestartSec=5
+StartLimitInterval=0
+
+[Install]
+WantedBy=multi-user.target

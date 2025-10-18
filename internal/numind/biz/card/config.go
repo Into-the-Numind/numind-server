@@ -1,0 +1,130 @@
+package card
+
+import (
+	"os"
+	"strconv"
+
+	"github.com/spf13/viper"
+)
+
+// RendererConfig 渲染器配置
+type RendererConfig struct {
+	// 是否启用渲染-测量方案
+	EnableRenderAndMeasure bool
+	// 是否启用Chrome无头浏览器
+	EnableChromeHeadless bool
+	// 是否启用传统渲染器作为备用
+	EnableTraditionalRenderer bool
+	// 是否启用增强版渲染器（新实现）
+	EnableEnhancedRenderer bool
+	// 是否启用轻量级渲染器（无浏览器依赖）
+	EnableLightweightRenderer bool
+	// 是否启用流式分页渲染器（真实排版 + 实时测量 + 二分回退）
+	EnableFlowRenderer bool
+	// Chrome调试端口
+	ChromeDebugPort int
+	// 渲染超时时间（秒）
+	RenderTimeout int
+}
+
+// GetRendererConfig 获取渲染器配置
+func GetRendererConfig() *RendererConfig {
+	config := &RendererConfig{
+		EnableRenderAndMeasure:    false, // 禁用调试用的渲染-测量方案
+		EnableChromeHeadless:      true,  // 默认启用Chrome无头浏览器
+		EnableTraditionalRenderer: false, // 禁用传统渲染器，使用FlowRenderer
+		EnableEnhancedRenderer:    false, // 暂时禁用增强版渲染器
+		EnableLightweightRenderer: false, // 禁用轻量级渲染器，使用FlowRenderer
+		EnableFlowRenderer:        true,  // 启用流式分页渲染器作为主要渲染方案
+		ChromeDebugPort:           9222,  // 默认Chrome调试端口
+		RenderTimeout:             300,   // 默认5分钟超时
+	}
+
+	// 从配置文件读取（优先级高于环境变量，用于废弃 .env.local）
+	if viper.IsSet("card.rendering.enable_flow_renderer") {
+		config.EnableFlowRenderer = viper.GetBool("card.rendering.enable_flow_renderer")
+	}
+
+	// 兼容环境变量作为后备（不再依赖 .env.local）
+	if env := os.Getenv("ENABLE_RENDER_AND_MEASURE"); env != "" {
+		if enabled, err := strconv.ParseBool(env); err == nil {
+			config.EnableRenderAndMeasure = enabled
+		}
+	}
+
+	if env := os.Getenv("ENABLE_CHROME_HEADLESS"); env != "" {
+		if enabled, err := strconv.ParseBool(env); err == nil {
+			config.EnableChromeHeadless = enabled
+		}
+	}
+
+	if env := os.Getenv("ENABLE_TRADITIONAL_RENDERER"); env != "" {
+		if enabled, err := strconv.ParseBool(env); err == nil {
+			config.EnableTraditionalRenderer = enabled
+		}
+	}
+
+	if env := os.Getenv("ENABLE_ENHANCED_RENDERER"); env != "" {
+		if enabled, err := strconv.ParseBool(env); err == nil {
+			config.EnableEnhancedRenderer = enabled
+		}
+	}
+
+	if env := os.Getenv("ENABLE_LIGHTWEIGHT_RENDERER"); env != "" {
+		if enabled, err := strconv.ParseBool(env); err == nil {
+			config.EnableLightweightRenderer = enabled
+		}
+	}
+
+	if env := os.Getenv("ENABLE_FLOW_RENDERER"); env != "" {
+		if enabled, err := strconv.ParseBool(env); err == nil {
+			config.EnableFlowRenderer = enabled
+		}
+	}
+
+	if env := os.Getenv("CHROME_DEBUG_PORT"); env != "" {
+		if port, err := strconv.Atoi(env); err == nil {
+			config.ChromeDebugPort = port
+		}
+	}
+
+	if env := os.Getenv("RENDER_TIMEOUT"); env != "" {
+		if timeout, err := strconv.Atoi(env); err == nil {
+			config.RenderTimeout = timeout
+		}
+	}
+
+	return config
+}
+
+// IsRenderAndMeasureEnabled 检查是否启用渲染-测量方案
+func IsRenderAndMeasureEnabled() bool {
+	return GetRendererConfig().EnableRenderAndMeasure
+}
+
+// IsChromeHeadlessEnabled 检查是否启用Chrome无头浏览器
+func IsChromeHeadlessEnabled() bool {
+	return GetRendererConfig().EnableChromeHeadless
+}
+
+// IsTraditionalRendererEnabled 检查是否启用传统渲染器
+func IsTraditionalRendererEnabled() bool {
+	return GetRendererConfig().EnableTraditionalRenderer
+}
+
+// IsEnhancedRendererEnabled 检查是否启用增强版渲染器
+func IsEnhancedRendererEnabled() bool {
+	// 暂时禁用增强版渲染器，优先使用修复后的传统渲染器
+	// return GetRendererConfig().EnableEnhancedRenderer
+	return false
+}
+
+// IsLightweightRendererEnabled 检查是否启用轻量级渲染器
+func IsLightweightRendererEnabled() bool {
+	return GetRendererConfig().EnableLightweightRenderer
+}
+
+// IsFlowRendererEnabled 检查是否启用流式分页渲染器
+func IsFlowRendererEnabled() bool {
+	return GetRendererConfig().EnableFlowRenderer
+}
