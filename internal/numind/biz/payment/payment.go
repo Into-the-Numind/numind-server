@@ -206,9 +206,9 @@ func (b *paymentBiz) handleMembershipPurchase(ctx context.Context, payment *mode
 		days := payment.SubscriptionDays
 		if days <= 0 {
 			// 如果没有传递天数，根据金额判断（兼容旧逻辑）
-			if payment.Amount == 2800 {
+			if payment.Amount == 1900 {
 				days = 30
-			} else if payment.Amount == 19800 {
+			} else if payment.Amount == 13700 {
 				days = 365
 			} else {
 				days = 30 // 默认30天
@@ -357,9 +357,9 @@ func (b *paymentBiz) logPaymentAudit(ctx context.Context, payment *model.Payment
 	subscriptionDays := payment.SubscriptionDays
 	if subscriptionDays <= 0 && payment.MembershipType == model.MembershipTypeSubscription {
 		// 如果没有记录天数，根据金额计算（兼容旧逻辑）
-		if payment.Amount == 2800 {
+		if payment.Amount == 1900 {
 			subscriptionDays = 30
-		} else if payment.Amount == 19800 {
+		} else if payment.Amount == 13700 {
 			subscriptionDays = 365
 		}
 	}

@@ -16,14 +16,12 @@ type PriceValidator struct {
 func NewPriceValidator() *PriceValidator {
 	return &PriceValidator{
 		subscriptionPrices: map[int64]int{
-			2800:  30,  // 月度订阅：28元 -> 30天
-			19800: 365, // 年度订阅：198元 -> 365天
+			1900:  30,  // 月度订阅：19元 -> 30天
+			13700: 365, // 年度订阅：137元 -> 365天
 		},
 		packagePrices: map[int]int64{
-			1:  300,  // 1次 -> 3元
-			5:  1200, // 5次 -> 12元
-			20: 3800, // 20次 -> 38元
-			50: 5000, // 50次 -> 50元
+			20: 1000, // 20次 -> 10元
+			50: 2000, // 50次 -> 20元
 		},
 	}
 }
@@ -32,7 +30,7 @@ func NewPriceValidator() *PriceValidator {
 func (pv *PriceValidator) ValidateSubscriptionPrice(amount int64) (int, error) {
 	days, exists := pv.subscriptionPrices[amount]
 	if !exists {
-		return 0, fmt.Errorf("无效的订阅价格: %d分，只支持30天(2800分)和365天(19800分)", amount)
+		return 0, fmt.Errorf("无效的订阅价格: %d分，只支持30天(1900分)和365天(13700分)", amount)
 	}
 	return days, nil
 }
@@ -41,7 +39,7 @@ func (pv *PriceValidator) ValidateSubscriptionPrice(amount int64) (int, error) {
 func (pv *PriceValidator) ValidatePackagePrice(count int, amount int64) error {
 	expectedAmount, exists := pv.packagePrices[count]
 	if !exists {
-		return fmt.Errorf("无效的资源包次数: %d，只支持1、5、20、50次", count)
+		return fmt.Errorf("无效的资源包次数: %d，只支持20、50次", count)
 	}
 
 	if amount != expectedAmount {

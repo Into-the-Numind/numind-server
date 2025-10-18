@@ -15,13 +15,13 @@ func TestPriceValidator_ValidateSubscriptionPrice(t *testing.T) {
 	}{
 		{
 			name:     "有效的月度订阅价格",
-			amount:   2800,
+			amount:   1900,
 			expected: 30,
 			hasError: false,
 		},
 		{
 			name:     "有效的年度订阅价格",
-			amount:   19800,
+			amount:   13700,
 			expected: 365,
 			hasError: false,
 		},
@@ -68,44 +68,32 @@ func TestPriceValidator_ValidatePackagePrice(t *testing.T) {
 		hasError bool
 	}{
 		{
-			name:     "有效的1次包价格",
-			count:    1,
-			amount:   300,
-			hasError: false,
-		},
-		{
-			name:     "有效的5次包价格",
-			count:    5,
-			amount:   1200,
-			hasError: false,
-		},
-		{
 			name:     "有效的20次包价格",
 			count:    20,
-			amount:   3800,
+			amount:   1000,
 			hasError: false,
 		},
 		{
 			name:     "有效的50次包价格",
 			count:    50,
-			amount:   5000,
+			amount:   2000,
 			hasError: false,
 		},
 		{
 			name:     "无效的包次数",
 			count:    10,
-			amount:   3000,
+			amount:   1000,
 			hasError: true,
 		},
 		{
 			name:     "价格不匹配",
-			count:    5,
-			amount:   1000, // 应该是1200
+			count:    20,
+			amount:   1500, // 应该是1000
 			hasError: true,
 		},
 		{
 			name:     "恶意篡改的价格",
-			count:    1,
+			count:    20,
 			amount:   1,
 			hasError: true,
 		},
@@ -139,13 +127,13 @@ func TestPriceValidator_GetSubscriptionPrice(t *testing.T) {
 		{
 			name:     "30天订阅",
 			days:     30,
-			expected: 2800,
+			expected: 1900,
 			hasError: false,
 		},
 		{
 			name:     "365天订阅",
 			days:     365,
-			expected: 19800,
+			expected: 13700,
 			hasError: false,
 		},
 		{
@@ -185,27 +173,15 @@ func TestPriceValidator_GetPackagePrice(t *testing.T) {
 		hasError bool
 	}{
 		{
-			name:     "1次包",
-			count:    1,
-			expected: 300,
-			hasError: false,
-		},
-		{
-			name:     "5次包",
-			count:    5,
-			expected: 1200,
-			hasError: false,
-		},
-		{
 			name:     "20次包",
 			count:    20,
-			expected: 3800,
+			expected: 1000,
 			hasError: false,
 		},
 		{
 			name:     "50次包",
 			count:    50,
-			expected: 5000,
+			expected: 2000,
 			hasError: false,
 		},
 		{
