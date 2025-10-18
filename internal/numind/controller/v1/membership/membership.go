@@ -301,7 +301,7 @@ func (mc *MembershipController) GetMembershipPlans(c *gin.Context) {
 		{
 			"type":        "subscription",
 			"name":        "月度订阅会员",
-			"price":       2800, // 28元，单位分
+			"price":       1900, // 28元，单位分
 			"days":        30,   // 订阅天数
 			"description": "享受月度订阅会员权益",
 			"features":    []string{"30天会员权益", "无水印", "解锁全部模板", "高峰期优先处理"},
@@ -309,46 +309,28 @@ func (mc *MembershipController) GetMembershipPlans(c *gin.Context) {
 		{
 			"type":        "subscription",
 			"name":        "年度订阅会员",
-			"price":       19800, // 198元，单位分
+			"price":       13700, // 198元，单位分
 			"days":        365,   // 订阅天数
-			"description": "享受年度订阅会员权益，约16.5元/月，立省40%",
+			"description": "享受年度订阅会员权益，约11.4元/月，立省40%",
 			"features":    []string{"365天会员权益", "无水印", "解锁全部模板", "高峰期优先处理", "年度优惠价格"},
 		},
 		// 资源包选项 - 根据定价表
 		{
 			"type":        "package",
-			"name":        "1次创作包",
-			"price":       300, // 3元，单位分
-			"count":       1,
-			"unit_price":  300, // 3.0元/次，单位分
-			"description": "单次使用，适合偶尔使用",
-			"features":    []string{"按次计费", "灵活使用", "适合偶尔使用"},
-		},
-		{
-			"type":        "package",
-			"name":        "5次创作包",
-			"price":       1200, // 12元，单位分
-			"count":       5,
-			"unit_price":  240, // 2.4元/次，单位分
-			"description": "5次使用，单次成本2.4元",
-			"features":    []string{"按次计费", "灵活使用", "单次成本优惠"},
-		},
-		{
-			"type":        "package",
 			"name":        "20次创作包",
-			"price":       3800, // 38元，单位分
+			"price":       1000, // 38元，单位分
 			"count":       20,
-			"unit_price":  190, // 1.9元/次，单位分
-			"description": "20次使用，单次成本1.9元",
+			"unit_price":  50, // 1.9元/次，单位分
+			"description": "20次使用，单次成本0.5元",
 			"features":    []string{"按次计费", "灵活使用", "单次成本更优惠"},
 		},
 		{
 			"type":        "package",
 			"name":        "50次创作包",
-			"price":       5000, // 50元，单位分
+			"price":       2000, // 50元，单位分
 			"count":       50,
-			"unit_price":  100, // 1.0元/次，单位分
-			"description": "50次使用，单次成本1.0元",
+			"unit_price":  40, // 1.0元/次，单位分
+			"description": "50次使用，单次成本0.4元",
 			"features":    []string{"按次计费", "灵活使用", "单次成本最优惠"},
 		},
 	}
