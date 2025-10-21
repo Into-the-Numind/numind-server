@@ -1,4 +1,4 @@
-# qa 环境
+# prod 环境
 # 通用配置
 runmode: debug               # Gin 开发模式, 可选值有：debug, release, test
 addr: :9091                  # HTTP 服务器监听地址
@@ -82,8 +82,8 @@ cos:
   enabled: true           # 本地默认关闭，改为 true 启用
   secret_id: "AKID26xnQq2ziEYeVAh3B6oIbwHh06zf7LMA"           # API 密钥 SecretId
   secret_key: "e4FNTPI90jNzQfjbFgHk3CRaYMxRuFP5"          # API 密钥 SecretKey
-  bucket: "numind-qa-1334169463" # BucketName-APPID 形式
-  region: "ap-chengdu"    # 地域，如 ap-chengdu（成都）
+  bucket: "numind-product-1334169463" # BucketName-APPID 形式
+  region: "ap-beijing"    # 地域，如 ap-chengdu（成都）
 
 baidu:
   api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
