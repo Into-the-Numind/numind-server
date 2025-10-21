@@ -75,7 +75,7 @@ volc:
   max_retries: 3
 
 resource:
-  image_path: "/opt/numind/qa/image/upload"
+  image_path: "/opt/numind/prod/image/upload"
 
 # 腾讯云 COS 配置
 cos:
