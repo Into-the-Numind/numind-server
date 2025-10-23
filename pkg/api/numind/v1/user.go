@@ -110,6 +110,7 @@ type ListFeedbackResponse struct {
 type CreateTemplateRequest struct {
 	Name         string `json:"name" binding:"required" valid:"required,stringlength(1|50)"`
 	File         string `json:"file" binding:"required" valid:"required"`
+	Preview      string `json:"preview"`        // 预览图片路径
 	IsMemberOnly bool   `json:"is_member_only"` // 是否仅会员可用
 }
 
@@ -117,6 +118,7 @@ type CreateTemplateRequest struct {
 type UpdateTemplateRequest struct {
 	Name         *string `json:"name" valid:"stringlength(1|50)"`
 	File         *string `json:"file"`
+	Preview      *string `json:"preview"`        // 预览图片路径
 	IsMemberOnly *bool   `json:"is_member_only"` // 是否仅会员可用
 }
 
@@ -125,6 +127,7 @@ type TemplateResponse struct {
 	ID           uint   `json:"id"`
 	Name         string `json:"name"`
 	File         string `json:"file"`
+	Preview      string `json:"preview"`        // 预览图片路径
 	IsMemberOnly bool   `json:"is_member_only"` // 是否仅会员可用
 	CreatedAt    string `json:"created_at"`
 	UpdatedAt    string `json:"updated_at"`
