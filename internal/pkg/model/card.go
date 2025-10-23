@@ -8,16 +8,18 @@ import (
 
 type CardM struct {
 	gorm.Model
-	UserID        uint   `gorm:"index;not null" json:"user_id"`   // 创建用户ID
-	BookID        uint   `gorm:"index" json:"book_id"`            // 所属卡册ID
-	ProcessedText string `gorm:"type:text" json:"processed_text"` // AI处理后的文本
-	RenderedImage string `gorm:"size:255" json:"rendered_image"`  // 渲染后的图片URL
-	SortOrder     int    `gorm:"default:1" json:"sort_order"`     // 在卡册中的排序，从1开始
-	Tags          string `gorm:"size:255" json:"tags"`            // 标签，逗号分隔
+	UserID        uint   `gorm:"index;not null" json:"user_id"`           // 创建用户ID
+	BookID        uint   `gorm:"index" json:"book_id"`                    // 所属卡册ID
+	ProcessedText string `gorm:"type:text" json:"processed_text"`         // AI处理后的文本
+	RenderedImage string `gorm:"size:255" json:"rendered_image"`          // 渲染后的图片URL
+	SortOrder     int    `gorm:"default:1" json:"sort_order"`             // 在卡册中的排序，从1开始
+	Tags          string `gorm:"size:255" json:"tags"`                    // 标签，逗号分隔
+	CardType      string `gorm:"size:20;default:'long'" json:"card_type"` // 卡片类型 long(长图) 或 paginated(分页)
+	TemplateID    string `gorm:"size:50" json:"template_id"`              // 渲染时使用的模板ID
 
 	// 关联关系
-	// User  User   `gorm:"foreignKey:UserID;constraintName:fk_card_user_new" json:"user,omitempty"`
-	// Book  BookM  `gorm:"foreignKey:BookID;constraintName:fk_card_book_new" json:"book,omitempty"`
+	User User   `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	Book *BookM `gorm:"foreignKey:BookID" json:"book,omitempty"` // 关联的笔记
 }
 
 func (CardM) TableName() string {
