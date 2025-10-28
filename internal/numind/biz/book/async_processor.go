@@ -291,7 +291,7 @@ func (p *AsyncBookProcessor) CreateBookAsync(ctx context.Context, userID uint, t
 }
 
 // CreateBookWithImagesAsync 创建带图片的笔记（新版本）
-func (p *AsyncBookProcessor) CreateBookWithImagesAsync(ctx context.Context, userID uint, text string, files []*multipart.FileHeader) (*model.BookM, error) {
+func (p *AsyncBookProcessor) CreateBookWithImagesAsync(ctx context.Context, userID uint, text string, files []*multipart.FileHeader, aiPolish int) (*model.BookM, error) {
 	// 立即创建book记录，状态为creating
 	now := time.Now()
 	book := &model.BookM{
@@ -300,6 +300,7 @@ func (p *AsyncBookProcessor) CreateBookWithImagesAsync(ctx context.Context, user
 		OriginalText: text, // 保存用户原始输入文字
 		ViewTime:     &now,
 		Status:       model.BookStatusCreating,
+		AIPolish:     aiPolish, // 保存AI润色设置
 	}
 
 	if err := p.biz.Books().Create(ctx, book); err != nil {
@@ -327,16 +328,16 @@ func (p *AsyncBookProcessor) CreateBookWithImagesAsync(ctx context.Context, user
 
 	// 在后台异步处理book创建
 	go func() {
-		p.processBookCreationWithImagesInBackground(ctx, book.ID, userID, text, files)
+		p.processBookCreationWithImagesInBackground(ctx, book.ID, userID, text, files, aiPolish)
 	}()
 
 	return book, nil
 }
 
 // processBookCreationWithImagesInBackground 在后台处理带图片的book创建
-func (p *AsyncBookProcessor) processBookCreationWithImagesInBackground(ctx context.Context, bookID uint, userID uint, text string, files []*multipart.FileHeader) {
+func (p *AsyncBookProcessor) processBookCreationWithImagesInBackground(ctx context.Context, bookID uint, userID uint, text string, files []*multipart.FileHeader, aiPolish int) {
 	startTime := time.Now()
-	log.C(ctx).Infow("Starting async book creation with images", "book_id", bookID, "user_id", userID)
+	log.C(ctx).Infow("Starting async book creation with images", "book_id", bookID, "user_id", userID, "ai_polish", aiPolish)
 
 	// 获取book记录
 	book, err := p.biz.Books().GetByID(ctx, bookID)
@@ -346,15 +347,7 @@ func (p *AsyncBookProcessor) processBookCreationWithImagesInBackground(ctx conte
 		return
 	}
 
-	// 🚀 第一步：更新状态为AI处理中
-	log.C(ctx).Infow("🚀 更新状态为AI处理中", "book_id", bookID)
-	if err := p.updateBookStatus(ctx, bookID, model.BookStatusAI, ""); err != nil {
-		log.C(ctx).Errorw("Failed to update book status to AI", "book_id", bookID, "error", err.Error())
-		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to update status")
-		return
-	}
-
-	// 🖼️ 第二步：处理上传的图片（如果有的话）
+	// 🖼️ 第一步：处理上传的图片（如果有的话）
 	log.C(ctx).Infow("🖼️ 开始处理上传的图片", "book_id", bookID, "file_count", len(files))
 
 	// 上传图片到COS并创建ImageM记录
@@ -374,34 +367,62 @@ func (p *AsyncBookProcessor) processBookCreationWithImagesInBackground(ctx conte
 		log.C(ctx).Infow("📝 没有上传图片，跳过图片处理", "book_id", bookID)
 	}
 
-	// 🤖 第三步：AI处理文本
-	log.C(ctx).Infow("🤖 开始AI处理文本", "book_id", bookID)
+	// 🤖 第二步：AI处理文本（根据aiPolish参数决定）
+	var markdownContent string
+	var bookTitle string
 
-	// 调用AI处理文本（不包含OCR，因为OCR由小程序端处理）
-	aiResponse, err := p.processTextWithAI(ctx, text)
-	if err != nil {
-		log.C(ctx).Errorw("AI处理失败", "book_id", bookID, "error", err.Error())
-		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "AI processing failed: "+err.Error())
-		return
+	if aiPolish == 1 {
+		log.C(ctx).Infow("🤖 AI处理已启用，开始处理文本", "book_id", bookID)
+
+		// 更新状态为AI处理中
+		if err := p.updateBookStatus(ctx, bookID, model.BookStatusAI, ""); err != nil {
+			log.C(ctx).Errorw("Failed to update book status to AI", "book_id", bookID, "error", err.Error())
+		}
+
+		// 调用AI处理文本
+		aiResponse, err := p.processTextWithAI(ctx, text)
+		if err != nil {
+			log.C(ctx).Errorw("AI处理失败", "book_id", bookID, "error", err.Error())
+			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "AI processing failed: "+err.Error())
+			return
+		}
+
+		log.C(ctx).Infow("✅ AI处理完成", "book_id", bookID, "response_length", len(aiResponse))
+
+		// 解析AI响应
+		markdownContent, _ = p.parseMarkdownResponse(aiResponse)
+		if markdownContent == "" {
+			log.C(ctx).Errorw("❌ 无法解析markdown内容", "book_id", bookID)
+			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to parse markdown content")
+			return
+		}
+
+		// 删除一级标题
+		markdownContent = p.removeFirstLevelHeading(markdownContent)
+		log.C(ctx).Infow("✅ 已删除一级标题", "book_id", bookID)
+
+		// 从markdown文本中提取title作为book的标题
+		bookTitle = p.extractTitleFromMarkdown(markdownContent)
+		if bookTitle == "" {
+			bookTitle = fmt.Sprintf("AI生成笔记 - %s", time.Now().Format("2006-01-02 15:04:05"))
+		}
+	} else {
+		log.C(ctx).Infow("📝 AI处理已禁用，使用原始文本", "book_id", bookID)
+		markdownContent = text
+		bookTitle = fmt.Sprintf("笔记 - %s", time.Now().Format("2006-01-02 15:04:05"))
 	}
 
-	log.C(ctx).Infow("✅ AI处理完成", "book_id", bookID, "response_length", len(aiResponse))
-
-	// 📝 第四步：解析AI响应并保存
-	markdownContent, _ := p.parseMarkdownResponse(aiResponse)
-	if markdownContent == "" {
-		log.C(ctx).Errorw("❌ 无法解析markdown内容", "book_id", bookID)
-		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to parse markdown content")
-		return
+	// 📝 第三步：更新book记录
+	// 设置封面图片为最后上传的图片
+	if len(imageRecords) > 0 {
+		lastImage := imageRecords[len(imageRecords)-1]
+		book.ImageUrl = lastImage.OriginalURL
+		log.C(ctx).Infow("✅ 设置卡册封面为最后上传的图片",
+			"book_id", bookID,
+			"image_id", lastImage.ID,
+			"image_url", lastImage.OriginalURL)
 	}
 
-	// 从markdown文本中提取title作为book的标题
-	bookTitle := p.extractTitleFromMarkdown(markdownContent)
-	if bookTitle == "" {
-		bookTitle = fmt.Sprintf("AI生成笔记 - %s", time.Now().Format("2006-01-02 15:04:05"))
-	}
-
-	// 更新book记录
 	book.Title = bookTitle
 	book.ProcessedText = markdownContent
 	book.Status = model.BookStatusSuccess
@@ -2077,6 +2098,22 @@ func (p *AsyncBookProcessor) extractTitleFromMarkdown(markdown string) string {
 		}
 	}
 	return ""
+}
+
+// removeFirstLevelHeading 删除markdown文本中的一级标题
+func (p *AsyncBookProcessor) removeFirstLevelHeading(text string) string {
+	lines := strings.Split(text, "\n")
+	var result []string
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// 跳过空行或以单个#开头的一级标题
+		if trimmed == "" || !strings.HasPrefix(trimmed, "# ") {
+			result = append(result, line)
+		}
+	}
+
+	return strings.Join(result, "\n")
 }
 
 // convertMarkdownToElements 将markdown文本转换为分页元素

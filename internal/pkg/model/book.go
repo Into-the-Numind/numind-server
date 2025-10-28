@@ -23,6 +23,7 @@ type BookM struct {
 	ViewTime      *time.Time `gorm:"type:datetime(3)" json:"view_time"`                   // 查看时间
 	ImageUrl      string     `gorm:"size:255" json:"image_url"`                           // 封面图片URL
 	Status        string     `gorm:"size:20;default:'creating';index" json:"status"`      // 创建状态：creating, success, failed
+	AIPolish      int        `gorm:"default:0" json:"ai_polish"`                          // AI润色设置 0=关闭 1=开启
 
 	// 关联关系
 	//User     User       `gorm:"foreignKey:UserID" json:"user_id"`                       // 创建用户ID

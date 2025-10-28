@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"mime/multipart"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -19,7 +20,8 @@ import (
 
 // CreateBookRequest 创建笔记的请求结构
 type CreateBookRequest struct {
-	Text string `form:"text" binding:"required"` // 用户输入的文字（包含OCR结果）
+	Text     string `form:"text" binding:"required"` // 用户输入的文字（包含OCR结果）
+	AIPolish int    `form:"ai_polish"`               // AI润色开关 0=关闭 1=开启
 	// 图片文件通过multipart/form-data上传，字段名为"images"，可选
 }
 
@@ -121,15 +123,15 @@ func validateImageFile(file *multipart.FileHeader) error {
 }
 
 // createWithImageProcessor 使用图片处理器创建笔记
-func (ctrl *BookController) createWithImageProcessor(c *gin.Context, userID uint, text string, files []*multipart.FileHeader) {
+func (ctrl *BookController) createWithImageProcessor(c *gin.Context, userID uint, text string, files []*multipart.FileHeader, aiPolish int) {
 	// 创建适配器来包装biz接口
 	bizAdapter := &BookBizAdapter{biz: ctrl.b}
 
 	// 创建异步处理器
 	asyncProcessor := book.NewAsyncBookProcessor(bizAdapter)
 
-	// 异步创建book
-	book, err := asyncProcessor.CreateBookWithImagesAsync(c, userID, text, files)
+	// 异步创建book（传入aiPolish参数）
+	book, err := asyncProcessor.CreateBookWithImagesAsync(c, userID, text, files, aiPolish)
 	if err != nil {
 		log.C(c).Errorw("Failed to create book with image processor", "error", err.Error())
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: "+err.Error()), nil)
@@ -138,7 +140,8 @@ func (ctrl *BookController) createWithImageProcessor(c *gin.Context, userID uint
 
 	log.C(c).Infow("Book created successfully with image processor",
 		"book_id", book.ID,
-		"title", book.Title)
+		"title", book.Title,
+		"ai_polish", book.AIPolish)
 
 	// 立即返回成功响应
 	core.WriteResponse(c, nil, book)
@@ -169,6 +172,15 @@ func (ctrl *BookController) Create(c *gin.Context) {
 	text := textValues[0]
 	log.C(c).Infow("Text field received", "text_length", len(text))
 
+	// 获取ai_polish字段
+	aiPolish := 1 // 默认启用AI
+	if aiPolishValues := form.Value["ai_polish"]; len(aiPolishValues) > 0 {
+		if aiPol, err := strconv.Atoi(aiPolishValues[0]); err == nil {
+			aiPolish = aiPol
+		}
+	}
+	log.C(c).Infow("AI polish setting", "ai_polish", aiPolish)
+
 	// 获取上传的图片文件（支持images和files字段名）
 	files := form.File["images"]
 	if len(files) == 0 {
@@ -193,7 +205,7 @@ func (ctrl *BookController) Create(c *gin.Context) {
 
 	// 使用新的处理模式
 	log.C(c).Infow("Using new processing mode with images")
-	ctrl.createWithImageProcessor(c, userID, text, files)
+	ctrl.createWithImageProcessor(c, userID, text, files, aiPolish)
 }
 
 // BookBizAdapter 适配器，用于包装biz接口
