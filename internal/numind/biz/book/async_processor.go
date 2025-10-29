@@ -397,15 +397,17 @@ func (p *AsyncBookProcessor) processBookCreationWithImagesInBackground(ctx conte
 			return
 		}
 
-		// 删除一级标题
-		markdownContent = p.removeFirstLevelHeading(markdownContent)
-		log.C(ctx).Infow("✅ 已删除一级标题", "book_id", bookID)
-
-		// 从markdown文本中提取title作为book的标题
+		// 从markdown文本中提取title作为book的标题（在删除一级标题之前）
 		bookTitle = p.extractTitleFromMarkdown(markdownContent)
 		if bookTitle == "" {
 			bookTitle = fmt.Sprintf("AI生成笔记 - %s", time.Now().Format("2006-01-02 15:04:05"))
+		} else {
+			log.C(ctx).Infow("✅ 从一级标题中提取标题", "book_id", bookID, "title", bookTitle)
 		}
+
+		// 删除一级标题（仅从processed_text中删除，不影响title字段）
+		markdownContent = p.removeFirstLevelHeading(markdownContent)
+		log.C(ctx).Infow("✅ 已删除一级标题", "book_id", bookID)
 	} else {
 		log.C(ctx).Infow("📝 AI处理已禁用，使用原始文本", "book_id", bookID)
 		markdownContent = text
