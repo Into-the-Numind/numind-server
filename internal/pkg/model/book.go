@@ -10,23 +10,26 @@ import (
 // BookM 卡册表
 type BookM struct {
 	gorm.Model
-	UserID       uint       `gorm:"index;not null" json:"user_id"`                       // 创建用户ID
-	Title        string     `gorm:"size:255;not null;index:idx_title_tags" json:"title"` // 卡册标题
-	CategoryID   *uint      `gorm:"index" json:"category_id"`                            // 分类ID（可为空）
-	CategoryName string     `gorm:"size:100" json:"category_name"`                       // 分类名称（兼容旧字段）
-	TemplateID   string     `gorm:"size:50" json:"template_id"`                          // 模板ID
-	Tags         string     `gorm:"size:255;index:idx_title_tags" json:"tags"`           // 标签，逗号分隔
-	Keywords     []string   `gorm:"type:json" json:"keywords"`                           // 自动生成的关键词，JSON数组
-	KeywordsText string     `gorm:"size:500;index:idx_keywords_text" json:"-"`           // 关键词的文本表示（用于索引）
-	CardCount    int        `gorm:"default:0" json:"card_count"`                         // 卡片数量
-	ViewTime     *time.Time `gorm:"type:datetime(3)" json:"view_time"`                   // 查看时间
-	ImageUrl     string     `gorm:"size:255" json:"image_url"`                           // 封面图片URL
-	Status       string     `gorm:"size:20;default:'creating';index" json:"status"`      // 创建状态：creating, success, failed
+	UserID        uint       `gorm:"index;not null" json:"user_id"`                       // 创建用户ID
+	Title         string     `gorm:"size:255;not null;index:idx_title_tags" json:"title"` // 卡册标题
+	OriginalText  string     `gorm:"type:text" json:"original_text"`                      // 用户原始输入文字（包含OCR结果）
+	ProcessedText string     `gorm:"type:text" json:"processed_text"`                     // AI处理后的markdown
+	CategoryID    *uint      `gorm:"index" json:"category_id"`                            // 分类ID（可为空）
+	CategoryName  string     `gorm:"size:100" json:"category_name"`                       // 分类名称（兼容旧字段）
+	Tags          string     `gorm:"size:255;index:idx_title_tags" json:"tags"`           // 标签，逗号分隔
+	Keywords      []string   `gorm:"type:json" json:"keywords"`                           // 自动生成的关键词，JSON数组
+	KeywordsText  string     `gorm:"size:500;index:idx_keywords_text" json:"-"`           // 关键词的文本表示（用于索引）
+	CardCount     int        `gorm:"default:0" json:"card_count"`                         // 卡片数量
+	ViewTime      *time.Time `gorm:"type:datetime(3)" json:"view_time"`                   // 查看时间
+	ImageUrl      string     `gorm:"size:255" json:"image_url"`                           // 封面图片URL
+	Status        string     `gorm:"size:20;default:'creating';index" json:"status"`      // 创建状态：creating, success, failed
+	AIPolish      int        `gorm:"default:0" json:"ai_polish"`                          // AI润色设置 0=关闭 1=开启
 
 	// 关联关系
 	//User     User       `gorm:"foreignKey:UserID" json:"user_id"`                       // 创建用户ID
 	Category *CategoryM `gorm:"foreignKey:CategoryID" json:"category,omitempty"`
-	// Cards    []CardM    `gorm:"foreignKey:BookID" json:"cards,omitempty"`
+	Images   []ImageM   `gorm:"foreignKey:BookID" json:"images,omitempty"` // 关联的图片
+	Cards    []CardM    `gorm:"foreignKey:BookID" json:"cards,omitempty"`  // 关联的卡片
 }
 
 func (BookM) TableName() string {
@@ -65,7 +68,7 @@ func (b *BookM) GetKeywords() []string {
 
 // updateKeywordsText 更新关键词文本字段（用于索引）
 func (b *BookM) updateKeywordsText() {
-	if b.Keywords != nil && len(b.Keywords) > 0 {
+	if len(b.Keywords) > 0 {
 		// 将关键词数组转换为逗号分隔的文本
 		keywordsText := strings.Join(b.Keywords, ",")
 		// 限制长度以避免超出数据库字段限制（500字符）

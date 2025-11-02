@@ -31,6 +31,7 @@ func (ctrl *TemplateController) Create(c *gin.Context) {
 	template := &model.Template{
 		Name:         r.Name,
 		File:         r.File,
+		Preview:      r.Preview,
 		IsMemberOnly: r.IsMemberOnly,
 	}
 

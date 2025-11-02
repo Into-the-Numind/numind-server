@@ -14,6 +14,7 @@ type ImageStore interface {
 	BatchCreate(ctx context.Context, images []*model.ImageM) error
 	GetByID(ctx context.Context, id uint) (*model.ImageM, error)
 	ListByUser(ctx context.Context, userID uint, offset, limit int) (int64, []*model.ImageM, error)
+	ListByBook(ctx context.Context, bookID uint, offset, limit int) (int64, []*model.ImageM, error)
 	Update(ctx context.Context, image *model.ImageM) error
 	Delete(ctx context.Context, id uint) error
 }
@@ -48,6 +49,13 @@ func (s *images) GetByID(ctx context.Context, id uint) (*model.ImageM, error) {
 func (s *images) ListByUser(ctx context.Context, userID uint, offset, limit int) (count int64, ret []*model.ImageM, err error) {
 	err = s.db.WithContext(ctx).Where("user_id = ?", userID).
 		Offset(offset).Limit(defaultLimit(limit)).Order("id desc").Find(&ret).
+		Offset(-1).Limit(-1).Count(&count).Error
+	return
+}
+
+func (s *images) ListByBook(ctx context.Context, bookID uint, offset, limit int) (count int64, ret []*model.ImageM, err error) {
+	err = s.db.WithContext(ctx).Where("book_id = ?", bookID).
+		Offset(offset).Limit(defaultLimit(limit)).Order("id asc").Find(&ret).
 		Offset(-1).Limit(-1).Count(&count).Error
 	return
 }

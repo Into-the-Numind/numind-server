@@ -3,6 +3,8 @@ package book
 import (
 	"context"
 	"fmt"
+	"mime/multipart"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -16,10 +18,11 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
-// CreateBookRequest 创建卡册的请求结构
+// CreateBookRequest 创建笔记的请求结构
 type CreateBookRequest struct {
-	Text       string `json:"text" binding:"required"`
-	TemplateID string `json:"template_id" binding:"required"`
+	Text     string `form:"text" binding:"required"` // 用户输入的文字（包含OCR结果）
+	AIPolish int    `form:"ai_polish"`               // AI润色开关 0=关闭 1=开启
+	// 图片文件通过multipart/form-data上传，字段名为"images"，可选
 }
 
 // QianwenResponse 通义千问返回的结构化数据
@@ -99,22 +102,91 @@ func extractJSONFromResponse(response string) string {
 	return response[start:end]
 }
 
-// downloadAndSaveImage 下载并保存图片
-func downloadAndSaveImage(remoteURL string, bookID uint) (string, error) {
-	// 这里实现图片下载和保存逻辑
-	// 为了简化，这里返回一个占位符
-	return fmt.Sprintf("/images/book_%d_cover.jpg", bookID), nil
+// validateImageFile 验证图片文件
+func validateImageFile(file *multipart.FileHeader) error {
+	// 检查文件大小 (限制为10MB)
+	if file.Size > 10*1024*1024 {
+		return fmt.Errorf("file size too large: %d bytes", file.Size)
+	}
+
+	// 检查文件类型
+	allowedTypes := []string{"image/jpeg", "image/jpg", "image/png", "image/webp"}
+	contentType := file.Header.Get("Content-Type")
+
+	for _, allowedType := range allowedTypes {
+		if contentType == allowedType {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("unsupported file type: %s", contentType)
 }
 
+// createWithImageProcessor 使用图片处理器创建笔记
+func (ctrl *BookController) createWithImageProcessor(c *gin.Context, userID uint, text string, files []*multipart.FileHeader, aiPolish int) {
+	// 创建适配器来包装biz接口
+	bizAdapter := &BookBizAdapter{biz: ctrl.b}
+
+	// 创建异步处理器
+	asyncProcessor := book.NewAsyncBookProcessor(bizAdapter)
+
+	// 异步创建book（传入aiPolish参数）
+	book, err := asyncProcessor.CreateBookWithImagesAsync(c, userID, text, files, aiPolish)
+	if err != nil {
+		log.C(c).Errorw("Failed to create book with image processor", "error", err.Error())
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: "+err.Error()), nil)
+		return
+	}
+
+	log.C(c).Infow("Book created successfully with image processor",
+		"book_id", book.ID,
+		"title", book.Title,
+		"ai_polish", book.AIPolish)
+
+	// 立即返回成功响应
+	core.WriteResponse(c, nil, book)
+}
+
+// Create 创建笔记
+// 支持multipart/form-data格式，包含text字段和可选的images文件
 func (ctrl *BookController) Create(c *gin.Context) {
 	log.C(c).Infow("Create book function called")
 
-	// 处理text和template_id参数
-	var req CreateBookRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind, nil)
+	// 获取multipart form
+	form, err := c.MultipartForm()
+	if err != nil {
+		log.C(c).Errorw("Failed to get multipart form", "error", err.Error())
+		core.WriteResponse(c, errno.ErrBind.SetMessage("Invalid multipart form"), nil)
 		return
 	}
+
+	log.C(c).Infow("Multipart form received", "form_values", len(form.Value), "form_files", len(form.File))
+
+	// 获取text字段
+	textValues := form.Value["text"]
+	if len(textValues) == 0 {
+		log.C(c).Errorw("Missing text field in form")
+		core.WriteResponse(c, errno.ErrBind.SetMessage("Missing text field"), nil)
+		return
+	}
+	text := textValues[0]
+	log.C(c).Infow("Text field received", "text_length", len(text))
+
+	// 获取ai_polish字段
+	aiPolish := 1 // 默认启用AI
+	if aiPolishValues := form.Value["ai_polish"]; len(aiPolishValues) > 0 {
+		if aiPol, err := strconv.Atoi(aiPolishValues[0]); err == nil {
+			aiPolish = aiPol
+		}
+	}
+	log.C(c).Infow("AI polish setting", "ai_polish", aiPolish)
+
+	// 获取上传的图片文件（支持images和files字段名）
+	files := form.File["images"]
+	if len(files) == 0 {
+		files = form.File["files"] // 兼容files字段名
+	}
+	log.C(c).Infow("Files received", "images_count", len(form.File["images"]), "files_count", len(form.File["files"]), "total_files", len(files))
 
 	// 从JWT token中获取用户ID
 	userID, err := getUserIDFromToken(c)
@@ -123,12 +195,17 @@ func (ctrl *BookController) Create(c *gin.Context) {
 		return
 	}
 
-	// 将 TemplateID 转换为字符串
-	templateID := fmt.Sprintf("%v", req.TemplateID)
+	// 验证文件格式和大小（仅当有文件时）
+	for _, file := range files {
+		if err := validateImageFile(file); err != nil {
+			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("Invalid file: "+err.Error()), nil)
+			return
+		}
+	}
 
-	// 使用简化的处理模式
-	log.C(c).Infow("Using simplified processing mode")
-	ctrl.createWithSimplifiedProcessor(c, userID, req.Text, templateID)
+	// 使用新的处理模式
+	log.C(c).Infow("Using new processing mode with images")
+	ctrl.createWithImageProcessor(c, userID, text, files, aiPolish)
 }
 
 // BookBizAdapter 适配器，用于包装biz接口
@@ -162,6 +239,51 @@ func (a *BookBizAdapter) Templates() book.AsyncTemplateBiz {
 
 func (a *BookBizAdapter) Store() book.AsyncStoreBiz {
 	return &AsyncStoreBizAdapter{biz: a.biz}
+}
+
+func (a *BookBizAdapter) Images() book.AsyncImageBiz {
+	return &AsyncImageBizAdapter{biz: a.biz}
+}
+
+// AsyncImageBizAdapter 图片业务适配器
+type AsyncImageBizAdapter struct {
+	biz biz.IBiz
+}
+
+func (a *AsyncImageBizAdapter) Create(ctx context.Context, image *model.ImageM) error {
+	return a.biz.Images().Create(ctx, image)
+}
+
+func (a *AsyncImageBizAdapter) GetByID(ctx context.Context, id uint) (*model.ImageM, error) {
+	return a.biz.Images().GetByID(ctx, id)
+}
+
+func (a *AsyncImageBizAdapter) ListByBook(ctx context.Context, bookID uint, offset, limit int) (int64, []*model.ImageM, error) {
+	return a.biz.Images().ListByBook(ctx, bookID, offset, limit)
+}
+
+func (a *BookBizAdapter) Pagination() book.AsyncPaginationBiz {
+	return &AsyncPaginationBizAdapter{biz: a.biz}
+}
+
+// AsyncPaginationBizAdapter 分页业务适配器
+type AsyncPaginationBizAdapter struct {
+	biz biz.IBiz
+}
+
+func (a *AsyncPaginationBizAdapter) PaginateText(ctx context.Context, text string) ([]interface{}, error) {
+	// 使用现有的分页逻辑
+	paginatedContent, err := a.biz.Pagination().PaginateFromJSON(text)
+	if err != nil {
+		return nil, err
+	}
+
+	// 转换为[]interface{}格式
+	var result []interface{}
+	for _, card := range paginatedContent.Cards {
+		result = append(result, card)
+	}
+	return result, nil
 }
 
 // AsyncBookBizAdapter 书籍业务适配器
