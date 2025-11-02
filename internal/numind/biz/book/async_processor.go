@@ -415,14 +415,14 @@ func (p *AsyncBookProcessor) processBookCreationWithImagesInBackground(ctx conte
 	}
 
 	// 📝 第三步：更新book记录
-	// 设置封面图片为最后上传的图片
+	// 设置封面图片为最先上传的图片（ID最小的图片）
 	if len(imageRecords) > 0 {
-		lastImage := imageRecords[len(imageRecords)-1]
-		book.ImageUrl = lastImage.OriginalURL
-		log.C(ctx).Infow("✅ 设置卡册封面为最后上传的图片",
+		firstImage := imageRecords[0]
+		book.ImageUrl = firstImage.OriginalURL
+		log.C(ctx).Infow("✅ 设置卡册封面为最先上传的图片",
 			"book_id", bookID,
-			"image_id", lastImage.ID,
-			"image_url", lastImage.OriginalURL)
+			"image_id", firstImage.ID,
+			"image_url", firstImage.OriginalURL)
 	}
 
 	book.Title = bookTitle
