@@ -11,7 +11,8 @@ import (
 type User struct {
 	// 用户相关字段
 	gorm.Model
-	OpenID    string `gorm:"uniqueIndex;size:50" json:"openid"`
+	OpenID    string `gorm:"uniqueIndex:idx_openid;size:50" json:"openid"`
+	UnionID   string `gorm:"uniqueIndex:idx_unionid;size:50;index" json:"unionid"` // 统一使用UnionID作为用户标识
 	Phone     string `gorm:"size:20;index" json:"phone"`
 	Nickname  string `gorm:"size:100" json:"nickname"`
 	AvatarURL string `gorm:"size:255" json:"avatar_url"`

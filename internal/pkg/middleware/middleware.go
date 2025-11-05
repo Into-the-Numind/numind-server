@@ -126,6 +126,7 @@ func extractToken(c *gin.Context) string {
 }
 
 // validateToken 验证JWT token并返回用户信息
+// 注意：这个方法目前返回的是简化的用户对象，如果需要完整用户信息，应该从数据库查询
 func validateToken(tokenString string) (*model.User, error) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -140,12 +141,21 @@ func validateToken(tokenString string) (*model.User, error) {
 
 	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
 		userID := uint(claims["user_id"].(float64))
-		openID := claims["openid"].(string)
+
+		// 优先使用unionid，如果没有则使用openid（兼容旧token）
+		var unionID, openID string
+		if uid, ok := claims["unionid"].(string); ok && uid != "" {
+			unionID = uid
+		}
+		if oid, ok := claims["openid"].(string); ok && oid != "" {
+			openID = oid
+		}
 
 		// 这里应该从数据库获取用户信息，暂时返回模拟数据
 		// 在实际使用中，应该通过依赖注入的方式获取数据库连接
 		user := &model.User{}
 		user.ID = userID
+		user.UnionID = unionID
 		user.OpenID = openID
 
 		return user, nil
