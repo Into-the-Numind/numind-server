@@ -14,7 +14,6 @@ import (
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/store"
-	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 
@@ -73,6 +72,55 @@ func New(ds store.IStore, userBiz user.UserBiz, aliBiz ali.AliBiz, volcBiz volc.
 	}
 }
 
+// wrapChatError 将内部错误包装为用户友好的错误消息
+// 避免暴露数据库内部细节（如表名、外键约束等）
+func wrapChatError(err error, operation string) error {
+	if err == nil {
+		return nil
+	}
+
+	errStr := err.Error()
+
+	// 检查是否是记录不存在错误（这是业务逻辑错误，可以返回具体消息）
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		if strings.Contains(operation, "session") {
+			return fmt.Errorf("对话会话不存在")
+		}
+		if strings.Contains(operation, "book") || strings.Contains(operation, "笔记") {
+			return fmt.Errorf("笔记不存在")
+		}
+		return fmt.Errorf("资源不存在")
+	}
+
+	// 检查是否是权限错误（这是业务逻辑错误，可以返回具体消息）
+	if strings.Contains(errStr, "unauthorized") || strings.Contains(errStr, "forbidden") {
+		return fmt.Errorf("无权访问该资源")
+	}
+
+	// 对于已知的业务错误，直接返回（这些错误消息已经是用户友好的）
+	if strings.Contains(errStr, "笔记不存在") ||
+		strings.Contains(errStr, "无权访问") ||
+		strings.Contains(errStr, "对话会话不存在") ||
+		strings.Contains(errStr, "资源不存在") {
+		return err
+	}
+
+	// 所有数据库相关错误（外键约束、连接错误、SQL错误等）统一返回内部错误
+	if strings.Contains(errStr, "foreign key") ||
+		strings.Contains(errStr, "1452") ||
+		strings.Contains(errStr, "23000") ||
+		strings.Contains(errStr, "Cannot add or update") ||
+		strings.Contains(errStr, "database") ||
+		strings.Contains(errStr, "sql") ||
+		strings.Contains(errStr, "connection") ||
+		strings.Contains(errStr, "timeout") {
+		return fmt.Errorf("内部错误，请稍后重试")
+	}
+
+	// 未知错误，返回通用错误消息
+	return fmt.Errorf("内部错误，请稍后重试")
+}
+
 // CreateSession 创建新的对话会话
 func (b *chatBiz) CreateSession(ctx context.Context, userID uint, title string, bookID *uint) (*model.ChatSession, error) {
 	session := &model.ChatSession{
@@ -83,7 +131,7 @@ func (b *chatBiz) CreateSession(ctx context.Context, userID uint, title string, 
 	}
 
 	if err := b.ds.Chats().CreateSession(ctx, session); err != nil {
-		return nil, fmt.Errorf("failed to create session: %w", err)
+		return nil, wrapChatError(err, "create session")
 	}
 
 	return session, nil
@@ -93,12 +141,12 @@ func (b *chatBiz) CreateSession(ctx context.Context, userID uint, title string, 
 func (b *chatBiz) GetSession(ctx context.Context, sessionID uint, userID uint) (*model.ChatSession, error) {
 	session, err := b.ds.Chats().GetSession(ctx, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get session: %w", err)
+		return nil, wrapChatError(err, "get session")
 	}
 
 	// 验证用户权限
 	if session.UserID != userID {
-		return nil, fmt.Errorf("unauthorized access to session")
+		return nil, wrapChatError(fmt.Errorf("unauthorized access to session"), "get session")
 	}
 
 	return session, nil
@@ -148,7 +196,7 @@ func (b *chatBiz) CreateMessage(ctx context.Context, sessionID uint, userID uint
 	}
 
 	if err := b.ds.Chats().CreateMessage(ctx, message); err != nil {
-		return nil, fmt.Errorf("failed to create message: %w", err)
+		return nil, wrapChatError(err, "create message")
 	}
 
 	// 更新会话的消息数量
@@ -234,6 +282,10 @@ func (b *chatBiz) GetOrCreateSessionByBook(ctx context.Context, userID uint, boo
 			if err == nil {
 				title = book.Title + " - AI对话"
 			} else {
+				// 如果获取笔记失败，可能是笔记不存在
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil, wrapChatError(err, "get book for session")
+				}
 				title = "AI对话"
 			}
 		}
@@ -241,13 +293,13 @@ func (b *chatBiz) GetOrCreateSessionByBook(ctx context.Context, userID uint, boo
 		bookIDPtr := &bookID
 		session, err := b.CreateSession(ctx, userID, title, bookIDPtr)
 		if err != nil {
-			return nil, err
+			return nil, wrapChatError(err, "create session by book")
 		}
 
 		return session, nil
 	}
 
-	return nil, err
+	return nil, wrapChatError(err, "get session by book")
 }
 
 // GetBookChatHistory 获取笔记的聊天记录
@@ -255,17 +307,17 @@ func (b *chatBiz) GetBookChatHistory(ctx context.Context, userID uint, bookID ui
 	// 验证笔记属于用户
 	book, err := b.ds.Books().GetByID(ctx, bookID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("笔记不存在: %w", err)
+		return nil, nil, wrapChatError(err, "get book for chat history")
 	}
 
 	if book.UserID != userID {
-		return nil, nil, errno.ErrUnauthorized
+		return nil, nil, wrapChatError(fmt.Errorf("unauthorized access to book"), "get book chat history")
 	}
 
 	// 获取聊天记录
 	session, messages, err := b.ds.Chats().GetBookChatHistory(ctx, userID, bookID, limit)
 	if err != nil {
-		return nil, nil, fmt.Errorf("获取聊天记录失败: %w", err)
+		return nil, nil, wrapChatError(err, "get book chat history")
 	}
 
 	return session, messages, nil
@@ -276,11 +328,11 @@ func (b *chatBiz) ListSessionsByBook(ctx context.Context, userID uint, bookID ui
 	// 验证笔记属于用户
 	book, err := b.ds.Books().GetByID(ctx, bookID)
 	if err != nil {
-		return nil, 0, fmt.Errorf("笔记不存在: %w", err)
+		return nil, 0, wrapChatError(err, "get book for sessions")
 	}
 
 	if book.UserID != userID {
-		return nil, 0, errno.ErrUnauthorized
+		return nil, 0, wrapChatError(fmt.Errorf("unauthorized access to book"), "list sessions by book")
 	}
 
 	return b.ds.Chats().ListSessionsByBookID(ctx, userID, bookID, offset, limit)
@@ -492,6 +544,16 @@ func (b *chatBiz) handleChatMessageStream(ctx context.Context, userID uint, msg 
 		Content:   assistantContent,
 		Role:      "assistant",
 		Timestamp: time.Now(),
+	}
+
+	// 通过WebSocket发送完成消息
+	doneBytes, err := json.Marshal(doneMsg)
+	if err != nil {
+		log.C(ctx).Errorw("序列化完成消息失败", "error", err)
+	} else {
+		if err := conn.WriteMessage(websocket.TextMessage, doneBytes); err != nil {
+			log.C(ctx).Errorw("发送完成消息失败", "error", err)
+		}
 	}
 
 	// AI对话成功后，增加用户的聊天数量

@@ -171,10 +171,12 @@ func (ctrl *ChatController) WebSocket(c *gin.Context) {
 			// 使用流式处理
 			_, err := ctrl.chatBiz.ProcessWebSocketMessageStream(c.Request.Context(), userID, &wsMsg, conn)
 			if err != nil {
-				log.Errorw("Failed to process WebSocket message stream", "error", err)
+				// 记录详细错误日志（包含原始错误信息，用于调试）
+				log.Errorw("Failed to process WebSocket message stream", "error", err, "user_id", userID)
+				// 发送用户友好的错误消息（不暴露内部细节）
 				errorMsg := &model.WebSocketMessage{
 					Type:      "error",
-					Error:     err.Error(),
+					Error:     err.Error(), // err.Error() 已经是用户友好的消息（经过 wrapChatError 处理）
 					Timestamp: time.Now(),
 				}
 				errorBytes, _ := json.Marshal(errorMsg)
