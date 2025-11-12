@@ -6,8 +6,11 @@ on:
       - main
       - develop
       - release
+      - admin-develop
+      - admin-release
     tags:
       - 'v*'
+      - 'admin-v*'
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -602,4 +605,249 @@ jobs:
               echo "Error: Container failed to start"
               docker logs numind-server-prod || true
               exit 1
+            fi
+
+  # 后台管理系统 Docker 镜像构建
+  admin_image_build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: |
+      github.ref == 'refs/heads/admin-develop' || 
+      github.ref == 'refs/heads/admin-release' || 
+      startsWith(github.ref, 'refs/tags/admin-v')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.24.2
+          cache: false
+
+      - name: Install Task
+        uses: arduino/setup-task@v1
+        with:
+          version: '3.x'
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-
+            ${{ runner.os }}-go-
+
+      - name: Setup Go environment
+        run: |
+          go env -w CGO_ENABLED=1
+          go env -w CC=gcc
+          go env -w CXX=g++
+
+      - name: Get dependencies
+        run: |
+          go clean -modcache || true
+          go clean -cache || true
+          go mod download
+          go mod tidy
+          go mod verify
+
+      - name: Build admin application
+        run: |
+          mkdir -p ./bin
+          echo "🐧 开始构建 numind-admin-linux-amd64..."
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+            -ldflags="-s -w" \
+            -o ./bin/numind-admin-linux-amd64 \
+            ./cmd/numind-admin
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ Admin Linux 版本构建成功"
+          else
+            echo "❌ Admin Linux 版本构建失败"
+            exit 1
+          fi
+
+      - name: Login to Docker Hub
+        run: |
+          echo "Docker1234" | docker login -u neozhang96 --password-stdin
+
+      - name: Build and push admin Docker image
+        run: |
+          # 根据分支或tag确定环境参数和镜像标签
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            BUILD_ENV="prod"
+            IMAGE_TAG="${{ github.ref_name }}"
+            echo "🚀 通过 TAG 触发构建: $IMAGE_TAG"
+          else
+            if [ "${{ github.ref_name }}" = "admin-develop" ]; then
+              BUILD_ENV="dev"
+              IMAGE_TAG="admin-develop"
+            elif [ "${{ github.ref_name }}" = "admin-release" ]; then
+              BUILD_ENV="qa"
+              IMAGE_TAG="admin-release"
+            else
+              BUILD_ENV="dev"
+              IMAGE_TAG="admin-dev"
+            fi
+            echo "🚀 通过分支触发构建: $IMAGE_TAG"
+          fi
+          
+          echo "构建环境: $BUILD_ENV"
+          echo "镜像标签: $IMAGE_TAG"
+          
+          # 构建镜像
+          docker build -f Dockerfile.admin \
+            --no-cache \
+            --build-arg ENV=$BUILD_ENV \
+            --build-arg BINARY_PATH=./bin/numind-admin-linux-amd64 \
+            -t neozhang96/numind-admin:$IMAGE_TAG .
+          
+          # 推送镜像
+          docker push neozhang96/numind-admin:$IMAGE_TAG
+          
+          # 如果是 tag 构建，同时推送 latest 标签
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            docker tag neozhang96/numind-admin:$IMAGE_TAG neozhang96/numind-admin:latest
+            docker push neozhang96/numind-admin:latest
+            echo "✅ 已推送 latest 标签"
+          fi
+
+  # 后台管理系统开发环境部署
+  deploy_admin_dev:
+    needs: admin_image_build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.ref == 'refs/heads/admin-develop'
+    environment: development
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy Admin to Development Server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 49.233.219.254
+          username: root
+          password: Numind2025
+          port: 22
+          script: |
+            echo "Docker1234" | docker login -u neozhang96 --password-stdin
+            docker pull neozhang96/numind-admin:admin-develop
+            
+            if docker ps -q -f name=numind-admin-dev | grep -q .; then
+              docker stop numind-admin-dev
+            fi
+            
+            if docker ps -aq -f name=numind-admin-dev | grep -q .; then
+              docker rm numind-admin-dev
+            fi
+            
+            docker run -d \
+              --name numind-admin-dev \
+              -p 9097:9097 \
+              -e APP_ENV=dev \
+              --restart always \
+              neozhang96/numind-admin:admin-develop
+            
+            sleep 10
+            if curl -f http://localhost:9097/healthz > /dev/null 2>&1; then
+              echo "Admin deployment completed successfully!"
+            else
+              echo "Warning: Health endpoint not responding"
+              docker logs --tail 10 numind-admin-dev || true
+            fi
+
+  # 后台管理系统 QA 环境部署
+  deploy_admin_qa:
+    needs: admin_image_build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.ref == 'refs/heads/admin-release'
+    environment: qa
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy Admin to QA Environment
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 49.233.219.254
+          username: root
+          password: Numind2025
+          script: |
+            echo "Docker1234" | docker login -u neozhang96 --password-stdin
+            docker pull neozhang96/numind-admin:admin-release
+            
+            if docker ps -q -f name=numind-admin-qa | grep -q .; then
+              docker stop numind-admin-qa
+            fi
+            
+            if docker ps -aq -f name=numind-admin-qa | grep -q .; then
+              docker rm numind-admin-qa
+            fi
+            
+            docker run -d \
+              --name numind-admin-qa \
+              -p 9098:9097 \
+              -e APP_ENV=qa \
+              --restart always \
+              neozhang96/numind-admin:admin-release
+            
+            sleep 10
+            if curl -f http://localhost:9098/healthz > /dev/null 2>&1; then
+              echo "Admin QA deployment completed successfully!"
+            else
+              echo "Warning: Health endpoint not responding"
+              docker logs --tail 10 numind-admin-qa || true
+            fi
+
+  # 后台管理系统生产环境部署
+  deploy_admin_prod:
+    needs: admin_image_build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: startsWith(github.ref, 'refs/tags/admin-v')
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy Admin to Production Environment
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 49.233.219.254
+          username: root
+          password: Numind2025
+          script: |
+            IMAGE_TAG="${{ github.ref_name }}"
+            echo "Docker1234" | docker login -u neozhang96 --password-stdin
+            docker pull neozhang96/numind-admin:$IMAGE_TAG
+            
+            if docker ps -q -f name=numind-admin-prod | grep -q .; then
+              docker stop numind-admin-prod
+            fi
+            
+            if docker ps -aq -f name=numind-admin-prod | grep -q .; then
+              docker rm numind-admin-prod
+            fi
+            
+            docker run -d \
+              --name numind-admin-prod \
+              -p 9099:9097 \
+              -e APP_ENV=prod \
+              --restart always \
+              neozhang96/numind-admin:$IMAGE_TAG
+            
+            sleep 10
+            if curl -f http://localhost:9099/healthz > /dev/null 2>&1; then
+              echo "Admin production deployment completed successfully!"
+            else
+              echo "Warning: Health endpoint not responding"
+              docker logs --tail 10 numind-admin-prod || true
             fi

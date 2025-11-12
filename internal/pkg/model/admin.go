@@ -4,34 +4,26 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-
-	"github.com/marmotedu/miniblog/pkg/auth"
 )
 
-// UserM 是数据库中 user 记录 struct 格式的映射.
-type UserM struct {
-	ID        int64     `gorm:"column:id;primary_key"`
-	Username  string    `gorm:"column:username;not null"`
-	Password  string    `gorm:"column:password;not null"`
-	Nickname  string    `gorm:"column:nickname"`
-	Email     string    `gorm:"column:email"`
-	Phone     string    `gorm:"column:phone"`
-	CreatedAt time.Time `gorm:"column:createdAt"`
-	UpdatedAt time.Time `gorm:"column:updatedAt"`
+// Admin 管理员表
+type Admin struct {
+	gorm.Model
+	Username  string     `gorm:"size:50;uniqueIndex;not null" json:"username"`
+	Password  string     `gorm:"size:255;not null" json:"-"`
+	Nickname  string     `gorm:"size:100" json:"nickname"`
+	Email     string     `gorm:"size:100;index" json:"email"`
+	Status    int        `gorm:"default:1;comment:状态 0-禁用 1-启用" json:"status"`
+	LastLogin *time.Time `json:"last_login"`
+	Remark    string     `gorm:"size:255" json:"remark"`
 }
 
-// TableName 用来指定映射的 MySQL 表名.
-func (u *UserM) TableName() string {
+func (Admin) TableName() string {
 	return "admin"
 }
 
-// BeforeCreate 在创建数据库记录之前加密明文密码.
-func (u *UserM) BeforeCreate(tx *gorm.DB) (err error) {
-	// Encrypt the user password.
-	u.Password, err = auth.Encrypt(u.Password)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
+// AdminStatus 管理员状态常量
+const (
+	AdminStatusDisabled = 0 // 禁用
+	AdminStatusEnabled  = 1 // 启用
+)

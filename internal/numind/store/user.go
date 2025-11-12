@@ -107,7 +107,7 @@ func (u *users) UpdateUser(ctx context.Context, user *model.User) error {
 }
 
 func (u *users) UpdateWechatUser(ctx context.Context, openid string, update map[string]interface{}) error {
-	return u.db.Model(&model.UserM{}).Where("open_id = ?", openid).Updates(update).Error
+	return u.db.Model(&model.User{}).Where("open_id = ?", openid).Updates(update).Error
 }
 
 func NewUserStore(db *gorm.DB) UserStore {

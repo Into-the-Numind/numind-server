@@ -5,6 +5,7 @@ package biz
 import (
 	accountrecordbiz "numind-server/internal/numind/biz/account_record"
 	"numind-server/internal/numind/biz/admin"
+	adminaccountbiz "numind-server/internal/numind/biz/admin_account"
 	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/biz/article"
 	"numind-server/internal/numind/biz/baidu"
@@ -44,6 +45,7 @@ type IBiz interface {
 	Chats() chat.ChatBiz
 	Article() article.IArticleBiz
 	Admin() admin.IAdminBiz
+	AdminAccounts() adminaccountbiz.AdminAccountBiz
 	Configs() config.ConfigBiz
 	Payments() payment.PaymentBiz
 	AccountRecords() accountrecordbiz.AccountRecordBiz
@@ -135,6 +137,10 @@ func (b *biz) Article() article.IArticleBiz {
 
 func (b *biz) Admin() admin.IAdminBiz {
 	return admin.NewAdminBiz(b.ds.Admin())
+}
+
+func (b *biz) AdminAccounts() adminaccountbiz.AdminAccountBiz {
+	return adminaccountbiz.NewAdminAccountBiz(b.ds)
 }
 
 func (b *biz) Configs() config.ConfigBiz {

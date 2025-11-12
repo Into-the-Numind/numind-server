@@ -1,0 +1,119 @@
+package numindadmin
+
+import (
+	"numind-server/internal/numind/biz"
+	orderbiz "numind-server/internal/numind/biz/order"
+	"numind-server/internal/numind/controller/v1/admin"
+	adminaccount "numind-server/internal/numind/controller/v1/admin_account"
+	"numind-server/internal/numind/controller/v1/book"
+	"numind-server/internal/numind/controller/v1/config"
+	"numind-server/internal/numind/controller/v1/image"
+	"numind-server/internal/numind/controller/v1/order"
+	"numind-server/internal/numind/controller/v1/payment"
+	"numind-server/internal/numind/controller/v1/template"
+	"numind-server/internal/numind/controller/v1/user"
+	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/core"
+	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
+
+	importMw "numind-server/internal/pkg/middleware"
+
+	"github.com/gin-gonic/gin"
+)
+
+// installAdminRouters 注册所有后台管理路由
+func installAdminRouters(g *gin.Engine) error {
+	// 注册 404 Handler
+	g.NoRoute(func(c *gin.Context) {
+		core.WriteResponse(c, errno.ErrPageNotFound, nil)
+	})
+
+	// 注册 /healthz handler
+	g.GET("/healthz", func(c *gin.Context) {
+		log.C(c).Infow("Healthz function called")
+		core.WriteResponse(c, nil, map[string]string{"status": "ok"})
+	})
+
+	uc := user.New(store.S)
+	b := biz.NewBiz(store.S)
+	ic := image.New(b)
+	bc := book.New(b)
+	tc := template.New(b)
+	configc := config.New(b)
+	adminc := admin.NewAdminController(b.Admin())
+	adminAccountCtrl := adminaccount.NewAdminAccountController(b.AdminAccounts())
+
+	// 登录接口不需要鉴权
+	v1Group := g.Group("/v1/admin")
+	v1Group.POST("/login", adminAccountCtrl.Login)
+
+	// 需要管理员鉴权的接口
+	authGroup := v1Group.Group("")
+	authGroup.Use(importMw.AuthMiddleware())
+
+	// 用户管理
+	{
+		authGroup.GET("/users", uc.List)
+		authGroup.GET("/users/:name", uc.Get)
+		authGroup.PUT("/users/:name", uc.Update)
+		authGroup.DELETE("/users/:name", uc.Delete)
+	}
+
+	// 笔记（书籍）管理
+	{
+		authGroup.GET("/books", bc.List)
+		authGroup.GET("/books/:id", bc.Get)
+		authGroup.PUT("/books/:id", bc.Update)
+		authGroup.DELETE("/books/:id", bc.Delete)
+		authGroup.DELETE("/books", bc.DeleteBatch)
+	}
+
+	// 图片管理
+	{
+		authGroup.GET("/images", ic.List)
+		authGroup.GET("/images/:id", ic.Get)
+		authGroup.PUT("/images/:id", ic.Update)
+		authGroup.DELETE("/images/:id", ic.Delete)
+	}
+
+	// 订单管理
+	{
+		orderBiz := orderbiz.NewOrderBiz(store.S, b.Users(), b.AccountRecords())
+		orderCtrl := order.New(orderBiz)
+		authGroup.GET("/orders", orderCtrl.ListByUser) // 可以扩展为管理员查看所有订单
+	}
+
+	// 支付管理
+	{
+		paymentCtrl := payment.NewPaymentController(b)
+		authGroup.GET("/payments", paymentCtrl.ListPayments)
+		authGroup.GET("/payments/:out_trade_no", paymentCtrl.GetPayment)
+	}
+
+	// 模板管理
+	{
+		authGroup.GET("/templates", tc.List)
+		authGroup.GET("/templates/:id", tc.Get)
+		authGroup.POST("/templates", tc.Create)
+		authGroup.PUT("/templates/:id", tc.Update)
+		authGroup.DELETE("/templates/:id", tc.Delete)
+	}
+
+	// 系统配置管理
+	{
+		authGroup.POST("/configs", configc.Create)
+		authGroup.GET("/configs", configc.List)
+		authGroup.GET("/configs/:key", configc.Get)
+		authGroup.PUT("/configs/:key", configc.Update)
+		authGroup.DELETE("/configs/:key", configc.Delete)
+		authGroup.POST("/configs/init", configc.InitDefault)
+	}
+
+	// 管理员统计信息
+	{
+		authGroup.GET("/stats", adminc.GetStats)
+	}
+
+	return nil
+}
