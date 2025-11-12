@@ -90,17 +90,17 @@ func New(ds store.IStore) *userBiz {
 
 // ChangePassword 是 UserBiz 接口中 `ChangePassword` 方法的实现.
 func (b *userBiz) ChangePassword(ctx context.Context, username string, r *v1.ChangePasswordRequest) error {
-	userM, err := b.ds.Users().Get(ctx, username)
+	user, err := b.ds.Users().Get(ctx, username)
 	if err != nil {
 		return err
 	}
 
-	if err := auth.Compare(userM.Password, r.OldPassword); err != nil {
+	if err := auth.Compare(user.Password, r.OldPassword); err != nil {
 		return errno.ErrPasswordIncorrect
 	}
 
-	userM.Password, _ = auth.Encrypt(r.NewPassword)
-	if err := b.ds.Users().Update(ctx, userM); err != nil {
+	user.Password, _ = auth.Encrypt(r.NewPassword)
+	if err := b.ds.Users().Update(ctx, user); err != nil {
 		return err
 	}
 
@@ -131,10 +131,10 @@ func (b *userBiz) Login(ctx context.Context, r *v1.LoginRequest) (*v1.LoginRespo
 
 // Create 是 UserBiz 接口中 `Create` 方法的实现.
 func (b *userBiz) Create(ctx context.Context, r *v1.CreateUserRequest) error {
-	var userM model.UserM
-	_ = copier.Copy(&userM, r)
+	var user model.User
+	_ = copier.Copy(&user, r)
 
-	if err := b.ds.Users().Create(ctx, &userM); err != nil {
+	if err := b.ds.Users().Create(ctx, &user); err != nil {
 		if match, _ := regexp.MatchString("Duplicate entry '.*' for key 'username'", err.Error()); match {
 			return errno.ErrUserAlreadyExist
 		}
@@ -272,8 +272,8 @@ func (b *userBiz) List(ctx context.Context, offset, limit int) (*v1.ListUserResp
 				m.Store(user.ID, &v1.UserInfo{
 					Username:  user.Username,
 					Nickname:  user.Nickname,
-					Email:     user.Email,
-					Phone:     user.Email,
+					Email:     "", // User 模型没有 Email 字段
+					Phone:     user.Phone,
 					PostCount: 0,
 					CreatedAt: user.CreatedAt.Format("2006-01-02 15:04:05"),
 					UpdatedAt: user.UpdatedAt.Format("2006-01-02 15:04:05"),
@@ -302,24 +302,25 @@ func (b *userBiz) List(ctx context.Context, offset, limit int) (*v1.ListUserResp
 
 // Update 是 UserBiz 接口中 `Update` 方法的实现.
 func (b *userBiz) Update(ctx context.Context, username string, user *v1.UpdateUserRequest) error {
-	userM, err := b.ds.Users().Get(ctx, username)
+	userModel, err := b.ds.Users().Get(ctx, username)
 	if err != nil {
 		return err
 	}
 
-	if user.Email != nil {
-		userM.Email = *user.Email
-	}
+	// User 模型没有 Email 字段，跳过 Email 更新
+	// if user.Email != nil {
+	// 	userModel.Email = *user.Email
+	// }
 
 	if user.Nickname != nil {
-		userM.Nickname = *user.Nickname
+		userModel.Nickname = *user.Nickname
 	}
 
 	if user.Phone != nil {
-		userM.Phone = *user.Phone
+		userModel.Phone = *user.Phone
 	}
 
-	if err := b.ds.Users().Update(ctx, userM); err != nil {
+	if err := b.ds.Users().Update(ctx, userModel); err != nil {
 		return err
 	}
 

@@ -140,25 +140,42 @@ func validateToken(tokenString string) (*model.User, error) {
 	}
 
 	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
-		userID := uint(claims["user_id"].(float64))
-
-		// 优先使用unionid，如果没有则使用openid（兼容旧token）
-		var unionID, openID string
-		if uid, ok := claims["unionid"].(string); ok && uid != "" {
-			unionID = uid
-		}
-		if oid, ok := claims["openid"].(string); ok && oid != "" {
-			openID = oid
-		}
-
-		// 这里应该从数据库获取用户信息，暂时返回模拟数据
-		// 在实际使用中，应该通过依赖注入的方式获取数据库连接
 		user := &model.User{}
-		user.ID = userID
-		user.UnionID = unionID
-		user.OpenID = openID
 
-		return user, nil
+		// 检查是否是管理员 token（包含 admin_id）
+		if adminID, ok := claims["admin_id"].(float64); ok {
+			// 管理员 token
+			user.ID = uint(adminID)
+			user.IsAdmin = true
+			if username, ok := claims["username"].(string); ok {
+				user.Username = username
+			}
+			// 如果 token 中明确标记了 is_admin，使用该值
+			if isAdmin, ok := claims["is_admin"].(bool); ok {
+				user.IsAdmin = isAdmin
+			}
+			return user, nil
+		}
+
+		// 普通用户 token（包含 user_id）
+		if userID, ok := claims["user_id"].(float64); ok {
+			user.ID = uint(userID)
+
+			// 优先使用unionid，如果没有则使用openid（兼容旧token）
+			if uid, ok := claims["unionid"].(string); ok && uid != "" {
+				user.UnionID = uid
+			}
+			if oid, ok := claims["openid"].(string); ok && oid != "" {
+				user.OpenID = oid
+			}
+
+			// 这里应该从数据库获取用户信息，暂时返回模拟数据
+			// 在实际使用中，应该通过依赖注入的方式获取数据库连接
+			return user, nil
+		}
+
+		// 如果既没有 user_id 也没有 admin_id，返回错误
+		return nil, fmt.Errorf("token missing user_id or admin_id claim")
 	}
 
 	return nil, fmt.Errorf("invalid token")
