@@ -5,7 +5,7 @@ addr: :9091                  # HTTP 服务器监听地址
 
 # 后台管理系统配置
 admin:
-  addr: :9097                # 后台管理系统监听地址
+  addr: :9099                # 后台管理系统监听地址
 
 jwt:
   secret: Rtg8BPKNEf2mB4mgvKONGPZZQSaJWNLijxR42qRgq0iBb5 # JWT 签发密钥

@@ -117,7 +117,7 @@ func run() error {
 func startInsecureServer(g *gin.Engine) *http.Server {
 	addr := viper.GetString("admin.addr")
 	if addr == "" {
-		addr = ":9097" // 默认后台管理端口
+		addr = ":9099" // 默认后台管理端口
 	}
 
 	httpsrv := &http.Server{Addr: addr, Handler: g}

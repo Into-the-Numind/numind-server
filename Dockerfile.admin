@@ -35,29 +35,31 @@ COPY config_${ENV}.yaml /app/config_${ENV}.yaml
 ARG BINARY_SOURCE=external-binary
 COPY --from=external-binary /app/numind-admin /app/numind-admin
 
-# 创建日志目录、启动脚本并设置权限（合并多个 RUN 以减少镜像层数）
+# 创建日志目录并设置权限
 RUN mkdir -p /app/logs && \
     chown -R numind:numind /app && \
     chmod -R 775 /app/logs && \
-    chmod +x /app/numind-admin && \
-    echo '#!/bin/sh\n\
-# 根据环境变量选择配置文件\n\
-if [ -n "$APP_ENV" ]; then\n\
-    CONFIG_FILE="/app/config_${APP_ENV}.yaml"\n\
-else\n\
-    CONFIG_FILE="/app/config_dev.yaml"\n\
-fi\n\
-\n\
-# 检查配置文件是否存在\n\
-if [ ! -f "$CONFIG_FILE" ]; then\n\
-    echo "错误: 配置文件不存在: $CONFIG_FILE"\n\
-    echo "可用的配置文件:"\n\
-    ls -la /app/config_*.yaml\n\
-    exit 1\n\
-fi\n\
-\n\
-echo "使用配置文件: $CONFIG_FILE"\n\
-exec /app/numind-admin -c "$CONFIG_FILE" "$@"' > /app/start.sh && \
+    chmod +x /app/numind-admin
+
+# 创建启动脚本（使用 echo 逐行写入，确保在 Alpine 中正常工作）
+RUN echo '#!/bin/sh' > /app/start.sh && \
+    echo '# 根据环境变量选择配置文件' >> /app/start.sh && \
+    echo 'if [ -n "$APP_ENV" ]; then' >> /app/start.sh && \
+    echo '    CONFIG_FILE="/app/config_${APP_ENV}.yaml"' >> /app/start.sh && \
+    echo 'else' >> /app/start.sh && \
+    echo '    CONFIG_FILE="/app/config_dev.yaml"' >> /app/start.sh && \
+    echo 'fi' >> /app/start.sh && \
+    echo '' >> /app/start.sh && \
+    echo '# 检查配置文件是否存在' >> /app/start.sh && \
+    echo 'if [ ! -f "$CONFIG_FILE" ]; then' >> /app/start.sh && \
+    echo '    echo "错误: 配置文件不存在: $CONFIG_FILE"' >> /app/start.sh && \
+    echo '    echo "可用的配置文件:"' >> /app/start.sh && \
+    echo '    ls -la /app/config_*.yaml' >> /app/start.sh && \
+    echo '    exit 1' >> /app/start.sh && \
+    echo 'fi' >> /app/start.sh && \
+    echo '' >> /app/start.sh && \
+    echo 'echo "使用配置文件: $CONFIG_FILE"' >> /app/start.sh && \
+    echo 'exec /app/numind-admin -c "$CONFIG_FILE" "$@"' >> /app/start.sh && \
     chmod +x /app/start.sh && \
     chown numind:numind /app/start.sh && \
     ls -la /app/config_*.yaml && \
@@ -68,16 +70,16 @@ exec /app/numind-admin -c "$CONFIG_FILE" "$@"' > /app/start.sh && \
 USER numind
 
 # 暴露端口（后台管理系统默认端口）
-EXPOSE 9097
+EXPOSE 9099
 
 # 设置环境变量
 ENV GIN_MODE=release
-ENV PORT=9097
+ENV PORT=9099
 ENV TZ=Asia/Shanghai
 
 # 健康检查（使用 wget 替代 curl）
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:9097/healthz || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:9099/healthz || exit 1
 
 # 启动应用
 ENTRYPOINT ["/app/start.sh"]
