@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 
 	"gorm.io/gorm"
@@ -42,10 +43,22 @@ func (s *books) Create(ctx context.Context, book *model.BookM) error {
 
 func (s *books) GetByID(ctx context.Context, id uint) (*model.BookM, error) {
 	var book model.BookM
-	err := s.db.WithContext(ctx).Preload("Category").First(&book, id).Error
+	// 使用显式的WHERE条件，确保能正确查询
+	// GORM会自动添加 deleted_at IS NULL 条件（因为BookM继承了gorm.Model）
+	err := s.db.WithContext(ctx).
+		Where("id = ?", id).
+		Preload("Category").
+		First(&book).Error
 	if err != nil {
+		// 记录详细的错误信息，便于调试
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			log.C(ctx).Warnw("笔记不存在或已被删除", "book_id", id)
+		} else {
+			log.C(ctx).Errorw("查询笔记失败", "book_id", id, "error", err)
+		}
 		return nil, err
 	}
+	log.C(ctx).Debugw("成功获取笔记", "book_id", id, "user_id", book.UserID, "status", book.Status, "title", book.Title)
 	return &book, nil
 }
 
