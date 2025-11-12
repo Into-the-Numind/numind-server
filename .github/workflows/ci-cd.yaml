@@ -645,9 +645,8 @@ jobs:
 
       - name: Setup Go environment
         run: |
-          go env -w CGO_ENABLED=1
-          go env -w CC=gcc
-          go env -w CXX=g++
+          # numind-admin 不需要 CGO，使用静态链接以确保在 Alpine 中正常运行
+          go env -w CGO_ENABLED=0
 
       - name: Get dependencies
         run: |
@@ -660,9 +659,10 @@ jobs:
       - name: Build admin application
         run: |
           mkdir -p ./bin
-          echo "🐧 开始构建 numind-admin-linux-amd64..."
-          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+          echo "🐧 开始构建 numind-admin-linux-amd64 (静态链接)..."
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
             -ldflags="-s -w" \
+            -a -installsuffix cgo \
             -o ./bin/numind-admin-linux-amd64 \
             ./cmd/numind-admin
           
@@ -738,7 +738,25 @@ jobs:
           port: 22
           script: |
             echo "Docker1234" | docker login -u neozhang96 --password-stdin
+            
+            # 拉取新镜像
             docker pull neozhang96/numind-admin:admin-develop
+            
+            # 获取新镜像的 ID
+            NEW_IMAGE_ID=$(docker images --format "{{.ID}}" neozhang96/numind-admin:admin-develop | head -n 1)
+            echo "新镜像 ID: $NEW_IMAGE_ID"
+            
+            # 清理相同 tag 的旧镜像（保留新镜像）
+            echo "清理相同 tag 的旧镜像..."
+            docker images neozhang96/numind-admin:admin-develop --format "{{.ID}}" | while read image_id; do
+              if [ "$image_id" != "$NEW_IMAGE_ID" ]; then
+                echo "删除旧镜像: $image_id"
+                docker rmi $image_id || true
+              fi
+            done
+            
+            # 清理 dangling 镜像
+            docker image prune -f || true
             
             if docker ps -q -f name=numind-admin-server-dev | grep -q .; then
               docker stop numind-admin-server-dev
@@ -782,7 +800,25 @@ jobs:
           password: Numind2025
           script: |
             echo "Docker1234" | docker login -u neozhang96 --password-stdin
+            
+            # 拉取新镜像
             docker pull neozhang96/numind-admin:admin-release
+            
+            # 获取新镜像的 ID
+            NEW_IMAGE_ID=$(docker images --format "{{.ID}}" neozhang96/numind-admin:admin-release | head -n 1)
+            echo "新镜像 ID: $NEW_IMAGE_ID"
+            
+            # 清理相同 tag 的旧镜像（保留新镜像）
+            echo "清理相同 tag 的旧镜像..."
+            docker images neozhang96/numind-admin:admin-release --format "{{.ID}}" | while read image_id; do
+              if [ "$image_id" != "$NEW_IMAGE_ID" ]; then
+                echo "删除旧镜像: $image_id"
+                docker rmi $image_id || true
+              fi
+            done
+            
+            # 清理 dangling 镜像
+            docker image prune -f || true
             
             if docker ps -q -f name=numind-admin-server-qa | grep -q .; then
               docker stop numind-admin-server-qa
@@ -827,7 +863,25 @@ jobs:
           script: |
             IMAGE_TAG="${{ github.ref_name }}"
             echo "Docker1234" | docker login -u neozhang96 --password-stdin
+            
+            # 拉取新镜像
             docker pull neozhang96/numind-admin:$IMAGE_TAG
+            
+            # 获取新镜像的 ID
+            NEW_IMAGE_ID=$(docker images --format "{{.ID}}" neozhang96/numind-admin:$IMAGE_TAG | head -n 1)
+            echo "新镜像 ID: $NEW_IMAGE_ID"
+            
+            # 清理相同 tag 的旧镜像（保留新镜像）
+            echo "清理相同 tag 的旧镜像..."
+            docker images neozhang96/numind-admin:$IMAGE_TAG --format "{{.ID}}" | while read image_id; do
+              if [ "$image_id" != "$NEW_IMAGE_ID" ]; then
+                echo "删除旧镜像: $image_id"
+                docker rmi $image_id || true
+              fi
+            done
+            
+            # 清理 dangling 镜像
+            docker image prune -f || true
             
             if docker ps -q -f name=numind-admin-server-prod | grep -q .; then
               docker stop numind-admin-server-prod

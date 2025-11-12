@@ -39,7 +39,18 @@ COPY --from=external-binary /app/numind-admin /app/numind-admin
 RUN mkdir -p /app/logs && \
     chown -R numind:numind /app && \
     chmod -R 775 /app/logs && \
-    chmod +x /app/numind-admin
+    chmod +x /app/numind-admin && \
+    # 验证二进制文件是否存在且可执行
+    if [ ! -f /app/numind-admin ]; then \
+        echo "❌ 错误: 二进制文件不存在"; \
+        exit 1; \
+    fi && \
+    if [ ! -x /app/numind-admin ]; then \
+        echo "❌ 错误: 二进制文件不可执行"; \
+        exit 1; \
+    fi && \
+    ls -lh /app/numind-admin && \
+    echo "✅ 二进制文件验证成功"
 
 # 创建启动脚本（使用 echo 逐行写入，确保在 Alpine 中正常工作）
 RUN echo '#!/bin/sh' > /app/start.sh && \
