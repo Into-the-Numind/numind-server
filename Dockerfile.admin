@@ -11,10 +11,12 @@ ENV TZ=Asia/Shanghai
 
 # 安装必要的运行时依赖并设置时区和用户（合并多个 RUN 以减少镜像层数）
 # ca-certificates 用于 HTTPS 连接，tzdata 用于时区，wget 用于健康检查
+# libwebp 用于支持 webp 包（虽然后台管理系统不使用，但通过 biz 包间接依赖，使用动态链接时需要）
 RUN apk add --no-cache \
     ca-certificates \
     tzdata \
     wget \
+    libwebp \
     && update-ca-certificates \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
     && echo $TZ > /etc/timezone \

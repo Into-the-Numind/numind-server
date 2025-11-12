@@ -645,8 +645,18 @@ jobs:
 
       - name: Setup Go environment
         run: |
-          # numind-admin 不需要 CGO，使用静态链接以确保在 Alpine 中正常运行
-          go env -w CGO_ENABLED=0
+          # numind-admin 通过 biz 包间接依赖了 webp，需要 CGO 支持
+          # 使用 musl 工具链编译，确保与 Alpine Linux 兼容
+          go env -w CGO_ENABLED=1
+
+      - name: Install musl toolchain and dependencies
+        run: |
+          # 安装 musl 工具链和 libwebp 开发库（用于编译）
+          sudo apt-get update
+          sudo apt-get install -y musl-tools libwebp-dev
+          # 设置 musl-gcc 作为 C 编译器（使用动态链接，与 Alpine musl libc 兼容）
+          go env -w CC=musl-gcc
+          go env -w CXX=musl-g++
 
       - name: Get dependencies
         run: |
@@ -659,10 +669,9 @@ jobs:
       - name: Build admin application
         run: |
           mkdir -p ./bin
-          echo "🐧 开始构建 numind-admin-linux-amd64 (静态链接)..."
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+          echo "🐧 开始构建 numind-admin-linux-amd64 (使用 musl 工具链，动态链接)..."
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
             -ldflags="-s -w" \
-            -a -installsuffix cgo \
             -o ./bin/numind-admin-linux-amd64 \
             ./cmd/numind-admin
           
