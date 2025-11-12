@@ -733,7 +733,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     if: github.ref == 'refs/heads/admin-develop'
-    environment: development
+    environment: admin-development
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -796,7 +796,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     if: github.ref == 'refs/heads/admin-release'
-    environment: qa
+    environment: admin-qa
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -858,7 +858,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     if: startsWith(github.ref, 'refs/tags/admin-v')
-    environment: production
+    environment: admin-production
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
