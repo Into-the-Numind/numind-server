@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"numind-server/internal/pkg/log"
-
-	"gorm.io/gorm"
 )
 
 // PaymentBiz 支付业务接口
@@ -206,9 +204,9 @@ func (b *paymentBiz) handleMembershipPurchase(ctx context.Context, payment *mode
 		days := payment.SubscriptionDays
 		if days <= 0 {
 			// 如果没有传递天数，根据金额判断（兼容旧逻辑）
-			if payment.Amount == 1900 {
+			if payment.Amount == 1600 {
 				days = 30
-			} else if payment.Amount == 13700 {
+			} else if payment.Amount == 11900 {
 				days = 365
 			} else {
 				days = 30 // 默认30天
@@ -216,15 +214,7 @@ func (b *paymentBiz) handleMembershipPurchase(ctx context.Context, payment *mode
 		}
 
 		// 确定新的会员类型
-		var newMembershipType string
-		// 检查用户是否有有效的资源包（PackageCount > 0）
-		if user.PackageCount > 0 {
-			// 如果用户已有资源包，则设为both
-			newMembershipType = model.MembershipTypeBoth
-		} else {
-			// 否则设为订阅会员
-			newMembershipType = model.MembershipTypeSubscription
-		}
+		var newMembershipType string = model.MembershipTypeSubscription
 
 		// 计算新的到期时间
 		// 如果用户已有订阅会员且未过期，在现有到期时间基础上累加天数
@@ -274,27 +264,6 @@ func (b *paymentBiz) handleMembershipPurchase(ctx context.Context, payment *mode
 			return fmt.Errorf("更新用户会员状态失败: %w", err)
 		}
 
-	case model.MembershipTypePackage:
-		// 确定新的会员类型
-		var newMembershipType string
-		if user.MembershipType == model.MembershipTypeSubscription || user.MembershipType == model.MembershipTypeBoth {
-			// 如果用户已有订阅会员，则设为both
-			newMembershipType = model.MembershipTypeBoth
-		} else {
-			// 否则设为资源包
-			newMembershipType = model.MembershipTypePackage
-		}
-
-		// 包次数类型，增加次数
-		if err := b.ds.DB().Model(&model.User{}).Where("id = ?", payment.UserID).
-			UpdateColumns(map[string]interface{}{
-				"membership_type": newMembershipType,
-				"is_pro":          true,
-				"package_count":   gorm.Expr("package_count + ?", payment.PackageCount),
-			}).Error; err != nil {
-			return fmt.Errorf("更新用户包次数失败: %w", err)
-		}
-
 	default:
 		return fmt.Errorf("不支持的会员类型: %s", payment.MembershipType)
 	}
@@ -333,17 +302,6 @@ func (b *paymentBiz) validatePaymentRequest(req *model.CreatePaymentRequest) err
 
 		b.priceValidator.LogPriceValidation(context.Background(), req.MembershipType, req.Amount, req.SubscriptionDays, true, nil)
 
-	case model.MembershipTypePackage:
-		// 验证资源包价格
-		if req.PackageCount <= 0 {
-			return fmt.Errorf("资源包次数必须大于0")
-		}
-		if err := b.priceValidator.ValidatePackagePrice(req.PackageCount, req.Amount); err != nil {
-			b.priceValidator.LogPriceValidation(context.Background(), req.MembershipType, req.Amount, req.PackageCount, false, err)
-			return err
-		}
-		b.priceValidator.LogPriceValidation(context.Background(), req.MembershipType, req.Amount, req.PackageCount, true, nil)
-
 	default:
 		return fmt.Errorf("不支持的会员类型: %s", req.MembershipType)
 	}
@@ -357,9 +315,9 @@ func (b *paymentBiz) logPaymentAudit(ctx context.Context, payment *model.Payment
 	subscriptionDays := payment.SubscriptionDays
 	if subscriptionDays <= 0 && payment.MembershipType == model.MembershipTypeSubscription {
 		// 如果没有记录天数，根据金额计算（兼容旧逻辑）
-		if payment.Amount == 1900 {
+		if payment.Amount == 1600 {
 			subscriptionDays = 30
-		} else if payment.Amount == 13700 {
+		} else if payment.Amount == 11900 {
 			subscriptionDays = 365
 		}
 	}
