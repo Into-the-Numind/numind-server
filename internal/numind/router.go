@@ -146,6 +146,9 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.DELETE("/chat/sessions/:id", chatc.DeleteSession)                     // 删除会话
 		authGroup.GET("/chat/sessions/:id/messages", chatc.ListMessages)                // 获取会话消息
 		authGroup.GET("/chat/sessions/:id/with-messages", chatc.GetSessionWithMessages) // 获取会话及消息
+		// 笔记聊天相关
+		authGroup.GET("/chat/book/:book_id/history", chatc.GetBookChatHistory) // 获取笔记的聊天记录
+		authGroup.GET("/chat/book/:book_id/sessions", chatc.ListBookSessions)  // 列出笔记的所有会话
 	}
 
 	// 分页相关

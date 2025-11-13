@@ -44,8 +44,7 @@ func getWechatPayConfig() map[string]string {
 // CreateMembershipPayment 创建会员购买支付
 func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 	var req struct {
-		MembershipType   string `json:"membership_type" binding:"required,oneof=subscription package"`
-		PackageCount     int    `json:"package_count,omitempty"`     // 仅当membership_type为package时使用
+		MembershipType   string `json:"membership_type" binding:"required,oneof=subscription"`
 		SubscriptionDays int    `json:"subscription_days,omitempty"` // 仅当membership_type为subscription时使用，30或365
 		PayMethod        string `json:"pay_method" binding:"required,oneof=native miniprogram jsapi"`
 		OpenID           string `json:"openid,omitempty"` // 小程序支付必填
@@ -64,25 +63,7 @@ func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 	}
 
 	// 验证参数
-	if req.MembershipType == model.MembershipTypePackage {
-		if req.PackageCount <= 0 {
-			core.WriteResponse(c, errno.ErrBind.SetMessage("包次数必须大于0"), nil)
-			return
-		}
-		// 验证包次数是否在允许的范围内
-		validCounts := []int{20, 50}
-		isValidCount := false
-		for _, count := range validCounts {
-			if req.PackageCount == count {
-				isValidCount = true
-				break
-			}
-		}
-		if !isValidCount {
-			core.WriteResponse(c, errno.ErrBind.SetMessage("包次数只支持20、50次"), nil)
-			return
-		}
-	} else if req.MembershipType == model.MembershipTypeSubscription {
+	if req.MembershipType == model.MembershipTypeSubscription {
 		// 添加调试日志
 		log.C(c).Infow("订阅天数验证", "subscription_days", req.SubscriptionDays, "type", fmt.Sprintf("%T", req.SubscriptionDays))
 		if req.SubscriptionDays != 30 && req.SubscriptionDays != 365 {
@@ -107,10 +88,6 @@ func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 		} else {
 			description = "年度订阅会员（365天）"
 		}
-	case model.MembershipTypePackage:
-		// 资源包：服务端根据次数计算价格
-		amount = mc.calculatePackagePrice(req.PackageCount)
-		description = fmt.Sprintf("资源包会员（%d次）", req.PackageCount)
 	}
 
 	// 创建支付请求
@@ -121,7 +98,6 @@ func (mc *MembershipController) CreateMembershipPayment(c *gin.Context) {
 		OpenID:           req.OpenID,
 		PayMethod:        req.PayMethod,
 		MembershipType:   req.MembershipType,
-		PackageCount:     req.PackageCount,
 		SubscriptionDays: req.SubscriptionDays,
 	}
 
@@ -243,33 +219,17 @@ func (mc *MembershipController) GetMembershipInfo(c *gin.Context) {
 		return
 	}
 
-	// 计算package剩余次数信息
-	var packageInfo gin.H
-	if user.MembershipType == model.MembershipTypePackage || user.MembershipType == model.MembershipTypeBoth {
-		packageInfo = gin.H{
-			"remaining_count": user.PackageCount,
-			"description":     fmt.Sprintf("资源包剩余%d次", user.PackageCount),
-			"can_use":         user.PackageCount > 0,
-		}
-	} else {
-		packageInfo = gin.H{
-			"remaining_count": 0,
-			"description":     "非资源包会员",
-			"can_use":         false,
-		}
-	}
-
 	// 计算月度卡册信息
 	var monthlyBookInfo gin.H
 	if user.MembershipType == model.MembershipTypeSubscription || user.MembershipType == model.MembershipTypeBoth {
 		monthStart := user.GetCurrentMembershipMonthStart()
 		monthlyBookInfo = gin.H{
 			"current_count":   user.MonthlyBookCount,
-			"remaining_count": user.GetRemainingMonthlyBooks(),
+			"remaining_count": -1, // 无限制
 			"month_start":     &monthStart,
 			"month_end":       user.GetCurrentMembershipMonthEnd(),
-			"can_create":      user.CanCreateBookInCurrentMonth(),
-			"description":     fmt.Sprintf("本月已创建%d个卡册，还可以创建%d个", user.MonthlyBookCount, user.GetRemainingMonthlyBooks()),
+			"can_create":      true,
+			"description":     "会员无数量限制",
 		}
 	} else {
 		monthlyBookInfo = gin.H{
@@ -286,8 +246,6 @@ func (mc *MembershipController) GetMembershipInfo(c *gin.Context) {
 	core.WriteResponse(c, nil, gin.H{
 		"membership_type":    user.MembershipType,
 		"membership_expires": user.MembershipExpires,
-		"package_count":      user.PackageCount,
-		"package_info":       packageInfo,
 		"monthly_book_info":  monthlyBookInfo,
 		"is_pro":             user.IsPro,
 		"membership_status":  user.GetMembershipStatus(),
@@ -301,7 +259,7 @@ func (mc *MembershipController) GetMembershipPlans(c *gin.Context) {
 		{
 			"type":        "subscription",
 			"name":        "月度订阅会员",
-			"price":       1900, // 19元，单位分
+			"price":       1600, // 16元，单位分
 			"days":        30,   // 订阅天数
 			"description": "享受月度订阅会员权益",
 			"features":    []string{"30天会员权益", "无水印", "解锁全部模板", "高峰期优先处理"},
@@ -309,29 +267,10 @@ func (mc *MembershipController) GetMembershipPlans(c *gin.Context) {
 		{
 			"type":        "subscription",
 			"name":        "年度订阅会员",
-			"price":       13700, // 137元，单位分
+			"price":       11900, // 119元，单位分
 			"days":        365,   // 订阅天数
-			"description": "享受年度订阅会员权益，约11.4元/月，立省40%",
+			"description": "享受年度订阅会员权益，约9.92元/月，立省38%",
 			"features":    []string{"365天会员权益", "无水印", "解锁全部模板", "高峰期优先处理", "年度优惠价格"},
-		},
-		// 资源包选项 - 根据定价表
-		{
-			"type":        "package",
-			"name":        "20次创作包",
-			"price":       1000, // 10元，单位分
-			"count":       20,
-			"unit_price":  50, // 0.5元/次，单位分
-			"description": "20次使用，单次成本0.5元",
-			"features":    []string{"按次计费", "灵活使用", "单次成本更优惠"},
-		},
-		{
-			"type":        "package",
-			"name":        "50次创作包",
-			"price":       2000, // 20元，单位分
-			"count":       50,
-			"unit_price":  40, // 0.4元/次，单位分
-			"description": "50次使用，单次成本0.4元",
-			"features":    []string{"按次计费", "灵活使用", "单次成本最优惠"},
 		},
 	}
 
@@ -364,7 +303,6 @@ func (mc *MembershipController) CheckCreatePermission(c *gin.Context) {
 		"reason":             permission.Reason,
 		"membership_type":    user.MembershipType,
 		"is_pro":             user.IsPro,
-		"package_count":      user.PackageCount,
 		"book_all_num":       user.BookAllNum,
 		"membership_expires": user.MembershipExpires,
 	})
@@ -390,7 +328,7 @@ func (mc *MembershipController) calculateCreatePermission(user *model.User) *Cre
 		// 判断是否需要重置月度计数
 		oldType := user.MembershipType
 		resetMonthly := (oldType == model.MembershipTypeSubscription || oldType == model.MembershipTypeBoth) &&
-			(actualType == model.MembershipTypeFree || actualType == model.MembershipTypePackage)
+			(actualType == model.MembershipTypeFree)
 
 		// 更新到数据库
 		if err := mc.b.Users().SyncMembershipType(context.Background(), user.ID, actualType, resetMonthly); err != nil {
@@ -427,37 +365,12 @@ func (mc *MembershipController) calculateCreatePermission(user *model.User) *Cre
 		}
 	}
 
-	// 检查订阅会员月度限制
+	// 检查订阅会员
 	if user.CanUseSubscription() {
-		// 检查月度限制
-		if !user.CanCreateBookInCurrentMonth() {
-			remaining := user.GetRemainingMonthlyBooks()
-			// 如果还有资源包，可以使用资源包创建
-			if user.CanUsePackage() && user.PackageCount > 0 {
-				return &CreatePermission{
-					CanCreate: true,
-					Reason:    fmt.Sprintf("本月已创建%d个卡册，达到月度限制100个，但资源包剩余%d次，可以继续创建", user.MonthlyBookCount, user.PackageCount),
-				}
-			}
-			// 没有资源包或资源包用完了
-			return &CreatePermission{
-				CanCreate: false,
-				Reason:    fmt.Sprintf("本月已创建%d个卡册，达到月度限制100个，剩余%d个", user.MonthlyBookCount, remaining),
-			}
-		}
-
-		// 月度限制未达到，可以创建
+		// 会员无数量限制，可以创建
 		return &CreatePermission{
 			CanCreate: true,
-			Reason:    fmt.Sprintf("%s有效，本月已创建%d个卡册，还可以创建%d个", user.GetMembershipStatus(), user.MonthlyBookCount, user.GetRemainingMonthlyBooks()),
-		}
-	}
-
-	// 检查资源包
-	if user.CanUsePackage() {
-		return &CreatePermission{
-			CanCreate: true,
-			Reason:    fmt.Sprintf("资源包剩余%d次，可以创建卡册", user.PackageCount),
+			Reason:    fmt.Sprintf("%s有效，无数量限制", user.GetMembershipStatus()),
 		}
 	}
 
@@ -483,7 +396,7 @@ func (mc *MembershipController) calculateCreatePermission(user *model.User) *Cre
 	// 会员过期
 	return &CreatePermission{
 		CanCreate: false,
-		Reason:    "会员已过期，请续费或购买资源包",
+		Reason:    "会员已过期，请续费",
 	}
 }
 
@@ -491,25 +404,12 @@ func (mc *MembershipController) calculateCreatePermission(user *model.User) *Cre
 func (mc *MembershipController) calculateSubscriptionPrice(days int) int64 {
 	switch days {
 	case 30:
-		return 1900 // 19元
+		return 1600 // 16元
 	case 365:
-		return 13700 // 137元
+		return 11900 // 119元
 	default:
 		// 默认返回月度价格
-		return 1900
-	}
-}
-
-// calculatePackagePrice 根据包次数计算价格（单位：分）
-func (mc *MembershipController) calculatePackagePrice(count int) int64 {
-	switch count {
-	case 20:
-		return 1000 // 10元
-	case 50:
-		return 2000 // 20元
-	default:
-		// 如果不是标准包次数，按单次0.5元计算
-		return int64(count * 50)
+		return 1600
 	}
 }
 
@@ -546,7 +446,7 @@ func (mc *MembershipController) ConsumeUsage(c *gin.Context) {
 	core.WriteResponse(c, nil, gin.H{
 		"message":         "使用次数消费成功",
 		"usage_type":      usageType,
-		"remaining":       user.PackageCount,
+		"remaining":       -1,
 		"membership_type": user.MembershipType,
 	})
 }
@@ -583,19 +483,10 @@ func (mc *MembershipController) resetFreeUserMonthlyBookCount(user *model.User) 
 
 // consumeUserUsage 消费用户使用次数
 func (mc *MembershipController) consumeUserUsage(c *gin.Context, user *model.User) (string, error) {
-	// 优先使用订阅会员
+	// 使用订阅会员
 	if user.CanUseSubscription() {
 		// 订阅会员无限制，不需要扣除次数
 		return "subscription", nil
-	}
-
-	// 其次使用资源包
-	if user.CanUsePackage() {
-		// 扣除资源包次数
-		if err := mc.b.Users().ConsumePackageCount(c, user.ID, 1); err != nil {
-			return "", fmt.Errorf("扣除资源包次数失败: %w", err)
-		}
-		return "package", nil
 	}
 
 	return "", fmt.Errorf("没有可用的使用次数")

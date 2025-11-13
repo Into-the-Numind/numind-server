@@ -10,12 +10,14 @@ import (
 type ChatSession struct {
 	gorm.Model
 	UserID       uint   `gorm:"index;not null" json:"user_id"`
+	BookID       *uint  `gorm:"index" json:"book_id,omitempty"` // 关联的笔记ID（可为空，支持通用聊天）
 	Title        string `gorm:"size:255" json:"title"`
 	Status       string `gorm:"size:20;default:'active'" json:"status"` // active, closed
 	MessageCount int    `gorm:"default:0" json:"message_count"`
 
 	// 关联关系
 	User     User          `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	Book     *BookM        `gorm:"foreignKey:BookID" json:"book,omitempty"` // 关联的笔记
 	Messages []ChatMessage `gorm:"foreignKey:SessionID" json:"messages,omitempty"`
 }
 
@@ -43,8 +45,9 @@ func (ChatMessage) TableName() string {
 
 // WebSocketMessage WebSocket消息结构
 type WebSocketMessage struct {
-	Type      string      `json:"type"` // message, session, error, ping, pong
+	Type      string      `json:"type"` // message, message_chunk, message_done, session, error, ping, pong
 	SessionID uint        `json:"session_id,omitempty"`
+	BookID    *uint       `json:"book_id,omitempty"` // 关联的笔记ID
 	MessageID uint        `json:"message_id,omitempty"`
 	Content   string      `json:"content,omitempty"`
 	Role      string      `json:"role,omitempty"`

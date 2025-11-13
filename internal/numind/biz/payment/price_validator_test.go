@@ -15,13 +15,13 @@ func TestPriceValidator_ValidateSubscriptionPrice(t *testing.T) {
 	}{
 		{
 			name:     "有效的月度订阅价格",
-			amount:   1900,
+			amount:   1600,
 			expected: 30,
 			hasError: false,
 		},
 		{
 			name:     "有效的年度订阅价格",
-			amount:   13700,
+			amount:   11900,
 			expected: 365,
 			hasError: false,
 		},
@@ -58,63 +58,6 @@ func TestPriceValidator_ValidateSubscriptionPrice(t *testing.T) {
 	}
 }
 
-func TestPriceValidator_ValidatePackagePrice(t *testing.T) {
-	validator := NewPriceValidator()
-
-	tests := []struct {
-		name     string
-		count    int
-		amount   int64
-		hasError bool
-	}{
-		{
-			name:     "有效的20次包价格",
-			count:    20,
-			amount:   1000,
-			hasError: false,
-		},
-		{
-			name:     "有效的50次包价格",
-			count:    50,
-			amount:   2000,
-			hasError: false,
-		},
-		{
-			name:     "无效的包次数",
-			count:    10,
-			amount:   1000,
-			hasError: true,
-		},
-		{
-			name:     "价格不匹配",
-			count:    20,
-			amount:   1500, // 应该是1000
-			hasError: true,
-		},
-		{
-			name:     "恶意篡改的价格",
-			count:    20,
-			amount:   1,
-			hasError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validator.ValidatePackagePrice(tt.count, tt.amount)
-			if tt.hasError {
-				if err == nil {
-					t.Errorf("期望有错误，但没有错误")
-				}
-			} else {
-				if err != nil {
-					t.Errorf("不期望有错误，但有错误: %v", err)
-				}
-			}
-		})
-	}
-}
-
 func TestPriceValidator_GetSubscriptionPrice(t *testing.T) {
 	validator := NewPriceValidator()
 
@@ -127,13 +70,13 @@ func TestPriceValidator_GetSubscriptionPrice(t *testing.T) {
 		{
 			name:     "30天订阅",
 			days:     30,
-			expected: 1900,
+			expected: 1600,
 			hasError: false,
 		},
 		{
 			name:     "365天订阅",
 			days:     365,
-			expected: 13700,
+			expected: 11900,
 			hasError: false,
 		},
 		{
@@ -147,54 +90,6 @@ func TestPriceValidator_GetSubscriptionPrice(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			price, err := validator.GetSubscriptionPrice(tt.days)
-			if tt.hasError {
-				if err == nil {
-					t.Errorf("期望有错误，但没有错误")
-				}
-			} else {
-				if err != nil {
-					t.Errorf("不期望有错误，但有错误: %v", err)
-				}
-				if price != tt.expected {
-					t.Errorf("期望价格 %d，实际 %d", tt.expected, price)
-				}
-			}
-		})
-	}
-}
-
-func TestPriceValidator_GetPackagePrice(t *testing.T) {
-	validator := NewPriceValidator()
-
-	tests := []struct {
-		name     string
-		count    int
-		expected int64
-		hasError bool
-	}{
-		{
-			name:     "20次包",
-			count:    20,
-			expected: 1000,
-			hasError: false,
-		},
-		{
-			name:     "50次包",
-			count:    50,
-			expected: 2000,
-			hasError: false,
-		},
-		{
-			name:     "无效的次数",
-			count:    10,
-			expected: 0,
-			hasError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			price, err := validator.GetPackagePrice(tt.count)
 			if tt.hasError {
 				if err == nil {
 					t.Errorf("期望有错误，但没有错误")
