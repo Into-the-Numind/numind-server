@@ -7,6 +7,7 @@ import (
 	adminaccount "numind-server/internal/numind/controller/v1/admin_account"
 	"numind-server/internal/numind/controller/v1/book"
 	"numind-server/internal/numind/controller/v1/config"
+	"numind-server/internal/numind/controller/v1/feedback"
 	"numind-server/internal/numind/controller/v1/image"
 	"numind-server/internal/numind/controller/v1/order"
 	"numind-server/internal/numind/controller/v1/payment"
@@ -43,6 +44,7 @@ func installAdminRouters(g *gin.Engine) error {
 	configc := config.New(b)
 	adminc := admin.NewAdminController(b.Admin())
 	adminAccountCtrl := adminaccount.NewAdminAccountController(b.AdminAccounts())
+	feedbackCtrl := feedback.NewAdminFeedbackController(b)
 
 	// 登录接口不需要鉴权
 	v1Group := g.Group("/v1/admin")
@@ -113,6 +115,14 @@ func installAdminRouters(g *gin.Engine) error {
 	// 管理员统计信息
 	{
 		authGroup.GET("/stats", adminc.GetStats)
+	}
+
+	// 反馈管理
+	{
+		authGroup.GET("/feedbacks", feedbackCtrl.List)
+		authGroup.GET("/feedbacks/:id", feedbackCtrl.Get)
+		authGroup.PUT("/feedbacks/:id", feedbackCtrl.Update)
+		authGroup.DELETE("/feedbacks/:id", feedbackCtrl.Delete)
 	}
 
 	return nil
