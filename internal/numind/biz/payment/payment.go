@@ -280,8 +280,8 @@ func (b *paymentBiz) handleMembershipPurchase(ctx context.Context, payment *mode
 			// 检查是否为开发环境
 			runmode := viper.GetString("runmode")
 			if runmode == "debug" {
-				// 开发环境：1分钱，默认30天
-				if payment.Amount == 1 {
+				// 开发环境：1元（100分），默认30天
+				if payment.Amount == 100 {
 					days = 30 // 开发环境默认30天
 				} else {
 					days = 30 // 默认30天
@@ -440,8 +440,8 @@ func (b *paymentBiz) logPaymentAudit(ctx context.Context, payment *model.Payment
 		// 如果没有记录天数，根据金额计算（兼容旧逻辑）
 		runmode := viper.GetString("runmode")
 		if runmode == "debug" {
-			// 开发环境：1分钱，默认30天
-			if payment.Amount == 1 {
+			// 开发环境：1元（100分），默认30天
+			if payment.Amount == 100 {
 				subscriptionDays = 30
 			}
 		} else {
