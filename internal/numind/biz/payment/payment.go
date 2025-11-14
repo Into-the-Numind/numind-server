@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"numind-server/internal/pkg/log"
+
+	"github.com/spf13/viper"
 )
 
 // PaymentBiz 支付业务接口
@@ -275,12 +277,24 @@ func (b *paymentBiz) handleMembershipPurchase(ctx context.Context, payment *mode
 			log.C(ctx).Warnw("Subscription days is 0 or negative, inferring from amount",
 				"subscription_days", payment.SubscriptionDays,
 				"amount", payment.Amount)
-			if payment.Amount == 1600 {
-				days = 30
-			} else if payment.Amount == 11900 {
-				days = 365
+			// 检查是否为开发环境
+			runmode := viper.GetString("runmode")
+			if runmode == "debug" {
+				// 开发环境：1分钱，默认30天
+				if payment.Amount == 1 {
+					days = 30 // 开发环境默认30天
+				} else {
+					days = 30 // 默认30天
+				}
 			} else {
-				days = 30 // 默认30天
+				// 生产环境：正常价格
+				if payment.Amount == 1600 {
+					days = 30
+				} else if payment.Amount == 11900 {
+					days = 365
+				} else {
+					days = 30 // 默认30天
+				}
 			}
 			log.C(ctx).Infow("Inferred subscription days from amount",
 				"amount", payment.Amount,
@@ -424,10 +438,19 @@ func (b *paymentBiz) logPaymentAudit(ctx context.Context, payment *model.Payment
 	subscriptionDays := payment.SubscriptionDays
 	if subscriptionDays <= 0 && payment.MembershipType == model.MembershipTypeSubscription {
 		// 如果没有记录天数，根据金额计算（兼容旧逻辑）
-		if payment.Amount == 1600 {
-			subscriptionDays = 30
-		} else if payment.Amount == 11900 {
-			subscriptionDays = 365
+		runmode := viper.GetString("runmode")
+		if runmode == "debug" {
+			// 开发环境：1分钱，默认30天
+			if payment.Amount == 1 {
+				subscriptionDays = 30
+			}
+		} else {
+			// 生产环境：正常价格
+			if payment.Amount == 1600 {
+				subscriptionDays = 30
+			} else if payment.Amount == 11900 {
+				subscriptionDays = 365
+			}
 		}
 	}
 
