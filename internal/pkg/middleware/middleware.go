@@ -141,21 +141,12 @@ func validateToken(tokenString string) (*model.User, error) {
 
 	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
 		userID := uint(claims["user_id"].(float64))
-
-		// 优先使用unionid，如果没有则使用openid（兼容旧token）
-		var unionID, openID string
-		if uid, ok := claims["unionid"].(string); ok && uid != "" {
-			unionID = uid
-		}
-		if oid, ok := claims["openid"].(string); ok && oid != "" {
-			openID = oid
-		}
+		openID := claims["openid"].(string)
 
 		// 这里应该从数据库获取用户信息，暂时返回模拟数据
 		// 在实际使用中，应该通过依赖注入的方式获取数据库连接
 		user := &model.User{}
 		user.ID = userID
-		user.UnionID = unionID
 		user.OpenID = openID
 
 		return user, nil

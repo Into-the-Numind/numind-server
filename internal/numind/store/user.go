@@ -103,7 +103,8 @@ func (u *users) GetUserByID(ctx context.Context, userID uint) (*model.User, erro
 }
 
 func (u *users) UpdateUser(ctx context.Context, user *model.User) error {
-	return u.db.Save(user).Error
+	// 使用Select只更新特定字段，避免更新UnionID等敏感字段
+	return u.db.Model(user).Select("nickname", "avatar_url", "updated_at").Updates(user).Error
 }
 
 func (u *users) UpdateWechatUser(ctx context.Context, openid string, update map[string]interface{}) error {
