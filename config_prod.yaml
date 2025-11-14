@@ -48,7 +48,7 @@ wechat:
     app_secret: "cd5e2a2a919fd6a06c52ae2a15286a36"
     mch_id: "1722456639"
     mch_cert_serial_no: "6D2DCAC8D07269DB7B19F4B644F2BDB1772B983B"
-    mch_api_v3_key: "fT6vGq3sR2wP9kY7hN4bZ5cX1jM8aE0d"
+    mch_api_v3_key: "fda9ba0b25b6822789676ee6dcbc01d2"
     mch_private_key_path: "/opt/numind/config/cert/apiclient_key.pem"
     wechatpay_cert_path: "/opt/numind/config/cert/apiclient_cert.pem"
     notify_url: "https://youshu.asia/api/pay/wechat/notify"
