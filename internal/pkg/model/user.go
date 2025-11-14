@@ -15,7 +15,7 @@ type User struct {
 	UnionID   string `gorm:"uniqueIndex:idx_unionid;size:50;index" json:"unionid"` // 统一使用UnionID作为用户标识
 	Phone     string `gorm:"size:20;index" json:"phone"`
 	Nickname  string `gorm:"size:100" json:"nickname"`
-	AvatarURL string `gorm:"size:255" json:"avatar_url"`
+	AvatarURL string `gorm:"size:512" json:"avatar_url"`
 	IsPro     bool   `gorm:"default:false" json:"is_pro"`
 	// 会员相关字段
 	MembershipType           string     `gorm:"size:20;default:'free';index" json:"membership_type"` // 会员类型：free, subscription, package
