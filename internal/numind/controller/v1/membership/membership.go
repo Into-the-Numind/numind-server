@@ -255,23 +255,51 @@ func (mc *MembershipController) GetMembershipInfo(c *gin.Context) {
 
 // GetMembershipPlans 获取会员套餐信息
 func (mc *MembershipController) GetMembershipPlans(c *gin.Context) {
-	plans := []gin.H{
-		{
-			"type":        "subscription",
-			"name":        "月度订阅会员",
-			"price":       1600, // 16元，单位分
-			"days":        30,   // 订阅天数
-			"description": "享受月度订阅会员权益",
-			"features":    []string{"30天会员权益", "无水印", "解锁全部模板", "高峰期优先处理"},
-		},
-		{
-			"type":        "subscription",
-			"name":        "年度订阅会员",
-			"price":       11900, // 119元，单位分
-			"days":        365,   // 订阅天数
-			"description": "享受年度订阅会员权益，约9.92元/月，立省38%",
-			"features":    []string{"365天会员权益", "无水印", "解锁全部模板", "高峰期优先处理", "年度优惠价格"},
-		},
+	// 检查是否为开发环境
+	runmode := viper.GetString("runmode")
+	isDev := runmode == "debug"
+
+	var plans []gin.H
+	if isDev {
+		// 开发环境：1元（100分）用于测试
+		plans = []gin.H{
+			{
+				"type":        "subscription",
+				"name":        "月度订阅会员（测试）",
+				"price":       100, // 1元（100分），单位分
+				"days":        30,  // 订阅天数
+				"description": "享受月度订阅会员权益（开发环境测试价格）",
+				"features":    []string{"30天会员权益", "无水印", "解锁全部模板", "高峰期优先处理"},
+			},
+			{
+				"type":        "subscription",
+				"name":        "年度订阅会员（测试）",
+				"price":       100, // 1元（100分），单位分
+				"days":        365, // 订阅天数
+				"description": "享受年度订阅会员权益（开发环境测试价格）",
+				"features":    []string{"365天会员权益", "无水印", "解锁全部模板", "高峰期优先处理", "年度优惠价格"},
+			},
+		}
+	} else {
+		// 生产环境：正常价格
+		plans = []gin.H{
+			{
+				"type":        "subscription",
+				"name":        "月度订阅会员",
+				"price":       1600, // 16元，单位分
+				"days":        30,   // 订阅天数
+				"description": "享受月度订阅会员权益",
+				"features":    []string{"30天会员权益", "无水印", "解锁全部模板", "高峰期优先处理"},
+			},
+			{
+				"type":        "subscription",
+				"name":        "年度订阅会员",
+				"price":       11900, // 119元，单位分
+				"days":        365,   // 订阅天数
+				"description": "享受年度订阅会员权益，约9.92元/月，立省38%",
+				"features":    []string{"365天会员权益", "无水印", "解锁全部模板", "高峰期优先处理", "年度优惠价格"},
+			},
+		}
 	}
 
 	core.WriteResponse(c, nil, gin.H{
@@ -402,6 +430,17 @@ func (mc *MembershipController) calculateCreatePermission(user *model.User) *Cre
 
 // calculateSubscriptionPrice 根据订阅天数计算价格（单位：分）
 func (mc *MembershipController) calculateSubscriptionPrice(days int) int64 {
+	// 检查是否为开发环境
+	runmode := viper.GetString("runmode")
+	if runmode == "debug" {
+		// 开发环境：1元（100分）用于测试
+		if days == 30 || days == 365 {
+			return 100
+		}
+		return 100 // 默认返回1元（100分）
+	}
+
+	// 生产环境：正常价格
 	switch days {
 	case 30:
 		return 1600 // 16元
