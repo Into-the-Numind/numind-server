@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/wechatpay-apiv3/wechatpay-go/core"
+	"github.com/wechatpay-apiv3/wechatpay-go/core/auth"
+	"github.com/wechatpay-apiv3/wechatpay-go/core/auth/verifiers"
 	"github.com/wechatpay-apiv3/wechatpay-go/core/notify"
 	"github.com/wechatpay-apiv3/wechatpay-go/core/option"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/payments"
@@ -236,7 +238,30 @@ func CreateMiniProgramOrder(cfg map[string]string, outTradeNo, description strin
 
 // 支付回调业务
 func ParsePayNotify(cfg map[string]string, ctx context.Context, req *http.Request) (*payments.Transaction, error) {
-	handler := notify.NewNotifyHandler(cfg["mch_api_v3_key"], nil)
+	var verifier auth.Verifier
+
+	// 根据配置选择验证器
+	if cfg["use_wechatpay_public_key"] == "true" {
+		// 使用微信支付公钥模式：需要加载平台证书来验证回调签名
+		// 回调的签名是用微信支付平台证书签名的，所以需要证书来验证
+		wechatPayCert, err := utils.LoadCertificateWithPath(cfg["wechatpay_cert_path"])
+		if err != nil {
+			return nil, fmt.Errorf("加载微信支付平台证书失败: %v", err)
+		}
+		// 使用证书创建验证器
+		verifier = verifiers.NewSHA256WithRSAVerifier(core.NewCertificateMapWithList([]*x509.Certificate{wechatPayCert}))
+	} else {
+		// 使用平台证书模式
+		wechatPayCert, err := utils.LoadCertificateWithPath(cfg["wechatpay_cert_path"])
+		if err != nil {
+			return nil, fmt.Errorf("加载微信支付平台证书失败: %v", err)
+		}
+		// 使用证书创建验证器
+		verifier = verifiers.NewSHA256WithRSAVerifier(core.NewCertificateMapWithList([]*x509.Certificate{wechatPayCert}))
+	}
+
+	// 使用 Verifier 创建通知处理器
+	handler := notify.NewNotifyHandler(cfg["mch_api_v3_key"], verifier)
 	transaction := &payments.Transaction{}
 	_, err := handler.ParseNotifyRequest(ctx, req, transaction)
 	if err != nil {
