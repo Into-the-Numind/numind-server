@@ -3,6 +3,8 @@ package wechat
 import (
 	"context"
 	"crypto"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -12,6 +14,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,6 +23,7 @@ import (
 	"github.com/wechatpay-apiv3/wechatpay-go/core/auth/verifiers"
 	"github.com/wechatpay-apiv3/wechatpay-go/core/notify"
 	"github.com/wechatpay-apiv3/wechatpay-go/core/option"
+	"github.com/wechatpay-apiv3/wechatpay-go/services/certificates"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/payments"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/payments/jsapi"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/payments/native"
@@ -236,34 +240,124 @@ func CreateMiniProgramOrder(cfg map[string]string, outTradeNo, description strin
 	}, nil
 }
 
+// downloadWechatPayCertificate 从微信支付 API 下载平台证书
+func downloadWechatPayCertificate(cfg map[string]string) (*x509.Certificate, error) {
+	// 创建 PayClient（使用公钥模式，不需要平台证书）
+	payClient, err := newPayClientWithPublicKey(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("创建支付客户端失败: %v", err)
+	}
+
+	// 使用证书下载服务
+	svc := certificates.CertificatesApiService{Client: payClient.Client}
+	resp, _, err := svc.DownloadCertificates(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("下载平台证书失败: %v", err)
+	}
+
+	if resp == nil || len(resp.Data) == 0 {
+		return nil, fmt.Errorf("未获取到平台证书")
+	}
+
+	// 获取最新的有效证书（通常第一个是最新的）
+	certData := resp.Data[0]
+	if certData.EncryptCertificate == nil {
+		return nil, fmt.Errorf("证书数据为空")
+	}
+
+	// 解密证书
+	encryptCert := certData.EncryptCertificate
+	if encryptCert.Algorithm == nil || *encryptCert.Algorithm != "AEAD_AES_256_GCM" {
+		return nil, fmt.Errorf("不支持的加密算法: %v", encryptCert.Algorithm)
+	}
+
+	// 使用 API v3 Key 解密证书
+	apiV3Key := cfg["mch_api_v3_key"]
+	c, err := aes.NewCipher([]byte(apiV3Key))
+	if err != nil {
+		return nil, fmt.Errorf("创建 AES 密码失败: %v", err)
+	}
+
+	aesgcm, err := cipher.NewGCM(c)
+	if err != nil {
+		return nil, fmt.Errorf("创建 GCM 失败: %v", err)
+	}
+
+	// 解码密文
+	ciphertext, err := base64.StdEncoding.DecodeString(*encryptCert.Ciphertext)
+	if err != nil {
+		return nil, fmt.Errorf("解码密文失败: %v", err)
+	}
+
+	// 准备解密参数
+	nonce := []byte(*encryptCert.Nonce)
+	associatedData := []byte{}
+	if encryptCert.AssociatedData != nil {
+		associatedData = []byte(*encryptCert.AssociatedData)
+	}
+
+	// 解密
+	plaintext, err := aesgcm.Open(nil, nonce, ciphertext, associatedData)
+	if err != nil {
+		return nil, fmt.Errorf("解密证书失败: %v", err)
+	}
+
+	// 解析证书
+	cert, err := utils.LoadCertificate(string(plaintext))
+	if err != nil {
+		return nil, fmt.Errorf("解析证书失败: %v", err)
+	}
+
+	// 尝试保存证书到文件（如果路径存在）
+	certPath := cfg["wechatpay_cert_path"]
+	if certPath != "" {
+		// 确保目录存在
+		dir := filepath.Dir(certPath)
+		if err := os.MkdirAll(dir, 0755); err == nil {
+			// 保存证书（忽略错误，因为可能没有写入权限）
+			_ = os.WriteFile(certPath, plaintext, 0644)
+		}
+	}
+
+	return cert, nil
+}
+
+// loadWechatPayCertificate 加载微信支付平台证书，如果文件不存在则尝试下载
+func loadWechatPayCertificate(cfg map[string]string) (*x509.Certificate, error) {
+	certPath := cfg["wechatpay_cert_path"]
+
+	// 首先尝试从文件加载
+	if certPath != "" {
+		if _, err := os.Stat(certPath); err == nil {
+			cert, err := utils.LoadCertificateWithPath(certPath)
+			if err == nil {
+				return cert, nil
+			}
+		}
+	}
+
+	// 文件不存在或加载失败，尝试从 API 下载
+	return downloadWechatPayCertificate(cfg)
+}
+
 // 支付回调业务
 func ParsePayNotify(cfg map[string]string, ctx context.Context, req *http.Request) (*payments.Transaction, error) {
 	var verifier auth.Verifier
 
-	// 根据配置选择验证器
-	if cfg["use_wechatpay_public_key"] == "true" {
-		// 使用微信支付公钥模式：需要加载平台证书来验证回调签名
-		// 回调的签名是用微信支付平台证书签名的，所以需要证书来验证
-		wechatPayCert, err := utils.LoadCertificateWithPath(cfg["wechatpay_cert_path"])
-		if err != nil {
-			return nil, fmt.Errorf("加载微信支付平台证书失败: %v", err)
-		}
-		// 使用证书创建验证器
-		verifier = verifiers.NewSHA256WithRSAVerifier(core.NewCertificateMapWithList([]*x509.Certificate{wechatPayCert}))
-	} else {
-		// 使用平台证书模式
-		wechatPayCert, err := utils.LoadCertificateWithPath(cfg["wechatpay_cert_path"])
-		if err != nil {
-			return nil, fmt.Errorf("加载微信支付平台证书失败: %v", err)
-		}
-		// 使用证书创建验证器
-		verifier = verifiers.NewSHA256WithRSAVerifier(core.NewCertificateMapWithList([]*x509.Certificate{wechatPayCert}))
+	// 加载平台证书（如果文件不存在则自动下载）
+	// 注意：即使使用公钥模式，验证回调签名时仍需要平台证书
+	wechatPayCert, err := loadWechatPayCertificate(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("加载微信支付平台证书失败: %v。提示：请确保证书文件存在，或检查网络连接以自动下载证书", err)
 	}
+
+	// 使用证书创建验证器
+	verifier = verifiers.NewSHA256WithRSAVerifier(core.NewCertificateMapWithList([]*x509.Certificate{wechatPayCert}))
 
 	// 使用 Verifier 创建通知处理器
 	handler := notify.NewNotifyHandler(cfg["mch_api_v3_key"], verifier)
 	transaction := &payments.Transaction{}
-	_, err := handler.ParseNotifyRequest(ctx, req, transaction)
+	_, err = handler.ParseNotifyRequest(ctx, req, transaction)
 	if err != nil {
 		return nil, err
 	}
