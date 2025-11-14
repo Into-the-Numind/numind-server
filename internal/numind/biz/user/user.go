@@ -461,12 +461,13 @@ func (s *userBiz) findOrCreateUser(openID string) (*model.User, error) {
 
 	if err == gorm.ErrRecordNotFound {
 		// 创建新用户，设置唯一的username
+		// 使用Omit排除union_id字段，避免空字符串触发唯一索引冲突
 		user = model.User{
 			OpenID:   openID,
 			Username: fmt.Sprintf("user_%s", openID), // 使用openid生成唯一username
 		}
 
-		if err := s.ds.DB().Create(&user).Error; err != nil {
+		if err := s.ds.DB().Omit("union_id").Create(&user).Error; err != nil {
 			return nil, fmt.Errorf("创建用户失败: %v", err)
 		}
 	} else if err != nil {
