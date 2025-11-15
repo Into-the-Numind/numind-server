@@ -51,8 +51,9 @@ func installAdminRouters(g *gin.Engine) error {
 	v1Group.POST("/login", adminAccountCtrl.Login)
 
 	// 需要管理员鉴权的接口
+	// 使用专门的后台管理中间件，验证 admin token 并从 admin 表查询
 	authGroup := v1Group.Group("")
-	authGroup.Use(importMw.AuthMiddleware())
+	authGroup.Use(importMw.AdminSystemAuthMiddleware())
 
 	// 用户管理
 	{
