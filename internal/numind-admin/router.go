@@ -120,10 +120,11 @@ func installAdminRouters(g *gin.Engine) error {
 
 	// 反馈管理
 	{
-		authGroup.GET("/feedbacks", feedbackCtrl.List)
-		authGroup.GET("/feedbacks/:id", feedbackCtrl.Get)
-		authGroup.PUT("/feedbacks/:id", feedbackCtrl.Update)
-		authGroup.DELETE("/feedbacks/:id", feedbackCtrl.Delete)
+		authGroup.POST("/feedbacks", feedbackCtrl.Create)       // 创建反馈
+		authGroup.GET("/feedbacks", feedbackCtrl.List)          // 获取反馈列表（返回所有字段）
+		authGroup.GET("/feedbacks/:id", feedbackCtrl.Get)       // 获取单个反馈
+		authGroup.PUT("/feedbacks/:id", feedbackCtrl.Update)    // 更新反馈
+		authGroup.DELETE("/feedbacks/:id", feedbackCtrl.Delete) // 删除反馈
 	}
 
 	return nil

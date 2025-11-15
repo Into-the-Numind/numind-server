@@ -4,8 +4,7 @@ import (
 	"strconv"
 
 	"numind-server/internal/numind/biz"
-	"numind-server/internal/pkg/core"
-	"numind-server/internal/pkg/errno"
+	v1 "numind-server/pkg/api/numind/v1"
 
 	"github.com/gin-gonic/gin"
 )
@@ -20,15 +19,73 @@ func NewAdminFeedbackController(b biz.IBiz) *AdminFeedbackController {
 	return &AdminFeedbackController{b: b}
 }
 
-// List 获取反馈列表（管理员）
+// Create 创建反馈（管理员）
+func (c *AdminFeedbackController) Create(ctx *gin.Context) {
+	var req struct {
+		UserID  uint   `json:"user_id" binding:"required"`
+		Content string `json:"content" binding:"required"`
+		Type    string `json:"type" binding:"required"`
+	}
+
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(400, gin.H{
+			"code":    1,
+			"message": "请求参数错误: " + err.Error(),
+			"data":    nil,
+		})
+		return
+	}
+
+	// 使用 biz 层的 Create 方法创建反馈
+	createReq := &v1.CreateFeedbackRequest{
+		Content: req.Content,
+		Type:    req.Type,
+	}
+
+	err := c.b.Feedbacks().Create(ctx, req.UserID, createReq)
+	if err != nil {
+		ctx.JSON(500, gin.H{
+			"code":    1,
+			"message": err.Error(),
+			"data":    nil,
+		})
+		return
+	}
+
+	ctx.JSON(200, gin.H{
+		"code":    0,
+		"message": "创建反馈成功",
+		"data":    nil,
+	})
+}
+
+// List 获取反馈列表（管理员，返回所有字段）
 func (c *AdminFeedbackController) List(ctx *gin.Context) {
-	page, _ := strconv.Atoi(ctx.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(ctx.DefaultQuery("limit", "10"))
+	offsetStr := ctx.DefaultQuery("offset", "0")
+	limitStr := ctx.DefaultQuery("limit", "10")
 	userIDStr := ctx.Query("user_id")
 	statusStr := ctx.Query("status")
 	feedbackType := ctx.Query("type")
 
-	offset := (page - 1) * limit
+	offset, err := strconv.Atoi(offsetStr)
+	if err != nil {
+		ctx.JSON(400, gin.H{
+			"code":    1,
+			"message": "offset参数格式错误",
+			"data":    nil,
+		})
+		return
+	}
+
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil {
+		ctx.JSON(400, gin.H{
+			"code":    1,
+			"message": "limit参数格式错误",
+			"data":    nil,
+		})
+		return
+	}
 
 	var userID *uint
 	if userIDStr != "" {
@@ -52,37 +109,54 @@ func (c *AdminFeedbackController) List(ctx *gin.Context) {
 
 	result, err := c.b.Feedbacks().ListAll(ctx, offset, limit, userID, status, feedbackTypePtr)
 	if err != nil {
-		core.WriteResponse(ctx, err, nil)
+		ctx.JSON(500, gin.H{
+			"code":    1,
+			"message": err.Error(),
+			"data":    nil,
+		})
 		return
 	}
 
-	pages := int((result.TotalCount + int64(limit) - 1) / int64(limit))
-
-	core.WriteResponse(ctx, nil, gin.H{
-		"items": result.Feedbacks,
-		"total": result.TotalCount,
-		"page":  page,
-		"limit": limit,
-		"pages": pages,
+	ctx.JSON(200, gin.H{
+		"code":    0,
+		"message": "获取反馈列表成功",
+		"data": gin.H{
+			"items":  result.Feedbacks,
+			"total":  result.TotalCount,
+			"offset": offset,
+			"limit":  limit,
+		},
 	})
 }
 
-// Get 获取单个反馈（管理员）
+// Get 获取单个反馈（管理员，返回所有字段）
 func (c *AdminFeedbackController) Get(ctx *gin.Context) {
 	feedbackIDStr := ctx.Param("id")
 	feedbackID, err := strconv.ParseUint(feedbackIDStr, 10, 32)
 	if err != nil {
-		core.WriteResponse(ctx, errno.ErrBind.SetMessage("反馈ID格式错误"), nil)
+		ctx.JSON(400, gin.H{
+			"code":    1,
+			"message": "反馈ID格式错误",
+			"data":    nil,
+		})
 		return
 	}
 
 	feedback, err := c.b.Feedbacks().GetByID(ctx, uint(feedbackID))
 	if err != nil {
-		core.WriteResponse(ctx, err, nil)
+		ctx.JSON(500, gin.H{
+			"code":    1,
+			"message": err.Error(),
+			"data":    nil,
+		})
 		return
 	}
 
-	core.WriteResponse(ctx, nil, feedback)
+	ctx.JSON(200, gin.H{
+		"code":    0,
+		"message": "获取反馈成功",
+		"data":    feedback,
+	})
 }
 
 // Update 更新反馈（管理员）
@@ -90,7 +164,11 @@ func (c *AdminFeedbackController) Update(ctx *gin.Context) {
 	feedbackIDStr := ctx.Param("id")
 	feedbackID, err := strconv.ParseUint(feedbackIDStr, 10, 32)
 	if err != nil {
-		core.WriteResponse(ctx, errno.ErrBind.SetMessage("反馈ID格式错误"), nil)
+		ctx.JSON(400, gin.H{
+			"code":    1,
+			"message": "反馈ID格式错误",
+			"data":    nil,
+		})
 		return
 	}
 
@@ -100,17 +178,29 @@ func (c *AdminFeedbackController) Update(ctx *gin.Context) {
 	}
 
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(ctx, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		ctx.JSON(400, gin.H{
+			"code":    1,
+			"message": "请求参数错误: " + err.Error(),
+			"data":    nil,
+		})
 		return
 	}
 
 	err = c.b.Feedbacks().Update(ctx, uint(feedbackID), req.Status, req.Reply)
 	if err != nil {
-		core.WriteResponse(ctx, err, nil)
+		ctx.JSON(500, gin.H{
+			"code":    1,
+			"message": err.Error(),
+			"data":    nil,
+		})
 		return
 	}
 
-	core.WriteResponse(ctx, nil, nil)
+	ctx.JSON(200, gin.H{
+		"code":    0,
+		"message": "更新反馈成功",
+		"data":    nil,
+	})
 }
 
 // Delete 删除反馈（管理员）
@@ -118,15 +208,27 @@ func (c *AdminFeedbackController) Delete(ctx *gin.Context) {
 	feedbackIDStr := ctx.Param("id")
 	feedbackID, err := strconv.ParseUint(feedbackIDStr, 10, 32)
 	if err != nil {
-		core.WriteResponse(ctx, errno.ErrBind.SetMessage("反馈ID格式错误"), nil)
+		ctx.JSON(400, gin.H{
+			"code":    1,
+			"message": "反馈ID格式错误",
+			"data":    nil,
+		})
 		return
 	}
 
 	err = c.b.Feedbacks().DeleteByAdmin(ctx, uint(feedbackID))
 	if err != nil {
-		core.WriteResponse(ctx, err, nil)
+		ctx.JSON(500, gin.H{
+			"code":    1,
+			"message": err.Error(),
+			"data":    nil,
+		})
 		return
 	}
 
-	core.WriteResponse(ctx, nil, nil)
+	ctx.JSON(200, gin.H{
+		"code":    0,
+		"message": "删除反馈成功",
+		"data":    nil,
+	})
 }
