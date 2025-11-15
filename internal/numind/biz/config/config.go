@@ -12,6 +12,7 @@ type ConfigBiz interface {
 	Create(ctx context.Context, key, value, description string) (*model.SystemConfigM, error)
 	GetByKey(ctx context.Context, key string) (*model.SystemConfigM, error)
 	GetAll(ctx context.Context) ([]*model.SystemConfigM, error)
+	List(ctx context.Context, offset, limit int) (int64, []*model.SystemConfigM, error) // 分页查询，用于后台管理系统
 	Update(ctx context.Context, key, value, description string) (*model.SystemConfigM, error)
 	Delete(ctx context.Context, key string) error
 	InitDefaultConfigs(ctx context.Context) error
@@ -47,6 +48,11 @@ func (b *configBiz) GetByKey(ctx context.Context, key string) (*model.SystemConf
 
 func (b *configBiz) GetAll(ctx context.Context) ([]*model.SystemConfigM, error) {
 	return b.ds.Configs().GetAll(ctx)
+}
+
+// List 分页查询系统配置（用于后台管理系统）
+func (b *configBiz) List(ctx context.Context, offset, limit int) (int64, []*model.SystemConfigM, error) {
+	return b.ds.Configs().List(ctx, offset, limit)
 }
 
 func (b *configBiz) Update(ctx context.Context, key, value, description string) (*model.SystemConfigM, error) {

@@ -1,12 +1,13 @@
 package config
 
 import (
+	"strconv"
+	"strings"
+
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
-	"strings"
-
 	"numind-server/internal/pkg/util"
 
 	"github.com/gin-gonic/gin"
@@ -73,7 +74,7 @@ func (ctrl *ConfigController) Get(c *gin.Context) {
 	core.WriteResponse(c, nil, config)
 }
 
-// List 获取所有配置
+// List 获取所有配置（用于 numind，支持字段过滤和压缩）
 func (ctrl *ConfigController) List(c *gin.Context) {
 	// 获取字段过滤参数
 	fieldsStr := c.Query("fields")
@@ -102,6 +103,45 @@ func (ctrl *ConfigController) List(c *gin.Context) {
 
 	// 使用压缩响应以减少带宽使用
 	core.WriteCompressedResponse(c, nil, responseData)
+}
+
+// ListWithPagination 分页获取系统配置列表（用于后台管理系统，返回所有字段）
+func (ctrl *ConfigController) ListWithPagination(c *gin.Context) {
+	log.C(c).Infow("List system configs with pagination function called")
+
+	offsetStr := c.DefaultQuery("offset", "0")
+	limitStr := c.DefaultQuery("limit", "10")
+
+	offset, err := strconv.Atoi(offsetStr)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	total, configs, err := ctrl.b.Configs().List(c, offset, limit)
+	if err != nil {
+		log.C(c).Errorw("Failed to list configs", "error", err.Error())
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	// 使用与后台管理系统一致的响应格式
+	c.JSON(200, gin.H{
+		"code":    0,
+		"message": "获取系统配置列表成功",
+		"data": gin.H{
+			"items":  configs,
+			"total":  total,
+			"offset": offset,
+			"limit":  limit,
+		},
+	})
 }
 
 // Update 更新配置

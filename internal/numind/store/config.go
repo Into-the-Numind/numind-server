@@ -13,6 +13,7 @@ type ConfigStore interface {
 	Create(ctx context.Context, config *model.SystemConfigM) error
 	GetByKey(ctx context.Context, key string) (*model.SystemConfigM, error)
 	GetAll(ctx context.Context) ([]*model.SystemConfigM, error)
+	List(ctx context.Context, offset, limit int) (int64, []*model.SystemConfigM, error) // 分页查询，用于后台管理系统
 	Update(ctx context.Context, config *model.SystemConfigM) error
 	Delete(ctx context.Context, key string) error
 	InitDefaultConfigs(ctx context.Context) error
@@ -45,6 +46,25 @@ func (s *configs) GetAll(ctx context.Context) ([]*model.SystemConfigM, error) {
 	var configs []*model.SystemConfigM
 	err := s.db.WithContext(ctx).Find(&configs).Error
 	return configs, err
+}
+
+// List 分页查询系统配置（用于后台管理系统）
+func (s *configs) List(ctx context.Context, offset, limit int) (int64, []*model.SystemConfigM, error) {
+	query := s.db.WithContext(ctx).Model(&model.SystemConfigM{})
+
+	// 获取总数
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return 0, nil, err
+	}
+
+	// 分页查询，返回所有字段
+	var configs []*model.SystemConfigM
+	if err := query.Offset(offset).Limit(defaultLimit(limit)).Order("id DESC").Find(&configs).Error; err != nil {
+		return 0, nil, err
+	}
+
+	return total, configs, nil
 }
 
 func (s *configs) Update(ctx context.Context, config *model.SystemConfigM) error {

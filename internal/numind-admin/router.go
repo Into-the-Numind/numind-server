@@ -105,12 +105,12 @@ func installAdminRouters(g *gin.Engine) error {
 
 	// 系统配置管理
 	{
-		authGroup.POST("/configs", configc.Create)
-		authGroup.GET("/configs", configc.List)
-		authGroup.GET("/configs/:key", configc.Get)
-		authGroup.PUT("/configs/:key", configc.Update)
-		authGroup.DELETE("/configs/:key", configc.Delete)
-		authGroup.POST("/configs/init", configc.InitDefault)
+		authGroup.POST("/system-configs", configc.Create)            // 创建系统配置
+		authGroup.GET("/system-configs", configc.ListWithPagination) // 分页获取系统配置列表（返回所有字段）
+		authGroup.GET("/system-configs/:key", configc.Get)           // 获取单个系统配置
+		authGroup.PUT("/system-configs/:key", configc.Update)        // 更新系统配置
+		authGroup.DELETE("/system-configs/:key", configc.Delete)     // 删除系统配置
+		authGroup.POST("/system-configs/init", configc.InitDefault)  // 初始化默认配置
 	}
 
 	// 管理员统计信息
