@@ -57,7 +57,7 @@ func installAdminRouters(g *gin.Engine) error {
 
 	// 用户管理
 	{
-		authGroup.GET("/users", uc.List)
+		authGroup.GET("/users", adminc.GetUserList) // 后台管理系统专用，返回所有用户字段
 		authGroup.GET("/users/:name", uc.Get)
 		authGroup.PUT("/users/:name", uc.Update)
 		authGroup.DELETE("/users/:name", uc.Delete)

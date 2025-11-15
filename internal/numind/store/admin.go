@@ -2,6 +2,7 @@ package store
 
 import (
 	"numind-server/internal/pkg/model"
+
 	"gorm.io/gorm"
 )
 
@@ -13,6 +14,7 @@ type IAdminStore interface {
 	DeleteArticle(id uint) error
 	BulkDeleteArticles(ids []uint) error
 	GetUsers(page, limit int) ([]model.User, int64, error)
+	GetUserList(offset, limit int) ([]model.User, int64, error) // 后台管理系统专用，返回所有用户字段
 	UpdateUser(id uint, updates map[string]interface{}) error
 	DeleteUser(id uint) error
 	GetCategories() ([]model.CategoryM, error)
@@ -114,6 +116,25 @@ func (s *AdminStore) GetUsers(page, limit int) ([]model.User, int64, error) {
 	offset := (page - 1) * limit
 	var users []model.User
 	if err := query.Offset(offset).Limit(limit).Order("created_at DESC").Find(&users).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return users, total, nil
+}
+
+// GetUserList 获取用户列表（后台管理系统专用，返回所有用户字段，使用 offset/limit 参数）
+func (s *AdminStore) GetUserList(offset, limit int) ([]model.User, int64, error) {
+	query := s.db.Model(&model.User{})
+
+	// 获取总数
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// 分页查询，返回所有用户字段
+	var users []model.User
+	if err := query.Offset(offset).Limit(limit).Order("id DESC").Find(&users).Error; err != nil {
 		return nil, 0, err
 	}
 

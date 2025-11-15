@@ -3,8 +3,8 @@ package admin
 import (
 	"context"
 	"fmt"
-	"numind-server/internal/pkg/model"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/model"
 	"time"
 )
 
@@ -16,6 +16,7 @@ type IAdminBiz interface {
 	DeleteArticle(ctx context.Context, id uint) error
 	BulkDeleteArticles(ctx context.Context, ids []uint) error
 	GetUsers(ctx context.Context, page, limit int) ([]model.User, int64, error)
+	GetUserList(ctx context.Context, offset, limit int) ([]model.User, int64, error) // 后台管理系统专用，返回所有用户字段
 	UpdateUser(ctx context.Context, id uint, req *AdminUserUpdateRequest) error
 	DeleteUser(ctx context.Context, id uint) error
 	GetCategories(ctx context.Context) ([]model.CategoryM, error)
@@ -99,7 +100,7 @@ func (b *AdminBiz) CreateArticle(ctx context.Context, req *AdminArticleCreateReq
 
 func (b *AdminBiz) UpdateArticle(ctx context.Context, id uint, req *AdminArticleUpdateRequest) error {
 	updates := make(map[string]interface{})
-	
+
 	if req.Title != nil {
 		updates["title"] = *req.Title
 	}
@@ -138,9 +139,14 @@ func (b *AdminBiz) GetUsers(ctx context.Context, page, limit int) ([]model.User,
 	return b.store.GetUsers(page, limit)
 }
 
+// GetUserList 获取用户列表（后台管理系统专用，返回所有用户字段，使用 offset/limit 参数）
+func (b *AdminBiz) GetUserList(ctx context.Context, offset, limit int) ([]model.User, int64, error) {
+	return b.store.GetUserList(offset, limit)
+}
+
 func (b *AdminBiz) UpdateUser(ctx context.Context, id uint, req *AdminUserUpdateRequest) error {
 	updates := make(map[string]interface{})
-	
+
 	if req.Username != nil {
 		updates["username"] = *req.Username
 	}
@@ -183,7 +189,7 @@ func (b *AdminBiz) CreateCategory(ctx context.Context, req *AdminCategoryCreateR
 
 func (b *AdminBiz) UpdateCategory(ctx context.Context, id uint, req *AdminCategoryUpdateRequest) error {
 	updates := make(map[string]interface{})
-	
+
 	if req.Name != nil {
 		updates["name"] = *req.Name
 	}

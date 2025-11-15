@@ -4,9 +4,10 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/gin-gonic/gin"
 	"numind-server/internal/numind/biz/admin"
 	"numind-server/internal/numind/store"
+
+	"github.com/gin-gonic/gin"
 )
 
 type AdminController struct {
@@ -235,7 +236,7 @@ func (c *AdminController) BulkDeleteArticles(ctx *gin.Context) {
 	})
 }
 
-// GetUsers 获取用户列表
+// GetUsers 获取用户列表（使用 page/limit 参数）
 func (c *AdminController) GetUsers(ctx *gin.Context) {
 	page, _ := strconv.Atoi(ctx.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(ctx.DefaultQuery("limit", "10"))
@@ -261,6 +262,33 @@ func (c *AdminController) GetUsers(ctx *gin.Context) {
 			"page":  page,
 			"limit": limit,
 			"pages": pages,
+		},
+	})
+}
+
+// GetUserList 获取用户列表（后台管理系统专用，返回所有用户字段，使用 offset/limit 参数）
+func (c *AdminController) GetUserList(ctx *gin.Context) {
+	offset, _ := strconv.Atoi(ctx.DefaultQuery("offset", "0"))
+	limit, _ := strconv.Atoi(ctx.DefaultQuery("limit", "10"))
+
+	users, total, err := c.biz.GetUserList(ctx, offset, limit)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{
+			"code":    1,
+			"message": err.Error(),
+			"data":    nil,
+		})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "获取用户列表成功",
+		"data": gin.H{
+			"items":  users,
+			"total":  total,
+			"offset": offset,
+			"limit":  limit,
 		},
 	})
 }
