@@ -65,7 +65,7 @@ func installAdminRouters(g *gin.Engine) error {
 
 	// 笔记（书籍）管理
 	{
-		authGroup.GET("/books", bc.List)
+		authGroup.GET("/books", bc.ListAll) // 后台管理系统专用，返回所有书籍字段
 		authGroup.GET("/books/:id", bc.Get)
 		authGroup.PUT("/books/:id", bc.Update)
 		authGroup.DELETE("/books/:id", bc.Delete)
