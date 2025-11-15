@@ -16,9 +16,11 @@ import (
 type PaymentBiz interface {
 	CreatePayment(ctx context.Context, req *model.CreatePaymentRequest, userID uint) (*model.CreatePaymentResponse, error)
 	GetPaymentByOutTradeNo(ctx context.Context, outTradeNo string) (*model.PaymentM, error)
+	GetPaymentByID(ctx context.Context, id uint) (*model.PaymentM, error)
 	UpdatePaymentStatus(ctx context.Context, outTradeNo, status, transactionID string, paidAt *time.Time) error
 	ListPaymentsByUser(ctx context.Context, userID uint, offset, limit int) ([]*model.PaymentM, error)
 	ListPaymentsByStatus(ctx context.Context, status string, offset, limit int) ([]*model.PaymentM, error)
+	ListPayments(ctx context.Context, req *store.AdminPaymentListRequest) ([]*model.PaymentM, int64, error)
 	CountPaymentsByUser(ctx context.Context, userID uint) (int64, error)
 	CountPaymentsByStatus(ctx context.Context, status string) (int64, error)
 	DeletePayment(ctx context.Context, id uint) error
@@ -89,6 +91,11 @@ func (b *paymentBiz) CreatePayment(ctx context.Context, req *model.CreatePayment
 // GetPaymentByOutTradeNo 根据商户订单号获取支付记录
 func (b *paymentBiz) GetPaymentByOutTradeNo(ctx context.Context, outTradeNo string) (*model.PaymentM, error) {
 	return b.ds.Payments().GetByOutTradeNo(ctx, outTradeNo)
+}
+
+// GetPaymentByID 根据ID获取支付记录（管理员）
+func (b *paymentBiz) GetPaymentByID(ctx context.Context, id uint) (*model.PaymentM, error) {
+	return b.ds.Payments().GetByID(ctx, id)
 }
 
 // UpdatePaymentStatus 更新支付状态
@@ -189,6 +196,11 @@ func (b *paymentBiz) ListPaymentsByUser(ctx context.Context, userID uint, offset
 // ListPaymentsByStatus 根据状态获取支付记录列表
 func (b *paymentBiz) ListPaymentsByStatus(ctx context.Context, status string, offset, limit int) ([]*model.PaymentM, error) {
 	return b.ds.Payments().ListByStatus(ctx, status, offset, limit)
+}
+
+// ListPayments 获取支付记录列表（管理员，支持多条件筛选）
+func (b *paymentBiz) ListPayments(ctx context.Context, req *store.AdminPaymentListRequest) ([]*model.PaymentM, int64, error) {
+	return b.ds.Payments().List(ctx, req)
 }
 
 // CountPaymentsByUser 统计用户的支付记录数量

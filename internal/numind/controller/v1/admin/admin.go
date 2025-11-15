@@ -3,19 +3,25 @@ package admin
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"numind-server/internal/numind/biz/admin"
+	paymentbiz "numind-server/internal/numind/biz/payment"
 	"numind-server/internal/numind/store"
 
 	"github.com/gin-gonic/gin"
 )
 
 type AdminController struct {
-	biz admin.IAdminBiz
+	biz        admin.IAdminBiz
+	paymentBiz paymentbiz.PaymentBiz
 }
 
-func NewAdminController(biz admin.IAdminBiz) *AdminController {
-	return &AdminController{biz: biz}
+func NewAdminController(biz admin.IAdminBiz, paymentBiz paymentbiz.PaymentBiz) *AdminController {
+	return &AdminController{
+		biz:        biz,
+		paymentBiz: paymentBiz,
+	}
 }
 
 // GetArticles 获取文章列表（管理员）
@@ -497,5 +503,116 @@ func (c *AdminController) GetStats(ctx *gin.Context) {
 		"code":    0,
 		"message": "获取统计信息成功",
 		"data":    stats,
+	})
+}
+
+// GetPaymentList 获取支付记录列表（管理员）
+func (c *AdminController) GetPaymentList(ctx *gin.Context) {
+	offset, _ := strconv.Atoi(ctx.DefaultQuery("offset", "0"))
+	limit, _ := strconv.Atoi(ctx.DefaultQuery("limit", "10"))
+	userIDStr := ctx.Query("user_id")
+	statusStr := ctx.Query("status")
+	channelStr := ctx.Query("channel")
+	startDateStr := ctx.Query("start_date")
+	endDateStr := ctx.Query("end_date")
+	keyword := ctx.Query("keyword")
+
+	req := &store.AdminPaymentListRequest{
+		Offset:  offset,
+		Limit:   limit,
+		Keyword: keyword,
+	}
+
+	// 解析用户ID
+	if userIDStr != "" {
+		if id, err := strconv.ParseUint(userIDStr, 10, 32); err == nil {
+			uid := uint(id)
+			req.UserID = &uid
+		}
+	}
+
+	// 解析状态
+	if statusStr != "" {
+		req.Status = &statusStr
+	}
+
+	// 解析渠道
+	if channelStr != "" {
+		req.Channel = &channelStr
+	}
+
+	// 解析开始日期
+	if startDateStr != "" {
+		if t, err := time.Parse("2006-01-02", startDateStr); err == nil {
+			req.StartDate = &t
+		}
+	}
+
+	// 解析结束日期
+	if endDateStr != "" {
+		if t, err := time.Parse("2006-01-02", endDateStr); err == nil {
+			// 设置为当天的23:59:59
+			t = time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, t.Location())
+			req.EndDate = &t
+		}
+	}
+
+	payments, total, err := c.paymentBiz.ListPayments(ctx, req)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{
+			"code":    1,
+			"message": "获取支付记录列表失败: " + err.Error(),
+			"data":    nil,
+		})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "获取支付记录列表成功",
+		"data": gin.H{
+			"items":  payments,
+			"total":  total,
+			"offset": offset,
+			"limit":  limit,
+		},
+	})
+}
+
+// GetPayment 获取支付记录详情（管理员）
+func (c *AdminController) GetPayment(ctx *gin.Context) {
+	// 支持通过 out_trade_no 或 id 查询
+	outTradeNo := ctx.Param("out_trade_no")
+	if outTradeNo == "" {
+		ctx.JSON(http.StatusBadRequest, gin.H{
+			"code":    1,
+			"message": "订单号不能为空",
+			"data":    nil,
+		})
+		return
+	}
+
+	// 先尝试通过 out_trade_no 查询
+	payment, err := c.paymentBiz.GetPaymentByOutTradeNo(ctx, outTradeNo)
+	if err != nil {
+		// 如果通过 out_trade_no 查询失败，尝试通过 ID 查询
+		if id, parseErr := strconv.ParseUint(outTradeNo, 10, 32); parseErr == nil {
+			payment, err = c.paymentBiz.GetPaymentByID(ctx, uint(id))
+		}
+	}
+
+	if err != nil {
+		ctx.JSON(http.StatusNotFound, gin.H{
+			"code":    1,
+			"message": "支付记录不存在",
+			"data":    nil,
+		})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "获取支付记录成功",
+		"data":    payment,
 	})
 }

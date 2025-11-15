@@ -10,7 +10,6 @@ import (
 	"numind-server/internal/numind/controller/v1/feedback"
 	"numind-server/internal/numind/controller/v1/image"
 	"numind-server/internal/numind/controller/v1/order"
-	"numind-server/internal/numind/controller/v1/payment"
 	"numind-server/internal/numind/controller/v1/template"
 	"numind-server/internal/numind/controller/v1/user"
 	"numind-server/internal/numind/store"
@@ -42,7 +41,7 @@ func installAdminRouters(g *gin.Engine) error {
 	bc := book.New(b)
 	tc := template.New(b)
 	configc := config.New(b)
-	adminc := admin.NewAdminController(b.Admin())
+	adminc := admin.NewAdminController(b.Admin(), b.Payments())
 	adminAccountCtrl := adminaccount.NewAdminAccountController(b.AdminAccounts())
 	feedbackCtrl := feedback.NewAdminFeedbackController(b)
 
@@ -89,9 +88,8 @@ func installAdminRouters(g *gin.Engine) error {
 
 	// 支付管理
 	{
-		paymentCtrl := payment.NewPaymentController(b)
-		authGroup.GET("/payments", paymentCtrl.ListPayments)
-		authGroup.GET("/payments/:out_trade_no", paymentCtrl.GetPayment)
+		authGroup.GET("/payments", adminc.GetPaymentList)
+		authGroup.GET("/payments/:out_trade_no", adminc.GetPayment)
 	}
 
 	// 模板管理
