@@ -5,7 +5,6 @@ import (
 	"numind-server/internal/numind/biz"
 	orderbiz "numind-server/internal/numind/biz/order"
 	"numind-server/internal/numind/controller/v1/account"
-	"numind-server/internal/numind/controller/v1/admin"
 	"numind-server/internal/numind/controller/v1/article"
 	"numind-server/internal/numind/controller/v1/book"
 	"numind-server/internal/numind/controller/v1/card"
@@ -27,7 +26,6 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/spf13/viper"
 
-	"numind-server/internal/numind/controller/v1/config"
 	"numind-server/internal/numind/controller/v1/feedback"
 	importPayController "numind-server/internal/numind/controller/v1/pay"
 	importMw "numind-server/internal/pkg/middleware"
@@ -62,13 +60,11 @@ func installNumindRouters(g *gin.Engine) error {
 	fc := feedback.New(b)
 	chatc := chat.New(b.Chats())
 	ac := article.NewArticleController(b.Article())
-	adminc := admin.NewAdminController(b.Admin())
 
 	v1Group := g.Group("/v1")
 
 	// 登录接口不需要鉴权
 	v1Group.POST("/wechat/login", uc.WechatLogin)
-	v1Group.POST("/admin/login", uc.Login)
 
 	// WebSocket连接不需要鉴权，因为它在内部处理认证
 	v1Group.GET("/chat/ws", chatc.WebSocket)
@@ -173,39 +169,6 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.DELETE("/articles/:id/favorite", ac.RemoveFavorite)     // 移除收藏
 		authGroup.GET("/articles/favorites", ac.GetFavorites)             // 获取收藏列表
 		authGroup.POST("/articles/paraphrase", ac.ParaphraseText)         // 文本释义
-	}
-
-	// 管理员相关
-	adminGroup := v1Group.Group("/admin", importMw.AuthMiddleware())
-	{
-		adminGroup.GET("/articles", adminc.GetArticles)                     // 获取文章列表（管理员）
-		adminGroup.GET("/articles/:id", adminc.GetArticle)                  // 获取单个文章（管理员）
-		adminGroup.POST("/articles", adminc.CreateArticle)                  // 创建文章（管理员）
-		adminGroup.PUT("/articles/:id", adminc.UpdateArticle)               // 更新文章（管理员）
-		adminGroup.DELETE("/articles/:id", adminc.DeleteArticle)            // 删除文章（管理员）
-		adminGroup.POST("/articles/bulk-delete", adminc.BulkDeleteArticles) // 批量删除文章
-		adminGroup.GET("/categories", adminc.GetCategories)                 // 获取分类列表
-		adminGroup.POST("/categories", adminc.CreateCategory)               // 创建分类
-		adminGroup.PUT("/categories/:id", adminc.UpdateCategory)            // 更新分类
-		adminGroup.DELETE("/categories/:id", adminc.DeleteCategory)         // 删除分类
-		adminGroup.GET("/stats", adminc.GetStats)                           // 获取统计信息
-
-		// 用户管理相关API（管理员权限）
-		adminGroup.GET("/users", uc.List)            // 查询用户列表
-		adminGroup.GET("/users/:name", uc.Get)       // 查询用户详情
-		adminGroup.PUT("/users/:name", uc.Update)    // 更改用户
-		adminGroup.DELETE("/users/:name", uc.Delete) // 删除用户
-	}
-
-	// 配置相关（管理员权限）
-	{
-		configc := config.New(b)
-		adminGroup.POST("/configs", configc.Create)           // 创建配置
-		adminGroup.GET("/configs", configc.List)              // 获取所有配置
-		adminGroup.GET("/configs/:key", configc.Get)          // 获取单个配置
-		adminGroup.PUT("/configs/:key", configc.Update)       // 更新配置
-		adminGroup.DELETE("/configs/:key", configc.Delete)    // 删除配置
-		adminGroup.POST("/configs/init", configc.InitDefault) // 初始化默认配置
 	}
 
 	// 用户相关

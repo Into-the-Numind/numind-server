@@ -6,8 +6,11 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz/admin"
+	bookbiz "numind-server/internal/numind/biz/book"
+	imagebiz "numind-server/internal/numind/biz/image"
 	paymentbiz "numind-server/internal/numind/biz/payment"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/model"
 
 	"github.com/gin-gonic/gin"
 )
@@ -15,12 +18,16 @@ import (
 type AdminController struct {
 	biz        admin.IAdminBiz
 	paymentBiz paymentbiz.PaymentBiz
+	bookBiz    bookbiz.BookBiz
+	imageBiz   imagebiz.ImageBiz
 }
 
-func NewAdminController(biz admin.IAdminBiz, paymentBiz paymentbiz.PaymentBiz) *AdminController {
+func NewAdminController(biz admin.IAdminBiz, paymentBiz paymentbiz.PaymentBiz, bookBiz bookbiz.BookBiz, imageBiz imagebiz.ImageBiz) *AdminController {
 	return &AdminController{
 		biz:        biz,
 		paymentBiz: paymentBiz,
+		bookBiz:    bookBiz,
+		imageBiz:   imageBiz,
 	}
 }
 
@@ -614,5 +621,49 @@ func (c *AdminController) GetPayment(ctx *gin.Context) {
 		"code":    0,
 		"message": "获取支付记录成功",
 		"data":    payment,
+	})
+}
+
+// GetBook 获取笔记详情（管理员，包含图片信息）
+func (c *AdminController) GetBook(ctx *gin.Context) {
+	bookIDStr := ctx.Param("id")
+	bookID, err := strconv.ParseUint(bookIDStr, 10, 32)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{
+			"code":    1,
+			"message": "笔记ID格式错误",
+			"data":    nil,
+		})
+		return
+	}
+
+	// 获取笔记基本信息
+	book, err := c.bookBiz.GetByID(ctx, uint(bookID))
+	if err != nil {
+		ctx.JSON(http.StatusNotFound, gin.H{
+			"code":    1,
+			"message": "笔记不存在",
+			"data":    nil,
+		})
+		return
+	}
+
+	// 获取该笔记的所有图片
+	_, images, err := c.imageBiz.ListByBook(ctx, uint(bookID), 0, 1000) // 获取所有图片
+	if err != nil {
+		// 记录错误但不影响主要操作
+		images = []*model.ImageM{}
+	}
+
+	// 创建BookResponse
+	bookResponse := model.NewBookResponse(book)
+	if len(images) > 0 {
+		bookResponse.AddImages(images)
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "获取笔记详情成功",
+		"data":    bookResponse,
 	})
 }

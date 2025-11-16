@@ -41,7 +41,7 @@ func installAdminRouters(g *gin.Engine) error {
 	bc := book.New(b)
 	tc := template.New(b)
 	configc := config.New(b)
-	adminc := admin.NewAdminController(b.Admin(), b.Payments())
+	adminc := admin.NewAdminController(b.Admin(), b.Payments(), b.Books(), b.Images())
 	adminAccountCtrl := adminaccount.NewAdminAccountController(b.AdminAccounts())
 	feedbackCtrl := feedback.NewAdminFeedbackController(b)
 
@@ -64,8 +64,8 @@ func installAdminRouters(g *gin.Engine) error {
 
 	// 笔记（书籍）管理
 	{
-		authGroup.GET("/books", bc.ListAll) // 后台管理系统专用，返回所有书籍字段
-		authGroup.GET("/books/:id", bc.Get)
+		authGroup.GET("/books", bc.ListAll)         // 后台管理系统专用，返回所有书籍字段
+		authGroup.GET("/books/:id", adminc.GetBook) // 后台管理系统专用，返回笔记详情（包含图片信息）
 		authGroup.PUT("/books/:id", bc.Update)
 		authGroup.DELETE("/books/:id", bc.Delete)
 		authGroup.DELETE("/books", bc.DeleteBatch)
