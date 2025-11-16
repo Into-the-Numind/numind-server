@@ -667,3 +667,61 @@ func (c *AdminController) GetBook(ctx *gin.Context) {
 		"data":    bookResponse,
 	})
 }
+
+// GetImageList 获取图片列表（管理员）
+func (c *AdminController) GetImageList(ctx *gin.Context) {
+	offset, _ := strconv.Atoi(ctx.DefaultQuery("offset", "0"))
+	limit, _ := strconv.Atoi(ctx.DefaultQuery("limit", "10"))
+	userIDStr := ctx.Query("user_id")
+	bookIDStr := ctx.Query("book_id")
+	statusStr := ctx.Query("status")
+	keyword := ctx.Query("keyword")
+
+	req := &store.AdminImageListRequest{
+		Offset:  offset,
+		Limit:   limit,
+		Keyword: keyword,
+	}
+
+	// 解析用户ID
+	if userIDStr != "" {
+		if id, err := strconv.ParseUint(userIDStr, 10, 32); err == nil {
+			uid := uint(id)
+			req.UserID = &uid
+		}
+	}
+
+	// 解析笔记ID
+	if bookIDStr != "" {
+		if id, err := strconv.ParseUint(bookIDStr, 10, 32); err == nil {
+			bid := uint(id)
+			req.BookID = &bid
+		}
+	}
+
+	// 解析状态
+	if statusStr != "" {
+		req.Status = &statusStr
+	}
+
+	images, total, err := c.imageBiz.ListAll(ctx, req)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{
+			"code":    1,
+			"message": "获取图片列表失败: " + err.Error(),
+			"data":    nil,
+		})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "获取图片列表成功",
+		"data": gin.H{
+			"items":  images,
+			"total":  total,
+			"offset": offset,
+			"limit":  limit,
+		},
+	})
+}

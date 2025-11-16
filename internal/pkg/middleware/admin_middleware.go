@@ -48,6 +48,12 @@ func AdminSystemAuthMiddleware() gin.HandlerFunc {
 // validateAdminToken 验证后台管理系统的 JWT token 并返回管理员信息
 // token 应包含 admin_id 和 username 字段
 func validateAdminToken(ctx context.Context, tokenString string) (*model.Admin, error) {
+	// 检查token是否在黑名单中
+	blacklist := GetTokenBlacklist()
+	if blacklist.IsTokenBlacklisted(tokenString) {
+		return nil, fmt.Errorf("token已失效")
+	}
+
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -60,6 +66,11 @@ func validateAdminToken(ctx context.Context, tokenString string) (*model.Admin, 
 	}
 
 	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+		// 再次检查黑名单（防止在解析过程中token被加入黑名单）
+		if blacklist.IsTokenBlacklisted(tokenString) {
+			return nil, fmt.Errorf("token已失效")
+		}
+
 		// 安全地获取 admin_id
 		adminIDValue, exists := claims["admin_id"]
 		if !exists || adminIDValue == nil {

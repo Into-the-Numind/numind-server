@@ -54,6 +54,11 @@ func installAdminRouters(g *gin.Engine) error {
 	authGroup := v1Group.Group("")
 	authGroup.Use(importMw.AdminSystemAuthMiddleware())
 
+	// 账户管理
+	{
+		authGroup.POST("/logout", adminAccountCtrl.Logout) // 管理员登出
+	}
+
 	// 用户管理
 	{
 		authGroup.GET("/users", adminc.GetUserList) // 后台管理系统专用，返回所有用户字段
@@ -73,7 +78,7 @@ func installAdminRouters(g *gin.Engine) error {
 
 	// 图片管理
 	{
-		authGroup.GET("/images", ic.List)
+		authGroup.GET("/images", adminc.GetImageList) // 后台管理系统专用，返回所有图片字段
 		authGroup.GET("/images/:id", ic.Get)
 		authGroup.PUT("/images/:id", ic.Update)
 		authGroup.DELETE("/images/:id", ic.Delete)
