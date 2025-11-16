@@ -513,6 +513,79 @@ func (c *AdminController) GetStats(ctx *gin.Context) {
 	})
 }
 
+// GetDashboardStats 获取仪表板统计信息
+func (c *AdminController) GetDashboardStats(ctx *gin.Context) {
+	stats, err := c.biz.GetDashboardStats(ctx)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{
+			"code":    1,
+			"message": err.Error(),
+			"data":    nil,
+		})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "获取仪表板统计信息成功",
+		"data":    stats,
+	})
+}
+
+// GetUserGrowthTrend 获取用户增长趋势
+// 支持三种时间范围：
+//   - week: 本周（从本周一开始，按日统计，显示格式：1日、2日...）
+//   - month: 本月（从本月1日开始，按日统计，显示格式：1日、2日...）
+//   - year: 今年（从1月1日开始，按月统计，显示格式：1月、2月...）
+//
+// 参数：period (可选，默认 "month")
+func (c *AdminController) GetUserGrowthTrend(ctx *gin.Context) {
+	period := ctx.DefaultQuery("period", "month")
+
+	trend, err := c.biz.GetUserGrowthTrend(ctx, period)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{
+			"code":    1,
+			"message": err.Error(),
+			"data":    nil,
+		})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "获取用户增长趋势成功",
+		"data":    trend,
+	})
+}
+
+// GetBookGrowthTrend 获取笔记增长趋势
+// 支持三种时间范围：
+//   - week: 本周（从本周一开始，按日统计，显示格式：1日、2日...）
+//   - month: 本月（从本月1日开始，按日统计，显示格式：1日、2日...）
+//   - year: 今年（从1月1日开始，按月统计，显示格式：1月、2月...）
+//
+// 参数：period (可选，默认 "month")
+func (c *AdminController) GetBookGrowthTrend(ctx *gin.Context) {
+	period := ctx.DefaultQuery("period", "month")
+
+	trend, err := c.biz.GetBookGrowthTrend(ctx, period)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{
+			"code":    1,
+			"message": err.Error(),
+			"data":    nil,
+		})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "获取笔记增长趋势成功",
+		"data":    trend,
+	})
+}
+
 // GetPaymentList 获取支付记录列表（管理员）
 func (c *AdminController) GetPaymentList(ctx *gin.Context) {
 	offset, _ := strconv.Atoi(ctx.DefaultQuery("offset", "0"))

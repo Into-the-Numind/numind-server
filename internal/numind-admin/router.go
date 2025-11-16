@@ -118,7 +118,10 @@ func installAdminRouters(g *gin.Engine) error {
 
 	// 管理员统计信息
 	{
-		authGroup.GET("/stats", adminc.GetStats)
+		authGroup.GET("/stats", adminc.GetStats)                          // 获取统计信息
+		authGroup.GET("/dashboard/stats", adminc.GetDashboardStats)       // 获取仪表板统计信息
+		authGroup.GET("/dashboard/user-trend", adminc.GetUserGrowthTrend) // 获取用户增长趋势
+		authGroup.GET("/dashboard/book-trend", adminc.GetBookGrowthTrend) // 获取笔记增长趋势
 	}
 
 	// 反馈管理

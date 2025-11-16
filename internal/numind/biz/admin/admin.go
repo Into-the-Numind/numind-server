@@ -24,6 +24,9 @@ type IAdminBiz interface {
 	UpdateCategory(ctx context.Context, id uint, req *AdminCategoryUpdateRequest) error
 	DeleteCategory(ctx context.Context, id uint) error
 	GetStats(ctx context.Context) (*store.AdminStats, error)
+	GetDashboardStats(ctx context.Context) (*store.DashboardStats, error)
+	GetUserGrowthTrend(ctx context.Context, period string) ([]store.GrowthTrendItem, error)
+	GetBookGrowthTrend(ctx context.Context, period string) ([]store.GrowthTrendItem, error)
 }
 
 type AdminBiz struct {
@@ -207,4 +210,16 @@ func (b *AdminBiz) DeleteCategory(ctx context.Context, id uint) error {
 
 func (b *AdminBiz) GetStats(ctx context.Context) (*store.AdminStats, error) {
 	return b.store.GetStats()
+}
+
+func (b *AdminBiz) GetDashboardStats(ctx context.Context) (*store.DashboardStats, error) {
+	return b.store.GetDashboardStats()
+}
+
+func (b *AdminBiz) GetUserGrowthTrend(ctx context.Context, period string) ([]store.GrowthTrendItem, error) {
+	return b.store.GetUserGrowthTrend(period)
+}
+
+func (b *AdminBiz) GetBookGrowthTrend(ctx context.Context, period string) ([]store.GrowthTrendItem, error) {
+	return b.store.GetBookGrowthTrend(period)
 }
