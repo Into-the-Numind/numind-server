@@ -24,6 +24,7 @@ func New(b biz.IBiz) *ConfigController {
 // CreateConfigRequest 创建配置请求
 type CreateConfigRequest struct {
 	Key         string `json:"key" binding:"required"`
+	Title       string `json:"title"` // 配置标题
 	Value       string `json:"value" binding:"required"`
 	Description string `json:"description"`
 }
@@ -44,7 +45,7 @@ func (ctrl *ConfigController) Create(c *gin.Context) {
 		return
 	}
 
-	config, err := ctrl.b.Configs().Create(c, req.Key, req.Value, req.Description)
+	config, err := ctrl.b.Configs().Create(c, req.Key, req.Title, req.Value, req.Description)
 	if err != nil {
 		log.C(c).Errorw("Failed to create config", "error", err.Error())
 		core.WriteResponse(c, err, nil)

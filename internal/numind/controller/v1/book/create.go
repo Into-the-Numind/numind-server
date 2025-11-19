@@ -13,6 +13,7 @@ import (
 
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/book"
+	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
@@ -130,6 +131,10 @@ func (ctrl *BookController) createWithImageProcessor(c *gin.Context, userID uint
 
 	// 创建异步处理器
 	asyncProcessor := book.NewAsyncBookProcessor(bizAdapter)
+
+	// 设置配置读取器（从Redis/数据库读取配置）
+	configReader := config.NewConfigReader(ctrl.b.Configs())
+	asyncProcessor.SetConfigReader(configReader)
 
 	// 异步创建book（传入aiPolish参数）
 	book, err := asyncProcessor.CreateBookWithImagesAsync(c, userID, text, files, aiPolish)
@@ -279,6 +284,11 @@ func (ctrl *BookController) Create(c *gin.Context) {
 // BookBizAdapter 适配器，用于包装biz接口
 type BookBizAdapter struct {
 	biz biz.IBiz
+}
+
+// Configs 返回配置业务接口（用于访问配置读取器）
+func (a *BookBizAdapter) Configs() biz.IBiz {
+	return a.biz
 }
 
 func (a *BookBizAdapter) Books() book.AsyncBookBiz {

@@ -1,9 +1,12 @@
 package numind
 
 import (
+	"context"
 	"fmt"
+	configbiz "numind-server/internal/numind/biz/config"
 	"numind-server/internal/numind/config"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/redis"
 	"numind-server/internal/pkg/util"
 	"os"
 	"path/filepath"
@@ -105,7 +108,33 @@ func initStore() error {
 		return err
 	}
 
-	_ = store.NewStore(ins)
+	storeInstance := store.NewStore(ins)
+
+	// 初始化Redis
+	if err := redis.Init(); err != nil {
+		log.Warnw("Failed to initialize Redis", "error", err)
+		// Redis初始化失败不影响应用启动，但配置缓存功能将不可用
+	} else {
+		log.Infow("Redis initialized successfully")
+	}
+
+	// 同步系统配置（启动时自动同步）
+	ctx := context.Background()
+	configBiz := configbiz.New(storeInstance)
+	if err := configBiz.InitDefaultConfigs(ctx); err != nil {
+		log.Warnw("Failed to sync system configs", "error", err)
+		// 配置同步失败不影响应用启动
+	} else {
+		log.Infow("System configs synchronized successfully")
+	}
+
+	// 启动配置变更监听器
+	if err := configBiz.StartConfigChangeListener(ctx); err != nil {
+		log.Warnw("Failed to start config change listener", "error", err)
+		// 监听器启动失败不影响应用启动
+	} else {
+		log.Infow("Config change listener started successfully")
+	}
 
 	return nil
 }
