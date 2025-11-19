@@ -40,13 +40,14 @@ log:
   format: console # 指定日志显示格式，可选值：console, json
   output-paths: [./numind.log, stdout] # 指定日志输出位置，多个输出，用 `逗号 + 空格` 分开。stdout：标准输出，
 
+# Redis 缓存相关配置
 redis:
-    host: "localhost"
-    port: 6379
-    password: ""
-    db: 0
-    pool_size: 10
-    min_idle_conns: 5
+  host: 49.233.219.254  # Redis 机器 IP
+  port: 26739           # Redis 端口
+  password: Numind2025  # Redis 密码
+  db: 2                 # Redis 数据库编号，QA环境使用 2
+  pool_size: 10        # Redis 连接池大小
+  min_idle_conns: 5    # Redis 最小空闲连接数
 
 wechat:
     app_id: "wxad0aec8b3d3b2ef4"

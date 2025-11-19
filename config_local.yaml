@@ -32,6 +32,15 @@ db:
   max-connection-life-time: 10s # 空闲连接最大存活时间，默认 10s
   log-level: 4 # GORM log level, 1: silent, 2:error, 3:warn, 4:info
 
+# Redis 缓存相关配置
+redis:
+  host: 49.233.219.254  # Redis 机器 IP，默认 127.0.0.1
+  port: 26739        # Redis 端口，默认 6379
+  password: Numind2025  # Redis 密码，默认空
+  db: 0             # Redis 数据库编号，本地环境使用 0
+  pool_size: 10     # Redis 连接池大小，默认 10
+  min_idle_conns: 5 # Redis 最小空闲连接数，默认 5
+
 # 日志配置
 log:
   disable-caller: false # 是否开启 caller，如果开启会在日志中显示调用日志所在的文件和行号
