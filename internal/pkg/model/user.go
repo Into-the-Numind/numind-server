@@ -15,7 +15,7 @@ type User struct {
 	UnionID   string `gorm:"uniqueIndex:idx_unionid;size:50;index" json:"unionid"` // 统一使用UnionID作为用户标识
 	Phone     string `gorm:"size:20;index" json:"phone"`
 	Nickname  string `gorm:"size:100" json:"nickname"`
-	AvatarURL string `gorm:"size:255" json:"avatar_url"`
+	AvatarURL string `gorm:"size:512" json:"avatar_url"`
 	IsPro     bool   `gorm:"default:false" json:"is_pro"`
 	// 会员相关字段
 	MembershipType           string     `gorm:"size:20;default:'free';index" json:"membership_type"` // 会员类型：free, subscription, package
@@ -224,7 +224,7 @@ func (u *User) GetCurrentMembershipMonthEnd() time.Time {
 
 // CanCreateBookInCurrentMonth 检查当前会员月内是否可以创建卡册
 func (u *User) CanCreateBookInCurrentMonth() bool {
-	// 只有订阅会员和both类型才需要检查月度限制
+	// 只有订阅会员和both类型才需要检查
 	if u.MembershipType != MembershipTypeSubscription && u.MembershipType != MembershipTypeBoth {
 		return true
 	}
@@ -234,9 +234,8 @@ func (u *User) CanCreateBookInCurrentMonth() bool {
 		return false
 	}
 
-	// 检查月度创建数量限制
-	const monthlyBookLimit = 100
-	return u.MonthlyBookCount < monthlyBookLimit
+	// 会员无数量限制，直接返回true
+	return true
 }
 
 // GetRemainingMonthlyBooks 获取当前会员月内剩余可创建的卡册数量
@@ -245,12 +244,8 @@ func (u *User) GetRemainingMonthlyBooks() int {
 		return -1 // 无限制
 	}
 
-	const monthlyBookLimit = 100
-	remaining := monthlyBookLimit - u.MonthlyBookCount
-	if remaining < 0 {
-		return 0
-	}
-	return remaining
+	// 会员无数量限制
+	return -1
 }
 
 // IsInNewFreeUserMonth 检查免费用户是否进入新的日历月

@@ -4,53 +4,74 @@ import (
 	"context"
 	"fmt"
 	"numind-server/internal/pkg/log"
+
+	"github.com/spf13/viper"
 )
 
 // PriceValidator 价格验证器
 type PriceValidator struct {
 	subscriptionPrices map[int64]int // 订阅价格映射：价格(分) -> 天数
-	packagePrices      map[int]int64 // 资源包价格映射：次数 -> 价格(分)
 }
 
 // NewPriceValidator 创建价格验证器
 func NewPriceValidator() *PriceValidator {
+	// 检查是否为开发环境（debug模式）
+	runmode := viper.GetString("runmode")
+	isDev := runmode == "debug"
+
+	prices := make(map[int64]int)
+	if isDev {
+		// 开发环境：1元（100分）用于测试（30天和365天都是1元）
+		// 注意：由于map的key不能重复，我们只存储100分 -> 30天
+		// 在ValidateSubscriptionPrice中会特殊处理365天的情况
+		prices[100] = 30 // 月度订阅：1元（100分） -> 30天
+		log.C(context.Background()).Infow("价格验证器初始化（开发模式）", "runmode", runmode, "price", 100)
+	} else {
+		// 生产环境：正常价格
+		prices[1600] = 30   // 月度订阅：16元 -> 30天
+		prices[11900] = 365 // 年度订阅：119元 -> 365天
+	}
+
 	return &PriceValidator{
-		subscriptionPrices: map[int64]int{
-			1900:  30,  // 月度订阅：19元 -> 30天
-			13700: 365, // 年度订阅：137元 -> 365天
-		},
-		packagePrices: map[int]int64{
-			20: 1000, // 20次 -> 10元
-			50: 2000, // 50次 -> 20元
-		},
+		subscriptionPrices: prices,
 	}
 }
 
 // ValidateSubscriptionPrice 验证订阅会员价格
 func (pv *PriceValidator) ValidateSubscriptionPrice(amount int64) (int, error) {
+	// 检查是否为开发环境
+	runmode := viper.GetString("runmode")
+	if runmode == "debug" {
+		// 开发环境：1元（100分），需要根据其他信息判断天数
+		// 由于无法从价格区分30天和365天，这里返回30天作为默认值
+		// 实际天数应该从payment.SubscriptionDays字段获取
+		if amount == 100 {
+			return 30, nil // 开发环境默认返回30天，实际天数由SubscriptionDays字段决定
+		}
+		return 0, fmt.Errorf("无效的订阅价格: %d分，开发环境只支持1元（100分）", amount)
+	}
+
+	// 生产环境：正常验证
 	days, exists := pv.subscriptionPrices[amount]
 	if !exists {
-		return 0, fmt.Errorf("无效的订阅价格: %d分，只支持30天(1900分)和365天(13700分)", amount)
+		return 0, fmt.Errorf("无效的订阅价格: %d分，只支持30天(1600分)和365天(11900分)", amount)
 	}
 	return days, nil
 }
 
-// ValidatePackagePrice 验证资源包价格
-func (pv *PriceValidator) ValidatePackagePrice(count int, amount int64) error {
-	expectedAmount, exists := pv.packagePrices[count]
-	if !exists {
-		return fmt.Errorf("无效的资源包次数: %d，只支持20、50次", count)
-	}
-
-	if amount != expectedAmount {
-		return fmt.Errorf("资源包价格不匹配: 期望%d分，实际%d分", expectedAmount, amount)
-	}
-
-	return nil
-}
-
 // GetSubscriptionPrice 获取订阅价格（服务端计算）
 func (pv *PriceValidator) GetSubscriptionPrice(days int) (int64, error) {
+	// 检查是否为开发环境
+	runmode := viper.GetString("runmode")
+	if runmode == "debug" {
+		// 开发环境：无论多少天都返回1元（100分）
+		if days == 30 || days == 365 {
+			return 100, nil
+		}
+		return 0, fmt.Errorf("无效的订阅天数: %d，只支持30天和365天", days)
+	}
+
+	// 生产环境：正常价格
 	for price, dayCount := range pv.subscriptionPrices {
 		if dayCount == days {
 			return price, nil
@@ -59,31 +80,12 @@ func (pv *PriceValidator) GetSubscriptionPrice(days int) (int64, error) {
 	return 0, fmt.Errorf("无效的订阅天数: %d，只支持30天和365天", days)
 }
 
-// GetPackagePrice 获取资源包价格（服务端计算）
-func (pv *PriceValidator) GetPackagePrice(count int) (int64, error) {
-	price, exists := pv.packagePrices[count]
-	if !exists {
-		return 0, fmt.Errorf("无效的资源包次数: %d，只支持1、5、20、50次", count)
-	}
-	return price, nil
-}
-
 // GetValidSubscriptionPrices 获取所有有效的订阅价格
 func (pv *PriceValidator) GetValidSubscriptionPrices() map[int64]int {
 	// 返回副本，防止外部修改
 	result := make(map[int64]int)
 	for price, days := range pv.subscriptionPrices {
 		result[price] = days
-	}
-	return result
-}
-
-// GetValidPackagePrices 获取所有有效的资源包价格
-func (pv *PriceValidator) GetValidPackagePrices() map[int]int64 {
-	// 返回副本，防止外部修改
-	result := make(map[int]int64)
-	for count, price := range pv.packagePrices {
-		result[count] = price
 	}
 	return result
 }

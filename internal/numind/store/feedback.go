@@ -15,6 +15,8 @@ type FeedbackStore interface {
 	GetByUserID(ctx context.Context, userID uint, offset, limit int) (int64, []*model.Feedback, error)
 	Update(ctx context.Context, feedback *model.Feedback) error
 	Delete(ctx context.Context, feedbackID uint) error
+	// 管理员方法
+	ListAll(ctx context.Context, offset, limit int, userID *uint, status *int, feedbackType *string) (int64, []*model.Feedback, error)
 }
 
 // FeedbackStore 接口的实现.
@@ -65,4 +67,33 @@ func (f *feedbacks) Update(ctx context.Context, feedback *model.Feedback) error 
 // Delete 根据ID删除数据库 feedback 记录.
 func (f *feedbacks) Delete(ctx context.Context, feedbackID uint) error {
 	return f.db.Delete(&model.Feedback{}, feedbackID).Error
+}
+
+// ListAll 管理员查询所有反馈（支持筛选）
+func (f *feedbacks) ListAll(ctx context.Context, offset, limit int, userID *uint, status *int, feedbackType *string) (count int64, ret []*model.Feedback, err error) {
+	query := f.db.Model(&model.Feedback{})
+
+	// 根据用户ID筛选
+	if userID != nil {
+		query = query.Where("user_id = ?", *userID)
+	}
+
+	// 根据状态筛选
+	if status != nil {
+		query = query.Where("status = ?", *status)
+	}
+
+	// 根据类型筛选
+	if feedbackType != nil && *feedbackType != "" {
+		query = query.Where("type = ?", *feedbackType)
+	}
+
+	// 获取总数
+	if err := query.Count(&count).Error; err != nil {
+		return 0, nil, err
+	}
+
+	// 分页查询
+	err = query.Preload("User").Offset(offset).Limit(defaultLimit(limit)).Order("created_at DESC").Find(&ret).Error
+	return
 }

@@ -90,17 +90,17 @@ func New(ds store.IStore) *userBiz {
 
 // ChangePassword 是 UserBiz 接口中 `ChangePassword` 方法的实现.
 func (b *userBiz) ChangePassword(ctx context.Context, username string, r *v1.ChangePasswordRequest) error {
-	userM, err := b.ds.Users().Get(ctx, username)
+	user, err := b.ds.Users().Get(ctx, username)
 	if err != nil {
 		return err
 	}
 
-	if err := auth.Compare(userM.Password, r.OldPassword); err != nil {
+	if err := auth.Compare(user.Password, r.OldPassword); err != nil {
 		return errno.ErrPasswordIncorrect
 	}
 
-	userM.Password, _ = auth.Encrypt(r.NewPassword)
-	if err := b.ds.Users().Update(ctx, userM); err != nil {
+	user.Password, _ = auth.Encrypt(r.NewPassword)
+	if err := b.ds.Users().Update(ctx, user); err != nil {
 		return err
 	}
 
@@ -131,10 +131,10 @@ func (b *userBiz) Login(ctx context.Context, r *v1.LoginRequest) (*v1.LoginRespo
 
 // Create 是 UserBiz 接口中 `Create` 方法的实现.
 func (b *userBiz) Create(ctx context.Context, r *v1.CreateUserRequest) error {
-	var userM model.UserM
-	_ = copier.Copy(&userM, r)
+	var user model.User
+	_ = copier.Copy(&user, r)
 
-	if err := b.ds.Users().Create(ctx, &userM); err != nil {
+	if err := b.ds.Users().Create(ctx, &user); err != nil {
 		if match, _ := regexp.MatchString("Duplicate entry '.*' for key 'username'", err.Error()); match {
 			return errno.ErrUserAlreadyExist
 		}
@@ -272,8 +272,8 @@ func (b *userBiz) List(ctx context.Context, offset, limit int) (*v1.ListUserResp
 				m.Store(user.ID, &v1.UserInfo{
 					Username:  user.Username,
 					Nickname:  user.Nickname,
-					Email:     user.Email,
-					Phone:     user.Email,
+					Email:     "", // User 模型没有 Email 字段
+					Phone:     user.Phone,
 					PostCount: 0,
 					CreatedAt: user.CreatedAt.Format("2006-01-02 15:04:05"),
 					UpdatedAt: user.UpdatedAt.Format("2006-01-02 15:04:05"),
@@ -302,24 +302,25 @@ func (b *userBiz) List(ctx context.Context, offset, limit int) (*v1.ListUserResp
 
 // Update 是 UserBiz 接口中 `Update` 方法的实现.
 func (b *userBiz) Update(ctx context.Context, username string, user *v1.UpdateUserRequest) error {
-	userM, err := b.ds.Users().Get(ctx, username)
+	userModel, err := b.ds.Users().Get(ctx, username)
 	if err != nil {
 		return err
 	}
 
-	if user.Email != nil {
-		userM.Email = *user.Email
-	}
+	// User 模型没有 Email 字段，跳过 Email 更新
+	// if user.Email != nil {
+	// 	userModel.Email = *user.Email
+	// }
 
 	if user.Nickname != nil {
-		userM.Nickname = *user.Nickname
+		userModel.Nickname = *user.Nickname
 	}
 
 	if user.Phone != nil {
-		userM.Phone = *user.Phone
+		userModel.Phone = *user.Phone
 	}
 
-	if err := b.ds.Users().Update(ctx, userM); err != nil {
+	if err := b.ds.Users().Update(ctx, userModel); err != nil {
 		return err
 	}
 
@@ -437,7 +438,7 @@ func (s *userBiz) getWechatToken(code string) (*wechat.WechatTokenResponse, erro
 	return &tokenResp, nil
 }
 
-// generateToken 生成JWT token（包含unionid）
+// generateToken 生成JWT token
 func (s *userBiz) generateToken(user *model.User) (string, error) {
 	expireHours := viper.GetInt("jwt.expire-hours")
 	if expireHours == 0 {
@@ -446,8 +447,7 @@ func (s *userBiz) generateToken(user *model.User) (string, error) {
 
 	claims := jwt.MapClaims{
 		"user_id": user.ID,
-		"unionid": user.UnionID, // 优先使用unionid
-		"openid":  user.OpenID,  // 保留openid用于兼容
+		"openid":  user.OpenID,
 		"exp":     time.Now().Add(time.Duration(expireHours) * time.Hour).Unix(),
 	}
 
@@ -455,63 +455,24 @@ func (s *userBiz) generateToken(user *model.User) (string, error) {
 	return token.SignedString([]byte(viper.GetString("jwt.secret")))
 }
 
-// findOrCreateUser 查找或创建用户（优先使用UnionID）
-func (s *userBiz) findOrCreateUser(unionID, openID string) (*model.User, error) {
+// findOrCreateUser 查找或创建用户
+func (s *userBiz) findOrCreateUser(openID string) (*model.User, error) {
 	var user model.User
-	var err error
+	err := s.ds.DB().Where("open_id = ?", openID).First(&user).Error
 
-	// 优先使用 UnionID 查找用户
-	if unionID != "" {
-		err = s.ds.DB().Where("union_id = ?", unionID).First(&user).Error
-		if err == nil {
-			// 找到用户，更新 OpenID（如果发生变化）和 UnionID（确保已保存）
-			needUpdate := false
-			if user.OpenID != openID && openID != "" {
-				user.OpenID = openID
-				needUpdate = true
-			}
-			if user.UnionID == "" {
-				user.UnionID = unionID
-				needUpdate = true
-			}
-			if needUpdate {
-				s.ds.DB().Save(&user)
-			}
-			return &user, nil
+	if err == gorm.ErrRecordNotFound {
+		// 创建新用户，设置唯一的username
+		// 使用Omit排除union_id字段，避免空字符串触发唯一索引冲突
+		user = model.User{
+			OpenID:   openID,
+			Username: fmt.Sprintf("user_%s", openID), // 使用openid生成唯一username
 		}
-		if err != gorm.ErrRecordNotFound {
-			return nil, err
-		}
-	}
 
-	// 如果没有 UnionID 或通过 UnionID 未找到，尝试通过 OpenID 查找（兼容旧用户）
-	if openID != "" {
-		err = s.ds.DB().Where("open_id = ?", openID).First(&user).Error
-		if err == nil {
-			// 找到旧用户，更新 UnionID
-			if unionID != "" && user.UnionID == "" {
-				user.UnionID = unionID
-				s.ds.DB().Save(&user)
-			}
-			return &user, nil
+		if err := s.ds.DB().Omit("union_id").Create(&user).Error; err != nil {
+			return nil, fmt.Errorf("创建用户失败: %v", err)
 		}
-		if err != gorm.ErrRecordNotFound {
-			return nil, err
-		}
-	}
-
-	// 用户不存在，创建新用户
-	user = model.User{
-		OpenID:   openID,
-		UnionID:  unionID,
-		Username: fmt.Sprintf("user_%s", unionID), // 优先使用unionid生成username
-	}
-	if user.Username == "user_" && openID != "" {
-		user.Username = fmt.Sprintf("user_%s", openID) // 如果没有unionid，使用openid
-	}
-
-	if err := s.ds.DB().Create(&user).Error; err != nil {
-		return nil, fmt.Errorf("创建用户失败: %v", err)
+	} else if err != nil {
+		return nil, err
 	}
 
 	return &user, nil
@@ -534,16 +495,10 @@ func (s *userBiz) WechatLogin(req *v1.WechatLoginRequest) (*v1.WechatLoginRespon
 		}
 	}
 
-	log.C(context.Background()).Infow("微信登录处理",
-		"openid", tokenResp.OpenID,
-		"unionid", tokenResp.UnionID)
+	log.C(context.Background()).Infow("微信登录处理", "openid", tokenResp.OpenID)
 
-	// 优先使用 UnionID，如果没有则使用 OpenID（兼容旧数据）
-	unionID := tokenResp.UnionID
-	openID := tokenResp.OpenID
-
-	// 查找或创建用户（优先使用UnionID）
-	user, err := s.findOrCreateUser(unionID, openID)
+	// 查找或创建用户
+	user, err := s.findOrCreateUser(tokenResp.OpenID)
 	if err != nil {
 		return nil, fmt.Errorf("用户处理失败: %v", err)
 	}

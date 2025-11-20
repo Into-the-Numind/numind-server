@@ -1,6 +1,6 @@
 # qa 环境
 # 通用配置
-runmode: debug               # Gin 开发模式, 可选值有：debug, release, test
+runmode: release             # Gin 开发模式, 可选值有：debug, release, test
 addr: :9091                  # HTTP 服务器监听地址
 
 # 后台管理系统配置
@@ -40,20 +40,21 @@ log:
   format: console # 指定日志显示格式，可选值：console, json
   output-paths: [./numind.log, stdout] # 指定日志输出位置，多个输出，用 `逗号 + 空格` 分开。stdout：标准输出，
 
+# Redis 缓存相关配置
 redis:
-    host: "localhost"
-    port: 6379
-    password: ""
-    db: 0
-    pool_size: 10
-    min_idle_conns: 5
+  host: 49.233.219.254  # Redis 机器 IP
+  port: 26739           # Redis 端口
+  password: Numind2025  # Redis 密码
+  db: 2                 # Redis 数据库编号，QA环境使用 2
+  pool_size: 10        # Redis 连接池大小
+  min_idle_conns: 5    # Redis 最小空闲连接数
 
 wechat:
     app_id: "wxad0aec8b3d3b2ef4"
     app_secret: "cd5e2a2a919fd6a06c52ae2a15286a36"
     mch_id: "1722456639"
     mch_cert_serial_no: "6D2DCAC8D07269DB7B19F4B644F2BDB1772B983B"
-    mch_api_v3_key: "fT6vGq3sR2wP9kY7hN4bZ5cX1jM8aE0d"
+    mch_api_v3_key: "fda9ba0b25b6822789676ee6dcbc01d2"
     mch_private_key_path: "/opt/numind/config/cert/apiclient_key.pem"
     wechatpay_cert_path: "/opt/numind/config/cert/wechatpay_cert.pem"
     notify_url: "https://youshu.asia/qa/api/pay/wechat/notify"

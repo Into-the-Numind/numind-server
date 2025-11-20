@@ -70,10 +70,11 @@ func run() error {
 		return err
 	}
 
-	// 初始化系统配置（从数据库加载）
-	if err := initSystemConfigs(); err != nil {
-		log.Warnw("Failed to init system configs from database, will use yaml config", "err", err)
-	}
+	// 初始化 token 黑名单
+	mw.InitTokenBlacklist()
+
+	// 系统配置已通过 initStore() 中的 InitDefaultConfigs() 同步硬编码配置
+	// 不再从 yaml 文件加载配置，只使用代码中硬编码的配置定义
 
 	// 初始化 COS（如果已配置）
 	InitCOS()

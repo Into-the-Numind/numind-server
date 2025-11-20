@@ -7,9 +7,9 @@ import (
 	adminaccount "numind-server/internal/numind/controller/v1/admin_account"
 	"numind-server/internal/numind/controller/v1/book"
 	"numind-server/internal/numind/controller/v1/config"
+	"numind-server/internal/numind/controller/v1/feedback"
 	"numind-server/internal/numind/controller/v1/image"
 	"numind-server/internal/numind/controller/v1/order"
-	"numind-server/internal/numind/controller/v1/payment"
 	"numind-server/internal/numind/controller/v1/template"
 	"numind-server/internal/numind/controller/v1/user"
 	"numind-server/internal/numind/store"
@@ -41,20 +41,27 @@ func installAdminRouters(g *gin.Engine) error {
 	bc := book.New(b)
 	tc := template.New(b)
 	configc := config.New(b)
-	adminc := admin.NewAdminController(b.Admin())
+	adminc := admin.NewAdminController(b.Admin(), b.Payments(), b.Books(), b.Images())
 	adminAccountCtrl := adminaccount.NewAdminAccountController(b.AdminAccounts())
+	feedbackCtrl := feedback.NewAdminFeedbackController(b)
 
 	// 登录接口不需要鉴权
 	v1Group := g.Group("/v1/admin")
 	v1Group.POST("/login", adminAccountCtrl.Login)
 
 	// 需要管理员鉴权的接口
+	// 使用专门的后台管理中间件，验证 admin token 并从 admin 表查询
 	authGroup := v1Group.Group("")
-	authGroup.Use(importMw.AuthMiddleware())
+	authGroup.Use(importMw.AdminSystemAuthMiddleware())
+
+	// 账户管理
+	{
+		authGroup.POST("/logout", adminAccountCtrl.Logout) // 管理员登出
+	}
 
 	// 用户管理
 	{
-		authGroup.GET("/users", uc.List)
+		authGroup.GET("/users", adminc.GetUserList) // 后台管理系统专用，返回所有用户字段
 		authGroup.GET("/users/:name", uc.Get)
 		authGroup.PUT("/users/:name", uc.Update)
 		authGroup.DELETE("/users/:name", uc.Delete)
@@ -62,8 +69,8 @@ func installAdminRouters(g *gin.Engine) error {
 
 	// 笔记（书籍）管理
 	{
-		authGroup.GET("/books", bc.List)
-		authGroup.GET("/books/:id", bc.Get)
+		authGroup.GET("/books", bc.ListAll)         // 后台管理系统专用，返回所有书籍字段
+		authGroup.GET("/books/:id", adminc.GetBook) // 后台管理系统专用，返回笔记详情（包含图片信息）
 		authGroup.PUT("/books/:id", bc.Update)
 		authGroup.DELETE("/books/:id", bc.Delete)
 		authGroup.DELETE("/books", bc.DeleteBatch)
@@ -71,7 +78,7 @@ func installAdminRouters(g *gin.Engine) error {
 
 	// 图片管理
 	{
-		authGroup.GET("/images", ic.List)
+		authGroup.GET("/images", adminc.GetImageList) // 后台管理系统专用，返回所有图片字段
 		authGroup.GET("/images/:id", ic.Get)
 		authGroup.PUT("/images/:id", ic.Update)
 		authGroup.DELETE("/images/:id", ic.Delete)
@@ -86,9 +93,8 @@ func installAdminRouters(g *gin.Engine) error {
 
 	// 支付管理
 	{
-		paymentCtrl := payment.NewPaymentController(b)
-		authGroup.GET("/payments", paymentCtrl.ListPayments)
-		authGroup.GET("/payments/:out_trade_no", paymentCtrl.GetPayment)
+		authGroup.GET("/payments", adminc.GetPaymentList)
+		authGroup.GET("/payments/:out_trade_no", adminc.GetPayment)
 	}
 
 	// 模板管理
@@ -102,17 +108,29 @@ func installAdminRouters(g *gin.Engine) error {
 
 	// 系统配置管理
 	{
-		authGroup.POST("/configs", configc.Create)
-		authGroup.GET("/configs", configc.List)
-		authGroup.GET("/configs/:key", configc.Get)
-		authGroup.PUT("/configs/:key", configc.Update)
-		authGroup.DELETE("/configs/:key", configc.Delete)
-		authGroup.POST("/configs/init", configc.InitDefault)
+		authGroup.POST("/system-configs", configc.Create)            // 创建系统配置
+		authGroup.GET("/system-configs", configc.ListWithPagination) // 分页获取系统配置列表（返回所有字段）
+		authGroup.GET("/system-configs/:key", configc.Get)           // 获取单个系统配置
+		authGroup.PUT("/system-configs/:key", configc.Update)        // 更新系统配置
+		authGroup.DELETE("/system-configs/:key", configc.Delete)     // 删除系统配置
+		authGroup.POST("/system-configs/init", configc.InitDefault)  // 初始化默认配置
 	}
 
 	// 管理员统计信息
 	{
-		authGroup.GET("/stats", adminc.GetStats)
+		authGroup.GET("/stats", adminc.GetStats)                          // 获取统计信息
+		authGroup.GET("/dashboard/stats", adminc.GetDashboardStats)       // 获取仪表板统计信息
+		authGroup.GET("/dashboard/user-trend", adminc.GetUserGrowthTrend) // 获取用户增长趋势
+		authGroup.GET("/dashboard/book-trend", adminc.GetBookGrowthTrend) // 获取笔记增长趋势
+	}
+
+	// 反馈管理
+	{
+		authGroup.POST("/feedbacks", feedbackCtrl.Create)       // 创建反馈
+		authGroup.GET("/feedbacks", feedbackCtrl.List)          // 获取反馈列表（返回所有字段）
+		authGroup.GET("/feedbacks/:id", feedbackCtrl.Get)       // 获取单个反馈
+		authGroup.PUT("/feedbacks/:id", feedbackCtrl.Update)    // 更新反馈
+		authGroup.DELETE("/feedbacks/:id", feedbackCtrl.Delete) // 删除反馈
 	}
 
 	return nil

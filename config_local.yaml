@@ -32,6 +32,15 @@ db:
   max-connection-life-time: 10s # 空闲连接最大存活时间，默认 10s
   log-level: 4 # GORM log level, 1: silent, 2:error, 3:warn, 4:info
 
+# Redis 缓存相关配置
+redis:
+  host: 49.233.219.254  # Redis 机器 IP，默认 127.0.0.1
+  port: 26739        # Redis 端口，默认 6379
+  password: Numind2025  # Redis 密码，默认空
+  db: 0             # Redis 数据库编号，本地环境使用 0
+  pool_size: 10     # Redis 连接池大小，默认 10
+  min_idle_conns: 5 # Redis 最小空闲连接数，默认 5
+
 # 日志配置
 log:
   disable-caller: false # 是否开启 caller，如果开启会在日志中显示调用日志所在的文件和行号
@@ -45,7 +54,7 @@ wechat:
     app_secret: "cd5e2a2a919fd6a06c52ae2a15286a36"
     mch_id: "1722456639"
     mch_cert_serial_no: "6D2DCAC8D07269DB7B19F4B644F2BDB1772B983B"
-    mch_api_v3_key: "fT6vGq3sR2wP9kY7hN4bZ5cX1jM8aE0d"
+    mch_api_v3_key: "fda9ba0b25b6822789676ee6dcbc01d2"
     mch_private_key_path: "/Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/configs/cert/apiclient_key.pem"
     wechatpay_cert_path: "/Users/neozhang/go/src/github.com/Into-the-Numind/numind-server/configs/cert/apiclient_cert.pem"
     notify_url: "https://49.233.219.254:9092/api/pay/wechat/notify"

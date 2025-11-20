@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"numind-server/internal/numind/biz"
+	configbiz "numind-server/internal/numind/biz/config"
 	dbconfig "numind-server/internal/numind/config"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/redis"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,7 +89,33 @@ func initStore() error {
 		return err
 	}
 
-	_ = store.NewStore(ins)
+	storeInstance := store.NewStore(ins)
+
+	// 初始化Redis（后台管理系统也需要Redis来更新配置）
+	if err := redis.Init(); err != nil {
+		log.Warnw("Failed to initialize Redis", "error", err)
+		// Redis初始化失败不影响应用启动，但配置缓存功能将不可用
+	} else {
+		log.Infow("Redis initialized successfully")
+	}
+
+	// 同步系统配置（启动时自动同步）
+	ctx := context.Background()
+	configBiz := configbiz.New(storeInstance)
+	if err := configBiz.InitDefaultConfigs(ctx); err != nil {
+		log.Warnw("Failed to sync system configs", "error", err)
+		// 配置同步失败不影响应用启动
+	} else {
+		log.Infow("System configs synchronized successfully")
+	}
+
+	// 启动配置变更监听器
+	if err := configBiz.StartConfigChangeListener(ctx); err != nil {
+		log.Warnw("Failed to start config change listener", "error", err)
+		// 监听器启动失败不影响应用启动
+	} else {
+		log.Infow("Config change listener started successfully")
+	}
 
 	return nil
 }
@@ -102,6 +130,11 @@ func autoMigrate(db *gorm.DB) error {
 		log.Warnw("Failed to ensure database charset, continuing with migration", "error", err)
 	} else {
 		log.Infow("Database charset verification and repair completed")
+	}
+
+	// 检查并删除 system_config 表（如果存在），以便统一字段类型
+	if err := checkAndDropSystemConfigTable(db); err != nil {
+		log.Warnw("Failed to check/drop system_config table, continuing with migration", "error", err)
 	}
 
 	log.Infow("Starting database schema migration...")
@@ -135,6 +168,32 @@ func autoMigrate(db *gorm.DB) error {
 		log.Warnw("Failed to init default admin", "error", err)
 	}
 
+	return nil
+}
+
+// checkAndDropSystemConfigTable 检查 system_config 表是否存在，如果存在则删除
+func checkAndDropSystemConfigTable(db *gorm.DB) error {
+	tableName := "system_config"
+
+	// 检查表是否存在
+	var count int64
+	err := db.Raw("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", tableName).Scan(&count).Error
+	if err != nil {
+		return fmt.Errorf("failed to check table existence: %w", err)
+	}
+
+	if count == 0 {
+		log.Infow("system_config table does not exist, skipping drop", "table", tableName)
+		return nil
+	}
+
+	// 表存在，删除它
+	log.Infow("system_config table exists, dropping it to unify field types", "table", tableName)
+	if err := db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", tableName)).Error; err != nil {
+		return fmt.Errorf("failed to drop system_config table: %w", err)
+	}
+
+	log.Infow("system_config table dropped successfully", "table", tableName)
 	return nil
 }
 
@@ -219,7 +278,7 @@ func initSystemConfigs() error {
 		dbConfig, exists := dbConfigMap[key]
 		if !exists {
 			// 数据库中没有，创建新配置
-			_, err := configBiz.Create(ctx, key, yamlValueStr, fmt.Sprintf("Loaded from yaml file: %s", viper.ConfigFileUsed()))
+			_, err := configBiz.Create(ctx, key, "", yamlValueStr, fmt.Sprintf("Loaded from yaml file: %s", viper.ConfigFileUsed()))
 			if err != nil {
 				log.Warnw("Failed to create config in database", "key", key, "error", err)
 				continue

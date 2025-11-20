@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"mime/multipart"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -12,6 +13,7 @@ import (
 
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/book"
+	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
@@ -130,6 +132,10 @@ func (ctrl *BookController) createWithImageProcessor(c *gin.Context, userID uint
 	// 创建异步处理器
 	asyncProcessor := book.NewAsyncBookProcessor(bizAdapter)
 
+	// 设置配置读取器（从Redis/数据库读取配置）
+	configReader := config.NewConfigReader(ctrl.b.Configs())
+	asyncProcessor.SetConfigReader(configReader)
+
 	// 异步创建book（传入aiPolish参数）
 	book, err := asyncProcessor.CreateBookWithImagesAsync(c, userID, text, files, aiPolish)
 	if err != nil {
@@ -191,8 +197,75 @@ func (ctrl *BookController) Create(c *gin.Context) {
 	// 从JWT token中获取用户ID
 	userID, err := getUserIDFromToken(c)
 	if err != nil {
+		log.C(c).Errorw("Failed to get user ID from token", "error", err.Error())
 		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("Failed to get user ID from token: "+err.Error()), nil)
 		return
+	}
+
+	log.C(c).Infow("User ID extracted from token", "user_id", userID)
+
+	// 获取用户信息并检查会员权限
+	user, err := ctrl.b.Users().GetCurrentUser(c, userID)
+	if err != nil {
+		log.C(c).Errorw("Failed to get user info", "user_id", userID, "error", err.Error())
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("获取用户信息失败: "+err.Error()), nil)
+		return
+	}
+
+	log.C(c).Infow("User info retrieved",
+		"user_id", user.ID,
+		"membership_type", user.MembershipType,
+		"is_pro", user.IsPro,
+		"membership_expires", user.MembershipExpires,
+		"is_membership_active", user.IsMembershipActive(),
+		"can_use_subscription", user.CanUseSubscription())
+
+	// 检查会员是否过期
+	if !user.IsMembershipActive() {
+		// 检查是否是订阅会员但已过期
+		if user.MembershipType == model.MembershipTypeSubscription || user.MembershipType == model.MembershipTypeBoth {
+			log.C(c).Warnw("User membership expired, cannot create book",
+				"user_id", user.ID,
+				"membership_type", user.MembershipType,
+				"membership_expires", user.MembershipExpires,
+				"current_time", time.Now())
+			core.WriteResponse(c, errno.ErrForbidden.SetMessage("会员已过期，请续费后再创建卡册"), nil)
+			return
+		}
+	}
+
+	// 检查订阅会员权限（如果会员有效，则无限制）
+	if user.CanUseSubscription() {
+		log.C(c).Infow("User has active subscription, unlimited book creation",
+			"user_id", user.ID,
+			"membership_type", user.MembershipType,
+			"membership_expires", user.MembershipExpires)
+		// 订阅会员无限制，继续创建
+	} else {
+		// 检查免费用户限制
+		if user.MembershipType == model.MembershipTypeFree {
+			if !user.CanCreateBookAsFreeUser() {
+				remaining := user.GetRemainingFreeUserMonthlyBooks()
+				log.C(c).Warnw("Free user monthly limit reached",
+					"user_id", user.ID,
+					"free_user_monthly_book_count", user.FreeUserMonthlyBookCount,
+					"remaining", remaining)
+				core.WriteResponse(c, errno.ErrForbidden.SetMessage(
+					fmt.Sprintf("免费用户本月已创建%d个卡册，达到月度限制5个，剩余%d个，下月1号重置",
+						user.FreeUserMonthlyBookCount, remaining)), nil)
+				return
+			}
+			remaining := user.GetRemainingFreeUserMonthlyBooks()
+			log.C(c).Infow("Free user can create book",
+				"user_id", user.ID,
+				"free_user_monthly_book_count", user.FreeUserMonthlyBookCount,
+				"remaining", remaining)
+		} else {
+			// 其他情况（资源包等）
+			log.C(c).Infow("User membership check passed",
+				"user_id", user.ID,
+				"membership_type", user.MembershipType)
+		}
 	}
 
 	// 验证文件格式和大小（仅当有文件时）
@@ -211,6 +284,11 @@ func (ctrl *BookController) Create(c *gin.Context) {
 // BookBizAdapter 适配器，用于包装biz接口
 type BookBizAdapter struct {
 	biz biz.IBiz
+}
+
+// Configs 返回配置业务接口（用于访问配置读取器）
+func (a *BookBizAdapter) Configs() biz.IBiz {
+	return a.biz
 }
 
 func (a *BookBizAdapter) Books() book.AsyncBookBiz {
