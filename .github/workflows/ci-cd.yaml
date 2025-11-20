@@ -779,6 +779,8 @@ jobs:
               --name numind-admin-server-dev \
               -p 9099:9099 \
               -e APP_ENV=dev \
+              --log-opt max-size=10m \
+              --log-opt max-file=3 \
               --restart always \
               neozhang96/numind-admin:admin-develop
             
@@ -841,6 +843,8 @@ jobs:
               --name numind-admin-server-qa \
               -p 9103:9099 \
               -e APP_ENV=qa \
+              --log-opt max-size=10m \
+              --log-opt max-file=3 \
               --restart always \
               neozhang96/numind-admin:admin-release
             
@@ -904,6 +908,8 @@ jobs:
               --name numind-admin-server-prod \
               -p 9104:9099 \
               -e APP_ENV=prod \
+              --log-opt max-size=10m \
+              --log-opt max-file=3 \
               --restart always \
               neozhang96/numind-admin:$IMAGE_TAG
             
