@@ -29,6 +29,7 @@ type IStore interface {
 	AccountRecords() AccountRecordStore
 	Article() IArticleStore
 	Admin() IAdminStore
+	AdminAccounts() AdminAccountStore
 	Configs() ConfigStore
 	Payments() PaymentStore
 }
@@ -103,6 +104,10 @@ func (ds *datastore) Article() IArticleStore {
 
 func (ds *datastore) Admin() IAdminStore {
 	return NewAdminStore(ds.db)
+}
+
+func (ds *datastore) AdminAccounts() AdminAccountStore {
+	return NewAdminAccountStore(ds.db)
 }
 
 func (ds *datastore) Configs() ConfigStore {

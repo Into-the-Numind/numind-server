@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	cardbiz "numind-server/internal/numind/biz/card"
+	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/numind/biz/markdown"
 	"numind-server/internal/numind/biz/pagination"
 	"numind-server/internal/pkg/httpclient"
@@ -85,7 +86,13 @@ func releaseRenderSlot() {
 
 // AsyncBookProcessor 异步book处理器
 type AsyncBookProcessor struct {
-	biz BizInterface
+	biz          BizInterface
+	configReader *config.ConfigReader
+}
+
+// SetConfigReader 设置配置读取器（可选，如果不设置则使用viper）
+func (p *AsyncBookProcessor) SetConfigReader(reader *config.ConfigReader) {
+	p.configReader = reader
 }
 
 // getCoverTitleConfig 获取封面标题配置
@@ -502,8 +509,13 @@ func (p *AsyncBookProcessor) processAndUploadImage(ctx context.Context, bookID, 
 func (p *AsyncBookProcessor) processTextWithAI(ctx context.Context, text string) (string, error) {
 	log.C(ctx).Infow("开始AI处理文本", "text_length", len(text))
 
-	// 获取配置文件中的提示词
-	textProcessingPrompt := viper.GetString("ai_prompts.text_processing")
+	// 获取配置文件中的提示词（优先从Redis/数据库读取）
+	var textProcessingPrompt string
+	if p.configReader != nil {
+		textProcessingPrompt = p.configReader.GetTextProcessingPrompt(ctx)
+	} else {
+		textProcessingPrompt = viper.GetString("ai_prompts.text_processing")
+	}
 	if textProcessingPrompt == "" {
 		return "", fmt.Errorf("missing text_processing prompt in config")
 	}
@@ -822,12 +834,25 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	// 调用文字大模型，获取返回的 markdown 格式内容
 	log.C(ctx).Infow("🚀 第一步：调用文字大模型处理文本", "book_id", bookID, "text_length", len(text))
 
-	// 获取配置文件中的提示词
-	textProcessingPrompt := viper.GetString("ai_prompts.text_processing")
+	// 获取配置文件中的提示词（优先从Redis/数据库读取）
+	var textProcessingPrompt string
+	if p.configReader != nil {
+		textProcessingPrompt = p.configReader.GetTextProcessingPrompt(ctx)
+	} else {
+		textProcessingPrompt = viper.GetString("ai_prompts.text_processing")
+	}
 	if textProcessingPrompt == "" {
 		log.C(ctx).Errorw("❌ 配置文件中未找到ai_prompts.text_processing", "book_id", bookID)
 		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Missing text_processing prompt in config")
 		return
+	}
+
+	// 获取模型配置参数（优先从Redis/数据库读取）
+	var maxTokens int = 4000
+	var temperature float64 = 0.7
+	if p.configReader != nil {
+		maxTokens = p.configReader.GetVolcTokens(ctx)
+		temperature = p.configReader.GetVolcTemperature(ctx)
 	}
 
 	// 构建消息 - 将用户文本拼接到提示词的 # 待处理的OCR文本 后面
@@ -844,12 +869,12 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		"full_prompt", fullPrompt)
 
 	// 调用AI模型处理文本 - 先尝试火山方舟，失败后降级到阿里百炼
-	aiResponse, err := p.biz.Volc().VolcTextStream(ctx, messages, 4000, 0.7)
+	aiResponse, err := p.biz.Volc().VolcTextStream(ctx, messages, maxTokens, temperature)
 	if err != nil {
 		log.C(ctx).Warnw("⚠️ 火山方舟API失败，尝试阿里百炼降级", "book_id", bookID, "error", err.Error())
 
 		// 降级到阿里百炼API
-		aiResponse, err = p.biz.Ali().QianwenTextStream(messages, 4000, 0.7)
+		aiResponse, err = p.biz.Ali().QianwenTextStream(messages, maxTokens, temperature)
 		if err != nil {
 			log.C(ctx).Errorw("❌ 所有AI API都失败", "book_id", bookID, "error", err.Error())
 			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, fmt.Sprintf("All AI APIs failed: %v", err))

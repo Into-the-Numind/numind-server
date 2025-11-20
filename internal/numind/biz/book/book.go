@@ -16,6 +16,7 @@ type BookBiz interface {
 	GetByID(ctx context.Context, id uint) (*model.BookM, error)
 	ListByUser(ctx context.Context, userID uint, offset, limit int) (int64, []*model.BookM, error)
 	ListByCategory(ctx context.Context, categoryID uint, offset, limit int) (int64, []*model.BookM, error)
+	ListAll(ctx context.Context, offset, limit int) (int64, []*model.BookM, error) // 获取所有书籍（用于后台管理等场景）
 	Update(ctx context.Context, book *model.BookM) error
 	Delete(ctx context.Context, id uint) error
 	DeleteBatch(ctx context.Context, ids []uint) error
@@ -47,6 +48,11 @@ func (b *bookBiz) ListByUser(ctx context.Context, userID uint, offset, limit int
 
 func (b *bookBiz) ListByCategory(ctx context.Context, categoryID uint, offset, limit int) (int64, []*model.BookM, error) {
 	return b.ds.Books().ListByCategory(ctx, categoryID, offset, limit)
+}
+
+// ListAll 获取所有书籍（用于后台管理等场景，返回所有字段）
+func (b *bookBiz) ListAll(ctx context.Context, offset, limit int) (int64, []*model.BookM, error) {
+	return b.ds.Books().ListAll(ctx, offset, limit)
 }
 
 func (b *bookBiz) Update(ctx context.Context, book *model.BookM) error {
