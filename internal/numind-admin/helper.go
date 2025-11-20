@@ -132,6 +132,11 @@ func autoMigrate(db *gorm.DB) error {
 		log.Infow("Database charset verification and repair completed")
 	}
 
+	// 检查并删除 system_config 表（如果存在），以便统一字段类型
+	if err := checkAndDropSystemConfigTable(db); err != nil {
+		log.Warnw("Failed to check/drop system_config table, continuing with migration", "error", err)
+	}
+
 	log.Infow("Starting database schema migration...")
 	err := db.AutoMigrate(
 		&model.User{},
@@ -163,6 +168,32 @@ func autoMigrate(db *gorm.DB) error {
 		log.Warnw("Failed to init default admin", "error", err)
 	}
 
+	return nil
+}
+
+// checkAndDropSystemConfigTable 检查 system_config 表是否存在，如果存在则删除
+func checkAndDropSystemConfigTable(db *gorm.DB) error {
+	tableName := "system_config"
+
+	// 检查表是否存在
+	var count int64
+	err := db.Raw("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", tableName).Scan(&count).Error
+	if err != nil {
+		return fmt.Errorf("failed to check table existence: %w", err)
+	}
+
+	if count == 0 {
+		log.Infow("system_config table does not exist, skipping drop", "table", tableName)
+		return nil
+	}
+
+	// 表存在，删除它
+	log.Infow("system_config table exists, dropping it to unify field types", "table", tableName)
+	if err := db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS `%s`", tableName)).Error; err != nil {
+		return fmt.Errorf("failed to drop system_config table: %w", err)
+	}
+
+	log.Infow("system_config table dropped successfully", "table", tableName)
 	return nil
 }
 

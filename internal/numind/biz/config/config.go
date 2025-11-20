@@ -3,7 +3,6 @@ package config
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/log"
@@ -97,7 +96,7 @@ func (b *configBiz) Update(ctx context.Context, key, value, description string) 
 	if description != "" {
 		config.Description = description
 	}
-	config.UpdatedAt = time.Now().Unix()
+	// UpdatedAt 由 gorm.Model 自动管理，无需手动设置
 
 	if err := b.ds.Configs().Update(ctx, config); err != nil {
 		return nil, err

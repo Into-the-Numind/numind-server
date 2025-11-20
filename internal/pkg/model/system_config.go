@@ -1,11 +1,12 @@
 package model
 
+import (
+	"gorm.io/gorm"
+)
+
 // SystemConfigM 系统配置表
 type SystemConfigM struct {
-	ID          uint   `gorm:"primaryKey;autoIncrement" json:"id"` // 主键，自增
-	CreatedAt   int64  `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt   int64  `gorm:"autoUpdateTime" json:"updated_at"`
-	DeletedAt   *int64 `gorm:"index" json:"deleted_at,omitempty"`
+	gorm.Model
 	Key         string `gorm:"size:100;uniqueIndex" json:"key"`
 	Title       string `gorm:"size:100" json:"title"` // 配置标题，用于后台显示
 	Value       string `gorm:"type:text" json:"value"`

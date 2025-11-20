@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"time"
 
 	"numind-server/internal/pkg/model"
 
@@ -68,7 +67,7 @@ func (s *configs) List(ctx context.Context, offset, limit int) (int64, []*model.
 }
 
 func (s *configs) Update(ctx context.Context, config *model.SystemConfigM) error {
-	config.UpdatedAt = time.Now().Unix()
+	// UpdatedAt 由 gorm.Model 自动管理，无需手动设置
 	return s.db.WithContext(ctx).Save(config).Error
 }
 
