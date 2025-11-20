@@ -839,13 +839,13 @@ jobs:
             
             docker run -d \
               --name numind-admin-server-qa \
-              -p 9099:9099 \
+              -p 9103:9099 \
               -e APP_ENV=qa \
               --restart always \
               neozhang96/numind-admin:admin-release
             
             sleep 10
-            if curl -f http://localhost:9099/healthz > /dev/null 2>&1; then
+            if curl -f http://localhost:9103/healthz > /dev/null 2>&1; then
               echo "Admin QA deployment completed successfully!"
             else
               echo "Warning: Health endpoint not responding"
@@ -902,13 +902,13 @@ jobs:
             
             docker run -d \
               --name numind-admin-server-prod \
-              -p 9099:9099 \
+              -p 9104:9099 \
               -e APP_ENV=prod \
               --restart always \
               neozhang96/numind-admin:$IMAGE_TAG
             
             sleep 10
-            if curl -f http://localhost:9099/healthz > /dev/null 2>&1; then
+            if curl -f http://localhost:9104/healthz > /dev/null 2>&1; then
               echo "Admin production deployment completed successfully!"
             else
               echo "Warning: Health endpoint not responding"
