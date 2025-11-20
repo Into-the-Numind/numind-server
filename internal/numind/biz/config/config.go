@@ -201,11 +201,14 @@ func (b *configBiz) InitDefaultConfigs(ctx context.Context) error {
 					log.Warnw("Failed to update config metadata", "key", def.Key, "error", err)
 				} else {
 					log.Infow("Updated config metadata", "key", def.Key, "title", def.Title)
-					// 更新Redis缓存
-					if err := b.cache.Set(ctx, existing); err != nil {
-						log.Warnw("Failed to update cache", "key", def.Key, "error", err)
-					}
 				}
+			}
+
+			// 无论元数据是否变化，都确保写入Redis缓存（同步数据库中的value到Redis）
+			if err := b.cache.Set(ctx, existing); err != nil {
+				log.Warnw("Failed to sync config to Redis", "key", def.Key, "error", err)
+			} else {
+				log.Debugw("Synced config to Redis", "key", def.Key)
 			}
 		}
 	}
