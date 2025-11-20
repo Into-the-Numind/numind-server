@@ -59,7 +59,7 @@ func (s *configs) List(ctx context.Context, offset, limit int) (int64, []*model.
 
 	// 分页查询，返回所有字段
 	var configs []*model.SystemConfigM
-	if err := query.Offset(offset).Limit(defaultLimit(limit)).Order("id DESC").Find(&configs).Error; err != nil {
+	if err := query.Offset(offset).Limit(defaultLimit(limit)).Order("id ASC").Find(&configs).Error; err != nil {
 		return 0, nil, err
 	}
 

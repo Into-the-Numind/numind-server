@@ -154,7 +154,7 @@ func (s *AdminStore) GetUserList(offset, limit int) ([]model.User, int64, error)
 
 	// 分页查询，返回所有用户字段
 	var users []model.User
-	if err := query.Offset(offset).Limit(limit).Order("id DESC").Find(&users).Error; err != nil {
+	if err := query.Offset(offset).Limit(limit).Order("id ASC").Find(&users).Error; err != nil {
 		return nil, 0, err
 	}
 

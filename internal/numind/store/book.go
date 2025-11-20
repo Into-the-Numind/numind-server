@@ -89,7 +89,7 @@ func (s *books) ListByCategory(ctx context.Context, categoryID uint, offset, lim
 func (s *books) ListAll(ctx context.Context, offset, limit int) (count int64, ret []*model.BookM, err error) {
 	err = s.db.WithContext(ctx).
 		Preload("Category").
-		Offset(offset).Limit(defaultLimit(limit)).Order("id desc").Find(&ret).
+		Offset(offset).Limit(defaultLimit(limit)).Order("id ASC").Find(&ret).
 		Offset(-1).Limit(-1).Count(&count).Error
 	return
 }
