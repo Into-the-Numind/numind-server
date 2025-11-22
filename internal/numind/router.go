@@ -176,6 +176,7 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/users/me", uc.GetCurrentUser)    // 获取当前用户信息
 		authGroup.PUT("/users/me", uc.UpdateProfile)     // 更新当前用户个人信息
 		authGroup.POST("/users/avatar", uc.UploadAvatar) // 上传用户头像
+		authGroup.POST("/users/logout", uc.Logout)       // 用户登出
 	}
 
 	// 微信支付相关
