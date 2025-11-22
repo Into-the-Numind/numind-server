@@ -15,7 +15,7 @@ import (
 
 // UpdateBookRequest 更新卡册的请求结构
 type UpdateBookRequest struct {
-	Title string `json:"title" binding:"required,min=1,max=255"`
+	Title string `json:"title"`
 	Text  string `json:"text"` // 用户输入的文字内容，用于更新processed_text
 }
 
