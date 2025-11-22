@@ -90,6 +90,7 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/books", bc.List)                                                   // 获取卡册列表
 		authGroup.GET("/books/:id", bc.Get)                                                // 获取卡册详情
 		authGroup.PUT("/books/:id", bc.Update)                                             // 更新卡册
+		authGroup.PUT("/books/:id/type", bc.UpdateBookType)                                // 更新笔记类型（用于 todo 打钩）
 		authGroup.PUT("/books/:id/content", bc.UpdateContent)                              // 更新笔记内容
 		authGroup.POST("/books/:id/generate-long-image", bc.GenerateLongImage)             // 生成长图
 		authGroup.POST("/books/:id/generate-paginated-images", bc.GeneratePaginatedImages) // 生成分页图片

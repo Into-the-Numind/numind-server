@@ -255,6 +255,46 @@ func NewAsyncBookProcessor(biz BizInterface) *AsyncBookProcessor {
 	}
 }
 
+// validateAndSetBookType 验证并设置笔记类型
+func validateAndSetBookType(book *model.BookM, hasImages bool) {
+	validTypes := []string{
+		model.BookTypeText,
+		model.BookTypeTextWithImage,
+		model.BookTypeTodo,
+		model.BookTypeDone,
+	}
+
+	// 如果前端没有传类型，根据是否有图片自动判断
+	if book.BookType == "" {
+		if hasImages {
+			book.BookType = model.BookTypeTextWithImage
+		} else {
+			book.BookType = model.BookTypeText
+		}
+		return
+	}
+
+	// 验证类型合法性
+	isValid := false
+	for _, validType := range validTypes {
+		if book.BookType == validType {
+			isValid = true
+			break
+		}
+	}
+
+	// 如果类型不合法，根据是否有图片设置默认类型
+	if !isValid {
+		if hasImages {
+			book.BookType = model.BookTypeTextWithImage
+		} else {
+			book.BookType = model.BookTypeText
+		}
+	}
+
+	// 注意：todo 和 done 类型必须由前端明确指定，不会自动判断
+}
+
 // CreateBookAsync 异步创建book
 func (p *AsyncBookProcessor) CreateBookAsync(ctx context.Context, userID uint, text, templateID string) (*model.BookM, error) {
 	// 立即创建book记录，状态为creating
@@ -298,17 +338,22 @@ func (p *AsyncBookProcessor) CreateBookAsync(ctx context.Context, userID uint, t
 }
 
 // CreateBookWithImagesAsync 创建带图片的笔记（新版本）
-func (p *AsyncBookProcessor) CreateBookWithImagesAsync(ctx context.Context, userID uint, text string, files []*multipart.FileHeader, aiPolish int) (*model.BookM, error) {
+func (p *AsyncBookProcessor) CreateBookWithImagesAsync(ctx context.Context, userID uint, text string, title string, bookType string, files []*multipart.FileHeader, aiPolish int) (*model.BookM, error) {
 	// 立即创建book记录，状态为creating
 	now := time.Now()
 	book := &model.BookM{
 		UserID:       userID,
-		Title:        fmt.Sprintf("AI生成笔记 - %s", now.Format("2006-01-02 15:04:05")),
-		OriginalText: text, // 保存用户原始输入文字
+		Title:        title, // 使用传入的title，如果为空则不设置标题
+		OriginalText: text,  // 保存用户原始输入文字
 		ViewTime:     &now,
 		Status:       model.BookStatusCreating,
 		AIPolish:     aiPolish, // 保存AI润色设置
+		BookType:     bookType, // 笔记类型
 	}
+
+	// 验证并设置笔记类型（根据是否有图片自动判断）
+	hasImages := len(files) > 0
+	validateAndSetBookType(book, hasImages)
 
 	if err := p.biz.Books().Create(ctx, book); err != nil {
 		log.C(ctx).Errorw("Failed to create initial book record", "error", err.Error())
@@ -335,16 +380,16 @@ func (p *AsyncBookProcessor) CreateBookWithImagesAsync(ctx context.Context, user
 
 	// 在后台异步处理book创建
 	go func() {
-		p.processBookCreationWithImagesInBackground(ctx, book.ID, userID, text, files, aiPolish)
+		p.processBookCreationWithImagesInBackground(ctx, book.ID, userID, text, title, book.BookType, files, aiPolish)
 	}()
 
 	return book, nil
 }
 
 // processBookCreationWithImagesInBackground 在后台处理带图片的book创建
-func (p *AsyncBookProcessor) processBookCreationWithImagesInBackground(ctx context.Context, bookID uint, userID uint, text string, files []*multipart.FileHeader, aiPolish int) {
+func (p *AsyncBookProcessor) processBookCreationWithImagesInBackground(ctx context.Context, bookID uint, userID uint, text string, title string, bookType string, files []*multipart.FileHeader, aiPolish int) {
 	startTime := time.Now()
-	log.C(ctx).Infow("Starting async book creation with images", "book_id", bookID, "user_id", userID, "ai_polish", aiPolish)
+	log.C(ctx).Infow("Starting async book creation with images", "book_id", bookID, "user_id", userID, "ai_polish", aiPolish, "title", title)
 
 	// 获取book记录
 	book, err := p.biz.Books().GetByID(ctx, bookID)
@@ -404,12 +449,19 @@ func (p *AsyncBookProcessor) processBookCreationWithImagesInBackground(ctx conte
 			return
 		}
 
-		// 从markdown文本中提取title作为book的标题（在删除一级标题之前）
-		bookTitle = p.extractTitleFromMarkdown(markdownContent)
-		if bookTitle == "" {
-			bookTitle = fmt.Sprintf("AI生成笔记 - %s", time.Now().Format("2006-01-02 15:04:05"))
+		// 如果用户没有提供title，才从markdown文本中提取title作为book的标题（在删除一级标题之前）
+		if title == "" {
+			bookTitle = p.extractTitleFromMarkdown(markdownContent)
+			if bookTitle == "" {
+				// 如果提取不到标题，也不自动生成，保持为空
+				bookTitle = ""
+			} else {
+				log.C(ctx).Infow("✅ 从一级标题中提取标题", "book_id", bookID, "title", bookTitle)
+			}
 		} else {
-			log.C(ctx).Infow("✅ 从一级标题中提取标题", "book_id", bookID, "title", bookTitle)
+			// 用户已经提供了title，使用用户提供的title
+			bookTitle = title
+			log.C(ctx).Infow("✅ 使用用户提供的标题", "book_id", bookID, "title", bookTitle)
 		}
 
 		// 删除一级标题（仅从processed_text中删除，不影响title字段）
@@ -418,7 +470,13 @@ func (p *AsyncBookProcessor) processBookCreationWithImagesInBackground(ctx conte
 	} else {
 		log.C(ctx).Infow("📝 AI处理已禁用，使用原始文本", "book_id", bookID)
 		markdownContent = text
-		bookTitle = fmt.Sprintf("笔记 - %s", time.Now().Format("2006-01-02 15:04:05"))
+		// 如果用户没有提供title，也不自动生成，保持为空
+		if title == "" {
+			bookTitle = ""
+		} else {
+			bookTitle = title
+			log.C(ctx).Infow("✅ 使用用户提供的标题", "book_id", bookID, "title", bookTitle)
+		}
 	}
 
 	// 📝 第三步：更新book记录
@@ -432,7 +490,10 @@ func (p *AsyncBookProcessor) processBookCreationWithImagesInBackground(ctx conte
 			"image_url", firstImage.OriginalURL)
 	}
 
-	book.Title = bookTitle
+	// 只有在bookTitle不为空时才更新Title，如果为空则保持为空（不设置默认标题）
+	if bookTitle != "" {
+		book.Title = bookTitle
+	}
 	book.ProcessedText = markdownContent
 	book.Status = model.BookStatusSuccess
 
@@ -3420,6 +3481,15 @@ func (p *AsyncBookProcessor) generateDefaultImagePrompt(content string) string {
 
 // generateCoverHTML 生成封面HTML内容（背景图在底层，图片和标题在上层）
 func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background string, bookID uint) string {
+	// 处理无标题的情况
+	titleContent := ""
+	if title == "" {
+		// 无标题时，显示一个占位符
+		titleContent = `<div class="title-text" style="opacity: 0.5; font-style: italic;">无标题笔记</div>`
+	} else {
+		titleContent = fmt.Sprintf(`<h1 class="title-text">%s</h1>`, title)
+	}
+
 	// 获取封面标题配置
 	fontSize, lineHeight, color := getCoverTitleConfig()
 
@@ -3650,13 +3720,13 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
         <div class="cover-content-layer">
             <div class="title-section">
                 <div class="title-content">
-                    <h1 class="title-text">%s</h1>
+                    %s
                 </div>
             </div>
         </div>
     </div>
 </body>
-</html>`, title, regularFontPath, boldFontPath, backgroundStyle, backgroundStyle, fontSize, color, lineHeight, title)
+</html>`, title, regularFontPath, boldFontPath, backgroundStyle, backgroundStyle, fontSize, color, lineHeight, titleContent)
 }
 
 // generateCoverImageOnly 仅生成封面图片，不重新生成HTML
