@@ -468,8 +468,8 @@ func (p *AsyncBookProcessor) processBookCreationWithImagesInBackground(ctx conte
 		markdownContent = p.removeFirstLevelHeading(markdownContent)
 		log.C(ctx).Infow("✅ 已删除一级标题", "book_id", bookID)
 	} else {
-		log.C(ctx).Infow("📝 AI处理已禁用，使用原始文本", "book_id", bookID)
-		markdownContent = text
+		log.C(ctx).Infow("📝 AI处理已禁用，processed_text将保持为空", "book_id", bookID)
+		markdownContent = "" // 如果未启用AI优化，processed_text应该为空
 		// 如果用户没有提供title，也不自动生成，保持为空
 		if title == "" {
 			bookTitle = ""
