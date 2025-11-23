@@ -16,11 +16,11 @@ import (
 // UpdateBookRequest 更新卡册的请求结构
 type UpdateBookRequest struct {
 	Title string `json:"title"`
-	Text  string `json:"text"` // 用户输入的文字内容，用于更新processed_text
+	Text  string `json:"text"` // 用户输入的文字内容，根据ai_polish决定更新processed_text或original_text
 }
 
 // Update 更新卡册信息
-// 支持更新title和text字段，text字段用于更新processed_text
+// 支持更新title和text字段，text字段根据ai_polish值决定更新processed_text（ai_polish=1）或original_text（ai_polish=0）
 func (ctrl *BookController) Update(c *gin.Context) {
 	log.C(c).Infow("Update book function called")
 
@@ -63,9 +63,15 @@ func (ctrl *BookController) Update(c *gin.Context) {
 	book.Title = req.Title
 
 	// 更新text字段（如果提供了）
+	// 根据ai_polish的值决定更新processed_text还是original_text
 	if req.Text != "" {
-		book.ProcessedText = req.Text
-		log.C(c).Infow("Updated processed_text", "book_id", bookID, "text_length", len(req.Text))
+		if book.AIPolish == 1 {
+			book.ProcessedText = req.Text
+			log.C(c).Infow("Updated processed_text", "book_id", bookID, "text_length", len(req.Text), "ai_polish", book.AIPolish)
+		} else {
+			book.OriginalText = req.Text
+			log.C(c).Infow("Updated original_text", "book_id", bookID, "text_length", len(req.Text), "ai_polish", book.AIPolish)
+		}
 	}
 
 	// 更新ViewTime字段为当前时间
