@@ -74,7 +74,12 @@ func NewBiz(ds store.IStore) *biz {
 	if dbPath == "" {
 		dbPath = "./data/vector_db"
 	}
-	ragService, err := ragbiz.NewRagService(b.Ali(), dbPath)
+
+	// 创建 ConfigReader，用于从 Redis → MySQL → Viper 读取配置
+	configBiz := b.Configs()
+	configReader := config.NewConfigReader(configBiz)
+
+	ragService, err := ragbiz.NewRagService(b.Ali(), configReader, dbPath)
 	if err != nil {
 		// RAG服务初始化失败不影响系统启动，只记录错误
 		// 后续调用时会检查 ragService 是否为 nil

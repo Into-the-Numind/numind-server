@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"numind-server/internal/numind/biz/ali"
+	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/pkg/log"
 
 	"github.com/philippgille/chromem-go"
@@ -24,13 +25,14 @@ func contains(s, substr string) bool {
 
 // RagService RAG服务结构体
 type RagService struct {
-	db         *chromem.DB
-	collection *chromem.Collection
-	aliBiz     ali.AliBiz
+	db           *chromem.DB
+	collection   *chromem.Collection
+	aliBiz       ali.AliBiz
+	configReader *config.ConfigReader
 }
 
 // NewRagService 创建新的RAG服务实例
-func NewRagService(aliBiz ali.AliBiz, dbPath string) (*RagService, error) {
+func NewRagService(aliBiz ali.AliBiz, configReader *config.ConfigReader, dbPath string) (*RagService, error) {
 	// 初始化持久化向量数据库
 	db, err := chromem.NewPersistentDB(dbPath, false)
 	if err != nil {
@@ -45,9 +47,10 @@ func NewRagService(aliBiz ali.AliBiz, dbPath string) (*RagService, error) {
 	}
 
 	return &RagService{
-		db:         db,
-		collection: collection,
-		aliBiz:     aliBiz,
+		db:           db,
+		collection:   collection,
+		aliBiz:       aliBiz,
+		configReader: configReader,
 	}, nil
 }
 
@@ -316,8 +319,15 @@ func (r *RagService) ChatWithRAGStream(ctx context.Context, userID uint, questio
 func (r *RagService) callAliStream(ctx context.Context, messages []map[string]string, handler func(chunk string) error) error {
 	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 
+	model := r.getAliModel(ctx)
+	apiKey := r.getAliAPIKey(ctx)
+
+	if apiKey == "" {
+		return fmt.Errorf("阿里API密钥未配置")
+	}
+
 	bodyMap := map[string]interface{}{
-		"model":       r.getAliModel(),
+		"model":       model,
 		"messages":    messages,
 		"max_tokens":  4000,
 		"temperature": 0.7,
@@ -335,7 +345,8 @@ func (r *RagService) callAliStream(ctx context.Context, messages []map[string]st
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+r.getAliAPIKey())
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	log.C(ctx).Infow("调用阿里API", "model", model, "api_key_prefix", apiKey[:20]+"...")
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -350,11 +361,14 @@ func (r *RagService) callAliStream(ctx context.Context, messages []map[string]st
 
 	// 流式读取响应
 	scanner := bufio.NewScanner(resp.Body)
+	chunkCount := 0
 	for scanner.Scan() {
 		line := scanner.Text()
+		log.C(ctx).Infow("收到LLM响应行", "line", line)
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
+				log.C(ctx).Infow("LLM流式响应完成", "chunk_count", chunkCount)
 				break
 			}
 
@@ -364,9 +378,13 @@ func (r *RagService) callAliStream(ctx context.Context, messages []map[string]st
 					if choice, ok := choices[0].(map[string]interface{}); ok {
 						if delta, ok := choice["delta"].(map[string]interface{}); ok {
 							if content, ok := delta["content"].(string); ok && content != "" {
+								chunkCount++
+								log.C(ctx).Infow("调用handler处理chunk", "chunk_num", chunkCount, "content_length", len(content))
 								if err := handler(content); err != nil {
+									log.C(ctx).Errorw("handler处理失败", "error", err)
 									return err
 								}
+								log.C(ctx).Infow("handler处理成功", "chunk_num", chunkCount)
 							}
 						}
 					}
@@ -375,11 +393,22 @@ func (r *RagService) callAliStream(ctx context.Context, messages []map[string]st
 		}
 	}
 
+	if chunkCount == 0 {
+		log.C(ctx).Warnw("未收到任何chunk，可能是非流式响应")
+	}
+
 	return scanner.Err()
 }
 
-// getAliModel 获取阿里模型名称（从配置中获取）
-func (r *RagService) getAliModel() string {
+// getAliModel 获取阿里模型名称（优先级：Redis → MySQL → Viper）
+func (r *RagService) getAliModel(ctx context.Context) string {
+	if r.configReader != nil {
+		model := r.configReader.GetString(ctx, "ali.text.model")
+		if model != "" {
+			return model
+		}
+	}
+	// 降级到 viper
 	model := viper.GetString("ali.text.model")
 	if model == "" {
 		return "qwen-turbo" // 默认值
@@ -387,13 +416,41 @@ func (r *RagService) getAliModel() string {
 	return model
 }
 
-// getAliAPIKey 获取阿里API密钥（从配置中获取）
-func (r *RagService) getAliAPIKey() string {
-	apiKey := viper.GetString("ali.text.api_key")
-	if apiKey == "" {
-		log.Errorw("阿里API密钥未配置")
+// getAliAPIKey 获取阿里API密钥（优先级：Redis → MySQL → Viper）
+func (r *RagService) getAliAPIKey(ctx context.Context) string {
+	var apiKey string
+
+	// 优先级1: 从 ConfigReader 读取（会自动从 Redis → MySQL → Viper 读取）
+	if r.configReader != nil {
+		apiKey = r.configReader.GetString(ctx, "ali.api_key")
+		if apiKey != "" {
+			log.C(ctx).Debugw("使用统一配置的阿里API密钥", "source", "config_reader")
+			return apiKey
+		}
+
+		// 尝试从文本服务专用密钥
+		apiKey = r.configReader.GetString(ctx, "ali.text.api_key")
+		if apiKey != "" {
+			log.C(ctx).Debugw("使用文本服务专用API密钥", "source", "config_reader")
+			return apiKey
+		}
 	}
-	return apiKey
+
+	// 优先级2: 从 viper 读取（兼容性）
+	apiKey = viper.GetString("ali.api_key")
+	if apiKey != "" {
+		log.C(ctx).Debugw("使用统一配置的阿里API密钥", "source", "viper")
+		return apiKey
+	}
+
+	apiKey = viper.GetString("ali.text.api_key")
+	if apiKey != "" {
+		log.C(ctx).Debugw("使用文本服务专用API密钥", "source", "viper")
+		return apiKey
+	}
+
+	log.C(ctx).Errorw("阿里API密钥未配置", "checked_keys", []string{"ali.api_key", "ali.text.api_key"})
+	return ""
 }
 
 // AddBookVector 添加笔记向量到向量数据库（异步调用）

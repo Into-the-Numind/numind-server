@@ -702,7 +702,8 @@ func (b *chatBiz) GenerateAssistantResponse(ctx context.Context, userMessage str
 
 // ProcessWebSocketMessageStream 流式处理WebSocket消息
 func (b *chatBiz) ProcessWebSocketMessageStream(ctx context.Context, userID uint, msg *model.WebSocketMessage, conn *websocket.Conn) (*model.WebSocketMessage, error) {
-	if msg.Type == "message" {
+	// 处理聊天消息（type为"chat"、"message"或为空）
+	if msg.Type == "chat" || msg.Type == "message" || (msg.Type == "" && msg.Question != "") {
 		return b.handleChatMessageStream(ctx, userID, msg, conn)
 	}
 	// 其他类型使用原有逻辑
