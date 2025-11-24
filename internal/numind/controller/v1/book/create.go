@@ -13,6 +13,7 @@ import (
 
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/book"
+	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
@@ -22,6 +23,8 @@ import (
 // CreateBookRequest 创建笔记的请求结构
 type CreateBookRequest struct {
 	Text     string `form:"text" binding:"required"` // 用户输入的文字（包含OCR结果）
+	Title    string `form:"title"`                   // 笔记标题（可选，为空则不设置标题）
+	BookType string `form:"book_type"`               // 笔记类型：text, text_with_image, todo, done
 	AIPolish int    `form:"ai_polish"`               // AI润色开关 0=关闭 1=开启
 	// 图片文件通过multipart/form-data上传，字段名为"images"，可选
 }
@@ -103,6 +106,46 @@ func extractJSONFromResponse(response string) string {
 	return response[start:end]
 }
 
+// validateAndSetBookType 验证并设置笔记类型
+func validateAndSetBookType(book *model.BookM, hasImages bool) {
+	validTypes := []string{
+		model.BookTypeText,
+		model.BookTypeTextWithImage,
+		model.BookTypeTodo,
+		model.BookTypeDone,
+	}
+
+	// 如果前端没有传类型，根据是否有图片自动判断
+	if book.BookType == "" {
+		if hasImages {
+			book.BookType = model.BookTypeTextWithImage
+		} else {
+			book.BookType = model.BookTypeText
+		}
+		return
+	}
+
+	// 验证类型合法性
+	isValid := false
+	for _, validType := range validTypes {
+		if book.BookType == validType {
+			isValid = true
+			break
+		}
+	}
+
+	// 如果类型不合法，根据是否有图片设置默认类型
+	if !isValid {
+		if hasImages {
+			book.BookType = model.BookTypeTextWithImage
+		} else {
+			book.BookType = model.BookTypeText
+		}
+	}
+
+	// 注意：todo 和 done 类型必须由前端明确指定，不会自动判断
+}
+
 // validateImageFile 验证图片文件
 func validateImageFile(file *multipart.FileHeader) error {
 	// 检查文件大小 (限制为10MB)
@@ -124,15 +167,19 @@ func validateImageFile(file *multipart.FileHeader) error {
 }
 
 // createWithImageProcessor 使用图片处理器创建笔记
-func (ctrl *BookController) createWithImageProcessor(c *gin.Context, userID uint, text string, files []*multipart.FileHeader, aiPolish int) {
+func (ctrl *BookController) createWithImageProcessor(c *gin.Context, userID uint, text string, title string, bookType string, files []*multipart.FileHeader, aiPolish int) {
 	// 创建适配器来包装biz接口
 	bizAdapter := &BookBizAdapter{biz: ctrl.b}
 
 	// 创建异步处理器
 	asyncProcessor := book.NewAsyncBookProcessor(bizAdapter)
 
-	// 异步创建book（传入aiPolish参数）
-	book, err := asyncProcessor.CreateBookWithImagesAsync(c, userID, text, files, aiPolish)
+	// 设置配置读取器（从Redis/数据库读取配置）
+	configReader := config.NewConfigReader(ctrl.b.Configs())
+	asyncProcessor.SetConfigReader(configReader)
+
+	// 异步创建book（传入title、bookType和aiPolish参数）
+	book, err := asyncProcessor.CreateBookWithImagesAsync(c, userID, text, title, bookType, files, aiPolish)
 	if err != nil {
 		log.C(c).Errorw("Failed to create book with image processor", "error", err.Error())
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: "+err.Error()), nil)
@@ -172,6 +219,20 @@ func (ctrl *BookController) Create(c *gin.Context) {
 	}
 	text := textValues[0]
 	log.C(c).Infow("Text field received", "text_length", len(text))
+
+	// 获取title字段（可选）
+	title := ""
+	if titleValues := form.Value["title"]; len(titleValues) > 0 && titleValues[0] != "" {
+		title = titleValues[0]
+	}
+	log.C(c).Infow("Title field received", "title", title, "has_title", title != "")
+
+	// 获取book_type字段（可选）
+	bookType := ""
+	if bookTypeValues := form.Value["book_type"]; len(bookTypeValues) > 0 && bookTypeValues[0] != "" {
+		bookType = bookTypeValues[0]
+	}
+	log.C(c).Infow("Book type field received", "book_type", bookType)
 
 	// 获取ai_polish字段
 	aiPolish := 1 // 默认启用AI
@@ -273,12 +334,17 @@ func (ctrl *BookController) Create(c *gin.Context) {
 
 	// 使用新的处理模式
 	log.C(c).Infow("Using new processing mode with images")
-	ctrl.createWithImageProcessor(c, userID, text, files, aiPolish)
+	ctrl.createWithImageProcessor(c, userID, text, title, bookType, files, aiPolish)
 }
 
 // BookBizAdapter 适配器，用于包装biz接口
 type BookBizAdapter struct {
 	biz biz.IBiz
+}
+
+// Configs 返回配置业务接口（用于访问配置读取器）
+func (a *BookBizAdapter) Configs() biz.IBiz {
+	return a.biz
 }
 
 func (a *BookBizAdapter) Books() book.AsyncBookBiz {

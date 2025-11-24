@@ -34,6 +34,8 @@ cmd/numind/uploads
 
 cmd/numind/numind.log
 cmd/numind/__debug_bin*
+cmd/numind-admin/__debug_bin*
+cmd/numind-admin/numind-admin.log
 
 configs/cert/
 configs/ssl/

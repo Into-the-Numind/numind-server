@@ -85,11 +85,11 @@ func (s *books) ListByCategory(ctx context.Context, categoryID uint, offset, lim
 	return
 }
 
-// ListAll 获取所有书籍（用于搜索功能）
+// ListAll 获取所有书籍（用于后台管理等场景，返回所有状态的书籍）
 func (s *books) ListAll(ctx context.Context, offset, limit int) (count int64, ret []*model.BookM, err error) {
-	err = s.db.WithContext(ctx).Where("status != ?", model.BookStatusFailed).
+	err = s.db.WithContext(ctx).
 		Preload("Category").
-		Offset(offset).Limit(defaultLimit(limit)).Order("id desc").Find(&ret).
+		Offset(offset).Limit(defaultLimit(limit)).Order("id ASC").Find(&ret).
 		Offset(-1).Limit(-1).Count(&count).Error
 	return
 }

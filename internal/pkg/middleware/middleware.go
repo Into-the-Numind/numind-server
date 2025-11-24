@@ -128,6 +128,12 @@ func extractToken(c *gin.Context) string {
 // validateToken 验证JWT token并返回用户信息
 // 注意：这个方法目前返回的是简化的用户对象，如果需要完整用户信息，应该从数据库查询
 func validateToken(tokenString string) (*model.User, error) {
+	// 检查token是否在黑名单中
+	blacklist := GetTokenBlacklist()
+	if blacklist.IsTokenBlacklisted(tokenString) {
+		return nil, fmt.Errorf("token已失效")
+	}
+
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -140,6 +146,11 @@ func validateToken(tokenString string) (*model.User, error) {
 	}
 
 	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+		// 再次检查黑名单（防止在解析过程中token被加入黑名单）
+		if blacklist.IsTokenBlacklisted(tokenString) {
+			return nil, fmt.Errorf("token已失效")
+		}
+
 		userID := uint(claims["user_id"].(float64))
 		openID := claims["openid"].(string)
 
