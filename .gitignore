@@ -54,3 +54,5 @@ res/
 /test_*
 
 *.html
+
+cmd/numind/data/

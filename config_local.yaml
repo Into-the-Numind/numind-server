@@ -110,6 +110,15 @@ ali:
   stable_diffusion:
     model: "stable-diffusion-3.5-large-turbo"  # SD模型
     timeout: 300s        # SD生成超时时间（5分钟）
+  
+  # Embedding服务（用于RAG）
+  embedding:
+    model: "text-embedding-v3"  # 向量化模型
+    timeout: 60s         # Embedding超时时间
+
+# RAG配置
+rag:
+  vector_db_path: "./data/vector_db"  # 向量数据库存储路径
 
 # 卡片配置 - 统一的卡片渲染和分页配置中心
 card:
@@ -381,7 +390,3 @@ html_converter:
   available_width: 1000          # 可用宽度
   max_content_height: 1360       # 最大内容高度
   # 注意：其他配置项（字体、行高、边距等）现在从card配置中继承
-
-# GSE分词库配置
-gse:
-  enabled: false         # 是否启用GSE分词功能（默认关闭，避免启动时加载字典）

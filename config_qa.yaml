@@ -403,6 +403,3 @@ html_converter:
   max_content_height: 1400       # 最大内容高度
   # 注意：其他配置项（字体、行高、边距等）现在从card配置中继承
 
-# GSE分词库配置
-gse:
-  enabled: false         # 是否启用GSE分词功能（默认关闭，避免启动时加载字典）

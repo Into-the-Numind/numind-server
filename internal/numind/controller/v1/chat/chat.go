@@ -166,9 +166,27 @@ func (ctrl *ChatController) WebSocket(c *gin.Context) {
 		// 设置时间戳
 		wsMsg.Timestamp = time.Now()
 
-		// 处理消息（对于message类型使用流式处理）
-		if wsMsg.Type == "message" {
+		// 统一请求结构：支持 question 和 book_ids（与HTTP保持一致）
+		// 如果提供了 Content 和 BookID（旧格式），转换为新格式
+		if wsMsg.Question == "" && wsMsg.Content != "" {
+			wsMsg.Question = wsMsg.Content
+		}
+		if len(wsMsg.BookIDs) == 0 && wsMsg.BookID != nil {
+			wsMsg.BookIDs = []uint{*wsMsg.BookID}
+		}
+
+		// 自动判断消息类型：如果有 question 或 content，且没有指定其他 type，则默认为聊天消息
+		// type 字段可以完全省略，系统会自动判断
+		if wsMsg.Type == "" {
+			if wsMsg.Question != "" || wsMsg.Content != "" {
+				wsMsg.Type = "chat" // 有问题的消息，默认为聊天
+			}
+		}
+
+		// 处理消息（对于 chat 类型或未指定 type 但有 question 的使用流式处理）
+		if wsMsg.Type == "chat" || wsMsg.Type == "message" || (wsMsg.Type == "" && wsMsg.Question != "") {
 			// 使用流式处理
+			log.Infow("开始处理WebSocket流式消息", "user_id", userID, "question", wsMsg.Question, "book_ids", wsMsg.BookIDs, "session_id", wsMsg.SessionID)
 			_, err := ctrl.chatBiz.ProcessWebSocketMessageStream(c.Request.Context(), userID, &wsMsg, conn)
 			if err != nil {
 				// 记录详细错误日志（包含原始错误信息，用于调试）
@@ -181,9 +199,11 @@ func (ctrl *ChatController) WebSocket(c *gin.Context) {
 				}
 				errorBytes, _ := json.Marshal(errorMsg)
 				conn.WriteMessage(websocket.TextMessage, errorBytes)
+			} else {
+				log.Infow("WebSocket流式消息处理完成", "user_id", userID)
 			}
 		} else {
-			// 其他类型的消息使用原有逻辑
+			// 其他类型的消息使用原有逻辑（session, search_books, ping等）
 			response, err := ctrl.chatBiz.ProcessWebSocketMessage(c.Request.Context(), userID, &wsMsg)
 			if err != nil {
 				log.Errorw("Failed to process WebSocket message", "error", err)

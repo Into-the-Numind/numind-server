@@ -19,6 +19,7 @@ import (
 	"numind-server/internal/numind/biz/order"
 	"numind-server/internal/numind/biz/pagination"
 	"numind-server/internal/numind/biz/payment"
+	ragbiz "numind-server/internal/numind/biz/rag"
 	"numind-server/internal/numind/biz/template"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
@@ -49,6 +50,7 @@ type IBiz interface {
 	Configs() config.ConfigBiz
 	Payments() payment.PaymentBiz
 	AccountRecords() accountrecordbiz.AccountRecordBiz
+	Rag() *ragbiz.RagService // RAG服务
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -56,7 +58,8 @@ var _ IBiz = (*biz)(nil)
 
 // biz 是 IBiz 的一个具体实现.
 type biz struct {
-	ds store.IStore
+	ds         store.IStore
+	ragService *ragbiz.RagService
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -64,7 +67,23 @@ var _ IBiz = (*biz)(nil)
 
 // NewBiz 创建一个 IBiz 类型的实例.
 func NewBiz(ds store.IStore) *biz {
-	return &biz{ds: ds}
+	b := &biz{ds: ds}
+
+	// 初始化 RAG 服务（向量数据库路径，如果未配置则使用默认路径）
+	dbPath := viper.GetString("rag.vector_db_path")
+	if dbPath == "" {
+		dbPath = "./data/vector_db"
+	}
+	ragService, err := ragbiz.NewRagService(b.Ali(), dbPath)
+	if err != nil {
+		// RAG服务初始化失败不影响系统启动，只记录错误
+		// 后续调用时会检查 ragService 是否为 nil
+		// log.Errorw("初始化RAG服务失败", "error", err)
+	} else {
+		b.ragService = ragService
+	}
+
+	return b
 }
 
 // Users 返回一个实现了 UserBiz 接口的实例.
@@ -128,7 +147,7 @@ func (b *biz) Pagination() pagination.PaginationBiz {
 }
 
 func (b *biz) Chats() chat.ChatBiz {
-	return chat.New(b.ds, b.Users(), b.Ali(), b.Volc())
+	return chat.New(b.ds, b.Users(), b.Ali(), b.Volc(), b.Rag())
 }
 
 func (b *biz) Article() article.IArticleBiz {
@@ -149,4 +168,8 @@ func (b *biz) Configs() config.ConfigBiz {
 
 func (b *biz) Payments() payment.PaymentBiz {
 	return payment.NewPaymentBiz(b.ds)
+}
+
+func (b *biz) Rag() *ragbiz.RagService {
+	return b.ragService
 }
