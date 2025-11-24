@@ -151,8 +151,36 @@ func validateToken(tokenString string) (*model.User, error) {
 			return nil, fmt.Errorf("token已失效")
 		}
 
-		userID := uint(claims["user_id"].(float64))
-		openID := claims["openid"].(string)
+		// 安全地获取 user_id（避免panic）
+		userIDValue, exists := claims["user_id"]
+		if !exists {
+			return nil, fmt.Errorf("user_id not found in token")
+		}
+
+		var userID uint
+		switch v := userIDValue.(type) {
+		case float64:
+			userID = uint(v)
+		case int:
+			userID = uint(v)
+		case uint:
+			userID = v
+		case int64:
+			userID = uint(v)
+		default:
+			return nil, fmt.Errorf("invalid user_id type in token: %T", v)
+		}
+
+		// 安全地获取 openid（避免panic）
+		openIDValue, exists := claims["openid"]
+		if !exists {
+			return nil, fmt.Errorf("openid not found in token")
+		}
+
+		openID, ok := openIDValue.(string)
+		if !ok {
+			return nil, fmt.Errorf("invalid openid type in token: %T", openIDValue)
+		}
 
 		// 这里应该从数据库获取用户信息，暂时返回模拟数据
 		// 在实际使用中，应该通过依赖注入的方式获取数据库连接
