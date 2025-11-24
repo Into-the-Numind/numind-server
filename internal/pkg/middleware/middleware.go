@@ -1,10 +1,13 @@
 package middleware
 
 import (
+	"context"
 	"fmt"
-	"log"
+	stdlog "log"
+	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	"strings"
 	"time"
@@ -12,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/spf13/viper"
+	"gorm.io/gorm"
 )
 
 // Logger 日志中间件
@@ -39,7 +43,7 @@ func ErrorHandler() gin.HandlerFunc {
 		// 检查是否有错误
 		if len(c.Errors) > 0 {
 			err := c.Errors.Last()
-			log.Printf("Error: %v", err.Error())
+			stdlog.Printf("Error: %v", err.Error())
 
 			// 返回统一的错误响应
 			core.WriteResponse(c, errno.ErrInternalServer, nil)
@@ -57,7 +61,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		user, err := validateToken(token)
+		user, err := validateToken(c.Request.Context(), token)
 		if err != nil {
 			core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("无效的认证令牌"), nil)
 			c.Abort()
@@ -74,7 +78,7 @@ func OptionalAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractToken(c)
 		if token != "" {
-			if user, err := validateToken(token); err == nil {
+			if user, err := validateToken(c.Request.Context(), token); err == nil {
 				c.Set("current_user", user)
 			}
 		}
@@ -92,7 +96,7 @@ func AdminAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		user, err := validateToken(token)
+		user, err := validateToken(c.Request.Context(), token)
 		if err != nil {
 			core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("无效的认证令牌"), nil)
 			c.Abort()
@@ -126,8 +130,8 @@ func extractToken(c *gin.Context) string {
 }
 
 // validateToken 验证JWT token并返回用户信息
-// 注意：这个方法目前返回的是简化的用户对象，如果需要完整用户信息，应该从数据库查询
-func validateToken(tokenString string) (*model.User, error) {
+// 从数据库验证用户是否存在，并验证openid是否匹配
+func validateToken(ctx context.Context, tokenString string) (*model.User, error) {
 	// 检查token是否在黑名单中
 	blacklist := GetTokenBlacklist()
 	if blacklist.IsTokenBlacklisted(tokenString) {
@@ -151,14 +155,62 @@ func validateToken(tokenString string) (*model.User, error) {
 			return nil, fmt.Errorf("token已失效")
 		}
 
-		userID := uint(claims["user_id"].(float64))
-		openID := claims["openid"].(string)
+		// 安全地获取 user_id（避免panic）
+		userIDValue, exists := claims["user_id"]
+		if !exists {
+			return nil, fmt.Errorf("user_id not found in token")
+		}
 
-		// 这里应该从数据库获取用户信息，暂时返回模拟数据
-		// 在实际使用中，应该通过依赖注入的方式获取数据库连接
-		user := &model.User{}
-		user.ID = userID
-		user.OpenID = openID
+		var userID uint
+		switch v := userIDValue.(type) {
+		case float64:
+			userID = uint(v)
+		case int:
+			userID = uint(v)
+		case uint:
+			userID = v
+		case int64:
+			userID = uint(v)
+		default:
+			return nil, fmt.Errorf("invalid user_id type in token: %T", v)
+		}
+
+		// 安全地获取 openid（避免panic）
+		openIDValue, exists := claims["openid"]
+		if !exists {
+			return nil, fmt.Errorf("openid not found in token")
+		}
+
+		openID, ok := openIDValue.(string)
+		if !ok {
+			return nil, fmt.Errorf("invalid openid type in token: %T", openIDValue)
+		}
+
+		// 从数据库验证用户是否存在，并验证openid是否匹配
+		if store.S == nil {
+			log.C(ctx).Warnw("store.S未初始化，跳过数据库验证")
+			// 如果store未初始化，返回简化的用户对象（向后兼容）
+			user := &model.User{}
+			user.ID = userID
+			user.OpenID = openID
+			return user, nil
+		}
+
+		// 从数据库查询用户
+		user, err := store.S.Users().GetUserByID(ctx, userID)
+		if err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return nil, fmt.Errorf("用户不存在")
+			}
+			log.C(ctx).Errorw("查询用户失败", "user_id", userID, "error", err)
+			return nil, fmt.Errorf("查询用户失败: %v", err)
+		}
+
+		// 验证openid是否匹配（防止token被篡改）
+		if user.OpenID != openID {
+			log.C(ctx).Warnw("token中的openid与数据库不匹配", "user_id", userID, "token_openid", openID, "db_openid", user.OpenID)
+			return nil, fmt.Errorf("token无效：openid不匹配")
+		}
 
 		return user, nil
 	}
