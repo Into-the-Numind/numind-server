@@ -26,6 +26,8 @@ type BookResponse struct {
 	ViewTime      *time.Time `json:"view_time,omitempty"`
 	ImageUrl      string     `json:"image_url"`
 	Status        string     `json:"status"`
+	AIPolish      int        `json:"ai_polish"` // AI润色设置 0=关闭 1=开启
+	BookType      string     `json:"book_type"` // 笔记类型：text, text_with_image, todo, done
 
 	// 关联的图片信息
 	Images []ImageResponse `json:"images,omitempty"`
@@ -87,6 +89,8 @@ func NewBookResponse(book *BookM) *BookResponse {
 		CardCount:     book.CardCount,
 		ViewTime:      book.ViewTime,
 		Status:        book.Status,
+		AIPolish:      book.AIPolish,
+		BookType:      book.BookType,
 		// 优先使用COS链接，如果获取失败则使用本地路径
 		ImageUrl: util.GetBookImageWithCOS(context.Background(), book.ID, book.ImageUrl),
 		Images:   []ImageResponse{},
