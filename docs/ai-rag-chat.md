@@ -192,7 +192,7 @@ func (r *RagService) ChatWithRAG(
 ```go
 Document {
     ID: "book_{bookID}",           // 文档ID
-    Embedding: []float32,          // 向量
+    Embedding: []float32,          // 向量（1536维）
     Metadata: {
         "user_id": "123",          // 用户ID（用于隔离）
         "book_id": "456",          // 笔记ID
@@ -202,7 +202,95 @@ Document {
 }
 ```
 
-### 4.4 RagController
+### 4.4 向量数据库持久化机制
+
+**存储格式**: `.gob` 文件（Go 二进制序列化格式）
+
+**存储路径**（自动计算）:
+
+系统会根据以下优先级确定存储路径：
+
+1. **显式配置**: `rag.vector_db_path`（如果在配置文件中指定）
+2. **自动计算**: 基于 `resource.image_path` 智能计算（推荐）
+   ```
+   规则1: 如果父目录是 "image"，向上一级后创建 vector_db
+          /opt/numind/dev/image/upload => /opt/numind/dev/vector_db
+   
+   规则2: 否则在父目录下创建 vector_db
+          /Users/.../res/upload => /Users/.../res/vector_db
+   ```
+3. **默认路径**: `./data/vector_db`（仅无配置时）
+
+**各环境路径示例**:
+- Dev:  `/opt/numind/dev/vector_db/`
+- QA:   `/opt/numind/qa/vector_db/`
+- Prod: `/opt/numind/prod/vector_db/`
+- Local: `/Users/.../res/vector_db/`
+
+**文件结构**:
+```
+data/vector_db/
+└── 6e317bcd/              # Collection ID (books集合的唯一标识)
+    ├── 00000000.gob       # Collection元数据文件 (82B)
+    ├── 8c52a8e0.gob       # Document向量文件 (10KB)
+    ├── 1944c93e.gob       # Document向量文件 (6.3KB)
+    ├── 7af4b5b6.gob       # Document向量文件 (17KB)
+    └── ...                # 其他笔记的向量文件
+```
+
+**文件说明**:
+
+1. **00000000.gob** - Collection 元数据文件
+   - 存储 Collection 的名称、配置等信息
+   - 大小：约 82B
+   - **必不可少**：删除后无法识别 Collection
+
+2. **其他 .gob 文件** - Document 向量数据文件
+   - 每个文件存储一个或多个笔记的向量数据
+   - 文件名：随机生成的十六进制哈希值
+   - 包含内容：
+     - 笔记向量（1536维 float32 数组，约6KB）
+     - 笔记元数据（user_id, book_id, content）
+     - 笔记原文内容
+   - 大小：6KB - 17KB（取决于笔记内容长度）
+
+**重要性级别**: 🔴 **极其重要，不可删除**
+
+**为什么不能删除**:
+1. ❌ **数据完全丢失**: 删除 gob 文件会导致所有笔记向量数据永久丢失
+2. ❌ **RAG 功能失效**: 没有向量数据，无法进行语义检索，RAG 聊天功能完全不可用
+3. ❌ **无法自动恢复**: 虽然笔记原文存储在 MySQL 中，但需要重新调用 Embedding API 向量化所有笔记
+   - 成本：每篇笔记约 0.0001 元（Embedding API 费用）
+   - 时间：1000篇笔记约需 5-10 分钟重新向量化
+4. ❌ **服务中断**: 在重新向量化完成前，RAG 聊天功能完全不可用
+
+**数据恢复方式**:
+如果误删除，只能通过以下方式恢复：
+```bash
+# 1. 重启服务，触发自动向量化
+# 系统会检查所有笔记，自动向量化未向量化的笔记
+
+# 2. 手动触发向量化（未来可实现管理接口）
+curl -X POST "http://localhost:9091/v1/admin/rag/rebuild" \
+  -H "Authorization: Bearer ADMIN_TOKEN"
+```
+
+**备份建议**:
+```bash
+# 定期备份向量数据库
+tar -czf vector_db_backup_$(date +%Y%m%d).tar.gz data/vector_db/
+
+# 保留最近7天的备份
+find . -name "vector_db_backup_*.tar.gz" -mtime +7 -delete
+```
+
+**磁盘空间估算**:
+- 单篇笔记向量：6-17KB
+- 1000篇笔记：约 6-17MB
+- 10000篇笔记：约 60-170MB
+- 100000篇笔记：约 600MB-1.7GB
+
+### 4.5 RagController
 
 **位置**: `internal/numind/controller/v1/rag/rag.go`
 
@@ -227,7 +315,7 @@ Document {
 }
 ```
 
-### 4.5 异步向量化机制
+### 4.6 异步向量化机制
 
 **位置**: `internal/numind/biz/rag/rag_service.go`
 
@@ -1090,6 +1178,222 @@ echo "平均查询时间: ${AVG_QUERY_TIME}ms"
 
 ---
 
+## 数据备份与维护
+
+### 11.8 向量数据库备份
+
+**重要性**: 🔴 极其重要
+
+向量数据库存储在 `.gob` 文件中，这些文件包含了所有笔记的向量数据。一旦丢失，需要重新调用 Embedding API 向量化所有笔记，会产生额外成本和时间。
+
+#### 11.8.1 容器化环境配置
+
+**Docker Compose 示例**:
+```yaml
+version: '3.8'
+services:
+  numind-dev:
+    image: numind-server:dev
+    volumes:
+      # 挂载持久化目录（包含图片和向量数据库）
+      - /data/numind/dev:/opt/numind/dev
+    environment:
+      - ENV=dev
+    # 系统会自动计算 vector_db 路径:
+    # /opt/numind/dev/image/upload => /opt/numind/dev/vector_db
+```
+
+**宿主机目录结构**:
+```bash
+/data/numind/dev/
+├── image/
+│   └── upload/          # 图片上传目录（持久化）
+└── vector_db/           # 向量数据库目录（持久化）✅
+    └── 6e317bcd/
+        ├── 00000000.gob
+        └── *.gob
+```
+
+---
+
+#### 11.8.2 备份策略
+
+**每日备份**（推荐）:
+```bash
+#!/bin/bash
+# 备份向量数据库（支持多环境）
+ENV=${1:-"dev"}  # 默认 dev 环境
+BASE_PATH="/opt/numind/${ENV}"
+VECTOR_DB_PATH="${BASE_PATH}/vector_db"
+BACKUP_DIR="/backup/vector_db"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+# 创建备份
+tar -czf ${BACKUP_DIR}/vector_db_${ENV}_${TIMESTAMP}.tar.gz ${VECTOR_DB_PATH}
+
+# 保留最近7天的备份
+find ${BACKUP_DIR} -name "vector_db_${ENV}_*.tar.gz" -mtime +7 -delete
+
+echo "✅ 备份完成: vector_db_${ENV}_${TIMESTAMP}.tar.gz"
+```
+
+**使用方法**:
+```bash
+# 备份不同环境
+./backup_vector_db.sh dev
+./backup_vector_db.sh qa
+./backup_vector_db.sh prod
+```
+
+**增量备份**（高频场景）:
+```bash
+# 使用 rsync 增量备份（根据环境调整路径）
+ENV=dev
+rsync -avz --delete /opt/numind/${ENV}/vector_db/ /backup/vector_db_${ENV}_sync/
+```
+
+#### 11.8.3 恢复流程
+
+**场景1：数据完全丢失**
+```bash
+# 1. 停止服务
+systemctl stop numind-dev
+
+# 2. 恢复备份（根据环境调整路径）
+ENV=dev
+tar -xzf /backup/vector_db/vector_db_${ENV}_20241124.tar.gz -C /
+
+# 3. 重启服务
+systemctl start numind-dev
+
+# 4. 验证数据
+curl -X POST "https://youshu.asia/dev/api/rag/chat" \
+  -H "Authorization: Bearer TOKEN" \
+  -d '{"question":"测试","book_ids":[469]}'
+```
+
+**场景2：部分数据损坏**
+```bash
+# 1. 停止服务
+systemctl stop numind-dev
+
+# 2. 删除损坏的向量数据
+ENV=dev
+rm -rf /opt/numind/${ENV}/vector_db/
+
+# 3. 重启服务（会自动重新向量化所有笔记）
+systemctl start numind-dev
+
+# 注意：自动向量化会调用 Embedding API，产生费用
+# 成本估算：每篇笔记约 0.0005 元，1000篇约 0.5 元
+```
+
+#### 11.8.4 文件说明
+
+**gob 文件格式**:
+- **格式**: Go 标准库 `encoding/gob` 二进制序列化
+- **优势**: 高效、类型安全、Go 原生支持
+- **劣势**: 只能被 Go 程序读取
+
+**文件命名规则**:
+- `00000000.gob`: Collection 元数据文件（必须存在）
+- `{hash}.gob`: Document 向量数据文件（文件名为随机哈希）
+
+**单个 gob 文件内容**:
+```go
+// Document 向量文件包含
+{
+    ID: "book_469",                    // 文档ID
+    Embedding: [0.123, -0.456, ...],   // 1536维向量（约6KB）
+    Metadata: {
+        "user_id": "2",                // 用户ID
+        "book_id": "469",              // 笔记ID
+        "content": "笔记完整内容..."    // 笔记文本
+    },
+    Content: "笔记完整内容..."
+}
+```
+
+**容量规划**:
+- 单篇笔记：6-17KB（取决于笔记长度）
+- 1000篇笔记：约 6-17MB
+- 10000篇笔记：约 60-170MB
+- 实际案例：13个文件，总大小 172KB
+
+#### 11.8.5 监控与告警
+
+**监控指标**:
+```yaml
+监控项:
+  - 向量数据库目录大小
+  - gob 文件数量
+  - 最后修改时间
+  - 磁盘空间使用率
+
+告警阈值:
+  - 目录大小超过 10GB
+  - 文件数量超过 100万个
+  - 磁盘空间使用率超过 80%
+```
+
+**监控脚本**:
+```bash
+#!/bin/bash
+# 检查向量数据库状态（支持多环境）
+
+ENV=${1:-"dev"}
+DB_PATH="/opt/numind/${ENV}/vector_db"
+
+if [ ! -d "$DB_PATH" ]; then
+    echo "❌ 向量数据库目录不存在: $DB_PATH"
+    exit 1
+fi
+
+DB_SIZE=$(du -sh $DB_PATH | awk '{print $1}')
+FILE_COUNT=$(find $DB_PATH -name "*.gob" | wc -l)
+
+echo "向量数据库状态 (${ENV}):"
+echo "  路径: $DB_PATH"
+echo "  大小: $DB_SIZE"
+echo "  文件数: $FILE_COUNT"
+echo "  最后修改: $(stat $DB_PATH | grep Modify)"
+```
+
+**使用方法**:
+```bash
+# 检查不同环境
+./check_vector_db.sh dev
+./check_vector_db.sh qa
+./check_vector_db.sh prod
+```
+
+#### 11.8.6 灾难恢复
+
+**最坏情况**：向量数据完全丢失且无备份
+
+**恢复步骤**:
+1. 系统会在启动时自动检测并向量化历史笔记
+2. 进程会在后台运行，不阻塞服务启动
+3. 根据笔记数量，恢复时间估算：
+   - 100篇笔记：约 1-2 分钟
+   - 1000篇笔记：约 5-10 分钟
+   - 10000篇笔记：约 50-100 分钟
+
+**费用估算**（重新向量化）:
+- Embedding API：约 ¥0.0007/千tokens
+- 平均每篇笔记：500字 ≈ 750 tokens
+- 单篇成本：约 ¥0.0005
+- 1000篇笔记：约 ¥0.5
+- 10000篇笔记：约 ¥5
+
+**建议**:
+- ✅ 每天备份向量数据库
+- ✅ 保留至少7天的备份
+- ✅ 重要环境（生产）保留30天备份
+- ✅ 定期测试恢复流程
+
+---
+
 ## 安全与隐私
 
 ### 12.1 数据隔离
@@ -1107,8 +1411,33 @@ echo "平均查询时间: ${AVG_QUERY_TIME}ms"
 ### 12.3 数据安全
 
 - **向量数据库**: 本地存储，不暴露到公网
-- **API Key**: 存储在配置文件中，不提交到代码仓库
+- **gob 文件**: 存储在 `data/vector_db/` 目录，必须加入备份计划
+- **API Key**: 存储在配置文件中，不提交到代码仓库  
 - **HTTPS**: 生产环境必须使用 HTTPS
+
+**数据保护措施**:
+```bash
+# 1. 限制目录权限
+chmod 700 data/vector_db/
+
+# 2. 添加到 .gitignore（避免误提交）
+echo "data/vector_db/" >> .gitignore
+
+# 3. 定期备份（见 11.8 节）
+tar -czf vector_db_backup.tar.gz data/vector_db/
+```
+
+**数据保护措施**:
+```bash
+# 1. 限制目录权限
+chmod 700 data/vector_db/
+
+# 2. 添加到 .gitignore（避免误提交）
+echo "data/vector_db/" >> .gitignore
+
+# 3. 定期备份
+# 见 11.8 节"向量数据库备份"
+```
 
 ### 12.4 隐私保护
 

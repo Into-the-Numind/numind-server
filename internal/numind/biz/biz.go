@@ -3,6 +3,8 @@ package biz
 //go:generate mockgen -destination mock_biz.go -package biz github.com/marmotedu/miniblog/internal/miniblog/biz IBiz
 
 import (
+	"path/filepath"
+
 	accountrecordbiz "numind-server/internal/numind/biz/account_record"
 	"numind-server/internal/numind/biz/admin"
 	adminaccountbiz "numind-server/internal/numind/biz/admin_account"
@@ -25,6 +27,7 @@ import (
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/biz/wechat"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/log"
 
 	"github.com/spf13/viper"
 )
@@ -69,10 +72,36 @@ var _ IBiz = (*biz)(nil)
 func NewBiz(ds store.IStore) *biz {
 	b := &biz{ds: ds}
 
-	// 初始化 RAG 服务（向量数据库路径，如果未配置则使用默认路径）
+	// 初始化 RAG 服务（向量数据库路径）
+	// 优先级：rag.vector_db_path 配置 > 基于 resource.image_path 计算 > 默认路径
 	dbPath := viper.GetString("rag.vector_db_path")
 	if dbPath == "" {
-		dbPath = "./data/vector_db"
+		// 如果没有配置 rag.vector_db_path，则基于 resource.image_path 计算路径
+		imagePath := viper.GetString("resource.image_path")
+		if imagePath != "" {
+			// 从 image_path 获取父目录，在同级创建 vector_db 目录
+			// 例如1：/opt/numind/dev/image/upload -> /opt/numind/dev/vector_db
+			// 例如2：/Users/.../res/upload -> /Users/.../res/vector_db
+			// 判断路径中是否包含 "image" 目录
+			parentDir := filepath.Dir(imagePath) // 移除 upload
+			if filepath.Base(parentDir) == "image" {
+				// 如果父目录是 image，则再向上一级
+				// /opt/numind/dev/image -> /opt/numind/dev
+				baseDir := filepath.Dir(parentDir)
+				dbPath = filepath.Join(baseDir, "vector_db")
+			} else {
+				// 否则在同级创建
+				// /Users/.../res -> /Users/.../res/vector_db
+				dbPath = filepath.Join(parentDir, "vector_db")
+			}
+			log.Infow("使用基于 resource.image_path 计算的向量数据库路径", "image_path", imagePath, "vector_db_path", dbPath)
+		} else {
+			// 如果都没配置，使用默认路径
+			dbPath = "./data/vector_db"
+			log.Infow("使用默认向量数据库路径", "path", dbPath)
+		}
+	} else {
+		log.Infow("使用配置的向量数据库路径", "path", dbPath)
 	}
 
 	// 创建 ConfigReader，用于从 Redis → MySQL → Viper 读取配置

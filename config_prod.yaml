@@ -81,7 +81,14 @@ volc:
   max_retries: 3
 
 resource:
-  image_path: "/opt/numind/prod/image/upload"
+  image_path: "/opt/numind/prod/image/upload"  # 图片上传路径（持久化）
+
+# RAG 向量数据库配置
+rag:
+  # 向量数据库存储路径（可选）
+  # 如果不配置，默认使用 resource.image_path 的同级目录
+  # 当前环境自动计算路径: /opt/numind/prod/vector_db
+  # vector_db_path: "/opt/numind/prod/vector_db"  # 也可以显式指定
 
 # 腾讯云 COS 配置
 cos:
