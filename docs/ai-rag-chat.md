@@ -542,47 +542,388 @@ Content-Type: application/json
 
 **注意**: `book_ids` 是必填字段，必须至少包含1个笔记ID。系统会基于指定的多个笔记进行整合检索和回答。
 
-### 6.2 获取笔记聊天记录
+### 6.2 聊天会话管理接口
 
-**接口**: `GET /v1/chat/book/:book_id/history`
+#### 6.2.1 接口概览
 
-**说明**: 这是现有的聊天接口，用于获取笔记的聊天记录
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `/chat/book/:book_id/sessions` | GET | 列出笔记的所有会话 |
+| `/chat/session/:session_id/history` | GET | 获取会话的聊天记录 |
+| `/v1/chat/ws` | WebSocket | 实时聊天（自动创建会话） |
+
+#### 6.2.2 使用流程
+
+**典型场景：查看笔记的历史对话**
+
+```
+用户操作                          API 调用
+  │
+  ├─ 进入笔记详情页              
+  │
+  ├─ 点击"查看历史对话"          → GET /chat/book/469/sessions
+  │                                  获取该笔记的所有会话列表
+  │
+  ├─ 展示会话列表
+  │   - 会话1: "关于笔记的讨论" (2024-11-26)
+  │   - 会话2: "第二次对话" (2024-11-25)
+  │
+  ├─ 用户点击"会话1"             → GET /chat/session/123/history
+  │                                  获取该会话的所有消息
+  │
+  └─ 展示完整对话历史
+      - 用户: "这篇笔记讲的是什么？"
+      - AI: "这篇笔记主要讲解了..."
+      - 用户: "可以详细说明一下吗？"
+      - AI: "当然可以，详细来说..."
+```
+
+#### 6.2.3 列出笔记的所有会话
+
+**接口**: `GET /chat/book/:book_id/sessions`
+
+**说明**: 获取指定笔记的所有对话会话列表
+
+**路径参数**:
+- `book_id`: 笔记ID（必填）
 
 **查询参数**:
-- `limit`: 返回消息数量限制（默认 50，最大 200）
+- `offset`: 偏移量，默认 `0`
+- `limit`: 每页数量，默认 `10`，最大 `100`
 
-**响应**:
+**请求示例**:
+```bash
+curl -X GET "https://youshu.asia/dev/api/chat/book/469/sessions?offset=0&limit=10" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json"
+```
+
+**响应示例**:
 ```json
 {
   "code": 0,
-  "message": "OK",
+  "message": "success",
   "data": {
-    "session": {
-      "id": 1,
-      "user_id": 1,
-      "book_id": 123,
-      "title": "我的笔记 - AI对话",
-      "status": "active",
-      "message_count": 10
-    },
-    "messages": [
+    "sessions": [
       {
-        "id": 1,
-        "role": "user",
-        "content": "这个笔记讲了什么？",
-        "created_at": "2024-01-01T10:00:00Z"
+        "id": 123,
+        "user_id": 2,
+        "book_id": 469,
+        "title": "关于笔记的讨论",
+        "created_at": "2024-11-26T10:00:00Z",
+        "updated_at": "2024-11-26T11:30:00Z"
       },
       {
-        "id": 2,
-        "role": "assistant",
-        "content": "根据您的笔记内容...",
-        "created_at": "2024-01-01T10:00:01Z"
+        "id": 122,
+        "user_id": 2,
+        "book_id": 469,
+        "title": "第二次对话",
+        "created_at": "2024-11-25T15:00:00Z",
+        "updated_at": "2024-11-25T16:00:00Z"
       }
     ],
-    "total": 10
+    "total": 2,
+    "offset": 0,
+    "limit": 10
   }
 }
 ```
+
+**响应字段说明**:
+- `sessions`: 会话列表
+  - `id`: 会话ID（用于获取聊天记录）
+  - `user_id`: 用户ID
+  - `book_id`: 笔记ID
+  - `title`: 会话标题
+  - `created_at`: 创建时间
+  - `updated_at`: 最后更新时间
+- `total`: 总会话数
+- `offset`: 当前偏移量
+- `limit`: 每页数量
+
+#### 6.2.4 获取会话的聊天记录
+
+**接口**: `GET /chat/session/:session_id/history`
+
+**说明**: 获取指定会话的完整聊天记录
+
+**路径参数**:
+- `session_id`: 会话ID（必填，从会话列表中获取）
+
+**查询参数**:
+- `offset`: 偏移量，默认 `0`
+- `limit`: 每页数量，默认 `50`，最大 `200`
+
+**请求示例**:
+```bash
+curl -X GET "https://youshu.asia/dev/api/chat/session/123/history?offset=0&limit=50" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json"
+```
+
+**响应示例**:
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "session": {
+      "id": 123,
+      "user_id": 2,
+      "book_id": 469,
+      "title": "关于笔记的讨论",
+      "created_at": "2024-11-26T10:00:00Z",
+      "updated_at": "2024-11-26T11:30:00Z"
+    },
+    "messages": [
+      {
+        "id": 1001,
+        "session_id": 123,
+        "user_id": 2,
+        "role": "user",
+        "content": "这篇笔记讲的是什么？",
+        "created_at": "2024-11-26T10:00:00Z"
+      },
+      {
+        "id": 1002,
+        "session_id": 123,
+        "user_id": 2,
+        "role": "assistant",
+        "content": "这篇笔记主要讲解了向量数据库的基本概念...",
+        "created_at": "2024-11-26T10:00:05Z"
+      },
+      {
+        "id": 1003,
+        "session_id": 123,
+        "user_id": 2,
+        "role": "user",
+        "content": "可以详细说明一下吗？",
+        "created_at": "2024-11-26T10:01:00Z"
+      },
+      {
+        "id": 1004,
+        "session_id": 123,
+        "user_id": 2,
+        "role": "assistant",
+        "content": "当然可以，详细来说，向量数据库...",
+        "created_at": "2024-11-26T10:01:10Z"
+      }
+    ],
+    "total": 4,
+    "offset": 0,
+    "limit": 50
+  }
+}
+```
+
+**响应字段说明**:
+- `session`: 会话信息
+  - `id`: 会话ID
+  - `user_id`: 用户ID
+  - `book_id`: 关联的笔记ID
+  - `title`: 会话标题
+  - `created_at`: 创建时间
+  - `updated_at`: 最后更新时间
+- `messages`: 消息列表（按时间正序排列）
+  - `id`: 消息ID
+  - `session_id`: 所属会话ID
+  - `user_id`: 用户ID
+  - `role`: 角色（`user` 或 `assistant`）
+  - `content`: 消息内容
+  - `created_at`: 创建时间
+- `total`: 总消息数
+- `offset`: 当前偏移量
+- `limit`: 每页数量
+
+#### 6.2.5 WebSocket 实时聊天
+
+**接口**: `ws://localhost:9091/v1/chat/ws?token=YOUR_TOKEN`
+
+**说明**: 通过 WebSocket 进行实时聊天，自动创建或使用现有会话
+
+详细说明请参考本文档的 [WebSocket 聊天章节](#websocket-聊天)
+
+#### 6.2.6 测试场景
+
+**场景1：查看笔记的所有历史会话**
+
+```bash
+# 1. 获取笔记ID为469的所有会话
+curl -X GET "https://youshu.asia/dev/api/chat/book/469/sessions" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
+# 响应：返回会话列表，每个会话有 id, title, created_at 等信息
+```
+
+**场景2：查看特定会话的完整对话**
+
+```bash
+# 2. 获取会话ID为123的所有消息
+curl -X GET "https://youshu.asia/dev/api/chat/session/123/history" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
+# 响应：返回会话信息 + 所有消息（用户和AI的对话）
+```
+
+**场景3：分页加载历史消息**
+
+```bash
+# 首次加载前20条消息
+curl -X GET "https://youshu.asia/dev/api/chat/session/123/history?offset=0&limit=20" \
+  -H "Authorization: Bearer TOKEN"
+
+# 加载更多（下一页）
+curl -X GET "https://youshu.asia/dev/api/chat/session/123/history?offset=20&limit=20" \
+  -H "Authorization: Bearer TOKEN"
+
+# 继续加载
+curl -X GET "https://youshu.asia/dev/api/chat/session/123/history?offset=40&limit=20" \
+  -H "Authorization: Bearer TOKEN"
+```
+
+#### 6.2.7 前端实现建议
+
+**1. 会话列表页面**
+
+```javascript
+// 获取笔记的所有会话
+async function loadBookSessions(bookId) {
+  const response = await fetch(
+    `/api/chat/book/${bookId}/sessions?offset=0&limit=20`,
+    {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      }
+    }
+  );
+  
+  const data = await response.json();
+  
+  // 展示会话列表
+  data.sessions.forEach(session => {
+    displaySession({
+      id: session.id,
+      title: session.title,
+      time: new Date(session.updated_at).toLocaleString()
+    });
+  });
+}
+```
+
+**2. 聊天记录页面**
+
+```javascript
+// 获取会话的聊天记录
+async function loadChatHistory(sessionId) {
+  const response = await fetch(
+    `/api/chat/session/${sessionId}/history?offset=0&limit=50`,
+    {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      }
+    }
+  );
+  
+  const data = await response.json();
+  
+  // 展示会话信息
+  displaySessionInfo({
+    title: data.session.title,
+    bookId: data.session.book_id
+  });
+  
+  // 展示消息列表
+  data.messages.forEach(message => {
+    displayMessage({
+      role: message.role, // 'user' or 'assistant'
+      content: message.content,
+      time: new Date(message.created_at).toLocaleString()
+    });
+  });
+}
+```
+
+**3. 分页加载更多**
+
+```javascript
+// 懒加载历史消息
+let offset = 0;
+const limit = 20;
+
+async function loadMoreMessages(sessionId) {
+  const response = await fetch(
+    `/api/chat/session/${sessionId}/history?offset=${offset}&limit=${limit}`,
+    {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      }
+    }
+  );
+  
+  const data = await response.json();
+  
+  // 追加消息
+  data.messages.forEach(message => {
+    appendMessage(message);
+  });
+  
+  // 更新偏移量
+  offset += data.messages.length;
+  
+  // 判断是否还有更多
+  const hasMore = offset < data.total;
+  
+  return hasMore;
+}
+```
+
+#### 6.2.8 错误处理
+
+**常见错误码**
+
+| 错误码 | 说明 | 处理建议 |
+|--------|------|----------|
+| 401 | 未授权 | 检查 Token 是否有效 |
+| 404 | 资源不存在 | 检查 session_id 或 book_id 是否正确 |
+| 403 | 无权限访问 | 检查会话是否属于当前用户 |
+| 500 | 服务器错误 | 稍后重试或联系管理员 |
+
+**错误响应示例**
+
+```json
+{
+  "code": 404,
+  "message": "会话不存在",
+  "data": null
+}
+```
+
+#### 6.2.9 数据层次结构
+
+```
+用户 (User)
+  │
+  ├─ 笔记1 (Book)
+  │   ├─ 会话1 (Session)
+  │   │   ├─ 消息1 (Message - user)
+  │   │   ├─ 消息2 (Message - assistant)
+  │   │   ├─ 消息3 (Message - user)
+  │   │   └─ 消息4 (Message - assistant)
+  │   │
+  │   └─ 会话2 (Session)
+  │       ├─ 消息1 (Message - user)
+  │       └─ 消息2 (Message - assistant)
+  │
+  └─ 笔记2 (Book)
+      └─ 会话1 (Session)
+          └─ ...
+```
+
+**关系说明**:
+- 一个用户可以有多个笔记
+- 一个笔记可以有多个会话（Session）
+- 一个会话包含多条消息（Message）
+- 消息分为用户消息和AI助手消息
 
 ---
 

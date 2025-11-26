@@ -39,11 +39,14 @@ type ChatBiz interface {
 	// 新增：根据笔记ID获取或创建会话
 	GetOrCreateSessionByBook(ctx context.Context, userID uint, bookID uint, title string) (*model.ChatSession, error)
 
-	// 新增：获取笔记的聊天记录
+	// 新增：获取笔记的聊天记录（已废弃，请使用 GetSessionHistory）
 	GetBookChatHistory(ctx context.Context, userID uint, bookID uint, limit int) (*model.ChatSession, []*model.ChatMessage, error)
 
 	// 新增：列出笔记的所有会话
 	ListSessionsByBook(ctx context.Context, userID uint, bookID uint, offset, limit int) ([]*model.ChatSession, int64, error)
+
+	// 新增：获取会话的聊天记录
+	GetSessionHistory(ctx context.Context, userID uint, sessionID uint, offset, limit int) (*model.ChatSession, []*model.ChatMessage, int64, error)
 
 	// WebSocket相关方法
 	ProcessWebSocketMessage(ctx context.Context, userID uint, msg *model.WebSocketMessage) (*model.WebSocketMessage, error)
@@ -320,6 +323,23 @@ func (b *chatBiz) GetBookChatHistory(ctx context.Context, userID uint, bookID ui
 	}
 
 	return session, messages, nil
+}
+
+// GetSessionHistory 获取会话的聊天记录
+func (b *chatBiz) GetSessionHistory(ctx context.Context, userID uint, sessionID uint, offset, limit int) (*model.ChatSession, []*model.ChatMessage, int64, error) {
+	// 获取会话信息并验证权限
+	session, err := b.GetSession(ctx, sessionID, userID)
+	if err != nil {
+		return nil, nil, 0, wrapChatError(err, "get session")
+	}
+
+	// 获取该会话的所有消息
+	messages, total, err := b.ds.Chats().ListMessages(ctx, sessionID, offset, limit)
+	if err != nil {
+		return nil, nil, 0, wrapChatError(err, "list messages")
+	}
+
+	return session, messages, total, nil
 }
 
 // ListSessionsByBook 列出笔记的所有会话

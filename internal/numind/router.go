@@ -165,8 +165,8 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/chat/sessions/:id/messages", chatc.ListMessages)                // 获取会话消息
 		authGroup.GET("/chat/sessions/:id/with-messages", chatc.GetSessionWithMessages) // 获取会话及消息
 		// 笔记聊天相关
-		authGroup.GET("/chat/book/:book_id/history", chatc.GetBookChatHistory) // 获取笔记的聊天记录
-		authGroup.GET("/chat/book/:book_id/sessions", chatc.ListBookSessions)  // 列出笔记的所有会话
+		authGroup.GET("/chat/book/:book_id/sessions", chatc.ListBookSessions)       // 列出笔记的所有会话
+		authGroup.GET("/chat/session/:session_id/history", chatc.GetSessionHistory) // 获取会话的聊天记录
 	}
 
 	// 分页相关

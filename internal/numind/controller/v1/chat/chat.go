@@ -422,8 +422,8 @@ func (ctrl *ChatController) GetSessionWithMessages(c *gin.Context) {
 	core.WriteResponse(c, nil, session)
 }
 
-// GetBookChatHistory 获取笔记的聊天记录
-func (ctrl *ChatController) GetBookChatHistory(c *gin.Context) {
+// GetSessionHistory 获取会话的聊天记录
+func (ctrl *ChatController) GetSessionHistory(c *gin.Context) {
 	// 从认证中间件中获取用户信息
 	currentUser := middleware.GetCurrentUser(c)
 	if currentUser == nil {
@@ -431,11 +431,11 @@ func (ctrl *ChatController) GetBookChatHistory(c *gin.Context) {
 		return
 	}
 
-	// 获取笔记ID
-	bookIDStr := c.Param("book_id")
-	bookID, err := strconv.ParseUint(bookIDStr, 10, 32)
+	// 获取会话ID
+	sessionIDStr := c.Param("session_id")
+	sessionID, err := strconv.ParseUint(sessionIDStr, 10, 32)
 	if err != nil {
-		core.WriteResponse(c, errno.ErrBind, nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的会话ID"), nil)
 		return
 	}
 
@@ -445,11 +445,17 @@ func (ctrl *ChatController) GetBookChatHistory(c *gin.Context) {
 		limit = 50
 	}
 
+	// 获取offset参数（可选，默认0）
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if offset < 0 {
+		offset = 0
+	}
+
 	// 获取聊天记录
-	session, messages, err := ctrl.chatBiz.GetBookChatHistory(c.Request.Context(), currentUser.ID, uint(bookID), limit)
+	session, messages, total, err := ctrl.chatBiz.GetSessionHistory(c.Request.Context(), currentUser.ID, uint(sessionID), offset, limit)
 	if err != nil {
-		log.C(c).Errorw("获取笔记聊天记录失败", "error", err, "book_id", bookID)
-		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("获取笔记聊天记录失败: %s", err.Error()), nil)
+		log.C(c).Errorw("获取会话聊天记录失败", "error", err, "session_id", sessionID)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("获取会话聊天记录失败: %s", err.Error()), nil)
 		return
 	}
 
@@ -457,16 +463,9 @@ func (ctrl *ChatController) GetBookChatHistory(c *gin.Context) {
 	response := gin.H{
 		"session":  session,
 		"messages": messages,
-		"total":    len(messages),
-	}
-
-	// 如果没有会话，返回空数据
-	if session == nil {
-		response = gin.H{
-			"session":  nil,
-			"messages": []*model.ChatMessage{},
-			"total":    0,
-		}
+		"total":    total,
+		"offset":   offset,
+		"limit":    limit,
 	}
 
 	core.WriteResponse(c, nil, response)
