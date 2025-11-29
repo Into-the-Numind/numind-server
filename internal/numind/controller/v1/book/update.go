@@ -1,6 +1,7 @@
 package book
 
 import (
+	"context"
 	"strconv"
 	"time"
 
@@ -82,6 +83,27 @@ func (ctrl *BookController) Update(c *gin.Context) {
 	if err := ctrl.b.Books().Update(c, book); err != nil {
 		core.WriteResponse(c, err, nil)
 		return
+	}
+
+	// 🔍 异步更新笔记向量（用于RAG检索）
+	// 提取笔记内容（优先使用 ProcessedText，如果为空则使用 OriginalText）
+	bookContent := book.ProcessedText
+	if bookContent == "" {
+		bookContent = book.OriginalText
+	}
+
+	if bookContent != "" && ctrl.b.Rag() != nil {
+		// 在独立的 goroutine 中异步向量化，不阻塞主流程
+		go func() {
+			// 使用新的 context，避免原 context 被取消
+			vectorCtx := context.Background()
+			if err := ctrl.b.Rag().UpdateBookVector(vectorCtx, currentUser.ID, uint(bookID), bookContent); err != nil {
+				log.C(vectorCtx).Errorw("异步更新笔记向量失败", "error", err, "user_id", currentUser.ID, "book_id", bookID)
+				// 向量化失败不影响笔记更新，只记录错误
+			} else {
+				log.C(vectorCtx).Infow("✅ 笔记向量更新成功", "user_id", currentUser.ID, "book_id", bookID)
+			}
+		}()
 	}
 
 	core.WriteResponse(c, nil, nil)

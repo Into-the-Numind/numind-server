@@ -1,9 +1,11 @@
 package numind
 
 import (
+	"context"
 	"fmt"
 	"numind-server/internal/numind/biz"
 	orderbiz "numind-server/internal/numind/biz/order"
+	ragbiz "numind-server/internal/numind/biz/rag"
 	"numind-server/internal/numind/controller/v1/account"
 	"numind-server/internal/numind/controller/v1/article"
 	"numind-server/internal/numind/controller/v1/book"
@@ -14,6 +16,7 @@ import (
 	"numind-server/internal/numind/controller/v1/membership"
 	"numind-server/internal/numind/controller/v1/order"
 	"numind-server/internal/numind/controller/v1/pagination"
+	ragcontroller "numind-server/internal/numind/controller/v1/rag"
 	"numind-server/internal/numind/controller/v1/template"
 	"numind-server/internal/numind/controller/v1/user"
 	"numind-server/internal/numind/store"
@@ -60,6 +63,24 @@ func installNumindRouters(g *gin.Engine) error {
 	fc := feedback.New(b)
 	chatc := chat.New(b.Chats())
 	ac := article.NewArticleController(b.Article())
+
+	// 使用 biz 层已初始化的 RAG 服务
+	ragService := b.Rag()
+	if ragService == nil {
+		log.Fatalw("RAG服务未初始化")
+	}
+	ragc := ragcontroller.NewRagController(ragService, b.Chats())
+
+	// 🔍 系统启动时检查并向量化历史笔记（异步执行，不阻塞启动）
+	go func() {
+		ctx := context.Background()
+		log.Infow("开始检查历史笔记向量化状态")
+		if err := vectorizeHistoricalBooks(ctx, b, ragService); err != nil {
+			log.Errorw("历史笔记向量化检查失败", "error", err)
+		} else {
+			log.Infow("历史笔记向量化检查完成")
+		}
+	}()
 
 	v1Group := g.Group("/v1")
 
@@ -144,8 +165,8 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/chat/sessions/:id/messages", chatc.ListMessages)                // 获取会话消息
 		authGroup.GET("/chat/sessions/:id/with-messages", chatc.GetSessionWithMessages) // 获取会话及消息
 		// 笔记聊天相关
-		authGroup.GET("/chat/book/:book_id/history", chatc.GetBookChatHistory) // 获取笔记的聊天记录
-		authGroup.GET("/chat/book/:book_id/sessions", chatc.ListBookSessions)  // 列出笔记的所有会话
+		authGroup.GET("/chat/book/:book_id/sessions", chatc.ListBookSessions)       // 列出笔记的所有会话
+		authGroup.GET("/chat/session/:session_id/history", chatc.GetSessionHistory) // 获取会话的聊天记录
 	}
 
 	// 分页相关
@@ -216,6 +237,11 @@ func installNumindRouters(g *gin.Engine) error {
 		g.GET("/v1/membership/plans", membershipCtrl.GetMembershipPlans) // 获取会员套餐信息（无需鉴权）
 	}
 
+	// RAG相关
+	{
+		authGroup.POST("/rag/chat", ragc.ChatWithRAG) // 基于笔记进行RAG对话
+	}
+
 	return nil
 }
 
@@ -253,4 +279,89 @@ func getUserIDFromToken(c *gin.Context) (uint, error) {
 	}
 
 	return 0, fmt.Errorf("invalid token or missing user_id")
+}
+
+// vectorizeHistoricalBooks 检查并向量化历史笔记
+// 在系统启动时异步执行，检查所有已创建的笔记，如果还没有向量化，则进行向量化
+func vectorizeHistoricalBooks(ctx context.Context, b biz.IBiz, ragService *ragbiz.RagService) error {
+	log.Infow("开始检查历史笔记向量化状态")
+
+	// 分批获取所有笔记（只获取状态为 success 的笔记）
+	batchSize := 100
+	offset := 0
+	totalProcessed := 0
+	totalVectorized := 0
+	totalSkipped := 0
+
+	for {
+		// 获取一批笔记
+		count, books, err := b.Books().ListAll(ctx, offset, batchSize)
+		if err != nil {
+			return fmt.Errorf("获取笔记列表失败: %w", err)
+		}
+
+		if len(books) == 0 {
+			break // 没有更多笔记了
+		}
+
+		log.Infow("处理笔记批次", "offset", offset, "count", len(books), "total", count)
+
+		// 遍历这批笔记，检查并向量化
+		for _, book := range books {
+			// 只处理状态为 success 的笔记
+			if book.Status != "success" {
+				totalSkipped++
+				continue
+			}
+
+			// 检查向量是否已存在
+			exists, err := ragService.CheckBookVectorExists(ctx, book.ID)
+			if err != nil {
+				log.Errorw("检查笔记向量失败", "error", err, "book_id", book.ID)
+				continue
+			}
+
+			if exists {
+				totalSkipped++
+				continue // 向量已存在，跳过
+			}
+
+			// 提取笔记内容（优先使用 ProcessedText，如果为空则使用 OriginalText）
+			bookContent := book.ProcessedText
+			if bookContent == "" {
+				bookContent = book.OriginalText
+			}
+
+			// 如果内容为空，跳过
+			if bookContent == "" {
+				totalSkipped++
+				continue
+			}
+
+			// 向量化笔记
+			if err := ragService.AddBookVector(ctx, book.UserID, book.ID, bookContent); err != nil {
+				log.Errorw("向量化笔记失败", "error", err, "book_id", book.ID, "user_id", book.UserID)
+				// 继续处理下一个笔记，不中断整个流程
+				continue
+			}
+
+			totalVectorized++
+			log.Infow("✅ 历史笔记向量化成功", "book_id", book.ID, "user_id", book.UserID)
+		}
+
+		totalProcessed += len(books)
+		offset += batchSize
+
+		// 如果已经处理完所有笔记，退出循环
+		if int64(offset) >= count {
+			break
+		}
+	}
+
+	log.Infow("历史笔记向量化检查完成",
+		"total_processed", totalProcessed,
+		"total_vectorized", totalVectorized,
+		"total_skipped", totalSkipped)
+
+	return nil
 }

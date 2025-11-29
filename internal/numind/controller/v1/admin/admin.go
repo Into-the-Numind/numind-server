@@ -20,14 +20,16 @@ type AdminController struct {
 	paymentBiz paymentbiz.PaymentBiz
 	bookBiz    bookbiz.BookBiz
 	imageBiz   imagebiz.ImageBiz
+	chatStore  store.ChatStore
 }
 
-func NewAdminController(biz admin.IAdminBiz, paymentBiz paymentbiz.PaymentBiz, bookBiz bookbiz.BookBiz, imageBiz imagebiz.ImageBiz) *AdminController {
+func NewAdminController(biz admin.IAdminBiz, paymentBiz paymentbiz.PaymentBiz, bookBiz bookbiz.BookBiz, imageBiz imagebiz.ImageBiz, chatStore store.ChatStore) *AdminController {
 	return &AdminController{
 		biz:        biz,
 		paymentBiz: paymentBiz,
 		bookBiz:    bookBiz,
 		imageBiz:   imageBiz,
+		chatStore:  chatStore,
 	}
 }
 
@@ -796,5 +798,78 @@ func (c *AdminController) GetImageList(ctx *gin.Context) {
 			"offset": offset,
 			"limit":  limit,
 		},
+	})
+}
+
+// GetBookSessions 获取笔记的会话列表（管理员）
+// GET /v1/admin/books/:id/sessions
+// 查询参数：
+//   - offset: 偏移量，默认 0
+//   - limit: 每页数量，默认 10
+func (c *AdminController) GetBookSessions(ctx *gin.Context) {
+	bookIDStr := ctx.Param("id")
+	bookID, err := strconv.ParseUint(bookIDStr, 10, 32)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{
+			"code":    1,
+			"message": "笔记ID格式错误",
+			"data":    nil,
+		})
+		return
+	}
+
+	offset, _ := strconv.Atoi(ctx.DefaultQuery("offset", "0"))
+	limit, _ := strconv.Atoi(ctx.DefaultQuery("limit", "10"))
+
+	sessions, total, err := c.chatStore.ListSessionsByBookIDForAdmin(ctx, uint(bookID), offset, limit)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{
+			"code":    1,
+			"message": "获取会话列表失败: " + err.Error(),
+			"data":    nil,
+		})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "获取会话列表成功",
+		"data": gin.H{
+			"total":    total,
+			"sessions": sessions,
+			"offset":   offset,
+			"limit":    limit,
+		},
+	})
+}
+
+// GetSessionMessages 根据会话ID获取聊天记录（管理员）
+// GET /v1/admin/sessions/:session_id/messages
+func (c *AdminController) GetSessionMessages(ctx *gin.Context) {
+	sessionIDStr := ctx.Param("session_id")
+	sessionID, err := strconv.ParseUint(sessionIDStr, 10, 32)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{
+			"code":    1,
+			"message": "会话ID格式错误",
+			"data":    nil,
+		})
+		return
+	}
+
+	session, err := c.chatStore.GetSessionWithMessagesForAdmin(ctx, uint(sessionID))
+	if err != nil {
+		ctx.JSON(http.StatusNotFound, gin.H{
+			"code":    1,
+			"message": "会话不存在",
+			"data":    nil,
+		})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "获取聊天记录成功",
+		"data":    session,
 	})
 }

@@ -183,6 +183,7 @@ type BizInterface interface {
 	Volc() AsyncVolcBiz // 新增volc支持
 	Templates() AsyncTemplateBiz
 	Store() AsyncStoreBiz // 新增store层访问
+	Rag() AsyncRagBiz     // 新增RAG服务访问
 }
 
 // AsyncBookBiz 书籍业务接口
@@ -231,6 +232,14 @@ type AsyncAliBiz interface {
 // AsyncVolcBiz 火山引擎业务接口
 type AsyncVolcBiz interface {
 	VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error)
+}
+
+// AsyncRagBiz RAG业务接口
+type AsyncRagBiz interface {
+	AddBookVector(ctx context.Context, userID uint, bookID uint, content string) error
+	UpdateBookVector(ctx context.Context, userID uint, bookID uint, content string) error
+	DeleteBookVector(ctx context.Context, bookID uint) error
+	CheckBookVectorExists(ctx context.Context, bookID uint) (bool, error)
 }
 
 // AsyncTemplateBiz 模板业务接口
@@ -507,6 +516,33 @@ func (p *AsyncBookProcessor) processBookCreationWithImagesInBackground(ctx conte
 	if err := p.biz.Users().IncrementUserBookNum(ctx, userID); err != nil {
 		log.C(ctx).Errorw("Failed to update user book stats", "book_id", bookID, "error", err.Error())
 		// 统计更新失败不影响主要流程
+	}
+
+	// 🔍 第四步：异步向量化笔记内容（用于RAG检索）
+	// 提取笔记内容（优先使用 ProcessedText，如果为空则使用 OriginalText）
+	bookContent := book.ProcessedText
+	if bookContent == "" {
+		bookContent = book.OriginalText
+	}
+
+	if bookContent != "" && p.biz.Rag() != nil {
+		// 在独立的 goroutine 中异步向量化，不阻塞主流程
+		go func() {
+			// 使用新的 context，避免原 context 被取消
+			vectorCtx := context.Background()
+			if err := p.biz.Rag().AddBookVector(vectorCtx, userID, bookID, bookContent); err != nil {
+				log.C(vectorCtx).Errorw("异步向量化笔记失败", "error", err, "user_id", userID, "book_id", bookID)
+				// 向量化失败不影响笔记创建，只记录错误
+			} else {
+				log.C(vectorCtx).Infow("✅ 笔记向量化成功", "user_id", userID, "book_id", bookID)
+			}
+		}()
+	} else {
+		if bookContent == "" {
+			log.C(ctx).Warnw("笔记内容为空，跳过向量化", "book_id", bookID)
+		} else if p.biz.Rag() == nil {
+			log.C(ctx).Warnw("RAG服务未初始化，跳过向量化", "book_id", bookID)
+		}
 	}
 
 	duration := time.Since(startTime)

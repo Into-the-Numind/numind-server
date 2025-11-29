@@ -166,9 +166,27 @@ func (ctrl *ChatController) WebSocket(c *gin.Context) {
 		// 设置时间戳
 		wsMsg.Timestamp = time.Now()
 
-		// 处理消息（对于message类型使用流式处理）
-		if wsMsg.Type == "message" {
+		// 统一请求结构：支持 question 和 book_ids（与HTTP保持一致）
+		// 如果提供了 Content 和 BookID（旧格式），转换为新格式
+		if wsMsg.Question == "" && wsMsg.Content != "" {
+			wsMsg.Question = wsMsg.Content
+		}
+		if len(wsMsg.BookIDs) == 0 && wsMsg.BookID != nil {
+			wsMsg.BookIDs = []uint{*wsMsg.BookID}
+		}
+
+		// 自动判断消息类型：如果有 question 或 content，且没有指定其他 type，则默认为聊天消息
+		// type 字段可以完全省略，系统会自动判断
+		if wsMsg.Type == "" {
+			if wsMsg.Question != "" || wsMsg.Content != "" {
+				wsMsg.Type = "chat" // 有问题的消息，默认为聊天
+			}
+		}
+
+		// 处理消息（对于 chat 类型或未指定 type 但有 question 的使用流式处理）
+		if wsMsg.Type == "chat" || wsMsg.Type == "message" || (wsMsg.Type == "" && wsMsg.Question != "") {
 			// 使用流式处理
+			log.Infow("开始处理WebSocket流式消息", "user_id", userID, "question", wsMsg.Question, "book_ids", wsMsg.BookIDs, "session_id", wsMsg.SessionID)
 			_, err := ctrl.chatBiz.ProcessWebSocketMessageStream(c.Request.Context(), userID, &wsMsg, conn)
 			if err != nil {
 				// 记录详细错误日志（包含原始错误信息，用于调试）
@@ -181,9 +199,11 @@ func (ctrl *ChatController) WebSocket(c *gin.Context) {
 				}
 				errorBytes, _ := json.Marshal(errorMsg)
 				conn.WriteMessage(websocket.TextMessage, errorBytes)
+			} else {
+				log.Infow("WebSocket流式消息处理完成", "user_id", userID)
 			}
 		} else {
-			// 其他类型的消息使用原有逻辑
+			// 其他类型的消息使用原有逻辑（session, search_books, ping等）
 			response, err := ctrl.chatBiz.ProcessWebSocketMessage(c.Request.Context(), userID, &wsMsg)
 			if err != nil {
 				log.Errorw("Failed to process WebSocket message", "error", err)
@@ -402,8 +422,8 @@ func (ctrl *ChatController) GetSessionWithMessages(c *gin.Context) {
 	core.WriteResponse(c, nil, session)
 }
 
-// GetBookChatHistory 获取笔记的聊天记录
-func (ctrl *ChatController) GetBookChatHistory(c *gin.Context) {
+// GetSessionHistory 获取会话的聊天记录
+func (ctrl *ChatController) GetSessionHistory(c *gin.Context) {
 	// 从认证中间件中获取用户信息
 	currentUser := middleware.GetCurrentUser(c)
 	if currentUser == nil {
@@ -411,11 +431,11 @@ func (ctrl *ChatController) GetBookChatHistory(c *gin.Context) {
 		return
 	}
 
-	// 获取笔记ID
-	bookIDStr := c.Param("book_id")
-	bookID, err := strconv.ParseUint(bookIDStr, 10, 32)
+	// 获取会话ID
+	sessionIDStr := c.Param("session_id")
+	sessionID, err := strconv.ParseUint(sessionIDStr, 10, 32)
 	if err != nil {
-		core.WriteResponse(c, errno.ErrBind, nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的会话ID"), nil)
 		return
 	}
 
@@ -425,11 +445,17 @@ func (ctrl *ChatController) GetBookChatHistory(c *gin.Context) {
 		limit = 50
 	}
 
+	// 获取offset参数（可选，默认0）
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if offset < 0 {
+		offset = 0
+	}
+
 	// 获取聊天记录
-	session, messages, err := ctrl.chatBiz.GetBookChatHistory(c.Request.Context(), currentUser.ID, uint(bookID), limit)
+	session, messages, total, err := ctrl.chatBiz.GetSessionHistory(c.Request.Context(), currentUser.ID, uint(sessionID), offset, limit)
 	if err != nil {
-		log.C(c).Errorw("获取笔记聊天记录失败", "error", err, "book_id", bookID)
-		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("获取笔记聊天记录失败: %s", err.Error()), nil)
+		log.C(c).Errorw("获取会话聊天记录失败", "error", err, "session_id", sessionID)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("获取会话聊天记录失败: %s", err.Error()), nil)
 		return
 	}
 
@@ -437,16 +463,9 @@ func (ctrl *ChatController) GetBookChatHistory(c *gin.Context) {
 	response := gin.H{
 		"session":  session,
 		"messages": messages,
-		"total":    len(messages),
-	}
-
-	// 如果没有会话，返回空数据
-	if session == nil {
-		response = gin.H{
-			"session":  nil,
-			"messages": []*model.ChatMessage{},
-			"total":    0,
-		}
+		"total":    total,
+		"offset":   offset,
+		"limit":    limit,
 	}
 
 	core.WriteResponse(c, nil, response)

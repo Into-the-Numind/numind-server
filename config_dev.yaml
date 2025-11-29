@@ -75,7 +75,14 @@ volc:
   max_retries: 3
 
 resource:
-  image_path: "/opt/numind/dev/image/upload"
+  image_path: "/opt/numind/dev/image/upload"  # 图片上传路径（持久化）
+
+# RAG 向量数据库配置
+rag:
+  # 向量数据库存储路径（可选）
+  # 如果不配置，默认使用 resource.image_path 的同级目录
+  # 当前环境自动计算路径: /opt/numind/dev/vector_db
+  # vector_db_path: "/opt/numind/dev/vector_db"  # 也可以显式指定
 
 # 腾讯云 COS 配置
 cos:
@@ -381,6 +388,3 @@ html_converter:
   max_content_height: 1360       # 最大内容高度
   # 注意：其他配置项（字体、行高、边距等）现在从card配置中继承
 
-# GSE分词库配置
-gse:
-  enabled: false         # 是否启用GSE分词功能（默认关闭，避免启动时加载字典）
