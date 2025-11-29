@@ -34,6 +34,12 @@ type ChatStore interface {
 
 	// 新增：获取笔记的聊天记录（会话+消息）
 	GetBookChatHistory(ctx context.Context, userID uint, bookID uint, limit int) (*model.ChatSession, []*model.ChatMessage, error)
+
+	// Admin 专用：根据笔记ID列出会话列表（不需要 userID 限制）
+	ListSessionsByBookIDForAdmin(ctx context.Context, bookID uint, offset, limit int) ([]*model.ChatSession, int64, error)
+
+	// Admin 专用：根据会话ID获取会话及其消息（不需要 userID 限制）
+	GetSessionWithMessagesForAdmin(ctx context.Context, sessionID uint) (*model.ChatSession, error)
 }
 
 // chatStore 是 ChatStore 的具体实现
@@ -220,4 +226,46 @@ func (s *chatStore) GetBookChatHistory(ctx context.Context, userID uint, bookID 
 	}
 
 	return session, messages, nil
+}
+
+// ListSessionsByBookIDForAdmin 根据笔记ID列出会话列表（Admin 专用，不需要 userID 限制）
+func (s *chatStore) ListSessionsByBookIDForAdmin(ctx context.Context, bookID uint, offset, limit int) ([]*model.ChatSession, int64, error) {
+	var sessions []*model.ChatSession
+	var total int64
+
+	// 获取总数
+	err := s.db.WithContext(ctx).
+		Model(&model.ChatSession{}).
+		Where("book_id = ?", bookID).
+		Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 获取会话列表
+	err = s.db.WithContext(ctx).
+		Where("book_id = ?", bookID).
+		Preload("User").
+		Order("updated_at DESC").
+		Offset(offset).Limit(limit).
+		Find(&sessions).Error
+
+	return sessions, total, err
+}
+
+// GetSessionWithMessagesForAdmin 根据会话ID获取会话及其消息（Admin 专用，不需要 userID 限制）
+func (s *chatStore) GetSessionWithMessagesForAdmin(ctx context.Context, sessionID uint) (*model.ChatSession, error) {
+	var session model.ChatSession
+	err := s.db.WithContext(ctx).
+		Preload("User").
+		Preload("Book").
+		Preload("Messages", func(db *gorm.DB) *gorm.DB {
+			return db.Order("created_at ASC")
+		}).
+		Where("id = ?", sessionID).
+		First(&session).Error
+	if err != nil {
+		return nil, err
+	}
+	return &session, nil
 }
