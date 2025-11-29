@@ -187,8 +187,9 @@ func (r *RagService) ChatWithRAG(ctx context.Context, userID uint, question stri
 // userID: 用户ID，用于数据隔离
 // question: 用户问题
 // bookIDs: 必填的笔记ID数组，用于基于多个笔记进行聊天
+// deepThinking: 是否开启深度思考模式
 // handler: 流式处理函数，每收到一个chunk就调用一次
-func (r *RagService) ChatWithRAGStream(ctx context.Context, userID uint, question string, bookIDs []uint, handler func(chunk string) error) error {
+func (r *RagService) ChatWithRAGStream(ctx context.Context, userID uint, question string, bookIDs []uint, deepThinking bool, handler func(chunk string) error) error {
 	if question == "" {
 		return fmt.Errorf("问题不能为空")
 	}
@@ -282,7 +283,28 @@ func (r *RagService) ChatWithRAGStream(ctx context.Context, userID uint, questio
 	}
 
 	// 6. 调用 LLM：构造 messages，使用流式API
-	systemPrompt := fmt.Sprintf(`你是一位智能助手，专门帮助用户基于他们创建的笔记内容回答问题。
+	var systemPrompt string
+	if deepThinking {
+		// 深度思考模式：要求更深入的分析和思考
+		systemPrompt = fmt.Sprintf(`你是一位智能助手，专门帮助用户基于他们创建的笔记内容回答问题。当前处于深度思考模式，请进行更深入的分析和思考。
+
+%s
+
+## 用户问题
+%s
+
+## 回答要求（深度思考模式）
+1. 基于上述笔记内容进行深入分析和思考，回答用户的问题
+2. 如果笔记中包含相关信息，请深入挖掘这些信息，提供更全面的分析
+3. 如果笔记中没有相关信息，可以基于你的知识回答，但要说明这是基于通用知识
+4. 回答要深入、全面、有洞察力，不仅回答表面问题，还要提供更深层的思考
+5. 可以适当展开相关背景、原因、影响等方面的分析
+6. 使用中文回答
+
+请直接回答用户的问题，不要包含"根据上下文"等前缀。`, contextText, question)
+	} else {
+		// 普通模式：简洁回答
+		systemPrompt = fmt.Sprintf(`你是一位智能助手，专门帮助用户基于他们创建的笔记内容回答问题。
 
 %s
 
@@ -297,15 +319,16 @@ func (r *RagService) ChatWithRAGStream(ctx context.Context, userID uint, questio
 5. 使用中文回答
 
 请直接回答用户的问题，不要包含"根据上下文"等前缀。`, contextText, question)
+	}
 
 	messages := []map[string]string{
 		{"role": "user", "content": systemPrompt},
 	}
 
-	log.C(ctx).Infow("开始调用LLM生成流式回答", "user_id", userID)
+	log.C(ctx).Infow("开始调用LLM生成流式回答", "user_id", userID, "deep_thinking", deepThinking)
 
 	// 使用流式API（参考 generator.go 中的实现）
-	err = r.callAliStream(ctx, messages, handler)
+	err = r.callAliStream(ctx, messages, deepThinking, handler)
 	if err != nil {
 		log.C(ctx).Errorw("LLM生成流式回答失败", "error", err, "user_id", userID)
 		return fmt.Errorf("LLM生成流式回答失败: %w", err)
@@ -316,7 +339,8 @@ func (r *RagService) ChatWithRAGStream(ctx context.Context, userID uint, questio
 }
 
 // callAliStream 调用阿里百炼流式API（内部方法）
-func (r *RagService) callAliStream(ctx context.Context, messages []map[string]string, handler func(chunk string) error) error {
+// deepThinking: 是否开启深度思考模式，影响 temperature 参数
+func (r *RagService) callAliStream(ctx context.Context, messages []map[string]string, deepThinking bool, handler func(chunk string) error) error {
 	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 
 	model := r.getAliModel(ctx)
@@ -326,11 +350,18 @@ func (r *RagService) callAliStream(ctx context.Context, messages []map[string]st
 		return fmt.Errorf("阿里API密钥未配置")
 	}
 
+	// 根据深度思考模式调整参数
+	temperature := 0.7 // 默认温度
+	if deepThinking {
+		// 深度思考模式：降低温度，使回答更稳定、更深入
+		temperature = 0.3
+	}
+
 	bodyMap := map[string]interface{}{
 		"model":       model,
 		"messages":    messages,
 		"max_tokens":  4000,
-		"temperature": 0.7,
+		"temperature": temperature,
 		"stream":      true,
 	}
 

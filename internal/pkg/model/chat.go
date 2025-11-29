@@ -49,6 +49,7 @@ func (ChatMessage) TableName() string {
 //   - question: 用户问题（必填）
 //   - book_ids: 笔记ID数组（必填，至少1个）
 //   - session_id: 会话ID（可选，用于继续已有会话；如果未提供，系统会自动创建新会话）
+//   - deep_thinking: 是否开启深度思考（可选，默认 false）
 //
 // 响应消息（服务端 -> 客户端）：
 //   - type: "session_created" (新会话已创建，仅在首次对话时发送) | "message_chunk" (流式消息块) | "message_done" (消息完成) | "error" (错误)
@@ -58,17 +59,18 @@ func (ChatMessage) TableName() string {
 //   - role: "user" | "assistant"
 //   - data: 其他数据（session_created 时包含会话详情）
 type WebSocketMessage struct {
-	Type      string      `json:"type,omitempty"`       // 请求时：可省略（默认"chat"）或 "chat"；响应时：message_chunk, message_done, error
-	SessionID uint        `json:"session_id,omitempty"` // 会话ID
-	Question  string      `json:"question,omitempty"`   // 用户问题（请求时必填，与HTTP保持一致）
-	BookIDs   []uint      `json:"book_ids,omitempty"`   // 笔记ID数组（请求时必填，与HTTP保持一致）
-	BookID    *uint       `json:"book_id,omitempty"`    // 保留向后兼容，如果提供则转换为book_ids
-	MessageID uint        `json:"message_id,omitempty"` // 消息ID（响应时）
-	Content   string      `json:"content,omitempty"`    // 消息内容（响应时）
-	Role      string      `json:"role,omitempty"`       // 角色（响应时）
-	Data      interface{} `json:"data,omitempty"`       // 其他数据
-	Error     string      `json:"error,omitempty"`      // 错误信息
-	Timestamp time.Time   `json:"timestamp"`            // 时间戳
+	Type         string      `json:"type,omitempty"`          // 请求时：可省略（默认"chat"）或 "chat"；响应时：message_chunk, message_done, error
+	SessionID    uint        `json:"session_id,omitempty"`    // 会话ID
+	Question     string      `json:"question,omitempty"`      // 用户问题（请求时必填，与HTTP保持一致）
+	BookIDs      []uint      `json:"book_ids,omitempty"`      // 笔记ID数组（请求时必填，与HTTP保持一致）
+	BookID       *uint       `json:"book_id,omitempty"`       // 保留向后兼容，如果提供则转换为book_ids
+	DeepThinking bool        `json:"deep_thinking,omitempty"` // 是否开启深度思考（请求时可选，默认 false）
+	MessageID    uint        `json:"message_id,omitempty"`    // 消息ID（响应时）
+	Content      string      `json:"content,omitempty"`       // 消息内容（响应时）
+	Role         string      `json:"role,omitempty"`          // 角色（响应时）
+	Data         interface{} `json:"data,omitempty"`          // 其他数据
+	Error        string      `json:"error,omitempty"`         // 错误信息
+	Timestamp    time.Time   `json:"timestamp"`               // 时间戳
 }
 
 // ChatRequest 创建对话请求
