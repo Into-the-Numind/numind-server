@@ -261,26 +261,26 @@ func (s *AdminStore) GetUserGrowthTrend(period string) ([]GrowthTrendItem, error
 		}
 		startTime = time.Date(now.Year(), now.Month(), now.Day()-weekday+1, 0, 0, 0, 0, now.Location())
 		endTime = now
-		dateFormat = "01-02" // 按日统计
+		dateFormat = "%m-%d" // MySQL格式：按日统计
 		incrementFunc = func(t time.Time) time.Time { return t.AddDate(0, 0, 1) }
 		displayFormatFunc = func(t time.Time) string { return fmt.Sprintf("%d日", t.Day()) }
 	case "month": // 本月
 		startTime = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 		endTime = now
-		dateFormat = "01-02" // 按日统计
+		dateFormat = "%m-%d" // MySQL格式：按日统计
 		incrementFunc = func(t time.Time) time.Time { return t.AddDate(0, 0, 1) }
 		displayFormatFunc = func(t time.Time) string { return fmt.Sprintf("%d日", t.Day()) }
 	case "year": // 今年
 		startTime = time.Date(now.Year(), 1, 1, 0, 0, 0, 0, now.Location())
 		endTime = now
-		dateFormat = "01" // 按月统计
+		dateFormat = "%m" // MySQL格式：按月统计
 		incrementFunc = func(t time.Time) time.Time { return t.AddDate(0, 1, 0) }
 		displayFormatFunc = func(t time.Time) string { return fmt.Sprintf("%d月", int(t.Month())) }
 	default:
 		// 默认本月
 		startTime = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 		endTime = now
-		dateFormat = "01-02"
+		dateFormat = "%m-%d" // MySQL格式
 		incrementFunc = func(t time.Time) time.Time { return t.AddDate(0, 0, 1) }
 		displayFormatFunc = func(t time.Time) string { return fmt.Sprintf("%d日", t.Day()) }
 	}
@@ -360,26 +360,26 @@ func (s *AdminStore) GetBookGrowthTrend(period string) ([]GrowthTrendItem, error
 		}
 		startTime = time.Date(now.Year(), now.Month(), now.Day()-weekday+1, 0, 0, 0, 0, now.Location())
 		endTime = now
-		dateFormat = "01-02" // 按日统计
+		dateFormat = "%m-%d" // MySQL格式：按日统计
 		incrementFunc = func(t time.Time) time.Time { return t.AddDate(0, 0, 1) }
 		displayFormatFunc = func(t time.Time) string { return fmt.Sprintf("%d日", t.Day()) }
 	case "month": // 本月
 		startTime = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 		endTime = now
-		dateFormat = "01-02" // 按日统计
+		dateFormat = "%m-%d" // MySQL格式：按日统计
 		incrementFunc = func(t time.Time) time.Time { return t.AddDate(0, 0, 1) }
 		displayFormatFunc = func(t time.Time) string { return fmt.Sprintf("%d日", t.Day()) }
 	case "year": // 今年
 		startTime = time.Date(now.Year(), 1, 1, 0, 0, 0, 0, now.Location())
 		endTime = now
-		dateFormat = "01" // 按月统计
+		dateFormat = "%m" // MySQL格式：按月统计
 		incrementFunc = func(t time.Time) time.Time { return t.AddDate(0, 1, 0) }
 		displayFormatFunc = func(t time.Time) string { return fmt.Sprintf("%d月", int(t.Month())) }
 	default:
 		// 默认本月
 		startTime = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 		endTime = now
-		dateFormat = "01-02"
+		dateFormat = "%m-%d" // MySQL格式
 		incrementFunc = func(t time.Time) time.Time { return t.AddDate(0, 0, 1) }
 		displayFormatFunc = func(t time.Time) string { return fmt.Sprintf("%d日", t.Day()) }
 	}
