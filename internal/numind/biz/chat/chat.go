@@ -574,13 +574,17 @@ func (b *chatBiz) handleChatMessageStream(ctx context.Context, userID uint, msg 
 		return nil, fmt.Errorf("RAG服务未初始化")
 	}
 
+	// 获取深度思考参数
+	deepThinking := msg.DeepThinking
+	log.C(ctx).Infow("开始调用RAG流式服务", "session_id", sessionID, "question", question, "book_ids", bookIDs, "deep_thinking", deepThinking)
+
 	// 使用 RagService 的流式方法，支持多笔记
-	log.C(ctx).Infow("开始调用RAG流式服务", "session_id", sessionID, "question", question, "book_ids", bookIDs)
 	err = b.ragService.ChatWithRAGStream(
 		ctx,
 		userID,
 		question,
-		bookIDs, // 直接传递所有笔记ID
+		bookIDs,      // 直接传递所有笔记ID
+		deepThinking, // 传递深度思考参数
 		func(chunk string) error {
 			// 累积完整回答
 			fullResponse.WriteString(chunk)
