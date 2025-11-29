@@ -41,7 +41,7 @@ func installAdminRouters(g *gin.Engine) error {
 	bc := book.New(b)
 	tc := template.New(b)
 	configc := config.New(b)
-	adminc := admin.NewAdminController(b.Admin(), b.Payments(), b.Books(), b.Images())
+	adminc := admin.NewAdminController(b.Admin(), b.Payments(), b.Books(), b.Images(), store.S.Chats())
 	adminAccountCtrl := adminaccount.NewAdminAccountController(b.AdminAccounts())
 	feedbackCtrl := feedback.NewAdminFeedbackController(b)
 
@@ -67,13 +67,19 @@ func installAdminRouters(g *gin.Engine) error {
 		authGroup.DELETE("/users/:name", uc.Delete)
 	}
 
-	// 笔记（书籍）管理
+	// 笔记管理
 	{
-		authGroup.GET("/books", bc.ListAll)         // 后台管理系统专用，返回所有书籍字段
-		authGroup.GET("/books/:id", adminc.GetBook) // 后台管理系统专用，返回笔记详情（包含图片信息）
+		authGroup.GET("/books", bc.ListAll)                          // 后台管理系统专用，返回所有笔记字段
+		authGroup.GET("/books/:id/sessions", adminc.GetBookSessions) // 获取笔记的会话列表（需要放在 /books/:id 之前，避免路由冲突）
+		authGroup.GET("/books/:id", adminc.GetBook)                  // 后台管理系统专用，返回笔记详情（包含图片信息）
 		authGroup.PUT("/books/:id", bc.Update)
 		authGroup.DELETE("/books/:id", bc.Delete)
 		authGroup.DELETE("/books", bc.DeleteBatch)
+	}
+
+	// 会话和聊天记录管理
+	{
+		authGroup.GET("/sessions/:session_id/messages", adminc.GetSessionMessages) // 根据会话ID获取聊天记录
 	}
 
 	// 图片管理

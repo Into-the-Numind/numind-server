@@ -2,102 +2,74 @@ package book
 
 import (
 	"context"
-	"sort"
+	"strings"
 
 	"numind-server/internal/pkg/model"
-	"numind-server/internal/pkg/util"
 )
 
-// SearchService 搜索服务
+// SearchService 搜索服务（已简化，不再使用 gse 分词）
 type SearchService struct {
-	keywordMatcher   *util.KeywordMatcher
-	keywordGenerator *KeywordGenerator
 }
 
 // NewSearchService 创建新的搜索服务
 func NewSearchService() *SearchService {
-	return &SearchService{
-		keywordMatcher:   util.NewKeywordMatcher(),
-		keywordGenerator: NewKeywordGenerator(),
-	}
+	return &SearchService{}
 }
 
-// Close 关闭搜索服务
+// Close 关闭搜索服务（空实现，保持接口兼容）
 func (s *SearchService) Close() {
-	if s.keywordMatcher != nil {
-		s.keywordMatcher.Close()
-	}
-	if s.keywordGenerator != nil {
-		s.keywordGenerator.Close()
-	}
 }
 
-// SearchBooks 搜索书籍
+// SearchBooks 搜索书籍（简化版本，使用简单的字符串匹配）
 func (s *SearchService) SearchBooks(ctx context.Context, userQuery string, books []*model.BookM, limit int) []*model.BookM {
 	if len(books) == 0 || userQuery == "" {
 		return []*model.BookM{}
 	}
 
-	// 从用户查询中提取关键词
-	userKeywords := s.keywordMatcher.GetKeywords(userQuery)
-	if len(userKeywords) == 0 {
-		return []*model.BookM{}
-	}
+	// 简单的标题和标签匹配（不再使用关键词分词）
+	userQueryLower := strings.ToLower(userQuery)
+	var result []*model.BookM
 
-	// 计算每本书的匹配分数
-	type bookScore struct {
-		book  *model.BookM
-		score float64
-	}
-
-	var bookScores []bookScore
 	for _, book := range books {
-		// 确保书籍有关键词
-		if len(book.Keywords) == 0 {
-			s.keywordGenerator.UpdateBookKeywords(book)
+		if len(result) >= limit {
+			break
 		}
-		
-		score := s.keywordMatcher.MatchScore(userKeywords, book)
-		bookScores = append(bookScores, bookScore{book: book, score: score})
-	}
 
-	// 按分数降序排序
-	sort.Slice(bookScores, func(i, j int) bool {
-		return bookScores[i].score > bookScores[j].score
-	})
+		// 检查标题是否包含查询
+		if strings.Contains(strings.ToLower(book.Title), userQueryLower) {
+			result = append(result, book)
+			continue
+		}
 
-	// 返回前limit本书
-	result := make([]*model.BookM, 0, limit)
-	for i := 0; i < len(bookScores) && i < limit; i++ {
-		if bookScores[i].score > 0 {
-			result = append(result, bookScores[i].book)
+		// 检查标签是否包含查询
+		if book.Tags != "" && strings.Contains(strings.ToLower(book.Tags), userQueryLower) {
+			result = append(result, book)
+			continue
 		}
 	}
 
 	return result
 }
 
-// GetKeywords 获取关键词（暴露给外部使用）
+// GetKeywords 获取关键词（已废弃，返回空数组）
 func (s *SearchService) GetKeywords(text string) []string {
-	return s.keywordMatcher.GetKeywords(text)
+	return []string{}
 }
 
-// MatchScore 计算匹配分数（暴露给外部使用）
+// MatchScore 计算匹配分数（已废弃，返回0）
 func (s *SearchService) MatchScore(userKeywords []string, book *model.BookM) float64 {
-	return s.keywordMatcher.MatchScore(userKeywords, book)
+	return 0.0
 }
 
-// GenerateBookKeywords 生成书籍关键词
+// GenerateBookKeywords 生成书籍关键词（已废弃，返回空数组）
 func (s *SearchService) GenerateBookKeywords(book *model.BookM) []string {
-	return s.keywordGenerator.GenerateBookKeywords(book)
+	return []string{}
 }
 
-// UpdateBookKeywords 更新书籍关键词
+// UpdateBookKeywords 更新书籍关键词（已废弃，空实现）
 func (s *SearchService) UpdateBookKeywords(book *model.BookM) {
-	s.keywordGenerator.UpdateBookKeywords(book)
 }
 
-// BatchUpdateKeywords 批量更新关键词
+// BatchUpdateKeywords 批量更新关键词（已废弃，空实现）
 func (s *SearchService) BatchUpdateKeywords(books []*model.BookM) {
-	s.keywordGenerator.BatchUpdateKeywords(books)
 }

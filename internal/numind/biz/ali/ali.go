@@ -33,6 +33,7 @@ type BailianConfig struct {
 
 type AliBiz interface {
 	QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error)
+	QianwenEmbedding(text string) ([]float32, error)
 	WanxiangImageStream(prompt string, style string, size string) (string, error)
 	WanxiangImageAsync(prompt, style, size string) (string, error)
 	StableDiffusionImageAsync(prompt, size string) (string, error)
@@ -538,6 +539,98 @@ func (a *aliBiz) StableDiffusionImageAsync(prompt, size string) (string, error) 
 
 	log.Printf("✅ Stable Diffusion图片生成完成: %s", imgUrl)
 	return imgUrl, nil
+}
+
+// QianwenEmbedding 调用阿里百炼 Embedding API 获取文本向量
+func (a *aliBiz) QianwenEmbedding(text string) ([]float32, error) {
+	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
+
+	bodyMap := map[string]interface{}{
+		"model": "text-embedding-v3",
+		"input": []string{text},
+	}
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return nil, fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	// 使用优化的HTTP客户端
+	client := httpclient.NewClientFromConfig("ali.text")
+	defer client.Close()
+
+	// 创建请求
+	httpReq := &httpclient.Request{
+		Method:  "POST",
+		URL:     url,
+		Body:    bytes.NewBuffer(bodyBytes),
+		Context: context.Background(),
+		Headers: map[string]string{
+			"Content-Type":  "application/json",
+			"Authorization": "Bearer " + getAliConfig("text", "api_key"),
+		},
+		RetryPolicy: &httpclient.RetryPolicy{
+			MaxRetries:   3,
+			RetryDelay:   1 * time.Second,
+			RetryBackoff: 2.0,
+		},
+	}
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		// 网络诊断信息
+		if netErr, ok := err.(net.Error); ok {
+			if netErr.Timeout() {
+				return nil, fmt.Errorf("网络超时错误: %w", err)
+			} else if netErr.Temporary() {
+				return nil, fmt.Errorf("临时网络错误: %w", err)
+			}
+		}
+		return nil, fmt.Errorf("HTTP请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 读取响应体
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取响应失败: %w", err)
+	}
+
+	// 检查HTTP状态码
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(respBody))
+	}
+
+	// 解析响应
+	var result struct {
+		Data []struct {
+			Embedding []float32 `json:"embedding"`
+		} `json:"data"`
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("解析响应失败: %w, 原始响应: %s", err, string(respBody))
+	}
+
+	// 检查API错误
+	if result.Error.Message != "" {
+		return nil, fmt.Errorf("API错误: %s (类型: %s, 代码: %s)", result.Error.Message, result.Error.Type, result.Error.Code)
+	}
+
+	// 提取向量
+	if len(result.Data) == 0 {
+		return nil, fmt.Errorf("API返回数据为空: %s", string(respBody))
+	}
+
+	if len(result.Data[0].Embedding) == 0 {
+		return nil, fmt.Errorf("API返回向量为空: %s", string(respBody))
+	}
+
+	return result.Data[0].Embedding, nil
 }
 
 func (a *aliBiz) GetPromptManager() *PromptManager {

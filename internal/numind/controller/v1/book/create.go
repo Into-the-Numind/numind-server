@@ -379,6 +379,10 @@ func (a *BookBizAdapter) Images() book.AsyncImageBiz {
 	return &AsyncImageBizAdapter{biz: a.biz}
 }
 
+func (a *BookBizAdapter) Rag() book.AsyncRagBiz {
+	return &AsyncRagBizAdapter{biz: a.biz}
+}
+
 // AsyncImageBizAdapter 图片业务适配器
 type AsyncImageBizAdapter struct {
 	biz biz.IBiz
@@ -539,6 +543,42 @@ type AsyncStoreBizAdapter struct {
 func (a *AsyncStoreBizAdapter) UpdateUserBookStatsOnStatusChange(ctx context.Context, userID uint, oldStatus, newStatus string) error {
 	// 通过store层直接更新用户统计
 	return a.biz.Books().UpdateUserBookStatsOnStatusChange(ctx, userID, oldStatus, newStatus)
+}
+
+// AsyncRagBizAdapter RAG业务适配器
+type AsyncRagBizAdapter struct {
+	biz biz.IBiz
+}
+
+func (a *AsyncRagBizAdapter) AddBookVector(ctx context.Context, userID uint, bookID uint, content string) error {
+	// 通过 biz 层访问 RagService
+	// 注意：这里需要确保 biz 层有 RagService 的访问方法
+	// 如果还没有，需要在 biz.go 中添加
+	if ragService := a.biz.Rag(); ragService != nil {
+		return ragService.AddBookVector(ctx, userID, bookID, content)
+	}
+	return nil // RAG服务未初始化时，不报错
+}
+
+func (a *AsyncRagBizAdapter) UpdateBookVector(ctx context.Context, userID uint, bookID uint, content string) error {
+	if ragService := a.biz.Rag(); ragService != nil {
+		return ragService.UpdateBookVector(ctx, userID, bookID, content)
+	}
+	return nil
+}
+
+func (a *AsyncRagBizAdapter) DeleteBookVector(ctx context.Context, bookID uint) error {
+	if ragService := a.biz.Rag(); ragService != nil {
+		return ragService.DeleteBookVector(ctx, bookID)
+	}
+	return nil
+}
+
+func (a *AsyncRagBizAdapter) CheckBookVectorExists(ctx context.Context, bookID uint) (bool, error) {
+	if ragService := a.biz.Rag(); ragService != nil {
+		return ragService.CheckBookVectorExists(ctx, bookID)
+	}
+	return false, nil
 }
 
 // createWithSimplifiedProcessor 使用简化的处理器创建书籍
