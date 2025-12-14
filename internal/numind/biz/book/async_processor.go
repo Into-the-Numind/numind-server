@@ -518,32 +518,32 @@ func (p *AsyncBookProcessor) processBookCreationWithImagesInBackground(ctx conte
 		// 统计更新失败不影响主要流程
 	}
 
-	// 🔍 第四步：异步向量化笔记内容（用于RAG检索）
-	// 提取笔记内容（优先使用 ProcessedText，如果为空则使用 OriginalText）
-	bookContent := book.ProcessedText
-	if bookContent == "" {
-		bookContent = book.OriginalText
-	}
+	// 🔍 第四步：异步向量化笔记内容（用于RAG检索）- 暂时注释，不使用向量化
+	// // 提取笔记内容（优先使用 ProcessedText，如果为空则使用 OriginalText）
+	// bookContent := book.ProcessedText
+	// if bookContent == "" {
+	// 	bookContent = book.OriginalText
+	// }
 
-	if bookContent != "" && p.biz.Rag() != nil {
-		// 在独立的 goroutine 中异步向量化，不阻塞主流程
-		go func() {
-			// 使用新的 context，避免原 context 被取消
-			vectorCtx := context.Background()
-			if err := p.biz.Rag().AddBookVector(vectorCtx, userID, bookID, bookContent); err != nil {
-				log.C(vectorCtx).Errorw("异步向量化笔记失败", "error", err, "user_id", userID, "book_id", bookID)
-				// 向量化失败不影响笔记创建，只记录错误
-			} else {
-				log.C(vectorCtx).Infow("✅ 笔记向量化成功", "user_id", userID, "book_id", bookID)
-			}
-		}()
-	} else {
-		if bookContent == "" {
-			log.C(ctx).Warnw("笔记内容为空，跳过向量化", "book_id", bookID)
-		} else if p.biz.Rag() == nil {
-			log.C(ctx).Warnw("RAG服务未初始化，跳过向量化", "book_id", bookID)
-		}
-	}
+	// if bookContent != "" && p.biz.Rag() != nil {
+	// 	// 在独立的 goroutine 中异步向量化，不阻塞主流程
+	// 	go func() {
+	// 		// 使用新的 context，避免原 context 被取消
+	// 		vectorCtx := context.Background()
+	// 		if err := p.biz.Rag().AddBookVector(vectorCtx, userID, bookID, bookContent); err != nil {
+	// 			log.C(vectorCtx).Errorw("异步向量化笔记失败", "error", err, "user_id", userID, "book_id", bookID)
+	// 			// 向量化失败不影响笔记创建，只记录错误
+	// 		} else {
+	// 			log.C(vectorCtx).Infow("✅ 笔记向量化成功", "user_id", userID, "book_id", bookID)
+	// 		}
+	// 	}()
+	// } else {
+	// 	if bookContent == "" {
+	// 		log.C(ctx).Warnw("笔记内容为空，跳过向量化", "book_id", bookID)
+	// 	} else if p.biz.Rag() == nil {
+	// 		log.C(ctx).Warnw("RAG服务未初始化，跳过向量化", "book_id", bookID)
+	// 	}
+	// }
 
 	duration := time.Since(startTime)
 	log.C(ctx).Infow("✅ 笔记创建完成", "book_id", bookID, "duration", duration.String(), "image_count", len(imageRecords))
