@@ -81,6 +81,19 @@ type WechatLoginResponse struct {
 	User        *model.User `json:"user"`
 }
 
+// WebLoginRequest Web端用户名密码登录请求
+type WebLoginRequest struct {
+	Username string `json:"username" binding:"required"`
+	Password string `json:"password" binding:"required"`
+}
+
+// WebLoginResponse Web端登录响应
+type WebLoginResponse struct {
+	AccessToken string      `json:"access_token"`
+	TokenType   string      `json:"token_type"`
+	User        *model.User `json:"user"`
+}
+
 // CreateFeedbackRequest 创建反馈的请求参数
 type CreateFeedbackRequest struct {
 	Content string `json:"content" binding:"required" valid:"required,stringlength(1|1000)"`

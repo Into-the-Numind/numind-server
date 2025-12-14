@@ -84,6 +84,7 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 登录接口不需要鉴权
 	v1Group.POST("/wechat/login", uc.WechatLogin)
+	v1Group.POST("/web/login", uc.WebLogin)
 
 	// WebSocket连接不需要鉴权，因为它在内部处理认证
 	v1Group.GET("/chat/ws", chatc.WebSocket)

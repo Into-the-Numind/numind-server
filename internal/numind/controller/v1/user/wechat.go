@@ -3,6 +3,7 @@ package user
 import (
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/util"
 	v1 "numind-server/pkg/api/numind/v1"
 
@@ -19,6 +20,30 @@ func (ctrl *UserController) WechatLogin(c *gin.Context) {
 	result, err := ctrl.b.Users().WechatLogin(&req)
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		return
+	}
+
+	// 转换头像URL用于展示（优先使用COS链接）
+	if result.User != nil && result.User.AvatarURL != "" {
+		result.User.AvatarURL = util.GetAvatarWithCOS(c, result.User.ID, result.User.AvatarURL)
+	}
+
+	core.WriteResponse(c, nil, result)
+}
+
+// WebLogin Web端用户名密码登录
+func (ctrl *UserController) WebLogin(c *gin.Context) {
+	log.C(c).Infow("Web login function called")
+
+	var req v1.WebLoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		return
+	}
+
+	result, err := ctrl.b.Users().WebLogin(&req)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrUserNotFound.SetMessage(err.Error()), nil)
 		return
 	}
 

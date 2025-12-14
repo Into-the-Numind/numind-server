@@ -50,6 +50,9 @@ type UserBiz interface {
 	ValidateToken(tokenString string) (*model.User, error)
 	UpdateWechatUser(ctx context.Context, openid string, r *v1.UpdateUserRequest) error
 
+	// Web端登录
+	WebLogin(req *v1.WebLoginRequest) (*v1.WebLoginResponse, error)
+
 	// 用户统计更新
 	IncrementUserBookNum(ctx context.Context, userID uint) error
 	IncrementUserCardNum(ctx context.Context, userID uint) error
@@ -476,6 +479,42 @@ func (s *userBiz) findOrCreateUser(openID string) (*model.User, error) {
 	}
 
 	return &user, nil
+}
+
+// WebLogin Web端用户名密码登录
+func (s *userBiz) WebLogin(req *v1.WebLoginRequest) (*v1.WebLoginResponse, error) {
+	// 根据用户名查找用户
+	var user model.User
+	err := s.ds.DB().Where("username = ?", req.Username).First(&user).Error
+
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("用户名或密码错误")
+		}
+		return nil, fmt.Errorf("查询用户失败: %v", err)
+	}
+
+	// 验证密码（明文比对）
+	if user.Password != req.Password {
+		return nil, fmt.Errorf("用户名或密码错误")
+	}
+
+	// 更新最后登录时间
+	now := time.Now()
+	user.LastLogin = &now
+	s.ds.DB().Save(&user)
+
+	// 生成JWT token
+	token, err := s.generateToken(&user)
+	if err != nil {
+		return nil, fmt.Errorf("生成token失败: %v", err)
+	}
+
+	return &v1.WebLoginResponse{
+		AccessToken: token,
+		TokenType:   "Bearer",
+		User:        &user,
+	}, nil
 }
 
 // WechatLogin 微信登录
