@@ -22,6 +22,7 @@ import (
 	"numind-server/internal/numind/biz/pagination"
 	"numind-server/internal/numind/biz/payment"
 	ragbiz "numind-server/internal/numind/biz/rag"
+	sopbiz "numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/biz/template"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
@@ -54,6 +55,7 @@ type IBiz interface {
 	Payments() payment.PaymentBiz
 	AccountRecords() accountrecordbiz.AccountRecordBiz
 	Rag() *ragbiz.RagService // RAG服务
+	Sop() sopbiz.ISopBiz     // SOP服务
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -63,6 +65,7 @@ var _ IBiz = (*biz)(nil)
 type biz struct {
 	ds         store.IStore
 	ragService *ragbiz.RagService
+	sopService sopbiz.ISopBiz
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -116,6 +119,10 @@ func NewBiz(ds store.IStore) *biz {
 	} else {
 		b.ragService = ragService
 	}
+
+	// 初始化SOP服务
+	sopExecutor := sopbiz.NewSopExecutor(b.ds)
+	b.sopService = sopbiz.NewSopBiz(b.ds, sopExecutor)
 
 	return b
 }
@@ -206,4 +213,8 @@ func (b *biz) Payments() payment.PaymentBiz {
 
 func (b *biz) Rag() *ragbiz.RagService {
 	return b.ragService
+}
+
+func (b *biz) Sop() sopbiz.ISopBiz {
+	return b.sopService
 }

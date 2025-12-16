@@ -155,6 +155,8 @@ func autoMigrate(db *gorm.DB) error {
 
 	// 2. 自动迁移所有模型
 	log.Infow("Starting database schema migration...")
+
+	// 先迁移基础表
 	err := db.AutoMigrate(
 		&model.User{},
 		&model.CategoryM{},
@@ -176,9 +178,40 @@ func autoMigrate(db *gorm.DB) error {
 		&model.Admin{},
 	)
 	if err != nil {
-		return fmt.Errorf("failed to migrate database: %v", err)
+		return fmt.Errorf("failed to migrate basic tables: %v", err)
 	}
-	log.Infow("Database schema migration completed")
+
+	// 单独迁移SOP相关表，按依赖顺序分步骤创建
+	log.Infow("Migrating SOP tables...")
+
+	// 第一步：创建模板表（无外键依赖）
+	if err := db.AutoMigrate(&model.SopTemplate{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_template: %v", err)
+	}
+
+	// 第二步：创建节点表（依赖模板表）
+	if err := db.AutoMigrate(&model.SopNode{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_node: %v", err)
+	}
+
+	// 第三步：创建执行记录表（依赖模板表和用户表）
+	if err := db.AutoMigrate(&model.SopRun{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_run: %v", err)
+	}
+
+	// 第四步：创建节点执行记录表（依赖上面所有表）
+	if err := db.AutoMigrate(&model.SopNodeRun{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_node_run: %v", err)
+	}
+
+	// 第五步：创建笔记表（依赖执行记录表）
+	if err := db.AutoMigrate(&model.SopNote{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_note: %v", err)
+	}
+
+	log.Infow("SOP tables migration completed")
+
+	log.Infow("All database schema migration completed")
 
 	// 3. 迁移后强制再次确保字符集正确
 	log.Infow("Post-migration charset verification and repair...")

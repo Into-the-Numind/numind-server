@@ -5,6 +5,7 @@ import (
 	"numind-server/internal/numind/biz"
 	orderbiz "numind-server/internal/numind/biz/order"
 	"numind-server/internal/numind/controller/v1/account"
+	"numind-server/internal/numind/controller/v1/admin_sop"
 	"numind-server/internal/numind/controller/v1/article"
 	"numind-server/internal/numind/controller/v1/book"
 	"numind-server/internal/numind/controller/v1/card"
@@ -68,6 +69,9 @@ func installNumindRouters(g *gin.Engine) error {
 		log.Fatalw("RAG服务未初始化")
 	}
 	ragc := ragcontroller.NewRagController(ragService, b.Chats())
+
+	// 初始化SOP控制器
+	sopc := admin_sop.NewSopController(b.Sop())
 
 	// 🔍 系统启动时检查并向量化历史笔记（异步执行，不阻塞启动）- 暂时注释，不使用向量化
 	// go func() {
@@ -239,6 +243,33 @@ func installNumindRouters(g *gin.Engine) error {
 	// RAG相关
 	{
 		authGroup.POST("/rag/chat", ragc.ChatWithRAG) // 基于笔记进行RAG对话
+	}
+
+	// SOP相关（管理员接口）
+	{
+		// 模板管理
+		authGroup.POST("/admin/sop/templates", sopc.CreateTemplate)
+		authGroup.GET("/admin/sop/templates/:id", sopc.GetTemplate)
+		authGroup.GET("/admin/sop/templates", sopc.ListTemplates)
+		authGroup.PUT("/admin/sop/templates/:id", sopc.UpdateTemplate)
+		authGroup.DELETE("/admin/sop/templates/:id", sopc.DeleteTemplate)
+
+		// 节点管理
+		authGroup.POST("/admin/sop/nodes", sopc.CreateNode)
+		authGroup.GET("/admin/sop/nodes/:id", sopc.GetNode)
+		authGroup.GET("/admin/sop/templates/:id/nodes", sopc.ListNodesByTemplate)
+		authGroup.PUT("/admin/sop/nodes/:id", sopc.UpdateNode)
+		authGroup.DELETE("/admin/sop/nodes/:id", sopc.DeleteNode)
+
+		// 执行管理
+		authGroup.POST("/admin/sop/templates/:id/run", sopc.ExecuteTemplate)
+		authGroup.GET("/admin/sop/runs/:id", sopc.GetRun)
+		authGroup.GET("/admin/sop/runs/:id/detail", sopc.GetRunDetail)
+		authGroup.GET("/admin/sop/runs", sopc.ListRuns)
+
+		// 笔记管理
+		authGroup.GET("/admin/sop/notes/:id", sopc.GetNote)
+		authGroup.GET("/admin/sop/users/:user_id/notes", sopc.ListNotesByUser)
 	}
 
 	return nil
