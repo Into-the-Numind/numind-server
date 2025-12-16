@@ -38,8 +38,13 @@ type UpdateSopNodeRequest struct {
 	Prompt         *string `json:"prompt"`
 }
 
-// ExecuteSopTemplateRequest 执行SOP模板请求
+// ExecuteSopTemplateRequest 执行SOP模板请求（用户端，从token获取user_id）
 type ExecuteSopTemplateRequest struct {
+	InitialInput string `json:"initial_input" binding:"required"`
+}
+
+// AdminExecuteSopTemplateRequest 执行SOP模板请求（管理端，需要指定user_id）
+type AdminExecuteSopTemplateRequest struct {
 	UserID       uint   `json:"user_id" binding:"required"`
 	InitialInput string `json:"initial_input" binding:"required"`
 }

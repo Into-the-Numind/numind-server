@@ -5,6 +5,7 @@ import (
 	orderbiz "numind-server/internal/numind/biz/order"
 	"numind-server/internal/numind/controller/v1/admin"
 	adminaccount "numind-server/internal/numind/controller/v1/admin_account"
+	"numind-server/internal/numind/controller/v1/admin_sop"
 	"numind-server/internal/numind/controller/v1/book"
 	"numind-server/internal/numind/controller/v1/config"
 	"numind-server/internal/numind/controller/v1/feedback"
@@ -44,6 +45,7 @@ func installAdminRouters(g *gin.Engine) error {
 	adminc := admin.NewAdminController(b.Admin(), b.Payments(), b.Books(), b.Images(), store.S.Chats())
 	adminAccountCtrl := adminaccount.NewAdminAccountController(b.AdminAccounts())
 	feedbackCtrl := feedback.NewAdminFeedbackController(b)
+	adminSopc := admin_sop.NewSopController(b.Sop())
 
 	// 登录接口不需要鉴权
 	v1Group := g.Group("/v1/admin")
@@ -137,6 +139,33 @@ func installAdminRouters(g *gin.Engine) error {
 		authGroup.GET("/feedbacks/:id", feedbackCtrl.Get)       // 获取单个反馈
 		authGroup.PUT("/feedbacks/:id", feedbackCtrl.Update)    // 更新反馈
 		authGroup.DELETE("/feedbacks/:id", feedbackCtrl.Delete) // 删除反馈
+	}
+
+	// SOP管理（后台管理员接口）
+	{
+		// 模板管理
+		authGroup.POST("/sop/templates", adminSopc.CreateTemplate)
+		authGroup.GET("/sop/templates/:id", adminSopc.GetTemplate)
+		authGroup.GET("/sop/templates", adminSopc.ListTemplates)
+		authGroup.PUT("/sop/templates/:id", adminSopc.UpdateTemplate)
+		authGroup.DELETE("/sop/templates/:id", adminSopc.DeleteTemplate)
+
+		// 节点管理
+		authGroup.POST("/sop/nodes", adminSopc.CreateNode)
+		authGroup.GET("/sop/nodes/:id", adminSopc.GetNode)
+		authGroup.GET("/sop/templates/:id/nodes", adminSopc.ListNodesByTemplate)
+		authGroup.PUT("/sop/nodes/:id", adminSopc.UpdateNode)
+		authGroup.DELETE("/sop/nodes/:id", adminSopc.DeleteNode)
+
+		// 执行管理（管理员可以查看所有用户的执行记录）
+		authGroup.POST("/sop/templates/:id/run", adminSopc.ExecuteTemplate)
+		authGroup.GET("/sop/runs/:id", adminSopc.GetRun)
+		authGroup.GET("/sop/runs/:id/detail", adminSopc.GetRunDetail)
+		authGroup.GET("/sop/runs", adminSopc.ListRuns)
+
+		// 笔记管理（管理员可以查看所有用户的笔记）
+		authGroup.GET("/sop/notes/:id", adminSopc.GetNote)
+		authGroup.GET("/sop/users/:user_id/notes", adminSopc.ListNotesByUser)
 	}
 
 	return nil

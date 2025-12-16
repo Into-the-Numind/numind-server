@@ -140,8 +140,23 @@ Authorization: Bearer <token>
 
 {
   "name": "新节点名称",
-  "sort": 2
+  "status": "active",
+  "base_url": "https://api.openai.com/v1/chat/completions",
+  "model_name": "gpt-4o",
+  "timeout_seconds": 120,
+  "sort": 2,
+  "prompt": "请详细分析以下内容，并提供专业建议："
 }
+
+注意：所有字段都是可选的，只传入需要修改的字段即可。
+支持修改的字段：
+- name: 节点名称
+- status: 节点状态 (active/inactive)
+- base_url: AI服务地址
+- model_name: 模型名称
+- timeout_seconds: 超时时间（秒）
+- sort: 执行顺序
+- prompt: 节点提示词模板
 ```
 
 #### 删除节点

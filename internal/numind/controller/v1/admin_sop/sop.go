@@ -287,7 +287,7 @@ func (ctrl *SopController) ExecuteTemplate(c *gin.Context) {
 		return
 	}
 
-	var req v1.ExecuteSopTemplateRequest
+	var req v1.AdminExecuteSopTemplateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
 		return

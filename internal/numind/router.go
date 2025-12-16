@@ -5,7 +5,6 @@ import (
 	"numind-server/internal/numind/biz"
 	orderbiz "numind-server/internal/numind/biz/order"
 	"numind-server/internal/numind/controller/v1/account"
-	"numind-server/internal/numind/controller/v1/admin_sop"
 	"numind-server/internal/numind/controller/v1/article"
 	"numind-server/internal/numind/controller/v1/book"
 	"numind-server/internal/numind/controller/v1/card"
@@ -16,6 +15,7 @@ import (
 	"numind-server/internal/numind/controller/v1/order"
 	"numind-server/internal/numind/controller/v1/pagination"
 	ragcontroller "numind-server/internal/numind/controller/v1/rag"
+	sopcontroller "numind-server/internal/numind/controller/v1/sop"
 	"numind-server/internal/numind/controller/v1/template"
 	"numind-server/internal/numind/controller/v1/user"
 	"numind-server/internal/numind/store"
@@ -70,8 +70,8 @@ func installNumindRouters(g *gin.Engine) error {
 	}
 	ragc := ragcontroller.NewRagController(ragService, b.Chats())
 
-	// 初始化SOP控制器
-	sopc := admin_sop.NewSopController(b.Sop())
+	// 初始化SOP控制器（用户端）
+	userSopc := sopcontroller.NewSopController(b.Sop())
 
 	// 🔍 系统启动时检查并向量化历史笔记（异步执行，不阻塞启动）- 暂时注释，不使用向量化
 	// go func() {
@@ -245,31 +245,16 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.POST("/rag/chat", ragc.ChatWithRAG) // 基于笔记进行RAG对话
 	}
 
-	// SOP相关（管理员接口）
+	// SOP相关（用户端接口）
 	{
-		// 模板管理
-		authGroup.POST("/admin/sop/templates", sopc.CreateTemplate)
-		authGroup.GET("/admin/sop/templates/:id", sopc.GetTemplate)
-		authGroup.GET("/admin/sop/templates", sopc.ListTemplates)
-		authGroup.PUT("/admin/sop/templates/:id", sopc.UpdateTemplate)
-		authGroup.DELETE("/admin/sop/templates/:id", sopc.DeleteTemplate)
-
-		// 节点管理
-		authGroup.POST("/admin/sop/nodes", sopc.CreateNode)
-		authGroup.GET("/admin/sop/nodes/:id", sopc.GetNode)
-		authGroup.GET("/admin/sop/templates/:id/nodes", sopc.ListNodesByTemplate)
-		authGroup.PUT("/admin/sop/nodes/:id", sopc.UpdateNode)
-		authGroup.DELETE("/admin/sop/nodes/:id", sopc.DeleteNode)
-
-		// 执行管理
-		authGroup.POST("/admin/sop/templates/:id/run", sopc.ExecuteTemplate)
-		authGroup.GET("/admin/sop/runs/:id", sopc.GetRun)
-		authGroup.GET("/admin/sop/runs/:id/detail", sopc.GetRunDetail)
-		authGroup.GET("/admin/sop/runs", sopc.ListRuns)
-
-		// 笔记管理
-		authGroup.GET("/admin/sop/notes/:id", sopc.GetNote)
-		authGroup.GET("/admin/sop/users/:user_id/notes", sopc.ListNotesByUser)
+		// 用户执行SOP
+		authGroup.GET("/sop/templates", userSopc.ListTemplates)                // 获取可用模板列表
+		authGroup.POST("/sop/templates/:id/execute", userSopc.ExecuteTemplate) // 执行模板
+		authGroup.GET("/sop/runs/:id", userSopc.GetRun)                        // 查看执行记录
+		authGroup.GET("/sop/runs/:id/detail", userSopc.GetRunDetail)           // 查看执行详情
+		authGroup.GET("/sop/runs", userSopc.ListMyRuns)                        // 获取我的执行记录列表
+		authGroup.GET("/sop/notes/:id", userSopc.GetNote)                      // 查看笔记详情
+		authGroup.GET("/sop/notes", userSopc.ListMyNotes)                      // 获取我的笔记列表
 	}
 
 	return nil
