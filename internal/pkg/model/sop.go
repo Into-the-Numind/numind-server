@@ -12,6 +12,7 @@ type SopTemplate struct {
 	Name        string `gorm:"size:100;not null;index" json:"name"`
 	Description string `gorm:"type:text" json:"description"`
 	Status      string `gorm:"size:20;default:'active';index" json:"status"` // active, inactive
+	Prompt      string `gorm:"type:text" json:"prompt"`                      // 预处理提示词，在执行第一个节点前发送
 }
 
 func (SopTemplate) TableName() string {
@@ -27,6 +28,7 @@ type SopNode struct {
 	Status         string `gorm:"size:20;default:'active'" json:"status"`        // active, inactive
 	BaseURL        string `gorm:"size:255;not null" json:"base_url"`             // AI服务地址
 	ModelName      string `gorm:"size:100;not null" json:"model_name"`           // 模型名称
+	APIKey         string `gorm:"size:255" json:"api_key"`                       // API密钥，调用大模型时使用
 	TimeoutSeconds int    `gorm:"default:60" json:"timeout_seconds"`             // 超时时间（秒）
 	Sort           int    `gorm:"default:0;index:idx_template_sort" json:"sort"` // 排序，用于线性执行顺序
 	IsRoot         bool   `gorm:"default:false;index" json:"is_root"`            // 是否为根节点

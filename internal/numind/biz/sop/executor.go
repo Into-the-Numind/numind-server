@@ -61,6 +61,18 @@ func (e *SopExecutor) Execute(ctx context.Context, run *model.SopRun, nodes []mo
 
 	// 构建对话历史（用于保持上下文连贯）
 	conversationHistory := []LLMMessage{}
+
+	// 获取模板信息（用于预处理提示词）
+	template, err := e.ds.Sop().GetTemplate(run.TemplateID)
+	if err == nil && template != nil && template.Prompt != "" {
+		// 如果模板有预处理提示词，添加到对话历史中
+		conversationHistory = append(conversationHistory, LLMMessage{
+			Role:    "system",
+			Content: template.Prompt,
+		})
+		log.C(ctx).Infow("Added template preprocessing prompt", "template_id", run.TemplateID)
+	}
+
 	currentInput := initialInput
 
 	// 按sort顺序执行节点（线性执行）
@@ -193,6 +205,11 @@ func (e *SopExecutor) executeNode(ctx context.Context, node *model.SopNode, inpu
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+
+	// 设置API密钥
+	if node.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+node.APIKey)
+	}
 
 	// 设置超时
 	client := &http.Client{

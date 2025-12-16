@@ -6,6 +6,7 @@ import "numind-server/internal/pkg/model"
 type CreateSopTemplateRequest struct {
 	Name        string `json:"name" binding:"required"`
 	Description string `json:"description"`
+	Prompt      string `json:"prompt"` // 预处理提示词
 }
 
 // UpdateSopTemplateRequest 更新SOP模板请求
@@ -13,6 +14,7 @@ type UpdateSopTemplateRequest struct {
 	Name        *string `json:"name"`
 	Description *string `json:"description"`
 	Status      *string `json:"status"`
+	Prompt      *string `json:"prompt"` // 预处理提示词
 }
 
 // CreateSopNodeRequest 创建SOP节点请求
@@ -22,6 +24,7 @@ type CreateSopNodeRequest struct {
 	Name           string `json:"name" binding:"required"`
 	BaseURL        string `json:"base_url" binding:"required"`
 	ModelName      string `json:"model_name" binding:"required"`
+	APIKey         string `json:"api_key"` // API密钥
 	TimeoutSeconds int    `json:"timeout_seconds"`
 	Sort           int    `json:"sort"`
 	Prompt         string `json:"prompt"`
@@ -33,6 +36,7 @@ type UpdateSopNodeRequest struct {
 	Status         *string `json:"status"`
 	BaseURL        *string `json:"base_url"`
 	ModelName      *string `json:"model_name"`
+	APIKey         *string `json:"api_key"` // API密钥
 	TimeoutSeconds *int    `json:"timeout_seconds"`
 	Sort           *int    `json:"sort"`
 	Prompt         *string `json:"prompt"`

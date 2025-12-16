@@ -15,7 +15,7 @@ import (
 // ISopBiz SOP业务逻辑接口
 type ISopBiz interface {
 	// Template operations
-	CreateTemplate(ctx context.Context, name, description string) (*model.SopTemplate, error)
+	CreateTemplate(ctx context.Context, name, description, prompt string) (*model.SopTemplate, error)
 	GetTemplate(ctx context.Context, id uint) (*model.SopTemplate, error)
 	ListTemplates(ctx context.Context, offset, limit int) ([]model.SopTemplate, int64, error)
 	UpdateTemplate(ctx context.Context, id uint, updates map[string]interface{}) error
@@ -53,10 +53,11 @@ func NewSopBiz(ds store.IStore, executor *SopExecutor) ISopBiz {
 }
 
 // Template operations
-func (b *sopBiz) CreateTemplate(ctx context.Context, name, description string) (*model.SopTemplate, error) {
+func (b *sopBiz) CreateTemplate(ctx context.Context, name, description, prompt string) (*model.SopTemplate, error) {
 	template := &model.SopTemplate{
 		Name:        name,
 		Description: description,
+		Prompt:      prompt,
 		Status:      model.SopNodeStatusActive,
 	}
 

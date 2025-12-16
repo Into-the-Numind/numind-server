@@ -35,7 +35,7 @@ func (ctrl *SopController) CreateTemplate(c *gin.Context) {
 		return
 	}
 
-	template, err := ctrl.sopBiz.CreateTemplate(c, req.Name, req.Description)
+	template, err := ctrl.sopBiz.CreateTemplate(c, req.Name, req.Description, req.Prompt)
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
 		return
@@ -107,6 +107,9 @@ func (ctrl *SopController) UpdateTemplate(c *gin.Context) {
 	}
 	if req.Status != nil {
 		updates["status"] = *req.Status
+	}
+	if req.Prompt != nil {
+		updates["prompt"] = *req.Prompt
 	}
 
 	if err := ctrl.sopBiz.UpdateTemplate(c, uint(id), updates); err != nil {
@@ -240,6 +243,9 @@ func (ctrl *SopController) UpdateNode(c *gin.Context) {
 	}
 	if req.ModelName != nil {
 		updates["model_name"] = *req.ModelName
+	}
+	if req.APIKey != nil {
+		updates["api_key"] = *req.APIKey
 	}
 	if req.TimeoutSeconds != nil {
 		updates["timeout_seconds"] = *req.TimeoutSeconds
