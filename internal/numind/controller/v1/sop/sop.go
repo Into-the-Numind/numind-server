@@ -9,6 +9,7 @@ import (
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/model"
 	v1 "numind-server/pkg/api/numind/v1"
 )
 
@@ -34,12 +35,13 @@ func (ctrl *SopController) ExecuteTemplate(c *gin.Context) {
 		return
 	}
 
-	// 从token获取当前用户ID
-	userID, exists := c.Get("user_id")
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
 	if !exists {
 		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
 		return
 	}
+	user := currentUser.(*model.User)
 
 	var req v1.ExecuteSopTemplateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -47,8 +49,8 @@ func (ctrl *SopController) ExecuteTemplate(c *gin.Context) {
 		return
 	}
 
-	// 使用token中的用户ID，忽略请求中的user_id
-	run, err := ctrl.sopBiz.ExecuteTemplate(c, uint(templateID), userID.(uint), req.InitialInput)
+	// 使用token中的用户ID
+	run, err := ctrl.sopBiz.ExecuteTemplate(c, uint(templateID), user.ID, req.InitialInput)
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
 		return
@@ -67,12 +69,13 @@ func (ctrl *SopController) GetRun(c *gin.Context) {
 		return
 	}
 
-	// 从token获取当前用户ID
-	userID, exists := c.Get("user_id")
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
 	if !exists {
 		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
 		return
 	}
+	user := currentUser.(*model.User)
 
 	run, err := ctrl.sopBiz.GetRun(c, uint(id))
 	if err != nil {
@@ -81,7 +84,7 @@ func (ctrl *SopController) GetRun(c *gin.Context) {
 	}
 
 	// 验证是否是用户自己的记录
-	if run.UserID != userID.(uint) {
+	if run.UserID != user.ID {
 		core.WriteResponse(c, errno.ErrForbidden.SetMessage("无权访问此记录"), nil)
 		return
 	}
@@ -99,12 +102,13 @@ func (ctrl *SopController) GetRunDetail(c *gin.Context) {
 		return
 	}
 
-	// 从token获取当前用户ID
-	userID, exists := c.Get("user_id")
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
 	if !exists {
 		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
 		return
 	}
+	user := currentUser.(*model.User)
 
 	run, nodeRuns, err := ctrl.sopBiz.GetRunWithNodes(c, uint(id))
 	if err != nil {
@@ -113,7 +117,7 @@ func (ctrl *SopController) GetRunDetail(c *gin.Context) {
 	}
 
 	// 验证是否是用户自己的记录
-	if run.UserID != userID.(uint) {
+	if run.UserID != user.ID {
 		core.WriteResponse(c, errno.ErrForbidden.SetMessage("无权访问此记录"), nil)
 		return
 	}
@@ -128,17 +132,18 @@ func (ctrl *SopController) GetRunDetail(c *gin.Context) {
 func (ctrl *SopController) ListMyRuns(c *gin.Context) {
 	log.C(c).Infow("User list my SOP runs called")
 
-	// 从token获取当前用户ID
-	userID, exists := c.Get("user_id")
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
 	if !exists {
 		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
 		return
 	}
+	user := currentUser.(*model.User)
 
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 
-	uid := userID.(uint)
+	uid := user.ID
 	runs, total, err := ctrl.sopBiz.ListRuns(c, offset, limit, &uid)
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
@@ -155,17 +160,18 @@ func (ctrl *SopController) ListMyRuns(c *gin.Context) {
 func (ctrl *SopController) ListMyNotes(c *gin.Context) {
 	log.C(c).Infow("User list my SOP notes called")
 
-	// 从token获取当前用户ID
-	userID, exists := c.Get("user_id")
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
 	if !exists {
 		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
 		return
 	}
+	user := currentUser.(*model.User)
 
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 
-	notes, total, err := ctrl.sopBiz.ListNotesByUser(c, userID.(uint), offset, limit)
+	notes, total, err := ctrl.sopBiz.ListNotesByUser(c, user.ID, offset, limit)
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
 		return
@@ -187,12 +193,13 @@ func (ctrl *SopController) GetNote(c *gin.Context) {
 		return
 	}
 
-	// 从token获取当前用户ID
-	userID, exists := c.Get("user_id")
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
 	if !exists {
 		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
 		return
 	}
+	user := currentUser.(*model.User)
 
 	note, err := ctrl.sopBiz.GetNote(c, uint(id))
 	if err != nil {
@@ -201,7 +208,7 @@ func (ctrl *SopController) GetNote(c *gin.Context) {
 	}
 
 	// 验证是否是用户自己的笔记
-	if note.UserID != userID.(uint) {
+	if note.UserID != user.ID {
 		core.WriteResponse(c, errno.ErrForbidden.SetMessage("无权访问此笔记"), nil)
 		return
 	}
