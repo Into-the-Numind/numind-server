@@ -159,6 +159,7 @@ func (ctrl *SopController) CreateNode(c *gin.Context) {
 		Name:           req.Name,
 		BaseURL:        req.BaseURL,
 		ModelName:      req.ModelName,
+		APIKey:         req.APIKey, // 设置API密钥
 		TimeoutSeconds: req.TimeoutSeconds,
 		Sort:           req.Sort,
 		Status:         model.SopNodeStatusActive,

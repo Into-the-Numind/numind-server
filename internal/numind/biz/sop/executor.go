@@ -168,6 +168,24 @@ func (e *SopExecutor) Execute(ctx context.Context, run *model.SopRun, nodes []mo
 
 // executeNode 执行单个节点
 func (e *SopExecutor) executeNode(ctx context.Context, node *model.SopNode, input string, history []LLMMessage) (string, error) {
+	// 检查API密钥是否配置
+	if node.APIKey == "" {
+		log.C(ctx).Errorw("Node API key is empty", "node_id", node.ID, "node_name", node.Name)
+		return "", fmt.Errorf("node %s (ID: %d) API key is not configured, please update the node with a valid API key", node.Name, node.ID)
+	}
+
+	// 脱敏日志：只显示前4位和后4位
+	maskedKey := node.APIKey
+	if len(node.APIKey) > 8 {
+		maskedKey = node.APIKey[:4] + "****" + node.APIKey[len(node.APIKey)-4:]
+	}
+	log.C(ctx).Infow("Executing node with LLM API",
+		"node_id", node.ID,
+		"node_name", node.Name,
+		"base_url", node.BaseURL,
+		"model", node.ModelName,
+		"api_key_masked", maskedKey)
+
 	// 构建请求消息
 	messages := make([]LLMMessage, len(history))
 	copy(messages, history)
@@ -198,6 +216,13 @@ func (e *SopExecutor) executeNode(ctx context.Context, node *model.SopNode, inpu
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	// 记录请求信息（用于调试）
+	log.C(ctx).Infow("LLM API request details",
+		"url", node.BaseURL,
+		"model", node.ModelName,
+		"messages_count", len(messages),
+		"request_body_length", len(reqData))
+
 	// 创建HTTP请求
 	req, err := http.NewRequestWithContext(ctx, "POST", node.BaseURL, bytes.NewBuffer(reqData))
 	if err != nil {
@@ -205,11 +230,8 @@ func (e *SopExecutor) executeNode(ctx context.Context, node *model.SopNode, inpu
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-
-	// 设置API密钥
-	if node.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+node.APIKey)
-	}
+	req.Header.Set("Authorization", "Bearer "+node.APIKey)
+	req.Header.Set("User-Agent", "numind-server/1.0")
 
 	// 设置超时
 	client := &http.Client{
@@ -223,14 +245,28 @@ func (e *SopExecutor) executeNode(ctx context.Context, node *model.SopNode, inpu
 	}
 	defer resp.Body.Close()
 
+	// 读取响应体
+	body, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		log.C(ctx).Errorw("LLM API error response",
+			"status_code", resp.StatusCode,
+			"url", node.BaseURL,
+			"model", node.ModelName,
+			"response_body", string(body))
 		return "", fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
+	log.C(ctx).Infow("LLM API response received",
+		"status_code", resp.StatusCode,
+		"body_length", len(body))
+
 	// 解析响应
 	var llmResp LLMResponse
-	if err := json.NewDecoder(resp.Body).Decode(&llmResp); err != nil {
+	if err := json.Unmarshal(body, &llmResp); err != nil {
+		log.C(ctx).Errorw("Failed to decode LLM response",
+			"error", err,
+			"body", string(body))
 		return "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
