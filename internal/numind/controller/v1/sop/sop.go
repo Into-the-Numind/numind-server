@@ -1,6 +1,8 @@
 package sop
 
 import (
+	"encoding/json"
+	"fmt"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -241,4 +243,227 @@ func (ctrl *SopController) ListTemplates(c *gin.Context) {
 		"total":     len(activeTemplates),
 		"templates": activeTemplates,
 	})
+}
+
+// CreateRun 创建SOP执行（不立即执行）
+func (ctrl *SopController) CreateRun(c *gin.Context) {
+	log.C(c).Infow("User create SOP run called")
+
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	var req v1.CreateSopRunRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		return
+	}
+
+	run, err := ctrl.sopBiz.CreateRun(c, req.TemplateID, user.ID, req.Text)
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, run)
+}
+
+// GetNextNode 获取下一个待执行节点
+func (ctrl *SopController) GetNextNode(c *gin.Context) {
+	log.C(c).Infow("User get next node called")
+
+	runID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的执行ID"), nil)
+		return
+	}
+
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	// 验证Run是否属于当前用户
+	run, err := ctrl.sopBiz.GetRun(c, uint(runID))
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("执行记录不存在"), nil)
+		return
+	}
+	if run.UserID != user.ID {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("无权访问此记录"), nil)
+		return
+	}
+
+	node, hasNext, err := ctrl.sopBiz.GetNextNode(c, uint(runID))
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		return
+	}
+
+	if node == nil {
+		core.WriteResponse(c, nil, gin.H{
+			"node":     nil,
+			"has_next": false,
+			"message":  "所有节点已执行完成",
+		})
+		return
+	}
+
+	core.WriteResponse(c, nil, v1.NextNodeResponse{
+		NodeID:   node.ID,
+		NodeName: node.Name,
+		Sort:     node.Sort,
+		IsFirst:  len(run.ConversationID) > 0, // 简化判断，实际应该检查是否有已完成的节点
+		HasNext:  hasNext,
+	})
+}
+
+// ExecuteNodeStream 流式执行指定节点
+func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
+	log.C(c).Infow("User execute SOP node stream called")
+
+	runID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的执行ID"), nil)
+		return
+	}
+
+	nodeID, err := strconv.ParseUint(c.Param("node_id"), 10, 32)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的节点ID"), nil)
+		return
+	}
+
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	// 验证Run是否属于当前用户
+	run, err := ctrl.sopBiz.GetRun(c, uint(runID))
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("执行记录不存在"), nil)
+		return
+	}
+	if run.UserID != user.ID {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("无权访问此记录"), nil)
+		return
+	}
+
+	var req v1.ExecuteSopNodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		// text是可选的，所以不强制要求
+		req.Text = ""
+	}
+
+	// 设置SSE响应头
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no") // 禁用nginx缓冲
+
+	// 流式执行节点
+	err = ctrl.sopBiz.ExecuteNodeStream(c, uint(runID), uint(nodeID), req.Text, func(chunk string) error {
+		// 发送SSE格式的数据（需要对JSON进行转义）
+		chunkJSON, _ := json.Marshal(chunk)
+		data := fmt.Sprintf("data: %s\n\n", string(chunkJSON))
+		if _, err := c.Writer.WriteString(data); err != nil {
+			return err
+		}
+		c.Writer.Flush()
+		return nil
+	})
+
+	if err != nil {
+		// 发送错误事件
+		errorMsg, _ := json.Marshal(err.Error())
+		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
+		c.Writer.WriteString(errorData)
+		c.Writer.Flush()
+		return
+	}
+
+	// 发送完成事件
+	doneData := "event: done\ndata: {\"status\":\"completed\"}\n\n"
+	c.Writer.WriteString(doneData)
+	c.Writer.Flush()
+}
+
+// GetRunStatus 获取Run执行状态
+func (ctrl *SopController) GetRunStatus(c *gin.Context) {
+	log.C(c).Infow("User get SOP run status called")
+
+	runID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的执行ID"), nil)
+		return
+	}
+
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	// 验证Run是否属于当前用户
+	run, err := ctrl.sopBiz.GetRun(c, uint(runID))
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("执行记录不存在"), nil)
+		return
+	}
+	if run.UserID != user.ID {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("无权访问此记录"), nil)
+		return
+	}
+
+	status, err := ctrl.sopBiz.GetRunStatus(c, uint(runID))
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		return
+	}
+
+	// 转换为API响应格式
+	response := v1.RunStatusResponse{
+		Status:          status.Status,
+		CurrentNodeSort: status.CurrentNodeSort,
+		TotalNodes:      status.TotalNodes,
+		CompletedCount:  status.CompletedCount,
+	}
+
+	// 转换已完成节点
+	completedNodes := make([]v1.CompletedNodeInfo, len(status.CompletedNodes))
+	for i, node := range status.CompletedNodes {
+		completedNodes[i] = v1.CompletedNodeInfo{
+			NodeID:        node.NodeID,
+			NodeName:      node.NodeName,
+			Sort:          node.Sort,
+			OutputPreview: node.OutputPreview,
+		}
+	}
+	response.CompletedNodes = completedNodes
+
+	// 转换下一个节点
+	if status.NextNode != nil {
+		response.NextNode = &v1.NextNodeInfo{
+			NodeID:   status.NextNode.NodeID,
+			NodeName: status.NextNode.NodeName,
+			Sort:     status.NextNode.Sort,
+			IsFirst:  status.NextNode.IsFirst,
+			HasNext:  status.NextNode.HasNext,
+		}
+	}
+
+	core.WriteResponse(c, nil, response)
 }

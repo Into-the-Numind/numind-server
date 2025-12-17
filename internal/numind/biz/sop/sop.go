@@ -29,10 +29,16 @@ type ISopBiz interface {
 	DeleteNode(ctx context.Context, id uint) error
 
 	// Execution operations
-	ExecuteTemplate(ctx context.Context, templateID, userID uint, initialInput string) (*model.SopRun, error)
+	ExecuteTemplate(ctx context.Context, templateID, userID uint, text string) (*model.SopRun, error)
 	GetRun(ctx context.Context, id uint) (*model.SopRun, error)
 	ListRuns(ctx context.Context, offset, limit int, userID *uint) ([]model.SopRun, int64, error)
 	GetRunWithNodes(ctx context.Context, runID uint) (*model.SopRun, []model.SopNodeRun, error)
+
+	// Step-by-step execution operations
+	CreateRun(ctx context.Context, templateID, userID uint, text string) (*model.SopRun, error)
+	GetNextNode(ctx context.Context, runID uint) (*model.SopNode, bool, error)
+	ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text string, handler func(chunk string) error) error
+	GetRunStatus(ctx context.Context, runID uint) (*RunStatus, error)
 
 	// Note operations
 	GetNote(ctx context.Context, id uint) (*model.SopNote, error)
@@ -122,8 +128,35 @@ func (b *sopBiz) DeleteNode(ctx context.Context, id uint) error {
 	return b.ds.Sop().DeleteNode(id)
 }
 
+// RunStatus Run执行状态
+type RunStatus struct {
+	Status          string              `json:"status"`
+	CurrentNodeSort int                 `json:"current_node_sort"`
+	CompletedNodes  []CompletedNodeInfo `json:"completed_nodes"`
+	NextNode        *NextNodeInfo       `json:"next_node,omitempty"`
+	TotalNodes      int                 `json:"total_nodes"`
+	CompletedCount  int                 `json:"completed_count"`
+}
+
+// CompletedNodeInfo 已完成节点信息
+type CompletedNodeInfo struct {
+	NodeID        uint   `json:"node_id"`
+	NodeName      string `json:"node_name"`
+	Sort          int    `json:"sort"`
+	OutputPreview string `json:"output_preview"` // 输出预览（前200字符）
+}
+
+// NextNodeInfo 下一个节点信息
+type NextNodeInfo struct {
+	NodeID   uint   `json:"node_id"`
+	NodeName string `json:"node_name"`
+	Sort     int    `json:"sort"`
+	IsFirst  bool   `json:"is_first"`
+	HasNext  bool   `json:"has_next"`
+}
+
 // Execution operations
-func (b *sopBiz) ExecuteTemplate(ctx context.Context, templateID, userID uint, initialInput string) (*model.SopRun, error) {
+func (b *sopBiz) ExecuteTemplate(ctx context.Context, templateID, userID uint, text string) (*model.SopRun, error) {
 	// 验证模板是否存在
 	_, err := b.ds.Sop().GetTemplate(templateID)
 	if err != nil {
@@ -158,12 +191,336 @@ func (b *sopBiz) ExecuteTemplate(ctx context.Context, templateID, userID uint, i
 	// 异步执行SOP
 	go func() {
 		execCtx := context.Background()
-		if err := b.executor.Execute(execCtx, run, nodes, initialInput); err != nil {
+		if err := b.executor.Execute(execCtx, run, nodes, text); err != nil {
 			log.C(execCtx).Errorw("SOP execution failed", "run_id", run.ID, "error", err)
 		}
 	}()
 
 	return run, nil
+}
+
+// CreateRun 创建Run（不立即执行）
+func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text string) (*model.SopRun, error) {
+	// 验证模板是否存在
+	_, err := b.ds.Sop().GetTemplate(templateID)
+	if err != nil {
+		return nil, fmt.Errorf("template not found: %w", err)
+	}
+
+	// 生成唯一的conversation_id
+	conversationID := fmt.Sprintf("sop_%d_%d_%d", templateID, userID, time.Now().Unix())
+
+	// 创建Run记录（状态为pending）
+	run := &model.SopRun{
+		TemplateID:     templateID,
+		UserID:         userID,
+		Status:         model.SopStatusPending,
+		ConversationID: conversationID,
+	}
+
+	if err := b.ds.Sop().CreateRun(run); err != nil {
+		return nil, fmt.Errorf("failed to create run: %w", err)
+	}
+
+	log.C(ctx).Infow("Created SOP run", "run_id", run.ID, "template_id", templateID, "user_id", userID)
+	return run, nil
+}
+
+// GetNextNode 获取下一个待执行节点
+func (b *sopBiz) GetNextNode(ctx context.Context, runID uint) (*model.SopNode, bool, error) {
+	// 获取Run信息
+	run, err := b.ds.Sop().GetRun(runID)
+	if err != nil {
+		return nil, false, fmt.Errorf("run not found: %w", err)
+	}
+
+	// 获取模板的所有节点（按sort排序）
+	nodes, err := b.ds.Sop().ListNodesByTemplate(run.TemplateID)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to get template nodes: %w", err)
+	}
+
+	if len(nodes) == 0 {
+		return nil, false, fmt.Errorf("template has no nodes")
+	}
+
+	// 获取已执行的NodeRun（按sort排序）
+	completedNodeRuns, err := b.ds.Sop().ListNodeRunsByRun(runID)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to get node runs: %w", err)
+	}
+
+	// 找出已完成的节点ID集合
+	completedNodeIDs := make(map[uint]bool)
+	for _, nodeRun := range completedNodeRuns {
+		if nodeRun.Status == model.SopStatusSucceeded {
+			completedNodeIDs[nodeRun.NodeID] = true
+		}
+	}
+
+	// 找到第一个未执行的节点
+	for _, node := range nodes {
+		if !completedNodeIDs[node.ID] {
+			// 检查是否还有下一个节点
+			hasNext := false
+			for i := 0; i < len(nodes); i++ {
+				if nodes[i].Sort > node.Sort && !completedNodeIDs[nodes[i].ID] {
+					hasNext = true
+					break
+				}
+			}
+			return &node, hasNext, nil
+		}
+	}
+
+	// 所有节点都已执行完成
+	return nil, false, nil
+}
+
+// ExecuteNodeStream 流式执行指定节点
+func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text string, handler func(chunk string) error) error {
+	// 获取Run信息
+	run, err := b.ds.Sop().GetRun(runID)
+	if err != nil {
+		return fmt.Errorf("run not found: %w", err)
+	}
+
+	// 获取节点信息
+	node, err := b.ds.Sop().GetNode(nodeID)
+	if err != nil {
+		return fmt.Errorf("node not found: %w", err)
+	}
+
+	// 验证节点属于该模板
+	if node.TemplateID != run.TemplateID {
+		return fmt.Errorf("node does not belong to this template")
+	}
+
+	// 获取已执行的NodeRun（用于构建上下文）
+	completedNodeRuns, err := b.ds.Sop().ListNodeRunsByRun(runID)
+	if err != nil {
+		return fmt.Errorf("failed to get node runs: %w", err)
+	}
+
+	// 构建对话历史
+	conversationHistory := []LLMMessage{}
+
+	// 添加模板的预处理prompt
+	template, err := b.ds.Sop().GetTemplate(run.TemplateID)
+	if err == nil && template != nil && template.Prompt != "" {
+		conversationHistory = append(conversationHistory, LLMMessage{
+			Role:    "system",
+			Content: template.Prompt,
+		})
+	}
+
+	// 添加所有已执行节点的输入输出（按sort排序）
+	// 按sort顺序添加对话历史
+	for i := 0; i < 1000; i++ { // 假设最多1000个节点
+		found := false
+		for _, nodeRun := range completedNodeRuns {
+			if nodeRun.Sort == i && nodeRun.Status == model.SopStatusSucceeded {
+				conversationHistory = append(conversationHistory, LLMMessage{
+					Role:    "user",
+					Content: nodeRun.Input,
+				})
+				conversationHistory = append(conversationHistory, LLMMessage{
+					Role:    "assistant",
+					Content: nodeRun.Output,
+				})
+				found = true
+				break
+			}
+		}
+		if !found {
+			break
+		}
+	}
+
+	// 确定当前节点的输入
+	var currentInput string
+	if text != "" {
+		// 如果用户提供了新text，使用新text
+		currentInput = text
+	} else {
+		// 否则使用上一个节点的输出
+		if len(completedNodeRuns) > 0 {
+			// 找到最后一个已完成的节点
+			lastNodeRun := completedNodeRuns[0]
+			for _, nodeRun := range completedNodeRuns {
+				if nodeRun.Sort > lastNodeRun.Sort && nodeRun.Status == model.SopStatusSucceeded {
+					lastNodeRun = nodeRun
+				}
+			}
+			if lastNodeRun.Status == model.SopStatusSucceeded {
+				currentInput = lastNodeRun.Output
+			} else {
+				return fmt.Errorf("no valid previous node output found")
+			}
+		} else {
+			return fmt.Errorf("no input provided and no previous node output")
+		}
+	}
+
+	// 更新Run状态为running（如果是第一个节点）
+	if len(completedNodeRuns) == 0 {
+		startTime := time.Now()
+		if err := b.ds.Sop().UpdateRun(runID, map[string]interface{}{
+			"status":     model.SopStatusRunning,
+			"started_at": startTime,
+		}); err != nil {
+			return fmt.Errorf("failed to update run status: %w", err)
+		}
+	}
+
+	// 创建NodeRun记录
+	nodeRun := &model.SopNodeRun{
+		RunID:          runID,
+		NodeID:         nodeID,
+		TemplateID:     run.TemplateID,
+		UserID:         run.UserID,
+		ParentNodeID:   node.ParentID,
+		Status:         model.SopStatusRunning,
+		Input:          currentInput,
+		ConversationID: run.ConversationID,
+		Sort:           node.Sort,
+		StartedAt:      &[]time.Time{time.Now()}[0],
+	}
+
+	if err := b.ds.Sop().CreateNodeRun(nodeRun); err != nil {
+		return fmt.Errorf("failed to create node run: %w", err)
+	}
+
+	// 执行节点（流式）
+	startTime := time.Now()
+	output, err := b.executor.ExecuteNodeStream(ctx, node, currentInput, conversationHistory, handler)
+	nodeEndTime := time.Now()
+	latency := nodeEndTime.Sub(startTime).Milliseconds()
+
+	if err != nil {
+		// 节点执行失败
+		b.ds.Sop().UpdateNodeRun(nodeRun.ID, map[string]interface{}{
+			"status":        model.SopStatusFailed,
+			"error_message": err.Error(),
+			"latency_ms":    latency,
+			"finished_at":   nodeEndTime,
+		})
+		return fmt.Errorf("node execution failed: %w", err)
+	}
+
+	// 更新NodeRun为成功
+	if err := b.ds.Sop().UpdateNodeRun(nodeRun.ID, map[string]interface{}{
+		"status":      model.SopStatusSucceeded,
+		"output":      output,
+		"latency_ms":  latency,
+		"finished_at": nodeEndTime,
+	}); err != nil {
+		return fmt.Errorf("failed to update node run: %w", err)
+	}
+
+	// 检查是否所有节点都执行完成
+	allNodeRuns, err := b.ds.Sop().ListNodeRunsByRun(runID)
+	if err == nil {
+		allNodes, _ := b.ds.Sop().ListNodesByTemplate(run.TemplateID)
+		completedCount := 0
+		for _, nodeRun := range allNodeRuns {
+			if nodeRun.Status == model.SopStatusSucceeded {
+				completedCount++
+			}
+		}
+		if completedCount == len(allNodes) {
+			// 所有节点执行完成，生成最终Note
+			finalOutput := output
+			note, err := b.executor.CreateFinalNote(ctx, run, finalOutput)
+			if err == nil {
+				finishTime := time.Now()
+				b.ds.Sop().UpdateRun(runID, map[string]interface{}{
+					"status":        model.SopStatusSucceeded,
+					"final_note_id": note.ID,
+					"finished_at":   finishTime,
+				})
+			}
+		}
+	}
+
+	return nil
+}
+
+// GetRunStatus 获取Run执行状态
+func (b *sopBiz) GetRunStatus(ctx context.Context, runID uint) (*RunStatus, error) {
+	// 获取Run信息
+	run, err := b.ds.Sop().GetRun(runID)
+	if err != nil {
+		return nil, fmt.Errorf("run not found: %w", err)
+	}
+
+	// 获取模板的所有节点
+	allNodes, err := b.ds.Sop().ListNodesByTemplate(run.TemplateID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get template nodes: %w", err)
+	}
+
+	// 获取已执行的NodeRun
+	completedNodeRuns, err := b.ds.Sop().ListNodeRunsByRun(runID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get node runs: %w", err)
+	}
+
+	// 构建已完成节点信息
+	completedNodes := []CompletedNodeInfo{}
+	completedNodeIDs := make(map[uint]bool)
+	currentNodeSort := -1
+
+	for _, nodeRun := range completedNodeRuns {
+		if nodeRun.Status == model.SopStatusSucceeded {
+			completedNodeIDs[nodeRun.NodeID] = true
+			outputPreview := nodeRun.Output
+			if len(outputPreview) > 200 {
+				outputPreview = outputPreview[:200] + "..."
+			}
+			completedNodes = append(completedNodes, CompletedNodeInfo{
+				NodeID:        nodeRun.NodeID,
+				NodeName:      nodeRun.Node.Name,
+				Sort:          nodeRun.Sort,
+				OutputPreview: outputPreview,
+			})
+			if nodeRun.Sort > currentNodeSort {
+				currentNodeSort = nodeRun.Sort
+			}
+		}
+	}
+
+	// 找到下一个节点
+	var nextNode *NextNodeInfo
+	for _, node := range allNodes {
+		if !completedNodeIDs[node.ID] {
+			// 检查是否还有下一个节点
+			hasNext := false
+			for i := 0; i < len(allNodes); i++ {
+				if allNodes[i].Sort > node.Sort && !completedNodeIDs[allNodes[i].ID] {
+					hasNext = true
+					break
+				}
+			}
+			nextNode = &NextNodeInfo{
+				NodeID:   node.ID,
+				NodeName: node.Name,
+				Sort:     node.Sort,
+				IsFirst:  len(completedNodes) == 0,
+				HasNext:  hasNext,
+			}
+			break
+		}
+	}
+
+	return &RunStatus{
+		Status:          run.Status,
+		CurrentNodeSort: currentNodeSort,
+		CompletedNodes:  completedNodes,
+		NextNode:        nextNode,
+		TotalNodes:      len(allNodes),
+		CompletedCount:  len(completedNodes),
+	}, nil
 }
 
 func (b *sopBiz) GetRun(ctx context.Context, id uint) (*model.SopRun, error) {

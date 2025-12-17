@@ -249,12 +249,19 @@ func installNumindRouters(g *gin.Engine) error {
 	{
 		// 用户执行SOP
 		authGroup.GET("/sop/templates", userSopc.ListTemplates)                // 获取可用模板列表
-		authGroup.POST("/sop/templates/:id/execute", userSopc.ExecuteTemplate) // 执行模板
-		authGroup.GET("/sop/runs/:id", userSopc.GetRun)                        // 查看执行记录
-		authGroup.GET("/sop/runs/:id/detail", userSopc.GetRunDetail)           // 查看执行详情
-		authGroup.GET("/sop/runs", userSopc.ListMyRuns)                        // 获取我的执行记录列表
-		authGroup.GET("/sop/notes/:id", userSopc.GetNote)                      // 查看笔记详情
-		authGroup.GET("/sop/notes", userSopc.ListMyNotes)                      // 获取我的笔记列表
+		authGroup.POST("/sop/templates/:id/execute", userSopc.ExecuteTemplate) // 执行模板（异步，一次性执行所有节点）
+
+		// 逐步执行SOP节点（新增）- 注意：这些路由必须在 /sop/runs/:id 之前注册，避免路由冲突
+		authGroup.POST("/sop/runs", userSopc.CreateRun)                                    // 创建Run（不立即执行）
+		authGroup.GET("/sop/runs/:id/next-node", userSopc.GetNextNode)                     // 获取下一个待执行节点
+		authGroup.POST("/sop/runs/:id/nodes/:node_id/execute", userSopc.ExecuteNodeStream) // 流式执行指定节点
+		authGroup.GET("/sop/runs/:id/status", userSopc.GetRunStatus)                       // 获取Run执行状态
+
+		authGroup.GET("/sop/runs/:id", userSopc.GetRun)              // 查看执行记录
+		authGroup.GET("/sop/runs/:id/detail", userSopc.GetRunDetail) // 查看执行详情
+		authGroup.GET("/sop/runs", userSopc.ListMyRuns)              // 获取我的执行记录列表
+		authGroup.GET("/sop/notes/:id", userSopc.GetNote)            // 查看笔记详情
+		authGroup.GET("/sop/notes", userSopc.ListMyNotes)            // 获取我的笔记列表
 	}
 
 	return nil

@@ -154,3 +154,50 @@ type SopRunDetailResponse struct {
 	Run      SopRunResponse       `json:"run"`
 	NodeRuns []SopNodeRunResponse `json:"node_runs"`
 }
+
+// CreateSopRunRequest 创建SOP执行请求
+type CreateSopRunRequest struct {
+	TemplateID uint   `json:"template_id" binding:"required"`
+	Text       string `json:"text" binding:"required"`
+}
+
+// ExecuteSopNodeRequest 执行SOP节点请求
+type ExecuteSopNodeRequest struct {
+	Text string `json:"text"` // 可选，如果不提供则使用上一个节点的输出
+}
+
+// NextNodeResponse 下一个节点响应
+type NextNodeResponse struct {
+	NodeID   uint   `json:"node_id"`
+	NodeName string `json:"node_name"`
+	Sort     int    `json:"sort"`
+	IsFirst  bool   `json:"is_first"`
+	HasNext  bool   `json:"has_next"`
+}
+
+// RunStatusResponse Run执行状态响应
+type RunStatusResponse struct {
+	Status          string              `json:"status"`
+	CurrentNodeSort int                 `json:"current_node_sort"`
+	CompletedNodes  []CompletedNodeInfo `json:"completed_nodes"`
+	NextNode        *NextNodeInfo       `json:"next_node,omitempty"`
+	TotalNodes      int                 `json:"total_nodes"`
+	CompletedCount  int                 `json:"completed_count"`
+}
+
+// CompletedNodeInfo 已完成节点信息
+type CompletedNodeInfo struct {
+	NodeID        uint   `json:"node_id"`
+	NodeName      string `json:"node_name"`
+	Sort          int    `json:"sort"`
+	OutputPreview string `json:"output_preview"`
+}
+
+// NextNodeInfo 下一个节点信息
+type NextNodeInfo struct {
+	NodeID   uint   `json:"node_id"`
+	NodeName string `json:"node_name"`
+	Sort     int    `json:"sort"`
+	IsFirst  bool   `json:"is_first"`
+	HasNext  bool   `json:"has_next"`
+}
