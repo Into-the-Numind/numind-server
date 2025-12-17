@@ -300,7 +300,7 @@ func (ctrl *SopController) ExecuteTemplate(c *gin.Context) {
 		return
 	}
 
-	run, err := ctrl.sopBiz.ExecuteTemplate(c, uint(templateID), req.UserID, req.InitialInput)
+	run, err := ctrl.sopBiz.ExecuteTemplate(c, uint(templateID), req.UserID, req.Text)
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
 		return

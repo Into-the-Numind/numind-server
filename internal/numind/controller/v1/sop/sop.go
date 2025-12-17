@@ -50,7 +50,7 @@ func (ctrl *SopController) ExecuteTemplate(c *gin.Context) {
 	}
 
 	// 使用token中的用户ID
-	run, err := ctrl.sopBiz.ExecuteTemplate(c, uint(templateID), user.ID, req.InitialInput)
+	run, err := ctrl.sopBiz.ExecuteTemplate(c, uint(templateID), user.ID, req.Text)
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
 		return
