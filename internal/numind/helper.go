@@ -204,6 +204,15 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate sop_node_run: %v", err)
 	}
 
+	// 修复 sop_node_run 表的 input 和 output 字段类型（从 TEXT 改为 LONGTEXT）
+	// 注意：GORM的AutoMigrate可能不会自动修改字段类型，需要手动修复
+	if err := fixSopNodeRunTextFields(db); err != nil {
+		log.Warnw("Failed to fix sop_node_run text fields, continuing", "error", err)
+		// 不返回错误，继续执行，因为可能是字段已经是正确的类型
+	} else {
+		log.Infow("Sop_node_run text fields fixed successfully")
+	}
+
 	// 第五步：创建笔记表（依赖执行记录表）
 	if err := db.AutoMigrate(&model.SopNote{}); err != nil {
 		return fmt.Errorf("failed to migrate sop_note: %v", err)
@@ -367,6 +376,81 @@ func forceFixChatMessageTable(db *gorm.DB, charsetConfig *config.DatabaseCharset
 		} else {
 			log.Infow("Field charset updated", "field", field)
 		}
+	}
+
+	return nil
+}
+
+// fixSopNodeRunTextFields 修复 sop_node_run 表的 input 和 output 字段类型
+// 将 TEXT 类型改为 LONGTEXT 以支持超长文本
+func fixSopNodeRunTextFields(db *gorm.DB) error {
+	tableName := "sop_node_run"
+
+	// 检查表是否存在
+	var count int64
+	err := db.Raw(`
+		SELECT COUNT(*) 
+		FROM information_schema.TABLES 
+		WHERE TABLE_SCHEMA = DATABASE() 
+			AND TABLE_NAME = ?
+	`, tableName).Scan(&count).Error
+
+	if err != nil {
+		return fmt.Errorf("failed to check table existence: %v", err)
+	}
+
+	if count == 0 {
+		log.Infow("Table does not exist, skipping text fields fix", "table", tableName)
+		return nil
+	}
+
+	// 检查字段当前类型
+	var inputType, outputType string
+	err = db.Raw(`
+		SELECT DATA_TYPE 
+		FROM information_schema.COLUMNS 
+		WHERE TABLE_SCHEMA = DATABASE() 
+			AND TABLE_NAME = ? 
+			AND COLUMN_NAME = 'input'
+	`, tableName).Scan(&inputType).Error
+
+	if err != nil {
+		return fmt.Errorf("failed to check input field type: %v", err)
+	}
+
+	err = db.Raw(`
+		SELECT DATA_TYPE 
+		FROM information_schema.COLUMNS 
+		WHERE TABLE_SCHEMA = DATABASE() 
+			AND TABLE_NAME = ? 
+			AND COLUMN_NAME = 'output'
+	`, tableName).Scan(&outputType).Error
+
+	if err != nil {
+		return fmt.Errorf("failed to check output field type: %v", err)
+	}
+
+	// 如果字段类型不是 LONGTEXT，则修改
+	if inputType != "longtext" {
+		log.Infow("Fixing input field type", "from", inputType, "to", "longtext")
+		if err := db.Exec(`
+			ALTER TABLE ` + tableName + ` 
+			MODIFY COLUMN input LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+		`).Error; err != nil {
+			return fmt.Errorf("failed to modify input field: %v", err)
+		}
+		log.Infow("Input field type fixed successfully")
+	}
+
+	if outputType != "longtext" {
+		log.Infow("Fixing output field type", "from", outputType, "to", "longtext")
+		if err := db.Exec(`
+			ALTER TABLE ` + tableName + ` 
+			MODIFY COLUMN output LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+		`).Error; err != nil {
+			return fmt.Errorf("failed to modify output field: %v", err)
+		}
+		log.Infow("Output field type fixed successfully")
 	}
 
 	return nil
