@@ -218,6 +218,11 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate sop_note: %v", err)
 	}
 
+	// 第六步：创建文件表（依赖执行记录表和节点表）
+	if err := db.AutoMigrate(&model.SopFile{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_file: %v", err)
+	}
+
 	log.Infow("SOP tables migration completed")
 
 	log.Infow("All database schema migration completed")

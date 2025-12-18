@@ -400,6 +400,18 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 				return fmt.Errorf("no valid previous node output found")
 			}
 		} else {
+			// 第一个节点，没有输入也没有上一个节点的输出
+			// 检查是否是第一个节点（sort为0或最小）
+			isFirstNode := true
+			for _, n := range allNodes {
+				if n.Sort < node.Sort {
+					isFirstNode = false
+					break
+				}
+			}
+			if isFirstNode {
+				return fmt.Errorf("第一个节点需要提供输入内容（text参数或上传文件）")
+			}
 			return fmt.Errorf("no input provided and no previous node output")
 		}
 	}

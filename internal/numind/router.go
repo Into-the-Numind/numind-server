@@ -71,7 +71,7 @@ func installNumindRouters(g *gin.Engine) error {
 	ragc := ragcontroller.NewRagController(ragService, b.Chats())
 
 	// 初始化SOP控制器（用户端）
-	userSopc := sopcontroller.NewSopController(b.Sop())
+	userSopc := sopcontroller.NewSopController(b.Sop(), b.Ali(), b.Volc())
 
 	// 🔍 系统启动时检查并向量化历史笔记（异步执行，不阻塞启动）- 暂时注释，不使用向量化
 	// go func() {
@@ -254,7 +254,8 @@ func installNumindRouters(g *gin.Engine) error {
 		// 逐步执行SOP节点（新增）- 注意：这些路由必须在 /sop/runs/:id 之前注册，避免路由冲突
 		authGroup.POST("/sop/runs", userSopc.CreateRun)                                    // 创建Run（不立即执行）
 		authGroup.GET("/sop/runs/:id/next-node", userSopc.GetNextNode)                     // 获取下一个待执行节点
-		authGroup.POST("/sop/runs/:id/nodes/:node_id/execute", userSopc.ExecuteNodeStream) // 流式执行指定节点
+		authGroup.POST("/sop/runs/:id/nodes/:node_id/execute", userSopc.ExecuteNodeStream) // 流式执行指定节点（支持文件上传）
+		authGroup.POST("/sop/files/check-quality", userSopc.CheckFileQuality)              // 检测上传文件质量
 		authGroup.GET("/sop/runs/:id/status", userSopc.GetRunStatus)                       // 获取Run执行状态
 
 		authGroup.GET("/sop/runs/:id", userSopc.GetRun)              // 查看执行记录

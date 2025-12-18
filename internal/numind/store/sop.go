@@ -38,6 +38,14 @@ type ISopStore interface {
 	CreateNote(note *model.SopNote) error
 	GetNote(id uint) (*model.SopNote, error)
 	ListNotesByUser(userID uint, offset, limit int) ([]model.SopNote, int64, error)
+
+	// File operations
+	CreateFile(file *model.SopFile) error
+	GetFile(id uint) (*model.SopFile, error)
+	ListFilesByRun(runID uint) ([]model.SopFile, error)
+	ListFilesByUser(userID uint, offset, limit int) ([]model.SopFile, int64, error)
+	UpdateFile(id uint, updates map[string]interface{}) error
+	DeleteFile(id uint) error
 }
 
 type sopStore struct {
@@ -208,4 +216,50 @@ func (s *sopStore) ListNotesByUser(userID uint, offset, limit int) ([]model.SopN
 	}
 
 	return notes, total, nil
+}
+
+// File operations
+func (s *sopStore) CreateFile(file *model.SopFile) error {
+	return s.db.Create(file).Error
+}
+
+func (s *sopStore) GetFile(id uint) (*model.SopFile, error) {
+	var file model.SopFile
+	err := s.db.Preload("User").Preload("Run").Preload("Node").First(&file, id).Error
+	if err != nil {
+		return nil, err
+	}
+	return &file, nil
+}
+
+func (s *sopStore) ListFilesByRun(runID uint) ([]model.SopFile, error) {
+	var files []model.SopFile
+	err := s.db.Where("run_id = ?", runID).Order("created_at DESC").Find(&files).Error
+	return files, err
+}
+
+func (s *sopStore) ListFilesByUser(userID uint, offset, limit int) ([]model.SopFile, int64, error) {
+	var files []model.SopFile
+	var total int64
+
+	query := s.db.Model(&model.SopFile{}).Where("user_id = ?", userID)
+
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	if err := query.Preload("Run").Preload("Node").
+		Offset(offset).Limit(limit).Order("created_at DESC").Find(&files).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return files, total, nil
+}
+
+func (s *sopStore) UpdateFile(id uint, updates map[string]interface{}) error {
+	return s.db.Model(&model.SopFile{}).Where("id = ?", id).Updates(updates).Error
+}
+
+func (s *sopStore) DeleteFile(id uint) error {
+	return s.db.Delete(&model.SopFile{}, id).Error
 }

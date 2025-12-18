@@ -114,6 +114,32 @@ func (SopNote) TableName() string {
 	return "sop_note"
 }
 
+// SopFile SOP文件表（用于存储用户上传的文件）
+type SopFile struct {
+	gorm.Model
+	UserID    uint   `gorm:"not null;index" json:"user_id"`            // 上传用户ID
+	RunID     *uint  `gorm:"index" json:"run_id"`                      // 关联的SOP执行ID（可选）
+	NodeID    *uint  `gorm:"index" json:"node_id"`                     // 关联的节点ID（可选）
+	FileName  string `gorm:"size:255;not null" json:"file_name"`       // 原始文件名
+	FileURL   string `gorm:"size:512;not null" json:"file_url"`        // 文件URL（COS链接）
+	FileType  string `gorm:"size:50" json:"file_type"`                 // 文件类型（MIME类型）
+	FileSize  int64  `gorm:"not null" json:"file_size"`                // 文件大小（字节）
+	FileExt   string `gorm:"size:10" json:"file_ext"`                  // 文件扩展名
+	Content   string `gorm:"type:longtext" json:"content"`             // 提取的文本内容（可选）
+	Status    string `gorm:"size:20;default:'uploaded'" json:"status"` // 状态: uploaded, processed, failed
+	ObjectKey string `gorm:"size:512" json:"object_key"`               // COS对象键
+	ErrorMsg  string `gorm:"type:text" json:"error_msg"`               // 错误信息（如果上传失败）
+
+	// 关联关系
+	User *User    `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	Run  *SopRun  `gorm:"foreignKey:RunID" json:"run,omitempty"`
+	Node *SopNode `gorm:"foreignKey:NodeID" json:"node,omitempty"`
+}
+
+func (SopFile) TableName() string {
+	return "sop_file"
+}
+
 // SOP状态常量
 const (
 	SopStatusPending   = "pending"
