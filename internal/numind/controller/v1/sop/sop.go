@@ -1,10 +1,12 @@
 package sop
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -380,8 +382,38 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 		return
 	}
 
+	// 创建带心跳的 context，用于定期发送心跳保持连接
+	heartbeatCtx, heartbeatCancel := context.WithCancel(c.Request.Context())
+	defer heartbeatCancel()
+
+	// 启动心跳 goroutine，每 15 秒发送一次注释行（SSE 心跳），更频繁地保持连接活跃
+	heartbeatTicker := time.NewTicker(15 * time.Second)
+	defer heartbeatTicker.Stop()
+	go func() {
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-heartbeatTicker.C:
+				// 发送 SSE 注释行（以 : 开头）作为心跳
+				// 检查连接是否仍然有效
+				select {
+				case <-c.Request.Context().Done():
+					return
+				default:
+					// 发送心跳注释行
+					if _, err := c.Writer.WriteString(": heartbeat\n\n"); err != nil {
+						log.C(c).Warnw("Failed to send heartbeat", "error", err)
+						return
+					}
+					flusher.Flush()
+				}
+			}
+		}
+	}()
+
 	// 流式执行节点
-	err = ctrl.sopBiz.ExecuteNodeStream(c.Request.Context(), uint(runID), uint(nodeID), req.Text, func(chunk string) error {
+	err = ctrl.sopBiz.ExecuteNodeStream(heartbeatCtx, uint(runID), uint(nodeID), req.Text, func(chunk string) error {
 		// 检查客户端是否断开连接
 		select {
 		case <-c.Request.Context().Done():

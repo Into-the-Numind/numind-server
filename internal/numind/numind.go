@@ -155,7 +155,14 @@ func run() error {
 // startInsecureServer 创建并运行 HTTP 服务器.
 func startInsecureServer(g *gin.Engine) *http.Server {
 	// 创建 HTTP Server 实例
-	httpsrv := &http.Server{Addr: viper.GetString("addr"), Handler: g}
+	// 对于 SSE 流式响应，需要设置较长的超时时间
+	httpsrv := &http.Server{
+		Addr:         viper.GetString("addr"),
+		Handler:      g,
+		ReadTimeout:  600 * time.Second,  // 10分钟读取超时（支持长流式响应）
+		WriteTimeout: 1200 * time.Second, // 20分钟写入超时（支持长流式响应）
+		IdleTimeout:  120 * time.Second,  // 2分钟空闲超时
+	}
 
 	// 运行 HTTP 服务器。在 goroutine 中启动服务器，它不会阻止下面的正常关闭处理流程
 	// 打印一条日志，用来提示 HTTP 服务已经起来，方便排障
