@@ -405,7 +405,7 @@ func fixSopNodeRunTextFields(db *gorm.DB) error {
 	}
 
 	// 检查字段当前类型
-	var inputType, outputType string
+	var inputType, outputType, thinkingType string
 	err = db.Raw(`
 		SELECT DATA_TYPE 
 		FROM information_schema.COLUMNS 
@@ -430,6 +430,29 @@ func fixSopNodeRunTextFields(db *gorm.DB) error {
 		return fmt.Errorf("failed to check output field type: %v", err)
 	}
 
+	// 检查 thinking 字段是否存在
+	var thinkingExists int64
+	err = db.Raw(`
+		SELECT COUNT(*) 
+		FROM information_schema.COLUMNS 
+		WHERE TABLE_SCHEMA = DATABASE() 
+			AND TABLE_NAME = ? 
+			AND COLUMN_NAME = 'thinking'
+	`, tableName).Scan(&thinkingExists).Error
+
+	if err == nil && thinkingExists > 0 {
+		err = db.Raw(`
+			SELECT DATA_TYPE 
+			FROM information_schema.COLUMNS 
+			WHERE TABLE_SCHEMA = DATABASE() 
+				AND TABLE_NAME = ? 
+				AND COLUMN_NAME = 'thinking'
+		`, tableName).Scan(&thinkingType).Error
+		if err != nil {
+			return fmt.Errorf("failed to check thinking field type: %v", err)
+		}
+	}
+
 	// 如果字段类型不是 LONGTEXT，则修改
 	if inputType != "longtext" {
 		log.Infow("Fixing input field type", "from", inputType, "to", "longtext")
@@ -451,6 +474,18 @@ func fixSopNodeRunTextFields(db *gorm.DB) error {
 			return fmt.Errorf("failed to modify output field: %v", err)
 		}
 		log.Infow("Output field type fixed successfully")
+	}
+
+	// 如果 thinking 字段存在但类型不是 LONGTEXT，则修改
+	if thinkingExists > 0 && thinkingType != "longtext" {
+		log.Infow("Fixing thinking field type", "from", thinkingType, "to", "longtext")
+		if err := db.Exec(`
+			ALTER TABLE ` + tableName + ` 
+			MODIFY COLUMN thinking LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+		`).Error; err != nil {
+			return fmt.Errorf("failed to modify thinking field: %v", err)
+		}
+		log.Infow("Thinking field type fixed successfully")
 	}
 
 	return nil

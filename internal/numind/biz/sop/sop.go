@@ -296,6 +296,23 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		return fmt.Errorf("node does not belong to this template")
 	}
 
+	// 获取模板的所有节点，用于判断当前节点是否是最后一个节点
+	allNodes, err := b.ds.Sop().ListNodesByTemplate(run.TemplateID)
+	if err != nil {
+		return fmt.Errorf("failed to get template nodes: %w", err)
+	}
+
+	// 找到最大的sort值（最后一个节点）
+	maxSort := -1
+	for _, n := range allNodes {
+		if n.Sort > maxSort {
+			maxSort = n.Sort
+		}
+	}
+
+	// 判断当前节点是否是最后一个节点
+	isLastNode := node.Sort == maxSort
+
 	// 获取已执行的NodeRun（用于构建上下文）
 	completedNodeRuns, err := b.ds.Sop().ListNodeRunsByRun(runID)
 	if err != nil {
@@ -342,8 +359,33 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	if text != "" {
 		// 如果用户提供了新text，使用新text
 		currentInput = text
+	} else if isLastNode {
+		// 如果是最后一个节点，整合所有前面节点的输出
+		// 按sort顺序收集前面所有节点的输出
+		var previousOutputs []string
+		for i := 0; i < node.Sort; i++ {
+			// 找到sort为i的已执行节点
+			for _, nodeRun := range completedNodeRuns {
+				if nodeRun.Sort == i && nodeRun.Status == model.SopStatusSucceeded {
+					previousOutputs = append(previousOutputs, nodeRun.Output)
+					break
+				}
+			}
+		}
+
+		// 整合所有前面节点的输出
+		if len(previousOutputs) > 0 {
+			// 构建整合后的输入，替换prompt中的占位符
+			integratedInput := ""
+			for i, output := range previousOutputs {
+				integratedInput += fmt.Sprintf("[STAGE_%d_CACHE] = %s\n\n", i+1, output)
+			}
+			currentInput = integratedInput
+		} else {
+			return fmt.Errorf("最后一个节点需要前面节点的输出，但未找到已完成的节点")
+		}
 	} else {
-		// 否则使用上一个节点的输出
+		// 其他节点使用上一个节点的输出
 		if len(completedNodeRuns) > 0 {
 			// 找到最后一个已完成的节点
 			lastNodeRun := completedNodeRuns[0]
@@ -391,9 +433,9 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		return fmt.Errorf("failed to create node run: %w", err)
 	}
 
-	// 执行节点（流式）
+	// 执行节点（流式），返回完整输出和思考内容
 	startTime := time.Now()
-	output, err := b.executor.ExecuteNodeStream(ctx, node, currentInput, conversationHistory, handler)
+	output, thinking, err := b.executor.ExecuteNodeStreamWithThinking(ctx, node, currentInput, conversationHistory, handler)
 	nodeEndTime := time.Now()
 	latency := nodeEndTime.Sub(startTime).Milliseconds()
 
@@ -408,10 +450,11 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		return fmt.Errorf("node execution failed: %w", err)
 	}
 
-	// 更新NodeRun为成功
+	// 更新NodeRun为成功，同时保存思考内容
 	if err := b.ds.Sop().UpdateNodeRun(nodeRun.ID, map[string]interface{}{
 		"status":      model.SopStatusSucceeded,
 		"output":      output,
+		"thinking":    thinking,
 		"latency_ms":  latency,
 		"finished_at": nodeEndTime,
 	}); err != nil {

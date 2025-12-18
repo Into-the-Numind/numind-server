@@ -76,6 +76,7 @@ type SopNodeRun struct {
 	Status         string     `gorm:"size:20;default:'pending';index" json:"status"` // pending, running, succeeded, failed
 	Input          string     `gorm:"type:longtext" json:"input"`                    // 节点输入（使用LONGTEXT支持超长文本）
 	Output         string     `gorm:"type:longtext" json:"output"`                   // 节点输出（使用LONGTEXT支持超长文本）
+	Thinking       string     `gorm:"type:longtext" json:"thinking"`                 // 思考过程内容（AI的思考部分，如"已思考"等）
 	LatencyMs      int64      `gorm:"default:0" json:"latency_ms"`                   // 执行耗时（毫秒）
 	ConversationID string     `gorm:"size:100;index" json:"conversation_id"`         // 对话ID（与Run保持一致）
 	Sort           int        `gorm:"default:0;index:idx_run_sort" json:"sort"`      // 执行顺序

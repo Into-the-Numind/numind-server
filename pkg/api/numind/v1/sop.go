@@ -158,7 +158,7 @@ type SopRunDetailResponse struct {
 // CreateSopRunRequest 创建SOP执行请求
 type CreateSopRunRequest struct {
 	TemplateID uint   `json:"template_id" binding:"required"`
-	Text       string `json:"text" binding:"required"`
+	Text       string `json:"text"` // 可选，如果不提供则使用默认输入
 }
 
 // ExecuteSopNodeRequest 执行SOP节点请求
