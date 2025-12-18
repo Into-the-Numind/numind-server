@@ -3,6 +3,7 @@ package sop
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -372,31 +373,55 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no") // 禁用nginx缓冲
 
+	// 获取Flusher（用于实时刷新）
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("Streaming not supported"), nil)
+		return
+	}
+
 	// 流式执行节点
-	err = ctrl.sopBiz.ExecuteNodeStream(c, uint(runID), uint(nodeID), req.Text, func(chunk string) error {
+	err = ctrl.sopBiz.ExecuteNodeStream(c.Request.Context(), uint(runID), uint(nodeID), req.Text, func(chunk string) error {
+		// 检查客户端是否断开连接
+		select {
+		case <-c.Request.Context().Done():
+			log.C(c).Infow("Client disconnected during stream")
+			return c.Request.Context().Err()
+		default:
+		}
+
 		// 发送SSE格式的数据（需要对JSON进行转义）
 		chunkJSON, _ := json.Marshal(chunk)
 		data := fmt.Sprintf("data: %s\n\n", string(chunkJSON))
 		if _, err := c.Writer.WriteString(data); err != nil {
+			log.C(c).Warnw("Failed to write chunk to client", "error", err)
 			return err
 		}
-		c.Writer.Flush()
+
+		// 立即刷新，确保数据实时发送
+		flusher.Flush()
 		return nil
 	})
 
 	if err != nil {
+		// 检查是否是客户端断开连接
+		if c.Request.Context().Err() != nil {
+			log.C(c).Infow("Client disconnected during stream", "error", err)
+			return // 客户端断开，不需要发送错误
+		}
+
 		// 发送错误事件
 		errorMsg, _ := json.Marshal(err.Error())
 		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
 		c.Writer.WriteString(errorData)
-		c.Writer.Flush()
+		flusher.Flush()
 		return
 	}
 
 	// 发送完成事件
 	doneData := "event: done\ndata: {\"status\":\"completed\"}\n\n"
 	c.Writer.WriteString(doneData)
-	c.Writer.Flush()
+	flusher.Flush()
 }
 
 // GetRunStatus 获取Run执行状态

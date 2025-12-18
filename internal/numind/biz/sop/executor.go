@@ -343,9 +343,17 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 	req.Header.Set("Authorization", "Bearer "+node.APIKey)
 	req.Header.Set("User-Agent", "numind-server/1.0")
 
-	// 设置超时
+	// 对于流式响应，不能使用Client.Timeout（会限制整个响应读取时间）
+	// 而是使用Transport的ResponseHeaderTimeout来控制响应头超时
+	// 流式响应的读取时间由context控制
+	transport := &http.Transport{
+		ResponseHeaderTimeout: time.Duration(node.TimeoutSeconds) * time.Second, // 响应头超时
+		IdleConnTimeout:       90 * time.Second,
+	}
 	client := &http.Client{
-		Timeout: time.Duration(node.TimeoutSeconds) * time.Second,
+		Transport: transport,
+		// 不设置Timeout，让流式响应可以持续读取
+		// Timeout会限制整个请求-响应周期，包括读取响应体的时间
 	}
 
 	// 发送请求
@@ -368,7 +376,24 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 	// 流式读取响应
 	var fullOutput strings.Builder
 	scanner := bufio.NewScanner(resp.Body)
+
+	// 设置更大的缓冲区以处理长行
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024) // 1MB缓冲区
+
 	for scanner.Scan() {
+		// 检查context是否被取消
+		select {
+		case <-ctx.Done():
+			log.C(ctx).Warnw("Context cancelled during stream", "node_id", node.ID)
+			// 即使context取消，也返回已累积的输出
+			if fullOutput.Len() > 0 {
+				return fullOutput.String(), nil
+			}
+			return "", fmt.Errorf("stream cancelled: %w", ctx.Err())
+		default:
+		}
+
 		line := scanner.Text()
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
@@ -386,7 +411,9 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 								fullOutput.WriteString(content)
 								// 调用handler发送chunk
 								if err := handler(content); err != nil {
-									return "", fmt.Errorf("stream handler error: %w", err)
+									log.C(ctx).Warnw("Stream handler error, but continuing to read full response", "error", err)
+									// 不立即返回错误，继续处理完整响应
+									// 如果客户端断开连接，handler会返回错误，但我们继续读取完整响应以便保存
 								}
 							}
 						}
@@ -397,6 +424,11 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 	}
 
 	if err := scanner.Err(); err != nil {
+		log.C(ctx).Errorw("Scanner error during stream", "error", err)
+		// 即使scanner出错，也返回已累积的输出（如果有）
+		if fullOutput.Len() > 0 {
+			return fullOutput.String(), nil
+		}
 		return "", fmt.Errorf("scanner error: %w", err)
 	}
 
