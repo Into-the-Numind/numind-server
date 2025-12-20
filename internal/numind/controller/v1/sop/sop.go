@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -287,6 +288,51 @@ func (ctrl *SopController) ListTemplates(c *gin.Context) {
 	core.WriteResponse(c, nil, gin.H{
 		"total":     len(activeTemplates),
 		"templates": activeTemplates,
+	})
+}
+
+// GetTemplateNodes 获取指定模板的所有节点（用户端）
+func (ctrl *SopController) GetTemplateNodes(c *gin.Context) {
+	log.C(c).Infow("User get SOP template nodes called")
+
+	templateID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的模板ID"), nil)
+		return
+	}
+
+	// 验证模板是否存在且为active状态
+	template, err := ctrl.sopBiz.GetTemplate(c, uint(templateID))
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("模板不存在"), nil)
+		return
+	}
+
+	// 只允许获取active状态的模板节点
+	if template.Status != "active" {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("模板未激活"), nil)
+		return
+	}
+
+	// 获取模板的所有节点
+	nodes, err := ctrl.sopBiz.ListNodesByTemplate(c, uint(templateID))
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		return
+	}
+
+	// 按Sort字段排序节点（使用标准库sort包）
+	sortedNodes := make([]model.SopNode, len(nodes))
+	copy(sortedNodes, nodes)
+	sort.Slice(sortedNodes, func(i, j int) bool {
+		return sortedNodes[i].Sort < sortedNodes[j].Sort
+	})
+
+	core.WriteResponse(c, nil, gin.H{
+		"template_id":   templateID,
+		"template_name": template.Name,
+		"nodes":         sortedNodes,
+		"total":         len(sortedNodes),
 	})
 }
 
