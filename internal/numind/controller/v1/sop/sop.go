@@ -2,6 +2,7 @@ package sop
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -19,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
+	"github.com/spf13/viper"
 
 	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/biz/sop"
@@ -1352,6 +1354,391 @@ func (ctrl *SopController) GetRunStatus(c *gin.Context) {
 	}
 
 	core.WriteResponse(c, nil, response)
+}
+
+// EditTextStream 文本编辑流式对话（不保存到数据库）
+func (ctrl *SopController) EditTextStream(c *gin.Context) {
+	log.C(c).Infow("Edit text stream called")
+
+	// 1. 解析请求参数
+	var req v1.EditTextRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		return
+	}
+
+	// 2. 参数验证
+	req.OriginalText = strings.TrimSpace(req.OriginalText)
+	req.UserMessage = strings.TrimSpace(req.UserMessage)
+
+	if req.UserMessage == "" {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("用户消息不能为空"), nil)
+		return
+	}
+
+	// 判断是否是第一次对话（没有历史且没有原始文本）
+	isFirstConversation := len(req.ConversationHistory) == 0
+
+	// 第一次对话必须有原始文本
+	if isFirstConversation && req.OriginalText == "" {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("第一次对话时原始文本不能为空"), nil)
+		return
+	}
+
+	// 限制文本长度（防止token超限）
+	const MaxOriginalTextLength = 100000 // 原始文本最大100KB
+	const MaxUserMessageLength = 10000   // 用户消息最大10KB
+	const MaxHistoryRounds = 10          // 最多10轮对话历史
+
+	if req.OriginalText != "" && len(req.OriginalText) > MaxOriginalTextLength {
+		req.OriginalText = req.OriginalText[:MaxOriginalTextLength] + "...(内容过长已截断)"
+	}
+
+	if len(req.UserMessage) > MaxUserMessageLength {
+		req.UserMessage = req.UserMessage[:MaxUserMessageLength] + "...(内容过长已截断)"
+	}
+
+	// 限制对话历史长度
+	if len(req.ConversationHistory) > MaxHistoryRounds*2 { // 每轮包含user和assistant两条消息
+		req.ConversationHistory = req.ConversationHistory[len(req.ConversationHistory)-MaxHistoryRounds*2:]
+		log.C(c).Warnw("对话历史过长，已截断", "original_length", len(req.ConversationHistory), "truncated_length", MaxHistoryRounds*2)
+	}
+
+	// 3. 构建对话消息
+	messages := buildEditTextMessages(req.OriginalText, req.UserMessage, req.ConversationHistory, isFirstConversation)
+
+	// 4. 设置SSE响应头
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no") // 禁用nginx缓冲
+
+	// 5. 获取Flusher（用于实时刷新）
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("Streaming not supported"), nil)
+		return
+	}
+
+	// 6. 创建带心跳的 context
+	heartbeatCtx, heartbeatCancel := context.WithCancel(c.Request.Context())
+	defer heartbeatCancel()
+
+	// 7. 启动心跳 goroutine，每 15 秒发送一次注释行（SSE 心跳）
+	heartbeatTicker := time.NewTicker(15 * time.Second)
+	defer heartbeatTicker.Stop()
+	go func() {
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-heartbeatTicker.C:
+				select {
+				case <-c.Request.Context().Done():
+					return
+				default:
+					if _, err := c.Writer.WriteString(": heartbeat\n\n"); err != nil {
+						log.C(c).Warnw("Failed to send heartbeat", "error", err)
+						return
+					}
+					flusher.Flush()
+				}
+			}
+		}
+	}()
+
+	// 8. 调用AI流式API（优先使用火山方舟，失败后降级到阿里百炼）
+	var aiErr error
+	var hasResponse bool
+
+	// 先尝试火山方舟
+	if ctrl.volcBiz != nil {
+		aiErr = ctrl.callVolcEditStream(heartbeatCtx, messages, func(chunk string) error {
+			hasResponse = true
+			// 检查客户端是否断开连接
+			select {
+			case <-c.Request.Context().Done():
+				log.C(c).Infow("Client disconnected during stream")
+				return c.Request.Context().Err()
+			default:
+			}
+
+			// 发送SSE格式的数据
+			chunkJSON, _ := json.Marshal(chunk)
+			data := fmt.Sprintf("data: %s\n\n", string(chunkJSON))
+			if _, err := c.Writer.WriteString(data); err != nil {
+				log.C(c).Warnw("Failed to write chunk to client", "error", err)
+				return err
+			}
+
+			// 立即刷新，确保数据实时发送
+			flusher.Flush()
+			return nil
+		})
+
+		if aiErr == nil {
+			log.C(c).Infow("火山方舟API调用成功")
+		} else {
+			log.C(c).Warnw("火山方舟API失败，尝试阿里百炼降级", "error", aiErr)
+		}
+	}
+
+	// 如果火山方舟失败或不可用，降级到阿里百炼
+	if aiErr != nil || !hasResponse {
+		if ctrl.aliBiz != nil {
+			aiErr = ctrl.callAliEditStream(heartbeatCtx, messages, func(chunk string) error {
+				hasResponse = true
+				// 检查客户端是否断开连接
+				select {
+				case <-c.Request.Context().Done():
+					log.C(c).Infow("Client disconnected during stream")
+					return c.Request.Context().Err()
+				default:
+				}
+
+				// 发送SSE格式的数据
+				chunkJSON, _ := json.Marshal(chunk)
+				data := fmt.Sprintf("data: %s\n\n", string(chunkJSON))
+				if _, err := c.Writer.WriteString(data); err != nil {
+					log.C(c).Warnw("Failed to write chunk to client", "error", err)
+					return err
+				}
+
+				// 立即刷新，确保数据实时发送
+				flusher.Flush()
+				return nil
+			})
+
+			if aiErr == nil {
+				log.C(c).Infow("阿里百炼API降级成功")
+			}
+		} else {
+			aiErr = fmt.Errorf("AI服务不可用")
+		}
+	}
+
+	// 9. 处理错误
+	if aiErr != nil {
+		// 检查是否是客户端断开连接
+		if c.Request.Context().Err() != nil {
+			log.C(c).Infow("Client disconnected during stream", "error", aiErr)
+			return // 客户端断开，不需要发送错误
+		}
+
+		// 发送错误事件
+		errorMsg, _ := json.Marshal(aiErr.Error())
+		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
+		c.Writer.WriteString(errorData)
+		flusher.Flush()
+		return
+	}
+
+	// 10. 发送完成事件
+	c.Writer.WriteString("event: done\ndata: {\"status\":\"completed\"}\n\n")
+	flusher.Flush()
+}
+
+// buildEditTextMessages 构建文本编辑的对话消息
+func buildEditTextMessages(originalText, userMessage string, history []v1.EditTextMessage, isFirstConversation bool) []map[string]string {
+	messages := []map[string]string{}
+
+	// 只在第一次对话时添加系统提示词（包含原始文本）
+	if isFirstConversation && originalText != "" {
+		systemPrompt := `你是一位专业的文本编辑助手。用户会提供一段原始文本，你需要根据用户的指令对文本进行修改、优化或改进。
+
+## 编辑要求：
+- 保持原文的核心意思和风格
+- 根据用户的具体指令进行修改
+- 如果用户没有明确指令，则进行通用优化（提升可读性、流畅度等）
+- 只返回修改后的文本，不要添加额外的说明或解释
+- 如果用户要求保持某些内容不变，请严格遵守
+
+## 原始文本：
+` + originalText
+
+		messages = append(messages, map[string]string{
+			"role":    "system",
+			"content": systemPrompt,
+		})
+	}
+
+	// 添加对话历史
+	for _, msg := range history {
+		if msg.Role == "user" || msg.Role == "assistant" {
+			messages = append(messages, map[string]string{
+				"role":    msg.Role,
+				"content": msg.Content,
+			})
+		}
+	}
+
+	// 添加当前用户消息
+	messages = append(messages, map[string]string{
+		"role":    "user",
+		"content": userMessage,
+	})
+
+	return messages
+}
+
+// callVolcEditStream 调用火山方舟流式API进行文本编辑
+func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []map[string]string, handler func(chunk string) error) error {
+	baseURL := viper.GetString("volc.base_url")
+	if baseURL == "" {
+		return fmt.Errorf("volc base_url not configured")
+	}
+	url := baseURL + "/chat/completions"
+
+	bodyMap := map[string]interface{}{
+		"model":       viper.GetString("volc.model"),
+		"messages":    messages,
+		"max_tokens":  4000,
+		"temperature": 0.7,
+		"stream":      true,
+	}
+
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return fmt.Errorf("创建请求失败: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+viper.GetString("volc.api_key"))
+
+	client := &http.Client{
+		Timeout: 120 * time.Second,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTP请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(body))
+	}
+
+	// 流式读取响应
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
+				break
+			}
+
+			var m map[string]interface{}
+			if err := json.Unmarshal([]byte(data), &m); err == nil {
+				if choices, ok := m["choices"].([]interface{}); ok && len(choices) > 0 {
+					if choice, ok := choices[0].(map[string]interface{}); ok {
+						if delta, ok := choice["delta"].(map[string]interface{}); ok {
+							if content, ok := delta["content"].(string); ok && content != "" {
+								if err := handler(content); err != nil {
+									return err
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return scanner.Err()
+}
+
+// callAliEditStream 调用阿里百炼流式API进行文本编辑
+func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map[string]string, handler func(chunk string) error) error {
+	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+
+	bodyMap := map[string]interface{}{
+		"model":       getAliConfig("text", "model"),
+		"messages":    messages,
+		"max_tokens":  4000,
+		"temperature": 0.7,
+		"stream":      true,
+	}
+
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return fmt.Errorf("创建请求失败: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+getAliConfig("text", "api_key"))
+
+	client := &http.Client{
+		Timeout: 120 * time.Second,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTP请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(body))
+	}
+
+	// 流式读取响应
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
+				break
+			}
+
+			var m map[string]interface{}
+			if err := json.Unmarshal([]byte(data), &m); err == nil {
+				if choices, ok := m["choices"].([]interface{}); ok && len(choices) > 0 {
+					if choice, ok := choices[0].(map[string]interface{}); ok {
+						if delta, ok := choice["delta"].(map[string]interface{}); ok {
+							if content, ok := delta["content"].(string); ok && content != "" {
+								if err := handler(content); err != nil {
+									return err
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return scanner.Err()
+}
+
+// getAliConfig 获取Ali配置（从controller中访问，因为aliBiz是私有的）
+func getAliConfig(service string, key string) string {
+	// 先尝试服务特定配置
+	serviceKey := fmt.Sprintf("ali.%s.%s", service, key)
+	if viper.IsSet(serviceKey) {
+		return viper.GetString(serviceKey)
+	}
+
+	// 回退到通用配置
+	commonKey := fmt.Sprintf("ali.%s", key)
+	if viper.IsSet(commonKey) {
+		return viper.GetString(commonKey)
+	}
+
+	// 如果都没有，返回空字符串
+	return ""
 }
 
 // extractTextFromPDF 从PDF文件中提取文本

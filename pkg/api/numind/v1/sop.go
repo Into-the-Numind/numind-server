@@ -201,3 +201,16 @@ type NextNodeInfo struct {
 	IsFirst  bool   `json:"is_first"`
 	HasNext  bool   `json:"has_next"`
 }
+
+// EditTextMessage 文本编辑对话消息
+type EditTextMessage struct {
+	Role    string `json:"role"`    // user/assistant
+	Content string `json:"content"` // 消息内容
+}
+
+// EditTextRequest 文本编辑请求（支持多轮对话）
+type EditTextRequest struct {
+	OriginalText        string            `json:"original_text,omitempty"`         // 原始文本内容（第一次对话必需，后续可选）
+	UserMessage         string            `json:"user_message" binding:"required"` // 用户编辑指令（必需）
+	ConversationHistory []EditTextMessage `json:"conversation_history,omitempty"`  // 对话历史（可选，前端维护）
+}
