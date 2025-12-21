@@ -33,6 +33,7 @@ type ISopBiz interface {
 	GetRun(ctx context.Context, id uint) (*model.SopRun, error)
 	ListRuns(ctx context.Context, offset, limit int, userID *uint) ([]model.SopRun, int64, error)
 	GetRunWithNodes(ctx context.Context, runID uint) (*model.SopRun, []model.SopNodeRun, error)
+	ListExecutedTemplatesByUser(ctx context.Context, userID uint) ([]store.ExecutedTemplateInfo, error)
 
 	// Step-by-step execution operations
 	CreateRun(ctx context.Context, templateID, userID uint, text string) (*model.SopRun, error)
@@ -607,4 +608,8 @@ func (b *sopBiz) GetNote(ctx context.Context, id uint) (*model.SopNote, error) {
 
 func (b *sopBiz) ListNotesByUser(ctx context.Context, userID uint, offset, limit int) ([]model.SopNote, int64, error) {
 	return b.ds.Sop().ListNotesByUser(userID, offset, limit)
+}
+
+func (b *sopBiz) ListExecutedTemplatesByUser(ctx context.Context, userID uint) ([]store.ExecutedTemplateInfo, error) {
+	return b.ds.Sop().ListExecutedTemplatesByUser(userID)
 }

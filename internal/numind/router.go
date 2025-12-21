@@ -248,9 +248,10 @@ func installNumindRouters(g *gin.Engine) error {
 	// SOP相关（用户端接口）
 	{
 		// 用户执行SOP
-		authGroup.GET("/sop/templates", userSopc.ListTemplates)                // 获取可用模板列表
-		authGroup.GET("/sop/templates/:id/nodes", userSopc.GetTemplateNodes)   // 获取模板的所有节点
-		authGroup.POST("/sop/templates/:id/execute", userSopc.ExecuteTemplate) // 执行模板（异步，一次性执行所有节点）
+		authGroup.GET("/sop/templates", userSopc.ListTemplates)                    // 获取可用模板列表
+		authGroup.GET("/sop/templates/:id/nodes", userSopc.GetTemplateNodes)       // 获取模板的所有节点
+		authGroup.POST("/sop/templates/:id/execute", userSopc.ExecuteTemplate)     // 执行模板（异步，一次性执行所有节点）
+		authGroup.GET("/sop/templates/executed", userSopc.ListMyExecutedTemplates) // 获取当前用户已执行的模板列表（按模板分组）
 
 		// 逐步执行SOP节点（新增）- 注意：这些路由必须在 /sop/runs/:id 之前注册，避免路由冲突
 		authGroup.POST("/sop/runs", userSopc.CreateRun)                                    // 创建Run（不立即执行）

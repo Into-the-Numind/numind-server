@@ -214,3 +214,19 @@ type EditTextRequest struct {
 	UserMessage         string            `json:"user_message" binding:"required"` // 用户编辑指令（必需）
 	ConversationHistory []EditTextMessage `json:"conversation_history,omitempty"`  // 对话历史（可选，前端维护）
 }
+
+// ExecutedTemplateInfo 用户已执行的模板信息
+type ExecutedTemplateInfo struct {
+	TemplateID   uint   `json:"template_id"`   // 模板ID
+	TemplateName string `json:"template_name"` // 模板名称
+	RunCount     int64  `json:"run_count"`     // 执行次数
+	ExecutedAt   string `json:"executed_at"`   // 执行时间
+	RunID        uint   `json:"run_id"`        // Run ID
+	RunStatus    string `json:"run_status"`    // 执行状态
+}
+
+// ListExecutedTemplatesResponse 用户已执行的模板列表响应
+type ListExecutedTemplatesResponse struct {
+	Total     int64                  `json:"total"`     // 模板总数
+	Templates []ExecutedTemplateInfo `json:"templates"` // 模板列表
+}

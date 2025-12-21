@@ -206,6 +206,45 @@ func (ctrl *SopController) ListMyRuns(c *gin.Context) {
 	})
 }
 
+// ListMyExecutedTemplates 获取当前用户已执行的SOP模板列表（按模板分组）
+func (ctrl *SopController) ListMyExecutedTemplates(c *gin.Context) {
+	log.C(c).Infow("User list my executed SOP templates called")
+
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	// 获取用户已执行的模板列表
+	templates, err := ctrl.sopBiz.ListExecutedTemplatesByUser(c, user.ID)
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		return
+	}
+
+	// 转换为API响应格式
+	response := v1.ListExecutedTemplatesResponse{
+		Total:     int64(len(templates)),
+		Templates: make([]v1.ExecutedTemplateInfo, len(templates)),
+	}
+
+	for i, t := range templates {
+		response.Templates[i] = v1.ExecutedTemplateInfo{
+			TemplateID:   t.TemplateID,
+			TemplateName: t.TemplateName,
+			RunCount:     t.RunCount,
+			ExecutedAt:   t.ExecutedAt,
+			RunID:        t.RunID,
+			RunStatus:    t.RunStatus,
+		}
+	}
+
+	core.WriteResponse(c, nil, response)
+}
+
 // ListMyNotes 获取当前用户的SOP笔记列表
 func (ctrl *SopController) ListMyNotes(c *gin.Context) {
 	log.C(c).Infow("User list my SOP notes called")

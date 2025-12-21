@@ -27,6 +27,7 @@ type ISopStore interface {
 	GetRun(id uint) (*model.SopRun, error)
 	UpdateRun(id uint, updates map[string]interface{}) error
 	ListRuns(offset, limit int, userID *uint) ([]model.SopRun, int64, error)
+	ListExecutedTemplatesByUser(userID uint) ([]ExecutedTemplateInfo, error)
 
 	// NodeRun operations
 	CreateNodeRun(nodeRun *model.SopNodeRun) error
@@ -262,4 +263,48 @@ func (s *sopStore) UpdateFile(id uint, updates map[string]interface{}) error {
 
 func (s *sopStore) DeleteFile(id uint) error {
 	return s.db.Delete(&model.SopFile{}, id).Error
+}
+
+// ExecutedTemplateInfo 用户已执行的模板信息
+type ExecutedTemplateInfo struct {
+	TemplateID   uint   `json:"template_id"`
+	TemplateName string `json:"template_name"`
+	RunCount     int64  `json:"run_count"`   // 执行次数
+	ExecutedAt   string `json:"executed_at"` // 执行时间
+	RunID        uint   `json:"run_id"`      // Run ID
+	RunStatus    string `json:"run_status"`  // 执行状态
+}
+
+// ListExecutedTemplatesByUser 获取用户已执行的模板列表（按模板分组）
+// 只返回状态为running、succeeded、failed的记录（排除pending）
+func (s *sopStore) ListExecutedTemplatesByUser(userID uint) ([]ExecutedTemplateInfo, error) {
+	var results []ExecutedTemplateInfo
+
+	// 简化查询：先查出当前用户的非 pending 的 sop_run 列表，再在内存中做聚合
+	var runs []model.SopRun
+	if err := s.db.
+		Preload("Template").
+		Where("user_id = ? AND status != ?", userID, "pending").
+		Order("created_at DESC").
+		Find(&runs).Error; err != nil {
+		return nil, err
+	}
+
+	// 不聚合，逐条返回（前端自行聚合）
+	for _, run := range runs {
+		info := ExecutedTemplateInfo{
+			TemplateID:   run.TemplateID,
+			TemplateName: "",
+			RunCount:     1,
+			ExecutedAt:   run.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+			RunID:        run.ID,
+			RunStatus:    run.Status,
+		}
+		if run.Template != nil {
+			info.TemplateName = run.Template.Name
+		}
+		results = append(results, info)
+	}
+
+	return results, nil
 }
