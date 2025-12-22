@@ -187,10 +187,10 @@ type RunStatusResponse struct {
 
 // CompletedNodeInfo 已完成节点信息
 type CompletedNodeInfo struct {
-	NodeID        uint   `json:"node_id"`
-	NodeName      string `json:"node_name"`
-	Sort          int    `json:"sort"`
-	OutputPreview string `json:"output_preview"`
+	NodeID   uint   `json:"node_id"`
+	NodeName string `json:"node_name"`
+	Sort     int    `json:"sort"`
+	Output   string `json:"output"` // 完整输出
 }
 
 // NextNodeInfo 下一个节点信息

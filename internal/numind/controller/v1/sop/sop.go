@@ -1373,10 +1373,10 @@ func (ctrl *SopController) GetRunStatus(c *gin.Context) {
 	completedNodes := make([]v1.CompletedNodeInfo, len(status.CompletedNodes))
 	for i, node := range status.CompletedNodes {
 		completedNodes[i] = v1.CompletedNodeInfo{
-			NodeID:        node.NodeID,
-			NodeName:      node.NodeName,
-			Sort:          node.Sort,
-			OutputPreview: node.OutputPreview,
+			NodeID:   node.NodeID,
+			NodeName: node.NodeName,
+			Sort:     node.Sort,
+			Output:   node.Output, // 返回完整输出
 		}
 	}
 	response.CompletedNodes = completedNodes

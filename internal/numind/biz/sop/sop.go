@@ -141,10 +141,10 @@ type RunStatus struct {
 
 // CompletedNodeInfo 已完成节点信息
 type CompletedNodeInfo struct {
-	NodeID        uint   `json:"node_id"`
-	NodeName      string `json:"node_name"`
-	Sort          int    `json:"sort"`
-	OutputPreview string `json:"output_preview"` // 输出预览（前200字符）
+	NodeID   uint   `json:"node_id"`
+	NodeName string `json:"node_name"`
+	Sort     int    `json:"sort"`
+	Output   string `json:"output"` // 完整输出
 }
 
 // NextNodeInfo 下一个节点信息
@@ -530,15 +530,11 @@ func (b *sopBiz) GetRunStatus(ctx context.Context, runID uint) (*RunStatus, erro
 	for _, nodeRun := range completedNodeRuns {
 		if nodeRun.Status == model.SopStatusSucceeded {
 			completedNodeIDs[nodeRun.NodeID] = true
-			outputPreview := nodeRun.Output
-			if len(outputPreview) > 200 {
-				outputPreview = outputPreview[:200] + "..."
-			}
 			completedNodes = append(completedNodes, CompletedNodeInfo{
-				NodeID:        nodeRun.NodeID,
-				NodeName:      nodeRun.Node.Name,
-				Sort:          nodeRun.Sort,
-				OutputPreview: outputPreview,
+				NodeID:   nodeRun.NodeID,
+				NodeName: nodeRun.Node.Name,
+				Sort:     nodeRun.Sort,
+				Output:   nodeRun.Output, // 返回完整输出
 			})
 			if nodeRun.Sort > currentNodeSort {
 				currentNodeSort = nodeRun.Sort
