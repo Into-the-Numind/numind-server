@@ -458,6 +458,22 @@ func (s *userBiz) generateToken(user *model.User) (string, error) {
 	return token.SignedString([]byte(viper.GetString("jwt.secret")))
 }
 
+// generateWebToken 生成Web端登录JWT token（7天有效期）
+func (s *userBiz) generateWebToken(user *model.User) (string, error) {
+	// Web端登录token有效期为7天
+	expireDays := 7
+	expireHours := expireDays * 24 // 7天 = 168小时
+
+	claims := jwt.MapClaims{
+		"user_id": user.ID,
+		"openid":  user.OpenID,
+		"exp":     time.Now().Add(time.Duration(expireHours) * time.Hour).Unix(),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(viper.GetString("jwt.secret")))
+}
+
 // findOrCreateUser 查找或创建用户
 func (s *userBiz) findOrCreateUser(openID string) (*model.User, error) {
 	var user model.User
@@ -504,8 +520,8 @@ func (s *userBiz) WebLogin(req *v1.WebLoginRequest) (*v1.WebLoginResponse, error
 	user.LastLogin = &now
 	s.ds.DB().Save(&user)
 
-	// 生成JWT token
-	token, err := s.generateToken(&user)
+	// 生成JWT token（Web端登录使用7天有效期）
+	token, err := s.generateWebToken(&user)
 	if err != nil {
 		return nil, fmt.Errorf("生成token失败: %v", err)
 	}
