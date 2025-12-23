@@ -395,6 +395,12 @@ func (r *RagService) callAliStream(ctx context.Context, messages []map[string]st
 	chunkCount := 0
 	for scanner.Scan() {
 		line := scanner.Text()
+		
+		// 过滤 SSE 注释行（以 : 开头）和空行，防止心跳等注释内容混入输出
+		if strings.HasPrefix(line, ":") || line == "" {
+			continue
+		}
+		
 		log.C(ctx).Infow("收到LLM响应行", "line", line)
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")

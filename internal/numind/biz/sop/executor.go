@@ -395,6 +395,12 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 		}
 
 		line := scanner.Text()
+
+		// 过滤 SSE 注释行（以 : 开头）和空行，防止心跳等注释内容混入输出
+		if strings.HasPrefix(line, ":") || line == "" {
+			continue
+		}
+
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
@@ -554,6 +560,12 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 		}
 
 		line := scanner.Text()
+
+		// 过滤 SSE 注释行（以 : 开头）和空行，防止心跳等注释内容混入输出
+		if strings.HasPrefix(line, ":") || line == "" {
+			continue
+		}
+
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {

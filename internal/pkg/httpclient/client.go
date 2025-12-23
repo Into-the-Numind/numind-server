@@ -244,6 +244,11 @@ func (c *Client) StreamRequest(req *Request) (<-chan StreamResponse, error) {
 		for scanner.Scan() {
 			line := scanner.Text()
 
+			// 过滤 SSE 注释行（以 : 开头）和空行，防止心跳等注释内容混入输出
+			if strings.HasPrefix(line, ":") || line == "" {
+				continue
+			}
+
 			if strings.HasPrefix(line, "data: ") {
 				data := strings.TrimPrefix(line, "data: ")
 				if data == "[DONE]" {
@@ -252,7 +257,7 @@ func (c *Client) StreamRequest(req *Request) (<-chan StreamResponse, error) {
 				}
 
 				stream <- StreamResponse{Data: []byte(data)}
-			} else if line != "" {
+			} else {
 				stream <- StreamResponse{Data: []byte(line)}
 			}
 		}
