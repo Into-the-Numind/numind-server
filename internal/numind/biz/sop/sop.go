@@ -446,9 +446,9 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		return fmt.Errorf("failed to create node run: %w", err)
 	}
 
-	// 执行节点（流式），返回完整输出和思考内容
+	// 执行节点（流式），返回完整输出
 	startTime := time.Now()
-	output, thinking, err := b.executor.ExecuteNodeStreamWithThinking(ctx, node, currentInput, conversationHistory, handler)
+	output, err := b.executor.ExecuteNodeStream(ctx, node, currentInput, conversationHistory, handler)
 	nodeEndTime := time.Now()
 	latency := nodeEndTime.Sub(startTime).Milliseconds()
 
@@ -463,11 +463,10 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		return fmt.Errorf("node execution failed: %w", err)
 	}
 
-	// 更新NodeRun为成功，同时保存思考内容
+	// 更新NodeRun为成功，保存完整输出
 	if err := b.ds.Sop().UpdateNodeRun(nodeRun.ID, map[string]interface{}{
 		"status":      model.SopStatusSucceeded,
 		"output":      output,
-		"thinking":    thinking,
 		"latency_ms":  latency,
 		"finished_at": nodeEndTime,
 	}); err != nil {
