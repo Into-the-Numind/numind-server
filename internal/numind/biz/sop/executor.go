@@ -333,6 +333,15 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	// 记录请求信息用于调试
+	log.C(ctx).Infow("LLM API request",
+		"node_id", node.ID,
+		"node_name", node.Name,
+		"url", node.BaseURL,
+		"model", node.ModelName,
+		"request_body", string(reqData),
+		"messages_count", len(messages))
+
 	// 创建HTTP请求
 	req, err := http.NewRequestWithContext(ctx, "POST", node.BaseURL, bytes.NewBuffer(reqData))
 	if err != nil {
@@ -357,15 +366,29 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 	}
 
 	// 发送请求
+	log.C(ctx).Infow("Sending LLM API request",
+		"node_id", node.ID,
+		"url", node.BaseURL)
+
 	resp, err := client.Do(req)
 	if err != nil {
+		log.C(ctx).Errorw("LLM API request failed",
+			"node_id", node.ID,
+			"url", node.BaseURL,
+			"error", err.Error())
 		return "", fmt.Errorf("failed to call LLM API: %w", err)
 	}
 	defer resp.Body.Close()
 
+	log.C(ctx).Infow("LLM API response received",
+		"node_id", node.ID,
+		"status_code", resp.StatusCode,
+		"headers", resp.Header)
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		log.C(ctx).Errorw("LLM API error response",
+			"node_id", node.ID,
 			"status_code", resp.StatusCode,
 			"url", node.BaseURL,
 			"model", node.ModelName,
@@ -395,20 +418,49 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 		}
 
 		line := scanner.Text()
+
+		// 过滤 SSE 注释行（以 : 开头）和空行，防止心跳等注释内容混入输出
+		if strings.HasPrefix(line, ":") || line == "" {
+			continue
+		}
+
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
+				log.C(ctx).Infow("LLM stream completed",
+					"node_id", node.ID,
+					"total_output_length", fullOutput.Len())
 				break
 			}
+
+			// 记录每个chunk的原始数据用于调试
+			log.C(ctx).Debugw("LLM stream chunk received",
+				"node_id", node.ID,
+				"raw_data", data)
 
 			var m map[string]interface{}
 			if err := json.Unmarshal([]byte(data), &m); err == nil {
 				if choices, ok := m["choices"].([]interface{}); ok && len(choices) > 0 {
 					if choice, ok := choices[0].(map[string]interface{}); ok {
 						if delta, ok := choice["delta"].(map[string]interface{}); ok {
+							// 记录delta的完整内容用于调试
+							deltaJSON, _ := json.Marshal(delta)
+							log.C(ctx).Debugw("LLM stream delta",
+								"node_id", node.ID,
+								"delta", string(deltaJSON))
+
 							if content, ok := delta["content"].(string); ok && content != "" {
 								// 累积完整输出
 								fullOutput.WriteString(content)
+								// 记录内容预览（仅前100字符，避免日志过大）
+								contentPreview := content
+								if len(contentPreview) > 100 {
+									contentPreview = contentPreview[:100] + "..."
+								}
+								log.C(ctx).Debugw("LLM stream content chunk",
+									"node_id", node.ID,
+									"content_length", len(content),
+									"content_preview", contentPreview)
 								// 调用handler发送chunk
 								if err := handler(content); err != nil {
 									log.C(ctx).Warnw("Stream handler error, but continuing to read full response", "error", err)
@@ -419,6 +471,12 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 						}
 					}
 				}
+			} else {
+				// JSON解析失败，记录原始数据
+				log.C(ctx).Warnw("Failed to parse LLM stream chunk",
+					"node_id", node.ID,
+					"raw_data", data,
+					"error", err.Error())
 			}
 		}
 	}
@@ -433,7 +491,18 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 	}
 
 	output := fullOutput.String()
+
+	// 记录最终响应结果
+	log.C(ctx).Infow("LLM stream response completed",
+		"node_id", node.ID,
+		"node_name", node.Name,
+		"model", node.ModelName,
+		"output_length", len(output),
+		"output", output)
+
 	if output == "" {
+		log.C(ctx).Errorw("LLM returned empty response",
+			"node_id", node.ID)
 		return "", fmt.Errorf("LLM returned empty response")
 	}
 
