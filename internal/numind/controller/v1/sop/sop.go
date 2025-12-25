@@ -856,6 +856,256 @@ func (ctrl *SopController) uploadFileToCOS(c *gin.Context, file *multipart.FileH
 	return sopFile, nil
 }
 
+// FileTextResult 单个文件的文本提取结果
+type FileTextResult struct {
+	FileName  string `json:"file_name"`
+	FileID    string `json:"file_id,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// ParseFileTextResponse 文本提取接口返回结果
+type ParseFileTextResponse struct {
+	Text    string           `json:"text"`               // 合并后的文本（用于直接回填）
+	Files   []FileTextResult `json:"files"`              // 文件信息列表（包含file_id）
+	FileIDs []string         `json:"file_ids,omitempty"` // 便于前端调试/透传
+}
+
+// ParseFileText 上传文件，让阿里百炼 qwen-long 解析纯文本并返回（不落库）
+func (ctrl *SopController) ParseFileText(c *gin.Context) {
+	log.C(c).Infow("Parse file text called")
+
+	// 1. 获取multipart form
+	form, err := c.MultipartForm()
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的multipart form: "+err.Error()), nil)
+		return
+	}
+	defer form.RemoveAll() // 清理临时文件
+
+	// 2. 获取文件列表，兼容file / files
+	files := form.File["files"]
+	if len(files) == 0 {
+		files = form.File["file"]
+	}
+	if len(files) == 0 {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("请上传至少一个文件"), nil)
+		return
+	}
+
+	// 3. 基础校验：数量和总大小
+	if len(files) > MaxFilesPerUpload {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(fmt.Sprintf("文件数量超过限制（最多%d个）", MaxFilesPerUpload)), nil)
+		return
+	}
+
+	var (
+		totalSize int64
+		fileIDs   []string
+		fileInfos []FileTextResult
+	)
+
+	for _, file := range files {
+		if file == nil || file.Size <= 0 {
+			continue
+		}
+
+		totalSize += file.Size
+		if totalSize > MaxFileSize*MaxFilesPerUpload {
+			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("所有文件总大小超过限制"), nil)
+			return
+		}
+
+		// 阿里百炼支持的扩展名更宽，这里沿用现有校验
+		ext := strings.ToLower(filepath.Ext(file.Filename))
+		if !isAllowedExtension(ext) {
+			log.C(c).Warnw("文件扩展名不支持，已跳过", "filename", file.Filename, "ext", ext)
+			continue
+		}
+
+		fileID, err := uploadFileToDashScope(file)
+		if err != nil {
+			log.C(c).Errorw("上传文件到百炼失败", "filename", file.Filename, "error", err)
+			core.WriteResponse(c, errno.ErrInternalServer.SetMessage("上传文件到百炼失败: %v", err), nil)
+			return
+		}
+
+		fileIDs = append(fileIDs, fileID)
+		fileInfos = append(fileInfos, FileTextResult{
+			FileName: file.Filename,
+			FileID:   fileID,
+		})
+	}
+
+	if len(fileIDs) == 0 {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("未能上传任何文件"), nil)
+		return
+	}
+
+	// 4. 让 qwen-long 读取文件并输出原始纯文本
+	text, err := extractPlainTextWithQwenLong(c.Request.Context(), fileIDs)
+	if err != nil {
+		log.C(c).Errorw("qwen-long 解析失败", "error", err, "file_ids", fileIDs)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("qwen-long 解析失败: %v", err), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, ParseFileTextResponse{
+		Text:    strings.TrimSpace(text),
+		Files:   fileInfos,
+		FileIDs: fileIDs,
+	})
+}
+
+// uploadFileToDashScope 使用OpenAI兼容接口上传文件到阿里百炼，返回file_id
+func uploadFileToDashScope(file *multipart.FileHeader) (string, error) {
+	apiKey := getAliConfig("text", "api_key")
+	if apiKey == "" {
+		return "", fmt.Errorf("未配置阿里百炼API Key")
+	}
+
+	// 打开文件
+	src, err := file.Open()
+	if err != nil {
+		return "", fmt.Errorf("打开文件失败: %w", err)
+	}
+	defer src.Close()
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+
+	part, err := writer.CreateFormFile("file", filepath.Base(file.Filename))
+	if err != nil {
+		return "", fmt.Errorf("创建multipart文件部分失败: %w", err)
+	}
+	if _, err := io.Copy(part, src); err != nil {
+		return "", fmt.Errorf("写入文件内容失败: %w", err)
+	}
+	// purpose 固定为 file-extract，见官方文档
+	if err := writer.WriteField("purpose", "file-extract"); err != nil {
+		return "", fmt.Errorf("写入purpose失败: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return "", fmt.Errorf("关闭multipart writer失败: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", "https://dashscope.aliyuncs.com/compatible-mode/v1/files", &buf)
+	if err != nil {
+		return "", fmt.Errorf("创建上传请求失败: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("调用上传接口失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("文件上传失败，HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var res struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return "", fmt.Errorf("解析上传响应失败: %w，响应: %s", err, string(body))
+	}
+	if res.ID == "" {
+		return "", fmt.Errorf("文件上传响应缺少file_id，响应: %s", string(body))
+	}
+
+	return res.ID, nil
+}
+
+// extractPlainTextWithQwenLong 通过 qwen-long 读取 file_id 列表并返回纯文本
+func extractPlainTextWithQwenLong(ctx context.Context, fileIDs []string) (string, error) {
+	apiKey := getAliConfig("text", "api_key")
+	if apiKey == "" {
+		return "", fmt.Errorf("未配置阿里百炼API Key")
+	}
+
+	model := getAliConfig("qwen_long", "model")
+	if model == "" {
+		model = "qwen-long"
+	}
+
+	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+
+	messages := []map[string]string{
+		{
+			"role":    "system",
+			"content": "你是一个文档抽取助手，请输出文件的原始纯文本内容，保持顺序，不要总结，不要省略，也不要添加说明或格式标记。",
+		},
+	}
+	for _, fid := range fileIDs {
+		messages = append(messages, map[string]string{
+			"role":    "system",
+			"content": fmt.Sprintf("fileid://%s", fid),
+		})
+	}
+	messages = append(messages, map[string]string{
+		"role":    "user",
+		"content": "请将文件内容以纯文本原样输出，不要总结，不要省略，不要添加说明。",
+	})
+
+	bodyMap := map[string]interface{}{
+		"model":       model,
+		"messages":    messages,
+		"max_tokens":  32000,
+		"temperature": 0.1,
+		"stream":      false,
+	}
+
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return "", fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("创建请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("调用qwen-long失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		// 解析中的情况：400 + “File parsing in progress...”
+		if resp.StatusCode == http.StatusBadRequest {
+			return "", fmt.Errorf("文件仍在解析中，请稍后重试。响应: %s", strings.TrimSpace(string(respBody)))
+		}
+		return "", fmt.Errorf("qwen-long 返回错误 HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	// 兼容OpenAI格式响应
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("解析qwen-long响应失败: %w，响应: %s", err, string(respBody))
+	}
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("qwen-long 响应为空: %s", string(respBody))
+	}
+
+	return result.Choices[0].Message.Content, nil
+}
+
 // CheckFileQuality 检测上传文件的质量（不保存到数据库）
 func (ctrl *SopController) CheckFileQuality(c *gin.Context) {
 	log.C(c).Infow("Check file quality called")

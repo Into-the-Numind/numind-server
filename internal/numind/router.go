@@ -258,6 +258,7 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/sop/runs/:id/next-node", userSopc.GetNextNode)                     // 获取下一个待执行节点
 		authGroup.POST("/sop/runs/:id/nodes/:node_id/execute", userSopc.ExecuteNodeStream) // 流式执行指定节点（支持文件上传）
 		authGroup.POST("/sop/files/check-quality", userSopc.CheckFileQuality)              // 检测上传文件质量
+		authGroup.POST("/sop/files/parse-text", userSopc.ParseFileText)                    // 上传文件解析文本（返回文本用于回填）
 		authGroup.POST("/sop/text/edit", userSopc.EditTextStream)                          // 文本编辑流式对话（不保存到数据库）
 		authGroup.GET("/sop/runs/:id/status", userSopc.GetRunStatus)                       // 获取Run执行状态
 
