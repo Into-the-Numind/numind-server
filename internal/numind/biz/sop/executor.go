@@ -510,7 +510,7 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 }
 
 // ExecuteNodeStreamWithThinking 流式执行单个节点，并分离思考内容和实际内容
-func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, handler StreamHandler) (string, string, error) {
+func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, handler StreamHandler, isLastNode bool) (string, string, error) {
 	// 检查API密钥是否配置
 	if node.APIKey == "" {
 		log.C(ctx).Errorw("Node API key is empty", "node_id", node.ID, "node_name", node.Name)
@@ -527,19 +527,29 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 		"node_name", node.Name,
 		"base_url", node.BaseURL,
 		"model", node.ModelName,
-		"api_key_masked", maskedKey)
+		"api_key_masked", maskedKey,
+		"is_last_node", isLastNode)
 
 	// 构建请求消息
 	messages := make([]LLMMessage, len(history))
 	copy(messages, history)
 
 	// 添加当前输入
-	// 如果节点有prompt模板，使用模板；否则直接使用输入
+	// 如果是最后一个节点，直接使用前端传来的 input（前端已经拼接好了）
+	// 否则，使用节点的 prompt + input 拼接
 	var userMessage string
-	if node.Prompt != "" {
-		userMessage = fmt.Sprintf("%s\n\n%s", node.Prompt, input)
-	} else {
+	if isLastNode {
+		// 最后一个节点：直接使用前端传来的 text，不拼接 prompt
 		userMessage = input
+		log.C(ctx).Infow("Last node: using input directly without prompt", "node_id", node.ID, "input_length", len(input))
+	} else {
+		// 非最后一个节点：使用 prompt + input 拼接
+		if node.Prompt != "" {
+			userMessage = fmt.Sprintf("%s\n\n%s", node.Prompt, input)
+		} else {
+			userMessage = input
+		}
+		log.C(ctx).Debugw("Non-last node: using prompt + input", "node_id", node.ID, "has_prompt", node.Prompt != "")
 	}
 
 	messages = append(messages, LLMMessage{

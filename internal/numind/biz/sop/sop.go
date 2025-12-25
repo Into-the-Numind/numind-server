@@ -499,7 +499,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 
 	// 执行节点（流式），返回完整输出和思考内容
 	startTime := time.Now()
-	output, thinking, err := b.executor.ExecuteNodeStreamWithThinking(ctx, node, currentInput, conversationHistory, handler)
+	output, thinking, err := b.executor.ExecuteNodeStreamWithThinking(ctx, node, currentInput, conversationHistory, handler, isLastNode)
 	nodeEndTime := time.Now()
 	latency := nodeEndTime.Sub(startTime).Milliseconds()
 
