@@ -32,6 +32,7 @@ type ISopStore interface {
 	// NodeRun operations
 	CreateNodeRun(nodeRun *model.SopNodeRun) error
 	GetNodeRun(id uint) (*model.SopNodeRun, error)
+	GetNodeRunByRunAndNode(runID, nodeID uint) (*model.SopNodeRun, error) // 根据runID和nodeID获取最新的NodeRun（用于检查是否已存在，支持重复执行）
 	ListNodeRunsByRun(runID uint) ([]model.SopNodeRun, error)
 	UpdateNodeRun(id uint, updates map[string]interface{}) error
 
@@ -172,6 +173,22 @@ func (s *sopStore) GetNodeRun(id uint) (*model.SopNodeRun, error) {
 	var nodeRun model.SopNodeRun
 	err := s.db.Preload("Node").Preload("Template").First(&nodeRun, id).Error
 	if err != nil {
+		return nil, err
+	}
+	return &nodeRun, nil
+}
+
+func (s *sopStore) GetNodeRunByRunAndNode(runID, nodeID uint) (*model.SopNodeRun, error) {
+	var nodeRun model.SopNodeRun
+	// 获取最新的记录（按创建时间倒序取第一条）
+	err := s.db.Where("run_id = ? AND node_id = ?", runID, nodeID).
+		Preload("Node").
+		Order("created_at DESC").
+		First(&nodeRun).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil // 返回nil表示不存在
+		}
 		return nil, err
 	}
 	return &nodeRun, nil
