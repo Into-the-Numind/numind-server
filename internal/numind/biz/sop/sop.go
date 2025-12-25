@@ -38,7 +38,7 @@ type ISopBiz interface {
 	// Step-by-step execution operations
 	CreateRun(ctx context.Context, templateID, userID uint, text string) (*model.SopRun, error)
 	GetNextNode(ctx context.Context, runID uint) (*model.SopNode, bool, error)
-	ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text string, handler func(chunk string) error) error
+	ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text string, handler func(event string, chunk string) error) error
 	GetRunStatus(ctx context.Context, runID uint) (*RunStatus, error)
 
 	// Note operations
@@ -279,7 +279,7 @@ func (b *sopBiz) GetNextNode(ctx context.Context, runID uint) (*model.SopNode, b
 }
 
 // ExecuteNodeStream 流式执行指定节点
-func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text string, handler func(chunk string) error) error {
+func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text string, handler func(event string, chunk string) error) error {
 	// 获取Run信息
 	run, err := b.ds.Sop().GetRun(runID)
 	if err != nil {
@@ -499,7 +499,11 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 
 	// 执行节点（流式），返回完整输出和思考内容
 	startTime := time.Now()
-	output, thinking, err := b.executor.ExecuteNodeStreamWithThinking(ctx, node, currentInput, conversationHistory, handler, isLastNode)
+	// 深度思考模式：开启 enable_thinking
+	output, thinking, err := b.executor.ExecuteNodeStreamWithThinking(ctx, node, currentInput, conversationHistory, func(event string, chunk string) error {
+		// 直接透传事件给上层 handler
+		return handler(event, chunk)
+	}, isLastNode, true)
 	nodeEndTime := time.Now()
 	latency := nodeEndTime.Sub(startTime).Milliseconds()
 

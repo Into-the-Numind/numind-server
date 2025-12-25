@@ -49,7 +49,8 @@ type LLMResponse struct {
 }
 
 // StreamHandler 流式处理函数类型
-type StreamHandler func(chunk string) error
+// event: "thinking" | "message" | "done"
+type StreamHandler func(event string, chunk string) error
 
 // Execute 执行SOP流程
 func (e *SopExecutor) Execute(ctx context.Context, run *model.SopRun, nodes []model.SopNode, text string) error {
@@ -462,7 +463,7 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 									"content_length", len(content),
 									"content_preview", contentPreview)
 								// 调用handler发送chunk
-								if err := handler(content); err != nil {
+								if err := handler("message", content); err != nil {
 									log.C(ctx).Warnw("Stream handler error, but continuing to read full response", "error", err)
 									// 不立即返回错误，继续处理完整响应
 									// 如果客户端断开连接，handler会返回错误，但我们继续读取完整响应以便保存
@@ -510,7 +511,8 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 }
 
 // ExecuteNodeStreamWithThinking 流式执行单个节点，并分离思考内容和实际内容
-func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, handler StreamHandler, isLastNode bool) (string, string, error) {
+// deepThinking: 是否开启深度思考模式（阿里百炼 enable_thinking）
+func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, handler StreamHandler, isLastNode bool, deepThinking bool) (string, string, error) {
 	// 检查API密钥是否配置
 	if node.APIKey == "" {
 		log.C(ctx).Errorw("Node API key is empty", "node_id", node.ID, "node_name", node.Name)
@@ -557,129 +559,40 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 		Content: userMessage,
 	})
 
-	// 构建请求（启用流式）
-	reqBody := LLMRequest{
-		Model:    node.ModelName,
-		Messages: messages,
-		Stream:   true,
-	}
-
-	reqData, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	// 创建HTTP请求
-	req, err := http.NewRequestWithContext(ctx, "POST", node.BaseURL, bytes.NewBuffer(reqData))
-	if err != nil {
-		return "", "", fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+node.APIKey)
-	req.Header.Set("User-Agent", "numind-server/1.0")
-
-	// 对于流式响应，不能使用Client.Timeout（会限制整个响应读取时间）
-	// 而是使用Transport的ResponseHeaderTimeout来控制响应头超时
-	// 流式响应的读取时间由context控制
-	transport := &http.Transport{
-		ResponseHeaderTimeout: time.Duration(node.TimeoutSeconds) * time.Second, // 响应头超时
-		IdleConnTimeout:       90 * time.Second,
-	}
-	client := &http.Client{
-		Transport: transport,
-		// 不设置Timeout，让流式响应可以持续读取
-		// Timeout会限制整个请求-响应周期，包括读取响应体的时间
-	}
-
-	// 发送请求
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to call LLM API: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		log.C(ctx).Errorw("LLM API error response",
-			"status_code", resp.StatusCode,
-			"url", node.BaseURL,
-			"model", node.ModelName,
-			"response_body", string(body))
-		return "", "", fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// 流式读取响应
-	var fullOutput strings.Builder
-	scanner := bufio.NewScanner(resp.Body)
-
-	// 设置更大的缓冲区以处理长行
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024) // 1MB缓冲区
-
-	for scanner.Scan() {
-		// 检查context是否被取消
-		select {
-		case <-ctx.Done():
-			log.C(ctx).Warnw("Context cancelled during stream", "node_id", node.ID)
-			if fullOutput.Len() > 0 {
-				// 如果已累积输出，尝试提取思考内容
-				thinking := extractThinkingContent(fullOutput.String())
-				actual := removeThinkingContent(fullOutput.String())
-				return actual, thinking, nil
-			}
-			return "", "", fmt.Errorf("stream cancelled: %w", ctx.Err())
+	// 调用阿里深度思考流式接口，分别积累思考与答案
+	var thinkingBuf, answerBuf strings.Builder
+	err := e.callAliDeepThinkingStream(ctx, node, messages, deepThinking, func(event string, chunk string) error {
+		switch event {
+		case "thinking":
+			thinkingBuf.WriteString(chunk)
+			return handler("thinking", chunk)
+		case "message":
+			answerBuf.WriteString(chunk)
+			return handler("message", chunk)
+		case "done":
+			return handler("done", "")
 		default:
+			return nil
 		}
-
-		line := scanner.Text()
-		if strings.HasPrefix(line, "data: ") {
-			data := strings.TrimPrefix(line, "data: ")
-			if data == "[DONE]" {
-				break
-			}
-
-			var m map[string]interface{}
-			if err := json.Unmarshal([]byte(data), &m); err == nil {
-				if choices, ok := m["choices"].([]interface{}); ok && len(choices) > 0 {
-					if choice, ok := choices[0].(map[string]interface{}); ok {
-						if delta, ok := choice["delta"].(map[string]interface{}); ok {
-							if content, ok := delta["content"].(string); ok && content != "" {
-								// 累积完整输出
-								fullOutput.WriteString(content)
-
-								// 调用handler发送chunk
-								if err := handler(content); err != nil {
-									log.C(ctx).Warnw("Stream handler error, but continuing to read full response", "error", err)
-								}
-							}
-						}
-					}
-				}
-			}
-		}
+	})
+	if err != nil {
+		return "", "", err
 	}
 
-	if err := scanner.Err(); err != nil {
-		log.C(ctx).Errorw("Scanner error during stream", "error", err)
-		if fullOutput.Len() > 0 {
-			thinking := extractThinkingContent(fullOutput.String())
-			actual := removeThinkingContent(fullOutput.String())
-			return actual, thinking, nil
-		}
-		return "", "", fmt.Errorf("scanner error: %w", err)
-	}
+	output := answerBuf.String()
+	thinking := thinkingBuf.String()
 
-	output := fullOutput.String()
-	if output == "" {
+	if output == "" && thinking == "" {
 		return "", "", fmt.Errorf("LLM returned empty response")
 	}
 
-	// 从完整输出中提取思考内容和实际内容
-	thinking := extractThinkingContent(output)
-	actual := removeThinkingContent(output)
+	// 兼容旧模型：若未返回reasoning，尝试从输出中拆分
+	if thinking == "" {
+		thinking = extractThinkingContent(output)
+		output = removeThinkingContent(output)
+	}
 
-	return actual, thinking, nil
+	return output, thinking, nil
 }
 
 // extractThinkingContent 从完整输出中提取思考内容
@@ -737,6 +650,105 @@ func removeThinkingContent(output string) string {
 	// 移除思考部分
 	result := strings.Replace(output, thinking, "", 1)
 	return strings.TrimSpace(result)
+}
+
+// callAliDeepThinkingStream 调用阿里百炼深度思考流式接口
+// 使用兼容模式：enable_thinking=true，reasoning_content 为思考链条，content 为最终答案
+func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model.SopNode, messages []LLMMessage, deepThinking bool, handler StreamHandler) error {
+	url := node.BaseURL
+	if url == "" {
+		url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+	}
+
+	// 构建 payload（openai 兼容）
+	payload := map[string]interface{}{
+		"model":    node.ModelName,
+		"messages": messages,
+		"stream":   true,
+		"extra_body": map[string]interface{}{
+			"enable_thinking": true,
+		},
+	}
+	// 温度按 deepThinking 微调
+	if deepThinking {
+		payload["temperature"] = 0.8
+	} else {
+		payload["temperature"] = 0.7
+	}
+
+	reqData, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqData))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+node.APIKey)
+	req.Header.Set("User-Agent", "numind-server/1.0")
+
+	client := &http.Client{
+		Timeout: time.Duration(node.TimeoutSeconds) * time.Second,
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to call ali deep thinking stream: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("ali stream status %d: %s", resp.StatusCode, string(body))
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		raw := strings.TrimPrefix(line, "data: ")
+		if raw == "[DONE]" {
+			_ = handler("done", "")
+			break
+		}
+
+		var m map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			log.C(ctx).Warnw("Failed to parse ali stream chunk", "error", err)
+			continue
+		}
+
+		choices, ok := m["choices"].([]interface{})
+		if !ok || len(choices) == 0 {
+			continue
+		}
+		choice, _ := choices[0].(map[string]interface{})
+		delta, _ := choice["delta"].(map[string]interface{})
+
+		if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
+			if err := handler("thinking", rc); err != nil {
+				return err
+			}
+		}
+		if content, ok := delta["content"].(string); ok && content != "" {
+			if err := handler("message", content); err != nil {
+				return err
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scanner error: %w", err)
+	}
+
+	return nil
 }
 
 // CreateFinalNote 创建最终笔记（公开方法）

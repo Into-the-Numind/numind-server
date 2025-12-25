@@ -621,7 +621,7 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 	}()
 
 	// 流式执行节点
-	err = ctrl.sopBiz.ExecuteNodeStream(heartbeatCtx, uint(runID), uint(nodeID), inputText, func(chunk string) error {
+	err = ctrl.sopBiz.ExecuteNodeStream(heartbeatCtx, uint(runID), uint(nodeID), inputText, func(event string, chunk string) error {
 		// 检查客户端是否断开连接
 		select {
 		case <-c.Request.Context().Done():
@@ -632,7 +632,17 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 
 		// 发送SSE格式的数据（需要对JSON进行转义）
 		chunkJSON, _ := json.Marshal(chunk)
-		data := fmt.Sprintf("data: %s\n\n", string(chunkJSON))
+		var data string
+		if event == "thinking" {
+			data = fmt.Sprintf("event: thinking\ndata: %s\n\n", string(chunkJSON))
+		} else if event == "message" {
+			data = fmt.Sprintf("data: %s\n\n", string(chunkJSON))
+		} else if event == "done" {
+			data = "event: done\ndata: {\"status\":\"completed\"}\n\n"
+		} else {
+			return nil
+		}
+
 		if _, err := c.Writer.WriteString(data); err != nil {
 			log.C(c).Warnw("Failed to write chunk to client", "error", err)
 			return err
@@ -658,7 +668,7 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 		return
 	}
 
-	// 发送完成事件（包含上传的文件ID）
+	// 完成事件已在流式回调中发送；此处仅附带上传文件ID的结束包（可选）
 	doneData := fmt.Sprintf("event: done\ndata: {\"status\":\"completed\",\"uploaded_file_ids\":%v}\n\n", uploadedFileIDs)
 	c.Writer.WriteString(doneData)
 	flusher.Flush()
