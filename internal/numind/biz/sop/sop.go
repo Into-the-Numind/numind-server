@@ -503,7 +503,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	output, thinking, err := b.executor.ExecuteNodeStreamWithThinking(ctx, node, currentInput, conversationHistory, func(event string, chunk string) error {
 		// 直接透传事件给上层 handler
 		return handler(event, chunk)
-	}, isLastNode, true)
+	}, isLastNode, true, run.ConversationID)
 	nodeEndTime := time.Now()
 	latency := nodeEndTime.Sub(startTime).Milliseconds()
 

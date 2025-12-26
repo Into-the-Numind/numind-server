@@ -512,7 +512,7 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 
 // ExecuteNodeStreamWithThinking 流式执行单个节点，并分离思考内容和实际内容
 // deepThinking: 是否开启深度思考模式（阿里百炼 enable_thinking）
-func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, handler StreamHandler, isLastNode bool, deepThinking bool) (string, string, error) {
+func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, handler StreamHandler, isLastNode bool, deepThinking bool, conversationID string) (string, string, error) {
 	// 检查API密钥是否配置
 	if node.APIKey == "" {
 		log.C(ctx).Errorw("Node API key is empty", "node_id", node.ID, "node_name", node.Name)
@@ -561,7 +561,7 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 
 	// 调用阿里深度思考流式接口，分别积累思考与答案
 	var thinkingBuf, answerBuf strings.Builder
-	err := e.callAliDeepThinkingStream(ctx, node, messages, deepThinking, func(event string, chunk string) error {
+	err := e.callAliDeepThinkingStream(ctx, node, messages, deepThinking, conversationID, func(event string, chunk string) error {
 		switch event {
 		case "thinking":
 			thinkingBuf.WriteString(chunk)
@@ -654,7 +654,7 @@ func removeThinkingContent(output string) string {
 
 // callAliDeepThinkingStream 调用阿里百炼深度思考流式接口
 // 使用兼容模式：enable_thinking=true，reasoning_content 为思考链条，content 为最终答案
-func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model.SopNode, messages []LLMMessage, deepThinking bool, handler StreamHandler) error {
+func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model.SopNode, messages []LLMMessage, deepThinking bool, conversationID string, handler StreamHandler) error {
 	url := node.BaseURL
 	if url == "" {
 		url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
@@ -668,6 +668,10 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		"extra_body": map[string]interface{}{
 			"enable_thinking": true,
 		},
+	}
+	// 为每个 run 透传独立的 conversation_id，避免百炼会话串联
+	if conversationID != "" {
+		payload["conversation_id"] = conversationID
 	}
 	// 温度按 deepThinking 微调
 	if deepThinking {
@@ -685,6 +689,9 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+node.APIKey)
 	req.Header.Set("User-Agent", "numind-server/1.0")
+	if conversationID != "" {
+		req.Header.Set("X-DashScope-Conversation-Id", conversationID)
+	}
 
 	client := &http.Client{
 		Timeout: time.Duration(node.TimeoutSeconds) * time.Second,
