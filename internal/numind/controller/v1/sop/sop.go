@@ -1777,17 +1777,12 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 	req.OriginalText = strings.TrimSpace(req.OriginalText)
 	req.UserMessage = strings.TrimSpace(req.UserMessage)
 
-	if req.UserMessage == "" {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("用户消息不能为空"), nil)
-		return
-	}
-
 	// 判断是否是第一次对话（没有历史且没有原始文本）
 	isFirstConversation := len(req.ConversationHistory) == 0
 
-	// 第一次对话必须有原始文本
+	// 第一次对话必须有原始文本（text参数）
 	if isFirstConversation && req.OriginalText == "" {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("第一次对话时原始文本不能为空"), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文本内容不能为空"), nil)
 		return
 	}
 
@@ -2100,16 +2095,55 @@ func buildEditTextMessages(originalText, userMessage string, history []v1.EditTe
 
 	// 只在第一次对话时添加系统提示词（包含原始文本）
 	if isFirstConversation && originalText != "" {
-		systemPrompt := `你是一位专业的文本编辑助手。用户会提供一段原始文本，你需要根据用户的指令对文本进行修改、优化或改进。
+		systemPrompt := `### 角色：内容工程质检员
 
-## 编辑要求：
-- 保持原文的核心意思和风格
-- 根据用户的具体指令进行修改
-- 如果用户没有明确指令，则进行通用优化（提升可读性、流畅度等）
-- 只返回修改后的文本，不要添加额外的说明或解释
-- 如果用户要求保持某些内容不变，请严格遵守
+#### 核心指令
+以"严苛、数据驱动、反空话"的原则，对用户上传的《业务介绍文档》进行六维核验。核心使命是核验文档的"信息密度"与"证据强度"，严禁模糊、宽泛、缺乏证据的原材料通过。
 
-## 原始文本：
+#### 审计标准：
+一、业务定位
+- 身份：清晰界定（如：全案陪跑 vs 代运营）
+- 壁垒：必须包含排他性优势（如：全网首家、商业闭环）
+- 痛点：覆盖用户在决策链条中的核心卡点（如：信息不对称、合规风险、执行门槛、决策成本等）
+二、信任背书
+- 背景：硬核学历（如：QS前100或大厂/名企高管经历）
+- 人设：复合标签（如：老板+妈妈+留学生，缺一不可）
+- 战绩：
+    - 体量：如：陪跑>400位
+    - 结果：如：GMV>5亿美金
+    - 归因：战绩需挂钩具体方法论
+三、高精度画像
+- 属性：如：锁定高净值/创始人
+- 地域：如：全球布局（北美/欧洲/澳洲）或二线以上城市
+- 门槛：如：暗示或明确35-55岁、年入50-800万
+四、深层心理
+- 焦虑：如：行业内卷、自我怀疑
+- 渴望：如：不做网红，只做正规军打法
+- 顾虑：如：主动化解异地信任、时差、落地执行疑虑
+五、交付体系
+- 命名：如：专属模型名称（如：高势能IP-6力模型）
+- 模式：如：矩阵式交付（分赛道+分时区）
+- 颗粒度：如：极致细节（改标题、给模板、妆造指导）
+六、案例证据
+- 反差：如：低粉丝 vs 高变现
+- 覆盖：如：涵盖房产、留学、移民等核心赛道
+
+#### 输出格式
+【IP资产审计报告】
+得分：[0-100]
+评级：[S: 优秀 (85-100分)/ A: 微调 (70-85分)/ B: 重写(0-70分)]
+
+#### 维度扫描：
+（按以下格式逐项点评：通过/存疑/缺失 + 具体意见）
+业务定位：
+信任背书：
+用户画像：
+深层心理：
+交付体系：
+案例证据：
+
+#### 输入
+此处是产品文档的内容：
 ` + originalText
 
 		messages = append(messages, map[string]string{
@@ -2128,11 +2162,13 @@ func buildEditTextMessages(originalText, userMessage string, history []v1.EditTe
 		}
 	}
 
-	// 添加当前用户消息
-	messages = append(messages, map[string]string{
-		"role":    "user",
-		"content": userMessage,
-	})
+	// 添加当前用户消息（如果存在）
+	if userMessage != "" {
+		messages = append(messages, map[string]string{
+			"role":    "user",
+			"content": userMessage,
+		})
+	}
 
 	return messages
 }
