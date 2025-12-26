@@ -3,6 +3,7 @@ package sop
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"numind-server/internal/numind/store"
@@ -38,12 +39,16 @@ type ISopBiz interface {
 	// Step-by-step execution operations
 	CreateRun(ctx context.Context, templateID, userID uint, text string) (*model.SopRun, error)
 	GetNextNode(ctx context.Context, runID uint) (*model.SopNode, bool, error)
-	ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text string, handler func(chunk string) error) error
+	ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text string, handler func(event string, chunk string) error) error
 	GetRunStatus(ctx context.Context, runID uint) (*RunStatus, error)
 
 	// Note operations
 	GetNote(ctx context.Context, id uint) (*model.SopNote, error)
 	ListNotesByUser(ctx context.Context, userID uint, offset, limit int) ([]model.SopNote, int64, error)
+
+	// Chat operations
+	ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, handler func(event string, chunk string) error) error
+	ListChatMessages(ctx context.Context, runID uint, userID uint) ([]model.SopChatMsg, error)
 }
 
 type sopBiz struct {
@@ -145,6 +150,7 @@ type CompletedNodeInfo struct {
 	NodeName string `json:"node_name"`
 	Sort     int    `json:"sort"`
 	Output   string `json:"output"` // 完整输出
+	Thinking string `json:"thinking,omitempty"`
 }
 
 // NextNodeInfo 下一个节点信息
@@ -279,7 +285,7 @@ func (b *sopBiz) GetNextNode(ctx context.Context, runID uint) (*model.SopNode, b
 }
 
 // ExecuteNodeStream 流式执行指定节点
-func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text string, handler func(chunk string) error) error {
+func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text string, handler func(event string, chunk string) error) error {
 	// 获取Run信息
 	run, err := b.ds.Sop().GetRun(runID)
 	if err != nil {
@@ -314,10 +320,24 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	// 判断当前节点是否是最后一个节点
 	isLastNode := node.Sort == maxSort
 
+	// 检查是否已存在该节点的执行记录（支持重复执行）
+	existingNodeRun, err := b.ds.Sop().GetNodeRunByRunAndNode(runID, nodeID)
+	if err != nil {
+		return fmt.Errorf("failed to check existing node run: %w", err)
+	}
+
 	// 获取已执行的NodeRun（用于构建上下文）
-	completedNodeRuns, err := b.ds.Sop().ListNodeRunsByRun(runID)
+	allNodeRuns, err := b.ds.Sop().ListNodeRunsByRun(runID)
 	if err != nil {
 		return fmt.Errorf("failed to get node runs: %w", err)
+	}
+
+	// 过滤出已完成的其他节点（排除当前要重新执行的节点）
+	completedNodeRuns := []model.SopNodeRun{}
+	for _, nodeRun := range allNodeRuns {
+		if nodeRun.NodeID != nodeID && nodeRun.Status == model.SopStatusSucceeded {
+			completedNodeRuns = append(completedNodeRuns, nodeRun)
+		}
 	}
 
 	// 构建对话历史
@@ -332,7 +352,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		})
 	}
 
-	// 添加所有已执行节点的输入输出（按sort排序）
+	// 添加所有已执行节点的输入输出（按sort排序，排除当前要重新执行的节点）
 	// 按sort顺序添加对话历史
 	for i := 0; i < 1000; i++ { // 假设最多1000个节点
 		found := false
@@ -417,8 +437,8 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		}
 	}
 
-	// 更新Run状态为running（如果是第一个节点）
-	if len(completedNodeRuns) == 0 {
+	// 更新Run状态为running（如果是第一个节点或重新执行）
+	if len(completedNodeRuns) == 0 && existingNodeRun == nil {
 		startTime := time.Now()
 		if err := b.ds.Sop().UpdateRun(runID, map[string]interface{}{
 			"status":     model.SopStatusRunning,
@@ -428,27 +448,68 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		}
 	}
 
-	// 创建NodeRun记录
-	nodeRun := &model.SopNodeRun{
-		RunID:          runID,
-		NodeID:         nodeID,
-		TemplateID:     run.TemplateID,
-		UserID:         run.UserID,
-		ParentNodeID:   node.ParentID,
-		Status:         model.SopStatusRunning,
-		Input:          currentInput,
-		ConversationID: run.ConversationID,
-		Sort:           node.Sort,
-		StartedAt:      &[]time.Time{time.Now()}[0],
+	var nodeRun *model.SopNodeRun
+	var isUpdate bool
+
+	if existingNodeRun != nil {
+		// 如果已存在，更新现有记录（重新执行）
+		log.C(ctx).Infow("Node run already exists, will update it for re-execution",
+			"run_id", runID, "node_id", nodeID, "existing_node_run_id", existingNodeRun.ID)
+		nodeRun = existingNodeRun
+		isUpdate = true
+
+		// 更新节点执行状态和时间（清空之前的输出和错误信息）
+		updateData := map[string]interface{}{
+			"status":        model.SopStatusRunning,
+			"input":         currentInput,
+			"started_at":    time.Now(),
+			"output":        "",  // 清空之前的输出
+			"thinking":      "",  // 清空之前的思考内容
+			"error_message": "",  // 清空之前的错误信息
+			"finished_at":   nil, // 清空完成时间
+			"latency_ms":    0,   // 重置延迟
+		}
+
+		if err := b.ds.Sop().UpdateNodeRun(nodeRun.ID, updateData); err != nil {
+			return fmt.Errorf("failed to update node run: %w", err)
+		}
+
+		// 重新加载nodeRun以获取最新数据
+		nodeRun, err = b.ds.Sop().GetNodeRun(nodeRun.ID)
+		if err != nil {
+			return fmt.Errorf("failed to reload node run: %w", err)
+		}
+	} else {
+		// 如果不存在，创建新记录
+		nodeRun = &model.SopNodeRun{
+			RunID:          runID,
+			NodeID:         nodeID,
+			TemplateID:     run.TemplateID,
+			UserID:         run.UserID,
+			ParentNodeID:   node.ParentID,
+			Status:         model.SopStatusRunning,
+			Input:          currentInput,
+			ConversationID: run.ConversationID,
+			Sort:           node.Sort,
+			StartedAt:      &[]time.Time{time.Now()}[0],
+		}
+
+		if err := b.ds.Sop().CreateNodeRun(nodeRun); err != nil {
+			return fmt.Errorf("failed to create node run: %w", err)
+		}
+		isUpdate = false
 	}
 
-	if err := b.ds.Sop().CreateNodeRun(nodeRun); err != nil {
-		return fmt.Errorf("failed to create node run: %w", err)
-	}
+	log.C(ctx).Infow("Node run prepared for execution",
+		"run_id", runID, "node_id", nodeID, "node_run_id", nodeRun.ID, "is_update", isUpdate)
 
-	// 执行节点（流式），返回完整输出
+	// 执行节点（流式），返回完整输出和思考内容
 	startTime := time.Now()
-	output, err := b.executor.ExecuteNodeStream(ctx, node, currentInput, conversationHistory, handler)
+	// 深度思考模式：开启 enable_thinking
+	output, thinking, err := b.executor.ExecuteNodeStreamWithThinking(ctx, node, currentInput, conversationHistory, func(event string, chunk string) error {
+		// 直接透传事件给上层 handler
+		return handler(event, chunk)
+	}, isLastNode, true, run.ConversationID)
 	nodeEndTime := time.Now()
 	latency := nodeEndTime.Sub(startTime).Milliseconds()
 
@@ -463,10 +524,11 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		return fmt.Errorf("node execution failed: %w", err)
 	}
 
-	// 更新NodeRun为成功，保存完整输出
+	// 更新NodeRun为成功，同时保存思考内容
 	if err := b.ds.Sop().UpdateNodeRun(nodeRun.ID, map[string]interface{}{
 		"status":      model.SopStatusSucceeded,
 		"output":      output,
+		"thinking":    thinking,
 		"latency_ms":  latency,
 		"finished_at": nodeEndTime,
 	}); err != nil {
@@ -474,15 +536,17 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	}
 
 	// 检查是否所有节点都执行完成
-	allNodeRuns, err := b.ds.Sop().ListNodeRunsByRun(runID)
+	allNodeRunsForCheck, err := b.ds.Sop().ListNodeRunsByRun(runID)
 	if err == nil {
 		allNodes, _ := b.ds.Sop().ListNodesByTemplate(run.TemplateID)
-		completedCount := 0
-		for _, nodeRun := range allNodeRuns {
-			if nodeRun.Status == model.SopStatusSucceeded {
-				completedCount++
+		// 统计每个节点的最新成功记录（用于处理重复执行的情况）
+		nodeStatusMap := make(map[uint]bool) // nodeID -> has succeeded record
+		for _, nr := range allNodeRunsForCheck {
+			if nr.Status == model.SopStatusSucceeded {
+				nodeStatusMap[nr.NodeID] = true
 			}
 		}
+		completedCount := len(nodeStatusMap)
 		if completedCount == len(allNodes) {
 			// 所有节点执行完成，生成最终Note
 			finalOutput := output
@@ -534,6 +598,7 @@ func (b *sopBiz) GetRunStatus(ctx context.Context, runID uint) (*RunStatus, erro
 				NodeName: nodeRun.Node.Name,
 				Sort:     nodeRun.Sort,
 				Output:   nodeRun.Output, // 返回完整输出
+				Thinking: nodeRun.Thinking,
 			})
 			if nodeRun.Sort > currentNodeSort {
 				currentNodeSort = nodeRun.Sort
@@ -607,4 +672,139 @@ func (b *sopBiz) ListNotesByUser(ctx context.Context, userID uint, offset, limit
 
 func (b *sopBiz) ListExecutedTemplatesByUser(ctx context.Context, userID uint) ([]store.ExecutedTemplateInfo, error) {
 	return b.ds.Sop().ListExecutedTemplatesByUser(userID)
+}
+
+// ChatAfterRunStream 基于已完成的Run继续对话（SSE）
+func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, handler func(event string, chunk string) error) error {
+	// 校验 run
+	run, err := b.ds.Sop().GetRun(runID)
+	if err != nil {
+		return fmt.Errorf("run not found: %w", err)
+	}
+	if run.UserID != userID {
+		return fmt.Errorf("no permission to access this run")
+	}
+	if conversationID != "" && run.ConversationID != conversationID {
+		return fmt.Errorf("conversation_id mismatch with run")
+	}
+	// 使用 run 中的会话ID
+	conversationID = run.ConversationID
+
+	// 获取模板、节点、节点执行记录
+	template, err := b.ds.Sop().GetTemplate(run.TemplateID)
+	if err != nil {
+		return fmt.Errorf("template not found: %w", err)
+	}
+	nodes, err := b.ds.Sop().ListNodesByTemplate(run.TemplateID)
+	if err != nil {
+		return fmt.Errorf("failed to list nodes: %w", err)
+	}
+	if len(nodes) == 0 {
+		return fmt.Errorf("template has no nodes")
+	}
+	// 找到最后一个节点，作为对话模型配置载体
+	lastNode := nodes[0]
+	for _, n := range nodes {
+		if n.Sort > lastNode.Sort {
+			lastNode = n
+		}
+	}
+
+	nodeRuns, err := b.ds.Sop().ListNodeRunsByRun(runID)
+	if err != nil {
+		return fmt.Errorf("failed to list node runs: %w", err)
+	}
+
+	// 构建对话历史：模板 prompt -> 节点输入/输出 -> 已有聊天消息
+	history := []LLMMessage{}
+	if template != nil && template.Prompt != "" {
+		history = append(history, LLMMessage{Role: "system", Content: template.Prompt})
+	}
+	for _, nr := range nodeRuns {
+		if nr.Status != model.SopStatusSucceeded {
+			continue
+		}
+		history = append(history, LLMMessage{Role: "user", Content: nr.Input})
+		history = append(history, LLMMessage{Role: "assistant", Content: nr.Output})
+	}
+
+	chatMessages, err := b.ds.Sop().ListChatMessagesByRun(runID)
+	if err != nil {
+		return fmt.Errorf("failed to list chat messages: %w", err)
+	}
+	maxSeq := 0
+	for _, msg := range chatMessages {
+		if msg.Seq > maxSeq {
+			maxSeq = msg.Seq
+		}
+		history = append(history, LLMMessage{Role: msg.Role, Content: msg.Content})
+	}
+
+	// 保存当前用户提问
+	userMsg := &model.SopChatMsg{
+		RunID:          runID,
+		ConversationID: conversationID,
+		UserID:         userID,
+		Role:           "user",
+		Content:        question,
+		Seq:            maxSeq + 1,
+	}
+	if err := b.ds.Sop().CreateChatMessage(userMsg); err != nil {
+		return fmt.Errorf("failed to save chat message: %w", err)
+	}
+	history = append(history, LLMMessage{Role: "user", Content: question})
+
+	// 调用模型流式生成回答
+	var answerBuf strings.Builder
+	_, _, err = b.executor.ExecuteNodeStreamWithThinking(
+		ctx,
+		&lastNode,
+		question,
+		history,
+		func(event string, chunk string) error {
+			if event == "message" {
+				answerBuf.WriteString(chunk)
+			}
+			return handler(event, chunk)
+		},
+		true, // isLastNode：使用纯输入，避免重复拼prompt
+		true, // deepThinking
+		conversationID,
+	)
+	if err != nil {
+		return err
+	}
+
+	// 保存助手回复
+	assistantMsg := &model.SopChatMsg{
+		RunID:          runID,
+		ConversationID: conversationID,
+		UserID:         userID,
+		Role:           "assistant",
+		Content:        answerBuf.String(),
+		Seq:            maxSeq + 2,
+	}
+	if err := b.ds.Sop().CreateChatMessage(assistantMsg); err != nil {
+		return fmt.Errorf("failed to save assistant message: %w", err)
+	}
+
+	return nil
+}
+
+// ListChatMessages 获取指定run的聊天记录（需校验归属）
+func (b *sopBiz) ListChatMessages(ctx context.Context, runID uint, userID uint) ([]model.SopChatMsg, error) {
+	// 校验 run 归属
+	run, err := b.ds.Sop().GetRun(runID)
+	if err != nil {
+		return nil, fmt.Errorf("run not found: %w", err)
+	}
+	if run.UserID != userID {
+		return nil, fmt.Errorf("no permission to access this run")
+	}
+
+	msgs, err := b.ds.Sop().ListChatMessagesByRun(runID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list chat messages: %w", err)
+	}
+	return msgs, nil
 }

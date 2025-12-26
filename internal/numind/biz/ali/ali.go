@@ -34,6 +34,7 @@ type BailianConfig struct {
 type AliBiz interface {
 	QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error)
 	QianwenEmbedding(text string) ([]float32, error)
+	QianwenVision(ctx context.Context, imageBase64 string, prompt string) (string, error)
 	WanxiangImageStream(prompt string, style string, size string) (string, error)
 	WanxiangImageAsync(prompt, style, size string) (string, error)
 	StableDiffusionImageAsync(prompt, size string) (string, error)
@@ -643,6 +644,75 @@ func (a *aliBiz) QianwenEmbedding(text string) ([]float32, error) {
 	}
 
 	return result.Data[0].Embedding, nil
+}
+
+// QianwenVision 调用qwen-vl-max读取图片
+func (a *aliBiz) QianwenVision(ctx context.Context, imageBase64 string, prompt string) (string, error) {
+	if prompt == "" {
+		prompt = "请描述图片内容"
+	}
+	apiKey := getAliConfig("vision", "api_key")
+	model := getAliConfig("vision", "model")
+	if model == "" {
+		model = "qwen-vl-max"
+	}
+	if apiKey == "" {
+		return "", fmt.Errorf("未配置ali.vision.api_key")
+	}
+
+	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+	bodyMap := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]interface{}{
+			{
+				"role": "user",
+				"content": []map[string]string{
+					{"type": "text", "text": prompt},
+					{"type": "image_url", "image_url": fmt.Sprintf("data:image/png;base64,%s", imageBase64)},
+				},
+			},
+		},
+		"stream": false,
+	}
+
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return "", fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("创建请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("HTTP请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("解析响应失败: %w, 原始响应: %s", err, string(respBody))
+	}
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("响应为空: %s", string(respBody))
+	}
+	return result.Choices[0].Message.Content, nil
 }
 
 func (a *aliBiz) GetPromptManager() *PromptManager {

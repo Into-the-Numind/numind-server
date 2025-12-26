@@ -32,6 +32,7 @@ type ISopStore interface {
 	// NodeRun operations
 	CreateNodeRun(nodeRun *model.SopNodeRun) error
 	GetNodeRun(id uint) (*model.SopNodeRun, error)
+	GetNodeRunByRunAndNode(runID, nodeID uint) (*model.SopNodeRun, error) // 根据runID和nodeID获取最新的NodeRun（用于检查是否已存在，支持重复执行）
 	ListNodeRunsByRun(runID uint) ([]model.SopNodeRun, error)
 	UpdateNodeRun(id uint, updates map[string]interface{}) error
 
@@ -47,6 +48,10 @@ type ISopStore interface {
 	ListFilesByUser(userID uint, offset, limit int) ([]model.SopFile, int64, error)
 	UpdateFile(id uint, updates map[string]interface{}) error
 	DeleteFile(id uint) error
+
+	// Chat operations
+	CreateChatMessage(msg *model.SopChatMsg) error
+	ListChatMessagesByRun(runID uint) ([]model.SopChatMsg, error)
 }
 
 type sopStore struct {
@@ -177,6 +182,22 @@ func (s *sopStore) GetNodeRun(id uint) (*model.SopNodeRun, error) {
 	return &nodeRun, nil
 }
 
+func (s *sopStore) GetNodeRunByRunAndNode(runID, nodeID uint) (*model.SopNodeRun, error) {
+	var nodeRun model.SopNodeRun
+	// 获取最新的记录（按创建时间倒序取第一条）
+	err := s.db.Where("run_id = ? AND node_id = ?", runID, nodeID).
+		Preload("Node").
+		Order("created_at DESC").
+		First(&nodeRun).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil // 返回nil表示不存在
+		}
+		return nil, err
+	}
+	return &nodeRun, nil
+}
+
 func (s *sopStore) ListNodeRunsByRun(runID uint) ([]model.SopNodeRun, error) {
 	var nodeRuns []model.SopNodeRun
 	err := s.db.Where("run_id = ?", runID).Preload("Node").Order("sort ASC").Find(&nodeRuns).Error
@@ -263,6 +284,17 @@ func (s *sopStore) UpdateFile(id uint, updates map[string]interface{}) error {
 
 func (s *sopStore) DeleteFile(id uint) error {
 	return s.db.Delete(&model.SopFile{}, id).Error
+}
+
+// Chat operations
+func (s *sopStore) CreateChatMessage(msg *model.SopChatMsg) error {
+	return s.db.Create(msg).Error
+}
+
+func (s *sopStore) ListChatMessagesByRun(runID uint) ([]model.SopChatMsg, error) {
+	var msgs []model.SopChatMsg
+	err := s.db.Where("run_id = ?", runID).Order("seq ASC, created_at ASC").Find(&msgs).Error
+	return msgs, err
 }
 
 // ExecutedTemplateInfo 用户已执行的模板信息

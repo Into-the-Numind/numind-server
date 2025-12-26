@@ -140,6 +140,21 @@ func (SopFile) TableName() string {
 	return "sop_file"
 }
 
+// SopChatMsg SOP对话消息表
+type SopChatMsg struct {
+	gorm.Model
+	RunID          uint   `gorm:"not null;index" json:"run_id"`
+	ConversationID string `gorm:"size:100;index" json:"conversation_id"`
+	UserID         uint   `gorm:"not null;index" json:"user_id"`
+	Role           string `gorm:"size:20;not null" json:"role"` // user / assistant
+	Content        string `gorm:"type:longtext;not null" json:"content"`
+	Seq            int    `gorm:"default:0;index:idx_run_seq" json:"seq"` // 顺序号，用于重建对话
+}
+
+func (SopChatMsg) TableName() string {
+	return "sop_chat_message"
+}
+
 // SOP状态常量
 const (
 	SopStatusPending   = "pending"

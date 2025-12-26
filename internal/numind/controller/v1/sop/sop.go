@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -621,7 +622,7 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 	}()
 
 	// 流式执行节点
-	err = ctrl.sopBiz.ExecuteNodeStream(heartbeatCtx, uint(runID), uint(nodeID), inputText, func(chunk string) error {
+	err = ctrl.sopBiz.ExecuteNodeStream(heartbeatCtx, uint(runID), uint(nodeID), inputText, func(event string, chunk string) error {
 		// 检查客户端是否断开连接
 		select {
 		case <-c.Request.Context().Done():
@@ -632,7 +633,17 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 
 		// 发送SSE格式的数据（需要对JSON进行转义）
 		chunkJSON, _ := json.Marshal(chunk)
-		data := fmt.Sprintf("data: %s\n\n", string(chunkJSON))
+		var data string
+		if event == "thinking" {
+			data = fmt.Sprintf("event: thinking\ndata: %s\n\n", string(chunkJSON))
+		} else if event == "message" {
+			data = fmt.Sprintf("data: %s\n\n", string(chunkJSON))
+		} else if event == "done" {
+			data = "event: done\ndata: {\"status\":\"completed\"}\n\n"
+		} else {
+			return nil
+		}
+
 		if _, err := c.Writer.WriteString(data); err != nil {
 			log.C(c).Warnw("Failed to write chunk to client", "error", err)
 			return err
@@ -658,7 +669,7 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 		return
 	}
 
-	// 发送完成事件（包含上传的文件ID）
+	// 完成事件已在流式回调中发送；此处仅附带上传文件ID的结束包（可选）
 	doneData := fmt.Sprintf("event: done\ndata: {\"status\":\"completed\",\"uploaded_file_ids\":%v}\n\n", uploadedFileIDs)
 	c.Writer.WriteString(doneData)
 	flusher.Flush()
@@ -844,6 +855,361 @@ func (ctrl *SopController) uploadFileToCOS(c *gin.Context, file *multipart.FileH
 		"has_content", content != "")
 
 	return sopFile, nil
+}
+
+// FileTextResult 单个文件的文本提取结果
+type FileTextResult struct {
+	FileName  string `json:"file_name"`
+	FileID    string `json:"file_id,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// ParseFileTextResponse 文本提取接口返回结果
+type ParseFileTextResponse struct {
+	Text    string           `json:"text"`               // 合并后的文本（用于直接回填）
+	Files   []FileTextResult `json:"files"`              // 文件信息列表（包含file_id）
+	FileIDs []string         `json:"file_ids,omitempty"` // 便于前端调试/透传
+}
+
+// ParseFileText 上传文件，让阿里百炼 qwen-long 解析纯文本并返回（不落库）
+func (ctrl *SopController) ParseFileText(c *gin.Context) {
+	log.C(c).Infow("Parse file text called")
+
+	// 1. 获取multipart form
+	form, err := c.MultipartForm()
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的multipart form: "+err.Error()), nil)
+		return
+	}
+	defer form.RemoveAll() // 清理临时文件
+
+	// 2. 获取文件列表，兼容file / files
+	files := form.File["files"]
+	if len(files) == 0 {
+		files = form.File["file"]
+	}
+	if len(files) == 0 {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("请上传至少一个文件"), nil)
+		return
+	}
+
+	// 3. 基础校验：数量和总大小
+	if len(files) > MaxFilesPerUpload {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(fmt.Sprintf("文件数量超过限制（最多%d个）", MaxFilesPerUpload)), nil)
+		return
+	}
+
+	var (
+		totalSize int64
+		fileIDs   []string
+		fileInfos []FileTextResult
+	)
+
+	for _, file := range files {
+		if file == nil || file.Size <= 0 {
+			continue
+		}
+
+		totalSize += file.Size
+		if totalSize > MaxFileSize*MaxFilesPerUpload {
+			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("所有文件总大小超过限制"), nil)
+			return
+		}
+
+		// 阿里百炼支持的扩展名更宽，这里沿用现有校验
+		ext := strings.ToLower(filepath.Ext(file.Filename))
+		if !isAllowedExtension(ext) {
+			log.C(c).Warnw("文件扩展名不支持，已跳过", "filename", file.Filename, "ext", ext)
+			continue
+		}
+
+		fileID, err := uploadFileToDashScope(file)
+		if err != nil {
+			log.C(c).Errorw("上传文件到百炼失败", "filename", file.Filename, "error", err)
+			core.WriteResponse(c, errno.ErrInternalServer.SetMessage("上传文件到百炼失败: %v", err), nil)
+			return
+		}
+
+		fileIDs = append(fileIDs, fileID)
+		fileInfos = append(fileInfos, FileTextResult{
+			FileName: file.Filename,
+			FileID:   fileID,
+		})
+	}
+
+	if len(fileIDs) == 0 {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("未能上传任何文件"), nil)
+		return
+	}
+
+	// 4. 让 qwen-long 读取文件并输出原始纯文本
+	text, err := extractPlainTextWithQwenLong(c.Request.Context(), fileIDs)
+	if err != nil {
+		// 如果仍在解析中，返回file_ids方便前端轮询查询接口
+		if strings.Contains(err.Error(), "文件仍在解析中") {
+			log.C(c).Infow("qwen-long 文件仍在解析中", "file_ids", fileIDs, "error", err.Error())
+			core.WriteResponse(c, errno.ErrInternalServer.SetMessage("qwen-long 解析中，请稍后用file_ids轮询查询"), ParseFileTextResponse{
+				Text:    "",
+				Files:   fileInfos,
+				FileIDs: fileIDs,
+			})
+			return
+		}
+		log.C(c).Errorw("qwen-long 解析失败", "error", err, "file_ids", fileIDs)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("qwen-long 解析失败: %v", err), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, ParseFileTextResponse{
+		Text:    strings.TrimSpace(text),
+		Files:   fileInfos,
+		FileIDs: fileIDs,
+	})
+}
+
+// ParseFileTextQuery 轮询查询 qwen-long 解析结果（不重新上传）
+func (ctrl *SopController) ParseFileTextQuery(c *gin.Context) {
+	log.C(c).Infow("Parse file text query called")
+
+	var req struct {
+		FileIDs []string `json:"file_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.FileIDs) == 0 {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("file_ids 不能为空"), nil)
+		return
+	}
+
+	// 直接调用 qwen-long 读取已有 file_ids
+	text, err := extractPlainTextWithQwenLong(c.Request.Context(), req.FileIDs)
+	if err != nil {
+		log.C(c).Errorw("qwen-long 解析查询失败", "error", err, "file_ids", req.FileIDs)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage(err.Error()), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, ParseFileTextResponse{
+		Text:    strings.TrimSpace(text),
+		Files:   []FileTextResult{},
+		FileIDs: req.FileIDs,
+	})
+}
+
+// ReadImageWithQwenVL 读取图片，调用qwen-vl-max进行理解
+func (ctrl *SopController) ReadImageWithQwenVL(c *gin.Context) {
+	log.C(c).Infow("Read image with qwen-vl called")
+
+	// 仅支持 multipart 上传
+	contentType := c.GetHeader("Content-Type")
+	if !strings.Contains(contentType, "multipart/form-data") {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请使用multipart/form-data上传图片"), nil)
+		return
+	}
+
+	const maxImageSize = 5 * 1024 * 1024 // 5MB
+	form, err := c.MultipartForm()
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的multipart form: "+err.Error()), nil)
+		return
+	}
+	defer form.RemoveAll()
+
+	files := form.File["file"]
+	if len(files) == 0 {
+		files = form.File["image"]
+	}
+	if len(files) == 0 {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("请上传图片文件（field: file 或 image）"), nil)
+		return
+	}
+
+	question := strings.TrimSpace(c.DefaultPostForm("question", "请描述图片内容"))
+
+	fh := files[0]
+	if fh.Size > maxImageSize {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("图片大小超过5MB限制"), nil)
+		return
+	}
+
+	file, err := fh.Open()
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("无法读取文件: "+err.Error()), nil)
+		return
+	}
+	defer file.Close()
+
+	buf := make([]byte, maxImageSize+1)
+	n, err := file.Read(buf)
+	if err != nil && err != io.EOF {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("读取文件失败: "+err.Error()), nil)
+		return
+	}
+	if int64(n) > maxImageSize {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("图片大小超过5MB限制"), nil)
+		return
+	}
+	data := buf[:n]
+
+	encoded := base64.StdEncoding.EncodeToString(data)
+	resp, err := ctrl.aliBiz.QianwenVision(c.Request.Context(), encoded, question)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage(err.Error()), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"question": question,
+		"answer":   resp,
+	})
+}
+
+// uploadFileToDashScope 使用OpenAI兼容接口上传文件到阿里百炼，返回file_id
+func uploadFileToDashScope(file *multipart.FileHeader) (string, error) {
+	apiKey := getAliConfig("text", "api_key")
+	if apiKey == "" {
+		return "", fmt.Errorf("未配置阿里百炼API Key")
+	}
+
+	// 打开文件
+	src, err := file.Open()
+	if err != nil {
+		return "", fmt.Errorf("打开文件失败: %w", err)
+	}
+	defer src.Close()
+
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+
+	part, err := writer.CreateFormFile("file", filepath.Base(file.Filename))
+	if err != nil {
+		return "", fmt.Errorf("创建multipart文件部分失败: %w", err)
+	}
+	if _, err := io.Copy(part, src); err != nil {
+		return "", fmt.Errorf("写入文件内容失败: %w", err)
+	}
+	// purpose 固定为 file-extract，见官方文档
+	if err := writer.WriteField("purpose", "file-extract"); err != nil {
+		return "", fmt.Errorf("写入purpose失败: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return "", fmt.Errorf("关闭multipart writer失败: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", "https://dashscope.aliyuncs.com/compatible-mode/v1/files", &buf)
+	if err != nil {
+		return "", fmt.Errorf("创建上传请求失败: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("调用上传接口失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("文件上传失败，HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var res struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return "", fmt.Errorf("解析上传响应失败: %w，响应: %s", err, string(body))
+	}
+	if res.ID == "" {
+		return "", fmt.Errorf("文件上传响应缺少file_id，响应: %s", string(body))
+	}
+
+	return res.ID, nil
+}
+
+// extractPlainTextWithQwenLong 通过 qwen-long 读取 file_id 列表并返回纯文本
+func extractPlainTextWithQwenLong(ctx context.Context, fileIDs []string) (string, error) {
+	apiKey := getAliConfig("text", "api_key")
+	if apiKey == "" {
+		return "", fmt.Errorf("未配置阿里百炼API Key")
+	}
+
+	model := getAliConfig("qwen_long", "model")
+	if model == "" {
+		model = "qwen-long"
+	}
+
+	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+
+	messages := []map[string]string{
+		{
+			"role":    "system",
+			"content": "你是一个文档抽取助手，请输出文件的原始纯文本内容，保持顺序，不要总结，不要省略，也不要添加说明或格式标记。",
+		},
+	}
+	for _, fid := range fileIDs {
+		messages = append(messages, map[string]string{
+			"role":    "system",
+			"content": fmt.Sprintf("fileid://%s", fid),
+		})
+	}
+	messages = append(messages, map[string]string{
+		"role":    "user",
+		"content": "请将文件内容以纯文本原样输出，不要总结，不要省略，不要添加说明。",
+	})
+
+	bodyMap := map[string]interface{}{
+		"model":       model,
+		"messages":    messages,
+		"max_tokens":  32000,
+		"temperature": 0.1,
+		"stream":      false,
+	}
+
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return "", fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("创建请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("调用qwen-long失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		// 解析中的情况：400 + “File parsing in progress...”
+		if resp.StatusCode == http.StatusBadRequest {
+			return "", fmt.Errorf("文件仍在解析中，请稍后重试。响应: %s", strings.TrimSpace(string(respBody)))
+		}
+		return "", fmt.Errorf("qwen-long 返回错误 HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	// 兼容OpenAI格式响应
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("解析qwen-long响应失败: %w，响应: %s", err, string(respBody))
+	}
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("qwen-long 响应为空: %s", string(respBody))
+	}
+
+	return result.Choices[0].Message.Content, nil
 }
 
 // CheckFileQuality 检测上传文件的质量（不保存到数据库）
@@ -1377,6 +1743,7 @@ func (ctrl *SopController) GetRunStatus(c *gin.Context) {
 			NodeName: node.NodeName,
 			Sort:     node.Sort,
 			Output:   node.Output, // 返回完整输出
+			Thinking: node.Thinking,
 		}
 	}
 	response.CompletedNodes = completedNodes
@@ -1410,17 +1777,12 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 	req.OriginalText = strings.TrimSpace(req.OriginalText)
 	req.UserMessage = strings.TrimSpace(req.UserMessage)
 
-	if req.UserMessage == "" {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("用户消息不能为空"), nil)
-		return
-	}
-
 	// 判断是否是第一次对话（没有历史且没有原始文本）
 	isFirstConversation := len(req.ConversationHistory) == 0
 
-	// 第一次对话必须有原始文本
+	// 第一次对话必须有原始文本（text参数）
 	if isFirstConversation && req.OriginalText == "" {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("第一次对话时原始文本不能为空"), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文本内容不能为空"), nil)
 		return
 	}
 
@@ -1577,22 +1939,211 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 	flusher.Flush()
 }
 
+// ChatAfterRunStream 已完成run后的对话（SSE）
+func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
+	log.C(c).Infow("Chat after run stream called")
+
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	// 解析请求参数
+	var req struct {
+		RunID          uint   `json:"run_id"`
+		ConversationID string `json:"conversation_id"`
+		Question       string `json:"question"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.RunID == 0 || strings.TrimSpace(req.Question) == "" {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误"), nil)
+		return
+	}
+	req.Question = strings.TrimSpace(req.Question)
+
+	// 设置SSE响应头
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no") // 禁用nginx缓冲
+
+	// 获取Flusher（用于实时刷新）
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("Streaming not supported"), nil)
+		return
+	}
+
+	// 创建带心跳的 context
+	heartbeatCtx, heartbeatCancel := context.WithCancel(c.Request.Context())
+	defer heartbeatCancel()
+
+	// 心跳 goroutine
+	heartbeatTicker := time.NewTicker(15 * time.Second)
+	defer heartbeatTicker.Stop()
+	go func() {
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-heartbeatTicker.C:
+				select {
+				case <-c.Request.Context().Done():
+					return
+				default:
+					if _, err := c.Writer.WriteString(": heartbeat\n\n"); err != nil {
+						log.C(c).Warnw("Failed to send heartbeat", "error", err)
+						return
+					}
+					flusher.Flush()
+				}
+			}
+		}
+	}()
+
+	// 执行业务流
+	err := ctrl.sopBiz.ChatAfterRunStream(heartbeatCtx, req.RunID, req.ConversationID, req.Question, user.ID, func(event string, chunk string) error {
+		// 检查客户端连接
+		select {
+		case <-c.Request.Context().Done():
+			return c.Request.Context().Err()
+		default:
+		}
+
+		chunkJSON, _ := json.Marshal(chunk)
+		var data string
+		switch event {
+		case "thinking":
+			data = fmt.Sprintf("event: thinking\ndata: %s\n\n", string(chunkJSON))
+		case "message":
+			data = fmt.Sprintf("data: %s\n\n", string(chunkJSON))
+		case "done":
+			data = "event: done\ndata: {\"status\":\"completed\"}\n\n"
+		default:
+			return nil
+		}
+
+		if _, err := c.Writer.WriteString(data); err != nil {
+			log.C(c).Warnw("Failed to write chunk to client", "error", err)
+			return err
+		}
+		flusher.Flush()
+		return nil
+	})
+
+	if err != nil {
+		if c.Request.Context().Err() != nil {
+			log.C(c).Infow("Client disconnected during stream", "error", err)
+			return
+		}
+		// 发送错误事件
+		errorMsg, _ := json.Marshal(err.Error())
+		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
+		c.Writer.WriteString(errorData)
+		flusher.Flush()
+		return
+	}
+
+	// 结尾done事件已在handler写入
+}
+
+// ListRunChatMessages 获取指定run的聊天记录（需登录且归属校验）
+func (ctrl *SopController) ListRunChatMessages(c *gin.Context) {
+	log.C(c).Infow("List run chat messages called")
+
+	runID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的执行ID"), nil)
+		return
+	}
+
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	msgs, err := ctrl.sopBiz.ListChatMessages(c, uint(runID), user.ID)
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"run_id":          runID,
+		"conversation_id": msgsSafeConversationID(msgs),
+		"messages":        msgs,
+	})
+}
+
+// msgsSafeConversationID 取聊天记录里的一个conversation_id用于响应
+func msgsSafeConversationID(msgs []model.SopChatMsg) string {
+	for _, m := range msgs {
+		if m.ConversationID != "" {
+			return m.ConversationID
+		}
+	}
+	return ""
+}
+
 // buildEditTextMessages 构建文本编辑的对话消息
 func buildEditTextMessages(originalText, userMessage string, history []v1.EditTextMessage, isFirstConversation bool) []map[string]string {
 	messages := []map[string]string{}
 
 	// 只在第一次对话时添加系统提示词（包含原始文本）
 	if isFirstConversation && originalText != "" {
-		systemPrompt := `你是一位专业的文本编辑助手。用户会提供一段原始文本，你需要根据用户的指令对文本进行修改、优化或改进。
+		systemPrompt := `### 角色：内容工程质检员
 
-## 编辑要求：
-- 保持原文的核心意思和风格
-- 根据用户的具体指令进行修改
-- 如果用户没有明确指令，则进行通用优化（提升可读性、流畅度等）
-- 只返回修改后的文本，不要添加额外的说明或解释
-- 如果用户要求保持某些内容不变，请严格遵守
+#### 核心指令
+以"严苛、数据驱动、反空话"的原则，对用户上传的《业务介绍文档》进行六维核验。核心使命是核验文档的"信息密度"与"证据强度"，严禁模糊、宽泛、缺乏证据的原材料通过。
 
-## 原始文本：
+#### 审计标准：
+一、业务定位
+- 身份：清晰界定（如：全案陪跑 vs 代运营）
+- 壁垒：必须包含排他性优势（如：全网首家、商业闭环）
+- 痛点：覆盖用户在决策链条中的核心卡点（如：信息不对称、合规风险、执行门槛、决策成本等）
+二、信任背书
+- 背景：硬核学历（如：QS前100或大厂/名企高管经历）
+- 人设：复合标签（如：老板+妈妈+留学生，缺一不可）
+- 战绩：
+    - 体量：如：陪跑>400位
+    - 结果：如：GMV>5亿美金
+    - 归因：战绩需挂钩具体方法论
+三、高精度画像
+- 属性：如：锁定高净值/创始人
+- 地域：如：全球布局（北美/欧洲/澳洲）或二线以上城市
+- 门槛：如：暗示或明确35-55岁、年入50-800万
+四、深层心理
+- 焦虑：如：行业内卷、自我怀疑
+- 渴望：如：不做网红，只做正规军打法
+- 顾虑：如：主动化解异地信任、时差、落地执行疑虑
+五、交付体系
+- 命名：如：专属模型名称（如：高势能IP-6力模型）
+- 模式：如：矩阵式交付（分赛道+分时区）
+- 颗粒度：如：极致细节（改标题、给模板、妆造指导）
+六、案例证据
+- 反差：如：低粉丝 vs 高变现
+- 覆盖：如：涵盖房产、留学、移民等核心赛道
+
+#### 输出格式
+【IP资产审计报告】
+得分：[0-100]
+评级：[S: 优秀 (85-100分)/ A: 微调 (70-85分)/ B: 重写(0-70分)]
+
+#### 维度扫描：
+（按以下格式逐项点评：通过/存疑/缺失 + 具体意见）
+业务定位：
+信任背书：
+用户画像：
+深层心理：
+交付体系：
+案例证据：
+
+#### 输入
+此处是产品文档的内容：
 ` + originalText
 
 		messages = append(messages, map[string]string{
@@ -1611,11 +2162,13 @@ func buildEditTextMessages(originalText, userMessage string, history []v1.EditTe
 		}
 	}
 
-	// 添加当前用户消息
-	messages = append(messages, map[string]string{
-		"role":    "user",
-		"content": userMessage,
-	})
+	// 添加当前用户消息（如果存在）
+	if userMessage != "" {
+		messages = append(messages, map[string]string{
+			"role":    "user",
+			"content": userMessage,
+		})
+	}
 
 	return messages
 }
