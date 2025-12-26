@@ -148,6 +148,12 @@ func callVolcStream(ctx context.Context, messages []map[string]string, handler S
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
+		
+		// 过滤 SSE 注释行（以 : 开头）和空行，防止心跳等注释内容混入输出
+		if strings.HasPrefix(line, ":") || line == "" {
+			continue
+		}
+		
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
@@ -214,6 +220,12 @@ func callAliStream(ctx context.Context, aliBiz ali.AliBiz, messages []map[string
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
+		
+		// 过滤 SSE 注释行（以 : 开头）和空行，防止心跳等注释内容混入输出
+		if strings.HasPrefix(line, ":") || line == "" {
+			continue
+		}
+		
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
