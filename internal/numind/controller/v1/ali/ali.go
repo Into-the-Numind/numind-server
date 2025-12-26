@@ -1,6 +1,8 @@
 package ali
 
 import (
+	"encoding/base64"
+	"io"
 	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
@@ -63,6 +65,51 @@ func (ctrl *AliController) AddFile(c *gin.Context) {
 
 	core.WriteResponse(c, nil, gin.H{
 		"file_id": fileId,
+	})
+}
+
+// VisionAnalyze 视觉理解接口 (支持 Base64 上传)
+func (ctrl *AliController) VisionAnalyze(c *gin.Context) {
+	// 1. 获取上传的文件 (multipart/form-data)
+	file, err := c.FormFile("file")
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind, nil)
+		return
+	}
+
+	// 2. 检查文件大小 (百炼限制 7MB)
+	if file.Size > 7*1024*1024 {
+		core.WriteResponse(c, errno.ErrInvalidParameter, "文件大小不能超过 7MB")
+		return
+	}
+
+	// 3. 读取文件内容并转换为 Base64
+	f, err := file.Open()
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	defer f.Close()
+
+	content, err := io.ReadAll(f)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	encoded := base64.StdEncoding.EncodeToString(content)
+
+	// 4. 获取 Prompt (可选)
+	prompt := c.PostForm("prompt")
+
+	// 5. 调用 Biz 层进行分析
+	result, err := ctrl.aliBiz.QianwenVision(c.Request.Context(), encoded, prompt)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"content": result,
 	})
 }
 

@@ -251,6 +251,7 @@ func installNumindRouters(g *gin.Engine) error {
 	{
 		authGroup.POST("/ali/bailian/lease", alic.GetFileUploadLease) // 获取上传租约
 		authGroup.POST("/ali/bailian/confirm", alic.AddFile)          // 确认上传并导入
+		authGroup.POST("/ali/vision/analyze", alic.VisionAnalyze)     // 视觉理解 (Base64)
 	}
 
 	// SOP相关（用户端接口）
