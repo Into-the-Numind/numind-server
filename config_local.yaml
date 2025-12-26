@@ -92,6 +92,9 @@ baidu:
 # 阿里云配置 - 优化后的统一配置
 ali:
   # 通用配置（所有服务共用）
+  access_key_id: "LTAI5t7S7S7S7S7S7S7S7S7S" # 阿里云 AccessKey ID
+  access_key_secret: "S7S7S7S7S7S7S7S7S7S7S7S7S7" # 阿里云 AccessKey Secret
+  workspace_id: "ws-7s7s7s7s7s7s" # 百炼 Workspace ID
   api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"  # 文本服务API密钥
   api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"  # 统一API地址
   

@@ -5,6 +5,7 @@ import (
 	"numind-server/internal/numind/biz"
 	orderbiz "numind-server/internal/numind/biz/order"
 	"numind-server/internal/numind/controller/v1/account"
+	"numind-server/internal/numind/controller/v1/ali"
 	"numind-server/internal/numind/controller/v1/article"
 	"numind-server/internal/numind/controller/v1/book"
 	"numind-server/internal/numind/controller/v1/card"
@@ -62,6 +63,7 @@ func installNumindRouters(g *gin.Engine) error {
 	fc := feedback.New(b)
 	chatc := chat.New(b.Chats())
 	ac := article.NewArticleController(b.Article())
+	alic := ali.New(b.Ali())
 
 	// 使用 biz 层已初始化的 RAG 服务
 	ragService := b.Rag()
@@ -243,6 +245,12 @@ func installNumindRouters(g *gin.Engine) error {
 	// RAG相关
 	{
 		authGroup.POST("/rag/chat", ragc.ChatWithRAG) // 基于笔记进行RAG对话
+	}
+
+	// 阿里云百炼相关
+	{
+		authGroup.POST("/ali/bailian/lease", alic.GetFileUploadLease) // 获取上传租约
+		authGroup.POST("/ali/bailian/confirm", alic.AddFile)          // 确认上传并导入
 	}
 
 	// SOP相关（用户端接口）

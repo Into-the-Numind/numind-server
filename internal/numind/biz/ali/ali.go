@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/service"
 	"os"
 	"strings"
 	"time"
@@ -38,18 +39,26 @@ type AliBiz interface {
 	WanxiangImageStream(prompt string, style string, size string) (string, error)
 	WanxiangImageAsync(prompt, style, size string) (string, error)
 	StableDiffusionImageAsync(prompt, size string) (string, error)
+	GetFileUploadLease(fileName string) (string, map[string]string, string, error)
+	AddFile(leaseId string) (string, error)
 	GetPromptManager() *PromptManager
 }
 
 type aliBiz struct {
-	ds store.IStore
-	pm *PromptManager
+	ds            store.IStore
+	pm            *PromptManager
+	bailianClient *service.BailianHTTPClient
 }
 
 func NewAliBiz(ds store.IStore) AliBiz {
 	return &aliBiz{
 		ds: ds,
 		pm: NewPromptManager(),
+		bailianClient: service.NewBailianHTTPClient(
+			getAliConfig("common", "access_key_id"),
+			getAliConfig("common", "access_key_secret"),
+			getAliConfig("common", "workspace_id"),
+		),
 	}
 }
 
@@ -713,6 +722,14 @@ func (a *aliBiz) QianwenVision(ctx context.Context, imageBase64 string, prompt s
 		return "", fmt.Errorf("响应为空: %s", string(respBody))
 	}
 	return result.Choices[0].Message.Content, nil
+}
+
+func (a *aliBiz) GetFileUploadLease(fileName string) (string, map[string]string, string, error) {
+	return a.bailianClient.GetLease(fileName)
+}
+
+func (a *aliBiz) AddFile(leaseId string) (string, error) {
+	return a.bailianClient.ConfirmFile(leaseId)
 }
 
 func (a *aliBiz) GetPromptManager() *PromptManager {
