@@ -945,6 +945,16 @@ func (ctrl *SopController) ParseFileText(c *gin.Context) {
 	// 4. 让 qwen-long 读取文件并输出原始纯文本
 	text, err := extractPlainTextWithQwenLong(c.Request.Context(), fileIDs)
 	if err != nil {
+		// 如果仍在解析中，返回file_ids方便前端轮询查询接口
+		if strings.Contains(err.Error(), "文件仍在解析中") {
+			log.C(c).Infow("qwen-long 文件仍在解析中", "file_ids", fileIDs, "error", err.Error())
+			core.WriteResponse(c, errno.ErrInternalServer.SetMessage("qwen-long 解析中，请稍后用file_ids轮询查询"), ParseFileTextResponse{
+				Text:    "",
+				Files:   fileInfos,
+				FileIDs: fileIDs,
+			})
+			return
+		}
 		log.C(c).Errorw("qwen-long 解析失败", "error", err, "file_ids", fileIDs)
 		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("qwen-long 解析失败: %v", err), nil)
 		return
@@ -954,6 +964,33 @@ func (ctrl *SopController) ParseFileText(c *gin.Context) {
 		Text:    strings.TrimSpace(text),
 		Files:   fileInfos,
 		FileIDs: fileIDs,
+	})
+}
+
+// ParseFileTextQuery 轮询查询 qwen-long 解析结果（不重新上传）
+func (ctrl *SopController) ParseFileTextQuery(c *gin.Context) {
+	log.C(c).Infow("Parse file text query called")
+
+	var req struct {
+		FileIDs []string `json:"file_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.FileIDs) == 0 {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("file_ids 不能为空"), nil)
+		return
+	}
+
+	// 直接调用 qwen-long 读取已有 file_ids
+	text, err := extractPlainTextWithQwenLong(c.Request.Context(), req.FileIDs)
+	if err != nil {
+		log.C(c).Errorw("qwen-long 解析查询失败", "error", err, "file_ids", req.FileIDs)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage(err.Error()), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, ParseFileTextResponse{
+		Text:    strings.TrimSpace(text),
+		Files:   []FileTextResult{},
+		FileIDs: req.FileIDs,
 	})
 }
 
@@ -1637,6 +1674,7 @@ func (ctrl *SopController) GetRunStatus(c *gin.Context) {
 			NodeName: node.NodeName,
 			Sort:     node.Sort,
 			Output:   node.Output, // 返回完整输出
+			Thinking: node.Thinking,
 		}
 	}
 	response.CompletedNodes = completedNodes

@@ -150,6 +150,7 @@ type CompletedNodeInfo struct {
 	NodeName string `json:"node_name"`
 	Sort     int    `json:"sort"`
 	Output   string `json:"output"` // 完整输出
+	Thinking string `json:"thinking,omitempty"`
 }
 
 // NextNodeInfo 下一个节点信息
@@ -597,6 +598,7 @@ func (b *sopBiz) GetRunStatus(ctx context.Context, runID uint) (*RunStatus, erro
 				NodeName: nodeRun.Node.Name,
 				Sort:     nodeRun.Sort,
 				Output:   nodeRun.Output, // 返回完整输出
+				Thinking: nodeRun.Thinking,
 			})
 			if nodeRun.Sort > currentNodeSort {
 				currentNodeSort = nodeRun.Sort
