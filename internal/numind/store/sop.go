@@ -48,6 +48,10 @@ type ISopStore interface {
 	ListFilesByUser(userID uint, offset, limit int) ([]model.SopFile, int64, error)
 	UpdateFile(id uint, updates map[string]interface{}) error
 	DeleteFile(id uint) error
+
+	// Chat operations
+	CreateChatMessage(msg *model.SopChatMsg) error
+	ListChatMessagesByRun(runID uint) ([]model.SopChatMsg, error)
 }
 
 type sopStore struct {
@@ -280,6 +284,17 @@ func (s *sopStore) UpdateFile(id uint, updates map[string]interface{}) error {
 
 func (s *sopStore) DeleteFile(id uint) error {
 	return s.db.Delete(&model.SopFile{}, id).Error
+}
+
+// Chat operations
+func (s *sopStore) CreateChatMessage(msg *model.SopChatMsg) error {
+	return s.db.Create(msg).Error
+}
+
+func (s *sopStore) ListChatMessagesByRun(runID uint) ([]model.SopChatMsg, error) {
+	var msgs []model.SopChatMsg
+	err := s.db.Where("run_id = ?", runID).Order("seq ASC, created_at ASC").Find(&msgs).Error
+	return msgs, err
 }
 
 // ExecutedTemplateInfo 用户已执行的模板信息

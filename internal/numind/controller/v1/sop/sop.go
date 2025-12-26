@@ -1837,6 +1837,156 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 	flusher.Flush()
 }
 
+// ChatAfterRunStream 已完成run后的对话（SSE）
+func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
+	log.C(c).Infow("Chat after run stream called")
+
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	// 解析请求参数
+	var req struct {
+		RunID          uint   `json:"run_id"`
+		ConversationID string `json:"conversation_id"`
+		Question       string `json:"question"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.RunID == 0 || strings.TrimSpace(req.Question) == "" {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误"), nil)
+		return
+	}
+	req.Question = strings.TrimSpace(req.Question)
+
+	// 设置SSE响应头
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no") // 禁用nginx缓冲
+
+	// 获取Flusher（用于实时刷新）
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("Streaming not supported"), nil)
+		return
+	}
+
+	// 创建带心跳的 context
+	heartbeatCtx, heartbeatCancel := context.WithCancel(c.Request.Context())
+	defer heartbeatCancel()
+
+	// 心跳 goroutine
+	heartbeatTicker := time.NewTicker(15 * time.Second)
+	defer heartbeatTicker.Stop()
+	go func() {
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-heartbeatTicker.C:
+				select {
+				case <-c.Request.Context().Done():
+					return
+				default:
+					if _, err := c.Writer.WriteString(": heartbeat\n\n"); err != nil {
+						log.C(c).Warnw("Failed to send heartbeat", "error", err)
+						return
+					}
+					flusher.Flush()
+				}
+			}
+		}
+	}()
+
+	// 执行业务流
+	err := ctrl.sopBiz.ChatAfterRunStream(heartbeatCtx, req.RunID, req.ConversationID, req.Question, user.ID, func(event string, chunk string) error {
+		// 检查客户端连接
+		select {
+		case <-c.Request.Context().Done():
+			return c.Request.Context().Err()
+		default:
+		}
+
+		chunkJSON, _ := json.Marshal(chunk)
+		var data string
+		switch event {
+		case "thinking":
+			data = fmt.Sprintf("event: thinking\ndata: %s\n\n", string(chunkJSON))
+		case "message":
+			data = fmt.Sprintf("data: %s\n\n", string(chunkJSON))
+		case "done":
+			data = "event: done\ndata: {\"status\":\"completed\"}\n\n"
+		default:
+			return nil
+		}
+
+		if _, err := c.Writer.WriteString(data); err != nil {
+			log.C(c).Warnw("Failed to write chunk to client", "error", err)
+			return err
+		}
+		flusher.Flush()
+		return nil
+	})
+
+	if err != nil {
+		if c.Request.Context().Err() != nil {
+			log.C(c).Infow("Client disconnected during stream", "error", err)
+			return
+		}
+		// 发送错误事件
+		errorMsg, _ := json.Marshal(err.Error())
+		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
+		c.Writer.WriteString(errorData)
+		flusher.Flush()
+		return
+	}
+
+	// 结尾done事件已在handler写入
+}
+
+// ListRunChatMessages 获取指定run的聊天记录（需登录且归属校验）
+func (ctrl *SopController) ListRunChatMessages(c *gin.Context) {
+	log.C(c).Infow("List run chat messages called")
+
+	runID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的执行ID"), nil)
+		return
+	}
+
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	msgs, err := ctrl.sopBiz.ListChatMessages(c, uint(runID), user.ID)
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"run_id":          runID,
+		"conversation_id": msgsSafeConversationID(msgs),
+		"messages":        msgs,
+	})
+}
+
+// msgsSafeConversationID 取聊天记录里的一个conversation_id用于响应
+func msgsSafeConversationID(msgs []model.SopChatMsg) string {
+	for _, m := range msgs {
+		if m.ConversationID != "" {
+			return m.ConversationID
+		}
+	}
+	return ""
+}
+
 // buildEditTextMessages 构建文本编辑的对话消息
 func buildEditTextMessages(originalText, userMessage string, history []v1.EditTextMessage, isFirstConversation bool) []map[string]string {
 	messages := []map[string]string{}

@@ -3,6 +3,7 @@ package sop
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"numind-server/internal/numind/store"
@@ -44,6 +45,10 @@ type ISopBiz interface {
 	// Note operations
 	GetNote(ctx context.Context, id uint) (*model.SopNote, error)
 	ListNotesByUser(ctx context.Context, userID uint, offset, limit int) ([]model.SopNote, int64, error)
+
+	// Chat operations
+	ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, handler func(event string, chunk string) error) error
+	ListChatMessages(ctx context.Context, runID uint, userID uint) ([]model.SopChatMsg, error)
 }
 
 type sopBiz struct {
@@ -665,4 +670,139 @@ func (b *sopBiz) ListNotesByUser(ctx context.Context, userID uint, offset, limit
 
 func (b *sopBiz) ListExecutedTemplatesByUser(ctx context.Context, userID uint) ([]store.ExecutedTemplateInfo, error) {
 	return b.ds.Sop().ListExecutedTemplatesByUser(userID)
+}
+
+// ChatAfterRunStream 基于已完成的Run继续对话（SSE）
+func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, handler func(event string, chunk string) error) error {
+	// 校验 run
+	run, err := b.ds.Sop().GetRun(runID)
+	if err != nil {
+		return fmt.Errorf("run not found: %w", err)
+	}
+	if run.UserID != userID {
+		return fmt.Errorf("no permission to access this run")
+	}
+	if conversationID != "" && run.ConversationID != conversationID {
+		return fmt.Errorf("conversation_id mismatch with run")
+	}
+	// 使用 run 中的会话ID
+	conversationID = run.ConversationID
+
+	// 获取模板、节点、节点执行记录
+	template, err := b.ds.Sop().GetTemplate(run.TemplateID)
+	if err != nil {
+		return fmt.Errorf("template not found: %w", err)
+	}
+	nodes, err := b.ds.Sop().ListNodesByTemplate(run.TemplateID)
+	if err != nil {
+		return fmt.Errorf("failed to list nodes: %w", err)
+	}
+	if len(nodes) == 0 {
+		return fmt.Errorf("template has no nodes")
+	}
+	// 找到最后一个节点，作为对话模型配置载体
+	lastNode := nodes[0]
+	for _, n := range nodes {
+		if n.Sort > lastNode.Sort {
+			lastNode = n
+		}
+	}
+
+	nodeRuns, err := b.ds.Sop().ListNodeRunsByRun(runID)
+	if err != nil {
+		return fmt.Errorf("failed to list node runs: %w", err)
+	}
+
+	// 构建对话历史：模板 prompt -> 节点输入/输出 -> 已有聊天消息
+	history := []LLMMessage{}
+	if template != nil && template.Prompt != "" {
+		history = append(history, LLMMessage{Role: "system", Content: template.Prompt})
+	}
+	for _, nr := range nodeRuns {
+		if nr.Status != model.SopStatusSucceeded {
+			continue
+		}
+		history = append(history, LLMMessage{Role: "user", Content: nr.Input})
+		history = append(history, LLMMessage{Role: "assistant", Content: nr.Output})
+	}
+
+	chatMessages, err := b.ds.Sop().ListChatMessagesByRun(runID)
+	if err != nil {
+		return fmt.Errorf("failed to list chat messages: %w", err)
+	}
+	maxSeq := 0
+	for _, msg := range chatMessages {
+		if msg.Seq > maxSeq {
+			maxSeq = msg.Seq
+		}
+		history = append(history, LLMMessage{Role: msg.Role, Content: msg.Content})
+	}
+
+	// 保存当前用户提问
+	userMsg := &model.SopChatMsg{
+		RunID:          runID,
+		ConversationID: conversationID,
+		UserID:         userID,
+		Role:           "user",
+		Content:        question,
+		Seq:            maxSeq + 1,
+	}
+	if err := b.ds.Sop().CreateChatMessage(userMsg); err != nil {
+		return fmt.Errorf("failed to save chat message: %w", err)
+	}
+	history = append(history, LLMMessage{Role: "user", Content: question})
+
+	// 调用模型流式生成回答
+	var answerBuf strings.Builder
+	_, _, err = b.executor.ExecuteNodeStreamWithThinking(
+		ctx,
+		&lastNode,
+		question,
+		history,
+		func(event string, chunk string) error {
+			if event == "message" {
+				answerBuf.WriteString(chunk)
+			}
+			return handler(event, chunk)
+		},
+		true, // isLastNode：使用纯输入，避免重复拼prompt
+		true, // deepThinking
+		conversationID,
+	)
+	if err != nil {
+		return err
+	}
+
+	// 保存助手回复
+	assistantMsg := &model.SopChatMsg{
+		RunID:          runID,
+		ConversationID: conversationID,
+		UserID:         userID,
+		Role:           "assistant",
+		Content:        answerBuf.String(),
+		Seq:            maxSeq + 2,
+	}
+	if err := b.ds.Sop().CreateChatMessage(assistantMsg); err != nil {
+		return fmt.Errorf("failed to save assistant message: %w", err)
+	}
+
+	return nil
+}
+
+// ListChatMessages 获取指定run的聊天记录（需校验归属）
+func (b *sopBiz) ListChatMessages(ctx context.Context, runID uint, userID uint) ([]model.SopChatMsg, error) {
+	// 校验 run 归属
+	run, err := b.ds.Sop().GetRun(runID)
+	if err != nil {
+		return nil, fmt.Errorf("run not found: %w", err)
+	}
+	if run.UserID != userID {
+		return nil, fmt.Errorf("no permission to access this run")
+	}
+
+	msgs, err := b.ds.Sop().ListChatMessagesByRun(runID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list chat messages: %w", err)
+	}
+	return msgs, nil
 }

@@ -223,6 +223,11 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate sop_file: %v", err)
 	}
 
+	// 第七步：创建对话消息表（依赖执行记录表和用户表）
+	if err := db.AutoMigrate(&model.SopChatMsg{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_chat_message: %v", err)
+	}
+
 	log.Infow("SOP tables migration completed")
 
 	log.Infow("All database schema migration completed")
