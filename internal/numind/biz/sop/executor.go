@@ -705,6 +705,13 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 
+	var (
+		thinkingBuf    strings.Builder
+		messageBuf     strings.Builder
+		thinkingChunks int
+		messageChunks  int
+	)
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" || strings.HasPrefix(line, ":") {
@@ -733,11 +740,27 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		delta, _ := choice["delta"].(map[string]interface{})
 
 		if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
+			thinkingChunks++
+			thinkingBuf.WriteString(rc)
+			log.C(ctx).Infow("LLM thinking chunk",
+				"node_id", node.ID,
+				"node_name", node.Name,
+				"chunk_index", thinkingChunks,
+				"chunk_length", len(rc),
+				"chunk", rc)
 			if err := handler("thinking", rc); err != nil {
 				return err
 			}
 		}
 		if content, ok := delta["content"].(string); ok && content != "" {
+			messageChunks++
+			messageBuf.WriteString(content)
+			log.C(ctx).Infow("LLM message chunk",
+				"node_id", node.ID,
+				"node_name", node.Name,
+				"chunk_index", messageChunks,
+				"chunk_length", len(content),
+				"chunk", content)
 			if err := handler("message", content); err != nil {
 				return err
 			}
@@ -745,8 +768,22 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 	}
 
 	if err := scanner.Err(); err != nil {
+		log.C(ctx).Errorw("Scanner error during ali deep thinking stream",
+			"node_id", node.ID,
+			"node_name", node.Name,
+			"collected_reasoning", thinkingBuf.String(),
+			"collected_message", messageBuf.String(),
+			"error", err)
 		return fmt.Errorf("scanner error: %w", err)
 	}
+
+	log.C(ctx).Infow("LLM deep thinking stream finished",
+		"node_id", node.ID,
+		"node_name", node.Name,
+		"thinking_chunks", thinkingChunks,
+		"message_chunks", messageChunks,
+		"reasoning_output", thinkingBuf.String(),
+		"message_output", messageBuf.String())
 
 	return nil
 }
