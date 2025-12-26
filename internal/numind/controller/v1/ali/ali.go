@@ -112,4 +112,3 @@ func (ctrl *AliController) VisionAnalyze(c *gin.Context) {
 		"content": result,
 	})
 }
-
