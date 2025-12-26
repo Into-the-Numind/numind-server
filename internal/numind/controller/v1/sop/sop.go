@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -991,6 +992,74 @@ func (ctrl *SopController) ParseFileTextQuery(c *gin.Context) {
 		Text:    strings.TrimSpace(text),
 		Files:   []FileTextResult{},
 		FileIDs: req.FileIDs,
+	})
+}
+
+// ReadImageWithQwenVL 读取图片，调用qwen-vl-max进行理解
+func (ctrl *SopController) ReadImageWithQwenVL(c *gin.Context) {
+	log.C(c).Infow("Read image with qwen-vl called")
+
+	// 仅支持 multipart 上传
+	contentType := c.GetHeader("Content-Type")
+	if !strings.Contains(contentType, "multipart/form-data") {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请使用multipart/form-data上传图片"), nil)
+		return
+	}
+
+	const maxImageSize = 5 * 1024 * 1024 // 5MB
+	form, err := c.MultipartForm()
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的multipart form: "+err.Error()), nil)
+		return
+	}
+	defer form.RemoveAll()
+
+	files := form.File["file"]
+	if len(files) == 0 {
+		files = form.File["image"]
+	}
+	if len(files) == 0 {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("请上传图片文件（field: file 或 image）"), nil)
+		return
+	}
+
+	question := strings.TrimSpace(c.DefaultPostForm("question", "请描述图片内容"))
+
+	fh := files[0]
+	if fh.Size > maxImageSize {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("图片大小超过5MB限制"), nil)
+		return
+	}
+
+	file, err := fh.Open()
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("无法读取文件: "+err.Error()), nil)
+		return
+	}
+	defer file.Close()
+
+	buf := make([]byte, maxImageSize+1)
+	n, err := file.Read(buf)
+	if err != nil && err != io.EOF {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("读取文件失败: "+err.Error()), nil)
+		return
+	}
+	if int64(n) > maxImageSize {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("图片大小超过5MB限制"), nil)
+		return
+	}
+	data := buf[:n]
+
+	encoded := base64.StdEncoding.EncodeToString(data)
+	resp, err := ctrl.aliBiz.QianwenVision(c.Request.Context(), encoded, question)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage(err.Error()), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"question": question,
+		"answer":   resp,
 	})
 }
 

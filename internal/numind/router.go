@@ -260,6 +260,7 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.POST("/sop/files/check-quality", userSopc.CheckFileQuality)              // 检测上传文件质量
 		authGroup.POST("/sop/files/parse-text", userSopc.ParseFileText)                    // 上传文件解析文本（返回文本用于回填）
 		authGroup.POST("/sop/files/parse-text/query", userSopc.ParseFileTextQuery)         // 轮询qwen-long解析结果
+		authGroup.POST("/sop/images/read", userSopc.ReadImageWithQwenVL)                   // 读取图片（qwen-vl-max）
 		authGroup.POST("/sop/text/edit", userSopc.EditTextStream)                          // 文本编辑流式对话（不保存到数据库）
 		authGroup.POST("/sop/chat/stream", userSopc.ChatAfterRunStream)                    // Run完成后的对话流式接口
 		authGroup.GET("/sop/runs/:id/chat-messages", userSopc.ListRunChatMessages)         // 获取Run聊天记录
