@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -399,13 +400,14 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 
 	// 流式读取响应
 	var fullOutput strings.Builder
-	scanner := bufio.NewScanner(resp.Body)
+	reader := bufio.NewReader(resp.Body)
+	
+	// 读取超时时间：3秒
+	readTimeout := 3 * time.Second
+	maxConsecutiveTimeouts := 3
+	consecutiveTimeouts := 0
 
-	// 设置更大的缓冲区以处理长行
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024) // 1MB缓冲区
-
-	for scanner.Scan() {
+	for {
 		// 检查context是否被取消
 		select {
 		case <-ctx.Done():
@@ -418,7 +420,64 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 		default:
 		}
 
-		line := scanner.Text()
+		// 使用context.WithTimeout实现读取超时
+		readCtx, readCancel := context.WithTimeout(ctx, readTimeout)
+		var lineBytes []byte
+		var readErr error
+		readDone := make(chan struct{})
+
+		go func() {
+			defer readCancel()
+			lineBytes, readErr = reader.ReadBytes('\n')
+			close(readDone)
+		}()
+
+		select {
+		case <-readCtx.Done():
+			// 超时
+			consecutiveTimeouts++
+			if consecutiveTimeouts >= maxConsecutiveTimeouts {
+				log.C(ctx).Warnw("Multiple read timeouts, may indicate connection issue",
+					"node_id", node.ID,
+					"consecutive_timeouts", consecutiveTimeouts)
+				// 继续尝试，但记录警告
+			}
+			// 超时，继续尝试读取（可能是上游暂时没有数据）
+			continue
+		case <-readDone:
+			// 读取完成
+			readCancel()
+		}
+
+		if readErr != nil {
+			// 检查是否是超时错误
+			if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
+				consecutiveTimeouts++
+				if consecutiveTimeouts >= maxConsecutiveTimeouts {
+					log.C(ctx).Warnw("Multiple read timeouts, may indicate connection issue",
+						"node_id", node.ID,
+						"consecutive_timeouts", consecutiveTimeouts)
+				}
+				// 超时，继续尝试读取
+				continue
+			}
+			if readErr == io.EOF {
+				// 流结束
+				break
+			}
+			log.C(ctx).Errorw("Read error during stream", "node_id", node.ID, "error", readErr)
+			// 即使读取出错，也返回已累积的输出（如果有）
+			if fullOutput.Len() > 0 {
+				return fullOutput.String(), nil
+			}
+			return "", fmt.Errorf("read error: %w", readErr)
+		}
+
+		// 重置超时计数器
+		consecutiveTimeouts = 0
+
+		// 转换为字符串并去除换行符
+		line := strings.TrimRight(string(lineBytes), "\r\n")
 
 		// 过滤 SSE 注释行（以 : 开头）和空行，防止心跳等注释内容混入输出
 		if strings.HasPrefix(line, ":") || line == "" {
@@ -480,15 +539,6 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 					"error", err.Error())
 			}
 		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		log.C(ctx).Errorw("Scanner error during stream", "error", err)
-		// 即使scanner出错，也返回已累积的输出（如果有）
-		if fullOutput.Len() > 0 {
-			return fullOutput.String(), nil
-		}
-		return "", fmt.Errorf("scanner error: %w", err)
 	}
 
 	output := fullOutput.String()
@@ -708,9 +758,12 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		return fmt.Errorf("ali stream status %d: %s", resp.StatusCode, string(body))
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	reader := bufio.NewReader(resp.Body)
+	
+	// 读取超时时间：3秒
+	readTimeout := 3 * time.Second
+	maxConsecutiveTimeouts := 3
+	consecutiveTimeouts := 0
 
 	var (
 		thinkingBuf    strings.Builder
@@ -719,8 +772,67 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		messageChunks  int
 	)
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	for {
+		// 检查context是否被取消
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// 使用context.WithTimeout实现读取超时
+		readCtx, readCancel := context.WithTimeout(ctx, readTimeout)
+		var lineBytes []byte
+		var readErr error
+		readDone := make(chan struct{})
+
+		go func() {
+			defer readCancel()
+			lineBytes, readErr = reader.ReadBytes('\n')
+			close(readDone)
+		}()
+
+		select {
+		case <-readCtx.Done():
+			// 超时
+			consecutiveTimeouts++
+			if consecutiveTimeouts >= maxConsecutiveTimeouts {
+				log.C(ctx).Warnw("Multiple read timeouts in ali deep thinking stream",
+					"node_id", node.ID,
+					"consecutive_timeouts", consecutiveTimeouts)
+			}
+			// 超时，继续尝试读取
+			continue
+		case <-readDone:
+			// 读取完成
+			readCancel()
+		}
+
+		if readErr != nil {
+			// 检查是否是超时错误
+			if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
+				consecutiveTimeouts++
+				if consecutiveTimeouts >= maxConsecutiveTimeouts {
+					log.C(ctx).Warnw("Multiple read timeouts in ali deep thinking stream",
+						"node_id", node.ID,
+						"consecutive_timeouts", consecutiveTimeouts)
+				}
+				// 超时，继续尝试读取
+				continue
+			}
+			if readErr == io.EOF {
+				// 流结束
+				break
+			}
+			log.C(ctx).Errorw("Read error in ali deep thinking stream", "node_id", node.ID, "error", readErr)
+			return fmt.Errorf("read error: %w", readErr)
+		}
+
+		// 重置超时计数器
+		consecutiveTimeouts = 0
+
+		// 转换为字符串并去除换行符
+		line := strings.TrimRight(string(lineBytes), "\r\n")
 		if line == "" || strings.HasPrefix(line, ":") {
 			continue
 		}
@@ -772,16 +884,6 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 				return err
 			}
 		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		log.C(ctx).Errorw("Scanner error during ali deep thinking stream",
-			"node_id", node.ID,
-			"node_name", node.Name,
-			"collected_reasoning", thinkingBuf.String(),
-			"collected_message", messageBuf.String(),
-			"error", err)
-		return fmt.Errorf("scanner error: %w", err)
 	}
 
 	log.C(ctx).Infow("LLM deep thinking stream finished",

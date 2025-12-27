@@ -348,10 +348,14 @@ jobs:
                 echo "Health check passed! Deployment completed successfully!"
                 echo "Container status:"
                 docker ps -f name=numind-server-dev --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+                echo ""
+                echo "=== Recent startup logs (including DEBUG) ==="
+                docker logs --tail 50 numind-server-dev | grep -E "\[DEBUG\]|ERROR|FATAL|panic" || docker logs --tail 50 numind-server-dev
+                echo "============================================="
               else
                 echo "Warning: Health endpoint not responding, but container is running"
                 echo "Container logs:"
-                docker logs --tail 10 numind-server-dev || true
+                docker logs --tail 50 numind-server-dev || true
                 echo "Container status:"
                 docker ps -f name=numind-server-dev --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
               fi

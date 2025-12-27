@@ -4,7 +4,8 @@ ARG BINARY_PATH
 COPY $BINARY_PATH /app/numind
 
 # 运行阶段 - 基于Ubuntu以获得更好的Chrome支持
-FROM ubuntu:22.04
+# 使用 Ubuntu 24.04 以匹配 GitHub Actions 构建环境的 GLIBC 版本
+FROM ubuntu:24.04
 
 # 设置环境变量避免交互式安装
 ENV DEBIAN_FRONTEND=noninteractive

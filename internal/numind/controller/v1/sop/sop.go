@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -380,10 +382,32 @@ func (ctrl *SopController) GetTemplateNodes(c *gin.Context) {
 
 // CreateRun 创建SOP执行（不立即执行）
 func (ctrl *SopController) CreateRun(c *gin.Context) {
+	// #region agent log
+	func() {
+		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if logFile != nil {
+			defer logFile.Close()
+			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:382","message":"CreateRun handler entry","data":{"hypothesisId":"B","path":%q},"sessionId":"debug-session","runId":"request"}
+`, time.Now().UnixMilli(), c.Request.URL.Path)
+			logFile.WriteString(logEntry)
+		}
+	}()
+	// #endregion
 	log.C(c).Infow("User create SOP run called")
 
 	// 从token获取当前用户
 	currentUser, exists := c.Get("current_user")
+	// #region agent log
+	func() {
+		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if logFile != nil {
+			defer logFile.Close()
+			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:387","message":"Auth check result","data":{"hypothesisId":"D","exists":%t},"sessionId":"debug-session","runId":"request"}
+`, time.Now().UnixMilli(), exists)
+			logFile.WriteString(logEntry)
+		}
+	}()
+	// #endregion
 	if !exists {
 		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
 		return
@@ -392,16 +416,69 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 
 	var req v1.CreateSopRunRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		// #region agent log
+		func() {
+			logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if logFile != nil {
+				defer logFile.Close()
+				logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:394","message":"JSON bind error","data":{"hypothesisId":"B","error":%q},"sessionId":"debug-session","runId":"request"}
+`, time.Now().UnixMilli(), err.Error())
+				logFile.WriteString(logEntry)
+			}
+		}()
+		// #endregion
 		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
 		return
 	}
+	// #region agent log
+	func() {
+		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if logFile != nil {
+			defer logFile.Close()
+			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:397","message":"Request parsed","data":{"hypothesisId":"B","templateID":%d,"userID":%d},"sessionId":"debug-session","runId":"request"}
+`, time.Now().UnixMilli(), req.TemplateID, user.ID)
+			logFile.WriteString(logEntry)
+		}
+	}()
+	// #endregion
 
 	run, err := ctrl.sopBiz.CreateRun(c, req.TemplateID, user.ID, req.Text)
+	// #region agent log
+	func() {
+		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if logFile != nil {
+			defer logFile.Close()
+			hasErr := err != nil
+			runID := uint(0)
+			if run != nil {
+				runID = run.ID
+			}
+			errMsg := ""
+			if err != nil {
+				errMsg = err.Error()
+			}
+			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:399","message":"CreateRun biz result","data":{"hypothesisId":"B","error":%t,"errorMsg":%q,"runID":%d},"sessionId":"debug-session","runId":"request"}
+`, time.Now().UnixMilli(), hasErr, errMsg, runID)
+			logFile.WriteString(logEntry)
+		}
+	}()
+	// #endregion
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
 		return
 	}
 
+	// #region agent log
+	func() {
+		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if logFile != nil {
+			defer logFile.Close()
+			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:405","message":"CreateRun handler exit","data":{"hypothesisId":"B","runID":%d,"success":true},"sessionId":"debug-session","runId":"request"}
+`, time.Now().UnixMilli(), run.ID)
+			logFile.WriteString(logEntry)
+		}
+	}()
+	// #endregion
 	core.WriteResponse(c, nil, run)
 }
 
@@ -610,8 +687,8 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 				case <-c.Request.Context().Done():
 					return
 				default:
-					// 发送心跳注释行
-					if _, err := c.Writer.WriteString(": heartbeat\n\n"); err != nil {
+					// 发送心跳注释行（使用简洁格式，确保前端不会解析）
+					if _, err := c.Writer.WriteString(":\n\n"); err != nil {
 						log.C(c).Warnw("Failed to send heartbeat", "error", err)
 						return
 					}
@@ -1838,7 +1915,8 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 				case <-c.Request.Context().Done():
 					return
 				default:
-					if _, err := c.Writer.WriteString(": heartbeat\n\n"); err != nil {
+					// 发送心跳注释行（使用简洁格式，确保前端不会解析）
+					if _, err := c.Writer.WriteString(":\n\n"); err != nil {
 						log.C(c).Warnw("Failed to send heartbeat", "error", err)
 						return
 					}
@@ -1993,7 +2071,8 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 				case <-c.Request.Context().Done():
 					return
 				default:
-					if _, err := c.Writer.WriteString(": heartbeat\n\n"); err != nil {
+					// 发送心跳注释行（使用简洁格式，确保前端不会解析）
+					if _, err := c.Writer.WriteString(":\n\n"); err != nil {
 						log.C(c).Warnw("Failed to send heartbeat", "error", err)
 						return
 					}
@@ -2221,10 +2300,70 @@ func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []ma
 		return fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(body))
 	}
 
-	// 流式读取响应
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
+	// 流式读取响应（带3秒超时）
+	reader := bufio.NewReader(resp.Body)
+	readTimeout := 3 * time.Second
+	maxConsecutiveTimeouts := 3
+	consecutiveTimeouts := 0
+
+	for {
+		// 检查context是否被取消
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// 使用context.WithTimeout实现读取超时
+		readCtx, readCancel := context.WithTimeout(ctx, readTimeout)
+		var lineBytes []byte
+		var readErr error
+		readDone := make(chan struct{})
+
+		go func() {
+			defer readCancel()
+			lineBytes, readErr = reader.ReadBytes('\n')
+			close(readDone)
+		}()
+
+		select {
+		case <-readCtx.Done():
+			// 超时
+			consecutiveTimeouts++
+			if consecutiveTimeouts >= maxConsecutiveTimeouts {
+				log.C(ctx).Warnw("Multiple read timeouts in volc edit stream",
+					"consecutive_timeouts", consecutiveTimeouts)
+			}
+			// 超时，继续尝试读取
+			continue
+		case <-readDone:
+			// 读取完成
+			readCancel()
+		}
+
+		if readErr != nil {
+			// 检查是否是超时错误
+			if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
+				consecutiveTimeouts++
+				if consecutiveTimeouts >= maxConsecutiveTimeouts {
+					log.C(ctx).Warnw("Multiple read timeouts in volc edit stream",
+						"consecutive_timeouts", consecutiveTimeouts)
+				}
+				// 超时，继续尝试读取
+				continue
+			}
+			if readErr == io.EOF {
+				// 流结束
+				break
+			}
+			return fmt.Errorf("read error: %w", readErr)
+		}
+
+		// 重置超时计数器
+		consecutiveTimeouts = 0
+
+		// 转换为字符串并去除换行符
+		line := strings.TrimRight(string(lineBytes), "\r\n")
 
 		// 过滤 SSE 注释行（以 : 开头）和空行，防止心跳等注释内容混入输出
 		if strings.HasPrefix(line, ":") || line == "" {
@@ -2254,7 +2393,7 @@ func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []ma
 		}
 	}
 
-	return scanner.Err()
+	return nil
 }
 
 // callAliEditStream 调用阿里百炼流式API进行文本编辑
@@ -2296,10 +2435,70 @@ func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map
 		return fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(body))
 	}
 
-	// 流式读取响应
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
+	// 流式读取响应（带3秒超时）
+	reader := bufio.NewReader(resp.Body)
+	readTimeout := 3 * time.Second
+	maxConsecutiveTimeouts := 3
+	consecutiveTimeouts := 0
+
+	for {
+		// 检查context是否被取消
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// 使用context.WithTimeout实现读取超时
+		readCtx, readCancel := context.WithTimeout(ctx, readTimeout)
+		var lineBytes []byte
+		var readErr error
+		readDone := make(chan struct{})
+
+		go func() {
+			defer readCancel()
+			lineBytes, readErr = reader.ReadBytes('\n')
+			close(readDone)
+		}()
+
+		select {
+		case <-readCtx.Done():
+			// 超时
+			consecutiveTimeouts++
+			if consecutiveTimeouts >= maxConsecutiveTimeouts {
+				log.C(ctx).Warnw("Multiple read timeouts in ali edit stream",
+					"consecutive_timeouts", consecutiveTimeouts)
+			}
+			// 超时，继续尝试读取
+			continue
+		case <-readDone:
+			// 读取完成
+			readCancel()
+		}
+
+		if readErr != nil {
+			// 检查是否是超时错误
+			if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
+				consecutiveTimeouts++
+				if consecutiveTimeouts >= maxConsecutiveTimeouts {
+					log.C(ctx).Warnw("Multiple read timeouts in ali edit stream",
+						"consecutive_timeouts", consecutiveTimeouts)
+				}
+				// 超时，继续尝试读取
+				continue
+			}
+			if readErr == io.EOF {
+				// 流结束
+				break
+			}
+			return fmt.Errorf("read error: %w", readErr)
+		}
+
+		// 重置超时计数器
+		consecutiveTimeouts = 0
+
+		// 转换为字符串并去除换行符
+		line := strings.TrimRight(string(lineBytes), "\r\n")
 
 		// 过滤 SSE 注释行（以 : 开头）和空行，防止心跳等注释内容混入输出
 		if strings.HasPrefix(line, ":") || line == "" {
@@ -2329,7 +2528,7 @@ func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map
 		}
 	}
 
-	return scanner.Err()
+	return nil
 }
 
 // getAliConfig 获取Ali配置（从controller中访问，因为aliBiz是私有的）

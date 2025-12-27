@@ -1,6 +1,10 @@
 package store
 
 import (
+	"fmt"
+	"os"
+	"time"
+
 	"numind-server/internal/pkg/model"
 
 	"gorm.io/gorm"
@@ -130,7 +134,39 @@ func (s *sopStore) DeleteNode(id uint) error {
 
 // Run operations
 func (s *sopStore) CreateRun(run *model.SopRun) error {
-	return s.db.Create(run).Error
+	// #region agent log
+	func() {
+		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if logFile != nil {
+			defer logFile.Close()
+			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:132","message":"CreateRun store entry","data":{"hypothesisId":"E","templateID":%d,"userID":%d},"sessionId":"debug-session","runId":"request"}
+`, time.Now().UnixMilli(), run.TemplateID, run.UserID)
+			logFile.WriteString(logEntry)
+		}
+	}()
+	// #endregion
+	err := s.db.Create(run).Error
+	// #region agent log
+	func() {
+		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if logFile != nil {
+			defer logFile.Close()
+			hasErr := err != nil
+			errMsg := ""
+			if err != nil {
+				errMsg = err.Error()
+			}
+			runID := uint(0)
+			if run != nil {
+				runID = run.ID
+			}
+			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:134","message":"CreateRun store result","data":{"hypothesisId":"E","error":%t,"errorMsg":%q,"runID":%d},"sessionId":"debug-session","runId":"request"}
+`, time.Now().UnixMilli(), hasErr, errMsg, runID)
+			logFile.WriteString(logEntry)
+		}
+	}()
+	// #endregion
+	return err
 }
 
 func (s *sopStore) GetRun(id uint) (*model.SopRun, error) {

@@ -44,8 +44,13 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 注册 /healthz handler.
 	g.GET("/healthz", func(c *gin.Context) {
+		// #region agent log
+		log.Infow("[DEBUG] Healthz endpoint called", "hypothesisId", "F", "location", "router.go:48", "runId", "runtime")
+		// #endregion
 		log.C(c).Infow("Healthz function called")
-
+		// #region agent log
+		log.Infow("[DEBUG] Healthz response sent", "hypothesisId", "F", "location", "router.go:51", "runId", "runtime")
+		// #endregion
 		core.WriteResponse(c, nil, map[string]string{"status": "ok"})
 	})
 
@@ -77,7 +82,13 @@ func installNumindRouters(g *gin.Engine) error {
 	userSopc := sopcontroller.NewSopController(b.Sop(), b.Ali(), b.Volc())
 
 	// 初始化PDF控制器
+	// #region agent log
+	log.Infow("[DEBUG] Before PDF controller init", "hypothesisId", "C", "location", "router.go:82", "runId", "startup")
+	// #endregion
 	pdfc := pdfcontroller.NewPdfController()
+	// #region agent log
+	log.Infow("[DEBUG] After PDF controller init success", "hypothesisId", "C", "location", "router.go:93", "runId", "startup")
+	// #endregion
 
 	// 🔍 系统启动时检查并向量化历史笔记（异步执行，不阻塞启动）- 暂时注释，不使用向量化
 	// go func() {
@@ -291,6 +302,9 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/sop/notes", userSopc.ListMyNotes)            // 获取我的笔记列表
 	}
 
+	// #region agent log
+	log.Infow("[DEBUG] Router installation completed", "hypothesisId", "C", "location", "router.go:339", "runId", "startup")
+	// #endregion
 	return nil
 }
 

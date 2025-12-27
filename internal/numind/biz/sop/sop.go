@@ -3,6 +3,7 @@ package sop
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -208,8 +209,35 @@ func (b *sopBiz) ExecuteTemplate(ctx context.Context, templateID, userID uint, t
 
 // CreateRun 创建Run（不立即执行）
 func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text string) (*model.SopRun, error) {
+	// #region agent log
+	func() {
+		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if logFile != nil {
+			defer logFile.Close()
+			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:210","message":"CreateRun biz entry","data":{"hypothesisId":"B","templateID":%d,"userID":%d},"sessionId":"debug-session","runId":"request"}
+`, time.Now().UnixMilli(), templateID, userID)
+			logFile.WriteString(logEntry)
+		}
+	}()
+	// #endregion
 	// 验证模板是否存在
 	_, err := b.ds.Sop().GetTemplate(templateID)
+	// #region agent log
+	func() {
+		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if logFile != nil {
+			defer logFile.Close()
+			hasErr := err != nil
+			errMsg := ""
+			if err != nil {
+				errMsg = err.Error()
+			}
+			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:212","message":"GetTemplate result","data":{"hypothesisId":"E","error":%t,"errorMsg":%q},"sessionId":"debug-session","runId":"request"}
+`, time.Now().UnixMilli(), hasErr, errMsg)
+			logFile.WriteString(logEntry)
+		}
+	}()
+	// #endregion
 	if err != nil {
 		return nil, fmt.Errorf("template not found: %w", err)
 	}
@@ -225,10 +253,43 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 		ConversationID: conversationID,
 	}
 
+	// #region agent log
+	func() {
+		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if logFile != nil {
+			defer logFile.Close()
+			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:228","message":"Before CreateRun store call","data":{"hypothesisId":"E","run":%q},"sessionId":"debug-session","runId":"request"}
+`, time.Now().UnixMilli(), conversationID)
+			logFile.WriteString(logEntry)
+		}
+	}()
+	// #endregion
 	if err := b.ds.Sop().CreateRun(run); err != nil {
+		// #region agent log
+		func() {
+			logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if logFile != nil {
+				defer logFile.Close()
+				logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:229","message":"CreateRun store error","data":{"hypothesisId":"E","error":%q},"sessionId":"debug-session","runId":"request"}
+`, time.Now().UnixMilli(), err.Error())
+				logFile.WriteString(logEntry)
+			}
+		}()
+		// #endregion
 		return nil, fmt.Errorf("failed to create run: %w", err)
 	}
 
+	// #region agent log
+	func() {
+		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if logFile != nil {
+			defer logFile.Close()
+			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:232","message":"CreateRun biz success","data":{"hypothesisId":"E","runID":%d},"sessionId":"debug-session","runId":"request"}
+`, time.Now().UnixMilli(), run.ID)
+			logFile.WriteString(logEntry)
+		}
+	}()
+	// #endregion
 	log.C(ctx).Infow("Created SOP run", "run_id", run.ID, "template_id", templateID, "user_id", userID)
 	return run, nil
 }
