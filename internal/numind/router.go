@@ -269,9 +269,9 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.POST("/ali/vision/analyze", alic.VisionAnalyze)     // 视觉理解 (Base64)
 	}
 
-	// PDF转文字相关
+	// 文档转文字相关（支持 PDF、Word、TXT、MD、RTF 等格式）
 	{
-		authGroup.POST("/pdf/convert-to-text", pdfc.ConvertToText) // PDF转文字
+		authGroup.POST("/pdf/convert-to-text", pdfc.ConvertToText) // 文档转文字（支持 .pdf, .txt, .md, .docx, .doc, .rtf）
 	}
 
 	// SOP相关（用户端接口）
