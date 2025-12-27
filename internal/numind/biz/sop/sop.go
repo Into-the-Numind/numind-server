@@ -777,10 +777,13 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	}
 
 	// 构建对话历史：模板 prompt -> 节点输入/输出 -> 已有聊天消息
+	// 注意：同一个 run_id 下的所有聊天记录都在同一个 conversation_id 下，会全部保留
 	history := []LLMMessage{}
+	// 1. 添加模板的 system prompt（如果有）
 	if template != nil && template.Prompt != "" {
 		history = append(history, LLMMessage{Role: "system", Content: template.Prompt})
 	}
+	// 2. 添加所有成功执行的节点输入/输出对（前四步的对话记录）
 	for _, nr := range nodeRuns {
 		if nr.Status != model.SopStatusSucceeded {
 			continue
@@ -788,7 +791,9 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 		history = append(history, LLMMessage{Role: "user", Content: nr.Input})
 		history = append(history, LLMMessage{Role: "assistant", Content: nr.Output})
 	}
-
+	// 3. 添加已有的聊天消息（通过 /v1/sop/chat/stream API 产生的历史对话）
+	// ListChatMessagesByRun 会获取同一个 run_id 下的所有聊天记录，按 seq 排序
+	// 这些记录都在同一个 conversation_id 下，确保大模型有完整的对话记忆
 	chatMessages, err := b.ds.Sop().ListChatMessagesByRun(runID)
 	if err != nil {
 		return fmt.Errorf("failed to list chat messages: %w", err)
