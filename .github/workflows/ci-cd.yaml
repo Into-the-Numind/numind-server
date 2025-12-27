@@ -91,6 +91,15 @@ jobs:
             echo "ℹ️  Go modules cache 未找到，将重新下载"
           fi
 
+      - name: Install system dependencies
+        run: |
+          # 安装MuPDF开发库（go-fitz依赖）
+          echo "=== 安装系统依赖 ==="
+          sudo apt-get update
+          sudo apt-get install -y libmupdf-dev
+          echo "✅ MuPDF开发库安装完成"
+          echo "================================"
+
       - name: Setup Go environment
         run: |
           # 设置Go环境变量
