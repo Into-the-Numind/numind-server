@@ -587,21 +587,15 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 	copy(messages, history)
 
 	// 添加当前输入
-	// 如果是最后一个节点，直接使用前端传来的 input（前端已经拼接好了）
-	// 否则，使用节点的 prompt + input 拼接
+	// 所有节点都应该应用自己的 prompt（如果有的话）
+	// 最后一个节点的特殊处理应该是在输入内容的准备上（整合前面节点的输出），而不是在 prompt 的应用上
 	var userMessage string
-	if isLastNode {
-		// 最后一个节点：直接使用前端传来的 text，不拼接 prompt
-		userMessage = input
-		log.C(ctx).Infow("Last node: using input directly without prompt", "node_id", node.ID, "input_length", len(input))
+	if node.Prompt != "" {
+		userMessage = fmt.Sprintf("%s\n\n%s", node.Prompt, input)
+		log.C(ctx).Infow("Using prompt + input", "node_id", node.ID, "node_name", node.Name, "is_last_node", isLastNode, "prompt_length", len(node.Prompt), "input_length", len(input))
 	} else {
-		// 非最后一个节点：使用 prompt + input 拼接
-		if node.Prompt != "" {
-			userMessage = fmt.Sprintf("%s\n\n%s", node.Prompt, input)
-		} else {
-			userMessage = input
-		}
-		log.C(ctx).Debugw("Non-last node: using prompt + input", "node_id", node.ID, "has_prompt", node.Prompt != "")
+		userMessage = input
+		log.C(ctx).Debugw("No prompt, using input directly", "node_id", node.ID, "node_name", node.Name, "is_last_node", isLastNode)
 	}
 
 	messages = append(messages, LLMMessage{
