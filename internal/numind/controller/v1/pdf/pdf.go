@@ -66,7 +66,7 @@ func (ctrl *PdfController) ConvertToText(c *gin.Context) {
 	}
 
 	// 6. 提取PDF文本
-	text, pageCount, err := extractTextFromPDF(fileData)
+	text, _, err := extractTextFromPDF(fileData)
 	if err != nil {
 		log.C(c).Errorw("PDF文本提取失败", "error", err, "filename", file.Filename)
 		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("PDF文本提取失败: "+err.Error()), nil)

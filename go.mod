@@ -9,7 +9,6 @@ require (
 	github.com/chromedp/cdproto v0.0.0-20250724212937-08a3db8b4327
 	github.com/chromedp/chromedp v0.14.1
 	github.com/common-nighthawk/go-figure v0.0.0-20210622060536-734e95fb86be
-	github.com/gen2brain/go-fitz v0.0.0-20240123100026-46297711bf74
 	github.com/gin-contrib/pprof v1.5.3
 	github.com/gin-gonic/gin v1.10.1
 	github.com/golang-jwt/jwt/v5 v5.2.2
@@ -36,6 +35,8 @@ require (
 require (
 	github.com/chai2010/webp v1.4.0
 	github.com/disintegration/imaging v1.6.2
+	github.com/gen2brain/go-fitz v1.24.15
+	github.com/philippgille/chromem-go v0.7.0
 	github.com/redis/go-redis/v9 v9.16.0
 	github.com/yuin/goldmark v1.7.13
 )
@@ -50,6 +51,7 @@ require (
 	github.com/cloudwego/base64x v0.1.5 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+	github.com/ebitengine/purego v0.8.4 // indirect
 	github.com/fatih/color v1.13.0 // indirect
 	github.com/fsnotify/fsnotify v1.8.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.9 // indirect
@@ -70,6 +72,7 @@ require (
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
+	github.com/jupiterrider/ffi v0.5.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
@@ -81,7 +84,6 @@ require (
 	github.com/mozillazg/go-httpheader v0.2.1 // indirect
 	github.com/nxadm/tail v1.4.11 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
-	github.com/philippgille/chromem-go v0.7.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rivo/uniseg v0.4.2 // indirect
 	github.com/sagikazarmark/locafero v0.7.0 // indirect
@@ -91,7 +93,6 @@ require (
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.0 // indirect
-	github.com/vcaesar/cedar v0.20.2 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/arch v0.18.0 // indirect
 	golang.org/x/net v0.41.0 // indirect
