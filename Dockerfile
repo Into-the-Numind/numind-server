@@ -4,8 +4,8 @@ ARG BINARY_PATH
 COPY $BINARY_PATH /app/numind
 
 # 运行阶段 - 基于Ubuntu以获得更好的Chrome支持
-# 使用 Ubuntu 24.04 以匹配 GitHub Actions 构建环境的 GLIBC 版本
-FROM ubuntu:24.04
+# 使用 Ubuntu 23.10 以匹配 GitHub Actions 构建环境的 GLIBC 版本（Ubuntu 23.10 有 GLIBC 2.38）
+FROM ubuntu:23.10
 
 # 设置环境变量避免交互式安装
 ENV DEBIAN_FRONTEND=noninteractive
@@ -25,7 +25,9 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     && rm -rf /var/lib/apt/lists/*
 
 # 安装Chrome依赖和字体
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+# Ubuntu 24.04: 先更新包列表，然后安装所有依赖
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     fonts-liberation \
     fonts-noto-cjk \
     fonts-wqy-microhei \
