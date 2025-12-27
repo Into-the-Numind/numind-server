@@ -15,6 +15,7 @@ import (
 	"numind-server/internal/numind/controller/v1/membership"
 	"numind-server/internal/numind/controller/v1/order"
 	"numind-server/internal/numind/controller/v1/pagination"
+	pdfcontroller "numind-server/internal/numind/controller/v1/pdf"
 	ragcontroller "numind-server/internal/numind/controller/v1/rag"
 	sopcontroller "numind-server/internal/numind/controller/v1/sop"
 	"numind-server/internal/numind/controller/v1/template"
@@ -74,6 +75,9 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 初始化SOP控制器（用户端）
 	userSopc := sopcontroller.NewSopController(b.Sop(), b.Ali(), b.Volc())
+
+	// 初始化PDF控制器
+	pdfc := pdfcontroller.NewPdfController()
 
 	// 🔍 系统启动时检查并向量化历史笔记（异步执行，不阻塞启动）- 暂时注释，不使用向量化
 	// go func() {
@@ -252,6 +256,11 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.POST("/ali/bailian/lease", alic.GetFileUploadLease) // 获取上传租约
 		authGroup.POST("/ali/bailian/confirm", alic.AddFile)          // 确认上传并导入
 		authGroup.POST("/ali/vision/analyze", alic.VisionAnalyze)     // 视觉理解 (Base64)
+	}
+
+	// PDF转文字相关
+	{
+		authGroup.POST("/pdf/convert-to-text", pdfc.ConvertToText) // PDF转文字
 	}
 
 	// SOP相关（用户端接口）
