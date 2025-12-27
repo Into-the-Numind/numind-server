@@ -20,6 +20,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     bash \
     file \
     tzdata \
+    libmupdf-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装Chrome依赖和字体
