@@ -124,7 +124,7 @@ jobs:
           go mod tidy
           go mod verify
 
-      - name: Build application
+      - name: Build application in Docker container
         run: |
           # 显示构建环境信息
           echo "=== CI/CD 构建环境信息 ==="
@@ -138,12 +138,31 @@ jobs:
           # 创建输出目录
           mkdir -p ./bin
           
-          # 直接构建 Linux 版本
-          echo "🐧 开始构建 numind-linux-amd64..."
-          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
-            -ldflags="-s -w" \
-            -o ./bin/numind-linux-amd64 \
-            ./cmd/numind
+          # 在 Docker 容器中构建，使用与运行环境相同的基础镜像（Ubuntu 22.04）
+          echo "🐧 在 Docker 容器中构建 numind-linux-amd64（使用 Ubuntu 22.04）..."
+          docker run --rm \
+            -v $(pwd):/workspace \
+            -w /workspace \
+            ubuntu:22.04 \
+            sh -c "
+              export DEBIAN_FRONTEND=noninteractive && \
+              apt-get update && \
+              apt-get install -y --no-install-recommends \
+                ca-certificates \
+                curl \
+                gcc \
+                libc6-dev \
+                libmupdf-dev \
+                && \
+              curl -fsSL https://go.dev/dl/go1.24.2.linux-amd64.tar.gz | tar -xz -C /usr/local && \
+              export PATH=/usr/local/go/bin:\$PATH && \
+              export CGO_ENABLED=1 && \
+              export GOOS=linux && \
+              export GOARCH=amd64 && \
+              cd /workspace && \
+              go mod download && \
+              go build -ldflags='-s -w' -o ./bin/numind-linux-amd64 ./cmd/numind
+            "
           
           if [ $? -eq 0 ]; then
             echo "✅ Linux 版本构建成功"
