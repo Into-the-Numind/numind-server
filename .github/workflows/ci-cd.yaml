@@ -93,11 +93,13 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          # 安装MuPDF开发库和运行时库（go-fitz依赖）
+          # 安装MuPDF开发库（go-fitz依赖，会自动安装运行时库）
           echo "=== 安装系统依赖 ==="
           sudo apt-get update
-          sudo apt-get install -y libmupdf-dev libmupdf1
-          echo "✅ MuPDF开发库和运行时库安装完成"
+          sudo apt-get install -y libmupdf-dev
+          echo "✅ MuPDF开发库安装完成（包含运行时库）"
+          echo "验证安装:"
+          dpkg -l | grep mupdf || echo "未找到mupdf包"
           echo "================================"
 
       - name: Setup Go environment
