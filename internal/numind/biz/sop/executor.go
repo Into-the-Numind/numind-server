@@ -1090,12 +1090,14 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 // 使用 thinking.type: "enabled" 开启深度思考
 // 返回 usage 信息用于统计 token 消耗
 func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *model.SopNode, messages []LLMMessage, deepThinking bool, conversationID string, handler StreamHandler) (*TokenUsage, error) {
-	// 构建 URL
-	url := node.BaseURL
+	// 构建 URL（先 trim 掉空格，避免拼接错误）
+	url := strings.TrimSpace(node.BaseURL)
 	if url == "" {
 		url = "https://ark.cn-beijing.volces.com/api/v3"
 	}
 	if !strings.HasSuffix(url, "/chat/completions") {
+		// 确保 URL 末尾没有空格和斜杠
+		url = strings.TrimRight(url, " /")
 		if !strings.HasSuffix(url, "/") {
 			url += "/"
 		}
