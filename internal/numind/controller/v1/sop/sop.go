@@ -248,6 +248,51 @@ func (ctrl *SopController) ListMyExecutedTemplates(c *gin.Context) {
 	core.WriteResponse(c, nil, response)
 }
 
+// ListTemplateRuns 获取指定模板下的所有历史运行记录（包含完整信息）
+func (ctrl *SopController) ListTemplateRuns(c *gin.Context) {
+	log.C(c).Infow("User list template runs with details called")
+
+	// 从URL参数获取template_id
+	templateID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的模板ID"), nil)
+		return
+	}
+
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	// 获取分页参数
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	
+	// 限制最大limit，防止一次性返回过多数据
+	if limit > 100 {
+		limit = 100
+	}
+
+	// 调用biz层获取数据
+	histories, total, err := ctrl.sopBiz.ListTemplateRunsWithDetails(c, user.ID, uint(templateID), offset, limit)
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		return
+	}
+
+	// 返回响应
+	response := v1.ListTemplateRunsResponse{
+		TemplateID: uint(templateID),
+		Total:      total,
+		Runs:       histories,
+	}
+
+	core.WriteResponse(c, nil, response)
+}
+
 // ListMyNotes 获取当前用户的SOP笔记列表
 func (ctrl *SopController) ListMyNotes(c *gin.Context) {
 	log.C(c).Infow("User list my SOP notes called")

@@ -232,3 +232,55 @@ type ListExecutedTemplatesResponse struct {
 	Total     int64                  `json:"total"`     // 模板总数
 	Templates []ExecutedTemplateInfo `json:"templates"` // 模板列表
 }
+
+// TemplateRunHistoryResponse 模板运行历史记录响应
+type TemplateRunHistoryResponse struct {
+	ID             uint                      `json:"id"`              // Run ID
+	TemplateID     uint                      `json:"template_id"`     // 模板ID
+	Status         string                    `json:"status"`          // Run状态
+	CreatedAt      string                    `json:"created_at"`      // 创建时间
+	UpdatedAt      string                    `json:"updated_at"`     // 更新时间
+	CompletedCount int                       `json:"completed_count"` // 已完成节点数
+	TotalNodes     int                       `json:"total_nodes"`    // 总节点数
+	NodeRuns       []TemplateNodeRunInfo     `json:"node_runs"`      // 节点执行记录列表
+	ChatMessages   []TemplateChatMessageInfo `json:"chat_messages"`  // 对话记录列表
+}
+
+// TemplateNodeRunInfo 模板节点执行信息
+type TemplateNodeRunInfo struct {
+	ID            uint                `json:"id"`             // NodeRun ID
+	NodeID        uint                `json:"node_id"`        // 节点ID
+	NodeName      string              `json:"node_name"`     // 节点名称（从Node关联获取）
+	Sort          int                 `json:"sort"`           // 节点排序
+	Status        string              `json:"status"`         // 节点状态
+	FinishedAt    *string             `json:"finished_at"`   // 完成时间
+	Input         string              `json:"input"`         // 用户输入（对应input字段）
+	Output        string              `json:"output"`        // AI输出内容（对应output字段）
+	Thinking      string              `json:"thinking"`      // AI思考过程（可选，对应thinking字段）
+	OutputPreview string              `json:"output_preview,omitempty"` // 输出预览（用于列表展示，截取前200字符）
+	Files         []TemplateFileInfo  `json:"files,omitempty"`          // 文件列表（如果有）
+}
+
+// TemplateFileInfo 模板文件信息
+type TemplateFileInfo struct {
+	ID       uint   `json:"id"`        // 文件ID
+	FileName string `json:"file_name"` // 文件名
+	FileURL  string `json:"file_url"`  // 文件URL
+	FileSize int64  `json:"file_size"` // 文件大小
+	FileType string `json:"file_type"` // 文件类型
+}
+
+// TemplateChatMessageInfo 模板对话消息信息
+type TemplateChatMessageInfo struct {
+	ID        uint   `json:"id"`         // 消息ID
+	Role      string `json:"role"`       // 角色（user/assistant）
+	Content   string `json:"content"`    // 消息内容
+	CreatedAt string `json:"created_at"` // 创建时间
+}
+
+// ListTemplateRunsResponse 模板运行历史列表响应
+type ListTemplateRunsResponse struct {
+	TemplateID uint                        `json:"template_id"` // 模板ID
+	Total      int64                       `json:"total"`       // 总记录数
+	Runs       []TemplateRunHistoryResponse `json:"runs"`       // 运行记录列表
+}

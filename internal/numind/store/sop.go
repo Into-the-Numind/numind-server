@@ -31,6 +31,7 @@ type ISopStore interface {
 	GetRun(id uint) (*model.SopRun, error)
 	UpdateRun(id uint, updates map[string]interface{}) error
 	ListRuns(offset, limit int, userID *uint) ([]model.SopRun, int64, error)
+	ListRunsByUserAndTemplate(userID, templateID uint, offset, limit int) ([]model.SopRun, int64, error)
 	ListExecutedTemplatesByUser(userID uint) ([]ExecutedTemplateInfo, error)
 
 	// NodeRun operations
@@ -38,6 +39,7 @@ type ISopStore interface {
 	GetNodeRun(id uint) (*model.SopNodeRun, error)
 	GetNodeRunByRunAndNode(runID, nodeID uint) (*model.SopNodeRun, error) // 根据runID和nodeID获取最新的NodeRun（用于检查是否已存在，支持重复执行）
 	ListNodeRunsByRun(runID uint) ([]model.SopNodeRun, error)
+	ListNodeRunsByRuns(runIDs []uint) (map[uint][]model.SopNodeRun, error)
 	UpdateNodeRun(id uint, updates map[string]interface{}) error
 
 	// Note operations
@@ -50,12 +52,14 @@ type ISopStore interface {
 	GetFile(id uint) (*model.SopFile, error)
 	ListFilesByRun(runID uint) ([]model.SopFile, error)
 	ListFilesByUser(userID uint, offset, limit int) ([]model.SopFile, int64, error)
+	ListFilesByNodeRuns(nodeIDs []uint) (map[uint][]model.SopFile, error)
 	UpdateFile(id uint, updates map[string]interface{}) error
 	DeleteFile(id uint) error
 
 	// Chat operations
 	CreateChatMessage(msg *model.SopChatMsg) error
 	ListChatMessagesByRun(runID uint) ([]model.SopChatMsg, error)
+	ListChatMessagesByRuns(runIDs []uint) (map[uint][]model.SopChatMsg, error)
 }
 
 type sopStore struct {
@@ -204,6 +208,26 @@ func (s *sopStore) ListRuns(offset, limit int, userID *uint) ([]model.SopRun, in
 	return runs, total, nil
 }
 
+func (s *sopStore) ListRunsByUserAndTemplate(userID, templateID uint, offset, limit int) ([]model.SopRun, int64, error) {
+	var runs []model.SopRun
+	var total int64
+
+	query := s.db.Model(&model.SopRun{}).
+		Where("user_id = ? AND template_id = ?", userID, templateID)
+
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	if err := query.Preload("Template").Preload("User").
+		Offset(offset).Limit(defaultLimit(limit)).Order("created_at DESC").
+		Find(&runs).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return runs, total, nil
+}
+
 // NodeRun operations
 func (s *sopStore) CreateNodeRun(nodeRun *model.SopNodeRun) error {
 	return s.db.Create(nodeRun).Error
@@ -238,6 +262,36 @@ func (s *sopStore) ListNodeRunsByRun(runID uint) ([]model.SopNodeRun, error) {
 	var nodeRuns []model.SopNodeRun
 	err := s.db.Where("run_id = ?", runID).Preload("Node").Order("sort ASC").Find(&nodeRuns).Error
 	return nodeRuns, err
+}
+
+func (s *sopStore) ListNodeRunsByRuns(runIDs []uint) (map[uint][]model.SopNodeRun, error) {
+	if len(runIDs) == 0 {
+		return make(map[uint][]model.SopNodeRun), nil
+	}
+
+	var nodeRuns []model.SopNodeRun
+	err := s.db.Where("run_id IN ?", runIDs).
+		Preload("Node").
+		Order("run_id ASC, sort ASC").
+		Find(&nodeRuns).Error
+	if err != nil {
+		return nil, err
+	}
+
+	// 按run_id分组
+	result := make(map[uint][]model.SopNodeRun)
+	for _, nodeRun := range nodeRuns {
+		result[nodeRun.RunID] = append(result[nodeRun.RunID], nodeRun)
+	}
+
+	// 确保所有run_id都有对应的空数组
+	for _, runID := range runIDs {
+		if _, exists := result[runID]; !exists {
+			result[runID] = []model.SopNodeRun{}
+		}
+	}
+
+	return result, nil
 }
 
 func (s *sopStore) UpdateNodeRun(id uint, updates map[string]interface{}) error {
@@ -314,6 +368,31 @@ func (s *sopStore) ListFilesByUser(userID uint, offset, limit int) ([]model.SopF
 	return files, total, nil
 }
 
+func (s *sopStore) ListFilesByNodeRuns(nodeIDs []uint) (map[uint][]model.SopFile, error) {
+	if len(nodeIDs) == 0 {
+		return make(map[uint][]model.SopFile), nil
+	}
+
+	var files []model.SopFile
+	err := s.db.Where("node_id IN ?", nodeIDs).
+		Order("node_id ASC, created_at ASC").
+		Find(&files).Error
+	if err != nil {
+		return nil, err
+	}
+
+	// 按node_id分组（注意：这里node_id对应的是SopNode的ID，不是SopNodeRun的ID）
+	// 但SopFile的node_id字段存储的是SopNode的ID
+	result := make(map[uint][]model.SopFile)
+	for _, file := range files {
+		if file.NodeID != nil {
+			result[*file.NodeID] = append(result[*file.NodeID], file)
+		}
+	}
+
+	return result, nil
+}
+
 func (s *sopStore) UpdateFile(id uint, updates map[string]interface{}) error {
 	return s.db.Model(&model.SopFile{}).Where("id = ?", id).Updates(updates).Error
 }
@@ -331,6 +410,35 @@ func (s *sopStore) ListChatMessagesByRun(runID uint) ([]model.SopChatMsg, error)
 	var msgs []model.SopChatMsg
 	err := s.db.Where("run_id = ?", runID).Order("seq ASC, created_at ASC").Find(&msgs).Error
 	return msgs, err
+}
+
+func (s *sopStore) ListChatMessagesByRuns(runIDs []uint) (map[uint][]model.SopChatMsg, error) {
+	if len(runIDs) == 0 {
+		return make(map[uint][]model.SopChatMsg), nil
+	}
+
+	var chatMsgs []model.SopChatMsg
+	err := s.db.Where("run_id IN ?", runIDs).
+		Order("run_id ASC, seq ASC, created_at ASC").
+		Find(&chatMsgs).Error
+	if err != nil {
+		return nil, err
+	}
+
+	// 按run_id分组
+	result := make(map[uint][]model.SopChatMsg)
+	for _, msg := range chatMsgs {
+		result[msg.RunID] = append(result[msg.RunID], msg)
+	}
+
+	// 确保所有run_id都有对应的空数组
+	for _, runID := range runIDs {
+		if _, exists := result[runID]; !exists {
+			result[runID] = []model.SopChatMsg{}
+		}
+	}
+
+	return result, nil
 }
 
 // ExecutedTemplateInfo 用户已执行的模板信息

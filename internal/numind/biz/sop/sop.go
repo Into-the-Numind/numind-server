@@ -10,6 +10,7 @@ import (
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+	v1 "numind-server/pkg/api/numind/v1"
 
 	"gorm.io/gorm"
 )
@@ -36,6 +37,7 @@ type ISopBiz interface {
 	ListRuns(ctx context.Context, offset, limit int, userID *uint) ([]model.SopRun, int64, error)
 	GetRunWithNodes(ctx context.Context, runID uint) (*model.SopRun, []model.SopNodeRun, error)
 	ListExecutedTemplatesByUser(ctx context.Context, userID uint) ([]store.ExecutedTemplateInfo, error)
+	ListTemplateRunsWithDetails(ctx context.Context, userID, templateID uint, offset, limit int) ([]v1.TemplateRunHistoryResponse, int64, error)
 
 	// Step-by-step execution operations
 	CreateRun(ctx context.Context, templateID, userID uint, text string) (*model.SopRun, error)
@@ -755,6 +757,165 @@ func (b *sopBiz) ListNotesByUser(ctx context.Context, userID uint, offset, limit
 
 func (b *sopBiz) ListExecutedTemplatesByUser(ctx context.Context, userID uint) ([]store.ExecutedTemplateInfo, error) {
 	return b.ds.Sop().ListExecutedTemplatesByUser(userID)
+}
+
+func (b *sopBiz) ListTemplateRunsWithDetails(ctx context.Context, userID, templateID uint, offset, limit int) ([]v1.TemplateRunHistoryResponse, int64, error) {
+	// 验证template是否存在
+	_, err := b.ds.Sop().GetTemplate(templateID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, 0, fmt.Errorf("模板不存在")
+		}
+		return nil, 0, err
+	}
+
+	// 获取模板的所有节点，用于计算total_nodes
+	nodes, err := b.ds.Sop().ListNodesByTemplate(templateID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("获取模板节点失败: %w", err)
+	}
+	totalNodes := len(nodes)
+
+	// 获取runs列表
+	runs, total, err := b.ds.Sop().ListRunsByUserAndTemplate(userID, templateID, offset, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if len(runs) == 0 {
+		return []v1.TemplateRunHistoryResponse{}, total, nil
+	}
+
+	// 提取所有run_id
+	runIDs := make([]uint, len(runs))
+	for i, run := range runs {
+		runIDs[i] = run.ID
+	}
+
+	// 批量获取node执行记录
+	nodeRunsMap, err := b.ds.Sop().ListNodeRunsByRuns(runIDs)
+	if err != nil {
+		return nil, 0, fmt.Errorf("获取节点执行记录失败: %w", err)
+	}
+
+	// 批量获取对话记录
+	chatMsgsMap, err := b.ds.Sop().ListChatMessagesByRuns(runIDs)
+	if err != nil {
+		return nil, 0, fmt.Errorf("获取对话记录失败: %w", err)
+	}
+
+	// 提取所有node_id用于查询文件
+	nodeIDs := make([]uint, 0)
+	for _, nodeRuns := range nodeRunsMap {
+		for _, nodeRun := range nodeRuns {
+			if nodeRun.Node != nil {
+				nodeIDs = append(nodeIDs, nodeRun.Node.ID)
+			}
+		}
+	}
+
+	// 批量获取文件列表（按node_id分组）
+	filesMap := make(map[uint][]model.SopFile)
+	if len(nodeIDs) > 0 {
+		filesMap, err = b.ds.Sop().ListFilesByNodeRuns(nodeIDs)
+		if err != nil {
+			// 文件获取失败不影响主流程，记录日志即可
+			log.C(ctx).Warnw("获取文件列表失败", "error", err)
+		}
+	}
+
+	// 组装结果
+	result := make([]v1.TemplateRunHistoryResponse, len(runs))
+	for i, run := range runs {
+		nodeRuns := nodeRunsMap[run.ID]
+		chatMsgs := chatMsgsMap[run.ID]
+
+		// 计算已完成节点数
+		completedCount := 0
+		for _, nodeRun := range nodeRuns {
+			if nodeRun.Status == model.SopStatusSucceeded {
+				completedCount++
+			}
+		}
+
+		// 转换nodeRuns
+		nodeRunInfos := make([]v1.TemplateNodeRunInfo, len(nodeRuns))
+		for j, nodeRun := range nodeRuns {
+			nodeName := ""
+			nodeID := uint(0)
+			if nodeRun.Node != nil {
+				nodeName = nodeRun.Node.Name
+				nodeID = nodeRun.Node.ID
+			}
+
+			// 获取该节点关联的文件
+			files := filesMap[nodeID]
+			fileInfos := make([]v1.TemplateFileInfo, len(files))
+			for k, file := range files {
+				fileInfos[k] = v1.TemplateFileInfo{
+					ID:       file.ID,
+					FileName: file.FileName,
+					FileURL:  file.FileURL,
+					FileSize: file.FileSize,
+					FileType: file.FileType,
+				}
+			}
+
+			// 生成输出预览（截取前200字符）
+			outputPreview := ""
+			if len(nodeRun.Output) > 200 {
+				outputPreview = nodeRun.Output[:200] + "..."
+			} else {
+				outputPreview = nodeRun.Output
+			}
+
+			// 格式化时间
+			finishedAtStr := (*string)(nil)
+			if nodeRun.FinishedAt != nil {
+				finishedAtStr = new(string)
+				*finishedAtStr = nodeRun.FinishedAt.Format(time.RFC3339)
+			}
+
+			nodeRunInfos[j] = v1.TemplateNodeRunInfo{
+				ID:            nodeRun.ID,
+				NodeID:        nodeID,
+				NodeName:      nodeName,
+				Sort:          nodeRun.Sort,
+				Status:        nodeRun.Status,
+				FinishedAt:    finishedAtStr,
+				Input:         nodeRun.Input,
+				Output:        nodeRun.Output,
+				Thinking:      nodeRun.Thinking,
+				OutputPreview: outputPreview,
+				Files:         fileInfos,
+			}
+		}
+
+		// 转换chatMessages
+		chatMsgInfos := make([]v1.TemplateChatMessageInfo, len(chatMsgs))
+		for j, msg := range chatMsgs {
+			chatMsgInfos[j] = v1.TemplateChatMessageInfo{
+				ID:        msg.ID,
+				Role:      msg.Role,
+				Content:   msg.Content,
+				CreatedAt: msg.CreatedAt.Format(time.RFC3339),
+			}
+		}
+
+		result[i] = v1.TemplateRunHistoryResponse{
+			ID:             run.ID,
+			TemplateID:     run.TemplateID,
+			Status:         run.Status,
+			CreatedAt:      run.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:      run.UpdatedAt.Format(time.RFC3339),
+			CompletedCount: completedCount,
+			TotalNodes:     totalNodes,
+			NodeRuns:       nodeRunInfos,
+			ChatMessages:   chatMsgInfos,
+		}
+	}
+
+	return result, total, nil
 }
 
 // ChatAfterRunStream 基于已完成的Run继续对话（SSE）
