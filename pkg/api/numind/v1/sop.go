@@ -281,6 +281,7 @@ type TemplateChatMessageInfo struct {
 // ListTemplateRunsResponse 模板运行历史列表响应
 type ListTemplateRunsResponse struct {
 	TemplateID uint                        `json:"template_id"` // 模板ID
+	Name       string                      `json:"name"`         // 模板名称
 	Total      int64                       `json:"total"`       // 总记录数
 	Runs       []TemplateRunHistoryResponse `json:"runs"`       // 运行记录列表
 }

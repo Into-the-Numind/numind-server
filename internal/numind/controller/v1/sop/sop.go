@@ -276,6 +276,13 @@ func (ctrl *SopController) ListTemplateRuns(c *gin.Context) {
 		limit = 100
 	}
 
+	// 获取template信息（用于获取name）
+	template, err := ctrl.sopBiz.GetTemplate(c, uint(templateID))
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("模板不存在"), nil)
+		return
+	}
+
 	// 调用biz层获取数据
 	histories, total, err := ctrl.sopBiz.ListTemplateRunsWithDetails(c, user.ID, uint(templateID), offset, limit)
 	if err != nil {
@@ -286,6 +293,7 @@ func (ctrl *SopController) ListTemplateRuns(c *gin.Context) {
 	// 返回响应
 	response := v1.ListTemplateRunsResponse{
 		TemplateID: uint(templateID),
+		Name:       template.Name,
 		Total:      total,
 		Runs:       histories,
 	}
