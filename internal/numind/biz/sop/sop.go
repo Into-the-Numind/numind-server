@@ -150,6 +150,7 @@ type CompletedNodeInfo struct {
 	NodeID   uint   `json:"node_id"`
 	NodeName string `json:"node_name"`
 	Sort     int    `json:"sort"`
+	Input    string `json:"input"`  // 节点输入
 	Output   string `json:"output"` // 完整输出
 	Thinking string `json:"thinking,omitempty"`
 }
@@ -597,7 +598,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		"latency_ms":  latency,
 		"finished_at": nodeEndTime,
 	}
-	
+
 	// 保存 token 使用统计（如果存在）
 	if usage != nil {
 		updateData["prompt_tokens"] = usage.PromptTokens
@@ -611,7 +612,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 			"total_tokens", usage.TotalTokens,
 			"reasoning_tokens", usage.ReasoningTokens)
 	}
-	
+
 	if err := b.ds.Sop().UpdateNodeRun(nodeRun.ID, updateData); err != nil {
 		return fmt.Errorf("failed to update node run: %w", err)
 	}
@@ -678,6 +679,7 @@ func (b *sopBiz) GetRunStatus(ctx context.Context, runID uint) (*RunStatus, erro
 				NodeID:   nodeRun.NodeID,
 				NodeName: nodeRun.Node.Name,
 				Sort:     nodeRun.Sort,
+				Input:    nodeRun.Input,  // 节点输入
 				Output:   nodeRun.Output, // 返回完整输出
 				Thinking: nodeRun.Thinking,
 			})

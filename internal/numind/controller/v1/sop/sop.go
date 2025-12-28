@@ -1819,7 +1819,8 @@ func (ctrl *SopController) GetRunStatus(c *gin.Context) {
 			NodeID:   node.NodeID,
 			NodeName: node.NodeName,
 			Sort:     node.Sort,
-			Output:   node.Output, // 返回完整输出
+			Input:    node.Input,    // 节点输入
+			Output:   node.Output,   // 返回完整输出
 			Thinking: node.Thinking,
 		}
 	}

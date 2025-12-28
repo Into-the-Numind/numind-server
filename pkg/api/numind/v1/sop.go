@@ -190,7 +190,8 @@ type CompletedNodeInfo struct {
 	NodeID   uint   `json:"node_id"`
 	NodeName string `json:"node_name"`
 	Sort     int    `json:"sort"`
-	Output   string `json:"output"` // 完整输出
+	Input    string `json:"input"`     // 节点输入
+	Output   string `json:"output"`    // 完整输出
 	Thinking string `json:"thinking,omitempty"`
 }
 
