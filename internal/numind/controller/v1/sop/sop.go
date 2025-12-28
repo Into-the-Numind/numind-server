@@ -2650,7 +2650,21 @@ func extractTextFromPDF(data []byte) (string, error) {
 }
 
 // extractPrintableTextFromPDF 从PDF中提取可打印文本（备用方法）
+// 注意：此方法会过滤掉PDF格式代码，只提取实际文本内容
 func extractPrintableTextFromPDF(data []byte) string {
+	// PDF格式代码关键词，用于识别和过滤PDF格式代码
+	pdfKeywords := []string{
+		"PDF-", "obj", "endobj", "stream", "endstream",
+		"FilterFlateDecode", "Filter", "Length", "BT", "ET",
+		"Tj", "TJ", "Tm", "Td", "TD", "T*", "q", "Q",
+		"cm", "rg", "RG", "g", "G", "f", "F", "S", "s",
+		"W", "n", "m", "l", "c", "v", "y", "h", "re",
+		"xref", "trailer", "startxref", "/Type", "/Subtype",
+		"/Pages", "/Page", "/Font", "/Resources", "/MediaBox",
+		"/Contents", "/Parent", "/Kids", "/Count", "/Root",
+		"/Info", "/ID", "/Size", "/Prev", "/W", "/D",
+	}
+
 	var result strings.Builder
 	var currentWord strings.Builder
 
@@ -2678,8 +2692,8 @@ func extractPrintableTextFromPDF(data []byte) string {
 			// 遇到空白字符，结束当前单词
 			if currentWord.Len() > 0 {
 				word := currentWord.String()
-				// 过滤掉太短的单词（可能是PDF格式代码）
-				if len(word) >= 2 {
+				// 过滤掉PDF格式代码和太短的单词
+				if len(word) >= 2 && !isPDFFormatCode(word, pdfKeywords) {
 					result.WriteString(word)
 					result.WriteByte(' ')
 				}
@@ -2689,7 +2703,7 @@ func extractPrintableTextFromPDF(data []byte) string {
 			// 其他字符，重置当前单词
 			if currentWord.Len() > 0 {
 				word := currentWord.String()
-				if len(word) >= 2 {
+				if len(word) >= 2 && !isPDFFormatCode(word, pdfKeywords) {
 					result.WriteString(word)
 					result.WriteByte(' ')
 				}
@@ -2701,12 +2715,31 @@ func extractPrintableTextFromPDF(data []byte) string {
 	// 处理最后一个单词
 	if currentWord.Len() > 0 {
 		word := currentWord.String()
-		if len(word) >= 2 {
+		if len(word) >= 2 && !isPDFFormatCode(word, pdfKeywords) {
 			result.WriteString(word)
 		}
 	}
 
 	return result.String()
+}
+
+// isPDFFormatCode 检查单词是否是PDF格式代码
+func isPDFFormatCode(word string, keywords []string) bool {
+	wordUpper := strings.ToUpper(word)
+	for _, keyword := range keywords {
+		if strings.Contains(wordUpper, strings.ToUpper(keyword)) {
+			return true
+		}
+	}
+	// 检查是否是PDF对象引用格式（如 "141 0 obj" 中的 "141" 或 "0"）
+	if matched, _ := regexp.MatchString(`^\d+\s+\d+\s+obj$`, word); matched {
+		return true
+	}
+	// 检查是否只包含数字和PDF操作符（可能是PDF格式代码）
+	if matched, _ := regexp.MatchString(`^[\d\s/()\[\]<>]+$`, word); matched && len(word) < 20 {
+		return true
+	}
+	return false
 }
 
 // extractTextFromDOCX 从DOCX文件中提取文本
@@ -2870,13 +2903,21 @@ func cleanExtractedText(text string) string {
 		text = strings.ToValidUTF8(text, "")
 	}
 
-	// 第二步：移除控制字符（包括NULL、换行、回车等）
-	text = regexp.MustCompile(`[\x00-\x1F\x7F-\x9F]`).ReplaceAllString(text, "")
+	// 第二步：移除控制字符（包括NULL、换行、回车等，但保留换行符和制表符）
+	// 保留有用的空白字符：换行符(\n)、回车符(\r)、制表符(\t)、空格( )
+	text = regexp.MustCompile(`[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F-\x9F]`).ReplaceAllString(text, "")
 
-	// 第三步：移除多余的空白字符
-	text = regexp.MustCompile(`\s+`).ReplaceAllString(text, " ")
+	// 第三步：移除PDF格式代码（在清理其他字符之前）
+	text = removePDFFormatCode(text)
 
-	// 第四步：移除PDF/DOCX格式残留字符（保留中文、英文、数字和常用标点）
+	// 第四步：规范化换行符（统一为\n）
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+
+	// 第五步：移除多余的空白字符（多个连续空格合并为单个空格）
+	text = regexp.MustCompile(`[ \t]+`).ReplaceAllString(text, " ")
+
+	// 第六步：移除PDF/DOCX格式残留字符（保留中文、英文、数字和常用标点）
 	// Go的regexp不支持\u转义序列，使用Unicode属性类和字符类
 	// \p{L} 匹配所有字母，\p{N} 匹配所有数字，\p{Han} 匹配汉字
 	// \s 匹配空白字符
@@ -2884,10 +2925,73 @@ func cleanExtractedText(text string) string {
 	keepPattern := regexp.MustCompile(`[^\p{L}\p{N}\p{Han}\s.,!?;:()\[\]{}\-—–'""…。，、；：？！（）【】《》]`)
 	text = keepPattern.ReplaceAllString(text, "")
 
-	// 第五步：再次验证UTF-8有效性，并移除任何剩余的无效字符
+	// 第七步：再次验证UTF-8有效性，并移除任何剩余的无效字符
 	text = sanitizeUTF8ForDatabase(text)
 
+	// 第八步：清理多余的空行（3个以上连续换行符合并为2个）
+	text = regexp.MustCompile(`\n{3,}`).ReplaceAllString(text, "\n\n")
+
 	return strings.TrimSpace(text)
+}
+
+// removePDFFormatCode 移除PDF格式代码
+func removePDFFormatCode(text string) string {
+	// PDF格式代码关键词
+	pdfKeywords := []string{
+		"PDF-", "obj", "endobj", "stream", "endstream",
+		"FilterFlateDecode", "Filter", "Length", "BT", "ET",
+		"Tj", "TJ", "Tm", "Td", "TD", "T*", "q", "Q",
+		"cm", "rg", "RG", "g", "G", "f", "F", "S", "s",
+		"W", "n", "m", "l", "c", "v", "y", "h", "re",
+		"xref", "trailer", "startxref", "/Type", "/Subtype",
+		"/Pages", "/Page", "/Font", "/Resources", "/MediaBox",
+		"/Contents", "/Parent", "/Kids", "/Count", "/Root",
+		"/Info", "/ID", "/Size", "/Prev", "/W", "/D",
+	}
+
+	// 检查是否包含多个PDF格式关键词（可能是PDF原始内容）
+	keywordCount := 0
+	textLower := strings.ToLower(text)
+	for _, keyword := range pdfKeywords {
+		if strings.Contains(textLower, strings.ToLower(keyword)) {
+			keywordCount++
+		}
+	}
+
+	// 如果包含3个或以上的PDF关键词，且内容看起来像PDF格式代码，则进行清理
+	if keywordCount >= 3 {
+		// 检查是否包含PDF对象标记（如 "141 0 obj"）
+		objPattern := regexp.MustCompile(`\d+\s+\d+\s+obj`)
+		if objPattern.MatchString(text) {
+			// 如果内容很长且包含大量PDF格式代码，尝试提取实际文本
+			if len(text) > 500 && keywordCount >= 5 {
+				// 移除PDF格式代码行
+				lines := strings.Split(text, "\n")
+				var cleanedLines []string
+				for _, line := range lines {
+					lineLower := strings.ToLower(strings.TrimSpace(line))
+					isPDFLine := false
+					for _, keyword := range pdfKeywords {
+						if strings.Contains(lineLower, strings.ToLower(keyword)) {
+							isPDFLine = true
+							break
+						}
+					}
+					// 检查是否是PDF对象引用格式
+					if matched, _ := regexp.MatchString(`^\d+\s+\d+\s+obj`, strings.TrimSpace(line)); matched {
+						isPDFLine = true
+					}
+					// 如果这一行不是PDF格式代码，保留它
+					if !isPDFLine && strings.TrimSpace(line) != "" {
+						cleanedLines = append(cleanedLines, line)
+					}
+				}
+				text = strings.Join(cleanedLines, "\n")
+			}
+		}
+	}
+
+	return text
 }
 
 // sanitizeUTF8ForDatabase 清理文本以确保可以安全存储到数据库
