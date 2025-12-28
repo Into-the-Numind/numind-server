@@ -2234,6 +2234,7 @@ func buildEditTextMessages(originalText, userMessage string, history []v1.EditTe
 以"严苛、数据驱动、反空话"的原则，对用户上传的《业务介绍文档》进行六维核验。核心使命是核验文档的"信息密度"与"证据强度"，严禁模糊、宽泛、缺乏证据的原材料通过。
 
 #### 审计标准：
+（以下纬度需要逐项点评："通过"/"存疑"/"缺失" + 具体意见）
 一、业务定位
 - 身份：清晰界定（如：全案陪跑 vs 代运营）
 - 壁垒：必须包含排他性优势（如：全网首家、商业闭环）
@@ -2271,7 +2272,6 @@ func buildEditTextMessages(originalText, userMessage string, history []v1.EditTe
 **得分**：[具体分数，0-100分的范围]
 **评价**：[从三个档中选择对应的具体评价，如：微调]
 
-（以下纬度需要逐项点评："通过"/"存疑"/"缺失" + 具体意见）
 **业务定位**：
 **信任背书**：
 **用户画像**：
@@ -2281,7 +2281,7 @@ func buildEditTextMessages(originalText, userMessage string, history []v1.EditTe
 "
 
 #### 输入
-此处是产品文档的内容：
+下方是产品文档的内容：
 ` + originalText
 
 		messages = append(messages, map[string]string{
