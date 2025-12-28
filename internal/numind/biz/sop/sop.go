@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -861,12 +862,17 @@ func (b *sopBiz) ListTemplateRunsWithDetails(ctx context.Context, userID, templa
 				}
 			}
 
+			// 清理input和output，过滤PDF格式代码等无效内容
+			cleanedInput := cleanPDFFormatCode(nodeRun.Input)
+			cleanedOutput := cleanPDFFormatCode(nodeRun.Output)
+			cleanedThinking := cleanPDFFormatCode(nodeRun.Thinking)
+
 			// 生成输出预览（截取前200字符）
 			outputPreview := ""
-			if len(nodeRun.Output) > 200 {
-				outputPreview = nodeRun.Output[:200] + "..."
+			if len(cleanedOutput) > 200 {
+				outputPreview = cleanedOutput[:200] + "..."
 			} else {
-				outputPreview = nodeRun.Output
+				outputPreview = cleanedOutput
 			}
 
 			// 格式化时间
@@ -883,9 +889,9 @@ func (b *sopBiz) ListTemplateRunsWithDetails(ctx context.Context, userID, templa
 				Sort:          nodeRun.Sort,
 				Status:        nodeRun.Status,
 				FinishedAt:    finishedAtStr,
-				Input:         nodeRun.Input,
-				Output:        nodeRun.Output,
-				Thinking:      nodeRun.Thinking,
+				Input:         cleanedInput,
+				Output:        cleanedOutput,
+				Thinking:      cleanedThinking,
 				OutputPreview: outputPreview,
 				Files:         fileInfos,
 			}
@@ -1056,4 +1062,53 @@ func (b *sopBiz) ListChatMessages(ctx context.Context, runID uint, userID uint) 
 		return nil, fmt.Errorf("failed to list chat messages: %w", err)
 	}
 	return msgs, nil
+}
+
+// cleanPDFFormatCode 清理PDF格式代码等无效内容
+// 如果检测到内容是PDF格式代码（如FilterFlateDecode、stream、endstream等），返回空字符串
+func cleanPDFFormatCode(content string) string {
+	if content == "" {
+		return ""
+	}
+
+	// 检测PDF格式代码的关键词
+	pdfKeywords := []string{
+		"FilterFlateDecode",
+		"stream",
+		"endstream",
+		"endobj",
+		"obj",
+		"Length",
+		"PDF-",
+		"BT",
+		"ET",
+		"Tj",
+		"TJ",
+	}
+
+	// 检查内容中是否包含多个PDF格式关键词
+	keywordCount := 0
+	contentLower := strings.ToLower(content)
+	for _, keyword := range pdfKeywords {
+		if strings.Contains(contentLower, strings.ToLower(keyword)) {
+			keywordCount++
+		}
+	}
+
+	// 如果包含3个或以上的PDF关键词，且内容看起来像PDF格式代码，则认为是无效内容
+	if keywordCount >= 3 {
+		// 进一步检查：如果内容中PDF格式代码的比例很高，则认为是无效内容
+		// 检查是否包含大量PDF对象标记（如数字+空格+数字+空格+obj）
+		objPattern := `\d+\s+\d+\s+obj`
+		if matched, _ := regexp.MatchString(objPattern, content); matched {
+			// 检查内容长度，如果很长且包含大量PDF格式代码，则认为是PDF原始内容
+			if len(content) > 500 && keywordCount >= 5 {
+				log.C(context.Background()).Warnw("检测到PDF格式代码，已过滤", "content_length", len(content), "keyword_count", keywordCount)
+				return "" // 返回空字符串，表示内容无效
+			}
+		}
+	}
+
+	// 如果内容看起来正常，返回原内容
+	return content
 }
