@@ -35,6 +35,7 @@ type ISopBiz interface {
 	// Execution operations
 	ExecuteTemplate(ctx context.Context, templateID, userID uint, text string) (*model.SopRun, error)
 	GetRun(ctx context.Context, id uint) (*model.SopRun, error)
+	CheckRunOwnership(ctx context.Context, runID, userID uint) (bool, error)
 	ListRuns(ctx context.Context, offset, limit int, userID *uint) ([]model.SopRun, int64, error)
 	GetRunWithNodes(ctx context.Context, runID uint) (*model.SopRun, []model.SopNodeRun, error)
 	ListExecutedTemplatesByUser(ctx context.Context, userID uint) ([]store.ExecutedTemplateInfo, error)
@@ -351,28 +352,18 @@ func (b *sopBiz) GetNextNode(ctx context.Context, runID uint) (*model.SopNode, b
 
 // ExecuteNodeStream 流式执行指定节点
 func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text string, handler func(event string, chunk string) error) error {
-	// 获取Run信息
-	run, err := b.ds.Sop().GetRun(runID)
+	// 使用合并查询一次性获取所有需要的数据（优化性能）
+	execCtx, err := b.ds.Sop().GetExecutionContext(runID, nodeID)
 	if err != nil {
-		return fmt.Errorf("run not found: %w", err)
+		return err
 	}
 
-	// 获取节点信息
-	node, err := b.ds.Sop().GetNode(nodeID)
-	if err != nil {
-		return fmt.Errorf("node not found: %w", err)
-	}
-
-	// 验证节点属于该模板
-	if node.TemplateID != run.TemplateID {
-		return fmt.Errorf("node does not belong to this template")
-	}
-
-	// 获取模板的所有节点，用于判断当前节点是否是最后一个节点
-	allNodes, err := b.ds.Sop().ListNodesByTemplate(run.TemplateID)
-	if err != nil {
-		return fmt.Errorf("failed to get template nodes: %w", err)
-	}
+	run := execCtx.Run
+	node := execCtx.Node
+	template := execCtx.Template
+	allNodes := execCtx.AllNodes
+	allNodeRuns := execCtx.AllNodeRuns
+	existingNodeRun := execCtx.ExistingNodeRun
 
 	// 找到最大的sort值（最后一个节点）
 	maxSort := -1
@@ -384,18 +375,6 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 
 	// 判断当前节点是否是最后一个节点
 	isLastNode := node.Sort == maxSort
-
-	// 检查是否已存在该节点的执行记录（支持重复执行）
-	existingNodeRun, err := b.ds.Sop().GetNodeRunByRunAndNode(runID, nodeID)
-	if err != nil {
-		return fmt.Errorf("failed to check existing node run: %w", err)
-	}
-
-	// 获取已执行的NodeRun（用于构建上下文）
-	allNodeRuns, err := b.ds.Sop().ListNodeRunsByRun(runID)
-	if err != nil {
-		return fmt.Errorf("failed to get node runs: %w", err)
-	}
 
 	// 过滤出已完成的其他节点（排除当前要重新执行的节点）
 	completedNodeRuns := []model.SopNodeRun{}
@@ -409,8 +388,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	conversationHistory := []LLMMessage{}
 
 	// 添加模板的预处理prompt
-	template, err := b.ds.Sop().GetTemplate(run.TemplateID)
-	if err == nil && template != nil && template.Prompt != "" {
+	if template != nil && template.Prompt != "" {
 		conversationHistory = append(conversationHistory, LLMMessage{
 			Role:    "system",
 			Content: template.Prompt,
@@ -620,10 +598,9 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		return fmt.Errorf("failed to update node run: %w", err)
 	}
 
-	// 检查是否所有节点都执行完成
+	// 检查是否所有节点都执行完成（重新获取最新的 NodeRuns 状态）
 	allNodeRunsForCheck, err := b.ds.Sop().ListNodeRunsByRun(runID)
 	if err == nil {
-		allNodes, _ := b.ds.Sop().ListNodesByTemplate(run.TemplateID)
 		// 统计每个节点的最新成功记录（用于处理重复执行的情况）
 		nodeStatusMap := make(map[uint]bool) // nodeID -> has succeeded record
 		for _, nr := range allNodeRunsForCheck {
@@ -727,6 +704,11 @@ func (b *sopBiz) GetRunStatus(ctx context.Context, runID uint) (*RunStatus, erro
 
 func (b *sopBiz) GetRun(ctx context.Context, id uint) (*model.SopRun, error) {
 	return b.ds.Sop().GetRun(id)
+}
+
+// CheckRunOwnership 检查Run是否属于指定用户（轻量级权限验证）
+func (b *sopBiz) CheckRunOwnership(ctx context.Context, runID, userID uint) (bool, error) {
+	return b.ds.Sop().CheckRunOwnership(runID, userID)
 }
 
 func (b *sopBiz) ListRuns(ctx context.Context, offset, limit int, userID *uint) ([]model.SopRun, int64, error) {

@@ -612,13 +612,13 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 	}
 	user := currentUser.(*model.User)
 
-	// 验证Run是否属于当前用户
-	run, err := ctrl.sopBiz.GetRun(c, uint(runID))
+	// 验证Run是否属于当前用户（使用轻量级权限验证，避免完整查询）
+	hasAccess, err := ctrl.sopBiz.CheckRunOwnership(c, uint(runID), user.ID)
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("执行记录不存在"), nil)
 		return
 	}
-	if run.UserID != user.ID {
+	if !hasAccess {
 		core.WriteResponse(c, errno.ErrForbidden.SetMessage("无权访问此记录"), nil)
 		return
 	}

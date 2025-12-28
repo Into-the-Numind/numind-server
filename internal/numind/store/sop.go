@@ -60,6 +60,12 @@ type ISopStore interface {
 	CreateChatMessage(msg *model.SopChatMsg) error
 	ListChatMessagesByRun(runID uint) ([]model.SopChatMsg, error)
 	ListChatMessagesByRuns(runIDs []uint) (map[uint][]model.SopChatMsg, error)
+
+	// Execution context (optimized batch query)
+	GetExecutionContext(runID, nodeID uint) (*ExecutionContext, error)
+	
+	// CheckRunOwnership 检查Run是否属于指定用户（轻量级权限验证）
+	CheckRunOwnership(runID, userID uint) (bool, error)
 }
 
 type sopStore struct {
@@ -115,7 +121,7 @@ func (s *sopStore) CreateNode(node *model.SopNode) error {
 
 func (s *sopStore) GetNode(id uint) (*model.SopNode, error) {
 	var node model.SopNode
-	err := s.db.Preload("Template").First(&node, id).Error
+	err := s.db.First(&node, id).Error
 	if err != nil {
 		return nil, err
 	}
@@ -483,4 +489,88 @@ func (s *sopStore) ListExecutedTemplatesByUser(userID uint) ([]ExecutedTemplateI
 	}
 
 	return results, nil
+}
+
+// ExecutionContext 执行上下文，包含执行节点所需的所有数据
+type ExecutionContext struct {
+	Run            *model.SopRun
+	Node           *model.SopNode
+	Template       *model.SopTemplate
+	AllNodes       []model.SopNode
+	AllNodeRuns    []model.SopNodeRun
+	ExistingNodeRun *model.SopNodeRun
+}
+
+// GetExecutionContext 一次性获取执行节点所需的所有数据（优化性能）
+func (s *sopStore) GetExecutionContext(runID, nodeID uint) (*ExecutionContext, error) {
+	ctx := &ExecutionContext{}
+
+	// 1. 获取 Run（不预加载，后续单独查询 Template）
+	var run model.SopRun
+	if err := s.db.First(&run, runID).Error; err != nil {
+		return nil, fmt.Errorf("run not found: %w", err)
+	}
+	ctx.Run = &run
+
+	// 2. 获取 Node（不预加载 Template）
+	var node model.SopNode
+	if err := s.db.First(&node, nodeID).Error; err != nil {
+		return nil, fmt.Errorf("node not found: %w", err)
+	}
+	ctx.Node = &node
+
+	// 3. 验证节点属于该模板
+	if node.TemplateID != run.TemplateID {
+		return nil, fmt.Errorf("node does not belong to this template")
+	}
+
+	// 4. 获取 Template
+	var template model.SopTemplate
+	if err := s.db.First(&template, run.TemplateID).Error; err != nil {
+		return nil, fmt.Errorf("template not found: %w", err)
+	}
+	ctx.Template = &template
+
+	// 5. 获取模板的所有节点
+	var allNodes []model.SopNode
+	if err := s.db.Where("template_id = ?", run.TemplateID).Order("sort ASC").Find(&allNodes).Error; err != nil {
+		return nil, fmt.Errorf("failed to get template nodes: %w", err)
+	}
+	ctx.AllNodes = allNodes
+
+	// 6. 获取所有 NodeRuns（不预加载 Node，因为 ExecuteNodeStream 不需要 Node 信息）
+	var allNodeRuns []model.SopNodeRun
+	if err := s.db.Where("run_id = ?", runID).Order("sort ASC").Find(&allNodeRuns).Error; err != nil {
+		return nil, fmt.Errorf("failed to get node runs: %w", err)
+	}
+	ctx.AllNodeRuns = allNodeRuns
+
+	// 7. 获取已存在的 NodeRun（如果存在，不预加载 Node）
+	var existingNodeRun model.SopNodeRun
+	err := s.db.Where("run_id = ? AND node_id = ?", runID, nodeID).
+		Order("created_at DESC").
+		First(&existingNodeRun).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			ctx.ExistingNodeRun = nil
+		} else {
+			return nil, fmt.Errorf("failed to check existing node run: %w", err)
+		}
+	} else {
+		ctx.ExistingNodeRun = &existingNodeRun
+	}
+
+	return ctx, nil
+}
+
+// CheckRunOwnership 检查Run是否属于指定用户（轻量级权限验证，只查询user_id）
+func (s *sopStore) CheckRunOwnership(runID, userID uint) (bool, error) {
+	var count int64
+	err := s.db.Model(&model.SopRun{}).
+		Where("id = ? AND user_id = ?", runID, userID).
+		Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
