@@ -744,6 +744,15 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 
 	reqData, _ := json.Marshal(payload)
 
+	// 添加详细的请求日志（用于调试思考模式）
+	log.C(ctx).Infow("Sending request to Ali Deep Thinking API",
+		"node_id", node.ID,
+		"node_name", node.Name,
+		"url", url,
+		"model", node.ModelName,
+		"request_body", string(reqData), // 关键：查看实际发送的完整请求体
+		"enable_thinking_in_extra_body", payload["extra_body"])
+
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -918,6 +927,16 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		choice, _ := choices[0].(map[string]interface{})
 		delta, _ := choice["delta"].(map[string]interface{})
 
+		// 添加调试日志：查看原始 delta 数据（用于诊断思考模式）
+		if len(delta) > 0 {
+			deltaJSON, _ := json.Marshal(delta)
+			log.C(ctx).Debugw("Received delta from Ali API",
+				"node_id", node.ID,
+				"delta_keys", getMapKeys(delta),
+				"delta_preview", string(deltaJSON),
+				"has_reasoning_content", hasKey(delta, "reasoning_content"))
+		}
+
 		// 优先检查 reasoning_content（如果模型支持单独的 reasoning_content 字段）
 		if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
 			thinkingChunks++
@@ -1073,6 +1092,21 @@ func getStringPreview(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// getMapKeys 获取 map 的所有键（用于调试日志）
+func getMapKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// hasKey 检查 map 是否包含指定键（用于调试日志）
+func hasKey(m map[string]interface{}, key string) bool {
+	_, ok := m[key]
+	return ok
 }
 
 // CreateFinalNote 创建最终笔记（公开方法）
