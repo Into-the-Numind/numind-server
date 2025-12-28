@@ -1030,7 +1030,7 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 			}
 			return handler(event, chunk)
 		},
-		true, // isLastNode：使用纯输入，避免重复拼prompt
+		true, // isLastNode：标记为最后一个节点（用于日志和统计，所有节点统一使用 prompt + input 格式）
 		true, // deepThinking
 		conversationID,
 	)
