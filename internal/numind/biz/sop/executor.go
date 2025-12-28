@@ -53,6 +53,14 @@ type LLMResponse struct {
 // event: "thinking" | "message" | "done"
 type StreamHandler func(event string, chunk string) error
 
+// TokenUsage Token使用统计信息
+type TokenUsage struct {
+	PromptTokens    int `json:"prompt_tokens"`    // 输入 tokens
+	CompletionTokens int `json:"completion_tokens"` // 输出 tokens
+	TotalTokens     int `json:"total_tokens"`     // 总 tokens
+	ReasoningTokens int `json:"reasoning_tokens"` // 思考过程 tokens（如果开启思考模式）
+}
+
 // Execute 执行SOP流程
 func (e *SopExecutor) Execute(ctx context.Context, run *model.SopRun, nodes []model.SopNode, text string) error {
 	log.C(ctx).Infow("Starting SOP execution", "run_id", run.ID, "template_id", run.TemplateID)
@@ -562,11 +570,12 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 
 // ExecuteNodeStreamWithThinking 流式执行单个节点，并分离思考内容和实际内容
 // deepThinking: 是否开启深度思考模式（阿里百炼 enable_thinking）
-func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, handler StreamHandler, isLastNode bool, deepThinking bool, conversationID string) (string, string, error) {
+// 返回: output, thinking, usage, error
+func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, handler StreamHandler, isLastNode bool, deepThinking bool, conversationID string) (string, string, *TokenUsage, error) {
 	// 检查API密钥是否配置
 	if node.APIKey == "" {
 		log.C(ctx).Errorw("Node API key is empty", "node_id", node.ID, "node_name", node.Name)
-		return "", "", fmt.Errorf("node %s (ID: %d) API key is not configured, please update the node with a valid API key", node.Name, node.ID)
+		return "", "", nil, fmt.Errorf("node %s (ID: %d) API key is not configured, please update the node with a valid API key", node.Name, node.ID)
 	}
 
 	// 脱敏日志：只显示前4位和后4位
@@ -610,7 +619,7 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 
 	// 调用阿里深度思考流式接口，分别积累思考与答案
 	var thinkingBuf, answerBuf strings.Builder
-	err := e.callAliDeepThinkingStream(ctx, node, messages, deepThinking, conversationID, func(event string, chunk string) error {
+	usage, err := e.callAliDeepThinkingStream(ctx, node, messages, deepThinking, conversationID, func(event string, chunk string) error {
 		switch event {
 		case "thinking":
 			thinkingBuf.WriteString(chunk)
@@ -625,14 +634,14 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 		}
 	})
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 
 	output := answerBuf.String()
 	thinking := thinkingBuf.String()
 
 	if output == "" && thinking == "" {
-		return "", "", fmt.Errorf("LLM returned empty response")
+		return "", "", nil, fmt.Errorf("LLM returned empty response")
 	}
 
 	// 兼容旧模型：若未返回reasoning，尝试从输出中拆分
@@ -641,7 +650,7 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 		output = removeThinkingContent(output)
 	}
 
-	return output, thinking, nil
+	return output, thinking, usage, nil
 }
 
 // extractThinkingContent 从完整输出中提取思考内容
@@ -703,7 +712,8 @@ func removeThinkingContent(output string) string {
 
 // callAliDeepThinkingStream 调用阿里百炼深度思考流式接口
 // 使用兼容模式：enable_thinking=true，reasoning_content 为思考链条，content 为最终答案
-func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model.SopNode, messages []LLMMessage, deepThinking bool, conversationID string, handler StreamHandler) error {
+// 返回 usage 信息用于统计 token 消耗
+func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model.SopNode, messages []LLMMessage, deepThinking bool, conversationID string, handler StreamHandler) (*TokenUsage, error) {
 	url := node.BaseURL
 	if url == "" {
 		url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
@@ -716,6 +726,9 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		"stream":   true,
 		"extra_body": map[string]interface{}{
 			"enable_thinking": true,
+		},
+		"stream_options": map[string]interface{}{
+			"include_usage": true,
 		},
 	}
 	// 为每个 run 透传独立的 conversation_id，避免百炼会话串联
@@ -733,7 +746,7 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqData))
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+node.APIKey)
@@ -748,13 +761,13 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to call ali deep thinking stream: %w", err)
+		return nil, fmt.Errorf("failed to call ali deep thinking stream: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("ali stream status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("ali stream status %d: %s", resp.StatusCode, string(body))
 	}
 
 	reader := bufio.NewReader(resp.Body)
@@ -765,17 +778,37 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 	consecutiveTimeouts := 0
 
 	var (
-		thinkingBuf    strings.Builder
-		messageBuf     strings.Builder
-		thinkingChunks int
-		messageChunks  int
+		thinkingBuf        strings.Builder
+		messageBuf         strings.Builder
+		thinkingChunks     int
+		messageChunks      int
+		usage              *TokenUsage // 用于存储 token 使用统计
+		accumulatedContent strings.Builder // 累积所有内容用于判断思考阶段
+		hasThinkingMarker  bool = false    // 是否已检测到思考开始标记
+		thinkingEnded      bool = false    // 思考阶段是否已结束
 	)
+
+	// 思考开始标记
+	thinkingStartMarkers := []string{
+		"已思考",
+		"**已思考**",
+		"思考",
+		"**思考**",
+	}
+
+	// 思考结束标记
+	thinkingEndMarkers := []string{
+		"请开始",
+		"开始创作",
+		"创作要求",
+		"\n\n[完整",
+	}
 
 	for {
 		// 检查context是否被取消
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil, ctx.Err()
 		default:
 		}
 
@@ -824,7 +857,7 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 				break
 			}
 			log.C(ctx).Errorw("Read error in ali deep thinking stream", "node_id", node.ID, "error", readErr)
-			return fmt.Errorf("read error: %w", readErr)
+			return nil, fmt.Errorf("read error: %w", readErr)
 		}
 
 		// 重置超时计数器
@@ -850,6 +883,34 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 			continue
 		}
 
+		// 检查是否有 usage 信息（通常在最后一个数据块中，且 choices 可能为空）
+		if usageData, ok := m["usage"].(map[string]interface{}); ok {
+			usage = &TokenUsage{}
+			if pt, ok := usageData["prompt_tokens"].(float64); ok {
+				usage.PromptTokens = int(pt)
+			}
+			if ct, ok := usageData["completion_tokens"].(float64); ok {
+				usage.CompletionTokens = int(ct)
+			}
+			if tt, ok := usageData["total_tokens"].(float64); ok {
+				usage.TotalTokens = int(tt)
+			}
+			// 检查 completion_tokens_details 中的 reasoning_tokens
+			if ctd, ok := usageData["completion_tokens_details"].(map[string]interface{}); ok {
+				if rt, ok := ctd["reasoning_tokens"].(float64); ok {
+					usage.ReasoningTokens = int(rt)
+				}
+			}
+			log.C(ctx).Infow("Token usage received",
+				"node_id", node.ID,
+				"prompt_tokens", usage.PromptTokens,
+				"completion_tokens", usage.CompletionTokens,
+				"total_tokens", usage.TotalTokens,
+				"reasoning_tokens", usage.ReasoningTokens)
+			// 如果找到 usage，choices 可能为空，继续处理但不处理 delta
+			continue
+		}
+
 		choices, ok := m["choices"].([]interface{})
 		if !ok || len(choices) == 0 {
 			continue
@@ -857,30 +918,139 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		choice, _ := choices[0].(map[string]interface{})
 		delta, _ := choice["delta"].(map[string]interface{})
 
+		// 优先检查 reasoning_content（如果模型支持单独的 reasoning_content 字段）
 		if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
 			thinkingChunks++
 			thinkingBuf.WriteString(rc)
-			log.C(ctx).Infow("LLM thinking chunk",
+			log.C(ctx).Infow("LLM thinking chunk (from reasoning_content)",
 				"node_id", node.ID,
 				"node_name", node.Name,
 				"chunk_index", thinkingChunks,
 				"chunk_length", len(rc),
-				"chunk", rc)
+				"chunk_preview", getStringPreview(rc, 50))
 			if err := handler("thinking", rc); err != nil {
-				return err
+				return nil, err
 			}
 		}
+
+		// 处理 content 字段（思考内容可能混在其中）
 		if content, ok := delta["content"].(string); ok && content != "" {
-			messageChunks++
-			messageBuf.WriteString(content)
-			log.C(ctx).Infow("LLM message chunk",
-				"node_id", node.ID,
-				"node_name", node.Name,
-				"chunk_index", messageChunks,
-				"chunk_length", len(content),
-				"chunk", content)
-			if err := handler("message", content); err != nil {
-				return err
+			// 保存累积内容长度（用于计算相对位置）
+			prevLen := accumulatedContent.Len()
+			
+			// 累积内容用于判断思考阶段
+			accumulatedContent.WriteString(content)
+			currentText := accumulatedContent.String()
+
+			// 检查是否包含思考开始标记
+			if !hasThinkingMarker {
+				for _, marker := range thinkingStartMarkers {
+					if strings.Contains(currentText, marker) {
+						hasThinkingMarker = true
+						log.C(ctx).Infow("Thinking phase detected",
+							"node_id", node.ID,
+							"node_name", node.Name,
+							"marker", marker)
+						break
+					}
+				}
+			}
+
+			// 如果已检测到思考标记，检查是否遇到结束标记
+			if hasThinkingMarker && !thinkingEnded {
+				// 查找结束标记的位置
+				endMarkerIndex := -1
+				var endMarker string
+				for _, marker := range thinkingEndMarkers {
+					if idx := strings.Index(currentText, marker); idx != -1 {
+						endMarkerIndex = idx
+						endMarker = marker
+						break
+					}
+				}
+
+				if endMarkerIndex != -1 {
+					// 遇到结束标记，需要拆分当前 chunk
+					// 计算结束标记在当前chunk中的相对位置
+					relativePos := endMarkerIndex - prevLen
+
+					if relativePos >= 0 && relativePos < len(content) {
+						// 结束标记在当前chunk中，需要拆分
+						thinkingPart := content[:relativePos+len(endMarker)]
+						messagePart := content[relativePos+len(endMarker):]
+
+						// 发送思考部分
+						if thinkingPart != "" {
+							thinkingChunks++
+							thinkingBuf.WriteString(thinkingPart)
+							log.C(ctx).Infow("LLM thinking chunk (split at end marker)",
+								"node_id", node.ID,
+								"node_name", node.Name,
+								"chunk_index", thinkingChunks,
+								"chunk_length", len(thinkingPart),
+								"end_marker", endMarker)
+							if err := handler("thinking", thinkingPart); err != nil {
+								return nil, err
+							}
+						}
+
+						// 切换到 message 阶段
+						thinkingEnded = true
+
+						// 发送正式内容部分
+						if messagePart != "" {
+							messageChunks++
+							messageBuf.WriteString(messagePart)
+							log.C(ctx).Infow("LLM message chunk (after thinking ended)",
+								"node_id", node.ID,
+								"node_name", node.Name,
+								"chunk_index", messageChunks,
+								"chunk_length", len(messagePart))
+							if err := handler("message", messagePart); err != nil {
+								return nil, err
+							}
+						}
+					} else {
+						// 结束标记不在当前chunk中，但已检测到
+						// 这种情况不应该发生，但为了安全还是处理
+						thinkingEnded = true
+						messageChunks++
+						messageBuf.WriteString(content)
+						log.C(ctx).Warnw("Unexpected: end marker found but not in current chunk",
+							"node_id", node.ID,
+							"node_name", node.Name)
+						if err := handler("message", content); err != nil {
+							return nil, err
+						}
+					}
+				} else {
+					// 仍在思考阶段，作为思考内容发送
+					thinkingChunks++
+					thinkingBuf.WriteString(content)
+					log.C(ctx).Infow("LLM thinking chunk (from content)",
+						"node_id", node.ID,
+						"node_name", node.Name,
+						"chunk_index", thinkingChunks,
+						"chunk_length", len(content),
+						"chunk_preview", getStringPreview(content, 50))
+					if err := handler("thinking", content); err != nil {
+						return nil, err
+					}
+				}
+			} else if thinkingEnded || !hasThinkingMarker {
+				// 正式内容阶段，或没有思考标记（向后兼容）
+				messageChunks++
+				messageBuf.WriteString(content)
+				log.C(ctx).Infow("LLM message chunk",
+					"node_id", node.ID,
+					"node_name", node.Name,
+					"chunk_index", messageChunks,
+					"chunk_length", len(content),
+					"has_thinking_marker", hasThinkingMarker,
+					"thinking_ended", thinkingEnded)
+				if err := handler("message", content); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -891,9 +1061,18 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		"thinking_chunks", thinkingChunks,
 		"message_chunks", messageChunks,
 		"reasoning_output", thinkingBuf.String(),
-		"message_output", messageBuf.String())
+		"message_output", messageBuf.String(),
+		"usage", usage)
 
-	return nil
+	return usage, nil
+}
+
+// getStringPreview 获取字符串预览（用于日志，避免日志过长）
+func getStringPreview(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 // CreateFinalNote 创建最终笔记（公开方法）

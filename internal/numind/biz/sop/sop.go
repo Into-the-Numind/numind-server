@@ -519,16 +519,20 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		nodeRun = existingNodeRun
 		isUpdate = true
 
-		// 更新节点执行状态和时间（清空之前的输出和错误信息）
+		// 更新节点执行状态和时间（清空之前的输出、错误信息和 token 统计）
 		updateData := map[string]interface{}{
-			"status":        model.SopStatusRunning,
-			"input":         currentInput,
-			"started_at":    time.Now(),
-			"output":        "",  // 清空之前的输出
-			"thinking":      "",  // 清空之前的思考内容
-			"error_message": "",  // 清空之前的错误信息
-			"finished_at":   nil, // 清空完成时间
-			"latency_ms":    0,   // 重置延迟
+			"status":            model.SopStatusRunning,
+			"input":             currentInput,
+			"started_at":        time.Now(),
+			"output":            "",  // 清空之前的输出
+			"thinking":          "",  // 清空之前的思考内容
+			"error_message":     "",  // 清空之前的错误信息
+			"finished_at":       nil, // 清空完成时间
+			"latency_ms":        0,   // 重置延迟
+			"prompt_tokens":     0,   // 重置 token 统计
+			"completion_tokens": 0,   // 重置 token 统计
+			"total_tokens":      0,   // 重置 token 统计
+			"reasoning_tokens":  0,   // 重置 token 统计
 		}
 
 		if err := b.ds.Sop().UpdateNodeRun(nodeRun.ID, updateData); err != nil {
@@ -564,10 +568,10 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	log.C(ctx).Infow("Node run prepared for execution",
 		"run_id", runID, "node_id", nodeID, "node_run_id", nodeRun.ID, "is_update", isUpdate)
 
-	// 执行节点（流式），返回完整输出和思考内容
+	// 执行节点（流式），返回完整输出、思考内容和 token 使用统计
 	startTime := time.Now()
 	// 深度思考模式：开启 enable_thinking
-	output, thinking, err := b.executor.ExecuteNodeStreamWithThinking(ctx, node, currentInput, conversationHistory, func(event string, chunk string) error {
+	output, thinking, usage, err := b.executor.ExecuteNodeStreamWithThinking(ctx, node, currentInput, conversationHistory, func(event string, chunk string) error {
 		// 直接透传事件给上层 handler
 		return handler(event, chunk)
 	}, isLastNode, true, run.ConversationID)
@@ -585,14 +589,30 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		return fmt.Errorf("node execution failed: %w", err)
 	}
 
-	// 更新NodeRun为成功，同时保存思考内容
-	if err := b.ds.Sop().UpdateNodeRun(nodeRun.ID, map[string]interface{}{
+	// 更新NodeRun为成功，同时保存思考内容和 token 使用统计
+	updateData := map[string]interface{}{
 		"status":      model.SopStatusSucceeded,
 		"output":      output,
 		"thinking":    thinking,
 		"latency_ms":  latency,
 		"finished_at": nodeEndTime,
-	}); err != nil {
+	}
+	
+	// 保存 token 使用统计（如果存在）
+	if usage != nil {
+		updateData["prompt_tokens"] = usage.PromptTokens
+		updateData["completion_tokens"] = usage.CompletionTokens
+		updateData["total_tokens"] = usage.TotalTokens
+		updateData["reasoning_tokens"] = usage.ReasoningTokens
+		log.C(ctx).Infow("Saving token usage to node run",
+			"node_run_id", nodeRun.ID,
+			"prompt_tokens", usage.PromptTokens,
+			"completion_tokens", usage.CompletionTokens,
+			"total_tokens", usage.TotalTokens,
+			"reasoning_tokens", usage.ReasoningTokens)
+	}
+	
+	if err := b.ds.Sop().UpdateNodeRun(nodeRun.ID, updateData); err != nil {
 		return fmt.Errorf("failed to update node run: %w", err)
 	}
 
@@ -822,7 +842,7 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 
 	// 调用模型流式生成回答
 	var answerBuf strings.Builder
-	_, _, err = b.executor.ExecuteNodeStreamWithThinking(
+	_, _, _, err = b.executor.ExecuteNodeStreamWithThinking(
 		ctx,
 		&lastNode,
 		question,
