@@ -617,9 +617,9 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 		Content: userMessage,
 	})
 
-	// 调用阿里深度思考流式接口，分别积累思考与答案
+	// 调用火山方舟深度思考流式接口，分别积累思考与答案
 	var thinkingBuf, answerBuf strings.Builder
-	usage, err := e.callAliDeepThinkingStream(ctx, node, messages, deepThinking, conversationID, func(event string, chunk string) error {
+	usage, err := e.callVolcDeepThinkingStream(ctx, node, messages, deepThinking, conversationID, func(event string, chunk string) error {
 		switch event {
 		case "thinking":
 			thinkingBuf.WriteString(chunk)
@@ -1075,6 +1075,262 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 	}
 
 	log.C(ctx).Infow("LLM deep thinking stream finished",
+		"node_id", node.ID,
+		"node_name", node.Name,
+		"thinking_chunks", thinkingChunks,
+		"message_chunks", messageChunks,
+		"reasoning_output", thinkingBuf.String(),
+		"message_output", messageBuf.String(),
+		"usage", usage)
+
+	return usage, nil
+}
+
+// callVolcDeepThinkingStream 调用火山方舟深度思考流式接口
+// 使用 thinking.type: "enabled" 开启深度思考
+// 返回 usage 信息用于统计 token 消耗
+func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *model.SopNode, messages []LLMMessage, deepThinking bool, conversationID string, handler StreamHandler) (*TokenUsage, error) {
+	// 构建 URL
+	url := node.BaseURL
+	if url == "" {
+		url = "https://ark.cn-beijing.volces.com/api/v3"
+	}
+	if !strings.HasSuffix(url, "/chat/completions") {
+		if !strings.HasSuffix(url, "/") {
+			url += "/"
+		}
+		url += "chat/completions"
+	}
+
+	// 转换 messages 格式
+	volcMessages := make([]map[string]interface{}, len(messages))
+	for i, msg := range messages {
+		volcMessages[i] = map[string]interface{}{
+			"role":    msg.Role,
+			"content": msg.Content,
+		}
+	}
+
+	// 构建 payload
+	payload := map[string]interface{}{
+		"model":    node.ModelName,
+		"messages": volcMessages,
+		"stream":   true,
+		"thinking": map[string]interface{}{
+			"type": "enabled", // 强制开启深度思考
+		},
+	}
+
+	reqData, _ := json.Marshal(payload)
+
+	// 添加详细的请求日志
+	log.C(ctx).Infow("Sending request to Volcengine Ark Deep Thinking API",
+		"node_id", node.ID,
+		"node_name", node.Name,
+		"url", url,
+		"model", node.ModelName,
+		"request_body", string(reqData),
+		"thinking_enabled", true)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+node.APIKey)
+	req.Header.Set("User-Agent", "numind-server/1.0")
+
+	// 设置超时时间（深度思考耗时更长，推荐30分钟）
+	timeout := time.Duration(node.TimeoutSeconds) * time.Second
+	if timeout < 30*time.Minute {
+		timeout = 30 * time.Minute
+	}
+	client := &http.Client{
+		Timeout: timeout,
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call volc deep thinking stream: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("volc stream status %d: %s", resp.StatusCode, string(body))
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	
+	// 读取超时时间：3秒
+	readTimeout := 3 * time.Second
+	maxConsecutiveTimeouts := 3
+	consecutiveTimeouts := 0
+
+	var (
+		thinkingBuf        strings.Builder
+		messageBuf         strings.Builder
+		thinkingChunks     int
+		messageChunks      int
+		usage              *TokenUsage
+	)
+
+	for {
+		// 检查context是否被取消
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		// 使用context.WithTimeout实现读取超时
+		readCtx, readCancel := context.WithTimeout(ctx, readTimeout)
+		var lineBytes []byte
+		var readErr error
+		readDone := make(chan struct{})
+
+		go func() {
+			defer readCancel()
+			lineBytes, readErr = reader.ReadBytes('\n')
+			close(readDone)
+		}()
+
+		select {
+		case <-readCtx.Done():
+			// 超时
+			consecutiveTimeouts++
+			if consecutiveTimeouts >= maxConsecutiveTimeouts {
+				log.C(ctx).Warnw("Multiple read timeouts in volc deep thinking stream",
+					"node_id", node.ID,
+					"consecutive_timeouts", consecutiveTimeouts)
+			}
+			// 超时，继续尝试读取
+			continue
+		case <-readDone:
+			// 读取完成
+			readCancel()
+		}
+
+		if readErr != nil {
+			// 检查是否是超时错误
+			if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
+				consecutiveTimeouts++
+				if consecutiveTimeouts >= maxConsecutiveTimeouts {
+					log.C(ctx).Warnw("Multiple read timeouts in volc deep thinking stream",
+						"node_id", node.ID,
+						"consecutive_timeouts", consecutiveTimeouts)
+				}
+				// 超时，继续尝试读取
+				continue
+			}
+			if readErr == io.EOF {
+				// 流结束
+				break
+			}
+			log.C(ctx).Errorw("Read error in volc deep thinking stream", "node_id", node.ID, "error", readErr)
+			return nil, fmt.Errorf("read error: %w", readErr)
+		}
+
+		// 重置超时计数器
+		consecutiveTimeouts = 0
+
+		// 转换为字符串并去除换行符
+		line := strings.TrimRight(string(lineBytes), "\r\n")
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		raw := strings.TrimPrefix(line, "data: ")
+		if raw == "[DONE]" {
+			_ = handler("done", "")
+			break
+		}
+
+		var m map[string]interface{}
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			log.C(ctx).Warnw("Failed to parse volc stream chunk", "error", err, "raw", raw)
+			continue
+		}
+
+		// 检查是否有 usage 信息（通常在最后一个数据块中）
+		if usageData, ok := m["usage"].(map[string]interface{}); ok {
+			usage = &TokenUsage{}
+			if pt, ok := usageData["prompt_tokens"].(float64); ok {
+				usage.PromptTokens = int(pt)
+			}
+			if ct, ok := usageData["completion_tokens"].(float64); ok {
+				usage.CompletionTokens = int(ct)
+			}
+			if tt, ok := usageData["total_tokens"].(float64); ok {
+				usage.TotalTokens = int(tt)
+			}
+			// 火山方舟可能使用不同的字段名，尝试多种可能
+			if ctd, ok := usageData["completion_tokens_details"].(map[string]interface{}); ok {
+				if rt, ok := ctd["reasoning_tokens"].(float64); ok {
+					usage.ReasoningTokens = int(rt)
+				}
+			}
+			log.C(ctx).Infow("Token usage received from volc",
+				"node_id", node.ID,
+				"prompt_tokens", usage.PromptTokens,
+				"completion_tokens", usage.CompletionTokens,
+				"total_tokens", usage.TotalTokens,
+				"reasoning_tokens", usage.ReasoningTokens)
+			// 如果找到 usage，choices 可能为空，继续处理但不处理 delta
+			continue
+		}
+
+		choices, ok := m["choices"].([]interface{})
+		if !ok || len(choices) == 0 {
+			continue
+		}
+		choice, _ := choices[0].(map[string]interface{})
+		delta, _ := choice["delta"].(map[string]interface{})
+
+		// 添加调试日志
+		if len(delta) > 0 {
+			deltaJSON, _ := json.Marshal(delta)
+			log.C(ctx).Debugw("Received delta from Volcengine Ark API",
+				"node_id", node.ID,
+				"delta_keys", getMapKeys(delta),
+				"delta_preview", string(deltaJSON),
+				"has_reasoning_content", hasKey(delta, "reasoning_content"))
+		}
+
+		// 优先处理 reasoning_content（思维链内容）
+		if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
+			thinkingChunks++
+			thinkingBuf.WriteString(rc)
+			log.C(ctx).Infow("LLM thinking chunk (from reasoning_content)",
+				"node_id", node.ID,
+				"node_name", node.Name,
+				"chunk_index", thinkingChunks,
+				"chunk_length", len(rc),
+				"chunk_preview", getStringPreview(rc, 50))
+			if err := handler("thinking", rc); err != nil {
+				return nil, err
+			}
+		}
+
+		// 处理 content 字段（最终回答内容）
+		if content, ok := delta["content"].(string); ok && content != "" {
+			messageChunks++
+			messageBuf.WriteString(content)
+			log.C(ctx).Infow("LLM message chunk",
+				"node_id", node.ID,
+				"node_name", node.Name,
+				"chunk_index", messageChunks,
+				"chunk_length", len(content),
+				"chunk_preview", getStringPreview(content, 50))
+			if err := handler("message", content); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	log.C(ctx).Infow("LLM volc deep thinking stream finished",
 		"node_id", node.ID,
 		"node_name", node.Name,
 		"thinking_chunks", thinkingChunks,
