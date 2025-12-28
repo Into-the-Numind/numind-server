@@ -849,8 +849,16 @@ func (b *sopBiz) ListTemplateRunsWithDetails(ctx context.Context, userID, templa
 				nodeID = nodeRun.Node.ID
 			}
 
-			// 获取该节点关联的文件
-			files := filesMap[nodeID]
+			// 获取该节点关联的文件（需要同时匹配node_id和run_id）
+			// 因为同一个template的不同run可能使用相同的node_id，所以必须按run_id过滤
+			allFiles := filesMap[nodeID]
+			files := make([]model.SopFile, 0)
+			for _, file := range allFiles {
+				// 只返回属于当前run的文件
+				if file.RunID != nil && *file.RunID == run.ID {
+					files = append(files, file)
+				}
+			}
 			fileInfos := make([]v1.TemplateFileInfo, len(files))
 			for k, file := range files {
 				fileInfos[k] = v1.TemplateFileInfo{
