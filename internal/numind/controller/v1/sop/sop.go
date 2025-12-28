@@ -1986,7 +1986,7 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 
 	// 先尝试火山方舟
 	if ctrl.volcBiz != nil {
-		aiErr = ctrl.callVolcEditStream(heartbeatCtx, messages, func(chunk string) error {
+		aiErr = ctrl.callVolcEditStream(heartbeatCtx, messages, func(event string, chunk string) error {
 			hasResponse = true
 			// 检查客户端是否断开连接
 			select {
@@ -1996,9 +1996,19 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 			default:
 			}
 
-			// 发送SSE格式的数据
+			// 发送SSE格式的数据（根据事件类型使用不同格式）
 			chunkJSON, _ := json.Marshal(chunk)
-			data := fmt.Sprintf("data: %s\n\n", string(chunkJSON))
+			var data string
+			if event == "thinking" {
+				data = fmt.Sprintf("event: thinking\ndata: %s\n\n", string(chunkJSON))
+			} else if event == "message" {
+				data = fmt.Sprintf("data: %s\n\n", string(chunkJSON))
+			} else if event == "done" {
+				data = "event: done\ndata: {\"status\":\"completed\"}\n\n"
+			} else {
+				return nil
+			}
+
 			if _, err := c.Writer.WriteString(data); err != nil {
 				log.C(c).Warnw("Failed to write chunk to client", "error", err)
 				return err
@@ -2019,7 +2029,7 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 	// 如果火山方舟失败或不可用，降级到阿里百炼
 	if aiErr != nil || !hasResponse {
 		if ctrl.aliBiz != nil {
-			aiErr = ctrl.callAliEditStream(heartbeatCtx, messages, func(chunk string) error {
+			aiErr = ctrl.callAliEditStream(heartbeatCtx, messages, func(event string, chunk string) error {
 				hasResponse = true
 				// 检查客户端是否断开连接
 				select {
@@ -2029,9 +2039,19 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 				default:
 				}
 
-				// 发送SSE格式的数据
+				// 发送SSE格式的数据（阿里百炼降级时只发送 message 事件）
 				chunkJSON, _ := json.Marshal(chunk)
-				data := fmt.Sprintf("data: %s\n\n", string(chunkJSON))
+				var data string
+				if event == "thinking" {
+					data = fmt.Sprintf("event: thinking\ndata: %s\n\n", string(chunkJSON))
+				} else if event == "message" {
+					data = fmt.Sprintf("data: %s\n\n", string(chunkJSON))
+				} else if event == "done" {
+					data = "event: done\ndata: {\"status\":\"completed\"}\n\n"
+				} else {
+					return nil
+				}
+
 				if _, err := c.Writer.WriteString(data); err != nil {
 					log.C(c).Warnw("Failed to write chunk to client", "error", err)
 					return err
@@ -2312,7 +2332,7 @@ func buildEditTextMessages(originalText, userMessage string, history []v1.EditTe
 }
 
 // callVolcEditStream 调用火山方舟流式API进行文本编辑
-func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []map[string]string, handler func(chunk string) error) error {
+func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []map[string]string, handler func(event string, chunk string) error) error {
 	baseURL := viper.GetString("volc.base_url")
 	if baseURL == "" {
 		return fmt.Errorf("volc base_url not configured")
@@ -2320,11 +2340,14 @@ func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []ma
 	url := baseURL + "/chat/completions"
 
 	bodyMap := map[string]interface{}{
-		"model":       viper.GetString("volc.model"),
+		"model":       "deepseek-v3-2-251201",
 		"messages":    messages,
 		"max_tokens":  4000,
 		"temperature": 0.7,
 		"stream":      true,
+		"thinking": map[string]interface{}{
+			"type": "enabled", // 开启思考模式
+		},
 	}
 
 	bodyBytes, err := json.Marshal(bodyMap)
@@ -2427,6 +2450,7 @@ func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []ma
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
+				_ = handler("done", "")
 				break
 			}
 
@@ -2435,8 +2459,15 @@ func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []ma
 				if choices, ok := m["choices"].([]interface{}); ok && len(choices) > 0 {
 					if choice, ok := choices[0].(map[string]interface{}); ok {
 						if delta, ok := choice["delta"].(map[string]interface{}); ok {
+							// 思考模式下，优先处理 reasoning_content（思维链内容）
+							if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
+								if err := handler("thinking", rc); err != nil {
+									return err
+								}
+							}
+							// 处理 content 字段（最终回答内容）
 							if content, ok := delta["content"].(string); ok && content != "" {
-								if err := handler(content); err != nil {
+								if err := handler("message", content); err != nil {
 									return err
 								}
 							}
@@ -2451,7 +2482,7 @@ func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []ma
 }
 
 // callAliEditStream 调用阿里百炼流式API进行文本编辑
-func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map[string]string, handler func(chunk string) error) error {
+func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map[string]string, handler func(event string, chunk string) error) error {
 	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 
 	bodyMap := map[string]interface{}{
@@ -2562,6 +2593,7 @@ func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
+				_ = handler("done", "")
 				break
 			}
 
@@ -2571,7 +2603,7 @@ func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map
 					if choice, ok := choices[0].(map[string]interface{}); ok {
 						if delta, ok := choice["delta"].(map[string]interface{}); ok {
 							if content, ok := delta["content"].(string); ok && content != "" {
-								if err := handler(content); err != nil {
+								if err := handler("message", content); err != nil {
 									return err
 								}
 							}
