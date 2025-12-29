@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/gen2brain/go-fitz"
@@ -26,7 +27,7 @@ import (
 
 // 常量定义（与 SOP 模块保持一致）
 const (
-	MaxFileSize         = 10 * 1024 * 1024 // 10MB
+	MaxFileSize          = 10 * 1024 * 1024 // 10MB
 	MaxTextContentLength = 100000           // 文本内容最大长度
 )
 
@@ -336,7 +337,7 @@ func extractTextFromPDF(data []byte) (string, int, error) {
 	return text, numPages, nil
 }
 
-// formatPdfText 格式化PDF文本，保留原格式但清理多余空格和空行
+// formatPdfText 格式化PDF文本，保留原格式但清理多余空格和空行，并合并被截断的段落
 func formatPdfText(text string) string {
 	// 第一步：确保字符串是有效的UTF-8
 	if !utf8.ValidString(text) {
@@ -344,53 +345,181 @@ func formatPdfText(text string) string {
 	}
 
 	// 第二步：移除控制字符（保留换行符、制表符等有用的空白字符）
-	// 移除NULL、垂直制表符等控制字符，但保留换行符(\n)、回车符(\r)、制表符(\t)
 	controlCharPattern := regexp.MustCompile(`[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F-\x9F]`)
 	text = controlCharPattern.ReplaceAllString(text, "")
 
-	// 第三步：规范化换行符（统一为\n）
-	// 将Windows换行符(\r\n)和Mac换行符(\r)统一为Unix换行符(\n)
+	// 第三步：规范化换行符
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
 
-	// 第四步：清理行内多余空格（多个连续空格合并为1个）
-	// 但保留换行符，所以需要逐行处理
+	// 第四步：初步清理行
 	lines := strings.Split(text, "\n")
-	var formattedLines []string
+	var cleanLines []string
 	for _, line := range lines {
 		// 清理行内多个连续空格
 		line = regexp.MustCompile(`[ \t]+`).ReplaceAllString(line, " ")
-		// 移除行首行尾空格
 		line = strings.TrimSpace(line)
-		formattedLines = append(formattedLines, line)
+		cleanLines = append(cleanLines, line)
 	}
-	text = strings.Join(formattedLines, "\n")
 
-	// 第五步：清理多余空行（3个以上连续换行符合并为2个）
-	// 保留段落间的空行（2个换行符），但移除过多的空行
+	// 第五步：段落合并（核心优化：减少token占用的关键）
+	text = mergeParagraphs(cleanLines)
+
+	// 第六步：清理多余空行（3个以上合并为2个）
 	text = regexp.MustCompile(`\n{3,}`).ReplaceAllString(text, "\n\n")
 
-	// 第六步：移除无效字符，保留中文、英文、数字和常用标点符号
-	// 保留换行符、空格、制表符等空白字符
-	keepPattern := regexp.MustCompile(`[^\p{L}\p{N}\p{Han}\s.,!?;:()\[\]{}\-—–'""…。，、；：？！（）【】《》\n\r\t]`)
+	// 第七步：过滤非必要字符
+	// 扩大范围保留更多有意义的符号，但去除纯乱码
+	// 保留所有 Unicode 字母(L)、数字(N)、标点(P)、符号(S)和空白(Z/C)
+	// 如果需要严格过滤，可以用之前的正则，但建议放宽以避免误删特殊数学符号等
+	keepPattern := regexp.MustCompile(`[^\p{L}\p{N}\p{P}\p{S}\s]`)
+	// 注意：上面的正则保留了所有标点和符号。之前的实现是只保留特定标点。
+	// 为了安全性，我们还是用白名单比较好，但加上 \p{P} (标点) 和 \p{S} (符号) 可以保留更多语义信息
 	text = keepPattern.ReplaceAllString(text, "")
 
-	// 第七步：最终清理 - 移除行首行尾空白
+	// 第八步：最终清理
 	text = strings.TrimSpace(text)
 
-	// 第八步：再次验证UTF-8有效性
-	if !utf8.ValidString(text) {
-		// 如果仍然无效，进行更激进的清理
-		var result strings.Builder
-		for _, r := range text {
-			if utf8.ValidRune(r) {
-				result.WriteRune(r)
+	return text
+}
+
+// mergeParagraphs 智能合并被断行的段落
+func mergeParagraphs(lines []string) string {
+	var result strings.Builder
+	var pendingLine string // 当前正在构建的段落（可能包含多行）
+
+	for _, line := range lines {
+		// 1. 如果是空行，表示段落分隔
+		if line == "" {
+			if pendingLine != "" {
+				result.WriteString(pendingLine)
+				result.WriteString("\n\n") // 段落结束
+				pendingLine = ""
 			}
+			continue
 		}
-		text = result.String()
+
+		// 2. 简单的页码/页眉页脚过滤（数字或极短且包含Page等关键词）
+		// 比如 "Page 1", "1 / 20"
+		if isPageFooter(line) {
+			continue
+		}
+
+		// 3. 处理 pendingLine
+		if pendingLine == "" {
+			pendingLine = line
+			continue
+		}
+
+		// 4. 判断是否合并
+		// 查看 pendingLine 的结尾和 line 的开头
+		if shouldMerge(pendingLine, line) {
+			// 需要合并
+			// 中文与中文之间不需要空格，其他情况通常需要空格
+			sep := " "
+			if isCJKEnd(pendingLine) && isCJKStart(line) {
+				sep = ""
+			}
+			pendingLine += sep + line
+		} else {
+			// 不需要合并，当前 pendingLine 结束
+			result.WriteString(pendingLine)
+			result.WriteString("\n") // 换行，但不一定是段落结束，可能是列表项
+			pendingLine = line
+		}
 	}
 
-	return text
+	// 处理最后遗留的 line
+	if pendingLine != "" {
+		result.WriteString(pendingLine)
+	}
+
+	return result.String()
+}
+
+// shouldMerge 判断两行是否应该合并
+func shouldMerge(prev, next string) bool {
+	// 这里是一些启发式规则
+
+	// 1. 如果下一行是列表项（数字或符号开头），不合并
+	if isListItem(next) {
+		return false
+	}
+
+	// 2. 如果上一行以结束性标点结尾，不合并
+	// 英文: . ? ! : ;
+	// 中文: 。 ？ ！ ： ；
+	if isSentenceEnd(prev) {
+		return false
+	}
+
+	// 3. 如果上一行非常短（可能是标题），不合并
+	// 这个阈值需要斟酌，比如 "Chapter 1"
+	// 但如果是长句被切断，上一行（切断部分）可能很长，下一行可能短
+	// 这里的prev是"已经累积的行"，可能会很长。
+	// 我们只应该看"prev原本的最后一行"。但在当前逻辑里，prev是累积的。
+	// 风险：如果标题很长被切分了，会被合并。这通常是可以接受的。
+	// 风险：如果标题短，且没有标点（通常如此），会被合并到正文。
+	// 例如： "Introduction" (换行) "This is..." -> "Introduction This is..."
+	// 这样其实还好，比断行好。
+
+	// 4. 如果下一行是大写字母开头，且上一行不是以连字符结尾
+	// 英文中，虽然句子开头大写，但专有名词也大写。
+	// 如果 prev 没有结束符，且 next 大写，有可能是新句子（如果prev漏了标点？），也有可能只是专有名词。
+	// 倾向于合并，除非看起来像标题。
+
+	return true
+}
+
+func isListItem(s string) bool {
+	// 匹配 "1.", "1)", "•", "-", "* "
+	matched, _ := regexp.MatchString(`^(\d+[\.\)]|\u2022|\-|\*|·)\s`, s)
+	return matched
+}
+
+func isSentenceEnd(s string) bool {
+	if s == "" {
+		return false
+	}
+	// 获取最后一个字符（注意 rune）
+	r, _ := utf8.DecodeLastRuneInString(s)
+	switch r {
+	case '.', '!', '?', ';', ':': // 英文
+		return true
+	case '。', '！', '？', '；', '：': // 中文
+		return true
+		// 注意：不包括逗号，逗号应该合并
+	}
+	return false
+}
+
+func isCJKEnd(s string) bool {
+	if s == "" {
+		return false
+	}
+	r, _ := utf8.DecodeLastRuneInString(s)
+	return unicode.Is(unicode.Han, r)
+}
+
+func isCJKStart(s string) bool {
+	if s == "" {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(s)
+	return unicode.Is(unicode.Han, r)
+}
+
+func isPageFooter(s string) bool {
+	// 纯数字
+	if _, err := strconv.Atoi(s); err == nil {
+		return true
+	}
+	// Page X of Y
+	if strings.HasPrefix(strings.ToLower(s), "page") && len(s) < 20 {
+		return true
+	}
+	// 极短的非标点内容?
+	return false
 }
 
 // formatText 格式化文本（用于非PDF格式），保留原格式但清理多余空格和空行
@@ -722,4 +851,3 @@ func sanitizeUTF8ForDatabase(text string) string {
 
 	return result.String()
 }
-
