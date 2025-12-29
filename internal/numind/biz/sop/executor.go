@@ -596,22 +596,28 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 	copy(messages, history)
 
 	// 添加当前输入
-	// 所有节点统一使用相同的逻辑：如果有 prompt 就拼接，否则直接使用 input
-	var userMessage string
-	if node.Prompt != "" {
-		// 如果有 prompt 就拼接：prompt + "\n\n" + input
-		userMessage = fmt.Sprintf("%s\n\n%s", node.Prompt, input)
-		log.C(ctx).Infow("Using prompt + input", "node_id", node.ID, "node_name", node.Name, "is_last_node", isLastNode, "prompt_length", len(node.Prompt), "input_length", len(input))
-	} else {
-		// 如果没有 prompt，直接使用 input
-		userMessage = input
-		log.C(ctx).Debugw("No prompt, using input directly", "node_id", node.ID, "node_name", node.Name, "is_last_node", isLastNode)
-	}
+	// 如果 input 为空字符串，说明用户问题已经在 history 中了（聊天场景），不需要再次添加
+	if input != "" {
+		// 所有节点统一使用相同的逻辑：如果有 prompt 就拼接，否则直接使用 input
+		var userMessage string
+		if node.Prompt != "" {
+			// 如果有 prompt 就拼接：prompt + "\n\n" + input
+			userMessage = fmt.Sprintf("%s\n\n%s", node.Prompt, input)
+			log.C(ctx).Infow("Using prompt + input", "node_id", node.ID, "node_name", node.Name, "is_last_node", isLastNode, "prompt_length", len(node.Prompt), "input_length", len(input))
+		} else {
+			// 如果没有 prompt，直接使用 input
+			userMessage = input
+			log.C(ctx).Debugw("No prompt, using input directly", "node_id", node.ID, "node_name", node.Name, "is_last_node", isLastNode)
+		}
 
-	messages = append(messages, LLMMessage{
-		Role:    "user",
-		Content: userMessage,
-	})
+		messages = append(messages, LLMMessage{
+			Role:    "user",
+			Content: userMessage,
+		})
+	} else {
+		// input 为空，说明是聊天场景，用户问题已经在 history 中了
+		log.C(ctx).Debugw("Input is empty, using history directly (chat scenario)", "node_id", node.ID, "node_name", node.Name, "is_last_node", isLastNode)
+	}
 
 	// 调用火山方舟深度思考流式接口，分别积累思考与答案
 	var thinkingBuf, answerBuf strings.Builder

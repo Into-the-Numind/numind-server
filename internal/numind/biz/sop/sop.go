@@ -1000,11 +1000,13 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	history = append(history, LLMMessage{Role: "user", Content: question})
 
 	// 调用模型流式生成回答
+	// 注意：传入空字符串作为 input，因为用户问题已经在 history 中了
+	// 这样可以避免 ExecuteNodeStreamWithThinking 再次添加用户问题并拼接节点的 prompt
 	var answerBuf strings.Builder
 	_, _, _, err = b.executor.ExecuteNodeStreamWithThinking(
 		ctx,
 		&lastNode,
-		question,
+		"", // 传入空字符串，因为用户问题已经在 history 中了，避免重复添加和拼接 prompt
 		history,
 		func(event string, chunk string) error {
 			if event == "message" {
