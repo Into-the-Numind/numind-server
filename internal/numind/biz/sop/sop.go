@@ -52,7 +52,7 @@ type ISopBiz interface {
 	ListNotesByUser(ctx context.Context, userID uint, offset, limit int) ([]model.SopNote, int64, error)
 
 	// Chat operations
-	ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, handler func(event string, chunk string) error) error
+	ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, deepThinking bool, handler func(event string, chunk string) error) error
 	ListChatMessages(ctx context.Context, runID uint, userID uint) ([]model.SopChatMsg, error)
 }
 
@@ -915,7 +915,7 @@ func (b *sopBiz) ListTemplateRunsWithDetails(ctx context.Context, userID, templa
 }
 
 // ChatAfterRunStream 基于已完成的Run继续对话（SSE）
-func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, handler func(event string, chunk string) error) error {
+func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, deepThinking bool, handler func(event string, chunk string) error) error {
 	// 校验 run
 	run, err := b.ds.Sop().GetRun(runID)
 	if err != nil {
@@ -1014,8 +1014,8 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 			}
 			return handler(event, chunk)
 		},
-		true, // isLastNode：标记为最后一个节点（用于日志和统计，所有节点统一使用 prompt + input 格式）
-		true, // deepThinking
+		true,         // isLastNode：标记为最后一个节点（用于日志和统计，所有节点统一使用 prompt + input 格式）
+		deepThinking, // deepThinking
 		conversationID,
 	)
 	if err != nil {

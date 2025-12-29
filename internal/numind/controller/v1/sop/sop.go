@@ -2108,12 +2108,19 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 		RunID          uint   `json:"run_id"`
 		ConversationID string `json:"conversation_id"`
 		Question       string `json:"question"`
+		DeepThinking   *bool  `json:"deep_thinking"` // 思考模式开关
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.RunID == 0 || strings.TrimSpace(req.Question) == "" {
 		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误"), nil)
 		return
 	}
 	req.Question = strings.TrimSpace(req.Question)
+
+	// 处理思考模式开关，默认关闭
+	deepThinking := false
+	if req.DeepThinking != nil {
+		deepThinking = *req.DeepThinking
+	}
 
 	// 设置SSE响应头
 	c.Header("Content-Type", "text/event-stream")
@@ -2157,7 +2164,7 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 	}()
 
 	// 执行业务流
-	err := ctrl.sopBiz.ChatAfterRunStream(heartbeatCtx, req.RunID, req.ConversationID, req.Question, user.ID, func(event string, chunk string) error {
+	err := ctrl.sopBiz.ChatAfterRunStream(heartbeatCtx, req.RunID, req.ConversationID, req.Question, user.ID, deepThinking, func(event string, chunk string) error {
 		// 检查客户端连接
 		select {
 		case <-c.Request.Context().Done():
