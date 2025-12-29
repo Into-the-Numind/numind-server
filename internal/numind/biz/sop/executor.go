@@ -47,6 +47,7 @@ type LLMResponse struct {
 	Choices []struct {
 		Message LLMMessage `json:"message"`
 	} `json:"choices"`
+	Usage *TokenUsage `json:"usage"`
 }
 
 // StreamHandler 流式处理函数类型
@@ -58,7 +59,23 @@ type TokenUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`     // 输入 tokens
 	CompletionTokens int `json:"completion_tokens"` // 输出 tokens
 	TotalTokens      int `json:"total_tokens"`      // 总 tokens
-	ReasoningTokens  int `json:"reasoning_tokens"`  // 思考过程 tokens（如果开启思考模式）
+	ReasoningTokens  int `json:"reasoning_tokens"`  // 思考过程 tokens（某些模型直接返回）
+
+	// Volcengine/OpenAI 兼容的嵌套结构
+	CompletionTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
+}
+
+// Normalize 同步嵌套字段到扁平字段
+func (u *TokenUsage) Normalize() {
+	if u == nil {
+		return
+	}
+	// 如果扁平字段为0且嵌套字段有值，则进行同步
+	if u.ReasoningTokens == 0 && u.CompletionTokensDetails.ReasoningTokens > 0 {
+		u.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
+	}
 }
 
 // Execute 执行SOP流程
@@ -113,7 +130,7 @@ func (e *SopExecutor) Execute(ctx context.Context, run *model.SopRun, nodes []mo
 		}
 
 		// 执行节点
-		output, err := e.executeNode(ctx, &node, currentInput, conversationHistory)
+		output, usage, err := e.executeNode(ctx, &node, currentInput, conversationHistory)
 		nodeEndTime := time.Now()
 		latency := nodeEndTime.Sub(startTime).Milliseconds()
 
@@ -133,12 +150,28 @@ func (e *SopExecutor) Execute(ctx context.Context, run *model.SopRun, nodes []mo
 		}
 
 		// 更新NodeRun为成功
-		e.ds.Sop().UpdateNodeRun(nodeRun.ID, map[string]interface{}{
+		updateData := map[string]interface{}{
 			"status":      model.SopStatusSucceeded,
 			"output":      output,
 			"latency_ms":  latency,
 			"finished_at": nodeEndTime,
-		})
+		}
+
+		// 保存 token 使用统计（如果存在）
+		if usage != nil {
+			updateData["prompt_tokens"] = usage.PromptTokens
+			updateData["completion_tokens"] = usage.CompletionTokens
+			updateData["total_tokens"] = usage.TotalTokens
+			updateData["reasoning_tokens"] = usage.ReasoningTokens
+			log.C(ctx).Infow("Saving token usage to node run (sync execution)",
+				"node_run_id", nodeRun.ID,
+				"prompt_tokens", usage.PromptTokens,
+				"completion_tokens", usage.CompletionTokens,
+				"total_tokens", usage.TotalTokens,
+				"reasoning_tokens", usage.ReasoningTokens)
+		}
+
+		e.ds.Sop().UpdateNodeRun(nodeRun.ID, updateData)
 
 		log.C(ctx).Infow("Node execution succeeded", "run_id", run.ID, "node_id", node.ID, "latency_ms", latency)
 
@@ -182,11 +215,11 @@ func (e *SopExecutor) Execute(ctx context.Context, run *model.SopRun, nodes []mo
 }
 
 // executeNode 执行单个节点
-func (e *SopExecutor) executeNode(ctx context.Context, node *model.SopNode, input string, history []LLMMessage) (string, error) {
+func (e *SopExecutor) executeNode(ctx context.Context, node *model.SopNode, input string, history []LLMMessage) (string, *TokenUsage, error) {
 	// 检查API密钥是否配置
 	if node.APIKey == "" {
 		log.C(ctx).Errorw("Node API key is empty", "node_id", node.ID, "node_name", node.Name)
-		return "", fmt.Errorf("node %s (ID: %d) API key is not configured, please update the node with a valid API key", node.Name, node.ID)
+		return "", nil, fmt.Errorf("node %s (ID: %d) API key is not configured, please update the node with a valid API key", node.Name, node.ID)
 	}
 
 	// 脱敏日志：只显示前4位和后4位
@@ -228,7 +261,7 @@ func (e *SopExecutor) executeNode(ctx context.Context, node *model.SopNode, inpu
 
 	reqData, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal request: %w", err)
+		return "", nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	// 记录请求信息（用于调试）
@@ -241,7 +274,7 @@ func (e *SopExecutor) executeNode(ctx context.Context, node *model.SopNode, inpu
 	// 创建HTTP请求
 	req, err := http.NewRequestWithContext(ctx, "POST", node.BaseURL, bytes.NewBuffer(reqData))
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+		return "", nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -256,7 +289,7 @@ func (e *SopExecutor) executeNode(ctx context.Context, node *model.SopNode, inpu
 	// 发送请求
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to call LLM API: %w", err)
+		return "", nil, fmt.Errorf("failed to call LLM API: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -269,7 +302,7 @@ func (e *SopExecutor) executeNode(ctx context.Context, node *model.SopNode, inpu
 			"url", node.BaseURL,
 			"model", node.ModelName,
 			"response_body", string(body))
-		return "", fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, string(body))
+		return "", nil, fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	log.C(ctx).Infow("LLM API response received",
@@ -282,23 +315,27 @@ func (e *SopExecutor) executeNode(ctx context.Context, node *model.SopNode, inpu
 		log.C(ctx).Errorw("Failed to decode LLM response",
 			"error", err,
 			"body", string(body))
-		return "", fmt.Errorf("failed to decode response: %w", err)
+		return "", nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	if len(llmResp.Choices) == 0 {
-		return "", fmt.Errorf("LLM returned no choices")
+		return "", nil, fmt.Errorf("LLM returned no choices")
 	}
 
 	output := llmResp.Choices[0].Message.Content
-	return output, nil
+	// 归一化 token 使用信息
+	if llmResp.Usage != nil {
+		llmResp.Usage.Normalize()
+	}
+	return output, llmResp.Usage, nil
 }
 
 // ExecuteNodeStream 流式执行单个节点（公开方法）
-func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, handler StreamHandler) (string, error) {
+func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, handler StreamHandler) (string, *TokenUsage, error) {
 	// 检查API密钥是否配置
 	if node.APIKey == "" {
 		log.C(ctx).Errorw("Node API key is empty", "node_id", node.ID, "node_name", node.Name)
-		return "", fmt.Errorf("node %s (ID: %d) API key is not configured, please update the node with a valid API key", node.Name, node.ID)
+		return "", nil, fmt.Errorf("node %s (ID: %d) API key is not configured, please update the node with a valid API key", node.Name, node.ID)
 	}
 
 	// 脱敏日志：只显示前4位和后4位
@@ -340,7 +377,7 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 
 	reqData, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal request: %w", err)
+		return "", nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	// 记录请求信息用于调试
@@ -355,7 +392,7 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 	// 创建HTTP请求
 	req, err := http.NewRequestWithContext(ctx, "POST", node.BaseURL, bytes.NewBuffer(reqData))
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+		return "", nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -386,7 +423,7 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 			"node_id", node.ID,
 			"url", node.BaseURL,
 			"error", err.Error())
-		return "", fmt.Errorf("failed to call LLM API: %w", err)
+		return "", nil, fmt.Errorf("failed to call LLM API: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -403,11 +440,12 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 			"url", node.BaseURL,
 			"model", node.ModelName,
 			"response_body", string(body))
-		return "", fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, string(body))
+		return "", nil, fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	// 流式读取响应
 	var fullOutput strings.Builder
+	var usage *TokenUsage
 	reader := bufio.NewReader(resp.Body)
 
 	// 读取超时时间：3秒
@@ -422,9 +460,9 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 			log.C(ctx).Warnw("Context cancelled during stream", "node_id", node.ID)
 			// 即使context取消，也返回已累积的输出
 			if fullOutput.Len() > 0 {
-				return fullOutput.String(), nil
+				return fullOutput.String(), usage, nil
 			}
-			return "", fmt.Errorf("stream cancelled: %w", ctx.Err())
+			return "", nil, fmt.Errorf("stream cancelled: %w", ctx.Err())
 		default:
 		}
 
@@ -476,9 +514,9 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 			log.C(ctx).Errorw("Read error during stream", "node_id", node.ID, "error", readErr)
 			// 即使读取出错，也返回已累积的输出（如果有）
 			if fullOutput.Len() > 0 {
-				return fullOutput.String(), nil
+				return fullOutput.String(), usage, nil
 			}
-			return "", fmt.Errorf("read error: %w", readErr)
+			return "", nil, fmt.Errorf("read error: %w", readErr)
 		}
 
 		// 重置超时计数器
@@ -508,6 +546,19 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 
 			var m map[string]interface{}
 			if err := json.Unmarshal([]byte(data), &m); err == nil {
+				if rawUsage, ok := m["usage"]; ok {
+					usageBytes, _ := json.Marshal(rawUsage)
+					usage = &TokenUsage{}
+					if err := json.Unmarshal(usageBytes, usage); err != nil {
+						log.C(ctx).Warnw("Failed to unmarshal plain stream usage data", "error", err)
+					}
+					log.C(ctx).Infow("Token usage received in plain stream",
+						"node_id", node.ID,
+						"prompt_tokens", usage.PromptTokens,
+						"completion_tokens", usage.CompletionTokens)
+					continue
+				}
+
 				if choices, ok := m["choices"].([]interface{}); ok && len(choices) > 0 {
 					if choice, ok := choices[0].(map[string]interface{}); ok {
 						if delta, ok := choice["delta"].(map[string]interface{}); ok {
@@ -562,10 +613,11 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 	if output == "" {
 		log.C(ctx).Errorw("LLM returned empty response",
 			"node_id", node.ID)
-		return "", fmt.Errorf("LLM returned empty response")
+		return "", nil, fmt.Errorf("LLM returned empty response")
 	}
 
-	return output, nil
+	usage.Normalize()
+	return output, usage, nil
 }
 
 // ExecuteNodeStreamWithThinking 流式执行单个节点，并分离思考内容和实际内容
@@ -895,22 +947,11 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		}
 
 		// 检查是否有 usage 信息（通常在最后一个数据块中，且 choices 可能为空）
-		if usageData, ok := m["usage"].(map[string]interface{}); ok {
+		if rawUsage, ok := m["usage"]; ok {
+			usageBytes, _ := json.Marshal(rawUsage)
 			usage = &TokenUsage{}
-			if pt, ok := usageData["prompt_tokens"].(float64); ok {
-				usage.PromptTokens = int(pt)
-			}
-			if ct, ok := usageData["completion_tokens"].(float64); ok {
-				usage.CompletionTokens = int(ct)
-			}
-			if tt, ok := usageData["total_tokens"].(float64); ok {
-				usage.TotalTokens = int(tt)
-			}
-			// 检查 completion_tokens_details 中的 reasoning_tokens
-			if ctd, ok := usageData["completion_tokens_details"].(map[string]interface{}); ok {
-				if rt, ok := ctd["reasoning_tokens"].(float64); ok {
-					usage.ReasoningTokens = int(rt)
-				}
+			if err := json.Unmarshal(usageBytes, usage); err != nil {
+				log.C(ctx).Warnw("Failed to unmarshal usage data", "error", err)
 			}
 			log.C(ctx).Infow("Token usage received",
 				"node_id", node.ID,
@@ -1085,6 +1126,7 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		"message_output", messageBuf.String(),
 		"usage", usage)
 
+	usage.Normalize()
 	return usage, nil
 }
 
@@ -1264,22 +1306,11 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 		}
 
 		// 检查是否有 usage 信息（通常在最后一个数据块中）
-		if usageData, ok := m["usage"].(map[string]interface{}); ok {
+		if rawUsage, ok := m["usage"]; ok {
+			usageBytes, _ := json.Marshal(rawUsage)
 			usage = &TokenUsage{}
-			if pt, ok := usageData["prompt_tokens"].(float64); ok {
-				usage.PromptTokens = int(pt)
-			}
-			if ct, ok := usageData["completion_tokens"].(float64); ok {
-				usage.CompletionTokens = int(ct)
-			}
-			if tt, ok := usageData["total_tokens"].(float64); ok {
-				usage.TotalTokens = int(tt)
-			}
-			// 火山方舟可能使用不同的字段名，尝试多种可能
-			if ctd, ok := usageData["completion_tokens_details"].(map[string]interface{}); ok {
-				if rt, ok := ctd["reasoning_tokens"].(float64); ok {
-					usage.ReasoningTokens = int(rt)
-				}
+			if err := json.Unmarshal(usageBytes, usage); err != nil {
+				log.C(ctx).Warnw("Failed to unmarshal volc usage data", "error", err)
 			}
 			log.C(ctx).Infow("Token usage received from volc",
 				"node_id", node.ID,
@@ -1348,6 +1379,7 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 		"message_output", messageBuf.String(),
 		"usage", usage)
 
+	usage.Normalize()
 	return usage, nil
 }
 
