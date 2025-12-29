@@ -270,7 +270,7 @@ func (ctrl *SopController) ListTemplateRuns(c *gin.Context) {
 	// 获取分页参数
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-	
+
 	// 限制最大limit，防止一次性返回过多数据
 	if limit > 100 {
 		limit = 100
@@ -1872,8 +1872,8 @@ func (ctrl *SopController) GetRunStatus(c *gin.Context) {
 			NodeID:   node.NodeID,
 			NodeName: node.NodeName,
 			Sort:     node.Sort,
-			Input:    node.Input,    // 节点输入
-			Output:   node.Output,   // 返回完整输出
+			Input:    node.Input,  // 节点输入
+			Output:   node.Output, // 返回完整输出
 			Thinking: node.Thinking,
 		}
 	}
@@ -1984,9 +1984,15 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 	var aiErr error
 	var hasResponse bool
 
+	// 处理思考模式开关，默认关闭
+	deepThinking := false
+	if req.DeepThinking != nil {
+		deepThinking = *req.DeepThinking
+	}
+
 	// 先尝试火山方舟
 	if ctrl.volcBiz != nil {
-		aiErr = ctrl.callVolcEditStream(heartbeatCtx, messages, func(event string, chunk string) error {
+		aiErr = ctrl.callVolcEditStream(heartbeatCtx, messages, deepThinking, func(event string, chunk string) error {
 			hasResponse = true
 			// 检查客户端是否断开连接
 			select {
@@ -2029,7 +2035,7 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 	// 如果火山方舟失败或不可用，降级到阿里百炼
 	if aiErr != nil || !hasResponse {
 		if ctrl.aliBiz != nil {
-			aiErr = ctrl.callAliEditStream(heartbeatCtx, messages, func(event string, chunk string) error {
+			aiErr = ctrl.callAliEditStream(heartbeatCtx, messages, deepThinking, func(event string, chunk string) error {
 				hasResponse = true
 				// 检查客户端是否断开连接
 				select {
@@ -2339,12 +2345,17 @@ func buildEditTextMessages(originalText, userMessage string, history []v1.EditTe
 }
 
 // callVolcEditStream 调用火山方舟流式API进行文本编辑
-func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []map[string]string, handler func(event string, chunk string) error) error {
+func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []map[string]string, deepThinking bool, handler func(event string, chunk string) error) error {
 	baseURL := viper.GetString("volc.base_url")
 	if baseURL == "" {
 		return fmt.Errorf("volc base_url not configured")
 	}
 	url := baseURL + "/chat/completions"
+
+	thinkingType := "disabled"
+	if deepThinking {
+		thinkingType = "enabled"
+	}
 
 	bodyMap := map[string]interface{}{
 		"model":       "deepseek-v3-2-251201",
@@ -2353,7 +2364,7 @@ func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []ma
 		"temperature": 0.7,
 		"stream":      true,
 		"thinking": map[string]interface{}{
-			"type": "enabled", // 开启思考模式
+			"type": thinkingType,
 		},
 	}
 
@@ -2489,7 +2500,7 @@ func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []ma
 }
 
 // callAliEditStream 调用阿里百炼流式API进行文本编辑
-func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map[string]string, handler func(event string, chunk string) error) error {
+func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map[string]string, deepThinking bool, handler func(event string, chunk string) error) error {
 	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 
 	bodyMap := map[string]interface{}{
@@ -2498,6 +2509,9 @@ func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map
 		"max_tokens":  4000,
 		"temperature": 0.7,
 		"stream":      true,
+		"extra_body": map[string]interface{}{
+			"enable_thinking": deepThinking,
+		},
 	}
 
 	bodyBytes, err := json.Marshal(bodyMap)

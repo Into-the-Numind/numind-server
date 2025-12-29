@@ -55,10 +55,10 @@ type StreamHandler func(event string, chunk string) error
 
 // TokenUsage Token使用统计信息
 type TokenUsage struct {
-	PromptTokens    int `json:"prompt_tokens"`    // 输入 tokens
+	PromptTokens     int `json:"prompt_tokens"`     // 输入 tokens
 	CompletionTokens int `json:"completion_tokens"` // 输出 tokens
-	TotalTokens     int `json:"total_tokens"`     // 总 tokens
-	ReasoningTokens int `json:"reasoning_tokens"` // 思考过程 tokens（如果开启思考模式）
+	TotalTokens      int `json:"total_tokens"`      // 总 tokens
+	ReasoningTokens  int `json:"reasoning_tokens"`  // 思考过程 tokens（如果开启思考模式）
 }
 
 // Execute 执行SOP流程
@@ -409,7 +409,7 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 	// 流式读取响应
 	var fullOutput strings.Builder
 	reader := bufio.NewReader(resp.Body)
-	
+
 	// 读取超时时间：3秒
 	readTimeout := 3 * time.Second
 	maxConsecutiveTimeouts := 3
@@ -727,7 +727,7 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		"messages": messages,
 		"stream":   true,
 		"extra_body": map[string]interface{}{
-			"enable_thinking": true,
+			"enable_thinking": deepThinking,
 		},
 		"stream_options": map[string]interface{}{
 			"include_usage": true,
@@ -782,7 +782,7 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 	}
 
 	reader := bufio.NewReader(resp.Body)
-	
+
 	// 读取超时时间：3秒
 	readTimeout := 3 * time.Second
 	maxConsecutiveTimeouts := 3
@@ -793,10 +793,10 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		messageBuf         strings.Builder
 		thinkingChunks     int
 		messageChunks      int
-		usage              *TokenUsage // 用于存储 token 使用统计
-		accumulatedContent strings.Builder // 累积所有内容用于判断思考阶段
-		hasThinkingMarker  bool = false    // 是否已检测到思考开始标记
-		thinkingEnded      bool = false    // 思考阶段是否已结束
+		usage              *TokenUsage             // 用于存储 token 使用统计
+		accumulatedContent strings.Builder         // 累积所有内容用于判断思考阶段
+		hasThinkingMarker  bool            = false // 是否已检测到思考开始标记
+		thinkingEnded      bool            = false // 思考阶段是否已结束
 	)
 
 	// 思考开始标记
@@ -958,13 +958,13 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		if content, ok := delta["content"].(string); ok && content != "" {
 			// 保存累积内容长度（用于计算相对位置）
 			prevLen := accumulatedContent.Len()
-			
+
 			// 累积内容用于判断思考阶段
 			accumulatedContent.WriteString(content)
 			currentText := accumulatedContent.String()
 
 			// 检查是否包含思考开始标记
-			if !hasThinkingMarker {
+			if deepThinking && !hasThinkingMarker {
 				for _, marker := range thinkingStartMarkers {
 					if strings.Contains(currentText, marker) {
 						hasThinkingMarker = true
@@ -978,7 +978,7 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 			}
 
 			// 如果已检测到思考标记，检查是否遇到结束标记
-			if hasThinkingMarker && !thinkingEnded {
+			if deepThinking && hasThinkingMarker && !thinkingEnded {
 				// 查找结束标记的位置
 				endMarkerIndex := -1
 				var endMarker string
@@ -1116,12 +1116,17 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 	}
 
 	// 构建 payload
+	thinkingType := "disabled"
+	if deepThinking {
+		thinkingType = "enabled"
+	}
+
 	payload := map[string]interface{}{
 		"model":    node.ModelName,
 		"messages": volcMessages,
 		"stream":   true,
 		"thinking": map[string]interface{}{
-			"type": "enabled", // 强制开启深度思考
+			"type": thinkingType,
 		},
 	}
 
@@ -1134,7 +1139,7 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 		"url", url,
 		"model", node.ModelName,
 		"request_body", string(reqData),
-		"thinking_enabled", true)
+		"thinking_enabled", deepThinking)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(reqData))
 	if err != nil {
@@ -1165,18 +1170,18 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 	}
 
 	reader := bufio.NewReader(resp.Body)
-	
+
 	// 读取超时时间：3秒
 	readTimeout := 3 * time.Second
 	maxConsecutiveTimeouts := 3
 	consecutiveTimeouts := 0
 
 	var (
-		thinkingBuf        strings.Builder
-		messageBuf         strings.Builder
-		thinkingChunks     int
-		messageChunks      int
-		usage              *TokenUsage
+		thinkingBuf    strings.Builder
+		messageBuf     strings.Builder
+		thinkingChunks int
+		messageChunks  int
+		usage          *TokenUsage
 	)
 
 	for {

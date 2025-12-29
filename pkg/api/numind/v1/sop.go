@@ -190,8 +190,8 @@ type CompletedNodeInfo struct {
 	NodeID   uint   `json:"node_id"`
 	NodeName string `json:"node_name"`
 	Sort     int    `json:"sort"`
-	Input    string `json:"input"`     // 节点输入
-	Output   string `json:"output"`    // 完整输出
+	Input    string `json:"input"`  // 节点输入
+	Output   string `json:"output"` // 完整输出
 	Thinking string `json:"thinking,omitempty"`
 }
 
@@ -215,6 +215,7 @@ type EditTextRequest struct {
 	OriginalText        string            `json:"original_text,omitempty"`         // 原始文本内容（第一次对话必需，后续可选）
 	UserMessage         string            `json:"user_message" binding:"required"` // 用户编辑指令（必需）
 	ConversationHistory []EditTextMessage `json:"conversation_history,omitempty"`  // 对话历史（可选，前端维护）
+	DeepThinking        *bool             `json:"deep_thinking,omitempty"`         // 是否开启深度思考（可选）
 }
 
 // ExecutedTemplateInfo 用户已执行的模板信息
@@ -239,26 +240,26 @@ type TemplateRunHistoryResponse struct {
 	TemplateID     uint                      `json:"template_id"`     // 模板ID
 	Status         string                    `json:"status"`          // Run状态
 	CreatedAt      string                    `json:"created_at"`      // 创建时间
-	UpdatedAt      string                    `json:"updated_at"`     // 更新时间
+	UpdatedAt      string                    `json:"updated_at"`      // 更新时间
 	CompletedCount int                       `json:"completed_count"` // 已完成节点数
-	TotalNodes     int                       `json:"total_nodes"`    // 总节点数
-	NodeRuns       []TemplateNodeRunInfo     `json:"node_runs"`      // 节点执行记录列表
-	ChatMessages   []TemplateChatMessageInfo `json:"chat_messages"`  // 对话记录列表
+	TotalNodes     int                       `json:"total_nodes"`     // 总节点数
+	NodeRuns       []TemplateNodeRunInfo     `json:"node_runs"`       // 节点执行记录列表
+	ChatMessages   []TemplateChatMessageInfo `json:"chat_messages"`   // 对话记录列表
 }
 
 // TemplateNodeRunInfo 模板节点执行信息
 type TemplateNodeRunInfo struct {
-	ID            uint                `json:"id"`             // NodeRun ID
-	NodeID        uint                `json:"node_id"`        // 节点ID
-	NodeName      string              `json:"node_name"`     // 节点名称（从Node关联获取）
-	Sort          int                 `json:"sort"`           // 节点排序
-	Status        string              `json:"status"`         // 节点状态
-	FinishedAt    *string             `json:"finished_at"`   // 完成时间
-	Input         string              `json:"input"`         // 用户输入（对应input字段）
-	Output        string              `json:"output"`        // AI输出内容（对应output字段）
-	Thinking      string              `json:"thinking"`      // AI思考过程（可选，对应thinking字段）
-	OutputPreview string              `json:"output_preview,omitempty"` // 输出预览（用于列表展示，截取前200字符）
-	Files         []TemplateFileInfo  `json:"files,omitempty"`          // 文件列表（如果有）
+	ID            uint               `json:"id"`                       // NodeRun ID
+	NodeID        uint               `json:"node_id"`                  // 节点ID
+	NodeName      string             `json:"node_name"`                // 节点名称（从Node关联获取）
+	Sort          int                `json:"sort"`                     // 节点排序
+	Status        string             `json:"status"`                   // 节点状态
+	FinishedAt    *string            `json:"finished_at"`              // 完成时间
+	Input         string             `json:"input"`                    // 用户输入（对应input字段）
+	Output        string             `json:"output"`                   // AI输出内容（对应output字段）
+	Thinking      string             `json:"thinking"`                 // AI思考过程（可选，对应thinking字段）
+	OutputPreview string             `json:"output_preview,omitempty"` // 输出预览（用于列表展示，截取前200字符）
+	Files         []TemplateFileInfo `json:"files,omitempty"`          // 文件列表（如果有）
 }
 
 // TemplateFileInfo 模板文件信息
@@ -280,8 +281,8 @@ type TemplateChatMessageInfo struct {
 
 // ListTemplateRunsResponse 模板运行历史列表响应
 type ListTemplateRunsResponse struct {
-	TemplateID uint                        `json:"template_id"` // 模板ID
-	Name       string                      `json:"name"`         // 模板名称
-	Total      int64                       `json:"total"`       // 总记录数
-	Runs       []TemplateRunHistoryResponse `json:"runs"`       // 运行记录列表
+	TemplateID uint                         `json:"template_id"` // 模板ID
+	Name       string                       `json:"name"`        // 模板名称
+	Total      int64                        `json:"total"`       // 总记录数
+	Runs       []TemplateRunHistoryResponse `json:"runs"`        // 运行记录列表
 }
