@@ -68,25 +68,25 @@ func (SopRun) TableName() string {
 // SopNodeRun SOP节点执行记录表
 type SopNodeRun struct {
 	gorm.Model
-	RunID           uint       `gorm:"not null;index:idx_run_sort" json:"run_id"`
-	NodeID          uint       `gorm:"not null;index" json:"node_id"`
-	TemplateID      uint       `gorm:"not null;index" json:"template_id"`
-	UserID          uint       `gorm:"not null;index" json:"user_id"`
-	ParentNodeID    *uint      `gorm:"index" json:"parent_node_id"`
-	Status          string     `gorm:"size:20;default:'pending';index" json:"status"` // pending, running, succeeded, failed
-	Input           string     `gorm:"type:longtext" json:"input"`                    // 节点输入（使用LONGTEXT支持超长文本）
-	Output          string     `gorm:"type:longtext" json:"output"`                   // 节点输出（使用LONGTEXT支持超长文本）
-	Thinking        string     `gorm:"type:longtext" json:"thinking"`                 // 思考过程内容（AI的思考部分，如"已思考"等）
-	LatencyMs       int64      `gorm:"default:0" json:"latency_ms"`                   // 执行耗时（毫秒）
-	ConversationID  string     `gorm:"size:100;index" json:"conversation_id"`         // 对话ID（与Run保持一致）
-	Sort            int        `gorm:"default:0;index:idx_run_sort" json:"sort"`      // 执行顺序
-	StartedAt       *time.Time `json:"started_at"`
-	FinishedAt      *time.Time `json:"finished_at"`
-	ErrorMessage    string     `gorm:"type:text" json:"error_message"` // 错误信息
-	PromptTokens     int `gorm:"default:0;index" json:"-"` // 输入 tokens（不返回给前端，仅用于统计）
-	CompletionTokens int `gorm:"default:0;index" json:"-"` // 输出 tokens（不返回给前端，仅用于统计）
-	TotalTokens      int `gorm:"default:0;index" json:"-"` // 总 tokens（不返回给前端，仅用于统计）
-	ReasoningTokens  int `gorm:"default:0;index" json:"-"` // 思考过程 tokens（不返回给前端，仅用于统计）
+	RunID            uint       `gorm:"not null;index:idx_run_sort" json:"run_id"`
+	NodeID           uint       `gorm:"not null;index" json:"node_id"`
+	TemplateID       uint       `gorm:"not null;index" json:"template_id"`
+	UserID           uint       `gorm:"not null;index" json:"user_id"`
+	ParentNodeID     *uint      `gorm:"index" json:"parent_node_id"`
+	Status           string     `gorm:"size:20;default:'pending';index" json:"status"` // pending, running, succeeded, failed
+	Input            string     `gorm:"type:longtext" json:"input"`                    // 节点输入（使用LONGTEXT支持超长文本）
+	Output           string     `gorm:"type:longtext" json:"output"`                   // 节点输出（使用LONGTEXT支持超长文本）
+	Thinking         string     `gorm:"type:longtext" json:"thinking"`                 // 思考过程内容（AI的思考部分，如"已思考"等）
+	LatencyMs        int64      `gorm:"default:0" json:"latency_ms"`                   // 执行耗时（毫秒）
+	ConversationID   string     `gorm:"size:100;index" json:"conversation_id"`         // 对话ID（与Run保持一致）
+	Sort             int        `gorm:"default:0;index:idx_run_sort" json:"sort"`      // 执行顺序
+	StartedAt        *time.Time `json:"started_at"`
+	FinishedAt       *time.Time `json:"finished_at"`
+	ErrorMessage     string     `gorm:"type:text" json:"error_message"` // 错误信息
+	PromptTokens     int        `gorm:"default:0;index" json:"-"`       // 输入 tokens（不返回给前端，仅用于统计）
+	CompletionTokens int        `gorm:"default:0;index" json:"-"`       // 输出 tokens（不返回给前端，仅用于统计）
+	TotalTokens      int        `gorm:"default:0;index" json:"-"`       // 总 tokens（不返回给前端，仅用于统计）
+	ReasoningTokens  int        `gorm:"default:0;index" json:"-"`       // 思考过程 tokens（不返回给前端，仅用于统计）
 
 	// 关联
 	Run      *SopRun      `gorm:"foreignKey:RunID" json:"run,omitempty"`
@@ -152,7 +152,8 @@ type SopChatMsg struct {
 	UserID         uint   `gorm:"not null;index" json:"user_id"`
 	Role           string `gorm:"size:20;not null" json:"role"` // user / assistant
 	Content        string `gorm:"type:longtext;not null" json:"content"`
-	Seq            int    `gorm:"default:0;index:idx_run_seq" json:"seq"` // 顺序号，用于重建对话
+	Thinking       string `gorm:"type:longtext" json:"thinking,omitempty"` // 思考过程内容（可选）
+	Seq            int    `gorm:"default:0;index:idx_run_seq" json:"seq"`  // 顺序号，用于重建对话
 }
 
 func (SopChatMsg) TableName() string {
