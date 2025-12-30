@@ -148,13 +148,18 @@ func (SopFile) TableName() string {
 // SopChatMsg SOP对话消息表
 type SopChatMsg struct {
 	gorm.Model
-	RunID          uint   `gorm:"not null;index" json:"run_id"`
-	ConversationID string `gorm:"size:100;index" json:"conversation_id"`
-	UserID         uint   `gorm:"not null;index" json:"user_id"`
-	Role           string `gorm:"size:20;not null" json:"role"` // user / assistant
-	Content        string `gorm:"type:longtext;not null" json:"content"`
-	Thinking       string `gorm:"type:longtext" json:"thinking,omitempty"` // 思考过程内容（可选）
-	Seq            int    `gorm:"default:0;index:idx_run_seq" json:"seq"`  // 顺序号，用于重建对话
+	RunID                 uint   `gorm:"not null;index" json:"run_id"`
+	ConversationID        string `gorm:"size:100;index" json:"conversation_id"`
+	UserID                uint   `gorm:"not null;index" json:"user_id"`
+	Role                  string `gorm:"size:20;not null" json:"role"` // user / assistant
+	Content               string `gorm:"type:longtext;not null" json:"content"`
+	Thinking              string `gorm:"type:longtext" json:"thinking,omitempty"` // 思考过程内容（可选）
+	Seq                   int    `gorm:"default:0;index:idx_run_seq" json:"seq"`  // 顺序号，用于重建对话
+	PromptTokens          int    `gorm:"default:0;index" json:"-"`                // 输入 tokens
+	CompletionTokens      int    `gorm:"default:0;index" json:"-"`                // 输出 tokens
+	TotalTokens           int    `gorm:"default:0;index" json:"-"`                // 总 tokens
+	ReasoningTokens       int    `gorm:"default:0;index" json:"-"`                // 思考过程 tokens
+	EstimatedPromptTokens int    `gorm:"default:0;index" json:"-"`                // 预估输入 tokens
 }
 
 func (SopChatMsg) TableName() string {

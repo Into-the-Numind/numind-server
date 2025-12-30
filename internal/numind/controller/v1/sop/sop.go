@@ -2285,11 +2285,16 @@ func (ctrl *SopController) ListRunChatMessages(c *gin.Context) {
 	responseMessages := make([]v1.RunChatMessageItem, len(msgs))
 	for i, msg := range msgs {
 		responseMessages[i] = v1.RunChatMessageItem{
-			ID:        msg.ID,
-			Role:      msg.Role,
-			Content:   msg.Content,
-			Thinking:  msg.Thinking,
-			CreatedAt: msg.CreatedAt.Format(time.RFC3339),
+			ID:                    msg.ID,
+			Role:                  msg.Role,
+			Content:               msg.Content,
+			Thinking:              msg.Thinking,
+			CreatedAt:             msg.CreatedAt.Format(time.RFC3339),
+			PromptTokens:          msg.PromptTokens,
+			CompletionTokens:      msg.CompletionTokens,
+			TotalTokens:           msg.TotalTokens,
+			ReasoningTokens:       msg.ReasoningTokens,
+			EstimatedPromptTokens: msg.EstimatedPromptTokens,
 		}
 	}
 

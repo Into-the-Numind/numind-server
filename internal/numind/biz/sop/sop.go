@@ -935,10 +935,15 @@ func (b *sopBiz) ListTemplateRunsWithDetails(ctx context.Context, userID, templa
 		chatMsgInfos := make([]v1.TemplateChatMessageInfo, len(chatMsgs))
 		for j, msg := range chatMsgs {
 			chatMsgInfos[j] = v1.TemplateChatMessageInfo{
-				ID:        msg.ID,
-				Role:      msg.Role,
-				Content:   msg.Content,
-				CreatedAt: msg.CreatedAt.Format(time.RFC3339),
+				ID:                    msg.ID,
+				Role:                  msg.Role,
+				Content:               msg.Content,
+				CreatedAt:             msg.CreatedAt.Format(time.RFC3339),
+				PromptTokens:          msg.PromptTokens,
+				CompletionTokens:      msg.CompletionTokens,
+				TotalTokens:           msg.TotalTokens,
+				ReasoningTokens:       msg.ReasoningTokens,
+				EstimatedPromptTokens: msg.EstimatedPromptTokens,
 			}
 		}
 
@@ -1047,18 +1052,21 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 			}
 		}
 
-		// 构建排除后的新切片
+		// 删除旧记录并构建新切片（解决数据库记录重复问题）
 		newChatMessages := make([]model.SopChatMsg, 0, len(chatMessages))
 		for i, msg := range chatMessages {
-			if !excludeIndices[i] {
+			if excludeIndices[i] {
+				// 物理删除旧记录，确保数据库只保留最新生成的对话
+				if err := b.ds.Sop().DeleteChatMessage(msg.ID); err != nil {
+					log.C(ctx).Warnw("Failed to delete chat message during regeneration", "msg_id", msg.ID, "error", err)
+				}
+			} else {
 				newChatMessages = append(newChatMessages, msg)
 			}
 		}
 		chatMessages = newChatMessages
 
-		log.C(ctx).Infow("Regeneration requested, excluded target messages from history", "target_msg_id", targetMsg.ID)
-		// 注意：不再调用 DeleteChatMessage，保持数据安全。
-		// 如果之后需要物理删除，可以由前端管理或添加专门的删除接口。
+		log.C(ctx).Infow("Regeneration process: old records deleted", "target_msg_id", targetMsg.ID)
 	}
 
 	// 构建对话历史：仅包含节点输入/输出 -> 已有聊天消息
@@ -1099,7 +1107,7 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	// 调用模型流式生成回答
 	// 传入空字符串作为 input，这样执行器不会拼装节点的 Prompt，AI 保持普通助手身份
 	var answerBuf strings.Builder
-	_, thinking, _, err := b.executor.ExecuteNodeStreamWithThinking(
+	_, thinking, usage, err := b.executor.ExecuteNodeStreamWithThinking(
 		ctx,
 		&lastNode,
 		"", // 传入空字符串，避免触发 node.Prompt 拼接
@@ -1131,6 +1139,22 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 		Thinking:       thinking, // 保存思考过程
 		Seq:            maxSeq + 2,
 	}
+
+	// 保存 token 使用统计（如果存在）
+	if usage != nil {
+		assistantMsg.PromptTokens = usage.PromptTokens
+		assistantMsg.CompletionTokens = usage.CompletionTokens
+		assistantMsg.TotalTokens = usage.TotalTokens
+		assistantMsg.ReasoningTokens = usage.ReasoningTokens
+		assistantMsg.EstimatedPromptTokens = usage.EstimatedPromptTokens
+		log.C(ctx).Infow("Saving token usage to chat message",
+			"run_id", runID,
+			"prompt_tokens", usage.PromptTokens,
+			"completion_tokens", usage.CompletionTokens,
+			"total_tokens", usage.TotalTokens,
+			"reasoning_tokens", usage.ReasoningTokens)
+	}
+
 	if err := b.ds.Sop().CreateChatMessage(assistantMsg); err != nil {
 		return fmt.Errorf("failed to save assistant message: %w", err)
 	}

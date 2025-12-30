@@ -273,10 +273,15 @@ type TemplateFileInfo struct {
 
 // TemplateChatMessageInfo 模板对话消息信息
 type TemplateChatMessageInfo struct {
-	ID        uint   `json:"id"`         // 消息ID
-	Role      string `json:"role"`       // 角色（user/assistant）
-	Content   string `json:"content"`    // 消息内容
-	CreatedAt string `json:"created_at"` // 创建时间
+	ID                    uint   `json:"id"`                      // 消息ID
+	Role                  string `json:"role"`                    // 角色（user/assistant）
+	Content               string `json:"content"`                 // 消息内容
+	CreatedAt             string `json:"created_at"`              // 创建时间
+	PromptTokens          int    `json:"prompt_tokens"`           // 输入 tokens
+	CompletionTokens      int    `json:"completion_tokens"`       // 输出 tokens
+	TotalTokens           int    `json:"total_tokens"`            // 总 tokens
+	ReasoningTokens       int    `json:"reasoning_tokens"`        // 思考过程 tokens
+	EstimatedPromptTokens int    `json:"estimated_prompt_tokens"` // 预估输入 tokens
 }
 
 // ListTemplateRunsResponse 模板运行历史列表响应
@@ -296,11 +301,16 @@ type ChatAfterRunRequest struct {
 
 // RunChatMessageItem Run对话消息项
 type RunChatMessageItem struct {
-	ID        uint   `json:"id"`
-	Role      string `json:"role"`       // user / assistant
-	Content   string `json:"content"`    // 正文
-	Thinking  string `json:"thinking"`   // 思考过程（如果有）
-	CreatedAt string `json:"created_at"` // 创建时间
+	ID                    uint   `json:"id"`
+	Role                  string `json:"role"`                    // user / assistant
+	Content               string `json:"content"`                 // 正文
+	Thinking              string `json:"thinking"`                // 思考过程（如果有）
+	CreatedAt             string `json:"created_at"`              // 创建时间
+	PromptTokens          int    `json:"prompt_tokens"`           // 输入 tokens
+	CompletionTokens      int    `json:"completion_tokens"`       // 输出 tokens
+	TotalTokens           int    `json:"total_tokens"`            // 总 tokens
+	ReasoningTokens       int    `json:"reasoning_tokens"`        // 思考过程 tokens
+	EstimatedPromptTokens int    `json:"estimated_prompt_tokens"` // 预估输入 tokens
 }
 
 // RunChatMessagesResponse Run对话消息列表响应
