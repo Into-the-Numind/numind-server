@@ -761,8 +761,8 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 		return "", "", nil, fmt.Errorf("LLM returned empty response")
 	}
 
-	// 兼容旧模型：若未返回reasoning，尝试从输出中拆分
-	if thinking == "" {
+	// 兼容旧模型：若未返回reasoning，且开启了深度思考，尝试从输出中拆分
+	if deepThinking && thinking == "" {
 		thinking = extractThinkingContent(output)
 		output = removeThinkingContent(output)
 	}
