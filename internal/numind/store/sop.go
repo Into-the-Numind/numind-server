@@ -71,6 +71,11 @@ type ISopStore interface {
 
 	// ResetZombieRuns 重置长时间处于运行中状态的“僵尸任务”
 	ResetZombieRuns(timeout time.Duration) (int64, error)
+
+	// Cleanup operations
+	DeleteNodeRunsAfterSort(runID uint, sort int) error
+	DeleteNotesByRun(runID uint) error
+	DeleteChatMessagesByRun(runID uint) error
 }
 
 type sopStore struct {
@@ -605,4 +610,19 @@ func (s *sopStore) ResetZombieRuns(timeout time.Duration) (int64, error) {
 		})
 
 	return result.RowsAffected, result.Error
+}
+
+// DeleteNodeRunsAfterSort 删除指定任务中排序在指定位置之后的执行记录
+func (s *sopStore) DeleteNodeRunsAfterSort(runID uint, sort int) error {
+	return s.db.Where("run_id = ? AND sort > ?", runID, sort).Delete(&model.SopNodeRun{}).Error
+}
+
+// DeleteNotesByRun 删除指定任务关联的所有笔记
+func (s *sopStore) DeleteNotesByRun(runID uint) error {
+	return s.db.Where("run_id = ?", runID).Delete(&model.SopNote{}).Error
+}
+
+// DeleteChatMessagesByRun 删除指定任务关联的所有对话消息
+func (s *sopStore) DeleteChatMessagesByRun(runID uint) error {
+	return s.db.Where("run_id = ?", runID).Delete(&model.SopChatMsg{}).Error
 }

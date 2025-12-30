@@ -884,7 +884,9 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 	}
 
 	client := &http.Client{
-		Timeout: time.Duration(node.TimeoutSeconds) * time.Second,
+		// Timeout 设置为 0，因为我们已经通过 NewRequestWithContext 使用了 context 来控制全局超时
+		// 这样连接会随 context 取消而立即物理切断（解决“影子账单”风险 2）
+		Timeout: 0,
 	}
 
 	resp, err := client.Do(req)
@@ -940,6 +942,10 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 			if readErr == io.EOF {
 				// 流结束
 				break
+			}
+			if ctx.Err() != nil {
+				log.C(ctx).Warnw("LLM connection closed due to context cancellation", "node_id", node.ID, "error", readErr)
+				return usage, ctx.Err()
 			}
 			log.C(ctx).Errorw("Read error in ali deep thinking stream", "node_id", node.ID, "error", readErr)
 			return usage, fmt.Errorf("read error: %w", readErr)
@@ -1225,7 +1231,7 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 		timeout = 30 * time.Minute
 	}
 	client := &http.Client{
-		Timeout: timeout,
+		Timeout: 0, // 由 context 统一控制（解决“影子账单”风险 2）
 	}
 
 	resp, err := client.Do(req)
@@ -1262,6 +1268,10 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 			if readErr == io.EOF {
 				// 流结束
 				break
+			}
+			if ctx.Err() != nil {
+				log.C(ctx).Warnw("LLM connection closed due to context cancellation", "node_id", node.ID, "error", readErr)
+				return usage, ctx.Err()
 			}
 			log.C(ctx).Errorw("Read error in volc deep thinking stream", "node_id", node.ID, "error", readErr)
 			return usage, fmt.Errorf("read error: %w", readErr)

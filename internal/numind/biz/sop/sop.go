@@ -405,15 +405,21 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		})
 	}
 
-	// 添加所有已执行节点的输入输出（按sort排序，排除当前要重新执行的节点以及之后的节点）
-	// 我们只关心当前节点之前的历史记录
-	relevantNodeRuns := []model.SopNodeRun{}
-	for _, nodeRun := range completedNodeRuns {
-		// 关键修正：只包含当前节点之前的节点 (Sort < node.Sort)
-		// 这样可以确保重新生成中间节点时，不会错误的包含"未来"的对话记录
-		if nodeRun.Sort < node.Sort && nodeRun.Status == model.SopStatusSucceeded {
-			relevantNodeRuns = append(relevantNodeRuns, nodeRun)
+	// 构建历史：严格过滤出当前节点之前的最新成功记录（解决“幻觉注入”问题）
+	// 我们按 Sort 分组，每组只取最新的一条
+	latestRunsMap := make(map[int]model.SopNodeRun)
+	for _, nr := range allNodeRuns {
+		if nr.Sort < node.Sort && nr.Status == model.SopStatusSucceeded && nr.Output != "" {
+			existing, ok := latestRunsMap[nr.Sort]
+			if !ok || nr.CreatedAt.After(existing.CreatedAt) {
+				latestRunsMap[nr.Sort] = nr
+			}
 		}
+	}
+
+	relevantNodeRuns := []model.SopNodeRun{}
+	for _, nr := range latestRunsMap {
+		relevantNodeRuns = append(relevantNodeRuns, nr)
 	}
 
 	// 按Sort字段排序
@@ -529,6 +535,22 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 
 		if err := b.ds.Sop().UpdateNodeRun(nodeRun.ID, updateData); err != nil {
 			return fmt.Errorf("failed to update node run: %w", err)
+		}
+
+		// 联动清理（解决“时空推演矛盾”）：既然中间节点重做了，后续的所有步骤、笔记和对话都已经失效，必须清除以防冲突
+		log.C(ctx).Infow("Regeneration triggered, cleaning up downstream records", "run_id", runID, "after_sort", node.Sort)
+
+		// 1. 删除后续节点的执行记录
+		if err := b.ds.Sop().DeleteNodeRunsAfterSort(runID, node.Sort); err != nil {
+			log.C(ctx).Warnw("Failed to cleanup downstream node runs", "error", err)
+		}
+		// 2. 删除该任务关联的最终笔记
+		if err := b.ds.Sop().DeleteNotesByRun(runID); err != nil {
+			log.C(ctx).Warnw("Failed to cleanup run notes", "error", err)
+		}
+		// 3. 删除该任务关联的对话消息（历史已变，追问需重来）
+		if err := b.ds.Sop().DeleteChatMessagesByRun(runID); err != nil {
+			log.C(ctx).Warnw("Failed to cleanup run chat messages", "error", err)
 		}
 
 		// 重新加载nodeRun以获取最新数据
