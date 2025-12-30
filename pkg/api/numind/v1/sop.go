@@ -293,3 +293,19 @@ type ChatAfterRunRequest struct {
 	DeepThinking    bool   `json:"deep_thinking"`     // 是否深度思考
 	RegenerateMsgID uint   `json:"regenerate_msg_id"` // 需要重新生成的AI消息ID（可选）
 }
+
+// RunChatMessageItem Run对话消息项
+type RunChatMessageItem struct {
+	ID        uint   `json:"id"`
+	Role      string `json:"role"`       // user / assistant
+	Content   string `json:"content"`    // 正文
+	Thinking  string `json:"thinking"`   // 思考过程（如果有）
+	CreatedAt string `json:"created_at"` // 创建时间
+}
+
+// RunChatMessagesResponse Run对话消息列表响应
+type RunChatMessagesResponse struct {
+	RunID          uint                 `json:"run_id"`
+	ConversationID string               `json:"conversation_id"`
+	Messages       []RunChatMessageItem `json:"messages"`
+}

@@ -1108,6 +1108,9 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 			if event == "message" {
 				answerBuf.WriteString(chunk)
 			}
+			if event == "done" {
+				return nil // 拦截 done 事件，稍后随着 ID 一起发送
+			}
 			return handler(event, chunk)
 		},
 		true,         // isLastNode：标记为最后一个节点（用于日志和统计，所有节点统一使用 prompt + input 格式）
@@ -1132,7 +1135,9 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 		return fmt.Errorf("failed to save assistant message: %w", err)
 	}
 
-	return nil
+	// 发送包含 message_id 的完成事件
+	donePayload := fmt.Sprintf(`{"status":"completed","message_id":%d}`, assistantMsg.ID)
+	return handler("done", donePayload)
 }
 
 // ListChatMessages 获取指定run的聊天记录（需校验归属）

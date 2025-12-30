@@ -2221,7 +2221,11 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 		case "message":
 			data = fmt.Sprintf("data: %s\n\n", string(chunkJSON))
 		case "done":
-			data = "event: done\ndata: {\"status\":\"completed\"}\n\n"
+			if chunk != "" {
+				data = fmt.Sprintf("event: done\ndata: %s\n\n", chunk)
+			} else {
+				data = "event: done\ndata: {\"status\":\"completed\"}\n\n"
+			}
 		default:
 			return nil
 		}
@@ -2277,10 +2281,22 @@ func (ctrl *SopController) ListRunChatMessages(c *gin.Context) {
 		return
 	}
 
-	core.WriteResponse(c, nil, gin.H{
-		"run_id":          runID,
-		"conversation_id": msgsSafeConversationID(msgs),
-		"messages":        msgs,
+	// 转换为响应结构体
+	responseMessages := make([]v1.RunChatMessageItem, len(msgs))
+	for i, msg := range msgs {
+		responseMessages[i] = v1.RunChatMessageItem{
+			ID:        msg.ID,
+			Role:      msg.Role,
+			Content:   msg.Content,
+			Thinking:  msg.Thinking,
+			CreatedAt: msg.CreatedAt.Format(time.RFC3339),
+		}
+	}
+
+	core.WriteResponse(c, nil, v1.RunChatMessagesResponse{
+		RunID:          uint(runID),
+		ConversationID: msgsSafeConversationID(msgs),
+		Messages:       responseMessages,
 	})
 }
 
