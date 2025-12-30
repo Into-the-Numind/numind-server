@@ -10,7 +10,7 @@ const (
 	// DeepSeek V3 Context Window
 	MaxContextWindow = 128000
 	// Safety Coefficient for estimation
-	SafetyCoefficient = 1.1
+	SafetyCoefficient = 1.0
 	// Target token count after pruning (to leave room for new input and generation)
 	TargetPrunedTokens = 80000
 )
@@ -66,7 +66,7 @@ func (t *Tokenizer) EstimateMessageTokens(messages []Message) int {
 // PruneContext automatically removes oldest messages to fit within limit
 // Strategies:
 // 1. Always keep System Prompt (if present at index 0)
-// 2. Keep the user's latest input (assumed to be appended before calling this, or handled by caller)
+// 2. Keep the user's latest input (at least one message if possible)
 // 3. Remove oldest messages from history until total tokens < target
 func (t *Tokenizer) PruneContext(messages []Message, targetLimit int) ([]Message, int) {
 	if len(messages) == 0 {
@@ -93,22 +93,28 @@ func (t *Tokenizer) PruneContext(messages []Message, targetLimit int) ([]Message
 	}
 
 	// We need to keep the latest messages.
-	// We'll iterate from the end backwards to find how many we can keep.
-	// However, the standard requirements usually imply "sliding window" from the *start* of history.
-
-	// Let's calculate tokens for immutable parts first (System Prompt)
+	// We'll calculate tokens for immutable parts first (System Prompt)
 	currentTokens := 0
 	if systemMsg != nil {
 		currentTokens = t.EstimateMessageTokens([]Message{*systemMsg})
 	}
 
-	// Calculate tokens for all non-system messages
-	// We want to keep the LATEST N messages that fit.
+	// Identify the latest message index that we MUST keep if possible (usually the last one)
+	// Even if it exceeds the limit by itself, we keep it to avoid empty message list error.
+	lastIdx := len(messages) - 1
 
 	// Working backwards from the last message
 	tempKept := []Message{}
-	for i := len(messages) - 1; i >= startIdx; i-- {
+	for i := lastIdx; i >= startIdx; i-- {
 		msgTokens := t.EstimateMessageTokens([]Message{messages[i]})
+		// If it is the LAST message and it is NOT a system message, we ALWAYS keep it
+		// to avoid sending an empty messages array to the API.
+		if i == lastIdx && i >= startIdx {
+			currentTokens += msgTokens
+			tempKept = append([]Message{messages[i]}, tempKept...)
+			continue
+		}
+
 		if currentTokens+msgTokens > targetLimit {
 			break
 		}

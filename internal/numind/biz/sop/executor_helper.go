@@ -39,13 +39,13 @@ func (e *SopExecutor) prepareContext(ctx context.Context, node *model.SopNode, m
 	finalMessages := messages
 	maxTokens := 4096 // Default buffer
 
-	// 3. 判断是否需要处理
+	// 3. 判断是否需要处理 (触发阈值 110k)
 	if totalEstimated > limit110k {
-		log.C(ctx).Infow("Token limit warning triggered", "node_id", node.ID, "estimated", totalEstimated)
+		log.C(ctx).Infow("Token limit threshold reached (110k)", "node_id", node.ID, "estimated", totalEstimated)
 
-		// Situation: Critical Overflow (> 125k)
+		// 情况 A: 极其严重的溢出 (> 125k)，如果是首轮则需要对输入进行物理截断
 		if totalEstimated > limit125k {
-			// Check if it's first turn (only System + User)
+			// 检查是否是第一轮对话（只有 System + User）
 			isFirstTurn := true
 			for _, m := range messages {
 				if m.Role == "assistant" {
@@ -55,27 +55,26 @@ func (e *SopExecutor) prepareContext(ctx context.Context, node *model.SopNode, m
 			}
 
 			if isFirstTurn && e.tokenizer != nil {
-				// Handle First Turn Overflow: Truncate Input
-				log.C(ctx).Warnw("First turn overflow detected, truncating input", "node_id", node.ID)
+				// 处理首轮超限：直接截断当前输入
+				log.C(ctx).Warnw("First turn critical overflow (>125k), truncating input", "node_id", node.ID)
 
-				// Estimate overhead of system prompt
+				// 估算系统提示词开销
 				sysOverhead := 0
 				if len(messages) > 0 && messages[0].Role == "system" {
 					sysOverhead = e.tokenizer.EstimateTokens(messages[0].Content)
 				}
 
-				// Truncate user message to fit roughly 100k
+				// 截断用户消息至约 100k
 				targetInput := 100000 - sysOverhead
 				if targetInput < 10000 {
 					targetInput = 10000
-				} // Safety floor
+				}
 
-				// Extract user message content (assuming it's the last one)
 				lastMsgIdx := len(messages) - 1
 				originalContent := messages[lastMsgIdx].Content
 				truncatedInput := e.tokenizer.TruncateText(originalContent, targetInput)
 
-				// Rebuild messages
+				// 重组消息列表
 				finalMessages = make([]LLMMessage, 0)
 				if len(messages) > 0 && messages[0].Role == "system" {
 					finalMessages = append(finalMessages, messages[0])
@@ -85,15 +84,13 @@ func (e *SopExecutor) prepareContext(ctx context.Context, node *model.SopNode, m
 					Content: truncatedInput,
 				})
 
-				// Re-estimate
+				// 重新评估 token
 				totalEstimated = e.tokenizer.EstimateTokens(finalMessages[len(finalMessages)-1].Content) + sysOverhead
-
 			} else if e.tokenizer != nil {
-				// Handle History Overflow: Prune Context
-				log.C(ctx).Warnw("History overflow detected, pruning context", "node_id", node.ID)
+				// 历史溢出：裁剪至安全区 (80k)
+				log.C(ctx).Warnw("History critical overflow (>125k), pruning to 80k", "node_id", node.ID)
 				prunedTkMessages, newEst := e.tokenizer.PruneContext(tkMessages, 80000)
 
-				// Convert back to LLMMessage
 				finalMessages = make([]LLMMessage, len(prunedTkMessages))
 				for i, m := range prunedTkMessages {
 					finalMessages[i] = LLMMessage{
@@ -104,9 +101,8 @@ func (e *SopExecutor) prepareContext(ctx context.Context, node *model.SopNode, m
 				totalEstimated = newEst
 			}
 		} else if e.tokenizer != nil {
-			// Situation: Warning Zone (110k - 125k)
-			// Prune history if possible to get back to safe zone (80k)
-			// But if it is first turn, we do nothing here (unless it hits critical)
+			// 情况 B: 超过阈值 (110k - 125k)
+			// 如果不是首轮，则进行历史裁剪至 80k
 			isFirstTurn := true
 			for _, m := range messages {
 				if m.Role == "assistant" {
@@ -116,7 +112,7 @@ func (e *SopExecutor) prepareContext(ctx context.Context, node *model.SopNode, m
 			}
 
 			if !isFirstTurn {
-				log.C(ctx).Infow("Pruning history to safe zone", "node_id", node.ID)
+				log.C(ctx).Infow("Token exceeded 110k, pruning history to 80k", "node_id", node.ID)
 				prunedTkMessages, newEst := e.tokenizer.PruneContext(tkMessages, 80000)
 				finalMessages = make([]LLMMessage, len(prunedTkMessages))
 				for i, m := range prunedTkMessages {
@@ -152,9 +148,13 @@ func (e *SopExecutor) prepareContext(ctx context.Context, node *model.SopNode, m
 		maxTokens = 4096
 	}
 
-	// Safety floor
-	if maxTokens < 1 {
-		maxTokens = 1
+	// Safety check: ensure finalMessages is not empty if original messages was not empty
+	if len(finalMessages) == 0 && len(messages) > 0 {
+		log.C(ctx).Warnw("finalMessages is empty after processing, forcing last message to be kept", "node_id", node.ID)
+		finalMessages = []LLMMessage{messages[len(messages)-1]}
+		totalEstimated = e.tokenizer.EstimateMessageTokens([]tokenizer.Message{
+			{Role: finalMessages[0].Role, Content: finalMessages[0].Content},
+		})
 	}
 
 	return finalMessages, totalEstimated, maxTokens, nil
