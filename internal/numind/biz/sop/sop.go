@@ -607,6 +607,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 			updateData["completion_tokens"] = usage.CompletionTokens
 			updateData["total_tokens"] = usage.TotalTokens
 			updateData["reasoning_tokens"] = usage.ReasoningTokens
+			updateData["estimated_prompt_tokens"] = usage.EstimatedPromptTokens
 		}
 		b.ds.Sop().UpdateNodeRun(nodeRun.ID, updateData)
 		return fmt.Errorf("node execution failed: %w", err)
@@ -627,12 +628,14 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		updateData["completion_tokens"] = usage.CompletionTokens
 		updateData["total_tokens"] = usage.TotalTokens
 		updateData["reasoning_tokens"] = usage.ReasoningTokens
+		updateData["estimated_prompt_tokens"] = usage.EstimatedPromptTokens
 		log.C(ctx).Infow("Saving token usage to node run",
 			"node_run_id", nodeRun.ID,
 			"prompt_tokens", usage.PromptTokens,
 			"completion_tokens", usage.CompletionTokens,
 			"total_tokens", usage.TotalTokens,
-			"reasoning_tokens", usage.ReasoningTokens)
+			"reasoning_tokens", usage.ReasoningTokens,
+			"estimated_prompt_tokens", usage.EstimatedPromptTokens)
 	}
 
 	if err := b.ds.Sop().UpdateNodeRun(nodeRun.ID, updateData); err != nil {

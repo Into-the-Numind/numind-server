@@ -767,6 +767,16 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 		output = removeThinkingContent(output)
 	}
 
+	if usage != nil {
+		usage.Normalize()
+		usage.EstimatedPromptTokens = estimatedTokens
+	} else {
+		// 如果 usage 为空（例如出错中断），至少保留预估数据
+		usage = &TokenUsage{
+			EstimatedPromptTokens: estimatedTokens,
+		}
+	}
+
 	return output, thinking, usage, nil
 }
 
