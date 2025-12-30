@@ -10,7 +10,7 @@ const (
 	// DeepSeek V3 Context Window
 	MaxContextWindow = 128000
 	// Safety Coefficient for estimation
-	SafetyCoefficient = 0.58
+	SafetyCoefficient = 0.6
 	// Target token count after pruning (to leave room for new input and generation)
 	TargetPrunedTokens = 80000
 )

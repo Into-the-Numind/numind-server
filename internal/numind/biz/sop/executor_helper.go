@@ -34,7 +34,6 @@ func (e *SopExecutor) prepareContext(ctx context.Context, node *model.SopNode, m
 
 	limit110k := 110000
 	limit125k := 125000
-	maxContext := 128000
 
 	finalMessages := messages
 	maxTokens := 4096 // Default buffer
@@ -126,27 +125,11 @@ func (e *SopExecutor) prepareContext(ctx context.Context, node *model.SopNode, m
 		}
 	}
 
-	// 4. 计算剩余空间并设置 MaxTokens
-	remaining := maxContext - totalEstimated
-	if remaining < 0 {
-		remaining = 0
-	} // Should be handled by truncation/pruning, but just in case
-
-	// Dynamic MaxTokens strategy:
-	// If remaining is ample (> 4k), use default 4096 (or model limit).
-	// If remaining is tight (< 4k), squeeze max_tokens to fit window.
-	// Minimum safety floor: 200 tokens (if less, we might get incomplete answer but better than error)
-
-	if remaining < 1000 {
-		// Very tight, give it all remaining space
-		maxTokens = remaining
-	} else if remaining < 5000 {
-		// Moderately tight, use safe buffer
-		maxTokens = remaining - 100 // Leave tiny buffer
-	} else {
-		// Plenty of space
-		maxTokens = 4096
-	}
+	// 4. 计算剩余空间（仅作记录，不再限制输出）
+	// 用户要求完全移除 max_tokens 限制，让模型自由生成直到上下文上限
+	// 此时 maxTokens 返回 0，在 executor.go 中会因 omitempty 字段而不传给 API
+	// 从而解除限制
+	maxTokens = 0
 
 	// Safety check: ensure finalMessages is not empty if original messages was not empty
 	if len(finalMessages) == 0 && len(messages) > 0 {
