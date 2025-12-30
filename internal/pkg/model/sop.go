@@ -126,7 +126,7 @@ type SopFile struct {
 	NodeID    *uint  `gorm:"index" json:"node_id"`                     // 关联的节点ID（可选）
 	FileName  string `gorm:"size:255;not null" json:"file_name"`       // 原始文件名
 	FileURL   string `gorm:"size:512;not null" json:"file_url"`        // 文件URL（COS链接）
-	FileType  string `gorm:"size:50" json:"file_type"`                 // 文件类型（MIME类型）
+	FileType  string `gorm:"size:255" json:"file_type"`                // 文件类型（MIME类型）
 	FileSize  int64  `gorm:"not null" json:"file_size"`                // 文件大小（字节）
 	FileExt   string `gorm:"size:10" json:"file_ext"`                  // 文件扩展名
 	Content   string `gorm:"type:longtext" json:"content"`             // 提取的文本内容（可选）

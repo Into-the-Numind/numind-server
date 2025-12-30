@@ -223,6 +223,13 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate sop_file: %v", err)
 	}
 
+	// 修复 sop_file 表的 file_type 字段长度（从 50 增加到 255）
+	if err := fixSopFileFields(db); err != nil {
+		log.Warnw("Failed to fix sop_file fields, continuing", "error", err)
+	} else {
+		log.Infow("Sop_file fields fixed successfully")
+	}
+
 	// 第七步：创建对话消息表（依赖执行记录表和用户表）
 	if err := db.AutoMigrate(&model.SopChatMsg{}); err != nil {
 		return fmt.Errorf("failed to migrate sop_chat_message: %v", err)
@@ -496,6 +503,39 @@ func fixSopNodeRunTextFields(db *gorm.DB) error {
 			return fmt.Errorf("failed to modify thinking field: %v", err)
 		}
 		log.Infow("Thinking field type fixed successfully")
+	}
+
+	return nil
+}
+
+// fixSopFileFields 修复 sop_file 表的字段长度
+func fixSopFileFields(db *gorm.DB) error {
+	tableName := "sop_file"
+
+	// 检查表是否存在
+	var count int64
+	err := db.Raw(`
+		SELECT COUNT(*) 
+		FROM information_schema.TABLES 
+		WHERE TABLE_SCHEMA = DATABASE() 
+			AND TABLE_NAME = ?
+	`, tableName).Scan(&count).Error
+
+	if err != nil {
+		return fmt.Errorf("failed to check table existence: %v", err)
+	}
+
+	if count == 0 {
+		return nil
+	}
+
+	// 强制修改 file_type 字段长度为 255
+	log.Infow("Ensuring file_type column length is 255", "table", tableName)
+	if err := db.Exec(`
+		ALTER TABLE ` + tableName + ` 
+		MODIFY COLUMN file_type VARCHAR(255)
+	`).Error; err != nil {
+		return fmt.Errorf("failed to modify file_type field: %v", err)
 	}
 
 	return nil
