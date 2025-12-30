@@ -546,17 +546,16 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 
 			var m map[string]interface{}
 			if err := json.Unmarshal([]byte(data), &m); err == nil {
-				if rawUsage, ok := m["usage"]; ok {
+				if rawUsage, ok := m["usage"]; ok && rawUsage != nil {
 					usageBytes, _ := json.Marshal(rawUsage)
-					usage = &TokenUsage{}
-					if err := json.Unmarshal(usageBytes, usage); err != nil {
-						log.C(ctx).Warnw("Failed to unmarshal plain stream usage data", "error", err)
+					var tempUsage TokenUsage
+					if err := json.Unmarshal(usageBytes, &tempUsage); err == nil && (tempUsage.TotalTokens > 0 || tempUsage.PromptTokens > 0 || tempUsage.CompletionTokens > 0) {
+						usage = &tempUsage
+						log.C(ctx).Infow("Token usage received in plain stream",
+							"node_id", node.ID,
+							"prompt_tokens", usage.PromptTokens,
+							"completion_tokens", usage.CompletionTokens)
 					}
-					log.C(ctx).Infow("Token usage received in plain stream",
-						"node_id", node.ID,
-						"prompt_tokens", usage.PromptTokens,
-						"completion_tokens", usage.CompletionTokens)
-					continue
 				}
 
 				if choices, ok := m["choices"].([]interface{}); ok && len(choices) > 0 {
@@ -947,20 +946,18 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		}
 
 		// 检查是否有 usage 信息（通常在最后一个数据块中，且 choices 可能为空）
-		if rawUsage, ok := m["usage"]; ok {
+		if rawUsage, ok := m["usage"]; ok && rawUsage != nil {
 			usageBytes, _ := json.Marshal(rawUsage)
-			usage = &TokenUsage{}
-			if err := json.Unmarshal(usageBytes, usage); err != nil {
-				log.C(ctx).Warnw("Failed to unmarshal usage data", "error", err)
+			var tempUsage TokenUsage
+			if err := json.Unmarshal(usageBytes, &tempUsage); err == nil && (tempUsage.TotalTokens > 0 || tempUsage.PromptTokens > 0 || tempUsage.CompletionTokens > 0) {
+				usage = &tempUsage
+				log.C(ctx).Infow("Token usage received",
+					"node_id", node.ID,
+					"prompt_tokens", usage.PromptTokens,
+					"completion_tokens", usage.CompletionTokens,
+					"total_tokens", usage.TotalTokens,
+					"reasoning_tokens", usage.ReasoningTokens)
 			}
-			log.C(ctx).Infow("Token usage received",
-				"node_id", node.ID,
-				"prompt_tokens", usage.PromptTokens,
-				"completion_tokens", usage.CompletionTokens,
-				"total_tokens", usage.TotalTokens,
-				"reasoning_tokens", usage.ReasoningTokens)
-			// 如果找到 usage，choices 可能为空，继续处理但不处理 delta
-			continue
 		}
 
 		choices, ok := m["choices"].([]interface{})
@@ -1306,20 +1303,18 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 		}
 
 		// 检查是否有 usage 信息（通常在最后一个数据块中）
-		if rawUsage, ok := m["usage"]; ok {
+		if rawUsage, ok := m["usage"]; ok && rawUsage != nil {
 			usageBytes, _ := json.Marshal(rawUsage)
-			usage = &TokenUsage{}
-			if err := json.Unmarshal(usageBytes, usage); err != nil {
-				log.C(ctx).Warnw("Failed to unmarshal volc usage data", "error", err)
+			var tempUsage TokenUsage
+			if err := json.Unmarshal(usageBytes, &tempUsage); err == nil && (tempUsage.TotalTokens > 0 || tempUsage.PromptTokens > 0 || tempUsage.CompletionTokens > 0) {
+				usage = &tempUsage
+				log.C(ctx).Infow("Token usage received from volc",
+					"node_id", node.ID,
+					"prompt_tokens", usage.PromptTokens,
+					"completion_tokens", usage.CompletionTokens,
+					"total_tokens", usage.TotalTokens,
+					"reasoning_tokens", usage.ReasoningTokens)
 			}
-			log.C(ctx).Infow("Token usage received from volc",
-				"node_id", node.ID,
-				"prompt_tokens", usage.PromptTokens,
-				"completion_tokens", usage.CompletionTokens,
-				"total_tokens", usage.TotalTokens,
-				"reasoning_tokens", usage.ReasoningTokens)
-			// 如果找到 usage，choices 可能为空，继续处理但不处理 delta
-			continue
 		}
 
 		choices, ok := m["choices"].([]interface{})
