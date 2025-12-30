@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -195,6 +196,10 @@ func (ctrl *SopController) ListMyRuns(c *gin.Context) {
 
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+
+	// 自动清理处于运行中状态但已超时的“僵尸任务”（30分钟超时）
+	// 这样可以确保用户看到的列表状态是准确的，提升鲁棒性
+	_ = ctrl.sopBiz.CleanZombieRuns(c, 30*time.Minute)
 
 	uid := user.ID
 	runs, total, err := ctrl.sopBiz.ListRuns(c, offset, limit, &uid)
@@ -721,6 +726,9 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 		return
 	}
 
+	// 使用互斥锁保护并发写入 c.Writer（防止 heartbeater 和主 handler 冲突造成数据竞争）
+	var mu sync.Mutex
+
 	// 创建带心跳的 context，用于定期发送心跳保持连接
 	heartbeatCtx, heartbeatCancel := context.WithCancel(c.Request.Context())
 	defer heartbeatCancel()
@@ -741,11 +749,14 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 					return
 				default:
 					// 发送心跳注释行（使用简洁格式，确保前端不会解析）
+					mu.Lock()
 					if _, err := c.Writer.WriteString(":\n\n"); err != nil {
 						log.C(c).Warnw("Failed to send heartbeat", "error", err)
+						mu.Unlock()
 						return
 					}
 					flusher.Flush()
+					mu.Unlock()
 				}
 			}
 		}
@@ -774,6 +785,8 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 			return nil
 		}
 
+		mu.Lock()
+		defer mu.Unlock()
 		if _, err := c.Writer.WriteString(data); err != nil {
 			log.C(c).Warnw("Failed to write chunk to client", "error", err)
 			return err
@@ -794,15 +807,20 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 		// 发送错误事件
 		errorMsg, _ := json.Marshal(err.Error())
 		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
+		mu.Lock()
 		c.Writer.WriteString(errorData)
 		flusher.Flush()
+		mu.Unlock()
 		return
 	}
 
 	// 完成事件已在流式回调中发送；此处仅附带上传文件ID的结束包（可选）
-	doneData := fmt.Sprintf("event: done\ndata: {\"status\":\"completed\",\"uploaded_file_ids\":%v}\n\n", uploadedFileIDs)
+	fileIDsJSON, _ := json.Marshal(uploadedFileIDs)
+	doneData := fmt.Sprintf("event: done\ndata: {\"status\":\"completed\",\"uploaded_file_ids\":%s}\n\n", string(fileIDsJSON))
+	mu.Lock()
 	c.Writer.WriteString(doneData)
 	flusher.Flush()
+	mu.Unlock()
 }
 
 // uploadFileToCOS 上传文件到COS并创建数据库记录（考虑各种极端情况）
@@ -1956,6 +1974,9 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 	heartbeatCtx, heartbeatCancel := context.WithCancel(c.Request.Context())
 	defer heartbeatCancel()
 
+	// 使用互斥锁保护并发写入 c.Writer
+	var mu sync.Mutex
+
 	// 7. 启动心跳 goroutine，每 15 秒发送一次注释行（SSE 心跳）
 	heartbeatTicker := time.NewTicker(15 * time.Second)
 	defer heartbeatTicker.Stop()
@@ -1970,11 +1991,14 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 					return
 				default:
 					// 发送心跳注释行（使用简洁格式，确保前端不会解析）
+					mu.Lock()
 					if _, err := c.Writer.WriteString(":\n\n"); err != nil {
 						log.C(c).Warnw("Failed to send heartbeat", "error", err)
+						mu.Unlock()
 						return
 					}
 					flusher.Flush()
+					mu.Unlock()
 				}
 			}
 		}
@@ -2015,6 +2039,8 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 				return nil
 			}
 
+			mu.Lock()
+			defer mu.Unlock()
 			if _, err := c.Writer.WriteString(data); err != nil {
 				log.C(c).Warnw("Failed to write chunk to client", "error", err)
 				return err
@@ -2058,6 +2084,8 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 					return nil
 				}
 
+				mu.Lock()
+				defer mu.Unlock()
 				if _, err := c.Writer.WriteString(data); err != nil {
 					log.C(c).Warnw("Failed to write chunk to client", "error", err)
 					return err
@@ -2142,6 +2170,9 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 		return
 	}
 
+	// 使用互斥锁保护并发写入 c.Writer
+	var mu sync.Mutex
+
 	// 创建带心跳的 context
 	heartbeatCtx, heartbeatCancel := context.WithCancel(c.Request.Context())
 	defer heartbeatCancel()
@@ -2160,11 +2191,14 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 					return
 				default:
 					// 发送心跳注释行（使用简洁格式，确保前端不会解析）
+					mu.Lock()
 					if _, err := c.Writer.WriteString(":\n\n"); err != nil {
 						log.C(c).Warnw("Failed to send heartbeat", "error", err)
+						mu.Unlock()
 						return
 					}
 					flusher.Flush()
+					mu.Unlock()
 				}
 			}
 		}
@@ -2192,6 +2226,8 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 			return nil
 		}
 
+		mu.Lock()
+		defer mu.Unlock()
 		if _, err := c.Writer.WriteString(data); err != nil {
 			log.C(c).Warnw("Failed to write chunk to client", "error", err)
 			return err
@@ -2208,8 +2244,10 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 		// 发送错误事件
 		errorMsg, _ := json.Marshal(err.Error())
 		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
+		mu.Lock()
 		c.Writer.WriteString(errorData)
 		flusher.Flush()
+		mu.Unlock()
 		return
 	}
 

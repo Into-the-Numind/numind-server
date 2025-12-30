@@ -68,6 +68,9 @@ type ISopStore interface {
 
 	// CheckRunOwnership 检查Run是否属于指定用户（轻量级权限验证）
 	CheckRunOwnership(runID, userID uint) (bool, error)
+
+	// ResetZombieRuns 重置长时间处于运行中状态的“僵尸任务”
+	ResetZombieRuns(timeout time.Duration) (int64, error)
 }
 
 type sopStore struct {
@@ -588,4 +591,18 @@ func (s *sopStore) CheckRunOwnership(runID, userID uint) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// ResetZombieRuns 重置长时间处于运行中状态的“僵尸任务”
+func (s *sopStore) ResetZombieRuns(timeout time.Duration) (int64, error) {
+	threshold := time.Now().Add(-timeout)
+	result := s.db.Model(&model.SopRun{}).
+		Where("status = ? AND updated_at < ?", model.SopStatusRunning, threshold).
+		Updates(map[string]interface{}{
+			"status":        model.SopStatusFailed,
+			"error_message": "任务执行超时，已由系统自动重置",
+			"finished_at":   time.Now(),
+		})
+
+	return result.RowsAffected, result.Error
 }

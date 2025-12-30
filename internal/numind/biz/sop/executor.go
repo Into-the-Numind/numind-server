@@ -749,7 +749,9 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 		})
 	}
 	if err != nil {
-		return "", "", nil, err
+		log.C(ctx).Errorw("LLM stream execution interrupted with error", "node_id", node.ID, "error", err, "partial_output_len", answerBuf.Len())
+		// 即使出错，也返回已生成的内容和统计数据（Issue 3 & 4）
+		return answerBuf.String(), thinkingBuf.String(), usage, err
 	}
 
 	output := answerBuf.String()
@@ -829,6 +831,7 @@ func removeThinkingContent(output string) string {
 // 使用兼容模式：enable_thinking=true，reasoning_content 为思考链条，content 为最终答案
 // 返回 usage 信息用于统计 token 消耗
 func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model.SopNode, messages []LLMMessage, maxTokens int, deepThinking bool, conversationID string, handler StreamHandler) (*TokenUsage, error) {
+	var usage *TokenUsage // 用于存储 token 使用统计
 	url := node.BaseURL
 	if url == "" {
 		url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
@@ -902,7 +905,6 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		messageBuf         strings.Builder
 		thinkingChunks     int
 		messageChunks      int
-		usage              *TokenUsage             // 用于存储 token 使用统计
 		accumulatedContent strings.Builder         // 累积所有内容用于判断思考阶段
 		hasThinkingMarker  bool            = false // 是否已检测到思考开始标记
 		thinkingEnded      bool            = false // 思考阶段是否已结束
@@ -928,7 +930,7 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		// 检查context是否被取消
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return usage, ctx.Err()
 		default:
 		}
 
@@ -940,7 +942,7 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 				break
 			}
 			log.C(ctx).Errorw("Read error in ali deep thinking stream", "node_id", node.ID, "error", readErr)
-			return nil, fmt.Errorf("read error: %w", readErr)
+			return usage, fmt.Errorf("read error: %w", readErr)
 		}
 
 		// 转换为字符串并去除换行符
@@ -1155,6 +1157,7 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 // 使用 thinking.type: "enabled" 开启深度思考
 // 返回 usage 信息用于统计 token 消耗
 func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *model.SopNode, messages []LLMMessage, maxTokens int, deepThinking bool, conversationID string, handler StreamHandler) (*TokenUsage, error) {
+	var usage *TokenUsage
 	// 构建 URL（先 trim 掉空格，避免拼接错误）
 	url := strings.TrimSpace(node.BaseURL)
 	if url == "" {
@@ -1227,7 +1230,7 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to call volc deep thinking stream: %w", err)
+		return usage, fmt.Errorf("failed to call volc deep thinking stream: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -1243,14 +1246,13 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 		messageBuf     strings.Builder
 		thinkingChunks int
 		messageChunks  int
-		usage          *TokenUsage
 	)
 
 	for {
 		// 检查context是否被取消
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return usage, ctx.Err()
 		default:
 		}
 
@@ -1262,7 +1264,7 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 				break
 			}
 			log.C(ctx).Errorw("Read error in volc deep thinking stream", "node_id", node.ID, "error", readErr)
-			return nil, fmt.Errorf("read error: %w", readErr)
+			return usage, fmt.Errorf("read error: %w", readErr)
 		}
 
 		// 转换为字符串并去除换行符

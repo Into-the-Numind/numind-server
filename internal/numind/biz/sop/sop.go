@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"numind-server/internal/numind/store"
@@ -55,11 +56,16 @@ type ISopBiz interface {
 	// Chat operations
 	ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, deepThinking bool, regenerateMsgID uint, handler func(event string, chunk string) error) error
 	ListChatMessages(ctx context.Context, runID uint, userID uint) ([]model.SopChatMsg, error)
+
+	// Admin operations
+	CleanZombieRuns(ctx context.Context, timeout time.Duration) error
 }
 
 type sopBiz struct {
 	ds       store.IStore
 	executor *SopExecutor
+	// runningRuns 用于存储正在执行的任务 ID，防止并发冲突（互斥锁）
+	runningRuns sync.Map
 }
 
 // NewSopBiz 创建SOP业务逻辑实例
@@ -183,12 +189,8 @@ func (b *sopBiz) ExecuteTemplate(ctx context.Context, templateID, userID uint, t
 		return nil, fmt.Errorf("failed to get template nodes: %w", err)
 	}
 
-	if len(nodes) == 0 {
-		return nil, fmt.Errorf("template has no nodes")
-	}
-
-	// 生成唯一的conversation_id
-	conversationID := fmt.Sprintf("sop_%d_%d_%d", templateID, userID, time.Now().Unix())
+	// 生成唯一的conversation_id（改用纳秒级时间戳，彻底解决碰撞问题）
+	conversationID := fmt.Sprintf("sop_%d_%d_%d", templateID, userID, time.Now().UnixNano())
 
 	// 创建Run记录
 	run := &model.SopRun{
@@ -248,8 +250,8 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 		return nil, fmt.Errorf("template not found: %w", err)
 	}
 
-	// 生成唯一的conversation_id
-	conversationID := fmt.Sprintf("sop_%d_%d_%d", templateID, userID, time.Now().Unix())
+	// 生成唯一的conversation_id（改用纳秒级时间戳，彻底解决碰撞问题）
+	conversationID := fmt.Sprintf("sop_%d_%d_%d", templateID, userID, time.Now().UnixNano())
 
 	// 创建Run记录（状态为pending）
 	run := &model.SopRun{
@@ -353,6 +355,13 @@ func (b *sopBiz) GetNextNode(ctx context.Context, runID uint) (*model.SopNode, b
 
 // ExecuteNodeStream 流式执行指定节点
 func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text string, handler func(event string, chunk string) error) error {
+	// 互斥锁检测：防止同一个 RunID 的任务在后台并发执行（解决“执行互斥锁”问题）
+	if _, loaded := b.runningRuns.LoadOrStore(runID, struct{}{}); loaded {
+		log.C(ctx).Warnw("Detected concurrent execution attempt", "run_id", runID)
+		return fmt.Errorf("该任务正在处理中，请勿重复操作")
+	}
+	defer b.runningRuns.Delete(runID)
+
 	// 使用合并查询一次性获取所有需要的数据（优化性能）
 	execCtx, err := b.ds.Sop().GetExecutionContext(runID, nodeID)
 	if err != nil {
@@ -429,49 +438,39 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	if text != "" {
 		// 如果用户提供了新text，使用新text
 		currentInput = text
-	} else if isLastNode {
-		// 如果是最后一个节点，整合所有前面节点的输出
-		// 按sort顺序收集前面所有节点的输出
-		var previousOutputs []string
-		for i := 0; i < node.Sort; i++ {
-			// 找到sort为i的已执行节点
-			for _, nodeRun := range completedNodeRuns {
-				if nodeRun.Sort == i && nodeRun.Status == model.SopStatusSucceeded {
-					previousOutputs = append(previousOutputs, nodeRun.Output)
-					break
-				}
-			}
-		}
-
-		// 整合所有前面节点的输出
-		if len(previousOutputs) > 0 {
-			// 构建整合后的输入，替换prompt中的占位符
-			integratedInput := ""
-			for i, output := range previousOutputs {
-				integratedInput += fmt.Sprintf("[STAGE_%d_CACHE] = %s\n\n", i+1, output)
-			}
-			currentInput = integratedInput
-		} else {
-			return fmt.Errorf("最后一个节点需要前面节点的输出，但未找到已完成的节点")
-		}
 	} else {
-		// 其他节点使用上一个节点的输出
+		// 统一逻辑：使用上一个已完成节点的输出作为当前输入
+		// AI 会通过已经构建好的 conversationHistory 看到之前所有步骤的完整记录
 		if len(completedNodeRuns) > 0 {
-			// 找到最后一个已完成的节点
-			lastNodeRun := completedNodeRuns[0]
-			for _, nodeRun := range completedNodeRuns {
-				if nodeRun.Sort > lastNodeRun.Sort && nodeRun.Status == model.SopStatusSucceeded {
-					lastNodeRun = nodeRun
+			// 找到当前节点之前（Sort最大）且已成功的节点
+			var lastNodeRun *model.SopNodeRun
+			for i := range completedNodeRuns {
+				nr := &completedNodeRuns[i]
+				if nr.Sort < node.Sort && nr.Status == model.SopStatusSucceeded {
+					if lastNodeRun == nil || nr.Sort > lastNodeRun.Sort {
+						lastNodeRun = nr
+					}
 				}
 			}
-			if lastNodeRun.Status == model.SopStatusSucceeded {
+
+			if lastNodeRun != nil {
 				currentInput = lastNodeRun.Output
 			} else {
-				return fmt.Errorf("no valid previous node output found")
+				// 检查是否真的是第一个节点
+				isFirstNode := true
+				for _, n := range allNodes {
+					if n.Sort < node.Sort {
+						isFirstNode = false
+						break
+					}
+				}
+				if isFirstNode {
+					return fmt.Errorf("第一个节点需要提供输入内容（text参数或上传文件）")
+				}
+				return fmt.Errorf("未找到前序节点的有效输出")
 			}
 		} else {
-			// 第一个节点，没有输入也没有上一个节点的输出
-			// 检查是否是第一个节点（sort为0或最小）
+			// 如果没有任何已完成节点，必须是第一个节点且必须有输入
 			isFirstNode := true
 			for _, n := range allNodes {
 				if n.Sort < node.Sort {
@@ -486,14 +485,19 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		}
 	}
 
-	// 更新Run状态为running（如果是第一个节点或重新执行）
-	if len(completedNodeRuns) == 0 && existingNodeRun == nil {
-		startTime := time.Now()
-		if err := b.ds.Sop().UpdateRun(runID, map[string]interface{}{
-			"status":     model.SopStatusRunning,
-			"started_at": startTime,
-		}); err != nil {
-			return fmt.Errorf("failed to update run status: %w", err)
+	// 确全局执行记录（Run）的状态标记为正在执行（解决“状态僵死”问题）
+	// 无论是第一个节点启动，还是中间节点重生成，都必须确保整体状态为 running
+	if run.Status != model.SopStatusRunning {
+		updateData := map[string]interface{}{
+			"status":        model.SopStatusRunning,
+			"error_message": "", // 重新执行时清空之前的全局错误
+		}
+		// 如果是第一次真正启动（没有开始时间），记录开始时间
+		if run.StartedAt == nil {
+			updateData["started_at"] = time.Now()
+		}
+		if err := b.ds.Sop().UpdateRun(runID, updateData); err != nil {
+			return fmt.Errorf("failed to update run status to running: %w", err)
 		}
 	}
 
@@ -567,13 +571,22 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	latency := nodeEndTime.Sub(startTime).Milliseconds()
 
 	if err != nil {
-		// 节点执行失败
-		b.ds.Sop().UpdateNodeRun(nodeRun.ID, map[string]interface{}{
+		// 节点执行失败，但仍然尝试保存已生成的中间内容和 Token 消耗（Issue 3 & 4）
+		updateData := map[string]interface{}{
 			"status":        model.SopStatusFailed,
+			"output":        output,   // 保存已生成的文字
+			"thinking":      thinking, // 保存已生成的思考
 			"error_message": err.Error(),
 			"latency_ms":    latency,
 			"finished_at":   nodeEndTime,
-		})
+		}
+		if usage != nil {
+			updateData["prompt_tokens"] = usage.PromptTokens
+			updateData["completion_tokens"] = usage.CompletionTokens
+			updateData["total_tokens"] = usage.TotalTokens
+			updateData["reasoning_tokens"] = usage.ReasoningTokens
+		}
+		b.ds.Sop().UpdateNodeRun(nodeRun.ID, updateData)
 		return fmt.Errorf("node execution failed: %w", err)
 	}
 
@@ -922,7 +935,15 @@ func (b *sopBiz) ListTemplateRunsWithDetails(ctx context.Context, userID, templa
 
 // ChatAfterRunStream Run完成后的对话流式接口
 func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, deepThinking bool, regenerateMsgID uint, handler func(event string, chunk string) error) error {
+	// 互斥锁检测（解决“执行互斥锁”问题）
+	if _, loaded := b.runningRuns.LoadOrStore(runID, struct{}{}); loaded {
+		log.C(ctx).Warnw("Detected concurrent chat attempt", "run_id", runID)
+		return fmt.Errorf("该任务正在处理中，请勿重复操作")
+	}
+	defer b.runningRuns.Delete(runID)
+
 	// 验证Run
+
 	run, err := b.ds.Sop().GetRun(runID)
 	if err != nil {
 		return fmt.Errorf("run not found: %w", err)
@@ -937,7 +958,7 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	conversationID = run.ConversationID
 
 	// 获取模板、节点、节点执行记录
-	template, err := b.ds.Sop().GetTemplate(run.TemplateID)
+	_, err = b.ds.Sop().GetTemplate(run.TemplateID)
 	if err != nil {
 		return fmt.Errorf("template not found: %w", err)
 	}
@@ -990,55 +1011,35 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 			return fmt.Errorf("can only regenerate assistant message")
 		}
 
-		// 确定要删除的消息ID列表（目标消息 + 可能存在的前置用户消息）
-		idsToDelete := []uint{targetMsg.ID}
+		// 确定要排除的消息索引列表（目标消息 + 可能存在的前置用户消息）
+		excludeIndices := make(map[int]bool)
+		excludeIndices[targetIndex] = true
 
-		// 检查前一条是否是用户消息
 		if targetIndex > 0 {
 			prevMsg := chatMessages[targetIndex-1]
 			if prevMsg.Role == "user" {
-				// 只有当它是紧邻的用户消息时才删除，认为是该轮对话的提问
-				// 这里假设正常的对话顺序是 User -> Assistant
-				idsToDelete = append(idsToDelete, prevMsg.ID)
-
-				// 从内存切片中移除这两条消息
-				// chatMessages = append(chatMessages[:targetIndex-1], chatMessages[targetIndex+1:]...)
-				// 更加安全的做法是基于索引重建切片
-				newChatMessages := make([]model.SopChatMsg, 0, len(chatMessages)-2)
-				newChatMessages = append(newChatMessages, chatMessages[:targetIndex-1]...)
-				newChatMessages = append(newChatMessages, chatMessages[targetIndex+1:]...)
-				chatMessages = newChatMessages
-			} else {
-				// 前一条不是用户消息（可能是连续的assistant消息？不常见），只删除当前消息
-				newChatMessages := make([]model.SopChatMsg, 0, len(chatMessages)-1)
-				newChatMessages = append(newChatMessages, chatMessages[:targetIndex]...)
-				newChatMessages = append(newChatMessages, chatMessages[targetIndex+1:]...)
-				chatMessages = newChatMessages
-			}
-		} else {
-			// 是第一条消息，只删除它
-			chatMessages = chatMessages[1:]
-		}
-
-		// 执行数据库删除
-		for _, id := range idsToDelete {
-			if err := b.ds.Sop().DeleteChatMessage(id); err != nil {
-				log.C(ctx).Warnw("Failed to delete chat message during regeneration", "msg_id", id, "error", err)
-				// 继续执行，不阻断流程
-			} else {
-				log.C(ctx).Infow("Deleted chat message for regeneration", "msg_id", id)
+				excludeIndices[targetIndex-1] = true
 			}
 		}
+
+		// 构建排除后的新切片
+		newChatMessages := make([]model.SopChatMsg, 0, len(chatMessages))
+		for i, msg := range chatMessages {
+			if !excludeIndices[i] {
+				newChatMessages = append(newChatMessages, msg)
+			}
+		}
+		chatMessages = newChatMessages
+
+		log.C(ctx).Infow("Regeneration requested, excluded target messages from history", "target_msg_id", targetMsg.ID)
+		// 注意：不再调用 DeleteChatMessage，保持数据安全。
+		// 如果之后需要物理删除，可以由前端管理或添加专门的删除接口。
 	}
 
-	// 构建对话历史：模板 prompt -> 节点输入/输出 -> 已有聊天消息
-	// 注意：同一个 run_id 下的所有聊天记录都在同一个 conversation_id 下，会全部保留
+	// 构建对话历史：仅包含节点输入/输出 -> 已有聊天消息
+	// 注意：不包含模板或节点的 Prompt，使 AI 回归纯净助手状态
 	history := []LLMMessage{}
-	// 1. 添加模板的 system prompt（如果有）
-	if template != nil && template.Prompt != "" {
-		history = append(history, LLMMessage{Role: "system", Content: template.Prompt})
-	}
-	// 2. 添加所有成功执行的节点输入/输出对（前四步的对话记录）
+	// 1. 添加所有成功执行的节点输入/输出对（前序步骤的内容）
 	for _, nr := range nodeRuns {
 		if nr.Status != model.SopStatusSucceeded {
 			continue
@@ -1067,16 +1068,16 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	if err := b.ds.Sop().CreateChatMessage(userMsg); err != nil {
 		return fmt.Errorf("failed to save chat message: %w", err)
 	}
+	// 将当前问题加入 history
 	history = append(history, LLMMessage{Role: "user", Content: question})
 
 	// 调用模型流式生成回答
-	// 注意：传入空字符串作为 input，因为用户问题已经在 history 中了
-	// 这样可以避免 ExecuteNodeStreamWithThinking 再次添加用户问题并拼接节点的 prompt
+	// 传入空字符串作为 input，这样执行器不会拼装节点的 Prompt，AI 保持普通助手身份
 	var answerBuf strings.Builder
 	_, thinking, _, err := b.executor.ExecuteNodeStreamWithThinking(
 		ctx,
 		&lastNode,
-		"", // 传入空字符串，因为用户问题已经在 history 中了，避免重复添加和拼接 prompt
+		"", // 传入空字符串，避免触发 node.Prompt 拼接
 		history,
 		func(event string, chunk string) error {
 			if event == "message" {
@@ -1125,6 +1126,18 @@ func (b *sopBiz) ListChatMessages(ctx context.Context, runID uint, userID uint) 
 		return nil, fmt.Errorf("failed to list chat messages: %w", err)
 	}
 	return msgs, nil
+}
+
+// CleanZombieRuns 清理僵尸任务（将长时间运行中的任务标记为失败）
+func (b *sopBiz) CleanZombieRuns(ctx context.Context, timeout time.Duration) error {
+	affected, err := b.ds.Sop().ResetZombieRuns(timeout)
+	if err != nil {
+		return fmt.Errorf("failed to reset zombie runs: %w", err)
+	}
+	if affected > 0 {
+		log.C(ctx).Infow("Zombies cleaned successfully", "count", affected, "timeout", timeout)
+	}
+	return nil
 }
 
 // cleanPDFFormatCode 清理PDF格式代码等无效内容
