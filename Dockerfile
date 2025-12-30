@@ -27,7 +27,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 Python 增强解析依赖
-RUN pip3 install --no-cache-dir pymupdf
+RUN pip3 install --no-cache-dir pymupdf python-docx
 
 # 安装Chrome依赖和字体
 # Ubuntu 24.04: 先更新包列表，然后安装所有依赖
@@ -130,11 +130,11 @@ RUN ls -la /app/config_*.yaml && \
     echo "✅ 配置文件复制成功" && \
     echo "=== 验证特殊渲染规则配置 ===" && \
     if [ -f "/app/config_${ENV}.yaml" ]; then \
-        echo "✅ 目标配置文件存在: /app/config_${ENV}.yaml"; \
-        echo "特殊渲染规则配置:"; \
-        grep -A 10 "special_rules:" "/app/config_${ENV}.yaml" || echo "未找到special_rules配置"; \
+    echo "✅ 目标配置文件存在: /app/config_${ENV}.yaml"; \
+    echo "特殊渲染规则配置:"; \
+    grep -A 10 "special_rules:" "/app/config_${ENV}.yaml" || echo "未找到special_rules配置"; \
     else \
-        echo "❌ 目标配置文件不存在: /app/config_${ENV}.yaml"; \
+    echo "❌ 目标配置文件不存在: /app/config_${ENV}.yaml"; \
     fi && \
     echo "================================"
 
@@ -199,23 +199,23 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 # 创建启动脚本
 RUN echo '#!/bin/bash\n\
-# 根据环境变量选择配置文件\n\
-if [ -n "$APP_ENV" ]; then\n\
+    # 根据环境变量选择配置文件\n\
+    if [ -n "$APP_ENV" ]; then\n\
     CONFIG_FILE="/app/config_${APP_ENV}.yaml"\n\
-else\n\
+    else\n\
     CONFIG_FILE="/app/config_dev.yaml"\n\
-fi\n\
-\n\
-# 检查配置文件是否存在\n\
-if [ ! -f "$CONFIG_FILE" ]; then\n\
+    fi\n\
+    \n\
+    # 检查配置文件是否存在\n\
+    if [ ! -f "$CONFIG_FILE" ]; then\n\
     echo "错误: 配置文件不存在: $CONFIG_FILE"\n\
     echo "可用的配置文件:"\n\
     ls -la /app/config_*.yaml\n\
     exit 1\n\
-fi\n\
-\n\
-echo "使用配置文件: $CONFIG_FILE"\n\
-exec /app/numind -c "$CONFIG_FILE" "$@"' > /app/start.sh && \
+    fi\n\
+    \n\
+    echo "使用配置文件: $CONFIG_FILE"\n\
+    exec /app/numind -c "$CONFIG_FILE" "$@"' > /app/start.sh && \
     chmod +x /app/start.sh
 
 # 清理缓存和临时文件，进一步减少镜像大小

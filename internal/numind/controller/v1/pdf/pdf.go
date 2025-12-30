@@ -327,11 +327,11 @@ func extractTextFromPDFEnhanced(data []byte) (string, int, error) {
 	}
 
 	// 执行 Python 脚本
-	// 注意：脚本路径需要根据实际部署位置调整，这里假设在 scripts/pdf_parser.py
-	scriptPath := "/app/scripts/pdf_parser.py"
+	// 注意：脚本路径改为通用解析器
+	scriptPath := "/app/scripts/document_parser.py"
 	// 如果是本地开发环境，尝试相对路径
 	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		scriptPath = "scripts/pdf_parser.py"
+		scriptPath = "scripts/document_parser.py"
 	}
 
 	cmd := exec.Command("python3", scriptPath, tmpFile.Name())
@@ -700,8 +700,22 @@ func formatText(text string) string {
 	return text
 }
 
-// extractTextFromDOCX 从DOCX文件中提取文本
+// extractTextFromDOCX 从DOCX文件中提取文本，优先使用 Python 增强解析
 func extractTextFromDOCX(data []byte) (string, error) {
+	// 1. 尝试使用 Python 增强解析 (python-docx)
+	text, _, err := extractTextFromPDFEnhanced(data) // 复用已有的外部脚本执行逻辑
+	if err == nil && text != "" {
+		log.Infow("Successfully extracted DOCX using enhanced Python parser")
+		return text, nil
+	}
+
+	// 2. 降级方案
+	log.Warnw("Enhanced DOCX parsing failed, falling back to legacy XML parser", "error", err)
+	return extractTextFromDOCXLegacy(data)
+}
+
+// extractTextFromDOCXLegacy 原有的 DOCX XML 解析逻辑
+func extractTextFromDOCXLegacy(data []byte) (string, error) {
 	// 创建ZIP reader
 	zipReader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
