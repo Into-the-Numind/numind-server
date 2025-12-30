@@ -2111,10 +2111,11 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 
 	// 解析请求参数
 	var req struct {
-		RunID          uint   `json:"run_id"`
-		ConversationID string `json:"conversation_id"`
-		Question       string `json:"question"`
-		DeepThinking   *bool  `json:"deep_thinking"` // 思考模式开关
+		RunID           uint   `json:"run_id"`
+		ConversationID  string `json:"conversation_id"`
+		Question        string `json:"question"`
+		DeepThinking    *bool  `json:"deep_thinking"`     // 思考模式开关
+		RegenerateMsgID uint   `json:"regenerate_msg_id"` // 需要重新生成的AI消息ID（可选）
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.RunID == 0 || strings.TrimSpace(req.Question) == "" {
 		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误"), nil)
@@ -2170,7 +2171,7 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 	}()
 
 	// 执行业务流
-	err := ctrl.sopBiz.ChatAfterRunStream(heartbeatCtx, req.RunID, req.ConversationID, req.Question, user.ID, deepThinking, func(event string, chunk string) error {
+	err := ctrl.sopBiz.ChatAfterRunStream(heartbeatCtx, req.RunID, req.ConversationID, req.Question, user.ID, deepThinking, req.RegenerateMsgID, func(event string, chunk string) error {
 		// 检查客户端连接
 		select {
 		case <-c.Request.Context().Done():

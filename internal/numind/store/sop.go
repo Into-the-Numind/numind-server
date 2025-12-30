@@ -58,12 +58,14 @@ type ISopStore interface {
 
 	// Chat operations
 	CreateChatMessage(msg *model.SopChatMsg) error
+	GetChatMessage(id uint) (*model.SopChatMsg, error)
+	DeleteChatMessage(id uint) error
 	ListChatMessagesByRun(runID uint) ([]model.SopChatMsg, error)
 	ListChatMessagesByRuns(runIDs []uint) (map[uint][]model.SopChatMsg, error)
 
 	// Execution context (optimized batch query)
 	GetExecutionContext(runID, nodeID uint) (*ExecutionContext, error)
-	
+
 	// CheckRunOwnership 检查Run是否属于指定用户（轻量级权限验证）
 	CheckRunOwnership(runID, userID uint) (bool, error)
 }
@@ -412,6 +414,19 @@ func (s *sopStore) CreateChatMessage(msg *model.SopChatMsg) error {
 	return s.db.Create(msg).Error
 }
 
+func (s *sopStore) GetChatMessage(id uint) (*model.SopChatMsg, error) {
+	var msg model.SopChatMsg
+	err := s.db.First(&msg, id).Error
+	if err != nil {
+		return nil, err
+	}
+	return &msg, nil
+}
+
+func (s *sopStore) DeleteChatMessage(id uint) error {
+	return s.db.Delete(&model.SopChatMsg{}, id).Error
+}
+
 func (s *sopStore) ListChatMessagesByRun(runID uint) ([]model.SopChatMsg, error) {
 	var msgs []model.SopChatMsg
 	err := s.db.Where("run_id = ?", runID).Order("seq ASC, created_at ASC").Find(&msgs).Error
@@ -493,11 +508,11 @@ func (s *sopStore) ListExecutedTemplatesByUser(userID uint) ([]ExecutedTemplateI
 
 // ExecutionContext 执行上下文，包含执行节点所需的所有数据
 type ExecutionContext struct {
-	Run            *model.SopRun
-	Node           *model.SopNode
-	Template       *model.SopTemplate
-	AllNodes       []model.SopNode
-	AllNodeRuns    []model.SopNodeRun
+	Run             *model.SopRun
+	Node            *model.SopNode
+	Template        *model.SopTemplate
+	AllNodes        []model.SopNode
+	AllNodeRuns     []model.SopNodeRun
 	ExistingNodeRun *model.SopNodeRun
 }
 

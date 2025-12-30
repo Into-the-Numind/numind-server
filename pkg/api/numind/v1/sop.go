@@ -286,3 +286,10 @@ type ListTemplateRunsResponse struct {
 	Total      int64                        `json:"total"`       // 总记录数
 	Runs       []TemplateRunHistoryResponse `json:"runs"`        // 运行记录列表
 }
+
+// ChatAfterRunRequest Run完成后的对话请求
+type ChatAfterRunRequest struct {
+	Question        string `json:"question"`          // 用户问题
+	DeepThinking    bool   `json:"deep_thinking"`     // 是否深度思考
+	RegenerateMsgID uint   `json:"regenerate_msg_id"` // 需要重新生成的AI消息ID（可选）
+}

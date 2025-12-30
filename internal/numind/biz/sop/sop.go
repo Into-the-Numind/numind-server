@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -52,7 +53,7 @@ type ISopBiz interface {
 	ListNotesByUser(ctx context.Context, userID uint, offset, limit int) ([]model.SopNote, int64, error)
 
 	// Chat operations
-	ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, deepThinking bool, handler func(event string, chunk string) error) error
+	ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, deepThinking bool, regenerateMsgID uint, handler func(event string, chunk string) error) error
 	ListChatMessages(ctx context.Context, runID uint, userID uint) ([]model.SopChatMsg, error)
 }
 
@@ -395,27 +396,32 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		})
 	}
 
-	// 添加所有已执行节点的输入输出（按sort排序，排除当前要重新执行的节点）
-	// 按sort顺序添加对话历史
-	for i := 0; i < 1000; i++ { // 假设最多1000个节点
-		found := false
-		for _, nodeRun := range completedNodeRuns {
-			if nodeRun.Sort == i && nodeRun.Status == model.SopStatusSucceeded {
-				conversationHistory = append(conversationHistory, LLMMessage{
-					Role:    "user",
-					Content: nodeRun.Input,
-				})
-				conversationHistory = append(conversationHistory, LLMMessage{
-					Role:    "assistant",
-					Content: nodeRun.Output,
-				})
-				found = true
-				break
-			}
+	// 添加所有已执行节点的输入输出（按sort排序，排除当前要重新执行的节点以及之后的节点）
+	// 我们只关心当前节点之前的历史记录
+	relevantNodeRuns := []model.SopNodeRun{}
+	for _, nodeRun := range completedNodeRuns {
+		// 关键修正：只包含当前节点之前的节点 (Sort < node.Sort)
+		// 这样可以确保重新生成中间节点时，不会错误的包含"未来"的对话记录
+		if nodeRun.Sort < node.Sort && nodeRun.Status == model.SopStatusSucceeded {
+			relevantNodeRuns = append(relevantNodeRuns, nodeRun)
 		}
-		if !found {
-			break
-		}
+	}
+
+	// 按Sort字段排序
+	sort.Slice(relevantNodeRuns, func(i, j int) bool {
+		return relevantNodeRuns[i].Sort < relevantNodeRuns[j].Sort
+	})
+
+	// 添加到对话历史
+	for _, nodeRun := range relevantNodeRuns {
+		conversationHistory = append(conversationHistory, LLMMessage{
+			Role:    "user",
+			Content: nodeRun.Input,
+		})
+		conversationHistory = append(conversationHistory, LLMMessage{
+			Role:    "assistant",
+			Content: nodeRun.Output,
+		})
 	}
 
 	// 确定当前节点的输入
@@ -914,9 +920,9 @@ func (b *sopBiz) ListTemplateRunsWithDetails(ctx context.Context, userID, templa
 	return result, total, nil
 }
 
-// ChatAfterRunStream 基于已完成的Run继续对话（SSE）
-func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, deepThinking bool, handler func(event string, chunk string) error) error {
-	// 校验 run
+// ChatAfterRunStream Run完成后的对话流式接口
+func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, deepThinking bool, regenerateMsgID uint, handler func(event string, chunk string) error) error {
+	// 验证Run
 	run, err := b.ds.Sop().GetRun(runID)
 	if err != nil {
 		return fmt.Errorf("run not found: %w", err)
@@ -955,6 +961,76 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 		return fmt.Errorf("failed to list node runs: %w", err)
 	}
 
+	// 3. 获取已有的聊天消息（通过 /v1/sop/chat/stream API 产生的历史对话）
+	// ListChatMessagesByRun 会获取同一个 run_id 下的所有聊天记录，按 seq 排序
+	// 这些记录都在同一个 conversation_id 下，确保大模型有完整的对话记忆
+	chatMessages, err := b.ds.Sop().ListChatMessagesByRun(runID)
+	if err != nil {
+		return fmt.Errorf("failed to list chat messages: %w", err)
+	}
+
+	// 处理重新生成逻辑
+	if regenerateMsgID > 0 {
+		log.C(ctx).Infow("Processing regeneration request", "regenerate_msg_id", regenerateMsgID)
+
+		targetIndex := -1
+		for i, msg := range chatMessages {
+			if msg.ID == regenerateMsgID {
+				targetIndex = i
+				break
+			}
+		}
+
+		if targetIndex == -1 {
+			return fmt.Errorf("message to regenerate not found: %d", regenerateMsgID)
+		}
+
+		targetMsg := chatMessages[targetIndex]
+		if targetMsg.Role != "assistant" {
+			return fmt.Errorf("can only regenerate assistant message")
+		}
+
+		// 确定要删除的消息ID列表（目标消息 + 可能存在的前置用户消息）
+		idsToDelete := []uint{targetMsg.ID}
+
+		// 检查前一条是否是用户消息
+		if targetIndex > 0 {
+			prevMsg := chatMessages[targetIndex-1]
+			if prevMsg.Role == "user" {
+				// 只有当它是紧邻的用户消息时才删除，认为是该轮对话的提问
+				// 这里假设正常的对话顺序是 User -> Assistant
+				idsToDelete = append(idsToDelete, prevMsg.ID)
+
+				// 从内存切片中移除这两条消息
+				// chatMessages = append(chatMessages[:targetIndex-1], chatMessages[targetIndex+1:]...)
+				// 更加安全的做法是基于索引重建切片
+				newChatMessages := make([]model.SopChatMsg, 0, len(chatMessages)-2)
+				newChatMessages = append(newChatMessages, chatMessages[:targetIndex-1]...)
+				newChatMessages = append(newChatMessages, chatMessages[targetIndex+1:]...)
+				chatMessages = newChatMessages
+			} else {
+				// 前一条不是用户消息（可能是连续的assistant消息？不常见），只删除当前消息
+				newChatMessages := make([]model.SopChatMsg, 0, len(chatMessages)-1)
+				newChatMessages = append(newChatMessages, chatMessages[:targetIndex]...)
+				newChatMessages = append(newChatMessages, chatMessages[targetIndex+1:]...)
+				chatMessages = newChatMessages
+			}
+		} else {
+			// 是第一条消息，只删除它
+			chatMessages = chatMessages[1:]
+		}
+
+		// 执行数据库删除
+		for _, id := range idsToDelete {
+			if err := b.ds.Sop().DeleteChatMessage(id); err != nil {
+				log.C(ctx).Warnw("Failed to delete chat message during regeneration", "msg_id", id, "error", err)
+				// 继续执行，不阻断流程
+			} else {
+				log.C(ctx).Infow("Deleted chat message for regeneration", "msg_id", id)
+			}
+		}
+	}
+
 	// 构建对话历史：模板 prompt -> 节点输入/输出 -> 已有聊天消息
 	// 注意：同一个 run_id 下的所有聊天记录都在同一个 conversation_id 下，会全部保留
 	history := []LLMMessage{}
@@ -970,13 +1046,7 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 		history = append(history, LLMMessage{Role: "user", Content: nr.Input})
 		history = append(history, LLMMessage{Role: "assistant", Content: nr.Output})
 	}
-	// 3. 添加已有的聊天消息（通过 /v1/sop/chat/stream API 产生的历史对话）
-	// ListChatMessagesByRun 会获取同一个 run_id 下的所有聊天记录，按 seq 排序
-	// 这些记录都在同一个 conversation_id 下，确保大模型有完整的对话记忆
-	chatMessages, err := b.ds.Sop().ListChatMessagesByRun(runID)
-	if err != nil {
-		return fmt.Errorf("failed to list chat messages: %w", err)
-	}
+
 	maxSeq := 0
 	for _, msg := range chatMessages {
 		if msg.Seq > maxSeq {
