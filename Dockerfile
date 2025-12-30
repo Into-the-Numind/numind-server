@@ -22,7 +22,12 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     file \
     tzdata \
     libmupdf-dev \
+    python3 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+# 安装 Python 增强解析依赖
+RUN pip3 install --no-cache-dir pymupdf
 
 # 安装Chrome依赖和字体
 # Ubuntu 24.04: 先更新包列表，然后安装所有依赖
@@ -118,6 +123,7 @@ COPY config_${ENV}.yaml /app/config_${ENV}.yaml
 ARG BINARY_SOURCE=external-binary
 # 使用条件复制，根据 BINARY_SOURCE 参数选择来源
 COPY --from=external-binary /app/numind /app/numind
+COPY scripts /app/scripts
 
 # 验证配置文件复制成功
 RUN ls -la /app/config_*.yaml && \

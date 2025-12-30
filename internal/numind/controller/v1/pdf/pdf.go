@@ -3,9 +3,12 @@ package pdf
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -295,8 +298,72 @@ func (ctrl *PdfController) ConvertToText(c *gin.Context) {
 	core.WriteResponse(c, nil, text)
 }
 
-// extractTextFromPDF 使用go-fitz提取PDF文本
+// extractTextFromPDF 尝试使用 Python 增强解析，如果失败则降级到 go-fitz
 func extractTextFromPDF(data []byte) (string, int, error) {
+	// 1. 尝试使用 Python 增强解析 (PyMuPDF blocks 模式)
+	text, pages, err := extractTextFromPDFEnhanced(data)
+	if err == nil && text != "" {
+		log.Infow("Successfully extracted PDF using enhanced Python parser", "pages", pages)
+		return text, pages, nil
+	}
+
+	// 2. 如果增强解析失败或未安装环境，降级到原有的 go-fitz 解析
+	log.Warnw("Enhanced PDF parsing failed, falling back to legacy go-fitz", "error", err)
+	return extractTextFromPDFLegacy(data)
+}
+
+// extractTextFromPDFEnhanced 使用外部 Python 脚本进行高质量解析
+func extractTextFromPDFEnhanced(data []byte) (string, int, error) {
+	// 创建临时文件
+	tmpFile, err := os.CreateTemp("", "pdf_upload_*.pdf")
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		return "", 0, fmt.Errorf("failed to write data to temp file: %w", err)
+	}
+
+	// 执行 Python 脚本
+	// 注意：脚本路径需要根据实际部署位置调整，这里假设在 scripts/pdf_parser.py
+	scriptPath := "/app/scripts/pdf_parser.py"
+	// 如果是本地开发环境，尝试相对路径
+	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+		scriptPath = "scripts/pdf_parser.py"
+	}
+
+	cmd := exec.Command("python3", scriptPath, tmpFile.Name())
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", 0, fmt.Errorf("python script execution failed: %v, stderr: %s", err, stderr.String())
+	}
+
+	// 解析输出的 JSON
+	var result struct {
+		Success   bool   `json:"success"`
+		Content   string `json:"content"`
+		PageCount int    `json:"page_count"`
+		Error     string `json:"error"`
+	}
+
+	if err := json.Unmarshal([]byte(stdout.String()), &result); err != nil {
+		return "", 0, fmt.Errorf("failed to parse python output: %w", err)
+	}
+
+	if !result.Success {
+		return "", 0, fmt.Errorf("python extraction error: %s", result.Error)
+	}
+
+	return result.Content, result.PageCount, nil
+}
+
+// extractTextFromPDFLegacy 使用原本的 go-fitz 提取 PDF 文本（作为降级方案）
+func extractTextFromPDFLegacy(data []byte) (string, int, error) {
 	// 从内存中打开PDF文档
 	doc, err := fitz.NewFromMemory(data)
 	if err != nil {
@@ -311,17 +378,14 @@ func extractTextFromPDF(data []byte) (string, int, error) {
 	for i := 0; i < numPages; i++ {
 		pageText, err := doc.Text(i)
 		if err != nil {
-			// 如果某一页提取失败，记录错误但继续处理其他页
 			log.Infow("PDF页面文本提取失败", "page", i+1, "error", err)
 			continue
 		}
 
 		if pageText != "" {
-			// 清理页面文本（移除行尾空格）
 			pageText = strings.TrimRight(pageText, " \t")
 			if pageText != "" {
 				result.WriteString(pageText)
-				// 页面之间添加单个换行符分隔
 				if i < numPages-1 {
 					result.WriteString("\n")
 				}
@@ -331,7 +395,7 @@ func extractTextFromPDF(data []byte) (string, int, error) {
 
 	text := result.String()
 	if text == "" {
-		return "", 0, fmt.Errorf("未能从PDF中提取到文本，可能是扫描版PDF或加密PDF")
+		return "", 0, fmt.Errorf("未能从PDF中提取到文本")
 	}
 
 	return text, numPages, nil
