@@ -24,6 +24,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     libmupdf-dev \
     python3 \
     python3-pip \
+    antiword \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 Python 增强解析依赖

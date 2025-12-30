@@ -838,8 +838,22 @@ func decodeXMLEntities(text string) string {
 	return text
 }
 
-// extractTextFromDOC 从旧版Word文档(.doc)中提取文本
+// extractTextFromDOC 从旧版Word文档(.doc)中提取文本，优先使用 Python 增强解析
 func extractTextFromDOC(data []byte) (string, error) {
+	// 1. 尝试使用 Python 增强解析 (antiword)
+	text, _, err := extractTextFromPDFEnhanced(data) // 复用已有的外部脚本执行逻辑
+	if err == nil && text != "" {
+		log.Infow("Successfully extracted DOC using enhanced Python parser (antiword)")
+		return text, nil
+	}
+
+	// 2. 降级方案
+	log.Warnw("Enhanced DOC parsing failed, falling back to legacy printable text extraction", "error", err)
+	return extractTextFromDOCLegacy(data)
+}
+
+// extractTextFromDOCLegacy 原有的简单二进制文本提取逻辑
+func extractTextFromDOCLegacy(data []byte) (string, error) {
 	// .doc格式是OLE2格式，解析比较复杂
 	// 这里使用简单的文本提取方法
 	text := extractPrintableText(data)
