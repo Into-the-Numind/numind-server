@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -448,11 +447,6 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 	var usage *TokenUsage
 	reader := bufio.NewReader(resp.Body)
 
-	// 读取超时时间：3秒
-	readTimeout := 3 * time.Second
-	maxConsecutiveTimeouts := 3
-	consecutiveTimeouts := 0
-
 	for {
 		// 检查context是否被取消
 		select {
@@ -466,47 +460,9 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 		default:
 		}
 
-		// 使用context.WithTimeout实现读取超时
-		readCtx, readCancel := context.WithTimeout(ctx, readTimeout)
-		var lineBytes []byte
-		var readErr error
-		readDone := make(chan struct{})
-
-		go func() {
-			defer readCancel()
-			lineBytes, readErr = reader.ReadBytes('\n')
-			close(readDone)
-		}()
-
-		select {
-		case <-readCtx.Done():
-			// 超时
-			consecutiveTimeouts++
-			if consecutiveTimeouts >= maxConsecutiveTimeouts {
-				log.C(ctx).Warnw("Multiple read timeouts, may indicate connection issue",
-					"node_id", node.ID,
-					"consecutive_timeouts", consecutiveTimeouts)
-				// 继续尝试，但记录警告
-			}
-			// 超时，继续尝试读取（可能是上游暂时没有数据）
-			continue
-		case <-readDone:
-			// 读取完成
-			readCancel()
-		}
-
+		// 直接阻塞读取，不再使用不安全的每行超时逻辑
+		lineBytes, readErr := reader.ReadBytes('\n')
 		if readErr != nil {
-			// 检查是否是超时错误
-			if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
-				consecutiveTimeouts++
-				if consecutiveTimeouts >= maxConsecutiveTimeouts {
-					log.C(ctx).Warnw("Multiple read timeouts, may indicate connection issue",
-						"node_id", node.ID,
-						"consecutive_timeouts", consecutiveTimeouts)
-				}
-				// 超时，继续尝试读取
-				continue
-			}
 			if readErr == io.EOF {
 				// 流结束
 				break
@@ -518,9 +474,6 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 			}
 			return "", nil, fmt.Errorf("read error: %w", readErr)
 		}
-
-		// 重置超时计数器
-		consecutiveTimeouts = 0
 
 		// 转换为字符串并去除换行符
 		line := strings.TrimRight(string(lineBytes), "\r\n")
@@ -834,11 +787,6 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 
 	reader := bufio.NewReader(resp.Body)
 
-	// 读取超时时间：3秒
-	readTimeout := 3 * time.Second
-	maxConsecutiveTimeouts := 3
-	consecutiveTimeouts := 0
-
 	var (
 		thinkingBuf        strings.Builder
 		messageBuf         strings.Builder
@@ -874,46 +822,9 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		default:
 		}
 
-		// 使用context.WithTimeout实现读取超时
-		readCtx, readCancel := context.WithTimeout(ctx, readTimeout)
-		var lineBytes []byte
-		var readErr error
-		readDone := make(chan struct{})
-
-		go func() {
-			defer readCancel()
-			lineBytes, readErr = reader.ReadBytes('\n')
-			close(readDone)
-		}()
-
-		select {
-		case <-readCtx.Done():
-			// 超时
-			consecutiveTimeouts++
-			if consecutiveTimeouts >= maxConsecutiveTimeouts {
-				log.C(ctx).Warnw("Multiple read timeouts in ali deep thinking stream",
-					"node_id", node.ID,
-					"consecutive_timeouts", consecutiveTimeouts)
-			}
-			// 超时，继续尝试读取
-			continue
-		case <-readDone:
-			// 读取完成
-			readCancel()
-		}
-
+		// 直接阻塞读取，不再使用不安全的每行超时逻辑
+		lineBytes, readErr := reader.ReadBytes('\n')
 		if readErr != nil {
-			// 检查是否是超时错误
-			if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
-				consecutiveTimeouts++
-				if consecutiveTimeouts >= maxConsecutiveTimeouts {
-					log.C(ctx).Warnw("Multiple read timeouts in ali deep thinking stream",
-						"node_id", node.ID,
-						"consecutive_timeouts", consecutiveTimeouts)
-				}
-				// 超时，继续尝试读取
-				continue
-			}
 			if readErr == io.EOF {
 				// 流结束
 				break
@@ -921,9 +832,6 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 			log.C(ctx).Errorw("Read error in ali deep thinking stream", "node_id", node.ID, "error", readErr)
 			return nil, fmt.Errorf("read error: %w", readErr)
 		}
-
-		// 重置超时计数器
-		consecutiveTimeouts = 0
 
 		// 转换为字符串并去除换行符
 		line := strings.TrimRight(string(lineBytes), "\r\n")
@@ -1210,11 +1118,6 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 
 	reader := bufio.NewReader(resp.Body)
 
-	// 读取超时时间：3秒
-	readTimeout := 3 * time.Second
-	maxConsecutiveTimeouts := 3
-	consecutiveTimeouts := 0
-
 	var (
 		thinkingBuf    strings.Builder
 		messageBuf     strings.Builder
@@ -1231,46 +1134,9 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 		default:
 		}
 
-		// 使用context.WithTimeout实现读取超时
-		readCtx, readCancel := context.WithTimeout(ctx, readTimeout)
-		var lineBytes []byte
-		var readErr error
-		readDone := make(chan struct{})
-
-		go func() {
-			defer readCancel()
-			lineBytes, readErr = reader.ReadBytes('\n')
-			close(readDone)
-		}()
-
-		select {
-		case <-readCtx.Done():
-			// 超时
-			consecutiveTimeouts++
-			if consecutiveTimeouts >= maxConsecutiveTimeouts {
-				log.C(ctx).Warnw("Multiple read timeouts in volc deep thinking stream",
-					"node_id", node.ID,
-					"consecutive_timeouts", consecutiveTimeouts)
-			}
-			// 超时，继续尝试读取
-			continue
-		case <-readDone:
-			// 读取完成
-			readCancel()
-		}
-
+		// 直接阻塞读取，不再使用不安全的每行超时逻辑
+		lineBytes, readErr := reader.ReadBytes('\n')
 		if readErr != nil {
-			// 检查是否是超时错误
-			if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
-				consecutiveTimeouts++
-				if consecutiveTimeouts >= maxConsecutiveTimeouts {
-					log.C(ctx).Warnw("Multiple read timeouts in volc deep thinking stream",
-						"node_id", node.ID,
-						"consecutive_timeouts", consecutiveTimeouts)
-				}
-				// 超时，继续尝试读取
-				continue
-			}
 			if readErr == io.EOF {
 				// 流结束
 				break
@@ -1278,9 +1144,6 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 			log.C(ctx).Errorw("Read error in volc deep thinking stream", "node_id", node.ID, "error", readErr)
 			return nil, fmt.Errorf("read error: %w", readErr)
 		}
-
-		// 重置超时计数器
-		consecutiveTimeouts = 0
 
 		// 转换为字符串并去除换行符
 		line := strings.TrimRight(string(lineBytes), "\r\n")
