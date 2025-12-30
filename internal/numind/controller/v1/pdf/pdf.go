@@ -352,13 +352,23 @@ func formatPdfText(text string) string {
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
 
-	// 第四步：初步清理行
+	// 第四步：初步清理行 & 垃圾行过滤（核心修复：去除二进制乱码）
 	lines := strings.Split(text, "\n")
 	var cleanLines []string
 	for _, line := range lines {
 		// 清理行内多个连续空格
 		line = regexp.MustCompile(`[ \t]+`).ReplaceAllString(line, " ")
 		line = strings.TrimSpace(line)
+
+		if line == "" {
+			continue
+		}
+
+		// 过滤垃圾行
+		if isGarbageLine(line) {
+			continue
+		}
+
 		cleanLines = append(cleanLines, line)
 	}
 
@@ -371,16 +381,88 @@ func formatPdfText(text string) string {
 	// 第七步：过滤非必要字符
 	// 扩大范围保留更多有意义的符号，但去除纯乱码
 	// 保留所有 Unicode 字母(L)、数字(N)、标点(P)、符号(S)和空白(Z/C)
-	// 如果需要严格过滤，可以用之前的正则，但建议放宽以避免误删特殊数学符号等
 	keepPattern := regexp.MustCompile(`[^\p{L}\p{N}\p{P}\p{S}\s]`)
-	// 注意：上面的正则保留了所有标点和符号。之前的实现是只保留特定标点。
-	// 为了安全性，我们还是用白名单比较好，但加上 \p{P} (标点) 和 \p{S} (符号) 可以保留更多语义信息
 	text = keepPattern.ReplaceAllString(text, "")
 
 	// 第八步：最终清理
 	text = strings.TrimSpace(text)
 
 	return text
+}
+
+// isGarbageLine 判断是否为垃圾行（乱码、二进制残留）
+func isGarbageLine(line string) bool {
+	totalCount := 0
+	validCount := 0  // CJK, Letters, Numbers
+	symbolCount := 0 // Crazy symbols
+
+	for _, r := range line {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		totalCount++
+
+		if unicode.Is(unicode.Han, r) || unicode.IsLetter(r) || unicode.IsNumber(r) {
+			validCount++
+		} else if unicode.IsPunct(r) {
+			// 标点符号中性，不计数为有效也不计数为垃圾，除非纯标点
+		} else if unicode.IsSymbol(r) {
+			symbolCount++
+		} else {
+			// 其他未识别字符视为潜在垃圾
+			symbolCount++
+		}
+	}
+
+	if totalCount == 0 {
+		return true
+	}
+
+	// 规则1：如果有效字符（字母/数字/中文）比例过低 (< 30%) 且行有一定长度
+	// 适用于：大量的乱码符号行，例如 "#@!$%^&*()..."
+	if totalCount > 10 && float64(validCount)/float64(totalCount) < 0.3 {
+		return true
+	}
+
+	// 规则2：如果特殊符号占比过高 (> 50%)
+	if totalCount > 5 && float64(symbolCount)/float64(totalCount) > 0.5 {
+		return true
+	}
+
+	// 规则3：检测 "cid:" 乱码（PDF字体映射错误常见特征）
+	if strings.Contains(line, "cid:") || strings.Contains(line, "(cid:") {
+		return true
+	}
+
+	// 规则4：检测长串无空格的非CJK字符串（类似于base64或二进制dump）
+	// 仅在不包含任何中文的情况下应用
+	hasCJK := false
+	for _, r := range line {
+		if unicode.Is(unicode.Han, r) {
+			hasCJK = true
+			break
+		}
+	}
+
+	if !hasCJK && len(line) > 50 && !strings.Contains(line, " ") {
+		// 例外：保留可能的长URL
+		if !strings.HasPrefix(line, "http") {
+			return true
+		}
+	}
+
+	// 规则5：检测连续的重复字符（如 ".............." 或 "__________"）
+	// 这种情况常用于排版，但在LLM上下文中通常是噪音
+	// 简单的检测：如果去重后的字符种类很少且长度很长
+	uniqueChars := make(map[rune]struct{})
+	for _, r := range line {
+		uniqueChars[r] = struct{}{}
+	}
+	if len(line) > 20 && len(uniqueChars) < 3 {
+		return true
+	}
+
+	return false
 }
 
 // mergeParagraphs 智能合并被断行的段落
