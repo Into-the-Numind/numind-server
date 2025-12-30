@@ -30,9 +30,15 @@ func NewSopExecutor(ds store.IStore) *SopExecutor {
 
 // LLMRequest 大模型请求结构
 type LLMRequest struct {
-	Model    string       `json:"model"`
-	Messages []LLMMessage `json:"messages"`
-	Stream   bool         `json:"stream"`
+	Model         string         `json:"model"`
+	Messages      []LLMMessage   `json:"messages"`
+	Stream        bool           `json:"stream"`
+	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
+}
+
+// StreamOptions 流式请求选项
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // LLMMessage 大模型消息结构
@@ -325,6 +331,13 @@ func (e *SopExecutor) executeNode(ctx context.Context, node *model.SopNode, inpu
 	// 归一化 token 使用信息
 	if llmResp.Usage != nil {
 		llmResp.Usage.Normalize()
+		log.C(ctx).Infow("LLM sync response usage captured",
+			"prompt_tokens", llmResp.Usage.PromptTokens,
+			"completion_tokens", llmResp.Usage.CompletionTokens,
+			"total_tokens", llmResp.Usage.TotalTokens,
+			"reasoning_tokens", llmResp.Usage.ReasoningTokens)
+	} else {
+		log.C(ctx).Warnw("LLM sync response missing usage info", "body", string(body))
 	}
 	return output, llmResp.Usage, nil
 }
@@ -372,6 +385,9 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 		Model:    node.ModelName,
 		Messages: messages,
 		Stream:   true,
+		StreamOptions: &StreamOptions{
+			IncludeUsage: true,
+		},
 	}
 
 	reqData, err := json.Marshal(reqBody)
@@ -507,7 +523,11 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 						log.C(ctx).Infow("Token usage received in plain stream",
 							"node_id", node.ID,
 							"prompt_tokens", usage.PromptTokens,
-							"completion_tokens", usage.CompletionTokens)
+							"completion_tokens", usage.CompletionTokens,
+							"total_tokens", usage.TotalTokens,
+							"raw_usage", rawUsage)
+					} else if err != nil {
+						log.C(ctx).Warnw("Failed to unmarshal usage in plain stream", "error", err, "raw_usage", rawUsage)
 					}
 				}
 
@@ -623,22 +643,46 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 		log.C(ctx).Debugw("Input is empty, using history directly (chat scenario)", "node_id", node.ID, "node_name", node.Name, "is_last_node", isLastNode)
 	}
 
-	// 调用火山方舟深度思考流式接口，分别积累思考与答案
+	// 调用流式接口，分别积累思考与答案
 	var thinkingBuf, answerBuf strings.Builder
-	usage, err := e.callVolcDeepThinkingStream(ctx, node, messages, deepThinking, conversationID, func(event string, chunk string) error {
-		switch event {
-		case "thinking":
-			thinkingBuf.WriteString(chunk)
-			return handler("thinking", chunk)
-		case "message":
-			answerBuf.WriteString(chunk)
-			return handler("message", chunk)
-		case "done":
-			return handler("done", "")
-		default:
-			return nil
-		}
-	})
+	var usage *TokenUsage
+	var err error
+
+	isAli := strings.Contains(node.BaseURL, "aliyuncs.com") || strings.Contains(node.ModelName, "qwen")
+
+	if isAli {
+		log.C(ctx).Infow("Routing to Ali Deep Thinking API", "node_id", node.ID)
+		usage, err = e.callAliDeepThinkingStream(ctx, node, messages, deepThinking, conversationID, func(event string, chunk string) error {
+			switch event {
+			case "thinking":
+				thinkingBuf.WriteString(chunk)
+				return handler("thinking", chunk)
+			case "message":
+				answerBuf.WriteString(chunk)
+				return handler("message", chunk)
+			case "done":
+				return handler("done", "")
+			default:
+				return nil
+			}
+		})
+	} else {
+		log.C(ctx).Infow("Routing to Volcengine Deep Thinking API", "node_id", node.ID)
+		usage, err = e.callVolcDeepThinkingStream(ctx, node, messages, deepThinking, conversationID, func(event string, chunk string) error {
+			switch event {
+			case "thinking":
+				thinkingBuf.WriteString(chunk)
+				return handler("thinking", chunk)
+			case "message":
+				answerBuf.WriteString(chunk)
+				return handler("message", chunk)
+			case "done":
+				return handler("done", "")
+			default:
+				return nil
+			}
+		})
+	}
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -849,9 +893,12 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 
 		var m map[string]interface{}
 		if err := json.Unmarshal([]byte(raw), &m); err != nil {
-			log.C(ctx).Warnw("Failed to parse ali stream chunk", "error", err)
+			log.C(ctx).Warnw("Failed to parse ali stream chunk", "error", err, "raw", raw)
 			continue
 		}
+
+		// 记录原始 chunk 数据，帮助排查 token 统计问题
+		log.C(ctx).Debugw("Ali stream chunk received", "node_id", node.ID, "raw", raw)
 
 		// 检查是否有 usage 信息（通常在最后一个数据块中，且 choices 可能为空）
 		if rawUsage, ok := m["usage"]; ok && rawUsage != nil {
@@ -859,12 +906,15 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 			var tempUsage TokenUsage
 			if err := json.Unmarshal(usageBytes, &tempUsage); err == nil && (tempUsage.TotalTokens > 0 || tempUsage.PromptTokens > 0 || tempUsage.CompletionTokens > 0) {
 				usage = &tempUsage
-				log.C(ctx).Infow("Token usage received",
+				log.C(ctx).Infow("Token usage received from Ali",
 					"node_id", node.ID,
 					"prompt_tokens", usage.PromptTokens,
 					"completion_tokens", usage.CompletionTokens,
 					"total_tokens", usage.TotalTokens,
-					"reasoning_tokens", usage.ReasoningTokens)
+					"reasoning_tokens", usage.ReasoningTokens,
+					"raw_usage", rawUsage)
+			} else if err != nil {
+				log.C(ctx).Warnw("Failed to unmarshal usage from Ali", "error", err, "raw_usage", rawUsage)
 			}
 		}
 
@@ -1075,6 +1125,9 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 		"thinking": map[string]interface{}{
 			"type": thinkingType,
 		},
+		"stream_options": map[string]interface{}{
+			"include_usage": true,
+		},
 	}
 
 	reqData, _ := json.Marshal(payload)
@@ -1176,7 +1229,10 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 					"prompt_tokens", usage.PromptTokens,
 					"completion_tokens", usage.CompletionTokens,
 					"total_tokens", usage.TotalTokens,
-					"reasoning_tokens", usage.ReasoningTokens)
+					"reasoning_tokens", usage.ReasoningTokens,
+					"raw_usage", rawUsage)
+			} else if err != nil {
+				log.C(ctx).Warnw("Failed to unmarshal usage from volc", "error", err, "raw_usage", rawUsage)
 			}
 		}
 
