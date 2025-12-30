@@ -14,17 +14,27 @@ import (
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/tokenizer"
 )
 
 // SopExecutor SOP执行器
 type SopExecutor struct {
-	ds store.IStore
+	ds        store.IStore
+	tokenizer *tokenizer.Tokenizer
 }
 
 // NewSopExecutor 创建SOP执行器
 func NewSopExecutor(ds store.IStore) *SopExecutor {
+	tk, err := tokenizer.NewTokenizer()
+	if err != nil {
+		// Log error but don't fail startup, just degrade gracefully (we can add checks later)
+		// For now, assume it works or we'll panic/error on first use if nil.
+		// Better to just log.
+		fmt.Printf("Failed to initialize tokenizer: %v\n", err)
+	}
 	return &SopExecutor{
-		ds: ds,
+		ds:        ds,
+		tokenizer: tk,
 	}
 }
 
@@ -33,6 +43,7 @@ type LLMRequest struct {
 	Model         string         `json:"model"`
 	Messages      []LLMMessage   `json:"messages"`
 	Stream        bool           `json:"stream"`
+	MaxTokens     int            `json:"max_tokens,omitempty"` // Add MaxTokens
 	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
 }
 
@@ -61,10 +72,11 @@ type StreamHandler func(event string, chunk string) error
 
 // TokenUsage Token使用统计信息
 type TokenUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`     // 输入 tokens
-	CompletionTokens int `json:"completion_tokens"` // 输出 tokens
-	TotalTokens      int `json:"total_tokens"`      // 总 tokens
-	ReasoningTokens  int `json:"reasoning_tokens"`  // 思考过程 tokens（某些模型直接返回）
+	PromptTokens          int `json:"prompt_tokens"`     // 输入 tokens
+	CompletionTokens      int `json:"completion_tokens"` // 输出 tokens
+	TotalTokens           int `json:"total_tokens"`      // 总 tokens
+	ReasoningTokens       int `json:"reasoning_tokens"`  // 思考过程 tokens（某些模型直接返回）
+	EstimatedPromptTokens int `json:"-"`                 // 预估输入 tokens（内部使用）
 
 	// Volcengine/OpenAI 兼容的嵌套结构
 	CompletionTokensDetails struct {
@@ -168,12 +180,14 @@ func (e *SopExecutor) Execute(ctx context.Context, run *model.SopRun, nodes []mo
 			updateData["completion_tokens"] = usage.CompletionTokens
 			updateData["total_tokens"] = usage.TotalTokens
 			updateData["reasoning_tokens"] = usage.ReasoningTokens
+			updateData["estimated_prompt_tokens"] = usage.EstimatedPromptTokens
 			log.C(ctx).Infow("Saving token usage to node run (sync execution)",
 				"node_run_id", nodeRun.ID,
 				"prompt_tokens", usage.PromptTokens,
 				"completion_tokens", usage.CompletionTokens,
 				"total_tokens", usage.TotalTokens,
-				"reasoning_tokens", usage.ReasoningTokens)
+				"reasoning_tokens", usage.ReasoningTokens,
+				"estimated_prompt_tokens", usage.EstimatedPromptTokens)
 		}
 
 		e.ds.Sop().UpdateNodeRun(nodeRun.ID, updateData)
@@ -257,11 +271,24 @@ func (e *SopExecutor) executeNode(ctx context.Context, node *model.SopNode, inpu
 		Content: userMessage,
 	})
 
+	// 准备上下文（包含Token估算、裁剪等逻辑）
+	messages, estimatedTokens, maxTokens, err := e.prepareContext(ctx, node, messages)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to prepare context: %w", err)
+	}
+
+	log.C(ctx).Infow("Context prepared",
+		"node_id", node.ID,
+		"estimated_tokens", estimatedTokens,
+		"max_tokens_setting", maxTokens,
+		"messages_count", len(messages))
+
 	// 构建请求
 	reqBody := LLMRequest{
-		Model:    node.ModelName,
-		Messages: messages,
-		Stream:   false,
+		Model:     node.ModelName,
+		Messages:  messages,
+		Stream:    false,
+		MaxTokens: maxTokens,
 	}
 
 	reqData, err := json.Marshal(reqBody)
@@ -331,13 +358,19 @@ func (e *SopExecutor) executeNode(ctx context.Context, node *model.SopNode, inpu
 	// 归一化 token 使用信息
 	if llmResp.Usage != nil {
 		llmResp.Usage.Normalize()
+		llmResp.Usage.EstimatedPromptTokens = estimatedTokens // Set estimated tokens
 		log.C(ctx).Infow("LLM sync response usage captured",
 			"prompt_tokens", llmResp.Usage.PromptTokens,
+			"estimated_prompt_tokens", llmResp.Usage.EstimatedPromptTokens,
 			"completion_tokens", llmResp.Usage.CompletionTokens,
 			"total_tokens", llmResp.Usage.TotalTokens,
 			"reasoning_tokens", llmResp.Usage.ReasoningTokens)
 	} else {
-		log.C(ctx).Warnw("LLM sync response missing usage info", "body", string(body))
+		// If usage is nil, create one with at least estimated tokens
+		llmResp.Usage = &TokenUsage{
+			EstimatedPromptTokens: estimatedTokens,
+		}
+		log.C(ctx).Warnw("LLM sync response missing usage info, but recorded estimate", "body", string(body), "estimated", estimatedTokens)
 	}
 	return output, llmResp.Usage, nil
 }
@@ -380,11 +413,24 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 		Content: userMessage,
 	})
 
+	// 准备上下文（包含Token估算、裁剪等逻辑）
+	messages, estimatedTokens, maxTokens, err := e.prepareContext(ctx, node, messages)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to prepare context: %w", err)
+	}
+
+	log.C(ctx).Infow("Stream Context prepared",
+		"node_id", node.ID,
+		"estimated_tokens", estimatedTokens,
+		"max_tokens_setting", maxTokens,
+		"messages_count", len(messages))
+
 	// 构建请求（启用流式）
 	reqBody := LLMRequest{
-		Model:    node.ModelName,
-		Messages: messages,
-		Stream:   true,
+		Model:     node.ModelName,
+		Messages:  messages,
+		Stream:    true,
+		MaxTokens: maxTokens,
 		StreamOptions: &StreamOptions{
 			IncludeUsage: true,
 		},
@@ -588,7 +634,15 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 		return "", nil, fmt.Errorf("LLM returned empty response")
 	}
 
-	usage.Normalize()
+	if usage != nil {
+		usage.Normalize()
+		usage.EstimatedPromptTokens = estimatedTokens
+	} else {
+		// Create usage with estimate if missing
+		usage = &TokenUsage{
+			EstimatedPromptTokens: estimatedTokens,
+		}
+	}
 	return output, usage, nil
 }
 
@@ -643,16 +697,27 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 		log.C(ctx).Debugw("Input is empty, using history directly (chat scenario)", "node_id", node.ID, "node_name", node.Name, "is_last_node", isLastNode)
 	}
 
+	// 准备上下文（包含Token估算、裁剪等逻辑）
+	messages, estimatedTokens, maxTokens, err := e.prepareContext(ctx, node, messages)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("failed to prepare context: %w", err)
+	}
+
+	log.C(ctx).Infow("Deep Thinking Context prepared",
+		"node_id", node.ID,
+		"estimated_tokens", estimatedTokens,
+		"max_tokens_setting", maxTokens,
+		"messages_count", len(messages))
+
 	// 调用流式接口，分别积累思考与答案
 	var thinkingBuf, answerBuf strings.Builder
 	var usage *TokenUsage
-	var err error
 
 	isAli := strings.Contains(node.BaseURL, "aliyuncs.com") || strings.Contains(node.ModelName, "qwen")
 
 	if isAli {
 		log.C(ctx).Infow("Routing to Ali Deep Thinking API", "node_id", node.ID)
-		usage, err = e.callAliDeepThinkingStream(ctx, node, messages, deepThinking, conversationID, func(event string, chunk string) error {
+		usage, err = e.callAliDeepThinkingStream(ctx, node, messages, maxTokens, deepThinking, conversationID, func(event string, chunk string) error {
 			switch event {
 			case "thinking":
 				thinkingBuf.WriteString(chunk)
@@ -668,7 +733,7 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 		})
 	} else {
 		log.C(ctx).Infow("Routing to Volcengine Deep Thinking API", "node_id", node.ID)
-		usage, err = e.callVolcDeepThinkingStream(ctx, node, messages, deepThinking, conversationID, func(event string, chunk string) error {
+		usage, err = e.callVolcDeepThinkingStream(ctx, node, messages, maxTokens, deepThinking, conversationID, func(event string, chunk string) error {
 			switch event {
 			case "thinking":
 				thinkingBuf.WriteString(chunk)
@@ -763,7 +828,7 @@ func removeThinkingContent(output string) string {
 // callAliDeepThinkingStream 调用阿里百炼深度思考流式接口
 // 使用兼容模式：enable_thinking=true，reasoning_content 为思考链条，content 为最终答案
 // 返回 usage 信息用于统计 token 消耗
-func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model.SopNode, messages []LLMMessage, deepThinking bool, conversationID string, handler StreamHandler) (*TokenUsage, error) {
+func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model.SopNode, messages []LLMMessage, maxTokens int, deepThinking bool, conversationID string, handler StreamHandler) (*TokenUsage, error) {
 	url := node.BaseURL
 	if url == "" {
 		url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
@@ -771,9 +836,10 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 
 	// 构建 payload（openai 兼容）
 	payload := map[string]interface{}{
-		"model":    node.ModelName,
-		"messages": messages,
-		"stream":   true,
+		"model":      node.ModelName,
+		"messages":   messages,
+		"stream":     true,
+		"max_tokens": maxTokens,
 		"extra_body": map[string]interface{}{
 			"enable_thinking": deepThinking,
 		},
@@ -1088,7 +1154,7 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 // callVolcDeepThinkingStream 调用火山方舟深度思考流式接口
 // 使用 thinking.type: "enabled" 开启深度思考
 // 返回 usage 信息用于统计 token 消耗
-func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *model.SopNode, messages []LLMMessage, deepThinking bool, conversationID string, handler StreamHandler) (*TokenUsage, error) {
+func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *model.SopNode, messages []LLMMessage, maxTokens int, deepThinking bool, conversationID string, handler StreamHandler) (*TokenUsage, error) {
 	// 构建 URL（先 trim 掉空格，避免拼接错误）
 	url := strings.TrimSpace(node.BaseURL)
 	if url == "" {
@@ -1119,9 +1185,10 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 	}
 
 	payload := map[string]interface{}{
-		"model":    node.ModelName,
-		"messages": volcMessages,
-		"stream":   true,
+		"model":      node.ModelName,
+		"messages":   volcMessages,
+		"stream":     true,
+		"max_tokens": maxTokens,
 		"thinking": map[string]interface{}{
 			"type": thinkingType,
 		},
