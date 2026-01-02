@@ -19,7 +19,7 @@ import (
 
 // Configuration
 const (
-	baseURL         = "http://49.233.219.254:9200" // Or "http://localhost:8080" if local
+	baseURL         = "http://49.233.219.254:9091" // Or "http://localhost:8080" if local
 	loginAPI        = "/v1/wechat/login"
 	createSopRunAPI = "/v1/sop/runs"
 	templateID      = 1                 // Default template ID
@@ -82,7 +82,11 @@ func main() {
 		fmt.Printf("Login failing: %v\n", err)
 		return
 	}
-	fmt.Printf("Login successful. Token: %s...\n", token[:20])
+	if len(token) > 20 {
+		fmt.Printf("Login successful. Token: %s...\n", token[:20])
+	} else {
+		fmt.Printf("Login successful. Token: %s\n", token)
+	}
 
 	// 2. Start Workers
 	var wg sync.WaitGroup
@@ -201,11 +205,19 @@ func login() (string, error) {
 		return "", fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
 	}
 
-	var res LoginResponse
+	var res struct {
+		Code int `json:"code"`
+		Data struct {
+			AccessToken string `json:"access_token"`
+		} `json:"data"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return "", err
 	}
-	return res.Token, nil
+	if res.Code != 0 {
+		return "", fmt.Errorf("login failed with code %d", res.Code)
+	}
+	return res.Data.AccessToken, nil
 }
 
 func createRun(client *http.Client, token string) (uint, error) {
@@ -259,7 +271,7 @@ func getNextNode(client *http.Client, token string, runID uint) (*struct {
 	Name string `json:"name"`
 	Sort int    `json:"sort"`
 }, bool, error) {
-	url := fmt.Sprintf("%s/v1/sop/runs/%d/next", baseURL, runID)
+	url := fmt.Sprintf("%s/v1/sop/runs/%d/next-node", baseURL, runID)
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 

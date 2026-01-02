@@ -266,7 +266,7 @@ jobs:
       - name: Deploy to Development Server
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: 49.233.219.254
+          host: ${{ env.DEV_HOST }}
           username: root
           password: Numind2025
           port: 22
@@ -398,7 +398,7 @@ jobs:
       - name: Deploy to QA Environment
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: 49.233.219.254
+          host: ${{ env.QA_HOST }}
           username: root
           password: Numind2025
           script: |
@@ -525,7 +525,7 @@ jobs:
       - name: Deploy to Production Environment
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: 49.233.219.254
+          host: ${{ env.PROD_HOST }}
           username: root
           password: Numind2025
           script: |
@@ -771,7 +771,7 @@ jobs:
       - name: Deploy Admin to Development Server
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: 49.233.219.254
+          host: ${{ env.DEV_HOST }}
           username: root
           password: Numind2025
           port: 22

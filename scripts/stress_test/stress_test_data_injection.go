@@ -19,7 +19,7 @@ import (
 
 // Config
 const (
-	baseURL         = "http://49.233.219.254:9200"
+	baseURL         = "http://49.233.219.254:9091"
 	loginAPI        = "/v1/wechat/login"
 	createSopRunAPI = "/v1/sop/runs"
 	testDataDir     = "test_data"
@@ -141,7 +141,8 @@ func runInjectionTest(workerID int, token string, fileName string, fileData []by
 	if err != nil {
 		return fmt.Errorf("create run failed: %w", err)
 	}
-
+	// Wait for DB consistency / async logic
+	time.Sleep(2 * time.Second)
 	// If we only have text, we are done testing CreateRun.
 	// But usually we want to verify it works by executing at least one node.
 	if fileName == "" {
@@ -228,9 +229,18 @@ func login() (string, error) {
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("status %d", resp.StatusCode)
 	}
-	var res LoginResponse
+	var res struct {
+		Code int `json:"code"`
+		Data struct {
+			AccessToken string `json:"access_token"`
+		} `json:"data"`
+	}
+	// Reset reader if needed, but here we just read once
 	json.NewDecoder(resp.Body).Decode(&res)
-	return res.Token, nil
+	if res.Code != 0 {
+		return "", fmt.Errorf("login failed: code %d", res.Code)
+	}
+	return res.Data.AccessToken, nil
 }
 
 type CreateRunRequest struct {
@@ -241,7 +251,11 @@ type CreateRunRequest struct {
 func createRun(client *http.Client, token string, text string) (uint, error) {
 	// Template ID 1 default
 	reqBody := CreateRunRequest{TemplateID: 1, Text: text}
+	if text == "" {
+		reqBody.Text = "Default text for file upload test"
+	}
 	jsonData, _ := json.Marshal(reqBody)
+	fmt.Printf("CreateRun Request: %s\n", string(jsonData))
 
 	req, _ := http.NewRequest("POST", baseURL+createSopRunAPI, bytes.NewBuffer(jsonData))
 	req.Header.Set("Content-Type", "application/json")
@@ -253,10 +267,15 @@ func createRun(client *http.Client, token string, text string) (uint, error) {
 	}
 	defer resp.Body.Close()
 
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	fmt.Printf("CreateRun Response: %s\n", string(bodyBytes))
+
 	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(resp.Body)
-		return 0, fmt.Errorf("status %d: %s", resp.StatusCode, string(b))
+		return 0, fmt.Errorf("status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
+
+	// Restore body for decoder
+	resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
 	type StandardResponse struct {
 		Code int `json:"code"`
@@ -278,7 +297,8 @@ func getNextNode(client *http.Client, token string, runID uint) (*struct {
 	Name string `json:"name"`
 	Sort int    `json:"sort"`
 }, bool, error) {
-	url := fmt.Sprintf("%s/v1/sop/runs/%d/next", baseURL, runID)
+	url := fmt.Sprintf("%s/v1/sop/runs/%d/next-node", baseURL, runID)
+	fmt.Printf("GetNextNode URL: %s\n", url)
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 
@@ -288,17 +308,21 @@ func getNextNode(client *http.Client, token string, runID uint) (*struct {
 	}
 	defer resp.Body.Close()
 
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	fmt.Printf("GetNextNode Response: %s\n", string(bodyBytes))
+
 	if resp.StatusCode != 200 {
-		return nil, false, fmt.Errorf("status %d", resp.StatusCode)
+		return nil, false, fmt.Errorf("status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
+	// Restore body
+	resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
 	type NextNodeData struct {
-		Node *struct {
-			ID   uint   `json:"id"`
-			Name string `json:"name"`
-			Sort int    `json:"sort"`
-		} `json:"node"`
-		HasNext bool `json:"has_next"`
+		ID      uint   `json:"node_id"`
+		Name    string `json:"node_name"`
+		Sort    int    `json:"sort"`
+		HasNext bool   `json:"has_next"`
 	}
 	type StandardResponse struct {
 		Code int          `json:"code"`
@@ -306,7 +330,20 @@ func getNextNode(client *http.Client, token string, runID uint) (*struct {
 	}
 	var stdRes StandardResponse
 	json.NewDecoder(resp.Body).Decode(&stdRes)
-	return stdRes.Data.Node, stdRes.Data.HasNext, nil
+
+	// Return as a pointer to anonymous struct manually if needed, or change return type
+	// To keep signature compatible:
+	node := &struct {
+		ID   uint   `json:"id"`
+		Name string `json:"name"`
+		Sort int    `json:"sort"`
+	}{
+		ID:   stdRes.Data.ID,
+		Name: stdRes.Data.Name,
+		Sort: stdRes.Data.Sort,
+	}
+
+	return node, stdRes.Data.HasNext, nil
 }
 
 func logError(workerID int, err error) {

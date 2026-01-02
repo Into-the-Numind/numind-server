@@ -48,6 +48,9 @@ type aliBiz struct {
 	ds            store.IStore
 	pm            *PromptManager
 	bailianClient *service.BailianHTTPClient
+	textClient    *httpclient.Client
+	visionClient  *httpclient.Client
+	imageClient   *httpclient.Client
 }
 
 func NewAliBiz(ds store.IStore) AliBiz {
@@ -59,6 +62,9 @@ func NewAliBiz(ds store.IStore) AliBiz {
 			getAliConfig("common", "access_key_secret"),
 			getAliConfig("common", "workspace_id"),
 		),
+		textClient:   httpclient.NewClientFromConfig("ali.text"),
+		visionClient: httpclient.NewClientFromConfig("ali.vision"),
+		imageClient:  httpclient.NewClientFromConfig("ali.image"),
 	}
 }
 
@@ -150,14 +156,8 @@ func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, 
 		"stream":      true,
 	}
 	bodyBytes, _ := json.Marshal(bodyMap)
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(bodyBytes))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+getAliConfig("text", "api_key"))
-	req.Header.Set("User-Agent", "numind-server/1.0")
-
-	// 使用优化的HTTP客户端
-	client := httpclient.NewClientFromConfig("ali.text")
-	defer client.Close()
+	// 使用 persistent client
+	client := a.textClient
 
 	// 创建请求
 	httpReq := &httpclient.Request{
@@ -576,9 +576,8 @@ func (a *aliBiz) QianwenEmbedding(text string) ([]float32, error) {
 		return nil, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
-	// 使用优化的HTTP客户端
-	client := httpclient.NewClientFromConfig("ali.text")
-	defer client.Close()
+	// 使用 persistent client
+	client := a.textClient
 
 	// 创建请求
 	httpReq := &httpclient.Request{
@@ -697,9 +696,8 @@ func (a *aliBiz) QianwenVision(ctx context.Context, imageBase64 string, prompt s
 		return "", fmt.Errorf("序列化请求失败: %w", err)
 	}
 
-	// 使用优化的HTTP客户端
-	client := httpclient.NewClientFromConfig("ali.vision")
-	defer client.Close()
+	// 使用 persistent client
+	client := a.visionClient
 
 	httpReq := &httpclient.Request{
 		Method:  "POST",
