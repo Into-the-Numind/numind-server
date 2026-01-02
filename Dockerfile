@@ -1,7 +1,23 @@
-# 外部构建阶段 - 用于 CI/CD 中使用预构建的二进制文件
-FROM scratch AS external-binary
-ARG BINARY_PATH
-COPY $BINARY_PATH /app/numind
+# 构建阶段 - 在容器内编译源码
+FROM golang:1.24-bookworm AS builder
+
+# 安装必要的构建工具
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libc6-dev \
+    libmupdf-dev \
+    git
+
+WORKDIR /app
+
+# 复制依赖文件并下载
+COPY go.mod go.sum ./
+RUN go mod download
+
+# 复制源码并编译
+COPY . .
+# CGO_ENABLED=1 是必须的，因为使用了 go-fitz (libmupdf)
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o numind cmd/numind/main.go
 
 # 运行阶段 - 基于Ubuntu以获得更好的Chrome支持
 # 使用 Ubuntu 22.04 LTS（稳定版本，确保软件源可用）
@@ -121,9 +137,8 @@ ARG ENV=dev
 COPY config_${ENV}.yaml /app/config_${ENV}.yaml
 
 # 根据构建参数选择二进制文件来源
-ARG BINARY_SOURCE=external-binary
-# 使用条件复制，根据 BINARY_SOURCE 参数选择来源
-COPY --from=external-binary /app/numind /app/numind
+# 从构建阶段复制编译好的二进制文件
+COPY --from=builder /app/numind /app/numind
 COPY scripts /app/scripts
 
 # 验证配置文件复制成功
