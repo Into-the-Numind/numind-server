@@ -336,6 +336,7 @@ jobs:
               -v /opt/numind/dev:/opt/numind/dev \
               -v /opt/numind/config:/opt/numind/config:ro \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
+              --log-driver json-file \
               --log-opt max-size=10m \
               --log-opt max-file=3 \
               --restart always \
@@ -467,6 +468,7 @@ jobs:
               -v /opt/numind/qa:/opt/numind/qa \
               -v /opt/numind/config:/opt/numind/config:ro \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
+              --log-driver json-file \
               --log-opt max-size=10m \
               --log-opt max-file=3 \
               --restart always \
@@ -598,6 +600,7 @@ jobs:
               -v /opt/numind/prod:/opt/numind/prod \
               -v /opt/numind/config:/opt/numind/config:ro \
               -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
+              --log-driver json-file \
               --log-opt max-size=20m \
               --log-opt max-file=5 \
               --restart always \
