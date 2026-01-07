@@ -23,7 +23,7 @@ grpc:
 
 # MySQL 数据库相关配置
 db:
-  host: numind-mysql-prod:3306  # 使用 Docker 内部服务名
+  host: 127.0.0.1:13306  # 使用 Docker 内部服务名
   username: root # MySQL 用户名(建议授权最小权限集)
   password: Numind2025 # MySQL 用户密码
   database: numind-prod # miniblog 系统所用的数据库名
@@ -42,7 +42,7 @@ log:
 
 # Redis 缓存相关配置
 redis:
-  host: numind-redis-prod  # 使用 Docker 内部服务名
+  host: 127.0.0.1  # 使用 Docker 内部服务名
   port: 6379           # Redis 内部端口
   password: Numind2025  # Redis 密码
   db: 3                 # Redis 数据库编号，生产环境使用 3
