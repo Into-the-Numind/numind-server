@@ -12,6 +12,7 @@ WORKDIR /app
 
 # 复制依赖文件并下载
 COPY go.mod go.sum ./
+ENV GOPROXY=https://goproxy.cn,direct
 RUN go mod download
 
 # 复制源码并编译
@@ -134,7 +135,7 @@ WORKDIR /app
 ARG ENV=dev
 
 # 根据环境复制对应的配置文件
-COPY config_${ENV}.yaml /app/config_${ENV}.yaml
+COPY config_*.yaml ./
 
 # 根据构建参数选择二进制文件来源
 # 从构建阶段复制编译好的二进制文件
