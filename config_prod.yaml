@@ -43,7 +43,7 @@ log:
 # Redis 缓存相关配置
 redis:
   host: 127.0.0.1  # 使用 Docker 内部服务名
-  port: 6379           # Redis 内部端口
+  port: 26739           # Redis 内部端口
   password: Numind2025  # Redis 密码
   db: 3                 # Redis 数据库编号，生产环境使用 3
   pool_size: 10        # Redis 连接池大小
