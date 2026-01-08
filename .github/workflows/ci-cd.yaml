@@ -306,8 +306,9 @@ jobs:
               docker rm numind-server-dev
             fi
             
-            # 创建必要的目录并设置权限（确保容器内 UID 1001 可写）
-            echo "Creating necessary directories..."
+            # 创建必要的网络和目录
+            echo "Creating necessary network and directories..."
+            docker network create numind-network 2>/dev/null || true
             sudo mkdir -p /opt/numind/dev/image/upload/{avatars,card,book}
             sudo mkdir -p /opt/numind/config/cert
             sudo chown -R 1001:1001 /opt/numind/dev || true
@@ -330,6 +331,7 @@ jobs:
             echo "Starting new container..."
             docker run -d \
               --name numind-server-dev \
+              --network numind-network \
               -p 9091:9091 \
               -p 9092:9092 \
               -e APP_ENV=dev \
@@ -438,8 +440,9 @@ jobs:
               docker rm numind-server-qa
             fi
             
-            # 创建必要的目录并设置权限（确保容器内 UID 1001 可写）
-            echo "Creating necessary directories..."
+            # 创建必要的网络和目录
+            echo "Creating necessary network and directories..."
+            docker network create numind-network 2>/dev/null || true
             sudo mkdir -p /opt/numind/qa/image/upload/{avatars,card,book}
             sudo mkdir -p /opt/numind/config/cert
             sudo chown -R 1001:1001 /opt/numind/qa || true
@@ -462,6 +465,7 @@ jobs:
             echo "Starting new container..."
             docker run -d \
               --name numind-server-qa \
+              --network numind-network \
               -p 9093:9091 \
               -p 9094:9092 \
               -e APP_ENV=qa \
