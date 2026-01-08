@@ -23,7 +23,7 @@ grpc:
 
 # MySQL 数据库相关配置
 db:
-  host: 172.17.0.1:13306  # MySQL 机器 IP 和端口，连接服务器A本地MySQL
+  host: numind-mysql-dev:3306  # MySQL 机器 IP 和端口，连接服务器A本地MySQL
   username: root # MySQL 用户名(建议授权最小权限集)
   password: Numind2025 # MySQL 用户密码
   database: numind-dev # miniblog 系统所用的数据库名
