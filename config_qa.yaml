@@ -23,7 +23,7 @@ grpc:
 
 # MySQL 数据库相关配置
 db:
-  host: 127.0.0.1:13306  # MySQL 机器 IP 和端口，连接服务器A本地MySQL
+  host: 62.234.165.77:13306  # MySQL 机器 IP 和端口，默认 127.0.0.1:3306
   username: root # MySQL 用户名(建议授权最小权限集)
   password: Numind2025 # MySQL 用户密码
   database: numind-qa # miniblog 系统所用的数据库名
@@ -36,13 +36,13 @@ db:
 log:
   disable-caller: false # 是否开启 caller，如果开启会在日志中显示调用日志所在的文件和行号
   disable-stacktrace: false # 是否禁止在 panic 及以上级别打印堆栈信息
-  level: info # 指定日志级别，可选值：debug, info, warn, error, dpanic, panic, fatal
+  level: debug # 指定日志级别，可选值：debug, info, warn, error, dpanic, panic, fatal
   format: console # 指定日志显示格式，可选值：console, json
   output-paths: [./numind.log, stdout] # 指定日志输出位置，多个输出，用 `逗号 + 空格` 分开。stdout：标准输出，
 
 # Redis 缓存相关配置
 redis:
-  host: 127.0.0.1  # Redis 机器 IP，连接服务器A本地Redis
+  host: 62.234.165.77  # Redis 机器 IP
   port: 26739           # Redis 端口
   password: Numind2025  # Redis 密码
   db: 2                 # Redis 数据库编号，QA环境使用 2
