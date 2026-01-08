@@ -1,6 +1,7 @@
 package book
 
 import (
+	"context"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -24,6 +25,20 @@ func (ctrl *BookController) Delete(c *gin.Context) {
 	if err := ctrl.b.Books().Delete(c, uint(bookID)); err != nil {
 		core.WriteResponse(c, err, nil)
 		return
+	}
+
+	// 🔍 异步删除笔记向量（从向量数据库中移除）
+	if ctrl.b.Rag() != nil {
+		go func() {
+			// 使用新的 context，避免原 context 被取消
+			vectorCtx := context.Background()
+			if err := ctrl.b.Rag().DeleteBookVector(vectorCtx, uint(bookID)); err != nil {
+				log.C(vectorCtx).Errorw("异步删除笔记向量失败", "error", err, "book_id", bookID)
+				// 向量删除失败不影响笔记删除，只记录错误
+			} else {
+				log.C(vectorCtx).Infow("✅ 笔记向量删除成功", "book_id", bookID)
+			}
+		}()
 	}
 
 	core.WriteResponse(c, nil, nil)
@@ -52,6 +67,22 @@ func (ctrl *BookController) DeleteBatch(c *gin.Context) {
 	if err := ctrl.b.Books().DeleteBatch(c, ids); err != nil {
 		core.WriteResponse(c, err, nil)
 		return
+	}
+
+	// 🔍 异步批量删除笔记向量（从向量数据库中移除）
+	if ctrl.b.Rag() != nil {
+		go func() {
+			// 使用新的 context，避免原 context 被取消
+			vectorCtx := context.Background()
+			for _, bookID := range ids {
+				if err := ctrl.b.Rag().DeleteBookVector(vectorCtx, bookID); err != nil {
+					log.C(vectorCtx).Errorw("异步删除笔记向量失败", "error", err, "book_id", bookID)
+					// 向量删除失败不影响笔记删除，只记录错误
+				} else {
+					log.C(vectorCtx).Infow("✅ 笔记向量删除成功", "book_id", bookID)
+				}
+			}
+		}()
 	}
 
 	core.WriteResponse(c, nil, nil)

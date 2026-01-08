@@ -28,11 +28,15 @@ type VolcBiz interface {
 }
 
 type volcBiz struct {
-	ds store.IStore
+	ds     store.IStore
+	client *httpclient.Client
 }
 
 func NewVolcBiz(ds store.IStore) VolcBiz {
-	return &volcBiz{ds: ds}
+	return &volcBiz{
+		ds:     ds,
+		client: httpclient.NewClientFromConfig("volc"),
+	}
 }
 
 // GenerateArticleContent 通用内容生成函数
@@ -97,9 +101,8 @@ func (v *volcBiz) GenerateArticleContent(content string, contentType string, max
 	bodyBytes, _ := json.Marshal(params)
 	url := cfg.APIBase + "/chat/completions"
 
-	// 使用优化的HTTP客户端
-	client := httpclient.NewClientFromConfig("volc")
-	defer client.Close()
+	// 使用 persistent client
+	client := v.client
 
 	// 创建请求
 	httpReq := &httpclient.Request{
@@ -136,7 +139,7 @@ func (v *volcBiz) GenerateArticleContent(content string, contentType string, max
 		// 使用高级JSON修复引擎
 		extractor := httpclient.NewAdvancedJSONExtractor()
 		repairedBody, repairErr := extractor.ExtractValidJSON(respBody)
-		
+
 		if repairErr != nil {
 			return "", fmt.Errorf("JSON解析和修复都失败: 原始错误=%w, 修复错误=%v, 响应长度=%d", err, repairErr, len(respBody))
 		}
@@ -167,9 +170,8 @@ func (v *volcBiz) VolcTextStream(ctx context.Context, messages []map[string]stri
 	// 添加调试日志
 	log.C(ctx).Debugw("调用volc API", "url", url, "request_params", string(bodyBytes))
 
-	// 使用优化的HTTP客户端
-	client := httpclient.NewClientFromConfig("volc")
-	defer client.Close()
+	// 使用 persistent client
+	client := v.client
 
 	// 创建请求
 	httpReq := &httpclient.Request{
@@ -234,7 +236,7 @@ func (v *volcBiz) VolcTextStream(ctx context.Context, messages []map[string]stri
 		// 使用高级JSON修复引擎
 		extractor := httpclient.NewAdvancedJSONExtractor()
 		repairedBody, repairErr := extractor.ExtractValidJSON(respBody)
-		
+
 		if repairErr != nil {
 			log.C(ctx).Errorw("JSON修复失败", "repair_error", repairErr.Error(), "original_error", err.Error())
 			return "", fmt.Errorf("JSON解析和修复都失败: 原始错误=%w, 修复错误=%v, 响应长度=%d", err, repairErr, respLength)
@@ -246,7 +248,7 @@ func (v *volcBiz) VolcTextStream(ctx context.Context, messages []map[string]stri
 			// 输出修复后的响应的前后部分用于调试
 			debugLen := 200
 			if len(repairedBody) > debugLen*2 {
-				log.C(ctx).Debugw("修复后响应调试信息", 
+				log.C(ctx).Debugw("修复后响应调试信息",
 					"repaired_start", string(repairedBody[:debugLen]),
 					"repaired_end", string(repairedBody[len(repairedBody)-debugLen:]))
 			} else {

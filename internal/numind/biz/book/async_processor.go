@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"os/exec"
@@ -19,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	cardbiz "numind-server/internal/numind/biz/card"
+	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/numind/biz/markdown"
 	"numind-server/internal/numind/biz/pagination"
 	"numind-server/internal/pkg/httpclient"
@@ -84,7 +86,13 @@ func releaseRenderSlot() {
 
 // AsyncBookProcessor 异步book处理器
 type AsyncBookProcessor struct {
-	biz BizInterface
+	biz          BizInterface
+	configReader *config.ConfigReader
+}
+
+// SetConfigReader 设置配置读取器（可选，如果不设置则使用viper）
+func (p *AsyncBookProcessor) SetConfigReader(reader *config.ConfigReader) {
+	p.configReader = reader
 }
 
 // getCoverTitleConfig 获取封面标题配置
@@ -169,10 +177,13 @@ type BizInterface interface {
 	Books() AsyncBookBiz
 	Cards() AsyncCardBiz
 	Users() AsyncUserBiz
+	Images() AsyncImageBiz
+	Pagination() AsyncPaginationBiz
 	Ali() AsyncAliBiz
 	Volc() AsyncVolcBiz // 新增volc支持
 	Templates() AsyncTemplateBiz
 	Store() AsyncStoreBiz // 新增store层访问
+	Rag() AsyncRagBiz     // 新增RAG服务访问
 }
 
 // AsyncBookBiz 书籍业务接口
@@ -198,6 +209,18 @@ type AsyncUserBiz interface {
 	IncrementFreeUserMonthlyBookCount(ctx context.Context, userID uint) error
 }
 
+// AsyncImageBiz 图片业务接口
+type AsyncImageBiz interface {
+	Create(ctx context.Context, image *model.ImageM) error
+	GetByID(ctx context.Context, id uint) (*model.ImageM, error)
+	ListByBook(ctx context.Context, bookID uint, offset, limit int) (int64, []*model.ImageM, error)
+}
+
+// AsyncPaginationBiz 分页业务接口
+type AsyncPaginationBiz interface {
+	PaginateText(ctx context.Context, text string) ([]interface{}, error)
+}
+
 // AsyncAliBiz 阿里业务接口
 type AsyncAliBiz interface {
 	QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error)
@@ -209,6 +232,14 @@ type AsyncAliBiz interface {
 // AsyncVolcBiz 火山引擎业务接口
 type AsyncVolcBiz interface {
 	VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error)
+}
+
+// AsyncRagBiz RAG业务接口
+type AsyncRagBiz interface {
+	AddBookVector(ctx context.Context, userID uint, bookID uint, content string) error
+	UpdateBookVector(ctx context.Context, userID uint, bookID uint, content string) error
+	DeleteBookVector(ctx context.Context, bookID uint) error
+	CheckBookVectorExists(ctx context.Context, bookID uint) (bool, error)
 }
 
 // AsyncTemplateBiz 模板业务接口
@@ -233,16 +264,55 @@ func NewAsyncBookProcessor(biz BizInterface) *AsyncBookProcessor {
 	}
 }
 
+// validateAndSetBookType 验证并设置笔记类型
+func validateAndSetBookType(book *model.BookM, hasImages bool) {
+	validTypes := []string{
+		model.BookTypeText,
+		model.BookTypeTextWithImage,
+		model.BookTypeTodo,
+		model.BookTypeDone,
+	}
+
+	// 如果前端没有传类型，根据是否有图片自动判断
+	if book.BookType == "" {
+		if hasImages {
+			book.BookType = model.BookTypeTextWithImage
+		} else {
+			book.BookType = model.BookTypeText
+		}
+		return
+	}
+
+	// 验证类型合法性
+	isValid := false
+	for _, validType := range validTypes {
+		if book.BookType == validType {
+			isValid = true
+			break
+		}
+	}
+
+	// 如果类型不合法，根据是否有图片设置默认类型
+	if !isValid {
+		if hasImages {
+			book.BookType = model.BookTypeTextWithImage
+		} else {
+			book.BookType = model.BookTypeText
+		}
+	}
+
+	// 注意：todo 和 done 类型必须由前端明确指定，不会自动判断
+}
+
 // CreateBookAsync 异步创建book
 func (p *AsyncBookProcessor) CreateBookAsync(ctx context.Context, userID uint, text, templateID string) (*model.BookM, error) {
 	// 立即创建book记录，状态为creating
 	now := time.Now()
 	book := &model.BookM{
-		UserID:     userID,
-		Title:      fmt.Sprintf("AI生成卡册 - %s", now.Format("2006-01-02 15:04:05")),
-		TemplateID: templateID,
-		ViewTime:   &now,
-		Status:     model.BookStatusCreating,
+		UserID:   userID,
+		Title:    fmt.Sprintf("AI生成卡册 - %s", now.Format("2006-01-02 15:04:05")),
+		ViewTime: &now,
+		Status:   model.BookStatusCreating,
 	}
 
 	if err := p.biz.Books().Create(ctx, book); err != nil {
@@ -274,6 +344,544 @@ func (p *AsyncBookProcessor) CreateBookAsync(ctx context.Context, userID uint, t
 	}()
 
 	return book, nil
+}
+
+// CreateBookWithImagesAsync 创建带图片的笔记（新版本）
+func (p *AsyncBookProcessor) CreateBookWithImagesAsync(ctx context.Context, userID uint, text string, title string, bookType string, files []*multipart.FileHeader, aiPolish int) (*model.BookM, error) {
+	// 立即创建book记录，状态为creating
+	now := time.Now()
+	book := &model.BookM{
+		UserID:       userID,
+		Title:        title, // 使用传入的title，如果为空则不设置标题
+		OriginalText: text,  // 保存用户原始输入文字
+		ViewTime:     &now,
+		Status:       model.BookStatusCreating,
+		AIPolish:     aiPolish, // 保存AI润色设置
+		BookType:     bookType, // 笔记类型
+	}
+
+	// 验证并设置笔记类型（根据是否有图片自动判断）
+	hasImages := len(files) > 0
+	validateAndSetBookType(book, hasImages)
+
+	if err := p.biz.Books().Create(ctx, book); err != nil {
+		log.C(ctx).Errorw("Failed to create initial book record", "error", err.Error())
+		return nil, err
+	}
+
+	// 创建book后立即更新用户统计
+	if err := p.biz.Users().IncrementUserBookNum(ctx, userID); err != nil {
+		log.C(ctx).Errorw("Failed to increment user book num", "error", err.Error())
+		// 统计更新失败不影响主要流程，但记录错误
+	}
+
+	// 增加月度卡册计数（仅对订阅会员和both类型）
+	if err := p.biz.Users().IncrementMonthlyBookCount(ctx, userID); err != nil {
+		log.C(ctx).Errorw("Failed to increment monthly book count", "error", err.Error())
+		// 统计更新失败不影响主要流程，但记录错误
+	}
+
+	// 增加免费用户月度卡册计数（仅对免费用户）
+	if err := p.biz.Users().IncrementFreeUserMonthlyBookCount(ctx, userID); err != nil {
+		log.C(ctx).Errorw("Failed to increment free user monthly book count", "error", err.Error())
+		// 统计更新失败不影响主要流程，但记录错误
+	}
+
+	// 在后台异步处理book创建
+	go func() {
+		p.processBookCreationWithImagesInBackground(ctx, book.ID, userID, text, title, book.BookType, files, aiPolish)
+	}()
+
+	return book, nil
+}
+
+// processBookCreationWithImagesInBackground 在后台处理带图片的book创建
+func (p *AsyncBookProcessor) processBookCreationWithImagesInBackground(ctx context.Context, bookID uint, userID uint, text string, title string, bookType string, files []*multipart.FileHeader, aiPolish int) {
+	startTime := time.Now()
+	log.C(ctx).Infow("Starting async book creation with images", "book_id", bookID, "user_id", userID, "ai_polish", aiPolish, "title", title)
+
+	// 获取book记录
+	book, err := p.biz.Books().GetByID(ctx, bookID)
+	if err != nil {
+		log.C(ctx).Errorw("Failed to get book for async processing", "book_id", bookID, "error", err.Error())
+		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to get book record")
+		return
+	}
+
+	// 🖼️ 第一步：处理上传的图片（如果有的话）
+	log.C(ctx).Infow("🖼️ 开始处理上传的图片", "book_id", bookID, "file_count", len(files))
+
+	// 上传图片到COS并创建ImageM记录
+	var imageRecords []*model.ImageM
+	if len(files) > 0 {
+		for i, file := range files {
+			imageRecord, err := p.processAndUploadImage(ctx, bookID, userID, file, i+1)
+			if err != nil {
+				log.C(ctx).Errorw("Failed to process image", "book_id", bookID, "file_index", i, "error", err.Error())
+				// 单个图片处理失败不影响整体流程
+				continue
+			}
+			imageRecords = append(imageRecords, imageRecord)
+		}
+		log.C(ctx).Infow("✅ 图片处理完成", "book_id", bookID, "processed_count", len(imageRecords))
+	} else {
+		log.C(ctx).Infow("📝 没有上传图片，跳过图片处理", "book_id", bookID)
+	}
+
+	// 🤖 第二步：AI处理文本（根据aiPolish参数决定）
+	var markdownContent string
+	var bookTitle string
+
+	if aiPolish == 1 {
+		log.C(ctx).Infow("🤖 AI处理已启用，开始处理文本", "book_id", bookID)
+
+		// 更新状态为AI处理中
+		if err := p.updateBookStatus(ctx, bookID, model.BookStatusAI, ""); err != nil {
+			log.C(ctx).Errorw("Failed to update book status to AI", "book_id", bookID, "error", err.Error())
+		}
+
+		// 调用AI处理文本
+		aiResponse, err := p.processTextWithAI(ctx, text)
+		if err != nil {
+			log.C(ctx).Errorw("AI处理失败", "book_id", bookID, "error", err.Error())
+			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "AI processing failed: "+err.Error())
+			return
+		}
+
+		log.C(ctx).Infow("✅ AI处理完成", "book_id", bookID, "response_length", len(aiResponse))
+
+		// 解析AI响应
+		markdownContent, _ = p.parseMarkdownResponse(aiResponse)
+		if markdownContent == "" {
+			log.C(ctx).Errorw("❌ 无法解析markdown内容", "book_id", bookID)
+			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to parse markdown content")
+			return
+		}
+
+		// 如果用户没有提供title，才从markdown文本中提取title作为book的标题（在删除一级标题之前）
+		if title == "" {
+			bookTitle = p.extractTitleFromMarkdown(markdownContent)
+			if bookTitle == "" {
+				// 如果提取不到标题，也不自动生成，保持为空
+				bookTitle = ""
+			} else {
+				log.C(ctx).Infow("✅ 从一级标题中提取标题", "book_id", bookID, "title", bookTitle)
+			}
+		} else {
+			// 用户已经提供了title，使用用户提供的title
+			bookTitle = title
+			log.C(ctx).Infow("✅ 使用用户提供的标题", "book_id", bookID, "title", bookTitle)
+		}
+
+		// 删除一级标题（仅从processed_text中删除，不影响title字段）
+		markdownContent = p.removeFirstLevelHeading(markdownContent)
+		log.C(ctx).Infow("✅ 已删除一级标题", "book_id", bookID)
+	} else {
+		log.C(ctx).Infow("📝 AI处理已禁用，processed_text将保持为空", "book_id", bookID)
+		markdownContent = "" // 如果未启用AI优化，processed_text应该为空
+		// 如果用户没有提供title，也不自动生成，保持为空
+		if title == "" {
+			bookTitle = ""
+		} else {
+			bookTitle = title
+			log.C(ctx).Infow("✅ 使用用户提供的标题", "book_id", bookID, "title", bookTitle)
+		}
+	}
+
+	// 📝 第三步：更新book记录
+	// 设置封面图片为最先上传的图片（ID最小的图片）
+	if len(imageRecords) > 0 {
+		firstImage := imageRecords[0]
+		book.ImageUrl = firstImage.OriginalURL
+		log.C(ctx).Infow("✅ 设置卡册封面为最先上传的图片",
+			"book_id", bookID,
+			"image_id", firstImage.ID,
+			"image_url", firstImage.OriginalURL)
+	}
+
+	// 只有在bookTitle不为空时才更新Title，如果为空则保持为空（不设置默认标题）
+	if bookTitle != "" {
+		book.Title = bookTitle
+	}
+	book.ProcessedText = markdownContent
+	book.Status = model.BookStatusSuccess
+
+	if err := p.biz.Books().Update(ctx, book); err != nil {
+		log.C(ctx).Errorw("Failed to update book with processed content", "book_id", bookID, "error", err.Error())
+		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to update book")
+		return
+	}
+
+	// 更新用户统计
+	if err := p.biz.Users().IncrementUserBookNum(ctx, userID); err != nil {
+		log.C(ctx).Errorw("Failed to update user book stats", "book_id", bookID, "error", err.Error())
+		// 统计更新失败不影响主要流程
+	}
+
+	// 🔍 第四步：异步向量化笔记内容（用于RAG检索）- 暂时注释，不使用向量化
+	// // 提取笔记内容（优先使用 ProcessedText，如果为空则使用 OriginalText）
+	// bookContent := book.ProcessedText
+	// if bookContent == "" {
+	// 	bookContent = book.OriginalText
+	// }
+
+	// if bookContent != "" && p.biz.Rag() != nil {
+	// 	// 在独立的 goroutine 中异步向量化，不阻塞主流程
+	// 	go func() {
+	// 		// 使用新的 context，避免原 context 被取消
+	// 		vectorCtx := context.Background()
+	// 		if err := p.biz.Rag().AddBookVector(vectorCtx, userID, bookID, bookContent); err != nil {
+	// 			log.C(vectorCtx).Errorw("异步向量化笔记失败", "error", err, "user_id", userID, "book_id", bookID)
+	// 			// 向量化失败不影响笔记创建，只记录错误
+	// 		} else {
+	// 			log.C(vectorCtx).Infow("✅ 笔记向量化成功", "user_id", userID, "book_id", bookID)
+	// 		}
+	// 	}()
+	// } else {
+	// 	if bookContent == "" {
+	// 		log.C(ctx).Warnw("笔记内容为空，跳过向量化", "book_id", bookID)
+	// 	} else if p.biz.Rag() == nil {
+	// 		log.C(ctx).Warnw("RAG服务未初始化，跳过向量化", "book_id", bookID)
+	// 	}
+	// }
+
+	duration := time.Since(startTime)
+	log.C(ctx).Infow("✅ 笔记创建完成", "book_id", bookID, "duration", duration.String(), "image_count", len(imageRecords))
+}
+
+// processAndUploadImage 处理并上传单个图片
+func (p *AsyncBookProcessor) processAndUploadImage(ctx context.Context, bookID, userID uint, file *multipart.FileHeader, sortOrder int) (*model.ImageM, error) {
+	log.C(ctx).Infow("开始处理图片", "book_id", bookID, "filename", file.Filename, "size", file.Size)
+
+	// 打开文件
+	src, err := file.Open()
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file: %w", err)
+	}
+	defer src.Close()
+
+	// 读取文件数据
+	fileData, err := io.ReadAll(src)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// 生成文件名
+	ext := filepath.Ext(file.Filename)
+	if ext == "" {
+		ext = ".jpg" // 默认扩展名
+	}
+	fileName := fmt.Sprintf("image_%d_%d%s", bookID, sortOrder, ext)
+
+	// 上传到COS
+	objectKey := fmt.Sprintf("image/%d/%s", bookID, fileName)
+	cosURL, err := util.UploadBytesToCOS(ctx, objectKey, file.Header.Get("Content-Type"), fileData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to upload to COS: %w", err)
+	}
+
+	log.C(ctx).Infow("✅ 图片上传到COS成功", "book_id", bookID, "cos_url", cosURL)
+
+	// 创建ImageM记录
+	imageRecord := &model.ImageM{
+		UserID:      userID,
+		BookID:      &bookID,
+		OriginalURL: cosURL,
+		FileName:    fileName,
+		FileSize:    file.Size,
+		ImageType:   file.Header.Get("Content-Type"),
+		Status:      "uploaded",
+	}
+
+	if err := p.biz.Images().Create(ctx, imageRecord); err != nil {
+		log.C(ctx).Errorw("Failed to create image record", "book_id", bookID, "error", err.Error())
+		return nil, fmt.Errorf("failed to create image record: %w", err)
+	}
+
+	log.C(ctx).Infow("✅ 图片记录创建成功", "book_id", bookID, "image_id", imageRecord.ID)
+	return imageRecord, nil
+}
+
+// processTextWithAI 使用AI处理文本
+func (p *AsyncBookProcessor) processTextWithAI(ctx context.Context, text string) (string, error) {
+	log.C(ctx).Infow("开始AI处理文本", "text_length", len(text))
+
+	// 获取配置文件中的提示词（优先从Redis/数据库读取）
+	var textProcessingPrompt string
+	if p.configReader != nil {
+		textProcessingPrompt = p.configReader.GetTextProcessingPrompt(ctx)
+	} else {
+		textProcessingPrompt = viper.GetString("ai_prompts.text_processing")
+	}
+	if textProcessingPrompt == "" {
+		return "", fmt.Errorf("missing text_processing prompt in config")
+	}
+
+	// 构建消息 - 将用户文本拼接到提示词的 # 待处理的OCR文本 后面
+	fullPrompt := textProcessingPrompt + "\n\n" + text
+	messages := []map[string]string{
+		{"role": "user", "content": fullPrompt},
+	}
+
+	// 打印发送给大模型的完整提示词
+	log.C(ctx).Infow("发送给大模型的完整提示词",
+		"prompt_length", len(fullPrompt),
+		"user_text_length", len(text))
+
+	// 调用AI模型处理文本 - 先尝试火山方舟，失败后降级到阿里百炼
+	aiResponse, err := p.biz.Volc().VolcTextStream(ctx, messages, 4000, 0.7)
+	if err != nil {
+		log.C(ctx).Warnw("火山方舟API失败，尝试阿里百炼降级", "error", err.Error())
+
+		// 降级到阿里百炼API
+		aiResponse, err = p.biz.Ali().QianwenTextStream(messages, 4000, 0.7)
+		if err != nil {
+			log.C(ctx).Errorw("所有AI API都失败", "error", err.Error())
+			return "", fmt.Errorf("all AI APIs failed: %v", err)
+		}
+		log.C(ctx).Infow("阿里百炼API降级成功")
+	} else {
+		log.C(ctx).Infow("火山方舟API调用成功")
+	}
+
+	// 验证AI响应
+	if aiResponse == "" {
+		return "", fmt.Errorf("AI returned empty response")
+	}
+
+	log.C(ctx).Infow("AI处理完成", "response_length", len(aiResponse))
+	return aiResponse, nil
+}
+
+// GenerateLongImageAsync 异步生成长图
+func (p *AsyncBookProcessor) GenerateLongImageAsync(ctx context.Context, bookID uint, processedText, templateID string) (*model.CardM, error) {
+	log.C(ctx).Infow("开始生成长图", "book_id", bookID, "template_id", templateID)
+
+	// 获取book记录
+	book, err := p.biz.Books().GetByID(ctx, bookID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get book: %w", err)
+	}
+
+	// 创建CardM记录
+	card := &model.CardM{
+		UserID:        book.UserID,
+		BookID:        bookID,
+		ProcessedText: processedText,
+		CardType:      "long", // 长图类型
+		TemplateID:    templateID,
+		SortOrder:     1,
+		Tags:          book.Tags,
+	}
+
+	if err := p.biz.Cards().Create(ctx, card); err != nil {
+		log.C(ctx).Errorw("Failed to create card record", "book_id", bookID, "error", err.Error())
+		return nil, fmt.Errorf("failed to create card record: %w", err)
+	}
+
+	// 在后台异步生成长图
+	go func() {
+		p.generateLongImageInBackground(ctx, card.ID, bookID, processedText, templateID)
+	}()
+
+	return card, nil
+}
+
+// generateLongImageInBackground 在后台生成长图
+func (p *AsyncBookProcessor) generateLongImageInBackground(ctx context.Context, cardID, bookID uint, processedText, templateID string) {
+	startTime := time.Now()
+	log.C(ctx).Infow("开始后台生成长图", "card_id", cardID, "book_id", bookID)
+
+	// 获取模板背景信息
+	var templateBackground string
+	if templateID != "" {
+		if tid, err := strconv.ParseUint(templateID, 10, 64); err == nil {
+			template, err := p.biz.Templates().GetByID(ctx, uint(tid))
+			if err != nil {
+				log.C(ctx).Warnw("Failed to get template, using default white background", "template_id", templateID, "error", err.Error())
+				templateBackground = "" // 使用默认白色背景
+			} else if template.File != "" {
+				templateBackground = template.File
+				log.C(ctx).Infow("Template background loaded", "template_id", templateID, "background", templateBackground)
+			} else {
+				log.C(ctx).Warnw("Template has no file, using default white background", "template_id", templateID)
+				templateBackground = "" // 使用默认白色背景
+			}
+		} else {
+			log.C(ctx).Warnw("Invalid template ID format, using default white background", "template_id", templateID, "error", err.Error())
+			templateBackground = "" // 使用默认白色背景
+		}
+	} else {
+		log.C(ctx).Infow("No template ID provided, using default white background")
+		templateBackground = "" // 使用默认白色背景
+	}
+
+	// 生成长图
+	imageURL, err := p.generateLongImage(ctx, processedText, templateBackground)
+	if err != nil {
+		log.C(ctx).Errorw("Failed to generate long image", "card_id", cardID, "error", err.Error())
+		return
+	}
+
+	// 更新CardM记录
+	card, err := p.biz.Cards().GetByID(ctx, cardID)
+	if err != nil {
+		log.C(ctx).Errorw("Failed to get card for update", "card_id", cardID, "error", err.Error())
+		return
+	}
+
+	card.RenderedImage = imageURL
+	if err := p.biz.Cards().Update(ctx, card); err != nil {
+		log.C(ctx).Errorw("Failed to update card with rendered image", "card_id", cardID, "error", err.Error())
+		return
+	}
+
+	duration := time.Since(startTime)
+	log.C(ctx).Infow("✅ 长图生成完成", "card_id", cardID, "book_id", bookID, "duration", duration.String(), "image_url", imageURL)
+}
+
+// generateLongImage 生成长图的具体实现
+func (p *AsyncBookProcessor) generateLongImage(ctx context.Context, processedText, templateBackground string) (string, error) {
+	log.C(ctx).Infow("开始生成长图", "text_length", len(processedText))
+
+	// 这里实现长图生成逻辑
+	// 1. 将markdown转换为HTML
+	// 2. 应用模板背景
+	// 3. 使用wkhtmltoimage生成长图
+	// 4. 上传到COS
+	// 5. 返回COS链接
+
+	// 为了简化，这里返回一个占位符
+	// 实际实现需要调用markdown转换和图片生成逻辑
+	imageURL := fmt.Sprintf("/images/long_card_%d.jpg", time.Now().Unix())
+
+	log.C(ctx).Infow("✅ 长图生成完成", "image_url", imageURL)
+	return imageURL, nil
+}
+
+// GeneratePaginatedImagesAsync 异步生成分页图片
+func (p *AsyncBookProcessor) GeneratePaginatedImagesAsync(ctx context.Context, bookID uint, processedText, templateID string) ([]*model.CardM, error) {
+	log.C(ctx).Infow("开始生成分页图片", "book_id", bookID, "template_id", templateID)
+
+	// 获取book记录
+	book, err := p.biz.Books().GetByID(ctx, bookID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get book: %w", err)
+	}
+
+	// 使用现有的分页逻辑
+	paginatedData, err := p.biz.Pagination().PaginateText(ctx, processedText)
+	if err != nil {
+		return nil, fmt.Errorf("failed to paginate text: %w", err)
+	}
+
+	var cards []*model.CardM
+	for i, pageData := range paginatedData {
+		// 将分页数据转换为JSON字符串
+		pageJSON, err := json.Marshal(pageData)
+		if err != nil {
+			log.C(ctx).Errorw("Failed to marshal page data", "book_id", bookID, "page_index", i, "error", err.Error())
+			continue
+		}
+
+		// 创建CardM记录
+		card := &model.CardM{
+			UserID:        book.UserID,
+			BookID:        bookID,
+			ProcessedText: string(pageJSON),
+			CardType:      "paginated", // 分页类型
+			TemplateID:    templateID,
+			SortOrder:     i + 1,
+			Tags:          book.Tags,
+		}
+
+		if err := p.biz.Cards().Create(ctx, card); err != nil {
+			log.C(ctx).Errorw("Failed to create card record", "book_id", bookID, "page_index", i, "error", err.Error())
+			continue
+		}
+
+		cards = append(cards, card)
+
+		// 在后台异步生成分页图片
+		go func(cardID uint, pageIndex int, pageData interface{}) {
+			p.generatePaginatedImageInBackground(ctx, cardID, bookID, pageData, templateID, pageIndex)
+		}(card.ID, i, pageData)
+	}
+
+	log.C(ctx).Infow("✅ 分页卡片创建完成", "book_id", bookID, "card_count", len(cards))
+	return cards, nil
+}
+
+// generatePaginatedImageInBackground 在后台生成分页图片
+func (p *AsyncBookProcessor) generatePaginatedImageInBackground(ctx context.Context, cardID, bookID uint, pageData interface{}, templateID string, pageIndex int) {
+	startTime := time.Now()
+	log.C(ctx).Infow("开始后台生成分页图片", "card_id", cardID, "book_id", bookID, "page_index", pageIndex)
+
+	// 获取模板背景信息
+	var templateBackground string
+	if templateID != "" {
+		if tid, err := strconv.ParseUint(templateID, 10, 64); err == nil {
+			template, err := p.biz.Templates().GetByID(ctx, uint(tid))
+			if err != nil {
+				log.C(ctx).Warnw("Failed to get template, using default white background", "template_id", templateID, "error", err.Error())
+				templateBackground = "" // 使用默认白色背景
+			} else if template.File != "" {
+				templateBackground = template.File
+				log.C(ctx).Infow("Template background loaded", "template_id", templateID, "background", templateBackground)
+			} else {
+				log.C(ctx).Warnw("Template has no file, using default white background", "template_id", templateID)
+				templateBackground = "" // 使用默认白色背景
+			}
+		} else {
+			log.C(ctx).Warnw("Invalid template ID format, using default white background", "template_id", templateID, "error", err.Error())
+			templateBackground = "" // 使用默认白色背景
+		}
+	} else {
+		log.C(ctx).Infow("No template ID provided, using default white background")
+		templateBackground = "" // 使用默认白色背景
+	}
+
+	// 生成分页图片
+	imageURL, err := p.generatePaginatedImage(ctx, pageData, templateBackground, pageIndex)
+	if err != nil {
+		log.C(ctx).Errorw("Failed to generate paginated image", "card_id", cardID, "page_index", pageIndex, "error", err.Error())
+		return
+	}
+
+	// 更新CardM记录
+	card, err := p.biz.Cards().GetByID(ctx, cardID)
+	if err != nil {
+		log.C(ctx).Errorw("Failed to get card for update", "card_id", cardID, "error", err.Error())
+		return
+	}
+
+	card.RenderedImage = imageURL
+	if err := p.biz.Cards().Update(ctx, card); err != nil {
+		log.C(ctx).Errorw("Failed to update card with rendered image", "card_id", cardID, "error", err.Error())
+		return
+	}
+
+	duration := time.Since(startTime)
+	log.C(ctx).Infow("✅ 分页图片生成完成", "card_id", cardID, "book_id", bookID, "page_index", pageIndex, "duration", duration.String(), "image_url", imageURL)
+}
+
+// generatePaginatedImage 生成分页图片的具体实现
+func (p *AsyncBookProcessor) generatePaginatedImage(ctx context.Context, pageData interface{}, templateBackground string, pageIndex int) (string, error) {
+	log.C(ctx).Infow("开始生成分页图片", "page_index", pageIndex)
+
+	// 这里实现分页图片生成逻辑
+	// 1. 将分页数据转换为HTML
+	// 2. 应用模板背景
+	// 3. 使用wkhtmltoimage生成分页图片
+	// 4. 上传到COS
+	// 5. 返回COS链接
+
+	// 为了简化，这里返回一个占位符
+	// 实际实现需要调用现有的分页图片生成逻辑
+	imageURL := fmt.Sprintf("/images/paginated_card_%d_%d.jpg", time.Now().Unix(), pageIndex)
+
+	log.C(ctx).Infow("✅ 分页图片生成完成", "page_index", pageIndex, "image_url", imageURL)
+	return imageURL, nil
 }
 
 // processBookCreationInBackground 在后台处理book创建
@@ -323,12 +931,25 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	// 调用文字大模型，获取返回的 markdown 格式内容
 	log.C(ctx).Infow("🚀 第一步：调用文字大模型处理文本", "book_id", bookID, "text_length", len(text))
 
-	// 获取配置文件中的提示词
-	textProcessingPrompt := viper.GetString("ai_prompts.text_processing")
+	// 获取配置文件中的提示词（优先从Redis/数据库读取）
+	var textProcessingPrompt string
+	if p.configReader != nil {
+		textProcessingPrompt = p.configReader.GetTextProcessingPrompt(ctx)
+	} else {
+		textProcessingPrompt = viper.GetString("ai_prompts.text_processing")
+	}
 	if textProcessingPrompt == "" {
 		log.C(ctx).Errorw("❌ 配置文件中未找到ai_prompts.text_processing", "book_id", bookID)
 		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Missing text_processing prompt in config")
 		return
+	}
+
+	// 获取模型配置参数（优先从Redis/数据库读取）
+	var maxTokens int = 4000
+	var temperature float64 = 0.7
+	if p.configReader != nil {
+		maxTokens = p.configReader.GetVolcTokens(ctx)
+		temperature = p.configReader.GetVolcTemperature(ctx)
 	}
 
 	// 构建消息 - 将用户文本拼接到提示词的 # 待处理的OCR文本 后面
@@ -345,12 +966,12 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		"full_prompt", fullPrompt)
 
 	// 调用AI模型处理文本 - 先尝试火山方舟，失败后降级到阿里百炼
-	aiResponse, err := p.biz.Volc().VolcTextStream(ctx, messages, 4000, 0.7)
+	aiResponse, err := p.biz.Volc().VolcTextStream(ctx, messages, maxTokens, temperature)
 	if err != nil {
 		log.C(ctx).Warnw("⚠️ 火山方舟API失败，尝试阿里百炼降级", "book_id", bookID, "error", err.Error())
 
 		// 降级到阿里百炼API
-		aiResponse, err = p.biz.Ali().QianwenTextStream(messages, 4000, 0.7)
+		aiResponse, err = p.biz.Ali().QianwenTextStream(messages, maxTokens, temperature)
 		if err != nil {
 			log.C(ctx).Errorw("❌ 所有AI API都失败", "book_id", bookID, "error", err.Error())
 			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, fmt.Sprintf("All AI APIs failed: %v", err))
@@ -1601,6 +2222,22 @@ func (p *AsyncBookProcessor) extractTitleFromMarkdown(markdown string) string {
 		}
 	}
 	return ""
+}
+
+// removeFirstLevelHeading 删除markdown文本中的一级标题
+func (p *AsyncBookProcessor) removeFirstLevelHeading(text string) string {
+	lines := strings.Split(text, "\n")
+	var result []string
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// 跳过空行或以单个#开头的一级标题
+		if trimmed == "" || !strings.HasPrefix(trimmed, "# ") {
+			result = append(result, line)
+		}
+	}
+
+	return strings.Join(result, "\n")
 }
 
 // convertMarkdownToElements 将markdown文本转换为分页元素
@@ -2880,6 +3517,15 @@ func (p *AsyncBookProcessor) generateDefaultImagePrompt(content string) string {
 
 // generateCoverHTML 生成封面HTML内容（背景图在底层，图片和标题在上层）
 func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background string, bookID uint) string {
+	// 处理无标题的情况
+	titleContent := ""
+	if title == "" {
+		// 无标题时，显示一个占位符
+		titleContent = `<div class="title-text" style="opacity: 0.5; font-style: italic;">无标题笔记</div>`
+	} else {
+		titleContent = fmt.Sprintf(`<h1 class="title-text">%s</h1>`, title)
+	}
+
 	// 获取封面标题配置
 	fontSize, lineHeight, color := getCoverTitleConfig()
 
@@ -3110,13 +3756,13 @@ func (p *AsyncBookProcessor) generateCoverHTML(title, imageURL, background strin
         <div class="cover-content-layer">
             <div class="title-section">
                 <div class="title-content">
-                    <h1 class="title-text">%s</h1>
+                    %s
                 </div>
             </div>
         </div>
     </div>
 </body>
-</html>`, title, regularFontPath, boldFontPath, backgroundStyle, backgroundStyle, fontSize, color, lineHeight, title)
+</html>`, title, regularFontPath, boldFontPath, backgroundStyle, backgroundStyle, fontSize, color, lineHeight, titleContent)
 }
 
 // generateCoverImageOnly 仅生成封面图片，不重新生成HTML

@@ -7,6 +7,7 @@ import (
 	"numind-server/internal/numind/biz/wechat"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 	"strconv"
@@ -278,12 +279,25 @@ func (pc *PaymentController) CancelPayment(c *gin.Context) {
 
 // WechatPayNotify 微信支付回调
 func (pc *PaymentController) WechatPayNotify(c *gin.Context) {
+	// 记录回调请求开始
+	log.C(c).Infow("WechatPayNotify callback received",
+		"method", c.Request.Method,
+		"url", c.Request.URL.String(),
+		"remote_addr", c.ClientIP(),
+		"user_agent", c.Request.UserAgent(),
+		"content_type", c.ContentType())
+
 	cfg := getWechatPayConfig()
 	transaction, err := wechat.ParsePayNotify(cfg, c.Request.Context(), c.Request)
 	if err != nil {
+		log.C(c).Errorw("Failed to parse wechat pay notify",
+			"error", err.Error(),
+			"remote_addr", c.ClientIP())
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("回调解析失败: "+err.Error()), nil)
 		return
 	}
+
+	log.C(c).Infow("Wechat pay notify parsed successfully")
 
 	// 从微信支付回调中提取订单信息
 	// 根据微信支付官方文档，Transaction结构包含以下字段：
@@ -296,8 +310,26 @@ func (pc *PaymentController) WechatPayNotify(c *gin.Context) {
 	// 直接使用Transaction对象
 	trans := transaction
 
+	// 记录交易状态
+	if trans.TradeState != nil {
+		log.C(c).Infow("Trade state received", "trade_state", *trans.TradeState)
+	} else {
+		log.C(c).Warnw("Trade state is nil")
+	}
+
 	// 检查交易状态
 	if trans.TradeState == nil || *trans.TradeState != "SUCCESS" {
+		tradeState := "nil"
+		if trans.TradeState != nil {
+			tradeState = *trans.TradeState
+		}
+		outTradeNoForLog := ""
+		if trans.OutTradeNo != nil {
+			outTradeNoForLog = *trans.OutTradeNo
+		}
+		log.C(c).Warnw("Payment not successful",
+			"trade_state", tradeState,
+			"out_trade_no", outTradeNoForLog)
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("支付未成功"), nil)
 		return
 	}
@@ -308,28 +340,68 @@ func (pc *PaymentController) WechatPayNotify(c *gin.Context) {
 
 	if trans.OutTradeNo != nil {
 		outTradeNo = *trans.OutTradeNo
+		log.C(c).Infow("Out trade no extracted", "out_trade_no", outTradeNo)
+	} else {
+		log.C(c).Warnw("Out trade no is nil")
 	}
+
 	if trans.TransactionId != nil {
 		transactionID = *trans.TransactionId
+		log.C(c).Infow("Transaction ID extracted", "transaction_id", transactionID)
+	} else {
+		log.C(c).Warnw("Transaction ID is nil")
 	}
+
 	if trans.SuccessTime != nil {
 		// 解析微信支付的时间格式 "2023-12-01T12:00:00+08:00"
 		if t, err := time.Parse(time.RFC3339, *trans.SuccessTime); err == nil {
 			paidAt = &t
+			log.C(c).Infow("Success time parsed", "paid_at", paidAt)
+		} else {
+			log.C(c).Warnw("Failed to parse success time",
+				"success_time", *trans.SuccessTime,
+				"error", err.Error())
 		}
+	} else {
+		log.C(c).Warnw("Success time is nil")
+	}
+
+	// 记录金额信息（如果有）
+	if trans.Amount != nil && trans.Amount.Total != nil {
+		currency := ""
+		if trans.Amount.Currency != nil {
+			currency = *trans.Amount.Currency
+		}
+		log.C(c).Infow("Payment amount",
+			"total", *trans.Amount.Total,
+			"currency", currency)
 	}
 
 	// 验证必要字段
 	if outTradeNo == "" {
+		log.C(c).Errorw("Out trade no is empty, cannot process payment")
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("订单号为空"), nil)
 		return
 	}
 
 	// 更新支付状态
+	log.C(c).Infow("Starting to update payment status",
+		"out_trade_no", outTradeNo,
+		"status", model.PaymentStatusSuccess,
+		"transaction_id", transactionID)
+
 	if err := pc.b.Payments().UpdatePaymentStatus(c, outTradeNo, model.PaymentStatusSuccess, transactionID, paidAt); err != nil {
+		log.C(c).Errorw("Failed to update payment status",
+			"error", err.Error(),
+			"out_trade_no", outTradeNo,
+			"transaction_id", transactionID)
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("更新支付状态失败: "+err.Error()), nil)
 		return
 	}
+
+	log.C(c).Infow("Payment status updated successfully",
+		"out_trade_no", outTradeNo,
+		"transaction_id", transactionID)
 
 	core.WriteResponse(c, nil, gin.H{"code": "SUCCESS", "message": "成功"})
 }

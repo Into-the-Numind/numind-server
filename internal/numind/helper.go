@@ -1,9 +1,12 @@
 package numind
 
 import (
+	"context"
 	"fmt"
+	configbiz "numind-server/internal/numind/biz/config"
 	"numind-server/internal/numind/config"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/redis"
 	"numind-server/internal/pkg/util"
 	"os"
 	"path/filepath"
@@ -105,7 +108,33 @@ func initStore() error {
 		return err
 	}
 
-	_ = store.NewStore(ins)
+	storeInstance := store.NewStore(ins)
+
+	// 初始化Redis
+	if err := redis.Init(); err != nil {
+		log.Warnw("Failed to initialize Redis", "error", err)
+		// Redis初始化失败不影响应用启动，但配置缓存功能将不可用
+	} else {
+		log.Infow("Redis initialized successfully")
+	}
+
+	// 同步系统配置（启动时自动同步）
+	ctx := context.Background()
+	configBiz := configbiz.New(storeInstance)
+	if err := configBiz.InitDefaultConfigs(ctx); err != nil {
+		log.Warnw("Failed to sync system configs", "error", err)
+		// 配置同步失败不影响应用启动
+	} else {
+		log.Infow("System configs synchronized successfully")
+	}
+
+	// 启动配置变更监听器
+	if err := configBiz.StartConfigChangeListener(ctx); err != nil {
+		log.Warnw("Failed to start config change listener", "error", err)
+		// 监听器启动失败不影响应用启动
+	} else {
+		log.Infow("Config change listener started successfully")
+	}
 
 	return nil
 }
@@ -126,6 +155,8 @@ func autoMigrate(db *gorm.DB) error {
 
 	// 2. 自动迁移所有模型
 	log.Infow("Starting database schema migration...")
+
+	// 先迁移基础表
 	err := db.AutoMigrate(
 		&model.User{},
 		&model.CategoryM{},
@@ -144,11 +175,69 @@ func autoMigrate(db *gorm.DB) error {
 		&model.ChatMessage{},
 		&model.AccountRecord{},
 		&model.PaymentM{},
+		&model.Admin{},
 	)
 	if err != nil {
-		return fmt.Errorf("failed to migrate database: %v", err)
+		return fmt.Errorf("failed to migrate basic tables: %v", err)
 	}
-	log.Infow("Database schema migration completed")
+
+	// 单独迁移SOP相关表，按依赖顺序分步骤创建
+	log.Infow("Migrating SOP tables...")
+
+	// 第一步：创建模板表（无外键依赖）
+	if err := db.AutoMigrate(&model.SopTemplate{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_template: %v", err)
+	}
+
+	// 第二步：创建节点表（依赖模板表）
+	if err := db.AutoMigrate(&model.SopNode{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_node: %v", err)
+	}
+
+	// 第三步：创建执行记录表（依赖模板表和用户表）
+	if err := db.AutoMigrate(&model.SopRun{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_run: %v", err)
+	}
+
+	// 第四步：创建节点执行记录表（依赖上面所有表）
+	if err := db.AutoMigrate(&model.SopNodeRun{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_node_run: %v", err)
+	}
+
+	// 修复 sop_node_run 表的 input 和 output 字段类型（从 TEXT 改为 LONGTEXT）
+	// 注意：GORM的AutoMigrate可能不会自动修改字段类型，需要手动修复
+	if err := fixSopNodeRunTextFields(db); err != nil {
+		log.Warnw("Failed to fix sop_node_run text fields, continuing", "error", err)
+		// 不返回错误，继续执行，因为可能是字段已经是正确的类型
+	} else {
+		log.Infow("Sop_node_run text fields fixed successfully")
+	}
+
+	// 第五步：创建笔记表（依赖执行记录表）
+	if err := db.AutoMigrate(&model.SopNote{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_note: %v", err)
+	}
+
+	// 第六步：创建文件表（依赖执行记录表和节点表）
+	if err := db.AutoMigrate(&model.SopFile{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_file: %v", err)
+	}
+
+	// 修复 sop_file 表的 file_type 字段长度（从 50 增加到 255）
+	if err := fixSopFileFields(db); err != nil {
+		log.Warnw("Failed to fix sop_file fields, continuing", "error", err)
+	} else {
+		log.Infow("Sop_file fields fixed successfully")
+	}
+
+	// 第七步：创建对话消息表（依赖执行记录表和用户表）
+	if err := db.AutoMigrate(&model.SopChatMsg{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_chat_message: %v", err)
+	}
+
+	log.Infow("SOP tables migration completed")
+
+	log.Infow("All database schema migration completed")
 
 	// 3. 迁移后强制再次确保字符集正确
 	log.Infow("Post-migration charset verification and repair...")
@@ -304,6 +393,149 @@ func forceFixChatMessageTable(db *gorm.DB, charsetConfig *config.DatabaseCharset
 		} else {
 			log.Infow("Field charset updated", "field", field)
 		}
+	}
+
+	return nil
+}
+
+// fixSopNodeRunTextFields 修复 sop_node_run 表的 input 和 output 字段类型
+// 将 TEXT 类型改为 LONGTEXT 以支持超长文本
+func fixSopNodeRunTextFields(db *gorm.DB) error {
+	tableName := "sop_node_run"
+
+	// 检查表是否存在
+	var count int64
+	err := db.Raw(`
+		SELECT COUNT(*) 
+		FROM information_schema.TABLES 
+		WHERE TABLE_SCHEMA = DATABASE() 
+			AND TABLE_NAME = ?
+	`, tableName).Scan(&count).Error
+
+	if err != nil {
+		return fmt.Errorf("failed to check table existence: %v", err)
+	}
+
+	if count == 0 {
+		log.Infow("Table does not exist, skipping text fields fix", "table", tableName)
+		return nil
+	}
+
+	// 检查字段当前类型
+	var inputType, outputType, thinkingType string
+	err = db.Raw(`
+		SELECT DATA_TYPE 
+		FROM information_schema.COLUMNS 
+		WHERE TABLE_SCHEMA = DATABASE() 
+			AND TABLE_NAME = ? 
+			AND COLUMN_NAME = 'input'
+	`, tableName).Scan(&inputType).Error
+
+	if err != nil {
+		return fmt.Errorf("failed to check input field type: %v", err)
+	}
+
+	err = db.Raw(`
+		SELECT DATA_TYPE 
+		FROM information_schema.COLUMNS 
+		WHERE TABLE_SCHEMA = DATABASE() 
+			AND TABLE_NAME = ? 
+			AND COLUMN_NAME = 'output'
+	`, tableName).Scan(&outputType).Error
+
+	if err != nil {
+		return fmt.Errorf("failed to check output field type: %v", err)
+	}
+
+	// 检查 thinking 字段是否存在
+	var thinkingExists int64
+	err = db.Raw(`
+		SELECT COUNT(*) 
+		FROM information_schema.COLUMNS 
+		WHERE TABLE_SCHEMA = DATABASE() 
+			AND TABLE_NAME = ? 
+			AND COLUMN_NAME = 'thinking'
+	`, tableName).Scan(&thinkingExists).Error
+
+	if err == nil && thinkingExists > 0 {
+		err = db.Raw(`
+			SELECT DATA_TYPE 
+			FROM information_schema.COLUMNS 
+			WHERE TABLE_SCHEMA = DATABASE() 
+				AND TABLE_NAME = ? 
+				AND COLUMN_NAME = 'thinking'
+		`, tableName).Scan(&thinkingType).Error
+		if err != nil {
+			return fmt.Errorf("failed to check thinking field type: %v", err)
+		}
+	}
+
+	// 如果字段类型不是 LONGTEXT，则修改
+	if inputType != "longtext" {
+		log.Infow("Fixing input field type", "from", inputType, "to", "longtext")
+		if err := db.Exec(`
+			ALTER TABLE ` + tableName + ` 
+			MODIFY COLUMN input LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+		`).Error; err != nil {
+			return fmt.Errorf("failed to modify input field: %v", err)
+		}
+		log.Infow("Input field type fixed successfully")
+	}
+
+	if outputType != "longtext" {
+		log.Infow("Fixing output field type", "from", outputType, "to", "longtext")
+		if err := db.Exec(`
+			ALTER TABLE ` + tableName + ` 
+			MODIFY COLUMN output LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+		`).Error; err != nil {
+			return fmt.Errorf("failed to modify output field: %v", err)
+		}
+		log.Infow("Output field type fixed successfully")
+	}
+
+	// 如果 thinking 字段存在但类型不是 LONGTEXT，则修改
+	if thinkingExists > 0 && thinkingType != "longtext" {
+		log.Infow("Fixing thinking field type", "from", thinkingType, "to", "longtext")
+		if err := db.Exec(`
+			ALTER TABLE ` + tableName + ` 
+			MODIFY COLUMN thinking LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+		`).Error; err != nil {
+			return fmt.Errorf("failed to modify thinking field: %v", err)
+		}
+		log.Infow("Thinking field type fixed successfully")
+	}
+
+	return nil
+}
+
+// fixSopFileFields 修复 sop_file 表的字段长度
+func fixSopFileFields(db *gorm.DB) error {
+	tableName := "sop_file"
+
+	// 检查表是否存在
+	var count int64
+	err := db.Raw(`
+		SELECT COUNT(*) 
+		FROM information_schema.TABLES 
+		WHERE TABLE_SCHEMA = DATABASE() 
+			AND TABLE_NAME = ?
+	`, tableName).Scan(&count).Error
+
+	if err != nil {
+		return fmt.Errorf("failed to check table existence: %v", err)
+	}
+
+	if count == 0 {
+		return nil
+	}
+
+	// 强制修改 file_type 字段长度为 255
+	log.Infow("Ensuring file_type column length is 255", "table", tableName)
+	if err := db.Exec(`
+		ALTER TABLE ` + tableName + ` 
+		MODIFY COLUMN file_type VARCHAR(255)
+	`).Error; err != nil {
+		return fmt.Errorf("failed to modify file_type field: %v", err)
 	}
 
 	return nil

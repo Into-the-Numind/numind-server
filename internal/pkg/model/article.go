@@ -21,7 +21,7 @@ type ArticleM struct {
 	CategoryAt       time.Time `json:"category_at"`
 
 	// 关联关系
-	User      User       `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	User      User       `gorm:"foreignKey:UserID;references:ID" json:"user,omitempty"`
 	Category  *CategoryM `gorm:"foreignKey:CategoryID" json:"category,omitempty"`
 	Favorites []Favorite `gorm:"foreignKey:ArticleID" json:"favorites,omitempty"`
 }

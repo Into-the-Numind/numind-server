@@ -24,7 +24,7 @@ import (
 
 // ChatController 是 chat 模块在 Controller 层的实现
 type ChatController struct {
-	b biz.IBiz
+	b       biz.IBiz
 	chatBiz chat.ChatBiz
 }
 
@@ -166,27 +166,65 @@ func (ctrl *ChatController) WebSocket(c *gin.Context) {
 		// 设置时间戳
 		wsMsg.Timestamp = time.Now()
 
-		// 处理消息
-		response, err := ctrl.chatBiz.ProcessWebSocketMessage(c.Request.Context(), userID, &wsMsg)
-		if err != nil {
-			log.Errorw("Failed to process WebSocket message", "error", err)
-			response = &model.WebSocketMessage{
-				Type:      "error",
-				Error:     err.Error(),
-				Timestamp: time.Now(),
+		// 统一请求结构：支持 question 和 book_ids（与HTTP保持一致）
+		// 如果提供了 Content 和 BookID（旧格式），转换为新格式
+		if wsMsg.Question == "" && wsMsg.Content != "" {
+			wsMsg.Question = wsMsg.Content
+		}
+		if len(wsMsg.BookIDs) == 0 && wsMsg.BookID != nil {
+			wsMsg.BookIDs = []uint{*wsMsg.BookID}
+		}
+
+		// 自动判断消息类型：如果有 question 或 content，且没有指定其他 type，则默认为聊天消息
+		// type 字段可以完全省略，系统会自动判断
+		if wsMsg.Type == "" {
+			if wsMsg.Question != "" || wsMsg.Content != "" {
+				wsMsg.Type = "chat" // 有问题的消息，默认为聊天
 			}
 		}
 
-		// 发送响应
-		responseBytes, err := json.Marshal(response)
-		if err != nil {
-			log.Errorw("Failed to marshal WebSocket response", "error", err)
-			continue
-		}
+		// 处理消息（对于 chat 类型或未指定 type 但有 question 的使用流式处理）
+		if wsMsg.Type == "chat" || wsMsg.Type == "message" || (wsMsg.Type == "" && wsMsg.Question != "") {
+			// 使用流式处理
+			log.Infow("开始处理WebSocket流式消息", "user_id", userID, "question", wsMsg.Question, "book_ids", wsMsg.BookIDs, "session_id", wsMsg.SessionID)
+			_, err := ctrl.chatBiz.ProcessWebSocketMessageStream(c.Request.Context(), userID, &wsMsg, conn)
+			if err != nil {
+				// 记录详细错误日志（包含原始错误信息，用于调试）
+				log.Errorw("Failed to process WebSocket message stream", "error", err, "user_id", userID)
+				// 发送用户友好的错误消息（不暴露内部细节）
+				errorMsg := &model.WebSocketMessage{
+					Type:      "error",
+					Error:     err.Error(), // err.Error() 已经是用户友好的消息（经过 wrapChatError 处理）
+					Timestamp: time.Now(),
+				}
+				errorBytes, _ := json.Marshal(errorMsg)
+				conn.WriteMessage(websocket.TextMessage, errorBytes)
+			} else {
+				log.Infow("WebSocket流式消息处理完成", "user_id", userID)
+			}
+		} else {
+			// 其他类型的消息使用原有逻辑（session, search_books, ping等）
+			response, err := ctrl.chatBiz.ProcessWebSocketMessage(c.Request.Context(), userID, &wsMsg)
+			if err != nil {
+				log.Errorw("Failed to process WebSocket message", "error", err)
+				response = &model.WebSocketMessage{
+					Type:      "error",
+					Error:     err.Error(),
+					Timestamp: time.Now(),
+				}
+			}
 
-		if err := conn.WriteMessage(websocket.TextMessage, responseBytes); err != nil {
-			log.Errorw("Failed to write WebSocket message", "error", err)
-			break
+			// 发送响应
+			responseBytes, err := json.Marshal(response)
+			if err != nil {
+				log.Errorw("Failed to marshal WebSocket response", "error", err)
+				continue
+			}
+
+			if err := conn.WriteMessage(websocket.TextMessage, responseBytes); err != nil {
+				log.Errorw("Failed to write WebSocket message", "error", err)
+				break
+			}
 		}
 	}
 
@@ -211,7 +249,7 @@ func (ctrl *ChatController) CreateSession(c *gin.Context) {
 		return
 	}
 
-	session, err := ctrl.chatBiz.CreateSession(c.Request.Context(), currentUser.ID, req.Title)
+	session, err := ctrl.chatBiz.CreateSession(c.Request.Context(), currentUser.ID, req.Title, nil)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInternalServer, nil)
 		return
@@ -382,4 +420,86 @@ func (ctrl *ChatController) GetSessionWithMessages(c *gin.Context) {
 	}
 
 	core.WriteResponse(c, nil, session)
+}
+
+// GetSessionHistory 获取会话的聊天记录
+func (ctrl *ChatController) GetSessionHistory(c *gin.Context) {
+	// 从认证中间件中获取用户信息
+	currentUser := middleware.GetCurrentUser(c)
+	if currentUser == nil {
+		core.WriteResponse(c, errno.ErrUnauthorized, nil)
+		return
+	}
+
+	// 获取会话ID
+	sessionIDStr := c.Param("session_id")
+	sessionID, err := strconv.ParseUint(sessionIDStr, 10, 32)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的会话ID"), nil)
+		return
+	}
+
+	// 获取limit参数（可选，默认50）
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+
+	// 获取offset参数（可选，默认0）
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if offset < 0 {
+		offset = 0
+	}
+
+	// 获取聊天记录
+	session, messages, total, err := ctrl.chatBiz.GetSessionHistory(c.Request.Context(), currentUser.ID, uint(sessionID), offset, limit)
+	if err != nil {
+		log.C(c).Errorw("获取会话聊天记录失败", "error", err, "session_id", sessionID)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("获取会话聊天记录失败: %s", err.Error()), nil)
+		return
+	}
+
+	// 构建响应
+	response := gin.H{
+		"session":  session,
+		"messages": messages,
+		"total":    total,
+		"offset":   offset,
+		"limit":    limit,
+	}
+
+	core.WriteResponse(c, nil, response)
+}
+
+// ListBookSessions 列出笔记的所有会话
+func (ctrl *ChatController) ListBookSessions(c *gin.Context) {
+	// 从认证中间件中获取用户信息
+	currentUser := middleware.GetCurrentUser(c)
+	if currentUser == nil {
+		core.WriteResponse(c, errno.ErrUnauthorized, nil)
+		return
+	}
+
+	// 获取笔记ID
+	bookIDStr := c.Param("book_id")
+	bookID, err := strconv.ParseUint(bookIDStr, 10, 32)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind, nil)
+		return
+	}
+
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+
+	sessions, total, err := ctrl.chatBiz.ListSessionsByBook(c.Request.Context(), currentUser.ID, uint(bookID), offset, limit)
+	if err != nil {
+		log.C(c).Errorw("列出笔记会话失败", "error", err, "book_id", bookID)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("列出笔记会话失败: %s", err.Error()), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"total":    total,
+		"sessions": sessions,
+	})
 }

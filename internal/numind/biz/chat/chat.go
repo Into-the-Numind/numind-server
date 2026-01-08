@@ -2,20 +2,27 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"numind-server/internal/numind/biz/book"
+	"numind-server/internal/numind/biz/ali"
+	"numind-server/internal/numind/biz/rag"
 	"numind-server/internal/numind/biz/user"
+	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+
+	"github.com/gorilla/websocket"
+	"gorm.io/gorm"
 )
 
 // ChatBiz 定义了对话相关的业务逻辑接口
 type ChatBiz interface {
-	CreateSession(ctx context.Context, userID uint, title string) (*model.ChatSession, error)
+	CreateSession(ctx context.Context, userID uint, title string, bookID *uint) (*model.ChatSession, error)
 	GetSession(ctx context.Context, sessionID uint, userID uint) (*model.ChatSession, error)
 	ListSessions(ctx context.Context, userID uint, offset, limit int) ([]*model.ChatSession, int64, error)
 	UpdateSession(ctx context.Context, sessionID uint, userID uint, title string) error
@@ -29,37 +36,104 @@ type ChatBiz interface {
 
 	GetSessionWithMessages(ctx context.Context, sessionID uint, userID uint) (*model.ChatSession, error)
 
+	// 新增：根据笔记ID获取或创建会话
+	GetOrCreateSessionByBook(ctx context.Context, userID uint, bookID uint, title string) (*model.ChatSession, error)
+
+	// 新增：获取笔记的聊天记录（已废弃，请使用 GetSessionHistory）
+	GetBookChatHistory(ctx context.Context, userID uint, bookID uint, limit int) (*model.ChatSession, []*model.ChatMessage, error)
+
+	// 新增：列出笔记的所有会话
+	ListSessionsByBook(ctx context.Context, userID uint, bookID uint, offset, limit int) ([]*model.ChatSession, int64, error)
+
+	// 新增：获取会话的聊天记录
+	GetSessionHistory(ctx context.Context, userID uint, sessionID uint, offset, limit int) (*model.ChatSession, []*model.ChatMessage, int64, error)
+
 	// WebSocket相关方法
 	ProcessWebSocketMessage(ctx context.Context, userID uint, msg *model.WebSocketMessage) (*model.WebSocketMessage, error)
+	ProcessWebSocketMessageStream(ctx context.Context, userID uint, msg *model.WebSocketMessage, conn *websocket.Conn) (*model.WebSocketMessage, error)
 	GenerateAssistantResponse(ctx context.Context, userMessage string) (string, error)
 }
 
 // chatBiz 是 ChatBiz 的具体实现
 type chatBiz struct {
-	ds            store.IStore
-	userBiz       user.UserBiz
-	searchService *book.SearchService
+	ds         store.IStore
+	userBiz    user.UserBiz
+	ragService *rag.RagService
+	aliBiz     ali.AliBiz
+	volcBiz    volc.VolcBiz
 }
 
 // New 创建一个新的 ChatBiz 实例
-func New(ds store.IStore, userBiz user.UserBiz) ChatBiz {
+func New(ds store.IStore, userBiz user.UserBiz, aliBiz ali.AliBiz, volcBiz volc.VolcBiz, ragService *rag.RagService) ChatBiz {
 	return &chatBiz{
-		ds:            ds,
-		userBiz:       userBiz,
-		searchService: book.NewSearchService(),
+		ds:         ds,
+		userBiz:    userBiz,
+		ragService: ragService,
+		aliBiz:     aliBiz,
+		volcBiz:    volcBiz,
 	}
 }
 
+// wrapChatError 将内部错误包装为用户友好的错误消息
+// 避免暴露数据库内部细节（如表名、外键约束等）
+func wrapChatError(err error, operation string) error {
+	if err == nil {
+		return nil
+	}
+
+	errStr := err.Error()
+
+	// 检查是否是记录不存在错误（这是业务逻辑错误，可以返回具体消息）
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		if strings.Contains(operation, "session") {
+			return fmt.Errorf("对话会话不存在")
+		}
+		if strings.Contains(operation, "book") || strings.Contains(operation, "笔记") {
+			return fmt.Errorf("笔记不存在")
+		}
+		return fmt.Errorf("资源不存在")
+	}
+
+	// 检查是否是权限错误（这是业务逻辑错误，可以返回具体消息）
+	if strings.Contains(errStr, "unauthorized") || strings.Contains(errStr, "forbidden") {
+		return fmt.Errorf("无权访问该资源")
+	}
+
+	// 对于已知的业务错误，直接返回（这些错误消息已经是用户友好的）
+	if strings.Contains(errStr, "笔记不存在") ||
+		strings.Contains(errStr, "无权访问") ||
+		strings.Contains(errStr, "对话会话不存在") ||
+		strings.Contains(errStr, "资源不存在") {
+		return err
+	}
+
+	// 所有数据库相关错误（外键约束、连接错误、SQL错误等）统一返回内部错误
+	if strings.Contains(errStr, "foreign key") ||
+		strings.Contains(errStr, "1452") ||
+		strings.Contains(errStr, "23000") ||
+		strings.Contains(errStr, "Cannot add or update") ||
+		strings.Contains(errStr, "database") ||
+		strings.Contains(errStr, "sql") ||
+		strings.Contains(errStr, "connection") ||
+		strings.Contains(errStr, "timeout") {
+		return fmt.Errorf("内部错误，请稍后重试")
+	}
+
+	// 未知错误，返回通用错误消息
+	return fmt.Errorf("内部错误，请稍后重试")
+}
+
 // CreateSession 创建新的对话会话
-func (b *chatBiz) CreateSession(ctx context.Context, userID uint, title string) (*model.ChatSession, error) {
+func (b *chatBiz) CreateSession(ctx context.Context, userID uint, title string, bookID *uint) (*model.ChatSession, error) {
 	session := &model.ChatSession{
 		UserID: userID,
+		BookID: bookID,
 		Title:  title,
 		Status: "active",
 	}
 
 	if err := b.ds.Chats().CreateSession(ctx, session); err != nil {
-		return nil, fmt.Errorf("failed to create session: %w", err)
+		return nil, wrapChatError(err, "create session")
 	}
 
 	return session, nil
@@ -69,12 +143,12 @@ func (b *chatBiz) CreateSession(ctx context.Context, userID uint, title string) 
 func (b *chatBiz) GetSession(ctx context.Context, sessionID uint, userID uint) (*model.ChatSession, error) {
 	session, err := b.ds.Chats().GetSession(ctx, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get session: %w", err)
+		return nil, wrapChatError(err, "get session")
 	}
 
 	// 验证用户权限
 	if session.UserID != userID {
-		return nil, fmt.Errorf("unauthorized access to session")
+		return nil, wrapChatError(fmt.Errorf("unauthorized access to session"), "get session")
 	}
 
 	return session, nil
@@ -124,7 +198,7 @@ func (b *chatBiz) CreateMessage(ctx context.Context, sessionID uint, userID uint
 	}
 
 	if err := b.ds.Chats().CreateMessage(ctx, message); err != nil {
-		return nil, fmt.Errorf("failed to create message: %w", err)
+		return nil, wrapChatError(err, "create message")
 	}
 
 	// 更新会话的消息数量
@@ -194,11 +268,103 @@ func (b *chatBiz) GetSessionWithMessages(ctx context.Context, sessionID uint, us
 	return b.ds.Chats().GetSessionWithMessages(ctx, sessionID)
 }
 
-// ProcessWebSocketMessage 处理WebSocket消息
+// GetOrCreateSessionByBook 根据笔记ID获取或创建会话
+func (b *chatBiz) GetOrCreateSessionByBook(ctx context.Context, userID uint, bookID uint, title string) (*model.ChatSession, error) {
+	// 先尝试获取现有会话
+	session, err := b.ds.Chats().GetSessionByBookID(ctx, userID, bookID)
+	if err == nil {
+		return session, nil
+	}
+
+	// 如果不存在，创建新会话
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// 如果没有提供标题，使用笔记标题
+		if title == "" {
+			book, err := b.ds.Books().GetByID(ctx, bookID)
+			if err == nil {
+				title = book.Title + " - AI对话"
+			} else {
+				// 如果获取笔记失败，可能是笔记不存在
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil, wrapChatError(err, "get book for session")
+				}
+				title = "AI对话"
+			}
+		}
+
+		bookIDPtr := &bookID
+		session, err := b.CreateSession(ctx, userID, title, bookIDPtr)
+		if err != nil {
+			return nil, wrapChatError(err, "create session by book")
+		}
+
+		return session, nil
+	}
+
+	return nil, wrapChatError(err, "get session by book")
+}
+
+// GetBookChatHistory 获取笔记的聊天记录
+func (b *chatBiz) GetBookChatHistory(ctx context.Context, userID uint, bookID uint, limit int) (*model.ChatSession, []*model.ChatMessage, error) {
+	// 验证笔记属于用户
+	book, err := b.ds.Books().GetByID(ctx, bookID)
+	if err != nil {
+		return nil, nil, wrapChatError(err, "get book for chat history")
+	}
+
+	if book.UserID != userID {
+		return nil, nil, wrapChatError(fmt.Errorf("unauthorized access to book"), "get book chat history")
+	}
+
+	// 获取聊天记录
+	session, messages, err := b.ds.Chats().GetBookChatHistory(ctx, userID, bookID, limit)
+	if err != nil {
+		return nil, nil, wrapChatError(err, "get book chat history")
+	}
+
+	return session, messages, nil
+}
+
+// GetSessionHistory 获取会话的聊天记录
+func (b *chatBiz) GetSessionHistory(ctx context.Context, userID uint, sessionID uint, offset, limit int) (*model.ChatSession, []*model.ChatMessage, int64, error) {
+	// 获取会话信息并验证权限
+	session, err := b.GetSession(ctx, sessionID, userID)
+	if err != nil {
+		return nil, nil, 0, wrapChatError(err, "get session")
+	}
+
+	// 获取该会话的所有消息
+	messages, total, err := b.ds.Chats().ListMessages(ctx, sessionID, offset, limit)
+	if err != nil {
+		return nil, nil, 0, wrapChatError(err, "list messages")
+	}
+
+	return session, messages, total, nil
+}
+
+// ListSessionsByBook 列出笔记的所有会话
+func (b *chatBiz) ListSessionsByBook(ctx context.Context, userID uint, bookID uint, offset, limit int) ([]*model.ChatSession, int64, error) {
+	// 验证笔记属于用户
+	book, err := b.ds.Books().GetByID(ctx, bookID)
+	if err != nil {
+		return nil, 0, wrapChatError(err, "get book for sessions")
+	}
+
+	if book.UserID != userID {
+		return nil, 0, wrapChatError(fmt.Errorf("unauthorized access to book"), "list sessions by book")
+	}
+
+	return b.ds.Chats().ListSessionsByBookID(ctx, userID, bookID, offset, limit)
+}
+
+// ProcessWebSocketMessage 处理WebSocket消息（非流式，用于非聊天消息）
 func (b *chatBiz) ProcessWebSocketMessage(ctx context.Context, userID uint, msg *model.WebSocketMessage) (*model.WebSocketMessage, error) {
-	switch msg.Type {
-	case "message":
+	// 如果 type 为空或 "chat"，且提供了 question，则视为聊天消息
+	if (msg.Type == "" || msg.Type == "chat" || msg.Type == "message") && msg.Question != "" {
 		return b.handleChatMessage(ctx, userID, msg)
+	}
+
+	switch msg.Type {
 	case "session":
 		return b.handleSessionMessage(ctx, userID, msg)
 	case "search_books":
@@ -217,20 +383,53 @@ func (b *chatBiz) ProcessWebSocketMessage(ctx context.Context, userID uint, msg 
 	}
 }
 
-// handleChatMessage 处理聊天消息
+// handleChatMessage 处理聊天消息（非流式，保持向后兼容）
 func (b *chatBiz) handleChatMessage(ctx context.Context, userID uint, msg *model.WebSocketMessage) (*model.WebSocketMessage, error) {
-	// 创建或获取会话
+	// 统一请求结构：使用 question 和 book_ids（与HTTP保持一致）
+	question := msg.Question
+	if question == "" {
+		question = msg.Content // 向后兼容：如果没有 question，使用 content
+	}
+
+	if question == "" {
+		return nil, fmt.Errorf("question 不能为空")
+	}
+
+	bookIDs := msg.BookIDs
+	if len(bookIDs) == 0 && msg.BookID != nil {
+		// 向后兼容：如果只有 bookID，转换为 book_ids 数组
+		bookIDs = []uint{*msg.BookID}
+	}
+
+	if len(bookIDs) == 0 {
+		return nil, fmt.Errorf("book_ids 不能为空")
+	}
+
+	// 创建或获取会话（使用第一个笔记ID作为会话关联）
+	// 如果是第一次对话（未提供 session_id），系统会自动创建新会话
 	var sessionID uint
+	var session *model.ChatSession
+	var err error
+
 	if msg.SessionID == 0 {
-		// 创建新会话
-		session, err := b.CreateSession(ctx, userID, "新对话")
+		// 第一次对话，自动创建新会话
+		bookID := bookIDs[0] // 使用第一个笔记ID
+		var sessionTitle string
+		if len(bookIDs) == 1 {
+			sessionTitle = "" // 使用默认标题
+		} else {
+			sessionTitle = fmt.Sprintf("多笔记对话（%d篇笔记）", len(bookIDs))
+		}
+		// 使用GetOrCreateSessionByBook确保同一笔记使用同一个会话
+		session, err = b.GetOrCreateSessionByBook(ctx, userID, bookID, sessionTitle)
 		if err != nil {
 			return nil, err
 		}
 		sessionID = session.ID
+		log.C(ctx).Infow("自动创建新会话", "session_id", sessionID, "user_id", userID, "book_id", bookID)
 	} else {
 		// 验证现有会话
-		session, err := b.GetSession(ctx, msg.SessionID, userID)
+		session, err = b.GetSession(ctx, msg.SessionID, userID)
 		if err != nil {
 			return nil, err
 		}
@@ -238,15 +437,22 @@ func (b *chatBiz) handleChatMessage(ctx context.Context, userID uint, msg *model
 	}
 
 	// 保存用户消息
-	_, err := b.CreateMessage(ctx, sessionID, userID, msg.Content, "user")
+	_, err = b.CreateMessage(ctx, sessionID, userID, question, "user")
 	if err != nil {
 		return nil, err
 	}
 
-	// 生成助手回复
-	assistantContent, err := b.GenerateAssistantResponse(ctx, msg.Content)
-	if err != nil {
-		return nil, err
+	// 使用 RagService 生成助手回复（支持多笔记）
+	var assistantContent string
+	if b.ragService != nil {
+		assistantContent, err = b.ragService.ChatWithRAG(ctx, userID, question, bookIDs)
+		if err != nil {
+			log.C(ctx).Errorw("RAG生成回答失败", "error", err)
+			assistantContent = "抱歉，生成回答时遇到了一些问题，请稍后重试。"
+		}
+	} else {
+		// 如果 RagService 未初始化，返回提示
+		assistantContent = "RAG服务未初始化，请稍后重试。"
 	}
 
 	// 保存助手消息
@@ -262,13 +468,201 @@ func (b *chatBiz) handleChatMessage(ctx context.Context, userID uint, msg *model
 	}
 
 	return &model.WebSocketMessage{
-		Type:      "message",
+		Type:      "message_done",
 		SessionID: sessionID,
 		MessageID: assistantMessage.ID,
 		Content:   assistantContent,
 		Role:      "assistant",
 		Timestamp: time.Now(),
 	}, nil
+}
+
+// handleChatMessageStream 处理聊天消息（流式）
+func (b *chatBiz) handleChatMessageStream(ctx context.Context, userID uint, msg *model.WebSocketMessage, conn *websocket.Conn) (*model.WebSocketMessage, error) {
+	// 统一请求结构：使用 question 和 book_ids（与HTTP保持一致）
+	question := msg.Question
+	if question == "" {
+		question = msg.Content // 向后兼容：如果没有 question，使用 content
+	}
+
+	if question == "" {
+		return nil, fmt.Errorf("question 不能为空")
+	}
+
+	bookIDs := msg.BookIDs
+	if len(bookIDs) == 0 && msg.BookID != nil {
+		// 向后兼容：如果只有 bookID，转换为 book_ids 数组
+		bookIDs = []uint{*msg.BookID}
+	}
+
+	if len(bookIDs) == 0 {
+		return nil, fmt.Errorf("book_ids 不能为空")
+	}
+
+	// 创建或获取会话（使用第一个笔记ID作为会话关联）
+	// 如果是第一次对话（未提供 session_id），系统会自动创建新会话
+	var sessionID uint
+	var session *model.ChatSession
+	var err error
+
+	if msg.SessionID == 0 {
+		// 第一次对话，自动创建新会话
+		bookID := bookIDs[0] // 使用第一个笔记ID
+		var sessionTitle string
+		if len(bookIDs) == 1 {
+			sessionTitle = "" // 使用默认标题
+		} else {
+			sessionTitle = fmt.Sprintf("多笔记对话（%d篇笔记）", len(bookIDs))
+		}
+		// 使用GetOrCreateSessionByBook确保同一笔记使用同一个会话
+		session, err = b.GetOrCreateSessionByBook(ctx, userID, bookID, sessionTitle)
+		if err != nil {
+			return nil, err
+		}
+		sessionID = session.ID
+		log.C(ctx).Infow("自动创建新会话", "session_id", sessionID, "user_id", userID, "book_id", bookID)
+
+		// 如果是新创建的会话，立即通知客户端（在开始发送消息块之前）
+		sessionCreatedMsg := &model.WebSocketMessage{
+			Type:      "session_created",
+			SessionID: sessionID,
+			Data: map[string]interface{}{
+				"session_id": sessionID,
+				"title":      session.Title,
+				"book_id":    session.BookID,
+				"book_ids":   bookIDs,
+			},
+			Timestamp: time.Now(),
+		}
+		sessionCreatedBytes, _ := json.Marshal(sessionCreatedMsg)
+		if err := conn.WriteMessage(websocket.TextMessage, sessionCreatedBytes); err != nil {
+			log.C(ctx).Errorw("发送会话创建通知失败", "error", err)
+			// 不返回错误，继续处理消息
+		} else {
+			log.C(ctx).Infow("✅ 已发送session_created消息", "session_id", sessionID)
+		}
+	} else {
+		// 验证现有会话
+		session, err = b.GetSession(ctx, msg.SessionID, userID)
+		if err != nil {
+			return nil, err
+		}
+		sessionID = session.ID
+	}
+
+	// 保存用户消息（如果保存失败，记录错误但继续处理，因为助手消息更重要）
+	_, err = b.CreateMessage(ctx, sessionID, userID, question, "user")
+	if err != nil {
+		log.C(ctx).Errorw("保存用户消息失败", "error", err, "session_id", sessionID)
+		// 不返回错误，继续处理，因为助手消息更重要
+	}
+
+	// 使用 RagService 生成流式回答（支持多笔记）
+	var fullResponse strings.Builder
+
+	// 检查 RagService 是否可用
+	if b.ragService == nil {
+		log.C(ctx).Errorw("RagService 未初始化，无法生成回答")
+		errorMsg := &model.WebSocketMessage{
+			Type:      "error",
+			SessionID: sessionID, // 确保错误消息也包含session_id
+			Error:     "RAG服务未初始化，请稍后重试",
+			Timestamp: time.Now(),
+		}
+		errorBytes, _ := json.Marshal(errorMsg)
+		conn.WriteMessage(websocket.TextMessage, errorBytes)
+		return nil, fmt.Errorf("RAG服务未初始化")
+	}
+
+	// 获取深度思考参数
+	deepThinking := msg.DeepThinking
+	log.C(ctx).Infow("开始调用RAG流式服务", "session_id", sessionID, "question", question, "book_ids", bookIDs, "deep_thinking", deepThinking)
+
+	// 使用 RagService 的流式方法，支持多笔记
+	err = b.ragService.ChatWithRAGStream(
+		ctx,
+		userID,
+		question,
+		bookIDs,      // 直接传递所有笔记ID
+		deepThinking, // 传递深度思考参数
+		func(chunk string) error {
+			// 累积完整回答
+			fullResponse.WriteString(chunk)
+
+			// 实时发送chunk给客户端
+			chunkMsg := &model.WebSocketMessage{
+				Type:      "message_chunk",
+				SessionID: sessionID,
+				Content:   chunk,
+				Role:      "assistant",
+				Timestamp: time.Now(),
+			}
+
+			chunkBytes, err := json.Marshal(chunkMsg)
+			if err != nil {
+				log.C(ctx).Errorw("序列化chunk消息失败", "error", err)
+				return err
+			}
+
+			if err := conn.WriteMessage(websocket.TextMessage, chunkBytes); err != nil {
+				log.C(ctx).Errorw("发送chunk消息失败", "error", err)
+				return err
+			}
+
+			return nil
+		},
+	)
+
+	if err == nil {
+		log.C(ctx).Infow("RAG流式服务调用完成", "session_id", sessionID, "response_length", fullResponse.Len())
+	}
+
+	if err != nil {
+		log.C(ctx).Errorw("RAG生成回答失败", "error", err)
+		errorMsg := &model.WebSocketMessage{
+			Type:      "error",
+			SessionID: sessionID, // 确保错误消息也包含session_id
+			Error:     "生成回答失败，请稍后重试",
+			Timestamp: time.Now(),
+		}
+		errorBytes, _ := json.Marshal(errorMsg)
+		conn.WriteMessage(websocket.TextMessage, errorBytes)
+		return nil, err
+	}
+
+	// 保存完整的助手消息
+	assistantContent := fullResponse.String()
+	assistantMessage, err := b.CreateMessage(ctx, sessionID, userID, assistantContent, "assistant")
+	if err != nil {
+		log.C(ctx).Errorw("保存助手消息失败", "error", err)
+	}
+
+	// 发送完成消息
+	doneMsg := &model.WebSocketMessage{
+		Type:      "message_done",
+		SessionID: sessionID,
+		MessageID: assistantMessage.ID,
+		Content:   assistantContent,
+		Role:      "assistant",
+		Timestamp: time.Now(),
+	}
+
+	// 通过WebSocket发送完成消息
+	doneBytes, err := json.Marshal(doneMsg)
+	if err != nil {
+		log.C(ctx).Errorw("序列化完成消息失败", "error", err)
+	} else {
+		if err := conn.WriteMessage(websocket.TextMessage, doneBytes); err != nil {
+			log.C(ctx).Errorw("发送完成消息失败", "error", err)
+		}
+	}
+
+	// AI对话成功后，增加用户的聊天数量
+	if err := b.userBiz.IncrementUserChatNum(ctx, userID); err != nil {
+		log.C(ctx).Errorw("Failed to increment user chat num", "userID", userID, "error", err)
+	}
+
+	return doneMsg, nil
 }
 
 // handleSessionMessage 处理会话相关消息
@@ -281,13 +675,12 @@ func (b *chatBiz) handleSessionMessage(ctx context.Context, userID uint, msg *mo
 	}, nil
 }
 
-// handleBookSearch 处理书籍搜索消息
+// handleBookSearch 处理书籍搜索消息（简化版本，不再使用关键词匹配）
 func (b *chatBiz) handleBookSearch(ctx context.Context, userID uint, msg *model.WebSocketMessage) (*model.WebSocketMessage, error) {
 	log.C(ctx).Infow("Handling book search request", "user_id", userID, "content", msg.Content)
 
-	// 假设我们有一个函数来获取所有书籍
-	// 这里需要根据实际的数据库查询来实现
-	books, err := b.findAllBooks(ctx)
+	// 获取用户的书籍列表（简化实现，不再使用关键词搜索）
+	_, books, err := b.ds.Books().ListAll(ctx, 0, 100) // 获取前100本书
 	if err != nil {
 		log.C(ctx).Errorw("Failed to find books", "error", err)
 		return &model.WebSocketMessage{
@@ -297,170 +690,46 @@ func (b *chatBiz) handleBookSearch(ctx context.Context, userID uint, msg *model.
 		}, nil
 	}
 
-	// 使用搜索服务进行关键词匹配
-	searchResults := b.searchService.SearchBooks(ctx, msg.Content, books, 5)
-
-	// 构建搜索结果响应
+	// 简单的标题匹配（不再使用关键词匹配）
 	var searchData []map[string]interface{}
-	for _, book := range searchResults {
-		searchData = append(searchData, map[string]interface{}{
-			"id":          book.ID,
-			"title":       book.Title,
-			"tags":        book.Tags,
-			"keywords":    book.Keywords, // 添加关键词信息
-			"category_id": book.CategoryID,
-			"image_url":   book.ImageUrl,
-			"card_count":  book.CardCount,
-		})
+	for _, book := range books {
+		if len(searchData) >= 5 {
+			break
+		}
+		// 简单的标题包含匹配
+		if strings.Contains(strings.ToLower(book.Title), strings.ToLower(msg.Content)) {
+			searchData = append(searchData, map[string]interface{}{
+				"id":          book.ID,
+				"title":       book.Title,
+				"tags":        book.Tags,
+				"category_id": book.CategoryID,
+				"image_url":   book.ImageUrl,
+				"card_count":  book.CardCount,
+			})
+		}
 	}
 
 	return &model.WebSocketMessage{
 		Type:      "search_books_result",
-		Content:   fmt.Sprintf("找到 %d 本相关书籍", len(searchResults)),
+		Content:   fmt.Sprintf("找到 %d 本相关书籍", len(searchData)),
 		Data:      searchData,
 		Timestamp: time.Now(),
 	}, nil
 }
 
-// findAllBooks 获取所有书籍（这里需要根据实际的数据库查询来实现）
-func (b *chatBiz) findAllBooks(ctx context.Context) ([]*model.BookM, error) {
-	// 使用store层的新方法获取所有书籍
-	// 在实际生产环境中，可能需要实现分页查询或者专门的搜索接口
-
-	// 获取所有状态不为failed的书籍作为搜索范围
-	// 这里可以根据实际需求调整，比如搜索所有公开的书籍
-	_, books, err := b.ds.Books().ListAll(ctx, 0, 1000) // 获取前1000本书
-	if err != nil {
-		log.C(ctx).Errorw("Failed to get books from database", "error", err)
-		return nil, err
-	}
-
-	// 自动为所有书籍生成关键词（如果还没有的话）
-	b.searchService.BatchUpdateKeywords(books)
-
-	log.C(ctx).Infow("Retrieved books for search", "count", len(books))
-	return books, nil
-}
-
-// GenerateAssistantResponse 生成助手回复
+// GenerateAssistantResponse 生成助手回复（已废弃，保留接口兼容性）
+// 现在应该使用 RagService.ChatWithRAG 代替
 func (b *chatBiz) GenerateAssistantResponse(ctx context.Context, userMessage string) (string, error) {
-	// 智能分析用户消息，判断是否需要搜索卡册
-	if b.shouldSearchBooks(userMessage) {
-		// 进行卡册搜索
-		searchResults, err := b.performBookSearch(ctx, userMessage)
-		if err != nil {
-			log.C(ctx).Errorw("Failed to perform book search", "error", err, "query", userMessage)
-			// 搜索失败时返回友好提示
-			return "抱歉，我在搜索卡册时遇到了一些问题。请稍后再试，或者直接告诉我您想要什么类型的卡册。", nil
-		}
-
-		// 根据搜索结果生成回复
-		return b.generateSearchResponse(userMessage, searchResults), nil
-	}
-
-	// 如果不是搜索相关的消息，返回默认回复
-	return b.generateDefaultResponse(userMessage), nil
+	// 返回默认回复（不再使用关键词搜索）
+	return "抱歉，此方法已废弃。请使用基于笔记的 RAG 对话功能。", nil
 }
 
-// shouldSearchBooks 判断用户消息是否需要搜索卡册
-func (b *chatBiz) shouldSearchBooks(userMessage string) bool {
-	// 搜索关键词配置
-	var searchKeywords = []string{
-		"找", "搜索", "查找", "推荐", "有什么", "哪些", "书", "书籍", "卡册", "卡片",
-		"推荐", "建议", "喜欢", "感兴趣", "想看", "想读", "想了解", "想学习",
-		"关于", "有关", "相关", "类似", "相似", "推荐", "介绍", "推荐", "推荐",
+// ProcessWebSocketMessageStream 流式处理WebSocket消息
+func (b *chatBiz) ProcessWebSocketMessageStream(ctx context.Context, userID uint, msg *model.WebSocketMessage, conn *websocket.Conn) (*model.WebSocketMessage, error) {
+	// 处理聊天消息（type为"chat"、"message"或为空）
+	if msg.Type == "chat" || msg.Type == "message" || (msg.Type == "" && msg.Question != "") {
+		return b.handleChatMessageStream(ctx, userID, msg, conn)
 	}
-
-	// 检查用户消息是否包含搜索关键词
-	for _, keyword := range searchKeywords {
-		if strings.Contains(userMessage, keyword) {
-			return true
-		}
-	}
-
-	// 检查消息长度，较长的消息更可能是搜索请求
-	if len(userMessage) > 10 {
-		return true
-	}
-
-	return false
-}
-
-// performBookSearch 执行卡册搜索
-func (b *chatBiz) performBookSearch(ctx context.Context, userMessage string) ([]*model.BookM, error) {
-	// 获取所有书籍
-	books, err := b.findAllBooks(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// 使用搜索服务进行关键词匹配
-	searchResults := b.searchService.SearchBooks(ctx, userMessage, books, 5)
-
-	return searchResults, nil
-}
-
-// generateSearchResponse 根据搜索结果生成回复
-func (b *chatBiz) generateSearchResponse(userMessage string, searchResults []*model.BookM) string {
-	if len(searchResults) == 0 {
-		return fmt.Sprintf("抱歉，我没有找到与\"%s\"相关的卡册。您可以尝试使用其他关键词，或者告诉我您具体想要什么类型的卡册。", userMessage)
-	}
-
-	// 生成个性化回复
-	var response strings.Builder
-	response.WriteString(fmt.Sprintf("根据您的查询\"%s\"，我为您找到了 %d 本相关卡册：\n\n", userMessage, len(searchResults)))
-
-	for i, book := range searchResults {
-		response.WriteString(fmt.Sprintf("%d. **%s**\n", i+1, book.Title))
-
-		// 添加标签信息
-		if book.Tags != "" {
-			response.WriteString(fmt.Sprintf("   标签: %s\n", book.Tags))
-		}
-
-		// 添加关键词信息
-		if len(book.Keywords) > 0 {
-			response.WriteString(fmt.Sprintf("   关键词: %s\n", strings.Join(book.Keywords, ", ")))
-		}
-
-		// 添加卡片数量信息
-		if book.CardCount > 0 {
-			response.WriteString(fmt.Sprintf("   包含 %d 张卡片\n", book.CardCount))
-		}
-
-		// 添加分类信息
-		if book.CategoryName != "" {
-			response.WriteString(fmt.Sprintf("   分类: %s\n", book.CategoryName))
-		}
-
-		response.WriteString("\n")
-	}
-
-	// 添加建议
-	response.WriteString("💡 **小贴士**: 您可以点击任意卡册查看详情，或者告诉我您想要什么特定类型的卡册，我可以为您提供更精准的推荐。")
-
-	return response.String()
-}
-
-// generateDefaultResponse 生成默认回复
-func (b *chatBiz) generateDefaultResponse(userMessage string) string {
-	// 根据消息内容生成智能回复
-	if strings.Contains(userMessage, "你好") || strings.Contains(userMessage, "hello") || strings.Contains(userMessage, "hi") {
-		return "你好！我是您的智能卡册助手。我可以帮您搜索和推荐各种类型的卡册，包括旅行照片、美食记录、艺术创作等。请告诉我您想要什么类型的卡册，或者有什么其他问题需要帮助。"
-	}
-
-	if strings.Contains(userMessage, "谢谢") || strings.Contains(userMessage, "感谢") {
-		return "不客气！很高兴能帮到您。如果您还需要其他帮助，比如搜索特定类型的卡册、了解卡册功能等，随时告诉我。"
-	}
-
-	if strings.Contains(userMessage, "帮助") || strings.Contains(userMessage, "怎么用") || strings.Contains(userMessage, "功能") {
-		return "我可以帮您：\n\n" +
-			"🔍 **搜索卡册**: 告诉我您想要什么类型的卡册，比如\"旅行照片\"、\"美食记录\"等\n" +
-			"📚 **推荐卡册**: 根据您的兴趣推荐相关卡册\n" +
-			"💡 **使用建议**: 提供卡册使用和创作的建议\n\n" +
-			"试试告诉我您想要什么类型的卡册吧！"
-	}
-
-	// 通用回复
-	return fmt.Sprintf("我收到了您的消息：%s\n\n我可以帮您搜索和推荐各种类型的卡册。请告诉我您想要什么类型的卡册，比如旅行照片、美食记录、艺术创作等，我会为您找到最相关的内容。", userMessage)
+	// 其他类型使用原有逻辑
+	return b.ProcessWebSocketMessage(ctx, userID, msg)
 }

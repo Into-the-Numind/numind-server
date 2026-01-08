@@ -1,8 +1,13 @@
-# 忽略编译后的二进制文件
-stress_test_book
+# Binaries
+stress_test_sop_flow
+stress_test_data_injection
+generate_data
+chaos_mock_server
+monitor_resources
 
-# 忽略测试结果文件（如果生成）
+# Generated Data
+test_data/
+test_results/
+data_injection_results/
+performance_report.md
 *.log
-*.out
-results/
-

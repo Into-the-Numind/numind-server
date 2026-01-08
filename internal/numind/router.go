@@ -5,7 +5,7 @@ import (
 	"numind-server/internal/numind/biz"
 	orderbiz "numind-server/internal/numind/biz/order"
 	"numind-server/internal/numind/controller/v1/account"
-	"numind-server/internal/numind/controller/v1/admin"
+	"numind-server/internal/numind/controller/v1/ali"
 	"numind-server/internal/numind/controller/v1/article"
 	"numind-server/internal/numind/controller/v1/book"
 	"numind-server/internal/numind/controller/v1/card"
@@ -15,6 +15,9 @@ import (
 	"numind-server/internal/numind/controller/v1/membership"
 	"numind-server/internal/numind/controller/v1/order"
 	"numind-server/internal/numind/controller/v1/pagination"
+	pdfcontroller "numind-server/internal/numind/controller/v1/pdf"
+	ragcontroller "numind-server/internal/numind/controller/v1/rag"
+	sopcontroller "numind-server/internal/numind/controller/v1/sop"
 	"numind-server/internal/numind/controller/v1/template"
 	"numind-server/internal/numind/controller/v1/user"
 	"numind-server/internal/numind/store"
@@ -27,7 +30,6 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/spf13/viper"
 
-	"numind-server/internal/numind/controller/v1/config"
 	"numind-server/internal/numind/controller/v1/feedback"
 	importPayController "numind-server/internal/numind/controller/v1/pay"
 	importMw "numind-server/internal/pkg/middleware"
@@ -42,8 +44,13 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 注册 /healthz handler.
 	g.GET("/healthz", func(c *gin.Context) {
+		// #region agent log
+		log.Infow("[DEBUG] Healthz endpoint called", "hypothesisId", "F", "location", "router.go:48", "runId", "runtime")
+		// #endregion
 		log.C(c).Infow("Healthz function called")
-
+		// #region agent log
+		log.Infow("[DEBUG] Healthz response sent", "hypothesisId", "F", "location", "router.go:51", "runId", "runtime")
+		// #endregion
 		core.WriteResponse(c, nil, map[string]string{"status": "ok"})
 	})
 
@@ -62,13 +69,43 @@ func installNumindRouters(g *gin.Engine) error {
 	fc := feedback.New(b)
 	chatc := chat.New(b.Chats())
 	ac := article.NewArticleController(b.Article())
-	adminc := admin.NewAdminController(b.Admin())
+	alic := ali.New(b.Ali())
+
+	// 使用 biz 层已初始化的 RAG 服务
+	ragService := b.Rag()
+	if ragService == nil {
+		log.Fatalw("RAG服务未初始化")
+	}
+	ragc := ragcontroller.NewRagController(ragService, b.Chats())
+
+	// 初始化SOP控制器（用户端）
+	userSopc := sopcontroller.NewSopController(b.Sop(), b.Ali(), b.Volc())
+
+	// 初始化PDF控制器
+	// #region agent log
+	log.Infow("[DEBUG] Before PDF controller init", "hypothesisId", "C", "location", "router.go:82", "runId", "startup")
+	// #endregion
+	pdfc := pdfcontroller.NewPdfController()
+	// #region agent log
+	log.Infow("[DEBUG] After PDF controller init success", "hypothesisId", "C", "location", "router.go:93", "runId", "startup")
+	// #endregion
+
+	// 🔍 系统启动时检查并向量化历史笔记（异步执行，不阻塞启动）- 暂时注释，不使用向量化
+	// go func() {
+	// 	ctx := context.Background()
+	// 	log.Infow("开始检查历史笔记向量化状态")
+	// 	if err := vectorizeHistoricalBooks(ctx, b, ragService); err != nil {
+	// 		log.Errorw("历史笔记向量化检查失败", "error", err)
+	// 	} else {
+	// 		log.Infow("历史笔记向量化检查完成")
+	// 	}
+	// }()
 
 	v1Group := g.Group("/v1")
 
 	// 登录接口不需要鉴权
 	v1Group.POST("/wechat/login", uc.WechatLogin)
-	v1Group.POST("/admin/login", uc.Login)
+	v1Group.POST("/web/login", uc.WebLogin)
 
 	// WebSocket连接不需要鉴权，因为它在内部处理认证
 	v1Group.GET("/chat/ws", chatc.WebSocket)
@@ -87,15 +124,19 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.DELETE("/images/:id", ic.Delete)
 	}
 
-	// 卡册相关
+	// 笔记相关
 	{
-		authGroup.PUT("/books/:id/category", bc.SetCategory) // 设置卡册分类
-		authGroup.POST("/books", bc.Create)                  // 创建卡册
-		authGroup.GET("/books", bc.List)                     // 获取卡册列表
-		authGroup.GET("/books/:id", bc.Get)                  // 获取卡册详情
-		authGroup.PUT("/books/:id", bc.Update)               // 更新卡册
-		authGroup.DELETE("/books/:id", bc.Delete)            // 删除卡册
-		authGroup.DELETE("/books", bc.DeleteBatch)           // 批量删除卡册，query: bookID=1&bookID=2
+		authGroup.PUT("/books/:id/category", bc.SetCategory)                               // 设置卡册分类
+		authGroup.POST("/books", bc.Create)                                                // 创建卡册
+		authGroup.GET("/books", bc.List)                                                   // 获取卡册列表
+		authGroup.GET("/books/:id", bc.Get)                                                // 获取卡册详情
+		authGroup.PUT("/books/:id", bc.Update)                                             // 更新卡册
+		authGroup.PUT("/books/:id/type", bc.UpdateBookType)                                // 更新笔记类型（用于 todo 打钩）
+		authGroup.PUT("/books/:id/content", bc.UpdateContent)                              // 更新笔记内容
+		authGroup.POST("/books/:id/generate-long-image", bc.GenerateLongImage)             // 生成长图
+		authGroup.POST("/books/:id/generate-paginated-images", bc.GeneratePaginatedImages) // 生成分页图片
+		authGroup.DELETE("/books/:id", bc.Delete)                                          // 删除卡册
+		authGroup.DELETE("/books", bc.DeleteBatch)                                         // 批量删除卡册，query: bookID=1&bookID=2
 	}
 
 	// 卡片相关
@@ -143,6 +184,9 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.DELETE("/chat/sessions/:id", chatc.DeleteSession)                     // 删除会话
 		authGroup.GET("/chat/sessions/:id/messages", chatc.ListMessages)                // 获取会话消息
 		authGroup.GET("/chat/sessions/:id/with-messages", chatc.GetSessionWithMessages) // 获取会话及消息
+		// 笔记聊天相关
+		authGroup.GET("/chat/book/:book_id/sessions", chatc.ListBookSessions)       // 列出笔记的所有会话
+		authGroup.GET("/chat/session/:session_id/history", chatc.GetSessionHistory) // 获取会话的聊天记录
 	}
 
 	// 分页相关
@@ -169,44 +213,12 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.POST("/articles/paraphrase", ac.ParaphraseText)         // 文本释义
 	}
 
-	// 管理员相关
-	adminGroup := v1Group.Group("/admin", importMw.AuthMiddleware())
-	{
-		adminGroup.GET("/articles", adminc.GetArticles)                     // 获取文章列表（管理员）
-		adminGroup.GET("/articles/:id", adminc.GetArticle)                  // 获取单个文章（管理员）
-		adminGroup.POST("/articles", adminc.CreateArticle)                  // 创建文章（管理员）
-		adminGroup.PUT("/articles/:id", adminc.UpdateArticle)               // 更新文章（管理员）
-		adminGroup.DELETE("/articles/:id", adminc.DeleteArticle)            // 删除文章（管理员）
-		adminGroup.POST("/articles/bulk-delete", adminc.BulkDeleteArticles) // 批量删除文章
-		adminGroup.GET("/categories", adminc.GetCategories)                 // 获取分类列表
-		adminGroup.POST("/categories", adminc.CreateCategory)               // 创建分类
-		adminGroup.PUT("/categories/:id", adminc.UpdateCategory)            // 更新分类
-		adminGroup.DELETE("/categories/:id", adminc.DeleteCategory)         // 删除分类
-		adminGroup.GET("/stats", adminc.GetStats)                           // 获取统计信息
-
-		// 用户管理相关API（管理员权限）
-		adminGroup.GET("/users", uc.List)            // 查询用户列表
-		adminGroup.GET("/users/:name", uc.Get)       // 查询用户详情
-		adminGroup.PUT("/users/:name", uc.Update)    // 更改用户
-		adminGroup.DELETE("/users/:name", uc.Delete) // 删除用户
-	}
-
-	// 配置相关（管理员权限）
-	{
-		configc := config.New(b)
-		adminGroup.POST("/configs", configc.Create)           // 创建配置
-		adminGroup.GET("/configs", configc.List)              // 获取所有配置
-		adminGroup.GET("/configs/:key", configc.Get)          // 获取单个配置
-		adminGroup.PUT("/configs/:key", configc.Update)       // 更新配置
-		adminGroup.DELETE("/configs/:key", configc.Delete)    // 删除配置
-		adminGroup.POST("/configs/init", configc.InitDefault) // 初始化默认配置
-	}
-
 	// 用户相关
 	{
 		authGroup.GET("/users/me", uc.GetCurrentUser)    // 获取当前用户信息
 		authGroup.PUT("/users/me", uc.UpdateProfile)     // 更新当前用户个人信息
 		authGroup.POST("/users/avatar", uc.UploadAvatar) // 上传用户头像
+		authGroup.POST("/users/logout", uc.Logout)       // 用户登出
 	}
 
 	// 微信支付相关
@@ -245,6 +257,55 @@ func installNumindRouters(g *gin.Engine) error {
 		g.GET("/v1/membership/plans", membershipCtrl.GetMembershipPlans) // 获取会员套餐信息（无需鉴权）
 	}
 
+	// RAG相关
+	{
+		authGroup.POST("/rag/chat", ragc.ChatWithRAG) // 基于笔记进行RAG对话
+	}
+
+	// 阿里云百炼相关
+	{
+		authGroup.POST("/ali/bailian/lease", alic.GetFileUploadLease) // 获取上传租约
+		authGroup.POST("/ali/bailian/confirm", alic.AddFile)          // 确认上传并导入
+		authGroup.POST("/ali/vision/analyze", alic.VisionAnalyze)     // 视觉理解 (Base64)
+	}
+
+	// 文档转文字相关（支持 PDF、Word、TXT、MD、RTF 等格式）
+	{
+		authGroup.POST("/pdf/convert-to-text", pdfc.ConvertToText) // 文档转文字（支持 .pdf, .txt, .md, .docx, .doc, .rtf）
+	}
+
+	// SOP相关（用户端接口）
+	{
+		// 用户执行SOP
+		authGroup.GET("/sop/templates", userSopc.ListTemplates)                    // 获取可用模板列表
+		authGroup.GET("/sop/templates/:id/nodes", userSopc.GetTemplateNodes)       // 获取模板的所有节点
+		authGroup.POST("/sop/templates/:id/execute", userSopc.ExecuteTemplate)     // 执行模板（异步，一次性执行所有节点）
+		authGroup.GET("/sop/templates/executed", userSopc.ListMyExecutedTemplates) // 获取当前用户已执行的模板列表（按模板分组）
+		authGroup.GET("/sop/templates/:id/runs", userSopc.ListTemplateRuns) // 获取指定模板下的所有历史运行记录（包含完整信息）
+
+		// 逐步执行SOP节点（新增）- 注意：这些路由必须在 /sop/runs/:id 之前注册，避免路由冲突
+		authGroup.POST("/sop/runs", userSopc.CreateRun)                                    // 创建Run（不立即执行）
+		authGroup.GET("/sop/runs/:id/next-node", userSopc.GetNextNode)                     // 获取下一个待执行节点
+		authGroup.POST("/sop/runs/:id/nodes/:node_id/execute", userSopc.ExecuteNodeStream) // 流式执行指定节点（支持文件上传）
+		authGroup.POST("/sop/files/check-quality", userSopc.CheckFileQuality)              // 检测上传文件质量
+		authGroup.POST("/sop/files/parse-text", userSopc.ParseFileText)                    // 上传文件解析文本（返回文本用于回填）
+		authGroup.POST("/sop/files/parse-text/query", userSopc.ParseFileTextQuery)         // 轮询qwen-long解析结果
+		authGroup.POST("/sop/images/read", userSopc.ReadImageWithQwenVL)                   // 读取图片（qwen-vl-max）
+		authGroup.POST("/sop/text/edit", userSopc.EditTextStream)                          // 文本编辑流式对话（不保存到数据库）
+		authGroup.POST("/sop/chat/stream", userSopc.ChatAfterRunStream)                    // Run完成后的对话流式接口
+		authGroup.GET("/sop/runs/:id/chat-messages", userSopc.ListRunChatMessages)         // 获取Run聊天记录
+		authGroup.GET("/sop/runs/:id/status", userSopc.GetRunStatus)                       // 获取Run执行状态
+
+		authGroup.GET("/sop/runs/:id", userSopc.GetRun)              // 查看执行记录
+		authGroup.GET("/sop/runs/:id/detail", userSopc.GetRunDetail) // 查看执行详情
+		authGroup.GET("/sop/runs", userSopc.ListMyRuns)              // 获取我的执行记录列表
+		authGroup.GET("/sop/notes/:id", userSopc.GetNote)            // 查看笔记详情
+		authGroup.GET("/sop/notes", userSopc.ListMyNotes)            // 获取我的笔记列表
+	}
+
+	// #region agent log
+	log.Infow("[DEBUG] Router installation completed", "hypothesisId", "C", "location", "router.go:339", "runId", "startup")
+	// #endregion
 	return nil
 }
 
@@ -283,3 +344,88 @@ func getUserIDFromToken(c *gin.Context) (uint, error) {
 
 	return 0, fmt.Errorf("invalid token or missing user_id")
 }
+
+// vectorizeHistoricalBooks 检查并向量化历史笔记 - 暂时注释，不使用向量化
+// 在系统启动时异步执行，检查所有已创建的笔记，如果还没有向量化，则进行向量化
+// func vectorizeHistoricalBooks(ctx context.Context, b biz.IBiz, ragService *ragbiz.RagService) error {
+// 	log.Infow("开始检查历史笔记向量化状态")
+
+// 	// 分批获取所有笔记（只获取状态为 success 的笔记）
+// 	batchSize := 100
+// 	offset := 0
+// 	totalProcessed := 0
+// 	totalVectorized := 0
+// 	totalSkipped := 0
+
+// 	for {
+// 		// 获取一批笔记
+// 		count, books, err := b.Books().ListAll(ctx, offset, batchSize)
+// 		if err != nil {
+// 			return fmt.Errorf("获取笔记列表失败: %w", err)
+// 		}
+
+// 		if len(books) == 0 {
+// 			break // 没有更多笔记了
+// 		}
+
+// 		log.Infow("处理笔记批次", "offset", offset, "count", len(books), "total", count)
+
+// 		// 遍历这批笔记，检查并向量化
+// 		for _, book := range books {
+// 			// 只处理状态为 success 的笔记
+// 			if book.Status != "success" {
+// 				totalSkipped++
+// 				continue
+// 			}
+
+// 			// 检查向量是否已存在
+// 			exists, err := ragService.CheckBookVectorExists(ctx, book.ID)
+// 			if err != nil {
+// 				log.Errorw("检查笔记向量失败", "error", err, "book_id", book.ID)
+// 				continue
+// 			}
+
+// 			if exists {
+// 				totalSkipped++
+// 				continue // 向量已存在，跳过
+// 			}
+
+// 			// 提取笔记内容（优先使用 ProcessedText，如果为空则使用 OriginalText）
+// 			bookContent := book.ProcessedText
+// 			if bookContent == "" {
+// 				bookContent = book.OriginalText
+// 			}
+
+// 			// 如果内容为空，跳过
+// 			if bookContent == "" {
+// 				totalSkipped++
+// 				continue
+// 			}
+
+// 			// 向量化笔记
+// 			if err := ragService.AddBookVector(ctx, book.UserID, book.ID, bookContent); err != nil {
+// 				log.Errorw("向量化笔记失败", "error", err, "book_id", book.ID, "user_id", book.UserID)
+// 				// 继续处理下一个笔记，不中断整个流程
+// 				continue
+// 			}
+
+// 			totalVectorized++
+// 			log.Infow("✅ 历史笔记向量化成功", "book_id", book.ID, "user_id", book.UserID)
+// 		}
+
+// 		totalProcessed += len(books)
+// 		offset += batchSize
+
+// 		// 如果已经处理完所有笔记，退出循环
+// 		if int64(offset) >= count {
+// 			break
+// 		}
+// 	}
+
+// 	log.Infow("历史笔记向量化检查完成",
+// 		"total_processed", totalProcessed,
+// 		"total_vectorized", totalVectorized,
+// 		"total_skipped", totalSkipped)
+
+// 	return nil
+// }

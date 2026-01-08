@@ -19,13 +19,13 @@ func TestSubscriptionDaysAccumulation(t *testing.T) {
 		{
 			name:             "30天订阅",
 			subscriptionDays: 30,
-			expectedPrice:    1900,
+			expectedPrice:    1600,
 			hasError:         false,
 		},
 		{
 			name:             "365天订阅",
 			subscriptionDays: 365,
-			expectedPrice:    13700,
+			expectedPrice:    11900,
 			hasError:         false,
 		},
 		{
@@ -74,13 +74,13 @@ func TestSubscriptionDaysValidation(t *testing.T) {
 		{
 			name:             "30天订阅正确价格",
 			subscriptionDays: 30,
-			amount:           1900,
+			amount:           1600,
 			hasError:         false,
 		},
 		{
 			name:             "365天订阅正确价格",
 			subscriptionDays: 365,
-			amount:           13700,
+			amount:           11900,
 			hasError:         false,
 		},
 		{
@@ -202,7 +202,7 @@ func TestPaymentRequestValidation(t *testing.T) {
 			req: &model.CreatePaymentRequest{
 				MembershipType:   model.MembershipTypeSubscription,
 				SubscriptionDays: 30,
-				Amount:           1900,
+				Amount:           1600,
 			},
 			hasError: false,
 		},
@@ -211,7 +211,7 @@ func TestPaymentRequestValidation(t *testing.T) {
 			req: &model.CreatePaymentRequest{
 				MembershipType:   model.MembershipTypeSubscription,
 				SubscriptionDays: 365,
-				Amount:           13700,
+				Amount:           11900,
 			},
 			hasError: false,
 		},
@@ -240,7 +240,7 @@ func TestPaymentRequestValidation(t *testing.T) {
 			req: &model.CreatePaymentRequest{
 				MembershipType:   model.MembershipTypeSubscription,
 				SubscriptionDays: 0,
-				Amount:           1900,
+				Amount:           1600,
 			},
 			hasError:      true,
 			errorContains: "订阅天数必须大于0",

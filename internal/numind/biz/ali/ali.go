@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/service"
 	"os"
 	"strings"
 	"time"
@@ -33,21 +34,37 @@ type BailianConfig struct {
 
 type AliBiz interface {
 	QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error)
+	QianwenEmbedding(text string) ([]float32, error)
+	QianwenVision(ctx context.Context, imageBase64 string, prompt string) (string, error)
 	WanxiangImageStream(prompt string, style string, size string) (string, error)
 	WanxiangImageAsync(prompt, style, size string) (string, error)
 	StableDiffusionImageAsync(prompt, size string) (string, error)
+	GetFileUploadLease(fileName string) (string, map[string]string, string, error)
+	AddFile(leaseId string) (string, error)
 	GetPromptManager() *PromptManager
 }
 
 type aliBiz struct {
-	ds store.IStore
-	pm *PromptManager
+	ds            store.IStore
+	pm            *PromptManager
+	bailianClient *service.BailianHTTPClient
+	textClient    *httpclient.Client
+	visionClient  *httpclient.Client
+	imageClient   *httpclient.Client
 }
 
 func NewAliBiz(ds store.IStore) AliBiz {
 	return &aliBiz{
 		ds: ds,
 		pm: NewPromptManager(),
+		bailianClient: service.NewBailianHTTPClient(
+			getAliConfig("common", "access_key_id"),
+			getAliConfig("common", "access_key_secret"),
+			getAliConfig("common", "workspace_id"),
+		),
+		textClient:   httpclient.NewClientFromConfig("ali.text"),
+		visionClient: httpclient.NewClientFromConfig("ali.vision"),
+		imageClient:  httpclient.NewClientFromConfig("ali.image"),
 	}
 }
 
@@ -139,14 +156,8 @@ func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, 
 		"stream":      true,
 	}
 	bodyBytes, _ := json.Marshal(bodyMap)
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(bodyBytes))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+getAliConfig("text", "api_key"))
-	req.Header.Set("User-Agent", "numind-server/1.0")
-
-	// 使用优化的HTTP客户端
-	client := httpclient.NewClientFromConfig("ali.text")
-	defer client.Close()
+	// 使用 persistent client
+	client := a.textClient
 
 	// 创建请求
 	httpReq := &httpclient.Request{
@@ -183,6 +194,12 @@ func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, 
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
+
+		// 过滤 SSE 注释行（以 : 开头）和空行，防止心跳等注释内容混入输出
+		if strings.HasPrefix(line, ":") || line == "" {
+			continue
+		}
+
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
@@ -237,6 +254,12 @@ func (a *aliBiz) WanxiangImageStream(prompt string, style string, size string) (
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
+
+		// 过滤 SSE 注释行（以 : 开头）和空行，防止心跳等注释内容混入输出
+		if strings.HasPrefix(line, ":") || line == "" {
+			continue
+		}
+
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
@@ -538,6 +561,194 @@ func (a *aliBiz) StableDiffusionImageAsync(prompt, size string) (string, error) 
 
 	log.Printf("✅ Stable Diffusion图片生成完成: %s", imgUrl)
 	return imgUrl, nil
+}
+
+// QianwenEmbedding 调用阿里百炼 Embedding API 获取文本向量
+func (a *aliBiz) QianwenEmbedding(text string) ([]float32, error) {
+	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
+
+	bodyMap := map[string]interface{}{
+		"model": "text-embedding-v3",
+		"input": []string{text},
+	}
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return nil, fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	// 使用 persistent client
+	client := a.textClient
+
+	// 创建请求
+	httpReq := &httpclient.Request{
+		Method:  "POST",
+		URL:     url,
+		Body:    bytes.NewBuffer(bodyBytes),
+		Context: context.Background(),
+		Headers: map[string]string{
+			"Content-Type":  "application/json",
+			"Authorization": "Bearer " + getAliConfig("text", "api_key"),
+		},
+		RetryPolicy: &httpclient.RetryPolicy{
+			MaxRetries:   3,
+			RetryDelay:   1 * time.Second,
+			RetryBackoff: 2.0,
+		},
+	}
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		// 网络诊断信息
+		if netErr, ok := err.(net.Error); ok {
+			if netErr.Timeout() {
+				return nil, fmt.Errorf("网络超时错误: %w", err)
+			} else if netErr.Temporary() {
+				return nil, fmt.Errorf("临时网络错误: %w", err)
+			}
+		}
+		return nil, fmt.Errorf("HTTP请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 读取响应体
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取响应失败: %w", err)
+	}
+
+	// 检查HTTP状态码
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(respBody))
+	}
+
+	// 解析响应
+	var result struct {
+		Data []struct {
+			Embedding []float32 `json:"embedding"`
+		} `json:"data"`
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("解析响应失败: %w, 原始响应: %s", err, string(respBody))
+	}
+
+	// 检查API错误
+	if result.Error.Message != "" {
+		return nil, fmt.Errorf("API错误: %s (类型: %s, 代码: %s)", result.Error.Message, result.Error.Type, result.Error.Code)
+	}
+
+	// 提取向量
+	if len(result.Data) == 0 {
+		return nil, fmt.Errorf("API返回数据为空: %s", string(respBody))
+	}
+
+	if len(result.Data[0].Embedding) == 0 {
+		return nil, fmt.Errorf("API返回向量为空: %s", string(respBody))
+	}
+
+	return result.Data[0].Embedding, nil
+}
+
+// QianwenVision 调用视觉模型读取图片 (OpenAI 兼容模式)
+func (a *aliBiz) QianwenVision(ctx context.Context, imageBase64 string, prompt string) (string, error) {
+	if prompt == "" {
+		prompt = "图中描绘的是什么景象?"
+	}
+	apiKey := getAliConfig("vision", "api_key")
+	model := getAliConfig("vision", "model")
+	if model == "" {
+		model = "qwen-vl-plus" // 使用文档推荐的模型作为默认值
+	}
+	if apiKey == "" {
+		return "", fmt.Errorf("未配置ali.vision.api_key")
+	}
+
+	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+	bodyMap := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]interface{}{
+			{
+				"role": "user",
+				"content": []interface{}{
+					map[string]interface{}{
+						"type": "image_url",
+						"image_url": map[string]string{
+							"url": fmt.Sprintf("data:image/jpeg;base64,%s", imageBase64),
+						},
+					},
+					map[string]string{
+						"type": "text",
+						"text": prompt,
+					},
+				},
+			},
+		},
+		"stream": false,
+	}
+
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return "", fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	// 使用 persistent client
+	client := a.visionClient
+
+	httpReq := &httpclient.Request{
+		Method:  "POST",
+		URL:     url,
+		Body:    bytes.NewBuffer(bodyBytes),
+		Context: ctx,
+		Headers: map[string]string{
+			"Content-Type":  "application/json",
+			"Authorization": "Bearer " + apiKey,
+		},
+		RetryPolicy: httpclient.DefaultRetryPolicy(),
+	}
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("HTTP请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("读取响应失败: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("解析响应失败: %w, 原始响应: %s", err, string(respBody))
+	}
+
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("响应为空: %s", string(respBody))
+	}
+	return result.Choices[0].Message.Content, nil
+}
+
+func (a *aliBiz) GetFileUploadLease(fileName string) (string, map[string]string, string, error) {
+	return a.bailianClient.GetLease(fileName)
+}
+
+func (a *aliBiz) AddFile(leaseId string) (string, error) {
+	return a.bailianClient.ConfirmFile(leaseId)
 }
 
 func (a *aliBiz) GetPromptManager() *PromptManager {

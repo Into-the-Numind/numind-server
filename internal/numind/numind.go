@@ -77,14 +77,26 @@ func NewNumindCommand() *cobra.Command {
 
 // run 函数是实际的业务代码入口函数.
 func run() error {
+	// #region agent log
+	log.Infow("[DEBUG] run() function entry", "hypothesisId", "A", "location", "numind.go:79", "runId", "startup")
+	// #endregion
 	// 服务启动打印banner
 	banner := figure.NewColorFigure("Numind Server", "", "green", true)
 	banner.Print()
 
 	// 初始化 store 层
+	// #region agent log
+	log.Infow("[DEBUG] Before initStore", "hypothesisId", "A", "location", "numind.go:85", "runId", "startup")
+	// #endregion
 	if err := initStore(); err != nil {
+		// #region agent log
+		log.Errorw("[DEBUG] initStore failed", "hypothesisId", "A", "location", "numind.go:86", "runId", "startup", "error", err)
+		// #endregion
 		return err
 	}
+	// #region agent log
+	log.Infow("[DEBUG] After initStore success", "hypothesisId", "A", "location", "numind.go:87", "runId", "startup")
+	// #endregion
 
 	// 初始化上传目录 - 暂时注释掉，避免权限问题
 	// if err := initUploadDirectories(); err != nil {
@@ -108,12 +120,27 @@ func run() error {
 
 	g.Use(mws...)
 
+	// #region agent log
+	log.Infow("[DEBUG] Before installNumindRouters", "hypothesisId", "C", "location", "numind.go:111", "runId", "startup")
+	// #endregion
 	if err := installNumindRouters(g); err != nil {
+		// #region agent log
+		log.Errorw("[DEBUG] installNumindRouters failed", "hypothesisId", "C", "location", "numind.go:112", "runId", "startup", "error", err)
+		// #endregion
 		return err
 	}
+	// #region agent log
+	log.Infow("[DEBUG] After installNumindRouters success", "hypothesisId", "C", "location", "numind.go:113", "runId", "startup")
+	// #endregion
 
 	// 创建并运行 HTTP 服务器
+	// #region agent log
+	log.Infow("[DEBUG] Before startInsecureServer", "hypothesisId", "C", "location", "numind.go:116", "runId", "startup")
+	// #endregion
 	httpsrv := startInsecureServer(g)
+	// #region agent log
+	log.Infow("[DEBUG] After startInsecureServer", "hypothesisId", "C", "location", "numind.go:117", "runId", "startup", "serverCreated", true)
+	// #endregion
 
 	// 创建并运行 HTTPS 服务器
 	//httpssrv := startSecureServer(g)
@@ -155,16 +182,35 @@ func run() error {
 // startInsecureServer 创建并运行 HTTP 服务器.
 func startInsecureServer(g *gin.Engine) *http.Server {
 	// 创建 HTTP Server 实例
-	httpsrv := &http.Server{Addr: viper.GetString("addr"), Handler: g}
+	// 对于 SSE 流式响应，需要设置较长的超时时间
+	httpsrv := &http.Server{
+		Addr:         viper.GetString("addr"),
+		Handler:      g,
+		ReadTimeout:  600 * time.Second,  // 10分钟读取超时（支持长流式响应）
+		WriteTimeout: 1200 * time.Second, // 20分钟写入超时（支持长流式响应）
+		IdleTimeout:  120 * time.Second,  // 2分钟空闲超时
+	}
 
 	// 运行 HTTP 服务器。在 goroutine 中启动服务器，它不会阻止下面的正常关闭处理流程
 	// 打印一条日志，用来提示 HTTP 服务已经起来，方便排障
 	log.Infow("Start to listening the incoming requests on http address", "addr", viper.GetString("addr"))
+	// #region agent log
+	log.Infow("[DEBUG] Before ListenAndServe goroutine", "hypothesisId", "C", "location", "numind.go:267", "runId", "startup", "addr", viper.GetString("addr"))
+	// #endregion
 	go func() {
+		// #region agent log
+		log.Infow("[DEBUG] ListenAndServe goroutine started", "hypothesisId", "C", "location", "numind.go:270", "runId", "startup")
+		// #endregion
 		if err := httpsrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			// #region agent log
+			log.Errorw("[DEBUG] ListenAndServe error", "hypothesisId", "C", "location", "numind.go:272", "runId", "startup", "error", err)
+			// #endregion
 			log.Fatalw(err.Error())
 		}
 	}()
+	// #region agent log
+	log.Infow("[DEBUG] After ListenAndServe goroutine", "hypothesisId", "C", "location", "numind.go:275", "runId", "startup")
+	// #endregion
 
 	return httpsrv
 }

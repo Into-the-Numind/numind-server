@@ -67,7 +67,7 @@ type UpdateUserRequest struct {
 // UpdateUserProfileRequest 指定了修改用户个人信息的请求参数
 type UpdateUserProfileRequest struct {
 	Nickname  *string `json:"nickname" valid:"stringlength(1|100)"`
-	AvatarURL *string `json:"avatar_url" valid:"stringlength(1|255)"`
+	AvatarURL *string `json:"avatar_url" valid:"stringlength(1|512)"`
 }
 
 type WechatLoginRequest struct {
@@ -76,6 +76,19 @@ type WechatLoginRequest struct {
 }
 
 type WechatLoginResponse struct {
+	AccessToken string      `json:"access_token"`
+	TokenType   string      `json:"token_type"`
+	User        *model.User `json:"user"`
+}
+
+// WebLoginRequest Web端用户名密码登录请求
+type WebLoginRequest struct {
+	Username string `json:"username" binding:"required"`
+	Password string `json:"password" binding:"required"`
+}
+
+// WebLoginResponse Web端登录响应
+type WebLoginResponse struct {
 	AccessToken string      `json:"access_token"`
 	TokenType   string      `json:"token_type"`
 	User        *model.User `json:"user"`
@@ -110,6 +123,7 @@ type ListFeedbackResponse struct {
 type CreateTemplateRequest struct {
 	Name         string `json:"name" binding:"required" valid:"required,stringlength(1|50)"`
 	File         string `json:"file" binding:"required" valid:"required"`
+	Preview      string `json:"preview"`        // 预览图片路径
 	IsMemberOnly bool   `json:"is_member_only"` // 是否仅会员可用
 }
 
@@ -117,6 +131,7 @@ type CreateTemplateRequest struct {
 type UpdateTemplateRequest struct {
 	Name         *string `json:"name" valid:"stringlength(1|50)"`
 	File         *string `json:"file"`
+	Preview      *string `json:"preview"`        // 预览图片路径
 	IsMemberOnly *bool   `json:"is_member_only"` // 是否仅会员可用
 }
 
@@ -125,6 +140,7 @@ type TemplateResponse struct {
 	ID           uint   `json:"id"`
 	Name         string `json:"name"`
 	File         string `json:"file"`
+	Preview      string `json:"preview"`        // 预览图片路径
 	IsMemberOnly bool   `json:"is_member_only"` // 是否仅会员可用
 	CreatedAt    string `json:"created_at"`
 	UpdatedAt    string `json:"updated_at"`

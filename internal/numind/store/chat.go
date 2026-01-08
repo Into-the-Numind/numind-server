@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 
 	"numind-server/internal/pkg/model"
 
@@ -24,6 +25,21 @@ type ChatStore interface {
 
 	GetSessionWithMessages(ctx context.Context, sessionID uint) (*model.ChatSession, error)
 	UpdateSessionMessageCount(ctx context.Context, sessionID uint) error
+
+	// 新增：根据笔记ID获取会话
+	GetSessionByBookID(ctx context.Context, userID uint, bookID uint) (*model.ChatSession, error)
+
+	// 新增：根据笔记ID列出会话（一个笔记可能有多个会话）
+	ListSessionsByBookID(ctx context.Context, userID uint, bookID uint, offset, limit int) ([]*model.ChatSession, int64, error)
+
+	// 新增：获取笔记的聊天记录（会话+消息）
+	GetBookChatHistory(ctx context.Context, userID uint, bookID uint, limit int) (*model.ChatSession, []*model.ChatMessage, error)
+
+	// Admin 专用：根据笔记ID列出会话列表（不需要 userID 限制）
+	ListSessionsByBookIDForAdmin(ctx context.Context, bookID uint, offset, limit int) ([]*model.ChatSession, int64, error)
+
+	// Admin 专用：根据会话ID获取会话及其消息（不需要 userID 限制）
+	GetSessionWithMessagesForAdmin(ctx context.Context, sessionID uint) (*model.ChatSession, error)
 }
 
 // chatStore 是 ChatStore 的具体实现
@@ -152,4 +168,104 @@ func (s *chatStore) UpdateSessionMessageCount(ctx context.Context, sessionID uin
 	return s.db.WithContext(ctx).Model(&model.ChatSession{}).
 		Where("id = ?", sessionID).
 		Update("message_count", count).Error
+}
+
+// GetSessionByBookID 根据笔记ID获取最新的会话
+func (s *chatStore) GetSessionByBookID(ctx context.Context, userID uint, bookID uint) (*model.ChatSession, error) {
+	var session model.ChatSession
+	err := s.db.WithContext(ctx).
+		Where("user_id = ? AND book_id = ?", userID, bookID).
+		Order("updated_at DESC").
+		First(&session).Error
+	if err != nil {
+		return nil, err
+	}
+	return &session, nil
+}
+
+// ListSessionsByBookID 根据笔记ID列出会话列表
+func (s *chatStore) ListSessionsByBookID(ctx context.Context, userID uint, bookID uint, offset, limit int) ([]*model.ChatSession, int64, error) {
+	var sessions []*model.ChatSession
+	var total int64
+
+	// 获取总数
+	err := s.db.WithContext(ctx).
+		Model(&model.ChatSession{}).
+		Where("user_id = ? AND book_id = ?", userID, bookID).
+		Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 获取会话列表
+	err = s.db.WithContext(ctx).
+		Where("user_id = ? AND book_id = ?", userID, bookID).
+		Order("updated_at DESC").
+		Offset(offset).Limit(limit).
+		Find(&sessions).Error
+
+	return sessions, total, err
+}
+
+// GetBookChatHistory 获取笔记的聊天记录（返回最新会话及其所有消息）
+func (s *chatStore) GetBookChatHistory(ctx context.Context, userID uint, bookID uint, limit int) (*model.ChatSession, []*model.ChatMessage, error) {
+	// 获取最新的会话
+	session, err := s.GetSessionByBookID(ctx, userID, bookID)
+	if err != nil {
+		// 如果没有会话，返回空
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, []*model.ChatMessage{}, nil
+		}
+		return nil, nil, err
+	}
+
+	// 获取该会话的所有消息（限制数量）
+	messages, _, err := s.ListMessages(ctx, session.ID, 0, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return session, messages, nil
+}
+
+// ListSessionsByBookIDForAdmin 根据笔记ID列出会话列表（Admin 专用，不需要 userID 限制）
+func (s *chatStore) ListSessionsByBookIDForAdmin(ctx context.Context, bookID uint, offset, limit int) ([]*model.ChatSession, int64, error) {
+	var sessions []*model.ChatSession
+	var total int64
+
+	// 获取总数
+	err := s.db.WithContext(ctx).
+		Model(&model.ChatSession{}).
+		Where("book_id = ?", bookID).
+		Count(&total).Error
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 获取会话列表
+	err = s.db.WithContext(ctx).
+		Where("book_id = ?", bookID).
+		Preload("User").
+		Order("updated_at DESC").
+		Offset(offset).Limit(limit).
+		Find(&sessions).Error
+
+	return sessions, total, err
+}
+
+// GetSessionWithMessagesForAdmin 根据会话ID获取会话及其消息（Admin 专用，不需要 userID 限制）
+func (s *chatStore) GetSessionWithMessagesForAdmin(ctx context.Context, sessionID uint) (*model.ChatSession, error) {
+	var session model.ChatSession
+	err := s.db.WithContext(ctx).
+		Preload("User").
+		Preload("Book").
+		Preload("Messages", func(db *gorm.DB) *gorm.DB {
+			return db.Order("created_at ASC")
+		}).
+		Where("id = ?", sessionID).
+		First(&session).Error
+	if err != nil {
+		return nil, err
+	}
+	return &session, nil
 }

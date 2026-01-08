@@ -20,6 +20,10 @@ type FeedbackBiz interface {
 	GetByID(ctx context.Context, feedbackID uint) (*v1.FeedbackResponse, error)
 	GetByUserID(ctx context.Context, userID uint, offset, limit int) (*v1.ListFeedbackResponse, error)
 	Delete(ctx context.Context, userID uint, feedbackID uint) error
+	// 管理员方法
+	ListAll(ctx context.Context, offset, limit int, userID *uint, status *int, feedbackType *string) (*v1.ListFeedbackResponse, error)
+	Update(ctx context.Context, feedbackID uint, status *int, reply *string) error
+	DeleteByAdmin(ctx context.Context, feedbackID uint) error
 }
 
 // FeedbackBiz 接口的实现.
@@ -127,6 +131,79 @@ func (b *feedbackBiz) Delete(ctx context.Context, userID uint, feedbackID uint) 
 	// 检查反馈是否属于当前用户
 	if feedback.UserID != userID {
 		return errno.ErrUnauthorized
+	}
+
+	return b.ds.Feedbacks().Delete(ctx, feedbackID)
+}
+
+// ListAll 管理员查询所有反馈（支持筛选）
+func (b *feedbackBiz) ListAll(ctx context.Context, offset, limit int, userID *uint, status *int, feedbackType *string) (*v1.ListFeedbackResponse, error) {
+	count, list, err := b.ds.Feedbacks().ListAll(ctx, offset, limit, userID, status, feedbackType)
+	if err != nil {
+		log.C(ctx).Errorw("Failed to list all feedbacks from storage", "err", err)
+		return nil, err
+	}
+
+	feedbacks := make([]*v1.FeedbackResponse, 0, len(list))
+	for _, item := range list {
+		feedback := item
+		var resp v1.FeedbackResponse
+		_ = copier.Copy(&resp, feedback)
+
+		// 格式化时间
+		resp.CreatedAt = feedback.CreatedAt.Format("2006-01-02 15:04:05")
+		resp.UpdatedAt = feedback.UpdatedAt.Format("2006-01-02 15:04:05")
+
+		// 添加用户信息
+		if feedback.User.ID != 0 {
+			resp.User = &v1.UserInfo{
+				Username:  feedback.User.Username,
+				Nickname:  feedback.User.Nickname,
+				CreatedAt: feedback.User.CreatedAt.Format("2006-01-02 15:04:05"),
+				UpdatedAt: feedback.User.UpdatedAt.Format("2006-01-02 15:04:05"),
+			}
+		}
+
+		feedbacks = append(feedbacks, &resp)
+	}
+
+	log.C(ctx).Debugw("Get all feedbacks from backend storage", "count", len(feedbacks))
+
+	return &v1.ListFeedbackResponse{TotalCount: count, Feedbacks: feedbacks}, nil
+}
+
+// Update 管理员更新反馈（更新状态和回复）
+func (b *feedbackBiz) Update(ctx context.Context, feedbackID uint, status *int, reply *string) error {
+	feedback, err := b.ds.Feedbacks().GetByID(ctx, feedbackID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errno.ErrPageNotFound
+		}
+		return err
+	}
+
+	// 更新状态
+	if status != nil {
+		feedback.Status = *status
+	}
+
+	// 更新回复
+	if reply != nil {
+		feedback.Reply = *reply
+	}
+
+	return b.ds.Feedbacks().Update(ctx, feedback)
+}
+
+// DeleteByAdmin 管理员删除反馈（不需要检查用户权限）
+func (b *feedbackBiz) DeleteByAdmin(ctx context.Context, feedbackID uint) error {
+	// 检查反馈是否存在
+	_, err := b.ds.Feedbacks().GetByID(ctx, feedbackID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errno.ErrPageNotFound
+		}
+		return err
 	}
 
 	return b.ds.Feedbacks().Delete(ctx, feedbackID)

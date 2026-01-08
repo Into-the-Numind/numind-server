@@ -50,6 +50,9 @@ type UserBiz interface {
 	ValidateToken(tokenString string) (*model.User, error)
 	UpdateWechatUser(ctx context.Context, openid string, r *v1.UpdateUserRequest) error
 
+	// Web端登录
+	WebLogin(req *v1.WebLoginRequest) (*v1.WebLoginResponse, error)
+
 	// 用户统计更新
 	IncrementUserBookNum(ctx context.Context, userID uint) error
 	IncrementUserCardNum(ctx context.Context, userID uint) error
@@ -90,17 +93,17 @@ func New(ds store.IStore) *userBiz {
 
 // ChangePassword 是 UserBiz 接口中 `ChangePassword` 方法的实现.
 func (b *userBiz) ChangePassword(ctx context.Context, username string, r *v1.ChangePasswordRequest) error {
-	userM, err := b.ds.Users().Get(ctx, username)
+	user, err := b.ds.Users().Get(ctx, username)
 	if err != nil {
 		return err
 	}
 
-	if err := auth.Compare(userM.Password, r.OldPassword); err != nil {
+	if err := auth.Compare(user.Password, r.OldPassword); err != nil {
 		return errno.ErrPasswordIncorrect
 	}
 
-	userM.Password, _ = auth.Encrypt(r.NewPassword)
-	if err := b.ds.Users().Update(ctx, userM); err != nil {
+	user.Password, _ = auth.Encrypt(r.NewPassword)
+	if err := b.ds.Users().Update(ctx, user); err != nil {
 		return err
 	}
 
@@ -131,10 +134,10 @@ func (b *userBiz) Login(ctx context.Context, r *v1.LoginRequest) (*v1.LoginRespo
 
 // Create 是 UserBiz 接口中 `Create` 方法的实现.
 func (b *userBiz) Create(ctx context.Context, r *v1.CreateUserRequest) error {
-	var userM model.UserM
-	_ = copier.Copy(&userM, r)
+	var user model.User
+	_ = copier.Copy(&user, r)
 
-	if err := b.ds.Users().Create(ctx, &userM); err != nil {
+	if err := b.ds.Users().Create(ctx, &user); err != nil {
 		if match, _ := regexp.MatchString("Duplicate entry '.*' for key 'username'", err.Error()); match {
 			return errno.ErrUserAlreadyExist
 		}
@@ -272,8 +275,8 @@ func (b *userBiz) List(ctx context.Context, offset, limit int) (*v1.ListUserResp
 				m.Store(user.ID, &v1.UserInfo{
 					Username:  user.Username,
 					Nickname:  user.Nickname,
-					Email:     user.Email,
-					Phone:     user.Email,
+					Email:     "", // User 模型没有 Email 字段
+					Phone:     user.Phone,
 					PostCount: 0,
 					CreatedAt: user.CreatedAt.Format("2006-01-02 15:04:05"),
 					UpdatedAt: user.UpdatedAt.Format("2006-01-02 15:04:05"),
@@ -302,24 +305,25 @@ func (b *userBiz) List(ctx context.Context, offset, limit int) (*v1.ListUserResp
 
 // Update 是 UserBiz 接口中 `Update` 方法的实现.
 func (b *userBiz) Update(ctx context.Context, username string, user *v1.UpdateUserRequest) error {
-	userM, err := b.ds.Users().Get(ctx, username)
+	userModel, err := b.ds.Users().Get(ctx, username)
 	if err != nil {
 		return err
 	}
 
-	if user.Email != nil {
-		userM.Email = *user.Email
-	}
+	// User 模型没有 Email 字段，跳过 Email 更新
+	// if user.Email != nil {
+	// 	userModel.Email = *user.Email
+	// }
 
 	if user.Nickname != nil {
-		userM.Nickname = *user.Nickname
+		userModel.Nickname = *user.Nickname
 	}
 
 	if user.Phone != nil {
-		userM.Phone = *user.Phone
+		userModel.Phone = *user.Phone
 	}
 
-	if err := b.ds.Users().Update(ctx, userM); err != nil {
+	if err := b.ds.Users().Update(ctx, userModel); err != nil {
 		return err
 	}
 
@@ -454,6 +458,22 @@ func (s *userBiz) generateToken(user *model.User) (string, error) {
 	return token.SignedString([]byte(viper.GetString("jwt.secret")))
 }
 
+// generateWebToken 生成Web端登录JWT token（7天有效期）
+func (s *userBiz) generateWebToken(user *model.User) (string, error) {
+	// Web端登录token有效期为7天
+	expireDays := 7
+	expireHours := expireDays * 24 // 7天 = 168小时
+
+	claims := jwt.MapClaims{
+		"user_id": user.ID,
+		"openid":  user.OpenID,
+		"exp":     time.Now().Add(time.Duration(expireHours) * time.Hour).Unix(),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(viper.GetString("jwt.secret")))
+}
+
 // findOrCreateUser 查找或创建用户
 func (s *userBiz) findOrCreateUser(openID string) (*model.User, error) {
 	var user model.User
@@ -461,12 +481,13 @@ func (s *userBiz) findOrCreateUser(openID string) (*model.User, error) {
 
 	if err == gorm.ErrRecordNotFound {
 		// 创建新用户，设置唯一的username
+		// 使用Omit排除union_id字段，避免空字符串触发唯一索引冲突
 		user = model.User{
 			OpenID:   openID,
 			Username: fmt.Sprintf("user_%s", openID), // 使用openid生成唯一username
 		}
 
-		if err := s.ds.DB().Create(&user).Error; err != nil {
+		if err := s.ds.DB().Omit("union_id").Create(&user).Error; err != nil {
 			return nil, fmt.Errorf("创建用户失败: %v", err)
 		}
 	} else if err != nil {
@@ -474,6 +495,42 @@ func (s *userBiz) findOrCreateUser(openID string) (*model.User, error) {
 	}
 
 	return &user, nil
+}
+
+// WebLogin Web端用户名密码登录
+func (s *userBiz) WebLogin(req *v1.WebLoginRequest) (*v1.WebLoginResponse, error) {
+	// 根据用户名查找用户
+	var user model.User
+	err := s.ds.DB().Where("username = ?", req.Username).First(&user).Error
+
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("用户名或密码错误")
+		}
+		return nil, fmt.Errorf("查询用户失败: %v", err)
+	}
+
+	// 验证密码（明文比对）
+	if user.Password != req.Password {
+		return nil, fmt.Errorf("用户名或密码错误")
+	}
+
+	// 更新最后登录时间
+	now := time.Now()
+	user.LastLogin = &now
+	s.ds.DB().Save(&user)
+
+	// 生成JWT token（Web端登录使用7天有效期）
+	token, err := s.generateWebToken(&user)
+	if err != nil {
+		return nil, fmt.Errorf("生成token失败: %v", err)
+	}
+
+	return &v1.WebLoginResponse{
+		AccessToken: token,
+		TokenType:   "Bearer",
+		User:        &user,
+	}, nil
 }
 
 // WechatLogin 微信登录

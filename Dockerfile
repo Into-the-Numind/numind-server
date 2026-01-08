@@ -1,9 +1,27 @@
-# 外部构建阶段 - 用于 CI/CD 中使用预构建的二进制文件
-FROM scratch AS external-binary
-ARG BINARY_PATH
-COPY $BINARY_PATH /app/numind
+# 构建阶段 - 在容器内编译源码
+FROM golang:1.24-bookworm AS builder
+
+# 安装必要的构建工具
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libc6-dev \
+    libmupdf-dev \
+    git
+
+WORKDIR /app
+
+# 复制依赖文件并下载
+COPY go.mod go.sum ./
+ENV GOPROXY=https://goproxy.cn,direct
+RUN go mod download
+
+# 复制源码并编译
+COPY . .
+# CGO_ENABLED=1 是必须的，因为使用了 go-fitz (libmupdf)
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o numind cmd/numind/main.go
 
 # 运行阶段 - 基于Ubuntu以获得更好的Chrome支持
+# 使用 Ubuntu 22.04 LTS（稳定版本，确保软件源可用）
 FROM ubuntu:22.04
 
 # 设置环境变量避免交互式安装
@@ -20,10 +38,19 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     bash \
     file \
     tzdata \
+    libmupdf-dev \
+    python3 \
+    python3-pip \
+    antiword \
     && rm -rf /var/lib/apt/lists/*
 
+# 安装 Python 增强解析依赖
+RUN pip3 install --no-cache-dir pymupdf python-docx
+
 # 安装Chrome依赖和字体
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+# Ubuntu 24.04: 先更新包列表，然后安装所有依赖
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     fonts-liberation \
     fonts-noto-cjk \
     fonts-wqy-microhei \
@@ -108,23 +135,23 @@ WORKDIR /app
 ARG ENV=dev
 
 # 根据环境复制对应的配置文件
-COPY config_${ENV}.yaml /app/config_${ENV}.yaml
+COPY config_*.yaml ./
 
 # 根据构建参数选择二进制文件来源
-ARG BINARY_SOURCE=external-binary
-# 使用条件复制，根据 BINARY_SOURCE 参数选择来源
-COPY --from=external-binary /app/numind /app/numind
+# 从构建阶段复制编译好的二进制文件
+COPY --from=builder /app/numind /app/numind
+COPY scripts /app/scripts
 
 # 验证配置文件复制成功
 RUN ls -la /app/config_*.yaml && \
     echo "✅ 配置文件复制成功" && \
     echo "=== 验证特殊渲染规则配置 ===" && \
     if [ -f "/app/config_${ENV}.yaml" ]; then \
-        echo "✅ 目标配置文件存在: /app/config_${ENV}.yaml"; \
-        echo "特殊渲染规则配置:"; \
-        grep -A 10 "special_rules:" "/app/config_${ENV}.yaml" || echo "未找到special_rules配置"; \
+    echo "✅ 目标配置文件存在: /app/config_${ENV}.yaml"; \
+    echo "特殊渲染规则配置:"; \
+    grep -A 10 "special_rules:" "/app/config_${ENV}.yaml" || echo "未找到special_rules配置"; \
     else \
-        echo "❌ 目标配置文件不存在: /app/config_${ENV}.yaml"; \
+    echo "❌ 目标配置文件不存在: /app/config_${ENV}.yaml"; \
     fi && \
     echo "================================"
 
@@ -189,23 +216,23 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 # 创建启动脚本
 RUN echo '#!/bin/bash\n\
-# 根据环境变量选择配置文件\n\
-if [ -n "$APP_ENV" ]; then\n\
+    # 根据环境变量选择配置文件\n\
+    if [ -n "$APP_ENV" ]; then\n\
     CONFIG_FILE="/app/config_${APP_ENV}.yaml"\n\
-else\n\
+    else\n\
     CONFIG_FILE="/app/config_dev.yaml"\n\
-fi\n\
-\n\
-# 检查配置文件是否存在\n\
-if [ ! -f "$CONFIG_FILE" ]; then\n\
+    fi\n\
+    \n\
+    # 检查配置文件是否存在\n\
+    if [ ! -f "$CONFIG_FILE" ]; then\n\
     echo "错误: 配置文件不存在: $CONFIG_FILE"\n\
     echo "可用的配置文件:"\n\
     ls -la /app/config_*.yaml\n\
     exit 1\n\
-fi\n\
-\n\
-echo "使用配置文件: $CONFIG_FILE"\n\
-exec /app/numind -c "$CONFIG_FILE" "$@"' > /app/start.sh && \
+    fi\n\
+    \n\
+    echo "使用配置文件: $CONFIG_FILE"\n\
+    exec /app/numind -c "$CONFIG_FILE" "$@"' > /app/start.sh && \
     chmod +x /app/start.sh
 
 # 清理缓存和临时文件，进一步减少镜像大小

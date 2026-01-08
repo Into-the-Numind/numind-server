@@ -11,11 +11,11 @@ import (
 
 // UserStore 定义了 user 模块在 store 层所实现的方法.
 type UserStore interface {
-	Create(ctx context.Context, user *model.UserM) error
-	Get(ctx context.Context, username string) (*model.UserM, error)
-	GetByID(ctx context.Context, userID uint) (*model.UserM, error)
-	Update(ctx context.Context, user *model.UserM) error
-	List(ctx context.Context, offset, limit int) (int64, []*model.UserM, error)
+	Create(ctx context.Context, user *model.User) error
+	Get(ctx context.Context, username string) (*model.User, error)
+	GetByID(ctx context.Context, userID uint) (*model.User, error)
+	Update(ctx context.Context, user *model.User) error
+	List(ctx context.Context, offset, limit int) (int64, []*model.User, error)
 	Delete(ctx context.Context, username string) error
 	GetUser(userID uint) (*model.User, error)
 	GetUserByID(ctx context.Context, userID uint) (*model.User, error)
@@ -36,13 +36,13 @@ func newUsers(db *gorm.DB) *users {
 }
 
 // Create 插入一条 user 记录.
-func (u *users) Create(ctx context.Context, user *model.UserM) error {
+func (u *users) Create(ctx context.Context, user *model.User) error {
 	return u.db.Create(&user).Error
 }
 
 // Get 根据用户名查询指定 user 的数据库记录.
-func (u *users) Get(ctx context.Context, username string) (*model.UserM, error) {
-	var user model.UserM
+func (u *users) Get(ctx context.Context, username string) (*model.User, error) {
+	var user model.User
 	if err := u.db.Where("username = ?", username).First(&user).Error; err != nil {
 		return nil, err
 	}
@@ -51,8 +51,8 @@ func (u *users) Get(ctx context.Context, username string) (*model.UserM, error) 
 }
 
 // GetByID 根据用户ID查询指定 user 的数据库记录.
-func (u *users) GetByID(ctx context.Context, userID uint) (*model.UserM, error) {
-	var user model.UserM
+func (u *users) GetByID(ctx context.Context, userID uint) (*model.User, error) {
+	var user model.User
 	if err := u.db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return nil, err
 	}
@@ -61,12 +61,12 @@ func (u *users) GetByID(ctx context.Context, userID uint) (*model.UserM, error) 
 }
 
 // Update 更新一条 user 数据库记录.
-func (u *users) Update(ctx context.Context, user *model.UserM) error {
+func (u *users) Update(ctx context.Context, user *model.User) error {
 	return u.db.Save(user).Error
 }
 
 // List 根据 offset 和 limit 返回 user 列表.
-func (u *users) List(ctx context.Context, offset, limit int) (count int64, ret []*model.UserM, err error) {
+func (u *users) List(ctx context.Context, offset, limit int) (count int64, ret []*model.User, err error) {
 	err = u.db.Offset(offset).Limit(defaultLimit(limit)).Order("id desc").Find(&ret).
 		Offset(-1).
 		Limit(-1).
@@ -78,7 +78,7 @@ func (u *users) List(ctx context.Context, offset, limit int) (count int64, ret [
 
 // Delete 根据 username 删除数据库 user 记录.
 func (u *users) Delete(ctx context.Context, username string) error {
-	err := u.db.Where("username = ?", username).Delete(&model.UserM{}).Error
+	err := u.db.Where("username = ?", username).Delete(&model.User{}).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
@@ -103,11 +103,12 @@ func (u *users) GetUserByID(ctx context.Context, userID uint) (*model.User, erro
 }
 
 func (u *users) UpdateUser(ctx context.Context, user *model.User) error {
-	return u.db.Save(user).Error
+	// 使用Select只更新特定字段，避免更新UnionID等敏感字段
+	return u.db.Model(user).Select("nickname", "avatar_url", "updated_at").Updates(user).Error
 }
 
 func (u *users) UpdateWechatUser(ctx context.Context, openid string, update map[string]interface{}) error {
-	return u.db.Model(&model.UserM{}).Where("open_id = ?", openid).Updates(update).Error
+	return u.db.Model(&model.User{}).Where("open_id = ?", openid).Updates(update).Error
 }
 
 func NewUserStore(db *gorm.DB) UserStore {

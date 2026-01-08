@@ -63,6 +63,11 @@ func (sse *SSEProcessor) ProcessSSE(req *Request, eventHandler func(*SSEEvent) e
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 
+		// 过滤 SSE 注释行（以 : 开头），防止心跳等注释内容混入输出
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+
 		if line == "" {
 			if currentData.Len() > 0 {
 				currentEvent.Data = json.RawMessage(currentData.String())
@@ -124,7 +129,9 @@ func (jsp *JSONStreamProcessor) ProcessJSONStream(req *Request, jsonHandler func
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
+		
+		// 过滤 SSE 注释行（以 : 开头）和空行，防止心跳等注释内容混入输出
+		if strings.HasPrefix(line, ":") || line == "" {
 			continue
 		}
 

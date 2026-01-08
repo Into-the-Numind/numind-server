@@ -48,6 +48,9 @@ func (ctrl *TemplateController) Update(c *gin.Context) {
 	if r.File != nil {
 		template.File = *r.File
 	}
+	if r.Preview != nil {
+		template.Preview = *r.Preview
+	}
 	if r.IsMemberOnly != nil {
 		template.IsMemberOnly = *r.IsMemberOnly
 	}
