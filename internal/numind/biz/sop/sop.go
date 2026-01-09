@@ -239,7 +239,7 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 	}()
 	// #endregion
 	// 验证模板是否存在
-	_, err := b.ds.Sop().GetTemplate(templateID)
+	_, err = b.ds.Sop().GetTemplate(templateID)
 	// #region agent log
 	func() {
 		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
