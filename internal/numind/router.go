@@ -11,6 +11,7 @@ import (
 	"numind-server/internal/numind/controller/v1/card"
 	"numind-server/internal/numind/controller/v1/category"
 	"numind-server/internal/numind/controller/v1/chat"
+	customercontroller "numind-server/internal/numind/controller/v1/customer"
 	"numind-server/internal/numind/controller/v1/image"
 	"numind-server/internal/numind/controller/v1/membership"
 	"numind-server/internal/numind/controller/v1/order"
