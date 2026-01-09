@@ -9,7 +9,7 @@ admin:
 
 jwt:
   secret: Rtg8BPKNEf2mB4mgvKONGPZZQSaJWNLijxR42qRgq0iBb5 # JWT 签发密钥
-  expire-hours: 24 # JWT 过期时间，单位：小时
+  expire-hours: 12 # JWT Token 过期时间，单位：小时
 
 # HTTPS 服务器相关配置
 tls:
