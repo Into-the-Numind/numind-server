@@ -158,7 +158,7 @@ func autoMigrate(db *gorm.DB) error {
 
 	// 先迁移基础表
 	err := db.AutoMigrate(
-		&model.User{},
+		// &model.User{}, // 暂时跳过 User 表迁移以避免 Error 3780 外键冲突
 		&model.CategoryM{},
 		&model.ArticleM{},
 		&model.Favorite{},
