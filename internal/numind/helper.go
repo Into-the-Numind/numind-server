@@ -236,9 +236,9 @@ func autoMigrate(db *gorm.DB) error {
 	}
 
 	// 第八步:创建用户模板权限表（依赖用户表和模板表）
-	if err := db.AutoMigrate(&model.UserTemplatePermission{}); err != nil {
-		return fmt.Errorf("failed to migrate user_template_permission: %v", err)
-	}
+	// if err := db.AutoMigrate(&model.UserTemplatePermission{}); err != nil {
+	// 	return fmt.Errorf("failed to migrate user_template_permission: %v", err)
+	// }
 
 	log.Infow("SOP tables migration completed")
 
