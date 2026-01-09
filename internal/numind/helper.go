@@ -140,11 +140,6 @@ func initStore() error {
 }
 
 func autoMigrate(db *gorm.DB) error {
-	// 临时禁用外键检查，防止迁移时的外键冲突导致 Error 3780
-	// 这是一个底层兜底方案，确保应用能正常启动
-	db.Exec("SET FOREIGN_KEY_CHECKS = 0")
-	defer db.Exec("SET FOREIGN_KEY_CHECKS = 1")
-
 	log.Infow("Migrating database...")
 
 	// 获取数据库字符集配置

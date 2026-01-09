@@ -20,6 +20,7 @@ type User struct {
 
 	// 客户层级管理字段
 	ParentUserID *uint `gorm:"type:int unsigned;index" json:"parent_user_id,omitempty"` // 上级客户ID,NULL表示直接客户
+	Parent       *User `gorm:"foreignKey:ParentUserID;references:ID" json:"parent,omitempty"`
 
 	// 会员相关字段
 	MembershipType           string     `gorm:"size:20;default:'free';index" json:"membership_type"` // 会员类型：free, subscription, package
