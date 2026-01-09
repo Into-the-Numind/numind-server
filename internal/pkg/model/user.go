@@ -17,10 +17,10 @@ type User struct {
 	Nickname  string `gorm:"size:100" json:"nickname"`
 	AvatarURL string `gorm:"size:512" json:"avatar_url"`
 	IsPro     bool   `gorm:"default:false" json:"is_pro"`
-	
+
 	// 客户层级管理字段
-	ParentUserID *uint `gorm:"index" json:"parent_user_id,omitempty"` // 上级客户ID,NULL表示直接客户
-	
+	ParentUserID *uint `gorm:"type:int unsigned;index" json:"parent_user_id,omitempty"` // 上级客户ID,NULL表示直接客户
+
 	// 会员相关字段
 	MembershipType           string     `gorm:"size:20;default:'free';index" json:"membership_type"` // 会员类型：free, subscription, package
 	MembershipExpires        *time.Time `gorm:"index" json:"membership_expires"`                     // 会员到期时间
@@ -33,11 +33,11 @@ type User struct {
 	FreeUserLastResetDate    *time.Time `gorm:"index" json:"free_user_last_reset_date"`        // 免费用户上次重置时间
 	CardNum                  int        `gorm:"default:0" json:"card_num"`
 	ChatNum                  int        `gorm:"default:0" json:"chat_num"`
-	
+
 	// SOP运行统计字段
-	TotalSopRuns   int        `gorm:"default:0;index" json:"total_sop_runs"`  // 总SOP运行次数
-	MonthlySopRuns int        `gorm:"default:0" json:"monthly_sop_runs"`      // 当月SOP运行次数
-	MonthlyResetAt *time.Time `gorm:"index" json:"monthly_reset_at"`          // 上次月度重置时间
+	TotalSopRuns   int        `gorm:"default:0;index" json:"total_sop_runs"` // 总SOP运行次数
+	MonthlySopRuns int        `gorm:"default:0" json:"monthly_sop_runs"`     // 当月SOP运行次数
+	MonthlyResetAt *time.Time `gorm:"index" json:"monthly_reset_at"`         // 上次月度重置时间
 
 	// 管理员相关字段
 	Username  string     `gorm:"size:50;uniqueIndex" json:"username,omitempty"`
