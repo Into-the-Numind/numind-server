@@ -281,7 +281,7 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/sop/templates/:id/nodes", userSopc.GetTemplateNodes)       // 获取模板的所有节点
 		authGroup.POST("/sop/templates/:id/execute", userSopc.ExecuteTemplate)     // 执行模板（异步，一次性执行所有节点）
 		authGroup.GET("/sop/templates/executed", userSopc.ListMyExecutedTemplates) // 获取当前用户已执行的模板列表（按模板分组）
-		authGroup.GET("/sop/templates/:id/runs", userSopc.ListTemplateRuns) // 获取指定模板下的所有历史运行记录（包含完整信息）
+		authGroup.GET("/sop/templates/:id/runs", userSopc.ListTemplateRuns)        // 获取指定模板下的所有历史运行记录（包含完整信息）
 
 		// 逐步执行SOP节点（新增）- 注意：这些路由必须在 /sop/runs/:id 之前注册，避免路由冲突
 		authGroup.POST("/sop/runs", userSopc.CreateRun)                                    // 创建Run（不立即执行）
@@ -301,6 +301,17 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/sop/runs", userSopc.ListMyRuns)              // 获取我的执行记录列表
 		authGroup.GET("/sop/notes/:id", userSopc.GetNote)            // 查看笔记详情
 		authGroup.GET("/sop/notes", userSopc.ListMyNotes)            // 获取我的笔记列表
+	}
+
+	// 客户管理相关
+	{
+		customerCtrl := customercontroller.NewCustomerController(b.Customers())
+		authGroup.GET("/customers/statistics", customerCtrl.GetStatistics)                          // 获取客户统计数据
+		authGroup.GET("/customers/sub-users", customerCtrl.ListSubUsers)                            // 获取二级客户列表
+		authGroup.GET("/customers/sub-users/:user_id", customerCtrl.GetSubUserDetail)               // 获取二级客户详情
+		authGroup.GET("/customers/sub-users/:user_id/templates", customerCtrl.ListSubUserTemplates) // 获取二级客户已授权模板
+		authGroup.POST("/customers/sub-users/:user_id/templates", customerCtrl.GrantTemplates)      // 为二级客户授权模板
+		authGroup.DELETE("/customers/sub-users/:user_id/templates", customerCtrl.RevokeTemplates)   // 撤销二级客户模板权限
 	}
 
 	// #region agent log

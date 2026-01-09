@@ -217,6 +217,16 @@ func (b *sopBiz) ExecuteTemplate(ctx context.Context, templateID, userID uint, t
 
 // CreateRun 创建Run（不立即执行）
 func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text string) (*model.SopRun, error) {
+	// 权限验证:检查用户是否有权限执行此模板
+	hasPermission, err := b.ds.Customers().HasTemplatePermission(ctx, userID, templateID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check template permission: %w", err)
+	}
+	if !hasPermission {
+		log.C(ctx).Warnw("User has no permission to execute template", "user_id", userID, "template_id", templateID)
+		return nil, fmt.Errorf("您没有权限执行此模板")
+	}
+	log.C(ctx).Infow("Template permission check passed", "user_id", userID, "template_id", templateID)
 	// #region agent log
 	func() {
 		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -664,6 +674,12 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 					"final_note_id": note.ID,
 					"finished_at":   finishTime,
 				})
+				log.C(ctx).Infow("SOP execution completed, updating run count", "run_id", runID, "user_id", run.UserID)
+				// 更新运行次数统计
+				if err := b.ds.Customers().IncrementSopRunCount(ctx, run.UserID); err != nil {
+					log.C(ctx).Errorw("Failed to increment sop run count", "user_id", run.UserID, "err", err)
+					// 不阻断流程,仅记录日志
+				}
 			}
 		}
 	}

@@ -230,9 +230,14 @@ func autoMigrate(db *gorm.DB) error {
 		log.Infow("Sop_file fields fixed successfully")
 	}
 
-	// 第七步：创建对话消息表（依赖执行记录表和用户表）
+	// 第七步:创建对话消息表（依赖执行记录表和用户表）
 	if err := db.AutoMigrate(&model.SopChatMsg{}); err != nil {
 		return fmt.Errorf("failed to migrate sop_chat_message: %v", err)
+	}
+
+	// 第八步:创建用户模板权限表（依赖用户表和模板表）
+	if err := db.AutoMigrate(&model.UserTemplatePermission{}); err != nil {
+		return fmt.Errorf("failed to migrate user_template_permission: %v", err)
 	}
 
 	log.Infow("SOP tables migration completed")

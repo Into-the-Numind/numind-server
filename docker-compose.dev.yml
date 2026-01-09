@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  numind-server-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: numind-server-dev
+    restart: unless-stopped
+    ports:
+      - "9091:9091"
+    environment:
+      - APP_ENV=dev
+      - GIN_MODE=debug
+    volumes:
+      - ./logs-dev:/app/logs
+      - ./config_dev.yaml:/app/config_dev.yaml:ro
+      - /opt/numind/dev:/opt/numind
+    networks:
+      - numind-network
+
+networks:
+  numind-network:
+    external: true
