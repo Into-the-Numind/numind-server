@@ -155,6 +155,10 @@ func (c *customerBiz) GetCustomerStatistics(ctx context.Context, userID uint) (*
 		TotalTemplatesCount: len(templates),
 		MyTotalSopRuns:      user.TotalSopRuns,
 		MyMonthlySopRuns:    user.MonthlySopRuns,
+		// 用户等级相关字段（用于侧边栏运行次数卡片）
+		UserTier:         user.GetActualUserTier(),
+		TierExpires:      user.TierExpires,
+		RemainingSOPRuns: user.GetRemainingSOPRuns(),
 	}, nil
 }
 

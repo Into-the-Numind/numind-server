@@ -62,4 +62,8 @@ type CustomerStatisticsResponse struct {
 	TotalTemplatesCount int `json:"total_templates_count"` // 总模板数
 	MyTotalSopRuns      int `json:"my_total_sop_runs"`     // 我的总运行次数
 	MyMonthlySopRuns    int `json:"my_monthly_sop_runs"`   // 我的当月运行次数
+	// 用户等级相关字段（用于侧边栏运行次数卡片）
+	UserTier         string     `json:"user_tier"`          // 用户等级：free, standard, premium
+	TierExpires      *time.Time `json:"tier_expires"`       // 等级到期时间
+	RemainingSOPRuns int        `json:"remaining_sop_runs"` // 剩余SOP运行次数（-1表示无限次）
 }
