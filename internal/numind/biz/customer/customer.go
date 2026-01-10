@@ -62,6 +62,10 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 			MonthlySopRuns:      user.MonthlySopRuns,
 			AuthorizedTemplates: len(permissions),
 			CreatedAt:           user.CreatedAt,
+			// 用户等级相关字段
+			UserTier:         user.GetActualUserTier(),
+			TierExpires:      user.TierExpires,
+			RemainingSOPRuns: user.GetRemainingSOPRuns(),
 		})
 	}
 
@@ -113,6 +117,10 @@ func (c *customerBiz) GetSubUserDetail(ctx context.Context, parentUserID, subUse
 			MonthlySopRuns:      user.MonthlySopRuns,
 			AuthorizedTemplates: len(templateList),
 			CreatedAt:           user.CreatedAt,
+			// 用户等级相关字段
+			UserTier:         user.GetActualUserTier(),
+			TierExpires:      user.TierExpires,
+			RemainingSOPRuns: user.GetRemainingSOPRuns(),
 		},
 		AuthorizedTemplateList: templateList,
 	}, nil

@@ -40,6 +40,10 @@ type User struct {
 	MonthlySopRuns int        `gorm:"default:0" json:"monthly_sop_runs"`     // 当月SOP运行次数
 	MonthlyResetAt *time.Time `gorm:"index" json:"monthly_reset_at"`         // 上次月度重置时间
 
+	// 用户等级字段（控制SOP运行权限）
+	UserTier    string     `gorm:"size:20;default:'free';index" json:"user_tier"` // 用户等级：free, standard, premium
+	TierExpires *time.Time `gorm:"index" json:"tier_expires"`                     // 等级到期时间
+
 	// 管理员相关字段
 	Username  string     `gorm:"size:50;uniqueIndex" json:"username,omitempty"`
 	Password  string     `gorm:"size:255" json:"-"`
@@ -66,6 +70,16 @@ const (
 	MembershipTypePackage      = "package"      // 付费资源包（次数）
 	MembershipTypeBoth         = "both"         // 同时拥有订阅会员和资源包
 )
+
+// UserTier 定义用户等级常量（控制SOP运行权限）
+const (
+	UserTierFree     = "free"     // 免费用户：不可运行SOP
+	UserTierStandard = "standard" // 普通会员：每月20次SOP
+	UserTierPremium  = "premium"  // 高级会员：无限次SOP
+)
+
+// StandardUserMonthlySOPLimit 普通会员每月SOP运行次数上限
+const StandardUserMonthlySOPLimit = 20
 
 // IsMembershipActive 检查会员是否有效
 func (u *User) IsMembershipActive() bool {
@@ -314,4 +328,128 @@ func (u *User) GetRemainingFreeUserMonthlyBooks() int {
 		return 0
 	}
 	return remaining
+}
+
+// ============================================================================
+// SOP 运行权限相关方法（用户等级控制）
+// ============================================================================
+
+// GetActualUserTier 获取实际的用户等级（考虑过期自动降级）
+// 如果会员已过期，返回 UserTierFree
+func (u *User) GetActualUserTier() string {
+	// 如果是免费用户，直接返回
+	if u.UserTier == "" || u.UserTier == UserTierFree {
+		return UserTierFree
+	}
+
+	// 检查是否过期
+	if u.TierExpires != nil && u.TierExpires.Before(time.Now()) {
+		return UserTierFree // 已过期，降级为免费用户
+	}
+
+	return u.UserTier
+}
+
+// CanRunSOP 检查用户是否可以运行SOP
+// 返回值：是否可运行，不可运行时的原因
+func (u *User) CanRunSOP() (bool, string) {
+	actualTier := u.GetActualUserTier()
+
+	switch actualTier {
+	case UserTierFree:
+		return false, "免费用户无法运行SOP，请升级为会员"
+
+	case UserTierStandard:
+		// 检查是否过期
+		if u.TierExpires != nil && u.TierExpires.Before(time.Now()) {
+			return false, "会员已过期，请续费"
+		}
+		// 检查是否需要重置月度次数（跨自然月）
+		if u.IsInNewSOPMonth() {
+			// 需要重置，说明本月还未使用过，可以运行
+			return true, ""
+		}
+		// 检查月度运行次数限制
+		if u.MonthlySopRuns >= StandardUserMonthlySOPLimit {
+			return false, fmt.Sprintf("本月运行次数已达上限（%d次），请升级为高级会员或等待下月重置", StandardUserMonthlySOPLimit)
+		}
+		return true, ""
+
+	case UserTierPremium:
+		// 检查是否过期
+		if u.TierExpires != nil && u.TierExpires.Before(time.Now()) {
+			return false, "会员已过期，请续费"
+		}
+		return true, ""
+
+	default:
+		return false, "未知用户等级"
+	}
+}
+
+// GetRemainingSOPRuns 获取用户剩余可运行SOP次数
+// 返回值：剩余次数（-1 表示无限次，0 表示无法运行）
+func (u *User) GetRemainingSOPRuns() int {
+	actualTier := u.GetActualUserTier()
+
+	switch actualTier {
+	case UserTierFree:
+		return 0
+
+	case UserTierStandard:
+		// 检查是否已过期
+		if u.TierExpires != nil && u.TierExpires.Before(time.Now()) {
+			return 0
+		}
+		// 如果跨月了，返回满额次数（IncrementSopRunCount 会自动重置）
+		if u.IsInNewSOPMonth() {
+			return StandardUserMonthlySOPLimit
+		}
+		// 计算剩余次数
+		remaining := StandardUserMonthlySOPLimit - u.MonthlySopRuns
+		if remaining < 0 {
+			return 0
+		}
+		return remaining
+
+	case UserTierPremium:
+		// 检查是否已过期
+		if u.TierExpires != nil && u.TierExpires.Before(time.Now()) {
+			return 0
+		}
+		return -1 // 无限次
+
+	default:
+		return 0
+	}
+}
+
+// IsInNewSOPMonth 检查是否已进入新的自然月（需要重置月度SOP运行次数）
+func (u *User) IsInNewSOPMonth() bool {
+	if u.MonthlyResetAt == nil {
+		// 从未重置过，需要重置
+		return true
+	}
+
+	now := time.Now()
+	lastReset := *u.MonthlyResetAt
+
+	// 检查是否跨自然月（比较年月）
+	return now.Year() != lastReset.Year() || now.Month() != lastReset.Month()
+}
+
+// GetUserTierDisplayName 获取用户等级的显示名称
+func (u *User) GetUserTierDisplayName() string {
+	actualTier := u.GetActualUserTier()
+
+	switch actualTier {
+	case UserTierFree:
+		return "免费用户"
+	case UserTierStandard:
+		return "普通会员"
+	case UserTierPremium:
+		return "高级会员"
+	default:
+		return "免费用户"
+	}
 }

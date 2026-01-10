@@ -18,6 +18,10 @@ type SubUserInfo struct {
 	MonthlySopRuns      int        `json:"monthly_sop_runs"`
 	AuthorizedTemplates int        `json:"authorized_templates"` // 已授权的模板数量
 	CreatedAt           time.Time  `json:"created_at"`
+	// 用户等级相关字段
+	UserTier         string     `json:"user_tier"`          // 用户等级：free, standard, premium
+	TierExpires      *time.Time `json:"tier_expires"`       // 等级到期时间
+	RemainingSOPRuns int        `json:"remaining_sop_runs"` // 剩余SOP运行次数（-1表示无限次）
 }
 
 // ListSubUsersResponse 二级客户列表响应

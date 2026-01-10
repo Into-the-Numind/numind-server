@@ -2,6 +2,7 @@ package sop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -217,6 +218,29 @@ func (b *sopBiz) ExecuteTemplate(ctx context.Context, templateID, userID uint, t
 
 // CreateRun 创建Run（不立即执行）
 func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text string) (*model.SopRun, error) {
+	// ===== 用户等级权限检查（控制SOP运行权限）=====
+	user, err := b.ds.Users().GetByID(ctx, userID)
+	if err != nil {
+		log.C(ctx).Errorw("Failed to get user for SOP permission check", "user_id", userID, "err", err)
+		return nil, fmt.Errorf("获取用户信息失败: %w", err)
+	}
+
+	// 检查用户是否可以运行SOP（基于用户等级和月度次数限制）
+	canRun, reason := user.CanRunSOP()
+	if !canRun {
+		log.C(ctx).Warnw("User cannot run SOP",
+			"user_id", userID,
+			"user_tier", user.UserTier,
+			"monthly_sop_runs", user.MonthlySopRuns,
+			"reason", reason)
+		return nil, errors.New(reason)
+	}
+	log.C(ctx).Infow("User SOP permission check passed",
+		"user_id", userID,
+		"user_tier", user.GetActualUserTier(),
+		"remaining_runs", user.GetRemainingSOPRuns())
+
+	// ===== 模板权限检查 =====
 	// 权限验证:检查用户是否有权限执行此模板
 	hasPermission, err := b.ds.Customers().HasTemplatePermission(ctx, userID, templateID)
 	if err != nil {
