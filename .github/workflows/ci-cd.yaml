@@ -458,8 +458,10 @@ jobs:
             
             # 启动新容器
             echo "Starting new container..."
+            docker network create numind-network 2>/dev/null || true
             docker run -d \
               --name numind-server-prod \
+              --network numind-network \
               -p 9095:9091 \
               -p 9096:9092 \
               -e APP_ENV=prod \
