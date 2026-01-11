@@ -424,7 +424,8 @@ func (u *User) GetRemainingSOPRuns() int {
 	}
 }
 
-// IsInNewSOPMonth 检查是否已进入新的自然月（需要重置月度SOP运行次数）
+// IsInNewSOPMonth 检查是否已进入新的30天周期（需要重置月度SOP运行次数）
+// 周期从用户成为会员那天开始计算，每30天重置一次
 func (u *User) IsInNewSOPMonth() bool {
 	if u.MonthlyResetAt == nil {
 		// 从未重置过，需要重置
@@ -434,8 +435,8 @@ func (u *User) IsInNewSOPMonth() bool {
 	now := time.Now()
 	lastReset := *u.MonthlyResetAt
 
-	// 检查是否跨自然月（比较年月）
-	return now.Year() != lastReset.Year() || now.Month() != lastReset.Month()
+	// 检查是否已过30天周期
+	return now.After(lastReset.AddDate(0, 0, 30))
 }
 
 // GetUserTierDisplayName 获取用户等级的显示名称

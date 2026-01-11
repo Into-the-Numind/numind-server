@@ -51,6 +51,7 @@ type SopRun struct {
 	Status         string     `gorm:"size:20;default:'pending';index" json:"status"` // pending, running, succeeded, failed
 	ConversationID string     `gorm:"size:100;index" json:"conversation_id"`         // 隔离的对话ID
 	FinalNoteID    *uint      `gorm:"index" json:"final_note_id"`                    // 最终生成的Note ID（不设置外键约束，避免循环依赖）
+	Counted        bool       `gorm:"default:false;index" json:"counted"`            // 是否已计入用户的SOP运行次数（防止重复计数）
 	StartedAt      *time.Time `json:"started_at"`
 	FinishedAt     *time.Time `json:"finished_at"`
 	ErrorMessage   string     `gorm:"type:text" json:"error_message"` // 错误信息
