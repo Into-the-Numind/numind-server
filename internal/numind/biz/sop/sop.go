@@ -676,6 +676,21 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		return fmt.Errorf("failed to update node run: %w", err)
 	}
 
+	// 节点执行成功后，检查是否需要计入运行次数（首次成功运行节点时计入）
+	// 条件：run.Counted = false 表示此run尚未计入运行次数
+	if !run.Counted {
+		log.C(ctx).Infow("First successful node execution, incrementing run count", "run_id", runID, "user_id", run.UserID)
+		// 更新运行次数统计
+		if err := b.ds.Customers().IncrementSopRunCount(ctx, run.UserID); err != nil {
+			log.C(ctx).Errorw("Failed to increment sop run count", "user_id", run.UserID, "err", err)
+			// 不阻断流程,仅记录日志
+		}
+		// 标记此run已计入运行次数，防止后续节点重复计数
+		b.ds.Sop().UpdateRun(runID, map[string]interface{}{
+			"counted": true,
+		})
+	}
+
 	// 检查是否所有节点都执行完成（重新获取最新的 NodeRuns 状态）
 	allNodeRunsForCheck, err := b.ds.Sop().ListNodeRunsByRun(runID)
 	if err == nil {
@@ -698,12 +713,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 					"final_note_id": note.ID,
 					"finished_at":   finishTime,
 				})
-				log.C(ctx).Infow("SOP execution completed, updating run count", "run_id", runID, "user_id", run.UserID)
-				// 更新运行次数统计
-				if err := b.ds.Customers().IncrementSopRunCount(ctx, run.UserID); err != nil {
-					log.C(ctx).Errorw("Failed to increment sop run count", "user_id", run.UserID, "err", err)
-					// 不阻断流程,仅记录日志
-				}
+				log.C(ctx).Infow("SOP execution completed", "run_id", runID, "user_id", run.UserID)
 			}
 		}
 	}
