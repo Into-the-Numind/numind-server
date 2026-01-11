@@ -16,6 +16,7 @@ import (
 	"numind-server/internal/numind/biz/category"
 	"numind-server/internal/numind/biz/chat"
 	"numind-server/internal/numind/biz/config"
+	customerbiz "numind-server/internal/numind/biz/customer"
 	"numind-server/internal/numind/biz/feedback"
 	"numind-server/internal/numind/biz/image"
 	"numind-server/internal/numind/biz/order"
@@ -54,8 +55,9 @@ type IBiz interface {
 	Configs() config.ConfigBiz
 	Payments() payment.PaymentBiz
 	AccountRecords() accountrecordbiz.AccountRecordBiz
-	Rag() *ragbiz.RagService // RAG服务
-	Sop() sopbiz.ISopBiz     // SOP服务
+	Rag() *ragbiz.RagService             // RAG服务
+	Sop() sopbiz.ISopBiz                 // SOP服务
+	Customers() customerbiz.ICustomerBiz // 客户管理服务
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -217,4 +219,8 @@ func (b *biz) Rag() *ragbiz.RagService {
 
 func (b *biz) Sop() sopbiz.ISopBiz {
 	return b.sopService
+}
+
+func (b *biz) Customers() customerbiz.ICustomerBiz {
+	return customerbiz.New(b.ds)
 }
