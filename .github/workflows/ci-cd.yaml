@@ -129,6 +129,7 @@ jobs:
           username: root
           password: Numind2025
           port: 22
+          command_timeout: 5m
           script: |
             # 设置环境变量
             export GITHUB_ACTOR="${{ github.actor }}"
@@ -263,6 +264,7 @@ jobs:
           host: ${{ env.QA_HOST }}
           username: root
           password: Numind2025
+          command_timeout: 5m
           script: |
             # 设置环境变量
             export GITHUB_ACTOR="${{ github.actor }}"
@@ -393,6 +395,7 @@ jobs:
           host: ${{ env.PROD_HOST }}
           username: root
           password: Numind2025
+          command_timeout: 5m
           script: |
             # 设置环境变量
             export GITHUB_ACTOR="${{ github.actor }}"
@@ -650,6 +653,7 @@ jobs:
           username: root
           password: Numind2025
           port: 22
+          command_timeout: 5m
           script: |
             echo "Docker1234" | docker login -u neozhang96 --password-stdin
             
@@ -714,6 +718,7 @@ jobs:
           host: 49.233.219.254
           username: root
           password: Numind2025
+          command_timeout: 5m
           script: |
             echo "Docker1234" | docker login -u neozhang96 --password-stdin
             
@@ -778,6 +783,7 @@ jobs:
           host: 49.233.219.254
           username: root
           password: Numind2025
+          command_timeout: 5m
           script: |
             IMAGE_TAG="${{ github.ref_name }}"
             echo "Docker1234" | docker login -u neozhang96 --password-stdin
