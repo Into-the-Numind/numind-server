@@ -169,6 +169,39 @@ func (ctrl *SopController) BatchDeleteRuns(c *gin.Context) {
 	core.WriteResponse(c, nil, gin.H{"message": "批量删除成功"})
 }
 
+// GetRun 获取SOP执行记录（用户端）
+func (ctrl *SopController) GetRun(c *gin.Context) {
+	log.C(c).Infow("User get SOP run called")
+
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的执行ID"), nil)
+		return
+	}
+
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	run, err := ctrl.sopBiz.GetRun(c, uint(id))
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("执行记录不存在"), nil)
+		return
+	}
+
+	// 验证是否是用户自己的记录
+	if run.UserID != user.ID {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("无权访问此记录"), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, run)
+}
+
 // GetRunDetail 获取SOP执行详情（用户端）
 func (ctrl *SopController) GetRunDetail(c *gin.Context) {
 	log.C(c).Infow("User get SOP run detail called")
