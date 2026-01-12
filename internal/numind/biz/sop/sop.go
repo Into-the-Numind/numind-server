@@ -59,6 +59,8 @@ type ISopBiz interface {
 	ListChatMessages(ctx context.Context, runID uint, userID uint) ([]model.SopChatMsg, error)
 
 	// Admin operations
+	DeleteRun(ctx context.Context, runID uint, userID uint) error
+	DeleteRuns(ctx context.Context, runIDs []uint, userID uint) error
 	CleanZombieRuns(ctx context.Context, timeout time.Duration) error
 }
 
@@ -1230,6 +1232,42 @@ func (b *sopBiz) ListChatMessages(ctx context.Context, runID uint, userID uint) 
 		return nil, fmt.Errorf("failed to list chat messages: %w", err)
 	}
 	return msgs, nil
+}
+
+// DeleteRun 删除指定用户的 SOP 记录（含级联数据）
+func (b *sopBiz) DeleteRun(ctx context.Context, runID uint, userID uint) error {
+	// 1. 校验所有权
+	isOwner, err := b.ds.Sop().CheckRunOwnership(runID, userID)
+	if err != nil {
+		return err
+	}
+	if !isOwner {
+		return errors.New("无权删除此运行记录")
+	}
+
+	// 2. 调用 store 层执行物理删除
+	return b.ds.Sop().DeleteRun(runID)
+}
+
+// DeleteRuns 批量删除 SOP 记录
+func (b *sopBiz) DeleteRuns(ctx context.Context, runIDs []uint, userID uint) error {
+	if len(runIDs) == 0 {
+		return nil
+	}
+
+	// 1. 逐个校验所有权，确保安全性
+	for _, runID := range runIDs {
+		isOwner, err := b.ds.Sop().CheckRunOwnership(runID, userID)
+		if err != nil {
+			return err
+		}
+		if !isOwner {
+			return fmt.Errorf("无权删除运行记录 #%d", runID)
+		}
+	}
+
+	// 2. 调用 store 层执行批量物理删除
+	return b.ds.Sop().DeleteRuns(runIDs)
 }
 
 // CleanZombieRuns 清理僵尸任务（将长时间运行中的任务标记为失败）

@@ -73,8 +73,12 @@ type ISopStore interface {
 	ResetZombieRuns(timeout time.Duration) (int64, error)
 
 	// Cleanup operations
+	DeleteRun(runID uint) error
+	DeleteRuns(runIDs []uint) error
+	DeleteNodeRunsByRun(runID uint) error
 	DeleteNodeRunsAfterSort(runID uint, sort int) error
 	DeleteNotesByRun(runID uint) error
+	DeleteFilesByRun(runID uint) error
 	DeleteChatMessagesByRun(runID uint) error
 }
 
@@ -612,6 +616,73 @@ func (s *sopStore) ResetZombieRuns(timeout time.Duration) (int64, error) {
 	return result.RowsAffected, result.Error
 }
 
+// DeleteRun 物理删除指定任务及其所有关联数据
+func (s *sopStore) DeleteRun(runID uint) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		// 1. 删除节点运行记录
+		if err := tx.Where("run_id = ?", runID).Delete(&model.SopNodeRun{}).Error; err != nil {
+			return err
+		}
+
+		// 2. 删除笔记
+		if err := tx.Where("run_id = ?", runID).Delete(&model.SopNote{}).Error; err != nil {
+			return err
+		}
+
+		// 3. 删除文件关联（注意：这里只删除数据库记录，物理文件由COS清理策略处理）
+		if err := tx.Where("run_id = ?", runID).Delete(&model.SopFile{}).Error; err != nil {
+			return err
+		}
+
+		// 4. 删除对话消息
+		if err := tx.Where("run_id = ?", runID).Delete(&model.SopChatMsg{}).Error; err != nil {
+			return err
+		}
+
+		// 5. 最后删除 Run 主记录
+		if err := tx.Delete(&model.SopRun{}, runID).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
+}
+
+// DeleteRuns 批量物理删除任务
+func (s *sopStore) DeleteRuns(runIDs []uint) error {
+	if len(runIDs) == 0 {
+		return nil
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		// 1. 批量删除节点运行记录
+		if err := tx.Where("run_id IN ?", runIDs).Delete(&model.SopNodeRun{}).Error; err != nil {
+			return err
+		}
+		// 2. 批量删除笔记
+		if err := tx.Where("run_id IN ?", runIDs).Delete(&model.SopNote{}).Error; err != nil {
+			return err
+		}
+		// 3. 批量删除文件关联
+		if err := tx.Where("run_id IN ?", runIDs).Delete(&model.SopFile{}).Error; err != nil {
+			return err
+		}
+		// 4. 批量删除对话消息
+		if err := tx.Where("run_id IN ?", runIDs).Delete(&model.SopChatMsg{}).Error; err != nil {
+			return err
+		}
+		// 5. 最后批量删除 Run 主记录
+		if err := tx.Where("id IN ?", runIDs).Delete(&model.SopRun{}).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+// DeleteNodeRunsByRun 删除指定任务的所有节点运行记录
+func (s *sopStore) DeleteNodeRunsByRun(runID uint) error {
+	return s.db.Where("run_id = ?", runID).Delete(&model.SopNodeRun{}).Error
+}
+
 // DeleteNodeRunsAfterSort 删除指定任务中排序在指定位置之后的执行记录
 func (s *sopStore) DeleteNodeRunsAfterSort(runID uint, sort int) error {
 	return s.db.Where("run_id = ? AND sort > ?", runID, sort).Delete(&model.SopNodeRun{}).Error
@@ -620,6 +691,11 @@ func (s *sopStore) DeleteNodeRunsAfterSort(runID uint, sort int) error {
 // DeleteNotesByRun 删除指定任务关联的所有笔记
 func (s *sopStore) DeleteNotesByRun(runID uint) error {
 	return s.db.Where("run_id = ?", runID).Delete(&model.SopNote{}).Error
+}
+
+// DeleteFilesByRun 删除指定任务关联的所有文件记录
+func (s *sopStore) DeleteFilesByRun(runID uint) error {
+	return s.db.Where("run_id = ?", runID).Delete(&model.SopFile{}).Error
 }
 
 // DeleteChatMessagesByRun 删除指定任务关联的所有对话消息

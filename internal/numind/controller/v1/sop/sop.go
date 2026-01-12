@@ -113,9 +113,9 @@ func (ctrl *SopController) ExecuteTemplate(c *gin.Context) {
 	core.WriteResponse(c, nil, run)
 }
 
-// GetRun 获取SOP执行记录（用户端，只能查看自己的）
-func (ctrl *SopController) GetRun(c *gin.Context) {
-	log.C(c).Infow("User get SOP run called")
+// DeleteRun 删除指定执行记录（物理删除）
+func (ctrl *SopController) DeleteRun(c *gin.Context) {
+	log.C(c).Infow("User delete SOP run called")
 
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
@@ -131,19 +131,42 @@ func (ctrl *SopController) GetRun(c *gin.Context) {
 	}
 	user := currentUser.(*model.User)
 
-	run, err := ctrl.sopBiz.GetRun(c, uint(id))
-	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("执行记录不存在"), nil)
+	// 调用biz层执行删除（biz层会校验所有权）
+	if err := ctrl.sopBiz.DeleteRun(c, uint(id), user.ID); err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
 		return
 	}
 
-	// 验证是否是用户自己的记录
-	if run.UserID != user.ID {
-		core.WriteResponse(c, errno.ErrForbidden.SetMessage("无权访问此记录"), nil)
+	core.WriteResponse(c, nil, gin.H{"message": "删除成功"})
+}
+
+// BatchDeleteRuns 批量删除执行记录
+func (ctrl *SopController) BatchDeleteRuns(c *gin.Context) {
+	log.C(c).Infow("User batch delete SOP runs called")
+
+	var req struct {
+		IDs []uint `json:"ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
 		return
 	}
 
-	core.WriteResponse(c, nil, run)
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	// 调用biz层执行批量删除
+	if err := ctrl.sopBiz.DeleteRuns(c, req.IDs, user.ID); err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{"message": "批量删除成功"})
 }
 
 // GetRunDetail 获取SOP执行详情（用户端）

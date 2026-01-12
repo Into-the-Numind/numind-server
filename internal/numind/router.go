@@ -297,11 +297,13 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/sop/runs/:id/chat-messages", userSopc.ListRunChatMessages)         // 获取Run聊天记录
 		authGroup.GET("/sop/runs/:id/status", userSopc.GetRunStatus)                       // 获取Run执行状态
 
-		authGroup.GET("/sop/runs/:id", userSopc.GetRun)              // 查看执行记录
-		authGroup.GET("/sop/runs/:id/detail", userSopc.GetRunDetail) // 查看执行详情
-		authGroup.GET("/sop/runs", userSopc.ListMyRuns)              // 获取我的执行记录列表
-		authGroup.GET("/sop/notes/:id", userSopc.GetNote)            // 查看笔记详情
-		authGroup.GET("/sop/notes", userSopc.ListMyNotes)            // 获取我的笔记列表
+		authGroup.GET("/sop/runs/:id", userSopc.GetRun)                    // 查看执行记录
+		authGroup.DELETE("/sop/runs/:id", userSopc.DeleteRun)              // 物理删除执行记录
+		authGroup.POST("/sop/runs/batch/delete", userSopc.BatchDeleteRuns) // 批量删除执行记录
+		authGroup.GET("/sop/runs/:id/detail", userSopc.GetRunDetail)       // 查看执行详情
+		authGroup.GET("/sop/runs", userSopc.ListMyRuns)                    // 获取我的执行记录列表
+		authGroup.GET("/sop/notes/:id", userSopc.GetNote)                  // 查看笔记详情
+		authGroup.GET("/sop/notes", userSopc.ListMyNotes)                  // 获取我的笔记列表
 	}
 
 	// 客户管理相关
