@@ -9,8 +9,8 @@ import (
 	v1 "numind-server/pkg/api/numind/v1"
 )
 
-// CustomerBiz 客户业务逻辑接口
-type CustomerBiz interface {
+// ICustomerBiz 客户业务逻辑接口
+type ICustomerBiz interface {
 	// 子用户管理
 	ListSubUsers(ctx context.Context, parentUserID uint, offset, limit int) (*v1.ListSubUsersResponse, error)
 	GetSubUserDetail(ctx context.Context, parentUserID, subUserID uint) (*v1.SubUserDetailResponse, error)
@@ -30,9 +30,9 @@ type customerBiz struct {
 	ds store.IStore
 }
 
-var _ CustomerBiz = (*customerBiz)(nil)
+var _ ICustomerBiz = (*customerBiz)(nil)
 
-func New(ds store.IStore) CustomerBiz {
+func New(ds store.IStore) ICustomerBiz {
 	return &customerBiz{ds: ds}
 }
 

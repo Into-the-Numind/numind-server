@@ -138,8 +138,8 @@ func (ctrl *CustomerController) ListSubUserTemplates(c *gin.Context) {
 	}
 
 	core.WriteResponse(c, nil, gin.H{
-		"templates": detail.AuthorizedTemplateList,
-		"total":     len(detail.AuthorizedTemplateList),
+		"templates": detail.AuthorizedTemplates,
+		"total":     len(detail.AuthorizedTemplates),
 	})
 }
 
