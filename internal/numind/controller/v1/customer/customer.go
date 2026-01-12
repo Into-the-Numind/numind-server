@@ -182,6 +182,38 @@ func (ctrl *CustomerController) GrantTemplates(c *gin.Context) {
 	})
 }
 
+// BatchGrantTemplates 批量为多个二级客户授权模板
+func (ctrl *CustomerController) BatchGrantTemplates(c *gin.Context) {
+	log.C(c).Infow("Batch grant templates called")
+
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	// 绑定请求body
+	var req v1.BatchGrantTemplateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		return
+	}
+
+	// 执行批量授权
+	err := ctrl.customerBiz.BatchGrantTemplates(c, user.ID, req.UserIDs, req.TemplateIDs)
+	if err != nil {
+		log.C(c).Errorw("Failed to batch grant templates", "parent_user_id", user.ID, "user_ids", req.UserIDs, "template_ids", req.TemplateIDs, "err", err)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"message": "批量授权成功",
+	})
+}
+
 // RevokeTemplates 撤销二级客户的模板权限
 func (ctrl *CustomerController) RevokeTemplates(c *gin.Context) {
 	log.C(c).Infow("Revoke templates called")
@@ -218,5 +250,37 @@ func (ctrl *CustomerController) RevokeTemplates(c *gin.Context) {
 
 	core.WriteResponse(c, nil, gin.H{
 		"message": "撤销成功",
+	})
+}
+
+// BatchRevokeTemplates 批量为多个二级客户撤销模板权限
+func (ctrl *CustomerController) BatchRevokeTemplates(c *gin.Context) {
+	log.C(c).Infow("Batch revoke templates called")
+
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	// 绑定请求body
+	var req v1.BatchRevokeTemplateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		return
+	}
+
+	// 执行批量撤销
+	err := ctrl.customerBiz.BatchRevokeTemplates(c, user.ID, req.UserIDs, req.TemplateIDs)
+	if err != nil {
+		log.C(c).Errorw("Failed to batch revoke templates", "parent_user_id", user.ID, "user_ids", req.UserIDs, "template_ids", req.TemplateIDs, "err", err)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"message": "批量撤销成功",
 	})
 }
