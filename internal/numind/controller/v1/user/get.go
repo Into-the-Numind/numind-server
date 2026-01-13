@@ -51,7 +51,7 @@ func (ctrl *UserController) GetCurrentUser(c *gin.Context) {
 		userWithStats.AvatarURL = util.GetAvatarWithCOS(c, userWithStats.ID, userWithStats.AvatarURL)
 	}
 
-	// 构建响应数据，确保包含id字段（小写）
+	// 构建响应数据，包含完整的 SOP 统计和会员等级
 	response := gin.H{
 		"id":                           userWithStats.ID,
 		"openid":                       userWithStats.OpenID,
@@ -73,6 +73,13 @@ func (ctrl *UserController) GetCurrentUser(c *gin.Context) {
 		"chat_num":                     userWithStats.ChatNum,
 		"created_at":                   userWithStats.CreatedAt,
 		"updated_at":                   userWithStats.UpdatedAt,
+
+		// 新增：SOP 统计与等级信息，确保前端设置页面秒开
+		"user_tier":          userWithStats.GetActualUserTier(),
+		"tier_expires":       userWithStats.TierExpires,
+		"total_sop_runs":     userWithStats.TotalSopRuns,
+		"monthly_sop_runs":   userWithStats.MonthlySopRuns,
+		"remaining_sop_runs": userWithStats.GetRemainingSOPRuns(),
 	}
 
 	core.WriteResponse(c, nil, response)
