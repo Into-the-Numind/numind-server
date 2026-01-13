@@ -476,12 +476,14 @@ func (s *sopStore) ListChatMessagesByRuns(runIDs []uint) (map[uint][]model.SopCh
 
 // ExecutedTemplateInfo 用户已执行的模板信息
 type ExecutedTemplateInfo struct {
-	TemplateID   uint   `json:"template_id"`
-	TemplateName string `json:"template_name"`
-	RunCount     int64  `json:"run_count"`   // 执行次数
-	ExecutedAt   string `json:"executed_at"` // 执行时间
-	RunID        uint   `json:"run_id"`      // Run ID
-	RunStatus    string `json:"run_status"`  // 执行状态
+	TemplateID     uint   `json:"template_id"`
+	TemplateName   string `json:"template_name"`
+	RunCount       int64  `json:"run_count"`       // 执行次数
+	ExecutedAt     string `json:"executed_at"`     // 执行时间
+	RunID          uint   `json:"run_id"`          // Run ID
+	RunStatus      string `json:"run_status"`      // 执行状态
+	CompletedCount int    `json:"completed_count"` // 已完成节点数
+	TotalNodes     int    `json:"total_nodes"`     // 总节点数
 }
 
 // ListExecutedTemplatesByUser 获取用户已执行的模板列表（按模板分组）
@@ -499,15 +501,51 @@ func (s *sopStore) ListExecutedTemplatesByUser(userID uint) ([]ExecutedTemplateI
 		return nil, err
 	}
 
+	// 获取所有相关的 run IDs
+	runIDs := make([]uint, len(runs))
+	templateIDs := make(map[uint]bool)
+	for i, run := range runs {
+		runIDs[i] = run.ID
+		templateIDs[run.TemplateID] = true
+	}
+
+	// 批量获取所有模板的节点数量
+	templateNodeCounts := make(map[uint]int)
+	for templateID := range templateIDs {
+		var count int64
+		s.db.Model(&model.SopNode{}).Where("template_id = ?", templateID).Count(&count)
+		templateNodeCounts[templateID] = int(count)
+	}
+
+	// 批量获取所有 run 的已完成节点数量
+	runCompletedCounts := make(map[uint]int)
+	if len(runIDs) > 0 {
+		type countResult struct {
+			RunID uint
+			Count int
+		}
+		var counts []countResult
+		s.db.Model(&model.SopNodeRun{}).
+			Select("run_id, COUNT(*) as count").
+			Where("run_id IN ? AND status = ?", runIDs, "succeeded").
+			Group("run_id").
+			Scan(&counts)
+		for _, c := range counts {
+			runCompletedCounts[c.RunID] = c.Count
+		}
+	}
+
 	// 不聚合，逐条返回（前端自行聚合）
 	for _, run := range runs {
 		info := ExecutedTemplateInfo{
-			TemplateID:   run.TemplateID,
-			TemplateName: "",
-			RunCount:     1,
-			ExecutedAt:   run.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-			RunID:        run.ID,
-			RunStatus:    run.Status,
+			TemplateID:     run.TemplateID,
+			TemplateName:   "",
+			RunCount:       1,
+			ExecutedAt:     run.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+			RunID:          run.ID,
+			RunStatus:      run.Status,
+			CompletedCount: runCompletedCounts[run.ID],
+			TotalNodes:     templateNodeCounts[run.TemplateID],
 		}
 		if run.Template != nil {
 			info.TemplateName = run.Template.Name

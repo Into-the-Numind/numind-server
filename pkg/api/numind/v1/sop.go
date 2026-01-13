@@ -220,12 +220,14 @@ type EditTextRequest struct {
 
 // ExecutedTemplateInfo 用户已执行的模板信息
 type ExecutedTemplateInfo struct {
-	TemplateID   uint   `json:"template_id"`   // 模板ID
-	TemplateName string `json:"template_name"` // 模板名称
-	RunCount     int64  `json:"run_count"`     // 执行次数
-	ExecutedAt   string `json:"executed_at"`   // 执行时间
-	RunID        uint   `json:"run_id"`        // Run ID
-	RunStatus    string `json:"run_status"`    // 执行状态
+	TemplateID     uint   `json:"template_id"`     // 模板ID
+	TemplateName   string `json:"template_name"`   // 模板名称
+	RunCount       int64  `json:"run_count"`       // 执行次数
+	ExecutedAt     string `json:"executed_at"`     // 执行时间
+	RunID          uint   `json:"run_id"`          // Run ID
+	RunStatus      string `json:"run_status"`      // 执行状态
+	CompletedCount int    `json:"completed_count"` // 已完成节点数
+	TotalNodes     int    `json:"total_nodes"`     // 总节点数
 }
 
 // ListExecutedTemplatesResponse 用户已执行的模板列表响应

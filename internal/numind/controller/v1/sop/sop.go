@@ -297,12 +297,14 @@ func (ctrl *SopController) ListMyExecutedTemplates(c *gin.Context) {
 
 	for i, t := range templates {
 		response.Templates[i] = v1.ExecutedTemplateInfo{
-			TemplateID:   t.TemplateID,
-			TemplateName: t.TemplateName,
-			RunCount:     t.RunCount,
-			ExecutedAt:   t.ExecutedAt,
-			RunID:        t.RunID,
-			RunStatus:    t.RunStatus,
+			TemplateID:     t.TemplateID,
+			TemplateName:   t.TemplateName,
+			RunCount:       t.RunCount,
+			ExecutedAt:     t.ExecutedAt,
+			RunID:          t.RunID,
+			RunStatus:      t.RunStatus,
+			CompletedCount: t.CompletedCount,
+			TotalNodes:     t.TotalNodes,
 		}
 	}
 
