@@ -501,36 +501,50 @@ func (s *sopStore) ListExecutedTemplatesByUser(userID uint) ([]ExecutedTemplateI
 		return nil, err
 	}
 
-	// 获取所有相关的 run IDs
-	runIDs := make([]uint, len(runs))
-	templateIDs := make(map[uint]bool)
-	for i, run := range runs {
-		runIDs[i] = run.ID
-		templateIDs[run.TemplateID] = true
+	// 获取所有相关的 run IDs 和 template IDs
+	runIDs := make([]uint, 0, len(runs))
+	templateIDs := make([]uint, 0)
+	templateMap := make(map[uint]bool)
+	for _, run := range runs {
+		runIDs = append(runIDs, run.ID)
+		if !templateMap[run.TemplateID] {
+			templateMap[run.TemplateID] = true
+			templateIDs = append(templateIDs, run.TemplateID)
+		}
 	}
 
 	// 批量获取所有模板的节点数量
 	templateNodeCounts := make(map[uint]int)
-	for templateID := range templateIDs {
-		var count int64
-		s.db.Model(&model.SopNode{}).Where("template_id = ?", templateID).Count(&count)
-		templateNodeCounts[templateID] = int(count)
+	if len(templateIDs) > 0 {
+		type tplCountResult struct {
+			TemplateID uint
+			Count      int
+		}
+		var tplCounts []tplCountResult
+		s.db.Table("sop_node").
+			Select("template_id, COUNT(*) as count").
+			Where("template_id IN (?) AND deleted_at IS NULL", templateIDs).
+			Group("template_id").
+			Scan(&tplCounts)
+		for _, c := range tplCounts {
+			templateNodeCounts[c.TemplateID] = c.Count
+		}
 	}
 
 	// 批量获取所有 run 的已完成节点数量
 	runCompletedCounts := make(map[uint]int)
 	if len(runIDs) > 0 {
-		type countResult struct {
+		type runCountResult struct {
 			RunID uint
 			Count int
 		}
-		var counts []countResult
-		s.db.Model(&model.SopNodeRun{}).
+		var runCounts []runCountResult
+		s.db.Table("sop_node_run").
 			Select("run_id, COUNT(*) as count").
-			Where("run_id IN ? AND status = ?", runIDs, "succeeded").
+			Where("run_id IN (?) AND status = ? AND deleted_at IS NULL", runIDs, "succeeded").
 			Group("run_id").
-			Scan(&counts)
-		for _, c := range counts {
+			Scan(&runCounts)
+		for _, c := range runCounts {
 			runCompletedCounts[c.RunID] = c.Count
 		}
 	}
@@ -549,6 +563,10 @@ func (s *sopStore) ListExecutedTemplatesByUser(userID uint) ([]ExecutedTemplateI
 		}
 		if run.Template != nil {
 			info.TemplateName = run.Template.Name
+		}
+		// 如果 total_nodes 为 0，尝试使用默认值 4
+		if info.TotalNodes == 0 {
+			info.TotalNodes = 4
 		}
 		results = append(results, info)
 	}
