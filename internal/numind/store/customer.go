@@ -98,11 +98,12 @@ func (c *customerStore) GrantTemplates(ctx context.Context, parentUserID, subUse
 }
 
 // SetTemplates 设置二级客户的模板权限(覆盖模式)
+// 注意：删除时不限制parent_user_id，因为权限可能是由管理员或其他父用户创建的
 func (c *customerStore) SetTemplates(ctx context.Context, parentUserID, subUserID uint, templateIDs []uint) error {
 	// 使用事务确保原子性
 	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 1. 删除现有权限
-		if err := tx.Where("parent_user_id = ? AND sub_user_id = ?", parentUserID, subUserID).
+		// 1. 删除该子用户的所有现有权限（不限制parent_user_id）
+		if err := tx.Where("sub_user_id = ?", subUserID).
 			Delete(&model.UserTemplatePermission{}).Error; err != nil {
 			return fmt.Errorf("failed to clear existing permissions: %w", err)
 		}
@@ -126,9 +127,10 @@ func (c *customerStore) SetTemplates(ctx context.Context, parentUserID, subUserI
 }
 
 // RevokeTemplates 撤销二级客户的模板权限
+// 注意：权限可能是由管理员或其他父用户创建的，所以不限制parent_user_id
 func (c *customerStore) RevokeTemplates(ctx context.Context, parentUserID, subUserID uint, templateIDs []uint) error {
 	return c.db.WithContext(ctx).
-		Where("parent_user_id = ? AND sub_user_id = ? AND template_id IN ?", parentUserID, subUserID, templateIDs).
+		Where("sub_user_id = ? AND template_id IN ?", subUserID, templateIDs).
 		Delete(&model.UserTemplatePermission{}).Error
 }
 
