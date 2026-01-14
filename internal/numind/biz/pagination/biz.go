@@ -28,9 +28,9 @@ type PaginationBiz interface {
 
 // paginationBiz 分页业务实现
 type paginationBiz struct {
-	engine        *PaginationEngine
-	lineEngine    *LineBasedPaginationEngine
-	config        *PaginationConfig
+	engine     *PaginationEngine
+	lineEngine *LineBasedPaginationEngine
+	config     *PaginationConfig
 }
 
 // NewPaginationBiz 创建新的分页业务实例

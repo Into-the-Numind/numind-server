@@ -74,7 +74,7 @@ func main() {
 
 	fmt.Printf("\n✓ Template 2节点信息:\n")
 	expectedNames := []string{"拆解产品", "拆解爆款朋友圈", "拆解语言风格", "仿写朋友圈"}
-	
+
 	if len(nodes2) != 4 {
 		fmt.Printf("  ✗ 节点数量不正确: 期望4个，实际%d个\n", len(nodes2))
 	} else {
@@ -98,15 +98,3 @@ func main() {
 
 	fmt.Println("\n✅ 验证完成！")
 }
-
-
-
-
-
-
-
-
-
-
-
-

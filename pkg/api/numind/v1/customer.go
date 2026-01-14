@@ -22,8 +22,18 @@ type ListSubUsersResponse struct {
 
 // SubUserDetailResponse 获取子客户详情响应
 type SubUserDetailResponse struct {
-	SubUserInfo
-	AuthorizedTemplates []TemplateInfo `json:"authorized_templates"`
+	UserID         uint   `json:"user_id"`
+	Nickname       string `json:"nickname"`
+	Phone          string `json:"phone"`
+	Avatar         string `json:"avatar"`
+	UserTier       string `json:"user_tier"`
+	TierExpires    string `json:"tier_expires"`
+	TotalSopRuns   int    `json:"total_sop_runs"`
+	MonthlySopRuns int    `json:"monthly_sop_runs"`
+
+	AuthorizedTemplatesCount int            `json:"authorized_templates_count"`
+	RemainingSopRuns         int            `json:"remaining_sop_runs"`
+	AuthorizedTemplates      []TemplateInfo `json:"authorized_templates"`
 }
 
 // TemplateInfo 模板简要信息

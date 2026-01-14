@@ -16,20 +16,20 @@ func main() {
 	// 尝试加载不同的配置文件
 	configFiles := []string{"config_dev", "config_qa", "config_local", "config_prod"}
 	var configLoaded bool
-	
+
 	for _, configName := range configFiles {
 		viper.SetConfigName(configName)
 		viper.SetConfigType("yaml")
 		viper.AddConfigPath(".")
 		viper.AddConfigPath("./configs")
-		
+
 		if err := viper.ReadInConfig(); err == nil {
 			fmt.Printf("Loaded config: %s\n", configName)
 			configLoaded = true
 			break
 		}
 	}
-	
+
 	if !configLoaded {
 		log.Fatalf("Failed to load any config file. Tried: %v", configFiles)
 	}
@@ -80,4 +80,3 @@ func main() {
 		fmt.Printf("    %s\n", preview)
 	}
 }
-

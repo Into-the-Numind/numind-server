@@ -17,20 +17,20 @@ func main() {
 	// 尝试加载不同的配置文件（优先尝试dev和qa，因为它们连接远程数据库）
 	configFiles := []string{"config_dev", "config_qa", "config_local", "config_prod"}
 	var configLoaded bool
-	
+
 	for _, configName := range configFiles {
 		viper.SetConfigName(configName)
 		viper.SetConfigType("yaml")
 		viper.AddConfigPath(".")
 		viper.AddConfigPath("./configs")
-		
+
 		if err := viper.ReadInConfig(); err == nil {
 			fmt.Printf("Loaded config: %s\n", configName)
 			configLoaded = true
 			break
 		}
 	}
-	
+
 	if !configLoaded {
 		log.Fatalf("Failed to load any config file. Tried: %v", configFiles)
 	}
@@ -82,7 +82,7 @@ Or run this script when the database is available.
 	if err != nil {
 		log.Fatalf("Failed to get template 1: %v", err)
 	}
-	fmt.Printf("Template 1: ID=%d, Name=%s, Description=%s, Prompt=%s\n", 
+	fmt.Printf("Template 1: ID=%d, Name=%s, Description=%s, Prompt=%s\n",
 		template1.ID, template1.Name, template1.Description, template1.Prompt)
 
 	// 查询template 1的所有节点
@@ -115,7 +115,7 @@ Or run this script when the database is available.
 
 	for i, node1 := range nodes1 {
 		fmt.Printf("\n步骤3.%d: 创建节点 %d (sort=%d, name=%s)...\n", i+1, i+1, node1.Sort, nodeNames[i])
-		
+
 		newNode := &model.SopNode{
 			TemplateID:     template2.ID,
 			ParentID:       node1.ParentID,
@@ -156,4 +156,3 @@ Or run this script when the database is available.
 
 	fmt.Println("\n✅ 所有步骤完成！Template 2创建成功。")
 }
-

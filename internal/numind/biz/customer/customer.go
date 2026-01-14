@@ -85,22 +85,23 @@ func (c *customerBiz) GetSubUserDetail(ctx context.Context, parentUserID, subUse
 	}
 
 	// 获取已授权的模板列表
-	permissions, err := c.ds.Customers().ListUserTemplatePermissions(ctx, subUserID)
+	templates, err := c.ds.Customers().GetAuthorizedTemplates(ctx, subUserID)
 	if err != nil {
-		log.C(ctx).Errorw("Failed to list user template permissions", "sub_user_id", subUserID, "err", err)
+		log.C(ctx).Errorw("Failed to get authorized templates", "sub_user_id", subUserID, "err", err)
 		return nil, err
 	}
 
 	// 转换为模板信息列表
-	templateList := make([]v1.TemplateInfo, 0, len(permissions))
-	for _, perm := range permissions {
-		if perm.Template != nil {
-			templateList = append(templateList, v1.TemplateInfo{
-				ID:          perm.TemplateID,
-				Name:        perm.Template.Name,
-				Description: perm.Template.Description,
-			})
+	templateList := make([]v1.TemplateInfo, 0, len(templates))
+	for _, t := range templates {
+		if t.Status != "active" {
+			continue
 		}
+		templateList = append(templateList, v1.TemplateInfo{
+			ID:          t.ID,
+			Name:        t.Name,
+			Description: t.Description,
+		})
 	}
 
 	expiresStr := ""
@@ -109,19 +110,17 @@ func (c *customerBiz) GetSubUserDetail(ctx context.Context, parentUserID, subUse
 	}
 
 	return &v1.SubUserDetailResponse{
-		SubUserInfo: v1.SubUserInfo{
-			UserID:              user.ID,
-			Nickname:            user.Nickname,
-			Phone:               user.Phone,
-			Avatar:              user.AvatarURL,
-			TotalSopRuns:        user.TotalSopRuns,
-			MonthlySopRuns:      user.MonthlySopRuns,
-			AuthorizedTemplates: len(templateList),
-			UserTier:            user.GetActualUserTier(),
-			TierExpires:         expiresStr,
-			RemainingSopRuns:    user.GetRemainingSOPRuns(),
-		},
-		AuthorizedTemplates: templateList,
+		UserID:                   user.ID,
+		Nickname:                 user.Nickname,
+		Phone:                    user.Phone,
+		Avatar:                   user.AvatarURL,
+		UserTier:                 user.GetActualUserTier(),
+		TierExpires:              expiresStr,
+		TotalSopRuns:             user.TotalSopRuns,
+		MonthlySopRuns:           user.MonthlySopRuns,
+		AuthorizedTemplatesCount: len(templateList),
+		RemainingSopRuns:         user.GetRemainingSOPRuns(),
+		AuthorizedTemplates:      templateList,
 	}, nil
 }
 

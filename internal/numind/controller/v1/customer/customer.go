@@ -41,7 +41,7 @@ func (ctrl *CustomerController) GetStatistics(c *gin.Context) {
 	stats, err := ctrl.customerBiz.GetCustomerStatistics(c, user.ID)
 	if err != nil {
 		log.C(c).Errorw("Failed to get customer statistics", "user_id", user.ID, "err", err)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -73,7 +73,7 @@ func (ctrl *CustomerController) ListSubUsers(c *gin.Context) {
 	result, err := ctrl.customerBiz.ListSubUsers(c, user.ID, offset, limit)
 	if err != nil {
 		log.C(c).Errorw("Failed to list sub users", "user_id", user.ID, "err", err)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -103,7 +103,7 @@ func (ctrl *CustomerController) GetSubUserDetail(c *gin.Context) {
 	detail, err := ctrl.customerBiz.GetSubUserDetail(c, user.ID, uint(subUserID))
 	if err != nil {
 		log.C(c).Errorw("Failed to get sub user detail", "parent_user_id", user.ID, "sub_user_id", subUserID, "err", err)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -133,13 +133,14 @@ func (ctrl *CustomerController) ListSubUserTemplates(c *gin.Context) {
 	detail, err := ctrl.customerBiz.GetSubUserDetail(c, user.ID, uint(subUserID))
 	if err != nil {
 		log.C(c).Errorw("Failed to get sub user templates", "parent_user_id", user.ID, "sub_user_id", subUserID, "err", err)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
 	core.WriteResponse(c, nil, gin.H{
-		"templates": detail.AuthorizedTemplates,
-		"total":     len(detail.AuthorizedTemplates),
+		"authorized_templates": detail.AuthorizedTemplates,
+		"templates":            detail.AuthorizedTemplates,
+		"total":                len(detail.AuthorizedTemplates),
 	})
 }
 
@@ -165,7 +166,7 @@ func (ctrl *CustomerController) GrantTemplates(c *gin.Context) {
 	// 绑定请求body
 	var req v1.GrantTemplateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
 		return
 	}
 
@@ -173,7 +174,7 @@ func (ctrl *CustomerController) GrantTemplates(c *gin.Context) {
 	err = ctrl.customerBiz.GrantTemplates(c, user.ID, uint(subUserID), req.TemplateIDs)
 	if err != nil {
 		log.C(c).Errorw("Failed to grant templates", "parent_user_id", user.ID, "sub_user_id", subUserID, "template_ids", req.TemplateIDs, "err", err)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -197,7 +198,7 @@ func (ctrl *CustomerController) BatchGrantTemplates(c *gin.Context) {
 	// 绑定请求body
 	var req v1.BatchGrantTemplateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
 		return
 	}
 
@@ -205,7 +206,7 @@ func (ctrl *CustomerController) BatchGrantTemplates(c *gin.Context) {
 	err := ctrl.customerBiz.BatchGrantTemplates(c, user.ID, req.UserIDs, req.TemplateIDs)
 	if err != nil {
 		log.C(c).Errorw("Failed to batch grant templates", "parent_user_id", user.ID, "user_ids", req.UserIDs, "template_ids", req.TemplateIDs, "err", err)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -236,7 +237,7 @@ func (ctrl *CustomerController) RevokeTemplates(c *gin.Context) {
 	// 绑定请求body
 	var req v1.RevokeTemplateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
 		return
 	}
 
@@ -244,7 +245,7 @@ func (ctrl *CustomerController) RevokeTemplates(c *gin.Context) {
 	err = ctrl.customerBiz.RevokeTemplates(c, user.ID, uint(subUserID), req.TemplateIDs)
 	if err != nil {
 		log.C(c).Errorw("Failed to revoke templates", "parent_user_id", user.ID, "sub_user_id", subUserID, "template_ids", req.TemplateIDs, "err", err)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -268,7 +269,7 @@ func (ctrl *CustomerController) BatchRevokeTemplates(c *gin.Context) {
 	// 绑定请求body
 	var req v1.BatchRevokeTemplateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
 		return
 	}
 
@@ -276,7 +277,7 @@ func (ctrl *CustomerController) BatchRevokeTemplates(c *gin.Context) {
 	err := ctrl.customerBiz.BatchRevokeTemplates(c, user.ID, req.UserIDs, req.TemplateIDs)
 	if err != nil {
 		log.C(c).Errorw("Failed to batch revoke templates", "parent_user_id", user.ID, "user_ids", req.UserIDs, "template_ids", req.TemplateIDs, "err", err)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 

@@ -17,20 +17,20 @@ func main() {
 	// 尝试加载不同的配置文件
 	configFiles := []string{"config_dev", "config_qa", "config_local", "config_prod"}
 	var configLoaded bool
-	
+
 	for _, configName := range configFiles {
 		viper.SetConfigName(configName)
 		viper.SetConfigType("yaml")
 		viper.AddConfigPath(".")
 		viper.AddConfigPath("./configs")
-		
+
 		if err := viper.ReadInConfig(); err == nil {
 			fmt.Printf("Loaded config: %s\n", configName)
 			configLoaded = true
 			break
 		}
 	}
-	
+
 	if !configLoaded {
 		log.Fatalf("Failed to load any config file. Tried: %v", configFiles)
 	}
@@ -63,7 +63,7 @@ func main() {
 	fmt.Println("=" + strings.Repeat("=", 80))
 	fmt.Println("Template 2 提示词查询结果")
 	fmt.Println("=" + strings.Repeat("=", 80))
-	
+
 	template2, err := sopBiz.GetTemplate(ctx, 2)
 	if err != nil {
 		log.Fatalf("Failed to get template 2: %v", err)
@@ -93,7 +93,7 @@ func main() {
 
 	fmt.Printf("\n【节点信息】\n")
 	fmt.Printf("  总节点数: %d\n", len(nodes2))
-	
+
 	for i, node := range nodes2 {
 		fmt.Printf("\n  【步骤 %d】 (sort=%d)\n", i+1, node.Sort)
 		fmt.Printf("    节点ID: %d\n", node.ID)
@@ -120,4 +120,3 @@ func main() {
 	fmt.Printf("\n" + strings.Repeat("=", 80) + "\n")
 	fmt.Println("查询完成！")
 }
-

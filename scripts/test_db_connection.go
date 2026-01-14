@@ -25,7 +25,7 @@ func main() {
 			fmt.Printf("✓ Loaded config: %s\n", configName)
 			configLoaded = true
 			loadedConfig = configName
-			
+
 			// 测试这个配置的数据库连接
 			testOptions := &db.MySQLOptions{
 				Host:                  viper.GetString("db.host"),
@@ -37,7 +37,7 @@ func main() {
 				MaxConnectionLifeTime: viper.GetDuration("db.max-connection-life-time"),
 				LogLevel:              viper.GetInt("db.log-level"),
 			}
-			
+
 			// 快速测试连接
 			testDB, err := db.NewMySQL(testOptions)
 			if err == nil {
@@ -128,4 +128,3 @@ func maskPassword(pwd string) string {
 	}
 	return pwd[:2] + "****" + pwd[len(pwd)-2:]
 }
-

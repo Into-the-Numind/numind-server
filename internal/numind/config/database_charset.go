@@ -26,14 +26,14 @@ type DatabaseCharsetConfig struct {
 // DefaultDatabaseCharsetConfig 返回默认的数据库字符集配置
 func DefaultDatabaseCharsetConfig() *DatabaseCharsetConfig {
 	return &DatabaseCharsetConfig{
-		TargetCharset:      "utf8mb4",
-		TargetCollation:    "utf8mb4_unicode_ci",
-		AutoFix:            true,
-		CheckOnStartup:     true,
+		TargetCharset:       "utf8mb4",
+		TargetCollation:     "utf8mb4_unicode_ci",
+		AutoFix:             true,
+		CheckOnStartup:      true,
 		CheckAfterMigration: true,
 		CriticalTables: []string{
 			"chat_message",
-			"chat_session", 
+			"chat_session",
 			"book",
 			"user",
 			"card",
@@ -53,16 +53,16 @@ func (c *DatabaseCharsetConfig) Validate() error {
 	if c.TargetCharset == "" {
 		return fmt.Errorf("target charset cannot be empty")
 	}
-	
+
 	if c.TargetCollation == "" {
 		return fmt.Errorf("target collation cannot be empty")
 	}
-	
+
 	// 验证字符集和排序规则的匹配性
 	if !strings.HasPrefix(c.TargetCollation, c.TargetCharset) {
 		return fmt.Errorf("collation %s does not match charset %s", c.TargetCollation, c.TargetCharset)
 	}
-	
+
 	return nil
 }
 
@@ -78,7 +78,7 @@ func (c *DatabaseCharsetConfig) GetAlterDatabaseSQL() string {
 
 // GetAlterTableSQL 获取修改表字符集的SQL
 func (c *DatabaseCharsetConfig) GetAlterTableSQL(tableName string) string {
-	return fmt.Sprintf("ALTER TABLE %s CONVERT TO CHARACTER SET %s COLLATE %s", 
+	return fmt.Sprintf("ALTER TABLE %s CONVERT TO CHARACTER SET %s COLLATE %s",
 		tableName, c.TargetCharset, c.TargetCollation)
 }
 
@@ -103,17 +103,17 @@ func GetTableCharsetInfo(db *gorm.DB, tableName string) (charset, collation stri
 	var result struct {
 		TableCollation string `gorm:"column:TABLE_COLLATION"`
 	}
-	
+
 	err = db.Raw(`
 		SELECT TABLE_COLLATION
 		FROM information_schema.TABLES 
 		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
 	`, tableName).Scan(&result).Error
-	
+
 	if err != nil {
 		return "", "", err
 	}
-	
+
 	// 从排序规则中提取字符集
 	if strings.Contains(result.TableCollation, "_") {
 		parts := strings.Split(result.TableCollation, "_")
@@ -121,7 +121,7 @@ func GetTableCharsetInfo(db *gorm.DB, tableName string) (charset, collation stri
 	} else {
 		charset = result.TableCollation
 	}
-	
+
 	return charset, result.TableCollation, nil
 }
 
@@ -131,7 +131,7 @@ func GetColumnCharsetInfo(db *gorm.DB, tableName, columnName string) (charset, c
 		CharacterSetName string `gorm:"column:CHARACTER_SET_NAME"`
 		CollationName    string `gorm:"column:COLLATION_NAME"`
 	}
-	
+
 	err = db.Raw(`
 		SELECT CHARACTER_SET_NAME, COLLATION_NAME
 		FROM information_schema.COLUMNS 
@@ -139,11 +139,11 @@ func GetColumnCharsetInfo(db *gorm.DB, tableName, columnName string) (charset, c
 			AND TABLE_NAME = ? 
 			AND COLUMN_NAME = ?
 	`, tableName, columnName).Scan(&result).Error
-	
+
 	if err != nil {
 		return "", "", err
 	}
-	
+
 	return result.CharacterSetName, result.CollationName, nil
 }
 
@@ -153,7 +153,7 @@ func GetDatabaseCharsetInfo(db *gorm.DB) (charset, collation string, err error) 
 		DefaultCharacterSetName string `gorm:"column:DEFAULT_CHARACTER_SET_NAME"`
 		DefaultCollationName    string `gorm:"column:DEFAULT_COLLATION_NAME"`
 	}
-	
+
 	err = db.Raw(`
 		SELECT 
 			DEFAULT_CHARACTER_SET_NAME,
@@ -161,10 +161,10 @@ func GetDatabaseCharsetInfo(db *gorm.DB) (charset, collation string, err error) 
 		FROM information_schema.SCHEMATA 
 		WHERE SCHEMA_NAME = DATABASE()
 	`).Scan(&result).Error
-	
+
 	if err != nil {
 		return "", "", err
 	}
-	
+
 	return result.DefaultCharacterSetName, result.DefaultCollationName, nil
 }

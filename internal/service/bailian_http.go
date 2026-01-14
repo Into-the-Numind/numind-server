@@ -279,4 +279,3 @@ async function uploadFileWithFetch(file) {
     return confirmData.fileId;
 }
 */
-

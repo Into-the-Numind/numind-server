@@ -93,12 +93,12 @@ func (b *accountRecordBiz) GetUserAccountSummary(ctx context.Context, userID uin
 	}
 
 	summary := map[string]interface{}{
-		"total_payment":        totalPayment,
-		"total_payment_yuan":   float64(totalPayment) / 100.0,
-		"total_records":        len(records),
-		"type_distribution":    typeCounts,
-		"last_payment_at":      nil,
-		"last_payment_amount":  0,
+		"total_payment":       totalPayment,
+		"total_payment_yuan":  float64(totalPayment) / 100.0,
+		"total_records":       len(records),
+		"type_distribution":   typeCounts,
+		"last_payment_at":     nil,
+		"last_payment_amount": 0,
 	}
 
 	// 获取最后一次支付信息
@@ -112,7 +112,7 @@ func (b *accountRecordBiz) GetUserAccountSummary(ctx context.Context, userID uin
 				}
 			}
 		}
-		
+
 		if latestPayment.Type == "payment" && !latestPayment.PaymentAt.IsZero() {
 			summary["last_payment_at"] = latestPayment.PaymentAt
 			summary["last_payment_amount"] = latestPayment.Amount

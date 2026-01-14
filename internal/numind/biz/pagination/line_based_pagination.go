@@ -238,7 +238,7 @@ func (l *LineBasedPaginationEngine) paginateLines(breakdowns []ElementLineBreakd
 			card := l.createCardFromLines(currentLines, breakdown.Element.Type)
 			cards = append(cards, card)
 			fmt.Printf("✅ 完成卡片 %d，高度：%dpx，行数：%d\n", len(cards), currentHeight, len(currentLines))
-			
+
 			// 重置当前卡片
 			currentLines = []LineInfo{}
 			currentHeight = 0
@@ -268,7 +268,7 @@ func (l *LineBasedPaginationEngine) paginateLines(breakdowns []ElementLineBreakd
 			currentHeight += lineHeight
 
 			fmt.Printf("📝 添加行 %d/%d：高度=%dpx，当前总高度=%dpx，内容：%s\n",
-				j+1, len(breakdown.Lines), lineHeight, currentHeight, 
+				j+1, len(breakdown.Lines), lineHeight, currentHeight,
 				truncateString(line.Text, 30))
 		}
 

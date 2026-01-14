@@ -4,10 +4,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"path/filepath"
-	"strconv"
-	"strings"
-	"time"
 	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/core"
@@ -15,6 +11,10 @@ import (
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
