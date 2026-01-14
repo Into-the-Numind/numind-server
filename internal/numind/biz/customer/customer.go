@@ -47,8 +47,14 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 	// 转换为响应格式
 	subUsers := make([]v1.SubUserInfo, 0, len(users))
 	for _, user := range users {
-		// 获取已授权的模板数量
-		permissions, _ := c.ds.Customers().ListUserTemplatePermissions(ctx, user.ID)
+		// 获取已授权的模板数量（使用GetAuthorizedTemplates并过滤active状态，与GetSubUserDetail保持一致）
+		templates, _ := c.ds.Customers().GetAuthorizedTemplates(ctx, user.ID)
+		activeTemplateCount := 0
+		for _, t := range templates {
+			if t.Status == "active" {
+				activeTemplateCount++
+			}
+		}
 
 		expiresStr := ""
 		if user.TierExpires != nil {
@@ -62,7 +68,7 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 			Avatar:              user.AvatarURL,
 			TotalSopRuns:        user.TotalSopRuns,
 			MonthlySopRuns:      user.MonthlySopRuns,
-			AuthorizedTemplates: len(permissions),
+			AuthorizedTemplates: activeTemplateCount,
 			UserTier:            user.GetActualUserTier(),
 			TierExpires:         expiresStr,
 			RemainingSopRuns:    user.GetRemainingSOPRuns(),
