@@ -79,6 +79,46 @@ type QualityCheckResult struct {
 
 // ... existing code ...
 
+// CheckTemplatePermission 检查用户是否有运行指定模板的权限
+// 用于前端在跳转SOP详情页前进行权限检查
+func (ctrl *SopController) CheckTemplatePermission(c *gin.Context) {
+	log.C(c).Infow("Check template permission called")
+
+	templateID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的模板ID"), nil)
+		return
+	}
+
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	// 如果用户是直接客户(parent_user_id为NULL)，则有权限执行所有模板
+	if user.ParentUserID == nil {
+		core.WriteResponse(c, nil, gin.H{
+			"has_permission": true,
+		})
+		return
+	}
+
+	// 如果是二级客户，检查白名单权限
+	hasPermission, err := store.S.Customers().HasTemplatePermission(c, user.ID, uint(templateID))
+	if err != nil {
+		log.C(c).Errorw("Failed to check template permission", "user_id", user.ID, "template_id", templateID, "err", err)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("权限检查失败"), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"has_permission": hasPermission,
+	})
+}
+
 // ExecuteTemplate 执行SOP模板（用户端）
 func (ctrl *SopController) ExecuteTemplate(c *gin.Context) {
 	log.C(c).Infow("User execute SOP template called")
