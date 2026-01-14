@@ -411,6 +411,17 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	allNodeRuns := execCtx.AllNodeRuns
 	existingNodeRun := execCtx.ExistingNodeRun
 
+	// ===== 权限检查 =====
+	// 检查用户是否仍有权限执行此模板（针对子用户权限被撤销的情况）
+	hasPermission, err := b.ds.Customers().HasTemplatePermission(ctx, run.UserID, run.TemplateID)
+	if err != nil {
+		return fmt.Errorf("failed to check template permission: %w", err)
+	}
+	if !hasPermission {
+		log.C(ctx).Warnw("User permission revoked for template", "user_id", run.UserID, "template_id", run.TemplateID)
+		return fmt.Errorf("您没有权限执行此模板（权限已被撤销）")
+	}
+
 	// 找到最大的sort值（最后一个节点）
 	maxSort := -1
 	for _, n := range allNodes {
@@ -1038,6 +1049,17 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	}
 	// 使用 run 中的会话ID
 	conversationID = run.ConversationID
+
+	// ===== 权限检查 =====
+	// 检查用户是否仍有权限执行此模板（针对子用户权限被撤销的情况）
+	hasPermission, err := b.ds.Customers().HasTemplatePermission(ctx, run.UserID, run.TemplateID)
+	if err != nil {
+		return fmt.Errorf("failed to check template permission: %w", err)
+	}
+	if !hasPermission {
+		log.C(ctx).Warnw("User permission revoked for template", "user_id", run.UserID, "template_id", run.TemplateID)
+		return fmt.Errorf("您没有权限执行此模板（权限已被撤销）")
+	}
 
 	// 获取模板、节点、节点执行记录
 	_, err = b.ds.Sop().GetTemplate(run.TemplateID)
