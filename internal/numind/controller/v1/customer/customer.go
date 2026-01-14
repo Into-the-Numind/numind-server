@@ -241,6 +241,8 @@ func (ctrl *CustomerController) RevokeTemplates(c *gin.Context) {
 		return
 	}
 
+	log.C(c).Infow("Revoking templates", "parent_user_id", user.ID, "sub_user_id", subUserID, "template_ids", req.TemplateIDs)
+
 	// 执行撤销
 	err = ctrl.customerBiz.RevokeTemplates(c, user.ID, uint(subUserID), req.TemplateIDs)
 	if err != nil {
@@ -249,6 +251,7 @@ func (ctrl *CustomerController) RevokeTemplates(c *gin.Context) {
 		return
 	}
 
+	log.C(c).Infow("Templates revoked successfully", "parent_user_id", user.ID, "sub_user_id", subUserID, "template_ids", req.TemplateIDs)
 	core.WriteResponse(c, nil, gin.H{
 		"message": "撤销成功",
 	})

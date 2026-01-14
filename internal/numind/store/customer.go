@@ -174,6 +174,7 @@ func (c *customerStore) GetAuthorizedTemplates(ctx context.Context, userID uint)
 	var templates []model.SopTemplate
 
 	err := c.db.WithContext(ctx).
+		Distinct("sop_template.*").
 		Joins("INNER JOIN user_template_permission ON user_template_permission.template_id = sop_template.id").
 		Where("user_template_permission.sub_user_id = ?", userID).
 		Find(&templates).Error
