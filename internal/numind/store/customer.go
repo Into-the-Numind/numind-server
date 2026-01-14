@@ -17,6 +17,7 @@ type ICustomerStore interface {
 
 	// 模板权限管理
 	GrantTemplates(ctx context.Context, parentUserID, subUserID uint, templateIDs []uint) error
+	SetTemplates(ctx context.Context, parentUserID, subUserID uint, templateIDs []uint) error
 	RevokeTemplates(ctx context.Context, parentUserID, subUserID uint, templateIDs []uint) error
 	HasTemplatePermission(ctx context.Context, userID, templateID uint) (bool, error)
 	ListUserTemplatePermissions(ctx context.Context, userID uint) ([]model.UserTemplatePermission, error)
@@ -90,6 +91,34 @@ func (c *customerStore) GrantTemplates(ctx context.Context, parentUserID, subUse
 				TemplateID: templateID,
 			}).FirstOrCreate(permission).Error; err != nil {
 				return fmt.Errorf("failed to grant template %d: %w", templateID, err)
+			}
+		}
+		return nil
+	})
+}
+
+// SetTemplates 设置二级客户的模板权限(覆盖模式)
+func (c *customerStore) SetTemplates(ctx context.Context, parentUserID, subUserID uint, templateIDs []uint) error {
+	// 使用事务确保原子性
+	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 1. 删除现有权限
+		if err := tx.Where("parent_user_id = ? AND sub_user_id = ?", parentUserID, subUserID).
+			Delete(&model.UserTemplatePermission{}).Error; err != nil {
+			return fmt.Errorf("failed to clear existing permissions: %w", err)
+		}
+
+		// 2. 添加新权限
+		if len(templateIDs) > 0 {
+			var permissions []model.UserTemplatePermission
+			for _, templateID := range templateIDs {
+				permissions = append(permissions, model.UserTemplatePermission{
+					ParentUserID: parentUserID,
+					SubUserID:    subUserID,
+					TemplateID:   templateID,
+				})
+			}
+			if err := tx.Create(&permissions).Error; err != nil {
+				return fmt.Errorf("failed to set templates: %w", err)
 			}
 		}
 		return nil

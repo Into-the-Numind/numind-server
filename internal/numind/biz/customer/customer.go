@@ -195,9 +195,10 @@ func (c *customerBiz) BatchGrantTemplates(ctx context.Context, parentUserID uint
 			continue
 		}
 
-		err = c.ds.Customers().GrantTemplates(ctx, parentUserID, userID, templateIDs)
+		// 使用SetTemplates代替GrantTemplates，实现"所见即所得"的权限设置（包含移除未选中的权限）
+		err = c.ds.Customers().SetTemplates(ctx, parentUserID, userID, templateIDs)
 		if err != nil {
-			log.C(ctx).Errorw("Failed to batch grant templates to user", "sub_user_id", userID, "err", err)
+			log.C(ctx).Errorw("Failed to batch set templates for user", "sub_user_id", userID, "err", err)
 			return err
 		}
 	}

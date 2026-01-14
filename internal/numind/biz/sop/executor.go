@@ -508,6 +508,7 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 	var fullOutput strings.Builder
 	var usage *TokenUsage
 	reader := bufio.NewReader(resp.Body)
+	sawDone := false
 
 	for {
 		// 检查context是否被取消
@@ -526,8 +527,9 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 		lineBytes, readErr := reader.ReadBytes('\n')
 		if readErr != nil {
 			if readErr == io.EOF {
-				// 流结束
-				break
+				if len(lineBytes) == 0 {
+					break
+				}
 			}
 			log.C(ctx).Errorw("Read error during stream", "node_id", node.ID, "error", readErr)
 			// 即使读取出错，也返回已累积的输出（如果有）
@@ -548,6 +550,7 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
+				sawDone = true
 				log.C(ctx).Infow("LLM stream completed",
 					"node_id", node.ID,
 					"total_output_length", fullOutput.Len())
@@ -616,9 +619,22 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 					"error", err.Error())
 			}
 		}
+
+		if readErr == io.EOF {
+			break
+		}
 	}
 
 	output := fullOutput.String()
+
+	if !sawDone {
+		log.C(ctx).Warnw("LLM stream ended without [DONE]",
+			"node_id", node.ID,
+			"node_name", node.Name,
+			"model", node.ModelName,
+			"output_length", len(output))
+		return output, usage, fmt.Errorf("LLM stream ended unexpectedly: %w", io.ErrUnexpectedEOF)
+	}
 
 	// 记录最终响应结果
 	log.C(ctx).Infow("LLM stream response completed",
@@ -842,6 +858,7 @@ func removeThinkingContent(output string) string {
 // 返回 usage 信息用于统计 token 消耗
 func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model.SopNode, messages []LLMMessage, maxTokens int, deepThinking bool, conversationID string, handler StreamHandler) (*TokenUsage, error) {
 	var usage *TokenUsage // 用于存储 token 使用统计
+	sawDone := false
 	url := node.BaseURL
 	if url == "" {
 		url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
@@ -950,8 +967,9 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		lineBytes, readErr := reader.ReadBytes('\n')
 		if readErr != nil {
 			if readErr == io.EOF {
-				// 流结束
-				break
+				if len(lineBytes) == 0 {
+					break
+				}
 			}
 			if ctx.Err() != nil {
 				log.C(ctx).Warnw("LLM connection closed due to context cancellation", "node_id", node.ID, "error", readErr)
@@ -971,6 +989,7 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 		}
 		raw := strings.TrimPrefix(line, "data: ")
 		if raw == "[DONE]" {
+			sawDone = true
 			_ = handler("done", "")
 			break
 		}
@@ -1154,6 +1173,21 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 				}
 			}
 		}
+
+		if readErr == io.EOF {
+			break
+		}
+	}
+
+	if !sawDone {
+		log.C(ctx).Warnw("Ali deep thinking stream ended without [DONE]",
+			"node_id", node.ID,
+			"node_name", node.Name,
+			"model", node.ModelName,
+			"conversation_id", conversationID,
+			"thinking_chunks", thinkingChunks,
+			"message_chunks", messageChunks)
+		return usage, fmt.Errorf("ali deep thinking stream ended unexpectedly: %w", io.ErrUnexpectedEOF)
 	}
 
 	log.C(ctx).Infow("LLM deep thinking stream finished",
@@ -1174,6 +1208,7 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 // 返回 usage 信息用于统计 token 消耗
 func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *model.SopNode, messages []LLMMessage, maxTokens int, deepThinking bool, conversationID string, handler StreamHandler) (*TokenUsage, error) {
 	var usage *TokenUsage
+	sawDone := false
 	// 构建 URL（先 trim 掉空格，避免拼接错误）
 	url := strings.TrimSpace(node.BaseURL)
 	if url == "" {
@@ -1276,8 +1311,9 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 		lineBytes, readErr := reader.ReadBytes('\n')
 		if readErr != nil {
 			if readErr == io.EOF {
-				// 流结束
-				break
+				if len(lineBytes) == 0 {
+					break
+				}
 			}
 			if ctx.Err() != nil {
 				log.C(ctx).Warnw("LLM connection closed due to context cancellation", "node_id", node.ID, "error", readErr)
@@ -1297,6 +1333,7 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 		}
 		raw := strings.TrimPrefix(line, "data: ")
 		if raw == "[DONE]" {
+			sawDone = true
 			_ = handler("done", "")
 			break
 		}
@@ -1371,6 +1408,21 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 				return nil, err
 			}
 		}
+
+		if readErr == io.EOF {
+			break
+		}
+	}
+
+	if !sawDone {
+		log.C(ctx).Warnw("Volc deep thinking stream ended without [DONE]",
+			"node_id", node.ID,
+			"node_name", node.Name,
+			"model", node.ModelName,
+			"conversation_id", conversationID,
+			"thinking_chunks", thinkingChunks,
+			"message_chunks", messageChunks)
+		return usage, fmt.Errorf("volc deep thinking stream ended unexpectedly: %w", io.ErrUnexpectedEOF)
 	}
 
 	log.C(ctx).Infow("LLM volc deep thinking stream finished",
