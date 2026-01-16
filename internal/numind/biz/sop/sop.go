@@ -773,6 +773,7 @@ func (b *sopBiz) GetRunStatus(ctx context.Context, runID uint) (*RunStatus, erro
 		if nodeRun.Status == model.SopStatusSucceeded {
 			completedNodeIDs[nodeRun.NodeID] = true
 			completedNodes = append(completedNodes, CompletedNodeInfo{
+				NodeRunID:    nodeRun.ID,           // 节点运行ID
 				NodeID:       nodeRun.NodeID,
 				NodeName:     nodeRun.Node.Name,
 				Sort:         nodeRun.Sort,

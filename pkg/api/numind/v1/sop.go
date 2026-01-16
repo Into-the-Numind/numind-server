@@ -190,6 +190,7 @@ type RunStatusResponse struct {
 
 // CompletedNodeInfo 已完成节点信息
 type CompletedNodeInfo struct {
+	NodeRunID    uint   `json:"node_run_id"`           // 节点运行ID
 	NodeID       uint   `json:"node_id"`
 	NodeName     string `json:"node_name"`
 	Sort         int    `json:"sort"`
