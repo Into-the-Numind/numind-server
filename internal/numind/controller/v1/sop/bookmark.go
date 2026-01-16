@@ -145,7 +145,7 @@ func (ctrl *SopController) GetBookmark(c *gin.Context) {
 	bookmark, err := ctrl.sopBiz.GetBookmark(c.Request.Context(), uint(bookmarkID), user.ID)
 	if err != nil {
 		log.C(c).Errorw("Failed to get bookmark", "error", err)
-		core.WriteResponse(c, errno.ErrNotFound.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
 		return
 	}
 
