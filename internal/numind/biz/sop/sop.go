@@ -62,6 +62,14 @@ type ISopBiz interface {
 	DeleteRun(ctx context.Context, runID uint, userID uint) error
 	DeleteRuns(ctx context.Context, runIDs []uint, userID uint) error
 	CleanZombieRuns(ctx context.Context, timeout time.Duration) error
+
+	// Bookmark operations
+	SaveNodeBookmark(ctx context.Context, userID, nodeRunID uint, bookmarkName, description string) (*model.SopNodeBookmark, error)
+	GetBookmark(ctx context.Context, id, userID uint) (*model.SopNodeBookmark, error)
+	ListBookmarksByTemplate(ctx context.Context, userID, templateID uint) ([]model.SopNodeBookmark, error)
+	DeleteBookmark(ctx context.Context, id, userID uint) error
+	ApplyBookmarkToNode(ctx context.Context, userID, runID, nodeID uint, bookmarkID *uint) (*model.SopNodeRun, error)
+	CreateRunWithBookmarks(ctx context.Context, templateID, userID uint, text string, autoApplyBookmarks bool) (*model.SopRun, []uint, error)
 }
 
 type sopBiz struct {
@@ -161,12 +169,14 @@ type RunStatus struct {
 
 // CompletedNodeInfo 已完成节点信息
 type CompletedNodeInfo struct {
-	NodeID   uint   `json:"node_id"`
-	NodeName string `json:"node_name"`
-	Sort     int    `json:"sort"`
-	Input    string `json:"input"`  // 节点输入
-	Output   string `json:"output"` // 完整输出
-	Thinking string `json:"thinking,omitempty"`
+	NodeID       uint   `json:"node_id"`
+	NodeName     string `json:"node_name"`
+	Sort         int    `json:"sort"`
+	Input        string `json:"input"`  // 节点输入
+	Output       string `json:"output"` // 完整输出
+	Thinking     string `json:"thinking,omitempty"`
+	FromBookmark bool   `json:"from_bookmark"` // 是否从书签恢复
+	BookmarkID   *uint  `json:"bookmark_id,omitempty"`   // 关联的书签ID
 }
 
 // NextNodeInfo 下一个节点信息
@@ -763,12 +773,14 @@ func (b *sopBiz) GetRunStatus(ctx context.Context, runID uint) (*RunStatus, erro
 		if nodeRun.Status == model.SopStatusSucceeded {
 			completedNodeIDs[nodeRun.NodeID] = true
 			completedNodes = append(completedNodes, CompletedNodeInfo{
-				NodeID:   nodeRun.NodeID,
-				NodeName: nodeRun.Node.Name,
-				Sort:     nodeRun.Sort,
-				Input:    nodeRun.Input,  // 节点输入
-				Output:   nodeRun.Output, // 返回完整输出
-				Thinking: nodeRun.Thinking,
+				NodeID:       nodeRun.NodeID,
+				NodeName:     nodeRun.Node.Name,
+				Sort:         nodeRun.Sort,
+				Input:        nodeRun.Input,  // 节点输入
+				Output:       nodeRun.Output, // 返回完整输出
+				Thinking:     nodeRun.Thinking,
+				FromBookmark: nodeRun.FromBookmark, // 是否从书签恢复
+				BookmarkID:   nodeRun.BookmarkID,   // 关联的书签ID
 			})
 			if nodeRun.Sort > currentNodeSort {
 				currentNodeSort = nodeRun.Sort
@@ -1302,6 +1314,275 @@ func (b *sopBiz) CleanZombieRuns(ctx context.Context, timeout time.Duration) err
 		log.C(ctx).Infow("Zombies cleaned successfully", "count", affected, "timeout", timeout)
 	}
 	return nil
+}
+
+// Bookmark operations
+
+// SaveNodeBookmark 保存节点为书签
+func (b *sopBiz) SaveNodeBookmark(ctx context.Context, userID, nodeRunID uint, bookmarkName, description string) (*model.SopNodeBookmark, error) {
+	// 1. 获取NodeRun记录
+	nodeRun, err := b.ds.Sop().GetNodeRun(nodeRunID)
+	if err != nil {
+		return nil, fmt.Errorf("node run not found: %w", err)
+	}
+
+	// 2. 验证权限（NodeRun必须属于当前用户）
+	if nodeRun.UserID != userID {
+		return nil, fmt.Errorf("无权限操作该节点运行记录")
+	}
+
+	// 3. 验证节点运行状态（只能保存成功的节点）
+	if nodeRun.Status != model.SopStatusSucceeded {
+		return nil, fmt.Errorf("只能保存执行成功的节点")
+	}
+
+	// 4. 获取Run信息（用于获取TemplateID）
+	run, err := b.ds.Sop().GetRun(nodeRun.RunID)
+	if err != nil {
+		return nil, fmt.Errorf("run not found: %w", err)
+	}
+
+	// 5. 获取Node信息（用于获取Sort）
+	node, err := b.ds.Sop().GetNode(nodeRun.NodeID)
+	if err != nil {
+		return nil, fmt.Errorf("node not found: %w", err)
+	}
+
+	// 6. 检查是否已有书签（用户、模板、节点的唯一性）
+	existingBookmark, err := b.ds.Sop().GetBookmarkByUserTemplateNode(userID, run.TemplateID, node.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check existing bookmark: %w", err)
+	}
+
+	// 7. 创建或更新书签
+	bookmark := &model.SopNodeBookmark{
+		UserID:           userID,
+		TemplateID:       run.TemplateID,
+		NodeID:           node.ID,
+		NodeSort:         node.Sort,
+		Input:            nodeRun.Input,
+		Output:           nodeRun.Output,
+		Thinking:         nodeRun.Thinking,
+		SourceRunID:      &run.ID,
+		SourceNodeRunID:  &nodeRun.ID,
+		PromptTokens:     nodeRun.PromptTokens,
+		CompletionTokens: nodeRun.CompletionTokens,
+		TotalTokens:      nodeRun.TotalTokens,
+		BookmarkName:     bookmarkName,
+		Description:      description,
+	}
+
+	if existingBookmark != nil {
+		// 更新现有书签
+		updates := map[string]interface{}{
+			"input":               bookmark.Input,
+			"output":              bookmark.Output,
+			"thinking":            bookmark.Thinking,
+			"source_run_id":       bookmark.SourceRunID,
+			"source_node_run_id":  bookmark.SourceNodeRunID,
+			"prompt_tokens":       bookmark.PromptTokens,
+			"completion_tokens":   bookmark.CompletionTokens,
+			"total_tokens":        bookmark.TotalTokens,
+			"bookmark_name":       bookmark.BookmarkName,
+			"description":         bookmark.Description,
+		}
+		if err := b.ds.Sop().UpdateBookmark(existingBookmark.ID, updates); err != nil {
+			return nil, fmt.Errorf("failed to update bookmark: %w", err)
+		}
+		bookmark.ID = existingBookmark.ID
+		log.C(ctx).Infow("Updated bookmark", "bookmark_id", bookmark.ID, "node_id", node.ID, "user_id", userID)
+	} else {
+		// 创建新书签
+		if err := b.ds.Sop().CreateBookmark(bookmark); err != nil {
+			return nil, fmt.Errorf("failed to create bookmark: %w", err)
+		}
+		log.C(ctx).Infow("Created bookmark", "bookmark_id", bookmark.ID, "node_id", node.ID, "user_id", userID)
+	}
+
+	return bookmark, nil
+}
+
+// GetBookmark 获取书签详情
+func (b *sopBiz) GetBookmark(ctx context.Context, id, userID uint) (*model.SopNodeBookmark, error) {
+	bookmark, err := b.ds.Sop().GetBookmark(id)
+	if err != nil {
+		return nil, fmt.Errorf("bookmark not found: %w", err)
+	}
+
+	// 验证权限
+	if bookmark.UserID != userID {
+		return nil, fmt.Errorf("无权限访问该书签")
+	}
+
+	return bookmark, nil
+}
+
+// ListBookmarksByTemplate 获取用户在指定模板下的所有书签
+func (b *sopBiz) ListBookmarksByTemplate(ctx context.Context, userID, templateID uint) ([]model.SopNodeBookmark, error) {
+	return b.ds.Sop().ListBookmarksByUserAndTemplate(userID, templateID)
+}
+
+// DeleteBookmark 删除书签
+func (b *sopBiz) DeleteBookmark(ctx context.Context, id, userID uint) error {
+	// 验证权限
+	bookmark, err := b.ds.Sop().GetBookmark(id)
+	if err != nil {
+		return fmt.Errorf("bookmark not found: %w", err)
+	}
+
+	if bookmark.UserID != userID {
+		return fmt.Errorf("无权限删除该书签")
+	}
+
+	return b.ds.Sop().DeleteBookmark(id)
+}
+
+// ApplyBookmarkToNode 应用书签到节点
+func (b *sopBiz) ApplyBookmarkToNode(ctx context.Context, userID, runID, nodeID uint, bookmarkID *uint) (*model.SopNodeRun, error) {
+	// 1. 验证Run权限
+	run, err := b.ds.Sop().GetRun(runID)
+	if err != nil {
+		return nil, fmt.Errorf("run not found: %w", err)
+	}
+	if run.UserID != userID {
+		return nil, fmt.Errorf("无权限操作该运行记录")
+	}
+
+	// 2. 获取Node信息
+	node, err := b.ds.Sop().GetNode(nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("node not found: %w", err)
+	}
+
+	// 验证节点属于该模板
+	if node.TemplateID != run.TemplateID {
+		return nil, fmt.Errorf("节点不属于该模板")
+	}
+
+	// 3. 获取书签
+	var bookmark *model.SopNodeBookmark
+	if bookmarkID != nil {
+		bookmark, err = b.ds.Sop().GetBookmark(*bookmarkID)
+		if err != nil {
+			return nil, fmt.Errorf("bookmark not found: %w", err)
+		}
+		if bookmark.UserID != userID {
+			return nil, fmt.Errorf("无权限访问该书签")
+		}
+	} else {
+		// 自动查找该节点的书签
+		bookmark, err = b.ds.Sop().GetBookmarkByUserTemplateNode(userID, run.TemplateID, nodeID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get bookmark: %w", err)
+		}
+		if bookmark == nil {
+			return nil, fmt.Errorf("该节点没有保存的书签")
+		}
+	}
+
+	// 4. 检查是否已有NodeRun记录
+	existingNodeRun, err := b.ds.Sop().GetNodeRunByRunAndNode(runID, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check existing node run: %w", err)
+	}
+
+	// 5. 如果该节点已经执行过，需要清理下游节点（与重新执行逻辑一致）
+	if existingNodeRun != nil {
+		if err := b.ds.Sop().DeleteNodeRunsAfterSort(runID, node.Sort); err != nil {
+			return nil, fmt.Errorf("failed to clean downstream nodes: %w", err)
+		}
+		// 同时清理笔记和聊天消息
+		_ = b.ds.Sop().DeleteNotesByRun(runID)
+		_ = b.ds.Sop().DeleteChatMessagesByRun(runID)
+	}
+
+	// 6. 创建或更新NodeRun
+	now := time.Now()
+	nodeRun := &model.SopNodeRun{
+		RunID:            runID,
+		NodeID:           nodeID,
+		TemplateID:       run.TemplateID,
+		UserID:           userID,
+		Sort:             node.Sort,
+		Status:           model.SopStatusSucceeded,
+		FromBookmark:     true,
+		BookmarkID:       &bookmark.ID,
+		Input:            bookmark.Input,
+		Output:           bookmark.Output,
+		Thinking:         bookmark.Thinking,
+		PromptTokens:     bookmark.PromptTokens,
+		CompletionTokens: bookmark.CompletionTokens,
+		TotalTokens:      bookmark.TotalTokens,
+		ConversationID:   run.ConversationID,
+		StartedAt:        &now,
+		FinishedAt:       &now,
+	}
+
+	if existingNodeRun != nil {
+		nodeRun.ID = existingNodeRun.ID
+		updates := map[string]interface{}{
+			"status":             nodeRun.Status,
+			"from_bookmark":      nodeRun.FromBookmark,
+			"bookmark_id":        nodeRun.BookmarkID,
+			"input":              nodeRun.Input,
+			"output":             nodeRun.Output,
+			"thinking":           nodeRun.Thinking,
+			"prompt_tokens":      nodeRun.PromptTokens,
+			"completion_tokens":  nodeRun.CompletionTokens,
+			"total_tokens":       nodeRun.TotalTokens,
+			"started_at":         nodeRun.StartedAt,
+			"finished_at":        nodeRun.FinishedAt,
+		}
+		if err := b.ds.Sop().UpdateNodeRun(existingNodeRun.ID, updates); err != nil {
+			return nil, fmt.Errorf("failed to update node run: %w", err)
+		}
+	} else {
+		if err := b.ds.Sop().CreateNodeRun(nodeRun); err != nil {
+			return nil, fmt.Errorf("failed to create node run: %w", err)
+		}
+	}
+
+	log.C(ctx).Infow("Applied bookmark to node", "bookmark_id", bookmark.ID, "node_id", nodeID, "run_id", runID)
+	return nodeRun, nil
+}
+
+// CreateRunWithBookmarks 创建Run并自动应用书签
+func (b *sopBiz) CreateRunWithBookmarks(ctx context.Context, templateID, userID uint, text string, autoApplyBookmarks bool) (*model.SopRun, []uint, error) {
+	// 1. 先创建普通的Run（包含权限检查）
+	run, err := b.CreateRun(ctx, templateID, userID, text)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	appliedBookmarkIDs := []uint{}
+
+	// 2. 如果启用自动应用书签
+	if autoApplyBookmarks {
+		// 获取该用户在该模板下的所有书签
+		bookmarks, err := b.ds.Sop().ListBookmarksByUserAndTemplate(userID, templateID)
+		if err != nil {
+			log.C(ctx).Errorw("Failed to get bookmarks", "error", err)
+			// 不影响Run创建，继续返回
+			return run, appliedBookmarkIDs, nil
+		}
+
+		// 为每个有书签的节点应用书签
+		for _, bookmark := range bookmarks {
+			nodeRun, err := b.ApplyBookmarkToNode(ctx, userID, run.ID, bookmark.NodeID, &bookmark.ID)
+			if err != nil {
+				log.C(ctx).Errorw("Failed to apply bookmark", "bookmark_id", bookmark.ID, "error", err)
+				// 继续处理其他书签
+				continue
+			}
+			if nodeRun != nil {
+				appliedBookmarkIDs = append(appliedBookmarkIDs, bookmark.ID)
+			}
+		}
+
+		log.C(ctx).Infow("Auto-applied bookmarks", "run_id", run.ID, "count", len(appliedBookmarkIDs))
+	}
+
+	return run, appliedBookmarkIDs, nil
 }
 
 // cleanPDFFormatCode 清理PDF格式代码等无效内容

@@ -75,6 +75,8 @@ type SopNodeRun struct {
 	UserID                uint       `gorm:"not null;index" json:"user_id"`
 	ParentNodeID          *uint      `gorm:"index" json:"parent_node_id"`
 	Status                string     `gorm:"size:20;default:'pending';index" json:"status"` // pending, running, succeeded, failed
+	FromBookmark          bool       `gorm:"default:false" json:"from_bookmark"`            // 是否从书签恢复
+	BookmarkID            *uint      `gorm:"index:idx_bookmark" json:"bookmark_id"`         // 关联的书签ID
 	Input                 string     `gorm:"type:longtext" json:"input"`                    // 节点输入（使用LONGTEXT支持超长文本）
 	Output                string     `gorm:"type:longtext" json:"output"`                   // 节点输出（使用LONGTEXT支持超长文本）
 	Thinking              string     `gorm:"type:longtext" json:"thinking"`                 // 思考过程内容（AI的思考部分，如"已思考"等）
@@ -165,6 +167,34 @@ type SopChatMsg struct {
 
 func (SopChatMsg) TableName() string {
 	return "sop_chat_message"
+}
+
+// SopNodeBookmark SOP节点书签表
+type SopNodeBookmark struct {
+	gorm.Model
+	UserID              uint   `gorm:"not null;uniqueIndex:uk_user_template_node" json:"user_id"`
+	TemplateID          uint   `gorm:"not null;uniqueIndex:uk_user_template_node;index:idx_user_template" json:"template_id"`
+	NodeID              uint   `gorm:"not null;uniqueIndex:uk_user_template_node;index" json:"node_id"`
+	NodeSort            int    `gorm:"not null" json:"node_sort"`                    // 节点排序（冗余，便于查询）
+	Input               string `gorm:"type:longtext" json:"input"`                   // 节点输入
+	Output              string `gorm:"type:longtext" json:"output"`                  // 节点输出
+	Thinking            string `gorm:"type:longtext" json:"thinking"`                // AI思考过程
+	SourceRunID         *uint  `gorm:"index:idx_source_run" json:"source_run_id"`    // 来源运行ID
+	SourceNodeRunID     *uint  `json:"source_node_run_id"`                           // 来源节点运行ID
+	PromptTokens        int    `gorm:"default:0" json:"prompt_tokens"`               // 输入token数
+	CompletionTokens    int    `gorm:"default:0" json:"completion_tokens"`           // 输出token数
+	TotalTokens         int    `gorm:"default:0" json:"total_tokens"`                // 总token数
+	BookmarkName        string `gorm:"size:255" json:"bookmark_name"`                // 书签名称（可选）
+	Description         string `gorm:"type:text" json:"description"`                 // 书签描述（可选）
+
+	// 关联
+	User     *User        `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	Template *SopTemplate `gorm:"foreignKey:TemplateID" json:"template,omitempty"`
+	Node     *SopNode     `gorm:"foreignKey:NodeID" json:"node,omitempty"`
+}
+
+func (SopNodeBookmark) TableName() string {
+	return "sop_node_bookmark"
 }
 
 // SOP状态常量

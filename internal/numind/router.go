@@ -281,14 +281,21 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/sop/templates", userSopc.ListTemplates)                                // 获取可用模板列表
 		authGroup.GET("/sop/templates/:id/nodes", userSopc.GetTemplateNodes)                   // 获取模板的所有节点
 		authGroup.GET("/sop/templates/:id/check-permission", userSopc.CheckTemplatePermission) // 检查用户是否有模板权限
+		authGroup.GET("/sop/templates/:id/bookmarks", userSopc.ListBookmarksByTemplate)        // 获取模板的所有书签
 		authGroup.POST("/sop/templates/:id/execute", userSopc.ExecuteTemplate)                 // 执行模板（异步，一次性执行所有节点）
 		authGroup.GET("/sop/templates/executed", userSopc.ListMyExecutedTemplates)             // 获取当前用户已执行的模板列表（按模板分组）
 		authGroup.GET("/sop/templates/:id/runs", userSopc.ListTemplateRuns)                    // 获取指定模板下的所有历史运行记录（包含完整信息）
 
+		// 书签管理
+		authGroup.POST("/sop/bookmarks", userSopc.SaveBookmark)         // 保存节点为书签
+		authGroup.GET("/sop/bookmarks/:id", userSopc.GetBookmark)       // 获取书签详情
+		authGroup.DELETE("/sop/bookmarks/:id", userSopc.DeleteBookmark) // 删除书签
+
 		// 逐步执行SOP节点（新增）- 注意：这些路由必须在 /sop/runs/:id 之前注册，避免路由冲突
-		authGroup.POST("/sop/runs", userSopc.CreateRun)                                    // 创建Run（不立即执行）
-		authGroup.GET("/sop/runs/:id/next-node", userSopc.GetNextNode)                     // 获取下一个待执行节点
-		authGroup.POST("/sop/runs/:id/nodes/:node_id/execute", userSopc.ExecuteNodeStream) // 流式执行指定节点（支持文件上传）
+		authGroup.POST("/sop/runs", userSopc.CreateRun)                                            // 创建Run（不立即执行，支持自动应用书签）
+		authGroup.GET("/sop/runs/:id/next-node", userSopc.GetNextNode)                             // 获取下一个待执行节点
+		authGroup.POST("/sop/runs/:id/nodes/:node_id/execute", userSopc.ExecuteNodeStream)         // 流式执行指定节点（支持文件上传）
+		authGroup.POST("/sop/runs/:id/nodes/:node_id/apply-bookmark", userSopc.ApplyBookmark)      // 应用书签到节点
 		authGroup.POST("/sop/files/check-quality", userSopc.CheckFileQuality)              // 检测上传文件质量
 		authGroup.POST("/sop/files/parse-text", userSopc.ParseFileText)                    // 上传文件解析文本（返回文本用于回填）
 		authGroup.POST("/sop/files/parse-text/query", userSopc.ParseFileTextQuery)         // 轮询qwen-long解析结果

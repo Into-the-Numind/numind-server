@@ -598,7 +598,8 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 	}()
 	// #endregion
 
-	run, err := ctrl.sopBiz.CreateRun(c, req.TemplateID, user.ID, req.Text)
+	// 支持书签功能：创建 Run 并自动应用书签
+	run, appliedBookmarkIDs, err := ctrl.sopBiz.CreateRunWithBookmarks(c.Request.Context(), req.TemplateID, user.ID, req.Text, req.AutoApplyBookmarks)
 	// #region agent log
 	func() {
 		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -613,8 +614,8 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 			if err != nil {
 				errMsg = err.Error()
 			}
-			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:399","message":"CreateRun biz result","data":{"hypothesisId":"B","error":%t,"errorMsg":%q,"runID":%d},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), hasErr, errMsg, runID)
+			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:399","message":"CreateRun biz result","data":{"hypothesisId":"B","error":%t,"errorMsg":%q,"runID":%d,"autoAppliedCount":%d},"sessionId":"debug-session","runId":"request"}
+`, time.Now().UnixMilli(), hasErr, errMsg, runID, len(appliedBookmarkIDs))
 			logFile.WriteString(logEntry)
 		}
 	}()
@@ -629,13 +630,20 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if logFile != nil {
 			defer logFile.Close()
-			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:405","message":"CreateRun handler exit","data":{"hypothesisId":"B","runID":%d,"success":true},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), run.ID)
+			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:405","message":"CreateRun handler exit","data":{"hypothesisId":"B","runID":%d,"success":true,"autoAppliedCount":%d},"sessionId":"debug-session","runId":"request"}
+`, time.Now().UnixMilli(), run.ID, len(appliedBookmarkIDs))
 			logFile.WriteString(logEntry)
 		}
 	}()
 	// #endregion
-	core.WriteResponse(c, nil, run)
+	core.WriteResponse(c, nil, gin.H{
+		"id":                 run.ID,
+		"template_id":        run.TemplateID,
+		"status":             run.Status,
+		"conversation_id":    run.ConversationID,
+		"auto_applied_count": len(appliedBookmarkIDs),
+		"created_at":         run.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+	})
 }
 
 // GetNextNode 获取下一个待执行节点
@@ -1973,6 +1981,14 @@ func (ctrl *SopController) GetRunStatus(c *gin.Context) {
 		return
 	}
 
+	// 获取该用户在该模板下的所有书签
+	bookmarks, err := ctrl.sopBiz.ListBookmarksByTemplate(c.Request.Context(), user.ID, run.TemplateID)
+	if err != nil {
+		log.C(c).Warnw("Failed to get bookmarks", "error", err)
+		// 不影响主流程，继续返回状态
+		bookmarks = []model.SopNodeBookmark{}
+	}
+
 	// 转换为API响应格式
 	response := v1.RunStatusResponse{
 		Status:          status.Status,
@@ -1981,16 +1997,18 @@ func (ctrl *SopController) GetRunStatus(c *gin.Context) {
 		CompletedCount:  status.CompletedCount,
 	}
 
-	// 转换已完成节点
+	// 转换已完成节点，包含书签信息
 	completedNodes := make([]v1.CompletedNodeInfo, len(status.CompletedNodes))
 	for i, node := range status.CompletedNodes {
 		completedNodes[i] = v1.CompletedNodeInfo{
-			NodeID:   node.NodeID,
-			NodeName: node.NodeName,
-			Sort:     node.Sort,
-			Input:    node.Input,  // 节点输入
-			Output:   node.Output, // 返回完整输出
-			Thinking: node.Thinking,
+			NodeID:       node.NodeID,
+			NodeName:     node.NodeName,
+			Sort:         node.Sort,
+			Input:        node.Input,  // 节点输入
+			Output:       node.Output, // 返回完整输出
+			Thinking:     node.Thinking,
+			FromBookmark: node.FromBookmark,
+			BookmarkID:   node.BookmarkID,
 		}
 	}
 	response.CompletedNodes = completedNodes
@@ -2005,6 +2023,34 @@ func (ctrl *SopController) GetRunStatus(c *gin.Context) {
 			HasNext:  status.NextNode.HasNext,
 		}
 	}
+
+	// 添加可用书签信息（未应用的书签）
+	availableBookmarks := []v1.BookmarkInfo{}
+	appliedNodeIDs := make(map[uint]bool)
+	for _, node := range status.CompletedNodes {
+		appliedNodeIDs[node.NodeID] = true
+	}
+
+	for _, bookmark := range bookmarks {
+		// 只返回尚未应用的书签
+		if !appliedNodeIDs[bookmark.NodeID] {
+			availableBookmarks = append(availableBookmarks, v1.BookmarkInfo{
+				NodeID:     bookmark.NodeID,
+				NodeSort:   bookmark.NodeSort,
+				BookmarkID: bookmark.ID,
+			})
+		}
+	}
+	response.AvailableBookmarks = availableBookmarks
+
+	// 统计自动应用的书签数量
+	autoAppliedCount := 0
+	for _, node := range status.CompletedNodes {
+		if node.FromBookmark {
+			autoAppliedCount++
+		}
+	}
+	response.AutoAppliedCount = autoAppliedCount
 
 	core.WriteResponse(c, nil, response)
 }
