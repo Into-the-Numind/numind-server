@@ -1320,6 +1320,21 @@ func (b *sopBiz) CleanZombieRuns(ctx context.Context, timeout time.Duration) err
 
 // Bookmark operations
 
+// SaveNodeBookmarkByRunAndNode 通过 runID 和 nodeID 保存书签
+func (b *sopBiz) SaveNodeBookmarkByRunAndNode(ctx context.Context, userID, runID, nodeID uint, bookmarkName, description string) (*model.SopNodeBookmark, error) {
+	// 1. 根据 runID 和 nodeID 查询 NodeRun
+	nodeRun, err := b.ds.Sop().GetNodeRunByRunAndNode(runID, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get node run: %w", err)
+	}
+	if nodeRun == nil {
+		return nil, fmt.Errorf("未找到节点执行记录")
+	}
+
+	// 2. 调用原有的 SaveNodeBookmark 方法
+	return b.SaveNodeBookmark(ctx, userID, nodeRun.ID, bookmarkName, description)
+}
+
 // SaveNodeBookmark 保存节点为书签
 func (b *sopBiz) SaveNodeBookmark(ctx context.Context, userID, nodeRunID uint, bookmarkName, description string) (*model.SopNodeBookmark, error) {
 	// 1. 获取NodeRun记录

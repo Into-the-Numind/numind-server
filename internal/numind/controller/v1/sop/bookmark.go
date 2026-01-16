@@ -14,7 +14,8 @@ import (
 
 // SaveBookmarkRequest 保存书签请求
 type SaveBookmarkRequest struct {
-	NodeRunID    uint   `json:"node_run_id" binding:"required"`
+	RunID        uint   `json:"run_id" binding:"required"`  // SOP Run ID
+	NodeID       uint   `json:"node_id" binding:"required"` // Node ID
 	BookmarkName string `json:"bookmark_name"`
 	Description  string `json:"description"`
 }
@@ -86,8 +87,8 @@ func (ctrl *SopController) SaveBookmark(c *gin.Context) {
 		return
 	}
 
-	// 调用业务逻辑
-	bookmark, err := ctrl.sopBiz.SaveNodeBookmark(c.Request.Context(), user.ID, req.NodeRunID, req.BookmarkName, req.Description)
+	// 调用业务逻辑（传入 runID 和 nodeID，由业务层查询 nodeRunID）
+	bookmark, err := ctrl.sopBiz.SaveNodeBookmarkByRunAndNode(c.Request.Context(), user.ID, req.RunID, req.NodeID, req.BookmarkName, req.Description)
 	if err != nil {
 		log.C(c).Errorw("Failed to save bookmark", "error", err)
 		core.WriteResponse(c, errno.ErrInternalServer.SetMessage(err.Error()), nil)
