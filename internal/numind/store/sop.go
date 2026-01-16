@@ -819,14 +819,3 @@ func (s *sopStore) UpdateBookmark(id uint, updates map[string]interface{}) error
 func (s *sopStore) DeleteBookmark(id uint) error {
 	return s.db.Delete(&model.SopNodeBookmark{}, id).Error
 }
-
-// helper function
-func defaultLimit(limit int) int {
-	if limit <= 0 {
-		return 10
-	}
-	if limit > 100 {
-		return 100
-	}
-	return limit
-}
