@@ -65,6 +65,7 @@ type ISopBiz interface {
 
 	// Bookmark operations
 	SaveNodeBookmark(ctx context.Context, userID, nodeRunID uint, bookmarkName, description string) (*model.SopNodeBookmark, error)
+	SaveNodeBookmarkByRunAndNode(ctx context.Context, userID, runID, nodeID uint, bookmarkName, description string) (*model.SopNodeBookmark, error)
 	GetBookmark(ctx context.Context, id, userID uint) (*model.SopNodeBookmark, error)
 	ListBookmarksByTemplate(ctx context.Context, userID, templateID uint) ([]model.SopNodeBookmark, error)
 	DeleteBookmark(ctx context.Context, id, userID uint) error
