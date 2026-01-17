@@ -197,8 +197,9 @@ type CompletedNodeInfo struct {
 	Input        string `json:"input"`  // 节点输入
 	Output       string `json:"output"` // 完整输出
 	Thinking     string `json:"thinking,omitempty"`
-	FromBookmark bool   `json:"from_bookmark"` // 是否从书签恢复
-	BookmarkID   *uint  `json:"bookmark_id,omitempty"`   // 关联的书签ID
+	FromBookmark bool   `json:"from_bookmark"`         // 是否从书签恢复
+	BookmarkID   *uint  `json:"bookmark_id,omitempty"` // 关联的书签ID
+	IsAccessible bool   `json:"is_accessible"`         // 是否可访问（前面所有节点都已完成）
 }
 
 // BookmarkInfo 书签信息（用于状态响应）

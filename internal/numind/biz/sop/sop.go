@@ -179,8 +179,9 @@ type CompletedNodeInfo struct {
 	Input        string `json:"input"`  // 节点输入
 	Output       string `json:"output"` // 完整输出
 	Thinking     string `json:"thinking,omitempty"`
-	FromBookmark bool   `json:"from_bookmark"` // 是否从书签恢复
-	BookmarkID   *uint  `json:"bookmark_id,omitempty"`   // 关联的书签ID
+	FromBookmark bool   `json:"from_bookmark"`         // 是否从书签恢复
+	BookmarkID   *uint  `json:"bookmark_id,omitempty"` // 关联的书签ID
+	IsAccessible bool   `json:"is_accessible"`         // 是否可访问（前面所有节点都已完成）
 }
 
 // NextNodeInfo 下一个节点信息
@@ -434,6 +435,30 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	if !hasPermission {
 		log.C(ctx).Warnw("User permission revoked for template", "user_id", run.UserID, "template_id", run.TemplateID)
 		return fmt.Errorf("您没有权限执行此模板（权限已被撤销）")
+	}
+
+	// ===== 前置节点完成检查 =====
+	// 确保当前节点之前的所有节点都已完成，以维护业务流程的顺序性
+	for _, n := range allNodes {
+		if n.Sort < node.Sort {
+			// 检查该前置节点是否已完成
+			completed := false
+			for _, nodeRun := range allNodeRuns {
+				if nodeRun.NodeID == n.ID && nodeRun.Status == model.SopStatusSucceeded {
+					completed = true
+					break
+				}
+			}
+			if !completed {
+				log.C(ctx).Warnw("Prerequisite node not completed",
+					"run_id", runID,
+					"current_node_id", nodeID,
+					"current_node_name", node.Name,
+					"prerequisite_node_id", n.ID,
+					"prerequisite_node_name", n.Name)
+				return fmt.Errorf("前置节点「%s」尚未完成，无法执行当前节点「%s」", n.Name, node.Name)
+			}
+		}
 	}
 
 	// ===== 状态转换：draft → running =====
@@ -803,6 +828,23 @@ func (b *sopBiz) GetRunStatus(ctx context.Context, runID uint) (*RunStatus, erro
 				currentNodeSort = nodeRun.Sort
 			}
 		}
+	}
+
+	// 计算每个已完成节点的可访问性
+	// 规则：只有当一个节点之前的所有节点都已完成时，该节点才可访问
+	for i := range completedNodes {
+		isAccessible := true
+		// 检查该节点之前的所有节点是否都已完成
+		for _, node := range allNodes {
+			if node.Sort < completedNodes[i].Sort {
+				if !completedNodeIDs[node.ID] {
+					// 存在未完成的前置节点，标记为不可访问
+					isAccessible = false
+					break
+				}
+			}
+		}
+		completedNodes[i].IsAccessible = isAccessible
 	}
 
 	// 找到下一个节点
