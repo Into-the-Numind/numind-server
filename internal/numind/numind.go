@@ -14,6 +14,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"numind-server/internal/numind/biz"
+	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/log"
 	mw "numind-server/internal/pkg/middleware"
 	"numind-server/pkg/version/verflag"
@@ -141,6 +143,27 @@ func run() error {
 	// #region agent log
 	log.Infow("[DEBUG] After startInsecureServer", "hypothesisId", "C", "location", "numind.go:117", "runId", "startup", "serverCreated", true)
 	// #endregion
+
+	// 启动 SOP draft 清理任务（每2小时清理一次超过8小时的草稿）
+	bizLayer := biz.NewBiz(store.S)
+	go func() {
+		ticker := time.NewTicker(2 * time.Hour)
+		defer ticker.Stop()
+
+		log.Infow("SOP draft cleanup task started", "interval", "2 hours", "timeout", "8 hours")
+
+		// 启动时立即执行一次清理
+		if err := bizLayer.Sop().CleanupDraftRuns(context.Background(), 8*time.Hour); err != nil {
+			log.Errorw("Initial draft cleanup failed", "error", err)
+		}
+
+		// 然后定期执行
+		for range ticker.C {
+			if err := bizLayer.Sop().CleanupDraftRuns(context.Background(), 8*time.Hour); err != nil {
+				log.Errorw("Draft cleanup failed", "error", err)
+			}
+		}
+	}()
 
 	// 创建并运行 HTTPS 服务器
 	//httpssrv := startSecureServer(g)

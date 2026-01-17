@@ -41,6 +41,7 @@ type ISopStore interface {
 	ListNodeRunsByRun(runID uint) ([]model.SopNodeRun, error)
 	ListNodeRunsByRuns(runIDs []uint) (map[uint][]model.SopNodeRun, error)
 	UpdateNodeRun(id uint, updates map[string]interface{}) error
+	DeleteNodeRunsByRunID(runID uint) error
 
 	// Note operations
 	CreateNote(note *model.SopNote) error
@@ -219,7 +220,7 @@ func (s *sopStore) ListRuns(offset, limit int, userID *uint) ([]model.SopRun, in
 	var runs []model.SopRun
 	var total int64
 
-	query := s.db.Model(&model.SopRun{})
+	query := s.db.Model(&model.SopRun{}).Where("status != ?", "draft")
 	if userID != nil {
 		query = query.Where("user_id = ?", *userID)
 	}
@@ -241,7 +242,7 @@ func (s *sopStore) ListRunsByUserAndTemplate(userID, templateID uint, offset, li
 	var total int64
 
 	query := s.db.Model(&model.SopRun{}).
-		Where("user_id = ? AND template_id = ?", userID, templateID)
+		Where("user_id = ? AND template_id = ? AND status != ?", userID, templateID, "draft")
 
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
@@ -495,15 +496,15 @@ type ExecutedTemplateInfo struct {
 }
 
 // ListExecutedTemplatesByUser 获取用户已执行的模板列表（按模板分组）
-// 只返回状态为running、succeeded、failed的记录（排除pending）
+// 只返回状态为running、succeeded、failed的记录（排除pending和draft）
 func (s *sopStore) ListExecutedTemplatesByUser(userID uint) ([]ExecutedTemplateInfo, error) {
 	var results []ExecutedTemplateInfo
 
-	// 简化查询：先查出当前用户的非 pending 的 sop_run 列表，再在内存中做聚合
+	// 简化查询：先查出当前用户的非 pending 和非 draft 的 sop_run 列表，再在内存中做聚合
 	var runs []model.SopRun
 	if err := s.db.
 		Preload("Template").
-		Where("user_id = ? AND status != ?", userID, "pending").
+		Where("user_id = ? AND status != ? AND status != ?", userID, "pending", "draft").
 		Order("created_at DESC").
 		Find(&runs).Error; err != nil {
 		return nil, err
@@ -678,6 +679,11 @@ func (s *sopStore) ResetZombieRuns(timeout time.Duration) (int64, error) {
 		})
 
 	return result.RowsAffected, result.Error
+}
+
+// DeleteNodeRunsByRunID 删除指定 run 的所有 node_run 记录
+func (s *sopStore) DeleteNodeRunsByRunID(runID uint) error {
+	return s.db.Where("run_id = ?", runID).Delete(&model.SopNodeRun{}).Error
 }
 
 // DeleteRun 物理删除指定任务及其所有关联数据

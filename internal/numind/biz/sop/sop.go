@@ -71,6 +71,8 @@ type ISopBiz interface {
 	DeleteBookmark(ctx context.Context, id, userID uint) error
 	ApplyBookmarkToNode(ctx context.Context, userID, runID, nodeID uint, bookmarkID *uint) (*model.SopNodeRun, error)
 	CreateRunWithBookmarks(ctx context.Context, templateID, userID uint, text string, autoApplyBookmarks bool) (*model.SopRun, []uint, error)
+	DeleteDraftRun(ctx context.Context, runID, userID uint) error
+	CleanupDraftRuns(ctx context.Context, timeout time.Duration) error
 }
 
 type sopBiz struct {
@@ -432,6 +434,18 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	if !hasPermission {
 		log.C(ctx).Warnw("User permission revoked for template", "user_id", run.UserID, "template_id", run.TemplateID)
 		return fmt.Errorf("您没有权限执行此模板（权限已被撤销）")
+	}
+
+	// ===== 状态转换：draft → running =====
+	// 如果当前run是draft状态，首次执行节点时转换为running状态（此时才计入配额）
+	if run.Status == model.SopStatusDraft {
+		run.Status = model.SopStatusRunning
+		if err := b.ds.Sop().UpdateRun(run.ID, map[string]interface{}{"status": model.SopStatusRunning}); err != nil {
+			log.C(ctx).Errorw("Failed to update run status from draft to running", "run_id", run.ID, "error", err)
+			// 不阻断执行，记录错误后继续
+		} else {
+			log.C(ctx).Infow("Run status changed from draft to running", "run_id", run.ID, "user_id", run.UserID)
+		}
 	}
 
 	// 找到最大的sort值（最后一个节点）
@@ -1572,6 +1586,14 @@ func (b *sopBiz) CreateRunWithBookmarks(ctx context.Context, templateID, userID 
 		return nil, nil, err
 	}
 
+	// 2. 将状态改为 draft（不计入配额和历史记录）
+	run.Status = model.SopStatusDraft
+	if err := b.ds.Sop().UpdateRun(run.ID, map[string]interface{}{"status": model.SopStatusDraft}); err != nil {
+		log.C(ctx).Errorw("Failed to update run status to draft", "run_id", run.ID, "error", err)
+		// 不阻断流程，继续执行
+	}
+	log.C(ctx).Infow("Created draft run", "run_id", run.ID, "template_id", templateID, "user_id", userID)
+
 	appliedBookmarkIDs := []uint{}
 
 	// 2. 如果启用自动应用书签
@@ -1601,6 +1623,40 @@ func (b *sopBiz) CreateRunWithBookmarks(ctx context.Context, templateID, userID 
 	}
 
 	return run, appliedBookmarkIDs, nil
+}
+
+// DeleteDraftRun 删除草稿状态的 run（用户离开页面时调用）
+// 只能删除 status="draft" 的 run，防止误删除正在运行的记录
+func (b *sopBiz) DeleteDraftRun(ctx context.Context, runID, userID uint) error {
+	// 1. 获取 run 信息
+	run, err := b.ds.Sop().GetRun(runID)
+	if err != nil {
+		return fmt.Errorf("failed to get run: %w", err)
+	}
+
+	// 2. 权限检查
+	if run.UserID != userID {
+		return errors.New("无权限删除该记录")
+	}
+
+	// 3. 状态检查：只能删除 draft 状态的 run
+	if run.Status != model.SopStatusDraft {
+		return fmt.Errorf("只能删除草稿状态的记录，当前状态: %s", run.Status)
+	}
+
+	// 4. 删除关联的 node_run 记录（如果有书签被应用）
+	if err := b.ds.Sop().DeleteNodeRunsByRunID(runID); err != nil {
+		log.C(ctx).Warnw("Failed to delete node runs", "run_id", runID, "error", err)
+		// 不阻断删除流程
+	}
+
+	// 5. 删除 run 记录
+	if err := b.ds.Sop().DeleteRun(runID); err != nil {
+		return fmt.Errorf("failed to delete run: %w", err)
+	}
+
+	log.C(ctx).Infow("Draft run deleted", "run_id", runID, "user_id", userID)
+	return nil
 }
 
 // cleanPDFFormatCode 清理PDF格式代码等无效内容

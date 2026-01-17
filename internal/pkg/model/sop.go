@@ -199,6 +199,7 @@ func (SopNodeBookmark) TableName() string {
 
 // SOP状态常量
 const (
+	SopStatusDraft     = "draft"     // 草稿状态：仅浏览/加载书签，不计入配额
 	SopStatusPending   = "pending"
 	SopStatusRunning   = "running"
 	SopStatusSucceeded = "succeeded"
