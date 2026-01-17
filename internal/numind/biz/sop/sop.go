@@ -615,6 +615,37 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		nodeRun = existingNodeRun
 		isUpdate = true
 
+		// ===== 如果该节点是从书签恢复的，删除对应的书签 =====
+		// 避免书签内容与重新生成的内容不一致，导致数据过期问题
+		if existingNodeRun.FromBookmark {
+			// 查找该用户在该模板该节点的书签
+			bookmark, err := b.ds.Sop().GetBookmarkByUserTemplateNode(run.UserID, run.TemplateID, nodeID)
+			if err != nil {
+				log.C(ctx).Warnw("Failed to query bookmark before regeneration",
+					"node_id", nodeID,
+					"user_id", run.UserID,
+					"template_id", run.TemplateID,
+					"error", err)
+				// 查询失败不阻断执行，继续处理
+			} else if bookmark != nil {
+				// 删除书签
+				if err := b.ds.Sop().DeleteBookmark(bookmark.ID); err != nil {
+					log.C(ctx).Warnw("Failed to delete bookmark after regeneration",
+						"bookmark_id", bookmark.ID,
+						"node_id", nodeID,
+						"user_id", run.UserID,
+						"error", err)
+					// 删除失败不阻断执行，只记录警告
+				} else {
+					log.C(ctx).Infow("Bookmark deleted due to node regeneration",
+						"bookmark_id", bookmark.ID,
+						"node_id", nodeID,
+						"user_id", run.UserID,
+						"bookmark_name", bookmark.BookmarkName)
+				}
+			}
+		}
+
 		// 更新节点执行状态和时间（清空之前的输出、错误信息和 token 统计）
 		updateData := map[string]interface{}{
 			"status":            model.SopStatusRunning,
@@ -629,6 +660,8 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 			"completion_tokens": 0,   // 重置 token 统计
 			"total_tokens":      0,   // 重置 token 统计
 			"reasoning_tokens":  0,   // 重置 token 统计
+			"from_bookmark":     false, // 清除书签标记
+			"bookmark_id":       nil,   // 清除书签ID
 		}
 
 		if err := b.ds.Sop().UpdateNodeRun(nodeRun.ID, updateData); err != nil {
