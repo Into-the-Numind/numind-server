@@ -157,8 +157,9 @@ type SopRunDetailResponse struct {
 
 // CreateSopRunRequest 创建SOP执行请求
 type CreateSopRunRequest struct {
-	TemplateID uint   `json:"template_id" binding:"required"`
-	Text       string `json:"text"` // 可选，如果不提供则使用默认输入
+	TemplateID          uint `json:"template_id" binding:"required"`
+	Text                string `json:"text"` // 可选，如果不提供则使用默认输入
+	AutoApplyBookmarks  bool `json:"auto_apply_bookmarks"` // 是否自动应用书签（默认false）
 }
 
 // ExecuteSopNodeRequest 执行SOP节点请求
@@ -177,22 +178,35 @@ type NextNodeResponse struct {
 
 // RunStatusResponse Run执行状态响应
 type RunStatusResponse struct {
-	Status          string              `json:"status"`
-	CurrentNodeSort int                 `json:"current_node_sort"`
-	CompletedNodes  []CompletedNodeInfo `json:"completed_nodes"`
-	NextNode        *NextNodeInfo       `json:"next_node,omitempty"`
-	TotalNodes      int                 `json:"total_nodes"`
-	CompletedCount  int                 `json:"completed_count"`
+	Status              string              `json:"status"`
+	CurrentNodeSort     int                 `json:"current_node_sort"`
+	CompletedNodes      []CompletedNodeInfo `json:"completed_nodes"`
+	NextNode            *NextNodeInfo       `json:"next_node,omitempty"`
+	TotalNodes          int                 `json:"total_nodes"`
+	CompletedCount      int                 `json:"completed_count"`
+	AvailableBookmarks  []BookmarkInfo      `json:"available_bookmarks,omitempty"` // 可用的书签列表
+	AutoAppliedCount    int                 `json:"auto_applied_count"`            // 自动应用的书签数量
 }
 
 // CompletedNodeInfo 已完成节点信息
 type CompletedNodeInfo struct {
-	NodeID   uint   `json:"node_id"`
-	NodeName string `json:"node_name"`
-	Sort     int    `json:"sort"`
-	Input    string `json:"input"`  // 节点输入
-	Output   string `json:"output"` // 完整输出
-	Thinking string `json:"thinking,omitempty"`
+	NodeRunID    uint   `json:"node_run_id"`           // 节点运行ID
+	NodeID       uint   `json:"node_id"`
+	NodeName     string `json:"node_name"`
+	Sort         int    `json:"sort"`
+	Input        string `json:"input"`  // 节点输入
+	Output       string `json:"output"` // 完整输出
+	Thinking     string `json:"thinking,omitempty"`
+	FromBookmark bool   `json:"from_bookmark"`         // 是否从书签恢复
+	BookmarkID   *uint  `json:"bookmark_id,omitempty"` // 关联的书签ID
+	IsAccessible bool   `json:"is_accessible"`         // 是否可访问（前面所有节点都已完成）
+}
+
+// BookmarkInfo 书签信息（用于状态响应）
+type BookmarkInfo struct {
+	NodeID     uint   `json:"node_id"`
+	NodeSort   int    `json:"node_sort"`
+	BookmarkID uint   `json:"bookmark_id"`
 }
 
 // NextNodeInfo 下一个节点信息

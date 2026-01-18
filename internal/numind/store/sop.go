@@ -41,6 +41,7 @@ type ISopStore interface {
 	ListNodeRunsByRun(runID uint) ([]model.SopNodeRun, error)
 	ListNodeRunsByRuns(runIDs []uint) (map[uint][]model.SopNodeRun, error)
 	UpdateNodeRun(id uint, updates map[string]interface{}) error
+	DeleteNodeRunsByRunID(runID uint) error
 
 	// Note operations
 	CreateNote(note *model.SopNote) error
@@ -69,8 +70,16 @@ type ISopStore interface {
 	// CheckRunOwnership 检查Run是否属于指定用户（轻量级权限验证）
 	CheckRunOwnership(runID, userID uint) (bool, error)
 
-	// ResetZombieRuns 重置长时间处于运行中状态的“僵尸任务”
+	// ResetZombieRuns 重置长时间处于运行中状态的"僵尸任务"
 	ResetZombieRuns(timeout time.Duration) (int64, error)
+
+	// Bookmark operations
+	CreateBookmark(bookmark *model.SopNodeBookmark) error
+	GetBookmark(id uint) (*model.SopNodeBookmark, error)
+	GetBookmarkByUserTemplateNode(userID, templateID, nodeID uint) (*model.SopNodeBookmark, error)
+	ListBookmarksByUserAndTemplate(userID, templateID uint) ([]model.SopNodeBookmark, error)
+	UpdateBookmark(id uint, updates map[string]interface{}) error
+	DeleteBookmark(id uint) error
 
 	// Cleanup operations
 	DeleteRun(runID uint) error
@@ -211,7 +220,7 @@ func (s *sopStore) ListRuns(offset, limit int, userID *uint) ([]model.SopRun, in
 	var runs []model.SopRun
 	var total int64
 
-	query := s.db.Model(&model.SopRun{})
+	query := s.db.Model(&model.SopRun{}).Where("status != ?", "draft")
 	if userID != nil {
 		query = query.Where("user_id = ?", *userID)
 	}
@@ -233,7 +242,7 @@ func (s *sopStore) ListRunsByUserAndTemplate(userID, templateID uint, offset, li
 	var total int64
 
 	query := s.db.Model(&model.SopRun{}).
-		Where("user_id = ? AND template_id = ?", userID, templateID)
+		Where("user_id = ? AND template_id = ? AND status != ?", userID, templateID, "draft")
 
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
@@ -487,15 +496,15 @@ type ExecutedTemplateInfo struct {
 }
 
 // ListExecutedTemplatesByUser 获取用户已执行的模板列表（按模板分组）
-// 只返回状态为running、succeeded、failed的记录（排除pending）
+// 只返回状态为running、succeeded、failed的记录（排除pending和draft）
 func (s *sopStore) ListExecutedTemplatesByUser(userID uint) ([]ExecutedTemplateInfo, error) {
 	var results []ExecutedTemplateInfo
 
-	// 简化查询：先查出当前用户的非 pending 的 sop_run 列表，再在内存中做聚合
+	// 简化查询：先查出当前用户的非 pending 和非 draft 的 sop_run 列表，再在内存中做聚合
 	var runs []model.SopRun
 	if err := s.db.
 		Preload("Template").
-		Where("user_id = ? AND status != ?", userID, "pending").
+		Where("user_id = ? AND status != ? AND status != ?", userID, "pending", "draft").
 		Order("created_at DESC").
 		Find(&runs).Error; err != nil {
 		return nil, err
@@ -672,6 +681,11 @@ func (s *sopStore) ResetZombieRuns(timeout time.Duration) (int64, error) {
 	return result.RowsAffected, result.Error
 }
 
+// DeleteNodeRunsByRunID 删除指定 run 的所有 node_run 记录
+func (s *sopStore) DeleteNodeRunsByRunID(runID uint) error {
+	return s.db.Where("run_id = ?", runID).Delete(&model.SopNodeRun{}).Error
+}
+
 // DeleteRun 物理删除指定任务及其所有关联数据
 func (s *sopStore) DeleteRun(runID uint) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
@@ -757,4 +771,57 @@ func (s *sopStore) DeleteFilesByRun(runID uint) error {
 // DeleteChatMessagesByRun 删除指定任务关联的所有对话消息
 func (s *sopStore) DeleteChatMessagesByRun(runID uint) error {
 	return s.db.Where("run_id = ?", runID).Delete(&model.SopChatMsg{}).Error
+}
+
+// Bookmark operations
+
+// CreateBookmark 创建书签
+func (s *sopStore) CreateBookmark(bookmark *model.SopNodeBookmark) error {
+	return s.db.Create(bookmark).Error
+}
+
+// GetBookmark 根据ID获取书签
+func (s *sopStore) GetBookmark(id uint) (*model.SopNodeBookmark, error) {
+	var bookmark model.SopNodeBookmark
+	err := s.db.Preload("Node").Preload("Template").First(&bookmark, id).Error
+	if err != nil {
+		return nil, err
+	}
+	return &bookmark, nil
+}
+
+// GetBookmarkByUserTemplateNode 根据用户ID、模板ID、节点ID获取书签
+func (s *sopStore) GetBookmarkByUserTemplateNode(userID, templateID, nodeID uint) (*model.SopNodeBookmark, error) {
+	var bookmark model.SopNodeBookmark
+	err := s.db.Where("user_id = ? AND template_id = ? AND node_id = ?", userID, templateID, nodeID).
+		Preload("Node").
+		Preload("Template").
+		First(&bookmark).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil // 返回nil表示不存在
+		}
+		return nil, err
+	}
+	return &bookmark, nil
+}
+
+// ListBookmarksByUserAndTemplate 获取用户在指定模板下的所有书签
+func (s *sopStore) ListBookmarksByUserAndTemplate(userID, templateID uint) ([]model.SopNodeBookmark, error) {
+	var bookmarks []model.SopNodeBookmark
+	err := s.db.Where("user_id = ? AND template_id = ?", userID, templateID).
+		Preload("Node").
+		Order("node_sort ASC").
+		Find(&bookmarks).Error
+	return bookmarks, err
+}
+
+// UpdateBookmark 更新书签
+func (s *sopStore) UpdateBookmark(id uint, updates map[string]interface{}) error {
+	return s.db.Model(&model.SopNodeBookmark{}).Where("id = ?", id).Updates(updates).Error
+}
+
+// DeleteBookmark 删除书签
+func (s *sopStore) DeleteBookmark(id uint) error {
+	return s.db.Delete(&model.SopNodeBookmark{}, id).Error
 }
