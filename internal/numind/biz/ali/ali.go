@@ -662,7 +662,7 @@ func (a *aliBiz) QianwenVision(ctx context.Context, imageBase64 string, prompt s
 	apiKey := getAliConfig("vision", "api_key")
 	model := getAliConfig("vision", "model")
 	if model == "" {
-		model = "qwen-vl-plus" // 使用文档推荐的模型作为默认值
+		model = "qwen3-vl-flash" // 使用文档推荐的模型作为默认值
 	}
 	if apiKey == "" {
 		return "", fmt.Errorf("未配置ali.vision.api_key")

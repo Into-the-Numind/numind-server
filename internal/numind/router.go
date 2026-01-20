@@ -75,7 +75,7 @@ func installNumindRouters(g *gin.Engine) error {
 	// 使用 biz 层已初始化的 RAG 服务
 	ragService := b.Rag()
 	if ragService == nil {
-		log.Fatalw("RAG服务未初始化")
+		log.Errorw("RAG服务未初始化 (本地开发环境可忽略此错误)")
 	}
 	ragc := ragcontroller.NewRagController(ragService, b.Chats())
 
@@ -292,20 +292,20 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.DELETE("/sop/bookmarks/:id", userSopc.DeleteBookmark) // 删除书签
 
 		// 逐步执行SOP节点（新增）- 注意：这些路由必须在 /sop/runs/:id 之前注册，避免路由冲突
-		authGroup.POST("/sop/runs", userSopc.CreateRun)                                            // 创建Run（不立即执行，支持自动应用书签）
-		authGroup.GET("/sop/runs/:id/next-node", userSopc.GetNextNode)                             // 获取下一个待执行节点
-		authGroup.POST("/sop/runs/:id/nodes/:node_id/execute", userSopc.ExecuteNodeStream)         // 流式执行指定节点（支持文件上传）
-		authGroup.POST("/sop/runs/:id/nodes/:node_id/apply-bookmark", userSopc.ApplyBookmark)      // 应用书签到节点
-		authGroup.DELETE("/sop/runs/:id/draft", userSopc.DeleteDraftRun)                           // 删除草稿状态的run
-		authGroup.POST("/sop/runs/:id/draft", userSopc.DeleteDraftRun)                             // 删除草稿状态的run（Beacon方式）
-		authGroup.POST("/sop/files/check-quality", userSopc.CheckFileQuality)              // 检测上传文件质量
-		authGroup.POST("/sop/files/parse-text", userSopc.ParseFileText)                    // 上传文件解析文本（返回文本用于回填）
-		authGroup.POST("/sop/files/parse-text/query", userSopc.ParseFileTextQuery)         // 轮询qwen-long解析结果
-		authGroup.POST("/sop/images/read", userSopc.ReadImageWithQwenVL)                   // 读取图片（qwen-vl-max）
-		authGroup.POST("/sop/text/edit", userSopc.EditTextStream)                          // 文本编辑流式对话（不保存到数据库）
-		authGroup.POST("/sop/chat/stream", userSopc.ChatAfterRunStream)                    // Run完成后的对话流式接口
-		authGroup.GET("/sop/runs/:id/chat-messages", userSopc.ListRunChatMessages)         // 获取Run聊天记录
-		authGroup.GET("/sop/runs/:id/status", userSopc.GetRunStatus)                       // 获取Run执行状态
+		authGroup.POST("/sop/runs", userSopc.CreateRun)                                       // 创建Run（不立即执行，支持自动应用书签）
+		authGroup.GET("/sop/runs/:id/next-node", userSopc.GetNextNode)                        // 获取下一个待执行节点
+		authGroup.POST("/sop/runs/:id/nodes/:node_id/execute", userSopc.ExecuteNodeStream)    // 流式执行指定节点（支持文件上传）
+		authGroup.POST("/sop/runs/:id/nodes/:node_id/apply-bookmark", userSopc.ApplyBookmark) // 应用书签到节点
+		authGroup.DELETE("/sop/runs/:id/draft", userSopc.DeleteDraftRun)                      // 删除草稿状态的run
+		authGroup.POST("/sop/runs/:id/draft", userSopc.DeleteDraftRun)                        // 删除草稿状态的run（Beacon方式）
+		authGroup.POST("/sop/files/check-quality", userSopc.CheckFileQuality)                 // 检测上传文件质量
+		authGroup.POST("/sop/files/parse-text", userSopc.ParseFileText)                       // 上传文件解析文本（返回文本用于回填）
+		authGroup.POST("/sop/files/parse-text/query", userSopc.ParseFileTextQuery)            // 轮询qwen-long解析结果
+		authGroup.POST("/sop/images/read", userSopc.ReadImageWithQwenVL)                      // 读取图片（qwen-vl-max）
+		authGroup.POST("/sop/text/edit", userSopc.EditTextStream)                             // 文本编辑流式对话（不保存到数据库）
+		authGroup.POST("/sop/chat/stream", userSopc.ChatAfterRunStream)                       // Run完成后的对话流式接口
+		authGroup.GET("/sop/runs/:id/chat-messages", userSopc.ListRunChatMessages)            // 获取Run聊天记录
+		authGroup.GET("/sop/runs/:id/status", userSopc.GetRunStatus)                          // 获取Run执行状态
 
 		authGroup.GET("/sop/runs/:id", userSopc.GetRun)                    // 查看执行记录
 		authGroup.DELETE("/sop/runs/:id", userSopc.DeleteRun)              // 物理删除执行记录
