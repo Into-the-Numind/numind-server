@@ -1305,7 +1305,7 @@ func (ctrl *SopController) ReadImageWithQwenVL(c *gin.Context) {
 	data := buf[:n]
 
 	encoded := base64.StdEncoding.EncodeToString(data)
-	resp, err := ctrl.aliBiz.QianwenVision(c.Request.Context(), encoded, question)
+	resp, err := ctrl.aliBiz.QianwenVision(c.Request.Context(), encoded, question, "")
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInternalServer.SetMessage(err.Error()), nil)
 		return

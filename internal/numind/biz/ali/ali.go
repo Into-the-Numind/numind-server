@@ -35,7 +35,7 @@ type BailianConfig struct {
 type AliBiz interface {
 	QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error)
 	QianwenEmbedding(text string) ([]float32, error)
-	QianwenVision(ctx context.Context, imageBase64 string, prompt string) (string, error)
+	QianwenVision(ctx context.Context, imageBase64 string, prompt string, model string) (string, error)
 	WanxiangImageStream(prompt string, style string, size string) (string, error)
 	WanxiangImageAsync(prompt, style, size string) (string, error)
 	StableDiffusionImageAsync(prompt, size string) (string, error)
@@ -655,14 +655,19 @@ func (a *aliBiz) QianwenEmbedding(text string) ([]float32, error) {
 }
 
 // QianwenVision 调用视觉模型读取图片 (OpenAI 兼容模式)
-func (a *aliBiz) QianwenVision(ctx context.Context, imageBase64 string, prompt string) (string, error) {
+func (a *aliBiz) QianwenVision(ctx context.Context, imageBase64 string, prompt string, model string) (string, error) {
 	if prompt == "" {
 		prompt = "图中描绘的是什么景象?"
 	}
 	apiKey := getAliConfig("vision", "api_key")
-	model := getAliConfig("vision", "model")
+
+	// 如果未指定模型，尝试从配置获取
 	if model == "" {
-		model = "qwen3-vl-flash" // 使用文档推荐的模型作为默认值
+		model = getAliConfig("vision", "model")
+	}
+	// 如果仍未指定，使用默认模型
+	if model == "" {
+		model = "qwen-vl-plus" // 保持原有默认值，避免影响其他模块
 	}
 	if apiKey == "" {
 		return "", fmt.Errorf("未配置ali.vision.api_key")
