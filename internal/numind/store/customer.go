@@ -147,7 +147,20 @@ func (c *customerStore) HasTemplatePermission(ctx context.Context, userID, templ
 		return true, nil
 	}
 
-	// 如果是二级客户,检查白名单
+	// 检查用户是否有任何权限配置记录
+	var totalPermissions int64
+	if err := c.db.WithContext(ctx).Model(&model.UserTemplatePermission{}).
+		Where("sub_user_id = ?", userID).
+		Count(&totalPermissions).Error; err != nil {
+		return false, err
+	}
+
+	// 如果没有任何权限配置记录（新用户或被重置），允许所有
+	if totalPermissions == 0 {
+		return true, nil
+	}
+
+	// 如果有配置记录，则检查白名单
 	var count int64
 	err := c.db.WithContext(ctx).Model(&model.UserTemplatePermission{}).
 		Where("sub_user_id = ? AND template_id = ?", userID, templateID).

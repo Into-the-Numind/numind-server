@@ -137,9 +137,6 @@ func (b *userBiz) Create(ctx context.Context, r *v1.CreateUserRequest) error {
 	var user model.User
 	_ = copier.Copy(&user, r)
 
-	// 新建用户默认授予高级会员权限（可以运行所有SOP）
-	user.UserTier = model.UserTierPremium
-
 	if err := b.ds.Users().Create(ctx, &user); err != nil {
 		if match, _ := regexp.MatchString("Duplicate entry '.*' for key 'username'", err.Error()); match {
 			return errno.ErrUserAlreadyExist
@@ -488,7 +485,7 @@ func (s *userBiz) findOrCreateUser(openID string) (*model.User, error) {
 		user = model.User{
 			OpenID:   openID,
 			Username: fmt.Sprintf("user_%s", openID), // 使用openid生成唯一username
-			UserTier: model.UserTierPremium,          // 新建用户默认授予高级会员权限
+
 		}
 
 		if err := s.ds.DB().Omit("union_id").Create(&user).Error; err != nil {
