@@ -143,18 +143,28 @@ func (s *MarkdownSplitter) splitByParagraphs(text string, maxLen int) []string {
 		if len(p) == 0 {
 			continue
 		}
+
+		// 如果单个段落本身就超过最大长度，需要对其进行强制切分
+		if len(p) > maxLen {
+			// 先处理 buffer 中的内容
+			if buffer.Len() > 0 {
+				result = append(result, buffer.String())
+				buffer.Reset()
+			}
+
+			// 对超长段落进行切分
+			subChunks := s.splitLongText(p, maxLen)
+			result = append(result, subChunks...)
+			continue
+		}
+
+		// 检查加入 buffer 后是否会超长
 		if buffer.Len()+len(p)+2 > maxLen {
 			if buffer.Len() > 0 {
 				result = append(result, buffer.String())
 				buffer.Reset()
 			}
-			// If single paragraph > maxLen, create it anyway (or refine split)
-			if len(p) > maxLen {
-				// TODO: Sentence split if needed
-				result = append(result, p)
-			} else {
-				buffer.WriteString(p)
-			}
+			buffer.WriteString(p)
 		} else {
 			if buffer.Len() > 0 {
 				buffer.WriteString("\n\n")
@@ -164,6 +174,22 @@ func (s *MarkdownSplitter) splitByParagraphs(text string, maxLen int) []string {
 	}
 	if buffer.Len() > 0 {
 		result = append(result, buffer.String())
+	}
+	return result
+}
+
+// splitLongText 将超长文本强制切分
+func (s *MarkdownSplitter) splitLongText(text string, maxLen int) []string {
+	var result []string
+	runes := []rune(text)
+	length := len(runes)
+
+	for i := 0; i < length; i += maxLen {
+		end := i + maxLen
+		if end > length {
+			end = length
+		}
+		result = append(result, string(runes[i:end]))
 	}
 	return result
 }
