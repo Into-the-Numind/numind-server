@@ -34,6 +34,7 @@ type IStore interface {
 	Payments() PaymentStore
 	Sop() ISopStore
 	Customers() ICustomerStore
+	KnowledgeDocuments() KnowledgeDocumentStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -126,4 +127,8 @@ func (ds *datastore) Sop() ISopStore {
 
 func (ds *datastore) Customers() ICustomerStore {
 	return NewCustomerStore(ds.db)
+}
+
+func (ds *datastore) KnowledgeDocuments() KnowledgeDocumentStore {
+	return newKnowledgeDocuments(ds.db)
 }

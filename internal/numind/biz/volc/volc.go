@@ -25,6 +25,8 @@ type VolcBiz interface {
 	GenerateArticleContent(content string, contentType string, maxLength int, cfg *OpenAIConfig, prompt string) (string, error)
 	// 新增流式文本生成方法，与ali的QianwenTextStream保持一致
 	VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error)
+	// 火山方舟 Embedding 向量化
+	DoubaoEmbedding(ctx context.Context, text string) ([]float32, error)
 }
 
 type volcBiz struct {
@@ -282,4 +284,115 @@ func (v *volcBiz) VolcTextStream(ctx context.Context, messages []map[string]stri
 	return content, nil
 }
 
-// 注意：原来的cleanJSONResponse函数已被弃用，现在使用更强大的httpclient.AdvancedJSONExtractor
+// DoubaoEmbedding 调用火山方舟 Embedding API 获取文本向量
+// 使用 doubao-embedding-vision 模型，支持多模态输入
+func (v *volcBiz) DoubaoEmbedding(ctx context.Context, text string) ([]float32, error) {
+	// 构建 API URL
+	baseURL := viper.GetString("volc.base_url")
+	if baseURL == "" {
+		baseURL = "https://ark.cn-beijing.volces.com/api/v3"
+	}
+	url := baseURL + "/embeddings/multimodal"
+
+	// 读取 embedding 模型配置
+	embeddingModel := viper.GetString("volc.embedding.model")
+	if embeddingModel == "" {
+		embeddingModel = "doubao-embedding-vision-250615"
+	}
+
+	// 读取 embedding 专用 API Key（如果没有则回退到通用 api_key）
+	apiKey := viper.GetString("volc.embedding.api_key")
+	if apiKey == "" {
+		apiKey = viper.GetString("volc.api_key")
+	}
+
+	// 构建请求体（多模态格式，仅使用 text 类型）
+	bodyMap := map[string]interface{}{
+		"model": embeddingModel,
+		"input": []map[string]interface{}{
+			{
+				"type": "text",
+				"text": text,
+			},
+		},
+	}
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return nil, fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	log.C(ctx).Debugw("调用火山Embedding API", "url", url, "model", embeddingModel, "text_length", len(text))
+
+	// 创建请求
+	httpReq := &httpclient.Request{
+		Method:  "POST",
+		URL:     url,
+		Body:    bytes.NewBuffer(bodyBytes),
+		Context: ctx,
+		Headers: map[string]string{
+			"Content-Type":  "application/json",
+			"Authorization": "Bearer " + apiKey,
+		},
+		RetryPolicy: &httpclient.RetryPolicy{
+			MaxRetries:   3,
+			RetryDelay:   1 * time.Second,
+			RetryBackoff: 2.0,
+		},
+	}
+
+	// 发送请求
+	respBody, err := v.client.DoWithJSONResponse(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("Embedding API请求失败: %w", err)
+	}
+
+	// 解析响应
+	// 火山方舟 Embedding 响应格式：
+	// {
+	//   "data": [{ "embedding": [0.1, 0.2, ...], "index": 0 }],
+	//   "model": "...",
+	//   "usage": { "prompt_tokens": 10, "total_tokens": 10 }
+	// }
+	var result struct {
+		Data []struct {
+			Embedding []float64 `json:"embedding"`
+			Index     int       `json:"index"`
+		} `json:"data"`
+		Error *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("解析Embedding响应失败: %w, 响应内容: %s", err, string(respBody[:min(len(respBody), 500)]))
+	}
+
+	// 检查错误
+	if result.Error != nil {
+		return nil, fmt.Errorf("Embedding API错误: %s - %s", result.Error.Code, result.Error.Message)
+	}
+
+	// 检查数据
+	if len(result.Data) == 0 || len(result.Data[0].Embedding) == 0 {
+		return nil, fmt.Errorf("Embedding API未返回向量数据")
+	}
+
+	// 转换 float64 到 float32
+	embedding := result.Data[0].Embedding
+	vector := make([]float32, len(embedding))
+	for i, v := range embedding {
+		vector[i] = float32(v)
+	}
+
+	log.C(ctx).Debugw("Embedding成功", "vector_dim", len(vector))
+	return vector, nil
+}
+
+// min 返回两个整数中的较小值
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

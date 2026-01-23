@@ -568,8 +568,11 @@ func (a *aliBiz) QianwenEmbedding(text string) ([]float32, error) {
 	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
 
 	bodyMap := map[string]interface{}{
-		"model": "text-embedding-v3",
+		"model": "text-embedding-v4",
 		"input": []string{text},
+		"parameters": map[string]interface{}{
+			"dimensions": 2048,
+		},
 	}
 	bodyBytes, err := json.Marshal(bodyMap)
 	if err != nil {

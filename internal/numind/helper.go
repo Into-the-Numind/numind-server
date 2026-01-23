@@ -145,12 +145,12 @@ func autoMigrate(db *gorm.DB) error {
 	// 获取数据库字符集配置
 	charsetConfig := getDatabaseCharsetConfig()
 
-	// 1. 强制检查和修复数据库字符集（启动时）
-	log.Infow("Starting database charset verification and repair...")
-	if err := forceEnsureDatabaseCharset(db, charsetConfig); err != nil {
+	// 1. 检查和修复数据库字符集（仅在必要时）
+	log.Infow("Starting database charset verification...")
+	if err := ensureDatabaseCharset(db, charsetConfig); err != nil {
 		log.Warnw("Failed to ensure database charset, continuing with migration", "error", err)
 	} else {
-		log.Infow("Database charset verification and repair completed")
+		log.Infow("Database charset verification completed")
 	}
 
 	// 2. 自动迁移所有模型
@@ -176,6 +176,7 @@ func autoMigrate(db *gorm.DB) error {
 		&model.AccountRecord{},
 		&model.PaymentM{},
 		&model.Admin{},
+		&model.KnowledgeDocument{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate basic tables: %v", err)
@@ -244,29 +245,33 @@ func autoMigrate(db *gorm.DB) error {
 
 	log.Infow("All database schema migration completed")
 
-	// 3. 迁移后强制再次确保字符集正确
-	log.Infow("Post-migration charset verification and repair...")
-	if err := forceEnsureDatabaseCharset(db, charsetConfig); err != nil {
+	// 3. 迁移后再次验证字符集
+	log.Infow("Post-migration charset verification...")
+	if err := ensureDatabaseCharset(db, charsetConfig); err != nil {
 		log.Warnw("Failed to ensure database charset after migration", "error", err)
 	} else {
-		log.Infow("Post-migration charset verification and repair completed")
+		log.Infow("Post-migration charset verification completed")
 	}
 
 	// 4. 特别强制修复chat_message表（这是出错的主要表）
+	/* 暂时注释掉，避免启动时压力过大导致连接断开
 	log.Infow("Force fixing chat_message table charset...")
 	if err := forceFixChatMessageTable(db, charsetConfig); err != nil {
 		log.Warnw("Failed to force fix chat_message table", "error", err)
 	} else {
 		log.Infow("Chat_message table charset force fix completed")
 	}
+	*/
 
 	// 5. 验证修复结果
-	log.Infow("Verifying charset repair results...")
-	if err := verifyCharsetRepair(db, charsetConfig); err != nil {
-		log.Warnw("Charset repair verification failed", "error", err)
-	} else {
-		log.Infow("Charset repair verification completed successfully")
-	}
+	/*
+		log.Infow("Verifying charset repair results...")
+		if err := verifyCharsetRepair(db, charsetConfig); err != nil {
+			log.Warnw("Charset repair verification failed", "error", err)
+		} else {
+			log.Infow("Charset repair verification completed successfully")
+		}
+	*/
 
 	log.Infow("Database migration and charset repair completed successfully")
 	return nil

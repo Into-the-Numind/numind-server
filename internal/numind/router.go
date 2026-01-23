@@ -18,6 +18,7 @@ import (
 	"numind-server/internal/numind/controller/v1/pagination"
 	pdfcontroller "numind-server/internal/numind/controller/v1/pdf"
 	ragcontroller "numind-server/internal/numind/controller/v1/rag"
+	"numind-server/internal/numind/controller/v1/salesrag"
 	sopcontroller "numind-server/internal/numind/controller/v1/sop"
 	"numind-server/internal/numind/controller/v1/template"
 	"numind-server/internal/numind/controller/v1/user"
@@ -71,6 +72,7 @@ func installNumindRouters(g *gin.Engine) error {
 	chatc := chat.New(b.Chats())
 	ac := article.NewArticleController(b.Article())
 	alic := ali.New(b.Ali())
+	salesRAGc := salesrag.NewSalesRAGController(b)
 
 	// 使用 biz 层已初始化的 RAG 服务
 	ragService := b.Rag()
@@ -261,6 +263,15 @@ func installNumindRouters(g *gin.Engine) error {
 	// RAG相关
 	{
 		authGroup.POST("/rag/chat", ragc.ChatWithRAG) // 基于笔记进行RAG对话
+	}
+
+	// 销售智能体 RAG 相关
+	{
+		authGroup.POST("/sales-rag/ingest", salesRAGc.Ingest)                  // 上传并解析文档
+		authGroup.POST("/sales-rag/chat", salesRAGc.Chat)                      // 销售 RAG 对话检索
+		authGroup.GET("/sales-rag/documents", salesRAGc.ListDocuments)         // 获取文档列表
+		authGroup.PUT("/sales-rag/documents/:id", salesRAGc.UpdateDocument)    // 更新文档
+		authGroup.DELETE("/sales-rag/documents/:id", salesRAGc.DeleteDocument) // 删除文档
 	}
 
 	// 阿里云百炼相关

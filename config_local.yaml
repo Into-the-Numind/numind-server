@@ -66,13 +66,21 @@ book:
     use_simplified_processing: true  # 启用简化处理模式
 
 volc:
-  api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
+  access_key: "AKLTNTkwZTA5NGUxMTk2NGQyMTkwNDgwOTk0YzQzYzUwYmM"
+  secret_key: "TkRCa056STNNVGRrTmpFMk5EVTBPV0prT1RnM05UTTVPVGhqWXpnd1kySQ=="
+  api_key: "716dc07a-b121-4bae-a132-497117f74c7a"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
   model: "doubao-seed-1-6-flash-250828"
   temperature: 0.5
   tokens: 2000
   timeout: 180s
   max_retries: 3
+
+vikingdb:
+  host: "api-vikingdb.volces.com"
+  region: "cn-beijing"
+  collection: "sales_rag"
+  index: "sales_knowledge_index"
 
 resource:
   image_path: "/opt/numind/dev/image/upload"  # 图片上传路径（持久化）
@@ -125,6 +133,12 @@ ali:
   vision:
     model: "qwen3-vl-flash" # 视觉模型
     timeout: 180s
+
+  # DashVector 向量数据库配置
+  dashvector:
+    endpoint: "https://vrs-cn-62l4mht1d0001e.dashvector.cn-hangzhou.aliyuncs.com" # DashVector Endpoint
+    api_key: "" # DashVector API Key (若为空则使用通用配置)
+    collection: "sales_rag"
 
 # 卡片配置 - 统一的卡片渲染和分页配置中心
 card:
