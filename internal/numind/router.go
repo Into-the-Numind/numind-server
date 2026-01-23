@@ -270,6 +270,7 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.POST("/sales-rag/ingest", salesRAGc.Ingest)                  // 上传并解析文档
 		authGroup.POST("/sales-rag/chat", salesRAGc.Chat)                      // 销售 RAG 对话检索
 		authGroup.GET("/sales-rag/documents", salesRAGc.ListDocuments)         // 获取文档列表
+		authGroup.GET("/sales-rag/documents/:id", salesRAGc.GetDocument)       // 获取文档详情
 		authGroup.PUT("/sales-rag/documents/:id", salesRAGc.UpdateDocument)    // 更新文档
 		authGroup.DELETE("/sales-rag/documents/:id", salesRAGc.DeleteDocument) // 删除文档
 	}

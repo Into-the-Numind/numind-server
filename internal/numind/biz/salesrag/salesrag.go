@@ -22,6 +22,8 @@ type SalesRAGBiz interface {
 	Retrieve(ctx context.Context, query string, stage domain.SalesStage, docIDs []uint) (*service.RetrievalVerdict, error)
 	// ListDocuments 获取用户的文档列表
 	ListDocuments(ctx context.Context, userID uint) ([]domain.KnowledgeDocument, error)
+	// GetDocument 获取单个文档详情
+	GetDocument(ctx context.Context, userID uint, docID uint) (*domain.KnowledgeDocument, error)
 	// UpdateDocument 更新文档信息
 	UpdateDocument(ctx context.Context, userID uint, docID uint, req UpdateDocumentRequest) error
 	// DeleteDocument 删除文档
@@ -248,6 +250,40 @@ func (b *salesRAGBiz) ListDocuments(ctx context.Context, userID uint) ([]domain.
 		})
 	}
 	return results, nil
+}
+
+func (b *salesRAGBiz) GetDocument(ctx context.Context, userID uint, docID uint) (*domain.KnowledgeDocument, error) {
+	doc, err := b.ds.KnowledgeDocuments().GetByID(ctx, docID)
+	if err != nil {
+		return nil, err
+	}
+	if doc.UserID != userID {
+		return nil, fmt.Errorf("permission denied")
+	}
+
+	// 解析 Tags（从JSON字符串）
+	var tags []string
+	if doc.Tags != "" && doc.Tags != "[]" {
+		_ = json.Unmarshal([]byte(doc.Tags), &tags)
+	}
+
+	return &domain.KnowledgeDocument{
+		ID:          doc.ID,
+		UserID:      doc.UserID,
+		Name:        doc.Name,
+		FilePath:    doc.FilePath,
+		Status:      domain.DocStatus(doc.Status),
+		ErrorMsg:    doc.ErrorMsg,
+		Description: doc.Description,
+		Tags:        tags,
+		ChunkCount:  doc.ChunkCount,
+		FileSize:    doc.FileSize,
+		FileType:    doc.FileType,
+		Type:        domain.DocType(doc.Type),
+		IsEnabled:   doc.IsEnabled,
+		CreatedAt:   doc.CreatedAt,
+		UpdatedAt:   doc.UpdatedAt,
+	}, nil
 }
 
 func (b *salesRAGBiz) DeleteDocument(ctx context.Context, userID uint, docID uint) error {

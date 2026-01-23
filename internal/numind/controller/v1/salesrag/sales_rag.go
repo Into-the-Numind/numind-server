@@ -114,6 +114,28 @@ func (ctrl *SalesRAGController) ListDocuments(c *gin.Context) {
 	core.WriteResponse(c, nil, docs)
 }
 
+// GetDocument 获取单个文档详情
+func (ctrl *SalesRAGController) GetDocument(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+	doc, err := ctrl.b.SalesRAG().GetDocument(c, user.ID, uint(id))
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	core.WriteResponse(c, nil, doc)
+}
+
 // DeleteDocument 删除文档
 func (ctrl *SalesRAGController) DeleteDocument(c *gin.Context) {
 	idStr := c.Param("id")
