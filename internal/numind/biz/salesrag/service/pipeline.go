@@ -1,10 +1,13 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
+	"strings"
 	"time"
 
 	"numind-server/internal/numind/biz/salesrag/domain"
@@ -82,7 +85,33 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 	}
 
 	// 1. Parsing
-	markdown, err := p.parser.Parse(ctx, nil, doc.FilePath)
+	var fileReader io.Reader
+	// 检查是否为云端存储的 URL
+	if strings.HasPrefix(doc.FilePath, "http://") || strings.HasPrefix(doc.FilePath, "https://") {
+		// 下载文件内容
+		resp, err := http.Get(doc.FilePath)
+		if err != nil {
+			p.fail(doc, fmt.Errorf("failed to download file from URL: %w", err))
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			p.fail(doc, fmt.Errorf("failed to download file, status code: %d", resp.StatusCode))
+			return
+		}
+
+		// 读取全部内容到内存（对于通常的文档，这还可以接受）
+		// 如果文件很大，可以考虑流式处理，但 SimpleParser 也是读全部
+		content, err := io.ReadAll(resp.Body)
+		if err != nil {
+			p.fail(doc, fmt.Errorf("failed to read downloaded content: %w", err))
+			return
+		}
+		fileReader = bytes.NewReader(content)
+	}
+
+	markdown, err := p.parser.Parse(ctx, fileReader, doc.FilePath) // fileReader 可能为 nil，如果不是 URL 且 fileReader 为 nil，parser 会尝试读本地文件（兼容旧数据）
 	if err != nil {
 		p.fail(doc, fmt.Errorf("parsing failed: %w", err))
 		return

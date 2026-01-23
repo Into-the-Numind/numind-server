@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
+	"time"
 
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/util"
 )
 
 // SalesRAGBiz 定义了销售 RAG 业务层的对外接口
@@ -57,26 +58,34 @@ func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *s
 }
 
 func (b *salesRAGBiz) Ingest(ctx context.Context, userID uint, filename string, reader io.Reader, opts IngestOptions) (uint, error) {
-	// 1. Save file locally
-	// Ensure uploads directory exists
-	uploadDir := "uploads/sales_rag"
-	if err := os.MkdirAll(uploadDir, 0755); err != nil {
-		return 0, fmt.Errorf("failed to create upload directory: %w", err)
+	// 1. Upload to Cloud Object Storage (COS)
+	// Read file content
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read file content: %w", err)
 	}
 
-	// Create unique filename
-	uniqueName := fmt.Sprintf("%d_%s", userID, filename)
-	filePath := filepath.Join(uploadDir, uniqueName)
+	// Generate object key: sales_rag/<user_id>/<timestamp>_<filename>
+	objectKey := fmt.Sprintf("sales_rag/%d/%d_%s", userID, time.Now().Unix(), filename)
 
-	dst, err := os.Create(filePath)
-	if err != nil {
-		return 0, fmt.Errorf("failed to create file: %w", err)
+	// Determine content type (simple guess or default)
+	contentType := "application/octet-stream"
+	if filepath.Ext(filename) == ".pdf" {
+		contentType = "application/pdf"
+	} else if filepath.Ext(filename) == ".md" {
+		contentType = "text/markdown"
+	} else if filepath.Ext(filename) == ".txt" {
+		contentType = "text/plain"
 	}
-	defer dst.Close()
 
-	written, err := io.Copy(dst, reader)
+	// Upload to COS using util package
+	// Note: We need to import "numind-server/internal/pkg/util"
+	cosURL, err := util.UploadBytesToCOS(ctx, objectKey, contentType, data)
 	if err != nil {
-		return 0, fmt.Errorf("failed to save file: %w", err)
+		return 0, fmt.Errorf("failed to upload to COS: %w", err)
+	}
+	if cosURL == "" {
+		return 0, fmt.Errorf("COS upload returned empty URL")
 	}
 
 	// Tags 序列化
@@ -90,29 +99,28 @@ func (b *salesRAGBiz) Ingest(ctx context.Context, userID uint, filename string, 
 	doc := &model.KnowledgeDocument{
 		UserID:      userID,
 		Name:        filename,
-		FilePath:    filePath,
+		FilePath:    cosURL, // Store COS URL instead of local path
 		Status:      string(domain.DocStatusPending),
 		Description: opts.Description,
 		Tags:        tagsJson,
-		FileSize:    written,
-		Type:        opts.Type, // Save Type
-		IsEnabled:   true,      // 默认启用
+		FileSize:    int64(len(data)),
+		Type:        opts.Type,
+		IsEnabled:   true,
 	}
 	if err := b.ds.KnowledgeDocuments().Create(ctx, doc); err != nil {
 		return 0, err
 	}
 
 	// 3. Submit to pipeline
-	// Map model.KnowledgeDocument to domain.KnowledgeDocument
 	dDoc := &domain.KnowledgeDocument{
 		ID:          doc.ID,
 		UserID:      doc.UserID,
 		Name:        doc.Name,
-		FilePath:    doc.FilePath,
+		FilePath:    doc.FilePath, // This is now a URL
 		Status:      domain.DocStatusPending,
 		Description: doc.Description,
 		Tags:        opts.Tags,
-		Type:        domain.DocType(doc.Type), // Pass Type to pipeline
+		Type:        domain.DocType(doc.Type),
 		FileSize:    doc.FileSize,
 		IsEnabled:   doc.IsEnabled,
 	}
