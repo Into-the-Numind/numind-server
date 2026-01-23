@@ -72,6 +72,7 @@ type KnowledgeDocument struct {
 	ChunkCount  int       `json:"chunk_count"`
 	FileSize    int64     `json:"file_size"`
 	FileType    string    `json:"file_type"`
+	Type        DocType   `json:"type"` // FACT, STRATEGY, CASE
 	IsEnabled   bool      `json:"is_enabled"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`

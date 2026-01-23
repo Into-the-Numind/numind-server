@@ -113,7 +113,7 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 			UserID:     doc.UserID, // 传递用户ID用于数据隔离
 			Content:    sc.Content,
 			Tags:       tags, // Use merged tags
-			DocType:    domain.DocTypeFact,
+			DocType:    doc.Type,
 			SalesStage: []domain.SalesStage{domain.StageDiscovery},
 		}
 	}

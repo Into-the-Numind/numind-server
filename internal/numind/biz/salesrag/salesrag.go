@@ -31,6 +31,7 @@ type SalesRAGBiz interface {
 type IngestOptions struct {
 	Description string
 	Tags        []string
+	Type        string
 }
 
 type UpdateDocumentRequest struct {
@@ -92,7 +93,8 @@ func (b *salesRAGBiz) Ingest(ctx context.Context, userID uint, filename string, 
 		Description: opts.Description,
 		Tags:        tagsJson,
 		FileSize:    written,
-		IsEnabled:   true, // 默认启用
+		Type:        opts.Type, // Save Type
+		IsEnabled:   true,      // 默认启用
 	}
 	if err := b.ds.KnowledgeDocuments().Create(ctx, doc); err != nil {
 		return 0, err
@@ -108,6 +110,7 @@ func (b *salesRAGBiz) Ingest(ctx context.Context, userID uint, filename string, 
 		Status:      domain.DocStatusPending,
 		Description: doc.Description,
 		Tags:        opts.Tags,
+		Type:        domain.DocType(doc.Type), // Pass Type to pipeline
 		FileSize:    doc.FileSize,
 		IsEnabled:   doc.IsEnabled,
 	}
@@ -233,12 +236,13 @@ func (b *salesRAGBiz) ListDocuments(ctx context.Context, userID uint) ([]domain.
 			FilePath:    d.FilePath,
 			Status:      domain.DocStatus(d.Status),
 			ErrorMsg:    d.ErrorMsg,
-			Description: d.Description, // ✅ 补充字段
-			Tags:        tags,          // ✅ 补充字段（解析JSON）
-			ChunkCount:  d.ChunkCount,  // ✅ 补充字段
-			FileSize:    d.FileSize,    // ✅ 补充字段
-			FileType:    d.FileType,    // ✅ 补充字段
-			IsEnabled:   d.IsEnabled,   // ✅ 补充字段
+			Description: d.Description,          // ✅ 补充字段
+			Tags:        tags,                   // ✅ 补充字段（解析JSON）
+			ChunkCount:  d.ChunkCount,           // ✅ 补充字段
+			FileSize:    d.FileSize,             // ✅ 补充字段
+			FileType:    d.FileType,             // ✅ 补充字段
+			Type:        domain.DocType(d.Type), // ✅ 补充字段
+			IsEnabled:   d.IsEnabled,            // ✅ 补充字段
 			CreatedAt:   d.CreatedAt,
 			UpdatedAt:   d.UpdatedAt,
 		})

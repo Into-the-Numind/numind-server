@@ -35,6 +35,7 @@ func (ctrl *SalesRAGController) Ingest(c *gin.Context) {
 
 	// Parse additional fields
 	description := c.DefaultPostForm("description", "")
+	docType := c.DefaultPostForm("type", "FACT") // Default to FACT if missing
 	tagsStr := c.DefaultPostForm("tags", "")
 
 	var tags []string
@@ -49,6 +50,7 @@ func (ctrl *SalesRAGController) Ingest(c *gin.Context) {
 	opts := salesrag.IngestOptions{
 		Description: description,
 		Tags:        tags,
+		Type:        docType,
 	}
 
 	// 获取当前用户

@@ -17,6 +17,7 @@ type KnowledgeDocument struct {
 	ChunkCount  int    `gorm:"default:0" json:"chunk_count"`
 	FileSize    int64  `gorm:"default:0" json:"file_size"`
 	FileType    string `gorm:"size:20" json:"file_type"`
+	Type        string `gorm:"size:20;not null;default:'FACT'" json:"type"` // FACT, STRATEGY, CASE
 	IsEnabled   bool   `gorm:"default:true;index" json:"is_enabled"`
 }
 
