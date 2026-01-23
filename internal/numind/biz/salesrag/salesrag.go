@@ -297,8 +297,11 @@ func (b *salesRAGBiz) DeleteDocument(ctx context.Context, userID uint, docID uin
 	}
 
 	// 2. 从向量库删除
+	// 注意：如果向量库删除失败（例如旧数据不在向量库中，或者网络问题），我们记录错误但继续删除数据库记录
+	// 这样可以避免用户无法删除"僵尸"文档的情况
 	if err := b.ragSvc.DeleteByDocumentID(ctx, docID); err != nil {
-		return err
+		// Log warning but continue
+		fmt.Printf("Warning: Failed to delete document %d from vector store: %v\n", docID, err)
 	}
 
 	// 3. 从数据库删除
