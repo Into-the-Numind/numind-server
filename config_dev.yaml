@@ -121,6 +121,17 @@ ali:
     model: "stable-diffusion-3.5-large-turbo"  # SD模型
     timeout: 300s        # SD生成超时时间（5分钟）
 
+  # 视觉理解服务
+  vision:
+    model: "qwen3-vl-flash" # 视觉模型
+    timeout: 180s
+
+  # DashVector 向量数据库配置
+  dashvector:
+    endpoint: "https://vrs-cn-62l4mht1d0001e.dashvector.cn-hangzhou.aliyuncs.com" # DashVector Endpoint
+    api_key: "" # DashVector API Key (若为空则使用通用 ali.api_key)
+    collection: "sales_rag"
+
 # 卡片配置 - 统一的卡片渲染和分页配置中心
 card:
   # 基础尺寸配置（所有组件共用）
