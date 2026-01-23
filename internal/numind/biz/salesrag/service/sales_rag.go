@@ -19,6 +19,7 @@ type RetrievalVerdict struct {
 	Strategies   []domain.KnowledgeChunk // 策略知识块
 	Cases        []domain.KnowledgeChunk // 案例知识块
 	Evidence     []domain.KnowledgeChunk `json:"evidence"` // 检索到的证据 (可能是Facts, Strategies, Cases的合并或子集)
+	Answer       string                  `json:"answer"`   // AI生成的最终回复
 }
 
 // SalesRAGService 销售智能体 RAG 服务

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"numind-server/internal/numind/biz/salesrag/domain"
@@ -49,13 +50,20 @@ type salesRAGBiz struct {
 	ds                store.IStore
 	ingestionPipeline *service.IngestionPipeline
 	ragSvc            *service.SalesRAGService
+	volcBiz           VolcBiz // 添加大模型服务依赖
 }
 
-func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *service.SalesRAGService) SalesRAGBiz {
+// VolcBiz 火山引擎服务接口（避免循环依赖）
+type VolcBiz interface {
+	VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error)
+}
+
+func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *service.SalesRAGService, volc VolcBiz) SalesRAGBiz {
 	return &salesRAGBiz{
 		ds:                ds,
 		ingestionPipeline: pipeline,
 		ragSvc:            rag,
+		volcBiz:           volc,
 	}
 }
 
@@ -229,7 +237,25 @@ func (b *salesRAGBiz) Retrieve(ctx context.Context, query string, stage domain.S
 	}
 
 	// 6. 使用过滤后的文档ID进行检索
-	return b.ragSvc.RetrieveForResponse(ctx, query, stage, filteredDocIDs)
+	verdict, err := b.ragSvc.RetrieveForResponse(ctx, query, stage, filteredDocIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	// 7. 调用大模型生成最终回复
+	answer, err := b.generateAnswer(ctx, query, stage, verdict)
+	if err != nil {
+		// 生成失败时，返回友好提示
+		if verdict.IsChitChat {
+			verdict.Answer = "您好，我是销售智能助手。请问有什么可以帮您的吗？"
+		} else {
+			verdict.Answer = "抱歉，我遇到了一些问题，请稍后再试。"
+		}
+	} else {
+		verdict.Answer = answer
+	}
+
+	return verdict, nil
 }
 
 func (b *salesRAGBiz) ListDocuments(ctx context.Context, userID uint) ([]domain.KnowledgeDocument, error) {
@@ -321,4 +347,115 @@ func (b *salesRAGBiz) DeleteDocument(ctx context.Context, userID uint, docID uin
 
 	// 3. 从数据库删除
 	return b.ds.KnowledgeDocuments().Delete(ctx, docID)
+}
+
+// generateAnswer 使用大模型生成最终回复
+func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, stage domain.SalesStage, verdict *service.RetrievalVerdict) (string, error) {
+	// 1. 如果是闲聊，生成友好的闲聊回复
+	if verdict.IsChitChat {
+		messages := []map[string]string{
+			{
+				"role":    "system",
+				"content": "你是一个专业、友好的销售智能助手。请用简洁、自然的方式回复用户的问候或闲聊。",
+			},
+			{
+				"role":    "user",
+				"content": query,
+			},
+		}
+		return b.volcBiz.VolcTextStream(ctx, messages, 200, 0.7)
+	}
+
+	// 2. 构建知识上下文
+	var contextParts []string
+
+	// 合并所有检索到的知识
+	allChunks := append(verdict.Facts, verdict.Strategies...)
+	allChunks = append(allChunks, verdict.Cases...)
+
+	if len(allChunks) == 0 {
+		// 没有检索到相关知识，让大模型基于自身知识回答
+		messages := []map[string]string{
+			{
+				"role":    "system",
+				"content": "你是一个专业的销售智能助手。由于知识库中没有找到相关信息，请基于你的通用知识给出专业、有帮助的回答。",
+			},
+			{
+				"role":    "user",
+				"content": query,
+			},
+		}
+		return b.volcBiz.VolcTextStream(ctx, messages, 1000, 0.7)
+	}
+
+	// 构建知识上下文
+	for i, chunk := range allChunks {
+		contextParts = append(contextParts, fmt.Sprintf("[知识%d] %s", i+1, chunk.Content))
+		if i >= 4 { // 最多使用5条知识
+			break
+		}
+	}
+	knowledgeContext := strings.Join(contextParts, "\n\n")
+
+	// 3. 根据销售阶段定制系统提示词
+	var systemPrompt string
+	switch stage {
+	case domain.StageDiscovery:
+		systemPrompt = `你是一个专业的销售智能助手，当前处于【需求发现】阶段。
+
+你的任务是基于提供的知识库信息，回答用户的问题。请注意：
+1. 准确引用知识库中的内容，不要虚构信息
+2. 用友好、专业的语气回答
+3. 帮助用户了解产品的核心功能和价值
+4. 如果知识库中没有直接答案，可以引导用户提供更多信息
+
+知识库内容：
+` + knowledgeContext
+
+	case domain.StageNegotiation:
+		systemPrompt = `你是一个专业的销售智能助手，当前处于【方案协商】阶段。
+
+你的任务是基于提供的知识库信息，回答用户的问题。请注意：
+1. 准确引用知识库中的定价、方案等信息
+2. 强调产品的价值和ROI
+3. 用清晰、有说服力的语气回答
+4. 帮助用户理解不同方案的优势
+
+知识库内容：
+` + knowledgeContext
+
+	case domain.StageClosing:
+		systemPrompt = `你是一个专业的销售智能助手，当前处于【成交跟进】阶段。
+
+你的任务是基于提供的知识库信息，回答用户的问题。请注意：
+1. 准确引用知识库中的交付、支持等信息
+2. 强调服务保障和售后支持
+3. 用专业、可靠的语气回答
+4. 帮助用户消除最后的顾虑
+
+知识库内容：
+` + knowledgeContext
+
+	default:
+		systemPrompt = `你是一个专业的销售智能助手。
+
+你的任务是基于提供的知识库信息，准确、友好地回答用户的问题。
+
+知识库内容：
+` + knowledgeContext
+	}
+
+	// 4. 构建消息并调用大模型
+	messages := []map[string]string{
+		{
+			"role":    "system",
+			"content": systemPrompt,
+		},
+		{
+			"role":    "user",
+			"content": query,
+		},
+	}
+
+	return b.volcBiz.VolcTextStream(ctx, messages, 1000, 0.7)
 }

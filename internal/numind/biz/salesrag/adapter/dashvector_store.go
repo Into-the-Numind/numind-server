@@ -161,7 +161,7 @@ func (s *DashVectorStore) DeleteByDocumentID(ctx context.Context, documentID uin
 		// Alternative: DELETE with complex filter?
 		// Let's try to query with a zero vector or dummy vector just to match filter results.
 		// A dummy vector + filter should work to retrieve IDs.
-		dummyVector := make([]float32, 1536) // Assuming 1536 dim
+		dummyVector := make([]float32, 2048) // text-embedding-v4 使用 2048 维
 		queryBody["vector"] = dummyVector
 
 		bodyBytes, _ := json.Marshal(queryBody)

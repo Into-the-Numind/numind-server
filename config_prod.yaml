@@ -74,9 +74,9 @@ book:
 volc:
   api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "doubao-seed-1-6-flash-250828"
-  temperature: 0.5
-  tokens: 2000
+  model: "glm-4-7-251222"  # 测试阶段使用智谱GLM-4-7模型
+  temperature: 0.7
+  tokens: 4000
   timeout: 180s
   max_retries: 3
 
