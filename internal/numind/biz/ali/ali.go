@@ -570,9 +570,9 @@ func (a *aliBiz) QianwenEmbedding(text string) ([]float32, error) {
 	bodyMap := map[string]interface{}{
 		"model": "text-embedding-v4",
 		"input": []string{text},
-		"parameters": map[string]interface{}{
-			"dimensions": 2048,
-		},
+		// "parameters": map[string]interface{}{
+		// 	"dimensions": 2048, // 移除固定维度，使用默认值(1536)以匹配现有Collection
+		// },
 	}
 	bodyBytes, err := json.Marshal(bodyMap)
 	if err != nil {
