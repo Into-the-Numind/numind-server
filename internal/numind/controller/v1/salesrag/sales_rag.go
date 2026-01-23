@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 
+	"numind-server/internal/pkg/middleware"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -50,9 +52,13 @@ func (ctrl *SalesRAGController) Ingest(c *gin.Context) {
 	}
 
 	// 获取当前用户
-	userID, _ := c.Get("userID")
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
 
-	docID, err := ctrl.b.SalesRAG().Ingest(c, userID.(uint), header.Filename, file, opts)
+	docID, err := ctrl.b.SalesRAG().Ingest(c, user.ID, header.Filename, file, opts)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
@@ -74,6 +80,14 @@ func (ctrl *SalesRAGController) Chat(c *gin.Context) {
 		return
 	}
 
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+	// 注入 userID 到 context 中，因为 Biz 层 Retrive 方法依赖 ctx.Value("userID")
+	c.Set("userID", user.ID)
+
 	verdict, err := ctrl.b.SalesRAG().Retrieve(c, r.Query, r.SalesStage, r.DocumentIDs)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
@@ -85,8 +99,12 @@ func (ctrl *SalesRAGController) Chat(c *gin.Context) {
 
 // ListDocuments 获取文档列表
 func (ctrl *SalesRAGController) ListDocuments(c *gin.Context) {
-	userID, _ := c.Get("userID")
-	docs, err := ctrl.b.SalesRAG().ListDocuments(c, userID.(uint))
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+	docs, err := ctrl.b.SalesRAG().ListDocuments(c, user.ID)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
@@ -103,8 +121,12 @@ func (ctrl *SalesRAGController) DeleteDocument(c *gin.Context) {
 		return
 	}
 
-	userID, _ := c.Get("userID")
-	if err := ctrl.b.SalesRAG().DeleteDocument(c, userID.(uint), uint(id)); err != nil {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+	if err := ctrl.b.SalesRAG().DeleteDocument(c, user.ID, uint(id)); err != nil {
 		core.WriteResponse(c, err, nil)
 		return
 	}
@@ -126,8 +148,12 @@ func (ctrl *SalesRAGController) UpdateDocument(c *gin.Context) {
 		return
 	}
 
-	userID, _ := c.Get("userID")
-	if err := ctrl.b.SalesRAG().UpdateDocument(c, userID.(uint), uint(id), req); err != nil {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+	if err := ctrl.b.SalesRAG().UpdateDocument(c, user.ID, uint(id), req); err != nil {
 		core.WriteResponse(c, err, nil)
 		return
 	}
