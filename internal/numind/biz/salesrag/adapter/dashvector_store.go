@@ -10,6 +10,7 @@ import (
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/pkg/httpclient"
+	"numind-server/internal/pkg/log"
 )
 
 type DashVectorStore struct {
@@ -47,6 +48,7 @@ type DashVectorResponse struct {
 }
 
 func (s *DashVectorStore) Upsert(ctx context.Context, chunks []domain.KnowledgeChunk) error {
+	log.Infow("DashVector Upsert start", "count", len(chunks), "collection", s.collection)
 	if len(chunks) == 0 {
 		return nil
 	}
@@ -118,6 +120,7 @@ func (s *DashVectorStore) Upsert(ctx context.Context, chunks []domain.KnowledgeC
 		if resp.Code != 0 {
 			return fmt.Errorf("dashvector upsert failed: code=%d msg=%s", resp.Code, resp.Message)
 		}
+		log.Infow("DashVector Upsert batch success", "batch_size", len(batch), "resp_code", resp.Code)
 	}
 
 	return nil
