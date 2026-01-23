@@ -136,7 +136,7 @@ ali:
   # DashVector 向量数据库配置
   dashvector:
     endpoint: "https://vrs-cn-62l4mht1d0001e.dashvector.cn-hangzhou.aliyuncs.com" # DashVector Endpoint
-    api_key: "" # DashVector API Key (若为空则使用通用 ali.api_key)
+    api_key: "sk-gMsgxE1A1QzoxexCdtuTaVjuF6w8Z52890CC5F85411F08940FAD61112A032"
     collection: "sales_rag_qa"
 
 # 卡片配置 - 统一的卡片渲染和分页配置中心
