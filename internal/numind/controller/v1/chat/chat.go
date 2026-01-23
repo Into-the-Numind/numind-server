@@ -375,7 +375,7 @@ func (ctrl *ChatController) ListMessages(c *gin.Context) {
 		return
 	}
 
-	sessionIDStr := c.Param("session_id")
+	sessionIDStr := c.Param("id")
 	sessionID, err := strconv.ParseUint(sessionIDStr, 10, 32)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrBind, nil)
