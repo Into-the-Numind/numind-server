@@ -7,11 +7,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/pkg/util"
 )
 
 // PipelineParser defines interface for parsing file to markdown
@@ -88,8 +90,21 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 	var fileReader io.Reader
 	// 检查是否为云端存储的 URL
 	if strings.HasPrefix(doc.FilePath, "http://") || strings.HasPrefix(doc.FilePath, "https://") {
+		downloadURL := doc.FilePath
+
+		// 尝试针对 COS 生成签名 URL，解决 403 问题
+		// 解析 URL 获取 ObjectKey
+		if u, err := url.Parse(doc.FilePath); err == nil {
+			objectKey := strings.TrimPrefix(u.Path, "/")
+			// 生成签名 URL (有效期 10 分钟)
+			if signed, err := util.GenerateSignedURL(context.Background(), objectKey, 600); err == nil && signed != "" {
+				downloadURL = signed
+				log.Printf("Generated signed URL for doc %d: %s...", doc.ID, objectKey)
+			}
+		}
+
 		// 下载文件内容
-		resp, err := http.Get(doc.FilePath)
+		resp, err := http.Get(downloadURL)
 		if err != nil {
 			p.fail(doc, fmt.Errorf("failed to download file from URL: %w", err))
 			return
