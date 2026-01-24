@@ -531,3 +531,80 @@ func (ctrl *SalesRAGController) GetCustomerProfile(c *gin.Context) {
 
 	core.WriteResponse(c, nil, profile)
 }
+
+// PinSession 置顶会话
+func (ctrl *SalesRAGController) PinSession(c *gin.Context) {
+	sessionIDStr := c.Param("id")
+	sessionID, err := strconv.ParseUint(sessionIDStr, 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	if err := ctrl.b.SalesRAG().PinSession(c, user.ID, uint(sessionID)); err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, map[string]string{"message": "Session pinned successfully"})
+}
+
+// UnpinSession 取消置顶会话
+func (ctrl *SalesRAGController) UnpinSession(c *gin.Context) {
+	sessionIDStr := c.Param("id")
+	sessionID, err := strconv.ParseUint(sessionIDStr, 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	if err := ctrl.b.SalesRAG().UnpinSession(c, user.ID, uint(sessionID)); err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, map[string]string{"message": "Session unpinned successfully"})
+}
+
+// RenameSession 重命名会话
+func (ctrl *SalesRAGController) RenameSession(c *gin.Context) {
+	sessionIDStr := c.Param("id")
+	sessionID, err := strconv.ParseUint(sessionIDStr, 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	var req struct {
+		Title string `json:"title" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	if err := ctrl.b.SalesRAG().RenameSession(c, user.ID, uint(sessionID), req.Title); err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, map[string]string{"message": "Session renamed successfully"})
+}

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"numind-server/internal/pkg/model"
 
@@ -24,6 +25,13 @@ type SalesSessionStore interface {
 
 	GetSessionWithMessages(ctx context.Context, sessionID uint, userID uint) (*model.SalesSession, error)
 	UpdateSessionMessageCount(ctx context.Context, sessionID uint) error
+
+	// 置顶相关
+	PinSession(ctx context.Context, sessionID uint, userID uint) error
+	UnpinSession(ctx context.Context, sessionID uint, userID uint) error
+
+	// 重命名
+	RenameSession(ctx context.Context, sessionID uint, userID uint, newTitle string) error
 }
 
 // salesSessionStore 是 SalesSessionStore 的具体实现
@@ -70,12 +78,12 @@ func (s *salesSessionStore) ListSessions(ctx context.Context, userID uint, offse
 		return nil, 0, err
 	}
 
-	// 获取会话列表
+	// 获取会话列表，置顶的会话优先显示，按照置顶时间降序，未置顶的按更新时间降序
 	query = s.db.WithContext(ctx).Where("user_id = ?", userID)
 	if salesStage != "" {
 		query = query.Where("sales_stage = ?", salesStage)
 	}
-	err = query.Order("updated_at DESC").
+	err = query.Order("is_pinned DESC, CASE WHEN is_pinned = true THEN pinned_at ELSE updated_at END DESC").
 		Offset(offset).Limit(limit).
 		Find(&sessions).Error
 
@@ -178,4 +186,32 @@ func (s *salesSessionStore) UpdateSessionMessageCount(ctx context.Context, sessi
 	return s.db.WithContext(ctx).Model(&model.SalesSession{}).
 		Where("id = ?", sessionID).
 		Update("message_count", count).Error
+}
+
+// PinSession 置顶会话
+func (s *salesSessionStore) PinSession(ctx context.Context, sessionID uint, userID uint) error {
+	now := time.Now()
+	return s.db.WithContext(ctx).Model(&model.SalesSession{}).
+		Where("id = ? AND user_id = ?", sessionID, userID).
+		Updates(map[string]interface{}{
+			"is_pinned": true,
+			"pinned_at": now,
+		}).Error
+}
+
+// UnpinSession 取消置顶会话
+func (s *salesSessionStore) UnpinSession(ctx context.Context, sessionID uint, userID uint) error {
+	return s.db.WithContext(ctx).Model(&model.SalesSession{}).
+		Where("id = ? AND user_id = ?", sessionID, userID).
+		Updates(map[string]interface{}{
+			"is_pinned": false,
+			"pinned_at": nil,
+		}).Error
+}
+
+// RenameSession 重命名会话
+func (s *salesSessionStore) RenameSession(ctx context.Context, sessionID uint, userID uint, newTitle string) error {
+	return s.db.WithContext(ctx).Model(&model.SalesSession{}).
+		Where("id = ? AND user_id = ?", sessionID, userID).
+		Update("title", newTitle).Error
 }

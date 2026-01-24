@@ -1,6 +1,10 @@
 package model
 
-import "gorm.io/gorm"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 // SalesSession 销售智能体对话会话表
 type SalesSession struct {
@@ -16,6 +20,10 @@ type SalesSession struct {
 	DeepThinking    bool   `gorm:"default:false" json:"deep_thinking"`
 	CustomerProfile string `gorm:"type:text" json:"customer_profile"` // JSON object
 	LastQuery       string `gorm:"type:text" json:"last_query"`
+
+	// 置顶功能字段
+	IsPinned bool       `gorm:"default:false;index" json:"is_pinned"`
+	PinnedAt *time.Time `gorm:"index" json:"pinned_at,omitempty"`
 
 	// 关联关系
 	User     User           `gorm:"foreignKey:UserID" json:"user,omitempty"`

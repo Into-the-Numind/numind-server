@@ -49,6 +49,11 @@ type SalesRAGBiz interface {
 	UpdateCustomerProfile(ctx context.Context, userID uint, sessionID uint, profile string) error
 	GetCustomerProfile(ctx context.Context, userID uint, sessionID uint) (string, error)
 
+	// 置顶和重命名接口
+	PinSession(ctx context.Context, userID uint, sessionID uint) error
+	UnpinSession(ctx context.Context, userID uint, sessionID uint) error
+	RenameSession(ctx context.Context, userID uint, sessionID uint, newTitle string) error
+
 	// ChatWithSession 基于会话的流式对话（保存聊天记录）
 	ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, stage domain.SalesStage, docIDs []uint, deepThinking bool, onEvent func(eventType string, data interface{}) error) error
 }
@@ -783,6 +788,21 @@ func (b *salesRAGBiz) UpdateSession(ctx context.Context, userID uint, sessionID 
 // DeleteSession 删除销售会话
 func (b *salesRAGBiz) DeleteSession(ctx context.Context, userID uint, sessionID uint) error {
 	return b.sessionStore.DeleteSession(ctx, sessionID, userID)
+}
+
+// PinSession 置顶会话
+func (b *salesRAGBiz) PinSession(ctx context.Context, userID uint, sessionID uint) error {
+	return b.sessionStore.PinSession(ctx, sessionID, userID)
+}
+
+// UnpinSession 取消置顶会话
+func (b *salesRAGBiz) UnpinSession(ctx context.Context, userID uint, sessionID uint) error {
+	return b.sessionStore.UnpinSession(ctx, sessionID, userID)
+}
+
+// RenameSession 重命名会话
+func (b *salesRAGBiz) RenameSession(ctx context.Context, userID uint, sessionID uint, newTitle string) error {
+	return b.sessionStore.RenameSession(ctx, sessionID, userID, newTitle)
 }
 
 // ListMessages 获取会话的消息列表

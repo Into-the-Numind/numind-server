@@ -276,11 +276,14 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.DELETE("/sales-rag/documents/:id", salesRAGc.DeleteDocument) // 删除文档
 
 		// 会话管理
-		authGroup.POST("/sales-rag/sessions", salesRAGc.CreateSession)       // 创建销售会话
-		authGroup.GET("/sales-rag/sessions", salesRAGc.ListSessions)         // 获取会话列表
-		authGroup.GET("/sales-rag/sessions/:id", salesRAGc.GetSession)       // 获取会话详情
-		authGroup.PUT("/sales-rag/sessions/:id", salesRAGc.UpdateSession)    // 更新会话信息
-		authGroup.DELETE("/sales-rag/sessions/:id", salesRAGc.DeleteSession) // 删除会话
+		authGroup.POST("/sales-rag/sessions", salesRAGc.CreateSession)          // 创建销售会话
+		authGroup.GET("/sales-rag/sessions", salesRAGc.ListSessions)            // 获取会话列表
+		authGroup.GET("/sales-rag/sessions/:id", salesRAGc.GetSession)          // 获取会话详情
+		authGroup.PUT("/sales-rag/sessions/:id", salesRAGc.UpdateSession)       // 更新会话信息
+		authGroup.DELETE("/sales-rag/sessions/:id", salesRAGc.DeleteSession)    // 删除会话
+		authGroup.PUT("/sales-rag/sessions/:id/pin", salesRAGc.PinSession)      // 置顶会话
+		authGroup.DELETE("/sales-rag/sessions/:id/pin", salesRAGc.UnpinSession) // 取消置顶会话
+		authGroup.PUT("/sales-rag/sessions/:id/rename", salesRAGc.RenameSession) // 重命名会话
 
 		// 消息管理
 		authGroup.POST("/sales-rag/sessions/:id/chat", salesRAGc.ChatWithSession) // 基于会话的销售对话（SSE流式）
