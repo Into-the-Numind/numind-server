@@ -21,7 +21,6 @@ func NewContentTagger(llm ali.AliBiz) *ContentTagger {
 
 // TaggingResult structure matching JSON output from LLM
 type TaggingResult struct {
-	DocType    string   `json:"doc_type"`
 	SalesStage []string `json:"sales_stage"`
 	Tags       []string `json:"tags"`
 	Summary    string   `json:"summary"`
@@ -48,8 +47,7 @@ func (t *ContentTagger) TagChunks(ctx context.Context, chunks []*domain.Knowledg
 			res, err := t.analyze(ctx, chunk.Content)
 			if err != nil {
 				// Fallback or Log
-				// defaulting to FACT and DISCOVERY if failure
-				chunk.DocType = domain.DocTypeFact
+				// defaulting to DISCOVERY if failure
 				chunk.SalesStage = []domain.SalesStage{domain.StageDiscovery}
 				// TODO: Add logging
 				return
@@ -63,6 +61,27 @@ func (t *ContentTagger) TagChunks(ctx context.Context, chunks []*domain.Knowledg
 	return nil
 }
 
+// TagChunk 单个切片打标 (实现 port.ContentTagger 接口)
+func (t *ContentTagger) TagChunk(ctx context.Context, content string) ([]domain.SalesStage, []string, error) {
+	res, err := t.analyze(ctx, content)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Convert strings to SalesStage
+	stages := make([]domain.SalesStage, 0)
+	for _, s := range res.SalesStage {
+		st := domain.SalesStage(strings.ToUpper(s))
+		if st == domain.StageDiscovery || st == domain.StageNegotiation || st == domain.StageClosing {
+			stages = append(stages, st)
+		}
+	}
+	if len(stages) == 0 {
+		stages = []domain.SalesStage{domain.StageDiscovery}
+	}
+	return stages, res.Tags, nil
+}
+
 func (t *ContentTagger) analyze(ctx context.Context, text string) (*TaggingResult, error) {
 	// Construct Prompt
 	prompt := fmt.Sprintf(`Role: Sales Knowledge Expert.
@@ -70,12 +89,10 @@ Task: Analyze the text and assign metadata in strictly valid JSON format.
 Input Text: """%s"""
 
 Definitions:
-- doc_type: FACT (product info, price), STRATEGY (technique, negotiation), STYLE (phrasing), CASE (success story).
 - sales_stage: DISCOVERY, NEGOTIATION, CLOSING.
 
 Output Schema:
 {
- "doc_type": "FACT",
  "sales_stage": ["DISCOVERY"],
  "tags": ["keyword1", "keyword2"],
  "summary": "brief summary"
@@ -106,14 +123,6 @@ Requirement: Output ONLY the JSON string. Do not use markdown blocks.`, text)
 }
 
 func (t *ContentTagger) mapResult(chunk *domain.KnowledgeChunk, res *TaggingResult) {
-	// DocType
-	dt := domain.DocType(strings.ToUpper(res.DocType))
-	switch dt {
-	case domain.DocTypeFact, domain.DocTypeStrategy, domain.DocTypeStyle, domain.DocTypeCase:
-		chunk.DocType = dt
-	default:
-		chunk.DocType = domain.DocTypeFact // Default
-	}
 
 	// SalesStage
 	chunk.SalesStage = make([]domain.SalesStage, 0)

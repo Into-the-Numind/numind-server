@@ -1,13 +1,17 @@
 package volc
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/httpclient"
 	"numind-server/internal/pkg/log"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -27,6 +31,10 @@ type VolcBiz interface {
 	VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error)
 	// 火山方舟 Embedding 向量化
 	DoubaoEmbedding(ctx context.Context, text string) ([]float32, error)
+	// StreamChat 真正的流式聊天，通过回调函数逐 token 或思维链内容推送
+	// onEvent: 收到事件内容时调用，event 类型为 "thinking" 或 "message"
+	// 返回: 完整内容（所有 token 拼接）和错误
+	StreamChat(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
 }
 
 type volcBiz struct {
@@ -395,4 +403,136 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// StreamChat 真正的流式聊天方法
+// 通过回调函数 onEvent 逐 token 或思维链内容推送
+// 火山方舟 API 使用 SSE 格式，每行格式为 "data: {json}\n\n"
+func (v *volcBiz) StreamChat(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error) {
+	url := viper.GetString("volc.base_url") + "/chat/completions"
+
+	thinkingType := "disabled"
+	if deepThinking {
+		thinkingType = "enabled"
+	}
+
+	bodyMap := map[string]interface{}{
+		"model":       viper.GetString("volc.model"),
+		"messages":    messages,
+		"max_tokens":  maxTokens,
+		"temperature": temperature,
+		"stream":      true, // 启用流式传输
+		"thinking": map[string]interface{}{
+			"type": thinkingType, // 使用参数控制深度思考
+		},
+		"stream_options": map[string]interface{}{
+			"include_usage": true, // 包含 token 使用统计
+		},
+	}
+	bodyBytes, _ := json.Marshal(bodyMap)
+
+	log.C(ctx).Debugw("调用volc流式API", "url", url, "stream", true)
+
+	// 创建 HTTP 请求
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("创建请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+viper.GetString("volc.api_key"))
+	req.Header.Set("Accept", "text/event-stream")
+
+	// 使用带处理响应头的 HTTP 客户端
+	client := &http.Client{
+		Timeout: 0, // 流式传输由 context 控制
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("HTTP请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("API返回错误状态码: %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	// 逐行读取 SSE 响应
+	var fullContent strings.Builder
+	var thinkingContent strings.Builder
+	reader := bufio.NewReader(resp.Body)
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fullContent.String(), fmt.Errorf("读取响应失败: %w", err)
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		// 使用通用的 map 解析，因为可能有多种字段（content, reasoning_content）
+		var chunk map[string]interface{}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			log.C(ctx).Warnw("解析SSE JSON失败", "data", data, "error", err)
+			continue
+		}
+
+		// 检查是否有错误
+		if errObj, ok := chunk["error"].(map[string]interface{}); ok {
+			return fullContent.String(), fmt.Errorf("API流式错误: %v", errObj["message"])
+		}
+
+		// 提取 choices
+		choices, ok := chunk["choices"].([]interface{})
+		if !ok || len(choices) == 0 {
+			continue
+		}
+
+		choice := choices[0].(map[string]interface{})
+		delta, ok := choice["delta"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// 1. 处理思维链内容 (reasoning_content)
+		if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
+			thinkingContent.WriteString(rc)
+			if onEvent != nil {
+				if err := onEvent("thinking", rc); err != nil {
+					return fullContent.String(), err
+				}
+			}
+		}
+
+		// 2. 处理普通回答内容 (content)
+		if content, ok := delta["content"].(string); ok && content != "" {
+			fullContent.WriteString(content)
+			if onEvent != nil {
+				if err := onEvent("message", content); err != nil {
+					return fullContent.String(), err
+				}
+			}
+		}
+
+		// 3. 检查结束
+		if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
+			if finishReason == "stop" {
+				break
+			}
+		}
+	}
+
+	log.C(ctx).Debugw("流式聊天完成", "content_len", fullContent.Len(), "thinking_len", thinkingContent.Len())
+	return fullContent.String(), nil
 }

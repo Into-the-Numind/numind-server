@@ -30,9 +30,9 @@ type MockTagger struct {
 	mock.Mock
 }
 
-func (m *MockTagger) TagChunk(ctx context.Context, content string) (domain.DocType, []domain.SalesStage, []string, error) {
+func (m *MockTagger) TagChunk(ctx context.Context, content string) ([]domain.SalesStage, []string, error) {
 	args := m.Called(ctx, content)
-	return args.Get(0).(domain.DocType), args.Get(1).([]domain.SalesStage), args.Get(2).([]string), args.Error(3)
+	return args.Get(0).([]domain.SalesStage), args.Get(1).([]string), args.Error(2)
 }
 
 func TestIngestDocument(t *testing.T) {
@@ -52,7 +52,6 @@ func TestIngestDocument(t *testing.T) {
 	parser.On("Parse", ctx, rawContent, "test.pdf").Return(parsedChunks, nil)
 
 	tagger.On("TagChunk", ctx, context.Background(), "Chunk 1 Content").Return( // Check context matching? simpliy mock
-		domain.DocTypeFact,
 		[]domain.SalesStage{domain.StageDiscovery},
 		[]string{"tag1"},
 		nil,
@@ -61,7 +60,6 @@ func TestIngestDocument(t *testing.T) {
 	// Re-setup tagger expectation carefully
 	// The service calls `tagger.TagChunk(ctx, content)`
 	tagger.On("TagChunk", ctx, "Chunk 1 Content").Return(
-		domain.DocTypeFact,
 		[]domain.SalesStage{domain.StageDiscovery},
 		[]string{"tag1"},
 		nil,
@@ -72,9 +70,7 @@ func TestIngestDocument(t *testing.T) {
 	assert.Nil(t, err)
 
 	// Verify Store
-	filter := port.SearchFilter{
-		DocTypes: []domain.DocType{domain.DocTypeFact},
-	}
+	filter := port.SearchFilter{}
 	results, err := store.Search(ctx, "Chunk 1", filter, 10)
 	assert.Nil(t, err)
 	assert.Len(t, results, 1)

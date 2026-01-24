@@ -22,16 +22,13 @@ func TestSalesRAGService_RetrieveDualTrack(t *testing.T) {
 	store.Upsert(ctx, []domain.KnowledgeChunk{
 		{
 			ID: "f1", DocumentID: 1, Content: "Product Price is $500",
-			DocType: domain.DocTypeFact,
 		},
 		{
 			ID: "s1", DocumentID: 1, Content: "If customer ask price, emphasize value.",
-			DocType:    domain.DocTypeStrategy,
 			SalesStage: []domain.SalesStage{domain.StageNegotiation},
 		},
 		{
 			ID: "s2", DocumentID: 1, Content: "Closing technique: limited time offer.",
-			DocType:    domain.DocTypeStrategy,
 			SalesStage: []domain.SalesStage{domain.StageClosing}, // Different stage
 		},
 	})
@@ -46,18 +43,18 @@ func TestSalesRAGService_RetrieveDualTrack(t *testing.T) {
 	verdict, err := svc.RetrieveForResponse(ctx, query, stage, nil)
 	assert.Nil(t, err)
 
-	// Should allow Facts
-	assert.NotEmpty(t, verdict.Facts)
-	assert.Equal(t, "Product Price is $500", verdict.Facts[0].Content)
+	// Should contain evidence
+	assert.NotEmpty(t, verdict.Evidence)
 
-	// Should allow Strategy for Negotiation
-	assert.NotEmpty(t, verdict.Strategies)
-	assert.Equal(t, "If customer ask price, emphasize value.", verdict.Strategies[0].Content)
-
-	// Should NOT include Closing strategy
-	for _, s := range verdict.Strategies {
-		assert.NotEqual(t, "Closing technique: limited time offer.", s.Content)
+	// We expect relevant chunks to be retrieved (simple string match in mock)
+	found := false
+	for _, e := range verdict.Evidence {
+		if e.Content == "Product Price is $500" {
+			found = true
+			break
+		}
 	}
+	assert.True(t, found, "Should retrieve product price fact")
 }
 
 func TestSalesRAGService_ChitChat(t *testing.T) {
@@ -69,7 +66,6 @@ func TestSalesRAGService_ChitChat(t *testing.T) {
 	assert.Nil(t, err)
 
 	// Should be empty for chitchat
-	assert.Empty(t, verdict.Facts)
-	assert.Empty(t, verdict.Strategies)
+	assert.Empty(t, verdict.Evidence)
 	assert.Equal(t, true, verdict.IsChitChat)
 }

@@ -75,7 +75,6 @@ func (s *ChromemStore) Upsert(ctx context.Context, chunks []domain.KnowledgeChun
 			Embedding: embedding,
 			Metadata: map[string]string{
 				"document_id": strconv.FormatUint(uint64(chunk.DocumentID), 10),
-				"doc_type":    string(chunk.DocType),
 				"sales_stage": stagesStr,
 				"tags":        tagsStr,
 				"source_ref":  chunk.SourceRef,
@@ -139,9 +138,6 @@ func (s *ChromemStore) Search(ctx context.Context, query string, filter port.Sea
 			val, _ := strconv.ParseUint(dID, 10, 64)
 			chunk.DocumentID = uint(val)
 		}
-		if dType, ok := res.Metadata["doc_type"]; ok {
-			chunk.DocType = domain.DocType(dType)
-		}
 		chunk.SourceRef = res.Metadata["source_ref"]
 
 		// TODO: 还原 SalesStage 和 Tags
@@ -163,21 +159,7 @@ func (s *ChromemStore) Search(ctx context.Context, query string, filter port.Sea
 func (s *ChromemStore) matchFilter(chunk domain.KnowledgeChunk, filter port.SearchFilter) bool {
 	// 如果过滤条件为空，默认通过
 
-	// 1. DocTypes 过滤
-	if len(filter.DocTypes) > 0 {
-		matched := false
-		for _, dt := range filter.DocTypes {
-			if chunk.DocType == dt {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
-	}
-
-	// 2. DocumentIDs 过滤 (Scope Control)
+	// 1. DocumentIDs 过滤 (Scope Control)
 	if len(filter.DocumentIDs) > 0 {
 		matched := false
 		for _, id := range filter.DocumentIDs {

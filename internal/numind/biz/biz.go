@@ -178,7 +178,10 @@ func NewBiz(ds store.IStore) *biz {
 	// 业务逻辑实现
 	salesRAGSvc := salesragservice.NewSalesRAGService(vStore, regexRouter)
 
-	b.salesRAGService = salesrag.NewSalesRAGBiz(b.ds, pipeline, salesRAGSvc, b.Volc())
+	// 创建 SalesSessionStore
+	salesSessionStore := store.NewSalesSessionStore(b.ds.DB())
+
+	b.salesRAGService = salesrag.NewSalesRAGBiz(b.ds, pipeline, salesRAGSvc, b.Volc(), salesSessionStore)
 
 	return b
 }

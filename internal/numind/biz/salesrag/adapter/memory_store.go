@@ -64,18 +64,6 @@ func (m *MemoryStore) Search(ctx context.Context, query string, filter port.Sear
 		}
 
 		// 2. DocType 过滤
-		if len(filter.DocTypes) > 0 {
-			match := false
-			for _, dt := range filter.DocTypes {
-				if chunk.DocType == dt {
-					match = true
-					break
-				}
-			}
-			if !match {
-				continue
-			}
-		}
 
 		// 3. DocumentIDs 过滤
 		if len(filter.DocumentIDs) > 0 {

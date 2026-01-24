@@ -7,7 +7,6 @@ import (
 
 // SearchFilter 定义检索标准
 type SearchFilter struct {
-	DocTypes    []domain.DocType    // 根据文档类型过滤 (e.g., FACT vs STRATEGY)
 	SalesStages []domain.SalesStage // 根据销售阶段过滤
 	Tags        []string            // 标签过滤
 	DocumentIDs []uint              // [New] 根据文档ID/知识库ID过滤 (Scope Filtering)

@@ -61,7 +61,6 @@ func (s *VikingStore) Upsert(ctx context.Context, chunks []domain.KnowledgeChunk
 			"id":          chunk.ID,
 			"doc_id":      int64(chunk.DocumentID),
 			"user_id":     int64(chunk.UserID), // 使用实际用户ID
-			"doc_type":    string(chunk.DocType),
 			"sales_stage": joinStages(chunk.SalesStage),
 			"tags":        strings.Join(chunk.Tags, ","),
 			"content":     chunk.Content,
@@ -120,10 +119,9 @@ func (s *VikingStore) DeleteByDocumentID(ctx context.Context, documentID uint) e
 }
 
 func (s *VikingStore) Search(ctx context.Context, query string, filter port.SearchFilter, limit int) ([]domain.KnowledgeChunk, error) {
-	// 托管向量化模式：直接使用文本进行搜索，由 VikingDB 服务端负责向量化
 	opts := vikingdb.NewSearchOptions()
 	opts.SetLimit(int64(limit))
-	opts.SetOutputFields([]string{"id", "content", "doc_type", "sales_stage", "tags", "source_ref", "doc_id"})
+	opts.SetOutputFields([]string{"id", "content", "sales_stage", "tags", "source_ref", "doc_id"})
 
 	// Build Filter map
 	filterMap := buildVikingFilter(filter)
@@ -150,8 +148,8 @@ func (s *VikingStore) Search(ctx context.Context, query string, filter port.Sear
 		if val, ok := res.Fields["content"].(string); ok {
 			c.Content = val
 		}
-		if val, ok := res.Fields["doc_type"].(string); ok {
-			c.DocType = domain.DocType(val)
+		if val, ok := res.Fields["content"].(string); ok {
+			c.Content = val
 		}
 		if val, ok := res.Fields["doc_id"].(json.Number); ok {
 			idInt, _ := val.Int64()
@@ -185,16 +183,6 @@ func buildVikingFilter(f port.SearchFilter) map[string]interface{} {
 	// VikingDB filter DSL: {"field": {"op": val}}
 	// "and": [{"field":...}, {...}]
 	conditions := make([]map[string]interface{}, 0)
-
-	if len(f.DocTypes) > 0 {
-		types := make([]interface{}, len(f.DocTypes))
-		for i, t := range f.DocTypes {
-			types[i] = string(t)
-		}
-		conditions = append(conditions, map[string]interface{}{
-			"doc_type": map[string]interface{}{"in": types},
-		})
-	}
 
 	if len(f.SalesStages) > 0 {
 		stages := make([]interface{}, len(f.SalesStages))

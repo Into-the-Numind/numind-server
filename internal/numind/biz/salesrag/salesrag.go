@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz/salesrag/domain"
+	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/model"
@@ -22,8 +23,11 @@ import (
 type SalesRAGBiz interface {
 	// Ingest 处理文档导入
 	Ingest(ctx context.Context, userID uint, filename string, reader io.Reader, opts IngestOptions) (uint, error)
-	// Retrieve 检索知识
+	// Retrieve 检索知识（非流式）
 	Retrieve(ctx context.Context, query string, stage domain.SalesStage, docIDs []uint) (*service.RetrievalVerdict, error)
+	// RetrieveStream 流式检索知识并生成回答
+	// onEvent: 事件回调，eventType 可为 "verdict"/"token"/"error"/"done"
+	RetrieveStream(ctx context.Context, query string, stage domain.SalesStage, docIDs []uint, deepThinking bool, onEvent func(eventType string, data interface{}) error) error
 	// ListDocuments 获取用户的文档列表
 	ListDocuments(ctx context.Context, userID uint) ([]domain.KnowledgeDocument, error)
 	// GetDocument 获取单个文档详情
@@ -32,12 +36,26 @@ type SalesRAGBiz interface {
 	UpdateDocument(ctx context.Context, userID uint, docID uint, req UpdateDocumentRequest) error
 	// DeleteDocument 删除文档
 	DeleteDocument(ctx context.Context, userID uint, docID uint) error
+	// ListDocumentChunks 获取文档的切片列表
+	ListDocumentChunks(ctx context.Context, userID uint, docID uint, limit int) ([]domain.KnowledgeChunk, error)
+
+	// 会话管理接口
+	CreateSession(ctx context.Context, userID uint, req CreateSessionRequest) (*model.SalesSession, error)
+	GetSession(ctx context.Context, userID uint, sessionID uint) (*model.SalesSession, error)
+	ListSessions(ctx context.Context, userID uint, offset, limit int, salesStage string) ([]*model.SalesSession, int64, error)
+	UpdateSession(ctx context.Context, userID uint, sessionID uint, req UpdateSessionRequest) error
+	DeleteSession(ctx context.Context, userID uint, sessionID uint) error
+	ListMessages(ctx context.Context, userID uint, sessionID uint, offset, limit int) ([]*model.SalesMessage, int64, error)
+	UpdateCustomerProfile(ctx context.Context, userID uint, sessionID uint, profile string) error
+	GetCustomerProfile(ctx context.Context, userID uint, sessionID uint) (string, error)
+
+	// ChatWithSession 基于会话的流式对话（保存聊天记录）
+	ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, stage domain.SalesStage, docIDs []uint, deepThinking bool, onEvent func(eventType string, data interface{}) error) error
 }
 
 type IngestOptions struct {
 	Description string
 	Tags        []string
-	Type        string
 }
 
 type UpdateDocumentRequest struct {
@@ -46,24 +64,44 @@ type UpdateDocumentRequest struct {
 	IsEnabled   *bool
 }
 
+type CreateSessionRequest struct {
+	Title           string
+	SalesStage      domain.SalesStage
+	DocumentIDs     []uint
+	DeepThinking    bool
+	CustomerProfile string // JSON string
+}
+
+type UpdateSessionRequest struct {
+	Title           *string
+	SalesStage      *domain.SalesStage
+	DocumentIDs     []uint
+	DeepThinking    *bool
+	CustomerProfile *string
+}
+
 type salesRAGBiz struct {
 	ds                store.IStore
 	ingestionPipeline *service.IngestionPipeline
 	ragSvc            *service.SalesRAGService
 	volcBiz           VolcBiz // 添加大模型服务依赖
+	sessionStore      store.SalesSessionStore
 }
 
 // VolcBiz 火山引擎服务接口（避免循环依赖）
 type VolcBiz interface {
 	VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error)
+	// StreamChat 真正的流式聊天，通过回调函数逐 token 或思维链内容推送
+	StreamChat(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
 }
 
-func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *service.SalesRAGService, volc VolcBiz) SalesRAGBiz {
+func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *service.SalesRAGService, volc VolcBiz, sessionStore store.SalesSessionStore) SalesRAGBiz {
 	return &salesRAGBiz{
 		ds:                ds,
 		ingestionPipeline: pipeline,
 		ragSvc:            rag,
 		volcBiz:           volc,
+		sessionStore:      sessionStore,
 	}
 }
 
@@ -119,7 +157,6 @@ func (b *salesRAGBiz) Ingest(ctx context.Context, userID uint, filename string, 
 		Description: opts.Description,
 		Tags:        tagsJson,
 		FileSize:    int64(len(data)),
-		Type:        opts.Type,
 		IsEnabled:   true,
 	}
 	if err := b.ds.KnowledgeDocuments().Create(ctx, doc); err != nil {
@@ -135,7 +172,6 @@ func (b *salesRAGBiz) Ingest(ctx context.Context, userID uint, filename string, 
 		Status:      domain.DocStatusPending,
 		Description: doc.Description,
 		Tags:        opts.Tags,
-		Type:        domain.DocType(doc.Type),
 		FileSize:    doc.FileSize,
 		IsEnabled:   doc.IsEnabled,
 	}
@@ -279,13 +315,12 @@ func (b *salesRAGBiz) ListDocuments(ctx context.Context, userID uint) ([]domain.
 			FilePath:    d.FilePath,
 			Status:      domain.DocStatus(d.Status),
 			ErrorMsg:    d.ErrorMsg,
-			Description: d.Description,          // ✅ 补充字段
-			Tags:        tags,                   // ✅ 补充字段（解析JSON）
-			ChunkCount:  d.ChunkCount,           // ✅ 补充字段
-			FileSize:    d.FileSize,             // ✅ 补充字段
-			FileType:    d.FileType,             // ✅ 补充字段
-			Type:        domain.DocType(d.Type), // ✅ 补充字段
-			IsEnabled:   d.IsEnabled,            // ✅ 补充字段
+			Description: d.Description, // ✅ 补充字段
+			Tags:        tags,          // ✅ 补充字段（解析JSON）
+			ChunkCount:  d.ChunkCount,  // ✅ 补充字段
+			FileSize:    d.FileSize,    // ✅ 补充字段
+			FileType:    d.FileType,    // ✅ 补充字段
+			IsEnabled:   d.IsEnabled,   // ✅ 补充字段
 			CreatedAt:   d.CreatedAt,
 			UpdatedAt:   d.UpdatedAt,
 		})
@@ -320,7 +355,6 @@ func (b *salesRAGBiz) GetDocument(ctx context.Context, userID uint, docID uint) 
 		ChunkCount:  doc.ChunkCount,
 		FileSize:    doc.FileSize,
 		FileType:    doc.FileType,
-		Type:        domain.DocType(doc.Type),
 		IsEnabled:   doc.IsEnabled,
 		CreatedAt:   doc.CreatedAt,
 		UpdatedAt:   doc.UpdatedAt,
@@ -349,6 +383,27 @@ func (b *salesRAGBiz) DeleteDocument(ctx context.Context, userID uint, docID uin
 	return b.ds.KnowledgeDocuments().Delete(ctx, docID)
 }
 
+func (b *salesRAGBiz) ListDocumentChunks(ctx context.Context, userID uint, docID uint, limit int) ([]domain.KnowledgeChunk, error) {
+	// 1. 验证所有权
+	doc, err := b.ds.KnowledgeDocuments().GetByID(ctx, docID)
+	if err != nil {
+		return nil, err
+	}
+	if doc.UserID != userID {
+		return nil, fmt.Errorf("permission denied")
+	}
+
+	// 2. 调用向量库搜索（空查询 + 文档ID过滤）
+	if limit <= 0 {
+		limit = 100 // 默认返回100条
+	}
+	filter := port.SearchFilter{
+		DocumentIDs: []uint{docID},
+	}
+
+	return b.ragSvc.Search(ctx, "", filter, limit)
+}
+
 // generateAnswer 使用大模型生成最终回复
 func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, stage domain.SalesStage, verdict *service.RetrievalVerdict) (string, error) {
 	// 1. 如果是闲聊，生成友好的闲聊回复
@@ -370,8 +425,7 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, stage do
 	var contextParts []string
 
 	// 合并所有检索到的知识
-	allChunks := append(verdict.Facts, verdict.Strategies...)
-	allChunks = append(allChunks, verdict.Cases...)
+	allChunks := verdict.Evidence
 
 	if len(allChunks) == 0 {
 		// 没有检索到相关知识，让大模型基于自身知识回答
@@ -458,4 +512,390 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, stage do
 	}
 
 	return b.volcBiz.VolcTextStream(ctx, messages, 1000, 0.7)
+}
+
+// RetrieveStream 流式检索知识并生成回答
+// 事件类型:
+// - "verdict": data 为 *service.RetrievalVerdict，检索结果
+// - "token": data 为 string，回答的增量 token
+// - "error": data 为 string，错误消息
+// - "done": data 为 nil，流式完成
+func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, stage domain.SalesStage, docIDs []uint, deepThinking bool, onEvent func(eventType string, data interface{}) error) error {
+	// 1. 从上下文获取用户ID
+	var userID uint
+	if uid, ok := ctx.Value("userID").(uint); ok {
+		userID = uid
+	} else {
+		return onEvent("error", "user_id not found in context")
+	}
+
+	// 2. 查询用户所有文档
+	docs, err := b.ds.KnowledgeDocuments().ListByUser(ctx, userID)
+	if err != nil {
+		return onEvent("error", fmt.Sprintf("failed to query user documents: %v", err))
+	}
+
+	// 3. 构建启用且已完成的文档ID白名单
+	enabledDocIDs := make(map[uint]bool)
+	for _, doc := range docs {
+		if doc.IsEnabled && doc.Status == string(domain.DocStatusCompleted) {
+			enabledDocIDs[doc.ID] = true
+		}
+	}
+
+	// 4. 过滤前端传来的docIDs
+	var filteredDocIDs []uint
+	if len(docIDs) == 0 {
+		for id := range enabledDocIDs {
+			filteredDocIDs = append(filteredDocIDs, id)
+		}
+	} else {
+		for _, id := range docIDs {
+			if enabledDocIDs[id] {
+				filteredDocIDs = append(filteredDocIDs, id)
+			}
+		}
+	}
+
+	// 5. 如果没有可用文档，返回友好提示
+	if len(filteredDocIDs) == 0 {
+		verdict := &service.RetrievalVerdict{
+			Query:      query,
+			IsChitChat: true,
+			Reason:     "没有可用的知识库文档（文档可能被禁用或未完成处理）",
+		}
+		if err := onEvent("verdict", verdict); err != nil {
+			return err
+		}
+		if err := onEvent("token", "抱歉，当前没有可用的知识库文档。请先上传并启用相关文档。"); err != nil {
+			return err
+		}
+		return onEvent("done", nil)
+	}
+
+	// 6. 执行检索
+	verdict, err := b.ragSvc.RetrieveForResponse(ctx, query, stage, filteredDocIDs)
+	if err != nil {
+		return onEvent("error", fmt.Sprintf("retrieval failed: %v", err))
+	}
+
+	// 7. 立即发送 verdict 事件
+	if err := onEvent("verdict", verdict); err != nil {
+		return err
+	}
+
+	// 8. 构建 prompt 并流式生成回答
+	messages := b.buildPromptMessages(query, stage, verdict)
+
+	// 9. 调用流式聊天
+	_, err = b.volcBiz.StreamChat(ctx, messages, 1000, 0.7, deepThinking, func(event string, token string) error {
+		// 根据事件类型发送不同的事件
+		switch event {
+		case "thinking":
+			return onEvent("thinking", token)
+		case "message":
+			return onEvent("token", token) // 保持向前兼容，前端仍然接收 "token"
+		default:
+			return nil
+		}
+	})
+	if err != nil {
+		return onEvent("error", fmt.Sprintf("stream chat failed: %v", err))
+	}
+
+	// 10. 发送完成事件
+	return onEvent("done", nil)
+}
+
+// buildPromptMessages 根据检索结果构建 prompt 消息
+func (b *salesRAGBiz) buildPromptMessages(query string, stage domain.SalesStage, verdict *service.RetrievalVerdict) []map[string]string {
+	// 如果是闲聊
+	if verdict.IsChitChat {
+		return []map[string]string{
+			{
+				"role":    "system",
+				"content": "你是一个专业、友好的销售智能助手。请用简洁、自然的方式回复用户的问候或闲聊。",
+			},
+			{
+				"role":    "user",
+				"content": query,
+			},
+		}
+	}
+
+	// 合并所有检索到的知识
+	allChunks := verdict.Evidence
+
+	if len(allChunks) == 0 {
+		return []map[string]string{
+			{
+				"role":    "system",
+				"content": "你是一个专业的销售智能助手。由于知识库中没有找到相关信息，请基于你的通用知识给出专业、有帮助的回答。",
+			},
+			{
+				"role":    "user",
+				"content": query,
+			},
+		}
+	}
+
+	// 构建知识上下文
+	var contextParts []string
+	for i, chunk := range allChunks {
+		contextParts = append(contextParts, fmt.Sprintf("[知识%d] %s", i+1, chunk.Content))
+		if i >= 4 {
+			break
+		}
+	}
+	knowledgeContext := strings.Join(contextParts, "\n\n")
+
+	// 根据销售阶段定制系统提示词
+	var systemPrompt string
+	switch stage {
+	case domain.StageDiscovery:
+		systemPrompt = `你是一个专业的销售智能助手，当前处于【需求发现】阶段。
+
+你的任务是基于提供的知识库信息，回答用户的问题。请注意：
+1. 准确引用知识库中的内容，不要虚构信息
+2. 用友好、专业的语气回答
+3. 帮助用户了解产品的核心功能和价值
+4. 如果知识库中没有直接答案，可以引导用户提供更多信息
+
+知识库内容：
+` + knowledgeContext
+
+	case domain.StageNegotiation:
+		systemPrompt = `你是一个专业的销售智能助手，当前处于【方案协商】阶段。
+
+你的任务是基于提供的知识库信息，回答用户的问题。请注意：
+1. 准确引用知识库中的定价、方案等信息
+2. 强调产品的价值和ROI
+3. 用清晰、有说服力的语气回答
+4. 帮助用户理解不同方案的优势
+
+知识库内容：
+` + knowledgeContext
+
+	case domain.StageClosing:
+		systemPrompt = `你是一个专业的销售智能助手，当前处于【成交跟进】阶段。
+
+你的任务是基于提供的知识库信息，回答用户的问题。请注意：
+1. 准确引用知识库中的交付、支持等信息
+2. 强调服务保障和售后支持
+3. 用专业、可靠的语气回答
+4. 帮助用户消除最后的顾虑
+
+知识库内容：
+` + knowledgeContext
+
+	default:
+		systemPrompt = `你是一个专业的销售智能助手。
+
+你的任务是基于提供的知识库信息，准确、友好地回答用户的问题。
+
+知识库内容：
+` + knowledgeContext
+	}
+
+	return []map[string]string{
+		{
+			"role":    "system",
+			"content": systemPrompt,
+		},
+		{
+			"role":    "user",
+			"content": query,
+		},
+	}
+}
+
+// ============ 会话管理方法 ============
+
+// CreateSession 创建新的销售会话
+func (b *salesRAGBiz) CreateSession(ctx context.Context, userID uint, req CreateSessionRequest) (*model.SalesSession, error) {
+	// 序列化 DocumentIDs 为 JSON
+	docIDsJSON, err := json.Marshal(req.DocumentIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal document_ids: %w", err)
+	}
+
+	// 创建会话
+	session := &model.SalesSession{
+		UserID:          userID,
+		Title:           req.Title,
+		Status:          "active",
+		SalesStage:      string(req.SalesStage),
+		DocumentIDs:     string(docIDsJSON),
+		DeepThinking:    req.DeepThinking,
+		CustomerProfile: req.CustomerProfile,
+		MessageCount:    0,
+	}
+
+	if err := b.sessionStore.CreateSession(ctx, session); err != nil {
+		return nil, fmt.Errorf("failed to create session: %w", err)
+	}
+
+	return session, nil
+}
+
+// GetSession 获取销售会话详情
+func (b *salesRAGBiz) GetSession(ctx context.Context, userID uint, sessionID uint) (*model.SalesSession, error) {
+	return b.sessionStore.GetSession(ctx, sessionID, userID)
+}
+
+// ListSessions 获取用户的销售会话列表
+func (b *salesRAGBiz) ListSessions(ctx context.Context, userID uint, offset, limit int, salesStage string) ([]*model.SalesSession, int64, error) {
+	return b.sessionStore.ListSessions(ctx, userID, offset, limit, salesStage)
+}
+
+// UpdateSession 更新销售会话
+func (b *salesRAGBiz) UpdateSession(ctx context.Context, userID uint, sessionID uint, req UpdateSessionRequest) error {
+	// 获取现有会话
+	session, err := b.sessionStore.GetSession(ctx, sessionID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to get session: %w", err)
+	}
+
+	// 更新字段
+	if req.Title != nil {
+		session.Title = *req.Title
+	}
+	if req.SalesStage != nil {
+		session.SalesStage = string(*req.SalesStage)
+	}
+	if req.DocumentIDs != nil {
+		docIDsJSON, err := json.Marshal(req.DocumentIDs)
+		if err != nil {
+			return fmt.Errorf("failed to marshal document_ids: %w", err)
+		}
+		session.DocumentIDs = string(docIDsJSON)
+	}
+	if req.DeepThinking != nil {
+		session.DeepThinking = *req.DeepThinking
+	}
+	if req.CustomerProfile != nil {
+		session.CustomerProfile = *req.CustomerProfile
+	}
+
+	return b.sessionStore.UpdateSession(ctx, session)
+}
+
+// DeleteSession 删除销售会话
+func (b *salesRAGBiz) DeleteSession(ctx context.Context, userID uint, sessionID uint) error {
+	return b.sessionStore.DeleteSession(ctx, sessionID, userID)
+}
+
+// ListMessages 获取会话的消息列表
+func (b *salesRAGBiz) ListMessages(ctx context.Context, userID uint, sessionID uint, offset, limit int) ([]*model.SalesMessage, int64, error) {
+	return b.sessionStore.ListMessages(ctx, sessionID, userID, offset, limit)
+}
+
+// UpdateCustomerProfile 更新客户档案
+func (b *salesRAGBiz) UpdateCustomerProfile(ctx context.Context, userID uint, sessionID uint, profile string) error {
+	session, err := b.sessionStore.GetSession(ctx, sessionID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to get session: %w", err)
+	}
+
+	session.CustomerProfile = profile
+	return b.sessionStore.UpdateSession(ctx, session)
+}
+
+// GetCustomerProfile 获取客户档案
+func (b *salesRAGBiz) GetCustomerProfile(ctx context.Context, userID uint, sessionID uint) (string, error) {
+	session, err := b.sessionStore.GetSession(ctx, sessionID, userID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get session: %w", err)
+	}
+	return session.CustomerProfile, nil
+}
+
+// ChatWithSession 基于会话的流式对话（保存聊天记录）
+func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, stage domain.SalesStage, docIDs []uint, deepThinking bool, onEvent func(eventType string, data interface{}) error) error {
+	// 1. 验证会话
+	session, err := b.sessionStore.GetSession(ctx, sessionID, userID)
+	if err != nil {
+		return fmt.Errorf("failed to get session: %w", err)
+	}
+
+	// 2. 保存用户消息
+	userMessage := &model.SalesMessage{
+		SessionID: sessionID,
+		UserID:    userID,
+		Role:      "user",
+		Content:   query,
+		Status:    "sent",
+	}
+	if err := b.sessionStore.CreateMessage(ctx, userMessage); err != nil {
+		return fmt.Errorf("failed to save user message: %w", err)
+	}
+
+	// 3. 累积流式内容
+	var fullContent strings.Builder
+	var verdictJSON string
+	var thinkingText string
+
+	// 4. 调用流式检索，累积内容
+	err = b.RetrieveStream(ctx, query, stage, docIDs, deepThinking, func(eventType string, data interface{}) error {
+		switch eventType {
+		case "verdict":
+			// 序列化 verdict 为 JSON
+			if verdictData, ok := data.(*service.RetrievalVerdict); ok {
+				bytes, _ := json.Marshal(verdictData)
+				verdictJSON = string(bytes)
+			}
+			// 继续传递给外部回调
+			return onEvent(eventType, data)
+
+		case "thinking":
+			// 累积思维链内容
+			if token, ok := data.(string); ok {
+				thinkingText += token
+			}
+			// 继续传递给外部回调
+			return onEvent(eventType, data)
+
+		case "token":
+			// 累积回答内容
+			if token, ok := data.(string); ok {
+				fullContent.WriteString(token)
+			}
+			// 继续传递给外部回调
+			return onEvent(eventType, data)
+
+		case "error", "done":
+			// 直接传递
+			return onEvent(eventType, data)
+
+		default:
+			return onEvent(eventType, data)
+		}
+	})
+
+	if err != nil {
+		return err
+	}
+
+	// 5. 保存助手消息
+	assistantMessage := &model.SalesMessage{
+		SessionID: sessionID,
+		UserID:    userID,
+		Role:      "assistant",
+		Content:   fullContent.String(),
+		Status:    "sent",
+		Verdict:   verdictJSON,
+		Thinking:  thinkingText,
+	}
+	if err := b.sessionStore.CreateMessage(ctx, assistantMessage); err != nil {
+		return fmt.Errorf("failed to save assistant message: %w", err)
+	}
+
+	// 6. 更新会话统计
+	session.MessageCount += 2
+	session.LastQuery = query
+	if err := b.sessionStore.UpdateSession(ctx, session); err != nil {
+		return fmt.Errorf("failed to update session: %w", err)
+	}
+
+	return nil
 }

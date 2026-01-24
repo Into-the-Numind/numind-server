@@ -25,7 +25,6 @@ func TestContentTagger_TagChunks(t *testing.T) {
 	// Mock successful JSON response
 	mockJSON := "```json\n" +
 		`{
-		"doc_type": "STRATEGY",
 		"sales_stage": ["NEGOTIATION"],
 		"tags": ["price", "discount"],
 		"summary": "Negotiation techniques"
@@ -47,7 +46,6 @@ func TestContentTagger_TagChunks(t *testing.T) {
 
 	// Verify enrichment
 	for _, c := range chunks {
-		assert.Equal(t, domain.DocTypeStrategy, c.DocType)
 		assert.Contains(t, c.SalesStage, domain.StageNegotiation)
 		assert.Contains(t, c.Tags, "price")
 	}

@@ -68,7 +68,6 @@ func (s *DashVectorStore) Upsert(ctx context.Context, chunks []domain.KnowledgeC
 		fields := map[string]interface{}{
 			"doc_id":      chunk.DocumentID,
 			"user_id":     chunk.UserID,
-			"doc_type":    string(chunk.DocType),
 			"sales_stage": joinStagesDash(chunk.SalesStage),
 			"tags":        strings.Join(chunk.Tags, ","),
 			"content":     chunk.Content,
@@ -269,7 +268,7 @@ func (s *DashVectorStore) Search(ctx context.Context, query string, filter port.
 		"vector":         vector,
 		"top_k":          limit,
 		"include_vector": false,
-		"output_fields":  []string{"id", "content", "doc_type", "sales_stage", "tags", "source_ref", "doc_id", "user_id"},
+		"output_fields":  []string{"id", "content", "sales_stage", "tags", "source_ref", "doc_id", "user_id"},
 	}
 	if filterStr != "" {
 		queryBody["filter"] = filterStr
@@ -320,9 +319,6 @@ func (s *DashVectorStore) Search(ctx context.Context, query string, filter port.
 		if val, ok := item.Fields["content"].(string); ok {
 			c.Content = val
 		}
-		if val, ok := item.Fields["doc_type"].(string); ok {
-			c.DocType = domain.DocType(val)
-		}
 		if val, ok := item.Fields["doc_id"].(float64); ok {
 			c.DocumentID = uint(val)
 		}
@@ -352,14 +348,6 @@ func (s *DashVectorStore) Search(ctx context.Context, query string, filter port.
 
 func buildDashVectorFilter(f port.SearchFilter) string {
 	parts := []string{}
-
-	if len(f.DocTypes) > 0 {
-		vals := make([]string, len(f.DocTypes))
-		for i, v := range f.DocTypes {
-			vals[i] = fmt.Sprintf("'%s'", v)
-		}
-		parts = append(parts, fmt.Sprintf("doc_type IN (%s)", strings.Join(vals, ", ")))
-	}
 
 	if len(f.SalesStages) > 0 {
 		// sales_stage is a comma-separated string in DB?

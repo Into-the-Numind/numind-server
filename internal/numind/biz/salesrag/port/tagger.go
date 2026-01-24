@@ -7,6 +7,6 @@ import (
 
 // ContentTagger 自动打标接口 (通常是大模型)
 type ContentTagger interface {
-	// TagChunk 为切片自动生成 DocType, SalesStage 和 Tags
-	TagChunk(ctx context.Context, content string) (domain.DocType, []domain.SalesStage, []string, error)
+	// TagChunk 为切片自动生成 SalesStage 和 Tags
+	TagChunk(ctx context.Context, content string) ([]domain.SalesStage, []string, error)
 }

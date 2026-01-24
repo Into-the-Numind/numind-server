@@ -14,7 +14,6 @@ func TestKnowledgeChunkValidation(t *testing.T) {
 	chunk := domain.KnowledgeChunk{
 		ID:         "chunk_1",
 		Content:    "产品价格是100元。",
-		DocType:    domain.DocTypeFact,
 		SalesStage: []domain.SalesStage{domain.StageNegotiation},
 		DocumentID: 1,
 	}
@@ -22,7 +21,6 @@ func TestKnowledgeChunkValidation(t *testing.T) {
 
 	// Invalid Chunk (Missing Content)
 	invalidChunk := domain.KnowledgeChunk{
-		DocType:    domain.DocTypeStrategy,
 		DocumentID: 1,
 	}
 	assert.Error(t, invalidChunk.Validate())
@@ -30,7 +28,6 @@ func TestKnowledgeChunkValidation(t *testing.T) {
 	// Invalid Chunk (Missing DocumentID)
 	invalidChunk2 := domain.KnowledgeChunk{
 		Content: "Valid content",
-		DocType: domain.DocTypeFact,
 	}
 	assert.Error(t, invalidChunk2.Validate())
 }

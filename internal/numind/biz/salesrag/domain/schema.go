@@ -5,16 +5,6 @@ import (
 	"time"
 )
 
-// DocType 文档/知识类型
-type DocType string
-
-const (
-	DocTypeFact     DocType = "FACT"     // 事实 (产品参数、价格)
-	DocTypeStrategy DocType = "STRATEGY" // 策略 (话术、对策)
-	DocTypeStyle    DocType = "STYLE"    // 风格 (语气、人设)
-	DocTypeCase     DocType = "CASE"     // 案例 (成功故事)
-)
-
 // SalesStage 销售阶段
 type SalesStage string
 
@@ -26,12 +16,12 @@ const (
 
 // KnowledgeChunk 知识切片（最小检索单位）
 type KnowledgeChunk struct {
-	ID         string       `json:"id"`
-	DocumentID uint         `json:"document_id"` // 关联的文档ID
-	UserID     uint         `json:"user_id"`     // 关联的用户ID，用于数据隔离
-	Content    string       `json:"content"`
-	Vector     []float32    `json:"vector,omitempty"`
-	DocType    DocType      `json:"doc_type"`
+	ID         string    `json:"id"`
+	DocumentID uint      `json:"document_id"` // 关联的文档ID
+	UserID     uint      `json:"user_id"`     // 关联的用户ID，用于数据隔离
+	Content    string    `json:"content"`
+	Vector     []float32 `json:"vector,omitempty"`
+
 	Tags       []string     `json:"tags"`
 	SalesStage []SalesStage `json:"sales_stage"` // 核心过滤字段
 	SourceRef  string       `json:"source_ref"`  // 例如: "第3页"
@@ -72,10 +62,10 @@ type KnowledgeDocument struct {
 	ChunkCount  int       `json:"chunk_count"`
 	FileSize    int64     `json:"file_size"`
 	FileType    string    `json:"file_type"`
-	Type        DocType   `json:"type"` // FACT, STRATEGY, CASE
-	IsEnabled   bool      `json:"is_enabled"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+
+	IsEnabled bool      `json:"is_enabled"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Validate 验证文档合法性

@@ -177,6 +177,8 @@ func autoMigrate(db *gorm.DB) error {
 		&model.PaymentM{},
 		&model.Admin{},
 		&model.KnowledgeDocument{},
+		&model.SalesSession{},
+		&model.SalesMessage{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate basic tables: %v", err)

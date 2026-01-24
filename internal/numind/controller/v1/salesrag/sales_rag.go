@@ -1,6 +1,8 @@
 package salesrag
 
 import (
+	"context"
+	"fmt"
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/pkg/core"
@@ -35,7 +37,6 @@ func (ctrl *SalesRAGController) Ingest(c *gin.Context) {
 
 	// Parse additional fields
 	description := c.DefaultPostForm("description", "")
-	docType := c.DefaultPostForm("type", "FACT") // Default to FACT if missing
 	tagsStr := c.DefaultPostForm("tags", "")
 
 	var tags []string
@@ -50,7 +51,6 @@ func (ctrl *SalesRAGController) Ingest(c *gin.Context) {
 	opts := salesrag.IngestOptions{
 		Description: description,
 		Tags:        tags,
-		Type:        docType,
 	}
 
 	// 获取当前用户
@@ -69,12 +69,21 @@ func (ctrl *SalesRAGController) Ingest(c *gin.Context) {
 	core.WriteResponse(c, nil, map[string]uint{"document_id": docID})
 }
 
-// Chat 基于知识库的销售智能体聊天
-func (ctrl *SalesRAGController) Chat(c *gin.Context) {
+// ChatWithSession 基于会话的销售智能体聊天（SSE 流式输出，保存聊天记录）
+func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
+	// 获取会话ID
+	sessionIDStr := c.Param("id")
+	sessionID, err := strconv.ParseUint(sessionIDStr, 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
 	var r struct {
-		Query       string            `json:"query" binding:"required"`
-		SalesStage  domain.SalesStage `json:"sales_stage"`
-		DocumentIDs []uint            `json:"document_ids"`
+		Query        string            `json:"query" binding:"required"`
+		SalesStage   domain.SalesStage `json:"sales_stage"`
+		DocumentIDs  []uint            `json:"document_ids"`
+		DeepThinking bool              `json:"deep_thinking"`
 	}
 
 	if err := c.ShouldBindJSON(&r); err != nil {
@@ -87,16 +96,75 @@ func (ctrl *SalesRAGController) Chat(c *gin.Context) {
 		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
 		return
 	}
-	// 注入 userID 到 context 中，因为 Biz 层 Retrive 方法依赖 ctx.Value("userID")
-	c.Set("userID", user.ID)
 
-	verdict, err := ctrl.b.SalesRAG().Retrieve(c, r.Query, r.SalesStage, r.DocumentIDs)
+	// 注入 userID 到请求 context 中，供业务层使用
+	newCtx := context.WithValue(c.Request.Context(), "userID", user.ID)
+
+	// 设置 SSE 响应头
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no") // 禁用 nginx 缓冲
+
+	// 获取 Writer 用于 flush
+	w := c.Writer
+
+	// 调用基于会话的流式检索方法（会自动保存消息）
+	err = ctrl.b.SalesRAG().ChatWithSession(newCtx, user.ID, uint(sessionID), r.Query, r.SalesStage, r.DocumentIDs, r.DeepThinking,
+		func(eventType string, data interface{}) error {
+			var eventData []byte
+			var marshalErr error
+
+			switch eventType {
+			case "verdict":
+				eventData, marshalErr = json.Marshal(map[string]interface{}{
+					"type": "verdict",
+					"data": data,
+				})
+			case "thinking":
+				eventData, marshalErr = json.Marshal(map[string]interface{}{
+					"type": "thinking",
+					"data": data,
+				})
+			case "token":
+				eventData, marshalErr = json.Marshal(map[string]interface{}{
+					"type": "token",
+					"data": data,
+				})
+			case "error":
+				eventData, marshalErr = json.Marshal(map[string]interface{}{
+					"type": "error",
+					"data": data,
+				})
+			case "done":
+				eventData, marshalErr = json.Marshal(map[string]interface{}{
+					"type": "done",
+				})
+			default:
+				return nil
+			}
+
+			if marshalErr != nil {
+				return marshalErr
+			}
+
+			_, writeErr := fmt.Fprintf(w, "data: %s\n\n", eventData)
+			if writeErr != nil {
+				return writeErr
+			}
+
+			w.Flush()
+			return nil
+		})
+
 	if err != nil {
-		core.WriteResponse(c, err, nil)
-		return
+		errData, _ := json.Marshal(map[string]interface{}{
+			"type": "error",
+			"data": err.Error(),
+		})
+		fmt.Fprintf(w, "data: %s\n\n", errData)
+		w.Flush()
 	}
-
-	core.WriteResponse(c, nil, verdict)
 }
 
 // ListDocuments 获取文档列表
@@ -182,4 +250,284 @@ func (ctrl *SalesRAGController) UpdateDocument(c *gin.Context) {
 		return
 	}
 	core.WriteResponse(c, nil, nil)
+}
+
+// ListChunks 获取文档切片列表
+func (ctrl *SalesRAGController) ListChunks(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	limitStr := c.DefaultQuery("limit", "100")
+	limit, _ := strconv.Atoi(limitStr)
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	chunks, err := ctrl.b.SalesRAG().ListDocumentChunks(c, user.ID, uint(id), limit)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, chunks)
+}
+
+// ============ 会话管理 API ============
+
+// CreateSession 创建销售会话
+func (ctrl *SalesRAGController) CreateSession(c *gin.Context) {
+	var req struct {
+		Title           string            `json:"title"`
+		SalesStage      domain.SalesStage `json:"sales_stage"`
+		DocumentIDs     []uint            `json:"document_ids"`
+		DeepThinking    bool              `json:"deep_thinking"`
+		CustomerProfile string            `json:"customer_profile"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	// 如果未提供标题，生成默认标题
+	if req.Title == "" {
+		req.Title = "新对话"
+	}
+
+	createReq := salesrag.CreateSessionRequest{
+		Title:           req.Title,
+		SalesStage:      req.SalesStage,
+		DocumentIDs:     req.DocumentIDs,
+		DeepThinking:    req.DeepThinking,
+		CustomerProfile: req.CustomerProfile,
+	}
+
+	session, err := ctrl.b.SalesRAG().CreateSession(c, user.ID, createReq)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, session)
+}
+
+// ListSessions 获取会话列表
+func (ctrl *SalesRAGController) ListSessions(c *gin.Context) {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	// 解析分页参数
+	offsetStr := c.DefaultQuery("offset", "0")
+	limitStr := c.DefaultQuery("limit", "20")
+	salesStage := c.DefaultQuery("sales_stage", "")
+
+	offset, _ := strconv.Atoi(offsetStr)
+	limit, _ := strconv.Atoi(limitStr)
+
+	sessions, total, err := ctrl.b.SalesRAG().ListSessions(c, user.ID, offset, limit, salesStage)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, map[string]interface{}{
+		"total":    total,
+		"sessions": sessions,
+	})
+}
+
+// GetSession 获取会话详情
+func (ctrl *SalesRAGController) GetSession(c *gin.Context) {
+	sessionIDStr := c.Param("id")
+	sessionID, err := strconv.ParseUint(sessionIDStr, 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	session, err := ctrl.b.SalesRAG().GetSession(c, user.ID, uint(sessionID))
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, session)
+}
+
+// UpdateSession 更新会话信息
+func (ctrl *SalesRAGController) UpdateSession(c *gin.Context) {
+	sessionIDStr := c.Param("id")
+	sessionID, err := strconv.ParseUint(sessionIDStr, 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	var req salesrag.UpdateSessionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	if err := ctrl.b.SalesRAG().UpdateSession(c, user.ID, uint(sessionID), req); err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, map[string]string{"message": "Session updated successfully"})
+}
+
+// DeleteSession 删除会话
+func (ctrl *SalesRAGController) DeleteSession(c *gin.Context) {
+	sessionIDStr := c.Param("id")
+	sessionID, err := strconv.ParseUint(sessionIDStr, 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	if err := ctrl.b.SalesRAG().DeleteSession(c, user.ID, uint(sessionID)); err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, map[string]string{"message": "Session deleted successfully"})
+}
+
+// ListMessages 获取会话的消息列表
+func (ctrl *SalesRAGController) ListMessages(c *gin.Context) {
+	sessionIDStr := c.Param("id")
+	sessionID, err := strconv.ParseUint(sessionIDStr, 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	// 解析分页参数
+	offsetStr := c.DefaultQuery("offset", "0")
+	limitStr := c.DefaultQuery("limit", "50")
+	offset, _ := strconv.Atoi(offsetStr)
+	limit, _ := strconv.Atoi(limitStr)
+
+	messages, total, err := ctrl.b.SalesRAG().ListMessages(c, user.ID, uint(sessionID), offset, limit)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, map[string]interface{}{
+		"total":    total,
+		"messages": messages,
+	})
+}
+
+// UpdateCustomerProfile 更新客户档案
+func (ctrl *SalesRAGController) UpdateCustomerProfile(c *gin.Context) {
+	sessionIDStr := c.Param("id")
+	sessionID, err := strconv.ParseUint(sessionIDStr, 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	var req map[string]interface{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	// 序列化为JSON字符串
+	profileJSON, err := json.Marshal(req)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	if err := ctrl.b.SalesRAG().UpdateCustomerProfile(c, user.ID, uint(sessionID), string(profileJSON)); err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, map[string]string{"message": "Customer profile updated successfully"})
+}
+
+// GetCustomerProfile 获取客户档案
+func (ctrl *SalesRAGController) GetCustomerProfile(c *gin.Context) {
+	sessionIDStr := c.Param("id")
+	sessionID, err := strconv.ParseUint(sessionIDStr, 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	profileJSON, err := ctrl.b.SalesRAG().GetCustomerProfile(c, user.ID, uint(sessionID))
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	// 解析JSON字符串为对象
+	var profile map[string]interface{}
+	if profileJSON != "" {
+		if err := json.Unmarshal([]byte(profileJSON), &profile); err != nil {
+			// 如果解析失败，返回空对象
+			profile = make(map[string]interface{})
+		}
+	} else {
+		profile = make(map[string]interface{})
+	}
+
+	core.WriteResponse(c, nil, profile)
 }

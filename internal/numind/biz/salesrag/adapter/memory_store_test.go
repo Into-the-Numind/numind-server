@@ -20,21 +20,18 @@ func TestMemoryStore_UpsertAndSearch(t *testing.T) {
 		ID:         "c1",
 		DocumentID: 1,
 		Content:    "Product A is $100.",
-		DocType:    domain.DocTypeFact,
 		SalesStage: []domain.SalesStage{domain.StageNegotiation},
 	}
 	chunk2 := domain.KnowledgeChunk{
 		ID:         "c2",
 		DocumentID: 1,
 		Content:    "Don't lower the price too early.",
-		DocType:    domain.DocTypeStrategy,
 		SalesStage: []domain.SalesStage{domain.StageNegotiation},
 	}
 	chunk3 := domain.KnowledgeChunk{ // Different doc
 		ID:         "c3",
 		DocumentID: 2,
 		Content:    "Competitor is cheap.",
-		DocType:    domain.DocTypeFact,
 	}
 
 	// 2. Test Upsert
@@ -43,17 +40,15 @@ func TestMemoryStore_UpsertAndSearch(t *testing.T) {
 
 	// 3. Test Search (Exact match simulation for memory store)
 	// Query: "Price" -> Should match chunk1
-	filter := port.SearchFilter{
-		DocTypes: []domain.DocType{domain.DocTypeFact},
-	}
+	filter := port.SearchFilter{}
 	results, err := store.Search(ctx, "Product", filter, 10)
 	assert.Nil(t, err)
 	assert.NotEmpty(t, results)
 	assert.Equal(t, chunk1.ID, results[0].ID)
 
-	// 4. Test Filter by DocType (Strategy)
+	// 4. Test Filter by SalesStage
 	filterStrategy := port.SearchFilter{
-		DocTypes: []domain.DocType{domain.DocTypeStrategy},
+		SalesStages: []domain.SalesStage{domain.StageNegotiation},
 	}
 	results, err = store.Search(ctx, "price", filterStrategy, 10)
 	assert.Nil(t, err)

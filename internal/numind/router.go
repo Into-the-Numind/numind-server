@@ -267,12 +267,28 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 销售智能体 RAG 相关
 	{
+		// 文档管理
 		authGroup.POST("/sales-rag/ingest", salesRAGc.Ingest)                  // 上传并解析文档
-		authGroup.POST("/sales-rag/chat", salesRAGc.Chat)                      // 销售 RAG 对话检索
 		authGroup.GET("/sales-rag/documents", salesRAGc.ListDocuments)         // 获取文档列表
 		authGroup.GET("/sales-rag/documents/:id", salesRAGc.GetDocument)       // 获取文档详情
+		authGroup.GET("/sales-rag/documents/:id/chunks", salesRAGc.ListChunks) // 获取文档切片列表
 		authGroup.PUT("/sales-rag/documents/:id", salesRAGc.UpdateDocument)    // 更新文档
 		authGroup.DELETE("/sales-rag/documents/:id", salesRAGc.DeleteDocument) // 删除文档
+
+		// 会话管理
+		authGroup.POST("/sales-rag/sessions", salesRAGc.CreateSession)       // 创建销售会话
+		authGroup.GET("/sales-rag/sessions", salesRAGc.ListSessions)         // 获取会话列表
+		authGroup.GET("/sales-rag/sessions/:id", salesRAGc.GetSession)       // 获取会话详情
+		authGroup.PUT("/sales-rag/sessions/:id", salesRAGc.UpdateSession)    // 更新会话信息
+		authGroup.DELETE("/sales-rag/sessions/:id", salesRAGc.DeleteSession) // 删除会话
+
+		// 消息管理
+		authGroup.POST("/sales-rag/sessions/:id/chat", salesRAGc.ChatWithSession) // 基于会话的销售对话（SSE流式）
+		authGroup.GET("/sales-rag/sessions/:id/messages", salesRAGc.ListMessages) // 获取会话消息列表
+
+		// 客户档案管理
+		authGroup.PUT("/sales-rag/sessions/:id/customer-profile", salesRAGc.UpdateCustomerProfile) // 更新客户档案
+		authGroup.GET("/sales-rag/sessions/:id/customer-profile", salesRAGc.GetCustomerProfile)    // 获取客户档案
 	}
 
 	// 阿里云百炼相关
