@@ -70,19 +70,19 @@ type UpdateDocumentRequest struct {
 }
 
 type CreateSessionRequest struct {
-	Title           string
-	SalesStage      domain.SalesStage
-	DocumentIDs     []uint
-	DeepThinking    bool
-	CustomerProfile string // JSON string
+	Title           string            `json:"title"`
+	SalesStage      domain.SalesStage `json:"sales_stage"`
+	DocumentIDs     []uint            `json:"document_ids"`
+	DeepThinking    bool              `json:"deep_thinking"`
+	CustomerProfile string            `json:"customer_profile"` // JSON string
 }
 
 type UpdateSessionRequest struct {
-	Title           *string
-	SalesStage      *domain.SalesStage
-	DocumentIDs     []uint
-	DeepThinking    *bool
-	CustomerProfile *string
+	Title           *string            `json:"title"`
+	SalesStage      *domain.SalesStage `json:"sales_stage"`
+	DocumentIDs     []uint             `json:"document_ids"`
+	DeepThinking    *bool              `json:"deep_thinking"`
+	CustomerProfile *string            `json:"customer_profile"`
 }
 
 type salesRAGBiz struct {
