@@ -122,7 +122,7 @@ func (t *ContentTagger) analyze(ctx context.Context, text string) (*TaggingResul
 func (t *ContentTagger) callDMXAPI(prompt string) (string, error) {
 	url := "https://www.dmxapi.cn/v1/chat/completions"
 	apiKey := "sk-XgINDoE22MHQfcSZnToYICS4rNnoknIrXhZHZYs3VQM9DP25" // User provided key
-	model := "Doubao-1.5-lite-32k"
+	model := "Doubao-lite-32k"
 
 	payload := map[string]interface{}{
 		"model": model,
