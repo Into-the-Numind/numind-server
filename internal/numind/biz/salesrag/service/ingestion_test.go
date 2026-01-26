@@ -30,9 +30,9 @@ type MockTagger struct {
 	mock.Mock
 }
 
-func (m *MockTagger) TagChunk(ctx context.Context, content string) ([]domain.SalesStage, []string, error) {
+func (m *MockTagger) TagChunk(ctx context.Context, content string) ([]string, string, error) {
 	args := m.Called(ctx, content)
-	return args.Get(0).([]domain.SalesStage), args.Get(1).([]string), args.Error(2)
+	return args.Get(0).([]string), args.Get(1).(string), args.Error(2)
 }
 
 func TestIngestDocument(t *testing.T) {
@@ -51,17 +51,9 @@ func TestIngestDocument(t *testing.T) {
 
 	parser.On("Parse", ctx, rawContent, "test.pdf").Return(parsedChunks, nil)
 
-	tagger.On("TagChunk", ctx, context.Background(), "Chunk 1 Content").Return( // Check context matching? simpliy mock
-		[]domain.SalesStage{domain.StageDiscovery},
-		[]string{"tag1"},
-		nil,
-	).Maybe() // Loose matching for context
-
-	// Re-setup tagger expectation carefully
-	// The service calls `tagger.TagChunk(ctx, content)`
 	tagger.On("TagChunk", ctx, "Chunk 1 Content").Return(
-		[]domain.SalesStage{domain.StageDiscovery},
 		[]string{"tag1"},
+		"Test summary",
 		nil,
 	)
 
@@ -76,5 +68,6 @@ func TestIngestDocument(t *testing.T) {
 	assert.Len(t, results, 1)
 	assert.Equal(t, "Chunk 1 Content", results[0].Content)
 	assert.Equal(t, uint(1), results[0].DocumentID)
-	assert.Equal(t, domain.StageDiscovery, results[0].SalesStage[0])
+	assert.Equal(t, []string{"tag1"}, results[0].Tags)
+	assert.Equal(t, "Test summary", results[0].Summary)
 }

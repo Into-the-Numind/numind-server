@@ -79,27 +79,6 @@ func (m *MemoryStore) Search(ctx context.Context, query string, filter port.Sear
 			}
 		}
 
-		// 4. SalesStage 过滤 (如果有交集则匹配)
-		if len(filter.SalesStages) > 0 {
-			match := false
-			// Check intersection between chunk.SalesStage and filter.SalesStages
-			for _, stage := range chunk.SalesStage {
-				for _, reqStage := range filter.SalesStages {
-					if stage == reqStage {
-						match = true
-						break
-					}
-				}
-				if match {
-					break
-				}
-			}
-			// 注意：如果切片没有 Stage 标签，但过滤要求 Stage，则不匹配
-			if !match {
-				continue
-			}
-		}
-
 		results = append(results, chunk)
 		if len(results) >= limit {
 			break

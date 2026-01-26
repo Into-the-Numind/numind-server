@@ -132,7 +132,15 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 		return
 	}
 
-	// 2. Split
+	// 2. Split - 更新状态为 SPLITTING
+	if p.docStore != nil {
+		if err := p.docStore.UpdateStatus(ctx, doc.ID, string(domain.DocStatusSplitting), ""); err != nil {
+			log.Printf("Failed to update status to SPLITTING: %v", err)
+		}
+	}
+
+	log.Printf("Starting splitting for doc %d", doc.ID)
+
 	chunks, err := p.splitter.Split(markdown)
 	if err != nil {
 		p.fail(doc, fmt.Errorf("splitting failed: %w", err))
@@ -143,6 +151,8 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 		p.fail(doc, fmt.Errorf("no chunks generated from document"))
 		return
 	}
+
+	log.Printf("Generated %d chunks for doc %d", len(chunks), doc.ID)
 
 	// 3. Convert SplitChunk to KnowledgeChunk
 	kChunks := make([]*domain.KnowledgeChunk, len(chunks))
@@ -157,11 +167,18 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 			UserID:     doc.UserID, // 传递用户ID用于数据隔离
 			Content:    sc.Content,
 			Tags:       tags, // Use merged tags
-			SalesStage: []domain.SalesStage{domain.StageDiscovery},
+					}
+	}
+
+	// 4. Tag - 更新状态为 TAGGING
+	if p.docStore != nil {
+		if err := p.docStore.UpdateStatus(ctx, doc.ID, string(domain.DocStatusTagging), ""); err != nil {
+			log.Printf("Failed to update status to TAGGING: %v", err)
 		}
 	}
 
-	// 4. Tag
+	log.Printf("Starting tagging for %d chunks (doc %d)", len(kChunks), doc.ID)
+
 	err = p.tagger.TagChunks(ctx, kChunks)
 	if err != nil {
 		p.fail(doc, fmt.Errorf("tagging failed: %w", err))

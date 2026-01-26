@@ -25,22 +25,18 @@ func TestSalesRAGService_RetrieveDualTrack(t *testing.T) {
 		},
 		{
 			ID: "s1", DocumentID: 1, Content: "If customer ask price, emphasize value.",
-			SalesStage: []domain.SalesStage{domain.StageNegotiation},
 		},
 		{
 			ID: "s2", DocumentID: 1, Content: "Closing technique: limited time offer.",
-			SalesStage: []domain.SalesStage{domain.StageClosing}, // Different stage
 		},
 	})
 
 	svc := service.NewSalesRAGService(store, router)
 
-	// 2. Test Case: Negotiation Stage
-	// Intent -> Direct "Product Price"
+	// 2. Test Case: Product Price Query
 	query := "Price"
-	stage := domain.StageNegotiation
 
-	verdict, err := svc.RetrieveForResponse(ctx, query, stage, nil)
+	verdict, err := svc.RetrieveForResponse(ctx, query, nil)
 	assert.Nil(t, err)
 
 	// Should contain evidence
@@ -62,7 +58,7 @@ func TestSalesRAGService_ChitChat(t *testing.T) {
 	router := adapter.NewRegexRouter()
 	svc := service.NewSalesRAGService(store, router)
 
-	verdict, err := svc.RetrieveForResponse(context.Background(), "Hello", domain.StageDiscovery, nil)
+	verdict, err := svc.RetrieveForResponse(context.Background(), "Hello", nil)
 	assert.Nil(t, err)
 
 	// Should be empty for chitchat

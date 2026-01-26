@@ -23,9 +23,9 @@ func (m *MockAliBiz) QianwenTextStream(messages []map[string]string, maxTokens i
 
 func TestContentTagger_TagChunks(t *testing.T) {
 	// Mock successful JSON response
+	// Mock successful JSON response
 	mockJSON := "```json\n" +
 		`{
-		"sales_stage": ["NEGOTIATION"],
 		"tags": ["price", "discount"],
 		"summary": "Negotiation techniques"
 	}` + "\n```"
@@ -46,7 +46,7 @@ func TestContentTagger_TagChunks(t *testing.T) {
 
 	// Verify enrichment
 	for _, c := range chunks {
-		assert.Contains(t, c.SalesStage, domain.StageNegotiation)
+		// SalesStage is no longer enriched by tagger
 		assert.Contains(t, c.Tags, "price")
 	}
 }

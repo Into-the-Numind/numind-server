@@ -36,14 +36,14 @@ func (s *IngestionService) IngestDocument(ctx context.Context, docID uint, filen
 		chunks[i].ID = fmt.Sprintf("%d_c%d", docID, i) // Generate Chunk ID
 
 		// Call LLM for tagging
-		stages, tags, err := s.tagger.TagChunk(ctx, chunks[i].Content)
+		tags, summary, err := s.tagger.TagChunk(ctx, chunks[i].Content)
 		if err != nil {
 			// Log warning but maybe fallback to default?
 			// For now, return error
 			return fmt.Errorf("auto-tagging failed for chunk %d: %w", i, err)
 		}
-		chunks[i].SalesStage = stages
 		chunks[i].Tags = tags
+		chunks[i].Summary = summary
 	}
 
 	// 3. 存入向量库

@@ -2,17 +2,15 @@ package salesrag
 
 import (
 	"context"
-	"fmt"
-	"numind-server/internal/numind/biz"
-	"numind-server/internal/numind/biz/salesrag/domain"
-	"numind-server/internal/pkg/core"
-	"numind-server/internal/pkg/errno"
-
 	"encoding/json"
-	"numind-server/internal/numind/biz/salesrag"
+	"fmt"
 	"strconv"
 	"strings"
 
+	"numind-server/internal/numind/biz"
+	"numind-server/internal/numind/biz/salesrag"
+	"numind-server/internal/pkg/core"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/middleware"
 
 	"github.com/gin-gonic/gin"
@@ -80,10 +78,9 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 	}
 
 	var r struct {
-		Query        string            `json:"query" binding:"required"`
-		SalesStage   domain.SalesStage `json:"sales_stage"`
-		DocumentIDs  []uint            `json:"document_ids"`
-		DeepThinking bool              `json:"deep_thinking"`
+		Query        string `json:"query" binding:"required"`
+		DocumentIDs  []uint `json:"document_ids"`
+		DeepThinking bool   `json:"deep_thinking"`
 	}
 
 	if err := c.ShouldBindJSON(&r); err != nil {
@@ -110,7 +107,7 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 	w := c.Writer
 
 	// 调用基于会话的流式检索方法（会自动保存消息）
-	err = ctrl.b.SalesRAG().ChatWithSession(newCtx, user.ID, uint(sessionID), r.Query, r.SalesStage, r.DocumentIDs, r.DeepThinking,
+	err = ctrl.b.SalesRAG().ChatWithSession(newCtx, user.ID, uint(sessionID), r.Query, r.DocumentIDs, r.DeepThinking,
 		func(eventType string, data interface{}) error {
 			var eventData []byte
 			var marshalErr error
@@ -284,11 +281,10 @@ func (ctrl *SalesRAGController) ListChunks(c *gin.Context) {
 // CreateSession 创建销售会话
 func (ctrl *SalesRAGController) CreateSession(c *gin.Context) {
 	var req struct {
-		Title           string            `json:"title"`
-		SalesStage      domain.SalesStage `json:"sales_stage"`
-		DocumentIDs     []uint            `json:"document_ids"`
-		DeepThinking    bool              `json:"deep_thinking"`
-		CustomerProfile string            `json:"customer_profile"`
+		Title           string `json:"title"`
+		DocumentIDs     []uint `json:"document_ids"`
+		DeepThinking    bool   `json:"deep_thinking"`
+		CustomerProfile string `json:"customer_profile"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -309,7 +305,6 @@ func (ctrl *SalesRAGController) CreateSession(c *gin.Context) {
 
 	createReq := salesrag.CreateSessionRequest{
 		Title:           req.Title,
-		SalesStage:      req.SalesStage,
 		DocumentIDs:     req.DocumentIDs,
 		DeepThinking:    req.DeepThinking,
 		CustomerProfile: req.CustomerProfile,

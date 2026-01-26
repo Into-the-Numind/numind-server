@@ -6,7 +6,6 @@ import (
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
 	"strconv"
-	"strings"
 	"sync"
 
 	"github.com/philippgille/chromem-go"
@@ -68,7 +67,7 @@ func (s *ChromemStore) Upsert(ctx context.Context, chunks []domain.KnowledgeChun
 			Embedding: embedding,
 			Metadata: map[string]string{
 				"document_id": strconv.FormatUint(uint64(chunk.DocumentID), 10),
-				"summary":     chunk.Summary,
+				"sales_stage": stagesStr,
 				"tags":        tagsStr,
 				"source_ref":  chunk.SourceRef,
 			},
@@ -132,12 +131,8 @@ func (s *ChromemStore) Search(ctx context.Context, query string, filter port.Sea
 			chunk.DocumentID = uint(val)
 		}
 		chunk.SourceRef = res.Metadata["source_ref"]
-		chunk.Summary = res.Metadata["summary"]
 
-		// 还原 Tags
-		if tagsStr, ok := res.Metadata["tags"]; ok && tagsStr != "" {
-			chunk.Tags = strings.Split(tagsStr, ",")
-		}
+		// TODO: 还原 SalesStage 和 Tags
 
 		// 业务级过滤
 		if !s.matchFilter(chunk, filter) {

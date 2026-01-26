@@ -66,12 +66,12 @@ func (s *DashVectorStore) Upsert(ctx context.Context, chunks []domain.KnowledgeC
 		}
 
 		fields := map[string]interface{}{
-			"doc_id":      chunk.DocumentID,
-			"user_id":     chunk.UserID,
-			"sales_stage": joinStagesDash(chunk.SalesStage),
-			"tags":        strings.Join(chunk.Tags, ","),
-			"content":     chunk.Content,
-			"source_ref":  chunk.SourceRef,
+			"doc_id":     chunk.DocumentID,
+			"user_id":    chunk.UserID,
+			"tags":       strings.Join(chunk.Tags, ","),
+			"summary":    chunk.Summary,
+			"content":    chunk.Content,
+			"source_ref": chunk.SourceRef,
 		}
 
 		docs = append(docs, DashVectorDoc{
@@ -268,7 +268,7 @@ func (s *DashVectorStore) Search(ctx context.Context, query string, filter port.
 		"vector":         vector,
 		"top_k":          limit,
 		"include_vector": false,
-		"output_fields":  []string{"id", "content", "sales_stage", "tags", "source_ref", "doc_id", "user_id"},
+		"output_fields":  []string{"id", "content", "tags", "summary", "source_ref", "doc_id", "user_id"},
 	}
 	if filterStr != "" {
 		queryBody["filter"] = filterStr
@@ -328,13 +328,8 @@ func (s *DashVectorStore) Search(ctx context.Context, query string, filter port.
 		if val, ok := item.Fields["tags"].(string); ok {
 			c.Tags = strings.Split(val, ",")
 		}
-		if val, ok := item.Fields["sales_stage"].(string); ok {
-			stagesStr := strings.Split(val, ",")
-			stages := make([]domain.SalesStage, len(stagesStr))
-			for i, st := range stagesStr {
-				stages[i] = domain.SalesStage(st)
-			}
-			c.SalesStage = stages
+		if val, ok := item.Fields["summary"].(string); ok {
+			c.Summary = val
 		}
 		if val, ok := item.Fields["source_ref"].(string); ok {
 			c.SourceRef = val
@@ -349,54 +344,6 @@ func (s *DashVectorStore) Search(ctx context.Context, query string, filter port.
 func buildDashVectorFilter(f port.SearchFilter) string {
 	parts := []string{}
 
-	if len(f.SalesStages) > 0 {
-		// sales_stage is a comma-separated string in DB?
-		// NOTE: DashVector string field exact match.
-		// If we stored "stage1,stage2", IN query might not work for partial match.
-		// But in joinStages we joined them.
-
-		// If we use simple string match, we can only check strict equality or maybe LIKE if supported?
-		// DashVector supports standard SQL: `field LIKE '%val%'` logic?
-		// Official docs say: =, !=, >, >=, <, <=, IN, NOT IN, AND, OR, NOT.
-		// String LIKE is usually not supported in basic vector DBs unless specified.
-
-		// Workaround: We might rely on exact match if we only ever store single stage,
-		// BUT domain.KnowledgeChunk has []SalesStage.
-		// IF a chunk belongs to multiple stages, we stored it as "A,B".
-		// Querying for "A" won't match "A,B" with IN/=.
-
-		// Better approach: Denormalize or use multi-value field if supported.
-		// DashVector DOES support multi-value fields (Array). But we sent it as string `strings.Join`.
-		// Let's check `Upsert` logic: ` "sales_stage": joinStages(chunk.SalesStage) ` -> comma string.
-
-		// WE SHOULD CHANGE `Upsert` to use Array if DashVector supports it.
-		// Assuming DashVector supports []string as field value?
-		// If so, `sales_stage IN (...)` works?
-
-		// For safety and staying close to VikingDB logic which used text search or exact match...
-		// Let's use OR logic with string match if we stick to string.
-		// "sales_stage = 'DISCOVERY'" will fail if it is "DISCOVERY,NEGOTIATION".
-
-		// DECISION: For now, assume simple case (one stage usually) OR keep the string.
-		// If we want correct filtering, we should probably stick to `doc_type` which is single value.
-		// For `SalesStages`, we might skip filtering here if complex, or try our best.
-		// Let's assume we used single value mostly, or add a TODO.
-
-		// But wait, the `joinStages` indicates multiple.
-		// If DashVector supports string array, we should pass `[]string` in `fields`.
-		// Let's try to pass it as []string in Upsert and see if it works.
-		// BUT the struct `DashVectorDoc` used `map[string]interface{}`.
-		// I will modify `Upsert` to pass `chunk.SalesStage` (converted to []string) as a list if possible.
-		// However, commonly people serialize to string.
-
-		// For this implementation, I will stick to string and simple IN query, acknowledging limitation.
-		vals := make([]string, len(f.SalesStages))
-		for i, v := range f.SalesStages {
-			vals[i] = fmt.Sprintf("'%s'", v)
-		}
-		parts = append(parts, fmt.Sprintf("sales_stage IN (%s)", strings.Join(vals, ", ")))
-	}
-
 	if len(f.DocumentIDs) > 0 {
 		ids := make([]string, len(f.DocumentIDs))
 		for i, id := range f.DocumentIDs {
@@ -409,12 +356,4 @@ func buildDashVectorFilter(f port.SearchFilter) string {
 		return ""
 	}
 	return strings.Join(parts, " AND ")
-}
-
-func joinStagesDash(stages []domain.SalesStage) string {
-	strs := make([]string, len(stages))
-	for i, s := range stages {
-		strs[i] = string(s)
-	}
-	return strings.Join(strs, ",")
 }

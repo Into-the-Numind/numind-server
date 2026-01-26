@@ -1,11 +1,15 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/biz/salesrag/domain"
@@ -21,15 +25,14 @@ func NewContentTagger(llm ali.AliBiz) *ContentTagger {
 
 // TaggingResult structure matching JSON output from LLM
 type TaggingResult struct {
-	SalesStage []string `json:"sales_stage"`
-	Tags       []string `json:"tags"`
-	Summary    string   `json:"summary"`
+	Tags    []string `json:"tags"`
+	Summary string   `json:"summary"`
 }
 
 // TagChunks processes a slice of KnowledgeChunks in parallel, enriching them with metadata
 func (t *ContentTagger) TagChunks(ctx context.Context, chunks []*domain.KnowledgeChunk) error {
-	// 1. Concurrency Control (e.g., max 5 concurrent requests)
-	sem := make(chan struct{}, 5)
+	// 1. Concurrency Control (e.g., max 10 concurrent requests)
+	sem := make(chan struct{}, 10)
 	var wg sync.WaitGroup
 
 	for i := range chunks {
@@ -39,17 +42,13 @@ func (t *ContentTagger) TagChunks(ctx context.Context, chunks []*domain.Knowledg
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			// 2. Call LLM
-			// Avoid processing too small chunks if necessary, but for now process all.
-			// Truncate content if too long for prompt context window?
-			// Assume chunks are < 2000 chars (from Splitter config).
-
+			// 2. Call LLM (Now DMXAPI)
 			res, err := t.analyze(ctx, chunk.Content)
 			if err != nil {
 				// Fallback or Log
-				// defaulting to DISCOVERY if failure
-				chunk.SalesStage = []domain.SalesStage{domain.StageDiscovery}
-				// TODO: Add logging
+				// defaulting to basic tags if failure
+				chunk.Tags = []string{"general"}
+				fmt.Printf("Tagging failed for chunk: %v\n", err)
 				return
 			}
 
@@ -62,82 +61,121 @@ func (t *ContentTagger) TagChunks(ctx context.Context, chunks []*domain.Knowledg
 }
 
 // TagChunk 单个切片打标 (实现 port.ContentTagger 接口)
-func (t *ContentTagger) TagChunk(ctx context.Context, content string) ([]domain.SalesStage, []string, error) {
+func (t *ContentTagger) TagChunk(ctx context.Context, content string) ([]string, string, error) {
 	res, err := t.analyze(ctx, content)
 	if err != nil {
-		return nil, nil, err
+		return nil, "", err
 	}
 
-	// Convert strings to SalesStage
-	stages := make([]domain.SalesStage, 0)
-	for _, s := range res.SalesStage {
-		st := domain.SalesStage(strings.ToUpper(s))
-		if st == domain.StageDiscovery || st == domain.StageNegotiation || st == domain.StageClosing {
-			stages = append(stages, st)
-		}
-	}
-	if len(stages) == 0 {
-		stages = []domain.SalesStage{domain.StageDiscovery}
-	}
-	return stages, res.Tags, nil
+	return res.Tags, res.Summary, nil
 }
 
 func (t *ContentTagger) analyze(ctx context.Context, text string) (*TaggingResult, error) {
 	// Construct Prompt
-	prompt := fmt.Sprintf(`Role: Sales Knowledge Expert.
-Task: Analyze the text and assign metadata in strictly valid JSON format.
-Input Text: """%s"""
+	prompt := fmt.Sprintf(`角色：销售知识专家
+任务：分析文本内容并提取元数据，输出严格合法的 JSON 格式。
+输入文本："""%s"""
 
-Definitions:
-- sales_stage: DISCOVERY, NEGOTIATION, CLOSING.
-
-Output Schema:
+输出格式：
 {
- "sales_stage": ["DISCOVERY"],
- "tags": ["keyword1", "keyword2"],
- "summary": "brief summary"
+ "tags": ["关键词1", "关键词2"],
+ "summary": "简短摘要（不超过一句话）"
 }
 
-Requirement: Output ONLY the JSON string. Do not use markdown blocks.`, text)
+要求：
+1. 提取 3-5 个最能代表内容的中文关键词（例如：产品功能、具体参数、常见问题）。
+2. 生成一个非常简短的中文摘要，用于搜索结果预览。
+3. 仅输出 JSON 字符串，不要包含 Markdown 格式（如 '''json ... '''）。`, text)
 
-	messages := []map[string]string{
-		{"role": "user", "content": prompt},
+	var lastErr error
+	maxRetries := 3
+
+	for i := 0; i < maxRetries; i++ {
+		// Call DMXAPI directly
+		respStr, err := t.callDMXAPI(prompt)
+		if err != nil {
+			// Network error, might be worth retrying or failing fast.
+			// Let's retry on network error too.
+			lastErr = err
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		// Parse JSON
+		cleaned := cleanJSON(respStr)
+		var result TaggingResult
+		if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
+			lastErr = fmt.Errorf("json parse error: %w, raw: %s", err, respStr)
+			// If parse failed, retry
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		// Success
+		return &result, nil
 	}
 
-	// Call AliBiz
-	// Using generic params: maxTokens=500, temp=0.1 (deterministic)
-	respStr, err := t.llm.QianwenTextStream(messages, 500, 0.1)
+	return nil, fmt.Errorf("tagging failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+// callDMXAPI invokes the Doubao-1.5-lite-32k model via DMXAPI
+func (t *ContentTagger) callDMXAPI(prompt string) (string, error) {
+	url := "https://www.dmxapi.cn/v1/chat/completions"
+	apiKey := "sk-XgINDoE22MHQfcSZnToYICS4rNnoknIrXhZHZYs3VQM9DP25" // User provided key
+	model := "Doubao-1.5-lite-32k"
+
+	payload := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+		"temperature": 0.1,
+		"max_tokens":  1024,
+	}
+
+	bodyBytes, _ := json.Marshal(payload)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(bodyBytes))
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
-	// Parse JSON
-	// Clean up potential markdown code blocks ```json ... ```
-	cleaned := cleanJSON(respStr)
-	var result TaggingResult
-	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
-		return nil, fmt.Errorf("json parse error: %w, raw: %s", err, respStr)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", apiKey)
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("DMXAPI request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("DMXAPI error %d: %s", resp.StatusCode, string(body))
 	}
 
-	return &result, nil
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decode response failed: %w", err)
+	}
+
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("empty choices from DMXAPI")
+	}
+
+	return result.Choices[0].Message.Content, nil
 }
 
 func (t *ContentTagger) mapResult(chunk *domain.KnowledgeChunk, res *TaggingResult) {
-
-	// SalesStage
-	chunk.SalesStage = make([]domain.SalesStage, 0)
-	for _, s := range res.SalesStage {
-		st := domain.SalesStage(strings.ToUpper(s))
-		if st == domain.StageDiscovery || st == domain.StageNegotiation || st == domain.StageClosing {
-			chunk.SalesStage = append(chunk.SalesStage, st)
-		}
-	}
-	if len(chunk.SalesStage) == 0 {
-		chunk.SalesStage = []domain.SalesStage{domain.StageDiscovery}
-	}
-
-	// Tags
 	chunk.Tags = res.Tags
+	chunk.Summary = res.Summary
 }
 
 func cleanJSON(s string) string {

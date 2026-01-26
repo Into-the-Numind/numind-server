@@ -165,7 +165,7 @@ func NewBiz(ds store.IStore) *biz {
 	regexRouter := adapter.NewRegexRouter()
 
 	// Initialize Pipeline Components
-	parser := adapter.NewSimpleParser()
+	parser := adapter.NewEnhancedParser()
 	splitter := salesragservice.NewMarkdownSplitter(salesragservice.SplitterConfig{
 		MaxChunkSize: 1000,
 		MinChunkSize: 100,

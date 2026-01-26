@@ -5,15 +5,6 @@ import (
 	"time"
 )
 
-// SalesStage 销售阶段
-type SalesStage string
-
-const (
-	StageDiscovery   SalesStage = "DISCOVERY"   // 探索/线索
-	StageNegotiation SalesStage = "NEGOTIATION" // 谈判/报价
-	StageClosing     SalesStage = "CLOSING"     // 缔结/签约
-)
-
 // KnowledgeChunk 知识切片（最小检索单位）
 type KnowledgeChunk struct {
 	ID         string    `json:"id"`
@@ -22,9 +13,9 @@ type KnowledgeChunk struct {
 	Content    string    `json:"content"`
 	Vector     []float32 `json:"vector,omitempty"`
 
-	Tags       []string     `json:"tags"`
-	SalesStage []SalesStage `json:"sales_stage"` // 核心过滤字段
-	SourceRef  string       `json:"source_ref"`  // 例如: "第3页"
+	Tags      []string `json:"tags"`
+	Summary   string   `json:"summary"`
+	SourceRef string   `json:"source_ref"` // 例如: "第3页"
 }
 
 // Validate 验证切片合法性
@@ -44,6 +35,8 @@ type DocStatus string
 const (
 	DocStatusPending   DocStatus = "PENDING"
 	DocStatusParsing   DocStatus = "PARSING"
+	DocStatusSplitting DocStatus = "SPLITTING"
+	DocStatusTagging   DocStatus = "TAGGING"
 	DocStatusEmbedding DocStatus = "EMBEDDING"
 	DocStatusCompleted DocStatus = "COMPLETED"
 	DocStatusFailed    DocStatus = "FAILED"

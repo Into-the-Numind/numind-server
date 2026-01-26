@@ -24,10 +24,10 @@ type SalesRAGBiz interface {
 	// Ingest 处理文档导入
 	Ingest(ctx context.Context, userID uint, filename string, reader io.Reader, opts IngestOptions) (uint, error)
 	// Retrieve 检索知识（非流式）
-	Retrieve(ctx context.Context, query string, stage domain.SalesStage, docIDs []uint) (*service.RetrievalVerdict, error)
+	Retrieve(ctx context.Context, query string, docIDs []uint) (*service.RetrievalVerdict, error)
 	// RetrieveStream 流式检索知识并生成回答
 	// onEvent: 事件回调，eventType 可为 "verdict"/"token"/"error"/"done"
-	RetrieveStream(ctx context.Context, query string, stage domain.SalesStage, docIDs []uint, deepThinking bool, onEvent func(eventType string, data interface{}) error) error
+	RetrieveStream(ctx context.Context, query string, docIDs []uint, deepThinking bool, onEvent func(eventType string, data interface{}) error) error
 	// ListDocuments 获取用户的文档列表
 	ListDocuments(ctx context.Context, userID uint) ([]domain.KnowledgeDocument, error)
 	// GetDocument 获取单个文档详情
@@ -55,7 +55,7 @@ type SalesRAGBiz interface {
 	RenameSession(ctx context.Context, userID uint, sessionID uint, newTitle string) error
 
 	// ChatWithSession 基于会话的流式对话（保存聊天记录）
-	ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, stage domain.SalesStage, docIDs []uint, deepThinking bool, onEvent func(eventType string, data interface{}) error) error
+	ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, docIDs []uint, deepThinking bool, onEvent func(eventType string, data interface{}) error) error
 }
 
 type IngestOptions struct {
@@ -70,19 +70,17 @@ type UpdateDocumentRequest struct {
 }
 
 type CreateSessionRequest struct {
-	Title           string            `json:"title"`
-	SalesStage      domain.SalesStage `json:"sales_stage"`
-	DocumentIDs     []uint            `json:"document_ids"`
-	DeepThinking    bool              `json:"deep_thinking"`
-	CustomerProfile string            `json:"customer_profile"` // JSON string
+	Title           string `json:"title"`
+	DocumentIDs     []uint `json:"document_ids"`
+	DeepThinking    bool   `json:"deep_thinking"`
+	CustomerProfile string `json:"customer_profile"` // JSON string
 }
 
 type UpdateSessionRequest struct {
-	Title           *string            `json:"title"`
-	SalesStage      *domain.SalesStage `json:"sales_stage"`
-	DocumentIDs     []uint             `json:"document_ids"`
-	DeepThinking    *bool              `json:"deep_thinking"`
-	CustomerProfile *string            `json:"customer_profile"`
+	Title           *string `json:"title"`
+	DocumentIDs     []uint  `json:"document_ids"`
+	DeepThinking    *bool   `json:"deep_thinking"`
+	CustomerProfile *string `json:"customer_profile"`
 }
 
 type salesRAGBiz struct {
@@ -226,7 +224,7 @@ func (b *salesRAGBiz) UpdateDocument(ctx context.Context, userID uint, docID uin
 	return b.ds.KnowledgeDocuments().UpdateColumns(ctx, docID, updates)
 }
 
-func (b *salesRAGBiz) Retrieve(ctx context.Context, query string, stage domain.SalesStage, docIDs []uint) (*service.RetrievalVerdict, error) {
+func (b *salesRAGBiz) Retrieve(ctx context.Context, query string, docIDs []uint) (*service.RetrievalVerdict, error) {
 	// 🔴 关键风险点：IsEnabled 过滤
 	// 从数据库查询用户所有启用且已完成的文档ID，作为白名单进行二次过滤
 
@@ -278,13 +276,13 @@ func (b *salesRAGBiz) Retrieve(ctx context.Context, query string, stage domain.S
 	}
 
 	// 6. 使用过滤后的文档ID进行检索
-	verdict, err := b.ragSvc.RetrieveForResponse(ctx, query, stage, filteredDocIDs)
+	verdict, err := b.ragSvc.RetrieveForResponse(ctx, query, filteredDocIDs)
 	if err != nil {
 		return nil, err
 	}
 
 	// 7. 调用大模型生成最终回复
-	answer, err := b.generateAnswer(ctx, query, stage, verdict)
+	answer, err := b.generateAnswer(ctx, query, verdict)
 	if err != nil {
 		// 生成失败时，返回友好提示
 		if verdict.IsChitChat {
@@ -410,7 +408,7 @@ func (b *salesRAGBiz) ListDocumentChunks(ctx context.Context, userID uint, docID
 }
 
 // generateAnswer 使用大模型生成最终回复
-func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, stage domain.SalesStage, verdict *service.RetrievalVerdict) (string, error) {
+func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, verdict *service.RetrievalVerdict) (string, error) {
 	// 1. 如果是闲聊，生成友好的闲聊回复
 	if verdict.IsChitChat {
 		messages := []map[string]string{
@@ -456,53 +454,16 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, stage do
 	}
 	knowledgeContext := strings.Join(contextParts, "\n\n")
 
-	// 3. 根据销售阶段定制系统提示词
-	var systemPrompt string
-	switch stage {
-	case domain.StageDiscovery:
-		systemPrompt = `你是一个专业的销售智能助手，当前处于【需求发现】阶段。
+	// 3. 使用通用的系统提示词
+	systemPrompt := `你是一个专业的销售智能助手。
 
-你的任务是基于提供的知识库信息，回答用户的问题。请注意：
+你的任务是基于提供的知识库信息，准确、友好地回答用户的问题。请注意：
 1. 准确引用知识库中的内容，不要虚构信息
 2. 用友好、专业的语气回答
-3. 帮助用户了解产品的核心功能和价值
-4. 如果知识库中没有直接答案，可以引导用户提供更多信息
+3. 如果知识库中没有直接答案，可以引导用户提供更多信息
 
 知识库内容：
 ` + knowledgeContext
-
-	case domain.StageNegotiation:
-		systemPrompt = `你是一个专业的销售智能助手，当前处于【方案协商】阶段。
-
-你的任务是基于提供的知识库信息，回答用户的问题。请注意：
-1. 准确引用知识库中的定价、方案等信息
-2. 强调产品的价值和ROI
-3. 用清晰、有说服力的语气回答
-4. 帮助用户理解不同方案的优势
-
-知识库内容：
-` + knowledgeContext
-
-	case domain.StageClosing:
-		systemPrompt = `你是一个专业的销售智能助手，当前处于【成交跟进】阶段。
-
-你的任务是基于提供的知识库信息，回答用户的问题。请注意：
-1. 准确引用知识库中的交付、支持等信息
-2. 强调服务保障和售后支持
-3. 用专业、可靠的语气回答
-4. 帮助用户消除最后的顾虑
-
-知识库内容：
-` + knowledgeContext
-
-	default:
-		systemPrompt = `你是一个专业的销售智能助手。
-
-你的任务是基于提供的知识库信息，准确、友好地回答用户的问题。
-
-知识库内容：
-` + knowledgeContext
-	}
 
 	// 4. 构建消息并调用大模型
 	messages := []map[string]string{
@@ -525,7 +486,7 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, stage do
 // - "token": data 为 string，回答的增量 token
 // - "error": data 为 string，错误消息
 // - "done": data 为 nil，流式完成
-func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, stage domain.SalesStage, docIDs []uint, deepThinking bool, onEvent func(eventType string, data interface{}) error) error {
+func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, docIDs []uint, deepThinking bool, onEvent func(eventType string, data interface{}) error) error {
 	// 1. 从上下文获取用户ID
 	var userID uint
 	if uid, ok := ctx.Value("userID").(uint); ok {
@@ -579,7 +540,7 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, stage do
 	}
 
 	// 6. 执行检索
-	verdict, err := b.ragSvc.RetrieveForResponse(ctx, query, stage, filteredDocIDs)
+	verdict, err := b.ragSvc.RetrieveForResponse(ctx, query, filteredDocIDs)
 	if err != nil {
 		return onEvent("error", fmt.Sprintf("retrieval failed: %v", err))
 	}
@@ -590,7 +551,7 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, stage do
 	}
 
 	// 8. 构建 prompt 并流式生成回答
-	messages := b.buildPromptMessages(query, stage, verdict)
+	messages := b.buildPromptMessages(query, verdict)
 
 	// 9. 调用流式聊天
 	_, err = b.volcBiz.StreamChat(ctx, messages, 1000, 0.7, deepThinking, func(event string, token string) error {
@@ -613,7 +574,7 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, stage do
 }
 
 // buildPromptMessages 根据检索结果构建 prompt 消息
-func (b *salesRAGBiz) buildPromptMessages(query string, stage domain.SalesStage, verdict *service.RetrievalVerdict) []map[string]string {
+func (b *salesRAGBiz) buildPromptMessages(query string, verdict *service.RetrievalVerdict) []map[string]string {
 	// 如果是闲聊
 	if verdict.IsChitChat {
 		return []map[string]string{
@@ -654,53 +615,16 @@ func (b *salesRAGBiz) buildPromptMessages(query string, stage domain.SalesStage,
 	}
 	knowledgeContext := strings.Join(contextParts, "\n\n")
 
-	// 根据销售阶段定制系统提示词
-	var systemPrompt string
-	switch stage {
-	case domain.StageDiscovery:
-		systemPrompt = `你是一个专业的销售智能助手，当前处于【需求发现】阶段。
+	// 使用通用的系统提示词
+	systemPrompt := `你是一个专业的销售智能助手。
 
-你的任务是基于提供的知识库信息，回答用户的问题。请注意：
+你的任务是基于提供的知识库信息，准确、友好地回答用户的问题。请注意：
 1. 准确引用知识库中的内容，不要虚构信息
 2. 用友好、专业的语气回答
-3. 帮助用户了解产品的核心功能和价值
-4. 如果知识库中没有直接答案，可以引导用户提供更多信息
+3. 如果知识库中没有直接答案，可以引导用户提供更多信息
 
 知识库内容：
 ` + knowledgeContext
-
-	case domain.StageNegotiation:
-		systemPrompt = `你是一个专业的销售智能助手，当前处于【方案协商】阶段。
-
-你的任务是基于提供的知识库信息，回答用户的问题。请注意：
-1. 准确引用知识库中的定价、方案等信息
-2. 强调产品的价值和ROI
-3. 用清晰、有说服力的语气回答
-4. 帮助用户理解不同方案的优势
-
-知识库内容：
-` + knowledgeContext
-
-	case domain.StageClosing:
-		systemPrompt = `你是一个专业的销售智能助手，当前处于【成交跟进】阶段。
-
-你的任务是基于提供的知识库信息，回答用户的问题。请注意：
-1. 准确引用知识库中的交付、支持等信息
-2. 强调服务保障和售后支持
-3. 用专业、可靠的语气回答
-4. 帮助用户消除最后的顾虑
-
-知识库内容：
-` + knowledgeContext
-
-	default:
-		systemPrompt = `你是一个专业的销售智能助手。
-
-你的任务是基于提供的知识库信息，准确、友好地回答用户的问题。
-
-知识库内容：
-` + knowledgeContext
-	}
 
 	return []map[string]string{
 		{
@@ -729,7 +653,6 @@ func (b *salesRAGBiz) CreateSession(ctx context.Context, userID uint, req Create
 		UserID:          userID,
 		Title:           req.Title,
 		Status:          "active",
-		SalesStage:      string(req.SalesStage),
 		DocumentIDs:     string(docIDsJSON),
 		DeepThinking:    req.DeepThinking,
 		CustomerProfile: req.CustomerProfile,
@@ -764,9 +687,6 @@ func (b *salesRAGBiz) UpdateSession(ctx context.Context, userID uint, sessionID 
 	// 更新字段
 	if req.Title != nil {
 		session.Title = *req.Title
-	}
-	if req.SalesStage != nil {
-		session.SalesStage = string(*req.SalesStage)
 	}
 	if req.DocumentIDs != nil {
 		docIDsJSON, err := json.Marshal(req.DocumentIDs)
@@ -831,7 +751,7 @@ func (b *salesRAGBiz) GetCustomerProfile(ctx context.Context, userID uint, sessi
 }
 
 // ChatWithSession 基于会话的流式对话（保存聊天记录）
-func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, stage domain.SalesStage, docIDs []uint, deepThinking bool, onEvent func(eventType string, data interface{}) error) error {
+func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, docIDs []uint, deepThinking bool, onEvent func(eventType string, data interface{}) error) error {
 	// 1. 验证会话
 	session, err := b.sessionStore.GetSession(ctx, sessionID, userID)
 	if err != nil {
@@ -856,7 +776,7 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	var thinkingText string
 
 	// 4. 调用流式检索，累积内容
-	err = b.RetrieveStream(ctx, query, stage, docIDs, deepThinking, func(eventType string, data interface{}) error {
+	err = b.RetrieveStream(ctx, query, docIDs, deepThinking, func(eventType string, data interface{}) error {
 		switch eventType {
 		case "verdict":
 			// 序列化 verdict 为 JSON

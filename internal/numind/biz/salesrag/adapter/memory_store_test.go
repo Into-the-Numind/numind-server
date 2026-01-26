@@ -20,18 +20,19 @@ func TestMemoryStore_UpsertAndSearch(t *testing.T) {
 		ID:         "c1",
 		DocumentID: 1,
 		Content:    "Product A is $100.",
-		SalesStage: []domain.SalesStage{domain.StageNegotiation},
+		Tags:       []string{"pricing", "product"},
 	}
 	chunk2 := domain.KnowledgeChunk{
 		ID:         "c2",
 		DocumentID: 1,
 		Content:    "Don't lower the price too early.",
-		SalesStage: []domain.SalesStage{domain.StageNegotiation},
+		Tags:       []string{"pricing", "strategy"},
 	}
 	chunk3 := domain.KnowledgeChunk{ // Different doc
 		ID:         "c3",
 		DocumentID: 2,
 		Content:    "Competitor is cheap.",
+		Tags:       []string{"competitor"},
 	}
 
 	// 2. Test Upsert
@@ -46,14 +47,10 @@ func TestMemoryStore_UpsertAndSearch(t *testing.T) {
 	assert.NotEmpty(t, results)
 	assert.Equal(t, chunk1.ID, results[0].ID)
 
-	// 4. Test Filter by SalesStage
-	filterStrategy := port.SearchFilter{
-		SalesStages: []domain.SalesStage{domain.StageNegotiation},
-	}
-	results, err = store.Search(ctx, "price", filterStrategy, 10)
+	// 4. Test Search with query
+	results, err = store.Search(ctx, "price", port.SearchFilter{}, 10)
 	assert.Nil(t, err)
-	assert.Len(t, results, 1)
-	assert.Equal(t, chunk2.ID, results[0].ID)
+	assert.NotEmpty(t, results)
 
 	// 5. Test DeleteByDocumentID
 	err = store.DeleteByDocumentID(ctx, 1)

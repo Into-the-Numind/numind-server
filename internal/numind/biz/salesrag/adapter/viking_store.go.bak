@@ -121,7 +121,7 @@ func (s *VikingStore) DeleteByDocumentID(ctx context.Context, documentID uint) e
 func (s *VikingStore) Search(ctx context.Context, query string, filter port.SearchFilter, limit int) ([]domain.KnowledgeChunk, error) {
 	opts := vikingdb.NewSearchOptions()
 	opts.SetLimit(int64(limit))
-	opts.SetOutputFields([]string{"id", "content", "summary", "tags", "source_ref", "doc_id"})
+	opts.SetOutputFields([]string{"id", "content", "sales_stage", "tags", "source_ref", "doc_id"})
 
 	// Build Filter map
 	filterMap := buildVikingFilter(filter)
@@ -200,3 +200,10 @@ func buildVikingFilter(f port.SearchFilter) map[string]interface{} {
 	}
 }
 
+func joinStages(stages []domain.SalesStage) string {
+	strs := make([]string, len(stages))
+	for i, s := range stages {
+		strs[i] = string(s)
+	}
+	return strings.Join(strs, ",")
+}

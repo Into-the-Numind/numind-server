@@ -45,7 +45,6 @@ func (s *SalesRAGService) Search(ctx context.Context, query string, filter port.
 func (s *SalesRAGService) RetrieveForResponse(
 	ctx context.Context,
 	query string,
-	stage domain.SalesStage,
 	docIDs []uint,
 ) (*RetrievalVerdict, error) {
 
@@ -75,14 +74,8 @@ func (s *SalesRAGService) RetrieveForResponse(
 	}
 
 	filter := port.SearchFilter{
-		SalesStages: []domain.SalesStage{stage},
 		DocumentIDs: docIDs,
 	}
-
-	// 如果是 DISCOVERY 阶段，也许不需要强制过滤 Stage?
-	// 但为了保持原有 Strategy 逻辑，我们加上 Stage 过滤。
-	// 不过既然去掉了 DocType，也许我们应该放宽一些？
-	// 简单起见，我们先做单次检索，取 Top 8
 
 	evidence, err := s.store.Search(ctx, finalQuery, filter, 8)
 	if err != nil {
