@@ -87,3 +87,25 @@ func (m *MemoryStore) Search(ctx context.Context, query string, filter port.Sear
 
 	return results, nil
 }
+
+// FetchByDocumentID 直接获取指定文档的所有切片
+func (m *MemoryStore) FetchByDocumentID(ctx context.Context, documentID uint, limit int) ([]domain.KnowledgeChunk, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if limit <= 0 {
+		limit = 1000
+	}
+
+	var results []domain.KnowledgeChunk
+	for _, chunk := range m.chunks {
+		if chunk.DocumentID == documentID {
+			results = append(results, chunk)
+			if len(results) >= limit {
+				break
+			}
+		}
+	}
+
+	return results, nil
+}

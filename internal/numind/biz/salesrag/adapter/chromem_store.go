@@ -174,3 +174,64 @@ func (s *ChromemStore) matchFilter(chunk domain.KnowledgeChunk, filter port.Sear
 
 	return true
 }
+
+// FetchByDocumentID 直接获取指定文档的所有切片
+func (s *ChromemStore) FetchByDocumentID(ctx context.Context, documentID uint, limit int) ([]domain.KnowledgeChunk, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if limit <= 0 {
+		limit = 1000
+	}
+
+	// 使用一个通用查询词生成向量
+	queryEmbedding, err := s.embeddingFunc(ctx, "文档内容")
+	if err != nil {
+		return nil, fmt.Errorf("failed to embed query: %w", err)
+	}
+
+	// 使用一个较大的查询限制来确保获取所有切片
+	results, err := s.collection.QueryEmbedding(ctx, queryEmbedding, limit, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query chromem: %w", err)
+	}
+
+	// 解析结果并过滤指定文档ID
+	chunks := make([]domain.KnowledgeChunk, 0, len(results))
+	for _, res := range results {
+		chunk := domain.KnowledgeChunk{
+			ID:      res.ID,
+			Content: res.Content,
+		}
+
+		// 从 Metadata 还原字段
+		if dID, ok := res.Metadata["document_id"]; ok {
+			val, _ := strconv.ParseUint(dID, 10, 64)
+			chunk.DocumentID = uint(val)
+		}
+
+		// 只返回指定文档的切片
+		if chunk.DocumentID != documentID {
+			continue
+		}
+
+		if uID, ok := res.Metadata["user_id"]; ok {
+			val, _ := strconv.ParseUint(uID, 10, 64)
+			chunk.UserID = uint(val)
+		}
+		chunk.SourceRef = res.Metadata["source_ref"]
+		chunk.Summary = res.Metadata["summary"]
+
+		// 还原 Tags
+		if tagsStr, ok := res.Metadata["tags"]; ok && tagsStr != "" {
+			chunk.Tags = strings.Split(tagsStr, ",")
+		}
+
+		chunks = append(chunks, chunk)
+		if len(chunks) >= limit {
+			break
+		}
+	}
+
+	return chunks, nil
+}

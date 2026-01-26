@@ -41,6 +41,11 @@ func (s *SalesRAGService) Search(ctx context.Context, query string, filter port.
 	return s.store.Search(ctx, query, filter, limit)
 }
 
+// FetchByDocumentID 直接获取指定文档的所有切片（不使用向量搜索）
+func (s *SalesRAGService) FetchByDocumentID(ctx context.Context, documentID uint, limit int) ([]domain.KnowledgeChunk, error) {
+	return s.store.FetchByDocumentID(ctx, documentID, limit)
+}
+
 // RetrieveForResponse 为生成回复进行检索
 func (s *SalesRAGService) RetrieveForResponse(
 	ctx context.Context,

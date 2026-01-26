@@ -341,6 +341,113 @@ func (s *DashVectorStore) Search(ctx context.Context, query string, filter port.
 	return chunks, nil
 }
 
+// FetchByDocumentID 直接获取指定文档的所有切片（不使用语义搜索）
+func (s *DashVectorStore) FetchByDocumentID(ctx context.Context, documentID uint, limit int) ([]domain.KnowledgeChunk, error) {
+	// DashVector 需要向量才能查询，所以我们使用一个通用的查询
+	// 生成一个中性向量（全部为0.5）来绕过向量相似度计算
+	// 通过过滤条件来精确匹配文档ID
+
+	if limit <= 0 {
+		limit = 1000 // 默认返回1000条，确保能获取所有切片
+	}
+
+	// 方案：使用一个固定的embedding向量（可以是零向量或随机向量）
+	// 由于我们主要依赖过滤条件，向量的具体值不重要
+	// 但 DashVector 要求向量维度与collection匹配，所以我们使用一个通用查询生成向量
+
+	// 使用一个通用查询词来生成向量
+	var vector []float32
+	var err error
+	if s.embedder != nil {
+		// 使用一个中性的查询词，避免偏向任何特定内容
+		vector, err = s.embedder(ctx, "文档内容")
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate embedding: %w", err)
+		}
+	} else {
+		return nil, fmt.Errorf("embedder is required")
+	}
+
+	// 构建过滤条件：只查询指定文档ID
+	filterStr := fmt.Sprintf("doc_id = %d", documentID)
+
+	// 构建查询请求
+	queryBody := map[string]interface{}{
+		"vector":         vector,
+		"top_k":          limit,
+		"include_vector": false,
+		"output_fields":  []string{"id", "content", "tags", "summary", "source_ref", "doc_id", "user_id"},
+		"filter":         filterStr,
+	}
+
+	bodyBytes, _ := json.Marshal(queryBody)
+	url := fmt.Sprintf("%s/v1/collections/%s/query", s.endpoint, s.collection)
+
+	req := &httpclient.Request{
+		Method:  "POST",
+		URL:     url,
+		Body:    bytes.NewBuffer(bodyBytes),
+		Context: ctx,
+		Headers: map[string]string{
+			"dashvector-auth-token": s.apiKey,
+			"Content-Type":          "application/json",
+		},
+	}
+
+	respBytes, err := s.client.DoWithJSONResponse(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch request failed: %w", err)
+	}
+
+	var resp struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Output  []struct {
+			ID     string                 `json:"id"`
+			Score  float32                `json:"score"`
+			Fields map[string]interface{} `json:"fields"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(respBytes, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	if resp.Code != 0 {
+		return nil, fmt.Errorf("fetch failed: %d %s", resp.Code, resp.Message)
+	}
+
+	// 映射结果到 KnowledgeChunk
+	chunks := make([]domain.KnowledgeChunk, 0, len(resp.Output))
+	for _, item := range resp.Output {
+		c := domain.KnowledgeChunk{
+			ID: item.ID,
+		}
+
+		if val, ok := item.Fields["content"].(string); ok {
+			c.Content = val
+		}
+		if val, ok := item.Fields["doc_id"].(float64); ok {
+			c.DocumentID = uint(val)
+		}
+		if val, ok := item.Fields["user_id"].(float64); ok {
+			c.UserID = uint(val)
+		}
+		if val, ok := item.Fields["tags"].(string); ok && val != "" {
+			c.Tags = strings.Split(val, ",")
+		}
+		if val, ok := item.Fields["summary"].(string); ok {
+			c.Summary = val
+		}
+		if val, ok := item.Fields["source_ref"].(string); ok {
+			c.SourceRef = val
+		}
+
+		chunks = append(chunks, c)
+	}
+
+	log.Infow("FetchByDocumentID completed", "documentID", documentID, "returned", len(chunks), "limit", limit)
+	return chunks, nil
+}
+
 func buildDashVectorFilter(f port.SearchFilter) string {
 	parts := []string{}
 

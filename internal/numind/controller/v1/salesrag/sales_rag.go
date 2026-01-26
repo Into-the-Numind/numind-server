@@ -258,7 +258,7 @@ func (ctrl *SalesRAGController) ListChunks(c *gin.Context) {
 		return
 	}
 
-	limitStr := c.DefaultQuery("limit", "100")
+	limitStr := c.DefaultQuery("limit", "1000")
 	limit, _ := strconv.Atoi(limitStr)
 
 	user := middleware.GetCurrentUser(c)

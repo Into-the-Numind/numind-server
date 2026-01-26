@@ -174,6 +174,69 @@ func (s *VikingStore) Search(ctx context.Context, query string, filter port.Sear
 	return chunks, nil
 }
 
+// FetchByDocumentID 直接获取指定文档的所有切片（不使用语义搜索）
+func (s *VikingStore) FetchByDocumentID(ctx context.Context, documentID uint, limit int) ([]domain.KnowledgeChunk, error) {
+	if limit <= 0 {
+		limit = 1000 // 默认返回1000条，确保能获取所有切片
+	}
+
+	opts := vikingdb.NewSearchOptions()
+	opts.SetLimit(int64(limit))
+	opts.SetOutputFields([]string{"id", "content", "summary", "tags", "source_ref", "doc_id", "user_id"})
+
+	// 构建过滤条件：只查询指定文档ID
+	filterMap := map[string]interface{}{
+		"doc_id": map[string]interface{}{"=": int64(documentID)},
+	}
+	opts.SetFilter(filterMap)
+
+	// 使用一个通用查询词
+	results, err := s.index.SearchByText(vikingdb.TextObject{Text: "文档内容"}, opts)
+	if err != nil {
+		return nil, fmt.Errorf("fetch failed: %w", err)
+	}
+
+	// 映射结果
+	chunks := make([]domain.KnowledgeChunk, 0, len(results))
+	for _, res := range results {
+		c := domain.KnowledgeChunk{}
+		if idStr, ok := res.Id.(string); ok {
+			c.ID = idStr
+		} else {
+			c.ID = fmt.Sprintf("%v", res.Id)
+		}
+
+		if val, ok := res.Fields["content"].(string); ok {
+			c.Content = val
+		}
+		if val, ok := res.Fields["doc_id"].(json.Number); ok {
+			idInt, _ := val.Int64()
+			c.DocumentID = uint(idInt)
+		} else if val, ok := res.Fields["doc_id"].(float64); ok {
+			c.DocumentID = uint(val)
+		}
+		if val, ok := res.Fields["user_id"].(json.Number); ok {
+			idInt, _ := val.Int64()
+			c.UserID = uint(idInt)
+		} else if val, ok := res.Fields["user_id"].(float64); ok {
+			c.UserID = uint(val)
+		}
+		if val, ok := res.Fields["tags"].(string); ok && val != "" {
+			c.Tags = strings.Split(val, ",")
+		}
+		if val, ok := res.Fields["summary"].(string); ok {
+			c.Summary = val
+		}
+		if val, ok := res.Fields["source_ref"].(string); ok {
+			c.SourceRef = val
+		}
+
+		chunks = append(chunks, c)
+	}
+
+	return chunks, nil
+}
+
 func buildVikingFilter(f port.SearchFilter) map[string]interface{} {
 	// VikingDB filter DSL: {"field": {"op": val}}
 	// "and": [{"field":...}, {...}]

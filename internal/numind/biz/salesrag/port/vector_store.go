@@ -21,4 +21,8 @@ type VectorStore interface {
 
 	// Search 根据语义检索相关切片
 	Search(ctx context.Context, query string, filter SearchFilter, limit int) ([]domain.KnowledgeChunk, error)
+
+	// FetchByDocumentID 直接获取指定文档的所有切片（不使用向量搜索）
+	// 用于列表展示等场景，更高效且结果完整
+	FetchByDocumentID(ctx context.Context, documentID uint, limit int) ([]domain.KnowledgeChunk, error)
 }

@@ -3,20 +3,22 @@ package salesrag
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"numind-server/internal/numind/biz/salesrag/domain"
-	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
 
 	"github.com/spf13/viper"
+	"gorm.io/gorm"
 )
 
 // SalesRAGBiz 定义了销售 RAG 业务层的对外接口
@@ -374,15 +376,21 @@ func (b *salesRAGBiz) DeleteDocument(ctx context.Context, userID uint, docID uin
 		return fmt.Errorf("permission denied")
 	}
 
-	// 2. 从向量库删除
+	// 2. 删除MySQL中的切片（快速、可靠）
+	if err := b.ds.KnowledgeChunks().DeleteByDocument(ctx, docID); err != nil {
+		log.Printf("Warning: Failed to delete chunks from MySQL for doc %d: %v", docID, err)
+		// 继续执行，避免阻塞
+	}
+
+	// 3. 从向量库删除切片（尽力而为）
 	// 注意：如果向量库删除失败（例如旧数据不在向量库中，或者网络问题），我们记录错误但继续删除数据库记录
 	// 这样可以避免用户无法删除"僵尸"文档的情况
 	if err := b.ragSvc.DeleteByDocumentID(ctx, docID); err != nil {
 		// Log warning but continue
-		fmt.Printf("Warning: Failed to delete document %d from vector store: %v\n", docID, err)
+		log.Printf("Warning: Failed to delete document %d from vector store: %v", docID, err)
 	}
 
-	// 3. 从数据库删除
+	// 4. 从数据库删除文档记录
 	return b.ds.KnowledgeDocuments().Delete(ctx, docID)
 }
 
@@ -396,15 +404,34 @@ func (b *salesRAGBiz) ListDocumentChunks(ctx context.Context, userID uint, docID
 		return nil, fmt.Errorf("permission denied")
 	}
 
-	// 2. 调用向量库搜索（空查询 + 文档ID过滤）
 	if limit <= 0 {
-		limit = 100 // 默认返回100条
-	}
-	filter := port.SearchFilter{
-		DocumentIDs: []uint{docID},
+		limit = 1000 // 默认返回1000条，确保能获取所有切片
 	}
 
-	return b.ragSvc.Search(ctx, "", filter, limit)
+	// 2. 优先从MySQL读取（快速，无费用）
+	mysqlChunks, err := b.ds.KnowledgeChunks().ListByDocumentAndUser(ctx, docID, userID, limit)
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		log.Printf("Warning: MySQL query failed for doc %d: %v", docID, err)
+	}
+
+	if len(mysqlChunks) > 0 {
+		// 转换model.KnowledgeChunk到domain.KnowledgeChunk
+		return b.convertModelChunksToDomain(mysqlChunks), nil
+	}
+
+	// 3. Fallback到向量数据库（兼容旧数据）
+	log.Printf("No chunks in MySQL for doc %d, falling back to vector DB", docID)
+	vectorChunks, err := b.ragSvc.FetchByDocumentID(ctx, docID, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	// 4. 异步回填到MySQL（懒加载迁移）
+	if len(vectorChunks) > 0 {
+		go b.backfillChunksToMySQL(context.Background(), doc, vectorChunks)
+	}
+
+	return vectorChunks, nil
 }
 
 // generateAnswer 使用大模型生成最终回复
@@ -838,4 +865,53 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	}
 
 	return nil
+}
+
+// convertModelChunksToDomain 将MySQL模型转换为领域模型
+func (b *salesRAGBiz) convertModelChunksToDomain(modelChunks []*model.KnowledgeChunk) []domain.KnowledgeChunk {
+	result := make([]domain.KnowledgeChunk, len(modelChunks))
+	for i, mc := range modelChunks {
+		var tags []string
+		if mc.Tags != "" {
+			tags = strings.Split(mc.Tags, ",")
+		}
+		result[i] = domain.KnowledgeChunk{
+			ID:         mc.VectorID, // 使用向量数据库ID作为chunk ID
+			DocumentID: mc.DocumentID,
+			UserID:     mc.UserID,
+			Content:    mc.Content,
+			Tags:       tags,
+			Summary:    mc.Summary,
+			SourceRef:  mc.SourceRef,
+		}
+	}
+	return result
+}
+
+// backfillChunksToMySQL 异步回填切片到MySQL（懒加载迁移）
+func (b *salesRAGBiz) backfillChunksToMySQL(ctx context.Context, doc *model.KnowledgeDocument, chunks []domain.KnowledgeChunk) {
+	if len(chunks) == 0 {
+		return
+	}
+
+	modelChunks := make([]*model.KnowledgeChunk, len(chunks))
+	for i, chunk := range chunks {
+		modelChunks[i] = &model.KnowledgeChunk{
+			DocumentID:      doc.ID,
+			UserID:          doc.UserID,
+			Sequence:        i,
+			Content:         chunk.Content,
+			Summary:         chunk.Summary,
+			SourceRef:       chunk.SourceRef,
+			Tags:            strings.Join(chunk.Tags, ","),
+			VectorID:        chunk.ID,
+			EmbeddingStatus: "COMPLETED", // 已在向量数据库中
+		}
+	}
+
+	if err := b.ds.KnowledgeChunks().BatchCreate(ctx, modelChunks); err != nil {
+		log.Printf("Backfill failed for doc %d: %v", doc.ID, err)
+	} else {
+		log.Printf("Successfully backfilled %d chunks for doc %d", len(chunks), doc.ID)
+	}
 }

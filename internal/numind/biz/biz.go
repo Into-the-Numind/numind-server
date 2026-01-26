@@ -170,10 +170,10 @@ func NewBiz(ds store.IStore) *biz {
 		MaxChunkSize: 1000,
 		MinChunkSize: 100,
 	})
-	tagger := salesragservice.NewContentTagger(b.Ali())
+	tagger := salesragservice.NewContentTagger()
 
 	// Initialize Ingestion Pipeline (托管模式下不需要传 embedder)
-	pipeline := salesragservice.NewIngestionPipeline(parser, splitter, tagger, b.ds.KnowledgeDocuments(), vStore)
+	pipeline := salesragservice.NewIngestionPipeline(parser, splitter, tagger, b.ds.KnowledgeDocuments(), vStore, b.ds.KnowledgeChunks())
 
 	// 业务逻辑实现
 	salesRAGSvc := salesragservice.NewSalesRAGService(vStore, regexRouter)

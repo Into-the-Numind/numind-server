@@ -13,6 +13,8 @@ import (
 
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
 )
 
@@ -31,12 +33,13 @@ type DocumentStatusUpdater interface {
 
 // IngestionPipeline manages the end-to-end ingestion process
 type IngestionPipeline struct {
-	parser   PipelineParser
-	splitter *MarkdownSplitter
-	tagger   *ContentTagger
-	docStore DocumentStatusUpdater // 文档状态更新器
-	store    port.VectorStore
-	docChan  chan *domain.KnowledgeDocument
+	parser     PipelineParser
+	splitter   *MarkdownSplitter
+	tagger     *ContentTagger
+	docStore   DocumentStatusUpdater    // 文档状态更新器
+	store      port.VectorStore         // 向量数据库
+	chunkStore store.KnowledgeChunkStore // MySQL切片存储
+	docChan    chan *domain.KnowledgeDocument
 }
 
 func NewIngestionPipeline(
@@ -45,14 +48,16 @@ func NewIngestionPipeline(
 	tagger *ContentTagger,
 	docStore DocumentStatusUpdater,
 	store port.VectorStore,
+	chunkStore store.KnowledgeChunkStore,
 ) *IngestionPipeline {
 	p := &IngestionPipeline{
-		parser:   parser,
-		splitter: splitter,
-		tagger:   tagger,
-		docStore: docStore,
-		store:    store,
-		docChan:  make(chan *domain.KnowledgeDocument, 10),
+		parser:     parser,
+		splitter:   splitter,
+		tagger:     tagger,
+		docStore:   docStore,
+		store:      store,
+		chunkStore: chunkStore,
+		docChan:    make(chan *domain.KnowledgeDocument, 10),
 	}
 	// Start worker
 	go p.worker()
@@ -193,19 +198,30 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 		}
 	}
 
-	log.Printf("Submitting %d chunks to store (Managed Vectorization)", len(kChunks))
-
-	// 6. Store（存储）
+	// 6. 先存储到MySQL（主数据源，优先写入）
+	log.Printf("Storing %d chunks to MySQL for doc %d", len(kChunks), doc.ID)
 	kChunksVal := make([]domain.KnowledgeChunk, len(kChunks))
 	for i, c := range kChunks {
 		kChunksVal[i] = *c
 	}
 
-	err = p.store.Upsert(ctx, kChunksVal)
-	if err != nil {
-		p.fail(doc, fmt.Errorf("storage failed: %w", err))
+	if err := p.storeChunksToMySQL(ctx, doc, kChunksVal); err != nil {
+		p.fail(doc, fmt.Errorf("MySQL storage failed: %w", err))
 		return
 	}
+
+	// 7. 再存储到向量数据库（用于语义搜索）
+	log.Printf("Storing %d chunks to vector DB for doc %d", len(kChunks), doc.ID)
+	err = p.store.Upsert(ctx, kChunksVal)
+	if err != nil {
+		// 标记向量化失败，但MySQL已有数据
+		p.updateChunkEmbeddingStatus(ctx, doc.ID, "FAILED")
+		p.fail(doc, fmt.Errorf("vector storage failed: %w", err))
+		return
+	}
+
+	// 8. 标记向量化完成
+	p.updateChunkEmbeddingStatus(ctx, doc.ID, "COMPLETED")
 
 	// 更新状态为 COMPLETED，并回写 ChunkCount
 	if p.docStore != nil {
@@ -239,6 +255,51 @@ func (p *IngestionPipeline) fail(doc *domain.KnowledgeDocument, err error) {
 		ctx := context.Background()
 		if updateErr := p.docStore.UpdateStatus(ctx, doc.ID, string(domain.DocStatusFailed), err.Error()); updateErr != nil {
 			log.Printf("Failed to update status to FAILED: %v", updateErr)
+		}
+	}
+}
+
+// storeChunksToMySQL 将切片存储到MySQL
+func (p *IngestionPipeline) storeChunksToMySQL(ctx context.Context, doc *domain.KnowledgeDocument, chunks []domain.KnowledgeChunk) error {
+	if p.chunkStore == nil {
+		return fmt.Errorf("chunk store is not initialized")
+	}
+
+	modelChunks := make([]*model.KnowledgeChunk, len(chunks))
+	for i, chunk := range chunks {
+		modelChunks[i] = &model.KnowledgeChunk{
+			DocumentID:      doc.ID,
+			UserID:          doc.UserID,
+			Sequence:        i,
+			Content:         chunk.Content,
+			Summary:         chunk.Summary,
+			SourceRef:       chunk.SourceRef,
+			Tags:            strings.Join(chunk.Tags, ","),
+			VectorID:        chunk.ID, // 存储向量数据库ID
+			EmbeddingStatus: "PENDING",
+		}
+	}
+	return p.chunkStore.BatchCreate(ctx, modelChunks)
+}
+
+// updateChunkEmbeddingStatus 更新切片的向量化状态
+func (p *IngestionPipeline) updateChunkEmbeddingStatus(ctx context.Context, docID uint, status string) {
+	if p.chunkStore == nil {
+		return
+	}
+
+	// 获取文档的所有切片
+	chunks, err := p.chunkStore.ListByDocument(ctx, docID, 0)
+	if err != nil {
+		log.Printf("Failed to list chunks for status update: %v", err)
+		return
+	}
+
+	// 批量更新状态
+	for _, chunk := range chunks {
+		updates := map[string]interface{}{"embedding_status": status}
+		if err := p.chunkStore.UpdateColumns(ctx, chunk.ID, updates); err != nil {
+			log.Printf("Failed to update chunk %d status: %v", chunk.ID, err)
 		}
 	}
 }

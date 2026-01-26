@@ -11,16 +11,14 @@ import (
 	"sync"
 	"time"
 
-	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/biz/salesrag/domain"
 )
 
 type ContentTagger struct {
-	llm ali.AliBiz
 }
 
-func NewContentTagger(llm ali.AliBiz) *ContentTagger {
-	return &ContentTagger{llm: llm}
+func NewContentTagger() *ContentTagger {
+	return &ContentTagger{}
 }
 
 // TaggingResult structure matching JSON output from LLM
@@ -118,11 +116,11 @@ func (t *ContentTagger) analyze(ctx context.Context, text string) (*TaggingResul
 	return nil, fmt.Errorf("tagging failed after %d attempts: %w", maxRetries, lastErr)
 }
 
-// callDMXAPI invokes the Doubao-1.5-lite-32k model via DMXAPI
+// callDMXAPI invokes the qwen-turbo-latest model via DMXAPI
 func (t *ContentTagger) callDMXAPI(prompt string) (string, error) {
 	url := "https://www.dmxapi.cn/v1/chat/completions"
 	apiKey := "sk-XgINDoE22MHQfcSZnToYICS4rNnoknIrXhZHZYs3VQM9DP25" // User provided key
-	model := "Doubao-lite-32k"
+	model := "qwen-turbo-latest"
 
 	payload := map[string]interface{}{
 		"model": model,
