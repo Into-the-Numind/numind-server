@@ -1,12 +1,14 @@
 package salesrag
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"time"
@@ -58,6 +60,9 @@ type SalesRAGBiz interface {
 
 	// ChatWithSession 基于会话的流式对话（保存聊天记录）
 	ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, docIDs []uint, deepThinking bool, onEvent func(eventType string, data interface{}) error) error
+
+	// AnalyzeDocument 解析文档并生成客户档案
+	AnalyzeDocument(ctx context.Context, userID uint, file io.Reader, filename string) (string, error)
 }
 
 type IngestOptions struct {
@@ -66,9 +71,9 @@ type IngestOptions struct {
 }
 
 type UpdateDocumentRequest struct {
-	Description *string
-	Tags        []string
-	IsEnabled   *bool
+	Description *string  `json:"description"`
+	Tags        []string `json:"tags"`
+	IsEnabled   *bool    `json:"is_enabled"`
 }
 
 type CreateSessionRequest struct {
@@ -91,6 +96,7 @@ type salesRAGBiz struct {
 	ragSvc            *service.SalesRAGService
 	volcBiz           VolcBiz // 添加大模型服务依赖
 	sessionStore      store.SalesSessionStore
+	parser            service.PipelineParser
 }
 
 // VolcBiz 火山引擎服务接口（避免循环依赖）
@@ -100,13 +106,14 @@ type VolcBiz interface {
 	StreamChat(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
 }
 
-func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *service.SalesRAGService, volc VolcBiz, sessionStore store.SalesSessionStore) SalesRAGBiz {
+func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *service.SalesRAGService, volc VolcBiz, sessionStore store.SalesSessionStore, parser service.PipelineParser) SalesRAGBiz {
 	return &salesRAGBiz{
 		ds:                ds,
 		ingestionPipeline: pipeline,
 		ragSvc:            rag,
 		volcBiz:           volc,
 		sessionStore:      sessionStore,
+		parser:            parser,
 	}
 }
 
@@ -247,7 +254,7 @@ func (b *salesRAGBiz) Retrieve(ctx context.Context, query string, docIDs []uint)
 	// 3. 构建启用且已完成的文档ID白名单
 	enabledDocIDs := make(map[uint]bool)
 	for _, doc := range docs {
-		if doc.IsEnabled && doc.Status == string(domain.DocStatusCompleted) {
+		if doc.Status == string(domain.DocStatusCompleted) {
 			enabledDocIDs[doc.ID] = true
 		}
 	}
@@ -531,7 +538,7 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, docIDs [
 	// 3. 构建启用且已完成的文档ID白名单
 	enabledDocIDs := make(map[uint]bool)
 	for _, doc := range docs {
-		if doc.IsEnabled && doc.Status == string(domain.DocStatusCompleted) {
+		if doc.Status == string(domain.DocStatusCompleted) {
 			enabledDocIDs[doc.ID] = true
 		}
 	}
@@ -798,6 +805,10 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	}
 
 	// 3. 累积流式内容
+	// (Check implementation in original file, keeping it simple here as I am adding at the end of file for AnalyzeDocument)
+	// Actually I will append AnalyzeDocument at the end of the file or before ChatWithSession if needed.
+	// The prompt implies multiple chunks. I will add AnalyzeDocument at the end.
+
 	var fullContent strings.Builder
 	var verdictJSON string
 	var thinkingText string
@@ -914,4 +925,98 @@ func (b *salesRAGBiz) backfillChunksToMySQL(ctx context.Context, doc *model.Know
 	} else {
 		log.Printf("Successfully backfilled %d chunks for doc %d", len(chunks), doc.ID)
 	}
+}
+
+// AnalyzeDocument 解析文档并生成客户档案
+// 使用 dmxapi 的 qwen-turbo-latest 模型，不开启思维模式
+func (b *salesRAGBiz) AnalyzeDocument(ctx context.Context, userID uint, file io.Reader, filename string) (string, error) {
+	// 1. 解析文档内容
+	content, err := b.parser.Parse(ctx, file, filename)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse document: %w", err)
+	}
+
+	// 2. 截断 (避免 token 溢出)
+	maxLen := 50000
+	if len(content) > maxLen {
+		content = content[:maxLen] + "\n...(truncated)"
+	}
+
+	// 3. 构建提示词
+	systemPrompt := `你是一个专业的销售分析师。你的任务是根据提供的客户文档，提取并生成一份结构化的客户档案。
+请包含以下内容（如果文档中提及）：
+1. 客户基本信息（名称、行业、规模）
+2. 关键痛点与需求
+3. 目前的销售阶段推测
+4. 决策链信息
+5. 其它关键备注
+
+请直接输出Markdown格式的档案内容，不要包含其他开场白。`
+
+	// 4. 调用 dmxapi 的 qwen-turbo-latest 模型
+	return b.callDMXAPI(ctx, systemPrompt, "客户文档内容如下：\n\n"+content)
+}
+
+// callDMXAPI 调用 dmxapi 的 qwen-turbo-latest 模型
+func (b *salesRAGBiz) callDMXAPI(ctx context.Context, systemPrompt, userMessage string) (string, error) {
+	url := "https://www.dmxapi.cn/v1/chat/completions"
+	apiKey := "sk-XgINDoE22MHQfcSZnToYICS4rNnoknIrXhZHZYs3VQM9DP25"
+	model := "qwen-turbo-latest"
+
+	payload := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": userMessage},
+		},
+		"temperature": 0.5,
+		"max_tokens":  2000,
+	}
+
+	bodyBytes, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("create request failed: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", apiKey)
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("DMXAPI request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("DMXAPI error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Error *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decode response failed: %w", err)
+	}
+
+	if result.Error != nil {
+		return "", fmt.Errorf("DMXAPI error: %s - %s", result.Error.Code, result.Error.Message)
+	}
+
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("empty choices from DMXAPI")
+	}
+
+	return result.Choices[0].Message.Content, nil
 }

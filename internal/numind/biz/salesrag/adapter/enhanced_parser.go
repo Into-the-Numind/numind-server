@@ -450,7 +450,8 @@ func (p *EnhancedParser) formatText(text string) string {
 
 // extractTextFromDOCX 从DOCX文件中提取文本，优先使用 Python 增强解析
 func (p *EnhancedParser) extractTextFromDOCX(data []byte) (string, error) {
-	text, _, err := p.extractTextFromPDFEnhanced(data)
+	// 使用专门的 DOCX 增强解析器（正确的文件后缀）
+	text, err := p.extractTextFromDOCXEnhanced(data)
 	if err == nil && text != "" {
 		log.Infow("Successfully extracted DOCX using enhanced Python parser")
 		return text, nil
@@ -458,6 +459,57 @@ func (p *EnhancedParser) extractTextFromDOCX(data []byte) (string, error) {
 
 	log.Warnw("Enhanced DOCX parsing failed, falling back to legacy XML parser", "error", err)
 	return p.extractTextFromDOCXLegacy(data)
+}
+
+// extractTextFromDOCXEnhanced 使用外部 Python 脚本进行 DOCX 高质量解析
+func (p *EnhancedParser) extractTextFromDOCXEnhanced(data []byte) (string, error) {
+	// 创建临时文件 - 注意使用 .docx 后缀，这样 Python 脚本才能正确识别文件类型
+	tmpFile, err := os.CreateTemp("", "docx_upload_*.docx")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		return "", fmt.Errorf("failed to write data to temp file: %w", err)
+	}
+
+	// 执行 Python 脚本
+	scriptPath := "scripts/document_parser.py"
+	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+		// 尝试 Docker 容器内的常见路径
+		scriptPath = "/app/scripts/document_parser.py"
+		if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+			return "", fmt.Errorf("python parser script not found")
+		}
+	}
+
+	cmd := exec.Command("python3", scriptPath, tmpFile.Name())
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("python script execution failed: %v, stderr: %s", err, stderr.String())
+	}
+
+	// 解析输出的 JSON
+	var result struct {
+		Success bool   `json:"success"`
+		Content string `json:"content"`
+		Error   string `json:"error"`
+	}
+
+	if err := json.Unmarshal([]byte(stdout.String()), &result); err != nil {
+		return "", fmt.Errorf("failed to parse python output: %w", err)
+	}
+
+	if !result.Success {
+		return "", fmt.Errorf("python extraction error: %s", result.Error)
+	}
+
+	return result.Content, nil
 }
 
 // extractTextFromDOCXLegacy 原有的 DOCX XML 解析逻辑

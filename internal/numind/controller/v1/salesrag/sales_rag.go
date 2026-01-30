@@ -34,6 +34,7 @@ func (ctrl *SalesRAGController) Ingest(c *gin.Context) {
 	defer file.Close()
 
 	// Parse additional fields
+	name := c.DefaultPostForm("name", "")
 	description := c.DefaultPostForm("description", "")
 	tagsStr := c.DefaultPostForm("tags", "")
 
@@ -58,7 +59,13 @@ func (ctrl *SalesRAGController) Ingest(c *gin.Context) {
 		return
 	}
 
-	docID, err := ctrl.b.SalesRAG().Ingest(c, user.ID, header.Filename, file, opts)
+	// 使用用户输入的名称，如果未提供则回退到文件名
+	displayName := name
+	if displayName == "" {
+		displayName = header.Filename
+	}
+
+	docID, err := ctrl.b.SalesRAG().Ingest(c, user.ID, displayName, file, opts)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
@@ -602,4 +609,28 @@ func (ctrl *SalesRAGController) RenameSession(c *gin.Context) {
 	}
 
 	core.WriteResponse(c, nil, map[string]string{"message": "Session renamed successfully"})
+}
+
+// AnalyzeProfile 解析上传的文档生成客户档案
+func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+	defer file.Close()
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	profile, err := ctrl.b.SalesRAG().AnalyzeDocument(c, user.ID, file, header.Filename)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, map[string]string{"profile": profile})
 }

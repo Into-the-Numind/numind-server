@@ -181,7 +181,7 @@ func NewBiz(ds store.IStore) *biz {
 	// 创建 SalesSessionStore
 	salesSessionStore := store.NewSalesSessionStore(b.ds.DB())
 
-	b.salesRAGService = salesrag.NewSalesRAGBiz(b.ds, pipeline, salesRAGSvc, b.Volc(), salesSessionStore)
+	b.salesRAGService = salesrag.NewSalesRAGBiz(b.ds, pipeline, salesRAGSvc, b.Volc(), salesSessionStore, parser)
 
 	return b
 }
