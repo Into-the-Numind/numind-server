@@ -31,8 +31,9 @@ type SalesRAGBiz interface {
 	// Retrieve 检索知识（非流式）
 	Retrieve(ctx context.Context, query string, docIDs []uint) (*service.RetrievalVerdict, error)
 	// RetrieveStream 流式检索知识并生成回答
+	// chatMode: "sales" (销售话术) 或 "free" (自由讨论)
 	// onEvent: 事件回调，eventType 可为 "verdict"/"token"/"error"/"done"
-	RetrieveStream(ctx context.Context, query string, docIDs []uint, deepThinking bool, onEvent func(eventType string, data interface{}) error) error
+	RetrieveStream(ctx context.Context, query string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error
 	// ListDocuments 获取用户的文档列表
 	ListDocuments(ctx context.Context, userID uint) ([]domain.KnowledgeDocument, error)
 	// GetDocument 获取单个文档详情
@@ -60,7 +61,8 @@ type SalesRAGBiz interface {
 	RenameSession(ctx context.Context, userID uint, sessionID uint, newTitle string) error
 
 	// ChatWithSession 基于会话的流式对话（保存聊天记录）
-	ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, docIDs []uint, deepThinking bool, onEvent func(eventType string, data interface{}) error) error
+	// chatMode: "sales" (销售话术模式) 或 "free" (自由讨论模式)
+	ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error
 
 	// AnalyzeDocument 解析文档并生成客户档案
 	AnalyzeDocument(ctx context.Context, userID uint, file io.Reader, filename string) (string, error)
@@ -523,7 +525,9 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, verdict 
 // - "token": data 为 string，回答的增量 token
 // - "error": data 为 string，错误消息
 // - "done": data 为 nil，流式完成
-func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, docIDs []uint, deepThinking bool, onEvent func(eventType string, data interface{}) error) error {
+// RetrieveStream 流式检索知识并生成回答
+// chatMode: "sales" (销售话术) 或 "free" (自由讨论)
+func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error {
 	// 1. 从上下文获取用户ID
 	var userID uint
 	if uid, ok := ctx.Value("userID").(uint); ok {
@@ -576,8 +580,8 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, docIDs [
 		return onEvent("done", nil)
 	}
 
-	// 6. 执行检索
-	verdict, err := b.ragSvc.RetrieveForResponse(ctx, query, filteredDocIDs)
+	// 6. 执行检索（使用 V2 版本，传递 chatMode）
+	verdict, err := b.ragSvc.RetrieveForResponseV2(ctx, query, filteredDocIDs, nil, chatMode)
 	if err != nil {
 		return onEvent("error", fmt.Sprintf("retrieval failed: %v", err))
 	}
@@ -820,7 +824,8 @@ func (b *salesRAGBiz) GetCustomerProfile(ctx context.Context, userID uint, sessi
 }
 
 // ChatWithSession 基于会话的流式对话（保存聊天记录）
-func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, docIDs []uint, deepThinking bool, onEvent func(eventType string, data interface{}) error) error {
+// chatMode: "sales" (销售话术模式) 或 "free" (自由讨论模式)
+func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error {
 	// 1. 验证会话
 	session, err := b.sessionStore.GetSession(ctx, sessionID, userID)
 	if err != nil {
@@ -849,7 +854,7 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	var thinkingText string
 
 	// 4. 调用流式检索，累积内容
-	err = b.RetrieveStream(ctx, query, docIDs, deepThinking, func(eventType string, data interface{}) error {
+	err = b.RetrieveStream(ctx, query, docIDs, deepThinking, chatMode, func(eventType string, data interface{}) error {
 		switch eventType {
 		case "verdict":
 			// 序列化 verdict 为 JSON

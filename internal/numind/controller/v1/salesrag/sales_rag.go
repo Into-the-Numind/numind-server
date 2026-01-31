@@ -88,11 +88,17 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 		Query        string `json:"query" binding:"required"`
 		DocumentIDs  []uint `json:"document_ids"`
 		DeepThinking bool   `json:"deep_thinking"`
+		ChatMode     string `json:"chat_mode"` // "sales" (销售话术) 或 "free" (自由讨论)
 	}
 
 	if err := c.ShouldBindJSON(&r); err != nil {
 		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
 		return
+	}
+
+	// 设置默认模式
+	if r.ChatMode == "" {
+		r.ChatMode = "sales"
 	}
 
 	user := middleware.GetCurrentUser(c)
@@ -114,7 +120,7 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 	w := c.Writer
 
 	// 调用基于会话的流式检索方法（会自动保存消息）
-	err = ctrl.b.SalesRAG().ChatWithSession(newCtx, user.ID, uint(sessionID), r.Query, r.DocumentIDs, r.DeepThinking,
+	err = ctrl.b.SalesRAG().ChatWithSession(newCtx, user.ID, uint(sessionID), r.Query, r.DocumentIDs, r.DeepThinking, r.ChatMode,
 		func(eventType string, data interface{}) error {
 			var eventData []byte
 			var marshalErr error

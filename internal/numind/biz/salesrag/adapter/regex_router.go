@@ -26,7 +26,8 @@ func NewRegexRouter() *RegexRouter {
 }
 
 // AnalyzeIntentV2 分析用户意图并生成搜索策略（V2 接口实现）
-func (r *RegexRouter) AnalyzeIntentV2(ctx context.Context, query string, history []string) (*port.IntentAnalysisResult, error) {
+// chatMode 参数在 RegexRouter 中被忽略（仅 LLMRouter 支持）
+func (r *RegexRouter) AnalyzeIntentV2(ctx context.Context, query string, history []string, chatMode string) (*port.IntentAnalysisResult, error) {
 	intent, rewrite, err := r.AnalyzeIntent(ctx, query, history)
 	if err != nil {
 		return nil, err

@@ -27,17 +27,20 @@ const (
 
 // IntentAnalysisResult 意图分析结果（包含多路搜索 Query）
 type IntentAnalysisResult struct {
-	Intent        IntentType `json:"intent"`         // 主要意图
-	SearchQueries []string   `json:"search_queries"` // 生成的多路搜索词（已改写消歧）
-	Reason        string     `json:"reason"`         // 判断依据
+	Intent           IntentType `json:"intent"`            // 主要意图
+	SearchQueries    []string   `json:"search_queries"`    // 生成的多路搜索词（已改写消歧）
+	Reason           string     `json:"reason"`            // 判断依据
+	SalesInstruction string     `json:"sales_instruction"` // [free模式专用] 销售指令（如果有）
+	CustomerMessage  string     `json:"customer_message"`  // [free模式专用] 客户原始消息
 }
 
 // IntentRouter 意图路由器接口
 type IntentRouter interface {
 	// AnalyzeIntentV2 分析用户意图并生成搜索策略（V2）
+	// chatMode: "sales"（销售话术模式-输入为纯客户消息）或 "free"（自由讨论模式-输入可能包含销售指令+客户消息）
 	// history: 最近的聊天记录，用于指代消歧
 	// 返回: 意图分析结果（包含多路搜索词）
-	AnalyzeIntentV2(ctx context.Context, query string, history []string) (*IntentAnalysisResult, error)
+	AnalyzeIntentV2(ctx context.Context, query string, history []string, chatMode string) (*IntentAnalysisResult, error)
 
 	// AnalyzeIntent 旧版接口，保持向后兼容
 	// Deprecated: 请使用 AnalyzeIntentV2

@@ -63,8 +63,8 @@ func (s *SalesRAGService) RetrieveForResponse(
 	query string,
 	docIDs []uint,
 ) (*RetrievalVerdict, error) {
-	// 直接调用 V2 接口
-	return s.RetrieveForResponseV2(ctx, query, docIDs, nil)
+	// 直接调用 V2 接口，默认使用 sales 模式
+	return s.RetrieveForResponseV2(ctx, query, docIDs, nil, "sales")
 }
 
 // RetrieveForResponseV2 V2 版检索流程
@@ -73,15 +73,17 @@ func (s *SalesRAGService) RetrieveForResponse(
 // 3. 聚合去重
 // 4. LLM Rerank (qwen3-rerank) - 返回 Top N 索引
 // 5. 组装最终 Evidence
+// chatMode: "sales" (销售话术模式) 或 "free" (自由讨论模式)
 func (s *SalesRAGService) RetrieveForResponseV2(
 	ctx context.Context,
 	query string,
 	docIDs []uint,
 	history []string,
+	chatMode string,
 ) (*RetrievalVerdict, error) {
 
 	// 1. 意图分析 + Query 生成 (LLM: qwen-turbo-latest)
-	intentResult, err := s.router.AnalyzeIntentV2(ctx, query, history)
+	intentResult, err := s.router.AnalyzeIntentV2(ctx, query, history, chatMode)
 	if err != nil {
 		return nil, fmt.Errorf("intent analysis failed: %w", err)
 	}
