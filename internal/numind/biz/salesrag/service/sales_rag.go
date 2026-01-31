@@ -23,6 +23,7 @@ type RetrievalVerdict struct {
 	// V2 扩展字段
 	Intent        port.IntentType `json:"intent,omitempty"`         // 识别的意图
 	SearchQueries []string        `json:"search_queries,omitempty"` // 多路搜索词
+	ChatMode      string          `json:"chat_mode,omitempty"`      // 对话模式 (sales/free)
 }
 
 // SalesRAGService 销售智能体 RAG 服务
@@ -93,6 +94,7 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 		Intent:        intentResult.Intent,
 		SearchQueries: intentResult.SearchQueries,
 		Reason:        intentResult.Reason,
+		ChatMode:      chatMode,
 	}
 
 	// 设置 RewriteQuery 为第一个搜索词（兼容 V1）

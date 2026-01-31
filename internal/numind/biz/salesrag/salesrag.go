@@ -624,62 +624,85 @@ func (b *salesRAGBiz) buildPromptMessages(query string, verdict *service.Retriev
 func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.RetrievalVerdict) []adapter.ChatMessage {
 	// 如果是闲聊
 	if verdict.IsChitChat {
+		var content string
+		if verdict.ChatMode == "sales" {
+			// Sales 模式：直接回复内容
+			content = "请直接回复这句话，语气轻松自然，不要带任何解释。"
+		} else {
+			// Free 模式：助手风格
+			content = "你是一个专业、友好的销售智能助手。请用简洁、自然的方式回复用户的问候或闲聊。"
+		}
 		return []adapter.ChatMessage{
-			{
-				Role:    "system",
-				Content: "你是一个专业、友好的销售智能助手。请用简洁、自然的方式回复用户的问候或闲聊。",
-			},
-			{
-				Role:    "user",
-				Content: query,
-			},
+			{Role: "system", Content: content},
+			{Role: "user", Content: query},
 		}
 	}
 
 	// 合并所有检索到的知识
 	allChunks := verdict.Evidence
 
-	if len(allChunks) == 0 {
-		return []adapter.ChatMessage{
-			{
-				Role:    "system",
-				Content: "你是一个专业的销售智能助手。由于知识库中没有找到相关信息，请基于你的通用知识给出专业、有帮助的销售话术建议。",
-			},
-			{
-				Role:    "user",
-				Content: fmt.Sprintf("客户说：\"%s\"\n\n请帮我生成合适的回复话术。", query),
-			},
-		}
-	}
-
 	// 构建知识上下文（所有 reranked chunks）
 	var contextParts []string
-	for i, chunk := range allChunks {
-		contextParts = append(contextParts, fmt.Sprintf("[知识%d] %s", i+1, chunk.Content))
+	if len(allChunks) > 0 {
+		for i, chunk := range allChunks {
+			contextParts = append(contextParts, fmt.Sprintf("[知识%d] %s", i+1, chunk.Content))
+		}
 	}
 	knowledgeContext := strings.Join(contextParts, "\n\n")
+	if knowledgeContext == "" {
+		knowledgeContext = "（知识库中未找到相关内容，请基于通用销售经验回答）"
+	}
 
 	// 获取意图描述
 	intentDesc := getIntentDescription(string(verdict.Intent))
 
-	// 销售 Copilot 优化的系统提示词
-	systemPrompt := fmt.Sprintf(`你是一位资深的销售顾问助手，正在帮助销售人员回复客户消息。
+	var systemPrompt string
+	var userMessage string
+
+	if verdict.ChatMode == "free" {
+		// ========== Free 模式 (顾问/教练模式) ==========
+		systemPrompt = fmt.Sprintf(`你是一位资深的销售顾问助手，正在帮助销售人员回复客户消息。
 
 ## 客户意图分析
 %s
 
 ## 你的任务
-基于以下知识库内容，为销售人员生成合适的回复话术。
+基于以下知识库内容，为销售人员生成合适的回复话术建议。
 
 ## 回复要求
-1. 语气要专业但亲切，适合微信聊天场景
-2. 回复要简洁有力，不要太长
+1. 语气专业但亲切，适合微信聊天场景
+2. 先给出分析或建议，再提供具体话术
 3. 如果是异议处理，先共情再引导
 4. 不要虚构知识库中没有的信息
 5. 可以生成多个风格的回复供选择（如：专业风、亲和风）
 
 ## 知识库内容
 %s`, intentDesc, knowledgeContext)
+
+		userMessage = fmt.Sprintf("客户说：\"%s\"\n\n请帮我生成合适的回复话术。", query)
+
+	} else {
+		// ========== Sales 模式 (角色扮演模式) ==========
+		systemPrompt = fmt.Sprintf(`你就是一位专业的销售人员（不是助手）。现在客户发来了消息，请直接回复客户。
+
+## 客户意图分析
+%s
+
+## 你的任务
+参考知识库内容，直接生成回复给客户的内容。
+
+## 核心要求
+1. 【至关重要】直接输出回复内容，**不要**包含任何"建议您"、"您可以这样回"、"话术如下"等解释性语言
+2. 语气自然、真诚，像真人在微信聊天
+3. 也就是第一人称（"我"）回复客户（"您"）
+4. 如果有知识库内容，必须基于知识库回答；如果没有，用通用销售技巧应答
+5. 简洁有力，不要长篇大论
+
+## 知识库内容
+%s`, intentDesc, knowledgeContext)
+
+		userMessage = query // 直接把 query 作为用户输入，模拟真实对话
+	}
 
 	return []adapter.ChatMessage{
 		{
@@ -688,7 +711,7 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 		},
 		{
 			Role:    "user",
-			Content: fmt.Sprintf("客户说：\"%s\"\n\n请帮我生成合适的回复话术。", query),
+			Content: userMessage,
 		},
 	}
 }
