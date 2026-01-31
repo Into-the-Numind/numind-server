@@ -33,7 +33,7 @@ type SalesRAGBiz interface {
 	// RetrieveStream 流式检索知识并生成回答
 	// chatMode: "sales" (销售话术) 或 "free" (自由讨论)
 	// onEvent: 事件回调，eventType 可为 "verdict"/"token"/"error"/"done"
-	RetrieveStream(ctx context.Context, query string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error
+	RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error
 	// ListDocuments 获取用户的文档列表
 	ListDocuments(ctx context.Context, userID uint) ([]domain.KnowledgeDocument, error)
 	// GetDocument 获取单个文档详情
@@ -527,7 +527,7 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, verdict 
 // - "done": data 为 nil，流式完成
 // RetrieveStream 流式检索知识并生成回答
 // chatMode: "sales" (销售话术) 或 "free" (自由讨论)
-func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error {
+func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error {
 	// 1. 从上下文获取用户ID
 	var userID uint
 	if uid, ok := ctx.Value("userID").(uint); ok {
@@ -580,8 +580,8 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, docIDs [
 		return onEvent("done", nil)
 	}
 
-	// 6. 执行检索（使用 V2 版本，传递 chatMode）
-	verdict, err := b.ragSvc.RetrieveForResponseV2(ctx, query, filteredDocIDs, nil, chatMode)
+	// 6. 执行检索（使用 V2 版本，传递 chatMode 和 history）
+	verdict, err := b.ragSvc.RetrieveForResponseV2(ctx, query, filteredDocIDs, history, chatMode)
 	if err != nil {
 		return onEvent("error", fmt.Sprintf("retrieval failed: %v", err))
 	}
@@ -683,6 +683,7 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 
 	} else {
 		// ========== Sales 模式 (角色扮演模式) ==========
+		// 优化：强约束风格，禁止列表，强调口语化
 		systemPrompt = fmt.Sprintf(`你就是一位专业的销售人员（不是助手）。现在客户发来了消息，请直接回复客户。
 
 ## 客户意图分析
@@ -691,17 +692,27 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 ## 你的任务
 参考知识库内容，直接生成回复给客户的内容。
 
-## 核心要求
-1. 【至关重要】直接输出回复内容，**不要**包含任何"建议您"、"您可以这样回"、"话术如下"等解释性语言
-2. 语气自然、真诚，像真人在微信聊天
-3. 也就是第一人称（"我"）回复客户（"您"）
-4. 如果有知识库内容，必须基于知识库回答；如果没有，用通用销售技巧应答
-5. 简洁有力，不要长篇大论
+## 🚫 严格禁止 (Negative Constraints)
+1. **禁止使用列表**：绝对不要用 "1. 2. 3." 或 "- " 符号列表
+2. **禁止解释**：绝对不要出现 "建议您"、"您可以这样回"、"话术如下"、"首先...其次..."
+3. **禁止长篇大论**：不要写小作文，长话短说
+
+## ✅ 核心要求
+1. **极度口语化**：像微信聊天一样，使用 "其实"、"不过"、"那个" 等连接词
+2. **第一人称**：直接用 "我" 回复 "您/你"
+3. **分段发送**：如果内容较多，请直接换行，模拟发送了两条消息
+4. **基于知识**：优先用知识库内容，没有则用通用技巧
 
 ## 知识库内容
 %s`, intentDesc, knowledgeContext)
 
-		userMessage = query // 直接把 query 作为用户输入，模拟真实对话
+		userMessage = query
+	}
+
+	// 注入历史记录上下文
+	if len(verdict.History) > 0 {
+		historyStr := strings.Join(verdict.History, "\n")
+		systemPrompt += fmt.Sprintf("\n\n## 对话历史上下文\n%s", historyStr)
 	}
 
 	return []adapter.ChatMessage{
@@ -849,10 +860,35 @@ func (b *salesRAGBiz) GetCustomerProfile(ctx context.Context, userID uint, sessi
 // ChatWithSession 基于会话的流式对话（保存聊天记录）
 // chatMode: "sales" (销售话术模式) 或 "free" (自由讨论模式)
 func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error {
-	// 1. 验证会话
-	session, err := b.sessionStore.GetSession(ctx, sessionID, userID)
+	// 1. 验证会话并加载历史消息
+	session, err := b.sessionStore.GetSessionWithMessages(ctx, sessionID, userID)
 	if err != nil {
 		return fmt.Errorf("failed to get session: %w", err)
+	}
+
+	// 提取最近历史消息（例如最近 10 条）
+	// 注意：session.Messages 是按时间正序排列的
+	var history []string
+	if len(session.Messages) > 0 {
+		start := 0
+		if len(session.Messages) > 10 {
+			start = len(session.Messages) - 10
+		}
+		recentMsgs := session.Messages[start:]
+		for _, m := range recentMsgs {
+			// 格式化为 "Role: Content" 供参考，但 Analyzer 可能需要纯文本列表
+			// Analyzer 期望的是 []string representing history turns
+			// 通常建议是 "User: xxx", "Assistant: yyy"
+			// 根据 LLMRouter Prompt，它直接把 history strings join 起来。
+			// 所以我们需要表明角色。
+			roleName := "销售"
+			if m.Role == "user" {
+				roleName = "客户"
+			} else if m.Role == "assistant" {
+				roleName = "销售助手"
+			}
+			history = append(history, fmt.Sprintf("%s: %s", roleName, m.Content))
+		}
 	}
 
 	// 2. 保存用户消息
@@ -877,7 +913,7 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	var thinkingText string
 
 	// 4. 调用流式检索，累积内容
-	err = b.RetrieveStream(ctx, query, docIDs, deepThinking, chatMode, func(eventType string, data interface{}) error {
+	err = b.RetrieveStream(ctx, query, history, docIDs, deepThinking, chatMode, func(eventType string, data interface{}) error {
 		switch eventType {
 		case "verdict":
 			// 序列化 verdict 为 JSON
