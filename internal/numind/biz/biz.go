@@ -162,7 +162,8 @@ func NewBiz(ds store.IStore) *biz {
 		vStore, _ = adapter.NewChromemStore(salesDBPath, "sales_knowledge", embedder)
 	}
 
-	regexRouter := adapter.NewRegexRouter()
+	// 初始化 LLM 意图路由器（V2: 使用 DMXAPI qwen-turbo-latest）
+	llmRouter := adapter.NewLLMRouter()
 
 	// Initialize Pipeline Components
 	parser := adapter.NewEnhancedParser()
@@ -175,8 +176,8 @@ func NewBiz(ds store.IStore) *biz {
 	// Initialize Ingestion Pipeline (托管模式下不需要传 embedder)
 	pipeline := salesragservice.NewIngestionPipeline(parser, splitter, tagger, b.ds.KnowledgeDocuments(), vStore, b.ds.KnowledgeChunks())
 
-	// 业务逻辑实现
-	salesRAGSvc := salesragservice.NewSalesRAGService(vStore, regexRouter)
+	// 业务逻辑实现（使用 LLMRouter）
+	salesRAGSvc := salesragservice.NewSalesRAGService(vStore, llmRouter)
 
 	// 创建 SalesSessionStore
 	salesSessionStore := store.NewSalesSessionStore(b.ds.DB())

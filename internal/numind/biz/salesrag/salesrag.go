@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/store"
@@ -94,9 +95,10 @@ type salesRAGBiz struct {
 	ds                store.IStore
 	ingestionPipeline *service.IngestionPipeline
 	ragSvc            *service.SalesRAGService
-	volcBiz           VolcBiz // 添加大模型服务依赖
+	volcBiz           VolcBiz // 添加大模型服务依赖（保留用于 fallback）
 	sessionStore      store.SalesSessionStore
 	parser            service.PipelineParser
+	dmxClient         *adapter.DMXAPIClient // DMXAPI 客户端（用于 DeepSeek-V3.2）
 }
 
 // VolcBiz 火山引擎服务接口（避免循环依赖）
@@ -114,6 +116,7 @@ func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *s
 		volcBiz:           volc,
 		sessionStore:      sessionStore,
 		parser:            parser,
+		dmxClient:         adapter.NewDMXAPIClient(),
 	}
 }
 
@@ -585,19 +588,11 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, docIDs [
 	}
 
 	// 8. 构建 prompt 并流式生成回答
-	messages := b.buildPromptMessages(query, verdict)
+	messages := b.buildPromptMessagesV2(query, verdict)
 
-	// 9. 调用流式聊天
-	_, err = b.volcBiz.StreamChat(ctx, messages, 1000, 0.7, deepThinking, func(event string, token string) error {
-		// 根据事件类型发送不同的事件
-		switch event {
-		case "thinking":
-			return onEvent("thinking", token)
-		case "message":
-			return onEvent("token", token) // 保持向前兼容，前端仍然接收 "token"
-		default:
-			return nil
-		}
+	// 9. 调用 DMXAPI DeepSeek-V3.2 流式聊天（非思考模式）
+	_, err = b.dmxClient.StreamChatCompletion(ctx, "DeepSeek-V3.2", messages, 0.7, 2000, func(content string) error {
+		return onEvent("token", content)
 	})
 	if err != nil {
 		return onEvent("error", fmt.Sprintf("stream chat failed: %v", err))
@@ -607,18 +602,32 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, docIDs [
 	return onEvent("done", nil)
 }
 
-// buildPromptMessages 根据检索结果构建 prompt 消息
+// buildPromptMessages 根据检索结果构建 prompt 消息 (V1 兼容)
+// Deprecated: 请使用 buildPromptMessagesV2
 func (b *salesRAGBiz) buildPromptMessages(query string, verdict *service.RetrievalVerdict) []map[string]string {
+	messagesV2 := b.buildPromptMessagesV2(query, verdict)
+	result := make([]map[string]string, len(messagesV2))
+	for i, msg := range messagesV2 {
+		result[i] = map[string]string{
+			"role":    msg.Role,
+			"content": msg.Content,
+		}
+	}
+	return result
+}
+
+// buildPromptMessagesV2 根据检索结果构建 prompt 消息（销售 Copilot 优化版）
+func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.RetrievalVerdict) []adapter.ChatMessage {
 	// 如果是闲聊
 	if verdict.IsChitChat {
-		return []map[string]string{
+		return []adapter.ChatMessage{
 			{
-				"role":    "system",
-				"content": "你是一个专业、友好的销售智能助手。请用简洁、自然的方式回复用户的问候或闲聊。",
+				Role:    "system",
+				Content: "你是一个专业、友好的销售智能助手。请用简洁、自然的方式回复用户的问候或闲聊。",
 			},
 			{
-				"role":    "user",
-				"content": query,
+				Role:    "user",
+				Content: query,
 			},
 		}
 	}
@@ -627,48 +636,74 @@ func (b *salesRAGBiz) buildPromptMessages(query string, verdict *service.Retriev
 	allChunks := verdict.Evidence
 
 	if len(allChunks) == 0 {
-		return []map[string]string{
+		return []adapter.ChatMessage{
 			{
-				"role":    "system",
-				"content": "你是一个专业的销售智能助手。由于知识库中没有找到相关信息，请基于你的通用知识给出专业、有帮助的回答。",
+				Role:    "system",
+				Content: "你是一个专业的销售智能助手。由于知识库中没有找到相关信息，请基于你的通用知识给出专业、有帮助的销售话术建议。",
 			},
 			{
-				"role":    "user",
-				"content": query,
+				Role:    "user",
+				Content: fmt.Sprintf("客户说：\"%s\"\n\n请帮我生成合适的回复话术。", query),
 			},
 		}
 	}
 
-	// 构建知识上下文
+	// 构建知识上下文（所有 reranked chunks）
 	var contextParts []string
 	for i, chunk := range allChunks {
 		contextParts = append(contextParts, fmt.Sprintf("[知识%d] %s", i+1, chunk.Content))
-		if i >= 4 {
-			break
-		}
 	}
 	knowledgeContext := strings.Join(contextParts, "\n\n")
 
-	// 使用通用的系统提示词
-	systemPrompt := `你是一个专业的销售智能助手。
+	// 获取意图描述
+	intentDesc := getIntentDescription(string(verdict.Intent))
 
-你的任务是基于提供的知识库信息，准确、友好地回答用户的问题。请注意：
-1. 准确引用知识库中的内容，不要虚构信息
-2. 用友好、专业的语气回答
-3. 如果知识库中没有直接答案，可以引导用户提供更多信息
+	// 销售 Copilot 优化的系统提示词
+	systemPrompt := fmt.Sprintf(`你是一位资深的销售顾问助手，正在帮助销售人员回复客户消息。
 
-知识库内容：
-` + knowledgeContext
+## 客户意图分析
+%s
 
-	return []map[string]string{
+## 你的任务
+基于以下知识库内容，为销售人员生成合适的回复话术。
+
+## 回复要求
+1. 语气要专业但亲切，适合微信聊天场景
+2. 回复要简洁有力，不要太长
+3. 如果是异议处理，先共情再引导
+4. 不要虚构知识库中没有的信息
+5. 可以生成多个风格的回复供选择（如：专业风、亲和风）
+
+## 知识库内容
+%s`, intentDesc, knowledgeContext)
+
+	return []adapter.ChatMessage{
 		{
-			"role":    "system",
-			"content": systemPrompt,
+			Role:    "system",
+			Content: systemPrompt,
 		},
 		{
-			"role":    "user",
-			"content": query,
+			Role:    "user",
+			Content: fmt.Sprintf("客户说：\"%s\"\n\n请帮我生成合适的回复话术。", query),
 		},
+	}
+}
+
+// getIntentDescription 获取意图的中文描述
+func getIntentDescription(intent string) string {
+	switch intent {
+	case "OBJECTION":
+		return "客户正在表达异议或抗拒（如嫌贵、犹豫、质疑）。需要先共情，再引导价值认知。"
+	case "COMPARISON":
+		return "客户在比较竞品或进行选型。需要突出差异化优势，扬长避短。"
+	case "INQUIRY":
+		return "客户在咨询产品信息。需要准确、专业地回答，并适当引导。"
+	case "BUYING_PROOF":
+		return "客户表现出购买意向或需要案例佐证。需要积极推进，提供信任背书。"
+	case "CHIT_CHAT":
+		return "客户在闲聊。保持轻松友好，拉近关系。"
+	default:
+		return "客户意图待分析。"
 	}
 }
 
