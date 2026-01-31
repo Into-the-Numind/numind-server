@@ -14,7 +14,6 @@ func TestKnowledgeChunkValidation(t *testing.T) {
 	chunk := domain.KnowledgeChunk{
 		ID:         "chunk_1",
 		Content:    "产品价格是100元。",
-		SalesStage: []domain.SalesStage{domain.StageNegotiation},
 		DocumentID: 1,
 	}
 	assert.Nil(t, chunk.Validate())

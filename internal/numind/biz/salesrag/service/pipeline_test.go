@@ -10,11 +10,12 @@ import (
 	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/pkg/model"
 
 	"github.com/stretchr/testify/assert"
 )
 
-// MockStore
+// MockStore 用于测试的 Mock VectorStore
 type MockStore struct {
 	UpsertFunc func(ctx context.Context, chunks []domain.KnowledgeChunk) error
 }
@@ -31,6 +32,43 @@ func (m *MockStore) Search(ctx context.Context, query string, filter port.Search
 func (m *MockStore) DeleteByDocumentID(ctx context.Context, documentID uint) error {
 	return nil
 }
+func (m *MockStore) FetchByDocumentID(ctx context.Context, documentID uint, limit int) ([]domain.KnowledgeChunk, error) {
+	return nil, nil
+}
+
+// MockChunkStore 用于测试的 Mock KnowledgeChunkStore
+type MockChunkStore struct{}
+
+func (m *MockChunkStore) Create(ctx context.Context, chunk *model.KnowledgeChunk) error {
+	return nil
+}
+func (m *MockChunkStore) BatchCreate(ctx context.Context, chunks []*model.KnowledgeChunk) error {
+	return nil
+}
+func (m *MockChunkStore) GetByID(ctx context.Context, id uint) (*model.KnowledgeChunk, error) {
+	return nil, nil
+}
+func (m *MockChunkStore) ListByDocument(ctx context.Context, documentID uint, limit int) ([]*model.KnowledgeChunk, error) {
+	return nil, nil
+}
+func (m *MockChunkStore) ListByDocumentAndUser(ctx context.Context, documentID uint, userID uint, limit int) ([]*model.KnowledgeChunk, error) {
+	return nil, nil
+}
+func (m *MockChunkStore) Update(ctx context.Context, chunk *model.KnowledgeChunk) error {
+	return nil
+}
+func (m *MockChunkStore) UpdateColumns(ctx context.Context, id uint, updates map[string]interface{}) error {
+	return nil
+}
+func (m *MockChunkStore) DeleteByDocument(ctx context.Context, documentID uint) error {
+	return nil
+}
+func (m *MockChunkStore) GetByVectorID(ctx context.Context, vectorID string) (*model.KnowledgeChunk, error) {
+	return nil, nil
+}
+func (m *MockChunkStore) CountByDocument(ctx context.Context, documentID uint) (int64, error) {
+	return 0, nil
+}
 
 func TestIngestionPipeline_Process(t *testing.T) {
 	// 1. Setup Parser
@@ -39,9 +77,8 @@ func TestIngestionPipeline_Process(t *testing.T) {
 	// 2. Setup Splitter
 	splitter := NewMarkdownSplitter(SplitterConfig{MaxChunkSize: 100})
 
-	// 3. Setup Tagger (Mock)
-	mockJSON := "```json\n" + `{"sales_stage": ["DISCOVERY"], "tags": ["test"]}` + "\n```"
-	tagger := NewContentTagger(&MockAliBiz{MockResponse: mockJSON})
+	// 3. Setup Tagger (使用真实的 DMXAPI Tagger)
+	tagger := NewContentTagger()
 
 	// 4. Setup Store (Mock)
 	var wg sync.WaitGroup
@@ -50,32 +87,22 @@ func TestIngestionPipeline_Process(t *testing.T) {
 		UpsertFunc: func(ctx context.Context, chunks []domain.KnowledgeChunk) error {
 			defer wg.Done()
 			assert.NotEmpty(t, chunks)
-			// 验证向量已生成
-			// 验证向量 (Empty because we don't have embedder here anymore, store handles embedding?)
-			// Pipeline calls tagger, then store. Store Upsert logic handles embedding usually in adapter/dashvector.
-			// But here we are mocking store.
-			// Pipeline struct doesn't have embedder anymore? It assumes store does it?
-			// Wait, Pipeline struct in service depends on who?
-			// Let's check pipeline.go again. It doesn't have embedder.
-			// And we removed embedder from KnowledgeChunk in pipeline?
-			// Checking pipeline.go step 124.
-			// No embedding logic in pipeline.go. It's done by store or before.
-			// If store does it, then chunks here won't have vector yet IF pipeline doesn't call embedder.
-			// Pipeline.go does NOT call embedder.
-			// So chunks[0].Vector is empty here.
-			// I should remove the vector assertion or expect empty.
+			// Vector 在 store.Upsert 时由 DashVector 处理，这里 mock 不生成
 			assert.Empty(t, chunks[0].Vector, "Vector should be empty before store handles it")
 			return nil
 		},
 	}
 
-	// 6. Setup Mock DocumentStatusUpdater (nil for test simplicity)
+	// 5. Setup Mock DocumentStatusUpdater (nil for test simplicity)
 	var mockDocStore DocumentStatusUpdater = nil
 
-	// 7. Setup Pipeline
-	pipeline := NewIngestionPipeline(parser, splitter, tagger, mockDocStore, store)
+	// 6. Setup Mock ChunkStore
+	mockChunkStore := &MockChunkStore{}
 
-	// 6. Create temp file
+	// 7. Setup Pipeline
+	pipeline := NewIngestionPipeline(parser, splitter, tagger, mockDocStore, store, mockChunkStore)
+
+	// 8. Create temp file
 	tmpFile, err := os.CreateTemp("", "test_doc_*.md")
 	assert.NoError(t, err)
 	defer os.Remove(tmpFile.Name())
@@ -84,7 +111,7 @@ func TestIngestionPipeline_Process(t *testing.T) {
 	tmpFile.WriteString(content)
 	tmpFile.Close()
 
-	// 7. Submit Doc
+	// 9. Submit Doc
 	doc := &domain.KnowledgeDocument{
 		ID:       1,
 		Name:     "test.md",
@@ -106,7 +133,7 @@ func TestIngestionPipeline_Process(t *testing.T) {
 	select {
 	case <-done:
 		// Success
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Pipeline processing timed out")
 	}
 }

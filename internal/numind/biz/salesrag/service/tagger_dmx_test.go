@@ -9,7 +9,7 @@ import (
 )
 
 func TestContentTagger_CallDMXAPI(t *testing.T) {
-	tagger := NewContentTagger(nil)
+	tagger := NewContentTagger()
 	prompt := "你好，请简单回答'收到'。"
 
 	resp, err := tagger.callDMXAPI(prompt)
@@ -22,7 +22,7 @@ func TestContentTagger_CallDMXAPI(t *testing.T) {
 }
 
 func TestContentTagger_AnalyzeWithDMX(t *testing.T) {
-	tagger := NewContentTagger(nil)
+	tagger := NewContentTagger()
 	ctx := context.Background()
 	text := "我们的产品是一款智能温控器，支持手机App远程控制，节能省钱。"
 
