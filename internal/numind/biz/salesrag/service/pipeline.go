@@ -131,7 +131,8 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 		fileReader = bytes.NewReader(content)
 	}
 
-	markdown, err := p.parser.Parse(ctx, fileReader, doc.FilePath) // fileReader 可能为 nil，如果不是 URL 且 fileReader 为 nil，parser 会尝试读本地文件（兼容旧数据）
+	// 使用原始文件名（而非 COS URL）进行解析，避免 URL 查询参数干扰扩展名识别
+	markdown, err := p.parser.Parse(ctx, fileReader, doc.Name)
 	if err != nil {
 		p.fail(doc, fmt.Errorf("parsing failed: %w", err))
 		return

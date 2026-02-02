@@ -47,8 +47,19 @@ func (p *EnhancedParser) Parse(ctx context.Context, file io.Reader, filename str
 		return "", fmt.Errorf("failed to read file: %w", err)
 	}
 
-	// 2. 根据扩展名分发
-	ext := strings.ToLower(filepath.Ext(filename))
+	// 2. 清理文件名（移除 URL 查询参数，防止扩展名识别失败）
+	cleanFilename := filename
+	// 如果包含查询参数，移除它们
+	if idx := strings.Index(cleanFilename, "?"); idx != -1 {
+		cleanFilename = cleanFilename[:idx]
+	}
+	// 如果是 URL，提取文件名部分（额外的安全措施）
+	if strings.HasPrefix(cleanFilename, "http://") || strings.HasPrefix(cleanFilename, "https://") {
+		cleanFilename = filepath.Base(cleanFilename)
+	}
+
+	// 3. 根据扩展名分发
+	ext := strings.ToLower(filepath.Ext(cleanFilename))
 	var text string
 
 	switch ext {
@@ -86,12 +97,11 @@ func (p *EnhancedParser) Parse(ctx context.Context, file io.Reader, filename str
 		text = p.formatText(text)
 
 	default:
-		// 默认当做文本尝试处理
-		text = string(data)
-		text = p.formatText(text)
+		// 不支持的文件类型，返回明确错误而不是强制转换
+		return "", fmt.Errorf("unsupported file type: %s (extension: %s). Supported: .pdf, .docx, .doc, .txt, .md", filename, ext)
 	}
 
-	// 3. 最终 UTF-8 清洗确保安全
+	// 4. 最终 UTF-8 清洗确保安全
 	if !utf8.ValidString(text) {
 		text = strings.ToValidUTF8(text, "")
 	}

@@ -66,6 +66,9 @@ type SalesRAGBiz interface {
 
 	// AnalyzeDocument 解析文档并生成客户档案
 	AnalyzeDocument(ctx context.Context, userID uint, file io.Reader, filename string) (string, error)
+
+	// AnalyzeChatStyle 分析聊天风格（语言指纹分析）
+	AnalyzeChatStyle(ctx context.Context, userID uint, text string) (string, error)
 }
 
 type IngestOptions struct {
@@ -1118,4 +1121,57 @@ func (b *salesRAGBiz) callDMXAPI(ctx context.Context, systemPrompt, userMessage 
 	}
 
 	return result.Choices[0].Message.Content, nil
+}
+
+// AnalyzeChatStyle 分析聊天风格（语言指纹分析）
+// 使用 dmxapi 的 qwen-turbo-latest 模型
+func (b *salesRAGBiz) AnalyzeChatStyle(ctx context.Context, userID uint, text string) (string, error) {
+	// 1. 截断 (避免 token 溢出)
+	maxLen := 50000
+	if len(text) > maxLen {
+		text = text[:maxLen] + "\n...(truncated)"
+	}
+
+	// 2. 构建系统提示词
+	systemPrompt := `### **指令：IP语言分析**
+你是【语言神经科学家】，需构建IP的"语言指纹模型"：
+
+#### **语言DNA提取**：
+1. **词汇场分析**
+- 高频词TOP20
+- 特有词库：该IP偏爱但他人少用的词（如"绝了"、"拿捏"）
+- 比喻偏好：常用哪类比喻（身体感知/自然现象/科技类比）
+
+2. **句法指纹**
+- 平均句长
+- 问句与感叹句比例
+- 标志性句式（如"有没有发现…"、"我跟你讲…"）
+
+3. **认知风格标记**
+- 论证方式：故事驱动/数据驱动/类比驱动
+- 权威来源：引用亲身经历/专家/朋友/大众共识
+- 自我披露频率：每千字透露多少个人细节
+
+4. **韵律模型**
+- 口头禅与填充词（"对吧"、"嗯……"）
+- 强调模式：通过重复/停顿/音量变化（用文字推测）
+- 节奏单位：通常几句话构成一个完整意思单元
+
+**人格一致性测试**
+- 生成一段该IP**绝不会说**的话，并解释为什么
+- 生成一段该IP**标志性**的表述，突出3个语言指纹特征
+
+**输出格式**：
+"
+**词汇场**：
+**句法指纹**：
+**认知风格**：
+**韵律模式**：
+"
+
+#### **输入层**：
+- 下方为分析材料：`
+
+	// 3. 调用 dmxapi 的 qwen-turbo-latest 模型
+	return b.callDMXAPI(ctx, systemPrompt, text)
 }

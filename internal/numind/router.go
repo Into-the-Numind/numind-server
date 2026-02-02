@@ -293,6 +293,9 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.PUT("/sales-rag/sessions/:id/customer-profile", salesRAGc.UpdateCustomerProfile) // 更新客户档案
 		authGroup.GET("/sales-rag/sessions/:id/customer-profile", salesRAGc.GetCustomerProfile)    // 获取客户档案
 		authGroup.POST("/sales-rag/analyze-profile", salesRAGc.AnalyzeProfile)                     // 解析文档生成客户档案
+
+		// 聊天风格分析
+		authGroup.POST("/sales-rag/analyze-chat-style", salesRAGc.AnalyzeChatStyle) // 分析聊天风格（语言指纹）
 	}
 
 	// 阿里云百炼相关
