@@ -126,6 +126,21 @@ func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *s
 }
 
 func (b *salesRAGBiz) Ingest(ctx context.Context, userID uint, filename string, reader io.Reader, opts IngestOptions) (uint, error) {
+	// 0. 验证文件名
+	if filename == "" {
+		return 0, fmt.Errorf("filename cannot be empty")
+	}
+	if len(filename) <= 2 {
+		return 0, fmt.Errorf("invalid filename: too short (%s)", filename)
+	}
+	// 验证是否包含文件扩展名
+	ext := filepath.Ext(filename)
+	if ext == "" {
+		return 0, fmt.Errorf("filename must have an extension: %s", filename)
+	}
+
+	log.Printf("Starting document ingestion: filename=%s, user_id=%d", filename, userID)
+
 	// 1. Upload to Cloud Object Storage (COS)
 	// Read file content
 	data, err := io.ReadAll(reader)

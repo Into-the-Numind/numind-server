@@ -132,11 +132,14 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 	}
 
 	// 使用原始文件名（而非 COS URL）进行解析，避免 URL 查询参数干扰扩展名识别
+	log.Printf("DEBUG: Parsing document - ID: %d, Name: '%s', FilePath: '%s'", doc.ID, doc.Name, doc.FilePath)
 	markdown, err := p.parser.Parse(ctx, fileReader, doc.Name)
 	if err != nil {
+		log.Printf("ERROR: Parsing failed for doc %d - Name: '%s', Error: %v", doc.ID, doc.Name, err)
 		p.fail(doc, fmt.Errorf("parsing failed: %w", err))
 		return
 	}
+	log.Printf("DEBUG: Parsing succeeded for doc %d, content length: %d", doc.ID, len(markdown))
 
 	// 2. Split - 更新状态为 SPLITTING
 	if p.docStore != nil {
