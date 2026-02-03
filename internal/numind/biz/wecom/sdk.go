@@ -112,6 +112,9 @@ func (c *Client) FetchData(seq uint64, limit int) (*ChatDataResponse, error) {
 	defer C.FreeSlice(&chatData)
 
 	// 解析 JSON 响应
+	if chatData.buf == nil {
+		return nil, fmt.Errorf("SDK returned null buffer with code %d", ret)
+	}
 	jsonStr := C.GoStringN(chatData.buf, chatData.len)
 	var response ChatDataResponse
 	if err := json.Unmarshal([]byte(jsonStr), &response); err != nil {
