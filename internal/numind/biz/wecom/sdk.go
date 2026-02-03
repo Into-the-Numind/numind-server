@@ -75,18 +75,21 @@ func NewClient(corpID, secret, privateKeyPath string) (*Client, error) {
 // seq: 起始序列号（返回 seq+1 开始的消息）
 // limit: 拉取数量，最大 1000
 func (c *Client) FetchData(seq uint64, limit int) (*ChatDataResponse, error) {
-	var chatData C.Slice_t
+	chatData := C.NewSlice()
+	if chatData == nil {
+		return nil, fmt.Errorf("failed to allocate Slice_t")
+	}
+	defer C.FreeSlice(chatData)
 
 	cProxy := C.CString("")
 	cPasswd := C.CString("")
 	defer C.free(unsafe.Pointer(cProxy))
 	defer C.free(unsafe.Pointer(cPasswd))
 
-	ret := C.GetChatData(c.sdk, C.ulonglong(seq), C.uint(limit), cProxy, cPasswd, 60, &chatData)
+	ret := C.GetChatData(c.sdk, C.ulonglong(seq), C.uint(limit), cProxy, cPasswd, 60, chatData)
 	if ret != 0 {
 		return nil, fmt.Errorf("GetChatData failed with code: %d", ret)
 	}
-	defer C.FreeSlice(&chatData)
 
 	// 解析 JSON 响应
 	if chatData.buf == nil {
@@ -127,12 +130,16 @@ func (c *Client) Decrypt(encryptRandomKey, encryptChatMsg string) (string, error
 	defer C.free(unsafe.Pointer(cEncryptKey))
 	defer C.free(unsafe.Pointer(cEncryptMsg))
 
-	var msg C.Slice_t
-	ret := C.DecryptData(cEncryptKey, cEncryptMsg, &msg)
+	msg := C.NewSlice()
+	if msg == nil {
+		return "", fmt.Errorf("failed to allocate Slice_t for decrypt")
+	}
+	defer C.FreeSlice(msg)
+
+	ret := C.DecryptData(cEncryptKey, cEncryptMsg, msg)
 	if ret != 0 {
 		return "", fmt.Errorf("DecryptData failed with code: %d", ret)
 	}
-	defer C.FreeSlice(&msg)
 
 	return C.GoStringN(msg.buf, msg.len), nil
 }
