@@ -111,9 +111,59 @@ jobs:
         run: |
           echo "✅ Docker 镜像构建和推送完成"
 
+  # WeCom Agent 镜像构建
+  wecom_agent_build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: |
+      github.ref == 'refs/heads/develop' || 
+      github.ref == 'refs/heads/release' || 
+      startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_PASSWORD }}
+
+      - name: Calculate Metadata
+        id: meta
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            IMAGE_TAG="${{ github.ref_name }}"
+          elif [ "${{ github.ref_name }}" = "develop" ]; then
+            IMAGE_TAG="develop"
+          elif [ "${{ github.ref_name }}" = "release" ]; then
+            IMAGE_TAG="release"
+          else
+            IMAGE_TAG="dev"
+          fi
+          
+          TAGS="neozhang96/numind-wecom-agent:$IMAGE_TAG"
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAGS="$TAGS,neozhang96/numind-wecom-agent:latest"
+          fi
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.wecom-agent
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   # 开发环境部署 - 只在 develop 分支触发
   deploy_dev:
-    needs: image_build
+    needs: [image_build, wecom_agent_build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     if: github.ref == 'refs/heads/develop'
@@ -247,9 +297,39 @@ jobs:
               exit 1
             fi
 
+            # ==========================================
+            # 部署 WeCom Agent (Dev/QA 共享实例)
+            # ==========================================
+            echo "🤖 部署 WeCom Agent (Shared)..."
+            
+            # 拉取镜像
+            docker pull neozhang96/numind-wecom-agent:develop
+            
+            # 清理旧容器
+            if docker ps -aq -f name=numind-wecom-agent | grep -q .; then
+               docker rm -f numind-wecom-agent
+            fi
+            
+            # 启动 Agent
+            if [ -f "/root/numind-server-dev/.env.wecom" ]; then
+              docker run -d \
+                --name numind-wecom-agent \
+                --network numind-network \
+                --env-file /root/numind-server-dev/.env.wecom \
+                -e MYSQL_DSN="root:Numind2025@tcp(numind-mysql-dev:3306)/numind?charset=utf8mb4&parseTime=True&loc=Local" \
+                -v /root/numind-server-dev/wecom_private.pem:/app/private.pem:ro \
+                -v /opt/numind/dev/logs/wecom:/app/logs \
+                --restart always \
+                neozhang96/numind-wecom-agent:develop
+                
+              echo "✅ WeCom Agent 部署完成"
+            else
+              echo "⚠️ 未找到 .env.wecom 配置文件，跳过 Agent 部署"
+            fi
+
   # QA 环境部署 - 只在 release 分支触发
   deploy_qa:
-    needs: image_build
+    needs: [image_build, wecom_agent_build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     if: github.ref == 'refs/heads/release'
@@ -378,9 +458,11 @@ jobs:
               exit 1
             fi
 
+
+
   # 生产环境部署 - 只通过版本 tag 触发
   deploy_product:
-    needs: image_build
+    needs: [image_build, wecom_agent_build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     if: startsWith(github.ref, 'refs/tags/v')
@@ -511,6 +593,34 @@ jobs:
               echo "Error: Container failed to start"
               docker logs numind-server-prod || true
               exit 1
+            fi
+
+            # ==========================================
+            # 部署 WeCom Agent (Prod)
+            # ==========================================
+            echo "🤖 部署 WeCom Agent (Prod)..."
+            
+            docker pull neozhang96/numind-wecom-agent:$IMAGE_TAG
+            
+            if docker ps -aq -f name=numind-wecom-agent-prod | grep -q .; then
+               docker rm -f numind-wecom-agent-prod
+            fi
+            
+            # Prod 配置放在 /opt/numind/config 下
+            if [ -f "/opt/numind/config/.env.wecom" ]; then
+              docker run -d \
+                --name numind-wecom-agent-prod \
+                --network numind-network \
+                --env-file /opt/numind/config/.env.wecom \
+                -e MYSQL_DSN="root:Numind2025@tcp(numind-mysql-prod:3306)/numind-prod?charset=utf8mb4&parseTime=True&loc=Local" \
+                -v /opt/numind/config/cert/wecom_private.pem:/app/private.pem:ro \
+                -v /opt/numind/prod/logs/wecom:/app/logs \
+                --restart always \
+                neozhang96/numind-wecom-agent:$IMAGE_TAG
+                
+              echo "✅ WeCom Agent (Prod) 部署完成"
+            else
+              echo "⚠️ 未找到 /opt/numind/config/.env.wecom，跳过 Agent 部署。请手动上传配置文件及私钥。"
             fi
 
   # 后台管理系统 Docker 镜像构建

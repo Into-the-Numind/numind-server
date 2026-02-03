@@ -43,19 +43,34 @@ func main() {
 	}
 
 	// 初始化 SDK 客户端
-	// TODO: 等待 Secret 审核通过后启用
-	// client, err := wecom.NewClient(cfg.CorpID, cfg.Secret)
-	// if err != nil {
-	// 	log.Fatalf("❌ Failed to init WeWork SDK: %v", err)
-	// }
+	var client *wecom.Client
+	if cfg.CorpID != "" && cfg.Secret != "" {
+		var err error
+		client, err = wecom.NewClient(cfg.CorpID, cfg.Secret, cfg.PrivateKeyPath)
+		if err != nil {
+			log.Printf("❌ Failed to init WeWork SDK: %v", err)
+			// 注意：如果 SDK 初始化失败，client 为 nil，Poller 会处理这种情况
+		} else {
+			log.Println("✅ WeWork SDK initialized")
+			defer client.Close()
+		}
+	}
 
-	// 创建 Poller 服务
-	poller := wecom.NewPoller(db, nil, cfg.PrivateKeyPath, cfg.PollInterval)
-
-	// 启动轮询（在单独的 goroutine 中）
+	// 上下文控制
 	ctx, cancel := context.WithCancel(context.Background())
-	go poller.Start(ctx)
-	log.Printf("✅ Poller started with interval: %v", cfg.PollInterval)
+
+	// 检查是否启用 Poller (默认 true)
+	pollerEnabled := getEnv("WECOM_POLLER_ENABLED", "true") == "true"
+	if pollerEnabled {
+		// 创建 Poller 服务
+		poller := wecom.NewPoller(db, client, cfg.PrivateKeyPath, cfg.PollInterval)
+
+		// 启动轮询（在单独的 goroutine 中）
+		go poller.Start(ctx)
+		log.Printf("✅ Poller started with interval: %v", cfg.PollInterval)
+	} else {
+		log.Println("⏸️ Poller is disabled by WECOM_POLLER_ENABLED=false")
+	}
 
 	// 优雅退出
 	quit := make(chan os.Signal, 1)
