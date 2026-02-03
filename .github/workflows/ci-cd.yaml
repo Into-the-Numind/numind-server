@@ -305,27 +305,37 @@ jobs:
             # 拉取镜像
             docker pull neozhang96/numind-wecom-agent:develop
             
-            # 清理旧容器
+            # 生成 .env.wecom 文件 (如果不存在)
+            # 注意：实际生产中应从 Secrets 获取，这里为了简化演示直接写入
+            # 修正数据库名: numind -> numind-dev
+            if [ ! -f "/root/numind-server-dev/.env.wecom" ]; then
+              echo "WECOM_CORP_ID=${{ secrets.WECOM_CORP_ID }}" > /root/numind-server-dev/.env.wecom
+              echo "WECOM_SECRET=${{ secrets.WECOM_SECRET }}" >> /root/numind-server-dev/.env.wecom
+              echo "WECOM_PRIVATE_KEY_PATH=/app/private.pem" >> /root/numind-server-dev/.env.wecom
+              echo "MYSQL_DSN=root:Numind2025@tcp(numind-mysql-dev:3306)/numind-dev?charset=utf8mb4&parseTime=True&loc=Local" >> /root/numind-server-dev/.env.wecom
+            else
+              # 如果文件存在，确保 MYSQL_DSN 是正确的 (强制更新 DSN)
+              sed -i 's|/numind?|/numind-dev?|g' /root/numind-server-dev/.env.wecom
+            fi
+            
+            # 停止并移除旧容器
             if docker ps -aq -f name=numind-wecom-agent | grep -q .; then
                docker rm -f numind-wecom-agent
             fi
-            
-            # 启动 Agent
-            if [ -f "/root/numind-server-dev/.env.wecom" ]; then
-              docker run -d \
-                --name numind-wecom-agent \
-                --network numind-network \
-                --env-file /root/numind-server-dev/.env.wecom \
-                -e MYSQL_DSN="root:Numind2025@tcp(numind-mysql-dev:3306)/numind?charset=utf8mb4&parseTime=True&loc=Local" \
-                -v /root/numind-server-dev/wecom_private.pem:/app/private.pem:ro \
-                -v /opt/numind/dev/logs/wecom:/app/logs \
-                --restart always \
-                neozhang96/numind-wecom-agent:develop
+
+            # 启动 Agent (Shared for Dev/QA)
+            # 挂载宿主机的 private key
+            docker run -d \
+              --name numind-wecom-agent \
+              --network numind-network \
+              --env-file /root/numind-server-dev/.env.wecom \
+              -e MYSQL_DSN="root:Numind2025@tcp(numind-mysql-dev:3306)/numind-dev?charset=utf8mb4&parseTime=True&loc=Local" \
+              -v /root/numind-server-dev/wecom_private.pem:/app/private.pem:ro \
+              -v /opt/numind/dev/logs/wecom:/app/logs \
+              --restart always \
+              neozhang96/numind-wecom-agent:develop
                 
-              echo "✅ WeCom Agent 部署完成"
-            else
-              echo "⚠️ 未找到 .env.wecom 配置文件，跳过 Agent 部署"
-            fi
+            echo "✅ WeCom Agent 部署完成"
 
   # QA 环境部署 - 只在 release 分支触发
   deploy_qa:
