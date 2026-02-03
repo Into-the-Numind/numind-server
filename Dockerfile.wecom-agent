@@ -4,7 +4,7 @@
 # ===========================================
 
 # Build Stage - 使用 bullseye 确保 glibc 兼容性
-FROM golang:1.21-bullseye AS builder
+FROM golang:1.24-bullseye AS builder
 
 WORKDIR /app
 
@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     g++ \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
+
 
 # 复制 SDK 头文件和库
 # 注意: 你需要将 libWeWorkFinanceSdk.so 和头文件放入 lib/wecom-sdk/
@@ -53,11 +54,8 @@ COPY --from=builder /usr/local/lib/wecom-sdk/libWeWorkFinanceSdk.so /usr/lib/lib
 # 刷新动态库缓存
 RUN ldconfig
 
-# 环境变量 (敏感信息通过运行时注入)
-ENV WECOM_CORP_ID=""
-ENV WECOM_SECRET=""
-ENV WECOM_PRIVATE_KEY_PATH="/app/private.pem"
-ENV MYSQL_DSN=""
+# 环境变量 (运行时通过 docker run -e 注入)
+# WECOM_CORP_ID, WECOM_SECRET, WECOM_PRIVATE_KEY_PATH, MYSQL_DSN
 
 # 健康检查 (可选，根据实际情况调整)
 # HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
