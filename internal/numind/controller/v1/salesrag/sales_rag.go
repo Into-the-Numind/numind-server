@@ -12,6 +12,7 @@ import (
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 
 	"github.com/gin-gonic/gin"
@@ -66,8 +67,9 @@ func (ctrl *SalesRAGController) Ingest(c *gin.Context) {
 		displayName = header.Filename
 	}
 
-	docID, err := ctrl.b.SalesRAG().Ingest(c, user.ID, displayName, file, opts)
+	docID, err := ctrl.b.SalesRAG().Ingest(c, user.ID, header.Filename, displayName, file, opts)
 	if err != nil {
+		log.Errorw("Ingest failed", "error", err, "user_id", user.ID, "filename", displayName)
 		core.WriteResponse(c, err, nil)
 		return
 	}

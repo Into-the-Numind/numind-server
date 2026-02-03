@@ -27,7 +27,7 @@ import (
 // SalesRAGBiz 定义了销售 RAG 业务层的对外接口
 type SalesRAGBiz interface {
 	// Ingest 处理文档导入
-	Ingest(ctx context.Context, userID uint, filename string, reader io.Reader, opts IngestOptions) (uint, error)
+	Ingest(ctx context.Context, userID uint, filename string, displayName string, reader io.Reader, opts IngestOptions) (uint, error)
 	// Retrieve 检索知识（非流式）
 	Retrieve(ctx context.Context, query string, docIDs []uint) (*service.RetrievalVerdict, error)
 	// RetrieveStream 流式检索知识并生成回答
@@ -125,21 +125,24 @@ func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *s
 	}
 }
 
-func (b *salesRAGBiz) Ingest(ctx context.Context, userID uint, filename string, reader io.Reader, opts IngestOptions) (uint, error) {
+func (b *salesRAGBiz) Ingest(ctx context.Context, userID uint, filename string, displayName string, reader io.Reader, opts IngestOptions) (uint, error) {
 	// 0. 验证文件名
 	if filename == "" {
 		return 0, fmt.Errorf("filename cannot be empty")
 	}
-	if len(filename) <= 2 {
-		return 0, fmt.Errorf("invalid filename: too short (%s)", filename)
-	}
+
 	// 验证是否包含文件扩展名
 	ext := filepath.Ext(filename)
 	if ext == "" {
 		return 0, fmt.Errorf("filename must have an extension: %s", filename)
 	}
 
-	log.Printf("Starting document ingestion: filename=%s, user_id=%d", filename, userID)
+	// 如果 displayName 为空，则使用 filename
+	if displayName == "" {
+		displayName = filename
+	}
+
+	log.Printf("Starting document ingestion: filename=%s, displayName=%s, user_id=%d", filename, displayName, userID)
 
 	// 1. Upload to Cloud Object Storage (COS)
 	// Read file content
@@ -186,7 +189,7 @@ func (b *salesRAGBiz) Ingest(ctx context.Context, userID uint, filename string, 
 	// 2. 创建文档记录
 	doc := &model.KnowledgeDocument{
 		UserID:      userID,
-		Name:        filename,
+		Name:        displayName,
 		FilePath:    cosURL, // Store COS URL instead of local path
 		Status:      string(domain.DocStatusPending),
 		Description: opts.Description,
@@ -202,7 +205,7 @@ func (b *salesRAGBiz) Ingest(ctx context.Context, userID uint, filename string, 
 	dDoc := &domain.KnowledgeDocument{
 		ID:          doc.ID,
 		UserID:      doc.UserID,
-		Name:        doc.Name,
+		Name:        filename,     // Use original filename for pipeline processing (extension detection)
 		FilePath:    doc.FilePath, // This is now a URL
 		Status:      domain.DocStatusPending,
 		Description: doc.Description,

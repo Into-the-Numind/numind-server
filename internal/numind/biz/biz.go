@@ -33,6 +33,7 @@ import (
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/biz/wechat"
+	"numind-server/internal/numind/biz/wecom"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/log"
 
@@ -50,6 +51,7 @@ type IBiz interface {
 	Feedbacks() feedback.FeedbackBiz
 	Baidu() baidu.BaiduBiz
 	Wechat() wechat.WechatBiz
+	Wecom() wecom.WecomBiz
 	Ali() ali.AliBiz
 	Volc() volc.VolcBiz
 	Pagination() pagination.PaginationBiz
@@ -225,6 +227,10 @@ func (b *biz) Baidu() baidu.BaiduBiz {
 
 func (b *biz) Wechat() wechat.WechatBiz {
 	return wechat.New(b.ds)
+}
+
+func (b *biz) Wecom() wecom.WecomBiz {
+	return wecom.New(b.ds)
 }
 
 func (b *biz) Ali() ali.AliBiz {

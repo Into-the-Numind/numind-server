@@ -13,5 +13,8 @@ mkdir -p ./data/image
 # Viper 会将这些映射到 db.max-connection-life-time 等配置项
 export NUMIND_DB_MAX_CONNECTION_LIFE_TIME="30s"
 
+# Ensure we use the python environment with installed packages (miniconda)
+export PATH="/opt/homebrew/Caskroom/miniconda/base/bin:$PATH"
+
 # 启动 API 服务 (端口 9091)
 go run cmd/numind/main.go --config config_local.yaml

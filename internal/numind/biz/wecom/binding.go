@@ -151,6 +151,87 @@ func (s *BindingService) GetConversationMessages(externalUserID, partnerID strin
 	return messages, total, nil
 }
 
+// ContactConversation 联系人会话摘要
+type ContactConversation struct {
+	PartnerID   string    `json:"partner_id"`   // 对方ID (User ID or Room ID)
+	PartnerName string    `json:"partner_name"` // 对方名称 (Mocked for now if not stored)
+	LastMsg     string    `json:"last_msg"`     // 最后一条消息内容
+	LastTime    time.Time `json:"last_time"`    // 最后一条消息时间
+	Avatar      string    `json:"avatar"`       // 头像 (Mocked or from DB)
+}
+
+// GetContacts 获取最近联系人列表
+func (s *BindingService) GetContacts(numindUserID int64) ([]ContactConversation, error) {
+	// 1. 获取绑定身份
+	binding, err := s.GetBindingByNumindUser(numindUserID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return []ContactConversation{}, nil
+		}
+		return nil, err
+	}
+	myID := binding.ID
+
+	// 2. 聚合查询最近联系人
+	type Result struct {
+		PartnerID   string
+		LastMsgTime int64
+	}
+	var results []Result
+
+	// Use Gorm Raw
+	err = s.db.Raw(`
+		SELECT 
+			CASE WHEN from_user_id = ? THEN to_user_id ELSE from_user_id END as partner_id,
+			MAX(msg_time) as last_msg_time
+		FROM wecom_messages
+		WHERE from_user_id = ? OR to_user_id = ?
+		GROUP BY partner_id
+		ORDER BY last_msg_time DESC
+		LIMIT 50
+	`, myID, myID, myID).Scan(&results).Error
+
+	if err != nil {
+		return nil, err
+	}
+
+	var contacts []ContactConversation
+	for _, r := range results {
+		// Get Last Message Content
+		var lastMsg WecomMessage
+		s.db.Where("(from_user_id = ? AND to_user_id = ? AND msg_time = ?) OR (from_user_id = ? AND to_user_id = ? AND msg_time = ?)",
+			myID, r.PartnerID, r.LastMsgTime,
+			r.PartnerID, myID, r.LastMsgTime,
+		).First(&lastMsg)
+
+		// Mock Name/Avatar for now or query User table if exists
+		// In a real system we would join WecomUser table
+		var partnerName = "用户 " + r.PartnerID
+		var partnerAvatar = "https://ui-avatars.com/api/?name=" + r.PartnerID + "&background=random"
+
+		// Try to find partner info
+		var partnerUser WecomUser
+		if err := s.db.First(&partnerUser, "id = ?", r.PartnerID).Error; err == nil {
+			if partnerUser.Name != "" {
+				partnerName = partnerUser.Name
+			}
+			if partnerUser.Avatar != "" {
+				partnerAvatar = partnerUser.Avatar
+			}
+		}
+
+		contacts = append(contacts, ContactConversation{
+			PartnerID:   r.PartnerID,
+			PartnerName: partnerName,
+			LastMsg:     lastMsg.Content,
+			LastTime:    time.UnixMilli(r.LastMsgTime),
+			Avatar:      partnerAvatar,
+		})
+	}
+
+	return contacts, nil
+}
+
 // GenerateBindCode 生成绑定验证码
 func (s *BindingService) GenerateBindCode(numindUserID int64) (string, error) {
 	// 简单的 6 位随机数生成
