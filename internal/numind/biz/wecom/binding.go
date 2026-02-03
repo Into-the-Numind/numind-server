@@ -2,6 +2,7 @@ package wecom
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -148,4 +149,48 @@ func (s *BindingService) GetConversationMessages(externalUserID, partnerID strin
 	}
 
 	return messages, total, nil
+}
+
+// GenerateBindCode 生成绑定验证码
+func (s *BindingService) GenerateBindCode(numindUserID int64) (string, error) {
+	// 简单的 6 位随机数生成
+	code := fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
+
+	bindCode := WecomBindCode{
+		Code:      code,
+		UserID:    numindUserID,
+		ExpiredAt: time.Now().Add(5 * time.Minute), // 5分钟有效
+		CreatedAt: time.Now(),
+	}
+
+	if err := s.db.Create(&bindCode).Error; err != nil {
+		return "", err
+	}
+	return code, nil
+}
+
+// VerifyAndBind 验证并绑定
+func (s *BindingService) VerifyAndBind(code string, externalUserID string) error {
+	var bindCode WecomBindCode
+	// 查找并校验
+	if err := s.db.Where("code = ? AND expired_at > ?", code, time.Now()).First(&bindCode).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return errors.New("验证码无效或已过期")
+		}
+		return err
+	}
+
+	// 执行绑定
+	req := &BindUserRequest{
+		NumindUserID:   bindCode.UserID,
+		ExternalUserID: externalUserID,
+	}
+	if err := s.BindUser(req); err != nil {
+		return err
+	}
+
+	// 绑定成功后删除验证码（防止重复使用）
+	s.db.Delete(&bindCode)
+
+	return nil
 }

@@ -38,7 +38,7 @@ func main() {
 	log.Println("✅ Database connected")
 
 	// 自动迁移表结构 (可选，生产环境建议关闭)
-	if err := db.AutoMigrate(&wecom.WecomUser{}, &wecom.WecomMessage{}, &wecom.WecomCursor{}); err != nil {
+	if err := db.AutoMigrate(&wecom.WecomUser{}, &wecom.WecomMessage{}, &wecom.WecomCursor{}, &wecom.WecomBindCode{}); err != nil {
 		log.Fatalf("❌ Failed to migrate database: %v", err)
 	}
 

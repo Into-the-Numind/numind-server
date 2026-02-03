@@ -3,6 +3,7 @@ package wecom
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -99,6 +100,11 @@ func (p *Poller) poll() error {
 			continue
 		}
 
+		// 处理 #BIND 指令
+		if msg.MsgType == "text" && strings.HasPrefix(strings.ToUpper(msg.Content), "#BIND") {
+			p.handleBindCommand(msg)
+		}
+
 		// 更新游标 (取已处理的最大 seq)
 		if data.Seq > cursor.Seq {
 			cursor.Seq = data.Seq
@@ -132,4 +138,24 @@ func (p *Poller) ensureUserExists(externalUserID string) error {
 		return p.db.Create(&user).Error
 	}
 	return err
+}
+
+// handleBindCommand 处理绑定指令
+func (p *Poller) handleBindCommand(msg *WecomMessage) {
+	parts := strings.Fields(msg.Content)
+	if len(parts) < 2 {
+		log.Printf("⚠️ Invalid bind command format from %s: %s", msg.FromUserID, msg.Content)
+		return
+	}
+
+	code := parts[1]
+	binder := NewBindingService(p.db)
+
+	// 验证并绑定
+	// 注意: 这里的 ExternalUserID 就是 msg.FromUserID
+	if err := binder.VerifyAndBind(code, msg.FromUserID); err != nil {
+		log.Printf("❌ Bind failed for user %s with code %s: %v", msg.FromUserID, code, err)
+	} else {
+		log.Printf("✅ bind success! User %s linked via code %s", msg.FromUserID, code)
+	}
 }

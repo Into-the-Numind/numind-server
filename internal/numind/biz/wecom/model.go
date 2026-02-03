@@ -89,3 +89,15 @@ func IsRobotUser(userID string) bool {
 	}
 	return userID[:2] == "wb"
 }
+
+// WecomBindCode 绑定验证码表
+type WecomBindCode struct {
+	Code      string    `gorm:"column:code;primaryKey;type:varchar(10)"`
+	UserID    int64     `gorm:"column:user_id;index"`
+	ExpiredAt time.Time `gorm:"column:expired_at"`
+	CreatedAt time.Time `gorm:"column:created_at"`
+}
+
+func (WecomBindCode) TableName() string {
+	return "wecom_bind_codes"
+}
