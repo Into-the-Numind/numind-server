@@ -10,36 +10,13 @@ package wecom
 // 1. 将 libWeWorkFinanceSdk.so 放入 /usr/lib 或 lib/wecom-sdk/
 // 2. 将 WeWorkFinanceSdk_C.h 放入 lib/wecom-sdk/
 //
-// 编译命令：
-// CGO_ENABLED=1 go build -o wecom-agent ./cmd/wecom-agent
-//
 // ===========================================
 
 #cgo CFLAGS: -I${SRCDIR}/../../../../lib/wecom-sdk
-#cgo LDFLAGS: -L/usr/lib -lWeWorkFinanceSdk
+#cgo LDFLAGS: -L${SRCDIR}/../../../../lib/wecom-sdk -lWeWorkFinanceSdk -Wl,-rpath,${SRCDIR}/../../../../lib/wecom-sdk
 
 #include <stdlib.h>
-
-// 前向声明 SDK 类型和函数
-// 注意：实际头文件中的定义可能略有不同，请根据官方头文件调整
-
-typedef struct WeWorkFinanceSdk WeWorkFinanceSdk_t;
-
-typedef struct Slice {
-    char* buf;
-    int len;
-} Slice_t;
-
-// SDK 函数声明
-extern WeWorkFinanceSdk_t* NewSdk();
-extern int Init(WeWorkFinanceSdk_t* sdk, const char* corpid, const char* secret);
-extern int GetChatData(WeWorkFinanceSdk_t* sdk, unsigned long long seq, unsigned int limit,
-                       const char* proxy, const char* passwd, int timeout, Slice_t* chatData);
-extern int DecryptData(const char* encrypt_key, const char* encrypt_msg, Slice_t* msg);
-extern int GetMediaData(WeWorkFinanceSdk_t* sdk, const char* sdkfileid, const char* proxy,
-                        const char* passwd, int timeout, const char* savefile);
-extern void DestroySdk(WeWorkFinanceSdk_t* sdk);
-extern void FreeSlice(Slice_t* slice);
+#include "WeWorkFinanceSdk_C.h"
 */
 import "C"
 
@@ -158,27 +135,6 @@ func (c *Client) Decrypt(encryptRandomKey, encryptChatMsg string) (string, error
 	defer C.FreeSlice(&msg)
 
 	return C.GoStringN(msg.buf, msg.len), nil
-}
-
-// DownloadMedia 下载媒体文件
-// sdkFileID: 媒体文件 ID
-// savePath: 保存路径
-func (c *Client) DownloadMedia(sdkFileID, savePath string) error {
-	cSDKFileID := C.CString(sdkFileID)
-	cProxy := C.CString("")
-	cPasswd := C.CString("")
-	cSavePath := C.CString(savePath)
-	defer C.free(unsafe.Pointer(cSDKFileID))
-	defer C.free(unsafe.Pointer(cProxy))
-	defer C.free(unsafe.Pointer(cPasswd))
-	defer C.free(unsafe.Pointer(cSavePath))
-
-	ret := C.GetMediaData(c.sdk, cSDKFileID, cProxy, cPasswd, 60, cSavePath)
-	if ret != 0 {
-		return fmt.Errorf("GetMediaData failed with code: %d", ret)
-	}
-
-	return nil
 }
 
 // Close 释放 SDK 资源
