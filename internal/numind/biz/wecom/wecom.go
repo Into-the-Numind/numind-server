@@ -12,14 +12,22 @@ type WecomBiz interface {
 	GetConversationMessages(externalUserID, partnerID string, limit, offset int) ([]WecomMessage, int64, error)
 	GenerateBindCode(numindUserID int64) (string, error)
 	VerifyAndBind(code string, externalUserID string) error
+
+	// Inbox / Import Batch Methods
+	// Smart Archive Methods
+	CreateImportBatch(userID int64, title string, messages []ImportMessage) (*ImportBatch, error)
+	GetArchiveSessions(userID int64) ([]ArchiveSession, error)
+	GetSessionMessages(userID int64, sessionKey string) ([]ImportMessage, error)
 }
 
 type wecomBiz struct {
 	*BindingService
+	*ImportService
 }
 
 func New(ds store.IStore) WecomBiz {
 	return &wecomBiz{
 		BindingService: NewBindingService(ds.DB()),
+		ImportService:  NewImportService(ds.DB()),
 	}
 }

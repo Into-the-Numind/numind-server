@@ -115,3 +115,48 @@ func (ctrl *WecomController) GetBindCode(c *gin.Context) {
 		"code": code,
 	})
 }
+
+// ListSessions 获取自动归类的会话列表 (替代 ListInbox)
+func (ctrl *WecomController) ListSessions(c *gin.Context) {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	sessions, err := ctrl.b.Wecom().GetArchiveSessions(int64(user.ID))
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, sessions)
+}
+
+// GetSessionMessages 获取会话的时间轴消息 (替代 GetInboxDetail)
+func (ctrl *WecomController) GetSessionMessages(c *gin.Context) {
+	sessionKey := c.Param("session_key") // from path
+	if sessionKey == "" {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	messages, err := ctrl.b.Wecom().GetSessionMessages(int64(user.ID), sessionKey)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, messages)
+}
+
+// Deprecated: CommitInbox is no longer used in the new auto-archive system
+func (ctrl *WecomController) CommitInbox(c *gin.Context) {
+	core.WriteResponse(c, nil, nil)
+}

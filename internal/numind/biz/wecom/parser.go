@@ -248,3 +248,39 @@ func ParseNoteItems(noteContent *NoteContent) ([]map[string]string, error) {
 
 	return results, nil
 }
+
+// ParseMergedHistoryJSON parses the JSON content of a WeCom chatrecord message
+func ParseMergedHistoryJSON(jsonContent string) ([]ImportMessage, error) {
+	var raw struct {
+		ChatRecord struct {
+			Item []struct {
+				Type       string `json:"type"`
+				MsgTime    int64  `json:"msgtime"`
+				Content    string `json:"content"`
+				SourceName string `json:"sourcename"`
+			} `json:"item"`
+		} `json:"chatrecord"`
+	}
+	if err := json.Unmarshal([]byte(jsonContent), &raw); err != nil {
+		return nil, err
+	}
+
+	var result []ImportMessage
+	for _, item := range raw.ChatRecord.Item {
+		msg := ImportMessage{
+			MsgTime: item.MsgTime,
+			Speaker: item.SourceName,
+		}
+		if item.Type == "ChatRecordText" {
+			var textContent struct {
+				Content string `json:"content"`
+			}
+			// Unmarshal the nested content JSON string
+			if err := json.Unmarshal([]byte(item.Content), &textContent); err == nil {
+				msg.Content = textContent.Content
+			}
+		}
+		result = append(result, msg)
+	}
+	return result, nil
+}

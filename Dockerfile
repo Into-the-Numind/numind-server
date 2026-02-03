@@ -140,6 +140,8 @@ COPY config_*.yaml ./
 # 根据构建参数选择二进制文件来源
 # 从构建阶段复制编译好的二进制文件
 COPY --from=builder /app/numind /app/numind
+COPY --from=builder /app/lib/wecom-sdk/libWeWorkFinanceSdk.so /usr/lib/
+RUN ldconfig
 COPY scripts /app/scripts
 
 # 验证配置文件复制成功
