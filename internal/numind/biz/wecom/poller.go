@@ -64,41 +64,51 @@ func (p *Poller) poll() error {
 	}
 
 	// Step 3: 调用 SDK 拉取数据
-	// chatDataList, err := p.client.FetchData(cursor.Seq, 1000)
-	// if err != nil {
-	// 	return err
-	// }
+	log.Printf("📥 Polling from seq: %d", cursor.Seq)
+	resp, err := p.client.FetchData(cursor.Seq, 1000)
+	if err != nil {
+		log.Printf("❌ SDK FetchData error: %v", err)
+		return err
+	}
+
+	if len(resp.ChatData) > 0 {
+		log.Printf("📦 Fetched %d items", len(resp.ChatData))
+	}
 
 	// Step 4: 解密并解析消息
-	// for _, data := range chatDataList {
-	// 	plainText, err := p.client.Decrypt(data.EncryptRandomKey, data.EncryptChatMsg)
-	// 	if err != nil {
-	// 		log.Printf("Decrypt error for msg %s: %v", data.MsgID, err)
-	// 		continue
-	// 	}
-	//
-	// 	msg, err := ParseMessage(plainText)
-	// 	if err != nil {
-	// 		log.Printf("Parse error for msg %s: %v", data.MsgID, err)
-	// 		continue
-	// 	}
-	//
-	// 	// 保存消息
-	// 	if err := p.saveMessage(msg); err != nil {
-	// 		log.Printf("Save error for msg %s: %v", data.MsgID, err)
-	// 		continue
-	// 	}
-	//
-	// 	// 更新游标
-	// 	if data.Seq > cursor.Seq {
-	// 		cursor.Seq = data.Seq
-	// 	}
-	// }
+	for _, data := range resp.ChatData {
+		plainText, err := p.client.Decrypt(data.EncryptRandomKey, data.EncryptChatMsg)
+		if err != nil {
+			log.Printf("❌ Decrypt error for msg %s: %v", data.MsgID, err)
+			continue
+		}
+
+		msg, err := ParseMessage(plainText)
+		if err != nil {
+			log.Printf("⚠️ Parse error for msg %s: %v", data.MsgID, err)
+			continue
+		}
+
+		// 补充 Seq 和 MsgID，防止 ParseMessage 中没有提取到
+		msg.MsgID = data.MsgID
+		msg.Seq = data.Seq
+
+		// 保存消息
+		if err := p.saveMessage(msg); err != nil {
+			log.Printf("❌ Save error for msg %s: %v", data.MsgID, err)
+			continue
+		}
+
+		// 更新游标 (取已处理的最大 seq)
+		if data.Seq > cursor.Seq {
+			cursor.Seq = data.Seq
+		}
+	}
 
 	// Step 5: 保存新游标
-	// if err := p.db.Save(&cursor).Error; err != nil {
-	// 	return err
-	// }
+	if err := p.db.Save(&cursor).Error; err != nil {
+		return err
+	}
 
 	return nil
 }
