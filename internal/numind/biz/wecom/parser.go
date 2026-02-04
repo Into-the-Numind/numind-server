@@ -270,15 +270,38 @@ func ParseMergedHistoryJSON(jsonContent string) ([]ImportMessage, error) {
 		msg := ImportMessage{
 			MsgTime: item.MsgTime,
 			Speaker: item.SourceName,
+			MsgType: "text", // Default to text
 		}
-		if item.Type == "ChatRecordText" {
+
+		switch item.Type {
+		case "ChatRecordText":
 			var textContent struct {
 				Content string `json:"content"`
 			}
-			// Unmarshal the nested content JSON string
 			if err := json.Unmarshal([]byte(item.Content), &textContent); err == nil {
 				msg.Content = textContent.Content
 			}
+			msg.MsgType = "text"
+
+		case "ChatRecordImage":
+			msg.Content = item.Content // Store the full media JSON (contains sdkfileid)
+			msg.MsgType = "image"
+
+		case "ChatRecordVoice":
+			msg.Content = item.Content
+			msg.MsgType = "voice"
+
+		case "ChatRecordVideo":
+			msg.Content = item.Content
+			msg.MsgType = "video"
+
+		case "ChatRecordFile":
+			msg.Content = item.Content
+			msg.MsgType = "file"
+
+		default:
+			msg.Content = "[不支持的合并消息类型: " + item.Type + "]"
+			msg.MsgType = "text"
 		}
 		result = append(result, msg)
 	}
