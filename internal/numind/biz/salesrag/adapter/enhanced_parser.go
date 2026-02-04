@@ -96,9 +96,14 @@ func (p *EnhancedParser) Parse(ctx context.Context, file io.Reader, filename str
 		text = string(data)
 		text = p.formatText(text)
 
+	case ".html", ".htm":
+		// HTML 文件直接读取并清洗
+		text = string(data)
+		text = p.formatText(text)
+
 	default:
 		// 不支持的文件类型，返回明确错误而不是强制转换
-		return "", fmt.Errorf("unsupported file type: %s (extension: %s). Supported: .pdf, .docx, .doc, .txt, .md", filename, ext)
+		return "", fmt.Errorf("unsupported file type: %s (extension: %s). Supported: .pdf, .docx, .doc, .txt, .md, .html, .xlsx, .pptx", filename, ext)
 	}
 
 	// 4. 最终 UTF-8 清洗确保安全
@@ -617,10 +622,55 @@ func (p *EnhancedParser) parseDOCXXMLWithParser(xmlData []byte) (string, error) 
 	return result.String(), nil
 }
 
-// extractTextFromDOC 占位
+// extractTextFromDOC 使用 Python + antiword 解析旧版 DOC 文件
 func (p *EnhancedParser) extractTextFromDOC(data []byte) (string, error) {
-	// 目前暂不支持，可以考虑调用 antiword 或 python textract，这里先返回错误或空
-	return "", fmt.Errorf("DOC format not supported yet (convert to DOCX)")
+	// 创建临时文件 - 使用 .doc 后缀以便 Python 脚本识别
+	tmpFile, err := os.CreateTemp("", "doc_upload_*.doc")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		return "", fmt.Errorf("failed to write data to temp file: %w", err)
+	}
+
+	// 执行 Python 脚本 (document_parser.py 内部使用 antiword 处理 .doc)
+	scriptPath := "scripts/document_parser.py"
+	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+		// 尝试 Docker 容器内的常见路径
+		scriptPath = "/app/scripts/document_parser.py"
+		if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+			return "", fmt.Errorf("python parser script not found")
+		}
+	}
+
+	cmd := exec.Command("python3", scriptPath, tmpFile.Name())
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("python script execution failed: %v, stderr: %s", err, stderr.String())
+	}
+
+	// 解析输出的 JSON
+	var result struct {
+		Success bool   `json:"success"`
+		Content string `json:"content"`
+		Error   string `json:"error"`
+	}
+
+	if err := json.Unmarshal([]byte(stdout.String()), &result); err != nil {
+		return "", fmt.Errorf("failed to parse python output: %w", err)
+	}
+
+	if !result.Success {
+		return "", fmt.Errorf("DOC extraction error: %s", result.Error)
+	}
+
+	return result.Content, nil
 }
 
 // extractTextFromRTF 占位

@@ -1193,3 +1193,32 @@ func (b *salesRAGBiz) AnalyzeChatStyle(ctx context.Context, userID uint, text st
 	// 3. 调用 dmxapi 的 qwen-turbo-latest 模型
 	return b.callDMXAPI(ctx, systemPrompt, text)
 }
+
+// CheckSemanticSplitterStatus 检查语义切分器状态
+// 返回: (是否可用, 诊断信息, 错误)
+func CheckSemanticSplitterStatus() (bool, string, error) {
+	splitter := service.NewEmbeddingSplitter(service.EmbeddingSplitterConfig{
+		Threshold:    0.6,
+		MinChunkSize: 100,
+		MaxChunkSize: 1000,
+		OverlapSize:  100,
+	})
+
+	available := splitter.IsAvailable()
+	if available {
+		return true, "语义切分器(bge-small-zh)已就绪", nil
+	}
+
+	// 返回诊断信息
+	info := `语义切分器(bge-small-zh)不可用。可能的原因：
+1. Python3 未安装或不在 PATH 中
+2. sentence-transformers 未安装: pip3 install sentence-transformers
+3. 模型首次下载需要网络连接
+
+安装命令:
+  bash scripts/install_semantic_deps.sh
+
+系统将自动回退到规则切分器。`
+
+	return false, info, nil
+}

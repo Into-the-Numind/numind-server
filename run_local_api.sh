@@ -16,5 +16,23 @@ export NUMIND_DB_MAX_CONNECTION_LIFE_TIME="30s"
 # Ensure we use the python environment with installed packages (miniconda)
 export PATH="/opt/homebrew/Caskroom/miniconda/base/bin:$PATH"
 
+# 配置 WeCom Agent 环境变量
+export WECOM_CORP_ID="wwb71317627b6b70d8"
+export WECOM_SECRET="7-55a-RDZgDzC5jhH4YjxF6zwtFRO0Mwj5_6TxQGUtc"
+export WECOM_POLLER_ENABLED="true"
+# 使用 config_local.yaml 中的远程数据库配置
+export MYSQL_DSN="root:Numind2025@tcp(49.233.219.254:13306)/numind-dev?charset=utf8mb4&parseTime=True&loc=Local"
+
+echo "==== 正在启动 wecom-agent (消息轮询) ===="
+go run cmd/wecom-agent/main.go &
+WECOM_PID=$!
+
+cleanup() {
+    echo "Stopping background processes..."
+    kill $WECOM_PID 2>/dev/null
+}
+trap cleanup EXIT INT TERM
+
 # 启动 API 服务 (端口 9091)
+echo "==== 正在启动 numind-server (API) ===="
 go run cmd/numind/main.go --config config_local.yaml

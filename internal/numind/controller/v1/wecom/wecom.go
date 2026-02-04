@@ -105,14 +105,15 @@ func (ctrl *WecomController) GetBindCode(c *gin.Context) {
 		return
 	}
 
-	code, err := ctrl.b.Wecom().GenerateBindCode(int64(user.ID))
+	bindCode, err := ctrl.b.Wecom().GenerateBindCode(int64(user.ID))
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
 	}
 
 	core.WriteResponse(c, nil, map[string]interface{}{
-		"code": code,
+		"code":       bindCode.Code,
+		"expired_at": bindCode.ExpiredAt,
 	})
 }
 

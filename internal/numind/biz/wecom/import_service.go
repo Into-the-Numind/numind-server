@@ -73,7 +73,7 @@ func (s *ImportService) GetArchiveSessions(userID int64) ([]ArchiveSession, erro
 
 		sessions = append(sessions, ArchiveSession{
 			SessionID:  "myself",
-			Title:      "个人记录 (Personal History)",
+			Title:      "个人记录",
 			LastActive: lastActiveStr,
 			MsgCount:   myCount,
 			Type:       "system",
@@ -94,12 +94,22 @@ func (s *ImportService) GetArchiveSessions(userID int64) ([]ArchiveSession, erro
 		// 尝试从 Content JSON 中提取 title
 		title := "合并聊天记录"
 		var meta struct {
-			Title string `json:"title"`
+			Title      string `json:"title"`
+			ChatRecord struct {
+				Title string `json:"title"`
+			} `json:"chatrecord"`
 		}
+
 		// 简单的 JSON 解析尝试
-		if json.Unmarshal([]byte(m.Content), &meta) == nil && meta.Title != "" {
-			title = meta.Title
-		} else {
+		if json.Unmarshal([]byte(m.Content), &meta) == nil {
+			if meta.Title != "" {
+				title = meta.Title
+			} else if meta.ChatRecord.Title != "" {
+				title = meta.ChatRecord.Title
+			}
+		}
+
+		if title == "合并聊天记录" {
 			// 如果没有 title，使用时间作为标题
 			title = fmt.Sprintf("记录 %s", time.UnixMilli(m.MsgTime).Format("01-02 15:04"))
 		}

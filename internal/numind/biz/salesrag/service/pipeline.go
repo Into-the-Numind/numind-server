@@ -31,10 +31,15 @@ type DocumentStatusUpdater interface {
 	UpdateStatus(ctx context.Context, id uint, status string, errorMsg string) error
 }
 
+// TextSplitter 定义文本切分器接口
+type TextSplitter interface {
+	Split(text string) ([]SplitChunk, error)
+}
+
 // IngestionPipeline manages the end-to-end ingestion process
 type IngestionPipeline struct {
 	parser     PipelineParser
-	splitter   *MarkdownSplitter
+	splitter   TextSplitter             // 使用接口而非具体类型
 	tagger     *ContentTagger
 	docStore   DocumentStatusUpdater    // 文档状态更新器
 	store      port.VectorStore         // 向量数据库
@@ -44,7 +49,7 @@ type IngestionPipeline struct {
 
 func NewIngestionPipeline(
 	parser PipelineParser,
-	splitter *MarkdownSplitter,
+	splitter TextSplitter,
 	tagger *ContentTagger,
 	docStore DocumentStatusUpdater,
 	store port.VectorStore,

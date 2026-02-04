@@ -34,6 +34,7 @@ def clean_text(text):
 
 # ==================== Legacy DOC Parsing (Antiword) ====================
 def extract_doc_content(doc_path):
+    """使用 antiword 解析旧版二进制 .doc 文件"""
     try:
         # Try antiword first (Linux/Mac standard for binary .doc)
         result = subprocess.run(['antiword', '-w', '0', doc_path], 
@@ -42,7 +43,7 @@ def extract_doc_content(doc_path):
         if result.returncode == 0:
             content = result.stdout.strip()
             if content:
-                return {"success": True, "content": clean_text(content)}
+                return {"success": True, "content": clean_text(content), "page_count": 0}
 
         return {"success": False, "error": "Unable to extract text from .doc file (antiword missing or failed)"}
         
@@ -53,6 +54,10 @@ def extract_doc_content(doc_path):
 
 # ==================== Unified Modern Parsing (MarkItDown) ====================
 def extract_with_markitdown(file_path):
+    """
+    使用 MarkItDown 解析文档（首选方案）
+    支持：PDF, DOCX, XLSX, PPTX, HTML, TXT, MD 等
+    """
     md = MarkItDown()
     try:
         # MarkItDown handles docx, xlsx, pptx, pdf, html, txt, etc. auto-magically
@@ -61,7 +66,10 @@ def extract_with_markitdown(file_path):
         # Access the converted text content
         # Note: MarkItDown returns an object with .text_content
         if result and result.text_content:
-            return {"success": True, "content": clean_text(result.text_content)}
+            content = clean_text(result.text_content)
+            # 尝试获取 PDF 页数（如果可用）
+            page_count = _get_pdf_page_count(file_path) if file_path.lower().endswith('.pdf') else 0
+            return {"success": True, "content": content, "page_count": page_count}
         else:
             return {"success": False, "error": "Extracted content is empty"}
             
@@ -69,10 +77,23 @@ def extract_with_markitdown(file_path):
         # Catch-all for conversion errors
         return {"success": False, "error": f"MarkItDown conversion failed: {str(e)}"}
 
+def _get_pdf_page_count(file_path):
+    """辅助函数：尝试获取 PDF 页数"""
+    try:
+        import fitz  # PyMuPDF
+        doc = fitz.open(file_path)
+        count = len(doc)
+        doc.close()
+        return count
+    except Exception:
+        # 如果获取失败，返回 0
+        return 0
+
 # ==================== Main Entry ====================
 if __name__ == "__main__":
     # Ensure stdout uses UTF-8 to avoid encoding issues with Chinese characters
-    sys.stdout.reconfigure(encoding='utf-8')
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
 
     if len(sys.argv) < 2:
         print(json.dumps({"success": False, "error": "No file path provided"}))

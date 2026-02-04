@@ -44,8 +44,48 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     antiword \
     && rm -rf /var/lib/apt/lists/*
 
-# 安装 Python 增强解析依赖
-RUN pip3 install --no-cache-dir pymupdf python-docx
+# 安装 Python 增强解析依赖 + 语义切分依赖
+RUN pip3 install --no-cache-dir pymupdf python-docx sentence-transformers numpy
+
+# 预下载语义切分模型（带重试机制）
+RUN mkdir -p /app/model_cache && \
+    echo "📥 预下载 bge-small-zh 模型..." && \
+    python3 << 'EOF'
+import os
+import sys
+import time
+
+# 设置模型缓存目录
+os.environ['SENTENCE_TRANSFORMERS_HOME'] = '/app/model_cache'
+os.environ['HF_HOME'] = '/app/model_cache'
+
+# 中国大陆镜像源（自动检测）
+if os.environ.get('USE_CHINA_MIRROR', 'auto').lower() in ('1', 'true', 'yes', 'auto'):
+    os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+    print(f"🌐 使用镜像源: {os.environ['HF_ENDPOINT']}")
+
+max_retries = 3
+for attempt in range(1, max_retries + 1):
+    try:
+        print(f"🔄 第 {attempt} 次尝试下载模型...")
+        from sentence_transformers import SentenceTransformer
+        model = SentenceTransformer('BAAI/bge-small-zh', cache_folder='/app/model_cache')
+        print("✅ 模型预下载成功!")
+        sys.exit(0)
+    except Exception as e:
+        print(f"❌ 第 {attempt} 次尝试失败: {e}")
+        if attempt < max_retries:
+            wait_time = 5 * attempt
+            print(f"⏳ 等待 {wait_time} 秒后重试...")
+            time.sleep(wait_time)
+        else:
+            print("⚠️ 模型预下载失败，将在运行时尝试下载")
+            # 不退出，让构建继续
+            sys.exit(0)
+EOF
+
+# 设置模型缓存目录权限
+RUN chown -R 1001:1001 /app/model_cache && chmod -R 755 /app/model_cache
 
 # 安装Chrome依赖和字体
 # Ubuntu 24.04: 先更新包列表，然后安装所有依赖
@@ -216,26 +256,9 @@ ENV GOMEMLIMIT=16GiB
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:9091/healthz || exit 1
 
-# 创建启动脚本
-RUN echo '#!/bin/bash\n\
-    # 根据环境变量选择配置文件\n\
-    if [ -n "$APP_ENV" ]; then\n\
-    CONFIG_FILE="/app/config_${APP_ENV}.yaml"\n\
-    else\n\
-    CONFIG_FILE="/app/config_dev.yaml"\n\
-    fi\n\
-    \n\
-    # 检查配置文件是否存在\n\
-    if [ ! -f "$CONFIG_FILE" ]; then\n\
-    echo "错误: 配置文件不存在: $CONFIG_FILE"\n\
-    echo "可用的配置文件:"\n\
-    ls -la /app/config_*.yaml\n\
-    exit 1\n\
-    fi\n\
-    \n\
-    echo "使用配置文件: $CONFIG_FILE"\n\
-    exec /app/numind -c "$CONFIG_FILE" "$@"' > /app/start.sh && \
-    chmod +x /app/start.sh
+# 复制启动脚本（包含语义切分模型检查）
+COPY scripts/docker-entrypoint.sh /app/start.sh
+RUN chmod +x /app/start.sh
 
 # 清理缓存和临时文件，进一步减少镜像大小
 RUN apt-get clean && \

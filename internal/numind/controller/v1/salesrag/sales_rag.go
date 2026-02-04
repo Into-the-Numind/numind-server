@@ -28,12 +28,21 @@ func NewSalesRAGController(b biz.IBiz) *SalesRAGController {
 
 // Ingest 处理知识库文档上传
 func (ctrl *SalesRAGController) Ingest(c *gin.Context) {
+	// 设置文件大小限制：100MB
+	const maxFileSize = 100 * 1024 * 1024 // 100MB
+
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
-		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文件上传失败: "+err.Error()), nil)
 		return
 	}
 	defer file.Close()
+
+	// 检查文件大小
+	if header.Size > maxFileSize {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(fmt.Sprintf("文件大小 %.2fMB 超过100MB限制", float64(header.Size)/1024/1024)), nil)
+		return
+	}
 
 	// Parse additional fields
 	name := c.DefaultPostForm("name", "")

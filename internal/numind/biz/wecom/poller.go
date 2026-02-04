@@ -94,15 +94,22 @@ func (p *Poller) poll() error {
 		msg.MsgID = data.MsgID
 		msg.Seq = data.Seq
 
+		// 确保 WecomUser 存在 (避免外键约束问题，同时为绑定做准备)
+		if err := p.ensureUserExists(msg.FromUserID); err != nil {
+			log.Printf("⚠️ EnsureUserExists warning for %s: %v", msg.FromUserID, err)
+		}
+
 		// 保存消息
 		if err := p.saveMessage(msg); err != nil {
 			log.Printf("❌ Save error for msg %s: %v", data.MsgID, err)
 			continue
 		}
 
-		// 处理 #BIND 指令
-		if msg.MsgType == "text" && strings.HasPrefix(strings.ToUpper(msg.Content), "#BIND") {
-			p.handleBindCommand(msg)
+		// 处理绑定指令
+		// 逻辑变更: 直接识别6位数字验证码，无需前缀
+		cleanContent := strings.TrimSpace(msg.Content)
+		if msg.MsgType == "text" && isSixDigitCode(cleanContent) {
+			p.handleBindCommand(msg, cleanContent)
 		}
 
 		// 更新游标 (取已处理的最大 seq)
@@ -117,6 +124,19 @@ func (p *Poller) poll() error {
 	}
 
 	return nil
+}
+
+// isSixDigitCode 检查是否为6位数字
+func isSixDigitCode(s string) bool {
+	if len(s) != 6 {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // saveMessage 保存消息到数据库
@@ -141,14 +161,8 @@ func (p *Poller) ensureUserExists(externalUserID string) error {
 }
 
 // handleBindCommand 处理绑定指令
-func (p *Poller) handleBindCommand(msg *WecomMessage) {
-	parts := strings.Fields(msg.Content)
-	if len(parts) < 2 {
-		log.Printf("⚠️ Invalid bind command format from %s: %s", msg.FromUserID, msg.Content)
-		return
-	}
-
-	code := parts[1]
+func (p *Poller) handleBindCommand(msg *WecomMessage, code string) {
+	log.Printf("🔍 Processing bind command: User=%s Code=%s", msg.FromUserID, code)
 	binder := NewBindingService(p.db)
 
 	// 验证并绑定

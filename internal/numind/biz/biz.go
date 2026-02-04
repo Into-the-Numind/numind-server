@@ -169,9 +169,10 @@ func NewBiz(ds store.IStore) *biz {
 
 	// Initialize Pipeline Components
 	parser := adapter.NewEnhancedParser()
-	splitter := salesragservice.NewMarkdownSplitter(salesragservice.SplitterConfig{
+	// 使用增强版切分器（支持中文分词、语义边界、100字符重叠、Markdown分级）
+	splitter := salesragservice.NewCompatibilitySplitter(salesragservice.SplitterConfig{
 		MaxChunkSize: 1000,
-		MinChunkSize: 100,
+		MinChunkSize: 200,
 	})
 	tagger := salesragservice.NewContentTagger()
 

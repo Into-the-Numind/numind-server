@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"time"
 
+	"numind-server/internal/pkg/model"
+
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // BindingService 身份绑定服务
@@ -35,37 +38,49 @@ func (s *BindingService) BindUser(req *BindUserRequest) error {
 		return errors.New("external_user_id is required")
 	}
 
-	// 检查是否已被其他 Numind 用户绑定
-	var existingUser WecomUser
-	err := s.db.First(&existingUser, "id = ?", req.ExternalUserID).Error
-	if err == nil && existingUser.NumindUserID != nil && *existingUser.NumindUserID != req.NumindUserID {
-		return errors.New("此微信账号已被其他用户绑定")
+	// 0. 获取 Numind 用户信息 (用于填充名称)
+	var numindUser model.User
+	if err := s.db.First(&numindUser, req.NumindUserID).Error; err != nil {
+		return fmt.Errorf("failed to fetch numind user: %v", err)
 	}
 
-	// 检查该 Numind 用户是否已绑定其他微信
-	var boundUser WecomUser
-	err = s.db.First(&boundUser, "numind_user_id = ?", req.NumindUserID).Error
-	if err == nil && boundUser.ID != req.ExternalUserID {
-		return errors.New("您已绑定其他微信账号，请先解绑")
-	}
-
-	// 执行绑定
-	now := time.Now()
-	if err == gorm.ErrRecordNotFound {
-		// 新建用户记录
-		user := WecomUser{
-			ID:           req.ExternalUserID,
-			NumindUserID: &req.NumindUserID,
-			BoundAt:      &now,
+	// 1. 检查 ExternalUserID (微信号) 是否已存在
+	var wechatUser WecomUser
+	errWechat := s.db.First(&wechatUser, "id = ?", req.ExternalUserID).Error
+	if errWechat == nil {
+		// 存在: 检查是否已被 *其他* Numind 用户绑定
+		if wechatUser.NumindUserID != nil && *wechatUser.NumindUserID != req.NumindUserID {
+			return errors.New("此微信账号已被其他用户绑定")
 		}
-		return s.db.Create(&user).Error
+	} else if errWechat != gorm.ErrRecordNotFound {
+		return errWechat // database error
 	}
 
-	// 更新现有记录
-	return s.db.Model(&WecomUser{}).Where("id = ?", req.ExternalUserID).Updates(map[string]interface{}{
-		"numind_user_id": req.NumindUserID,
-		"bound_at":       now,
-	}).Error
+	// 2. 检查 NumindUserID (当前登录用户) 是否已绑定 *其他* 微信号
+	var boundUser WecomUser
+	// 修正：这里应该检查 numind_user_id 为 req.NumindUserID 且 ID 不等于 req.ExternalUserID 的记录
+	errNumind := s.db.First(&boundUser, "numind_user_id = ?", req.NumindUserID).Error
+	if errNumind == nil {
+		// 存在: 检查绑定的微信号是否是当前正在绑定的这个
+		if boundUser.ID != req.ExternalUserID {
+			return errors.New("您已绑定其他微信账号，请先解绑")
+		}
+	}
+
+	// 3. 执行绑定 (Upsert)
+	// 使用 OnConflict 解决并发创建或“已存在但未查到”的冲突问题
+	now := time.Now()
+	user := WecomUser{
+		ID:           req.ExternalUserID,
+		NumindUserID: &req.NumindUserID,
+		Name:         numindUser.Nickname,
+		BoundAt:      &now,
+	}
+
+	return s.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"numind_user_id", "name", "bound_at"}),
+	}).Create(&user).Error
 }
 
 // UnbindUser 解除绑定
@@ -232,9 +247,15 @@ func (s *BindingService) GetContacts(numindUserID int64) ([]ContactConversation,
 	return contacts, nil
 }
 
-// GenerateBindCode 生成绑定验证码
-func (s *BindingService) GenerateBindCode(numindUserID int64) (string, error) {
-	// 简单的 6 位随机数生成
+// GenerateBindCode 生成或获取现有的绑定验证码
+func (s *BindingService) GenerateBindCode(numindUserID int64) (*WecomBindCode, error) {
+	// 1. 检查是否已有未过期的验证码
+	var existing WecomBindCode
+	if err := s.db.Where("user_id = ? AND expired_at > ?", numindUserID, time.Now()).Order("created_at DESC").First(&existing).Error; err == nil {
+		return &existing, nil
+	}
+
+	// 2. 生成新验证码 (简单的 6 位随机数)
 	code := fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
 
 	bindCode := WecomBindCode{
@@ -245,9 +266,9 @@ func (s *BindingService) GenerateBindCode(numindUserID int64) (string, error) {
 	}
 
 	if err := s.db.Create(&bindCode).Error; err != nil {
-		return "", err
+		return nil, err
 	}
-	return code, nil
+	return &bindCode, nil
 }
 
 // VerifyAndBind 验证并绑定

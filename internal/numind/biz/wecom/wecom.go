@@ -10,7 +10,7 @@ type WecomBiz interface {
 	GetContacts(numindUserID int64) ([]ContactConversation, error)
 	GetMessagesByNumindUser(numindUserID int64, limit, offset int) ([]WecomMessage, int64, error)
 	GetConversationMessages(externalUserID, partnerID string, limit, offset int) ([]WecomMessage, int64, error)
-	GenerateBindCode(numindUserID int64) (string, error)
+	GenerateBindCode(numindUserID int64) (*WecomBindCode, error)
 	VerifyAndBind(code string, externalUserID string) error
 
 	// Inbox / Import Batch Methods
