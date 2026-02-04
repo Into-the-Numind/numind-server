@@ -13,35 +13,15 @@ type HybridSplitterConfig struct {
 	// 语义切分配置
 	SemanticConfig EmbeddingSplitterConfig
 
-	// 策略选择
-	Strategy SplitStrategy
-
 	// 阈值：文本长度超过此值才使用语义切分
 	SemanticMinLength int
 }
 
-// SplitStrategy 切分策略
-type SplitStrategy int
-
-const (
-	// StrategyRuleOnly 仅使用规则切分
-	StrategyRuleOnly SplitStrategy = iota
-
-	// StrategySemanticOnly 仅使用语义切分
-	StrategySemanticOnly
-
-	// StrategyHybrid 混合策略：先规则后语义优化
-	StrategyHybrid
-
-	// StrategyAuto 自动选择：长文本用语义，短文本用规则
-	StrategyAuto
-)
-
 // HybridSplitter 混合切分器
 type HybridSplitter struct {
-	ruleSplitter     *EnhancedMarkdownSplitter
-	semanticSplitter *EmbeddingSplitter
-	cfg              HybridSplitterConfig
+	ruleSplitter      *EnhancedMarkdownSplitter
+	semanticSplitter  *EmbeddingSplitter
+	cfg               HybridSplitterConfig
 	semanticAvailable bool
 }
 
@@ -167,22 +147,6 @@ func (h *HybridSplitter) convertToSplitChunks(chunks []EnhancedSplitChunk, err e
 	return result, nil
 }
 
-// String 返回策略名称
-func (s SplitStrategy) String() string {
-	switch s {
-	case StrategyRuleOnly:
-		return "rule_only"
-	case StrategySemanticOnly:
-		return "semantic_only"
-	case StrategyHybrid:
-		return "hybrid"
-	case StrategyAuto:
-		return "auto"
-	default:
-		return "unknown"
-	}
-}
-
 // NewDefaultHybridSplitter 创建默认配置的混合切分器
 // 简化策略：
 // 1. < 500字符：不切分
@@ -202,7 +166,6 @@ func NewDefaultHybridSplitter() *HybridSplitter {
 			MaxChunkSize: 1000,
 			OverlapSize:  100,
 		},
-		Strategy:          StrategyAuto,
 		SemanticMinLength: 500, // 简化为500字符阈值
 	})
 }

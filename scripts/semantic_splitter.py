@@ -31,7 +31,9 @@ def get_model():
 
 
 def split_into_sentences(text: str) -> List[str]:
-    """将文本切分为句子"""
+    """
+    将文本切分为句子，同时保护 Markdown 表格不被拆分
+    """
     # 中文句子结束符
     chinese_ends = r'[。！？；]'
     # 英文句子结束符
@@ -41,20 +43,69 @@ def split_into_sentences(text: str) -> List[str]:
     pattern = f'({chinese_ends}|{english_ends})+'
     
     sentences = []
-    current = ""
     
-    for char in text:
-        current += char
-        if re.match(f'.*{pattern}$', current):
-            stripped = current.strip()
-            if stripped:
-                sentences.append(stripped)
+    # 1. 首先按行分割，识别表格块
+    lines = text.split('\n')
+    current_table_block = []
+    table_mode = False
+    
+    # 将文本视为混合块列表：普通文本块 和 表格块
+    blocks = []
+    current_text_block = []
+    
+    for line in lines:
+        stripped_line = line.strip()
+        # 简单判定：以 | 开头且包含至少一个 | 视为表格行
+        is_table_row = stripped_line.startswith('|') and stripped_line.count('|') >= 2
+        
+        if is_table_row:
+            # 如果之前有普通文本堆积，先保存
+            if current_text_block:
+                blocks.append({"type": "text", "content": "\n".join(current_text_block)})
+                current_text_block = []
+            
+            table_mode = True
+            current_table_block.append(line)
+        else:
+            if table_mode:
+                # 表格结束
+                blocks.append({"type": "table", "content": "\n".join(current_table_block)})
+                current_table_block = []
+                table_mode = False
+            
+            current_text_block.append(line)
+            
+    # 处理最后的块
+    if current_table_block:
+        blocks.append({"type": "table", "content": "\n".join(current_table_block)})
+    if current_text_block:
+        blocks.append({"type": "text", "content": "\n".join(current_text_block)})
+        
+    # 2. 对普通文本块进行分句，表格块整体作为一个句子
+    for block in blocks:
+        if block["type"] == "table":
+            # 表格作为一个整体，不进行内部切分
+            sentences.append(block["content"])
+        else:
+            # 普通文本进行正则句读切分
+            content = block["content"]
+            # 这里的切分逻辑需要稍微调整以处理多行文本
+            # 简单起见，我们对 content 再次进行字符级遍历或正则切分
+            # 注意：之前的逻辑是基于字符流的，这里 content 包含换行
+            
             current = ""
-    
-    # 处理最后一个句子
-    if current.strip():
-        sentences.append(current.strip())
-    
+            for char in content:
+                current += char
+                if re.match(f'.*{pattern}$', current):
+                    # 检查是否是在换行符后（即段落结束）也算
+                    stripped = current.strip()
+                    if stripped:
+                        sentences.append(stripped)
+                    current = ""
+            
+            if current.strip():
+                sentences.append(current.strip())
+                
     return sentences
 
 

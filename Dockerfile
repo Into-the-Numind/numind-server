@@ -183,6 +183,9 @@ COPY --from=builder /app/numind /app/numind
 COPY --from=builder /app/lib/wecom-sdk/libWeWorkFinanceSdk.so /usr/lib/
 RUN ldconfig
 COPY scripts /app/scripts
+# Copy jieba dictionary files
+COPY --from=builder /go/pkg/mod/github.com/yanyiwu/gojieba@v1.4.6/deps/cppjieba/dict /app/dict
+RUN chown -R numind:numind /app/dict
 
 # 验证配置文件复制成功
 RUN ls -la /app/config_*.yaml && \

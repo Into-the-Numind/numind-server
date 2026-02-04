@@ -22,11 +22,11 @@ type EnhancedSplitterConfig struct {
 
 // EnhancedSplitChunk 增强版切片
 type EnhancedSplitChunk struct {
-	Content    string   // 切片内容（包含重叠部分）
-	CoreStart  int      // 核心内容开始位置（不含前置重叠）
-	CoreEnd    int      // 核心内容结束位置（不含后置重叠）
-	Headers    []string // 标题继承链
-	Level      int      // 层级深度
+	Content   string   // 切片内容（包含重叠部分）
+	CoreStart int      // 核心内容开始位置（不含前置重叠）
+	CoreEnd   int      // 核心内容结束位置（不含后置重叠）
+	Headers   []string // 标题继承链
+	Level     int      // 层级深度
 }
 
 // Boundary 切分边界
@@ -59,7 +59,24 @@ func NewEnhancedMarkdownSplitter(cfg EnhancedSplitterConfig) *EnhancedMarkdownSp
 
 	// 初始化中文分词器
 	if cfg.EnableJieba {
-		s.jieba = gojieba.NewJieba()
+		// 检查 Docker 环境下的字典文件是否存在
+		dictPath := "/app/dict/jieba.dict.utf8"
+		if _, err := os.Stat(dictPath); err == nil {
+			log.Printf("[EnhancedSplitter] Using custom dictionary path: %s", dictPath)
+			s.jieba = gojieba.NewJieba(
+				"/app/dict/jieba.dict.utf8",
+				"/app/dict/hmm_model.utf8",
+				"/app/dict/user.dict.utf8",
+				"/app/dict/idf.utf8",
+				"/app/dict/stop_words.utf8",
+			)
+		} else {
+			// 本地开发环境或未找到字典文件，使用默认配置
+			// 注意：如果在 Docker 中未正确 COPY 字典文件，这里仍然会 Panic，
+			// 但这是预期的，因为我们需要确保分词功能正常工作而不是静默失败。
+			log.Println("[EnhancedSplitter] using default dictionary path")
+			s.jieba = gojieba.NewJieba()
+		}
 	}
 
 	return s
@@ -181,17 +198,17 @@ func (s *EnhancedMarkdownSplitter) splitSection(section MarkdownSection, fullTex
 	// 如果内容小于最大切分大小，直接返回
 	if len(content) <= s.cfg.MaxChunkSize {
 		return []EnhancedSplitChunk{{
-			Content:    content,
-			CoreStart:  0,
-			CoreEnd:    len(content),
-			Headers:    section.HeaderPath,
-			Level:      section.Level,
+			Content:   content,
+			CoreStart: 0,
+			CoreEnd:   len(content),
+			Headers:   section.HeaderPath,
+			Level:     section.Level,
 		}}
 	}
 
 	// 找到所有切分边界
 	boundaries := s.findBoundaries(content)
-	
+
 	// 调试日志
 	if os.Getenv("SPLITTER_DEBUG") == "1" {
 		log.Printf("[EnhancedSplitter] Section length: %d, boundaries found: %d", len(content), len(boundaries))
@@ -214,11 +231,11 @@ func (s *EnhancedMarkdownSplitter) splitSection(section MarkdownSection, fullTex
 				chunkContent := content[startPos:lastBoundary]
 				if len(chunkContent) >= s.cfg.MinChunkSize {
 					chunks = append(chunks, EnhancedSplitChunk{
-						Content:    chunkContent,
-						CoreStart:  0,
-						CoreEnd:    len(chunkContent),
-						Headers:    section.HeaderPath,
-						Level:      section.Level,
+						Content:   chunkContent,
+						CoreStart: 0,
+						CoreEnd:   len(chunkContent),
+						Headers:   section.HeaderPath,
+						Level:     section.Level,
 					})
 					if os.Getenv("SPLITTER_DEBUG") == "1" {
 						log.Printf("[EnhancedSplitter] Chunk at boundary: pos=%d, len=%d", lastBoundary, len(chunkContent))
@@ -231,15 +248,15 @@ func (s *EnhancedMarkdownSplitter) splitSection(section MarkdownSection, fullTex
 				forcePos := s.findForceSplitPoint(content, startPos+s.cfg.MaxChunkSize)
 				chunkContent := content[startPos:forcePos]
 				chunks = append(chunks, EnhancedSplitChunk{
-					Content:    chunkContent,
-					CoreStart:  0,
-					CoreEnd:    len(chunkContent),
-					Headers:    section.HeaderPath,
-					Level:      section.Level,
+					Content:   chunkContent,
+					CoreStart: 0,
+					CoreEnd:   len(chunkContent),
+					Headers:   section.HeaderPath,
+					Level:     section.Level,
 				})
 				forceSplitCount++
 				if os.Getenv("SPLITTER_DEBUG") == "1" {
-					log.Printf("[EnhancedSplitter] Forced split: pos=%d, len=%d, next_start=%q...", 
+					log.Printf("[EnhancedSplitter] Forced split: pos=%d, len=%d, next_start=%q...",
 						forcePos, len(chunkContent), truncate(content[forcePos:], 30))
 				}
 				startPos = forcePos
@@ -256,11 +273,11 @@ func (s *EnhancedMarkdownSplitter) splitSection(section MarkdownSection, fullTex
 		remaining := content[startPos:]
 		if len(remaining) >= s.cfg.MinChunkSize || len(chunks) == 0 {
 			chunks = append(chunks, EnhancedSplitChunk{
-				Content:    remaining,
-				CoreStart:  0,
-				CoreEnd:    len(remaining),
-				Headers:    section.HeaderPath,
-				Level:      section.Level,
+				Content:   remaining,
+				CoreStart: 0,
+				CoreEnd:   len(remaining),
+				Headers:   section.HeaderPath,
+				Level:     section.Level,
 			})
 		} else if len(chunks) > 0 {
 			// 剩余内容太少，合并到最后一个chunk
@@ -269,7 +286,7 @@ func (s *EnhancedMarkdownSplitter) splitSection(section MarkdownSection, fullTex
 			chunks[lastIdx].CoreEnd = len(chunks[lastIdx].Content)
 		}
 	}
-	
+
 	if os.Getenv("SPLITTER_DEBUG") == "1" {
 		log.Printf("[EnhancedSplitter] Split complete: %d chunks, %d forced splits", len(chunks), forceSplitCount)
 	}
@@ -405,7 +422,7 @@ func (s *EnhancedMarkdownSplitter) findForceSplitPoint(text string, targetPos in
 
 	// 句子结束符
 	sentenceEndings := []rune{'。', '！', '？', '.', '!', '?', '；', ';', '\n'}
-	
+
 	// 在窗口内寻找最近的句子边界
 	bestPos := -1
 	minDiff := windowSize

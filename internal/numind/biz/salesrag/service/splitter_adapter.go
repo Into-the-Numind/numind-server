@@ -67,7 +67,6 @@ func NewCompatibilitySplitter(cfg SplitterConfig) *CompatibilitySplitter {
 			MaxChunkSize: cfg.MaxChunkSize,
 			OverlapSize:  100,
 		},
-		Strategy:          StrategyAuto,
 		SemanticMinLength: 500, // 简化为500字符阈值
 	}
 
