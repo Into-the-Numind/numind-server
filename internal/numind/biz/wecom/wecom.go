@@ -14,10 +14,8 @@ type WecomBiz interface {
 	VerifyAndBind(code string, externalUserID string) error
 
 	// Inbox / Import Batch Methods
-	// Smart Archive Methods
-	CreateImportBatch(userID int64, title string, messages []ImportMessage) (*ImportBatch, error)
 	GetArchiveSessions(userID int64) ([]ArchiveSession, error)
-	GetSessionMessages(userID int64, sessionKey string) ([]ImportMessage, error)
+	GetSessionMessages(userID int64, sessionKey string) ([]ArchiveMessage, error)
 }
 
 type wecomBiz struct {
