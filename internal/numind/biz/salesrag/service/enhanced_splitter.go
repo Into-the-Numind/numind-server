@@ -1,6 +1,8 @@
 package service
 
 import (
+	"log"
+	"os"
 	"regexp"
 	"strings"
 	"unicode"
@@ -189,11 +191,17 @@ func (s *EnhancedMarkdownSplitter) splitSection(section MarkdownSection, fullTex
 
 	// 找到所有切分边界
 	boundaries := s.findBoundaries(content)
+	
+	// 调试日志
+	if os.Getenv("SPLITTER_DEBUG") == "1" {
+		log.Printf("[EnhancedSplitter] Section length: %d, boundaries found: %d", len(content), len(boundaries))
+	}
 
 	// 智能切分
 	var chunks []EnhancedSplitChunk
 	startPos := 0
 	lastBoundary := 0
+	forceSplitCount := 0
 
 	for _, boundary := range boundaries {
 		// 检查从startPos到boundary的距离
@@ -212,11 +220,14 @@ func (s *EnhancedMarkdownSplitter) splitSection(section MarkdownSection, fullTex
 						Headers:    section.HeaderPath,
 						Level:      section.Level,
 					})
+					if os.Getenv("SPLITTER_DEBUG") == "1" {
+						log.Printf("[EnhancedSplitter] Chunk at boundary: pos=%d, len=%d", lastBoundary, len(chunkContent))
+					}
 				}
 				startPos = lastBoundary
 				lastBoundary = boundary.Pos
 			} else {
-				// 没有找到合适的边界，强制切分（但尽量在分词边界）
+				// 没有找到合适的边界，强制切分（但尽量在句子边界）
 				forcePos := s.findForceSplitPoint(content, startPos+s.cfg.MaxChunkSize)
 				chunkContent := content[startPos:forcePos]
 				chunks = append(chunks, EnhancedSplitChunk{
@@ -226,6 +237,11 @@ func (s *EnhancedMarkdownSplitter) splitSection(section MarkdownSection, fullTex
 					Headers:    section.HeaderPath,
 					Level:      section.Level,
 				})
+				forceSplitCount++
+				if os.Getenv("SPLITTER_DEBUG") == "1" {
+					log.Printf("[EnhancedSplitter] Forced split: pos=%d, len=%d, next_start=%q...", 
+						forcePos, len(chunkContent), truncate(content[forcePos:], 30))
+				}
 				startPos = forcePos
 				lastBoundary = boundary.Pos
 			}
@@ -253,8 +269,20 @@ func (s *EnhancedMarkdownSplitter) splitSection(section MarkdownSection, fullTex
 			chunks[lastIdx].CoreEnd = len(chunks[lastIdx].Content)
 		}
 	}
+	
+	if os.Getenv("SPLITTER_DEBUG") == "1" {
+		log.Printf("[EnhancedSplitter] Split complete: %d chunks, %d forced splits", len(chunks), forceSplitCount)
+	}
 
 	return chunks
+}
+
+// 辅助函数：截断字符串
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen]
 }
 
 // findBoundaries 查找所有切分边界
@@ -362,16 +390,51 @@ func (s *EnhancedMarkdownSplitter) isInsideTable(text string, pos int) bool {
 	return false
 }
 
-// findForceSplitPoint 强制切分点（尽量在词语边界）
+// findForceSplitPoint 强制切分点（优先句子边界，其次词语边界）
 func (s *EnhancedMarkdownSplitter) findForceSplitPoint(text string, targetPos int) int {
-	// 如果启用了分词，在targetPos附近找分词边界
+	// 首先在 targetPos 附近寻找句子边界
+	windowSize := 100
+	windowStart := targetPos - windowSize
+	if windowStart < 0 {
+		windowStart = 0
+	}
+	windowEnd := targetPos + windowSize
+	if windowEnd > len(text) {
+		windowEnd = len(text)
+	}
+
+	// 句子结束符
+	sentenceEndings := []rune{'。', '！', '？', '.', '!', '?', '；', ';', '\n'}
+	
+	// 在窗口内寻找最近的句子边界
+	bestPos := -1
+	minDiff := windowSize
+
+	for i := windowStart; i < windowEnd && i < len(text); i++ {
+		for _, ending := range sentenceEndings {
+			if rune(text[i]) == ending {
+				diff := abs(targetPos - i)
+				if diff < minDiff {
+					minDiff = diff
+					bestPos = i + 1 // 切分点在结束符之后
+				}
+			}
+		}
+	}
+
+	// 如果找到了句子边界，优先使用
+	if bestPos > 0 && bestPos < len(text) {
+		return bestPos
+	}
+
+	// 如果没有找到句子边界，使用分词边界（中文）
 	if s.cfg.EnableJieba && s.jieba != nil && targetPos < len(text) {
 		// 在前后50字符范围内搜索
-		windowStart := targetPos - 50
+		windowStart = targetPos - 50
 		if windowStart < 0 {
 			windowStart = 0
 		}
-		windowEnd := targetPos + 50
+		windowEnd = targetPos + 50
 		if windowEnd > len(text) {
 			windowEnd = len(text)
 		}
@@ -382,7 +445,7 @@ func (s *EnhancedMarkdownSplitter) findForceSplitPoint(text string, targetPos in
 		// 找到最接近targetPos的词语边界
 		currentPos := windowStart
 		bestPos := targetPos
-		minDiff := abs(targetPos - currentPos)
+		minDiff = abs(targetPos - currentPos)
 
 		for _, word := range words {
 			currentPos += len(word)
@@ -396,7 +459,7 @@ func (s *EnhancedMarkdownSplitter) findForceSplitPoint(text string, targetPos in
 		return bestPos
 	}
 
-	// 否则直接返回targetPos
+	// 最后手段：直接返回targetPos
 	return targetPos
 }
 

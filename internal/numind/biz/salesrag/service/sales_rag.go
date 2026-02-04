@@ -104,12 +104,6 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 		verdict.RewriteQuery = intentResult.SearchQueries[0]
 	}
 
-	// 2. 快速路径：闲聊不检索
-	if intentResult.Intent == port.IntentChitChat {
-		verdict.IsChitChat = true
-		return verdict, nil
-	}
-
 	// 3. 并行多路检索
 	filter := port.SearchFilter{DocumentIDs: docIDs}
 	allChunks, err := s.parallelSearch(ctx, intentResult.SearchQueries, filter)
@@ -211,18 +205,10 @@ func (s *SalesRAGService) rerankChunks(
 		return chunks, nil // 太少无需 rerank
 	}
 
-	// 准备 documents 列表 (仅 Summary + Content 前 150 字)
+	// 准备 documents 列表 (发送全量 Content)
 	documents := make([]string, len(chunks))
 	for i, chunk := range chunks {
-		preview := chunk.Content
-		if len(preview) > 150 {
-			preview = preview[:150] + "..."
-		}
-		if chunk.Summary != "" {
-			documents[i] = fmt.Sprintf("[%s] %s", chunk.Summary, preview)
-		} else {
-			documents[i] = preview
-		}
+		documents[i] = chunk.Content
 	}
 
 	// 调用 Rerank API

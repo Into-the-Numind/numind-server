@@ -14,14 +14,12 @@ type RegexRouter struct {
 	// 预编译的正则
 	pronouns    *regexp.Regexp
 	comparisons *regexp.Regexp
-	chitChat    *regexp.Regexp
 }
 
 func NewRegexRouter() *RegexRouter {
 	return &RegexRouter{
 		pronouns:    regexp.MustCompile(`(它|这个|那个|这款|前者|后者|it|this|that)`),
 		comparisons: regexp.MustCompile(`(对比|区别|优势|vs|compare|diff)`),
-		chitChat:    regexp.MustCompile(`^(你好|嗨|hello|hi|谢谢|不用了|再见|bye)$`),
 	}
 }
 
@@ -53,11 +51,6 @@ func (r *RegexRouter) AnalyzeIntentV2(ctx context.Context, query string, history
 func (r *RegexRouter) AnalyzeIntent(ctx context.Context, query string, history []string) (port.IntentType, string, error) {
 	q := strings.TrimSpace(strings.ToLower(query))
 
-	// 1. ChitChat
-	if r.chitChat.MatchString(q) {
-		return port.IntentChitChat, "", nil
-	}
-
 	// 2. Ambiguous (指代) -> 映射为 Inquiry
 	if r.pronouns.MatchString(q) {
 		return port.IntentAmbiguous, query, nil
@@ -75,8 +68,7 @@ func (r *RegexRouter) AnalyzeIntent(ctx context.Context, query string, history [
 // mapLegacyIntent 将旧意图类型映射到新的销售导向类型
 func mapLegacyIntent(legacy port.IntentType) port.IntentType {
 	switch legacy {
-	case port.IntentChitChat:
-		return port.IntentChitChat
+
 	case port.IntentAmbiguous, port.IntentDirect:
 		return port.IntentInquiry
 	case port.IntentComplex:

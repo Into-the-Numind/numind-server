@@ -8,8 +8,6 @@ import (
 type IntentType string
 
 const (
-	// IntentChitChat 闲聊/寒暄（不需要检索知识库）
-	IntentChitChat IntentType = "CHIT_CHAT"
 	// IntentObjection 异议/抗拒（嫌贵、不需要、犹豫、质疑价值）
 	IntentObjection IntentType = "OBJECTION"
 	// IntentComparison 竞品对比/选型（提到其他厂商或对比）

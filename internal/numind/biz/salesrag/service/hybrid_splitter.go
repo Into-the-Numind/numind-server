@@ -1,8 +1,8 @@
 package service
 
 import (
-	"fmt"
 	"log"
+	"os"
 )
 
 // HybridSplitterConfig 混合切分器配置
@@ -47,9 +47,9 @@ type HybridSplitter struct {
 
 // NewHybridSplitter 创建混合切分器
 func NewHybridSplitter(cfg HybridSplitterConfig) *HybridSplitter {
-	// 设置默认值
+	// 设置默认值（与Split函数中的硬编码500保持一致）
 	if cfg.SemanticMinLength == 0 {
-		cfg.SemanticMinLength = 2000 // 超过2000字符才使用语义切分
+		cfg.SemanticMinLength = 500 // 简化为500字符阈值
 	}
 
 	h := &HybridSplitter{
@@ -71,122 +71,74 @@ func NewHybridSplitter(cfg HybridSplitterConfig) *HybridSplitter {
 }
 
 // Split 执行切分（实现 TextSplitter 接口）
+// 简化策略：
+// 1. < 500字符：不切分，直接返回一个chunk
+// 2. >= 500字符：优先语义切分，不可用则降级规则切分
 func (h *HybridSplitter) Split(text string) ([]SplitChunk, error) {
-	strategy := h.selectStrategy(text)
+	// 输出诊断日志（可以通过环境变量控制）
+	if os.Getenv("SPLITTER_DEBUG") == "1" {
+		log.Printf("[HybridSplitter] Text length: %d, SemanticAvailable: %v",
+			len(text), h.semanticAvailable)
+	}
 
-	switch strategy {
-	case StrategySemanticOnly:
-		if h.semanticAvailable {
-			return h.semanticSplitter.Split(text)
+	// 策略1：文本太短（<500字符），不切分
+	if len(text) < 500 {
+		if os.Getenv("SPLITTER_DEBUG") == "1" {
+			log.Println("[HybridSplitter] Text < 500 chars, no splitting needed")
 		}
-		return h.convertToSplitChunks(h.ruleSplitter.Split(text))
+		return []SplitChunk{{
+			Content: text,
+			Headers: []string{},
+		}}, nil
+	}
 
-	case StrategyHybrid:
-		return h.hybridSplit(text)
-
-	case StrategyAuto:
-		if len(text) > h.cfg.SemanticMinLength && h.semanticAvailable {
-			return h.semanticSplitter.Split(text)
+	// 策略2：文本足够长（>=500字符），优先语义切分
+	if h.semanticAvailable {
+		if os.Getenv("SPLITTER_DEBUG") == "1" {
+			log.Println("[HybridSplitter] Text >= 500 chars, using semantic splitting")
 		}
-		return h.convertToSplitChunks(h.ruleSplitter.Split(text))
-
-	default: // StrategyRuleOnly
-		return h.convertToSplitChunks(h.ruleSplitter.Split(text))
-	}
-}
-
-// selectStrategy 选择切分策略
-func (h *HybridSplitter) selectStrategy(text string) SplitStrategy {
-	// 如果语义切分不可用，强制使用规则
-	if !h.semanticAvailable {
-		return StrategyRuleOnly
+		return h.semanticSplitter.Split(text)
 	}
 
-	return h.cfg.Strategy
-}
-
-// hybridSplit 混合切分：先规则切分，再对大块进行语义切分
-func (h *HybridSplitter) hybridSplit(text string) ([]SplitChunk, error) {
-	// 步骤 1：先用规则切分
-	ruleChunks, err := h.ruleSplitter.Split(text)
-	if err != nil {
-		return nil, fmt.Errorf("rule split failed: %w", err)
+	// 策略3：语义切分不可用，降级为规则切分
+	if os.Getenv("SPLITTER_DEBUG") == "1" {
+		log.Println("[HybridSplitter] Semantic unavailable, fallback to rule splitting")
 	}
-
-	// 步骤 2：检查每个 chunk，如果太大则用语义切分细化
-	var finalChunks []SplitChunk
-
-	for _, chunk := range ruleChunks {
-		// 如果 chunk 太大，用语义切分细化
-		if len(chunk.Content) > h.cfg.SemanticConfig.MaxChunkSize {
-			semanticChunks, err := h.semanticSplitter.Split(chunk.Content)
-			if err != nil {
-				// 语义切分失败，保留原 chunk
-				log.Printf("[HybridSplitter] Semantic split failed for chunk, using rule chunk: %v", err)
-				finalChunks = append(finalChunks, chunk.ConvertToSplitChunk())
-				continue
-			}
-
-			// 将语义切分结果继承原 chunk 的 Headers
-			for _, sc := range semanticChunks {
-				sc.Headers = chunk.Headers
-				finalChunks = append(finalChunks, sc)
-			}
-		} else {
-			finalChunks = append(finalChunks, chunk.ConvertToSplitChunk())
-		}
-	}
-
-	return finalChunks, nil
+	return h.convertToSplitChunks(h.ruleSplitter.Split(text))
 }
 
 // SplitWithDetails 返回详细的切分信息
+// 简化策略：
+// 1. < 500字符：不切分，直接返回一个chunk
+// 2. >= 500字符：优先语义切分，不可用则降级规则切分
 func (h *HybridSplitter) SplitWithDetails(text string) ([]SplitChunk, map[string]interface{}, error) {
-	strategy := h.selectStrategy(text)
-
 	details := map[string]interface{}{
-		"strategy":            strategy.String(),
-		"semantic_available":  h.semanticAvailable,
-		"text_length":         len(text),
+		"semantic_available": h.semanticAvailable,
+		"text_length":        len(text),
 	}
 
 	var chunks []SplitChunk
 	var err error
 
-	switch strategy {
-	case StrategySemanticOnly:
-		if h.semanticAvailable {
-			semanticChunks, semErr := h.semanticSplitter.SplitEnhanced(text)
-			if semErr != nil {
-				err = semErr
-				break
-			}
-			// 转换为 SplitChunk
-			for _, sc := range semanticChunks {
-				chunks = append(chunks, SplitChunk{
-					Content: sc.Content,
-					Headers: []string{},
-				})
-			}
-			details["semantic_chunks"] = semanticChunks
-		} else {
-			chunks, err = h.convertToSplitChunks(h.ruleSplitter.Split(text))
-		}
+	// 策略1：文本太短（<500字符），不切分
+	if len(text) < 500 {
+		details["strategy"] = "no_split"
+		details["reason"] = "text_too_short(<500)"
+		chunks = []SplitChunk{{
+			Content: text,
+			Headers: []string{},
+		}}
+		return chunks, details, nil
+	}
 
-	case StrategyHybrid:
-		chunks, err = h.hybridSplit(text)
-		details["hybrid"] = true
-
-	case StrategyAuto:
-		if len(text) > h.cfg.SemanticMinLength && h.semanticAvailable {
-			chunks, err = h.semanticSplitter.Split(text)
-			details["auto_selected"] = "semantic"
-		} else {
-			chunks, err = h.convertToSplitChunks(h.ruleSplitter.Split(text))
-			details["auto_selected"] = "rule"
-		}
-
-	default:
+	// 策略2：文本足够长（>=500字符），优先语义切分
+	if h.semanticAvailable {
+		details["strategy"] = "semantic"
+		chunks, err = h.semanticSplitter.Split(text)
+	} else {
+		// 策略3：语义切分不可用，降级为规则切分
+		details["strategy"] = "rule"
+		details["reason"] = "semantic_unavailable"
 		chunks, err = h.convertToSplitChunks(h.ruleSplitter.Split(text))
 	}
 
@@ -232,6 +184,9 @@ func (s SplitStrategy) String() string {
 }
 
 // NewDefaultHybridSplitter 创建默认配置的混合切分器
+// 简化策略：
+// 1. < 500字符：不切分
+// 2. >= 500字符：优先语义切分，不可用则降级规则切分
 func NewDefaultHybridSplitter() *HybridSplitter {
 	return NewHybridSplitter(HybridSplitterConfig{
 		RuleConfig: EnhancedSplitterConfig{
@@ -247,7 +202,7 @@ func NewDefaultHybridSplitter() *HybridSplitter {
 			MaxChunkSize: 1000,
 			OverlapSize:  100,
 		},
-		Strategy:          StrategyAuto, // 默认自动选择
-		SemanticMinLength: 2000,         // 超过2000字符使用语义切分
+		Strategy:          StrategyAuto,
+		SemanticMinLength: 500, // 简化为500字符阈值
 	})
 }

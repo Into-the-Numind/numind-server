@@ -29,7 +29,6 @@ const salesModePrompt = `你是一个专业的销售意图分析师。分析以�
 
 ## 任务 1: 意图分类
 将客户消息归类为以下类别之一：
-- CHIT_CHAT: 闲聊/寒暄/表情包/无需业务回复
 - OBJECTION: 异议/抗拒（嫌贵、不需要、还要考虑、质疑价值）
 - COMPARISON: 竞品对比/选型/提到其他厂商
 - INQUIRY: 产品/业务咨询（问参数、功能、资质）
@@ -37,10 +36,10 @@ const salesModePrompt = `你是一个专业的销售意图分析师。分析以�
 
 ## 任务 2: 搜索词生成
 基于意图，生成 2-3 个用于检索知识库的搜索词。要求：
-1. 每个搜索词必须独立、完整、包含主语（不能用"它"、"这个"）
-2. 如果是模糊指代，结合对话历史补全主语
+1. 每个搜索词必须独立、完整、包含主语
+2. 结合对话历史补全主语
 3. 针对不同维度生成（如：产品参数、销售话术、成功案例）
-4. 如果是闲聊类型，search_queries 可以为空数组
+4. **核心要求**：必须在搜索词中保留原始消息中的核心实体名、专有名词、技术参数或具体型号，不能进行过度泛化。
 
 ## 对话历史
 %s
@@ -66,7 +65,6 @@ const freeModePrompt = `你是一个专业的销售意图分析师。分析以�
 
 ## 任务 2: 意图分类（针对客户消息）
 将客户消息归类为以下类别之一：
-- CHIT_CHAT: 闲聊/寒暄/表情包/无需业务回复
 - OBJECTION: 异议/抗拒（嫌贵、不需要、还要考虑、质疑价值）
 - COMPARISON: 竞品对比/选型/提到其他厂商
 - INQUIRY: 产品/业务咨询（问参数、功能、资质）
@@ -75,7 +73,11 @@ const freeModePrompt = `你是一个专业的销售意图分析师。分析以�
 如果没有客户消息，只有销售指令，意图设为 INQUIRY。
 
 ## 任务 3: 搜索词生成
-基于客户意图和销售指令，生成 2-3 个用于检索知识库的搜索词。
+基于客户消息中的意图和销售指令，生成 2-3 个用于检索知识库的搜索词。
+要求：
+1. 搜索词必须以“客户消息”中的核心实体和问题为核心。
+2. 严禁只根据“销售指令”生成动作类搜索词（如禁止生成“幽默回复技巧”），必须生成能检索到产品知识的搜索词（如“产品X的价格政策”）。
+3. 保留原始消息中的关键参数和型号。
 
 ## 对话历史
 %s
@@ -142,9 +144,21 @@ func (r *LLMRouter) AnalyzeIntentV2(ctx context.Context, query string, history [
 	// 验证意图有效性
 	result.Intent = normalizeIntent(result.Intent)
 
-	// 确保至少有一个搜索词（除非是闲聊）
-	if len(result.SearchQueries) == 0 && result.Intent != port.IntentChitChat {
-		result.SearchQueries = []string{query}
+	// 确保原始 Query 始终在搜索列表中（底层安全保障）
+	originalQueryExists := false
+	for _, q := range result.SearchQueries {
+		if q == query {
+			originalQueryExists = true
+			break
+		}
+	}
+	if !originalQueryExists {
+		result.SearchQueries = append([]string{query}, result.SearchQueries...)
+	}
+
+	// 限制搜索词数量，避免召回过多重复噪声
+	if len(result.SearchQueries) > 4 {
+		result.SearchQueries = result.SearchQueries[:4]
 	}
 
 	log.C(ctx).Infow("Intent analysis completed",
@@ -188,7 +202,7 @@ func extractJSON(resp string) string {
 // normalizeIntent 验证并规范化意图类型
 func normalizeIntent(intent port.IntentType) port.IntentType {
 	switch intent {
-	case port.IntentChitChat, port.IntentObjection, port.IntentComparison, port.IntentInquiry, port.IntentBuyingProof:
+	case port.IntentObjection, port.IntentComparison, port.IntentInquiry, port.IntentBuyingProof:
 		return intent
 	default:
 		return port.IntentInquiry // 默认为咨询

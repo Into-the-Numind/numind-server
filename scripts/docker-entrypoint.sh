@@ -47,7 +47,7 @@ check_and_download_model() {
     fi
     
     # 检查模型是否已存在
-    if python3 << 'EOF' 2>/dev/null; then
+    if python3 << 'EOF' 2>/dev/null
 import os
 import sys
 
@@ -78,7 +78,7 @@ EOF
     for i in $(seq 1 $max_retries); do
         log_info "🔄 第 $i 次尝试下载模型..."
         
-        if python3 << 'EOF' 2>&1; then
+        if python3 << 'EOF' 2>&1
 import os
 import sys
 import time

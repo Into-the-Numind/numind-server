@@ -48,6 +48,9 @@ type CompatibilitySplitter struct {
 }
 
 // NewCompatibilitySplitter 创建兼容切分器（使用混合策略）
+// 简化策略：
+// 1. < 500字符：不切分
+// 2. >= 500字符：优先语义切分，不可用则降级规则切分
 func NewCompatibilitySplitter(cfg SplitterConfig) *CompatibilitySplitter {
 	// 创建混合配置
 	hybridCfg := HybridSplitterConfig{
@@ -64,8 +67,8 @@ func NewCompatibilitySplitter(cfg SplitterConfig) *CompatibilitySplitter {
 			MaxChunkSize: cfg.MaxChunkSize,
 			OverlapSize:  100,
 		},
-		Strategy:          StrategyAuto, // 默认自动选择
-		SemanticMinLength: 2000,         // 超过2000字符使用语义切分
+		Strategy:          StrategyAuto,
+		SemanticMinLength: 500, // 简化为500字符阈值
 	}
 
 	return &CompatibilitySplitter{

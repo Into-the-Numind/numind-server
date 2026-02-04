@@ -469,22 +469,7 @@ func (b *salesRAGBiz) ListDocumentChunks(ctx context.Context, userID uint, docID
 
 // generateAnswer 使用大模型生成最终回复
 func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, verdict *service.RetrievalVerdict) (string, error) {
-	// 1. 如果是闲聊，生成友好的闲聊回复
-	if verdict.IsChitChat {
-		messages := []map[string]string{
-			{
-				"role":    "system",
-				"content": "你是一个专业、友好的销售智能助手。请用简洁、自然的方式回复用户的问候或闲聊。",
-			},
-			{
-				"role":    "user",
-				"content": query,
-			},
-		}
-		return b.volcBiz.VolcTextStream(ctx, messages, 200, 0.7)
-	}
-
-	// 2. 构建知识上下文
+	// 1. 构建知识上下文
 	var contextParts []string
 
 	// 合并所有检索到的知识
@@ -588,9 +573,8 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 	// 5. 如果没有可用文档，返回友好提示
 	if len(filteredDocIDs) == 0 {
 		verdict := &service.RetrievalVerdict{
-			Query:      query,
-			IsChitChat: true,
-			Reason:     "没有可用的知识库文档（文档可能被禁用或未完成处理）",
+			Query:  query,
+			Reason: "没有可用的知识库文档（文档可能被禁用或未完成处理）",
 		}
 		if err := onEvent("verdict", verdict); err != nil {
 			return err
@@ -643,22 +627,6 @@ func (b *salesRAGBiz) buildPromptMessages(query string, verdict *service.Retriev
 
 // buildPromptMessagesV2 根据检索结果构建 prompt 消息（销售 Copilot 优化版）
 func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.RetrievalVerdict) []adapter.ChatMessage {
-	// 如果是闲聊
-	if verdict.IsChitChat {
-		var content string
-		if verdict.ChatMode == "sales" {
-			// Sales 模式：直接回复内容
-			content = "请直接回复这句话，语气轻松自然，不要带任何解释。"
-		} else {
-			// Free 模式：助手风格
-			content = "你是一个专业、友好的销售智能助手。请用简洁、自然的方式回复用户的问候或闲聊。"
-		}
-		return []adapter.ChatMessage{
-			{Role: "system", Content: content},
-			{Role: "user", Content: query},
-		}
-	}
-
 	// 合并所有检索到的知识
 	allChunks := verdict.Evidence
 
@@ -687,15 +655,21 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 ## 客户意图分析
 %s
 
+## 客户画像（如果为空则忽略此部分）
+（留空，待注入）
+
 ## 你的任务
-基于以下知识库内容，为销售人员生成合适的回复话术建议。
+必须严格基于以下知识库内容，为销售人员生成合适的回复话术建议。
 
 ## 回复要求
 1. 语气专业但亲切，适合微信聊天场景
 2. 先给出分析或建议，再提供具体话术
 3. 如果是异议处理，先共情再引导
-4. 不要虚构知识库中没有的信息
+4. **严禁编造**：回复建议必须严格遵循知识库。如果知识库中没有直接答案，你必须明确说明“知识库中未检索到相关信息，无法提供准确建议”，不得虚构信息。
 5. 可以生成多个风格的回复供选择（如：专业风、亲和风）
+
+## 语言风格（如果为空则忽略此部分）
+（留空，待注入）
 
 ## 知识库内容
 %s`, intentDesc, knowledgeContext)
@@ -710,19 +684,26 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 ## 客户意图分析
 %s
 
-## 你的任务
-参考知识库内容，直接生成回复给客户的内容。
+## 客户画像（如果为空则忽略此部分）
+（留空，待注入）
 
-## 🚫 严格禁止 (Negative Constraints)
+## 你的任务
+必须严格基于以下知识库内容，直接生成回复给客户的内容。
+
+## 🚫 严格禁止
 1. **禁止使用列表**：绝对不要用 "1. 2. 3." 或 "- " 符号列表
 2. **禁止解释**：绝对不要出现 "建议您"、"您可以这样回"、"话术如下"、"首先...其次..."
 3. **禁止长篇大论**：不要写小作文，长话短说
+4. **严禁编造**：如果知识库中没有相关答案，你必须直接告知客户这部分信息暂时无法提供或需要核实，绝对不能基于通用知识进行编造。
 
 ## ✅ 核心要求
-1. **极度口语化**：像微信聊天一样，使用 "其实"、"不过"、"那个" 等连接词
+1. **极度口语化**：必须严格遵循下方的“语言风格”进行回复。
 2. **第一人称**：直接用 "我" 回复 "您/你"
 3. **分段发送**：如果内容较多，请直接换行，模拟发送了两条消息
-4. **基于知识**：优先用知识库内容，没有则用通用技巧
+4. **严格基于知识**：你的所有回复内容必须能在知识库中找到依据。
+
+## 语言风格（如果为空则忽略此部分）
+（留空，待注入）
 
 ## 知识库内容
 %s`, intentDesc, knowledgeContext)
@@ -759,8 +740,7 @@ func getIntentDescription(intent string) string {
 		return "客户在咨询产品信息。需要准确、专业地回答，并适当引导。"
 	case "BUYING_PROOF":
 		return "客户表现出购买意向或需要案例佐证。需要积极推进，提供信任背书。"
-	case "CHIT_CHAT":
-		return "客户在闲聊。保持轻松友好，拉近关系。"
+
 	default:
 		return "客户意图待分析。"
 	}
