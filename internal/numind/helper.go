@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	configbiz "numind-server/internal/numind/biz/config"
+	"numind-server/internal/numind/biz/wecom"
 	"numind-server/internal/numind/config"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/redis"
@@ -153,6 +154,13 @@ func autoMigrate(db *gorm.DB) error {
 		log.Infow("Database charset verification completed")
 	}
 
+	// 1.5 企业微信相关表迁移前的字段处理 (幂等更名: numind_user_id -> user_id)
+	log.Infow("Running custom migrations for Wecom tables...")
+	if err := migrateWecomUsersTable(db); err != nil {
+		log.Errorw("Failed to run custom Wecom migration", "error", err)
+		// 仍然尝试继续 AutoMigrate
+	}
+
 	// 2. 自动迁移所有模型
 	log.Infow("Starting database schema migration...")
 
@@ -179,6 +187,11 @@ func autoMigrate(db *gorm.DB) error {
 		&model.KnowledgeDocument{},
 		&model.SalesSession{},
 		&model.SalesMessage{},
+		&model.LanguageStyle{},
+		&wecom.WecomUser{},
+		&wecom.WecomMessage{},
+		&wecom.WecomCursor{},
+		&wecom.WecomBindCode{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate basic tables: %v", err)
@@ -805,4 +818,37 @@ func InitCOS() {
 	} else {
 		log.Infow("Tencent COS disabled or not configured")
 	}
+}
+
+// migrateWecomUsersTable 处理 wecom_users 表的字段重命名 (numind_user_id -> user_id)
+// 这是一个自定义的迁移函数，因为 GORM's AutoMigrate 不支持重命名列。
+func migrateWecomUsersTable(db *gorm.DB) error {
+	tableName := "wecom_users"
+
+	// 1. 检查表是否存在
+	if !db.Migrator().HasTable(tableName) {
+		log.Infow("wecom_users table does not exist, skipping rename logic", "table", tableName)
+		return nil
+	}
+
+	// 2. 检查旧字段 numind_user_id 是否存在
+	if db.Migrator().HasColumn(tableName, "numind_user_id") {
+		// 3. 检查新字段 user_id 是否已存在 (如果已存在，可能已经更名过了)
+		if !db.Migrator().HasColumn(tableName, "user_id") {
+			log.Infow("Renaming numind_user_id to user_id in wecom_users table...")
+			// 执行重命名 SQL
+			// 注意: MySQL 8.0+ 支持 RENAME COLUMN，但为了兼容性，使用 CHANGE
+			err := db.Exec(fmt.Sprintf("ALTER TABLE %s CHANGE numind_user_id user_id bigint(20)", tableName)).Error
+			if err != nil {
+				return fmt.Errorf("failed to rename column: %v", err)
+			}
+			log.Infow("Successfully renamed numind_user_id to user_id")
+		} else {
+			log.Infow("Both numind_user_id and user_id exist, skipping rename to avoid conflict")
+		}
+	} else {
+		log.Debugw("numind_user_id not found in wecom_users, maybe already renamed")
+	}
+
+	return nil
 }

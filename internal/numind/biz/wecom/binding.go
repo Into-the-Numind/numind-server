@@ -24,15 +24,15 @@ func NewBindingService(db *gorm.DB) *BindingService {
 
 // BindUserRequest 绑定请求
 type BindUserRequest struct {
-	NumindUserID   int64  `json:"numind_user_id"`   // Numind 平台用户 ID
+	UserID         int64  `json:"user_id"`          // Numind 平台用户 ID
 	ExternalUserID string `json:"external_user_id"` // 微信外部联系人 ID (wm_xxx)
 }
 
 // BindUser 将微信外部联系人绑定到 Numind 用户
 // 场景：用户在 Numind 前端扫码/输入验证码完成绑定
 func (s *BindingService) BindUser(req *BindUserRequest) error {
-	if req.NumindUserID <= 0 {
-		return errors.New("invalid numind_user_id")
+	if req.UserID <= 0 {
+		return errors.New("invalid user_id")
 	}
 	if req.ExternalUserID == "" {
 		return errors.New("external_user_id is required")
@@ -40,7 +40,7 @@ func (s *BindingService) BindUser(req *BindUserRequest) error {
 
 	// 0. 获取 Numind 用户信息 (用于填充名称)
 	var numindUser model.User
-	if err := s.db.First(&numindUser, req.NumindUserID).Error; err != nil {
+	if err := s.db.First(&numindUser, req.UserID).Error; err != nil {
 		return fmt.Errorf("failed to fetch numind user: %v", err)
 	}
 
@@ -49,7 +49,7 @@ func (s *BindingService) BindUser(req *BindUserRequest) error {
 	errWechat := s.db.First(&wechatUser, "id = ?", req.ExternalUserID).Error
 	if errWechat == nil {
 		// 存在: 检查是否已被 *其他* Numind 用户绑定
-		if wechatUser.NumindUserID != nil && *wechatUser.NumindUserID != req.NumindUserID {
+		if wechatUser.UserID != nil && *wechatUser.UserID != req.UserID {
 			return errors.New("此微信账号已被其他用户绑定")
 		}
 	} else if errWechat != gorm.ErrRecordNotFound {
@@ -58,8 +58,8 @@ func (s *BindingService) BindUser(req *BindUserRequest) error {
 
 	// 2. 检查 NumindUserID (当前登录用户) 是否已绑定 *其他* 微信号
 	var boundUser WecomUser
-	// 修正：这里应该检查 numind_user_id 为 req.NumindUserID 且 ID 不等于 req.ExternalUserID 的记录
-	errNumind := s.db.First(&boundUser, "numind_user_id = ?", req.NumindUserID).Error
+	// 修正：这里应该检查 user_id 为 req.UserID 且 ID 不等于 req.ExternalUserID 的记录
+	errNumind := s.db.First(&boundUser, "user_id = ?", req.UserID).Error
 	if errNumind == nil {
 		// 存在: 检查绑定的微信号是否是当前正在绑定的这个
 		if boundUser.ID != req.ExternalUserID {
@@ -71,30 +71,30 @@ func (s *BindingService) BindUser(req *BindUserRequest) error {
 	// 使用 OnConflict 解决并发创建或“已存在但未查到”的冲突问题
 	now := time.Now()
 	user := WecomUser{
-		ID:           req.ExternalUserID,
-		NumindUserID: &req.NumindUserID,
-		Name:         numindUser.Nickname,
-		BoundAt:      &now,
+		ID:      req.ExternalUserID,
+		UserID:  &req.UserID,
+		Name:    numindUser.Nickname,
+		BoundAt: &now,
 	}
 
 	return s.db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"numind_user_id", "name", "bound_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{"user_id", "name", "bound_at"}),
 	}).Create(&user).Error
 }
 
 // UnbindUser 解除绑定
 func (s *BindingService) UnbindUser(numindUserID int64) error {
-	return s.db.Model(&WecomUser{}).Where("numind_user_id = ?", numindUserID).Updates(map[string]interface{}{
-		"numind_user_id": nil,
-		"bound_at":       nil,
+	return s.db.Model(&WecomUser{}).Where("user_id = ?", numindUserID).Updates(map[string]interface{}{
+		"user_id":  nil,
+		"bound_at": nil,
 	}).Error
 }
 
 // GetBindingByNumindUser 根据 Numind 用户 ID 查询绑定的微信账号
 func (s *BindingService) GetBindingByNumindUser(numindUserID int64) (*WecomUser, error) {
 	var user WecomUser
-	err := s.db.First(&user, "numind_user_id = ?", numindUserID).Error
+	err := s.db.First(&user, "user_id = ?", numindUserID).Error
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +284,7 @@ func (s *BindingService) VerifyAndBind(code string, externalUserID string) error
 
 	// 执行绑定
 	req := &BindUserRequest{
-		NumindUserID:   bindCode.UserID,
+		UserID:         bindCode.UserID,
 		ExternalUserID: externalUserID,
 	}
 	if err := s.BindUser(req); err != nil {

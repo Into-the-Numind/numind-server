@@ -33,7 +33,7 @@ func (ctrl *SalesRAGController) Ingest(c *gin.Context) {
 
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文件上传失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(fmt.Sprintf("文件上传失败: %s", err.Error())), nil)
 		return
 	}
 	defer file.Close()
@@ -655,36 +655,27 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 
 // AnalyzeChatStyle 分析聊天风格（语言指纹分析）
 // 支持上传文件或直接传入文本
+// AnalyzeChatStyle 分析聊天风格（语言指纹分析）
+// 支持上传文件或直接传入文本
 func (ctrl *SalesRAGController) AnalyzeChatStyle(c *gin.Context) {
-	var text string
+	var reader io.Reader
+	var filename string
 
 	// 尝试获取上传的文件
-	file, _, err := c.Request.FormFile("file")
+	file, header, err := c.Request.FormFile("file")
 	if err == nil && file != nil {
-		// 有文件上传，解析文件内容
 		defer file.Close()
-
-		// 读取文件内容
-		data, err := io.ReadAll(file)
-		if err != nil {
-			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("读取文件失败"), nil)
-			return
-		}
-		text = string(data)
+		reader = file
+		filename = header.Filename
 	} else {
 		// 没有文件，尝试获取 text 字段
-		text = c.PostForm("text")
-	}
-
-	// 校验文本内容
-	if text == "" {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("请提供聊天文本或上传文件"), nil)
-		return
-	}
-
-	// 限制文本长度
-	if len(text) > 50000 {
-		text = text[:50000] + "\n...(truncated)"
+		text := c.PostForm("text")
+		if text == "" {
+			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("请提供聊天文本或上传文件"), nil)
+			return
+		}
+		reader = strings.NewReader(text)
+		filename = "input_text.txt"
 	}
 
 	user := middleware.GetCurrentUser(c)
@@ -693,8 +684,8 @@ func (ctrl *SalesRAGController) AnalyzeChatStyle(c *gin.Context) {
 		return
 	}
 
-	// 调用业务层分析
-	result, err := ctrl.b.SalesRAG().AnalyzeChatStyle(c, user.ID, text)
+	// 调用业务层分析 (业务层会处理解析和截断)
+	result, err := ctrl.b.SalesRAG().AnalyzeChatStyle(c, user.ID, reader, filename)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
@@ -702,5 +693,24 @@ func (ctrl *SalesRAGController) AnalyzeChatStyle(c *gin.Context) {
 
 	core.WriteResponse(c, nil, map[string]string{
 		"analysis": result,
+	})
+}
+
+// GetLanguageStyle 获取用户的语言风格
+func (ctrl *SalesRAGController) GetLanguageStyle(c *gin.Context) {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	style, err := ctrl.b.SalesRAG().GetLanguageStyle(c, user.ID)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, map[string]string{
+		"style": style,
 	})
 }

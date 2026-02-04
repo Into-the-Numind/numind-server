@@ -68,7 +68,10 @@ type SalesRAGBiz interface {
 	AnalyzeDocument(ctx context.Context, userID uint, file io.Reader, filename string) (string, error)
 
 	// AnalyzeChatStyle 分析聊天风格（语言指纹分析）
-	AnalyzeChatStyle(ctx context.Context, userID uint, text string) (string, error)
+	AnalyzeChatStyle(ctx context.Context, userID uint, file io.Reader, filename string) (string, error)
+
+	// GetLanguageStyle 获取用户的语言风格
+	GetLanguageStyle(ctx context.Context, userID uint) (string, error)
 }
 
 type IngestOptions struct {
@@ -1123,9 +1126,15 @@ func (b *salesRAGBiz) callDMXAPI(ctx context.Context, systemPrompt, userMessage 
 
 // AnalyzeChatStyle 分析聊天风格（语言指纹分析）
 // 使用 dmxapi 的 qwen-turbo-latest 模型
-func (b *salesRAGBiz) AnalyzeChatStyle(ctx context.Context, userID uint, text string) (string, error) {
-	// 1. 截断 (避免 token 溢出)
-	maxLen := 50000
+func (b *salesRAGBiz) AnalyzeChatStyle(ctx context.Context, userID uint, file io.Reader, filename string) (string, error) {
+	// 1. 解析内容
+	text, err := b.parser.Parse(ctx, file, filename)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse chat file: %w", err)
+	}
+
+	// 2. 截断 (避免 token 溢出)
+	maxLen := 10000
 	if len(text) > maxLen {
 		text = text[:maxLen] + "\n...(truncated)"
 	}
@@ -1170,8 +1179,31 @@ func (b *salesRAGBiz) AnalyzeChatStyle(ctx context.Context, userID uint, text st
 #### **输入层**：
 - 下方为分析材料：`
 
-	// 3. 调用 dmxapi 的 qwen-turbo-latest 模型
-	return b.callDMXAPI(ctx, systemPrompt, text)
+	// 4. 调用 dmxapi 的 qwen-turbo-latest 模型
+	analysis, err := b.callDMXAPI(ctx, systemPrompt, text)
+	if err != nil {
+		return "", err
+	}
+
+	// 5. 保存到数据库
+	style := &model.LanguageStyle{
+		UserID: userID,
+		Style:  analysis,
+	}
+	if err := b.ds.LanguageStyles().Save(ctx, style); err != nil {
+		log.Printf("Failed to save language style: %v", err)
+	}
+
+	return analysis, nil
+}
+
+// GetLanguageStyle 获取用户的语言风格
+func (b *salesRAGBiz) GetLanguageStyle(ctx context.Context, userID uint) (string, error) {
+	style, err := b.ds.LanguageStyles().Get(ctx, userID)
+	if err != nil {
+		return "", nil // Not found
+	}
+	return style.Style, nil
 }
 
 // CheckSemanticSplitterStatus 检查语义切分器状态

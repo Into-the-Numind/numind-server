@@ -41,7 +41,7 @@ type ArchiveMessage struct {
 // GetBindingUserID 获取当前用户绑定的微信 ExternalUserID
 func (s *ImportService) GetBindingUserID(userID int64) (string, error) {
 	var binding WecomUser
-	if err := s.db.Where("numind_user_id = ?", userID).First(&binding).Error; err != nil {
+	if err := s.db.Where("user_id = ?", userID).First(&binding).Error; err != nil {
 		return "", err
 	}
 	return binding.ID, nil

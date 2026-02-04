@@ -5,13 +5,13 @@ import "time"
 // WecomUser 微信外部联系人与 Numind 用户绑定表
 // 用于将企业微信的 external_userid 与 Numind 平台用户关联
 type WecomUser struct {
-	ID           string     `gorm:"column:id;primaryKey;type:varchar(64)" json:"id"` // ExternalUserID (wm_xxx)
-	NumindUserID *int64     `gorm:"column:numind_user_id;index" json:"numind_user_id"`
-	Name         string     `gorm:"column:name;type:varchar(128)" json:"name"`     // 微信昵称
-	Avatar       string     `gorm:"column:avatar;type:varchar(512)" json:"avatar"` // 头像URL
-	BoundAt      *time.Time `gorm:"column:bound_at" json:"bound_at"`               // 绑定时间
-	CreatedAt    time.Time  `gorm:"column:created_at" json:"created_at"`
-	UpdatedAt    time.Time  `gorm:"column:updated_at" json:"updated_at"`
+	ID        string     `gorm:"column:id;primaryKey;type:varchar(64)" json:"id"` // ExternalUserID (wm_xxx)
+	UserID    *int64     `gorm:"column:user_id;index" json:"user_id"`
+	Name      string     `gorm:"column:name;type:varchar(128)" json:"name"`     // 微信昵称
+	Avatar    string     `gorm:"column:avatar;type:varchar(512)" json:"avatar"` // 头像URL
+	BoundAt   *time.Time `gorm:"column:bound_at" json:"bound_at"`               // 绑定时间
+	CreatedAt time.Time  `gorm:"column:created_at" json:"created_at"`
+	UpdatedAt time.Time  `gorm:"column:updated_at" json:"updated_at"`
 }
 
 func (WecomUser) TableName() string {

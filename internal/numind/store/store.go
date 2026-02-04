@@ -36,6 +36,7 @@ type IStore interface {
 	Customers() ICustomerStore
 	KnowledgeDocuments() KnowledgeDocumentStore
 	KnowledgeChunks() KnowledgeChunkStore
+	LanguageStyles() LanguageStyleStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -136,4 +137,8 @@ func (ds *datastore) KnowledgeDocuments() KnowledgeDocumentStore {
 
 func (ds *datastore) KnowledgeChunks() KnowledgeChunkStore {
 	return newKnowledgeChunks(ds.db)
+}
+
+func (ds *datastore) LanguageStyles() LanguageStyleStore {
+	return NewLanguageStyleStore(ds.db)
 }

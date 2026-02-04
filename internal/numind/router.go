@@ -298,6 +298,7 @@ func installNumindRouters(g *gin.Engine) error {
 
 		// 聊天风格分析
 		authGroup.POST("/sales-rag/analyze-chat-style", salesRAGc.AnalyzeChatStyle) // 分析聊天风格（语言指纹）
+		authGroup.GET("/sales-rag/analyze-chat-style", salesRAGc.GetLanguageStyle)  // 获取已分析的聊天风格
 	}
 
 	// 企业微信存档相关

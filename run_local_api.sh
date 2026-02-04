@@ -23,13 +23,23 @@ export WECOM_POLLER_ENABLED="true"
 # 使用 config_local.yaml 中的远程数据库配置
 export MYSQL_DSN="root:Numind2025@tcp(49.233.219.254:13306)/numind-dev?charset=utf8mb4&parseTime=True&loc=Local"
 
+
 echo "==== 正在启动 wecom-agent (消息轮询) ===="
 go run cmd/wecom-agent/main.go &
 WECOM_PID=$!
 
+echo "==== 正在启动 semantic-server (语义切分服务) ===="
+python3 scripts/semantic_server.py > semantic_server.log 2>&1 &
+SEMANTIC_PID=$!
+
+# 等待 Python 服务启动 (模型加载可能需要几秒)
+echo "正在等待语义模型加载..."
+sleep 5
+
 cleanup() {
     echo "Stopping background processes..."
     kill $WECOM_PID 2>/dev/null
+    kill $SEMANTIC_PID 2>/dev/null
 }
 trap cleanup EXIT INT TERM
 

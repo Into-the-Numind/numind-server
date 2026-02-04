@@ -192,6 +192,32 @@ main() {
     
     echo ""
     echo "╔════════════════════════════════════════════════════════╗"
+    echo "║         🧠 启动语义切分服务...                         ║"
+    echo "╚════════════════════════════════════════════════════════╝"
+    echo ""
+
+    # 启动 semantic-server (后台运行)
+    # 确保日志目录存在
+    mkdir -p /app/logs
+    python3 /app/scripts/semantic_server.py > /app/logs/semantic_server.log 2>&1 &
+    SEMANTIC_PID=$!
+    
+    log_info "✅ Semantic Server started (PID: $SEMANTIC_PID)"
+    log_info "   Logs: /app/logs/semantic_server.log"
+    
+    # 设置清理钩子，确保容器退出时清理子进程
+    cleanup() {
+        log_info "🛑 Stopping background processes..."
+        kill $SEMANTIC_PID 2>/dev/null || true
+    }
+    trap cleanup EXIT INT TERM
+    
+    # 等待服务启动
+    log_info "⏳ 等待模型加载 (5s)..."
+    sleep 5
+    
+    echo ""
+    echo "╔════════════════════════════════════════════════════════╗"
     echo "║         🟢 启动应用...                                 ║"
     echo "╚════════════════════════════════════════════════════════╝"
     echo ""
