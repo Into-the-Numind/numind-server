@@ -4,295 +4,288 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
+// ImportService 微信存档服务
+// 提供归档会话列表和会话消息详情的查询
 type ImportService struct {
 	db *gorm.DB
 }
 
 func NewImportService(db *gorm.DB) *ImportService {
-	// Auto Migrate the tables
-	_ = db.AutoMigrate(&ImportBatch{}, &ImportMessage{})
 	return &ImportService{db: db}
 }
 
-func (s *ImportService) CreateImportBatch(userID int64, title string, messages []ImportMessage) (*ImportBatch, error) {
-	// Calculate distinct speakers
-	speakerSet := make(map[string]struct{})
-	for _, m := range messages {
-		if m.Speaker != "" {
-			speakerSet[m.Speaker] = struct{}{}
-		}
-	}
-	speakers := make([]string, 0, len(speakerSet))
-	for k := range speakerSet {
-		speakers = append(speakers, k)
-	}
-	sort.Strings(speakers) // Ensure deterministic order for session grouping
-	speakersStr := strings.Join(speakers, ",")
-
-	batch := &ImportBatch{
-		ID:        uuid.New().String(),
-		UserID:    userID,
-		Title:     title,
-		Speakers:  speakersStr, // Cache the speakers
-		Status:    ImportBatchStatusPending,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}
-
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(batch).Error; err != nil {
-			return err
-		}
-
-		for i := range messages {
-			messages[i].BatchID = batch.ID
-			messages[i].CreatedAt = time.Now()
-		}
-
-		if len(messages) > 0 {
-			if err := tx.Create(&messages).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-
-	if err != nil {
-		return nil, err
-	}
-	return batch, nil
-}
-
-// ArchiveSession represents a grouped session in the UI
+// ArchiveSession 会话列表项结构
 type ArchiveSession struct {
 	SessionID  string `json:"session_id"`
 	Title      string `json:"title"`
 	LastActive string `json:"last_active"`
-	MsgCount   int    `json:"msg_count"`
-	Type       string `json:"type"` // "customer" or "system"
+	MsgCount   int64  `json:"msg_count"`
+	Type       string `json:"type"` // "system" (个人/普通聚合) 或 "customer" (合并聊天记录)
 }
 
-// GetArchiveSessions rewritten to split by MsgType
+// ArchiveMessage 统一消息结构 (用于前端展示)
+type ArchiveMessage struct {
+	MsgID       string `json:"msg_id"`
+	MsgTime     int64  `json:"msg_time"`
+	MsgType     string `json:"msg_type"` // text, image, file, etc.
+	Content     string `json:"content"`  // 展示内容
+	SpeakerName string `json:"speaker"`  // 发送者名称 (显示用)
+	FromUserID  string `json:"from_user_id"`
+}
+
+// GetArchiveSessions 获取归档会话列表
+// 逻辑：
+// 1. "个人记录 (My History)": 聚合所有非 chatrecord 类型的消息。
+// 2. "合并记录 (Merged Records)": 每一条 chatrecord 类型的消息作为一个独立会话。
 func (s *ImportService) GetArchiveSessions(userID int64) ([]ArchiveSession, error) {
-	// We need all messages for this user.
-	// Assuming messages are linked via Batch.
-	var messages []struct {
-		MessageID uint      `gorm:"column:message_id"`
-		Content   string    `gorm:"column:content"`
-		MsgType   string    `gorm:"column:msg_type"`
-		CreatedAt time.Time `gorm:"column:created_at"`
-		Title     string    `gorm:"column:title"` // Batch Title
-	}
+	var sessions []ArchiveSession
 
-	// Fetch essential fields
-	err := s.db.Table("import_messages").
-		Select("import_messages.id as message_id, import_messages.content, import_messages.msg_type, import_messages.created_at, import_batches.title").
-		Joins("JOIN import_batches ON import_batches.id = import_messages.batch_id").
-		Where("import_batches.user_id = ?", userID).
-		Order("import_messages.msg_time desc"). // Show newest first? User said Order by CreatedAt previously? Let's use MsgTime for chat order logic usually. But CreatedAt for archive list is ok.
-		Scan(&messages).Error
+	// 1. 获取 "个人记录" (聚合 MsgType != 'chatrecord')
+	var myCount int64
+	var lastMsg WecomMessage
 
-	if err != nil {
+	// 统计数量
+	if err := s.db.Model(&WecomMessage{}).
+		Where("msg_type != ?", "chatrecord").
+		Count(&myCount).Error; err != nil {
 		return nil, err
 	}
 
-	var result []ArchiveSession
+	// 只有当有消息时才添加
+	if myCount > 0 {
+		// 获取最后一条消息的时间作为 LastActive
+		s.db.Model(&WecomMessage{}).
+			Where("msg_type != ?", "chatrecord").
+			Order("msg_time desc").
+			First(&lastMsg)
 
-	// Classify
-	myHistoryCount := 0
-	var myHistoryLastActive time.Time
-	hasMyHistory := false
-
-	for _, m := range messages {
-		// Strict check based on MsgType
-		if m.MsgType == "chatrecord" {
-			// Distinct Session for this merged record
-			sessionID := fmt.Sprintf("msg_%d", m.MessageID)
-
-			// For title: The chatrecord content usually contains a title in JSON
-			// But doing full parse here is heavy.
-			// Let's use the Batch title as a base, or "合并聊天记录"
-			displayTitle := m.Title
-			if displayTitle == "" {
-				displayTitle = "合并聊天记录"
-			}
-
-			// Try simple string find for title in Content content if possible?
-			// {"chatrecord":{"title":"Leo和pmtm啊的聊天记录"...
-			// Let's rely on Batch Title for now as it's cleaner.
-
-			result = append(result, ArchiveSession{
-				SessionID:  sessionID,
-				Title:      displayTitle,
-				LastActive: m.CreatedAt.Format(time.RFC3339),
-				MsgCount:   1, // It is ONE record representing a session
-				Type:       "customer",
-			})
-
+		lastActiveStr := ""
+		if !lastMsg.CreatedAt.IsZero() {
+			lastActiveStr = lastMsg.CreatedAt.Format(time.RFC3339)
 		} else {
-			// Aggregated Messages (text, image, etc. sent directly to Bot)
-			myHistoryCount++
-			if !hasMyHistory || m.CreatedAt.After(myHistoryLastActive) {
-				myHistoryLastActive = m.CreatedAt
-				hasMyHistory = true
-			}
+			lastActiveStr = time.Now().Format(time.RFC3339)
+		}
+
+		sessions = append(sessions, ArchiveSession{
+			SessionID:  "myself",
+			Title:      "个人记录 (Personal History)",
+			LastActive: lastActiveStr,
+			MsgCount:   myCount,
+			Type:       "system",
+		})
+	}
+
+	// 2. 获取 "合并记录" (MsgType == 'chatrecord')
+	// 直接查询 WecomMessage 表中的 chatrecord 记录
+	var chatRecords []WecomMessage
+	if err := s.db.Model(&WecomMessage{}).
+		Where("msg_type = ?", "chatrecord").
+		Order("msg_time desc").
+		Find(&chatRecords).Error; err != nil {
+		return nil, err
+	}
+
+	for _, m := range chatRecords {
+		// 尝试从 Content JSON 中提取 title
+		title := "合并聊天记录"
+		var meta struct {
+			Title string `json:"title"`
+		}
+		// 简单的 JSON 解析尝试
+		if json.Unmarshal([]byte(m.Content), &meta) == nil && meta.Title != "" {
+			title = meta.Title
+		} else {
+			// 如果没有 title，使用时间作为标题
+			title = fmt.Sprintf("记录 %s", time.UnixMilli(m.MsgTime).Format("01-02 15:04"))
+		}
+
+		sessions = append(sessions, ArchiveSession{
+			SessionID:  m.MsgID, // 使用 MsgID 作为会话 Key
+			Title:      title,
+			LastActive: m.CreatedAt.Format(time.RFC3339),
+			MsgCount:   1, // 每个记录视为 1 个条目 (包含多条内部消息)
+			Type:       "customer",
+		})
+	}
+
+	return sessions, nil
+}
+
+// GetSessionMessages 获取会话消息详情
+// logic:
+// - key == "myself": 返回所有 MsgType != 'chatrecord' 的消息列表。
+// - key == [MsgID]:  返回该条 chatrecord 消息，并在后端解析其 JSON 内容，展平为 ArchiveMessage 列表。
+func (s *ImportService) GetSessionMessages(userID int64, sessionKey string) ([]ArchiveMessage, error) {
+	var result []ArchiveMessage
+
+	if sessionKey == "myself" {
+		// 获取个人聚合记录
+		var msgs []WecomMessage
+		if err := s.db.Model(&WecomMessage{}).
+			Where("msg_type != ?", "chatrecord").
+			Order("msg_time asc").
+			Find(&msgs).Error; err != nil {
+			return nil, err
+		}
+
+		// 转换为 UI 结构
+		for _, m := range msgs {
+			result = append(result, ArchiveMessage{
+				MsgID:       m.MsgID,
+				MsgTime:     m.MsgTime,
+				MsgType:     m.MsgType,
+				Content:     m.Content,
+				FromUserID:  m.FromUserID,
+				SpeakerName: "", // 普通消息由前端根据 UserID 显示名字/头像
+			})
+		}
+
+	} else {
+		// 获取合并记录 (单条 chatrecord)
+		var msg WecomMessage
+		if err := s.db.Model(&WecomMessage{}).
+			Where("msg_id = ?", sessionKey).
+			First(&msg).Error; err != nil {
+			return nil, err
+		}
+
+		// 解析 JSON 内容
+		// 结构通常为 { "chatrecord": { "item": [ ... ] } } 或直接 { "item": ... }
+		items := parseChatRecordItems(msg.Content)
+
+		for _, item := range items {
+			result = append(result, item)
 		}
 	}
-
-	// Add My History
-	if !hasMyHistory {
-		myHistoryLastActive = time.Now()
-	}
-
-	mySession := ArchiveSession{
-		SessionID:  "myself",
-		Title:      "个人记录 (My History)",
-		LastActive: myHistoryLastActive.Format(time.RFC3339),
-		MsgCount:   myHistoryCount,
-		Type:       "system",
-	}
-	// Prepend
-	result = append([]ArchiveSession{mySession}, result...)
 
 	return result, nil
 }
 
-// GetSessionMessages rewritten to expand chatrecord content
-func (s *ImportService) GetSessionMessages(userID int64, sessionKey string) ([]ImportMessage, error) {
-	if sessionKey == "myself" {
-		// Return all messages that are NOT chatrecord
-		var allMessages []ImportMessage
-		err := s.db.Table("import_messages").
-			Select("import_messages.*").
-			Joins("JOIN import_batches ON import_batches.id = import_messages.batch_id").
-			Where("import_batches.user_id = ? AND import_messages.msg_type != ?", userID, "chatrecord").
-			Order("import_messages.msg_time asc").
-			Find(&allMessages).Error
+// parseChatRecordItems 解析 chatrecord 的 JSON 内容并展平为消息列表
+func parseChatRecordItems(jsonContent string) []ArchiveMessage {
+	var result []ArchiveMessage
+	var raw map[string]interface{}
 
-		return allMessages, err
-
-	} else if strings.HasPrefix(sessionKey, "msg_") {
-		// Single ChatRecord Expansion
-		msgIDStr := strings.TrimPrefix(sessionKey, "msg_")
-
-		var msg ImportMessage
-		err := s.db.Table("import_messages").
-			Select("import_messages.*").
-			Joins("JOIN import_batches ON import_batches.id = import_messages.batch_id").
-			Where("import_batches.user_id = ? AND import_messages.id = ?", userID, msgIDStr).
-			First(&msg).Error
-
-		if err != nil {
-			return nil, err
-		}
-
-		// Expand Content
-		// Content expected to be JSON of merged history
-		var rawMap map[string]interface{}
-		if err := json.Unmarshal([]byte(msg.Content), &rawMap); err != nil {
-			return []ImportMessage{msg}, nil // Fallback
-		}
-
-		// Find items
-		var items []interface{}
-		// Structure 1: {"chatrecord": {"item": [...]}}
-		// Structure 2: {"title": "...", "item": [...]} (if content IS the chatrecord object)
-
-		if cr, ok := rawMap["chatrecord"].(map[string]interface{}); ok {
-			if it, ok := cr["item"].([]interface{}); ok {
-				items = it
-			}
-		} else if it, ok := rawMap["item"].([]interface{}); ok {
-			// Maybe root is the record
-			items = it
-		} else {
-			// scan
-			for _, v := range rawMap {
-				if subMap, ok := v.(map[string]interface{}); ok {
-					if cr, ok := subMap["chatrecord"].(map[string]interface{}); ok {
-						if it, ok := cr["item"].([]interface{}); ok {
-							items = it
-							break
-						}
-					}
-				}
-			}
-		}
-
-		if items == nil {
-			// No items found -> return raw (maybe just empty or wrong format)
-			return []ImportMessage{msg}, nil
-		}
-
-		var expanded []ImportMessage
-		for _, it := range items {
-			itemMap, ok := it.(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			mType, _ := itemMap["type"].(string)
-
-			// Content extraction
-			mContent := ""
-			if c, ok := itemMap["content"].(string); ok {
-				mContent = c
-			}
-
-			// Nested JSON string parsing for text
-			if mType == "ChatRecordText" {
-				var txtObj struct {
-					Content string `json:"content"`
-				}
-				if json.Unmarshal([]byte(mContent), &txtObj) == nil && txtObj.Content != "" {
-					mContent = txtObj.Content
-				}
-				mType = "text"
-			} else if mType == "ChatRecordImage" {
-				mType = "image"
-				mContent = "[图片]"
-			} else if mType == "ChatRecordVoice" {
-				mType = "voice"
-				mContent = "[语音]"
-			} else if mType == "ChatRecordVideo" {
-				mType = "video"
-				mContent = "[视频]"
-			} else if mType == "ChatRecordFile" {
-				mType = "file"
-				mContent = "[文件]"
-			}
-
-			if mType == "" {
-				mType = "text"
-			}
-
-			var mTime int64
-			if tVal, ok := itemMap["msgtime"].(float64); ok {
-				mTime = int64(tVal) * 1000
-			}
-
-			mSpeaker, _ := itemMap["sourcename"].(string)
-
-			expanded = append(expanded, ImportMessage{
-				ID:        0,
-				BatchID:   msg.BatchID,
-				MsgTime:   mTime,
-				Speaker:   mSpeaker,
-				Content:   mContent,
-				MsgType:   mType,
-				CreatedAt: time.Now(),
-			})
-		}
-		return expanded, nil
-
+	if err := json.Unmarshal([]byte(jsonContent), &raw); err != nil {
+		// 解析失败，返回原始内容作为一条文本
+		return []ArchiveMessage{{
+			MsgType: "text",
+			Content: "无法解析记录内容: " + jsonContent,
+		}}
 	}
 
-	return []ImportMessage{}, nil
+	// 寻找 item 数组
+	var items []interface{}
+
+	// 尝试常见路径
+	// 1. root["item"]
+	if list, ok := raw["item"].([]interface{}); ok {
+		items = list
+	} else if cr, ok := raw["chatrecord"].(map[string]interface{}); ok {
+		// 2. root["chatrecord"]["item"]
+		if list, ok := cr["item"].([]interface{}); ok {
+			items = list
+		}
+	} else {
+		// 3. 深度搜索 (防止有时候结构不同)
+		for _, v := range raw {
+			if subMap, ok := v.(map[string]interface{}); ok {
+				if list, ok := subMap["item"].([]interface{}); ok {
+					items = list
+					break
+				}
+			}
+		}
+	}
+
+	if items == nil {
+		return []ArchiveMessage{{
+			MsgType: "text",
+			Content: "记录为空或格式不支持",
+		}}
+	}
+
+	// 遍历 item 解析
+	for _, it := range items {
+		m, ok := it.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// 提取字段
+		// type: "ChatRecordText" -> "text"
+		// content: string or json string
+		// msgtime: number
+		// sourcename: string (Speaker)
+
+		rawType, _ := m["type"].(string)
+		rawContent, _ := m["content"].(string) // 有可能是 JSON 字符串
+		sourceName, _ := m["sourcename"].(string)
+
+		var msgTime int64
+		if tVal, ok := m["msgtime"].(float64); ok {
+			msgTime = int64(tVal) * 1000 // 通常是秒，转毫秒? 需确认。WeCom SDK通常是秒。Archived MsgTime 是毫秒。
+			// 假设是秒 (UNIX timestamp)
+		}
+
+		// 规范化 MsgType 和 Content
+		finalType := "text"
+		finalContent := rawContent
+
+		switch rawType {
+		case "ChatRecordText":
+			finalType = "text"
+			// ChatRecordText 的 content 有时是 JSON `{"content":"..."}`
+			var txtObj struct {
+				Content string `json:"content"`
+			}
+			if json.Unmarshal([]byte(rawContent), &txtObj) == nil && txtObj.Content != "" {
+				finalContent = txtObj.Content
+			}
+		case "ChatRecordImage":
+			finalType = "image"
+			finalContent = "[图片]" // 图片内容可能是 xml 或 details，前端暂只显示占位或如果有URL则解析
+		case "ChatRecordVoice":
+			finalType = "voice"
+			finalContent = "[语音]"
+		case "ChatRecordVideo":
+			finalType = "video"
+			finalContent = "[视频]"
+		case "ChatRecordFile":
+			finalType = "file"
+			finalContent = "[文件]"
+		case "ChatRecordLocation":
+			finalType = "location"
+			finalContent = "[位置]"
+		case "ChatRecordLink":
+			finalType = "link"
+			finalContent = "[链接]"
+		default:
+			finalType = "unknown"
+			finalContent = fmt.Sprintf("[未知类型: %s]", rawType)
+		}
+
+		// 生成 ID (虚拟)
+		tempID := fmt.Sprintf("%d_%s", msgTime, sourceName)
+
+		result = append(result, ArchiveMessage{
+			MsgID:       tempID,
+			MsgTime:     msgTime,
+			MsgType:     finalType,
+			Content:     finalContent,
+			SpeakerName: sourceName,
+		})
+	}
+
+	// 按时间排序
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].MsgTime < result[j].MsgTime
+	})
+
+	return result
 }
