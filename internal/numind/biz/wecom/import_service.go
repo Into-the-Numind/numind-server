@@ -38,20 +38,39 @@ type ArchiveMessage struct {
 	FromUserID  string `json:"from_user_id"`
 }
 
+// GetBindingUserID 获取当前用户绑定的微信 ExternalUserID
+func (s *ImportService) GetBindingUserID(userID int64) (string, error) {
+	var binding WecomUser
+	if err := s.db.Where("numind_user_id = ?", userID).First(&binding).Error; err != nil {
+		return "", err
+	}
+	return binding.ID, nil
+}
+
 // GetArchiveSessions 获取归档会话列表
 // 逻辑：
 // 1. "个人记录 (My History)": 聚合所有非 chatrecord 类型的消息。
 // 2. "合并记录 (Merged Records)": 每一条 chatrecord 类型的消息作为一个独立会话。
+// 安全修正：严格过滤仅显示属于当前用户绑定的微信账号的消息
 func (s *ImportService) GetArchiveSessions(userID int64) ([]ArchiveSession, error) {
+	// 0. 获取当前用户绑定的微信号
+	wxID, err := s.GetBindingUserID(userID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return []ArchiveSession{}, nil // 未绑定，显示空列表
+		}
+		return nil, err
+	}
+
 	var sessions []ArchiveSession
 
 	// 1. 获取 "个人记录" (聚合 MsgType != 'chatrecord')
 	var myCount int64
 	var lastMsg WecomMessage
 
-	// 统计数量
+	// 统计数量 (增加归属权校验)
 	if err := s.db.Model(&WecomMessage{}).
-		Where("msg_type != ?", "chatrecord").
+		Where("msg_type != ? AND (from_user_id = ? OR to_user_id = ?)", "chatrecord", wxID, wxID).
 		Count(&myCount).Error; err != nil {
 		return nil, err
 	}
@@ -60,7 +79,7 @@ func (s *ImportService) GetArchiveSessions(userID int64) ([]ArchiveSession, erro
 	if myCount > 0 {
 		// 获取最后一条消息的时间作为 LastActive
 		s.db.Model(&WecomMessage{}).
-			Where("msg_type != ?", "chatrecord").
+			Where("msg_type != ? AND (from_user_id = ? OR to_user_id = ?)", "chatrecord", wxID, wxID).
 			Order("msg_time desc").
 			First(&lastMsg)
 
@@ -81,10 +100,10 @@ func (s *ImportService) GetArchiveSessions(userID int64) ([]ArchiveSession, erro
 	}
 
 	// 2. 获取 "合并记录" (MsgType == 'chatrecord')
-	// 直接查询 WecomMessage 表中的 chatrecord 记录
+	// 直接查询 WecomMessage 表中的 chatrecord 记录 (增加归属权校验)
 	var chatRecords []WecomMessage
 	if err := s.db.Model(&WecomMessage{}).
-		Where("msg_type = ?", "chatrecord").
+		Where("msg_type = ? AND (from_user_id = ? OR to_user_id = ?)", "chatrecord", wxID, wxID).
 		Order("msg_time desc").
 		Find(&chatRecords).Error; err != nil {
 		return nil, err
@@ -130,14 +149,24 @@ func (s *ImportService) GetArchiveSessions(userID int64) ([]ArchiveSession, erro
 // logic:
 // - key == "myself": 返回所有 MsgType != 'chatrecord' 的消息列表。
 // - key == [MsgID]:  返回该条 chatrecord 消息，并在后端解析其 JSON 内容，展平为 ArchiveMessage 列表。
+// 安全修正：增加归属权校验
 func (s *ImportService) GetSessionMessages(userID int64, sessionKey string) ([]ArchiveMessage, error) {
+	// 0. 获取当前用户绑定的微信号
+	wxID, err := s.GetBindingUserID(userID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("user not bound")
+		}
+		return nil, err
+	}
+
 	var result []ArchiveMessage
 
 	if sessionKey == "myself" {
-		// 获取个人聚合记录
+		// 获取个人聚合记录 (增加归属权校验)
 		var msgs []WecomMessage
 		if err := s.db.Model(&WecomMessage{}).
-			Where("msg_type != ?", "chatrecord").
+			Where("msg_type != ? AND (from_user_id = ? OR to_user_id = ?)", "chatrecord", wxID, wxID).
 			Order("msg_time asc").
 			Find(&msgs).Error; err != nil {
 			return nil, err
@@ -158,9 +187,13 @@ func (s *ImportService) GetSessionMessages(userID int64, sessionKey string) ([]A
 	} else {
 		// 获取合并记录 (单条 chatrecord)
 		var msg WecomMessage
+		// 校验：这条消息必须属于当前用户(发送者是自己，或者接收者是自己)
 		if err := s.db.Model(&WecomMessage{}).
-			Where("msg_id = ?", sessionKey).
+			Where("msg_id = ? AND (from_user_id = ? OR to_user_id = ?)", sessionKey, wxID, wxID).
 			First(&msg).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return nil, fmt.Errorf("record not found or access denied")
+			}
 			return nil, err
 		}
 

@@ -95,8 +95,11 @@ func (p *Poller) poll() error {
 		msg.Seq = data.Seq
 
 		// 确保 WecomUser 存在 (避免外键约束问题，同时为绑定做准备)
-		if err := p.ensureUserExists(msg.FromUserID); err != nil {
-			log.Printf("⚠️ EnsureUserExists warning for %s: %v", msg.FromUserID, err)
+		// 逻辑变更: 仅当发送者为外部联系人(IsExternal=true)时才创建用户记录，避免机器人入库
+		if msg.IsExternal {
+			if err := p.ensureUserExists(msg.FromUserID); err != nil {
+				log.Printf("⚠️ EnsureUserExists warning for %s: %v", msg.FromUserID, err)
+			}
 		}
 
 		// 保存消息
