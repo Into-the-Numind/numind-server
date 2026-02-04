@@ -231,6 +231,10 @@ RUN ls -la /app/numind && \
     ldd /app/numind 2>/dev/null || echo "Static linked or no dependencies" && \
     echo "✅ 运行阶段二进制文件验证成功"
 
+# 复制启动脚本（包含语义切分模型检查）- 必须在 USER 切换之前
+COPY scripts/docker-entrypoint.sh /app/start.sh
+RUN chmod +x /app/start.sh && chown numind:numind /app/start.sh
+
 # 切换到非 root 用户
 USER numind
 
@@ -255,10 +259,6 @@ ENV GOMEMLIMIT=16GiB
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:9091/healthz || exit 1
-
-# 复制启动脚本（包含语义切分模型检查）
-COPY scripts/docker-entrypoint.sh /app/start.sh
-RUN chmod +x /app/start.sh
 
 # 清理缓存和临时文件，进一步减少镜像大小
 RUN apt-get clean && \
