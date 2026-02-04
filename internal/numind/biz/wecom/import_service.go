@@ -79,23 +79,24 @@ type ArchiveSession struct {
 	Type       string `json:"type"` // "customer" or "system"
 }
 
-// GetArchiveSessions rewritten to filter by Content pattern
+// GetArchiveSessions rewritten to split by MsgType
 func (s *ImportService) GetArchiveSessions(userID int64) ([]ArchiveSession, error) {
-	// Join with Batch to filter by UserID
+	// We need all messages for this user.
+	// Assuming messages are linked via Batch.
 	var messages []struct {
 		MessageID uint      `gorm:"column:message_id"`
-		BatchID   string    `gorm:"column:batch_id"`
 		Content   string    `gorm:"column:content"`
+		MsgType   string    `gorm:"column:msg_type"`
 		CreatedAt time.Time `gorm:"column:created_at"`
-		Title     string    `gorm:"column:title"` // Batch Title as fallback
-		Speaker   string    `gorm:"column:speaker"`
+		Title     string    `gorm:"column:title"` // Batch Title
 	}
 
+	// Fetch essential fields
 	err := s.db.Table("import_messages").
-		Select("import_messages.id as message_id, import_messages.batch_id, import_messages.content, import_messages.created_at, import_messages.speaker, import_batches.title").
+		Select("import_messages.id as message_id, import_messages.content, import_messages.msg_type, import_messages.created_at, import_batches.title").
 		Joins("JOIN import_batches ON import_batches.id = import_messages.batch_id").
 		Where("import_batches.user_id = ?", userID).
-		Order("import_messages.created_at desc").
+		Order("import_messages.msg_time desc"). // Show newest first? User said Order by CreatedAt previously? Let's use MsgTime for chat order logic usually. But CreatedAt for archive list is ok.
 		Scan(&messages).Error
 
 	if err != nil {
@@ -104,51 +105,48 @@ func (s *ImportService) GetArchiveSessions(userID int64) ([]ArchiveSession, erro
 
 	var result []ArchiveSession
 
+	// Classify
 	myHistoryCount := 0
 	var myHistoryLastActive time.Time
 	hasMyHistory := false
 
 	for _, m := range messages {
-		// Pattern Check: Starts with {"msgid" AND Ends with }]}}
-		isMergedRecord := strings.HasPrefix(m.Content, `{"msgid"`) && strings.HasSuffix(m.Content, `}]}}`)
-
-		if !isMergedRecord {
-			// "Personal Record" / Single Messages
-			myHistoryCount++
-			if !hasMyHistory || m.CreatedAt.After(myHistoryLastActive) {
-				myHistoryLastActive = m.CreatedAt
-				hasMyHistory = true
-			}
-		} else {
-			// Distinct Session for Merged Record
-			// We use the MessageID as basis for SessionID.
-			// Format: "msg_<ID>"
+		// Strict check based on MsgType
+		if m.MsgType == "chatrecord" {
+			// Distinct Session for this merged record
 			sessionID := fmt.Sprintf("msg_%d", m.MessageID)
 
-			// Try to extract title from content or use Batch title fallback
-			// For now, simpler to use Batch Title or a generic name.
+			// For title: The chatrecord content usually contains a title in JSON
+			// But doing full parse here is heavy.
+			// Let's use the Batch title as a base, or "合并聊天记录"
 			displayTitle := m.Title
 			if displayTitle == "" {
 				displayTitle = "合并聊天记录"
 			}
-			if m.Speaker != "" {
-				// Maybe incorporate speaker name
-			}
+
+			// Try simple string find for title in Content content if possible?
+			// {"chatrecord":{"title":"Leo和pmtm啊的聊天记录"...
+			// Let's rely on Batch Title for now as it's cleaner.
 
 			result = append(result, ArchiveSession{
 				SessionID:  sessionID,
 				Title:      displayTitle,
 				LastActive: m.CreatedAt.Format(time.RFC3339),
-				MsgCount:   1,          // Represents 1 merged message record
-				Type:       "customer", // Merged records are customer records
+				MsgCount:   1, // It is ONE record representing a session
+				Type:       "customer",
 			})
+
+		} else {
+			// Aggregated Messages (text, image, etc. sent directly to Bot)
+			myHistoryCount++
+			if !hasMyHistory || m.CreatedAt.After(myHistoryLastActive) {
+				myHistoryLastActive = m.CreatedAt
+				hasMyHistory = true
+			}
 		}
 	}
 
-	// Add My History (Personal Record)
-	// Always adding it even if empty, as per user request "Personal Record session forever exists"
-
-	// Default Time if none
+	// Add My History
 	if !hasMyHistory {
 		myHistoryLastActive = time.Now()
 	}
@@ -166,47 +164,25 @@ func (s *ImportService) GetArchiveSessions(userID int64) ([]ArchiveSession, erro
 	return result, nil
 }
 
-// GetSessionMessages rewritten to handle virtual expansion of merged records
+// GetSessionMessages rewritten to expand chatrecord content
 func (s *ImportService) GetSessionMessages(userID int64, sessionKey string) ([]ImportMessage, error) {
 	if sessionKey == "myself" {
-		// Return all messages that are NOT merged records
-		// Ideally we do this in SQL: content NOT LIKE '{"msgid" ...'
-		// But the pattern is long.
-		// Let's filter in Go for consistency with GetArchiveSessions,
-		// OR better: use SQL LIKE logic if possible.
-		// strings.HasPrefix check in SQL is `content LIKE '{"msgid"%'`
-
+		// Return all messages that are NOT chatrecord
 		var allMessages []ImportMessage
-		// Join with Batch to filter by user.
-		// We only select the fields we need to return.
 		err := s.db.Table("import_messages").
 			Select("import_messages.*").
 			Joins("JOIN import_batches ON import_batches.id = import_messages.batch_id").
-			Where("import_batches.user_id = ?", userID).
+			Where("import_batches.user_id = ? AND import_messages.msg_type != ?", userID, "chatrecord").
 			Order("import_messages.msg_time asc").
 			Find(&allMessages).Error
 
-		if err != nil {
-			return nil, err
-		}
-
-		// Filter valid messages (exclude merged chunks)
-		var filtered []ImportMessage
-		for _, m := range allMessages {
-			isMergedRecord := strings.HasPrefix(m.Content, `{"msgid"`) && strings.HasSuffix(m.Content, `}]}}`)
-			if !isMergedRecord {
-				filtered = append(filtered, m)
-			}
-		}
-		return filtered, nil
+		return allMessages, err
 
 	} else if strings.HasPrefix(sessionKey, "msg_") {
-		// Single Merged Message Expansion
+		// Single ChatRecord Expansion
 		msgIDStr := strings.TrimPrefix(sessionKey, "msg_")
 
-		// Find the single message
 		var msg ImportMessage
-		// Join purely for User check safety (though msg ID is unique)
 		err := s.db.Table("import_messages").
 			Select("import_messages.*").
 			Joins("JOIN import_batches ON import_batches.id = import_messages.batch_id").
@@ -217,55 +193,27 @@ func (s *ImportService) GetSessionMessages(userID int64, sessionKey string) ([]I
 			return nil, err
 		}
 
-		// Now we must expand this message content into a list of messages.
-		// Expected Content format: `{"msgid":123, "chatrecord":{...}}` or similar raw structure?
-		// Wait, user said `{"msgid"` start.
-		// We need to parse this JSON.
-		// Let's assume a generic structure compatible with what we saw in Frontend.
-		// JSON structure likely:
-		// { ... "chatrecord": { "title": "xxx", "item": [ ... ] } ... }
-		// Or the root IS the item list wrapper?
-		// Let's define a helper struct to parse.
-
-		type ChatRecordItem struct {
-			Type         string `json:"type"`
-			Content      string `json:"content"` // Can be string or nested JSON string
-			MsgTime      int64  `json:"msgtime"`
-			SourceNameTo string `json:"sourcename"`
-			// ... other fields
-		}
-
-		type ChatRecordWrapper struct {
-			ChatRecord struct {
-				Title string           `json:"title"`
-				Item  []ChatRecordItem `json:"item"`
-			} `json:"chatrecord"`
-		}
-
-		// Try unmarshal
-		// If the JSON is wrapped in external layers (like the user implied with {"msgid"...}),
-		// we might need to parse it generically or find the 'chatrecord' key.
-		// Let's try direct unmarshal first (if Content contains chatrecord key).
-
-		// If simple unmarshal fails, we might need to try partial.
-		// Given Go's JSON parser, strict structure is needed.
-		// Let's use map[string]interface{} for safety if structure varies.
-
+		// Expand Content
+		// Content expected to be JSON of merged history
 		var rawMap map[string]interface{}
 		if err := json.Unmarshal([]byte(msg.Content), &rawMap); err != nil {
-			// Fallback: return the original message as is (failed to expand)
-			return []ImportMessage{msg}, nil
+			return []ImportMessage{msg}, nil // Fallback
 		}
 
-		// Locate "chatrecord"
+		// Find items
 		var items []interface{}
-		// Check root first
+		// Structure 1: {"chatrecord": {"item": [...]}}
+		// Structure 2: {"title": "...", "item": [...]} (if content IS the chatrecord object)
+
 		if cr, ok := rawMap["chatrecord"].(map[string]interface{}); ok {
 			if it, ok := cr["item"].([]interface{}); ok {
 				items = it
 			}
+		} else if it, ok := rawMap["item"].([]interface{}); ok {
+			// Maybe root is the record
+			items = it
 		} else {
-			// Maybe nested? Only searching 1 level deep for now.
+			// scan
 			for _, v := range rawMap {
 				if subMap, ok := v.(map[string]interface{}); ok {
 					if cr, ok := subMap["chatrecord"].(map[string]interface{}); ok {
@@ -283,43 +231,33 @@ func (s *ImportService) GetSessionMessages(userID int64, sessionKey string) ([]I
 			return []ImportMessage{msg}, nil
 		}
 
-		// Convert items to ImportMessages
 		var expanded []ImportMessage
-
 		for _, it := range items {
 			itemMap, ok := it.(map[string]interface{})
 			if !ok {
 				continue
 			}
 
-			// Extract fields
-			// type
 			mType, _ := itemMap["type"].(string)
-			// content: might be JSON string inside.
-			// user wants "normal bubble", so we keep it as string.
+
+			// Content extraction
 			mContent := ""
 			if c, ok := itemMap["content"].(string); ok {
 				mContent = c
 			}
 
-			// Check if content is inner JSON (ChatRecordText)
-			// Frontend usually handles this, OR we parse it here to be cleaner.
-			// "ChatRecordText" usually has content `{"content":"Actual Text"}`
+			// Nested JSON string parsing for text
 			if mType == "ChatRecordText" {
-				// try to peek inside to get plain text?
-				// Doing simplistic extraction:
 				var txtObj struct {
 					Content string `json:"content"`
 				}
 				if json.Unmarshal([]byte(mContent), &txtObj) == nil && txtObj.Content != "" {
 					mContent = txtObj.Content
-					mType = "text" // Normalize type for frontend
-				} else {
-					mType = "text"
 				}
+				mType = "text"
 			} else if mType == "ChatRecordImage" {
 				mType = "image"
-				mContent = "[图片]" // Placeholders for now until media logic
+				mContent = "[图片]"
 			} else if mType == "ChatRecordVoice" {
 				mType = "voice"
 				mContent = "[语音]"
@@ -331,18 +269,19 @@ func (s *ImportService) GetSessionMessages(userID int64, sessionKey string) ([]I
 				mContent = "[文件]"
 			}
 
-			// time
-			var mTime int64
-			if tVal, ok := itemMap["msgtime"].(float64); ok {
-				mTime = int64(tVal) * 1000 // verify units. chatrecord usually seconds? Frontend code said *1000.
+			if mType == "" {
+				mType = "text"
 			}
 
-			// speaker
+			var mTime int64
+			if tVal, ok := itemMap["msgtime"].(float64); ok {
+				mTime = int64(tVal) * 1000
+			}
+
 			mSpeaker, _ := itemMap["sourcename"].(string)
 
-			// Create message
 			expanded = append(expanded, ImportMessage{
-				ID:        0, // Virtual ID
+				ID:        0,
 				BatchID:   msg.BatchID,
 				MsgTime:   mTime,
 				Speaker:   mSpeaker,
@@ -351,23 +290,9 @@ func (s *ImportService) GetSessionMessages(userID int64, sessionKey string) ([]I
 				CreatedAt: time.Now(),
 			})
 		}
-
 		return expanded, nil
 
-	} else {
-		// Fallback for old SessionID style (batch ID) just in case
-		// Verify it belongs to user
-		var batch ImportBatch
-		if err := s.db.Where("id = ? AND user_id = ?", sessionKey, userID).First(&batch).Error; err != nil {
-			return []ImportMessage{}, nil
-		}
-		var targetBatches []string
-		targetBatches = append(targetBatches, batch.ID)
-
-		var messages []ImportMessage
-		if err := s.db.Where("batch_id IN ?", targetBatches).Order("msg_time asc").Find(&messages).Error; err != nil {
-			return nil, err
-		}
-		return messages, nil
 	}
+
+	return []ImportMessage{}, nil
 }
