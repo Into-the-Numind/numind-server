@@ -6,6 +6,7 @@ type MetaStrategy struct {
 	ID              string   `json:"id"`               // 策略ID，如 "M-T01"
 	Name            string   `json:"name"`             // 策略名称
 	Description     string   `json:"description"`      // 路由专用描述（简短）
+	DecisionTree    string   `json:"decision_tree"`    // 核心决策树逻辑（Prompt）
 	TriggerKeywords []string `json:"trigger_keywords"` // 触发关键词
 	BasicIDs        []string `json:"basic_ids"`        // 包含的基础策略ID列表
 }

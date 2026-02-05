@@ -648,8 +648,20 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 		knowledgeContext = "（知识库中未找到相关内容，请基于通用销售经验回答）"
 	}
 
-	// 获取意图描述
-	intentDesc := getIntentDescription(string(verdict.Intent))
+	// 处理策略内容 (参考性)
+	var strategyContent string
+	if verdict.Strategy != nil {
+		strategyContent = fmt.Sprintf(`
+## 🌟 核心策略参考 (推荐方案)
+系统分析认为客户当前可能处于【%s】阶段，推荐参考以下战术【%s】。
+请结合实际对话上下文，**灵活参考**该策略中的"话术模板"或"核心逻辑"构建回复。如果策略与当前对话明显不符，请以你的判断为准。
+
+### 推荐策略：[%s] %s
+`+"```markdown"+`
+%s
+`+"```"+`
+`, verdict.Strategy.MetaID, verdict.Strategy.Name, verdict.Strategy.ID, verdict.Strategy.Name, verdict.Strategy.Content)
+	}
 
 	var systemPrompt string
 	var userMessage string
@@ -658,61 +670,53 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 		// ========== Free 模式 (顾问/教练模式) ==========
 		systemPrompt = fmt.Sprintf(`你是一位资深的销售顾问助手，正在帮助销售人员回复客户消息。
 
-## 客户意图分析
-%s
-
 ## 客户画像（如果为空则忽略此部分）
 %s
-
+%s
 ## 你的任务
-必须严格基于以下知识库内容，为销售人员生成合适的回复话术建议。
+请综合参考上述【核心策略参考】以及下方的【知识库内容】，为销售人员生成最合适的回复话术建议。
 
 ## 回复要求
 1. 语气专业但亲切，适合微信聊天场景
 2. 先给出分析或建议，再提供具体话术
-3. 如果是异议处理，先共情再引导
-4. **严禁编造**：回复建议必须严格遵循知识库。如果知识库中没有直接答案，你必须明确说明“知识库中未检索到相关信息，无法提供准确建议”，不得虚构信息。
-5. 可以生成多个风格的回复供选择（如：专业风、亲和风）
+3. **严禁编造**：回复建议必须严格遵循知识库。如果知识库中没有直接答案，你必须明确说明“知识库中未检索到相关信息，无法提供准确建议”，不得虚构信息。
 
-## 语言风格（如果为空则忽略此部分）
+## 回复话术的语言风格（如果为空则忽略此部分）
 %s
 
 ## 知识库内容
-%s`, intentDesc, customerProfile, languageStyle, knowledgeContext)
+%s`, customerProfile, strategyContent, languageStyle, knowledgeContext)
 
-		userMessage = fmt.Sprintf("客户说：\"%s\"\n\n请帮我生成合适的回复话术。", query)
+		userMessage = query
 
 	} else {
 		// ========== Sales 模式 (角色扮演模式) ==========
 		// 优化：强约束风格，禁止列表，强调口语化
 		systemPrompt = fmt.Sprintf(`你就是一位专业的销售人员（不是助手）。现在客户发来了消息，请直接回复客户。
 
-## 客户意图分析
-%s
-
 ## 客户画像（如果为空则忽略此部分）
 %s
-
+%s
 ## 你的任务
-必须严格基于以下知识库内容，直接生成回复给客户的内容。
+请综合参考上述【核心策略参考】以及下方的【知识库内容】，直接生成回复给客户的内容。
 
 ## 🚫 严格禁止
-1. **禁止使用列表**：绝对不要用 "1. 2. 3." 或 "- " 符号列表
-2. **禁止解释**：绝对不要出现 "建议您"、"您可以这样回"、"话术如下"、"首先...其次..."
-3. **禁止长篇大论**：不要写小作文，长话短说
-4. **严禁编造**：如果知识库中没有相关答案，你必须直接告知客户这部分信息暂时无法提供或需要核实，绝对不能基于通用知识进行编造。
+1. **禁止解释**：绝对不要出现 "建议您"、"您可以这样回"、"话术如下"、"首先...其次..."
+2. **禁止长篇大论**：不要写小作文，长话短说
+3. **严禁编造**：如果知识库中没有相关答案，你必须直接告知客户这部分信息暂时无法提供或需要核实，绝对不能基于通用知识进行编造。
 
 ## ✅ 核心要求
 1. **极度口语化**：必须严格遵循下方的“语言风格”进行回复。
 2. **第一人称**：直接用 "我" 回复 "您/你"
 3. **分段发送**：如果内容较多，请直接换行，模拟发送了两条消息
 4. **严格基于知识**：你的所有回复内容必须能在知识库中找到依据。
+5. **参考策略**：请优先参考上方的【核心策略参考】进行回复，但需确保符合上下文逻辑。
 
 ## 语言风格（如果为空则忽略此部分）
 %s
 
 ## 知识库内容
-%s`, intentDesc, customerProfile, languageStyle, knowledgeContext)
+%s`, customerProfile, strategyContent, languageStyle, knowledgeContext)
 
 		userMessage = query
 	}

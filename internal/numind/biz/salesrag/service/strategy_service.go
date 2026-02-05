@@ -38,6 +38,11 @@ func (s *StrategyService) loadData() {
 	s.once.Do(func() {
 		s.metas, s.basics = LoadStrategies()
 
+		// 尝试从指定目录加载策略内容（覆盖默认内容）
+		// TODO: 路径应从配置读取
+		strategyDir := "/Users/zhiyuchen/Desktop/莫小派/Codes/基础策略"
+		LoadStrategyContentsFromDir(strategyDir, s.basics)
+
 		// 构建索引
 		for _, m := range s.metas {
 			s.metaMap[m.ID] = m
@@ -77,7 +82,13 @@ func (s *StrategyService) DetermineStrategy(ctx context.Context, query string, h
 	}
 
 	// Stage 3: 从基础策略中选择最匹配的一个
-	basicID, err := s.router.SelectBasicStrategy(ctx, query, history, basics)
+	// 获取当前综合策略的决策树逻辑
+	decisionTree := ""
+	if meta, ok := s.metaMap[metaID]; ok {
+		decisionTree = meta.DecisionTree
+	}
+
+	basicID, err := s.router.SelectBasicStrategy(ctx, query, history, decisionTree, basics)
 	if err != nil {
 		log.C(ctx).Warnw("Failed to select basic strategy", "error", err)
 		basicID = basics[0].ID

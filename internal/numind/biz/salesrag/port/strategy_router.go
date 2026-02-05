@@ -13,9 +13,10 @@ type StrategyRouter interface {
 	// 返回选中的综合策略ID
 	SelectMetaStrategy(ctx context.Context, query string, history []string, metas []domain.MetaStrategy) (string, error)
 
-	// SelectBasicStrategy 从基础策略列表中选择最匹配的一个
+	// SelectBasicStrategy 根据综合策略的决策树逻辑，选择最匹配的基础策略
+	// input: decisionTree (决策树逻辑文本)
 	// 返回选中的基础策略ID
-	SelectBasicStrategy(ctx context.Context, query string, history []string, basics []domain.BasicStrategy) (string, error)
+	SelectBasicStrategy(ctx context.Context, query string, history []string, decisionTree string, basics []domain.BasicStrategy) (string, error)
 }
 
 // StrategyRouterResult 策略路由结果

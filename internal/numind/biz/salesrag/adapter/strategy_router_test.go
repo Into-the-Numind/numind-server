@@ -14,7 +14,7 @@ func TestStrategyRouter_SelectMetaStrategy(t *testing.T) {
 
 	metas := []domain.MetaStrategy{
 		{ID: "M-T01", Name: "信任建立", Description: "处理信任问题"},
-		{ID: "M-P06", Name: "专业边界", Description: "处理边界试探，如电话语音请求"},
+		{ID: "M-P02", Name: "专业边界", Description: "处理边界试探，如电话语音请求"},
 	}
 
 	// 测试电话请求应匹配 M-P06
@@ -32,7 +32,8 @@ func TestStrategyRouter_SelectBasicStrategy(t *testing.T) {
 	}
 
 	// 测试电话请求应匹配 P-001
-	basicID, err := router.SelectBasicStrategy(context.Background(), "能打个电话聊聊吗", nil, basics)
+	dummyDecisionTree := "如果客户要电话，选择 P-001"
+	basicID, err := router.SelectBasicStrategy(context.Background(), "能打个电话聊聊吗", nil, dummyDecisionTree, basics)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, basicID)
 }

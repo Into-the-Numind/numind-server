@@ -14,8 +14,8 @@ func TestLoadStrategies(t *testing.T) {
 	assert.Equal(t, 6, len(metas), "应有6个综合策略")
 
 	// 验证第一个综合策略
-	assert.Equal(t, "M-T01", metas[0].ID)
-	assert.Equal(t, "信任建立与证据碾压系统", metas[0].Name)
+	assert.Equal(t, "M-C01", metas[0].ID)
+	assert.Equal(t, "价格守卫与成交锁死系统", metas[0].Name)
 
 	// 验证基础策略加载
 	assert.NotEmpty(t, basics, "基础策略不应为空")
@@ -25,7 +25,7 @@ func TestLoadStrategies(t *testing.T) {
 	for _, b := range basics {
 		if b.ID == "P-001" {
 			foundP001 = true
-			assert.Equal(t, "M-P06", b.MetaID) // P-001 属于专业边界系统
+			assert.Equal(t, "M-P02", b.MetaID) // P-001 属于专业边界系统 M-P02
 			break
 		}
 	}

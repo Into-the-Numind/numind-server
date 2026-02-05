@@ -95,8 +95,8 @@ func (r *StrategyRouter) SelectMetaStrategy(ctx context.Context, query string, h
 	return metas[0].ID, nil
 }
 
-// SelectBasicStrategy 从基础策略列表中选择最匹配的一个
-func (r *StrategyRouter) SelectBasicStrategy(ctx context.Context, query string, history []string, basics []domain.BasicStrategy) (string, error) {
+// SelectBasicStrategy 根据综合策略的决策树逻辑，选择最匹配的基础策略
+func (r *StrategyRouter) SelectBasicStrategy(ctx context.Context, query string, history []string, decisionTree string, basics []domain.BasicStrategy) (string, error) {
 	if len(basics) == 0 {
 		return "", fmt.Errorf("no basic strategies provided")
 	}
@@ -106,10 +106,10 @@ func (r *StrategyRouter) SelectBasicStrategy(ctx context.Context, query string, 
 		return basics[0].ID, nil
 	}
 
-	// 构建策略选项描述
+	// 构建备选列表（仅用于给LLM做ID参考）
 	var options strings.Builder
 	for i, b := range basics {
-		options.WriteString(fmt.Sprintf("%d. [%s] %s: %s\n", i+1, b.ID, b.Name, b.Description))
+		options.WriteString(fmt.Sprintf("%d. [%s] %s\n", i+1, b.ID, b.Name))
 	}
 
 	// 构建历史上下文
@@ -122,9 +122,13 @@ func (r *StrategyRouter) SelectBasicStrategy(ctx context.Context, query string, 
 		historyStr = strings.Join(recentHistory, "\n")
 	}
 
-	prompt := fmt.Sprintf(`你是一个销售策略分析师。根据客户的消息，从以下基础策略卡片中选择最匹配的一个。
+	// 使用决策树逻辑专用 Prompt
+	prompt := fmt.Sprintf(`你是一个严格执行逻辑的销售决策引擎。请阅读以下【决策树逻辑】，根据客户的最新消息，判断应路由到哪个基础策略卡片。
 
-## 可选策略卡片
+## 核心策略决策树 (逻辑准则)
+%s
+
+## 可选基础策略 ID 列表
 %s
 
 ## 对话历史
@@ -134,8 +138,8 @@ func (r *StrategyRouter) SelectBasicStrategy(ctx context.Context, query string, 
 %s
 
 ## 输出要求
-请严格按照以下JSON格式输出，不要包含其他内容：
-{"basic_id": "选中的策略ID", "reason": "选择理由"}`, options.String(), historyStr, query)
+请严格基于决策树逻辑进行判断。只输出 JSON：
+{"basic_id": "选中的策略ID", "reason": "基于决策树的判断依据"}`, decisionTree, options.String(), historyStr, query)
 
 	messages := []ChatMessage{
 		{Role: "user", Content: prompt},
