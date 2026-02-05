@@ -44,6 +44,8 @@ func DefaultDatabaseCharsetConfig() *DatabaseCharsetConfig {
 			"article",
 			"admin",
 			"account_record",
+			"knowledge_document",
+			"knowledge_chunk",
 		},
 	}
 }
