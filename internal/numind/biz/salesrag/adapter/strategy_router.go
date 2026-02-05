@@ -39,8 +39,8 @@ func (r *StrategyRouter) SelectMetaStrategy(ctx context.Context, query string, h
 	historyStr := "无"
 	if len(history) > 0 {
 		recentHistory := history
-		if len(history) > 3 {
-			recentHistory = history[len(history)-3:]
+		if len(history) > 4 {
+			recentHistory = history[len(history)-4:]
 		}
 		historyStr = strings.Join(recentHistory, "\n")
 	}
@@ -57,6 +57,7 @@ func (r *StrategyRouter) SelectMetaStrategy(ctx context.Context, query string, h
 %s
 
 ## 输出要求
+**必须且只能选择 1 个最匹配的策略ID**。
 请严格按照以下JSON格式输出，不要包含其他内容：
 {"meta_id": "选中的策略ID", "reason": "选择理由"}`, options.String(), historyStr, query)
 
@@ -116,8 +117,8 @@ func (r *StrategyRouter) SelectBasicStrategy(ctx context.Context, query string, 
 	historyStr := "无"
 	if len(history) > 0 {
 		recentHistory := history
-		if len(history) > 3 {
-			recentHistory = history[len(history)-3:]
+		if len(history) > 4 {
+			recentHistory = history[len(history)-4:]
 		}
 		historyStr = strings.Join(recentHistory, "\n")
 	}
@@ -138,7 +139,8 @@ func (r *StrategyRouter) SelectBasicStrategy(ctx context.Context, query string, 
 %s
 
 ## 输出要求
-请严格基于决策树逻辑进行判断。只输出 JSON：
+请严格基于决策树逻辑进行判断。**必须且只能选择 1 个最匹配的策略ID**。
+只输出 JSON：
 {"basic_id": "选中的策略ID", "reason": "基于决策树的判断依据"}`, decisionTree, options.String(), historyStr, query)
 
 	messages := []ChatMessage{
