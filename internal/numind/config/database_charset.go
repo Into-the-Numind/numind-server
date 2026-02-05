@@ -46,6 +46,11 @@ func DefaultDatabaseCharsetConfig() *DatabaseCharsetConfig {
 			"account_record",
 			"knowledge_document",
 			"knowledge_chunk",
+			"sales_session",
+			"sales_message",
+			"language_style",
+			"wecom_user",
+			"wecom_message",
 		},
 	}
 }
