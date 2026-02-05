@@ -221,6 +221,13 @@ func autoMigrate(db *gorm.DB) error {
 		log.Infow("Sop_node_run text fields fixed successfully")
 	}
 
+	// 修复 knowledge_chunk 表的 content 字段类型（从 TEXT 改为 LONGTEXT）
+	if err := fixKnowledgeChunkTextFields(db); err != nil {
+		log.Warnw("Failed to fix knowledge_chunk text fields, continuing", "error", err)
+	} else {
+		log.Infow("Knowledge_chunk text fields fixed successfully")
+	}
+
 	// 第五步：创建笔记表（依赖执行记录表）
 	if err := db.AutoMigrate(&model.SopNote{}); err != nil {
 		return fmt.Errorf("failed to migrate sop_note: %v", err)
@@ -354,6 +361,37 @@ func forceFixContentField(db *gorm.DB, charsetConfig *config.DatabaseCharsetConf
 	}
 
 	log.Infow("Content field charset force updated successfully")
+	return nil
+}
+
+// fixKnowledgeChunkTextFields 修复 knowledge_chunk 表的 content 字段类型
+// 将 TEXT 类型改为 LONGTEXT 以支持超长文本分片
+func fixKnowledgeChunkTextFields(db *gorm.DB) error {
+	tableName := "knowledge_chunk"
+	var contentType string
+
+	// 检查当前字段类型
+	err := db.Raw(`
+		SELECT DATA_TYPE 
+		FROM information_schema.COLUMNS 
+		WHERE TABLE_SCHEMA = DATABASE() 
+			AND TABLE_NAME = ? 
+			AND COLUMN_NAME = 'content'
+	`, tableName).Scan(&contentType).Error
+
+	if err != nil {
+		return fmt.Errorf("failed to check content field type: %v", err)
+	}
+
+	// 如果不是 LONGTEXT，则升级
+	if strings.ToLower(contentType) != "longtext" {
+		log.Infow("Upgrading knowledge_chunk content field to LONGTEXT", "current_type", contentType)
+		if err := db.Exec("ALTER TABLE knowledge_chunk MODIFY COLUMN content LONGTEXT").Error; err != nil {
+			return fmt.Errorf("failed to upgrade content field to LONGTEXT: %v", err)
+		}
+		log.Infow("knowledge_chunk content field upgraded to LONGTEXT successfully")
+	}
+
 	return nil
 }
 
