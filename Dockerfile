@@ -44,8 +44,10 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     antiword \
     && rm -rf /var/lib/apt/lists/*
 
-# 安装 Python 增强解析依赖 + 语义切分依赖
-RUN pip3 install --no-cache-dir pymupdf python-docx sentence-transformers numpy fastapi uvicorn
+# 安装 Python 依赖 (强制使用 CPU 版本 PyTorch 以减小镜像体积)
+RUN pip3 install --no-cache-dir --upgrade pip && \
+    pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip3 install --no-cache-dir pymupdf python-docx sentence-transformers numpy fastapi uvicorn
 
 # 预下载语义切分模型（带重试机制）
 # 将所有 scripts 目录下的脚本复制进去 (download_model.py 就在其中)
