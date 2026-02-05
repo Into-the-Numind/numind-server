@@ -184,6 +184,7 @@ func autoMigrate(db *gorm.DB) error {
 		&wecom.WecomMessage{},
 		&wecom.WecomCursor{},
 		&wecom.WecomBindCode{},
+		&model.KnowledgeChunk{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate basic tables: %v", err)
