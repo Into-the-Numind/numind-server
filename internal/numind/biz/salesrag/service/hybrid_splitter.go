@@ -170,18 +170,18 @@ func (h *HybridSplitter) convertToSplitChunks(chunks []EnhancedSplitChunk, err e
 func NewDefaultHybridSplitter() *HybridSplitter {
 	return NewHybridSplitter(HybridSplitterConfig{
 		RuleConfig: EnhancedSplitterConfig{
-			MaxChunkSize:    1000,
-			MinChunkSize:    200,
-			OverlapSize:     100,
+			MaxChunkSize:    2500, // 2500 字符 ≈ 4000 tokens
+			MinChunkSize:    350,  // 350 字符 ≈ 500 tokens
+			OverlapSize:     150,
 			EnableJieba:     true,
 			ProtectMarkdown: true,
 		},
 		SemanticConfig: EmbeddingSplitterConfig{
 			Threshold:    0.6,
-			MinChunkSize: 100,
-			MaxChunkSize: 1000,
-			OverlapSize:  100,
+			MinChunkSize: 350,  // 350 字符 ≈ 500 tokens
+			MaxChunkSize: 2500, // 2500 字符 ≈ 4000 tokens
+			OverlapSize:  150,
 		},
-		SemanticMinLength: 500, // 简化为500字符阈值
+		SemanticMinLength: 500,
 	})
 }
