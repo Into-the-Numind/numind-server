@@ -42,7 +42,8 @@ check_and_download_model() {
     
     # 检查 BGE 模型是否存在
     if [ -d "/app/model_cache/sentence_transformers/BAAI_bge-small-zh" ] || \
-       [ -d "/app/model_cache/sentence_transformers/BAAI__bge-small-zh" ]; then
+       [ -d "/app/model_cache/sentence_transformers/BAAI__bge-small-zh" ] || \
+       [ -d "/app/model_cache/models--BAAI--bge-small-zh" ]; then
         log_info "✅ BGE 语义模型已就绪 (Found in /app/model_cache)"
     else
         log_warn "⚠️ BGE 模型未找到，准备自动下载..."
