@@ -14,7 +14,7 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
-      - 'scripts/**'
+      # - 'scripts/**'  <-- 移除此行，确保脚本修改能触发构建（如 semantic_server.py）
       # 允许修改CI/CD配置时触发构建
       # - '.github/**'
   pull_request:
@@ -25,7 +25,7 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
-      - 'scripts/**'
+      # - 'scripts/**' <-- 移除此行
       # 允许修改CI/CD配置时触发构建
       # - '.github/**'
 
