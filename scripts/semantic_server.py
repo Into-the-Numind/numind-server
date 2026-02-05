@@ -31,9 +31,16 @@ def get_ocr_engine():
         try:
             from paddleocr import PaddleOCR
             print("Initializing PaddleOCR...", file=sys.stderr)
-            # PaddleOCR 3.x 初始化，兼容中英文识别
-            OCR_ENGINE = PaddleOCR(lang="ch")
-            print("PaddleOCR initialized successfully!", file=sys.stderr)
+            # 使用 PP-OCRv4 (比 v5 轻量很多)
+            # 显式禁用所有预处理以减少 CPU 占用
+            OCR_ENGINE = PaddleOCR(
+                lang="ch",
+                ocr_version="PP-OCRv4",
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False
+            )
+            print("PaddleOCR (PP-OCRv4) initialized successfully!", file=sys.stderr)
         except Exception as e:
             print(f"Failed to initialize PaddleOCR: {e}", file=sys.stderr)
             raise e
