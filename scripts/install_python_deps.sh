@@ -88,10 +88,19 @@ else
     DOCX_INSTALLED=false
 fi
 
+# 检查 markitdown
+if python3 -c "import markitdown" 2>/dev/null; then
+    echo "  ✅ markitdown 已安装"
+    MARKITDOWN_INSTALLED=true
+else
+    echo "  ❌ markitdown 未安装"
+    MARKITDOWN_INSTALLED=false
+fi
+
 echo ""
 
 # 4. 安装缺失的依赖
-if [[ "$PYMUPDF_INSTALLED" == false ]] || [[ "$DOCX_INSTALLED" == false ]]; then
+if [[ "$PYMUPDF_INSTALLED" == false ]] || [[ "$DOCX_INSTALLED" == false ]] || [[ "$MARKITDOWN_INSTALLED" == false ]]; then
     echo "4️⃣ 安装缺失的依赖..."
     echo ""
 
@@ -100,6 +109,7 @@ if [[ "$PYMUPDF_INSTALLED" == false ]] || [[ "$DOCX_INSTALLED" == false ]]; then
 # Sales RAG 文档解析依赖
 PyMuPDF>=1.23.0      # PDF 解析 (高质量 blocks 模式)
 python-docx>=0.8.11  # DOCX 解析 (段落 + 表格)
+markitdown           # 通用文档解析 (PDF, XLSX, PPTX, etc.)
 EOF
 
     echo "📦 安装依赖包..."
@@ -142,6 +152,14 @@ if python3 -c "from docx import Document; print('python-docx 验证成功')" 2>/
     echo "  ✅ python-docx 验证成功"
 else
     echo "  ❌ python-docx 验证失败"
+    SUCCESS=false
+fi
+
+# 验证 markitdown
+if python3 -c "import markitdown; print('markitdown 验证成功')" 2>/dev/null; then
+    echo "  ✅ markitdown 验证成功"
+else
+    echo "  ❌ markitdown 验证失败"
     SUCCESS=false
 fi
 

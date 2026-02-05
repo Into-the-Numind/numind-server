@@ -44,10 +44,21 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     antiword \
     && rm -rf /var/lib/apt/lists/*
 
-# 安装 Python 依赖 (强制使用 CPU 版本 PyTorch 以减小镜像体积)
+# 安装 Python 依赖 - 第一层：基础核心库 (变化频率低，体积大)
+# 强制使用 CPU 版本 PyTorch 以减小镜像体积 (~200MB+)
 RUN pip3 install --no-cache-dir --upgrade pip && \
-    pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
-    pip3 install --no-cache-dir pymupdf python-docx sentence-transformers numpy fastapi uvicorn
+    pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
+# 安装 Python 依赖 - 第二层：业务功能库 (变化频率高，体积小)
+# 分层安装的好处是：当添加新库（如 markitdown）时，不需要重新下载 PyTorch
+RUN pip3 install --no-cache-dir \
+    pymupdf \
+    python-docx \
+    sentence-transformers \
+    numpy \
+    fastapi \
+    uvicorn \
+    markitdown
 
 # 预下载语义切分模型 - 改为挂载宿主机目录
 RUN mkdir -p /app/model_cache
