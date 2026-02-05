@@ -55,6 +55,14 @@ func NewHybridSplitter(cfg HybridSplitterConfig) *HybridSplitter {
 // 1. < 500字符：不切分，直接返回一个chunk
 // 2. >= 500字符：优先语义切分，不可用则降级规则切分
 func (h *HybridSplitter) Split(text string) ([]SplitChunk, error) {
+	// [PRO] 动态重连机制：如果之前不可用，尝试重新检查一次并更新状态
+	if !h.semanticAvailable {
+		if h.semanticSplitter.IsAvailable() {
+			h.semanticAvailable = true
+			log.Println("[HybridSplitter] Semantic server detected! Switching to semantic splitting.")
+		}
+	}
+
 	// 输出诊断日志（可以通过环境变量控制）
 	if os.Getenv("SPLITTER_DEBUG") == "1" {
 		log.Printf("[HybridSplitter] Text length: %d, SemanticAvailable: %v",
@@ -92,6 +100,14 @@ func (h *HybridSplitter) Split(text string) ([]SplitChunk, error) {
 // 1. < 500字符：不切分，直接返回一个chunk
 // 2. >= 500字符：优先语义切分，不可用则降级规则切分
 func (h *HybridSplitter) SplitWithDetails(text string) ([]SplitChunk, map[string]interface{}, error) {
+	// [PRO] 动态重连机制：如果之前不可用，尝试重新检查一次并更新状态
+	if !h.semanticAvailable {
+		if h.semanticSplitter.IsAvailable() {
+			h.semanticAvailable = true
+			log.Println("[HybridSplitter] Semantic server detected! Switching to semantic splitting.")
+		}
+	}
+
 	details := map[string]interface{}{
 		"semantic_available": h.semanticAvailable,
 		"text_length":        len(text),

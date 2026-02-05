@@ -42,15 +42,19 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     python3 \
     python3-pip \
     antiword \
+    libgl1 \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 Python 依赖 - 第一层：基础核心库 (变化频率低，体积大)
-# 强制使用 CPU 版本 PyTorch 以减小镜像体积 (~200MB+)
+# 强制使用 CPU 版本以减小镜像体积
 RUN pip3 install --no-cache-dir --upgrade pip && \
-    pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+    pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip3 install --no-cache-dir \
+    paddlepaddle \
+    opencv-python-headless
 
-# 安装 Python 依赖 - 第二层：业务功能库 (变化频率高，体积小)
-# 分层安装的好处是：当添加新库（如 markitdown）时，不需要重新下载 PyTorch
+# 安装 Python 依赖 - 第二层：功能库
 RUN pip3 install --no-cache-dir \
     pymupdf \
     python-docx \
@@ -58,13 +62,35 @@ RUN pip3 install --no-cache-dir \
     numpy \
     fastapi \
     uvicorn \
-    markitdown
+    "markitdown[pdf]" \
+    paddleocr
 
-# 预下载语义切分模型 - 改为挂载宿主机目录
-RUN mkdir -p /app/model_cache
+# 第三层：预下载语义切分模型和 OCR 模型 (实现 99.9% 可用性)
+# 将模型固化在镜像中，避免由于网络问题导致的生产环境失效
+ENV SENTENCE_TRANSFORMERS_HOME=/app/model_cache
+ENV HF_HOME=/app/model_cache
+ENV HF_ENDPOINT=https://hf-mirror.com
 
-# 设置模型缓存目录权限
-RUN chown -R 1001:1001 /app/model_cache && chmod -R 755 /app/model_cache
+# 提前创建用户以便设置权限 (移到前面)
+RUN groupadd -g 1001 numind && useradd -m -u 1001 -g numind -G audio,video numind
+
+# 创建缓存目录并赋予权限
+RUN mkdir -p /app/model_cache && chown -R numind:numind /app/model_cache
+
+# 复制下载脚本 (用于运行时自动修复/首次初始化)
+COPY scripts/download_models.py /app/scripts/download_models.py
+RUN chmod +x /app/scripts/download_models.py
+
+# 设置模型路径映射
+# 我们将 ~/.paddleocr 整体指向 /app/model_cache/ocr，这样 PaddleOCR 下载的所有模型都会留在挂载卷里
+RUN mkdir -p /app/model_cache/ocr && \
+    su numind -c "mkdir -p /home/numind" && \
+    ln -s /app/model_cache/ocr /home/numind/.paddleocr && \
+    chown -R numind:numind /app/model_cache && \
+    chown -h numind:numind /home/numind/.paddleocr
+
+# 注意: 这里不再预下载模型，而是依赖运行时挂载。
+# 启动脚本(docker-entrypoint.sh)会在运行时检查，如果缺失会自动调用 scripts/download_models.py 下载。
 
 # 安装Chrome依赖和字体
 # Ubuntu 24.04: 先更新包列表，然后安装所有依赖
@@ -141,7 +167,7 @@ RUN echo "✅ Chrome优化启动脚本创建成功"
 ENV CHROME_BIN=/usr/local/bin/chrome-headless
 
 # 创建非 root 用户 - 确保UID为1001，与CI/CD配置一致
-RUN groupadd -g 1001 numind && useradd -u 1001 -g numind -G audio,video numind
+# 此时 numind 用户已在前面创建
 
 # 创建Chrome数据目录并设置权限
 RUN mkdir -p /home/numind/.config/google-chrome \

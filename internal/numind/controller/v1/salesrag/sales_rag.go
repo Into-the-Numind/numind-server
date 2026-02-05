@@ -1,12 +1,16 @@
 package salesrag
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
+	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/salesrag"
@@ -712,5 +716,73 @@ func (ctrl *SalesRAGController) GetLanguageStyle(c *gin.Context) {
 
 	core.WriteResponse(c, nil, map[string]string{
 		"style": style,
+	})
+}
+
+// OCR 识别图片中的文本 (转发给 Python OCR 微服务)
+func (ctrl *SalesRAGController) OCR(c *gin.Context) {
+	// 1. 获取上传的文件
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("未找到上传的图片文件"), nil)
+		return
+	}
+	defer file.Close()
+
+	// 2. 构建转发请求
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", header.Filename)
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("构建请求失败"), nil)
+		return
+	}
+	_, err = io.Copy(part, file)
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("复制文件数据失败"), nil)
+		return
+	}
+	writer.Close()
+
+	// 3. 发送请求到 Python OCR 服务 (9093 端口)
+	ocrURL := "http://localhost:9093/ocr"
+	req, err := http.NewRequest("POST", ocrURL, body)
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("创建转发请求失败"), nil)
+		return
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("调用 OCR 服务超时或失败"), nil)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("OCR 服务返回错误"), nil)
+		return
+	}
+
+	// 4. 解析结果
+	var result struct {
+		Success bool   `json:"success"`
+		Text    string `json:"text"`
+		Error   string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("解析 OCR 结果失败"), nil)
+		return
+	}
+
+	if !result.Success {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("OCR 识别失败: "+result.Error), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, map[string]string{
+		"text": result.Text,
 	})
 }

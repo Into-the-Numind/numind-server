@@ -217,73 +217,92 @@ func (s *EnhancedMarkdownSplitter) splitSection(section MarkdownSection, fullTex
 	// 智能切分
 	var chunks []EnhancedSplitChunk
 	startPos := 0
-	lastBoundary := 0
 	forceSplitCount := 0
 
-	for _, boundary := range boundaries {
-		// 检查从startPos到boundary的距离
-		distance := boundary.Pos - startPos
+	// 预留重叠空间：实际切分的 core content 必须给前后重叠留出空间
+	// 每个 core content 会在 addOverlap 中：
+	// 1. 在前面增加约 OverlapSize 长度的内容
+	// 2. 在后面增加约 OverlapSize 长度的内容
+	// 3. 增加 "[上下文衔接]" 标记及其换行符 (约 18 bytes * 2 = 36 bytes)
+	// 为了确保 Core + Overlap < MaxChunkSize，我们需要严格限制 core。
+	reserve := (s.cfg.OverlapSize * 2) + 50
+	effectiveMax := s.cfg.MaxChunkSize - reserve
 
-		// 如果距离超过最大切分大小，在最后一个合适的边界切分
-		if distance > s.cfg.MaxChunkSize {
-			if lastBoundary > startPos {
-				// 在lastBoundary处切分
-				chunkContent := content[startPos:lastBoundary]
-				if len(chunkContent) >= s.cfg.MinChunkSize {
-					chunks = append(chunks, EnhancedSplitChunk{
-						Content:   chunkContent,
-						CoreStart: 0,
-						CoreEnd:   len(chunkContent),
-						Headers:   section.HeaderPath,
-						Level:     section.Level,
-					})
-					if os.Getenv("SPLITTER_DEBUG") == "1" {
-						log.Printf("[EnhancedSplitter] Chunk at boundary: pos=%d, len=%d", lastBoundary, len(chunkContent))
-					}
-				}
-				startPos = lastBoundary
-				lastBoundary = boundary.Pos
-			} else {
-				// 没有找到合适的边界，强制切分（但尽量在句子边界）
-				forcePos := s.findForceSplitPoint(content, startPos+s.cfg.MaxChunkSize)
-				chunkContent := content[startPos:forcePos]
-				chunks = append(chunks, EnhancedSplitChunk{
-					Content:   chunkContent,
-					CoreStart: 0,
-					CoreEnd:   len(chunkContent),
-					Headers:   section.HeaderPath,
-					Level:     section.Level,
-				})
-				forceSplitCount++
-				if os.Getenv("SPLITTER_DEBUG") == "1" {
-					log.Printf("[EnhancedSplitter] Forced split: pos=%d, len=%d, next_start=%q...",
-						forcePos, len(chunkContent), truncate(content[forcePos:], 30))
-				}
-				startPos = forcePos
-				lastBoundary = boundary.Pos
-			}
-		} else if distance >= s.cfg.MinChunkSize {
-			// 达到了最小切分大小，记录这个边界
-			lastBoundary = boundary.Pos
-		}
+	// 防御性检查：如果 MaxChunkSize 太小导致预留后没有空间，则至少保留 1/3 的空间
+	if effectiveMax < s.cfg.MaxChunkSize/3 {
+		effectiveMax = s.cfg.MaxChunkSize / 3
+	}
+	// 确保不小于 MinChunkSize (除非 MinChunkSize 本身就很离谱)
+	if effectiveMax < 50 {
+		effectiveMax = 50
 	}
 
-	// 处理剩余内容
-	if startPos < len(content) {
-		remaining := content[startPos:]
-		if len(remaining) >= s.cfg.MinChunkSize || len(chunks) == 0 {
+	// 只要剩余内容大于有效限制，就继续循环
+	for startPos < len(content) {
+		remainingLen := len(content) - startPos
+		if remainingLen <= effectiveMax {
+			// 剩余内容已经足够小，作为最后一个 chunk
 			chunks = append(chunks, EnhancedSplitChunk{
-				Content:   remaining,
+				Content:   content[startPos:],
 				CoreStart: 0,
-				CoreEnd:   len(remaining),
+				CoreEnd:   remainingLen,
 				Headers:   section.HeaderPath,
 				Level:     section.Level,
 			})
-		} else if len(chunks) > 0 {
-			// 剩余内容太少，合并到最后一个chunk
-			lastIdx := len(chunks) - 1
-			chunks[lastIdx].Content += remaining
-			chunks[lastIdx].CoreEnd = len(chunks[lastIdx].Content)
+			break
+		}
+
+		// 需要切分，尝试在 [startPos + MinChunkSize, startPos + effectiveMax] 范围内寻找最优边界
+		found := false
+		bestBoundary := -1
+
+		// 寻找落入当前窗口内且优先级最高的最后一个边界
+		for _, b := range boundaries {
+			if b.Pos <= startPos {
+				continue
+			}
+			if b.Pos > startPos+effectiveMax {
+				break
+			}
+
+			// 我们希望尽可能切在自然边界上
+			if b.Pos >= startPos+s.cfg.MinChunkSize {
+				bestBoundary = b.Pos
+				found = true
+			}
+		}
+
+		if found {
+			// 在找到的最优边界处切分
+			chunkContent := content[startPos:bestBoundary]
+			chunks = append(chunks, EnhancedSplitChunk{
+				Content:   chunkContent,
+				CoreStart: 0,
+				CoreEnd:   len(chunkContent),
+				Headers:   section.HeaderPath,
+				Level:     section.Level,
+			})
+			startPos = bestBoundary
+		} else {
+			// 没有找到合适的边界，强制切分
+			forcePos := s.findForceSplitPoint(content, startPos+effectiveMax)
+			// 极端情况防御：如果 findForceSplitPoint 返回的位置没有进展，执行硬截断
+			if forcePos <= startPos {
+				forcePos = startPos + s.cfg.MaxChunkSize
+				if forcePos > len(content) {
+					forcePos = len(content)
+				}
+			}
+			chunkContent := content[startPos:forcePos]
+			chunks = append(chunks, EnhancedSplitChunk{
+				Content:   chunkContent,
+				CoreStart: 0,
+				CoreEnd:   len(chunkContent),
+				Headers:   section.HeaderPath,
+				Level:     section.Level,
+			})
+			forceSplitCount++
+			startPos = forcePos
 		}
 	}
 
@@ -335,16 +354,25 @@ func (s *EnhancedMarkdownSplitter) findBoundaries(text string) []Boundary {
 	for i, r := range text {
 		for _, end := range sentenceEnds {
 			if r == end {
-				// 确保后面是空格或换行
+				// 对于中文标点，通常不需要后跟空格
 				nextPos := i + utf8.RuneLen(r)
-				if nextPos < len(text) {
-					nextChar := text[nextPos]
-					if nextChar == ' ' || nextChar == '\n' {
-						boundaries = append(boundaries, Boundary{
-							Pos:      nextPos,
-							Priority: 3,
-							Type:     "sentence",
-						})
+				if end == '。' || end == '！' || end == '？' {
+					boundaries = append(boundaries, Boundary{
+						Pos:      nextPos,
+						Priority: 3,
+						Type:     "sentence",
+					})
+				} else {
+					// 对于英文标点，通常需要后跟空格或换行，以避免切分如 "3.14" 这样的数字
+					if nextPos < len(text) {
+						nextChar := text[nextPos]
+						if nextChar == ' ' || nextChar == '\n' || nextChar == '\r' {
+							boundaries = append(boundaries, Boundary{
+								Pos:      nextPos,
+								Priority: 3,
+								Type:     "sentence",
+							})
+						}
 					}
 				}
 				break

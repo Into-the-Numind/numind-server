@@ -25,7 +25,16 @@ os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 
 print("Downloading BAAI/bge-small-zh...")
 model = SentenceTransformer('BAAI/bge-small-zh')
-print("✅ 模型下载完成！")
+print("✅ 语义模型下载完成！")
+
+print("📥 开始预下载 PaddleOCR 模型...")
+try:
+    from paddleocr import PaddleOCR
+    # 初始化一次，会自动下载模型
+    ocr = PaddleOCR(use_angle_cls=True, lang="ch", show_log=False)
+    print("✅ PaddleOCR 模型下载完成！")
+except Exception as e:
+    print(f"⚠️ PaddleOCR 模型下载失败 (这可能需要网络): {e}")
 EOF
 
 # 设置权限确保容器内用户(1001)可读

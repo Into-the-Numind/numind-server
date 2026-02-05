@@ -162,3 +162,62 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+func TestEnhancedMarkdownSplitter_ForceSplit(t *testing.T) {
+	cfg := EnhancedSplitterConfig{
+		MaxChunkSize: 1000,
+		MinChunkSize: 200,
+		OverlapSize:  100,
+		EnableJieba:  false,
+	}
+	s := NewEnhancedMarkdownSplitter(cfg)
+
+	// Construct a long string without any boundaries (no spaces, no newlines, no punctuation)
+	// Total length 2500, should split into at least 3 chunks
+	text := ""
+	for i := 0; i < 2500; i++ {
+		text += "A"
+	}
+
+	chunks, err := s.Split(text)
+	if err != nil {
+		t.Fatalf("Split failed: %v", err)
+	}
+
+	// Should generate at least 3 chunks (250 / 100 = 2.5)
+	if len(chunks) < 3 {
+		t.Errorf("Expected at least 3 chunks, got %d", len(chunks))
+	}
+
+	// Verify all chunks are within MaxChunkSize
+	for i, c := range chunks {
+		if len(c.Content) > cfg.MaxChunkSize {
+			t.Errorf("Chunk %d exceeds MaxChunkSize: %d", i, len(c.Content))
+		}
+	}
+}
+
+func TestEnhancedMarkdownSplitter_ChineseSentence(t *testing.T) {
+	cfg := EnhancedSplitterConfig{
+		MaxChunkSize: 50,
+		MinChunkSize: 10,
+		OverlapSize:  0,
+		EnableJieba:  false,
+	}
+	s := NewEnhancedMarkdownSplitter(cfg)
+
+	// Chinese text where sentences are NOT followed by spaces
+	text := "这是第一句话。这是第二句话。这是第三句话。这是第四句话。"
+	// Each sentence is roughly 21 bytes in UTF-8.
+	// Total length is ~84 bytes.
+
+	chunks, err := s.Split(text)
+	if err != nil {
+		t.Fatalf("Split failed: %v", err)
+	}
+
+	// With improved sentence detection, it should split at the period
+	if len(chunks) < 2 {
+		t.Errorf("Expected multiple chunks split by Chinese periods, got %d", len(chunks))
+	}
+}

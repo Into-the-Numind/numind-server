@@ -75,7 +75,7 @@ func NewEmbeddingSplitter(cfg EmbeddingSplitterConfig) *EmbeddingSplitter {
 	return &EmbeddingSplitter{
 		cfg: cfg,
 		httpClient: &http.Client{
-			Timeout: 300 * time.Second, // 长文本处理可能比较慢，给够时间
+			Timeout: 600 * time.Second, // 增加超时到 600s，长文本处理可能比较慢
 		},
 	}
 }
@@ -86,12 +86,15 @@ func (s *EmbeddingSplitter) splitInternal(text string) ([]EmbeddingChunk, error)
 		return []EmbeddingChunk{}, nil
 	}
 
+	// [PRO] 长度预估：Go 使用的是字节长度，而 Python 处理的是字符长度。
+	// 对于中文，1个字符 ≈ 3个字节。为了保证切出的 chunk 不超过 Go 设置的字节阈值，
+	// 我们将传给 Python 的阈值缩小 3 倍（保守估计）。
 	reqBody := SplitRequest{
 		Text:         text,
 		Threshold:    s.cfg.Threshold,
-		MinChunkSize: s.cfg.MinChunkSize,
-		MaxChunkSize: s.cfg.MaxChunkSize,
-		OverlapSize:  s.cfg.OverlapSize,
+		MinChunkSize: s.cfg.MinChunkSize / 3,
+		MaxChunkSize: s.cfg.MaxChunkSize / 3,
+		OverlapSize:  s.cfg.OverlapSize / 3,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)

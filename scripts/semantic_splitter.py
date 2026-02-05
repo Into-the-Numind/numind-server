@@ -96,8 +96,16 @@ def split_into_sentences(text: str) -> List[str]:
             current = ""
             for char in content:
                 current += char
-                if re.match(f'.*{pattern}$', current):
-                    # 检查是否是在换行符后（即段落结束）也算
+                if re.search(f'{pattern}$', current):
+                    # 只要匹配到任何结束符，就切分
+                    stripped = current.strip()
+                    if stripped:
+                        sentences.append(stripped)
+                    current = ""
+                elif len(current) > 400:
+                    # [PRO] 预切分逻辑：如果一个连续文本块超过 400 字符还没遇到标点，
+                    # 强制物理切分，作为“伪句子”进行语义分析
+                    # 这样可以处理 OCR 出来的“文本墙”，并让模型对每个部分单独计算向量
                     stripped = current.strip()
                     if stripped:
                         sentences.append(stripped)
@@ -145,36 +153,48 @@ def find_semantic_boundaries(
     current_chunk_size = 0
     last_boundary = 0
     
-    for i, sim in enumerate(similarities):
-        current_chunk_size += len(sentences[i])
+    for i, sentence in enumerate(sentences):
+        sentence_len = len(sentence)
         
-        # 条件1：超过最大长度，强制切分
-        if current_chunk_size >= max_chunk_size:
+        # 如果单个句子就超过了 max_chunk_size，强制在它之后切分
+        if sentence_len >= max_chunk_size:
+            if current_chunk_size > 0:
+                boundaries.append(i - 1)
             boundaries.append(i)
-            last_boundary = i + 1
             current_chunk_size = 0
             continue
-        
-        # 条件2：相似度断崖（主题切换）且满足最小长度
-        if sim < threshold and current_chunk_size >= min_chunk_size:
-            boundaries.append(i)
-            last_boundary = i + 1
-            current_chunk_size = 0
-            continue
-        
-        # 条件3：相似度局部最小值（波谷）
-        if i > 0 and i < len(similarities) - 1:
-            prev_sim = similarities[i - 1]
-            next_sim = similarities[i + 1]
             
-            # 当前相似度是局部最小值且低于阈值
-            if sim < prev_sim and sim < next_sim and sim < threshold:
-                if current_chunk_size >= min_chunk_size:
-                    boundaries.append(i)
-                    last_boundary = i + 1
-                    current_chunk_size = 0
+        # 如果加上当前句子会超过限制，则在当前句子之前切分
+        if current_chunk_size + sentence_len > max_chunk_size:
+            if i > 0:
+                boundaries.append(i - 1)
+            current_chunk_size = sentence_len
+            continue
+            
+        current_chunk_size += sentence_len
+        
+        # 相似度断崖（主题切换）及局部波谷逻辑
+        if i < len(similarities):
+            sim = similarities[i]
+            
+            # 条件2：相似度断崖（主题切换）且满足最小长度
+            if sim < threshold and current_chunk_size >= min_chunk_size:
+                boundaries.append(i)
+                current_chunk_size = 0
+                continue
+            
+            # 条件3：相似度局部最小值（波谷）
+            if 0 < i < len(similarities) - 1:
+                prev_sim = similarities[i - 1]
+                next_sim = similarities[i + 1]
+                if sim < prev_sim and sim < next_sim and sim < threshold:
+                    if current_chunk_size >= min_chunk_size:
+                        boundaries.append(i)
+                        current_chunk_size = 0
     
-    return boundaries
+    # 确保 boundaries 中没有重复项且是有序的
+    final_boundaries = sorted(list(set(boundaries)))
+    return final_boundaries
 
 
 def semantic_split(
@@ -218,35 +238,62 @@ def semantic_split(
     chunks = []
     start_idx = 0
     
+    # 辅助函数：根据长度强制切分
+    def force_split_content(text, max_len):
+        runes = list(text)
+        res = []
+        for i in range(0, len(runes), max_len):
+            res.append("".join(runes[i:i+max_len]))
+        return res
+
     for boundary in boundaries:
         end_idx = boundary + 1
         chunk_sentences = sentences[start_idx:end_idx]
         chunk_text = "".join(chunk_sentences)
         
-        # 计算平均相似度（用于调试）
-        if start_idx < len(similarities):
-            avg_sim = sum(similarities[start_idx:min(end_idx-1, len(similarities))]) / max(1, end_idx - start_idx - 1)
+        # 如果这个语义块本身就超长，需要进一步物理切分
+        if len(chunk_text) > max_chunk_size:
+            sub_chunks = force_split_content(chunk_text, max_chunk_size)
+            for sub in sub_chunks:
+                chunks.append({
+                    "content": sub,
+                    "boundary_type": "physical_force",
+                    "sentence_count": 0
+                })
         else:
-            avg_sim = 1.0
-        
-        chunks.append({
-            "content": chunk_text,
-            "boundary_type": "semantic",
-            "similarity_before": float(similarities[boundary]) if boundary < len(similarities) else None,
-            "avg_similarity": float(avg_sim),
-            "sentence_count": len(chunk_sentences)
-        })
+            # 计算平均相似度（用于调试）
+            if start_idx < len(similarities):
+                avg_sim = sum(similarities[start_idx:min(end_idx-1, len(similarities))]) / max(1, end_idx - start_idx - 1)
+            else:
+                avg_sim = 1.0
+            
+            chunks.append({
+                "content": chunk_text,
+                "boundary_type": "semantic",
+                "similarity_before": float(similarities[boundary]) if boundary < len(similarities) else None,
+                "avg_similarity": float(avg_sim),
+                "sentence_count": len(chunk_sentences)
+            })
         start_idx = end_idx
     
     # 处理剩余句子
     if start_idx < len(sentences):
         chunk_sentences = sentences[start_idx:]
         chunk_text = "".join(chunk_sentences)
-        chunks.append({
-            "content": chunk_text,
-            "boundary_type": "end",
-            "sentence_count": len(chunk_sentences)
-        })
+        if len(chunk_text) > max_chunk_size:
+            sub_chunks = force_split_content(chunk_text, max_chunk_size)
+            for sub in sub_chunks:
+                chunks.append({
+                    "content": sub,
+                    "boundary_type": "physical_force",
+                    "sentence_count": 0
+                })
+        else:
+            chunks.append({
+                "content": chunk_text,
+                "boundary_type": "end",
+                "sentence_count": len(chunk_sentences)
+            })
     
     # 6. 添加重叠
     if overlap_size > 0 and len(chunks) > 1:

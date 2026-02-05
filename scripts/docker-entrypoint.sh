@@ -40,81 +40,36 @@ check_and_download_model() {
     export SENTENCE_TRANSFORMERS_HOME=/app/model_cache
     export HF_HOME=/app/model_cache
     
-    # 中国大陆用户使用镜像源
-    if [ -z "$HF_ENDPOINT" ]; then
-        export HF_ENDPOINT=https://hf-mirror.com
-        log_info "🌐 使用镜像源: $HF_ENDPOINT"
+    # 检查 BGE 模型是否存在
+    if [ -d "/app/model_cache/sentence_transformers/BAAI_bge-small-zh" ] || \
+       [ -d "/app/model_cache/sentence_transformers/BAAI__bge-small-zh" ]; then
+        log_info "✅ BGE 语义模型已就绪 (Found in /app/model_cache)"
+    else
+        log_warn "⚠️ BGE 模型未找到，准备自动下载..."
+        should_download=true
+    fi
+
+    # 检查 PaddleOCR 模型是否存在
+    # PaddleOCR 默认在 ~/.paddleocr，我们通过软链指向 /app/model_cache/ocr
+    if [ -d "/app/model_cache/ocr/whl" ] || [ -d "/app/model_cache/ocr/2.8" ]; then
+        log_info "✅ PaddleOCR 模型已就绪"
+    else
+        log_warn "⚠️ OCR 模型未找到，准备自动下载..."
+        should_download=true
     fi
     
-    # 检查模型是否已存在
-    if python3 << 'EOF' 2>/dev/null
-import os
-import sys
-
-model_dir = '/app/model_cache/sentence_transformers/BAAI__bge-small-zh'
-if os.path.exists(model_dir):
-    # 检查关键文件是否存在
-    required_files = ['config.json', 'pytorch_model.bin', 'tokenizer.json']
-    for f in required_files:
-        file_path = os.path.join(model_dir, f)
-        if not os.path.exists(file_path) and not os.path.exists(file_path + '.safetensors'):
-            print(f'Missing: {f}')
-            sys.exit(1)
-    print('Model exists and is complete')
-    sys.exit(0)
-else:
-    print('Model directory not found')
-    sys.exit(1)
-EOF
-    then
-        log_info "✅ 语义切分模型已就绪"
-        return 0
-    fi
-    
-    log_warn "⚠️ 模型未找到或文件不完整，尝试下载..."
-    
-    # 尝试下载模型（带重试）
-    max_retries=3
-    for i in $(seq 1 $max_retries); do
-        log_info "🔄 第 $i 次尝试下载模型..."
-        
-        if python3 << 'EOF' 2>&1
-import os
-import sys
-import time
-
-os.environ['SENTENCE_TRANSFORMERS_HOME'] = '/app/model_cache'
-os.environ['HF_HOME'] = '/app/model_cache'
-
-try:
-    from sentence_transformers import SentenceTransformer
-    # 使用离线模式检查
-    os.environ['TRANSFORMERS_OFFLINE'] = '0'
-    model = SentenceTransformer('BAAI/bge-small-zh', cache_folder='/app/model_cache')
-    print('✅ Model downloaded successfully')
-    sys.exit(0)
-except Exception as e:
-    print(f'Error: {e}')
-    sys.exit(1)
-EOF
-        then
-            log_info "✅ 模型下载成功"
-            return 0
+    if [ "$should_download" = true ]; then
+        log_info "🚀 开始下载模型... (这可能需要几分钟)"
+        if python3 /app/scripts/download_models.py; then
+            log_info "✅ 模型下载并缓存成功！"
         else
-            log_error "❌ 第 $i 次下载失败"
-            if [ $i -lt $max_retries ]; then
-                sleep_time=$((5 * i))
-                log_info "⏳ 等待 ${sleep_time}秒后重试..."
-                sleep $sleep_time
-            fi
+            log_error "❌ 模型下载失败"
+            log_warn "⚠️ 系统将尝试继续启动，但在模型缺失的情况下部分功能可能不可用"
+            return 0
         fi
-    done
+    fi
     
-    log_warn "⚠️ 模型下载失败，系统将使用规则切分作为回退"
-    log_warn "📋 手动下载命令:"
-    log_warn "   docker exec <container> python3 -c \"from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh')\""
-    
-    return 0  # 不阻止启动
+    return 0
 }
 
 # 检查 Python 依赖
@@ -126,8 +81,13 @@ check_python_deps() {
         return 1
     fi
     
-    if ! python3 -c "import numpy" 2>/dev/null; then
-        log_warn "⚠️ numpy 未安装"
+    if ! python3 -c "import paddleocr" 2>/dev/null; then
+        log_warn "⚠️ paddleocr 未安装"
+        return 1
+    fi
+
+    if ! python3 -c "import markitdown" 2>/dev/null; then
+        log_warn "⚠️ markitdown 未安装"
         return 1
     fi
     

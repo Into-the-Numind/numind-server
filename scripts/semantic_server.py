@@ -6,13 +6,32 @@ Loads the model once and serves splitting requests via HTTP.
 
 import sys
 import uvicorn
-from fastapi import FastAPI, HTTPException
+import os
+import tempfile
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from semantic_splitter import semantic_split, get_model
 
 # Initialize FastAPI app
-app = FastAPI(title="Semantic Splitter Service")
+app = FastAPI(title="Semantic & OCR Service")
+
+# --- OCR Engine Global ---
+OCR_ENGINE = None
+
+def get_ocr_engine():
+    global OCR_ENGINE
+    if OCR_ENGINE is None:
+        try:
+            from paddleocr import PaddleOCR
+            print("Initializing PaddleOCR...", file=sys.stderr)
+            # ch_PP-OCRv4 is the default and best for general purpose
+            OCR_ENGINE = PaddleOCR(use_textline_orientation=True, lang="ch")
+            print("PaddleOCR initialized successfully!", file=sys.stderr)
+        except Exception as e:
+            print(f"Failed to initialize PaddleOCR: {e}", file=sys.stderr)
+            raise e
+    return OCR_ENGINE
 
 # Request model
 class SplitRequest(BaseModel):
@@ -29,16 +48,25 @@ class SplitResponse(BaseModel):
     total_chunks: int
     error: Optional[str] = None
 
+class OCRResponse(BaseModel):
+    success: bool
+    text: str
+    error: Optional[str] = None
+
 @app.on_event("startup")
 async def startup_event():
-    """Load model on startup"""
+    """Load models on startup"""
     try:
-        print("Loading model on startup...", file=sys.stderr)
+        print("Loading semantic model on startup...", file=sys.stderr)
         get_model()
-        print("Model loaded successfully!", file=sys.stderr)
+        print("Semantic model loaded successfully!", file=sys.stderr)
+        
+        # Load OCR engine
+        get_ocr_engine()
     except Exception as e:
-        print(f"Failed to load model: {e}", file=sys.stderr)
-        sys.exit(1)
+        print(f"Failed to load models during startup: {e}", file=sys.stderr)
+        # We don't exit(1) here to allow the server to run even if one engine fails
+        # but the health check will reflect the status
 
 @app.post("/split", response_model=SplitResponse)
 async def split_text(req: SplitRequest):
@@ -64,9 +92,55 @@ async def split_text(req: SplitRequest):
             "error": str(e)
         }
 
+@app.post("/ocr", response_model=OCRResponse)
+async def ocr_image(file: UploadFile = File(...)):
+    """识别图片中的文本"""
+    temp_path = None
+    try:
+        # 1. 保存上传的文件到临时路径
+        suffix = os.path.splitext(file.filename)[1] if file.filename else ".png"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            content = await file.read()
+            tmp.write(content)
+            temp_path = tmp.name
+
+        # 2. 调用 OCR 引擎
+        ocr = get_ocr_engine()
+        result = ocr.ocr(temp_path, cls=True)
+
+        # 3. 解析结果 (PaddleOCR 返回的是一个列表，每个元素代表一行)
+        # 结构通常是: [[[[box], [text, confidence]], ...]]
+        extracted_text = []
+        if result and result[0]:
+            for line in result[0]:
+                text = line[1][0]
+                extracted_text.append(text)
+        
+        full_text = "\n".join(extracted_text)
+
+        return {
+            "success": True,
+            "text": full_text
+        }
+    except Exception as e:
+        print(f"OCR error: {e}", file=sys.stderr)
+        return {
+            "success": False,
+            "text": "",
+            "error": str(e)
+        }
+    finally:
+        # 4. 清理临时文件
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "model_loaded": True}
+    return {
+        "status": "ok", 
+        "semantic_model_loaded": True,
+        "ocr_engine_loaded": OCR_ENGINE is not None
+    }
 
 if __name__ == "__main__":
     # Run server
