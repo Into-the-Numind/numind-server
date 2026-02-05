@@ -49,12 +49,8 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
     pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
     pip3 install --no-cache-dir pymupdf python-docx sentence-transformers numpy fastapi uvicorn
 
-# 预下载语义切分模型（带重试机制）
-# 将所有 scripts 目录下的脚本复制进去 (download_model.py 就在其中)
-COPY scripts /app/scripts
-RUN mkdir -p /app/model_cache && \
-    echo "📥 预下载 bge-small-zh 模型..." && \
-    python3 /app/scripts/download_model.py
+# 预下载语义切分模型 - 改为挂载宿主机目录
+RUN mkdir -p /app/model_cache
 
 # 设置模型缓存目录权限
 RUN chown -R 1001:1001 /app/model_cache && chmod -R 755 /app/model_cache
