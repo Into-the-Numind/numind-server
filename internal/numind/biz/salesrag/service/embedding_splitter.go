@@ -12,7 +12,7 @@ import (
 
 // EmbeddingSplitterConfig 语义切分器配置
 type EmbeddingSplitterConfig struct {
-	Threshold    float64 // 相似度阈值，默认 0.6
+	Threshold    float64 // 相似度阈值，默认 0.5
 	MinChunkSize int     // 最小切片大小，默认 500
 	MaxChunkSize int     // 最大切片大小，默认 4000
 	OverlapSize  int     // 重叠大小，默认 100
@@ -57,7 +57,7 @@ type EmbeddingSplitter struct {
 func NewEmbeddingSplitter(cfg EmbeddingSplitterConfig) *EmbeddingSplitter {
 	// 设置默认值
 	if cfg.Threshold == 0 {
-		cfg.Threshold = 0.6
+		cfg.Threshold = 0.5
 	}
 	if cfg.MinChunkSize == 0 {
 		cfg.MinChunkSize = 500

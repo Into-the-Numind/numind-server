@@ -58,8 +58,8 @@ func (s *BindingService) BindUser(req *BindUserRequest) error {
 
 	// 2. 检查 NumindUserID (当前登录用户) 是否已绑定 *其他* 微信号
 	var boundUser WecomUser
-	// 修正：这里应该检查 user_id 为 req.UserID 且 ID 不等于 req.ExternalUserID 的记录
-	errNumind := s.db.First(&boundUser, "user_id = ?", req.UserID).Error
+	// 修正：这里应该检查 numind_user_id 为 req.UserID 且 ID 不等于 req.ExternalUserID 的记录
+	errNumind := s.db.First(&boundUser, "numind_user_id = ?", req.UserID).Error
 	if errNumind == nil {
 		// 存在: 检查绑定的微信号是否是当前正在绑定的这个
 		if boundUser.ID != req.ExternalUserID {
@@ -79,22 +79,22 @@ func (s *BindingService) BindUser(req *BindUserRequest) error {
 
 	return s.db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"user_id", "name", "bound_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{"numind_user_id", "name", "bound_at"}),
 	}).Create(&user).Error
 }
 
 // UnbindUser 解除绑定
 func (s *BindingService) UnbindUser(numindUserID int64) error {
-	return s.db.Model(&WecomUser{}).Where("user_id = ?", numindUserID).Updates(map[string]interface{}{
-		"user_id":  nil,
-		"bound_at": nil,
+	return s.db.Model(&WecomUser{}).Where("numind_user_id = ?", numindUserID).Updates(map[string]interface{}{
+		"numind_user_id": nil,
+		"bound_at":       nil,
 	}).Error
 }
 
 // GetBindingByNumindUser 根据 Numind 用户 ID 查询绑定的微信账号
 func (s *BindingService) GetBindingByNumindUser(numindUserID int64) (*WecomUser, error) {
 	var user WecomUser
-	err := s.db.First(&user, "user_id = ?", numindUserID).Error
+	err := s.db.First(&user, "numind_user_id = ?", numindUserID).Error
 	if err != nil {
 		return nil, err
 	}
@@ -251,7 +251,7 @@ func (s *BindingService) GetContacts(numindUserID int64) ([]ContactConversation,
 func (s *BindingService) GenerateBindCode(numindUserID int64) (*WecomBindCode, error) {
 	// 1. 检查是否已有未过期的验证码
 	var existing WecomBindCode
-	if err := s.db.Where("user_id = ? AND expired_at > ?", numindUserID, time.Now()).Order("created_at DESC").First(&existing).Error; err == nil {
+	if err := s.db.Where("numind_user_id = ? AND expired_at > ?", numindUserID, time.Now()).Order("created_at DESC").First(&existing).Error; err == nil {
 		return &existing, nil
 	}
 

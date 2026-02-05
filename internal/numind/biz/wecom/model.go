@@ -6,7 +6,7 @@ import "time"
 // 用于将企业微信的 external_userid 与 Numind 平台用户关联
 type WecomUser struct {
 	ID        string     `gorm:"column:id;primaryKey;type:varchar(64)" json:"id"` // ExternalUserID (wm_xxx)
-	UserID    *int64     `gorm:"column:user_id;index" json:"user_id"`
+	UserID    *int64     `gorm:"column:numind_user_id;index" json:"user_id"`
 	Name      string     `gorm:"column:name;type:varchar(128)" json:"name"`     // 微信昵称
 	Avatar    string     `gorm:"column:avatar;type:varchar(512)" json:"avatar"` // 头像URL
 	BoundAt   *time.Time `gorm:"column:bound_at" json:"bound_at"`               // 绑定时间
@@ -93,7 +93,7 @@ func IsRobotUser(userID string) bool {
 // WecomBindCode 绑定验证码表
 type WecomBindCode struct {
 	Code      string    `gorm:"column:code;primaryKey;type:varchar(10)"`
-	UserID    int64     `gorm:"column:user_id;index"`
+	UserID    int64     `gorm:"column:numind_user_id;index"`
 	ExpiredAt time.Time `gorm:"column:expired_at"`
 	CreatedAt time.Time `gorm:"column:created_at"`
 }

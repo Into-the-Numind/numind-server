@@ -124,7 +124,7 @@ def compute_similarity(embedding1: np.ndarray, embedding2: np.ndarray) -> float:
 def find_semantic_boundaries(
     sentences: List[str],
     similarities: List[float],
-    threshold: float = 0.6,
+    threshold: float = 0.5,
     min_chunk_size: int = 500,
     max_chunk_size: int = 4000
 ) -> List[int]:
@@ -191,7 +191,7 @@ def find_semantic_boundaries(
 
 def semantic_split(
     text: str,
-    threshold: float = 0.6,
+    threshold: float = 0.5,
     min_chunk_size: int = 500,
     max_chunk_size: int = 4000,
     overlap_size: int = 100
@@ -336,7 +336,7 @@ def main():
         sys.exit(1)
     
     text_file = sys.argv[1]
-    threshold = float(sys.argv[2]) if len(sys.argv) > 2 else 0.6
+    threshold = float(sys.argv[2]) if len(sys.argv) > 2 else 0.5
     min_size = int(sys.argv[3]) if len(sys.argv) > 3 else 500
     max_size = int(sys.argv[4]) if len(sys.argv) > 4 else 4000
     

@@ -146,12 +146,12 @@ func autoMigrate(db *gorm.DB) error {
 	// 获取数据库字符集配置
 	charsetConfig := getDatabaseCharsetConfig()
 
-	// 1.5 企业微信相关表迁移前的字段处理 (幂等更名: numind_user_id -> user_id)
-	log.Infow("Running custom migrations for Wecom tables...")
-	if err := migrateWecomUsersTable(db); err != nil {
-		log.Errorw("Failed to run custom Wecom migration", "error", err)
-		// 仍然尝试继续 AutoMigrate
-	}
+	// 1.5 企业微信相关表迁移前的字段处理 (已禁用，使用 numind_user_id 作为列名)
+	// log.Infow("Running custom migrations for Wecom tables...")
+	// if err := migrateWecomUsersTable(db); err != nil {
+	// 	log.Errorw("Failed to run custom Wecom migration", "error", err)
+	// 	// 仍然尝试继续 AutoMigrate
+	// }
 
 	// 2. 自动迁移所有模型
 	log.Infow("Starting database schema migration...")
@@ -834,6 +834,8 @@ func InitCOS() {
 
 // migrateWecomUsersTable 处理 wecom_users 表的字段重命名 (numind_user_id -> user_id)
 // 这是一个自定义的迁移函数，因为 GORM's AutoMigrate 不支持重命名列。
+// 注意：此函数已被禁用，因为我们决定使用 numind_user_id 作为数据库列名
+/*
 func migrateWecomUsersTable(db *gorm.DB) error {
 	tableName := "wecom_users"
 
@@ -864,3 +866,4 @@ func migrateWecomUsersTable(db *gorm.DB) error {
 
 	return nil
 }
+*/
