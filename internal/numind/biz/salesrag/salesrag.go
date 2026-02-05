@@ -441,7 +441,7 @@ func (b *salesRAGBiz) ListDocumentChunks(ctx context.Context, userID uint, docID
 	}
 
 	if limit <= 0 {
-		limit = 1000 // 默认返回1000条，确保能获取所有切片
+		limit = 10000 // 默认返回10000条，确保能获取所有切片
 	}
 
 	// 2. 优先从MySQL读取（快速，无费用）

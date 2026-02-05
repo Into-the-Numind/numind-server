@@ -94,7 +94,7 @@ func (m *MemoryStore) FetchByDocumentID(ctx context.Context, documentID uint, li
 	defer m.mu.RUnlock()
 
 	if limit <= 0 {
-		limit = 1000
+		limit = 10000 // 默认返回10000条，确保能获取所有切片
 	}
 
 	var results []domain.KnowledgeChunk

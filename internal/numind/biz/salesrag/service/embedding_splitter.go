@@ -13,8 +13,8 @@ import (
 // EmbeddingSplitterConfig 语义切分器配置
 type EmbeddingSplitterConfig struct {
 	Threshold    float64 // 相似度阈值，默认 0.6
-	MinChunkSize int     // 最小切片大小，默认 100
-	MaxChunkSize int     // 最大切片大小，默认 1000
+	MinChunkSize int     // 最小切片大小，默认 500
+	MaxChunkSize int     // 最大切片大小，默认 4000
 	OverlapSize  int     // 重叠大小，默认 100
 	ServerURL    string  // 语义切分服务地址，默认 http://localhost:9093
 }
@@ -60,10 +60,10 @@ func NewEmbeddingSplitter(cfg EmbeddingSplitterConfig) *EmbeddingSplitter {
 		cfg.Threshold = 0.6
 	}
 	if cfg.MinChunkSize == 0 {
-		cfg.MinChunkSize = 100
+		cfg.MinChunkSize = 500
 	}
 	if cfg.MaxChunkSize == 0 {
-		cfg.MaxChunkSize = 1000
+		cfg.MaxChunkSize = 4000
 	}
 	if cfg.OverlapSize == 0 {
 		cfg.OverlapSize = 100

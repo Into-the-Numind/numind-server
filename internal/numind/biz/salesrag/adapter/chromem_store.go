@@ -181,7 +181,7 @@ func (s *ChromemStore) FetchByDocumentID(ctx context.Context, documentID uint, l
 	defer s.mu.RUnlock()
 
 	if limit <= 0 {
-		limit = 1000
+		limit = 10000 // 默认返回10000条，确保能获取所有切片
 	}
 
 	// 使用一个通用查询词生成向量

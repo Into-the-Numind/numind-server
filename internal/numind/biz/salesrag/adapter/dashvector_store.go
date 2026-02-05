@@ -348,7 +348,7 @@ func (s *DashVectorStore) FetchByDocumentID(ctx context.Context, documentID uint
 	// 通过过滤条件来精确匹配文档ID
 
 	if limit <= 0 {
-		limit = 1000 // 默认返回1000条，确保能获取所有切片
+		limit = 10000 // 默认返回10000条，确保能获取所有切片
 	}
 
 	// 方案：使用一个固定的embedding向量（可以是零向量或随机向量）

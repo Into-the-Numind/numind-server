@@ -13,8 +13,8 @@ import (
 
 // EnhancedSplitterConfig 增强版切分器配置
 type EnhancedSplitterConfig struct {
-	MaxChunkSize    int  // 最大切片大小（默认1000）
-	MinChunkSize    int  // 最小切片大小（默认200）
+	MaxChunkSize    int  // 最大切片大小（默认4000）
+	MinChunkSize    int  // 最小切片大小（默认500）
 	OverlapSize     int  // 前后重叠字符数（默认100）
 	EnableJieba     bool // 是否启用中文分词（默认true）
 	ProtectMarkdown bool // 是否保护Markdown结构（默认true）
@@ -46,10 +46,10 @@ type EnhancedMarkdownSplitter struct {
 func NewEnhancedMarkdownSplitter(cfg EnhancedSplitterConfig) *EnhancedMarkdownSplitter {
 	// 设置默认值
 	if cfg.MaxChunkSize == 0 {
-		cfg.MaxChunkSize = 1000
+		cfg.MaxChunkSize = 4000
 	}
 	if cfg.MinChunkSize == 0 {
-		cfg.MinChunkSize = 200
+		cfg.MinChunkSize = 500
 	}
 	if cfg.OverlapSize == 0 {
 		cfg.OverlapSize = 100

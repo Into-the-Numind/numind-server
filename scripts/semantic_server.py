@@ -25,8 +25,8 @@ def get_ocr_engine():
         try:
             from paddleocr import PaddleOCR
             print("Initializing PaddleOCR...", file=sys.stderr)
-            # ch_PP-OCRv4 is the default and best for general purpose
-            OCR_ENGINE = PaddleOCR(use_textline_orientation=True, lang="ch")
+            # PaddleOCR 3.x 初始化，兼容中英文识别
+            OCR_ENGINE = PaddleOCR(lang="ch")
             print("PaddleOCR initialized successfully!", file=sys.stderr)
         except Exception as e:
             print(f"Failed to initialize PaddleOCR: {e}", file=sys.stderr)
@@ -106,15 +106,30 @@ async def ocr_image(file: UploadFile = File(...)):
 
         # 2. 调用 OCR 引擎
         ocr = get_ocr_engine()
-        result = ocr.ocr(temp_path, cls=True)
-
-        # 3. 解析结果 (PaddleOCR 返回的是一个列表，每个元素代表一行)
-        # 结构通常是: [[[[box], [text, confidence]], ...]]
+        
+        # PaddleOCR 3.x 使用 predict() 方法，2.x 使用 ocr() 方法
+        # 尝试兼容两个版本
         extracted_text = []
-        if result and result[0]:
-            for line in result[0]:
-                text = line[1][0]
-                extracted_text.append(text)
+        
+        if hasattr(ocr, 'predict'):
+            # PaddleOCR 3.x API
+            result = ocr.predict(temp_path)
+            # 3.x 返回结果对象列表，每个对象有 rec_texts 属性
+            if result:
+                for res in result:
+                    if hasattr(res, 'rec_texts') and res.rec_texts:
+                        extracted_text.extend(res.rec_texts)
+                    elif isinstance(res, dict) and 'rec_texts' in res:
+                        extracted_text.extend(res['rec_texts'])
+        else:
+            # PaddleOCR 2.x API (fallback)
+            result = ocr.ocr(temp_path)
+            # 2.x 返回格式: [[[[box], (text, confidence)], ...]]
+            if result and result[0]:
+                for line in result[0]:
+                    if len(line) >= 2:
+                        text = line[1][0] if isinstance(line[1], (list, tuple)) else line[1]
+                        extracted_text.append(text)
         
         full_text = "\n".join(extracted_text)
 
@@ -124,6 +139,8 @@ async def ocr_image(file: UploadFile = File(...)):
         }
     except Exception as e:
         print(f"OCR error: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
         return {
             "success": False,
             "text": "",

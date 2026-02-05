@@ -58,13 +58,13 @@ func (s *VikingStore) Upsert(ctx context.Context, chunks []domain.KnowledgeChunk
 	datas := make([]vikingdb.Data, 0, len(chunks))
 	for _, chunk := range chunks {
 		fields := map[string]interface{}{
-			"id":          chunk.ID,
-			"doc_id":      int64(chunk.DocumentID),
-			"user_id":     int64(chunk.UserID), // 使用实际用户ID
+			"id":         chunk.ID,
+			"doc_id":     int64(chunk.DocumentID),
+			"user_id":    int64(chunk.UserID), // 使用实际用户ID
 			"summary":    chunk.Summary,
-			"tags":        strings.Join(chunk.Tags, ","),
-			"content":     chunk.Content,
-			"source_ref":  chunk.SourceRef,
+			"tags":       strings.Join(chunk.Tags, ","),
+			"content":    chunk.Content,
+			"source_ref": chunk.SourceRef,
 		}
 
 		datas = append(datas, vikingdb.Data{
@@ -177,7 +177,7 @@ func (s *VikingStore) Search(ctx context.Context, query string, filter port.Sear
 // FetchByDocumentID 直接获取指定文档的所有切片（不使用语义搜索）
 func (s *VikingStore) FetchByDocumentID(ctx context.Context, documentID uint, limit int) ([]domain.KnowledgeChunk, error) {
 	if limit <= 0 {
-		limit = 1000 // 默认返回1000条，确保能获取所有切片
+		limit = 10000 // 默认返回10000条，确保能获取所有切片
 	}
 
 	opts := vikingdb.NewSearchOptions()
@@ -262,4 +262,3 @@ func buildVikingFilter(f port.SearchFilter) map[string]interface{} {
 		"and": conditions,
 	}
 }
-

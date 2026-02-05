@@ -102,15 +102,7 @@ def split_into_sentences(text: str) -> List[str]:
                     if stripped:
                         sentences.append(stripped)
                     current = ""
-                elif len(current) > 400:
-                    # [PRO] 预切分逻辑：如果一个连续文本块超过 400 字符还没遇到标点，
-                    # 强制物理切分，作为“伪句子”进行语义分析
-                    # 这样可以处理 OCR 出来的“文本墙”，并让模型对每个部分单独计算向量
-                    stripped = current.strip()
-                    if stripped:
-                        sentences.append(stripped)
-                    current = ""
-            
+
             if current.strip():
                 sentences.append(current.strip())
                 
@@ -133,8 +125,8 @@ def find_semantic_boundaries(
     sentences: List[str],
     similarities: List[float],
     threshold: float = 0.6,
-    min_chunk_size: int = 100,
-    max_chunk_size: int = 1000
+    min_chunk_size: int = 500,
+    max_chunk_size: int = 4000
 ) -> List[int]:
     """
     找到语义边界（相似度断崖处）
@@ -200,8 +192,8 @@ def find_semantic_boundaries(
 def semantic_split(
     text: str,
     threshold: float = 0.6,
-    min_chunk_size: int = 100,
-    max_chunk_size: int = 1000,
+    min_chunk_size: int = 500,
+    max_chunk_size: int = 4000,
     overlap_size: int = 100
 ) -> List[Dict]:
     """
@@ -345,8 +337,8 @@ def main():
     
     text_file = sys.argv[1]
     threshold = float(sys.argv[2]) if len(sys.argv) > 2 else 0.6
-    min_size = int(sys.argv[3]) if len(sys.argv) > 3 else 100
-    max_size = int(sys.argv[4]) if len(sys.argv) > 4 else 1000
+    min_size = int(sys.argv[3]) if len(sys.argv) > 3 else 500
+    max_size = int(sys.argv[4]) if len(sys.argv) > 4 else 4000
     
     try:
         # 读取文本
