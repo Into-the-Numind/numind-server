@@ -146,14 +146,6 @@ func autoMigrate(db *gorm.DB) error {
 	// 获取数据库字符集配置
 	charsetConfig := getDatabaseCharsetConfig()
 
-	// 1. 检查和修复数据库字符集（仅在必要时）
-	log.Infow("Starting database charset verification...")
-	if err := ensureDatabaseCharset(db, charsetConfig); err != nil {
-		log.Warnw("Failed to ensure database charset, continuing with migration", "error", err)
-	} else {
-		log.Infow("Database charset verification completed")
-	}
-
 	// 1.5 企业微信相关表迁移前的字段处理 (幂等更名: numind_user_id -> user_id)
 	log.Infow("Running custom migrations for Wecom tables...")
 	if err := migrateWecomUsersTable(db); err != nil {
@@ -260,33 +252,14 @@ func autoMigrate(db *gorm.DB) error {
 
 	log.Infow("All database schema migration completed")
 
-	// 3. 迁移后再次验证字符集
+	// 3. 迁移后验证字符集
+	// 关键：必须在 AutoMigrate 之后执行，确保新创建的表也能被正确修复
 	log.Infow("Post-migration charset verification...")
 	if err := ensureDatabaseCharset(db, charsetConfig); err != nil {
 		log.Warnw("Failed to ensure database charset after migration", "error", err)
 	} else {
 		log.Infow("Post-migration charset verification completed")
 	}
-
-	// 4. 特别强制修复chat_message表（这是出错的主要表）
-	/* 暂时注释掉，避免启动时压力过大导致连接断开
-	log.Infow("Force fixing chat_message table charset...")
-	if err := forceFixChatMessageTable(db, charsetConfig); err != nil {
-		log.Warnw("Failed to force fix chat_message table", "error", err)
-	} else {
-		log.Infow("Chat_message table charset force fix completed")
-	}
-	*/
-
-	// 5. 验证修复结果
-	/*
-		log.Infow("Verifying charset repair results...")
-		if err := verifyCharsetRepair(db, charsetConfig); err != nil {
-			log.Warnw("Charset repair verification failed", "error", err)
-		} else {
-			log.Infow("Charset repair verification completed successfully")
-		}
-	*/
 
 	log.Infow("Database migration and charset repair completed successfully")
 	return nil
