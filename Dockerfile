@@ -62,6 +62,7 @@ RUN pip3 install --no-cache-dir \
     numpy \
     fastapi \
     uvicorn \
+    python-multipart \
     "markitdown[pdf]" \
     paddleocr
 
