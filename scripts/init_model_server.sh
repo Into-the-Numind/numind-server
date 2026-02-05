@@ -31,7 +31,15 @@ print("📥 开始预下载 PaddleOCR 模型...")
 try:
     from paddleocr import PaddleOCR
     # 初始化一次，会自动下载模型
-    ocr = PaddleOCR(use_angle_cls=True, lang="ch", show_log=False)
+    # 显式使用 PP-OCRv4 mobile 版本，与运行时配置一致
+    ocr = PaddleOCR(
+        lang="ch", 
+        ocr_version="PP-OCRv4",
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_textline_orientation=False,
+        show_log=False
+    )
     print("✅ PaddleOCR 模型下载完成！")
 except Exception as e:
     print(f"⚠️ PaddleOCR 模型下载失败 (这可能需要网络): {e}")

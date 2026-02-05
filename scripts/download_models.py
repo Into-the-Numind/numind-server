@@ -28,8 +28,14 @@ def download_paddle_ocr():
     try:
         from paddleocr import PaddleOCR
         # 初始化会自动下载默认模型
-        # ch_PP-OCRv4 is default
-        PaddleOCR(use_textline_orientation=True, lang="ch")
+        # ch_PP-OCRv4 mobile is default but we want to be explicit and match runtime config
+        PaddleOCR(
+            lang="ch",
+            ocr_version="PP-OCRv4",
+            use_doc_orientation_classify=False,
+            use_doc_unwarping=False,
+            use_textline_orientation=False
+        )
         print("PaddleOCR models downloaded successfully.")
     except Exception as e:
         print(f"Failed to download PaddleOCR models: {e}")
