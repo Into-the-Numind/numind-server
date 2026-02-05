@@ -2,11 +2,35 @@ package store
 
 import (
 	"context"
+	"strings"
+	"unicode/utf8"
 
 	"numind-server/internal/pkg/model"
 
 	"gorm.io/gorm"
 )
+
+// sanitizeUTF8 清理字符串中无效的 UTF-8 字节序列
+// 避免 MySQL Error 1366: Incorrect string value
+func sanitizeUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	// 移除无效的 UTF-8 字节
+	var builder strings.Builder
+	builder.Grow(len(s))
+	for len(s) > 0 {
+		r, size := utf8.DecodeRuneInString(s)
+		if r == utf8.RuneError && size == 1 {
+			// 跳过无效字节
+			s = s[1:]
+			continue
+		}
+		builder.WriteRune(r)
+		s = s[size:]
+	}
+	return builder.String()
+}
 
 // KnowledgeChunkStore 定义知识切片的数据库操作接口
 type KnowledgeChunkStore interface {
@@ -58,6 +82,11 @@ func (s *knowledgeChunks) Create(ctx context.Context, chunk *model.KnowledgeChun
 func (s *knowledgeChunks) BatchCreate(ctx context.Context, chunks []*model.KnowledgeChunk) error {
 	if len(chunks) == 0 {
 		return nil
+	}
+	// 清理每个 chunk 的 Content 和 Summary 字段，移除无效 UTF-8 字节
+	for _, chunk := range chunks {
+		chunk.Content = sanitizeUTF8(chunk.Content)
+		chunk.Summary = sanitizeUTF8(chunk.Summary)
 	}
 	// 使用批量插入，每批100条
 	return s.db.WithContext(ctx).CreateInBatches(chunks, 100).Error
