@@ -18,7 +18,7 @@ type SalesSession struct {
 	SalesStage      string `gorm:"size:20;default:'DISCOVERY'" json:"sales_stage"` // DISCOVERY, NEGOTIATION, CLOSING
 	DocumentIDs     string `gorm:"type:text" json:"document_ids"`                  // JSON array: ["1","2","3"]
 	DeepThinking    bool   `gorm:"default:false" json:"deep_thinking"`
-	CustomerProfile string `gorm:"type:text" json:"customer_profile"` // JSON object
+	CustomerProfile string `gorm:"type:text" json:"customer_profile"` // Markdown 格式的分析结果
 	LastQuery       string `gorm:"type:text" json:"last_query"`
 
 	// 置顶功能字段

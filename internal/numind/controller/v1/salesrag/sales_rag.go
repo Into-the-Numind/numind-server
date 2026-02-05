@@ -494,7 +494,9 @@ func (ctrl *SalesRAGController) UpdateCustomerProfile(c *gin.Context) {
 		return
 	}
 
-	var req map[string]interface{}
+	var req struct {
+		Profile string `json:"profile"`
+	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
 		return
@@ -506,14 +508,7 @@ func (ctrl *SalesRAGController) UpdateCustomerProfile(c *gin.Context) {
 		return
 	}
 
-	// 序列化为JSON字符串
-	profileJSON, err := json.Marshal(req)
-	if err != nil {
-		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
-		return
-	}
-
-	if err := ctrl.b.SalesRAG().UpdateCustomerProfile(c, user.ID, uint(sessionID), string(profileJSON)); err != nil {
+	if err := ctrl.b.SalesRAG().UpdateCustomerProfile(c, user.ID, uint(sessionID), req.Profile); err != nil {
 		core.WriteResponse(c, err, nil)
 		return
 	}
@@ -536,24 +531,13 @@ func (ctrl *SalesRAGController) GetCustomerProfile(c *gin.Context) {
 		return
 	}
 
-	profileJSON, err := ctrl.b.SalesRAG().GetCustomerProfile(c, user.ID, uint(sessionID))
+	profile, err := ctrl.b.SalesRAG().GetCustomerProfile(c, user.ID, uint(sessionID))
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
 	}
 
-	// 解析JSON字符串为对象
-	var profile map[string]interface{}
-	if profileJSON != "" {
-		if err := json.Unmarshal([]byte(profileJSON), &profile); err != nil {
-			// 如果解析失败，返回空对象
-			profile = make(map[string]interface{})
-		}
-	} else {
-		profile = make(map[string]interface{})
-	}
-
-	core.WriteResponse(c, nil, profile)
+	core.WriteResponse(c, nil, map[string]string{"profile": profile})
 }
 
 // PinSession 置顶会话

@@ -51,7 +51,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 RUN pip3 install --no-cache-dir --upgrade pip && \
     pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
     pip3 install --no-cache-dir \
-    paddlepaddle \
+    paddlepaddle==3.2.2 \
     opencv-python-headless
 
 # 安装 Python 依赖 - 第二层：功能库

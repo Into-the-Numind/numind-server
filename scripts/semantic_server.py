@@ -5,8 +5,14 @@ Loads the model once and serves splitting requests via HTTP.
 """
 
 import sys
-import uvicorn
 import os
+
+# 在导入 PaddlePaddle 之前禁用 OneDNN (MKL-DNN)
+# 解决 PaddlePaddle 3.3.0+ 版本中 "ConvertPirAttribute2RuntimeAttribute not support" 错误
+# 这样可以继续使用 PaddleOCR-VL-1.5 等新模型
+os.environ["FLAGS_use_mkldnn"] = "0"
+
+import uvicorn
 import tempfile
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field

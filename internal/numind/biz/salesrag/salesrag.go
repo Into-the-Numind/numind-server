@@ -33,7 +33,7 @@ type SalesRAGBiz interface {
 	// RetrieveStream 流式检索知识并生成回答
 	// chatMode: "sales" (销售话术) 或 "free" (自由讨论)
 	// onEvent: 事件回调，eventType 可为 "verdict"/"token"/"error"/"done"
-	RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error
+	RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, deepThinking bool, chatMode string, customerProfile string, onEvent func(eventType string, data interface{}) error) error
 	// ListDocuments 获取用户的文档列表
 	ListDocuments(ctx context.Context, userID uint) ([]domain.KnowledgeDocument, error)
 	// GetDocument 获取单个文档详情
@@ -89,7 +89,7 @@ type CreateSessionRequest struct {
 	Title           string `json:"title"`
 	DocumentIDs     []uint `json:"document_ids"`
 	DeepThinking    bool   `json:"deep_thinking"`
-	CustomerProfile string `json:"customer_profile"` // JSON string
+	CustomerProfile string `json:"customer_profile"` // Markdown 格式
 }
 
 type UpdateSessionRequest struct {
@@ -536,7 +536,7 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, verdict 
 // - "done": data 为 nil，流式完成
 // RetrieveStream 流式检索知识并生成回答
 // chatMode: "sales" (销售话术) 或 "free" (自由讨论)
-func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error {
+func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, deepThinking bool, chatMode string, customerProfile string, onEvent func(eventType string, data interface{}) error) error {
 	// 1. 从上下文获取用户ID
 	var userID uint
 	if uid, ok := ctx.Value("userID").(uint); ok {
@@ -599,8 +599,11 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 		return err
 	}
 
-	// 8. 构建 prompt 并流式生成回答
-	messages := b.buildPromptMessagesV2(query, verdict)
+	// 8. 获取语言风格
+	languageStyle, _ := b.GetLanguageStyle(ctx, userID)
+
+	// 9. 构建 prompt 并流式生成回答
+	messages := b.buildPromptMessagesV2(query, verdict, customerProfile, languageStyle)
 
 	// 9. 调用 DMXAPI DeepSeek-V3.2 流式聊天（非思考模式）
 	_, err = b.dmxClient.StreamChatCompletion(ctx, "DeepSeek-V3.2", messages, 0.7, 2000, func(content string) error {
@@ -617,7 +620,7 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 // buildPromptMessages 根据检索结果构建 prompt 消息 (V1 兼容)
 // Deprecated: 请使用 buildPromptMessagesV2
 func (b *salesRAGBiz) buildPromptMessages(query string, verdict *service.RetrievalVerdict) []map[string]string {
-	messagesV2 := b.buildPromptMessagesV2(query, verdict)
+	messagesV2 := b.buildPromptMessagesV2(query, verdict, "", "")
 	result := make([]map[string]string, len(messagesV2))
 	for i, msg := range messagesV2 {
 		result[i] = map[string]string{
@@ -629,7 +632,7 @@ func (b *salesRAGBiz) buildPromptMessages(query string, verdict *service.Retriev
 }
 
 // buildPromptMessagesV2 根据检索结果构建 prompt 消息（销售 Copilot 优化版）
-func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.RetrievalVerdict) []adapter.ChatMessage {
+func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.RetrievalVerdict, customerProfile string, languageStyle string) []adapter.ChatMessage {
 	// 合并所有检索到的知识
 	allChunks := verdict.Evidence
 
@@ -659,7 +662,7 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 %s
 
 ## 客户画像（如果为空则忽略此部分）
-（留空，待注入）
+%s
 
 ## 你的任务
 必须严格基于以下知识库内容，为销售人员生成合适的回复话术建议。
@@ -672,10 +675,10 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 5. 可以生成多个风格的回复供选择（如：专业风、亲和风）
 
 ## 语言风格（如果为空则忽略此部分）
-（留空，待注入）
+%s
 
 ## 知识库内容
-%s`, intentDesc, knowledgeContext)
+%s`, intentDesc, customerProfile, languageStyle, knowledgeContext)
 
 		userMessage = fmt.Sprintf("客户说：\"%s\"\n\n请帮我生成合适的回复话术。", query)
 
@@ -688,7 +691,7 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 %s
 
 ## 客户画像（如果为空则忽略此部分）
-（留空，待注入）
+%s
 
 ## 你的任务
 必须严格基于以下知识库内容，直接生成回复给客户的内容。
@@ -706,10 +709,10 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 4. **严格基于知识**：你的所有回复内容必须能在知识库中找到依据。
 
 ## 语言风格（如果为空则忽略此部分）
-（留空，待注入）
+%s
 
 ## 知识库内容
-%s`, intentDesc, knowledgeContext)
+%s`, intentDesc, customerProfile, languageStyle, knowledgeContext)
 
 		userMessage = query
 	}
@@ -917,7 +920,7 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	var thinkingText string
 
 	// 4. 调用流式检索，累积内容
-	err = b.RetrieveStream(ctx, query, history, docIDs, deepThinking, chatMode, func(eventType string, data interface{}) error {
+	err = b.RetrieveStream(ctx, query, history, docIDs, deepThinking, chatMode, session.CustomerProfile, func(eventType string, data interface{}) error {
 		switch eventType {
 		case "verdict":
 			// 序列化 verdict 为 JSON
@@ -1046,15 +1049,21 @@ func (b *salesRAGBiz) AnalyzeDocument(ctx context.Context, userID uint, file io.
 	}
 
 	// 3. 构建提示词
-	systemPrompt := `你是一个专业的销售分析师。你的任务是根据提供的客户文档，提取并生成一份结构化的客户档案。
-请包含以下内容（如果文档中提及）：
-1. 客户基本信息（名称、行业、规模）
-2. 关键痛点与需求
-3. 目前的销售阶段推测
-4. 决策链信息
-5. 其它关键备注
+	systemPrompt := `你是一个敏锐的销售战略专家。任务是基于提供的片段，为销售人员提取一份“高干货”客户画像，用于指导后续的回复话术生成。
 
-请直接输出Markdown格式的档案内容，不要包含其他开场白。`
+##  核心原则：事实第一，不强求全
+- 如果文档信息极少，只提炼最有保障的事实或高概率推测，严禁编造信息。
+- 允许跳过无法确定的维度。格式虽然是结构化的，但内容根据实际资料灵活裁剪。
+
+## 提炼维度（仅在信息可识别时输出）：
+1. **基础背景**：对方是谁？（姓名、所属行业、规模、当前沟通背景/阶段等）
+2. **核心需求与敏锐点**：对方在乎什么？（急需解决的问题，强烈的需求，或者对价格、安全、效率等维度的敏感倾向）
+3. **性格与风格推断**：对方说话/行文的方式体现了什么特征？（如：老练果断、极度关注细节、犹豫不决等）
+4. **其他关键信息**：你认为至关重要的客户特点
+
+## 约束：
+- 严格控制在300 - 500 字以内
+- 直接以 Markdown 列表输出干货内容，严禁任何开场白和提示语`
 
 	// 4. 调用 dmxapi 的 qwen-turbo-latest 模型
 	return b.callDMXAPI(ctx, systemPrompt, "客户文档内容如下：\n\n"+content)
@@ -1140,44 +1149,31 @@ func (b *salesRAGBiz) AnalyzeChatStyle(ctx context.Context, userID uint, file io
 	}
 
 	// 2. 构建系统提示词
-	systemPrompt := `### **指令：IP语言分析**
-你是【语言神经科学家】，需构建IP的"语言指纹模型"：
+	systemPrompt := `你是一个资深的文字风格分析专家。由于现在的场景是微信文字聊天，请根据提供的语料，提炼出该销售人员的【文字沟通指纹】，以便让 AI 能够精准模仿
 
-#### **语言DNA提取**：
-1. **词汇场分析**
-- 高频词TOP20
-- 特有词库：该IP偏爱但他人少用的词（如"绝了"、"拿捏"）
-- 比喻偏好：常用哪类比喻（身体感知/自然现象/科技类比）
+## 核心要求：
+1. **严禁使用或提及任何表情（Emoji/颜文字）**，分析 and 生成的风格必须完全基于纯文字
+2. **纯文字复刻**：重点分析文字如何分词、如何分段、如何使用助词，确保回复感真实不生硬
 
-2. **句法指纹**
-- 平均句长
-- 问句与感叹句比例
-- 标志性句式（如"有没有发现…"、"我跟你讲…"）
+## 提炼维度：
+1. **社交人设与称谓习惯**：
+   - 沟通角色：是“利落的办事员”、“温润的顾问”、“平等的伙伴”还是别的角色？
+   - 称谓偏好：对客户的称呼习惯（您/你，或者其他特定称谓）
 
-3. **认知风格标记**
-- 论证方式：故事驱动/数据驱动/类比驱动
-- 权威来源：引用亲身经历/专家/朋友/大众共识
-- 自我披露频率：每千字透露多少个人细节
+2. **文字视觉指纹**：
+   - 句式习惯：爱发大长段，还是习惯短句换行？
+   - 标点符号：爱用规范标点，还是爱用空格/换行代替标点？
 
-4. **韵律模型**
-- 口头禅与填充词（"对吧"、"嗯……"）
-- 强调模式：通过重复/停顿/音量变化（用文字推测）
-- 节奏单位：通常几句话构成一个完整意思单元
+3. **语气词与词汇场**：
+   - 标志性结尾：习惯用哪些收尾词（如：哈、呢、吧、哒、！）？
+   - 高频用语：提取 10 个该销售最具代表性的口头禅或职业用语
 
-**人格一致性测试**
-- 生成一段该IP**绝不会说**的话，并解释为什么
-- 生成一段该IP**标志性**的表述，突出3个语言指纹特征
+4. **沟通逻辑脉络**：
+   - 它是如何回答难题或提出建议的？（如：先说结论、先给方案、还是先客套？）
 
-**输出格式**：
-"
-**词汇场**：
-**句法指纹**：
-**认知风格**：
-**韵律模式**：
-"
-
-#### **输入层**：
-- 下方为分析材料：`
+## 约束：
+- 直接输出 Markdown 格式的风格说明书，严禁开场白和任何提示语
+- 字数控制在 500 字以内`
 
 	// 4. 调用 dmxapi 的 qwen-turbo-latest 模型
 	analysis, err := b.callDMXAPI(ctx, systemPrompt, text)
