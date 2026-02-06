@@ -16,6 +16,10 @@ type KnowledgeChunk struct {
 	Tags      []string `json:"tags"`
 	Summary   string   `json:"summary"`
 	SourceRef string   `json:"source_ref"` // 例如: "第3页"
+
+	// 检索时填充的字段
+	Score        float32 `json:"score,omitempty"`         // 检索匹配度 (0-1)
+	DocumentName string  `json:"document_name,omitempty"` // 来源文档名称
 }
 
 // Validate 验证切片合法性

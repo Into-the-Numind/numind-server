@@ -36,6 +36,7 @@ type ArchiveMessage struct {
 	Content     string `json:"content"`  // 展示内容
 	SpeakerName string `json:"speaker"`  // 发送者名称 (显示用)
 	FromUserID  string `json:"from_user_id"`
+	IsExternal  bool   `json:"is_external"` // 是否来自外部联系人 (用于前端判断气泡位置)
 }
 
 // GetBindingUserID 获取当前用户绑定的微信 ExternalUserID
@@ -181,6 +182,7 @@ func (s *ImportService) GetSessionMessages(userID int64, sessionKey string) ([]A
 				Content:     m.Content,
 				FromUserID:  m.FromUserID,
 				SpeakerName: "", // 普通消息由前端根据 UserID 显示名字/头像
+				IsExternal:  m.IsExternal,
 			})
 		}
 

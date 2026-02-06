@@ -313,7 +313,8 @@ func (s *DashVectorStore) Search(ctx context.Context, query string, filter port.
 	chunks := make([]domain.KnowledgeChunk, 0, len(resp.Output))
 	for _, item := range resp.Output {
 		c := domain.KnowledgeChunk{
-			ID: item.ID,
+			ID:    item.ID,
+			Score: item.Score, // 保存检索得分
 		}
 
 		if val, ok := item.Fields["content"].(string); ok {

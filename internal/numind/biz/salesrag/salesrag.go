@@ -545,6 +545,11 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 		return onEvent("error", "user_id not found in context")
 	}
 
+	// 发送初始状态：正在分析...
+	if err := onEvent("status", "正在分析您的问题..."); err != nil {
+		return err
+	}
+
 	// 2. 查询用户所有文档
 	docs, err := b.ds.KnowledgeDocuments().ListByUser(ctx, userID)
 	if err != nil {
@@ -588,24 +593,38 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 		return onEvent("done", nil)
 	}
 
+	// 发送状态：正在检索知识库与匹配策略
+	if err := onEvent("status", "正在检索知识库与匹配策略..."); err != nil {
+		return err
+	}
+
 	// 6. 执行检索（使用 V2 版本，传递 chatMode 和 history）
+	// 注意：RetrieveForResponseV2 内部并行执行 RAG 检索和策略选择
 	verdict, err := b.ragSvc.RetrieveForResponseV2(ctx, query, filteredDocIDs, history, chatMode)
 	if err != nil {
 		return onEvent("error", fmt.Sprintf("retrieval failed: %v", err))
 	}
 
-	// 7. 立即发送 verdict 事件
+	// 7. 填充 evidence 中的 document_name（从数据库查询）
+	b.enrichChunksWithDocNames(ctx, verdict.Evidence)
+
+	// 8. 立即发送 verdict 事件
 	if err := onEvent("verdict", verdict); err != nil {
 		return err
 	}
 
-	// 8. 获取语言风格
+	// 发送状态：正在生成回复...
+	if err := onEvent("status", "正在生成回复..."); err != nil {
+		return err
+	}
+
+	// 9. 获取语言风格
 	languageStyle, _ := b.GetLanguageStyle(ctx, userID)
 
-	// 9. 构建 prompt 并流式生成回答
+	// 10. 构建 prompt 并流式生成回答
 	messages := b.buildPromptMessagesV2(query, verdict, customerProfile, languageStyle)
 
-	// 9. 调用 DMXAPI DeepSeek-V3.2 流式聊天（非思考模式）
+	// 11. 调用 DMXAPI DeepSeek-V3.2 流式聊天（非思考模式）
 	_, err = b.dmxClient.StreamChatCompletion(ctx, "DeepSeek-V3.2", messages, 0.7, 2000, func(content string) error {
 		return onEvent("token", content)
 	})
@@ -613,7 +632,7 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 		return onEvent("error", fmt.Sprintf("stream chat failed: %v", err))
 	}
 
-	// 10. 发送完成事件
+	// 12. 发送完成事件
 	return onEvent("done", nil)
 }
 
@@ -1233,4 +1252,42 @@ func CheckSemanticSplitterStatus() (bool, string, error) {
 系统将自动回退到规则切分器。`
 
 	return false, info, nil
+}
+
+// enrichChunksWithDocNames 为 chunks 填充 document_name 字段
+// 通过批量查询数据库获取文档信息，避免 N+1 查询
+func (b *salesRAGBiz) enrichChunksWithDocNames(ctx context.Context, chunks []domain.KnowledgeChunk) {
+	if len(chunks) == 0 {
+		return
+	}
+
+	// 1. 收集所有唯一的 document_id
+	docIDSet := make(map[uint]bool)
+	for _, chunk := range chunks {
+		if chunk.DocumentID > 0 {
+			docIDSet[chunk.DocumentID] = true
+		}
+	}
+
+	if len(docIDSet) == 0 {
+		return
+	}
+
+	// 2. 批量查询文档信息
+	docIDToName := make(map[uint]string)
+	for docID := range docIDSet {
+		doc, err := b.ds.KnowledgeDocuments().GetByID(ctx, docID)
+		if err != nil {
+			log.Printf("Warning: failed to get document %d: %v", docID, err)
+			continue
+		}
+		docIDToName[docID] = doc.Name
+	}
+
+	// 3. 填充文档名称
+	for i := range chunks {
+		if name, ok := docIDToName[chunks[i].DocumentID]; ok {
+			chunks[i].DocumentName = name
+		}
+	}
 }
