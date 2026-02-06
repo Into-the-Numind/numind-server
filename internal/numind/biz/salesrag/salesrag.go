@@ -652,6 +652,27 @@ func (b *salesRAGBiz) buildPromptMessages(query string, verdict *service.Retriev
 
 // buildPromptMessagesV2 根据检索结果构建 prompt 消息（销售 Copilot 优化版）
 func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.RetrievalVerdict, customerProfile string, languageStyle string) []adapter.ChatMessage {
+	// 上下文长度限制常量
+	const (
+		maxCustomerProfileChars = 5000  // 客户画像最大字符数
+		maxLanguageStyleChars   = 5000  // 语言风格最大字符数
+		maxUserInputChars       = 40000 // 用户输入最大字符数
+	)
+
+	// 截断辅助函数
+	truncate := func(s string, maxLen int) string {
+		runes := []rune(s)
+		if len(runes) <= maxLen {
+			return s
+		}
+		return string(runes[:maxLen]) + "...(已截断)"
+	}
+
+	// 应用截断
+	customerProfile = truncate(customerProfile, maxCustomerProfileChars)
+	languageStyle = truncate(languageStyle, maxLanguageStyleChars)
+	query = truncate(query, maxUserInputChars)
+
 	// 合并所有检索到的知识
 	allChunks := verdict.Evidence
 
@@ -682,6 +703,18 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 `, verdict.Strategy.MetaID, verdict.Strategy.Name, verdict.Strategy.ID, verdict.Strategy.Name, verdict.Strategy.Content)
 	}
 
+	// 统一的回复风格定义
+	const responseStyles = `
+### 选项A：激进型 (逼单)
+- 风格：侧重利益刺激、稀缺性强调、促成即刻行动。
+- 话术：直接、有冲击力。
+### 选项B：保守型 (共情)
+- 风格：侧重理解客户压力，提供情绪价值，建立信任关系。
+- 话术：温暖、包容、不给压力。
+### 选项C：纯知识回复 (专业)
+- 风格：基于知识库内容，给出客观、专业、中立的解答。
+- 话术：逻辑严密、数据支撑。`
+
 	var systemPrompt string
 	var userMessage string
 
@@ -693,49 +726,64 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 %s
 %s
 ## 你的任务
-请综合参考上述【核心策略参考】以及下方的【知识库内容】，为销售人员生成最合适的回复话术建议。
+请综合参考上述【核心策略参考】以及下方的【知识库内容】，为销售人员提供建议。
+你需要分析客户意图，并基于以下三种风格分别给出回复建议：
+%s
 
 ## 回复要求
 1. 语气专业但亲切，适合微信聊天场景
-2. 先给出分析或建议，再提供具体话术
+2. 先给出分析或建议，再提供具体话术建议
 3. **严禁编造**：回复建议必须严格遵循知识库。如果知识库中没有直接答案，你必须明确说明“知识库中未检索到相关信息，无法提供准确建议”，不得虚构信息。
 
 ## 回复话术的语言风格（如果为空则忽略此部分）
 %s
 
 ## 知识库内容
-%s`, customerProfile, strategyContent, languageStyle, knowledgeContext)
+%s`, customerProfile, strategyContent, responseStyles, languageStyle, knowledgeContext)
 
 		userMessage = query
 
 	} else {
-		// ========== Sales 模式 (角色扮演模式) ==========
-		// 优化：强约束风格，禁止列表，强调口语化
-		systemPrompt = fmt.Sprintf(`你就是一位专业的销售人员（不是助手）。现在客户发来了消息，请直接回复客户。
+		// ========== Sales 模式 (Sales Copilot) ==========
+		// 目标：生成三个不同风格的回复选项，供销售直接点击发送
+		systemPrompt = fmt.Sprintf(`你是一位顶尖的销售 Copilot。请根据当前对话情境，生成三条不同策略的待发送消息。
 
 ## 客户画像（如果为空则忽略此部分）
 %s
 %s
 ## 你的任务
-请综合参考上述【核心策略参考】以及下方的【知识库内容】，直接生成回复给客户的内容。
+请综合参考上述【核心策略参考】以及下方的【知识库内容】，生成以下三种风格的候选回复：
+%s
 
 ## 🚫 严格禁止
-1. **禁止解释**：绝对不要出现 "建议您"、"您可以这样回"、"话术如下"、"首先...其次..."
-2. **禁止长篇大论**：不要写小作文，长话短说
-3. **严禁编造**：如果知识库中没有相关答案，你必须直接告知客户这部分信息暂时无法提供或需要核实，绝对不能基于通用知识进行编造。
+1. **禁止解释**：不要写 "建议您..." 或分析原因，直接写能直接发送给客户的话术。
+2. **严禁编造**：如果知识库中没有相关答案，必须在话术中说明需进一步核实。
+3. **不要有多余文本**：只输出规定的 XML 格式。
 
 ## ✅ 核心要求
 1. **极度口语化**：必须严格遵循下方的“语言风格”进行回复。
-2. **第一人称**：直接用 "我" 回复 "您/你"
-3. **分段发送**：如果内容较多，请直接换行，模拟发送了两条消息
-4. **严格基于知识**：你的所有回复内容必须能在知识库中找到依据。
-5. **参考策略**：请优先参考上方的【核心策略参考】进行回复，但需确保符合上下文逻辑。
+2. **第一人称**：直接用 "我" 回复 "您/你"。
+3. **严格基于知识**：你的所有回复内容必须能在知识库中找到依据。
+4. **参考策略**：请优先参考上方的【核心策略参考】进行回复。
+
+## ⚠️ 严格输出格式要求
+你必须且只能输出以下 XML 格式的内容，不要包含任何其他解释或文本（也不要使用 markdown 代码块包裹）：
+
+<option type="A">
+(填入选项A的话术内容)
+</option>
+<option type="B">
+(填入选项B的话术内容)
+</option>
+<option type="C">
+(填入选项C的话术内容)
+</option>
 
 ## 语言风格（如果为空则忽略此部分）
 %s
 
 ## 知识库内容
-%s`, customerProfile, strategyContent, languageStyle, knowledgeContext)
+%s`, customerProfile, strategyContent, responseStyles, languageStyle, knowledgeContext)
 
 		userMessage = query
 	}
@@ -898,26 +946,46 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 
 	// 提取最近历史消息（例如最近 10 条）
 	// 注意：session.Messages 是按时间正序排列的
+	// 限制：最多5轮（10条消息），总字符数不超过20000
+	const maxHistoryTurns = 5     // 最多5轮对话
+	const maxHistoryChars = 20000 // 最大字符数
+
 	var history []string
 	if len(session.Messages) > 0 {
+		// 从最近的消息开始，向前遍历
+		maxMessages := maxHistoryTurns * 2 // 每轮2条消息
 		start := 0
-		if len(session.Messages) > 10 {
-			start = len(session.Messages) - 10
+		if len(session.Messages) > maxMessages {
+			start = len(session.Messages) - maxMessages
 		}
 		recentMsgs := session.Messages[start:]
-		for _, m := range recentMsgs {
-			// 格式化为 "Role: Content" 供参考，但 Analyzer 可能需要纯文本列表
-			// Analyzer 期望的是 []string representing history turns
-			// 通常建议是 "User: xxx", "Assistant: yyy"
-			// 根据 LLMRouter Prompt，它直接把 history strings join 起来。
-			// 所以我们需要表明角色。
+
+		var tempHistory []string
+		var totalChars int
+
+		// 从最近的消息开始添加，直到达到字符限制
+		for i := len(recentMsgs) - 1; i >= 0; i-- {
+			m := recentMsgs[i]
 			roleName := "销售"
 			if m.Role == "user" {
 				roleName = "客户"
 			} else if m.Role == "assistant" {
 				roleName = "销售助手"
 			}
-			history = append(history, fmt.Sprintf("%s: %s", roleName, m.Content))
+			entry := fmt.Sprintf("%s: %s", roleName, m.Content)
+
+			// 检查是否超过字符限制
+			if totalChars+len(entry) > maxHistoryChars {
+				break
+			}
+
+			tempHistory = append(tempHistory, entry)
+			totalChars += len(entry)
+		}
+
+		// 反转，恢复时间正序
+		for i := len(tempHistory) - 1; i >= 0; i-- {
+			history = append(history, tempHistory[i])
 		}
 	}
 
