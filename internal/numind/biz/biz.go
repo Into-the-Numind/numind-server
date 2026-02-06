@@ -3,6 +3,7 @@ package biz
 //go:generate mockgen -destination mock_biz.go -package biz github.com/marmotedu/miniblog/internal/miniblog/biz IBiz
 
 import (
+	"context"
 	"path/filepath"
 
 	accountrecordbiz "numind-server/internal/numind/biz/account_record"
@@ -23,11 +24,16 @@ import (
 	"numind-server/internal/numind/biz/pagination"
 	"numind-server/internal/numind/biz/payment"
 	ragbiz "numind-server/internal/numind/biz/rag"
+	"numind-server/internal/numind/biz/salesrag"
+	"numind-server/internal/numind/biz/salesrag/adapter"
+	"numind-server/internal/numind/biz/salesrag/port"
+	salesragservice "numind-server/internal/numind/biz/salesrag/service"
 	sopbiz "numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/biz/template"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/biz/wechat"
+	"numind-server/internal/numind/biz/wecom"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/log"
 
@@ -45,6 +51,7 @@ type IBiz interface {
 	Feedbacks() feedback.FeedbackBiz
 	Baidu() baidu.BaiduBiz
 	Wechat() wechat.WechatBiz
+	Wecom() wecom.WecomBiz
 	Ali() ali.AliBiz
 	Volc() volc.VolcBiz
 	Pagination() pagination.PaginationBiz
@@ -58,6 +65,7 @@ type IBiz interface {
 	Rag() *ragbiz.RagService             // RAG服务
 	Sop() sopbiz.ISopBiz                 // SOP服务
 	Customers() customerbiz.ICustomerBiz // 客户管理服务
+	SalesRAG() salesrag.SalesRAGBiz      // 销售 RAG 服务
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -65,9 +73,10 @@ var _ IBiz = (*biz)(nil)
 
 // biz 是 IBiz 的一个具体实现.
 type biz struct {
-	ds         store.IStore
-	ragService *ragbiz.RagService
-	sopService sopbiz.ISopBiz
+	ds              store.IStore
+	ragService      *ragbiz.RagService
+	sopService      sopbiz.ISopBiz
+	salesRAGService salesrag.SalesRAGBiz
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -126,6 +135,58 @@ func NewBiz(ds store.IStore) *biz {
 	sopExecutor := sopbiz.NewSopExecutor(b.ds)
 	b.sopService = sopbiz.NewSopBiz(b.ds, sopExecutor)
 
+	// 初始化销售 RAG 服务
+	// 使用 DashVector 向量库 (Migrated from VikingDB)
+	dashEndpoint := viper.GetString("ali.dashvector.endpoint")
+	dashApiKey := viper.GetString("ali.dashvector.api_key")
+	if dashApiKey == "" {
+		dashApiKey = viper.GetString("ali.api_key") // Fallback to common key
+	}
+	dashCollection := viper.GetString("ali.dashvector.collection")
+	if dashCollection == "" {
+		dashCollection = "sales_rag"
+	}
+
+	var vStore port.VectorStore
+
+	// Define Embedder using Qwen
+	embedder := func(ctx context.Context, text string) ([]float32, error) {
+		return b.Ali().QianwenEmbedding(text)
+	}
+
+	if dashEndpoint != "" {
+		vStore = adapter.NewDashVectorStore(dashEndpoint, dashApiKey, dashCollection, embedder)
+		log.Infow("Initialized DashVector store", "endpoint", dashEndpoint, "collection", dashCollection)
+	} else {
+		log.Warnw("DashVector endpoint not configured, falling back to ChromemStore for local dev")
+		// Fallback to local store
+		salesDBPath := filepath.Join(filepath.Dir(filepath.Dir(viper.GetString("resource.image_path"))), "sales_vector_db")
+		vStore, _ = adapter.NewChromemStore(salesDBPath, "sales_knowledge", embedder)
+	}
+
+	// 初始化 LLM 意图路由器（V2: 使用 DMXAPI qwen-turbo-latest）
+	llmRouter := adapter.NewLLMRouter()
+
+	// Initialize Pipeline Components
+	parser := adapter.NewEnhancedParser()
+	// 使用增强版切分器（支持中文分词、语义边界、100字符重叠、Markdown分级）
+	splitter := salesragservice.NewCompatibilitySplitter(salesragservice.SplitterConfig{
+		MaxChunkSize: 1000,
+		MinChunkSize: 200,
+	})
+	tagger := salesragservice.NewContentTagger()
+
+	// Initialize Ingestion Pipeline (托管模式下不需要传 embedder)
+	pipeline := salesragservice.NewIngestionPipeline(parser, splitter, tagger, b.ds.KnowledgeDocuments(), vStore, b.ds.KnowledgeChunks())
+
+	// 业务逻辑实现（使用 LLMRouter）
+	salesRAGSvc := salesragservice.NewSalesRAGService(vStore, llmRouter)
+
+	// 创建 SalesSessionStore
+	salesSessionStore := store.NewSalesSessionStore(b.ds.DB())
+
+	b.salesRAGService = salesrag.NewSalesRAGBiz(b.ds, pipeline, salesRAGSvc, b.Volc(), salesSessionStore, parser)
+
 	return b
 }
 
@@ -167,6 +228,10 @@ func (b *biz) Baidu() baidu.BaiduBiz {
 
 func (b *biz) Wechat() wechat.WechatBiz {
 	return wechat.New(b.ds)
+}
+
+func (b *biz) Wecom() wecom.WecomBiz {
+	return wecom.New(b.ds)
 }
 
 func (b *biz) Ali() ali.AliBiz {
@@ -223,4 +288,8 @@ func (b *biz) Sop() sopbiz.ISopBiz {
 
 func (b *biz) Customers() customerbiz.ICustomerBiz {
 	return customerbiz.New(b.ds)
+}
+
+func (b *biz) SalesRAG() salesrag.SalesRAGBiz {
+	return b.salesRAGService
 }

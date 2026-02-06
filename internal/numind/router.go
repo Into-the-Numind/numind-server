@@ -18,9 +18,11 @@ import (
 	"numind-server/internal/numind/controller/v1/pagination"
 	pdfcontroller "numind-server/internal/numind/controller/v1/pdf"
 	ragcontroller "numind-server/internal/numind/controller/v1/rag"
+	"numind-server/internal/numind/controller/v1/salesrag"
 	sopcontroller "numind-server/internal/numind/controller/v1/sop"
 	"numind-server/internal/numind/controller/v1/template"
 	"numind-server/internal/numind/controller/v1/user"
+	"numind-server/internal/numind/controller/v1/wecom"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
@@ -71,11 +73,13 @@ func installNumindRouters(g *gin.Engine) error {
 	chatc := chat.New(b.Chats())
 	ac := article.NewArticleController(b.Article())
 	alic := ali.New(b.Ali())
+	salesRAGc := salesrag.NewSalesRAGController(b)
+	wecomc := wecom.NewWecomController(b)
 
 	// 使用 biz 层已初始化的 RAG 服务
 	ragService := b.Rag()
 	if ragService == nil {
-		log.Fatalw("RAG服务未初始化")
+		log.Errorw("RAG服务未初始化 (本地开发环境可忽略此错误)")
 	}
 	ragc := ragcontroller.NewRagController(ragService, b.Chats())
 
@@ -263,6 +267,59 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.POST("/rag/chat", ragc.ChatWithRAG) // 基于笔记进行RAG对话
 	}
 
+	// 销售智能体 RAG 相关
+	{
+		// 文档管理
+		authGroup.POST("/sales-rag/ingest", salesRAGc.Ingest)                  // 上传并解析文档
+		authGroup.GET("/sales-rag/documents", salesRAGc.ListDocuments)         // 获取文档列表
+		authGroup.GET("/sales-rag/documents/:id", salesRAGc.GetDocument)       // 获取文档详情
+		authGroup.GET("/sales-rag/documents/:id/chunks", salesRAGc.ListChunks) // 获取文档切片列表
+		authGroup.PUT("/sales-rag/documents/:id", salesRAGc.UpdateDocument)    // 更新文档
+		authGroup.DELETE("/sales-rag/documents/:id", salesRAGc.DeleteDocument) // 删除文档
+
+		// 会话管理
+		authGroup.POST("/sales-rag/sessions", salesRAGc.CreateSession)           // 创建销售会话
+		authGroup.GET("/sales-rag/sessions", salesRAGc.ListSessions)             // 获取会话列表
+		authGroup.GET("/sales-rag/sessions/:id", salesRAGc.GetSession)           // 获取会话详情
+		authGroup.PUT("/sales-rag/sessions/:id", salesRAGc.UpdateSession)        // 更新会话信息
+		authGroup.DELETE("/sales-rag/sessions/:id", salesRAGc.DeleteSession)     // 删除会话
+		authGroup.PUT("/sales-rag/sessions/:id/pin", salesRAGc.PinSession)       // 置顶会话
+		authGroup.DELETE("/sales-rag/sessions/:id/pin", salesRAGc.UnpinSession)  // 取消置顶会话
+		authGroup.PUT("/sales-rag/sessions/:id/rename", salesRAGc.RenameSession) // 重命名会话
+
+		// 消息管理
+		authGroup.POST("/sales-rag/sessions/:id/chat", salesRAGc.ChatWithSession) // 基于会话的销售对话（SSE流式）
+		authGroup.GET("/sales-rag/sessions/:id/messages", salesRAGc.ListMessages) // 获取会话消息列表
+
+		// 客户档案管理
+		authGroup.PUT("/sales-rag/sessions/:id/customer-profile", salesRAGc.UpdateCustomerProfile) // 更新客户档案
+		authGroup.GET("/sales-rag/sessions/:id/customer-profile", salesRAGc.GetCustomerProfile)    // 获取客户档案
+		authGroup.POST("/sales-rag/analyze-profile", salesRAGc.AnalyzeProfile)                     // 解析文档生成客户档案
+
+		// 聊天风格分析
+		authGroup.POST("/sales-rag/analyze-chat-style", salesRAGc.AnalyzeChatStyle) // 分析聊天风格（语言指纹）
+		authGroup.GET("/sales-rag/analyze-chat-style", salesRAGc.GetLanguageStyle)  // 获取已分析的聊天风格
+		authGroup.POST("/sales-rag/ocr", salesRAGc.OCR)                             // OCR 识别图片
+	}
+
+	// 企业微信存档相关
+	{
+		authGroup.GET("/wecom/contacts", wecomc.ListContacts)             // 获取最近联系人
+		authGroup.GET("/wecom/messages/:partner_id", wecomc.ListMessages) // 获取与指定联系人的聊天记录
+		authGroup.GET("/wecom/bind-status", wecomc.CheckBindStatus)       // 检查绑定状态
+		authGroup.GET("/wecom/bind-code", wecomc.GetBindCode)             // 获取绑定验证码
+
+		// Inbox / Import Batch API
+
+		// Smart Archive API (Auto-Classified)
+		authGroup.GET("/wecom/archive/sessions", wecomc.ListSessions)                             // 获取自动归类的会话列表
+		authGroup.GET("/wecom/archive/sessions/:session_key/messages", wecomc.GetSessionMessages) // 获取会话时间轴
+
+		// Deprecated Inbox API (Keep for compatibility if needed, but we seem to have fully replaced it in controller)
+		// authGroup.GET("/wecom/inbox", ...)
+
+	}
+
 	// 阿里云百炼相关
 	{
 		authGroup.POST("/ali/bailian/lease", alic.GetFileUploadLease) // 获取上传租约
@@ -292,20 +349,20 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.DELETE("/sop/bookmarks/:id", userSopc.DeleteBookmark) // 删除书签
 
 		// 逐步执行SOP节点（新增）- 注意：这些路由必须在 /sop/runs/:id 之前注册，避免路由冲突
-		authGroup.POST("/sop/runs", userSopc.CreateRun)                                            // 创建Run（不立即执行，支持自动应用书签）
-		authGroup.GET("/sop/runs/:id/next-node", userSopc.GetNextNode)                             // 获取下一个待执行节点
-		authGroup.POST("/sop/runs/:id/nodes/:node_id/execute", userSopc.ExecuteNodeStream)         // 流式执行指定节点（支持文件上传）
-		authGroup.POST("/sop/runs/:id/nodes/:node_id/apply-bookmark", userSopc.ApplyBookmark)      // 应用书签到节点
-		authGroup.DELETE("/sop/runs/:id/draft", userSopc.DeleteDraftRun)                           // 删除草稿状态的run
-		authGroup.POST("/sop/runs/:id/draft", userSopc.DeleteDraftRun)                             // 删除草稿状态的run（Beacon方式）
-		authGroup.POST("/sop/files/check-quality", userSopc.CheckFileQuality)              // 检测上传文件质量
-		authGroup.POST("/sop/files/parse-text", userSopc.ParseFileText)                    // 上传文件解析文本（返回文本用于回填）
-		authGroup.POST("/sop/files/parse-text/query", userSopc.ParseFileTextQuery)         // 轮询qwen-long解析结果
-		authGroup.POST("/sop/images/read", userSopc.ReadImageWithQwenVL)                   // 读取图片（qwen-vl-max）
-		authGroup.POST("/sop/text/edit", userSopc.EditTextStream)                          // 文本编辑流式对话（不保存到数据库）
-		authGroup.POST("/sop/chat/stream", userSopc.ChatAfterRunStream)                    // Run完成后的对话流式接口
-		authGroup.GET("/sop/runs/:id/chat-messages", userSopc.ListRunChatMessages)         // 获取Run聊天记录
-		authGroup.GET("/sop/runs/:id/status", userSopc.GetRunStatus)                       // 获取Run执行状态
+		authGroup.POST("/sop/runs", userSopc.CreateRun)                                       // 创建Run（不立即执行，支持自动应用书签）
+		authGroup.GET("/sop/runs/:id/next-node", userSopc.GetNextNode)                        // 获取下一个待执行节点
+		authGroup.POST("/sop/runs/:id/nodes/:node_id/execute", userSopc.ExecuteNodeStream)    // 流式执行指定节点（支持文件上传）
+		authGroup.POST("/sop/runs/:id/nodes/:node_id/apply-bookmark", userSopc.ApplyBookmark) // 应用书签到节点
+		authGroup.DELETE("/sop/runs/:id/draft", userSopc.DeleteDraftRun)                      // 删除草稿状态的run
+		authGroup.POST("/sop/runs/:id/draft", userSopc.DeleteDraftRun)                        // 删除草稿状态的run（Beacon方式）
+		authGroup.POST("/sop/files/check-quality", userSopc.CheckFileQuality)                 // 检测上传文件质量
+		authGroup.POST("/sop/files/parse-text", userSopc.ParseFileText)                       // 上传文件解析文本（返回文本用于回填）
+		authGroup.POST("/sop/files/parse-text/query", userSopc.ParseFileTextQuery)            // 轮询qwen-long解析结果
+		authGroup.POST("/sop/images/read", userSopc.ReadImageWithQwenVL)                      // 读取图片（qwen-vl-max）
+		authGroup.POST("/sop/text/edit", userSopc.EditTextStream)                             // 文本编辑流式对话（不保存到数据库）
+		authGroup.POST("/sop/chat/stream", userSopc.ChatAfterRunStream)                       // Run完成后的对话流式接口
+		authGroup.GET("/sop/runs/:id/chat-messages", userSopc.ListRunChatMessages)            // 获取Run聊天记录
+		authGroup.GET("/sop/runs/:id/status", userSopc.GetRunStatus)                          // 获取Run执行状态
 
 		authGroup.GET("/sop/runs/:id", userSopc.GetRun)                    // 查看执行记录
 		authGroup.DELETE("/sop/runs/:id", userSopc.DeleteRun)              // 物理删除执行记录
@@ -318,7 +375,9 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 客户管理相关
 	{
-		customerCtrl := customercontroller.NewCustomerController(b.Customers())
+		customerCtrl := customercontroller.NewCustomerController(b.Customers(), b.Users())
+		authGroup.POST("/customers", customerCtrl.Create)                                           // 创建子客户（注册）
+		authGroup.GET("/customers/check-username", customerCtrl.CheckUsername)                      // 检查用户名是否可用
 		authGroup.GET("/customers/statistics", customerCtrl.GetStatistics)                          // 获取客户统计数据
 		authGroup.GET("/customers/sub-users", customerCtrl.ListSubUsers)                            // 获取二级客户列表
 		authGroup.GET("/customers/sub-users/:user_id", customerCtrl.GetSubUserDetail)               // 获取二级客户详情

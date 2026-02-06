@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	customerbiz "numind-server/internal/numind/biz/customer"
+	userbiz "numind-server/internal/numind/biz/user"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
@@ -16,12 +17,14 @@ import (
 // CustomerController 客户管理控制器
 type CustomerController struct {
 	customerBiz customerbiz.ICustomerBiz
+	userBiz     userbiz.UserBiz
 }
 
 // NewCustomerController 创建客户管理控制器
-func NewCustomerController(customerBiz customerbiz.ICustomerBiz) *CustomerController {
+func NewCustomerController(customerBiz customerbiz.ICustomerBiz, userBiz userbiz.UserBiz) *CustomerController {
 	return &CustomerController{
 		customerBiz: customerBiz,
+		userBiz:     userBiz,
 	}
 }
 
@@ -287,4 +290,56 @@ func (ctrl *CustomerController) BatchRevokeTemplates(c *gin.Context) {
 	core.WriteResponse(c, nil, gin.H{
 		"message": "批量撤销成功",
 	})
+}
+
+// Create 创建子客户
+func (ctrl *CustomerController) Create(c *gin.Context) {
+	log.C(c).Infow("Create customer called")
+
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	// 绑定请求body
+	var req v1.CreateCustomerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
+		return
+	}
+
+	// 验证请求参数
+	// TODO: 可以添加额外的验证逻辑
+
+	log.C(c).Infow("Creating customer", "parent_user_id", user.ID, "username", req.Username, "phone", req.Phone)
+
+	// 调用UserBiz创建客户
+	if err := ctrl.userBiz.CreateCustomer(c, user.ID, &req); err != nil {
+		log.C(c).Errorw("Failed to create customer", "parent_user_id", user.ID, "req", req, "err", err)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"message": "创建成功",
+	})
+}
+
+// CheckUsername 检查用户名是否可用
+func (ctrl *CustomerController) CheckUsername(c *gin.Context) {
+	username := c.Query("username")
+	if username == "" {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("用户名不能为空"), nil)
+		return
+	}
+
+	if err := ctrl.userBiz.CheckUsernameUsage(c, username); err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{"available": true})
 }

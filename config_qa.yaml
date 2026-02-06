@@ -23,7 +23,7 @@ grpc:
 
 # MySQL 数据库相关配置
 db:
-  host: 62.234.165.77:13306  # MySQL 机器 IP 和端口，默认 127.0.0.1:3306
+  host: 49.233.219.254:13306  # MySQL 机器 IP 和端口，连接服务器A本地MySQL
   username: root # MySQL 用户名(建议授权最小权限集)
   password: Numind2025 # MySQL 用户密码
   database: numind-qa # miniblog 系统所用的数据库名
@@ -42,7 +42,7 @@ log:
 
 # Redis 缓存相关配置
 redis:
-  host: 62.234.165.77  # Redis 机器 IP
+  host: 49.233.219.254  # Redis 机器 IP
   port: 26739           # Redis 端口
   password: Numind2025  # Redis 密码
   db: 2                 # Redis 数据库编号，QA环境使用 2
@@ -127,6 +127,17 @@ ali:
     api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"  # 使用相同的API key
     model: "wan2.2-t2i-flash"  # SD模型
     timeout: 300s        # SD生成超时时间（5分钟）
+
+  # 视觉理解服务
+  vision:
+    model: "qwen3-vl-flash" # 视觉模型
+    timeout: 180s
+
+  # DashVector 向量数据库配置
+  dashvector:
+    endpoint: "https://vrs-cn-62l4mht1d0001e.dashvector.cn-hangzhou.aliyuncs.com" # DashVector Endpoint
+    api_key: "sk-gMsgxE1A1QzoxexCdtuTaVjuF6w8Z52890CC5F85411F08940FAD61112A032"
+    collection: "sales_rag_qa"
 
 # 卡片配置 - 统一的卡片渲染和分页配置中心
 card:

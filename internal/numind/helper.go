@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	configbiz "numind-server/internal/numind/biz/config"
+	"numind-server/internal/numind/biz/wecom"
 	"numind-server/internal/numind/config"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/redis"
@@ -145,13 +146,12 @@ func autoMigrate(db *gorm.DB) error {
 	// 获取数据库字符集配置
 	charsetConfig := getDatabaseCharsetConfig()
 
-	// 1. 强制检查和修复数据库字符集（启动时）
-	log.Infow("Starting database charset verification and repair...")
-	if err := forceEnsureDatabaseCharset(db, charsetConfig); err != nil {
-		log.Warnw("Failed to ensure database charset, continuing with migration", "error", err)
-	} else {
-		log.Infow("Database charset verification and repair completed")
-	}
+	// 1.5 企业微信相关表迁移前的字段处理 (已禁用，使用 numind_user_id 作为列名)
+	// log.Infow("Running custom migrations for Wecom tables...")
+	// if err := migrateWecomUsersTable(db); err != nil {
+	// 	log.Errorw("Failed to run custom Wecom migration", "error", err)
+	// 	// 仍然尝试继续 AutoMigrate
+	// }
 
 	// 2. 自动迁移所有模型
 	log.Infow("Starting database schema migration...")
@@ -176,6 +176,15 @@ func autoMigrate(db *gorm.DB) error {
 		&model.AccountRecord{},
 		&model.PaymentM{},
 		&model.Admin{},
+		&model.KnowledgeDocument{},
+		&model.SalesSession{},
+		&model.SalesMessage{},
+		&model.LanguageStyle{},
+		&wecom.WecomUser{},
+		&wecom.WecomMessage{},
+		&wecom.WecomCursor{},
+		&wecom.WecomBindCode{},
+		&model.KnowledgeChunk{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate basic tables: %v", err)
@@ -213,6 +222,13 @@ func autoMigrate(db *gorm.DB) error {
 		log.Infow("Sop_node_run text fields fixed successfully")
 	}
 
+	// 修复 knowledge_chunk 表的 content 字段类型（从 TEXT 改为 LONGTEXT）
+	if err := fixKnowledgeChunkTextFields(db); err != nil {
+		log.Warnw("Failed to fix knowledge_chunk text fields, continuing", "error", err)
+	} else {
+		log.Infow("Knowledge_chunk text fields fixed successfully")
+	}
+
 	// 第五步：创建笔记表（依赖执行记录表）
 	if err := db.AutoMigrate(&model.SopNote{}); err != nil {
 		return fmt.Errorf("failed to migrate sop_note: %v", err)
@@ -244,28 +260,13 @@ func autoMigrate(db *gorm.DB) error {
 
 	log.Infow("All database schema migration completed")
 
-	// 3. 迁移后强制再次确保字符集正确
-	log.Infow("Post-migration charset verification and repair...")
-	if err := forceEnsureDatabaseCharset(db, charsetConfig); err != nil {
+	// 3. 迁移后验证字符集
+	// 关键：必须在 AutoMigrate 之后执行，确保新创建的表也能被正确修复
+	log.Infow("Post-migration charset verification...")
+	if err := ensureDatabaseCharset(db, charsetConfig); err != nil {
 		log.Warnw("Failed to ensure database charset after migration", "error", err)
 	} else {
-		log.Infow("Post-migration charset verification and repair completed")
-	}
-
-	// 4. 特别强制修复chat_message表（这是出错的主要表）
-	log.Infow("Force fixing chat_message table charset...")
-	if err := forceFixChatMessageTable(db, charsetConfig); err != nil {
-		log.Warnw("Failed to force fix chat_message table", "error", err)
-	} else {
-		log.Infow("Chat_message table charset force fix completed")
-	}
-
-	// 5. 验证修复结果
-	log.Infow("Verifying charset repair results...")
-	if err := verifyCharsetRepair(db, charsetConfig); err != nil {
-		log.Warnw("Charset repair verification failed", "error", err)
-	} else {
-		log.Infow("Charset repair verification completed successfully")
+		log.Infow("Post-migration charset verification completed")
 	}
 
 	log.Infow("Database migration and charset repair completed successfully")
@@ -361,6 +362,37 @@ func forceFixContentField(db *gorm.DB, charsetConfig *config.DatabaseCharsetConf
 	}
 
 	log.Infow("Content field charset force updated successfully")
+	return nil
+}
+
+// fixKnowledgeChunkTextFields 修复 knowledge_chunk 表的 content 字段类型
+// 将 TEXT 类型改为 LONGTEXT 以支持超长文本分片
+func fixKnowledgeChunkTextFields(db *gorm.DB) error {
+	tableName := "knowledge_chunk"
+	var contentType string
+
+	// 检查当前字段类型
+	err := db.Raw(`
+		SELECT DATA_TYPE 
+		FROM information_schema.COLUMNS 
+		WHERE TABLE_SCHEMA = DATABASE() 
+			AND TABLE_NAME = ? 
+			AND COLUMN_NAME = 'content'
+	`, tableName).Scan(&contentType).Error
+
+	if err != nil {
+		return fmt.Errorf("failed to check content field type: %v", err)
+	}
+
+	// 如果不是 LONGTEXT，则升级
+	if strings.ToLower(contentType) != "longtext" {
+		log.Infow("Upgrading knowledge_chunk content field to LONGTEXT", "current_type", contentType)
+		if err := db.Exec("ALTER TABLE knowledge_chunk MODIFY COLUMN content LONGTEXT").Error; err != nil {
+			return fmt.Errorf("failed to upgrade content field to LONGTEXT: %v", err)
+		}
+		log.Infow("knowledge_chunk content field upgraded to LONGTEXT successfully")
+	}
+
 	return nil
 }
 
@@ -799,3 +831,39 @@ func InitCOS() {
 		log.Infow("Tencent COS disabled or not configured")
 	}
 }
+
+// migrateWecomUsersTable 处理 wecom_users 表的字段重命名 (numind_user_id -> user_id)
+// 这是一个自定义的迁移函数，因为 GORM's AutoMigrate 不支持重命名列。
+// 注意：此函数已被禁用，因为我们决定使用 numind_user_id 作为数据库列名
+/*
+func migrateWecomUsersTable(db *gorm.DB) error {
+	tableName := "wecom_users"
+
+	// 1. 检查表是否存在
+	if !db.Migrator().HasTable(tableName) {
+		log.Infow("wecom_users table does not exist, skipping rename logic", "table", tableName)
+		return nil
+	}
+
+	// 2. 检查旧字段 numind_user_id 是否存在
+	if db.Migrator().HasColumn(tableName, "numind_user_id") {
+		// 3. 检查新字段 user_id 是否已存在 (如果已存在，可能已经更名过了)
+		if !db.Migrator().HasColumn(tableName, "user_id") {
+			log.Infow("Renaming numind_user_id to user_id in wecom_users table...")
+			// 执行重命名 SQL
+			// 注意: MySQL 8.0+ 支持 RENAME COLUMN，但为了兼容性，使用 CHANGE
+			err := db.Exec(fmt.Sprintf("ALTER TABLE %s CHANGE numind_user_id user_id bigint(20)", tableName)).Error
+			if err != nil {
+				return fmt.Errorf("failed to rename column: %v", err)
+			}
+			log.Infow("Successfully renamed numind_user_id to user_id")
+		} else {
+			log.Infow("Both numind_user_id and user_id exist, skipping rename to avoid conflict")
+		}
+	} else {
+		log.Debugw("numind_user_id not found in wecom_users, maybe already renamed")
+	}
+
+	return nil
+}
+*/

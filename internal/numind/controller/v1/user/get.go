@@ -45,10 +45,14 @@ func (ctrl *UserController) GetCurrentUser(c *gin.Context) {
 		core.WriteResponse(c, err, nil)
 		return
 	}
-
-	// 转换头像URL用于展示（优先使用COS链接）
 	if userWithStats.AvatarURL != "" {
 		userWithStats.AvatarURL = util.GetAvatarWithCOS(c, userWithStats.ID, userWithStats.AvatarURL)
+	}
+
+	// 检查企业微信绑定状态
+	wecomBound := false
+	if binding, err := ctrl.b.Wecom().GetBindingByNumindUser(int64(userWithStats.ID)); err == nil && binding != nil {
+		wecomBound = true
 	}
 
 	// 构建响应数据，包含完整的 SOP 统计和会员等级
@@ -80,6 +84,7 @@ func (ctrl *UserController) GetCurrentUser(c *gin.Context) {
 		"total_sop_runs":     userWithStats.TotalSopRuns,
 		"monthly_sop_runs":   userWithStats.MonthlySopRuns,
 		"remaining_sop_runs": userWithStats.GetRemainingSOPRuns(),
+		"wecom_bound":        wecomBound,
 	}
 
 	core.WriteResponse(c, nil, response)

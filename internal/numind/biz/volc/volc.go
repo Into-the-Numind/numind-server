@@ -1,13 +1,17 @@
 package volc
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/httpclient"
 	"numind-server/internal/pkg/log"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -25,6 +29,12 @@ type VolcBiz interface {
 	GenerateArticleContent(content string, contentType string, maxLength int, cfg *OpenAIConfig, prompt string) (string, error)
 	// 新增流式文本生成方法，与ali的QianwenTextStream保持一致
 	VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error)
+	// 火山方舟 Embedding 向量化
+	DoubaoEmbedding(ctx context.Context, text string) ([]float32, error)
+	// StreamChat 真正的流式聊天，通过回调函数逐 token 或思维链内容推送
+	// onEvent: 收到事件内容时调用，event 类型为 "thinking" 或 "message"
+	// 返回: 完整内容（所有 token 拼接）和错误
+	StreamChat(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
 }
 
 type volcBiz struct {
@@ -282,4 +292,247 @@ func (v *volcBiz) VolcTextStream(ctx context.Context, messages []map[string]stri
 	return content, nil
 }
 
-// 注意：原来的cleanJSONResponse函数已被弃用，现在使用更强大的httpclient.AdvancedJSONExtractor
+// DoubaoEmbedding 调用火山方舟 Embedding API 获取文本向量
+// 使用 doubao-embedding-vision 模型，支持多模态输入
+func (v *volcBiz) DoubaoEmbedding(ctx context.Context, text string) ([]float32, error) {
+	// 构建 API URL
+	baseURL := viper.GetString("volc.base_url")
+	if baseURL == "" {
+		baseURL = "https://ark.cn-beijing.volces.com/api/v3"
+	}
+	url := baseURL + "/embeddings/multimodal"
+
+	// 读取 embedding 模型配置
+	embeddingModel := viper.GetString("volc.embedding.model")
+	if embeddingModel == "" {
+		embeddingModel = "doubao-embedding-vision-250615"
+	}
+
+	// 读取 embedding 专用 API Key（如果没有则回退到通用 api_key）
+	apiKey := viper.GetString("volc.embedding.api_key")
+	if apiKey == "" {
+		apiKey = viper.GetString("volc.api_key")
+	}
+
+	// 构建请求体（多模态格式，仅使用 text 类型）
+	bodyMap := map[string]interface{}{
+		"model": embeddingModel,
+		"input": []map[string]interface{}{
+			{
+				"type": "text",
+				"text": text,
+			},
+		},
+	}
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return nil, fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	log.C(ctx).Debugw("调用火山Embedding API", "url", url, "model", embeddingModel, "text_length", len(text))
+
+	// 创建请求
+	httpReq := &httpclient.Request{
+		Method:  "POST",
+		URL:     url,
+		Body:    bytes.NewBuffer(bodyBytes),
+		Context: ctx,
+		Headers: map[string]string{
+			"Content-Type":  "application/json",
+			"Authorization": "Bearer " + apiKey,
+		},
+		RetryPolicy: &httpclient.RetryPolicy{
+			MaxRetries:   3,
+			RetryDelay:   1 * time.Second,
+			RetryBackoff: 2.0,
+		},
+	}
+
+	// 发送请求
+	respBody, err := v.client.DoWithJSONResponse(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("Embedding API请求失败: %w", err)
+	}
+
+	// 解析响应
+	// 火山方舟 Embedding 响应格式：
+	// {
+	//   "data": [{ "embedding": [0.1, 0.2, ...], "index": 0 }],
+	//   "model": "...",
+	//   "usage": { "prompt_tokens": 10, "total_tokens": 10 }
+	// }
+	var result struct {
+		Data []struct {
+			Embedding []float64 `json:"embedding"`
+			Index     int       `json:"index"`
+		} `json:"data"`
+		Error *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("解析Embedding响应失败: %w, 响应内容: %s", err, string(respBody[:min(len(respBody), 500)]))
+	}
+
+	// 检查错误
+	if result.Error != nil {
+		return nil, fmt.Errorf("Embedding API错误: %s - %s", result.Error.Code, result.Error.Message)
+	}
+
+	// 检查数据
+	if len(result.Data) == 0 || len(result.Data[0].Embedding) == 0 {
+		return nil, fmt.Errorf("Embedding API未返回向量数据")
+	}
+
+	// 转换 float64 到 float32
+	embedding := result.Data[0].Embedding
+	vector := make([]float32, len(embedding))
+	for i, v := range embedding {
+		vector[i] = float32(v)
+	}
+
+	log.C(ctx).Debugw("Embedding成功", "vector_dim", len(vector))
+	return vector, nil
+}
+
+// min 返回两个整数中的较小值
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// StreamChat 真正的流式聊天方法
+// 通过回调函数 onEvent 逐 token 或思维链内容推送
+// 火山方舟 API 使用 SSE 格式，每行格式为 "data: {json}\n\n"
+func (v *volcBiz) StreamChat(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error) {
+	url := viper.GetString("volc.base_url") + "/chat/completions"
+
+	thinkingType := "disabled"
+	if deepThinking {
+		thinkingType = "enabled"
+	}
+
+	bodyMap := map[string]interface{}{
+		"model":       viper.GetString("volc.model"),
+		"messages":    messages,
+		"max_tokens":  maxTokens,
+		"temperature": temperature,
+		"stream":      true, // 启用流式传输
+		"thinking": map[string]interface{}{
+			"type": thinkingType, // 使用参数控制深度思考
+		},
+		"stream_options": map[string]interface{}{
+			"include_usage": true, // 包含 token 使用统计
+		},
+	}
+	bodyBytes, _ := json.Marshal(bodyMap)
+
+	log.C(ctx).Debugw("调用volc流式API", "url", url, "stream", true)
+
+	// 创建 HTTP 请求
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("创建请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+viper.GetString("volc.api_key"))
+	req.Header.Set("Accept", "text/event-stream")
+
+	// 使用带处理响应头的 HTTP 客户端
+	client := &http.Client{
+		Timeout: 0, // 流式传输由 context 控制
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("HTTP请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("API返回错误状态码: %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	// 逐行读取 SSE 响应
+	var fullContent strings.Builder
+	var thinkingContent strings.Builder
+	reader := bufio.NewReader(resp.Body)
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fullContent.String(), fmt.Errorf("读取响应失败: %w", err)
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		// 使用通用的 map 解析，因为可能有多种字段（content, reasoning_content）
+		var chunk map[string]interface{}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			log.C(ctx).Warnw("解析SSE JSON失败", "data", data, "error", err)
+			continue
+		}
+
+		// 检查是否有错误
+		if errObj, ok := chunk["error"].(map[string]interface{}); ok {
+			return fullContent.String(), fmt.Errorf("API流式错误: %v", errObj["message"])
+		}
+
+		// 提取 choices
+		choices, ok := chunk["choices"].([]interface{})
+		if !ok || len(choices) == 0 {
+			continue
+		}
+
+		choice := choices[0].(map[string]interface{})
+		delta, ok := choice["delta"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// 1. 处理思维链内容 (reasoning_content)
+		if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
+			thinkingContent.WriteString(rc)
+			if onEvent != nil {
+				if err := onEvent("thinking", rc); err != nil {
+					return fullContent.String(), err
+				}
+			}
+		}
+
+		// 2. 处理普通回答内容 (content)
+		if content, ok := delta["content"].(string); ok && content != "" {
+			fullContent.WriteString(content)
+			if onEvent != nil {
+				if err := onEvent("message", content); err != nil {
+					return fullContent.String(), err
+				}
+			}
+		}
+
+		// 3. 检查结束
+		if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
+			if finishReason == "stop" {
+				break
+			}
+		}
+	}
+
+	log.C(ctx).Debugw("流式聊天完成", "content_len", fullContent.Len(), "thinking_len", thinkingContent.Len())
+	return fullContent.String(), nil
+}

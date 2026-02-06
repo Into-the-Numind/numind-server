@@ -36,10 +36,11 @@ require (
 	github.com/chai2010/webp v1.4.0
 	github.com/disintegration/imaging v1.6.2
 	github.com/gen2brain/go-fitz v1.24.15
-	github.com/jung-kurt/gofpdf v1.16.2
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/pkoukk/tiktoken-go v0.1.8
 	github.com/redis/go-redis/v9 v9.16.0
+	github.com/volcengine/volc-sdk-golang v1.0.235
+	github.com/yanyiwu/gojieba v1.4.6
 	github.com/yuin/goldmark v1.7.13
 )
 
@@ -47,6 +48,7 @@ require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/bytedance/sonic v1.13.3 // indirect
 	github.com/bytedance/sonic/loader v0.2.4 // indirect
+	github.com/cenkalti/backoff/v4 v4.1.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/clbanning/mxj v1.8.4 // indirect
@@ -70,7 +72,7 @@ require (
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gobwas/ws v1.4.0 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
-	github.com/google/go-querystring v1.0.0 // indirect
+	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
@@ -93,6 +95,7 @@ require (
 	github.com/sourcegraph/conc v0.3.0 // indirect
 	github.com/spf13/afero v1.12.0 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
+	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.0 // indirect
@@ -102,6 +105,5 @@ require (
 	golang.org/x/sys v0.34.0 // indirect
 	golang.org/x/text v0.27.0 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
-	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

@@ -74,9 +74,9 @@ book:
 volc:
   api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "doubao-seed-1-6-flash-250828"
-  temperature: 0.5
-  tokens: 2000
+  model: "glm-4-7-251222"  # 测试阶段使用智谱GLM-4-7模型
+  temperature: 0.7
+  tokens: 4000
   timeout: 180s
   max_retries: 3
 
@@ -127,6 +127,17 @@ ali:
     api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"  # 使用相同的API key
     model: "wan2.2-t2i-flash"  # SD模型
     timeout: 300s        # SD生成超时时间（5分钟）
+
+  # 视觉理解服务
+  vision:
+    model: "qwen3-vl-flash" # 视觉模型
+    timeout: 180s
+
+  # DashVector 向量数据库配置
+  dashvector:
+    endpoint: "https://vrs-cn-62l4mht1d0001e.dashvector.cn-hangzhou.aliyuncs.com" # DashVector Endpoint
+    api_key: "sk-gMsgxE1A1QzoxexCdtuTaVjuF6w8Z52890CC5F85411F08940FAD61112A032"
+    collection: "sales_rag_prod"
 
 # 卡片配置 - 统一的卡片渲染和分页配置中心
 card:

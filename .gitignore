@@ -55,4 +55,4 @@ res/
 
 *.html
 
-cmd/numind/data/
+cmd/numind/data/.worktrees/

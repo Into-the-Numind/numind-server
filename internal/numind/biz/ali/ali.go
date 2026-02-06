@@ -35,7 +35,7 @@ type BailianConfig struct {
 type AliBiz interface {
 	QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error)
 	QianwenEmbedding(text string) ([]float32, error)
-	QianwenVision(ctx context.Context, imageBase64 string, prompt string) (string, error)
+	QianwenVision(ctx context.Context, imageBase64 string, prompt string, model string) (string, error)
 	WanxiangImageStream(prompt string, style string, size string) (string, error)
 	WanxiangImageAsync(prompt, style, size string) (string, error)
 	StableDiffusionImageAsync(prompt, size string) (string, error)
@@ -563,13 +563,19 @@ func (a *aliBiz) StableDiffusionImageAsync(prompt, size string) (string, error) 
 	return imgUrl, nil
 }
 
-// QianwenEmbedding 调用阿里百炼 Embedding API 获取文本向量
+// QianwenEmbedding 调用阿里百炼 Embedding API 获取文本向量（使用 DashScope 原生接口）
 func (a *aliBiz) QianwenEmbedding(text string) ([]float32, error) {
-	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
+	// 使用 DashScope 原生接口，支持自定义维度参数
+	url := "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
 
 	bodyMap := map[string]interface{}{
-		"model": "text-embedding-v3",
-		"input": []string{text},
+		"model": "text-embedding-v4",
+		"input": map[string]interface{}{
+			"texts": []string{text},
+		},
+		"parameters": map[string]interface{}{
+			"dimension": 2048, // DashScope 原生接口使用 dimension（单数），支持 2048 维
+		},
 	}
 	bodyBytes, err := json.Marshal(bodyMap)
 	if err != nil {
@@ -621,48 +627,50 @@ func (a *aliBiz) QianwenEmbedding(text string) ([]float32, error) {
 		return nil, fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(respBody))
 	}
 
-	// 解析响应
+	// 解析响应（DashScope 原生接口格式）
 	var result struct {
-		Data []struct {
-			Embedding []float32 `json:"embedding"`
-		} `json:"data"`
-		Error struct {
-			Message string `json:"message"`
-			Type    string `json:"type"`
-			Code    string `json:"code"`
-		} `json:"error"`
+		Output struct {
+			Embeddings []struct {
+				Embedding []float32 `json:"embedding"`
+				TextIndex int       `json:"text_index"`
+			} `json:"embeddings"`
+		} `json:"output"`
+		Usage struct {
+			TotalTokens int `json:"total_tokens"`
+		} `json:"usage"`
+		RequestID string `json:"request_id"`
 	}
 
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return nil, fmt.Errorf("解析响应失败: %w, 原始响应: %s", err, string(respBody))
 	}
 
-	// 检查API错误
-	if result.Error.Message != "" {
-		return nil, fmt.Errorf("API错误: %s (类型: %s, 代码: %s)", result.Error.Message, result.Error.Type, result.Error.Code)
-	}
-
 	// 提取向量
-	if len(result.Data) == 0 {
+	if len(result.Output.Embeddings) == 0 {
 		return nil, fmt.Errorf("API返回数据为空: %s", string(respBody))
 	}
 
-	if len(result.Data[0].Embedding) == 0 {
+	if len(result.Output.Embeddings[0].Embedding) == 0 {
 		return nil, fmt.Errorf("API返回向量为空: %s", string(respBody))
 	}
 
-	return result.Data[0].Embedding, nil
+	return result.Output.Embeddings[0].Embedding, nil
 }
 
 // QianwenVision 调用视觉模型读取图片 (OpenAI 兼容模式)
-func (a *aliBiz) QianwenVision(ctx context.Context, imageBase64 string, prompt string) (string, error) {
+func (a *aliBiz) QianwenVision(ctx context.Context, imageBase64 string, prompt string, model string) (string, error) {
 	if prompt == "" {
 		prompt = "图中描绘的是什么景象?"
 	}
 	apiKey := getAliConfig("vision", "api_key")
-	model := getAliConfig("vision", "model")
+
+	// 如果未指定模型，尝试从配置获取
 	if model == "" {
-		model = "qwen-vl-plus" // 使用文档推荐的模型作为默认值
+		model = getAliConfig("vision", "model")
+	}
+	// 如果仍未指定，使用默认模型
+	if model == "" {
+		model = "qwen-vl-plus" // 保持原有默认值，避免影响其他模块
 	}
 	if apiKey == "" {
 		return "", fmt.Errorf("未配置ali.vision.api_key")
