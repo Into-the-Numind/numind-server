@@ -12,7 +12,7 @@ WORKDIR /app
 
 # 复制依赖文件并下载
 COPY go.mod go.sum ./
-ENV GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=https://proxy.golang.org,direct
 RUN go mod download
 
 # 复制源码并编译
