@@ -1258,36 +1258,48 @@ func CheckSemanticSplitterStatus() (bool, string, error) {
 // 通过批量查询数据库获取文档信息，避免 N+1 查询
 func (b *salesRAGBiz) enrichChunksWithDocNames(ctx context.Context, chunks []domain.KnowledgeChunk) {
 	if len(chunks) == 0 {
+		log.Printf("[enrichChunksWithDocNames] No chunks to process")
 		return
 	}
 
+	log.Printf("[enrichChunksWithDocNames] Processing %d chunks", len(chunks))
+
 	// 1. 收集所有唯一的 document_id
 	docIDSet := make(map[uint]bool)
-	for _, chunk := range chunks {
+	for i, chunk := range chunks {
+		log.Printf("[enrichChunksWithDocNames] Chunk %d: ID=%s, DocID=%d, Score=%f", i, chunk.ID, chunk.DocumentID, chunk.Score)
 		if chunk.DocumentID > 0 {
 			docIDSet[chunk.DocumentID] = true
 		}
 	}
 
 	if len(docIDSet) == 0 {
+		log.Printf("[enrichChunksWithDocNames] No document IDs found in chunks")
 		return
 	}
+
+	log.Printf("[enrichChunksWithDocNames] Found %d unique document IDs", len(docIDSet))
 
 	// 2. 批量查询文档信息
 	docIDToName := make(map[uint]string)
 	for docID := range docIDSet {
 		doc, err := b.ds.KnowledgeDocuments().GetByID(ctx, docID)
 		if err != nil {
-			log.Printf("Warning: failed to get document %d: %v", docID, err)
+			log.Printf("[enrichChunksWithDocNames] Warning: failed to get document %d: %v", docID, err)
 			continue
 		}
 		docIDToName[docID] = doc.Name
+		log.Printf("[enrichChunksWithDocNames] Document %d -> Name: %s", docID, doc.Name)
 	}
 
 	// 3. 填充文档名称
 	for i := range chunks {
 		if name, ok := docIDToName[chunks[i].DocumentID]; ok {
 			chunks[i].DocumentName = name
+			log.Printf("[enrichChunksWithDocNames] Set chunk %d DocumentName to: %s", i, name)
 		}
 	}
+
+	log.Printf("[enrichChunksWithDocNames] Finished processing. First chunk: DocName=%s, Score=%f",
+		chunks[0].DocumentName, chunks[0].Score)
 }

@@ -36,11 +36,11 @@ require (
 	github.com/chai2010/webp v1.4.0
 	github.com/disintegration/imaging v1.6.2
 	github.com/gen2brain/go-fitz v1.24.15
-	github.com/jung-kurt/gofpdf v1.16.2
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/pkoukk/tiktoken-go v0.1.8
 	github.com/redis/go-redis/v9 v9.16.0
 	github.com/volcengine/volc-sdk-golang v1.0.235
+	github.com/yanyiwu/gojieba v1.4.6
 	github.com/yuin/goldmark v1.7.13
 )
 
@@ -99,7 +99,6 @@ require (
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.0 // indirect
-	github.com/yanyiwu/gojieba v1.4.6 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/arch v0.18.0 // indirect
 	golang.org/x/net v0.41.0 // indirect

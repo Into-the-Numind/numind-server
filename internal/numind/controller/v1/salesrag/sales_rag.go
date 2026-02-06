@@ -142,6 +142,11 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 			var marshalErr error
 
 			switch eventType {
+			case "status":
+				eventData, marshalErr = json.Marshal(map[string]interface{}{
+					"type": "status",
+					"data": data,
+				})
 			case "verdict":
 				eventData, marshalErr = json.Marshal(map[string]interface{}{
 					"type": "verdict",
