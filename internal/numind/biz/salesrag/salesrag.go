@@ -290,12 +290,7 @@ func (b *salesRAGBiz) Retrieve(ctx context.Context, query string, docIDs []uint)
 
 	// 4. 过滤前端传来的docIDs，仅保留启用且已完成的
 	var filteredDocIDs []uint
-	if len(docIDs) == 0 {
-		// 前端未指定文档，默认使用所有启用且已完成的
-		for id := range enabledDocIDs {
-			filteredDocIDs = append(filteredDocIDs, id)
-		}
-	} else {
+	if len(docIDs) > 0 {
 		// 前端指定了文档，需要校验是否启用且已完成
 		for _, id := range docIDs {
 			if enabledDocIDs[id] {
@@ -304,16 +299,7 @@ func (b *salesRAGBiz) Retrieve(ctx context.Context, query string, docIDs []uint)
 		}
 	}
 
-	// 5. 如果过滤后没有可用文档，返回友好提示
-	if len(filteredDocIDs) == 0 {
-		return &service.RetrievalVerdict{
-			Query:      query,
-			IsChitChat: true,
-			Reason:     "没有可用的知识库文档（文档可能被禁用或未完成处理）",
-		}, nil
-	}
-
-	// 6. 使用过滤后的文档ID进行检索
+	// 5. 执行检索（即使 filteredDocIDs 为空也会执行，返回空证据）
 	verdict, err := b.ragSvc.RetrieveForResponse(ctx, query, filteredDocIDs)
 	if err != nil {
 		return nil, err
@@ -566,31 +552,12 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 
 	// 4. 过滤前端传来的docIDs
 	var filteredDocIDs []uint
-	if len(docIDs) == 0 {
-		for id := range enabledDocIDs {
-			filteredDocIDs = append(filteredDocIDs, id)
-		}
-	} else {
+	if len(docIDs) > 0 {
 		for _, id := range docIDs {
 			if enabledDocIDs[id] {
 				filteredDocIDs = append(filteredDocIDs, id)
 			}
 		}
-	}
-
-	// 5. 如果没有可用文档，返回友好提示
-	if len(filteredDocIDs) == 0 {
-		verdict := &service.RetrievalVerdict{
-			Query:  query,
-			Reason: "没有可用的知识库文档（文档可能被禁用或未完成处理）",
-		}
-		if err := onEvent("verdict", verdict); err != nil {
-			return err
-		}
-		if err := onEvent("token", "抱歉，当前没有可用的知识库文档。请先上传并启用相关文档。"); err != nil {
-			return err
-		}
-		return onEvent("done", nil)
 	}
 
 	// 发送状态：正在检索知识库与匹配策略
@@ -987,7 +954,16 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 		}
 	}
 
-	// 2. 保存用户消息
+	// 2. 准备会话配置
+	// 无论前端传什么，以数据库存储的选中知识库为准，确保一致性
+	var sessionDocIDs []uint
+	if session.DocumentIDs != "" && session.DocumentIDs != "null" {
+		if err := json.Unmarshal([]byte(session.DocumentIDs), &sessionDocIDs); err != nil {
+			log.Printf("[ChatWithSession] Warning: failed to parse session document_ids: %v", err)
+		}
+	}
+
+	// 3. 处理用户消息
 	userMessage := &model.SalesMessage{
 		SessionID: sessionID,
 		UserID:    userID,
@@ -999,17 +975,13 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 		return fmt.Errorf("failed to save user message: %w", err)
 	}
 
-	// 3. 累积流式内容
-	// (Check implementation in original file, keeping it simple here as I am adding at the end of file for AnalyzeDocument)
-	// Actually I will append AnalyzeDocument at the end of the file or before ChatWithSession if needed.
-	// The prompt implies multiple chunks. I will add AnalyzeDocument at the end.
-
+	// 4. 调用流式检索，累积内容
+	// 使用从数据库加载的 sessionDocIDs，而不是函数参数中的 docIDs
 	var fullContent strings.Builder
 	var verdictJSON string
 	var thinkingText string
 
-	// 4. 调用流式检索，累积内容
-	err = b.RetrieveStream(ctx, query, history, docIDs, deepThinking, chatMode, session.CustomerProfile, func(eventType string, data interface{}) error {
+	err = b.RetrieveStream(ctx, query, history, sessionDocIDs, deepThinking, chatMode, session.CustomerProfile, func(eventType string, data interface{}) error {
 		switch eventType {
 		case "verdict":
 			// 序列化 verdict 为 JSON
