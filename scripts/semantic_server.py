@@ -117,6 +117,29 @@ async def ocr_image(file: UploadFile = File(...)):
             tmp.write(content)
             temp_path = tmp.name
 
+        # 1.5 检查并调整图片尺寸 (防止 OpenCV 崩溃)
+        try:
+            import cv2
+            img = cv2.imread(temp_path)
+            if img is not None:
+                h, w = img.shape[:2]
+                # OpenCV limit is SHRT_MAX (32767), we use 32000 to be safe
+                LIMIT = 32000
+                if h > LIMIT or w > LIMIT:
+                    print(f"Warning: Image size {w}x{h} exceeds OpenCV limit {LIMIT}. Resizing...", file=sys.stderr)
+                    scale = LIMIT / max(h, w)
+                    new_w = int(w * scale)
+                    new_h = int(h * scale)
+                    # Use INTER_AREA for shrinking
+                    img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                    cv2.imwrite(temp_path, img) 
+                    print(f"Resized image to {new_w}x{new_h}", file=sys.stderr)
+        except ImportError:
+            # Should not happen as PaddleOCR depends on opencv-python
+            print("Warning: cv2 not found, skipping resize check", file=sys.stderr)
+        except Exception as e:
+            print(f"Warning: Failed to resize image: {e}", file=sys.stderr)
+
         # 2. 调用 OCR 引擎
         ocr = get_ocr_engine()
         
