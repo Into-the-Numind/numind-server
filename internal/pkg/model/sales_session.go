@@ -46,6 +46,7 @@ type SalesMessage struct {
 	// 销售特有字段（仅assistant角色有这些字段）
 	Verdict  string `gorm:"type:text" json:"verdict,omitempty"`  // JSON
 	Thinking string `gorm:"type:text" json:"thinking,omitempty"` // 思维链内容
+	Images   string `gorm:"type:text" json:"images,omitempty"`   // 图片链接列表，JSON 数组格式
 
 	// 关联关系
 	Session SalesSession `gorm:"foreignKey:SessionID" json:"session,omitempty"`

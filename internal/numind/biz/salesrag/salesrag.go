@@ -62,7 +62,7 @@ type SalesRAGBiz interface {
 
 	// ChatWithSession 基于会话的流式对话（保存聊天记录）
 	// chatMode: "sales" (销售话术模式) 或 "free" (自由讨论模式)
-	ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error
+	ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, images []string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error
 
 	// AnalyzeDocument 解析文档并生成客户档案
 	AnalyzeDocument(ctx context.Context, userID uint, file io.Reader, filename string) (string, error)
@@ -902,7 +902,7 @@ func (b *salesRAGBiz) GetCustomerProfile(ctx context.Context, userID uint, sessi
 
 // ChatWithSession 基于会话的流式对话（保存聊天记录）
 // chatMode: "sales" (销售话术模式) 或 "free" (自由讨论模式)
-func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error {
+func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, images []string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error {
 	// 1. 验证会话并加载历史消息
 	session, err := b.sessionStore.GetSessionWithMessages(ctx, sessionID, userID)
 	if err != nil {
@@ -964,12 +964,19 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	}
 
 	// 3. 处理用户消息
+	var imagesJSON string
+	if len(images) > 0 {
+		imgBytes, _ := json.Marshal(images)
+		imagesJSON = string(imgBytes)
+	}
+
 	userMessage := &model.SalesMessage{
 		SessionID: sessionID,
 		UserID:    userID,
 		Role:      "user",
 		Content:   query,
 		Status:    "sent",
+		Images:    imagesJSON,
 	}
 	if err := b.sessionStore.CreateMessage(ctx, userMessage); err != nil {
 		return fmt.Errorf("failed to save user message: %w", err)

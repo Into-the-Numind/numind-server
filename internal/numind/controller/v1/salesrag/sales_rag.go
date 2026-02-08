@@ -18,8 +18,10 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
+	"numind-server/internal/pkg/util"
 
 	"github.com/gin-gonic/gin"
+	"github.com/spf13/viper"
 )
 
 type SalesRAGController struct {
@@ -101,10 +103,11 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 	}
 
 	var r struct {
-		Query        string `json:"query" binding:"required"`
-		DocumentIDs  []uint `json:"document_ids"`
-		DeepThinking bool   `json:"deep_thinking"`
-		ChatMode     string `json:"chat_mode"` // "sales" (销售话术) 或 "free" (自由讨论)
+		Query        string   `json:"query" binding:"required"`
+		Images       []string `json:"images"` // 图片链接列表
+		DocumentIDs  []uint   `json:"document_ids"`
+		DeepThinking bool     `json:"deep_thinking"`
+		ChatMode     string   `json:"chat_mode"` // "sales" (销售话术) 或 "free" (自由讨论)
 	}
 
 	if err := c.ShouldBindJSON(&r); err != nil {
@@ -136,7 +139,7 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 	w := c.Writer
 
 	// 调用基于会话的流式检索方法（会自动保存消息）
-	err = ctrl.b.SalesRAG().ChatWithSession(newCtx, user.ID, uint(sessionID), r.Query, r.DocumentIDs, r.DeepThinking, r.ChatMode,
+	err = ctrl.b.SalesRAG().ChatWithSession(newCtx, user.ID, uint(sessionID), r.Query, r.Images, r.DocumentIDs, r.DeepThinking, r.ChatMode,
 		func(eventType string, data interface{}) error {
 			var eventData []byte
 			var marshalErr error
@@ -718,7 +721,38 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 	}
 	defer file.Close()
 
-	// 2. 构建转发请求
+	// 获取当前用户
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	// 2. 读取并在上传到 COS 的同时准备转发
+	data, err := io.ReadAll(file)
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("读取文件数据失败"), nil)
+		return
+	}
+
+	// 生成 object key: {env}/sales_chat/{userID}/{sessionID}/{timestamp}_{filename}
+	env := viper.GetString("runmode")
+	if env == "" {
+		env = "unknown"
+	}
+	// 可选的 session_id，如果前端没传则使用 no_session 目录
+	sessionID := c.DefaultPostForm("session_id", "no_session")
+	objectKey := fmt.Sprintf("%s/sales_chat/%d/%s/%d_%s", env, user.ID, sessionID, time.Now().Unix(), header.Filename)
+
+	// 上传到 COS
+	cosURL, err := util.UploadBytesToCOS(c.Request.Context(), objectKey, header.Header.Get("Content-Type"), data)
+	if err != nil {
+		log.Errorw("Upload image to COS failed", "error", err, "user_id", user.ID, "key", objectKey)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("图片存储失败"), nil)
+		return
+	}
+
+	// 3. 构建转发请求到 Python OCR 服务 (9093 端口)
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 	part, err := writer.CreateFormFile("file", header.Filename)
@@ -726,14 +760,13 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("构建请求失败"), nil)
 		return
 	}
-	_, err = io.Copy(part, file)
+	_, err = io.Copy(part, bytes.NewReader(data))
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("复制文件数据失败"), nil)
 		return
 	}
 	writer.Close()
 
-	// 3. 发送请求到 Python OCR 服务 (9093 端口)
 	ocrURL := "http://localhost:9093/ocr"
 	req, err := http.NewRequest("POST", ocrURL, body)
 	if err != nil {
@@ -773,5 +806,6 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 
 	core.WriteResponse(c, nil, map[string]string{
 		"text": result.Text,
+		"url":  cosURL,
 	})
 }
