@@ -68,6 +68,7 @@ func (s *ChromemStore) Upsert(ctx context.Context, chunks []domain.KnowledgeChun
 			Embedding: embedding,
 			Metadata: map[string]string{
 				"document_id": strconv.FormatUint(uint64(chunk.DocumentID), 10),
+				"user_id":     strconv.FormatUint(uint64(chunk.UserID), 10),
 				"summary":     chunk.Summary,
 				"tags":        tagsStr,
 				"source_ref":  chunk.SourceRef,
@@ -106,10 +107,16 @@ func (s *ChromemStore) Search(ctx context.Context, query string, filter port.Sea
 	}
 
 	// 2. 构造过滤条件
-	where := make(map[string]string)
+	// 如果不是全局管理员且没有指定 DocumentIDs，则直接返回空结果，杜绝泄露
+	if len(filter.DocumentIDs) == 0 {
+		return nil, nil // 严格模式
+	}
 
-	// Chromem-go 的 WHERE 过滤目前相对简单，只支持完全匹配
-	// 复杂的过滤逻辑可能需要在内存中二次筛选
+	where := make(map[string]string)
+	// 如果指定了用户，注入 user_id 到 where (如果 chromem 支持精准过滤)
+	if filter.UserID > 0 {
+		where["user_id"] = strconv.FormatUint(uint64(filter.UserID), 10)
+	}
 
 	// 3. 执行查询
 	// 注意: chromem 的 QueryEmbedding 会返回相似度结果
@@ -130,6 +137,10 @@ func (s *ChromemStore) Search(ctx context.Context, query string, filter port.Sea
 		if dID, ok := res.Metadata["document_id"]; ok {
 			val, _ := strconv.ParseUint(dID, 10, 64)
 			chunk.DocumentID = uint(val)
+		}
+		if uID, ok := res.Metadata["user_id"]; ok {
+			val, _ := strconv.ParseUint(uID, 10, 64)
+			chunk.UserID = uint(val)
 		}
 		chunk.SourceRef = res.Metadata["source_ref"]
 		chunk.Summary = res.Metadata["summary"]
@@ -154,23 +165,26 @@ func (s *ChromemStore) Search(ctx context.Context, query string, filter port.Sea
 }
 
 func (s *ChromemStore) matchFilter(chunk domain.KnowledgeChunk, filter port.SearchFilter) bool {
-	// 如果过滤条件为空，默认通过
-
-	// 1. DocumentIDs 过滤 (Scope Control)
-	if len(filter.DocumentIDs) > 0 {
-		matched := false
-		for _, id := range filter.DocumentIDs {
-			if chunk.DocumentID == id {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
+	// 1. 用户隔离 (强制)
+	if filter.UserID > 0 && chunk.UserID != filter.UserID {
+		return false
 	}
 
-	// 3. SalesStage 过滤 (省略复杂逻辑，暂不处理多对多匹配)
+	// 2. DocumentIDs 过滤 (严格模式：空列表不返回结果)
+	if len(filter.DocumentIDs) == 0 {
+		return false
+	}
+
+	matched := false
+	for _, id := range filter.DocumentIDs {
+		if chunk.DocumentID == id {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false
+	}
 
 	return true
 }

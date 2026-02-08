@@ -283,7 +283,7 @@ func (b *salesRAGBiz) Retrieve(ctx context.Context, query string, docIDs []uint)
 	// 3. 构建启用且已完成的文档ID白名单
 	enabledDocIDs := make(map[uint]bool)
 	for _, doc := range docs {
-		if doc.Status == string(domain.DocStatusCompleted) {
+		if doc.IsEnabled && doc.Status == string(domain.DocStatusCompleted) {
 			enabledDocIDs[doc.ID] = true
 		}
 	}
@@ -300,7 +300,7 @@ func (b *salesRAGBiz) Retrieve(ctx context.Context, query string, docIDs []uint)
 	}
 
 	// 5. 执行检索（即使 filteredDocIDs 为空也会执行，返回空证据）
-	verdict, err := b.ragSvc.RetrieveForResponse(ctx, query, filteredDocIDs)
+	verdict, err := b.ragSvc.RetrieveForResponse(ctx, query, filteredDocIDs, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -545,7 +545,7 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 	// 3. 构建启用且已完成的文档ID白名单
 	enabledDocIDs := make(map[uint]bool)
 	for _, doc := range docs {
-		if doc.Status == string(domain.DocStatusCompleted) {
+		if doc.IsEnabled && doc.Status == string(domain.DocStatusCompleted) {
 			enabledDocIDs[doc.ID] = true
 		}
 	}
@@ -567,7 +567,7 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 
 	// 6. 执行检索（使用 V2 版本，传递 chatMode 和 history）
 	// 注意：RetrieveForResponseV2 内部并行执行 RAG 检索和策略选择
-	verdict, err := b.ragSvc.RetrieveForResponseV2(ctx, query, filteredDocIDs, history, chatMode)
+	verdict, err := b.ragSvc.RetrieveForResponseV2(ctx, query, filteredDocIDs, history, chatMode, userID)
 	if err != nil {
 		return onEvent("error", fmt.Sprintf("retrieval failed: %v", err))
 	}

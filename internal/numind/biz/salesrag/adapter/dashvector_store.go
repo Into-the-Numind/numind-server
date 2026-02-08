@@ -261,6 +261,10 @@ func (s *DashVectorStore) Search(ctx context.Context, query string, filter port.
 	}
 
 	// 2. Build Filter
+	// 如果 DocumentIDs 为空，且不是全局管理员，则不返回任何结果，防止泄露背景知识
+	if len(filter.DocumentIDs) == 0 {
+		return nil, nil // 严格模式：没有选知识库就不检索
+	}
 	filterStr := buildDashVectorFilter(filter)
 
 	// 3. Query
@@ -451,6 +455,11 @@ func (s *DashVectorStore) FetchByDocumentID(ctx context.Context, documentID uint
 
 func buildDashVectorFilter(f port.SearchFilter) string {
 	parts := []string{}
+
+	// 强制注入 UserID 过滤
+	if f.UserID > 0 {
+		parts = append(parts, fmt.Sprintf("user_id = %d", f.UserID))
+	}
 
 	if len(f.DocumentIDs) > 0 {
 		ids := make([]string, len(f.DocumentIDs))

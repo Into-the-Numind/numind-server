@@ -124,6 +124,11 @@ func (s *VikingStore) Search(ctx context.Context, query string, filter port.Sear
 	opts.SetOutputFields([]string{"id", "content", "summary", "tags", "source_ref", "doc_id"})
 
 	// Build Filter map
+	// 如果 DocumentIDs 为空，且不是全局管理员，则不返回任何结果，防止泄露背景知识
+	if len(filter.DocumentIDs) == 0 {
+		return nil, nil // 严格模式
+	}
+
 	filterMap := buildVikingFilter(filter)
 	if len(filterMap) > 0 {
 		opts.SetFilter(filterMap)
@@ -160,6 +165,12 @@ func (s *VikingStore) Search(ctx context.Context, query string, filter port.Sear
 
 		if val, ok := res.Fields["tags"].(string); ok {
 			c.Tags = strings.Split(val, ",")
+		}
+		if val, ok := res.Fields["user_id"].(json.Number); ok {
+			idInt, _ := val.Int64()
+			c.UserID = uint(idInt)
+		} else if val, ok := res.Fields["user_id"].(float64); ok {
+			c.UserID = uint(val)
 		}
 		if val, ok := res.Fields["summary"].(string); ok {
 			c.Summary = val
@@ -241,6 +252,13 @@ func buildVikingFilter(f port.SearchFilter) map[string]interface{} {
 	// VikingDB filter DSL: {"field": {"op": val}}
 	// "and": [{"field":...}, {...}]
 	conditions := make([]map[string]interface{}, 0)
+
+	// 强制注入 UserID 过滤
+	if f.UserID > 0 {
+		conditions = append(conditions, map[string]interface{}{
+			"user_id": map[string]interface{}{"=": int64(f.UserID)},
+		})
+	}
 
 	if len(f.DocumentIDs) > 0 {
 		ids := make([]interface{}, len(f.DocumentIDs))

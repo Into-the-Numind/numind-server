@@ -39,10 +39,10 @@ type TextSplitter interface {
 // IngestionPipeline manages the end-to-end ingestion process
 type IngestionPipeline struct {
 	parser     PipelineParser
-	splitter   TextSplitter             // 使用接口而非具体类型
+	splitter   TextSplitter // 使用接口而非具体类型
 	tagger     *ContentTagger
-	docStore   DocumentStatusUpdater    // 文档状态更新器
-	store      port.VectorStore         // 向量数据库
+	docStore   DocumentStatusUpdater     // 文档状态更新器
+	store      port.VectorStore          // 向量数据库
 	chunkStore store.KnowledgeChunkStore // MySQL切片存储
 	docChan    chan *domain.KnowledgeDocument
 }
@@ -98,6 +98,8 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 
 	// 1. Parsing
 	var fileReader io.Reader
+	parsePath := doc.Name // 默认用于识别扩展名
+
 	// 检查是否为云端存储的 URL
 	if strings.HasPrefix(doc.FilePath, "http://") || strings.HasPrefix(doc.FilePath, "https://") {
 		downloadURL := doc.FilePath
@@ -134,11 +136,14 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 			return
 		}
 		fileReader = bytes.NewReader(content)
+	} else {
+		// 如果不是 URL，pass FilePath 给 Parser，因为它需要真实路径进行 ReadFile
+		parsePath = doc.FilePath
 	}
 
-	// 使用原始文件名（而非 COS URL）进行解析，避免 URL 查询参数干扰扩展名识别
+	// 使用原始文件名或路径进行解析
 	log.Printf("DEBUG: Parsing document - ID: %d, Name: '%s', FilePath: '%s'", doc.ID, doc.Name, doc.FilePath)
-	markdown, err := p.parser.Parse(ctx, fileReader, doc.Name)
+	markdown, err := p.parser.Parse(ctx, fileReader, parsePath)
 	if err != nil {
 		log.Printf("ERROR: Parsing failed for doc %d - Name: '%s', Error: %v", doc.ID, doc.Name, err)
 		p.fail(doc, fmt.Errorf("parsing failed: %w", err))
@@ -181,7 +186,7 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 			UserID:     doc.UserID, // 传递用户ID用于数据隔离
 			Content:    sc.Content,
 			Tags:       tags, // Use merged tags
-					}
+		}
 	}
 
 	// 4. Tag - 更新状态为 TAGGING

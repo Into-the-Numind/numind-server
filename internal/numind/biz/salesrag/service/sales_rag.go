@@ -70,9 +70,10 @@ func (s *SalesRAGService) RetrieveForResponse(
 	ctx context.Context,
 	query string,
 	docIDs []uint,
+	userID uint,
 ) (*RetrievalVerdict, error) {
 	// 直接调用 V2 接口，默认使用 sales 模式
-	return s.RetrieveForResponseV2(ctx, query, docIDs, nil, "sales")
+	return s.RetrieveForResponseV2(ctx, query, docIDs, nil, "sales", userID)
 }
 
 // RetrieveForResponseV2 V2 版检索流程
@@ -88,6 +89,7 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 	docIDs []uint,
 	history []string,
 	chatMode string,
+	userID uint,
 ) (*RetrievalVerdict, error) {
 
 	// 1. 意图分析 + Query 生成 (LLM: qwen-turbo-latest)
@@ -120,7 +122,10 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		filter := port.SearchFilter{DocumentIDs: docIDs}
+		filter := port.SearchFilter{
+			UserID:      userID,
+			DocumentIDs: docIDs,
+		}
 		allChunks, chunksErr = s.parallelSearch(ctx, intentResult.SearchQueries, filter)
 	}()
 
