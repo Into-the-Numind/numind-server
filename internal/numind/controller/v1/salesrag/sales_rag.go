@@ -21,7 +21,6 @@ import (
 	"numind-server/internal/pkg/util"
 
 	"github.com/gin-gonic/gin"
-	"github.com/spf13/viper"
 )
 
 type SalesRAGController struct {
@@ -39,14 +38,14 @@ func (ctrl *SalesRAGController) Ingest(c *gin.Context) {
 
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(fmt.Sprintf("文件上传失败: %s", err.Error())), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文件上传失败: %s", err.Error()), nil)
 		return
 	}
 	defer file.Close()
 
 	// 检查文件大小
 	if header.Size > maxFileSize {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(fmt.Sprintf("文件大小 %.2fMB 超过100MB限制", float64(header.Size)/1024/1024)), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文件大小 %.2fMB 超过100MB限制", float64(header.Size)/1024/1024), nil)
 		return
 	}
 
@@ -735,14 +734,10 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 		return
 	}
 
-	// 生成 object key: {env}/sales_chat/{userID}/{sessionID}/{timestamp}_{filename}
-	env := viper.GetString("runmode")
-	if env == "" {
-		env = "unknown"
-	}
+	// 生成 object key: sales_chat/{userID}/{sessionID}/{timestamp}_{filename}
 	// 可选的 session_id，如果前端没传则使用 no_session 目录
 	sessionID := c.DefaultPostForm("session_id", "no_session")
-	objectKey := fmt.Sprintf("%s/sales_chat/%d/%s/%d_%s", env, user.ID, sessionID, time.Now().Unix(), header.Filename)
+	objectKey := fmt.Sprintf("sales_chat/%d/%s/%d_%s", user.ID, sessionID, time.Now().Unix(), header.Filename)
 
 	// 上传到 COS
 	cosURL, err := util.UploadBytesToCOS(c.Request.Context(), objectKey, header.Header.Get("Content-Type"), data)
@@ -800,7 +795,7 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 	}
 
 	if !result.Success {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("OCR 识别失败: "+result.Error), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("OCR 识别失败: %s", result.Error), nil)
 		return
 	}
 
