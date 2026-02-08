@@ -20,7 +20,6 @@ import (
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
 
-	"github.com/spf13/viper"
 	"gorm.io/gorm"
 )
 
@@ -154,13 +153,8 @@ func (b *salesRAGBiz) Ingest(ctx context.Context, userID uint, filename string, 
 		return 0, fmt.Errorf("failed to read file content: %w", err)
 	}
 
-	// Generate object key: <env>/sales_rag/<user_id>/<timestamp>_<filename>
-	// 使用 runmode 区分环境 (debug/release/test)，防止本地开发污染 dev 环境数据
-	env := viper.GetString("runmode")
-	if env == "" {
-		env = "unknown"
-	}
-	objectKey := fmt.Sprintf("%s/sales_rag/%d/%d_%s", env, userID, time.Now().Unix(), filename)
+	// Generate object key: sales_rag/<user_id>/<timestamp>_<filename>
+	objectKey := fmt.Sprintf("sales_rag/%d/%d_%s", userID, time.Now().Unix(), filename)
 
 	// Determine content type (simple guess or default)
 	contentType := "application/octet-stream"

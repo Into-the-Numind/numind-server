@@ -14,10 +14,13 @@ func (err *Errno) Error() string {
 	return err.Message
 }
 
-// SetMessage 设置 Errno 类型错误中的 Message 字段.
+// SetMessage 设置 Errno 类型错误中的 Message 字段 (返回副本以避免篡改全局变量).
 func (err *Errno) SetMessage(format string, args ...interface{}) *Errno {
-	err.Message = fmt.Sprintf(format, args...)
-	return err
+	return &Errno{
+		HTTP:    err.HTTP,
+		Code:    err.Code,
+		Message: fmt.Sprintf(format, args...),
+	}
 }
 
 // Decode 尝试从 err 中解析出业务错误码和错误信息.
