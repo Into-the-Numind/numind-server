@@ -1493,10 +1493,28 @@ func (b *salesRAGBiz) analyzeImage(ctx context.Context, userID uint, file io.Rea
 func (b *salesRAGBiz) analyzeImageStream(ctx context.Context, userID uint, imageData []byte, onToken func(token string) error) (string, error) {
 	log.Printf("[analyzeImageStream] Starting analysis for user %d, image size: %d bytes", userID, len(imageData))
 
-	// 直接使用 base64 编码（和输入框保持一致，避免 COS 私有 URL 访问问题）
-	base64Image := base64.StdEncoding.EncodeToString(imageData)
-	dataURL := fmt.Sprintf("data:image/jpeg;base64,%s", base64Image)
-	log.Printf("[analyzeImageStream] Using base64 data URL (size: %d)", len(dataURL))
+	// 2. 准备数据传输 URL (优先使用 COS URL)
+	var dataURL string
+	ext := ".jpg" // 默认后缀
+	objectKey := fmt.Sprintf("vision_tmp/%d/%d%s", userID, time.Now().UnixNano(), ext)
+
+	// 尝试上传到 COS
+	if b.ds != nil {
+		cosURL, err := util.UploadBytesToCOS(ctx, objectKey, "image/jpeg", imageData)
+		if err == nil && cosURL != "" {
+			dataURL = cosURL
+			log.Printf("[analyzeImageStream] Successfully uploaded to COS, using URL: %s", objectKey)
+		} else {
+			log.Printf("[analyzeImageStream] COS upload failed: %v", err)
+		}
+	}
+
+	if dataURL == "" {
+		// 回退到 base64 方式
+		base64Image := base64.StdEncoding.EncodeToString(imageData)
+		dataURL = fmt.Sprintf("data:image/jpeg;base64,%s", base64Image)
+		log.Printf("[analyzeImageStream] Using base64 data URL (size: %d)", len(dataURL))
+	}
 
 	// 3. 构建提示词
 	combinedPrompt := `你是一位顶尖的商业洞察专家，擅长从细微的社交互动中拆解客户画像。
@@ -1918,10 +1936,28 @@ func (b *salesRAGBiz) AnalyzeChatStyle(ctx context.Context, userID uint, file io
 func (b *salesRAGBiz) analyzeChatStyleImage(ctx context.Context, userID uint, imageData []byte) (string, error) {
 	log.Printf("[analyzeChatStyleImage] Starting analysis for user %d, image size: %d bytes", userID, len(imageData))
 
-	// 直接使用 base64 编码（和输入框保持一致，避免 COS 私有 URL 访问问题）
-	base64Image := base64.StdEncoding.EncodeToString(imageData)
-	dataURL := fmt.Sprintf("data:image/jpeg;base64,%s", base64Image)
-	log.Printf("[analyzeChatStyleImage] Using base64 data URL (size: %d)", len(dataURL))
+	// 1. 上传图片到 COS 获取 URL
+	var dataURL string
+	ext := ".jpg"
+	objectKey := fmt.Sprintf("chat_style/%d/%d%s", userID, time.Now().UnixNano(), ext)
+
+	// 尝试上传到 COS
+	if b.ds != nil {
+		signedURL, err := util.UploadBytesToCOS(ctx, objectKey, "image/jpeg", imageData)
+		if err == nil && signedURL != "" {
+			dataURL = signedURL
+			log.Printf("[analyzeChatStyleImage] Successfully uploaded to COS, using URL: %s", objectKey)
+		} else {
+			log.Printf("[analyzeChatStyleImage] COS upload failed: %v", err)
+		}
+	}
+
+	if dataURL == "" {
+		// 回退到 base64 方式
+		base64Image := base64.StdEncoding.EncodeToString(imageData)
+		dataURL = fmt.Sprintf("data:image/jpeg;base64,%s", base64Image)
+		log.Printf("[analyzeChatStyleImage] Using base64 data URL (size: %d)", len(dataURL))
+	}
 
 	// 2. 构建提示词
 	systemPrompt := `你是一个资深的文字风格分析专家。这是一张微信聊天截图，请从中提取销售人员的【文字沟通指纹】，以便让 AI 能够精准模仿。
