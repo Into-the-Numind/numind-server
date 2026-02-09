@@ -240,14 +240,24 @@ func (ctrl *AliController) VisionAnalyze(c *gin.Context) {
 	// 7. 获取 Prompt (可选)
 	prompt := c.PostForm("prompt")
 
-	// 8. 调用 Biz 层进行分析
-	result, err := ctrl.aliBiz.QianwenVision(c.Request.Context(), fmt.Sprintf("data:image/jpeg;base64,%s", encoded), prompt, "qwen3-vl-flash-2026-01-22")
+	// 8. 准备图片 URL（优先使用 COS URL，失败则回退到 base64）
+	var imageURL string
+	if sopFile != nil && sopFile.FileURL != "" {
+		imageURL = sopFile.FileURL
+		log.C(c).Infow("使用 COS URL 调用视觉模型", "cos_url", imageURL)
+	} else {
+		imageURL = fmt.Sprintf("data:image/jpeg;base64,%s", encoded)
+		log.C(c).Infow("COS URL 不可用，使用 base64 调用视觉模型")
+	}
+
+	// 9. 调用 Biz 层进行分析
+	result, err := ctrl.aliBiz.QianwenVision(c.Request.Context(), imageURL, prompt, "qwen3-vl-flash-2026-01-22")
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
 	}
 
-	// 9. 返回结果（包含文件ID）
+	// 10. 返回结果（包含文件ID）
 	response := gin.H{
 		"content": result,
 	}
