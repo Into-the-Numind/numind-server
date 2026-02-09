@@ -130,7 +130,7 @@ ali:
 
   # 视觉理解服务
   vision:
-    model: "qwen3-vl-flash" # 视觉模型
+    model: "qwen3-vl-flash-2026-01-22" # 视觉模型
     timeout: 180s
 
   # DashVector 向量数据库配置

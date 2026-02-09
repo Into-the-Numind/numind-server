@@ -813,6 +813,8 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 		return "", fmt.Errorf("序列化请求失败: %w", err)
 	}
 
+	log.Printf("[QianwenVisionStream] Request: model=%s, imageURL=%s..., prompt=%s...", model, imageURL[:min(len(imageURL), 50)], prompt[:min(len(prompt), 50)])
+
 	client := a.visionClient
 	httpReq := &httpclient.Request{
 		Method:  "POST",
@@ -831,6 +833,8 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 	}
 	defer resp.Body.Close()
 
+	log.Printf("[QianwenVisionStream] Response status: %d", resp.StatusCode)
+
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		return "", fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(respBody))
@@ -838,37 +842,54 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 
 	var fullContent strings.Builder
 	scanner := bufio.NewScanner(resp.Body)
+	lineCount := 0
+	tokenCount := 0
+
 	for scanner.Scan() {
+		lineCount++
 		line := scanner.Text()
+		
 		if line == "" || !strings.HasPrefix(line, "data: ") {
 			continue
 		}
 
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
+			log.Printf("[QianwenVisionStream] Received [DONE]")
 			break
 		}
 
-		var chunk struct {
-			Choices []struct {
-				Delta struct {
-					Content string `json:"content"`
-				} `json:"delta"`
-			} `json:"choices"`
-		}
-
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			pkglog.Warnw("解析SSE数据失败", "error", err, "data", data)
+		// 解析为通用 map 以查看完整结构
+		var rawData map[string]interface{}
+		if err := json.Unmarshal([]byte(data), &rawData); err != nil {
+			pkglog.Warnw("解析SSE数据为map失败", "error", err, "data", data)
 			continue
 		}
-
-		if len(chunk.Choices) > 0 {
-			content := chunk.Choices[0].Delta.Content
-			if content != "" {
-				fullContent.WriteString(content)
-				if onToken != nil {
-					if err := onToken(content); err != nil {
-						return fullContent.String(), err
+		
+		// 打印每一行的关键信息
+		if choices, ok := rawData["choices"].([]interface{}); ok && len(choices) > 0 {
+			if choice, ok := choices[0].(map[string]interface{}); ok {
+				if delta, ok := choice["delta"].(map[string]interface{}); ok {
+					if content, ok := delta["content"].(string); ok && content != "" {
+						tokenCount++
+						fullContent.WriteString(content)
+						if onToken != nil {
+							if err := onToken(content); err != nil {
+								log.Printf("[QianwenVisionStream] onToken error: %v", err)
+								return fullContent.String(), err
+							}
+						}
+					}
+				}
+			}
+		}
+		
+		// 检查是否有 reasoning_content (思考内容)
+		if choices, ok := rawData["choices"].([]interface{}); ok && len(choices) > 0 {
+			if choice, ok := choices[0].(map[string]interface{}); ok {
+				if delta, ok := choice["delta"].(map[string]interface{}); ok {
+					if _, hasReasoning := delta["reasoning_content"]; hasReasoning {
+						log.Printf("[QianwenVisionStream] Found reasoning_content in delta")
 					}
 				}
 			}
@@ -876,10 +897,20 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 	}
 
 	if err := scanner.Err(); err != nil {
+		log.Printf("[QianwenVisionStream] Scanner error: %v", err)
 		return fullContent.String(), fmt.Errorf("读取流式响应失败: %w", err)
 	}
 
+	log.Printf("[QianwenVisionStream] Finished: lines=%d, tokens=%d, content_len=%d", lineCount, tokenCount, fullContent.Len())
+
 	return fullContent.String(), nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (a *aliBiz) GetFileUploadLease(fileName string) (string, map[string]string, string, error) {

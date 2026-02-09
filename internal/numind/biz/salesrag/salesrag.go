@@ -1476,8 +1476,8 @@ func (b *salesRAGBiz) analyzeImage(ctx context.Context, userID uint, file io.Rea
 - 使用洗练、具备商业厚度的 Markdown 格式。
 - **禁止任何开场白**，直接输出画像正文。`
 
-	// 5. 调用阿里云百炼视觉模型（qwen3-vl-flash）
-	const visionModel = "qwen3-vl-flash"
+	// 5. 调用阿里云百炼视觉模型（qwen3-vl-flash-2026-01-22）
+	const visionModel = "qwen3-vl-flash-2026-01-22"
 	profileResult, err := b.aliBiz.QianwenVision(ctx, dataURL, combinedPrompt, visionModel)
 	if err != nil {
 		return "", fmt.Errorf("视觉端到端分析失败 (阿里云): %w", err)
@@ -1490,6 +1490,8 @@ func (b *salesRAGBiz) analyzeImage(ctx context.Context, userID uint, file io.Rea
 
 // analyzeImageStream 是 analyzeImage 的流式版本
 func (b *salesRAGBiz) analyzeImageStream(ctx context.Context, userID uint, imageData []byte, onToken func(token string) error) (string, error) {
+	log.Printf("[analyzeImageStream] Starting analysis for user %d, image size: %d bytes", userID, len(imageData))
+	
 	// 2. 准备数据传输 URL (优先使用 COS 签名 URL，减少公网传输压力)
 	var dataURL string
 	ext := ".jpg" // 默认后缀
@@ -1501,6 +1503,8 @@ func (b *salesRAGBiz) analyzeImageStream(ctx context.Context, userID uint, image
 		if err == nil && signedURL != "" {
 			dataURL = signedURL
 			log.Printf("[analyzeImageStream] Successfully uploaded to COS, using signed URL: %s", objectKey)
+		} else {
+			log.Printf("[analyzeImageStream] COS upload failed: %v", err)
 		}
 	}
 
@@ -1537,8 +1541,18 @@ func (b *salesRAGBiz) analyzeImageStream(ctx context.Context, userID uint, image
 - 使用具备商业厚度的 Markdown 格式。
 - **直接输出画像内容**，不要有任何寒暄、前排分析或结论语。`
 
-	const visionModel = "qwen3-vl-flash"
-	return b.aliBiz.QianwenVisionStream(ctx, dataURL, combinedPrompt, visionModel, onToken)
+	const visionModel = "qwen3-vl-flash-2026-01-22"
+	
+	log.Printf("[analyzeImageStream] Calling QianwenVisionStream with model: %s", visionModel)
+	result, err := b.aliBiz.QianwenVisionStream(ctx, dataURL, combinedPrompt, visionModel, onToken)
+	
+	if err != nil {
+		log.Printf("[analyzeImageStream] QianwenVisionStream error: %v", err)
+		return "", err
+	}
+	
+	log.Printf("[analyzeImageStream] QianwenVisionStream completed, result length: %d", len(result))
+	return result, nil
 }
 
 // AnalyzeDocumentStream 流式分析文档

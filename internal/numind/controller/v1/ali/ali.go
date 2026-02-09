@@ -241,7 +241,7 @@ func (ctrl *AliController) VisionAnalyze(c *gin.Context) {
 	prompt := c.PostForm("prompt")
 
 	// 8. 调用 Biz 层进行分析
-	result, err := ctrl.aliBiz.QianwenVision(c.Request.Context(), fmt.Sprintf("data:image/jpeg;base64,%s", encoded), prompt, "qwen3-vl-flash")
+	result, err := ctrl.aliBiz.QianwenVision(c.Request.Context(), fmt.Sprintf("data:image/jpeg;base64,%s", encoded), prompt, "qwen3-vl-flash-2026-01-22")
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return

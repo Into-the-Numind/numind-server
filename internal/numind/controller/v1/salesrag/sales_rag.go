@@ -1,13 +1,10 @@
 package salesrag
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"mime/multipart"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -626,8 +623,11 @@ func (ctrl *SalesRAGController) RenameSession(c *gin.Context) {
 
 // AnalyzeProfile 解析上传的文档生成客户档案 (支持 SSE 流式)
 func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
+	log.Infow("[AnalyzeProfile] Received request")
+	
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
+		log.Errorw("[AnalyzeProfile] FormFile error", "error", err)
 		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
 		return
 	}
@@ -635,9 +635,12 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 
 	user := middleware.GetCurrentUser(c)
 	if user == nil {
+		log.Errorw("[AnalyzeProfile] No user found")
 		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
 		return
 	}
+
+	log.Infow("[AnalyzeProfile] User uploading file", "user_id", user.ID, "filename", header.Filename, "size", header.Size)
 
 	// 设置 SSE 响应头
 	c.Header("Content-Type", "text/event-stream")
@@ -654,8 +657,11 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 	})
 	fmt.Fprintf(w, "data: %s\n\n", statusData)
 	w.Flush()
+	log.Infow("[AnalyzeProfile] Sent initial status")
 
+	log.Infow("[AnalyzeProfile] Calling AnalyzeDocumentStream...")
 	profile, err := ctrl.b.SalesRAG().AnalyzeDocumentStream(c, user.ID, file, header.Filename, func(token string) error {
+		log.Infow("[AnalyzeProfile] Received token", "token_preview", token[:min(len(token), 30)])
 		eventData, _ := json.Marshal(map[string]interface{}{
 			"type": "token",
 			"data": token,
@@ -668,6 +674,7 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 	})
 
 	if err != nil {
+		log.Errorw("[AnalyzeProfile] AnalyzeDocumentStream error", "error", err)
 		errData, _ := json.Marshal(map[string]interface{}{
 			"type": "error",
 			"data": err.Error(),
@@ -677,6 +684,8 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 		return
 	}
 
+	log.Infow("[AnalyzeProfile] AnalyzeDocumentStream completed", "profile_length", len(profile))
+
 	// 发送完成并附带完整结果
 	doneData, _ := json.Marshal(map[string]interface{}{
 		"type":    "done",
@@ -684,6 +693,7 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 	})
 	fmt.Fprintf(w, "data: %s\n\n", doneData)
 	w.Flush()
+	log.Infow("[AnalyzeProfile] Sent done event")
 }
 
 // AnalyzeChatStyle 分析聊天风格（语言指纹分析）
@@ -748,7 +758,7 @@ func (ctrl *SalesRAGController) GetLanguageStyle(c *gin.Context) {
 	})
 }
 
-// OCR 识别图片中的文本 (转发给 Python OCR 微服务)
+// OCR 识别图片中的文本 (调用阿里云百炼视觉大模型)
 func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 	// 1. 获取上传的文件
 	file, header, err := c.Request.FormFile("file")
@@ -765,7 +775,7 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 		return
 	}
 
-	// 2. 读取并在上传到 COS 的同时准备转发
+	// 2. 读取并上传到 COS
 	data, err := io.ReadAll(file)
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("读取文件数据失败"), nil)
@@ -773,7 +783,6 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 	}
 
 	// 生成 object key: sales_chat/{userID}/{sessionID}/{timestamp}_{filename}
-	// 可选的 session_id，如果前端没传则使用 no_session 目录
 	sessionID := c.DefaultPostForm("session_id", "no_session")
 	objectKey := fmt.Sprintf("sales_chat/%d/%s/%d_%s", user.ID, sessionID, time.Now().Unix(), header.Filename)
 
@@ -785,60 +794,95 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 		return
 	}
 
-	// 3. 构建转发请求到 Python OCR 服务 (9093 端口)
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-	part, err := writer.CreateFormFile("file", header.Filename)
+	// 3. 调用阿里云百炼视觉模型进行 OCR 识别
+	// 使用 qwen3-vl-flash-2026-01-22 模型
+	prompt := `你是一个专业的微信聊天记录识别专家。请识别这张微信聊天截图中的对话内容。
+
+  ## 识别要求
+
+  ### 1. 气泡布局识别
+  - **左边气泡（白色/灰色）= 客户消息**
+  - **右边气泡（绿色）= 销售消息**
+  - 从上到下完整扫描所有对话气泡
+
+  ### 2. 内容提取规则
+  - **保留表情符号**：如 [微笑]、[呲牙]、🌹 等
+  - **只提取文字气泡**：忽略图片、语音、视频等多媒体消息
+  - **保持原文**：不要修改、总结或解释对话内容
+
+  ### 3. 输出格式（严格遵守）
+
+  **如果截图包含多轮对话**（2条及以上消息），按以下格式输出：
+
+  【对话历史】
+  客户：[第1条客户消息]
+  销售：[第1条销售消息]
+  客户：[第2条客户消息]
+  ...（所有历史对话）
+
+  【客户最新消息】
+  客户：[最后一条客户消息]
+
+  **如果截图只有单条消息**，直接输出：
+
+  客户：[消息内容]
+
+  ### 4. 特殊处理规则
+
+  - **最新消息必须是客户发的**：如果截图最后一条是销售发的，往前找到最近的客户消息作为"最新消息"
+  - **空消息处理**：如果气泡只有表情没有文字，保留表情符号
+  - **时间戳忽略**：不要提取对话中的时间信息
+
+  ## 输出示例
+
+  ### 示例1：多轮对话
+  【对话历史】
+  客户：你们这个产品怎么样？
+  销售：我们的产品在行业内评价很高，已经服务了1000+客户
+  客户：价格呢？
+  销售：我们有三种套餐，基础版998元...
+
+  【客户最新消息】
+  客户：太贵了，能便宜点吗？
+
+  ### 示例2：单条消息
+  客户：在吗？
+
+  ### 示例3：包含表情
+  【对话历史】
+  客户：你好[微笑]
+  销售：您好，很高兴为您服务
+
+  【客户最新消息】
+  客户：我想了解一下产品
+
+  ## 关键约束
+
+  1. **严格使用【对话历史】和【客户最新消息】标记**，不要使用其他标记
+  2. **每条消息前必须有"客户："或"销售："前缀**
+  3. **不要添加任何分析、解释或总结**，只输出识别的对话内容
+  4. **保持对话的原始顺序和完整性**
+
+  现在请识别这张截图。`
+	model := "qwen3-vl-flash-2026-01-22"
+
+	// 生成 10 分钟有效的签名 URL 供阿里云 API 访问
+	signedURL, err := util.GenerateSignedURL(c.Request.Context(), objectKey, 600)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("构建请求失败"), nil)
-		return
+		log.Warnw("Generate signed URL failed, use raw cosURL", "error", err, "key", objectKey)
+		signedURL = cosURL
 	}
-	_, err = io.Copy(part, bytes.NewReader(data))
+
+	ocrText, err := ctrl.b.Ali().QianwenVision(c.Request.Context(), signedURL, prompt, model)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("复制文件数据失败"), nil)
-		return
-	}
-	writer.Close()
-
-	ocrURL := "http://localhost:9093/ocr"
-	req, err := http.NewRequest("POST", ocrURL, body)
-	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("创建转发请求失败"), nil)
-		return
-	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("调用 OCR 服务超时或失败"), nil)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("OCR 服务返回错误"), nil)
+		log.Errorw("Alibaba Cloud Vision OCR failed", "error", err, "user_id", user.ID, "url", signedURL)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("图片识别失败，请检查模型配置"), nil)
 		return
 	}
 
-	// 4. 解析结果
-	var result struct {
-		Success bool   `json:"success"`
-		Text    string `json:"text"`
-		Error   string `json:"error"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("解析 OCR 结果失败"), nil)
-		return
-	}
-
-	if !result.Success {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("OCR 识别失败: %s", result.Error), nil)
-		return
-	}
-
+	// 4. 返回结果
 	core.WriteResponse(c, nil, map[string]string{
-		"text": result.Text,
+		"text": ocrText,
 		"url":  cosURL,
 	})
 }
