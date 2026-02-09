@@ -79,6 +79,8 @@ type SalesRAGBiz interface {
 
 	// GetLanguageStyle 获取用户的语言风格
 	GetLanguageStyle(ctx context.Context, userID uint) (string, error)
+	// SaveLanguageStyle 保存用户的语言风格
+	SaveLanguageStyle(ctx context.Context, userID uint, style string) error
 }
 
 type IngestOptions struct {
@@ -1494,6 +1496,97 @@ func (b *salesRAGBiz) analyzeImage(ctx context.Context, userID uint, file io.Rea
 func (b *salesRAGBiz) analyzeImageStream(ctx context.Context, userID uint, imageData []byte, onToken func(token string) error) (string, error) {
 	log.Printf("[analyzeImageStream] Starting analysis for user %d, image size: %d bytes", userID, len(imageData))
 
+	// 1. 检查图片大小和尺寸，如果超过限制则压缩
+	const maxVisionSize = 10 * 1024 * 1024 // 10MB
+	const maxDimension = 4096              // 阿里云视觉模型支持的最大边长
+
+	// 解码图片以检查尺寸
+	src, err := imaging.Decode(bytes.NewReader(imageData))
+	if err != nil {
+		log.Printf("[analyzeImageStream] Failed to decode image: %v", err)
+		return "", fmt.Errorf("解码图片失败: %w", err)
+	}
+
+	bounds := src.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	needsResize := false
+
+	log.Printf("[analyzeImageStream] Original image dimensions: %dx%d, size: %d bytes", width, height, len(imageData))
+
+	// 检查是否需要压缩（尺寸过大或文件过大）
+	if width > maxDimension || height > maxDimension || len(imageData) > maxVisionSize {
+		needsResize = true
+		log.Printf("[analyzeImageStream] Image exceeds limits (max dimension: %d, max size: %d MB), starting compression...", maxDimension, maxVisionSize/1024/1024)
+
+		// 计算缩放比例，确保最大边不超过 maxDimension
+		scale := 1.0
+		if width > height {
+			if width > maxDimension {
+				scale = float64(maxDimension) / float64(width)
+			}
+		} else {
+			if height > maxDimension {
+				scale = float64(maxDimension) / float64(height)
+			}
+		}
+
+		// 如果需要缩放
+		if scale < 1.0 {
+			width = int(float64(width) * scale)
+			height = int(float64(height) * scale)
+			log.Printf("[analyzeImageStream] Scaling image to %dx%d (scale: %.2f)", width, height, scale)
+		}
+
+		// 逐步压缩直到满足大小要求
+		quality := 85
+		for len(imageData) > maxVisionSize && (width > 500 || height > 500) {
+			// 调整尺寸
+			dst := imaging.Resize(src, width, height, imaging.Lanczos)
+
+			// 重新编码为JPEG
+			var buf bytes.Buffer
+			err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: quality})
+			if err != nil {
+				return "", fmt.Errorf("压缩图片失败: %w", err)
+			}
+			imageData = buf.Bytes()
+
+			log.Printf("[analyzeImageStream] Compressed to %dx%d, size: %d bytes (quality: %d)", width, height, len(imageData), quality)
+
+			// 如果还是太大，继续缩小
+			if len(imageData) > maxVisionSize {
+				if quality > 60 {
+					quality -= 10
+				} else {
+					width = int(float64(width) * 0.8)
+					height = int(float64(height) * 0.8)
+				}
+			} else {
+				break
+			}
+
+			src = dst
+		}
+
+		// 最后检查是否成功压缩
+		if len(imageData) > maxVisionSize {
+			return "", fmt.Errorf("图片过大且压缩失败 (当前大小: %d bytes)", len(imageData))
+		}
+
+		log.Printf("[analyzeImageStream] Compression completed, final size: %d bytes, dimensions: %dx%d", len(imageData), width, height)
+	} else if needsResize {
+		// 即使文件大小OK，但如果之前检测到尺寸需要调整，也要重新编码
+		dst := imaging.Resize(src, width, height, imaging.Lanczos)
+		var buf bytes.Buffer
+		err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 85})
+		if err != nil {
+			return "", fmt.Errorf("重新编码图片失败: %w", err)
+		}
+		imageData = buf.Bytes()
+		log.Printf("[analyzeImageStream] Resized image to %dx%d, new size: %d bytes", width, height, len(imageData))
+	}
+
 	// 2. 准备数据传输 URL (优先使用 COS URL)
 	var dataURL string
 	ext := ".jpg" // 默认后缀
@@ -2210,6 +2303,24 @@ func (b *salesRAGBiz) GetLanguageStyle(ctx context.Context, userID uint) (string
 		return "", nil // Not found
 	}
 	return style.Style, nil
+}
+
+// SaveLanguageStyle 保存用户的语言风格
+func (b *salesRAGBiz) SaveLanguageStyle(ctx context.Context, userID uint, styleContent string) error {
+	log.Printf("[SaveLanguageStyle] Saving for user %d, content length: %d", userID, len(styleContent))
+
+	style := &model.LanguageStyle{
+		UserID: userID,
+		Style:  styleContent,
+	}
+
+	if err := b.ds.LanguageStyles().Save(ctx, style); err != nil {
+		log.Printf("[SaveLanguageStyle] Failed to save for user %d: %v", userID, err)
+		return fmt.Errorf("保存语言风格失败: %w", err)
+	}
+
+	log.Printf("[SaveLanguageStyle] Successfully saved for user %d", userID)
+	return nil
 }
 
 // CheckSemanticSplitterStatus 检查语义切分器状态

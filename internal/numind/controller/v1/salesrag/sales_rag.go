@@ -808,6 +808,38 @@ func (ctrl *SalesRAGController) GetLanguageStyle(c *gin.Context) {
 	})
 }
 
+// SaveLanguageStyle 保存用户的语言风格
+func (ctrl *SalesRAGController) SaveLanguageStyle(c *gin.Context) {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	var req struct {
+		Style string `json:"style" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Errorw("[SaveLanguageStyle] Invalid request", "error", err)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("请提供语言风格内容"), nil)
+		return
+	}
+
+	log.Infow("[SaveLanguageStyle] Saving for user", "user_id", user.ID, "style_length", len(req.Style))
+
+	if err := ctrl.b.SalesRAG().SaveLanguageStyle(c, user.ID, req.Style); err != nil {
+		log.Errorw("[SaveLanguageStyle] Error", "userID", user.ID, "error", err.Error())
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	log.Infow("[SaveLanguageStyle] Successfully saved", "user_id", user.ID)
+	core.WriteResponse(c, nil, map[string]string{
+		"message": "语言风格保存成功",
+	})
+}
+
 // OCR 识别图片中的文本 (调用阿里云百炼视觉大模型)
 func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 	// 1. 获取上传的文件
