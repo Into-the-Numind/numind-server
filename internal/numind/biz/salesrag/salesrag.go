@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/jpeg"
 	"io"
 	"log"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
 
+	"github.com/disintegration/imaging"
 	"gorm.io/gorm"
 )
 
@@ -1123,21 +1125,65 @@ func (b *salesRAGBiz) analyzeImage(ctx context.Context, userID uint, file io.Rea
 		return "", fmt.Errorf("读取图片失败: %w", err)
 	}
 
-	// 2. 将图片转换为 base64
+	// 2. 检查图片大小，如果超过 10MB 则压缩
+	const maxVisionSize = 10 * 1024 * 1024 // 10MB
+	if len(imageData) > maxVisionSize {
+		log.Printf("[analyzeImage] Image size (%d bytes) exceeds 10MB, starting compression...", len(imageData))
+
+		// 转换字节为 image.Image
+		src, err := imaging.Decode(bytes.NewReader(imageData))
+		if err != nil {
+			return "", fmt.Errorf("解码图片失败: %w", err)
+		}
+
+		// 计算缩放比例：基于像素面积的简单启发式
+		// 视觉模型通常对像素总量有限制，或者我们通过缩放来显著减小文件体积
+		// 我们先尝试将长宽各缩小到原来的 70% (面积约 50%)
+		bounds := src.Bounds()
+		width := bounds.Dx()
+		height := bounds.Dy()
+
+		// 如果是超长截图（长宽比过大），我们要小心缩放逻辑
+		// 这里采用逐步缩放策略，直到大小达标或达到最小阈值
+		quality := 85
+		for len(imageData) > maxVisionSize && (width > 500 || height > 500) {
+			width = int(float64(width) * 0.8)
+			height = int(float64(height) * 0.8)
+
+			dst := imaging.Resize(src, width, height, imaging.Lanczos)
+
+			var buf bytes.Buffer
+			// 使用标准库 jpeg 包进行编码，以支持质量设置
+			err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: quality})
+			if err != nil {
+				return "", fmt.Errorf("压缩图片失败: %w", err)
+			}
+			imageData = buf.Bytes()
+
+			log.Printf("[analyzeImage] Compressed to %dx%d, size: %d bytes (quality: %d)", width, height, len(imageData), quality)
+
+			// 如果缩放后还是大，降低质量
+			if quality > 60 {
+				quality -= 10
+			}
+
+			// 更新当前 src 为已缩放的图，方便下一轮
+			src = dst
+		}
+
+		if len(imageData) > maxVisionSize {
+			return "", fmt.Errorf("图片过大且压缩失败 (当前大小: %d bytes)", len(imageData))
+		}
+	}
+
+	// 3. 将图片转换为 base64
 	base64Image := base64.StdEncoding.EncodeToString(imageData)
 
-	// 3. 构建 data URL
-	contentType := "image/jpeg"
-	if strings.HasSuffix(strings.ToLower(filename), ".png") {
-		contentType = "image/png"
-	} else if strings.HasSuffix(strings.ToLower(filename), ".gif") {
-		contentType = "image/gif"
-	} else if strings.HasSuffix(strings.ToLower(filename), ".webp") {
-		contentType = "image/webp"
-	}
-	dataURL := fmt.Sprintf("data:%s;base64,%s", contentType, base64Image)
+	// 4. 构建 data URL
+	// 注意：无论原图格式，压缩后统一使用 image/jpeg 提高兼容性和压缩率
+	dataURL := fmt.Sprintf("data:image/jpeg;base64,%s", base64Image)
 
-	log.Printf("图片已转换为 base64, 大小: %d bytes", len(imageData))
+	log.Printf("图片已处理完成, 最终大小: %d bytes, 格式: image/jpeg", len(imageData))
 
 	// 4. 构建聊天记录识别提示词
 	chatPrompt := `这是一张微信聊天截图。请帮我提取聊天记录中的文字内容。
