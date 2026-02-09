@@ -123,6 +123,7 @@ ali:
 
   # 视觉理解服务
   vision:
+    api_key: "sk-31f08fc72a594fbca4e827d5465a941b"  # 视觉服务专用API密钥
     model: "qwen3-vl-flash-2026-01-22" # 视觉模型
     timeout: 180s
 

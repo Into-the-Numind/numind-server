@@ -1,6 +1,7 @@
 package salesrag
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -1568,15 +1569,43 @@ func (b *salesRAGBiz) AnalyzeDocumentStream(ctx context.Context, userID uint, fi
 		return b.analyzeImageStream(ctx, userID, data, onToken)
 	}
 
-	// 暂时只支持图片流式，非图片走普通逻辑但在最后一次性吐出（或稍后补充文本流式）
-	content, err := b.analyzeDocument(ctx, bytes.NewReader(data), filename)
+	// 文本文件使用 dmxapi 流式输出
+	return b.analyzeDocumentStreamInternal(ctx, bytes.NewReader(data), filename, onToken)
+}
+
+// analyzeDocumentStreamInternal 分析文档（流式输出版本）
+func (b *salesRAGBiz) analyzeDocumentStreamInternal(ctx context.Context, file io.Reader, filename string, onToken func(token string) error) (string, error) {
+	// 1. 解析文档内容
+	content, err := b.parser.Parse(ctx, file, filename)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to parse document: %w", err)
 	}
-	if onToken != nil {
-		_ = onToken(content)
+
+	// 2. 截断 (避免 token 溢出)
+	maxLen := 50000
+	if len(content) > maxLen {
+		content = content[:maxLen] + "\n...(truncated)"
 	}
-	return content, nil
+
+	// 3. 构建提示词
+	systemPrompt := `你是一个敏锐的销售战略专家。任务是基于提供的片段，为销售人员提取一份"高干货"客户画像，用于指导后续的回复话术生成。
+
+##  核心原则：事实第一，不强求全
+- 如果文档信息极少，只提炼最有保障的事实或高概率推测，严禁编造信息。
+- 允许跳过无法确定的维度。格式虽然是结构化的，但内容根据实际资料灵活裁剪。
+
+## 提炼维度（仅在信息可识别时输出）：
+1. **基础背景**：对方是谁？（姓名、所属行业、规模、当前沟通背景/阶段等）
+2. **核心需求与敏锐点**：对方在乎什么？（急需解决的问题，强烈的需求，或者对价格、安全、效率等维度的敏感倾向）
+3. **性格与风格推断**：对方说话/行文的方式体现了什么特征？（如：老练果断、极度关注细节、犹豫不决等）
+4. **其他关键信息**：你认为至关重要的客户特点
+
+## 约束：
+- 严格控制在300 - 500 字以内
+- 直接以 Markdown 列表输出干货内容，严禁任何开场白和提示语`
+
+	// 4. 调用 dmxapi 的 qwen-turbo 模型（流式输出）
+	return b.callDMXAPIStream(ctx, systemPrompt, "客户文档内容如下：\n\n"+content, onToken)
 }
 
 // analyzeDocument 分析文档（原有逻辑）
@@ -1617,15 +1646,129 @@ func (b *salesRAGBiz) analyzeDocument(ctx context.Context, file io.Reader, filen
 // generateProfileFromChat 基于聊天记录生成客户画像
 // 已弃用：目前的图片处理流程已改为在 analyzeImage 中一次性完成端到端生
 
-// callDMXAPI 调用 dmxapi 的 qwen-turbo-latest 模型
-func (b *salesRAGBiz) callDMXAPI(ctx context.Context, systemPrompt, userMessage string) (string, error) {
+// callDMXAPIStream 调用 dmxapi 的 qwen-turbo 模型（流式输出）
+func (b *salesRAGBiz) callDMXAPIStream(ctx context.Context, systemPrompt, userMessage string, onToken func(token string) error) (string, error) {
 	url := "https://www.dmxapi.cn/v1/chat/completions"
 	apiKey := "sk-XgINDoE22MHQfcSZnToYICS4rNnoknIrXhZHZYs3VQM9DP25"
-	model := "qwen-turbo-latest"
+	model := "qwen-turbo"
+
+	log.Printf("[callDMXAPIStream] Starting API call, model: %s, text length: %d", model, len(userMessage))
 
 	payload := map[string]interface{}{
 		"model": model,
-		"messages": []map[string]string{
+		"messages": []map[string]interface{}{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": userMessage},
+		},
+		"temperature": 0.5,
+		"max_tokens":  2000,
+		"stream":      true, // 启用流式输出
+	}
+
+	bodyBytes, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		log.Printf("[callDMXAPIStream] Failed to create request: %v", err)
+		return "", fmt.Errorf("create request failed: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", apiKey)
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[callDMXAPIStream] HTTP request failed: %v", err)
+		return "", fmt.Errorf("DMXAPI request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	log.Printf("[callDMXAPIStream] Response status code: %d", resp.StatusCode)
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("[callDMXAPIStream] Error response body: %s", string(body))
+		return "", fmt.Errorf("DMXAPI error %d: %s", resp.StatusCode, string(body))
+	}
+
+	// 流式读取响应
+	var fullContent strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	tokenCount := 0
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// 跳过空行
+		if line == "" {
+			continue
+		}
+
+		// SSE 格式：data: {JSON}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+
+		// 检查结束标记
+		if data == "[DONE]" {
+			log.Printf("[callDMXAPIStream] Received [DONE]")
+			break
+		}
+
+		// 解析 JSON
+		var streamData struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+
+		if err := json.Unmarshal([]byte(data), &streamData); err != nil {
+			log.Printf("[callDMXAPIStream] Failed to parse stream data: %v, data: %s", err, data)
+			continue
+		}
+
+		// 提取 content
+		if len(streamData.Choices) > 0 {
+			content := streamData.Choices[0].Delta.Content
+			if content != "" {
+				tokenCount++
+				fullContent.WriteString(content)
+
+				// 调用回调函数
+				if onToken != nil {
+					if err := onToken(content); err != nil {
+						log.Printf("[callDMXAPIStream] onToken error: %v", err)
+						return fullContent.String(), err
+					}
+				}
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		log.Printf("[callDMXAPIStream] Scanner error: %v", err)
+		return fullContent.String(), fmt.Errorf("read stream failed: %w", err)
+	}
+
+	log.Printf("[callDMXAPIStream] Success, tokens: %d, content length: %d", tokenCount, fullContent.Len())
+	return fullContent.String(), nil
+}
+
+// callDMXAPI 调用 dmxapi 的 qwen-turbo 模型（用于文本分析）
+func (b *salesRAGBiz) callDMXAPI(ctx context.Context, systemPrompt, userMessage string) (string, error) {
+	url := "https://www.dmxapi.cn/v1/chat/completions"
+	apiKey := "sk-XgINDoE22MHQfcSZnToYICS4rNnoknIrXhZHZYs3VQM9DP25"
+	model := "qwen-turbo"
+
+	log.Printf("[callDMXAPI] Starting API call, model: %s, text length: %d", model, len(userMessage))
+
+	payload := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]interface{}{
 			{"role": "system", "content": systemPrompt},
 			{"role": "user", "content": userMessage},
 		},
@@ -1636,6 +1779,7 @@ func (b *salesRAGBiz) callDMXAPI(ctx context.Context, systemPrompt, userMessage 
 	bodyBytes, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
 	if err != nil {
+		log.Printf("[callDMXAPI] Failed to create request: %v", err)
 		return "", fmt.Errorf("create request failed: %w", err)
 	}
 
@@ -1645,13 +1789,24 @@ func (b *salesRAGBiz) callDMXAPI(ctx context.Context, systemPrompt, userMessage 
 	client := &http.Client{Timeout: 120 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Printf("[callDMXAPI] HTTP request failed: %v", err)
 		return "", fmt.Errorf("DMXAPI request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
+	log.Printf("[callDMXAPI] Response status code: %d", resp.StatusCode)
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		log.Printf("[callDMXAPI] Error response body: %s", string(body))
 		return "", fmt.Errorf("DMXAPI error %d: %s", resp.StatusCode, string(body))
+	}
+
+	// 读取响应体
+	bodyBytes, err = io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("[callDMXAPI] Failed to read response body: %v", err)
+		return "", fmt.Errorf("read response failed: %w", err)
 	}
 
 	var result struct {
@@ -1666,34 +1821,65 @@ func (b *salesRAGBiz) callDMXAPI(ctx context.Context, systemPrompt, userMessage 
 		} `json:"error,omitempty"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		log.Printf("[callDMXAPI] Failed to decode JSON response: %v, body: %s", err, string(bodyBytes))
 		return "", fmt.Errorf("decode response failed: %w", err)
 	}
 
 	if result.Error != nil {
+		log.Printf("[callDMXAPI] API returned error: code=%s, message=%s", result.Error.Code, result.Error.Message)
 		return "", fmt.Errorf("DMXAPI error: %s - %s", result.Error.Code, result.Error.Message)
 	}
 
 	if len(result.Choices) == 0 {
+		log.Printf("[callDMXAPI] Empty choices in response: %s", string(bodyBytes))
 		return "", fmt.Errorf("empty choices from DMXAPI")
 	}
 
+	log.Printf("[callDMXAPI] Success, content length: %d", len(result.Choices[0].Message.Content))
 	return result.Choices[0].Message.Content, nil
 }
 
 // AnalyzeChatStyle 分析聊天风格（语言指纹分析）
-// 使用 dmxapi 的 qwen-turbo-latest 模型
+// 图片使用阿里云 qwen3-vl-flash-2026-01-22，文本使用 dmxapi qwen-turbo
 func (b *salesRAGBiz) AnalyzeChatStyle(ctx context.Context, userID uint, file io.Reader, filename string) (string, error) {
-	// 1. 解析内容
+	log.Printf("[AnalyzeChatStyle] Starting analysis for user %d, filename: %s", userID, filename)
+
+	// 检查文件类型，如果是图片则使用视觉模型
+	ext := strings.ToLower(filepath.Ext(filename))
+	if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
+		log.Printf("[AnalyzeChatStyle] Image file detected, using vision model for user %d", userID)
+
+		// 读取图片数据
+		data, err := io.ReadAll(file)
+		if err != nil {
+			log.Printf("[AnalyzeChatStyle] Failed to read image data for user %d: %v", userID, err)
+			return "", fmt.Errorf("failed to read image: %w", err)
+		}
+
+		// 调用图片分析方法
+		return b.analyzeChatStyleImage(ctx, userID, data)
+	}
+
+	// 1. 解析文本内容
 	text, err := b.parser.Parse(ctx, file, filename)
 	if err != nil {
+		log.Printf("[AnalyzeChatStyle] Parse failed for user %d: %v", userID, err)
 		return "", fmt.Errorf("failed to parse chat file: %w", err)
 	}
+	log.Printf("[AnalyzeChatStyle] Parsed text length: %d", len(text))
 
 	// 2. 截断 (避免 token 溢出)
 	maxLen := 10000
 	if len(text) > maxLen {
 		text = text[:maxLen] + "\n...(truncated)"
+		log.Printf("[AnalyzeChatStyle] Text truncated to %d chars", maxLen)
+	}
+
+	// 检查文本是否为空
+	if len(strings.TrimSpace(text)) == 0 {
+		log.Printf("[AnalyzeChatStyle] Empty text after parsing for user %d", userID)
+		return "", fmt.Errorf("文本内容为空，无法分析")
 	}
 
 	// 2. 构建系统提示词
@@ -1705,7 +1891,7 @@ func (b *salesRAGBiz) AnalyzeChatStyle(ctx context.Context, userID uint, file io
 
 ## 提炼维度：
 1. **社交人设与称谓习惯**：
-   - 沟通角色：是“利落的办事员”、“温润的顾问”、“平等的伙伴”还是别的角色？
+   - 沟通角色：是"利落的办事员"、"温润的顾问"、"平等的伙伴"还是别的角色？
    - 称谓偏好：对客户的称呼习惯（您/你，或者其他特定称谓）
 
 2. **文字视觉指纹**：
@@ -1723,11 +1909,14 @@ func (b *salesRAGBiz) AnalyzeChatStyle(ctx context.Context, userID uint, file io
 - 直接输出 Markdown 格式的风格说明书，严禁开场白和任何提示语
 - 字数控制在 500 字以内`
 
-	// 4. 调用 dmxapi 的 qwen-turbo-latest 模型
+	// 4. 调用 dmxapi 的 qwen-turbo 模型
+	log.Printf("[AnalyzeChatStyle] Calling DMX API for user %d", userID)
 	analysis, err := b.callDMXAPI(ctx, systemPrompt, text)
 	if err != nil {
-		return "", err
+		log.Printf("[AnalyzeChatStyle] DMX API call failed for user %d: %v", userID, err)
+		return "", fmt.Errorf("AI 分析服务调用失败: %w", err)
 	}
+	log.Printf("[AnalyzeChatStyle] DMX API success, result length: %d", len(analysis))
 
 	// 5. 保存到数据库
 	style := &model.LanguageStyle{
@@ -1735,10 +1924,98 @@ func (b *salesRAGBiz) AnalyzeChatStyle(ctx context.Context, userID uint, file io
 		Style:  analysis,
 	}
 	if err := b.ds.LanguageStyles().Save(ctx, style); err != nil {
-		log.Printf("Failed to save language style: %v", err)
+		log.Printf("[AnalyzeChatStyle] Failed to save language style for user %d: %v", userID, err)
+	} else {
+		log.Printf("[AnalyzeChatStyle] Language style saved successfully for user %d", userID)
 	}
 
 	return analysis, nil
+}
+
+// analyzeChatStyleImage 使用阿里云视觉模型分析聊天截图的语言风格
+func (b *salesRAGBiz) analyzeChatStyleImage(ctx context.Context, userID uint, imageData []byte) (string, error) {
+	log.Printf("[analyzeChatStyleImage] Starting analysis for user %d, image size: %d bytes", userID, len(imageData))
+
+	// 1. 上传图片到 COS 获取 URL
+	var dataURL string
+	ext := ".jpg"
+	objectKey := fmt.Sprintf("chat_style/%d/%d%s", userID, time.Now().UnixNano(), ext)
+
+	// 尝试上传到 COS
+	if b.ds != nil {
+		signedURL, err := util.UploadBytesToCOS(ctx, objectKey, "image/jpeg", imageData)
+		if err == nil && signedURL != "" {
+			dataURL = signedURL
+			log.Printf("[analyzeChatStyleImage] Successfully uploaded to COS, using signed URL: %s", objectKey)
+		} else {
+			log.Printf("[analyzeChatStyleImage] COS upload failed: %v", err)
+		}
+	}
+
+	if dataURL == "" {
+		// 回退到 base64 方式
+		base64Image := base64.StdEncoding.EncodeToString(imageData)
+		dataURL = fmt.Sprintf("data:image/jpeg;base64,%s", base64Image)
+		log.Printf("[analyzeChatStyleImage] Using base64 data URL (size: %d)", len(dataURL))
+	}
+
+	// 2. 构建提示词
+	systemPrompt := `你是一个资深的文字风格分析专家。这是一张微信聊天截图，请从中提取销售人员的【文字沟通指纹】，以便让 AI 能够精准模仿。
+
+## 核心要求：
+1. **识别气泡布局**：
+   - 右边绿色气泡 = 销售人员的消息（重点分析对象）
+   - 左边白色/灰色气泡 = 客户消息（辅助理解）
+
+2. **严禁使用或提及任何表情（Emoji/颜文字）**，分析和生成的风格必须完全基于纯文字
+
+3. **只提取文字气泡**：忽略图片、语音、视频等多媒体消息
+
+## 提炼维度：
+1. **社交人设与称谓习惯**：
+   - 沟通角色：是"利落的办事员"、"温润的顾问"、"平等的伙伴"还是别的角色？
+   - 称谓偏好：对客户的称呼习惯（您/你，或者其他特定称谓）
+
+2. **文字视觉指纹**：
+   - 句式习惯：爱发大长段，还是习惯短句换行？
+   - 标点符号：爱用规范标点，还是爱用空格/换行代替标点？
+
+3. **语气词与词汇场**：
+   - 标志性结尾：习惯用哪些收尾词（如：哈、呢、吧、哒、！）？
+   - 高频用语：提取 10 个该销售最具代表性的口头禅或职业用语
+
+4. **沟通逻辑脉络**：
+   - 它是如何回答难题或提出建议的？（如：先说结论、先给方案、还是先客套？）
+
+## 约束：
+- 直接输出 Markdown 格式的风格说明书，严禁开场白和任何提示语
+- 字数控制在 500 字以内
+- 只分析销售人员（右边绿色气泡）的语言风格`
+
+	const visionModel = "qwen3-vl-flash-2026-01-22"
+
+	log.Printf("[analyzeChatStyleImage] Calling QianwenVision with model: %s", visionModel)
+	result, err := b.aliBiz.QianwenVision(ctx, dataURL, systemPrompt, visionModel)
+
+	if err != nil {
+		log.Printf("[analyzeChatStyleImage] QianwenVision error: %v", err)
+		return "", fmt.Errorf("视觉模型分析失败: %w", err)
+	}
+
+	log.Printf("[analyzeChatStyleImage] QianwenVision completed, result length: %d", len(result))
+
+	// 3. 保存到数据库
+	style := &model.LanguageStyle{
+		UserID: userID,
+		Style:  result,
+	}
+	if err := b.ds.LanguageStyles().Save(ctx, style); err != nil {
+		log.Printf("[analyzeChatStyleImage] Failed to save language style for user %d: %v", userID, err)
+	} else {
+		log.Printf("[analyzeChatStyleImage] Language style saved successfully for user %d", userID)
+	}
+
+	return result, nil
 }
 
 // GetLanguageStyle 获取用户的语言风格

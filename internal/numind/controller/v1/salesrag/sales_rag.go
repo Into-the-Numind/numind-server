@@ -730,6 +730,7 @@ func (ctrl *SalesRAGController) AnalyzeChatStyle(c *gin.Context) {
 	// 调用业务层分析 (业务层会处理解析和截断)
 	result, err := ctrl.b.SalesRAG().AnalyzeChatStyle(c, user.ID, reader, filename)
 	if err != nil {
+		log.Errorw("[AnalyzeChatStyle] Error", "userID", user.ID, "error", err.Error())
 		core.WriteResponse(c, err, nil)
 		return
 	}

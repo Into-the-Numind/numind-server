@@ -903,6 +903,11 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 
 	log.Printf("[QianwenVisionStream] Finished: lines=%d, tokens=%d, content_len=%d", lineCount, tokenCount, fullContent.Len())
 
+	// 检查是否收到了任何内容
+	if fullContent.Len() == 0 {
+		return "", fmt.Errorf("API返回内容为空，请检查: 1) API Key是否正确 2) 模型名称是否有效(%s) 3) 图片是否可访问", model)
+	}
+
 	return fullContent.String(), nil
 }
 
