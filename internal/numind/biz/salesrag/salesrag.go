@@ -75,6 +75,7 @@ type SalesRAGBiz interface {
 
 	// AnalyzeChatStyle 分析聊天风格（语言指纹分析）
 	AnalyzeChatStyle(ctx context.Context, userID uint, chatData io.Reader, filename string) (string, error)
+	AnalyzeChatStyleStream(ctx context.Context, userID uint, chatData io.Reader, filename string, onToken func(token string) error) (string, error)
 
 	// GetLanguageStyle 获取用户的语言风格
 	GetLanguageStyle(ctx context.Context, userID uint) (string, error)
@@ -1930,6 +1931,190 @@ func (b *salesRAGBiz) AnalyzeChatStyle(ctx context.Context, userID uint, file io
 	}
 
 	return analysis, nil
+}
+
+// AnalyzeChatStyleStream 流式分析聊天风格（语言指纹分析）
+// 图片使用阿里云 qwen3-vl-flash-2026-01-22，文本使用 dmxapi qwen-turbo（均为流式）
+func (b *salesRAGBiz) AnalyzeChatStyleStream(ctx context.Context, userID uint, file io.Reader, filename string, onToken func(token string) error) (string, error) {
+	log.Printf("[AnalyzeChatStyleStream] Starting analysis for user %d, filename: %s", userID, filename)
+
+	// 读取内容
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return "", err
+	}
+
+	// 检查文件类型
+	ext := strings.ToLower(filepath.Ext(filename))
+	if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
+		log.Printf("[AnalyzeChatStyleStream] Image file detected, using vision stream for user %d", userID)
+		return b.analyzeChatStyleImageStream(ctx, userID, data, onToken)
+	}
+
+	// 文本文件使用 dmxapi 流式输出
+	log.Printf("[AnalyzeChatStyleStream] Text file detected, using text stream for user %d", userID)
+	return b.analyzeChatStyleTextStream(ctx, userID, bytes.NewReader(data), filename, onToken)
+}
+
+// analyzeChatStyleTextStream 流式分析文本聊天记录的语言风格
+func (b *salesRAGBiz) analyzeChatStyleTextStream(ctx context.Context, userID uint, file io.Reader, filename string, onToken func(token string) error) (string, error) {
+	log.Printf("[analyzeChatStyleTextStream] Starting for user %d", userID)
+
+	// 1. 解析文本内容
+	text, err := b.parser.Parse(ctx, file, filename)
+	if err != nil {
+		log.Printf("[analyzeChatStyleTextStream] Parse failed for user %d: %v", userID, err)
+		return "", fmt.Errorf("failed to parse chat file: %w", err)
+	}
+	log.Printf("[analyzeChatStyleTextStream] Parsed text length: %d", len(text))
+
+	// 2. 截断 (避免 token 溢出)
+	maxLen := 10000
+	if len(text) > maxLen {
+		text = text[:maxLen] + "\n...(truncated)"
+		log.Printf("[analyzeChatStyleTextStream] Text truncated to %d chars", maxLen)
+	}
+
+	// 检查文本是否为空
+	if len(strings.TrimSpace(text)) == 0 {
+		log.Printf("[analyzeChatStyleTextStream] Empty text after parsing for user %d", userID)
+		return "", fmt.Errorf("文本内容为空，无法分析")
+	}
+
+	// 3. 构建系统提示词
+	systemPrompt := `你是一个资深的文字风格分析专家。由于现在的场景是微信文字聊天，请根据提供的语料，提炼出该销售人员的【文字沟通指纹】，以便让 AI 能够精准模仿
+
+## 核心要求：
+1. **严禁使用或提及任何表情（Emoji/颜文字）**，分析 and 生成的风格必须完全基于纯文字
+2. **纯文字复刻**：重点分析文字如何分词、如何分段、如何使用助词，确保回复感真实不生硬
+
+## 提炼维度：
+1. **社交人设与称谓习惯**：
+   - 沟通角色：是"利落的办事员"、"温润的顾问"、"平等的伙伴"还是别的角色？
+   - 称谓偏好：对客户的称呼习惯（您/你，或者其他特定称谓）
+
+2. **文字视觉指纹**：
+   - 句式习惯：爱发大长段，还是习惯短句换行？
+   - 标点符号：爱用规范标点，还是爱用空格/换行代替标点？
+
+3. **语气词与词汇场**：
+   - 标志性结尾：习惯用哪些收尾词（如：哈、呢、吧、哒、！）？
+   - 高频用语：提取 10 个该销售最具代表性的口头禅或职业用语
+
+4. **沟通逻辑脉络**：
+   - 它是如何回答难题或提出建议的？（如：先说结论、先给方案、还是先客套？）
+
+## 约束：
+- 直接输出 Markdown 格式的风格说明书，严禁开场白和任何提示语
+- 字数控制在 500 字以内`
+
+	// 4. 调用 dmxapi 的 qwen-turbo 模型（流式输出）
+	log.Printf("[analyzeChatStyleTextStream] Calling DMX API stream for user %d", userID)
+	analysis, err := b.callDMXAPIStream(ctx, systemPrompt, text, onToken)
+	if err != nil {
+		log.Printf("[analyzeChatStyleTextStream] DMX API stream failed for user %d: %v", userID, err)
+		return "", fmt.Errorf("AI 分析服务调用失败: %w", err)
+	}
+	log.Printf("[analyzeChatStyleTextStream] DMX API stream success, result length: %d", len(analysis))
+
+	// 5. 保存到数据库
+	style := &model.LanguageStyle{
+		UserID: userID,
+		Style:  analysis,
+	}
+	if err := b.ds.LanguageStyles().Save(ctx, style); err != nil {
+		log.Printf("[analyzeChatStyleTextStream] Failed to save language style for user %d: %v", userID, err)
+	} else {
+		log.Printf("[analyzeChatStyleTextStream] Language style saved successfully for user %d", userID)
+	}
+
+	return analysis, nil
+}
+
+// analyzeChatStyleImageStream 流式分析聊天截图的语言风格
+func (b *salesRAGBiz) analyzeChatStyleImageStream(ctx context.Context, userID uint, imageData []byte, onToken func(token string) error) (string, error) {
+	log.Printf("[analyzeChatStyleImageStream] Starting analysis for user %d, image size: %d bytes", userID, len(imageData))
+
+	// 1. 上传图片到 COS 获取 URL
+	var dataURL string
+	ext := ".jpg"
+	objectKey := fmt.Sprintf("chat_style/%d/%d%s", userID, time.Now().UnixNano(), ext)
+
+	// 尝试上传到 COS
+	if b.ds != nil {
+		signedURL, err := util.UploadBytesToCOS(ctx, objectKey, "image/jpeg", imageData)
+		if err == nil && signedURL != "" {
+			dataURL = signedURL
+			log.Printf("[analyzeChatStyleImageStream] Successfully uploaded to COS, using URL: %s", objectKey)
+		} else {
+			log.Printf("[analyzeChatStyleImageStream] COS upload failed: %v", err)
+		}
+	}
+
+	if dataURL == "" {
+		// 回退到 base64 方式
+		base64Image := base64.StdEncoding.EncodeToString(imageData)
+		dataURL = fmt.Sprintf("data:image/jpeg;base64,%s", base64Image)
+		log.Printf("[analyzeChatStyleImageStream] Using base64 data URL (size: %d)", len(dataURL))
+	}
+
+	// 2. 构建提示词
+	systemPrompt := `你是一个资深的文字风格分析专家。这是一张微信聊天截图，请从中提取销售人员的【文字沟通指纹】，以便让 AI 能够精准模仿。
+
+## 核心要求：
+1. **识别气泡布局**：
+   - 右边绿色气泡 = 销售人员的消息（重点分析对象）
+   - 左边白色/灰色气泡 = 客户消息（辅助理解）
+
+2. **严禁使用或提及任何表情（Emoji/颜文字）**，分析和生成的风格必须完全基于纯文字
+
+3. **只提取文字气泡**：忽略图片、语音、视频等多媒体消息
+
+## 提炼维度：
+1. **社交人设与称谓习惯**：
+   - 沟通角色：是"利落的办事员"、"温润的顾问"、"平等的伙伴"还是别的角色？
+   - 称谓偏好：对客户的称呼习惯（您/你，或者其他特定称谓）
+
+2. **文字视觉指纹**：
+   - 句式习惯：爱发大长段，还是习惯短句换行？
+   - 标点符号：爱用规范标点，还是爱用空格/换行代替标点？
+
+3. **语气词与词汇场**：
+   - 标志性结尾：习惯用哪些收尾词（如：哈、呢、吧、哒、！）？
+   - 高频用语：提取 10 个该销售最具代表性的口头禅或职业用语
+
+4. **沟通逻辑脉络**：
+   - 它是如何回答难题或提出建议的？（如：先说结论、先给方案、还是先客套？）
+
+## 约束：
+- 直接输出 Markdown 格式的风格说明书，严禁开场白和任何提示语
+- 字数控制在 500 字以内
+- 只分析销售人员（右边绿色气泡）的语言风格`
+
+	const visionModel = "qwen3-vl-flash-2026-01-22"
+
+	log.Printf("[analyzeChatStyleImageStream] Calling QianwenVisionStream with model: %s", visionModel)
+	result, err := b.aliBiz.QianwenVisionStream(ctx, dataURL, systemPrompt, visionModel, onToken)
+
+	if err != nil {
+		log.Printf("[analyzeChatStyleImageStream] QianwenVisionStream error: %v", err)
+		return "", fmt.Errorf("视觉模型分析失败: %w", err)
+	}
+
+	log.Printf("[analyzeChatStyleImageStream] QianwenVisionStream completed, result length: %d", len(result))
+
+	// 3. 保存到数据库
+	style := &model.LanguageStyle{
+		UserID: userID,
+		Style:  result,
+	}
+	if err := b.ds.LanguageStyles().Save(ctx, style); err != nil {
+		log.Printf("[analyzeChatStyleImageStream] Failed to save language style for user %d: %v", userID, err)
+	} else {
+		log.Printf("[analyzeChatStyleImageStream] Language style saved successfully for user %d", userID)
+	}
+
+	return result, nil
 }
 
 // analyzeChatStyleImage 使用阿里云视觉模型分析聊天截图的语言风格

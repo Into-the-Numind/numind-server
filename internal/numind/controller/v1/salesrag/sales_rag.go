@@ -653,7 +653,7 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 	// 发送初始状态
 	statusData, _ := json.Marshal(map[string]interface{}{
 		"type": "status",
-		"data": "正在分析图片内容...",
+		"data": "正在分析客户资料...",
 	})
 	fmt.Fprintf(w, "data: %s\n\n", statusData)
 	w.Flush()
@@ -696,11 +696,11 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 	log.Infow("[AnalyzeProfile] Sent done event")
 }
 
-// AnalyzeChatStyle 分析聊天风格（语言指纹分析）
-// 支持上传文件或直接传入文本
-// AnalyzeChatStyle 分析聊天风格（语言指纹分析）
+// AnalyzeChatStyle 分析聊天风格（语言指纹分析，支持 SSE 流式）
 // 支持上传文件或直接传入文本
 func (ctrl *SalesRAGController) AnalyzeChatStyle(c *gin.Context) {
+	log.Infow("[AnalyzeChatStyle] Received request")
+
 	var reader io.Reader
 	var filename string
 
@@ -710,34 +710,83 @@ func (ctrl *SalesRAGController) AnalyzeChatStyle(c *gin.Context) {
 		defer file.Close()
 		reader = file
 		filename = header.Filename
+		log.Infow("[AnalyzeChatStyle] File upload", "filename", header.Filename, "size", header.Size)
 	} else {
 		// 没有文件，尝试获取 text 字段
 		text := c.PostForm("text")
 		if text == "" {
+			log.Errorw("[AnalyzeChatStyle] No file or text provided")
 			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("请提供聊天文本或上传文件"), nil)
 			return
 		}
 		reader = strings.NewReader(text)
 		filename = "input_text.txt"
+		log.Infow("[AnalyzeChatStyle] Text input", "length", len(text))
 	}
 
 	user := middleware.GetCurrentUser(c)
 	if user == nil {
+		log.Errorw("[AnalyzeChatStyle] No user found")
 		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
 		return
 	}
 
-	// 调用业务层分析 (业务层会处理解析和截断)
-	result, err := ctrl.b.SalesRAG().AnalyzeChatStyle(c, user.ID, reader, filename)
+	log.Infow("[AnalyzeChatStyle] User analyzing", "user_id", user.ID, "filename", filename)
+
+	// 设置 SSE 响应头
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	w := c.Writer
+
+	// 发送初始状态
+	statusData, _ := json.Marshal(map[string]interface{}{
+		"type": "status",
+		"data": "正在分析语言风格...",
+	})
+	fmt.Fprintf(w, "data: %s\n\n", statusData)
+	w.Flush()
+	log.Infow("[AnalyzeChatStyle] Sent initial status")
+
+	// 调用流式业务层分析
+	log.Infow("[AnalyzeChatStyle] Calling AnalyzeChatStyleStream...")
+	result, err := ctrl.b.SalesRAG().AnalyzeChatStyleStream(c, user.ID, reader, filename, func(token string) error {
+		log.Infow("[AnalyzeChatStyle] Received token", "token_preview", token[:min(len(token), 30)])
+		eventData, _ := json.Marshal(map[string]interface{}{
+			"type": "token",
+			"data": token,
+		})
+		_, err := fmt.Fprintf(w, "data: %s\n\n", eventData)
+		if err == nil {
+			w.Flush()
+		}
+		return err
+	})
+
 	if err != nil {
-		log.Errorw("[AnalyzeChatStyle] Error", "userID", user.ID, "error", err.Error())
-		core.WriteResponse(c, err, nil)
+		log.Errorw("[AnalyzeChatStyle] AnalyzeChatStyleStream error", "error", err)
+		errData, _ := json.Marshal(map[string]interface{}{
+			"type": "error",
+			"data": err.Error(),
+		})
+		fmt.Fprintf(w, "data: %s\n\n", errData)
+		w.Flush()
 		return
 	}
 
-	core.WriteResponse(c, nil, map[string]string{
+	log.Infow("[AnalyzeChatStyle] AnalyzeChatStyleStream completed", "result_length", len(result))
+
+	// 发送完成并附带完整结果
+	doneData, _ := json.Marshal(map[string]interface{}{
+		"type":     "done",
 		"analysis": result,
+		"style":    result, // 兼容前端的两种字段名
 	})
+	fmt.Fprintf(w, "data: %s\n\n", doneData)
+	w.Flush()
+	log.Infow("[AnalyzeChatStyle] Sent done event")
 }
 
 // GetLanguageStyle 获取用户的语言风格
