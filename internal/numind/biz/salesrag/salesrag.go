@@ -22,6 +22,8 @@ import (
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
 
+	"numind-server/internal/numind/biz/ali"
+
 	"github.com/disintegration/imaging"
 	"gorm.io/gorm"
 )
@@ -105,7 +107,8 @@ type salesRAGBiz struct {
 	ds                store.IStore
 	ingestionPipeline *service.IngestionPipeline
 	ragSvc            *service.SalesRAGService
-	volcBiz           VolcBiz // 添加大模型服务依赖（保留用于 fallback）
+	volcBiz           VolcBiz    // 添加大模型服务依赖（保留用于 fallback）
+	aliBiz            ali.AliBiz // 阿里云 API 客户端
 	sessionStore      store.SalesSessionStore
 	parser            service.PipelineParser
 	dmxClient         *adapter.DMXAPIClient // DMXAPI 客户端（用于 DeepSeek-V3.2）
@@ -120,12 +123,13 @@ type VolcBiz interface {
 	VisionAnalyze(ctx context.Context, imageURL string, prompt string, model string) (string, error)
 }
 
-func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *service.SalesRAGService, volc VolcBiz, sessionStore store.SalesSessionStore, parser service.PipelineParser) SalesRAGBiz {
+func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *service.SalesRAGService, volc VolcBiz, ali ali.AliBiz, sessionStore store.SalesSessionStore, parser service.PipelineParser) SalesRAGBiz {
 	return &salesRAGBiz{
 		ds:                ds,
 		ingestionPipeline: pipeline,
 		ragSvc:            rag,
 		volcBiz:           volc,
+		aliBiz:            ali,
 		sessionStore:      sessionStore,
 		parser:            parser,
 		dmxClient:         adapter.NewDMXAPIClient(),
@@ -616,7 +620,7 @@ func (b *salesRAGBiz) buildPromptMessages(query string, verdict *service.Retriev
 	return result
 }
 
-// buildPromptMessagesV2 根据检索结果构建 prompt 消息（销售 Copilot 优化版）
+// buildPromptMessagesV2 根据检索结果构建 prompt 消息（优化版）
 func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.RetrievalVerdict, customerProfile string, languageStyle string) []adapter.ChatMessage {
 	// 上下文长度限制常量
 	const (
@@ -639,123 +643,34 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 	languageStyle = truncate(languageStyle, maxLanguageStyleChars)
 	query = truncate(query, maxUserInputChars)
 
-	// 合并所有检索到的知识
+	// 构建知识上下文
+	var knowledgeContext string
 	allChunks := verdict.Evidence
-
-	// 构建知识上下文（所有 reranked chunks）
-	var contextParts []string
 	if len(allChunks) > 0 {
+		var contextParts []string
 		for i, chunk := range allChunks {
 			contextParts = append(contextParts, fmt.Sprintf("[知识%d] %s", i+1, chunk.Content))
 		}
-	}
-	knowledgeContext := strings.Join(contextParts, "\n\n")
-	if knowledgeContext == "" {
-		knowledgeContext = "（知识库中未找到相关内容，请基于通用销售经验回答）"
+		knowledgeContext = strings.Join(contextParts, "\n\n")
 	}
 
-	// 处理策略内容 (参考性)
+	// 构建策略内容（只包含纯内容）
 	var strategyContent string
 	if verdict.Strategy != nil {
-		strategyContent = fmt.Sprintf(`
-## 🌟 核心策略参考 (推荐方案)
-系统分析认为客户当前可能处于【%s】阶段，推荐参考以下战术【%s】。
-请结合实际对话上下文，**灵活参考**该策略中的"话术模板"或"核心逻辑"构建回复。如果策略与当前对话明显不符，请以你的判断为准。
-
-### 推荐策略：[%s] %s
-`+"```markdown"+`
-%s
-`+"```"+`
-`, verdict.Strategy.MetaID, verdict.Strategy.Name, verdict.Strategy.ID, verdict.Strategy.Name, verdict.Strategy.Content)
+		strategyContent = verdict.Strategy.Content
 	}
-
-	// 统一的回复风格定义
-	const responseStyles = `
-### 选项A：激进型 (逼单)
-- 风格：侧重利益刺激、稀缺性强调、促成即刻行动。
-- 话术：直接、有冲击力。
-### 选项B：保守型 (共情)
-- 风格：侧重理解客户压力，提供情绪价值，建立信任关系。
-- 话术：温暖、包容、不给压力。
-### 选项C：纯知识回复 (专业)
-- 风格：基于知识库内容，给出客观、专业、中立的解答。
-- 话术：逻辑严密、数据支撑。`
 
 	var systemPrompt string
 	var userMessage string
 
 	if verdict.ChatMode == "free" {
-		// ========== Free 模式 (顾问/教练模式) ==========
-		systemPrompt = fmt.Sprintf(`你是一位资深的销售顾问助手，正在帮助销售人员回复客户消息。
-
-## 客户画像（如果为空则忽略此部分）
-%s
-%s
-## 你的任务
-请综合参考上述【核心策略参考】以及下方的【知识库内容】，为销售人员提供建议。
-你需要分析客户意图，并基于以下三种风格分别给出回复建议：
-%s
-
-## 回复要求
-1. 语气专业但亲切，适合微信聊天场景
-2. 先给出分析或建议，再提供具体话术建议
-3. **严禁编造**：回复建议必须严格遵循知识库。如果知识库中没有直接答案，你必须明确说明“知识库中未检索到相关信息，无法提供准确建议”，不得虚构信息。
-
-## 回复话术的语言风格（如果为空则忽略此部分）
-%s
-
-## 知识库内容
-%s`, customerProfile, strategyContent, responseStyles, languageStyle, knowledgeContext)
-
+		// ========== Free 模式 (Sales Copilot 顾问模式) ==========
+		systemPrompt = b.buildFreeModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle, verdict.History)
 		userMessage = query
-
 	} else {
-		// ========== Sales 模式 (Sales Copilot) ==========
-		// 目标：生成三个不同风格的回复选项，供销售参考
-		systemPrompt = fmt.Sprintf(`你是一位顶尖的销售 Copilot。请根据当前对话情境，生成三条不同策略的待发送消息。
-
-## 客户画像（如果为空则忽略此部分）
-%s
-%s
-## 你的任务
-请综合参考上述【核心策略参考】以及下方的【知识库内容】，生成以下三种风格的候选回复：
-%s
-
-## 🚫 严格禁止
-1. **禁止解释**：不要写 "建议您..." 或分析原因，直接写能直接发送给客户的话术。
-2. **严禁编造**：如果知识库中没有相关答案，必须在话术中说明需进一步核实。
-
-## ✅ 核心要求
-1. **极度口语化**：必须严格遵循下方的“语言风格”进行回复。
-2. **第一人称**：直接用 "我" 回复 "您/你"。
-3. **严格基于知识**：你的所有回复内容必须能在知识库中找到依据。
-4. **参考策略**：请优先参考上方的【核心策略参考】进行回复。
-
-## 输出格式要求
-不需要使用任何 XML 标签。请直接使用 Markdown 标题分隔三个选项，格式如下：
-
-### 选项A：激进型
-(内容...)
-
-### 选项B：保守型
-(内容...)
-
-### 选项C：纯知识回复
-(内容...)
-
-## 语言风格（如果为空则忽略此部分）
-%s
-
-## 知识库内容
-%s`, customerProfile, strategyContent, responseStyles, languageStyle, knowledgeContext)
-
+		// ========== Sales 模式 (销售人员本人视角) ==========
+		systemPrompt = b.buildSalesModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle, verdict.History)
 		userMessage = query
-	}
-
-	// 注入历史记录上下文
-	if len(verdict.History) > 0 {
-		historyStr := strings.Join(verdict.History, "\n")
-		systemPrompt += fmt.Sprintf("\n\n## 对话历史上下文\n%s", historyStr)
 	}
 
 	return []adapter.ChatMessage{
@@ -768,6 +683,249 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 			Content: userMessage,
 		},
 	}
+}
+
+// buildSalesModePrompt 构建 Sales 模式提示词
+func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle string, history []string) string {
+	var prompt strings.Builder
+
+	// 角色和目标
+	prompt.WriteString("你是一位顶尖的销售人员，正在通过微信与客户进行一对一沟通。你的目标是根据当前对话情境，草拟三条不同策略风格的待发送消息。\n\n")
+
+	// 客户背景信息（条件渲染）
+	hasBackground := customerProfile != "" || len(history) > 0
+	if hasBackground {
+		prompt.WriteString("## 客户背景信息\n\n")
+
+		if customerProfile != "" {
+			prompt.WriteString("### 客户画像\n")
+			prompt.WriteString(customerProfile)
+			prompt.WriteString("\n\n")
+		}
+
+		if len(history) > 0 {
+			prompt.WriteString("### 对话历史\n")
+			prompt.WriteString(strings.Join(history, "\n"))
+			prompt.WriteString("\n\n")
+		}
+
+		prompt.WriteString("---\n")
+	}
+
+	// 核心参考资料
+	prompt.WriteString("## 核心参考资料\n\n")
+
+	// 知识库内容（条件渲染）
+	if knowledgeContext != "" {
+		prompt.WriteString("### 知识库内容\n")
+		prompt.WriteString(knowledgeContext)
+		prompt.WriteString("\n\n")
+	}
+
+	// 核心策略参考（条件渲染）
+	if strategyContent != "" {
+		prompt.WriteString("### 核心策略参考\n")
+		prompt.WriteString("请结合实际对话上下文，**灵活参考**该策略中的\"话术模板\"或\"核心逻辑\"构建回复。如果策略与当前对话相符，需要严格按照策略来进行，如果明显不符，请以你的判断为准。\n\n")
+		prompt.WriteString("```markdown\n")
+		prompt.WriteString(strategyContent)
+		prompt.WriteString("\n```\n\n")
+	}
+
+	prompt.WriteString("---\n")
+
+	// 你的任务
+	prompt.WriteString("## 你的任务\n")
+	prompt.WriteString("请综合参考上述信息，为当前客户消息生成三个不同风格的回复选项：\n\n")
+	prompt.WriteString("### 选项A：激进型（逼单风格）\n")
+	prompt.WriteString("**核心策略**：侧重利益刺激、稀缺性强调、促成即刻行动  \n")
+	prompt.WriteString("**话术特征**：直接、有冲击力、紧迫感强\n\n")
+	prompt.WriteString("### 选项B：保守型（共情风格）\n")
+	prompt.WriteString("**核心策略**：侧重理解客户压力、提供情绪价值、建立信任关系  \n")
+	prompt.WriteString("**话术特征**：温暖、包容、不施加压力\n\n")
+	prompt.WriteString("### 选项C：纯知识回复（专业风格）\n")
+	prompt.WriteString("**核心策略**：基于知识库内容，给出客观、专业、中立的解答  \n")
+	prompt.WriteString("**话术特征**：逻辑严密、数据支撑、事实为主\n\n")
+	prompt.WriteString("---\n")
+
+	// 核心规则
+	prompt.WriteString("## 核心规则\n\n")
+	prompt.WriteString("### 必须严格遵守\n")
+	prompt.WriteString("1. **第一人称视角**  \n")
+	prompt.WriteString("   直接用\"我\"回复\"您/你\"，你就是销售本人\n\n")
+	prompt.WriteString("2. **极度口语化**  \n")
+	if languageStyle != "" {
+		prompt.WriteString("   必须严格遵循下方的【语言风格参考】  \n")
+	}
+	prompt.WriteString("   符合微信聊天场景的自然表达\n\n")
+	prompt.WriteString("3. **严格基于知识**  \n")
+	if knowledgeContext != "" {
+		prompt.WriteString("   所有回复内容必须能在【知识库内容】中找到依据  \n")
+	}
+	if strategyContent != "" {
+		prompt.WriteString("   优先参考【核心策略参考】中的话术模板或逻辑\n\n")
+	} else {
+		prompt.WriteString("\n")
+	}
+	prompt.WriteString("4. **灵活判断**  \n")
+	prompt.WriteString("   如果推荐策略与当前对话明显不符，以实际情况为准  \n")
+	prompt.WriteString("   三种风格只是参考方向，可以适度调整\n\n")
+
+	prompt.WriteString("### 严格禁止\n")
+	prompt.WriteString("1. **禁止元对话**  \n")
+	prompt.WriteString("   不要写\"建议您...\"、\"可以这样回复...\"等建议性语言  \n")
+	prompt.WriteString("   不要分析原因或解释为什么这样回复\n\n")
+	prompt.WriteString("2. **严禁编造信息**  \n")
+	prompt.WriteString("   如果知识库中没有相关答案，必须在话术中说明需进一步核实  \n")
+	prompt.WriteString("   不得虚构产品功能、价格、案例等信息  \n")
+	prompt.WriteString("   宁可保守回复，也不要过度承诺\n\n")
+	prompt.WriteString("3. **禁止格式混乱**  \n")
+	prompt.WriteString("   严格按照下方【输出格式要求】组织内容\n\n")
+
+	prompt.WriteString("### 输出格式要求\n")
+	prompt.WriteString("直接使用 Markdown 三级标题分隔三个选项：\n\n")
+	prompt.WriteString("### 选项A：激进型\n")
+	prompt.WriteString("（直接写给客户的话术，可分多段）\n\n")
+	prompt.WriteString("### 选项B：保守型\n")
+	prompt.WriteString("（直接写给客户的话术，可分多段）\n\n")
+	prompt.WriteString("### 选项C：纯知识回复\n")
+	prompt.WriteString("（直接写给客户的话术，可分多段）\n\n")
+
+	// 语言风格参考（固定显示）
+	prompt.WriteString("---\n")
+	prompt.WriteString("## 语言风格参考\n")
+	if languageStyle != "" {
+		prompt.WriteString(languageStyle)
+	} else {
+		prompt.WriteString("使用通用的微信聊天风格：简洁、自然、适度使用口语化表达")
+	}
+	prompt.WriteString("\n\n")
+
+	// 结尾引导
+	prompt.WriteString("---\n")
+	prompt.WriteString("现在请基于以上所有信息，为客户的这条消息生成三个回复选项。")
+
+	return prompt.String()
+}
+
+// buildFreeModePrompt 构建 Free 模式提示词
+func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle string, history []string) string {
+	var prompt strings.Builder
+
+	// 角色和目标
+	prompt.WriteString("你是一位资深的销售顾问助手（Sales Copilot），正在帮助销售人员分析客户消息并提供回复建议。\n\n")
+
+	// 客户背景信息（条件渲染）
+	hasBackground := customerProfile != "" || len(history) > 0
+	if hasBackground {
+		prompt.WriteString("## 客户背景信息\n\n")
+
+		if customerProfile != "" {
+			prompt.WriteString("### 客户画像\n")
+			prompt.WriteString(customerProfile)
+			prompt.WriteString("\n\n")
+		}
+
+		if len(history) > 0 {
+			prompt.WriteString("### 对话历史\n")
+			prompt.WriteString(strings.Join(history, "\n"))
+			prompt.WriteString("\n\n")
+		}
+
+		prompt.WriteString("---\n")
+	}
+
+	// 核心参考资料
+	prompt.WriteString("## 核心参考资料\n\n")
+
+	// 知识库内容（条件渲染）
+	if knowledgeContext != "" {
+		prompt.WriteString("### 知识库内容\n")
+		prompt.WriteString(knowledgeContext)
+		prompt.WriteString("\n\n")
+	}
+
+	// 核心策略参考（条件渲染）
+	if strategyContent != "" {
+		prompt.WriteString("### 核心策略参考\n")
+		prompt.WriteString("请结合实际对话上下文，**灵活参考**该策略中的\"话术模板\"或\"核心逻辑\"提供建议。如果策略与当前对话相符，需要严格按照策略来进行，如果明显不符，请以你的判断为准。\n\n")
+		prompt.WriteString("```markdown\n")
+		prompt.WriteString(strategyContent)
+		prompt.WriteString("\n```\n\n")
+	}
+
+	prompt.WriteString("---\n")
+
+	// 你的任务
+	prompt.WriteString("## 你的任务\n")
+	prompt.WriteString("请综合参考上述信息，为销售人员提供专业的回复建议。你需要分析客户意图，并基于以下三种风格分别给出建议：\n\n")
+	prompt.WriteString("### 选项A：激进型（逼单风格）\n")
+	prompt.WriteString("**核心策略**：侧重利益刺激、稀缺性强调、促成即刻行动  \n")
+	prompt.WriteString("**话术特征**：直接、有冲击力、紧迫感强\n\n")
+	prompt.WriteString("### 选项B：保守型（共情风格）\n")
+	prompt.WriteString("**核心策略**：侧重理解客户压力、提供情绪价值、建立信任关系  \n")
+	prompt.WriteString("**话术特征**：温暖、包容、不施加压力\n\n")
+	prompt.WriteString("### 选项C：纯知识回复（专业风格）\n")
+	prompt.WriteString("**核心策略**：基于知识库内容，给出客观、专业、中立的解答  \n")
+	prompt.WriteString("**话术特征**：逻辑严密、数据支撑、事实为主\n\n")
+	prompt.WriteString("---\n")
+
+	// 核心规则
+	prompt.WriteString("## 核心规则\n\n")
+	prompt.WriteString("### 必须严格遵守\n")
+	prompt.WriteString("1. **顾问视角**  \n")
+	prompt.WriteString("   你是在帮助销售人员，可以先分析再给建议  \n")
+	prompt.WriteString("   提供的话术建议要符合微信聊天场景\n\n")
+	prompt.WriteString("2. **专业分析**  \n")
+	prompt.WriteString("   先简要分析客户意图和沟通重点  \n")
+	prompt.WriteString("   再提供具体的话术建议\n\n")
+	prompt.WriteString("3. **严格基于知识**  \n")
+	if knowledgeContext != "" {
+		prompt.WriteString("   所有建议必须能在【知识库内容】中找到依据  \n")
+	}
+	if strategyContent != "" {
+		prompt.WriteString("   优先参考【核心策略参考】中的话术模板或逻辑\n\n")
+	} else {
+		prompt.WriteString("\n")
+	}
+	prompt.WriteString("4. **灵活判断**  \n")
+	prompt.WriteString("   如果推荐策略与当前对话明显不符，以实际情况为准  \n")
+	prompt.WriteString("   三种风格只是参考方向，可以适度调整\n\n")
+
+	prompt.WriteString("### 严格禁止\n")
+	prompt.WriteString("1. **严禁编造信息**  \n")
+	prompt.WriteString("   如果知识库中没有相关答案，必须明确说明\"知识库中未检索到相关信息，无法提供准确建议\"  \n")
+	prompt.WriteString("   不得虚构产品功能、价格、案例等信息\n\n")
+	prompt.WriteString("2. **禁止格式混乱**  \n")
+	prompt.WriteString("   严格按照下方【输出格式要求】组织内容\n\n")
+
+	prompt.WriteString("### 输出格式要求\n")
+	prompt.WriteString("每个选项包含\"分析\"和\"建议话术\"两部分：\n\n")
+	prompt.WriteString("### 选项A：激进型\n")
+	prompt.WriteString("**分析**：（简要分析为什么采用这种策略）  \n")
+	prompt.WriteString("**建议话术**：（具体的回复建议）\n\n")
+	prompt.WriteString("### 选项B：保守型\n")
+	prompt.WriteString("**分析**：（简要分析为什么采用这种策略）  \n")
+	prompt.WriteString("**建议话术**：（具体的回复建议）\n\n")
+	prompt.WriteString("### 选项C：纯知识回复\n")
+	prompt.WriteString("**分析**：（简要分析为什么采用这种策略）  \n")
+	prompt.WriteString("**建议话术**：（具体的回复建议）\n\n")
+
+	// 语言风格参考（固定显示）
+	prompt.WriteString("---\n")
+	prompt.WriteString("## 语言风格参考\n")
+	if languageStyle != "" {
+		prompt.WriteString("销售人员的语言风格如下，建议话术应参考这个风格：\n")
+		prompt.WriteString(languageStyle)
+	} else {
+		prompt.WriteString("使用通用的微信聊天风格：简洁、自然、适度使用口语化表达")
+	}
+	prompt.WriteString("\n\n")
+
+	// 结尾引导
+	prompt.WriteString("---\n")
+	prompt.WriteString("现在请基于以上所有信息，为这条客户消息提供三种风格的回复建议。")
+
+	return prompt.String()
 }
 
 // getIntentDescription 获取意图的中文描述
@@ -1236,10 +1394,11 @@ func (b *salesRAGBiz) analyzeImage(ctx context.Context, userID uint, file io.Rea
 - 使用洗练、具备商业厚度的 Markdown 格式。
 - **禁止任何开场白**，直接输出画像正文。`
 
-	// 5. 调用火山方舟视觉模型（一步到位）
-	profileResult, err := b.volcBiz.VisionAnalyze(ctx, dataURL, combinedPrompt, "")
+	// 5. 调用阿里云百炼视觉模型（qwen3-vl-flash-2026-01-22）
+	const visionModel = "qwen3-vl-flash-2026-01-22"
+	profileResult, err := b.aliBiz.QianwenVision(ctx, dataURL, combinedPrompt, visionModel)
 	if err != nil {
-		return "", fmt.Errorf("视觉端到端分析失败: %w", err)
+		return "", fmt.Errorf("视觉端到端分析失败 (阿里云): %w", err)
 	}
 
 	log.Printf("画像端到端生成完成, 长度: %d", len(profileResult))

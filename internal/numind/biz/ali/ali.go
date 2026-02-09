@@ -35,7 +35,7 @@ type BailianConfig struct {
 type AliBiz interface {
 	QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error)
 	QianwenEmbedding(text string) ([]float32, error)
-	QianwenVision(ctx context.Context, imageBase64 string, prompt string, model string) (string, error)
+	QianwenVision(ctx context.Context, imageURL string, prompt string, model string) (string, error)
 	WanxiangImageStream(prompt string, style string, size string) (string, error)
 	WanxiangImageAsync(prompt, style, size string) (string, error)
 	StableDiffusionImageAsync(prompt, size string) (string, error)
@@ -658,7 +658,7 @@ func (a *aliBiz) QianwenEmbedding(text string) ([]float32, error) {
 }
 
 // QianwenVision 调用视觉模型读取图片 (OpenAI 兼容模式)
-func (a *aliBiz) QianwenVision(ctx context.Context, imageBase64 string, prompt string, model string) (string, error) {
+func (a *aliBiz) QianwenVision(ctx context.Context, imageURL string, prompt string, model string) (string, error) {
 	if prompt == "" {
 		prompt = "图中描绘的是什么景象?"
 	}
@@ -686,7 +686,7 @@ func (a *aliBiz) QianwenVision(ctx context.Context, imageBase64 string, prompt s
 					map[string]interface{}{
 						"type": "image_url",
 						"image_url": map[string]string{
-							"url": fmt.Sprintf("data:image/jpeg;base64,%s", imageBase64),
+							"url": imageURL,
 						},
 					},
 					map[string]string{
