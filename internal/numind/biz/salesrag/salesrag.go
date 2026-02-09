@@ -1176,14 +1176,36 @@ func (b *salesRAGBiz) analyzeImage(ctx context.Context, userID uint, file io.Rea
 		}
 	}
 
-	// 3. 将图片转换为 base64
-	base64Image := base64.StdEncoding.EncodeToString(imageData)
-
-	// 4. 构建 data URL
-	// 注意：无论原图格式，压缩后统一使用 image/jpeg 提高兼容性和压缩率
-	dataURL := fmt.Sprintf("data:image/jpeg;base64,%s", base64Image)
-
 	log.Printf("图片已处理完成, 最终大小: %d bytes, 格式: image/jpeg", len(imageData))
+
+	// 4. 选择传输方式：优先使用 COS URL，失败或未开启则回退到 base64
+	var dataURL string
+	if util.IsCOSEnabled() {
+		// 生成 COS 对象路径: salesrag/analyze/userID/timestamp_filename.jpg
+		objectKey := fmt.Sprintf("salesrag/analyze/%d/%d_%s", userID, time.Now().Unix(), "analysis.jpg")
+
+		// 上传并设置 Content-Type
+		cosURL, err := util.UploadBytesToCOS(ctx, objectKey, "image/jpeg", imageData)
+		if err == nil && cosURL != "" {
+			// 生成 10 分钟有效的签名 URL 供外部 API 访问
+			signedURL, err := util.GenerateSignedURL(ctx, objectKey, 600)
+			if err == nil && signedURL != "" {
+				dataURL = signedURL
+				log.Printf("[analyzeImage] Successfully uploaded to COS, using signed URL: %s", objectKey)
+			}
+		}
+
+		if dataURL == "" {
+			log.Printf("[analyzeImage] COS upload or sign failed, fallback to base64")
+		}
+	}
+
+	if dataURL == "" {
+		// 回退到 base64 方式
+		base64Image := base64.StdEncoding.EncodeToString(imageData)
+		dataURL = fmt.Sprintf("data:image/jpeg;base64,%s", base64Image)
+		log.Printf("[analyzeImage] Using base64 data URL (size: %d)", len(dataURL))
+	}
 
 	// 4. 构建聊天记录识别提示词
 	chatPrompt := `这是一张微信聊天截图。请帮我提取聊天记录中的文字内容。
