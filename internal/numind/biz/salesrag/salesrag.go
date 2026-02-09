@@ -3,6 +3,7 @@ package salesrag
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -113,6 +114,8 @@ type VolcBiz interface {
 	VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error)
 	// StreamChat 真正的流式聊天，通过回调函数逐 token 或思维链内容推送
 	StreamChat(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
+	// VisionAnalyze 调用火山方舟视觉模型分析图片
+	VisionAnalyze(ctx context.Context, imageURL string, prompt string, model string) (string, error)
 }
 
 func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *service.SalesRAGService, volc VolcBiz, sessionStore store.SalesSessionStore, parser service.PipelineParser) SalesRAGBiz {
@@ -1095,9 +1098,86 @@ func (b *salesRAGBiz) backfillChunksToMySQL(ctx context.Context, doc *model.Know
 	}
 }
 
-// AnalyzeDocument 解析文档并生成客户档案
-// 使用 dmxapi 的 qwen-turbo-latest 模型，不开启思维模式
+// AnalyzeDocument 解析文档或图片并生成客户档案
+// 支持文档类型（PDF、DOC等）和图片类型（微信聊天记录截图）
+// 文档使用 dmxapi 处理，图片使用火山方舟视觉模型处理
 func (b *salesRAGBiz) AnalyzeDocument(ctx context.Context, userID uint, file io.Reader, filename string) (string, error) {
+	// 检测文件类型
+	ext := strings.ToLower(filepath.Ext(filename))
+	isImage := ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif" || ext == ".webp"
+
+	if isImage {
+		// 图片处理流程：上传到COS获取临时URL，然后调用视觉模型
+		return b.analyzeImage(ctx, userID, file, filename)
+	}
+
+	// 文档处理流程（原有逻辑）
+	return b.analyzeDocument(ctx, file, filename)
+}
+
+// analyzeImage 分析图片（微信聊天记录截图）
+func (b *salesRAGBiz) analyzeImage(ctx context.Context, userID uint, file io.Reader, filename string) (string, error) {
+	// 1. 读取图片数据
+	imageData, err := io.ReadAll(file)
+	if err != nil {
+		return "", fmt.Errorf("读取图片失败: %w", err)
+	}
+
+	// 2. 将图片转换为 base64
+	base64Image := base64.StdEncoding.EncodeToString(imageData)
+
+	// 3. 构建 data URL
+	contentType := "image/jpeg"
+	if strings.HasSuffix(strings.ToLower(filename), ".png") {
+		contentType = "image/png"
+	} else if strings.HasSuffix(strings.ToLower(filename), ".gif") {
+		contentType = "image/gif"
+	} else if strings.HasSuffix(strings.ToLower(filename), ".webp") {
+		contentType = "image/webp"
+	}
+	dataURL := fmt.Sprintf("data:%s;base64,%s", contentType, base64Image)
+
+	log.Printf("图片已转换为 base64, 大小: %d bytes", len(imageData))
+
+	// 4. 构建聊天记录识别提示词
+	chatPrompt := `这是一张微信聊天截图。请帮我提取聊天记录中的文字内容。
+
+## 识别规则：
+1. **方向识别**：
+   - 右边气泡 = 销售方（发送者）
+   - 左边气泡 = 客户方（接收者）
+
+2. **提取要求**：
+   - 逐条提取所有文字气泡的内容
+   - 保持对话的先后顺序
+   - 忽略双方发送的图片、表情、语音等非文字内容
+   - 对于图片消息，直接跳过不记录
+
+3. **输出格式**：
+   客户: [客户方的聊天内容]
+   销售: [销售方的聊天内容]
+   客户: [客户方的聊天内容]
+   ...
+
+4. **注意事项**：
+   - 确保每条消息都标注正确的发言方（客户/销售）
+   - 如聊天内容很长，请完整提取，不要遗漏
+   - 保持原始文字，不做任何修改或总结`
+
+	// 5. 调用火山方舟视觉模型（传入 base64 data URL）
+	extractedText, err := b.volcBiz.VisionAnalyze(ctx, dataURL, chatPrompt, "")
+	if err != nil {
+		return "", fmt.Errorf("视觉模型分析失败: %w", err)
+	}
+
+	log.Printf("聊天记录提取完成, 长度: %d", len(extractedText))
+
+	// 6. 基于提取的聊天记录生成客户画像
+	return b.generateProfileFromChat(ctx, extractedText)
+}
+
+// analyzeDocument 分析文档（原有逻辑）
+func (b *salesRAGBiz) analyzeDocument(ctx context.Context, file io.Reader, filename string) (string, error) {
 	// 1. 解析文档内容
 	content, err := b.parser.Parse(ctx, file, filename)
 	if err != nil {
@@ -1111,7 +1191,7 @@ func (b *salesRAGBiz) AnalyzeDocument(ctx context.Context, userID uint, file io.
 	}
 
 	// 3. 构建提示词
-	systemPrompt := `你是一个敏锐的销售战略专家。任务是基于提供的片段，为销售人员提取一份“高干货”客户画像，用于指导后续的回复话术生成。
+	systemPrompt := `你是一个敏锐的销售战略专家。任务是基于提供的片段，为销售人员提取一份"高干货"客户画像，用于指导后续的回复话术生成。
 
 ##  核心原则：事实第一，不强求全
 - 如果文档信息极少，只提炼最有保障的事实或高概率推测，严禁编造信息。
@@ -1129,6 +1209,27 @@ func (b *salesRAGBiz) AnalyzeDocument(ctx context.Context, userID uint, file io.
 
 	// 4. 调用 dmxapi 的 qwen-turbo-latest 模型
 	return b.callDMXAPI(ctx, systemPrompt, "客户文档内容如下：\n\n"+content)
+}
+
+// generateProfileFromChat 基于聊天记录生成客户画像
+func (b *salesRAGBiz) generateProfileFromChat(ctx context.Context, chatText string) (string, error) {
+	systemPrompt := `你是一个专业的销售分析专家。请基于提供的微信聊天记录，为销售人员生成一份详细的客户画像。
+
+## 分析维度：
+1. **基础信息**：客户称呼、行业/职业背景（如有提及）
+2. **需求分析**：客户的核心需求、痛点、购买动机
+3. **性格特征**：沟通风格、决策特点、关注点
+4. **销售阶段**：当前处于哪个销售阶段（初次接触/需求沟通/方案讨论/价格谈判/成交意向）
+5. **跟进建议**：针对该客户的后续跟进策略建议
+
+## 输出要求：
+- 使用 Markdown 格式
+- 每个维度独立成段
+- 基于聊天记录事实，严禁编造
+- 控制在 500-800 字
+- 直接输出画像内容，不要有任何开场白`
+
+	return b.callDMXAPI(ctx, systemPrompt, "以下是微信聊天记录：\n\n"+chatText)
 }
 
 // callDMXAPI 调用 dmxapi 的 qwen-turbo-latest 模型

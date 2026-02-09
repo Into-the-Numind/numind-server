@@ -35,6 +35,11 @@ type VolcBiz interface {
 	// onEvent: 收到事件内容时调用，event 类型为 "thinking" 或 "message"
 	// 返回: 完整内容（所有 token 拼接）和错误
 	StreamChat(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
+	// VisionAnalyze 调用火山方舟视觉模型分析图片
+	// imageURL: 图片URL地址
+	// prompt: 分析提示词
+	// model: 模型名称，为空则使用默认视觉模型
+	VisionAnalyze(ctx context.Context, imageURL string, prompt string, model string) (string, error)
 }
 
 type volcBiz struct {
@@ -535,4 +540,107 @@ func (v *volcBiz) StreamChat(ctx context.Context, messages []map[string]string, 
 
 	log.C(ctx).Debugw("流式聊天完成", "content_len", fullContent.Len(), "thinking_len", thinkingContent.Len())
 	return fullContent.String(), nil
+}
+
+// VisionAnalyze 调用火山方舟视觉模型分析图片
+// imageURL: 图片URL地址（支持公网可访问的URL）
+// prompt: 分析提示词
+// model: 模型名称，为空则使用默认视觉模型 doubao-seed-1-6-lite-251015
+func (v *volcBiz) VisionAnalyze(ctx context.Context, imageURL string, prompt string, model string) (string, error) {
+	// 设置默认模型
+	if model == "" {
+		model = "doubao-seed-1-6-lite-251015"
+	}
+
+	baseURL := viper.GetString("volc.base_url")
+	if baseURL == "" {
+		baseURL = "https://ark.cn-beijing.volces.com/api/v3"
+	}
+	url := baseURL + "/chat/completions"
+
+	// 构建多模态消息格式
+	messages := []map[string]interface{}{
+		{
+			"role": "user",
+			"content": []map[string]interface{}{
+				{
+					"type": "image_url",
+					"image_url": map[string]string{
+						"url": imageURL,
+					},
+				},
+				{
+					"type": "text",
+					"text": prompt,
+				},
+			},
+		},
+	}
+
+	bodyMap := map[string]interface{}{
+		"model":                 model,
+		"messages":              messages,
+		"max_completion_tokens": 65535,
+		"reasoning_effort":      "medium",
+	}
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return "", fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	log.C(ctx).Debugw("调用火山方舟视觉模型", "url", url, "model", model, "image_url", imageURL)
+
+	// 创建请求
+	httpReq := &httpclient.Request{
+		Method:  "POST",
+		URL:     url,
+		Body:    bytes.NewBuffer(bodyBytes),
+		Context: ctx,
+		Headers: map[string]string{
+			"Content-Type":  "application/json",
+			"Authorization": "Bearer " + viper.GetString("volc.api_key"),
+		},
+		RetryPolicy: &httpclient.RetryPolicy{
+			MaxRetries:   3,
+			RetryDelay:   2 * time.Second,
+			RetryBackoff: 2.0,
+		},
+	}
+
+	// 发送请求
+	respBody, err := v.client.DoWithJSONResponse(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("视觉模型API请求失败: %w", err)
+	}
+
+	// 解析响应
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Error *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("解析视觉模型响应失败: %w", err)
+	}
+
+	// 检查错误
+	if result.Error != nil {
+		return "", fmt.Errorf("视觉模型API错误: %s - %s", result.Error.Code, result.Error.Message)
+	}
+
+	// 检查是否有choices
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("视觉模型API未返回结果")
+	}
+
+	content := result.Choices[0].Message.Content
+	log.C(ctx).Infow("视觉模型分析完成", "content_length", len(content))
+	return content, nil
 }
