@@ -62,7 +62,7 @@ func TestIngestDocument(t *testing.T) {
 	assert.Nil(t, err)
 
 	// Verify Store
-	filter := port.SearchFilter{}
+	filter := port.SearchFilter{DocumentIDs: []uint{1}}
 	results, err := store.Search(ctx, "Chunk 1", filter, 10)
 	assert.Nil(t, err)
 	assert.Len(t, results, 1)

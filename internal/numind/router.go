@@ -302,22 +302,16 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.POST("/sales-rag/ocr", salesRAGc.OCR)                             // OCR 识别图片
 	}
 
-	// 企业微信存档相关
-	{
+	// 企业微信存档相关 (根据配置开启)
+	if viper.GetBool("features.enable_wecom_archive") {
 		authGroup.GET("/wecom/contacts", wecomc.ListContacts)             // 获取最近联系人
 		authGroup.GET("/wecom/messages/:partner_id", wecomc.ListMessages) // 获取与指定联系人的聊天记录
 		authGroup.GET("/wecom/bind-status", wecomc.CheckBindStatus)       // 检查绑定状态
 		authGroup.GET("/wecom/bind-code", wecomc.GetBindCode)             // 获取绑定验证码
 
-		// Inbox / Import Batch API
-
 		// Smart Archive API (Auto-Classified)
 		authGroup.GET("/wecom/archive/sessions", wecomc.ListSessions)                             // 获取自动归类的会话列表
 		authGroup.GET("/wecom/archive/sessions/:session_key/messages", wecomc.GetSessionMessages) // 获取会话时间轴
-
-		// Deprecated Inbox API (Keep for compatibility if needed, but we seem to have fully replaced it in controller)
-		// authGroup.GET("/wecom/inbox", ...)
-
 	}
 
 	// 阿里云百炼相关

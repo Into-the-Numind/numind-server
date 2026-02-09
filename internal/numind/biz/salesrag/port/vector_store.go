@@ -7,6 +7,7 @@ import (
 
 // SearchFilter 定义检索标准
 type SearchFilter struct {
+	UserID      uint     // 所属用户ID，用于强制隔离
 	Tags        []string // 标签过滤
 	DocumentIDs []uint   // 根据文档ID/知识库ID过滤 (Scope Filtering)
 }

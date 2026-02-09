@@ -58,25 +58,30 @@ func (m *MemoryStore) Search(ctx context.Context, query string, filter port.Sear
 	queryLower := strings.ToLower(query)
 
 	for _, chunk := range m.chunks {
-		// 1. 模拟相似度匹配 (Content 包含 Query)
-		if query != "" && !strings.Contains(strings.ToLower(chunk.Content), queryLower) {
+		// 1. 用户隔离 (强制)
+		if filter.UserID > 0 && chunk.UserID != filter.UserID {
 			continue
 		}
 
-		// 2. DocType 过滤
+		// 2. DocumentIDs 过滤 (严格模式：空列表不返回结果)
+		if len(filter.DocumentIDs) == 0 {
+			continue
+		}
 
-		// 3. DocumentIDs 过滤
-		if len(filter.DocumentIDs) > 0 {
-			match := false
-			for _, docID := range filter.DocumentIDs {
-				if chunk.DocumentID == docID {
-					match = true
-					break
-				}
+		match := false
+		for _, docID := range filter.DocumentIDs {
+			if chunk.DocumentID == docID {
+				match = true
+				break
 			}
-			if !match {
-				continue
-			}
+		}
+		if !match {
+			continue
+		}
+
+		// 3. 模拟相似度匹配 (Content 包含 Query)
+		if query != "" && !strings.Contains(strings.ToLower(chunk.Content), queryLower) {
+			continue
 		}
 
 		results = append(results, chunk)
