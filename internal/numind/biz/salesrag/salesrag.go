@@ -1207,41 +1207,44 @@ func (b *salesRAGBiz) analyzeImage(ctx context.Context, userID uint, file io.Rea
 		log.Printf("[analyzeImage] Using base64 data URL (size: %d)", len(dataURL))
 	}
 
-	// 4. 构建聊天记录识别提示词
-	chatPrompt := `这是一张微信聊天截图。请帮我提取聊天记录中的文字内容。
+	// 4. 构建更加精准的端到端视觉分析提示词
+	combinedPrompt := `你是一位顶尖的商业洞察专家，擅长从细微的社交互动中拆解客户画像。
+这是一张【经典微信气泡对话式】聊天窗口的截图（可能是一张垂直拼接的长截图）。
 
-## 识别规则：
-1. **方向识别**：
-   - 右边气泡 = 销售方（发送者）
-   - 左边气泡 = 客户方（接收者）
+请【完整扫描整张图片从上到下】的所有对话内容，并直接为我生成一份专业的客户画像。
 
-2. **提取要求**：
-   - 逐条提取所有文字气泡的内容
-   - 保持对话的先后顺序
-   - 忽略双方发送的图片、表情、语音等非文字内容
-   - 对于图片消息，直接跳过不记录
+### 核心视觉解析逻辑：
+1. **场景确认**：请识别微信对话特有的气泡布局。
+2. **重心偏移（客户为中心）**：
+   - **左边气泡 = 客户方（核心分析对象）**：请深度挖掘此侧的所有表达。
+   - **右边气泡 = 销售方（辅助理解）**：仅用于通过销售的提问或回复，来推断和修正对左侧客户真实意图的理解。
+3. **内容过滤与提取规则**：
+   - **保留表情符号**：请务必捕捉文字气泡中的表情（如：[呲牙]、🌹、握手等），这些是判断客户性格、情绪温度的关键指纹。
+   - **排除非文字消息类型**：即使图片消息中含有文字，也请视为“多媒体干扰”而直接忽略（因为它们不代表当前的对话文字流）。
 
-3. **输出格式**：
-   客户: [客户方的聊天内容]
-   销售: [销售方的聊天内容]
-   客户: [客户方的聊天内容]
-   ...
+### 画像输出维度：
+请基于上述扫描到的事实，生成以下画像：
+1. **客户基础标签**：身份推测、行业背景、当前的沟通氛围。
+2. **核心诉求与动机**：客户在对话中最关切的利益点、未明说的隐忧、购买的心理诱因。
+3. **性格指纹分析**：结合文字风格与“表情包使用偏好”，分析客户是属于何种社交类型（如：谨慎型、豪爽型、礼貌疏离型等）。
+4. **决策倾向与销售阶段**：当前所处的成交距离，以及客户在决策上的核心卡点。
+5. **高价值跟进建议**：你应该如何调整自己的沟通节奏和话术风格来匹配该客户？
 
-4. **注意事项**：
-   - 确保每条消息都标注正确的发言方（客户/销售）
-   - 如聊天内容很长，请完整提取，不要遗漏
-   - 保持原始文字，不做任何修改或总结`
+### 约束要求：
+- 哪怕截图再长，也必须确保覆盖所有气泡内容。
+- 严禁编造，必须有图有真相。
+- 使用洗练、具备商业厚度的 Markdown 格式。
+- **禁止任何开场白**，直接输出画像正文。`
 
-	// 5. 调用火山方舟视觉模型（传入 base64 data URL）
-	extractedText, err := b.volcBiz.VisionAnalyze(ctx, dataURL, chatPrompt, "")
+	// 5. 调用火山方舟视觉模型（一步到位）
+	profileResult, err := b.volcBiz.VisionAnalyze(ctx, dataURL, combinedPrompt, "")
 	if err != nil {
-		return "", fmt.Errorf("视觉模型分析失败: %w", err)
+		return "", fmt.Errorf("视觉端到端分析失败: %w", err)
 	}
 
-	log.Printf("聊天记录提取完成, 长度: %d", len(extractedText))
+	log.Printf("画像端到端生成完成, 长度: %d", len(profileResult))
 
-	// 6. 基于提取的聊天记录生成客户画像
-	return b.generateProfileFromChat(ctx, extractedText)
+	return profileResult, nil
 }
 
 // analyzeDocument 分析文档（原有逻辑）
@@ -1280,25 +1283,7 @@ func (b *salesRAGBiz) analyzeDocument(ctx context.Context, file io.Reader, filen
 }
 
 // generateProfileFromChat 基于聊天记录生成客户画像
-func (b *salesRAGBiz) generateProfileFromChat(ctx context.Context, chatText string) (string, error) {
-	systemPrompt := `你是一个专业的销售分析专家。请基于提供的微信聊天记录，为销售人员生成一份详细的客户画像。
-
-## 分析维度：
-1. **基础信息**：客户称呼、行业/职业背景（如有提及）
-2. **需求分析**：客户的核心需求、痛点、购买动机
-3. **性格特征**：沟通风格、决策特点、关注点
-4. **销售阶段**：当前处于哪个销售阶段（初次接触/需求沟通/方案讨论/价格谈判/成交意向）
-5. **跟进建议**：针对该客户的后续跟进策略建议
-
-## 输出要求：
-- 使用 Markdown 格式
-- 每个维度独立成段
-- 基于聊天记录事实，严禁编造
-- 控制在 500-800 字
-- 直接输出画像内容，不要有任何开场白`
-
-	return b.callDMXAPI(ctx, systemPrompt, "以下是微信聊天记录：\n\n"+chatText)
-}
+// 已弃用：目前的图片处理流程已改为在 analyzeImage 中一次性完成端到端生
 
 // callDMXAPI 调用 dmxapi 的 qwen-turbo-latest 模型
 func (b *salesRAGBiz) callDMXAPI(ctx context.Context, systemPrompt, userMessage string) (string, error) {
