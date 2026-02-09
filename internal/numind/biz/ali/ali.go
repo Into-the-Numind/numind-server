@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"numind-server/internal/pkg/httpclient"
+	pkglog "numind-server/internal/pkg/log"
 
 	"github.com/spf13/viper"
 )
@@ -36,6 +37,7 @@ type AliBiz interface {
 	QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error)
 	QianwenEmbedding(text string) ([]float32, error)
 	QianwenVision(ctx context.Context, imageURL string, prompt string, model string) (string, error)
+	QianwenVisionStream(ctx context.Context, imageURL string, prompt string, model string, onToken func(token string) error) (string, error)
 	WanxiangImageStream(prompt string, style string, size string) (string, error)
 	WanxiangImageAsync(prompt, style, size string) (string, error)
 	StableDiffusionImageAsync(prompt, size string) (string, error)
@@ -699,6 +701,12 @@ func (a *aliBiz) QianwenVision(ctx context.Context, imageURL string, prompt stri
 		"stream": false,
 	}
 
+	// 针对 qwen3-vl 系列模型开启深度思考 (Thinking)
+	if strings.Contains(strings.ToLower(model), "qwen3-vl") {
+		bodyMap["enable_thinking"] = true
+		bodyMap["thinking_budget"] = 81920
+	}
+
 	bodyBytes, err := json.Marshal(bodyMap)
 	if err != nil {
 		return "", fmt.Errorf("序列化请求失败: %w", err)
@@ -749,6 +757,129 @@ func (a *aliBiz) QianwenVision(ctx context.Context, imageURL string, prompt stri
 		return "", fmt.Errorf("响应为空: %s", string(respBody))
 	}
 	return result.Choices[0].Message.Content, nil
+}
+
+// QianwenVisionStream 调用视觉模型读取图片并进行流式回答 (OpenAI 兼容模式)
+func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, prompt string, model string, onToken func(token string) error) (string, error) {
+	if prompt == "" {
+		prompt = "图中描绘的是什么景象?"
+	}
+	apiKey := getAliConfig("vision", "api_key")
+
+	if model == "" {
+		model = getAliConfig("vision", "model")
+	}
+	if model == "" {
+		model = "qwen-vl-plus"
+	}
+	if apiKey == "" {
+		return "", fmt.Errorf("未配置ali.vision.api_key")
+	}
+
+	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+	bodyMap := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]interface{}{
+			{
+				"role": "user",
+				"content": []interface{}{
+					map[string]interface{}{
+						"type": "image_url",
+						"image_url": map[string]string{
+							"url": imageURL,
+						},
+					},
+					map[string]string{
+						"type": "text",
+						"text": prompt,
+					},
+				},
+			},
+		},
+		"stream": true, // 开启流式
+		"stream_options": map[string]interface{}{
+			"include_usage": true,
+		},
+	}
+
+	// 针对 qwen3-vl 系列模型开启深度思考
+	if strings.Contains(strings.ToLower(model), "qwen3-vl") {
+		bodyMap["enable_thinking"] = true
+		bodyMap["thinking_budget"] = 81920
+	}
+
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return "", fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	client := a.visionClient
+	httpReq := &httpclient.Request{
+		Method:  "POST",
+		URL:     url,
+		Body:    bytes.NewBuffer(bodyBytes),
+		Context: ctx,
+		Headers: map[string]string{
+			"Content-Type":  "application/json",
+			"Authorization": "Bearer " + apiKey,
+		},
+	}
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("HTTP请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(respBody))
+	}
+
+	var fullContent strings.Builder
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" || !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			pkglog.Warnw("解析SSE数据失败", "error", err, "data", data)
+			continue
+		}
+
+		if len(chunk.Choices) > 0 {
+			content := chunk.Choices[0].Delta.Content
+			if content != "" {
+				fullContent.WriteString(content)
+				if onToken != nil {
+					if err := onToken(content); err != nil {
+						return fullContent.String(), err
+					}
+				}
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fullContent.String(), fmt.Errorf("读取流式响应失败: %w", err)
+	}
+
+	return fullContent.String(), nil
 }
 
 func (a *aliBiz) GetFileUploadLease(fileName string) (string, map[string]string, string, error) {

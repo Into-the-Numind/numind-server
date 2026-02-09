@@ -624,7 +624,7 @@ func (ctrl *SalesRAGController) RenameSession(c *gin.Context) {
 	core.WriteResponse(c, nil, map[string]string{"message": "Session renamed successfully"})
 }
 
-// AnalyzeProfile 解析上传的文档生成客户档案
+// AnalyzeProfile 解析上传的文档生成客户档案 (支持 SSE 流式)
 func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
@@ -639,13 +639,51 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 		return
 	}
 
-	profile, err := ctrl.b.SalesRAG().AnalyzeDocument(c, user.ID, file, header.Filename)
+	// 设置 SSE 响应头
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	w := c.Writer
+
+	// 发送初始状态
+	statusData, _ := json.Marshal(map[string]interface{}{
+		"type": "status",
+		"data": "正在分析图片内容...",
+	})
+	fmt.Fprintf(w, "data: %s\n\n", statusData)
+	w.Flush()
+
+	profile, err := ctrl.b.SalesRAG().AnalyzeDocumentStream(c, user.ID, file, header.Filename, func(token string) error {
+		eventData, _ := json.Marshal(map[string]interface{}{
+			"type": "token",
+			"data": token,
+		})
+		_, err := fmt.Fprintf(w, "data: %s\n\n", eventData)
+		if err == nil {
+			w.Flush()
+		}
+		return err
+	})
+
 	if err != nil {
-		core.WriteResponse(c, err, nil)
+		errData, _ := json.Marshal(map[string]interface{}{
+			"type": "error",
+			"data": err.Error(),
+		})
+		fmt.Fprintf(w, "data: %s\n\n", errData)
+		w.Flush()
 		return
 	}
 
-	core.WriteResponse(c, nil, map[string]string{"profile": profile})
+	// 发送完成并附带完整结果
+	doneData, _ := json.Marshal(map[string]interface{}{
+		"type":    "done",
+		"profile": profile,
+	})
+	fmt.Fprintf(w, "data: %s\n\n", doneData)
+	w.Flush()
 }
 
 // AnalyzeChatStyle 分析聊天风格（语言指纹分析）

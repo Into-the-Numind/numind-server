@@ -70,9 +70,10 @@ type SalesRAGBiz interface {
 
 	// AnalyzeDocument 解析文档并生成客户档案
 	AnalyzeDocument(ctx context.Context, userID uint, file io.Reader, filename string) (string, error)
+	AnalyzeDocumentStream(ctx context.Context, userID uint, file io.Reader, filename string, onToken func(token string) error) (string, error)
 
 	// AnalyzeChatStyle 分析聊天风格（语言指纹分析）
-	AnalyzeChatStyle(ctx context.Context, userID uint, file io.Reader, filename string) (string, error)
+	AnalyzeChatStyle(ctx context.Context, userID uint, chatData io.Reader, filename string) (string, error)
 
 	// GetLanguageStyle 获取用户的语言风格
 	GetLanguageStyle(ctx context.Context, userID uint) (string, error)
@@ -1394,8 +1395,8 @@ func (b *salesRAGBiz) analyzeImage(ctx context.Context, userID uint, file io.Rea
 - 使用洗练、具备商业厚度的 Markdown 格式。
 - **禁止任何开场白**，直接输出画像正文。`
 
-	// 5. 调用阿里云百炼视觉模型（qwen3-vl-flash-2026-01-22）
-	const visionModel = "qwen3-vl-flash-2026-01-22"
+	// 5. 调用阿里云百炼视觉模型（qwen3-vl-flash）
+	const visionModel = "qwen3-vl-flash"
 	profileResult, err := b.aliBiz.QianwenVision(ctx, dataURL, combinedPrompt, visionModel)
 	if err != nil {
 		return "", fmt.Errorf("视觉端到端分析失败 (阿里云): %w", err)
@@ -1404,6 +1405,83 @@ func (b *salesRAGBiz) analyzeImage(ctx context.Context, userID uint, file io.Rea
 	log.Printf("画像端到端生成完成, 长度: %d", len(profileResult))
 
 	return profileResult, nil
+}
+
+// analyzeImageStream 是 analyzeImage 的流式版本
+func (b *salesRAGBiz) analyzeImageStream(ctx context.Context, userID uint, imageData []byte, onToken func(token string) error) (string, error) {
+	// 2. 准备数据传输 URL (优先使用 COS 签名 URL，减少公网传输压力)
+	var dataURL string
+	ext := ".jpg" // 默认后缀
+	objectKey := fmt.Sprintf("vision_tmp/%d/%d%s", userID, time.Now().UnixNano(), ext)
+
+	// 尝试上传到 COS
+	if b.ds != nil {
+		signedURL, err := util.UploadBytesToCOS(ctx, objectKey, "image/jpeg", imageData)
+		if err == nil && signedURL != "" {
+			dataURL = signedURL
+			log.Printf("[analyzeImageStream] Successfully uploaded to COS, using signed URL: %s", objectKey)
+		}
+	}
+
+	if dataURL == "" {
+		// 回退到 base64 方式
+		base64Image := base64.StdEncoding.EncodeToString(imageData)
+		dataURL = fmt.Sprintf("data:image/jpeg;base64,%s", base64Image)
+		log.Printf("[analyzeImageStream] Using base64 data URL (size: %d)", len(dataURL))
+	}
+
+	// 3. 构建提示词
+	combinedPrompt := `你是一位顶尖的商业洞察专家，擅长从细微的社交互动中拆解客户画像。
+这是一张【经典微信气泡对话式】聊天窗口的截图（可能是一张垂直拼接的长截图）。
+
+请【完整扫描整张图片从上到下】的所有对话内容，并直接为我生成一份专业的客户画像。
+
+### 核心视觉解析逻辑：
+1. **场景确认**：请识别微信对话特有的气泡布局。
+2. **重心偏移（客户为中心）**：
+   - **左边气泡 = 客户方（核心分析对象）**：请深度挖掘此侧的所有表达。
+   - **右边气泡 = 销售方（辅助理解）**：仅用于通过销售的提问或回复，来推断和修正对左侧客户真实意图的理解。
+3. **内容过滤与提取规则：
+   - **保留表情符号**：请务必捕捉文字气泡中的表情（如：[呲牙]、🌹、握手等），这些是判断客户性格、情绪温度的关键指纹。
+   - **排除非文字消息类型**：即使图片消息中含有文字，也请视为“多媒体干扰”而直接忽略。
+
+### 画像输出维度：
+1. **客户基础标签**
+2. **核心诉求与动机**
+3. **性格指纹分析**
+4. **决策倾向与销售阶段**
+5. **高价值跟进建议**
+
+### 约束要求：
+- 使用具备商业厚度的 Markdown 格式。
+- **直接输出画像内容**，不要有任何寒暄、前排分析或结论语。`
+
+	const visionModel = "qwen3-vl-flash"
+	return b.aliBiz.QianwenVisionStream(ctx, dataURL, combinedPrompt, visionModel, onToken)
+}
+
+// AnalyzeDocumentStream 流式分析文档
+func (b *salesRAGBiz) AnalyzeDocumentStream(ctx context.Context, userID uint, file io.Reader, filename string, onToken func(token string) error) (string, error) {
+	// 读取内容
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return "", err
+	}
+
+	ext := strings.ToLower(filepath.Ext(filename))
+	if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
+		return b.analyzeImageStream(ctx, userID, data, onToken)
+	}
+
+	// 暂时只支持图片流式，非图片走普通逻辑但在最后一次性吐出（或稍后补充文本流式）
+	content, err := b.analyzeDocument(ctx, bytes.NewReader(data), filename)
+	if err != nil {
+		return "", err
+	}
+	if onToken != nil {
+		_ = onToken(content)
+	}
+	return content, nil
 }
 
 // analyzeDocument 分析文档（原有逻辑）
