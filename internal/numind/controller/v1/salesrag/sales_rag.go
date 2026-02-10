@@ -502,6 +502,7 @@ func (ctrl *SalesRAGController) UpdateCustomerProfile(c *gin.Context) {
 		Profile string `json:"profile"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Errorw("[UpdateCustomerProfile] Failed to bind JSON", "error", err)
 		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
 		return
 	}
@@ -512,11 +513,19 @@ func (ctrl *SalesRAGController) UpdateCustomerProfile(c *gin.Context) {
 		return
 	}
 
+	log.Infow("[UpdateCustomerProfile] Updating profile",
+		"user_id", user.ID,
+		"session_id", sessionID,
+		"profile_length", len(req.Profile),
+		"profile_preview", req.Profile[:min(len(req.Profile), 100)])
+
 	if err := ctrl.b.SalesRAG().UpdateCustomerProfile(c, user.ID, uint(sessionID), req.Profile); err != nil {
+		log.Errorw("[UpdateCustomerProfile] Failed to update", "error", err)
 		core.WriteResponse(c, err, nil)
 		return
 	}
 
+	log.Infow("[UpdateCustomerProfile] Profile updated successfully", "user_id", user.ID, "session_id", sessionID)
 	core.WriteResponse(c, nil, map[string]string{"message": "Customer profile updated successfully"})
 }
 
