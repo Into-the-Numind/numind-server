@@ -66,6 +66,9 @@ jobs:
       - name: Calculate Metadata
         id: meta
         run: |
+          # 获取短 SHA（前7位）
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+
           # 根据分支或tag确定环境参数和镜像标签
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             BUILD_ENV="prod"
@@ -84,16 +87,20 @@ jobs:
             IMAGE_TAG="dev"
             echo "::notice::🚀 触发方式: 分支 (dev)"
           fi
-          
+
           echo "build_env=$BUILD_ENV" >> $GITHUB_OUTPUT
           echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
-          
-          # 生成 tags 列表
+          echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
+
+          # 生成 tags 列表（添加 SHA 标签确保唯一性）
           TAGS="${{ env.IMAGE_NAME }}:$IMAGE_TAG"
+          TAGS="$TAGS,${{ env.IMAGE_NAME }}:$IMAGE_TAG-$SHORT_SHA"
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAGS="$TAGS,${{ env.IMAGE_NAME }}:latest"
           fi
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+          echo "::notice::📦 镜像标签: $IMAGE_TAG, $IMAGE_TAG-$SHORT_SHA"
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -104,6 +111,13 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
             ENV=${{ steps.meta.outputs.build_env }}
+          # 添加 git SHA 作为标签，确保每次构建都是唯一的
+          labels: |
+            git.commit=${{ github.sha }}
+            git.branch=${{ github.ref_name }}
+          # 禁用缓存以确保每次都是完整构建（可选，会增加构建时间）
+          # no-cache: true
+          # 使用更激进的缓存策略，但添加 git SHA 确保可追溯
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -192,16 +206,40 @@ jobs:
             echo "✅ Docker登录状态验证:"
             docker system info | grep -A 5 "Registry" || echo "无法获取Registry信息"
             
+            # 【关键修复】强制删除旧镜像，避免缓存问题
+            echo "🗑️  删除旧镜像（如果存在）..."
+            docker rmi -f neozhang96/numind-server:develop 2>/dev/null || echo "旧镜像不存在，跳过删除"
+
             # 拉取最新镜像
             echo "📦 拉取最新镜像..."
             docker pull neozhang96/numind-server:develop
-            
-            # 验证镜像拉取成功
-            echo "🔍 验证镜像信息..."
-            docker images neozhang96/numind-server:develop --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}\t{{.Size}}"
+
+            # 验证镜像拉取成功（包含 digest 确保是最新的）
+            echo "🔍 验证镜像信息（包含内容哈希）..."
+            docker images --digests neozhang96/numind-server:develop --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Digest}}\t{{.CreatedAt}}\t{{.Size}}"
+
+            # 记录镜像构建标签
+            echo "📝 镜像标签信息:"
+            docker inspect neozhang96/numind-server:develop --format='{{json .Config.Labels}}' | jq -r 'to_entries[] | select(.key | startswith("git")) | "\(.key)=\(.value)"' || echo "无法获取 Git 标签"
+
+            # 验证镜像的 Git SHA 是否匹配当前提交
+            EXPECTED_SHA="${{ github.sha }}"
+            IMAGE_SHA=$(docker inspect neozhang96/numind-server:develop --format='{{index .Config.Labels "git.commit"}}' 2>/dev/null || echo "")
+
+            if [ -n "$IMAGE_SHA" ] && [ "$IMAGE_SHA" = "$EXPECTED_SHA" ]; then
+              echo "✅ 镜像 SHA 验证通过: $IMAGE_SHA"
+            elif [ -n "$IMAGE_SHA" ]; then
+              echo "⚠️  警告: 镜像 SHA 不匹配!"
+              echo "   期望: $EXPECTED_SHA"
+              echo "   实际: $IMAGE_SHA"
+              echo "   镜像可能未正确更新，请检查 Docker Hub 推送状态"
+            else
+              echo "⚠️  警告: 无法获取镜像的 Git SHA 标签"
+              echo "   这可能是旧版本镜像，建议检查镜像构建日志"
+            fi
 
             # 清理 dangling (<none>) 镜像，避免磁盘膨胀
-            echo "Pruning dangling images..."
+            echo "🧹 清理悬空镜像..."
             docker image prune -f || true
             
             # 检查并停止运行中的容器
