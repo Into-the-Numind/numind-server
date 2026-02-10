@@ -1696,7 +1696,8 @@ func (b *salesRAGBiz) analyzeDocumentStreamInternal(ctx context.Context, file io
 
 ## 约束：
 - 严格控制在300 - 500 字以内
-- 直接以 Markdown 列表输出干货内容，严禁任何开场白和提示语`
+- 直接以 Markdown 列表输出干货内容，严禁任何开场白和提示语
+- **重要**：不要用代码块包裹输出（如 ` + "```markdown" + ` 或 ` + "```" + `），直接输出纯 Markdown 文本`
 
 	// 4. 调用 dmxapi 的 qwen-turbo 模型（流式输出）
 	return b.callDMXAPIStream(ctx, systemPrompt, "客户文档内容如下：\n\n"+content, onToken)
@@ -1731,7 +1732,8 @@ func (b *salesRAGBiz) analyzeDocument(ctx context.Context, file io.Reader, filen
 
 ## 约束：
 - 严格控制在300 - 500 字以内
-- 直接以 Markdown 列表输出干货内容，严禁任何开场白和提示语`
+- 直接以 Markdown 列表输出干货内容，严禁任何开场白和提示语
+- **重要**：不要用代码块包裹输出（如 ` + "```markdown" + ` 或 ` + "```" + `），直接输出纯 Markdown 文本`
 
 	// 4. 调用 dmxapi 的 qwen-turbo-latest 模型
 	return b.callDMXAPI(ctx, systemPrompt, "客户文档内容如下：\n\n"+content)
