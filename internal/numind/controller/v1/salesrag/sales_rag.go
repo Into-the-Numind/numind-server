@@ -502,6 +502,7 @@ func (ctrl *SalesRAGController) UpdateCustomerProfile(c *gin.Context) {
 		Profile string `json:"profile"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Errorw("[UpdateCustomerProfile] Failed to bind JSON", "error", err)
 		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
 		return
 	}
@@ -512,11 +513,19 @@ func (ctrl *SalesRAGController) UpdateCustomerProfile(c *gin.Context) {
 		return
 	}
 
+	log.Infow("[UpdateCustomerProfile] Updating profile",
+		"user_id", user.ID,
+		"session_id", sessionID,
+		"profile_length", len(req.Profile),
+		"profile_preview", req.Profile[:min(len(req.Profile), 100)])
+
 	if err := ctrl.b.SalesRAG().UpdateCustomerProfile(c, user.ID, uint(sessionID), req.Profile); err != nil {
+		log.Errorw("[UpdateCustomerProfile] Failed to update", "error", err)
 		core.WriteResponse(c, err, nil)
 		return
 	}
 
+	log.Infow("[UpdateCustomerProfile] Profile updated successfully", "user_id", user.ID, "session_id", sessionID)
 	core.WriteResponse(c, nil, map[string]string{"message": "Customer profile updated successfully"})
 }
 
@@ -805,6 +814,38 @@ func (ctrl *SalesRAGController) GetLanguageStyle(c *gin.Context) {
 
 	core.WriteResponse(c, nil, map[string]string{
 		"style": style,
+	})
+}
+
+// SaveLanguageStyle 保存用户的语言风格
+func (ctrl *SalesRAGController) SaveLanguageStyle(c *gin.Context) {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	var req struct {
+		Style string `json:"style" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Errorw("[SaveLanguageStyle] Invalid request", "error", err)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("请提供语言风格内容"), nil)
+		return
+	}
+
+	log.Infow("[SaveLanguageStyle] Saving for user", "user_id", user.ID, "style_length", len(req.Style))
+
+	if err := ctrl.b.SalesRAG().SaveLanguageStyle(c, user.ID, req.Style); err != nil {
+		log.Errorw("[SaveLanguageStyle] Error", "userID", user.ID, "error", err.Error())
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	log.Infow("[SaveLanguageStyle] Successfully saved", "user_id", user.ID)
+	core.WriteResponse(c, nil, map[string]string{
+		"message": "语言风格保存成功",
 	})
 }
 
