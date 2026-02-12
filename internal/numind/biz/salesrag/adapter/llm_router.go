@@ -10,36 +10,57 @@ import (
 	"numind-server/internal/pkg/log"
 )
 
-// LLMRouter 基于大模型的意图路由器 (V2)
-// 使用 DMXAPI 平台的 qwen-turbo-latest 进行意图识别和查询生成
+// LLMRouter 基于大模型的意图路由器 (V3 - CoT + HyDE)
+// 使用 DMXAPI 平台的 qwen-turbo-latest（深度思考模式）进行深度意图理解和查询改写
 type LLMRouter struct {
 	dmxClient *DMXAPIClient
 }
 
-// NewLLMRouter 创建新的 LLM 意图路由器
+// NewLLMRouter 创建新的 LLM意图路由器
 func NewLLMRouter() *LLMRouter {
 	return &LLMRouter{
 		dmxClient: NewDMXAPIClient(),
 	}
 }
 
-// ========== 销售话术模式 Prompt ==========
+// ========== 销售话术模式 Prompt (V3 - CoT + HyDE) ==========
 // 输入被认为是纯客户消息
-const salesModePrompt = `你是一个专业的销售意图分析师。分析以下客户发来的消息，完成两个任务：
+const salesModePrompt = `你是一个资深的销售意图分析师和检索专家。你的任务是深度理解客户消息的真实含义，并生成高质量的知识库检索方案。
 
-## 任务 1: 意图分类
-将客户消息归类为以下类别之一：
-- OBJECTION: 异议/抗拒（嫌贵、不需要、还要考虑、质疑价值）
-- COMPARISON: 竞品对比/选型/提到其他厂商
-- INQUIRY: 产品/业务咨询（问参数、功能、资质）
-- BUYING_PROOF: 购买信号/案例需求（问合同、价格、成功案例）
+## 你需要完成的任务
 
-## 任务 2: 搜索词生成
-基于意图，生成 2-3 个用于检索知识库的搜索词。要求：
-1. 每个搜索词必须独立、完整、包含主语
-2. 结合对话历史补全主语
-3. 针对不同维度生成（如：产品参数、销售话术、成功案例）
-4. **核心要求**：必须在搜索词中保留原始消息中的核心实体名、专有名词、技术参数或具体型号，不能进行过度泛化。
+### 任务 1: 深度意图理解
+请对客户消息进行全维度深度分析，确保你真正理解了客户"话里话外"的含义。你必须从以下维度逐一思考：
+
+1. 表层语义 vs 深层意图：字面上在说什么？真正想要的是什么？（例如："太贵了"可能不是真的嫌贵，而是在试探底线或者需要更多购买理由）
+2. 情绪信号解读：信任/好奇/犹豫/焦虑/不耐烦/抗拒/期待/测试？背后驱动因素是什么？
+3. 决策阶段判断：初步了解/深入对比/临门一脚/售后跟进/流失挽回？
+4. 信息缺口识别：客户缺少什么信息才能做出决定？什么信息能最有效地推动对话前进？
+5. 对话历史的态度变化：态度是在升温还是降温？是否有前后矛盾的信号？
+6. 隐性需求挖掘：没说出来但可能存在的需求/核心顾虑是什么？
+
+### 任务 2: 生成 3 个检索改写 Query
+基于你的深度分析，生成 3 个用于检索知识库的高质量改写搜索词。
+
+**检索目标参考（知识库通常包含以下三类文档）**：
+- 产品/公司介绍（功能、参数、价格、服务等）
+- 成功案例库（客户案例、合作成果、数据表现等）
+- 百问百答（常见问题解答、异议处理话术等）
+
+**改写规则**：
+1. 灵活适配：这 3 个搜索词不需要生硬地一一对应上述三类文档。请根据你的深度分析，判断哪种检索方向对当前问题最有效。
+2. 多维覆盖：这 3 个词应代表 3 种不同的检索策略，以追求最大化召回率。例如，如果这是一个纯技术问题，你可能会生成两个不同维度的产品参数查询和一个可能的相关案例查询；如果这是一个纯异议处理，你可能会生成多个不同侧重点的 Q&A 改写。
+3. 独立性：每个搜索词必须独立、完整、包含主语，脱离上下文亦可理解。
+4. 保留细节：必须保留核心实体名、技术参数或具体型号，严禁过度泛化。
+5. 你必须在思考过程中解释故为什么要选择这 3 个特定的检索方向。
+
+### 任务 3: 生成 1 个 HyDE（假设性文档）
+想象你是知识库的作者。针对客户的这个问题，知识库中最可能包含答案的那篇文档长什么样？
+
+请写一段 50-150 字的假设性文档内容：
+- 写成百问百答或产品介绍文档中的一个条目的样子
+- 直接包含客户问题的答案或相关信息
+- 使用与知识库文档一致的专业但通俗的语言风格，不要写成建议或分析报告
 
 ## 对话历史
 %s
@@ -47,37 +68,50 @@ const salesModePrompt = `你是一个专业的销售意图分析师。分析以�
 ## 客户当前消息
 %s
 
-## 输出格式（严格 JSON，不要包含其他内容）
-{"intent": "OBJECTION", "search_queries": ["Numind 价格异议话术", "Numind 成功案例 ROI"], "reason": "客户表达了价格顾虑"}`
+## 输出格式（严格 JSON）
+{"search_queries": ["改写词1", "改写词2", "改写词3"], "hyde_query": "假设性文档内容..."}`
 
-// ========== 自由讨论模式 Prompt ==========
+// ========== 自由讨论模式 Prompt (V3 - CoT + HyDE) ==========
 // 输入可能包含销售人员的指令 + 客户消息混合
-const freeModePrompt = `你是一个专业的销售意图分析师。分析以下销售人员转发的内容，完成三个任务：
+const freeModePrompt = `你是一个资深的销售意图分析师和检索专家。你的任务是深度理解销售人员转发的内容，并生成高质量的知识库检索方案。
 
 ## 背景
-销售人员在微信和客户聊天，现在向你转发了一段内容。这段内容可能是：
-1. 纯客户消息（如："客户说：最近太忙了"）
-2. 销售人员的问题/指令（如："帮我想个促成话术"）
-3. 混合内容（客户消息 + 销售人员的指令）
+销售人员转发的内容可能是：纯客户消息、销售指令、或两者的混合。你需要从中提取关键信息。
 
-## 任务 1: 区分内容
-识别输入中哪部分是客户消息，哪部分是销售指令。
+## 你需要完成的任务
 
-## 任务 2: 意图分类（针对客户消息）
-将客户消息归类为以下类别之一：
-- OBJECTION: 异议/抗拒（嫌贵、不需要、还要考虑、质疑价值）
-- COMPARISON: 竞品对比/选型/提到其他厂商
-- INQUIRY: 产品/业务咨询（问参数、功能、资质）
-- BUYING_PROOF: 购买信号/案例需求（问合同、价格、成功案例）
+### 任务 1: 区分内容并深度分析
+首先识别输入中哪部分是客户消息，哪部分是销售指令。
 
-如果没有客户消息，只有销售指令，意图设为 INQUIRY。
+针对客户消息，你必须从以下维度逐一进行深度思考：
+1. 表层语义 vs 深层意图：客户转发的消息字面上在说什么？潜台词是什么？
+2. 情绪信号解读：客户的情绪状态是什么？（犹豫/抗拒/期待等）
+3. 决策阶段判断：客户处于哪个博弈阶段？
+4. 信息缺口识别：客户缺少什么核心支撑？销售人员的额外指令暗示了什么痛点或难点？
+5. 对话历史的态度变化：结合历史，客户的态度轨迹如何？
+6. 隐性需求挖掘：客户最担心的成本、风险或信任点在哪里？
 
-## 任务 3: 搜索词生成
-基于客户消息中的意图和销售指令，生成 2-3 个用于检索知识库的搜索词。
-要求：
-1. 搜索词必须以“客户消息”中的核心实体和问题为核心。
-2. 严禁只根据“销售指令”生成动作类搜索词（如禁止生成“幽默回复技巧”），必须生成能检索到产品知识的搜索词（如“产品X的价格政策”）。
-3. 保留原始消息中的关键参数和型号。
+### 任务 2: 生成 3 个检索改写 Query
+基于上述深度分析，生成 3 个高质量的改写搜索词。
+
+**检索目标参考（知识库通常包含以下三类文档）**：
+- 产品/公司介绍（功能、参数、价格、服务等）
+- 成功案例库（客户案例、合作成果、数据表现等）
+- 百问百答（常见问题解答、异议处理话术等）
+
+**改写规则**：
+1. 灵活适配：这 3 个词不需要生硬地一一对应上述三类文档。根据你的判断，生成最能解决实际问题的 3 个检索方向。
+2. 客户视角核心：搜索词必须以客户消息中的核心实体和核心疑虑为中心。
+3. 严禁动作化导出：严禁根据销售指令生成纯动作类搜索词（如“怎么夸奖客户”、“幽默话术”），必须生成能从知识库中检索到业务知识、产品细节或策略支撑的搜索词。
+4. 策略独立性：3 个搜索词应代表 3 种不同的切入点或召回侧重。
+5. 保留细节：独立完整，且保留原始消息中的关键参数和型号。
+6. 你必须在思考过程中解释这 3 个检索词的选取逻辑。
+
+### 任务 3: 生成 1 个 HyDE（假设性文档）
+想象你是知识库的作者。针对该场景，写一段 50-150 字的假设性知识库原文：
+- 写成百问百答或介绍文档的一个条目。
+- 直接包含解决客户问题所需的信息或策略。
+- 风格专业且通俗，坚决不要写成建议或分析。
 
 ## 对话历史
 %s
@@ -85,10 +119,10 @@ const freeModePrompt = `你是一个专业的销售意图分析师。分析以�
 ## 销售人员转发的内容
 %s
 
-## 输出格式（严格 JSON，不要包含其他内容）
-{"intent": "OBJECTION", "search_queries": ["价格异议话术", "产品价值卖点"], "reason": "客户嫌贵", "sales_instruction": "帮我想个回复", "customer_message": "太贵了，考虑考虑"}`
+## 输出格式（严格 JSON）
+{"search_queries": ["改写词1", "改写词2", "改写词3"], "hyde_query": "假设性文档内容...", "sales_instruction": "识别出的销售指令", "customer_message": "识别出的客户消息"}`
 
-// AnalyzeIntentV2 分析用户意图并生成搜索策略
+// AnalyzeIntentV2 深度理解用户意图并生成检索方案（V3 - CoT + HyDE）
 // chatMode: "sales"（销售话术模式）或 "free"（自由讨论模式）
 func (r *LLMRouter) AnalyzeIntentV2(ctx context.Context, query string, history []string, chatMode string) (*port.IntentAnalysisResult, error) {
 	// 构建历史上下文
@@ -115,15 +149,13 @@ func (r *LLMRouter) AnalyzeIntentV2(ctx context.Context, query string, history [
 		{Role: "user", Content: prompt},
 	}
 
-	// 调用 qwen-turbo-latest
-	resp, err := r.dmxClient.ChatCompletion(ctx, "qwen-turbo-latest", messages, 0.1, 500)
+	// 调用 qwen-turbo-latest（深度思考模式）
+	resp, err := r.dmxClient.ChatCompletionWithThinking(ctx, "qwen-turbo-latest", messages, 0.1, 2000)
 	if err != nil {
 		log.C(ctx).Errorw("LLM intent analysis failed", "error", err, "chatMode", chatMode)
-		// Fallback: 返回默认询问意图
+		// Fallback: 返回原始查询
 		return &port.IntentAnalysisResult{
-			Intent:        port.IntentInquiry,
 			SearchQueries: []string{query},
-			Reason:        "LLM 分析失败，使用原始查询",
 		}, nil
 	}
 
@@ -135,14 +167,18 @@ func (r *LLMRouter) AnalyzeIntentV2(ctx context.Context, query string, history [
 		log.C(ctx).Warnw("Failed to parse intent JSON", "response", resp, "error", err, "chatMode", chatMode)
 		// Fallback
 		return &port.IntentAnalysisResult{
-			Intent:        port.IntentInquiry,
 			SearchQueries: []string{query},
-			Reason:        "JSON 解析失败，使用原始查询",
 		}, nil
 	}
 
-	// 验证意图有效性
-	result.Intent = normalizeIntent(result.Intent)
+	// 确保生成了 3 个搜索词
+	if len(result.SearchQueries) == 0 {
+		result.SearchQueries = []string{query}
+	}
+	// 截断到最多 3 个改写 Query
+	if len(result.SearchQueries) > 3 {
+		result.SearchQueries = result.SearchQueries[:3]
+	}
 
 	// 确保原始 Query 始终在搜索列表中（底层安全保障）
 	originalQueryExists := false
@@ -153,22 +189,17 @@ func (r *LLMRouter) AnalyzeIntentV2(ctx context.Context, query string, history [
 		}
 	}
 	if !originalQueryExists {
+		// 将原始 Query 添加到列表开头
 		result.SearchQueries = append([]string{query}, result.SearchQueries...)
 	}
 
-	// 限制搜索词数量，避免召回过多重复噪声
-	if len(result.SearchQueries) > 4 {
-		result.SearchQueries = result.SearchQueries[:4]
-	}
-
-	log.C(ctx).Infow("Intent analysis completed",
+	log.C(ctx).Infow("Intent analysis completed (V3 CoT+HyDE)",
 		"query", query,
 		"chatMode", chatMode,
-		"intent", result.Intent,
 		"queries", result.SearchQueries,
+		"hyde_query_len", len(result.HyDEQuery),
 		"salesInstruction", result.SalesInstruction,
-		"customerMessage", result.CustomerMessage,
-		"reason", result.Reason)
+		"customerMessage", result.CustomerMessage)
 
 	return &result, nil
 }

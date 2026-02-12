@@ -100,9 +100,7 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 
 	verdict := &RetrievalVerdict{
 		Query:         query,
-		Intent:        intentResult.Intent,
 		SearchQueries: intentResult.SearchQueries,
-		Reason:        intentResult.Reason,
 		ChatMode:      chatMode,
 		History:       history,
 	}
@@ -112,13 +110,24 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 		verdict.RewriteQuery = intentResult.SearchQueries[0]
 	}
 
+	// 将 HyDE Query 追加到搜索列表（如果存在）
+	// 最终列表：原始 Query + 3 个普通改写 + 1 个 HyDE = 最多 5 路并行检索
+	allSearchQueries := make([]string, len(intentResult.SearchQueries))
+	copy(allSearchQueries, intentResult.SearchQueries)
+	if intentResult.HyDEQuery != "" {
+		allSearchQueries = append(allSearchQueries, intentResult.HyDEQuery)
+		log.C(ctx).Infow("HyDE query added to search list",
+			"hyde_query_len", len(intentResult.HyDEQuery),
+			"total_queries", len(allSearchQueries))
+	}
+
 	// 2. 并行执行：RAG 检索 + 策略选择
 	var wg sync.WaitGroup
 	var allChunks []domain.KnowledgeChunk
 	var chunksErr error
 	var strategy *domain.BasicStrategy
 
-	// 2a. 并行 - RAG 检索
+	// 2a. 并行 - RAG 检索（使用包含 HyDE 的完整搜索列表）
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -126,7 +135,7 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 			UserID:      userID,
 			DocumentIDs: docIDs,
 		}
-		allChunks, chunksErr = s.parallelSearch(ctx, intentResult.SearchQueries, filter)
+		allChunks, chunksErr = s.parallelSearch(ctx, allSearchQueries, filter)
 	}()
 
 	// 2b. 并行 - 策略选择（仅在 sales 模式下启用）
@@ -244,14 +253,18 @@ func (s *SalesRAGService) parallelSearch(
 	return allChunks, nil
 }
 
-// rerankChunks 使用 Rerank 模型进行重排序
+// rerankScoreThreshold Rerank 分数截断阈值
+// 低于此阈值的结果将被丢弃（最少保留 1 条）
+const rerankScoreThreshold = 0.3
+
+// rerankChunks 使用 Rerank 模型进行重排序，并按分数截断
 func (s *SalesRAGService) rerankChunks(
 	ctx context.Context,
 	query string,
 	chunks []domain.KnowledgeChunk,
 ) ([]domain.KnowledgeChunk, error) {
-	if len(chunks) <= 5 {
-		return chunks, nil // 太少无需 rerank
+	if len(chunks) <= 1 {
+		return chunks, nil // 只有 1 条无需 rerank
 	}
 
 	// 准备 documents 列表 (发送全量 Content)
@@ -260,23 +273,48 @@ func (s *SalesRAGService) rerankChunks(
 		documents[i] = chunk.Content
 	}
 
-	// 调用 Rerank API
-	indices, err := s.dmxClient.Rerank(ctx, query, documents, 5)
+	// 调用 Rerank API（返回索引+分数）
+	rerankResults, err := s.dmxClient.Rerank(ctx, query, documents, 5)
 	if err != nil {
 		return nil, err
 	}
 
-	// 根据索引提取 Chunk
-	result := make([]domain.KnowledgeChunk, 0, len(indices))
-	for _, idx := range indices {
-		if idx >= 0 && idx < len(chunks) {
-			result = append(result, chunks[idx])
+	// 根据索引提取 Chunk，用 Rerank Score 覆写原始余弦相似度
+	// 同时应用分数截断：score >= 0.3 的保留，最少 1 条，最多 5 条
+	result := make([]domain.KnowledgeChunk, 0, len(rerankResults))
+	for i, rr := range rerankResults {
+		if rr.Index < 0 || rr.Index >= len(chunks) {
+			continue
+		}
+		// 第一条始终保留（保底），后续按阈值筛选
+		if i > 0 && rr.Score < rerankScoreThreshold {
+			continue
+		}
+		chunk := chunks[rr.Index]
+		chunk.Score = float32(rr.Score) // 用 Rerank Score 覆写，前端展示此分数
+		result = append(result, chunk)
+	}
+
+	// 安全兜底：至少返回 1 条
+	if len(result) == 0 && len(rerankResults) > 0 {
+		bestIdx := rerankResults[0].Index
+		if bestIdx >= 0 && bestIdx < len(chunks) {
+			chunk := chunks[bestIdx]
+			chunk.Score = float32(rerankResults[0].Score)
+			result = append(result, chunk)
 		}
 	}
 
 	log.C(ctx).Infow("Rerank completed",
 		"input_count", len(chunks),
-		"output_count", len(result))
+		"output_count", len(result),
+		"threshold", rerankScoreThreshold,
+		"top_score", func() float64 {
+			if len(rerankResults) > 0 {
+				return rerankResults[0].Score
+			}
+			return 0
+		}())
 
 	return result, nil
 }

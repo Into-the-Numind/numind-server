@@ -648,13 +648,18 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 	languageStyle = truncate(languageStyle, maxLanguageStyleChars)
 	query = truncate(query, maxUserInputChars)
 
-	// 构建知识上下文
+	// 构建知识上下文（附带 Rerank 置信度信号）
 	var knowledgeContext string
 	allChunks := verdict.Evidence
 	if len(allChunks) > 0 {
 		var contextParts []string
 		for i, chunk := range allChunks {
-			contextParts = append(contextParts, fmt.Sprintf("[知识%d] %s", i+1, chunk.Content))
+			if chunk.Score > 0 {
+				// 附带 Rerank 相关度分数，帮助模型判断引用置信度
+				contextParts = append(contextParts, fmt.Sprintf("[知识%d] (相关度:%.0f%%) %s", i+1, chunk.Score*100, chunk.Content))
+			} else {
+				contextParts = append(contextParts, fmt.Sprintf("[知识%d] %s", i+1, chunk.Content))
+			}
 		}
 		knowledgeContext = strings.Join(contextParts, "\n\n")
 	}
@@ -720,9 +725,10 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 	// 核心参考资料
 	prompt.WriteString("## 核心参考资料\n\n")
 
-	// 知识库内容（条件渲染）
+	// 知识库内容（条件渲染，附带权重指引）
 	if knowledgeContext != "" {
 		prompt.WriteString("### 知识库内容\n")
+		prompt.WriteString("> 每条知识附带相关度百分比。相关度 ≥ 70% 的知识应重点融入回答；30%-70% 的仅作补充参考；如果所有知识相关度都偏低，以你的专业判断为主。\n\n")
 		prompt.WriteString(knowledgeContext)
 		prompt.WriteString("\n\n")
 	}
@@ -738,18 +744,15 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 
 	prompt.WriteString("---\n")
 
-	// 你的任务
+	// 你的任务（风格定义 + 输出格式合并）
 	prompt.WriteString("## 你的任务\n")
-	prompt.WriteString("请综合参考上述信息，为当前客户消息生成三个不同风格的回复选项：\n\n")
+	prompt.WriteString("请综合参考上述信息，为当前客户消息生成三个不同风格的回复选项。直接使用 Markdown 三级标题分隔：\n\n")
 	prompt.WriteString("### 选项A：激进型（逼单风格）\n")
-	prompt.WriteString("**核心策略**：侧重利益刺激、稀缺性强调、促成即刻行动  \n")
-	prompt.WriteString("**话术特征**：直接、有冲击力、紧迫感强\n\n")
+	prompt.WriteString("侧重利益刺激、稀缺性强调、促成即刻行动。话术直接有冲击力。\n（直接写给客户的话术，可分多段）\n\n")
 	prompt.WriteString("### 选项B：保守型（共情风格）\n")
-	prompt.WriteString("**核心策略**：侧重理解客户压力、提供情绪价值、建立信任关系  \n")
-	prompt.WriteString("**话术特征**：温暖、包容、不施加压力\n\n")
+	prompt.WriteString("侧重理解客户压力、提供情绪价值、建立信任关系。话术温暖包容。\n（直接写给客户的话术，可分多段）\n\n")
 	prompt.WriteString("### 选项C：纯知识回复（专业风格）\n")
-	prompt.WriteString("**核心策略**：基于知识库内容，给出客观、专业、中立的解答  \n")
-	prompt.WriteString("**话术特征**：逻辑严密、数据支撑、事实为主\n\n")
+	prompt.WriteString("基于知识库内容，给出客观、专业、中立的解答。话术逻辑严密、事实为主。\n（直接写给客户的话术，可分多段）\n\n")
 	prompt.WriteString("---\n")
 
 	// 核心规则
@@ -762,12 +765,14 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 		prompt.WriteString("   必须严格遵循下方的【语言风格参考】  \n")
 	}
 	prompt.WriteString("   符合微信聊天场景的自然表达\n\n")
-	prompt.WriteString("3. **严格基于知识**  \n")
+	prompt.WriteString("3. **知识为锚，判断为翼**  \n")
 	if knowledgeContext != "" {
-		prompt.WriteString("   所有回复内容必须能在【知识库内容】中找到依据  \n")
+		prompt.WriteString("   涉及具体产品信息（价格、功能、参数、案例）时，必须基于【知识库内容】  \n")
+		prompt.WriteString("   涉及策略分析、客户心理、沟通技巧时，请充分发挥你的专业判断  \n")
+		prompt.WriteString("   优先融合相关度高的知识，用你自己的理解重新组织，而非原文照搬  \n")
 	}
 	if strategyContent != "" {
-		prompt.WriteString("   优先参考【核心策略参考】中的话术模板或逻辑\n\n")
+		prompt.WriteString("   灵活参考【核心策略参考】中的话术模板或逻辑\n\n")
 	} else {
 		prompt.WriteString("\n")
 	}
@@ -780,20 +785,10 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 	prompt.WriteString("   不要写\"建议您...\"、\"可以这样回复...\"等建议性语言  \n")
 	prompt.WriteString("   不要分析原因或解释为什么这样回复\n\n")
 	prompt.WriteString("2. **严禁编造信息**  \n")
-	prompt.WriteString("   如果知识库中没有相关答案，必须在话术中说明需进一步核实  \n")
-	prompt.WriteString("   不得虚构产品功能、价格、案例等信息  \n")
+	prompt.WriteString("   如果涉及具体产品信息但知识库中没有答案，可在话术中自然地说明需核实  \n")
+	prompt.WriteString("   对于通用销售技巧和沟通策略，可以基于你的专业经验自由发挥  \n")
+	prompt.WriteString("   不得虚构产品功能、价格、案例等具体信息  \n")
 	prompt.WriteString("   宁可保守回复，也不要过度承诺\n\n")
-	prompt.WriteString("3. **禁止格式混乱**  \n")
-	prompt.WriteString("   严格按照下方【输出格式要求】组织内容\n\n")
-
-	prompt.WriteString("### 输出格式要求\n")
-	prompt.WriteString("直接使用 Markdown 三级标题分隔三个选项：\n\n")
-	prompt.WriteString("### 选项A：激进型\n")
-	prompt.WriteString("（直接写给客户的话术，可分多段）\n\n")
-	prompt.WriteString("### 选项B：保守型\n")
-	prompt.WriteString("（直接写给客户的话术，可分多段）\n\n")
-	prompt.WriteString("### 选项C：纯知识回复\n")
-	prompt.WriteString("（直接写给客户的话术，可分多段）\n\n")
 
 	// 语言风格参考（固定显示）
 	prompt.WriteString("---\n")
@@ -812,12 +807,12 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 	return prompt.String()
 }
 
-// buildFreeModePrompt 构建 Free 模式提示词（全能销售顾问）
+// buildFreeModePrompt 构建 Free 模式提示词（资深销售教练）
 func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle string, history []string) string {
 	var prompt strings.Builder
 
 	// 角色和目标
-	prompt.WriteString("你是一位全能的销售顾问助手，可以帮助销售人员解决任何与销售相关的问题和需求。\n\n")
+	prompt.WriteString("你是一位资深的销售教练，拥有丰富的一线实战经验和客户心理洞察力。你以搭档的身份协助销售人员分析局面、制定策略、打磨话术。\n\n")
 
 	// 客户背景信息（条件渲染）
 	hasBackground := customerProfile != "" || len(history) > 0
@@ -842,9 +837,10 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, str
 	// 核心参考资料
 	prompt.WriteString("## 核心参考资料\n\n")
 
-	// 知识库内容（条件渲染）
+	// 知识库内容（条件渲染，附带权重指引）
 	if knowledgeContext != "" {
 		prompt.WriteString("### 知识库内容\n")
+		prompt.WriteString("> 每条知识附带相关度百分比。相关度 ≥ 70% 的知识应重点融入回答；30%-70% 的仅作补充参考；如果所有知识相关度都偏低，以你的专业判断为主。\n\n")
 		prompt.WriteString(knowledgeContext)
 		prompt.WriteString("\n\n")
 	}
@@ -860,36 +856,6 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, str
 
 	prompt.WriteString("---\n")
 
-	// 你的能力范围
-	prompt.WriteString("## 你的能力范围\n\n")
-	prompt.WriteString("你可以协助销售人员处理以下各类需求（不限于此）：\n\n")
-	prompt.WriteString("### 沟通支持\n")
-	prompt.WriteString("- 客户消息回复建议\n")
-	prompt.WriteString("- 话术生成与优化\n")
-	prompt.WriteString("- 破冰与开场设计\n")
-	prompt.WriteString("- 异议处理方案\n\n")
-	prompt.WriteString("### 分析洞察\n")
-	prompt.WriteString("- 客户意图分析\n")
-	prompt.WriteString("- 销售阶段判断\n")
-	prompt.WriteString("- 需求挖掘与总结\n")
-	prompt.WriteString("- 对话关键信息提炼\n\n")
-	prompt.WriteString("### 策略咨询\n")
-	prompt.WriteString("- 销售策略推荐\n")
-	prompt.WriteString("- 跟进计划制定\n")
-	prompt.WriteString("- 成交路径设计\n")
-	prompt.WriteString("- 竞品对比分析\n\n")
-	prompt.WriteString("### 知识服务\n")
-	prompt.WriteString("- 产品信息查询\n")
-	prompt.WriteString("- 案例参考提供\n")
-	prompt.WriteString("- 销售方法论讲解\n")
-	prompt.WriteString("- 知识库内容检索\n\n")
-	prompt.WriteString("### 其他支持\n")
-	prompt.WriteString("- 销售流程指导\n")
-	prompt.WriteString("- 情绪支持与鼓励\n")
-	prompt.WriteString("- 工作计划辅助\n")
-	prompt.WriteString("- 任何其他销售相关需求\n\n")
-	prompt.WriteString("---\n")
-
 	// 核心工作原则
 	prompt.WriteString("## 核心工作原则\n\n")
 	prompt.WriteString("### 1. 智能自适应\n")
@@ -901,8 +867,9 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, str
 		prompt.WriteString("- 结合【客户背景信息】提供针对性建议\n")
 	}
 	if knowledgeContext != "" {
-		prompt.WriteString("- 优先从【知识库内容】中查找依据和答案\n")
-		prompt.WriteString("- 引用知识库时说明来源\n")
+		prompt.WriteString("- **知识为锚，判断为翼**：知识库提供事实依据，但你的分析和策略建议不受知识库限制\n")
+		prompt.WriteString("- 涉及具体产品信息时，以【知识库内容】为准；涉及策略和通用知识时，发挥你的专业判断\n")
+		prompt.WriteString("- 优先融合相关度高的知识，而非机械引用\n")
 	}
 	if strategyContent != "" {
 		prompt.WriteString("- 参考【核心策略参考】中的方法论和话术模板\n")
@@ -913,54 +880,42 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, str
 	}
 	prompt.WriteString("\n")
 	prompt.WriteString("### 3. 专业标准\n")
-	prompt.WriteString("- **严格基于事实**：所有建议必须有据可依，禁止编造\n")
+	prompt.WriteString("- **事实严谨、判断灵活**：产品信息必须有据可依，策略分析可充分发挥\n")
 	prompt.WriteString("- **语气专业友好**：保持顾问专业度，同时亲切易懂\n")
 	prompt.WriteString("- **结构清晰**：使用 Markdown 合理组织内容\n\n")
 	prompt.WriteString("---\n")
 
-	// 客户消息回复场景
+	// 客户消息回复场景（风格定义 + 输出格式合并）
 	prompt.WriteString("## 客户消息回复场景\n\n")
-	prompt.WriteString("**当问题是\"如何回复客户消息\"时**，提供**三种不同风格的回复选项**供销售人员参考选择：\n\n")
-	prompt.WriteString("### 三种风格\n")
-	prompt.WriteString("**选项A：激进型（逼单风格）**\n")
-	prompt.WriteString("- 核心策略：利益刺激、稀缺性强调、促成即刻行动\n")
-	prompt.WriteString("- 适用场景：客户意向明确，临门一脚\n")
-	prompt.WriteString("- 话术特征：直接、有冲击力、紧迫感强\n\n")
-	prompt.WriteString("**选项B：保守型（共情风格）**\n")
-	prompt.WriteString("- 核心策略：理解客户压力、提供情绪价值、建立信任\n")
-	prompt.WriteString("- 适用场景：客户有顾虑，需要缓解压力\n")
-	prompt.WriteString("- 话术特征：温暖、包容、不施加压力\n\n")
-	prompt.WriteString("**选项C：纯知识型（专业风格）**\n")
-	prompt.WriteString("- 核心策略：基于知识库，客观专业解答\n")
-	prompt.WriteString("- 适用场景：客户咨询产品信息\n")
-	prompt.WriteString("- 话术特征：逻辑严密、数据支撑、事实为主\n\n")
-	prompt.WriteString("### 输出格式\n\n")
+	prompt.WriteString("**当问题是\"如何回复客户消息\"时**，提供三种不同风格的回复选项，格式如下：\n\n")
 	prompt.WriteString("### 选项A：激进型\n")
-	prompt.WriteString("**分析**：（为什么选这个策略）  \n")
+	prompt.WriteString("利益刺激、稀缺性强调、促成行动。适用于客户意向明确的场景。\n")
+	prompt.WriteString("**分析**：（为什么选这个策略）\n")
 	prompt.WriteString("**建议话术**：（具体回复内容）\n\n")
 	prompt.WriteString("### 选项B：保守型\n")
-	prompt.WriteString("**分析**：（为什么选这个策略）  \n")
+	prompt.WriteString("理解客户压力、提供情绪价值、建立信任。适用于客户有顾虑的场景。\n")
+	prompt.WriteString("**分析**：（为什么选这个策略）\n")
 	prompt.WriteString("**建议话术**：（具体回复内容）\n\n")
 	prompt.WriteString("### 选项C：纯知识型\n")
-	prompt.WriteString("**分析**：（为什么选这个策略）  \n")
+	prompt.WriteString("基于知识库客观解答。适用于客户咨询产品信息的场景。\n")
+	prompt.WriteString("**分析**：（为什么选这个策略）\n")
 	prompt.WriteString("**建议话术**：（具体回复内容）\n\n")
-	prompt.WriteString("**注意**：如果销售人员明确要求其他方式（如只要一个答案、或特定风格），按需求调整。\n\n")
+	prompt.WriteString("如果销售人员明确要求其他方式（如只要一个答案、或特定风格），按需求调整。\n\n")
 	prompt.WriteString("---\n")
 
 	// 其他问题类型
 	prompt.WriteString("## 其他问题类型\n\n")
-	prompt.WriteString("对于非\"客户消息回复\"类的问题：\n")
-	prompt.WriteString("- 直接提供清晰、专业的解答\n")
-	prompt.WriteString("- 使用合适的 Markdown 格式组织（标题、列表、表格等）\n\n")
+	prompt.WriteString("对于非\"客户消息回复\"类的问题，直接提供清晰、专业的解答。\n\n")
 	prompt.WriteString("---\n")
 
 	// 核心规则
 	prompt.WriteString("## 核心规则\n\n")
 	prompt.WriteString("### 必须严格遵守\n\n")
-	prompt.WriteString("1. **严格基于知识，禁止编造**\n")
+	prompt.WriteString("1. **区分事实与判断**\n")
 	if knowledgeContext != "" {
-		prompt.WriteString("   - 所有产品信息、功能、价格必须能在【知识库内容】中找到依据\n")
-		prompt.WriteString("   - 如果知识库中没有相关信息，必须明确说明\"知识库中未检索到相关信息\"\n")
+		prompt.WriteString("   - **产品事实**（价格、功能、参数、案例）必须有知识库依据，不得编造\n")
+		prompt.WriteString("   - **策略分析和通用知识**（客户心理、沟通技巧、行业经验）请运用你的专业判断自由发挥\n")
+		prompt.WriteString("   - 如果销售人员问的是具体产品信息但知识库中没有，说明\"知识库暂未收录该信息，建议确认\"\n")
 	} else {
 		prompt.WriteString("   - 基于通用销售经验和方法论提供建议\n")
 		prompt.WriteString("   - 涉及具体产品信息时，建议销售人员核实\n")
@@ -1012,23 +967,6 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, str
 	prompt.WriteString("现在请基于以上指引，理解销售人员的问题并提供最合适的帮助。")
 
 	return prompt.String()
-}
-
-// getIntentDescription 获取意图的中文描述
-func getIntentDescription(intent string) string {
-	switch intent {
-	case "OBJECTION":
-		return "客户正在表达异议或抗拒（如嫌贵、犹豫、质疑）。需要先共情，再引导价值认知。"
-	case "COMPARISON":
-		return "客户在比较竞品或进行选型。需要突出差异化优势，扬长避短。"
-	case "INQUIRY":
-		return "客户在咨询产品信息。需要准确、专业地回答，并适当引导。"
-	case "BUYING_PROOF":
-		return "客户表现出购买意向或需要案例佐证。需要积极推进，提供信任背书。"
-
-	default:
-		return "客户意图待分析。"
-	}
 }
 
 // ============ 会话管理方法 ============
@@ -1637,15 +1575,15 @@ func (b *salesRAGBiz) analyzeImageStream(ctx context.Context, userID uint, image
 - **直接输出画像内容**，不要有任何寒暄、前排分析或结论语。`
 
 	const visionModel = "qwen3-vl-flash-2026-01-22"
-	
+
 	log.Printf("[analyzeImageStream] Calling QianwenVisionStream with model: %s", visionModel)
 	result, err := b.aliBiz.QianwenVisionStream(ctx, dataURL, combinedPrompt, visionModel, onToken)
-	
+
 	if err != nil {
 		log.Printf("[analyzeImageStream] QianwenVisionStream error: %v", err)
 		return "", err
 	}
-	
+
 	log.Printf("[analyzeImageStream] QianwenVisionStream completed, result length: %d", len(result))
 	return result, nil
 }

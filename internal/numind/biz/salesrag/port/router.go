@@ -23,10 +23,11 @@ const (
 	IntentDirect    IntentType = "DIRECT"    // -> IntentInquiry
 )
 
-// IntentAnalysisResult 意图分析结果（包含多路搜索 Query）
+// IntentAnalysisResult 意图分析结果（包含多路搜索 Query + HyDE）
 type IntentAnalysisResult struct {
 	Intent           IntentType `json:"intent"`            // 主要意图
-	SearchQueries    []string   `json:"search_queries"`    // 生成的多路搜索词（已改写消歧）
+	SearchQueries    []string   `json:"search_queries"`    // 生成的多路搜索词（已改写消歧，3 个）
+	HyDEQuery        string     `json:"hyde_query"`        // HyDE 假设性文档片段（用于语义匹配检索）
 	Reason           string     `json:"reason"`            // 判断依据
 	SalesInstruction string     `json:"sales_instruction"` // [free模式专用] 销售指令（如果有）
 	CustomerMessage  string     `json:"customer_message"`  // [free模式专用] 客户原始消息

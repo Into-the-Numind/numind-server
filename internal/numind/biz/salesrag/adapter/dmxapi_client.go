@@ -47,11 +47,12 @@ type ChatMessage struct {
 
 // ChatCompletionRequest 聊天请求
 type ChatCompletionRequest struct {
-	Model       string        `json:"model"`
-	Messages    []ChatMessage `json:"messages"`
-	Temperature float64       `json:"temperature,omitempty"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
-	Stream      bool          `json:"stream,omitempty"`
+	Model          string        `json:"model"`
+	Messages       []ChatMessage `json:"messages"`
+	Temperature    float64       `json:"temperature,omitempty"`
+	MaxTokens      int           `json:"max_tokens,omitempty"`
+	Stream         bool          `json:"stream,omitempty"`
+	EnableThinking *bool         `json:"enable_thinking,omitempty"` // Qwen 深度思考模式
 }
 
 // ChatCompletionResponse 聊天响应
@@ -121,6 +122,76 @@ func (c *DMXAPIClient) ChatCompletion(ctx context.Context, model string, message
 	}
 
 	return result.Choices[0].Message.Content, nil
+}
+
+// ChatCompletionWithThinking 调用聊天接口（非流式 + 深度思考模式）
+// 启用 enable_thinking=true，模型会在响应中包含 <think>...</think> 思维链
+// 返回值只包含最终回答内容（思维链部分会被记录到日志但不返回）
+func (c *DMXAPIClient) ChatCompletionWithThinking(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int) (string, error) {
+	enableThinking := true
+	reqBody := ChatCompletionRequest{
+		Model:          model,
+		Messages:       messages,
+		Temperature:    temperature,
+		MaxTokens:      maxTokens,
+		Stream:         false,
+		EnableThinking: &enableThinking,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshal request failed: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/chat/completions", bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("create request failed: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response failed: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result ChatCompletionResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("decode response failed: %w", err)
+	}
+
+	if result.Error != nil {
+		return "", fmt.Errorf("API error: %s - %s", result.Error.Code, result.Error.Message)
+	}
+
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("empty choices from API")
+	}
+
+	content := result.Choices[0].Message.Content
+
+	// 提取并记录思维链内容（如果存在），然后只返回最终回答
+	if thinkStart := strings.Index(content, "<think>"); thinkStart != -1 {
+		if thinkEnd := strings.Index(content, "</think>"); thinkEnd != -1 {
+			thinkContent := content[thinkStart+7 : thinkEnd]
+			log.Infow("LLM thinking chain", "thinking", thinkContent[:min(len(thinkContent), 500)])
+			// 只返回 </think> 之后的最终内容
+			content = strings.TrimSpace(content[thinkEnd+8:])
+		}
+	}
+
+	return content, nil
 }
 
 // StreamChatCompletion 调用聊天接口（流式）
@@ -232,9 +303,15 @@ type RerankResponse struct {
 	} `json:"error,omitempty"`
 }
 
+// RerankResult Rerank 结果，包含索引和相关性分数
+type RerankResult struct {
+	Index int     // 原始文档的索引位置
+	Score float64 // Rerank 相关性分数 (0-1)
+}
+
 // Rerank 调用 Rerank 模型
-// 返回按相关性排序的文档索引列表
-func (c *DMXAPIClient) Rerank(ctx context.Context, query string, documents []string, topN int) ([]int, error) {
+// 返回按相关性排序的文档索引和对应的 relevance_score
+func (c *DMXAPIClient) Rerank(ctx context.Context, query string, documents []string, topN int) ([]RerankResult, error) {
 	if len(documents) == 0 {
 		return nil, nil
 	}
@@ -288,13 +365,16 @@ func (c *DMXAPIClient) Rerank(ctx context.Context, query string, documents []str
 		return nil, fmt.Errorf("rerank error: %s", result.Error.Message)
 	}
 
-	// 提取排序后的索引
-	indices := make([]int, 0, len(result.Results))
+	// 提取排序后的索引和分数
+	results := make([]RerankResult, 0, len(result.Results))
 	for _, r := range result.Results {
-		indices = append(indices, r.Index)
+		results = append(results, RerankResult{
+			Index: r.Index,
+			Score: r.RelevanceScore,
+		})
 	}
 
-	log.Infow("Rerank completed", "query_len", len(query), "doc_count", len(documents), "top_n", topN, "result_count", len(indices))
+	log.Infow("Rerank completed", "query_len", len(query), "doc_count", len(documents), "top_n", topN, "result_count", len(results))
 
-	return indices, nil
+	return results, nil
 }
