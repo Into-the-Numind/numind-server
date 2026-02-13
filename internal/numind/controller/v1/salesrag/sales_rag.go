@@ -639,17 +639,36 @@ func (ctrl *SalesRAGController) RenameSession(c *gin.Context) {
 	core.WriteResponse(c, nil, map[string]string{"message": "Session renamed successfully"})
 }
 
-// AnalyzeProfile 解析上传的文档生成客户档案 (支持 SSE 流式)
+// AnalyzeProfile 解析上传的文档生成客户档案 (支持 SSE 流式，支持多文件)
 func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 	log.Infow("[AnalyzeProfile] Received request")
 
-	file, header, err := c.Request.FormFile("file")
-	if err != nil {
-		log.Errorw("[AnalyzeProfile] FormFile error", "error", err)
+	// 解析 multipart form
+	if err := c.Request.ParseMultipartForm(100 << 20); err != nil { // 100 MB max
+		log.Errorw("[AnalyzeProfile] ParseMultipartForm error", "error", err)
 		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
 		return
 	}
-	defer file.Close()
+
+	form := c.Request.MultipartForm
+	files := form.File["file"] // 前端 input name="file" multiple
+
+	if len(files) == 0 {
+		// 尝试获取 "files" 字段
+		files = form.File["files"]
+	}
+
+	if len(files) == 0 {
+		log.Errorw("[AnalyzeProfile] No files found")
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("请上传至少一个文件"), nil)
+		return
+	}
+
+	if len(files) > 5 {
+		log.Errorw("[AnalyzeProfile] Too many files", "count", len(files))
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("最多只能上传 5 个文件"), nil)
+		return
+	}
 
 	user := middleware.GetCurrentUser(c)
 	if user == nil {
@@ -658,7 +677,7 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 		return
 	}
 
-	log.Infow("[AnalyzeProfile] User uploading file", "user_id", user.ID, "filename", header.Filename, "size", header.Size)
+	log.Infow("[AnalyzeProfile] User uploading files", "user_id", user.ID, "count", len(files))
 
 	// 设置 SSE 响应头
 	c.Header("Content-Type", "text/event-stream")
@@ -671,15 +690,15 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 	// 发送初始状态
 	statusData, _ := json.Marshal(map[string]interface{}{
 		"type": "status",
-		"data": "正在分析客户资料...",
+		"data": fmt.Sprintf("正在综合分析 %d 份资料...", len(files)),
 	})
 	fmt.Fprintf(w, "data: %s\n\n", statusData)
 	w.Flush()
 	log.Infow("[AnalyzeProfile] Sent initial status")
 
-	log.Infow("[AnalyzeProfile] Calling AnalyzeDocumentStream...")
-	profile, err := ctrl.b.SalesRAG().AnalyzeDocumentStream(c, user.ID, file, header.Filename, func(token string) error {
-		log.Infow("[AnalyzeProfile] Received token", "token_preview", token[:min(len(token), 30)])
+	log.Infow("[AnalyzeProfile] Calling AnalyzeProfileMultiFiles...")
+	profile, err := ctrl.b.SalesRAG().AnalyzeProfileMultiFiles(c, user.ID, files, func(token string) error {
+		// log.Infow("[AnalyzeProfile] Received token", "token_preview", token[:min(len(token), 30)])
 		eventData, _ := json.Marshal(map[string]interface{}{
 			"type": "token",
 			"data": token,
@@ -692,7 +711,7 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 	})
 
 	if err != nil {
-		log.Errorw("[AnalyzeProfile] AnalyzeDocumentStream error", "error", err)
+		log.Errorw("[AnalyzeProfile] AnalyzeProfileMultiFiles error", "error", err)
 		errData, _ := json.Marshal(map[string]interface{}{
 			"type": "error",
 			"data": err.Error(),
@@ -702,7 +721,7 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 		return
 	}
 
-	log.Infow("[AnalyzeProfile] AnalyzeDocumentStream completed", "profile_length", len(profile))
+	log.Infow("[AnalyzeProfile] AnalyzeProfileMultiFiles completed", "profile_length", len(profile))
 
 	// 发送完成并附带完整结果
 	doneData, _ := json.Marshal(map[string]interface{}{
@@ -894,8 +913,8 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 		return
 	}
 
-	// 3. 调用阿里云百炼视觉模型进行 OCR 识别
-	// 使用 qwen3-vl-flash-2026-01-22 模型
+	// 3. 调用火山引擎 Doubao 视觉模型进行 OCR 识别
+	// 使用 doubao-seed-1-8-251228 模型 (对长图支持更友好)
 	prompt := `你是一个专业的微信聊天记录识别专家。请识别这张微信聊天截图中的对话内容。
 
   ## 识别要求
@@ -964,18 +983,19 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
   4. **保持对话的原始顺序和完整性**
 
   现在请识别这张截图。`
-	model := "qwen3-vl-flash-2026-01-22"
+	model := "doubao-seed-1-8-251228"
 
-	// 生成 10 分钟有效的签名 URL 供阿里云 API 访问
+	// 生成 10 分钟有效的签名 URL 供 API 访问
 	signedURL, err := util.GenerateSignedURL(c.Request.Context(), objectKey, 600)
 	if err != nil {
 		log.Warnw("Generate signed URL failed, use raw cosURL", "error", err, "key", objectKey)
 		signedURL = cosURL
 	}
 
-	ocrText, err := ctrl.b.Ali().QianwenVision(c.Request.Context(), signedURL, prompt, model)
+	// 调用火山引擎视觉模型
+	ocrText, err := ctrl.b.Volc().VisionAnalyze(c.Request.Context(), signedURL, prompt, model, 0, "minimal")
 	if err != nil {
-		log.Errorw("Alibaba Cloud Vision OCR failed", "error", err, "user_id", user.ID, "url", signedURL)
+		log.Errorw("Volc Engine Vision OCR failed", "error", err, "user_id", user.ID, "url", signedURL)
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("图片识别失败，请检查模型配置"), nil)
 		return
 	}

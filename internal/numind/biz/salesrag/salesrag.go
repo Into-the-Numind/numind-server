@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"mime/multipart"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -73,6 +74,8 @@ type SalesRAGBiz interface {
 	// AnalyzeDocument 解析文档并生成客户档案
 	AnalyzeDocument(ctx context.Context, userID uint, file io.Reader, filename string) (string, error)
 	AnalyzeDocumentStream(ctx context.Context, userID uint, file io.Reader, filename string, onToken func(token string) error) (string, error)
+	// AnalyzeProfileMultiFiles 多文件综合分析生成客户档案
+	AnalyzeProfileMultiFiles(ctx context.Context, userID uint, files []*multipart.FileHeader, onToken func(token string) error) (string, error)
 
 	// AnalyzeChatStyle 分析聊天风格（语言指纹分析）
 	AnalyzeChatStyle(ctx context.Context, userID uint, chatData io.Reader, filename string) (string, error)
@@ -130,15 +133,15 @@ type salesRAGBiz struct {
 type VolcBiz interface {
 	VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error)
 	// StreamChat 真正的流式聊天，通过回调函数逐 token 或思维链内容推送
-	StreamChat(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
+	StreamChat(ctx context.Context, messages []map[string]interface{}, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
 	// VisionAnalyze 调用火山方舟视觉模型分析图片
-	VisionAnalyze(ctx context.Context, imageURL string, prompt string, model string, maxTokens int) (string, error)
+	VisionAnalyze(ctx context.Context, imageURL string, prompt string, model string, maxTokens int, reasoningEffort string) (string, error)
 	// VisionAnalyzeStream 流式分析图片
-	VisionAnalyzeStream(ctx context.Context, imageURL string, prompt string, model string, maxTokens int, onToken func(token string) error) (string, error)
+	VisionAnalyzeStream(ctx context.Context, imageURL string, prompt string, model string, maxTokens int, reasoningEffort string, onToken func(token string) error) (string, error)
 	// ChatWithModel 非流式聊天
-	ChatWithModel(ctx context.Context, messages []map[string]string, model string, maxTokens int, temperature float64) (string, error)
+	ChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64) (string, error)
 	// StreamChatWithModel 流式聊天，支持指定模型
-	StreamChatWithModel(ctx context.Context, messages []map[string]string, model string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
+	StreamChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
 }
 
 func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *service.SalesRAGService, volc VolcBiz, ali ali.AliBiz, sessionStore store.SalesSessionStore, parser service.PipelineParser) SalesRAGBiz {
@@ -1408,6 +1411,149 @@ func (b *salesRAGBiz) AnalyzeDocument(ctx context.Context, userID uint, file io.
 	return b.analyzeDocument(ctx, file, filename)
 }
 
+// AnalyzeProfileMultiFiles 多文件综合分析生成客户档案
+// 支持图片（微信截图）和文档（PDF/DOC/TXT）混合输入
+// 采用 "Mixed Context" 模式，将所有内容整合到一个 Context 中由 Doubao-Seed-1.8 模型进行端到端分析
+func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint, files []*multipart.FileHeader, onToken func(token string) error) (string, error) {
+	log.Printf("[AnalyzeProfileMultiFiles] Starting analysis for user %d, file count: %d", userID, len(files))
+
+	// 1. 构建多模态消息内容
+	var contentParts []map[string]interface{}
+
+	// 添加引导文本
+	contentParts = append(contentParts, map[string]interface{}{
+		"type": "text",
+		"text": "以下是该客户的相关资料，包含微信聊天记录截图和文档资料：",
+	})
+
+	for i, fileHeader := range files {
+		src, err := fileHeader.Open()
+		if err != nil {
+			log.Printf("Failed to open file %s: %v", fileHeader.Filename, err)
+			continue
+		}
+		defer src.Close()
+
+		ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
+		isImage := ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif" || ext == ".webp"
+
+		if isImage {
+			// 图片处理：读取 -> 上传 COS -> 获取 URL
+			imageData, err := io.ReadAll(src)
+			if err != nil {
+				log.Printf("Failed to read image %s: %v", fileHeader.Filename, err)
+				continue
+			}
+
+			// 复用之前的图片压缩逻辑（如果需要），这里简化为直接上传，假设 COS 处理或模型接受大图
+			// 实际上 doubao-seed 接受 URL
+			// 为了简单，我们先上传到临时目录
+			objectKey := fmt.Sprintf("salesrag/analyze_tmp/%d/%d_%d_%s", userID, time.Now().Unix(), i, fileHeader.Filename)
+			cosURL, err := util.UploadBytesToCOS(ctx, objectKey, "image/jpeg", imageData) // 假设都是 jpeg 或者自动识别
+			if err != nil {
+				log.Printf("Failed to upload image %s to COS: %v", fileHeader.Filename, err)
+				continue
+			}
+
+			// 生成签名 URL (1小时有效)
+			signedURL, _ := util.GenerateSignedURL(ctx, objectKey, 3600)
+			if signedURL == "" {
+				signedURL = cosURL // Fallback
+			}
+
+			contentParts = append(contentParts, map[string]interface{}{
+				"type": "image_url",
+				"image_url": map[string]string{
+					"url": signedURL,
+				},
+			})
+			log.Printf("Added image part: %s", fileHeader.Filename)
+
+		} else {
+			// 文档处理：解析文本
+			// 这里需要重置 reader 因为 Parse 可能会读它
+			// 实际上 fileHeader.Open() 每次返回新的 reader
+
+			// 使用 parser 解析
+			text, err := b.parser.Parse(ctx, src, fileHeader.Filename)
+			if err != nil {
+				log.Printf("Failed to parse document %s: %v", fileHeader.Filename, err)
+				continue
+			}
+
+			// 截断过长文本 (例如每个文档 20k chars)
+			if len(text) > 20000 {
+				text = text[:20000] + "\n...(truncated)"
+			}
+
+			contentParts = append(contentParts, map[string]interface{}{
+				"type": "text",
+				"text": fmt.Sprintf("\n--- 文档 [%s] 内容 ---\n%s\n", fileHeader.Filename, text),
+			})
+			log.Printf("Added document part: %s (len: %d)", fileHeader.Filename, len(text))
+		}
+	}
+
+	// 2. 添加最终提示词 (Unified Prompt)
+	// 2. 添加最终提示词 (Unified Prompt)
+	// 2. 添加最终提示词 (Unified Prompt)
+	// 2. 添加最终提示词 (Unified Prompt)
+	unifiedPrompt := `
+### 角色定义
+你是一位拥有20年B2B销售经验的**商业洞察专家**。你擅长通过零散的信息（无论是正式的招标文档、需求清单，还是非正式的聊天记录截图）拼凑出完整的客户全貌。
+
+### 任务说明
+用户将上传一组资料（可能是单一的类型，如图片，也可能是混合资料）。请分析这些材料，生成一份**客户画像分析报告**。
+
+### 核心原则
+1. **输入灵活性**：用户上传的资料可能不完整。对于无法从资料中获取的信息，请直接留空或标注“依据不足”，严禁臆造。
+2. **术语准确性**：使用专业的销售术语（如：决策链、卡点、显性/隐性需求）。
+3. **去伪存真**：能够识别客户的“烟雾弹”。例如：客户一直在谈价格（显性），可能真实原因是怕决策失误（隐性卡点）。
+
+### 输出格式（Markdown）
+请直接用 markdown 格式输出以下结构，不要有任何开场白或结束语或用别的格式包裹：
+
+#### 客户背景
+- **关键角色判断**：根据现有信息，判断客户的行业、赛道、公司规模、职位、决策链角色等。
+- **业务场景聚焦**：客户所在的行业及当前关注的具体业务问题。
+
+#### 需求与博弈分析
+- **显性需求清单**：文档或沟通中明确提出的具体需求
+- **隐形卡点挖掘**：阻碍项目推进的潜在因素，如：对方案稳定性的担忧、内部利益冲突、预算等
+
+#### 关键信息
+- **关键信息**：如果提供的信息中，除了以上内容以外，仍有非常重要且确定的关键信息，则可以补充在此处。如果没有则可以忽略。
+`
+	contentParts = append(contentParts, map[string]interface{}{
+		"type": "text",
+		"text": unifiedPrompt,
+	})
+
+	// 3. 调用多模态模型 (Doubao-Seed-1.8)
+	messages := []map[string]interface{}{
+		{
+			"role":    "user",
+			"content": contentParts,
+		},
+	}
+
+	log.Printf("[AnalyzeProfileMultiFiles] Calling Volc StreamChatWithModel with %d parts", len(contentParts))
+	// 使用 doubao-seed-1-8-251228
+	// 开启 deepThinking (如果需要的话，或者设为 false) - 用户之前提到了 deep thinking，这里主要生成画像，暂时不开 deep thinking 以保证速度，或者根据 config。
+	// 这里默认 false，因为画像生成通常不需要复杂的推理思考链，而是需要敏锐的提取。
+	// 但 doubao-seed 本身支持 thinking，我们可以保留 deepThinking 参数入口，或者默认为 true/false。
+	// 既然是"资深专家"，开启 thinking 可能更好，但考虑到速度，先 false。
+	// 用户提到"调查doubao-seed...最大处理量"，并没有特别强调要 deep thinking，但为了质量，我们可以开启。
+	// 还是先保持 false，因为 StreamChatWithModel 会根据 thinking 参数决定是否启用。
+	// 让我们看 AnalyzeDocumentStream 原逻辑，它是 false。
+	return b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-1-8-251228", 0, 0.5, false, func(event string, token string) error {
+		if event == "message" {
+			return onToken(token)
+		}
+		return nil
+	})
+}
+
 // analyzeImage 分析图片（微信聊天记录截图）
 func (b *salesRAGBiz) analyzeImage(ctx context.Context, userID uint, file io.Reader, filename string) (string, error) {
 	// 1. 读取图片数据
@@ -1539,7 +1685,7 @@ func (b *salesRAGBiz) analyzeImage(ctx context.Context, userID uint, file io.Rea
 
 	// 5. 调用火山方舟视觉模型（doubao-seed-1-8-251228）
 	const visionModel = "doubao-seed-1-8-251228"
-	profileResult, err := b.volcBiz.VisionAnalyze(ctx, dataURL, combinedPrompt, visionModel, 0)
+	profileResult, err := b.volcBiz.VisionAnalyze(ctx, dataURL, combinedPrompt, visionModel, 0, "medium")
 	if err != nil {
 		return "", fmt.Errorf("视觉端到端分析失败 (火山方舟): %w", err)
 	}
@@ -1664,10 +1810,10 @@ func (b *salesRAGBiz) analyzeImageStream(ctx context.Context, userID uint, image
 - 使用具备商业厚度的 Markdown 格式。
 - **直接输出画像内容**，不要有任何寒暄、前排分析或结论语。`
 
+	// 5. 调用火山方舟视觉模型（doubao-seed-1-8-251228）
 	const visionModel = "doubao-seed-1-8-251228"
-
 	log.Printf("[analyzeImageStream] Calling Volc VisionAnalyzeStream with model: %s", visionModel)
-	result, err := b.volcBiz.VisionAnalyzeStream(ctx, dataURL, combinedPrompt, visionModel, 0, onToken)
+	result, err := b.volcBiz.VisionAnalyzeStream(ctx, dataURL, combinedPrompt, visionModel, 0, "medium", onToken)
 
 	if err != nil {
 		log.Printf("[analyzeImageStream] Volc VisionAnalyzeStream error: %v", err)
@@ -1728,7 +1874,7 @@ func (b *salesRAGBiz) analyzeDocumentStreamInternal(ctx context.Context, file io
 - **重要**：不要用代码块包裹输出（如 ` + "```markdown" + ` 或 ` + "```" + `），直接输出纯 Markdown 文本`
 
 	// 4. 调用火山方舟的 doubao-seed-1-8-251228 模型（流式输出）
-	messages := []map[string]string{
+	messages := []map[string]interface{}{
 		{"role": "system", "content": systemPrompt},
 		{"role": "user", "content": "客户文档内容如下：\n\n" + content},
 	}
@@ -1773,7 +1919,7 @@ func (b *salesRAGBiz) analyzeDocument(ctx context.Context, file io.Reader, filen
 - **重要**：不要用代码块包裹输出（如 ` + "```markdown" + ` 或 ` + "```" + `），直接输出纯 Markdown 文本`
 
 	// 4. 调用火山方舟的 doubao-seed-1-8-251228 模型
-	messages := []map[string]string{
+	messages := []map[string]interface{}{
 		{"role": "system", "content": systemPrompt},
 		{"role": "user", "content": "客户文档内容如下：\n\n" + content},
 	}
@@ -2146,7 +2292,7 @@ func (b *salesRAGBiz) analyzeChatStyleTextStream(ctx context.Context, userID uin
 
 	// 4. 调用火山方舟模型（流式输出）
 	log.Printf("[analyzeChatStyleTextStream] Calling Volc StreamChatWithModel for user %d", userID)
-	messages := []map[string]string{
+	messages := []map[string]interface{}{
 		{"role": "system", "content": systemPrompt},
 		{"role": "user", "content": text},
 	}
@@ -2327,11 +2473,9 @@ func (b *salesRAGBiz) analyzeChatStyleImageStream(ctx context.Context, userID ui
 - 字数控制在 500 字以内
 - 只分析销售人员（右边绿色气泡）的语言风格`
 
+	// 5. 调用火山方舟视觉模型（doubao-seed-1-8-251228）
 	const visionModel = "doubao-seed-1-8-251228"
-
-	log.Printf("[analyzeChatStyleImageStream] Calling Volc VisionAnalyzeStream with model: %s", visionModel)
-	result, err := b.volcBiz.VisionAnalyzeStream(ctx, dataURL, systemPrompt, visionModel, 0, onToken)
-
+	result, err := b.volcBiz.VisionAnalyzeStream(ctx, dataURL, systemPrompt, visionModel, 0, "low", onToken)
 	if err != nil {
 		log.Printf("[analyzeChatStyleImageStream] Volc VisionAnalyzeStream error: %v", err)
 		return "", fmt.Errorf("视觉模型分析失败: %w", err)
@@ -2507,7 +2651,7 @@ func (b *salesRAGBiz) analyzeChatStyleImage(ctx context.Context, userID uint, im
 	const visionModel = "doubao-seed-1-8-251228"
 
 	log.Printf("[analyzeChatStyleImage] Calling Volc VisionAnalyze with model: %s", visionModel)
-	result, err := b.volcBiz.VisionAnalyze(ctx, dataURL, systemPrompt, visionModel, 0)
+	result, err := b.volcBiz.VisionAnalyze(ctx, dataURL, systemPrompt, visionModel, 0, "low")
 
 	if err != nil {
 		log.Printf("[analyzeChatStyleImage] Volc VisionAnalyze error: %v", err)

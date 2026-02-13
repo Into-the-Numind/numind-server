@@ -34,16 +34,16 @@ type VolcBiz interface {
 	// StreamChat 真正的流式聊天，通过回调函数逐 token 或思维链内容推送
 	// onEvent: 收到事件内容时调用，event 类型为 "thinking" 或 "message"
 	// 返回: 完整内容（所有 token 拼接）和错误
-	StreamChat(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
+	StreamChat(ctx context.Context, messages []map[string]interface{}, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
 	// VisionAnalyze 调用火山方舟视觉模型分析图片
-	VisionAnalyze(ctx context.Context, imageURL string, prompt string, model string, maxTokens int) (string, error)
+	VisionAnalyze(ctx context.Context, imageURL string, prompt string, model string, maxTokens int, reasoningEffort string) (string, error)
 	// VisionAnalyzeStream 流式分析图片，支持思维链输出
-	VisionAnalyzeStream(ctx context.Context, imageURL string, prompt string, model string, maxTokens int, onToken func(token string) error) (string, error)
+	VisionAnalyzeStream(ctx context.Context, imageURL string, prompt string, model string, maxTokens int, reasoningEffort string, onToken func(token string) error) (string, error)
 
 	// ChatWithModel 非流式聊天，支持指定模型
-	ChatWithModel(ctx context.Context, messages []map[string]string, model string, maxTokens int, temperature float64) (string, error)
+	ChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64) (string, error)
 	// StreamChatWithModel 流式聊天，支持指定模型和深度思考
-	StreamChatWithModel(ctx context.Context, messages []map[string]string, model string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
+	StreamChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
 }
 
 type volcBiz struct {
@@ -417,7 +417,7 @@ func min(a, b int) int {
 // StreamChat 真正的流式聊天方法
 // 通过回调函数 onEvent 逐 token 或思维链内容推送
 // 火山方舟 API 使用 SSE 格式，每行格式为 "data: {json}\n\n"
-func (v *volcBiz) StreamChat(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error) {
+func (v *volcBiz) StreamChat(ctx context.Context, messages []map[string]interface{}, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error) {
 	url := viper.GetString("volc.base_url") + "/chat/completions"
 
 	thinkingType := "disabled"
@@ -560,7 +560,7 @@ func (v *volcBiz) StreamChat(ctx context.Context, messages []map[string]string, 
 }
 
 // VisionAnalyze 调用火山方舟视觉模型分析图片
-func (v *volcBiz) VisionAnalyze(ctx context.Context, imageURL string, prompt string, model string, maxTokens int) (string, error) {
+func (v *volcBiz) VisionAnalyze(ctx context.Context, imageURL string, prompt string, model string, maxTokens int, reasoningEffort string) (string, error) {
 	// 设置默认模型
 	if model == "" {
 		model = "doubao-seed-1-8-251228"
@@ -598,11 +598,12 @@ func (v *volcBiz) VisionAnalyze(ctx context.Context, imageURL string, prompt str
 
 	// 推理模型特殊参数
 	if strings.Contains(model, "doubao-seed") {
-		bodyMap["thinking"] = map[string]interface{}{
-			"type":          "enabled",
-			"budget_tokens": 2000,
+		// 设置思考程度: minimal, low, medium, high
+		if reasoningEffort == "" {
+			reasoningEffort = "medium"
 		}
-		bodyMap["max_completion_tokens"] = 32768
+		bodyMap["reasoning_effort"] = reasoningEffort
+		bodyMap["max_completion_tokens"] = 65535
 	} else {
 		if maxTokens > 0 {
 			bodyMap["max_tokens"] = maxTokens
@@ -674,7 +675,7 @@ func (v *volcBiz) VisionAnalyze(ctx context.Context, imageURL string, prompt str
 }
 
 // VisionAnalyzeStream 流式分析图片，支持思维链输出
-func (v *volcBiz) VisionAnalyzeStream(ctx context.Context, imageURL string, prompt string, model string, maxTokens int, onToken func(token string) error) (string, error) {
+func (v *volcBiz) VisionAnalyzeStream(ctx context.Context, imageURL string, prompt string, model string, maxTokens int, reasoningEffort string, onToken func(token string) error) (string, error) {
 	// 设置默认模型
 	if model == "" {
 		model = "doubao-seed-1-8-251228"
@@ -713,16 +714,16 @@ func (v *volcBiz) VisionAnalyzeStream(ctx context.Context, imageURL string, prom
 
 	// 推理模型特殊参数
 	if strings.Contains(model, "doubao-seed") {
-		bodyMap["thinking"] = map[string]interface{}{
-			"type":          "enabled",
-			"budget_tokens": 2000,
+		if reasoningEffort == "" {
+			reasoningEffort = "medium"
 		}
-		bodyMap["max_completion_tokens"] = 32768
+		bodyMap["reasoning_effort"] = reasoningEffort
+		bodyMap["max_completion_tokens"] = 65535
 	} else {
 		if maxTokens > 0 {
 			bodyMap["max_tokens"] = maxTokens
 		} else {
-			bodyMap["max_tokens"] = 2000
+			bodyMap["max_tokens"] = 2000 // 视觉模型默认给较多 token
 		}
 	}
 
@@ -812,7 +813,7 @@ func (v *volcBiz) VisionAnalyzeStream(ctx context.Context, imageURL string, prom
 }
 
 // ChatWithModel 非流式聊天，支持指定模型
-func (v *volcBiz) ChatWithModel(ctx context.Context, messages []map[string]string, model string, maxTokens int, temperature float64) (string, error) {
+func (v *volcBiz) ChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64) (string, error) {
 	if model == "" {
 		model = viper.GetString("volc.model")
 	}
@@ -887,7 +888,7 @@ func (v *volcBiz) ChatWithModel(ctx context.Context, messages []map[string]strin
 }
 
 // StreamChatWithModel 流式聊天，支持指定模型
-func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string]string, model string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error) {
+func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error) {
 	if model == "" {
 		model = viper.GetString("volc.model")
 	}
