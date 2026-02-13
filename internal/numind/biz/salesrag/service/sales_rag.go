@@ -76,7 +76,7 @@ func (s *SalesRAGService) RetrieveForResponse(
 	userID uint,
 ) (*RetrievalVerdict, error) {
 	// 直接调用 V2 接口，默认使用 sales 模式
-	return s.RetrieveForResponseV2(ctx, query, docIDs, nil, "sales", userID)
+	return s.RetrieveForResponseV2(ctx, query, docIDs, nil, "sales", userID, nil)
 }
 
 // RetrieveForResponseV2 V2 版检索流程
@@ -93,9 +93,13 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 	history []string,
 	chatMode string,
 	userID uint,
+	onStatus func(string),
 ) (*RetrievalVerdict, error) {
 
 	// 1. 意图分析 + Query 生成 (LLM: qwen-turbo-latest)
+	if onStatus != nil {
+		onStatus("正在分析您的意图...")
+	}
 	intentResult, err := s.router.AnalyzeIntentV2(ctx, query, history, chatMode)
 	if err != nil {
 		return nil, fmt.Errorf("intent analysis failed: %w", err)
@@ -125,6 +129,9 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 	}
 
 	// 2. 并行执行：RAG 检索 + 策略选择
+	if onStatus != nil {
+		onStatus(fmt.Sprintf("正在全库检索 (并发 %d 路)...", len(allSearchQueries)))
+	}
 	var wg sync.WaitGroup
 	var allChunks []domain.KnowledgeChunk
 	var chunksErr error
@@ -183,6 +190,9 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 	}
 
 	// 4. Rerank (仅返回 Top 5-7 的索引)
+	if onStatus != nil {
+		onStatus(fmt.Sprintf("检索到 %d 条相关知识，正在重排序...", len(allChunks)))
+	}
 	rerankedChunks, err := s.rerankChunks(ctx, query, allChunks)
 	if err != nil {
 		// Rerank 失败时 Fallback 到原始 Top 5

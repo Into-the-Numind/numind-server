@@ -582,7 +582,9 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 
 	// 6. 执行检索（使用 V2 版本，传递 chatMode 和 history）
 	// 注意：RetrieveForResponseV2 内部并行执行 RAG 检索和策略选择
-	verdict, err := b.ragSvc.RetrieveForResponseV2(ctx, query, filteredDocIDs, history, chatMode, userID)
+	verdict, err := b.ragSvc.RetrieveForResponseV2(ctx, query, filteredDocIDs, history, chatMode, userID, func(status string) {
+		_ = onEvent("status", status)
+	})
 	if err != nil {
 		return onEvent("error", fmt.Sprintf("retrieval failed: %v", err))
 	}
