@@ -38,7 +38,7 @@ type SalesRAGBiz interface {
 	// RetrieveStream 流式检索知识并生成回答
 	// chatMode: "sales" (销售话术) 或 "free" (自由讨论)
 	// onEvent: 事件回调，eventType 可为 "verdict"/"token"/"error"/"done"
-	RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, deepThinking bool, chatMode string, customerProfile string, onEvent func(eventType string, data interface{}) error) error
+	RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, onEvent func(eventType string, data interface{}) error) error
 	// ListDocuments 获取用户的文档列表
 	ListDocuments(ctx context.Context, userID uint) ([]domain.KnowledgeDocument, error)
 	// GetDocument 获取单个文档详情
@@ -97,6 +97,9 @@ type UpdateDocumentRequest struct {
 type CreateSessionRequest struct {
 	Title           string `json:"title"`
 	DocumentIDs     []uint `json:"document_ids"`
+	ProductDocIDs   []uint `json:"product_doc_ids"` // 产品文档
+	CaseDocIDs      []uint `json:"case_doc_ids"`    // 成功案例
+	FAQDocIDs       []uint `json:"faq_doc_ids"`     // 百问百答
 	DeepThinking    bool   `json:"deep_thinking"`
 	CustomerProfile string `json:"customer_profile"` // Markdown 格式
 }
@@ -104,6 +107,9 @@ type CreateSessionRequest struct {
 type UpdateSessionRequest struct {
 	Title           *string `json:"title"`
 	DocumentIDs     []uint  `json:"document_ids"`
+	ProductDocIDs   []uint  `json:"product_doc_ids"` // 产品文档
+	CaseDocIDs      []uint  `json:"case_doc_ids"`    // 成功案例
+	FAQDocIDs       []uint  `json:"faq_doc_ids"`     // 百问百答
 	DeepThinking    *bool   `json:"deep_thinking"`
 	CustomerProfile *string `json:"customer_profile"`
 }
@@ -529,8 +535,9 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, verdict 
 // - "error": data 为 string，错误消息
 // - "done": data 为 nil，流式完成
 // RetrieveStream 流式检索知识并生成回答
-// chatMode: "sales" (销售话术) 或 "free" (自由讨论)
-func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, deepThinking bool, chatMode string, customerProfile string, onEvent func(eventType string, data interface{}) error) error {
+// chatMode: "sales" (销售话术) 或// RetrieveStream 流式检索知识并生成回答
+// 修改：增加 docCategoryMap 参数，用于传递文档分类信息
+func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, onEvent func(eventType string, data interface{}) error) error {
 	// 1. 从上下文获取用户ID
 	var userID uint
 	if uid, ok := ctx.Value("userID").(uint); ok {
@@ -579,6 +586,9 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 	if err != nil {
 		return onEvent("error", fmt.Sprintf("retrieval failed: %v", err))
 	}
+
+	// 注入分类映射
+	verdict.DocCategoryMap = docCategoryMap
 
 	// 7. 填充 evidence 中的 document_name（从数据库查询）
 	b.enrichChunksWithDocNames(ctx, verdict.Evidence)
@@ -649,18 +659,39 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 	query = truncate(query, maxUserInputChars)
 
 	// 构建知识上下文（附带 Rerank 置信度信号）
+	// 构建知识上下文（按分类分组）
 	var knowledgeContext string
 	allChunks := verdict.Evidence
 	if len(allChunks) > 0 {
-		var contextParts []string
+		// 分组存储内容
+		categorizedContent := make(map[string][]string)
+		// 预定义顺序
+		categories := []string{"产品文档", "成功案例", "百问百答", "其他相关文档"}
+
 		for i, chunk := range allChunks {
+			category := "其他相关文档"
+			if cat, ok := verdict.DocCategoryMap[chunk.DocumentID]; ok && cat != "" {
+				category = cat
+			}
+
+			var contentLine string
 			if chunk.Score > 0 {
-				// 附带 Rerank 相关度分数，帮助模型判断引用置信度
-				contextParts = append(contextParts, fmt.Sprintf("[知识%d] (相关度:%.0f%%) %s", i+1, chunk.Score*100, chunk.Content))
+				contentLine = fmt.Sprintf("[知识%d] (相关度:%.0f%%) %s", i+1, chunk.Score*100, chunk.Content)
 			} else {
-				contextParts = append(contextParts, fmt.Sprintf("[知识%d] %s", i+1, chunk.Content))
+				contentLine = fmt.Sprintf("[知识%d] %s", i+1, chunk.Content)
+			}
+
+			categorizedContent[category] = append(categorizedContent[category], contentLine)
+		}
+
+		var contextParts []string
+		for _, cat := range categories {
+			if contents, ok := categorizedContent[cat]; ok && len(contents) > 0 {
+				section := fmt.Sprintf("### %s\n%s", cat, strings.Join(contents, "\n\n"))
+				contextParts = append(contextParts, section)
 			}
 		}
+
 		knowledgeContext = strings.Join(contextParts, "\n\n")
 	}
 
@@ -729,6 +760,7 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 	if knowledgeContext != "" {
 		prompt.WriteString("### 知识库内容\n")
 		prompt.WriteString("> 每条知识附带相关度百分比。相关度 ≥ 70% 的知识应重点融入回答；30%-70% 的仅作补充参考；如果所有知识相关度都偏低，以你的专业判断为主。\n\n")
+		prompt.WriteString("> **注意**：这些知识片段可能来自不同文档，彼此之间可能没有直接关联。请先通读理解所有片段的核心信息，形成统一认知后，围绕客户的实际问题用你自己的话自然组织回答。禁止逐条罗列，禁止生硬拼接不相关的信息。如果某条知识与当前问题关联不大，果断忽略即可。\n\n")
 		prompt.WriteString(knowledgeContext)
 		prompt.WriteString("\n\n")
 	}
@@ -841,6 +873,7 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, str
 	if knowledgeContext != "" {
 		prompt.WriteString("### 知识库内容\n")
 		prompt.WriteString("> 每条知识附带相关度百分比。相关度 ≥ 70% 的知识应重点融入回答；30%-70% 的仅作补充参考；如果所有知识相关度都偏低，以你的专业判断为主。\n\n")
+		prompt.WriteString("> **注意**：这些知识片段可能来自不同文档，彼此之间可能没有直接关联。请先通读理解所有片段的核心信息，形成统一认知后，围绕客户的实际问题用你自己的话自然组织回答。禁止逐条罗列，禁止生硬拼接不相关的信息。如果某条知识与当前问题关联不大，果断忽略即可。\n\n")
 		prompt.WriteString(knowledgeContext)
 		prompt.WriteString("\n\n")
 	}
@@ -973,11 +1006,16 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, str
 
 // CreateSession 创建新的销售会话
 func (b *salesRAGBiz) CreateSession(ctx context.Context, userID uint, req CreateSessionRequest) (*model.SalesSession, error) {
-	// 序列化 DocumentIDs 为 JSON
+	// 序列化 DocumentIDs 为 JSON（向后兼容）
 	docIDsJSON, err := json.Marshal(req.DocumentIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal document_ids: %w", err)
 	}
+
+	// 序列化三个分类文档 ID
+	productJSON, _ := json.Marshal(req.ProductDocIDs)
+	caseJSON, _ := json.Marshal(req.CaseDocIDs)
+	faqJSON, _ := json.Marshal(req.FAQDocIDs)
 
 	// 创建会话
 	session := &model.SalesSession{
@@ -985,6 +1023,9 @@ func (b *salesRAGBiz) CreateSession(ctx context.Context, userID uint, req Create
 		Title:           req.Title,
 		Status:          "active",
 		DocumentIDs:     string(docIDsJSON),
+		ProductDocIDs:   string(productJSON),
+		CaseDocIDs:      string(caseJSON),
+		FAQDocIDs:       string(faqJSON),
 		DeepThinking:    req.DeepThinking,
 		CustomerProfile: req.CustomerProfile,
 		MessageCount:    0,
@@ -1025,6 +1066,19 @@ func (b *salesRAGBiz) UpdateSession(ctx context.Context, userID uint, sessionID 
 			return fmt.Errorf("failed to marshal document_ids: %w", err)
 		}
 		session.DocumentIDs = string(docIDsJSON)
+	}
+	// 更新三个分类字段
+	if req.ProductDocIDs != nil {
+		productJSON, _ := json.Marshal(req.ProductDocIDs)
+		session.ProductDocIDs = string(productJSON)
+	}
+	if req.CaseDocIDs != nil {
+		caseJSON, _ := json.Marshal(req.CaseDocIDs)
+		session.CaseDocIDs = string(caseJSON)
+	}
+	if req.FAQDocIDs != nil {
+		faqJSON, _ := json.Marshal(req.FAQDocIDs)
+		session.FAQDocIDs = string(faqJSON)
 	}
 	if req.DeepThinking != nil {
 		session.DeepThinking = *req.DeepThinking
@@ -1136,9 +1190,34 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	}
 
 	// 2. 准备会话配置
-	// 无论前端传什么，以数据库存储的选中知识库为准，确保一致性
+	// 优先使用三个分类字段，合并所有分类的文档 ID 传给检索
 	var sessionDocIDs []uint
-	if session.DocumentIDs != "" && session.DocumentIDs != "null" {
+	var productDocIDs, caseDocIDs, faqDocIDs []uint
+
+	// 解析三个分类字段
+	if session.ProductDocIDs != "" && session.ProductDocIDs != "null" {
+		if err := json.Unmarshal([]byte(session.ProductDocIDs), &productDocIDs); err != nil {
+			log.Printf("[ChatWithSession] Warning: failed to parse product_doc_ids: %v", err)
+		}
+	}
+	if session.CaseDocIDs != "" && session.CaseDocIDs != "null" {
+		if err := json.Unmarshal([]byte(session.CaseDocIDs), &caseDocIDs); err != nil {
+			log.Printf("[ChatWithSession] Warning: failed to parse case_doc_ids: %v", err)
+		}
+	}
+	if session.FAQDocIDs != "" && session.FAQDocIDs != "null" {
+		if err := json.Unmarshal([]byte(session.FAQDocIDs), &faqDocIDs); err != nil {
+			log.Printf("[ChatWithSession] Warning: failed to parse faq_doc_ids: %v", err)
+		}
+	}
+
+	// 合并所有分类文档 ID
+	sessionDocIDs = append(sessionDocIDs, productDocIDs...)
+	sessionDocIDs = append(sessionDocIDs, caseDocIDs...)
+	sessionDocIDs = append(sessionDocIDs, faqDocIDs...)
+
+	// 向后兼容：如果三个分类字段都为空，则 fallback 到旧 document_ids 字段
+	if len(sessionDocIDs) == 0 && session.DocumentIDs != "" && session.DocumentIDs != "null" {
 		if err := json.Unmarshal([]byte(session.DocumentIDs), &sessionDocIDs); err != nil {
 			log.Printf("[ChatWithSession] Warning: failed to parse session document_ids: %v", err)
 		}
@@ -1163,13 +1242,25 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 		return fmt.Errorf("failed to save user message: %w", err)
 	}
 
+	// 构建文档分类映射
+	docCategoryMap := make(map[uint]string)
+	for _, id := range productDocIDs {
+		docCategoryMap[id] = "产品文档"
+	}
+	for _, id := range caseDocIDs {
+		docCategoryMap[id] = "成功案例"
+	}
+	for _, id := range faqDocIDs {
+		docCategoryMap[id] = "百问百答"
+	}
+
 	// 4. 调用流式检索，累积内容
 	// 使用从数据库加载的 sessionDocIDs，而不是函数参数中的 docIDs
 	var fullContent strings.Builder
 	var verdictJSON string
 	var thinkingText string
 
-	err = b.RetrieveStream(ctx, query, history, sessionDocIDs, deepThinking, chatMode, session.CustomerProfile, func(eventType string, data interface{}) error {
+	err = b.RetrieveStream(ctx, query, history, sessionDocIDs, docCategoryMap, deepThinking, chatMode, session.CustomerProfile, func(eventType string, data interface{}) error {
 		switch eventType {
 		case "verdict":
 			// 序列化 verdict 为 JSON

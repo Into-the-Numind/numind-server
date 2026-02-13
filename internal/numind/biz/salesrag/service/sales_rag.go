@@ -29,6 +29,9 @@ type RetrievalVerdict struct {
 	// V3 策略引擎扩展
 	Strategy       *domain.BasicStrategy `json:"strategy,omitempty"`         // 选择的销售策略
 	StrategyMetaID string                `json:"strategy_meta_id,omitempty"` // 综合策略ID
+
+	// V4 知识库分类
+	DocCategoryMap map[uint]string `json:"doc_category_map,omitempty"` // 文档ID→分类 (product/case/faq)
 }
 
 // SalesRAGService 销售智能体 RAG 服务

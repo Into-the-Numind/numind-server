@@ -16,7 +16,10 @@ type SalesSession struct {
 
 	// 销售特有字段
 	SalesStage      string `gorm:"size:20;default:'DISCOVERY'" json:"sales_stage"` // DISCOVERY, NEGOTIATION, CLOSING
-	DocumentIDs     string `gorm:"type:text" json:"document_ids"`                  // JSON array: ["1","2","3"]
+	DocumentIDs     string `gorm:"type:text" json:"document_ids"`                  // JSON array: ["1","2","3"] (旧字段，向后兼容)
+	ProductDocIDs   string `gorm:"type:text" json:"product_doc_ids"`               // 产品文档 JSON array
+	CaseDocIDs      string `gorm:"type:text" json:"case_doc_ids"`                  // 成功案例 JSON array
+	FAQDocIDs       string `gorm:"type:text" json:"faq_doc_ids"`                   // 百问百答 JSON array
 	DeepThinking    bool   `gorm:"default:false" json:"deep_thinking"`
 	CustomerProfile string `gorm:"type:text" json:"customer_profile"` // Markdown 格式的分析结果
 	LastQuery       string `gorm:"type:text" json:"last_query"`

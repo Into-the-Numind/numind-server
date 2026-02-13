@@ -99,11 +99,14 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 	}
 
 	var r struct {
-		Query        string   `json:"query" binding:"required"`
-		Images       []string `json:"images"` // 图片链接列表
-		DocumentIDs  []uint   `json:"document_ids"`
-		DeepThinking bool     `json:"deep_thinking"`
-		ChatMode     string   `json:"chat_mode"` // "sales" (销售话术) 或 "free" (自由讨论)
+		Query         string   `json:"query" binding:"required"`
+		Images        []string `json:"images"` // 图片链接列表
+		DocumentIDs   []uint   `json:"document_ids"`
+		ProductDocIDs []uint   `json:"product_doc_ids"` // 产品文档
+		CaseDocIDs    []uint   `json:"case_doc_ids"`    // 成功案例
+		FAQDocIDs     []uint   `json:"faq_doc_ids"`     // 百问百答
+		DeepThinking  bool     `json:"deep_thinking"`
+		ChatMode      string   `json:"chat_mode"` // "sales" (销售话术) 或 "free" (自由讨论)
 	}
 
 	if err := c.ShouldBindJSON(&r); err != nil {
@@ -316,6 +319,9 @@ func (ctrl *SalesRAGController) CreateSession(c *gin.Context) {
 	var req struct {
 		Title           string `json:"title"`
 		DocumentIDs     []uint `json:"document_ids"`
+		ProductDocIDs   []uint `json:"product_doc_ids"` // 产品文档
+		CaseDocIDs      []uint `json:"case_doc_ids"`    // 成功案例
+		FAQDocIDs       []uint `json:"faq_doc_ids"`     // 百问百答
 		DeepThinking    bool   `json:"deep_thinking"`
 		CustomerProfile string `json:"customer_profile"`
 	}
@@ -339,6 +345,9 @@ func (ctrl *SalesRAGController) CreateSession(c *gin.Context) {
 	createReq := salesrag.CreateSessionRequest{
 		Title:           req.Title,
 		DocumentIDs:     req.DocumentIDs,
+		ProductDocIDs:   req.ProductDocIDs,
+		CaseDocIDs:      req.CaseDocIDs,
+		FAQDocIDs:       req.FAQDocIDs,
 		DeepThinking:    req.DeepThinking,
 		CustomerProfile: req.CustomerProfile,
 	}
@@ -633,7 +642,7 @@ func (ctrl *SalesRAGController) RenameSession(c *gin.Context) {
 // AnalyzeProfile 解析上传的文档生成客户档案 (支持 SSE 流式)
 func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 	log.Infow("[AnalyzeProfile] Received request")
-	
+
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
 		log.Errorw("[AnalyzeProfile] FormFile error", "error", err)
