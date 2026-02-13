@@ -618,8 +618,8 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 	messages := b.buildPromptMessagesV2(query, verdict, customerProfile, languageStyle)
 
 	// 11. 调用 DMXAPI DeepSeek-V3.2 流式聊天（支持思考模式）
-	// 注意：deepThinking 参数决定是否启用思维链
-	_, err = b.dmxClient.StreamChatCompletion(ctx, "DeepSeek-V3.2", messages, 0.7, 2000, deepThinking, func(eventType, content string) error {
+	// 注意：deepThinking 参数决定是否启用思维链，不再对输出 Token 设限
+	_, err = b.dmxClient.StreamChatCompletion(ctx, "DeepSeek-V3.2", messages, 0.7, 0, deepThinking, func(eventType, content string) error {
 		if eventType == "thinking" {
 			return onEvent("thinking", content)
 		}
@@ -796,8 +796,8 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 	prompt.WriteString("侧重利益刺激、稀缺性强调、促成即刻行动。话术直接有冲击力。\n（直接写给客户的话术，可分多段）\n\n")
 	prompt.WriteString("### 选项B：保守型（共情风格）\n")
 	prompt.WriteString("侧重理解客户压力、提供情绪价值、建立信任关系。话术温暖包容。\n（直接写给客户的话术，可分多段）\n\n")
-	prompt.WriteString("### 选项C：纯知识回复（专业风格）\n")
-	prompt.WriteString("基于知识库内容，给出客观、专业、中立的解答。话术逻辑严密、事实为主。\n（直接写给客户的话术，可分多段）\n\n")
+	prompt.WriteString("### 选项C：高势能回复（专业风格）\n")
+	prompt.WriteString("侧重展现专业判断力、行业高度与决策感，通过观点输出建立“选你没错”的心理认知。话术逻辑犀利、引用数据/案例佐证、指出提问者背后的认知盲区。\n（直接写给客户的话术，可分多段）\n\n")
 	prompt.WriteString("---\n")
 
 	// 核心规则
@@ -942,8 +942,8 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, str
 	prompt.WriteString("理解客户压力、提供情绪价值、建立信任。适用于客户有顾虑的场景。\n")
 	prompt.WriteString("**分析**：（为什么选这个策略）\n")
 	prompt.WriteString("**建议话术**：（具体回复内容）\n\n")
-	prompt.WriteString("### 选项C：纯知识型\n")
-	prompt.WriteString("基于知识库客观解答。适用于客户咨询产品信息的场景。\n")
+	prompt.WriteString("### 选项C：高势能回复\n")
+	prompt.WriteString("展现专业判断力、行业高度与决策感，通过观点输出建立信任。话术逻辑犀利、引用数据/案例佐证、指出客户背后的认知盲区。\n")
 	prompt.WriteString("**分析**：（为什么选这个策略）\n")
 	prompt.WriteString("**建议话术**：（具体回复内容）\n\n")
 	prompt.WriteString("如果销售人员明确要求其他方式（如只要一个答案、或特定风格），按需求调整。\n\n")
