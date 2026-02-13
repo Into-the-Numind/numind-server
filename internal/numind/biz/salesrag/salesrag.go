@@ -131,7 +131,13 @@ type VolcBiz interface {
 	// StreamChat 真正的流式聊天，通过回调函数逐 token 或思维链内容推送
 	StreamChat(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
 	// VisionAnalyze 调用火山方舟视觉模型分析图片
-	VisionAnalyze(ctx context.Context, imageURL string, prompt string, model string) (string, error)
+	VisionAnalyze(ctx context.Context, imageURL string, prompt string, model string, maxTokens int) (string, error)
+	// VisionAnalyzeStream 流式分析图片
+	VisionAnalyzeStream(ctx context.Context, imageURL string, prompt string, model string, maxTokens int, onToken func(token string) error) (string, error)
+	// ChatWithModel 非流式聊天
+	ChatWithModel(ctx context.Context, messages []map[string]string, model string, maxTokens int, temperature float64) (string, error)
+	// StreamChatWithModel 流式聊天，支持指定模型
+	StreamChatWithModel(ctx context.Context, messages []map[string]string, model string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
 }
 
 func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *service.SalesRAGService, volc VolcBiz, ali ali.AliBiz, sessionStore store.SalesSessionStore, parser service.PipelineParser) SalesRAGBiz {
@@ -1520,11 +1526,11 @@ func (b *salesRAGBiz) analyzeImage(ctx context.Context, userID uint, file io.Rea
 - 使用洗练、具备商业厚度的 Markdown 格式。
 - **禁止任何开场白**，直接输出画像正文。`
 
-	// 5. 调用阿里云百炼视觉模型（qwen3-vl-flash-2026-01-22）
-	const visionModel = "qwen3-vl-flash-2026-01-22"
-	profileResult, err := b.aliBiz.QianwenVision(ctx, dataURL, combinedPrompt, visionModel)
+	// 5. 调用火山方舟视觉模型（doubao-seed-1-8-251228）
+	const visionModel = "doubao-seed-1-8-251228"
+	profileResult, err := b.volcBiz.VisionAnalyze(ctx, dataURL, combinedPrompt, visionModel, 0)
 	if err != nil {
-		return "", fmt.Errorf("视觉端到端分析失败 (阿里云): %w", err)
+		return "", fmt.Errorf("视觉端到端分析失败 (火山方舟): %w", err)
 	}
 
 	log.Printf("画像端到端生成完成, 长度: %d", len(profileResult))
@@ -1584,7 +1590,7 @@ func (b *salesRAGBiz) analyzeImageStream(ctx context.Context, userID uint, image
 			// 调整尺寸
 			dst := imaging.Resize(src, width, height, imaging.Lanczos)
 
-			// 重新编码为JPEG
+			//重新编码为JPEG
 			var buf bytes.Buffer
 			err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: quality})
 			if err != nil {
@@ -1676,17 +1682,17 @@ func (b *salesRAGBiz) analyzeImageStream(ctx context.Context, userID uint, image
 - 使用具备商业厚度的 Markdown 格式。
 - **直接输出画像内容**，不要有任何寒暄、前排分析或结论语。`
 
-	const visionModel = "qwen3-vl-flash-2026-01-22"
+	const visionModel = "doubao-seed-1-8-251228"
 
-	log.Printf("[analyzeImageStream] Calling QianwenVisionStream with model: %s", visionModel)
-	result, err := b.aliBiz.QianwenVisionStream(ctx, dataURL, combinedPrompt, visionModel, onToken)
+	log.Printf("[analyzeImageStream] Calling Volc VisionAnalyzeStream with model: %s", visionModel)
+	result, err := b.volcBiz.VisionAnalyzeStream(ctx, dataURL, combinedPrompt, visionModel, 0, onToken)
 
 	if err != nil {
-		log.Printf("[analyzeImageStream] QianwenVisionStream error: %v", err)
+		log.Printf("[analyzeImageStream] Volc VisionAnalyzeStream error: %v", err)
 		return "", err
 	}
 
-	log.Printf("[analyzeImageStream] QianwenVisionStream completed, result length: %d", len(result))
+	log.Printf("[analyzeImageStream] Volc VisionAnalyzeStream completed, result length: %d", len(result))
 	return result, nil
 }
 
@@ -1739,8 +1745,17 @@ func (b *salesRAGBiz) analyzeDocumentStreamInternal(ctx context.Context, file io
 - 直接以 Markdown 列表输出干货内容，严禁任何开场白和提示语
 - **重要**：不要用代码块包裹输出（如 ` + "```markdown" + ` 或 ` + "```" + `），直接输出纯 Markdown 文本`
 
-	// 4. 调用 dmxapi 的 qwen-turbo 模型（流式输出）
-	return b.callDMXAPIStream(ctx, systemPrompt, "客户文档内容如下：\n\n"+content, onToken)
+	// 4. 调用火山方舟的 doubao-seed-1-8-251228 模型（流式输出）
+	messages := []map[string]string{
+		{"role": "system", "content": systemPrompt},
+		{"role": "user", "content": "客户文档内容如下：\n\n" + content},
+	}
+	return b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-1-8-251228", 0, 0.5, true, func(event string, token string) error {
+		if event == "message" {
+			return onToken(token)
+		}
+		return nil
+	})
 }
 
 // analyzeDocument 分析文档（原有逻辑）
@@ -1775,8 +1790,12 @@ func (b *salesRAGBiz) analyzeDocument(ctx context.Context, file io.Reader, filen
 - 直接以 Markdown 列表输出干货内容，严禁任何开场白和提示语
 - **重要**：不要用代码块包裹输出（如 ` + "```markdown" + ` 或 ` + "```" + `），直接输出纯 Markdown 文本`
 
-	// 4. 调用 dmxapi 的 qwen-turbo-latest 模型
-	return b.callDMXAPI(ctx, systemPrompt, "客户文档内容如下：\n\n"+content)
+	// 4. 调用火山方舟的 doubao-seed-1-8-251228 模型
+	messages := []map[string]string{
+		{"role": "system", "content": systemPrompt},
+		{"role": "user", "content": "客户文档内容如下：\n\n" + content},
+	}
+	return b.volcBiz.ChatWithModel(ctx, messages, "doubao-seed-1-8-251228", 0, 0.5)
 }
 
 // generateProfileFromChat 基于聊天记录生成客户画像
@@ -2143,11 +2162,20 @@ func (b *salesRAGBiz) analyzeChatStyleTextStream(ctx context.Context, userID uin
 - 直接输出 Markdown 格式的风格说明书，严禁开场白和任何提示语
 - 字数控制在 500 字以内`
 
-	// 4. 调用 dmxapi 的 qwen-turbo 模型（流式输出）
-	log.Printf("[analyzeChatStyleTextStream] Calling DMX API stream for user %d", userID)
-	analysis, err := b.callDMXAPIStream(ctx, systemPrompt, text, onToken)
+	// 4. 调用火山方舟模型（流式输出）
+	log.Printf("[analyzeChatStyleTextStream] Calling Volc StreamChatWithModel for user %d", userID)
+	messages := []map[string]string{
+		{"role": "system", "content": systemPrompt},
+		{"role": "user", "content": text},
+	}
+	analysis, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-1-8-251228", 0, 0.5, true, func(event string, token string) error {
+		if event == "message" {
+			return onToken(token)
+		}
+		return nil
+	})
 	if err != nil {
-		log.Printf("[analyzeChatStyleTextStream] DMX API stream failed for user %d: %v", userID, err)
+		log.Printf("[analyzeChatStyleTextStream] Volc StreamChat failed for user %d: %v", userID, err)
 		return "", fmt.Errorf("AI 分析服务调用失败: %w", err)
 	}
 	log.Printf("[analyzeChatStyleTextStream] DMX API stream success, result length: %d", len(analysis))
@@ -2317,13 +2345,13 @@ func (b *salesRAGBiz) analyzeChatStyleImageStream(ctx context.Context, userID ui
 - 字数控制在 500 字以内
 - 只分析销售人员（右边绿色气泡）的语言风格`
 
-	const visionModel = "qwen3-vl-flash-2026-01-22"
+	const visionModel = "doubao-seed-1-8-251228"
 
-	log.Printf("[analyzeChatStyleImageStream] Calling QianwenVisionStream with model: %s", visionModel)
-	result, err := b.aliBiz.QianwenVisionStream(ctx, dataURL, systemPrompt, visionModel, onToken)
+	log.Printf("[analyzeChatStyleImageStream] Calling Volc VisionAnalyzeStream with model: %s", visionModel)
+	result, err := b.volcBiz.VisionAnalyzeStream(ctx, dataURL, systemPrompt, visionModel, 0, onToken)
 
 	if err != nil {
-		log.Printf("[analyzeChatStyleImageStream] QianwenVisionStream error: %v", err)
+		log.Printf("[analyzeChatStyleImageStream] Volc VisionAnalyzeStream error: %v", err)
 		return "", fmt.Errorf("视觉模型分析失败: %w", err)
 	}
 
@@ -2494,13 +2522,13 @@ func (b *salesRAGBiz) analyzeChatStyleImage(ctx context.Context, userID uint, im
 - 字数控制在 500 字以内
 - 只分析销售人员（右边绿色气泡）的语言风格`
 
-	const visionModel = "qwen3-vl-flash-2026-01-22"
+	const visionModel = "doubao-seed-1-8-251228"
 
-	log.Printf("[analyzeChatStyleImage] Calling QianwenVision with model: %s", visionModel)
-	result, err := b.aliBiz.QianwenVision(ctx, dataURL, systemPrompt, visionModel)
+	log.Printf("[analyzeChatStyleImage] Calling Volc VisionAnalyze with model: %s", visionModel)
+	result, err := b.volcBiz.VisionAnalyze(ctx, dataURL, systemPrompt, visionModel, 0)
 
 	if err != nil {
-		log.Printf("[analyzeChatStyleImage] QianwenVision error: %v", err)
+		log.Printf("[analyzeChatStyleImage] Volc VisionAnalyze error: %v", err)
 		return "", fmt.Errorf("视觉模型分析失败: %w", err)
 	}
 
