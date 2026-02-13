@@ -11,6 +11,7 @@ import (
 	"image/jpeg"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -1415,55 +1416,65 @@ func (b *salesRAGBiz) analyzeImage(ctx context.Context, userID uint, file io.Rea
 		return "", fmt.Errorf("读取图片失败: %w", err)
 	}
 
-	// 2. 检查图片大小，如果超过 10MB 则压缩
+	// 2. 检查图片属性以适配火山方舟模型规格 (Doubao-Seed-1-8)
+	// 限制：大小 < 10MB, 总像素 < 36,000,000, 长宽比 < 150:1
 	const maxVisionSize = 10 * 1024 * 1024 // 10MB
-	if len(imageData) > maxVisionSize {
-		log.Printf("[analyzeImage] Image size (%d bytes) exceeds 10MB, starting compression...", len(imageData))
+	const maxTotalPixels = 36000000        // 36MP
 
-		// 转换字节为 image.Image
-		src, err := imaging.Decode(bytes.NewReader(imageData))
-		if err != nil {
-			return "", fmt.Errorf("解码图片失败: %w", err)
+	// 解码图片以检查属性
+	src, err := imaging.Decode(bytes.NewReader(imageData))
+	if err != nil {
+		return "", fmt.Errorf("解码图片失败: %w", err)
+	}
+
+	bounds := src.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	totalPixels := int64(width) * int64(height)
+	aspectRatio := float64(height) / float64(width)
+	if width > height {
+		aspectRatio = float64(width) / float64(height)
+	}
+
+	if len(imageData) > maxVisionSize || totalPixels > maxTotalPixels || aspectRatio > 150 {
+		log.Printf("[analyzeImage] Image needs processing (Size: %d, Pixels: %d, Ratio: %.2f)", len(imageData), totalPixels, aspectRatio)
+
+		scale := 1.0
+		if totalPixels > maxTotalPixels {
+			scale = math.Sqrt(float64(maxTotalPixels-1000000) / float64(totalPixels))
+		}
+		if aspectRatio > 140 {
+			scale = math.Min(scale, 0.8)
 		}
 
-		// 计算缩放比例：基于像素面积的简单启发式
-		// 视觉模型通常对像素总量有限制，或者我们通过缩放来显著减小文件体积
-		// 我们先尝试将长宽各缩小到原来的 70% (面积约 50%)
-		bounds := src.Bounds()
-		width := bounds.Dx()
-		height := bounds.Dy()
-
-		// 如果是超长截图（长宽比过大），我们要小心缩放逻辑
-		// 这里采用逐步缩放策略，直到大小达标或达到最小阈值
 		quality := 85
-		for len(imageData) > maxVisionSize && (width > 500 || height > 500) {
-			width = int(float64(width) * 0.8)
-			height = int(float64(height) * 0.8)
-
-			dst := imaging.Resize(src, width, height, imaging.Lanczos)
+		for (len(imageData) > maxVisionSize || totalPixels > maxTotalPixels) && (width > 20 || height > 20) {
+			if scale < 1.0 {
+				width = int(float64(width) * scale)
+				height = int(float64(height) * scale)
+				src = imaging.Resize(src, width, height, imaging.Lanczos)
+				totalPixels = int64(width) * int64(height)
+			}
 
 			var buf bytes.Buffer
-			// 使用标准库 jpeg 包进行编码，以支持质量设置
-			err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: quality})
+			err = jpeg.Encode(&buf, src, &jpeg.Options{Quality: quality})
 			if err != nil {
 				return "", fmt.Errorf("压缩图片失败: %w", err)
 			}
 			imageData = buf.Bytes()
 
-			log.Printf("[analyzeImage] Compressed to %dx%d, size: %d bytes (quality: %d)", width, height, len(imageData), quality)
+			log.Printf("[analyzeImage] Iterative processing: %dx%d, size: %d bytes, quality: %d", width, height, len(imageData), quality)
 
-			// 如果缩放后还是大，降低质量
 			if quality > 60 {
 				quality -= 10
+			} else {
+				scale = 0.8
 			}
-
-			// 更新当前 src 为已缩放的图，方便下一轮
-			src = dst
 		}
+	}
 
-		if len(imageData) > maxVisionSize {
-			return "", fmt.Errorf("图片过大且压缩失败 (当前大小: %d bytes)", len(imageData))
-		}
+	// 3. 最终校验
+	if len(imageData) > maxVisionSize {
+		return "", fmt.Errorf("图片过大且压缩失败 (当前大小: %d bytes)", len(imageData))
 	}
 
 	log.Printf("图片已处理完成, 最终大小: %d bytes, 格式: image/jpeg", len(imageData))
@@ -1542,9 +1553,10 @@ func (b *salesRAGBiz) analyzeImage(ctx context.Context, userID uint, file io.Rea
 func (b *salesRAGBiz) analyzeImageStream(ctx context.Context, userID uint, imageData []byte, onToken func(token string) error) (string, error) {
 	log.Printf("[analyzeImageStream] Starting analysis for user %d, image size: %d bytes", userID, len(imageData))
 
-	// 1. 检查图片大小和尺寸，如果超过限制则压缩
+	// 1. 检查图片规格以适配火山方舟模型 (Doubao-Seed-1-8)
+	// 限制：文件 < 10MB, 总像素 < 36,000,000, 比例 < 150:1
 	const maxVisionSize = 10 * 1024 * 1024 // 10MB
-	const maxDimension = 4096              // 阿里云视觉模型支持的最大边长
+	const maxTotalPixels = 36000000        // 36MP
 
 	// 解码图片以检查尺寸
 	src, err := imaging.Decode(bytes.NewReader(imageData))
@@ -1554,84 +1566,54 @@ func (b *salesRAGBiz) analyzeImageStream(ctx context.Context, userID uint, image
 	}
 
 	bounds := src.Bounds()
-	width := bounds.Dx()
-	height := bounds.Dy()
-	needsResize := false
+	width, height := bounds.Dx(), bounds.Dy()
+	totalPixels := int64(width) * int64(height)
+	aspectRatio := float64(height) / float64(width)
+	if width > height {
+		aspectRatio = float64(width) / float64(height)
+	}
 
-	log.Printf("[analyzeImageStream] Original image dimensions: %dx%d, size: %d bytes", width, height, len(imageData))
+	log.Printf("[analyzeImageStream] Image stats: %dx%d, size: %d bytes, pixels: %d, ratio: %.2f", width, height, len(imageData), totalPixels, aspectRatio)
 
-	// 检查是否需要压缩（尺寸过大或文件过大）
-	if width > maxDimension || height > maxDimension || len(imageData) > maxVisionSize {
-		needsResize = true
-		log.Printf("[analyzeImageStream] Image exceeds limits (max dimension: %d, max size: %d MB), starting compression...", maxDimension, maxVisionSize/1024/1024)
+	// 只要符合规格，不做任何处理，保留原始清晰度
+	if len(imageData) > maxVisionSize || totalPixels > maxTotalPixels || aspectRatio > 150 {
+		log.Printf("[analyzeImageStream] Image exceeds limits, starting smart compression...")
 
-		// 计算缩放比例，确保最大边不超过 maxDimension
 		scale := 1.0
-		if width > height {
-			if width > maxDimension {
-				scale = float64(maxDimension) / float64(width)
-			}
-		} else {
-			if height > maxDimension {
-				scale = float64(maxDimension) / float64(height)
-			}
+		if totalPixels > maxTotalPixels {
+			scale = math.Sqrt(float64(maxTotalPixels-1000000) / float64(totalPixels))
 		}
 
-		// 如果需要缩放
-		if scale < 1.0 {
-			width = int(float64(width) * scale)
-			height = int(float64(height) * scale)
-			log.Printf("[analyzeImageStream] Scaling image to %dx%d (scale: %.2f)", width, height, scale)
-		}
-
-		// 逐步压缩直到满足大小要求
 		quality := 85
-		for len(imageData) > maxVisionSize && (width > 500 || height > 500) {
-			// 调整尺寸
-			dst := imaging.Resize(src, width, height, imaging.Lanczos)
+		for (len(imageData) > maxVisionSize || totalPixels > maxTotalPixels) && (width > 20 || height > 20) {
+			if scale < 1.0 {
+				width = int(float64(width) * scale)
+				height = int(float64(height) * scale)
+				src = imaging.Resize(src, width, height, imaging.Lanczos)
+				totalPixels = int64(width) * int64(height)
+			}
 
-			//重新编码为JPEG
 			var buf bytes.Buffer
-			err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: quality})
+			err = jpeg.Encode(&buf, src, &jpeg.Options{Quality: quality})
 			if err != nil {
-				return "", fmt.Errorf("压缩图片失败: %w", err)
+				return "", fmt.Errorf("流式压缩图片失败: %w", err)
 			}
 			imageData = buf.Bytes()
 
-			log.Printf("[analyzeImageStream] Compressed to %dx%d, size: %d bytes (quality: %d)", width, height, len(imageData), quality)
+			log.Printf("[analyzeImageStream] Compressed to %dx%d, size: %d, quality: %d", width, height, len(imageData), quality)
 
-			// 如果还是太大，继续缩小
-			if len(imageData) > maxVisionSize {
-				if quality > 60 {
-					quality -= 10
-				} else {
-					width = int(float64(width) * 0.8)
-					height = int(float64(height) * 0.8)
-				}
+			if quality > 60 {
+				quality -= 10
 			} else {
-				break
+				scale = 0.8
 			}
-
-			src = dst
 		}
 
-		// 最后检查是否成功压缩
 		if len(imageData) > maxVisionSize {
-			return "", fmt.Errorf("图片过大且压缩失败 (当前大小: %d bytes)", len(imageData))
+			return "", fmt.Errorf("图片过大且流式压缩失败 (当前大小: %d bytes)", len(imageData))
 		}
-
-		log.Printf("[analyzeImageStream] Compression completed, final size: %d bytes, dimensions: %dx%d", len(imageData), width, height)
-	} else if needsResize {
-		// 即使文件大小OK，但如果之前检测到尺寸需要调整，也要重新编码
-		dst := imaging.Resize(src, width, height, imaging.Lanczos)
-		var buf bytes.Buffer
-		err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 85})
-		if err != nil {
-			return "", fmt.Errorf("重新编码图片失败: %w", err)
-		}
-		imageData = buf.Bytes()
-		log.Printf("[analyzeImageStream] Resized image to %dx%d, new size: %d bytes", width, height, len(imageData))
 	}
+	log.Printf("[analyzeImageStream] Resized image to %dx%d, new size: %d bytes", width, height, len(imageData))
 
 	// 2. 准备数据传输 URL (优先使用 COS URL)
 	var dataURL string
