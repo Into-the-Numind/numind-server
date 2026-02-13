@@ -1050,6 +1050,10 @@ func (b *salesRAGBiz) ListSessions(ctx context.Context, userID uint, offset, lim
 
 // UpdateSession 更新销售会话
 func (b *salesRAGBiz) UpdateSession(ctx context.Context, userID uint, sessionID uint, req UpdateSessionRequest) error {
+	log.Printf("[UpdateSession] Received request for SessionID: %d, UserID: %d", sessionID, userID)
+	log.Printf("[UpdateSession] ProductDocIDs: %v (len: %d)", req.ProductDocIDs, len(req.ProductDocIDs))
+	log.Printf("[UpdateSession] CaseDocIDs: %v (len: %d)", req.CaseDocIDs, len(req.CaseDocIDs))
+	log.Printf("[UpdateSession] FAQDocIDs: %v (len: %d)", req.FAQDocIDs, len(req.FAQDocIDs))
 	// 获取现有会话
 	session, err := b.sessionStore.GetSession(ctx, sessionID, userID)
 	if err != nil {
