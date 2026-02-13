@@ -611,8 +611,13 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 	// 10. 构建 prompt 并流式生成回答
 	messages := b.buildPromptMessagesV2(query, verdict, customerProfile, languageStyle)
 
-	// 11. 调用 DMXAPI DeepSeek-V3.2 流式聊天（非思考模式）
-	_, err = b.dmxClient.StreamChatCompletion(ctx, "DeepSeek-V3.2", messages, 0.7, 2000, func(content string) error {
+	// 11. 调用 DMXAPI DeepSeek-V3.2 流式聊天（支持思考模式）
+	// 注意：deepThinking 参数决定是否启用思维链
+	_, err = b.dmxClient.StreamChatCompletion(ctx, "DeepSeek-V3.2", messages, 0.7, 2000, deepThinking, func(eventType, content string) error {
+		if eventType == "thinking" {
+			return onEvent("thinking", content)
+		}
+		// eventType == "content"
 		return onEvent("token", content)
 	})
 	if err != nil {

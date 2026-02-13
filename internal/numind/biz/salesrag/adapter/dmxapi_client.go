@@ -127,68 +127,31 @@ func (c *DMXAPIClient) ChatCompletion(ctx context.Context, model string, message
 // ChatCompletionWithThinking 调用聊天接口（非流式 + 深度思考模式）
 // 启用 enable_thinking=true，模型会在响应中包含 <think>...</think> 思维链
 // 返回值只包含最终回答内容（思维链部分会被记录到日志但不返回）
+// ChatCompletionWithThinking 调用聊天接口（流式 + 深度思考模式）
+// 启用 enable_thinking=true，模型会在响应中包含 <think>...</think> 思维链
+// 注意：虽然函数签名看起来是阻塞调用，但内部必须使用流式请求（Stream=true），因为当前 API 关于 thinking 参数仅支持流式调用
 func (c *DMXAPIClient) ChatCompletionWithThinking(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int) (string, error) {
-	enableThinking := true
-	reqBody := ChatCompletionRequest{
-		Model:          model,
-		Messages:       messages,
-		Temperature:    temperature,
-		MaxTokens:      maxTokens,
-		Stream:         false,
-		EnableThinking: &enableThinking,
-	}
+	var fullThinking strings.Builder
 
-	bodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("marshal request failed: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/chat/completions", bytes.NewBuffer(bodyBytes))
-	if err != nil {
-		return "", fmt.Errorf("create request failed: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read response failed: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var result ChatCompletionResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("decode response failed: %w", err)
-	}
-
-	if result.Error != nil {
-		return "", fmt.Errorf("API error: %s - %s", result.Error.Code, result.Error.Message)
-	}
-
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("empty choices from API")
-	}
-
-	content := result.Choices[0].Message.Content
-
-	// 提取并记录思维链内容（如果存在），然后只返回最终回答
-	if thinkStart := strings.Index(content, "<think>"); thinkStart != -1 {
-		if thinkEnd := strings.Index(content, "</think>"); thinkEnd != -1 {
-			thinkContent := content[thinkStart+7 : thinkEnd]
-			log.Infow("LLM thinking chain", "thinking", thinkContent[:min(len(thinkContent), 500)])
-			// 只返回 </think> 之后的最终内容
-			content = strings.TrimSpace(content[thinkEnd+8:])
+	// 调用增强后的 StreamChatCompletion
+	content, err := c.StreamChatCompletion(ctx, model, messages, temperature, maxTokens, true, func(eventType, chunk string) error {
+		if eventType == "thinking" {
+			fullThinking.WriteString(chunk)
 		}
+		return nil
+	})
+
+	if err != nil {
+		return "", err
+	}
+
+	// 记录思维链日志
+	if fullThinking.Len() > 0 {
+		logContent := fullThinking.String()
+		if len(logContent) > 500 {
+			logContent = logContent[:500] + "..."
+		}
+		log.Infow("LLM thinking chain", "thinking", logContent)
 	}
 
 	return content, nil
@@ -196,13 +159,17 @@ func (c *DMXAPIClient) ChatCompletionWithThinking(ctx context.Context, model str
 
 // StreamChatCompletion 调用聊天接口（流式）
 // onEvent: 回调函数，参数为 content 片段
-func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int, onEvent func(content string) error) (string, error) {
+// StreamChatCompletion 调用聊天接口（流式）
+// onEvent: 回调函数，参数为 (eventType string, content string)
+// eventType: "thinking" (思维链内容) 或 "content" (正文内容)
+func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int, enableThinking bool, onEvent func(eventType, content string) error) (string, error) {
 	reqBody := ChatCompletionRequest{
-		Model:       model,
-		Messages:    messages,
-		Temperature: temperature,
-		MaxTokens:   maxTokens,
-		Stream:      true,
+		Model:          model,
+		Messages:       messages,
+		Temperature:    temperature,
+		MaxTokens:      maxTokens,
+		Stream:         true,
+		EnableThinking: &enableThinking,
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
@@ -231,7 +198,11 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 	}
 
 	var fullContent strings.Builder
+	var fullThinking strings.Builder
 	reader := bufio.NewReader(resp.Body)
+
+	// 标记是否正在处理思维链（用于解析 <think> 标签）
+	inThinkingTag := false
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -260,7 +231,8 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content string `json:"content"`
+					Content  string `json:"content"`
+					Thinking string `json:"reasoning_content"` // 有些厂商可能使用 reasoning_content
 				} `json:"delta"`
 			} `json:"choices"`
 		}
@@ -270,12 +242,72 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 			continue
 		}
 
-		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
-			content := chunk.Choices[0].Delta.Content
-			fullContent.WriteString(content)
-			if onEvent != nil {
-				if err := onEvent(content); err != nil {
-					return fullContent.String(), err
+		if len(chunk.Choices) > 0 {
+			delta := chunk.Choices[0].Delta
+
+			// 1. 处理显式的 reasoning_content 字段
+			if delta.Thinking != "" {
+				fullThinking.WriteString(delta.Thinking)
+				if onEvent != nil {
+					if err := onEvent("thinking", delta.Thinking); err != nil {
+						return fullContent.String(), err
+					}
+				}
+			}
+
+			// 2. 处理 content 字段（可能包含 <think> 标签）
+			content := delta.Content
+			if content != "" {
+				// 简单的标签检测逻辑
+				// 注意：流式传输使得标签可能被切断（例: "<thi", "nk>"），这里做简化处理，
+				// 假设标签稍微完整一些，或者 content 纯粹。
+				// 更严谨的流式解析需要状态机，但针对大多数 API，<think> 通常单独出现或在开头。
+
+				// 检查 <think> 开始
+				if strings.Contains(content, "<think>") {
+					inThinkingTag = true
+					content = strings.Replace(content, "<think>", "", 1)
+				}
+
+				// 检查 </think> 结束
+				if strings.Contains(content, "</think>") {
+					inThinkingTag = false
+					parts := strings.Split(content, "</think>")
+
+					// </think> 之前的部分属于 thinking
+					if len(parts) > 0 && parts[0] != "" {
+						fullThinking.WriteString(parts[0])
+						if onEvent != nil {
+							_ = onEvent("thinking", parts[0])
+						}
+					}
+
+					// </think> 之后的部分属于 content
+					if len(parts) > 1 && parts[1] != "" {
+						// 过滤掉可能的换行
+						realContent := strings.TrimLeft(parts[1], "\n")
+						if realContent != "" {
+							fullContent.WriteString(realContent)
+							if onEvent != nil {
+								_ = onEvent("content", realContent) // 注意这里改成 content
+							}
+						}
+					}
+					continue // 本次 chunk 处理完毕
+				}
+
+				if inThinkingTag {
+					// 在 <think>...</think> 内部，全部视为思考内容
+					fullThinking.WriteString(content)
+					if onEvent != nil {
+						_ = onEvent("thinking", content)
+					}
+				} else {
+					// 正常内容
+					fullContent.WriteString(content)
+					if onEvent != nil {
+						_ = onEvent("content", content)
+					}
 				}
 			}
 		}
