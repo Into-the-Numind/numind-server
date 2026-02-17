@@ -932,22 +932,30 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 	if baseURL == "" {
 		baseURL = "https://ark.cn-beijing.volces.com/api/v3"
 	}
-	url := baseURL + "/chat/completions"
+	// Log request details
+	log.C(ctx).Infow("StreamChatWithModel request", "url", baseURL+"/chat/completions", "model", model, "body_map", bodyMap)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/chat/completions", bytes.NewBuffer(bodyBytes))
 	if err != nil {
 		return "", err
 	}
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+viper.GetString("volc.api_key"))
-	req.Header.Set("Accept", "text/event-stream")
 
-	client := &http.Client{Timeout: 0}
+	client := &http.Client{
+		Timeout: 300 * time.Second, // 增加超时时间以适应 deeply thinking
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("Volc API error: %d - %s", resp.StatusCode, string(body))
+	}
 
 	var fullContent strings.Builder
 	var thinkingContent strings.Builder
@@ -962,7 +970,13 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 		}
 
 		line = strings.TrimSpace(line)
-		if line == "" || !strings.HasPrefix(line, "data: ") {
+		if line == "" {
+			continue
+		}
+
+		log.C(ctx).Debugw("StreamChatWithModel raw line", "line", line)
+
+		if !strings.HasPrefix(line, "data: ") {
 			// log.C(ctx).Debugw("Skip line", "line", line)
 			continue
 		}
@@ -991,25 +1005,22 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 		}
 
 		choice := choices[0].(map[string]interface{})
-		delta, ok := choice["delta"].(map[string]interface{})
-		if !ok {
-			log.C(ctx).Debugw("StreamChatWithModel no delta", "choice", choice)
-			continue
-		}
+		if delta, ok := choice["delta"].(map[string]interface{}); ok {
+			// Log keys in delta to debug
+			// log.C(ctx).Debugw("StreamChatWithModel delta keys", "keys", maps.Keys(delta))
 
-		if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
-			// log.C(ctx).Debugw("StreamChatWithModel received thinking", "len", len(rc))
-			thinkingContent.WriteString(rc)
-			if onEvent != nil {
-				onEvent("thinking", rc)
+			if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
+				thinkingContent.WriteString(rc)
+				if onEvent != nil {
+					onEvent("thinking", rc)
+				}
 			}
-		}
 
-		if content, ok := delta["content"].(string); ok && content != "" {
-			// log.C(ctx).Debugw("StreamChatWithModel received content", "len", len(content))
-			fullContent.WriteString(content)
-			if onEvent != nil {
-				onEvent("message", content)
+			if content, ok := delta["content"].(string); ok && content != "" {
+				fullContent.WriteString(content)
+				if onEvent != nil {
+					onEvent("message", content)
+				}
 			}
 		}
 
