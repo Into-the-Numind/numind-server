@@ -324,6 +324,7 @@ func (ctrl *SalesRAGController) CreateSession(c *gin.Context) {
 		FAQDocIDs       []uint `json:"faq_doc_ids"`     // 百问百答
 		DeepThinking    bool   `json:"deep_thinking"`
 		CustomerProfile string `json:"customer_profile"`
+		SalesStage      string `json:"sales_stage"`     // 销售阶段
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -350,6 +351,7 @@ func (ctrl *SalesRAGController) CreateSession(c *gin.Context) {
 		FAQDocIDs:       req.FAQDocIDs,
 		DeepThinking:    req.DeepThinking,
 		CustomerProfile: req.CustomerProfile,
+		SalesStage:      req.SalesStage, // 销售阶段
 	}
 
 	session, err := ctrl.b.SalesRAG().CreateSession(c, user.ID, createReq)
