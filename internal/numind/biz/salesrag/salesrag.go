@@ -1438,18 +1438,118 @@ func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint,
 		isImage := ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif" || ext == ".webp"
 
 		if isImage {
-			// 图片处理：读取 -> 上传 COS -> 获取 URL
+			// 图片处理：读取 -> 压缩（如需）-> 上传 COS -> 获取 URL
 			imageData, err := io.ReadAll(src)
 			if err != nil {
 				log.Printf("Failed to read image %s: %v", fileHeader.Filename, err)
 				continue
 			}
 
-			// 复用之前的图片压缩逻辑（如果需要），这里简化为直接上传，假设 COS 处理或模型接受大图
-			// 实际上 doubao-seed 接受 URL
-			// 为了简单，我们先上传到临时目录
+			// 针对微信聊天记录长截图的压缩处理
+			// 火山方舟 Doubao-Seed 模型限制：大小 < 10MB, 总像素 < 36,000,000, 长宽比 < 150:1
+			const maxVisionSize = 10 * 1024 * 1024 // 10MB
+			const maxTotalPixels = 36000000        // 36MP
+
+			// 解码图片检查属性
+			img, err := imaging.Decode(bytes.NewReader(imageData))
+			if err != nil {
+				log.Printf("Failed to decode image %s: %v", fileHeader.Filename, err)
+				continue
+			}
+
+			bounds := img.Bounds()
+			width, height := bounds.Dx(), bounds.Dy()
+			totalPixels := int64(width) * int64(height)
+			aspectRatio := float64(height) / float64(width)
+			if width > height {
+				aspectRatio = float64(width) / float64(height)
+			}
+
+			// 检查是否需要压缩（大小、像素、长宽比任一超标）
+			if len(imageData) > maxVisionSize || totalPixels > maxTotalPixels || aspectRatio > 150 {
+				log.Printf("[AnalyzeProfileMultiFiles] Image %s needs compression (Size: %d, Pixels: %d, Ratio: %.2f)",
+					fileHeader.Filename, len(imageData), totalPixels, aspectRatio)
+
+				// 微信长截图通常宽高比很大，需要更激进的压缩策略
+				scale := 1.0
+				if totalPixels > maxTotalPixels {
+					scale = math.Sqrt(float64(maxTotalPixels-1000000) / float64(totalPixels))
+				}
+				// 长宽比过大时进一步缩小，避免模型处理超长图
+				if aspectRatio > 140 {
+					scale = math.Min(scale, 0.8)
+				}
+
+				quality := 85
+				// 迭代压缩直到满足限制，确保最终一定能压缩到 10MB 以下
+				for len(imageData) > maxVisionSize && (width > 100 || height > 100) {
+					if scale < 1.0 {
+						width = int(float64(width) * scale)
+						height = int(float64(height) * scale)
+					}
+					// 每次循环都进行缩放，确保尺寸在减小
+					if scale >= 1.0 {
+						width = int(float64(width) * 0.9)
+						height = int(float64(height) * 0.9)
+					}
+
+					img = imaging.Resize(img, width, height, imaging.Lanczos)
+					totalPixels = int64(width) * int64(height)
+
+					var buf bytes.Buffer
+					err = jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality})
+					if err != nil {
+						log.Printf("Failed to encode image %s: %v", fileHeader.Filename, err)
+						break
+					}
+					imageData = buf.Bytes()
+
+					log.Printf("[AnalyzeProfileMultiFiles] Compression iteration: %dx%d, size: %d bytes, quality: %d",
+						width, height, len(imageData), quality)
+
+					// 如果还超过 10MB，继续降低质量或缩小尺寸
+					if len(imageData) > maxVisionSize {
+						if quality > 30 {
+							// 优先降低质量，直到 30%
+							quality -= 10
+						} else {
+							// 质量到 30% 后，大幅缩小尺寸
+							scale = 0.7
+						}
+					}
+				}
+			}
+
+			// 最终校验，如果仍然超过 10MB，使用最后的手段：大幅降低质量和尺寸
+			if len(imageData) > maxVisionSize {
+				log.Printf("[AnalyzeProfileMultiFiles] Image %s still too large after normal compression (%d bytes), applying aggressive compression", fileHeader.Filename, len(imageData))
+				// 最后手段：质量降至 20%，尺寸减半
+				for len(imageData) > maxVisionSize && (width > 50 || height > 50) {
+					width = int(float64(width) * 0.7)
+					height = int(float64(height) * 0.7)
+					img = imaging.Resize(img, width, height, imaging.Lanczos)
+
+					var buf bytes.Buffer
+					err = jpeg.Encode(&buf, img, &jpeg.Options{Quality: 20})
+					if err != nil {
+						log.Printf("Failed to encode image %s in aggressive compression: %v", fileHeader.Filename, err)
+						break
+					}
+					imageData = buf.Bytes()
+
+					log.Printf("[AnalyzeProfileMultiFiles] Aggressive compression: %dx%d, size: %d bytes", width, height, len(imageData))
+				}
+			}
+
+			// 最终校验，如果仍然超过 10MB，则跳过该图片
+			if len(imageData) > maxVisionSize {
+				log.Printf("[AnalyzeProfileMultiFiles] Image %s too large even after aggressive compression (%d bytes), skipping", fileHeader.Filename, len(imageData))
+				continue
+			}
+
+			// 上传到临时目录
 			objectKey := fmt.Sprintf("salesrag/analyze_tmp/%d/%d_%d_%s", userID, time.Now().Unix(), i, fileHeader.Filename)
-			cosURL, err := util.UploadBytesToCOS(ctx, objectKey, "image/jpeg", imageData) // 假设都是 jpeg 或者自动识别
+			cosURL, err := util.UploadBytesToCOS(ctx, objectKey, "image/jpeg", imageData)
 			if err != nil {
 				log.Printf("Failed to upload image %s to COS: %v", fileHeader.Filename, err)
 				continue
