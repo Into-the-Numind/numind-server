@@ -745,6 +745,22 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 	}
 }
 
+// getSalesStageDescription 获取销售阶段简介
+func getSalesStageDescription(stage string) string {
+	switch stage {
+	case "破冰诊断":
+		return "建立信任，挖出客户需求"
+	case "价值塑造":
+		return "塑造产品价值，让客户想要"
+	case "异议处理":
+		return "打消顾虑，扫除成交障碍"
+	case "关单追销":
+		return "临门一脚，促成交易下单"
+	default:
+		return ""
+	}
+}
+
 // buildSalesModePrompt 构建 Sales 模式提示词
 func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle string, history []string, salesStage string) string {
 	var prompt strings.Builder
@@ -772,10 +788,15 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 		prompt.WriteString("---\n")
 	}
 
-	// 当前销售阶段（条件渲染）
+	// 当前销售阶段（条件渲染 - 仅非空时显示）
 	if salesStage != "" {
+		stageDesc := getSalesStageDescription(salesStage)
 		prompt.WriteString("### 当前销售阶段\n")
 		prompt.WriteString(salesStage)
+		if stageDesc != "" {
+			prompt.WriteString("\n")
+			prompt.WriteString(stageDesc)
+		}
 		prompt.WriteString("\n\n")
 	}
 
@@ -900,10 +921,15 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, str
 		prompt.WriteString("---\n")
 	}
 
-	// 当前销售阶段（条件渲染）
+	// 当前销售阶段（条件渲染 - 仅非空时显示）
 	if salesStage != "" {
+		stageDesc := getSalesStageDescription(salesStage)
 		prompt.WriteString("### 当前销售阶段\n")
 		prompt.WriteString(salesStage)
+		if stageDesc != "" {
+			prompt.WriteString("\n")
+			prompt.WriteString(stageDesc)
+		}
 		prompt.WriteString("\n\n")
 	}
 
