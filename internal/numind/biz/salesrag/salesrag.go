@@ -40,7 +40,7 @@ type SalesRAGBiz interface {
 	// RetrieveStream 流式检索知识并生成回答
 	// chatMode: "sales" (销售话术) 或 "free" (自由讨论)
 	// onEvent: 事件回调，eventType 可为 "verdict"/"token"/"error"/"done"
-	RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, onEvent func(eventType string, data interface{}) error) error
+	RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, salesStage string, onEvent func(eventType string, data interface{}) error) error
 	// ListDocuments 获取用户的文档列表
 	ListDocuments(ctx context.Context, userID uint) ([]domain.KnowledgeDocument, error)
 	// GetDocument 获取单个文档详情
@@ -106,6 +106,7 @@ type CreateSessionRequest struct {
 	FAQDocIDs       []uint `json:"faq_doc_ids"`     // 百问百答
 	DeepThinking    bool   `json:"deep_thinking"`
 	CustomerProfile string `json:"customer_profile"` // Markdown 格式
+	SalesStage      string `json:"sales_stage"`      // 销售阶段: ""(未选择), 初次接触, 了解业务, 方案介绍, 成交推进, 售后服务
 }
 
 type UpdateSessionRequest struct {
@@ -114,6 +115,7 @@ type UpdateSessionRequest struct {
 	ProductDocIDs   []uint  `json:"product_doc_ids"` // 产品文档
 	CaseDocIDs      []uint  `json:"case_doc_ids"`    // 成功案例
 	FAQDocIDs       []uint  `json:"faq_doc_ids"`     // 百问百答
+	SalesStage      *string `json:"sales_stage"`     // 销售阶段: ""(未选择), 初次接触, 了解业务, 方案介绍, 成交推进, 售后服务
 	DeepThinking    *bool   `json:"deep_thinking"`
 	CustomerProfile *string `json:"customer_profile"`
 }
@@ -547,7 +549,7 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, verdict 
 // RetrieveStream 流式检索知识并生成回答
 // chatMode: "sales" (销售话术) 或// RetrieveStream 流式检索知识并生成回答
 // 修改：增加 docCategoryMap 参数，用于传递文档分类信息
-func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, onEvent func(eventType string, data interface{}) error) error {
+func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, salesStage string, onEvent func(eventType string, data interface{}) error) error {
 	// 1. 从上下文获取用户ID
 	var userID uint
 	if uid, ok := ctx.Value("userID").(uint); ok {
@@ -619,7 +621,7 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 	languageStyle, _ := b.GetLanguageStyle(ctx, userID)
 
 	// 10. 构建 prompt 并流式生成回答
-	messages := b.buildPromptMessagesV2(query, verdict, customerProfile, languageStyle)
+	messages := b.buildPromptMessagesV2(query, verdict, customerProfile, languageStyle, salesStage)
 
 	// 11. 调用 DMXAPI DeepSeek-V3.2 流式聊天（支持思考模式）
 	// 注意：deepThinking 参数决定是否启用思维链，不再对输出 Token 设限
@@ -641,7 +643,7 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 // buildPromptMessages 根据检索结果构建 prompt 消息 (V1 兼容)
 // Deprecated: 请使用 buildPromptMessagesV2
 func (b *salesRAGBiz) buildPromptMessages(query string, verdict *service.RetrievalVerdict) []map[string]string {
-	messagesV2 := b.buildPromptMessagesV2(query, verdict, "", "")
+	messagesV2 := b.buildPromptMessagesV2(query, verdict, "", "", "")
 	result := make([]map[string]string, len(messagesV2))
 	for i, msg := range messagesV2 {
 		result[i] = map[string]string{
@@ -653,7 +655,7 @@ func (b *salesRAGBiz) buildPromptMessages(query string, verdict *service.Retriev
 }
 
 // buildPromptMessagesV2 根据检索结果构建 prompt 消息（优化版）
-func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.RetrievalVerdict, customerProfile string, languageStyle string) []adapter.ChatMessage {
+func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.RetrievalVerdict, customerProfile string, languageStyle string, salesStage string) []adapter.ChatMessage {
 	// 上下文长度限制常量
 	const (
 		maxCustomerProfileChars = 5000  // 客户画像最大字符数
@@ -723,11 +725,11 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 
 	if verdict.ChatMode == "free" {
 		// ========== Free 模式 (Sales Copilot 顾问模式) ==========
-		systemPrompt = b.buildFreeModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle, verdict.History)
+		systemPrompt = b.buildFreeModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle, verdict.History, salesStage)
 		userMessage = query
 	} else {
 		// ========== Sales 模式 (销售人员本人视角) ==========
-		systemPrompt = b.buildSalesModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle, verdict.History)
+		systemPrompt = b.buildSalesModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle, verdict.History, salesStage)
 		userMessage = query
 	}
 
@@ -744,7 +746,7 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 }
 
 // buildSalesModePrompt 构建 Sales 模式提示词
-func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle string, history []string) string {
+func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle string, history []string, salesStage string) string {
 	var prompt strings.Builder
 
 	// 角色和目标
@@ -768,6 +770,13 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 		}
 
 		prompt.WriteString("---\n")
+	}
+
+	// 当前销售阶段（条件渲染）
+	if salesStage != "" {
+		prompt.WriteString("### 当前销售阶段\n")
+		prompt.WriteString(salesStage)
+		prompt.WriteString("\n\n")
 	}
 
 	// 核心参考资料
@@ -796,8 +805,8 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 	// 你的任务（风格定义 + 输出格式合并）
 	prompt.WriteString("## 你的任务\n")
 	prompt.WriteString("请综合参考上述信息，为当前客户消息生成三个不同风格的回复选项。直接使用 Markdown 三级标题分隔：\n\n")
-	prompt.WriteString("### 选项A：激进型（逼单风格）\n")
-	prompt.WriteString("侧重利益刺激、稀缺性强调、促成即刻行动。话术直接有冲击力。\n（直接写给客户的话术，可分多段）\n\n")
+	prompt.WriteString("### 选项A：主动型（推进风格）\n")
+	prompt.WriteString("侧重价值呈现和时机把握，在尊重客户边界的前提下积极推进。话术坚定有方向感但避免压迫感，用利益引导代替强制推销，用提问和确认代替单向推进，确保客户感受到被尊重的同时明确下一步行动。\n（直接写给客户的话术，可分多段）\n\n")
 	prompt.WriteString("### 选项B：保守型（共情风格）\n")
 	prompt.WriteString("侧重理解客户压力、提供情绪价值、建立信任关系。话术温暖包容。\n（直接写给客户的话术，可分多段）\n\n")
 	prompt.WriteString("### 选项C：高势能回复（专业风格）\n")
@@ -828,20 +837,29 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 	prompt.WriteString("4. **灵活判断**  \n")
 	prompt.WriteString("   如果推荐策略与当前对话明显不符，以实际情况为准  \n")
 	prompt.WriteString("   三种风格只是参考方向，可以适度调整\n\n")
+	prompt.WriteString("5. **严守微信销售场景与角色边界**  \n")
+	prompt.WriteString("   - 你正在微信上进行销售对话，严禁引导至线下见面、电话沟通或其他非微信渠道  \n")
+	prompt.WriteString("   - 你是销售人员，不是顾问/专家，严禁主动提供免费诊断、免费分析、免费咨询等\"增值服务\"  \n")
+	prompt.WriteString("   - 销售推进依靠产品价值本身，而非额外赠送的服务或转移场景\n\n")
 
 	prompt.WriteString("### 严格禁止\n")
-	prompt.WriteString("1. **禁止元对话**  \n")
-	prompt.WriteString("   不要写\"建议您...\"、\"可以这样回复...\"等建议性语言  \n")
-	prompt.WriteString("   不要分析原因或解释为什么这样回复\n\n")
-	prompt.WriteString("2. **严禁编造信息**  \n")
-	prompt.WriteString("   如果涉及具体产品信息但知识库中没有答案，可在话术中自然地说明需核实  \n")
-	prompt.WriteString("   对于通用销售技巧和沟通策略，可以基于你的专业经验自由发挥  \n")
-	prompt.WriteString("   不得虚构产品功能、价格、案例等具体信息  \n")
-	prompt.WriteString("   宁可保守回复，也不要过度承诺\n\n")
+	prompt.WriteString("1. **禁止元对话**\n")
+	prompt.WriteString("   - 不要写\"建议您...\"、\"可以这样回复...\"等建议性语言\n")
+	prompt.WriteString("   - 不要分析原因或解释为什么这样回复\n\n")
+	prompt.WriteString("2. **禁止编造信息**\n")
+	prompt.WriteString("   - 不得虚构产品功能、价格等数据\n")
+	prompt.WriteString("   - 不得编造客户案例信息或对话历史\n")
+	prompt.WriteString("   - 宁可说\"不确定\"，也不要编造\n\n")
+	prompt.WriteString("3. **禁止僵化套用**\n")
+	prompt.WriteString("   - 不要机械套用模板而忽视问题本质\n")
+	prompt.WriteString("   - 根据实际需求灵活调整\n\n")
+	prompt.WriteString("4. **禁止误导性建议**\n")
+	prompt.WriteString("   - 不提供违背商业道德的建议\n")
+	prompt.WriteString("   - 不得欺骗或误导客户\n")
+	prompt.WriteString("   - 不得过度承诺或虚假宣传\n\n")
 
-	// 语言风格参考（固定显示）
 	prompt.WriteString("---\n")
-	prompt.WriteString("## 语言风格参考\n")
+	prompt.WriteString("### 语言风格参考\n")
 	if languageStyle != "" {
 		prompt.WriteString(languageStyle)
 	} else {
@@ -849,7 +867,6 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 	}
 	prompt.WriteString("\n\n")
 
-	// 结尾引导
 	prompt.WriteString("---\n")
 	prompt.WriteString("现在请基于以上所有信息，为客户的这条消息生成三个回复选项。")
 
@@ -857,7 +874,7 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 }
 
 // buildFreeModePrompt 构建 Free 模式提示词（资深销售教练）
-func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle string, history []string) string {
+func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle string, history []string, salesStage string) string {
 	var prompt strings.Builder
 
 	// 角色和目标
@@ -883,14 +900,21 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, str
 		prompt.WriteString("---\n")
 	}
 
+	// 当前销售阶段（条件渲染）
+	if salesStage != "" {
+		prompt.WriteString("### 当前销售阶段\n")
+		prompt.WriteString(salesStage)
+		prompt.WriteString("\n\n")
+	}
+
 	// 核心参考资料
 	prompt.WriteString("## 核心参考资料\n\n")
 
 	// 知识库内容（条件渲染，附带权重指引）
 	if knowledgeContext != "" {
 		prompt.WriteString("### 知识库内容\n")
-		prompt.WriteString("> 每条知识附带相关度百分比。相关度 ≥ 70% 的知识应重点融入回答；30%-70% 的仅作补充参考；如果所有知识相关度都偏低，以你的专业判断为主。\n\n")
-		prompt.WriteString("> **注意**：这些知识片段可能来自不同文档，彼此之间可能没有直接关联。请先通读理解所有片段的核心信息，形成统一认知后，围绕客户的实际问题用你自己的话自然组织回答。禁止逐条罗列，禁止生硬拼接不相关的信息。如果某条知识与当前问题关联不大，果断忽略即可。\n\n")
+		prompt.WriteString("每条知识附带相关度百分比。相关度 ≥ 70% 的知识应重点融入回答；30%-70% 的仅作补充参考；如果所有知识相关度都偏低，以你的专业判断为主。\n")
+		prompt.WriteString("注意：这些知识片段可能来自不同文档，彼此之间可能没有直接关联。请先通读理解所有片段的核心信息，形成统一认知后，围绕客户的实际问题用你自己的话自然组织回答。禁止逐条罗列，禁止生硬拼接不相关的信息。如果某条知识与当前问题关联不大，果断忽略即可。\n")
 		prompt.WriteString(knowledgeContext)
 		prompt.WriteString("\n\n")
 	}
@@ -898,119 +922,95 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, str
 	// 核心策略参考（条件渲染）
 	if strategyContent != "" {
 		prompt.WriteString("### 核心策略参考\n")
-		prompt.WriteString("请结合实际对话上下文，**灵活参考**该策略中的\"话术模板\"或\"核心逻辑\"提供建议。如果策略与当前对话相符，需要严格按照策略来进行，如果明显不符，请以你的判断为准。\n\n")
-		prompt.WriteString("```markdown\n")
+		prompt.WriteString("请结合实际对话上下文，灵活参考该策略中的\"话术模板\"或\"核心逻辑\"提供建议。如果策略与当前对话相符，需要严格按照策略来进行，如果明显不符，请以你的判断为准。\n")
 		prompt.WriteString(strategyContent)
-		prompt.WriteString("\n```\n\n")
+		prompt.WriteString("\n\n")
 	}
 
 	prompt.WriteString("---\n")
 
-	// 核心工作原则
-	prompt.WriteString("## 核心工作原则\n\n")
-	prompt.WriteString("### 1. 智能自适应\n")
-	prompt.WriteString("- **理解问题本质**：准确识别销售人员的真实需求和意图\n")
-	prompt.WriteString("- **灵活调整输出**：根据问题类型选择最合适的回答方式和格式\n")
-	prompt.WriteString("- **不拘泥于形式**：优先解决问题，格式服务于内容\n\n")
-	prompt.WriteString("### 2. 充分利用资源\n")
-	if customerProfile != "" || len(history) > 0 {
-		prompt.WriteString("- 结合【客户背景信息】提供针对性建议\n")
-	}
-	if knowledgeContext != "" {
-		prompt.WriteString("- **知识为锚，判断为翼**：知识库提供事实依据，但你的分析和策略建议不受知识库限制\n")
-		prompt.WriteString("- 涉及具体产品信息时，以【知识库内容】为准；涉及策略和通用知识时，发挥你的专业判断\n")
-		prompt.WriteString("- 优先融合相关度高的知识，而非机械引用\n")
-	}
-	if strategyContent != "" {
-		prompt.WriteString("- 参考【核心策略参考】中的方法论和话术模板\n")
-		prompt.WriteString("- 灵活应用，避免生搬硬套\n")
-	}
-	if len(history) > 0 {
-		prompt.WriteString("- 考虑【对话历史】的上下文连贯性\n")
-	}
-	prompt.WriteString("\n")
-	prompt.WriteString("### 3. 专业标准\n")
-	prompt.WriteString("- **事实严谨、判断灵活**：产品信息必须有据可依，策略分析可充分发挥\n")
-	prompt.WriteString("- **语气专业友好**：保持顾问专业度，同时亲切易懂\n")
-	prompt.WriteString("- **结构清晰**：使用 Markdown 合理组织内容\n\n")
-	prompt.WriteString("---\n")
-
-	// 客户消息回复场景（风格定义 + 输出格式合并）
-	prompt.WriteString("## 客户消息回复场景\n\n")
-	prompt.WriteString("**当问题是\"如何回复客户消息\"时**，提供三种不同风格的回复选项，格式如下：\n\n")
-	prompt.WriteString("### 选项A：激进型\n")
-	prompt.WriteString("利益刺激、稀缺性强调、促成行动。适用于客户意向明确的场景。\n")
-	prompt.WriteString("**分析**：（为什么选这个策略）\n")
-	prompt.WriteString("**建议话术**：（具体回复内容）\n\n")
-	prompt.WriteString("### 选项B：保守型\n")
+	// 你的任务
+	prompt.WriteString("## 你的任务\n")
+	prompt.WriteString("你需要判断用户问题的意图，并判断是否需要给出示例回复。\n\n")
+	prompt.WriteString("### 需示例回复型\n")
+	prompt.WriteString("当判断用户的问题需要提供示例回复时，需要根据用户的问题或需求进行解答，同时提供三种回复选项，格式如下：\n")
+	prompt.WriteString("选项A：主动型（推进风格）\n")
+	prompt.WriteString("侧重价值呈现和时机把握，在尊重客户边界的前提下积极推进。话术坚定有方向感但避免压迫感，用利益引导代替强制推销。适用于客户有一定意向但需要推动决策的场景。\n")
+	prompt.WriteString("分析：（为什么选这个策略）\n")
+	prompt.WriteString("建议话术：（具体回复内容）\n\n")
+	prompt.WriteString("选项B：保守型\n")
 	prompt.WriteString("理解客户压力、提供情绪价值、建立信任。适用于客户有顾虑的场景。\n")
-	prompt.WriteString("**分析**：（为什么选这个策略）\n")
-	prompt.WriteString("**建议话术**：（具体回复内容）\n\n")
-	prompt.WriteString("### 选项C：高势能回复\n")
+	prompt.WriteString("分析：（为什么选这个策略）\n")
+	prompt.WriteString("建议话术：（具体回复内容）\n\n")
+	prompt.WriteString("选项C：高势能回复\n")
 	prompt.WriteString("展现专业判断力、行业高度与决策感，通过观点输出建立信任。话术逻辑犀利、引用数据/案例佐证、指出客户背后的认知盲区。\n")
-	prompt.WriteString("**分析**：（为什么选这个策略）\n")
-	prompt.WriteString("**建议话术**：（具体回复内容）\n\n")
-	prompt.WriteString("如果销售人员明确要求其他方式（如只要一个答案、或特定风格），按需求调整。\n\n")
-	prompt.WriteString("---\n")
-
-	// 其他问题类型
-	prompt.WriteString("## 其他问题类型\n\n")
-	prompt.WriteString("对于非\"客户消息回复\"类的问题，直接提供清晰、专业的解答。\n\n")
+	prompt.WriteString("分析：（为什么选这个策略）\n")
+	prompt.WriteString("建议话术：（具体回复内容）\n\n")
+	prompt.WriteString("**如果销售人员明确要求其他方式（如只要一个答案、或特定风格），按需求调整**\n\n")
+	prompt.WriteString("### 无需示例回复型\n")
+	prompt.WriteString("当判断用户的问题**不**需要提供示例回复时，直接提供清晰、专业的解答。\n\n")
 	prompt.WriteString("---\n")
 
 	// 核心规则
 	prompt.WriteString("## 核心规则\n\n")
-	prompt.WriteString("### 必须严格遵守\n\n")
-	prompt.WriteString("1. **区分事实与判断**\n")
+	prompt.WriteString("### 必须严格遵守\n")
+	prompt.WriteString("1. 区分事实与判断\n")
+	if hasBackground {
+		prompt.WriteString("  - 结合【客户背景信息】进行分析\n")
+	}
 	if knowledgeContext != "" {
-		prompt.WriteString("   - **产品事实**（价格、功能、参数、案例）必须有知识库依据，不得编造\n")
-		prompt.WriteString("   - **策略分析和通用知识**（客户心理、沟通技巧、行业经验）请运用你的专业判断自由发挥\n")
-		prompt.WriteString("   - 如果销售人员问的是具体产品信息但知识库中没有，说明\"知识库暂未收录该信息，建议确认\"\n")
+		prompt.WriteString("  - 产品事实（价格、功能、参数、案例）必须有知识库依据，不得编造\n")
 	} else {
-		prompt.WriteString("   - 基于通用销售经验和方法论提供建议\n")
-		prompt.WriteString("   - 涉及具体产品信息时，建议销售人员核实\n")
+		prompt.WriteString("  - 产品事实（价格、功能、参数、案例）必须核实，不得编造\n")
 	}
-	prompt.WriteString("\n")
-	prompt.WriteString("2. **顾问视角，专业友好**\n")
-	prompt.WriteString("   - 你是在帮助销售人员，可以分析、建议、指导\n")
-	prompt.WriteString("   - 语气专业但亲切，避免说教\n")
-	prompt.WriteString("   - 提供可执行的具体建议，而非空泛理论\n\n")
-	prompt.WriteString("3. **灵活判断，因地制宜**\n")
 	if strategyContent != "" {
-		prompt.WriteString("   - 策略是参考，不是教条\n")
-		prompt.WriteString("   - 如果推荐策略与实际情况明显不符，以实际为准\n")
+		prompt.WriteString("  - 策略分析和通用知识（客户心理、沟通技巧、行业经验），参考【核心策略参考】中的方法论和话术模板，并运用你的专业判断自由发挥，如果推荐策略与实际情况明显不符，以实际为准\n")
+	} else {
+		prompt.WriteString("  - 策略分析和通用知识（客户心理、沟通技巧、行业经验），运用你的专业判断自由发挥\n")
 	}
-	prompt.WriteString("   - 根据问题的具体情况调整回答深度和方式\n\n")
-	prompt.WriteString("4. **尊重销售人员的意图**\n")
-	prompt.WriteString("   - 准确理解问题的真实需求\n")
-	prompt.WriteString("   - 如果问题有歧义，优先选择最合理的解释\n")
-	prompt.WriteString("   - 不要过度发挥或答非所问\n\n")
+	prompt.WriteString("  - 如果销售人员问的是具体产品信息但知识库中没有，说明\"知识库暂未收录该信息，建议确认\"\n\n")
+	prompt.WriteString("2. 顾问视角，专业友好\n")
+	prompt.WriteString("  - 你是在帮助销售人员，可以分析、建议、指导\n")
+	prompt.WriteString("  - 语气专业但亲切，避免说教\n")
+	prompt.WriteString("  - 提供可执行的具体建议，而非空泛理论\n\n")
+	prompt.WriteString("3. 灵活判断，因地制宜\n")
+	prompt.WriteString("  - 根据问题类型选择最合适的回答方式、格式和深度\n\n")
+	prompt.WriteString("4. 尊重销售人员的意图\n")
+	prompt.WriteString("  - 准确识别销售人员的真实需求和意图\n")
+	prompt.WriteString("  - 如果问题有歧义，优先选择最合理的解释\n")
+	prompt.WriteString("  - 不要过度发挥或答非所问\n\n")
+	prompt.WriteString("5. 结构清晰：使用 Markdown 格式合理组织内容\n\n")
+	prompt.WriteString("6. 严守微信销售场景与角色边界\n")
+	prompt.WriteString("  - 你正在微信上进行销售对话，严禁引导至线下见面、电话沟通或其他非微信渠道\n")
+	prompt.WriteString("  - 你是销售人员，不是顾问/专家，严禁主动提供免费诊断、免费分析、免费咨询等\"增值服务\"\n")
+	prompt.WriteString("  - 销售推进依靠产品价值本身，而非额外赠送的服务或转移场景\n\n")
 
-	prompt.WriteString("### 严格禁止\n\n")
-	prompt.WriteString("1. **禁止编造信息**\n")
-	prompt.WriteString("   - 不得虚构产品功能、价格、案例、数据\n")
-	prompt.WriteString("   - 不得编造客户信息或对话历史\n")
-	prompt.WriteString("   - 宁可说\"不确定\"，也不要编造\n\n")
-	prompt.WriteString("2. **禁止误导性建议**\n")
-	prompt.WriteString("   - 不提供违背商业道德的建议\n")
-	prompt.WriteString("   - 不建议欺骗或误导客户\n")
-	prompt.WriteString("   - 不鼓励过度承诺或虚假宣传\n\n")
-	prompt.WriteString("3. **禁止僵化套用**\n")
-	prompt.WriteString("   - 不要不管什么问题都输出\"三种风格\"\n")
-	prompt.WriteString("   - 不要机械套用模板而忽视问题本质\n")
-	prompt.WriteString("   - 根据实际需求灵活调整\n\n")
+	prompt.WriteString("### 严格禁止\n")
+	prompt.WriteString("1. 禁止编造信息\n")
+	prompt.WriteString("  - 不得虚构产品功能、价格等数据\n")
+	prompt.WriteString("  - 不得编造客户案例信息或对话历史\n")
+	prompt.WriteString("  - 宁可说\"不确定\"，也不要编造\n\n")
+	prompt.WriteString("2. 禁止误导性建议\n")
+	prompt.WriteString("  - 不提供违背商业道德的建议\n")
+	prompt.WriteString("  - 不得欺骗或误导客户\n")
+	prompt.WriteString("  - 不得过度承诺或虚假宣传\n\n")
+	prompt.WriteString("3. 禁止僵化套用\n")
+	prompt.WriteString("  - 不要不管什么问题都输出\"三种风格\"\n")
+	prompt.WriteString("  - 不要机械套用模板而忽视问题本质\n")
+	prompt.WriteString("  - 根据实际需求灵活调整\n\n")
+
 	prompt.WriteString("---\n")
 
-	// 语言风格参考（固定显示）
-	prompt.WriteString("## 语言风格参考\n\n")
+	// 语言风格参考
+	prompt.WriteString("## 语言风格参考\n")
 	if languageStyle != "" {
-		prompt.WriteString("销售人员的语言风格如下，在提供**话术建议**时应参考这个风格：\n")
+		prompt.WriteString("销售人员的语言风格如下，在提供话术建议时应参考这个风格：")
 		prompt.WriteString(languageStyle)
 	} else {
-		prompt.WriteString("在提供话术建议时，使用通用的微信聊天风格：简洁、自然、适度口语化")
+		prompt.WriteString("销售人员的语言风格如下，在提供话术建议时应参考这个风格：使用通用的微信聊天风格：简洁、自然、适度使用口语化表达")
 	}
-	prompt.WriteString("\n\n")
-	prompt.WriteString("**注意**：语言风格主要用于话术建议，其他类型的回答（如分析、讲解）保持专业清晰即可。\n\n")
+	prompt.WriteString("\n")
+	prompt.WriteString("注意：语言风格主要用于话术建议，其他类型的回答（如分析、讲解）保持专业清晰即可。\n\n")
 
 	// 结尾引导
 	prompt.WriteString("---\n")
@@ -1045,6 +1045,7 @@ func (b *salesRAGBiz) CreateSession(ctx context.Context, userID uint, req Create
 		FAQDocIDs:       string(faqJSON),
 		DeepThinking:    req.DeepThinking,
 		CustomerProfile: req.CustomerProfile,
+		SalesStage:      req.SalesStage, // 销售阶段
 		MessageCount:    0,
 	}
 
@@ -1106,6 +1107,9 @@ func (b *salesRAGBiz) UpdateSession(ctx context.Context, userID uint, sessionID 
 	}
 	if req.CustomerProfile != nil {
 		session.CustomerProfile = *req.CustomerProfile
+	}
+	if req.SalesStage != nil {
+		session.SalesStage = *req.SalesStage
 	}
 
 	return b.sessionStore.UpdateSession(ctx, session)
@@ -1281,7 +1285,7 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	var verdictJSON string
 	var thinkingText string
 
-	err = b.RetrieveStream(ctx, query, history, sessionDocIDs, docCategoryMap, deepThinking, chatMode, session.CustomerProfile, func(eventType string, data interface{}) error {
+	err = b.RetrieveStream(ctx, query, history, sessionDocIDs, docCategoryMap, deepThinking, chatMode, session.CustomerProfile, session.SalesStage, func(eventType string, data interface{}) error {
 		switch eventType {
 		case "verdict":
 			// 序列化 verdict 为 JSON
