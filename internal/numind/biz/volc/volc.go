@@ -972,26 +972,33 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 			break
 		}
 
+		// log.C(ctx).Debugw("StreamChatWithModel received data", "data", data) // Uncomment for ultra-verbose debug
+
 		var chunk map[string]interface{}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			log.C(ctx).Warnw("StreamChatWithModel unmarshal failed", "data", data[:min(len(data), 100)], "error", err)
+			log.C(ctx).Warnw("StreamChatWithModel unmarshal failed", "data", data, "error", err)
 			continue
 		}
 
 		choices, ok := chunk["choices"].([]interface{})
 		if !ok || len(choices) == 0 {
-			// log.C(ctx).Debugw("StreamChatWithModel no choices", "data", data[:min(len(data), 100)])
+			// Check if there is an error field at root
+			if errObj, ok := chunk["error"].(map[string]interface{}); ok {
+				return fullContent.String(), fmt.Errorf("API Error: %v", errObj)
+			}
+			log.C(ctx).Warnw("StreamChatWithModel no choices", "data", data)
 			continue
 		}
 
 		choice := choices[0].(map[string]interface{})
 		delta, ok := choice["delta"].(map[string]interface{})
 		if !ok {
-			// log.C(ctx).Debugw("StreamChatWithModel no delta", "data", data[:min(len(data), 100)])
+			log.C(ctx).Debugw("StreamChatWithModel no delta", "choice", choice)
 			continue
 		}
 
 		if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
+			// log.C(ctx).Debugw("StreamChatWithModel received thinking", "len", len(rc))
 			thinkingContent.WriteString(rc)
 			if onEvent != nil {
 				onEvent("thinking", rc)
@@ -999,6 +1006,7 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 		}
 
 		if content, ok := delta["content"].(string); ok && content != "" {
+			// log.C(ctx).Debugw("StreamChatWithModel received content", "len", len(content))
 			fullContent.WriteString(content)
 			if onEvent != nil {
 				onEvent("message", content)
@@ -1006,13 +1014,12 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 		}
 
 		if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
-			if finishReason != "stop" {
-				log.C(ctx).Warnw("StreamChatWithModel finish_reason", "reason", finishReason)
-			}
+			log.C(ctx).Infow("StreamChatWithModel finish_reason", "reason", finishReason)
 		}
 	}
 
 	result := fullContent.String()
+	log.C(ctx).Infow("StreamChatWithModel completed", "content_len", len(result), "thinking_len", thinkingContent.Len())
 
 	if result == "" {
 		if thinkingContent.Len() > 0 {
