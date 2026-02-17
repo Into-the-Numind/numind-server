@@ -908,12 +908,17 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 		},
 	}
 
+	// doubao-seed 系列模型使用 reasoning_effort 参数控制思考程度
+	// minimal: 不思考; low/medium/high: 开启思考并控制程度
 	if strings.Contains(model, "doubao-seed") {
-		bodyMap["thinking"] = map[string]interface{}{
-			"type":          "enabled",
-			"budget_tokens": 2000,
-		}
-		bodyMap["max_completion_tokens"] = 32768
+		// 用户指示 "我们应使用“medium”的推理模式"。
+		// 所以这里忽略 deepThinking 参数，统一使用 medium。
+		bodyMap["reasoning_effort"] = "medium"
+		bodyMap["max_completion_tokens"] = 65535
+		delete(bodyMap, "max_tokens")
+
+		// 确保移除 thinking 字段（如果之前有设置默认值的话）
+		delete(bodyMap, "thinking")
 	} else {
 		bodyMap["max_tokens"] = maxTokens
 		bodyMap["thinking"] = map[string]interface{}{
@@ -945,6 +950,7 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 	defer resp.Body.Close()
 
 	var fullContent strings.Builder
+	var thinkingContent strings.Builder
 	reader := bufio.NewReader(resp.Body)
 	for {
 		line, err := reader.ReadString('\n')
@@ -957,6 +963,7 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 
 		line = strings.TrimSpace(line)
 		if line == "" || !strings.HasPrefix(line, "data: ") {
+			// log.C(ctx).Debugw("Skip line", "line", line)
 			continue
 		}
 
@@ -967,21 +974,25 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 
 		var chunk map[string]interface{}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			log.C(ctx).Warnw("StreamChatWithModel unmarshal failed", "data", data[:min(len(data), 100)], "error", err)
 			continue
 		}
 
 		choices, ok := chunk["choices"].([]interface{})
 		if !ok || len(choices) == 0 {
+			// log.C(ctx).Debugw("StreamChatWithModel no choices", "data", data[:min(len(data), 100)])
 			continue
 		}
 
 		choice := choices[0].(map[string]interface{})
 		delta, ok := choice["delta"].(map[string]interface{})
 		if !ok {
+			// log.C(ctx).Debugw("StreamChatWithModel no delta", "data", data[:min(len(data), 100)])
 			continue
 		}
 
 		if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
+			thinkingContent.WriteString(rc)
 			if onEvent != nil {
 				onEvent("thinking", rc)
 			}
@@ -993,7 +1004,23 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 				onEvent("message", content)
 			}
 		}
+
+		if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
+			if finishReason != "stop" {
+				log.C(ctx).Warnw("StreamChatWithModel finish_reason", "reason", finishReason)
+			}
+		}
 	}
 
-	return fullContent.String(), nil
+	result := fullContent.String()
+
+	if result == "" {
+		if thinkingContent.Len() > 0 {
+			log.C(ctx).Warnw("StreamChatWithModel response empty but has thinking content", "thinking_len", thinkingContent.Len())
+		} else {
+			log.C(ctx).Warnw("StreamChatWithModel returned empty content and empty thinking")
+		}
+	}
+
+	return result, nil
 }

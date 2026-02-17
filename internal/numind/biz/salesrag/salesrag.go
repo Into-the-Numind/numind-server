@@ -1546,7 +1546,7 @@ func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint,
 	// 用户提到"调查doubao-seed...最大处理量"，并没有特别强调要 deep thinking，但为了质量，我们可以开启。
 	// 还是先保持 false，因为 StreamChatWithModel 会根据 thinking 参数决定是否启用。
 	// 让我们看 AnalyzeDocumentStream 原逻辑，它是 false。
-	return b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-1-8-251228", 0, 0.5, false, func(event string, token string) error {
+	return b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, false, func(event string, token string) error {
 		if event == "message" {
 			return onToken(token)
 		}
