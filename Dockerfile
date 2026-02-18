@@ -8,14 +8,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libmupdf-dev \
     git
 
+# =====================================================
+# Docker 分层缓存优化说明
+# =====================================================
+# 第 1 层：依赖层（go.mod/sum 不变时缓存命中）
+# - go mod download 结果会被缓存
+# - 只有修改 go.mod 时才会重新下载
+#
+# 第 2 层：构建层（每次代码变更都会重建）
+# - 源码变更触发重新编译
+# - 依赖未变时使用缓存的依赖层
+#
+# 手动刷新缓存：修改此行时间戳 -> # Cache Bust: 2026-02-18-001
+# =====================================================
+
 WORKDIR /app
 
-# 复制依赖文件并下载
+# 第 1 层：复制依赖文件并下载（缓存层）
 COPY go.mod go.sum ./
 ENV GOPROXY=https://proxy.golang.org,direct
 RUN go mod download
 
-# 复制源码并编译
+# 第 2 层：复制源码并编译（非缓存层，每次重新构建）
 COPY . .
 # CGO_ENABLED=1 是必须的，因为使用了 go-fitz (libmupdf)
 RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o numind cmd/numind/main.go

@@ -17,12 +17,29 @@ on:
       # - 'scripts/**'  <-- 移除此行，确保脚本修改能触发构建（如 semantic_server.py）
       # 允许修改CI/CD配置时触发构建
       # - '.github/**'
+  
   pull_request:
     branches:
       - main
       - develop
       - release
     paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  
+  # 手动触发，支持刷新缓存
+  workflow_dispatch:
+    inputs:
+      refresh_cache:
+        description: '刷新 Docker 缓存（解决缓存问题）'
+        type: boolean
+        required: false
+        default: false
+      skip_cache:
+        description: '跳过缓存（完全重新构建）'
+        type: boolean
+        required: false
+        default: false
       - '**.md'
       - 'docs/**'
       # - 'scripts/**' <-- 移除此行
@@ -102,6 +119,49 @@ jobs:
 
           echo "::notice::📦 镜像标签: $IMAGE_TAG, $IMAGE_TAG-$SHORT_SHA"
 
+      # =====================================================
+      # 分层缓存策略（优化构建速度 + 确保代码最新）
+      # =====================================================
+      # 缓存层级：
+      # 1. 基础依赖层（go mod download）：基于 go.mod 哈希
+      # 2. 构建层（源代码）：基于分支 + 最近成功构建
+      # 3. 确保最新：每次提交触发新构建，不使用过期缓存
+      # =====================================================
+      
+      - name: Set up Docker cache
+        id: cache-vars
+        run: |
+          # 检查是否需要刷新缓存或跳过缓存
+          REFRESH_CACHE="${{ github.event.inputs.refresh_cache }}"
+          SKIP_CACHE="${{ github.event.inputs.skip_cache }}"
+          
+          if [ "$SKIP_CACHE" = "true" ]; then
+            echo "skip_cache=true" >> $GITHUB_OUTPUT
+            echo "no_cache=true" >> $GITHUB_OUTPUT
+            echo "::notice::⏭️  跳过缓存（完全重新构建）"
+            exit 0
+          fi
+          
+          # 生成缓存键（按分支隔离 + 依赖文件哈希）
+          BRANCH="${{ github.ref_name }}"
+          GO_MOD_HASH=$(md5sum go.mod | cut -d' ' -f1 | cut -c1-8)
+          
+          # 如果需要刷新缓存，添加时间戳使缓存键变化
+          if [ "$REFRESH_CACHE" = "true" ]; then
+            TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+            CACHE_SCOPE="${BRANCH}_${GO_MOD_HASH}_${TIMESTAMP}"
+            echo "::notice::🔄 刷新缓存，新缓存键: ${CACHE_SCOPE}"
+          else
+            # 缓存作用域：分支名_依赖哈希
+            CACHE_SCOPE="${BRANCH}_${GO_MOD_HASH}"
+            echo "::notice::🔄 使用缓存: ${CACHE_SCOPE}"
+          fi
+          
+          echo "cache_scope=${CACHE_SCOPE}" >> $GITHUB_OUTPUT
+          echo "go_mod_hash=${GO_MOD_HASH}" >> $GITHUB_OUTPUT
+          echo "skip_cache=false" >> $GITHUB_OUTPUT
+          echo "no_cache=false" >> $GITHUB_OUTPUT
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -115,11 +175,17 @@ jobs:
           labels: |
             git.commit=${{ github.sha }}
             git.branch=${{ github.ref_name }}
-          # 禁用缓存以避免 GitHub Actions Cache 配额问题
-          no-cache: true
-          # 缓存暂时禁用，后续可恢复：
-          # cache-from: type=gha
-          # cache-to: type=gha,mode=max
+          # 根据输入决定是否使用缓存
+          no-cache: ${{ steps.cache-vars.outputs.no_cache == 'true' }}
+          # 分层缓存策略
+          cache-from: |
+            type=gha,scope=${{ steps.cache-vars.outputs.cache_scope }}
+            type=gha,scope=${{ github.ref_name }}
+            type=gha,scope=master
+          cache-to: |
+            type=gha,scope=${{ steps.cache-vars.outputs.cache_scope }},mode=min
+          # mode=min: 只缓存最终层，大大减少配额使用
+          # 每次 go.mod 变化时，缓存键变化，触发完整重建
 
       - name: Clean up old Docker images
         run: |
