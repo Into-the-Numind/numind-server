@@ -584,20 +584,6 @@ jobs:
             echo "Pruning dangling images..."
             docker image prune -f || true
             
-            # ============================================
-            # 【WeCom 数据清理】阶段 3: 自动清理数据库表
-            # ============================================
-            echo "🗑️  Cleaning up WeCom database tables (if exist)..."
-            docker exec -i numind-mysql-prod mysql -uroot -pNumind2025 numind-prod -e "
-              SET FOREIGN_KEY_CHECKS = 0;
-              DROP TABLE IF EXISTS wecom_bind_codes;
-              DROP TABLE IF EXISTS wecom_cursors;
-              DROP TABLE IF EXISTS wecom_messages;
-              DROP TABLE IF EXISTS wecom_users;
-              SET FOREIGN_KEY_CHECKS = 1;
-              SELECT 'WeCom tables cleanup completed' as status;
-            " 2>/dev/null || echo "⚠️  MySQL not running or tables do not exist, skipping cleanup"
-            
             # 检查并停止运行中的容器
             if docker ps -q -f name=numind-server-prod | grep -q .; then
               echo "Container numind-server-prod is running, stopping it..."
