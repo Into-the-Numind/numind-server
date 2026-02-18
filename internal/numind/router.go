@@ -22,7 +22,6 @@ import (
 	sopcontroller "numind-server/internal/numind/controller/v1/sop"
 	"numind-server/internal/numind/controller/v1/template"
 	"numind-server/internal/numind/controller/v1/user"
-	"numind-server/internal/numind/controller/v1/wecom"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
@@ -74,7 +73,6 @@ func installNumindRouters(g *gin.Engine) error {
 	ac := article.NewArticleController(b.Article())
 	alic := ali.New(b.Ali())
 	salesRAGc := salesrag.NewSalesRAGController(b)
-	wecomc := wecom.NewWecomController(b)
 
 	// 使用 biz 层已初始化的 RAG 服务
 	ragService := b.Rag()
@@ -301,18 +299,6 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/sales-rag/analyze-chat-style", salesRAGc.GetLanguageStyle)   // 获取已分析的聊天风格
 		authGroup.PUT("/sales-rag/analyze-chat-style", salesRAGc.SaveLanguageStyle)  // 保存/更新语言风格
 		authGroup.POST("/sales-rag/ocr", salesRAGc.OCR)                              // OCR 识别图片
-	}
-
-	// 企业微信存档相关 (根据配置开启)
-	if viper.GetBool("features.enable_wecom_archive") {
-		authGroup.GET("/wecom/contacts", wecomc.ListContacts)             // 获取最近联系人
-		authGroup.GET("/wecom/messages/:partner_id", wecomc.ListMessages) // 获取与指定联系人的聊天记录
-		authGroup.GET("/wecom/bind-status", wecomc.CheckBindStatus)       // 检查绑定状态
-		authGroup.GET("/wecom/bind-code", wecomc.GetBindCode)             // 获取绑定验证码
-
-		// Smart Archive API (Auto-Classified)
-		authGroup.GET("/wecom/archive/sessions", wecomc.ListSessions)                             // 获取自动归类的会话列表
-		authGroup.GET("/wecom/archive/sessions/:session_key/messages", wecomc.GetSessionMessages) // 获取会话时间轴
 	}
 
 	// 阿里云百炼相关
