@@ -56,3 +56,4 @@ res/
 *.html
 
 cmd/numind/data/.worktrees/
+backup-wecom-*.tar.gz
