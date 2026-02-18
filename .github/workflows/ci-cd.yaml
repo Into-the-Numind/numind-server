@@ -26,6 +26,9 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
+      # - 'scripts/**' <-- 移除此行，确保脚本修改能触发构建
+      # 允许修改CI/CD配置时触发构建
+      # - '.github/**'
   
   # 手动触发，支持刷新缓存
   workflow_dispatch:
@@ -40,11 +43,6 @@ on:
         type: boolean
         required: false
         default: false
-      - '**.md'
-      - 'docs/**'
-      # - 'scripts/**' <-- 移除此行
-      # 允许修改CI/CD配置时触发构建
-      # - '.github/**'
 
 env:
   DOCKERHUB_USERNAME: neozhang96
