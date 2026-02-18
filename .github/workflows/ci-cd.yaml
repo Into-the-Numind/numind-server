@@ -115,11 +115,11 @@ jobs:
           labels: |
             git.commit=${{ github.sha }}
             git.branch=${{ github.ref_name }}
-          # 禁用缓存以确保每次都是完整构建（可选，会增加构建时间）
-          # no-cache: true
-          # 使用更激进的缓存策略，但添加 git SHA 确保可追溯
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # 禁用缓存以避免 GitHub Actions Cache 配额问题
+          no-cache: true
+          # 缓存暂时禁用，后续可恢复：
+          # cache-from: type=gha
+          # cache-to: type=gha,mode=max
 
       - name: Clean up old Docker images
         run: |
