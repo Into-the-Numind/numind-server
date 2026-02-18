@@ -186,8 +186,6 @@ COPY config_*.yaml ./
 # 根据构建参数选择二进制文件来源
 # 从构建阶段复制编译好的二进制文件
 COPY --from=builder /app/numind /app/numind
-COPY --from=builder /app/lib/wecom-sdk/libWeWorkFinanceSdk.so /usr/lib/
-RUN ldconfig
 COPY scripts /app/scripts
 # Copy jieba dictionary files
 COPY --from=builder /go/pkg/mod/github.com/yanyiwu/gojieba@v1.4.6/deps/cppjieba/dict /app/dict
