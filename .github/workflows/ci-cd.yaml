@@ -46,7 +46,7 @@ on:
 
 env:
   DOCKERHUB_USERNAME: neozhang96
-  DOCKERHUB_PASSWORD: Docker1234
+  DOCKERHUB_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
   IMAGE_NAME: neozhang96/numind-server
   SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
   DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -55,6 +55,23 @@ env:
   PROD_HOST: ${{ secrets.PROD_HOST }}
 
 jobs:
+  # 代码质量检查 - 在 PR 时触发
+  check:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - run: go mod download
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+      - run: go build ./cmd/numind
+      - run: go test ./...
+
   # Docker 镜像构建 - 在特定分支或 tag 时触发
   image_build:
     runs-on: ubuntu-latest
@@ -205,16 +222,16 @@ jobs:
         with:
           host: ${{ env.DEV_HOST }}
           username: root
-          password: Numind2025
+          password: ${{ secrets.DEV_SERVER_PASSWORD }}
           port: 22
           command_timeout: 10m
           script: |
             # 设置环境变量
             export GITHUB_ACTOR="${{ github.actor }}"
-            
+
             # 登录到Docker Hub
             echo "🔐 登录到Docker Hub..."
-            echo "Docker1234" | docker login -u neozhang96 --password-stdin
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u neozhang96 --password-stdin
             
             # 验证登录状态
             echo "✅ Docker登录状态验证:"
@@ -260,7 +277,7 @@ jobs:
             # 【WeCom 数据清理】阶段 3: 自动清理数据库表
             # ============================================
             echo "🗑️  清理 WeCom 数据库表（如存在）..."
-            docker exec -i numind-mysql-dev mysql -uroot -pNumind2025 numind-dev -e "
+            docker exec -i numind-mysql-dev mysql -uroot -p"${{ secrets.DEV_MYSQL_PASSWORD }}" numind-dev -e "
               SET FOREIGN_KEY_CHECKS = 0;
               DROP TABLE IF EXISTS wecom_bind_codes;
               DROP TABLE IF EXISTS wecom_cursors;
@@ -380,15 +397,15 @@ jobs:
         with:
           host: ${{ env.QA_HOST }}
           username: root
-          password: Numind2025
+          password: ${{ secrets.DEV_SERVER_PASSWORD }}
           command_timeout: 10m
           script: |
             # 设置环境变量
             export GITHUB_ACTOR="${{ github.actor }}"
-            
+
             # 登录到Docker Hub
             echo "🔐 登录到Docker Hub..."
-            echo "Docker1234" | docker login -u neozhang96 --password-stdin
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u neozhang96 --password-stdin
             
             # 验证登录状态
             echo "✅ Docker登录状态验证:"
@@ -410,7 +427,7 @@ jobs:
             # 【WeCom 数据清理】阶段 3: 自动清理数据库表
             # ============================================
             echo "🗑️  Cleaning up WeCom database tables (if exist)..."
-            docker exec -i numind-mysql-dev mysql -uroot -pNumind2025 numind-qa -e "
+            docker exec -i numind-mysql-dev mysql -uroot -p"${{ secrets.DEV_MYSQL_PASSWORD }}" numind-qa -e "
               SET FOREIGN_KEY_CHECKS = 0;
               DROP TABLE IF EXISTS wecom_bind_codes;
               DROP TABLE IF EXISTS wecom_cursors;
@@ -528,15 +545,15 @@ jobs:
         with:
           host: ${{ env.PROD_HOST }}
           username: root
-          password: Numind2025
+          password: ${{ secrets.PROD_SERVER_PASSWORD }}
           command_timeout: 10m
           script: |
             # 设置环境变量
             export GITHUB_ACTOR="${{ github.actor }}"
-            
+
             # 登录到Docker Hub
             echo "🔐 登录到Docker Hub..."
-            echo "Docker1234" | docker login -u neozhang96 --password-stdin
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u neozhang96 --password-stdin
             
             # 验证登录状态
             echo "✅ Docker登录状态验证:"
@@ -788,11 +805,11 @@ jobs:
         with:
           host: ${{ env.DEV_HOST }}
           username: root
-          password: Numind2025
+          password: ${{ secrets.DEV_SERVER_PASSWORD }}
           port: 22
           command_timeout: 10m
           script: |
-            echo "Docker1234" | docker login -u neozhang96 --password-stdin
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u neozhang96 --password-stdin
             
             # 拉取新镜像
             docker pull neozhang96/numind-admin:admin-develop
@@ -852,12 +869,12 @@ jobs:
       - name: Deploy Admin to QA Environment
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: 49.233.219.254
+          host: ${{ env.DEV_HOST }}
           username: root
-          password: Numind2025
+          password: ${{ secrets.DEV_SERVER_PASSWORD }}
           command_timeout: 10m
           script: |
-            echo "Docker1234" | docker login -u neozhang96 --password-stdin
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u neozhang96 --password-stdin
             
             # 拉取新镜像
             docker pull neozhang96/numind-admin:admin-release
@@ -917,13 +934,13 @@ jobs:
       - name: Deploy Admin to Production Environment
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: 49.233.219.254
+          host: ${{ env.PROD_HOST }}
           username: root
-          password: Numind2025
+          password: ${{ secrets.PROD_SERVER_PASSWORD }}
           command_timeout: 10m
           script: |
             IMAGE_TAG="${{ github.ref_name }}"
-            echo "Docker1234" | docker login -u neozhang96 --password-stdin
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u neozhang96 --password-stdin
             
             # 拉取新镜像
             docker pull neozhang96/numind-admin:$IMAGE_TAG
