@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -33,8 +34,17 @@ func NewDMXAPIClient() *DMXAPIClient {
 	return &DMXAPIClient{
 		baseURL: DMXAPIBaseURL,
 		apiKey:  DMXAPIKey,
+		// 流式响应不能使用 Client.Timeout（它覆盖整个请求生命周期包括 body 读取）
+		// 改用 Transport 级别超时：只限制建连和握手，不限制 body 读取时间
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout:   30 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				TLSHandshakeTimeout:   15 * time.Second,
+				ResponseHeaderTimeout: 60 * time.Second,
+			},
 		},
 	}
 }

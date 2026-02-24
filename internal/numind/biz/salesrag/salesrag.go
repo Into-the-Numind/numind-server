@@ -13,6 +13,7 @@ import (
 	"log"
 	"math"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -2088,7 +2089,17 @@ func (b *salesRAGBiz) callDMXAPIStream(ctx context.Context, systemPrompt, userMe
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", apiKey)
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	// 流式响应不能使用 Client.Timeout（它覆盖整个请求生命周期包括 body 读取）
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   15 * time.Second,
+			ResponseHeaderTimeout: 60 * time.Second,
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("[callDMXAPIStream] HTTP request failed: %v", err)
