@@ -2,15 +2,11 @@ package salesrag
 
 import (
 	"context"
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"image/jpeg"
 	"io"
-	"math"
 	"strconv"
 	"strings"
-	"time"
 
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/salesrag"
@@ -18,9 +14,7 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
-	"numind-server/internal/pkg/util"
 
-	"github.com/disintegration/imaging"
 	"github.com/gin-gonic/gin"
 )
 
@@ -883,7 +877,7 @@ func (ctrl *SalesRAGController) SaveLanguageStyle(c *gin.Context) {
 	})
 }
 
-// OCR 识别图片中的文本 (调用阿里云百炼视觉大模型)
+// OCR 识别图片中的文本 (调用视觉大模型)
 func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 	// 1. 获取上传的文件
 	file, header, err := c.Request.FormFile("file")
@@ -907,190 +901,18 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 		return
 	}
 
-	// 3. 图片压缩（与客户档案分析保持一致）
-	// 火山方舟 Doubao-Seed 模型限制：大小 < 10MB, 总像素 < 36,000,000, 长宽比 < 150:1
-	const maxVisionSize = 10 * 1024 * 1024 // 10MB
-	const maxTotalPixels int64 = 36000000  // 36MP
-
+	// 3. 调用 biz 层完成压缩、上传、识别
 	contentType := header.Header.Get("Content-Type")
-
-	img, err := imaging.Decode(bytes.NewReader(imageData))
-	if err != nil {
-		log.Errorw("Failed to decode image for compression check", "error", err, "user_id", user.ID)
-		// 解码失败时仍然尝试上传原图
-	} else {
-		bounds := img.Bounds()
-		width, height := bounds.Dx(), bounds.Dy()
-		totalPixels := int64(width) * int64(height)
-		aspectRatio := float64(height) / float64(width)
-		if width > height {
-			aspectRatio = float64(width) / float64(height)
-		}
-
-		if len(imageData) > maxVisionSize || totalPixels > maxTotalPixels || aspectRatio > 150 {
-			log.Infow("OCR image needs compression", "user_id", user.ID,
-				"size", len(imageData), "pixels", totalPixels, "ratio", aspectRatio)
-
-			scale := 1.0
-			if totalPixels > maxTotalPixels {
-				scale = math.Sqrt(float64(maxTotalPixels-1000000) / float64(totalPixels))
-			}
-			if aspectRatio > 140 {
-				scale = math.Min(scale, 0.8)
-			}
-
-			quality := 85
-			for len(imageData) > maxVisionSize && (width > 100 || height > 100) {
-				if scale < 1.0 {
-					width = int(float64(width) * scale)
-					height = int(float64(height) * scale)
-				} else {
-					width = int(float64(width) * 0.9)
-					height = int(float64(height) * 0.9)
-				}
-
-				img = imaging.Resize(img, width, height, imaging.Lanczos)
-
-				var buf bytes.Buffer
-				if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
-					log.Errorw("Failed to compress image", "error", err)
-					break
-				}
-				imageData = buf.Bytes()
-
-				if len(imageData) > maxVisionSize {
-					if quality > 30 {
-						quality -= 10
-					} else {
-						scale = 0.7
-					}
-				}
-			}
-
-			// 激进压缩：质量降至 20%，尺寸持续缩小
-			if len(imageData) > maxVisionSize {
-				for len(imageData) > maxVisionSize && (width > 50 || height > 50) {
-					width = int(float64(width) * 0.7)
-					height = int(float64(height) * 0.7)
-					img = imaging.Resize(img, width, height, imaging.Lanczos)
-
-					var buf bytes.Buffer
-					if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 20}); err != nil {
-						break
-					}
-					imageData = buf.Bytes()
-				}
-			}
-
-			if len(imageData) > maxVisionSize {
-				core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("图片过大且压缩失败，请上传更小的图片"), nil)
-				return
-			}
-
-			contentType = "image/jpeg"
-			log.Infow("OCR image compression done", "user_id", user.ID,
-				"final_size", len(imageData), "dimensions", fmt.Sprintf("%dx%d", width, height))
-		}
-	}
-
-	// 4. 上传到 COS
 	sessionID := c.DefaultPostForm("session_id", "no_session")
-	objectKey := fmt.Sprintf("sales_chat/%d/%s/%d_%s", user.ID, sessionID, time.Now().Unix(), header.Filename)
 
-	cosURL, err := util.UploadBytesToCOS(c.Request.Context(), objectKey, contentType, imageData)
+	ocrText, cosURL, err := ctrl.b.SalesRAG().OCRAnalyze(c.Request.Context(), user.ID, imageData, contentType, sessionID, header.Filename)
 	if err != nil {
-		log.Errorw("Upload image to COS failed", "error", err, "user_id", user.ID, "key", objectKey)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("图片存储失败"), nil)
+		log.Errorw("OCRAnalyze failed", "error", err, "user_id", user.ID)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
 		return
 	}
 
-	// 5. 调用火山引擎 Doubao 视觉模型进行 OCR 识别
-	prompt := `你是一个专业的微信聊天记录识别专家。请识别这张微信聊天截图中的对话内容。
-
-  ## 识别要求
-
-  ### 1. 气泡布局识别
-  - **左边气泡（白色/灰色）= 客户消息**
-  - **右边气泡（绿色）= 销售消息**
-  - 从上到下完整扫描所有对话气泡
-
-  ### 2. 内容提取规则
-  - **保留表情符号**：如 [微笑]、[呲牙]、🌹 等
-  - **只提取文字气泡**：忽略图片、语音、视频等多媒体消息
-  - **保持原文**：不要修改、总结或解释对话内容
-
-  ### 3. 输出格式（严格遵守）
-
-  **如果截图包含多轮对话**（2条及以上消息），按以下格式输出：
-
-  【对话历史】
-  客户：[第1条客户消息]
-  销售：[第1条销售消息]
-  客户：[第2条客户消息]
-  ...（所有历史对话）
-
-  【客户最新消息】
-  客户：[最后一条客户消息]
-
-  **如果截图只有单条消息**，直接输出：
-
-  客户：[消息内容]
-
-  ### 4. 特殊处理规则
-
-  - **最新消息必须是客户发的**：如果截图最后一条是销售发的，往前找到最近的客户消息作为"最新消息"
-  - **空消息处理**：如果气泡只有表情没有文字，保留表情符号
-  - **时间戳忽略**：不要提取对话中的时间信息
-
-  ## 输出示例
-
-  ### 示例1：多轮对话
-  【对话历史】
-  客户：你们这个产品怎么样？
-  销售：我们的产品在行业内评价很高，已经服务了1000+客户
-  客户：价格呢？
-  销售：我们有三种套餐，基础版998元...
-
-  【客户最新消息】
-  客户：太贵了，能便宜点吗？
-
-  ### 示例2：单条消息
-  客户：在吗？
-
-  ### 示例3：包含表情
-  【对话历史】
-  客户：你好[微笑]
-  销售：您好，很高兴为您服务
-
-  【客户最新消息】
-  客户：我想了解一下产品
-
-  ## 关键约束
-
-  1. **严格使用【对话历史】和【客户最新消息】标记**，不要使用其他标记
-  2. **每条消息前必须有"客户："或"销售："前缀**
-  3. **不要添加任何分析、解释或总结**，只输出识别的对话内容
-  4. **保持对话的原始顺序和完整性**
-
-  现在请识别这张截图。`
-	model := "doubao-seed-2-0-lite-260215"
-
-	// 生成 10 分钟有效的签名 URL 供 API 访问
-	signedURL, err := util.GenerateSignedURL(c.Request.Context(), objectKey, 600)
-	if err != nil {
-		log.Warnw("Generate signed URL failed, use raw cosURL", "error", err, "key", objectKey)
-		signedURL = cosURL
-	}
-
-	// 调用火山引擎视觉模型
-	ocrText, err := ctrl.b.Volc().VisionAnalyze(c.Request.Context(), signedURL, prompt, model, 0, "minimal")
-	if err != nil {
-		log.Errorw("Volc Engine Vision OCR failed", "error", err, "user_id", user.ID, "url", signedURL)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("图片识别失败，请检查模型配置"), nil)
-		return
-	}
-
-	// 6. 返回结果
+	// 4. 返回结果
 	core.WriteResponse(c, nil, map[string]string{
 		"text": ocrText,
 		"url":  cosURL,
