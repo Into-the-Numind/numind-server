@@ -32,6 +32,16 @@ import (
 	"gorm.io/gorm"
 )
 
+// streamTransport 流式 HTTP 请求共享的 Transport（复用连接池）
+var streamTransport = &http.Transport{
+	DialContext: (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext,
+	TLSHandshakeTimeout:   15 * time.Second,
+	ResponseHeaderTimeout: 60 * time.Second,
+}
+
 // SalesRAGBiz 定义了销售 RAG 业务层的对外接口
 type SalesRAGBiz interface {
 	// Ingest 处理文档导入
@@ -86,6 +96,9 @@ type SalesRAGBiz interface {
 	GetLanguageStyle(ctx context.Context, userID uint) (string, error)
 	// SaveLanguageStyle 保存用户的语言风格
 	SaveLanguageStyle(ctx context.Context, userID uint, style string) error
+
+	// OCRAnalyze 识别图片中的文本（压缩 + 上传 COS + 调用视觉大模型）
+	OCRAnalyze(ctx context.Context, userID uint, imageData []byte, contentType string, sessionID string, filename string) (ocrText string, cosURL string, err error)
 }
 
 type IngestOptions struct {
@@ -2090,16 +2103,8 @@ func (b *salesRAGBiz) callDMXAPIStream(ctx context.Context, systemPrompt, userMe
 	req.Header.Set("Authorization", apiKey)
 
 	// 流式响应不能使用 Client.Timeout（它覆盖整个请求生命周期包括 body 读取）
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			TLSHandshakeTimeout:   15 * time.Second,
-			ResponseHeaderTimeout: 60 * time.Second,
-		},
-	}
+	// 使用包级别共享 Transport 复用连接池
+	client := &http.Client{Transport: streamTransport}
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("[callDMXAPIStream] HTTP request failed: %v", err)
@@ -2642,94 +2647,93 @@ func (b *salesRAGBiz) analyzeChatStyleImage(ctx context.Context, userID uint, im
 	log.Printf("[analyzeChatStyleImage] Starting analysis for user %d, image size: %d bytes", userID, len(imageData))
 
 	// 1. 检查图片大小和尺寸，如果超过限制则压缩
+	// 火山方舟 Doubao-Seed 模型限制：大小 < 10MB, 总像素 < 36,000,000, 长宽比 < 150:1
 	const maxVisionSize = 10 * 1024 * 1024 // 10MB
-	const maxDimension = 4096              // 阿里云视觉模型支持的最大边长
+	const maxTotalPixels int64 = 36000000  // 36MP
 
 	// 解码图片以检查尺寸
-	src, err := imaging.Decode(bytes.NewReader(imageData))
+	img, err := imaging.Decode(bytes.NewReader(imageData))
 	if err != nil {
 		log.Printf("[analyzeChatStyleImage] Failed to decode image: %v", err)
 		return "", fmt.Errorf("解码图片失败: %w", err)
 	}
 
-	bounds := src.Bounds()
+	bounds := img.Bounds()
 	width := bounds.Dx()
 	height := bounds.Dy()
-	needsResize := false
+	totalPixels := int64(width) * int64(height)
+	aspectRatio := float64(height) / float64(width)
+	if width > height {
+		aspectRatio = float64(width) / float64(height)
+	}
 
-	log.Printf("[analyzeChatStyleImage] Original image dimensions: %dx%d, size: %d bytes", width, height, len(imageData))
+	log.Printf("[analyzeChatStyleImage] Original image: %dx%d, size: %d bytes, pixels: %d, ratio: %.2f",
+		width, height, len(imageData), totalPixels, aspectRatio)
 
-	// 检查是否需要压缩（尺寸过大或文件过大）
-	if width > maxDimension || height > maxDimension || len(imageData) > maxVisionSize {
-		needsResize = true
-		log.Printf("[analyzeChatStyleImage] Image exceeds limits (max dimension: %d, max size: %d MB), starting compression...", maxDimension, maxVisionSize/1024/1024)
+	// 检查是否需要压缩（大小、像素、长宽比任一超标）
+	if len(imageData) > maxVisionSize || totalPixels > maxTotalPixels || aspectRatio > 150 {
+		log.Printf("[analyzeChatStyleImage] Image needs compression")
 
-		// 计算缩放比例，确保最大边不超过 maxDimension
 		scale := 1.0
-		if width > height {
-			if width > maxDimension {
-				scale = float64(maxDimension) / float64(width)
-			}
-		} else {
-			if height > maxDimension {
-				scale = float64(maxDimension) / float64(height)
-			}
+		if totalPixels > maxTotalPixels {
+			scale = math.Sqrt(float64(maxTotalPixels-1000000) / float64(totalPixels))
+		}
+		if aspectRatio > 140 {
+			scale = math.Min(scale, 0.8)
 		}
 
-		// 如果需要缩放
-		if scale < 1.0 {
-			width = int(float64(width) * scale)
-			height = int(float64(height) * scale)
-			log.Printf("[analyzeChatStyleImage] Scaling image to %dx%d (scale: %.2f)", width, height, scale)
-		}
-
-		// 逐步压缩直到满足大小要求
 		quality := 85
-		for len(imageData) > maxVisionSize && (width > 500 || height > 500) {
-			// 调整尺寸
-			dst := imaging.Resize(src, width, height, imaging.Lanczos)
+		for len(imageData) > maxVisionSize && (width > 100 || height > 100) {
+			if scale < 1.0 {
+				width = int(float64(width) * scale)
+				height = int(float64(height) * scale)
+			} else {
+				width = int(float64(width) * 0.9)
+				height = int(float64(height) * 0.9)
+			}
 
-			// 重新编码为JPEG
+			img = imaging.Resize(img, width, height, imaging.Lanczos)
+
 			var buf bytes.Buffer
-			err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: quality})
-			if err != nil {
+			if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
 				return "", fmt.Errorf("压缩图片失败: %w", err)
 			}
 			imageData = buf.Bytes()
 
-			log.Printf("[analyzeChatStyleImage] Compressed to %dx%d, size: %d bytes (quality: %d)", width, height, len(imageData), quality)
+			log.Printf("[analyzeChatStyleImage] Compression iteration: %dx%d, size: %d bytes, quality: %d",
+				width, height, len(imageData), quality)
 
-			// 如果还是太大，继续缩小
 			if len(imageData) > maxVisionSize {
-				if quality > 60 {
+				if quality > 30 {
 					quality -= 10
 				} else {
-					width = int(float64(width) * 0.8)
-					height = int(float64(height) * 0.8)
+					scale = 0.7
 				}
-			} else {
-				break
 			}
-
-			src = dst
 		}
 
-		// 最后检查是否成功压缩
+		// 激进压缩：质量降至 20%，尺寸持续缩小
+		if len(imageData) > maxVisionSize {
+			for len(imageData) > maxVisionSize && (width > 50 || height > 50) {
+				width = int(float64(width) * 0.7)
+				height = int(float64(height) * 0.7)
+				img = imaging.Resize(img, width, height, imaging.Lanczos)
+
+				var buf bytes.Buffer
+				if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 20}); err != nil {
+					return "", fmt.Errorf("激进压缩图片失败: %w", err)
+				}
+				imageData = buf.Bytes()
+
+				log.Printf("[analyzeChatStyleImage] Aggressive compression: %dx%d, size: %d bytes", width, height, len(imageData))
+			}
+		}
+
 		if len(imageData) > maxVisionSize {
 			return "", fmt.Errorf("图片过大且压缩失败 (当前大小: %d bytes)", len(imageData))
 		}
 
-		log.Printf("[analyzeChatStyleImage] Compression completed, final size: %d bytes, dimensions: %dx%d", len(imageData), width, height)
-	} else if needsResize {
-		// 即使文件大小OK，但如果之前检测到尺寸需要调整，也要重新编码
-		dst := imaging.Resize(src, width, height, imaging.Lanczos)
-		var buf bytes.Buffer
-		err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 85})
-		if err != nil {
-			return "", fmt.Errorf("重新编码图片失败: %w", err)
-		}
-		imageData = buf.Bytes()
-		log.Printf("[analyzeChatStyleImage] Resized image to %dx%d, new size: %d bytes", width, height, len(imageData))
+		log.Printf("[analyzeChatStyleImage] Compression done, final: %dx%d, %d bytes", width, height, len(imageData))
 	}
 
 	// 2. 上传图片到 COS 获取 URL
@@ -2788,7 +2792,7 @@ func (b *salesRAGBiz) analyzeChatStyleImage(ctx context.Context, userID uint, im
 - 字数控制在 500 字以内
 - 只分析销售人员（右边绿色气泡）的语言风格`
 
-	const visionModel = "doubao-seed-1-8-251228"
+	const visionModel = "doubao-seed-2-0-lite-260215"
 
 	log.Printf("[analyzeChatStyleImage] Calling Volc VisionAnalyze with model: %s", visionModel)
 	result, err := b.volcBiz.VisionAnalyze(ctx, dataURL, systemPrompt, visionModel, 0, "low")
@@ -2839,6 +2843,188 @@ func (b *salesRAGBiz) SaveLanguageStyle(ctx context.Context, userID uint, styleC
 
 	log.Printf("[SaveLanguageStyle] Successfully saved for user %d", userID)
 	return nil
+}
+
+// OCRAnalyze 识别图片中的文本（压缩 + 上传 COS + 调用视觉大模型）
+func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []byte, contentType string, sessionID string, filename string) (string, string, error) {
+	// 1. 图片压缩（与客户档案分析保持一致）
+	// 火山方舟 Doubao-Seed 模型限制：大小 < 10MB, 总像素 < 36,000,000, 长宽比 < 150:1
+	const maxVisionSize = 10 * 1024 * 1024 // 10MB
+	const maxTotalPixels int64 = 36000000  // 36MP
+
+	img, err := imaging.Decode(bytes.NewReader(imageData))
+	if err != nil {
+		log.Printf("[OCRAnalyze] Failed to decode image for compression check, user_id: %d, error: %v", userID, err)
+		// 解码失败时仍然尝试上传原图
+	} else {
+		bounds := img.Bounds()
+		width, height := bounds.Dx(), bounds.Dy()
+		totalPixels := int64(width) * int64(height)
+		aspectRatio := float64(height) / float64(width)
+		if width > height {
+			aspectRatio = float64(width) / float64(height)
+		}
+
+		if len(imageData) > maxVisionSize || totalPixels > maxTotalPixels || aspectRatio > 150 {
+			log.Printf("[OCRAnalyze] Image needs compression, user_id: %d, size: %d, pixels: %d, ratio: %.2f",
+				userID, len(imageData), totalPixels, aspectRatio)
+
+			scale := 1.0
+			if totalPixels > maxTotalPixels {
+				scale = math.Sqrt(float64(maxTotalPixels-1000000) / float64(totalPixels))
+			}
+			if aspectRatio > 140 {
+				scale = math.Min(scale, 0.8)
+			}
+
+			quality := 85
+			for len(imageData) > maxVisionSize && (width > 100 || height > 100) {
+				if scale < 1.0 {
+					width = int(float64(width) * scale)
+					height = int(float64(height) * scale)
+				} else {
+					width = int(float64(width) * 0.9)
+					height = int(float64(height) * 0.9)
+				}
+
+				img = imaging.Resize(img, width, height, imaging.Lanczos)
+
+				var buf bytes.Buffer
+				if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
+					log.Printf("[OCRAnalyze] Failed to compress image: %v", err)
+					break
+				}
+				imageData = buf.Bytes()
+
+				if len(imageData) > maxVisionSize {
+					if quality > 30 {
+						quality -= 10
+					} else {
+						scale = 0.7
+					}
+				}
+			}
+
+			// 激进压缩：质量降至 20%，尺寸持续缩小
+			if len(imageData) > maxVisionSize {
+				for len(imageData) > maxVisionSize && (width > 50 || height > 50) {
+					width = int(float64(width) * 0.7)
+					height = int(float64(height) * 0.7)
+					img = imaging.Resize(img, width, height, imaging.Lanczos)
+
+					var buf bytes.Buffer
+					if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 20}); err != nil {
+						break
+					}
+					imageData = buf.Bytes()
+				}
+			}
+
+			if len(imageData) > maxVisionSize {
+				return "", "", fmt.Errorf("图片过大且压缩失败，请上传更小的图片")
+			}
+
+			contentType = "image/jpeg"
+			log.Printf("[OCRAnalyze] Compression done, user_id: %d, final_size: %d, dimensions: %dx%d",
+				userID, len(imageData), width, height)
+		}
+	}
+
+	// 2. 上传到 COS
+	objectKey := fmt.Sprintf("sales_chat/%d/%s/%d_%s", userID, sessionID, time.Now().Unix(), filename)
+
+	cosURL, err := util.UploadBytesToCOS(ctx, objectKey, contentType, imageData)
+	if err != nil {
+		log.Printf("[OCRAnalyze] Upload image to COS failed, user_id: %d, key: %s, error: %v", userID, objectKey, err)
+		return "", "", fmt.Errorf("图片存储失败: %w", err)
+	}
+
+	// 3. 调用火山引擎 Doubao 视觉模型进行 OCR 识别
+	prompt := `你是一个专业的微信聊天记录识别专家。请识别这张微信聊天截图中的对话内容。
+
+  ## 识别要求
+
+  ### 1. 气泡布局识别
+  - **左边气泡（白色/灰色）= 客户消息**
+  - **右边气泡（绿色）= 销售消息**
+  - 从上到下完整扫描所有对话气泡
+
+  ### 2. 内容提取规则
+  - **保留表情符号**：如 [微笑]、[呲牙]、🌹 等
+  - **只提取文字气泡**：忽略图片、语音、视频等多媒体消息
+  - **保持原文**：不要修改、总结或解释对话内容
+
+  ### 3. 输出格式（严格遵守）
+
+  **如果截图包含多轮对话**（2条及以上消息），按以下格式输出：
+
+  【对话历史】
+  客户：[第1条客户消息]
+  销售：[第1条销售消息]
+  客户：[第2条客户消息]
+  ...（所有历史对话）
+
+  【客户最新消息】
+  客户：[最后一条客户消息]
+
+  **如果截图只有单条消息**，直接输出：
+
+  客户：[消息内容]
+
+  ### 4. 特殊处理规则
+
+  - **最新消息必须是客户发的**：如果截图最后一条是销售发的，往前找到最近的客户消息作为"最新消息"
+  - **空消息处理**：如果气泡只有表情没有文字，保留表情符号
+  - **时间戳忽略**：不要提取对话中的时间信息
+
+  ## 输出示例
+
+  ### 示例1：多轮对话
+  【对话历史】
+  客户：你们这个产品怎么样？
+  销售：我们的产品在行业内评价很高，已经服务了1000+客户
+  客户：价格呢？
+  销售：我们有三种套餐，基础版998元...
+
+  【客户最新消息】
+  客户：太贵了，能便宜点吗？
+
+  ### 示例2：单条消息
+  客户：在吗？
+
+  ### 示例3：包含表情
+  【对话历史】
+  客户：你好[微笑]
+  销售：您好，很高兴为您服务
+
+  【客户最新消息】
+  客户：我想了解一下产品
+
+  ## 关键约束
+
+  1. **严格使用【对话历史】和【客户最新消息】标记**，不要使用其他标记
+  2. **每条消息前必须有"客户："或"销售："前缀**
+  3. **不要添加任何分析、解释或总结**，只输出识别的对话内容
+  4. **保持对话的原始顺序和完整性**
+
+  现在请识别这张截图。`
+	visionModel := "doubao-seed-2-0-lite-260215"
+
+	// 生成 10 分钟有效的签名 URL 供 API 访问
+	signedURL, err := util.GenerateSignedURL(ctx, objectKey, 600)
+	if err != nil {
+		log.Printf("[OCRAnalyze] Generate signed URL failed, use raw cosURL, error: %v, key: %s", err, objectKey)
+		signedURL = cosURL
+	}
+
+	// 调用火山引擎视觉模型
+	ocrText, err := b.volcBiz.VisionAnalyze(ctx, signedURL, prompt, visionModel, 0, "minimal")
+	if err != nil {
+		log.Printf("[OCRAnalyze] Volc Engine Vision OCR failed, user_id: %d, url: %s, error: %v", userID, signedURL, err)
+		return "", "", fmt.Errorf("图片识别失败，请检查模型配置: %w", err)
+	}
+
+	return ocrText, cosURL, nil
 }
 
 // CheckSemanticSplitterStatus 检查语义切分器状态

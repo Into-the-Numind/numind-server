@@ -133,7 +133,8 @@ func callVolcStream(ctx context.Context, messages []map[string]string, handler S
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+viper.GetString("volc.api_key"))
 
-	client := &http.Client{}
+	// 使用包级别共享 Transport 复用连接池
+	client := &http.Client{Transport: streamTransport}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("HTTP请求失败: %w", err)
@@ -205,7 +206,8 @@ func callAliStream(ctx context.Context, aliBiz ali.AliBiz, messages []map[string
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+viper.GetString("ali.text.api_key"))
 
-	client := &http.Client{}
+	// 使用包级别共享 Transport 复用连接池
+	client := &http.Client{Transport: streamTransport}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("HTTP请求失败: %w", err)

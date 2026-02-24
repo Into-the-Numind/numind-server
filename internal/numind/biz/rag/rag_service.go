@@ -20,6 +20,16 @@ import (
 	"github.com/spf13/viper"
 )
 
+// streamTransport 流式 HTTP 请求共享的 Transport（复用连接池）
+var streamTransport = &http.Transport{
+	DialContext: (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext,
+	TLSHandshakeTimeout:   15 * time.Second,
+	ResponseHeaderTimeout: 60 * time.Second,
+}
+
 // contains 检查字符串是否包含子字符串（不区分大小写）
 func contains(s, substr string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
@@ -382,16 +392,8 @@ func (r *RagService) callAliStream(ctx context.Context, messages []map[string]st
 	log.C(ctx).Infow("调用阿里API", "model", model, "api_key_prefix", apiKey[:20]+"...")
 
 	// 流式响应不能使用 Client.Timeout（它覆盖整个请求生命周期包括 body 读取）
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			TLSHandshakeTimeout:   15 * time.Second,
-			ResponseHeaderTimeout: 60 * time.Second,
-		},
-	}
+	// 使用包级别共享 Transport 复用连接池
+	client := &http.Client{Transport: streamTransport}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("HTTP请求失败: %w", err)
