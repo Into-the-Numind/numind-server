@@ -2468,94 +2468,93 @@ func (b *salesRAGBiz) analyzeChatStyleImageStream(ctx context.Context, userID ui
 	log.Printf("[analyzeChatStyleImageStream] Starting analysis for user %d, image size: %d bytes", userID, len(imageData))
 
 	// 1. 检查图片大小和尺寸，如果超过限制则压缩
+	// 火山方舟 Doubao-Seed 模型限制：大小 < 10MB, 总像素 < 36,000,000, 长宽比 < 150:1
 	const maxVisionSize = 10 * 1024 * 1024 // 10MB
-	const maxDimension = 4096              // 阿里云视觉模型支持的最大边长
+	const maxTotalPixels int64 = 36000000  // 36MP
 
 	// 解码图片以检查尺寸
-	src, err := imaging.Decode(bytes.NewReader(imageData))
+	img, err := imaging.Decode(bytes.NewReader(imageData))
 	if err != nil {
 		log.Printf("[analyzeChatStyleImageStream] Failed to decode image: %v", err)
 		return "", fmt.Errorf("解码图片失败: %w", err)
 	}
 
-	bounds := src.Bounds()
+	bounds := img.Bounds()
 	width := bounds.Dx()
 	height := bounds.Dy()
-	needsResize := false
+	totalPixels := int64(width) * int64(height)
+	aspectRatio := float64(height) / float64(width)
+	if width > height {
+		aspectRatio = float64(width) / float64(height)
+	}
 
-	log.Printf("[analyzeChatStyleImageStream] Original image dimensions: %dx%d, size: %d bytes", width, height, len(imageData))
+	log.Printf("[analyzeChatStyleImageStream] Original image: %dx%d, size: %d bytes, pixels: %d, ratio: %.2f",
+		width, height, len(imageData), totalPixels, aspectRatio)
 
-	// 检查是否需要压缩（尺寸过大或文件过大）
-	if width > maxDimension || height > maxDimension || len(imageData) > maxVisionSize {
-		needsResize = true
-		log.Printf("[analyzeChatStyleImageStream] Image exceeds limits (max dimension: %d, max size: %d MB), starting compression...", maxDimension, maxVisionSize/1024/1024)
+	// 检查是否需要压缩（大小、像素、长宽比任一超标）
+	if len(imageData) > maxVisionSize || totalPixels > maxTotalPixels || aspectRatio > 150 {
+		log.Printf("[analyzeChatStyleImageStream] Image needs compression")
 
-		// 计算缩放比例，确保最大边不超过 maxDimension
 		scale := 1.0
-		if width > height {
-			if width > maxDimension {
-				scale = float64(maxDimension) / float64(width)
-			}
-		} else {
-			if height > maxDimension {
-				scale = float64(maxDimension) / float64(height)
-			}
+		if totalPixels > maxTotalPixels {
+			scale = math.Sqrt(float64(maxTotalPixels-1000000) / float64(totalPixels))
+		}
+		if aspectRatio > 140 {
+			scale = math.Min(scale, 0.8)
 		}
 
-		// 如果需要缩放
-		if scale < 1.0 {
-			width = int(float64(width) * scale)
-			height = int(float64(height) * scale)
-			log.Printf("[analyzeChatStyleImageStream] Scaling image to %dx%d (scale: %.2f)", width, height, scale)
-		}
-
-		// 逐步压缩直到满足大小要求
 		quality := 85
-		for len(imageData) > maxVisionSize && (width > 500 || height > 500) {
-			// 调整尺寸
-			dst := imaging.Resize(src, width, height, imaging.Lanczos)
+		for len(imageData) > maxVisionSize && (width > 100 || height > 100) {
+			if scale < 1.0 {
+				width = int(float64(width) * scale)
+				height = int(float64(height) * scale)
+			} else {
+				width = int(float64(width) * 0.9)
+				height = int(float64(height) * 0.9)
+			}
 
-			// 重新编码为JPEG
+			img = imaging.Resize(img, width, height, imaging.Lanczos)
+
 			var buf bytes.Buffer
-			err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: quality})
-			if err != nil {
+			if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
 				return "", fmt.Errorf("压缩图片失败: %w", err)
 			}
 			imageData = buf.Bytes()
 
-			log.Printf("[analyzeChatStyleImageStream] Compressed to %dx%d, size: %d bytes (quality: %d)", width, height, len(imageData), quality)
+			log.Printf("[analyzeChatStyleImageStream] Compression iteration: %dx%d, size: %d bytes, quality: %d",
+				width, height, len(imageData), quality)
 
-			// 如果还是太大，继续缩小
 			if len(imageData) > maxVisionSize {
-				if quality > 60 {
+				if quality > 30 {
 					quality -= 10
 				} else {
-					width = int(float64(width) * 0.8)
-					height = int(float64(height) * 0.8)
+					scale = 0.7
 				}
-			} else {
-				break
 			}
-
-			src = dst
 		}
 
-		// 最后检查是否成功压缩
+		// 激进压缩：质量降至 20%，尺寸持续缩小
+		if len(imageData) > maxVisionSize {
+			for len(imageData) > maxVisionSize && (width > 50 || height > 50) {
+				width = int(float64(width) * 0.7)
+				height = int(float64(height) * 0.7)
+				img = imaging.Resize(img, width, height, imaging.Lanczos)
+
+				var buf bytes.Buffer
+				if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 20}); err != nil {
+					return "", fmt.Errorf("激进压缩图片失败: %w", err)
+				}
+				imageData = buf.Bytes()
+
+				log.Printf("[analyzeChatStyleImageStream] Aggressive compression: %dx%d, size: %d bytes", width, height, len(imageData))
+			}
+		}
+
 		if len(imageData) > maxVisionSize {
 			return "", fmt.Errorf("图片过大且压缩失败 (当前大小: %d bytes)", len(imageData))
 		}
 
-		log.Printf("[analyzeChatStyleImageStream] Compression completed, final size: %d bytes, dimensions: %dx%d", len(imageData), width, height)
-	} else if needsResize {
-		// 即使文件大小OK，但如果之前检测到尺寸需要调整，也要重新编码
-		dst := imaging.Resize(src, width, height, imaging.Lanczos)
-		var buf bytes.Buffer
-		err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 85})
-		if err != nil {
-			return "", fmt.Errorf("重新编码图片失败: %w", err)
-		}
-		imageData = buf.Bytes()
-		log.Printf("[analyzeChatStyleImageStream] Resized image to %dx%d, new size: %d bytes", width, height, len(imageData))
+		log.Printf("[analyzeChatStyleImageStream] Compression done, final: %dx%d, %d bytes", width, height, len(imageData))
 	}
 
 	// 2. 上传图片到 COS 获取 URL
@@ -2614,8 +2613,8 @@ func (b *salesRAGBiz) analyzeChatStyleImageStream(ctx context.Context, userID ui
 - 字数控制在 500 字以内
 - 只分析销售人员（右边绿色气泡）的语言风格`
 
-	// 5. 调用火山方舟视觉模型（doubao-seed-1-8-251228）
-	const visionModel = "doubao-seed-1-8-251228"
+	// 5. 调用火山方舟视觉模型（doubao-seed-2-0-lite-260215，与客户档案分析保持一致）
+	const visionModel = "doubao-seed-2-0-lite-260215"
 	result, err := b.volcBiz.VisionAnalyzeStream(ctx, dataURL, systemPrompt, visionModel, 0, "low", onToken)
 	if err != nil {
 		log.Printf("[analyzeChatStyleImageStream] Volc VisionAnalyzeStream error: %v", err)

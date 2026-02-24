@@ -2,9 +2,12 @@ package salesrag
 
 import (
 	"context"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"image/jpeg"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +20,7 @@ import (
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/util"
 
+	"github.com/disintegration/imaging"
 	"github.com/gin-gonic/gin"
 )
 
@@ -896,27 +900,111 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 		return
 	}
 
-	// 2. 读取并上传到 COS
-	data, err := io.ReadAll(file)
+	// 2. 读取图片数据
+	imageData, err := io.ReadAll(file)
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("读取文件数据失败"), nil)
 		return
 	}
 
-	// 生成 object key: sales_chat/{userID}/{sessionID}/{timestamp}_{filename}
+	// 3. 图片压缩（与客户档案分析保持一致）
+	// 火山方舟 Doubao-Seed 模型限制：大小 < 10MB, 总像素 < 36,000,000, 长宽比 < 150:1
+	const maxVisionSize = 10 * 1024 * 1024 // 10MB
+	const maxTotalPixels int64 = 36000000  // 36MP
+
+	contentType := header.Header.Get("Content-Type")
+
+	img, err := imaging.Decode(bytes.NewReader(imageData))
+	if err != nil {
+		log.Errorw("Failed to decode image for compression check", "error", err, "user_id", user.ID)
+		// 解码失败时仍然尝试上传原图
+	} else {
+		bounds := img.Bounds()
+		width, height := bounds.Dx(), bounds.Dy()
+		totalPixels := int64(width) * int64(height)
+		aspectRatio := float64(height) / float64(width)
+		if width > height {
+			aspectRatio = float64(width) / float64(height)
+		}
+
+		if len(imageData) > maxVisionSize || totalPixels > maxTotalPixels || aspectRatio > 150 {
+			log.Infow("OCR image needs compression", "user_id", user.ID,
+				"size", len(imageData), "pixels", totalPixels, "ratio", aspectRatio)
+
+			scale := 1.0
+			if totalPixels > maxTotalPixels {
+				scale = math.Sqrt(float64(maxTotalPixels-1000000) / float64(totalPixels))
+			}
+			if aspectRatio > 140 {
+				scale = math.Min(scale, 0.8)
+			}
+
+			quality := 85
+			for len(imageData) > maxVisionSize && (width > 100 || height > 100) {
+				if scale < 1.0 {
+					width = int(float64(width) * scale)
+					height = int(float64(height) * scale)
+				} else {
+					width = int(float64(width) * 0.9)
+					height = int(float64(height) * 0.9)
+				}
+
+				img = imaging.Resize(img, width, height, imaging.Lanczos)
+
+				var buf bytes.Buffer
+				if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
+					log.Errorw("Failed to compress image", "error", err)
+					break
+				}
+				imageData = buf.Bytes()
+
+				if len(imageData) > maxVisionSize {
+					if quality > 30 {
+						quality -= 10
+					} else {
+						scale = 0.7
+					}
+				}
+			}
+
+			// 激进压缩：质量降至 20%，尺寸持续缩小
+			if len(imageData) > maxVisionSize {
+				for len(imageData) > maxVisionSize && (width > 50 || height > 50) {
+					width = int(float64(width) * 0.7)
+					height = int(float64(height) * 0.7)
+					img = imaging.Resize(img, width, height, imaging.Lanczos)
+
+					var buf bytes.Buffer
+					if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 20}); err != nil {
+						break
+					}
+					imageData = buf.Bytes()
+				}
+			}
+
+			if len(imageData) > maxVisionSize {
+				core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("图片过大且压缩失败，请上传更小的图片"), nil)
+				return
+			}
+
+			contentType = "image/jpeg"
+			log.Infow("OCR image compression done", "user_id", user.ID,
+				"final_size", len(imageData), "dimensions", fmt.Sprintf("%dx%d", width, height))
+		}
+	}
+
+	// 4. 上传到 COS
 	sessionID := c.DefaultPostForm("session_id", "no_session")
 	objectKey := fmt.Sprintf("sales_chat/%d/%s/%d_%s", user.ID, sessionID, time.Now().Unix(), header.Filename)
 
-	// 上传到 COS
-	cosURL, err := util.UploadBytesToCOS(c.Request.Context(), objectKey, header.Header.Get("Content-Type"), data)
+	cosURL, err := util.UploadBytesToCOS(c.Request.Context(), objectKey, contentType, imageData)
 	if err != nil {
 		log.Errorw("Upload image to COS failed", "error", err, "user_id", user.ID, "key", objectKey)
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("图片存储失败"), nil)
 		return
 	}
 
-	// 3. 调用火山引擎 Doubao 视觉模型进行 OCR 识别
-	// 使用 doubao-seed-1-8-251228 模型 (对长图支持更友好)
+	// 5. 调用火山引擎 Doubao 视觉模型进行 OCR 识别
 	prompt := `你是一个专业的微信聊天记录识别专家。请识别这张微信聊天截图中的对话内容。
 
   ## 识别要求
@@ -985,7 +1073,7 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
   4. **保持对话的原始顺序和完整性**
 
   现在请识别这张截图。`
-	model := "doubao-seed-1-8-251228"
+	model := "doubao-seed-2-0-lite-260215"
 
 	// 生成 10 分钟有效的签名 URL 供 API 访问
 	signedURL, err := util.GenerateSignedURL(c.Request.Context(), objectKey, 600)
@@ -1002,7 +1090,7 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 		return
 	}
 
-	// 4. 返回结果
+	// 6. 返回结果
 	core.WriteResponse(c, nil, map[string]string{
 		"text": ocrText,
 		"url":  cosURL,
