@@ -82,6 +82,10 @@ type ChatCompletionResponse struct {
 
 // ChatCompletion 调用聊天接口（非流式）
 func (c *DMXAPIClient) ChatCompletion(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int) (string, error) {
+	// 非流式请求添加整体超时保护（覆盖建连+等待响应+读取 body 全流程）
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
 	reqBody := ChatCompletionRequest{
 		Model:       model,
 		Messages:    messages,
@@ -354,6 +358,10 @@ type RerankResult struct {
 // Rerank 调用 Rerank 模型
 // 返回按相关性排序的文档索引和对应的 relevance_score
 func (c *DMXAPIClient) Rerank(ctx context.Context, query string, documents []string, topN int) ([]RerankResult, error) {
+	// 非流式请求添加整体超时保护
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
 	if len(documents) == 0 {
 		return nil, nil
 	}
