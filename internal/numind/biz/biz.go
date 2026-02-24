@@ -134,17 +134,7 @@ func NewBiz(ds store.IStore) *biz {
 	b.sopService = sopbiz.NewSopBiz(b.ds, sopExecutor)
 
 	// 初始化销售 RAG 服务
-	// 使用 DashVector 向量库 (Migrated from VikingDB)
-	dashEndpoint := viper.GetString("ali.dashvector.endpoint")
-	dashApiKey := viper.GetString("ali.dashvector.api_key")
-	if dashApiKey == "" {
-		dashApiKey = viper.GetString("ali.api_key") // Fallback to common key
-	}
-	dashCollection := viper.GetString("ali.dashvector.collection")
-	if dashCollection == "" {
-		dashCollection = "sales_rag"
-	}
-
+	// 向量库支持 sqlitevec（默认）、dashvector（回退兼容）、memory（测试）
 	var vStore port.VectorStore
 
 	// Define Embedder using Qwen
@@ -152,14 +142,52 @@ func NewBiz(ds store.IStore) *biz {
 		return b.Ali().QianwenEmbedding(text)
 	}
 
-	if dashEndpoint != "" {
+	vectorStoreType := viper.GetString("salesrag.vector_store.type")
+	if vectorStoreType == "" {
+		vectorStoreType = "sqlitevec" // 默认使用 sqlite-vec
+	}
+
+	switch vectorStoreType {
+	case "sqlitevec":
+		vecDBPath := viper.GetString("salesrag.vector_store.path")
+		if vecDBPath == "" {
+			// 基于 resource.image_path 计算默认路径
+			imagePath := viper.GetString("resource.image_path")
+			parentDir := filepath.Dir(imagePath) // 移除 upload
+			if filepath.Base(parentDir) == "image" {
+				baseDir := filepath.Dir(parentDir)
+				vecDBPath = filepath.Join(baseDir, "sales_vector.db")
+			} else {
+				vecDBPath = filepath.Join(parentDir, "sales_vector.db")
+			}
+		}
+		var vecErr error
+		vStore, vecErr = adapter.NewSQLiteVecStore(vecDBPath, embedder)
+		if vecErr != nil {
+			log.Errorw("Failed to initialize SQLiteVecStore, falling back to MemoryStore", "error", vecErr, "path", vecDBPath)
+			vStore = adapter.NewMemoryStore()
+		} else {
+			log.Infow("Initialized SQLiteVecStore", "path", vecDBPath)
+		}
+	case "dashvector":
+		// 保留向后兼容，迁移期间可用
+		dashEndpoint := viper.GetString("ali.dashvector.endpoint")
+		dashApiKey := viper.GetString("ali.dashvector.api_key")
+		if dashApiKey == "" {
+			dashApiKey = viper.GetString("ali.api_key")
+		}
+		dashCollection := viper.GetString("ali.dashvector.collection")
+		if dashCollection == "" {
+			dashCollection = "sales_rag"
+		}
 		vStore = adapter.NewDashVectorStore(dashEndpoint, dashApiKey, dashCollection, embedder)
 		log.Infow("Initialized DashVector store", "endpoint", dashEndpoint, "collection", dashCollection)
-	} else {
-		log.Warnw("DashVector endpoint not configured, falling back to ChromemStore for local dev")
-		// Fallback to local store
-		salesDBPath := filepath.Join(filepath.Dir(filepath.Dir(viper.GetString("resource.image_path"))), "sales_vector_db")
-		vStore, _ = adapter.NewChromemStore(salesDBPath, "sales_knowledge", embedder)
+	case "memory":
+		vStore = adapter.NewMemoryStore()
+		log.Infow("Initialized MemoryStore (testing only)")
+	default:
+		log.Warnw("Unknown vector store type, falling back to MemoryStore", "type", vectorStoreType)
+		vStore = adapter.NewMemoryStore()
 	}
 
 	// 初始化 LLM 意图路由器（V2: 使用 DMXAPI qwen-turbo-latest）
