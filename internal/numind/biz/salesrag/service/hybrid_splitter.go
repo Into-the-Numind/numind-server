@@ -44,8 +44,11 @@ func NewHybridSplitter(cfg HybridSplitterConfig) *HybridSplitter {
 	h.semanticSplitter = NewEmbeddingSplitter(cfg.SemanticConfig)
 	h.semanticAvailable = h.semanticSplitter.IsAvailable()
 
-	if !h.semanticAvailable {
-		log.Println("[HybridSplitter] Semantic splitter not available, falling back to rule-based only")
+	// 始终输出启动状态（不再依赖 SPLITTER_DEBUG 环境变量）
+	if h.semanticAvailable {
+		log.Println("[HybridSplitter] Semantic splitter available and ready")
+	} else {
+		log.Println("[HybridSplitter] WARNING: Semantic splitter not available, will use rule-based splitting. Dynamic reconnection is enabled.")
 	}
 
 	return h
@@ -83,16 +86,18 @@ func (h *HybridSplitter) Split(text string) ([]SplitChunk, error) {
 
 	// 策略2：文本足够长（>= h.cfg.SemanticMinLength），优先语义切分
 	if h.semanticAvailable {
-		if os.Getenv("SPLITTER_DEBUG") == "1" {
-			log.Printf("[HybridSplitter] Text >= %d bytes, using semantic splitting", h.cfg.SemanticMinLength)
+		log.Printf("[HybridSplitter] Using semantic splitting (text=%d bytes)", len(text))
+		chunks, err := h.semanticSplitter.Split(text)
+		if err != nil {
+			// 语义切分失败，自动降级到规则切分（而非直接返回错误）
+			log.Printf("[HybridSplitter] WARNING: Semantic split failed, falling back to rule-based: %v", err)
+			return h.convertToSplitChunks(h.ruleSplitter.Split(text))
 		}
-		return h.semanticSplitter.Split(text)
+		return chunks, nil
 	}
 
 	// 策略3：语义切分不可用，降级为规则切分
-	if os.Getenv("SPLITTER_DEBUG") == "1" {
-		log.Println("[HybridSplitter] Semantic unavailable, fallback to rule splitting")
-	}
+	log.Printf("[HybridSplitter] Semantic unavailable, using rule-based splitting (text=%d bytes)", len(text))
 	return h.convertToSplitChunks(h.ruleSplitter.Split(text))
 }
 
@@ -132,6 +137,13 @@ func (h *HybridSplitter) SplitWithDetails(text string) ([]SplitChunk, map[string
 	if h.semanticAvailable {
 		details["strategy"] = "semantic"
 		chunks, err = h.semanticSplitter.Split(text)
+		if err != nil {
+			// 语义切分失败，自动降级到规则切分
+			log.Printf("[HybridSplitter] WARNING: Semantic split failed in SplitWithDetails, falling back: %v", err)
+			details["strategy"] = "rule_fallback"
+			details["semantic_error"] = err.Error()
+			chunks, err = h.convertToSplitChunks(h.ruleSplitter.Split(text))
+		}
 	} else {
 		// 策略3：语义切分不可用，降级为规则切分
 		details["strategy"] = "rule"

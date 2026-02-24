@@ -162,20 +162,58 @@ main() {
     mkdir -p /app/logs
     python3 /app/scripts/semantic_server.py > /app/logs/semantic_server.log 2>&1 &
     SEMANTIC_PID=$!
-    
+
     log_info "✅ Semantic Server started (PID: $SEMANTIC_PID)"
     log_info "   Logs: /app/logs/semantic_server.log"
-    
+
     # 设置清理钩子，确保容器退出时清理子进程
     cleanup() {
         log_info "🛑 Stopping background processes..."
         kill $SEMANTIC_PID 2>/dev/null || true
     }
     trap cleanup EXIT INT TERM
-    
-    # 等待服务启动
-    log_info "⏳ 等待模型加载 (5s)..."
-    sleep 5
+
+    # 主动轮询语义服务器健康状态（最多等待 120 秒）
+    # BGE 模型加载 + PaddleOCR 初始化通常需要 30-90 秒
+    MAX_WAIT=120
+    INTERVAL=5
+    WAITED=0
+    SEMANTIC_READY=false
+
+    log_info "⏳ 等待语义服务就绪 (最多 ${MAX_WAIT}s)..."
+    while [ $WAITED -lt $MAX_WAIT ]; do
+        # 先检查进程是否还活着
+        if ! kill -0 $SEMANTIC_PID 2>/dev/null; then
+            log_error "❌ Semantic Server 进程已退出!"
+            log_error "   最后 20 行日志:"
+            tail -20 /app/logs/semantic_server.log 2>/dev/null || true
+            break
+        fi
+
+        # 检查 health 端点
+        if curl -sf http://localhost:9093/health > /tmp/semantic_health.json 2>/dev/null; then
+            # 检查模型是否真正加载完成
+            if grep -q '"model_ready":true' /tmp/semantic_health.json 2>/dev/null; then
+                log_info "✅ 语义服务就绪! (耗时 ${WAITED}s)"
+                SEMANTIC_READY=true
+                break
+            else
+                log_info "⏳ 服务已启动，模型加载中... (${WAITED}s/${MAX_WAIT}s)"
+            fi
+        fi
+
+        sleep $INTERVAL
+        WAITED=$((WAITED + INTERVAL))
+    done
+
+    if [ "$SEMANTIC_READY" = false ]; then
+        log_warn "⚠️ 语义服务未在 ${MAX_WAIT}s 内就绪，Go 应用将先启动"
+        log_warn "   HybridSplitter 会在后续请求中自动重连"
+        log_warn "   日志: /app/logs/semantic_server.log"
+        # 打印最后几行日志帮助诊断
+        log_warn "   最后 10 行日志:"
+        tail -10 /app/logs/semantic_server.log 2>/dev/null || true
+    fi
     
     echo ""
     echo "╔════════════════════════════════════════════════════════╗"
