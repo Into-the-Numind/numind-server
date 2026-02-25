@@ -275,6 +275,9 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.PUT("/sales-rag/documents/:id", salesRAGc.UpdateDocument)    // 更新文档
 		authGroup.DELETE("/sales-rag/documents/:id", salesRAGc.DeleteDocument) // 删除文档
 
+		// 观点库
+		authGroup.GET("/sales-rag/opinion-tracks", salesRAGc.ListOpinionTracks) // 获取系统内置观点赛道列表
+
 		// 会话管理
 		authGroup.POST("/sales-rag/sessions", salesRAGc.CreateSession)           // 创建销售会话
 		authGroup.GET("/sales-rag/sessions", salesRAGc.ListSessions)             // 获取会话列表

@@ -253,20 +253,20 @@ func buildVikingFilter(f port.SearchFilter) map[string]interface{} {
 	// "and": [{"field":...}, {...}]
 	conditions := make([]map[string]interface{}, 0)
 
-	// 强制注入 UserID 过滤
-	if f.UserID > 0 {
-		conditions = append(conditions, map[string]interface{}{
-			"user_id": map[string]interface{}{"=": int64(f.UserID)},
-		})
-	}
-
 	if len(f.DocumentIDs) > 0 {
+		// 有精确文档 ID 时，仅用 doc_id 过滤，不叠加 user_id
+		// （安全性由 biz 层白名单保证，系统文档 user_id=0 也能被检索）
 		ids := make([]interface{}, len(f.DocumentIDs))
 		for i, id := range f.DocumentIDs {
 			ids[i] = int64(id)
 		}
 		conditions = append(conditions, map[string]interface{}{
 			"doc_id": map[string]interface{}{"in": ids},
+		})
+	} else if f.UserID > 0 {
+		// 无文档 ID 时，按用户过滤
+		conditions = append(conditions, map[string]interface{}{
+			"user_id": map[string]interface{}{"=": int64(f.UserID)},
 		})
 	}
 

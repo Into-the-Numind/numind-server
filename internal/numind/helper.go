@@ -180,6 +180,7 @@ func autoMigrate(db *gorm.DB) error {
 		&model.SalesMessage{},
 		&model.LanguageStyle{},
 		&model.KnowledgeChunk{},
+		&model.OpinionTrack{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate basic tables: %v", err)

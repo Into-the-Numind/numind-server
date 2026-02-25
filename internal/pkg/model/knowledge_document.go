@@ -19,6 +19,7 @@ type KnowledgeDocument struct {
 	FileType    string `gorm:"size:20" json:"file_type"`
 
 	IsEnabled bool `gorm:"default:true;index" json:"is_enabled"`
+	IsSystem  bool `gorm:"default:false;index" json:"is_system"` // 系统内置文档（不可删除/编辑）
 }
 
 func (KnowledgeDocument) TableName() string {

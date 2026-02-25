@@ -27,6 +27,7 @@ import (
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/numind/biz/salesrag/seed"
 	salesragservice "numind-server/internal/numind/biz/salesrag/service"
 	sopbiz "numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/biz/template"
@@ -212,6 +213,38 @@ func NewBiz(ds store.IStore) *biz {
 	salesSessionStore := store.NewSalesSessionStore(b.ds.DB())
 
 	b.salesRAGService = salesrag.NewSalesRAGBiz(b.ds, pipeline, salesRAGSvc, b.Volc(), b.Ali(), salesSessionStore, parser)
+
+	// 系统内置观点赛道初始化（异步，不阻塞启动）
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Errorw("Panic in opinion track seeder", "recover", r)
+			}
+		}()
+		ctx := context.Background()
+		seeder := seed.NewSeeder(b.ds.DB())
+		results := seeder.SeedOpinionTracks(ctx)
+		for slug, result := range results {
+			log.Infow("Seeding opinion track", "slug", slug, "opinions", result.Count)
+			docID, err := b.salesRAGService.Ingest(ctx, 0, slug+".md", result.Track.Name+" - 系统观点库", result.MarkdownReader(), salesrag.IngestOptions{
+				Description: result.Track.Desc,
+				Tags:        []string{"观点库", "系统内置", slug},
+			})
+			if err != nil {
+				log.Errorw("Failed to ingest opinion track", "slug", slug, "error", err)
+				continue
+			}
+			// 标记为系统文档
+			if err := b.ds.KnowledgeDocuments().UpdateColumns(ctx, docID, map[string]interface{}{"is_system": true}); err != nil {
+				log.Errorw("Failed to mark document as system", "slug", slug, "doc_id", docID, "error", err)
+			}
+			// 创建/更新赛道记录
+			if err := seeder.CreateOrUpdateTrack(ctx, slug, docID); err != nil {
+				log.Errorw("Failed to create opinion track record", "slug", slug, "error", err)
+			}
+			log.Infow("Opinion track seeded", "slug", slug, "doc_id", docID)
+		}
+	}()
 
 	return b
 }

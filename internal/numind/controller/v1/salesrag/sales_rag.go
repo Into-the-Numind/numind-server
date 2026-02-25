@@ -317,12 +317,14 @@ func (ctrl *SalesRAGController) CreateSession(c *gin.Context) {
 	var req struct {
 		Title           string `json:"title"`
 		DocumentIDs     []uint `json:"document_ids"`
-		ProductDocIDs   []uint `json:"product_doc_ids"` // 产品文档
-		CaseDocIDs      []uint `json:"case_doc_ids"`    // 成功案例
-		FAQDocIDs       []uint `json:"faq_doc_ids"`     // 百问百答
+		ProductDocIDs   []uint `json:"product_doc_ids"`   // 产品文档
+		CaseDocIDs      []uint `json:"case_doc_ids"`      // 成功案例
+		FAQDocIDs       []uint `json:"faq_doc_ids"`       // 百问百答
+		OpinionDocIDs   []uint `json:"opinion_doc_ids"`   // 观点库（用户上传）
+		OpinionTrackIDs []uint `json:"opinion_track_ids"` // 观点库（系统赛道）
 		DeepThinking    bool   `json:"deep_thinking"`
 		CustomerProfile string `json:"customer_profile"`
-		SalesStage      string `json:"sales_stage"`     // 销售阶段
+		SalesStage      string `json:"sales_stage"` // 销售阶段
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -347,9 +349,11 @@ func (ctrl *SalesRAGController) CreateSession(c *gin.Context) {
 		ProductDocIDs:   req.ProductDocIDs,
 		CaseDocIDs:      req.CaseDocIDs,
 		FAQDocIDs:       req.FAQDocIDs,
+		OpinionDocIDs:   req.OpinionDocIDs,
+		OpinionTrackIDs: req.OpinionTrackIDs,
 		DeepThinking:    req.DeepThinking,
 		CustomerProfile: req.CustomerProfile,
-		SalesStage:      req.SalesStage, // 销售阶段
+		SalesStage:      req.SalesStage,
 	}
 
 	session, err := ctrl.b.SalesRAG().CreateSession(c, user.ID, createReq)
@@ -463,6 +467,16 @@ func (ctrl *SalesRAGController) DeleteSession(c *gin.Context) {
 	}
 
 	core.WriteResponse(c, nil, map[string]string{"message": "Session deleted successfully"})
+}
+
+// ListOpinionTracks 获取系统内置观点赛道列表
+func (ctrl *SalesRAGController) ListOpinionTracks(c *gin.Context) {
+	tracks, err := ctrl.b.SalesRAG().ListOpinionTracks(c)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	core.WriteResponse(c, nil, tracks)
 }
 
 // ListMessages 获取会话的消息列表

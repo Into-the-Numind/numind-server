@@ -20,6 +20,8 @@ type SalesSession struct {
 	ProductDocIDs   string `gorm:"type:text" json:"product_doc_ids"`               // 产品文档 JSON array
 	CaseDocIDs      string `gorm:"type:text" json:"case_doc_ids"`                  // 成功案例 JSON array
 	FAQDocIDs       string `gorm:"type:text" json:"faq_doc_ids"`                   // 百问百答 JSON array
+	OpinionDocIDs   string `gorm:"type:text" json:"opinion_doc_ids"`              // 用户上传观点文档 JSON array
+	OpinionTrackIDs string `gorm:"type:text" json:"opinion_track_ids"`            // 系统赛道 ID JSON array (最多2个)
 	DeepThinking    bool   `gorm:"default:false" json:"deep_thinking"`
 	CustomerProfile string `gorm:"type:text" json:"customer_profile"` // Markdown 格式的分析结果
 	LastQuery       string `gorm:"type:text" json:"last_query"`

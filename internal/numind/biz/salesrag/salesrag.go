@@ -99,6 +99,9 @@ type SalesRAGBiz interface {
 
 	// OCRAnalyze 识别图片中的文本（压缩 + 上传 COS + 调用视觉大模型）
 	OCRAnalyze(ctx context.Context, userID uint, imageData []byte, contentType string, sessionID string, filename string) (ocrText string, cosURL string, err error)
+
+	// ListOpinionTracks 获取系统内置观点赛道列表
+	ListOpinionTracks(ctx context.Context) ([]model.OpinionTrack, error)
 }
 
 type IngestOptions struct {
@@ -115,9 +118,11 @@ type UpdateDocumentRequest struct {
 type CreateSessionRequest struct {
 	Title           string `json:"title"`
 	DocumentIDs     []uint `json:"document_ids"`
-	ProductDocIDs   []uint `json:"product_doc_ids"` // 产品文档
-	CaseDocIDs      []uint `json:"case_doc_ids"`    // 成功案例
-	FAQDocIDs       []uint `json:"faq_doc_ids"`     // 百问百答
+	ProductDocIDs   []uint `json:"product_doc_ids"`   // 产品文档
+	CaseDocIDs      []uint `json:"case_doc_ids"`      // 成功案例
+	FAQDocIDs       []uint `json:"faq_doc_ids"`       // 百问百答
+	OpinionDocIDs   []uint `json:"opinion_doc_ids"`   // 观点库（用户上传）
+	OpinionTrackIDs []uint `json:"opinion_track_ids"` // 观点库（系统赛道ID）
 	DeepThinking    bool   `json:"deep_thinking"`
 	CustomerProfile string `json:"customer_profile"` // Markdown 格式
 	SalesStage      string `json:"sales_stage"`      // 销售阶段: ""(未选择), 初次接触, 了解业务, 方案介绍, 成交推进, 售后服务
@@ -126,10 +131,12 @@ type CreateSessionRequest struct {
 type UpdateSessionRequest struct {
 	Title           *string `json:"title"`
 	DocumentIDs     []uint  `json:"document_ids"`
-	ProductDocIDs   []uint  `json:"product_doc_ids"` // 产品文档
-	CaseDocIDs      []uint  `json:"case_doc_ids"`    // 成功案例
-	FAQDocIDs       []uint  `json:"faq_doc_ids"`     // 百问百答
-	SalesStage      *string `json:"sales_stage"`     // 销售阶段: ""(未选择), 初次接触, 了解业务, 方案介绍, 成交推进, 售后服务
+	ProductDocIDs   []uint  `json:"product_doc_ids"`   // 产品文档
+	CaseDocIDs      []uint  `json:"case_doc_ids"`      // 成功案例
+	FAQDocIDs       []uint  `json:"faq_doc_ids"`       // 百问百答
+	OpinionDocIDs   []uint  `json:"opinion_doc_ids"`   // 观点库（用户上传）
+	OpinionTrackIDs []uint  `json:"opinion_track_ids"` // 观点库（系统赛道ID）
+	SalesStage      *string `json:"sales_stage"`       // 销售阶段: ""(未选择), 初次接触, 了解业务, 方案介绍, 成交推进, 售后服务
 	DeepThinking    *bool   `json:"deep_thinking"`
 	CustomerProfile *string `json:"customer_profile"`
 }
@@ -434,6 +441,9 @@ func (b *salesRAGBiz) DeleteDocument(ctx context.Context, userID uint, docID uin
 	if err != nil {
 		return err
 	}
+	if doc.IsSystem {
+		return fmt.Errorf("cannot delete system document")
+	}
 	if doc.UserID != userID {
 		return fmt.Errorf("permission denied")
 	}
@@ -577,10 +587,16 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 		return err
 	}
 
-	// 2. 查询用户所有文档
+	// 2. 查询用户所有文档 + 系统文档
 	docs, err := b.ds.KnowledgeDocuments().ListByUser(ctx, userID)
 	if err != nil {
 		return onEvent("error", fmt.Sprintf("failed to query user documents: %v", err))
+	}
+	sysDocs, sysErr := b.ds.KnowledgeDocuments().ListSystemDocs(ctx)
+	if sysErr != nil {
+		log.Printf("[RetrieveStream] Warning: failed to query system docs: %v", sysErr)
+	} else {
+		docs = append(docs, sysDocs...)
 	}
 
 	// 3. 构建启用且已完成的文档ID白名单
@@ -699,7 +715,7 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 		// 分组存储内容
 		categorizedContent := make(map[string][]string)
 		// 预定义顺序
-		categories := []string{"产品文档", "成功案例", "百问百答", "其他相关文档"}
+		categories := []string{"产品文档", "成功案例", "百问百答", "观点库", "其他相关文档"}
 
 		for i, chunk := range allChunks {
 			category := "其他相关文档"
@@ -1069,10 +1085,12 @@ func (b *salesRAGBiz) CreateSession(ctx context.Context, userID uint, req Create
 		return nil, fmt.Errorf("failed to marshal document_ids: %w", err)
 	}
 
-	// 序列化三个分类文档 ID
+	// 序列化分类文档 ID
 	productJSON, _ := json.Marshal(req.ProductDocIDs)
 	caseJSON, _ := json.Marshal(req.CaseDocIDs)
 	faqJSON, _ := json.Marshal(req.FAQDocIDs)
+	opinionJSON, _ := json.Marshal(req.OpinionDocIDs)
+	opinionTrackJSON, _ := json.Marshal(req.OpinionTrackIDs)
 
 	// 创建会话
 	session := &model.SalesSession{
@@ -1083,6 +1101,8 @@ func (b *salesRAGBiz) CreateSession(ctx context.Context, userID uint, req Create
 		ProductDocIDs:   string(productJSON),
 		CaseDocIDs:      string(caseJSON),
 		FAQDocIDs:       string(faqJSON),
+		OpinionDocIDs:   string(opinionJSON),
+		OpinionTrackIDs: string(opinionTrackJSON),
 		DeepThinking:    req.DeepThinking,
 		CustomerProfile: req.CustomerProfile,
 		SalesStage:      req.SalesStage, // 销售阶段
@@ -1142,6 +1162,14 @@ func (b *salesRAGBiz) UpdateSession(ctx context.Context, userID uint, sessionID 
 		faqJSON, _ := json.Marshal(req.FAQDocIDs)
 		session.FAQDocIDs = string(faqJSON)
 	}
+	if req.OpinionDocIDs != nil {
+		opinionJSON, _ := json.Marshal(req.OpinionDocIDs)
+		session.OpinionDocIDs = string(opinionJSON)
+	}
+	if req.OpinionTrackIDs != nil {
+		opinionTrackJSON, _ := json.Marshal(req.OpinionTrackIDs)
+		session.OpinionTrackIDs = string(opinionTrackJSON)
+	}
 	if req.DeepThinking != nil {
 		session.DeepThinking = *req.DeepThinking
 	}
@@ -1173,6 +1201,34 @@ func (b *salesRAGBiz) UnpinSession(ctx context.Context, userID uint, sessionID u
 // RenameSession 重命名会话
 func (b *salesRAGBiz) RenameSession(ctx context.Context, userID uint, sessionID uint, newTitle string) error {
 	return b.sessionStore.RenameSession(ctx, sessionID, userID, newTitle)
+}
+
+// ListOpinionTracks 获取系统内置观点赛道列表
+func (b *salesRAGBiz) ListOpinionTracks(ctx context.Context) ([]model.OpinionTrack, error) {
+	var tracks []model.OpinionTrack
+	if err := b.ds.DB().WithContext(ctx).Where("is_enabled = ?", true).Order("sort_order ASC").Find(&tracks).Error; err != nil {
+		return nil, fmt.Errorf("failed to list opinion tracks: %w", err)
+	}
+	return tracks, nil
+}
+
+// resolveTrackDocIDs 将赛道 ID 解析为对应的 KnowledgeDocument ID
+func (b *salesRAGBiz) resolveTrackDocIDs(ctx context.Context, trackIDs []uint) []uint {
+	if len(trackIDs) == 0 {
+		return nil
+	}
+	var tracks []model.OpinionTrack
+	if err := b.ds.DB().WithContext(ctx).Where("id IN ? AND is_enabled = ?", trackIDs, true).Find(&tracks).Error; err != nil {
+		log.Printf("[resolveTrackDocIDs] Warning: failed to query tracks: %v", err)
+		return nil
+	}
+	var docIDs []uint
+	for _, t := range tracks {
+		if t.DocID > 0 {
+			docIDs = append(docIDs, t.DocID)
+		}
+	}
+	return docIDs
 }
 
 // ListMessages 获取会话的消息列表
@@ -1255,11 +1311,12 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	}
 
 	// 2. 准备会话配置
-	// 优先使用三个分类字段，合并所有分类的文档 ID 传给检索
+	// 优先使用分类字段，合并所有分类的文档 ID 传给检索
 	var sessionDocIDs []uint
-	var productDocIDs, caseDocIDs, faqDocIDs []uint
+	var productDocIDs, caseDocIDs, faqDocIDs, opinionDocIDs []uint
+	var opinionTrackIDs []uint
 
-	// 解析三个分类字段
+	// 解析分类字段
 	if session.ProductDocIDs != "" && session.ProductDocIDs != "null" {
 		if err := json.Unmarshal([]byte(session.ProductDocIDs), &productDocIDs); err != nil {
 			log.Printf("[ChatWithSession] Warning: failed to parse product_doc_ids: %v", err)
@@ -1275,11 +1332,26 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 			log.Printf("[ChatWithSession] Warning: failed to parse faq_doc_ids: %v", err)
 		}
 	}
+	if session.OpinionDocIDs != "" && session.OpinionDocIDs != "null" {
+		if err := json.Unmarshal([]byte(session.OpinionDocIDs), &opinionDocIDs); err != nil {
+			log.Printf("[ChatWithSession] Warning: failed to parse opinion_doc_ids: %v", err)
+		}
+	}
+	if session.OpinionTrackIDs != "" && session.OpinionTrackIDs != "null" {
+		if err := json.Unmarshal([]byte(session.OpinionTrackIDs), &opinionTrackIDs); err != nil {
+			log.Printf("[ChatWithSession] Warning: failed to parse opinion_track_ids: %v", err)
+		}
+	}
+
+	// 将系统赛道 ID 解析为对应的文档 ID
+	trackDocIDs := b.resolveTrackDocIDs(ctx, opinionTrackIDs)
 
 	// 合并所有分类文档 ID
 	sessionDocIDs = append(sessionDocIDs, productDocIDs...)
 	sessionDocIDs = append(sessionDocIDs, caseDocIDs...)
 	sessionDocIDs = append(sessionDocIDs, faqDocIDs...)
+	sessionDocIDs = append(sessionDocIDs, opinionDocIDs...)
+	sessionDocIDs = append(sessionDocIDs, trackDocIDs...)
 
 	// 向后兼容：如果三个分类字段都为空，则 fallback 到旧 document_ids 字段
 	if len(sessionDocIDs) == 0 && session.DocumentIDs != "" && session.DocumentIDs != "null" {
@@ -1317,6 +1389,12 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	}
 	for _, id := range faqDocIDs {
 		docCategoryMap[id] = "百问百答"
+	}
+	for _, id := range opinionDocIDs {
+		docCategoryMap[id] = "观点库"
+	}
+	for _, id := range trackDocIDs {
+		docCategoryMap[id] = "观点库"
 	}
 
 	// 4. 调用流式检索，累积内容

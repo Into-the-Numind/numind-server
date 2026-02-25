@@ -311,17 +311,18 @@ func (s *SQLiteVecStore) Search(ctx context.Context, query string, filter port.S
 	conditions := []string{
 		fmt.Sprintf("id IN (%s)", strings.Join(placeholders, ",")),
 	}
-	if filter.UserID > 0 {
-		conditions = append(conditions, "user_id = ?")
-		args = append(args, filter.UserID)
-	}
 	if len(filter.DocumentIDs) > 0 {
+		// 有精确文档 ID 时，仅用 document_id 过滤，不叠加 user_id
+		// （安全性由 biz 层白名单保证，系统文档 user_id=0 也能被检索）
 		docPlaceholders := make([]string, len(filter.DocumentIDs))
 		for i, id := range filter.DocumentIDs {
 			docPlaceholders[i] = "?"
 			args = append(args, id)
 		}
 		conditions = append(conditions, fmt.Sprintf("document_id IN (%s)", strings.Join(docPlaceholders, ",")))
+	} else if filter.UserID > 0 {
+		conditions = append(conditions, "user_id = ?")
+		args = append(args, filter.UserID)
 	}
 
 	metaSQL := fmt.Sprintf(`
