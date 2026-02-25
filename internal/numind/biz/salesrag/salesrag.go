@@ -881,7 +881,7 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 	prompt.WriteString("### 选项B：保守型（共情风格）\n")
 	prompt.WriteString("侧重理解客户压力、提供情绪价值、建立信任关系。话术温暖包容。\n（直接写给客户的话术，可分多段）\n\n")
 	prompt.WriteString("### 选项C：高势能回复（专业风格）\n")
-	prompt.WriteString("侧重展现专业判断力、行业高度与决策感，通过观点输出建立“选你没错”的心理认知。话术逻辑犀利、引用数据/案例佐证、指出提问者背后的认知盲区。\n（直接写给客户的话术，可分多段）\n\n")
+	prompt.WriteString("侧重展现专业判断力、行业高度与决策感，通过观点输出建立\u201c选你没错\u201d的心理认知。话术逻辑犀利、引用数据/案例佐证、指出提问者背后的认知盲区。\n（直接写给客户的话术，可分多段）\n\n")
 	prompt.WriteString("---\n")
 
 	// 核心规则
@@ -1746,51 +1746,60 @@ func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint,
 		}
 	}
 
-	// 2. 添加最终提示词 (Unified Prompt)
-	// 2. 添加最终提示词 (Unified Prompt)
-	// 2. 添加最终提示词 (Unified Prompt)
-	// 2. 添加最终提示词 (Unified Prompt)
-	unifiedPrompt := `
-### 角色定义
-你是一位拥有20年B2B销售经验的**商业洞察专家**。你擅长通过零散的信息（无论是正式的招标文档、需求清单，还是非正式的聊天记录截图）拼凑出完整的客户全貌。
+	// 2. 构建 system + user 消息（DEC-016: system/user 分离）
+	systemPrompt := `你是一位拥有20年B2B销售经验的商业洞察专家。你擅长通过零散的信息（无论是正式的招标文档、需求清单，还是非正式的聊天记录截图）拼凑出完整的客户全貌。
 
-### 任务说明
-用户将上传一组资料（可能是单一的类型，如图片，也可能是混合资料）。请分析这些材料，生成一份**客户画像分析报告**。
+## 核心原则
 
-### 核心原则
-1. **输入灵活性**：用户上传的资料可能不完整。对于无法从资料中获取的信息，请直接留空或标注“依据不足”，严禁臆造。
-2. **术语准确性**：使用专业的销售术语（如：决策链、卡点、显性/隐性需求）。
-3. **去伪存真**：能够识别客户的“烟雾弹”。例如：客户一直在谈价格（显性），可能真实原因是怕决策失误（隐性卡点）。
+1. **事实优先，严禁臆造**：所有结论必须有素材中的原文或截图内容作为依据。对于无法从资料中获取的信息，直接留空或标注"依据不足"。宁可少写，也不编造。
+2. **区分事实与推断**：直接引用素材的信息标记为事实；需要推理的信息必须标注推理依据（如"根据对话中提到XX，推断..."）。
+3. **术语准确**：使用专业销售术语（决策链、卡点、显性/隐性需求等）。
+4. **识别烟雾弹**：客户表面诉求未必是真实诉求。例如客户反复谈价格（显性），真实原因可能是怕决策失误（隐性卡点）。但这类推断必须注明依据。
 
-### 输出格式（Markdown）
-请直接用 markdown 格式输出以下结构，不要有任何开场白或结束语或用别的格式包裹：
+## 分析步骤
+
+在输出报告之前，请先完成以下内部分析（不需要输出分析过程）：
+1. 识别素材中出现的所有人物角色及其关系（谁是客户、谁是销售、谁是决策者等）
+2. 梳理事件或需求的时间线（如有）
+3. 提取所有明确的事实信息（客户直接说的话、文档中的数据）
+4. 基于事实进行有限度的推断（必须有依据支撑）
+5. 按下方模板组织输出
+
+## 输出格式
+
+请直接用 Markdown 格式输出以下结构，不要有任何开场白或结束语：
 
 #### 客户背景
-- **关键角色判断**：根据现有信息，判断客户的行业、赛道、公司规模、职位、决策链角色等。
-- **业务场景聚焦**：客户所在的行业及当前关注的具体业务问题。
+- **行业/赛道**：（依据不足则留空）
+- **公司规模**：（依据不足则留空）
+- **关键角色**：判断对方在决策链中的角色（决策者/影响者/使用者），附判断依据
+- **业务场景**：客户当前关注的具体业务问题
 
-#### 需求与博弈分析
-- **显性需求清单**：文档或沟通中明确提出的具体需求
-- **隐形卡点挖掘**：阻碍项目推进的潜在因素，如：对方案稳定性的担忧、内部利益冲突、预算等
+#### 需求分析
+- **显性需求**：文档或沟通中明确提出的具体需求（逐条列出）
+- **隐性卡点**：可推断的阻碍因素（每条必须附推理依据，格式："现象 → 推断 → 依据"）
 
-#### 关键信息
-- **关键信息**：如果提供的信息中，除了以上内容以外，仍有非常重要且确定的关键信息，则可以补充在此处。如果没有则可以忽略。
-`
-	contentParts = append(contentParts, map[string]interface{}{
-		"type": "text",
-		"text": unifiedPrompt,
-	})
+#### 竞争与预算线索
+- **竞品线索**：素材中提到或暗示的竞品、替代方案（依据不足则标注"未提及"）
+- **预算信号**：价格敏感度、预算区间等线索（依据不足则标注"未提及"）
 
-	// 3. 调用多模态模型 (Doubao-Seed-2.0-Lite)
+#### 关键信息摘要
+- 不属于以上类别、但确定且重要的信息（如果没有则省略此板块）`
+
+	// 3. 调用多模态模型 (Doubao-Seed-2.0-Lite, thinking: medium)
 	messages := []map[string]interface{}{
+		{
+			"role":    "system",
+			"content": systemPrompt,
+		},
 		{
 			"role":    "user",
 			"content": contentParts,
 		},
 	}
 
-	log.Printf("[AnalyzeProfileMultiFiles] Calling Volc StreamChatWithModel with %d parts", len(contentParts))
-	return b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "low", func(event string, token string) error {
+	log.Printf("[AnalyzeProfileMultiFiles] Calling Volc StreamChatWithModel with %d content parts", len(contentParts))
+	return b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "medium", func(event string, token string) error {
 		if event == "message" {
 			return onToken(token)
 		}
