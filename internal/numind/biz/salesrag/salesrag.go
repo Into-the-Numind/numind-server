@@ -32,11 +32,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// 观点库业务限制常量
-const (
-	maxOpinionTracks = 2 // 系统赛道最多选 2 个
-	maxOpinionDocs   = 3 // 用户观点文档最多选 3 个
-)
+// 观点库业务限制常量：系统赛道 + 自定义赛道合计上限
+const maxOpinionTotal = 2
 
 // 文档分类常量
 const (
@@ -1094,12 +1091,9 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, str
 
 // CreateSession 创建新的销售会话
 func (b *salesRAGBiz) CreateSession(ctx context.Context, userID uint, req CreateSessionRequest) (*model.SalesSession, error) {
-	// 校验观点库上限：赛道最多 2 个，观点文档最多 3 个
-	if len(req.OpinionTrackIDs) > maxOpinionTracks {
-		return nil, fmt.Errorf("最多选择 %d 个系统赛道", maxOpinionTracks)
-	}
-	if len(req.OpinionDocIDs) > maxOpinionDocs {
-		return nil, fmt.Errorf("最多选择 %d 个观点文档", maxOpinionDocs)
+	// 校验观点库上限：系统赛道 + 自定义赛道合计最多 2 个
+	if len(req.OpinionTrackIDs)+len(req.OpinionDocIDs) > maxOpinionTotal {
+		return nil, fmt.Errorf("系统赛道与自定义赛道合计最多选择 %d 个", maxOpinionTotal)
 	}
 
 	// 序列化 DocumentIDs 为 JSON（向后兼容）
@@ -1156,12 +1150,9 @@ func (b *salesRAGBiz) UpdateSession(ctx context.Context, userID uint, sessionID 
 	log.Printf("[UpdateSession] CaseDocIDs: %v (len: %d)", req.CaseDocIDs, len(req.CaseDocIDs))
 	log.Printf("[UpdateSession] FAQDocIDs: %v (len: %d)", req.FAQDocIDs, len(req.FAQDocIDs))
 
-	// 校验观点库上限
-	if len(req.OpinionTrackIDs) > maxOpinionTracks {
-		return fmt.Errorf("最多选择 %d 个系统赛道", maxOpinionTracks)
-	}
-	if len(req.OpinionDocIDs) > maxOpinionDocs {
-		return fmt.Errorf("最多选择 %d 个观点文档", maxOpinionDocs)
+	// 校验观点库上限：系统赛道 + 自定义赛道合计最多 2 个
+	if len(req.OpinionTrackIDs)+len(req.OpinionDocIDs) > maxOpinionTotal {
+		return fmt.Errorf("系统赛道与自定义赛道合计最多选择 %d 个", maxOpinionTotal)
 	}
 
 	// 获取现有会话
@@ -1250,10 +1241,10 @@ func (b *salesRAGBiz) resolveTrackDocIDs(ctx context.Context, trackIDs []uint) [
 	if len(trackIDs) == 0 {
 		return nil
 	}
-	// 上限校验：最多 2 个赛道
-	if len(trackIDs) > 2 {
-		log.Printf("[resolveTrackDocIDs] Warning: too many track IDs (%d), truncating to 2", len(trackIDs))
-		trackIDs = trackIDs[:2]
+	// 上限校验：最多 maxOpinionTotal 个赛道（合计上限的保护）
+	if len(trackIDs) > maxOpinionTotal {
+		log.Printf("[resolveTrackDocIDs] Warning: too many track IDs (%d), truncating to %d", len(trackIDs), maxOpinionTotal)
+		trackIDs = trackIDs[:maxOpinionTotal]
 	}
 	var tracks []model.OpinionTrack
 	if err := b.ds.DB().WithContext(ctx).Where("id IN ? AND is_enabled = ?", trackIDs, true).Find(&tracks).Error; err != nil {
