@@ -11,6 +11,7 @@ import (
 type KnowledgeDocumentStore interface {
 	Create(ctx context.Context, doc *model.KnowledgeDocument) error
 	GetByID(ctx context.Context, id uint) (*model.KnowledgeDocument, error)
+	GetByIDs(ctx context.Context, ids []uint) ([]*model.KnowledgeDocument, error)
 	ListByUser(ctx context.Context, userID uint) ([]*model.KnowledgeDocument, error)
 	ListSystemDocs(ctx context.Context) ([]*model.KnowledgeDocument, error) // 查询系统内置文档
 	Update(ctx context.Context, doc *model.KnowledgeDocument) error
@@ -37,6 +38,17 @@ func (s *knowledgeDocuments) GetByID(ctx context.Context, id uint) (*model.Knowl
 		return nil, err
 	}
 	return &doc, nil
+}
+
+func (s *knowledgeDocuments) GetByIDs(ctx context.Context, ids []uint) ([]*model.KnowledgeDocument, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var docs []*model.KnowledgeDocument
+	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&docs).Error; err != nil {
+		return nil, err
+	}
+	return docs, nil
 }
 
 func (s *knowledgeDocuments) ListByUser(ctx context.Context, userID uint) ([]*model.KnowledgeDocument, error) {

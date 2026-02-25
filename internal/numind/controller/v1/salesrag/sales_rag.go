@@ -1,7 +1,6 @@
 package salesrag
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -124,7 +123,7 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 	}
 
 	// 注入 userID 到请求 context 中，供业务层使用
-	newCtx := context.WithValue(c.Request.Context(), "userID", user.ID)
+	newCtx := middleware.NewContextWithUserID(c.Request.Context(), user.ID)
 
 	// 设置 SSE 响应头
 	c.Header("Content-Type", "text/event-stream")

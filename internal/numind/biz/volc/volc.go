@@ -26,7 +26,7 @@ type OpenAIConfig struct {
 }
 
 type VolcBiz interface {
-	GenerateArticleContent(content string, contentType string, maxLength int, cfg *OpenAIConfig, prompt string) (string, error)
+	GenerateArticleContent(ctx context.Context, content string, contentType string, maxLength int, cfg *OpenAIConfig, prompt string) (string, error)
 	// 新增流式文本生成方法，与ali的QianwenTextStream保持一致
 	VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error)
 	// 火山方舟 Embedding 向量化
@@ -60,7 +60,7 @@ func NewVolcBiz(ds store.IStore) VolcBiz {
 }
 
 // GenerateArticleContent 通用内容生成函数
-func (v *volcBiz) GenerateArticleContent(content string, contentType string, maxLength int, cfg *OpenAIConfig, prompt string) (string, error) {
+func (v *volcBiz) GenerateArticleContent(ctx context.Context, content string, contentType string, maxLength int, cfg *OpenAIConfig, prompt string) (string, error) {
 	if cfg == nil {
 		cfg = &OpenAIConfig{
 			APIKey:      viper.GetString("volc.api_key"),
@@ -129,7 +129,7 @@ func (v *volcBiz) GenerateArticleContent(content string, contentType string, max
 		Method:  "POST",
 		URL:     url,
 		Body:    bytes.NewBuffer(bodyBytes),
-		Context: context.Background(),
+		Context: ctx,
 		Headers: map[string]string{
 			"Content-Type":  "application/json",
 			"Authorization": "Bearer " + cfg.APIKey,
@@ -405,14 +405,6 @@ func (v *volcBiz) DoubaoEmbedding(ctx context.Context, text string) ([]float32, 
 
 	log.C(ctx).Debugw("Embedding成功", "vector_dim", len(vector))
 	return vector, nil
-}
-
-// min 返回两个整数中的较小值
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // StreamChat 真正的流式聊天方法
@@ -1011,14 +1003,18 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 			if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
 				thinkingContent.WriteString(rc)
 				if onEvent != nil {
-					onEvent("thinking", rc)
+					if err := onEvent("thinking", rc); err != nil {
+						return fullContent.String(), err
+					}
 				}
 			}
 
 			if content, ok := delta["content"].(string); ok && content != "" {
 				fullContent.WriteString(content)
 				if onEvent != nil {
-					onEvent("message", content)
+					if err := onEvent("message", content); err != nil {
+						return fullContent.String(), err
+					}
 				}
 			}
 		}

@@ -94,7 +94,7 @@ func main() {
 
 	// 查询 MySQL 中所有有效切片
 	var chunks []model.KnowledgeChunk
-	result := db.Where("embedding_status = ? OR embedding_status = ?", "COMPLETED", "PENDING").
+	result := db.Where("embedding_status = ?", "COMPLETED").
 		Order("document_id, sequence").
 		Find(&chunks)
 	if result.Error != nil {

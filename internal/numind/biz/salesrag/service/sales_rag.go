@@ -290,9 +290,13 @@ func (s *SalesRAGService) parallelSearch(
 	// 收集结果
 	var allChunks []domain.KnowledgeChunk
 	seenIDs := make(map[string]bool)
+	var failCount int
+	var lastErr error
 
 	for result := range resultChan {
 		if result.err != nil {
+			failCount++
+			lastErr = result.err
 			log.C(ctx).Warnw("Search query failed", "error", result.err)
 			continue
 		}
@@ -305,6 +309,11 @@ func (s *SalesRAGService) parallelSearch(
 		}
 	}
 
+	// 所有查询都失败时返回错误，避免静默降级
+	if failCount == len(queries) && lastErr != nil {
+		return nil, fmt.Errorf("all %d search queries failed: %w", failCount, lastErr)
+	}
+
 	return allChunks, nil
 }
 
@@ -312,30 +321,28 @@ func (s *SalesRAGService) parallelSearch(
 // 低于此阈值的结果将被丢弃（最少保留 1 条）
 const rerankScoreThreshold = 0.3
 
-// rerankChunks 使用 Rerank 模型进行重排序，并按分数截断
-func (s *SalesRAGService) rerankChunks(
+// rerankWithLimit 通用 Rerank：按 topN 截断 + 分数阈值过滤 + 兜底至少 1 条
+func (s *SalesRAGService) rerankWithLimit(
 	ctx context.Context,
 	query string,
 	chunks []domain.KnowledgeChunk,
+	topN int,
+	label string,
 ) ([]domain.KnowledgeChunk, error) {
 	if len(chunks) <= 1 {
-		return chunks, nil // 只有 1 条无需 rerank
+		return chunks, nil
 	}
 
-	// 准备 documents 列表 (发送全量 Content)
 	documents := make([]string, len(chunks))
 	for i, chunk := range chunks {
 		documents[i] = chunk.Content
 	}
 
-	// 调用 Rerank API（返回索引+分数）
-	rerankResults, err := s.dmxClient.Rerank(ctx, query, documents, 5)
+	rerankResults, err := s.dmxClient.Rerank(ctx, query, documents, topN)
 	if err != nil {
 		return nil, err
 	}
 
-	// 根据索引提取 Chunk，用 Rerank Score 覆写原始余弦相似度
-	// 同时应用分数截断：score >= 0.3 的保留，最少 1 条，最多 5 条
 	result := make([]domain.KnowledgeChunk, 0, len(rerankResults))
 	for i, rr := range rerankResults {
 		if rr.Index < 0 || rr.Index >= len(chunks) {
@@ -346,7 +353,7 @@ func (s *SalesRAGService) rerankChunks(
 			continue
 		}
 		chunk := chunks[rr.Index]
-		chunk.Score = float32(rr.Score) // 用 Rerank Score 覆写，前端展示此分数
+		chunk.Score = float32(rr.Score)
 		result = append(result, chunk)
 	}
 
@@ -360,7 +367,7 @@ func (s *SalesRAGService) rerankChunks(
 		}
 	}
 
-	log.C(ctx).Infow("Rerank completed",
+	log.C(ctx).Infow(label+" completed",
 		"input_count", len(chunks),
 		"output_count", len(result),
 		"threshold", rerankScoreThreshold,
@@ -374,58 +381,12 @@ func (s *SalesRAGService) rerankChunks(
 	return result, nil
 }
 
-// rerankOpinionChunks 观点库专用 Rerank：top 2，阈值 0.3，兜底至少 1 条
-func (s *SalesRAGService) rerankOpinionChunks(
-	ctx context.Context,
-	query string,
-	chunks []domain.KnowledgeChunk,
-) ([]domain.KnowledgeChunk, error) {
-	if len(chunks) <= 1 {
-		return chunks, nil
-	}
+// rerankChunks 使用 Rerank 模型进行重排序（top 5）
+func (s *SalesRAGService) rerankChunks(ctx context.Context, query string, chunks []domain.KnowledgeChunk) ([]domain.KnowledgeChunk, error) {
+	return s.rerankWithLimit(ctx, query, chunks, 5, "Rerank")
+}
 
-	documents := make([]string, len(chunks))
-	for i, chunk := range chunks {
-		documents[i] = chunk.Content
-	}
-
-	rerankResults, err := s.dmxClient.Rerank(ctx, query, documents, 2)
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]domain.KnowledgeChunk, 0, len(rerankResults))
-	for i, rr := range rerankResults {
-		if rr.Index < 0 || rr.Index >= len(chunks) {
-			continue
-		}
-		if i > 0 && rr.Score < rerankScoreThreshold {
-			continue
-		}
-		chunk := chunks[rr.Index]
-		chunk.Score = float32(rr.Score)
-		result = append(result, chunk)
-	}
-
-	if len(result) == 0 && len(rerankResults) > 0 {
-		bestIdx := rerankResults[0].Index
-		if bestIdx >= 0 && bestIdx < len(chunks) {
-			chunk := chunks[bestIdx]
-			chunk.Score = float32(rerankResults[0].Score)
-			result = append(result, chunk)
-		}
-	}
-
-	log.C(ctx).Infow("Opinion rerank completed",
-		"input_count", len(chunks),
-		"output_count", len(result),
-		"threshold", rerankScoreThreshold,
-		"top_score", func() float64 {
-			if len(rerankResults) > 0 {
-				return rerankResults[0].Score
-			}
-			return 0
-		}())
-
-	return result, nil
+// rerankOpinionChunks 观点库专用 Rerank（top 2）
+func (s *SalesRAGService) rerankOpinionChunks(ctx context.Context, query string, chunks []domain.KnowledgeChunk) ([]domain.KnowledgeChunk, error) {
+	return s.rerankWithLimit(ctx, query, chunks, 2, "Opinion rerank")
 }

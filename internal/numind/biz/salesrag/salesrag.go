@@ -20,6 +20,7 @@ import (
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
 
@@ -310,7 +311,7 @@ func (b *salesRAGBiz) Retrieve(ctx context.Context, query string, docIDs []uint)
 
 	// 1. 从上下文获取用户ID
 	var userID uint
-	if uid, ok := ctx.Value("userID").(uint); ok {
+	if uid, ok := middleware.UserIDFromCtx(ctx); ok {
 		userID = uid
 	} else {
 		return nil, fmt.Errorf("user_id not found in context")
@@ -571,7 +572,7 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, verdict 
 func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, opinionDocIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, salesStage string, onEvent func(eventType string, data interface{}) error) error {
 	// 1. 从上下文获取用户ID
 	var userID uint
-	if uid, ok := ctx.Value("userID").(uint); ok {
+	if uid, ok := middleware.UserIDFromCtx(ctx); ok {
 		userID = uid
 	} else {
 		return onEvent("error", "user_id not found in context")
@@ -2316,52 +2317,48 @@ func CheckSemanticSplitterStatus() (bool, string, error) {
 	return false, info, nil
 }
 
-// enrichChunksWithDocNames 为 chunks 填充 document_name 字段
-// 通过批量查询数据库获取文档信息，避免 N+1 查询
+// enrichChunksWithDocNames 为 chunks 填充 document_name 字段（单次批量查询）
 func (b *salesRAGBiz) enrichChunksWithDocNames(ctx context.Context, chunks []domain.KnowledgeChunk) {
 	if len(chunks) == 0 {
-		log.Printf("[enrichChunksWithDocNames] No chunks to process")
 		return
 	}
 
-	log.Printf("[enrichChunksWithDocNames] Processing %d chunks", len(chunks))
-
 	// 1. 收集所有唯一的 document_id
 	docIDSet := make(map[uint]bool)
-	for i, chunk := range chunks {
-		log.Printf("[enrichChunksWithDocNames] Chunk %d: ID=%s, DocID=%d, Score=%f", i, chunk.ID, chunk.DocumentID, chunk.Score)
+	for _, chunk := range chunks {
 		if chunk.DocumentID > 0 {
 			docIDSet[chunk.DocumentID] = true
 		}
 	}
-
 	if len(docIDSet) == 0 {
-		log.Printf("[enrichChunksWithDocNames] No document IDs found in chunks")
 		return
 	}
 
-	log.Printf("[enrichChunksWithDocNames] Found %d unique document IDs", len(docIDSet))
+	ids := make([]uint, 0, len(docIDSet))
+	for id := range docIDSet {
+		ids = append(ids, id)
+	}
 
-	// 2. 批量查询文档信息
-	docIDToName := make(map[uint]string)
-	for docID := range docIDSet {
-		doc, err := b.ds.KnowledgeDocuments().GetByID(ctx, docID)
-		if err != nil {
-			log.Printf("[enrichChunksWithDocNames] Warning: failed to get document %d: %v", docID, err)
-			continue
-		}
-		docIDToName[docID] = doc.Name
-		log.Printf("[enrichChunksWithDocNames] Document %d -> Name: %s", docID, doc.Name)
+	// 2. 单次批量查询（替代 N+1 逐条查询）
+	docs, err := b.ds.KnowledgeDocuments().GetByIDs(ctx, ids)
+	if err != nil {
+		log.Printf("[enrichChunksWithDocNames] batch query failed: %v", err)
+		return
+	}
+
+	docIDToName := make(map[uint]string, len(docs))
+	for _, doc := range docs {
+		docIDToName[doc.ID] = doc.Name
 	}
 
 	// 3. 填充文档名称
+	enriched := 0
 	for i := range chunks {
 		if name, ok := docIDToName[chunks[i].DocumentID]; ok {
 			chunks[i].DocumentName = name
-			log.Printf("[enrichChunksWithDocNames] Set chunk %d DocumentName to: %s", i, name)
+			enriched++
 		}
 	}
 
-	log.Printf("[enrichChunksWithDocNames] Finished processing. First chunk: DocName=%s, Score=%f",
-		chunks[0].DocumentName, chunks[0].Score)
+	log.Printf("[enrichChunksWithDocNames] %d chunks, %d docs, %d enriched", len(chunks), len(docIDSet), enriched)
 }

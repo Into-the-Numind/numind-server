@@ -35,7 +35,7 @@ func GenerateArticleContentHandler(b volc.VolcBiz) gin.HandlerFunc {
 			Temperature: 0.5,
 			MaxTokens:   2000,
 		}
-		result, err := b.GenerateArticleContent(req.Content, req.ContentType, req.MaxLength, cfg, req.Prompt)
+		result, err := b.GenerateArticleContent(c.Request.Context(), req.Content, req.ContentType, req.MaxLength, cfg, req.Prompt)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -60,7 +60,7 @@ func BatchGenerateArticleContentHandler(b volc.VolcBiz) gin.HandlerFunc {
 		}
 		results := make([]string, 0, len(req.Contents))
 		for _, content := range req.Contents {
-			result, err := b.GenerateArticleContent(content, req.ContentType, req.MaxLength, cfg, req.Prompt)
+			result, err := b.GenerateArticleContent(c.Request.Context(), content, req.ContentType, req.MaxLength, cfg, req.Prompt)
 			if err != nil {
 				results = append(results, "ERROR: "+err.Error())
 			} else {

@@ -16,6 +16,7 @@ import (
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/numind/biz/salesrag/service"
+	"numind-server/internal/pkg/middleware"
 
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/suite"
@@ -110,7 +111,7 @@ func (s *DashVectorAuditSuite) TestFullRAGAudit() {
 		expected := qrels[qID]
 		startTime := time.Now()
 
-		testCtx := context.WithValue(s.ctx, "userID", s.testUserID)
+		testCtx := middleware.NewContextWithUserID(s.ctx, s.testUserID)
 		verdict, err := s.ragEx.RetrieveForResponseV2(testCtx, question, allDocIDs, nil, nil, "sales", s.testUserID, nil)
 		if err != nil {
 			t.Logf("[AUDIT] ERROR: Query %s failed: %v", qID, err)
