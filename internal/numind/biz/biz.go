@@ -5,6 +5,7 @@ package biz
 import (
 	"context"
 	"path/filepath"
+	"time"
 
 	accountrecordbiz "numind-server/internal/numind/biz/account_record"
 	"numind-server/internal/numind/biz/admin"
@@ -214,14 +215,15 @@ func NewBiz(ds store.IStore) *biz {
 
 	b.salesRAGService = salesrag.NewSalesRAGBiz(b.ds, pipeline, salesRAGSvc, b.Volc(), b.Ali(), salesSessionStore, parser)
 
-	// 系统内置观点赛道初始化（异步，不阻塞启动）
+	// 系统内置观点赛道初始化（异步，不阻塞启动，5 分钟超时保护）
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Errorw("Panic in opinion track seeder", "recover", r)
 			}
 		}()
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
 		seeder := seed.NewSeeder(b.ds.DB())
 		results := seeder.SeedOpinionTracks(ctx)
 		for slug, result := range results {

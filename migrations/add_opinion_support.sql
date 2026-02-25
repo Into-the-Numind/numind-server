@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS `opinion_track` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `idx_opinion_track_slug` (`slug`),
   KEY `idx_opinion_track_deleted_at` (`deleted_at`),
-  KEY `idx_opinion_track_doc_id` (`doc_id`)
+  KEY `idx_opinion_track_doc_id` (`doc_id`),
+  KEY `idx_opinion_track_enabled_order` (`is_enabled`, `sort_order`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 扩展 sales_session 表：新增观点库字段
