@@ -50,7 +50,7 @@ type SalesRAGBiz interface {
 	// RetrieveStream 流式检索知识并生成回答
 	// chatMode: "sales" (销售话术) 或 "free" (自由讨论)
 	// onEvent: 事件回调，eventType 可为 "verdict"/"token"/"error"/"done"
-	RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, salesStage string, onEvent func(eventType string, data interface{}) error) error
+	RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, opinionDocIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, salesStage string, onEvent func(eventType string, data interface{}) error) error
 	// ListDocuments 获取用户的文档列表
 	ListDocuments(ctx context.Context, userID uint) ([]domain.KnowledgeDocument, error)
 	// GetDocument 获取单个文档详情
@@ -568,7 +568,7 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, verdict 
 // RetrieveStream 流式检索知识并生成回答
 // chatMode: "sales" (销售话术) 或// RetrieveStream 流式检索知识并生成回答
 // 修改：增加 docCategoryMap 参数，用于传递文档分类信息
-func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, salesStage string, onEvent func(eventType string, data interface{}) error) error {
+func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, opinionDocIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, salesStage string, onEvent func(eventType string, data interface{}) error) error {
 	// 1. 从上下文获取用户ID
 	var userID uint
 	if uid, ok := ctx.Value("userID").(uint); ok {
@@ -612,14 +612,24 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 		}
 	}
 
+	// 4b. 过滤观点库 docIDs
+	var filteredOpinionDocIDs []uint
+	if len(opinionDocIDs) > 0 {
+		for _, id := range opinionDocIDs {
+			if enabledDocIDs[id] {
+				filteredOpinionDocIDs = append(filteredOpinionDocIDs, id)
+			}
+		}
+	}
+
 	// 发送状态：正在检索知识库与匹配策略
 	if err := onEvent("status", "正在检索知识库与匹配策略..."); err != nil {
 		return err
 	}
 
 	// 6. 执行检索（使用 V2 版本，传递 chatMode 和 history）
-	// 注意：RetrieveForResponseV2 内部并行执行 RAG 检索和策略选择
-	verdict, err := b.ragSvc.RetrieveForResponseV2(ctx, query, filteredDocIDs, history, chatMode, userID, func(status string) {
+	// 注意：RetrieveForResponseV2 内部并行执行 RAG 检索、策略选择和观点库独立检索
+	verdict, err := b.ragSvc.RetrieveForResponseV2(ctx, query, filteredDocIDs, filteredOpinionDocIDs, history, chatMode, userID, func(status string) {
 		_ = onEvent("status", status)
 	})
 	if err != nil {
@@ -631,6 +641,7 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 
 	// 7. 填充 evidence 中的 document_name（从数据库查询）
 	b.enrichChunksWithDocNames(ctx, verdict.Evidence)
+	b.enrichChunksWithDocNames(ctx, verdict.OpinionEvidence)
 
 	// 8. 立即发送 verdict 事件
 	if err := onEvent("verdict", verdict); err != nil {
@@ -702,15 +713,13 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 	languageStyle = truncate(languageStyle, maxLanguageStyleChars)
 	query = truncate(query, maxUserInputChars)
 
-	// 构建知识上下文（附带 Rerank 置信度信号）
-	// 构建知识上下文（按分类分组）
+	// 构建知识上下文（按分类分组，观点库走独立通道）
 	var knowledgeContext string
 	allChunks := verdict.Evidence
-	if len(allChunks) > 0 {
-		// 分组存储内容
+	if len(allChunks) > 0 || len(verdict.OpinionEvidence) > 0 {
+		// 分组存储内容（常规知识库，不含观点库）
 		categorizedContent := make(map[string][]string)
-		// 预定义顺序
-		categories := []string{catProduct, catCase, catFAQ, catOpinion, catOther}
+		categories := []string{catProduct, catCase, catFAQ, catOther}
 
 		for i, chunk := range allChunks {
 			category := catOther
@@ -734,6 +743,21 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 				section := fmt.Sprintf("### %s\n%s", cat, strings.Join(contents, "\n\n"))
 				contextParts = append(contextParts, section)
 			}
+		}
+
+		// 观点库独立区域（来自 OpinionEvidence 独立通道）
+		if len(verdict.OpinionEvidence) > 0 {
+			var opinionLines []string
+			for i, chunk := range verdict.OpinionEvidence {
+				idx := len(allChunks) + i + 1
+				if chunk.Score > 0 {
+					opinionLines = append(opinionLines, fmt.Sprintf("[知识%d] (相关度:%.0f%%) %s", idx, chunk.Score*100, chunk.Content))
+				} else {
+					opinionLines = append(opinionLines, fmt.Sprintf("[知识%d] %s", idx, chunk.Content))
+				}
+			}
+			opinionSection := fmt.Sprintf("### 观点库参考\n%s", strings.Join(opinionLines, "\n\n"))
+			contextParts = append(contextParts, opinionSection)
 		}
 
 		knowledgeContext = strings.Join(contextParts, "\n\n")
@@ -1365,15 +1389,18 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	// 将系统赛道 ID 解析为对应的文档 ID
 	trackDocIDs := b.resolveTrackDocIDs(ctx, opinionTrackIDs)
 
-	// 合并所有分类文档 ID
+	// 合并非观点分类文档 ID（观点库走独立通道）
 	sessionDocIDs = append(sessionDocIDs, productDocIDs...)
 	sessionDocIDs = append(sessionDocIDs, caseDocIDs...)
 	sessionDocIDs = append(sessionDocIDs, faqDocIDs...)
-	sessionDocIDs = append(sessionDocIDs, opinionDocIDs...)
-	sessionDocIDs = append(sessionDocIDs, trackDocIDs...)
 
-	// 向后兼容：如果三个分类字段都为空，则 fallback 到旧 document_ids 字段
-	if len(sessionDocIDs) == 0 && session.DocumentIDs != "" && session.DocumentIDs != "null" {
+	// 观点文档单独收集，不混入 sessionDocIDs
+	allOpinionDocIDs := make([]uint, 0, len(opinionDocIDs)+len(trackDocIDs))
+	allOpinionDocIDs = append(allOpinionDocIDs, opinionDocIDs...)
+	allOpinionDocIDs = append(allOpinionDocIDs, trackDocIDs...)
+
+	// 向后兼容：如果所有分类字段都为空，则 fallback 到旧 document_ids 字段
+	if len(sessionDocIDs) == 0 && len(allOpinionDocIDs) == 0 && session.DocumentIDs != "" && session.DocumentIDs != "null" {
 		if err := json.Unmarshal([]byte(session.DocumentIDs), &sessionDocIDs); err != nil {
 			log.Printf("[ChatWithSession] Warning: failed to parse session document_ids: %v", err)
 		}
@@ -1422,7 +1449,7 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	var verdictJSON string
 	var thinkingText string
 
-	err = b.RetrieveStream(ctx, query, history, sessionDocIDs, docCategoryMap, deepThinking, chatMode, session.CustomerProfile, session.SalesStage, func(eventType string, data interface{}) error {
+	err = b.RetrieveStream(ctx, query, history, sessionDocIDs, allOpinionDocIDs, docCategoryMap, deepThinking, chatMode, session.CustomerProfile, session.SalesStage, func(eventType string, data interface{}) error {
 		switch eventType {
 		case "verdict":
 			// 序列化 verdict 为 JSON

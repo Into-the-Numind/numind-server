@@ -32,6 +32,9 @@ type RetrievalVerdict struct {
 
 	// V4 知识库分类
 	DocCategoryMap map[uint]string `json:"doc_category_map,omitempty"` // 文档ID→分类 (product/case/faq)
+
+	// V5 观点库独立通道
+	OpinionEvidence []domain.KnowledgeChunk `json:"opinion_evidence,omitempty"` // 观点库独立检索结果
 }
 
 // SalesRAGService 销售智能体 RAG 服务
@@ -75,8 +78,8 @@ func (s *SalesRAGService) RetrieveForResponse(
 	docIDs []uint,
 	userID uint,
 ) (*RetrievalVerdict, error) {
-	// 直接调用 V2 接口，默认使用 sales 模式
-	return s.RetrieveForResponseV2(ctx, query, docIDs, nil, "sales", userID, nil)
+	// 直接调用 V2 接口，默认使用 sales 模式（无独立观点库通道）
+	return s.RetrieveForResponseV2(ctx, query, docIDs, nil, nil, "sales", userID, nil)
 }
 
 // RetrieveForResponseV2 V2 版检索流程
@@ -90,6 +93,7 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 	ctx context.Context,
 	query string,
 	docIDs []uint,
+	opinionDocIDs []uint,
 	history []string,
 	chatMode string,
 	userID uint,
@@ -128,13 +132,15 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 			"total_queries", len(allSearchQueries))
 	}
 
-	// 2. 并行执行：RAG 检索 + 策略选择
+	// 2. 并行执行：RAG 检索 + 策略选择 + 观点库独立检索
 	if onStatus != nil {
 		onStatus(fmt.Sprintf("正在全库检索 (并发 %d 路)...", len(allSearchQueries)))
 	}
 	var wg sync.WaitGroup
 	var allChunks []domain.KnowledgeChunk
 	var chunksErr error
+	var opinionChunks []domain.KnowledgeChunk
+	var opinionErr error
 	var strategy *domain.BasicStrategy
 
 	// 2a. 并行 - RAG 检索（使用包含 HyDE 的完整搜索列表）
@@ -161,11 +167,27 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 		}()
 	}
 
+	// 2c. 并行 - 观点库独立检索（复用通用搜索词）
+	if len(opinionDocIDs) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			opinionFilter := port.SearchFilter{
+				UserID:      userID,
+				DocumentIDs: opinionDocIDs,
+			}
+			opinionChunks, opinionErr = s.parallelSearch(ctx, allSearchQueries, opinionFilter)
+		}()
+	}
+
 	wg.Wait()
 
 	// 处理检索错误
 	if chunksErr != nil {
 		return nil, fmt.Errorf("parallel search failed: %w", chunksErr)
+	}
+	if opinionErr != nil {
+		log.C(ctx).Warnw("Opinion search failed, continuing without opinion evidence", "error", opinionErr)
 	}
 
 	// 设置策略结果
@@ -183,30 +205,50 @@ func (s *SalesRAGService) RetrieveForResponseV2(
 		"total_chunks", len(allChunks),
 		"has_strategy", strategy != nil)
 
-	// 3. 如果检索结果为空，直接返回
+	// 3. 常规知识库 Rerank
 	if len(allChunks) == 0 {
 		verdict.Reason = "未检索到相关知识"
-		return verdict, nil
+	} else {
+		// 4. Rerank (仅返回 Top 5-7 的索引)
+		if onStatus != nil {
+			onStatus(fmt.Sprintf("检索到 %d 条相关知识，正在重排序...", len(allChunks)))
+		}
+		rerankedChunks, err := s.rerankChunks(ctx, query, allChunks)
+		if err != nil {
+			// Rerank 失败时 Fallback 到原始 Top 5
+			log.C(ctx).Warnw("Rerank failed, using original top chunks", "error", err)
+			if len(allChunks) > 5 {
+				rerankedChunks = allChunks[:5]
+			} else {
+				rerankedChunks = allChunks
+			}
+		}
+
+		verdict.Evidence = rerankedChunks
+		verdict.Reason = fmt.Sprintf("检索到 %d 条知识，Rerank 后保留 %d 条",
+			len(allChunks), len(rerankedChunks))
 	}
 
-	// 4. Rerank (仅返回 Top 5-7 的索引)
-	if onStatus != nil {
-		onStatus(fmt.Sprintf("检索到 %d 条相关知识，正在重排序...", len(allChunks)))
-	}
-	rerankedChunks, err := s.rerankChunks(ctx, query, allChunks)
-	if err != nil {
-		// Rerank 失败时 Fallback 到原始 Top 5
-		log.C(ctx).Warnw("Rerank failed, using original top chunks", "error", err)
-		if len(allChunks) > 5 {
-			rerankedChunks = allChunks[:5]
+	// 5. 观点库独立 Rerank（top 2，阈值 0.3）
+	if len(opinionChunks) > 0 {
+		rerankedOpinion, rerankErr := s.rerankOpinionChunks(ctx, query, opinionChunks)
+		if rerankErr != nil {
+			log.C(ctx).Warnw("Opinion rerank failed, using top chunks", "error", rerankErr)
+			if len(opinionChunks) > 2 {
+				rerankedOpinion = opinionChunks[:2]
+			} else {
+				rerankedOpinion = opinionChunks
+			}
+		}
+		verdict.OpinionEvidence = rerankedOpinion
+		if verdict.Reason == "" {
+			verdict.Reason = fmt.Sprintf("观点库 %d 条 Rerank 后保留 %d 条",
+				len(opinionChunks), len(rerankedOpinion))
 		} else {
-			rerankedChunks = allChunks
+			verdict.Reason += fmt.Sprintf("，观点库 %d 条 Rerank 后保留 %d 条",
+				len(opinionChunks), len(rerankedOpinion))
 		}
 	}
-
-	verdict.Evidence = rerankedChunks
-	verdict.Reason = fmt.Sprintf("检索到 %d 条知识，Rerank 后保留 %d 条",
-		len(allChunks), len(rerankedChunks))
 
 	return verdict, nil
 }
@@ -319,6 +361,62 @@ func (s *SalesRAGService) rerankChunks(
 	}
 
 	log.C(ctx).Infow("Rerank completed",
+		"input_count", len(chunks),
+		"output_count", len(result),
+		"threshold", rerankScoreThreshold,
+		"top_score", func() float64 {
+			if len(rerankResults) > 0 {
+				return rerankResults[0].Score
+			}
+			return 0
+		}())
+
+	return result, nil
+}
+
+// rerankOpinionChunks 观点库专用 Rerank：top 2，阈值 0.3，兜底至少 1 条
+func (s *SalesRAGService) rerankOpinionChunks(
+	ctx context.Context,
+	query string,
+	chunks []domain.KnowledgeChunk,
+) ([]domain.KnowledgeChunk, error) {
+	if len(chunks) <= 1 {
+		return chunks, nil
+	}
+
+	documents := make([]string, len(chunks))
+	for i, chunk := range chunks {
+		documents[i] = chunk.Content
+	}
+
+	rerankResults, err := s.dmxClient.Rerank(ctx, query, documents, 2)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]domain.KnowledgeChunk, 0, len(rerankResults))
+	for i, rr := range rerankResults {
+		if rr.Index < 0 || rr.Index >= len(chunks) {
+			continue
+		}
+		if i > 0 && rr.Score < rerankScoreThreshold {
+			continue
+		}
+		chunk := chunks[rr.Index]
+		chunk.Score = float32(rr.Score)
+		result = append(result, chunk)
+	}
+
+	if len(result) == 0 && len(rerankResults) > 0 {
+		bestIdx := rerankResults[0].Index
+		if bestIdx >= 0 && bestIdx < len(chunks) {
+			chunk := chunks[bestIdx]
+			chunk.Score = float32(rerankResults[0].Score)
+			result = append(result, chunk)
+		}
+	}
+
+	log.C(ctx).Infow("Opinion rerank completed",
 		"input_count", len(chunks),
 		"output_count", len(result),
 		"threshold", rerankScoreThreshold,

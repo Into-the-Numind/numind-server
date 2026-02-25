@@ -111,7 +111,7 @@ func (s *DashVectorAuditSuite) TestFullRAGAudit() {
 		startTime := time.Now()
 
 		testCtx := context.WithValue(s.ctx, "userID", s.testUserID)
-		verdict, err := s.ragEx.RetrieveForResponseV2(testCtx, question, allDocIDs, nil, "sales", s.testUserID, nil)
+		verdict, err := s.ragEx.RetrieveForResponseV2(testCtx, question, allDocIDs, nil, nil, "sales", s.testUserID, nil)
 		if err != nil {
 			t.Logf("[AUDIT] ERROR: Query %s failed: %v", qID, err)
 			continue
