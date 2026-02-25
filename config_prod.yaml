@@ -83,6 +83,12 @@ volc:
 resource:
   image_path: "/opt/numind/prod/image/upload"  # 图片上传路径（持久化）
 
+# SalesRAG 向量数据库配置（sqlite-vec 本地方案）
+salesrag:
+  vector_store:
+    type: "sqlitevec"   # sqlitevec | dashvector | memory
+    path: "/opt/numind/prod/sales_vector.db"
+
 # RAG 向量数据库配置
 rag:
   # 向量数据库存储路径（可选）

@@ -34,6 +34,7 @@ RUN go mod download
 COPY . .
 # CGO_ENABLED=1 是必须的，因为使用了 go-fitz (libmupdf)
 RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o numind cmd/numind/main.go
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o migrate-vectors cmd/migrate-vectors/main.go
 
 # 运行阶段 - 基于Ubuntu以获得更好的Chrome支持
 # 使用 Ubuntu 22.04 LTS（稳定版本，确保软件源可用）
@@ -201,6 +202,7 @@ COPY config_*.yaml ./
 # 根据构建参数选择二进制文件来源
 # 从构建阶段复制编译好的二进制文件
 COPY --from=builder /app/numind /app/numind
+COPY --from=builder /app/migrate-vectors /app/migrate-vectors
 COPY scripts /app/scripts
 # Copy jieba dictionary files
 COPY --from=builder /go/pkg/mod/github.com/yanyiwu/gojieba@v1.4.6/deps/cppjieba/dict /app/dict
@@ -240,6 +242,7 @@ RUN chown -R numind:numind /opt/numind && \
     chmod -R 775 /app/logs && \
     chmod -R 775 /app/temp && \
     chmod +x /app/numind && \
+    chmod +x /app/migrate-vectors && \
     # 确保父目录也有正确权限
     chmod 775 /opt/numind/dev && \
     chmod 775 /opt/numind/dev/image && \
