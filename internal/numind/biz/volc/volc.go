@@ -42,8 +42,9 @@ type VolcBiz interface {
 
 	// ChatWithModel 非流式聊天，支持指定模型
 	ChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64) (string, error)
-	// StreamChatWithModel 流式聊天，支持指定模型和深度思考
-	StreamChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
+	// StreamChatWithModel 流式聊天，支持指定模型和思考程度
+	// reasoningEffort: doubao-seed 系列使用 "minimal"/"low"/"medium"/"high"；其他模型非空时开启 thinking
+	StreamChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64, reasoningEffort string, onEvent func(event string, token string) error) (string, error)
 }
 
 type volcBiz struct {
@@ -887,15 +888,10 @@ func (v *volcBiz) ChatWithModel(ctx context.Context, messages []map[string]inter
 	return result.Choices[0].Message.Content, nil
 }
 
-// StreamChatWithModel 流式聊天，支持指定模型
-func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error) {
+// StreamChatWithModel 流式聊天，支持指定模型和思考程度
+func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64, reasoningEffort string, onEvent func(event string, token string) error) (string, error) {
 	if model == "" {
 		model = viper.GetString("volc.model")
-	}
-
-	thinkingType := "disabled"
-	if deepThinking {
-		thinkingType = "enabled"
 	}
 
 	bodyMap := map[string]interface{}{
@@ -911,16 +907,19 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 	// doubao-seed 系列模型使用 reasoning_effort 参数控制思考程度
 	// minimal: 不思考; low/medium/high: 开启思考并控制程度
 	if strings.Contains(model, "doubao-seed") {
-		// 用户指示 "我们应使用“medium”的推理模式"。
-		// 所以这里忽略 deepThinking 参数，统一使用 medium。
-		bodyMap["reasoning_effort"] = "medium"
+		if reasoningEffort == "" {
+			reasoningEffort = "medium"
+		}
+		bodyMap["reasoning_effort"] = reasoningEffort
 		bodyMap["max_completion_tokens"] = 65535
 		delete(bodyMap, "max_tokens")
-
-		// 确保移除 thinking 字段（如果之前有设置默认值的话）
 		delete(bodyMap, "thinking")
 	} else {
 		bodyMap["max_tokens"] = maxTokens
+		thinkingType := "disabled"
+		if reasoningEffort != "" && reasoningEffort != "minimal" {
+			thinkingType = "enabled"
+		}
 		bodyMap["thinking"] = map[string]interface{}{
 			"type": thinkingType,
 		}
