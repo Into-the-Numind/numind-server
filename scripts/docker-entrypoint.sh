@@ -96,6 +96,37 @@ check_python_deps() {
     return 0
 }
 
+# 检查并执行向量数据迁移（一次性，从 MySQL 迁移到 sqlitevec）
+check_and_migrate_vectors() {
+    local config_file="$1"
+
+    # 检查迁移工具是否存在
+    if [ ! -f "/app/migrate-vectors" ]; then
+        log_debug "迁移工具不存在，跳过向量迁移"
+        return 0
+    fi
+
+    # 使用哨兵文件避免重复迁移
+    local env="${APP_ENV:-dev}"
+    local sentinel="/opt/numind/${env}/.vectors_migrated"
+
+    if [ -f "$sentinel" ]; then
+        log_info "✅ 向量数据已迁移"
+        return 0
+    fi
+
+    log_info "🔄 首次启动，执行向量数据迁移 (MySQL → sqlitevec)..."
+    if CONFIG_FILE="$config_file" /app/migrate-vectors; then
+        log_info "✅ 向量迁移完成"
+        touch "$sentinel" 2>/dev/null || true
+    else
+        log_error "❌ 向量迁移失败，RAG 检索可能返回空结果"
+        log_warn "   手动重试: docker exec <container> CONFIG_FILE=$config_file /app/migrate-vectors"
+    fi
+
+    return 0
+}
+
 # 显示系统信息
 show_system_info() {
     log_info "📊 系统信息:"
@@ -150,7 +181,12 @@ main() {
     fi
     
     log_info "📄 使用配置文件: $CONFIG_FILE"
-    
+
+    echo ""
+
+    # 向量数据迁移检查（一次性，非阻塞）
+    check_and_migrate_vectors "$CONFIG_FILE" || true
+
     echo ""
     echo "╔════════════════════════════════════════════════════════╗"
     echo "║         🧠 启动语义切分服务...                         ║"
