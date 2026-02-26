@@ -11,7 +11,7 @@ func TestHybridSplitter_SemanticSplit(t *testing.T) {
 
 	// 2. 检查语义服务是否可用
 	if !h.IsSemanticAvailable() {
-		t.Log("Semantic server not detected, skipping semantic test part (but checking fallback)")
+		t.Skip("Semantic server not available, skipping test")
 	}
 
 	// 3. 构造一段长文本（超过 500 字符，触发语义切分）
