@@ -875,8 +875,8 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, op
 	prompt.WriteString("侧重价值呈现和时机把握，在尊重客户边界的前提下积极推进。话术坚定有方向感但避免压迫感，用利益引导代替强制推销，用提问和确认代替单向推进，确保客户感受到被尊重的同时明确下一步行动。\n（直接写给客户的话术，可分多段）\n\n")
 	prompt.WriteString("### 选项B：保守型（共情风格）\n")
 	prompt.WriteString("侧重理解客户压力、提供情绪价值、建立信任关系。话术温暖包容。\n（直接写给客户的话术，可分多段）\n\n")
-	prompt.WriteString("### 选项C：高势能回复（专业风格）\n")
-	prompt.WriteString("侧重展现专业判断力、行业高度与决策感，通过观点输出建立\u201c选你没错\u201d的心理认知。话术逻辑犀利、引用数据/案例佐证、指出提问者背后的认知盲区。\n（直接写给客户的话术，可分多段）\n\n")
+	prompt.WriteString("### 选项C：高势能回复（造梦风格）\n")
+	prompt.WriteString("以\"造梦\"为核心策略，通过具体画面描绘客户成功后的未来愿景，辅以真实学员案例证明路径可行性，再戳破当前痛点给出确定性价值，让客户感受到希望、掌控感和可复制的成功路径。\n（直接写给客户的话术，可分多段）\n\n")
 	prompt.WriteString("---\n")
 
 	// 核心规则
@@ -1026,8 +1026,8 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, opi
 	prompt.WriteString("理解客户压力、提供情绪价值、建立信任。适用于客户有顾虑的场景。\n")
 	prompt.WriteString("分析：（为什么选这个策略）\n")
 	prompt.WriteString("建议话术：（具体回复内容）\n\n")
-	prompt.WriteString("选项C：高势能回复\n")
-	prompt.WriteString("展现专业判断力、行业高度与决策感，通过观点输出建立信任。话术逻辑犀利、引用数据/案例佐证、指出客户背后的认知盲区。\n")
+	prompt.WriteString("选项C：高势能回复（造梦风格）\n")
+	prompt.WriteString("以\"造梦\"为核心，用具体画面描绘未来愿景，以真实案例证明可行性，戳破痛点给出确定性路径。适用于需要激发客户行动力的场景。\n")
 	prompt.WriteString("分析：（为什么选这个策略）\n")
 	prompt.WriteString("建议话术：（具体回复内容）\n\n")
 	prompt.WriteString("**如果销售人员明确要求其他方式（如只要一个答案、或特定风格），按需求调整**\n\n")
