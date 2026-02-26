@@ -182,7 +182,7 @@ func (ctrl *BookController) createWithImageProcessor(c *gin.Context, userID uint
 	book, err := asyncProcessor.CreateBookWithImagesAsync(c, userID, text, title, bookType, files, aiPolish)
 	if err != nil {
 		log.C(c).Errorw("Failed to create book with image processor", "error", err.Error())
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: %s", err.Error()), nil)
 		return
 	}
 
@@ -254,7 +254,7 @@ func (ctrl *BookController) Create(c *gin.Context) {
 	userID, err := getUserIDFromToken(c)
 	if err != nil {
 		log.C(c).Errorw("Failed to get user ID from token", "error", err.Error())
-		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("Failed to get user ID from token: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("Failed to get user ID from token: %s", err.Error()), nil)
 		return
 	}
 
@@ -264,7 +264,7 @@ func (ctrl *BookController) Create(c *gin.Context) {
 	user, err := ctrl.b.Users().GetCurrentUser(c, userID)
 	if err != nil {
 		log.C(c).Errorw("Failed to get user info", "user_id", userID, "error", err.Error())
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("获取用户信息失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("获取用户信息失败: %s", err.Error()), nil)
 		return
 	}
 
@@ -307,8 +307,8 @@ func (ctrl *BookController) Create(c *gin.Context) {
 					"free_user_monthly_book_count", user.FreeUserMonthlyBookCount,
 					"remaining", remaining)
 				core.WriteResponse(c, errno.ErrForbidden.SetMessage(
-					fmt.Sprintf("免费用户本月已创建%d个卡册，达到月度限制5个，剩余%d个，下月1号重置",
-						user.FreeUserMonthlyBookCount, remaining)), nil)
+					"免费用户本月已创建%d个卡册，达到月度限制5个，剩余%d个，下月1号重置",
+					user.FreeUserMonthlyBookCount, remaining), nil)
 				return
 			}
 			remaining := user.GetRemainingFreeUserMonthlyBooks()
@@ -327,7 +327,7 @@ func (ctrl *BookController) Create(c *gin.Context) {
 	// 验证文件格式和大小（仅当有文件时）
 	for _, file := range files {
 		if err := validateImageFile(file); err != nil {
-			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("Invalid file: "+err.Error()), nil)
+			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("Invalid file: %s", err.Error()), nil)
 			return
 		}
 	}
@@ -593,7 +593,7 @@ func (ctrl *BookController) createWithSimplifiedProcessor(c *gin.Context, userID
 	book, err := asyncProcessor.CreateBookAsync(c, userID, text, templateID)
 	if err != nil {
 		log.C(c).Errorw("Failed to create book with simplified processor", "error", err.Error())
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: %s", err.Error()), nil)
 		return
 	}
 
@@ -617,7 +617,7 @@ func (ctrl *BookController) createWithJSONProcessor(c *gin.Context, userID uint,
 	book, err := asyncProcessor.CreateBookAsync(c, userID, text, templateID)
 	if err != nil {
 		log.C(c).Errorw("Failed to create book async", "error", err.Error())
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: %s", err.Error()), nil)
 		return
 	}
 

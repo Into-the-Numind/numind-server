@@ -275,7 +275,7 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 			defer logFile.Close()
 			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:210","message":"CreateRun biz entry","data":{"hypothesisId":"B","templateID":%d,"userID":%d},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), templateID, userID)
-			logFile.WriteString(logEntry)
+			_, _ = logFile.WriteString(logEntry)
 		}
 	}()
 	// #endregion
@@ -740,7 +740,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 			updateData["reasoning_tokens"] = usage.ReasoningTokens
 			updateData["estimated_prompt_tokens"] = usage.EstimatedPromptTokens
 		}
-		b.ds.Sop().UpdateNodeRun(nodeRun.ID, updateData)
+		_ = b.ds.Sop().UpdateNodeRun(nodeRun.ID, updateData)
 		return fmt.Errorf("node execution failed: %w", err)
 	}
 
@@ -783,7 +783,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 			// 不阻断流程,仅记录日志
 		}
 		// 标记此run已计入运行次数，防止后续节点重复计数
-		b.ds.Sop().UpdateRun(runID, map[string]interface{}{
+		_ = b.ds.Sop().UpdateRun(runID, map[string]interface{}{
 			"counted": true,
 		})
 	}
@@ -805,7 +805,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 			note, err := b.executor.CreateFinalNote(ctx, run, finalOutput)
 			if err == nil {
 				finishTime := time.Now()
-				b.ds.Sop().UpdateRun(runID, map[string]interface{}{
+				_ = b.ds.Sop().UpdateRun(runID, map[string]interface{}{
 					"status":        model.SopStatusSucceeded,
 					"final_note_id": note.ID,
 					"finished_at":   finishTime,

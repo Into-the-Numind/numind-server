@@ -184,8 +184,6 @@ func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, 
 		if netErr, ok := err.(net.Error); ok {
 			if netErr.Timeout() {
 				return "", fmt.Errorf("网络超时错误: %w", err)
-			} else if netErr.Temporary() {
-				return "", fmt.Errorf("临时网络错误: %w", err)
 			}
 		}
 		return "", fmt.Errorf("HTTP请求失败: %w", err)
@@ -610,8 +608,6 @@ func (a *aliBiz) QianwenEmbedding(text string) ([]float32, error) {
 		if netErr, ok := err.(net.Error); ok {
 			if netErr.Timeout() {
 				return nil, fmt.Errorf("网络超时错误: %w", err)
-			} else if netErr.Temporary() {
-				return nil, fmt.Errorf("临时网络错误: %w", err)
 			}
 		}
 		return nil, fmt.Errorf("HTTP请求失败: %w", err)

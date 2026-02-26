@@ -31,13 +31,13 @@ func (ctrl *SopController) CreateTemplate(c *gin.Context) {
 
 	var req v1.CreateSopTemplateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
 		return
 	}
 
 	template, err := ctrl.sopBiz.CreateTemplate(c, req.Name, req.Description, req.Prompt)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -72,7 +72,7 @@ func (ctrl *SopController) ListTemplates(c *gin.Context) {
 
 	templates, total, err := ctrl.sopBiz.ListTemplates(c, offset, limit)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -94,7 +94,7 @@ func (ctrl *SopController) UpdateTemplate(c *gin.Context) {
 
 	var req v1.UpdateSopTemplateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
 		return
 	}
 
@@ -113,7 +113,7 @@ func (ctrl *SopController) UpdateTemplate(c *gin.Context) {
 	}
 
 	if err := ctrl.sopBiz.UpdateTemplate(c, uint(id), updates); err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -131,7 +131,7 @@ func (ctrl *SopController) DeleteTemplate(c *gin.Context) {
 	}
 
 	if err := ctrl.sopBiz.DeleteTemplate(c, uint(id)); err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -144,7 +144,7 @@ func (ctrl *SopController) CreateNode(c *gin.Context) {
 
 	var req v1.CreateSopNodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
 		return
 	}
 
@@ -168,7 +168,7 @@ func (ctrl *SopController) CreateNode(c *gin.Context) {
 
 	createdNode, err := ctrl.sopBiz.CreateNode(c, node)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -206,7 +206,7 @@ func (ctrl *SopController) ListNodesByTemplate(c *gin.Context) {
 
 	nodes, err := ctrl.sopBiz.ListNodesByTemplate(c, uint(templateID))
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -228,7 +228,7 @@ func (ctrl *SopController) UpdateNode(c *gin.Context) {
 
 	var req v1.UpdateSopNodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
 		return
 	}
 
@@ -259,7 +259,7 @@ func (ctrl *SopController) UpdateNode(c *gin.Context) {
 	}
 
 	if err := ctrl.sopBiz.UpdateNode(c, uint(id), updates); err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -277,7 +277,7 @@ func (ctrl *SopController) DeleteNode(c *gin.Context) {
 	}
 
 	if err := ctrl.sopBiz.DeleteNode(c, uint(id)); err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -296,13 +296,13 @@ func (ctrl *SopController) ExecuteTemplate(c *gin.Context) {
 
 	var req v1.AdminExecuteSopTemplateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
 		return
 	}
 
 	run, err := ctrl.sopBiz.ExecuteTemplate(c, uint(templateID), req.UserID, req.Text)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -368,7 +368,7 @@ func (ctrl *SopController) ListRuns(c *gin.Context) {
 
 	runs, total, err := ctrl.sopBiz.ListRuns(c, offset, limit, userID)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -412,7 +412,7 @@ func (ctrl *SopController) ListNotesByUser(c *gin.Context) {
 
 	notes, total, err := ctrl.sopBiz.ListNotesByUser(c, uint(userID), offset, limit)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 

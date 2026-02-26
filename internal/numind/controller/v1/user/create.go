@@ -26,7 +26,7 @@ func (ctrl *UserController) Create(c *gin.Context) {
 
 	// 参数校验
 	if _, err := govalidator.ValidateStruct(r); err != nil {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("%s", err.Error()), nil)
 
 		return
 	}

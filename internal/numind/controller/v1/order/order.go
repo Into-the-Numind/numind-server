@@ -29,7 +29,7 @@ func getUserIDFromToken(c *gin.Context) (uint, error) {
 	}
 
 	var tokenString string
-	fmt.Sscanf(header, "Bearer %s", &tokenString)
+	_, _ = fmt.Sscanf(header, "Bearer %s", &tokenString)
 
 	// 使用viper获取JWT密钥
 	jwtSecret := viper.GetString("jwt.secret")
@@ -64,7 +64,7 @@ func (ctrl *OrderController) Create(c *gin.Context) {
 		Description string `json:"description" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("参数错误: %s", err.Error()), nil)
 		return
 	}
 	userID, err := getUserIDFromToken(c)
@@ -81,7 +81,7 @@ func (ctrl *OrderController) Create(c *gin.Context) {
 		Status:      "pending",
 	}
 	if err := ctrl.b.Create(c, order); err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("创建订单失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("创建订单失败: %s", err.Error()), nil)
 		return
 	}
 	core.WriteResponse(c, nil, gin.H{
@@ -96,7 +96,7 @@ func (ctrl *OrderController) WechatNotify(c *gin.Context) {
 
 	// 使用新的支付成功处理方法
 	if err := ctrl.b.HandlePaymentSuccess(c, outTradeNo); err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("处理支付成功失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("处理支付成功失败: %s", err.Error()), nil)
 		return
 	}
 
@@ -112,7 +112,7 @@ func (ctrl *OrderController) ListByUser(c *gin.Context) {
 	}
 	orders, err := ctrl.b.ListByUser(c, userID, 0, 20)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败: %s", err.Error()), nil)
 		return
 	}
 	core.WriteResponse(c, nil, orders)

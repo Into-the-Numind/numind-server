@@ -373,40 +373,6 @@ func (r *CoverRenderer) GenerateCoverHTML(coverData CoverCardData, config *pagin
 	return html
 }
 
-// generateImageHTML 生成图片HTML
-func (r *CoverRenderer) generateImageHTML(imageURL string) string {
-	if imageURL == "" {
-		return `<div class="image-placeholder">
-            <div class="placeholder-icon">🖼️</div>
-            <div class="placeholder-text">封面图片</div>
-        </div>`
-	}
-
-	// 根据 URL 类型决定如何拼接：
-	// 1) http/https/data URL：直接使用
-	// 2) 绝对文件路径：加上 file:// 前缀
-	// 3) 相对文件路径：转为绝对路径再加 file://
-	absoluteSrc := imageURL
-	lower := strings.ToLower(imageURL)
-	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "data:") {
-		// 远程或 data URL，保持原样
-		absoluteSrc = imageURL
-	} else if filepath.IsAbs(imageURL) {
-		// 本地绝对路径，添加 file:// 前缀
-		absoluteSrc = "file://" + imageURL
-	} else {
-		// 相对路径，转换为绝对路径
-		if absPath, err := filepath.Abs(imageURL); err == nil {
-			absoluteSrc = "file://" + absPath
-		} else {
-			// 回退到原值
-			absoluteSrc = imageURL
-		}
-	}
-
-	return fmt.Sprintf(`<img src="%s" class="cover-image" alt="封面图片">`, absoluteSrc)
-}
-
 // formatBackgroundStyle 将背景图路径转为内联 CSS 样式，支持 http(s)、data、本地绝对/相对路径
 func formatBackgroundStyle(background string) string {
 	if strings.TrimSpace(background) == "" {
@@ -425,29 +391,6 @@ func formatBackgroundStyle(background string) string {
 		}
 	}
 	// 背景图居中、cover 铺满
-	return fmt.Sprintf("background: url('%s') center center / cover no-repeat;", src)
-}
-
-// sectionBackgroundStyle 如果提供了背景图，将其作为对应半区的背景（image 上半区 / title 下半区）
-func sectionBackgroundStyle(background string, isImageSection bool) string {
-	if strings.TrimSpace(background) == "" {
-		// 无背景图，保持默认（上半灰色、下半白色）
-		if isImageSection {
-			return "background: #f5f5f5;"
-		}
-		return "background: #ffffff;"
-	}
-	src := background
-	lower := strings.ToLower(background)
-	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "data:") {
-		src = background
-	} else if filepath.IsAbs(background) {
-		src = "file://" + background
-	} else {
-		if absPath, err := filepath.Abs(background); err == nil {
-			src = "file://" + absPath
-		}
-	}
 	return fmt.Sprintf("background: url('%s') center center / cover no-repeat;", src)
 }
 
@@ -476,9 +419,7 @@ func (r *CoverRenderer) renderWithHeadlessBrowser(htmlContent string) ([]byte, e
 	args := []string{}
 	if extraFlags != "" {
 		// 简单按空白分割
-		for _, f := range strings.Fields(extraFlags) {
-			args = append(args, f)
-		}
+		args = append(args, strings.Fields(extraFlags)...)
 	}
 
 	// 追加默认稳定 flags（容器无权限启用 sandbox，会导致失败）

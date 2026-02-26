@@ -56,7 +56,7 @@ func (ctrl *BookController) GenerateLongImage(c *gin.Context) {
 	card, err := asyncProcessor.GenerateLongImageAsync(c, uint(bookID), book.ProcessedText, req.TemplateID)
 	if err != nil {
 		log.C(c).Errorw("Failed to generate long image", "book_id", bookID, "error", err.Error())
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to generate long image: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to generate long image: %s", err.Error()), nil)
 		return
 	}
 

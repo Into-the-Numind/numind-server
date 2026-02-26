@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"image"
-	"image/color"
-	"image/png"
 	"io"
 	"numind-server/internal/pkg/log"
 	"os"
@@ -15,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chai2010/webp"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 )
@@ -220,9 +216,7 @@ func (w *WkhtmltoimageRenderer) renderWithChromedp(ctx context.Context, htmlFile
 		chromedp.Sleep(1*time.Second), // 减少初始等待时间
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			// 等待字体加载 - 容器环境优化
-			if err := chromedp.Evaluate(`document.fonts.ready`, nil).Do(ctx); err == nil {
-				// 字体加载完成
-			}
+			_ = chromedp.Evaluate(`document.fonts.ready`, nil).Do(ctx)
 
 			// 检查思源宋体是否加载成功
 			var fontLoaded bool
@@ -276,57 +270,6 @@ func (w *WkhtmltoimageRenderer) renderWithChromedp(ctx context.Context, htmlFile
 	// 保存图片文件
 	if err := os.WriteFile(outputPath, imageData, 0644); err != nil {
 		return fmt.Errorf("failed to save image: %v", err)
-	}
-
-	return nil
-}
-
-// createPlaceholderImage 创建占位符图片
-func (w *WkhtmltoimageRenderer) createPlaceholderImage() image.Image {
-	// 创建一个简单的占位符图片
-	// 在实际项目中，这里应该渲染真实的HTML内容
-	img := image.NewRGBA(image.Rect(0, 0, w.config.Width, w.config.Height))
-
-	// 填充背景色（浅灰色）
-	for y := 0; y < w.config.Height; y++ {
-		for x := 0; x < w.config.Width; x++ {
-			img.Set(x, y, color.RGBA{240, 240, 240, 255})
-		}
-	}
-
-	return img
-}
-
-// saveAsWebP 保存为WebP格式
-func (w *WkhtmltoimageRenderer) saveAsWebP(img image.Image, outputPath string) error {
-	file, err := os.Create(outputPath)
-	if err != nil {
-		return fmt.Errorf("failed to create output file: %v", err)
-	}
-	defer file.Close()
-
-	options := &webp.Options{
-		Lossless: false,
-		Quality:  float32(w.config.Quality),
-	}
-
-	if err := webp.Encode(file, img, options); err != nil {
-		return fmt.Errorf("failed to encode WebP: %v", err)
-	}
-
-	return nil
-}
-
-// saveAsPNG 保存为PNG格式
-func (w *WkhtmltoimageRenderer) saveAsPNG(img image.Image, outputPath string) error {
-	file, err := os.Create(outputPath)
-	if err != nil {
-		return fmt.Errorf("failed to create output file: %v", err)
-	}
-	defer file.Close()
-
-	if err := png.Encode(file, img); err != nil {
-		return fmt.Errorf("failed to encode PNG: %v", err)
 	}
 
 	return nil

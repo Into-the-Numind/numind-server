@@ -13,13 +13,13 @@ import (
 func (ctrl *UserController) WechatLogin(c *gin.Context) {
 	var req v1.WechatLoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
 		return
 	}
 
 	result, err := ctrl.b.Users().WechatLogin(&req)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -37,13 +37,13 @@ func (ctrl *UserController) WebLogin(c *gin.Context) {
 
 	var req v1.WebLoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
 		return
 	}
 
 	result, err := ctrl.b.Users().WebLogin(&req)
 	if err != nil {
-		core.WriteResponse(c, errno.ErrUserNotFound.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.ErrUserNotFound.SetMessage("%s", err.Error()), nil)
 		return
 	}
 

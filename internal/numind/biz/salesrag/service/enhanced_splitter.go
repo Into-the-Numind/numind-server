@@ -313,14 +313,6 @@ func (s *EnhancedMarkdownSplitter) splitSection(section MarkdownSection, fullTex
 	return chunks
 }
 
-// 辅助函数：截断字符串
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen]
-}
-
 // findBoundaries 查找所有切分边界
 func (s *EnhancedMarkdownSplitter) findBoundaries(text string) []Boundary {
 	var boundaries []Boundary
@@ -408,31 +400,6 @@ func (s *EnhancedMarkdownSplitter) isInsideCodeBlock(text string, pos int) bool 
 	textBefore := text[:pos]
 	count := strings.Count(textBefore, "```")
 	return count%2 == 1
-}
-
-// isInsideTable 检查位置是否在表格内
-func (s *EnhancedMarkdownSplitter) isInsideTable(text string, pos int) bool {
-	// 获取当前行
-	lines := strings.Split(text[:pos], "\n")
-	if len(lines) == 0 {
-		return false
-	}
-
-	// 检查最近几行是否有表格特征
-	startIdx := len(lines) - 3
-	if startIdx < 0 {
-		startIdx = 0
-	}
-
-	for i := startIdx; i < len(lines); i++ {
-		line := lines[i]
-		// Markdown表格特征：包含 | 且 | 数量 >= 2
-		if strings.Count(line, "|") >= 2 {
-			return true
-		}
-	}
-
-	return false
 }
 
 // findForceSplitPoint 强制切分点（优先句子边界，其次词语边界）

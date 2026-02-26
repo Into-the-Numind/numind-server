@@ -175,18 +175,13 @@ func (s *ChromemStore) matchFilter(chunk domain.KnowledgeChunk, filter port.Sear
 		return false
 	}
 
-	matched := false
 	for _, id := range filter.DocumentIDs {
 		if chunk.DocumentID == id {
-			matched = true
-			break
+			return true
 		}
 	}
-	if !matched {
-		return false
-	}
 
-	return true
+	return false
 }
 
 // FetchByDocumentID 直接获取指定文档的所有切片

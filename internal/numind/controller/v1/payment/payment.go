@@ -30,7 +30,7 @@ func NewPaymentController(b biz.IBiz) *PaymentController {
 func (pc *PaymentController) CreatePayment(c *gin.Context) {
 	var req model.CreatePaymentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("参数错误: %s", err.Error()), nil)
 		return
 	}
 
@@ -44,7 +44,7 @@ func (pc *PaymentController) CreatePayment(c *gin.Context) {
 	// 创建支付记录
 	paymentResp, err := pc.b.Payments().CreatePayment(c, &req, userID.ID)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("创建支付失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("创建支付失败: %s", err.Error()), nil)
 		return
 	}
 
@@ -71,8 +71,8 @@ func (pc *PaymentController) createNativePayment(c *gin.Context, req model.Creat
 	resp, err := wechat.CreateNativeOrder(cfg, req.OutTradeNo, req.Description, req.Amount)
 	if err != nil {
 		// 支付创建失败，更新支付状态为失败
-		pc.b.Payments().UpdatePaymentStatus(c, req.OutTradeNo, model.PaymentStatusFailed, "", nil)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("创建微信支付失败: "+err.Error()), nil)
+		_ = pc.b.Payments().UpdatePaymentStatus(c, req.OutTradeNo, model.PaymentStatusFailed, "", nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("创建微信支付失败: %s", err.Error()), nil)
 		return
 	}
 
@@ -100,8 +100,8 @@ func (pc *PaymentController) createMiniProgramPayment(c *gin.Context, req model.
 	resp, err := wechat.CreateMiniProgramOrder(cfg, req.OutTradeNo, req.Description, req.Amount, req.OpenID)
 	if err != nil {
 		// 支付创建失败，更新支付状态为失败
-		pc.b.Payments().UpdatePaymentStatus(c, req.OutTradeNo, model.PaymentStatusFailed, "", nil)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("创建小程序支付失败: "+err.Error()), nil)
+		_ = pc.b.Payments().UpdatePaymentStatus(c, req.OutTradeNo, model.PaymentStatusFailed, "", nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("创建小程序支付失败: %s", err.Error()), nil)
 		return
 	}
 
@@ -194,23 +194,23 @@ func (pc *PaymentController) ListPayments(c *gin.Context) {
 	if status != "" {
 		payments, err = pc.b.Payments().ListPaymentsByStatus(c, status, offset, pageSize)
 		if err != nil {
-			core.WriteResponse(c, errno.InternalServerError.SetMessage("获取支付记录失败: "+err.Error()), nil)
+			core.WriteResponse(c, errno.InternalServerError.SetMessage("获取支付记录失败: %s", err.Error()), nil)
 			return
 		}
 		total, err = pc.b.Payments().CountPaymentsByStatus(c, status)
 		if err != nil {
-			core.WriteResponse(c, errno.InternalServerError.SetMessage("统计支付记录失败: "+err.Error()), nil)
+			core.WriteResponse(c, errno.InternalServerError.SetMessage("统计支付记录失败: %s", err.Error()), nil)
 			return
 		}
 	} else {
 		payments, err = pc.b.Payments().ListPaymentsByUser(c, userID.ID, offset, pageSize)
 		if err != nil {
-			core.WriteResponse(c, errno.InternalServerError.SetMessage("获取支付记录失败: "+err.Error()), nil)
+			core.WriteResponse(c, errno.InternalServerError.SetMessage("获取支付记录失败: %s", err.Error()), nil)
 			return
 		}
 		total, err = pc.b.Payments().CountPaymentsByUser(c, userID.ID)
 		if err != nil {
-			core.WriteResponse(c, errno.InternalServerError.SetMessage("统计支付记录失败: "+err.Error()), nil)
+			core.WriteResponse(c, errno.InternalServerError.SetMessage("统计支付记录失败: %s", err.Error()), nil)
 			return
 		}
 	}
@@ -270,7 +270,7 @@ func (pc *PaymentController) CancelPayment(c *gin.Context) {
 
 	// 更新状态为已取消
 	if err := pc.b.Payments().UpdatePaymentStatus(c, outTradeNo, model.PaymentStatusCancelled, "", nil); err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("取消支付失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("取消支付失败: %s", err.Error()), nil)
 		return
 	}
 
@@ -293,7 +293,7 @@ func (pc *PaymentController) WechatPayNotify(c *gin.Context) {
 		log.C(c).Errorw("Failed to parse wechat pay notify",
 			"error", err.Error(),
 			"remote_addr", c.ClientIP())
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("回调解析失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("回调解析失败: %s", err.Error()), nil)
 		return
 	}
 
@@ -395,7 +395,7 @@ func (pc *PaymentController) WechatPayNotify(c *gin.Context) {
 			"error", err.Error(),
 			"out_trade_no", outTradeNo,
 			"transaction_id", transactionID)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("更新支付状态失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("更新支付状态失败: %s", err.Error()), nil)
 		return
 	}
 

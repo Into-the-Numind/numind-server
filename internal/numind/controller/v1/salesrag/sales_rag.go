@@ -921,7 +921,7 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 	ocrText, cosURL, err := ctrl.b.SalesRAG().OCRAnalyze(c.Request.Context(), user.ID, imageData, contentType, sessionID, header.Filename)
 	if err != nil {
 		log.Errorw("OCRAnalyze failed", "error", err, "user_id", user.ID)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 

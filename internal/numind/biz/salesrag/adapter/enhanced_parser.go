@@ -402,7 +402,7 @@ func (p *EnhancedParser) shouldMerge(prev, next string) bool {
 }
 
 func (p *EnhancedParser) isListItem(s string) bool {
-	matched, _ := regexp.MatchString(`^(\d+[\.\)]|\u2022|\-|\*|·)\s`, s)
+	matched, _ := regexp.MatchString(`^(\d+[\.\)]|•|\-|\*|·)\s`, s)
 	return matched
 }
 

@@ -56,7 +56,7 @@ func (ctrl *BookController) GeneratePaginatedImages(c *gin.Context) {
 	cards, err := asyncProcessor.GeneratePaginatedImagesAsync(c, uint(bookID), book.ProcessedText, req.TemplateID)
 	if err != nil {
 		log.C(c).Errorw("Failed to generate paginated images", "book_id", bookID, "error", err.Error())
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to generate paginated images: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to generate paginated images: %s", err.Error()), nil)
 		return
 	}
 

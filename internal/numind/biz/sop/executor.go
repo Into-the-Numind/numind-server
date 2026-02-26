@@ -155,7 +155,7 @@ func (e *SopExecutor) Execute(ctx context.Context, run *model.SopRun, nodes []mo
 			// 节点执行失败
 			log.C(ctx).Errorw("Node execution failed", "run_id", run.ID, "node_id", node.ID, "error", err)
 
-			e.ds.Sop().UpdateNodeRun(nodeRun.ID, map[string]interface{}{
+			_ = e.ds.Sop().UpdateNodeRun(nodeRun.ID, map[string]interface{}{
 				"status":        model.SopStatusFailed,
 				"error_message": err.Error(),
 				"latency_ms":    latency,
@@ -190,7 +190,7 @@ func (e *SopExecutor) Execute(ctx context.Context, run *model.SopRun, nodes []mo
 				"estimated_prompt_tokens", usage.EstimatedPromptTokens)
 		}
 
-		e.ds.Sop().UpdateNodeRun(nodeRun.ID, updateData)
+		_ = e.ds.Sop().UpdateNodeRun(nodeRun.ID, updateData)
 
 		log.C(ctx).Infow("Node execution succeeded", "run_id", run.ID, "node_id", node.ID, "latency_ms", latency)
 
@@ -1270,11 +1270,7 @@ func (e *SopExecutor) callVolcDeepThinkingStream(ctx context.Context, node *mode
 	req.Header.Set("Authorization", "Bearer "+node.APIKey)
 	req.Header.Set("User-Agent", "numind-server/1.0")
 
-	// 设置超时时间（深度思考耗时更长，推荐30分钟）
-	timeout := time.Duration(node.TimeoutSeconds) * time.Second
-	if timeout < 30*time.Minute {
-		timeout = 30 * time.Minute
-	}
+	// 设置超时时间（由 context 统一控制）
 	client := &http.Client{
 		Timeout: 0, // 由 context 统一控制（解决“影子账单”风险 2）
 	}

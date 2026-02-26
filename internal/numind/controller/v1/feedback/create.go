@@ -22,7 +22,7 @@ func (ctrl *FeedbackController) Create(c *gin.Context) {
 	}
 
 	if _, err := govalidator.ValidateStruct(r); err != nil {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("%s", err.Error()), nil)
 		return
 	}
 

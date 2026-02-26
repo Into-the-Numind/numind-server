@@ -98,7 +98,7 @@ func (ctrl *SopController) SaveBookmark(c *gin.Context) {
 	bookmark, err := ctrl.sopBiz.SaveNodeBookmarkByRunAndNode(c.Request.Context(), user.ID, req.RunID, req.NodeID, req.BookmarkName, req.Description)
 	if err != nil {
 		log.C(c).Errorw("Failed to save bookmark", "error", err)
-		core.WriteResponse(c, errno.ErrInternalServer.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -153,7 +153,7 @@ func (ctrl *SopController) GetBookmark(c *gin.Context) {
 	bookmark, err := ctrl.sopBiz.GetBookmark(c.Request.Context(), uint(bookmarkID), user.ID)
 	if err != nil {
 		log.C(c).Errorw("Failed to get bookmark", "error", err)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -208,7 +208,7 @@ func (ctrl *SopController) ListBookmarksByTemplate(c *gin.Context) {
 	bookmarks, err := ctrl.sopBiz.ListBookmarksByTemplate(c.Request.Context(), user.ID, uint(templateID))
 	if err != nil {
 		log.C(c).Errorw("Failed to list bookmarks", "error", err)
-		core.WriteResponse(c, errno.ErrInternalServer.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -272,7 +272,7 @@ func (ctrl *SopController) DeleteBookmark(c *gin.Context) {
 	// 调用业务逻辑
 	if err := ctrl.sopBiz.DeleteBookmark(c.Request.Context(), uint(bookmarkID), user.ID); err != nil {
 		log.C(c).Errorw("Failed to delete bookmark", "error", err)
-		core.WriteResponse(c, errno.ErrInternalServer.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -327,7 +327,7 @@ func (ctrl *SopController) ApplyBookmark(c *gin.Context) {
 	nodeRun, err := ctrl.sopBiz.ApplyBookmarkToNode(c.Request.Context(), user.ID, uint(runID), uint(nodeID), req.BookmarkID)
 	if err != nil {
 		log.C(c).Errorw("Failed to apply bookmark", "error", err)
-		core.WriteResponse(c, errno.ErrInternalServer.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -371,7 +371,7 @@ func (ctrl *SopController) DeleteDraftRun(c *gin.Context) {
 		user, err = validateTokenFromQuery(c.Request.Context(), token)
 		if err != nil {
 			log.C(c).Errorw("Token validation failed", "error", err)
-			core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("Token验证失败: "+err.Error()), nil)
+			core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("Token验证失败: %s", err.Error()), nil)
 			return
 		}
 
@@ -388,7 +388,7 @@ func (ctrl *SopController) DeleteDraftRun(c *gin.Context) {
 	// 调用业务逻辑
 	if err := ctrl.sopBiz.DeleteDraftRun(c.Request.Context(), uint(runID), user.ID); err != nil {
 		log.C(c).Errorw("Failed to delete draft run", "error", err)
-		core.WriteResponse(c, errno.ErrInternalServer.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("%s", err.Error()), nil)
 		return
 	}
 

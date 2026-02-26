@@ -1651,7 +1651,6 @@ func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint,
 					}
 
 					img = imaging.Resize(img, width, height, imaging.Lanczos)
-					totalPixels = int64(width) * int64(height)
 
 					var buf bytes.Buffer
 					err = jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality})

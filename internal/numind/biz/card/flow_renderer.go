@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -613,25 +612,4 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
-}
-
-// formatBackgroundStyle 将背景图路径转为内联 CSS 样式，支持 http(s)、data、本地绝对/相对路径
-func (r *FlowRenderer) formatBackgroundStyle(background string) string {
-	if strings.TrimSpace(background) == "" {
-		return "background: #ffffff;"
-	}
-	src := background
-	lower := strings.ToLower(background)
-	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "data:") {
-		// remote or data url
-		src = background
-	} else if filepath.IsAbs(background) {
-		src = "file://" + background
-	} else {
-		if absPath, err := filepath.Abs(background); err == nil {
-			src = "file://" + absPath
-		}
-	}
-	// 背景图居中、cover 铺满
-	return fmt.Sprintf("background: url('%s') center center / cover no-repeat;", src)
 }

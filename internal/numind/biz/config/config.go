@@ -246,7 +246,7 @@ func (b *configBiz) StartConfigChangeListener(ctx context.Context) error {
 		if err != nil {
 			log.Warnw("Failed to reload config after change notification", "key", key, "error", err)
 			// 如果配置不存在，删除缓存
-			b.cache.Delete(ctx, key)
+			_ = b.cache.Delete(ctx, key)
 		} else {
 			// 更新缓存
 			if err := b.cache.Set(ctx, config); err != nil {

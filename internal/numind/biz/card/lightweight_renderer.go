@@ -277,13 +277,9 @@ func (r *LightweightRenderer) generateFullBookHTML(book *model.BookM, cards []*m
     </div>`, cardHTML))
 	}
 
-	// 获取嵌入字体的base64（这里简化处理，实际应用中需要加载真实字体文件）
-	fontBase64 := r.getEmbeddedFont()
-
 	// 填充模板参数
 	fullHTML := fmt.Sprintf(htmlTemplate,
 		book.Title,                 // 标题
-		fontBase64,                 // 字体base64
 		r.config.Card.Width,        // body宽度
 		r.config.Card.Width,        // card-container宽度
 		r.config.Card.Height,       // card-container最小高度
@@ -573,13 +569,6 @@ func (r *LightweightRenderer) saveImage(imageData []byte, cardID uint) (string, 
 
 	fmt.Printf("💾 图片保存成功: %s\n", url)
 	return url, nil
-}
-
-// getEmbeddedFont 获取嵌入字体的base64编码（简化实现）
-func (r *LightweightRenderer) getEmbeddedFont() string {
-	// 这里应该加载真实的字体文件并转换为base64
-	// 简化处理，返回空字符串，让系统使用fallback字体
-	return ""
 }
 
 // escapeHTML HTML转义

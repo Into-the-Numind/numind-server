@@ -86,7 +86,7 @@ func (p *AsyncImageProcessor) processImagesInBackground(ctx context.Context, tas
 	startTime := time.Now()
 
 	// 确保目录存在
-	os.MkdirAll("uploads", os.ModePerm)
+	_ = os.MkdirAll("uploads", os.ModePerm)
 
 	// 定义处理结果结构
 	type ProcessResult struct {

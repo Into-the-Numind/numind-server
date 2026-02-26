@@ -36,7 +36,7 @@ func (e *SopExecutor) prepareContext(ctx context.Context, node *model.SopNode, m
 	limit125k := 125000
 
 	finalMessages := messages
-	maxTokens := 4096 // Default buffer
+	var maxTokens int
 
 	// 3. 判断是否需要处理 (触发阈值 110k)
 	if totalEstimated > limit110k {
