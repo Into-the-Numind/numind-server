@@ -158,23 +158,7 @@ func autoMigrate(db *gorm.DB) error {
 	// 先迁移基础表
 	err := db.AutoMigrate(
 		// &model.User{}, // 暂时跳过 User 表迁移以避免 Error 3780 外键冲突
-		&model.CategoryM{},
-		&model.ArticleM{},
-		&model.Favorite{},
 		&model.SystemConfigM{},
-		&model.ProxyServerM{},
-		&model.Feedback{},
-		&model.AboutUsM{},
-		&model.Agreement{},
-		&model.BookM{},
-		&model.CardM{},
-		&model.ImageM{},
-		&model.Template{},
-		&model.ChatSession{},
-		&model.ChatMessage{},
-		&model.AccountRecord{},
-		&model.PaymentM{},
-		&model.Admin{},
 		&model.KnowledgeDocument{},
 		&model.SalesSession{},
 		&model.SalesMessage{},
@@ -563,62 +547,6 @@ func ensureTableCharset(db *gorm.DB, tableName string, charsetConfig *config.Dat
 		}
 
 		log.Infow("Table charset updated successfully", "table", tableName)
-	}
-
-	// 特别处理chat_message表的content字段
-	if tableName == "chat_message" {
-		if err := ensureContentFieldCharset(db, charsetConfig); err != nil {
-			log.Warnw("Failed to ensure content field charset", "error", err)
-		}
-	}
-
-	return nil
-}
-
-// ensureContentFieldCharset 确保content字段使用正确的字符集
-func ensureContentFieldCharset(db *gorm.DB, charsetConfig *config.DatabaseCharsetConfig) error {
-	// 检查content字段是否存在
-	var count int64
-	err := db.Raw(`
-		SELECT COUNT(*) 
-		FROM information_schema.COLUMNS 
-		WHERE TABLE_SCHEMA = DATABASE() 
-			AND TABLE_NAME = 'chat_message' 
-			AND COLUMN_NAME = 'content'
-	`).Scan(&count).Error
-
-	if err != nil {
-		return fmt.Errorf("failed to check content field existence: %v", err)
-	}
-
-	if count == 0 {
-		log.Infow("Content field does not exist, skipping charset check")
-		return nil
-	}
-
-	// 检查content字段字符集
-	currentCharset, currentCollation, err := config.GetColumnCharsetInfo(db, "chat_message", "content")
-	if err != nil {
-		return fmt.Errorf("failed to check content field charset: %v", err)
-	}
-
-	log.Infow("Content field charset info",
-		"charset", currentCharset,
-		"collation", currentCollation)
-
-	// 如果字段字符集不是目标字符集，则修复
-	if currentCharset != charsetConfig.TargetCharset {
-		log.Infow("Updating content field charset",
-			"from", currentCharset,
-			"to", charsetConfig.TargetCharset)
-
-		// 修复字段字符集
-		alterSQL := charsetConfig.GetAlterColumnSQL("chat_message", "content", "TEXT")
-		if err := db.Exec(alterSQL).Error; err != nil {
-			return fmt.Errorf("failed to update content field charset: %v", err)
-		}
-
-		log.Infow("Content field charset updated successfully")
 	}
 
 	return nil

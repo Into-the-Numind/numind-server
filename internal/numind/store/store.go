@@ -18,20 +18,7 @@ var (
 type IStore interface {
 	DB() *gorm.DB
 	Users() UserStore
-	Images() ImageStore
-	Cards() CardStore
-	Books() BookStore
-	Orders() OrderStore
-	Categories() CategoryStore
-	Templates() TemplateStore
-	Feedbacks() FeedbackStore
-	Chats() ChatStore
-	AccountRecords() AccountRecordStore
-	Article() IArticleStore
-	Admin() IAdminStore
-	AdminAccounts() AdminAccountStore
 	Configs() ConfigStore
-	Payments() PaymentStore
 	Sop() ISopStore
 	Customers() ICustomerStore
 	KnowledgeDocuments() KnowledgeDocumentStore
@@ -67,78 +54,32 @@ func (ds *datastore) Users() UserStore {
 	return newUsers(ds.db)
 }
 
-func (ds *datastore) Images() ImageStore {
-	return NewImageStore(ds.db)
-}
-
-func (ds *datastore) Cards() CardStore {
-	return NewCardStore(ds.db)
-}
-
-func (ds *datastore) Books() BookStore {
-	return NewBookStore(ds.db)
-}
-
-func (ds *datastore) Orders() OrderStore {
-	return NewOrderStore(ds.db)
-}
-
-func (ds *datastore) Categories() CategoryStore {
-	return NewCategoryStore(ds.db)
-}
-
-func (ds *datastore) Templates() TemplateStore {
-	return NewTemplateStore(ds.db)
-}
-
-func (ds *datastore) Feedbacks() FeedbackStore {
-	return newFeedbacks(ds.db)
-}
-
-func (ds *datastore) Chats() ChatStore {
-	return NewChatStore(ds.db)
-}
-
-func (ds *datastore) AccountRecords() AccountRecordStore {
-	return NewAccountRecordStore(ds.db)
-}
-
-func (ds *datastore) Article() IArticleStore {
-	return NewArticleStore(ds.db)
-}
-
-func (ds *datastore) Admin() IAdminStore {
-	return NewAdminStore(ds.db)
-}
-
-func (ds *datastore) AdminAccounts() AdminAccountStore {
-	return NewAdminAccountStore(ds.db)
-}
-
+// Configs 返回一个实现了 ConfigStore 接口的实例.
 func (ds *datastore) Configs() ConfigStore {
 	return NewConfigStore(ds.db)
 }
 
-func (ds *datastore) Payments() PaymentStore {
-	return NewPaymentStore(ds.db)
-}
-
+// Sop 返回一个实现了 ISopStore 接口的实例.
 func (ds *datastore) Sop() ISopStore {
 	return NewSopStore(ds.db)
 }
 
+// Customers 返回一个实现了 ICustomerStore 接口的实例.
 func (ds *datastore) Customers() ICustomerStore {
 	return NewCustomerStore(ds.db)
 }
 
+// KnowledgeDocuments 返回一个实现了 KnowledgeDocumentStore 接口的实例.
 func (ds *datastore) KnowledgeDocuments() KnowledgeDocumentStore {
 	return newKnowledgeDocuments(ds.db)
 }
 
+// KnowledgeChunks 返回一个实现了 KnowledgeChunkStore 接口的实例.
 func (ds *datastore) KnowledgeChunks() KnowledgeChunkStore {
 	return newKnowledgeChunks(ds.db)
 }
 
+// LanguageStyles 返回一个实现了 LanguageStyleStore 接口的实例.
 func (ds *datastore) LanguageStyles() LanguageStyleStore {
 	return NewLanguageStyleStore(ds.db)
 }

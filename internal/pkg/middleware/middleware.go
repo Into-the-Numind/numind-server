@@ -9,7 +9,6 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
-	"os"
 	"strings"
 	"time"
 
@@ -55,30 +54,7 @@ func ErrorHandler() gin.HandlerFunc {
 // AuthMiddleware 认证中间件
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// #region agent log
-		func() {
-			logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if logFile != nil {
-				defer logFile.Close()
-				logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"middleware.go:55","message":"AuthMiddleware entry","data":{"hypothesisId":"D","path":%q},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), c.Request.URL.Path)
-				_, _ = logFile.WriteString(logEntry)
-			}
-		}()
-		// #endregion
 		token := extractToken(c)
-		// #region agent log
-		func() {
-			logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if logFile != nil {
-				defer logFile.Close()
-				hasToken := token != ""
-				logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"middleware.go:58","message":"Token extracted","data":{"hypothesisId":"D","hasToken":%t},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), hasToken)
-				_, _ = logFile.WriteString(logEntry)
-			}
-		}()
-		// #endregion
 		if token == "" {
 			core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("未提供认证令牌"), nil)
 			c.Abort()
@@ -86,25 +62,6 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 
 		user, err := validateToken(c.Request.Context(), token)
-		// #region agent log
-		func() {
-			logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if logFile != nil {
-				defer logFile.Close()
-				hasErr := err != nil
-				errMsg := ""
-				userID := uint(0)
-				if err != nil {
-					errMsg = err.Error()
-				} else if user != nil {
-					userID = user.ID
-				}
-				logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"middleware.go:64","message":"Token validation result","data":{"hypothesisId":"D","error":%t,"errorMsg":%q,"userID":%d},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), hasErr, errMsg, userID)
-				_, _ = logFile.WriteString(logEntry)
-			}
-		}()
-		// #endregion
 		if err != nil {
 			core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("无效的认证令牌"), nil)
 			c.Abort()
@@ -112,17 +69,6 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 
 		c.Set("current_user", user)
-		// #region agent log
-		func() {
-			logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if logFile != nil {
-				defer logFile.Close()
-				logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"middleware.go:71","message":"AuthMiddleware success","data":{"hypothesisId":"D","userID":%d},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), user.ID)
-				_, _ = logFile.WriteString(logEntry)
-			}
-		}()
-		// #endregion
 		c.Next()
 	}
 }
@@ -184,7 +130,7 @@ func extractToken(c *gin.Context) string {
 }
 
 // validateToken 验证JWT token并返回用户信息
-// 从数据库验证用户是否存在，并验证openid是否匹配
+// 从数据库验证用户是否存在
 func validateToken(ctx context.Context, tokenString string) (*model.User, error) {
 	// 检查token是否在黑名单中
 	blacklist := GetTokenBlacklist()
@@ -229,24 +175,12 @@ func validateToken(ctx context.Context, tokenString string) (*model.User, error)
 			return nil, fmt.Errorf("invalid user_id type in token: %T", v)
 		}
 
-		// 安全地获取 openid（避免panic）
-		openIDValue, exists := claims["openid"]
-		if !exists {
-			return nil, fmt.Errorf("openid not found in token")
-		}
-
-		openID, ok := openIDValue.(string)
-		if !ok {
-			return nil, fmt.Errorf("invalid openid type in token: %T", openIDValue)
-		}
-
-		// 从数据库验证用户是否存在，并验证openid是否匹配
+		// 从数据库验证用户是否存在
 		if store.S == nil {
 			log.C(ctx).Warnw("store.S未初始化，跳过数据库验证")
 			// 如果store未初始化，返回简化的用户对象（向后兼容）
 			user := &model.User{}
 			user.ID = userID
-			user.OpenID = openID
 			return user, nil
 		}
 
@@ -258,12 +192,6 @@ func validateToken(ctx context.Context, tokenString string) (*model.User, error)
 			}
 			log.C(ctx).Errorw("查询用户失败", "user_id", userID, "error", err)
 			return nil, fmt.Errorf("查询用户失败: %v", err)
-		}
-
-		// 验证openid是否匹配（防止token被篡改）
-		if user.OpenID != openID {
-			log.C(ctx).Warnw("token中的openid与数据库不匹配", "user_id", userID, "token_openid", openID, "db_openid", user.OpenID)
-			return nil, fmt.Errorf("token无效：openid不匹配")
 		}
 
 		return user, nil

@@ -444,24 +444,11 @@ func validateTokenFromQuery(ctx context.Context, tokenString string) (*model.Use
 			return nil, fmt.Errorf("invalid user_id type in token: %T", v)
 		}
 
-		// 安全地获取 openid
-		openIDValue, exists := claims["openid"]
-		if !exists {
-			return nil, fmt.Errorf("openid not found in token")
-		}
-
-		openID, ok := openIDValue.(string)
-		if !ok {
-			return nil, fmt.Errorf("invalid openid type in token: %T", openIDValue)
-		}
-
-		// 从数据库验证用户是否存在，并验证openid是否匹配
+		// 从数据库验证用户是否存在
 		if store.S == nil {
 			log.C(ctx).Warnw("store.S未初始化，跳过数据库验证")
-			// 如果store未初始化，返回简化的用户对象（向后兼容）
 			user := &model.User{}
 			user.ID = userID
-			user.OpenID = openID
 			return user, nil
 		}
 
@@ -473,12 +460,6 @@ func validateTokenFromQuery(ctx context.Context, tokenString string) (*model.Use
 			}
 			log.C(ctx).Errorw("查询用户失败", "user_id", userID, "error", err)
 			return nil, fmt.Errorf("查询用户失败: %w", err)
-		}
-
-		// 验证openid是否匹配（安全措施）
-		if user.OpenID != openID {
-			log.C(ctx).Warnw("token中的openid与数据库不匹配", "user_id", userID, "token_openid", openID, "db_openid", user.OpenID)
-			return nil, fmt.Errorf("token验证失败")
 		}
 
 		return user, nil

@@ -34,7 +34,6 @@ func (ctrl *UserController) GetProfile(c *gin.Context) {
 
 	userData := gin.H{
 		"id":         user.ID,
-		"openid":     user.OpenID,
 		"nickname":   user.Nickname,
 		"avatar_url": avatarURL,
 		"phone":      user.Phone,
