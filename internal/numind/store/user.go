@@ -20,7 +20,6 @@ type UserStore interface {
 	GetUser(userID uint) (*model.User, error)
 	GetUserByID(ctx context.Context, userID uint) (*model.User, error)
 	UpdateUser(ctx context.Context, user *model.User) error
-	UpdateWechatUser(ctx context.Context, openid string, update map[string]interface{}) error
 }
 
 // UserStore 接口的实现.
@@ -103,12 +102,8 @@ func (u *users) GetUserByID(ctx context.Context, userID uint) (*model.User, erro
 }
 
 func (u *users) UpdateUser(ctx context.Context, user *model.User) error {
-	// 使用Select只更新特定字段，避免更新UnionID等敏感字段
+	// 使用Select只更新特定字段，避免意外更新敏感字段
 	return u.db.Model(user).Select("nickname", "avatar_url", "updated_at").Updates(user).Error
-}
-
-func (u *users) UpdateWechatUser(ctx context.Context, openid string, update map[string]interface{}) error {
-	return u.db.Model(&model.User{}).Where("open_id = ?", openid).Updates(update).Error
 }
 
 func NewUserStore(db *gorm.DB) UserStore {
