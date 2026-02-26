@@ -514,4 +514,3 @@ func (a *AsyncRagBizAdapter) CheckBookVectorExists(ctx context.Context, bookID u
 	}
 	return false, nil
 }
-

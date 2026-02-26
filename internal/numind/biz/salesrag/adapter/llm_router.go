@@ -229,4 +229,3 @@ func extractJSON(resp string) string {
 	}
 	return resp
 }
-

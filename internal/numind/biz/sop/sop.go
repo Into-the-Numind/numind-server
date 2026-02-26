@@ -172,7 +172,7 @@ type RunStatus struct {
 
 // CompletedNodeInfo 已完成节点信息
 type CompletedNodeInfo struct {
-	NodeRunID    uint   `json:"node_run_id"`           // 节点运行ID
+	NodeRunID    uint   `json:"node_run_id"` // 节点运行ID
 	NodeID       uint   `json:"node_id"`
 	NodeName     string `json:"node_name"`
 	Sort         int    `json:"sort"`
@@ -345,7 +345,7 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 			defer logFile.Close()
 			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:232","message":"CreateRun biz success","data":{"hypothesisId":"E","runID":%d},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), run.ID)
-			logFile.WriteString(logEntry)
+			_, _ = logFile.WriteString(logEntry)
 		}
 	}()
 	// #endregion
@@ -651,15 +651,15 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 			"status":            model.SopStatusRunning,
 			"input":             currentInput,
 			"started_at":        time.Now(),
-			"output":            "",  // 清空之前的输出
-			"thinking":          "",  // 清空之前的思考内容
-			"error_message":     "",  // 清空之前的错误信息
-			"finished_at":       nil, // 清空完成时间
-			"latency_ms":        0,   // 重置延迟
-			"prompt_tokens":     0,   // 重置 token 统计
-			"completion_tokens": 0,   // 重置 token 统计
-			"total_tokens":      0,   // 重置 token 统计
-			"reasoning_tokens":  0,   // 重置 token 统计
+			"output":            "",    // 清空之前的输出
+			"thinking":          "",    // 清空之前的思考内容
+			"error_message":     "",    // 清空之前的错误信息
+			"finished_at":       nil,   // 清空完成时间
+			"latency_ms":        0,     // 重置延迟
+			"prompt_tokens":     0,     // 重置 token 统计
+			"completion_tokens": 0,     // 重置 token 统计
+			"total_tokens":      0,     // 重置 token 统计
+			"reasoning_tokens":  0,     // 重置 token 统计
 			"from_bookmark":     false, // 清除书签标记
 			"bookmark_id":       nil,   // 清除书签ID
 		}
@@ -847,7 +847,7 @@ func (b *sopBiz) GetRunStatus(ctx context.Context, runID uint) (*RunStatus, erro
 		if nodeRun.Status == model.SopStatusSucceeded {
 			completedNodeIDs[nodeRun.NodeID] = true
 			completedNodes = append(completedNodes, CompletedNodeInfo{
-				NodeRunID:    nodeRun.ID,           // 节点运行ID
+				NodeRunID:    nodeRun.ID, // 节点运行ID
 				NodeID:       nodeRun.NodeID,
 				NodeName:     nodeRun.Node.Name,
 				Sort:         nodeRun.Sort,
@@ -1482,16 +1482,16 @@ func (b *sopBiz) SaveNodeBookmark(ctx context.Context, userID, nodeRunID uint, b
 	if existingBookmark != nil {
 		// 更新现有书签
 		updates := map[string]interface{}{
-			"input":               bookmark.Input,
-			"output":              bookmark.Output,
-			"thinking":            bookmark.Thinking,
-			"source_run_id":       bookmark.SourceRunID,
-			"source_node_run_id":  bookmark.SourceNodeRunID,
-			"prompt_tokens":       bookmark.PromptTokens,
-			"completion_tokens":   bookmark.CompletionTokens,
-			"total_tokens":        bookmark.TotalTokens,
-			"bookmark_name":       bookmark.BookmarkName,
-			"description":         bookmark.Description,
+			"input":              bookmark.Input,
+			"output":             bookmark.Output,
+			"thinking":           bookmark.Thinking,
+			"source_run_id":      bookmark.SourceRunID,
+			"source_node_run_id": bookmark.SourceNodeRunID,
+			"prompt_tokens":      bookmark.PromptTokens,
+			"completion_tokens":  bookmark.CompletionTokens,
+			"total_tokens":       bookmark.TotalTokens,
+			"bookmark_name":      bookmark.BookmarkName,
+			"description":        bookmark.Description,
 		}
 		if err := b.ds.Sop().UpdateBookmark(existingBookmark.ID, updates); err != nil {
 			return nil, fmt.Errorf("failed to update bookmark: %w", err)
@@ -1628,17 +1628,17 @@ func (b *sopBiz) ApplyBookmarkToNode(ctx context.Context, userID, runID, nodeID 
 	if existingNodeRun != nil {
 		nodeRun.ID = existingNodeRun.ID
 		updates := map[string]interface{}{
-			"status":             nodeRun.Status,
-			"from_bookmark":      nodeRun.FromBookmark,
-			"bookmark_id":        nodeRun.BookmarkID,
-			"input":              nodeRun.Input,
-			"output":             nodeRun.Output,
-			"thinking":           nodeRun.Thinking,
-			"prompt_tokens":      nodeRun.PromptTokens,
-			"completion_tokens":  nodeRun.CompletionTokens,
-			"total_tokens":       nodeRun.TotalTokens,
-			"started_at":         nodeRun.StartedAt,
-			"finished_at":        nodeRun.FinishedAt,
+			"status":            nodeRun.Status,
+			"from_bookmark":     nodeRun.FromBookmark,
+			"bookmark_id":       nodeRun.BookmarkID,
+			"input":             nodeRun.Input,
+			"output":            nodeRun.Output,
+			"thinking":          nodeRun.Thinking,
+			"prompt_tokens":     nodeRun.PromptTokens,
+			"completion_tokens": nodeRun.CompletionTokens,
+			"total_tokens":      nodeRun.TotalTokens,
+			"started_at":        nodeRun.StartedAt,
+			"finished_at":       nodeRun.FinishedAt,
 		}
 		if err := b.ds.Sop().UpdateNodeRun(existingNodeRun.ID, updates); err != nil {
 			return nil, fmt.Errorf("failed to update node run: %w", err)

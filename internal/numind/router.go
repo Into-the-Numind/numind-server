@@ -295,10 +295,10 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.POST("/sales-rag/analyze-profile", salesRAGc.AnalyzeProfile)                     // 解析文档生成客户档案
 
 		// 聊天风格分析
-		authGroup.POST("/sales-rag/analyze-chat-style", salesRAGc.AnalyzeChatStyle)  // 分析聊天风格（语言指纹）
-		authGroup.GET("/sales-rag/analyze-chat-style", salesRAGc.GetLanguageStyle)   // 获取已分析的聊天风格
-		authGroup.PUT("/sales-rag/analyze-chat-style", salesRAGc.SaveLanguageStyle)  // 保存/更新语言风格
-		authGroup.POST("/sales-rag/ocr", salesRAGc.OCR)                              // OCR 识别图片
+		authGroup.POST("/sales-rag/analyze-chat-style", salesRAGc.AnalyzeChatStyle) // 分析聊天风格（语言指纹）
+		authGroup.GET("/sales-rag/analyze-chat-style", salesRAGc.GetLanguageStyle)  // 获取已分析的聊天风格
+		authGroup.PUT("/sales-rag/analyze-chat-style", salesRAGc.SaveLanguageStyle) // 保存/更新语言风格
+		authGroup.POST("/sales-rag/ocr", salesRAGc.OCR)                             // OCR 识别图片
 	}
 
 	// 阿里云百炼相关
@@ -374,7 +374,6 @@ func installNumindRouters(g *gin.Engine) error {
 	// #endregion
 	return nil
 }
-
 
 // vectorizeHistoricalBooks 检查并向量化历史笔记 - 暂时注释，不使用向量化
 // 在系统启动时异步执行，检查所有已创建的笔记，如果还没有向量化，则进行向量化

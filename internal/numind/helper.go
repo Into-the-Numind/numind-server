@@ -269,7 +269,6 @@ func autoMigrate(db *gorm.DB) error {
 	return nil
 }
 
-
 // fixKnowledgeChunkTextFields 修复 knowledge_chunk 表的 content 字段类型
 // 将 TEXT 类型改为 LONGTEXT 以支持超长文本分片
 func fixKnowledgeChunkTextFields(db *gorm.DB) error {
@@ -300,7 +299,6 @@ func fixKnowledgeChunkTextFields(db *gorm.DB) error {
 
 	return nil
 }
-
 
 // fixSopNodeRunTextFields 修复 sop_node_run 表的 input 和 output 字段类型
 // 将 TEXT 类型改为 LONGTEXT 以支持超长文本
@@ -444,7 +442,6 @@ func fixSopFileFields(db *gorm.DB) error {
 
 	return nil
 }
-
 
 // getDatabaseCharsetConfig 获取数据库字符集配置
 func getDatabaseCharsetConfig() *config.DatabaseCharsetConfig {
@@ -626,7 +623,6 @@ func ensureContentFieldCharset(db *gorm.DB, charsetConfig *config.DatabaseCharse
 
 	return nil
 }
-
 
 // InitCOS prints COS status on startup for visibility
 func InitCOS() {

@@ -971,7 +971,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		aiResponse, err = p.biz.Ali().QianwenTextStream(messages, maxTokens, temperature)
 		if err != nil {
 			log.C(ctx).Errorw("❌ 所有AI API都失败", "book_id", bookID, "error", err.Error())
-			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, fmt.Sprintf("All AI APIs failed: %v", err))
+			_ = p.updateBookStatus(ctx, bookID, model.BookStatusFailed, fmt.Sprintf("All AI APIs failed: %v", err))
 			return
 		}
 		log.C(ctx).Infow("✅ 阿里百炼API降级成功", "book_id", bookID)
@@ -982,7 +982,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	// 验证AI响应
 	if aiResponse == "" {
 		log.C(ctx).Errorw("❌ AI返回空响应", "book_id", bookID)
-		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "AI returned empty response")
+		_ = p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "AI returned empty response")
 		return
 	}
 
@@ -992,7 +992,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 	markdownContent, imagePrompt := p.parseMarkdownResponse(aiResponse)
 	if markdownContent == "" {
 		log.C(ctx).Errorw("❌ 无法解析markdown内容", "book_id", bookID)
-		p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to parse markdown content")
+		_ = p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "Failed to parse markdown content")
 		return
 	}
 
@@ -1064,7 +1064,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 		// 直接使用markdown渲染器处理
 		if err := p.processBookWithMarkdownRenderer(ctx, book, userID, markdownContent, templateBackground); err != nil {
 			log.C(ctx).Errorw("markdown渲染器处理失败", "book_id", bookID, "error", err.Error())
-			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "markdown渲染器处理失败: "+err.Error())
+			_ = p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "markdown渲染器处理失败: "+err.Error())
 			return
 		}
 	} else {
@@ -1073,7 +1073,7 @@ func (p *AsyncBookProcessor) processBookCreationInBackground(ctx context.Context
 
 		if err := p.processBookWithMarkdownRenderer(ctx, book, userID, text, templateBackground); err != nil {
 			log.C(ctx).Errorw("markdown渲染器处理失败", "book_id", bookID, "error", err.Error())
-			p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "markdown渲染器处理失败: "+err.Error())
+			_ = p.updateBookStatus(ctx, bookID, model.BookStatusFailed, "markdown渲染器处理失败: "+err.Error())
 			return
 		}
 	}

@@ -844,7 +844,7 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 	for scanner.Scan() {
 		lineCount++
 		line := scanner.Text()
-		
+
 		if line == "" || !strings.HasPrefix(line, "data: ") {
 			continue
 		}
@@ -861,7 +861,7 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 			pkglog.Warnw("解析SSE数据为map失败", "error", err, "data", data)
 			continue
 		}
-		
+
 		// 打印每一行的关键信息
 		if choices, ok := rawData["choices"].([]interface{}); ok && len(choices) > 0 {
 			if choice, ok := choices[0].(map[string]interface{}); ok {
@@ -879,7 +879,7 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 				}
 			}
 		}
-		
+
 		// 检查是否有 reasoning_content (思考内容)
 		if choices, ok := rawData["choices"].([]interface{}); ok && len(choices) > 0 {
 			if choice, ok := choices[0].(map[string]interface{}); ok {

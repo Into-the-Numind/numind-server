@@ -545,7 +545,7 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 			defer logFile.Close()
 			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:382","message":"CreateRun handler entry","data":{"hypothesisId":"B","path":%q},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), c.Request.URL.Path)
-			logFile.WriteString(logEntry)
+			_, _ = logFile.WriteString(logEntry)
 		}
 	}()
 	// #endregion
@@ -560,7 +560,7 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 			defer logFile.Close()
 			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:387","message":"Auth check result","data":{"hypothesisId":"D","exists":%t},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), exists)
-			logFile.WriteString(logEntry)
+			_, _ = logFile.WriteString(logEntry)
 		}
 	}()
 	// #endregion
@@ -579,7 +579,7 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 				defer logFile.Close()
 				logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:394","message":"JSON bind error","data":{"hypothesisId":"B","error":%q},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), err.Error())
-				logFile.WriteString(logEntry)
+				_, _ = logFile.WriteString(logEntry)
 			}
 		}()
 		// #endregion
@@ -593,7 +593,7 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 			defer logFile.Close()
 			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:397","message":"Request parsed","data":{"hypothesisId":"B","templateID":%d,"userID":%d},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), req.TemplateID, user.ID)
-			logFile.WriteString(logEntry)
+			_, _ = logFile.WriteString(logEntry)
 		}
 	}()
 	// #endregion
@@ -616,7 +616,7 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 			}
 			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:399","message":"CreateRun biz result","data":{"hypothesisId":"B","error":%t,"errorMsg":%q,"runID":%d,"autoAppliedCount":%d},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), hasErr, errMsg, runID, len(appliedBookmarkIDs))
-			logFile.WriteString(logEntry)
+			_, _ = logFile.WriteString(logEntry)
 		}
 	}()
 	// #endregion
@@ -632,7 +632,7 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 			defer logFile.Close()
 			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:405","message":"CreateRun handler exit","data":{"hypothesisId":"B","runID":%d,"success":true,"autoAppliedCount":%d},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), run.ID, len(appliedBookmarkIDs))
-			logFile.WriteString(logEntry)
+			_, _ = logFile.WriteString(logEntry)
 		}
 	}()
 	// #endregion

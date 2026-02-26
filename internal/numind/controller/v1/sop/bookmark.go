@@ -49,15 +49,15 @@ type SaveBookmarkResponse struct {
 
 // BookmarkListItem 书签列表项
 type BookmarkListItem struct {
-	ID             uint   `json:"id"`
-	NodeID         uint   `json:"node_id"`
-	NodeSort       int    `json:"node_sort"`
-	NodeName       string `json:"node_name"`
-	BookmarkName   string `json:"bookmark_name"`
-	OutputPreview  string `json:"output_preview"` // 前200字
-	HasThinking    bool   `json:"has_thinking"`
-	TotalTokens    int    `json:"total_tokens"`
-	CreatedAt      string `json:"created_at"`
+	ID            uint   `json:"id"`
+	NodeID        uint   `json:"node_id"`
+	NodeSort      int    `json:"node_sort"`
+	NodeName      string `json:"node_name"`
+	BookmarkName  string `json:"bookmark_name"`
+	OutputPreview string `json:"output_preview"` // 前200字
+	HasThinking   bool   `json:"has_thinking"`
+	TotalTokens   int    `json:"total_tokens"`
+	CreatedAt     string `json:"created_at"`
 }
 
 // ApplyBookmarkRequest 应用书签请求

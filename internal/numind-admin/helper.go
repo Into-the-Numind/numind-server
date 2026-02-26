@@ -234,7 +234,6 @@ func initDefaultAdmin(db *gorm.DB) error {
 	return nil
 }
 
-
 // forceEnsureDatabaseCharset 强制确保数据库使用正确的字符集
 func forceEnsureDatabaseCharset(db *gorm.DB, charsetConfig *dbconfig.DatabaseCharsetConfig) error {
 	if err := db.Exec("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci").Error; err != nil {
