@@ -11,7 +11,9 @@ import (
 type KnowledgeDocumentStore interface {
 	Create(ctx context.Context, doc *model.KnowledgeDocument) error
 	GetByID(ctx context.Context, id uint) (*model.KnowledgeDocument, error)
+	GetByIDs(ctx context.Context, ids []uint) ([]*model.KnowledgeDocument, error)
 	ListByUser(ctx context.Context, userID uint) ([]*model.KnowledgeDocument, error)
+	ListSystemDocs(ctx context.Context) ([]*model.KnowledgeDocument, error) // 查询系统内置文档
 	Update(ctx context.Context, doc *model.KnowledgeDocument) error
 	UpdateStatus(ctx context.Context, id uint, status string, errorMsg string) error // 便捷状态更新方法
 	Delete(ctx context.Context, id uint) error
@@ -36,6 +38,17 @@ func (s *knowledgeDocuments) GetByID(ctx context.Context, id uint) (*model.Knowl
 		return nil, err
 	}
 	return &doc, nil
+}
+
+func (s *knowledgeDocuments) GetByIDs(ctx context.Context, ids []uint) ([]*model.KnowledgeDocument, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var docs []*model.KnowledgeDocument
+	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&docs).Error; err != nil {
+		return nil, err
+	}
+	return docs, nil
 }
 
 func (s *knowledgeDocuments) ListByUser(ctx context.Context, userID uint) ([]*model.KnowledgeDocument, error) {
@@ -63,6 +76,15 @@ func (s *knowledgeDocuments) UpdateStatus(ctx context.Context, id uint, status s
 		updates["error_msg"] = errorMsg
 	}
 	return s.UpdateColumns(ctx, id, updates)
+}
+
+// ListSystemDocs 查询所有系统内置文档（is_system=true, user_id=0）
+func (s *knowledgeDocuments) ListSystemDocs(ctx context.Context) ([]*model.KnowledgeDocument, error) {
+	var docs []*model.KnowledgeDocument
+	if err := s.db.WithContext(ctx).Where("is_system = ? AND user_id = 0", true).Find(&docs).Error; err != nil {
+		return nil, err
+	}
+	return docs, nil
 }
 
 func (s *knowledgeDocuments) Delete(ctx context.Context, id uint) error {

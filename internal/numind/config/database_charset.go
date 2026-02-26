@@ -49,8 +49,6 @@ func DefaultDatabaseCharsetConfig() *DatabaseCharsetConfig {
 			"sales_session",
 			"sales_message",
 			"language_style",
-			"wecom_user",
-			"wecom_message",
 		},
 	}
 }

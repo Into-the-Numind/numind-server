@@ -48,6 +48,12 @@ res/
 
 # 只忽略根目录下的numind文件，不忽略包含numind路径的文件
 /numind
+/numind-admin
+/migrate-vectors
+
+# 临时构建产物和文档
+tmp/
+PROJECT_BREAKDOWN.md
 
 *.png
 
@@ -56,3 +62,4 @@ res/
 *.html
 
 cmd/numind/data/.worktrees/
+backup-wecom-*.tar.gz

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -33,8 +34,17 @@ func NewDMXAPIClient() *DMXAPIClient {
 	return &DMXAPIClient{
 		baseURL: DMXAPIBaseURL,
 		apiKey:  DMXAPIKey,
+		// 流式响应不能使用 Client.Timeout（它覆盖整个请求生命周期包括 body 读取）
+		// 改用 Transport 级别超时：只限制建连和握手，不限制 body 读取时间
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout:   30 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				TLSHandshakeTimeout:   15 * time.Second,
+				ResponseHeaderTimeout: 60 * time.Second,
+			},
 		},
 	}
 }
@@ -47,11 +57,12 @@ type ChatMessage struct {
 
 // ChatCompletionRequest 聊天请求
 type ChatCompletionRequest struct {
-	Model       string        `json:"model"`
-	Messages    []ChatMessage `json:"messages"`
-	Temperature float64       `json:"temperature,omitempty"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
-	Stream      bool          `json:"stream,omitempty"`
+	Model          string        `json:"model"`
+	Messages       []ChatMessage `json:"messages"`
+	Temperature    float64       `json:"temperature,omitempty"`
+	MaxTokens      int           `json:"max_tokens,omitempty"`
+	Stream         bool          `json:"stream,omitempty"`
+	EnableThinking *bool         `json:"enable_thinking,omitempty"` // Qwen 深度思考模式
 }
 
 // ChatCompletionResponse 聊天响应
@@ -71,6 +82,10 @@ type ChatCompletionResponse struct {
 
 // ChatCompletion 调用聊天接口（非流式）
 func (c *DMXAPIClient) ChatCompletion(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int) (string, error) {
+	// 非流式请求添加整体超时保护（覆盖建连+等待响应+读取 body 全流程）
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
 	reqBody := ChatCompletionRequest{
 		Model:       model,
 		Messages:    messages,
@@ -123,15 +138,52 @@ func (c *DMXAPIClient) ChatCompletion(ctx context.Context, model string, message
 	return result.Choices[0].Message.Content, nil
 }
 
+// ChatCompletionWithThinking 调用聊天接口（非流式 + 深度思考模式）
+// 启用 enable_thinking=true，模型会在响应中包含 <think>...</think> 思维链
+// 返回值只包含最终回答内容（思维链部分会被记录到日志但不返回）
+// ChatCompletionWithThinking 调用聊天接口（流式 + 深度思考模式）
+// 启用 enable_thinking=true，模型会在响应中包含 <think>...</think> 思维链
+// 注意：虽然函数签名看起来是阻塞调用，但内部必须使用流式请求（Stream=true），因为当前 API 关于 thinking 参数仅支持流式调用
+func (c *DMXAPIClient) ChatCompletionWithThinking(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int) (string, error) {
+	var fullThinking strings.Builder
+
+	// 调用增强后的 StreamChatCompletion
+	content, err := c.StreamChatCompletion(ctx, model, messages, temperature, maxTokens, true, func(eventType, chunk string) error {
+		if eventType == "thinking" {
+			fullThinking.WriteString(chunk)
+		}
+		return nil
+	})
+
+	if err != nil {
+		return "", err
+	}
+
+	// 记录思维链日志
+	if fullThinking.Len() > 0 {
+		logContent := fullThinking.String()
+		if len(logContent) > 500 {
+			logContent = logContent[:500] + "..."
+		}
+		log.Infow("LLM thinking chain", "thinking", logContent)
+	}
+
+	return content, nil
+}
+
 // StreamChatCompletion 调用聊天接口（流式）
 // onEvent: 回调函数，参数为 content 片段
-func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int, onEvent func(content string) error) (string, error) {
+// StreamChatCompletion 调用聊天接口（流式）
+// onEvent: 回调函数，参数为 (eventType string, content string)
+// eventType: "thinking" (思维链内容) 或 "content" (正文内容)
+func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int, enableThinking bool, onEvent func(eventType, content string) error) (string, error) {
 	reqBody := ChatCompletionRequest{
-		Model:       model,
-		Messages:    messages,
-		Temperature: temperature,
-		MaxTokens:   maxTokens,
-		Stream:      true,
+		Model:          model,
+		Messages:       messages,
+		Temperature:    temperature,
+		MaxTokens:      maxTokens,
+		Stream:         true,
+		EnableThinking: &enableThinking,
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
@@ -160,7 +212,11 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 	}
 
 	var fullContent strings.Builder
+	var fullThinking strings.Builder
 	reader := bufio.NewReader(resp.Body)
+
+	// 标记是否正在处理思维链（用于解析 <think> 标签）
+	inThinkingTag := false
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -189,7 +245,8 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content string `json:"content"`
+					Content  string `json:"content"`
+					Thinking string `json:"reasoning_content"` // 有些厂商可能使用 reasoning_content
 				} `json:"delta"`
 			} `json:"choices"`
 		}
@@ -199,12 +256,72 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 			continue
 		}
 
-		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
-			content := chunk.Choices[0].Delta.Content
-			fullContent.WriteString(content)
-			if onEvent != nil {
-				if err := onEvent(content); err != nil {
-					return fullContent.String(), err
+		if len(chunk.Choices) > 0 {
+			delta := chunk.Choices[0].Delta
+
+			// 1. 处理显式的 reasoning_content 字段
+			if delta.Thinking != "" {
+				fullThinking.WriteString(delta.Thinking)
+				if onEvent != nil {
+					if err := onEvent("thinking", delta.Thinking); err != nil {
+						return fullContent.String(), err
+					}
+				}
+			}
+
+			// 2. 处理 content 字段（可能包含 <think> 标签）
+			content := delta.Content
+			if content != "" {
+				// 简单的标签检测逻辑
+				// 注意：流式传输使得标签可能被切断（例: "<thi", "nk>"），这里做简化处理，
+				// 假设标签稍微完整一些，或者 content 纯粹。
+				// 更严谨的流式解析需要状态机，但针对大多数 API，<think> 通常单独出现或在开头。
+
+				// 检查 <think> 开始
+				if strings.Contains(content, "<think>") {
+					inThinkingTag = true
+					content = strings.Replace(content, "<think>", "", 1)
+				}
+
+				// 检查 </think> 结束
+				if strings.Contains(content, "</think>") {
+					inThinkingTag = false
+					parts := strings.Split(content, "</think>")
+
+					// </think> 之前的部分属于 thinking
+					if len(parts) > 0 && parts[0] != "" {
+						fullThinking.WriteString(parts[0])
+						if onEvent != nil {
+							_ = onEvent("thinking", parts[0])
+						}
+					}
+
+					// </think> 之后的部分属于 content
+					if len(parts) > 1 && parts[1] != "" {
+						// 过滤掉可能的换行
+						realContent := strings.TrimLeft(parts[1], "\n")
+						if realContent != "" {
+							fullContent.WriteString(realContent)
+							if onEvent != nil {
+								_ = onEvent("content", realContent) // 注意这里改成 content
+							}
+						}
+					}
+					continue // 本次 chunk 处理完毕
+				}
+
+				if inThinkingTag {
+					// 在 <think>...</think> 内部，全部视为思考内容
+					fullThinking.WriteString(content)
+					if onEvent != nil {
+						_ = onEvent("thinking", content)
+					}
+				} else {
+					// 正常内容
+					fullContent.WriteString(content)
+					if onEvent != nil {
+						_ = onEvent("content", content)
+					}
 				}
 			}
 		}
@@ -232,9 +349,19 @@ type RerankResponse struct {
 	} `json:"error,omitempty"`
 }
 
+// RerankResult Rerank 结果，包含索引和相关性分数
+type RerankResult struct {
+	Index int     // 原始文档的索引位置
+	Score float64 // Rerank 相关性分数 (0-1)
+}
+
 // Rerank 调用 Rerank 模型
-// 返回按相关性排序的文档索引列表
-func (c *DMXAPIClient) Rerank(ctx context.Context, query string, documents []string, topN int) ([]int, error) {
+// 返回按相关性排序的文档索引和对应的 relevance_score
+func (c *DMXAPIClient) Rerank(ctx context.Context, query string, documents []string, topN int) ([]RerankResult, error) {
+	// 非流式请求添加整体超时保护
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
 	if len(documents) == 0 {
 		return nil, nil
 	}
@@ -288,13 +415,16 @@ func (c *DMXAPIClient) Rerank(ctx context.Context, query string, documents []str
 		return nil, fmt.Errorf("rerank error: %s", result.Error.Message)
 	}
 
-	// 提取排序后的索引
-	indices := make([]int, 0, len(result.Results))
+	// 提取排序后的索引和分数
+	results := make([]RerankResult, 0, len(result.Results))
 	for _, r := range result.Results {
-		indices = append(indices, r.Index)
+		results = append(results, RerankResult{
+			Index: r.Index,
+			Score: r.RelevanceScore,
+		})
 	}
 
-	log.Infow("Rerank completed", "query_len", len(query), "doc_count", len(documents), "top_n", topN, "result_count", len(indices))
+	log.Infow("Rerank completed", "query_len", len(query), "doc_count", len(documents), "top_n", topN, "result_count", len(results))
 
-	return indices, nil
+	return results, nil
 }

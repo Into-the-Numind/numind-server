@@ -1,13 +1,11 @@
 package salesrag
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
-	"time"
 
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/salesrag"
@@ -15,7 +13,6 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
-	"numind-server/internal/pkg/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -99,11 +96,14 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 	}
 
 	var r struct {
-		Query        string   `json:"query" binding:"required"`
-		Images       []string `json:"images"` // 图片链接列表
-		DocumentIDs  []uint   `json:"document_ids"`
-		DeepThinking bool     `json:"deep_thinking"`
-		ChatMode     string   `json:"chat_mode"` // "sales" (销售话术) 或 "free" (自由讨论)
+		Query         string   `json:"query" binding:"required"`
+		Images        []string `json:"images"` // 图片链接列表
+		DocumentIDs   []uint   `json:"document_ids"`
+		ProductDocIDs []uint   `json:"product_doc_ids"` // 产品文档
+		CaseDocIDs    []uint   `json:"case_doc_ids"`    // 成功案例
+		FAQDocIDs     []uint   `json:"faq_doc_ids"`     // 百问百答
+		DeepThinking  bool     `json:"deep_thinking"`
+		ChatMode      string   `json:"chat_mode"` // "sales" (销售话术) 或 "free" (自由讨论)
 	}
 
 	if err := c.ShouldBindJSON(&r); err != nil {
@@ -123,7 +123,7 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 	}
 
 	// 注入 userID 到请求 context 中，供业务层使用
-	newCtx := context.WithValue(c.Request.Context(), "userID", user.ID)
+	newCtx := middleware.NewContextWithUserID(c.Request.Context(), user.ID)
 
 	// 设置 SSE 响应头
 	c.Header("Content-Type", "text/event-stream")
@@ -316,8 +316,14 @@ func (ctrl *SalesRAGController) CreateSession(c *gin.Context) {
 	var req struct {
 		Title           string `json:"title"`
 		DocumentIDs     []uint `json:"document_ids"`
+		ProductDocIDs   []uint `json:"product_doc_ids"`   // 产品文档
+		CaseDocIDs      []uint `json:"case_doc_ids"`      // 成功案例
+		FAQDocIDs       []uint `json:"faq_doc_ids"`       // 百问百答
+		OpinionDocIDs   []uint `json:"opinion_doc_ids"`   // 观点库（用户上传）
+		OpinionTrackIDs []uint `json:"opinion_track_ids"` // 观点库（系统赛道）
 		DeepThinking    bool   `json:"deep_thinking"`
 		CustomerProfile string `json:"customer_profile"`
+		SalesStage      string `json:"sales_stage"` // 销售阶段
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -339,8 +345,14 @@ func (ctrl *SalesRAGController) CreateSession(c *gin.Context) {
 	createReq := salesrag.CreateSessionRequest{
 		Title:           req.Title,
 		DocumentIDs:     req.DocumentIDs,
+		ProductDocIDs:   req.ProductDocIDs,
+		CaseDocIDs:      req.CaseDocIDs,
+		FAQDocIDs:       req.FAQDocIDs,
+		OpinionDocIDs:   req.OpinionDocIDs,
+		OpinionTrackIDs: req.OpinionTrackIDs,
 		DeepThinking:    req.DeepThinking,
 		CustomerProfile: req.CustomerProfile,
+		SalesStage:      req.SalesStage,
 	}
 
 	session, err := ctrl.b.SalesRAG().CreateSession(c, user.ID, createReq)
@@ -454,6 +466,16 @@ func (ctrl *SalesRAGController) DeleteSession(c *gin.Context) {
 	}
 
 	core.WriteResponse(c, nil, map[string]string{"message": "Session deleted successfully"})
+}
+
+// ListOpinionTracks 获取系统内置观点赛道列表
+func (ctrl *SalesRAGController) ListOpinionTracks(c *gin.Context) {
+	tracks, err := ctrl.b.SalesRAG().ListOpinionTracks(c)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	core.WriteResponse(c, nil, tracks)
 }
 
 // ListMessages 获取会话的消息列表
@@ -630,17 +652,36 @@ func (ctrl *SalesRAGController) RenameSession(c *gin.Context) {
 	core.WriteResponse(c, nil, map[string]string{"message": "Session renamed successfully"})
 }
 
-// AnalyzeProfile 解析上传的文档生成客户档案 (支持 SSE 流式)
+// AnalyzeProfile 解析上传的文档生成客户档案 (支持 SSE 流式，支持多文件)
 func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 	log.Infow("[AnalyzeProfile] Received request")
-	
-	file, header, err := c.Request.FormFile("file")
-	if err != nil {
-		log.Errorw("[AnalyzeProfile] FormFile error", "error", err)
+
+	// 解析 multipart form
+	if err := c.Request.ParseMultipartForm(100 << 20); err != nil { // 100 MB max
+		log.Errorw("[AnalyzeProfile] ParseMultipartForm error", "error", err)
 		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
 		return
 	}
-	defer file.Close()
+
+	form := c.Request.MultipartForm
+	files := form.File["file"] // 前端 input name="file" multiple
+
+	if len(files) == 0 {
+		// 尝试获取 "files" 字段
+		files = form.File["files"]
+	}
+
+	if len(files) == 0 {
+		log.Errorw("[AnalyzeProfile] No files found")
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("请上传至少一个文件"), nil)
+		return
+	}
+
+	if len(files) > 5 {
+		log.Errorw("[AnalyzeProfile] Too many files", "count", len(files))
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("最多只能上传 5 个文件"), nil)
+		return
+	}
 
 	user := middleware.GetCurrentUser(c)
 	if user == nil {
@@ -649,7 +690,7 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 		return
 	}
 
-	log.Infow("[AnalyzeProfile] User uploading file", "user_id", user.ID, "filename", header.Filename, "size", header.Size)
+	log.Infow("[AnalyzeProfile] User uploading files", "user_id", user.ID, "count", len(files))
 
 	// 设置 SSE 响应头
 	c.Header("Content-Type", "text/event-stream")
@@ -662,15 +703,15 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 	// 发送初始状态
 	statusData, _ := json.Marshal(map[string]interface{}{
 		"type": "status",
-		"data": "正在分析客户资料...",
+		"data": fmt.Sprintf("正在综合分析 %d 份资料...", len(files)),
 	})
 	fmt.Fprintf(w, "data: %s\n\n", statusData)
 	w.Flush()
 	log.Infow("[AnalyzeProfile] Sent initial status")
 
-	log.Infow("[AnalyzeProfile] Calling AnalyzeDocumentStream...")
-	profile, err := ctrl.b.SalesRAG().AnalyzeDocumentStream(c, user.ID, file, header.Filename, func(token string) error {
-		log.Infow("[AnalyzeProfile] Received token", "token_preview", token[:min(len(token), 30)])
+	log.Infow("[AnalyzeProfile] Calling AnalyzeProfileMultiFiles...")
+	profile, err := ctrl.b.SalesRAG().AnalyzeProfileMultiFiles(c, user.ID, files, func(token string) error {
+		// log.Infow("[AnalyzeProfile] Received token", "token_preview", token[:min(len(token), 30)])
 		eventData, _ := json.Marshal(map[string]interface{}{
 			"type": "token",
 			"data": token,
@@ -683,7 +724,7 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 	})
 
 	if err != nil {
-		log.Errorw("[AnalyzeProfile] AnalyzeDocumentStream error", "error", err)
+		log.Errorw("[AnalyzeProfile] AnalyzeProfileMultiFiles error", "error", err)
 		errData, _ := json.Marshal(map[string]interface{}{
 			"type": "error",
 			"data": err.Error(),
@@ -693,7 +734,7 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 		return
 	}
 
-	log.Infow("[AnalyzeProfile] AnalyzeDocumentStream completed", "profile_length", len(profile))
+	log.Infow("[AnalyzeProfile] AnalyzeProfileMultiFiles completed", "profile_length", len(profile))
 
 	// 发送完成并附带完整结果
 	doneData, _ := json.Marshal(map[string]interface{}{
@@ -849,7 +890,7 @@ func (ctrl *SalesRAGController) SaveLanguageStyle(c *gin.Context) {
 	})
 }
 
-// OCR 识别图片中的文本 (调用阿里云百炼视觉大模型)
+// OCR 识别图片中的文本 (调用视觉大模型)
 func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 	// 1. 获取上传的文件
 	file, header, err := c.Request.FormFile("file")
@@ -866,108 +907,21 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 		return
 	}
 
-	// 2. 读取并上传到 COS
-	data, err := io.ReadAll(file)
+	// 2. 读取图片数据
+	imageData, err := io.ReadAll(file)
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("读取文件数据失败"), nil)
 		return
 	}
 
-	// 生成 object key: sales_chat/{userID}/{sessionID}/{timestamp}_{filename}
+	// 3. 调用 biz 层完成压缩、上传、识别
+	contentType := header.Header.Get("Content-Type")
 	sessionID := c.DefaultPostForm("session_id", "no_session")
-	objectKey := fmt.Sprintf("sales_chat/%d/%s/%d_%s", user.ID, sessionID, time.Now().Unix(), header.Filename)
 
-	// 上传到 COS
-	cosURL, err := util.UploadBytesToCOS(c.Request.Context(), objectKey, header.Header.Get("Content-Type"), data)
+	ocrText, cosURL, err := ctrl.b.SalesRAG().OCRAnalyze(c.Request.Context(), user.ID, imageData, contentType, sessionID, header.Filename)
 	if err != nil {
-		log.Errorw("Upload image to COS failed", "error", err, "user_id", user.ID, "key", objectKey)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("图片存储失败"), nil)
-		return
-	}
-
-	// 3. 调用阿里云百炼视觉模型进行 OCR 识别
-	// 使用 qwen3-vl-flash-2026-01-22 模型
-	prompt := `你是一个专业的微信聊天记录识别专家。请识别这张微信聊天截图中的对话内容。
-
-  ## 识别要求
-
-  ### 1. 气泡布局识别
-  - **左边气泡（白色/灰色）= 客户消息**
-  - **右边气泡（绿色）= 销售消息**
-  - 从上到下完整扫描所有对话气泡
-
-  ### 2. 内容提取规则
-  - **保留表情符号**：如 [微笑]、[呲牙]、🌹 等
-  - **只提取文字气泡**：忽略图片、语音、视频等多媒体消息
-  - **保持原文**：不要修改、总结或解释对话内容
-
-  ### 3. 输出格式（严格遵守）
-
-  **如果截图包含多轮对话**（2条及以上消息），按以下格式输出：
-
-  【对话历史】
-  客户：[第1条客户消息]
-  销售：[第1条销售消息]
-  客户：[第2条客户消息]
-  ...（所有历史对话）
-
-  【客户最新消息】
-  客户：[最后一条客户消息]
-
-  **如果截图只有单条消息**，直接输出：
-
-  客户：[消息内容]
-
-  ### 4. 特殊处理规则
-
-  - **最新消息必须是客户发的**：如果截图最后一条是销售发的，往前找到最近的客户消息作为"最新消息"
-  - **空消息处理**：如果气泡只有表情没有文字，保留表情符号
-  - **时间戳忽略**：不要提取对话中的时间信息
-
-  ## 输出示例
-
-  ### 示例1：多轮对话
-  【对话历史】
-  客户：你们这个产品怎么样？
-  销售：我们的产品在行业内评价很高，已经服务了1000+客户
-  客户：价格呢？
-  销售：我们有三种套餐，基础版998元...
-
-  【客户最新消息】
-  客户：太贵了，能便宜点吗？
-
-  ### 示例2：单条消息
-  客户：在吗？
-
-  ### 示例3：包含表情
-  【对话历史】
-  客户：你好[微笑]
-  销售：您好，很高兴为您服务
-
-  【客户最新消息】
-  客户：我想了解一下产品
-
-  ## 关键约束
-
-  1. **严格使用【对话历史】和【客户最新消息】标记**，不要使用其他标记
-  2. **每条消息前必须有"客户："或"销售："前缀**
-  3. **不要添加任何分析、解释或总结**，只输出识别的对话内容
-  4. **保持对话的原始顺序和完整性**
-
-  现在请识别这张截图。`
-	model := "qwen3-vl-flash-2026-01-22"
-
-	// 生成 10 分钟有效的签名 URL 供阿里云 API 访问
-	signedURL, err := util.GenerateSignedURL(c.Request.Context(), objectKey, 600)
-	if err != nil {
-		log.Warnw("Generate signed URL failed, use raw cosURL", "error", err, "key", objectKey)
-		signedURL = cosURL
-	}
-
-	ocrText, err := ctrl.b.Ali().QianwenVision(c.Request.Context(), signedURL, prompt, model)
-	if err != nil {
-		log.Errorw("Alibaba Cloud Vision OCR failed", "error", err, "user_id", user.ID, "url", signedURL)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("图片识别失败，请检查模型配置"), nil)
+		log.Errorw("OCRAnalyze failed", "error", err, "user_id", user.ID)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
 		return
 	}
 

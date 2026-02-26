@@ -26,7 +26,7 @@ type OpenAIConfig struct {
 }
 
 type VolcBiz interface {
-	GenerateArticleContent(content string, contentType string, maxLength int, cfg *OpenAIConfig, prompt string) (string, error)
+	GenerateArticleContent(ctx context.Context, content string, contentType string, maxLength int, cfg *OpenAIConfig, prompt string) (string, error)
 	// 新增流式文本生成方法，与ali的QianwenTextStream保持一致
 	VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error)
 	// 火山方舟 Embedding 向量化
@@ -34,12 +34,17 @@ type VolcBiz interface {
 	// StreamChat 真正的流式聊天，通过回调函数逐 token 或思维链内容推送
 	// onEvent: 收到事件内容时调用，event 类型为 "thinking" 或 "message"
 	// 返回: 完整内容（所有 token 拼接）和错误
-	StreamChat(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
+	StreamChat(ctx context.Context, messages []map[string]interface{}, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
 	// VisionAnalyze 调用火山方舟视觉模型分析图片
-	// imageURL: 图片URL地址
-	// prompt: 分析提示词
-	// model: 模型名称，为空则使用默认视觉模型
-	VisionAnalyze(ctx context.Context, imageURL string, prompt string, model string) (string, error)
+	VisionAnalyze(ctx context.Context, imageURL string, prompt string, model string, maxTokens int, reasoningEffort string) (string, error)
+	// VisionAnalyzeStream 流式分析图片，支持思维链输出
+	VisionAnalyzeStream(ctx context.Context, imageURL string, prompt string, model string, maxTokens int, reasoningEffort string, onToken func(token string) error) (string, error)
+
+	// ChatWithModel 非流式聊天，支持指定模型
+	ChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64) (string, error)
+	// StreamChatWithModel 流式聊天，支持指定模型和思考程度
+	// reasoningEffort: doubao-seed 系列使用 "minimal"/"low"/"medium"/"high"；其他模型非空时开启 thinking
+	StreamChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64, reasoningEffort string, onEvent func(event string, token string) error) (string, error)
 }
 
 type volcBiz struct {
@@ -55,7 +60,7 @@ func NewVolcBiz(ds store.IStore) VolcBiz {
 }
 
 // GenerateArticleContent 通用内容生成函数
-func (v *volcBiz) GenerateArticleContent(content string, contentType string, maxLength int, cfg *OpenAIConfig, prompt string) (string, error) {
+func (v *volcBiz) GenerateArticleContent(ctx context.Context, content string, contentType string, maxLength int, cfg *OpenAIConfig, prompt string) (string, error) {
 	if cfg == nil {
 		cfg = &OpenAIConfig{
 			APIKey:      viper.GetString("volc.api_key"),
@@ -124,7 +129,7 @@ func (v *volcBiz) GenerateArticleContent(content string, contentType string, max
 		Method:  "POST",
 		URL:     url,
 		Body:    bytes.NewBuffer(bodyBytes),
-		Context: context.Background(),
+		Context: ctx,
 		Headers: map[string]string{
 			"Content-Type":  "application/json",
 			"Authorization": "Bearer " + cfg.APIKey,
@@ -402,18 +407,10 @@ func (v *volcBiz) DoubaoEmbedding(ctx context.Context, text string) ([]float32, 
 	return vector, nil
 }
 
-// min 返回两个整数中的较小值
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // StreamChat 真正的流式聊天方法
 // 通过回调函数 onEvent 逐 token 或思维链内容推送
 // 火山方舟 API 使用 SSE 格式，每行格式为 "data: {json}\n\n"
-func (v *volcBiz) StreamChat(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error) {
+func (v *volcBiz) StreamChat(ctx context.Context, messages []map[string]interface{}, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error) {
 	url := viper.GetString("volc.base_url") + "/chat/completions"
 
 	thinkingType := "disabled"
@@ -434,6 +431,19 @@ func (v *volcBiz) StreamChat(ctx context.Context, messages []map[string]string, 
 			"include_usage": true, // 包含 token 使用统计
 		},
 	}
+	// 如果是推理系列模型（doubao-seed），设置思维链预算和较大的输出上限
+	if modelName, ok := bodyMap["model"].(string); ok && strings.Contains(modelName, "doubao-seed") {
+		// 思考过程限制 2000 token，总输出放宽至 32k（提示词会控制实际输出）
+		bodyMap["thinking"] = map[string]interface{}{
+			"type":          "enabled",
+			"budget_tokens": 2000,
+		}
+		bodyMap["max_completion_tokens"] = 32768
+		delete(bodyMap, "max_tokens")
+		// 移除互斥或较低精度的参数
+		delete(bodyMap, "reasoning_effort")
+	}
+
 	bodyBytes, _ := json.Marshal(bodyMap)
 
 	log.C(ctx).Debugw("调用volc流式API", "url", url, "stream", true)
@@ -543,13 +553,10 @@ func (v *volcBiz) StreamChat(ctx context.Context, messages []map[string]string, 
 }
 
 // VisionAnalyze 调用火山方舟视觉模型分析图片
-// imageURL: 图片URL地址（支持公网可访问的URL）
-// prompt: 分析提示词
-// model: 模型名称，为空则使用默认视觉模型 doubao-seed-1-6-lite-251015
-func (v *volcBiz) VisionAnalyze(ctx context.Context, imageURL string, prompt string, model string) (string, error) {
+func (v *volcBiz) VisionAnalyze(ctx context.Context, imageURL string, prompt string, model string, maxTokens int, reasoningEffort string) (string, error) {
 	// 设置默认模型
 	if model == "" {
-		model = "doubao-seed-1-6-lite-251015"
+		model = "doubao-seed-1-8-251228"
 	}
 
 	baseURL := viper.GetString("volc.base_url")
@@ -578,11 +585,26 @@ func (v *volcBiz) VisionAnalyze(ctx context.Context, imageURL string, prompt str
 	}
 
 	bodyMap := map[string]interface{}{
-		"model":                 model,
-		"messages":              messages,
-		"max_completion_tokens": 65535,
-		"reasoning_effort":      "medium",
+		"model":    model,
+		"messages": messages,
 	}
+
+	// 推理模型特殊参数
+	if strings.Contains(model, "doubao-seed") {
+		// 设置思考程度: minimal, low, medium, high
+		if reasoningEffort == "" {
+			reasoningEffort = "medium"
+		}
+		bodyMap["reasoning_effort"] = reasoningEffort
+		bodyMap["max_completion_tokens"] = 65535
+	} else {
+		if maxTokens > 0 {
+			bodyMap["max_tokens"] = maxTokens
+		} else {
+			bodyMap["max_tokens"] = 2000 // 视觉模型默认给较多 token
+		}
+	}
+
 	bodyBytes, err := json.Marshal(bodyMap)
 	if err != nil {
 		return "", fmt.Errorf("序列化请求失败: %w", err)
@@ -643,4 +665,375 @@ func (v *volcBiz) VisionAnalyze(ctx context.Context, imageURL string, prompt str
 	content := result.Choices[0].Message.Content
 	log.C(ctx).Infow("视觉模型分析完成", "content_length", len(content))
 	return content, nil
+}
+
+// VisionAnalyzeStream 流式分析图片，支持思维链输出
+func (v *volcBiz) VisionAnalyzeStream(ctx context.Context, imageURL string, prompt string, model string, maxTokens int, reasoningEffort string, onToken func(token string) error) (string, error) {
+	// 设置默认模型
+	if model == "" {
+		model = "doubao-seed-1-8-251228"
+	}
+
+	baseURL := viper.GetString("volc.base_url")
+	if baseURL == "" {
+		baseURL = "https://ark.cn-beijing.volces.com/api/v3"
+	}
+	url := baseURL + "/chat/completions"
+
+	// 构建多模态消息格式
+	messages := []map[string]interface{}{
+		{
+			"role": "user",
+			"content": []map[string]interface{}{
+				{
+					"type": "image_url",
+					"image_url": map[string]string{
+						"url": imageURL,
+					},
+				},
+				{
+					"type": "text",
+					"text": prompt,
+				},
+			},
+		},
+	}
+
+	bodyMap := map[string]interface{}{
+		"model":    model,
+		"messages": messages,
+		"stream":   true,
+	}
+
+	// 推理模型特殊参数
+	if strings.Contains(model, "doubao-seed") {
+		if reasoningEffort == "" {
+			reasoningEffort = "medium"
+		}
+		bodyMap["reasoning_effort"] = reasoningEffort
+		bodyMap["max_completion_tokens"] = 65535
+	} else {
+		if maxTokens > 0 {
+			bodyMap["max_tokens"] = maxTokens
+		} else {
+			bodyMap["max_tokens"] = 2000 // 视觉模型默认给较多 token
+		}
+	}
+
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return "", fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	log.C(ctx).Debugw("调用火山方舟流式视觉模型", "url", url, "model", model)
+
+	// 创建 HTTP 请求
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("创建请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+viper.GetString("volc.api_key"))
+	req.Header.Set("Accept", "text/event-stream")
+
+	client := &http.Client{Timeout: 0}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("HTTP请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("API返回错误状态码: %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	var fullContent strings.Builder
+	reader := bufio.NewReader(resp.Body)
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fullContent.String(), fmt.Errorf("读取响应失败: %w", err)
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var chunk map[string]interface{}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+
+		if errObj, ok := chunk["error"].(map[string]interface{}); ok {
+			return fullContent.String(), fmt.Errorf("API流式错误: %v", errObj["message"])
+		}
+
+		choices, ok := chunk["choices"].([]interface{})
+		if !ok || len(choices) == 0 {
+			continue
+		}
+
+		choice := choices[0].(map[string]interface{})
+		delta, ok := choice["delta"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// 处理普通回答内容 (content)
+		if content, ok := delta["content"].(string); ok && content != "" {
+			fullContent.WriteString(content)
+			if onToken != nil {
+				if err := onToken(content); err != nil {
+					return fullContent.String(), err
+				}
+			}
+		}
+	}
+
+	log.C(ctx).Debugw("流式视觉分析完成", "content_len", fullContent.Len())
+	return fullContent.String(), nil
+}
+
+// ChatWithModel 非流式聊天，支持指定模型
+func (v *volcBiz) ChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64) (string, error) {
+	if model == "" {
+		model = viper.GetString("volc.model")
+	}
+	if model == "" {
+		model = "deepseek-v3-250324"
+	}
+
+	baseURL := viper.GetString("volc.base_url")
+	if baseURL == "" {
+		baseURL = "https://ark.cn-beijing.volces.com/api/v3"
+	}
+	url := baseURL + "/chat/completions"
+
+	bodyMap := map[string]interface{}{
+		"model":       model,
+		"messages":    messages,
+		"temperature": temperature,
+	}
+
+	if strings.Contains(model, "doubao-seed") {
+		bodyMap["thinking"] = map[string]interface{}{
+			"type":          "enabled",
+			"budget_tokens": 2000,
+		}
+		bodyMap["max_completion_tokens"] = 32768
+	} else if maxTokens > 0 {
+		bodyMap["max_tokens"] = maxTokens
+	}
+
+	bodyBytes, _ := json.Marshal(bodyMap)
+
+	httpReq := &httpclient.Request{
+		Method:  "POST",
+		URL:     url,
+		Body:    bytes.NewBuffer(bodyBytes),
+		Context: ctx,
+		Headers: map[string]string{
+			"Content-Type":  "application/json",
+			"Authorization": "Bearer " + viper.GetString("volc.api_key"),
+		},
+	}
+
+	respBody, err := v.client.DoWithJSONResponse(httpReq)
+	if err != nil {
+		return "", err
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", err
+	}
+
+	if result.Error != nil {
+		return "", fmt.Errorf("API error: %s", result.Error.Message)
+	}
+
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("no choices returned")
+	}
+
+	return result.Choices[0].Message.Content, nil
+}
+
+// StreamChatWithModel 流式聊天，支持指定模型和思考程度
+func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64, reasoningEffort string, onEvent func(event string, token string) error) (string, error) {
+	if model == "" {
+		model = viper.GetString("volc.model")
+	}
+
+	bodyMap := map[string]interface{}{
+		"model":       model,
+		"messages":    messages,
+		"temperature": temperature,
+		"stream":      true,
+		"stream_options": map[string]interface{}{
+			"include_usage": true,
+		},
+	}
+
+	// doubao-seed 系列模型使用 reasoning_effort 参数控制思考程度
+	// minimal: 不思考; low/medium/high: 开启思考并控制程度
+	if strings.Contains(model, "doubao-seed") {
+		if reasoningEffort == "" {
+			reasoningEffort = "medium"
+		}
+		bodyMap["reasoning_effort"] = reasoningEffort
+		bodyMap["max_completion_tokens"] = 65535
+		delete(bodyMap, "max_tokens")
+		delete(bodyMap, "thinking")
+	} else {
+		bodyMap["max_tokens"] = maxTokens
+		thinkingType := "disabled"
+		if reasoningEffort != "" && reasoningEffort != "minimal" {
+			thinkingType = "enabled"
+		}
+		bodyMap["thinking"] = map[string]interface{}{
+			"type": thinkingType,
+		}
+	}
+
+	bodyBytes, _ := json.Marshal(bodyMap)
+
+	baseURL := viper.GetString("volc.base_url")
+	if baseURL == "" {
+		baseURL = "https://ark.cn-beijing.volces.com/api/v3"
+	}
+	// Log request details
+	log.C(ctx).Infow("StreamChatWithModel request", "url", baseURL+"/chat/completions", "model", model, "body_map", bodyMap)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/chat/completions", bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+viper.GetString("volc.api_key"))
+
+	client := &http.Client{
+		Timeout: 300 * time.Second, // 增加超时时间以适应 deeply thinking
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("Volc API error: %d - %s", resp.StatusCode, string(body))
+	}
+
+	var fullContent strings.Builder
+	var thinkingContent strings.Builder
+	reader := bufio.NewReader(resp.Body)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fullContent.String(), err
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		log.C(ctx).Debugw("StreamChatWithModel raw line", "line", line)
+
+		if !strings.HasPrefix(line, "data: ") {
+			// log.C(ctx).Debugw("Skip line", "line", line)
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		// log.C(ctx).Debugw("StreamChatWithModel received data", "data", data) // Uncomment for ultra-verbose debug
+
+		var chunk map[string]interface{}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			log.C(ctx).Warnw("StreamChatWithModel unmarshal failed", "data", data, "error", err)
+			continue
+		}
+
+		choices, ok := chunk["choices"].([]interface{})
+		if !ok || len(choices) == 0 {
+			// Check if there is an error field at root
+			if errObj, ok := chunk["error"].(map[string]interface{}); ok {
+				return fullContent.String(), fmt.Errorf("API Error: %v", errObj)
+			}
+			log.C(ctx).Warnw("StreamChatWithModel no choices", "data", data)
+			continue
+		}
+
+		choice := choices[0].(map[string]interface{})
+		if delta, ok := choice["delta"].(map[string]interface{}); ok {
+			// Log keys in delta to debug
+			// log.C(ctx).Debugw("StreamChatWithModel delta keys", "keys", maps.Keys(delta))
+
+			if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
+				thinkingContent.WriteString(rc)
+				if onEvent != nil {
+					if err := onEvent("thinking", rc); err != nil {
+						return fullContent.String(), err
+					}
+				}
+			}
+
+			if content, ok := delta["content"].(string); ok && content != "" {
+				fullContent.WriteString(content)
+				if onEvent != nil {
+					if err := onEvent("message", content); err != nil {
+						return fullContent.String(), err
+					}
+				}
+			}
+		}
+
+		if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
+			log.C(ctx).Infow("StreamChatWithModel finish_reason", "reason", finishReason)
+		}
+	}
+
+	result := fullContent.String()
+	log.C(ctx).Infow("StreamChatWithModel completed", "content_len", len(result), "thinking_len", thinkingContent.Len())
+
+	if result == "" {
+		if thinkingContent.Len() > 0 {
+			log.C(ctx).Warnw("StreamChatWithModel response empty but has thinking content", "thinking_len", thinkingContent.Len())
+		} else {
+			log.C(ctx).Warnw("StreamChatWithModel returned empty content and empty thinking")
+		}
+	}
+
+	return result, nil
 }

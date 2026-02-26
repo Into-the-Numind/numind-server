@@ -453,13 +453,12 @@ func (s *DashVectorStore) FetchByDocumentID(ctx context.Context, documentID uint
 	return chunks, nil
 }
 
+// buildDashVectorFilter 构建 DashVector 过滤条件
+// 安全约束：当 DocumentIDs 非空时，仅按 doc_id 过滤（不叠加 user_id），
+// 因为 biz 层 RetrieveStream 已通过 enabledDocIDs 白名单验证了访问权限。
+// 这使得系统文档（user_id=0）能被正常检索。
 func buildDashVectorFilter(f port.SearchFilter) string {
 	parts := []string{}
-
-	// 强制注入 UserID 过滤
-	if f.UserID > 0 {
-		parts = append(parts, fmt.Sprintf("user_id = %d", f.UserID))
-	}
 
 	if len(f.DocumentIDs) > 0 {
 		ids := make([]string, len(f.DocumentIDs))
@@ -467,6 +466,9 @@ func buildDashVectorFilter(f port.SearchFilter) string {
 			ids[i] = fmt.Sprintf("%d", id)
 		}
 		parts = append(parts, fmt.Sprintf("doc_id IN (%s)", strings.Join(ids, ", ")))
+	} else if f.UserID > 0 {
+		// 无文档 ID 时，按用户过滤
+		parts = append(parts, fmt.Sprintf("user_id = %d", f.UserID))
 	}
 
 	if len(parts) == 0 {

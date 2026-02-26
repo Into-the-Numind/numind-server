@@ -118,9 +118,10 @@ func (p *EnhancedParser) Parse(ctx context.Context, file io.Reader, filename str
 // 以下代码移植自 internal/numind/controller/v1/pdf/pdf.go
 // ====================================================================================
 
-// extractTextFromPDF 尝试使用 Python 增强解析，如果失败则降级到 go-fitz
+// extractTextFromPDF 尝试使用 Python 增强解析 (MarkItDown)，如果失败则降级到 go-fitz
+// 调用链: Go -> Python脚本(document_parser.py) -> MarkItDown -> (失败) -> go-fitz
 func (p *EnhancedParser) extractTextFromPDF(data []byte) (string, int, error) {
-	// 1. 尝试使用 Python 增强解析 (PyMuPDF blocks 模式)
+	// 1. 尝试使用 Python 增强解析 (MarkItDown 模式，支持多格式统一解析)
 	text, pages, err := p.extractTextFromPDFEnhanced(data)
 	if err == nil && text != "" {
 		log.Infow("Successfully extracted PDF using enhanced Python parser", "pages", pages)
@@ -133,6 +134,8 @@ func (p *EnhancedParser) extractTextFromPDF(data []byte) (string, int, error) {
 }
 
 // extractTextFromPDFEnhanced 使用外部 Python 脚本进行高质量解析
+// 脚本内部使用 MarkItDown 库处理 PDF/DOCX/XLSX/PPTX 等多种格式
+// MarkItDown: 微软出品的文档转 Markdown 工具，统一处理多格式文档
 func (p *EnhancedParser) extractTextFromPDFEnhanced(data []byte) (string, int, error) {
 	// 创建临时文件
 	tmpFile, err := os.CreateTemp("", "pdf_upload_*.pdf")
@@ -146,8 +149,8 @@ func (p *EnhancedParser) extractTextFromPDFEnhanced(data []byte) (string, int, e
 		return "", 0, fmt.Errorf("failed to write data to temp file: %w", err)
 	}
 
-	// 执行 Python 脚本
-	// 脚本路径通常在 scripts/document_parser.py
+	// 执行 Python 脚本 (scripts/document_parser.py)
+	// 该脚本使用 MarkItDown 解析文档，输出结构化 Markdown 文本
 	scriptPath := "scripts/document_parser.py"
 	// 尝试绝对路径或其他位置判定 (简单起见先假设在工作目录下或 app/scripts)
 	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
@@ -463,22 +466,24 @@ func (p *EnhancedParser) formatText(text string) string {
 	return text
 }
 
-// extractTextFromDOCX 从DOCX文件中提取文本，优先使用 Python 增强解析
+// extractTextFromDOCX 从DOCX文件中提取文本，优先使用 Python 增强解析 (MarkItDown)
+// 调用链: Go -> Python脚本(document_parser.py) -> MarkItDown -> (失败) -> XML解析
 func (p *EnhancedParser) extractTextFromDOCX(data []byte) (string, error) {
-	// 使用专门的 DOCX 增强解析器（正确的文件后缀）
+	// 使用 MarkItDown 进行高质量解析
 	text, err := p.extractTextFromDOCXEnhanced(data)
 	if err == nil && text != "" {
-		log.Infow("Successfully extracted DOCX using enhanced Python parser")
+		log.Infow("Successfully extracted DOCX using MarkItDown")
 		return text, nil
 	}
 
-	log.Warnw("Enhanced DOCX parsing failed, falling back to legacy XML parser", "error", err)
+	log.Warnw("MarkItDown DOCX parsing failed, falling back to legacy XML parser", "error", err)
 	return p.extractTextFromDOCXLegacy(data)
 }
 
 // extractTextFromDOCXEnhanced 使用外部 Python 脚本进行 DOCX 高质量解析
+// 脚本内部使用 MarkItDown 库统一处理文档解析
 func (p *EnhancedParser) extractTextFromDOCXEnhanced(data []byte) (string, error) {
-	// 创建临时文件 - 注意使用 .docx 后缀，这样 Python 脚本才能正确识别文件类型
+	// 创建临时文件 - 注意使用 .docx 后缀，这样 MarkItDown 才能正确识别文件类型
 	tmpFile, err := os.CreateTemp("", "docx_upload_*.docx")
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp file: %w", err)
@@ -490,7 +495,8 @@ func (p *EnhancedParser) extractTextFromDOCXEnhanced(data []byte) (string, error
 		return "", fmt.Errorf("failed to write data to temp file: %w", err)
 	}
 
-	// 执行 Python 脚本
+	// 执行 Python 脚本 (scripts/document_parser.py)
+	// 该脚本使用 MarkItDown 解析文档
 	scriptPath := "scripts/document_parser.py"
 	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
 		// 尝试 Docker 容器内的常见路径
@@ -623,6 +629,7 @@ func (p *EnhancedParser) parseDOCXXMLWithParser(xmlData []byte) (string, error) 
 }
 
 // extractTextFromDOC 使用 Python + antiword 解析旧版 DOC 文件
+// 注意：MarkItDown 不支持旧版 .doc 格式，因此使用 antiword 工具
 func (p *EnhancedParser) extractTextFromDOC(data []byte) (string, error) {
 	// 创建临时文件 - 使用 .doc 后缀以便 Python 脚本识别
 	tmpFile, err := os.CreateTemp("", "doc_upload_*.doc")
@@ -636,7 +643,7 @@ func (p *EnhancedParser) extractTextFromDOC(data []byte) (string, error) {
 		return "", fmt.Errorf("failed to write data to temp file: %w", err)
 	}
 
-	// 执行 Python 脚本 (document_parser.py 内部使用 antiword 处理 .doc)
+	// 执行 Python 脚本 (document_parser.py 内部对 .doc 使用 antiword，其他格式使用 MarkItDown)
 	scriptPath := "scripts/document_parser.py"
 	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
 		// 尝试 Docker 容器内的常见路径

@@ -102,38 +102,39 @@ services:
 
   # =====================================================
   # WeCom Agent Service - 企业微信会话存档拉取服务
+  # [DEPRECATED] 已于 2026-02-18 停用，准备删除
   # =====================================================
-  wecom-agent:
-    build:
-      context: .
-      dockerfile: Dockerfile.wecom-agent
-    container_name: numind-wecom-agent
-    restart: unless-stopped
-    environment:
-      # 企业微信配置 (必填，审核通过后填入)
-      - WECOM_CORP_ID=${WECOM_CORP_ID:-}
-      - WECOM_SECRET=${WECOM_SECRET:-}
-      - WECOM_PRIVATE_KEY_PATH=/app/private.pem
-
-      # MySQL 配置 (使用与主服务相同的数据库)
-      - MYSQL_DSN=root:Numind2025@tcp(numind-mysql-dev:3306)/numind?charset=utf8mb4&parseTime=True&loc=Local
-    volumes:
-      # 挂载 RSA 私钥文件
-      - ./wecom_private.pem:/app/private.pem:ro
-      # 挂载日志目录
-      - ./logs/wecom:/app/logs
-    networks:
-      - numind-network
-    depends_on:
-      - numind-server
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
-        reservations:
-          cpus: '0.1'
-          memory: 64M
+  # wecom-agent:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.wecom-agent
+  #   container_name: numind-wecom-agent
+  #   restart: unless-stopped
+  #   environment:
+  #     # 企业微信配置 (必填，审核通过后填入)
+  #     - WECOM_CORP_ID=${WECOM_CORP_ID:-}
+  #     - WECOM_SECRET=${WECOM_SECRET:-}
+  #     - WECOM_PRIVATE_KEY_PATH=/app/private.pem
+  #
+  #     # MySQL 配置 (使用与主服务相同的数据库)
+  #     - MYSQL_DSN=root:Numind2025@tcp(numind-mysql-dev:3306)/numind?charset=utf8mb4&parseTime=True&loc=Local
+  #   volumes:
+  #     # 挂载 RSA 私钥文件
+  #     - ./wecom_private.pem:/app/private.pem:ro
+  #     # 挂载日志目录
+  #     - ./logs/wecom:/app/logs
+  #   networks:
+  #     - numind-network
+  #   depends_on:
+  #     - numind-server
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: '0.5'
+  #         memory: 256M
+  #       reservations:
+  #         cpus: '0.1'
+  #         memory: 64M
 
   # Nginx 反向代理
   nginx:

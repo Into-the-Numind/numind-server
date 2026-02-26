@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"log"
 	"os"
 )
@@ -29,7 +30,7 @@ type HybridSplitter struct {
 func NewHybridSplitter(cfg HybridSplitterConfig) *HybridSplitter {
 	// 设置默认值（与Split函数中的硬编码500保持一致）
 	if cfg.SemanticMinLength == 0 {
-		cfg.SemanticMinLength = 500 // 简化为500字符阈值
+		cfg.SemanticMinLength = 1500 // 500汉字 * 3字节
 	}
 
 	h := &HybridSplitter{
@@ -43,8 +44,11 @@ func NewHybridSplitter(cfg HybridSplitterConfig) *HybridSplitter {
 	h.semanticSplitter = NewEmbeddingSplitter(cfg.SemanticConfig)
 	h.semanticAvailable = h.semanticSplitter.IsAvailable()
 
-	if !h.semanticAvailable {
-		log.Println("[HybridSplitter] Semantic splitter not available, falling back to rule-based only")
+	// 始终输出启动状态（不再依赖 SPLITTER_DEBUG 环境变量）
+	if h.semanticAvailable {
+		log.Println("[HybridSplitter] Semantic splitter available and ready")
+	} else {
+		log.Println("[HybridSplitter] WARNING: Semantic splitter not available, will use rule-based splitting. Dynamic reconnection is enabled.")
 	}
 
 	return h
@@ -69,10 +73,10 @@ func (h *HybridSplitter) Split(text string) ([]SplitChunk, error) {
 			len(text), h.semanticAvailable)
 	}
 
-	// 策略1：文本太短（<500字符），不切分
-	if len(text) < 500 {
+	// 策略1：文本太短（< h.cfg.SemanticMinLength），不切分
+	if len(text) < h.cfg.SemanticMinLength {
 		if os.Getenv("SPLITTER_DEBUG") == "1" {
-			log.Println("[HybridSplitter] Text < 500 chars, no splitting needed")
+			log.Printf("[HybridSplitter] Text < %d bytes, no splitting needed", h.cfg.SemanticMinLength)
 		}
 		return []SplitChunk{{
 			Content: text,
@@ -80,18 +84,20 @@ func (h *HybridSplitter) Split(text string) ([]SplitChunk, error) {
 		}}, nil
 	}
 
-	// 策略2：文本足够长（>=500字符），优先语义切分
+	// 策略2：文本足够长（>= h.cfg.SemanticMinLength），优先语义切分
 	if h.semanticAvailable {
-		if os.Getenv("SPLITTER_DEBUG") == "1" {
-			log.Println("[HybridSplitter] Text >= 500 chars, using semantic splitting")
+		log.Printf("[HybridSplitter] Using semantic splitting (text=%d bytes)", len(text))
+		chunks, err := h.semanticSplitter.Split(text)
+		if err != nil {
+			// 语义切分失败，自动降级到规则切分（而非直接返回错误）
+			log.Printf("[HybridSplitter] WARNING: Semantic split failed, falling back to rule-based: %v", err)
+			return h.convertToSplitChunks(h.ruleSplitter.Split(text))
 		}
-		return h.semanticSplitter.Split(text)
+		return chunks, nil
 	}
 
 	// 策略3：语义切分不可用，降级为规则切分
-	if os.Getenv("SPLITTER_DEBUG") == "1" {
-		log.Println("[HybridSplitter] Semantic unavailable, fallback to rule splitting")
-	}
+	log.Printf("[HybridSplitter] Semantic unavailable, using rule-based splitting (text=%d bytes)", len(text))
 	return h.convertToSplitChunks(h.ruleSplitter.Split(text))
 }
 
@@ -116,10 +122,10 @@ func (h *HybridSplitter) SplitWithDetails(text string) ([]SplitChunk, map[string
 	var chunks []SplitChunk
 	var err error
 
-	// 策略1：文本太短（<500字符），不切分
-	if len(text) < 500 {
+	// 策略1：文本太短（< h.cfg.SemanticMinLength），不切分
+	if len(text) < h.cfg.SemanticMinLength {
 		details["strategy"] = "no_split"
-		details["reason"] = "text_too_short(<500)"
+		details["reason"] = fmt.Sprintf("text_too_short(<%d)", h.cfg.SemanticMinLength)
 		chunks = []SplitChunk{{
 			Content: text,
 			Headers: []string{},
@@ -127,10 +133,17 @@ func (h *HybridSplitter) SplitWithDetails(text string) ([]SplitChunk, map[string
 		return chunks, details, nil
 	}
 
-	// 策略2：文本足够长（>=500字符），优先语义切分
+	// 策略2：文本足够长（>= h.cfg.SemanticMinLength），优先语义切分
 	if h.semanticAvailable {
 		details["strategy"] = "semantic"
 		chunks, err = h.semanticSplitter.Split(text)
+		if err != nil {
+			// 语义切分失败，自动降级到规则切分
+			log.Printf("[HybridSplitter] WARNING: Semantic split failed in SplitWithDetails, falling back: %v", err)
+			details["strategy"] = "rule_fallback"
+			details["semantic_error"] = err.Error()
+			chunks, err = h.convertToSplitChunks(h.ruleSplitter.Split(text))
+		}
 	} else {
 		// 策略3：语义切分不可用，降级为规则切分
 		details["strategy"] = "rule"
@@ -170,18 +183,18 @@ func (h *HybridSplitter) convertToSplitChunks(chunks []EnhancedSplitChunk, err e
 func NewDefaultHybridSplitter() *HybridSplitter {
 	return NewHybridSplitter(HybridSplitterConfig{
 		RuleConfig: EnhancedSplitterConfig{
-			MaxChunkSize:    2500, // 2500 字符 ≈ 4000 tokens
-			MinChunkSize:    350,  // 350 字符 ≈ 500 tokens
-			OverlapSize:     150,
+			MaxChunkSize:    6000,
+			MinChunkSize:    1500,
+			OverlapSize:     300,
 			EnableJieba:     true,
 			ProtectMarkdown: true,
 		},
 		SemanticConfig: EmbeddingSplitterConfig{
 			Threshold:    0.6,
-			MinChunkSize: 350,  // 350 字符 ≈ 500 tokens
-			MaxChunkSize: 2500, // 2500 字符 ≈ 4000 tokens
-			OverlapSize:  150,
+			MinChunkSize: 500,
+			MaxChunkSize: 2000,
+			OverlapSize:  100,
 		},
-		SemanticMinLength: 500,
+		SemanticMinLength: 1500,
 	})
 }

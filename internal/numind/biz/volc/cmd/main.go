@@ -23,6 +23,7 @@ func main() {
 
 	// 通用内容生成示例
 	content, err := biz.GenerateArticleContent(
+		context.Background(),
 		"这是一段测试文本，用于验证火山引擎的内容生成功能。",
 		"summary",
 		100,

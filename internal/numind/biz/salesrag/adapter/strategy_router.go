@@ -65,7 +65,7 @@ func (r *StrategyRouter) SelectMetaStrategy(ctx context.Context, query string, h
 		{Role: "user", Content: prompt},
 	}
 
-	resp, err := r.dmxClient.ChatCompletion(ctx, "qwen-turbo-latest", messages, 0.1, 200)
+	resp, err := r.dmxClient.ChatCompletionWithThinking(ctx, "qwen-turbo-latest", messages, 0.1, 200)
 	if err != nil {
 		log.C(ctx).Warnw("Meta strategy selection LLM call failed", "error", err)
 		// Fallback: 返回第一个策略
@@ -147,7 +147,7 @@ func (r *StrategyRouter) SelectBasicStrategy(ctx context.Context, query string, 
 		{Role: "user", Content: prompt},
 	}
 
-	resp, err := r.dmxClient.ChatCompletion(ctx, "qwen-turbo-latest", messages, 0.1, 200)
+	resp, err := r.dmxClient.ChatCompletionWithThinking(ctx, "qwen-turbo-latest", messages, 0.1, 200)
 	if err != nil {
 		log.C(ctx).Warnw("Basic strategy selection LLM call failed", "error", err)
 		return basics[0].ID, nil

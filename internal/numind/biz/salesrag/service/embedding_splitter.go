@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"time"
 )
 
@@ -146,21 +145,30 @@ func (s *EmbeddingSplitter) SplitEnhanced(text string) ([]EmbeddingChunk, error)
 	return s.splitInternal(text)
 }
 
-// IsAvailable 检查模型是否可用
+// healthResponse 语义服务健康检查响应
+type healthResponse struct {
+	Status     string `json:"status"`
+	ModelReady bool   `json:"model_ready"`
+}
+
+// IsAvailable 检查语义切分服务是否可用且模型已加载
 func (s *EmbeddingSplitter) IsAvailable() bool {
-	// 简单调用 health 接口
 	resp, err := s.httpClient.Get(s.cfg.ServerURL + "/health")
 	if err != nil {
-		// 尝试检查脚本是否存在（作为后备检查，虽然主要看服务是否启动）
-		scriptPath := "scripts/semantic_server.py"
-		if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-			scriptPath = "/app/scripts/semantic_server.py"
-			if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-				return false
-			}
-		}
 		return false
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	// 解析响应，确认模型实际已加载（而非仅服务运行中）
+	var health healthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		// 解析失败时降级为仅检查 HTTP 状态码
+		return true
+	}
+
+	return health.ModelReady
 }

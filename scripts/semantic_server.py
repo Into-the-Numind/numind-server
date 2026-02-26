@@ -17,6 +17,7 @@ import tempfile
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
 from typing import List, Optional
+import semantic_splitter
 from semantic_splitter import semantic_split, get_model
 
 # Initialize FastAPI app
@@ -190,8 +191,9 @@ async def ocr_image(file: UploadFile = File(...)):
 @app.get("/health")
 async def health_check():
     return {
-        "status": "ok", 
-        "semantic_model_loaded": True,
+        "status": "ok",
+        "model_ready": semantic_splitter._model is not None,
+        "semantic_model_loaded": semantic_splitter._model is not None,
         "ocr_engine_loaded": OCR_ENGINE is not None
     }
 

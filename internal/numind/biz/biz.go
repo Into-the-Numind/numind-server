@@ -5,6 +5,7 @@ package biz
 import (
 	"context"
 	"path/filepath"
+	"time"
 
 	accountrecordbiz "numind-server/internal/numind/biz/account_record"
 	"numind-server/internal/numind/biz/admin"
@@ -27,13 +28,13 @@ import (
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/numind/biz/salesrag/seed"
 	salesragservice "numind-server/internal/numind/biz/salesrag/service"
 	sopbiz "numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/biz/template"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/biz/wechat"
-	"numind-server/internal/numind/biz/wecom"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/log"
 
@@ -51,7 +52,6 @@ type IBiz interface {
 	Feedbacks() feedback.FeedbackBiz
 	Baidu() baidu.BaiduBiz
 	Wechat() wechat.WechatBiz
-	Wecom() wecom.WecomBiz
 	Ali() ali.AliBiz
 	Volc() volc.VolcBiz
 	Pagination() pagination.PaginationBiz
@@ -136,17 +136,7 @@ func NewBiz(ds store.IStore) *biz {
 	b.sopService = sopbiz.NewSopBiz(b.ds, sopExecutor)
 
 	// 初始化销售 RAG 服务
-	// 使用 DashVector 向量库 (Migrated from VikingDB)
-	dashEndpoint := viper.GetString("ali.dashvector.endpoint")
-	dashApiKey := viper.GetString("ali.dashvector.api_key")
-	if dashApiKey == "" {
-		dashApiKey = viper.GetString("ali.api_key") // Fallback to common key
-	}
-	dashCollection := viper.GetString("ali.dashvector.collection")
-	if dashCollection == "" {
-		dashCollection = "sales_rag"
-	}
-
+	// 向量库支持 sqlitevec（默认）、dashvector（回退兼容）、memory（测试）
 	var vStore port.VectorStore
 
 	// Define Embedder using Qwen
@@ -154,14 +144,52 @@ func NewBiz(ds store.IStore) *biz {
 		return b.Ali().QianwenEmbedding(text)
 	}
 
-	if dashEndpoint != "" {
+	vectorStoreType := viper.GetString("salesrag.vector_store.type")
+	if vectorStoreType == "" {
+		vectorStoreType = "sqlitevec" // 默认使用 sqlite-vec
+	}
+
+	switch vectorStoreType {
+	case "sqlitevec":
+		vecDBPath := viper.GetString("salesrag.vector_store.path")
+		if vecDBPath == "" {
+			// 基于 resource.image_path 计算默认路径
+			imagePath := viper.GetString("resource.image_path")
+			parentDir := filepath.Dir(imagePath) // 移除 upload
+			if filepath.Base(parentDir) == "image" {
+				baseDir := filepath.Dir(parentDir)
+				vecDBPath = filepath.Join(baseDir, "sales_vector.db")
+			} else {
+				vecDBPath = filepath.Join(parentDir, "sales_vector.db")
+			}
+		}
+		var vecErr error
+		vStore, vecErr = adapter.NewSQLiteVecStore(vecDBPath, embedder)
+		if vecErr != nil {
+			log.Errorw("Failed to initialize SQLiteVecStore, falling back to MemoryStore", "error", vecErr, "path", vecDBPath)
+			vStore = adapter.NewMemoryStore()
+		} else {
+			log.Infow("Initialized SQLiteVecStore", "path", vecDBPath)
+		}
+	case "dashvector":
+		// 保留向后兼容，迁移期间可用
+		dashEndpoint := viper.GetString("ali.dashvector.endpoint")
+		dashApiKey := viper.GetString("ali.dashvector.api_key")
+		if dashApiKey == "" {
+			dashApiKey = viper.GetString("ali.api_key")
+		}
+		dashCollection := viper.GetString("ali.dashvector.collection")
+		if dashCollection == "" {
+			dashCollection = "sales_rag"
+		}
 		vStore = adapter.NewDashVectorStore(dashEndpoint, dashApiKey, dashCollection, embedder)
 		log.Infow("Initialized DashVector store", "endpoint", dashEndpoint, "collection", dashCollection)
-	} else {
-		log.Warnw("DashVector endpoint not configured, falling back to ChromemStore for local dev")
-		// Fallback to local store
-		salesDBPath := filepath.Join(filepath.Dir(filepath.Dir(viper.GetString("resource.image_path"))), "sales_vector_db")
-		vStore, _ = adapter.NewChromemStore(salesDBPath, "sales_knowledge", embedder)
+	case "memory":
+		vStore = adapter.NewMemoryStore()
+		log.Infow("Initialized MemoryStore (testing only)")
+	default:
+		log.Warnw("Unknown vector store type, falling back to MemoryStore", "type", vectorStoreType)
+		vStore = adapter.NewMemoryStore()
 	}
 
 	// 初始化 LLM 意图路由器（V2: 使用 DMXAPI qwen-turbo-latest）
@@ -186,6 +214,39 @@ func NewBiz(ds store.IStore) *biz {
 	salesSessionStore := store.NewSalesSessionStore(b.ds.DB())
 
 	b.salesRAGService = salesrag.NewSalesRAGBiz(b.ds, pipeline, salesRAGSvc, b.Volc(), b.Ali(), salesSessionStore, parser)
+
+	// 系统内置观点赛道初始化（异步，不阻塞启动，5 分钟超时保护）
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Errorw("Panic in opinion track seeder", "recover", r)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		seeder := seed.NewSeeder(b.ds.DB())
+		results := seeder.SeedOpinionTracks(ctx)
+		for slug, result := range results {
+			log.Infow("Seeding opinion track", "slug", slug, "opinions", result.Count)
+			docID, err := b.salesRAGService.Ingest(ctx, 0, slug+".md", result.Track.Name+" - 系统观点库", result.MarkdownReader(), salesrag.IngestOptions{
+				Description: result.Track.Desc,
+				Tags:        []string{"观点库", "系统内置", slug},
+			})
+			if err != nil {
+				log.Errorw("Failed to ingest opinion track", "slug", slug, "error", err)
+				continue
+			}
+			// 标记为系统文档
+			if err := b.ds.KnowledgeDocuments().UpdateColumns(ctx, docID, map[string]interface{}{"is_system": true}); err != nil {
+				log.Errorw("Failed to mark document as system", "slug", slug, "doc_id", docID, "error", err)
+			}
+			// 创建/更新赛道记录
+			if err := seeder.CreateOrUpdateTrack(ctx, slug, docID); err != nil {
+				log.Errorw("Failed to create opinion track record", "slug", slug, "error", err)
+			}
+			log.Infow("Opinion track seeded", "slug", slug, "doc_id", docID)
+		}
+	}()
 
 	return b
 }
@@ -228,10 +289,6 @@ func (b *biz) Baidu() baidu.BaiduBiz {
 
 func (b *biz) Wechat() wechat.WechatBiz {
 	return wechat.New(b.ds)
-}
-
-func (b *biz) Wecom() wecom.WecomBiz {
-	return wecom.New(b.ds)
 }
 
 func (b *biz) Ali() ali.AliBiz {

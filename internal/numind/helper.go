@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	configbiz "numind-server/internal/numind/biz/config"
-	"numind-server/internal/numind/biz/wecom"
 	"numind-server/internal/numind/config"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/redis"
@@ -180,11 +179,8 @@ func autoMigrate(db *gorm.DB) error {
 		&model.SalesSession{},
 		&model.SalesMessage{},
 		&model.LanguageStyle{},
-		&wecom.WecomUser{},
-		&wecom.WecomMessage{},
-		&wecom.WecomCursor{},
-		&wecom.WecomBindCode{},
 		&model.KnowledgeChunk{},
+		&model.OpinionTrack{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to migrate basic tables: %v", err)

@@ -6,19 +6,35 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libc6-dev \
     libmupdf-dev \
+    libsqlite3-dev \
     git
+
+# =====================================================
+# Docker 分层缓存优化说明
+# =====================================================
+# 第 1 层：依赖层（go.mod/sum 不变时缓存命中）
+# - go mod download 结果会被缓存
+# - 只有修改 go.mod 时才会重新下载
+#
+# 第 2 层：构建层（每次代码变更都会重建）
+# - 源码变更触发重新编译
+# - 依赖未变时使用缓存的依赖层
+#
+# 手动刷新缓存：修改此行时间戳 -> # Cache Bust: 2026-02-18-001
+# =====================================================
 
 WORKDIR /app
 
-# 复制依赖文件并下载
+# 第 1 层：复制依赖文件并下载（缓存层）
 COPY go.mod go.sum ./
 ENV GOPROXY=https://proxy.golang.org,direct
 RUN go mod download
 
-# 复制源码并编译
+# 第 2 层：复制源码并编译（非缓存层，每次重新构建）
 COPY . .
 # CGO_ENABLED=1 是必须的，因为使用了 go-fitz (libmupdf)
 RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o numind cmd/numind/main.go
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o migrate-vectors cmd/migrate-vectors/main.go
 
 # 运行阶段 - 基于Ubuntu以获得更好的Chrome支持
 # 使用 Ubuntu 22.04 LTS（稳定版本，确保软件源可用）
@@ -186,8 +202,7 @@ COPY config_*.yaml ./
 # 根据构建参数选择二进制文件来源
 # 从构建阶段复制编译好的二进制文件
 COPY --from=builder /app/numind /app/numind
-COPY --from=builder /app/lib/wecom-sdk/libWeWorkFinanceSdk.so /usr/lib/
-RUN ldconfig
+COPY --from=builder /app/migrate-vectors /app/migrate-vectors
 COPY scripts /app/scripts
 # Copy jieba dictionary files
 COPY --from=builder /go/pkg/mod/github.com/yanyiwu/gojieba@v1.4.6/deps/cppjieba/dict /app/dict
@@ -227,6 +242,7 @@ RUN chown -R numind:numind /opt/numind && \
     chmod -R 775 /app/logs && \
     chmod -R 775 /app/temp && \
     chmod +x /app/numind && \
+    chmod +x /app/migrate-vectors && \
     # 确保父目录也有正确权限
     chmod 775 /opt/numind/dev && \
     chmod 775 /opt/numind/dev/image && \

@@ -248,17 +248,13 @@ func (s *VikingStore) FetchByDocumentID(ctx context.Context, documentID uint, li
 	return chunks, nil
 }
 
+// buildVikingFilter 构建 VikingDB 过滤条件
+// 安全约束：当 DocumentIDs 非空时，仅按 doc_id 过滤（不叠加 user_id），
+// 因为 biz 层 RetrieveStream 已通过 enabledDocIDs 白名单验证了访问权限。
 func buildVikingFilter(f port.SearchFilter) map[string]interface{} {
 	// VikingDB filter DSL: {"field": {"op": val}}
 	// "and": [{"field":...}, {...}]
 	conditions := make([]map[string]interface{}, 0)
-
-	// 强制注入 UserID 过滤
-	if f.UserID > 0 {
-		conditions = append(conditions, map[string]interface{}{
-			"user_id": map[string]interface{}{"=": int64(f.UserID)},
-		})
-	}
 
 	if len(f.DocumentIDs) > 0 {
 		ids := make([]interface{}, len(f.DocumentIDs))
@@ -267,6 +263,11 @@ func buildVikingFilter(f port.SearchFilter) map[string]interface{} {
 		}
 		conditions = append(conditions, map[string]interface{}{
 			"doc_id": map[string]interface{}{"in": ids},
+		})
+	} else if f.UserID > 0 {
+		// 无文档 ID 时，按用户过滤
+		conditions = append(conditions, map[string]interface{}{
+			"user_id": map[string]interface{}{"=": int64(f.UserID)},
 		})
 	}
 

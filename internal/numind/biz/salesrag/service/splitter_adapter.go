@@ -55,19 +55,19 @@ func NewCompatibilitySplitter(cfg SplitterConfig) *CompatibilitySplitter {
 	// 创建混合配置
 	hybridCfg := HybridSplitterConfig{
 		RuleConfig: EnhancedSplitterConfig{
-			MaxChunkSize:    cfg.MaxChunkSize,
-			MinChunkSize:    cfg.MinChunkSize,
-			OverlapSize:     100,
+			MaxChunkSize:    6000, // 2000汉字 * 3
+			MinChunkSize:    1500, // 500汉字 * 3
+			OverlapSize:     300,  // 100汉字 * 3
 			EnableJieba:     true,
 			ProtectMarkdown: true,
 		},
 		SemanticConfig: EmbeddingSplitterConfig{
 			Threshold:    0.6,
-			MinChunkSize: 100,
-			MaxChunkSize: cfg.MaxChunkSize,
-			OverlapSize:  100,
+			MinChunkSize: 500,  // 语义切分按字符计算，500字符
+			MaxChunkSize: 2000, // 语义切分按字符计算，2000字符
+			OverlapSize:  100,  // 语义切分按字符计算，100字符
 		},
-		SemanticMinLength: 500, // 简化为500字符阈值
+		SemanticMinLength: 1500, // 500汉字 * 3字节
 	}
 
 	return &CompatibilitySplitter{

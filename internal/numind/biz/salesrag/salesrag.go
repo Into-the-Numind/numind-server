@@ -1,7 +1,6 @@
 package salesrag
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -11,7 +10,8 @@ import (
 	"image/jpeg"
 	"io"
 	"log"
-	"net/http"
+	"math"
+	"mime/multipart"
 	"path/filepath"
 	"strings"
 	"time"
@@ -20,6 +20,7 @@ import (
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
 
@@ -27,6 +28,17 @@ import (
 
 	"github.com/disintegration/imaging"
 	"gorm.io/gorm"
+)
+
+// 观点库业务限制常量：系统赛道 + 自定义赛道合计上限
+const maxOpinionTotal = 2
+
+// 文档分类常量
+const (
+	catProduct  = "产品文档"
+	catCase   = "成功案例"
+	catFAQ    = "百问百答"
+	catOther  = "其他相关文档"
 )
 
 // SalesRAGBiz 定义了销售 RAG 业务层的对外接口
@@ -38,7 +50,7 @@ type SalesRAGBiz interface {
 	// RetrieveStream 流式检索知识并生成回答
 	// chatMode: "sales" (销售话术) 或 "free" (自由讨论)
 	// onEvent: 事件回调，eventType 可为 "verdict"/"token"/"error"/"done"
-	RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, deepThinking bool, chatMode string, customerProfile string, onEvent func(eventType string, data interface{}) error) error
+	RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, opinionDocIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, salesStage string, onEvent func(eventType string, data interface{}) error) error
 	// ListDocuments 获取用户的文档列表
 	ListDocuments(ctx context.Context, userID uint) ([]domain.KnowledgeDocument, error)
 	// GetDocument 获取单个文档详情
@@ -69,18 +81,22 @@ type SalesRAGBiz interface {
 	// chatMode: "sales" (销售话术模式) 或 "free" (自由讨论模式)
 	ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, images []string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error
 
-	// AnalyzeDocument 解析文档并生成客户档案
-	AnalyzeDocument(ctx context.Context, userID uint, file io.Reader, filename string) (string, error)
-	AnalyzeDocumentStream(ctx context.Context, userID uint, file io.Reader, filename string, onToken func(token string) error) (string, error)
+	// AnalyzeProfileMultiFiles 多文件综合分析生成客户档案
+	AnalyzeProfileMultiFiles(ctx context.Context, userID uint, files []*multipart.FileHeader, onToken func(token string) error) (string, error)
 
-	// AnalyzeChatStyle 分析聊天风格（语言指纹分析）
-	AnalyzeChatStyle(ctx context.Context, userID uint, chatData io.Reader, filename string) (string, error)
+	// AnalyzeChatStyleStream 流式分析聊天风格（语言指纹分析）
 	AnalyzeChatStyleStream(ctx context.Context, userID uint, chatData io.Reader, filename string, onToken func(token string) error) (string, error)
 
 	// GetLanguageStyle 获取用户的语言风格
 	GetLanguageStyle(ctx context.Context, userID uint) (string, error)
 	// SaveLanguageStyle 保存用户的语言风格
 	SaveLanguageStyle(ctx context.Context, userID uint, style string) error
+
+	// OCRAnalyze 识别图片中的文本（压缩 + 上传 COS + 调用视觉大模型）
+	OCRAnalyze(ctx context.Context, userID uint, imageData []byte, contentType string, sessionID string, filename string) (ocrText string, cosURL string, err error)
+
+	// ListOpinionTracks 获取系统内置观点赛道列表
+	ListOpinionTracks(ctx context.Context) ([]model.OpinionTrack, error)
 }
 
 type IngestOptions struct {
@@ -97,13 +113,25 @@ type UpdateDocumentRequest struct {
 type CreateSessionRequest struct {
 	Title           string `json:"title"`
 	DocumentIDs     []uint `json:"document_ids"`
+	ProductDocIDs   []uint `json:"product_doc_ids"`   // 产品文档
+	CaseDocIDs      []uint `json:"case_doc_ids"`      // 成功案例
+	FAQDocIDs       []uint `json:"faq_doc_ids"`       // 百问百答
+	OpinionDocIDs   []uint `json:"opinion_doc_ids"`   // 观点库（用户上传）
+	OpinionTrackIDs []uint `json:"opinion_track_ids"` // 观点库（系统赛道ID）
 	DeepThinking    bool   `json:"deep_thinking"`
 	CustomerProfile string `json:"customer_profile"` // Markdown 格式
+	SalesStage      string `json:"sales_stage"`      // 销售阶段: ""(未选择), 初次接触, 了解业务, 方案介绍, 成交推进, 售后服务
 }
 
 type UpdateSessionRequest struct {
 	Title           *string `json:"title"`
 	DocumentIDs     []uint  `json:"document_ids"`
+	ProductDocIDs   []uint  `json:"product_doc_ids"`   // 产品文档
+	CaseDocIDs      []uint  `json:"case_doc_ids"`      // 成功案例
+	FAQDocIDs       []uint  `json:"faq_doc_ids"`       // 百问百答
+	OpinionDocIDs   []uint  `json:"opinion_doc_ids"`   // 观点库（用户上传）
+	OpinionTrackIDs []uint  `json:"opinion_track_ids"` // 观点库（系统赛道ID）
+	SalesStage      *string `json:"sales_stage"`       // 销售阶段: ""(未选择), 初次接触, 了解业务, 方案介绍, 成交推进, 售后服务
 	DeepThinking    *bool   `json:"deep_thinking"`
 	CustomerProfile *string `json:"customer_profile"`
 }
@@ -123,9 +151,15 @@ type salesRAGBiz struct {
 type VolcBiz interface {
 	VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, error)
 	// StreamChat 真正的流式聊天，通过回调函数逐 token 或思维链内容推送
-	StreamChat(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
+	StreamChat(ctx context.Context, messages []map[string]interface{}, maxTokens int, temperature float64, deepThinking bool, onEvent func(event string, token string) error) (string, error)
 	// VisionAnalyze 调用火山方舟视觉模型分析图片
-	VisionAnalyze(ctx context.Context, imageURL string, prompt string, model string) (string, error)
+	VisionAnalyze(ctx context.Context, imageURL string, prompt string, model string, maxTokens int, reasoningEffort string) (string, error)
+	// VisionAnalyzeStream 流式分析图片
+	VisionAnalyzeStream(ctx context.Context, imageURL string, prompt string, model string, maxTokens int, reasoningEffort string, onToken func(token string) error) (string, error)
+	// ChatWithModel 非流式聊天
+	ChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64) (string, error)
+	// StreamChatWithModel 流式聊天，支持指定模型和思考程度
+	StreamChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64, reasoningEffort string, onEvent func(event string, token string) error) (string, error)
 }
 
 func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *service.SalesRAGService, volc VolcBiz, ali ali.AliBiz, sessionStore store.SalesSessionStore, parser service.PipelineParser) SalesRAGBiz {
@@ -276,7 +310,7 @@ func (b *salesRAGBiz) Retrieve(ctx context.Context, query string, docIDs []uint)
 
 	// 1. 从上下文获取用户ID
 	var userID uint
-	if uid, ok := ctx.Value("userID").(uint); ok {
+	if uid, ok := middleware.UserIDFromCtx(ctx); ok {
 		userID = uid
 	} else {
 		return nil, fmt.Errorf("user_id not found in context")
@@ -401,6 +435,9 @@ func (b *salesRAGBiz) DeleteDocument(ctx context.Context, userID uint, docID uin
 	doc, err := b.ds.KnowledgeDocuments().GetByID(ctx, docID)
 	if err != nil {
 		return err
+	}
+	if doc.IsSystem {
+		return fmt.Errorf("cannot delete system document")
 	}
 	if doc.UserID != userID {
 		return fmt.Errorf("permission denied")
@@ -529,11 +566,12 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, verdict 
 // - "error": data 为 string，错误消息
 // - "done": data 为 nil，流式完成
 // RetrieveStream 流式检索知识并生成回答
-// chatMode: "sales" (销售话术) 或 "free" (自由讨论)
-func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, deepThinking bool, chatMode string, customerProfile string, onEvent func(eventType string, data interface{}) error) error {
+// chatMode: "sales" (销售话术) 或// RetrieveStream 流式检索知识并生成回答
+// 修改：增加 docCategoryMap 参数，用于传递文档分类信息
+func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, opinionDocIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, salesStage string, onEvent func(eventType string, data interface{}) error) error {
 	// 1. 从上下文获取用户ID
 	var userID uint
-	if uid, ok := ctx.Value("userID").(uint); ok {
+	if uid, ok := middleware.UserIDFromCtx(ctx); ok {
 		userID = uid
 	} else {
 		return onEvent("error", "user_id not found in context")
@@ -544,10 +582,16 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 		return err
 	}
 
-	// 2. 查询用户所有文档
+	// 2. 查询用户所有文档 + 系统文档
 	docs, err := b.ds.KnowledgeDocuments().ListByUser(ctx, userID)
 	if err != nil {
 		return onEvent("error", fmt.Sprintf("failed to query user documents: %v", err))
+	}
+	sysDocs, sysErr := b.ds.KnowledgeDocuments().ListSystemDocs(ctx)
+	if sysErr != nil {
+		log.Printf("[RetrieveStream] Warning: failed to query system docs: %v", sysErr)
+	} else {
+		docs = append(docs, sysDocs...)
 	}
 
 	// 3. 构建启用且已完成的文档ID白名单
@@ -568,20 +612,37 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 		}
 	}
 
+	// 4b. 过滤观点库 docIDs
+	var filteredOpinionDocIDs []uint
+	if len(opinionDocIDs) > 0 {
+		for _, id := range opinionDocIDs {
+			if enabledDocIDs[id] {
+				filteredOpinionDocIDs = append(filteredOpinionDocIDs, id)
+			}
+		}
+	}
+
 	// 发送状态：正在检索知识库与匹配策略
 	if err := onEvent("status", "正在检索知识库与匹配策略..."); err != nil {
 		return err
 	}
 
 	// 6. 执行检索（使用 V2 版本，传递 chatMode 和 history）
-	// 注意：RetrieveForResponseV2 内部并行执行 RAG 检索和策略选择
-	verdict, err := b.ragSvc.RetrieveForResponseV2(ctx, query, filteredDocIDs, history, chatMode, userID)
+	// 注意：RetrieveForResponseV2 内部并行执行 RAG 检索、策略选择和观点库独立检索
+	verdict, err := b.ragSvc.RetrieveForResponseV2(ctx, query, filteredDocIDs, filteredOpinionDocIDs, history, chatMode, userID, func(status string) {
+		_ = onEvent("status", status)
+	})
 	if err != nil {
 		return onEvent("error", fmt.Sprintf("retrieval failed: %v", err))
 	}
 
+	// 注入分类映射
+	verdict.DocCategoryMap = docCategoryMap
+
 	// 7. 填充 evidence 中的 document_name（从数据库查询）
+	// 观点库和常规知识库的文档 ID 集合不重叠，分别查询即可
 	b.enrichChunksWithDocNames(ctx, verdict.Evidence)
+	b.enrichChunksWithDocNames(ctx, verdict.OpinionEvidence)
 
 	// 8. 立即发送 verdict 事件
 	if err := onEvent("verdict", verdict); err != nil {
@@ -597,10 +658,15 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 	languageStyle, _ := b.GetLanguageStyle(ctx, userID)
 
 	// 10. 构建 prompt 并流式生成回答
-	messages := b.buildPromptMessagesV2(query, verdict, customerProfile, languageStyle)
+	messages := b.buildPromptMessagesV2(query, verdict, customerProfile, languageStyle, salesStage)
 
-	// 11. 调用 DMXAPI DeepSeek-V3.2 流式聊天（非思考模式）
-	_, err = b.dmxClient.StreamChatCompletion(ctx, "DeepSeek-V3.2", messages, 0.7, 2000, func(content string) error {
+	// 11. 调用 DMXAPI DeepSeek-V3.2 流式聊天（支持思考模式）
+	// 注意：deepThinking 参数决定是否启用思维链，不再对输出 Token 设限
+	_, err = b.dmxClient.StreamChatCompletion(ctx, "DeepSeek-V3.2", messages, 0.7, 0, deepThinking, func(eventType, content string) error {
+		if eventType == "thinking" {
+			return onEvent("thinking", content)
+		}
+		// eventType == "content"
 		return onEvent("token", content)
 	})
 	if err != nil {
@@ -611,22 +677,8 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 	return onEvent("done", nil)
 }
 
-// buildPromptMessages 根据检索结果构建 prompt 消息 (V1 兼容)
-// Deprecated: 请使用 buildPromptMessagesV2
-func (b *salesRAGBiz) buildPromptMessages(query string, verdict *service.RetrievalVerdict) []map[string]string {
-	messagesV2 := b.buildPromptMessagesV2(query, verdict, "", "")
-	result := make([]map[string]string, len(messagesV2))
-	for i, msg := range messagesV2 {
-		result[i] = map[string]string{
-			"role":    msg.Role,
-			"content": msg.Content,
-		}
-	}
-	return result
-}
-
 // buildPromptMessagesV2 根据检索结果构建 prompt 消息（优化版）
-func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.RetrievalVerdict, customerProfile string, languageStyle string) []adapter.ChatMessage {
+func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.RetrievalVerdict, customerProfile string, languageStyle string, salesStage string) []adapter.ChatMessage {
 	// 上下文长度限制常量
 	const (
 		maxCustomerProfileChars = 5000  // 客户画像最大字符数
@@ -648,15 +700,54 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 	languageStyle = truncate(languageStyle, maxLanguageStyleChars)
 	query = truncate(query, maxUserInputChars)
 
-	// 构建知识上下文
+	// 构建知识上下文（按分类分组，观点库走独立通道）
 	var knowledgeContext string
 	allChunks := verdict.Evidence
-	if len(allChunks) > 0 {
-		var contextParts []string
+	if len(allChunks) > 0 || len(verdict.OpinionEvidence) > 0 {
+		// 分组存储内容（常规知识库，不含观点库）
+		categorizedContent := make(map[string][]string)
+		categories := []string{catProduct, catCase, catFAQ, catOther}
+
 		for i, chunk := range allChunks {
-			contextParts = append(contextParts, fmt.Sprintf("[知识%d] %s", i+1, chunk.Content))
+			category := catOther
+			if cat, ok := verdict.DocCategoryMap[chunk.DocumentID]; ok && cat != "" {
+				category = cat
+			}
+
+			var contentLine string
+			if chunk.Score > 0 {
+				contentLine = fmt.Sprintf("[知识%d] (相关度:%.0f%%) %s", i+1, chunk.Score*100, chunk.Content)
+			} else {
+				contentLine = fmt.Sprintf("[知识%d] %s", i+1, chunk.Content)
+			}
+
+			categorizedContent[category] = append(categorizedContent[category], contentLine)
 		}
+
+		var contextParts []string
+		for _, cat := range categories {
+			if contents, ok := categorizedContent[cat]; ok && len(contents) > 0 {
+				section := fmt.Sprintf("### %s\n%s", cat, strings.Join(contents, "\n\n"))
+				contextParts = append(contextParts, section)
+			}
+		}
+
 		knowledgeContext = strings.Join(contextParts, "\n\n")
+	}
+
+	// 构建观点库上下文（独立通道，不混入 knowledgeContext）
+	var opinionContext string
+	if len(verdict.OpinionEvidence) > 0 {
+		var opinionLines []string
+		for i, chunk := range verdict.OpinionEvidence {
+			idx := i + 1
+			if chunk.Score > 0 {
+				opinionLines = append(opinionLines, fmt.Sprintf("[观点%d] (相关度:%.0f%%) %s", idx, chunk.Score*100, chunk.Content))
+			} else {
+				opinionLines = append(opinionLines, fmt.Sprintf("[观点%d] %s", idx, chunk.Content))
+			}
+		}
+		opinionContext = strings.Join(opinionLines, "\n\n")
 	}
 
 	// 构建策略内容（只包含纯内容）
@@ -670,11 +761,11 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 
 	if verdict.ChatMode == "free" {
 		// ========== Free 模式 (Sales Copilot 顾问模式) ==========
-		systemPrompt = b.buildFreeModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle, verdict.History)
+		systemPrompt = b.buildFreeModePrompt(customerProfile, knowledgeContext, opinionContext, strategyContent, languageStyle, verdict.History, salesStage)
 		userMessage = query
 	} else {
 		// ========== Sales 模式 (销售人员本人视角) ==========
-		systemPrompt = b.buildSalesModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle, verdict.History)
+		systemPrompt = b.buildSalesModePrompt(customerProfile, knowledgeContext, opinionContext, strategyContent, languageStyle, verdict.History, salesStage)
 		userMessage = query
 	}
 
@@ -690,8 +781,24 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 	}
 }
 
+// getSalesStageDescription 获取销售阶段简介
+func getSalesStageDescription(stage string) string {
+	switch stage {
+	case "破冰诊断":
+		return "建立信任，挖出客户需求"
+	case "价值塑造":
+		return "塑造产品价值，让客户想要"
+	case "异议处理":
+		return "打消顾虑，扫除成交障碍"
+	case "关单追销":
+		return "临门一脚，促成交易下单"
+	default:
+		return ""
+	}
+}
+
 // buildSalesModePrompt 构建 Sales 模式提示词
-func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle string, history []string) string {
+func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, opinionContext, strategyContent, languageStyle string, history []string, salesStage string) string {
 	var prompt strings.Builder
 
 	// 角色和目标
@@ -717,20 +824,43 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 		prompt.WriteString("---\n")
 	}
 
+	// 当前销售阶段（条件渲染 - 仅非空时显示）
+	if salesStage != "" {
+		stageDesc := getSalesStageDescription(salesStage)
+		prompt.WriteString("### 当前销售阶段\n")
+		prompt.WriteString(salesStage)
+		if stageDesc != "" {
+			prompt.WriteString("\n")
+			prompt.WriteString(stageDesc)
+		}
+		prompt.WriteString("\n\n")
+	}
+
 	// 核心参考资料
 	prompt.WriteString("## 核心参考资料\n\n")
 
-	// 知识库内容（条件渲染）
+	// 知识库内容（条件渲染，附带权重指引）
 	if knowledgeContext != "" {
 		prompt.WriteString("### 知识库内容\n")
+		prompt.WriteString("> 每条知识附带相关度百分比。相关度 ≥ 70% 的知识应重点融入回答；30%-70% 的仅作补充参考；如果所有知识相关度都偏低，以你的专业判断为主。\n\n")
+		prompt.WriteString("> **注意**：这些知识片段可能来自不同文档，彼此之间可能没有直接关联。请先通读理解所有片段的核心信息，形成统一认知后，围绕客户的实际问题用你自己的话自然组织回答。禁止逐条罗列，禁止生硬拼接不相关的信息。如果某条知识与当前问题关联不大，果断忽略即可。\n\n")
 		prompt.WriteString(knowledgeContext)
+		prompt.WriteString("\n\n")
+	}
+
+	// 观点库（条件渲染 - 独立通道）
+	if opinionContext != "" {
+		prompt.WriteString("### 观点库\n")
+		prompt.WriteString("> 以下观点库供你参考，每条观点都包含核心洞察、金句、案例和适用场景。请根据用户的消息，判断其情绪和需求，从观点库中挑选最匹配的观点，并将其内容自然地融入上述框架中。\n\n")
+		prompt.WriteString("> **注意**：不要生硬地罗列观点，而是转化为你自己的语言，让回复听起来真诚、有洞察力。**重要！**：如果你觉得观点库不适合当轮的情况，则可以战术性放弃采用。\n\n")
+		prompt.WriteString(opinionContext)
 		prompt.WriteString("\n\n")
 	}
 
 	// 核心策略参考（条件渲染）
 	if strategyContent != "" {
 		prompt.WriteString("### 核心策略参考\n")
-		prompt.WriteString("请结合实际对话上下文，**灵活参考**该策略中的\"话术模板\"或\"核心逻辑\"构建回复。如果策略与当前对话相符，需要严格按照策略来进行，如果明显不符，请以你的判断为准。\n\n")
+		prompt.WriteString("> 请结合实际对话上下文，**灵活参考**该策略中的\"话术模板\"或\"核心逻辑\"构建回复。如果策略与当前对话相符，需要严格按照策略来进行，如果明显不符，请以你的判断为准。\n\n")
 		prompt.WriteString("```markdown\n")
 		prompt.WriteString(strategyContent)
 		prompt.WriteString("\n```\n\n")
@@ -738,18 +868,15 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 
 	prompt.WriteString("---\n")
 
-	// 你的任务
+	// 你的任务（风格定义 + 输出格式合并）
 	prompt.WriteString("## 你的任务\n")
-	prompt.WriteString("请综合参考上述信息，为当前客户消息生成三个不同风格的回复选项：\n\n")
-	prompt.WriteString("### 选项A：激进型（逼单风格）\n")
-	prompt.WriteString("**核心策略**：侧重利益刺激、稀缺性强调、促成即刻行动  \n")
-	prompt.WriteString("**话术特征**：直接、有冲击力、紧迫感强\n\n")
+	prompt.WriteString("请综合参考上述信息，为当前客户消息生成三个不同风格的回复选项。直接使用 Markdown 三级标题分隔：\n\n")
+	prompt.WriteString("### 选项A：主动型（推进风格）\n")
+	prompt.WriteString("侧重价值呈现和时机把握，在尊重客户边界的前提下积极推进。话术坚定有方向感但避免压迫感，用利益引导代替强制推销，用提问和确认代替单向推进，确保客户感受到被尊重的同时明确下一步行动。\n（直接写给客户的话术，可分多段）\n\n")
 	prompt.WriteString("### 选项B：保守型（共情风格）\n")
-	prompt.WriteString("**核心策略**：侧重理解客户压力、提供情绪价值、建立信任关系  \n")
-	prompt.WriteString("**话术特征**：温暖、包容、不施加压力\n\n")
-	prompt.WriteString("### 选项C：纯知识回复（专业风格）\n")
-	prompt.WriteString("**核心策略**：基于知识库内容，给出客观、专业、中立的解答  \n")
-	prompt.WriteString("**话术特征**：逻辑严密、数据支撑、事实为主\n\n")
+	prompt.WriteString("侧重理解客户压力、提供情绪价值、建立信任关系。话术温暖包容。\n（直接写给客户的话术，可分多段）\n\n")
+	prompt.WriteString("### 选项C：高势能回复（造梦风格）\n")
+	prompt.WriteString("以\"造梦\"为核心策略，通过具体画面描绘客户成功后的未来愿景，辅以真实学员案例证明路径可行性，再戳破当前痛点给出确定性价值，让客户感受到希望、掌控感和可复制的成功路径。\n（直接写给客户的话术，可分多段）\n\n")
 	prompt.WriteString("---\n")
 
 	// 核心规则
@@ -762,42 +889,46 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 		prompt.WriteString("   必须严格遵循下方的【语言风格参考】  \n")
 	}
 	prompt.WriteString("   符合微信聊天场景的自然表达\n\n")
-	prompt.WriteString("3. **严格基于知识**  \n")
+	prompt.WriteString("3. **知识为锚，判断为翼**  \n")
 	if knowledgeContext != "" {
-		prompt.WriteString("   所有回复内容必须能在【知识库内容】中找到依据  \n")
+		prompt.WriteString("   涉及具体产品信息（价格、功能、参数、案例）时，必须基于【知识库内容】  \n")
+		prompt.WriteString("   涉及策略分析、客户心理、沟通技巧时，请充分发挥你的专业判断  \n")
+		prompt.WriteString("   优先融合相关度高的知识，用你自己的理解重新组织，而非原文照搬  \n")
+	}
+	if opinionContext != "" {
+		prompt.WriteString("   涉及观点输出和洞察展现时，优先从【观点库】中挑选匹配观点，转化为自己的语言自然融入  \n")
 	}
 	if strategyContent != "" {
-		prompt.WriteString("   优先参考【核心策略参考】中的话术模板或逻辑\n\n")
+		prompt.WriteString("   灵活参考【核心策略参考】中的话术模板或逻辑\n\n")
 	} else {
 		prompt.WriteString("\n")
 	}
 	prompt.WriteString("4. **灵活判断**  \n")
 	prompt.WriteString("   如果推荐策略与当前对话明显不符，以实际情况为准  \n")
 	prompt.WriteString("   三种风格只是参考方向，可以适度调整\n\n")
+	prompt.WriteString("5. **严守微信销售场景与角色边界**  \n")
+	prompt.WriteString("   - 你正在微信上进行销售对话，严禁引导至线下见面、电话沟通或其他非微信渠道  \n")
+	prompt.WriteString("   - 你是销售人员，不是顾问/专家，严禁主动提供免费诊断、免费分析、免费咨询等\"增值服务\"  \n")
+	prompt.WriteString("   - 销售推进依靠产品价值本身，而非额外赠送的服务或转移场景\n\n")
 
 	prompt.WriteString("### 严格禁止\n")
-	prompt.WriteString("1. **禁止元对话**  \n")
-	prompt.WriteString("   不要写\"建议您...\"、\"可以这样回复...\"等建议性语言  \n")
-	prompt.WriteString("   不要分析原因或解释为什么这样回复\n\n")
-	prompt.WriteString("2. **严禁编造信息**  \n")
-	prompt.WriteString("   如果知识库中没有相关答案，必须在话术中说明需进一步核实  \n")
-	prompt.WriteString("   不得虚构产品功能、价格、案例等信息  \n")
-	prompt.WriteString("   宁可保守回复，也不要过度承诺\n\n")
-	prompt.WriteString("3. **禁止格式混乱**  \n")
-	prompt.WriteString("   严格按照下方【输出格式要求】组织内容\n\n")
+	prompt.WriteString("1. **禁止元对话**\n")
+	prompt.WriteString("   - 不要写\"建议您...\"、\"可以这样回复...\"等建议性语言\n")
+	prompt.WriteString("   - 不要分析原因或解释为什么这样回复\n\n")
+	prompt.WriteString("2. **禁止编造信息**\n")
+	prompt.WriteString("   - 不得虚构产品功能、价格等数据\n")
+	prompt.WriteString("   - 不得编造客户案例信息或对话历史\n")
+	prompt.WriteString("   - 宁可说\"不确定\"，也不要编造\n\n")
+	prompt.WriteString("3. **禁止僵化套用**\n")
+	prompt.WriteString("   - 不要机械套用模板而忽视问题本质\n")
+	prompt.WriteString("   - 根据实际需求灵活调整\n\n")
+	prompt.WriteString("4. **禁止误导性建议**\n")
+	prompt.WriteString("   - 不提供违背商业道德的建议\n")
+	prompt.WriteString("   - 不得欺骗或误导客户\n")
+	prompt.WriteString("   - 不得过度承诺或虚假宣传\n\n")
 
-	prompt.WriteString("### 输出格式要求\n")
-	prompt.WriteString("直接使用 Markdown 三级标题分隔三个选项：\n\n")
-	prompt.WriteString("### 选项A：激进型\n")
-	prompt.WriteString("（直接写给客户的话术，可分多段）\n\n")
-	prompt.WriteString("### 选项B：保守型\n")
-	prompt.WriteString("（直接写给客户的话术，可分多段）\n\n")
-	prompt.WriteString("### 选项C：纯知识回复\n")
-	prompt.WriteString("（直接写给客户的话术，可分多段）\n\n")
-
-	// 语言风格参考（固定显示）
 	prompt.WriteString("---\n")
-	prompt.WriteString("## 语言风格参考\n")
+	prompt.WriteString("### 语言风格参考\n")
 	if languageStyle != "" {
 		prompt.WriteString(languageStyle)
 	} else {
@@ -805,19 +936,18 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 	}
 	prompt.WriteString("\n\n")
 
-	// 结尾引导
 	prompt.WriteString("---\n")
 	prompt.WriteString("现在请基于以上所有信息，为客户的这条消息生成三个回复选项。")
 
 	return prompt.String()
 }
 
-// buildFreeModePrompt 构建 Free 模式提示词（全能销售顾问）
-func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle string, history []string) string {
+// buildFreeModePrompt 构建 Free 模式提示词（资深销售教练）
+func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, opinionContext, strategyContent, languageStyle string, history []string, salesStage string) string {
 	var prompt strings.Builder
 
 	// 角色和目标
-	prompt.WriteString("你是一位全能的销售顾问助手，可以帮助销售人员解决任何与销售相关的问题和需求。\n\n")
+	prompt.WriteString("你是一位资深的销售教练，拥有丰富的一线实战经验和客户心理洞察力。你以搭档的身份协助销售人员分析局面、制定策略、打磨话术。\n\n")
 
 	// 客户背景信息（条件渲染）
 	hasBackground := customerProfile != "" || len(history) > 0
@@ -839,20 +969,43 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, str
 		prompt.WriteString("---\n")
 	}
 
+	// 当前销售阶段（条件渲染 - 仅非空时显示）
+	if salesStage != "" {
+		stageDesc := getSalesStageDescription(salesStage)
+		prompt.WriteString("### 当前销售阶段\n")
+		prompt.WriteString(salesStage)
+		if stageDesc != "" {
+			prompt.WriteString("\n")
+			prompt.WriteString(stageDesc)
+		}
+		prompt.WriteString("\n\n")
+	}
+
 	// 核心参考资料
 	prompt.WriteString("## 核心参考资料\n\n")
 
-	// 知识库内容（条件渲染）
+	// 知识库内容（条件渲染，附带权重指引）
 	if knowledgeContext != "" {
 		prompt.WriteString("### 知识库内容\n")
+		prompt.WriteString("> 每条知识附带相关度百分比。相关度 ≥ 70% 的知识应重点融入回答；30%-70% 的仅作补充参考；如果所有知识相关度都偏低，以你的专业判断为主。\n\n")
+		prompt.WriteString("> **注意**：这些知识片段可能来自不同文档，彼此之间可能没有直接关联。请先通读理解所有片段的核心信息，形成统一认知后，围绕客户的实际问题用你自己的话自然组织回答。禁止逐条罗列，禁止生硬拼接不相关的信息。如果某条知识与当前问题关联不大，果断忽略即可。\n\n")
 		prompt.WriteString(knowledgeContext)
+		prompt.WriteString("\n\n")
+	}
+
+	// 观点库（条件渲染 - 独立通道）
+	if opinionContext != "" {
+		prompt.WriteString("### 观点库\n")
+		prompt.WriteString("> 以下观点库供你参考，每条观点都包含核心洞察、金句、案例和适用场景。请根据用户的消息，判断其情绪和需求，从观点库中挑选最匹配的观点，并将其内容自然地融入上述框架中。\n\n")
+		prompt.WriteString("> **注意**：不要生硬地罗列观点，而是转化为你自己的语言，让回复听起来真诚、有洞察力。**重要！**：如果你觉得观点库不适合当轮的情况，则可以战术性放弃采用。\n\n")
+		prompt.WriteString(opinionContext)
 		prompt.WriteString("\n\n")
 	}
 
 	// 核心策略参考（条件渲染）
 	if strategyContent != "" {
 		prompt.WriteString("### 核心策略参考\n")
-		prompt.WriteString("请结合实际对话上下文，**灵活参考**该策略中的\"话术模板\"或\"核心逻辑\"提供建议。如果策略与当前对话相符，需要严格按照策略来进行，如果明显不符，请以你的判断为准。\n\n")
+		prompt.WriteString("> 请结合实际对话上下文，**灵活参考**该策略中的\"话术模板\"或\"核心逻辑\"提供建议。如果策略与当前对话相符，需要严格按照策略来进行，如果明显不符，请以你的判断为准。\n\n")
 		prompt.WriteString("```markdown\n")
 		prompt.WriteString(strategyContent)
 		prompt.WriteString("\n```\n\n")
@@ -860,152 +1013,91 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, str
 
 	prompt.WriteString("---\n")
 
-	// 你的能力范围
-	prompt.WriteString("## 你的能力范围\n\n")
-	prompt.WriteString("你可以协助销售人员处理以下各类需求（不限于此）：\n\n")
-	prompt.WriteString("### 沟通支持\n")
-	prompt.WriteString("- 客户消息回复建议\n")
-	prompt.WriteString("- 话术生成与优化\n")
-	prompt.WriteString("- 破冰与开场设计\n")
-	prompt.WriteString("- 异议处理方案\n\n")
-	prompt.WriteString("### 分析洞察\n")
-	prompt.WriteString("- 客户意图分析\n")
-	prompt.WriteString("- 销售阶段判断\n")
-	prompt.WriteString("- 需求挖掘与总结\n")
-	prompt.WriteString("- 对话关键信息提炼\n\n")
-	prompt.WriteString("### 策略咨询\n")
-	prompt.WriteString("- 销售策略推荐\n")
-	prompt.WriteString("- 跟进计划制定\n")
-	prompt.WriteString("- 成交路径设计\n")
-	prompt.WriteString("- 竞品对比分析\n\n")
-	prompt.WriteString("### 知识服务\n")
-	prompt.WriteString("- 产品信息查询\n")
-	prompt.WriteString("- 案例参考提供\n")
-	prompt.WriteString("- 销售方法论讲解\n")
-	prompt.WriteString("- 知识库内容检索\n\n")
-	prompt.WriteString("### 其他支持\n")
-	prompt.WriteString("- 销售流程指导\n")
-	prompt.WriteString("- 情绪支持与鼓励\n")
-	prompt.WriteString("- 工作计划辅助\n")
-	prompt.WriteString("- 任何其他销售相关需求\n\n")
-	prompt.WriteString("---\n")
-
-	// 核心工作原则
-	prompt.WriteString("## 核心工作原则\n\n")
-	prompt.WriteString("### 1. 智能自适应\n")
-	prompt.WriteString("- **理解问题本质**：准确识别销售人员的真实需求和意图\n")
-	prompt.WriteString("- **灵活调整输出**：根据问题类型选择最合适的回答方式和格式\n")
-	prompt.WriteString("- **不拘泥于形式**：优先解决问题，格式服务于内容\n\n")
-	prompt.WriteString("### 2. 充分利用资源\n")
-	if customerProfile != "" || len(history) > 0 {
-		prompt.WriteString("- 结合【客户背景信息】提供针对性建议\n")
-	}
-	if knowledgeContext != "" {
-		prompt.WriteString("- 优先从【知识库内容】中查找依据和答案\n")
-		prompt.WriteString("- 引用知识库时说明来源\n")
-	}
-	if strategyContent != "" {
-		prompt.WriteString("- 参考【核心策略参考】中的方法论和话术模板\n")
-		prompt.WriteString("- 灵活应用，避免生搬硬套\n")
-	}
-	if len(history) > 0 {
-		prompt.WriteString("- 考虑【对话历史】的上下文连贯性\n")
-	}
-	prompt.WriteString("\n")
-	prompt.WriteString("### 3. 专业标准\n")
-	prompt.WriteString("- **严格基于事实**：所有建议必须有据可依，禁止编造\n")
-	prompt.WriteString("- **语气专业友好**：保持顾问专业度，同时亲切易懂\n")
-	prompt.WriteString("- **结构清晰**：使用 Markdown 合理组织内容\n\n")
-	prompt.WriteString("---\n")
-
-	// 客户消息回复场景
-	prompt.WriteString("## 客户消息回复场景\n\n")
-	prompt.WriteString("**当问题是\"如何回复客户消息\"时**，提供**三种不同风格的回复选项**供销售人员参考选择：\n\n")
-	prompt.WriteString("### 三种风格\n")
-	prompt.WriteString("**选项A：激进型（逼单风格）**\n")
-	prompt.WriteString("- 核心策略：利益刺激、稀缺性强调、促成即刻行动\n")
-	prompt.WriteString("- 适用场景：客户意向明确，临门一脚\n")
-	prompt.WriteString("- 话术特征：直接、有冲击力、紧迫感强\n\n")
-	prompt.WriteString("**选项B：保守型（共情风格）**\n")
-	prompt.WriteString("- 核心策略：理解客户压力、提供情绪价值、建立信任\n")
-	prompt.WriteString("- 适用场景：客户有顾虑，需要缓解压力\n")
-	prompt.WriteString("- 话术特征：温暖、包容、不施加压力\n\n")
-	prompt.WriteString("**选项C：纯知识型（专业风格）**\n")
-	prompt.WriteString("- 核心策略：基于知识库，客观专业解答\n")
-	prompt.WriteString("- 适用场景：客户咨询产品信息\n")
-	prompt.WriteString("- 话术特征：逻辑严密、数据支撑、事实为主\n\n")
-	prompt.WriteString("### 输出格式\n\n")
-	prompt.WriteString("### 选项A：激进型\n")
-	prompt.WriteString("**分析**：（为什么选这个策略）  \n")
-	prompt.WriteString("**建议话术**：（具体回复内容）\n\n")
-	prompt.WriteString("### 选项B：保守型\n")
-	prompt.WriteString("**分析**：（为什么选这个策略）  \n")
-	prompt.WriteString("**建议话术**：（具体回复内容）\n\n")
-	prompt.WriteString("### 选项C：纯知识型\n")
-	prompt.WriteString("**分析**：（为什么选这个策略）  \n")
-	prompt.WriteString("**建议话术**：（具体回复内容）\n\n")
-	prompt.WriteString("**注意**：如果销售人员明确要求其他方式（如只要一个答案、或特定风格），按需求调整。\n\n")
-	prompt.WriteString("---\n")
-
-	// 其他问题类型
-	prompt.WriteString("## 其他问题类型\n\n")
-	prompt.WriteString("对于非\"客户消息回复\"类的问题：\n")
-	prompt.WriteString("- 直接提供清晰、专业的解答\n")
-	prompt.WriteString("- 使用合适的 Markdown 格式组织（标题、列表、表格等）\n\n")
+	// 你的任务
+	prompt.WriteString("## 你的任务\n")
+	prompt.WriteString("你需要判断用户问题的意图，并判断是否需要给出示例回复。\n\n")
+	prompt.WriteString("### 需示例回复型\n")
+	prompt.WriteString("当判断用户的问题需要提供示例回复时，需要根据用户的问题或需求进行解答，同时提供三种回复选项，格式如下：\n")
+	prompt.WriteString("选项A：主动型（推进风格）\n")
+	prompt.WriteString("侧重价值呈现和时机把握，在尊重客户边界的前提下积极推进。话术坚定有方向感但避免压迫感，用利益引导代替强制推销。适用于客户有一定意向但需要推动决策的场景。\n")
+	prompt.WriteString("分析：（为什么选这个策略）\n")
+	prompt.WriteString("建议话术：（具体回复内容）\n\n")
+	prompt.WriteString("选项B：保守型\n")
+	prompt.WriteString("理解客户压力、提供情绪价值、建立信任。适用于客户有顾虑的场景。\n")
+	prompt.WriteString("分析：（为什么选这个策略）\n")
+	prompt.WriteString("建议话术：（具体回复内容）\n\n")
+	prompt.WriteString("选项C：高势能回复（造梦风格）\n")
+	prompt.WriteString("以\"造梦\"为核心，用具体画面描绘未来愿景，以真实案例证明可行性，戳破痛点给出确定性路径。适用于需要激发客户行动力的场景。\n")
+	prompt.WriteString("分析：（为什么选这个策略）\n")
+	prompt.WriteString("建议话术：（具体回复内容）\n\n")
+	prompt.WriteString("**如果销售人员明确要求其他方式（如只要一个答案、或特定风格），按需求调整**\n\n")
+	prompt.WriteString("### 无需示例回复型\n")
+	prompt.WriteString("当判断用户的问题**不**需要提供示例回复时，直接提供清晰、专业的解答。\n\n")
 	prompt.WriteString("---\n")
 
 	// 核心规则
 	prompt.WriteString("## 核心规则\n\n")
-	prompt.WriteString("### 必须严格遵守\n\n")
-	prompt.WriteString("1. **严格基于知识，禁止编造**\n")
+	prompt.WriteString("### 必须严格遵守\n")
+	prompt.WriteString("1. 区分事实与判断\n")
+	if hasBackground {
+		prompt.WriteString("  - 结合【客户背景信息】进行分析\n")
+	}
 	if knowledgeContext != "" {
-		prompt.WriteString("   - 所有产品信息、功能、价格必须能在【知识库内容】中找到依据\n")
-		prompt.WriteString("   - 如果知识库中没有相关信息，必须明确说明\"知识库中未检索到相关信息\"\n")
+		prompt.WriteString("  - 产品事实（价格、功能、参数、案例）必须有知识库依据，不得编造\n")
 	} else {
-		prompt.WriteString("   - 基于通用销售经验和方法论提供建议\n")
-		prompt.WriteString("   - 涉及具体产品信息时，建议销售人员核实\n")
+		prompt.WriteString("  - 产品事实（价格、功能、参数、案例）必须核实，不得编造\n")
 	}
-	prompt.WriteString("\n")
-	prompt.WriteString("2. **顾问视角，专业友好**\n")
-	prompt.WriteString("   - 你是在帮助销售人员，可以分析、建议、指导\n")
-	prompt.WriteString("   - 语气专业但亲切，避免说教\n")
-	prompt.WriteString("   - 提供可执行的具体建议，而非空泛理论\n\n")
-	prompt.WriteString("3. **灵活判断，因地制宜**\n")
+	if opinionContext != "" {
+		prompt.WriteString("  - 涉及观点输出和立场建议时，可从【观点库】中挑选匹配观点，融入话术建议中\n")
+	}
 	if strategyContent != "" {
-		prompt.WriteString("   - 策略是参考，不是教条\n")
-		prompt.WriteString("   - 如果推荐策略与实际情况明显不符，以实际为准\n")
+		prompt.WriteString("  - 策略分析和通用知识（客户心理、沟通技巧、行业经验），参考【核心策略参考】中的方法论和话术模板，并运用你的专业判断自由发挥，如果推荐策略与实际情况明显不符，以实际为准\n")
+	} else {
+		prompt.WriteString("  - 策略分析和通用知识（客户心理、沟通技巧、行业经验），运用你的专业判断自由发挥\n")
 	}
-	prompt.WriteString("   - 根据问题的具体情况调整回答深度和方式\n\n")
-	prompt.WriteString("4. **尊重销售人员的意图**\n")
-	prompt.WriteString("   - 准确理解问题的真实需求\n")
-	prompt.WriteString("   - 如果问题有歧义，优先选择最合理的解释\n")
-	prompt.WriteString("   - 不要过度发挥或答非所问\n\n")
+	prompt.WriteString("  - 如果销售人员问的是具体产品信息但知识库中没有，说明\"知识库暂未收录该信息，建议确认\"\n\n")
+	prompt.WriteString("2. 顾问视角，专业友好\n")
+	prompt.WriteString("  - 你是在帮助销售人员，可以分析、建议、指导\n")
+	prompt.WriteString("  - 语气专业但亲切，避免说教\n")
+	prompt.WriteString("  - 提供可执行的具体建议，而非空泛理论\n\n")
+	prompt.WriteString("3. 灵活判断，因地制宜\n")
+	prompt.WriteString("  - 根据问题类型选择最合适的回答方式、格式和深度\n\n")
+	prompt.WriteString("4. 尊重销售人员的意图\n")
+	prompt.WriteString("  - 准确识别销售人员的真实需求和意图\n")
+	prompt.WriteString("  - 如果问题有歧义，优先选择最合理的解释\n")
+	prompt.WriteString("  - 不要过度发挥或答非所问\n\n")
+	prompt.WriteString("5. 结构清晰：使用 Markdown 格式合理组织内容\n\n")
+	prompt.WriteString("6. 严守微信销售场景与角色边界\n")
+	prompt.WriteString("  - 你正在微信上进行销售对话，严禁引导至线下见面、电话沟通或其他非微信渠道\n")
+	prompt.WriteString("  - 你是销售人员，不是顾问/专家，严禁主动提供免费诊断、免费分析、免费咨询等\"增值服务\"\n")
+	prompt.WriteString("  - 销售推进依靠产品价值本身，而非额外赠送的服务或转移场景\n\n")
 
-	prompt.WriteString("### 严格禁止\n\n")
-	prompt.WriteString("1. **禁止编造信息**\n")
-	prompt.WriteString("   - 不得虚构产品功能、价格、案例、数据\n")
-	prompt.WriteString("   - 不得编造客户信息或对话历史\n")
-	prompt.WriteString("   - 宁可说\"不确定\"，也不要编造\n\n")
-	prompt.WriteString("2. **禁止误导性建议**\n")
-	prompt.WriteString("   - 不提供违背商业道德的建议\n")
-	prompt.WriteString("   - 不建议欺骗或误导客户\n")
-	prompt.WriteString("   - 不鼓励过度承诺或虚假宣传\n\n")
-	prompt.WriteString("3. **禁止僵化套用**\n")
-	prompt.WriteString("   - 不要不管什么问题都输出\"三种风格\"\n")
-	prompt.WriteString("   - 不要机械套用模板而忽视问题本质\n")
-	prompt.WriteString("   - 根据实际需求灵活调整\n\n")
+	prompt.WriteString("### 严格禁止\n")
+	prompt.WriteString("1. 禁止编造信息\n")
+	prompt.WriteString("  - 不得虚构产品功能、价格等数据\n")
+	prompt.WriteString("  - 不得编造客户案例信息或对话历史\n")
+	prompt.WriteString("  - 宁可说\"不确定\"，也不要编造\n\n")
+	prompt.WriteString("2. 禁止误导性建议\n")
+	prompt.WriteString("  - 不提供违背商业道德的建议\n")
+	prompt.WriteString("  - 不得欺骗或误导客户\n")
+	prompt.WriteString("  - 不得过度承诺或虚假宣传\n\n")
+	prompt.WriteString("3. 禁止僵化套用\n")
+	prompt.WriteString("  - 不要不管什么问题都输出\"三种风格\"\n")
+	prompt.WriteString("  - 不要机械套用模板而忽视问题本质\n")
+	prompt.WriteString("  - 根据实际需求灵活调整\n\n")
+
 	prompt.WriteString("---\n")
 
-	// 语言风格参考（固定显示）
-	prompt.WriteString("## 语言风格参考\n\n")
+	// 语言风格参考
+	prompt.WriteString("## 语言风格参考\n")
 	if languageStyle != "" {
-		prompt.WriteString("销售人员的语言风格如下，在提供**话术建议**时应参考这个风格：\n")
+		prompt.WriteString("销售人员的语言风格如下，在提供话术建议时应参考这个风格：")
 		prompt.WriteString(languageStyle)
 	} else {
-		prompt.WriteString("在提供话术建议时，使用通用的微信聊天风格：简洁、自然、适度口语化")
+		prompt.WriteString("销售人员的语言风格如下，在提供话术建议时应参考这个风格：使用通用的微信聊天风格：简洁、自然、适度使用口语化表达")
 	}
-	prompt.WriteString("\n\n")
-	prompt.WriteString("**注意**：语言风格主要用于话术建议，其他类型的回答（如分析、讲解）保持专业清晰即可。\n\n")
+	prompt.WriteString("\n")
+	prompt.WriteString("注意：语言风格主要用于话术建议，其他类型的回答（如分析、讲解）保持专业清晰即可。\n\n")
 
 	// 结尾引导
 	prompt.WriteString("---\n")
@@ -1014,32 +1106,27 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, str
 	return prompt.String()
 }
 
-// getIntentDescription 获取意图的中文描述
-func getIntentDescription(intent string) string {
-	switch intent {
-	case "OBJECTION":
-		return "客户正在表达异议或抗拒（如嫌贵、犹豫、质疑）。需要先共情，再引导价值认知。"
-	case "COMPARISON":
-		return "客户在比较竞品或进行选型。需要突出差异化优势，扬长避短。"
-	case "INQUIRY":
-		return "客户在咨询产品信息。需要准确、专业地回答，并适当引导。"
-	case "BUYING_PROOF":
-		return "客户表现出购买意向或需要案例佐证。需要积极推进，提供信任背书。"
-
-	default:
-		return "客户意图待分析。"
-	}
-}
-
 // ============ 会话管理方法 ============
 
 // CreateSession 创建新的销售会话
 func (b *salesRAGBiz) CreateSession(ctx context.Context, userID uint, req CreateSessionRequest) (*model.SalesSession, error) {
-	// 序列化 DocumentIDs 为 JSON
+	// 校验观点库上限：系统赛道 + 自定义赛道合计最多 2 个
+	if len(req.OpinionTrackIDs)+len(req.OpinionDocIDs) > maxOpinionTotal {
+		return nil, fmt.Errorf("系统赛道与自定义赛道合计最多选择 %d 个", maxOpinionTotal)
+	}
+
+	// 序列化 DocumentIDs 为 JSON（向后兼容）
 	docIDsJSON, err := json.Marshal(req.DocumentIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal document_ids: %w", err)
 	}
+
+	// 序列化分类文档 ID
+	productJSON, _ := json.Marshal(req.ProductDocIDs)
+	caseJSON, _ := json.Marshal(req.CaseDocIDs)
+	faqJSON, _ := json.Marshal(req.FAQDocIDs)
+	opinionJSON, _ := json.Marshal(req.OpinionDocIDs)
+	opinionTrackJSON, _ := json.Marshal(req.OpinionTrackIDs)
 
 	// 创建会话
 	session := &model.SalesSession{
@@ -1047,8 +1134,14 @@ func (b *salesRAGBiz) CreateSession(ctx context.Context, userID uint, req Create
 		Title:           req.Title,
 		Status:          "active",
 		DocumentIDs:     string(docIDsJSON),
+		ProductDocIDs:   string(productJSON),
+		CaseDocIDs:      string(caseJSON),
+		FAQDocIDs:       string(faqJSON),
+		OpinionDocIDs:   string(opinionJSON),
+		OpinionTrackIDs: string(opinionTrackJSON),
 		DeepThinking:    req.DeepThinking,
 		CustomerProfile: req.CustomerProfile,
+		SalesStage:      req.SalesStage, // 销售阶段
 		MessageCount:    0,
 	}
 
@@ -1071,6 +1164,16 @@ func (b *salesRAGBiz) ListSessions(ctx context.Context, userID uint, offset, lim
 
 // UpdateSession 更新销售会话
 func (b *salesRAGBiz) UpdateSession(ctx context.Context, userID uint, sessionID uint, req UpdateSessionRequest) error {
+	log.Printf("[UpdateSession] Received request for SessionID: %d, UserID: %d", sessionID, userID)
+	log.Printf("[UpdateSession] ProductDocIDs: %v (len: %d)", req.ProductDocIDs, len(req.ProductDocIDs))
+	log.Printf("[UpdateSession] CaseDocIDs: %v (len: %d)", req.CaseDocIDs, len(req.CaseDocIDs))
+	log.Printf("[UpdateSession] FAQDocIDs: %v (len: %d)", req.FAQDocIDs, len(req.FAQDocIDs))
+
+	// 校验观点库上限：系统赛道 + 自定义赛道合计最多 2 个
+	if len(req.OpinionTrackIDs)+len(req.OpinionDocIDs) > maxOpinionTotal {
+		return fmt.Errorf("系统赛道与自定义赛道合计最多选择 %d 个", maxOpinionTotal)
+	}
+
 	// 获取现有会话
 	session, err := b.sessionStore.GetSession(ctx, sessionID, userID)
 	if err != nil {
@@ -1088,11 +1191,35 @@ func (b *salesRAGBiz) UpdateSession(ctx context.Context, userID uint, sessionID 
 		}
 		session.DocumentIDs = string(docIDsJSON)
 	}
+	// 更新三个分类字段
+	if req.ProductDocIDs != nil {
+		productJSON, _ := json.Marshal(req.ProductDocIDs)
+		session.ProductDocIDs = string(productJSON)
+	}
+	if req.CaseDocIDs != nil {
+		caseJSON, _ := json.Marshal(req.CaseDocIDs)
+		session.CaseDocIDs = string(caseJSON)
+	}
+	if req.FAQDocIDs != nil {
+		faqJSON, _ := json.Marshal(req.FAQDocIDs)
+		session.FAQDocIDs = string(faqJSON)
+	}
+	if req.OpinionDocIDs != nil {
+		opinionJSON, _ := json.Marshal(req.OpinionDocIDs)
+		session.OpinionDocIDs = string(opinionJSON)
+	}
+	if req.OpinionTrackIDs != nil {
+		opinionTrackJSON, _ := json.Marshal(req.OpinionTrackIDs)
+		session.OpinionTrackIDs = string(opinionTrackJSON)
+	}
 	if req.DeepThinking != nil {
 		session.DeepThinking = *req.DeepThinking
 	}
 	if req.CustomerProfile != nil {
 		session.CustomerProfile = *req.CustomerProfile
+	}
+	if req.SalesStage != nil {
+		session.SalesStage = *req.SalesStage
 	}
 
 	return b.sessionStore.UpdateSession(ctx, session)
@@ -1116,6 +1243,54 @@ func (b *salesRAGBiz) UnpinSession(ctx context.Context, userID uint, sessionID u
 // RenameSession 重命名会话
 func (b *salesRAGBiz) RenameSession(ctx context.Context, userID uint, sessionID uint, newTitle string) error {
 	return b.sessionStore.RenameSession(ctx, sessionID, userID, newTitle)
+}
+
+// ListOpinionTracks 获取系统内置观点赛道列表
+func (b *salesRAGBiz) ListOpinionTracks(ctx context.Context) ([]model.OpinionTrack, error) {
+	var tracks []model.OpinionTrack
+	if err := b.ds.DB().WithContext(ctx).Where("is_enabled = ?", true).Order("sort_order ASC").Find(&tracks).Error; err != nil {
+		return nil, fmt.Errorf("failed to list opinion tracks: %w", err)
+	}
+	return tracks, nil
+}
+
+// resolveTrackDocIDs 将赛道 ID 解析为对应的 KnowledgeDocument ID
+// 安全校验：仅返回 is_enabled 且关联文档为系统文档（is_system=true）的 doc_id
+func (b *salesRAGBiz) resolveTrackDocIDs(ctx context.Context, trackIDs []uint) []uint {
+	if len(trackIDs) == 0 {
+		return nil
+	}
+	// 上限校验：最多 maxOpinionTotal 个赛道（合计上限的保护）
+	if len(trackIDs) > maxOpinionTotal {
+		log.Printf("[resolveTrackDocIDs] Warning: too many track IDs (%d), truncating to %d", len(trackIDs), maxOpinionTotal)
+		trackIDs = trackIDs[:maxOpinionTotal]
+	}
+	var tracks []model.OpinionTrack
+	if err := b.ds.DB().WithContext(ctx).Where("id IN ? AND is_enabled = ?", trackIDs, true).Find(&tracks).Error; err != nil {
+		log.Printf("[resolveTrackDocIDs] Warning: failed to query tracks: %v", err)
+		return nil
+	}
+	// 收集候选 doc_id
+	candidateDocIDs := make([]uint, 0, len(tracks))
+	for _, t := range tracks {
+		if t.DocID > 0 {
+			candidateDocIDs = append(candidateDocIDs, t.DocID)
+		}
+	}
+	if len(candidateDocIDs) == 0 {
+		return nil
+	}
+	// 二次校验：确认关联的文档确实是系统文档（is_system=true）
+	var validDocs []model.KnowledgeDocument
+	if err := b.ds.DB().WithContext(ctx).Where("id IN ? AND is_system = ?", candidateDocIDs, true).Select("id").Find(&validDocs).Error; err != nil {
+		log.Printf("[resolveTrackDocIDs] Warning: failed to verify system docs: %v", err)
+		return nil
+	}
+	docIDs := make([]uint, 0, len(validDocs))
+	for _, doc := range validDocs {
+		docIDs = append(docIDs, doc.ID)
+	}
+	return docIDs
 }
 
 // ListMessages 获取会话的消息列表
@@ -1198,9 +1373,46 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	}
 
 	// 2. 准备会话配置
-	// 无论前端传什么，以数据库存储的选中知识库为准，确保一致性
+	// 优先使用分类字段，合并所有分类的文档 ID 传给检索
 	var sessionDocIDs []uint
-	if session.DocumentIDs != "" && session.DocumentIDs != "null" {
+	var productDocIDs, caseDocIDs, faqDocIDs, opinionDocIDs []uint
+	var opinionTrackIDs []uint
+
+	// 解析分类字段（JSON 解析失败时记录错误并继续，不中断对话）
+	var parseErrors int
+	parseDocIDs := func(raw string, fieldName string, target *[]uint) {
+		if raw == "" || raw == "null" {
+			return
+		}
+		if err := json.Unmarshal([]byte(raw), target); err != nil {
+			log.Printf("[ChatWithSession] Error: failed to parse %s (raw=%q): %v", fieldName, raw, err)
+			parseErrors++
+		}
+	}
+	parseDocIDs(session.ProductDocIDs, "product_doc_ids", &productDocIDs)
+	parseDocIDs(session.CaseDocIDs, "case_doc_ids", &caseDocIDs)
+	parseDocIDs(session.FAQDocIDs, "faq_doc_ids", &faqDocIDs)
+	parseDocIDs(session.OpinionDocIDs, "opinion_doc_ids", &opinionDocIDs)
+	parseDocIDs(session.OpinionTrackIDs, "opinion_track_ids", &opinionTrackIDs)
+	if parseErrors > 0 {
+		log.Printf("[ChatWithSession] Warning: %d field(s) had JSON parse errors for session %d, some documents may be missing from retrieval", parseErrors, sessionID)
+	}
+
+	// 将系统赛道 ID 解析为对应的文档 ID
+	trackDocIDs := b.resolveTrackDocIDs(ctx, opinionTrackIDs)
+
+	// 合并非观点分类文档 ID（观点库走独立通道）
+	sessionDocIDs = append(sessionDocIDs, productDocIDs...)
+	sessionDocIDs = append(sessionDocIDs, caseDocIDs...)
+	sessionDocIDs = append(sessionDocIDs, faqDocIDs...)
+
+	// 观点文档单独收集，不混入 sessionDocIDs
+	allOpinionDocIDs := make([]uint, 0, len(opinionDocIDs)+len(trackDocIDs))
+	allOpinionDocIDs = append(allOpinionDocIDs, opinionDocIDs...)
+	allOpinionDocIDs = append(allOpinionDocIDs, trackDocIDs...)
+
+	// 向后兼容：如果所有分类字段都为空，则 fallback 到旧 document_ids 字段
+	if len(sessionDocIDs) == 0 && len(allOpinionDocIDs) == 0 && session.DocumentIDs != "" && session.DocumentIDs != "null" {
 		if err := json.Unmarshal([]byte(session.DocumentIDs), &sessionDocIDs); err != nil {
 			log.Printf("[ChatWithSession] Warning: failed to parse session document_ids: %v", err)
 		}
@@ -1225,13 +1437,25 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 		return fmt.Errorf("failed to save user message: %w", err)
 	}
 
+	// 构建文档分类映射（仅常规知识库，观点库走独立通道不需要分类映射）
+	docCategoryMap := make(map[uint]string)
+	for _, id := range productDocIDs {
+		docCategoryMap[id] = catProduct
+	}
+	for _, id := range caseDocIDs {
+		docCategoryMap[id] = catCase
+	}
+	for _, id := range faqDocIDs {
+		docCategoryMap[id] = catFAQ
+	}
+
 	// 4. 调用流式检索，累积内容
 	// 使用从数据库加载的 sessionDocIDs，而不是函数参数中的 docIDs
 	var fullContent strings.Builder
 	var verdictJSON string
 	var thinkingText string
 
-	err = b.RetrieveStream(ctx, query, history, sessionDocIDs, deepThinking, chatMode, session.CustomerProfile, func(eventType string, data interface{}) error {
+	err = b.RetrieveStream(ctx, query, history, sessionDocIDs, allOpinionDocIDs, docCategoryMap, deepThinking, chatMode, session.CustomerProfile, session.SalesStage, func(eventType string, data interface{}) error {
 		switch eventType {
 		case "verdict":
 			// 序列化 verdict 为 JSON
@@ -1344,688 +1568,248 @@ func (b *salesRAGBiz) backfillChunksToMySQL(ctx context.Context, doc *model.Know
 	}
 }
 
-// AnalyzeDocument 解析文档或图片并生成客户档案
-// 支持文档类型（PDF、DOC等）和图片类型（微信聊天记录截图）
-// 文档使用 dmxapi 处理，图片使用火山方舟视觉模型处理
-func (b *salesRAGBiz) AnalyzeDocument(ctx context.Context, userID uint, file io.Reader, filename string) (string, error) {
-	// 检测文件类型
-	ext := strings.ToLower(filepath.Ext(filename))
-	isImage := ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif" || ext == ".webp"
+// AnalyzeProfileMultiFiles 多文件综合分析生成客户档案
+// 支持图片（微信截图）和文档（PDF/DOC/TXT）混合输入
+// 采用 "Mixed Context" 模式，将所有内容整合到一个 Context 中由 Doubao-Seed-1.8 模型进行端到端分析
+func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint, files []*multipart.FileHeader, onToken func(token string) error) (string, error) {
+	log.Printf("[AnalyzeProfileMultiFiles] Starting analysis for user %d, file count: %d", userID, len(files))
 
-	if isImage {
-		// 图片处理流程：上传到COS获取临时URL，然后调用视觉模型
-		return b.analyzeImage(ctx, userID, file, filename)
-	}
+	// 1. 构建多模态消息内容
+	var contentParts []map[string]interface{}
 
-	// 文档处理流程（原有逻辑）
-	return b.analyzeDocument(ctx, file, filename)
-}
+	// 添加引导文本
+	contentParts = append(contentParts, map[string]interface{}{
+		"type": "text",
+		"text": "以下是该客户的相关资料，包含微信聊天记录截图和文档资料：",
+	})
 
-// analyzeImage 分析图片（微信聊天记录截图）
-func (b *salesRAGBiz) analyzeImage(ctx context.Context, userID uint, file io.Reader, filename string) (string, error) {
-	// 1. 读取图片数据
-	imageData, err := io.ReadAll(file)
-	if err != nil {
-		return "", fmt.Errorf("读取图片失败: %w", err)
-	}
-
-	// 2. 检查图片大小，如果超过 10MB 则压缩
-	const maxVisionSize = 10 * 1024 * 1024 // 10MB
-	if len(imageData) > maxVisionSize {
-		log.Printf("[analyzeImage] Image size (%d bytes) exceeds 10MB, starting compression...", len(imageData))
-
-		// 转换字节为 image.Image
-		src, err := imaging.Decode(bytes.NewReader(imageData))
+	for i, fileHeader := range files {
+		src, err := fileHeader.Open()
 		if err != nil {
-			return "", fmt.Errorf("解码图片失败: %w", err)
+			log.Printf("Failed to open file %s: %v", fileHeader.Filename, err)
+			continue
 		}
+		defer src.Close()
 
-		// 计算缩放比例：基于像素面积的简单启发式
-		// 视觉模型通常对像素总量有限制，或者我们通过缩放来显著减小文件体积
-		// 我们先尝试将长宽各缩小到原来的 70% (面积约 50%)
-		bounds := src.Bounds()
-		width := bounds.Dx()
-		height := bounds.Dy()
+		ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
+		isImage := ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif" || ext == ".webp"
 
-		// 如果是超长截图（长宽比过大），我们要小心缩放逻辑
-		// 这里采用逐步缩放策略，直到大小达标或达到最小阈值
-		quality := 85
-		for len(imageData) > maxVisionSize && (width > 500 || height > 500) {
-			width = int(float64(width) * 0.8)
-			height = int(float64(height) * 0.8)
-
-			dst := imaging.Resize(src, width, height, imaging.Lanczos)
-
-			var buf bytes.Buffer
-			// 使用标准库 jpeg 包进行编码，以支持质量设置
-			err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: quality})
+		if isImage {
+			// 图片处理：读取 -> 压缩（如需）-> 上传 COS -> 获取 URL
+			imageData, err := io.ReadAll(src)
 			if err != nil {
-				return "", fmt.Errorf("压缩图片失败: %w", err)
-			}
-			imageData = buf.Bytes()
-
-			log.Printf("[analyzeImage] Compressed to %dx%d, size: %d bytes (quality: %d)", width, height, len(imageData), quality)
-
-			// 如果缩放后还是大，降低质量
-			if quality > 60 {
-				quality -= 10
+				log.Printf("Failed to read image %s: %v", fileHeader.Filename, err)
+				continue
 			}
 
-			// 更新当前 src 为已缩放的图，方便下一轮
-			src = dst
-		}
+			// 针对微信聊天记录长截图的压缩处理
+			// 火山方舟 Doubao-Seed 模型限制：大小 < 10MB, 总像素 < 36,000,000, 长宽比 < 150:1
+			const maxVisionSize = 10 * 1024 * 1024 // 10MB
+			const maxTotalPixels = 36000000        // 36MP
 
-		if len(imageData) > maxVisionSize {
-			return "", fmt.Errorf("图片过大且压缩失败 (当前大小: %d bytes)", len(imageData))
-		}
-	}
-
-	log.Printf("图片已处理完成, 最终大小: %d bytes, 格式: image/jpeg", len(imageData))
-
-	// 4. 选择传输方式：优先使用 COS URL，失败或未开启则回退到 base64
-	var dataURL string
-	if util.IsCOSEnabled() {
-		// 生成 COS 对象路径: salesrag/analyze/userID/timestamp_filename.jpg
-		objectKey := fmt.Sprintf("salesrag/analyze/%d/%d_%s", userID, time.Now().Unix(), "analysis.jpg")
-
-		// 上传并设置 Content-Type
-		cosURL, err := util.UploadBytesToCOS(ctx, objectKey, "image/jpeg", imageData)
-		if err == nil && cosURL != "" {
-			// 生成 10 分钟有效的签名 URL 供外部 API 访问
-			signedURL, err := util.GenerateSignedURL(ctx, objectKey, 600)
-			if err == nil && signedURL != "" {
-				dataURL = signedURL
-				log.Printf("[analyzeImage] Successfully uploaded to COS, using signed URL: %s", objectKey)
-			}
-		}
-
-		if dataURL == "" {
-			log.Printf("[analyzeImage] COS upload or sign failed, fallback to base64")
-		}
-	}
-
-	if dataURL == "" {
-		// 回退到 base64 方式
-		base64Image := base64.StdEncoding.EncodeToString(imageData)
-		dataURL = fmt.Sprintf("data:image/jpeg;base64,%s", base64Image)
-		log.Printf("[analyzeImage] Using base64 data URL (size: %d)", len(dataURL))
-	}
-
-	// 4. 构建更加精准的端到端视觉分析提示词
-	combinedPrompt := `你是一位顶尖的商业洞察专家，擅长从细微的社交互动中拆解客户画像。
-这是一张【经典微信气泡对话式】聊天窗口的截图（可能是一张垂直拼接的长截图）。
-
-请【完整扫描整张图片从上到下】的所有对话内容，并直接为我生成一份专业的客户画像。
-
-### 核心视觉解析逻辑：
-1. **场景确认**：请识别微信对话特有的气泡布局。
-2. **重心偏移（客户为中心）**：
-   - **左边气泡 = 客户方（核心分析对象）**：请深度挖掘此侧的所有表达。
-   - **右边气泡 = 销售方（辅助理解）**：仅用于通过销售的提问或回复，来推断和修正对左侧客户真实意图的理解。
-3. **内容过滤与提取规则**：
-   - **保留表情符号**：请务必捕捉文字气泡中的表情（如：[呲牙]、🌹、握手等），这些是判断客户性格、情绪温度的关键指纹。
-   - **排除非文字消息类型**：即使图片消息中含有文字，也请视为“多媒体干扰”而直接忽略（因为它们不代表当前的对话文字流）。
-
-### 画像输出维度：
-请基于上述扫描到的事实，生成以下画像：
-1. **客户基础标签**：身份推测、行业背景、当前的沟通氛围。
-2. **核心诉求与动机**：客户在对话中最关切的利益点、未明说的隐忧、购买的心理诱因。
-3. **性格指纹分析**：结合文字风格与“表情包使用偏好”，分析客户是属于何种社交类型（如：谨慎型、豪爽型、礼貌疏离型等）。
-4. **决策倾向与销售阶段**：当前所处的成交距离，以及客户在决策上的核心卡点。
-5. **高价值跟进建议**：你应该如何调整自己的沟通节奏和话术风格来匹配该客户？
-
-### 约束要求：
-- 哪怕截图再长，也必须确保覆盖所有气泡内容。
-- 严禁编造，必须有图有真相。
-- 使用洗练、具备商业厚度的 Markdown 格式。
-- **禁止任何开场白**，直接输出画像正文。`
-
-	// 5. 调用阿里云百炼视觉模型（qwen3-vl-flash-2026-01-22）
-	const visionModel = "qwen3-vl-flash-2026-01-22"
-	profileResult, err := b.aliBiz.QianwenVision(ctx, dataURL, combinedPrompt, visionModel)
-	if err != nil {
-		return "", fmt.Errorf("视觉端到端分析失败 (阿里云): %w", err)
-	}
-
-	log.Printf("画像端到端生成完成, 长度: %d", len(profileResult))
-
-	return profileResult, nil
-}
-
-// analyzeImageStream 是 analyzeImage 的流式版本
-func (b *salesRAGBiz) analyzeImageStream(ctx context.Context, userID uint, imageData []byte, onToken func(token string) error) (string, error) {
-	log.Printf("[analyzeImageStream] Starting analysis for user %d, image size: %d bytes", userID, len(imageData))
-
-	// 1. 检查图片大小和尺寸，如果超过限制则压缩
-	const maxVisionSize = 10 * 1024 * 1024 // 10MB
-	const maxDimension = 4096              // 阿里云视觉模型支持的最大边长
-
-	// 解码图片以检查尺寸
-	src, err := imaging.Decode(bytes.NewReader(imageData))
-	if err != nil {
-		log.Printf("[analyzeImageStream] Failed to decode image: %v", err)
-		return "", fmt.Errorf("解码图片失败: %w", err)
-	}
-
-	bounds := src.Bounds()
-	width := bounds.Dx()
-	height := bounds.Dy()
-	needsResize := false
-
-	log.Printf("[analyzeImageStream] Original image dimensions: %dx%d, size: %d bytes", width, height, len(imageData))
-
-	// 检查是否需要压缩（尺寸过大或文件过大）
-	if width > maxDimension || height > maxDimension || len(imageData) > maxVisionSize {
-		needsResize = true
-		log.Printf("[analyzeImageStream] Image exceeds limits (max dimension: %d, max size: %d MB), starting compression...", maxDimension, maxVisionSize/1024/1024)
-
-		// 计算缩放比例，确保最大边不超过 maxDimension
-		scale := 1.0
-		if width > height {
-			if width > maxDimension {
-				scale = float64(maxDimension) / float64(width)
-			}
-		} else {
-			if height > maxDimension {
-				scale = float64(maxDimension) / float64(height)
-			}
-		}
-
-		// 如果需要缩放
-		if scale < 1.0 {
-			width = int(float64(width) * scale)
-			height = int(float64(height) * scale)
-			log.Printf("[analyzeImageStream] Scaling image to %dx%d (scale: %.2f)", width, height, scale)
-		}
-
-		// 逐步压缩直到满足大小要求
-		quality := 85
-		for len(imageData) > maxVisionSize && (width > 500 || height > 500) {
-			// 调整尺寸
-			dst := imaging.Resize(src, width, height, imaging.Lanczos)
-
-			// 重新编码为JPEG
-			var buf bytes.Buffer
-			err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: quality})
+			// 解码图片检查属性
+			img, err := imaging.Decode(bytes.NewReader(imageData))
 			if err != nil {
-				return "", fmt.Errorf("压缩图片失败: %w", err)
+				log.Printf("Failed to decode image %s: %v", fileHeader.Filename, err)
+				continue
 			}
-			imageData = buf.Bytes()
 
-			log.Printf("[analyzeImageStream] Compressed to %dx%d, size: %d bytes (quality: %d)", width, height, len(imageData), quality)
+			bounds := img.Bounds()
+			width, height := bounds.Dx(), bounds.Dy()
+			totalPixels := int64(width) * int64(height)
+			aspectRatio := float64(height) / float64(width)
+			if width > height {
+				aspectRatio = float64(width) / float64(height)
+			}
 
-			// 如果还是太大，继续缩小
-			if len(imageData) > maxVisionSize {
-				if quality > 60 {
-					quality -= 10
-				} else {
-					width = int(float64(width) * 0.8)
-					height = int(float64(height) * 0.8)
+			// 检查是否需要压缩（大小、像素、长宽比任一超标）
+			if len(imageData) > maxVisionSize || totalPixels > maxTotalPixels || aspectRatio > 150 {
+				log.Printf("[AnalyzeProfileMultiFiles] Image %s needs compression (Size: %d, Pixels: %d, Ratio: %.2f)",
+					fileHeader.Filename, len(imageData), totalPixels, aspectRatio)
+
+				// 微信长截图通常宽高比很大，需要更激进的压缩策略
+				scale := 1.0
+				if totalPixels > maxTotalPixels {
+					scale = math.Sqrt(float64(maxTotalPixels-1000000) / float64(totalPixels))
 				}
-			} else {
-				break
-			}
+				// 长宽比过大时进一步缩小，避免模型处理超长图
+				if aspectRatio > 140 {
+					scale = math.Min(scale, 0.8)
+				}
 
-			src = dst
-		}
+				quality := 85
+				// 迭代压缩直到满足限制，确保最终一定能压缩到 10MB 以下
+				for len(imageData) > maxVisionSize && (width > 100 || height > 100) {
+					if scale < 1.0 {
+						width = int(float64(width) * scale)
+						height = int(float64(height) * scale)
+					}
+					// 每次循环都进行缩放，确保尺寸在减小
+					if scale >= 1.0 {
+						width = int(float64(width) * 0.9)
+						height = int(float64(height) * 0.9)
+					}
 
-		// 最后检查是否成功压缩
-		if len(imageData) > maxVisionSize {
-			return "", fmt.Errorf("图片过大且压缩失败 (当前大小: %d bytes)", len(imageData))
-		}
+					img = imaging.Resize(img, width, height, imaging.Lanczos)
+					totalPixels = int64(width) * int64(height)
 
-		log.Printf("[analyzeImageStream] Compression completed, final size: %d bytes, dimensions: %dx%d", len(imageData), width, height)
-	} else if needsResize {
-		// 即使文件大小OK，但如果之前检测到尺寸需要调整，也要重新编码
-		dst := imaging.Resize(src, width, height, imaging.Lanczos)
-		var buf bytes.Buffer
-		err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 85})
-		if err != nil {
-			return "", fmt.Errorf("重新编码图片失败: %w", err)
-		}
-		imageData = buf.Bytes()
-		log.Printf("[analyzeImageStream] Resized image to %dx%d, new size: %d bytes", width, height, len(imageData))
-	}
+					var buf bytes.Buffer
+					err = jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality})
+					if err != nil {
+						log.Printf("Failed to encode image %s: %v", fileHeader.Filename, err)
+						break
+					}
+					imageData = buf.Bytes()
 
-	// 2. 准备数据传输 URL (优先使用 COS URL)
-	var dataURL string
-	ext := ".jpg" // 默认后缀
-	objectKey := fmt.Sprintf("vision_tmp/%d/%d%s", userID, time.Now().UnixNano(), ext)
+					log.Printf("[AnalyzeProfileMultiFiles] Compression iteration: %dx%d, size: %d bytes, quality: %d",
+						width, height, len(imageData), quality)
 
-	// 尝试上传到 COS
-	if b.ds != nil {
-		cosURL, err := util.UploadBytesToCOS(ctx, objectKey, "image/jpeg", imageData)
-		if err == nil && cosURL != "" {
-			dataURL = cosURL
-			log.Printf("[analyzeImageStream] Successfully uploaded to COS, using URL: %s", objectKey)
-		} else {
-			log.Printf("[analyzeImageStream] COS upload failed: %v", err)
-		}
-	}
-
-	if dataURL == "" {
-		// 回退到 base64 方式
-		base64Image := base64.StdEncoding.EncodeToString(imageData)
-		dataURL = fmt.Sprintf("data:image/jpeg;base64,%s", base64Image)
-		log.Printf("[analyzeImageStream] Using base64 data URL (size: %d)", len(dataURL))
-	}
-
-	// 3. 构建提示词
-	combinedPrompt := `你是一位顶尖的商业洞察专家，擅长从细微的社交互动中拆解客户画像。
-这是一张【经典微信气泡对话式】聊天窗口的截图（可能是一张垂直拼接的长截图）。
-
-请【完整扫描整张图片从上到下】的所有对话内容，并直接为我生成一份专业的客户画像。
-
-### 核心视觉解析逻辑：
-1. **场景确认**：请识别微信对话特有的气泡布局。
-2. **重心偏移（客户为中心）**：
-   - **左边气泡 = 客户方（核心分析对象）**：请深度挖掘此侧的所有表达。
-   - **右边气泡 = 销售方（辅助理解）**：仅用于通过销售的提问或回复，来推断和修正对左侧客户真实意图的理解。
-3. **内容过滤与提取规则：
-   - **保留表情符号**：请务必捕捉文字气泡中的表情（如：[呲牙]、🌹、握手等），这些是判断客户性格、情绪温度的关键指纹。
-   - **排除非文字消息类型**：即使图片消息中含有文字，也请视为“多媒体干扰”而直接忽略。
-
-### 画像输出维度：
-1. **客户基础标签**
-2. **核心诉求与动机**
-3. **性格指纹分析**
-4. **决策倾向与销售阶段**
-5. **高价值跟进建议**
-
-### 约束要求：
-- 使用具备商业厚度的 Markdown 格式。
-- **直接输出画像内容**，不要有任何寒暄、前排分析或结论语。`
-
-	const visionModel = "qwen3-vl-flash-2026-01-22"
-	
-	log.Printf("[analyzeImageStream] Calling QianwenVisionStream with model: %s", visionModel)
-	result, err := b.aliBiz.QianwenVisionStream(ctx, dataURL, combinedPrompt, visionModel, onToken)
-	
-	if err != nil {
-		log.Printf("[analyzeImageStream] QianwenVisionStream error: %v", err)
-		return "", err
-	}
-	
-	log.Printf("[analyzeImageStream] QianwenVisionStream completed, result length: %d", len(result))
-	return result, nil
-}
-
-// AnalyzeDocumentStream 流式分析文档
-func (b *salesRAGBiz) AnalyzeDocumentStream(ctx context.Context, userID uint, file io.Reader, filename string, onToken func(token string) error) (string, error) {
-	// 读取内容
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return "", err
-	}
-
-	ext := strings.ToLower(filepath.Ext(filename))
-	if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
-		return b.analyzeImageStream(ctx, userID, data, onToken)
-	}
-
-	// 文本文件使用 dmxapi 流式输出
-	return b.analyzeDocumentStreamInternal(ctx, bytes.NewReader(data), filename, onToken)
-}
-
-// analyzeDocumentStreamInternal 分析文档（流式输出版本）
-func (b *salesRAGBiz) analyzeDocumentStreamInternal(ctx context.Context, file io.Reader, filename string, onToken func(token string) error) (string, error) {
-	// 1. 解析文档内容
-	content, err := b.parser.Parse(ctx, file, filename)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse document: %w", err)
-	}
-
-	// 2. 截断 (避免 token 溢出)
-	maxLen := 50000
-	if len(content) > maxLen {
-		content = content[:maxLen] + "\n...(truncated)"
-	}
-
-	// 3. 构建提示词
-	systemPrompt := `你是一个敏锐的销售战略专家。任务是基于提供的片段，为销售人员提取一份"高干货"客户画像，用于指导后续的回复话术生成。
-
-##  核心原则：事实第一，不强求全
-- 如果文档信息极少，只提炼最有保障的事实或高概率推测，严禁编造信息。
-- 允许跳过无法确定的维度。格式虽然是结构化的，但内容根据实际资料灵活裁剪。
-
-## 提炼维度（仅在信息可识别时输出）：
-1. **基础背景**：对方是谁？（姓名、所属行业、规模、当前沟通背景/阶段等）
-2. **核心需求与敏锐点**：对方在乎什么？（急需解决的问题，强烈的需求，或者对价格、安全、效率等维度的敏感倾向）
-3. **性格与风格推断**：对方说话/行文的方式体现了什么特征？（如：老练果断、极度关注细节、犹豫不决等）
-4. **其他关键信息**：你认为至关重要的客户特点
-
-## 约束：
-- 严格控制在300 - 500 字以内
-- 直接以 Markdown 列表输出干货内容，严禁任何开场白和提示语
-- **重要**：不要用代码块包裹输出（如 ` + "```markdown" + ` 或 ` + "```" + `），直接输出纯 Markdown 文本`
-
-	// 4. 调用 dmxapi 的 qwen-turbo 模型（流式输出）
-	return b.callDMXAPIStream(ctx, systemPrompt, "客户文档内容如下：\n\n"+content, onToken)
-}
-
-// analyzeDocument 分析文档（原有逻辑）
-func (b *salesRAGBiz) analyzeDocument(ctx context.Context, file io.Reader, filename string) (string, error) {
-	// 1. 解析文档内容
-	content, err := b.parser.Parse(ctx, file, filename)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse document: %w", err)
-	}
-
-	// 2. 截断 (避免 token 溢出)
-	maxLen := 50000
-	if len(content) > maxLen {
-		content = content[:maxLen] + "\n...(truncated)"
-	}
-
-	// 3. 构建提示词
-	systemPrompt := `你是一个敏锐的销售战略专家。任务是基于提供的片段，为销售人员提取一份"高干货"客户画像，用于指导后续的回复话术生成。
-
-##  核心原则：事实第一，不强求全
-- 如果文档信息极少，只提炼最有保障的事实或高概率推测，严禁编造信息。
-- 允许跳过无法确定的维度。格式虽然是结构化的，但内容根据实际资料灵活裁剪。
-
-## 提炼维度（仅在信息可识别时输出）：
-1. **基础背景**：对方是谁？（姓名、所属行业、规模、当前沟通背景/阶段等）
-2. **核心需求与敏锐点**：对方在乎什么？（急需解决的问题，强烈的需求，或者对价格、安全、效率等维度的敏感倾向）
-3. **性格与风格推断**：对方说话/行文的方式体现了什么特征？（如：老练果断、极度关注细节、犹豫不决等）
-4. **其他关键信息**：你认为至关重要的客户特点
-
-## 约束：
-- 严格控制在300 - 500 字以内
-- 直接以 Markdown 列表输出干货内容，严禁任何开场白和提示语
-- **重要**：不要用代码块包裹输出（如 ` + "```markdown" + ` 或 ` + "```" + `），直接输出纯 Markdown 文本`
-
-	// 4. 调用 dmxapi 的 qwen-turbo-latest 模型
-	return b.callDMXAPI(ctx, systemPrompt, "客户文档内容如下：\n\n"+content)
-}
-
-// generateProfileFromChat 基于聊天记录生成客户画像
-// 已弃用：目前的图片处理流程已改为在 analyzeImage 中一次性完成端到端生
-
-// callDMXAPIStream 调用 dmxapi 的 qwen-turbo 模型（流式输出）
-func (b *salesRAGBiz) callDMXAPIStream(ctx context.Context, systemPrompt, userMessage string, onToken func(token string) error) (string, error) {
-	url := "https://www.dmxapi.cn/v1/chat/completions"
-	apiKey := "sk-XgINDoE22MHQfcSZnToYICS4rNnoknIrXhZHZYs3VQM9DP25"
-	model := "qwen-turbo"
-
-	log.Printf("[callDMXAPIStream] Starting API call, model: %s, text length: %d", model, len(userMessage))
-
-	payload := map[string]interface{}{
-		"model": model,
-		"messages": []map[string]interface{}{
-			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": userMessage},
-		},
-		"temperature": 0.5,
-		"max_tokens":  2000,
-		"stream":      true, // 启用流式输出
-	}
-
-	bodyBytes, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
-	if err != nil {
-		log.Printf("[callDMXAPIStream] Failed to create request: %v", err)
-		return "", fmt.Errorf("create request failed: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", apiKey)
-
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("[callDMXAPIStream] HTTP request failed: %v", err)
-		return "", fmt.Errorf("DMXAPI request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	log.Printf("[callDMXAPIStream] Response status code: %d", resp.StatusCode)
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		log.Printf("[callDMXAPIStream] Error response body: %s", string(body))
-		return "", fmt.Errorf("DMXAPI error %d: %s", resp.StatusCode, string(body))
-	}
-
-	// 流式读取响应
-	var fullContent strings.Builder
-	scanner := bufio.NewScanner(resp.Body)
-	tokenCount := 0
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// 跳过空行
-		if line == "" {
-			continue
-		}
-
-		// SSE 格式：data: {JSON}
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-
-		data := strings.TrimPrefix(line, "data: ")
-
-		// 检查结束标记
-		if data == "[DONE]" {
-			log.Printf("[callDMXAPIStream] Received [DONE]")
-			break
-		}
-
-		// 解析 JSON
-		var streamData struct {
-			Choices []struct {
-				Delta struct {
-					Content string `json:"content"`
-				} `json:"delta"`
-			} `json:"choices"`
-		}
-
-		if err := json.Unmarshal([]byte(data), &streamData); err != nil {
-			log.Printf("[callDMXAPIStream] Failed to parse stream data: %v, data: %s", err, data)
-			continue
-		}
-
-		// 提取 content
-		if len(streamData.Choices) > 0 {
-			content := streamData.Choices[0].Delta.Content
-			if content != "" {
-				tokenCount++
-				fullContent.WriteString(content)
-
-				// 调用回调函数
-				if onToken != nil {
-					if err := onToken(content); err != nil {
-						log.Printf("[callDMXAPIStream] onToken error: %v", err)
-						return fullContent.String(), err
+					// 如果还超过 10MB，继续降低质量或缩小尺寸
+					if len(imageData) > maxVisionSize {
+						if quality > 30 {
+							// 优先降低质量，直到 30%
+							quality -= 10
+						} else {
+							// 质量到 30% 后，大幅缩小尺寸
+							scale = 0.7
+						}
 					}
 				}
 			}
+
+			// 最终校验，如果仍然超过 10MB，使用最后的手段：大幅降低质量和尺寸
+			if len(imageData) > maxVisionSize {
+				log.Printf("[AnalyzeProfileMultiFiles] Image %s still too large after normal compression (%d bytes), applying aggressive compression", fileHeader.Filename, len(imageData))
+				// 最后手段：质量降至 20%，尺寸减半
+				for len(imageData) > maxVisionSize && (width > 50 || height > 50) {
+					width = int(float64(width) * 0.7)
+					height = int(float64(height) * 0.7)
+					img = imaging.Resize(img, width, height, imaging.Lanczos)
+
+					var buf bytes.Buffer
+					err = jpeg.Encode(&buf, img, &jpeg.Options{Quality: 20})
+					if err != nil {
+						log.Printf("Failed to encode image %s in aggressive compression: %v", fileHeader.Filename, err)
+						break
+					}
+					imageData = buf.Bytes()
+
+					log.Printf("[AnalyzeProfileMultiFiles] Aggressive compression: %dx%d, size: %d bytes", width, height, len(imageData))
+				}
+			}
+
+			// 最终校验，如果仍然超过 10MB，则跳过该图片
+			if len(imageData) > maxVisionSize {
+				log.Printf("[AnalyzeProfileMultiFiles] Image %s too large even after aggressive compression (%d bytes), skipping", fileHeader.Filename, len(imageData))
+				continue
+			}
+
+			// 上传到临时目录
+			objectKey := fmt.Sprintf("salesrag/analyze_tmp/%d/%d_%d_%s", userID, time.Now().Unix(), i, fileHeader.Filename)
+			cosURL, err := util.UploadBytesToCOS(ctx, objectKey, "image/jpeg", imageData)
+			if err != nil {
+				log.Printf("Failed to upload image %s to COS: %v", fileHeader.Filename, err)
+				continue
+			}
+
+			// 生成签名 URL (1小时有效)
+			signedURL, _ := util.GenerateSignedURL(ctx, objectKey, 3600)
+			if signedURL == "" {
+				signedURL = cosURL // Fallback
+			}
+
+			contentParts = append(contentParts, map[string]interface{}{
+				"type": "image_url",
+				"image_url": map[string]string{
+					"url": signedURL,
+				},
+			})
+			log.Printf("Added image part: %s", fileHeader.Filename)
+
+		} else {
+			// 文档处理：解析文本
+			// 这里需要重置 reader 因为 Parse 可能会读它
+			// 实际上 fileHeader.Open() 每次返回新的 reader
+
+			// 使用 parser 解析
+			text, err := b.parser.Parse(ctx, src, fileHeader.Filename)
+			if err != nil {
+				log.Printf("Failed to parse document %s: %v", fileHeader.Filename, err)
+				continue
+			}
+
+			// 截断过长文本（按 unicode 字符数，30000 字符）
+			if runes := []rune(text); len(runes) > 30000 {
+				text = string(runes[:30000]) + "\n...(truncated)"
+			}
+
+			contentParts = append(contentParts, map[string]interface{}{
+				"type": "text",
+				"text": fmt.Sprintf("\n--- 文档 [%s] 内容 ---\n%s\n", fileHeader.Filename, text),
+			})
+			log.Printf("Added document part: %s (len: %d)", fileHeader.Filename, len(text))
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		log.Printf("[callDMXAPIStream] Scanner error: %v", err)
-		return fullContent.String(), fmt.Errorf("read stream failed: %w", err)
-	}
+	// 2. 构建 system + user 消息（DEC-016: system/user 分离）
+	systemPrompt := `你是一位拥有20年B2B销售经验的商业洞察专家。你擅长通过零散的信息（无论是正式的招标文档、需求清单，还是非正式的聊天记录截图）拼凑出完整的客户全貌。
 
-	log.Printf("[callDMXAPIStream] Success, tokens: %d, content length: %d", tokenCount, fullContent.Len())
-	return fullContent.String(), nil
-}
+## 核心原则
 
-// callDMXAPI 调用 dmxapi 的 qwen-turbo 模型（用于文本分析）
-func (b *salesRAGBiz) callDMXAPI(ctx context.Context, systemPrompt, userMessage string) (string, error) {
-	url := "https://www.dmxapi.cn/v1/chat/completions"
-	apiKey := "sk-XgINDoE22MHQfcSZnToYICS4rNnoknIrXhZHZYs3VQM9DP25"
-	model := "qwen-turbo"
+1. **事实优先，严禁臆造**：所有结论必须有素材中的原文或截图内容作为依据。对于无法从资料中获取的信息，直接留空或标注"依据不足"。宁可少写，也不编造。
+2. **区分事实与推断**：直接引用素材的信息标记为事实；需要推理的信息必须标注推理依据（如"根据对话中提到XX，推断..."）。
+3. **术语准确**：使用专业销售术语（决策链、卡点、显性/隐性需求等）。
+4. **识别烟雾弹**：客户表面诉求未必是真实诉求。例如客户反复谈价格（显性），真实原因可能是怕决策失误（隐性卡点）。但这类推断必须注明依据。
 
-	log.Printf("[callDMXAPI] Starting API call, model: %s, text length: %d", model, len(userMessage))
+## 分析步骤
 
-	payload := map[string]interface{}{
-		"model": model,
-		"messages": []map[string]interface{}{
-			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": userMessage},
+在输出报告之前，请先完成以下内部分析（不需要输出分析过程）：
+1. 识别素材中出现的所有人物角色及其关系（谁是客户、谁是销售、谁是决策者等）
+2. 梳理事件或需求的时间线（如有）
+3. 提取所有明确的事实信息（客户直接说的话、文档中的数据）
+4. 基于事实进行有限度的推断（必须有依据支撑）
+5. 按下方模板组织输出
+
+## 输出格式
+
+请直接用 Markdown 格式输出以下结构，不要有任何开场白或结束语：
+
+#### 客户背景
+- **行业/赛道**：（依据不足则留空）
+- **公司规模**：（依据不足则留空）
+- **关键角色**：判断对方在决策链中的角色（决策者/影响者/使用者），附判断依据
+- **业务场景**：客户当前关注的具体业务问题
+
+#### 需求分析
+- **显性需求**：文档或沟通中明确提出的具体需求（逐条列出）
+- **隐性卡点**：可推断的阻碍因素（每条必须附推理依据，格式："现象 → 推断 → 依据"）
+
+#### 竞争与预算线索
+- **竞品线索**：素材中提到或暗示的竞品、替代方案（依据不足则标注"未提及"）
+- **预算信号**：价格敏感度、预算区间等线索（依据不足则标注"未提及"）
+
+#### 关键信息摘要
+- 不属于以上类别、但确定且重要的信息（如果没有则省略此板块）`
+
+	// 3. 调用多模态模型 (Doubao-Seed-2.0-Lite, thinking: medium)
+	messages := []map[string]interface{}{
+		{
+			"role":    "system",
+			"content": systemPrompt,
 		},
-		"temperature": 0.5,
-		"max_tokens":  2000,
+		{
+			"role":    "user",
+			"content": contentParts,
+		},
 	}
 
-	bodyBytes, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
-	if err != nil {
-		log.Printf("[callDMXAPI] Failed to create request: %v", err)
-		return "", fmt.Errorf("create request failed: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", apiKey)
-
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("[callDMXAPI] HTTP request failed: %v", err)
-		return "", fmt.Errorf("DMXAPI request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	log.Printf("[callDMXAPI] Response status code: %d", resp.StatusCode)
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		log.Printf("[callDMXAPI] Error response body: %s", string(body))
-		return "", fmt.Errorf("DMXAPI error %d: %s", resp.StatusCode, string(body))
-	}
-
-	// 读取响应体
-	bodyBytes, err = io.ReadAll(resp.Body)
-	if err != nil {
-		log.Printf("[callDMXAPI] Failed to read response body: %v", err)
-		return "", fmt.Errorf("read response failed: %w", err)
-	}
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Error *struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error,omitempty"`
-	}
-
-	if err := json.Unmarshal(bodyBytes, &result); err != nil {
-		log.Printf("[callDMXAPI] Failed to decode JSON response: %v, body: %s", err, string(bodyBytes))
-		return "", fmt.Errorf("decode response failed: %w", err)
-	}
-
-	if result.Error != nil {
-		log.Printf("[callDMXAPI] API returned error: code=%s, message=%s", result.Error.Code, result.Error.Message)
-		return "", fmt.Errorf("DMXAPI error: %s - %s", result.Error.Code, result.Error.Message)
-	}
-
-	if len(result.Choices) == 0 {
-		log.Printf("[callDMXAPI] Empty choices in response: %s", string(bodyBytes))
-		return "", fmt.Errorf("empty choices from DMXAPI")
-	}
-
-	log.Printf("[callDMXAPI] Success, content length: %d", len(result.Choices[0].Message.Content))
-	return result.Choices[0].Message.Content, nil
-}
-
-// AnalyzeChatStyle 分析聊天风格（语言指纹分析）
-// 图片使用阿里云 qwen3-vl-flash-2026-01-22，文本使用 dmxapi qwen-turbo
-func (b *salesRAGBiz) AnalyzeChatStyle(ctx context.Context, userID uint, file io.Reader, filename string) (string, error) {
-	log.Printf("[AnalyzeChatStyle] Starting analysis for user %d, filename: %s", userID, filename)
-
-	// 检查文件类型，如果是图片则使用视觉模型
-	ext := strings.ToLower(filepath.Ext(filename))
-	if ext == ".jpg" || ext == ".jpeg" || ext == ".png" {
-		log.Printf("[AnalyzeChatStyle] Image file detected, using vision model for user %d", userID)
-
-		// 读取图片数据
-		data, err := io.ReadAll(file)
-		if err != nil {
-			log.Printf("[AnalyzeChatStyle] Failed to read image data for user %d: %v", userID, err)
-			return "", fmt.Errorf("failed to read image: %w", err)
+	log.Printf("[AnalyzeProfileMultiFiles] Calling Volc StreamChatWithModel with %d content parts", len(contentParts))
+	return b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "medium", func(event string, token string) error {
+		if event == "message" {
+			return onToken(token)
 		}
-
-		// 调用图片分析方法
-		return b.analyzeChatStyleImage(ctx, userID, data)
-	}
-
-	// 1. 解析文本内容
-	text, err := b.parser.Parse(ctx, file, filename)
-	if err != nil {
-		log.Printf("[AnalyzeChatStyle] Parse failed for user %d: %v", userID, err)
-		return "", fmt.Errorf("failed to parse chat file: %w", err)
-	}
-	log.Printf("[AnalyzeChatStyle] Parsed text length: %d", len(text))
-
-	// 2. 截断 (避免 token 溢出)
-	maxLen := 10000
-	if len(text) > maxLen {
-		text = text[:maxLen] + "\n...(truncated)"
-		log.Printf("[AnalyzeChatStyle] Text truncated to %d chars", maxLen)
-	}
-
-	// 检查文本是否为空
-	if len(strings.TrimSpace(text)) == 0 {
-		log.Printf("[AnalyzeChatStyle] Empty text after parsing for user %d", userID)
-		return "", fmt.Errorf("文本内容为空，无法分析")
-	}
-
-	// 2. 构建系统提示词
-	systemPrompt := `你是一个资深的文字风格分析专家。由于现在的场景是微信文字聊天，请根据提供的语料，提炼出该销售人员的【文字沟通指纹】，以便让 AI 能够精准模仿
-
-## 核心要求：
-1. **严禁使用或提及任何表情（Emoji/颜文字）**，分析 and 生成的风格必须完全基于纯文字
-2. **纯文字复刻**：重点分析文字如何分词、如何分段、如何使用助词，确保回复感真实不生硬
-
-## 提炼维度：
-1. **社交人设与称谓习惯**：
-   - 沟通角色：是"利落的办事员"、"温润的顾问"、"平等的伙伴"还是别的角色？
-   - 称谓偏好：对客户的称呼习惯（您/你，或者其他特定称谓）
-
-2. **文字视觉指纹**：
-   - 句式习惯：爱发大长段，还是习惯短句换行？
-   - 标点符号：爱用规范标点，还是爱用空格/换行代替标点？
-
-3. **语气词与词汇场**：
-   - 标志性结尾：习惯用哪些收尾词（如：哈、呢、吧、哒、！）？
-   - 高频用语：提取 10 个该销售最具代表性的口头禅或职业用语
-
-4. **沟通逻辑脉络**：
-   - 它是如何回答难题或提出建议的？（如：先说结论、先给方案、还是先客套？）
-
-## 约束：
-- 直接输出 Markdown 格式的风格说明书，严禁开场白和任何提示语
-- 字数控制在 500 字以内`
-
-	// 4. 调用 dmxapi 的 qwen-turbo 模型
-	log.Printf("[AnalyzeChatStyle] Calling DMX API for user %d", userID)
-	analysis, err := b.callDMXAPI(ctx, systemPrompt, text)
-	if err != nil {
-		log.Printf("[AnalyzeChatStyle] DMX API call failed for user %d: %v", userID, err)
-		return "", fmt.Errorf("AI 分析服务调用失败: %w", err)
-	}
-	log.Printf("[AnalyzeChatStyle] DMX API success, result length: %d", len(analysis))
-
-	// 5. 保存到数据库
-	style := &model.LanguageStyle{
-		UserID: userID,
-		Style:  analysis,
-	}
-	if err := b.ds.LanguageStyles().Save(ctx, style); err != nil {
-		log.Printf("[AnalyzeChatStyle] Failed to save language style for user %d: %v", userID, err)
-	} else {
-		log.Printf("[AnalyzeChatStyle] Language style saved successfully for user %d", userID)
-	}
-
-	return analysis, nil
+		return nil
+	})
 }
 
 // AnalyzeChatStyleStream 流式分析聊天风格（语言指纹分析）
@@ -2103,11 +1887,20 @@ func (b *salesRAGBiz) analyzeChatStyleTextStream(ctx context.Context, userID uin
 - 直接输出 Markdown 格式的风格说明书，严禁开场白和任何提示语
 - 字数控制在 500 字以内`
 
-	// 4. 调用 dmxapi 的 qwen-turbo 模型（流式输出）
-	log.Printf("[analyzeChatStyleTextStream] Calling DMX API stream for user %d", userID)
-	analysis, err := b.callDMXAPIStream(ctx, systemPrompt, text, onToken)
+	// 4. 调用火山方舟模型（流式输出）
+	log.Printf("[analyzeChatStyleTextStream] Calling Volc StreamChatWithModel for user %d", userID)
+	messages := []map[string]interface{}{
+		{"role": "system", "content": systemPrompt},
+		{"role": "user", "content": text},
+	}
+	analysis, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "low", func(event string, token string) error {
+		if event == "message" {
+			return onToken(token)
+		}
+		return nil
+	})
 	if err != nil {
-		log.Printf("[analyzeChatStyleTextStream] DMX API stream failed for user %d: %v", userID, err)
+		log.Printf("[analyzeChatStyleTextStream] Volc StreamChat failed for user %d: %v", userID, err)
 		return "", fmt.Errorf("AI 分析服务调用失败: %w", err)
 	}
 	log.Printf("[analyzeChatStyleTextStream] DMX API stream success, result length: %d", len(analysis))
@@ -2131,94 +1924,93 @@ func (b *salesRAGBiz) analyzeChatStyleImageStream(ctx context.Context, userID ui
 	log.Printf("[analyzeChatStyleImageStream] Starting analysis for user %d, image size: %d bytes", userID, len(imageData))
 
 	// 1. 检查图片大小和尺寸，如果超过限制则压缩
+	// 火山方舟 Doubao-Seed 模型限制：大小 < 10MB, 总像素 < 36,000,000, 长宽比 < 150:1
 	const maxVisionSize = 10 * 1024 * 1024 // 10MB
-	const maxDimension = 4096              // 阿里云视觉模型支持的最大边长
+	const maxTotalPixels int64 = 36000000  // 36MP
 
 	// 解码图片以检查尺寸
-	src, err := imaging.Decode(bytes.NewReader(imageData))
+	img, err := imaging.Decode(bytes.NewReader(imageData))
 	if err != nil {
 		log.Printf("[analyzeChatStyleImageStream] Failed to decode image: %v", err)
 		return "", fmt.Errorf("解码图片失败: %w", err)
 	}
 
-	bounds := src.Bounds()
+	bounds := img.Bounds()
 	width := bounds.Dx()
 	height := bounds.Dy()
-	needsResize := false
+	totalPixels := int64(width) * int64(height)
+	aspectRatio := float64(height) / float64(width)
+	if width > height {
+		aspectRatio = float64(width) / float64(height)
+	}
 
-	log.Printf("[analyzeChatStyleImageStream] Original image dimensions: %dx%d, size: %d bytes", width, height, len(imageData))
+	log.Printf("[analyzeChatStyleImageStream] Original image: %dx%d, size: %d bytes, pixels: %d, ratio: %.2f",
+		width, height, len(imageData), totalPixels, aspectRatio)
 
-	// 检查是否需要压缩（尺寸过大或文件过大）
-	if width > maxDimension || height > maxDimension || len(imageData) > maxVisionSize {
-		needsResize = true
-		log.Printf("[analyzeChatStyleImageStream] Image exceeds limits (max dimension: %d, max size: %d MB), starting compression...", maxDimension, maxVisionSize/1024/1024)
+	// 检查是否需要压缩（大小、像素、长宽比任一超标）
+	if len(imageData) > maxVisionSize || totalPixels > maxTotalPixels || aspectRatio > 150 {
+		log.Printf("[analyzeChatStyleImageStream] Image needs compression")
 
-		// 计算缩放比例，确保最大边不超过 maxDimension
 		scale := 1.0
-		if width > height {
-			if width > maxDimension {
-				scale = float64(maxDimension) / float64(width)
-			}
-		} else {
-			if height > maxDimension {
-				scale = float64(maxDimension) / float64(height)
-			}
+		if totalPixels > maxTotalPixels {
+			scale = math.Sqrt(float64(maxTotalPixels-1000000) / float64(totalPixels))
+		}
+		if aspectRatio > 140 {
+			scale = math.Min(scale, 0.8)
 		}
 
-		// 如果需要缩放
-		if scale < 1.0 {
-			width = int(float64(width) * scale)
-			height = int(float64(height) * scale)
-			log.Printf("[analyzeChatStyleImageStream] Scaling image to %dx%d (scale: %.2f)", width, height, scale)
-		}
-
-		// 逐步压缩直到满足大小要求
 		quality := 85
-		for len(imageData) > maxVisionSize && (width > 500 || height > 500) {
-			// 调整尺寸
-			dst := imaging.Resize(src, width, height, imaging.Lanczos)
+		for len(imageData) > maxVisionSize && (width > 100 || height > 100) {
+			if scale < 1.0 {
+				width = int(float64(width) * scale)
+				height = int(float64(height) * scale)
+			} else {
+				width = int(float64(width) * 0.9)
+				height = int(float64(height) * 0.9)
+			}
 
-			// 重新编码为JPEG
+			img = imaging.Resize(img, width, height, imaging.Lanczos)
+
 			var buf bytes.Buffer
-			err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: quality})
-			if err != nil {
+			if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
 				return "", fmt.Errorf("压缩图片失败: %w", err)
 			}
 			imageData = buf.Bytes()
 
-			log.Printf("[analyzeChatStyleImageStream] Compressed to %dx%d, size: %d bytes (quality: %d)", width, height, len(imageData), quality)
+			log.Printf("[analyzeChatStyleImageStream] Compression iteration: %dx%d, size: %d bytes, quality: %d",
+				width, height, len(imageData), quality)
 
-			// 如果还是太大，继续缩小
 			if len(imageData) > maxVisionSize {
-				if quality > 60 {
+				if quality > 30 {
 					quality -= 10
 				} else {
-					width = int(float64(width) * 0.8)
-					height = int(float64(height) * 0.8)
+					scale = 0.7
 				}
-			} else {
-				break
 			}
-
-			src = dst
 		}
 
-		// 最后检查是否成功压缩
+		// 激进压缩：质量降至 20%，尺寸持续缩小
+		if len(imageData) > maxVisionSize {
+			for len(imageData) > maxVisionSize && (width > 50 || height > 50) {
+				width = int(float64(width) * 0.7)
+				height = int(float64(height) * 0.7)
+				img = imaging.Resize(img, width, height, imaging.Lanczos)
+
+				var buf bytes.Buffer
+				if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 20}); err != nil {
+					return "", fmt.Errorf("激进压缩图片失败: %w", err)
+				}
+				imageData = buf.Bytes()
+
+				log.Printf("[analyzeChatStyleImageStream] Aggressive compression: %dx%d, size: %d bytes", width, height, len(imageData))
+			}
+		}
+
 		if len(imageData) > maxVisionSize {
 			return "", fmt.Errorf("图片过大且压缩失败 (当前大小: %d bytes)", len(imageData))
 		}
 
-		log.Printf("[analyzeChatStyleImageStream] Compression completed, final size: %d bytes, dimensions: %dx%d", len(imageData), width, height)
-	} else if needsResize {
-		// 即使文件大小OK，但如果之前检测到尺寸需要调整，也要重新编码
-		dst := imaging.Resize(src, width, height, imaging.Lanczos)
-		var buf bytes.Buffer
-		err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 85})
-		if err != nil {
-			return "", fmt.Errorf("重新编码图片失败: %w", err)
-		}
-		imageData = buf.Bytes()
-		log.Printf("[analyzeChatStyleImageStream] Resized image to %dx%d, new size: %d bytes", width, height, len(imageData))
+		log.Printf("[analyzeChatStyleImageStream] Compression done, final: %dx%d, %d bytes", width, height, len(imageData))
 	}
 
 	// 2. 上传图片到 COS 获取 URL
@@ -2277,13 +2069,11 @@ func (b *salesRAGBiz) analyzeChatStyleImageStream(ctx context.Context, userID ui
 - 字数控制在 500 字以内
 - 只分析销售人员（右边绿色气泡）的语言风格`
 
-	const visionModel = "qwen3-vl-flash-2026-01-22"
-
-	log.Printf("[analyzeChatStyleImageStream] Calling QianwenVisionStream with model: %s", visionModel)
-	result, err := b.aliBiz.QianwenVisionStream(ctx, dataURL, systemPrompt, visionModel, onToken)
-
+	// 5. 调用火山方舟视觉模型（doubao-seed-2-0-lite-260215，与客户档案分析保持一致）
+	const visionModel = "doubao-seed-2-0-lite-260215"
+	result, err := b.volcBiz.VisionAnalyzeStream(ctx, dataURL, systemPrompt, visionModel, 0, "low", onToken)
 	if err != nil {
-		log.Printf("[analyzeChatStyleImageStream] QianwenVisionStream error: %v", err)
+		log.Printf("[analyzeChatStyleImageStream] Volc VisionAnalyzeStream error: %v", err)
 		return "", fmt.Errorf("视觉模型分析失败: %w", err)
 	}
 
@@ -2298,183 +2088,6 @@ func (b *salesRAGBiz) analyzeChatStyleImageStream(ctx context.Context, userID ui
 		log.Printf("[analyzeChatStyleImageStream] Failed to save language style for user %d: %v", userID, err)
 	} else {
 		log.Printf("[analyzeChatStyleImageStream] Language style saved successfully for user %d", userID)
-	}
-
-	return result, nil
-}
-
-// analyzeChatStyleImage 使用阿里云视觉模型分析聊天截图的语言风格
-func (b *salesRAGBiz) analyzeChatStyleImage(ctx context.Context, userID uint, imageData []byte) (string, error) {
-	log.Printf("[analyzeChatStyleImage] Starting analysis for user %d, image size: %d bytes", userID, len(imageData))
-
-	// 1. 检查图片大小和尺寸，如果超过限制则压缩
-	const maxVisionSize = 10 * 1024 * 1024 // 10MB
-	const maxDimension = 4096              // 阿里云视觉模型支持的最大边长
-
-	// 解码图片以检查尺寸
-	src, err := imaging.Decode(bytes.NewReader(imageData))
-	if err != nil {
-		log.Printf("[analyzeChatStyleImage] Failed to decode image: %v", err)
-		return "", fmt.Errorf("解码图片失败: %w", err)
-	}
-
-	bounds := src.Bounds()
-	width := bounds.Dx()
-	height := bounds.Dy()
-	needsResize := false
-
-	log.Printf("[analyzeChatStyleImage] Original image dimensions: %dx%d, size: %d bytes", width, height, len(imageData))
-
-	// 检查是否需要压缩（尺寸过大或文件过大）
-	if width > maxDimension || height > maxDimension || len(imageData) > maxVisionSize {
-		needsResize = true
-		log.Printf("[analyzeChatStyleImage] Image exceeds limits (max dimension: %d, max size: %d MB), starting compression...", maxDimension, maxVisionSize/1024/1024)
-
-		// 计算缩放比例，确保最大边不超过 maxDimension
-		scale := 1.0
-		if width > height {
-			if width > maxDimension {
-				scale = float64(maxDimension) / float64(width)
-			}
-		} else {
-			if height > maxDimension {
-				scale = float64(maxDimension) / float64(height)
-			}
-		}
-
-		// 如果需要缩放
-		if scale < 1.0 {
-			width = int(float64(width) * scale)
-			height = int(float64(height) * scale)
-			log.Printf("[analyzeChatStyleImage] Scaling image to %dx%d (scale: %.2f)", width, height, scale)
-		}
-
-		// 逐步压缩直到满足大小要求
-		quality := 85
-		for len(imageData) > maxVisionSize && (width > 500 || height > 500) {
-			// 调整尺寸
-			dst := imaging.Resize(src, width, height, imaging.Lanczos)
-
-			// 重新编码为JPEG
-			var buf bytes.Buffer
-			err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: quality})
-			if err != nil {
-				return "", fmt.Errorf("压缩图片失败: %w", err)
-			}
-			imageData = buf.Bytes()
-
-			log.Printf("[analyzeChatStyleImage] Compressed to %dx%d, size: %d bytes (quality: %d)", width, height, len(imageData), quality)
-
-			// 如果还是太大，继续缩小
-			if len(imageData) > maxVisionSize {
-				if quality > 60 {
-					quality -= 10
-				} else {
-					width = int(float64(width) * 0.8)
-					height = int(float64(height) * 0.8)
-				}
-			} else {
-				break
-			}
-
-			src = dst
-		}
-
-		// 最后检查是否成功压缩
-		if len(imageData) > maxVisionSize {
-			return "", fmt.Errorf("图片过大且压缩失败 (当前大小: %d bytes)", len(imageData))
-		}
-
-		log.Printf("[analyzeChatStyleImage] Compression completed, final size: %d bytes, dimensions: %dx%d", len(imageData), width, height)
-	} else if needsResize {
-		// 即使文件大小OK，但如果之前检测到尺寸需要调整，也要重新编码
-		dst := imaging.Resize(src, width, height, imaging.Lanczos)
-		var buf bytes.Buffer
-		err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 85})
-		if err != nil {
-			return "", fmt.Errorf("重新编码图片失败: %w", err)
-		}
-		imageData = buf.Bytes()
-		log.Printf("[analyzeChatStyleImage] Resized image to %dx%d, new size: %d bytes", width, height, len(imageData))
-	}
-
-	// 2. 上传图片到 COS 获取 URL
-	var dataURL string
-	ext := ".jpg"
-	objectKey := fmt.Sprintf("chat_style/%d/%d%s", userID, time.Now().UnixNano(), ext)
-
-	// 尝试上传到 COS
-	if b.ds != nil {
-		signedURL, err := util.UploadBytesToCOS(ctx, objectKey, "image/jpeg", imageData)
-		if err == nil && signedURL != "" {
-			dataURL = signedURL
-			log.Printf("[analyzeChatStyleImage] Successfully uploaded to COS, using URL: %s", objectKey)
-		} else {
-			log.Printf("[analyzeChatStyleImage] COS upload failed: %v", err)
-		}
-	}
-
-	if dataURL == "" {
-		// 回退到 base64 方式
-		base64Image := base64.StdEncoding.EncodeToString(imageData)
-		dataURL = fmt.Sprintf("data:image/jpeg;base64,%s", base64Image)
-		log.Printf("[analyzeChatStyleImage] Using base64 data URL (size: %d)", len(dataURL))
-	}
-
-	// 2. 构建提示词
-	systemPrompt := `你是一个资深的文字风格分析专家。这是一张微信聊天截图，请从中提取销售人员的【文字沟通指纹】，以便让 AI 能够精准模仿。
-
-## 核心要求：
-1. **识别气泡布局**：
-   - 右边绿色气泡 = 销售人员的消息（重点分析对象）
-   - 左边白色/灰色气泡 = 客户消息（辅助理解）
-
-2. **严禁使用或提及任何表情（Emoji/颜文字）**，分析和生成的风格必须完全基于纯文字
-
-3. **只提取文字气泡**：忽略图片、语音、视频等多媒体消息
-
-## 提炼维度：
-1. **社交人设与称谓习惯**：
-   - 沟通角色：是"利落的办事员"、"温润的顾问"、"平等的伙伴"还是别的角色？
-   - 称谓偏好：对客户的称呼习惯（您/你，或者其他特定称谓）
-
-2. **文字视觉指纹**：
-   - 句式习惯：爱发大长段，还是习惯短句换行？
-   - 标点符号：爱用规范标点，还是爱用空格/换行代替标点？
-
-3. **语气词与词汇场**：
-   - 标志性结尾：习惯用哪些收尾词（如：哈、呢、吧、哒、！）？
-   - 高频用语：提取 10 个该销售最具代表性的口头禅或职业用语
-
-4. **沟通逻辑脉络**：
-   - 它是如何回答难题或提出建议的？（如：先说结论、先给方案、还是先客套？）
-
-## 约束：
-- 直接输出 Markdown 格式的风格说明书，严禁开场白和任何提示语
-- 字数控制在 500 字以内
-- 只分析销售人员（右边绿色气泡）的语言风格`
-
-	const visionModel = "qwen3-vl-flash-2026-01-22"
-
-	log.Printf("[analyzeChatStyleImage] Calling QianwenVision with model: %s", visionModel)
-	result, err := b.aliBiz.QianwenVision(ctx, dataURL, systemPrompt, visionModel)
-
-	if err != nil {
-		log.Printf("[analyzeChatStyleImage] QianwenVision error: %v", err)
-		return "", fmt.Errorf("视觉模型分析失败: %w", err)
-	}
-
-	log.Printf("[analyzeChatStyleImage] QianwenVision completed, result length: %d", len(result))
-
-	// 3. 保存到数据库
-	style := &model.LanguageStyle{
-		UserID: userID,
-		Style:  result,
-	}
-	if err := b.ds.LanguageStyles().Save(ctx, style); err != nil {
-		log.Printf("[analyzeChatStyleImage] Failed to save language style for user %d: %v", userID, err)
-	} else {
-		log.Printf("[analyzeChatStyleImage] Language style saved successfully for user %d", userID)
 	}
 
 	return result, nil
@@ -2507,6 +2120,188 @@ func (b *salesRAGBiz) SaveLanguageStyle(ctx context.Context, userID uint, styleC
 	return nil
 }
 
+// OCRAnalyze 识别图片中的文本（压缩 + 上传 COS + 调用视觉大模型）
+func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []byte, contentType string, sessionID string, filename string) (string, string, error) {
+	// 1. 图片压缩（与客户档案分析保持一致）
+	// 火山方舟 Doubao-Seed 模型限制：大小 < 10MB, 总像素 < 36,000,000, 长宽比 < 150:1
+	const maxVisionSize = 10 * 1024 * 1024 // 10MB
+	const maxTotalPixels int64 = 36000000  // 36MP
+
+	img, err := imaging.Decode(bytes.NewReader(imageData))
+	if err != nil {
+		log.Printf("[OCRAnalyze] Failed to decode image for compression check, user_id: %d, error: %v", userID, err)
+		// 解码失败时仍然尝试上传原图
+	} else {
+		bounds := img.Bounds()
+		width, height := bounds.Dx(), bounds.Dy()
+		totalPixels := int64(width) * int64(height)
+		aspectRatio := float64(height) / float64(width)
+		if width > height {
+			aspectRatio = float64(width) / float64(height)
+		}
+
+		if len(imageData) > maxVisionSize || totalPixels > maxTotalPixels || aspectRatio > 150 {
+			log.Printf("[OCRAnalyze] Image needs compression, user_id: %d, size: %d, pixels: %d, ratio: %.2f",
+				userID, len(imageData), totalPixels, aspectRatio)
+
+			scale := 1.0
+			if totalPixels > maxTotalPixels {
+				scale = math.Sqrt(float64(maxTotalPixels-1000000) / float64(totalPixels))
+			}
+			if aspectRatio > 140 {
+				scale = math.Min(scale, 0.8)
+			}
+
+			quality := 85
+			for len(imageData) > maxVisionSize && (width > 100 || height > 100) {
+				if scale < 1.0 {
+					width = int(float64(width) * scale)
+					height = int(float64(height) * scale)
+				} else {
+					width = int(float64(width) * 0.9)
+					height = int(float64(height) * 0.9)
+				}
+
+				img = imaging.Resize(img, width, height, imaging.Lanczos)
+
+				var buf bytes.Buffer
+				if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
+					log.Printf("[OCRAnalyze] Failed to compress image: %v", err)
+					break
+				}
+				imageData = buf.Bytes()
+
+				if len(imageData) > maxVisionSize {
+					if quality > 30 {
+						quality -= 10
+					} else {
+						scale = 0.7
+					}
+				}
+			}
+
+			// 激进压缩：质量降至 20%，尺寸持续缩小
+			if len(imageData) > maxVisionSize {
+				for len(imageData) > maxVisionSize && (width > 50 || height > 50) {
+					width = int(float64(width) * 0.7)
+					height = int(float64(height) * 0.7)
+					img = imaging.Resize(img, width, height, imaging.Lanczos)
+
+					var buf bytes.Buffer
+					if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 20}); err != nil {
+						break
+					}
+					imageData = buf.Bytes()
+				}
+			}
+
+			if len(imageData) > maxVisionSize {
+				return "", "", fmt.Errorf("图片过大且压缩失败，请上传更小的图片")
+			}
+
+			contentType = "image/jpeg"
+			log.Printf("[OCRAnalyze] Compression done, user_id: %d, final_size: %d, dimensions: %dx%d",
+				userID, len(imageData), width, height)
+		}
+	}
+
+	// 2. 上传到 COS
+	objectKey := fmt.Sprintf("sales_chat/%d/%s/%d_%s", userID, sessionID, time.Now().Unix(), filename)
+
+	cosURL, err := util.UploadBytesToCOS(ctx, objectKey, contentType, imageData)
+	if err != nil {
+		log.Printf("[OCRAnalyze] Upload image to COS failed, user_id: %d, key: %s, error: %v", userID, objectKey, err)
+		return "", "", fmt.Errorf("图片存储失败: %w", err)
+	}
+
+	// 3. 调用火山引擎 Doubao 视觉模型进行 OCR 识别
+	prompt := `你是一个专业的微信聊天记录识别专家。请识别这张微信聊天截图中的对话内容。
+
+  ## 识别要求
+
+  ### 1. 气泡布局识别
+  - **左边气泡（白色/灰色）= 客户消息**
+  - **右边气泡（绿色）= 销售消息**
+  - 从上到下完整扫描所有对话气泡
+
+  ### 2. 内容提取规则
+  - **保留表情符号**：如 [微笑]、[呲牙]、🌹 等
+  - **只提取文字气泡**：忽略图片、语音、视频等多媒体消息
+  - **保持原文**：不要修改、总结或解释对话内容
+
+  ### 3. 输出格式（严格遵守）
+
+  **如果截图包含多轮对话**（2条及以上消息），按以下格式输出：
+
+  【对话历史】
+  客户：[第1条客户消息]
+  销售：[第1条销售消息]
+  客户：[第2条客户消息]
+  ...（所有历史对话）
+
+  【客户最新消息】
+  客户：[最后一条客户消息]
+
+  **如果截图只有单条消息**，直接输出：
+
+  客户：[消息内容]
+
+  ### 4. 特殊处理规则
+
+  - **最新消息必须是客户发的**：如果截图最后一条是销售发的，往前找到最近的客户消息作为"最新消息"
+  - **空消息处理**：如果气泡只有表情没有文字，保留表情符号
+  - **时间戳忽略**：不要提取对话中的时间信息
+
+  ## 输出示例
+
+  ### 示例1：多轮对话
+  【对话历史】
+  客户：你们这个产品怎么样？
+  销售：我们的产品在行业内评价很高，已经服务了1000+客户
+  客户：价格呢？
+  销售：我们有三种套餐，基础版998元...
+
+  【客户最新消息】
+  客户：太贵了，能便宜点吗？
+
+  ### 示例2：单条消息
+  客户：在吗？
+
+  ### 示例3：包含表情
+  【对话历史】
+  客户：你好[微笑]
+  销售：您好，很高兴为您服务
+
+  【客户最新消息】
+  客户：我想了解一下产品
+
+  ## 关键约束
+
+  1. **严格使用【对话历史】和【客户最新消息】标记**，不要使用其他标记
+  2. **每条消息前必须有"客户："或"销售："前缀**
+  3. **不要添加任何分析、解释或总结**，只输出识别的对话内容
+  4. **保持对话的原始顺序和完整性**
+
+  现在请识别这张截图。`
+	visionModel := "doubao-seed-2-0-lite-260215"
+
+	// 生成 10 分钟有效的签名 URL 供 API 访问
+	signedURL, err := util.GenerateSignedURL(ctx, objectKey, 600)
+	if err != nil {
+		log.Printf("[OCRAnalyze] Generate signed URL failed, use raw cosURL, error: %v, key: %s", err, objectKey)
+		signedURL = cosURL
+	}
+
+	// 调用火山引擎视觉模型
+	ocrText, err := b.volcBiz.VisionAnalyze(ctx, signedURL, prompt, visionModel, 0, "minimal")
+	if err != nil {
+		log.Printf("[OCRAnalyze] Volc Engine Vision OCR failed, user_id: %d, url: %s, error: %v", userID, signedURL, err)
+		return "", "", fmt.Errorf("图片识别失败，请检查模型配置: %w", err)
+	}
+
+	return ocrText, cosURL, nil
+}
+
 // CheckSemanticSplitterStatus 检查语义切分器状态
 // 返回: (是否可用, 诊断信息, 错误)
 func CheckSemanticSplitterStatus() (bool, string, error) {
@@ -2536,52 +2331,48 @@ func CheckSemanticSplitterStatus() (bool, string, error) {
 	return false, info, nil
 }
 
-// enrichChunksWithDocNames 为 chunks 填充 document_name 字段
-// 通过批量查询数据库获取文档信息，避免 N+1 查询
+// enrichChunksWithDocNames 为 chunks 填充 document_name 字段（单次批量查询）
 func (b *salesRAGBiz) enrichChunksWithDocNames(ctx context.Context, chunks []domain.KnowledgeChunk) {
 	if len(chunks) == 0 {
-		log.Printf("[enrichChunksWithDocNames] No chunks to process")
 		return
 	}
 
-	log.Printf("[enrichChunksWithDocNames] Processing %d chunks", len(chunks))
-
 	// 1. 收集所有唯一的 document_id
 	docIDSet := make(map[uint]bool)
-	for i, chunk := range chunks {
-		log.Printf("[enrichChunksWithDocNames] Chunk %d: ID=%s, DocID=%d, Score=%f", i, chunk.ID, chunk.DocumentID, chunk.Score)
+	for _, chunk := range chunks {
 		if chunk.DocumentID > 0 {
 			docIDSet[chunk.DocumentID] = true
 		}
 	}
-
 	if len(docIDSet) == 0 {
-		log.Printf("[enrichChunksWithDocNames] No document IDs found in chunks")
 		return
 	}
 
-	log.Printf("[enrichChunksWithDocNames] Found %d unique document IDs", len(docIDSet))
+	ids := make([]uint, 0, len(docIDSet))
+	for id := range docIDSet {
+		ids = append(ids, id)
+	}
 
-	// 2. 批量查询文档信息
-	docIDToName := make(map[uint]string)
-	for docID := range docIDSet {
-		doc, err := b.ds.KnowledgeDocuments().GetByID(ctx, docID)
-		if err != nil {
-			log.Printf("[enrichChunksWithDocNames] Warning: failed to get document %d: %v", docID, err)
-			continue
-		}
-		docIDToName[docID] = doc.Name
-		log.Printf("[enrichChunksWithDocNames] Document %d -> Name: %s", docID, doc.Name)
+	// 2. 单次批量查询（替代 N+1 逐条查询）
+	docs, err := b.ds.KnowledgeDocuments().GetByIDs(ctx, ids)
+	if err != nil {
+		log.Printf("[enrichChunksWithDocNames] batch query failed: %v", err)
+		return
+	}
+
+	docIDToName := make(map[uint]string, len(docs))
+	for _, doc := range docs {
+		docIDToName[doc.ID] = doc.Name
 	}
 
 	// 3. 填充文档名称
+	enriched := 0
 	for i := range chunks {
 		if name, ok := docIDToName[chunks[i].DocumentID]; ok {
 			chunks[i].DocumentName = name
-			log.Printf("[enrichChunksWithDocNames] Set chunk %d DocumentName to: %s", i, name)
+			enriched++
 		}
 	}
 
-	log.Printf("[enrichChunksWithDocNames] Finished processing. First chunk: DocName=%s, Score=%f",
-		chunks[0].DocumentName, chunks[0].Score)
+	log.Printf("[enrichChunksWithDocNames] %d chunks, %d docs, %d enriched", len(chunks), len(docIDSet), enriched)
 }
