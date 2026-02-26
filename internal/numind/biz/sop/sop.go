@@ -293,7 +293,7 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 			}
 			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:212","message":"GetTemplate result","data":{"hypothesisId":"E","error":%t,"errorMsg":%q},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), hasErr, errMsg)
-			logFile.WriteString(logEntry)
+			_, _ = logFile.WriteString(logEntry)
 		}
 	}()
 	// #endregion
@@ -319,7 +319,7 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 			defer logFile.Close()
 			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:228","message":"Before CreateRun store call","data":{"hypothesisId":"E","run":%q},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), conversationID)
-			logFile.WriteString(logEntry)
+			_, _ = logFile.WriteString(logEntry)
 		}
 	}()
 	// #endregion
@@ -331,7 +331,7 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 				defer logFile.Close()
 				logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:229","message":"CreateRun store error","data":{"hypothesisId":"E","error":%q},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), err.Error())
-				logFile.WriteString(logEntry)
+				_, _ = logFile.WriteString(logEntry)
 			}
 		}()
 		// #endregion

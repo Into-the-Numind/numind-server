@@ -15,14 +15,14 @@ import (
 
 // OpinionItem 观点库 JSON 结构
 type OpinionItem struct {
-	ID          string   `json:"观点ID"`
-	Title       string   `json:"标题"`
-	Insight     string   `json:"核心洞察"`
-	Quote       string   `json:"金句"`
-	CaseStudy   string   `json:"案例"`
-	Metaphor    string   `json:"比喻"`
-	Scenarios   []string `json:"适用场景"`
-	ScriptSrc   string   `json:"脚本来源"`
+	ID        string   `json:"观点ID"`
+	Title     string   `json:"标题"`
+	Insight   string   `json:"核心洞察"`
+	Quote     string   `json:"金句"`
+	CaseStudy string   `json:"案例"`
+	Metaphor  string   `json:"比喻"`
+	Scenarios []string `json:"适用场景"`
+	ScriptSrc string   `json:"脚本来源"`
 }
 
 // trackDef 赛道定义

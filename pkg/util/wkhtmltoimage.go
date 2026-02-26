@@ -220,13 +220,11 @@ func (w *WkhtmltoimageRenderer) renderWithChromedp(ctx context.Context, htmlFile
 
 			// 检查思源宋体是否加载成功
 			var fontLoaded bool
-			if err := chromedp.Evaluate(`
-				document.fonts.check('16px "SourceHanSerifSC"') || 
+			_ = chromedp.Evaluate(`
+				document.fonts.check('16px "SourceHanSerifSC"') ||
 				document.fonts.check('16px "STFangsong"') ||
 				document.fonts.check('16px "Noto Sans CJK SC"')
-			`, &fontLoaded).Do(ctx); err == nil && fontLoaded {
-				// 字体已加载
-			}
+			`, &fontLoaded).Do(ctx)
 
 			// 根据字体加载状态动态等待 - 优化性能
 			// 如果字体已加载，减少等待时间；否则等待更长时间
@@ -237,9 +235,7 @@ func (w *WkhtmltoimageRenderer) renderWithChromedp(ctx context.Context, htmlFile
 			}
 
 			// 强制重绘页面
-			if err := chromedp.Evaluate(`document.body.style.display='none';document.body.offsetHeight;document.body.style.display=''`, nil).Do(ctx); err == nil {
-				// 页面重绘完成
-			}
+			_ = chromedp.Evaluate(`document.body.style.display='none';document.body.offsetHeight;document.body.style.display=''`, nil).Do(ctx)
 
 			// 截图
 			var screenshotErr error

@@ -238,25 +238,6 @@ func startInsecureServer(g *gin.Engine) *http.Server {
 	return httpsrv
 }
 
-// startSecureServer 创建并运行 HTTPS 服务器.
-func startSecureServer(g *gin.Engine) *http.Server {
-	// 创建 HTTPS Server 实例
-	httpssrv := &http.Server{Addr: viper.GetString("tls.addr"), Handler: g}
-
-	// 运行 HTTPS 服务器。在 goroutine 中启动服务器，它不会阻止下面的正常关闭处理流程
-	// 打印一条日志，用来提示 HTTPS 服务已经起来，方便排障
-	log.Infow("Start to listening the incoming requests on https address", "addr", viper.GetString("tls.addr"))
-	cert, key := viper.GetString("tls.cert"), viper.GetString("tls.key")
-	if cert != "" && key != "" {
-		go func() {
-			if err := httpssrv.ListenAndServeTLS(cert, key); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Fatalw(err.Error())
-			}
-		}()
-	}
-
-	return httpssrv
-}
 
 // startGRPCServer 创建并运行 GRPC 服务器.
 // func startGRPCServer() *grpc.Server {

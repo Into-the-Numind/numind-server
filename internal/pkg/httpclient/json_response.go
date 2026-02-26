@@ -834,9 +834,7 @@ func (p *JSONResponseProcessor) basicCleanup(body string) string {
 	content := body
 
 	// 移除BOM
-	if strings.HasPrefix(content, "\uFEFF") {
-		content = content[3:]
-	}
+	content = strings.TrimPrefix(content, "\uFEFF")
 
 	// 移除前后空白
 	content = strings.TrimSpace(content)

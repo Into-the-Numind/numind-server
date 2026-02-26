@@ -2393,7 +2393,7 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 		errorMsg, _ := json.Marshal(err.Error())
 		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
 		mu.Lock()
-		c.Writer.WriteString(errorData)
+		_, _ = c.Writer.WriteString(errorData)
 		flusher.Flush()
 		mu.Unlock()
 		return

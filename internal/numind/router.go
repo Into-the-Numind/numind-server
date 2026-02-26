@@ -1,7 +1,6 @@
 package numind
 
 import (
-	"fmt"
 	"numind-server/internal/numind/biz"
 	orderbiz "numind-server/internal/numind/biz/order"
 	"numind-server/internal/numind/controller/v1/account"
@@ -29,8 +28,6 @@ import (
 
 	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/spf13/viper"
 
 	"numind-server/internal/numind/controller/v1/feedback"
 	importPayController "numind-server/internal/numind/controller/v1/pay"
@@ -378,41 +375,6 @@ func installNumindRouters(g *gin.Engine) error {
 	return nil
 }
 
-// getUserIDFromToken 从JWT token中获取用户ID
-func getUserIDFromToken(c *gin.Context) (uint, error) {
-	header := c.Request.Header.Get("Authorization")
-	if len(header) == 0 {
-		return 0, fmt.Errorf("missing authorization header")
-	}
-
-	var tokenString string
-	fmt.Sscanf(header, "Bearer %s", &tokenString)
-
-	// 使用viper获取JWT密钥
-	jwtSecret := viper.GetString("jwt.secret")
-	if jwtSecret == "" {
-		return 0, fmt.Errorf("jwt secret not configured")
-	}
-
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(jwtSecret), nil
-	})
-
-	if err != nil {
-		return 0, err
-	}
-
-	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
-		if userID, exists := claims["user_id"]; exists {
-			return uint(userID.(float64)), nil
-		}
-	}
-
-	return 0, fmt.Errorf("invalid token or missing user_id")
-}
 
 // vectorizeHistoricalBooks 检查并向量化历史笔记 - 暂时注释，不使用向量化
 // 在系统启动时异步执行，检查所有已创建的笔记，如果还没有向量化，则进行向量化

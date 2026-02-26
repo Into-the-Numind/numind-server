@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/chat"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
@@ -24,7 +23,6 @@ import (
 
 // ChatController 是 chat 模块在 Controller 层的实现
 type ChatController struct {
-	b       biz.IBiz
 	chatBiz chat.ChatBiz
 }
 

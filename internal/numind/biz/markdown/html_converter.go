@@ -1469,7 +1469,7 @@ input[type="checkbox"] {
 func (hc *HTMLConverter) wrapWithFixedMarginStyles(contentHTML, title string) string {
 	cssStyles := hc.generateFixedMarginCSS()
 
-	//nolint:staticcheck,SA5009
+	//nolint:staticcheck
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1490,7 +1490,7 @@ func (hc *HTMLConverter) wrapWithFixedMarginStyles(contentHTML, title string) st
 func (hc *HTMLConverter) generateFixedMarginCSS() string {
 	const fixedMargin = 20 // 固定上下边距为20px
 
-	//nolint:staticcheck,SA5009
+	//nolint:staticcheck
 	return fmt.Sprintf(`
 * {
     margin: 0;
@@ -2137,8 +2137,6 @@ func firstNonEmptyIsH1(lines []string) bool {
 	return false
 }
 
-
-
 // SplitLongParagraph 精确分割段落，确保第一部分恰好填满到底部边距位置
 func (hc *HTMLConverter) SplitLongParagraph(paragraph string, remainingHeight int) (string, string) {
 	// 精确计算参数
@@ -2299,7 +2297,7 @@ func truncateString(s string, length int) string {
 func (hc *HTMLConverter) wrapWithDynamicHeightStyles(contentHTML, title string) string {
 	// 使用CSS的 min-height 和 max-height 特性来支持动态高度
 	// 同时使用 overflow: auto 来处理内容溢出
-	//nolint:staticcheck,SA5009
+	//nolint:staticcheck
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -2481,7 +2479,7 @@ func (hc *HTMLConverter) generateClearLargeFontCSS() string {
 		backgroundStyle = fmt.Sprintf("background-color: %s;", hc.config.BackgroundColor)
 	}
 
-	//nolint:staticcheck,SA5009
+	//nolint:staticcheck
 	return fmt.Sprintf(`
 /* 思源宋体字体定义 - 容器环境优化 */
 @font-face {
