@@ -397,11 +397,6 @@ func (l *LineBasedPaginationEngine) calculateTextHeight(text string, style Style
 		return 0
 	}
 
-	availableWidth := l.config.Card.Width - l.config.Card.Padding.Left - l.config.Card.Padding.Right
-	if style.Indent > 0 {
-		availableWidth -= style.Indent
-	}
-
 	lines := l.splitTextIntoLines(text, style)
 	lineHeight := int(float64(style.FontSize) * 1.6)
 	totalHeight := len(lines) * lineHeight

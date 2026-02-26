@@ -174,7 +174,7 @@ func (s *sopStore) CreateRun(run *model.SopRun) error {
 			defer logFile.Close()
 			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:132","message":"CreateRun store entry","data":{"hypothesisId":"E","templateID":%d,"userID":%d},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), run.TemplateID, run.UserID)
-			logFile.WriteString(logEntry)
+			_, _ = logFile.WriteString(logEntry)
 		}
 	}()
 	// #endregion
@@ -195,7 +195,7 @@ func (s *sopStore) CreateRun(run *model.SopRun) error {
 			}
 			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:134","message":"CreateRun store result","data":{"hypothesisId":"E","error":%t,"errorMsg":%q,"runID":%d},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), hasErr, errMsg, runID)
-			logFile.WriteString(logEntry)
+			_, _ = logFile.WriteString(logEntry)
 		}
 	}()
 	// #endregion

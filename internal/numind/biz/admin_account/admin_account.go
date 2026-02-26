@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 
 	"numind-server/pkg/auth"
@@ -79,7 +80,7 @@ func (b *adminAccountBiz) Login(ctx context.Context, username, password string) 
 	now := time.Now()
 	admin.LastLogin = &now
 	if err := b.ds.AdminAccounts().UpdateLastLogin(ctx, admin.ID); err != nil {
-		// 登录时间更新失败不影响登录流程
+		log.C(ctx).Warnw("更新管理员最后登录时间失败", "admin_id", admin.ID, "error", err)
 	}
 
 	return admin, nil

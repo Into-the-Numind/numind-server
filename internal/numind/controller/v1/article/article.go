@@ -4,9 +4,10 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/gin-gonic/gin"
 	"numind-server/internal/numind/biz/article"
 	"numind-server/internal/numind/store"
+
+	"github.com/gin-gonic/gin"
 )
 
 type ArticleController struct {

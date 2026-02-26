@@ -217,7 +217,7 @@ func (c *Client) shouldRetry(err error, attempt int, policy *RetryPolicy) bool {
 	}
 
 	if netErr, ok := err.(net.Error); ok {
-		return netErr.Temporary() || netErr.Timeout()
+		return netErr.Timeout()
 	}
 
 	return false

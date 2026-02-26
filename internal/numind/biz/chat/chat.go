@@ -570,7 +570,7 @@ func (b *chatBiz) handleChatMessageStream(ctx context.Context, userID uint, msg 
 			Timestamp: time.Now(),
 		}
 		errorBytes, _ := json.Marshal(errorMsg)
-		conn.WriteMessage(websocket.TextMessage, errorBytes)
+		_ = conn.WriteMessage(websocket.TextMessage, errorBytes)
 		return nil, fmt.Errorf("RAG服务未初始化")
 	}
 
@@ -626,7 +626,7 @@ func (b *chatBiz) handleChatMessageStream(ctx context.Context, userID uint, msg 
 			Timestamp: time.Now(),
 		}
 		errorBytes, _ := json.Marshal(errorMsg)
-		conn.WriteMessage(websocket.TextMessage, errorBytes)
+		_ = conn.WriteMessage(websocket.TextMessage, errorBytes)
 		return nil, err
 	}
 

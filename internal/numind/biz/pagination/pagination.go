@@ -217,25 +217,6 @@ func (p *PaginationEngine) calculateElementHeight(element Element) int {
 	return textHeight + style.MarginTop + style.MarginBottom
 }
 
-// calculateElementCharCount 计算元素字符数
-func (p *PaginationEngine) calculateElementCharCount(element Element) int {
-	switch v := element.Content.(type) {
-	case string:
-		return len([]rune(v)) // 使用rune来正确计算中文字符
-	case []string:
-		// 列表类型，计算所有项目的总字符数
-		totalChars := 0
-		for _, item := range v {
-			totalChars += len([]rune(item))
-		}
-		return totalChars
-	default:
-		// 其他类型，转换为字符串计算
-		text := fmt.Sprintf("%v", v)
-		return len([]rune(text))
-	}
-}
-
 // PaginateElements 分页元素
 func (p *PaginationEngine) PaginateElements(elements []Element) (*PaginatedContent, error) {
 	if len(elements) == 0 {
@@ -486,64 +467,6 @@ func (p *PaginationEngine) splitLongElement(element Element, maxHeight int) []El
 
 	fmt.Printf("分割完成，共创建 %d 个元素\n", len(splitElements))
 	return splitElements
-}
-
-// splitTextByLines 按行分割文本，用于更精确的分页
-func (p *PaginationEngine) splitTextByLines(text string, maxLines int, style StyleConfig) []string {
-	if maxLines <= 0 {
-		return []string{text}
-	}
-
-	// 计算可用宽度
-	availableWidth := p.config.Card.Width - p.config.Card.Padding.Left - p.config.Card.Padding.Right
-	charWidth := float64(style.FontSize) * p.config.CharWidthFactor
-	charsPerLine := int(float64(availableWidth) / charWidth)
-
-	// 分割文本为行
-	lines := p.splitTextIntoLines(text, charsPerLine)
-
-	if len(lines) <= maxLines {
-		return []string{text}
-	}
-
-	// 按最大行数分割
-	var result []string
-	currentLines := 0
-	currentContent := ""
-
-	for i, line := range lines {
-		if currentLines >= maxLines {
-			// 当前部分已满，保存并开始新部分
-			if currentContent != "" {
-				result = append(result, strings.TrimSpace(currentContent))
-			}
-			currentContent = line
-			currentLines = 1
-		} else {
-			if currentContent != "" {
-				currentContent += "\n" + line
-			} else {
-				currentContent = line
-			}
-			currentLines++
-		}
-
-		// 最后一行特殊处理
-		if i == len(lines)-1 && currentContent != "" {
-			result = append(result, strings.TrimSpace(currentContent))
-		}
-	}
-
-	return result
-}
-
-// calculateTotalHeight 计算多个元素的总高度
-func (p *PaginationEngine) calculateTotalHeight(elements []Element) int {
-	totalHeight := 0
-	for _, element := range elements {
-		totalHeight += p.calculateElementHeight(element)
-	}
-	return totalHeight
 }
 
 // min 返回两个整数中的较小值

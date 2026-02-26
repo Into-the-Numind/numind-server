@@ -60,21 +60,22 @@ func (ctrl *BookController) List(c *gin.Context) {
 
 	var total int64
 	var books []*model.BookM
+	var listErr error
 
 	// 如果指定了分类ID，按分类查询；否则按用户查询
 	if categoryIDStr != "" {
-		categoryID, err := strconv.ParseUint(categoryIDStr, 10, 64)
-		if err != nil {
+		categoryID, parseErr := strconv.ParseUint(categoryIDStr, 10, 64)
+		if parseErr != nil {
 			core.WriteResponse(c, errno.ErrInvalidParameter, nil)
 			return
 		}
-		total, books, err = ctrl.b.Books().ListByCategory(c, uint(categoryID), offset, limit)
+		total, books, listErr = ctrl.b.Books().ListByCategory(c, uint(categoryID), offset, limit)
 	} else {
-		total, books, err = ctrl.b.Books().ListByUser(c, currentUser.ID, offset, limit)
+		total, books, listErr = ctrl.b.Books().ListByUser(c, currentUser.ID, offset, limit)
 	}
 
-	if err != nil {
-		core.WriteResponse(c, err, nil)
+	if listErr != nil {
+		core.WriteResponse(c, listErr, nil)
 		return
 	}
 

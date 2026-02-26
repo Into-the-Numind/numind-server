@@ -134,7 +134,7 @@ func (mc *MembershipController) createNativePayment(c *gin.Context, req model.Cr
 	resp, err := wechat.CreateNativeOrder(config, req.OutTradeNo, req.Description, req.Amount)
 	if err != nil {
 		// 支付创建失败，更新支付状态为失败
-		mc.b.Payments().UpdatePaymentStatus(c, req.OutTradeNo, model.PaymentStatusFailed, "", nil)
+		_ = mc.b.Payments().UpdatePaymentStatus(c, req.OutTradeNo, model.PaymentStatusFailed, "", nil)
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("创建微信支付失败: %s", err.Error()), nil)
 		return
 	}
@@ -171,7 +171,7 @@ func (mc *MembershipController) createMiniProgramPayment(c *gin.Context, req mod
 	resp, err := wechat.CreateMiniProgramOrder(config, req.OutTradeNo, req.Description, req.Amount, req.OpenID)
 	if err != nil {
 		// 支付创建失败，更新支付状态为失败
-		mc.b.Payments().UpdatePaymentStatus(c, req.OutTradeNo, model.PaymentStatusFailed, "", nil)
+		_ = mc.b.Payments().UpdatePaymentStatus(c, req.OutTradeNo, model.PaymentStatusFailed, "", nil)
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("创建微信支付失败: %s", err.Error()), nil)
 		return
 	}
@@ -194,7 +194,7 @@ func (mc *MembershipController) createJSAPIPayment(c *gin.Context, req model.Cre
 	resp, err := wechat.CreateMiniProgramOrder(config, req.OutTradeNo, req.Description, req.Amount, req.OpenID)
 	if err != nil {
 		// 支付创建失败，更新支付状态为失败
-		mc.b.Payments().UpdatePaymentStatus(c, req.OutTradeNo, model.PaymentStatusFailed, "", nil)
+		_ = mc.b.Payments().UpdatePaymentStatus(c, req.OutTradeNo, model.PaymentStatusFailed, "", nil)
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("创建微信支付失败: %s", err.Error()), nil)
 		return
 	}

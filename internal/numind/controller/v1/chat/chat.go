@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/chat"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
@@ -24,7 +23,6 @@ import (
 
 // ChatController 是 chat 模块在 Controller 层的实现
 type ChatController struct {
-	b       biz.IBiz
 	chatBiz chat.ChatBiz
 }
 
@@ -101,10 +99,9 @@ func (ctrl *ChatController) WebSocket(c *gin.Context) {
 	}
 
 	var userID uint
-	var currentUser *model.User
+	currentUser := middleware.GetCurrentUser(c)
 
 	// 首先尝试从认证中间件中获取用户信息（HTTP header方式）
-	currentUser = middleware.GetCurrentUser(c)
 	if currentUser != nil {
 		userID = currentUser.ID
 		log.Infow("WebSocket authentication via HTTP header", "user_id", userID)
@@ -198,7 +195,7 @@ func (ctrl *ChatController) WebSocket(c *gin.Context) {
 					Timestamp: time.Now(),
 				}
 				errorBytes, _ := json.Marshal(errorMsg)
-				conn.WriteMessage(websocket.TextMessage, errorBytes)
+				_ = conn.WriteMessage(websocket.TextMessage, errorBytes)
 			} else {
 				log.Infow("WebSocket流式消息处理完成", "user_id", userID)
 			}

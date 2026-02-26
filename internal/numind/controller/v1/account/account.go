@@ -46,7 +46,7 @@ func (ac *AccountController) GetUserPaymentHistory(c *gin.Context) {
 	// 获取用户支付历史
 	records, err := ac.b.AccountRecords().GetUserPaymentHistory(c, userID.ID, offset, limit)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败: %s", err.Error()), nil)
 		return
 	}
 
@@ -67,7 +67,7 @@ func (ac *AccountController) GetUserTotalAmount(c *gin.Context) {
 
 	total, err := ac.b.AccountRecords().GetUserTotalAmount(c, userID.ID, recordType)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败: %s", err.Error()), nil)
 		return
 	}
 
@@ -90,7 +90,7 @@ func (ac *AccountController) GetUserAccountSummary(c *gin.Context) {
 	// 获取用户账户摘要信息
 	summary, err := ac.b.AccountRecords().GetUserAccountSummary(c, userID.ID)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败: %s", err.Error()), nil)
 		return
 	}
 

@@ -62,7 +62,7 @@ func AuthMiddleware() gin.HandlerFunc {
 				defer logFile.Close()
 				logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"middleware.go:55","message":"AuthMiddleware entry","data":{"hypothesisId":"D","path":%q},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), c.Request.URL.Path)
-				logFile.WriteString(logEntry)
+				_, _ = logFile.WriteString(logEntry)
 			}
 		}()
 		// #endregion
@@ -75,7 +75,7 @@ func AuthMiddleware() gin.HandlerFunc {
 				hasToken := token != ""
 				logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"middleware.go:58","message":"Token extracted","data":{"hypothesisId":"D","hasToken":%t},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), hasToken)
-				logFile.WriteString(logEntry)
+				_, _ = logFile.WriteString(logEntry)
 			}
 		}()
 		// #endregion
@@ -101,7 +101,7 @@ func AuthMiddleware() gin.HandlerFunc {
 				}
 				logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"middleware.go:64","message":"Token validation result","data":{"hypothesisId":"D","error":%t,"errorMsg":%q,"userID":%d},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), hasErr, errMsg, userID)
-				logFile.WriteString(logEntry)
+				_, _ = logFile.WriteString(logEntry)
 			}
 		}()
 		// #endregion
@@ -119,7 +119,7 @@ func AuthMiddleware() gin.HandlerFunc {
 				defer logFile.Close()
 				logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"middleware.go:71","message":"AuthMiddleware success","data":{"hypothesisId":"D","userID":%d},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), user.ID)
-				logFile.WriteString(logEntry)
+				_, _ = logFile.WriteString(logEntry)
 			}
 		}()
 		// #endregion

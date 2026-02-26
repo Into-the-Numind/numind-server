@@ -132,7 +132,7 @@ func (cm *CertificateManager) GetCertificateStatus() (string, error) {
 		return "", err
 	}
 
-	status := fmt.Sprintf("证书状态报告:\n")
+	status := "证书状态报告:\n"
 	status += fmt.Sprintf("- 序列号: %s\n", certInfo.SerialNumber)
 	status += fmt.Sprintf("- 有效期: %s 至 %s\n",
 		certInfo.ValidFrom.Format("2006-01-02"),

@@ -29,14 +29,14 @@ db:
   database: numind-prod # miniblog 系统所用的数据库名
   max-idle-connections: 100 # MySQL 最大空闲连接数，默认 100
   max-open-connections: 100 # MySQL 最大打开的连接数，默认 100
-  max-connection-life_time: 10s # 空闲连接最大存活时间，默认 10s
+  max-connection-life-time: 10s # 空闲连接最大存活时间，默认 10s
   log-level: 4 # GORM log level, 1: silent, 2:error, 3:warn, 4:info
 
 # 日志配置
 log:
   disable-caller: false # 是否开启 caller，如果开启会在日志中显示调用日志所在的文件和行号
   disable-stacktrace: false # 是否禁止在 panic 及以上级别打印堆栈信息
-  level: debug # 指定日志级别，可选值：debug, info, warn, error, dpanic, panic, fatal
+  level: info # 指定日志级别，可选值：debug, info, warn, error, dpanic, panic, fatal
   format: console # 指定日志显示格式，可选值：console, json
   output-paths: [./numind.log, stdout] # 指定日志输出位置，多个输出，用 `逗号 + 空格` 分开。stdout：标准输出，
 
@@ -102,7 +102,7 @@ cos:
   secret_id: "AKID26xnQq2ziEYeVAh3B6oIbwHh06zf7LMA"           # API 密钥 SecretId
   secret_key: "e4FNTPI90jNzQfjbFgHk3CRaYMxRuFP5"          # API 密钥 SecretKey
   bucket: "numind-product-1334169463" # BucketName-APPID 形式
-  region: "ap-beijing"    # 地域，如 ap-chengdu（成都）
+  region: "ap-chengdu"    # 地域，如 ap-chengdu（成都）
 
 baidu:
   api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
@@ -165,7 +165,8 @@ card:
     format: "webp"         # 图片格式
     zoom: 1.0              # 缩放比例
     timeout: 30            # 超时时间（秒）
-    
+    max_concurrent: 2      # 最大并发渲染数（容器环境建议2，避免fork失败）
+
   # 分页算法参数
   pagination:
     algorithm: "line_based"         # 分页算法：line_based（逐字符→逐行→逐页）或 dynamic
@@ -429,6 +430,6 @@ json_processing:
 html_converter:
   # HTML转换特有配置
   available_width: 900          # 可用宽度
-  max_content_height: 1400       # 最大内容高度
+  max_content_height: 1360       # 最大内容高度
   # 注意：其他配置项（字体、行高、边距等）现在从card配置中继承
 

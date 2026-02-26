@@ -38,7 +38,7 @@ func getUserIDFromToken(c *gin.Context) (uint, error) {
 	}
 
 	var tokenString string
-	fmt.Sscanf(header, "Bearer %s", &tokenString)
+	_, _ = fmt.Sscanf(header, "Bearer %s", &tokenString)
 
 	// 使用viper获取JWT密钥
 	jwtSecret := viper.GetString("jwt.secret")
@@ -78,7 +78,7 @@ func (ctrl *ImageController) BatchCreate(c *gin.Context) {
 
 	for _, img := range req {
 		if _, err := govalidator.ValidateStruct(img); err != nil {
-			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(err.Error()), nil)
+			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("%s", err.Error()), nil)
 			return
 		}
 	}
@@ -110,14 +110,14 @@ func (ctrl *ImageController) BatchUpload(c *gin.Context) {
 	// 从JWT token中获取用户ID
 	userID, err := getUserIDFromToken(c)
 	if err != nil {
-		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("Failed to get user ID from token: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("Failed to get user ID from token: %s", err.Error()), nil)
 		return
 	}
 
 	// 验证文件格式和大小
 	for _, file := range files {
 		if err := validateImageFile(file); err != nil {
-			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("Invalid file: "+err.Error()), nil)
+			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("Invalid file: %s", err.Error()), nil)
 			return
 		}
 	}
@@ -136,7 +136,7 @@ func (ctrl *ImageController) BatchUpload(c *gin.Context) {
 	// 异步处理图片
 	taskID, err := asyncProcessor.ProcessImagesAsync(c, userID, files)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to start image processing: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to start image processing: %s", err.Error()), nil)
 		return
 	}
 

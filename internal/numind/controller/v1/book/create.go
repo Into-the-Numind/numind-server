@@ -80,72 +80,6 @@ func getUserIDFromToken(c *gin.Context) (uint, error) {
 	return 0, fmt.Errorf("invalid token")
 }
 
-// extractJSONFromResponse 从响应中提取JSON内容
-func extractJSONFromResponse(response string) string {
-	// 查找JSON内容的开始和结束位置
-	start := 0
-	end := len(response)
-
-	// 查找第一个 { 或 [
-	for i, char := range response {
-		if char == '{' || char == '[' {
-			start = i
-			break
-		}
-	}
-
-	// 从后往前查找最后一个 } 或 ]
-	for i := len(response) - 1; i >= 0; i-- {
-		char := response[i]
-		if char == '}' || char == ']' {
-			end = i + 1
-			break
-		}
-	}
-
-	return response[start:end]
-}
-
-// validateAndSetBookType 验证并设置笔记类型
-func validateAndSetBookType(book *model.BookM, hasImages bool) {
-	validTypes := []string{
-		model.BookTypeText,
-		model.BookTypeTextWithImage,
-		model.BookTypeTodo,
-		model.BookTypeDone,
-	}
-
-	// 如果前端没有传类型，根据是否有图片自动判断
-	if book.BookType == "" {
-		if hasImages {
-			book.BookType = model.BookTypeTextWithImage
-		} else {
-			book.BookType = model.BookTypeText
-		}
-		return
-	}
-
-	// 验证类型合法性
-	isValid := false
-	for _, validType := range validTypes {
-		if book.BookType == validType {
-			isValid = true
-			break
-		}
-	}
-
-	// 如果类型不合法，根据是否有图片设置默认类型
-	if !isValid {
-		if hasImages {
-			book.BookType = model.BookTypeTextWithImage
-		} else {
-			book.BookType = model.BookTypeText
-		}
-	}
-
-	// 注意：todo 和 done 类型必须由前端明确指定，不会自动判断
-}
-
 // validateImageFile 验证图片文件
 func validateImageFile(file *multipart.FileHeader) error {
 	// 检查文件大小 (限制为10MB)
@@ -182,7 +116,7 @@ func (ctrl *BookController) createWithImageProcessor(c *gin.Context, userID uint
 	book, err := asyncProcessor.CreateBookWithImagesAsync(c, userID, text, title, bookType, files, aiPolish)
 	if err != nil {
 		log.C(c).Errorw("Failed to create book with image processor", "error", err.Error())
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: %s", err.Error()), nil)
 		return
 	}
 
@@ -254,7 +188,7 @@ func (ctrl *BookController) Create(c *gin.Context) {
 	userID, err := getUserIDFromToken(c)
 	if err != nil {
 		log.C(c).Errorw("Failed to get user ID from token", "error", err.Error())
-		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("Failed to get user ID from token: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("Failed to get user ID from token: %s", err.Error()), nil)
 		return
 	}
 
@@ -264,7 +198,7 @@ func (ctrl *BookController) Create(c *gin.Context) {
 	user, err := ctrl.b.Users().GetCurrentUser(c, userID)
 	if err != nil {
 		log.C(c).Errorw("Failed to get user info", "user_id", userID, "error", err.Error())
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("获取用户信息失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("获取用户信息失败: %s", err.Error()), nil)
 		return
 	}
 
@@ -307,8 +241,8 @@ func (ctrl *BookController) Create(c *gin.Context) {
 					"free_user_monthly_book_count", user.FreeUserMonthlyBookCount,
 					"remaining", remaining)
 				core.WriteResponse(c, errno.ErrForbidden.SetMessage(
-					fmt.Sprintf("免费用户本月已创建%d个卡册，达到月度限制5个，剩余%d个，下月1号重置",
-						user.FreeUserMonthlyBookCount, remaining)), nil)
+					"免费用户本月已创建%d个卡册，达到月度限制5个，剩余%d个，下月1号重置",
+					user.FreeUserMonthlyBookCount, remaining), nil)
 				return
 			}
 			remaining := user.GetRemainingFreeUserMonthlyBooks()
@@ -327,7 +261,7 @@ func (ctrl *BookController) Create(c *gin.Context) {
 	// 验证文件格式和大小（仅当有文件时）
 	for _, file := range files {
 		if err := validateImageFile(file); err != nil {
-			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("Invalid file: "+err.Error()), nil)
+			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("Invalid file: %s", err.Error()), nil)
 			return
 		}
 	}
@@ -579,48 +513,4 @@ func (a *AsyncRagBizAdapter) CheckBookVectorExists(ctx context.Context, bookID u
 		return ragService.CheckBookVectorExists(ctx, bookID)
 	}
 	return false, nil
-}
-
-// createWithSimplifiedProcessor 使用简化的处理器创建书籍
-func (ctrl *BookController) createWithSimplifiedProcessor(c *gin.Context, userID uint, text, templateID string) {
-	// 创建适配器来包装biz接口
-	bizAdapter := &BookBizAdapter{biz: ctrl.b}
-
-	// 创建异步处理器
-	asyncProcessor := book.NewAsyncBookProcessor(bizAdapter)
-
-	// 异步创建book
-	book, err := asyncProcessor.CreateBookAsync(c, userID, text, templateID)
-	if err != nil {
-		log.C(c).Errorw("Failed to create book with simplified processor", "error", err.Error())
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: "+err.Error()), nil)
-		return
-	}
-
-	log.C(c).Infow("Book created successfully with simplified processor",
-		"book_id", book.ID,
-		"title", book.Title)
-
-	// 立即返回成功响应
-	core.WriteResponse(c, nil, book)
-}
-
-// createWithJSONProcessor 使用传统 JSON 处理器创建书籍（保持兼容性）
-func (ctrl *BookController) createWithJSONProcessor(c *gin.Context, userID uint, text, templateID string) {
-	// 创建适配器来包装biz接口
-	bizAdapter := &BookBizAdapter{biz: ctrl.b}
-
-	// 创建异步处理器
-	asyncProcessor := book.NewAsyncBookProcessor(bizAdapter)
-
-	// 异步创建book
-	book, err := asyncProcessor.CreateBookAsync(c, userID, text, templateID)
-	if err != nil {
-		log.C(c).Errorw("Failed to create book async", "error", err.Error())
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("Failed to create book: "+err.Error()), nil)
-		return
-	}
-
-	// 立即返回成功响应
-	core.WriteResponse(c, nil, book)
 }

@@ -377,9 +377,9 @@ func loadWechatPayCertificates(cfg map[string]string) ([]*x509.Certificate, erro
 				// 但先返回文件中的证书，避免阻塞
 				go func() {
 					// 后台下载所有证书并更新
-					if downloadedCerts, err := downloadWechatPayCertificates(cfg); err == nil && len(downloadedCerts) > 0 {
-						// 证书已下载并保存，下次会使用最新的
-					}
+					downloadedCerts, err := downloadWechatPayCertificates(cfg)
+					_ = err
+					_ = downloadedCerts
 				}()
 				return []*x509.Certificate{cert}, nil
 			}

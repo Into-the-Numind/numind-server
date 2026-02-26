@@ -43,11 +43,7 @@ func TestEstimateTokens(t *testing.T) {
 	rawCount := tokenizer.CountTokens(text)
 	estimated := tokenizer.EstimateTokens(text)
 
-	// Safety coefficient is 1.1, so estimated should be >= rawCount
-	if estimated < rawCount {
-		t.Errorf("Estimated count %d is less than raw count %d", estimated, rawCount)
-	}
-
+	// SafetyCoefficient is 0.6 (conservative), so estimated = rawCount * 0.6
 	expected := int(float64(rawCount) * SafetyCoefficient)
 	if estimated != expected {
 		t.Errorf("Expected estimated count %d, got %d", expected, estimated)

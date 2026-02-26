@@ -89,9 +89,7 @@ func UploadBytesToCOS(ctx context.Context, objectKey string, contentType string,
 		return "", nil
 	}
 
-	if strings.HasPrefix(objectKey, "/") {
-		objectKey = strings.TrimPrefix(objectKey, "/")
-	}
+	objectKey = strings.TrimPrefix(objectKey, "/")
 	// Normalize path
 	objectKey = path.Clean(objectKey)
 
@@ -131,9 +129,7 @@ func GenerateSignedURL(ctx context.Context, objectKey string, expirySeconds int6
 	if !cosClient.enabled || cosClient.client == nil {
 		return "", fmt.Errorf("cos not enabled")
 	}
-	if strings.HasPrefix(objectKey, "/") {
-		objectKey = strings.TrimPrefix(objectKey, "/")
-	}
+	objectKey = strings.TrimPrefix(objectKey, "/")
 	objectKey = path.Clean(objectKey)
 
 	// SDK provides presigned URL generation
@@ -166,9 +162,7 @@ func CheckObjectExists(ctx context.Context, objectKey string) bool {
 		return false
 	}
 
-	if strings.HasPrefix(objectKey, "/") {
-		objectKey = strings.TrimPrefix(objectKey, "/")
-	}
+	objectKey = strings.TrimPrefix(objectKey, "/")
 	objectKey = path.Clean(objectKey)
 
 	// Use HEAD request to check if object exists

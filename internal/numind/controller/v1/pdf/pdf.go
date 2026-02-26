@@ -131,7 +131,7 @@ func (ctrl *PdfController) ConvertToText(c *gin.Context) {
 		return
 	}
 	if file.Size > MaxFileSize {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(fmt.Sprintf("文件大小超过限制（最大%dMB）", MaxFileSize/(1024*1024))), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文件大小超过限制（最大%dMB）", MaxFileSize/(1024*1024)), nil)
 		return
 	}
 
@@ -191,7 +191,7 @@ func (ctrl *PdfController) ConvertToText(c *gin.Context) {
 		text, _, err = extractTextFromPDF(fileData)
 		if err != nil {
 			log.C(c).Errorw("PDF文本提取失败", "error", err, "filename", fileName)
-			core.WriteResponse(c, errno.ErrInternalServer.SetMessage("PDF文本提取失败: "+err.Error()), nil)
+			core.WriteResponse(c, errno.ErrInternalServer.SetMessage("PDF文本提取失败: %s", err.Error()), nil)
 			return
 		}
 		// PDF 使用专门的格式化函数
@@ -208,7 +208,7 @@ func (ctrl *PdfController) ConvertToText(c *gin.Context) {
 		text, err = extractTextFromDOCX(fileData)
 		if err != nil {
 			log.C(c).Errorw("DOCX文本提取失败", "error", err, "filename", fileName)
-			core.WriteResponse(c, errno.ErrInternalServer.SetMessage("DOCX文本提取失败: "+err.Error()), nil)
+			core.WriteResponse(c, errno.ErrInternalServer.SetMessage("DOCX文本提取失败: %s", err.Error()), nil)
 			return
 		}
 		text = formatText(text)
@@ -216,7 +216,7 @@ func (ctrl *PdfController) ConvertToText(c *gin.Context) {
 		text, err = extractTextFromDOC(fileData)
 		if err != nil {
 			log.C(c).Errorw("DOC文本提取失败", "error", err, "filename", fileName)
-			core.WriteResponse(c, errno.ErrInternalServer.SetMessage("DOC文本提取失败: "+err.Error()+"（建议转换为DOCX格式）"), nil)
+			core.WriteResponse(c, errno.ErrInternalServer.SetMessage("DOC文本提取失败: %s（建议转换为DOCX格式）", err.Error()), nil)
 			return
 		}
 		text = formatText(text)
@@ -224,7 +224,7 @@ func (ctrl *PdfController) ConvertToText(c *gin.Context) {
 		text, err = extractTextFromRTF(fileData)
 		if err != nil {
 			log.C(c).Errorw("RTF文本提取失败", "error", err, "filename", fileName)
-			core.WriteResponse(c, errno.ErrInternalServer.SetMessage("RTF文本提取失败: "+err.Error()), nil)
+			core.WriteResponse(c, errno.ErrInternalServer.SetMessage("RTF文本提取失败: %s", err.Error()), nil)
 			return
 		}
 		text = formatText(text)
@@ -281,7 +281,7 @@ func (ctrl *PdfController) ConvertToText(c *gin.Context) {
 	// 17. 保存到数据库
 	if err := ds.Sop().CreateFile(sopFile); err != nil {
 		log.C(c).Errorw("创建文件记录失败", "error", err, "filename", fileName)
-		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("保存文件记录失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("保存文件记录失败: %s", err.Error()), nil)
 		return
 	}
 
@@ -619,7 +619,7 @@ func shouldMerge(prev, next string) bool {
 
 func isListItem(s string) bool {
 	// 匹配 "1.", "1)", "•", "-", "* "
-	matched, _ := regexp.MatchString(`^(\d+[\.\)]|\u2022|\-|\*|·)\s`, s)
+	matched, _ := regexp.MatchString(`^(\d+[\.\)]|•|\-|\*|·)\s`, s)
 	return matched
 }
 

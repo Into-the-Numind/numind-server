@@ -124,8 +124,7 @@ func (s *books) DeleteBatch(ctx context.Context, ids []uint) error {
 
 	// 更新用户统计
 	if err := s.UpdateUserBookStatsOnBatchDelete(ctx, books); err != nil {
-		// 记录错误但不影响删除操作
-		// 这里可以考虑记录日志
+		log.C(ctx).Warnw("更新用户书本统计失败（不影响删除操作）", "error", err)
 	}
 
 	return nil

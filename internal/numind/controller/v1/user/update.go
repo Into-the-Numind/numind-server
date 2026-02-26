@@ -33,7 +33,7 @@ func (ctrl *UserController) Update(c *gin.Context) {
 	}
 
 	if _, err := govalidator.ValidateStruct(r); err != nil {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("%s", err.Error()), nil)
 
 		return
 	}
@@ -63,7 +63,7 @@ func (ctrl *UserController) UpdateProfile(c *gin.Context) {
 	}
 
 	if _, err := govalidator.ValidateStruct(r); err != nil {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -116,7 +116,7 @@ func (ctrl *UserController) UploadAvatar(c *gin.Context) {
 func (ctrl *UserController) handleAvatarUpload(c *gin.Context, file *multipart.FileHeader, user *model.User) (string, error) {
 	// 验证文件
 	if err := validateAvatarFile(file); err != nil {
-		return "", errno.ErrInvalidParameter.SetMessage(err.Error())
+		return "", errno.ErrInvalidParameter.SetMessage("%s", err.Error())
 	}
 
 	// 获取配置的图片上传路径
@@ -226,7 +226,7 @@ func (ctrl *UserController) UpdateWechatUser(c *gin.Context) {
 	}
 
 	if _, err := govalidator.ValidateStruct(r); err != nil {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("%s", err.Error()), nil)
 		return
 	}
 

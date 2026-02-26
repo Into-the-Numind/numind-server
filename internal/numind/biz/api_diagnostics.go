@@ -11,8 +11,6 @@ import (
 
 // APIDiagnostics API诊断工具
 type APIDiagnostics struct {
-	volcConfig     map[string]string
-	aliConfig      map[string]string
 	networkTimeout time.Duration
 }
 

@@ -44,14 +44,14 @@ func WechatCertificateStatus(c *gin.Context) {
 	// 获取证书状态
 	status, err := certManager.GetCertificateStatus()
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("获取证书状态失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("获取证书状态失败: %s", err.Error()), nil)
 		return
 	}
 
 	// 检查证书健康状态
 	certInfo, err := certManager.CheckCertificateHealth()
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("证书健康检查失败: "+err.Error()), map[string]interface{}{
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("证书健康检查失败: %s", err.Error()), map[string]interface{}{
 			"status": status,
 			"error":  err.Error(),
 		})
@@ -100,13 +100,13 @@ func WechatNativePay(c *gin.Context) {
 		Amount      int64  `json:"amount" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("参数错误: %s", err.Error()), nil)
 		return
 	}
 	cfg := getWechatPayConfig()
 	resp, err := wechat.CreateNativeOrder(cfg, req.OutTradeNo, req.Description, req.Amount)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 	core.WriteResponse(c, nil, resp)
@@ -121,13 +121,13 @@ func WechatMiniProgramPay(c *gin.Context) {
 		OpenID      string `json:"openid" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("参数错误: %s", err.Error()), nil)
 		return
 	}
 	cfg := getWechatPayConfig()
 	resp, err := wechat.CreateMiniProgramOrder(cfg, req.OutTradeNo, req.Description, req.Amount, req.OpenID)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 	core.WriteResponse(c, nil, resp)
@@ -149,7 +149,7 @@ func WechatPayNotify(c *gin.Context) {
 		log.C(c).Errorw("Failed to parse wechat pay notify",
 			"error", err.Error(),
 			"remote_addr", c.ClientIP())
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("回调解析失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("回调解析失败: %s", err.Error()), nil)
 		return
 	}
 
@@ -247,7 +247,7 @@ func WechatPayNotify(c *gin.Context) {
 			"error", err.Error(),
 			"out_trade_no", outTradeNo,
 			"transaction_id", transactionID)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("更新支付状态失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("更新支付状态失败: %s", err.Error()), nil)
 		return
 	}
 

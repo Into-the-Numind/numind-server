@@ -139,14 +139,14 @@ func (ctrl *SopController) ExecuteTemplate(c *gin.Context) {
 
 	var req v1.ExecuteSopTemplateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
 		return
 	}
 
 	// 使用token中的用户ID
 	run, err := ctrl.sopBiz.ExecuteTemplate(c, uint(templateID), user.ID, req.Text)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -173,7 +173,7 @@ func (ctrl *SopController) DeleteRun(c *gin.Context) {
 
 	// 调用biz层执行删除（biz层会校验所有权）
 	if err := ctrl.sopBiz.DeleteRun(c, uint(id), user.ID); err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -188,7 +188,7 @@ func (ctrl *SopController) BatchDeleteRuns(c *gin.Context) {
 		IDs []uint `json:"ids" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
 		return
 	}
 
@@ -202,7 +202,7 @@ func (ctrl *SopController) BatchDeleteRuns(c *gin.Context) {
 
 	// 调用biz层执行批量删除
 	if err := ctrl.sopBiz.DeleteRuns(c, req.IDs, user.ID); err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -300,7 +300,7 @@ func (ctrl *SopController) ListMyRuns(c *gin.Context) {
 	uid := user.ID
 	runs, total, err := ctrl.sopBiz.ListRuns(c, offset, limit, &uid)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -325,7 +325,7 @@ func (ctrl *SopController) ListMyExecutedTemplates(c *gin.Context) {
 	// 获取用户已执行的模板列表
 	templates, err := ctrl.sopBiz.ListExecutedTemplatesByUser(c, user.ID)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -389,7 +389,7 @@ func (ctrl *SopController) ListTemplateRuns(c *gin.Context) {
 	// 调用biz层获取数据
 	histories, total, err := ctrl.sopBiz.ListTemplateRunsWithDetails(c, user.ID, uint(templateID), offset, limit)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -421,7 +421,7 @@ func (ctrl *SopController) ListMyNotes(c *gin.Context) {
 
 	notes, total, err := ctrl.sopBiz.ListNotesByUser(c, user.ID, offset, limit)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -473,7 +473,7 @@ func (ctrl *SopController) ListTemplates(c *gin.Context) {
 
 	templates, _, err := ctrl.sopBiz.ListTemplates(c, offset, limit)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -517,7 +517,7 @@ func (ctrl *SopController) GetTemplateNodes(c *gin.Context) {
 	// 获取模板的所有节点
 	nodes, err := ctrl.sopBiz.ListNodesByTemplate(c, uint(templateID))
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -545,7 +545,7 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 			defer logFile.Close()
 			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:382","message":"CreateRun handler entry","data":{"hypothesisId":"B","path":%q},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), c.Request.URL.Path)
-			logFile.WriteString(logEntry)
+			_, _ = logFile.WriteString(logEntry)
 		}
 	}()
 	// #endregion
@@ -560,7 +560,7 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 			defer logFile.Close()
 			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:387","message":"Auth check result","data":{"hypothesisId":"D","exists":%t},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), exists)
-			logFile.WriteString(logEntry)
+			_, _ = logFile.WriteString(logEntry)
 		}
 	}()
 	// #endregion
@@ -579,11 +579,11 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 				defer logFile.Close()
 				logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:394","message":"JSON bind error","data":{"hypothesisId":"B","error":%q},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), err.Error())
-				logFile.WriteString(logEntry)
+				_, _ = logFile.WriteString(logEntry)
 			}
 		}()
 		// #endregion
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
 		return
 	}
 	// #region agent log
@@ -593,7 +593,7 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 			defer logFile.Close()
 			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:397","message":"Request parsed","data":{"hypothesisId":"B","templateID":%d,"userID":%d},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), req.TemplateID, user.ID)
-			logFile.WriteString(logEntry)
+			_, _ = logFile.WriteString(logEntry)
 		}
 	}()
 	// #endregion
@@ -616,12 +616,12 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 			}
 			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:399","message":"CreateRun biz result","data":{"hypothesisId":"B","error":%t,"errorMsg":%q,"runID":%d,"autoAppliedCount":%d},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), hasErr, errMsg, runID, len(appliedBookmarkIDs))
-			logFile.WriteString(logEntry)
+			_, _ = logFile.WriteString(logEntry)
 		}
 	}()
 	// #endregion
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -632,7 +632,7 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 			defer logFile.Close()
 			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:405","message":"CreateRun handler exit","data":{"hypothesisId":"B","runID":%d,"success":true,"autoAppliedCount":%d},"sessionId":"debug-session","runId":"request"}
 `, time.Now().UnixMilli(), run.ID, len(appliedBookmarkIDs))
-			logFile.WriteString(logEntry)
+			_, _ = logFile.WriteString(logEntry)
 		}
 	}()
 	// #endregion
@@ -677,7 +677,7 @@ func (ctrl *SopController) GetNextNode(c *gin.Context) {
 
 	node, hasNext, err := ctrl.sopBiz.GetNextNode(c, uint(runID))
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -783,7 +783,7 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 				// 如果所有文件都上传失败，返回错误
 				if len(uploadedFileNames) == 0 && len(uploadErrors) > 0 {
 					errorMsg := fmt.Sprintf("所有文件上传失败：%s", strings.Join(uploadErrors, "; "))
-					core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(errorMsg), nil)
+					core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("%s", errorMsg), nil)
 					return
 				}
 
@@ -914,7 +914,7 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 		errorMsg, _ := json.Marshal(err.Error())
 		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
 		mu.Lock()
-		c.Writer.WriteString(errorData)
+		_, _ = c.Writer.WriteString(errorData)
 		flusher.Flush()
 		mu.Unlock()
 		return
@@ -924,7 +924,7 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 	fileIDsJSON, _ := json.Marshal(uploadedFileIDs)
 	doneData := fmt.Sprintf("event: done\ndata: {\"status\":\"completed\",\"uploaded_file_ids\":%s}\n\n", string(fileIDsJSON))
 	mu.Lock()
-	c.Writer.WriteString(doneData)
+	_, _ = c.Writer.WriteString(doneData)
 	flusher.Flush()
 	mu.Unlock()
 }
@@ -1133,10 +1133,10 @@ func (ctrl *SopController) ParseFileText(c *gin.Context) {
 	// 1. 获取multipart form
 	form, err := c.MultipartForm()
 	if err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的multipart form: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的multipart form: %s", err.Error()), nil)
 		return
 	}
-	defer form.RemoveAll() // 清理临时文件
+	defer func() { _ = form.RemoveAll() }() // 清理临时文件
 
 	// 2. 获取文件列表，兼容file / files
 	files := form.File["files"]
@@ -1150,7 +1150,7 @@ func (ctrl *SopController) ParseFileText(c *gin.Context) {
 
 	// 3. 基础校验：数量和总大小
 	if len(files) > MaxFilesPerUpload {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(fmt.Sprintf("文件数量超过限制（最多%d个）", MaxFilesPerUpload)), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文件数量超过限制（最多%d个）", MaxFilesPerUpload), nil)
 		return
 	}
 
@@ -1238,7 +1238,7 @@ func (ctrl *SopController) ParseFileTextQuery(c *gin.Context) {
 	text, err := extractPlainTextWithQwenLong(c.Request.Context(), req.FileIDs)
 	if err != nil {
 		log.C(c).Errorw("qwen-long 解析查询失败", "error", err, "file_ids", req.FileIDs)
-		core.WriteResponse(c, errno.ErrInternalServer.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -1263,10 +1263,10 @@ func (ctrl *SopController) ReadImageWithQwenVL(c *gin.Context) {
 	const maxImageSize = 5 * 1024 * 1024 // 5MB
 	form, err := c.MultipartForm()
 	if err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的multipart form: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的multipart form: %s", err.Error()), nil)
 		return
 	}
-	defer form.RemoveAll()
+	defer func() { _ = form.RemoveAll() }()
 
 	files := form.File["file"]
 	if len(files) == 0 {
@@ -1287,7 +1287,7 @@ func (ctrl *SopController) ReadImageWithQwenVL(c *gin.Context) {
 
 	file, err := fh.Open()
 	if err != nil {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("无法读取文件: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("无法读取文件: %s", err.Error()), nil)
 		return
 	}
 	defer file.Close()
@@ -1295,7 +1295,7 @@ func (ctrl *SopController) ReadImageWithQwenVL(c *gin.Context) {
 	buf := make([]byte, maxImageSize+1)
 	n, err := file.Read(buf)
 	if err != nil && err != io.EOF {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("读取文件失败: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("读取文件失败: %s", err.Error()), nil)
 		return
 	}
 	if int64(n) > maxImageSize {
@@ -1307,7 +1307,7 @@ func (ctrl *SopController) ReadImageWithQwenVL(c *gin.Context) {
 	encoded := base64.StdEncoding.EncodeToString(data)
 	resp, err := ctrl.aliBiz.QianwenVision(c.Request.Context(), encoded, question, "")
 	if err != nil {
-		core.WriteResponse(c, errno.ErrInternalServer.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -1473,10 +1473,10 @@ func (ctrl *SopController) CheckFileQuality(c *gin.Context) {
 	// 1. 获取multipart form
 	form, err := c.MultipartForm()
 	if err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的multipart form: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的multipart form: %s", err.Error()), nil)
 		return
 	}
-	defer form.RemoveAll() // 确保清理临时文件
+	defer func() { _ = form.RemoveAll() }() // 确保清理临时文件
 
 	// 2. 获取文本内容（优先从text字段，如果没有则从文件提取）
 	var textContent string
@@ -1504,7 +1504,7 @@ func (ctrl *SopController) CheckFileQuality(c *gin.Context) {
 
 		// 限制文件数量
 		if len(files) > MaxFilesPerUpload {
-			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(fmt.Sprintf("文件数量超过限制（最多%d个）", MaxFilesPerUpload)), nil)
+			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文件数量超过限制（最多%d个）", MaxFilesPerUpload), nil)
 			return
 		}
 
@@ -1514,7 +1514,7 @@ func (ctrl *SopController) CheckFileQuality(c *gin.Context) {
 		for i, file := range files {
 			// 验证文件大小
 			if file.Size > MaxFileSize {
-				core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(fmt.Sprintf("文件 %s 超过大小限制（最大%dMB）", file.Filename, MaxFileSize/(1024*1024))), nil)
+				core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文件 %s 超过大小限制（最大%dMB）", file.Filename, MaxFileSize/(1024*1024)), nil)
 				return
 			}
 			totalSize += file.Size
@@ -1530,7 +1530,7 @@ func (ctrl *SopController) CheckFileQuality(c *gin.Context) {
 				log.C(c).Warnw("提取文件文本失败", "filename", file.Filename, "error", err)
 				// 如果所有文件都失败，返回错误
 				if i == len(files)-1 && len(fileTexts) == 0 {
-					core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("无法从文件中提取文本内容: "+err.Error()), nil)
+					core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("无法从文件中提取文本内容: %s", err.Error()), nil)
 					return
 				}
 				continue
@@ -1977,7 +1977,7 @@ func (ctrl *SopController) GetRunStatus(c *gin.Context) {
 
 	status, err := ctrl.sopBiz.GetRunStatus(c, uint(runID))
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -2062,7 +2062,7 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 	// 1. 解析请求参数
 	var req v1.EditTextRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
 		return
 	}
 
@@ -2259,13 +2259,13 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 		// 发送错误事件
 		errorMsg, _ := json.Marshal(aiErr.Error())
 		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
-		c.Writer.WriteString(errorData)
+		_, _ = c.Writer.WriteString(errorData)
 		flusher.Flush()
 		return
 	}
 
 	// 10. 发送完成事件
-	c.Writer.WriteString("event: done\ndata: {\"status\":\"completed\"}\n\n")
+	_, _ = c.Writer.WriteString("event: done\ndata: {\"status\":\"completed\"}\n\n")
 	flusher.Flush()
 }
 
@@ -2393,7 +2393,7 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 		errorMsg, _ := json.Marshal(err.Error())
 		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
 		mu.Lock()
-		c.Writer.WriteString(errorData)
+		_, _ = c.Writer.WriteString(errorData)
 		flusher.Flush()
 		mu.Unlock()
 		return
@@ -2421,7 +2421,7 @@ func (ctrl *SopController) ListRunChatMessages(c *gin.Context) {
 
 	msgs, err := ctrl.sopBiz.ListChatMessages(c, uint(runID), user.ID)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
@@ -3235,7 +3235,7 @@ func removePDFFormatCode(text string) string {
 						}
 					}
 					// 检查是否是PDF对象引用格式
-					if matched, _ := regexp.MatchString(`^\d+\s+\d+\s+obj`, strings.TrimSpace(line)); matched {
+					if objPattern.MatchString(strings.TrimSpace(line)) {
 						isPDFLine = true
 					}
 					// 如果这一行不是PDF格式代码，保留它

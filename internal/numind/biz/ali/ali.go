@@ -184,8 +184,6 @@ func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, 
 		if netErr, ok := err.(net.Error); ok {
 			if netErr.Timeout() {
 				return "", fmt.Errorf("网络超时错误: %w", err)
-			} else if netErr.Temporary() {
-				return "", fmt.Errorf("临时网络错误: %w", err)
 			}
 		}
 		return "", fmt.Errorf("HTTP请求失败: %w", err)
@@ -610,8 +608,6 @@ func (a *aliBiz) QianwenEmbedding(text string) ([]float32, error) {
 		if netErr, ok := err.(net.Error); ok {
 			if netErr.Timeout() {
 				return nil, fmt.Errorf("网络超时错误: %w", err)
-			} else if netErr.Temporary() {
-				return nil, fmt.Errorf("临时网络错误: %w", err)
 			}
 		}
 		return nil, fmt.Errorf("HTTP请求失败: %w", err)
@@ -848,7 +844,7 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 	for scanner.Scan() {
 		lineCount++
 		line := scanner.Text()
-		
+
 		if line == "" || !strings.HasPrefix(line, "data: ") {
 			continue
 		}
@@ -865,7 +861,7 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 			pkglog.Warnw("解析SSE数据为map失败", "error", err, "data", data)
 			continue
 		}
-		
+
 		// 打印每一行的关键信息
 		if choices, ok := rawData["choices"].([]interface{}); ok && len(choices) > 0 {
 			if choice, ok := choices[0].(map[string]interface{}); ok {
@@ -883,7 +879,7 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 				}
 			}
 		}
-		
+
 		// 检查是否有 reasoning_content (思考内容)
 		if choices, ok := rawData["choices"].([]interface{}); ok && len(choices) > 0 {
 			if choice, ok := choices[0].(map[string]interface{}); ok {

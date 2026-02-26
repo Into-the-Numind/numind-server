@@ -76,7 +76,7 @@ func ParseRequest(c *gin.Context) (string, error) {
 
 	var t string
 	// 从请求头中取出 token
-	fmt.Sscanf(header, "Bearer %s", &t)
+	_, _ = fmt.Sscanf(header, "Bearer %s", &t)
 
 	return Parse(t, config.key)
 }

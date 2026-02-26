@@ -229,13 +229,3 @@ func extractJSON(resp string) string {
 	}
 	return resp
 }
-
-// normalizeIntent 验证并规范化意图类型
-func normalizeIntent(intent port.IntentType) port.IntentType {
-	switch intent {
-	case port.IntentObjection, port.IntentComparison, port.IntentInquiry, port.IntentBuyingProof:
-		return intent
-	default:
-		return port.IntentInquiry // 默认为咨询
-	}
-}

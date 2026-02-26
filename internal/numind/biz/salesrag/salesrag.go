@@ -35,10 +35,10 @@ const maxOpinionTotal = 2
 
 // 文档分类常量
 const (
-	catProduct  = "产品文档"
-	catCase   = "成功案例"
-	catFAQ    = "百问百答"
-	catOther  = "其他相关文档"
+	catProduct = "产品文档"
+	catCase    = "成功案例"
+	catFAQ     = "百问百答"
+	catOther   = "其他相关文档"
 )
 
 // SalesRAGBiz 定义了销售 RAG 业务层的对外接口
@@ -1651,7 +1651,6 @@ func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint,
 					}
 
 					img = imaging.Resize(img, width, height, imaging.Lanczos)
-					totalPixels = int64(width) * int64(height)
 
 					var buf bytes.Buffer
 					err = jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality})
