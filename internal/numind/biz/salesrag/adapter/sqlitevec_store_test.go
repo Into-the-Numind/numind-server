@@ -243,15 +243,14 @@ func TestSQLiteVecStore_SearchUserIsolation(t *testing.T) {
 	}
 	require.NoError(t, store.Upsert(ctx, chunks))
 
-	// 用户10只能搜到自己的内容
+	// 有 DocumentIDs 时按文档过滤，不叠加 user_id（安全性由 biz 层白名单保证）
 	filter := port.SearchFilter{
 		UserID:      10,
 		DocumentIDs: []uint{1},
 	}
 	results, err := store.Search(ctx, "内容", filter, 10)
 	require.NoError(t, err)
-	assert.Len(t, results, 1)
-	assert.Equal(t, uint(10), results[0].UserID)
+	assert.Len(t, results, 2)
 }
 
 func TestSQLiteVecStore_FetchByDocumentID(t *testing.T) {

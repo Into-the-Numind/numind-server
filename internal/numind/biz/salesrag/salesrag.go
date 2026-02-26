@@ -36,10 +36,9 @@ const maxOpinionTotal = 2
 // 文档分类常量
 const (
 	catProduct  = "产品文档"
-	catCase     = "成功案例"
-	catFAQ      = "百问百答"
-	catOpinion  = "观点库"
-	catOther    = "其他相关文档"
+	catCase   = "成功案例"
+	catFAQ    = "百问百答"
+	catOther  = "其他相关文档"
 )
 
 // SalesRAGBiz 定义了销售 RAG 业务层的对外接口
@@ -641,6 +640,7 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 	verdict.DocCategoryMap = docCategoryMap
 
 	// 7. 填充 evidence 中的 document_name（从数据库查询）
+	// 观点库和常规知识库的文档 ID 集合不重叠，分别查询即可
 	b.enrichChunksWithDocNames(ctx, verdict.Evidence)
 	b.enrichChunksWithDocNames(ctx, verdict.OpinionEvidence)
 
@@ -675,20 +675,6 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 
 	// 12. 发送完成事件
 	return onEvent("done", nil)
-}
-
-// buildPromptMessages 根据检索结果构建 prompt 消息 (V1 兼容)
-// Deprecated: 请使用 buildPromptMessagesV2
-func (b *salesRAGBiz) buildPromptMessages(query string, verdict *service.RetrievalVerdict) []map[string]string {
-	messagesV2 := b.buildPromptMessagesV2(query, verdict, "", "", "")
-	result := make([]map[string]string, len(messagesV2))
-	for i, msg := range messagesV2 {
-		result[i] = map[string]string{
-			"role":    msg.Role,
-			"content": msg.Content,
-		}
-	}
-	return result
 }
 
 // buildPromptMessagesV2 根据检索结果构建 prompt 消息（优化版）
@@ -746,22 +732,22 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 			}
 		}
 
-		// 观点库独立区域（来自 OpinionEvidence 独立通道）
-		if len(verdict.OpinionEvidence) > 0 {
-			var opinionLines []string
-			for i, chunk := range verdict.OpinionEvidence {
-				idx := len(allChunks) + i + 1
-				if chunk.Score > 0 {
-					opinionLines = append(opinionLines, fmt.Sprintf("[知识%d] (相关度:%.0f%%) %s", idx, chunk.Score*100, chunk.Content))
-				} else {
-					opinionLines = append(opinionLines, fmt.Sprintf("[知识%d] %s", idx, chunk.Content))
-				}
-			}
-			opinionSection := fmt.Sprintf("### 观点库参考\n%s", strings.Join(opinionLines, "\n\n"))
-			contextParts = append(contextParts, opinionSection)
-		}
-
 		knowledgeContext = strings.Join(contextParts, "\n\n")
+	}
+
+	// 构建观点库上下文（独立通道，不混入 knowledgeContext）
+	var opinionContext string
+	if len(verdict.OpinionEvidence) > 0 {
+		var opinionLines []string
+		for i, chunk := range verdict.OpinionEvidence {
+			idx := i + 1
+			if chunk.Score > 0 {
+				opinionLines = append(opinionLines, fmt.Sprintf("[观点%d] (相关度:%.0f%%) %s", idx, chunk.Score*100, chunk.Content))
+			} else {
+				opinionLines = append(opinionLines, fmt.Sprintf("[观点%d] %s", idx, chunk.Content))
+			}
+		}
+		opinionContext = strings.Join(opinionLines, "\n\n")
 	}
 
 	// 构建策略内容（只包含纯内容）
@@ -775,11 +761,11 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 
 	if verdict.ChatMode == "free" {
 		// ========== Free 模式 (Sales Copilot 顾问模式) ==========
-		systemPrompt = b.buildFreeModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle, verdict.History, salesStage)
+		systemPrompt = b.buildFreeModePrompt(customerProfile, knowledgeContext, opinionContext, strategyContent, languageStyle, verdict.History, salesStage)
 		userMessage = query
 	} else {
 		// ========== Sales 模式 (销售人员本人视角) ==========
-		systemPrompt = b.buildSalesModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle, verdict.History, salesStage)
+		systemPrompt = b.buildSalesModePrompt(customerProfile, knowledgeContext, opinionContext, strategyContent, languageStyle, verdict.History, salesStage)
 		userMessage = query
 	}
 
@@ -812,7 +798,7 @@ func getSalesStageDescription(stage string) string {
 }
 
 // buildSalesModePrompt 构建 Sales 模式提示词
-func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle string, history []string, salesStage string) string {
+func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, opinionContext, strategyContent, languageStyle string, history []string, salesStage string) string {
 	var prompt strings.Builder
 
 	// 角色和目标
@@ -862,10 +848,19 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 		prompt.WriteString("\n\n")
 	}
 
+	// 观点库（条件渲染 - 独立通道）
+	if opinionContext != "" {
+		prompt.WriteString("### 观点库\n")
+		prompt.WriteString("> 以下观点库供你参考，每条观点都包含核心洞察、金句、案例和适用场景。请根据用户的消息，判断其情绪和需求，从观点库中挑选最匹配的观点，并将其内容自然地融入上述框架中。\n\n")
+		prompt.WriteString("> **注意**：不要生硬地罗列观点，而是转化为你自己的语言，让回复听起来真诚、有洞察力。**重要！**：如果你觉得观点库不适合当轮的情况，则可以战术性放弃采用。\n\n")
+		prompt.WriteString(opinionContext)
+		prompt.WriteString("\n\n")
+	}
+
 	// 核心策略参考（条件渲染）
 	if strategyContent != "" {
 		prompt.WriteString("### 核心策略参考\n")
-		prompt.WriteString("请结合实际对话上下文，**灵活参考**该策略中的\"话术模板\"或\"核心逻辑\"构建回复。如果策略与当前对话相符，需要严格按照策略来进行，如果明显不符，请以你的判断为准。\n\n")
+		prompt.WriteString("> 请结合实际对话上下文，**灵活参考**该策略中的\"话术模板\"或\"核心逻辑\"构建回复。如果策略与当前对话相符，需要严格按照策略来进行，如果明显不符，请以你的判断为准。\n\n")
 		prompt.WriteString("```markdown\n")
 		prompt.WriteString(strategyContent)
 		prompt.WriteString("\n```\n\n")
@@ -899,6 +894,9 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 		prompt.WriteString("   涉及具体产品信息（价格、功能、参数、案例）时，必须基于【知识库内容】  \n")
 		prompt.WriteString("   涉及策略分析、客户心理、沟通技巧时，请充分发挥你的专业判断  \n")
 		prompt.WriteString("   优先融合相关度高的知识，用你自己的理解重新组织，而非原文照搬  \n")
+	}
+	if opinionContext != "" {
+		prompt.WriteString("   涉及观点输出和洞察展现时，优先从【观点库】中挑选匹配观点，转化为自己的语言自然融入  \n")
 	}
 	if strategyContent != "" {
 		prompt.WriteString("   灵活参考【核心策略参考】中的话术模板或逻辑\n\n")
@@ -945,7 +943,7 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, st
 }
 
 // buildFreeModePrompt 构建 Free 模式提示词（资深销售教练）
-func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, strategyContent, languageStyle string, history []string, salesStage string) string {
+func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, opinionContext, strategyContent, languageStyle string, history []string, salesStage string) string {
 	var prompt strings.Builder
 
 	// 角色和目标
@@ -989,18 +987,28 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, str
 	// 知识库内容（条件渲染，附带权重指引）
 	if knowledgeContext != "" {
 		prompt.WriteString("### 知识库内容\n")
-		prompt.WriteString("每条知识附带相关度百分比。相关度 ≥ 70% 的知识应重点融入回答；30%-70% 的仅作补充参考；如果所有知识相关度都偏低，以你的专业判断为主。\n")
-		prompt.WriteString("注意：这些知识片段可能来自不同文档，彼此之间可能没有直接关联。请先通读理解所有片段的核心信息，形成统一认知后，围绕客户的实际问题用你自己的话自然组织回答。禁止逐条罗列，禁止生硬拼接不相关的信息。如果某条知识与当前问题关联不大，果断忽略即可。\n")
+		prompt.WriteString("> 每条知识附带相关度百分比。相关度 ≥ 70% 的知识应重点融入回答；30%-70% 的仅作补充参考；如果所有知识相关度都偏低，以你的专业判断为主。\n\n")
+		prompt.WriteString("> **注意**：这些知识片段可能来自不同文档，彼此之间可能没有直接关联。请先通读理解所有片段的核心信息，形成统一认知后，围绕客户的实际问题用你自己的话自然组织回答。禁止逐条罗列，禁止生硬拼接不相关的信息。如果某条知识与当前问题关联不大，果断忽略即可。\n\n")
 		prompt.WriteString(knowledgeContext)
+		prompt.WriteString("\n\n")
+	}
+
+	// 观点库（条件渲染 - 独立通道）
+	if opinionContext != "" {
+		prompt.WriteString("### 观点库\n")
+		prompt.WriteString("> 以下观点库供你参考，每条观点都包含核心洞察、金句、案例和适用场景。请根据用户的消息，判断其情绪和需求，从观点库中挑选最匹配的观点，并将其内容自然地融入上述框架中。\n\n")
+		prompt.WriteString("> **注意**：不要生硬地罗列观点，而是转化为你自己的语言，让回复听起来真诚、有洞察力。**重要！**：如果你觉得观点库不适合当轮的情况，则可以战术性放弃采用。\n\n")
+		prompt.WriteString(opinionContext)
 		prompt.WriteString("\n\n")
 	}
 
 	// 核心策略参考（条件渲染）
 	if strategyContent != "" {
 		prompt.WriteString("### 核心策略参考\n")
-		prompt.WriteString("请结合实际对话上下文，灵活参考该策略中的\"话术模板\"或\"核心逻辑\"提供建议。如果策略与当前对话相符，需要严格按照策略来进行，如果明显不符，请以你的判断为准。\n")
+		prompt.WriteString("> 请结合实际对话上下文，**灵活参考**该策略中的\"话术模板\"或\"核心逻辑\"提供建议。如果策略与当前对话相符，需要严格按照策略来进行，如果明显不符，请以你的判断为准。\n\n")
+		prompt.WriteString("```markdown\n")
 		prompt.WriteString(strategyContent)
-		prompt.WriteString("\n\n")
+		prompt.WriteString("\n```\n\n")
 	}
 
 	prompt.WriteString("---\n")
@@ -1038,6 +1046,9 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, str
 		prompt.WriteString("  - 产品事实（价格、功能、参数、案例）必须有知识库依据，不得编造\n")
 	} else {
 		prompt.WriteString("  - 产品事实（价格、功能、参数、案例）必须核实，不得编造\n")
+	}
+	if opinionContext != "" {
+		prompt.WriteString("  - 涉及观点输出和立场建议时，可从【观点库】中挑选匹配观点，融入话术建议中\n")
 	}
 	if strategyContent != "" {
 		prompt.WriteString("  - 策略分析和通用知识（客户心理、沟通技巧、行业经验），参考【核心策略参考】中的方法论和话术模板，并运用你的专业判断自由发挥，如果推荐策略与实际情况明显不符，以实际为准\n")
@@ -1426,7 +1437,7 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 		return fmt.Errorf("failed to save user message: %w", err)
 	}
 
-	// 构建文档分类映射
+	// 构建文档分类映射（仅常规知识库，观点库走独立通道不需要分类映射）
 	docCategoryMap := make(map[uint]string)
 	for _, id := range productDocIDs {
 		docCategoryMap[id] = catProduct
@@ -1436,12 +1447,6 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	}
 	for _, id := range faqDocIDs {
 		docCategoryMap[id] = catFAQ
-	}
-	for _, id := range opinionDocIDs {
-		docCategoryMap[id] = catOpinion
-	}
-	for _, id := range trackDocIDs {
-		docCategoryMap[id] = catOpinion
 	}
 
 	// 4. 调用流式检索，累积内容
