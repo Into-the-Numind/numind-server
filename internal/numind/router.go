@@ -320,7 +320,6 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/sop/templates/:id/nodes", userSopc.GetTemplateNodes)                   // 获取模板的所有节点
 		authGroup.GET("/sop/templates/:id/check-permission", userSopc.CheckTemplatePermission) // 检查用户是否有模板权限
 		authGroup.GET("/sop/templates/:id/bookmarks", userSopc.ListBookmarksByTemplate)        // 获取模板的所有书签
-		authGroup.POST("/sop/templates/:id/execute", userSopc.ExecuteTemplate)                 // 执行模板（异步，一次性执行所有节点）
 		authGroup.GET("/sop/templates/executed", userSopc.ListMyExecutedTemplates)             // 获取当前用户已执行的模板列表（按模板分组）
 		authGroup.GET("/sop/templates/:id/runs", userSopc.ListTemplateRuns)                    // 获取指定模板下的所有历史运行记录（包含完整信息）
 

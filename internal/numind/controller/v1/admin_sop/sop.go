@@ -284,31 +284,6 @@ func (ctrl *SopController) DeleteNode(c *gin.Context) {
 	core.WriteResponse(c, nil, nil)
 }
 
-// ExecuteTemplate 执行SOP模板
-func (ctrl *SopController) ExecuteTemplate(c *gin.Context) {
-	log.C(c).Infow("Execute SOP template called")
-
-	templateID, err := strconv.ParseUint(c.Param("id"), 10, 32)
-	if err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的模板ID"), nil)
-		return
-	}
-
-	var req v1.AdminExecuteSopTemplateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
-		return
-	}
-
-	run, err := ctrl.sopBiz.ExecuteTemplate(c, uint(templateID), req.UserID, req.Text)
-	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
-		return
-	}
-
-	core.WriteResponse(c, nil, run)
-}
-
 // GetRun 获取SOP执行记录
 func (ctrl *SopController) GetRun(c *gin.Context) {
 	log.C(c).Infow("Get SOP run called")

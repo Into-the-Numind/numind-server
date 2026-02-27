@@ -36,7 +36,6 @@ type ISopBiz interface {
 	DeleteNode(ctx context.Context, id uint) error
 
 	// Execution operations
-	ExecuteTemplate(ctx context.Context, templateID, userID uint, text string) (*model.SopRun, error)
 	GetRun(ctx context.Context, id uint) (*model.SopRun, error)
 	CheckRunOwnership(ctx context.Context, runID, userID uint) (bool, error)
 	ListRuns(ctx context.Context, offset, limit int, userID *uint) ([]model.SopRun, int64, error)
@@ -191,46 +190,6 @@ type NextNodeInfo struct {
 	Sort     int    `json:"sort"`
 	IsFirst  bool   `json:"is_first"`
 	HasNext  bool   `json:"has_next"`
-}
-
-// Execution operations
-func (b *sopBiz) ExecuteTemplate(ctx context.Context, templateID, userID uint, text string) (*model.SopRun, error) {
-	// 验证模板是否存在
-	_, err := b.ds.Sop().GetTemplate(templateID)
-	if err != nil {
-		return nil, fmt.Errorf("template not found: %w", err)
-	}
-
-	// 获取模板的所有节点
-	nodes, err := b.ds.Sop().ListNodesByTemplate(templateID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get template nodes: %w", err)
-	}
-
-	// 生成唯一的conversation_id（改用纳秒级时间戳，彻底解决碰撞问题）
-	conversationID := fmt.Sprintf("sop_%d_%d_%d", templateID, userID, time.Now().UnixNano())
-
-	// 创建Run记录
-	run := &model.SopRun{
-		TemplateID:     templateID,
-		UserID:         userID,
-		Status:         model.SopStatusPending,
-		ConversationID: conversationID,
-	}
-
-	if err := b.ds.Sop().CreateRun(run); err != nil {
-		return nil, fmt.Errorf("failed to create run: %w", err)
-	}
-
-	// 异步执行SOP
-	go func() {
-		execCtx := context.Background()
-		if err := b.executor.Execute(execCtx, run, nodes, text); err != nil {
-			log.C(execCtx).Errorw("SOP execution failed", "run_id", run.ID, "error", err)
-		}
-	}()
-
-	return run, nil
 }
 
 // CreateRun 创建Run（不立即执行）
@@ -527,9 +486,23 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 
 	// 添加到对话历史
 	for _, nodeRun := range relevantNodeRuns {
+		// 查找对应的 node 以获取 Prompt
+		var nodePrompt string
+		for _, n := range allNodes {
+			if n.ID == nodeRun.NodeID {
+				nodePrompt = n.Prompt
+				break
+			}
+		}
+
+		contentToAppend := nodeRun.Input
+		if nodePrompt != "" {
+			contentToAppend = fmt.Sprintf("%s\n\n%s", nodePrompt, nodeRun.Input)
+		}
+
 		conversationHistory = append(conversationHistory, LLMMessage{
 			Role:    "user",
-			Content: nodeRun.Input,
+			Content: contentToAppend,
 		})
 		conversationHistory = append(conversationHistory, LLMMessage{
 			Role:    "assistant",
@@ -540,53 +513,12 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	// 确定当前节点的输入
 	var currentInput string
 	if text != "" {
-		// 如果用户提供了新text，使用新text
+		// 用户提供了输入内容，直接使用
 		currentInput = text
 	} else {
-		// 统一逻辑：使用上一个已完成节点的输出作为当前输入
-		// AI 会通过已经构建好的 conversationHistory 看到之前所有步骤的完整记录
-		if len(completedNodeRuns) > 0 {
-			// 找到当前节点之前（Sort最大）且已成功的节点
-			var lastNodeRun *model.SopNodeRun
-			for i := range completedNodeRuns {
-				nr := &completedNodeRuns[i]
-				if nr.Sort < node.Sort && nr.Status == model.SopStatusSucceeded {
-					if lastNodeRun == nil || nr.Sort > lastNodeRun.Sort {
-						lastNodeRun = nr
-					}
-				}
-			}
-
-			if lastNodeRun != nil {
-				currentInput = lastNodeRun.Output
-			} else {
-				// 检查是否真的是第一个节点
-				isFirstNode := true
-				for _, n := range allNodes {
-					if n.Sort < node.Sort {
-						isFirstNode = false
-						break
-					}
-				}
-				if isFirstNode {
-					return fmt.Errorf("第一个节点需要提供输入内容（text参数或上传文件）")
-				}
-				return fmt.Errorf("未找到前序节点的有效输出")
-			}
-		} else {
-			// 如果没有任何已完成节点，必须是第一个节点且必须有输入
-			isFirstNode := true
-			for _, n := range allNodes {
-				if n.Sort < node.Sort {
-					isFirstNode = false
-					break
-				}
-			}
-			if isFirstNode {
-				return fmt.Errorf("第一个节点需要提供输入内容（text参数或上传文件）")
-			}
-			return fmt.Errorf("no input provided and no previous node output")
-		}
+		// 用户未提供任何输入，直接拒绝执行
+		// 前端应确保用户必须输入内容后才能点击生成按钮
+		return fmt.Errorf("请输入内容后再执行此步骤")
 	}
 
 	// 确全局执行记录（Run）的状态标记为正在执行（解决“状态僵死”问题）
