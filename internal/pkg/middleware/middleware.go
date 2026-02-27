@@ -61,7 +61,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		user, err := validateToken(c.Request.Context(), token)
+		user, err := ValidateToken(c.Request.Context(), token)
 		if err != nil {
 			core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("无效的认证令牌"), nil)
 			c.Abort()
@@ -78,7 +78,7 @@ func OptionalAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractToken(c)
 		if token != "" {
-			if user, err := validateToken(c.Request.Context(), token); err == nil {
+			if user, err := ValidateToken(c.Request.Context(), token); err == nil {
 				c.Set("current_user", user)
 			}
 		}
@@ -96,7 +96,7 @@ func AdminAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		user, err := validateToken(c.Request.Context(), token)
+		user, err := ValidateToken(c.Request.Context(), token)
 		if err != nil {
 			core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("无效的认证令牌"), nil)
 			c.Abort()
@@ -129,9 +129,9 @@ func extractToken(c *gin.Context) string {
 	return parts[1]
 }
 
-// validateToken 验证JWT token并返回用户信息
+// ValidateToken 验证JWT token并返回用户信息
 // 从数据库验证用户是否存在
-func validateToken(ctx context.Context, tokenString string) (*model.User, error) {
+func ValidateToken(ctx context.Context, tokenString string) (*model.User, error) {
 	// 检查token是否在黑名单中
 	blacklist := GetTokenBlacklist()
 	if blacklist.IsTokenBlacklisted(tokenString) {

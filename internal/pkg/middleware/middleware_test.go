@@ -27,7 +27,7 @@ func TestValidateToken_SafeTypeAssertion(t *testing.T) {
 			t.Fatalf("生成token失败: %v", err)
 		}
 
-		user, err := validateToken(context.Background(), tokenString)
+		user, err := ValidateToken(context.Background(), tokenString)
 		if err != nil {
 			t.Fatalf("验证token失败: %v", err)
 		}
@@ -49,7 +49,7 @@ func TestValidateToken_SafeTypeAssertion(t *testing.T) {
 			t.Fatalf("生成token失败: %v", err)
 		}
 
-		user, err := validateToken(context.Background(), tokenString)
+		user, err := ValidateToken(context.Background(), tokenString)
 		if err == nil {
 			t.Error("期望返回错误，但没有返回")
 		}
@@ -77,7 +77,7 @@ func TestValidateToken_SafeTypeAssertion(t *testing.T) {
 			t.Fatalf("生成token失败: %v", err)
 		}
 
-		user, err := validateToken(context.Background(), tokenString)
+		user, err := ValidateToken(context.Background(), tokenString)
 		if err == nil {
 			t.Error("期望返回错误，但没有返回")
 		}
@@ -105,7 +105,7 @@ func TestValidateToken_SafeTypeAssertion(t *testing.T) {
 			t.Fatalf("生成token失败: %v", err)
 		}
 
-		user, err := validateToken(context.Background(), tokenString)
+		user, err := ValidateToken(context.Background(), tokenString)
 		if err != nil {
 			t.Fatalf("验证token失败: %v", err)
 		}
