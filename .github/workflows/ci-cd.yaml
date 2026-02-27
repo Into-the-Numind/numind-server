@@ -590,20 +590,18 @@ jobs:
               docker rm numind-server-staging
             fi
 
-            # 创建必要的网络和目录
-            echo "Creating necessary network and directories..."
-            docker network create numind-network 2>/dev/null || true
+            # 创建必要的目录
+            echo "Creating necessary directories..."
             sudo mkdir -p /opt/numind/staging/image/upload/avatars
-            sudo chown -R 1001:1001 /opt/numind/staging || true
+            sudo mkdir -p /opt/numind/model/model_cache
+            sudo chown -R 1001:1001 /opt/numind/staging /opt/numind/model || true
             sudo chmod -R 775 /opt/numind/staging
 
-            # 启动新容器
+            # 启动新容器（使用 host 网络，避免容器内无法访问外部数据库）
             echo "Starting new container..."
             docker run -d \
               --name numind-server-staging \
-              --network numind-network \
-              -p 9091:9091 \
-              -p 9092:9092 \
+              --network host \
               -e APP_ENV=staging \
               -v /opt/numind/staging:/opt/numind/staging \
               -v /opt/numind/model/model_cache:/app/model_cache \
