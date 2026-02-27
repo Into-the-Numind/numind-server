@@ -1199,4 +1199,3 @@ func (e *SopExecutor) CreateFinalNote(ctx context.Context, run *model.SopRun, co
 
 	return note, nil
 }
-
