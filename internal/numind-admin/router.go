@@ -158,7 +158,6 @@ func installAdminRouters(g *gin.Engine) error {
 		authGroup.DELETE("/sop/nodes/:id", adminSopc.DeleteNode)
 
 		// 执行管理（管理员可以查看所有用户的执行记录）
-		authGroup.POST("/sop/templates/:id/run", adminSopc.ExecuteTemplate)
 		authGroup.GET("/sop/runs/:id", adminSopc.GetRun)
 		authGroup.GET("/sop/runs/:id/detail", adminSopc.GetRunDetail)
 		authGroup.GET("/sop/runs", adminSopc.ListRuns)

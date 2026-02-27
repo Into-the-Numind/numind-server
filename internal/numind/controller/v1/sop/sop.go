@@ -119,40 +119,6 @@ func (ctrl *SopController) CheckTemplatePermission(c *gin.Context) {
 	})
 }
 
-// ExecuteTemplate 执行SOP模板（用户端）
-func (ctrl *SopController) ExecuteTemplate(c *gin.Context) {
-	log.C(c).Infow("User execute SOP template called")
-
-	templateID, err := strconv.ParseUint(c.Param("id"), 10, 32)
-	if err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的模板ID"), nil)
-		return
-	}
-
-	// 从token获取当前用户
-	currentUser, exists := c.Get("current_user")
-	if !exists {
-		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
-		return
-	}
-	user := currentUser.(*model.User)
-
-	var req v1.ExecuteSopTemplateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: "+err.Error()), nil)
-		return
-	}
-
-	// 使用token中的用户ID
-	run, err := ctrl.sopBiz.ExecuteTemplate(c, uint(templateID), user.ID, req.Text)
-	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage(err.Error()), nil)
-		return
-	}
-
-	core.WriteResponse(c, nil, run)
-}
-
 // DeleteRun 删除指定执行记录（物理删除）
 func (ctrl *SopController) DeleteRun(c *gin.Context) {
 	log.C(c).Infow("User delete SOP run called")
