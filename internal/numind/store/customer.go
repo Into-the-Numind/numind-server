@@ -17,6 +17,8 @@ type ICustomerStore interface {
 
 	// 模板权限管理
 	GrantTemplates(ctx context.Context, parentUserID, subUserID uint, templateIDs []uint) error
+	BulkGrantAllTemplates(ctx context.Context, parentUserID, subUserID uint) error
+	GrantTemplateToConfiguredSubUsers(ctx context.Context, templateID uint) error
 	SetTemplates(ctx context.Context, parentUserID, subUserID uint, templateIDs []uint) error
 	RevokeTemplates(ctx context.Context, parentUserID, subUserID uint, templateIDs []uint) error
 	HasTemplatePermission(ctx context.Context, userID, templateID uint) (bool, error)
@@ -95,6 +97,27 @@ func (c *customerStore) GrantTemplates(ctx context.Context, parentUserID, subUse
 		}
 		return nil
 	})
+}
+
+// BulkGrantAllTemplates 为子用户批量授权所有现有SOP模板（用于新用户创建）
+func (c *customerStore) BulkGrantAllTemplates(ctx context.Context, parentUserID, subUserID uint) error {
+	// 单条SQL：将所有现有模板一次性授权给子用户
+	sql := `INSERT INTO user_template_permission (parent_user_id, sub_user_id, template_id, created_at, updated_at)
+		SELECT ?, ?, id, NOW(), NOW() FROM sop_template WHERE deleted_at IS NULL`
+	return c.db.WithContext(ctx).Exec(sql, parentUserID, subUserID).Error
+}
+
+// GrantTemplateToConfiguredSubUsers 将新模板自动授权给所有已配置权限的子用户
+func (c *customerStore) GrantTemplateToConfiguredSubUsers(ctx context.Context, templateID uint) error {
+	// 单条SQL：找到所有已有权限记录的子用户，为其授权新模板
+	sql := `INSERT INTO user_template_permission (parent_user_id, sub_user_id, template_id, created_at, updated_at)
+		SELECT DISTINCT parent_user_id, sub_user_id, ?, NOW(), NOW()
+		FROM user_template_permission
+		WHERE deleted_at IS NULL
+		AND (sub_user_id, ?) NOT IN (
+			SELECT sub_user_id, template_id FROM user_template_permission WHERE deleted_at IS NULL
+		)`
+	return c.db.WithContext(ctx).Exec(sql, templateID, templateID).Error
 }
 
 // SetTemplates 设置二级客户的模板权限(覆盖模式)
