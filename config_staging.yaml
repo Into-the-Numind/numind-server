@@ -1,0 +1,96 @@
+# Staging 环境 — 用于验证 refactor/strip-notes-code 分支
+# 连接 dev 环境的 MySQL 和 Redis，在新服务器 (110.42.221.25) 上独立运行
+
+# 通用配置
+runmode: debug               # 方便调试
+addr: :9091                  # HTTP 服务器监听地址
+
+jwt:
+  secret: Rtg8BPKNEf2mB4mgvKONGPZZQSaJWNLijxR42qRgq0iBb5
+  expire-hours: 24
+
+# HTTPS 服务器相关配置
+tls:
+  addr: :9092
+  cert: /etc/ssl/certimate/youshu.asia/cert.crt
+  key: /etc/ssl/certimate/youshu.asia/cert.key
+
+# GRPC 相关配置
+grpc:
+  addr: :9090
+
+# MySQL 数据库 — 连接 dev 服务器的 MySQL（与 dev 共享数据）
+db:
+  host: 49.233.219.254:13306
+  username: root
+  password: Numind2025
+  database: numind-dev
+  max-idle-connections: 100
+  max-open-connections: 100
+  max-connection-life-time: 10s
+  log-level: 4
+
+# 日志配置
+log:
+  disable-caller: false
+  disable-stacktrace: false
+  level: debug
+  format: console
+  output-paths: [./numind.log, stdout]
+
+# Redis 缓存 — 连接 dev 服务器的 Redis，使用 db:3 避免缓存冲突
+redis:
+  host: 49.233.219.254
+  port: 26739
+  password: Numind2025
+  db: 3
+  pool_size: 10
+  min_idle_conns: 5
+
+volc:
+  api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
+  base_url: "https://ark.cn-beijing.volces.com/api/v3"
+  model: "glm-4-7-251222"
+  temperature: 0.7
+  tokens: 4000
+  timeout: 180s
+  max_retries: 3
+
+resource:
+  image_path: "/opt/numind/staging/image/upload"
+
+# SalesRAG 向量数据库配置
+salesrag:
+  vector_store:
+    type: "sqlitevec"
+    path: "/opt/numind/staging/sales_vector.db"
+
+# 腾讯云 COS 配置
+cos:
+  enabled: true
+  secret_id: "AKID26xnQq2ziEYeVAh3B6oIbwHh06zf7LMA"
+  secret_key: "e4FNTPI90jNzQfjbFgHk3CRaYMxRuFP5"
+  bucket: "numind-dev-1334169463"
+  region: "ap-chengdu"
+
+# 阿里云配置
+ali:
+  access_key_id: "LTAI5t7S7S7S7S7S7S7S7S7S"
+  access_key_secret: "S7S7S7S7S7S7S7S7S7S7S7S7S7"
+  workspace_id: "ws-7s7s7s7s7s7s"
+  api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"
+  api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
+
+  text:
+    model: "qwen-turbo"
+    timeout: 180s
+
+  vision:
+    api_key: "sk-31f08fc72a594fbca4e827d5465a941b"
+    model: "qwen3-vl-flash-2026-01-22"
+    timeout: 180s
+
+  dashvector:
+    endpoint: "https://vrs-cn-62l4mht1d0001e.dashvector.cn-hangzhou.aliyuncs.com"
+    api_key: "sk-gMsgxE1A1QzoxexCdtuTaVjuF6w8Z52890CC5F85411F08940FAD61112A032"
+    collection: "sales_rag"
