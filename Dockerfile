@@ -54,17 +54,13 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     python3 \
     python3-pip \
     antiword \
-    libgl1 \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 Python 依赖 - 第一层：基础核心库 (变化频率低，体积大)
 # 强制使用 CPU 版本以减小镜像体积
 RUN pip3 install --no-cache-dir --upgrade pip && \
-    pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
-    pip3 install --no-cache-dir \
-    paddlepaddle==3.2.2 \
-    opencv-python-headless
+    pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
 # 安装 Python 依赖 - 第二层：功能库
 RUN pip3 install --no-cache-dir \
@@ -75,10 +71,9 @@ RUN pip3 install --no-cache-dir \
     fastapi \
     uvicorn \
     python-multipart \
-    "markitdown[pdf]" \
-    paddleocr
+    "markitdown[pdf]"
 
-# 第三层：预下载语义切分模型和 OCR 模型 (实现 99.9% 可用性)
+# 第三层：预下载语义切分模型 (实现 99.9% 可用性)
 # 将模型固化在镜像中，避免由于网络问题导致的生产环境失效
 ENV SENTENCE_TRANSFORMERS_HOME=/app/model_cache
 ENV HF_HOME=/app/model_cache
@@ -93,14 +88,6 @@ RUN mkdir -p /app/model_cache && chown -R numind:numind /app/model_cache
 # 复制下载脚本 (用于运行时自动修复/首次初始化)
 COPY scripts/download_models.py /app/scripts/download_models.py
 RUN chmod +x /app/scripts/download_models.py
-
-# 设置模型路径映射
-# 将 ~/.paddleocr 指向 /app/model_cache/ocr，这样 PaddleOCR 下载的所有模型都会留在挂载卷里
-RUN mkdir -p /app/model_cache/ocr && \
-    su numind -c "mkdir -p /home/numind" && \
-    ln -s /app/model_cache/ocr /home/numind/.paddleocr && \
-    chown -R numind:numind /app/model_cache && \
-    chown -h numind:numind /home/numind/.paddleocr
 
 # 设置时区
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone

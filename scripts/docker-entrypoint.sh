@@ -50,15 +50,6 @@ check_and_download_model() {
         should_download=true
     fi
 
-    # 检查 PaddleOCR 模型是否存在
-    # PaddleOCR 默认在 ~/.paddleocr，我们通过软链指向 /app/model_cache/ocr
-    if [ -d "/app/model_cache/ocr/whl" ] || [ -d "/app/model_cache/ocr/2.8" ]; then
-        log_info "✅ PaddleOCR 模型已就绪"
-    else
-        log_warn "⚠️ OCR 模型未找到，准备自动下载..."
-        should_download=true
-    fi
-    
     if [ "$should_download" = true ]; then
         log_info "🚀 开始下载模型... (这可能需要几分钟)"
         if python3 /app/scripts/download_models.py; then
@@ -82,11 +73,6 @@ check_python_deps() {
         return 1
     fi
     
-    if ! python3 -c "import paddleocr" 2>/dev/null; then
-        log_warn "⚠️ paddleocr 未安装"
-        return 1
-    fi
-
     if ! python3 -c "import markitdown" 2>/dev/null; then
         log_warn "⚠️ markitdown 未安装"
         return 1
@@ -210,7 +196,7 @@ main() {
     trap cleanup EXIT INT TERM
 
     # 主动轮询语义服务器健康状态（最多等待 120 秒）
-    # BGE 模型加载 + PaddleOCR 初始化通常需要 30-90 秒
+    # BGE 模型加载通常需要 30-90 秒
     MAX_WAIT=120
     INTERVAL=5
     WAITED=0
