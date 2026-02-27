@@ -214,4 +214,3 @@ func validateAvatarFile(file *multipart.FileHeader) error {
 
 	return nil
 }
-

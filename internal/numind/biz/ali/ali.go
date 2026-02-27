@@ -47,8 +47,8 @@ type aliBiz struct {
 	ds            store.IStore
 	pm            *PromptManager
 	bailianClient *service.BailianHTTPClient
-	textClient   *httpclient.Client
-	visionClient *httpclient.Client
+	textClient    *httpclient.Client
+	visionClient  *httpclient.Client
 }
 
 func NewAliBiz(ds store.IStore) AliBiz {

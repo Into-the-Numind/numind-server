@@ -448,14 +448,6 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	// 判断当前节点是否是最后一个节点
 	isLastNode := node.Sort == maxSort
 
-	// 过滤出已完成的其他节点（排除当前要重新执行的节点）
-	completedNodeRuns := []model.SopNodeRun{}
-	for _, nodeRun := range allNodeRuns {
-		if nodeRun.NodeID != nodeID && nodeRun.Status == model.SopStatusSucceeded {
-			completedNodeRuns = append(completedNodeRuns, nodeRun)
-		}
-	}
-
 	// 构建对话历史
 	conversationHistory := []LLMMessage{}
 
