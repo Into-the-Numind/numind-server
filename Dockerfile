@@ -43,14 +43,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
 
 # 安装系统依赖
+# 注意: libmupdf-dev 不需要 — go-fitz 使用自带的预编译静态库，MuPDF 已嵌入 Go 二进制
+# 注意: python3-pip 仅在下方 pip install 阶段需要，安装完成后移除以节省空间
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
-    wget \
-    bash \
-    file \
     tzdata \
-    libmupdf-dev \
     python3 \
     python3-pip \
     antiword \
@@ -71,7 +69,9 @@ RUN pip3 install --no-cache-dir \
     fastapi \
     uvicorn \
     python-multipart \
-    "markitdown[pdf]"
+    "markitdown[pdf]" && \
+    pip3 uninstall -y pip setuptools && \
+    rm -rf /usr/lib/python3/dist-packages/pip /usr/lib/python3/dist-packages/setuptools
 
 # 第三层：预下载语义切分模型 (实现 99.9% 可用性)
 # 将模型固化在镜像中，避免由于网络问题导致的生产环境失效
@@ -127,7 +127,6 @@ RUN chown -R numind:numind /opt/numind && \
 
 # 验证二进制文件存在且可执行
 RUN ls -la /app/numind && \
-    file /app/numind && \
     echo "✅ 运行阶段二进制文件验证成功"
 
 # 复制启动脚本（包含语义切分模型检查）- 必须在 USER 切换之前
