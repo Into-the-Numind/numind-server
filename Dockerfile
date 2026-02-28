@@ -43,28 +43,22 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
 
 # 安装系统依赖
+# 注意: libmupdf-dev 不需要 — go-fitz 使用自带的预编译静态库，MuPDF 已嵌入 Go 二进制
+# 注意: python3-pip 仅在下方 pip install 阶段需要，安装完成后移除以节省空间
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
-    wget \
-    bash \
-    file \
     tzdata \
-    libmupdf-dev \
     python3 \
     python3-pip \
     antiword \
-    libgl1 \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 Python 依赖 - 第一层：基础核心库 (变化频率低，体积大)
 # 强制使用 CPU 版本以减小镜像体积
 RUN pip3 install --no-cache-dir --upgrade pip && \
-    pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
-    pip3 install --no-cache-dir \
-    paddlepaddle==3.2.2 \
-    opencv-python-headless
+    pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
 # 安装 Python 依赖 - 第二层：功能库
 RUN pip3 install --no-cache-dir \
@@ -75,10 +69,11 @@ RUN pip3 install --no-cache-dir \
     fastapi \
     uvicorn \
     python-multipart \
-    "markitdown[pdf]" \
-    paddleocr
+    "markitdown[pdf]" && \
+    pip3 uninstall -y pip setuptools && \
+    rm -rf /usr/lib/python3/dist-packages/pip /usr/lib/python3/dist-packages/setuptools
 
-# 第三层：预下载语义切分模型和 OCR 模型 (实现 99.9% 可用性)
+# 第三层：预下载语义切分模型 (实现 99.9% 可用性)
 # 将模型固化在镜像中，避免由于网络问题导致的生产环境失效
 ENV SENTENCE_TRANSFORMERS_HOME=/app/model_cache
 ENV HF_HOME=/app/model_cache
@@ -93,14 +88,6 @@ RUN mkdir -p /app/model_cache && chown -R numind:numind /app/model_cache
 # 复制下载脚本 (用于运行时自动修复/首次初始化)
 COPY scripts/download_models.py /app/scripts/download_models.py
 RUN chmod +x /app/scripts/download_models.py
-
-# 设置模型路径映射
-# 将 ~/.paddleocr 指向 /app/model_cache/ocr，这样 PaddleOCR 下载的所有模型都会留在挂载卷里
-RUN mkdir -p /app/model_cache/ocr && \
-    su numind -c "mkdir -p /home/numind" && \
-    ln -s /app/model_cache/ocr /home/numind/.paddleocr && \
-    chown -R numind:numind /app/model_cache && \
-    chown -h numind:numind /home/numind/.paddleocr
 
 # 设置时区
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
@@ -140,7 +127,6 @@ RUN chown -R numind:numind /opt/numind && \
 
 # 验证二进制文件存在且可执行
 RUN ls -la /app/numind && \
-    file /app/numind && \
     echo "✅ 运行阶段二进制文件验证成功"
 
 # 复制启动脚本（包含语义切分模型检查）- 必须在 USER 切换之前

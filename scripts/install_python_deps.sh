@@ -97,19 +97,10 @@ else
     MARKITDOWN_INSTALLED=false
 fi
 
-# 检查 PaddleOCR
-if python3 -c "import paddleocr" 2>/dev/null; then
-    echo "  ✅ paddleocr 已安装"
-    PADDLEOCR_INSTALLED=true
-else
-    echo "  ❌ paddleocr 未安装"
-    PADDLEOCR_INSTALLED=false
-fi
-
 echo ""
 
 # 4. 安装缺失的依赖
-if [[ "$PYMUPDF_INSTALLED" == false ]] || [[ "$DOCX_INSTALLED" == false ]] || [[ "$MARKITDOWN_INSTALLED" == false ]] || [[ "$PADDLEOCR_INSTALLED" == false ]]; then
+if [[ "$PYMUPDF_INSTALLED" == false ]] || [[ "$DOCX_INSTALLED" == false ]] || [[ "$MARKITDOWN_INSTALLED" == false ]]; then
     echo "4️⃣ 安装缺失的依赖..."
     echo ""
 
@@ -119,9 +110,6 @@ if [[ "$PYMUPDF_INSTALLED" == false ]] || [[ "$DOCX_INSTALLED" == false ]] || [[
 PyMuPDF>=1.23.0      # PDF 解析 (高质量 blocks 模式)
 python-docx>=0.8.11  # DOCX 解析 (段落 + 表格)
 markitdown           # 通用文档解析 (PDF, XLSX, PPTX, etc.)
-paddlepaddle-tiny    # PaddlePaddle CPU 版 (OCR 引擎基础)
-paddleocr>=2.7.0     # OCR 识别
-opencv-python-headless # 图像处理
 EOF
 
     echo "📦 安装依赖包..."

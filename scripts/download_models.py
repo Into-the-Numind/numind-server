@@ -23,23 +23,5 @@ def download_bge():
         # 在构建时不强制退出，以便在没有网络的环境下也能完成基础构建
         # 但这会导致运行时需要尝试下载
 
-def download_paddle_ocr():
-    print("Downloading PaddleOCR models...")
-    try:
-        from paddleocr import PaddleOCR
-        # 初始化会自动下载默认模型
-        # ch_PP-OCRv4 mobile is default but we want to be explicit and match runtime config
-        PaddleOCR(
-            lang="ch",
-            ocr_version="PP-OCRv4",
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False
-        )
-        print("PaddleOCR models downloaded successfully.")
-    except Exception as e:
-        print(f"Failed to download PaddleOCR models: {e}")
-
 if __name__ == "__main__":
     download_bge()
-    download_paddle_ocr()
