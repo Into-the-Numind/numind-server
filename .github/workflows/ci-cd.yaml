@@ -46,10 +46,9 @@ on:
         default: false
 
 env:
-  TCR_REGISTRY: ccr.ccs.tencentyun.com
-  TCR_USERNAME: "100046537424"
-  TCR_PASSWORD: ${{ secrets.TCR_PASSWORD }}
-  IMAGE_NAME: ccr.ccs.tencentyun.com/numind/numind-server
+  DOCKERHUB_USERNAME: pmtmyaggy
+  DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+  IMAGE_NAME: pmtmyaggy/numind-server
   SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
   DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
   DEV_HOST: ${{ secrets.DEV_HOST }}
@@ -92,12 +91,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Tencent Cloud TCR
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.TCR_REGISTRY }}
-          username: ${{ env.TCR_USERNAME }}
-          password: ${{ env.TCR_PASSWORD }}
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_PASSWORD }}
 
       - name: Calculate Metadata
         id: meta
@@ -239,7 +237,7 @@ jobs:
 
             # 登录到Docker Hub
             echo "🔐 登录到Docker Hub..."
-            echo "${{ env.TCR_PASSWORD }}" | docker login -u ${{ env.TCR_USERNAME }} --password-stdin ${{ env.TCR_REGISTRY }}
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin
             
             # 验证登录状态
             echo "✅ Docker登录状态验证:"
@@ -247,23 +245,23 @@ jobs:
             
             # 【关键修复】强制删除旧镜像，避免缓存问题
             echo "🗑️  删除旧镜像（如果存在）..."
-            docker rmi -f ccr.ccs.tencentyun.com/numind/numind-server:develop 2>/dev/null || echo "旧镜像不存在，跳过删除"
+            docker rmi -f pmtmyaggy/numind-server:develop 2>/dev/null || echo "旧镜像不存在，跳过删除"
 
             # 拉取最新镜像
             echo "📦 拉取最新镜像..."
-            docker pull ccr.ccs.tencentyun.com/numind/numind-server:develop
+            docker pull pmtmyaggy/numind-server:develop
 
             # 验证镜像拉取成功（包含 digest 确保是最新的）
             echo "🔍 验证镜像信息（包含内容哈希）..."
-            docker images --digests ccr.ccs.tencentyun.com/numind/numind-server:develop --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Digest}}\t{{.CreatedAt}}\t{{.Size}}"
+            docker images --digests pmtmyaggy/numind-server:develop --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Digest}}\t{{.CreatedAt}}\t{{.Size}}"
 
             # 记录镜像构建标签
             echo "📝 镜像标签信息:"
-            docker inspect ccr.ccs.tencentyun.com/numind/numind-server:develop --format='{{json .Config.Labels}}' | jq -r 'to_entries[] | select(.key | startswith("git")) | "\(.key)=\(.value)"' || echo "无法获取 Git 标签"
+            docker inspect pmtmyaggy/numind-server:develop --format='{{json .Config.Labels}}' | jq -r 'to_entries[] | select(.key | startswith("git")) | "\(.key)=\(.value)"' || echo "无法获取 Git 标签"
 
             # 验证镜像的 Git SHA 是否匹配当前提交
             EXPECTED_SHA="${{ github.sha }}"
-            IMAGE_SHA=$(docker inspect ccr.ccs.tencentyun.com/numind/numind-server:develop --format='{{index .Config.Labels "git.commit"}}' 2>/dev/null || echo "")
+            IMAGE_SHA=$(docker inspect pmtmyaggy/numind-server:develop --format='{{index .Config.Labels "git.commit"}}' 2>/dev/null || echo "")
 
             if [ -n "$IMAGE_SHA" ] && [ "$IMAGE_SHA" = "$EXPECTED_SHA" ]; then
               echo "✅ 镜像 SHA 验证通过: $IMAGE_SHA"
@@ -344,7 +342,7 @@ jobs:
               --log-opt max-size=10m \
               --log-opt max-file=3 \
               --restart always \
-              ccr.ccs.tencentyun.com/numind/numind-server:develop
+              pmtmyaggy/numind-server:develop
             
             # 等待容器启动
             echo "Waiting for container to start..."
@@ -413,7 +411,7 @@ jobs:
 
             # 登录到Docker Hub
             echo "🔐 登录到Docker Hub..."
-            echo "${{ env.TCR_PASSWORD }}" | docker login -u ${{ env.TCR_USERNAME }} --password-stdin ${{ env.TCR_REGISTRY }}
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin
             
             # 验证登录状态
             echo "✅ Docker登录状态验证:"
@@ -421,11 +419,11 @@ jobs:
             
             # 拉取最新镜像
             echo "📦 拉取最新镜像..."
-            docker pull ccr.ccs.tencentyun.com/numind/numind-server:release
+            docker pull pmtmyaggy/numind-server:release
             
             # 验证镜像拉取成功
             echo "🔍 验证镜像信息..."
-            docker images ccr.ccs.tencentyun.com/numind/numind-server:release --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}\t{{.Size}}"
+            docker images pmtmyaggy/numind-server:release --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}\t{{.Size}}"
 
             # 清理 dangling (<none>) 镜像，避免磁盘膨胀
             echo "Pruning dangling images..."
@@ -494,7 +492,7 @@ jobs:
               --log-opt max-size=10m \
               --log-opt max-file=3 \
               --restart always \
-              ccr.ccs.tencentyun.com/numind/numind-server:release
+              pmtmyaggy/numind-server:release
             
             # 等待容器启动
             echo "Waiting for container to start..."
@@ -562,19 +560,19 @@ jobs:
 
             # 登录到Docker Hub
             echo "🔐 登录到Docker Hub..."
-            echo "${{ env.TCR_PASSWORD }}" | docker login -u ${{ env.TCR_USERNAME }} --password-stdin ${{ env.TCR_REGISTRY }}
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin
 
             # 删除旧镜像
             echo "🗑️  删除旧镜像（如果存在）..."
-            docker rmi -f ccr.ccs.tencentyun.com/numind/numind-server:staging 2>/dev/null || echo "旧镜像不存在，跳过删除"
+            docker rmi -f pmtmyaggy/numind-server:staging 2>/dev/null || echo "旧镜像不存在，跳过删除"
 
             # 拉取最新镜像
             echo "📦 拉取最新镜像..."
-            docker pull ccr.ccs.tencentyun.com/numind/numind-server:staging
+            docker pull pmtmyaggy/numind-server:staging
 
             # 验证镜像拉取成功
             echo "🔍 验证镜像信息..."
-            docker images --digests ccr.ccs.tencentyun.com/numind/numind-server:staging --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Digest}}\t{{.CreatedAt}}\t{{.Size}}"
+            docker images --digests pmtmyaggy/numind-server:staging --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Digest}}\t{{.CreatedAt}}\t{{.Size}}"
 
             # 清理 dangling 镜像
             echo "🧹 清理悬空镜像..."
@@ -611,7 +609,7 @@ jobs:
               --log-opt max-size=10m \
               --log-opt max-file=3 \
               --restart always \
-              ccr.ccs.tencentyun.com/numind/numind-server:staging
+              pmtmyaggy/numind-server:staging
 
             # 等待容器启动
             echo "Waiting for container to start..."
@@ -674,7 +672,7 @@ jobs:
 
             # 登录到Docker Hub
             echo "🔐 登录到Docker Hub..."
-            echo "${{ env.TCR_PASSWORD }}" | docker login -u ${{ env.TCR_USERNAME }} --password-stdin ${{ env.TCR_REGISTRY }}
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin
             
             # 验证登录状态
             echo "✅ Docker登录状态验证:"
@@ -683,14 +681,14 @@ jobs:
             # 确定镜像标签（现在只通过 tag 触发）
             IMAGE_TAG="${{ github.ref_name }}"
             echo "🚀 通过 TAG 触发部署: $IMAGE_TAG"
-            echo "📦 拉取镜像: ccr.ccs.tencentyun.com/numind/numind-server:$IMAGE_TAG"
+            echo "📦 拉取镜像: pmtmyaggy/numind-server:$IMAGE_TAG"
             
             # 拉取最新镜像
-            docker pull ccr.ccs.tencentyun.com/numind/numind-server:$IMAGE_TAG
+            docker pull pmtmyaggy/numind-server:$IMAGE_TAG
             
             # 验证镜像拉取成功
             echo "🔍 验证镜像信息:"
-            docker images ccr.ccs.tencentyun.com/numind/numind-server:$IMAGE_TAG --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}\t{{.Size}}"
+            docker images pmtmyaggy/numind-server:$IMAGE_TAG --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}\t{{.Size}}"
 
             # 清理 dangling (<none>) 镜像，避免磁盘膨胀
             echo "Pruning dangling images..."
@@ -745,7 +743,7 @@ jobs:
               --log-opt max-size=20m \
               --log-opt max-file=5 \
               --restart always \
-              ccr.ccs.tencentyun.com/numind/numind-server:$IMAGE_TAG
+              pmtmyaggy/numind-server:$IMAGE_TAG
             
             # 等待容器启动
             echo "Waiting for container to start..."
@@ -859,12 +857,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Tencent Cloud TCR
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.TCR_REGISTRY }}
-          username: ${{ env.TCR_USERNAME }}
-          password: ${{ env.TCR_PASSWORD }}
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_PASSWORD }}
 
       - name: Calculate Admin Metadata
         id: admin-meta
@@ -892,9 +889,9 @@ jobs:
           echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
           
           # 生成 tags 列表
-          TAGS="ccr.ccs.tencentyun.com/numind/numind-admin:$IMAGE_TAG"
+          TAGS="pmtmyaggy/numind-admin:$IMAGE_TAG"
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            TAGS="$TAGS,ccr.ccs.tencentyun.com/numind/numind-admin:latest"
+            TAGS="$TAGS,pmtmyaggy/numind-admin:latest"
           fi
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
@@ -931,18 +928,18 @@ jobs:
           port: 22
           command_timeout: 10m
           script: |
-            echo "${{ env.TCR_PASSWORD }}" | docker login -u ${{ env.TCR_USERNAME }} --password-stdin ${{ env.TCR_REGISTRY }}
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin
             
             # 拉取新镜像
-            docker pull ccr.ccs.tencentyun.com/numind/numind-admin:admin-develop
+            docker pull pmtmyaggy/numind-admin:admin-develop
             
             # 获取新镜像的 ID
-            NEW_IMAGE_ID=$(docker images --format "{{.ID}}" ccr.ccs.tencentyun.com/numind/numind-admin:admin-develop | head -n 1)
+            NEW_IMAGE_ID=$(docker images --format "{{.ID}}" pmtmyaggy/numind-admin:admin-develop | head -n 1)
             echo "新镜像 ID: $NEW_IMAGE_ID"
             
             # 清理相同 tag 的旧镜像（保留新镜像）
             echo "清理相同 tag 的旧镜像..."
-            docker images ccr.ccs.tencentyun.com/numind/numind-admin:admin-develop --format "{{.ID}}" | while read image_id; do
+            docker images pmtmyaggy/numind-admin:admin-develop --format "{{.ID}}" | while read image_id; do
               if [ "$image_id" != "$NEW_IMAGE_ID" ]; then
                 echo "删除旧镜像: $image_id"
                 docker rmi $image_id || true
@@ -967,7 +964,7 @@ jobs:
               --log-opt max-size=10m \
               --log-opt max-file=3 \
               --restart always \
-              ccr.ccs.tencentyun.com/numind/numind-admin:admin-develop
+              pmtmyaggy/numind-admin:admin-develop
             
             sleep 10
             if curl -f http://localhost:9099/healthz > /dev/null 2>&1; then
@@ -996,18 +993,18 @@ jobs:
           password: ${{ secrets.DEV_SERVER_PASSWORD }}
           command_timeout: 10m
           script: |
-            echo "${{ env.TCR_PASSWORD }}" | docker login -u ${{ env.TCR_USERNAME }} --password-stdin ${{ env.TCR_REGISTRY }}
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin
             
             # 拉取新镜像
-            docker pull ccr.ccs.tencentyun.com/numind/numind-admin:admin-release
+            docker pull pmtmyaggy/numind-admin:admin-release
             
             # 获取新镜像的 ID
-            NEW_IMAGE_ID=$(docker images --format "{{.ID}}" ccr.ccs.tencentyun.com/numind/numind-admin:admin-release | head -n 1)
+            NEW_IMAGE_ID=$(docker images --format "{{.ID}}" pmtmyaggy/numind-admin:admin-release | head -n 1)
             echo "新镜像 ID: $NEW_IMAGE_ID"
             
             # 清理相同 tag 的旧镜像（保留新镜像）
             echo "清理相同 tag 的旧镜像..."
-            docker images ccr.ccs.tencentyun.com/numind/numind-admin:admin-release --format "{{.ID}}" | while read image_id; do
+            docker images pmtmyaggy/numind-admin:admin-release --format "{{.ID}}" | while read image_id; do
               if [ "$image_id" != "$NEW_IMAGE_ID" ]; then
                 echo "删除旧镜像: $image_id"
                 docker rmi $image_id || true
@@ -1032,7 +1029,7 @@ jobs:
               --log-opt max-size=10m \
               --log-opt max-file=3 \
               --restart always \
-              ccr.ccs.tencentyun.com/numind/numind-admin:admin-release
+              pmtmyaggy/numind-admin:admin-release
             
             sleep 10
             if curl -f http://localhost:9103/healthz > /dev/null 2>&1; then
@@ -1062,18 +1059,18 @@ jobs:
           command_timeout: 10m
           script: |
             IMAGE_TAG="${{ github.ref_name }}"
-            echo "${{ env.TCR_PASSWORD }}" | docker login -u ${{ env.TCR_USERNAME }} --password-stdin ${{ env.TCR_REGISTRY }}
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin
             
             # 拉取新镜像
-            docker pull ccr.ccs.tencentyun.com/numind/numind-admin:$IMAGE_TAG
+            docker pull pmtmyaggy/numind-admin:$IMAGE_TAG
             
             # 获取新镜像的 ID
-            NEW_IMAGE_ID=$(docker images --format "{{.ID}}" ccr.ccs.tencentyun.com/numind/numind-admin:$IMAGE_TAG | head -n 1)
+            NEW_IMAGE_ID=$(docker images --format "{{.ID}}" pmtmyaggy/numind-admin:$IMAGE_TAG | head -n 1)
             echo "新镜像 ID: $NEW_IMAGE_ID"
             
             # 清理相同 tag 的旧镜像（保留新镜像）
             echo "清理相同 tag 的旧镜像..."
-            docker images ccr.ccs.tencentyun.com/numind/numind-admin:$IMAGE_TAG --format "{{.ID}}" | while read image_id; do
+            docker images pmtmyaggy/numind-admin:$IMAGE_TAG --format "{{.ID}}" | while read image_id; do
               if [ "$image_id" != "$NEW_IMAGE_ID" ]; then
                 echo "删除旧镜像: $image_id"
                 docker rmi $image_id || true
@@ -1098,7 +1095,7 @@ jobs:
               --log-opt max-size=10m \
               --log-opt max-file=3 \
               --restart always \
-              ccr.ccs.tencentyun.com/numind/numind-admin:$IMAGE_TAG
+              pmtmyaggy/numind-admin:$IMAGE_TAG
             
             sleep 10
             if curl -f http://localhost:9104/healthz > /dev/null 2>&1; then
