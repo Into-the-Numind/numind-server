@@ -238,6 +238,11 @@ func autoMigrate(db *gorm.DB) error {
 
 	log.Infow("SOP tables migration completed")
 
+	// 迁移等级变更日志表
+	if err := db.AutoMigrate(&model.TierChangeLog{}); err != nil {
+		return fmt.Errorf("failed to migrate tier_change_log: %v", err)
+	}
+
 	log.Infow("All database schema migration completed")
 
 	// 3. 迁移后验证字符集
