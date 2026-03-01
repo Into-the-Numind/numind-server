@@ -76,6 +76,10 @@ type UserBiz interface {
 
 	// 会员类型同步方法
 	SyncMembershipType(ctx context.Context, userID uint, newType string, resetMonthly bool) error
+
+	// 客户管理
+	CreateCustomer(ctx context.Context, parentUserID uint, r *v1.CreateCustomerRequest) error
+	CheckUsernameUsage(ctx context.Context, username string) error
 }
 
 // UserBiz 接口的实现.
@@ -799,4 +803,78 @@ func (b *userBiz) SyncMembershipType(ctx context.Context, userID uint, newType s
 
 	return b.ds.DB().Model(&model.User{}).Where("id = ?", userID).
 		Updates(updateData).Error
+}
+
+// CreateCustomer 是 UserBiz 接口中 `CreateCustomer` 方法的实现.
+func (b *userBiz) CreateCustomer(ctx context.Context, parentUserID uint, r *v1.CreateCustomerRequest) error {
+	// 1. 权限校验：检查当前用户是否是父级账户（ParentUserID为0或NULL）
+	// 注意：这里传入的 parentUserID 是调用者的 ID
+	parentUser, err := b.ds.Users().GetUserByID(ctx, parentUserID)
+	if err != nil {
+		return err
+	}
+
+	if parentUser.ParentUserID != nil {
+		return fmt.Errorf("操作失败：只有一级客户可以创建子客户")
+	}
+
+	// 2. 查重：检查用户名和手机号是否已存在
+	var count int64
+	query := b.ds.DB().Model(&model.User{})
+	if r.Phone != "" {
+		query = query.Where("username = ? OR phone = ?", r.Username, r.Phone)
+	} else {
+		query = query.Where("username = ?", r.Username)
+	}
+
+	if err := query.Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return errno.ErrUserAlreadyExist
+	}
+
+	// 3. 数据构造
+	// 生成唯一的OpenID和UnionID占位符
+	// 使用时间戳和随机数生成唯一ID
+	uuid := fmt.Sprintf("%d_%d", time.Now().UnixNano(), parentUserID)
+	openID := fmt.Sprintf("web_create_openid_%s", uuid)
+	unionID := fmt.Sprintf("web_create_unionid_%s", uuid)
+
+	user := model.User{
+		Username: r.Username,
+		// 密码直接存储明文，不加密
+		Password: r.Password,
+		Nickname: r.Nickname,
+		Phone:    r.Phone,
+		// 强制设置的字段
+		UserTier:       model.UserTierFree,
+		MembershipType: model.MembershipTypeFree,
+		// 关联信息
+		ParentUserID: &parentUserID,
+		// 微信相关占位符
+		OpenID:  openID,
+		UnionID: unionID,
+		// 默认状态
+		Status: 1, // 正常
+	}
+
+	// 4. 入库
+	if err := b.ds.Users().Create(ctx, &user); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// CheckUsernameUsage 检查用户名是否已被占用.
+func (b *userBiz) CheckUsernameUsage(ctx context.Context, username string) error {
+	var count int64
+	if err := b.ds.DB().Model(&model.User{}).Where("username = ?", username).Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return errno.ErrUserAlreadyExist
+	}
+	return nil
 }

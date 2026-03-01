@@ -317,7 +317,9 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 客户管理相关
 	{
-		customerCtrl := customercontroller.NewCustomerController(b.Customers())
+		customerCtrl := customercontroller.NewCustomerController(b.Customers(), b.Users())
+		authGroup.POST("/customers", customerCtrl.Create)                                           // 创建子客户（注册）
+		authGroup.GET("/customers/check-username", customerCtrl.CheckUsername)                      // 检查用户名是否可用
 		authGroup.GET("/customers/statistics", customerCtrl.GetStatistics)                          // 获取客户统计数据
 		authGroup.GET("/customers/sub-users", customerCtrl.ListSubUsers)                            // 获取二级客户列表
 		authGroup.GET("/customers/sub-users/:user_id", customerCtrl.GetSubUserDetail)               // 获取二级客户详情
