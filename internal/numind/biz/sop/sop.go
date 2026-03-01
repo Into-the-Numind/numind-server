@@ -102,6 +102,11 @@ func (b *sopBiz) CreateTemplate(ctx context.Context, name, description, prompt s
 		return nil, fmt.Errorf("failed to create template: %w", err)
 	}
 
+	// 自动将新模板授权给所有已配置权限的子用户
+	if err := b.ds.Customers().GrantTemplateToConfiguredSubUsers(ctx, template.ID); err != nil {
+		log.C(ctx).Warnw("Failed to auto-grant new template to sub-users", "template_id", template.ID, "err", err)
+	}
+
 	return template, nil
 }
 

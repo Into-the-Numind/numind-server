@@ -859,12 +859,19 @@ func (b *userBiz) CreateCustomer(ctx context.Context, parentUserID uint, r *v1.C
 		Status: 1, // 正常
 	}
 
-	// 4. 入库
-	if err := b.ds.Users().Create(ctx, &user); err != nil {
-		return err
-	}
+	// 4. 入库 + 授权（事务）
+	return b.ds.DB().Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&user).Error; err != nil {
+			return err
+		}
 
-	return nil
+		// 继承父账户的所有SOP模板权限（单条SQL批量插入）
+		if err := b.ds.Customers().BulkGrantAllTemplates(ctx, parentUserID, user.ID); err != nil {
+			log.C(ctx).Warnw("Failed to grant SOP templates to new sub-user", "sub_user_id", user.ID, "err", err)
+		}
+
+		return nil
+	})
 }
 
 // CheckUsernameUsage 检查用户名是否已被占用.
