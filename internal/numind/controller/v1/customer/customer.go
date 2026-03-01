@@ -318,8 +318,8 @@ func (ctrl *CustomerController) Create(c *gin.Context) {
 
 	// 调用UserBiz创建客户
 	if err := ctrl.userBiz.CreateCustomer(c, user.ID, &req); err != nil {
-		log.C(c).Errorw("Failed to create customer", "parent_user_id", user.ID, "req", req, "err", err)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
+		log.C(c).Errorw("Failed to create customer", "parent_user_id", user.ID, "username", req.Username, "err", err)
+		core.WriteResponse(c, err, nil)
 		return
 	}
 

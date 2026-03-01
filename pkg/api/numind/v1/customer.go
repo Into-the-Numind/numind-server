@@ -88,5 +88,7 @@ type CreateCustomerRequest struct {
 	Username string `json:"username" binding:"required" valid:"alphanum,required,stringlength(1|255)"`
 	Password string `json:"password" binding:"required" valid:"required,stringlength(6|18)"`
 	Nickname string `json:"nickname" valid:"stringlength(0|255)"`
-	Phone    string `json:"phone"` // Optional for sub-users
+	Phone    string `json:"phone"`             // Optional for sub-users
+	Tier     string `json:"tier,omitempty" binding:"omitempty,oneof=free standard premium"` // 可选: "standard"/"premium"，默认 free
+	Months   int    `json:"months,omitempty" binding:"omitempty,min=1,max=12"`              // 当 Tier 不为空/free 时必填, 1-12
 }
