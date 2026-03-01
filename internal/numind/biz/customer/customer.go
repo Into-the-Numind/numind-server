@@ -3,9 +3,11 @@ package customer
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/model"
 	v1 "numind-server/pkg/api/numind/v1"
 )
 
@@ -24,6 +26,9 @@ type ICustomerBiz interface {
 
 	// 运行统计
 	GetCustomerStatistics(ctx context.Context, userID uint) (*v1.CustomerStatisticsResponse, error)
+
+	// 等级管理
+	UpdateSubUserTier(ctx context.Context, parentUserID, subUserID uint, req *v1.UpdateTierRequest) error
 }
 
 type customerBiz struct {
@@ -250,4 +255,52 @@ func (c *customerBiz) RevokeTemplates(ctx context.Context, parentUserID, subUser
 // CheckTemplatePermission 检查子客户是否有模板权限
 func (c *customerBiz) CheckTemplatePermission(ctx context.Context, userID, templateID uint) (bool, error) {
 	return c.ds.Customers().HasTemplatePermission(ctx, userID, templateID)
+}
+
+// UpdateSubUserTier 升级子用户会员等级
+func (c *customerBiz) UpdateSubUserTier(ctx context.Context, parentUserID, subUserID uint, req *v1.UpdateTierRequest) error {
+	// 1. 验证所属关系
+	user, err := c.ds.Customers().GetSubUser(ctx, parentUserID, subUserID)
+	if err != nil {
+		log.C(ctx).Errorw("Failed to verify sub user ownership", "parent_user_id", parentUserID, "sub_user_id", subUserID, "err", err)
+		return fmt.Errorf("子用户不存在或不属于当前用户")
+	}
+
+	// 2. 获取当前实际等级
+	currentTier := user.GetActualUserTier()
+
+	// 3. 校验只能升级不能降级
+	if model.TierRank(req.Tier) <= model.TierRank(currentTier) {
+		return fmt.Errorf("只能升级等级，不能降级（当前: %s, 目标: %s）", currentTier, req.Tier)
+	}
+
+	// 4. 计算到期时间：从当前时刻起 + 选择月数 × 30 天（精确到秒）
+	now := time.Now()
+	newExpires := now.AddDate(0, 0, req.Months*30)
+
+	// 5. 在事务中更新等级并写入变更日志
+	changeLog := &model.TierChangeLog{
+		ParentUserID:   parentUserID,
+		SubUserID:      subUserID,
+		OldTier:        currentTier,
+		NewTier:        req.Tier,
+		Months:         req.Months,
+		OldTierExpires: user.TierExpires,
+		NewTierExpires: newExpires,
+	}
+	if err := c.ds.Customers().UpdateSubUserTierWithLog(ctx, subUserID, req.Tier, newExpires, changeLog); err != nil {
+		log.C(ctx).Errorw("Failed to update sub user tier", "sub_user_id", subUserID, "err", err)
+		return fmt.Errorf("更新等级失败: %w", err)
+	}
+
+	log.C(ctx).Infow("Sub user tier upgraded",
+		"parent_user_id", parentUserID,
+		"sub_user_id", subUserID,
+		"old_tier", currentTier,
+		"new_tier", req.Tier,
+		"months", req.Months,
+		"new_expires", newExpires.Format("2006-01-02"),
+	)
+
+	return nil
 }

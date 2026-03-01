@@ -439,6 +439,36 @@ func (u *User) IsInNewSOPMonth() bool {
 	return now.After(lastReset.AddDate(0, 0, 30))
 }
 
+// TierChangeLog 等级变更日志
+type TierChangeLog struct {
+	ID             uint64     `gorm:"primaryKey;autoIncrement" json:"id"`
+	ParentUserID   uint       `gorm:"type:int unsigned;not null;index:idx_parent" json:"parent_user_id"`
+	SubUserID      uint       `gorm:"type:int unsigned;not null;index:idx_sub" json:"sub_user_id"`
+	OldTier        string     `gorm:"size:20;not null" json:"old_tier"`
+	NewTier        string     `gorm:"size:20;not null" json:"new_tier"`
+	Months         int        `gorm:"not null;default:1" json:"months"`
+	OldTierExpires *time.Time `json:"old_tier_expires"`
+	NewTierExpires time.Time  `gorm:"not null" json:"new_tier_expires"`
+	CreatedAt      time.Time  `gorm:"not null;index:idx_created" json:"created_at"`
+}
+
+func (TierChangeLog) TableName() string {
+	return "tier_change_log"
+}
+
+// TierRank 返回等级的数值排名（用于升级校验）
+// free=0, standard=1, premium=2
+func TierRank(tier string) int {
+	switch tier {
+	case UserTierStandard:
+		return 1
+	case UserTierPremium:
+		return 2
+	default:
+		return 0
+	}
+}
+
 // GetUserTierDisplayName 获取用户等级的显示名称
 func (u *User) GetUserTierDisplayName() string {
 	actualTier := u.GetActualUserTier()
