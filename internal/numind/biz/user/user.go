@@ -834,16 +834,26 @@ func (b *userBiz) CreateCustomer(ctx context.Context, parentUserID uint, r *v1.C
 		return errno.ErrUserAlreadyExist
 	}
 
-	// 3. 数据构造
+	// 3. 校验可选的会员等级参数
+	tier := r.Tier
+	if tier == "" {
+		tier = model.UserTierFree
+	}
+	if tier != model.UserTierFree && tier != model.UserTierStandard && tier != model.UserTierPremium {
+		return errno.ErrInvalidParameter.SetMessage("无效的会员等级: %s", tier)
+	}
+	if tier != model.UserTierFree && (r.Months < 1 || r.Months > 12) {
+		return errno.ErrInvalidParameter.SetMessage("开通时长需在 1-12 个月之间")
+	}
+
+	// 4. 数据构造
 	// 生成唯一的OpenID和UnionID占位符
-	// 使用时间戳和随机数生成唯一ID
 	uuid := fmt.Sprintf("%d_%d", time.Now().UnixNano(), parentUserID)
 	openID := fmt.Sprintf("web_create_openid_%s", uuid)
 	unionID := fmt.Sprintf("web_create_unionid_%s", uuid)
 
 	user := model.User{
 		Username: r.Username,
-		// 密码直接存储明文，不加密
 		Password: r.Password,
 		Nickname: r.Nickname,
 		Phone:    r.Phone,
@@ -856,13 +866,37 @@ func (b *userBiz) CreateCustomer(ctx context.Context, parentUserID uint, r *v1.C
 		OpenID:  openID,
 		UnionID: unionID,
 		// 默认状态
-		Status: 1, // 正常
+		Status: 1,
 	}
 
-	// 4. 入库 + 授权（事务）
+	// 如果指定了付费等级，设置 UserTier 和 TierExpires
+	var tierExpires time.Time
+	if tier != model.UserTierFree {
+		user.UserTier = tier
+		tierExpires = time.Now().AddDate(0, 0, r.Months*30)
+		user.TierExpires = &tierExpires
+	}
+
+	// 5. 入库 + 授权（事务）
 	return b.ds.DB().Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&user).Error; err != nil {
 			return err
+		}
+
+		// 如果指定了付费等级，记录等级变更日志
+		if tier != model.UserTierFree {
+			changeLog := model.TierChangeLog{
+				ParentUserID:   parentUserID,
+				SubUserID:      user.ID,
+				OldTier:        model.UserTierFree,
+				NewTier:        tier,
+				Months:         r.Months,
+				OldTierExpires: nil,
+				NewTierExpires: tierExpires,
+			}
+			if err := tx.Create(&changeLog).Error; err != nil {
+				return fmt.Errorf("记录等级变更日志失败: %w", err)
+			}
 		}
 
 		// 继承父账户的所有SOP模板权限（单条SQL批量插入）
