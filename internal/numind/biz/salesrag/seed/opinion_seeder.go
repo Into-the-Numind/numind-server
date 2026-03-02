@@ -5,24 +5,11 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 
 	"numind-server/internal/pkg/model"
 
 	"gorm.io/gorm"
 )
-
-// OpinionItem 观点库 JSON 结构
-type OpinionItem struct {
-	ID        string   `json:"观点ID"`
-	Title     string   `json:"标题"`
-	Insight   string   `json:"核心洞察"`
-	Quote     string   `json:"金句"`
-	CaseStudy string   `json:"案例"`
-	Metaphor  string   `json:"比喻"`
-	Scenarios []string `json:"适用场景"`
-	ScriptSrc string   `json:"脚本来源"`
-}
 
 // trackDef 赛道定义
 type trackDef struct {
@@ -145,33 +132,4 @@ func findTrackDef(slug string) *trackDef {
 		}
 	}
 	return nil
-}
-
-func convertToMarkdown(opinions []OpinionItem, trackName string) string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# %s 观点库\n\n", trackName))
-
-	for _, op := range opinions {
-		sb.WriteString(fmt.Sprintf("## %s · %s\n\n", op.ID, op.Title))
-
-		if op.Insight != "" {
-			sb.WriteString(fmt.Sprintf("**核心洞察**: %s\n\n", op.Insight))
-		}
-		if op.Quote != "" {
-			sb.WriteString(fmt.Sprintf("**金句**: %s\n\n", op.Quote))
-		}
-		if op.CaseStudy != "" {
-			sb.WriteString(fmt.Sprintf("**案例**: %s\n\n", op.CaseStudy))
-		}
-		if op.Metaphor != "" {
-			sb.WriteString(fmt.Sprintf("**比喻**: %s\n\n", op.Metaphor))
-		}
-		if len(op.Scenarios) > 0 {
-			sb.WriteString(fmt.Sprintf("**适用场景**: %s\n\n", strings.Join(op.Scenarios, "、")))
-		}
-
-		sb.WriteString("---\n\n")
-	}
-
-	return sb.String()
 }
