@@ -166,6 +166,7 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.POST("/customers/sub-users/:user_id/templates", customerCtrl.GrantTemplates)      // 为二级客户授权模板
 		authGroup.POST("/customers/batch/grant-templates", customerCtrl.BatchGrantTemplates)        // 批量为多个二级客户授权模板
 		authGroup.POST("/customers/batch/revoke-templates", customerCtrl.BatchRevokeTemplates)      // 批量为多个二级客户撤销模板权限
+		authGroup.PUT("/customers/sub-users/:user_id/tier", customerCtrl.UpdateSubUserTier)         // 升级子用户会员等级
 		authGroup.DELETE("/customers/sub-users/:user_id/templates", customerCtrl.RevokeTemplates)   // 撤销二级客户模板权限
 	}
 

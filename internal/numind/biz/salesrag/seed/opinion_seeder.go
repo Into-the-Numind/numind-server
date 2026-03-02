@@ -3,27 +3,13 @@ package seed
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 
 	"numind-server/internal/pkg/model"
 
 	"gorm.io/gorm"
 )
-
-// OpinionItem 观点库 JSON 结构
-type OpinionItem struct {
-	ID        string   `json:"观点ID"`
-	Title     string   `json:"标题"`
-	Insight   string   `json:"核心洞察"`
-	Quote     string   `json:"金句"`
-	CaseStudy string   `json:"案例"`
-	Metaphor  string   `json:"比喻"`
-	Scenarios []string `json:"适用场景"`
-	ScriptSrc string   `json:"脚本来源"`
-}
 
 // trackDef 赛道定义
 type trackDef struct {
@@ -35,10 +21,10 @@ type trackDef struct {
 }
 
 var tracks = []trackDef{
-	{"overseas_property", "海外房产", "海外房产投资与IP打造相关观点", "data/overseas_property.json", 1},
-	{"insurance", "保险", "保险产品销售与IP建设相关观点", "data/insurance.json", 2},
-	{"overseas_ip", "海外IP", "海外高势能IP运营相关观点", "data/overseas_ip.json", 3},
-	{"study_immigration", "留学移民", "留学移民行业销售与IP相关观点", "data/study_immigration.json", 4},
+	{"overseas_property", "海外房产", "海外房产投资与IP打造相关观点", "data/overseas_property.txt", 1},
+	{"insurance", "保险", "保险产品销售与IP建设相关观点", "data/insurance.txt", 2},
+	{"overseas_ip", "通用观点库", "赛道通用销售观点", "data/overseas_ip.txt", 3},
+	{"study_immigration", "留学移民", "留学移民行业销售与IP相关观点", "data/study_immigration.txt", 4},
 }
 
 // Seeder 观点库初始化器
@@ -72,33 +58,25 @@ func (s *Seeder) SeedOpinionTracks(ctx context.Context) map[string]SeedResult {
 				t.Slug, existing.DocID, doc.Status)
 		}
 
-		// 2. 读取嵌入的 JSON 数据
+		// 2. 读取嵌入的 TXT 数据，直接作为 Markdown 使用
 		data, readErr := OpinionData.ReadFile(t.DataFile)
 		if readErr != nil {
 			log.Printf("[Seed] Failed to read embedded file %s: %v", t.DataFile, readErr)
 			continue
 		}
 
-		// 3. 解析 JSON
-		var opinions []OpinionItem
-		if parseErr := json.Unmarshal(data, &opinions); parseErr != nil {
-			log.Printf("[Seed] Failed to parse JSON for track '%s': %v", t.Slug, parseErr)
-			continue
-		}
+		markdown := string(data)
 
-		// 4. 转换为 Markdown
-		markdown := convertToMarkdown(opinions, t.Name)
-
-		// 5. 返回结果，由调用方执行 Ingest
+		// 3. 返回结果，由调用方执行 Ingest
 		results[t.Slug] = SeedResult{
 			Track:    t,
 			Markdown: markdown,
-			Count:    len(opinions),
+			Count:    0,
 			Existing: existing.ID > 0,
 			TrackID:  existing.ID,
 		}
 
-		log.Printf("[Seed] Prepared track '%s': %d opinions, %d bytes markdown", t.Slug, len(opinions), len(markdown))
+		log.Printf("[Seed] Prepared track '%s': %d bytes markdown", t.Slug, len(markdown))
 	}
 
 	return results
@@ -116,6 +94,8 @@ func (s *Seeder) CreateOrUpdateTrack(ctx context.Context, slug string, docID uin
 	if err == nil {
 		// 更新
 		existing.DocID = docID
+		existing.Name = td.Name
+		existing.Description = td.Desc
 		return s.db.WithContext(ctx).Save(&existing).Error
 	}
 
@@ -152,33 +132,4 @@ func findTrackDef(slug string) *trackDef {
 		}
 	}
 	return nil
-}
-
-func convertToMarkdown(opinions []OpinionItem, trackName string) string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# %s 观点库\n\n", trackName))
-
-	for _, op := range opinions {
-		sb.WriteString(fmt.Sprintf("## %s · %s\n\n", op.ID, op.Title))
-
-		if op.Insight != "" {
-			sb.WriteString(fmt.Sprintf("**核心洞察**: %s\n\n", op.Insight))
-		}
-		if op.Quote != "" {
-			sb.WriteString(fmt.Sprintf("**金句**: %s\n\n", op.Quote))
-		}
-		if op.CaseStudy != "" {
-			sb.WriteString(fmt.Sprintf("**案例**: %s\n\n", op.CaseStudy))
-		}
-		if op.Metaphor != "" {
-			sb.WriteString(fmt.Sprintf("**比喻**: %s\n\n", op.Metaphor))
-		}
-		if len(op.Scenarios) > 0 {
-			sb.WriteString(fmt.Sprintf("**适用场景**: %s\n\n", strings.Join(op.Scenarios, "、")))
-		}
-
-		sb.WriteString("---\n\n")
-	}
-
-	return sb.String()
 }

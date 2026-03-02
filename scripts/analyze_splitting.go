@@ -1,3 +1,4 @@
+//go:build ignore
 // +build ignore
 
 package main
@@ -46,14 +47,14 @@ func main() {
 	fmt.Println("\n----------------------------------------")
 	fmt.Println("1. 语义切分器状态检查")
 	fmt.Println("----------------------------------------")
-	
+
 	semanticSplitter := service.NewEmbeddingSplitter(service.EmbeddingSplitterConfig{
 		Threshold:    0.6,
 		MinChunkSize: 100,
 		MaxChunkSize: 1000,
 		OverlapSize:  100,
 	})
-	
+
 	if semanticSplitter.IsAvailable() {
 		fmt.Println("✅ 语义切分器可用")
 	} else {
@@ -95,7 +96,7 @@ func main() {
 		Strategy:          service.StrategyAuto,
 		SemanticMinLength: 2000,
 	})
-	
+
 	chunks, details, err := hybridSplitter.SplitWithDetails(text)
 	if err != nil {
 		log.Printf("切分失败: %v", err)
@@ -106,14 +107,14 @@ func main() {
 			fmt.Printf("   自动选择结果: %s\n", autoSelected)
 		}
 		fmt.Printf("   切分块数: %d\n", len(chunks))
-		
+
 		for i, chunk := range chunks {
 			fmt.Printf("\n   Chunk %d (%d 字符):\n", i+1, len(chunk.Content))
 			fmt.Printf("      内容: %s\n", truncate(chunk.Content, 80))
 			if len(chunk.Headers) > 0 {
 				fmt.Printf("      标题: %v\n", chunk.Headers)
 			}
-			
+
 			// 检查切分边界
 			checkBoundary(chunk.Content)
 		}
@@ -130,7 +131,9 @@ func main() {
 	fmt.Println("========================================")
 }
 
-func analyzeSplitting(splitter interface{ Split(string) ([]service.EnhancedSplitChunk, error) }, text string, name string) {
+func analyzeSplitting(splitter interface {
+	Split(string) ([]service.EnhancedSplitChunk, error)
+}, text string, name string) {
 	// 这里需要根据实际类型调整
 }
 
@@ -143,13 +146,13 @@ func analyzeBoundaries(chunks []service.SplitChunk) {
 	for i := 0; i < len(chunks)-1; i++ {
 		currentEnd := chunks[i].Content
 		nextStart := chunks[i+1].Content
-		
+
 		// 获取当前 chunk 的最后 20 个字符
 		currentEndTrim := currentEnd
 		if len(currentEndTrim) > 20 {
 			currentEndTrim = currentEndTrim[len(currentEndTrim)-20:]
 		}
-		
+
 		// 获取下一个 chunk 的前 20 个字符
 		nextStartTrim := nextStart
 		if len(nextStartTrim) > 20 {
@@ -159,7 +162,7 @@ func analyzeBoundaries(chunks []service.SplitChunk) {
 		fmt.Printf("\n边界 %d → %d:\n", i+1, i+2)
 		fmt.Printf("   Chunk %d 结尾: ...%q\n", i+1, currentEndTrim)
 		fmt.Printf("   Chunk %d 开头: %q...\n", i+2, nextStartTrim)
-		
+
 		// 检查是否在句子边界切分
 		if isSentenceBoundary(currentEnd, nextStart) {
 			fmt.Printf("   ✅ 在句子边界切分\n")
@@ -175,22 +178,22 @@ func isSentenceBoundary(prevText, nextText string) bool {
 	if len(trimmed) == 0 {
 		return false
 	}
-	
+
 	lastChar := trimmed[len(trimmed)-1:]
 	sentenceEndings := []string{".", "!", "?", "。", "！", "？", "；", ";", "\n"}
-	
+
 	for _, ending := range sentenceEndings {
 		if lastChar == ending {
 			return true
 		}
 	}
-	
+
 	// 检查下一个文本是否以大写字母或中文开头
 	nextTrimmed := strings.TrimSpace(nextText)
 	if len(nextTrimmed) == 0 {
 		return false
 	}
-	
+
 	firstChar := nextTrimmed[0:1]
 	// 大写字母
 	if firstChar >= "A" && firstChar <= "Z" {
@@ -200,7 +203,7 @@ func isSentenceBoundary(prevText, nextText string) bool {
 	if firstChar >= "\u4e00" && firstChar <= "\u9fff" {
 		return true
 	}
-	
+
 	return false
 }
 
@@ -210,10 +213,10 @@ func checkBoundary(content string) {
 	if len(lines) == 0 {
 		return
 	}
-	
+
 	firstLine := strings.TrimSpace(lines[0])
 	lastLine := strings.TrimSpace(lines[len(lines)-1])
-	
+
 	// 检查第一行是否以句子开始
 	if len(firstLine) > 0 {
 		firstChar := firstLine[0:1]
@@ -221,7 +224,7 @@ func checkBoundary(content string) {
 			fmt.Printf("      ⚠️  可能从句子中间开始（小写字母开头）\n")
 		}
 	}
-	
+
 	// 检查最后一行是否以句子结束
 	if len(lastLine) > 0 {
 		lastChar := lastLine[len(lastLine)-1:]

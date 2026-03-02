@@ -77,10 +77,18 @@ type CustomerStatisticsResponse struct {
 	RemainingSopRuns int    `json:"remaining_sop_runs"`
 }
 
+// UpdateTierRequest 升级子用户会员等级请求
+type UpdateTierRequest struct {
+	Tier   string `json:"tier" binding:"required,oneof=standard premium"`
+	Months int    `json:"months" binding:"required,min=1,max=12"`
+}
+
 // CreateCustomerRequest 创建子客户的请求参数
 type CreateCustomerRequest struct {
 	Username string `json:"username" binding:"required" valid:"alphanum,required,stringlength(1|255)"`
 	Password string `json:"password" binding:"required" valid:"required,stringlength(6|18)"`
-	Nickname string `json:"nickname" binding:"required" valid:"required,stringlength(1|255)"`
-	Phone    string `json:"phone"` // Optional for sub-users
+	Nickname string `json:"nickname" valid:"stringlength(0|255)"`
+	Phone    string `json:"phone"`                                                          // Optional for sub-users
+	Tier     string `json:"tier,omitempty" binding:"omitempty,oneof=free standard premium"` // 可选: "standard"/"premium"，默认 free
+	Months   int    `json:"months,omitempty" binding:"omitempty,min=1,max=12"`              // 当 Tier 不为空/free 时必填, 1-12
 }

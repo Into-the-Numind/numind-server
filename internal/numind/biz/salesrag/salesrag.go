@@ -851,8 +851,8 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, op
 	// 观点库（条件渲染 - 独立通道）
 	if opinionContext != "" {
 		prompt.WriteString("### 观点库\n")
-		prompt.WriteString("> 以下观点库供你参考，每条观点都包含核心洞察、金句、案例和适用场景。请根据用户的消息，判断其情绪和需求，从观点库中挑选最匹配的观点，并将其内容自然地融入上述框架中。\n\n")
-		prompt.WriteString("> **注意**：不要生硬地罗列观点，而是转化为你自己的语言，让回复听起来真诚、有洞察力。**重要！**：如果你觉得观点库不适合当轮的情况，则可以战术性放弃采用。\n\n")
+		prompt.WriteString("> 以下观点库供你参考，每条观点包含场景与关键词触达、客户潜台词、金句观点、活人感话术建议。请根据用户的消息，判断其情绪和所处场景，从观点库中挑选最匹配的观点，将其中的金句和话术建议自然地融入回复中。\n\n")
+		prompt.WriteString("> **注意**：不要生硬地罗列观点，而是转化为你自己的语言，让回复听起来真诚、有洞察力。特别关注「客户潜台词」来精准把握客户真实心理，用「活人感话术」的风格让回复有温度。**重要！**：如果你觉得观点库不适合当轮的情况，则可以战术性放弃采用。\n\n")
 		prompt.WriteString(opinionContext)
 		prompt.WriteString("\n\n")
 	}
@@ -896,7 +896,7 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, op
 		prompt.WriteString("   优先融合相关度高的知识，用你自己的理解重新组织，而非原文照搬  \n")
 	}
 	if opinionContext != "" {
-		prompt.WriteString("   涉及观点输出和洞察展现时，优先从【观点库】中挑选匹配观点，转化为自己的语言自然融入  \n")
+		prompt.WriteString("   涉及观点输出和洞察展现时，优先从【观点库】中挑选场景匹配的观点，参考其金句和活人感话术，转化为自己的语言自然融入  \n")
 	}
 	if strategyContent != "" {
 		prompt.WriteString("   灵活参考【核心策略参考】中的话术模板或逻辑\n\n")
@@ -996,8 +996,8 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, opi
 	// 观点库（条件渲染 - 独立通道）
 	if opinionContext != "" {
 		prompt.WriteString("### 观点库\n")
-		prompt.WriteString("> 以下观点库供你参考，每条观点都包含核心洞察、金句、案例和适用场景。请根据用户的消息，判断其情绪和需求，从观点库中挑选最匹配的观点，并将其内容自然地融入上述框架中。\n\n")
-		prompt.WriteString("> **注意**：不要生硬地罗列观点，而是转化为你自己的语言，让回复听起来真诚、有洞察力。**重要！**：如果你觉得观点库不适合当轮的情况，则可以战术性放弃采用。\n\n")
+		prompt.WriteString("> 以下观点库供你参考，每条观点包含场景与关键词触达、客户潜台词、金句观点、活人感话术建议。请根据用户的消息，判断其情绪和所处场景，从观点库中挑选最匹配的观点，将其中的金句和话术建议自然地融入回复中。\n\n")
+		prompt.WriteString("> **注意**：不要生硬地罗列观点，而是转化为你自己的语言，让回复听起来真诚、有洞察力。特别关注「客户潜台词」来精准把握客户真实心理，用「活人感话术」的风格让回复有温度。**重要！**：如果你觉得观点库不适合当轮的情况，则可以战术性放弃采用。\n\n")
 		prompt.WriteString(opinionContext)
 		prompt.WriteString("\n\n")
 	}
@@ -1048,7 +1048,7 @@ func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, opi
 		prompt.WriteString("  - 产品事实（价格、功能、参数、案例）必须核实，不得编造\n")
 	}
 	if opinionContext != "" {
-		prompt.WriteString("  - 涉及观点输出和立场建议时，可从【观点库】中挑选匹配观点，融入话术建议中\n")
+		prompt.WriteString("  - 涉及观点输出和立场建议时，可从【观点库】中挑选场景匹配的观点，参考其金句和活人感话术，融入话术建议中\n")
 	}
 	if strategyContent != "" {
 		prompt.WriteString("  - 策略分析和通用知识（客户心理、沟通技巧、行业经验），参考【核心策略参考】中的方法论和话术模板，并运用你的专业判断自由发挥，如果推荐策略与实际情况明显不符，以实际为准\n")

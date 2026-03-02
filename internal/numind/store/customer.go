@@ -32,6 +32,9 @@ type ICustomerStore interface {
 	// 运行次数更新
 	IncrementSopRunCount(ctx context.Context, userID uint) error
 	ResetMonthlySopRuns(ctx context.Context, userID uint) error
+
+	// 等级管理
+	UpdateSubUserTierWithLog(ctx context.Context, subUserID uint, tier string, tierExpires time.Time, changeLog *model.TierChangeLog) error
 }
 
 type customerStore struct {
@@ -296,4 +299,22 @@ func (c *customerStore) ResetMonthlySopRuns(ctx context.Context, userID uint) er
 		"monthly_sop_runs": 0,
 		"monthly_reset_at": now,
 	}).Error
+}
+
+// UpdateSubUserTierWithLog 在事务中更新子用户等级并写入变更日志
+func (c *customerStore) UpdateSubUserTierWithLog(ctx context.Context, subUserID uint, tier string, tierExpires time.Time, changeLog *model.TierChangeLog) error {
+	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&model.User{}).Where("id = ?", subUserID).Updates(map[string]interface{}{
+			"user_tier":    tier,
+			"tier_expires": tierExpires,
+		}).Error; err != nil {
+			return fmt.Errorf("failed to update user tier: %w", err)
+		}
+
+		if err := tx.Create(changeLog).Error; err != nil {
+			return fmt.Errorf("failed to create tier change log: %w", err)
+		}
+
+		return nil
+	})
 }
