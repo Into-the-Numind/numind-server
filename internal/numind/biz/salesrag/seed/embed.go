@@ -2,5 +2,5 @@ package seed
 
 import "embed"
 
-//go:embed data/*.json
+//go:embed data/*.txt
 var OpinionData embed.FS
