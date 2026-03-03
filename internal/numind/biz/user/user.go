@@ -412,12 +412,14 @@ func (b *userBiz) CreateCustomer(ctx context.Context, parentUserID uint, r *v1.C
 		Status:       1,
 	}
 
-	// 如果指定了付费等级，设置 UserTier 和 TierExpires
+	// 如果指定了付费等级，设置 UserTier、TierExpires 和会员月周期起点
+	now := time.Now()
 	var tierExpires time.Time
 	if tier != model.UserTierFree {
 		user.UserTier = tier
-		tierExpires = time.Now().AddDate(0, 0, r.Months*30)
+		tierExpires = now.AddDate(0, 0, r.Months*30)
 		user.TierExpires = &tierExpires
+		user.MonthlyResetAt = &now
 	}
 
 	// 5. 入库 + 授权（事务）

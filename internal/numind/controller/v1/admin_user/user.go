@@ -273,6 +273,7 @@ func (ctrl *AdminUserController) UpdateUserTier(c *gin.Context) {
 		"user_tier": req.Tier,
 	}
 
+	now := time.Now()
 	if req.Tier == model.UserTierFree {
 		updates["tier_expires"] = nil
 	} else {
@@ -280,8 +281,10 @@ func (ctrl *AdminUserController) UpdateUserTier(c *gin.Context) {
 			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("付费等级需指定时长（1-12个月）"), nil)
 			return
 		}
-		expires := time.Now().AddDate(0, req.Months, 0)
+		expires := now.AddDate(0, 0, req.Months*30)
 		updates["tier_expires"] = expires
+		updates["monthly_sop_runs"] = 0
+		updates["monthly_reset_at"] = now
 	}
 
 	if err := ctrl.ds.DB().Model(&user).Updates(updates).Error; err != nil {
