@@ -2298,7 +2298,14 @@ func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []b
 		return "", "", fmt.Errorf("图片识别失败，请检查模型配置: %w", err)
 	}
 
-	return ocrText, cosURL, nil
+	// 返回签名 URL 给前端，避免私有 bucket 403
+	frontendURL, err := util.GenerateSignedURL(ctx, objectKey, 86400) // 24h
+	if err != nil {
+		log.Printf("[OCRAnalyze] Generate frontend signed URL failed, fallback to raw, error: %v", err)
+		frontendURL = cosURL
+	}
+
+	return ocrText, frontendURL, nil
 }
 
 // CheckSemanticSplitterStatus 检查语义切分器状态

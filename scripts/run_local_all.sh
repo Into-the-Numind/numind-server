@@ -3,9 +3,9 @@
 # ============================================================
 #  莫小派 - 本地一键启动（前端 + 后端）
 #
-#  用法：  ./scripts/run_local_all.sh          启动全部（前端 V3 + 后端 + 辅助服务）
-#          ./scripts/run_local_all.sh backend   只启动后端
-#          ./scripts/run_local_all.sh frontend  只启动前端 V3
+#  用法：  ./scripts/run_local_all.sh          启动全部（用户端 + 管理端 + 辅助服务）
+#          ./scripts/run_local_all.sh backend   只启动后端（用户端 + 管理端）
+#          ./scripts/run_local_all.sh frontend  只启动前端（V3 + 管理端）
 #
 #  后端使用 air 热重载：改了 Go 代码保存后几秒自动生效，无需手动重启
 #  前端使用 Vite：改了 Vue 代码保存后浏览器自动刷新
@@ -21,6 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT_ROOT="$(cd "$SERVER_DIR/.." && pwd)"
 WEB_V3_DIR="$PROJECT_ROOT/numind-web-v3"
+ADMIN_WEB_DIR="$PROJECT_ROOT/numind-admin-web"
 AIR_BIN="$HOME/go/bin/air"
 
 # --- 颜色输出 ---
@@ -53,28 +54,20 @@ start_backend() {
 
     cd "$SERVER_DIR"
 
-    # 环境变量（从原 run_local_api.sh 搬过来）
+    # 环境变量
     mkdir -p ./data/image
     export NUMIND_DB_MAX_CONNECTION_LIFE_TIME="30s"
     export PATH="/opt/homebrew/Caskroom/miniconda/base/bin:$PATH"
-    export WECOM_CORP_ID="wwb71317627b6b70d8"
-    export WECOM_SECRET="7-55a-RDZgDzC5jhH4YjxF6zwtFRO0Mwj5_6TxQGUtc"
-    export WECOM_POLLER_ENABLED="true"
     export MYSQL_DSN="root:Numind2025@tcp(49.233.219.254:13306)/numind-dev?charset=utf8mb4&parseTime=True&loc=Local"
 
-    # 1) 企微消息轮询（后台）
-    echo -e "${GREEN}[1/3] 启动 wecom-agent ...${NC}"
-    go run cmd/wecom-agent/main.go &
-    PIDS+=($!)
-
-    # 2) 语义切分服务（后台）
-    echo -e "${GREEN}[2/3] 启动 semantic-server（模型加载中，请等待几秒）...${NC}"
+    # 1) 语义切分服务（后台）
+    echo -e "${GREEN}[1/3] 启动 semantic-server（模型加载中，请等待几秒）...${NC}"
     python3 scripts/semantic_server.py > semantic_server.log 2>&1 &
     PIDS+=($!)
     sleep 5
 
-    # 3) 主 API —— 用 air 热重载
-    echo -e "${GREEN}[3/3] 启动 numind-server（air 热重载模式）...${NC}"
+    # 2) 主 API —— 用 air 热重载
+    echo -e "${GREEN}[2/3] 启动 numind-server（air 热重载模式）...${NC}"
     echo -e "${YELLOW}    改了 Go 代码保存后会自动重新编译，几秒生效${NC}"
 
     if [ -x "$AIR_BIN" ]; then
@@ -87,8 +80,21 @@ start_backend() {
         PIDS+=($!)
     fi
 
-    echo ""
-    echo -e "${GREEN}后端已启动：http://localhost:9091${NC}"
+    echo -e "${GREEN}    用户端 API：http://localhost:9091${NC}"
+
+    # 3) 管理后台 API —— 用 air 热重载
+    echo -e "${GREEN}[3/3] 启动 numind-admin（air 热重载模式）...${NC}"
+
+    if [ -x "$AIR_BIN" ]; then
+        $AIR_BIN -c .air.admin.toml &
+        PIDS+=($!)
+    else
+        echo -e "${RED}未找到 air，回退到普通模式（无热重载）${NC}"
+        go run cmd/numind-admin/main.go --config config_local.yaml &
+        PIDS+=($!)
+    fi
+
+    echo -e "${GREEN}    管理端 API：http://localhost:9099${NC}"
 }
 
 # --- 启动前端 V3 ---
@@ -111,7 +117,28 @@ start_frontend() {
     PIDS+=($!)
 
     echo ""
-    echo -e "${GREEN}前端已启动：http://localhost:5173${NC}"
+    echo -e "${GREEN}用户端前端：http://localhost:5173${NC}"
+}
+
+# --- 启动管理后台前端 ---
+start_admin_frontend() {
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}  启动管理后台前端${NC}"
+    echo -e "${CYAN}========================================${NC}"
+
+    cd "$ADMIN_WEB_DIR"
+
+    # 检查 node_modules
+    if [ ! -d "node_modules" ]; then
+        echo -e "${YELLOW}首次运行，安装依赖中...${NC}"
+        npm install
+    fi
+
+    echo -e "${GREEN}启动管理后台 Vite 开发服务器...${NC}"
+    npm run dev &
+    PIDS+=($!)
+
+    echo -e "${GREEN}管理后台前端：http://localhost:5174${NC}"
 }
 
 # --- 主逻辑 ---
@@ -128,6 +155,8 @@ case "$MODE" in
         start_backend
         echo ""
         start_frontend
+        echo ""
+        start_admin_frontend
         ;;
 esac
 
@@ -136,12 +165,13 @@ echo -e "${CYAN}========================================${NC}"
 echo -e "${CYAN}  全部就绪！${NC}"
 echo -e "${CYAN}========================================${NC}"
 echo ""
-echo -e "  ${GREEN}前端访问地址（复制到浏览器打开）：${NC}"
+echo -e "  ${GREEN}访问地址：${NC}"
 echo ""
-echo "  http://localhost:5173"
+echo "  用户端前端：  http://localhost:5173"
+echo "  管理后台前端：http://localhost:5174"
 echo ""
-echo -e "  后端 API：${GREEN}http://localhost:9091${NC}"
-echo -e "  旧版前端：直接浏览器打开 numind-web/ 下的 HTML 文件"
+echo -e "  用户端 API：  ${GREEN}http://localhost:9091${NC}"
+echo -e "  管理端 API：  ${GREEN}http://localhost:9099${NC}"
 echo ""
 echo -e "  ${YELLOW}改了代码只需保存，前后端都会自动刷新${NC}"
 echo -e "  ${YELLOW}按 Ctrl+C 停止所有服务${NC}"
