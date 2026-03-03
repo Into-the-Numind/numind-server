@@ -16,7 +16,6 @@ import (
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 	v1 "numind-server/pkg/api/numind/v1"
-	"numind-server/pkg/auth"
 )
 
 // AdminLoginController 管理员登录控制器
@@ -51,9 +50,8 @@ func (ctrl *AdminLoginController) Login(c *gin.Context) {
 		return
 	}
 
-	// 验证密码（使用 bcrypt 安全比对）
-	// TODO: 添加登录频率限制（需要 Redis 支持）
-	if err := auth.Compare(user.Password, req.Password); err != nil {
+	// 验证密码（明文比对）
+	if user.Password != req.Password {
 		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("用户名或密码错误"), nil)
 		return
 	}
