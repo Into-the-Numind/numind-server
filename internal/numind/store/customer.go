@@ -242,15 +242,14 @@ func (c *customerStore) GetCustomerStatistics(ctx context.Context, userID uint) 
 	return totalSubUsers, activeSubUsers, err
 }
 
-// GetUsersNeedMonthlyReset 获取需要月度重置的用户
+// GetUsersNeedMonthlyReset 获取需要月度重置的用户（30天会员月周期）
 func (c *customerStore) GetUsersNeedMonthlyReset(ctx context.Context) ([]model.User, error) {
 	var users []model.User
 
-	now := time.Now()
-	// 查找monthly_reset_at不在本月的用户
+	// 查找 monthly_reset_at 为空 或 距上次重置已超过30天的用户
+	threshold := time.Now().AddDate(0, 0, -30)
 	err := c.db.WithContext(ctx).
-		Where("monthly_reset_at IS NULL OR YEAR(monthly_reset_at) != ? OR MONTH(monthly_reset_at) != ?",
-			now.Year(), int(now.Month())).
+		Where("monthly_reset_at IS NULL OR monthly_reset_at < ?", threshold).
 		Find(&users).Error
 
 	return users, err
@@ -270,9 +269,9 @@ func (c *customerStore) IncrementSopRunCount(ctx context.Context, userID uint) e
 	if user.MonthlyResetAt == nil {
 		needReset = true
 	} else {
-		// 检查是否跨月
+		// 检查是否已过30天会员月周期（与 IsInNewSOPMonth 统一）
 		lastReset := *user.MonthlyResetAt
-		if now.Year() != lastReset.Year() || now.Month() != lastReset.Month() {
+		if now.After(lastReset.AddDate(0, 0, 30)) {
 			needReset = true
 		}
 	}
@@ -304,9 +303,12 @@ func (c *customerStore) ResetMonthlySopRuns(ctx context.Context, userID uint) er
 // UpdateSubUserTierWithLog 在事务中更新子用户等级并写入变更日志
 func (c *customerStore) UpdateSubUserTierWithLog(ctx context.Context, subUserID uint, tier string, tierExpires time.Time, changeLog *model.TierChangeLog) error {
 	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		now := time.Now()
 		if err := tx.Model(&model.User{}).Where("id = ?", subUserID).Updates(map[string]interface{}{
-			"user_tier":    tier,
-			"tier_expires": tierExpires,
+			"user_tier":        tier,
+			"tier_expires":     tierExpires,
+			"monthly_sop_runs": 0,
+			"monthly_reset_at": now,
 		}).Error; err != nil {
 			return fmt.Errorf("failed to update user tier: %w", err)
 		}
