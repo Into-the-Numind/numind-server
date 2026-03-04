@@ -1803,7 +1803,7 @@ func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint,
 	}
 
 	log.Printf("[AnalyzeProfileMultiFiles] Calling Volc StreamChatWithModel with %d content parts", len(contentParts))
-	return b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "medium", func(event string, token string) error {
+	return b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "high", func(event string, token string) error {
 		if event == "message" {
 			return onToken(token)
 		}
@@ -1892,7 +1892,7 @@ func (b *salesRAGBiz) analyzeChatStyleTextStream(ctx context.Context, userID uin
 		{"role": "system", "content": systemPrompt},
 		{"role": "user", "content": text},
 	}
-	analysis, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "low", func(event string, token string) error {
+	analysis, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "high", func(event string, token string) error {
 		if event == "message" {
 			return onToken(token)
 		}
@@ -2070,7 +2070,7 @@ func (b *salesRAGBiz) analyzeChatStyleImageStream(ctx context.Context, userID ui
 
 	// 5. 调用火山方舟视觉模型（doubao-seed-2-0-lite-260215，与客户档案分析保持一致）
 	const visionModel = "doubao-seed-2-0-lite-260215"
-	result, err := b.volcBiz.VisionAnalyzeStream(ctx, dataURL, systemPrompt, visionModel, 0, "low", onToken)
+	result, err := b.volcBiz.VisionAnalyzeStream(ctx, dataURL, systemPrompt, visionModel, 0, "high", onToken)
 	if err != nil {
 		log.Printf("[analyzeChatStyleImageStream] Volc VisionAnalyzeStream error: %v", err)
 		return "", fmt.Errorf("视觉模型分析失败: %w", err)
@@ -2214,72 +2214,47 @@ func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []b
 	}
 
 	// 3. 调用火山引擎 Doubao 视觉模型进行 OCR 识别
-	prompt := `你是一个专业的微信聊天记录识别专家。请识别这张微信聊天截图中的对话内容。
+	prompt := `你是一个专业的微信聊天记录识别专家。请严格按照以下流程识别这张微信聊天截图。
 
-  ## 识别要求
+  ## 识别流程（必须按步骤执行）
 
-  ### 1. 气泡布局识别
-  - **左边气泡（白色/灰色）= 客户消息**
-  - **右边气泡（绿色）= 销售消息**
-  - 从上到下完整扫描所有对话气泡
+  ### 第1步：识别头像位置
+  - 找到截图中左侧和右侧的头像
+  - **左侧头像 = 客户**，**右侧头像 = 销售**
+  - 头像是判断说话人的唯一依据：每条气泡紧贴哪一侧的头像，就属于哪个人
 
-  ### 2. 内容提取规则
-  - **保留表情符号**：如 [微笑]、[呲牙]、🌹 等
-  - **只提取文字气泡**：忽略图片、语音、视频等多媒体消息
-  - **保持原文**：不要修改、总结或解释对话内容
+  ### 第2步：从上到下逐条扫描气泡
+  - 严格按照从上到下的顺序，逐条处理每个气泡
+  - 对每条气泡，先确认它紧贴的是左侧头像还是右侧头像，再读取内容
+  - 不要跳过任何气泡，不要调整顺序
 
-  ### 3. 输出格式（严格遵守）
+  ### 第3步：提取气泡中的文字内容
+  - 只输出气泡中实际可见的文字，逐字忠实转录
+  - 如果气泡中有表情符号，只输出你确实在图中看到的表情，禁止添加图中不存在的表情
+  - 如果某处文字模糊看不清，用 [不清晰] 标记，禁止猜测
+  - 忽略图片消息、语音消息、视频消息、红包等非文字内容
+  - 忽略对话中的时间戳和日期分隔线
 
-  **如果截图包含多轮对话**（2条及以上消息），按以下格式输出：
+  ## 输出格式
 
-  【对话历史】
-  客户：[第1条客户消息]
-  销售：[第1条销售消息]
-  客户：[第2条客户消息]
-  ...（所有历史对话）
-
-  【客户最新消息】
-  客户：[最后一条客户消息]
-
-  **如果截图只有单条消息**，直接输出：
-
-  客户：[消息内容]
-
-  ### 4. 特殊处理规则
-
-  - **最新消息必须是客户发的**：如果截图最后一条是销售发的，往前找到最近的客户消息作为"最新消息"
-  - **空消息处理**：如果气泡只有表情没有文字，保留表情符号
-  - **时间戳忽略**：不要提取对话中的时间信息
-
-  ## 输出示例
+  每条消息一行，格式为"说话人：内容"，按截图中从上到下的原始顺序排列。
 
   ### 示例1：多轮对话
-  【对话历史】
   客户：你们这个产品怎么样？
   销售：我们的产品在行业内评价很高，已经服务了1000+客户
   客户：价格呢？
-  销售：我们有三种套餐，基础版998元...
-
-  【客户最新消息】
+  销售：我们有三种套餐，基础版998元起
   客户：太贵了，能便宜点吗？
 
   ### 示例2：单条消息
   客户：在吗？
 
-  ### 示例3：包含表情
-  【对话历史】
-  客户：你好[微笑]
-  销售：您好，很高兴为您服务
+  ## 绝对禁止
 
-  【客户最新消息】
-  客户：我想了解一下产品
-
-  ## 关键约束
-
-  1. **严格使用【对话历史】和【客户最新消息】标记**，不要使用其他标记
-  2. **每条消息前必须有"客户："或"销售："前缀**
-  3. **不要添加任何分析、解释或总结**，只输出识别的对话内容
-  4. **保持对话的原始顺序和完整性**
+  1. **禁止凭空捏造**：不要输出图中没有的文字或表情
+  2. **禁止调整顺序**：必须严格按截图从上到下的顺序输出
+  3. **禁止混淆说话人**：每条气泡的归属只看它紧贴哪侧头像
+  4. **禁止添加任何额外内容**：不要分析、总结、解释，只做纯转录
 
   现在请识别这张截图。`
 	visionModel := "doubao-seed-2-0-lite-260215"
@@ -2292,7 +2267,7 @@ func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []b
 	}
 
 	// 调用火山引擎视觉模型
-	ocrText, err := b.volcBiz.VisionAnalyze(ctx, signedURL, prompt, visionModel, 0, "minimal")
+	ocrText, err := b.volcBiz.VisionAnalyze(ctx, signedURL, prompt, visionModel, 0, "high")
 	if err != nil {
 		log.Printf("[OCRAnalyze] Volc Engine Vision OCR failed, user_id: %d, url: %s, error: %v", userID, signedURL, err)
 		return "", "", fmt.Errorf("图片识别失败，请检查模型配置: %w", err)
