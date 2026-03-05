@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	v1 "numind-server/pkg/api/numind/v1"
@@ -702,6 +703,10 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		return fmt.Errorf("failed to update node run: %w", err)
 	}
 
+	// 记录 LLM 用量到计费系统
+	billing.RecordLLM(run.UserID, "volc", node.ModelName, "sop_node_execute", usage,
+		billing.Metadata("run_id", billing.FormatUint(runID), "node_id", billing.FormatUint(nodeID)))
+
 	// 节点执行成功后，检查是否需要计入运行次数（首次成功运行节点时计入）
 	// 条件：run.Counted = false 表示此run尚未计入运行次数
 	if !run.Counted {
@@ -1265,6 +1270,10 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	if err := b.ds.Sop().CreateChatMessage(assistantMsg); err != nil {
 		return fmt.Errorf("failed to save assistant message: %w", err)
 	}
+
+	// 记录 SOP 聊天用量
+	billing.RecordLLM(userID, "volc", lastNode.ModelName, "sop_chat_stream", usage,
+		billing.Metadata("run_id", billing.FormatUint(runID), "conversation_id", conversationID))
 
 	// 发送包含 message_id 的完成事件
 	donePayload := fmt.Sprintf(`{"status":"completed","message_id":%d}`, assistantMsg.ID)

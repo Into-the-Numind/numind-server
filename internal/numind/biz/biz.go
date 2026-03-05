@@ -65,7 +65,8 @@ func NewBiz(ds store.IStore) *biz {
 
 	// Define Embedder using Qwen
 	embedder := func(ctx context.Context, text string) ([]float32, error) {
-		return b.Ali().QianwenEmbedding(text)
+		vec, _, err := b.Ali().QianwenEmbedding(text)
+		return vec, err
 	}
 
 	vectorStoreType := viper.GetString("salesrag.vector_store.type")

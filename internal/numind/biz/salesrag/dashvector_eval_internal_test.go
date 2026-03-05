@@ -50,7 +50,8 @@ func (s *DashVectorAuditSuite) SetupSuite() {
 	s.aliBiz = ali.NewAliBiz(nil)
 
 	embedder := func(ctx context.Context, text string) ([]float32, error) {
-		return s.aliBiz.QianwenEmbedding(text)
+		vec, _, err := s.aliBiz.QianwenEmbedding(text)
+		return vec, err
 	}
 
 	endpoint := viper.GetString("ali.dashvector.endpoint")

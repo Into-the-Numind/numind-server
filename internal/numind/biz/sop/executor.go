@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/tokenizer"
@@ -70,30 +71,8 @@ type LLMResponse struct {
 // event: "thinking" | "message" | "done"
 type StreamHandler func(event string, chunk string) error
 
-// TokenUsage Token使用统计信息
-type TokenUsage struct {
-	PromptTokens          int `json:"prompt_tokens"`     // 输入 tokens
-	CompletionTokens      int `json:"completion_tokens"` // 输出 tokens
-	TotalTokens           int `json:"total_tokens"`      // 总 tokens
-	ReasoningTokens       int `json:"reasoning_tokens"`  // 思考过程 tokens（某些模型直接返回）
-	EstimatedPromptTokens int `json:"-"`                 // 预估输入 tokens（内部使用）
-
-	// Volcengine/OpenAI 兼容的嵌套结构
-	CompletionTokensDetails struct {
-		ReasoningTokens int `json:"reasoning_tokens"`
-	} `json:"completion_tokens_details"`
-}
-
-// Normalize 同步嵌套字段到扁平字段
-func (u *TokenUsage) Normalize() {
-	if u == nil {
-		return
-	}
-	// 如果扁平字段为0且嵌套字段有值，则进行同步
-	if u.ReasoningTokens == 0 && u.CompletionTokensDetails.ReasoningTokens > 0 {
-		u.ReasoningTokens = u.CompletionTokensDetails.ReasoningTokens
-	}
-}
+// TokenUsage Token使用统计信息（类型别名，实际定义在 billing 包中）
+type TokenUsage = billing.TokenUsage
 
 // ExecuteNodeStream 流式执行单个节点（公开方法）
 func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, handler StreamHandler) (string, *TokenUsage, error) {

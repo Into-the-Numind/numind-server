@@ -91,7 +91,7 @@ func (rm *APIRecoveryManager) tryVolcWithRecovery(
 	for attempt := 1; attempt <= rm.maxRetryAttempts; attempt++ {
 		log.C(ctx).Infow("🔄 尝试火山引擎API", "attempt", attempt, "max_attempts", rm.maxRetryAttempts)
 
-		result, err := rm.volcBiz.VolcTextStream(ctx, messages, maxTokens, temperature)
+		result, _, err := rm.volcBiz.VolcTextStream(ctx, messages, maxTokens, temperature)
 		if err == nil {
 			log.C(ctx).Infow("✅ 火山引擎API成功", "attempt", attempt)
 			return result, nil
@@ -134,7 +134,7 @@ func (rm *APIRecoveryManager) tryAliWithRecovery(
 	for attempt := 1; attempt <= rm.maxRetryAttempts; attempt++ {
 		log.C(ctx).Infow("🔄 尝试阿里千问API", "attempt", attempt, "max_attempts", rm.maxRetryAttempts)
 
-		result, err := rm.aliBiz.QianwenTextStream(messages, maxTokens, temperature)
+		result, _, err := rm.aliBiz.QianwenTextStream(messages, maxTokens, temperature)
 		if err == nil {
 			log.C(ctx).Infow("✅ 阿里千问API成功", "attempt", attempt)
 			return result, nil

@@ -24,6 +24,7 @@ type IStore interface {
 	KnowledgeDocuments() KnowledgeDocumentStore
 	KnowledgeChunks() KnowledgeChunkStore
 	LanguageStyles() LanguageStyleStore
+	Billing() BillingStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -82,4 +83,9 @@ func (ds *datastore) KnowledgeChunks() KnowledgeChunkStore {
 // LanguageStyles 返回一个实现了 LanguageStyleStore 接口的实例.
 func (ds *datastore) LanguageStyles() LanguageStyleStore {
 	return NewLanguageStyleStore(ds.db)
+}
+
+// Billing 返回一个实现了 BillingStore 接口的实例.
+func (ds *datastore) Billing() BillingStore {
+	return newBillingStore(ds.db)
 }

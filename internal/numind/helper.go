@@ -243,6 +243,12 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate tier_change_log: %v", err)
 	}
 
+	// 迁移计费相关表
+	log.Infow("Migrating billing tables...")
+	if err := db.AutoMigrate(&model.UsageRecord{}, &model.BillingAccount{}, &model.PricingRule{}); err != nil {
+		return fmt.Errorf("failed to migrate billing tables: %v", err)
+	}
+
 	log.Infow("All database schema migration completed")
 
 	// 3. 迁移后验证字符集

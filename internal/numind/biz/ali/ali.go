@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/billing"
 	"numind-server/internal/service"
 	"os"
 	"strings"
@@ -34,10 +35,10 @@ type BailianConfig struct {
 }
 
 type AliBiz interface {
-	QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error)
-	QianwenEmbedding(text string) ([]float32, error)
-	QianwenVision(ctx context.Context, imageURL string, prompt string, model string) (string, error)
-	QianwenVisionStream(ctx context.Context, imageURL string, prompt string, model string, onToken func(token string) error) (string, error)
+	QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, *billing.TokenUsage, error)
+	QianwenEmbedding(text string) ([]float32, *billing.EmbeddingUsage, error)
+	QianwenVision(ctx context.Context, imageURL string, prompt string, model string) (string, *billing.TokenUsage, error)
+	QianwenVisionStream(ctx context.Context, imageURL string, prompt string, model string, onToken func(token string) error) (string, *billing.TokenUsage, error)
 	GetFileUploadLease(fileName string) (string, map[string]string, string, error)
 	AddFile(leaseId string) (string, error)
 	GetPromptManager() *PromptManager
@@ -143,7 +144,7 @@ func (a *aliBiz) GenerateContent(messages []map[string]string, cfg *BailianConfi
 }
 
 // 千问（文字模型）流式API（兼容模式）
-func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, error) {
+func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, *billing.TokenUsage, error) {
 	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 	bodyMap := map[string]interface{}{
 		"model":       getAliConfig("text", "model"),
@@ -151,6 +152,9 @@ func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, 
 		"max_tokens":  maxTokens,
 		"temperature": temperature,
 		"stream":      true,
+		"stream_options": map[string]interface{}{
+			"include_usage": true,
+		},
 	}
 	bodyBytes, _ := json.Marshal(bodyMap)
 	// 使用 persistent client
@@ -178,14 +182,15 @@ func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, 
 		// 网络诊断信息
 		if netErr, ok := err.(net.Error); ok {
 			if netErr.Timeout() {
-				return "", fmt.Errorf("网络超时错误: %w", err)
+				return "", nil, fmt.Errorf("网络超时错误: %w", err)
 			}
 		}
-		return "", fmt.Errorf("HTTP请求失败: %w", err)
+		return "", nil, fmt.Errorf("HTTP请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	var result strings.Builder
+	var usage *billing.TokenUsage
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -200,9 +205,12 @@ func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, 
 			if data == "[DONE]" {
 				break
 			}
+			// 尝试提取 usage（通常在最后一个 chunk 中）
+			if u := billing.ExtractUsageFromSSEData(data); u != nil {
+				usage = u
+			}
 			var m map[string]interface{}
 			if err := json.Unmarshal([]byte(data), &m); err == nil {
-				//fmt.Println(m)
 				if choices, ok := m["choices"].([]interface{}); ok && len(choices) > 0 {
 					if choice, ok := choices[0].(map[string]interface{}); ok {
 						if delta, ok := choice["delta"].(map[string]interface{}); ok {
@@ -216,13 +224,13 @@ func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, 
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return "", err
+		return "", usage, err
 	}
-	return result.String(), nil
+	return result.String(), usage, nil
 }
 
 // QianwenEmbedding 调用阿里百炼 Embedding API 获取文本向量（使用 DashScope 原生接口）
-func (a *aliBiz) QianwenEmbedding(text string) ([]float32, error) {
+func (a *aliBiz) QianwenEmbedding(text string) ([]float32, *billing.EmbeddingUsage, error) {
 	// 使用 DashScope 原生接口，支持自定义维度参数
 	url := "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
 
@@ -237,7 +245,7 @@ func (a *aliBiz) QianwenEmbedding(text string) ([]float32, error) {
 	}
 	bodyBytes, err := json.Marshal(bodyMap)
 	if err != nil {
-		return nil, fmt.Errorf("序列化请求失败: %w", err)
+		return nil, nil, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
 	// 使用 persistent client
@@ -265,22 +273,22 @@ func (a *aliBiz) QianwenEmbedding(text string) ([]float32, error) {
 		// 网络诊断信息
 		if netErr, ok := err.(net.Error); ok {
 			if netErr.Timeout() {
-				return nil, fmt.Errorf("网络超时错误: %w", err)
+				return nil, nil, fmt.Errorf("网络超时错误: %w", err)
 			}
 		}
-		return nil, fmt.Errorf("HTTP请求失败: %w", err)
+		return nil, nil, fmt.Errorf("HTTP请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	// 读取响应体
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("读取响应失败: %w", err)
+		return nil, nil, fmt.Errorf("读取响应失败: %w", err)
 	}
 
 	// 检查HTTP状态码
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(respBody))
+		return nil, nil, fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(respBody))
 	}
 
 	// 解析响应（DashScope 原生接口格式）
@@ -298,23 +306,25 @@ func (a *aliBiz) QianwenEmbedding(text string) ([]float32, error) {
 	}
 
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("解析响应失败: %w, 原始响应: %s", err, string(respBody))
+		return nil, nil, fmt.Errorf("解析响应失败: %w, 原始响应: %s", err, string(respBody))
 	}
 
 	// 提取向量
 	if len(result.Output.Embeddings) == 0 {
-		return nil, fmt.Errorf("API返回数据为空: %s", string(respBody))
+		return nil, nil, fmt.Errorf("API返回数据为空: %s", string(respBody))
 	}
 
 	if len(result.Output.Embeddings[0].Embedding) == 0 {
-		return nil, fmt.Errorf("API返回向量为空: %s", string(respBody))
+		return nil, nil, fmt.Errorf("API返回向量为空: %s", string(respBody))
 	}
 
-	return result.Output.Embeddings[0].Embedding, nil
+	// 返回向量和用量信息
+	embUsage := &billing.EmbeddingUsage{TotalTokens: result.Usage.TotalTokens}
+	return result.Output.Embeddings[0].Embedding, embUsage, nil
 }
 
 // QianwenVision 调用视觉模型读取图片 (OpenAI 兼容模式)
-func (a *aliBiz) QianwenVision(ctx context.Context, imageURL string, prompt string, model string) (string, error) {
+func (a *aliBiz) QianwenVision(ctx context.Context, imageURL string, prompt string, model string) (string, *billing.TokenUsage, error) {
 	if prompt == "" {
 		prompt = "图中描绘的是什么景象?"
 	}
@@ -329,7 +339,7 @@ func (a *aliBiz) QianwenVision(ctx context.Context, imageURL string, prompt stri
 		model = "qwen-vl-plus" // 保持原有默认值，避免影响其他模块
 	}
 	if apiKey == "" {
-		return "", fmt.Errorf("未配置ali.vision.api_key")
+		return "", nil, fmt.Errorf("未配置ali.vision.api_key")
 	}
 
 	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
@@ -363,7 +373,7 @@ func (a *aliBiz) QianwenVision(ctx context.Context, imageURL string, prompt stri
 
 	bodyBytes, err := json.Marshal(bodyMap)
 	if err != nil {
-		return "", fmt.Errorf("序列化请求失败: %w", err)
+		return "", nil, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
 	// 使用 persistent client
@@ -383,17 +393,17 @@ func (a *aliBiz) QianwenVision(ctx context.Context, imageURL string, prompt stri
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("HTTP请求失败: %w", err)
+		return "", nil, fmt.Errorf("HTTP请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("读取响应失败: %w", err)
+		return "", nil, fmt.Errorf("读取响应失败: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(respBody))
+		return "", nil, fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(respBody))
 	}
 
 	var result struct {
@@ -402,19 +412,23 @@ func (a *aliBiz) QianwenVision(ctx context.Context, imageURL string, prompt stri
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage *billing.TokenUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("解析响应失败: %w, 原始响应: %s", err, string(respBody))
+		return "", nil, fmt.Errorf("解析响应失败: %w, 原始响应: %s", err, string(respBody))
 	}
 
 	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("响应为空: %s", string(respBody))
+		return "", nil, fmt.Errorf("响应为空: %s", string(respBody))
 	}
-	return result.Choices[0].Message.Content, nil
+	if result.Usage != nil {
+		result.Usage.Normalize()
+	}
+	return result.Choices[0].Message.Content, result.Usage, nil
 }
 
 // QianwenVisionStream 调用视觉模型读取图片并进行流式回答 (OpenAI 兼容模式)
-func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, prompt string, model string, onToken func(token string) error) (string, error) {
+func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, prompt string, model string, onToken func(token string) error) (string, *billing.TokenUsage, error) {
 	if prompt == "" {
 		prompt = "图中描绘的是什么景象?"
 	}
@@ -427,7 +441,7 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 		model = "qwen-vl-plus"
 	}
 	if apiKey == "" {
-		return "", fmt.Errorf("未配置ali.vision.api_key")
+		return "", nil, fmt.Errorf("未配置ali.vision.api_key")
 	}
 
 	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
@@ -464,7 +478,7 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 
 	bodyBytes, err := json.Marshal(bodyMap)
 	if err != nil {
-		return "", fmt.Errorf("序列化请求失败: %w", err)
+		return "", nil, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
 	log.Printf("[QianwenVisionStream] Request: model=%s, imageURL=%s..., prompt=%s...", model, imageURL[:min(len(imageURL), 50)], prompt[:min(len(prompt), 50)])
@@ -483,7 +497,7 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("HTTP请求失败: %w", err)
+		return "", nil, fmt.Errorf("HTTP请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -491,10 +505,11 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(respBody))
+		return "", nil, fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(respBody))
 	}
 
 	var fullContent strings.Builder
+	var usage *billing.TokenUsage
 	scanner := bufio.NewScanner(resp.Body)
 	lineCount := 0
 	tokenCount := 0
@@ -511,6 +526,11 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 		if data == "[DONE]" {
 			log.Printf("[QianwenVisionStream] Received [DONE]")
 			break
+		}
+
+		// 尝试提取 usage（通常在最后一个 chunk 中）
+		if u := billing.ExtractUsageFromSSEData(data); u != nil {
+			usage = u
 		}
 
 		// 解析为通用 map 以查看完整结构
@@ -530,7 +550,7 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 						if onToken != nil {
 							if err := onToken(content); err != nil {
 								log.Printf("[QianwenVisionStream] onToken error: %v", err)
-								return fullContent.String(), err
+								return fullContent.String(), usage, err
 							}
 						}
 					}
@@ -552,17 +572,17 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 
 	if err := scanner.Err(); err != nil {
 		log.Printf("[QianwenVisionStream] Scanner error: %v", err)
-		return fullContent.String(), fmt.Errorf("读取流式响应失败: %w", err)
+		return fullContent.String(), usage, fmt.Errorf("读取流式响应失败: %w", err)
 	}
 
 	log.Printf("[QianwenVisionStream] Finished: lines=%d, tokens=%d, content_len=%d", lineCount, tokenCount, fullContent.Len())
 
 	// 检查是否收到了任何内容
 	if fullContent.Len() == 0 {
-		return "", fmt.Errorf("API返回内容为空，请检查: 1) API Key是否正确 2) 模型名称是否有效(%s) 3) 图片是否可访问", model)
+		return "", usage, fmt.Errorf("API返回内容为空，请检查: 1) API Key是否正确 2) 模型名称是否有效(%s) 3) 图片是否可访问", model)
 	}
 
-	return fullContent.String(), nil
+	return fullContent.String(), usage, nil
 }
 
 func min(a, b int) int {
