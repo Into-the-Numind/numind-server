@@ -53,7 +53,7 @@ volc:
   model: "glm-4-7-251222"
   temperature: 0.7
   tokens: 4000
-  timeout: 180s
+  timeout: 300s
   max_retries: 3
 
 resource:
