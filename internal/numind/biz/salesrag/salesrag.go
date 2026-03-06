@@ -1817,7 +1817,7 @@ func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint,
 	}
 
 	log.Printf("[AnalyzeProfileMultiFiles] Calling Volc StreamChatWithModel with %d content parts", len(contentParts))
-	result, profileUsage, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "high", func(event string, token string) error {
+	result, profileUsage, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "medium", func(event string, token string) error {
 		if event == "message" {
 			return onToken(token)
 		}
@@ -2087,7 +2087,7 @@ func (b *salesRAGBiz) analyzeChatStyleImageStream(ctx context.Context, userID ui
 
 	// 5. 调用火山方舟视觉模型（doubao-seed-2-0-lite-260215，与客户档案分析保持一致）
 	const visionModel = "doubao-seed-2-0-lite-260215"
-	result, chatStyleUsage, err := b.volcBiz.VisionAnalyzeStream(ctx, dataURL, systemPrompt, visionModel, 0, "high", onToken)
+	result, chatStyleUsage, err := b.volcBiz.VisionAnalyzeStream(ctx, dataURL, systemPrompt, visionModel, 0, "medium", onToken)
 	if err != nil {
 		log.Printf("[analyzeChatStyleImageStream] Volc VisionAnalyzeStream error: %v", err)
 		return "", fmt.Errorf("视觉模型分析失败: %w", err)
@@ -2285,7 +2285,7 @@ func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []b
 	}
 
 	// 调用火山引擎视觉模型
-	ocrText, ocrUsage, err := b.volcBiz.VisionAnalyze(ctx, signedURL, prompt, visionModel, 0, "high")
+	ocrText, ocrUsage, err := b.volcBiz.VisionAnalyze(ctx, signedURL, prompt, visionModel, 0, "medium")
 	if err != nil {
 		log.Printf("[OCRAnalyze] Volc Engine Vision OCR failed, user_id: %d, url: %s, error: %v", userID, signedURL, err)
 		return "", "", fmt.Errorf("图片识别失败，请检查模型配置: %w", err)
