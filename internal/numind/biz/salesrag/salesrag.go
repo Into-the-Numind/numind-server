@@ -2172,11 +2172,17 @@ func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []b
 	}
 }
 
-// ocrWithBaidu 使用百度光学 OCR 识别图片文字
+// ocrWithBaidu 使用百度光学 OCR 识别微信聊天截图（根据文字位置自动标注说话人）
 func (b *salesRAGBiz) ocrWithBaidu(ctx context.Context, userID uint, imageData []byte, frontendURL string) (string, string, error) {
 	log.Printf("[OCRAnalyze] Using Baidu OCR engine, user_id: %d, image_size: %d", userID, len(imageData))
 
-	ocrText, err := baidu.RecognizeText(imageData)
+	// 获取图片宽度，用于判断文字左右位置
+	imageWidth := 0
+	if img, err := imaging.Decode(bytes.NewReader(imageData)); err == nil {
+		imageWidth = img.Bounds().Dx()
+	}
+
+	ocrText, err := baidu.RecognizeChatText(imageData, imageWidth)
 	if err != nil {
 		log.Printf("[OCRAnalyze] Baidu OCR failed, user_id: %d, error: %v", userID, err)
 		return "", "", fmt.Errorf("百度 OCR 识别失败: %w", err)
