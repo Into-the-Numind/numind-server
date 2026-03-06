@@ -26,6 +26,7 @@ import (
 	"numind-server/internal/pkg/util"
 
 	"numind-server/internal/numind/biz/ali"
+	"numind-server/internal/numind/biz/baidu"
 
 	"github.com/disintegration/imaging"
 	"gorm.io/gorm"
@@ -93,8 +94,9 @@ type SalesRAGBiz interface {
 	// SaveLanguageStyle 保存用户的语言风格
 	SaveLanguageStyle(ctx context.Context, userID uint, style string) error
 
-	// OCRAnalyze 识别图片中的文本（压缩 + 上传 COS + 调用视觉大模型）
-	OCRAnalyze(ctx context.Context, userID uint, imageData []byte, contentType string, sessionID string, filename string) (ocrText string, cosURL string, err error)
+	// OCRAnalyze 识别图片中的文本
+	// engine: "baidu"（百度光学OCR，默认）或 "vision"（火山视觉大模型）
+	OCRAnalyze(ctx context.Context, userID uint, imageData []byte, contentType string, sessionID string, filename string, engine string) (ocrText string, cosURL string, err error)
 
 	// ListOpinionTracks 获取系统内置观点赛道列表
 	ListOpinionTracks(ctx context.Context) ([]model.OpinionTrack, error)
@@ -2137,17 +2139,64 @@ func (b *salesRAGBiz) SaveLanguageStyle(ctx context.Context, userID uint, styleC
 	return nil
 }
 
-// OCRAnalyze 识别图片中的文本（压缩 + 上传 COS + 调用视觉大模型）
-func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []byte, contentType string, sessionID string, filename string) (string, string, error) {
-	// 1. 图片压缩（与客户档案分析保持一致）
-	// 火山方舟 Doubao-Seed 模型限制：大小 < 10MB, 总像素 < 36,000,000, 长宽比 < 150:1
+// OCRAnalyze 识别图片中的文本
+// engine: "baidu"（百度光学OCR，默认）或 "vision"（火山视觉大模型）
+func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []byte, contentType string, sessionID string, filename string, engine string) (string, string, error) {
+	if engine == "" {
+		engine = "baidu"
+	}
+
+	// 1. 上传原图到 COS（两种引擎都需要）
+	objectKey := fmt.Sprintf("sales_chat/%d/%s/%d_%s", userID, sessionID, time.Now().Unix(), filename)
+	cosURL, err := util.UploadBytesToCOS(ctx, objectKey, contentType, imageData)
+	if err != nil {
+		log.Printf("[OCRAnalyze] Upload image to COS failed, user_id: %d, key: %s, error: %v", userID, objectKey, err)
+		return "", "", fmt.Errorf("图片存储失败: %w", err)
+	}
+
+	// 生成前端展示用的签名 URL
+	frontendURL, err := util.GenerateSignedURL(ctx, objectKey, 86400) // 24h
+	if err != nil {
+		log.Printf("[OCRAnalyze] Generate frontend signed URL failed, fallback to raw, error: %v", err)
+		frontendURL = cosURL
+	}
+
+	// 2. 根据引擎选择识别方式
+	switch engine {
+	case "baidu":
+		return b.ocrWithBaidu(ctx, userID, imageData, frontendURL)
+	case "vision":
+		return b.ocrWithVisionModel(ctx, userID, imageData, contentType, objectKey, cosURL, frontendURL)
+	default:
+		return "", "", fmt.Errorf("不支持的 OCR 引擎: %s", engine)
+	}
+}
+
+// ocrWithBaidu 使用百度光学 OCR 识别图片文字
+func (b *salesRAGBiz) ocrWithBaidu(ctx context.Context, userID uint, imageData []byte, frontendURL string) (string, string, error) {
+	log.Printf("[OCRAnalyze] Using Baidu OCR engine, user_id: %d, image_size: %d", userID, len(imageData))
+
+	ocrText, err := baidu.RecognizeText(imageData)
+	if err != nil {
+		log.Printf("[OCRAnalyze] Baidu OCR failed, user_id: %d, error: %v", userID, err)
+		return "", "", fmt.Errorf("百度 OCR 识别失败: %w", err)
+	}
+
+	log.Printf("[OCRAnalyze] Baidu OCR done, user_id: %d, text_length: %d", userID, len(ocrText))
+	return ocrText, frontendURL, nil
+}
+
+// ocrWithVisionModel 使用火山引擎视觉大模型识别图片文字
+func (b *salesRAGBiz) ocrWithVisionModel(ctx context.Context, userID uint, imageData []byte, contentType string, objectKey string, cosURL string, frontendURL string) (string, string, error) {
+	log.Printf("[OCRAnalyze] Using vision model engine, user_id: %d, image_size: %d", userID, len(imageData))
+
+	// 图片压缩（火山方舟模型限制：大小 < 10MB, 总像素 < 36,000,000, 长宽比 < 150:1）
 	const maxVisionSize = 10 * 1024 * 1024 // 10MB
 	const maxTotalPixels int64 = 36000000  // 36MP
 
 	img, err := imaging.Decode(bytes.NewReader(imageData))
 	if err != nil {
 		log.Printf("[OCRAnalyze] Failed to decode image for compression check, user_id: %d, error: %v", userID, err)
-		// 解码失败时仍然尝试上传原图
 	} else {
 		bounds := img.Bounds()
 		width, height := bounds.Dx(), bounds.Dy()
@@ -2197,7 +2246,6 @@ func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []b
 				}
 			}
 
-			// 激进压缩：质量降至 20%，尺寸持续缩小
 			if len(imageData) > maxVisionSize {
 				for len(imageData) > maxVisionSize && (width > 50 || height > 50) {
 					width = int(float64(width) * 0.7)
@@ -2216,22 +2264,27 @@ func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []b
 				return "", "", fmt.Errorf("图片过大且压缩失败，请上传更小的图片")
 			}
 
-			contentType = "image/jpeg"
+			// 压缩后需要重新上传到 COS
+			compressedKey := objectKey + "_compressed.jpg"
+			_, uploadErr := util.UploadBytesToCOS(ctx, compressedKey, "image/jpeg", imageData)
+			if uploadErr != nil {
+				log.Printf("[OCRAnalyze] Upload compressed image failed: %v", uploadErr)
+			} else {
+				objectKey = compressedKey
+			}
+
 			log.Printf("[OCRAnalyze] Compression done, user_id: %d, final_size: %d, dimensions: %dx%d",
 				userID, len(imageData), width, height)
 		}
 	}
 
-	// 2. 上传到 COS
-	objectKey := fmt.Sprintf("sales_chat/%d/%s/%d_%s", userID, sessionID, time.Now().Unix(), filename)
-
-	cosURL, err := util.UploadBytesToCOS(ctx, objectKey, contentType, imageData)
+	// 生成签名 URL 供视觉模型访问
+	signedURL, err := util.GenerateSignedURL(ctx, objectKey, 600)
 	if err != nil {
-		log.Printf("[OCRAnalyze] Upload image to COS failed, user_id: %d, key: %s, error: %v", userID, objectKey, err)
-		return "", "", fmt.Errorf("图片存储失败: %w", err)
+		log.Printf("[OCRAnalyze] Generate signed URL failed, use raw cosURL, error: %v, key: %s", err, objectKey)
+		signedURL = cosURL
 	}
 
-	// 3. 调用火山引擎 Doubao 视觉模型进行 OCR 识别
 	prompt := `你是一个专业的微信聊天记录识别专家。请严格按照以下流程识别这张微信聊天截图。
 
   ## 识别流程（必须按步骤执行）
@@ -2277,27 +2330,12 @@ func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []b
   现在请识别这张截图。`
 	visionModel := "doubao-seed-2-0-lite-260215"
 
-	// 生成 10 分钟有效的签名 URL 供 API 访问
-	signedURL, err := util.GenerateSignedURL(ctx, objectKey, 600)
-	if err != nil {
-		log.Printf("[OCRAnalyze] Generate signed URL failed, use raw cosURL, error: %v, key: %s", err, objectKey)
-		signedURL = cosURL
-	}
-
-	// 调用火山引擎视觉模型
 	ocrText, ocrUsage, err := b.volcBiz.VisionAnalyze(ctx, signedURL, prompt, visionModel, 0, "medium")
 	if err != nil {
 		log.Printf("[OCRAnalyze] Volc Engine Vision OCR failed, user_id: %d, url: %s, error: %v", userID, signedURL, err)
 		return "", "", fmt.Errorf("图片识别失败，请检查模型配置: %w", err)
 	}
 	billing.RecordVision(userID, "volc", visionModel, "salesrag_ocr", ocrUsage, nil)
-
-	// 返回签名 URL 给前端，避免私有 bucket 403
-	frontendURL, err := util.GenerateSignedURL(ctx, objectKey, 86400) // 24h
-	if err != nil {
-		log.Printf("[OCRAnalyze] Generate frontend signed URL failed, fallback to raw, error: %v", err)
-		frontendURL = cosURL
-	}
 
 	return ocrText, frontendURL, nil
 }

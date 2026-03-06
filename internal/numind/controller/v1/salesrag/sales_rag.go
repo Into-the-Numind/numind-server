@@ -914,11 +914,12 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 		return
 	}
 
-	// 3. 调用 biz 层完成压缩、上传、识别
+	// 3. 调用 biz 层完成上传、识别
 	contentType := header.Header.Get("Content-Type")
 	sessionID := c.DefaultPostForm("session_id", "no_session")
+	engine := c.DefaultPostForm("engine", "baidu") // baidu（默认）或 vision
 
-	ocrText, cosURL, err := ctrl.b.SalesRAG().OCRAnalyze(c.Request.Context(), user.ID, imageData, contentType, sessionID, header.Filename)
+	ocrText, cosURL, err := ctrl.b.SalesRAG().OCRAnalyze(c.Request.Context(), user.ID, imageData, contentType, sessionID, header.Filename, engine)
 	if err != nil {
 		log.Errorw("OCRAnalyze failed", "error", err, "user_id", user.ID)
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)

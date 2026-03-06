@@ -107,8 +107,8 @@ cos:
   region: "ap-chengdu"    # 地域，如 ap-chengdu（成都）
 
 baidu:
-  api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
-  secret_key: "nH84dnA8SRK5WL1dASJxxumI9eOcj2dO"
+  api_key: "CkJCFXHinJLBsnEFT9lscwZr"
+  secret_key: "YbJZuvunKGhlSwTZpotTKZxkty0h5enU"
 
 # 阿里云配置 - 优化后的统一配置
 ali:
