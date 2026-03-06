@@ -2,6 +2,7 @@ package httpclient
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -139,17 +140,32 @@ func (c *Client) Do(req *Request) (*http.Response, error) {
 		req.RetryPolicy = DefaultRetryPolicy()
 	}
 
+	// 预读 body 以支持重试时重建 reader（io.Reader 读取后即耗尽）
+	var bodyBytes []byte
+	if req.Body != nil {
+		var err error
+		bodyBytes, err = io.ReadAll(req.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read request body: %w", err)
+		}
+	}
+
 	var lastErr error
 	delay := req.RetryPolicy.RetryDelay
 
 	for attempt := 0; attempt <= req.RetryPolicy.MaxRetries; attempt++ {
-		httpReq, err := http.NewRequestWithContext(req.Context, req.Method, req.URL, req.Body)
+		var bodyReader io.Reader
+		if bodyBytes != nil {
+			bodyReader = bytes.NewReader(bodyBytes)
+		}
+
+		httpReq, err := http.NewRequestWithContext(req.Context, req.Method, req.URL, bodyReader)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
 
 		httpReq.Header.Set("User-Agent", c.config.UserAgent)
-		if req.Body != nil {
+		if bodyBytes != nil {
 			httpReq.Header.Set("Content-Type", "application/json")
 		}
 
