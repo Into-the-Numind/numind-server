@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
 	"image/jpeg"
 	"io"
 	"net/http"
@@ -24,6 +25,10 @@ import (
 const (
 	maxLongEdge   = 8192             // 最长边 ≤ 8192px
 	maxBase64Size = 10 * 1024 * 1024 // base64 编码后 ≤ 10MB
+
+	// 分段参数
+	segmentHeight = 7000 // 每段高度（留余量，< 8192）
+	overlapHeight = 300  // 相邻段重叠高度（避免切断气泡）
 )
 
 // accessTokenCache 缓存百度 access_token（有效期 30 天）
@@ -71,7 +76,6 @@ func getAccessToken() (string, error) {
 	tokenCache.mu.Lock()
 	defer tokenCache.mu.Unlock()
 
-	// 双重检查
 	if tokenCache.token != "" && time.Now().Before(tokenCache.expiresAt) {
 		return tokenCache.token, nil
 	}
@@ -114,7 +118,6 @@ func getAccessToken() (string, error) {
 		return "", fmt.Errorf("百度 token 响应中无 access_token")
 	}
 
-	// 提前 1 小时过期，避免边界情况
 	tokenCache.token = tokenResp.AccessToken
 	tokenCache.expiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn-3600) * time.Second)
 
@@ -122,48 +125,60 @@ func getAccessToken() (string, error) {
 	return tokenCache.token, nil
 }
 
-// resizeForOCR 将图片缩放到百度 OCR 限制范围内（最长边 ≤ 8192px，base64 ≤ 10MB）
-// 返回处理后的图片数据和缩放比例（用于坐标还原）
-func resizeForOCR(imageData []byte) ([]byte, float64, error) {
-	img, err := imaging.Decode(bytes.NewReader(imageData))
-	if err != nil {
-		return nil, 1, fmt.Errorf("解码图片失败: %w", err)
-	}
-
-	bounds := img.Bounds()
-	width, height := bounds.Dx(), bounds.Dy()
-	scale := 1.0
-
-	// 检查是否需要缩放（最长边超限）
-	longEdge := width
-	if height > longEdge {
-		longEdge = height
-	}
-
-	if longEdge > maxLongEdge {
-		scale = float64(maxLongEdge) / float64(longEdge)
-		newWidth := int(float64(width) * scale)
-		newHeight := int(float64(height) * scale)
-		log.Infow("[BaiduOCR] Resizing image", "original", fmt.Sprintf("%dx%d", width, height), "target", fmt.Sprintf("%dx%d", newWidth, newHeight))
-		img = imaging.Resize(img, newWidth, newHeight, imaging.Lanczos)
-	}
-
-	// 编码为 JPEG，逐步降低质量直到 base64 大小 ≤ 10MB
+// encodeImageForOCR 将图片编码为 JPEG 并确保 base64 ≤ 10MB
+func encodeImageForOCR(img image.Image) ([]byte, error) {
 	quality := 90
 	for quality >= 20 {
 		var buf bytes.Buffer
 		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
-			return nil, 1, fmt.Errorf("编码 JPEG 失败: %w", err)
+			return nil, fmt.Errorf("编码 JPEG 失败: %w", err)
 		}
 		encoded := buf.Bytes()
 		b64Len := base64.StdEncoding.EncodedLen(len(encoded))
 		if b64Len <= maxBase64Size {
-			return encoded, scale, nil
+			return encoded, nil
 		}
 		quality -= 10
 	}
+	return nil, fmt.Errorf("图片段过大，压缩后仍超过百度 OCR 10MB 限制")
+}
 
-	return nil, 1, fmt.Errorf("图片过大，压缩后仍超过百度 OCR 10MB 限制")
+// splitImage 将超高图片切割为多个分段，每段高度 ≤ segmentHeight，相邻段重叠 overlapHeight
+// 返回每段的图片数据和该段在原图中的 y 偏移量
+func splitImage(img image.Image) (segments [][]byte, yOffsets []int, err error) {
+	bounds := img.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+
+	log.Infow("[BaiduOCR] Splitting tall image", "dimensions", fmt.Sprintf("%dx%d", width, height))
+
+	y := 0
+	for y < height {
+		segEnd := y + segmentHeight
+		if segEnd > height {
+			segEnd = height
+		}
+
+		// 裁剪当前段
+		segImg := imaging.Crop(img, image.Rect(0, y, width, segEnd))
+
+		segData, encErr := encodeImageForOCR(segImg)
+		if encErr != nil {
+			return nil, nil, fmt.Errorf("分段 %d 编码失败: %w", len(segments), encErr)
+		}
+
+		segments = append(segments, segData)
+		yOffsets = append(yOffsets, y)
+
+		log.Infow("[BaiduOCR] Segment created", "index", len(segments)-1, "yOffset", y, "segHeight", segEnd-y, "size", len(segData))
+
+		// 下一段起点 = 当前段终点 - 重叠
+		y = segEnd - overlapHeight
+		if segEnd == height {
+			break
+		}
+	}
+
+	return segments, yOffsets, nil
 }
 
 // callOCRAPI 调用百度 OCR API，返回原始结果
@@ -206,20 +221,79 @@ func callOCRAPI(imageData []byte) (*OCRResult, error) {
 	return &result, nil
 }
 
+// recognizeSegments 对多个图片分段调用 OCR，合并结果并将坐标映射回原图
+func recognizeSegments(segments [][]byte, yOffsets []int) ([]WordsItem, error) {
+	var allItems []WordsItem
+
+	for i, segData := range segments {
+		result, err := callOCRAPI(segData)
+		if err != nil {
+			log.Infow("[BaiduOCR] Segment OCR failed, skipping", "index", i, "error", err)
+			continue
+		}
+
+		// 将分段内的 top 坐标映射回原图坐标
+		for _, item := range result.WordsResult {
+			if item.Words == "" {
+				continue
+			}
+			item.Location.Top += yOffsets[i]
+			allItems = append(allItems, item)
+		}
+
+		log.Infow("[BaiduOCR] Segment OCR done", "index", i, "words_count", result.WordsResultNum)
+	}
+
+	// 按原图 top 坐标排序
+	sort.Slice(allItems, func(i, j int) bool {
+		return allItems[i].Location.Top < allItems[j].Location.Top
+	})
+
+	// 去重：重叠区域的相同文字（top 相近 + 文字相同）
+	allItems = deduplicateItems(allItems)
+
+	return allItems, nil
+}
+
+// deduplicateItems 去除重叠区域产生的重复识别结果
+func deduplicateItems(items []WordsItem) []WordsItem {
+	if len(items) <= 1 {
+		return items
+	}
+
+	var result []WordsItem
+	for i, item := range items {
+		isDup := false
+		// 与已保留的最后几条对比（重叠区域只可能产生相邻重复）
+		for j := len(result) - 1; j >= 0 && j >= len(result)-5; j-- {
+			prev := result[j]
+			topGap := item.Location.Top - prev.Location.Top
+			if topGap < 0 {
+				topGap = -topGap
+			}
+			// 同一行文字：top 差 < 30px 且文字相同
+			if topGap < 30 && item.Words == prev.Words {
+				isDup = true
+				break
+			}
+		}
+		if !isDup {
+			result = append(result, items[i])
+		}
+	}
+
+	return result
+}
+
 // RecognizeText 调用百度 OCR 并返回纯文本（无说话人标注）
 func RecognizeText(imageData []byte) (string, error) {
-	imageData, err := prepareImage(imageData)
+	items, _, err := recognizeImage(imageData)
 	if err != nil {
 		return "", err
 	}
 
-	result, err := callOCRAPI(imageData)
-	if err != nil {
-		return "", err
-	}
-
-	lines := make([]string, 0, len(result.WordsResult))
-	for _, item := range result.WordsResult {
+	lines := make([]string, 0, len(items))
+	for _, item := range items {
 		if item.Words != "" {
 			lines = append(lines, item.Words)
 		}
@@ -231,55 +305,70 @@ func RecognizeText(imageData []byte) (string, error) {
 // RecognizeChatText 调用百度 OCR 识别微信聊天截图，根据文字位置自动标注说话人
 // 返回格式: "客户：xxx\n销售：xxx\n..."
 func RecognizeChatText(imageData []byte, imageWidth int) (string, error) {
-	processedData, err := prepareImage(imageData)
+	items, width, err := recognizeImage(imageData)
 	if err != nil {
 		return "", err
 	}
-
-	// 如果图片被缩放过，需要用缩放后的宽度来判断位置
-	// 这里重新解码获取实际发送给 OCR 的图片宽度
-	if img, decErr := imaging.Decode(bytes.NewReader(processedData)); decErr == nil {
-		imageWidth = img.Bounds().Dx()
+	if width > 0 {
+		imageWidth = width
 	}
 
-	result, err := callOCRAPI(processedData)
-	if err != nil {
-		return "", err
-	}
-
-	if len(result.WordsResult) == 0 {
+	if len(items) == 0 {
 		return "", nil
 	}
 
-	return formatChatMessages(result.WordsResult, imageWidth), nil
+	return formatChatMessages(items, imageWidth), nil
 }
 
-// prepareImage 检查并预处理图片（缩放/压缩）以满足百度 OCR 限制
-func prepareImage(imageData []byte) ([]byte, error) {
-	b64Len := base64.StdEncoding.EncodedLen(len(imageData))
-	needResize := b64Len > maxBase64Size
+// recognizeImage 统一入口：解码图片 → 判断是否需要分段 → 调用 OCR → 返回结果
+// 返回: (识别结果, 图片宽度, 错误)
+func recognizeImage(imageData []byte) ([]WordsItem, int, error) {
+	img, err := imaging.Decode(bytes.NewReader(imageData))
+	if err != nil {
+		// 解码失败，直接发原图（可能是 OCR 支持但 imaging 不支持的格式）
+		result, ocrErr := callOCRAPI(imageData)
+		if ocrErr != nil {
+			return nil, 0, ocrErr
+		}
+		return result.WordsResult, 0, nil
+	}
 
-	if !needResize {
-		img, decErr := imaging.Decode(bytes.NewReader(imageData))
-		if decErr == nil {
-			bounds := img.Bounds()
-			longEdge := bounds.Dx()
-			if bounds.Dy() > longEdge {
-				longEdge = bounds.Dy()
+	bounds := img.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+
+	// 短图（高度 ≤ 8192）：直接识别
+	if height <= maxLongEdge {
+		// 检查 base64 大小，必要时压缩质量
+		b64Len := base64.StdEncoding.EncodedLen(len(imageData))
+		if b64Len > maxBase64Size {
+			imageData, err = encodeImageForOCR(img)
+			if err != nil {
+				return nil, 0, err
 			}
-			needResize = longEdge > maxLongEdge
 		}
+
+		result, ocrErr := callOCRAPI(imageData)
+		if ocrErr != nil {
+			return nil, 0, ocrErr
+		}
+		return result.WordsResult, width, nil
 	}
 
-	if needResize {
-		resized, _, resizeErr := resizeForOCR(imageData)
-		if resizeErr != nil {
-			return nil, fmt.Errorf("图片预处理失败: %w", resizeErr)
-		}
-		return resized, nil
+	// 长图：分段切割 → 逐段 OCR → 合并去重
+	log.Infow("[BaiduOCR] Tall image detected, splitting", "dimensions", fmt.Sprintf("%dx%d", width, height),
+		"segments", (height-1)/segmentHeight+1)
+
+	segments, yOffsets, splitErr := splitImage(img)
+	if splitErr != nil {
+		return nil, 0, splitErr
 	}
 
-	return imageData, nil
+	items, mergeErr := recognizeSegments(segments, yOffsets)
+	if mergeErr != nil {
+		return nil, 0, mergeErr
+	}
+
+	return items, width, nil
 }
 
 // speaker 说话人类型
@@ -303,19 +392,16 @@ func formatChatMessages(items []WordsItem, imageWidth int) string {
 	})
 
 	// 微信聊天布局判断阈值
-	// 客户气泡靠左（center_x < 图片宽度 * 0.45）
-	// 销售气泡靠右（center_x > 图片宽度 * 0.55）
-	// 系统消息居中（介于两者之间）
 	leftThreshold := float64(imageWidth) * 0.45
 	rightThreshold := float64(imageWidth) * 0.55
 
 	type chatLine struct {
 		speaker speaker
 		top     int
+		bottom  int
 		text    string
 	}
 
-	// 为每行文字标注说话人
 	var lines []chatLine
 	for _, item := range items {
 		if item.Words == "" {
@@ -335,53 +421,42 @@ func formatChatMessages(items []WordsItem, imageWidth int) string {
 		lines = append(lines, chatLine{
 			speaker: sp,
 			top:     item.Location.Top,
+			bottom:  item.Location.Top + item.Location.Height,
 			text:    item.Words,
 		})
 	}
 
-	// 合并相邻的同一说话人文字为一条消息
-	// 微信一条消息可能被 OCR 拆成多行，判断标准：同一说话人 + 垂直距离较近
-	const mergeGap = 60 // 同一消息内行间距通常 < 60px
+	// 合并相邻同一说话人的文字为一条消息
+	const mergeGap = 60
 
 	type message struct {
 		speaker speaker
 		texts   []string
+		bottom  int // 当前消息最后一行的底部
 	}
 
 	var messages []message
 	for _, line := range lines {
-		// 跳过系统消息（时间戳、日期分隔线等）
 		if line.speaker == speakerSystem {
 			continue
 		}
 
 		if len(messages) > 0 {
 			last := &messages[len(messages)-1]
-			// 同一说话人 + 垂直距离近 → 合并
-			if last.speaker == line.speaker {
-				lastBottom := lines[0].top // 简单取当前消息的上一行底部
-				for i, l := range lines {
-					if l.top == line.top && i > 0 {
-						prevItem := items[i-1]
-						lastBottom = prevItem.Location.Top + prevItem.Location.Height
-						break
-					}
-				}
-				gap := line.top - lastBottom
-				if gap < mergeGap {
-					last.texts = append(last.texts, line.text)
-					continue
-				}
+			if last.speaker == line.speaker && (line.top-last.bottom) < mergeGap {
+				last.texts = append(last.texts, line.text)
+				last.bottom = line.bottom
+				continue
 			}
 		}
 
 		messages = append(messages, message{
 			speaker: line.speaker,
 			texts:   []string{line.text},
+			bottom:  line.bottom,
 		})
 	}
 
-	// 格式化输出
 	var result strings.Builder
 	for i, msg := range messages {
 		if i > 0 {
