@@ -6,6 +6,7 @@ import (
 	"io"
 	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
@@ -48,6 +49,13 @@ func (ctrl *AliController) GetFileUploadLease(c *gin.Context) {
 		return
 	}
 
+	// 记录百炼 API 调用
+	if cu, ok := c.Get("current_user"); ok {
+		if u, ok := cu.(*model.User); ok {
+			billing.RecordAPICall(u.ID, "bailian", "bailian_upload_lease", billing.Metadata("filename", r.FileName))
+		}
+	}
+
 	core.WriteResponse(c, nil, gin.H{
 		"url":      url,
 		"headers":  headers,
@@ -70,6 +78,13 @@ func (ctrl *AliController) AddFile(c *gin.Context) {
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
+	}
+
+	// 记录百炼 API 调用
+	if cu, ok := c.Get("current_user"); ok {
+		if u, ok := cu.(*model.User); ok {
+			billing.RecordAPICall(u.ID, "bailian", "bailian_add_file", billing.Metadata("lease_id", r.LeaseId))
+		}
 	}
 
 	core.WriteResponse(c, nil, gin.H{
@@ -251,10 +266,17 @@ func (ctrl *AliController) VisionAnalyze(c *gin.Context) {
 	}
 
 	// 9. 调用 Biz 层进行分析
-	result, err := ctrl.aliBiz.QianwenVision(c.Request.Context(), imageURL, prompt, "qwen3-vl-flash-2026-01-22")
+	result, visionUsage, err := ctrl.aliBiz.QianwenVision(c.Request.Context(), imageURL, prompt, "qwen3-vl-flash-2026-01-22")
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
+	}
+
+	// 记录 Vision 用量
+	if cu, ok := c.Get("current_user"); ok {
+		if u, ok := cu.(*model.User); ok {
+			billing.RecordVision(u.ID, "ali", "qwen3-vl-flash", "ali_vision_analyze", visionUsage, nil)
+		}
 	}
 
 	// 10. 返回结果（包含文件ID）

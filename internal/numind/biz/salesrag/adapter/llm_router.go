@@ -7,7 +7,9 @@ import (
 	"strings"
 
 	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/middleware"
 )
 
 // LLMRouter 基于大模型的意图路由器 (V3 - CoT + HyDE)
@@ -150,7 +152,7 @@ func (r *LLMRouter) AnalyzeIntentV2(ctx context.Context, query string, history [
 	}
 
 	// 调用 qwen-turbo-latest（深度思考模式）
-	resp, err := r.dmxClient.ChatCompletionWithThinking(ctx, "qwen-turbo-latest", messages, 0.1, 2000)
+	resp, intentUsage, err := r.dmxClient.ChatCompletionWithThinking(ctx, "qwen-turbo-latest", messages, 0.1, 2000)
 	if err != nil {
 		log.C(ctx).Errorw("LLM intent analysis failed", "error", err, "chatMode", chatMode)
 		// Fallback: 返回原始查询
@@ -200,6 +202,11 @@ func (r *LLMRouter) AnalyzeIntentV2(ctx context.Context, query string, history [
 		"hyde_query_len", len(result.HyDEQuery),
 		"salesInstruction", result.SalesInstruction,
 		"customerMessage", result.CustomerMessage)
+
+	// 记录意图分析用量
+	if uid, ok := middleware.UserIDFromCtx(ctx); ok && uid > 0 {
+		billing.RecordLLM(uid, "dmxapi", "qwen-turbo-latest", "salesrag_intent_analysis", intentUsage, nil)
+	}
 
 	return &result, nil
 }

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/log"
 )
 
@@ -74,6 +75,7 @@ type ChatCompletionResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *billing.TokenUsage `json:"usage,omitempty"`
 	Error *struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
@@ -81,7 +83,7 @@ type ChatCompletionResponse struct {
 }
 
 // ChatCompletion 调用聊天接口（非流式）
-func (c *DMXAPIClient) ChatCompletion(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int) (string, error) {
+func (c *DMXAPIClient) ChatCompletion(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int) (string, *billing.TokenUsage, error) {
 	// 非流式请求添加整体超时保护（覆盖建连+等待响应+读取 body 全流程）
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
@@ -96,12 +98,12 @@ func (c *DMXAPIClient) ChatCompletion(ctx context.Context, model string, message
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("marshal request failed: %w", err)
+		return "", nil, fmt.Errorf("marshal request failed: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/chat/completions", bytes.NewBuffer(bodyBytes))
 	if err != nil {
-		return "", fmt.Errorf("create request failed: %w", err)
+		return "", nil, fmt.Errorf("create request failed: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -109,33 +111,37 @@ func (c *DMXAPIClient) ChatCompletion(ctx context.Context, model string, message
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
+		return "", nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("read response failed: %w", err)
+		return "", nil, fmt.Errorf("read response failed: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+		return "", nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var result ChatCompletionResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("decode response failed: %w", err)
+		return "", nil, fmt.Errorf("decode response failed: %w", err)
 	}
 
 	if result.Error != nil {
-		return "", fmt.Errorf("API error: %s - %s", result.Error.Code, result.Error.Message)
+		return "", nil, fmt.Errorf("API error: %s - %s", result.Error.Code, result.Error.Message)
 	}
 
 	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("empty choices from API")
+		return "", nil, fmt.Errorf("empty choices from API")
 	}
 
-	return result.Choices[0].Message.Content, nil
+	if result.Usage != nil {
+		result.Usage.Normalize()
+	}
+
+	return result.Choices[0].Message.Content, result.Usage, nil
 }
 
 // ChatCompletionWithThinking 调用聊天接口（非流式 + 深度思考模式）
@@ -144,11 +150,11 @@ func (c *DMXAPIClient) ChatCompletion(ctx context.Context, model string, message
 // ChatCompletionWithThinking 调用聊天接口（流式 + 深度思考模式）
 // 启用 enable_thinking=true，模型会在响应中包含 <think>...</think> 思维链
 // 注意：虽然函数签名看起来是阻塞调用，但内部必须使用流式请求（Stream=true），因为当前 API 关于 thinking 参数仅支持流式调用
-func (c *DMXAPIClient) ChatCompletionWithThinking(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int) (string, error) {
+func (c *DMXAPIClient) ChatCompletionWithThinking(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int) (string, *billing.TokenUsage, error) {
 	var fullThinking strings.Builder
 
 	// 调用增强后的 StreamChatCompletion
-	content, err := c.StreamChatCompletion(ctx, model, messages, temperature, maxTokens, true, func(eventType, chunk string) error {
+	content, usage, err := c.StreamChatCompletion(ctx, model, messages, temperature, maxTokens, true, func(eventType, chunk string) error {
 		if eventType == "thinking" {
 			fullThinking.WriteString(chunk)
 		}
@@ -156,7 +162,7 @@ func (c *DMXAPIClient) ChatCompletionWithThinking(ctx context.Context, model str
 	})
 
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	// 记录思维链日志
@@ -168,7 +174,7 @@ func (c *DMXAPIClient) ChatCompletionWithThinking(ctx context.Context, model str
 		log.Infow("LLM thinking chain", "thinking", logContent)
 	}
 
-	return content, nil
+	return content, usage, nil
 }
 
 // StreamChatCompletion 调用聊天接口（流式）
@@ -176,24 +182,30 @@ func (c *DMXAPIClient) ChatCompletionWithThinking(ctx context.Context, model str
 // StreamChatCompletion 调用聊天接口（流式）
 // onEvent: 回调函数，参数为 (eventType string, content string)
 // eventType: "thinking" (思维链内容) 或 "content" (正文内容)
-func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int, enableThinking bool, onEvent func(eventType, content string) error) (string, error) {
-	reqBody := ChatCompletionRequest{
-		Model:          model,
-		Messages:       messages,
-		Temperature:    temperature,
-		MaxTokens:      maxTokens,
-		Stream:         true,
-		EnableThinking: &enableThinking,
+func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int, enableThinking bool, onEvent func(eventType, content string) error) (string, *billing.TokenUsage, error) {
+	// 构建请求体（手动构建以添加 stream_options）
+	bodyMap := map[string]interface{}{
+		"model":            model,
+		"messages":         messages,
+		"temperature":      temperature,
+		"stream":           true,
+		"enable_thinking":  enableThinking,
+		"stream_options": map[string]interface{}{
+			"include_usage": true,
+		},
+	}
+	if maxTokens > 0 {
+		bodyMap["max_tokens"] = maxTokens
 	}
 
-	bodyBytes, err := json.Marshal(reqBody)
+	bodyBytes, err := json.Marshal(bodyMap)
 	if err != nil {
-		return "", fmt.Errorf("marshal request failed: %w", err)
+		return "", nil, fmt.Errorf("marshal request failed: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/chat/completions", bytes.NewBuffer(bodyBytes))
 	if err != nil {
-		return "", fmt.Errorf("create request failed: %w", err)
+		return "", nil, fmt.Errorf("create request failed: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -202,17 +214,18 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
+		return "", nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+		return "", nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var fullContent strings.Builder
 	var fullThinking strings.Builder
+	var usage *billing.TokenUsage
 	reader := bufio.NewReader(resp.Body)
 
 	// 标记是否正在处理思维链（用于解析 <think> 标签）
@@ -224,7 +237,7 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 			if err == io.EOF {
 				break
 			}
-			return fullContent.String(), fmt.Errorf("read stream failed: %w", err)
+			return fullContent.String(), usage, fmt.Errorf("read stream failed: %w", err)
 		}
 
 		line = strings.TrimSpace(line)
@@ -240,6 +253,11 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
 			break
+		}
+
+		// 提取 usage
+		if u := billing.ExtractUsageFromSSEData(data); u != nil {
+			usage = u
 		}
 
 		var chunk struct {
@@ -264,7 +282,7 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 				fullThinking.WriteString(delta.Thinking)
 				if onEvent != nil {
 					if err := onEvent("thinking", delta.Thinking); err != nil {
-						return fullContent.String(), err
+						return fullContent.String(), usage, err
 					}
 				}
 			}
@@ -272,11 +290,6 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 			// 2. 处理 content 字段（可能包含 <think> 标签）
 			content := delta.Content
 			if content != "" {
-				// 简单的标签检测逻辑
-				// 注意：流式传输使得标签可能被切断（例: "<thi", "nk>"），这里做简化处理，
-				// 假设标签稍微完整一些，或者 content 纯粹。
-				// 更严谨的流式解析需要状态机，但针对大多数 API，<think> 通常单独出现或在开头。
-
 				// 检查 <think> 开始
 				if strings.Contains(content, "<think>") {
 					inThinkingTag = true
@@ -303,7 +316,7 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 						if realContent != "" {
 							fullContent.WriteString(realContent)
 							if onEvent != nil {
-								_ = onEvent("content", realContent) // 注意这里改成 content
+								_ = onEvent("content", realContent)
 							}
 						}
 					}
@@ -327,7 +340,7 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 		}
 	}
 
-	return fullContent.String(), nil
+	return fullContent.String(), usage, nil
 }
 
 // RerankRequest Rerank 请求结构
@@ -357,13 +370,13 @@ type RerankResult struct {
 
 // Rerank 调用 Rerank 模型
 // 返回按相关性排序的文档索引和对应的 relevance_score
-func (c *DMXAPIClient) Rerank(ctx context.Context, query string, documents []string, topN int) ([]RerankResult, error) {
+func (c *DMXAPIClient) Rerank(ctx context.Context, query string, documents []string, topN int) ([]RerankResult, int, error) {
 	// 非流式请求添加整体超时保护
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	if len(documents) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
 
 	// 限制 topN 不超过文档数量
@@ -380,12 +393,12 @@ func (c *DMXAPIClient) Rerank(ctx context.Context, query string, documents []str
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("marshal request failed: %w", err)
+		return nil, 0, fmt.Errorf("marshal request failed: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/rerank", bytes.NewBuffer(bodyBytes))
 	if err != nil {
-		return nil, fmt.Errorf("create request failed: %w", err)
+		return nil, 0, fmt.Errorf("create request failed: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -393,26 +406,26 @@ func (c *DMXAPIClient) Rerank(ctx context.Context, query string, documents []str
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, 0, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read response failed: %w", err)
+		return nil, 0, fmt.Errorf("read response failed: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+		return nil, 0, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var result RerankResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("decode response failed: %w", err)
+		return nil, 0, fmt.Errorf("decode response failed: %w", err)
 	}
 
 	if result.Error != nil {
-		return nil, fmt.Errorf("rerank error: %s", result.Error.Message)
+		return nil, 0, fmt.Errorf("rerank error: %s", result.Error.Message)
 	}
 
 	// 提取排序后的索引和分数
@@ -426,5 +439,5 @@ func (c *DMXAPIClient) Rerank(ctx context.Context, query string, documents []str
 
 	log.Infow("Rerank completed", "query_len", len(query), "doc_count", len(documents), "top_n", topN, "result_count", len(results))
 
-	return results, nil
+	return results, len(documents), nil
 }

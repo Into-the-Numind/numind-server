@@ -2,6 +2,7 @@ package numind
 
 import (
 	"numind-server/internal/numind/biz"
+	"numind-server/internal/numind/controller/v1/admin_billing"
 	"numind-server/internal/numind/controller/v1/admin_dashboard"
 	"numind-server/internal/numind/controller/v1/admin_login"
 	"numind-server/internal/numind/controller/v1/admin_sop"
@@ -33,6 +34,8 @@ func installAdminRouters(g *gin.Engine) error {
 	loginCtrl := admin_login.New(store.S)
 	userCtrl := admin_user.New(store.S)
 	dashboardCtrl := admin_dashboard.New(store.S)
+
+	billingCtrl := admin_billing.New(store.S)
 
 	b := biz.NewBiz(store.S)
 	sopCtrl := admin_sop.NewSopController(b.Sop())
@@ -89,6 +92,17 @@ func installAdminRouters(g *gin.Engine) error {
 		// 笔记查看
 		adminGroup.GET("/sop/notes/:id", sopCtrl.GetNote)
 		adminGroup.GET("/sop/users/:user_id/notes", sopCtrl.ListNotesByUser)
+	}
+
+	// 计费管理
+	{
+		adminGroup.GET("/billing/overview", billingCtrl.GetOverview)
+		adminGroup.GET("/billing/records", billingCtrl.ListUsageRecords)
+		adminGroup.GET("/billing/users", billingCtrl.GetUserConsumption)
+		adminGroup.GET("/billing/pricing-rules", billingCtrl.ListPricingRules)
+		adminGroup.POST("/billing/pricing-rules", billingCtrl.CreatePricingRule)
+		adminGroup.PUT("/billing/pricing-rules/:id", billingCtrl.UpdatePricingRule)
+		adminGroup.DELETE("/billing/pricing-rules/:id", billingCtrl.DeletePricingRule)
 	}
 
 	return nil

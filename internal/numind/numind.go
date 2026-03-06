@@ -16,6 +16,7 @@ import (
 
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/log"
 	mw "numind-server/internal/pkg/middleware"
 	"numind-server/pkg/version/verflag"
@@ -144,6 +145,9 @@ func run() error {
 	log.Infow("[DEBUG] After startInsecureServer", "hypothesisId", "C", "location", "numind.go:117", "runId", "startup", "serverCreated", true)
 	// #endregion
 
+	// 初始化计费用量记录器
+	billing.InitRecorder(store.S.Billing())
+
 	// 启动 SOP draft 清理任务（每2小时清理一次超过8小时的草稿）
 	bizLayer := biz.NewBiz(store.S)
 	go func() {
@@ -196,6 +200,9 @@ func run() error {
 	// }
 
 	//grpcsrv.GracefulStop()
+
+	// 优雅关闭计费记录器，确保所有待写入事件落盘
+	billing.R.Stop()
 
 	log.Infow("Server exiting")
 

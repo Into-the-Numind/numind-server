@@ -77,7 +77,7 @@ volc:
   model: "deepseek-v3-1-terminus"  # 使用的AI模型
   temperature: 0.5 # 生成文本的随机性，值越高随机性越大
   tokens: 2000 # 生成文本的最大长度
-  timeout: 120s  # 超时时间，从30s改为120s
+  timeout: 300s  # 超时时间，改为300s以支持视觉模型OCR
   max_retries: 3
 
 resource:

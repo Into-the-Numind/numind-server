@@ -8,7 +8,9 @@ import (
 	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/middleware"
 )
 
 // RetrievalVerdict 检索判决结果 (V1 兼容)
@@ -338,9 +340,14 @@ func (s *SalesRAGService) rerankWithLimit(
 		documents[i] = chunk.Content
 	}
 
-	rerankResults, err := s.dmxClient.Rerank(ctx, query, documents, topN)
+	rerankResults, docCount, err := s.dmxClient.Rerank(ctx, query, documents, topN)
 	if err != nil {
 		return nil, err
+	}
+
+	// 记录 Rerank 用量
+	if uid, ok := middleware.UserIDFromCtx(ctx); ok && uid > 0 {
+		billing.RecordRerank(uid, "dmxapi", "salesrag_rerank", docCount, nil)
 	}
 
 	result := make([]domain.KnowledgeChunk, 0, len(rerankResults))

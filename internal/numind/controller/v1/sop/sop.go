@@ -30,6 +30,7 @@ import (
 	"numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
@@ -259,7 +260,7 @@ func (ctrl *SopController) ListMyRuns(c *gin.Context) {
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 
-	// 自动清理处于运行中状态但已超时的“僵尸任务”（30分钟超时）
+	// 自动清理处于运行中状态但已超时的"僵尸任务"（30分钟超时）
 	// 这样可以确保用户看到的列表状态是准确的，提升鲁棒性
 	_ = ctrl.sopBiz.CleanZombieRuns(c, 30*time.Minute)
 
@@ -951,6 +952,9 @@ func (ctrl *SopController) uploadFileToCOS(c *gin.Context, file *multipart.FileH
 			cosURL = "" // 设置为空，表示未上传到COS
 		} else {
 			log.C(c).Infow("文件上传到COS成功", "cos_url", cosURL, "object_key", objectKey)
+			// 记录 COS 上传用量
+			billing.RecordCOS(userID, "sop_file_upload", file.Size,
+				billing.Metadata("object_key", objectKey, "filename", fileName))
 		}
 	}
 
@@ -1164,7 +1168,7 @@ func (ctrl *SopController) ParseFileText(c *gin.Context) {
 	}
 
 	// 4. 让 qwen-long 读取文件并输出原始纯文本
-	text, err := extractPlainTextWithQwenLong(c.Request.Context(), fileIDs)
+	text, qwenUsage, err := extractPlainTextWithQwenLong(c.Request.Context(), fileIDs)
 	if err != nil {
 		// 如果仍在解析中，返回file_ids方便前端轮询查询接口
 		if strings.Contains(err.Error(), "文件仍在解析中") {
@@ -1179,6 +1183,13 @@ func (ctrl *SopController) ParseFileText(c *gin.Context) {
 		log.C(c).Errorw("qwen-long 解析失败", "error", err, "file_ids", fileIDs)
 		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("qwen-long 解析失败: %v", err), nil)
 		return
+	}
+
+	// 记录 qwen-long 用量
+	if cu, ok := c.Get("current_user"); ok {
+		if u, ok := cu.(*model.User); ok {
+			billing.RecordLLM(u.ID, "ali", "qwen-long", "sop_parse_file_text", qwenUsage, nil)
+		}
 	}
 
 	core.WriteResponse(c, nil, ParseFileTextResponse{
@@ -1201,11 +1212,18 @@ func (ctrl *SopController) ParseFileTextQuery(c *gin.Context) {
 	}
 
 	// 直接调用 qwen-long 读取已有 file_ids
-	text, err := extractPlainTextWithQwenLong(c.Request.Context(), req.FileIDs)
+	text, qwenUsage, err := extractPlainTextWithQwenLong(c.Request.Context(), req.FileIDs)
 	if err != nil {
 		log.C(c).Errorw("qwen-long 解析查询失败", "error", err, "file_ids", req.FileIDs)
 		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("%s", err.Error()), nil)
 		return
+	}
+
+	// 记录 qwen-long 用量
+	if cu, ok := c.Get("current_user"); ok {
+		if u, ok := cu.(*model.User); ok {
+			billing.RecordLLM(u.ID, "ali", "qwen-long", "sop_parse_file_query", qwenUsage, nil)
+		}
 	}
 
 	core.WriteResponse(c, nil, ParseFileTextResponse{
@@ -1271,10 +1289,17 @@ func (ctrl *SopController) ReadImageWithQwenVL(c *gin.Context) {
 	data := buf[:n]
 
 	encoded := base64.StdEncoding.EncodeToString(data)
-	resp, err := ctrl.aliBiz.QianwenVision(c.Request.Context(), encoded, question, "")
+	resp, visionUsage, err := ctrl.aliBiz.QianwenVision(c.Request.Context(), encoded, question, "")
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("%s", err.Error()), nil)
 		return
+	}
+
+	// 记录 Vision 用量
+	if cu, ok := c.Get("current_user"); ok {
+		if u, ok := cu.(*model.User); ok {
+			billing.RecordVision(u.ID, "ali", "qwen-vl-max", "sop_image_read", visionUsage, nil)
+		}
 	}
 
 	core.WriteResponse(c, nil, gin.H{
@@ -1348,10 +1373,10 @@ func uploadFileToDashScope(file *multipart.FileHeader) (string, error) {
 }
 
 // extractPlainTextWithQwenLong 通过 qwen-long 读取 file_id 列表并返回纯文本
-func extractPlainTextWithQwenLong(ctx context.Context, fileIDs []string) (string, error) {
+func extractPlainTextWithQwenLong(ctx context.Context, fileIDs []string) (string, *billing.TokenUsage, error) {
 	apiKey := getAliConfig("text", "api_key")
 	if apiKey == "" {
-		return "", fmt.Errorf("未配置阿里百炼API Key")
+		return "", nil, fmt.Errorf("未配置阿里百炼API Key")
 	}
 
 	model := getAliConfig("qwen_long", "model")
@@ -1388,12 +1413,12 @@ func extractPlainTextWithQwenLong(ctx context.Context, fileIDs []string) (string
 
 	bodyBytes, err := json.Marshal(bodyMap)
 	if err != nil {
-		return "", fmt.Errorf("序列化请求失败: %w", err)
+		return "", nil, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
 	if err != nil {
-		return "", fmt.Errorf("创建请求失败: %w", err)
+		return "", nil, fmt.Errorf("创建请求失败: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -1401,17 +1426,17 @@ func extractPlainTextWithQwenLong(ctx context.Context, fileIDs []string) (string
 	client := &http.Client{Timeout: 120 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("调用qwen-long失败: %w", err)
+		return "", nil, fmt.Errorf("调用qwen-long失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		// 解析中的情况：400 + “File parsing in progress...”
+		// 解析中的情况：400 + "File parsing in progress..."
 		if resp.StatusCode == http.StatusBadRequest {
-			return "", fmt.Errorf("文件仍在解析中，请稍后重试。响应: %s", strings.TrimSpace(string(respBody)))
+			return "", nil, fmt.Errorf("文件仍在解析中，请稍后重试。响应: %s", strings.TrimSpace(string(respBody)))
 		}
-		return "", fmt.Errorf("qwen-long 返回错误 HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return "", nil, fmt.Errorf("qwen-long 返回错误 HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
 	// 兼容OpenAI格式响应
@@ -1421,15 +1446,16 @@ func extractPlainTextWithQwenLong(ctx context.Context, fileIDs []string) (string
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage *billing.TokenUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("解析qwen-long响应失败: %w，响应: %s", err, string(respBody))
+		return "", nil, fmt.Errorf("解析qwen-long响应失败: %w，响应: %s", err, string(respBody))
 	}
 	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("qwen-long 响应为空: %s", string(respBody))
+		return "", nil, fmt.Errorf("qwen-long 响应为空: %s", string(respBody))
 	}
 
-	return result.Choices[0].Message.Content, nil
+	return result.Choices[0].Message.Content, result.Usage, nil
 }
 
 // CheckFileQuality 检测上传文件的质量（不保存到数据库）
@@ -1529,7 +1555,13 @@ func (ctrl *SopController) CheckFileQuality(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), AICallTimeout*time.Second)
 	defer cancel()
 
-	result, err := ctrl.checkQualityWithAI(ctx, textContent)
+	var qualityUserID uint
+	if cu, ok := c.Get("current_user"); ok {
+		if u, ok := cu.(*model.User); ok {
+			qualityUserID = u.ID
+		}
+	}
+	result, err := ctrl.checkQualityWithAI(ctx, textContent, qualityUserID)
 	if err != nil {
 		log.C(c).Errorw("质量检测失败", "error", err)
 		// 如果AI调用失败，返回基础的质量检测结果
@@ -1540,7 +1572,7 @@ func (ctrl *SopController) CheckFileQuality(c *gin.Context) {
 }
 
 // checkQualityWithAI 使用AI检测文本质量（带重试和容错）
-func (ctrl *SopController) checkQualityWithAI(ctx context.Context, text string) (*QualityCheckResult, error) {
+func (ctrl *SopController) checkQualityWithAI(ctx context.Context, text string, userID uint) (*QualityCheckResult, error) {
 	// 构建质量检测的prompt
 	prompt := `你是一位专业的文案质量检测专家。请对以下文案进行质量检测，并按照JSON格式返回结果。
 
@@ -1574,19 +1606,24 @@ func (ctrl *SopController) checkQualityWithAI(ctx context.Context, text string) 
 
 	// 先尝试火山方舟
 	if ctrl.volcBiz != nil {
-		aiResponse, err = ctrl.volcBiz.VolcTextStream(ctx, messages, 2000, 0.7)
+		var volcUsage *billing.TokenUsage
+		aiResponse, volcUsage, err = ctrl.volcBiz.VolcTextStream(ctx, messages, 2000, 0.7)
 		if err != nil {
 			log.C(ctx).Warnw("火山方舟API失败，尝试阿里百炼降级", "error", err.Error())
+		} else {
+			billing.RecordLLM(userID, "volc", "deepseek-v3", "sop_quality_check", volcUsage, nil)
 		}
 	}
 
 	// 如果火山方舟失败或不可用，降级到阿里百炼
 	if err != nil || aiResponse == "" {
 		if ctrl.aliBiz != nil {
-			aiResponse, err = ctrl.aliBiz.QianwenTextStream(messages, 2000, 0.7)
+			var aliUsage *billing.TokenUsage
+			aiResponse, aliUsage, err = ctrl.aliBiz.QianwenTextStream(messages, 2000, 0.7)
 			if err != nil {
 				return nil, fmt.Errorf("AI API调用失败: %w", err)
 			}
+			billing.RecordLLM(userID, "ali", "qwen-plus", "sop_quality_check", aliUsage, billing.Metadata("is_fallback", "true"))
 		} else {
 			return nil, fmt.Errorf("AI服务不可用")
 		}
@@ -2125,8 +2162,10 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 	}
 
 	// 先尝试火山方舟
+	var editUsage *billing.TokenUsage
+	var editProvider, editModel string
 	if ctrl.volcBiz != nil {
-		aiErr = ctrl.callVolcEditStream(heartbeatCtx, messages, deepThinking, func(event string, chunk string) error {
+		editUsage, aiErr = ctrl.callVolcEditStream(heartbeatCtx, messages, deepThinking, func(event string, chunk string) error {
 			hasResponse = true
 			// 检查客户端是否断开连接
 			select {
@@ -2162,6 +2201,8 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 		})
 
 		if aiErr == nil {
+			editProvider = "volc"
+			editModel = "deepseek-v3"
 			log.C(c).Infow("火山方舟API调用成功")
 		} else {
 			log.C(c).Warnw("火山方舟API失败，尝试阿里百炼降级", "error", aiErr)
@@ -2171,7 +2212,7 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 	// 如果火山方舟失败或不可用，降级到阿里百炼
 	if aiErr != nil || !hasResponse {
 		if ctrl.aliBiz != nil {
-			aiErr = ctrl.callAliEditStream(heartbeatCtx, messages, deepThinking, func(event string, chunk string) error {
+			editUsage, aiErr = ctrl.callAliEditStream(heartbeatCtx, messages, deepThinking, func(event string, chunk string) error {
 				hasResponse = true
 				// 检查客户端是否断开连接
 				select {
@@ -2207,10 +2248,21 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 			})
 
 			if aiErr == nil {
+				editProvider = "ali"
+				editModel = getAliConfig("text", "model")
 				log.C(c).Infow("阿里百炼API降级成功")
 			}
 		} else {
 			aiErr = fmt.Errorf("AI服务不可用")
+		}
+	}
+
+	// 记录文本编辑用量
+	if aiErr == nil {
+		if cu, ok := c.Get("current_user"); ok {
+			if u, ok := cu.(*model.User); ok {
+				billing.RecordLLM(u.ID, editProvider, editModel, "sop_text_edit", editUsage, nil)
+			}
 		}
 	}
 
@@ -2515,10 +2567,10 @@ func buildEditTextMessages(originalText, userMessage string, history []v1.EditTe
 }
 
 // callVolcEditStream 调用火山方舟流式API进行文本编辑
-func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []map[string]string, deepThinking bool, handler func(event string, chunk string) error) error {
+func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []map[string]string, deepThinking bool, handler func(event string, chunk string) error) (*billing.TokenUsage, error) {
 	baseURL := viper.GetString("volc.base_url")
 	if baseURL == "" {
-		return fmt.Errorf("volc base_url not configured")
+		return nil, fmt.Errorf("volc base_url not configured")
 	}
 	url := baseURL + "/chat/completions"
 
@@ -2536,16 +2588,19 @@ func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []ma
 		"thinking": map[string]interface{}{
 			"type": thinkingType,
 		},
+		"stream_options": map[string]interface{}{
+			"include_usage": true,
+		},
 	}
 
 	bodyBytes, err := json.Marshal(bodyMap)
 	if err != nil {
-		return fmt.Errorf("序列化请求失败: %w", err)
+		return nil, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
 	if err != nil {
-		return fmt.Errorf("创建请求失败: %w", err)
+		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -2556,13 +2611,13 @@ func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []ma
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("HTTP请求失败: %w", err)
+		return nil, fmt.Errorf("HTTP请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(body))
 	}
 
 	// 流式读取响应（带3秒超时）
@@ -2570,12 +2625,13 @@ func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []ma
 	readTimeout := 3 * time.Second
 	maxConsecutiveTimeouts := 3
 	consecutiveTimeouts := 0
+	var usage *billing.TokenUsage
 
 	for {
 		// 检查context是否被取消
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return usage, ctx.Err()
 		default:
 		}
 
@@ -2621,7 +2677,7 @@ func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []ma
 				// 流结束
 				break
 			}
-			return fmt.Errorf("read error: %w", readErr)
+			return usage, fmt.Errorf("read error: %w", readErr)
 		}
 
 		// 重置超时计数器
@@ -2642,6 +2698,11 @@ func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []ma
 				break
 			}
 
+			// 提取 usage
+			if u := billing.ExtractUsageFromSSEData(data); u != nil {
+				usage = u
+			}
+
 			var m map[string]interface{}
 			if err := json.Unmarshal([]byte(data), &m); err == nil {
 				if choices, ok := m["choices"].([]interface{}); ok && len(choices) > 0 {
@@ -2650,13 +2711,13 @@ func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []ma
 							// 思考模式下，优先处理 reasoning_content（思维链内容）
 							if rc, ok := delta["reasoning_content"].(string); ok && rc != "" {
 								if err := handler("thinking", rc); err != nil {
-									return err
+									return usage, err
 								}
 							}
 							// 处理 content 字段（最终回答内容）
 							if content, ok := delta["content"].(string); ok && content != "" {
 								if err := handler("message", content); err != nil {
-									return err
+									return usage, err
 								}
 							}
 						}
@@ -2666,11 +2727,11 @@ func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []ma
 		}
 	}
 
-	return nil
+	return usage, nil
 }
 
 // callAliEditStream 调用阿里百炼流式API进行文本编辑
-func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map[string]string, deepThinking bool, handler func(event string, chunk string) error) error {
+func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map[string]string, deepThinking bool, handler func(event string, chunk string) error) (*billing.TokenUsage, error) {
 	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 
 	bodyMap := map[string]interface{}{
@@ -2682,16 +2743,19 @@ func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map
 		"extra_body": map[string]interface{}{
 			"enable_thinking": deepThinking,
 		},
+		"stream_options": map[string]interface{}{
+			"include_usage": true,
+		},
 	}
 
 	bodyBytes, err := json.Marshal(bodyMap)
 	if err != nil {
-		return fmt.Errorf("序列化请求失败: %w", err)
+		return nil, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
 	if err != nil {
-		return fmt.Errorf("创建请求失败: %w", err)
+		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -2702,13 +2766,13 @@ func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("HTTP请求失败: %w", err)
+		return nil, fmt.Errorf("HTTP请求失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("HTTP错误: %d, 响应: %s", resp.StatusCode, string(body))
 	}
 
 	// 流式读取响应（带3秒超时）
@@ -2716,12 +2780,13 @@ func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map
 	readTimeout := 3 * time.Second
 	maxConsecutiveTimeouts := 3
 	consecutiveTimeouts := 0
+	var usage *billing.TokenUsage
 
 	for {
 		// 检查context是否被取消
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return usage, ctx.Err()
 		default:
 		}
 
@@ -2767,7 +2832,7 @@ func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map
 				// 流结束
 				break
 			}
-			return fmt.Errorf("read error: %w", readErr)
+			return usage, fmt.Errorf("read error: %w", readErr)
 		}
 
 		// 重置超时计数器
@@ -2788,6 +2853,11 @@ func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map
 				break
 			}
 
+			// 提取 usage
+			if u := billing.ExtractUsageFromSSEData(data); u != nil {
+				usage = u
+			}
+
 			var m map[string]interface{}
 			if err := json.Unmarshal([]byte(data), &m); err == nil {
 				if choices, ok := m["choices"].([]interface{}); ok && len(choices) > 0 {
@@ -2795,7 +2865,7 @@ func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map
 						if delta, ok := choice["delta"].(map[string]interface{}); ok {
 							if content, ok := delta["content"].(string); ok && content != "" {
 								if err := handler("message", content); err != nil {
-									return err
+									return usage, err
 								}
 							}
 						}
@@ -2805,7 +2875,7 @@ func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map
 		}
 	}
 
-	return nil
+	return usage, nil
 }
 
 // getAliConfig 获取Ali配置（从controller中访问，因为aliBiz是私有的）
