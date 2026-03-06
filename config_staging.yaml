@@ -56,6 +56,10 @@ volc:
   timeout: 300s
   max_retries: 3
 
+baidu:
+  api_key: "CkJCFXHinJLBsnEFT9lscwZr"
+  secret_key: "YbJZuvunKGhlSwTZpotTKZxkty0h5enU"
+
 resource:
   image_path: "/opt/numind/staging/image/upload"
 
