@@ -318,22 +318,7 @@ func RecognizeChatText(imageData []byte, imageWidth int) (string, error) {
 		return "", nil
 	}
 
-	// 打印原始 OCR 结果用于调试
-	log.Infow("[BaiduOCR] Raw OCR items", "count", len(items), "imageWidth", imageWidth)
-	for i, item := range items {
-		log.Infow("[BaiduOCR] Item",
-			"index", i,
-			"words", item.Words,
-			"left", item.Location.Left,
-			"top", item.Location.Top,
-			"width", item.Location.Width,
-			"height", item.Location.Height,
-		)
-	}
-
-	result := formatChatMessages(items, imageWidth)
-	log.Infow("[BaiduOCR] Formatted result", "result", result)
-	return result, nil
+	return formatChatMessages(items, imageWidth), nil
 }
 
 // recognizeImage 统一入口：解码图片 → 判断是否需要分段 → 调用 OCR → 返回结果
@@ -518,23 +503,19 @@ func formatChatMessages(items []WordsItem, imageWidth int) string {
 		}
 		// 过滤时间分隔符
 		if isWechatTimestamp(text) {
-			log.Infow("[BaiduOCR] Phase1 filtered (timestamp)", "words", text)
 			continue
 		}
 		// 过滤语音消息时长
 		if isVoiceDuration(text) {
-			log.Infow("[BaiduOCR] Phase1 filtered (voice)", "words", text)
 			continue
 		}
 		// 过滤系统通知
 		centerX := float64(item.Location.Left) + float64(item.Location.Width)/2.0
 		if isSystemMessage(text, centerX, imageWidth) {
-			log.Infow("[BaiduOCR] Phase1 filtered (system)", "words", text)
 			continue
 		}
 		// 过滤 UI 元素（导航按钮、输入栏按钮等）
 		if isUIElement(text, item.Location, imageWidth) {
-			log.Infow("[BaiduOCR] Phase1 filtered (UI)", "words", text)
 			continue
 		}
 		filtered = append(filtered, item)
@@ -612,10 +593,11 @@ func formatChatMessages(items []WordsItem, imageWidth int) string {
 	}
 
 	// === Phase 3: 气泡级说话人判断 ===
-	// 客户气泡锚定在左侧：leftEdge < 18% imageWidth
-	// 销售气泡锚定在右侧：rightEdge > 82% imageWidth
-	leftAnchor := float64(imageWidth) * 0.18
-	rightAnchor := float64(imageWidth) * 0.82
+	// 客户气泡锚定在左侧：leftEdge < 25% imageWidth
+	// 销售气泡锚定在右侧：rightEdge > 75% imageWidth
+	// 阈值需要足够宽松以适应不同分辨率（实测 1440px 宽图中气泡 leftEdge ≈ 18.4%）
+	leftAnchor := float64(imageWidth) * 0.25
+	rightAnchor := float64(imageWidth) * 0.75
 
 	type message struct {
 		speaker speaker
@@ -623,26 +605,27 @@ func formatChatMessages(items []WordsItem, imageWidth int) string {
 		bottom  int
 	}
 
-	log.Infow("[BaiduOCR] Phase2 bubbles", "count", len(bubbles), "leftAnchor", leftAnchor, "rightAnchor", rightAnchor)
-	for i, b := range bubbles {
-		var words []string
-		for _, item := range b.items {
-			words = append(words, item.Words)
-		}
-		log.Infow("[BaiduOCR] Bubble", "index", i, "leftEdge", b.leftEdge, "rightEdge", b.rightEdge, "words", strings.Join(words, "|"))
-	}
-
 	var messages []message
 	for _, b := range bubbles {
 		// 判断说话人
+		isLeft := float64(b.leftEdge) < leftAnchor
+		isRight := float64(b.rightEdge) > rightAnchor
 		var sp speaker
-		if float64(b.rightEdge) > rightAnchor {
+		if isLeft && isRight {
+			// 长文本同时触及两侧边界 → 用距离判断：leftEdge 离左边近 = 客户，rightEdge 离右边近 = 销售
+			distToLeft := float64(b.leftEdge)
+			distToRight := float64(imageWidth) - float64(b.rightEdge)
+			if distToLeft <= distToRight {
+				sp = speakerCustomer
+			} else {
+				sp = speakerSales
+			}
+		} else if isRight {
 			sp = speakerSales
-		} else if float64(b.leftEdge) < leftAnchor {
+		} else if isLeft {
 			sp = speakerCustomer
 		} else {
 			// 既不贴左也不贴右 → 系统消息/噪音，跳过
-			log.Infow("[BaiduOCR] Phase3 skipped bubble (center)", "leftEdge", b.leftEdge, "rightEdge", b.rightEdge, "words", b.items[0].Words)
 			continue
 		}
 
