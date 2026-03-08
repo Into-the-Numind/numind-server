@@ -318,7 +318,22 @@ func RecognizeChatText(imageData []byte, imageWidth int) (string, error) {
 		return "", nil
 	}
 
-	return formatChatMessages(items, imageWidth), nil
+	// 打印原始 OCR 结果用于调试
+	log.Infow("[BaiduOCR] Raw OCR items", "count", len(items), "imageWidth", imageWidth)
+	for i, item := range items {
+		log.Infow("[BaiduOCR] Item",
+			"index", i,
+			"words", item.Words,
+			"left", item.Location.Left,
+			"top", item.Location.Top,
+			"width", item.Location.Width,
+			"height", item.Location.Height,
+		)
+	}
+
+	result := formatChatMessages(items, imageWidth)
+	log.Infow("[BaiduOCR] Formatted result", "result", result)
+	return result, nil
 }
 
 // recognizeImage 统一入口：解码图片 → 判断是否需要分段 → 调用 OCR → 返回结果
@@ -503,19 +518,23 @@ func formatChatMessages(items []WordsItem, imageWidth int) string {
 		}
 		// 过滤时间分隔符
 		if isWechatTimestamp(text) {
+			log.Infow("[BaiduOCR] Phase1 filtered (timestamp)", "words", text)
 			continue
 		}
 		// 过滤语音消息时长
 		if isVoiceDuration(text) {
+			log.Infow("[BaiduOCR] Phase1 filtered (voice)", "words", text)
 			continue
 		}
 		// 过滤系统通知
 		centerX := float64(item.Location.Left) + float64(item.Location.Width)/2.0
 		if isSystemMessage(text, centerX, imageWidth) {
+			log.Infow("[BaiduOCR] Phase1 filtered (system)", "words", text)
 			continue
 		}
 		// 过滤 UI 元素（导航按钮、输入栏按钮等）
 		if isUIElement(text, item.Location, imageWidth) {
+			log.Infow("[BaiduOCR] Phase1 filtered (UI)", "words", text)
 			continue
 		}
 		filtered = append(filtered, item)
@@ -604,6 +623,15 @@ func formatChatMessages(items []WordsItem, imageWidth int) string {
 		bottom  int
 	}
 
+	log.Infow("[BaiduOCR] Phase2 bubbles", "count", len(bubbles), "leftAnchor", leftAnchor, "rightAnchor", rightAnchor)
+	for i, b := range bubbles {
+		var words []string
+		for _, item := range b.items {
+			words = append(words, item.Words)
+		}
+		log.Infow("[BaiduOCR] Bubble", "index", i, "leftEdge", b.leftEdge, "rightEdge", b.rightEdge, "words", strings.Join(words, "|"))
+	}
+
 	var messages []message
 	for _, b := range bubbles {
 		// 判断说话人
@@ -614,6 +642,7 @@ func formatChatMessages(items []WordsItem, imageWidth int) string {
 			sp = speakerCustomer
 		} else {
 			// 既不贴左也不贴右 → 系统消息/噪音，跳过
+			log.Infow("[BaiduOCR] Phase3 skipped bubble (center)", "leftEdge", b.leftEdge, "rightEdge", b.rightEdge, "words", b.items[0].Words)
 			continue
 		}
 
