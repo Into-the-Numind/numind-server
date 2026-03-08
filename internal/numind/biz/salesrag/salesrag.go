@@ -2196,21 +2196,57 @@ func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []b
 		return "", "", fmt.Errorf("图片存储失败: %w", err)
 	}
 
-	// 1b. 如果图片超过火山方舟10MB限制，压缩后重新上传
-	// 返回的 URL 后续会作为多模态 image_url 传给 AI，必须 <10MB
+	// 1b. 如果图片超过火山方舟限制，压缩后重新上传
+	// 返回的 URL 后续会作为多模态 image_url 传给 AI
+	// 火山方舟限制：大小 < 10MB, 总像素 < 36MP, 宽高比 < 150:1
 	const maxAIImageSize = 10 * 1024 * 1024
+	const maxAIPixels int64 = 36_000_000
+	const maxAIAspectRatio = 150.0
+
 	displayObjectKey := objectKey
-	if len(imageData) > maxAIImageSize {
-		log.Printf("[OCRAnalyze] Image exceeds AI limit (%d bytes), compressing, user_id: %d", len(imageData), userID)
-		if img, decErr := imaging.Decode(bytes.NewReader(imageData)); decErr == nil {
-			width, height := img.Bounds().Dx(), img.Bounds().Dy()
+	needsCompress := len(imageData) > maxAIImageSize
+	if img, decErr := imaging.Decode(bytes.NewReader(imageData)); decErr == nil {
+		width, height := img.Bounds().Dx(), img.Bounds().Dy()
+		totalPixels := int64(width) * int64(height)
+		aspectRatio := float64(width) / float64(height)
+		if height > width {
+			aspectRatio = float64(height) / float64(width)
+		}
+
+		if totalPixels > maxAIPixels || aspectRatio > maxAIAspectRatio {
+			needsCompress = true
+		}
+
+		if needsCompress {
+			log.Printf("[OCRAnalyze] Image needs compression for AI: size=%d, pixels=%d, ratio=%.1f, user_id=%d",
+				len(imageData), totalPixels, aspectRatio, userID)
+
+			// 先按像素/宽高比计算初始缩放
+			scale := 1.0
+			if totalPixels > maxAIPixels {
+				scale = math.Sqrt(float64(maxAIPixels-1_000_000) / float64(totalPixels))
+			}
+			if aspectRatio > maxAIAspectRatio {
+				scale = math.Min(scale, 0.8)
+			}
+			if scale < 1.0 {
+				width = int(float64(width) * scale)
+				height = int(float64(height) * scale)
+				img = imaging.Resize(img, width, height, imaging.Lanczos)
+			}
+
+			// 循环压缩直到满足大小限制
 			quality := 85
-			compressed := imageData
+			var compressed []byte
+			var buf bytes.Buffer
+			if encErr := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); encErr == nil {
+				compressed = buf.Bytes()
+			}
 			for len(compressed) > maxAIImageSize && (width > 100 || height > 100) {
 				width = int(float64(width) * 0.85)
 				height = int(float64(height) * 0.85)
 				resized := imaging.Resize(img, width, height, imaging.Lanczos)
-				var buf bytes.Buffer
+				buf.Reset()
 				if encErr := jpeg.Encode(&buf, resized, &jpeg.Options{Quality: quality}); encErr != nil {
 					break
 				}
@@ -2219,7 +2255,8 @@ func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []b
 					quality -= 10
 				}
 			}
-			if len(compressed) <= maxAIImageSize {
+
+			if len(compressed) > 0 && len(compressed) <= maxAIImageSize {
 				compressedKey := objectKey + "_ai.jpg"
 				if _, upErr := util.UploadBytesToCOS(ctx, compressedKey, "image/jpeg", compressed); upErr == nil {
 					displayObjectKey = compressedKey
