@@ -372,14 +372,6 @@ func recognizeImage(imageData []byte) ([]WordsItem, int, error) {
 	return items, width, nil
 }
 
-// speaker 说话人类型
-type speaker int
-
-const (
-	speakerCustomer speaker = iota // 客户（左侧）
-	speakerSales                   // 销售（右侧）
-	speakerSystem                  // 系统消息（居中/时间戳/通知）
-)
 
 // 微信时间分隔符正则（匹配整行）
 // 匹配格式：下午 2:30 / 昨天 下午 3:45 / 星期三 上午 9:00 / 10月15日 下午 2:30 等
@@ -456,65 +448,31 @@ func isUIElement(text string, loc Location, imageWidth int) bool {
 	return false
 }
 
-// itemSide 判断一个文字项在屏幕的哪一侧
-// 返回: -1=左侧, 0=中间, 1=右侧
-func itemSide(item WordsItem, imageWidth int) int {
-	midPoint := float64(imageWidth) / 2.0
-	itemCenter := float64(item.Location.Left) + float64(item.Location.Width)/2.0
-	if itemCenter < midPoint*0.8 {
-		return -1 // 左侧
-	}
-	if itemCenter > midPoint*1.2 {
-		return 1 // 右侧
-	}
-	return 0 // 中间
-}
-
-// bubbleSide 判断气泡当前内容主要在屏幕哪一侧（用第一个 item 的位置决定）
-func bubbleSide(b *bubble, imageWidth int) int {
-	if len(b.items) == 0 {
-		return 0
-	}
-	return itemSide(b.items[0], imageWidth)
-}
-
-// bubble 聊天气泡（一组垂直相邻的文字行）
-type bubble struct {
-	items     []WordsItem
-	leftEdge  int // 所有行中最小的 Left
-	rightEdge int // 所有行中最大的 Left+Width
-	bottom    int // 最后一行的底部 Y 坐标
-}
-
-// formatChatMessages 根据文字位置信息将 OCR 结果格式化为聊天记录
-// 算法：内容去噪 → 气泡分组 → 气泡级说话人判断 → 格式化输出
+// formatChatMessages 根据文字位置信息将 OCR 结果格式化为纯对话文本
+// 算法：内容去噪 → 气泡分组（按 Y 间距合并同一气泡的多行文字）→ 每个气泡输出一行
+// 不标注说话人角色（客户/销售），因为无法仅凭位置判断截图来自哪一方
 func formatChatMessages(items []WordsItem, imageWidth int) string {
 	if len(items) == 0 || imageWidth <= 0 {
 		return ""
 	}
 
 	// === Phase 1: 内容去噪 ===
-	// 过滤时间分隔符、系统通知和 UI 元素，防止干扰后续气泡分组
 	var filtered []WordsItem
 	for _, item := range items {
 		text := strings.TrimSpace(item.Words)
 		if text == "" {
 			continue
 		}
-		// 过滤时间分隔符
 		if isWechatTimestamp(text) {
 			continue
 		}
-		// 过滤语音消息时长
 		if isVoiceDuration(text) {
 			continue
 		}
-		// 过滤系统通知
 		centerX := float64(item.Location.Left) + float64(item.Location.Width)/2.0
 		if isSystemMessage(text, centerX, imageWidth) {
 			continue
 		}
-		// 过滤 UI 元素（导航按钮、输入栏按钮等）
 		if isUIElement(text, item.Location, imageWidth) {
 			continue
 		}
@@ -531,141 +489,55 @@ func formatChatMessages(items []WordsItem, imageWidth int) string {
 	})
 
 	// === Phase 2: 气泡分组 ===
-	// 计算中位数行高，用作自适应分组阈值
+	// 同一气泡内的多行文字（Y 间距小）合并为一条消息
 	heights := make([]int, len(filtered))
 	for i, item := range filtered {
 		h := item.Location.Height
 		if h <= 0 {
-			h = 30 // fallback
+			h = 30
 		}
 		heights[i] = h
 	}
 	sort.Ints(heights)
 	medianHeight := heights[len(heights)/2]
-	groupGap := medianHeight * 3 / 2 // 1.5 倍中位数行高
+	groupGap := medianHeight * 3 / 2
 	if groupGap < 30 {
-		groupGap = 30 // 最小阈值
+		groupGap = 30
 	}
 
-	// 按 Y 间距分组为气泡（同时检查水平一致性）
-	// 关键：Y 相近但在屏幕不同侧的文字不能合并（如客户文字和销售图片缩略图同行）
+	type bubble struct {
+		texts  []string
+		bottom int
+	}
 	var bubbles []bubble
 	for _, item := range filtered {
 		itemTop := item.Location.Top
 		itemBottom := item.Location.Top + item.Location.Height
-		itemRight := item.Location.Left + item.Location.Width
 
-		merged := false
 		if len(bubbles) > 0 {
 			last := &bubbles[len(bubbles)-1]
-			gap := itemTop - last.bottom
-			if gap < groupGap {
-				// Y 间距够近，再检查水平一致性
-				// 如果新 item 和气泡在屏幕的不同侧（一个左一个右），不合并
-				bSide := bubbleSide(last, imageWidth)
-				iSide := itemSide(item, imageWidth)
-				if bSide == 0 || iSide == 0 || bSide == iSide {
-					// 同侧或有一方居中 → 允许合并
-					last.items = append(last.items, item)
-					if item.Location.Left < last.leftEdge {
-						last.leftEdge = item.Location.Left
-					}
-					if itemRight > last.rightEdge {
-						last.rightEdge = itemRight
-					}
-					if itemBottom > last.bottom {
-						last.bottom = itemBottom
-					}
-					merged = true
+			if itemTop-last.bottom < groupGap {
+				last.texts = append(last.texts, item.Words)
+				if itemBottom > last.bottom {
+					last.bottom = itemBottom
 				}
-			}
-		}
-
-		if !merged {
-			// 新气泡
-			bubbles = append(bubbles, bubble{
-				items:     []WordsItem{item},
-				leftEdge:  item.Location.Left,
-				rightEdge: itemRight,
-				bottom:    itemBottom,
-			})
-		}
-	}
-
-	// === Phase 3: 气泡级说话人判断 ===
-	// 客户气泡锚定在左侧：leftEdge < 25% imageWidth
-	// 销售气泡锚定在右侧：rightEdge > 75% imageWidth
-	// 阈值需要足够宽松以适应不同分辨率（实测 1440px 宽图中气泡 leftEdge ≈ 18.4%）
-	leftAnchor := float64(imageWidth) * 0.25
-	rightAnchor := float64(imageWidth) * 0.75
-
-	type message struct {
-		speaker speaker
-		texts   []string
-		bottom  int
-	}
-
-	var messages []message
-	for _, b := range bubbles {
-		// 判断说话人
-		isLeft := float64(b.leftEdge) < leftAnchor
-		isRight := float64(b.rightEdge) > rightAnchor
-		var sp speaker
-		if isLeft && isRight {
-			// 长文本同时触及两侧边界 → 用距离判断：leftEdge 离左边近 = 客户，rightEdge 离右边近 = 销售
-			distToLeft := float64(b.leftEdge)
-			distToRight := float64(imageWidth) - float64(b.rightEdge)
-			if distToLeft <= distToRight {
-				sp = speakerCustomer
-			} else {
-				sp = speakerSales
-			}
-		} else if isRight {
-			sp = speakerSales
-		} else if isLeft {
-			sp = speakerCustomer
-		} else {
-			// 既不贴左也不贴右 → 系统消息/噪音，跳过
-			continue
-		}
-
-		// 收集气泡内所有文字
-		var texts []string
-		for _, item := range b.items {
-			texts = append(texts, item.Words)
-		}
-
-		// 合并相邻同一说话人的气泡（仅间距很小时合并，可能是 OCR 把一个气泡拆成了两个）
-		// 间距较大说明是同一人连发的多条消息，应保持独立
-		if len(messages) > 0 {
-			last := &messages[len(messages)-1]
-			if last.speaker == sp && (b.items[0].Location.Top-last.bottom) < groupGap {
-				last.texts = append(last.texts, texts...)
-				last.bottom = b.bottom
 				continue
 			}
 		}
 
-		messages = append(messages, message{
-			speaker: sp,
-			texts:   texts,
-			bottom:  b.bottom,
+		bubbles = append(bubbles, bubble{
+			texts:  []string{item.Words},
+			bottom: itemBottom,
 		})
 	}
 
-	// === Phase 4: 格式化输出 ===
+	// === Phase 3: 格式化输出 ===
 	var result strings.Builder
-	for i, msg := range messages {
+	for i, b := range bubbles {
 		if i > 0 {
 			result.WriteByte('\n')
 		}
-		prefix := "客户"
-		if msg.speaker == speakerSales {
-			prefix = "销售"
-		}
-		result.WriteString(prefix)
-		result.WriteString("：")
-		result.WriteString(strings.Join(msg.texts, ""))
+		result.WriteString(strings.Join(b.texts, ""))
 	}
 
 	return result.String()
