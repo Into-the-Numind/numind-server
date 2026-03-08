@@ -2196,8 +2196,42 @@ func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []b
 		return "", "", fmt.Errorf("图片存储失败: %w", err)
 	}
 
-	// 生成前端展示用的签名 URL
-	frontendURL, err := util.GenerateSignedURL(ctx, objectKey, 86400) // 24h
+	// 1b. 如果图片超过火山方舟10MB限制，压缩后重新上传
+	// 返回的 URL 后续会作为多模态 image_url 传给 AI，必须 <10MB
+	const maxAIImageSize = 10 * 1024 * 1024
+	displayObjectKey := objectKey
+	if len(imageData) > maxAIImageSize {
+		log.Printf("[OCRAnalyze] Image exceeds AI limit (%d bytes), compressing, user_id: %d", len(imageData), userID)
+		if img, decErr := imaging.Decode(bytes.NewReader(imageData)); decErr == nil {
+			width, height := img.Bounds().Dx(), img.Bounds().Dy()
+			quality := 85
+			compressed := imageData
+			for len(compressed) > maxAIImageSize && (width > 100 || height > 100) {
+				width = int(float64(width) * 0.85)
+				height = int(float64(height) * 0.85)
+				resized := imaging.Resize(img, width, height, imaging.Lanczos)
+				var buf bytes.Buffer
+				if encErr := jpeg.Encode(&buf, resized, &jpeg.Options{Quality: quality}); encErr != nil {
+					break
+				}
+				compressed = buf.Bytes()
+				if len(compressed) > maxAIImageSize && quality > 30 {
+					quality -= 10
+				}
+			}
+			if len(compressed) <= maxAIImageSize {
+				compressedKey := objectKey + "_ai.jpg"
+				if _, upErr := util.UploadBytesToCOS(ctx, compressedKey, "image/jpeg", compressed); upErr == nil {
+					displayObjectKey = compressedKey
+					log.Printf("[OCRAnalyze] Compressed for AI: %d -> %d bytes, %dx%d, user_id: %d",
+						len(imageData), len(compressed), width, height, userID)
+				}
+			}
+		}
+	}
+
+	// 生成前端展示用的签名 URL（使用压缩版，若有）
+	frontendURL, err := util.GenerateSignedURL(ctx, displayObjectKey, 86400) // 24h
 	if err != nil {
 		log.Printf("[OCRAnalyze] Generate frontend signed URL failed, fallback to raw, error: %v", err)
 		frontendURL = cosURL
