@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -221,27 +222,53 @@ func callOCRAPI(imageData []byte) (*OCRResult, error) {
 	return &result, nil
 }
 
-// recognizeSegments 对多个图片分段调用 OCR，合并结果并将坐标映射回原图
+// segmentResult 存储单个分段的 OCR 结果
+type segmentResult struct {
+	index int
+	items []WordsItem
+	err   error
+}
+
+// recognizeSegments 并发调用 OCR 识别多个分段（受限于百度 API 2 QPS），合并结果并将坐标映射回原图
 func recognizeSegments(segments [][]byte, yOffsets []int) ([]WordsItem, error) {
-	var allItems []WordsItem
+	results := make([]segmentResult, len(segments))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 2) // 百度 OCR 限制 2 QPS
 
 	for i, segData := range segments {
-		result, err := callOCRAPI(segData)
-		if err != nil {
-			log.Infow("[BaiduOCR] Segment OCR failed, skipping", "index", i, "error", err)
+		wg.Add(1)
+		sem <- struct{}{} // 获取信号量
+		go func(idx int, data []byte) {
+			defer wg.Done()
+			defer func() { <-sem }() // 释放信号量
+			result, err := callOCRAPI(data)
+			if err != nil {
+				results[idx] = segmentResult{index: idx, err: err}
+				return
+			}
+			var items []WordsItem
+			for _, item := range result.WordsResult {
+				if item.Words == "" {
+					continue
+				}
+				item.Location.Top += yOffsets[idx]
+				items = append(items, item)
+			}
+			results[idx] = segmentResult{index: idx, items: items}
+			log.Infow("[BaiduOCR] Segment OCR done", "index", idx, "words_count", result.WordsResultNum)
+		}(i, segData)
+	}
+
+	wg.Wait()
+
+	// 按分段顺序合并结果
+	var allItems []WordsItem
+	for _, r := range results {
+		if r.err != nil {
+			log.Infow("[BaiduOCR] Segment OCR failed, skipping", "index", r.index, "error", r.err)
 			continue
 		}
-
-		// 将分段内的 top 坐标映射回原图坐标
-		for _, item := range result.WordsResult {
-			if item.Words == "" {
-				continue
-			}
-			item.Location.Top += yOffsets[i]
-			allItems = append(allItems, item)
-		}
-
-		log.Infow("[BaiduOCR] Segment OCR done", "index", i, "words_count", result.WordsResultNum)
+		allItems = append(allItems, r.items...)
 	}
 
 	// 按原图 top 坐标排序
@@ -371,104 +398,172 @@ func recognizeImage(imageData []byte) ([]WordsItem, int, error) {
 	return items, width, nil
 }
 
-// speaker 说话人类型
-type speaker int
 
-const (
-	speakerCustomer speaker = iota // 客户（左侧）
-	speakerSales                   // 销售（右侧）
-	speakerSystem                  // 系统消息（居中，如时间戳）
+// 微信时间分隔符正则（匹配整行）
+// 匹配格式：下午 2:30 / 昨天 下午 3:45 / 星期三 上午 9:00 / 10月15日 下午 2:30 等
+var wechatTimeRegex = regexp.MustCompile(
+	`^((\d{4}年)?\d{1,2}月\d{1,2}日\s*)?` + // 可选日期
+		`(昨天|前天|今天|星期[一二三四五六日天])?\s*` + // 可选相对日期/星期
+		`(上午|下午|凌晨|中午|晚上)?\s*` + // 可选时段
+		`\d{1,2}:\d{2}\s*$`, // 时间 HH:MM
 )
 
-// formatChatMessages 根据文字位置信息将 OCR 结果格式化为聊天记录
+// 语音消息时长正则（匹配 5" / 15'' / 1'23" / 0:15 等）
+// 注意：纯 H:MM 格式已被 wechatTimeRegex 覆盖，此处补充秒数+引号格式
+var voiceDurationRegex = regexp.MustCompile(
+	`^\d{1,3}(["″]|'{1,2})\s*$|` + // 5" / 15'' / 60″ / 5'
+		`^\d{1,2}'\d{2}["''″]?\s*$`, // 1'23" / 2'00
+)
+
+// 微信系统通知关键词
+var systemMessageKeywords = []string{
+	"已添加", "好友验证", "撤回了一条消息", "邀请你加入",
+	"拍了拍", "以下是新消息", "消息已发出", "开启了朋友验证",
+	"发起了语音通话", "发起了视频通话", "领取了", "发出了红包", "通过了你的",
+}
+
+// isWechatTimestamp 判断文本是否为微信时间分隔符
+func isWechatTimestamp(text string) bool {
+	return wechatTimeRegex.MatchString(strings.TrimSpace(text))
+}
+
+// isVoiceDuration 判断文本是否为语音消息时长（如 5"、15''、1'23"）
+func isVoiceDuration(text string) bool {
+	return voiceDurationRegex.MatchString(strings.TrimSpace(text))
+}
+
+// isSystemMessage 判断文本是否为微信系统通知（需同时满足：包含关键词 + 居中 + 短文本）
+func isSystemMessage(text string, centerX float64, imageWidth int) bool {
+	if len([]rune(text)) > 30 {
+		return false
+	}
+	// 文字中心在图片宽度 30%-70% 范围内视为居中
+	if centerX < float64(imageWidth)*0.30 || centerX > float64(imageWidth)*0.70 {
+		return false
+	}
+	for _, kw := range systemMessageKeywords {
+		if strings.Contains(text, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// isUIElement 判断文本是否为微信 UI 元素（导航按钮、输入栏等）
+func isUIElement(text string, loc Location, imageWidth int) bool {
+	runeLen := len([]rune(text))
+
+	// 1-2 个字符的常见 UI 符号直接过滤（这些不可能是正常聊天内容）
+	if runeLen <= 2 {
+		switch text {
+		case "+", "<", ">", "×", "…", "⋯", "···", "...", "←":
+			return true
+		}
+	}
+
+	// 极短文本（≤3字符）且在屏幕极端位置（最左10%或最右10%）→ UI 按钮
+	// 这里覆盖了 "1"（未读计数）、"返回" 等位置相关的 UI 元素
+	if runeLen <= 3 {
+		leftRatio := float64(loc.Left) / float64(imageWidth)
+		rightRatio := float64(loc.Left+loc.Width) / float64(imageWidth)
+		if leftRatio > 0.90 || rightRatio < 0.10 {
+			return true
+		}
+	}
+
+	return false
+}
+
+// formatChatMessages 根据文字位置信息将 OCR 结果格式化为纯对话文本
+// 算法：内容去噪 → 气泡分组（按 Y 间距合并同一气泡的多行文字）→ 每个气泡输出一行
+// 不标注说话人角色（客户/销售），因为无法仅凭位置判断截图来自哪一方
 func formatChatMessages(items []WordsItem, imageWidth int) string {
-	if len(items) == 0 {
+	if len(items) == 0 || imageWidth <= 0 {
+		return ""
+	}
+
+	// === Phase 1: 内容去噪 ===
+	var filtered []WordsItem
+	for _, item := range items {
+		text := strings.TrimSpace(item.Words)
+		if text == "" {
+			continue
+		}
+		if isWechatTimestamp(text) {
+			continue
+		}
+		if isVoiceDuration(text) {
+			continue
+		}
+		centerX := float64(item.Location.Left) + float64(item.Location.Width)/2.0
+		if isSystemMessage(text, centerX, imageWidth) {
+			continue
+		}
+		if isUIElement(text, item.Location, imageWidth) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+
+	if len(filtered) == 0 {
 		return ""
 	}
 
 	// 按 top 坐标排序（从上到下）
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].Location.Top < items[j].Location.Top
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].Location.Top < filtered[j].Location.Top
 	})
 
-	// 微信聊天布局判断阈值
-	leftThreshold := float64(imageWidth) * 0.45
-	rightThreshold := float64(imageWidth) * 0.55
-
-	type chatLine struct {
-		speaker speaker
-		top     int
-		bottom  int
-		text    string
+	// === Phase 2: 气泡分组 ===
+	// 同一气泡内的多行文字（Y 间距小）合并为一条消息
+	heights := make([]int, len(filtered))
+	for i, item := range filtered {
+		h := item.Location.Height
+		if h <= 0 {
+			h = 30
+		}
+		heights[i] = h
+	}
+	sort.Ints(heights)
+	medianHeight := heights[len(heights)/2]
+	groupGap := medianHeight * 3 / 2
+	if groupGap < 30 {
+		groupGap = 30
 	}
 
-	var lines []chatLine
-	for _, item := range items {
-		if item.Words == "" {
-			continue
-		}
-		centerX := float64(item.Location.Left) + float64(item.Location.Width)/2.0
-
-		var sp speaker
-		if centerX < leftThreshold {
-			sp = speakerCustomer
-		} else if centerX > rightThreshold {
-			sp = speakerSales
-		} else {
-			sp = speakerSystem
-		}
-
-		lines = append(lines, chatLine{
-			speaker: sp,
-			top:     item.Location.Top,
-			bottom:  item.Location.Top + item.Location.Height,
-			text:    item.Words,
-		})
+	type bubble struct {
+		texts  []string
+		bottom int
 	}
+	var bubbles []bubble
+	for _, item := range filtered {
+		itemTop := item.Location.Top
+		itemBottom := item.Location.Top + item.Location.Height
 
-	// 合并相邻同一说话人的文字为一条消息
-	const mergeGap = 60
-
-	type message struct {
-		speaker speaker
-		texts   []string
-		bottom  int // 当前消息最后一行的底部
-	}
-
-	var messages []message
-	for _, line := range lines {
-		if line.speaker == speakerSystem {
-			continue
-		}
-
-		if len(messages) > 0 {
-			last := &messages[len(messages)-1]
-			if last.speaker == line.speaker && (line.top-last.bottom) < mergeGap {
-				last.texts = append(last.texts, line.text)
-				last.bottom = line.bottom
+		if len(bubbles) > 0 {
+			last := &bubbles[len(bubbles)-1]
+			if itemTop-last.bottom < groupGap {
+				last.texts = append(last.texts, item.Words)
+				if itemBottom > last.bottom {
+					last.bottom = itemBottom
+				}
 				continue
 			}
 		}
 
-		messages = append(messages, message{
-			speaker: line.speaker,
-			texts:   []string{line.text},
-			bottom:  line.bottom,
+		bubbles = append(bubbles, bubble{
+			texts:  []string{item.Words},
+			bottom: itemBottom,
 		})
 	}
 
+	// === Phase 3: 格式化输出 ===
 	var result strings.Builder
-	for i, msg := range messages {
+	for i, b := range bubbles {
 		if i > 0 {
 			result.WriteByte('\n')
 		}
-		prefix := "客户"
-		if msg.speaker == speakerSales {
-			prefix = "销售"
-		}
-		result.WriteString(prefix)
-		result.WriteString("：")
-		result.WriteString(strings.Join(msg.texts, ""))
+		result.WriteString(strings.Join(b.texts, ""))
 	}
 
 	return result.String()

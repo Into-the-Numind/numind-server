@@ -52,7 +52,10 @@ type SalesRAGBiz interface {
 	// RetrieveStream 流式检索知识并生成回答
 	// chatMode: "sales" (销售话术) 或 "free" (自由讨论)
 	// onEvent: 事件回调，eventType 可为 "verdict"/"token"/"error"/"done"
-	RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, opinionDocIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, salesStage string, onEvent func(eventType string, data interface{}) error) error
+	// RetrieveStream 流式检索并生成回复
+	// retrievalQuery: 用于知识库检索的查询（含OCR文字）
+	// promptQuery: 用于AI生成的查询（仅用户文字，不含OCR）
+	RetrieveStream(ctx context.Context, retrievalQuery string, promptQuery string, images []string, history []string, docIDs []uint, opinionDocIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, salesStage string, onEvent func(eventType string, data interface{}) error) error
 	// ListDocuments 获取用户的文档列表
 	ListDocuments(ctx context.Context, userID uint) ([]domain.KnowledgeDocument, error)
 	// GetDocument 获取单个文档详情
@@ -81,7 +84,8 @@ type SalesRAGBiz interface {
 
 	// ChatWithSession 基于会话的流式对话（保存聊天记录）
 	// chatMode: "sales" (销售话术模式) 或 "free" (自由讨论模式)
-	ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, images []string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error
+	// ocrTexts: 图片OCR识别文字，仅用于知识库检索，不进AI prompt
+	ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, ocrTexts []string, images []string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error
 
 	// AnalyzeProfileMultiFiles 多文件综合分析生成客户档案
 	AnalyzeProfileMultiFiles(ctx context.Context, userID uint, files []*multipart.FileHeader, onToken func(token string) error) (string, error)
@@ -583,7 +587,7 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, verdict 
 // RetrieveStream 流式检索知识并生成回答
 // chatMode: "sales" (销售话术) 或// RetrieveStream 流式检索知识并生成回答
 // 修改：增加 docCategoryMap 参数，用于传递文档分类信息
-func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history []string, docIDs []uint, opinionDocIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, salesStage string, onEvent func(eventType string, data interface{}) error) error {
+func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string, promptQuery string, images []string, history []string, docIDs []uint, opinionDocIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, salesStage string, onEvent func(eventType string, data interface{}) error) error {
 	// 1. 从上下文获取用户ID
 	var userID uint
 	if uid, ok := middleware.UserIDFromCtx(ctx); ok {
@@ -644,7 +648,7 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 
 	// 6. 执行检索（使用 V2 版本，传递 chatMode 和 history）
 	// 注意：RetrieveForResponseV2 内部并行执行 RAG 检索、策略选择和观点库独立检索
-	verdict, err := b.ragSvc.RetrieveForResponseV2(ctx, query, filteredDocIDs, filteredOpinionDocIDs, history, chatMode, userID, func(status string) {
+	verdict, err := b.ragSvc.RetrieveForResponseV2(ctx, retrievalQuery, filteredDocIDs, filteredOpinionDocIDs, history, chatMode, userID, func(status string) {
 		_ = onEvent("status", status)
 	})
 	if err != nil {
@@ -672,29 +676,33 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, query string, history 
 	// 9. 获取语言风格
 	languageStyle, _ := b.GetLanguageStyle(ctx, userID)
 
-	// 10. 构建 prompt 并流式生成回答
-	messages := b.buildPromptMessagesV2(query, verdict, customerProfile, languageStyle, salesStage)
+	// 10. 构建 prompt 并流式生成回答（用 promptQuery，不含OCR文字）
+	messages := b.buildPromptMessagesV2(promptQuery, images, verdict, customerProfile, languageStyle, salesStage)
 
-	// 11. 调用 DMXAPI DeepSeek-V3.2 流式聊天（支持思考模式）
-	// 注意：deepThinking 参数决定是否启用思维链，不再对输出 Token 设限
-	_, chatGenUsage, err := b.dmxClient.StreamChatCompletion(ctx, "DeepSeek-V3.2", messages, 0.7, 0, deepThinking, func(eventType, content string) error {
+	// 11. 调用火山方舟 doubao-seed-2-0-pro-260215 流式聊天（多模态，支持图片）
+	reasoningEffort := "minimal"
+	if deepThinking {
+		reasoningEffort = "high"
+	}
+	_, chatGenUsage, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-pro-260215", 0, 0.7, reasoningEffort, func(eventType, content string) error {
 		if eventType == "thinking" {
 			return onEvent("thinking", content)
 		}
-		// eventType == "content"
+		// eventType == "message"
 		return onEvent("token", content)
 	})
 	if err != nil {
 		return onEvent("error", fmt.Sprintf("stream chat failed: %v", err))
 	}
-	billing.RecordLLM(userID, "dmxapi", "DeepSeek-V3.2", "salesrag_chat_generate", chatGenUsage, nil)
+	billing.RecordLLM(userID, "volc", "doubao-seed-2-0-pro-260215", "salesrag_chat_generate", chatGenUsage, nil)
 
 	// 12. 发送完成事件
 	return onEvent("done", nil)
 }
 
 // buildPromptMessagesV2 根据检索结果构建 prompt 消息（优化版）
-func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.RetrievalVerdict, customerProfile string, languageStyle string, salesStage string) []adapter.ChatMessage {
+// images 非空时，user message 的 content 使用多模态格式（image_url + text）
+func (b *salesRAGBiz) buildPromptMessagesV2(query string, images []string, verdict *service.RetrievalVerdict, customerProfile string, languageStyle string, salesStage string) []map[string]interface{} {
 	// 上下文长度限制常量
 	const (
 		maxCustomerProfileChars = 5000  // 客户画像最大字符数
@@ -785,14 +793,36 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, verdict *service.Retri
 		userMessage = query
 	}
 
-	return []adapter.ChatMessage{
+	// 构建 user message 的 content（支持多模态）
+	var userContent interface{}
+	if len(images) > 0 {
+		// 多模态格式：先放图片，再放文字
+		contentParts := make([]map[string]interface{}, 0, len(images)+1)
+		for _, imgURL := range images {
+			contentParts = append(contentParts, map[string]interface{}{
+				"type": "image_url",
+				"image_url": map[string]interface{}{
+					"url": imgURL,
+				},
+			})
+		}
+		contentParts = append(contentParts, map[string]interface{}{
+			"type": "text",
+			"text": userMessage,
+		})
+		userContent = contentParts
+	} else {
+		userContent = userMessage
+	}
+
+	return []map[string]interface{}{
 		{
-			Role:    "system",
-			Content: systemPrompt,
+			"role":    "system",
+			"content": systemPrompt,
 		},
 		{
-			Role:    "user",
-			Content: userMessage,
+			"role":    "user",
+			"content": userContent,
 		},
 	}
 }
@@ -1336,7 +1366,8 @@ func (b *salesRAGBiz) GetCustomerProfile(ctx context.Context, userID uint, sessi
 
 // ChatWithSession 基于会话的流式对话（保存聊天记录）
 // chatMode: "sales" (销售话术模式) 或 "free" (自由讨论模式)
-func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, images []string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error {
+// ocrTexts: 图片OCR识别文字，仅用于知识库检索，不进AI prompt
+func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionID uint, query string, ocrTexts []string, images []string, docIDs []uint, deepThinking bool, chatMode string, onEvent func(eventType string, data interface{}) error) error {
 	// 1. 验证会话并加载历史消息
 	session, err := b.sessionStore.GetSessionWithMessages(ctx, sessionID, userID)
 	if err != nil {
@@ -1434,7 +1465,7 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 		}
 	}
 
-	// 3. 处理用户消息
+	// 3. 处理用户消息（只存用户文字，不存OCR内容）
 	var imagesJSON string
 	if len(images) > 0 {
 		imgBytes, _ := json.Marshal(images)
@@ -1451,6 +1482,17 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	}
 	if err := b.sessionStore.CreateMessage(ctx, userMessage); err != nil {
 		return fmt.Errorf("failed to save user message: %w", err)
+	}
+
+	// 3b. 构建检索用查询（用户文字 + OCR识别文字拼接，仅用于知识库检索）
+	retrievalQuery := query
+	if len(ocrTexts) > 0 {
+		ocrBlock := strings.Join(ocrTexts, "\n")
+		if query != "" {
+			retrievalQuery = query + "\n" + ocrBlock
+		} else {
+			retrievalQuery = ocrBlock
+		}
 	}
 
 	// 构建文档分类映射（仅常规知识库，观点库走独立通道不需要分类映射）
@@ -1471,7 +1513,7 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	var verdictJSON string
 	var thinkingText string
 
-	err = b.RetrieveStream(ctx, query, history, sessionDocIDs, allOpinionDocIDs, docCategoryMap, deepThinking, chatMode, session.CustomerProfile, session.SalesStage, func(eventType string, data interface{}) error {
+	err = b.RetrieveStream(ctx, retrievalQuery, query, images, history, sessionDocIDs, allOpinionDocIDs, docCategoryMap, deepThinking, chatMode, session.CustomerProfile, session.SalesStage, func(eventType string, data interface{}) error {
 		switch eventType {
 		case "verdict":
 			// 序列化 verdict 为 JSON

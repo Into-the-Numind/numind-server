@@ -96,8 +96,9 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 	}
 
 	var r struct {
-		Query         string   `json:"query" binding:"required"`
-		Images        []string `json:"images"` // 图片链接列表
+		Query         string   `json:"query"`       // 用户文字（可为空，仅图片时）
+		OcrTexts      []string `json:"ocr_texts"`   // OCR识别文字，仅用于知识库检索
+		Images        []string `json:"images"`       // 图片链接列表
 		DocumentIDs   []uint   `json:"document_ids"`
 		ProductDocIDs []uint   `json:"product_doc_ids"` // 产品文档
 		CaseDocIDs    []uint   `json:"case_doc_ids"`    // 成功案例
@@ -107,6 +108,12 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&r); err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	// 至少需要文字或图片之一
+	if strings.TrimSpace(r.Query) == "" && len(r.Images) == 0 {
 		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
 		return
 	}
@@ -135,7 +142,7 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 	w := c.Writer
 
 	// 调用基于会话的流式检索方法（会自动保存消息）
-	err = ctrl.b.SalesRAG().ChatWithSession(newCtx, user.ID, uint(sessionID), r.Query, r.Images, r.DocumentIDs, r.DeepThinking, r.ChatMode,
+	err = ctrl.b.SalesRAG().ChatWithSession(newCtx, user.ID, uint(sessionID), r.Query, r.OcrTexts, r.Images, r.DocumentIDs, r.DeepThinking, r.ChatMode,
 		func(eventType string, data interface{}) error {
 			var eventData []byte
 			var marshalErr error
