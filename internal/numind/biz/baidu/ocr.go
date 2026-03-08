@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -377,86 +378,193 @@ type speaker int
 const (
 	speakerCustomer speaker = iota // 客户（左侧）
 	speakerSales                   // 销售（右侧）
-	speakerSystem                  // 系统消息（居中，如时间戳）
+	speakerSystem                  // 系统消息（居中/时间戳/通知）
 )
 
+// 微信时间分隔符正则（匹配整行）
+// 匹配格式：下午 2:30 / 昨天 下午 3:45 / 星期三 上午 9:00 / 10月15日 下午 2:30 等
+var wechatTimeRegex = regexp.MustCompile(
+	`^((\d{4}年)?\d{1,2}月\d{1,2}日\s*)?` + // 可选日期
+		`(昨天|前天|今天|星期[一二三四五六日天])?\s*` + // 可选相对日期/星期
+		`(上午|下午|凌晨|中午|晚上)?\s*` + // 可选时段
+		`\d{1,2}:\d{2}\s*$`, // 时间 HH:MM
+)
+
+// 微信系统通知关键词
+var systemMessageKeywords = []string{
+	"已添加", "好友验证", "撤回了一条消息", "邀请你加入",
+	"拍了拍", "以下是新消息", "消息已发出", "开启了朋友验证",
+	"发起了语音通话", "发起了视频通话", "领取了", "发出了红包", "通过了你的",
+}
+
+// isWechatTimestamp 判断文本是否为微信时间分隔符
+func isWechatTimestamp(text string) bool {
+	return wechatTimeRegex.MatchString(strings.TrimSpace(text))
+}
+
+// isSystemMessage 判断文本是否为微信系统通知（需同时满足：包含关键词 + 居中 + 短文本）
+func isSystemMessage(text string, centerX float64, imageWidth int) bool {
+	if len([]rune(text)) > 30 {
+		return false
+	}
+	// 文字中心在图片宽度 30%-70% 范围内视为居中
+	if centerX < float64(imageWidth)*0.30 || centerX > float64(imageWidth)*0.70 {
+		return false
+	}
+	for _, kw := range systemMessageKeywords {
+		if strings.Contains(text, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// bubble 聊天气泡（一组垂直相邻的文字行）
+type bubble struct {
+	items     []WordsItem
+	leftEdge  int // 所有行中最小的 Left
+	rightEdge int // 所有行中最大的 Left+Width
+	bottom    int // 最后一行的底部 Y 坐标
+}
+
 // formatChatMessages 根据文字位置信息将 OCR 结果格式化为聊天记录
+// 算法：内容去噪 → 气泡分组 → 气泡级说话人判断 → 格式化输出
 func formatChatMessages(items []WordsItem, imageWidth int) string {
-	if len(items) == 0 {
+	if len(items) == 0 || imageWidth <= 0 {
+		return ""
+	}
+
+	// === Phase 1: 内容去噪 ===
+	// 过滤时间分隔符和系统通知，防止干扰后续气泡分组
+	var filtered []WordsItem
+	for _, item := range items {
+		text := strings.TrimSpace(item.Words)
+		if text == "" {
+			continue
+		}
+		// 过滤时间分隔符
+		if isWechatTimestamp(text) {
+			continue
+		}
+		// 过滤系统通知
+		centerX := float64(item.Location.Left) + float64(item.Location.Width)/2.0
+		if isSystemMessage(text, centerX, imageWidth) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+
+	if len(filtered) == 0 {
 		return ""
 	}
 
 	// 按 top 坐标排序（从上到下）
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].Location.Top < items[j].Location.Top
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].Location.Top < filtered[j].Location.Top
 	})
 
-	// 微信聊天布局判断阈值
-	leftThreshold := float64(imageWidth) * 0.45
-	rightThreshold := float64(imageWidth) * 0.55
-
-	type chatLine struct {
-		speaker speaker
-		top     int
-		bottom  int
-		text    string
+	// === Phase 2: 气泡分组 ===
+	// 计算中位数行高，用作自适应分组阈值
+	heights := make([]int, len(filtered))
+	for i, item := range filtered {
+		h := item.Location.Height
+		if h <= 0 {
+			h = 30 // fallback
+		}
+		heights[i] = h
+	}
+	sort.Ints(heights)
+	medianHeight := heights[len(heights)/2]
+	groupGap := medianHeight * 3 / 2 // 1.5 倍中位数行高
+	if groupGap < 30 {
+		groupGap = 30 // 最小阈值
 	}
 
-	var lines []chatLine
-	for _, item := range items {
-		if item.Words == "" {
-			continue
-		}
-		centerX := float64(item.Location.Left) + float64(item.Location.Width)/2.0
+	// 按 Y 间距分组为气泡
+	var bubbles []bubble
+	for _, item := range filtered {
+		itemTop := item.Location.Top
+		itemBottom := item.Location.Top + item.Location.Height
+		itemRight := item.Location.Left + item.Location.Width
 
-		var sp speaker
-		if centerX < leftThreshold {
-			sp = speakerCustomer
-		} else if centerX > rightThreshold {
-			sp = speakerSales
-		} else {
-			sp = speakerSystem
+		if len(bubbles) > 0 {
+			last := &bubbles[len(bubbles)-1]
+			gap := itemTop - last.bottom
+			if gap < groupGap {
+				// 归入当前气泡
+				last.items = append(last.items, item)
+				if item.Location.Left < last.leftEdge {
+					last.leftEdge = item.Location.Left
+				}
+				if itemRight > last.rightEdge {
+					last.rightEdge = itemRight
+				}
+				if itemBottom > last.bottom {
+					last.bottom = itemBottom
+				}
+				continue
+			}
 		}
 
-		lines = append(lines, chatLine{
-			speaker: sp,
-			top:     item.Location.Top,
-			bottom:  item.Location.Top + item.Location.Height,
-			text:    item.Words,
+		// 新气泡
+		bubbles = append(bubbles, bubble{
+			items:     []WordsItem{item},
+			leftEdge:  item.Location.Left,
+			rightEdge: itemRight,
+			bottom:    itemBottom,
 		})
 	}
 
-	// 合并相邻同一说话人的文字为一条消息
-	const mergeGap = 60
+	// === Phase 3: 气泡级说话人判断 ===
+	// 客户气泡锚定在左侧：leftEdge < 18% imageWidth
+	// 销售气泡锚定在右侧：rightEdge > 82% imageWidth
+	leftAnchor := float64(imageWidth) * 0.18
+	rightAnchor := float64(imageWidth) * 0.82
 
 	type message struct {
 		speaker speaker
 		texts   []string
-		bottom  int // 当前消息最后一行的底部
+		bottom  int
 	}
 
 	var messages []message
-	for _, line := range lines {
-		if line.speaker == speakerSystem {
+	for _, b := range bubbles {
+		// 判断说话人
+		var sp speaker
+		if float64(b.rightEdge) > rightAnchor {
+			sp = speakerSales
+		} else if float64(b.leftEdge) < leftAnchor {
+			sp = speakerCustomer
+		} else {
+			// 既不贴左也不贴右 → 系统消息/噪音，跳过
 			continue
 		}
 
+		// 收集气泡内所有文字
+		var texts []string
+		for _, item := range b.items {
+			texts = append(texts, item.Words)
+		}
+
+		// 合并相邻同一说话人的气泡（仅间距很小时合并，可能是 OCR 把一个气泡拆成了两个）
+		// 间距较大说明是同一人连发的多条消息，应保持独立
 		if len(messages) > 0 {
 			last := &messages[len(messages)-1]
-			if last.speaker == line.speaker && (line.top-last.bottom) < mergeGap {
-				last.texts = append(last.texts, line.text)
-				last.bottom = line.bottom
+			if last.speaker == sp && (b.items[0].Location.Top-last.bottom) < groupGap {
+				last.texts = append(last.texts, texts...)
+				last.bottom = b.bottom
 				continue
 			}
 		}
 
 		messages = append(messages, message{
-			speaker: line.speaker,
-			texts:   []string{line.text},
-			bottom:  line.bottom,
+			speaker: sp,
+			texts:   texts,
+			bottom:  b.bottom,
 		})
 	}
 
+	// === Phase 4: 格式化输出 ===
 	var result strings.Builder
 	for i, msg := range messages {
 		if i > 0 {
