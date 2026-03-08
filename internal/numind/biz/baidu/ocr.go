@@ -222,27 +222,50 @@ func callOCRAPI(imageData []byte) (*OCRResult, error) {
 	return &result, nil
 }
 
-// recognizeSegments 对多个图片分段调用 OCR，合并结果并将坐标映射回原图
+// segmentResult 存储单个分段的 OCR 结果
+type segmentResult struct {
+	index int
+	items []WordsItem
+	err   error
+}
+
+// recognizeSegments 并发调用 OCR 识别多个分段，合并结果并将坐标映射回原图
 func recognizeSegments(segments [][]byte, yOffsets []int) ([]WordsItem, error) {
-	var allItems []WordsItem
+	results := make([]segmentResult, len(segments))
+	var wg sync.WaitGroup
 
 	for i, segData := range segments {
-		result, err := callOCRAPI(segData)
-		if err != nil {
-			log.Infow("[BaiduOCR] Segment OCR failed, skipping", "index", i, "error", err)
+		wg.Add(1)
+		go func(idx int, data []byte) {
+			defer wg.Done()
+			result, err := callOCRAPI(data)
+			if err != nil {
+				results[idx] = segmentResult{index: idx, err: err}
+				return
+			}
+			var items []WordsItem
+			for _, item := range result.WordsResult {
+				if item.Words == "" {
+					continue
+				}
+				item.Location.Top += yOffsets[idx]
+				items = append(items, item)
+			}
+			results[idx] = segmentResult{index: idx, items: items}
+			log.Infow("[BaiduOCR] Segment OCR done", "index", idx, "words_count", result.WordsResultNum)
+		}(i, segData)
+	}
+
+	wg.Wait()
+
+	// 按分段顺序合并结果
+	var allItems []WordsItem
+	for _, r := range results {
+		if r.err != nil {
+			log.Infow("[BaiduOCR] Segment OCR failed, skipping", "index", r.index, "error", r.err)
 			continue
 		}
-
-		// 将分段内的 top 坐标映射回原图坐标
-		for _, item := range result.WordsResult {
-			if item.Words == "" {
-				continue
-			}
-			item.Location.Top += yOffsets[i]
-			allItems = append(allItems, item)
-		}
-
-		log.Infow("[BaiduOCR] Segment OCR done", "index", i, "words_count", result.WordsResultNum)
+		allItems = append(allItems, r.items...)
 	}
 
 	// 按原图 top 坐标排序
