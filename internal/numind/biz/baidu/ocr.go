@@ -229,15 +229,18 @@ type segmentResult struct {
 	err   error
 }
 
-// recognizeSegments 并发调用 OCR 识别多个分段，合并结果并将坐标映射回原图
+// recognizeSegments 并发调用 OCR 识别多个分段（受限于百度 API 2 QPS），合并结果并将坐标映射回原图
 func recognizeSegments(segments [][]byte, yOffsets []int) ([]WordsItem, error) {
 	results := make([]segmentResult, len(segments))
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, 2) // 百度 OCR 限制 2 QPS
 
 	for i, segData := range segments {
 		wg.Add(1)
+		sem <- struct{}{} // 获取信号量
 		go func(idx int, data []byte) {
 			defer wg.Done()
+			defer func() { <-sem }() // 释放信号量
 			result, err := callOCRAPI(data)
 			if err != nil {
 				results[idx] = segmentResult{index: idx, err: err}
