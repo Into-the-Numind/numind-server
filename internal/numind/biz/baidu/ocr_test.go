@@ -1,6 +1,7 @@
 package baidu
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -46,6 +47,33 @@ func TestIsWechatTimestamp(t *testing.T) {
 	}
 	for _, s := range shouldNotMatch {
 		if isWechatTimestamp(s) {
+			t.Errorf("unexpected match: %q", s)
+		}
+	}
+}
+
+func TestIsVoiceDuration(t *testing.T) {
+	shouldMatch := []string{
+		`5"`, `15"`, `60"`, `120"`,
+		"5''", "15''",
+		"5″",
+		"1'23\"", "2'00",
+	}
+	for _, s := range shouldMatch {
+		if !isVoiceDuration(s) {
+			t.Errorf("expected match: %q", s)
+		}
+	}
+
+	shouldNotMatch := []string{
+		"你好",
+		"5块钱",
+		"15",      // 纯数字不应匹配
+		"价格5\"", // 非独立时长
+		"3:00可以吗",
+	}
+	for _, s := range shouldNotMatch {
+		if isVoiceDuration(s) {
 			t.Errorf("unexpected match: %q", s)
 		}
 	}
@@ -119,6 +147,117 @@ func TestFormatChatMessages(t *testing.T) {
 	expected := "客户：你好，请问一下这个产品怎么样\n销售：你好！这款产品非常适合您的需求目前正在做促销活动价格很优惠\n客户：多少钱"
 	if result != expected {
 		t.Errorf("formatChatMessages result mismatch\ngot:  %q\nwant: %q", result, expected)
+	}
+}
+
+func TestFormatChatMessages_LeftRightSameRow(t *testing.T) {
+	// 模拟实际微信截图：客户文字在左，销售图片缩略图在右，同一行高度
+	// 核心测试：左右两侧内容不应被合并到同一个气泡
+	imgWidth := 750
+
+	items := []WordsItem{
+		// 导航栏（应被 UI 过滤）
+		{Words: "<", Location: Location{Left: 20, Top: 20, Width: 20, Height: 30}},
+		{Words: "1", Location: Location{Left: 50, Top: 20, Width: 20, Height: 30}},
+		{Words: "贾文皎", Location: Location{Left: 320, Top: 20, Width: 110, Height: 30}},
+		{Words: "···", Location: Location{Left: 700, Top: 20, Width: 30, Height: 30}},
+		// 地图卡片内文字（客户发的，左侧）
+		{Words: "高德订火车票更多优惠", Location: Location{Left: 110, Top: 80, Width: 200, Height: 25}},
+		{Words: "达州站", Location: Location{Left: 110, Top: 110, Width: 60, Height: 25}},
+		// 客户消息（左侧）
+		{Words: "很近过去", Location: Location{Left: 110, Top: 220, Width: 130, Height: 35}},
+		// 同一行高度的右侧图片中的 OCR 噪音文字
+		{Words: "风景照片", Location: Location{Left: 630, Top: 225, Width: 80, Height: 30}},
+		// 客户消息
+		{Words: "游刃有余", Location: Location{Left: 110, Top: 310, Width: 130, Height: 35}},
+		// 右侧 UI 残留
+		{Words: "<", Location: Location{Left: 720, Top: 315, Width: 15, Height: 25}},
+		// 客户消息
+		{Words: "我可以提前测（午饭结束后", Location: Location{Left: 110, Top: 400, Width: 300, Height: 35}},
+		// 销售消息（右侧绿色气泡）
+		{Words: "那倒不用", Location: Location{Left: 480, Top: 530, Width: 130, Height: 35}},
+		{Words: "看你时间，我今天不出去", Location: Location{Left: 310, Top: 600, Width: 350, Height: 35}},
+		{Words: "一直有空", Location: Location{Left: 480, Top: 670, Width: 130, Height: 35}},
+		// 客户消息
+		{Words: "好", Location: Location{Left: 110, Top: 760, Width: 50, Height: 35}},
+		// 时间分隔（应被过滤）
+		{Words: "上午 11:38", Location: Location{Left: 310, Top: 850, Width: 130, Height: 25}},
+		// 销售消息
+		{Words: "今天空了顺带帮我看看付款", Location: Location{Left: 250, Top: 940, Width: 400, Height: 35}},
+		// 客户消息
+		{Words: "今天就付款", Location: Location{Left: 110, Top: 1050, Width: 160, Height: 35}},
+		{Words: "财务结算出了个小bug，已经梳理清楚了", Location: Location{Left: 110, Top: 1120, Width: 350, Height: 70}},
+		// 底部输入栏 UI（应被过滤）
+		{Words: "+", Location: Location{Left: 710, Top: 1250, Width: 25, Height: 25}},
+	}
+
+	result := formatChatMessages(items, imgWidth)
+
+	// 验证关键点
+	if strings.Contains(result, "高德") {
+		// 地图卡片内容可以保留（作为客户发的位置），但不应被标为销售
+		if strings.Contains(result, "销售：高德") || strings.Contains(result, "销售：达州") {
+			t.Error("地图卡片内容不应被标为销售")
+		}
+	}
+	if !strings.Contains(result, "客户：很近过去") {
+		t.Errorf("缺少客户消息'很近过去', got: %s", result)
+	}
+	if !strings.Contains(result, "客户：游刃有余") {
+		t.Errorf("'游刃有余'应为客户消息, got: %s", result)
+	}
+	if strings.Contains(result, "销售：游刃有余") {
+		t.Errorf("'游刃有余'不应被标为销售, got: %s", result)
+	}
+	if !strings.Contains(result, "客户：好") {
+		t.Errorf("缺少客户消息'好', got: %s", result)
+	}
+	if !strings.Contains(result, "销售：那倒不用") {
+		t.Errorf("缺少销售消息'那倒不用', got: %s", result)
+	}
+	if strings.Contains(result, "+") {
+		t.Errorf("底部UI '+' 不应出现在结果中, got: %s", result)
+	}
+	if strings.Contains(result, "11:38") {
+		t.Errorf("时间分隔不应出现在结果中, got: %s", result)
+	}
+
+	t.Logf("Result:\n%s", result)
+}
+
+func TestIsUIElement(t *testing.T) {
+	imgWidth := 750
+
+	shouldFilter := []struct {
+		text string
+		loc  Location
+	}{
+		{"+", Location{Left: 710, Top: 1250, Width: 25, Height: 25}},
+		{"<", Location{Left: 20, Top: 20, Width: 20, Height: 30}},
+		{">", Location{Left: 720, Top: 300, Width: 15, Height: 25}},
+		{"···", Location{Left: 700, Top: 20, Width: 30, Height: 30}},
+		{"1", Location{Left: 50, Top: 20, Width: 20, Height: 30}},
+		// 极端位置的短文本
+		{"返回", Location{Left: 690, Top: 20, Width: 50, Height: 25}},
+	}
+	for _, tc := range shouldFilter {
+		if !isUIElement(tc.text, tc.loc, imgWidth) {
+			t.Errorf("expected UI element: %q at Left=%d", tc.text, tc.loc.Left)
+		}
+	}
+
+	shouldKeep := []struct {
+		text string
+		loc  Location
+	}{
+		{"你好", Location{Left: 120, Top: 200, Width: 80, Height: 35}},
+		{"好", Location{Left: 120, Top: 400, Width: 50, Height: 35}},
+		{"OK", Location{Left: 500, Top: 300, Width: 60, Height: 35}},
+	}
+	for _, tc := range shouldKeep {
+		if isUIElement(tc.text, tc.loc, imgWidth) {
+			t.Errorf("unexpected UI element: %q at Left=%d", tc.text, tc.loc.Left)
+		}
 	}
 }
 

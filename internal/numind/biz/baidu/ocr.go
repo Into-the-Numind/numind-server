@@ -390,6 +390,13 @@ var wechatTimeRegex = regexp.MustCompile(
 		`\d{1,2}:\d{2}\s*$`, // 时间 HH:MM
 )
 
+// 语音消息时长正则（匹配 5" / 15'' / 1'23" / 0:15 等）
+// 注意：纯 H:MM 格式已被 wechatTimeRegex 覆盖，此处补充秒数+引号格式
+var voiceDurationRegex = regexp.MustCompile(
+	`^\d{1,3}(["″]|'{1,2})\s*$|` + // 5" / 15'' / 60″ / 5'
+		`^\d{1,2}'\d{2}["''″]?\s*$`, // 1'23" / 2'00
+)
+
 // 微信系统通知关键词
 var systemMessageKeywords = []string{
 	"已添加", "好友验证", "撤回了一条消息", "邀请你加入",
@@ -400,6 +407,11 @@ var systemMessageKeywords = []string{
 // isWechatTimestamp 判断文本是否为微信时间分隔符
 func isWechatTimestamp(text string) bool {
 	return wechatTimeRegex.MatchString(strings.TrimSpace(text))
+}
+
+// isVoiceDuration 判断文本是否为语音消息时长（如 5"、15''、1'23"）
+func isVoiceDuration(text string) bool {
+	return voiceDurationRegex.MatchString(strings.TrimSpace(text))
 }
 
 // isSystemMessage 判断文本是否为微信系统通知（需同时满足：包含关键词 + 居中 + 短文本）
@@ -419,6 +431,53 @@ func isSystemMessage(text string, centerX float64, imageWidth int) bool {
 	return false
 }
 
+// isUIElement 判断文本是否为微信 UI 元素（导航按钮、输入栏等）
+func isUIElement(text string, loc Location, imageWidth int) bool {
+	runeLen := len([]rune(text))
+
+	// 1-2 个字符的常见 UI 符号直接过滤（这些不可能是正常聊天内容）
+	if runeLen <= 2 {
+		switch text {
+		case "+", "<", ">", "×", "…", "⋯", "···", "...", "←":
+			return true
+		}
+	}
+
+	// 极短文本（≤3字符）且在屏幕极端位置（最左10%或最右10%）→ UI 按钮
+	// 这里覆盖了 "1"（未读计数）、"返回" 等位置相关的 UI 元素
+	if runeLen <= 3 {
+		leftRatio := float64(loc.Left) / float64(imageWidth)
+		rightRatio := float64(loc.Left+loc.Width) / float64(imageWidth)
+		if leftRatio > 0.90 || rightRatio < 0.10 {
+			return true
+		}
+	}
+
+	return false
+}
+
+// itemSide 判断一个文字项在屏幕的哪一侧
+// 返回: -1=左侧, 0=中间, 1=右侧
+func itemSide(item WordsItem, imageWidth int) int {
+	midPoint := float64(imageWidth) / 2.0
+	itemCenter := float64(item.Location.Left) + float64(item.Location.Width)/2.0
+	if itemCenter < midPoint*0.8 {
+		return -1 // 左侧
+	}
+	if itemCenter > midPoint*1.2 {
+		return 1 // 右侧
+	}
+	return 0 // 中间
+}
+
+// bubbleSide 判断气泡当前内容主要在屏幕哪一侧（用第一个 item 的位置决定）
+func bubbleSide(b *bubble, imageWidth int) int {
+	if len(b.items) == 0 {
+		return 0
+	}
+	return itemSide(b.items[0], imageWidth)
+}
+
 // bubble 聊天气泡（一组垂直相邻的文字行）
 type bubble struct {
 	items     []WordsItem
@@ -435,7 +494,7 @@ func formatChatMessages(items []WordsItem, imageWidth int) string {
 	}
 
 	// === Phase 1: 内容去噪 ===
-	// 过滤时间分隔符和系统通知，防止干扰后续气泡分组
+	// 过滤时间分隔符、系统通知和 UI 元素，防止干扰后续气泡分组
 	var filtered []WordsItem
 	for _, item := range items {
 		text := strings.TrimSpace(item.Words)
@@ -446,9 +505,17 @@ func formatChatMessages(items []WordsItem, imageWidth int) string {
 		if isWechatTimestamp(text) {
 			continue
 		}
+		// 过滤语音消息时长
+		if isVoiceDuration(text) {
+			continue
+		}
 		// 过滤系统通知
 		centerX := float64(item.Location.Left) + float64(item.Location.Width)/2.0
 		if isSystemMessage(text, centerX, imageWidth) {
+			continue
+		}
+		// 过滤 UI 元素（导航按钮、输入栏按钮等）
+		if isUIElement(text, item.Location, imageWidth) {
 			continue
 		}
 		filtered = append(filtered, item)
@@ -480,39 +547,49 @@ func formatChatMessages(items []WordsItem, imageWidth int) string {
 		groupGap = 30 // 最小阈值
 	}
 
-	// 按 Y 间距分组为气泡
+	// 按 Y 间距分组为气泡（同时检查水平一致性）
+	// 关键：Y 相近但在屏幕不同侧的文字不能合并（如客户文字和销售图片缩略图同行）
 	var bubbles []bubble
 	for _, item := range filtered {
 		itemTop := item.Location.Top
 		itemBottom := item.Location.Top + item.Location.Height
 		itemRight := item.Location.Left + item.Location.Width
 
+		merged := false
 		if len(bubbles) > 0 {
 			last := &bubbles[len(bubbles)-1]
 			gap := itemTop - last.bottom
 			if gap < groupGap {
-				// 归入当前气泡
-				last.items = append(last.items, item)
-				if item.Location.Left < last.leftEdge {
-					last.leftEdge = item.Location.Left
+				// Y 间距够近，再检查水平一致性
+				// 如果新 item 和气泡在屏幕的不同侧（一个左一个右），不合并
+				bSide := bubbleSide(last, imageWidth)
+				iSide := itemSide(item, imageWidth)
+				if bSide == 0 || iSide == 0 || bSide == iSide {
+					// 同侧或有一方居中 → 允许合并
+					last.items = append(last.items, item)
+					if item.Location.Left < last.leftEdge {
+						last.leftEdge = item.Location.Left
+					}
+					if itemRight > last.rightEdge {
+						last.rightEdge = itemRight
+					}
+					if itemBottom > last.bottom {
+						last.bottom = itemBottom
+					}
+					merged = true
 				}
-				if itemRight > last.rightEdge {
-					last.rightEdge = itemRight
-				}
-				if itemBottom > last.bottom {
-					last.bottom = itemBottom
-				}
-				continue
 			}
 		}
 
-		// 新气泡
-		bubbles = append(bubbles, bubble{
-			items:     []WordsItem{item},
-			leftEdge:  item.Location.Left,
-			rightEdge: itemRight,
-			bottom:    itemBottom,
-		})
+		if !merged {
+			// 新气泡
+			bubbles = append(bubbles, bubble{
+				items:     []WordsItem{item},
+				leftEdge:  item.Location.Left,
+				rightEdge: itemRight,
+				bottom:    itemBottom,
+			})
+		}
 	}
 
 	// === Phase 3: 气泡级说话人判断 ===
