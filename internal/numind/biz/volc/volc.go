@@ -941,6 +941,9 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 		delete(bodyMap, "max_tokens")
 		delete(bodyMap, "thinking")
 	} else {
+		if maxTokens <= 0 {
+			maxTokens = 8192
+		}
 		bodyMap["max_tokens"] = maxTokens
 		thinkingType := "disabled"
 		if reasoningEffort != "" && reasoningEffort != "minimal" {

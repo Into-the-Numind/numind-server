@@ -54,8 +54,9 @@ type SalesRAGBiz interface {
 	// onEvent: 事件回调，eventType 可为 "verdict"/"token"/"error"/"done"
 	// RetrieveStream 流式检索并生成回复
 	// retrievalQuery: 用于知识库检索的查询（含OCR文字）
-	// promptQuery: 用于AI生成的查询（仅用户文字，不含OCR）
-	RetrieveStream(ctx context.Context, retrievalQuery string, promptQuery string, images []string, history []string, docIDs []uint, opinionDocIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, salesStage string, onEvent func(eventType string, data interface{}) error) error
+	// promptQuery: 用户原始文字（不含OCR，OCR文字通过 ocrTexts 参数在构建 prompt 时追加）
+	// ocrTexts: 图片OCR识别的文字，会追加到发给模型的 user message 中
+	RetrieveStream(ctx context.Context, retrievalQuery string, promptQuery string, ocrTexts []string, history []string, docIDs []uint, opinionDocIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, salesStage string, onEvent func(eventType string, data interface{}) error) error
 	// ListDocuments 获取用户的文档列表
 	ListDocuments(ctx context.Context, userID uint) ([]domain.KnowledgeDocument, error)
 	// GetDocument 获取单个文档详情
@@ -587,7 +588,7 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, verdict 
 // RetrieveStream 流式检索知识并生成回答
 // chatMode: "sales" (销售话术) 或// RetrieveStream 流式检索知识并生成回答
 // 修改：增加 docCategoryMap 参数，用于传递文档分类信息
-func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string, promptQuery string, images []string, history []string, docIDs []uint, opinionDocIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, salesStage string, onEvent func(eventType string, data interface{}) error) error {
+func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string, promptQuery string, ocrTexts []string, history []string, docIDs []uint, opinionDocIDs []uint, docCategoryMap map[uint]string, deepThinking bool, chatMode string, customerProfile string, salesStage string, onEvent func(eventType string, data interface{}) error) error {
 	// 1. 从上下文获取用户ID
 	var userID uint
 	if uid, ok := middleware.UserIDFromCtx(ctx); ok {
@@ -676,15 +677,15 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 	// 9. 获取语言风格
 	languageStyle, _ := b.GetLanguageStyle(ctx, userID)
 
-	// 10. 构建 prompt 并流式生成回答（用 promptQuery，不含OCR文字）
-	messages := b.buildPromptMessagesV2(promptQuery, images, verdict, customerProfile, languageStyle, salesStage)
+	// 10. 构建 prompt 并流式生成回答（用 promptQuery + OCR文字）
+	messages := b.buildPromptMessagesV2(promptQuery, ocrTexts, verdict, customerProfile, languageStyle, salesStage)
 
-	// 11. 调用火山方舟 doubao-seed-2-0-pro-260215 流式聊天（多模态，支持图片）
+	// 11. 调用火山方舟 deepseek-v3-2-251201 流式聊天（纯文本，图片通过OCR文字传入）
 	reasoningEffort := "minimal"
 	if deepThinking {
 		reasoningEffort = "high"
 	}
-	_, chatGenUsage, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-pro-260215", 0, 0.7, reasoningEffort, func(eventType, content string) error {
+	_, chatGenUsage, err := b.volcBiz.StreamChatWithModel(ctx, messages, "deepseek-v3-2-251201", 0, 0.7, reasoningEffort, func(eventType, content string) error {
 		if eventType == "thinking" {
 			return onEvent("thinking", content)
 		}
@@ -694,15 +695,15 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 	if err != nil {
 		return onEvent("error", fmt.Sprintf("stream chat failed: %v", err))
 	}
-	billing.RecordLLM(userID, "volc", "doubao-seed-2-0-pro-260215", "salesrag_chat_generate", chatGenUsage, nil)
+	billing.RecordLLM(userID, "volc", "deepseek-v3-2-251201", "salesrag_chat_generate", chatGenUsage, nil)
 
 	// 12. 发送完成事件
 	return onEvent("done", nil)
 }
 
 // buildPromptMessagesV2 根据检索结果构建 prompt 消息（优化版）
-// images 非空时，user message 的 content 使用多模态格式（image_url + text）
-func (b *salesRAGBiz) buildPromptMessagesV2(query string, images []string, verdict *service.RetrievalVerdict, customerProfile string, languageStyle string, salesStage string) []map[string]interface{} {
+// ocrTexts 非空时，将 OCR 识别的文字追加到 user message 中
+func (b *salesRAGBiz) buildPromptMessagesV2(query string, ocrTexts []string, verdict *service.RetrievalVerdict, customerProfile string, languageStyle string, salesStage string) []map[string]interface{} {
 	// 上下文长度限制常量
 	const (
 		maxCustomerProfileChars = 5000  // 客户画像最大字符数
@@ -793,27 +794,16 @@ func (b *salesRAGBiz) buildPromptMessagesV2(query string, images []string, verdi
 		userMessage = query
 	}
 
-	// 构建 user message 的 content（支持多模态）
-	var userContent interface{}
-	if len(images) > 0 {
-		// 多模态格式：先放图片，再放文字
-		contentParts := make([]map[string]interface{}, 0, len(images)+1)
-		for _, imgURL := range images {
-			contentParts = append(contentParts, map[string]interface{}{
-				"type": "image_url",
-				"image_url": map[string]interface{}{
-					"url": imgURL,
-				},
-			})
+	// 构建 user message 的 content（当有 OCR 文字时追加到用户消息中）
+	if len(ocrTexts) > 0 {
+		ocrBlock := truncate(strings.Join(ocrTexts, "\n"), maxUserInputChars)
+		if userMessage != "" {
+			userMessage = userMessage + "\n\n【用户上传图片的OCR识别内容】\n" + ocrBlock
+		} else {
+			userMessage = "【用户上传图片的OCR识别内容】\n" + ocrBlock
 		}
-		contentParts = append(contentParts, map[string]interface{}{
-			"type": "text",
-			"text": userMessage,
-		})
-		userContent = contentParts
-	} else {
-		userContent = userMessage
 	}
+	var userContent interface{} = userMessage
 
 	return []map[string]interface{}{
 		{
@@ -1513,7 +1503,7 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	var verdictJSON string
 	var thinkingText string
 
-	err = b.RetrieveStream(ctx, retrievalQuery, query, images, history, sessionDocIDs, allOpinionDocIDs, docCategoryMap, deepThinking, chatMode, session.CustomerProfile, session.SalesStage, func(eventType string, data interface{}) error {
+	err = b.RetrieveStream(ctx, retrievalQuery, query, ocrTexts, history, sessionDocIDs, allOpinionDocIDs, docCategoryMap, deepThinking, chatMode, session.CustomerProfile, session.SalesStage, func(eventType string, data interface{}) error {
 		switch eventType {
 		case "verdict":
 			// 序列化 verdict 为 JSON
