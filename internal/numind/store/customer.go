@@ -337,15 +337,26 @@ func (c *customerStore) HasFeaturePermission(ctx context.Context, userID uint, f
 func (c *customerStore) GrantFeatures(ctx context.Context, parentUserID, subUserID uint, featureKeys []string) error {
 	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, key := range featureKeys {
+			// 先查是否存在被软删除的记录（Unscoped 包含 deleted_at IS NOT NULL 的行）
+			var existing model.UserFeaturePermission
+			err := tx.Unscoped().Where("sub_user_id = ? AND feature_key = ?", subUserID, key).First(&existing).Error
+			if err == nil {
+				// 记录存在：如果是软删除状态则恢复，否则无需操作
+				if existing.DeletedAt.Valid {
+					return tx.Unscoped().Model(&existing).Updates(map[string]interface{}{
+						"deleted_at":     nil,
+						"parent_user_id": parentUserID,
+					}).Error
+				}
+				continue
+			}
+			// 记录不存在，创建新记录
 			permission := &model.UserFeaturePermission{
 				ParentUserID: parentUserID,
 				SubUserID:    subUserID,
 				FeatureKey:   key,
 			}
-			if err := tx.Where(model.UserFeaturePermission{
-				SubUserID:  subUserID,
-				FeatureKey: key,
-			}).FirstOrCreate(permission).Error; err != nil {
+			if err := tx.Create(permission).Error; err != nil {
 				return fmt.Errorf("failed to grant feature %s: %w", key, err)
 			}
 		}
