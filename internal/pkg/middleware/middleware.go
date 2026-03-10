@@ -208,3 +208,31 @@ func GetCurrentUser(c *gin.Context) *model.User {
 	}
 	return user.(*model.User)
 }
+
+// FeaturePermission 功能权限中间件，检查当前用户是否有指定功能的使用权限
+func FeaturePermission(featureKey string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		user := GetCurrentUser(c)
+		if user == nil {
+			core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+			c.Abort()
+			return
+		}
+
+		hasPermission, err := store.S.Customers().HasFeaturePermission(c, user.ID, featureKey)
+		if err != nil {
+			log.C(c).Errorw("Failed to check feature permission", "user_id", user.ID, "feature_key", featureKey, "err", err)
+			core.WriteResponse(c, errno.ErrInternalServer, nil)
+			c.Abort()
+			return
+		}
+
+		if !hasPermission {
+			core.WriteResponse(c, errno.ErrForbidden.SetMessage("未开通该功能权限，请联系管理员"), nil)
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}

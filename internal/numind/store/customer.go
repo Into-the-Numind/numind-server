@@ -307,6 +307,7 @@ func (c *customerStore) ResetMonthlySopRuns(ctx context.Context, userID uint) er
 }
 
 // HasFeaturePermission 检查用户是否有功能权限
+// 功能权限采用显式授权模式：主用户始终有权限，子用户必须被明确授权才有权限
 func (c *customerStore) HasFeaturePermission(ctx context.Context, userID uint, featureKey string) (bool, error) {
 	// 先查询用户信息
 	var user model.User
@@ -319,20 +320,7 @@ func (c *customerStore) HasFeaturePermission(ctx context.Context, userID uint, f
 		return true, nil
 	}
 
-	// 检查用户是否有任何功能权限配置记录
-	var totalPermissions int64
-	if err := c.db.WithContext(ctx).Model(&model.UserFeaturePermission{}).
-		Where("sub_user_id = ?", userID).
-		Count(&totalPermissions).Error; err != nil {
-		return false, err
-	}
-
-	// 如果没有任何功能权限配置记录，默认允许
-	if totalPermissions == 0 {
-		return true, nil
-	}
-
-	// 如果有配置记录，则检查白名单
+	// 子用户必须有明确的功能授权记录才允许
 	var count int64
 	err := c.db.WithContext(ctx).Model(&model.UserFeaturePermission{}).
 		Where("sub_user_id = ? AND feature_key = ?", userID, featureKey).

@@ -12,6 +12,7 @@ import (
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/model"
 
 	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
@@ -65,44 +66,48 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 销售智能体 RAG 相关
 	{
+		// 权限检查（不需要功能权限中间件，供前端查询权限状态）
+		authGroup.GET("/sales-rag/check-permission", salesRAGc.CheckSalesPermission)
+
+		// 以下所有销售智能体路由需要功能权限检查
+		salesGroup := authGroup.Group("/sales-rag")
+		salesGroup.Use(importMw.FeaturePermission(model.FeatureKeySalesAgent))
+
 		// 文档管理
-		authGroup.POST("/sales-rag/ingest", salesRAGc.Ingest)                  // 上传并解析文档
-		authGroup.GET("/sales-rag/documents", salesRAGc.ListDocuments)         // 获取文档列表
-		authGroup.GET("/sales-rag/documents/:id", salesRAGc.GetDocument)       // 获取文档详情
-		authGroup.GET("/sales-rag/documents/:id/chunks", salesRAGc.ListChunks) // 获取文档切片列表
-		authGroup.PUT("/sales-rag/documents/:id", salesRAGc.UpdateDocument)    // 更新文档
-		authGroup.DELETE("/sales-rag/documents/:id", salesRAGc.DeleteDocument) // 删除文档
+		salesGroup.POST("/ingest", salesRAGc.Ingest)                  // 上传并解析文档
+		salesGroup.GET("/documents", salesRAGc.ListDocuments)         // 获取文档列表
+		salesGroup.GET("/documents/:id", salesRAGc.GetDocument)       // 获取文档详情
+		salesGroup.GET("/documents/:id/chunks", salesRAGc.ListChunks) // 获取文档切片列表
+		salesGroup.PUT("/documents/:id", salesRAGc.UpdateDocument)    // 更新文档
+		salesGroup.DELETE("/documents/:id", salesRAGc.DeleteDocument) // 删除文档
 
 		// 观点库
-		authGroup.GET("/sales-rag/opinion-tracks", salesRAGc.ListOpinionTracks) // 获取系统内置观点赛道列表
+		salesGroup.GET("/opinion-tracks", salesRAGc.ListOpinionTracks) // 获取系统内置观点赛道列表
 
 		// 会话管理
-		authGroup.POST("/sales-rag/sessions", salesRAGc.CreateSession)           // 创建销售会话
-		authGroup.GET("/sales-rag/sessions", salesRAGc.ListSessions)             // 获取会话列表
-		authGroup.GET("/sales-rag/sessions/:id", salesRAGc.GetSession)           // 获取会话详情
-		authGroup.PUT("/sales-rag/sessions/:id", salesRAGc.UpdateSession)        // 更新会话信息
-		authGroup.DELETE("/sales-rag/sessions/:id", salesRAGc.DeleteSession)     // 删除会话
-		authGroup.PUT("/sales-rag/sessions/:id/pin", salesRAGc.PinSession)       // 置顶会话
-		authGroup.DELETE("/sales-rag/sessions/:id/pin", salesRAGc.UnpinSession)  // 取消置顶会话
-		authGroup.PUT("/sales-rag/sessions/:id/rename", salesRAGc.RenameSession) // 重命名会话
+		salesGroup.POST("/sessions", salesRAGc.CreateSession)           // 创建销售会话
+		salesGroup.GET("/sessions", salesRAGc.ListSessions)             // 获取会话列表
+		salesGroup.GET("/sessions/:id", salesRAGc.GetSession)           // 获取会话详情
+		salesGroup.PUT("/sessions/:id", salesRAGc.UpdateSession)        // 更新会话信息
+		salesGroup.DELETE("/sessions/:id", salesRAGc.DeleteSession)     // 删除会话
+		salesGroup.PUT("/sessions/:id/pin", salesRAGc.PinSession)       // 置顶会话
+		salesGroup.DELETE("/sessions/:id/pin", salesRAGc.UnpinSession)  // 取消置顶会话
+		salesGroup.PUT("/sessions/:id/rename", salesRAGc.RenameSession) // 重命名会话
 
 		// 消息管理
-		authGroup.POST("/sales-rag/sessions/:id/chat", salesRAGc.ChatWithSession) // 基于会话的销售对话（SSE流式）
-		authGroup.GET("/sales-rag/sessions/:id/messages", salesRAGc.ListMessages) // 获取会话消息列表
+		salesGroup.POST("/sessions/:id/chat", salesRAGc.ChatWithSession) // 基于会话的销售对话（SSE流式）
+		salesGroup.GET("/sessions/:id/messages", salesRAGc.ListMessages) // 获取会话消息列表
 
 		// 客户档案管理
-		authGroup.PUT("/sales-rag/sessions/:id/customer-profile", salesRAGc.UpdateCustomerProfile) // 更新客户档案
-		authGroup.GET("/sales-rag/sessions/:id/customer-profile", salesRAGc.GetCustomerProfile)    // 获取客户档案
-		authGroup.POST("/sales-rag/analyze-profile", salesRAGc.AnalyzeProfile)                     // 解析文档生成客户档案
+		salesGroup.PUT("/sessions/:id/customer-profile", salesRAGc.UpdateCustomerProfile) // 更新客户档案
+		salesGroup.GET("/sessions/:id/customer-profile", salesRAGc.GetCustomerProfile)    // 获取客户档案
+		salesGroup.POST("/analyze-profile", salesRAGc.AnalyzeProfile)                     // 解析文档生成客户档案
 
 		// 聊天风格分析
-		authGroup.POST("/sales-rag/analyze-chat-style", salesRAGc.AnalyzeChatStyle) // 分析聊天风格（语言指纹）
-		authGroup.GET("/sales-rag/analyze-chat-style", salesRAGc.GetLanguageStyle)  // 获取已分析的聊天风格
-		authGroup.PUT("/sales-rag/analyze-chat-style", salesRAGc.SaveLanguageStyle) // 保存/更新语言风格
-		authGroup.POST("/sales-rag/ocr", salesRAGc.OCR)                             // OCR 识别图片
-
-		// 权限检查
-		authGroup.GET("/sales-rag/check-permission", salesRAGc.CheckSalesPermission)
+		salesGroup.POST("/analyze-chat-style", salesRAGc.AnalyzeChatStyle) // 分析聊天风格（语言指纹）
+		salesGroup.GET("/analyze-chat-style", salesRAGc.GetLanguageStyle)  // 获取已分析的聊天风格
+		salesGroup.PUT("/analyze-chat-style", salesRAGc.SaveLanguageStyle) // 保存/更新语言风格
+		salesGroup.POST("/ocr", salesRAGc.OCR)                             // OCR 识别图片
 	}
 
 	// 阿里云百炼相关
