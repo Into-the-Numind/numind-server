@@ -29,6 +29,12 @@ type ICustomerBiz interface {
 
 	// 等级管理
 	UpdateSubUserTier(ctx context.Context, parentUserID, subUserID uint, req *v1.UpdateTierRequest) error
+
+	// 功能权限管理
+	CheckFeaturePermission(ctx context.Context, userID uint, featureKey string) (bool, error)
+	GrantFeatures(ctx context.Context, parentUserID, subUserID uint, featureKeys []string) error
+	RevokeFeatures(ctx context.Context, parentUserID, subUserID uint, featureKeys []string) error
+	ListUserFeatures(ctx context.Context, parentUserID, subUserID uint) ([]string, error)
 }
 
 type customerBiz struct {
@@ -303,4 +309,45 @@ func (c *customerBiz) UpdateSubUserTier(ctx context.Context, parentUserID, subUs
 	)
 
 	return nil
+}
+
+// CheckFeaturePermission 检查用户是否有功能权限
+func (c *customerBiz) CheckFeaturePermission(ctx context.Context, userID uint, featureKey string) (bool, error) {
+	return c.ds.Customers().HasFeaturePermission(ctx, userID, featureKey)
+}
+
+// GrantFeatures 为子用户授权功能
+func (c *customerBiz) GrantFeatures(ctx context.Context, parentUserID, subUserID uint, featureKeys []string) error {
+	// 验证所属关系
+	_, err := c.ds.Customers().GetSubUser(ctx, parentUserID, subUserID)
+	if err != nil {
+		log.C(ctx).Errorw("Failed to verify sub user ownership for feature grant", "parent_user_id", parentUserID, "sub_user_id", subUserID, "err", err)
+		return err
+	}
+
+	return c.ds.Customers().GrantFeatures(ctx, parentUserID, subUserID, featureKeys)
+}
+
+// RevokeFeatures 撤销子用户的功能权限
+func (c *customerBiz) RevokeFeatures(ctx context.Context, parentUserID, subUserID uint, featureKeys []string) error {
+	// 验证所属关系
+	_, err := c.ds.Customers().GetSubUser(ctx, parentUserID, subUserID)
+	if err != nil {
+		log.C(ctx).Errorw("Failed to verify sub user ownership for feature revoke", "parent_user_id", parentUserID, "sub_user_id", subUserID, "err", err)
+		return err
+	}
+
+	return c.ds.Customers().RevokeFeatures(ctx, parentUserID, subUserID, featureKeys)
+}
+
+// ListUserFeatures 获取用户的所有已授权功能（需验证所属关系）
+func (c *customerBiz) ListUserFeatures(ctx context.Context, parentUserID, subUserID uint) ([]string, error) {
+	// 验证所属关系
+	_, err := c.ds.Customers().GetSubUser(ctx, parentUserID, subUserID)
+	if err != nil {
+		log.C(ctx).Errorw("Failed to verify sub user ownership for feature list", "parent_user_id", parentUserID, "sub_user_id", subUserID, "err", err)
+		return nil, err
+	}
+
+	return c.ds.Customers().ListUserFeatures(ctx, subUserID)
 }

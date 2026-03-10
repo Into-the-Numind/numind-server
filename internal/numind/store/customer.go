@@ -35,6 +35,12 @@ type ICustomerStore interface {
 
 	// 等级管理
 	UpdateSubUserTierWithLog(ctx context.Context, subUserID uint, tier string, tierExpires time.Time, changeLog *model.TierChangeLog) error
+
+	// 功能权限管理
+	HasFeaturePermission(ctx context.Context, userID uint, featureKey string) (bool, error)
+	GrantFeatures(ctx context.Context, parentUserID, subUserID uint, featureKeys []string) error
+	RevokeFeatures(ctx context.Context, parentUserID, subUserID uint, featureKeys []string) error
+	ListUserFeatures(ctx context.Context, subUserID uint) ([]string, error)
 }
 
 type customerStore struct {
@@ -298,6 +304,81 @@ func (c *customerStore) ResetMonthlySopRuns(ctx context.Context, userID uint) er
 		"monthly_sop_runs": 0,
 		"monthly_reset_at": now,
 	}).Error
+}
+
+// HasFeaturePermission 检查用户是否有功能权限
+func (c *customerStore) HasFeaturePermission(ctx context.Context, userID uint, featureKey string) (bool, error) {
+	// 先查询用户信息
+	var user model.User
+	if err := c.db.WithContext(ctx).First(&user, userID).Error; err != nil {
+		return false, err
+	}
+
+	// 如果是直接客户(parent_user_id为NULL),有所有功能权限
+	if user.ParentUserID == nil {
+		return true, nil
+	}
+
+	// 检查用户是否有任何功能权限配置记录
+	var totalPermissions int64
+	if err := c.db.WithContext(ctx).Model(&model.UserFeaturePermission{}).
+		Where("sub_user_id = ?", userID).
+		Count(&totalPermissions).Error; err != nil {
+		return false, err
+	}
+
+	// 如果没有任何功能权限配置记录，默认允许
+	if totalPermissions == 0 {
+		return true, nil
+	}
+
+	// 如果有配置记录，则检查白名单
+	var count int64
+	err := c.db.WithContext(ctx).Model(&model.UserFeaturePermission{}).
+		Where("sub_user_id = ? AND feature_key = ?", userID, featureKey).
+		Count(&count).Error
+
+	if err != nil {
+		return false, err
+	}
+
+	return count > 0, nil
+}
+
+// GrantFeatures 为子用户授权功能
+func (c *customerStore) GrantFeatures(ctx context.Context, parentUserID, subUserID uint, featureKeys []string) error {
+	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, key := range featureKeys {
+			permission := &model.UserFeaturePermission{
+				ParentUserID: parentUserID,
+				SubUserID:    subUserID,
+				FeatureKey:   key,
+			}
+			if err := tx.Where(model.UserFeaturePermission{
+				SubUserID:  subUserID,
+				FeatureKey: key,
+			}).FirstOrCreate(permission).Error; err != nil {
+				return fmt.Errorf("failed to grant feature %s: %w", key, err)
+			}
+		}
+		return nil
+	})
+}
+
+// RevokeFeatures 撤销子用户的功能权限
+func (c *customerStore) RevokeFeatures(ctx context.Context, parentUserID, subUserID uint, featureKeys []string) error {
+	return c.db.WithContext(ctx).
+		Where("sub_user_id = ? AND feature_key IN ?", subUserID, featureKeys).
+		Delete(&model.UserFeaturePermission{}).Error
+}
+
+// ListUserFeatures 获取用户的所有已授权功能
+func (c *customerStore) ListUserFeatures(ctx context.Context, subUserID uint) ([]string, error) {
+	var features []string
+	err := c.db.WithContext(ctx).Model(&model.UserFeaturePermission{}).
+		Where("sub_user_id = ?", subUserID).
+		Pluck("feature_key", &features).Error
+	return features, err
 }
 
 // UpdateSubUserTierWithLog 在事务中更新子用户等级并写入变更日志

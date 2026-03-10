@@ -13,6 +13,7 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
+	"numind-server/internal/pkg/model"
 
 	"github.com/gin-gonic/gin"
 )
@@ -894,6 +895,26 @@ func (ctrl *SalesRAGController) SaveLanguageStyle(c *gin.Context) {
 	log.Infow("[SaveLanguageStyle] Successfully saved", "user_id", user.ID)
 	core.WriteResponse(c, nil, map[string]string{
 		"message": "语言风格保存成功",
+	})
+}
+
+// CheckSalesPermission 检查当前用户是否有销售智能体使用权限
+func (ctrl *SalesRAGController) CheckSalesPermission(c *gin.Context) {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	hasPermission, err := ctrl.b.Customers().CheckFeaturePermission(c, user.ID, model.FeatureKeySalesAgent)
+	if err != nil {
+		log.Errorw("Failed to check sales permission", "user_id", user.ID, "err", err)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("权限检查失败"), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"has_permission": hasPermission,
 	})
 }
 
