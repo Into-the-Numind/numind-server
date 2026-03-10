@@ -102,7 +102,7 @@ cos:
   secret_id: "AKID26xnQq2ziEYeVAh3B6oIbwHh06zf7LMA"           # API 密钥 SecretId
   secret_key: "e4FNTPI90jNzQfjbFgHk3CRaYMxRuFP5"          # API 密钥 SecretKey
   bucket: "numind-product-1334169463" # BucketName-APPID 形式
-  region: "ap-chengdu"    # 地域，如 ap-chengdu（成都）
+  region: "ap-beijing"    # 地域，北京（与实际 Bucket 所在区域一致）
 
 baidu:
   api_key: "CkJCFXHinJLBsnEFT9lscwZr"
