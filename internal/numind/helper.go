@@ -238,7 +238,10 @@ func autoMigrate(db *gorm.DB) error {
 
 	log.Infow("SOP tables migration completed")
 
-	// 功能权限表
+	// 功能权限表（先清理可能残留的外键约束，忽略不存在的错误）
+	for _, fk := range []string{"fk_user_feature_permission_parent_user", "fk_user_feature_permission_sub_user"} {
+		_ = db.Exec("ALTER TABLE `user_feature_permission` DROP FOREIGN KEY `" + fk + "`").Error
+	}
 	if err := db.AutoMigrate(&model.UserFeaturePermission{}); err != nil {
 		return fmt.Errorf("failed to migrate user_feature_permission: %v", err)
 	}
