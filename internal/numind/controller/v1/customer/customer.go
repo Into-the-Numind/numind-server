@@ -368,6 +368,99 @@ func (ctrl *CustomerController) UpdateSubUserTier(c *gin.Context) {
 	})
 }
 
+// ListSubUserFeatures 获取子用户的功能权限列表
+func (ctrl *CustomerController) ListSubUserFeatures(c *gin.Context) {
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	subUserID, err := strconv.ParseUint(c.Param("user_id"), 10, 32)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的用户ID"), nil)
+		return
+	}
+
+	features, err := ctrl.customerBiz.ListUserFeatures(c, user.ID, uint(subUserID))
+	if err != nil {
+		log.C(c).Errorw("Failed to list user features", "parent_user_id", user.ID, "sub_user_id", subUserID, "err", err)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"features": features,
+	})
+}
+
+// GrantFeatures 为子用户授权功能
+func (ctrl *CustomerController) GrantFeatures(c *gin.Context) {
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	subUserID, err := strconv.ParseUint(c.Param("user_id"), 10, 32)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的用户ID"), nil)
+		return
+	}
+
+	var req struct {
+		Features []string `json:"features" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
+		return
+	}
+
+	err = ctrl.customerBiz.GrantFeatures(c, user.ID, uint(subUserID), req.Features)
+	if err != nil {
+		log.C(c).Errorw("Failed to grant features", "parent_user_id", user.ID, "sub_user_id", subUserID, "features", req.Features, "err", err)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{"message": "功能授权成功"})
+}
+
+// RevokeFeatures 撤销子用户的功能权限
+func (ctrl *CustomerController) RevokeFeatures(c *gin.Context) {
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	subUserID, err := strconv.ParseUint(c.Param("user_id"), 10, 32)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的用户ID"), nil)
+		return
+	}
+
+	var req struct {
+		Features []string `json:"features" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
+		return
+	}
+
+	err = ctrl.customerBiz.RevokeFeatures(c, user.ID, uint(subUserID), req.Features)
+	if err != nil {
+		log.C(c).Errorw("Failed to revoke features", "parent_user_id", user.ID, "sub_user_id", subUserID, "features", req.Features, "err", err)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{"message": "功能权限已撤销"})
+}
+
 // CheckUsername 检查用户名是否可用
 func (ctrl *CustomerController) CheckUsername(c *gin.Context) {
 	username := c.Query("username")

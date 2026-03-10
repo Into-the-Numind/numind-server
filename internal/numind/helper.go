@@ -238,6 +238,11 @@ func autoMigrate(db *gorm.DB) error {
 
 	log.Infow("SOP tables migration completed")
 
+	// 功能权限表
+	if err := db.AutoMigrate(&model.UserFeaturePermission{}); err != nil {
+		return fmt.Errorf("failed to migrate user_feature_permission: %v", err)
+	}
+
 	// 迁移等级变更日志表
 	if err := db.AutoMigrate(&model.TierChangeLog{}); err != nil {
 		return fmt.Errorf("failed to migrate tier_change_log: %v", err)

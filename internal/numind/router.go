@@ -100,6 +100,9 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/sales-rag/analyze-chat-style", salesRAGc.GetLanguageStyle)  // 获取已分析的聊天风格
 		authGroup.PUT("/sales-rag/analyze-chat-style", salesRAGc.SaveLanguageStyle) // 保存/更新语言风格
 		authGroup.POST("/sales-rag/ocr", salesRAGc.OCR)                             // OCR 识别图片
+
+		// 权限检查
+		authGroup.GET("/sales-rag/check-permission", salesRAGc.CheckSalesPermission)
 	}
 
 	// 阿里云百炼相关
@@ -168,6 +171,11 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.POST("/customers/batch/revoke-templates", customerCtrl.BatchRevokeTemplates)      // 批量为多个二级客户撤销模板权限
 		authGroup.PUT("/customers/sub-users/:user_id/tier", customerCtrl.UpdateSubUserTier)         // 升级子用户会员等级
 		authGroup.DELETE("/customers/sub-users/:user_id/templates", customerCtrl.RevokeTemplates)   // 撤销二级客户模板权限
+
+		// 功能权限管理
+		authGroup.GET("/customers/sub-users/:user_id/features", customerCtrl.ListSubUserFeatures)
+		authGroup.POST("/customers/sub-users/:user_id/features", customerCtrl.GrantFeatures)
+		authGroup.DELETE("/customers/sub-users/:user_id/features", customerCtrl.RevokeFeatures)
 	}
 
 	return nil
