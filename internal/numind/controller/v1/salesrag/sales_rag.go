@@ -754,6 +754,77 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 	log.Infow("[AnalyzeProfile] Sent done event")
 }
 
+// AnalyzeProfileText 纯文本分析生成客户档案（SSE 流式）
+func (ctrl *SalesRAGController) AnalyzeProfileText(c *gin.Context) {
+	log.Infow("[AnalyzeProfileText] Received request")
+
+	var req struct {
+		Text string `json:"text"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Text) == "" {
+		log.Errorw("[AnalyzeProfileText] Invalid request", "error", err)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("请输入客户资料文本"), nil)
+		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		log.Errorw("[AnalyzeProfileText] No user found")
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	log.Infow("[AnalyzeProfileText] User submitting text", "user_id", user.ID, "text_length", len(req.Text))
+
+	// 设置 SSE 响应头
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	w := c.Writer
+
+	// 发送初始状态
+	statusData, _ := json.Marshal(map[string]interface{}{
+		"type": "status",
+		"data": "正在分析文本资料...",
+	})
+	fmt.Fprintf(w, "data: %s\n\n", statusData)
+	w.Flush()
+
+	profile, err := ctrl.b.SalesRAG().AnalyzeProfileText(c, user.ID, req.Text, func(token string) error {
+		eventData, _ := json.Marshal(map[string]interface{}{
+			"type": "token",
+			"data": token,
+		})
+		_, err := fmt.Fprintf(w, "data: %s\n\n", eventData)
+		if err == nil {
+			w.Flush()
+		}
+		return err
+	})
+
+	if err != nil {
+		log.Errorw("[AnalyzeProfileText] Error", "error", err)
+		errData, _ := json.Marshal(map[string]interface{}{
+			"type": "error",
+			"data": err.Error(),
+		})
+		fmt.Fprintf(w, "data: %s\n\n", errData)
+		w.Flush()
+		return
+	}
+
+	log.Infow("[AnalyzeProfileText] Completed", "profile_length", len(profile))
+
+	doneData, _ := json.Marshal(map[string]interface{}{
+		"type":    "done",
+		"profile": profile,
+	})
+	fmt.Fprintf(w, "data: %s\n\n", doneData)
+	w.Flush()
+}
+
 // AnalyzeChatStyle 分析聊天风格（语言指纹分析，支持 SSE 流式）
 // 支持上传文件或直接传入文本
 func (ctrl *SalesRAGController) AnalyzeChatStyle(c *gin.Context) {
