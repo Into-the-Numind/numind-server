@@ -43,6 +43,46 @@ const (
 	catOther   = "其他相关文档"
 )
 
+// analyzeProfileSystemPrompt 客户档案分析的 system prompt（AnalyzeProfileMultiFiles 和 AnalyzeProfileText 共用）
+const analyzeProfileSystemPrompt = `你是一位拥有20年B2B销售经验的商业洞察专家。你擅长通过零散的信息（无论是正式的招标文档、需求清单，还是非正式的聊天记录截图）拼凑出完整的客户全貌。
+
+## 核心原则
+
+1. **事实优先，严禁臆造**：所有结论必须有素材中的原文或截图内容作为依据。对于无法从资料中获取的信息，直接留空或标注"依据不足"。宁可少写，也不编造。
+2. **区分事实与推断**：直接引用素材的信息标记为事实；需要推理的信息必须标注推理依据（如"根据对话中提到XX，推断..."）。
+3. **术语准确**：使用专业销售术语（决策链、卡点、显性/隐性需求等）。
+4. **识别烟雾弹**：客户表面诉求未必是真实诉求。例如客户反复谈价格（显性），真实原因可能是怕决策失误（隐性卡点）。但这类推断必须注明依据。
+
+## 分析步骤
+
+在输出报告之前，请先完成以下内部分析（不需要输出分析过程）：
+1. 识别素材中出现的所有人物角色及其关系（谁是客户、谁是销售、谁是决策者等）
+2. 梳理事件或需求的时间线（如有）
+3. 提取所有明确的事实信息（客户直接说的话、文档中的数据）
+4. 基于事实进行有限度的推断（必须有依据支撑）
+5. 按下方模板组织输出
+
+## 输出格式
+
+请直接用 Markdown 格式输出以下结构，不要有任何开场白或结束语：
+
+#### 客户背景
+- **行业/赛道**：（依据不足则留空）
+- **公司规模**：（依据不足则留空）
+- **关键角色**：判断对方在决策链中的角色（决策者/影响者/使用者），附判断依据
+- **业务场景**：客户当前关注的具体业务问题
+
+#### 需求分析
+- **显性需求**：文档或沟通中明确提出的具体需求（逐条列出）
+- **隐性卡点**：可推断的阻碍因素（每条必须附推理依据，格式："现象 → 推断 → 依据"）
+
+#### 竞争与预算线索
+- **竞品线索**：素材中提到或暗示的竞品、替代方案（依据不足则标注"未提及"）
+- **预算信号**：价格敏感度、预算区间等线索（依据不足则标注"未提及"）
+
+#### 关键信息摘要
+- 不属于以上类别、但确定且重要的信息（如果没有则省略此板块）`
+
 // SalesRAGBiz 定义了销售 RAG 业务层的对外接口
 type SalesRAGBiz interface {
 	// Ingest 处理文档导入
@@ -90,6 +130,9 @@ type SalesRAGBiz interface {
 
 	// AnalyzeProfileMultiFiles 多文件综合分析生成客户档案
 	AnalyzeProfileMultiFiles(ctx context.Context, userID uint, files []*multipart.FileHeader, onToken func(token string) error) (string, error)
+
+	// AnalyzeProfileText 纯文本分析生成客户档案
+	AnalyzeProfileText(ctx context.Context, userID uint, text string, onToken func(token string) error) (string, error)
 
 	// AnalyzeChatStyleStream 流式分析聊天风格（语言指纹分析）
 	AnalyzeChatStyleStream(ctx context.Context, userID uint, chatData io.Reader, filename string, onToken func(token string) error) (string, error)
@@ -1799,50 +1842,11 @@ func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint,
 	}
 
 	// 2. 构建 system + user 消息（DEC-016: system/user 分离）
-	systemPrompt := `你是一位拥有20年B2B销售经验的商业洞察专家。你擅长通过零散的信息（无论是正式的招标文档、需求清单，还是非正式的聊天记录截图）拼凑出完整的客户全貌。
-
-## 核心原则
-
-1. **事实优先，严禁臆造**：所有结论必须有素材中的原文或截图内容作为依据。对于无法从资料中获取的信息，直接留空或标注"依据不足"。宁可少写，也不编造。
-2. **区分事实与推断**：直接引用素材的信息标记为事实；需要推理的信息必须标注推理依据（如"根据对话中提到XX，推断..."）。
-3. **术语准确**：使用专业销售术语（决策链、卡点、显性/隐性需求等）。
-4. **识别烟雾弹**：客户表面诉求未必是真实诉求。例如客户反复谈价格（显性），真实原因可能是怕决策失误（隐性卡点）。但这类推断必须注明依据。
-
-## 分析步骤
-
-在输出报告之前，请先完成以下内部分析（不需要输出分析过程）：
-1. 识别素材中出现的所有人物角色及其关系（谁是客户、谁是销售、谁是决策者等）
-2. 梳理事件或需求的时间线（如有）
-3. 提取所有明确的事实信息（客户直接说的话、文档中的数据）
-4. 基于事实进行有限度的推断（必须有依据支撑）
-5. 按下方模板组织输出
-
-## 输出格式
-
-请直接用 Markdown 格式输出以下结构，不要有任何开场白或结束语：
-
-#### 客户背景
-- **行业/赛道**：（依据不足则留空）
-- **公司规模**：（依据不足则留空）
-- **关键角色**：判断对方在决策链中的角色（决策者/影响者/使用者），附判断依据
-- **业务场景**：客户当前关注的具体业务问题
-
-#### 需求分析
-- **显性需求**：文档或沟通中明确提出的具体需求（逐条列出）
-- **隐性卡点**：可推断的阻碍因素（每条必须附推理依据，格式："现象 → 推断 → 依据"）
-
-#### 竞争与预算线索
-- **竞品线索**：素材中提到或暗示的竞品、替代方案（依据不足则标注"未提及"）
-- **预算信号**：价格敏感度、预算区间等线索（依据不足则标注"未提及"）
-
-#### 关键信息摘要
-- 不属于以上类别、但确定且重要的信息（如果没有则省略此板块）`
-
 	// 3. 调用多模态模型 (Doubao-Seed-2.0-Lite, thinking: medium)
 	messages := []map[string]interface{}{
 		{
 			"role":    "system",
-			"content": systemPrompt,
+			"content": analyzeProfileSystemPrompt,
 		},
 		{
 			"role":    "user",
@@ -1858,6 +1862,46 @@ func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint,
 		return nil
 	})
 	billing.RecordLLM(userID, "volc", "doubao-seed-2-0-lite-260215", "salesrag_analyze_profile", profileUsage, nil)
+	return result, err
+}
+
+// AnalyzeProfileText 纯文本分析生成客户档案
+// 与 AnalyzeProfileMultiFiles 使用相同的 system prompt，但直接接收文本输入
+func (b *salesRAGBiz) AnalyzeProfileText(ctx context.Context, userID uint, text string, onToken func(token string) error) (string, error) {
+	log.Printf("[AnalyzeProfileText] Starting analysis for user %d, text length: %d", userID, len(text))
+
+	// 截断过长文本（按 unicode 字符数，30000 字符）
+	if runes := []rune(text); len(runes) > 30000 {
+		text = string(runes[:30000]) + "\n...(truncated)"
+	}
+
+	// 构建 content parts
+	contentParts := []map[string]interface{}{
+		{
+			"type": "text",
+			"text": "以下是该客户的相关资料：\n\n" + text,
+		},
+	}
+
+	messages := []map[string]interface{}{
+		{
+			"role":    "system",
+			"content": analyzeProfileSystemPrompt,
+		},
+		{
+			"role":    "user",
+			"content": contentParts,
+		},
+	}
+
+	log.Printf("[AnalyzeProfileText] Calling Volc StreamChatWithModel")
+	result, profileUsage, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "medium", func(event string, token string) error {
+		if event == "message" {
+			return onToken(token)
+		}
+		return nil
+	})
+	billing.RecordLLM(userID, "volc", "doubao-seed-2-0-lite-260215", "salesrag_analyze_profile_text", profileUsage, nil)
 	return result, err
 }
 

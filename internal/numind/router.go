@@ -101,7 +101,8 @@ func installNumindRouters(g *gin.Engine) error {
 		// 客户档案管理
 		salesGroup.PUT("/sessions/:id/customer-profile", salesRAGc.UpdateCustomerProfile) // 更新客户档案
 		salesGroup.GET("/sessions/:id/customer-profile", salesRAGc.GetCustomerProfile)    // 获取客户档案
-		salesGroup.POST("/analyze-profile", salesRAGc.AnalyzeProfile)                     // 解析文档生成客户档案
+		salesGroup.POST("/analyze-profile", salesRAGc.AnalyzeProfile)           // 解析文档生成客户档案
+		salesGroup.POST("/analyze-profile-text", salesRAGc.AnalyzeProfileText) // 纯文本分析生成客户档案
 
 		// 聊天风格分析
 		salesGroup.POST("/analyze-chat-style", salesRAGc.AnalyzeChatStyle) // 分析聊天风格（语言指纹）
