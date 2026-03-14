@@ -6,6 +6,7 @@ import (
 	customercontroller "numind-server/internal/numind/controller/v1/customer"
 	pdfcontroller "numind-server/internal/numind/controller/v1/pdf"
 	"numind-server/internal/numind/controller/v1/salesrag"
+	"numind-server/internal/numind/controller/v1/user_billing"
 	sopcontroller "numind-server/internal/numind/controller/v1/sop"
 	"numind-server/internal/numind/controller/v1/user"
 	"numind-server/internal/numind/store"
@@ -161,6 +162,13 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/sop/runs", userSopc.ListMyRuns)                    // 获取我的执行记录列表
 		authGroup.GET("/sop/notes/:id", userSopc.GetNote)                  // 查看笔记详情
 		authGroup.GET("/sop/notes", userSopc.ListMyNotes)                  // 获取我的笔记列表
+	}
+
+	// 用户消费查询
+	{
+		billingCtrl := user_billing.New(store.S)
+		authGroup.GET("/billing/summary", billingCtrl.GetSummary)
+		authGroup.GET("/billing/records", billingCtrl.ListRecords)
 	}
 
 	// 客户管理相关

@@ -32,6 +32,8 @@ type BillingStore interface {
 	GetUsageOverview(ctx context.Context) (*UsageOverviewResult, error)
 	// GetUserConsumptionRanking 获取用户消费排行榜（分页）
 	GetUserConsumptionRanking(ctx context.Context, from, to time.Time, offset, limit int) ([]UserConsumptionItem, int64, error)
+	// GetUserUsageOverview 获取指定用户的用量概览统计
+	GetUserUsageOverview(ctx context.Context, userID uint) (*UsageOverviewResult, error)
 	// ListPricingRules 查询所有定价规则（分页）
 	ListPricingRules(ctx context.Context, offset, limit int) ([]model.PricingRule, int64, error)
 	// CreatePricingRule 创建定价规则
@@ -276,6 +278,66 @@ func (s *billingStore) GetUsageOverview(ctx context.Context) (*UsageOverviewResu
 
 	// 按操作分布
 	if err := db.Model(&model.UsageRecord{}).
+		Select("operation, COUNT(*) as call_count, COALESCE(SUM(cost_cents),0) as cost_cents").
+		Group("operation").
+		Order("cost_cents DESC").
+		Scan(&result.ByOperation).Error; err != nil {
+		return nil, fmt.Errorf("query by operation: %w", err)
+	}
+
+	return result, nil
+}
+
+// GetUserUsageOverview 获取指定用户的用量概览统计
+func (s *billingStore) GetUserUsageOverview(ctx context.Context, userID uint) (*UsageOverviewResult, error) {
+	result := &UsageOverviewResult{}
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+
+	db := s.db.WithContext(ctx).Where("user_id = ?", userID)
+
+	// 单条查询合并 today/month/total 统计
+	type overviewRow struct {
+		TodayCostCents int64 `gorm:"column:today_cost_cents"`
+		TodayCallCount int64 `gorm:"column:today_call_count"`
+		MonthCostCents int64 `gorm:"column:month_cost_cents"`
+		MonthCallCount int64 `gorm:"column:month_call_count"`
+		TotalCostCents int64 `gorm:"column:total_cost_cents"`
+		TotalCallCount int64 `gorm:"column:total_call_count"`
+	}
+	var overview overviewRow
+	if err := db.Model(&model.UsageRecord{}).
+		Select(`COALESCE(SUM(CASE WHEN created_at >= ? THEN cost_cents ELSE 0 END),0) as today_cost_cents,
+			SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as today_call_count,
+			COALESCE(SUM(CASE WHEN created_at >= ? THEN cost_cents ELSE 0 END),0) as month_cost_cents,
+			SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as month_call_count,
+			COALESCE(SUM(cost_cents),0) as total_cost_cents,
+			COUNT(*) as total_call_count`, todayStart, todayStart, monthStart, monthStart).
+		Scan(&overview).Error; err != nil {
+		return nil, fmt.Errorf("query user usage overview: %w", err)
+	}
+
+	result.TodayCostCents = overview.TodayCostCents
+	result.TodayCallCount = overview.TodayCallCount
+	result.MonthCostCents = overview.MonthCostCents
+	result.MonthCallCount = overview.MonthCallCount
+	result.TotalCostCents = overview.TotalCostCents
+	result.TotalCallCount = overview.TotalCallCount
+
+	// 按服务类型分布
+	if err := s.db.WithContext(ctx).Model(&model.UsageRecord{}).
+		Where("user_id = ?", userID).
+		Select("service_type, COUNT(*) as call_count, COALESCE(SUM(cost_cents),0) as cost_cents, COALESCE(SUM(total_tokens),0) as total_tokens").
+		Group("service_type").
+		Order("cost_cents DESC").
+		Scan(&result.ByServiceType).Error; err != nil {
+		return nil, fmt.Errorf("query by service type: %w", err)
+	}
+
+	// 按操作分布
+	if err := s.db.WithContext(ctx).Model(&model.UsageRecord{}).
+		Where("user_id = ?", userID).
 		Select("operation, COUNT(*) as call_count, COALESCE(SUM(cost_cents),0) as cost_cents").
 		Group("operation").
 		Order("cost_cents DESC").
