@@ -273,6 +273,8 @@ func (s *billingStore) GetUsageOverview(ctx context.Context) (*UsageOverviewResu
 		TotalCallCount    int64 `gorm:"column:total_call_count"`
 	}
 	var overview overviewRow
+	// 参数对应：?1-3=todayStart（cost/revenue/count），?4-6=monthStart（cost/revenue/count）
+	// total 统计不带日期条件，无需参数
 	if err := db.Model(&model.UsageRecord{}).
 		Select(`COALESCE(SUM(CASE WHEN created_at >= ? THEN cost_cents ELSE 0 END),0) as today_cost_cents,
 			COALESCE(SUM(CASE WHEN created_at >= ? THEN revenue_cents ELSE 0 END),0) as today_revenue_cents,
@@ -349,6 +351,7 @@ func (s *billingStore) GetUserUsageOverview(ctx context.Context, userID uint) (*
 		TotalCallCount    int64 `gorm:"column:total_call_count"`
 	}
 	var overview overviewRow
+	// 参数对应：?1-3=todayStart（cost/revenue/count），?4-6=monthStart（cost/revenue/count）
 	if err := db.Model(&model.UsageRecord{}).
 		Select(`COALESCE(SUM(CASE WHEN created_at >= ? THEN cost_cents ELSE 0 END),0) as today_cost_cents,
 			COALESCE(SUM(CASE WHEN created_at >= ? THEN revenue_cents ELSE 0 END),0) as today_revenue_cents,
