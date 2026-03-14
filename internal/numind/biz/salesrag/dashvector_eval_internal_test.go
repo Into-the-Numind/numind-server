@@ -50,7 +50,7 @@ func (s *DashVectorAuditSuite) SetupSuite() {
 	s.aliBiz = ali.NewAliBiz(nil)
 
 	embedder := func(ctx context.Context, text string) ([]float32, error) {
-		vec, _, err := s.aliBiz.QianwenEmbedding(text)
+		vec, _, err := s.aliBiz.QianwenEmbedding(ctx, text)
 		return vec, err
 	}
 

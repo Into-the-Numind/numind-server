@@ -340,14 +340,14 @@ func (s *SalesRAGService) rerankWithLimit(
 		documents[i] = chunk.Content
 	}
 
-	rerankResults, docCount, err := s.dmxClient.Rerank(ctx, query, documents, topN)
-	if err != nil {
-		return nil, err
+	// 注入计费上下文
+	if uid, ok := middleware.UserIDFromCtx(ctx); ok && uid > 0 {
+		ctx = billing.WithBilling(ctx, uid, "salesrag_rerank")
 	}
 
-	// 记录 Rerank 用量
-	if uid, ok := middleware.UserIDFromCtx(ctx); ok && uid > 0 {
-		billing.RecordRerank(uid, "dmxapi", "salesrag_rerank", docCount, nil)
+	rerankResults, _, err := s.dmxClient.Rerank(ctx, query, documents, topN)
+	if err != nil {
+		return nil, err
 	}
 
 	result := make([]domain.KnowledgeChunk, 0, len(rerankResults))

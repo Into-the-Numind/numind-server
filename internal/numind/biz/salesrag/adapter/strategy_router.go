@@ -67,16 +67,16 @@ func (r *StrategyRouter) SelectMetaStrategy(ctx context.Context, query string, h
 		{Role: "user", Content: prompt},
 	}
 
-	resp, metaUsage, err := r.dmxClient.ChatCompletionWithThinking(ctx, "qwen-turbo-latest", messages, 0.1, 200)
+	// 注入计费上下文
+	if uid, ok := middleware.UserIDFromCtx(ctx); ok && uid > 0 {
+		ctx = billing.WithBilling(ctx, uid, "salesrag_strategy_select")
+	}
+
+	resp, _, err := r.dmxClient.ChatCompletionWithThinking(ctx, "qwen-turbo-latest", messages, 0.1, 200)
 	if err != nil {
 		log.C(ctx).Warnw("Meta strategy selection LLM call failed", "error", err)
 		// Fallback: 返回第一个策略
 		return metas[0].ID, nil
-	}
-
-	// 记录策略选择用量
-	if uid, ok := middleware.UserIDFromCtx(ctx); ok && uid > 0 {
-		billing.RecordLLM(uid, "dmxapi", "qwen-turbo-latest", "salesrag_strategy_select", metaUsage, nil)
 	}
 
 	// 解析JSON响应
@@ -154,15 +154,15 @@ func (r *StrategyRouter) SelectBasicStrategy(ctx context.Context, query string, 
 		{Role: "user", Content: prompt},
 	}
 
-	resp, basicUsage, err := r.dmxClient.ChatCompletionWithThinking(ctx, "qwen-turbo-latest", messages, 0.1, 200)
+	// 注入计费上下文
+	if uid, ok := middleware.UserIDFromCtx(ctx); ok && uid > 0 {
+		ctx = billing.WithBilling(ctx, uid, "salesrag_strategy_select")
+	}
+
+	resp, _, err := r.dmxClient.ChatCompletionWithThinking(ctx, "qwen-turbo-latest", messages, 0.1, 200)
 	if err != nil {
 		log.C(ctx).Warnw("Basic strategy selection LLM call failed", "error", err)
 		return basics[0].ID, nil
-	}
-
-	// 记录策略选择用量
-	if uid, ok := middleware.UserIDFromCtx(ctx); ok && uid > 0 {
-		billing.RecordLLM(uid, "dmxapi", "qwen-turbo-latest", "salesrag_strategy_select", basicUsage, nil)
 	}
 
 	// 解析JSON响应

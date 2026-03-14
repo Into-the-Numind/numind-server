@@ -9,6 +9,7 @@ import (
 
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/httpclient"
 	"numind-server/internal/pkg/log"
 )
@@ -120,6 +121,11 @@ func (s *DashVectorStore) Upsert(ctx context.Context, chunks []domain.KnowledgeC
 			return fmt.Errorf("dashvector upsert failed: code=%d msg=%s", resp.Code, resp.Message)
 		}
 		log.Infow("DashVector Upsert batch success", "batch_size", len(batch), "resp_code", resp.Code)
+	}
+
+	// 记录向量库操作用量
+	if bc := billing.FromContext(ctx); bc != nil {
+		billing.RecordVectorDB(bc.UserID, "dashvector", bc.Operation, len(chunks), bc.Meta)
 	}
 
 	return nil

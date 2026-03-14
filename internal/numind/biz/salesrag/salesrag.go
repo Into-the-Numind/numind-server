@@ -227,6 +227,9 @@ func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *s
 }
 
 func (b *salesRAGBiz) Ingest(ctx context.Context, userID uint, filename string, displayName string, reader io.Reader, opts IngestOptions) (uint, error) {
+	// 注入计费上下文（覆盖 Embedding、VectorDB 等下游调用）
+	ctx = billing.WithBilling(ctx, userID, "salesrag_ingest")
+
 	// 0. 验证文件名
 	if filename == "" {
 		return 0, fmt.Errorf("filename cannot be empty")
@@ -576,10 +579,10 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, verdict 
 				"content": query,
 			},
 		}
-		result, genUsage, err := b.volcBiz.VolcTextStream(ctx, messages, 1000, 0.7)
 		if uid, ok := middleware.UserIDFromCtx(ctx); ok {
-			billing.RecordLLM(uid, "volc", "deepseek-v3", "salesrag_generate_answer", genUsage, nil)
+			ctx = billing.WithBilling(ctx, uid, "salesrag_generate_answer")
 		}
+		result, _, err := b.volcBiz.VolcTextStream(ctx, messages, 1000, 0.7)
 		return result, err
 	}
 
@@ -615,10 +618,10 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, verdict 
 		},
 	}
 
-	result, genUsage2, err := b.volcBiz.VolcTextStream(ctx, messages, 1000, 0.7)
 	if uid, ok := middleware.UserIDFromCtx(ctx); ok {
-		billing.RecordLLM(uid, "volc", "deepseek-v3", "salesrag_generate_answer", genUsage2, nil)
+		ctx = billing.WithBilling(ctx, uid, "salesrag_generate_answer")
 	}
+	result, _, err := b.volcBiz.VolcTextStream(ctx, messages, 1000, 0.7)
 	return result, err
 }
 
@@ -728,7 +731,8 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 	if deepThinking {
 		reasoningEffort = "high"
 	}
-	_, chatGenUsage, err := b.volcBiz.StreamChatWithModel(ctx, messages, "deepseek-v3-2-251201", 0, 0.7, reasoningEffort, func(eventType, content string) error {
+	ctx = billing.WithBilling(ctx, userID, "salesrag_chat_generate")
+	_, _, err = b.volcBiz.StreamChatWithModel(ctx, messages, "deepseek-v3-2-251201", 0, 0.7, reasoningEffort, func(eventType, content string) error {
 		if eventType == "thinking" {
 			return onEvent("thinking", content)
 		}
@@ -738,7 +742,6 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 	if err != nil {
 		return onEvent("error", fmt.Sprintf("stream chat failed: %v", err))
 	}
-	billing.RecordLLM(userID, "volc", "deepseek-v3-2-251201", "salesrag_chat_generate", chatGenUsage, nil)
 
 	// 12. 发送完成事件
 	return onEvent("done", nil)
@@ -1855,13 +1858,13 @@ func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint,
 	}
 
 	log.Printf("[AnalyzeProfileMultiFiles] Calling Volc StreamChatWithModel with %d content parts", len(contentParts))
-	result, profileUsage, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "medium", func(event string, token string) error {
+	ctx = billing.WithBilling(ctx, userID, "salesrag_analyze_profile")
+	result, _, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "medium", func(event string, token string) error {
 		if event == "message" {
 			return onToken(token)
 		}
 		return nil
 	})
-	billing.RecordLLM(userID, "volc", "doubao-seed-2-0-lite-260215", "salesrag_analyze_profile", profileUsage, nil)
 	return result, err
 }
 
@@ -1895,13 +1898,13 @@ func (b *salesRAGBiz) AnalyzeProfileText(ctx context.Context, userID uint, text 
 	}
 
 	log.Printf("[AnalyzeProfileText] Calling Volc StreamChatWithModel")
-	result, profileUsage, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "medium", func(event string, token string) error {
+	ctx = billing.WithBilling(ctx, userID, "salesrag_analyze_profile_text")
+	result, _, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "medium", func(event string, token string) error {
 		if event == "message" {
 			return onToken(token)
 		}
 		return nil
 	})
-	billing.RecordLLM(userID, "volc", "doubao-seed-2-0-lite-260215", "salesrag_analyze_profile_text", profileUsage, nil)
 	return result, err
 }
 
@@ -1982,11 +1985,12 @@ func (b *salesRAGBiz) analyzeChatStyleTextStream(ctx context.Context, userID uin
 
 	// 4. 调用火山方舟模型（流式输出）
 	log.Printf("[analyzeChatStyleTextStream] Calling Volc StreamChatWithModel for user %d", userID)
+	ctx = billing.WithBilling(ctx, userID, "salesrag_chat_style_text")
 	messages := []map[string]interface{}{
 		{"role": "system", "content": systemPrompt},
 		{"role": "user", "content": text},
 	}
-	analysis, chatStyleTextUsage, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "high", func(event string, token string) error {
+	analysis, _, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "high", func(event string, token string) error {
 		if event == "message" {
 			return onToken(token)
 		}
@@ -1996,8 +2000,7 @@ func (b *salesRAGBiz) analyzeChatStyleTextStream(ctx context.Context, userID uin
 		log.Printf("[analyzeChatStyleTextStream] Volc StreamChat failed for user %d: %v", userID, err)
 		return "", fmt.Errorf("AI 分析服务调用失败: %w", err)
 	}
-	billing.RecordLLM(userID, "volc", "doubao-seed-2-0-lite-260215", "salesrag_chat_style_text", chatStyleTextUsage, nil)
-	log.Printf("[analyzeChatStyleTextStream] DMX API stream success, result length: %d", len(analysis))
+	log.Printf("[analyzeChatStyleTextStream] Volc StreamChat success, result length: %d", len(analysis))
 
 	// 5. 保存到数据库
 	style := &model.LanguageStyle{
@@ -2165,12 +2168,12 @@ func (b *salesRAGBiz) analyzeChatStyleImageStream(ctx context.Context, userID ui
 
 	// 5. 调用火山方舟视觉模型（doubao-seed-2-0-lite-260215，与客户档案分析保持一致）
 	const visionModel = "doubao-seed-2-0-lite-260215"
-	result, chatStyleUsage, err := b.volcBiz.VisionAnalyzeStream(ctx, dataURL, systemPrompt, visionModel, 0, "medium", onToken)
+	ctx = billing.WithBilling(ctx, userID, "salesrag_chat_style_image")
+	result, _, err := b.volcBiz.VisionAnalyzeStream(ctx, dataURL, systemPrompt, visionModel, 0, "medium", onToken)
 	if err != nil {
 		log.Printf("[analyzeChatStyleImageStream] Volc VisionAnalyzeStream error: %v", err)
 		return "", fmt.Errorf("视觉模型分析失败: %w", err)
 	}
-	billing.RecordVision(userID, "volc", visionModel, "salesrag_chat_style_image", chatStyleUsage, nil)
 
 	log.Printf("[analyzeChatStyleImageStream] QianwenVisionStream completed, result length: %d", len(result))
 
@@ -2482,13 +2485,13 @@ func (b *salesRAGBiz) ocrWithVisionModel(ctx context.Context, userID uint, image
 
   现在请识别这张截图。`
 	visionModel := "doubao-seed-2-0-lite-260215"
+	ctx = billing.WithBilling(ctx, userID, "salesrag_ocr")
 
-	ocrText, ocrUsage, err := b.volcBiz.VisionAnalyze(ctx, signedURL, prompt, visionModel, 0, "medium")
+	ocrText, _, err := b.volcBiz.VisionAnalyze(ctx, signedURL, prompt, visionModel, 0, "medium")
 	if err != nil {
 		log.Printf("[OCRAnalyze] Volc Engine Vision OCR failed, user_id: %d, url: %s, error: %v", userID, signedURL, err)
 		return "", "", fmt.Errorf("图片识别失败，请检查模型配置: %w", err)
 	}
-	billing.RecordVision(userID, "volc", visionModel, "salesrag_ocr", ocrUsage, nil)
 
 	return ocrText, frontendURL, nil
 }

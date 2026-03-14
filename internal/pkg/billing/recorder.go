@@ -330,6 +330,21 @@ func FormatUint(v uint) string {
 	return fmt.Sprintf("%d", v)
 }
 
+// RecordVectorDB 便捷方法：记录向量数据库操作（Upsert/Search）
+func RecordVectorDB(userID uint, provider, operation string, itemCount int, metadata map[string]string) {
+	if R == nil {
+		return
+	}
+	R.Record(&UsageEvent{
+		UserID:      userID,
+		ServiceType: "vector_db",
+		Provider:    provider,
+		Operation:   operation,
+		ItemCount:   itemCount,
+		Metadata:    metadata,
+	})
+}
+
 // RecordRerank 便捷方法：记录 Rerank 调用
 func RecordRerank(userID uint, provider, operation string, docCount int, metadata map[string]string) {
 	if R == nil {

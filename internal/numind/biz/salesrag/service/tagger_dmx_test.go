@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"numind-server/internal/numind/biz/salesrag/adapter"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -12,9 +14,10 @@ func TestContentTagger_CallDMXAPI(t *testing.T) {
 	tagger := NewContentTagger()
 	prompt := "你好，请简单回答'收到'。"
 
-	resp, err := tagger.callDMXAPI(prompt)
+	messages := []adapter.ChatMessage{{Role: "user", Content: prompt}}
+	resp, _, err := tagger.dmxClient.ChatCompletion(context.Background(), "qwen-turbo-latest", messages, 0.1, 1024)
 	if err != nil {
-		t.Fatalf("callDMXAPI failed: %v", err)
+		t.Fatalf("ChatCompletion failed: %v", err)
 	}
 
 	fmt.Printf("DMXAPI Response: %s\n", resp)
