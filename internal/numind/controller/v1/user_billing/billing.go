@@ -42,10 +42,11 @@ func (ctrl *UserBillingController) GetSummary(c *gin.Context) {
 		return
 	}
 
+	// 用户端显示 revenue（客户被收费金额），而非 cost（平台成本）
 	core.WriteResponse(c, nil, gin.H{
-		"today_cost_cents": overview.TodayCostCents,
-		"month_cost_cents": overview.MonthCostCents,
-		"total_cost_cents": overview.TotalCostCents,
+		"today_cost_cents": overview.TodayRevenueCents,
+		"month_cost_cents": overview.MonthRevenueCents,
+		"total_cost_cents": overview.TotalRevenueCents,
 		"today_call_count": overview.TodayCallCount,
 		"month_call_count": overview.MonthCallCount,
 		"total_call_count": overview.TotalCallCount,
@@ -101,16 +102,16 @@ func (ctrl *UserBillingController) ListRecords(c *gin.Context) {
 	items := make([]gin.H, 0, len(records))
 	for _, r := range records {
 		items = append(items, gin.H{
-			"id":               r.ID,
-			"service_type":     r.ServiceType,
-			"provider":         r.Provider,
-			"model":            r.Model,
-			"operation":        r.Operation,
-			"prompt_tokens":    r.PromptTokens,
+			"id":                r.ID,
+			"service_type":      r.ServiceType,
+			"provider":          r.Provider,
+			"model":             r.Model,
+			"operation":         r.Operation,
+			"prompt_tokens":     r.PromptTokens,
 			"completion_tokens": r.CompletionTokens,
-			"total_tokens":     r.TotalTokens,
-			"cost_cents":       r.CostCents,
-			"created_at":       r.CreatedAt,
+			"total_tokens":      r.TotalTokens,
+			"cost_cents":        r.RevenueCents,
+			"created_at":        r.CreatedAt,
 		})
 	}
 

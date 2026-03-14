@@ -39,30 +39,45 @@ func (ctrl *AdminBillingController) GetOverview(c *gin.Context) {
 	byServiceType := make([]v1.AdminServiceTypeStat, len(result.ByServiceType))
 	for i, s := range result.ByServiceType {
 		byServiceType[i] = v1.AdminServiceTypeStat{
-			ServiceType: s.ServiceType,
-			CallCount:   s.CallCount,
-			CostCents:   s.CostCents,
-			TotalTokens: s.TotalTokens,
+			ServiceType:  s.ServiceType,
+			CallCount:    s.CallCount,
+			CostCents:    s.CostCents,
+			RevenueCents: s.RevenueCents,
+			TotalTokens:  s.TotalTokens,
 		}
 	}
 	byOperation := make([]v1.AdminOperationStat, len(result.ByOperation))
 	for i, o := range result.ByOperation {
 		byOperation[i] = v1.AdminOperationStat{
-			Operation: o.Operation,
-			CallCount: o.CallCount,
-			CostCents: o.CostCents,
+			Operation:    o.Operation,
+			CallCount:    o.CallCount,
+			CostCents:    o.CostCents,
+			RevenueCents: o.RevenueCents,
+		}
+	}
+	byProvider := make([]v1.AdminProviderStat, len(result.ByProvider))
+	for i, p := range result.ByProvider {
+		byProvider[i] = v1.AdminProviderStat{
+			Provider:     p.Provider,
+			CallCount:    p.CallCount,
+			CostCents:    p.CostCents,
+			RevenueCents: p.RevenueCents,
 		}
 	}
 
 	core.WriteResponse(c, nil, v1.AdminBillingOverviewResponse{
-		TodayCostCents: result.TodayCostCents,
-		MonthCostCents: result.MonthCostCents,
-		TotalCostCents: result.TotalCostCents,
-		TodayCallCount: result.TodayCallCount,
-		MonthCallCount: result.MonthCallCount,
-		TotalCallCount: result.TotalCallCount,
-		ByServiceType:  byServiceType,
-		ByOperation:    byOperation,
+		TodayCostCents:    result.TodayCostCents,
+		MonthCostCents:    result.MonthCostCents,
+		TotalCostCents:    result.TotalCostCents,
+		TodayRevenueCents: result.TodayRevenueCents,
+		MonthRevenueCents: result.MonthRevenueCents,
+		TotalRevenueCents: result.TotalRevenueCents,
+		TodayCallCount:    result.TodayCallCount,
+		MonthCallCount:    result.MonthCallCount,
+		TotalCallCount:    result.TotalCallCount,
+		ByServiceType:     byServiceType,
+		ByOperation:       byOperation,
+		ByProvider:        byProvider,
 	})
 }
 
@@ -124,6 +139,7 @@ func (ctrl *AdminBillingController) ListUsageRecords(c *gin.Context) {
 			BytesUploaded:    r.BytesUploaded,
 			ItemCount:        r.ItemCount,
 			CostCents:        r.CostCents,
+			RevenueCents:     r.RevenueCents,
 			BizRefType:       r.BizRefType,
 			BizRefID:         r.BizRefID,
 			IsFallback:       r.IsFallback,
@@ -206,17 +222,21 @@ func (ctrl *AdminBillingController) ListPricingRules(c *gin.Context) {
 	items := make([]v1.AdminPricingRuleItem, 0, len(rules))
 	for _, r := range rules {
 		items = append(items, v1.AdminPricingRuleItem{
-			ID:                 r.ID,
-			ServiceType:        r.ServiceType,
-			Provider:           r.Provider,
-			Model:              r.Model,
-			InputPricePerMTok:  r.InputPricePerMTok,
-			OutputPricePerMTok: r.OutputPricePerMTok,
-			PricePerCall:       r.PricePerCall,
-			PricePerGB:         r.PricePerGB,
-			IsActive:           r.IsActive,
-			CreatedAt:          r.CreatedAt,
-			UpdatedAt:          r.UpdatedAt,
+			ID:                     r.ID,
+			ServiceType:            r.ServiceType,
+			Provider:               r.Provider,
+			Model:                  r.Model,
+			InputPricePerMTok:      r.InputPricePerMTok,
+			OutputPricePerMTok:     r.OutputPricePerMTok,
+			PricePerCall:           r.PricePerCall,
+			PricePerGB:             r.PricePerGB,
+			SellInputPricePerMTok:  r.SellInputPricePerMTok,
+			SellOutputPricePerMTok: r.SellOutputPricePerMTok,
+			SellPricePerCall:       r.SellPricePerCall,
+			SellPricePerGB:         r.SellPricePerGB,
+			IsActive:               r.IsActive,
+			CreatedAt:              r.CreatedAt,
+			UpdatedAt:              r.UpdatedAt,
 		})
 	}
 
@@ -245,14 +265,18 @@ func (ctrl *AdminBillingController) CreatePricingRule(c *gin.Context) {
 	}
 
 	rule := &model.PricingRule{
-		ServiceType:        req.ServiceType,
-		Provider:           req.Provider,
-		Model:              req.Model,
-		InputPricePerMTok:  req.InputPricePerMTok,
-		OutputPricePerMTok: req.OutputPricePerMTok,
-		PricePerCall:       req.PricePerCall,
-		PricePerGB:         req.PricePerGB,
-		IsActive:           isActive,
+		ServiceType:            req.ServiceType,
+		Provider:               req.Provider,
+		Model:                  req.Model,
+		InputPricePerMTok:      req.InputPricePerMTok,
+		OutputPricePerMTok:     req.OutputPricePerMTok,
+		PricePerCall:           req.PricePerCall,
+		PricePerGB:             req.PricePerGB,
+		SellInputPricePerMTok:  req.SellInputPricePerMTok,
+		SellOutputPricePerMTok: req.SellOutputPricePerMTok,
+		SellPricePerCall:       req.SellPricePerCall,
+		SellPricePerGB:         req.SellPricePerGB,
+		IsActive:               isActive,
 	}
 
 	if err := ctrl.ds.Billing().CreatePricingRule(c, rule); err != nil {
@@ -262,17 +286,21 @@ func (ctrl *AdminBillingController) CreatePricingRule(c *gin.Context) {
 	}
 
 	core.WriteResponse(c, nil, v1.AdminPricingRuleItem{
-		ID:                 rule.ID,
-		ServiceType:        rule.ServiceType,
-		Provider:           rule.Provider,
-		Model:              rule.Model,
-		InputPricePerMTok:  rule.InputPricePerMTok,
-		OutputPricePerMTok: rule.OutputPricePerMTok,
-		PricePerCall:       rule.PricePerCall,
-		PricePerGB:         rule.PricePerGB,
-		IsActive:           rule.IsActive,
-		CreatedAt:          rule.CreatedAt,
-		UpdatedAt:          rule.UpdatedAt,
+		ID:                     rule.ID,
+		ServiceType:            rule.ServiceType,
+		Provider:               rule.Provider,
+		Model:                  rule.Model,
+		InputPricePerMTok:      rule.InputPricePerMTok,
+		OutputPricePerMTok:     rule.OutputPricePerMTok,
+		PricePerCall:           rule.PricePerCall,
+		PricePerGB:             rule.PricePerGB,
+		SellInputPricePerMTok:  rule.SellInputPricePerMTok,
+		SellOutputPricePerMTok: rule.SellOutputPricePerMTok,
+		SellPricePerCall:       rule.SellPricePerCall,
+		SellPricePerGB:         rule.SellPricePerGB,
+		IsActive:               rule.IsActive,
+		CreatedAt:              rule.CreatedAt,
+		UpdatedAt:              rule.UpdatedAt,
 	})
 }
 
@@ -293,14 +321,18 @@ func (ctrl *AdminBillingController) UpdatePricingRule(c *gin.Context) {
 	}
 
 	update := store.PricingRuleUpdate{
-		ServiceType:        req.ServiceType,
-		Provider:           req.Provider,
-		Model:              req.Model,
-		InputPricePerMTok:  req.InputPricePerMTok,
-		OutputPricePerMTok: req.OutputPricePerMTok,
-		PricePerCall:       req.PricePerCall,
-		PricePerGB:         req.PricePerGB,
-		IsActive:           req.IsActive,
+		ServiceType:            req.ServiceType,
+		Provider:               req.Provider,
+		Model:                  req.Model,
+		InputPricePerMTok:      req.InputPricePerMTok,
+		OutputPricePerMTok:     req.OutputPricePerMTok,
+		PricePerCall:           req.PricePerCall,
+		PricePerGB:             req.PricePerGB,
+		SellInputPricePerMTok:  req.SellInputPricePerMTok,
+		SellOutputPricePerMTok: req.SellOutputPricePerMTok,
+		SellPricePerCall:       req.SellPricePerCall,
+		SellPricePerGB:         req.SellPricePerGB,
+		IsActive:               req.IsActive,
 	}
 
 	if update.IsEmpty() {

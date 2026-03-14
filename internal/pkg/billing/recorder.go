@@ -163,8 +163,8 @@ func (r *UsageRecorder) buildRecord(event *UsageEvent) *model.UsageRecord {
 		}
 	}
 
-	// 计算预估成本
-	record.CostCents = r.calculateCost(record)
+	// 计算预估成本和收入
+	record.CostCents, record.RevenueCents = r.calculateCostAndRevenue(record)
 
 	return record
 }
@@ -181,35 +181,45 @@ func (r *UsageRecorder) flushBatch(batch []*model.UsageRecord) {
 	}
 }
 
-// calculateCost 根据定价规则计算预估成本（分）
-func (r *UsageRecorder) calculateCost(record *model.UsageRecord) int64 {
+// calculateCostAndRevenue 根据定价规则计算预估成本和收入（分）
+func (r *UsageRecorder) calculateCostAndRevenue(record *model.UsageRecord) (int64, int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	rule, err := r.store.GetPricingRule(ctx, record.ServiceType, record.Provider, record.Model)
 	if err != nil {
-		return 0 // 无定价规则，成本为 0（不影响记录）
+		return 0, 0 // 无定价规则，成本和收入为 0（不影响记录）
 	}
 
-	var costYuan float64
+	var costYuan, revenueYuan float64
 
 	switch {
 	case record.PromptTokens > 0 || record.CompletionTokens > 0:
 		// Token 计费: 每百万 tokens 价格
 		costYuan = float64(record.PromptTokens)/1_000_000*rule.InputPricePerMTok +
 			float64(record.CompletionTokens)/1_000_000*rule.OutputPricePerMTok
+		revenueYuan = float64(record.PromptTokens)/1_000_000*rule.SellInputPricePerMTok +
+			float64(record.CompletionTokens)/1_000_000*rule.SellOutputPricePerMTok
 	case record.TotalTokens > 0:
 		// Embedding 计费: 只有 total_tokens，用 input 价格
 		costYuan = float64(record.TotalTokens) / 1_000_000 * rule.InputPricePerMTok
+		revenueYuan = float64(record.TotalTokens) / 1_000_000 * rule.SellInputPricePerMTok
 	case record.BytesUploaded > 0:
 		// 存储计费: 每 GB 价格
 		costYuan = float64(record.BytesUploaded) / (1024 * 1024 * 1024) * rule.PricePerGB
+		revenueYuan = float64(record.BytesUploaded) / (1024 * 1024 * 1024) * rule.SellPricePerGB
 	default:
 		// 按次计费
 		costYuan = rule.PricePerCall
+		revenueYuan = rule.SellPricePerCall
 	}
 
-	return int64(math.Round(costYuan * 100)) // 元 → 分（四舍五入）
+	// 如果售价未设置（为0），fallback 到成本价
+	if revenueYuan == 0 && costYuan > 0 {
+		revenueYuan = costYuan
+	}
+
+	return int64(math.Round(costYuan * 100)), int64(math.Round(revenueYuan * 100))
 }
 
 // RecordLLM 便捷方法：记录 LLM 调用
