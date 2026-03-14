@@ -266,17 +266,12 @@ func (ctrl *AliController) VisionAnalyze(c *gin.Context) {
 	}
 
 	// 9. 调用 Biz 层进行分析
-	result, visionUsage, err := ctrl.aliBiz.QianwenVision(c.Request.Context(), imageURL, prompt, "qwen3-vl-flash-2026-01-22")
+	analyzeCtx := c.Request.Context()
+	analyzeCtx = billing.WithBilling(analyzeCtx, user.ID, "ali_vision_analyze")
+	result, _, err := ctrl.aliBiz.QianwenVision(analyzeCtx, imageURL, prompt, "qwen3-vl-flash-2026-01-22")
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
-	}
-
-	// 记录 Vision 用量
-	if cu, ok := c.Get("current_user"); ok {
-		if u, ok := cu.(*model.User); ok {
-			billing.RecordVision(u.ID, "ali", "qwen3-vl-flash", "ali_vision_analyze", visionUsage, nil)
-		}
 	}
 
 	// 10. 返回结果（包含文件ID）

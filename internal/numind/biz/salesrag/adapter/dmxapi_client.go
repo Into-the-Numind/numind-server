@@ -141,6 +141,11 @@ func (c *DMXAPIClient) ChatCompletion(ctx context.Context, model string, message
 		result.Usage.Normalize()
 	}
 
+	// 自动计费
+	if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
+		billing.RecordLLM(bc.UserID, "dmxapi", model, bc.Operation, result.Usage, bc.Meta)
+	}
+
 	return result.Choices[0].Message.Content, result.Usage, nil
 }
 
@@ -340,6 +345,11 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 		}
 	}
 
+	// 自动计费
+	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+		billing.RecordLLM(bc.UserID, "dmxapi", model, bc.Operation, usage, bc.Meta)
+	}
+
 	return fullContent.String(), usage, nil
 }
 
@@ -435,6 +445,11 @@ func (c *DMXAPIClient) Rerank(ctx context.Context, query string, documents []str
 			Index: r.Index,
 			Score: r.RelevanceScore,
 		})
+	}
+
+	// 自动计费
+	if bc := billing.FromContext(ctx); bc != nil {
+		billing.RecordRerank(bc.UserID, "dmxapi", bc.Operation, len(documents), bc.Meta)
 	}
 
 	log.Infow("Rerank completed", "query_len", len(query), "doc_count", len(documents), "top_n", topN, "result_count", len(results))

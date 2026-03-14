@@ -304,6 +304,11 @@ func (v *volcBiz) VolcTextStream(ctx context.Context, messages []map[string]stri
 		result.Usage.Normalize()
 	}
 
+	// 自动计费
+	if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
+		billing.RecordLLM(bc.UserID, "volc", viper.GetString("volc.model"), bc.Operation, result.Usage, bc.Meta)
+	}
+
 	log.C(ctx).Debugw("成功获取内容", "content_length", len(content))
 	return content, result.Usage, nil
 }
@@ -410,6 +415,11 @@ func (v *volcBiz) DoubaoEmbedding(ctx context.Context, text string) ([]float32, 
 	var embUsage *billing.EmbeddingUsage
 	if result.Usage != nil {
 		embUsage = &billing.EmbeddingUsage{TotalTokens: result.Usage.TotalTokens}
+	}
+
+	// 自动计费
+	if bc := billing.FromContext(ctx); bc != nil && embUsage != nil {
+		billing.RecordEmbedding(bc.UserID, "volc", embeddingModel, bc.Operation, embUsage, bc.Meta)
 	}
 
 	log.C(ctx).Debugw("Embedding成功", "vector_dim", len(vector))
@@ -563,6 +573,11 @@ func (v *volcBiz) StreamChat(ctx context.Context, messages []map[string]interfac
 		}
 	}
 
+	// 自动计费
+	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+		billing.RecordLLM(bc.UserID, "volc", viper.GetString("volc.model"), bc.Operation, usage, bc.Meta)
+	}
+
 	log.C(ctx).Debugw("流式聊天完成", "content_len", fullContent.Len(), "thinking_len", thinkingContent.Len())
 	return fullContent.String(), usage, nil
 }
@@ -680,6 +695,11 @@ func (v *volcBiz) VisionAnalyze(ctx context.Context, imageURL string, prompt str
 
 	if result.Usage != nil {
 		result.Usage.Normalize()
+	}
+
+	// 自动计费
+	if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
+		billing.RecordVision(bc.UserID, "volc", model, bc.Operation, result.Usage, bc.Meta)
 	}
 
 	content := result.Choices[0].Message.Content
@@ -830,6 +850,11 @@ func (v *volcBiz) VisionAnalyzeStream(ctx context.Context, imageURL string, prom
 		}
 	}
 
+	// 自动计费
+	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+		billing.RecordVision(bc.UserID, "volc", model, bc.Operation, usage, bc.Meta)
+	}
+
 	log.C(ctx).Debugw("流式视觉分析完成", "content_len", fullContent.Len())
 	return fullContent.String(), usage, nil
 }
@@ -909,6 +934,11 @@ func (v *volcBiz) ChatWithModel(ctx context.Context, messages []map[string]inter
 
 	if result.Usage != nil {
 		result.Usage.Normalize()
+	}
+
+	// 自动计费
+	if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
+		billing.RecordLLM(bc.UserID, "volc", model, bc.Operation, result.Usage, bc.Meta)
 	}
 
 	return result.Choices[0].Message.Content, result.Usage, nil
@@ -1059,6 +1089,11 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 		if finishReason, ok := choice["finish_reason"].(string); ok && finishReason != "" {
 			log.C(ctx).Infow("StreamChatWithModel finish_reason", "reason", finishReason)
 		}
+	}
+
+	// 自动计费
+	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+		billing.RecordLLM(bc.UserID, "volc", model, bc.Operation, usage, bc.Meta)
 	}
 
 	result := fullContent.String()

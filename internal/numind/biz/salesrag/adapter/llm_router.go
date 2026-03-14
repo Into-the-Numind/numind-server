@@ -151,8 +151,13 @@ func (r *LLMRouter) AnalyzeIntentV2(ctx context.Context, query string, history [
 		{Role: "user", Content: prompt},
 	}
 
+	// 注入计费上下文
+	if uid, ok := middleware.UserIDFromCtx(ctx); ok && uid > 0 {
+		ctx = billing.WithBilling(ctx, uid, "salesrag_intent_analysis")
+	}
+
 	// 调用 qwen-turbo-latest（深度思考模式）
-	resp, intentUsage, err := r.dmxClient.ChatCompletionWithThinking(ctx, "qwen-turbo-latest", messages, 0.1, 2000)
+	resp, _, err := r.dmxClient.ChatCompletionWithThinking(ctx, "qwen-turbo-latest", messages, 0.1, 2000)
 	if err != nil {
 		log.C(ctx).Errorw("LLM intent analysis failed", "error", err, "chatMode", chatMode)
 		// Fallback: 返回原始查询
@@ -202,11 +207,6 @@ func (r *LLMRouter) AnalyzeIntentV2(ctx context.Context, query string, history [
 		"hyde_query_len", len(result.HyDEQuery),
 		"salesInstruction", result.SalesInstruction,
 		"customerMessage", result.CustomerMessage)
-
-	// 记录意图分析用量
-	if uid, ok := middleware.UserIDFromCtx(ctx); ok && uid > 0 {
-		billing.RecordLLM(uid, "dmxapi", "qwen-turbo-latest", "salesrag_intent_analysis", intentUsage, nil)
-	}
 
 	return &result, nil
 }

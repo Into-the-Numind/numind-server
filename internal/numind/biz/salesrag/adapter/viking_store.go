@@ -8,6 +8,7 @@ import (
 
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/pkg/billing"
 
 	"github.com/volcengine/volc-sdk-golang/service/vikingdb"
 )
@@ -84,6 +85,12 @@ func (s *VikingStore) Upsert(ctx context.Context, chunks []domain.KnowledgeChunk
 			return fmt.Errorf("vikingdb upsert failed: %w", err)
 		}
 	}
+
+	// 记录向量库操作用量
+	if bc := billing.FromContext(ctx); bc != nil {
+		billing.RecordVectorDB(bc.UserID, "vikingdb", bc.Operation, len(chunks), bc.Meta)
+	}
+
 	return nil
 }
 
@@ -138,6 +145,11 @@ func (s *VikingStore) Search(ctx context.Context, query string, filter port.Sear
 	results, err := s.index.SearchByText(vikingdb.TextObject{Text: query}, opts)
 	if err != nil {
 		return nil, err
+	}
+
+	// 记录向量库搜索用量
+	if bc := billing.FromContext(ctx); bc != nil {
+		billing.RecordVectorDB(bc.UserID, "vikingdb", bc.Operation, 1, bc.Meta)
 	}
 
 	// 4. Map results
