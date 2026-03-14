@@ -18,6 +18,7 @@ type UsageRecord struct {
 	BytesUploaded         int64     `gorm:"default:0" json:"bytes_uploaded"`           // COS 上传字节数
 	ItemCount             int       `gorm:"default:0" json:"item_count"`               // 向量操作条数 / Rerank 文档数
 	CostCents             int64     `gorm:"default:0" json:"cost_cents"`               // 预估成本（分）
+	RevenueCents          int64     `gorm:"default:0" json:"revenue_cents"`            // 客户计费金额（分）
 	BizRefType            string    `gorm:"size:50" json:"biz_ref_type"`               // 关联业务对象类型: sop_run, sales_session 等
 	BizRefID              uint      `gorm:"default:0" json:"biz_ref_id"`               // 关联业务对象 ID
 	IsFallback            bool      `gorm:"default:false" json:"is_fallback"`          // 是否为降级调用
@@ -56,8 +57,12 @@ type PricingRule struct {
 	InputPricePerMTok float64   `gorm:"type:decimal(10,4);default:0" json:"input_price_per_mtok"`         // 每百万输入 tokens 价格（元）
 	OutputPricePerMTok float64  `gorm:"type:decimal(10,4);default:0" json:"output_price_per_mtok"`        // 每百万输出 tokens 价格（元）
 	PricePerCall      float64   `gorm:"type:decimal(10,4);default:0" json:"price_per_call"`               // 每次调用价格（元）
-	PricePerGB        float64   `gorm:"type:decimal(10,4);default:0" json:"price_per_gb"`                 // 每 GB 价格（元，COS 用）
-	IsActive          bool      `gorm:"default:true" json:"is_active"`
+	PricePerGB             float64   `gorm:"type:decimal(10,4);default:0" json:"price_per_gb"`                 // 每 GB 价格（元，COS 用）
+	SellInputPricePerMTok  float64   `gorm:"type:decimal(10,4);default:0" json:"sell_input_price_per_mtok"`   // 售价：每百万输入 tokens（元）
+	SellOutputPricePerMTok float64   `gorm:"type:decimal(10,4);default:0" json:"sell_output_price_per_mtok"`  // 售价：每百万输出 tokens（元）
+	SellPricePerCall       float64   `gorm:"type:decimal(10,4);default:0" json:"sell_price_per_call"`         // 售价：每次调用（元）
+	SellPricePerGB         float64   `gorm:"type:decimal(10,4);default:0" json:"sell_price_per_gb"`           // 售价：每 GB（元）
+	IsActive               bool      `gorm:"default:true" json:"is_active"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }

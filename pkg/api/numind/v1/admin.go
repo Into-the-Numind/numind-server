@@ -117,29 +117,43 @@ type AdminResetPasswordResponse struct {
 
 // AdminBillingOverviewResponse 用量概览响应
 type AdminBillingOverviewResponse struct {
-	TodayCostCents int64                  `json:"today_cost_cents"`
-	MonthCostCents int64                  `json:"month_cost_cents"`
-	TotalCostCents int64                  `json:"total_cost_cents"`
-	TodayCallCount int64                  `json:"today_call_count"`
-	MonthCallCount int64                  `json:"month_call_count"`
-	TotalCallCount int64                  `json:"total_call_count"`
-	ByServiceType  []AdminServiceTypeStat `json:"by_service_type"`
-	ByOperation    []AdminOperationStat   `json:"by_operation"`
+	TodayCostCents    int64                  `json:"today_cost_cents"`
+	MonthCostCents    int64                  `json:"month_cost_cents"`
+	TotalCostCents    int64                  `json:"total_cost_cents"`
+	TodayRevenueCents int64                  `json:"today_revenue_cents"`
+	MonthRevenueCents int64                  `json:"month_revenue_cents"`
+	TotalRevenueCents int64                  `json:"total_revenue_cents"`
+	TodayCallCount    int64                  `json:"today_call_count"`
+	MonthCallCount    int64                  `json:"month_call_count"`
+	TotalCallCount    int64                  `json:"total_call_count"`
+	ByServiceType     []AdminServiceTypeStat `json:"by_service_type"`
+	ByOperation       []AdminOperationStat   `json:"by_operation"`
+	ByProvider        []AdminProviderStat    `json:"by_provider"`
 }
 
 // AdminServiceTypeStat 按服务类型统计项
 type AdminServiceTypeStat struct {
-	ServiceType string `json:"service_type"`
-	CallCount   int64  `json:"call_count"`
-	CostCents   int64  `json:"cost_cents"`
-	TotalTokens int64  `json:"total_tokens"`
+	ServiceType  string `json:"service_type"`
+	CallCount    int64  `json:"call_count"`
+	CostCents    int64  `json:"cost_cents"`
+	RevenueCents int64  `json:"revenue_cents"`
+	TotalTokens  int64  `json:"total_tokens"`
 }
 
 // AdminOperationStat 按操作统计项
 type AdminOperationStat struct {
-	Operation string `json:"operation"`
-	CallCount int64  `json:"call_count"`
-	CostCents int64  `json:"cost_cents"`
+	Operation    string `json:"operation"`
+	CallCount    int64  `json:"call_count"`
+	CostCents    int64  `json:"cost_cents"`
+	RevenueCents int64  `json:"revenue_cents"`
+}
+
+// AdminProviderStat 按供应商统计项
+type AdminProviderStat struct {
+	Provider     string `json:"provider"`
+	CallCount    int64  `json:"call_count"`
+	CostCents    int64  `json:"cost_cents"`
+	RevenueCents int64  `json:"revenue_cents"`
 }
 
 // AdminUsageRecordItem 用量记录项
@@ -157,6 +171,7 @@ type AdminUsageRecordItem struct {
 	BytesUploaded    int64     `json:"bytes_uploaded"`
 	ItemCount        int       `json:"item_count"`
 	CostCents        int64     `json:"cost_cents"`
+	RevenueCents     int64     `json:"revenue_cents"`
 	BizRefType       string    `json:"biz_ref_type"`
 	BizRefID         uint      `json:"biz_ref_id"`
 	IsFallback       bool      `json:"is_fallback"`
@@ -188,17 +203,21 @@ type AdminUserConsumptionResponse struct {
 
 // AdminPricingRuleItem 定价规则项
 type AdminPricingRuleItem struct {
-	ID                 uint      `json:"id"`
-	ServiceType        string    `json:"service_type"`
-	Provider           string    `json:"provider"`
-	Model              string    `json:"model"`
-	InputPricePerMTok  float64   `json:"input_price_per_mtok"`
-	OutputPricePerMTok float64   `json:"output_price_per_mtok"`
-	PricePerCall       float64   `json:"price_per_call"`
-	PricePerGB         float64   `json:"price_per_gb"`
-	IsActive           bool      `json:"is_active"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID                     uint      `json:"id"`
+	ServiceType            string    `json:"service_type"`
+	Provider               string    `json:"provider"`
+	Model                  string    `json:"model"`
+	InputPricePerMTok      float64   `json:"input_price_per_mtok"`
+	OutputPricePerMTok     float64   `json:"output_price_per_mtok"`
+	PricePerCall           float64   `json:"price_per_call"`
+	PricePerGB             float64   `json:"price_per_gb"`
+	SellInputPricePerMTok  float64   `json:"sell_input_price_per_mtok"`
+	SellOutputPricePerMTok float64   `json:"sell_output_price_per_mtok"`
+	SellPricePerCall       float64   `json:"sell_price_per_call"`
+	SellPricePerGB         float64   `json:"sell_price_per_gb"`
+	IsActive               bool      `json:"is_active"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
 // AdminListPricingRulesResponse 定价规则列表响应
@@ -210,24 +229,32 @@ type AdminListPricingRulesResponse struct {
 
 // AdminCreatePricingRuleRequest 创建定价规则请求
 type AdminCreatePricingRuleRequest struct {
-	ServiceType        string  `json:"service_type" binding:"required"`
-	Provider           string  `json:"provider" binding:"required"`
-	Model              string  `json:"model"`
-	InputPricePerMTok  float64 `json:"input_price_per_mtok"`
-	OutputPricePerMTok float64 `json:"output_price_per_mtok"`
-	PricePerCall       float64 `json:"price_per_call"`
-	PricePerGB         float64 `json:"price_per_gb"`
-	IsActive           *bool   `json:"is_active"`
+	ServiceType            string  `json:"service_type" binding:"required"`
+	Provider               string  `json:"provider" binding:"required"`
+	Model                  string  `json:"model"`
+	InputPricePerMTok      float64 `json:"input_price_per_mtok"`
+	OutputPricePerMTok     float64 `json:"output_price_per_mtok"`
+	PricePerCall           float64 `json:"price_per_call"`
+	PricePerGB             float64 `json:"price_per_gb"`
+	SellInputPricePerMTok  float64 `json:"sell_input_price_per_mtok"`
+	SellOutputPricePerMTok float64 `json:"sell_output_price_per_mtok"`
+	SellPricePerCall       float64 `json:"sell_price_per_call"`
+	SellPricePerGB         float64 `json:"sell_price_per_gb"`
+	IsActive               *bool   `json:"is_active"`
 }
 
 // AdminUpdatePricingRuleRequest 更新定价规则请求
 type AdminUpdatePricingRuleRequest struct {
-	ServiceType        *string  `json:"service_type"`
-	Provider           *string  `json:"provider"`
-	Model              *string  `json:"model"`
-	InputPricePerMTok  *float64 `json:"input_price_per_mtok"`
-	OutputPricePerMTok *float64 `json:"output_price_per_mtok"`
-	PricePerCall       *float64 `json:"price_per_call"`
-	PricePerGB         *float64 `json:"price_per_gb"`
-	IsActive           *bool    `json:"is_active"`
+	ServiceType            *string  `json:"service_type"`
+	Provider               *string  `json:"provider"`
+	Model                  *string  `json:"model"`
+	InputPricePerMTok      *float64 `json:"input_price_per_mtok"`
+	OutputPricePerMTok     *float64 `json:"output_price_per_mtok"`
+	PricePerCall           *float64 `json:"price_per_call"`
+	PricePerGB             *float64 `json:"price_per_gb"`
+	SellInputPricePerMTok  *float64 `json:"sell_input_price_per_mtok"`
+	SellOutputPricePerMTok *float64 `json:"sell_output_price_per_mtok"`
+	SellPricePerCall       *float64 `json:"sell_price_per_call"`
+	SellPricePerGB         *float64 `json:"sell_price_per_gb"`
+	IsActive               *bool    `json:"is_active"`
 }

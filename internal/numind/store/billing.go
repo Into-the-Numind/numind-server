@@ -58,48 +58,69 @@ type UsageRecordFilter struct {
 
 // UsageOverviewResult 用量概览统计结果
 type UsageOverviewResult struct {
-	TodayCostCents int64
-	MonthCostCents int64
-	TotalCostCents int64
-	TodayCallCount int64
-	MonthCallCount int64
-	TotalCallCount int64
-	ByServiceType  []ServiceTypeStat
-	ByOperation    []OperationStat
+	TodayCostCents    int64
+	MonthCostCents    int64
+	TotalCostCents    int64
+	TodayRevenueCents int64
+	MonthRevenueCents int64
+	TotalRevenueCents int64
+	TodayCallCount    int64
+	MonthCallCount    int64
+	TotalCallCount    int64
+	ByServiceType     []ServiceTypeStat
+	ByOperation       []OperationStat
+	ByProvider        []ProviderStat
 }
 
 // ServiceTypeStat 按服务类型统计
 type ServiceTypeStat struct {
-	ServiceType string `gorm:"column:service_type" json:"service_type"`
-	CallCount   int64  `gorm:"column:call_count" json:"call_count"`
-	CostCents   int64  `gorm:"column:cost_cents" json:"cost_cents"`
-	TotalTokens int64  `gorm:"column:total_tokens" json:"total_tokens"`
+	ServiceType  string `gorm:"column:service_type" json:"service_type"`
+	CallCount    int64  `gorm:"column:call_count" json:"call_count"`
+	CostCents    int64  `gorm:"column:cost_cents" json:"cost_cents"`
+	RevenueCents int64  `gorm:"column:revenue_cents" json:"revenue_cents"`
+	TotalTokens  int64  `gorm:"column:total_tokens" json:"total_tokens"`
 }
 
 // OperationStat 按业务操作统计
 type OperationStat struct {
-	Operation string `gorm:"column:operation" json:"operation"`
-	CallCount int64  `gorm:"column:call_count" json:"call_count"`
-	CostCents int64  `gorm:"column:cost_cents" json:"cost_cents"`
+	Operation    string `gorm:"column:operation" json:"operation"`
+	CallCount    int64  `gorm:"column:call_count" json:"call_count"`
+	CostCents    int64  `gorm:"column:cost_cents" json:"cost_cents"`
+	RevenueCents int64  `gorm:"column:revenue_cents" json:"revenue_cents"`
+}
+
+// ProviderStat 按供应商统计
+type ProviderStat struct {
+	Provider     string `gorm:"column:provider" json:"provider"`
+	CallCount    int64  `gorm:"column:call_count" json:"call_count"`
+	CostCents    int64  `gorm:"column:cost_cents" json:"cost_cents"`
+	RevenueCents int64  `gorm:"column:revenue_cents" json:"revenue_cents"`
 }
 
 // PricingRuleUpdate 定价规则更新参数（类型安全，仅允许更新已知字段）
 type PricingRuleUpdate struct {
-	ServiceType        *string
-	Provider           *string
-	Model              *string
-	InputPricePerMTok  *float64
-	OutputPricePerMTok *float64
-	PricePerCall       *float64
-	PricePerGB         *float64
-	IsActive           *bool
+	ServiceType            *string
+	Provider               *string
+	Model                  *string
+	InputPricePerMTok      *float64
+	OutputPricePerMTok     *float64
+	PricePerCall           *float64
+	PricePerGB             *float64
+	SellInputPricePerMTok  *float64
+	SellOutputPricePerMTok *float64
+	SellPricePerCall       *float64
+	SellPricePerGB         *float64
+	IsActive               *bool
 }
 
 // IsEmpty 检查是否没有任何字段需要更新
 func (u PricingRuleUpdate) IsEmpty() bool {
 	return u.ServiceType == nil && u.Provider == nil && u.Model == nil &&
 		u.InputPricePerMTok == nil && u.OutputPricePerMTok == nil &&
-		u.PricePerCall == nil && u.PricePerGB == nil && u.IsActive == nil
+		u.PricePerCall == nil && u.PricePerGB == nil &&
+		u.SellInputPricePerMTok == nil && u.SellOutputPricePerMTok == nil &&
+		u.SellPricePerCall == nil && u.SellPricePerGB == nil &&
+		u.IsActive == nil
 }
 
 // UserConsumptionItem 用户消费排行项
@@ -241,35 +262,46 @@ func (s *billingStore) GetUsageOverview(ctx context.Context) (*UsageOverviewResu
 
 	// 单条查询合并 today/month/total 统计（减少数据库往返）
 	type overviewRow struct {
-		TodayCostCents int64 `gorm:"column:today_cost_cents"`
-		TodayCallCount int64 `gorm:"column:today_call_count"`
-		MonthCostCents int64 `gorm:"column:month_cost_cents"`
-		MonthCallCount int64 `gorm:"column:month_call_count"`
-		TotalCostCents int64 `gorm:"column:total_cost_cents"`
-		TotalCallCount int64 `gorm:"column:total_call_count"`
+		TodayCostCents    int64 `gorm:"column:today_cost_cents"`
+		TodayRevenueCents int64 `gorm:"column:today_revenue_cents"`
+		TodayCallCount    int64 `gorm:"column:today_call_count"`
+		MonthCostCents    int64 `gorm:"column:month_cost_cents"`
+		MonthRevenueCents int64 `gorm:"column:month_revenue_cents"`
+		MonthCallCount    int64 `gorm:"column:month_call_count"`
+		TotalCostCents    int64 `gorm:"column:total_cost_cents"`
+		TotalRevenueCents int64 `gorm:"column:total_revenue_cents"`
+		TotalCallCount    int64 `gorm:"column:total_call_count"`
 	}
 	var overview overviewRow
+	// 参数对应：?1-3=todayStart（cost/revenue/count），?4-6=monthStart（cost/revenue/count）
+	// total 统计不带日期条件，无需参数
 	if err := db.Model(&model.UsageRecord{}).
 		Select(`COALESCE(SUM(CASE WHEN created_at >= ? THEN cost_cents ELSE 0 END),0) as today_cost_cents,
+			COALESCE(SUM(CASE WHEN created_at >= ? THEN revenue_cents ELSE 0 END),0) as today_revenue_cents,
 			SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as today_call_count,
 			COALESCE(SUM(CASE WHEN created_at >= ? THEN cost_cents ELSE 0 END),0) as month_cost_cents,
+			COALESCE(SUM(CASE WHEN created_at >= ? THEN revenue_cents ELSE 0 END),0) as month_revenue_cents,
 			SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as month_call_count,
 			COALESCE(SUM(cost_cents),0) as total_cost_cents,
-			COUNT(*) as total_call_count`, todayStart, todayStart, monthStart, monthStart).
+			COALESCE(SUM(revenue_cents),0) as total_revenue_cents,
+			COUNT(*) as total_call_count`, todayStart, todayStart, todayStart, monthStart, monthStart, monthStart).
 		Scan(&overview).Error; err != nil {
 		return nil, fmt.Errorf("query usage overview: %w", err)
 	}
 
 	result.TodayCostCents = overview.TodayCostCents
+	result.TodayRevenueCents = overview.TodayRevenueCents
 	result.TodayCallCount = overview.TodayCallCount
 	result.MonthCostCents = overview.MonthCostCents
+	result.MonthRevenueCents = overview.MonthRevenueCents
 	result.MonthCallCount = overview.MonthCallCount
 	result.TotalCostCents = overview.TotalCostCents
+	result.TotalRevenueCents = overview.TotalRevenueCents
 	result.TotalCallCount = overview.TotalCallCount
 
 	// 按服务类型分布
 	if err := db.Model(&model.UsageRecord{}).
-		Select("service_type, COUNT(*) as call_count, COALESCE(SUM(cost_cents),0) as cost_cents, COALESCE(SUM(total_tokens),0) as total_tokens").
+		Select("service_type, COUNT(*) as call_count, COALESCE(SUM(cost_cents),0) as cost_cents, COALESCE(SUM(revenue_cents),0) as revenue_cents, COALESCE(SUM(total_tokens),0) as total_tokens").
 		Group("service_type").
 		Order("cost_cents DESC").
 		Scan(&result.ByServiceType).Error; err != nil {
@@ -278,11 +310,20 @@ func (s *billingStore) GetUsageOverview(ctx context.Context) (*UsageOverviewResu
 
 	// 按操作分布
 	if err := db.Model(&model.UsageRecord{}).
-		Select("operation, COUNT(*) as call_count, COALESCE(SUM(cost_cents),0) as cost_cents").
+		Select("operation, COUNT(*) as call_count, COALESCE(SUM(cost_cents),0) as cost_cents, COALESCE(SUM(revenue_cents),0) as revenue_cents").
 		Group("operation").
 		Order("cost_cents DESC").
 		Scan(&result.ByOperation).Error; err != nil {
 		return nil, fmt.Errorf("query by operation: %w", err)
+	}
+
+	// 按供应商分布
+	if err := db.Model(&model.UsageRecord{}).
+		Select("provider, COUNT(*) as call_count, COALESCE(SUM(cost_cents),0) as cost_cents, COALESCE(SUM(revenue_cents),0) as revenue_cents").
+		Group("provider").
+		Order("cost_cents DESC").
+		Scan(&result.ByProvider).Error; err != nil {
+		return nil, fmt.Errorf("query by provider: %w", err)
 	}
 
 	return result, nil
@@ -299,36 +340,46 @@ func (s *billingStore) GetUserUsageOverview(ctx context.Context, userID uint) (*
 
 	// 单条查询合并 today/month/total 统计
 	type overviewRow struct {
-		TodayCostCents int64 `gorm:"column:today_cost_cents"`
-		TodayCallCount int64 `gorm:"column:today_call_count"`
-		MonthCostCents int64 `gorm:"column:month_cost_cents"`
-		MonthCallCount int64 `gorm:"column:month_call_count"`
-		TotalCostCents int64 `gorm:"column:total_cost_cents"`
-		TotalCallCount int64 `gorm:"column:total_call_count"`
+		TodayCostCents    int64 `gorm:"column:today_cost_cents"`
+		TodayRevenueCents int64 `gorm:"column:today_revenue_cents"`
+		TodayCallCount    int64 `gorm:"column:today_call_count"`
+		MonthCostCents    int64 `gorm:"column:month_cost_cents"`
+		MonthRevenueCents int64 `gorm:"column:month_revenue_cents"`
+		MonthCallCount    int64 `gorm:"column:month_call_count"`
+		TotalCostCents    int64 `gorm:"column:total_cost_cents"`
+		TotalRevenueCents int64 `gorm:"column:total_revenue_cents"`
+		TotalCallCount    int64 `gorm:"column:total_call_count"`
 	}
 	var overview overviewRow
+	// 参数对应：?1-3=todayStart（cost/revenue/count），?4-6=monthStart（cost/revenue/count）
 	if err := db.Model(&model.UsageRecord{}).
 		Select(`COALESCE(SUM(CASE WHEN created_at >= ? THEN cost_cents ELSE 0 END),0) as today_cost_cents,
+			COALESCE(SUM(CASE WHEN created_at >= ? THEN revenue_cents ELSE 0 END),0) as today_revenue_cents,
 			SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as today_call_count,
 			COALESCE(SUM(CASE WHEN created_at >= ? THEN cost_cents ELSE 0 END),0) as month_cost_cents,
+			COALESCE(SUM(CASE WHEN created_at >= ? THEN revenue_cents ELSE 0 END),0) as month_revenue_cents,
 			SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as month_call_count,
 			COALESCE(SUM(cost_cents),0) as total_cost_cents,
-			COUNT(*) as total_call_count`, todayStart, todayStart, monthStart, monthStart).
+			COALESCE(SUM(revenue_cents),0) as total_revenue_cents,
+			COUNT(*) as total_call_count`, todayStart, todayStart, todayStart, monthStart, monthStart, monthStart).
 		Scan(&overview).Error; err != nil {
 		return nil, fmt.Errorf("query user usage overview: %w", err)
 	}
 
 	result.TodayCostCents = overview.TodayCostCents
+	result.TodayRevenueCents = overview.TodayRevenueCents
 	result.TodayCallCount = overview.TodayCallCount
 	result.MonthCostCents = overview.MonthCostCents
+	result.MonthRevenueCents = overview.MonthRevenueCents
 	result.MonthCallCount = overview.MonthCallCount
 	result.TotalCostCents = overview.TotalCostCents
+	result.TotalRevenueCents = overview.TotalRevenueCents
 	result.TotalCallCount = overview.TotalCallCount
 
 	// 按服务类型分布
 	if err := s.db.WithContext(ctx).Model(&model.UsageRecord{}).
 		Where("user_id = ?", userID).
-		Select("service_type, COUNT(*) as call_count, COALESCE(SUM(cost_cents),0) as cost_cents, COALESCE(SUM(total_tokens),0) as total_tokens").
+		Select("service_type, COUNT(*) as call_count, COALESCE(SUM(cost_cents),0) as cost_cents, COALESCE(SUM(revenue_cents),0) as revenue_cents, COALESCE(SUM(total_tokens),0) as total_tokens").
 		Group("service_type").
 		Order("cost_cents DESC").
 		Scan(&result.ByServiceType).Error; err != nil {
@@ -338,11 +389,21 @@ func (s *billingStore) GetUserUsageOverview(ctx context.Context, userID uint) (*
 	// 按操作分布
 	if err := s.db.WithContext(ctx).Model(&model.UsageRecord{}).
 		Where("user_id = ?", userID).
-		Select("operation, COUNT(*) as call_count, COALESCE(SUM(cost_cents),0) as cost_cents").
+		Select("operation, COUNT(*) as call_count, COALESCE(SUM(cost_cents),0) as cost_cents, COALESCE(SUM(revenue_cents),0) as revenue_cents").
 		Group("operation").
 		Order("cost_cents DESC").
 		Scan(&result.ByOperation).Error; err != nil {
 		return nil, fmt.Errorf("query by operation: %w", err)
+	}
+
+	// 按供应商分布
+	if err := s.db.WithContext(ctx).Model(&model.UsageRecord{}).
+		Where("user_id = ?", userID).
+		Select("provider, COUNT(*) as call_count, COALESCE(SUM(cost_cents),0) as cost_cents, COALESCE(SUM(revenue_cents),0) as revenue_cents").
+		Group("provider").
+		Order("cost_cents DESC").
+		Scan(&result.ByProvider).Error; err != nil {
+		return nil, fmt.Errorf("query by provider: %w", err)
 	}
 
 	return result, nil
@@ -420,6 +481,18 @@ func (s *billingStore) UpdatePricingRule(ctx context.Context, id uint, update Pr
 	}
 	if update.PricePerGB != nil {
 		updates["price_per_gb"] = *update.PricePerGB
+	}
+	if update.SellInputPricePerMTok != nil {
+		updates["sell_input_price_per_mtok"] = *update.SellInputPricePerMTok
+	}
+	if update.SellOutputPricePerMTok != nil {
+		updates["sell_output_price_per_mtok"] = *update.SellOutputPricePerMTok
+	}
+	if update.SellPricePerCall != nil {
+		updates["sell_price_per_call"] = *update.SellPricePerCall
+	}
+	if update.SellPricePerGB != nil {
+		updates["sell_price_per_gb"] = *update.SellPricePerGB
 	}
 	if update.IsActive != nil {
 		updates["is_active"] = *update.IsActive
