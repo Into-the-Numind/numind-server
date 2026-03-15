@@ -174,8 +174,9 @@ type AdminUsageRecordItem struct {
 	RevenueCents     int64     `json:"revenue_cents"`
 	BizRefType       string    `json:"biz_ref_type"`
 	BizRefID         uint      `json:"biz_ref_id"`
-	IsFallback       bool      `json:"is_fallback"`
-	CreatedAt        time.Time `json:"created_at"`
+	IsFallback       bool              `json:"is_fallback"`
+	Metadata         map[string]string `json:"metadata,omitempty"`
+	CreatedAt        time.Time         `json:"created_at"`
 }
 
 // AdminListUsageRecordsResponse 用量记录列表响应

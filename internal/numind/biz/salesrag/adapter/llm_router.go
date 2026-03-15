@@ -8,6 +8,7 @@ import (
 
 	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/pkg/billing"
+	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 )
@@ -138,13 +139,26 @@ func (r *LLMRouter) AnalyzeIntentV2(ctx context.Context, query string, history [
 		historyStr = strings.Join(recentHistory, "\n")
 	}
 
-	// 根据模式选择不同的 Prompt
+	// 根据模式选择不同的 Prompt（优先从 Langfuse 获取，fallback 到硬编码）
 	var prompt string
+	var promptVersion int
 	if chatMode == "free" {
-		prompt = fmt.Sprintf(freeModePrompt, historyStr, query)
+		tmpl, ver := langfuse.FetchPrompt("salesrag-intent-free", "")
+		promptVersion = ver
+		if tmpl != "" {
+			prompt = langfuse.Compile(tmpl, map[string]string{"history": historyStr, "query": query})
+		} else {
+			prompt = fmt.Sprintf(freeModePrompt, historyStr, query)
+		}
 	} else {
 		// 默认使用销售话术模式
-		prompt = fmt.Sprintf(salesModePrompt, historyStr, query)
+		tmpl, ver := langfuse.FetchPrompt("salesrag-intent-sales", "")
+		promptVersion = ver
+		if tmpl != "" {
+			prompt = langfuse.Compile(tmpl, map[string]string{"history": historyStr, "query": query})
+		} else {
+			prompt = fmt.Sprintf(salesModePrompt, historyStr, query)
+		}
 	}
 
 	messages := []ChatMessage{
@@ -154,6 +168,28 @@ func (r *LLMRouter) AnalyzeIntentV2(ctx context.Context, query string, history [
 	// 注入计费上下文
 	if uid, ok := middleware.UserIDFromCtx(ctx); ok && uid > 0 {
 		ctx = billing.WithBilling(ctx, uid, "salesrag_intent_analysis")
+	}
+
+	// 注入 Langfuse span（intent_analysis 子步骤）
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		spanID := langfuse.SpanID()
+		promptName := "salesrag-intent-sales"
+		if chatMode == "free" {
+			promptName = "salesrag-intent-free"
+		}
+		langfuse.CreateSpan(tc.TraceID, spanID, "intent_analysis",
+			langfuse.WithSpanParent(tc.ParentObservationID),
+			langfuse.WithSpanInput(map[string]interface{}{"query": query, "chatMode": chatMode, "history_count": len(history)}),
+		)
+		ctx = langfuse.WithTraceAndParent(ctx, tc.TraceID, spanID)
+		// 设置 prompt 上下文，供下游 generation 关联
+		if newTC := langfuse.FromContext(ctx); newTC != nil {
+			newTC.PromptName = promptName
+			newTC.PromptVersion = promptVersion
+		}
+		defer func() {
+			langfuse.EndSpan(spanID)
+		}()
 	}
 
 	// 调用 qwen-turbo-latest（深度思考模式）

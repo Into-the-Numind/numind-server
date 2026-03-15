@@ -11,6 +11,7 @@ import (
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/httpclient"
+	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"strings"
 	"time"
@@ -309,6 +310,22 @@ func (v *volcBiz) VolcTextStream(ctx context.Context, messages []map[string]stri
 		billing.RecordLLM(bc.UserID, "volc", viper.GetString("volc.model"), bc.Operation, result.Usage, bc.Meta)
 	}
 
+	// Langfuse generation 追踪
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		genID := langfuse.SpanID()
+		opts := []langfuse.GenOption{
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("volc-text"),
+			langfuse.WithGenModel(viper.GetString("volc.model")),
+			langfuse.WithGenOutput(content),
+		}
+		if result.Usage != nil {
+			opts = append(opts, langfuse.WithGenUsage(result.Usage.PromptTokens, result.Usage.CompletionTokens))
+		}
+		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+		langfuse.EndGeneration(genID)
+	}
+
 	log.C(ctx).Debugw("成功获取内容", "content_length", len(content))
 	return content, result.Usage, nil
 }
@@ -578,6 +595,22 @@ func (v *volcBiz) StreamChat(ctx context.Context, messages []map[string]interfac
 		billing.RecordLLM(bc.UserID, "volc", viper.GetString("volc.model"), bc.Operation, usage, bc.Meta)
 	}
 
+	// Langfuse generation 追踪
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		genID := langfuse.SpanID()
+		opts := []langfuse.GenOption{
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("volc-stream"),
+			langfuse.WithGenModel(viper.GetString("volc.model")),
+			langfuse.WithGenOutput(fullContent.String()),
+		}
+		if usage != nil {
+			opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
+		}
+		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+		langfuse.EndGeneration(genID)
+	}
+
 	log.C(ctx).Debugw("流式聊天完成", "content_len", fullContent.Len(), "thinking_len", thinkingContent.Len())
 	return fullContent.String(), usage, nil
 }
@@ -703,6 +736,23 @@ func (v *volcBiz) VisionAnalyze(ctx context.Context, imageURL string, prompt str
 	}
 
 	content := result.Choices[0].Message.Content
+
+	// Langfuse generation 追踪
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		genID := langfuse.SpanID()
+		opts := []langfuse.GenOption{
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("volc-vision"),
+			langfuse.WithGenModel(model),
+			langfuse.WithGenOutput(content),
+		}
+		if result.Usage != nil {
+			opts = append(opts, langfuse.WithGenUsage(result.Usage.PromptTokens, result.Usage.CompletionTokens))
+		}
+		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+		langfuse.EndGeneration(genID)
+	}
+
 	log.C(ctx).Infow("视觉模型分析完成", "content_length", len(content))
 	return content, result.Usage, nil
 }
@@ -1094,6 +1144,22 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 	// 自动计费
 	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
 		billing.RecordLLM(bc.UserID, "volc", model, bc.Operation, usage, bc.Meta)
+	}
+
+	// Langfuse generation 追踪
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		genID := langfuse.SpanID()
+		opts := []langfuse.GenOption{
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("volc-stream-" + model),
+			langfuse.WithGenModel(model),
+			langfuse.WithGenOutput(fullContent.String()),
+		}
+		if usage != nil {
+			opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
+		}
+		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+		langfuse.EndGeneration(genID)
 	}
 
 	result := fullContent.String()

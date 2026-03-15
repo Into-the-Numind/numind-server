@@ -50,8 +50,9 @@ type SalesMessage struct {
 
 	// 销售特有字段（仅assistant角色有这些字段）
 	Verdict  string `gorm:"type:mediumtext" json:"verdict,omitempty"` // 知识引用JSON，可能较大
-	Thinking string `gorm:"type:text" json:"thinking,omitempty"` // 思维链内容
-	Images   string `gorm:"type:text" json:"images,omitempty"`   // 图片链接列表，JSON 数组格式
+	Thinking string `gorm:"type:text" json:"thinking,omitempty"`      // 思维链内容
+	Images   string `gorm:"type:text" json:"images,omitempty"`        // 图片链接列表，JSON 数组格式
+	TraceID  string `gorm:"size:255" json:"trace_id,omitempty"`       // Langfuse trace ID
 
 	// 关联关系
 	Session SalesSession `gorm:"foreignKey:SessionID" json:"session,omitempty"`
@@ -60,4 +61,18 @@ type SalesMessage struct {
 
 func (SalesMessage) TableName() string {
 	return "sales_message"
+}
+
+// SalesMessageFeedback 销售消息反馈（点赞/点踩）
+type SalesMessageFeedback struct {
+	gorm.Model
+	MessageID uint   `gorm:"uniqueIndex;not null" json:"message_id"`
+	UserID    uint   `gorm:"index;not null" json:"user_id"`
+	Rating    int    `gorm:"not null" json:"rating"` // 1=点赞, -1=点踩
+	Comment   string `gorm:"type:text" json:"comment"`
+	TraceID   string `gorm:"size:255" json:"trace_id"`
+}
+
+func (SalesMessageFeedback) TableName() string {
+	return "sales_message_feedback"
 }
