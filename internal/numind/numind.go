@@ -17,6 +17,7 @@ import (
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/billing"
+	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	mw "numind-server/internal/pkg/middleware"
 	"numind-server/pkg/version/verflag"
@@ -148,6 +149,9 @@ func run() error {
 	// 初始化计费用量记录器
 	billing.InitRecorder(store.S.Billing())
 
+	// 初始化 Langfuse AI 可观测性客户端
+	langfuse.Init(langfuse.LoadConfig())
+
 	// 启动 SOP draft 清理任务（每2小时清理一次超过8小时的草稿）
 	bizLayer := biz.NewBiz(store.S)
 	go func() {
@@ -200,6 +204,9 @@ func run() error {
 	// }
 
 	//grpcsrv.GracefulStop()
+
+	// 优雅关闭 Langfuse 客户端
+	langfuse.C.Stop()
 
 	// 优雅关闭计费记录器，确保所有待写入事件落盘
 	billing.R.Stop()

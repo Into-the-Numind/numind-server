@@ -402,6 +402,13 @@ json_processing:
     # 最大响应大小（字节）
     max_response_size: 1048576  # 1MB
 
+# Langfuse AI 可观测性配置
+langfuse:
+  enabled: true
+  base_url: "http://langfuse-web:3100"  # Docker 内部网络访问
+  public_key: ""   # 在 Langfuse UI 创建项目后填入
+  secret_key: ""   # 在 Langfuse UI 创建项目后填入
+
 # HTML转换器配置 - 现在从card配置中继承，保留特定配置项
 html_converter:
   # HTML转换特有配置

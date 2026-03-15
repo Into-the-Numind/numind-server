@@ -7,6 +7,7 @@ import (
 	"numind-server/internal/pkg/model"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // SalesSessionStore 定义了销售智能体会话相关的数据访问接口
@@ -32,6 +33,10 @@ type SalesSessionStore interface {
 
 	// 重命名
 	RenameSession(ctx context.Context, sessionID uint, userID uint, newTitle string) error
+
+	// 反馈（点赞/点踩）
+	CreateOrUpdateFeedback(ctx context.Context, feedback *model.SalesMessageFeedback) error
+	GetFeedback(ctx context.Context, messageID uint) (*model.SalesMessageFeedback, error)
 }
 
 // salesSessionStore 是 SalesSessionStore 的具体实现
@@ -214,4 +219,22 @@ func (s *salesSessionStore) RenameSession(ctx context.Context, sessionID uint, u
 	return s.db.WithContext(ctx).Model(&model.SalesSession{}).
 		Where("id = ? AND user_id = ?", sessionID, userID).
 		Update("title", newTitle).Error
+}
+
+// CreateOrUpdateFeedback 创建或更新消息反馈（原子 upsert by message_id）
+func (s *salesSessionStore) CreateOrUpdateFeedback(ctx context.Context, feedback *model.SalesMessageFeedback) error {
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "message_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"rating", "comment", "updated_at"}),
+	}).Create(feedback).Error
+}
+
+// GetFeedback 获取消息反馈
+func (s *salesSessionStore) GetFeedback(ctx context.Context, messageID uint) (*model.SalesMessageFeedback, error) {
+	var feedback model.SalesMessageFeedback
+	err := s.db.WithContext(ctx).Where("message_id = ?", messageID).First(&feedback).Error
+	if err != nil {
+		return nil, err
+	}
+	return &feedback, nil
 }

@@ -96,8 +96,10 @@ func installNumindRouters(g *gin.Engine) error {
 		salesGroup.PUT("/sessions/:id/rename", salesRAGc.RenameSession) // 重命名会话
 
 		// 消息管理
-		salesGroup.POST("/sessions/:id/chat", salesRAGc.ChatWithSession) // 基于会话的销售对话（SSE流式）
-		salesGroup.GET("/sessions/:id/messages", salesRAGc.ListMessages) // 获取会话消息列表
+		salesGroup.POST("/sessions/:id/chat", salesRAGc.ChatWithSession)                                       // 基于会话的销售对话（SSE流式）
+		salesGroup.GET("/sessions/:id/messages", salesRAGc.ListMessages)                                        // 获取会话消息列表
+		salesGroup.POST("/sessions/:id/messages/:message_id/feedback", salesRAGc.SubmitFeedback)                // 提交消息反馈（点赞/点踩）
+		salesGroup.GET("/sessions/:id/messages/:message_id/feedback", salesRAGc.GetFeedback)                    // 获取消息反馈
 
 		// 客户档案管理
 		salesGroup.PUT("/sessions/:id/customer-profile", salesRAGc.UpdateCustomerProfile) // 更新客户档案

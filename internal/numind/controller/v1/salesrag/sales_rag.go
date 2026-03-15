@@ -1031,3 +1031,75 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 		"url":  cosURL,
 	})
 }
+
+// SubmitFeedback 提交消息反馈（点赞/点踩）
+func (ctrl *SalesRAGController) SubmitFeedback(c *gin.Context) {
+	sessionID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+	messageID, err := strconv.ParseUint(c.Param("message_id"), 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	var req struct {
+		Rating  int    `json:"rating" binding:"required,oneof=-1 1"`
+		Comment string `json:"comment"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("rating 必须为 1 或 -1"), nil)
+		return
+	}
+
+	err = ctrl.b.SalesRAG().SubmitFeedback(c.Request.Context(), user.ID, uint(sessionID), uint(messageID), req.Rating, req.Comment)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	core.WriteResponse(c, nil, nil)
+}
+
+// GetFeedback 获取消息反馈
+func (ctrl *SalesRAGController) GetFeedback(c *gin.Context) {
+	sessionID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+	messageID, err := strconv.ParseUint(c.Param("message_id"), 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	feedback, err := ctrl.b.SalesRAG().GetFeedback(c.Request.Context(), user.ID, uint(sessionID), uint(messageID))
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	if feedback == nil {
+		core.WriteResponse(c, nil, map[string]interface{}{})
+		return
+	}
+
+	core.WriteResponse(c, nil, map[string]interface{}{
+		"rating":  feedback.Rating,
+		"comment": feedback.Comment,
+	})
+}

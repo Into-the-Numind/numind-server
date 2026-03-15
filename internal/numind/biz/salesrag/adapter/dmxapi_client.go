@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"numind-server/internal/pkg/billing"
+	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 )
 
@@ -144,6 +145,27 @@ func (c *DMXAPIClient) ChatCompletion(ctx context.Context, model string, message
 	// 自动计费
 	if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
 		billing.RecordLLM(bc.UserID, "dmxapi", model, bc.Operation, result.Usage, bc.Meta)
+	}
+
+	// Langfuse generation 追踪
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		genID := langfuse.SpanID()
+		genOpts := []langfuse.GenOption{
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("dmxapi-chat"),
+			langfuse.WithGenModel(model),
+			langfuse.WithGenInput(messages),
+			langfuse.WithGenOutput(result.Choices[0].Message.Content),
+		}
+		if tc.PromptName != "" {
+			genOpts = append(genOpts, langfuse.WithGenPromptName(tc.PromptName, tc.PromptVersion))
+		}
+		langfuse.CreateGeneration(tc.TraceID, genID, genOpts...)
+		var endOpts []langfuse.GenOption
+		if result.Usage != nil {
+			endOpts = append(endOpts, langfuse.WithGenUsage(result.Usage.PromptTokens, result.Usage.CompletionTokens))
+		}
+		langfuse.EndGeneration(genID, endOpts...)
 	}
 
 	return result.Choices[0].Message.Content, result.Usage, nil
@@ -350,6 +372,26 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 		billing.RecordLLM(bc.UserID, "dmxapi", model, bc.Operation, usage, bc.Meta)
 	}
 
+	// Langfuse generation 追踪
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		genID := langfuse.SpanID()
+		opts := []langfuse.GenOption{
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("dmxapi-stream"),
+			langfuse.WithGenModel(model),
+			langfuse.WithGenInput(messages),
+			langfuse.WithGenOutput(fullContent.String()),
+		}
+		if usage != nil {
+			opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
+		}
+		if tc.PromptName != "" {
+			opts = append(opts, langfuse.WithGenPromptName(tc.PromptName, tc.PromptVersion))
+		}
+		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+		langfuse.EndGeneration(genID)
+	}
+
 	return fullContent.String(), usage, nil
 }
 
@@ -450,6 +492,19 @@ func (c *DMXAPIClient) Rerank(ctx context.Context, query string, documents []str
 	// 自动计费
 	if bc := billing.FromContext(ctx); bc != nil {
 		billing.RecordRerank(bc.UserID, "dmxapi", bc.Operation, len(documents), bc.Meta)
+	}
+
+	// Langfuse generation 追踪
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		genID := langfuse.SpanID()
+		langfuse.CreateGeneration(tc.TraceID, genID,
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("dmxapi-rerank"),
+			langfuse.WithGenModel("qwen3-rerank"),
+			langfuse.WithGenInput(map[string]interface{}{"query": query, "doc_count": len(documents), "top_n": topN}),
+			langfuse.WithGenOutput(results),
+		)
+		langfuse.EndGeneration(genID)
 	}
 
 	log.Infow("Rerank completed", "query_len", len(query), "doc_count", len(documents), "top_n", topN, "result_count", len(results))

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"numind-server/internal/pkg/httpclient"
+	"numind-server/internal/pkg/langfuse"
 	pkglog "numind-server/internal/pkg/log"
 
 	"github.com/spf13/viper"
@@ -233,6 +234,22 @@ func (a *aliBiz) QianwenTextStream(ctx context.Context, messages []map[string]st
 		billing.RecordLLM(bc.UserID, "ali", modelName, bc.Operation, usage, bc.Meta)
 	}
 
+	// Langfuse generation 追踪
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		genID := langfuse.SpanID()
+		opts := []langfuse.GenOption{
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("ali-text-stream"),
+			langfuse.WithGenModel(modelName),
+			langfuse.WithGenOutput(result.String()),
+		}
+		if usage != nil {
+			opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
+		}
+		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+		langfuse.EndGeneration(genID)
+	}
+
 	return result.String(), usage, nil
 }
 
@@ -444,7 +461,25 @@ func (a *aliBiz) QianwenVision(ctx context.Context, imageURL string, prompt stri
 		billing.RecordVision(bc.UserID, "ali", model, bc.Operation, result.Usage, bc.Meta)
 	}
 
-	return result.Choices[0].Message.Content, result.Usage, nil
+	visionContent := result.Choices[0].Message.Content
+
+	// Langfuse generation 追踪
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		genID := langfuse.SpanID()
+		opts := []langfuse.GenOption{
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("ali-vision"),
+			langfuse.WithGenModel(model),
+			langfuse.WithGenOutput(visionContent),
+		}
+		if result.Usage != nil {
+			opts = append(opts, langfuse.WithGenUsage(result.Usage.PromptTokens, result.Usage.CompletionTokens))
+		}
+		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+		langfuse.EndGeneration(genID)
+	}
+
+	return visionContent, result.Usage, nil
 }
 
 // QianwenVisionStream 调用视觉模型读取图片并进行流式回答 (OpenAI 兼容模式)
@@ -605,6 +640,22 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 	// 自动计费
 	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
 		billing.RecordVision(bc.UserID, "ali", model, bc.Operation, usage, bc.Meta)
+	}
+
+	// Langfuse generation 追踪
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		genID := langfuse.SpanID()
+		opts := []langfuse.GenOption{
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("ali-vision-stream"),
+			langfuse.WithGenModel(model),
+			langfuse.WithGenOutput(fullContent.String()),
+		}
+		if usage != nil {
+			opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
+		}
+		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+		langfuse.EndGeneration(genID)
 	}
 
 	return fullContent.String(), usage, nil

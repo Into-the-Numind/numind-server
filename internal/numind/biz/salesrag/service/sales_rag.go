@@ -9,6 +9,7 @@ import (
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/pkg/billing"
+	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 )
@@ -345,7 +346,25 @@ func (s *SalesRAGService) rerankWithLimit(
 		ctx = billing.WithBilling(ctx, uid, "salesrag_rerank")
 	}
 
+	// Langfuse rerank span
+	var rerankSpanID string
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		rerankSpanID = langfuse.SpanID()
+		langfuse.CreateSpan(tc.TraceID, rerankSpanID, "rerank",
+			langfuse.WithSpanParent(tc.ParentObservationID),
+			langfuse.WithSpanInput(map[string]interface{}{"query": query, "doc_count": len(documents), "topN": topN}),
+		)
+		ctx = langfuse.WithTraceAndParent(ctx, tc.TraceID, rerankSpanID)
+	}
+
 	rerankResults, _, err := s.dmxClient.Rerank(ctx, query, documents, topN)
+	if rerankSpanID != "" {
+		if err != nil {
+			langfuse.EndSpan(rerankSpanID, langfuse.WithSpanError(err.Error()))
+		} else {
+			langfuse.EndSpan(rerankSpanID, langfuse.WithSpanOutput(map[string]interface{}{"result_count": len(rerankResults)}))
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

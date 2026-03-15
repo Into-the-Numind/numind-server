@@ -11,6 +11,7 @@ import (
 	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/pkg/billing"
+	"numind-server/internal/pkg/langfuse"
 )
 
 type ContentTagger struct {
@@ -68,11 +69,10 @@ func (t *ContentTagger) TagChunk(ctx context.Context, content string) ([]string,
 	return res.Tags, res.Summary, nil
 }
 
-func (t *ContentTagger) analyze(ctx context.Context, text string) (*TaggingResult, error) {
-	// Construct Prompt
-	prompt := fmt.Sprintf(`角色：销售知识专家
+// taggingPromptFallback 标注 prompt 的硬编码 fallback
+const taggingPromptFallback = `角色：销售知识专家
 任务：分析文本内容并提取元数据，输出严格合法的 JSON 格式。
-输入文本："""%s"""
+输入文本："""{{content}}"""
 
 输出格式：
 {
@@ -83,16 +83,29 @@ func (t *ContentTagger) analyze(ctx context.Context, text string) (*TaggingResul
 要求：
 1. 提取 3-5 个最能代表内容的中文关键词（例如：产品功能、具体参数、常见问题）。
 2. 生成一个非常简短的中文摘要，用于搜索结果预览。
-3. 仅输出 JSON 字符串，不要包含 Markdown 格式（如 '''json ... '''）。`, text)
+3. 仅输出 JSON 字符串，不要包含 Markdown 格式（如 ` + "```" + `json ... ` + "```" + `）。`
+
+func (t *ContentTagger) analyze(ctx context.Context, text string) (*TaggingResult, error) {
+	// 从 Langfuse 获取 prompt，fallback 到硬编码
+	tmpl, _ := langfuse.FetchPrompt("salesrag-tagging", taggingPromptFallback)
+	prompt := langfuse.Compile(tmpl, map[string]string{"content": text})
 
 	var lastErr error
 	maxRetries := 3
 
+	// 创建 Langfuse trace（如果尚未在上下文中）
+	tagCtxBase := ctx
+	if langfuse.FromContext(ctx) == nil {
+		traceID := langfuse.TraceID()
+		langfuse.CreateTrace(traceID, "salesrag_tagging", langfuse.WithTraceTags("tagging"))
+		tagCtxBase = langfuse.WithTrace(ctx, traceID)
+	}
+
 	for i := 0; i < maxRetries; i++ {
 		// 设置计费上下文（如果尚未设置）
-		tagCtx := ctx
-		if billing.FromContext(ctx) == nil {
-			tagCtx = billing.WithBilling(ctx, 0, "salesrag_tagging")
+		tagCtx := tagCtxBase
+		if billing.FromContext(tagCtx) == nil {
+			tagCtx = billing.WithBilling(tagCtx, 0, "salesrag_tagging")
 		}
 		messages := []adapter.ChatMessage{{Role: "user", Content: prompt}}
 		respStr, _, err := t.dmxClient.ChatCompletion(tagCtx, "qwen-turbo-latest", messages, 0.1, 1024)

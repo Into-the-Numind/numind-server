@@ -13,6 +13,7 @@ import (
 
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/billing"
+	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	v1 "numind-server/pkg/api/numind/v1"
@@ -646,8 +647,16 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	// 执行节点（流式），返回完整输出、思考内容和 token 使用统计
 	startTime := time.Now()
 	// 注入计费上下文
+	traceID := langfuse.TraceID()
 	ctx = billing.WithBillingMeta(ctx, run.UserID, "sop_node_execute",
-		billing.Metadata("run_id", billing.FormatUint(runID), "node_id", billing.FormatUint(nodeID)))
+		billing.Metadata("run_id", billing.FormatUint(runID), "node_id", billing.FormatUint(nodeID), "trace_id", traceID))
+	// 创建 Langfuse trace
+	langfuse.CreateTrace(traceID, "sop_execute",
+		langfuse.WithUserID(run.UserID),
+		langfuse.WithTraceInput(map[string]interface{}{"run_id": runID, "node_id": nodeID, "node_name": node.Name}),
+		langfuse.WithTraceTags("sop"),
+	)
+	ctx = langfuse.WithTrace(ctx, traceID)
 	// 深度思考模式：开启 enable_thinking
 	output, thinking, usage, err := b.executor.ExecuteNodeStreamWithThinking(ctx, node, currentInput, conversationHistory, func(event string, chunk string) error {
 		// 直接透传事件给上层 handler

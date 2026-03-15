@@ -410,6 +410,10 @@ json_processing:
     # 最大响应大小（字节）
     max_response_size: 1048576  # 1MB
 
+# Langfuse AI 可观测性配置（本地默认关闭）
+langfuse:
+  enabled: false
+
 # HTML转换器配置 - 现在从card配置中继承，保留特定配置项
 html_converter:
   # HTML转换特有配置

@@ -1,6 +1,7 @@
 package admin_billing
 
 import (
+	"encoding/json"
 	"math"
 	"strconv"
 	"time"
@@ -125,6 +126,10 @@ func (ctrl *AdminBillingController) ListUsageRecords(c *gin.Context) {
 
 	items := make([]v1.AdminUsageRecordItem, 0, len(records))
 	for _, r := range records {
+		var meta map[string]string
+		if r.Metadata != "" {
+			_ = json.Unmarshal([]byte(r.Metadata), &meta)
+		}
 		items = append(items, v1.AdminUsageRecordItem{
 			ID:               r.ID,
 			UserID:           r.UserID,
@@ -143,6 +148,7 @@ func (ctrl *AdminBillingController) ListUsageRecords(c *gin.Context) {
 			BizRefType:       r.BizRefType,
 			BizRefID:         r.BizRefID,
 			IsFallback:       r.IsFallback,
+			Metadata:         meta,
 			CreatedAt:        r.CreatedAt,
 		})
 	}
