@@ -663,7 +663,7 @@ jobs:
               exit 1
             fi
 
-  # 后台管理系统 Docker 镜像构建（与主服务共享 develop/release 分支）
+  # 后台管理系统 Docker 镜像构建（多阶段构建，在 Docker 内编译）
   admin_image_build:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -674,68 +674,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: 1.24.2
-          cache: false
-
-      - name: Cache Go modules
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-
-            ${{ runner.os }}-go-
-
-      - name: Install build dependencies
-        run: |
-          # 安装 CGO 编译依赖（sqlite3、webp、g++）
-          # 使用系统 GCC 编译，运行时镜像基于 ubuntu:22.04
-          sudo apt-get update
-          sudo apt-get install -y gcc g++ libsqlite3-dev libwebp-dev
-
-      - name: Get dependencies
-        run: |
-          go clean -modcache || true
-          go clean -cache || true
-          go mod download
-          go mod tidy
-          go mod verify
-
-      - name: Build admin application
-        run: |
-          mkdir -p ./bin
-          echo "🐧 开始构建 numind-admin-linux-amd64 (标准 GCC，兼容 ubuntu:22.04 运行时)..."
-          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
-            -ldflags="-s -w" \
-            -o ./bin/numind-admin-linux-amd64 \
-            ./cmd/numind-admin
-          
-          if [ $? -eq 0 ]; then
-            echo "✅ Admin Linux 版本构建成功"
-          else
-            echo "❌ Admin Linux 版本构建失败"
-            exit 1
-          fi
-
-      - name: Prepare jieba dictionary files
-        run: |
-          # gojieba 运行时需要字典文件，从 Go module cache 复制到 Docker 构建上下文
-          JIEBA_PATH=$(find ~/go/pkg/mod/github.com/yanyiwu -name "dict" -type d | head -1)
-          if [ -n "$JIEBA_PATH" ]; then
-            cp -r "$JIEBA_PATH" ./dict
-            echo "✅ 字典文件已复制: $(ls ./dict/)"
-          else
-            echo "❌ 找不到 jieba 字典文件"
-            exit 1
-          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -749,7 +687,6 @@ jobs:
       - name: Calculate Admin Metadata
         id: admin-meta
         run: |
-          # 根据分支或tag确定环境参数和镜像标签
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             BUILD_ENV="prod"
             IMAGE_TAG="${{ github.ref_name }}"
@@ -767,11 +704,10 @@ jobs:
             IMAGE_TAG="admin-dev"
             echo "::notice::🚀 Admin 触发方式: 分支 ($IMAGE_TAG)"
           fi
-          
+
           echo "build_env=$BUILD_ENV" >> $GITHUB_OUTPUT
           echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
-          
-          # 生成 tags 列表
+
           TAGS="pmtmyaggy/numind-admin:$IMAGE_TAG"
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAGS="$TAGS,pmtmyaggy/numind-admin:latest"
@@ -787,7 +723,6 @@ jobs:
           tags: ${{ steps.admin-meta.outputs.tags }}
           build-args: |
             ENV=${{ steps.admin-meta.outputs.build_env }}
-            BINARY_PATH=./bin/numind-admin-linux-amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
