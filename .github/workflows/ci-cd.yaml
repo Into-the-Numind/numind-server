@@ -694,20 +694,12 @@ jobs:
             ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-
             ${{ runner.os }}-go-
 
-      - name: Setup Go environment
+      - name: Install build dependencies
         run: |
-          # numind-admin 通过 biz 包间接依赖了 webp，需要 CGO 支持
-          # 使用 musl 工具链编译，确保与 Alpine Linux 兼容
-          go env -w CGO_ENABLED=1
-
-      - name: Install musl toolchain and dependencies
-        run: |
-          # 安装 musl 工具链和 libwebp 开发库（用于编译）
+          # 安装 CGO 编译依赖（sqlite3、webp、g++）
+          # 使用系统 GCC 编译，运行时镜像基于 ubuntu:22.04
           sudo apt-get update
-          sudo apt-get install -y musl-tools libwebp-dev
-          # 设置 musl-gcc 作为 C 编译器（使用动态链接，与 Alpine musl libc 兼容）
-          go env -w CC=musl-gcc
-          go env -w CXX=musl-g++
+          sudo apt-get install -y gcc g++ libsqlite3-dev libwebp-dev
 
       - name: Get dependencies
         run: |
@@ -720,7 +712,7 @@ jobs:
       - name: Build admin application
         run: |
           mkdir -p ./bin
-          echo "🐧 开始构建 numind-admin-linux-amd64 (使用 musl 工具链，动态链接)..."
+          echo "🐧 开始构建 numind-admin-linux-amd64 (标准 GCC，兼容 ubuntu:22.04 运行时)..."
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
             -ldflags="-s -w" \
             -o ./bin/numind-admin-linux-amd64 \
