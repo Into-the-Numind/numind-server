@@ -725,6 +725,18 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare jieba dictionary files
+        run: |
+          # gojieba 运行时需要字典文件，从 Go module cache 复制到 Docker 构建上下文
+          JIEBA_PATH=$(find ~/go/pkg/mod/github.com/yanyiwu -name "dict" -type d | head -1)
+          if [ -n "$JIEBA_PATH" ]; then
+            cp -r "$JIEBA_PATH" ./dict
+            echo "✅ 字典文件已复制: $(ls ./dict/)"
+          else
+            echo "❌ 找不到 jieba 字典文件"
+            exit 1
+          fi
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
