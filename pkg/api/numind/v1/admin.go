@@ -286,14 +286,6 @@ type AdminTierInput struct {
 	SellPerMTok float64 `json:"sell_per_mtok" binding:"min=0"`
 }
 
-// AdminPricingRuleItemV2 扩展了 billing_mode 和分段的规则项
-type AdminPricingRuleItemV2 struct {
-	AdminPricingRuleItem
-	BillingMode string                     `json:"billing_mode"`
-	FlatUnit    string                     `json:"flat_unit"`
-	Tiers       []AdminPricingRuleTierItem `json:"tiers,omitempty"`
-}
-
 // ====== Analytics ======
 
 // AdminAnalyticsRequest GET /billing/analytics 查询参数

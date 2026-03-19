@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"gorm.io/gorm"
@@ -634,6 +635,7 @@ func (s *billingStore) GetAnalytics(ctx context.Context, filter AnalyticsFilter)
 		Group("ur.user_id, u.nickname").
 		Having("period_tokens > 0").
 		Order("period_cost_cents DESC").
+		Limit(1000).
 		Scan(&result.UserStats).Error
 	if err != nil {
 		return nil, fmt.Errorf("get user stats: %w", err)
@@ -655,7 +657,10 @@ func (s *billingStore) GetAnalytics(ctx context.Context, filter AnalyticsFilter)
 	return result, nil
 }
 
-// RecalculateCosts 按新的分段规则重算指定时间范围的 cost_cents/revenue_cents
+// RecalculateCosts 按新的分段规则重算指定时间范围的 cost_cents/revenue_cents。
+// 注意：写入按每 1000 条一个事务分批提交，非全局原子操作。
+// 如果进程中途失败，数据库会处于部分重算状态，需检查后重新执行。
+// dryRun=true 时只返回统计不写入。
 func (s *billingStore) RecalculateCosts(ctx context.Context, from, to time.Time, dryRun bool) (*RecalculateResult, error) {
 	// 1. 加载所有 tiered_token 规则和分段
 	var rules []model.PricingRule
@@ -712,7 +717,7 @@ func (s *billingStore) RecalculateCosts(ctx context.Context, from, to time.Time,
 				if sell {
 					price = t.SellPerMTok
 				}
-				return int64(float64(tokens) * price / 1_000_000 * 100)
+				return int64(math.Round(float64(tokens) * price / 1_000_000 * 100))
 			}
 		}
 		return 0

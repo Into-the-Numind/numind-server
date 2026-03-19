@@ -402,7 +402,7 @@ func (ctrl *AdminBillingController) GetTiers(c *gin.Context) {
 	tiers, err := ctrl.ds.Billing().GetTiersByRuleID(c, uint(id))
 	if err != nil {
 		log.C(c).Errorw("Failed to get tiers", "err", err)
-		core.WriteResponse(c, err, nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败，请稍后重试"), nil)
 		return
 	}
 	items := make([]v1.AdminPricingRuleTierItem, len(tiers))
@@ -440,7 +440,7 @@ func (ctrl *AdminBillingController) ReplaceTiers(c *gin.Context) {
 	}
 	if err := ctrl.ds.Billing().ReplaceTiers(c, uint(id), tiers); err != nil {
 		log.C(c).Errorw("Failed to replace tiers", "err", err)
-		core.WriteResponse(c, err, nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("保存失败，请稍后重试"), nil)
 		return
 	}
 	core.WriteResponse(c, nil, gin.H{"message": "ok"})
@@ -468,10 +468,14 @@ func (ctrl *AdminBillingController) Recalculate(c *gin.Context) {
 		core.WriteResponse(c, errno.ErrBind.SetMessage("to 日期不能早于 from 日期"), nil)
 		return
 	}
+	if to.Sub(from).Hours()/24 > 90 {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("重算范围不能超过 90 天"), nil)
+		return
+	}
 	result, err := ctrl.ds.Billing().RecalculateCosts(c, from, to, req.DryRun)
 	if err != nil {
 		log.C(c).Errorw("Failed to recalculate", "err", err)
-		core.WriteResponse(c, err, nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("重算失败，请稍后重试"), nil)
 		return
 	}
 	core.WriteResponse(c, nil, v1.AdminRecalculateResponse{
@@ -509,7 +513,7 @@ func (ctrl *AdminBillingController) GetAnalytics(c *gin.Context) {
 	data, err := ctrl.ds.Billing().GetAnalytics(c, store.AnalyticsFilter{From: from, To: to})
 	if err != nil {
 		log.C(c).Errorw("Failed to get analytics", "err", err)
-		core.WriteResponse(c, err, nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败，请稍后重试"), nil)
 		return
 	}
 
