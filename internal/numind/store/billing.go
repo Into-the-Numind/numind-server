@@ -598,7 +598,7 @@ func (s *billingStore) GetAnalytics(ctx context.Context, filter AnalyticsFilter)
 	// 1. 每次 SOP 运行的 token 汇总
 	err := s.db.WithContext(ctx).
 		Model(&model.UsageRecord{}).
-		Select("biz_ref_id, SUM(total_tokens) AS total_tokens").
+		Select("biz_ref_id, COALESCE(SUM(total_tokens), 0) AS total_tokens").
 		Where("biz_ref_type = ? AND created_at >= ? AND created_at < ?",
 			"sop_run", filter.From, filter.To.AddDate(0, 0, 1)).
 		Group("biz_ref_id").
@@ -629,7 +629,7 @@ func (s *billingStore) GetAnalytics(ctx context.Context, filter AnalyticsFilter)
 	// 3. 按模型分组
 	err = s.db.WithContext(ctx).
 		Model(&model.UsageRecord{}).
-		Select("model, SUM(total_tokens) AS period_tokens, SUM(cost_cents) AS period_cost_cents").
+		Select("model, COALESCE(SUM(total_tokens), 0) AS period_tokens, COALESCE(SUM(cost_cents), 0) AS period_cost_cents").
 		Where("created_at >= ? AND created_at < ?",
 			filter.From, filter.To.AddDate(0, 0, 1)).
 		Group("model").
