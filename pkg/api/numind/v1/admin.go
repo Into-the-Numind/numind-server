@@ -259,3 +259,114 @@ type AdminUpdatePricingRuleRequest struct {
 	SellPricePerGB         *float64 `json:"sell_price_per_gb"`
 	IsActive               *bool    `json:"is_active"`
 }
+
+// ====== Pricing Rule Tiers ======
+
+// AdminPricingRuleTierItem 分段定价项
+type AdminPricingRuleTierItem struct {
+	ID          uint64  `json:"id"`
+	RuleID      uint64  `json:"rule_id"`
+	TokenType   string  `json:"token_type"`   // input | output
+	MinTokens   uint    `json:"min_tokens"`
+	MaxTokens   *uint   `json:"max_tokens"`   // nil = 不限
+	CostPerMTok float64 `json:"cost_per_mtok"`
+	SellPerMTok float64 `json:"sell_per_mtok"`
+}
+
+// AdminReplaceTiersRequest PUT /pricing-rules/:id/tiers 请求体
+type AdminReplaceTiersRequest struct {
+	Tiers []AdminTierInput `json:"tiers" binding:"required"`
+}
+
+type AdminTierInput struct {
+	TokenType   string  `json:"token_type" binding:"required,oneof=input output"`
+	MinTokens   uint    `json:"min_tokens"`
+	MaxTokens   *uint   `json:"max_tokens"`
+	CostPerMTok float64 `json:"cost_per_mtok" binding:"min=0"`
+	SellPerMTok float64 `json:"sell_per_mtok" binding:"min=0"`
+}
+
+// AdminPricingRuleItemV2 扩展了 billing_mode 和分段的规则项
+type AdminPricingRuleItemV2 struct {
+	AdminPricingRuleItem
+	BillingMode string                     `json:"billing_mode"`
+	FlatUnit    string                     `json:"flat_unit"`
+	Tiers       []AdminPricingRuleTierItem `json:"tiers,omitempty"`
+}
+
+// ====== Analytics ======
+
+// AdminAnalyticsRequest GET /billing/analytics 查询参数
+type AdminAnalyticsRequest struct {
+	From string `form:"from" binding:"required"` // YYYY-MM-DD
+	To   string `form:"to" binding:"required"`   // YYYY-MM-DD
+}
+
+// AdminAnalyticsBucket 分布桶
+type AdminAnalyticsBucket struct {
+	Bucket string `json:"bucket"`
+	Count  int64  `json:"count"`
+}
+
+// AdminAnalyticsUserDetail 用于前端模拟器的用户原始数据
+type AdminAnalyticsUserDetail struct {
+	UserID          uint  `json:"user_id"`
+	PeriodTokens    int64 `json:"period_tokens"`
+	PeriodCostCents int64 `json:"period_cost_cents"`
+}
+
+// AdminAnalyticsTopUser 用户消费排行项
+type AdminAnalyticsTopUser struct {
+	UserID          uint   `json:"user_id"`
+	Nickname        string `json:"nickname"`
+	PeriodRuns      int64  `json:"period_runs"`
+	PeriodTokens    int64  `json:"period_tokens"`
+	PeriodCostCents int64  `json:"period_cost_cents"`
+}
+
+// AdminAnalyticsModelStat 按模型的统计
+type AdminAnalyticsModelStat struct {
+	Model           string `json:"model"`
+	TokenSharePct   int    `json:"token_share_pct"`
+	PeriodCostCents int64  `json:"period_cost_cents"`
+}
+
+// AdminAnalyticsSummary 汇总统计
+type AdminAnalyticsSummary struct {
+	ActiveUsers         int64 `json:"active_users"`
+	TotalRuns           int64 `json:"total_runs"`
+	DaysInRange         int   `json:"days_in_range"`
+	AvgTokensPerRun     int64 `json:"avg_tokens_per_run"`
+	P50TokensPerRun     int64 `json:"p50_tokens_per_run"`
+	P90TokensPerRun     int64 `json:"p90_tokens_per_run"`
+	P95TokensPerRun     int64 `json:"p95_tokens_per_run"`
+	P50CostCentsPerUser int64 `json:"p50_cost_cents_per_user"`
+	P90CostCentsPerUser int64 `json:"p90_cost_cents_per_user"`
+	P95CostCentsPerUser int64 `json:"p95_cost_cents_per_user"`
+}
+
+// AdminAnalyticsResponse GET /billing/analytics 响应
+type AdminAnalyticsResponse struct {
+	Summary          AdminAnalyticsSummary      `json:"summary"`
+	RunDistribution  []AdminAnalyticsBucket     `json:"run_distribution"`
+	UserDistribution []AdminAnalyticsBucket     `json:"user_distribution"`
+	UserDetails      []AdminAnalyticsUserDetail `json:"user_details"`
+	ModelBreakdown   []AdminAnalyticsModelStat  `json:"model_breakdown"`
+	TopUsers         []AdminAnalyticsTopUser    `json:"top_users"`
+}
+
+// AdminRecalculateRequest POST /billing/recalculate 请求体
+type AdminRecalculateRequest struct {
+	From   string `json:"from" binding:"required"` // YYYY-MM-DD
+	To     string `json:"to" binding:"required"`   // YYYY-MM-DD
+	DryRun bool   `json:"dry_run"`
+}
+
+// AdminRecalculateResponse 重算结果
+type AdminRecalculateResponse struct {
+	AffectedRecords   int64 `json:"affected_records"`
+	OldTotalCostCents int64 `json:"old_total_cost_cents"`
+	NewTotalCostCents int64 `json:"new_total_cost_cents"`
+	DeltaCents        int64 `json:"delta_cents"`
+	DryRun            bool  `json:"dry_run"`
+}
