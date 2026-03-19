@@ -103,6 +103,10 @@ func installAdminRouters(g *gin.Engine) error {
 		adminGroup.POST("/billing/pricing-rules", billingCtrl.CreatePricingRule)
 		adminGroup.PUT("/billing/pricing-rules/:id", billingCtrl.UpdatePricingRule)
 		adminGroup.DELETE("/billing/pricing-rules/:id", billingCtrl.DeletePricingRule)
+		adminGroup.GET("/billing/pricing-rules/:id/tiers", billingCtrl.GetTiers)
+		adminGroup.PUT("/billing/pricing-rules/:id/tiers", billingCtrl.ReplaceTiers)
+		adminGroup.POST("/billing/recalculate", billingCtrl.Recalculate)
+		adminGroup.GET("/billing/analytics", billingCtrl.GetAnalytics)
 	}
 
 	return nil
