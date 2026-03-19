@@ -663,18 +663,24 @@ func (s *billingStore) RecalculateCosts(ctx context.Context, from, to time.Time,
 		return nil, fmt.Errorf("load rules: %w", err)
 	}
 	// ruleID → (tokenType → []tier sorted by min_tokens)
-	tierMap := map[uint]map[string][]model.PricingRuleTier{}
+	ruleIDs := make([]uint, 0, len(rules))
 	for _, r := range rules {
-		var tiers []model.PricingRuleTier
+		ruleIDs = append(ruleIDs, r.ID)
+	}
+	tierMap := map[uint]map[string][]model.PricingRuleTier{}
+	if len(ruleIDs) > 0 {
+		var allTiers []model.PricingRuleTier
 		if err := s.db.WithContext(ctx).
-			Where("rule_id = ?", r.ID).
+			Where("rule_id IN ?", ruleIDs).
 			Order("token_type ASC, min_tokens ASC").
-			Find(&tiers).Error; err != nil {
-			return nil, err
+			Find(&allTiers).Error; err != nil {
+			return nil, fmt.Errorf("load tiers: %w", err)
 		}
-		tierMap[r.ID] = map[string][]model.PricingRuleTier{}
-		for _, t := range tiers {
-			tierMap[r.ID][t.TokenType] = append(tierMap[r.ID][t.TokenType], t)
+		for _, t := range allTiers {
+			if tierMap[t.RuleID] == nil {
+				tierMap[t.RuleID] = map[string][]model.PricingRuleTier{}
+			}
+			tierMap[t.RuleID][t.TokenType] = append(tierMap[t.RuleID][t.TokenType], t)
 		}
 	}
 
@@ -691,6 +697,9 @@ func (s *billingStore) RecalculateCosts(ctx context.Context, from, to time.Time,
 	batchSize := 1000
 
 	calcTieredCents := func(tokens int, tiers []model.PricingRuleTier, sell bool) int64 {
+		if tokens <= 0 {
+			return 0
+		}
 		for _, t := range tiers {
 			if uint(tokens) >= t.MinTokens && (t.MaxTokens == nil || uint(tokens) <= *t.MaxTokens) {
 				price := t.CostPerMTok
@@ -716,33 +725,46 @@ func (s *billingStore) RecalculateCosts(ctx context.Context, from, to time.Time,
 			break
 		}
 
-		for _, rec := range records {
-			result.AffectedRecords++
-			result.OldTotalCostCents += rec.CostCents
+		var batchAffected, batchOldCost, batchNewCost int64
+		txErr := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			for _, rec := range records {
+				batchAffected++
+				batchOldCost += rec.CostCents
 
-			key := rec.ServiceType + "|" + rec.Provider + "|" + rec.Model
-			rule, ok := ruleIndex[key]
-			if !ok {
-				result.NewTotalCostCents += rec.CostCents // 无规则则保留原值
-				continue
+				key := rec.ServiceType + "|" + rec.Provider + "|" + rec.Model
+				rule, ok := ruleIndex[key]
+				if !ok {
+					batchNewCost += rec.CostCents
+					continue
+				}
+				rtiers := tierMap[rule.ID]
+
+				newCost := calcTieredCents(rec.PromptTokens, rtiers["input"], false) +
+					calcTieredCents(rec.CompletionTokens, rtiers["output"], false)
+				newRevenue := calcTieredCents(rec.PromptTokens, rtiers["input"], true) +
+					calcTieredCents(rec.CompletionTokens, rtiers["output"], true)
+				batchNewCost += newCost
+
+				if !dryRun {
+					if err := tx.Model(&model.UsageRecord{}).
+						Where("id = ?", rec.ID).
+						Updates(map[string]interface{}{
+							"cost_cents":    newCost,
+							"revenue_cents": newRevenue,
+						}).Error; err != nil {
+						return fmt.Errorf("update record %d: %w", rec.ID, err)
+					}
+				}
 			}
-			rtiers := tierMap[rule.ID]
-
-			newCost := calcTieredCents(rec.PromptTokens, rtiers["input"], false) +
-				calcTieredCents(rec.CompletionTokens, rtiers["output"], false)
-			newRevenue := calcTieredCents(rec.PromptTokens, rtiers["input"], true) +
-				calcTieredCents(rec.CompletionTokens, rtiers["output"], true)
-			result.NewTotalCostCents += newCost
-
-			if !dryRun {
-				s.db.WithContext(ctx).Model(&model.UsageRecord{}).
-					Where("id = ?", rec.ID).
-					Updates(map[string]interface{}{
-						"cost_cents":    newCost,
-						"revenue_cents": newRevenue,
-					})
-			}
+			return nil
+		})
+		if txErr != nil {
+			return nil, txErr
 		}
+
+		result.AffectedRecords += batchAffected
+		result.OldTotalCostCents += batchOldCost
+		result.NewTotalCostCents += batchNewCost
 		offset += batchSize
 	}
 
