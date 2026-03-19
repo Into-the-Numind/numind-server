@@ -392,6 +392,7 @@ func percentileInt64(sorted []int64, p int) int64 {
 
 // GetTiers GET /billing/pricing-rules/:id/tiers
 func (ctrl *AdminBillingController) GetTiers(c *gin.Context) {
+	log.C(c).Infow("GetTiers")
 	idStr := c.Param("id")
 	id, err := strconv.ParseUint(idStr, 10, 64)
 	if err != nil {
@@ -400,6 +401,7 @@ func (ctrl *AdminBillingController) GetTiers(c *gin.Context) {
 	}
 	tiers, err := ctrl.ds.Billing().GetTiersByRuleID(c, uint(id))
 	if err != nil {
+		log.C(c).Errorw("Failed to get tiers", "err", err)
 		core.WriteResponse(c, err, nil)
 		return
 	}
@@ -416,6 +418,7 @@ func (ctrl *AdminBillingController) GetTiers(c *gin.Context) {
 
 // ReplaceTiers PUT /billing/pricing-rules/:id/tiers
 func (ctrl *AdminBillingController) ReplaceTiers(c *gin.Context) {
+	log.C(c).Infow("ReplaceTiers")
 	idStr := c.Param("id")
 	id, err := strconv.ParseUint(idStr, 10, 64)
 	if err != nil {
@@ -436,6 +439,7 @@ func (ctrl *AdminBillingController) ReplaceTiers(c *gin.Context) {
 		}
 	}
 	if err := ctrl.ds.Billing().ReplaceTiers(c, uint(id), tiers); err != nil {
+		log.C(c).Errorw("Failed to replace tiers", "err", err)
 		core.WriteResponse(c, err, nil)
 		return
 	}
@@ -444,6 +448,7 @@ func (ctrl *AdminBillingController) ReplaceTiers(c *gin.Context) {
 
 // Recalculate POST /billing/recalculate
 func (ctrl *AdminBillingController) Recalculate(c *gin.Context) {
+	log.C(c).Infow("Recalculate")
 	var req v1.AdminRecalculateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		core.WriteResponse(c, errno.ErrBind, nil)
@@ -459,8 +464,13 @@ func (ctrl *AdminBillingController) Recalculate(c *gin.Context) {
 		core.WriteResponse(c, errno.ErrBind, nil)
 		return
 	}
+	if to.Before(from) {
+		core.WriteResponse(c, errno.ErrBind, nil)
+		return
+	}
 	result, err := ctrl.ds.Billing().RecalculateCosts(c, from, to, req.DryRun)
 	if err != nil {
+		log.C(c).Errorw("Failed to recalculate", "err", err)
 		core.WriteResponse(c, err, nil)
 		return
 	}
@@ -475,6 +485,7 @@ func (ctrl *AdminBillingController) Recalculate(c *gin.Context) {
 
 // GetAnalytics GET /billing/analytics
 func (ctrl *AdminBillingController) GetAnalytics(c *gin.Context) {
+	log.C(c).Infow("GetAnalytics")
 	var req v1.AdminAnalyticsRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
 		core.WriteResponse(c, errno.ErrBind, nil)
@@ -490,9 +501,14 @@ func (ctrl *AdminBillingController) GetAnalytics(c *gin.Context) {
 		core.WriteResponse(c, errno.ErrBind, nil)
 		return
 	}
+	if to.Before(from) {
+		core.WriteResponse(c, errno.ErrBind, nil)
+		return
+	}
 
 	data, err := ctrl.ds.Billing().GetAnalytics(c, store.AnalyticsFilter{From: from, To: to})
 	if err != nil {
+		log.C(c).Errorw("Failed to get analytics", "err", err)
 		core.WriteResponse(c, err, nil)
 		return
 	}
@@ -562,7 +578,7 @@ func (ctrl *AdminBillingController) GetAnalytics(c *gin.Context) {
 	for i, m := range data.ModelStats {
 		sharePct := 0
 		if totalModelTokens > 0 {
-			sharePct = int(m.PeriodTokens * 100 / totalModelTokens)
+			sharePct = int(math.Round(float64(m.PeriodTokens) * 100 / float64(totalModelTokens)))
 		}
 		modelBreakdown[i] = v1.AdminAnalyticsModelStat{
 			Model: m.Model, TokenSharePct: sharePct, PeriodCostCents: m.PeriodCostCents,
