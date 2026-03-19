@@ -716,6 +716,7 @@ func (s *billingStore) RecalculateCosts(ctx context.Context, from, to time.Time,
 		var records []model.UsageRecord
 		err := s.db.WithContext(ctx).
 			Where("created_at >= ? AND created_at < ?", from, to.AddDate(0, 0, 1)).
+			Order("id ASC").
 			Offset(offset).Limit(batchSize).
 			Find(&records).Error
 		if err != nil {
@@ -726,40 +727,50 @@ func (s *billingStore) RecalculateCosts(ctx context.Context, from, to time.Time,
 		}
 
 		var batchAffected, batchOldCost, batchNewCost int64
-		txErr := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			for _, rec := range records {
-				batchAffected++
-				batchOldCost += rec.CostCents
+		type writeEntry struct {
+			id         uint64
+			newCost    int64
+			newRevenue int64
+		}
+		var writes []writeEntry
 
-				key := rec.ServiceType + "|" + rec.Provider + "|" + rec.Model
-				rule, ok := ruleIndex[key]
-				if !ok {
-					batchNewCost += rec.CostCents
-					continue
-				}
-				rtiers := tierMap[rule.ID]
+		for _, rec := range records {
+			batchOldCost += rec.CostCents
 
-				newCost := calcTieredCents(rec.PromptTokens, rtiers["input"], false) +
-					calcTieredCents(rec.CompletionTokens, rtiers["output"], false)
-				newRevenue := calcTieredCents(rec.PromptTokens, rtiers["input"], true) +
-					calcTieredCents(rec.CompletionTokens, rtiers["output"], true)
-				batchNewCost += newCost
+			key := rec.ServiceType + "|" + rec.Provider + "|" + rec.Model
+			rule, ok := ruleIndex[key]
+			if !ok {
+				batchNewCost += rec.CostCents
+				continue
+			}
+			rtiers := tierMap[rule.ID]
 
-				if !dryRun {
+			newCost := calcTieredCents(rec.PromptTokens, rtiers["input"], false) +
+				calcTieredCents(rec.CompletionTokens, rtiers["output"], false)
+			newRevenue := calcTieredCents(rec.PromptTokens, rtiers["input"], true) +
+				calcTieredCents(rec.CompletionTokens, rtiers["output"], true)
+			batchNewCost += newCost
+			batchAffected++
+			writes = append(writes, writeEntry{id: rec.ID, newCost: newCost, newRevenue: newRevenue})
+		}
+
+		if !dryRun && len(writes) > 0 {
+			txErr := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+				for _, w := range writes {
 					if err := tx.Model(&model.UsageRecord{}).
-						Where("id = ?", rec.ID).
+						Where("id = ?", w.id).
 						Updates(map[string]interface{}{
-							"cost_cents":    newCost,
-							"revenue_cents": newRevenue,
+							"cost_cents":    w.newCost,
+							"revenue_cents": w.newRevenue,
 						}).Error; err != nil {
-						return fmt.Errorf("update record %d: %w", rec.ID, err)
+						return fmt.Errorf("update record %d: %w", w.id, err)
 					}
 				}
+				return nil
+			})
+			if txErr != nil {
+				return nil, txErr
 			}
-			return nil
-		})
-		if txErr != nil {
-			return nil, txErr
 		}
 
 		result.AffectedRecords += batchAffected
