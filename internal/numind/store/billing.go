@@ -50,6 +50,10 @@ type BillingStore interface {
 
 	// GetAnalytics 获取消费分析数据（按时间范围）
 	GetAnalytics(ctx context.Context, filter AnalyticsFilter) (*AnalyticsResult, error)
+
+	// RecalculateCosts 按新的分段规则重算指定时间范围的 cost_cents/revenue_cents
+	// dryRun=true 时只返回统计不写入
+	RecalculateCosts(ctx context.Context, from, to time.Time, dryRun bool) (*RecalculateResult, error)
 }
 
 // UsageRecordFilter 用量记录查询过滤条件
@@ -168,6 +172,15 @@ type AnalyticsResult struct {
 	RunStats    []RunTokenStat
 	UserStats   []UserPeriodStat
 	ModelStats  []ModelPeriodStat
+}
+
+// RecalculateResult 重算结果
+type RecalculateResult struct {
+	AffectedRecords   int64
+	OldTotalCostCents int64
+	NewTotalCostCents int64
+	DeltaCents        int64
+	DryRun            bool
 }
 
 // UserConsumptionItem 用户消费排行项
@@ -639,5 +652,100 @@ func (s *billingStore) GetAnalytics(ctx context.Context, filter AnalyticsFilter)
 		return nil, fmt.Errorf("get model stats: %w", err)
 	}
 
+	return result, nil
+}
+
+// RecalculateCosts 按新的分段规则重算指定时间范围的 cost_cents/revenue_cents
+func (s *billingStore) RecalculateCosts(ctx context.Context, from, to time.Time, dryRun bool) (*RecalculateResult, error) {
+	// 1. 加载所有 tiered_token 规则和分段
+	var rules []model.PricingRule
+	if err := s.db.WithContext(ctx).Where("billing_mode = ?", "tiered_token").Find(&rules).Error; err != nil {
+		return nil, fmt.Errorf("load rules: %w", err)
+	}
+	// ruleID → (tokenType → []tier sorted by min_tokens)
+	tierMap := map[uint]map[string][]model.PricingRuleTier{}
+	for _, r := range rules {
+		var tiers []model.PricingRuleTier
+		if err := s.db.WithContext(ctx).
+			Where("rule_id = ?", r.ID).
+			Order("token_type ASC, min_tokens ASC").
+			Find(&tiers).Error; err != nil {
+			return nil, err
+		}
+		tierMap[r.ID] = map[string][]model.PricingRuleTier{}
+		for _, t := range tiers {
+			tierMap[r.ID][t.TokenType] = append(tierMap[r.ID][t.TokenType], t)
+		}
+	}
+
+	// lookup: (serviceType, provider, model) → rule
+	ruleIndex := map[string]*model.PricingRule{}
+	for i := range rules {
+		key := rules[i].ServiceType + "|" + rules[i].Provider + "|" + rules[i].Model
+		ruleIndex[key] = &rules[i]
+	}
+
+	// 2. 批量读取目标时间范围的 usage_record（分批，每批 1000 条）
+	result := &RecalculateResult{DryRun: dryRun}
+	offset := 0
+	batchSize := 1000
+
+	calcTieredCents := func(tokens int, tiers []model.PricingRuleTier, sell bool) int64 {
+		for _, t := range tiers {
+			if uint(tokens) >= t.MinTokens && (t.MaxTokens == nil || uint(tokens) <= *t.MaxTokens) {
+				price := t.CostPerMTok
+				if sell {
+					price = t.SellPerMTok
+				}
+				return int64(float64(tokens) * price / 1_000_000 * 100)
+			}
+		}
+		return 0
+	}
+
+	for {
+		var records []model.UsageRecord
+		err := s.db.WithContext(ctx).
+			Where("created_at >= ? AND created_at < ?", from, to.AddDate(0, 0, 1)).
+			Offset(offset).Limit(batchSize).
+			Find(&records).Error
+		if err != nil {
+			return nil, fmt.Errorf("load records batch: %w", err)
+		}
+		if len(records) == 0 {
+			break
+		}
+
+		for _, rec := range records {
+			result.AffectedRecords++
+			result.OldTotalCostCents += rec.CostCents
+
+			key := rec.ServiceType + "|" + rec.Provider + "|" + rec.Model
+			rule, ok := ruleIndex[key]
+			if !ok {
+				result.NewTotalCostCents += rec.CostCents // 无规则则保留原值
+				continue
+			}
+			rtiers := tierMap[rule.ID]
+
+			newCost := calcTieredCents(rec.PromptTokens, rtiers["input"], false) +
+				calcTieredCents(rec.CompletionTokens, rtiers["output"], false)
+			newRevenue := calcTieredCents(rec.PromptTokens, rtiers["input"], true) +
+				calcTieredCents(rec.CompletionTokens, rtiers["output"], true)
+			result.NewTotalCostCents += newCost
+
+			if !dryRun {
+				s.db.WithContext(ctx).Model(&model.UsageRecord{}).
+					Where("id = ?", rec.ID).
+					Updates(map[string]interface{}{
+						"cost_cents":    newCost,
+						"revenue_cents": newRevenue,
+					})
+			}
+		}
+		offset += batchSize
+	}
+
+	result.DeltaCents = result.NewTotalCostCents - result.OldTotalCostCents
 	return result, nil
 }
