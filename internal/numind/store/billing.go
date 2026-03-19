@@ -696,6 +696,12 @@ func (s *billingStore) RecalculateCosts(ctx context.Context, from, to time.Time,
 	offset := 0
 	batchSize := 1000
 
+	type writeEntry struct {
+		id         uint64
+		newCost    int64
+		newRevenue int64
+	}
+
 	calcTieredCents := func(tokens int, tiers []model.PricingRuleTier, sell bool) int64 {
 		if tokens <= 0 {
 			return 0
@@ -727,22 +733,16 @@ func (s *billingStore) RecalculateCosts(ctx context.Context, from, to time.Time,
 		}
 
 		var batchAffected, batchOldCost, batchNewCost int64
-		type writeEntry struct {
-			id         uint64
-			newCost    int64
-			newRevenue int64
-		}
 		var writes []writeEntry
 
 		for _, rec := range records {
-			batchOldCost += rec.CostCents
-
 			key := rec.ServiceType + "|" + rec.Provider + "|" + rec.Model
 			rule, ok := ruleIndex[key]
 			if !ok {
 				batchNewCost += rec.CostCents
 				continue
 			}
+			batchOldCost += rec.CostCents
 			rtiers := tierMap[rule.ID]
 
 			newCost := calcTieredCents(rec.PromptTokens, rtiers["input"], false) +
