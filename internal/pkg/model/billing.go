@@ -54,6 +54,8 @@ type PricingRule struct {
 	ServiceType       string    `gorm:"size:50;not null;uniqueIndex:uk_pricing_lookup" json:"service_type"`
 	Provider          string    `gorm:"size:50;not null;uniqueIndex:uk_pricing_lookup" json:"provider"`
 	Model             string    `gorm:"size:100;uniqueIndex:uk_pricing_lookup" json:"model"`              // 空字符串 = 该 service+provider 的默认价格
+	BillingMode string `gorm:"size:20;not null;default:'flat'" json:"billing_mode"` // tiered_token | flat
+	FlatUnit    string `gorm:"size:10;not null;default:'call'" json:"flat_unit"`    // call | gb
 	InputPricePerMTok float64   `gorm:"type:decimal(10,4);default:0" json:"input_price_per_mtok"`         // 每百万输入 tokens 价格（元）
 	OutputPricePerMTok float64  `gorm:"type:decimal(10,4);default:0" json:"output_price_per_mtok"`        // 每百万输出 tokens 价格（元）
 	PricePerCall      float64   `gorm:"type:decimal(10,4);default:0" json:"price_per_call"`               // 每次调用价格（元）
@@ -70,4 +72,21 @@ type PricingRule struct {
 // TableName 指定表名
 func (PricingRule) TableName() string {
 	return "pricing_rule"
+}
+
+// PricingRuleTier 定价规则的分段配置（用于 tiered_token 模式）
+type PricingRuleTier struct {
+	ID           uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
+	RuleID       uint64    `gorm:"not null;index:idx_rule_type" json:"rule_id"`
+	TokenType    string    `gorm:"size:10;not null;index:idx_rule_type" json:"token_type"` // input | output
+	MinTokens    uint      `gorm:"not null;default:0" json:"min_tokens"`
+	MaxTokens    *uint     `json:"max_tokens"` // nil = 不限
+	CostPerMTok  float64   `gorm:"type:decimal(12,6);not null;default:0" json:"cost_per_mtok"`
+	SellPerMTok  float64   `gorm:"type:decimal(12,6);not null;default:0" json:"sell_per_mtok"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+func (PricingRuleTier) TableName() string {
+	return "pricing_rule_tier"
 }
