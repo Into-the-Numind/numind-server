@@ -21,10 +21,10 @@ type UsageStore interface {
 
 // UsageRecorder 用量记录器 — 异步批量写入，不阻塞主流程
 type UsageRecorder struct {
-	store  UsageStore
-	ch     chan *UsageEvent
-	done   chan struct{}
-	wg     sync.WaitGroup
+	store UsageStore
+	ch    chan *UsageEvent
+	done  chan struct{}
+	wg    sync.WaitGroup
 }
 
 // UsageEvent 用量事件

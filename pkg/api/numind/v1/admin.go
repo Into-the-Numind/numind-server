@@ -158,22 +158,22 @@ type AdminProviderStat struct {
 
 // AdminUsageRecordItem 用量记录项
 type AdminUsageRecordItem struct {
-	ID               uint64    `json:"id"`
-	UserID           uint      `json:"user_id"`
-	ServiceType      string    `json:"service_type"`
-	Provider         string    `json:"provider"`
-	Model            string    `json:"model"`
-	Operation        string    `json:"operation"`
-	PromptTokens     int       `json:"prompt_tokens"`
-	CompletionTokens int       `json:"completion_tokens"`
-	TotalTokens      int       `json:"total_tokens"`
-	ReasoningTokens  int       `json:"reasoning_tokens"`
-	BytesUploaded    int64     `json:"bytes_uploaded"`
-	ItemCount        int       `json:"item_count"`
-	CostCents        int64     `json:"cost_cents"`
-	RevenueCents     int64     `json:"revenue_cents"`
-	BizRefType       string    `json:"biz_ref_type"`
-	BizRefID         uint      `json:"biz_ref_id"`
+	ID               uint64            `json:"id"`
+	UserID           uint              `json:"user_id"`
+	ServiceType      string            `json:"service_type"`
+	Provider         string            `json:"provider"`
+	Model            string            `json:"model"`
+	Operation        string            `json:"operation"`
+	PromptTokens     int               `json:"prompt_tokens"`
+	CompletionTokens int               `json:"completion_tokens"`
+	TotalTokens      int               `json:"total_tokens"`
+	ReasoningTokens  int               `json:"reasoning_tokens"`
+	BytesUploaded    int64             `json:"bytes_uploaded"`
+	ItemCount        int               `json:"item_count"`
+	CostCents        int64             `json:"cost_cents"`
+	RevenueCents     int64             `json:"revenue_cents"`
+	BizRefType       string            `json:"biz_ref_type"`
+	BizRefID         uint              `json:"biz_ref_id"`
 	IsFallback       bool              `json:"is_fallback"`
 	Metadata         map[string]string `json:"metadata,omitempty"`
 	CreatedAt        time.Time         `json:"created_at"`
@@ -266,9 +266,9 @@ type AdminUpdatePricingRuleRequest struct {
 type AdminPricingRuleTierItem struct {
 	ID          uint64  `json:"id"`
 	RuleID      uint64  `json:"rule_id"`
-	TokenType   string  `json:"token_type"`   // input | output
+	TokenType   string  `json:"token_type"` // input | output
 	MinTokens   uint    `json:"min_tokens"`
-	MaxTokens   *uint   `json:"max_tokens"`   // nil = 不限
+	MaxTokens   *uint   `json:"max_tokens"` // nil = 不限
 	CostPerMTok float64 `json:"cost_per_mtok"`
 	SellPerMTok float64 `json:"sell_per_mtok"`
 }

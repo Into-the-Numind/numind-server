@@ -97,9 +97,9 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 	}
 
 	var r struct {
-		Query         string   `json:"query"`       // 用户文字（可为空，仅图片时）
-		OcrTexts      []string `json:"ocr_texts"`   // OCR识别文字，仅用于知识库检索
-		Images        []string `json:"images"`       // 图片链接列表
+		Query         string   `json:"query"`     // 用户文字（可为空，仅图片时）
+		OcrTexts      []string `json:"ocr_texts"` // OCR识别文字，仅用于知识库检索
+		Images        []string `json:"images"`    // 图片链接列表
 		DocumentIDs   []uint   `json:"document_ids"`
 		ProductDocIDs []uint   `json:"product_doc_ids"` // 产品文档
 		CaseDocIDs    []uint   `json:"case_doc_ids"`    // 成功案例

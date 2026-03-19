@@ -41,7 +41,7 @@ func (c *Client) flush(batch []*IngestionEvent) {
 		return
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode >= 400 {
 		log.Warnw("langfuse: ingestion returned error", "status", resp.StatusCode, "count", len(batch))

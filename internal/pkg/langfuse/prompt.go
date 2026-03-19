@@ -55,7 +55,7 @@ func FetchPrompt(name, fallback string) (string, int) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, resp.Body)
+		_, _ = io.Copy(io.Discard, resp.Body)
 		log.Warnw("langfuse: prompt fetch returned error, using fallback", "name", name, "status", resp.StatusCode)
 		return fallback, 0
 	}

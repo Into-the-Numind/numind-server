@@ -66,7 +66,7 @@ func TestIsVoiceDuration(t *testing.T) {
 	shouldNotMatch := []string{
 		"你好",
 		"5块钱",
-		"15",      // 纯数字不应匹配
+		"15",    // 纯数字不应匹配
 		"价格5\"", // 非独立时长
 		"3:00可以吗",
 	}

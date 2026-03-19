@@ -5,7 +5,7 @@ import "time"
 // IngestionEvent Langfuse ingestion API 事件
 type IngestionEvent struct {
 	ID   string      `json:"id"`
-	Type string      `json:"type"`   // trace-create, generation-create, span-create, span-update, score-create, generation-update
+	Type string      `json:"type"` // trace-create, generation-create, span-create, span-update, score-create, generation-update
 	Body interface{} `json:"body"`
 	Time time.Time   `json:"timestamp"`
 }
@@ -83,10 +83,10 @@ type ScoreBody struct {
 
 // PromptResponse Langfuse Prompt API 响应
 type PromptResponse struct {
-	Name    string          `json:"name"`
-	Version int             `json:"version"`
-	Prompt  string          `json:"prompt"`
-	Config  interface{}     `json:"config"`
-	Labels  []string        `json:"labels"`
-	Tags    []string        `json:"tags"`
+	Name    string      `json:"name"`
+	Version int         `json:"version"`
+	Prompt  string      `json:"prompt"`
+	Config  interface{} `json:"config"`
+	Labels  []string    `json:"labels"`
+	Tags    []string    `json:"tags"`
 }
