@@ -77,7 +77,7 @@ func (PricingRule) TableName() string {
 // PricingRuleTier 定价规则的分段配置（用于 tiered_token 模式）
 type PricingRuleTier struct {
 	ID           uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
-	RuleID       uint64    `gorm:"not null;index:idx_rule_type" json:"rule_id"`
+	RuleID       uint      `gorm:"not null;index:idx_rule_type" json:"rule_id"`
 	TokenType    string    `gorm:"size:10;not null;index:idx_rule_type" json:"token_type"` // input | output
 	MinTokens    uint      `gorm:"not null;default:0" json:"min_tokens"`
 	MaxTokens    *uint     `json:"max_tokens"` // nil = 不限

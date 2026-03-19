@@ -44,9 +44,9 @@ type BillingStore interface {
 	DeletePricingRule(ctx context.Context, id uint) error
 
 	// GetTiersByRuleID 获取某规则的所有分段，按 token_type + min_tokens 排序
-	GetTiersByRuleID(ctx context.Context, ruleID uint64) ([]model.PricingRuleTier, error)
+	GetTiersByRuleID(ctx context.Context, ruleID uint) ([]model.PricingRuleTier, error)
 	// ReplaceTiers 全量替换某规则的分段（事务：DELETE + INSERT）
-	ReplaceTiers(ctx context.Context, ruleID uint64, tiers []model.PricingRuleTier) error
+	ReplaceTiers(ctx context.Context, ruleID uint, tiers []model.PricingRuleTier) error
 }
 
 // UsageRecordFilter 用量记录查询过滤条件
@@ -107,6 +107,8 @@ type PricingRuleUpdate struct {
 	ServiceType            *string
 	Provider               *string
 	Model                  *string
+	BillingMode            *string
+	FlatUnit               *string
 	InputPricePerMTok      *float64
 	OutputPricePerMTok     *float64
 	PricePerCall           *float64
@@ -121,6 +123,7 @@ type PricingRuleUpdate struct {
 // IsEmpty 检查是否没有任何字段需要更新
 func (u PricingRuleUpdate) IsEmpty() bool {
 	return u.ServiceType == nil && u.Provider == nil && u.Model == nil &&
+		u.BillingMode == nil && u.FlatUnit == nil &&
 		u.InputPricePerMTok == nil && u.OutputPricePerMTok == nil &&
 		u.PricePerCall == nil && u.PricePerGB == nil &&
 		u.SellInputPricePerMTok == nil && u.SellOutputPricePerMTok == nil &&
@@ -475,6 +478,12 @@ func (s *billingStore) UpdatePricingRule(ctx context.Context, id uint, update Pr
 	if update.Model != nil {
 		updates["model"] = *update.Model
 	}
+	if update.BillingMode != nil {
+		updates["billing_mode"] = *update.BillingMode
+	}
+	if update.FlatUnit != nil {
+		updates["flat_unit"] = *update.FlatUnit
+	}
 	if update.InputPricePerMTok != nil {
 		updates["input_price_per_mtok"] = *update.InputPricePerMTok
 	}
@@ -514,7 +523,7 @@ func (s *billingStore) DeletePricingRule(ctx context.Context, id uint) error {
 }
 
 // GetTiersByRuleID 获取某规则的所有分段，按 token_type + min_tokens 排序
-func (s *billingStore) GetTiersByRuleID(ctx context.Context, ruleID uint64) ([]model.PricingRuleTier, error) {
+func (s *billingStore) GetTiersByRuleID(ctx context.Context, ruleID uint) ([]model.PricingRuleTier, error) {
 	var tiers []model.PricingRuleTier
 	err := s.db.WithContext(ctx).
 		Where("rule_id = ?", ruleID).
@@ -524,7 +533,7 @@ func (s *billingStore) GetTiersByRuleID(ctx context.Context, ruleID uint64) ([]m
 }
 
 // ReplaceTiers 全量替换某规则的分段（事务：DELETE + INSERT）
-func (s *billingStore) ReplaceTiers(ctx context.Context, ruleID uint64, tiers []model.PricingRuleTier) error {
+func (s *billingStore) ReplaceTiers(ctx context.Context, ruleID uint, tiers []model.PricingRuleTier) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 删除旧分段
 		if err := tx.Where("rule_id = ?", ruleID).Delete(&model.PricingRuleTier{}).Error; err != nil {
