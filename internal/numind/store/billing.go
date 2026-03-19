@@ -42,6 +42,11 @@ type BillingStore interface {
 	UpdatePricingRule(ctx context.Context, id uint, update PricingRuleUpdate) error
 	// DeletePricingRule 删除定价规则
 	DeletePricingRule(ctx context.Context, id uint) error
+
+	// GetTiersByRuleID 获取某规则的所有分段，按 token_type + min_tokens 排序
+	GetTiersByRuleID(ctx context.Context, ruleID uint64) ([]model.PricingRuleTier, error)
+	// ReplaceTiers 全量替换某规则的分段（事务：DELETE + INSERT）
+	ReplaceTiers(ctx context.Context, ruleID uint64, tiers []model.PricingRuleTier) error
 }
 
 // UsageRecordFilter 用量记录查询过滤条件
@@ -506,4 +511,32 @@ func (s *billingStore) UpdatePricingRule(ctx context.Context, id uint, update Pr
 // DeletePricingRule 删除定价规则
 func (s *billingStore) DeletePricingRule(ctx context.Context, id uint) error {
 	return s.db.WithContext(ctx).Delete(&model.PricingRule{}, id).Error
+}
+
+// GetTiersByRuleID 获取某规则的所有分段，按 token_type + min_tokens 排序
+func (s *billingStore) GetTiersByRuleID(ctx context.Context, ruleID uint64) ([]model.PricingRuleTier, error) {
+	var tiers []model.PricingRuleTier
+	err := s.db.WithContext(ctx).
+		Where("rule_id = ?", ruleID).
+		Order("token_type ASC, min_tokens ASC").
+		Find(&tiers).Error
+	return tiers, err
+}
+
+// ReplaceTiers 全量替换某规则的分段（事务：DELETE + INSERT）
+func (s *billingStore) ReplaceTiers(ctx context.Context, ruleID uint64, tiers []model.PricingRuleTier) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 删除旧分段
+		if err := tx.Where("rule_id = ?", ruleID).Delete(&model.PricingRuleTier{}).Error; err != nil {
+			return err
+		}
+		// 插入新分段
+		if len(tiers) == 0 {
+			return nil
+		}
+		for i := range tiers {
+			tiers[i].RuleID = ruleID
+		}
+		return tx.Create(&tiers).Error
+	})
 }
