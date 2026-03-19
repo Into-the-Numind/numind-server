@@ -392,13 +392,13 @@ func percentileInt64(sorted []int64, p int) int64 {
 
 // GetTiers GET /billing/pricing-rules/:id/tiers
 func (ctrl *AdminBillingController) GetTiers(c *gin.Context) {
-	log.C(c).Infow("GetTiers")
 	idStr := c.Param("id")
 	id, err := strconv.ParseUint(idStr, 10, 64)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrBind, nil)
 		return
 	}
+	log.C(c).Infow("GetTiers", "rule_id", id)
 	tiers, err := ctrl.ds.Billing().GetTiersByRuleID(c, uint(id))
 	if err != nil {
 		log.C(c).Errorw("Failed to get tiers", "err", err)
@@ -418,13 +418,13 @@ func (ctrl *AdminBillingController) GetTiers(c *gin.Context) {
 
 // ReplaceTiers PUT /billing/pricing-rules/:id/tiers
 func (ctrl *AdminBillingController) ReplaceTiers(c *gin.Context) {
-	log.C(c).Infow("ReplaceTiers")
 	idStr := c.Param("id")
 	id, err := strconv.ParseUint(idStr, 10, 64)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrBind, nil)
 		return
 	}
+	log.C(c).Infow("ReplaceTiers", "rule_id", id)
 	var req v1.AdminReplaceTiersRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		core.WriteResponse(c, errno.ErrBind, nil)
@@ -448,12 +448,12 @@ func (ctrl *AdminBillingController) ReplaceTiers(c *gin.Context) {
 
 // Recalculate POST /billing/recalculate
 func (ctrl *AdminBillingController) Recalculate(c *gin.Context) {
-	log.C(c).Infow("Recalculate")
 	var req v1.AdminRecalculateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		core.WriteResponse(c, errno.ErrBind, nil)
 		return
 	}
+	log.C(c).Infow("Recalculate", "from", req.From, "to", req.To, "dry_run", req.DryRun)
 	from, err := time.Parse("2006-01-02", req.From)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrBind, nil)
@@ -465,7 +465,7 @@ func (ctrl *AdminBillingController) Recalculate(c *gin.Context) {
 		return
 	}
 	if to.Before(from) {
-		core.WriteResponse(c, errno.ErrBind, nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("to 日期不能早于 from 日期"), nil)
 		return
 	}
 	result, err := ctrl.ds.Billing().RecalculateCosts(c, from, to, req.DryRun)
@@ -485,12 +485,12 @@ func (ctrl *AdminBillingController) Recalculate(c *gin.Context) {
 
 // GetAnalytics GET /billing/analytics
 func (ctrl *AdminBillingController) GetAnalytics(c *gin.Context) {
-	log.C(c).Infow("GetAnalytics")
 	var req v1.AdminAnalyticsRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
 		core.WriteResponse(c, errno.ErrBind, nil)
 		return
 	}
+	log.C(c).Infow("GetAnalytics", "from", req.From, "to", req.To)
 	from, err := time.Parse("2006-01-02", req.From)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrBind, nil)
@@ -502,7 +502,7 @@ func (ctrl *AdminBillingController) GetAnalytics(c *gin.Context) {
 		return
 	}
 	if to.Before(from) {
-		core.WriteResponse(c, errno.ErrBind, nil)
+		core.WriteResponse(c, errno.ErrBind.SetMessage("to 日期不能早于 from 日期"), nil)
 		return
 	}
 
