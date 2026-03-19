@@ -6,9 +6,9 @@ import (
 	customercontroller "numind-server/internal/numind/controller/v1/customer"
 	pdfcontroller "numind-server/internal/numind/controller/v1/pdf"
 	"numind-server/internal/numind/controller/v1/salesrag"
-	"numind-server/internal/numind/controller/v1/user_billing"
 	sopcontroller "numind-server/internal/numind/controller/v1/sop"
 	"numind-server/internal/numind/controller/v1/user"
+	"numind-server/internal/numind/controller/v1/user_billing"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
@@ -96,16 +96,16 @@ func installNumindRouters(g *gin.Engine) error {
 		salesGroup.PUT("/sessions/:id/rename", salesRAGc.RenameSession) // 重命名会话
 
 		// 消息管理
-		salesGroup.POST("/sessions/:id/chat", salesRAGc.ChatWithSession)                                       // 基于会话的销售对话（SSE流式）
-		salesGroup.GET("/sessions/:id/messages", salesRAGc.ListMessages)                                        // 获取会话消息列表
-		salesGroup.POST("/sessions/:id/messages/:message_id/feedback", salesRAGc.SubmitFeedback)                // 提交消息反馈（点赞/点踩）
-		salesGroup.GET("/sessions/:id/messages/:message_id/feedback", salesRAGc.GetFeedback)                    // 获取消息反馈
+		salesGroup.POST("/sessions/:id/chat", salesRAGc.ChatWithSession)                         // 基于会话的销售对话（SSE流式）
+		salesGroup.GET("/sessions/:id/messages", salesRAGc.ListMessages)                         // 获取会话消息列表
+		salesGroup.POST("/sessions/:id/messages/:message_id/feedback", salesRAGc.SubmitFeedback) // 提交消息反馈（点赞/点踩）
+		salesGroup.GET("/sessions/:id/messages/:message_id/feedback", salesRAGc.GetFeedback)     // 获取消息反馈
 
 		// 客户档案管理
 		salesGroup.PUT("/sessions/:id/customer-profile", salesRAGc.UpdateCustomerProfile) // 更新客户档案
 		salesGroup.GET("/sessions/:id/customer-profile", salesRAGc.GetCustomerProfile)    // 获取客户档案
-		salesGroup.POST("/analyze-profile", salesRAGc.AnalyzeProfile)           // 解析文档生成客户档案
-		salesGroup.POST("/analyze-profile-text", salesRAGc.AnalyzeProfileText) // 纯文本分析生成客户档案
+		salesGroup.POST("/analyze-profile", salesRAGc.AnalyzeProfile)                     // 解析文档生成客户档案
+		salesGroup.POST("/analyze-profile-text", salesRAGc.AnalyzeProfileText)            // 纯文本分析生成客户档案
 
 		// 聊天风格分析
 		salesGroup.POST("/analyze-chat-style", salesRAGc.AnalyzeChatStyle) // 分析聊天风格（语言指纹）

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"gorm.io/gorm"
@@ -42,6 +43,18 @@ type BillingStore interface {
 	UpdatePricingRule(ctx context.Context, id uint, update PricingRuleUpdate) error
 	// DeletePricingRule 删除定价规则
 	DeletePricingRule(ctx context.Context, id uint) error
+
+	// GetTiersByRuleID 获取某规则的所有分段，按 token_type + min_tokens 排序
+	GetTiersByRuleID(ctx context.Context, ruleID uint) ([]model.PricingRuleTier, error)
+	// ReplaceTiers 全量替换某规则的分段（事务：DELETE + INSERT）
+	ReplaceTiers(ctx context.Context, ruleID uint, tiers []model.PricingRuleTier) error
+
+	// GetAnalytics 获取消费分析数据（按时间范围）
+	GetAnalytics(ctx context.Context, filter AnalyticsFilter) (*AnalyticsResult, error)
+
+	// RecalculateCosts 按新的分段规则重算指定时间范围的 cost_cents/revenue_cents
+	// dryRun=true 时只返回统计不写入
+	RecalculateCosts(ctx context.Context, from, to time.Time, dryRun bool) (*RecalculateResult, error)
 }
 
 // UsageRecordFilter 用量记录查询过滤条件
@@ -102,6 +115,8 @@ type PricingRuleUpdate struct {
 	ServiceType            *string
 	Provider               *string
 	Model                  *string
+	BillingMode            *string
+	FlatUnit               *string
 	InputPricePerMTok      *float64
 	OutputPricePerMTok     *float64
 	PricePerCall           *float64
@@ -116,11 +131,57 @@ type PricingRuleUpdate struct {
 // IsEmpty 检查是否没有任何字段需要更新
 func (u PricingRuleUpdate) IsEmpty() bool {
 	return u.ServiceType == nil && u.Provider == nil && u.Model == nil &&
+		u.BillingMode == nil && u.FlatUnit == nil &&
 		u.InputPricePerMTok == nil && u.OutputPricePerMTok == nil &&
 		u.PricePerCall == nil && u.PricePerGB == nil &&
 		u.SellInputPricePerMTok == nil && u.SellOutputPricePerMTok == nil &&
 		u.SellPricePerCall == nil && u.SellPricePerGB == nil &&
 		u.IsActive == nil
+}
+
+// AnalyticsFilter 消费分析查询参数
+type AnalyticsFilter struct {
+	From time.Time
+	To   time.Time
+}
+
+// RunTokenStat 单次运行的 token 汇总（用于分布计算）
+type RunTokenStat struct {
+	BizRefID    uint  `gorm:"column:biz_ref_id"`
+	TotalTokens int64 `gorm:"column:total_tokens"`
+}
+
+// UserPeriodStat 用户期间消费汇总
+type UserPeriodStat struct {
+	UserID          uint   `gorm:"column:user_id"`
+	Nickname        string `gorm:"column:nickname"`
+	PeriodRuns      int64  `gorm:"column:period_runs"`
+	PeriodTokens    int64  `gorm:"column:period_tokens"`
+	PeriodCostCents int64  `gorm:"column:period_cost_cents"`
+}
+
+// ModelPeriodStat 按模型的期间统计
+type ModelPeriodStat struct {
+	Model           string `gorm:"column:model"`
+	PeriodTokens    int64  `gorm:"column:period_tokens"`
+	PeriodCostCents int64  `gorm:"column:period_cost_cents"`
+}
+
+// AnalyticsResult 消费分析完整结果
+type AnalyticsResult struct {
+	DaysInRange int
+	RunStats    []RunTokenStat
+	UserStats   []UserPeriodStat
+	ModelStats  []ModelPeriodStat
+}
+
+// RecalculateResult 重算结果
+type RecalculateResult struct {
+	AffectedRecords   int64
+	OldTotalCostCents int64
+	NewTotalCostCents int64
+	DeltaCents        int64
+	DryRun            bool
 }
 
 // UserConsumptionItem 用户消费排行项
@@ -470,6 +531,12 @@ func (s *billingStore) UpdatePricingRule(ctx context.Context, id uint, update Pr
 	if update.Model != nil {
 		updates["model"] = *update.Model
 	}
+	if update.BillingMode != nil {
+		updates["billing_mode"] = *update.BillingMode
+	}
+	if update.FlatUnit != nil {
+		updates["flat_unit"] = *update.FlatUnit
+	}
 	if update.InputPricePerMTok != nil {
 		updates["input_price_per_mtok"] = *update.InputPricePerMTok
 	}
@@ -506,4 +573,217 @@ func (s *billingStore) UpdatePricingRule(ctx context.Context, id uint, update Pr
 // DeletePricingRule 删除定价规则
 func (s *billingStore) DeletePricingRule(ctx context.Context, id uint) error {
 	return s.db.WithContext(ctx).Delete(&model.PricingRule{}, id).Error
+}
+
+// GetTiersByRuleID 获取某规则的所有分段，按 token_type + min_tokens 排序
+func (s *billingStore) GetTiersByRuleID(ctx context.Context, ruleID uint) ([]model.PricingRuleTier, error) {
+	var tiers []model.PricingRuleTier
+	err := s.db.WithContext(ctx).
+		Where("rule_id = ?", ruleID).
+		Order("token_type ASC, min_tokens ASC").
+		Find(&tiers).Error
+	return tiers, err
+}
+
+// ReplaceTiers 全量替换某规则的分段（事务：DELETE + INSERT）
+func (s *billingStore) ReplaceTiers(ctx context.Context, ruleID uint, tiers []model.PricingRuleTier) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 删除旧分段
+		if err := tx.Where("rule_id = ?", ruleID).Delete(&model.PricingRuleTier{}).Error; err != nil {
+			return err
+		}
+		// 插入新分段
+		if len(tiers) == 0 {
+			return nil
+		}
+		for i := range tiers {
+			tiers[i].RuleID = ruleID
+		}
+		return tx.Create(&tiers).Error
+	})
+}
+
+// GetAnalytics 获取消费分析数据（按时间范围）
+func (s *billingStore) GetAnalytics(ctx context.Context, filter AnalyticsFilter) (*AnalyticsResult, error) {
+	result := &AnalyticsResult{
+		DaysInRange: int(filter.To.Sub(filter.From).Hours()/24) + 1,
+	}
+
+	// 1. 每次 SOP 运行的 token 汇总
+	err := s.db.WithContext(ctx).
+		Model(&model.UsageRecord{}).
+		Select("biz_ref_id, COALESCE(SUM(total_tokens), 0) AS total_tokens").
+		Where("biz_ref_type = ? AND created_at >= ? AND created_at < ?",
+			"sop_run", filter.From, filter.To.AddDate(0, 0, 1)).
+		Group("biz_ref_id").
+		Scan(&result.RunStats).Error
+	if err != nil {
+		return nil, fmt.Errorf("get run stats: %w", err)
+	}
+
+	// 2. 每个用户的期间汇总（JOIN user 表取 nickname）
+	err = s.db.WithContext(ctx).
+		Table("usage_record ur").
+		Select(`ur.user_id,
+			u.nickname,
+			COUNT(DISTINCT CASE WHEN ur.biz_ref_type='sop_run' THEN ur.biz_ref_id END) AS period_runs,
+			SUM(ur.total_tokens) AS period_tokens,
+			SUM(ur.cost_cents)   AS period_cost_cents`).
+		Joins("LEFT JOIN `user` u ON u.id = ur.user_id").
+		Where("ur.created_at >= ? AND ur.created_at < ?",
+			filter.From, filter.To.AddDate(0, 0, 1)).
+		Group("ur.user_id, u.nickname").
+		Having("period_tokens > 0").
+		Order("period_cost_cents DESC").
+		Limit(1000).
+		Scan(&result.UserStats).Error
+	if err != nil {
+		return nil, fmt.Errorf("get user stats: %w", err)
+	}
+
+	// 3. 按模型分组
+	err = s.db.WithContext(ctx).
+		Model(&model.UsageRecord{}).
+		Select("model, COALESCE(SUM(total_tokens), 0) AS period_tokens, COALESCE(SUM(cost_cents), 0) AS period_cost_cents").
+		Where("created_at >= ? AND created_at < ?",
+			filter.From, filter.To.AddDate(0, 0, 1)).
+		Group("model").
+		Order("period_cost_cents DESC").
+		Scan(&result.ModelStats).Error
+	if err != nil {
+		return nil, fmt.Errorf("get model stats: %w", err)
+	}
+
+	return result, nil
+}
+
+// RecalculateCosts 按新的分段规则重算指定时间范围的 cost_cents/revenue_cents。
+// 注意：写入按每 1000 条一个事务分批提交，非全局原子操作。
+// 如果进程中途失败，数据库会处于部分重算状态，需检查后重新执行。
+// dryRun=true 时只返回统计不写入。
+func (s *billingStore) RecalculateCosts(ctx context.Context, from, to time.Time, dryRun bool) (*RecalculateResult, error) {
+	// 1. 加载所有 tiered_token 规则和分段
+	var rules []model.PricingRule
+	if err := s.db.WithContext(ctx).Where("billing_mode = ?", "tiered_token").Find(&rules).Error; err != nil {
+		return nil, fmt.Errorf("load rules: %w", err)
+	}
+	// ruleID → (tokenType → []tier sorted by min_tokens)
+	ruleIDs := make([]uint, 0, len(rules))
+	for _, r := range rules {
+		ruleIDs = append(ruleIDs, r.ID)
+	}
+	tierMap := map[uint]map[string][]model.PricingRuleTier{}
+	if len(ruleIDs) > 0 {
+		var allTiers []model.PricingRuleTier
+		if err := s.db.WithContext(ctx).
+			Where("rule_id IN ?", ruleIDs).
+			Order("token_type ASC, min_tokens ASC").
+			Find(&allTiers).Error; err != nil {
+			return nil, fmt.Errorf("load tiers: %w", err)
+		}
+		for _, t := range allTiers {
+			if tierMap[t.RuleID] == nil {
+				tierMap[t.RuleID] = map[string][]model.PricingRuleTier{}
+			}
+			tierMap[t.RuleID][t.TokenType] = append(tierMap[t.RuleID][t.TokenType], t)
+		}
+	}
+
+	// lookup: (serviceType, provider, model) → rule
+	ruleIndex := map[string]*model.PricingRule{}
+	for i := range rules {
+		key := rules[i].ServiceType + "|" + rules[i].Provider + "|" + rules[i].Model
+		ruleIndex[key] = &rules[i]
+	}
+
+	// 2. 批量读取目标时间范围的 usage_record（分批，每批 1000 条）
+	result := &RecalculateResult{DryRun: dryRun}
+	offset := 0
+	batchSize := 1000
+
+	type writeEntry struct {
+		id         uint64
+		newCost    int64
+		newRevenue int64
+	}
+
+	calcTieredCents := func(tokens int, tiers []model.PricingRuleTier, sell bool) int64 {
+		if tokens <= 0 {
+			return 0
+		}
+		for _, t := range tiers {
+			if uint(tokens) >= t.MinTokens && (t.MaxTokens == nil || uint(tokens) <= *t.MaxTokens) {
+				price := t.CostPerMTok
+				if sell {
+					price = t.SellPerMTok
+				}
+				return int64(math.Round(float64(tokens) * price / 1_000_000 * 100))
+			}
+		}
+		return 0
+	}
+
+	for {
+		var records []model.UsageRecord
+		err := s.db.WithContext(ctx).
+			Where("created_at >= ? AND created_at < ?", from, to.AddDate(0, 0, 1)).
+			Order("id ASC").
+			Offset(offset).Limit(batchSize).
+			Find(&records).Error
+		if err != nil {
+			return nil, fmt.Errorf("load records batch: %w", err)
+		}
+		if len(records) == 0 {
+			break
+		}
+
+		var batchAffected, batchOldCost, batchNewCost int64
+		var writes []writeEntry
+
+		for _, rec := range records {
+			key := rec.ServiceType + "|" + rec.Provider + "|" + rec.Model
+			rule, ok := ruleIndex[key]
+			if !ok {
+				batchNewCost += rec.CostCents
+				continue
+			}
+			batchOldCost += rec.CostCents
+			rtiers := tierMap[rule.ID]
+
+			newCost := calcTieredCents(rec.PromptTokens, rtiers["input"], false) +
+				calcTieredCents(rec.CompletionTokens, rtiers["output"], false)
+			newRevenue := calcTieredCents(rec.PromptTokens, rtiers["input"], true) +
+				calcTieredCents(rec.CompletionTokens, rtiers["output"], true)
+			batchNewCost += newCost
+			batchAffected++
+			writes = append(writes, writeEntry{id: rec.ID, newCost: newCost, newRevenue: newRevenue})
+		}
+
+		if !dryRun && len(writes) > 0 {
+			txErr := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+				for _, w := range writes {
+					if err := tx.Model(&model.UsageRecord{}).
+						Where("id = ?", w.id).
+						Updates(map[string]interface{}{
+							"cost_cents":    w.newCost,
+							"revenue_cents": w.newRevenue,
+						}).Error; err != nil {
+						return fmt.Errorf("update record %d: %w", w.id, err)
+					}
+				}
+				return nil
+			})
+			if txErr != nil {
+				return nil, txErr
+			}
+		}
+
+		result.AffectedRecords += batchAffected
+		result.OldTotalCostCents += batchOldCost
+		result.NewTotalCostCents += batchNewCost
+		offset += batchSize
+	}
+
+	result.DeltaCents = result.NewTotalCostCents - result.OldTotalCostCents
+	return result, nil
 }

@@ -3,6 +3,7 @@ package admin_billing
 import (
 	"encoding/json"
 	"math"
+	"sort"
 	"strconv"
 	"time"
 
@@ -372,4 +373,272 @@ func (ctrl *AdminBillingController) DeletePricingRule(c *gin.Context) {
 	}
 
 	core.WriteResponse(c, nil, nil)
+}
+
+// percentileInt64 从已排序的切片中计算百分位数（p: 50/90/95）
+func percentileInt64(sorted []int64, p int) int64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	idx := int(math.Ceil(float64(len(sorted))*float64(p)/100)) - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(sorted) {
+		idx = len(sorted) - 1
+	}
+	return sorted[idx]
+}
+
+// GetTiers GET /billing/pricing-rules/:id/tiers
+func (ctrl *AdminBillingController) GetTiers(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind, nil)
+		return
+	}
+	log.C(c).Infow("GetTiers", "rule_id", id)
+	tiers, err := ctrl.ds.Billing().GetTiersByRuleID(c, uint(id))
+	if err != nil {
+		log.C(c).Errorw("Failed to get tiers", "err", err)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败，请稍后重试"), nil)
+		return
+	}
+	items := make([]v1.AdminPricingRuleTierItem, len(tiers))
+	for i, t := range tiers {
+		items[i] = v1.AdminPricingRuleTierItem{
+			ID: uint64(t.ID), RuleID: uint64(t.RuleID), TokenType: t.TokenType,
+			MinTokens: t.MinTokens, MaxTokens: t.MaxTokens,
+			CostPerMTok: t.CostPerMTok, SellPerMTok: t.SellPerMTok,
+		}
+	}
+	core.WriteResponse(c, nil, items)
+}
+
+// ReplaceTiers PUT /billing/pricing-rules/:id/tiers
+func (ctrl *AdminBillingController) ReplaceTiers(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind, nil)
+		return
+	}
+	log.C(c).Infow("ReplaceTiers", "rule_id", id)
+	var req v1.AdminReplaceTiersRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind, nil)
+		return
+	}
+	tiers := make([]model.PricingRuleTier, len(req.Tiers))
+	for i, t := range req.Tiers {
+		tiers[i] = model.PricingRuleTier{
+			TokenType: t.TokenType, MinTokens: t.MinTokens,
+			MaxTokens: t.MaxTokens, CostPerMTok: t.CostPerMTok,
+			SellPerMTok: t.SellPerMTok,
+		}
+	}
+	if err := ctrl.ds.Billing().ReplaceTiers(c, uint(id), tiers); err != nil {
+		log.C(c).Errorw("Failed to replace tiers", "err", err)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("保存失败，请稍后重试"), nil)
+		return
+	}
+	core.WriteResponse(c, nil, gin.H{"message": "ok"})
+}
+
+// Recalculate POST /billing/recalculate
+func (ctrl *AdminBillingController) Recalculate(c *gin.Context) {
+	var req v1.AdminRecalculateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind, nil)
+		return
+	}
+	log.C(c).Infow("Recalculate", "from", req.From, "to", req.To, "dry_run", req.DryRun)
+	from, err := time.Parse("2006-01-02", req.From)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind, nil)
+		return
+	}
+	to, err := time.Parse("2006-01-02", req.To)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind, nil)
+		return
+	}
+	if to.Before(from) {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("to 日期不能早于 from 日期"), nil)
+		return
+	}
+	if to.Sub(from).Hours()/24 > 90 {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("重算范围不能超过 90 天"), nil)
+		return
+	}
+	result, err := ctrl.ds.Billing().RecalculateCosts(c, from, to, req.DryRun)
+	if err != nil {
+		log.C(c).Errorw("Failed to recalculate", "err", err)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("重算失败，请稍后重试"), nil)
+		return
+	}
+	core.WriteResponse(c, nil, v1.AdminRecalculateResponse{
+		AffectedRecords:   result.AffectedRecords,
+		OldTotalCostCents: result.OldTotalCostCents,
+		NewTotalCostCents: result.NewTotalCostCents,
+		DeltaCents:        result.DeltaCents,
+		DryRun:            result.DryRun,
+	})
+}
+
+// GetAnalytics GET /billing/analytics
+func (ctrl *AdminBillingController) GetAnalytics(c *gin.Context) {
+	var req v1.AdminAnalyticsRequest
+	if err := c.ShouldBindQuery(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind, nil)
+		return
+	}
+	log.C(c).Infow("GetAnalytics", "from", req.From, "to", req.To)
+	from, err := time.Parse("2006-01-02", req.From)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind, nil)
+		return
+	}
+	to, err := time.Parse("2006-01-02", req.To)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind, nil)
+		return
+	}
+	if to.Before(from) {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("to 日期不能早于 from 日期"), nil)
+		return
+	}
+
+	data, err := ctrl.ds.Billing().GetAnalytics(c, store.AnalyticsFilter{From: from, To: to})
+	if err != nil {
+		log.C(c).Errorw("Failed to get analytics", "err", err)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败，请稍后重试"), nil)
+		return
+	}
+
+	// run_distribution
+	runBuckets := map[string]int64{
+		"0-3000": 0, "3001-8000": 0, "8001-16000": 0,
+		"16001-32000": 0, "32001-64000": 0, "64001+": 0,
+	}
+	var runTokensSorted []int64
+	var totalRunTokens int64
+	for _, r := range data.RunStats {
+		runTokensSorted = append(runTokensSorted, r.TotalTokens)
+		totalRunTokens += r.TotalTokens
+		switch {
+		case r.TotalTokens <= 3000:
+			runBuckets["0-3000"]++
+		case r.TotalTokens <= 8000:
+			runBuckets["3001-8000"]++
+		case r.TotalTokens <= 16000:
+			runBuckets["8001-16000"]++
+		case r.TotalTokens <= 32000:
+			runBuckets["16001-32000"]++
+		case r.TotalTokens <= 64000:
+			runBuckets["32001-64000"]++
+		default:
+			runBuckets["64001+"]++
+		}
+	}
+	sort.Slice(runTokensSorted, func(i, j int) bool { return runTokensSorted[i] < runTokensSorted[j] })
+
+	// user_distribution
+	userBuckets := map[string]int64{
+		"0-50000": 0, "50001-150000": 0, "150001-300000": 0,
+		"300001-500000": 0, "500001-1000000": 0, "1000001+": 0,
+	}
+	var userCostSorted []int64
+	userDetails := make([]v1.AdminAnalyticsUserDetail, 0, len(data.UserStats))
+	for _, u := range data.UserStats {
+		userCostSorted = append(userCostSorted, u.PeriodCostCents)
+		userDetails = append(userDetails, v1.AdminAnalyticsUserDetail{
+			UserID: u.UserID, PeriodTokens: u.PeriodTokens, PeriodCostCents: u.PeriodCostCents,
+		})
+		switch {
+		case u.PeriodTokens <= 50000:
+			userBuckets["0-50000"]++
+		case u.PeriodTokens <= 150000:
+			userBuckets["50001-150000"]++
+		case u.PeriodTokens <= 300000:
+			userBuckets["150001-300000"]++
+		case u.PeriodTokens <= 500000:
+			userBuckets["300001-500000"]++
+		case u.PeriodTokens <= 1000000:
+			userBuckets["500001-1000000"]++
+		default:
+			userBuckets["1000001+"]++
+		}
+	}
+	sort.Slice(userCostSorted, func(i, j int) bool { return userCostSorted[i] < userCostSorted[j] })
+
+	// model_breakdown
+	var totalModelTokens int64
+	for _, m := range data.ModelStats {
+		totalModelTokens += m.PeriodTokens
+	}
+	modelBreakdown := make([]v1.AdminAnalyticsModelStat, len(data.ModelStats))
+	for i, m := range data.ModelStats {
+		sharePct := 0
+		if totalModelTokens > 0 {
+			sharePct = int(math.Round(float64(m.PeriodTokens) * 100 / float64(totalModelTokens)))
+		}
+		modelBreakdown[i] = v1.AdminAnalyticsModelStat{
+			Model: m.Model, TokenSharePct: sharePct, PeriodCostCents: m.PeriodCostCents,
+		}
+	}
+
+	// top users (最多 20 个)
+	topN := 20
+	if len(data.UserStats) < topN {
+		topN = len(data.UserStats)
+	}
+	topUsers := make([]v1.AdminAnalyticsTopUser, topN)
+	for i := 0; i < topN; i++ {
+		u := data.UserStats[i]
+		topUsers[i] = v1.AdminAnalyticsTopUser{
+			UserID: u.UserID, Nickname: u.Nickname,
+			PeriodRuns: u.PeriodRuns, PeriodTokens: u.PeriodTokens,
+			PeriodCostCents: u.PeriodCostCents,
+		}
+	}
+
+	// summary
+	avgTokensPerRun := int64(0)
+	if len(data.RunStats) > 0 {
+		avgTokensPerRun = totalRunTokens / int64(len(data.RunStats))
+	}
+
+	bucketOrder := []string{"0-3000", "3001-8000", "8001-16000", "16001-32000", "32001-64000", "64001+"}
+	runDist := make([]v1.AdminAnalyticsBucket, len(bucketOrder))
+	for i, k := range bucketOrder {
+		runDist[i] = v1.AdminAnalyticsBucket{Bucket: k, Count: runBuckets[k]}
+	}
+
+	userBucketOrder := []string{"0-50000", "50001-150000", "150001-300000", "300001-500000", "500001-1000000", "1000001+"}
+	userDist := make([]v1.AdminAnalyticsBucket, len(userBucketOrder))
+	for i, k := range userBucketOrder {
+		userDist[i] = v1.AdminAnalyticsBucket{Bucket: k, Count: userBuckets[k]}
+	}
+
+	core.WriteResponse(c, nil, v1.AdminAnalyticsResponse{
+		Summary: v1.AdminAnalyticsSummary{
+			ActiveUsers:         int64(len(data.UserStats)),
+			TotalRuns:           int64(len(data.RunStats)),
+			DaysInRange:         data.DaysInRange,
+			AvgTokensPerRun:     avgTokensPerRun,
+			P50TokensPerRun:     percentileInt64(runTokensSorted, 50),
+			P90TokensPerRun:     percentileInt64(runTokensSorted, 90),
+			P95TokensPerRun:     percentileInt64(runTokensSorted, 95),
+			P50CostCentsPerUser: percentileInt64(userCostSorted, 50),
+			P90CostCentsPerUser: percentileInt64(userCostSorted, 90),
+			P95CostCentsPerUser: percentileInt64(userCostSorted, 95),
+		},
+		RunDistribution:  runDist,
+		UserDistribution: userDist,
+		UserDetails:      userDetails,
+		ModelBreakdown:   modelBreakdown,
+		TopUsers:         topUsers,
+	})
 }

@@ -398,7 +398,6 @@ func recognizeImage(imageData []byte) ([]WordsItem, int, error) {
 	return items, width, nil
 }
 
-
 // 微信时间分隔符正则（匹配整行）
 // 匹配格式：下午 2:30 / 昨天 下午 3:45 / 星期三 上午 9:00 / 10月15日 下午 2:30 等
 var wechatTimeRegex = regexp.MustCompile(
@@ -408,7 +407,7 @@ var wechatTimeRegex = regexp.MustCompile(
 		`\d{1,2}:\d{2}\s*$`, // 时间 HH:MM
 )
 
-// 语音消息时长正则（匹配 5" / 15'' / 1'23" / 0:15 等）
+// 语音消息时长正则（匹配 5" / 15” / 1'23" / 0:15 等）
 // 注意：纯 H:MM 格式已被 wechatTimeRegex 覆盖，此处补充秒数+引号格式
 var voiceDurationRegex = regexp.MustCompile(
 	`^\d{1,3}(["″]|'{1,2})\s*$|` + // 5" / 15'' / 60″ / 5'
@@ -427,7 +426,7 @@ func isWechatTimestamp(text string) bool {
 	return wechatTimeRegex.MatchString(strings.TrimSpace(text))
 }
 
-// isVoiceDuration 判断文本是否为语音消息时长（如 5"、15''、1'23"）
+// isVoiceDuration 判断文本是否为语音消息时长（如 5"、15”、1'23"）
 func isVoiceDuration(text string) bool {
 	return voiceDurationRegex.MatchString(strings.TrimSpace(text))
 }
