@@ -47,6 +47,9 @@ type BillingStore interface {
 	GetTiersByRuleID(ctx context.Context, ruleID uint) ([]model.PricingRuleTier, error)
 	// ReplaceTiers 全量替换某规则的分段（事务：DELETE + INSERT）
 	ReplaceTiers(ctx context.Context, ruleID uint, tiers []model.PricingRuleTier) error
+
+	// GetAnalytics 获取消费分析数据（按时间范围）
+	GetAnalytics(ctx context.Context, filter AnalyticsFilter) (*AnalyticsResult, error)
 }
 
 // UsageRecordFilter 用量记录查询过滤条件
@@ -129,6 +132,42 @@ func (u PricingRuleUpdate) IsEmpty() bool {
 		u.SellInputPricePerMTok == nil && u.SellOutputPricePerMTok == nil &&
 		u.SellPricePerCall == nil && u.SellPricePerGB == nil &&
 		u.IsActive == nil
+}
+
+// AnalyticsFilter 消费分析查询参数
+type AnalyticsFilter struct {
+	From time.Time
+	To   time.Time
+}
+
+// RunTokenStat 单次运行的 token 汇总（用于分布计算）
+type RunTokenStat struct {
+	BizRefID    uint  `gorm:"column:biz_ref_id"`
+	TotalTokens int64 `gorm:"column:total_tokens"`
+}
+
+// UserPeriodStat 用户期间消费汇总
+type UserPeriodStat struct {
+	UserID          uint   `gorm:"column:user_id"`
+	Nickname        string `gorm:"column:nickname"`
+	PeriodRuns      int64  `gorm:"column:period_runs"`
+	PeriodTokens    int64  `gorm:"column:period_tokens"`
+	PeriodCostCents int64  `gorm:"column:period_cost_cents"`
+}
+
+// ModelPeriodStat 按模型的期间统计
+type ModelPeriodStat struct {
+	Model           string `gorm:"column:model"`
+	PeriodTokens    int64  `gorm:"column:period_tokens"`
+	PeriodCostCents int64  `gorm:"column:period_cost_cents"`
+}
+
+// AnalyticsResult 消费分析完整结果
+type AnalyticsResult struct {
+	DaysInRange int
+	RunStats    []RunTokenStat
+	UserStats   []UserPeriodStat
+	ModelStats  []ModelPeriodStat
 }
 
 // UserConsumptionItem 用户消费排行项
@@ -548,4 +587,57 @@ func (s *billingStore) ReplaceTiers(ctx context.Context, ruleID uint, tiers []mo
 		}
 		return tx.Create(&tiers).Error
 	})
+}
+
+// GetAnalytics 获取消费分析数据（按时间范围）
+func (s *billingStore) GetAnalytics(ctx context.Context, filter AnalyticsFilter) (*AnalyticsResult, error) {
+	result := &AnalyticsResult{
+		DaysInRange: int(filter.To.Sub(filter.From).Hours()/24) + 1,
+	}
+
+	// 1. 每次 SOP 运行的 token 汇总
+	err := s.db.WithContext(ctx).
+		Model(&model.UsageRecord{}).
+		Select("biz_ref_id, SUM(total_tokens) AS total_tokens").
+		Where("biz_ref_type = ? AND created_at >= ? AND created_at < ?",
+			"sop_run", filter.From, filter.To.AddDate(0, 0, 1)).
+		Group("biz_ref_id").
+		Scan(&result.RunStats).Error
+	if err != nil {
+		return nil, fmt.Errorf("get run stats: %w", err)
+	}
+
+	// 2. 每个用户的期间汇总（JOIN user 表取 nickname）
+	err = s.db.WithContext(ctx).
+		Table("usage_record ur").
+		Select(`ur.user_id,
+			u.nickname,
+			COUNT(DISTINCT CASE WHEN ur.biz_ref_type='sop_run' THEN ur.biz_ref_id END) AS period_runs,
+			SUM(ur.total_tokens) AS period_tokens,
+			SUM(ur.cost_cents)   AS period_cost_cents`).
+		Joins("LEFT JOIN `user` u ON u.id = ur.user_id").
+		Where("ur.created_at >= ? AND ur.created_at < ?",
+			filter.From, filter.To.AddDate(0, 0, 1)).
+		Group("ur.user_id, u.nickname").
+		Having("period_tokens > 0").
+		Order("period_cost_cents DESC").
+		Scan(&result.UserStats).Error
+	if err != nil {
+		return nil, fmt.Errorf("get user stats: %w", err)
+	}
+
+	// 3. 按模型分组
+	err = s.db.WithContext(ctx).
+		Model(&model.UsageRecord{}).
+		Select("model, SUM(total_tokens) AS period_tokens, SUM(cost_cents) AS period_cost_cents").
+		Where("created_at >= ? AND created_at < ?",
+			filter.From, filter.To.AddDate(0, 0, 1)).
+		Group("model").
+		Order("period_cost_cents DESC").
+		Scan(&result.ModelStats).Error
+	if err != nil {
+		return nil, fmt.Errorf("get model stats: %w", err)
+	}
+
+	return result, nil
 }
