@@ -487,6 +487,111 @@ func (ctrl *AdminBillingController) Recalculate(c *gin.Context) {
 	})
 }
 
+// ListTierChangeLogs GET /billing/tier-changes
+func (ctrl *AdminBillingController) ListTierChangeLogs(c *gin.Context) {
+	log.C(c).Infow("ListTierChangeLogs")
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if limit > 100 {
+		limit = 100
+	}
+
+	filter := store.TierChangeLogFilter{
+		Offset: offset,
+		Limit:  limit,
+	}
+	if fromStr := c.Query("from"); fromStr != "" {
+		if t, err := time.Parse("2006-01-02", fromStr); err == nil {
+			filter.From = &t
+		}
+	}
+	if toStr := c.Query("to"); toStr != "" {
+		if t, err := time.Parse("2006-01-02", toStr); err == nil {
+			filter.To = &t
+		}
+	}
+
+	items, total, err := ctrl.ds.Billing().ListTierChangeLogs(c, filter)
+	if err != nil {
+		log.C(c).Errorw("Failed to list tier change logs", "err", err)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败，请稍后重试"), nil)
+		return
+	}
+
+	respItems := make([]v1.AdminTierChangeLogItem, len(items))
+	for i, item := range items {
+		respItems[i] = v1.AdminTierChangeLogItem{
+			ID:             item.ID,
+			ParentUserID:   item.ParentUserID,
+			ParentNickname: item.ParentNickname,
+			SubUserID:      item.SubUserID,
+			SubNickname:    item.SubNickname,
+			OldTier:        item.OldTier,
+			NewTier:        item.NewTier,
+			Months:         item.Months,
+			NewTierExpires: item.NewTierExpires.Format("2006-01-02 15:04:05"),
+			CreatedAt:      item.CreatedAt.Format("2006-01-02 15:04:05"),
+		}
+		if item.OldTierExpires != nil {
+			s := item.OldTierExpires.Format("2006-01-02 15:04:05")
+			respItems[i].OldTierExpires = &s
+		}
+	}
+
+	core.WriteResponse(c, nil, v1.AdminTierChangeLogsResponse{
+		Total: total,
+		Items: respItems,
+	})
+}
+
+// GetTierChangeStats GET /billing/tier-changes/stats
+func (ctrl *AdminBillingController) GetTierChangeStats(c *gin.Context) {
+	fromStr := c.Query("from")
+	toStr := c.Query("to")
+	if fromStr == "" || toStr == "" {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("from 和 to 参数必填"), nil)
+		return
+	}
+	log.C(c).Infow("GetTierChangeStats", "from", fromStr, "to", toStr)
+	from, err := time.Parse("2006-01-02", fromStr)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind, nil)
+		return
+	}
+	to, err := time.Parse("2006-01-02", toStr)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind, nil)
+		return
+	}
+	if to.Before(from) {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("to 日期不能早于 from 日期"), nil)
+		return
+	}
+
+	stats, err := ctrl.ds.Billing().GetTierChangeStats(c, from, to)
+	if err != nil {
+		log.C(c).Errorw("Failed to get tier change stats", "err", err)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败，请稍后重试"), nil)
+		return
+	}
+
+	breakdown := make([]v1.AdminTierBreakdownItem, len(stats.TierBreakdown))
+	for i, b := range stats.TierBreakdown {
+		breakdown[i] = v1.AdminTierBreakdownItem{
+			NewTier:     b.NewTier,
+			Count:       b.Count,
+			TotalMonths: b.TotalMonths,
+		}
+	}
+
+	core.WriteResponse(c, nil, v1.AdminTierChangeStatsResponse{
+		TotalChanges:  stats.TotalChanges,
+		Upgrades:      stats.Upgrades,
+		Downgrades:    stats.Downgrades,
+		TierBreakdown: breakdown,
+	})
+}
+
 // GetAnalytics GET /billing/analytics
 func (ctrl *AdminBillingController) GetAnalytics(c *gin.Context) {
 	var req v1.AdminAnalyticsRequest

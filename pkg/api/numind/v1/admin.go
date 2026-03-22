@@ -362,3 +362,41 @@ type AdminRecalculateResponse struct {
 	DeltaCents        int64 `json:"delta_cents"`
 	DryRun            bool  `json:"dry_run"`
 }
+
+// ====== Tier Change Logs ======
+
+// AdminTierChangeLogItem 等级变更日志项
+type AdminTierChangeLogItem struct {
+	ID             uint64  `json:"id"`
+	ParentUserID   uint    `json:"parent_user_id"`
+	ParentNickname string  `json:"parent_nickname"`
+	SubUserID      uint    `json:"sub_user_id"`
+	SubNickname    string  `json:"sub_nickname"`
+	OldTier        string  `json:"old_tier"`
+	NewTier        string  `json:"new_tier"`
+	Months         int     `json:"months"`
+	OldTierExpires *string `json:"old_tier_expires"`
+	NewTierExpires string  `json:"new_tier_expires"`
+	CreatedAt      string  `json:"created_at"`
+}
+
+// AdminTierChangeLogsResponse 等级变更日志列表响应
+type AdminTierChangeLogsResponse struct {
+	Total int64                    `json:"total"`
+	Items []AdminTierChangeLogItem `json:"items"`
+}
+
+// AdminTierChangeStatsResponse 等级变更统计响应
+type AdminTierChangeStatsResponse struct {
+	TotalChanges  int64                    `json:"total_changes"`
+	Upgrades      int64                    `json:"upgrades"`
+	Downgrades    int64                    `json:"downgrades"`
+	TierBreakdown []AdminTierBreakdownItem `json:"tier_breakdown"`
+}
+
+// AdminTierBreakdownItem 按目标等级的统计项
+type AdminTierBreakdownItem struct {
+	NewTier     string `json:"new_tier"`
+	Count       int64  `json:"count"`
+	TotalMonths int64  `json:"total_months"`
+}
