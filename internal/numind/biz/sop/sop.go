@@ -41,6 +41,7 @@ type ISopBiz interface {
 	GetRun(ctx context.Context, id uint) (*model.SopRun, error)
 	CheckRunOwnership(ctx context.Context, runID, userID uint) (bool, error)
 	ListRuns(ctx context.Context, offset, limit int, userID *uint) ([]model.SopRun, int64, error)
+	GetRunsStats(ctx context.Context, runIDs []uint) (map[uint]RunStats, error)
 	GetRunWithNodes(ctx context.Context, runID uint) (*model.SopRun, []model.SopNodeRun, error)
 	ListExecutedTemplatesByUser(ctx context.Context, userID uint) ([]store.ExecutedTemplateInfo, error)
 	ListTemplateRunsWithDetails(ctx context.Context, userID, templateID uint, offset, limit int) ([]v1.TemplateRunHistoryResponse, int64, error)
@@ -431,7 +432,13 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	// 如果当前run是draft状态，首次执行节点时转换为running状态（此时才计入配额）
 	if run.Status == model.SopStatusDraft {
 		run.Status = model.SopStatusRunning
-		if err := b.ds.Sop().UpdateRun(run.ID, map[string]interface{}{"status": model.SopStatusRunning}); err != nil {
+		draftUpdate := map[string]interface{}{"status": model.SopStatusRunning}
+		if run.StartedAt == nil {
+			now := time.Now()
+			run.StartedAt = &now
+			draftUpdate["started_at"] = now
+		}
+		if err := b.ds.Sop().UpdateRun(run.ID, draftUpdate); err != nil {
 			log.C(ctx).Errorw("Failed to update run status from draft to running", "run_id", run.ID, "error", err)
 			// 不阻断执行，记录错误后继续
 		} else {
@@ -866,6 +873,59 @@ func (b *sopBiz) CheckRunOwnership(ctx context.Context, runID, userID uint) (boo
 
 func (b *sopBiz) ListRuns(ctx context.Context, offset, limit int, userID *uint) ([]model.SopRun, int64, error) {
 	return b.ds.Sop().ListRuns(offset, limit, userID)
+}
+
+// RunStats 运行统计数据（token 和成本）
+type RunStats struct {
+	TotalTokens int64 `json:"total_tokens"`
+	CostCents   int64 `json:"cost_cents"`
+}
+
+// GetRunsStats 批量获取运行的 token 和成本统计
+func (b *sopBiz) GetRunsStats(ctx context.Context, runIDs []uint) (map[uint]RunStats, error) {
+	if len(runIDs) == 0 {
+		return map[uint]RunStats{}, nil
+	}
+
+	result := make(map[uint]RunStats, len(runIDs))
+
+	// 从 sop_node_run 聚合 token
+	type tokenRow struct {
+		RunID       uint  `gorm:"column:run_id"`
+		TotalTokens int64 `gorm:"column:total_tokens"`
+	}
+	var tokenRows []tokenRow
+	if err := b.ds.DB().Raw(
+		"SELECT run_id, COALESCE(SUM(total_tokens), 0) AS total_tokens FROM sop_node_run WHERE run_id IN ? AND deleted_at IS NULL GROUP BY run_id",
+		runIDs,
+	).Scan(&tokenRows).Error; err != nil {
+		return nil, fmt.Errorf("query token stats: %w", err)
+	}
+	for _, r := range tokenRows {
+		s := result[r.RunID]
+		s.TotalTokens = r.TotalTokens
+		result[r.RunID] = s
+	}
+
+	// 从 usage_record 聚合成本
+	type costRow struct {
+		BizRefID  uint  `gorm:"column:biz_ref_id"`
+		CostCents int64 `gorm:"column:cost_cents"`
+	}
+	var costRows []costRow
+	if err := b.ds.DB().Raw(
+		"SELECT biz_ref_id, COALESCE(SUM(cost_cents), 0) AS cost_cents FROM usage_record WHERE biz_ref_type = 'sop_run' AND biz_ref_id IN ? GROUP BY biz_ref_id",
+		runIDs,
+	).Scan(&costRows).Error; err != nil {
+		return nil, fmt.Errorf("query cost stats: %w", err)
+	}
+	for _, r := range costRows {
+		s := result[r.BizRefID]
+		s.CostCents = r.CostCents
+		result[r.BizRefID] = s
+	}
+
+	return result, nil
 }
 
 func (b *sopBiz) GetRunWithNodes(ctx context.Context, runID uint) (*model.SopRun, []model.SopNodeRun, error) {
