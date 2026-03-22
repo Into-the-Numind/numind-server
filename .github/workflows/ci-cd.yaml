@@ -770,11 +770,13 @@ jobs:
             if docker ps -q -f name=numind-admin-server-dev | grep -q .; then
               docker stop numind-admin-server-dev
             fi
-            
+
             if docker ps -aq -f name=numind-admin-server-dev | grep -q .; then
               docker rm numind-admin-server-dev
             fi
-            
+
+            docker network create numind-network 2>/dev/null || true
+
             docker run -d \
               --name numind-admin-server-dev \
               --network numind-network \
@@ -836,11 +838,13 @@ jobs:
             if docker ps -q -f name=numind-admin-server-qa | grep -q .; then
               docker stop numind-admin-server-qa
             fi
-            
+
             if docker ps -aq -f name=numind-admin-server-qa | grep -q .; then
               docker rm numind-admin-server-qa
             fi
-            
+
+            docker network create numind-network 2>/dev/null || true
+
             docker run -d \
               --name numind-admin-server-qa \
               --network numind-network \
@@ -903,11 +907,13 @@ jobs:
             if docker ps -q -f name=numind-admin-server-prod | grep -q .; then
               docker stop numind-admin-server-prod
             fi
-            
+
             if docker ps -aq -f name=numind-admin-server-prod | grep -q .; then
               docker rm numind-admin-server-prod
             fi
-            
+
+            docker network create numind-network 2>/dev/null || true
+
             docker run -d \
               --name numind-admin-server-prod \
               --network numind-network \
