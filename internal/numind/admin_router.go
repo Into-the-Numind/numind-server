@@ -107,6 +107,8 @@ func installAdminRouters(g *gin.Engine) error {
 		adminGroup.PUT("/billing/pricing-rules/:id/tiers", billingCtrl.ReplaceTiers)
 		adminGroup.POST("/billing/recalculate", billingCtrl.Recalculate)
 		adminGroup.GET("/billing/analytics", billingCtrl.GetAnalytics)
+		adminGroup.GET("/billing/tier-changes", billingCtrl.ListTierChangeLogs)
+		adminGroup.GET("/billing/tier-changes/stats", billingCtrl.GetTierChangeStats)
 	}
 
 	return nil

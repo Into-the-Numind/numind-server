@@ -55,6 +55,12 @@ type BillingStore interface {
 	// RecalculateCosts 按新的分段规则重算指定时间范围的 cost_cents/revenue_cents
 	// dryRun=true 时只返回统计不写入
 	RecalculateCosts(ctx context.Context, from, to time.Time, dryRun bool) (*RecalculateResult, error)
+
+	// ListTierChangeLogs 查询等级变更日志（支持时间范围和分页）
+	ListTierChangeLogs(ctx context.Context, filter TierChangeLogFilter) ([]TierChangeLogItem, int64, error)
+
+	// GetTierChangeStats 获取等级变更月度统计（用于计算收入）
+	GetTierChangeStats(ctx context.Context, from, to time.Time) (*TierChangeStats, error)
 }
 
 // UsageRecordFilter 用量记录查询过滤条件
@@ -191,6 +197,44 @@ type UserConsumptionItem struct {
 	Username  string `gorm:"column:username" json:"username"`
 	CostCents int64  `gorm:"column:cost_cents" json:"cost_cents"`
 	CallCount int64  `gorm:"column:call_count" json:"call_count"`
+}
+
+// TierChangeLogFilter 等级变更日志查询过滤条件
+type TierChangeLogFilter struct {
+	From   *time.Time
+	To     *time.Time
+	Offset int
+	Limit  int
+}
+
+// TierChangeLogItem JOIN user 表取 nickname
+type TierChangeLogItem struct {
+	ID             uint64     `gorm:"column:id"`
+	ParentUserID   uint       `gorm:"column:parent_user_id"`
+	ParentNickname string     `gorm:"column:parent_nickname"`
+	SubUserID      uint       `gorm:"column:sub_user_id"`
+	SubNickname    string     `gorm:"column:sub_nickname"`
+	OldTier        string     `gorm:"column:old_tier"`
+	NewTier        string     `gorm:"column:new_tier"`
+	Months         int        `gorm:"column:months"`
+	OldTierExpires *time.Time `gorm:"column:old_tier_expires"`
+	NewTierExpires time.Time  `gorm:"column:new_tier_expires"`
+	CreatedAt      time.Time  `gorm:"column:created_at"`
+}
+
+// TierChangeStats 月度统计
+type TierChangeStats struct {
+	TotalChanges  int64               `json:"total_changes"`
+	Upgrades      int64               `json:"upgrades"`
+	Downgrades    int64               `json:"downgrades"`
+	TierBreakdown []TierBreakdownItem `json:"tier_breakdown"`
+}
+
+// TierBreakdownItem 按目标等级的统计项
+type TierBreakdownItem struct {
+	NewTier     string `gorm:"column:new_tier" json:"new_tier"`
+	Count       int64  `gorm:"column:count" json:"count"`
+	TotalMonths int64  `gorm:"column:total_months" json:"total_months"`
 }
 
 type billingStore struct {
@@ -786,4 +830,80 @@ func (s *billingStore) RecalculateCosts(ctx context.Context, from, to time.Time,
 
 	result.DeltaCents = result.NewTotalCostCents - result.OldTotalCostCents
 	return result, nil
+}
+
+// ListTierChangeLogs 查询等级变更日志（支持时间范围和分页）
+func (s *billingStore) ListTierChangeLogs(ctx context.Context, filter TierChangeLogFilter) ([]TierChangeLogItem, int64, error) {
+	var total int64
+	countQuery := s.db.WithContext(ctx).Model(&model.TierChangeLog{})
+	if filter.From != nil {
+		countQuery = countQuery.Where("created_at >= ?", *filter.From)
+	}
+	if filter.To != nil {
+		countQuery = countQuery.Where("created_at < ?", (*filter.To).AddDate(0, 0, 1))
+	}
+	if err := countQuery.Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("count tier change logs: %w", err)
+	}
+
+	var items []TierChangeLogItem
+	query := s.db.WithContext(ctx).
+		Table("tier_change_log t").
+		Select(`t.id, t.parent_user_id, p.nickname AS parent_nickname,
+			t.sub_user_id, s.nickname AS sub_nickname,
+			t.old_tier, t.new_tier, t.months,
+			t.old_tier_expires, t.new_tier_expires, t.created_at`).
+		Joins("LEFT JOIN `user` p ON p.id = t.parent_user_id").
+		Joins("LEFT JOIN `user` s ON s.id = t.sub_user_id")
+
+	if filter.From != nil {
+		query = query.Where("t.created_at >= ?", *filter.From)
+	}
+	if filter.To != nil {
+		query = query.Where("t.created_at < ?", (*filter.To).AddDate(0, 0, 1))
+	}
+
+	err := query.Order("t.created_at DESC").
+		Offset(filter.Offset).Limit(filter.Limit).
+		Scan(&items).Error
+	if err != nil {
+		return nil, 0, fmt.Errorf("list tier change logs: %w", err)
+	}
+	return items, total, nil
+}
+
+// GetTierChangeStats 获取等级变更月度统计（用于计算收入）
+func (s *billingStore) GetTierChangeStats(ctx context.Context, from, to time.Time) (*TierChangeStats, error) {
+	stats := &TierChangeStats{}
+
+	// Total count
+	err := s.db.WithContext(ctx).Model(&model.TierChangeLog{}).
+		Where("created_at >= ? AND created_at < ?", from, to.AddDate(0, 0, 1)).
+		Count(&stats.TotalChanges).Error
+	if err != nil {
+		return nil, fmt.Errorf("count total: %w", err)
+	}
+
+	// Upgrades: free→standard, free→premium, standard→premium
+	err = s.db.WithContext(ctx).Model(&model.TierChangeLog{}).
+		Where("created_at >= ? AND created_at < ?", from, to.AddDate(0, 0, 1)).
+		Where("(old_tier = 'free' AND new_tier IN ('standard','premium')) OR (old_tier = 'standard' AND new_tier = 'premium')").
+		Count(&stats.Upgrades).Error
+	if err != nil {
+		return nil, fmt.Errorf("count upgrades: %w", err)
+	}
+
+	stats.Downgrades = stats.TotalChanges - stats.Upgrades
+
+	// Breakdown by new_tier
+	err = s.db.WithContext(ctx).Model(&model.TierChangeLog{}).
+		Select("new_tier, COUNT(*) as count, COALESCE(SUM(months), 0) as total_months").
+		Where("created_at >= ? AND created_at < ?", from, to.AddDate(0, 0, 1)).
+		Group("new_tier").
+		Scan(&stats.TierBreakdown).Error
+	if err != nil {
+		return nil, fmt.Errorf("tier breakdown: %w", err)
+	}
+
+	return stats, nil
 }
