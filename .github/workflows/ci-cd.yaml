@@ -777,6 +777,7 @@ jobs:
             
             docker run -d \
               --name numind-admin-server-dev \
+              --network numind-network \
               -p 9099:9099 \
               -e APP_ENV=dev \
               --log-opt max-size=10m \
@@ -842,6 +843,7 @@ jobs:
             
             docker run -d \
               --name numind-admin-server-qa \
+              --network numind-network \
               -p 9103:9099 \
               -e APP_ENV=qa \
               --log-opt max-size=10m \
@@ -908,6 +910,7 @@ jobs:
             
             docker run -d \
               --name numind-admin-server-prod \
+              --network numind-network \
               -p 9104:9099 \
               -e APP_ENV=prod \
               --log-opt max-size=10m \
