@@ -13,6 +13,7 @@ import (
 
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/billing"
+	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	v1 "numind-server/pkg/api/numind/v1"
@@ -40,6 +41,7 @@ type ISopBiz interface {
 	GetRun(ctx context.Context, id uint) (*model.SopRun, error)
 	CheckRunOwnership(ctx context.Context, runID, userID uint) (bool, error)
 	ListRuns(ctx context.Context, offset, limit int, userID *uint) ([]model.SopRun, int64, error)
+	GetRunsStats(ctx context.Context, runIDs []uint) (map[uint]RunStats, error)
 	GetRunWithNodes(ctx context.Context, runID uint) (*model.SopRun, []model.SopNodeRun, error)
 	ListExecutedTemplatesByUser(ctx context.Context, userID uint) ([]store.ExecutedTemplateInfo, error)
 	ListTemplateRunsWithDetails(ctx context.Context, userID, templateID uint, offset, limit int) ([]v1.TemplateRunHistoryResponse, int64, error)
@@ -430,7 +432,13 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	// 如果当前run是draft状态，首次执行节点时转换为running状态（此时才计入配额）
 	if run.Status == model.SopStatusDraft {
 		run.Status = model.SopStatusRunning
-		if err := b.ds.Sop().UpdateRun(run.ID, map[string]interface{}{"status": model.SopStatusRunning}); err != nil {
+		draftUpdate := map[string]interface{}{"status": model.SopStatusRunning}
+		if run.StartedAt == nil {
+			now := time.Now()
+			run.StartedAt = &now
+			draftUpdate["started_at"] = now
+		}
+		if err := b.ds.Sop().UpdateRun(run.ID, draftUpdate); err != nil {
 			log.C(ctx).Errorw("Failed to update run status from draft to running", "run_id", run.ID, "error", err)
 			// 不阻断执行，记录错误后继续
 		} else {
@@ -645,6 +653,17 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 
 	// 执行节点（流式），返回完整输出、思考内容和 token 使用统计
 	startTime := time.Now()
+	// 注入计费上下文
+	traceID := langfuse.TraceID()
+	ctx = billing.WithBillingMeta(ctx, run.UserID, "sop_node_execute",
+		billing.Metadata("run_id", billing.FormatUint(runID), "node_id", billing.FormatUint(nodeID), "trace_id", traceID))
+	// 创建 Langfuse trace
+	langfuse.CreateTrace(traceID, "sop_execute",
+		langfuse.WithUserID(run.UserID),
+		langfuse.WithTraceInput(map[string]interface{}{"run_id": runID, "node_id": nodeID, "node_name": node.Name}),
+		langfuse.WithTraceTags("sop"),
+	)
+	ctx = langfuse.WithTrace(ctx, traceID)
 	// 深度思考模式：开启 enable_thinking
 	output, thinking, usage, err := b.executor.ExecuteNodeStreamWithThinking(ctx, node, currentInput, conversationHistory, func(event string, chunk string) error {
 		// 直接透传事件给上层 handler
@@ -702,10 +721,6 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	if err := b.ds.Sop().UpdateNodeRun(nodeRun.ID, updateData); err != nil {
 		return fmt.Errorf("failed to update node run: %w", err)
 	}
-
-	// 记录 LLM 用量到计费系统
-	billing.RecordLLM(run.UserID, "volc", node.ModelName, "sop_node_execute", usage,
-		billing.Metadata("run_id", billing.FormatUint(runID), "node_id", billing.FormatUint(nodeID)))
 
 	// 节点执行成功后，检查是否需要计入运行次数（首次成功运行节点时计入）
 	// 条件：run.Counted = false 表示此run尚未计入运行次数
@@ -858,6 +873,59 @@ func (b *sopBiz) CheckRunOwnership(ctx context.Context, runID, userID uint) (boo
 
 func (b *sopBiz) ListRuns(ctx context.Context, offset, limit int, userID *uint) ([]model.SopRun, int64, error) {
 	return b.ds.Sop().ListRuns(offset, limit, userID)
+}
+
+// RunStats 运行统计数据（token 和成本）
+type RunStats struct {
+	TotalTokens int64 `json:"total_tokens"`
+	CostCents   int64 `json:"cost_cents"`
+}
+
+// GetRunsStats 批量获取运行的 token 和成本统计
+func (b *sopBiz) GetRunsStats(ctx context.Context, runIDs []uint) (map[uint]RunStats, error) {
+	if len(runIDs) == 0 {
+		return map[uint]RunStats{}, nil
+	}
+
+	result := make(map[uint]RunStats, len(runIDs))
+
+	// 从 sop_node_run 聚合 token
+	type tokenRow struct {
+		RunID       uint  `gorm:"column:run_id"`
+		TotalTokens int64 `gorm:"column:total_tokens"`
+	}
+	var tokenRows []tokenRow
+	if err := b.ds.DB().Raw(
+		"SELECT run_id, COALESCE(SUM(total_tokens), 0) AS total_tokens FROM sop_node_run WHERE run_id IN ? AND deleted_at IS NULL GROUP BY run_id",
+		runIDs,
+	).Scan(&tokenRows).Error; err != nil {
+		return nil, fmt.Errorf("query token stats: %w", err)
+	}
+	for _, r := range tokenRows {
+		s := result[r.RunID]
+		s.TotalTokens = r.TotalTokens
+		result[r.RunID] = s
+	}
+
+	// 从 usage_record 聚合成本
+	type costRow struct {
+		BizRefID  uint  `gorm:"column:biz_ref_id"`
+		CostCents int64 `gorm:"column:cost_cents"`
+	}
+	var costRows []costRow
+	if err := b.ds.DB().Raw(
+		"SELECT biz_ref_id, COALESCE(SUM(cost_cents), 0) AS cost_cents FROM usage_record WHERE biz_ref_type = 'sop_run' AND biz_ref_id IN ? GROUP BY biz_ref_id",
+		runIDs,
+	).Scan(&costRows).Error; err != nil {
+		return nil, fmt.Errorf("query cost stats: %w", err)
+	}
+	for _, r := range costRows {
+		s := result[r.BizRefID]
+		s.CostCents = r.CostCents
+		result[r.BizRefID] = s
+	}
+
+	return result, nil
 }
 
 func (b *sopBiz) GetRunWithNodes(ctx context.Context, runID uint) (*model.SopRun, []model.SopNodeRun, error) {
@@ -1217,6 +1285,9 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	history = append(history, LLMMessage{Role: "user", Content: question})
 
 	// 调用模型流式生成回答
+	// 注入计费上下文
+	ctx = billing.WithBillingMeta(ctx, userID, "sop_chat_stream",
+		billing.Metadata("run_id", billing.FormatUint(runID), "conversation_id", conversationID))
 	// 传入空字符串作为 input，这样执行器不会拼装节点的 Prompt，AI 保持普通助手身份
 	var answerBuf strings.Builder
 	_, thinking, usage, err := b.executor.ExecuteNodeStreamWithThinking(
@@ -1270,10 +1341,6 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	if err := b.ds.Sop().CreateChatMessage(assistantMsg); err != nil {
 		return fmt.Errorf("failed to save assistant message: %w", err)
 	}
-
-	// 记录 SOP 聊天用量
-	billing.RecordLLM(userID, "volc", lastNode.ModelName, "sop_chat_stream", usage,
-		billing.Metadata("run_id", billing.FormatUint(runID), "conversation_id", conversationID))
 
 	// 发送包含 message_id 的完成事件
 	donePayload := fmt.Sprintf(`{"status":"completed","message_id":%d}`, assistantMsg.ID)

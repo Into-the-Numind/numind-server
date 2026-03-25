@@ -1,0 +1,67 @@
+# 构建阶段 - 在容器内编译，保证 glibc 版本一致
+FROM golang:1.24-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ libc6-dev libsqlite3-dev libwebp-dev git
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+ENV GOPROXY=https://proxy.golang.org,direct
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-s -w" \
+    -o /app/numind-admin \
+    ./cmd/numind-admin
+
+# 运行阶段
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Shanghai
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates wget tzdata libwebp-dev libsqlite3-0 libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone \
+    && groupadd -g 1001 numind \
+    && useradd -m -u 1001 -g numind numind
+
+WORKDIR /app
+
+ARG ENV=dev
+COPY config_${ENV}.yaml /app/config_${ENV}.yaml
+
+COPY --from=builder /app/numind-admin /app/numind-admin
+
+# 复制 jieba 字典文件（gojieba 运行时依赖）
+COPY --from=builder /go/pkg/mod/github.com/yanyiwu/gojieba@v1.4.6/deps/cppjieba/dict /app/dict
+RUN chown -R numind:numind /app/dict
+
+# 创建必要目录并设置权限
+RUN mkdir -p /app/logs /opt/numind/dev /opt/numind/qa /opt/numind/prod && \
+    chown -R numind:numind /app /opt/numind && \
+    chmod +x /app/numind-admin && \
+    ls -lh /app/numind-admin && \
+    echo "✅ 二进制文件验证成功"
+
+# 创建启动脚本
+RUN printf '#!/bin/sh\nif [ -n "$APP_ENV" ]; then\n  CONFIG_FILE="/app/config_${APP_ENV}.yaml"\nelse\n  CONFIG_FILE="/app/config_dev.yaml"\nfi\nif [ ! -f "$CONFIG_FILE" ]; then\n  echo "Config not found: $CONFIG_FILE"\n  ls -la /app/config_*.yaml\n  exit 1\nfi\necho "Using config: $CONFIG_FILE"\nexec /app/numind-admin -c "$CONFIG_FILE" "$@"\n' > /app/start.sh && \
+    chmod +x /app/start.sh && \
+    chown numind:numind /app/start.sh
+
+USER numind
+
+EXPOSE 9099
+
+ENV GIN_MODE=release
+ENV PORT=9099
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:9099/healthz || exit 1
+
+ENTRYPOINT ["/app/start.sh"]
+CMD []

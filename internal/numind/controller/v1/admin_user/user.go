@@ -276,6 +276,12 @@ func (ctrl *AdminUserController) UpdateUserTier(c *gin.Context) {
 	now := time.Now()
 	if req.Tier == model.UserTierFree {
 		updates["tier_expires"] = nil
+	} else if req.Tier == model.UserTierTrial {
+		// 体验会员固定3天
+		expires := now.AddDate(0, 0, model.TrialDurationDays)
+		updates["tier_expires"] = expires
+		updates["monthly_sop_runs"] = 0
+		updates["monthly_reset_at"] = now
 	} else {
 		if req.Months < 1 {
 			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("付费等级需指定时长（1-12个月）"), nil)

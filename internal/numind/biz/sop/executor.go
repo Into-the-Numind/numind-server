@@ -13,6 +13,7 @@ import (
 
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/billing"
+	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/tokenizer"
@@ -490,6 +491,22 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 		usage = &TokenUsage{
 			EstimatedPromptTokens: estimatedTokens,
 		}
+	}
+
+	// Langfuse generation 追踪
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		genID := langfuse.SpanID()
+		opts := []langfuse.GenOption{
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("sop-node-" + node.Name),
+			langfuse.WithGenModel(node.ModelName),
+			langfuse.WithGenOutput(output),
+		}
+		if usage != nil {
+			opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
+		}
+		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+		langfuse.EndGeneration(genID)
 	}
 
 	return output, thinking, usage, nil

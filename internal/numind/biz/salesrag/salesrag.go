@@ -21,6 +21,8 @@ import (
 	"numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/billing"
+	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
@@ -82,6 +84,12 @@ const analyzeProfileSystemPrompt = `你是一位拥有20年B2B销售经验的商
 
 #### 关键信息摘要
 - 不属于以上类别、但确定且重要的信息（如果没有则省略此板块）`
+
+// fetchProfilePrompt 从 Langfuse 获取客户画像分析 prompt，fallback 到硬编码
+func fetchProfilePrompt() string {
+	p, _ := langfuse.FetchPrompt("salesrag-profile-analysis", analyzeProfileSystemPrompt)
+	return p
+}
 
 // SalesRAGBiz 定义了销售 RAG 业务层的对外接口
 type SalesRAGBiz interface {
@@ -148,6 +156,11 @@ type SalesRAGBiz interface {
 
 	// ListOpinionTracks 获取系统内置观点赛道列表
 	ListOpinionTracks(ctx context.Context) ([]model.OpinionTrack, error)
+
+	// SubmitFeedback 提交消息反馈（点赞/点踩），同步推送到 Langfuse
+	SubmitFeedback(ctx context.Context, userID, sessionID, messageID uint, rating int, comment string) error
+	// GetFeedback 获取消息反馈
+	GetFeedback(ctx context.Context, userID, sessionID, messageID uint) (*model.SalesMessageFeedback, error)
 }
 
 type IngestOptions struct {
@@ -227,6 +240,9 @@ func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *s
 }
 
 func (b *salesRAGBiz) Ingest(ctx context.Context, userID uint, filename string, displayName string, reader io.Reader, opts IngestOptions) (uint, error) {
+	// 注入计费上下文（覆盖 Embedding、VectorDB 等下游调用）
+	ctx = billing.WithBilling(ctx, userID, "salesrag_ingest")
+
 	// 0. 验证文件名
 	if filename == "" {
 		return 0, fmt.Errorf("filename cannot be empty")
@@ -576,10 +592,10 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, verdict 
 				"content": query,
 			},
 		}
-		result, genUsage, err := b.volcBiz.VolcTextStream(ctx, messages, 1000, 0.7)
 		if uid, ok := middleware.UserIDFromCtx(ctx); ok {
-			billing.RecordLLM(uid, "volc", "deepseek-v3", "salesrag_generate_answer", genUsage, nil)
+			ctx = billing.WithBilling(ctx, uid, "salesrag_generate_answer")
 		}
+		result, _, err := b.volcBiz.VolcTextStream(ctx, messages, 1000, 0.7)
 		return result, err
 	}
 
@@ -615,10 +631,10 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, verdict 
 		},
 	}
 
-	result, genUsage2, err := b.volcBiz.VolcTextStream(ctx, messages, 1000, 0.7)
 	if uid, ok := middleware.UserIDFromCtx(ctx); ok {
-		billing.RecordLLM(uid, "volc", "deepseek-v3", "salesrag_generate_answer", genUsage2, nil)
+		ctx = billing.WithBilling(ctx, uid, "salesrag_generate_answer")
 	}
+	result, _, err := b.volcBiz.VolcTextStream(ctx, messages, 1000, 0.7)
 	return result, err
 }
 
@@ -692,9 +708,32 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 
 	// 6. 执行检索（使用 V2 版本，传递 chatMode 和 history）
 	// 注意：RetrieveForResponseV2 内部并行执行 RAG 检索、策略选择和观点库独立检索
+	var retrievalSpanID string
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		retrievalSpanID = langfuse.SpanID()
+		langfuse.CreateSpan(tc.TraceID, retrievalSpanID, "parallel_search",
+			langfuse.WithSpanParent(tc.ParentObservationID),
+			langfuse.WithSpanInput(map[string]interface{}{"query": retrievalQuery, "doc_count": len(filteredDocIDs)}),
+		)
+		ctx = langfuse.WithTraceAndParent(ctx, tc.TraceID, retrievalSpanID)
+	}
 	verdict, err := b.ragSvc.RetrieveForResponseV2(ctx, retrievalQuery, filteredDocIDs, filteredOpinionDocIDs, history, chatMode, userID, func(status string) {
 		_ = onEvent("status", status)
 	})
+	if retrievalSpanID != "" {
+		if err != nil {
+			langfuse.EndSpan(retrievalSpanID, langfuse.WithSpanError(err.Error()))
+		} else {
+			langfuse.EndSpan(retrievalSpanID, langfuse.WithSpanOutput(map[string]interface{}{
+				"evidence_count": len(verdict.Evidence),
+				"opinion_count":  len(verdict.OpinionEvidence),
+			}))
+		}
+		// 恢复 parent 到 trace 级别（后续 generation 不嵌套在 retrieval 下）
+		if tc := langfuse.FromContext(ctx); tc != nil {
+			ctx = langfuse.WithTrace(ctx, tc.TraceID)
+		}
+	}
 	if err != nil {
 		return onEvent("error", fmt.Sprintf("retrieval failed: %v", err))
 	}
@@ -728,7 +767,8 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 	if deepThinking {
 		reasoningEffort = "high"
 	}
-	_, chatGenUsage, err := b.volcBiz.StreamChatWithModel(ctx, messages, "deepseek-v3-2-251201", 0, 0.7, reasoningEffort, func(eventType, content string) error {
+	ctx = billing.WithBilling(ctx, userID, "salesrag_chat_generate")
+	_, _, err = b.volcBiz.StreamChatWithModel(ctx, messages, "deepseek-v3-2-251201", 0, 0.7, reasoningEffort, func(eventType, content string) error {
 		if eventType == "thinking" {
 			return onEvent("thinking", content)
 		}
@@ -738,7 +778,6 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 	if err != nil {
 		return onEvent("error", fmt.Sprintf("stream chat failed: %v", err))
 	}
-	billing.RecordLLM(userID, "volc", "deepseek-v3-2-251201", "salesrag_chat_generate", chatGenUsage, nil)
 
 	// 12. 发送完成事件
 	return onEvent("done", nil)
@@ -877,7 +916,99 @@ func getSalesStageDescription(stage string) string {
 }
 
 // buildSalesModePrompt 构建 Sales 模式提示词
+// 优先从 Langfuse 获取静态骨架模板，动态段落（条件渲染）仍由 Go 负责组装
 func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, opinionContext, strategyContent, languageStyle string, history []string, salesStage string) string {
+	// 1. 组装动态段落（Go 负责条件渲染逻辑）
+	sections := b.buildPromptSections(customerProfile, knowledgeContext, opinionContext, strategyContent, languageStyle, history, salesStage)
+
+	// 2. 尝试从 Langfuse 获取静态骨架模板
+	tmpl, _ := langfuse.FetchPrompt("salesrag-answer-sales", "")
+	if tmpl != "" {
+		return langfuse.Compile(tmpl, sections)
+	}
+
+	// 3. Fallback 到硬编码逻辑
+	return b.buildSalesModePromptFallback(customerProfile, knowledgeContext, opinionContext, strategyContent, languageStyle, history, salesStage)
+}
+
+// buildPromptSections 组装动态段落，供 Langfuse 模板使用
+func (b *salesRAGBiz) buildPromptSections(customerProfile, knowledgeContext, opinionContext, strategyContent, languageStyle string, history []string, salesStage string) map[string]string {
+	var bgSection, refSection, rulesAddendum strings.Builder
+
+	// 背景段落
+	if customerProfile != "" {
+		bgSection.WriteString("### 客户画像\n")
+		bgSection.WriteString(customerProfile)
+		bgSection.WriteString("\n\n")
+	}
+	if len(history) > 0 {
+		bgSection.WriteString("### 对话历史\n")
+		bgSection.WriteString(strings.Join(history, "\n"))
+		bgSection.WriteString("\n\n")
+	}
+	if salesStage != "" {
+		stageDesc := getSalesStageDescription(salesStage)
+		bgSection.WriteString("### 当前销售阶段\n")
+		bgSection.WriteString(salesStage)
+		if stageDesc != "" {
+			bgSection.WriteString("\n")
+			bgSection.WriteString(stageDesc)
+		}
+		bgSection.WriteString("\n\n")
+	}
+
+	// 参考资料段落
+	if knowledgeContext != "" {
+		refSection.WriteString("### 知识库内容\n")
+		refSection.WriteString("> 每条知识附带相关度百分比。相关度 ≥ 70% 的知识应重点融入回答；30%-70% 的仅作补充参考；如果所有知识相关度都偏低，以你的专业判断为主。\n\n")
+		refSection.WriteString("> **注意**：这些知识片段可能来自不同文档，彼此之间可能没有直接关联。请先通读理解所有片段的核心信息，形成统一认知后，围绕客户的实际问题用你自己的话自然组织回答。禁止逐条罗列，禁止生硬拼接不相关的信息。如果某条知识与当前问题关联不大，果断忽略即可。\n\n")
+		refSection.WriteString(knowledgeContext)
+		refSection.WriteString("\n\n")
+	}
+	if opinionContext != "" {
+		refSection.WriteString("### 观点库\n")
+		refSection.WriteString("> 以下观点库供你参考，每条观点包含场景与关键词触达、客户潜台词、金句观点、活人感话术建议。请根据用户的消息，判断其情绪和所处场景，从观点库中挑选最匹配的观点，将其中的金句和话术建议自然地融入回复中。\n\n")
+		refSection.WriteString("> **注意**：不要生硬地罗列观点，而是转化为你自己的语言，让回复听起来真诚、有洞察力。特别关注「客户潜台词」来精准把握客户真实心理，用「活人感话术」的风格让回复有温度。**重要！**：如果你觉得观点库不适合当轮的情况，则可以战术性放弃采用。\n\n")
+		refSection.WriteString(opinionContext)
+		refSection.WriteString("\n\n")
+	}
+	if strategyContent != "" {
+		refSection.WriteString("### 核心策略参考\n")
+		refSection.WriteString("> 请结合实际对话上下文，**灵活参考**该策略中的\"话术模板\"或\"核心逻辑\"构建回复。如果策略与当前对话相符，需要严格按照策略来进行，如果明显不符，请以你的判断为准。\n\n")
+		refSection.WriteString("```markdown\n")
+		refSection.WriteString(strategyContent)
+		refSection.WriteString("\n```\n\n")
+	}
+
+	// 规则补充段（根据有无知识库/观点库/策略的条件规则）
+	if knowledgeContext != "" {
+		rulesAddendum.WriteString("   涉及具体产品信息（价格、功能、参数、案例）时，必须基于【知识库内容】  \n")
+		rulesAddendum.WriteString("   涉及策略分析、客户心理、沟通技巧时，请充分发挥你的专业判断  \n")
+		rulesAddendum.WriteString("   优先融合相关度高的知识，用你自己的理解重新组织，而非原文照搬  \n")
+	}
+	if opinionContext != "" {
+		rulesAddendum.WriteString("   涉及观点输出和洞察展现时，优先从【观点库】中挑选场景匹配的观点，参考其金句和活人感话术，转化为自己的语言自然融入  \n")
+	}
+	if strategyContent != "" {
+		rulesAddendum.WriteString("   灵活参考【核心策略参考】中的话术模板或逻辑\n")
+	}
+
+	// 语言风格
+	styleSection := "使用通用的微信聊天风格：简洁、自然、适度使用口语化表达"
+	if languageStyle != "" {
+		styleSection = languageStyle
+	}
+
+	return map[string]string{
+		"background_section": bgSection.String(),
+		"reference_section":  refSection.String(),
+		"rules_addendum":     rulesAddendum.String(),
+		"language_style":     styleSection,
+	}
+}
+
+// buildSalesModePromptFallback 硬编码的 Sales 模式提示词（Langfuse 不可用时的 fallback）
+func (b *salesRAGBiz) buildSalesModePromptFallback(customerProfile, knowledgeContext, opinionContext, strategyContent, languageStyle string, history []string, salesStage string) string {
 	var prompt strings.Builder
 
 	// 角色和目标
@@ -1022,7 +1153,23 @@ func (b *salesRAGBiz) buildSalesModePrompt(customerProfile, knowledgeContext, op
 }
 
 // buildFreeModePrompt 构建 Free 模式提示词（资深销售教练）
+// 优先从 Langfuse 获取静态骨架模板，动态段落（条件渲染）仍由 Go 负责组装
 func (b *salesRAGBiz) buildFreeModePrompt(customerProfile, knowledgeContext, opinionContext, strategyContent, languageStyle string, history []string, salesStage string) string {
+	// 1. 组装动态段落（复用 buildPromptSections）
+	sections := b.buildPromptSections(customerProfile, knowledgeContext, opinionContext, strategyContent, languageStyle, history, salesStage)
+
+	// 2. 尝试从 Langfuse 获取静态骨架模板
+	tmpl, _ := langfuse.FetchPrompt("salesrag-answer-free", "")
+	if tmpl != "" {
+		return langfuse.Compile(tmpl, sections)
+	}
+
+	// 3. Fallback 到硬编码逻辑
+	return b.buildFreeModePromptFallback(customerProfile, knowledgeContext, opinionContext, strategyContent, languageStyle, history, salesStage)
+}
+
+// buildFreeModePromptFallback 硬编码的 Free 模式提示词（Langfuse 不可用时的 fallback）
+func (b *salesRAGBiz) buildFreeModePromptFallback(customerProfile, knowledgeContext, opinionContext, strategyContent, languageStyle string, history []string, salesStage string) string {
 	var prompt strings.Builder
 
 	// 角色和目标
@@ -1540,7 +1687,25 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 		docCategoryMap[id] = catFAQ
 	}
 
-	// 4. 调用流式检索，累积内容
+	// 4. 创建 Langfuse trace（贯穿整条 SalesRAG 调用链路）
+	traceID := langfuse.TraceID()
+	langfuse.CreateTrace(traceID, "salesrag_chat",
+		langfuse.WithUserID(userID),
+		langfuse.WithSessionID(fmt.Sprintf("%d", sessionID)),
+		langfuse.WithTraceInput(map[string]interface{}{"query": query, "chatMode": chatMode, "deepThinking": deepThinking}),
+		langfuse.WithTraceTags("salesrag"),
+	)
+	ctx = langfuse.WithTrace(ctx, traceID)
+
+	// 将 trace_id 写入 billing metadata，关联 billing 和 Langfuse
+	if bc := billing.FromContext(ctx); bc != nil {
+		if bc.Meta == nil {
+			bc.Meta = make(map[string]string)
+		}
+		bc.Meta["trace_id"] = traceID
+	}
+
+	// 调用流式检索，累积内容
 	// 使用从数据库加载的 sessionDocIDs，而不是函数参数中的 docIDs
 	var fullContent strings.Builder
 	var verdictJSON string
@@ -1586,7 +1751,7 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 		return err
 	}
 
-	// 5. 保存助手消息
+	// 5. 保存助手消息（关联 Langfuse traceID，用于后续反馈评分）
 	assistantMessage := &model.SalesMessage{
 		SessionID: sessionID,
 		UserID:    userID,
@@ -1595,6 +1760,7 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 		Status:    "sent",
 		Verdict:   verdictJSON,
 		Thinking:  thinkingText,
+		TraceID:   traceID,
 	}
 	if err := b.sessionStore.CreateMessage(ctx, assistantMessage); err != nil {
 		return fmt.Errorf("failed to save assistant message: %w", err)
@@ -1608,6 +1774,59 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	}
 
 	return nil
+}
+
+// SubmitFeedback 提交消息反馈（点赞/点踩）
+func (b *salesRAGBiz) SubmitFeedback(ctx context.Context, userID, sessionID, messageID uint, rating int, comment string) error {
+	// 1. 验证会话属于该用户
+	_, err := b.sessionStore.GetSession(ctx, sessionID, userID)
+	if err != nil {
+		return errno.ErrForbidden
+	}
+	// 2. 验证消息存在且属于该会话
+	msg, err := b.sessionStore.GetMessage(ctx, messageID)
+	if err != nil {
+		return errno.ErrInvalidParameter.SetMessage("消息不存在")
+	}
+	if msg.SessionID != sessionID {
+		return errno.ErrForbidden
+	}
+
+	// 3. 保存到本地 DB（upsert）
+	feedback := &model.SalesMessageFeedback{
+		MessageID: messageID,
+		UserID:    userID,
+		Rating:    rating,
+		Comment:   comment,
+		TraceID:   msg.TraceID,
+	}
+	if err := b.sessionStore.CreateOrUpdateFeedback(ctx, feedback); err != nil {
+		return fmt.Errorf("保存反馈失败: %w", err)
+	}
+
+	// 3. 发送到 Langfuse（异步，不阻塞）
+	if msg.TraceID != "" {
+		langfuse.Score(msg.TraceID, "user_feedback", float64(rating), comment)
+	}
+	return nil
+}
+
+// GetFeedback 获取消息反馈
+func (b *salesRAGBiz) GetFeedback(ctx context.Context, userID, sessionID, messageID uint) (*model.SalesMessageFeedback, error) {
+	// 验证会话属于该用户
+	_, err := b.sessionStore.GetSession(ctx, sessionID, userID)
+	if err != nil {
+		return nil, errno.ErrForbidden
+	}
+
+	feedback, err := b.sessionStore.GetFeedback(ctx, messageID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil // 无反馈，返回 nil
+		}
+		return nil, err
+	}
+	return feedback, nil
 }
 
 // convertModelChunksToDomain 将MySQL模型转换为领域模型
@@ -1846,7 +2065,7 @@ func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint,
 	messages := []map[string]interface{}{
 		{
 			"role":    "system",
-			"content": analyzeProfileSystemPrompt,
+			"content": fetchProfilePrompt(),
 		},
 		{
 			"role":    "user",
@@ -1855,13 +2074,13 @@ func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint,
 	}
 
 	log.Printf("[AnalyzeProfileMultiFiles] Calling Volc StreamChatWithModel with %d content parts", len(contentParts))
-	result, profileUsage, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "medium", func(event string, token string) error {
+	ctx = billing.WithBilling(ctx, userID, "salesrag_analyze_profile")
+	result, _, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "medium", func(event string, token string) error {
 		if event == "message" {
 			return onToken(token)
 		}
 		return nil
 	})
-	billing.RecordLLM(userID, "volc", "doubao-seed-2-0-lite-260215", "salesrag_analyze_profile", profileUsage, nil)
 	return result, err
 }
 
@@ -1886,7 +2105,7 @@ func (b *salesRAGBiz) AnalyzeProfileText(ctx context.Context, userID uint, text 
 	messages := []map[string]interface{}{
 		{
 			"role":    "system",
-			"content": analyzeProfileSystemPrompt,
+			"content": fetchProfilePrompt(),
 		},
 		{
 			"role":    "user",
@@ -1895,13 +2114,13 @@ func (b *salesRAGBiz) AnalyzeProfileText(ctx context.Context, userID uint, text 
 	}
 
 	log.Printf("[AnalyzeProfileText] Calling Volc StreamChatWithModel")
-	result, profileUsage, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "medium", func(event string, token string) error {
+	ctx = billing.WithBilling(ctx, userID, "salesrag_analyze_profile_text")
+	result, _, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "medium", func(event string, token string) error {
 		if event == "message" {
 			return onToken(token)
 		}
 		return nil
 	})
-	billing.RecordLLM(userID, "volc", "doubao-seed-2-0-lite-260215", "salesrag_analyze_profile_text", profileUsage, nil)
 	return result, err
 }
 
@@ -1982,11 +2201,12 @@ func (b *salesRAGBiz) analyzeChatStyleTextStream(ctx context.Context, userID uin
 
 	// 4. 调用火山方舟模型（流式输出）
 	log.Printf("[analyzeChatStyleTextStream] Calling Volc StreamChatWithModel for user %d", userID)
+	ctx = billing.WithBilling(ctx, userID, "salesrag_chat_style_text")
 	messages := []map[string]interface{}{
 		{"role": "system", "content": systemPrompt},
 		{"role": "user", "content": text},
 	}
-	analysis, chatStyleTextUsage, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "high", func(event string, token string) error {
+	analysis, _, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "high", func(event string, token string) error {
 		if event == "message" {
 			return onToken(token)
 		}
@@ -1996,8 +2216,7 @@ func (b *salesRAGBiz) analyzeChatStyleTextStream(ctx context.Context, userID uin
 		log.Printf("[analyzeChatStyleTextStream] Volc StreamChat failed for user %d: %v", userID, err)
 		return "", fmt.Errorf("AI 分析服务调用失败: %w", err)
 	}
-	billing.RecordLLM(userID, "volc", "doubao-seed-2-0-lite-260215", "salesrag_chat_style_text", chatStyleTextUsage, nil)
-	log.Printf("[analyzeChatStyleTextStream] DMX API stream success, result length: %d", len(analysis))
+	log.Printf("[analyzeChatStyleTextStream] Volc StreamChat success, result length: %d", len(analysis))
 
 	// 5. 保存到数据库
 	style := &model.LanguageStyle{
@@ -2165,12 +2384,12 @@ func (b *salesRAGBiz) analyzeChatStyleImageStream(ctx context.Context, userID ui
 
 	// 5. 调用火山方舟视觉模型（doubao-seed-2-0-lite-260215，与客户档案分析保持一致）
 	const visionModel = "doubao-seed-2-0-lite-260215"
-	result, chatStyleUsage, err := b.volcBiz.VisionAnalyzeStream(ctx, dataURL, systemPrompt, visionModel, 0, "medium", onToken)
+	ctx = billing.WithBilling(ctx, userID, "salesrag_chat_style_image")
+	result, _, err := b.volcBiz.VisionAnalyzeStream(ctx, dataURL, systemPrompt, visionModel, 0, "medium", onToken)
 	if err != nil {
 		log.Printf("[analyzeChatStyleImageStream] Volc VisionAnalyzeStream error: %v", err)
 		return "", fmt.Errorf("视觉模型分析失败: %w", err)
 	}
-	billing.RecordVision(userID, "volc", visionModel, "salesrag_chat_style_image", chatStyleUsage, nil)
 
 	log.Printf("[analyzeChatStyleImageStream] QianwenVisionStream completed, result length: %d", len(result))
 
@@ -2482,13 +2701,13 @@ func (b *salesRAGBiz) ocrWithVisionModel(ctx context.Context, userID uint, image
 
   现在请识别这张截图。`
 	visionModel := "doubao-seed-2-0-lite-260215"
+	ctx = billing.WithBilling(ctx, userID, "salesrag_ocr")
 
-	ocrText, ocrUsage, err := b.volcBiz.VisionAnalyze(ctx, signedURL, prompt, visionModel, 0, "medium")
+	ocrText, _, err := b.volcBiz.VisionAnalyze(ctx, signedURL, prompt, visionModel, 0, "medium")
 	if err != nil {
 		log.Printf("[OCRAnalyze] Volc Engine Vision OCR failed, user_id: %d, url: %s, error: %v", userID, signedURL, err)
 		return "", "", fmt.Errorf("图片识别失败，请检查模型配置: %w", err)
 	}
-	billing.RecordVision(userID, "volc", visionModel, "salesrag_ocr", ocrUsage, nil)
 
 	return ocrText, frontendURL, nil
 }

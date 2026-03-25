@@ -6,9 +6,6 @@ on:
       - main
       - develop
       - release
-      - admin-develop
-      - admin-release
-      - refactor/strip-notes-code
     tags:
       - 'v*'
       - 'admin-v*'
@@ -80,7 +77,6 @@ jobs:
     if: |
       github.ref == 'refs/heads/develop' ||
       github.ref == 'refs/heads/release' ||
-      github.ref == 'refs/heads/refactor/strip-notes-code' ||
       startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Checkout code
@@ -116,10 +112,6 @@ jobs:
             BUILD_ENV="qa"
             IMAGE_TAG="release"
             echo "::notice::🚀 触发方式: 分支 (release)"
-          elif [ "${{ github.ref_name }}" = "refactor/strip-notes-code" ]; then
-            BUILD_ENV="staging"
-            IMAGE_TAG="staging"
-            echo "::notice::🚀 触发方式: 分支 (staging)"
           else
             BUILD_ENV="dev"
             IMAGE_TAG="dev"
@@ -535,119 +527,6 @@ jobs:
 
 
 
-  # Staging 环境部署 - 只在 refactor/strip-notes-code 分支触发
-  deploy_staging:
-    needs: [image_build]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    if: github.ref == 'refs/heads/refactor/strip-notes-code'
-    environment: staging
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Deploy to Staging Server
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.STAGING_HOST }}
-          username: root
-          password: ${{ secrets.STAGING_SERVER_PASSWORD }}
-          port: 22
-          command_timeout: 10m
-          script: |
-            # 设置环境变量
-            export GITHUB_ACTOR="${{ github.actor }}"
-
-            # 登录到Docker Hub
-            echo "🔐 登录到Docker Hub..."
-            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin
-
-            # 删除旧镜像
-            echo "🗑️  删除旧镜像（如果存在）..."
-            docker rmi -f pmtmyaggy/numind-server:staging 2>/dev/null || echo "旧镜像不存在，跳过删除"
-
-            # 拉取最新镜像
-            echo "📦 拉取最新镜像..."
-            docker pull pmtmyaggy/numind-server:staging
-
-            # 验证镜像拉取成功
-            echo "🔍 验证镜像信息..."
-            docker images --digests pmtmyaggy/numind-server:staging --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Digest}}\t{{.CreatedAt}}\t{{.Size}}"
-
-            # 清理 dangling 镜像
-            echo "🧹 清理悬空镜像..."
-            docker image prune -f || true
-
-            # 检查并停止运行中的容器
-            if docker ps -q -f name=numind-server-staging | grep -q .; then
-              echo "Container numind-server-staging is running, stopping it..."
-              docker stop numind-server-staging
-            fi
-
-            # 检查并删除存在的容器
-            if docker ps -aq -f name=numind-server-staging | grep -q .; then
-              echo "Container numind-server-staging exists, removing it..."
-              docker rm numind-server-staging
-            fi
-
-            # 创建必要的目录
-            echo "Creating necessary directories..."
-            sudo mkdir -p /opt/numind/staging/image/upload/avatars
-            sudo mkdir -p /opt/numind/model/model_cache
-            sudo chown -R 1001:1001 /opt/numind/staging /opt/numind/model || true
-            sudo chmod -R 775 /opt/numind/staging
-
-            # 启动新容器（使用 host 网络，避免容器内无法访问外部数据库）
-            echo "Starting new container..."
-            docker run -d \
-              --name numind-server-staging \
-              --network host \
-              -e APP_ENV=staging \
-              -v /opt/numind/staging:/opt/numind/staging \
-              -v /opt/numind/model/model_cache:/app/model_cache \
-              --log-driver json-file \
-              --log-opt max-size=10m \
-              --log-opt max-file=3 \
-              --restart always \
-              pmtmyaggy/numind-server:staging
-
-            # 等待容器启动
-            echo "Waiting for container to start..."
-            sleep 15
-
-            # 检查容器状态
-            if docker ps -q -f name=numind-server-staging | grep -q .; then
-              echo "Container started successfully!"
-
-              # 等待并检查健康状态
-              echo "Waiting for health check..."
-              sleep 10
-
-              if docker ps -q -f name=numind-server-staging | grep -q .; then
-                echo "Container is running, checking health endpoint..."
-
-                if curl -f http://localhost:9091/healthz > /dev/null 2>&1; then
-                  echo "Health check passed! Staging deployment completed successfully!"
-                  echo "Container status:"
-                  docker ps -f name=numind-server-staging --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-                else
-                  echo "Warning: Health endpoint not responding, but container is running"
-                  echo "Container logs:"
-                  docker logs --tail 50 numind-server-staging || true
-                  echo "Container status:"
-                  docker ps -f name=numind-server-staging --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-                fi
-              else
-                echo "Error: Container failed to start"
-                docker logs numind-server-staging || true
-                exit 1
-              fi
-            else
-              echo "Error: Container failed to start"
-              docker logs numind-server-staging || true
-              exit 1
-            fi
-
   # 生产环境部署 - 只通过版本 tag 触发
   deploy_product:
     needs: [image_build]
@@ -784,75 +663,17 @@ jobs:
               exit 1
             fi
 
-  # 后台管理系统 Docker 镜像构建
+  # 后台管理系统 Docker 镜像构建（多阶段构建，在 Docker 内编译）
   admin_image_build:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     if: |
-      github.ref == 'refs/heads/admin-develop' || 
-      github.ref == 'refs/heads/admin-release' || 
+      github.ref == 'refs/heads/develop' ||
+      github.ref == 'refs/heads/release' ||
       startsWith(github.ref, 'refs/tags/admin-v')
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: 1.24.2
-          cache: false
-
-      - name: Cache Go modules
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}-
-            ${{ runner.os }}-go-
-
-      - name: Setup Go environment
-        run: |
-          # numind-admin 通过 biz 包间接依赖了 webp，需要 CGO 支持
-          # 使用 musl 工具链编译，确保与 Alpine Linux 兼容
-          go env -w CGO_ENABLED=1
-
-      - name: Install musl toolchain and dependencies
-        run: |
-          # 安装 musl 工具链和 libwebp 开发库（用于编译）
-          sudo apt-get update
-          sudo apt-get install -y musl-tools libwebp-dev
-          # 设置 musl-gcc 作为 C 编译器（使用动态链接，与 Alpine musl libc 兼容）
-          go env -w CC=musl-gcc
-          go env -w CXX=musl-g++
-
-      - name: Get dependencies
-        run: |
-          go clean -modcache || true
-          go clean -cache || true
-          go mod download
-          go mod tidy
-          go mod verify
-
-      - name: Build admin application
-        run: |
-          mkdir -p ./bin
-          echo "🐧 开始构建 numind-admin-linux-amd64 (使用 musl 工具链，动态链接)..."
-          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
-            -ldflags="-s -w" \
-            -o ./bin/numind-admin-linux-amd64 \
-            ./cmd/numind-admin
-          
-          if [ $? -eq 0 ]; then
-            echo "✅ Admin Linux 版本构建成功"
-          else
-            echo "❌ Admin Linux 版本构建失败"
-            exit 1
-          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -866,29 +687,27 @@ jobs:
       - name: Calculate Admin Metadata
         id: admin-meta
         run: |
-          # 根据分支或tag确定环境参数和镜像标签
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             BUILD_ENV="prod"
             IMAGE_TAG="${{ github.ref_name }}"
             echo "::notice::🚀 Admin 触发方式: TAG ($IMAGE_TAG)"
+          elif [ "${{ github.ref_name }}" = "develop" ]; then
+            BUILD_ENV="dev"
+            IMAGE_TAG="admin-develop"
+            echo "::notice::🚀 Admin 触发方式: 分支 (develop → admin-develop)"
+          elif [ "${{ github.ref_name }}" = "release" ]; then
+            BUILD_ENV="qa"
+            IMAGE_TAG="admin-release"
+            echo "::notice::🚀 Admin 触发方式: 分支 (release → admin-release)"
           else
-            if [ "${{ github.ref_name }}" = "admin-develop" ]; then
-              BUILD_ENV="dev"
-              IMAGE_TAG="admin-develop"
-            elif [ "${{ github.ref_name }}" = "admin-release" ]; then
-              BUILD_ENV="qa"
-              IMAGE_TAG="admin-release"
-            else
-              BUILD_ENV="dev"
-              IMAGE_TAG="admin-dev"
-            fi
+            BUILD_ENV="dev"
+            IMAGE_TAG="admin-dev"
             echo "::notice::🚀 Admin 触发方式: 分支 ($IMAGE_TAG)"
           fi
-          
+
           echo "build_env=$BUILD_ENV" >> $GITHUB_OUTPUT
           echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
-          
-          # 生成 tags 列表
+
           TAGS="pmtmyaggy/numind-admin:$IMAGE_TAG"
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAGS="$TAGS,pmtmyaggy/numind-admin:latest"
@@ -904,7 +723,6 @@ jobs:
           tags: ${{ steps.admin-meta.outputs.tags }}
           build-args: |
             ENV=${{ steps.admin-meta.outputs.build_env }}
-            BINARY_PATH=./bin/numind-admin-linux-amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -913,7 +731,7 @@ jobs:
     needs: admin_image_build
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: github.ref == 'refs/heads/admin-develop'
+    if: github.ref == 'refs/heads/develop'
     environment: admin-development
     steps:
       - name: Checkout code
@@ -952,13 +770,16 @@ jobs:
             if docker ps -q -f name=numind-admin-server-dev | grep -q .; then
               docker stop numind-admin-server-dev
             fi
-            
+
             if docker ps -aq -f name=numind-admin-server-dev | grep -q .; then
               docker rm numind-admin-server-dev
             fi
-            
+
+            docker network create numind-network 2>/dev/null || true
+
             docker run -d \
               --name numind-admin-server-dev \
+              --network numind-network \
               -p 9099:9099 \
               -e APP_ENV=dev \
               --log-opt max-size=10m \
@@ -979,7 +800,7 @@ jobs:
     needs: admin_image_build
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: github.ref == 'refs/heads/admin-release'
+    if: github.ref == 'refs/heads/release'
     environment: admin-qa
     steps:
       - name: Checkout code
@@ -1017,13 +838,16 @@ jobs:
             if docker ps -q -f name=numind-admin-server-qa | grep -q .; then
               docker stop numind-admin-server-qa
             fi
-            
+
             if docker ps -aq -f name=numind-admin-server-qa | grep -q .; then
               docker rm numind-admin-server-qa
             fi
-            
+
+            docker network create numind-network 2>/dev/null || true
+
             docker run -d \
               --name numind-admin-server-qa \
+              --network numind-network \
               -p 9103:9099 \
               -e APP_ENV=qa \
               --log-opt max-size=10m \
@@ -1083,13 +907,16 @@ jobs:
             if docker ps -q -f name=numind-admin-server-prod | grep -q .; then
               docker stop numind-admin-server-prod
             fi
-            
+
             if docker ps -aq -f name=numind-admin-server-prod | grep -q .; then
               docker rm numind-admin-server-prod
             fi
-            
+
+            docker network create numind-network 2>/dev/null || true
+
             docker run -d \
               --name numind-admin-server-prod \
+              --network numind-network \
               -p 9104:9099 \
               -e APP_ENV=prod \
               --log-opt max-size=10m \

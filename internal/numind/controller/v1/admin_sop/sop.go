@@ -347,9 +347,38 @@ func (ctrl *SopController) ListRuns(c *gin.Context) {
 		return
 	}
 
+	// 批量获取 token 和成本统计
+	runIDs := make([]uint, len(runs))
+	for i, r := range runs {
+		runIDs[i] = r.ID
+	}
+
+	stats, err := ctrl.sopBiz.GetRunsStats(c, runIDs)
+	if err != nil {
+		log.C(c).Warnw("Failed to get run stats", "error", err)
+		// 不阻断，stats 为空 map 即可
+		stats = map[uint]sop.RunStats{}
+	}
+
+	type runWithStats struct {
+		model.SopRun
+		TotalTokens int64 `json:"total_tokens"`
+		CostCents   int64 `json:"cost_cents"`
+	}
+
+	enriched := make([]runWithStats, len(runs))
+	for i, r := range runs {
+		s := stats[r.ID]
+		enriched[i] = runWithStats{
+			SopRun:      r,
+			TotalTokens: s.TotalTokens,
+			CostCents:   s.CostCents,
+		}
+	}
+
 	core.WriteResponse(c, nil, gin.H{
 		"total": total,
-		"runs":  runs,
+		"runs":  enriched,
 	})
 }
 

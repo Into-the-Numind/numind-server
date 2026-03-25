@@ -1168,7 +1168,13 @@ func (ctrl *SopController) ParseFileText(c *gin.Context) {
 	}
 
 	// 4. 让 qwen-long 读取文件并输出原始纯文本
-	text, qwenUsage, err := extractPlainTextWithQwenLong(c.Request.Context(), fileIDs)
+	parseCtx := c.Request.Context()
+	if cu, ok := c.Get("current_user"); ok {
+		if u, ok := cu.(*model.User); ok {
+			parseCtx = billing.WithBilling(parseCtx, u.ID, "sop_parse_file_text")
+		}
+	}
+	text, qwenUsage, err := extractPlainTextWithQwenLong(parseCtx, fileIDs)
 	if err != nil {
 		// 如果仍在解析中，返回file_ids方便前端轮询查询接口
 		if strings.Contains(err.Error(), "文件仍在解析中") {
@@ -1185,12 +1191,7 @@ func (ctrl *SopController) ParseFileText(c *gin.Context) {
 		return
 	}
 
-	// 记录 qwen-long 用量
-	if cu, ok := c.Get("current_user"); ok {
-		if u, ok := cu.(*model.User); ok {
-			billing.RecordLLM(u.ID, "ali", "qwen-long", "sop_parse_file_text", qwenUsage, nil)
-		}
-	}
+	_ = qwenUsage // usage recorded via billing context
 
 	core.WriteResponse(c, nil, ParseFileTextResponse{
 		Text:    strings.TrimSpace(text),
@@ -1212,19 +1213,20 @@ func (ctrl *SopController) ParseFileTextQuery(c *gin.Context) {
 	}
 
 	// 直接调用 qwen-long 读取已有 file_ids
-	text, qwenUsage, err := extractPlainTextWithQwenLong(c.Request.Context(), req.FileIDs)
+	queryCtx := c.Request.Context()
+	if cu, ok := c.Get("current_user"); ok {
+		if u, ok := cu.(*model.User); ok {
+			queryCtx = billing.WithBilling(queryCtx, u.ID, "sop_parse_file_query")
+		}
+	}
+	text, qwenUsage, err := extractPlainTextWithQwenLong(queryCtx, req.FileIDs)
 	if err != nil {
 		log.C(c).Errorw("qwen-long 解析查询失败", "error", err, "file_ids", req.FileIDs)
 		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
-	// 记录 qwen-long 用量
-	if cu, ok := c.Get("current_user"); ok {
-		if u, ok := cu.(*model.User); ok {
-			billing.RecordLLM(u.ID, "ali", "qwen-long", "sop_parse_file_query", qwenUsage, nil)
-		}
-	}
+	_ = qwenUsage // usage recorded via billing context
 
 	core.WriteResponse(c, nil, ParseFileTextResponse{
 		Text:    strings.TrimSpace(text),
@@ -1289,17 +1291,16 @@ func (ctrl *SopController) ReadImageWithQwenVL(c *gin.Context) {
 	data := buf[:n]
 
 	encoded := base64.StdEncoding.EncodeToString(data)
-	resp, visionUsage, err := ctrl.aliBiz.QianwenVision(c.Request.Context(), encoded, question, "")
+	visionCtx := c.Request.Context()
+	if cu, ok := c.Get("current_user"); ok {
+		if u, ok := cu.(*model.User); ok {
+			visionCtx = billing.WithBilling(visionCtx, u.ID, "sop_image_read")
+		}
+	}
+	resp, _, err := ctrl.aliBiz.QianwenVision(visionCtx, encoded, question, "")
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("%s", err.Error()), nil)
 		return
-	}
-
-	// 记录 Vision 用量
-	if cu, ok := c.Get("current_user"); ok {
-		if u, ok := cu.(*model.User); ok {
-			billing.RecordVision(u.ID, "ali", "qwen-vl-max", "sop_image_read", visionUsage, nil)
-		}
 	}
 
 	core.WriteResponse(c, nil, gin.H{
@@ -1600,30 +1601,28 @@ func (ctrl *SopController) checkQualityWithAI(ctx context.Context, text string, 
 		{"role": "user", "content": prompt},
 	}
 
+	// 注入计费上下文
+	ctx = billing.WithBilling(ctx, userID, "sop_quality_check")
+
 	// 调用AI（优先使用火山方舟，失败后降级到阿里百炼）
 	var aiResponse string
 	var err error
 
 	// 先尝试火山方舟
 	if ctrl.volcBiz != nil {
-		var volcUsage *billing.TokenUsage
-		aiResponse, volcUsage, err = ctrl.volcBiz.VolcTextStream(ctx, messages, 2000, 0.7)
+		aiResponse, _, err = ctrl.volcBiz.VolcTextStream(ctx, messages, 2000, 0.7)
 		if err != nil {
 			log.C(ctx).Warnw("火山方舟API失败，尝试阿里百炼降级", "error", err.Error())
-		} else {
-			billing.RecordLLM(userID, "volc", "deepseek-v3", "sop_quality_check", volcUsage, nil)
 		}
 	}
 
 	// 如果火山方舟失败或不可用，降级到阿里百炼
 	if err != nil || aiResponse == "" {
 		if ctrl.aliBiz != nil {
-			var aliUsage *billing.TokenUsage
-			aiResponse, aliUsage, err = ctrl.aliBiz.QianwenTextStream(messages, 2000, 0.7)
+			aiResponse, _, err = ctrl.aliBiz.QianwenTextStream(ctx, messages, 2000, 0.7)
 			if err != nil {
 				return nil, fmt.Errorf("AI API调用失败: %w", err)
 			}
-			billing.RecordLLM(userID, "ali", "qwen-plus", "sop_quality_check", aliUsage, billing.Metadata("is_fallback", "true"))
 		} else {
 			return nil, fmt.Errorf("AI服务不可用")
 		}
@@ -2161,9 +2160,15 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 		deepThinking = *req.DeepThinking
 	}
 
+	// 注入计费上下文
+	if cu, ok := c.Get("current_user"); ok {
+		if u, ok := cu.(*model.User); ok {
+			heartbeatCtx = billing.WithBilling(heartbeatCtx, u.ID, "sop_text_edit")
+		}
+	}
+
 	// 先尝试火山方舟
 	var editUsage *billing.TokenUsage
-	var editProvider, editModel string
 	if ctrl.volcBiz != nil {
 		editUsage, aiErr = ctrl.callVolcEditStream(heartbeatCtx, messages, deepThinking, func(event string, chunk string) error {
 			hasResponse = true
@@ -2201,8 +2206,6 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 		})
 
 		if aiErr == nil {
-			editProvider = "volc"
-			editModel = "deepseek-v3"
 			log.C(c).Infow("火山方舟API调用成功")
 		} else {
 			log.C(c).Warnw("火山方舟API失败，尝试阿里百炼降级", "error", aiErr)
@@ -2248,8 +2251,6 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 			})
 
 			if aiErr == nil {
-				editProvider = "ali"
-				editModel = getAliConfig("text", "model")
 				log.C(c).Infow("阿里百炼API降级成功")
 			}
 		} else {
@@ -2257,14 +2258,7 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 		}
 	}
 
-	// 记录文本编辑用量
-	if aiErr == nil {
-		if cu, ok := c.Get("current_user"); ok {
-			if u, ok := cu.(*model.User); ok {
-				billing.RecordLLM(u.ID, editProvider, editModel, "sop_text_edit", editUsage, nil)
-			}
-		}
-	}
+	_ = editUsage // usage recorded via billing context
 
 	// 9. 处理错误
 	if aiErr != nil {

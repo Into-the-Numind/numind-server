@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"numind-server/internal/pkg/httpclient"
+	"numind-server/internal/pkg/langfuse"
 	pkglog "numind-server/internal/pkg/log"
 
 	"github.com/spf13/viper"
@@ -35,8 +36,8 @@ type BailianConfig struct {
 }
 
 type AliBiz interface {
-	QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, *billing.TokenUsage, error)
-	QianwenEmbedding(text string) ([]float32, *billing.EmbeddingUsage, error)
+	QianwenTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, *billing.TokenUsage, error)
+	QianwenEmbedding(ctx context.Context, text string) ([]float32, *billing.EmbeddingUsage, error)
 	QianwenVision(ctx context.Context, imageURL string, prompt string, model string) (string, *billing.TokenUsage, error)
 	QianwenVisionStream(ctx context.Context, imageURL string, prompt string, model string, onToken func(token string) error) (string, *billing.TokenUsage, error)
 	GetFileUploadLease(fileName string) (string, map[string]string, string, error)
@@ -144,10 +145,11 @@ func (a *aliBiz) GenerateContent(messages []map[string]string, cfg *BailianConfi
 }
 
 // 千问（文字模型）流式API（兼容模式）
-func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, temperature float64) (string, *billing.TokenUsage, error) {
+func (a *aliBiz) QianwenTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, *billing.TokenUsage, error) {
 	url := "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+	modelName := getAliConfig("text", "model")
 	bodyMap := map[string]interface{}{
-		"model":       getAliConfig("text", "model"),
+		"model":       modelName,
 		"messages":    messages,
 		"max_tokens":  maxTokens,
 		"temperature": temperature,
@@ -165,7 +167,7 @@ func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, 
 		Method:  "POST",
 		URL:     url,
 		Body:    bytes.NewBuffer(bodyBytes),
-		Context: context.Background(),
+		Context: ctx,
 		Headers: map[string]string{
 			"Content-Type":  "application/json",
 			"Authorization": "Bearer " + getAliConfig("text", "api_key"),
@@ -226,16 +228,39 @@ func (a *aliBiz) QianwenTextStream(messages []map[string]string, maxTokens int, 
 	if err := scanner.Err(); err != nil {
 		return "", usage, err
 	}
+
+	// 自动计费
+	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+		billing.RecordLLM(bc.UserID, "ali", modelName, bc.Operation, usage, bc.Meta)
+	}
+
+	// Langfuse generation 追踪
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		genID := langfuse.SpanID()
+		opts := []langfuse.GenOption{
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("ali-text-stream"),
+			langfuse.WithGenModel(modelName),
+			langfuse.WithGenOutput(result.String()),
+		}
+		if usage != nil {
+			opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
+		}
+		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+		langfuse.EndGeneration(genID)
+	}
+
 	return result.String(), usage, nil
 }
 
 // QianwenEmbedding 调用阿里百炼 Embedding API 获取文本向量（使用 DashScope 原生接口）
-func (a *aliBiz) QianwenEmbedding(text string) ([]float32, *billing.EmbeddingUsage, error) {
+func (a *aliBiz) QianwenEmbedding(ctx context.Context, text string) ([]float32, *billing.EmbeddingUsage, error) {
 	// 使用 DashScope 原生接口，支持自定义维度参数
 	url := "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
 
+	modelName := "text-embedding-v4"
 	bodyMap := map[string]interface{}{
-		"model": "text-embedding-v4",
+		"model": modelName,
 		"input": map[string]interface{}{
 			"texts": []string{text},
 		},
@@ -256,7 +281,7 @@ func (a *aliBiz) QianwenEmbedding(text string) ([]float32, *billing.EmbeddingUsa
 		Method:  "POST",
 		URL:     url,
 		Body:    bytes.NewBuffer(bodyBytes),
-		Context: context.Background(),
+		Context: ctx,
 		Headers: map[string]string{
 			"Content-Type":  "application/json",
 			"Authorization": "Bearer " + getAliConfig("text", "api_key"),
@@ -320,6 +345,12 @@ func (a *aliBiz) QianwenEmbedding(text string) ([]float32, *billing.EmbeddingUsa
 
 	// 返回向量和用量信息
 	embUsage := &billing.EmbeddingUsage{TotalTokens: result.Usage.TotalTokens}
+
+	// 自动计费
+	if bc := billing.FromContext(ctx); bc != nil && embUsage != nil {
+		billing.RecordEmbedding(bc.UserID, "ali", modelName, bc.Operation, embUsage, bc.Meta)
+	}
+
 	return result.Output.Embeddings[0].Embedding, embUsage, nil
 }
 
@@ -424,7 +455,31 @@ func (a *aliBiz) QianwenVision(ctx context.Context, imageURL string, prompt stri
 	if result.Usage != nil {
 		result.Usage.Normalize()
 	}
-	return result.Choices[0].Message.Content, result.Usage, nil
+
+	// 自动计费
+	if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
+		billing.RecordVision(bc.UserID, "ali", model, bc.Operation, result.Usage, bc.Meta)
+	}
+
+	visionContent := result.Choices[0].Message.Content
+
+	// Langfuse generation 追踪
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		genID := langfuse.SpanID()
+		opts := []langfuse.GenOption{
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("ali-vision"),
+			langfuse.WithGenModel(model),
+			langfuse.WithGenOutput(visionContent),
+		}
+		if result.Usage != nil {
+			opts = append(opts, langfuse.WithGenUsage(result.Usage.PromptTokens, result.Usage.CompletionTokens))
+		}
+		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+		langfuse.EndGeneration(genID)
+	}
+
+	return visionContent, result.Usage, nil
 }
 
 // QianwenVisionStream 调用视觉模型读取图片并进行流式回答 (OpenAI 兼容模式)
@@ -580,6 +635,27 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 	// 检查是否收到了任何内容
 	if fullContent.Len() == 0 {
 		return "", usage, fmt.Errorf("API返回内容为空，请检查: 1) API Key是否正确 2) 模型名称是否有效(%s) 3) 图片是否可访问", model)
+	}
+
+	// 自动计费
+	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+		billing.RecordVision(bc.UserID, "ali", model, bc.Operation, usage, bc.Meta)
+	}
+
+	// Langfuse generation 追踪
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		genID := langfuse.SpanID()
+		opts := []langfuse.GenOption{
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("ali-vision-stream"),
+			langfuse.WithGenModel(model),
+			langfuse.WithGenOutput(fullContent.String()),
+		}
+		if usage != nil {
+			opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
+		}
+		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+		langfuse.EndGeneration(genID)
 	}
 
 	return fullContent.String(), usage, nil

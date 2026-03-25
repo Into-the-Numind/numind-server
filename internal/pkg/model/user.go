@@ -25,7 +25,7 @@ type User struct {
 	MonthlyResetAt *time.Time `gorm:"index" json:"monthly_reset_at"`         // 上次月度重置时间
 
 	// 用户等级字段（控制SOP运行权限）
-	UserTier    string     `gorm:"size:20;default:'free';index" json:"user_tier"` // 用户等级：free, standard, premium
+	UserTier    string     `gorm:"size:20;default:'free';index" json:"user_tier"` // 用户等级：free, trial, standard, premium
 	TierExpires *time.Time `gorm:"index" json:"tier_expires"`                     // 等级到期时间
 
 	// 管理员相关字段
@@ -43,9 +43,16 @@ func (User) TableName() string {
 // UserTier 定义用户等级常量（控制SOP运行权限）
 const (
 	UserTierFree     = "free"     // 免费用户：不可运行SOP
+	UserTierTrial    = "trial"    // 体验会员：3天10次SOP（¥9.9）
 	UserTierStandard = "standard" // 普通会员：每月20次SOP
 	UserTierPremium  = "premium"  // 高级会员：无限次SOP
 )
+
+// TrialUserSOPLimit 体验会员SOP运行次数上限
+const TrialUserSOPLimit = 10
+
+// TrialDurationDays 体验会员固定时长（天）
+const TrialDurationDays = 3
 
 // StandardUserMonthlySOPLimit 普通会员每月SOP运行次数上限
 const StandardUserMonthlySOPLimit = 20
@@ -78,6 +85,17 @@ func (u *User) CanRunSOP() (bool, string) {
 	switch actualTier {
 	case UserTierFree:
 		return false, "免费用户无法运行SOP，请升级为会员"
+
+	case UserTierTrial:
+		// 检查是否过期
+		if u.TierExpires != nil && u.TierExpires.Before(time.Now()) {
+			return false, "体验会员已过期，请升级为正式会员"
+		}
+		// 检查运行次数限制（体验会员使用 MonthlySopRuns 记录，3天内不会重置）
+		if u.MonthlySopRuns >= TrialUserSOPLimit {
+			return false, fmt.Sprintf("体验会员运行次数已达上限（%d次），请升级为正式会员", TrialUserSOPLimit)
+		}
+		return true, ""
 
 	case UserTierStandard:
 		// 检查是否过期
@@ -115,6 +133,17 @@ func (u *User) GetRemainingSOPRuns() int {
 	switch actualTier {
 	case UserTierFree:
 		return 0
+
+	case UserTierTrial:
+		// 检查是否已过期
+		if u.TierExpires != nil && u.TierExpires.Before(time.Now()) {
+			return 0
+		}
+		remaining := TrialUserSOPLimit - u.MonthlySopRuns
+		if remaining < 0 {
+			return 0
+		}
+		return remaining
 
 	case UserTierStandard:
 		// 检查是否已过期
@@ -177,13 +206,15 @@ func (TierChangeLog) TableName() string {
 }
 
 // TierRank 返回等级的数值排名（用于升级校验）
-// free=0, standard=1, premium=2
+// free=0, trial=1, standard=2, premium=3
 func TierRank(tier string) int {
 	switch tier {
-	case UserTierStandard:
+	case UserTierTrial:
 		return 1
-	case UserTierPremium:
+	case UserTierStandard:
 		return 2
+	case UserTierPremium:
+		return 3
 	default:
 		return 0
 	}
@@ -196,6 +227,8 @@ func (u *User) GetUserTierDisplayName() string {
 	switch actualTier {
 	case UserTierFree:
 		return "免费用户"
+	case UserTierTrial:
+		return "体验会员"
 	case UserTierStandard:
 		return "普通会员"
 	case UserTierPremium:

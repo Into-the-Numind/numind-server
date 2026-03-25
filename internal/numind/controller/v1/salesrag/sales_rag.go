@@ -97,9 +97,9 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 	}
 
 	var r struct {
-		Query         string   `json:"query"`       // 用户文字（可为空，仅图片时）
-		OcrTexts      []string `json:"ocr_texts"`   // OCR识别文字，仅用于知识库检索
-		Images        []string `json:"images"`       // 图片链接列表
+		Query         string   `json:"query"`     // 用户文字（可为空，仅图片时）
+		OcrTexts      []string `json:"ocr_texts"` // OCR识别文字，仅用于知识库检索
+		Images        []string `json:"images"`    // 图片链接列表
 		DocumentIDs   []uint   `json:"document_ids"`
 		ProductDocIDs []uint   `json:"product_doc_ids"` // 产品文档
 		CaseDocIDs    []uint   `json:"case_doc_ids"`    // 成功案例
@@ -1029,5 +1029,77 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 	core.WriteResponse(c, nil, map[string]string{
 		"text": ocrText,
 		"url":  cosURL,
+	})
+}
+
+// SubmitFeedback 提交消息反馈（点赞/点踩）
+func (ctrl *SalesRAGController) SubmitFeedback(c *gin.Context) {
+	sessionID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+	messageID, err := strconv.ParseUint(c.Param("message_id"), 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	var req struct {
+		Rating  int    `json:"rating" binding:"required,oneof=-1 1"`
+		Comment string `json:"comment"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("rating 必须为 1 或 -1"), nil)
+		return
+	}
+
+	err = ctrl.b.SalesRAG().SubmitFeedback(c.Request.Context(), user.ID, uint(sessionID), uint(messageID), req.Rating, req.Comment)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	core.WriteResponse(c, nil, nil)
+}
+
+// GetFeedback 获取消息反馈
+func (ctrl *SalesRAGController) GetFeedback(c *gin.Context) {
+	sessionID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+	messageID, err := strconv.ParseUint(c.Param("message_id"), 10, 64)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter, nil)
+		return
+	}
+
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	feedback, err := ctrl.b.SalesRAG().GetFeedback(c.Request.Context(), user.ID, uint(sessionID), uint(messageID))
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	if feedback == nil {
+		core.WriteResponse(c, nil, map[string]interface{}{})
+		return
+	}
+
+	core.WriteResponse(c, nil, map[string]interface{}{
+		"rating":  feedback.Rating,
+		"comment": feedback.Comment,
 	})
 }

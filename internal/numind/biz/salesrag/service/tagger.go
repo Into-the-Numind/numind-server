@@ -1,24 +1,25 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/numind/biz/salesrag/domain"
+	"numind-server/internal/pkg/billing"
+	"numind-server/internal/pkg/langfuse"
 )
 
 type ContentTagger struct {
+	dmxClient *adapter.DMXAPIClient
 }
 
 func NewContentTagger() *ContentTagger {
-	return &ContentTagger{}
+	return &ContentTagger{dmxClient: adapter.NewDMXAPIClient()}
 }
 
 // TaggingResult structure matching JSON output from LLM
@@ -68,11 +69,10 @@ func (t *ContentTagger) TagChunk(ctx context.Context, content string) ([]string,
 	return res.Tags, res.Summary, nil
 }
 
-func (t *ContentTagger) analyze(ctx context.Context, text string) (*TaggingResult, error) {
-	// Construct Prompt
-	prompt := fmt.Sprintf(`角色：销售知识专家
+// taggingPromptFallback 标注 prompt 的硬编码 fallback
+const taggingPromptFallback = `角色：销售知识专家
 任务：分析文本内容并提取元数据，输出严格合法的 JSON 格式。
-输入文本："""%s"""
+输入文本："""{{content}}"""
 
 输出格式：
 {
@@ -83,17 +83,33 @@ func (t *ContentTagger) analyze(ctx context.Context, text string) (*TaggingResul
 要求：
 1. 提取 3-5 个最能代表内容的中文关键词（例如：产品功能、具体参数、常见问题）。
 2. 生成一个非常简短的中文摘要，用于搜索结果预览。
-3. 仅输出 JSON 字符串，不要包含 Markdown 格式（如 '''json ... '''）。`, text)
+3. 仅输出 JSON 字符串，不要包含 Markdown 格式（如 ` + "```" + `json ... ` + "```" + `）。`
+
+func (t *ContentTagger) analyze(ctx context.Context, text string) (*TaggingResult, error) {
+	// 从 Langfuse 获取 prompt，fallback 到硬编码
+	tmpl, _ := langfuse.FetchPrompt("salesrag-tagging", taggingPromptFallback)
+	prompt := langfuse.Compile(tmpl, map[string]string{"content": text})
 
 	var lastErr error
 	maxRetries := 3
 
+	// 创建 Langfuse trace（如果尚未在上下文中）
+	tagCtxBase := ctx
+	if langfuse.FromContext(ctx) == nil {
+		traceID := langfuse.TraceID()
+		langfuse.CreateTrace(traceID, "salesrag_tagging", langfuse.WithTraceTags("tagging"))
+		tagCtxBase = langfuse.WithTrace(ctx, traceID)
+	}
+
 	for i := 0; i < maxRetries; i++ {
-		// Call DMXAPI directly
-		respStr, err := t.callDMXAPI(prompt)
+		// 设置计费上下文（如果尚未设置）
+		tagCtx := tagCtxBase
+		if billing.FromContext(tagCtx) == nil {
+			tagCtx = billing.WithBilling(tagCtx, 0, "salesrag_tagging")
+		}
+		messages := []adapter.ChatMessage{{Role: "user", Content: prompt}}
+		respStr, _, err := t.dmxClient.ChatCompletion(tagCtx, "qwen-turbo-latest", messages, 0.1, 1024)
 		if err != nil {
-			// Network error, might be worth retrying or failing fast.
-			// Let's retry on network error too.
 			lastErr = err
 			time.Sleep(500 * time.Millisecond)
 			continue
@@ -114,61 +130,6 @@ func (t *ContentTagger) analyze(ctx context.Context, text string) (*TaggingResul
 	}
 
 	return nil, fmt.Errorf("tagging failed after %d attempts: %w", maxRetries, lastErr)
-}
-
-// callDMXAPI invokes the qwen-turbo-latest model via DMXAPI
-func (t *ContentTagger) callDMXAPI(prompt string) (string, error) {
-	url := "https://www.dmxapi.cn/v1/chat/completions"
-	apiKey := "sk-XgINDoE22MHQfcSZnToYICS4rNnoknIrXhZHZYs3VQM9DP25" // User provided key
-	model := "qwen-turbo-latest"
-
-	payload := map[string]interface{}{
-		"model": model,
-		"messages": []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-		"temperature": 0.1,
-		"max_tokens":  1024,
-	}
-
-	bodyBytes, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(bodyBytes))
-	if err != nil {
-		return "", err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", apiKey)
-
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("DMXAPI request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("DMXAPI error %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode response failed: %w", err)
-	}
-
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("empty choices from DMXAPI")
-	}
-
-	return result.Choices[0].Message.Content, nil
 }
 
 func (t *ContentTagger) mapResult(chunk *domain.KnowledgeChunk, res *TaggingResult) {
