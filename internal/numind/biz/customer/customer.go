@@ -280,9 +280,19 @@ func (c *customerBiz) UpdateSubUserTier(ctx context.Context, parentUserID, subUs
 		return fmt.Errorf("只能升级等级，不能降级（当前: %s, 目标: %s）", currentTier, req.Tier)
 	}
 
-	// 4. 计算到期时间：从当前时刻起 + 选择月数 × 30 天（精确到秒）
+	// 4. 计算到期时间
 	now := time.Now()
-	newExpires := now.AddDate(0, 0, req.Months*30)
+	var newExpires time.Time
+	if req.Tier == model.UserTierTrial {
+		// 体验会员固定3天
+		newExpires = now.AddDate(0, 0, model.TrialDurationDays)
+	} else {
+		// 非 trial 等级必须指定有效的开通时长
+		if req.Months < 1 || req.Months > 12 {
+			return fmt.Errorf("开通时长需在 1-12 个月之间")
+		}
+		newExpires = now.AddDate(0, 0, req.Months*30)
+	}
 
 	// 5. 在事务中更新等级并写入变更日志
 	changeLog := &model.TierChangeLog{

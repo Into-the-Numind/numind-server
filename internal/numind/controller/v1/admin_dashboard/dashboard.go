@@ -52,6 +52,8 @@ func (ctrl *AdminDashboardController) GetStats(c *gin.Context) {
 		switch tc.Tier {
 		case "free":
 			tierBreakdown.Free = tc.Count
+		case "trial":
+			tierBreakdown.Trial = tc.Count
 		case "standard":
 			tierBreakdown.Standard = tc.Count
 		case "premium":

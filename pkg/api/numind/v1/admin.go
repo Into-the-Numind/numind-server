@@ -33,6 +33,7 @@ type DashboardStatsResponse struct {
 // TierBreakdown 用户等级分布
 type TierBreakdown struct {
 	Free     int64 `json:"free"`
+	Trial    int64 `json:"trial"`
 	Standard int64 `json:"standard"`
 	Premium  int64 `json:"premium"`
 }
@@ -99,7 +100,7 @@ type AdminUpdateUserStatusRequest struct {
 
 // AdminUpdateUserTierRequest 管理员更新用户等级请求
 type AdminUpdateUserTierRequest struct {
-	Tier   string `json:"tier" binding:"required,oneof=free standard premium"`
+	Tier   string `json:"tier" binding:"required,oneof=free trial standard premium"`
 	Months int    `json:"months" binding:"omitempty,min=1,max=12"`
 }
 

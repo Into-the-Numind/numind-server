@@ -884,10 +884,10 @@ func (s *billingStore) GetTierChangeStats(ctx context.Context, from, to time.Tim
 		return nil, fmt.Errorf("count total: %w", err)
 	}
 
-	// Upgrades: free→standard, free→premium, standard→premium
+	// Upgrades: free→trial, free→standard, free→premium, trial→standard, trial→premium, standard→premium
 	err = s.db.WithContext(ctx).Model(&model.TierChangeLog{}).
 		Where("created_at >= ? AND created_at < ?", from, to.AddDate(0, 0, 1)).
-		Where("(old_tier = 'free' AND new_tier IN ('standard','premium')) OR (old_tier = 'standard' AND new_tier = 'premium')").
+		Where("(old_tier = 'free' AND new_tier IN ('trial','standard','premium')) OR (old_tier = 'trial' AND new_tier IN ('standard','premium')) OR (old_tier = 'standard' AND new_tier = 'premium')").
 		Count(&stats.Upgrades).Error
 	if err != nil {
 		return nil, fmt.Errorf("count upgrades: %w", err)
