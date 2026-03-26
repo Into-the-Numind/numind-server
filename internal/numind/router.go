@@ -43,7 +43,7 @@ func installNumindRouters(g *gin.Engine) error {
 	salesRAGc := salesrag.NewSalesRAGController(b)
 
 	// 初始化SOP控制器（用户端）
-	userSopc := sopcontroller.NewSopController(b.Sop(), b.Ali(), b.Volc())
+	userSopc := sopcontroller.NewSopController(b.Sop(), b.Ali(), b.Volc(), b.Credit())
 
 	// 初始化PDF控制器
 	pdfc := pdfcontroller.NewPdfController()

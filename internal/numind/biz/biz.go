@@ -63,7 +63,7 @@ func NewBiz(ds store.IStore) *biz {
 
 	// 初始化SOP服务
 	sopExecutor := sopbiz.NewSopExecutor(b.ds)
-	b.sopService = sopbiz.NewSopBiz(b.ds, sopExecutor)
+	b.sopService = sopbiz.NewSopBiz(b.ds, sopExecutor, b.credit)
 
 	// 初始化销售 RAG 服务
 	// 向量库支持 sqlitevec（默认）、dashvector（回退兼容）、memory（测试）
