@@ -19,6 +19,7 @@ type UsageRecord struct {
 	ItemCount             int       `gorm:"default:0" json:"item_count"`      // 向量操作条数 / Rerank 文档数
 	CostCents             int64     `gorm:"default:0" json:"cost_cents"`      // 预估成本（分）
 	RevenueCents          int64     `gorm:"default:0" json:"revenue_cents"`   // 客户计费金额（分）
+	CreditsDeducted       int64     `gorm:"default:0" json:"credits_deducted"` // 本次操作扣减的积分数
 	BizRefType            string    `gorm:"size:50" json:"biz_ref_type"`      // 关联业务对象类型: sop_run, sales_session 等
 	BizRefID              uint      `gorm:"default:0" json:"biz_ref_id"`      // 关联业务对象 ID
 	IsFallback            bool      `gorm:"default:false" json:"is_fallback"` // 是否为降级调用
