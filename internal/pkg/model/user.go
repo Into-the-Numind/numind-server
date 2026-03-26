@@ -77,6 +77,13 @@ func (u *User) GetActualUserTier() string {
 	return u.UserTier
 }
 
+// HasActiveMembership 判断用户是否仍在旧会员有效期内。
+// 过渡期用：旧会员走旧逻辑，新用户走积分逻辑。
+// trial 用户即使 10 次用完，只要 3 天未到期，仍视为旧会员。
+func (u *User) HasActiveMembership() bool {
+	return u.GetActualUserTier() != UserTierFree
+}
+
 // CanRunSOP 检查用户是否可以运行SOP
 // 返回值：是否可运行，不可运行时的原因
 func (u *User) CanRunSOP() (bool, string) {
