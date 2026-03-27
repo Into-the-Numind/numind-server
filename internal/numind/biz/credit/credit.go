@@ -19,6 +19,7 @@ type ICreditBiz interface {
 	DeductCredits(ctx context.Context, userID uint, costCents int64, operation, bizRefType, bizRefID string, usageRecordID *uint64) error
 	GetBalance(ctx context.Context, userID uint) (int64, error)
 	RechargeCredits(ctx context.Context, userID uint, packageType string, totalCredits int64, expiresAt time.Time) error
+	RechargeWithOrderTx(ctx context.Context, tx *gorm.DB, userID uint, orderID uint64, productType string, months int) error
 	RunCronTasks(ctx context.Context) error
 }
 
@@ -173,6 +174,115 @@ func (b *creditBiz) RechargeCredits(ctx context.Context, userID uint, packageTyp
 
 		return nil
 	})
+}
+
+// RechargeWithOrderTx 在调用方的事务中创建积分包并更新余额（支付回调用）
+func (b *creditBiz) RechargeWithOrderTx(ctx context.Context, tx *gorm.DB, userID uint, orderID uint64, productType string, months int) error {
+	// 确保账户存在（幂等操作，不需要在事务中）
+	if _, err := b.ds.Credits().GetOrCreateAccount(ctx, userID); err != nil {
+		return fmt.Errorf("ensure credit account: %w", err)
+	}
+
+	cfg := model.GetProductConfig(productType, months)
+	if cfg == nil {
+		return fmt.Errorf("unknown product type: %s", productType)
+	}
+
+	now := time.Now()
+	var packages []model.CreditPackage
+
+	switch productType {
+	case model.ProductTypeTrial:
+		packages = []model.CreditPackage{
+			{
+				UserID:        userID,
+				Type:          model.CreditTypeTrial,
+				TotalCredits:  200,
+				RemainCredits: 200,
+				ActivatedAt:   now,
+				ExpiresAt:     now.Add(3 * 24 * time.Hour),
+				OrderID:       &orderID,
+				Status:        model.CreditPackageActive,
+			},
+		}
+	case model.ProductTypeMonthly:
+		m := cfg.Months
+		if m < 1 {
+			m = 1
+		}
+		for i := 0; i < m; i++ {
+			status := model.CreditPackagePending
+			if i == 0 {
+				status = model.CreditPackageActive
+			}
+			activatedAt := now.AddDate(0, i, 0)
+			expiresAt := now.AddDate(0, i+1, 0)
+			packages = append(packages, model.CreditPackage{
+				UserID:        userID,
+				Type:          model.CreditTypeSubscription,
+				TotalCredits:  2000,
+				RemainCredits: 2000,
+				ActivatedAt:   activatedAt,
+				ExpiresAt:     expiresAt,
+				OrderID:       &orderID,
+				Status:        status,
+			})
+		}
+	case model.ProductTypeYearly:
+		for i := 0; i < 12; i++ {
+			status := model.CreditPackagePending
+			if i == 0 {
+				status = model.CreditPackageActive
+			}
+			activatedAt := now.AddDate(0, i, 0)
+			expiresAt := now.AddDate(0, i+1, 0)
+			packages = append(packages, model.CreditPackage{
+				UserID:        userID,
+				Type:          model.CreditTypeSubscription,
+				TotalCredits:  2000,
+				RemainCredits: 2000,
+				ActivatedAt:   activatedAt,
+				ExpiresAt:     expiresAt,
+				OrderID:       &orderID,
+				Status:        status,
+			})
+		}
+	case model.ProductTypeBooster:
+		packages = []model.CreditPackage{
+			{
+				UserID:        userID,
+				Type:          model.CreditTypeBooster,
+				TotalCredits:  600,
+				RemainCredits: 600,
+				ActivatedAt:   now,
+				ExpiresAt:     now.Add(90 * 24 * time.Hour),
+				OrderID:       &orderID,
+				Status:        model.CreditPackageActive,
+			},
+		}
+	default:
+		return fmt.Errorf("unsupported product type: %s", productType)
+	}
+
+	// 在调用方的事务中创建积分包
+	if err := tx.Create(&packages).Error; err != nil {
+		return fmt.Errorf("create credit packages: %w", err)
+	}
+
+	// 计算立即可用的积分（仅 active 状态的包）
+	var immediateCredits int64
+	for _, pkg := range packages {
+		if pkg.Status == model.CreditPackageActive {
+			immediateCredits += pkg.TotalCredits
+		}
+	}
+
+	// 更新余额（使用同一个事务）
+	if err := b.ds.Credits().UpdateBalance(ctx, tx, userID, immediateCredits); err != nil {
+		return fmt.Errorf("update balance: %w", err)
+	}
+
+	return nil
 }
 
 // RunCronTasks 执行积分定时任务（激活 pending 包、过期 active 包、重算余额）
