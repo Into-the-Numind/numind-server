@@ -2,6 +2,7 @@ package payment
 
 import (
 	"context"
+	"crypto/rsa"
 	"fmt"
 	"net/http"
 
@@ -19,14 +20,17 @@ import (
 
 // WechatPayClient wraps the WeChat Pay SDK client for Native payment.
 type WechatPayClient struct {
-	client    *core.Client
-	appID     string
-	mchID     string
-	apiV3Key  string
-	notifyURL string
+	client       *core.Client
+	appID        string
+	mchID        string
+	apiV3Key     string
+	notifyURL    string
+	pubKeyID     string
+	wechatPubKey *rsa.PublicKey
 }
 
 // NewWechatPayClient reads WeChat Pay config from viper and initialises the client.
+// Supports public key mode (recommended) via wechat.wechatpay_public_key_id + wechat.wechatpay_cert_path.
 func NewWechatPayClient() (*WechatPayClient, error) {
 	appID := viper.GetString("wechat.app_id")
 	mchID := viper.GetString("wechat.mch_id")
@@ -34,26 +38,48 @@ func NewWechatPayClient() (*WechatPayClient, error) {
 	apiV3Key := viper.GetString("wechat.mch_api_v3_key")
 	privateKeyPath := viper.GetString("wechat.mch_private_key_path")
 	notifyURL := viper.GetString("wechat.notify_url")
+	pubKeyID := viper.GetString("wechat.wechatpay_public_key_id")
+	pubKeyPath := viper.GetString("wechat.wechatpay_cert_path")
 
 	privateKey, err := utils.LoadPrivateKeyWithPath(privateKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("wechat: load private key: %w", err)
 	}
 
+	var wechatPubKey *rsa.PublicKey
+	var client *core.Client
 	ctx := context.Background()
-	client, err := core.NewClient(ctx, option.WithWechatPayAutoAuthCipher(mchID, certSerialNo, privateKey, apiV3Key))
-	if err != nil {
-		return nil, fmt.Errorf("wechat: create client: %w", err)
+
+	// 公钥模式（推荐）
+	if pubKeyID != "" && pubKeyPath != "" {
+		wechatPubKey, err = utils.LoadPublicKeyWithPath(pubKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("wechat: load public key: %w", err)
+		}
+		client, err = core.NewClient(ctx, option.WithWechatPayPublicKeyAuthCipher(
+			mchID, certSerialNo, privateKey, pubKeyID, wechatPubKey,
+		))
+		if err != nil {
+			return nil, fmt.Errorf("wechat: create client (pubkey mode): %w", err)
+		}
+		log.Infow("WechatPayClient initialised (public key mode)", "mch_id", mchID, "pub_key_id", pubKeyID)
+	} else {
+		// 证书模式（兼容）
+		client, err = core.NewClient(ctx, option.WithWechatPayAutoAuthCipher(mchID, certSerialNo, privateKey, apiV3Key))
+		if err != nil {
+			return nil, fmt.Errorf("wechat: create client (cert mode): %w", err)
+		}
+		log.Infow("WechatPayClient initialised (cert mode)", "mch_id", mchID)
 	}
 
-	log.Infow("WechatPayClient initialised", "mch_id", mchID, "app_id", appID)
-
 	return &WechatPayClient{
-		client:    client,
-		appID:     appID,
-		mchID:     mchID,
-		apiV3Key:  apiV3Key,
-		notifyURL: notifyURL,
+		client:       client,
+		appID:        appID,
+		mchID:        mchID,
+		apiV3Key:     apiV3Key,
+		notifyURL:    notifyURL,
+		pubKeyID:     pubKeyID,
+		wechatPubKey: wechatPubKey,
 	}, nil
 }
 
@@ -86,15 +112,22 @@ func (w *WechatPayClient) NativePrepay(ctx context.Context, orderNo string, amou
 
 // ParseNotifyRequest verifies the WeChat Pay signature and parses the payment notification.
 // Returns outTradeNo and transactionID on success.
-//
-// TODO: Replace core.NewCertificateMapWithList(nil) with actual platform certificate loading
-// for production. Currently signature verification will fail without valid certs.
-// Consider using the downloader package or loading the cert from wechat.wechatpay_cert_path.
 func (w *WechatPayClient) ParseNotifyRequest(ctx context.Context, request *http.Request) (outTradeNo string, transactionID string, err error) {
-	handler, err := notify.NewRSANotifyHandler(
-		w.apiV3Key,
-		verifiers.NewSHA256WithRSAVerifier(core.NewCertificateMapWithList(nil)),
-	)
+	var handler *notify.Handler
+
+	if w.wechatPubKey != nil && w.pubKeyID != "" {
+		// 公钥模式验签
+		handler, err = notify.NewRSANotifyHandler(
+			w.apiV3Key,
+			verifiers.NewSHA256WithRSAPubkeyVerifier(w.pubKeyID, *w.wechatPubKey),
+		)
+	} else {
+		// 证书模式验签（需要平台证书）
+		handler, err = notify.NewRSANotifyHandler(
+			w.apiV3Key,
+			verifiers.NewSHA256WithRSAVerifier(core.NewCertificateMapWithList(nil)),
+		)
+	}
 	if err != nil {
 		return "", "", fmt.Errorf("wechat: create notify handler: %w", err)
 	}
