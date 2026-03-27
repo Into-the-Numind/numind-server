@@ -115,19 +115,15 @@ func (w *WechatPayClient) NativePrepay(ctx context.Context, orderNo string, amou
 func (w *WechatPayClient) ParseNotifyRequest(ctx context.Context, request *http.Request) (outTradeNo string, transactionID string, err error) {
 	var handler *notify.Handler
 
-	if w.wechatPubKey != nil && w.pubKeyID != "" {
-		// 公钥模式验签
-		handler, err = notify.NewRSANotifyHandler(
-			w.apiV3Key,
-			verifiers.NewSHA256WithRSAPubkeyVerifier(w.pubKeyID, *w.wechatPubKey),
-		)
-	} else {
-		// 证书模式验签（需要平台证书）
-		handler, err = notify.NewRSANotifyHandler(
-			w.apiV3Key,
-			verifiers.NewSHA256WithRSAVerifier(core.NewCertificateMapWithList(nil)),
-		)
+	if w.wechatPubKey == nil || w.pubKeyID == "" {
+		return "", "", fmt.Errorf("wechat: public key not configured, cannot verify callback signature")
 	}
+
+	// 公钥模式验签
+	handler, err = notify.NewRSANotifyHandler(
+		w.apiV3Key,
+		verifiers.NewSHA256WithRSAPubkeyVerifier(w.pubKeyID, *w.wechatPubKey),
+	)
 	if err != nil {
 		return "", "", fmt.Errorf("wechat: create notify handler: %w", err)
 	}

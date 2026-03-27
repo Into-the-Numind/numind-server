@@ -118,18 +118,22 @@ func (b *creditBiz) DeductCredits(ctx context.Context, userID uint, costCents in
 			remaining -= deduct
 		}
 
+		// 实际扣减的积分数（可能小于请求数）
+		actualDeducted := credits - remaining
 		if remaining > 0 {
-			log.Errorw("Insufficient credits during deduction", "user_id", userID, "remaining", remaining, "operation", operation)
+			log.Warnw("Partial credit deduction (insufficient balance)", "user_id", userID, "requested", credits, "actual", actualDeducted, "operation", operation)
 		}
 
-		// 更新账户余额缓存
-		if err := b.ds.Credits().UpdateBalance(ctx, tx, userID, -credits); err != nil {
-			return fmt.Errorf("update balance: %w", err)
+		// 只扣减实际消耗的积分，避免余额变负
+		if actualDeducted > 0 {
+			if err := b.ds.Credits().UpdateBalance(ctx, tx, userID, -actualDeducted); err != nil {
+				return fmt.Errorf("update balance: %w", err)
+			}
 		}
 
 		// 如果有 usageRecordID，更新 UsageRecord 的 credits_deducted
 		if usageRecordID != nil {
-			if err := tx.Model(&model.UsageRecord{}).Where("id = ?", *usageRecordID).Update("credits_deducted", credits).Error; err != nil {
+			if err := tx.Model(&model.UsageRecord{}).Where("id = ?", *usageRecordID).Update("credits_deducted", actualDeducted).Error; err != nil {
 				return fmt.Errorf("update usage record credits_deducted: %w", err)
 			}
 		}

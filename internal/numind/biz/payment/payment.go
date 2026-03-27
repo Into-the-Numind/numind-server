@@ -188,15 +188,21 @@ func (b *paymentBiz) fulfillOrder(ctx context.Context, orderNo string, tradeNo s
 	// 在单个事务中完成订单更新和积分发放
 	now := time.Now()
 	err = b.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 更新订单状态为已支付
-		if err := tx.Model(&model.Order{}).Where("id = ? AND pay_status = ?", order.ID, model.OrderStatusPending).
+		// 更新订单状态为已支付（原子幂等：WHERE pay_status = pending + 检查 RowsAffected）
+		result := tx.Model(&model.Order{}).Where("id = ? AND pay_status = ?", order.ID, model.OrderStatusPending).
 			Updates(map[string]interface{}{
 				"pay_status": model.OrderStatusPaid,
 				"trade_no":   tradeNo,
 				"paid_at":    now,
 				"updated_at": now,
-			}).Error; err != nil {
-			return fmt.Errorf("update order status: %w", err)
+			})
+		if result.Error != nil {
+			return fmt.Errorf("update order status: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			// 并发回调已处理此订单，跳过
+			log.Infow("Order already fulfilled by concurrent callback", "order_no", orderNo)
+			return nil
 		}
 
 		// 发放积分包（使用同一个事务）

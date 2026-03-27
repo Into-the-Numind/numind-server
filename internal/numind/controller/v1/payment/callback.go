@@ -25,7 +25,7 @@ func (ctrl *CallbackController) WechatNotify(c *gin.Context) {
 		log.C(c).Errorw("WechatNotify failed", "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    "FAIL",
-			"message": err.Error(),
+			"message": "处理失败",
 		})
 		return
 	}
