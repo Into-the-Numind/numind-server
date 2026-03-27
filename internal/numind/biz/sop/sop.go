@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/langfuse"
@@ -78,17 +79,19 @@ type ISopBiz interface {
 }
 
 type sopBiz struct {
-	ds       store.IStore
-	executor *SopExecutor
+	ds        store.IStore
+	executor  *SopExecutor
+	creditBiz credit.ICreditBiz
 	// runningRuns 用于存储正在执行的任务 ID，防止并发冲突（互斥锁）
 	runningRuns sync.Map
 }
 
 // NewSopBiz 创建SOP业务逻辑实例
-func NewSopBiz(ds store.IStore, executor *SopExecutor) ISopBiz {
+func NewSopBiz(ds store.IStore, executor *SopExecutor, creditBiz credit.ICreditBiz) ISopBiz {
 	return &sopBiz{
-		ds:       ds,
-		executor: executor,
+		ds:        ds,
+		executor:  executor,
+		creditBiz: creditBiz,
 	}
 }
 
@@ -722,6 +725,9 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		return fmt.Errorf("failed to update node run: %w", err)
 	}
 
+	// ===== 积分扣减（新用户走积分，旧会员跳过）=====
+	b.deductCreditsForSop(ctx, run.UserID, "sop_run", "sop_run", fmt.Sprintf("%d", runID))
+
 	// 节点执行成功后，检查是否需要计入运行次数（首次成功运行节点时计入）
 	// 条件：run.Counted = false 表示此run尚未计入运行次数
 	if !run.Counted {
@@ -1342,6 +1348,9 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 		return fmt.Errorf("failed to save assistant message: %w", err)
 	}
 
+	// ===== 积分扣减（新用户走积分，旧会员跳过）=====
+	b.deductCreditsForSop(ctx, userID, "sop_chat", "sop_chat", fmt.Sprintf("%d", runID))
+
 	// 发送包含 message_id 的完成事件
 	donePayload := fmt.Sprintf(`{"status":"completed","message_id":%d}`, assistantMsg.ID)
 	return handler("done", donePayload)
@@ -1737,6 +1746,45 @@ func (b *sopBiz) DeleteDraftRun(ctx context.Context, runID, userID uint) error {
 
 	log.C(ctx).Infow("Draft run deleted", "run_id", runID, "user_id", userID)
 	return nil
+}
+
+// deductCreditsForSop 扣减积分（旧会员跳过，新用户按预估积分扣减）
+func (b *sopBiz) deductCreditsForSop(ctx context.Context, userID uint, operation, bizRefType, bizRefID string) {
+	if b.creditBiz == nil {
+		return
+	}
+
+	// 查询用户信息，判断是否为旧会员
+	user, err := b.ds.Users().GetByID(ctx, userID)
+	if err != nil {
+		log.C(ctx).Errorw("Failed to get user for credit deduction", "user_id", userID, "error", err)
+		return
+	}
+
+	// 旧会员走旧逻辑，不扣积分
+	if user.HasActiveMembership() {
+		return
+	}
+
+	// 使用预估积分作为扣减数值（cost_cents 来自异步 billing recorder，无法同步获取）
+	estimated := credit.GetEstimatedCredits(operation)
+	if estimated <= 0 {
+		return
+	}
+
+	if err := b.creditBiz.DeductCredits(ctx, userID, estimated, operation, bizRefType, bizRefID, nil); err != nil {
+		log.C(ctx).Errorw("Failed to deduct credits",
+			"user_id", userID,
+			"operation", operation,
+			"estimated_credits", estimated,
+			"error", err)
+		// 不阻断主流程，仅记录错误
+	} else {
+		log.C(ctx).Infow("Credits deducted successfully",
+			"user_id", userID,
+			"operation", operation,
+			"credits_deducted", estimated)
+	}
 }
 
 // cleanPDFFormatCode 清理PDF格式代码等无效内容

@@ -253,7 +253,7 @@ func autoMigrate(db *gorm.DB) error {
 
 	// 迁移计费相关表
 	log.Infow("Migrating billing tables...")
-	if err := db.AutoMigrate(&model.UsageRecord{}, &model.BillingAccount{}, &model.PricingRule{}); err != nil {
+	if err := db.AutoMigrate(&model.UsageRecord{}, &model.BillingAccount{}, &model.PricingRule{}, &model.CreditAccount{}, &model.CreditPackage{}, &model.CreditTransaction{}, &model.Order{}); err != nil {
 		return fmt.Errorf("failed to migrate billing tables: %v", err)
 	}
 

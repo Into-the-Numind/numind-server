@@ -11,16 +11,6 @@ jwt:
   secret: Rtg8BPKNEf2mB4mgvKONGPZZQSaJWNLijxR42qRgq0iBb5 # JWT 签发密钥
   expire-hours: 24 # JWT 过期时间，单位：小时
 
-# HTTPS 服务器相关配置
-tls:
-  addr: :9092 # HTTPS 服务器监听地址
-  cert: /etc/ssl/certimate/youshu.asia/cert.crt # 证书
-  key: /etc/ssl/certimate/youshu.asia/cert.key # 证书 Key 文件
-
-# GRPC 相关配置
-grpc:
-  addr: :9090 # GRPC 服务器监听地址
-
 # MySQL 数据库相关配置
 db:
   host: 49.233.219.254:13306  # MySQL 机器 IP 和端口
@@ -56,18 +46,18 @@ wechat:
     mch_cert_serial_no: "6D2DCAC8D07269DB7B19F4B644F2BDB1772B983B"
     mch_api_v3_key: "fda9ba0b25b6822789676ee6dcbc01d2"
     mch_private_key_path: "/opt/numind/config/cert/apiclient_key.pem"
-    wechatpay_cert_path: "/opt/numind/config/cert/wechatpay_cert.pem"
+    wechatpay_cert_path: "/opt/numind/config/cert/pub_key.pem"
+    wechatpay_public_key_id: "PUB_KEY_ID_0117224566392025080100292023002202"
     notify_url: "https://youshu.asia/dev/api/pay/wechat/notify"
-    # 使用微信支付公钥模式（推荐，避免证书过期问题）
-    use_wechatpay_public_key: "true"
 
-# 书籍处理配置
-book:
-    use_simplified_processing: true  # 启用简化处理模式
+alipay:
+    app_id: "2021000105656380"
+    private_key: "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCuyJ+AA5INqLp08h9aXcxSeZFI4QHpAStRer4tEZImQ5Ka0nR5NbdtijaULcLTnJ3nGEFZJvYDQmCdcvoQl0pNEch9eP9nocQbTyf2Xw/wABJDC2cxdGFH1jCC43DBgYZ9O1/e4Ne46dDyZt48gQ1AfJH8yROZnbL6PPt7fnVhj40Lw1HveWwWj24qCzmTg9zq/opDWdgIvHMw1InJAnEvfKMklPsjuqLEVJC/ynfGlPU6yUJ4oO/IRrmAnSkLMS3YLSAA7y1nxBMGhRJbvMdWnL5qfontsJaoBdNi2yddfHspUHX87n0vk433OYBZbIfe3zx69RQjRYifM9uJk3wdAgMBAAECggEAQMRM/mXUUEVu2nkCDz1kwkcUBBqE16+8OpQuNoslShKOF9rWmDfEgc3OjbgrUrjddk3xoTSjwu9s18tMSKuXN9nYHk6g7ejuv2PknhH52Ohd3AQ0uAm1JqaDEW1wUfRKPsuqqe9NYNMbv0dJIMh9faDrg+2K2siqErpYQhnJK14mlAOJM6RJoF60l4g18nZhgbOZZYARnkDc+Qza5Y7GJFVK97on/IHdJICNZbn3TLZCUkTmsGIXSUlz80OQqixfukwks+7CEsfkhI9YI6jFPR7EbwoQpVdjbvw9LiyHw5KMfzOufVHrXstDnncdRmv33oPudA10qFmAZ/kcEIbmTQKBgQDUMqKGaXez6lhUCXL22qF56+YuCIYzaWvLyMLnDqljVEZ26Ay3grP17bRVKfsdggm3QMnLx2kek0m72c+uI9hagPxccGbvHiB4Lb81VDlpYZNiRJ331GAk4MZrSrXsin5uiY240IWZZfaEgMT89ByxZ4OSo+aLfK1u467C2AhIgwKBgQDS3OEyKf7Wub3iyuUCFdM9KYYFtvq9fH3Pr7tSkOxdML2bTST0sqnfIMHBeDy9yGQUguXZKEPu0GTCO3FWdDkWD6WS+mKMAR0v7iRW4NvE3UP0SOQKy2w+pe3zaAAPp90mCs6/vCuSv2RckGk8kohDZZkGmEMYwUMuTfI+G+3G3wKBgQDEWhJf9Anq9qdDI/c4izguXGYDJKohuqQfzqbjLYL6QcpuTu0thglGQO3EfHM8a87XvmC8aspPm5T3+WWeStbxcDeUxgHJtAPxkMtE6qmxZLP/k2TlJaTNmxyfvWM3/TNez3PPl0x4lIwXMhyVwMEoO5PZRkaXvgex+4cEDukjRwKBgBuMQ9d76RFAfvBMNZMKKujIrfu9JhDvXLhvaveke1zJa1wIvhVB6jN+YhHWlYjtzzVmzISMYCOpEiDWBz6WPIcHUEhdcdZ8psWGRTUcd1nG1oPpqfFHFkMxBl9QbQGemqPHsa8W9FJdssztCPKi6i5z7YQRDGMFjLNV95npqCzdAoGBAJr3e/8f2hOrZJyxZj524uf0nE+LT7CObZwJQDWlIaazaz+hFq8KO+YvPFo63FUv/wVScNOG1wLsUO4zxwTfTqMWQ0ELZ0zbecNK2APwaJiBnrF220Wk4TAOoBz4oUfWxKCxVtU8nWMTkIL0hqRnaH8JR3fOwsOCIeZZw8EeQG3G"
+    alipay_public_key: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlvmuoFkLHUfogQsdasbAOAPTHk1WiNRiNHvC+2+18xjWY+HfbTJ13m1JMRTuU9Mx/nC6UmhlgkDLhNrOIXmM8A1giyepWaEAVurYc/tvrcIU+pFdpUaIDg8XC2MPgOek7nTtOUQLlzaU2QuoNHZj+bU++Ks7GVXbnGKww7zoGIC+AXbWZuBgJF726DKxWvceKsS1G9mEEfyE5FrZTqFYSEBdfzikstKgYOj+MsXJWQKtl8zjfTnoe4GDEMklwh0fXGwe15z/C7mgSmWy7E0gj6MrHn2Ab5sOyV5Vo86zyv5cB1rC7anQhyHuWvwGL+cZmMbx+86BOsSWHgpRelA50QIDAQAB"
+    notify_url: "https://youshu.asia/dev/api/pay/alipay/notify"
+    is_production: false
 
 volc:
-  access_key: "AKLTNTkwZTA5NGUxMTk2NGQyMTkwNDgwOTk0YzQzYzUwYmM"
-  secret_key: "TkRCa056STNNVGRrTmpFMk5EVTBPV0prT1RnM05UTTVPVGhqWXpnd1kySQ=="
   api_key: "716dc07a-b121-4bae-a132-497117f74c7a"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
   model: "glm-4-7-251222"  # 测试阶段使用智谱GLM-4-7模型
@@ -75,12 +65,6 @@ volc:
   tokens: 4000
   timeout: 300s
   max_retries: 3
-
-vikingdb:
-  host: "api-vikingdb.volces.com"
-  region: "cn-beijing"
-  collection: "sales_rag"
-  index: "sales_knowledge_index"
 
 resource:
   image_path: "/opt/numind/dev/image/upload"  # 图片上传路径（持久化）
@@ -117,23 +101,10 @@ ali:
   access_key_secret: "S7S7S7S7S7S7S7S7S7S7S7S7S7" # 阿里云 AccessKey Secret
   workspace_id: "ws-7s7s7s7s7s7s" # 百炼 Workspace ID
   api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"  # 文本服务API密钥
-  api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"  # 统一API地址
-  
   # 文本生成服务
   text:
     model: "qwen-turbo"  # 千问文本模型
     timeout: 180s        # 文本生成超时时间
-  
-  # 图像生成服务
-  image:
-    api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"  # 图像服务专用API密钥
-    model: "wanx2.1-t2i-turbo"  # 万象图像模型
-    timeout: 180s        # 图像生成超时时间
-  
-  # Stable Diffusion服务
-  stable_diffusion:
-    model: "stable-diffusion-3.5-large-turbo"  # SD模型
-    timeout: 300s        # SD生成超时时间（5分钟）
 
   # 视觉理解服务
   vision:
@@ -147,276 +118,6 @@ ali:
     api_key: "sk-gMsgxE1A1QzoxexCdtuTaVjuF6w8Z52890CC5F85411F08940FAD61112A032"
     collection: "sales_rag"
 
-# 卡片配置 - 统一的卡片渲染和分页配置中心
-card:
-  # 基础尺寸配置（所有组件共用）
-  dimensions:
-    width: 1080   # 标准尺寸: 1080×1440（3:4比例）
-    height: 1440  # 基础高度，实际使用动态高度
-    padding:
-      top: 50     # 标准内边距: 60px 50px
-      right: 50
-      bottom: 50
-      left: 50
-  
-  # 渲染器配置
-  rendering:
-    enable_flow_renderer: true      # 是否启用流式分页渲染器（优先于环境变量）
-    quality: 85            # 图片质量（1-100）
-    format: "webp"         # 图片格式
-    zoom: 1.0              # 缩放比例
-    timeout: 90            # 超时时间（秒）- 压力测试时建议设置为90秒
-    max_concurrent: 2      # 最大并发渲染数（容器环境建议2，避免fork失败）
-    
-  # 分页算法参数
-  pagination:
-    algorithm: "line_based"         # 分页算法：line_based（逐字符→逐行→逐页）或 dynamic
-    char_width_factor: 1.05         # 字符宽度系数（估算每个字符的像素宽度，影响换行与行数）
-    overflow_tolerance: 0.05        # 溢出容错比例（保留配置；当前贪心分页未使用，可后续接入）
-    high_utilization_threshold: 85.0 # 高利用率阈值（保留配置；当前贪心分页未使用，可后续接入）
-    min_chars_per_line: 20          # 最少每行字符数下限（仅作为安全兜底）
-    list_item_spacing: 8            # 列表项额外行距（渲染细节，分页按正文行高估算）
-    
-  # 动态分页特有参数
-  dynamic_pagination:
-    min_height: 720          # 最小卡片高度
-    max_height: 4320         # 最大卡片高度（3倍标准高度）
-    min_bottom_padding: 20    # 最小底部留白，确保文字不被遮挡
-    max_images_per_card: 5   # 每张卡片最大图片数
-    max_text_length: 5000    # 每张卡片最大文本长度
-    base_height: 1440        # 基础高度（用于规范化）
-    base_image_height: 400   # 基础图片高度
-    image_margin_top: 20     # 图片上边距
-    image_margin_bottom: 20  # 图片下边距
-
-  # 统一的字体和样式配置
-  typography:
-    # 段落处理策略配置
-    paragraph_strategy: "markdown"  # "markdown"(默认，空行分段) 或 "single_newline"(单换行即段落)
-    
-    # 字体族配置
-    font_family: "'SourceHanSerifSC', 'STFangsong', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif"
-    base_font_size: 36        # 基础字体大小（全局 body 备用，内容按下方 sizes/line_heights）
-    line_height_ratio: 1.1   # 基础行高比例（全局 body 备用）
-    
-    # 字体大小配置
-    sizes:
-      title: 120             # 标题字号（仅封面H1使用；正文卡片不渲染H1）
-      subtitle: 36           # 副标题字号（##/###）
-      h3: 36                 # 三级标题字号（###），默认与subtitle一致
-      body: 36               # 正文字号
-      list: 36               # 列表字号
-      quote: 36              # 引用字号
-      tag: 36                # 标签字号
-      number: 36             # 数字字号
-    
-    # 行高配置
-    line_heights:
-      title: 160             # 标题行高（像素）。分页按：行高倍数=160/120
-      subtitle: 60           # 副标题行高（像素）
-      h3: 60                 # 三级标题行高（像素），默认与subtitle一致
-      body: 60               # 正文行高（像素）
-      list: 60               # 列表行高（像素）
-      quote: 60              # 引用行高（像素）
-      tag: 60                # 标签行高（像素）
-      number: 60             # 数字行高（像素）
-    
-    # 间距配置
-    spacing:
-      base_margin: 0         # 基础段后距（默认应用到 title/subtitle/body，下面的 margins 可覆盖）
-      global_multiplier: 1.0 # 统一设为 1.0，避免旧路径的倍数干扰，确保分页=渲染
-      # 各元素类型的间距调整（可选，用于精确控制）
-      # adjustments:
-      #   title:
-      #     margin_top_multiplier: 1.0    # 标题上边距倍数
-      #     margin_bottom_multiplier: 1.0 # 标题下边距倍数
-      #     line_height_multiplier: 1.0   # 标题行高倍数
-      # 边距配置 - 优化间距
-      margins:
-        title_bottom: 40     # 标题段后距（像素，仅封面H1卡片有效）
-        subtitle_bottom: 0   # 副标题段后距（像素，分页最后一行才计入）
-        h3_bottom: 0         # 三级标题段后距（像素），默认与subtitle一致
-        body_bottom: 60      # 正文段后距（像素，分页最后一行才计入）
-    
-    # 颜色配置
-    colors:
-      text: "#333333"        # 主文本颜色（深灰）
-      secondary: "#1278B8"   # 次要文本颜色（中灰）
-      accent: "#1E90FF"      # 强调色（蓝色）
-      
-    # 对齐配置
-    alignments:
-      title: "justify"       # 标题对齐
-      subtitle: "justify"    # 副标题对齐
-      body: "justify"        # 正文对齐
-      list: "justify"        # 列表对齐
-      quote: "justify"       # 引用对齐
-      tag: "left"            # 标签对齐
-      number: "justify"       # 数字对齐
-      
-    # 其他样式配置
-    styles:
-      list_indent: 20        # 列表缩进（渲染用的左缩进；不改变分页可用宽度）
-
-  # 页码配置
-  page_number:
-    enabled: true            # 是否启用页码显示
-    font_size: 24           # 页码字号
-    color: "#666666"        # 页码颜色
-    font_weight: "normal"   # 页码粗细：normal, bold
-    position:
-      bottom: 30            # 距离底部边距
-      right: 50             # 距离右侧边距
-    format: "{current}/{total}"  # 页码格式：{current}当前页，{total}总页数
-
-# 特殊渲染规则配置
-special_rules:
-  cover_card:
-    width: 1080          # 封面卡片宽度
-    height: 1440         # 封面卡片高度（3:4比例）
-    title_section:
-      font_size: 120            # 封面标题字体大小
-      line_height: 160          # 封面标题行高
-      color: "#000000"         # 封面标题颜色
-      background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
-      backdrop_filter: "blur(0px)"            # 背景模糊效果
-      box_shadow: "0 4px 20px rgba(0, 0, 0, 0.1)"  # 阴影效果
-    image_section:
-      background: "transparent"                # 图片区域透明背景
-  
-  content_card:
-    safe_area_margin: 0                       # 内容安全区域边距
-    max_content_height: 1360                  # 内容最大高度
-    overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
-
-# AI提示词配置
-ai_prompts:
-  text_processing: |
-    # 角色
-    资深内容策展编辑，具备精准识别不同内容类型并采取差异化处理策略的卓越能力
-
-    # 核心任务：内容甄别与差异化处理
-
-    1.你必须严格遵循以下两步流程处理所有文本片段：
-
-    ## 步骤一：内容甄别
-    首先，通读并理解每一个文本段落，将其准确地归类为以下两种类型之一：
-    - 类型1，纯净内容：提供事实、观点、知识或情感分享，不含任何商业推广意图的文本
-    - 类型2，混合内容：将有价值的信息与具体的商业产品/品牌进行捆绑推广的文本
-
-    ## 步骤二：差异化处理
-    根据上一步的甄别结果，对不同类型的内容执行完全不同的处理策略：
-
-    - 针对1类的处理策略：【整理与保留】
-        - 绝对禁止进行任何形式的总结、提炼或大规模改写
-        - 唯一任务是最大程度地保留原文的结构、语句和作者的原意，只进行最基础的标点修正或排序。目标是100%忠于原文
-
-    - 针对2类的处理策略：【提炼与转述】
-        - 第一步（提炼）：识别出作者通过产品想要传达的、那个与产品本身无关的"核心理念"或"生活方式"。例如，从洗发水广告中提炼出"通过精致的日常仪式提升幸福感"的理念
-        - 第二步（转述）：完全抛开原文中与产品相关的具体描述，用你自己的、流畅自然的语言，将提炼出的"核心理念"重新转述出来，使其成为一段普适性的、能引发共鸣的独立观点。目标是保留广告背后的思想火花，并使其上下文通顺、自然
-
-    2. 诊断：分析处理完毕的片段的主题关联度，将其归类为以下两类之一：
-        - 结构A：主题连贯
-        - 结构B：主题发散
-
-    3. 执行：根据诊断结果，严格执行对应路径
-
-    ## 结构A：
-    - 一级标题：提炼唯一的、精准的核心主题，作为唯一的`# 标题`
-    - 内容：整合所有素材，撰写为逻辑连贯的单篇文章。使用`## 标题`划分内部层次。除了标题以外，需要保证每个段落的末尾有正确的标点，删除明显不合理的换行。重要：正文的开头不能再重复包含标题
-    - 尊重原文语言：生成的语言应该和素材一致，如果原文为多语言，则保持每个部分对应的语言
-
-    ## 结构B：
-    - 一级标题：必须生成一个概括性标题作为唯一的`# 标题`
-    - 内容：各独立主题分别成篇，严禁虚构逻辑联系。每个独立主题必须使用`## 标题`开启新板块。除了标题以外，需要保证每个段落的末尾有正确的标点，删除明显不合理的换行。重要：正文的开头不能再重复包含标题
-    - 尊重原文语言：生成的语言应该和素材一致，如果原文为多语言，则保持每个部分对应的语言
-
-    # 绝对规则
-    1. 乱码处理: 若文本为无意义乱码 or 文本量极少（不超过100字符），则输出原文本不做任何修改。
-    2. 格式与结构规则：
-        * 所有输出有且仅有一个`#`一级标题，且字数不超过30个字符
-        * 只允许使用`#`、`##`、`-`、`>` 四种格式，禁止使用其它任何markdown格式，比如禁止使用`###`三级标题
-        * 若文本内容是连续整体，无清晰主题转换，则不强行创造`##`副标题。若原文有明显的副标题格式则遵循使用`##`副标题
-    3. 内容限制：严禁添加原文外的任何评论、摘要、索引、目录
-    4. 输出格式: 直接生成markdown格式的文本。
-    5. 重要!: 生成markdown文本，换行必须要用两个空行符号`\n\n`来表示段落的换行，禁止只使用一个空行符号`\n`来表示段落的换行
-
-    # 待处理的文本片段：{content}
-  image_generation: "基于以下文本生成一张精美的配图：{content}"
-
-# JSON处理配置 - 控制JSON响应解析和字符过滤行为
-json_processing:
-  # 字符过滤配置
-  character_filtering:
-    # 是否启用严格的控制字符过滤
-    strict_control_chars: true
-    # 是否启用扩展ASCII字符过滤
-    filter_extended_ascii: true
-    # 是否启用Unicode替换字符过滤
-    filter_unicode_replacement: true
-    # 允许的控制字符列表（除了换行符和制表符）
-    allowed_control_chars: ["\n", "\t"]
-    # 允许的Unicode范围
-    allowed_unicode_ranges:
-      # 中文字符范围
-      chinese: [0x4E00, 0x9FFF]
-      # 中文标点符号范围
-      chinese_punctuation: [0x3000, 0x303F]
-      # 全角字符范围
-      fullwidth: [0xFF00, 0xFFEF]
-      # 拉丁字母扩展范围
-      latin_extended: 
-        - [0x00C0, 0x00FF]
-        - [0x0100, 0x017F]
-        - [0x0180, 0x024F]
-      # 阿拉伯文范围
-      arabic: [0x0600, 0x06FF]
-      # 西里尔文范围
-      cyrillic: [0x0400, 0x04FF]
-      # 希腊文范围
-      greek: [0x0370, 0x03FF]
-      # 希伯来文范围
-      hebrew: [0x0590, 0x05FF]
-      # 泰文范围
-      thai: [0x0E00, 0x0E7F]
-      # 韩文范围
-      korean: [0xAC00, 0xD7AF]
-      # 日文平假名范围
-      japanese_hiragana: [0x3040, 0x309F]
-      # 日文片假名范围
-      japanese_katakana: [0x30A0, 0x30FF]
-  
-  # JSON修复配置
-  json_repair:
-    # 是否启用深度JSON修复
-    enable_deep_repair: true
-    # 是否启用字段优先提取
-    enable_field_based_extraction: true
-    # 是否启用保守修复策略
-    enable_conservative_fix: true
-    # 最大修复尝试次数
-    max_repair_attempts: 3
-    # 是否启用日志记录
-    enable_logging: true
-  
-  # 响应处理配置
-  response_processing:
-    # 是否检查Content-Length
-    check_content_length: true
-    # 是否尝试恢复不完整响应
-    enable_response_recovery: true
-    # 响应超时时间
-    timeout: "30s"
-    # 最大响应大小（字节）
-    max_response_size: 1048576  # 1MB
-
 # Langfuse AI 可观测性配置（本地默认关闭）
 langfuse:
-  enabled: false
-
-# HTML转换器配置 - 现在从card配置中继承，保留特定配置项
-html_converter:
-  # HTML转换特有配置
-  available_width: 1000          # 可用宽度
-  max_content_height: 1360       # 最大内容高度
-  # 注意：其他配置项（字体、行高、边距等）现在从card配置中继承
+  enabled: true

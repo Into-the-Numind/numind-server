@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"numind-server/internal/numind/biz"
+	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
@@ -19,11 +20,13 @@ import (
 )
 
 type SalesRAGController struct {
-	b biz.IBiz
+	b         biz.IBiz
+	creditBiz credit.ICreditBiz
 }
 
-func NewSalesRAGController(b biz.IBiz) *SalesRAGController {
-	return &SalesRAGController{b: b}
+// NewSalesRAGController 创建 SalesRAG 控制器
+func NewSalesRAGController(b biz.IBiz, creditBiz credit.ICreditBiz) *SalesRAGController {
+	return &SalesRAGController{b: b, creditBiz: creditBiz}
 }
 
 // Ingest 处理知识库文档上传
@@ -70,6 +73,12 @@ func (ctrl *SalesRAGController) Ingest(c *gin.Context) {
 		return
 	}
 
+	// 积分预检：检查用户是否有足够积分执行文件解析
+	if canPerform, reason := ctrl.creditBiz.CanPerformAIOperation(c, user, "file_parse"); !canPerform {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("%s", reason), nil)
+		return
+	}
+
 	// 使用用户输入的名称，如果未提供则回退到文件名
 	displayName := name
 	if displayName == "" {
@@ -82,6 +91,9 @@ func (ctrl *SalesRAGController) Ingest(c *gin.Context) {
 		core.WriteResponse(c, err, nil)
 		return
 	}
+
+	// 积分扣减（旧会员跳过）
+	deductCredits(c, ctrl.creditBiz, user, "file_parse", "salesrag_ingest", fmt.Sprintf("%d", docID))
 
 	core.WriteResponse(c, nil, map[string]uint{"document_id": docID})
 }
@@ -127,6 +139,12 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 	user := middleware.GetCurrentUser(c)
 	if user == nil {
 		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	// 积分预检：检查用户是否有足够积分执行聊天
+	if canPerform, reason := ctrl.creditBiz.CanPerformAIOperation(c, user, "salesrag_chat"); !canPerform {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("%s", reason), nil)
 		return
 	}
 
@@ -202,6 +220,9 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 		})
 		fmt.Fprintf(w, "data: %s\n\n", errData)
 		w.Flush()
+	} else {
+		// 积分扣减（旧会员跳过）— 仅在聊天成功完成后扣减
+		deductCredits(c, ctrl.creditBiz, user, "salesrag_chat", "salesrag_chat", fmt.Sprintf("%d", sessionID))
 	}
 }
 
@@ -698,6 +719,12 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 		return
 	}
 
+	// 积分预检：检查用户是否有足够积分执行客户档案分析
+	if canPerform, reason := ctrl.creditBiz.CanPerformAIOperation(c, user, "profile_analysis"); !canPerform {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("%s", reason), nil)
+		return
+	}
+
 	log.Infow("[AnalyzeProfile] User uploading files", "user_id", user.ID, "count", len(files))
 
 	// 设置 SSE 响应头
@@ -744,6 +771,9 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 
 	log.Infow("[AnalyzeProfile] AnalyzeProfileMultiFiles completed", "profile_length", len(profile))
 
+	// 积分扣减（旧会员跳过）
+	deductCredits(c, ctrl.creditBiz, user, "profile_analysis", "salesrag_profile", fmt.Sprintf("user_%d", user.ID))
+
 	// 发送完成并附带完整结果
 	doneData, _ := json.Marshal(map[string]interface{}{
 		"type":    "done",
@@ -771,6 +801,12 @@ func (ctrl *SalesRAGController) AnalyzeProfileText(c *gin.Context) {
 	if user == nil {
 		log.Errorw("[AnalyzeProfileText] No user found")
 		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	// 积分预检：检查用户是否有足够积分执行客户档案分析
+	if canPerform, reason := ctrl.creditBiz.CanPerformAIOperation(c, user, "profile_analysis"); !canPerform {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("%s", reason), nil)
 		return
 	}
 
@@ -817,6 +853,9 @@ func (ctrl *SalesRAGController) AnalyzeProfileText(c *gin.Context) {
 
 	log.Infow("[AnalyzeProfileText] Completed", "profile_length", len(profile))
 
+	// 积分扣减（旧会员跳过）
+	deductCredits(c, ctrl.creditBiz, user, "profile_analysis", "salesrag_profile_text", fmt.Sprintf("user_%d", user.ID))
+
 	doneData, _ := json.Marshal(map[string]interface{}{
 		"type":    "done",
 		"profile": profile,
@@ -857,6 +896,12 @@ func (ctrl *SalesRAGController) AnalyzeChatStyle(c *gin.Context) {
 	if user == nil {
 		log.Errorw("[AnalyzeChatStyle] No user found")
 		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	// 积分预检：检查用户是否有足够积分执行风格分析
+	if canPerform, reason := ctrl.creditBiz.CanPerformAIOperation(c, user, "style_analysis"); !canPerform {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("%s", reason), nil)
 		return
 	}
 
@@ -906,6 +951,9 @@ func (ctrl *SalesRAGController) AnalyzeChatStyle(c *gin.Context) {
 	}
 
 	log.Infow("[AnalyzeChatStyle] AnalyzeChatStyleStream completed", "result_length", len(result))
+
+	// 积分扣减（旧会员跳过）
+	deductCredits(c, ctrl.creditBiz, user, "style_analysis", "salesrag_style", fmt.Sprintf("user_%d", user.ID))
 
 	// 发送完成并附带完整结果
 	doneData, _ := json.Marshal(map[string]interface{}{
@@ -1006,6 +1054,12 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 		return
 	}
 
+	// 积分预检：检查用户是否有足够积分执行 OCR
+	if canPerform, reason := ctrl.creditBiz.CanPerformAIOperation(c, user, "ocr"); !canPerform {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("%s", reason), nil)
+		return
+	}
+
 	// 2. 读取图片数据
 	imageData, err := io.ReadAll(file)
 	if err != nil {
@@ -1024,6 +1078,9 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
+
+	// 积分扣减（旧会员跳过）
+	deductCredits(c, ctrl.creditBiz, user, "ocr", "salesrag_ocr", sessionID)
 
 	// 4. 返回结果
 	core.WriteResponse(c, nil, map[string]string{
@@ -1102,4 +1159,15 @@ func (ctrl *SalesRAGController) GetFeedback(c *gin.Context) {
 		"rating":  feedback.Rating,
 		"comment": feedback.Comment,
 	})
+}
+
+// deductCredits 积分扣减辅助函数（旧会员跳过，失败不阻塞主流程）
+func deductCredits(c *gin.Context, creditBiz credit.ICreditBiz, user *model.User, operation, bizRefType, bizRefID string) {
+	if user.HasActiveMembership() {
+		return
+	}
+	estimatedCost := credit.GetEstimatedCredits(operation)
+	if err := creditBiz.DeductCredits(c.Request.Context(), user.ID, estimatedCost, operation, bizRefType, bizRefID, nil); err != nil {
+		log.Warnw("Failed to deduct credits", "error", err, "user_id", user.ID, "operation", operation)
+	}
 }

@@ -3,8 +3,10 @@ package numind
 import (
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/controller/v1/admin_billing"
+	"numind-server/internal/numind/controller/v1/admin_credit"
 	"numind-server/internal/numind/controller/v1/admin_dashboard"
 	"numind-server/internal/numind/controller/v1/admin_login"
+	"numind-server/internal/numind/controller/v1/admin_order"
 	"numind-server/internal/numind/controller/v1/admin_sop"
 	"numind-server/internal/numind/controller/v1/admin_user"
 	"numind-server/internal/numind/store"
@@ -39,6 +41,7 @@ func installAdminRouters(g *gin.Engine) error {
 
 	b := biz.NewBiz(store.S)
 	sopCtrl := admin_sop.NewSopController(b.Sop())
+	adminCreditCtrl := admin_credit.New(b.Credit(), store.S)
 
 	v1Group := g.Group("/v1")
 
@@ -92,6 +95,20 @@ func installAdminRouters(g *gin.Engine) error {
 		// 笔记查看
 		adminGroup.GET("/sop/notes/:id", sopCtrl.GetNote)
 		adminGroup.GET("/sop/users/:user_id/notes", sopCtrl.ListNotesByUser)
+	}
+
+	// 积分管理
+	{
+		adminGroup.GET("/credits/users", adminCreditCtrl.ListUsers)
+		adminGroup.GET("/credits/users/:id", adminCreditCtrl.GetUserDetail)
+		adminGroup.POST("/credits/users/:id/recharge", adminCreditCtrl.Recharge)
+	}
+
+	// 订单管理
+	{
+		adminOrderCtrl := admin_order.New(store.S)
+		adminGroup.GET("/orders", adminOrderCtrl.ListOrders)
+		adminGroup.GET("/orders/:id", adminOrderCtrl.GetOrder)
 	}
 
 	// 计费管理

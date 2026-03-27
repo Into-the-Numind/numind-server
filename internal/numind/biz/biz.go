@@ -9,7 +9,9 @@ import (
 
 	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/biz/config"
+	"numind-server/internal/numind/biz/credit"
 	customerbiz "numind-server/internal/numind/biz/customer"
+	"numind-server/internal/numind/biz/payment"
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/numind/biz/salesrag/port"
@@ -33,6 +35,8 @@ type IBiz interface {
 	Sop() sopbiz.ISopBiz                 // SOP服务
 	Customers() customerbiz.ICustomerBiz // 客户管理服务
 	SalesRAG() salesrag.SalesRAGBiz      // 销售 RAG 服务
+	Credit() credit.ICreditBiz           // 积分服务
+	Payment() payment.IPaymentBiz        // 支付服务
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -43,6 +47,8 @@ type biz struct {
 	ds              store.IStore
 	sopService      sopbiz.ISopBiz
 	salesRAGService salesrag.SalesRAGBiz
+	credit          credit.ICreditBiz
+	payment         payment.IPaymentBiz
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -50,14 +56,19 @@ var _ IBiz = (*biz)(nil)
 
 // NewBiz 创建一个 IBiz 类型的实例.
 func NewBiz(ds store.IStore) *biz {
-	b := &biz{ds: ds}
+	creditBiz := credit.NewCreditBiz(ds)
+	b := &biz{
+		ds:      ds,
+		credit:  creditBiz,
+		payment: payment.NewPaymentBiz(ds, creditBiz),
+	}
 
 	// 创建 ConfigReader，用于从 Redis → MySQL → Viper 读取配置
 	_ = config.NewConfigReader(b.Configs())
 
 	// 初始化SOP服务
 	sopExecutor := sopbiz.NewSopExecutor(b.ds)
-	b.sopService = sopbiz.NewSopBiz(b.ds, sopExecutor)
+	b.sopService = sopbiz.NewSopBiz(b.ds, sopExecutor, b.credit)
 
 	// 初始化销售 RAG 服务
 	// 向量库支持 sqlitevec（默认）、dashvector（回退兼容）、memory（测试）
@@ -209,4 +220,14 @@ func (b *biz) Customers() customerbiz.ICustomerBiz {
 // SalesRAG 返回销售 RAG 服务实例.
 func (b *biz) SalesRAG() salesrag.SalesRAGBiz {
 	return b.salesRAGService
+}
+
+// Credit 返回积分服务实例.
+func (b *biz) Credit() credit.ICreditBiz {
+	return b.credit
+}
+
+// Payment 返回支付服务实例.
+func (b *biz) Payment() payment.IPaymentBiz {
+	return b.payment
 }

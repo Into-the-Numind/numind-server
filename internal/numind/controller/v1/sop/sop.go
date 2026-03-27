@@ -27,6 +27,7 @@ import (
 	"github.com/spf13/viper"
 
 	"numind-server/internal/numind/biz/ali"
+	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/store"
@@ -55,17 +56,19 @@ const (
 
 // SopController 用户端SOP控制器
 type SopController struct {
-	sopBiz  sop.ISopBiz
-	aliBiz  ali.AliBiz
-	volcBiz volc.VolcBiz
+	sopBiz    sop.ISopBiz
+	aliBiz    ali.AliBiz
+	volcBiz   volc.VolcBiz
+	creditBiz credit.ICreditBiz
 }
 
 // NewSopController 创建用户端SOP控制器
-func NewSopController(sopBiz sop.ISopBiz, aliBiz ali.AliBiz, volcBiz volc.VolcBiz) *SopController {
+func NewSopController(sopBiz sop.ISopBiz, aliBiz ali.AliBiz, volcBiz volc.VolcBiz, creditBiz credit.ICreditBiz) *SopController {
 	return &SopController{
-		sopBiz:  sopBiz,
-		aliBiz:  aliBiz,
-		volcBiz: volcBiz,
+		sopBiz:    sopBiz,
+		aliBiz:    aliBiz,
+		volcBiz:   volcBiz,
+		creditBiz: creditBiz,
 	}
 }
 
@@ -698,6 +701,12 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 	}
 	if !hasAccess {
 		core.WriteResponse(c, errno.ErrForbidden.SetMessage("无权访问此记录"), nil)
+		return
+	}
+
+	// 积分预检：检查用户是否有足够积分执行 SOP 节点
+	if canPerform, reason := ctrl.creditBiz.CanPerformAIOperation(c, user, "sop_run"); !canPerform {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("%s", reason), nil)
 		return
 	}
 
@@ -2292,6 +2301,12 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 		return
 	}
 	user := currentUser.(*model.User)
+
+	// 积分预检：检查用户是否有足够积分执行追问
+	if canPerform, reason := ctrl.creditBiz.CanPerformAIOperation(c, user, "sop_chat"); !canPerform {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("%s", reason), nil)
+		return
+	}
 
 	// 解析请求参数
 	var req struct {
