@@ -10,8 +10,8 @@
 -- 定价：≤32K 档 input ¥1/MTok output ¥2/MTok；>32K 档 input ¥2/MTok output ¥8/MTok
 -- 使用 tiered_token 模式处理分段定价
 INSERT INTO pricing_rule (service_type, provider, model, billing_mode, flat_unit,
-  input_price_per_mtok, output_price_per_mtok, price_per_call, price_per_gb,
-  sell_input_price_per_mtok, sell_output_price_per_mtok, sell_price_per_call, sell_price_per_gb,
+  input_price_per_m_tok, output_price_per_m_tok, price_per_call, price_per_gb,
+  sell_input_price_per_m_tok, sell_output_price_per_m_tok, sell_price_per_call, sell_price_per_gb,
   is_active, created_at, updated_at)
 VALUES
 -- DeepSeek V3 (Volc) — 使用加权平均价 (78.2% ≤32K + 21.8% >32K)

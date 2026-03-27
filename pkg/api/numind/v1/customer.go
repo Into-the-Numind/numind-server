@@ -12,6 +12,7 @@ type SubUserInfo struct {
 	MonthlySopRuns      int    `json:"monthly_sop_runs"`
 	AuthorizedTemplates int    `json:"authorized_templates"`
 	RemainingSopRuns    int    `json:"remaining_sop_runs"` // 剩余运行次数
+	CreditBalance       int64  `json:"credit_balance"`     // 积分余额
 }
 
 // ListSubUsersResponse 获取子客户列表响应
