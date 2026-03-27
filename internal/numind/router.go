@@ -5,6 +5,8 @@ import (
 	"numind-server/internal/numind/controller/v1/ali"
 	creditcontroller "numind-server/internal/numind/controller/v1/credit"
 	customercontroller "numind-server/internal/numind/controller/v1/customer"
+	ordercontroller "numind-server/internal/numind/controller/v1/order"
+	paymentcontroller "numind-server/internal/numind/controller/v1/payment"
 	pdfcontroller "numind-server/internal/numind/controller/v1/pdf"
 	"numind-server/internal/numind/controller/v1/salesrag"
 	sopcontroller "numind-server/internal/numind/controller/v1/sop"
@@ -180,6 +182,14 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/credits/balance", creditCtrl.GetBalance)
 	}
 
+	// 订单管理（B 客户）
+	{
+		orderCtrl := ordercontroller.New(b.Payment(), store.S)
+		authGroup.POST("/orders", orderCtrl.CreateOrder)
+		authGroup.GET("/orders", orderCtrl.ListOrders)
+		authGroup.GET("/orders/:id", orderCtrl.GetOrder)
+	}
+
 	// 客户管理相关
 	{
 		customerCtrl := customercontroller.NewCustomerController(b.Customers(), b.Users())
@@ -199,6 +209,13 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/customers/sub-users/:user_id/features", customerCtrl.ListSubUserFeatures)
 		authGroup.POST("/customers/sub-users/:user_id/features", customerCtrl.GrantFeatures)
 		authGroup.DELETE("/customers/sub-users/:user_id/features", customerCtrl.RevokeFeatures)
+	}
+
+	// 支付回调（无需鉴权）
+	{
+		paymentCtrl := paymentcontroller.New(b.Payment())
+		v1Group.POST("/payment/wechat/notify", paymentCtrl.WechatNotify)
+		v1Group.POST("/payment/alipay/notify", paymentCtrl.AlipayNotify)
 	}
 
 	return nil
