@@ -6,6 +6,7 @@ import (
 	"numind-server/internal/numind/controller/v1/admin_credit"
 	"numind-server/internal/numind/controller/v1/admin_dashboard"
 	"numind-server/internal/numind/controller/v1/admin_login"
+	"numind-server/internal/numind/controller/v1/admin_order"
 	"numind-server/internal/numind/controller/v1/admin_sop"
 	"numind-server/internal/numind/controller/v1/admin_user"
 	"numind-server/internal/numind/store"
@@ -101,6 +102,13 @@ func installAdminRouters(g *gin.Engine) error {
 		adminGroup.GET("/credits/users", adminCreditCtrl.ListUsers)
 		adminGroup.GET("/credits/users/:id", adminCreditCtrl.GetUserDetail)
 		adminGroup.POST("/credits/users/:id/recharge", adminCreditCtrl.Recharge)
+	}
+
+	// 订单管理
+	{
+		adminOrderCtrl := admin_order.New(store.S)
+		adminGroup.GET("/orders", adminOrderCtrl.ListOrders)
+		adminGroup.GET("/orders/:id", adminOrderCtrl.GetOrder)
 	}
 
 	// 计费管理
