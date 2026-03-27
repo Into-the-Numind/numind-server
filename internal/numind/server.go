@@ -46,6 +46,12 @@ func startServer() error {
 			case <-ticker.C:
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				creditBiz.RunCronTasks(ctx)
+				// 关闭过期未支付订单
+				if count, err := store.S.Orders().CloseExpiredOrders(ctx); err != nil {
+					log.Printf("Close expired orders error: %v", err)
+				} else if count > 0 {
+					log.Printf("Closed %d expired orders", count)
+				}
 				cancel()
 			case <-quit:
 				return
