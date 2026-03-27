@@ -26,6 +26,7 @@ type IStore interface {
 	LanguageStyles() LanguageStyleStore
 	Billing() BillingStore
 	Credits() CreditStore
+	Orders() OrderStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -94,4 +95,9 @@ func (ds *datastore) Billing() BillingStore {
 // Credits 返回一个实现了 CreditStore 接口的实例.
 func (ds *datastore) Credits() CreditStore {
 	return newCreditStore(ds.db)
+}
+
+// Orders 返回一个实现了 OrderStore 接口的实例.
+func (ds *datastore) Orders() OrderStore {
+	return newOrderStore(ds.db)
 }
