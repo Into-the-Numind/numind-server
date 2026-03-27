@@ -63,9 +63,13 @@ func (s *creditStore) GetOrCreateAccount(ctx context.Context, userID uint) (*mod
 }
 
 // GetBalance 获取用户积分余额（缓存值）
+// 用户未创建积分账户时返回 0（不报错）
 func (s *creditStore) GetBalance(ctx context.Context, userID uint) (int64, error) {
 	var account model.CreditAccount
 	err := s.db.WithContext(ctx).Where("user_id = ?", userID).First(&account).Error
+	if err == gorm.ErrRecordNotFound {
+		return 0, nil
+	}
 	if err != nil {
 		return 0, err
 	}
