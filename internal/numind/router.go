@@ -40,7 +40,7 @@ func installNumindRouters(g *gin.Engine) error {
 	uc := user.New(store.S)
 	b := biz.NewBiz(store.S)
 	alic := ali.New(b.Ali())
-	salesRAGc := salesrag.NewSalesRAGController(b)
+	salesRAGc := salesrag.NewSalesRAGController(b, b.Credit())
 
 	// 初始化SOP控制器（用户端）
 	userSopc := sopcontroller.NewSopController(b.Sop(), b.Ali(), b.Volc(), b.Credit())
