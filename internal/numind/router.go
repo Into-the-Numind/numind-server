@@ -3,6 +3,7 @@ package numind
 import (
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/controller/v1/ali"
+	creditcontroller "numind-server/internal/numind/controller/v1/credit"
 	customercontroller "numind-server/internal/numind/controller/v1/customer"
 	pdfcontroller "numind-server/internal/numind/controller/v1/pdf"
 	"numind-server/internal/numind/controller/v1/salesrag"
@@ -171,6 +172,12 @@ func installNumindRouters(g *gin.Engine) error {
 		billingCtrl := user_billing.New(store.S)
 		authGroup.GET("/billing/summary", billingCtrl.GetSummary)
 		authGroup.GET("/billing/records", billingCtrl.ListRecords)
+	}
+
+	// 积分查询
+	{
+		creditCtrl := creditcontroller.New(b.Credit())
+		authGroup.GET("/credits/balance", creditCtrl.GetBalance)
 	}
 
 	// 客户管理相关
