@@ -29,6 +29,7 @@ type CreditStore interface {
 	ExpireActivePackages(ctx context.Context) ([]uint, error)
 	ListAllAccountsWithBalance(ctx context.Context, offset, limit int) ([]model.CreditAccount, int64, error)
 	GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error)
+	GetLatestCreditExpiry(ctx context.Context, userID uint) (string, error)
 }
 
 type creditStore struct {
@@ -304,4 +305,20 @@ func (s *creditStore) GetQuotaBreakdown(ctx context.Context, userID uint) (subTo
 		}
 	}
 	return
+}
+
+// GetLatestCreditExpiry 获取用户最晚的 active 额度包到期时间
+func (s *creditStore) GetLatestCreditExpiry(ctx context.Context, userID uint) (string, error) {
+	var pkg model.CreditPackage
+	err := s.db.WithContext(ctx).
+		Where("user_id = ? AND status IN ?", userID, []string{model.CreditPackageActive, model.CreditPackagePending}).
+		Order("expires_at DESC").
+		First(&pkg).Error
+	if err == gorm.ErrRecordNotFound {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return pkg.ExpiresAt.Format("2006-01-02"), nil
 }

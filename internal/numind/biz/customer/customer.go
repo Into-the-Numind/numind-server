@@ -73,6 +73,7 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 		}
 
 		creditBalance, _ := c.ds.Credits().GetBalance(ctx, user.ID)
+		creditExpires, _ := c.ds.Credits().GetLatestCreditExpiry(ctx, user.ID)
 
 		subUsers = append(subUsers, v1.SubUserInfo{
 			UserID:              user.ID,
@@ -86,6 +87,7 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 			TierExpires:         expiresStr,
 			RemainingSopRuns:    user.GetRemainingSOPRuns(),
 			CreditBalance:       creditBalance,
+			CreditExpires:       creditExpires,
 		})
 	}
 

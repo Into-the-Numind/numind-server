@@ -12,7 +12,8 @@ type SubUserInfo struct {
 	MonthlySopRuns      int    `json:"monthly_sop_runs"`
 	AuthorizedTemplates int    `json:"authorized_templates"`
 	RemainingSopRuns    int    `json:"remaining_sop_runs"` // 剩余运行次数
-	CreditBalance       int64  `json:"credit_balance"`     // 积分余额
+	CreditBalance       int64  `json:"credit_balance"`     // 额度余额
+	CreditExpires       string `json:"credit_expires"`     // 最晚额度包到期时间
 }
 
 // ListSubUsersResponse 获取子客户列表响应
