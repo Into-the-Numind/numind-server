@@ -5,10 +5,12 @@ import (
 	"crypto/rsa"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/spf13/viper"
 	"github.com/wechatpay-apiv3/wechatpay-go/core"
 	"github.com/wechatpay-apiv3/wechatpay-go/core/auth/verifiers"
+	"github.com/wechatpay-apiv3/wechatpay-go/core/downloader"
 	"github.com/wechatpay-apiv3/wechatpay-go/core/notify"
 	"github.com/wechatpay-apiv3/wechatpay-go/core/option"
 	"github.com/wechatpay-apiv3/wechatpay-go/services/payments"
@@ -27,10 +29,10 @@ type WechatPayClient struct {
 	notifyURL    string
 	pubKeyID     string
 	wechatPubKey *rsa.PublicKey
+	certVisitor  *downloader.CertificateVisitor // 用于旧证书模式验签（灰度期兼容）
 }
 
 // NewWechatPayClient reads WeChat Pay config from viper and initialises the client.
-// Supports public key mode (recommended) via wechat.wechatpay_public_key_id + wechat.wechatpay_cert_path.
 func NewWechatPayClient() (*WechatPayClient, error) {
 	appID := viper.GetString("wechat.app_id")
 	mchID := viper.GetString("wechat.mch_id")
@@ -46,49 +48,57 @@ func NewWechatPayClient() (*WechatPayClient, error) {
 		return nil, fmt.Errorf("wechat: load private key: %w", err)
 	}
 
-	var wechatPubKey *rsa.PublicKey
-	var client *core.Client
+	wc := &WechatPayClient{
+		appID:    appID,
+		mchID:    mchID,
+		apiV3Key: apiV3Key,
+		notifyURL: notifyURL,
+		pubKeyID: pubKeyID,
+	}
+
 	ctx := context.Background()
 
-	// 公钥模式（推荐）
+	// 加载公钥（如果配置了）
 	if pubKeyID != "" && pubKeyPath != "" {
-		wechatPubKey, err = utils.LoadPublicKeyWithPath(pubKeyPath)
+		wc.wechatPubKey, err = utils.LoadPublicKeyWithPath(pubKeyPath)
 		if err != nil {
 			return nil, fmt.Errorf("wechat: load public key: %w", err)
 		}
-		client, err = core.NewClient(ctx, option.WithWechatPayPublicKeyAuthCipher(
-			mchID, certSerialNo, privateKey, pubKeyID, wechatPubKey,
+	}
+
+	// 创建 client（公钥模式优先）
+	if wc.wechatPubKey != nil {
+		wc.client, err = core.NewClient(ctx, option.WithWechatPayPublicKeyAuthCipher(
+			mchID, certSerialNo, privateKey, pubKeyID, wc.wechatPubKey,
 		))
 		if err != nil {
 			return nil, fmt.Errorf("wechat: create client (pubkey mode): %w", err)
 		}
 		log.Infow("WechatPayClient initialised (public key mode)", "mch_id", mchID, "pub_key_id", pubKeyID)
 	} else {
-		// 证书模式（兼容）
-		client, err = core.NewClient(ctx, option.WithWechatPayAutoAuthCipher(mchID, certSerialNo, privateKey, apiV3Key))
+		wc.client, err = core.NewClient(ctx, option.WithWechatPayAutoAuthCipher(mchID, certSerialNo, privateKey, apiV3Key))
 		if err != nil {
 			return nil, fmt.Errorf("wechat: create client (cert mode): %w", err)
 		}
 		log.Infow("WechatPayClient initialised (cert mode)", "mch_id", mchID)
 	}
 
-	return &WechatPayClient{
-		client:       client,
-		appID:        appID,
-		mchID:        mchID,
-		apiV3Key:     apiV3Key,
-		notifyURL:    notifyURL,
-		pubKeyID:     pubKeyID,
-		wechatPubKey: wechatPubKey,
-	}, nil
+	// 下载平台证书用于灰度期旧证书回调验签
+	certDownloader, err := downloader.NewCertificateDownloaderWithClient(ctx, wc.client, apiV3Key)
+	if err != nil {
+		log.Warnw("Failed to init certificate downloader (old cert callbacks will fail)", "error", err)
+	} else {
+		wc.certVisitor = certDownloader
+		log.Infow("Platform certificate downloader initialised for hybrid verify")
+	}
+
+	return wc, nil
 }
 
 // NativePrepay creates a Native payment order and returns the QR code URL.
-// amountCents is the payment amount in fen (RMB cents).
 func (w *WechatPayClient) NativePrepay(ctx context.Context, orderNo string, amountCents int64, description string) (string, error) {
 	svc := native.NativeApiService{Client: w.client}
 
-	total := int64(amountCents)
 	resp, _, err := svc.Prepay(ctx, native.PrepayRequest{
 		Appid:       core.String(w.appID),
 		Mchid:       core.String(w.mchID),
@@ -96,7 +106,7 @@ func (w *WechatPayClient) NativePrepay(ctx context.Context, orderNo string, amou
 		OutTradeNo:  core.String(orderNo),
 		NotifyUrl:   core.String(w.notifyURL),
 		Amount: &native.Amount{
-			Total:    core.Int64(total),
+			Total:    core.Int64(amountCents),
 			Currency: core.String("CNY"),
 		},
 	})
@@ -111,19 +121,27 @@ func (w *WechatPayClient) NativePrepay(ctx context.Context, orderNo string, amou
 }
 
 // ParseNotifyRequest verifies the WeChat Pay signature and parses the payment notification.
-// Returns outTradeNo and transactionID on success.
+// Supports both public key mode and certificate mode (for gray-release compatibility).
 func (w *WechatPayClient) ParseNotifyRequest(ctx context.Context, request *http.Request) (outTradeNo string, transactionID string, err error) {
+	// 根据回调头部的 Wechatpay-Serial 判断用哪种验签
+	serial := request.Header.Get("Wechatpay-Serial")
+	isPubKeyMode := strings.HasPrefix(serial, "PUB_KEY_ID_")
+
 	var handler *notify.Handler
 
-	if w.wechatPubKey == nil || w.pubKeyID == "" {
-		return "", "", fmt.Errorf("wechat: public key not configured, cannot verify callback signature")
+	if isPubKeyMode && w.wechatPubKey != nil {
+		// 公钥模式
+		handler, err = notify.NewRSANotifyHandler(
+			w.apiV3Key,
+			verifiers.NewSHA256WithRSAPubkeyVerifier(w.pubKeyID, *w.wechatPubKey),
+		)
+	} else if w.certVisitor != nil {
+		// 旧证书模式（灰度期兼容）
+		handler, err = notify.NewRSANotifyHandler(w.apiV3Key, verifiers.NewSHA256WithRSAVerifier(w.certVisitor))
+	} else {
+		return "", "", fmt.Errorf("wechat: no verifier available for serial=%s", serial)
 	}
 
-	// 公钥模式验签
-	handler, err = notify.NewRSANotifyHandler(
-		w.apiV3Key,
-		verifiers.NewSHA256WithRSAPubkeyVerifier(w.pubKeyID, *w.wechatPubKey),
-	)
 	if err != nil {
 		return "", "", fmt.Errorf("wechat: create notify handler: %w", err)
 	}
