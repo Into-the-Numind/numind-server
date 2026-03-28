@@ -72,7 +72,7 @@ func GetProductConfig(productType string, months int) *ProductConfig {
 func GetProductAmount(productType string, months int) int64 {
 	switch productType {
 	case ProductTypeTrial:
-		return 1 // TODO: 测试完成后改回 990（¥9.9）
+		return 990 // ¥9.9
 	case ProductTypeMonthly:
 		if months < 1 {
 			months = 1
