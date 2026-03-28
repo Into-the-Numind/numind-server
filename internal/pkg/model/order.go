@@ -17,7 +17,7 @@ type Order struct {
 	PayChannel  string     `gorm:"size:20" json:"pay_channel"`
 	PayStatus   string     `gorm:"size:20;not null;default:'pending'" json:"pay_status"`
 	TradeNo     string     `gorm:"size:128" json:"trade_no"`
-	CodeURL     string     `gorm:"size:512" json:"code_url"`
+	CodeURL     string     `gorm:"type:text" json:"code_url"`
 	PaidAt      *time.Time `json:"paid_at"`
 	ExpiredAt   time.Time  `gorm:"not null" json:"expired_at"`
 	CreatedAt   time.Time  `gorm:"index:idx_order_payer" json:"created_at"`
