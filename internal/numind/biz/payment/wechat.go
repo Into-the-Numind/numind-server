@@ -29,7 +29,7 @@ type WechatPayClient struct {
 	notifyURL    string
 	pubKeyID     string
 	wechatPubKey *rsa.PublicKey
-	certVisitor  *downloader.CertificateVisitor // 用于旧证书模式验签（灰度期兼容）
+	certDownloader *downloader.CertificateDownloader // 用于旧证书模式验签（灰度期兼容）
 }
 
 // NewWechatPayClient reads WeChat Pay config from viper and initialises the client.
@@ -88,7 +88,7 @@ func NewWechatPayClient() (*WechatPayClient, error) {
 	if err != nil {
 		log.Warnw("Failed to init certificate downloader (old cert callbacks will fail)", "error", err)
 	} else {
-		wc.certVisitor = certDownloader
+		wc.certDownloader = certDownloader
 		log.Infow("Platform certificate downloader initialised for hybrid verify")
 	}
 
@@ -135,9 +135,9 @@ func (w *WechatPayClient) ParseNotifyRequest(ctx context.Context, request *http.
 			w.apiV3Key,
 			verifiers.NewSHA256WithRSAPubkeyVerifier(w.pubKeyID, *w.wechatPubKey),
 		)
-	} else if w.certVisitor != nil {
+	} else if w.certDownloader != nil {
 		// 旧证书模式（灰度期兼容）
-		handler, err = notify.NewRSANotifyHandler(w.apiV3Key, verifiers.NewSHA256WithRSAVerifier(w.certVisitor))
+		handler, err = notify.NewRSANotifyHandler(w.apiV3Key, verifiers.NewSHA256WithRSAVerifier(w.certDownloader))
 	} else {
 		return "", "", fmt.Errorf("wechat: no verifier available for serial=%s", serial)
 	}
