@@ -99,7 +99,7 @@ func GetProductName(productType string, months int) string {
 	case ProductTypeYearly:
 		return "有数AI工作台-年卡"
 	case ProductTypeBooster:
-		return "有数AI工作台-积分加油包"
+		return "有数AI工作台-加量包"
 	default:
 		return "有数AI工作台"
 	}

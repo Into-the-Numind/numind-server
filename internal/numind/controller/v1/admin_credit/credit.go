@@ -139,12 +139,12 @@ func (ctrl *AdminCreditController) Recharge(c *gin.Context) {
 	}
 
 	if req.TotalCredits <= 0 {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("积分数量必须大于0"), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("额度数量必须大于0"), nil)
 		return
 	}
 
 	if req.Type == "" {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("积分包类型不能为空"), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("额度包类型不能为空"), nil)
 		return
 	}
 

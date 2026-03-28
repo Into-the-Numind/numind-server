@@ -21,6 +21,7 @@ type ICreditBiz interface {
 	RechargeCredits(ctx context.Context, userID uint, packageType string, totalCredits int64, expiresAt time.Time) error
 	RechargeWithOrderTx(ctx context.Context, tx *gorm.DB, userID uint, orderID uint64, productType string, months int) error
 	RunCronTasks(ctx context.Context) error
+	GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error)
 }
 
 type creditBiz struct {
@@ -50,11 +51,11 @@ func (b *creditBiz) CanPerformAIOperation(ctx context.Context, user *model.User,
 	if err != nil {
 		log.Errorw("Failed to get credit balance", "user_id", user.ID, "error", err)
 		// 查不到余额时也返回不足，避免免费使用
-		return false, "积分不足，请联系管理员充值"
+		return false, "额度不足，请联系管理员充值"
 	}
 
 	if balance < estimated {
-		return false, "积分不足，请联系管理员充值"
+		return false, "额度不足，请联系管理员充值"
 	}
 
 	return true, ""
@@ -142,9 +143,14 @@ func (b *creditBiz) DeductCredits(ctx context.Context, userID uint, costCents in
 	})
 }
 
-// GetBalance 获取用户积分余额
+// GetBalance 获取用户额度余额
 func (b *creditBiz) GetBalance(ctx context.Context, userID uint) (int64, error) {
 	return b.ds.Credits().GetBalance(ctx, userID)
+}
+
+// GetQuotaBreakdown 获取用户额度分布（订阅 vs 加量包）
+func (b *creditBiz) GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error) {
+	return b.ds.Credits().GetQuotaBreakdown(ctx, userID)
 }
 
 // RechargeCredits 充值积分（创建积分包并更新余额）

@@ -28,6 +28,7 @@ type CreditStore interface {
 	ActivatePendingPackages(ctx context.Context) ([]uint, error)
 	ExpireActivePackages(ctx context.Context) ([]uint, error)
 	ListAllAccountsWithBalance(ctx context.Context, offset, limit int) ([]model.CreditAccount, int64, error)
+	GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error)
 }
 
 type creditStore struct {
@@ -273,4 +274,34 @@ func (s *creditStore) ListAllAccountsWithBalance(ctx context.Context, offset, li
 		return nil, 0, err
 	}
 	return accounts, total, nil
+}
+
+// GetQuotaBreakdown 获取用户额度分布（订阅 vs 加量包），只统计 active 状态的积分包
+func (s *creditStore) GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error) {
+	type result struct {
+		Type          string
+		TotalCredits  int64
+		RemainCredits int64
+	}
+	var rows []result
+	err = s.db.WithContext(ctx).
+		Model(&model.CreditPackage{}).
+		Select("type, SUM(total_credits) as total_credits, SUM(remain_credits) as remain_credits").
+		Where("user_id = ? AND status = ?", userID, model.CreditPackageActive).
+		Group("type").
+		Find(&rows).Error
+	if err != nil {
+		return
+	}
+	for _, r := range rows {
+		switch r.Type {
+		case model.CreditTypeSubscription, model.CreditTypeTrial:
+			subTotal += r.TotalCredits
+			subRemain += r.RemainCredits
+		case model.CreditTypeBooster:
+			boosterTotal += r.TotalCredits
+			boosterRemain += r.RemainCredits
+		}
+	}
+	return
 }

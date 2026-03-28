@@ -19,7 +19,7 @@ func New(creditBiz creditbiz.ICreditBiz) *CreditController {
 	return &CreditController{creditBiz: creditBiz}
 }
 
-// GetBalance GET /v1/credits/balance — C 用户查看积分余额
+// GetBalance GET /v1/credits/balance — C 用户查看额度余额及分布
 func (c *CreditController) GetBalance(ctx *gin.Context) {
 	user := middleware.GetCurrentUser(ctx)
 	if user == nil {
@@ -33,5 +33,17 @@ func (c *CreditController) GetBalance(ctx *gin.Context) {
 		return
 	}
 
-	core.WriteResponse(ctx, nil, map[string]int64{"balance": balance})
+	subTotal, subRemain, boosterTotal, boosterRemain, err := c.creditBiz.GetQuotaBreakdown(ctx, user.ID)
+	if err != nil {
+		core.WriteResponse(ctx, errno.ErrInternalServer, nil)
+		return
+	}
+
+	core.WriteResponse(ctx, nil, map[string]int64{
+		"balance":         balance,
+		"sub_total":       subTotal,
+		"sub_remain":      subRemain,
+		"booster_total":   boosterTotal,
+		"booster_remain":  boosterRemain,
+	})
 }
