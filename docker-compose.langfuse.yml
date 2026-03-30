@@ -1,6 +1,12 @@
 # Langfuse AI 可观测性服务栈
 # 独立于主 docker-compose.yml，避免干扰现有服务
 # 启动: docker compose -f docker-compose.langfuse.yml up -d
+#
+# ��️ 升级说明（从无密码 ClickHouse 迁移）:
+#   如果 ClickHouse 已有数据且之前密码为空，需要先进入容器重置密码：
+#   1. docker exec -it langfuse-clickhouse clickhouse-client
+#   2. ALTER USER default IDENTIFIED BY 'changeme';
+#   3. 然后 docker compose -f docker-compose.langfuse.yml up -d 重启服务
 
 x-langfuse-common: &langfuse-common
   restart: unless-stopped
@@ -28,6 +34,8 @@ services:
       - DATABASE_URL=postgresql://langfuse:langfuse_pwd@langfuse-postgres:5432/langfuse
       - CLICKHOUSE_URL=http://langfuse-clickhouse:8123
       - CLICKHOUSE_MIGRATION_URL=clickhouse://langfuse-clickhouse:9000
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=changeme
       - REDIS_CONNECTION_STRING=redis://langfuse-redis:6379/0
       - LANGFUSE_S3_EVENT_UPLOAD_ENABLED=true
       - LANGFUSE_S3_EVENT_UPLOAD_BUCKET=langfuse
@@ -71,6 +79,8 @@ services:
       - DATABASE_URL=postgresql://langfuse:langfuse_pwd@langfuse-postgres:5432/langfuse
       - CLICKHOUSE_URL=http://langfuse-clickhouse:8123
       - CLICKHOUSE_MIGRATION_URL=clickhouse://langfuse-clickhouse:9000
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=changeme
       - REDIS_CONNECTION_STRING=redis://langfuse-redis:6379/0
       - LANGFUSE_S3_EVENT_UPLOAD_ENABLED=true
       - LANGFUSE_S3_EVENT_UPLOAD_BUCKET=langfuse
@@ -113,10 +123,16 @@ services:
     container_name: langfuse-clickhouse
     volumes:
       - langfuse-ch-data:/var/lib/clickhouse
+      - langfuse-ch-logs:/var/log/clickhouse-server
+      - ./clickhouse-config/keeper.xml:/etc/clickhouse-server/config.d/keeper.xml:ro
     environment:
       - CLICKHOUSE_DB=langfuse
       - CLICKHOUSE_USER=default
-      - CLICKHOUSE_PASSWORD=
+      - CLICKHOUSE_PASSWORD=changeme
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8123/ping"]
       interval: 5s
@@ -154,6 +170,7 @@ services:
 volumes:
   langfuse-pg-data:
   langfuse-ch-data:
+  langfuse-ch-logs:
   langfuse-minio-data:
 
 networks:

@@ -59,11 +59,6 @@ func (r *ConfigReader) GetFloat64(ctx context.Context, key string) float64 {
 	return viper.GetFloat64(key)
 }
 
-// GetTextProcessingPrompt 获取文本处理提示词
-func (r *ConfigReader) GetTextProcessingPrompt(ctx context.Context) string {
-	return r.GetString(ctx, "ai_prompts.text_processing")
-}
-
 // GetVolcModel 获取火山引擎模型
 func (r *ConfigReader) GetVolcModel(ctx context.Context) string {
 	model := r.GetString(ctx, "volc.model")
