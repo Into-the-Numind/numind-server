@@ -485,7 +485,7 @@ func (ctrl *MonitorController) GetStats(c *gin.Context) {
 // AdminOverview returns a system-wide monitor overview.
 // GET /admin/monitor/overview
 func (ctrl *MonitorController) AdminOverview(c *gin.Context) {
-	db := ctrl.store.DB()
+	db := ctrl.store.DB().WithContext(c)
 
 	var totalBloggers, totalNotes, totalBriefings, totalUsers int64
 	db.Model(&model.MonitorBlogger{}).Count(&totalBloggers)
@@ -506,7 +506,7 @@ func (ctrl *MonitorController) AdminOverview(c *gin.Context) {
 func (ctrl *MonitorController) AdminListBloggers(c *gin.Context) {
 	offset, limit := parsePagination(c)
 
-	db := ctrl.store.DB().Model(&model.MonitorBlogger{})
+	db := ctrl.store.DB().WithContext(c).Model(&model.MonitorBlogger{})
 
 	if v := c.Query("user_id"); v != "" {
 		db = db.Where("user_id = ?", v)
@@ -530,7 +530,7 @@ func (ctrl *MonitorController) AdminListBloggers(c *gin.Context) {
 func (ctrl *MonitorController) AdminListNotes(c *gin.Context) {
 	offset, limit := parsePagination(c)
 
-	db := ctrl.store.DB().Model(&model.MonitorNote{})
+	db := ctrl.store.DB().WithContext(c).Model(&model.MonitorNote{})
 
 	if v := c.Query("user_id"); v != "" {
 		db = db.Where("user_id = ?", v)
@@ -554,7 +554,7 @@ func (ctrl *MonitorController) AdminListNotes(c *gin.Context) {
 func (ctrl *MonitorController) AdminListBriefings(c *gin.Context) {
 	offset, limit := parsePagination(c)
 
-	db := ctrl.store.DB().Model(&model.MonitorBriefing{})
+	db := ctrl.store.DB().WithContext(c).Model(&model.MonitorBriefing{})
 
 	if v := c.Query("user_id"); v != "" {
 		db = db.Where("user_id = ?", v)

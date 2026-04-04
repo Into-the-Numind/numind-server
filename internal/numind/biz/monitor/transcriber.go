@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/spf13/viper"
@@ -20,7 +21,10 @@ import (
 )
 
 // ffmpegSem 包级别 FFmpeg 并发信号量
-var ffmpegSem chan struct{}
+var (
+	ffmpegSem     chan struct{}
+	ffmpegSemOnce sync.Once
+)
 
 // initFFmpegSem 初始化 FFmpeg 并发信号量（需在启动时调用一次）
 func initFFmpegSem() {
@@ -33,9 +37,7 @@ func initFFmpegSem() {
 
 // ensureFFmpegSem 惰性初始化 FFmpeg 信号量
 func ensureFFmpegSem() {
-	if ffmpegSem == nil {
-		initFFmpegSem()
-	}
+	ffmpegSemOnce.Do(initFFmpegSem)
 }
 
 // funasrBaseURL 获取 FunASR 服务基础 URL

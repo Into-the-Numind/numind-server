@@ -207,17 +207,14 @@ func (mb *MonitorBiz) crawlOneBlogger(ctx context.Context, client *http.Client, 
 		// 去重：检查 (user_id, xhs_note_id) 是否已存在
 		_, err := mb.store.Monitor().GetNoteByXhsID(ctx, userID, summary.NoteID)
 		if err == nil {
-			// 已存在，跳过
+			// already exists, skip
 			continue
 		}
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			// GetNoteByXhsID wraps the error, so check the underlying error message
-			// GORM wraps with "GetNoteByXhsID: record not found", use string match as fallback
-			if err.Error() != fmt.Sprintf("GetNoteByXhsID: %s", gorm.ErrRecordNotFound.Error()) {
-				log.Errorw("crawlOneBlogger: check note existence failed", "noteID", summary.NoteID, "error", err)
-				continue
-			}
+			log.Errorw("Failed to check note existence", "error", err)
+			continue
 		}
+		// Not found — this is a new note, proceed
 
 		// 获取笔记详情
 		detail, err := fetchNoteDetail(ctx, client, summary.NoteID)

@@ -25,6 +25,14 @@ const briefingSystemPromptTemplate = `你是一个内容运营分析师。基于
 // GenerateUserBriefing 生成用户简报
 // briefingType: "daily" (日报, 最近 24h) 或 "weekly" (周报, 最近 7 天)
 func (mb *MonitorBiz) GenerateUserBriefing(ctx context.Context, userID uint, briefingType string) (*model.MonitorBriefing, error) {
+	// Langfuse trace
+	traceID := langfuse.TraceID()
+	langfuse.CreateTrace(traceID, "monitor-briefing",
+		langfuse.WithUserID(userID),
+		langfuse.WithTraceTags("monitor"),
+	)
+	ctx = langfuse.WithTrace(ctx, traceID)
+
 	// 1. 计算时间范围
 	now := time.Now()
 	var from time.Time
@@ -136,8 +144,7 @@ func (mb *MonitorBiz) GenerateUserBriefing(ctx context.Context, userID uint, bri
 	if cfgErr == nil && cfg != nil && cfg.FeishuWebhook != "" {
 		SendBriefing(cfg.FeishuWebhook, briefing)
 		// 更新发送状态
-		briefing.FeishuSent = true
-		_ = mb.store.Monitor().CreateBriefing(ctx, briefing) // upsert or ignore error
+		_ = mb.store.Monitor().UpdateBriefingSent(ctx, briefing.ID, true)
 	}
 
 	log.Infow("GenerateUserBriefing: completed",
