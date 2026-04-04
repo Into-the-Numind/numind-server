@@ -11,6 +11,7 @@ import (
 	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/numind/biz/credit"
 	customerbiz "numind-server/internal/numind/biz/customer"
+	"numind-server/internal/numind/biz/monitor"
 	"numind-server/internal/numind/biz/payment"
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/numind/biz/salesrag/adapter"
@@ -21,6 +22,7 @@ import (
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/llm"
 	"numind-server/internal/pkg/log"
 
 	"github.com/spf13/viper"
@@ -37,6 +39,7 @@ type IBiz interface {
 	SalesRAG() salesrag.SalesRAGBiz      // 销售 RAG 服务
 	Credit() credit.ICreditBiz           // 积分服务
 	Payment() payment.IPaymentBiz        // 支付服务
+	Monitor() monitor.IMonitorBiz        // 博主监控服务
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -49,6 +52,7 @@ type biz struct {
 	salesRAGService salesrag.SalesRAGBiz
 	credit          credit.ICreditBiz
 	payment         payment.IPaymentBiz
+	monitorService  monitor.IMonitorBiz
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -151,6 +155,14 @@ func NewBiz(ds store.IStore) *biz {
 
 	b.salesRAGService = salesrag.NewSalesRAGBiz(b.ds, pipeline, salesRAGSvc, b.Volc(), b.Ali(), salesSessionStore, parser)
 
+	// 初始化博主监控服务
+	llmClient := llm.NewDMXAPIClient()
+	monitorCooldown := monitor.NewCooldownManager(
+		viper.GetInt("monitor.cooldown.check_minutes"),
+		viper.GetInt("monitor.cooldown.analyze_minutes"),
+	)
+	b.monitorService = monitor.NewMonitorBiz(ds, llmClient, monitorCooldown)
+
 	// 系统内置观点赛道初始化（异步，不阻塞启动，5 分钟超时保护）
 	go func() {
 		defer func() {
@@ -230,4 +242,9 @@ func (b *biz) Credit() credit.ICreditBiz {
 // Payment 返回支付服务实例.
 func (b *biz) Payment() payment.IPaymentBiz {
 	return b.payment
+}
+
+// Monitor 返回博主监控服务实例.
+func (b *biz) Monitor() monitor.IMonitorBiz {
+	return b.monitorService
 }

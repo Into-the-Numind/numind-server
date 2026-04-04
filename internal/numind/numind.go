@@ -154,6 +154,14 @@ func run() error {
 
 	// 启动 SOP draft 清理任务（每2小时清理一次超过8小时的草稿）
 	bizLayer := biz.NewBiz(store.S)
+
+	// 启动博主监控 cron 调度器
+	go func() {
+		if err := bizLayer.Monitor().StartScheduler(context.Background()); err != nil {
+			log.Errorw("Failed to start monitor scheduler", "error", err)
+		}
+	}()
+
 	go func() {
 		ticker := time.NewTicker(2 * time.Hour)
 		defer ticker.Stop()
@@ -204,6 +212,9 @@ func run() error {
 	// }
 
 	//grpcsrv.GracefulStop()
+
+	// 优雅关闭博主监控调度器
+	bizLayer.Monitor().StopScheduler()
 
 	// 优雅关闭 Langfuse 客户端
 	langfuse.C.Stop()

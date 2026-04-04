@@ -5,6 +5,7 @@ import (
 	"numind-server/internal/numind/controller/v1/ali"
 	creditcontroller "numind-server/internal/numind/controller/v1/credit"
 	customercontroller "numind-server/internal/numind/controller/v1/customer"
+	monitorcontroller "numind-server/internal/numind/controller/v1/monitor"
 	ordercontroller "numind-server/internal/numind/controller/v1/order"
 	paymentcontroller "numind-server/internal/numind/controller/v1/payment"
 	pdfcontroller "numind-server/internal/numind/controller/v1/pdf"
@@ -209,6 +210,35 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/customers/sub-users/:user_id/features", customerCtrl.ListSubUserFeatures)
 		authGroup.POST("/customers/sub-users/:user_id/features", customerCtrl.GrantFeatures)
 		authGroup.DELETE("/customers/sub-users/:user_id/features", customerCtrl.RevokeFeatures)
+	}
+
+	// 博主内容监控
+	{
+		monitorCtrl := monitorcontroller.NewMonitorController(b.Monitor(), store.S)
+
+		// 权限检查（不需要功能权限中间件，供前端查询权限状态）
+		authGroup.GET("/monitor/check-permission", monitorCtrl.CheckPermission)
+
+		// 以下所有监控路由需要功能权限检查
+		monitorGroup := authGroup.Group("/monitor")
+		monitorGroup.Use(importMw.FeaturePermission(model.FeatureKeyContentMonitor))
+
+		monitorGroup.POST("/bloggers", monitorCtrl.AddBlogger)
+		monitorGroup.GET("/bloggers", monitorCtrl.ListBloggers)
+		monitorGroup.GET("/bloggers/:id", monitorCtrl.GetBlogger)
+		monitorGroup.PUT("/bloggers/:id", monitorCtrl.UpdateBlogger)
+		monitorGroup.DELETE("/bloggers/:id", monitorCtrl.DeleteBlogger)
+		monitorGroup.POST("/bloggers/:id/check", monitorCtrl.CheckBlogger)
+		monitorGroup.POST("/check-batch", monitorCtrl.CheckBatch)
+		monitorGroup.GET("/notes", monitorCtrl.ListNotes)
+		monitorGroup.GET("/notes/:id", monitorCtrl.GetNote)
+		monitorGroup.POST("/notes/:id/analyze", monitorCtrl.AnalyzeNote)
+		monitorGroup.GET("/briefings", monitorCtrl.ListBriefings)
+		monitorGroup.GET("/briefings/:id", monitorCtrl.GetBriefing)
+		monitorGroup.POST("/briefings/generate", monitorCtrl.GenerateBriefing)
+		monitorGroup.GET("/config", monitorCtrl.GetConfig)
+		monitorGroup.PUT("/config", monitorCtrl.UpdateConfig)
+		monitorGroup.GET("/stats", monitorCtrl.GetStats)
 	}
 
 	// 支付回调（无需鉴权）

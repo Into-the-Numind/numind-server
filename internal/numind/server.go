@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/viper"
 
+	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/store"
 )
@@ -35,6 +36,14 @@ func startServer() error {
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start monitor scheduler
+	bizLayer := biz.NewBiz(store.S)
+	go func() {
+		if err := bizLayer.Monitor().StartScheduler(context.Background()); err != nil {
+			log.Printf("Failed to start monitor scheduler: %v", err)
+		}
+	}()
 
 	// Start hourly cron for credit package lifecycle management
 	creditBiz := credit.NewCreditBiz(store.S)
@@ -70,6 +79,10 @@ func startServer() error {
 	<-quit
 
 	log.Println("Shutting down server...")
+
+	// Stop monitor scheduler
+	bizLayer.Monitor().StopScheduler()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {

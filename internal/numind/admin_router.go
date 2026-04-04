@@ -9,6 +9,7 @@ import (
 	"numind-server/internal/numind/controller/v1/admin_order"
 	"numind-server/internal/numind/controller/v1/admin_sop"
 	"numind-server/internal/numind/controller/v1/admin_user"
+	monitorcontroller "numind-server/internal/numind/controller/v1/monitor"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
@@ -126,6 +127,18 @@ func installAdminRouters(g *gin.Engine) error {
 		adminGroup.GET("/billing/analytics", billingCtrl.GetAnalytics)
 		adminGroup.GET("/billing/tier-changes", billingCtrl.ListTierChangeLogs)
 		adminGroup.GET("/billing/tier-changes/stats", billingCtrl.GetTierChangeStats)
+	}
+
+	// 博主内容监控管理
+	{
+		monitorCtrl := monitorcontroller.NewMonitorController(b.Monitor(), store.S)
+		adminMonitorGroup := adminGroup.Group("/monitor")
+		adminMonitorGroup.GET("/overview", monitorCtrl.AdminOverview)
+		adminMonitorGroup.GET("/bloggers", monitorCtrl.AdminListBloggers)
+		adminMonitorGroup.GET("/notes", monitorCtrl.AdminListNotes)
+		adminMonitorGroup.GET("/briefings", monitorCtrl.AdminListBriefings)
+		adminMonitorGroup.GET("/users/:user_id/config", monitorCtrl.AdminGetUserConfig)
+		adminMonitorGroup.PUT("/users/:user_id/config", monitorCtrl.AdminUpdateUserConfig)
 	}
 
 	return nil

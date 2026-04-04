@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/llm"
 	"numind-server/internal/pkg/model"
 )
@@ -52,10 +54,10 @@ type IMonitorBiz interface {
 
 // MonitorBiz implements IMonitorBiz
 type MonitorBiz struct {
-	store    store.IStore
-	llm      *llm.DMXAPIClient
-	cooldown *CooldownManager
-	// scheduler *MonitorScheduler // will be defined in scheduler.go (Task 8)
+	store     store.IStore
+	llm       *llm.DMXAPIClient
+	cooldown  *CooldownManager
+	scheduler *MonitorScheduler
 }
 
 // Compile-time interface check
@@ -195,21 +197,78 @@ func (mb *MonitorBiz) CheckBatch(ctx context.Context, userID uint, bloggerIDs []
 	return mb.CrawlBloggers(ctx, userID, bloggerIDs)
 }
 
-// AnalyzeNote 触发单条笔记的 AI 分析（Task 7 实现）
+// AnalyzeNote 触发单条笔记的 AI 分析
+// 验证所有权，检查冷却时间，注入计费上下文，调用 AnalyzeSingleNote。
 func (mb *MonitorBiz) AnalyzeNote(ctx context.Context, userID, noteID uint) error {
+	// 1. 获取笔记并验证所有权
+	note, err := mb.store.Monitor().GetNote(ctx, noteID)
+	if err != nil {
+		return fmt.Errorf("AnalyzeNote: %w", err)
+	}
+	if note.UserID != userID {
+		return errno.ErrForbidden
+	}
+
+	// 2. 检查冷却时间
+	if !mb.cooldown.CanAnalyze(noteID) {
+		return errno.ErrAnalyzeCooldown
+	}
+
+	// 3. 创建 Langfuse trace
+	traceID := langfuse.TraceID()
+	langfuse.CreateTrace(traceID, "monitor-analyze-note",
+		langfuse.WithUserID(userID),
+		langfuse.WithTraceInput(map[string]interface{}{
+			"note_id": noteID,
+			"title":   note.Title,
+		}),
+		langfuse.WithTraceTags("monitor"),
+	)
+	ctx = langfuse.WithTrace(ctx, traceID)
+
+	// 4. 注入计费上下文
+	ctx = billing.WithBilling(ctx, userID, "monitor_analyze")
+
+	// 5. 执行分析
+	if err := mb.AnalyzeSingleNote(ctx, note); err != nil {
+		return fmt.Errorf("AnalyzeNote: %w", err)
+	}
+
+	// 6. 记录冷却时间（成功后才记录）
+	mb.cooldown.RecordAnalyze(noteID)
+
 	return nil
 }
 
-// GenerateBriefing 生成简报（Task 7 实现）
+// GenerateBriefing 生成简报（默认使用用户配置的简报类型，若无配置则生成日报）
 func (mb *MonitorBiz) GenerateBriefing(ctx context.Context, userID uint) (*model.MonitorBriefing, error) {
-	return nil, nil
+	// 读取用户配置确定简报类型
+	briefingType := model.BriefingTypeDaily
+	cfg, err := mb.store.Monitor().GetConfig(ctx, userID)
+	if err == nil && cfg != nil && cfg.BriefingType != "" {
+		briefingType = cfg.BriefingType
+	}
+
+	return mb.GenerateUserBriefing(ctx, userID, briefingType)
 }
 
-// StartScheduler 启动调度器（Task 8 实现）
-func (mb *MonitorBiz) StartScheduler(ctx context.Context) error { return nil }
+// StartScheduler 启动 cron 调度器，加载所有用户的活跃配置并注册定时任务
+func (mb *MonitorBiz) StartScheduler(ctx context.Context) error {
+	mb.scheduler = NewMonitorScheduler(mb)
+	return mb.scheduler.Start(ctx)
+}
 
-// StopScheduler 停止调度器（Task 8 实现）
-func (mb *MonitorBiz) StopScheduler() {}
+// StopScheduler 优雅停止 cron 调度器
+func (mb *MonitorBiz) StopScheduler() {
+	if mb.scheduler != nil {
+		mb.scheduler.Stop()
+	}
+}
 
-// RefreshUserSchedule 刷新用户的调度计划（Task 8 实现）
-func (mb *MonitorBiz) RefreshUserSchedule(userID uint, cfg *model.MonitorConfig) error { return nil }
+// RefreshUserSchedule 刷新指定用户的调度计划（配置变更后调用）
+func (mb *MonitorBiz) RefreshUserSchedule(userID uint, cfg *model.MonitorConfig) error {
+	if mb.scheduler == nil {
+		return nil
+	}
+	return mb.scheduler.RefreshUser(userID, cfg.CrawlCron, cfg.BriefingCron, cfg.BriefingType)
+}
