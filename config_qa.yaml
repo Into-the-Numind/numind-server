@@ -51,6 +51,10 @@ wechat:
     # 使用微信支付公钥模式（推荐，避免证书过期问题）
     use_wechatpay_public_key: "true"
 
+dmxapi:
+  api_key: "sk-XgINDoE22MHQfcSZnToYICS4rNnoknIrXhZHZYs3VQM9DP25"
+  base_url: "https://www.dmxapi.cn/v1"
+
 volc:
   api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"

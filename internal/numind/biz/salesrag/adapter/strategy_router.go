@@ -8,6 +8,7 @@ import (
 
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/pkg/billing"
+	"numind-server/internal/pkg/llm"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 )
@@ -15,13 +16,13 @@ import (
 // StrategyRouter 基于LLM的策略路由器
 // 使用 qwen-turbo-latest 进行策略选择
 type StrategyRouter struct {
-	dmxClient *DMXAPIClient
+	dmxClient *llm.DMXAPIClient
 }
 
 // NewStrategyRouter 创建新的策略路由器
 func NewStrategyRouter() *StrategyRouter {
 	return &StrategyRouter{
-		dmxClient: NewDMXAPIClient(),
+		dmxClient: llm.NewDMXAPIClient(),
 	}
 }
 
@@ -63,7 +64,7 @@ func (r *StrategyRouter) SelectMetaStrategy(ctx context.Context, query string, h
 请严格按照以下JSON格式输出，不要包含其他内容：
 {"meta_id": "选中的策略ID", "reason": "选择理由"}`, options.String(), historyStr, query)
 
-	messages := []ChatMessage{
+	messages := []llm.ChatMessage{
 		{Role: "user", Content: prompt},
 	}
 
@@ -150,7 +151,7 @@ func (r *StrategyRouter) SelectBasicStrategy(ctx context.Context, query string, 
 只输出 JSON：
 {"basic_id": "选中的策略ID", "reason": "基于决策树的判断依据"}`, decisionTree, options.String(), historyStr, query)
 
-	messages := []ChatMessage{
+	messages := []llm.ChatMessage{
 		{Role: "user", Content: prompt},
 	}
 

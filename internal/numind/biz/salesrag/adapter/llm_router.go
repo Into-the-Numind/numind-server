@@ -9,6 +9,7 @@ import (
 	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/langfuse"
+	"numind-server/internal/pkg/llm"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 )
@@ -16,13 +17,13 @@ import (
 // LLMRouter 基于大模型的意图路由器 (V3 - CoT + HyDE)
 // 使用 DMXAPI 平台的 qwen-turbo-latest（深度思考模式）进行深度意图理解和查询改写
 type LLMRouter struct {
-	dmxClient *DMXAPIClient
+	dmxClient *llm.DMXAPIClient
 }
 
 // NewLLMRouter 创建新的 LLM意图路由器
 func NewLLMRouter() *LLMRouter {
 	return &LLMRouter{
-		dmxClient: NewDMXAPIClient(),
+		dmxClient: llm.NewDMXAPIClient(),
 	}
 }
 
@@ -161,7 +162,7 @@ func (r *LLMRouter) AnalyzeIntentV2(ctx context.Context, query string, history [
 		}
 	}
 
-	messages := []ChatMessage{
+	messages := []llm.ChatMessage{
 		{Role: "user", Content: prompt},
 	}
 

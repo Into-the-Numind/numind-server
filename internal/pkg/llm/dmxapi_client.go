@@ -1,4 +1,4 @@
-package adapter
+package llm
 
 import (
 	"bufio"
@@ -15,13 +15,8 @@ import (
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
-)
 
-const (
-	// DMXAPIBaseURL DMXAPI 平台基础 URL
-	DMXAPIBaseURL = "https://www.dmxapi.cn/v1"
-	// DMXAPIKey DMXAPI 平台 API Key
-	DMXAPIKey = "sk-XgINDoE22MHQfcSZnToYICS4rNnoknIrXhZHZYs3VQM9DP25"
+	"github.com/spf13/viper"
 )
 
 // DMXAPIClient DMXAPI 平台客户端
@@ -32,10 +27,20 @@ type DMXAPIClient struct {
 }
 
 // NewDMXAPIClient 创建新的 DMXAPI 客户端
+// 从 viper 配置读取 dmxapi.api_key 和 dmxapi.base_url，支持 fallback 默认值
 func NewDMXAPIClient() *DMXAPIClient {
+	apiKey := viper.GetString("dmxapi.api_key")
+	if apiKey == "" {
+		log.Warnw("dmxapi.api_key is not configured; DMXAPI calls will fail")
+	}
+	baseURL := viper.GetString("dmxapi.base_url")
+	if baseURL == "" {
+		baseURL = "https://www.dmxapi.cn/v1"
+	}
+
 	return &DMXAPIClient{
-		baseURL: DMXAPIBaseURL,
-		apiKey:  DMXAPIKey,
+		baseURL: baseURL,
+		apiKey:  apiKey,
 		// 流式响应不能使用 Client.Timeout（它覆盖整个请求生命周期包括 body 读取）
 		// 改用 Transport 级别超时：只限制建连和握手，不限制 body 读取时间
 		httpClient: &http.Client{

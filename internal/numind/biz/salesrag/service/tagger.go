@@ -8,18 +8,18 @@ import (
 	"sync"
 	"time"
 
-	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/langfuse"
+	"numind-server/internal/pkg/llm"
 )
 
 type ContentTagger struct {
-	dmxClient *adapter.DMXAPIClient
+	dmxClient *llm.DMXAPIClient
 }
 
 func NewContentTagger() *ContentTagger {
-	return &ContentTagger{dmxClient: adapter.NewDMXAPIClient()}
+	return &ContentTagger{dmxClient: llm.NewDMXAPIClient()}
 }
 
 // TaggingResult structure matching JSON output from LLM
@@ -107,7 +107,7 @@ func (t *ContentTagger) analyze(ctx context.Context, text string) (*TaggingResul
 		if billing.FromContext(tagCtx) == nil {
 			tagCtx = billing.WithBilling(tagCtx, 0, "salesrag_tagging")
 		}
-		messages := []adapter.ChatMessage{{Role: "user", Content: prompt}}
+		messages := []llm.ChatMessage{{Role: "user", Content: prompt}}
 		respStr, _, err := t.dmxClient.ChatCompletion(tagCtx, "qwen-turbo-latest", messages, 0.1, 1024)
 		if err != nil {
 			lastErr = err

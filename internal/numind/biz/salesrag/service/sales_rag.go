@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"sync"
 
-	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/langfuse"
+	"numind-server/internal/pkg/llm"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 )
@@ -44,7 +44,7 @@ type RetrievalVerdict struct {
 type SalesRAGService struct {
 	store       port.VectorStore
 	router      port.IntentRouter
-	dmxClient   *adapter.DMXAPIClient
+	dmxClient   *llm.DMXAPIClient
 	strategySvc *StrategyService // 策略引擎
 }
 
@@ -53,7 +53,7 @@ func NewSalesRAGService(store port.VectorStore, router port.IntentRouter) *Sales
 	return &SalesRAGService{
 		store:       store,
 		router:      router,
-		dmxClient:   adapter.NewDMXAPIClient(),
+		dmxClient:   llm.NewDMXAPIClient(),
 		strategySvc: NewStrategyService(),
 	}
 }

@@ -57,6 +57,10 @@ alipay:
     notify_url: "https://youshu.asia/dev/api/v1/payment/alipay/notify"
     is_production: true
 
+dmxapi:
+  api_key: "sk-XgINDoE22MHQfcSZnToYICS4rNnoknIrXhZHZYs3VQM9DP25"
+  base_url: "https://www.dmxapi.cn/v1"
+
 volc:
   api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"

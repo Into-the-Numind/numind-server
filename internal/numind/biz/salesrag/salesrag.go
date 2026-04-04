@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/numind/biz/salesrag/domain"
+	"numind-server/internal/pkg/llm"
 	"numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/billing"
@@ -208,7 +208,7 @@ type salesRAGBiz struct {
 	aliBiz            ali.AliBiz // 阿里云 API 客户端
 	sessionStore      store.SalesSessionStore
 	parser            service.PipelineParser
-	dmxClient         *adapter.DMXAPIClient // DMXAPI 客户端（用于 DeepSeek-V3.2）
+	dmxClient         *llm.DMXAPIClient // DMXAPI 客户端（用于 DeepSeek-V3.2）
 }
 
 // VolcBiz 火山引擎服务接口（避免循环依赖）
@@ -235,7 +235,7 @@ func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *s
 		aliBiz:            ali,
 		sessionStore:      sessionStore,
 		parser:            parser,
-		dmxClient:         adapter.NewDMXAPIClient(),
+		dmxClient:         llm.NewDMXAPIClient(),
 	}
 }
 
