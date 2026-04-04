@@ -122,6 +122,22 @@ ali:
     api_key: "sk-gMsgxE1A1QzoxexCdtuTaVjuF6w8Z52890CC5F85411F08940FAD61112A032"
     collection: "sales_rag"
 
+monitor:
+  xhs_service:
+    base_url: "http://localhost:8100"
+  funasr:
+    base_url: "http://localhost:10095"
+  ffmpeg_path: "ffmpeg"
+  temp_dir: "/tmp/numind-monitor/"
+  cooldown:
+    check_minutes: 5
+    analyze_minutes: 10
+  crawler:
+    max_concurrent_bloggers: 3
+    max_concurrent_ffmpeg: 2
+    request_interval_seconds: 5
+    max_consecutive_failures: 5
+
 # Langfuse AI 可观测性配置
 langfuse:
   enabled: true
