@@ -27,6 +27,7 @@ type IStore interface {
 	Billing() BillingStore
 	Credits() CreditStore
 	Orders() OrderStore
+	Monitor() IMonitorStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -100,4 +101,9 @@ func (ds *datastore) Credits() CreditStore {
 // Orders 返回一个实现了 OrderStore 接口的实例.
 func (ds *datastore) Orders() OrderStore {
 	return newOrderStore(ds.db)
+}
+
+// Monitor 返回一个实现了 IMonitorStore 接口的实例.
+func (ds *datastore) Monitor() IMonitorStore {
+	return NewMonitorStore(ds.db)
 }
