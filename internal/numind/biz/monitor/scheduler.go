@@ -27,16 +27,21 @@ func NewMonitorScheduler(mb *MonitorBiz) *MonitorScheduler {
 }
 
 // Start loads all active configs from the DB and registers cron jobs for each user.
+// The DB query is intentionally done outside the lock to avoid holding the mutex during I/O.
 func (s *MonitorScheduler) Start(ctx context.Context) error {
 	configs, err := s.monitorBiz.store.Monitor().ListAllActiveConfigs(ctx)
 	if err != nil {
 		return fmt.Errorf("MonitorScheduler.Start: %w", err)
 	}
+
+	s.mu.Lock()
 	for _, cfg := range configs {
 		if err := s.registerUserJobs(cfg.UserID, cfg.CrawlCron, cfg.BriefingCron, cfg.BriefingType); err != nil {
 			log.Warnw("Failed to register monitor jobs for user", "userID", cfg.UserID, "error", err)
 		}
 	}
+	s.mu.Unlock()
+
 	s.cron.Start()
 	log.Infow("Monitor scheduler started", "users", len(configs))
 	return nil

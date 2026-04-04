@@ -57,6 +57,9 @@ type IMonitorStore interface {
 	// Batch queries (for scheduler)
 	ListActiveBloggersByUser(ctx context.Context, userID uint) ([]model.MonitorBlogger, error)
 	ListNotesByPeriod(ctx context.Context, userID uint, from, to time.Time) ([]model.MonitorNote, error)
+
+	// ListBloggersByIDs 根据 ID 列表批量查询博主（用于所有权校验）
+	ListBloggersByIDs(ctx context.Context, ids []uint) ([]model.MonitorBlogger, error)
 }
 
 type monitorStore struct {
@@ -349,4 +352,13 @@ func (s *monitorStore) ListNotesByPeriod(ctx context.Context, userID uint, from,
 		return nil, fmt.Errorf("ListNotesByPeriod: %w", err)
 	}
 	return notes, nil
+}
+
+// ListBloggersByIDs 根据 ID 列表批量查询博主（用于所有权校验，单次 IN 查询）
+func (s *monitorStore) ListBloggersByIDs(ctx context.Context, ids []uint) ([]model.MonitorBlogger, error) {
+	var bloggers []model.MonitorBlogger
+	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Find(&bloggers).Error; err != nil {
+		return nil, fmt.Errorf("ListBloggersByIDs: %w", err)
+	}
+	return bloggers, nil
 }

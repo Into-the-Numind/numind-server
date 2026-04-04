@@ -135,11 +135,15 @@ func (mb *MonitorBiz) GetStats(ctx context.Context, userID uint) (*store.Monitor
 }
 
 // CheckPermission 检查用户是否有监控功能权限
-// Parent users automatically have all feature permissions.
-// Sub-users need explicit grant — but that check is handled by FeaturePermission middleware.
-// This endpoint just returns true if the user can reach it.
+// 主用户（parent_user_id 为 NULL）自动拥有全部功能权限；
+// 子用户需要显式授权 content_monitor 才有权限。
+// 此端点注册在 FeaturePermission 中间件之外，因此需要在 biz 层自行校验。
 func (mb *MonitorBiz) CheckPermission(ctx context.Context, userID uint) (bool, error) {
-	return true, nil
+	has, err := mb.store.Customers().HasFeaturePermission(ctx, userID, model.FeatureKeyContentMonitor)
+	if err != nil {
+		return false, fmt.Errorf("CheckPermission: %w", err)
+	}
+	return has, nil
 }
 
 // ========== Crawl triggers ==========
@@ -175,13 +179,16 @@ func (mb *MonitorBiz) CheckBatch(ctx context.Context, userID uint, bloggerIDs []
 		return fmt.Errorf("CheckBatch: blogger count must be between 1 and 50, got %d", len(bloggerIDs))
 	}
 
-	// 验证所有博主归属
-	for _, bid := range bloggerIDs {
-		blogger, err := mb.store.Monitor().GetBlogger(ctx, bid)
-		if err != nil {
-			return fmt.Errorf("CheckBatch: blogger %d: %w", bid, err)
-		}
-		if blogger.UserID != userID {
+	// 验证所有博主归属（单次 IN 查询代替 O(n) 循环）
+	bloggers, err := mb.store.Monitor().ListBloggersByIDs(ctx, bloggerIDs)
+	if err != nil {
+		return fmt.Errorf("CheckBatch: %w", err)
+	}
+	if len(bloggers) != len(bloggerIDs) {
+		return errno.ErrPageNotFound
+	}
+	for _, b := range bloggers {
+		if b.UserID != userID {
 			return errno.ErrForbidden
 		}
 	}
