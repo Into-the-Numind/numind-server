@@ -19,9 +19,12 @@ const (
 	BriefingTypeWeekly = "weekly"
 )
 
-// MonitorBlogger 监控博主 — 使用 gorm.Model（含软删除）
+// MonitorBlogger 监控博主（显式字段 + 软删除，确保 JSON tag 一致性）
 type MonitorBlogger struct {
-	gorm.Model
+	ID        uint           `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 	UserID              uint       `gorm:"not null;uniqueIndex:uk_user_blogger" json:"user_id"`
 	XhsUserID           string     `gorm:"size:100;not null;uniqueIndex:uk_user_blogger" json:"xhs_user_id"`
 	Nickname            string     `gorm:"size:200" json:"nickname"`
