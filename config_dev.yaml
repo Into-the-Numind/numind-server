@@ -124,7 +124,7 @@ ali:
 
 monitor:
   xhs_service:
-    base_url: "http://localhost:8100"
+    base_url: "http://172.17.0.1:8100"
   funasr:
     base_url: "http://localhost:10095"
   ffmpeg_path: "ffmpeg"
