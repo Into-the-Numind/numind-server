@@ -262,10 +262,20 @@ func (s *monitorStore) UpdateBriefingSent(ctx context.Context, id uint, sent boo
 
 // ========== Config ==========
 
-// GetConfig 获取用户的监控配置
+// GetConfig 获取用户的监控配置，如果不存在则返回默认配置
 func (s *monitorStore) GetConfig(ctx context.Context, userID uint) (*model.MonitorConfig, error) {
 	var config model.MonitorConfig
 	if err := s.db.WithContext(ctx).Where("user_id = ?", userID).First(&config).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 返回默认配置（未持久化）
+			return &model.MonitorConfig{
+				UserID:         userID,
+				CrawlCron:      "0 */8 * * *",
+				BriefingCron:   "0 20 * * *",
+				BriefingType:   model.BriefingTypeDaily,
+				NotifyOnUpdate: true,
+			}, nil
+		}
 		return nil, fmt.Errorf("GetConfig: %w", err)
 	}
 	return &config, nil
