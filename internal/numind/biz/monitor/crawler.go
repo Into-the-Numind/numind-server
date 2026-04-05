@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"numind-server/internal/pkg/billing"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
@@ -87,12 +88,13 @@ func newXhsHTTPClient() *http.Client {
 }
 
 // fetchUserNotes 从 xhs-service 获取博主的笔记列表
-func fetchUserNotes(ctx context.Context, client *http.Client, xhsUserID string) ([]XhsNoteSummary, error) {
+func fetchUserNotes(ctx context.Context, client *http.Client, xhsUserID, xhsCookies string) ([]XhsNoteSummary, error) {
 	url := fmt.Sprintf("%s/xhs/user-notes/%s", xhsServiceBaseURL(), xhsUserID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("fetchUserNotes: build request: %w", err)
 	}
+	req.Header.Set("X-XHS-Cookies", xhsCookies)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -105,20 +107,23 @@ func fetchUserNotes(ctx context.Context, client *http.Client, xhsUserID string) 
 		return nil, fmt.Errorf("fetchUserNotes: status %d, body: %s", resp.StatusCode, string(body))
 	}
 
-	var summaries []XhsNoteSummary
-	if err := json.NewDecoder(resp.Body).Decode(&summaries); err != nil {
-		return nil, fmt.Errorf("fetchUserNotes: decode: %w", err)
+	var wrapper struct {
+		Notes []XhsNoteSummary `json:"notes"`
 	}
-	return summaries, nil
+	if err := json.NewDecoder(resp.Body).Decode(&wrapper); err != nil {
+		return nil, fmt.Errorf("fetchUserNotes: decode response: %w", err)
+	}
+	return wrapper.Notes, nil
 }
 
 // fetchNoteDetail 从 xhs-service 获取笔记详情
-func fetchNoteDetail(ctx context.Context, client *http.Client, noteID string) (*XhsNoteDetail, error) {
+func fetchNoteDetail(ctx context.Context, client *http.Client, noteID, xhsCookies string) (*XhsNoteDetail, error) {
 	url := fmt.Sprintf("%s/xhs/note-detail/%s", xhsServiceBaseURL(), noteID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("fetchNoteDetail: build request: %w", err)
 	}
+	req.Header.Set("X-XHS-Cookies", xhsCookies)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -141,6 +146,15 @@ func fetchNoteDetail(ctx context.Context, client *http.Client, noteID string) (*
 // CrawlBloggers 批量爬取博主的最新笔记
 // 对每个博主并发执行（受 semaphore 限制），获取笔记列表、去重、插入新笔记、触发转录和分析。
 func (mb *MonitorBiz) CrawlBloggers(ctx context.Context, userID uint, bloggerIDs []uint) error {
+	// 读取用户的 XHS cookies
+	config, err := mb.store.Monitor().GetConfig(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("CrawlBloggers: get config: %w", err)
+	}
+	if config.XhsCookies == "" {
+		return errno.ErrXhsNotBound
+	}
+
 	// 创建 Langfuse trace
 	traceID := langfuse.TraceID()
 	langfuse.CreateTrace(traceID, "monitor-crawl",
@@ -170,7 +184,7 @@ func (mb *MonitorBiz) CrawlBloggers(ctx context.Context, userID uint, bloggerIDs
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			mb.crawlOneBlogger(ctx, client, userID, bloggerID, interval)
+			mb.crawlOneBlogger(ctx, client, userID, bloggerID, interval, config.XhsCookies)
 		}(bid)
 	}
 	wg.Wait()
@@ -179,7 +193,7 @@ func (mb *MonitorBiz) CrawlBloggers(ctx context.Context, userID uint, bloggerIDs
 }
 
 // crawlOneBlogger 爬取单个博主的笔记
-func (mb *MonitorBiz) crawlOneBlogger(ctx context.Context, client *http.Client, userID, bloggerID uint, interval time.Duration) {
+func (mb *MonitorBiz) crawlOneBlogger(ctx context.Context, client *http.Client, userID, bloggerID uint, interval time.Duration, xhsCookies string) {
 	logger := log.Infow
 	_ = logger
 
@@ -191,7 +205,7 @@ func (mb *MonitorBiz) crawlOneBlogger(ctx context.Context, client *http.Client, 
 	}
 
 	// 2. 获取笔记列表
-	summaries, err := fetchUserNotes(ctx, client, blogger.XhsUserID)
+	summaries, err := fetchUserNotes(ctx, client, blogger.XhsUserID, xhsCookies)
 	if err != nil {
 		log.Errorw("crawlOneBlogger: fetch user notes failed", "bloggerID", bloggerID, "xhsUserID", blogger.XhsUserID, "error", err)
 		mb.updateBloggerFailure(ctx, blogger, err)
@@ -217,7 +231,7 @@ func (mb *MonitorBiz) crawlOneBlogger(ctx context.Context, client *http.Client, 
 		// Not found — this is a new note, proceed
 
 		// 获取笔记详情
-		detail, err := fetchNoteDetail(ctx, client, summary.NoteID)
+		detail, err := fetchNoteDetail(ctx, client, summary.NoteID, xhsCookies)
 		if err != nil {
 			log.Errorw("crawlOneBlogger: fetch note detail failed", "noteID", summary.NoteID, "error", err)
 			time.Sleep(interval)
