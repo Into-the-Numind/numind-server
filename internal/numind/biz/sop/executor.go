@@ -11,9 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"numind-server/internal/numind/biz/llmrouter"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/langfuse"
+	"numind-server/internal/pkg/llm"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/tokenizer"
@@ -25,10 +27,11 @@ import (
 type SopExecutor struct {
 	ds        store.IStore
 	tokenizer *tokenizer.Tokenizer
+	llmRouter *llmrouter.Router
 }
 
 // NewSopExecutor 创建SOP执行器
-func NewSopExecutor(ds store.IStore) *SopExecutor {
+func NewSopExecutor(ds store.IStore, llmRouter *llmrouter.Router) *SopExecutor {
 	tk, err := tokenizer.NewTokenizer()
 	if err != nil {
 		// Log error but don't fail startup, just degrade gracefully (we can add checks later)
@@ -39,6 +42,7 @@ func NewSopExecutor(ds store.IStore) *SopExecutor {
 	return &SopExecutor{
 		ds:        ds,
 		tokenizer: tk,
+		llmRouter: llmRouter,
 	}
 }
 
@@ -97,7 +101,13 @@ func applyDefaultLLMConfig(node *model.SopNode) {
 }
 
 // ExecuteNodeStream 流式执行单个节点（公开方法）
-func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, handler StreamHandler) (string, *TokenUsage, error) {
+// 若 modelKey != "" 且 llmRouter 已注入，则通过 LLMRouter 路由执行；否则保留原有直连逻辑。
+func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, modelKey string, thinking bool, handler StreamHandler) (string, *TokenUsage, error) {
+	// LLMRouter 路径：用户选择了特定模型
+	if modelKey != "" && e.llmRouter != nil {
+		return e.executeViaRouter(ctx, node, input, history, modelKey, thinking, handler)
+	}
+
 	// 节点未配置 LLM 信息时，使用系统默认配置
 	applyDefaultLLMConfig(node)
 
@@ -384,6 +394,37 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 		}
 	}
 	return output, usage, nil
+}
+
+// executeViaRouter 通过 LLMRouter 执行节点流式调用
+func (e *SopExecutor) executeViaRouter(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, modelKey string, thinking bool, handler StreamHandler) (string, *TokenUsage, error) {
+	log.C(ctx).Infow("ExecuteNodeStream via LLMRouter",
+		"node_id", node.ID,
+		"node_name", node.Name,
+		"model_key", modelKey,
+		"thinking", thinking)
+
+	// 构建消息列表：system prompt → history → user input
+	var messages []llm.ChatMessage
+	if node.Prompt != "" {
+		messages = append(messages, llm.ChatMessage{Role: "system", Content: node.Prompt})
+	}
+	for _, msg := range history {
+		messages = append(messages, llm.ChatMessage{Role: msg.Role, Content: msg.Content})
+	}
+	if input != "" {
+		messages = append(messages, llm.ChatMessage{Role: "user", Content: input})
+	}
+
+	// 调用 LLMRouter.StreamChat，透传 StreamHandler
+	content, usage, err := e.llmRouter.StreamChat(ctx, modelKey, thinking, messages, 0, 0, func(eventType, chunk string) error {
+		return handler(eventType, chunk)
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("executeViaRouter: %w", err)
+	}
+
+	return content, usage, nil
 }
 
 // ExecuteNodeStreamWithThinking 流式执行单个节点，并分离思考内容和实际内容

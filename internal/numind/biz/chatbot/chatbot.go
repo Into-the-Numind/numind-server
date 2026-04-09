@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
+	"numind-server/internal/numind/biz/llmrouter"
 	"numind-server/internal/numind/biz/salesrag/port"
-	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
@@ -61,12 +61,12 @@ type IChatbotBiz interface {
 	ListSessions(ctx context.Context, userID uint, offset, limit int) ([]model.ChatbotSession, int64, error)
 	DeleteSession(ctx context.Context, userID uint, sessionID uint) error
 	ListMessages(ctx context.Context, userID uint, sessionID uint, offset, limit int) ([]model.ChatbotMessage, int64, error)
-	ChatStream(ctx context.Context, userID uint, sessionID uint, message string, handler StreamHandler) error
+	ChatStream(ctx context.Context, userID uint, sessionID uint, message string, modelKey string, thinking bool, handler StreamHandler) error
 }
 
 type chatbotBiz struct {
 	ds          store.IStore
-	volcBiz     volc.VolcBiz
+	llmRouter   *llmrouter.Router
 	vectorStore port.VectorStore
 	embedder    Embedder
 }
@@ -74,10 +74,10 @@ type chatbotBiz struct {
 var _ IChatbotBiz = (*chatbotBiz)(nil)
 
 // NewChatbotBiz 创建智能体业务层实例
-func NewChatbotBiz(ds store.IStore, volcBiz volc.VolcBiz, vectorStore port.VectorStore, embedder Embedder) IChatbotBiz {
+func NewChatbotBiz(ds store.IStore, llmRouter *llmrouter.Router, vectorStore port.VectorStore, embedder Embedder) IChatbotBiz {
 	return &chatbotBiz{
 		ds:          ds,
-		volcBiz:     volcBiz,
+		llmRouter:   llmRouter,
 		vectorStore: vectorStore,
 		embedder:    embedder,
 	}

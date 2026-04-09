@@ -56,6 +56,41 @@ func NewDMXAPIClient() *DMXAPIClient {
 	}
 }
 
+// NewDMXAPIClientWithConfig 创建使用动态配置的 DMXAPI 客户端
+// 与 NewDMXAPIClient 不同，baseURL 和 apiKey 由调用方直接提供，不从 viper 读取
+// 主要用于 LLMRouter，允许路由层统一管理提供商凭据
+func NewDMXAPIClientWithConfig(baseURL, apiKey string) *DMXAPIClient {
+	return &DMXAPIClient{
+		baseURL: baseURL,
+		apiKey:  apiKey,
+		httpClient: &http.Client{
+			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout:   30 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				TLSHandshakeTimeout:   15 * time.Second,
+				ResponseHeaderTimeout: 60 * time.Second,
+			},
+		},
+	}
+}
+
+// llmRouterCtxKey 是 LLMRouter 调用标记的 context key
+type llmRouterCtxKey struct{}
+
+// WithLLMRouterMark 在 context 中注入 LLMRouter 调用标记
+// LLMRouter 调用 DMXAPIClient 时须注入此标记，以跳过内部 Langfuse/billing（由 Router 统一处理，避免重复计费）
+func WithLLMRouterMark(ctx context.Context) context.Context {
+	return context.WithValue(ctx, llmRouterCtxKey{}, true)
+}
+
+// isFromLLMRouter 判断当前调用是否来自 LLMRouter
+func isFromLLMRouter(ctx context.Context) bool {
+	v, _ := ctx.Value(llmRouterCtxKey{}).(bool)
+	return v
+}
+
 // ChatMessage 聊天消息结构
 type ChatMessage struct {
 	Role    string `json:"role"`
@@ -147,30 +182,34 @@ func (c *DMXAPIClient) ChatCompletion(ctx context.Context, model string, message
 		result.Usage.Normalize()
 	}
 
-	// 自动计费
-	if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
-		billing.RecordLLM(bc.UserID, "dmxapi", model, bc.Operation, result.Usage, bc.Meta)
+	// 自动计费（LLMRouter 调用时跳过，由 Router 统一处理）
+	if !isFromLLMRouter(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
+			billing.RecordLLM(bc.UserID, "dmxapi", model, bc.Operation, result.Usage, bc.Meta)
+		}
 	}
 
-	// Langfuse generation 追踪
-	if tc := langfuse.FromContext(ctx); tc != nil {
-		genID := langfuse.SpanID()
-		genOpts := []langfuse.GenOption{
-			langfuse.WithGenParent(tc.ParentObservationID),
-			langfuse.WithGenName("dmxapi-chat"),
-			langfuse.WithGenModel(model),
-			langfuse.WithGenInput(messages),
-			langfuse.WithGenOutput(result.Choices[0].Message.Content),
+	// Langfuse generation 追踪（LLMRouter 调用时跳过，由 Router 统一处理）
+	if !isFromLLMRouter(ctx) {
+		if tc := langfuse.FromContext(ctx); tc != nil {
+			genID := langfuse.SpanID()
+			genOpts := []langfuse.GenOption{
+				langfuse.WithGenParent(tc.ParentObservationID),
+				langfuse.WithGenName("dmxapi-chat"),
+				langfuse.WithGenModel(model),
+				langfuse.WithGenInput(messages),
+				langfuse.WithGenOutput(result.Choices[0].Message.Content),
+			}
+			if tc.PromptName != "" {
+				genOpts = append(genOpts, langfuse.WithGenPromptName(tc.PromptName, tc.PromptVersion))
+			}
+			langfuse.CreateGeneration(tc.TraceID, genID, genOpts...)
+			var endOpts []langfuse.GenOption
+			if result.Usage != nil {
+				endOpts = append(endOpts, langfuse.WithGenUsage(result.Usage.PromptTokens, result.Usage.CompletionTokens))
+			}
+			langfuse.EndGeneration(genID, endOpts...)
 		}
-		if tc.PromptName != "" {
-			genOpts = append(genOpts, langfuse.WithGenPromptName(tc.PromptName, tc.PromptVersion))
-		}
-		langfuse.CreateGeneration(tc.TraceID, genID, genOpts...)
-		var endOpts []langfuse.GenOption
-		if result.Usage != nil {
-			endOpts = append(endOpts, langfuse.WithGenUsage(result.Usage.PromptTokens, result.Usage.CompletionTokens))
-		}
-		langfuse.EndGeneration(genID, endOpts...)
 	}
 
 	return result.Choices[0].Message.Content, result.Usage, nil
@@ -372,29 +411,33 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 		}
 	}
 
-	// 自动计费
-	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
-		billing.RecordLLM(bc.UserID, "dmxapi", model, bc.Operation, usage, bc.Meta)
+	// 自动计费（LLMRouter 调用时跳过，由 Router 统一处理）
+	if !isFromLLMRouter(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+			billing.RecordLLM(bc.UserID, "dmxapi", model, bc.Operation, usage, bc.Meta)
+		}
 	}
 
-	// Langfuse generation 追踪
-	if tc := langfuse.FromContext(ctx); tc != nil {
-		genID := langfuse.SpanID()
-		opts := []langfuse.GenOption{
-			langfuse.WithGenParent(tc.ParentObservationID),
-			langfuse.WithGenName("dmxapi-stream"),
-			langfuse.WithGenModel(model),
-			langfuse.WithGenInput(messages),
-			langfuse.WithGenOutput(fullContent.String()),
+	// Langfuse generation 追踪（LLMRouter 调用时跳过，由 Router 统一处理）
+	if !isFromLLMRouter(ctx) {
+		if tc := langfuse.FromContext(ctx); tc != nil {
+			genID := langfuse.SpanID()
+			opts := []langfuse.GenOption{
+				langfuse.WithGenParent(tc.ParentObservationID),
+				langfuse.WithGenName("dmxapi-stream"),
+				langfuse.WithGenModel(model),
+				langfuse.WithGenInput(messages),
+				langfuse.WithGenOutput(fullContent.String()),
+			}
+			if usage != nil {
+				opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
+			}
+			if tc.PromptName != "" {
+				opts = append(opts, langfuse.WithGenPromptName(tc.PromptName, tc.PromptVersion))
+			}
+			langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+			langfuse.EndGeneration(genID)
 		}
-		if usage != nil {
-			opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
-		}
-		if tc.PromptName != "" {
-			opts = append(opts, langfuse.WithGenPromptName(tc.PromptName, tc.PromptVersion))
-		}
-		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
-		langfuse.EndGeneration(genID)
 	}
 
 	return fullContent.String(), usage, nil

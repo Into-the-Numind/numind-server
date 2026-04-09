@@ -5,6 +5,7 @@ import (
 	"numind-server/internal/numind/controller/v1/admin_billing"
 	"numind-server/internal/numind/controller/v1/admin_credit"
 	"numind-server/internal/numind/controller/v1/admin_dashboard"
+	adminllm "numind-server/internal/numind/controller/v1/admin_llm"
 	"numind-server/internal/numind/controller/v1/admin_login"
 	"numind-server/internal/numind/controller/v1/admin_order"
 	"numind-server/internal/numind/controller/v1/admin_sop"
@@ -139,6 +140,26 @@ func installAdminRouters(g *gin.Engine) error {
 		adminMonitorGroup.GET("/briefings", monitorCtrl.AdminListBriefings)
 		adminMonitorGroup.GET("/users/:user_id/config", monitorCtrl.AdminGetUserConfig)
 		adminMonitorGroup.PUT("/users/:user_id/config", monitorCtrl.AdminUpdateUserConfig)
+	}
+
+	// LLM 供应商/模型/路由管理
+	{
+		adminLLMCtrl := adminllm.NewAdminLLMController(b.LLMRouter())
+		llmGroup := adminGroup.Group("/llm")
+		llmGroup.GET("/providers", adminLLMCtrl.ListProviders)
+		llmGroup.POST("/providers", adminLLMCtrl.CreateProvider)
+		llmGroup.PUT("/providers/:id", adminLLMCtrl.UpdateProvider)
+		llmGroup.DELETE("/providers/:id", adminLLMCtrl.DeleteProvider)
+
+		llmGroup.GET("/models", adminLLMCtrl.ListModels)
+		llmGroup.POST("/models", adminLLMCtrl.CreateModel)
+		llmGroup.PUT("/models/:id", adminLLMCtrl.UpdateModel)
+		llmGroup.DELETE("/models/:id", adminLLMCtrl.DeleteModel)
+
+		llmGroup.GET("/models/:id/routes", adminLLMCtrl.ListRoutes)
+		llmGroup.POST("/models/:id/routes", adminLLMCtrl.CreateRoute)
+		llmGroup.PUT("/models/:id/routes/:routeId", adminLLMCtrl.UpdateRoute)
+		llmGroup.DELETE("/models/:id/routes/:routeId", adminLLMCtrl.DeleteRoute)
 	}
 
 	return nil

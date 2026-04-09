@@ -28,6 +28,7 @@ import (
 
 	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/biz/credit"
+	"numind-server/internal/numind/biz/llmrouter"
 	"numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/store"
@@ -60,15 +61,17 @@ type SopController struct {
 	aliBiz    ali.AliBiz
 	volcBiz   volc.VolcBiz
 	creditBiz credit.ICreditBiz
+	llmRouter *llmrouter.Router
 }
 
 // NewSopController 创建用户端SOP控制器
-func NewSopController(sopBiz sop.ISopBiz, aliBiz ali.AliBiz, volcBiz volc.VolcBiz, creditBiz credit.ICreditBiz) *SopController {
+func NewSopController(sopBiz sop.ISopBiz, aliBiz ali.AliBiz, volcBiz volc.VolcBiz, creditBiz credit.ICreditBiz, llmRouter *llmrouter.Router) *SopController {
 	return &SopController{
 		sopBiz:    sopBiz,
 		aliBiz:    aliBiz,
 		volcBiz:   volcBiz,
 		creditBiz: creditBiz,
+		llmRouter: llmRouter,
 	}
 }
 
@@ -844,8 +847,26 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 		}
 	}()
 
+	// 读取模型参数（可选），走三级 fallback 解析
+	queryModelKey := c.Query("model_key")
+	thinkingStr := c.Query("thinking")
+	queryThinking := thinkingStr == "1" || thinkingStr == "true"
+	var queryThinkingPtr *bool
+	if thinkingStr != "" {
+		queryThinkingPtr = &queryThinking
+	}
+
+	resolvedModelKey, resolvedThinking, resolveErr := ctrl.llmRouter.ResolveUserModel(
+		c.Request.Context(), user.ID, "sop", queryModelKey, queryThinkingPtr)
+	if resolveErr != nil {
+		log.C(c).Warnw("LLMRouter.ResolveUserModel failed, using node default config", "error", resolveErr)
+		// 解析失败不阻断执行，使用空 modelKey 回退到节点默认配置
+		resolvedModelKey = ""
+		resolvedThinking = false
+	}
+
 	// 流式执行节点
-	err = ctrl.sopBiz.ExecuteNodeStream(heartbeatCtx, uint(runID), uint(nodeID), inputText, func(event string, chunk string) error {
+	err = ctrl.sopBiz.ExecuteNodeStream(heartbeatCtx, uint(runID), uint(nodeID), inputText, resolvedModelKey, resolvedThinking, func(event string, chunk string) error {
 		// 检查客户端是否断开连接
 		select {
 		case <-c.Request.Context().Done():

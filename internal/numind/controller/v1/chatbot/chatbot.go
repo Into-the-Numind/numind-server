@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"numind-server/internal/numind/biz/chatbot"
+	"numind-server/internal/numind/biz/llmrouter"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/middleware"
@@ -17,11 +18,12 @@ import (
 // ChatbotController C端智能体对话控制器
 type ChatbotController struct {
 	chatbotBiz chatbot.IChatbotBiz
+	llmRouter  *llmrouter.Router
 }
 
 // NewChatbotController 创建C端智能体对话控制器
-func NewChatbotController(chatbotBiz chatbot.IChatbotBiz) *ChatbotController {
-	return &ChatbotController{chatbotBiz: chatbotBiz}
+func NewChatbotController(chatbotBiz chatbot.IChatbotBiz, llmRouter *llmrouter.Router) *ChatbotController {
+	return &ChatbotController{chatbotBiz: chatbotBiz, llmRouter: llmRouter}
 }
 
 // List 获取当前用户可见的智能体列表
@@ -157,6 +159,22 @@ func (ctrl *ChatbotController) Chat(c *gin.Context) {
 		return
 	}
 
+	// 读取模型参数（可选），走三级 fallback 解析
+	queryModelKey := c.Query("model_key")
+	thinkingStr := c.Query("thinking")
+	queryThinking := thinkingStr == "1" || thinkingStr == "true"
+	var queryThinkingPtr *bool
+	if thinkingStr != "" {
+		queryThinkingPtr = &queryThinking
+	}
+
+	resolvedModelKey, resolvedThinking, resolveErr := ctrl.llmRouter.ResolveUserModel(
+		c.Request.Context(), user.ID, "chatbot", queryModelKey, queryThinkingPtr)
+	if resolveErr != nil {
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("模型解析失败: %s", resolveErr.Error()), nil)
+		return
+	}
+
 	// 设置 SSE 响应头
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -165,7 +183,7 @@ func (ctrl *ChatbotController) Chat(c *gin.Context) {
 
 	w := c.Writer
 
-	err := ctrl.chatbotBiz.ChatStream(c, user.ID, sessionID, req.Message,
+	err := ctrl.chatbotBiz.ChatStream(c, user.ID, sessionID, req.Message, resolvedModelKey, resolvedThinking,
 		func(eventType string, data interface{}) error {
 			var eventData []byte
 			var marshalErr error
