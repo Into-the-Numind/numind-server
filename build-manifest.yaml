@@ -114,8 +114,8 @@ features:
       qa: null
     progress:
       total_tasks: 17
-      completed_tasks: 0
-      reviewed_tasks: 0
+      completed_tasks: 16
+      reviewed_tasks: 16
       current_task: null
     rollback: null
     last_verified: null
