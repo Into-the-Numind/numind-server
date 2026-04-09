@@ -63,3 +63,4 @@ PROJECT_BREAKDOWN.md
 
 cmd/numind/data/.worktrees/
 backup-wecom-*.tar.gz
+.gstack/
