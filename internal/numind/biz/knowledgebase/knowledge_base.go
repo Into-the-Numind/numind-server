@@ -102,15 +102,33 @@ func (b *knowledgeBaseBiz) List(ctx context.Context, userID uint, offset, limit 
 		return nil, 0, fmt.Errorf("List: %w", err)
 	}
 
+	// 批量查询文档数量，避免 N+1
+	kbIDs := make([]uint, len(kbs))
+	for i, kb := range kbs {
+		kbIDs[i] = kb.ID
+	}
+	docCounts := make(map[uint]int64)
+	if len(kbIDs) > 0 {
+		var counts []struct {
+			KnowledgeBaseID uint  `gorm:"column:knowledge_base_id"`
+			Count           int64 `gorm:"column:count"`
+		}
+		b.ds.DB().WithContext(ctx).
+			Table("knowledge_base_document").
+			Select("knowledge_base_id, COUNT(*) as count").
+			Where("knowledge_base_id IN ?", kbIDs).
+			Group("knowledge_base_id").
+			Scan(&counts)
+		for _, c := range counts {
+			docCounts[c.KnowledgeBaseID] = c.Count
+		}
+	}
+
 	result := make([]KBWithDocCount, len(kbs))
 	for i, kb := range kbs {
-		docs, docErr := b.ds.KnowledgeBase().ListDocuments(ctx, kb.ID)
-		if docErr != nil {
-			return nil, 0, fmt.Errorf("List: count docs for kb %d: %w", kb.ID, docErr)
-		}
 		result[i] = KBWithDocCount{
 			KnowledgeBase: kb,
-			DocCount:      int64(len(docs)),
+			DocCount:      docCounts[kb.ID],
 		}
 	}
 
@@ -144,12 +162,15 @@ func (b *knowledgeBaseBiz) Delete(ctx context.Context, userID uint, id uint) err
 		return err
 	}
 
-	// 使用事务：先 unmount 所有关联的 chatbot，再删除知识库
+	// 使用事务：先 unmount 所有关联的 chatbot，再软删除知识库
+	// 直接操作 tx 而非通过 store 接口，确保两步在同一事务中
 	return b.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := b.ds.ChatbotConfig().UnmountAllByKB(ctx, id); err != nil {
+		// 硬删除所有 chatbot-KB 挂载关联
+		if err := tx.Where("knowledge_base_id = ?", id).Delete(&model.ChatbotKnowledgeBase{}).Error; err != nil {
 			return fmt.Errorf("Delete: unmount chatbots: %w", err)
 		}
-		if err := b.ds.KnowledgeBase().Delete(ctx, id); err != nil {
+		// 软删除知识库
+		if err := tx.Delete(&model.KnowledgeBase{}, id).Error; err != nil {
 			return fmt.Errorf("Delete: %w", err)
 		}
 		return nil
@@ -165,6 +186,7 @@ func (b *knowledgeBaseBiz) AddDocument(ctx context.Context, userID uint, kbID ui
 	}
 
 	// 2. 通过 SalesRAG Ingest 管道上传文档（含 COS 上传 + 文档记录创建 + 异步解析/向量化）
+	// 注意：Ingest 始终以 userID 创建新文档，document.UserID == kb.UserID 由设计保证（不存在跨用户关联风险）
 	filename := header.Filename
 
 	docID, err := b.salesRAG.Ingest(ctx, userID, filename, filename, file.(io.Reader), salesrag.IngestOptions{
@@ -217,4 +239,3 @@ func (b *knowledgeBaseBiz) getAndCheckOwnership(ctx context.Context, userID uint
 	}
 	return kb, nil
 }
-
