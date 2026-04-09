@@ -303,7 +303,7 @@ func (ctrl *AdminLLMController) DeleteModel(c *gin.Context) {
 func (ctrl *AdminLLMController) ListRoutes(c *gin.Context) {
 	log.C(c).Infow("Admin list LLM routes called")
 
-	modelID, err := strconv.ParseUint(c.Param("modelId"), 10, 64)
+	modelID, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("无效的模型 ID"), nil)
 		return
@@ -332,7 +332,7 @@ type createRouteReq struct {
 func (ctrl *AdminLLMController) CreateRoute(c *gin.Context) {
 	log.C(c).Infow("Admin create LLM route called")
 
-	modelID, err := strconv.ParseUint(c.Param("modelId"), 10, 64)
+	modelID, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil {
 		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("无效的模型 ID"), nil)
 		return

@@ -156,10 +156,10 @@ func installAdminRouters(g *gin.Engine) error {
 		llmGroup.PUT("/models/:id", adminLLMCtrl.UpdateModel)
 		llmGroup.DELETE("/models/:id", adminLLMCtrl.DeleteModel)
 
-		llmGroup.GET("/models/:modelId/routes", adminLLMCtrl.ListRoutes)
-		llmGroup.POST("/models/:modelId/routes", adminLLMCtrl.CreateRoute)
-		llmGroup.PUT("/models/:modelId/routes/:routeId", adminLLMCtrl.UpdateRoute)
-		llmGroup.DELETE("/models/:modelId/routes/:routeId", adminLLMCtrl.DeleteRoute)
+		llmGroup.GET("/models/:id/routes", adminLLMCtrl.ListRoutes)
+		llmGroup.POST("/models/:id/routes", adminLLMCtrl.CreateRoute)
+		llmGroup.PUT("/models/:id/routes/:routeId", adminLLMCtrl.UpdateRoute)
+		llmGroup.DELETE("/models/:id/routes/:routeId", adminLLMCtrl.DeleteRoute)
 	}
 
 	return nil
