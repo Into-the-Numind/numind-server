@@ -65,7 +65,7 @@ func (LLMModelProvider) TableName() string { return "llm_model_provider" }
 // UserModelPreference 用户模型偏好
 type UserModelPreference struct {
 	ID        uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserID    uint64    `gorm:"not null;uniqueIndex:uk_user_feature" json:"user_id"`
+	UserID    uint      `gorm:"not null;uniqueIndex:uk_user_feature" json:"user_id"`
 	Feature   string    `gorm:"size:20;not null;uniqueIndex:uk_user_feature" json:"feature"`
 	ModelKey  string    `gorm:"size:100;not null" json:"model_key"`
 	Thinking  bool      `gorm:"default:false" json:"thinking"`
