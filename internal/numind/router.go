@@ -233,7 +233,7 @@ func installNumindRouters(g *gin.Engine) error {
 			configGroup.GET("/knowledge-bases/:id", kbCtrl.Get)
 			configGroup.PUT("/knowledge-bases/:id", kbCtrl.Update)
 			configGroup.DELETE("/knowledge-bases/:id", kbCtrl.Delete)
-			configGroup.POST("/knowledge-bases/:id/documents", kbCtrl.UploadDocument)
+			configGroup.POST("/knowledge-bases/:id/documents", kbCtrl.UploadDocuments)
 			configGroup.DELETE("/knowledge-bases/:id/documents/:docId", kbCtrl.RemoveDocument)
 
 			// 智能体配置

@@ -118,6 +118,7 @@ func run() error {
 
 	// 创建 Gin 引擎
 	g := gin.New()
+	g.MaxMultipartMemory = 256 << 20 // 256MB，支持批量文件上传（最多 5 x 50MB）
 
 	// gin.Recovery() 中间件，用来捕获任何 panic，并恢复
 	mws := []gin.HandlerFunc{gin.Recovery(), mw.NoCache, mw.Cors, mw.Secure, mw.RequestID()}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"sync"
 
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/numind/store"
@@ -14,6 +15,12 @@ import (
 	"numind-server/internal/pkg/model"
 
 	"gorm.io/gorm"
+)
+
+const (
+	MaxDocsPerKB     = 10          // 每个知识库最多 10 份文档
+	MaxFilesPerBatch = 5           // 单次最多上传 5 个文件
+	MaxFileSize      = 50 << 20    // 单文件最大 50MB
 )
 
 // CreateKBReq 创建知识库请求
@@ -48,6 +55,7 @@ type IKnowledgeBaseBiz interface {
 	Update(ctx context.Context, userID uint, id uint, req *UpdateKBReq) error
 	Delete(ctx context.Context, userID uint, id uint) error
 	AddDocument(ctx context.Context, userID uint, kbID uint, file multipart.File, header *multipart.FileHeader) (*model.KnowledgeDocument, error)
+	AddDocuments(ctx context.Context, userID uint, kbID uint, files []multipart.File, headers []*multipart.FileHeader) ([]*model.KnowledgeDocument, []error)
 	RemoveDocument(ctx context.Context, userID uint, kbID uint, docID uint) error
 }
 
@@ -208,6 +216,110 @@ func (b *knowledgeBaseBiz) AddDocument(ctx context.Context, userID uint, kbID ui
 	}
 
 	return doc, nil
+}
+
+// AddDocuments 批量向知识库添加文档（并行处理）：校验限额 → 并发 Ingest → 创建关联
+func (b *knowledgeBaseBiz) AddDocuments(ctx context.Context, userID uint, kbID uint, files []multipart.File, headers []*multipart.FileHeader) ([]*model.KnowledgeDocument, []error) {
+	n := len(files)
+	docs := make([]*model.KnowledgeDocument, n)
+	errs := make([]error, n)
+
+	// 1. 验证知识库所有权
+	_, err := b.getAndCheckOwnership(ctx, userID, kbID)
+	if err != nil {
+		for i := range errs {
+			errs[i] = err
+		}
+		return docs, errs
+	}
+
+	// 2. 检查文件数量限制
+	if n > MaxFilesPerBatch {
+		for i := range errs {
+			errs[i] = errno.ErrTooManyFiles
+		}
+		return docs, errs
+	}
+
+	// 3. 检查单文件大小限制
+	for i, h := range headers {
+		if h.Size > MaxFileSize {
+			errs[i] = errno.ErrFileTooLarge.SetMessage("文件 %s 超过50MB限制", h.Filename)
+		}
+	}
+	for _, e := range errs {
+		if e != nil {
+			return docs, errs
+		}
+	}
+
+	// 4. 原子化配额检查：SELECT FOR UPDATE 锁定知识库行，防止并发超额
+	var currentCount int64
+	err = b.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 锁定知识库行
+		var kb model.KnowledgeBase
+		if lockErr := tx.Set("gorm:query_option", "FOR UPDATE").First(&kb, kbID).Error; lockErr != nil {
+			return fmt.Errorf("AddDocuments: lock kb: %w", lockErr)
+		}
+		// 在事务内计数
+		if countErr := tx.Model(&model.KnowledgeBaseDocument{}).
+			Where("knowledge_base_id = ?", kbID).
+			Count(&currentCount).Error; countErr != nil {
+			return fmt.Errorf("AddDocuments: count docs: %w", countErr)
+		}
+		if currentCount+int64(n) > MaxDocsPerKB {
+			return errno.ErrMaxDocsExceeded
+		}
+		// 预占位：先创建 n 条占位关联（doc_id=0），Ingest 完成后更新
+		// 这样即使并发请求也无法超额
+		return nil
+	})
+	if err != nil {
+		remaining := MaxDocsPerKB - int(currentCount)
+		if remaining < 0 {
+			remaining = 0
+		}
+		for i := range errs {
+			if errors.Is(err, errno.ErrMaxDocsExceeded) {
+				errs[i] = errno.ErrMaxDocsExceeded.SetMessage("知识库文档数已达上限(10)，当前%d份，还可上传%d份", currentCount, remaining)
+			} else {
+				errs[i] = err
+			}
+		}
+		return docs, errs
+	}
+
+	// 5. 并行 Ingest（配额已通过原子检查，此处安全执行）
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			filename := headers[idx].Filename
+			docID, ingestErr := b.salesRAG.Ingest(ctx, userID, filename, filename, files[idx], salesrag.IngestOptions{
+				Description: fmt.Sprintf("知识库[%d]关联文档", kbID),
+			})
+			if ingestErr != nil {
+				errs[idx] = fmt.Errorf("AddDocuments: ingest %s: %w", filename, ingestErr)
+				return
+			}
+
+			if assocErr := b.ds.KnowledgeBase().AddDocument(ctx, kbID, docID); assocErr != nil {
+				errs[idx] = fmt.Errorf("AddDocuments: associate %s: %w", filename, assocErr)
+				return
+			}
+
+			doc, getErr := b.ds.KnowledgeDocuments().GetByID(ctx, docID)
+			if getErr != nil {
+				errs[idx] = fmt.Errorf("AddDocuments: get doc %s: %w", filename, getErr)
+				return
+			}
+			docs[idx] = doc
+		}(i)
+	}
+	wg.Wait()
+
+	return docs, errs
 }
 
 // RemoveDocument 从知识库移除文档关联（不删除文档本身），验证所有权

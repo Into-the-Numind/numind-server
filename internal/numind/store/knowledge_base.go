@@ -20,6 +20,7 @@ type IKnowledgeBaseStore interface {
 	RemoveDocument(ctx context.Context, kbID uint, docID uint) error
 	ListDocuments(ctx context.Context, kbID uint) ([]model.KnowledgeDocument, error)
 	ListDocumentIDsByKBs(ctx context.Context, kbIDs []uint) ([]uint, error)
+	CountDocuments(ctx context.Context, kbID uint) (int64, error)
 }
 
 type knowledgeBaseStore struct {
@@ -101,6 +102,16 @@ func (s *knowledgeBaseStore) ListDocuments(ctx context.Context, kbID uint) ([]mo
 		Find(&docs).Error
 
 	return docs, err
+}
+
+// CountDocuments 统计知识库下的文档数量
+func (s *knowledgeBaseStore) CountDocuments(ctx context.Context, kbID uint) (int64, error) {
+	var count int64
+	err := s.db.WithContext(ctx).
+		Model(&model.KnowledgeBaseDocument{}).
+		Where("knowledge_base_id = ?", kbID).
+		Count(&count).Error
+	return count, err
 }
 
 // ListDocumentIDsByKBs 批量获取多个知识库下状态为 COMPLETED 的文档 ID

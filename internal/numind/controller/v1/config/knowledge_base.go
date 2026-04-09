@@ -1,6 +1,7 @@
 package config
 
 import (
+	"mime/multipart"
 	"strconv"
 
 	"numind-server/internal/numind/biz/knowledgebase"
@@ -109,28 +110,95 @@ func (ctrl *KnowledgeBaseController) Delete(c *gin.Context) {
 	core.WriteResponse(c, nil, nil)
 }
 
-// UploadDocument 上传知识库文档
-func (ctrl *KnowledgeBaseController) UploadDocument(c *gin.Context) {
+// UploadDocuments 批量上传知识库文档（支持多文件，最多5个）
+func (ctrl *KnowledgeBaseController) UploadDocuments(c *gin.Context) {
 	userID := currentUserID(c)
 	id, ok := parseUintParam(c, "id")
 	if !ok {
 		return
 	}
 
-	file, header, err := c.Request.FormFile("file")
+	form, err := c.MultipartForm()
 	if err != nil {
 		core.WriteResponse(c, errno.ErrBind.SetMessage("文件上传失败: %s", err.Error()), nil)
 		return
 	}
-	defer file.Close()
 
-	doc, err := ctrl.kbBiz.AddDocument(c, userID, id, file, header)
-	if err != nil {
-		core.WriteResponse(c, err, nil)
+	fileHeaders := form.File["files"]
+	if len(fileHeaders) == 0 {
+		// 兼容单文件上传（字段名 file）
+		fileHeaders = form.File["file"]
+	}
+	if len(fileHeaders) == 0 {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请选择要上传的文件"), nil)
+		return
+	}
+	if len(fileHeaders) > knowledgebase.MaxFilesPerBatch {
+		core.WriteResponse(c, errno.ErrTooManyFiles, nil)
 		return
 	}
 
-	core.WriteResponse(c, nil, doc)
+	// 打开所有文件
+	files := make([]multipart.File, len(fileHeaders))
+	for i, fh := range fileHeaders {
+		f, openErr := fh.Open()
+		if openErr != nil {
+			// 关闭已打开的文件
+			for j := 0; j < i; j++ {
+				files[j].Close()
+			}
+			core.WriteResponse(c, errno.ErrBind.SetMessage("打开文件失败: %s", openErr.Error()), nil)
+			return
+		}
+		files[i] = f
+	}
+	defer func() {
+		for _, f := range files {
+			f.Close()
+		}
+	}()
+
+	docs, errs := ctrl.kbBiz.AddDocuments(c, userID, id, files, fileHeaders)
+
+	// 构建结果：成功的文档 + 失败的错误信息
+	type uploadResult struct {
+		Filename string                   `json:"filename"`
+		Success  bool                     `json:"success"`
+		Doc      *model.KnowledgeDocument `json:"doc,omitempty"`
+		Error    string                   `json:"error,omitempty"`
+	}
+
+	results := make([]uploadResult, len(fileHeaders))
+	hasError := false
+	for i, fh := range fileHeaders {
+		r := uploadResult{Filename: fh.Filename}
+		if errs[i] != nil {
+			r.Success = false
+			r.Error = errs[i].Error()
+			hasError = true
+		} else {
+			r.Success = true
+			r.Doc = docs[i]
+		}
+		results[i] = r
+	}
+
+	// 如果所有文件都失败，返回第一个错误
+	if hasError {
+		allFailed := true
+		for _, r := range results {
+			if r.Success {
+				allFailed = false
+				break
+			}
+		}
+		if allFailed {
+			core.WriteResponse(c, errs[0], nil)
+			return
+		}
+	}
+
+	core.WriteResponse(c, nil, gin.H{"results": results})
 }
 
 // RemoveDocument 删除知识库文档
