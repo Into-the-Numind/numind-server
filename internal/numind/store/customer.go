@@ -36,6 +36,9 @@ type ICustomerStore interface {
 	// 等级管理
 	UpdateSubUserTierWithLog(ctx context.Context, subUserID uint, tier string, tierExpires time.Time, changeLog *model.TierChangeLog) error
 
+	// 模板批量授权（B端发布SOP时使用）
+	GrantTemplateToAllSubUsers(ctx context.Context, parentUserID uint, templateID uint) error
+
 	// 功能权限管理
 	HasFeaturePermission(ctx context.Context, userID uint, featureKey string) (bool, error)
 	GrantFeatures(ctx context.Context, parentUserID, subUserID uint, featureKeys []string) error
@@ -378,6 +381,37 @@ func (c *customerStore) ListUserFeatures(ctx context.Context, subUserID uint) ([
 		Where("sub_user_id = ?", subUserID).
 		Pluck("feature_key", &features).Error
 	return features, err
+}
+
+// GrantTemplateToAllSubUsers 将模板授权给指定父用户的所有子用户（跳过已有授权）
+func (c *customerStore) GrantTemplateToAllSubUsers(ctx context.Context, parentUserID uint, templateID uint) error {
+	// 查询所有子用户
+	var subUsers []model.User
+	if err := c.db.WithContext(ctx).Where("parent_user_id = ?", parentUserID).Find(&subUsers).Error; err != nil {
+		return fmt.Errorf("GrantTemplateToAllSubUsers: query sub users: %w", err)
+	}
+
+	if len(subUsers) == 0 {
+		return nil
+	}
+
+	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, u := range subUsers {
+			permission := &model.UserTemplatePermission{
+				ParentUserID: parentUserID,
+				SubUserID:    u.ID,
+				TemplateID:   templateID,
+			}
+			// FirstOrCreate 跳过已有授权
+			if err := tx.Where(model.UserTemplatePermission{
+				SubUserID:  u.ID,
+				TemplateID: templateID,
+			}).FirstOrCreate(permission).Error; err != nil {
+				return fmt.Errorf("GrantTemplateToAllSubUsers: grant to user %d: %w", u.ID, err)
+			}
+		}
+		return nil
+	})
 }
 
 // UpdateSubUserTierWithLog 在事务中更新子用户等级并写入变更日志
