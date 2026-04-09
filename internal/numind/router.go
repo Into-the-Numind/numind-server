@@ -7,6 +7,7 @@ import (
 	"numind-server/internal/numind/controller/v1/config"
 	creditcontroller "numind-server/internal/numind/controller/v1/credit"
 	customercontroller "numind-server/internal/numind/controller/v1/customer"
+	llmcontroller "numind-server/internal/numind/controller/v1/llm"
 	monitorcontroller "numind-server/internal/numind/controller/v1/monitor"
 	ordercontroller "numind-server/internal/numind/controller/v1/order"
 	paymentcontroller "numind-server/internal/numind/controller/v1/payment"
@@ -61,6 +62,9 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 初始化C端智能体对话控制器
 	chatbotCtrl := chatbotcontroller.NewChatbotController(b.Chatbot())
+
+	// 初始化 LLM 模型与偏好控制器
+	llmCtrl := llmcontroller.NewLLMController(b.LLMRouter())
 
 	v1Group := g.Group("/v1")
 
@@ -268,6 +272,16 @@ func installNumindRouters(g *gin.Engine) error {
 			chatbotGroup.DELETE("/sessions/:id", chatbotCtrl.DeleteSession)
 			chatbotGroup.GET("/sessions/:id/messages", chatbotCtrl.ListMessages)
 			chatbotGroup.POST("/sessions/:id/chat", chatbotCtrl.Chat)
+		}
+	}
+
+	// LLM 模型列表与用户偏好
+	{
+		llmGroup := authGroup.Group("/llm")
+		{
+			llmGroup.GET("/models", llmCtrl.ListModels)
+			llmGroup.GET("/preference", llmCtrl.GetPreference)
+			llmGroup.PUT("/preference", llmCtrl.SavePreference)
 		}
 	}
 

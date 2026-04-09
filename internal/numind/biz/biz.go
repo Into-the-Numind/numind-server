@@ -13,6 +13,7 @@ import (
 	"numind-server/internal/numind/biz/credit"
 	customerbiz "numind-server/internal/numind/biz/customer"
 	kbbiz "numind-server/internal/numind/biz/knowledgebase"
+	"numind-server/internal/numind/biz/llmrouter"
 	"numind-server/internal/numind/biz/monitor"
 	"numind-server/internal/numind/biz/payment"
 	"numind-server/internal/numind/biz/salesrag"
@@ -44,6 +45,7 @@ type IBiz interface {
 	Monitor() monitor.IMonitorBiz              // 博主监控服务
 	KnowledgeBase() kbbiz.IKnowledgeBaseBiz    // 知识库服务
 	Chatbot() chatbotbiz.IChatbotBiz           // 智能体服务
+	LLMRouter() *llmrouter.Router              // LLM 路由服务
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -59,6 +61,7 @@ type biz struct {
 	monitorService  monitor.IMonitorBiz
 	kbService       kbbiz.IKnowledgeBaseBiz
 	chatbotService  chatbotbiz.IChatbotBiz
+	llmRouterSvc    *llmrouter.Router
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -68,9 +71,10 @@ var _ IBiz = (*biz)(nil)
 func NewBiz(ds store.IStore) *biz {
 	creditBiz := credit.NewCreditBiz(ds)
 	b := &biz{
-		ds:      ds,
-		credit:  creditBiz,
-		payment: payment.NewPaymentBiz(ds, creditBiz),
+		ds:           ds,
+		credit:       creditBiz,
+		payment:      payment.NewPaymentBiz(ds, creditBiz),
+		llmRouterSvc: llmrouter.New(ds),
 	}
 
 	// 创建 ConfigReader，用于从 Redis → MySQL → Viper 读取配置
@@ -269,4 +273,9 @@ func (b *biz) KnowledgeBase() kbbiz.IKnowledgeBaseBiz {
 // Chatbot 返回智能体服务实例.
 func (b *biz) Chatbot() chatbotbiz.IChatbotBiz {
 	return b.chatbotService
+}
+
+// LLMRouter 返回 LLM 路由服务实例.
+func (b *biz) LLMRouter() *llmrouter.Router {
+	return b.llmRouterSvc
 }
