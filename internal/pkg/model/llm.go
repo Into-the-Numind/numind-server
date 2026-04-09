@@ -50,8 +50,8 @@ type LLMModelProvider struct {
 	ProviderID         uint64       `gorm:"not null;uniqueIndex:uk_model_provider" json:"provider_id"`
 	ProviderModelID    string       `gorm:"size:100;not null" json:"provider_model_id"`
 	Priority           int          `gorm:"default:0" json:"priority"`
-	InputPricePerMTok  float64      `gorm:"type:decimal(10,4);default:0" json:"input_price_per_mtok"`
-	OutputPricePerMTok float64      `gorm:"type:decimal(10,4);default:0" json:"output_price_per_mtok"`
+	InputPricePerMTok  float64      `gorm:"column:input_price_per_mtok;type:decimal(10,4);default:0" json:"input_price_per_mtok"`
+	OutputPricePerMTok float64      `gorm:"column:output_price_per_mtok;type:decimal(10,4);default:0" json:"output_price_per_mtok"`
 	IsActive           bool         `gorm:"default:true" json:"is_active"`
 	CreatedAt          time.Time    `json:"created_at"`
 	UpdatedAt          time.Time    `json:"updated_at"`
