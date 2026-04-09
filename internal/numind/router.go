@@ -3,6 +3,8 @@ package numind
 import (
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/controller/v1/ali"
+	chatbotcontroller "numind-server/internal/numind/controller/v1/chatbot"
+	"numind-server/internal/numind/controller/v1/config"
 	creditcontroller "numind-server/internal/numind/controller/v1/credit"
 	customercontroller "numind-server/internal/numind/controller/v1/customer"
 	monitorcontroller "numind-server/internal/numind/controller/v1/monitor"
@@ -51,6 +53,14 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 初始化PDF控制器
 	pdfc := pdfcontroller.NewPdfController()
+
+	// 初始化自助配置控制器（B端）
+	kbCtrl := config.NewKnowledgeBaseController(b.KnowledgeBase())
+	configChatbotCtrl := config.NewChatbotConfigController(b.Chatbot())
+	configSopCtrl := config.NewSopConfigController(b.Sop())
+
+	// 初始化C端智能体对话控制器
+	chatbotCtrl := chatbotcontroller.NewChatbotController(b.Chatbot())
 
 	v1Group := g.Group("/v1")
 
@@ -210,6 +220,55 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/customers/sub-users/:user_id/features", customerCtrl.ListSubUserFeatures)
 		authGroup.POST("/customers/sub-users/:user_id/features", customerCtrl.GrantFeatures)
 		authGroup.DELETE("/customers/sub-users/:user_id/features", customerCtrl.RevokeFeatures)
+	}
+
+	// 自助配置中心（B端，需要主账号 + 功能权限）
+	{
+		configGroup := authGroup.Group("/config")
+		configGroup.Use(importMw.ParentUserOnly(), importMw.FeaturePermission(model.FeatureKeySelfServiceConfig))
+		{
+			// 知识库管理
+			configGroup.POST("/knowledge-bases", kbCtrl.Create)
+			configGroup.GET("/knowledge-bases", kbCtrl.List)
+			configGroup.GET("/knowledge-bases/:id", kbCtrl.Get)
+			configGroup.PUT("/knowledge-bases/:id", kbCtrl.Update)
+			configGroup.DELETE("/knowledge-bases/:id", kbCtrl.Delete)
+			configGroup.POST("/knowledge-bases/:id/documents", kbCtrl.UploadDocument)
+			configGroup.DELETE("/knowledge-bases/:id/documents/:docId", kbCtrl.RemoveDocument)
+
+			// 智能体配置
+			configGroup.POST("/chatbots", configChatbotCtrl.Create)
+			configGroup.GET("/chatbots", configChatbotCtrl.List)
+			configGroup.GET("/chatbots/:id", configChatbotCtrl.Get)
+			configGroup.PUT("/chatbots/:id", configChatbotCtrl.Update)
+			configGroup.DELETE("/chatbots/:id", configChatbotCtrl.Delete)
+			configGroup.PUT("/chatbots/:id/status", configChatbotCtrl.UpdateStatus)
+
+			// SOP 模板配置
+			configGroup.POST("/sop-templates", configSopCtrl.Create)
+			configGroup.GET("/sop-templates", configSopCtrl.List)
+			configGroup.GET("/sop-templates/:id", configSopCtrl.Get)
+			configGroup.PUT("/sop-templates/:id", configSopCtrl.Update)
+			configGroup.DELETE("/sop-templates/:id", configSopCtrl.Delete)
+			configGroup.PUT("/sop-templates/:id/status", configSopCtrl.UpdateStatus)
+			configGroup.POST("/sop-templates/:id/nodes", configSopCtrl.CreateNode)
+			configGroup.PUT("/sop-templates/:id/nodes/batch-sort", configSopCtrl.BatchSortNodes) // 必须在 :nodeId 之前注册
+			configGroup.PUT("/sop-templates/:id/nodes/:nodeId", configSopCtrl.UpdateNode)
+			configGroup.DELETE("/sop-templates/:id/nodes/:nodeId", configSopCtrl.DeleteNode)
+		}
+	}
+
+	// C端智能体对话
+	{
+		chatbotGroup := authGroup.Group("/chatbot")
+		{
+			chatbotGroup.GET("/list", chatbotCtrl.List)
+			chatbotGroup.POST("/sessions", chatbotCtrl.CreateSession)
+			chatbotGroup.GET("/sessions", chatbotCtrl.ListSessions)
+			chatbotGroup.DELETE("/sessions/:id", chatbotCtrl.DeleteSession)
+			chatbotGroup.GET("/sessions/:id/messages", chatbotCtrl.ListMessages)
+			chatbotGroup.POST("/sessions/:id/chat", chatbotCtrl.Chat)
+		}
 	}
 
 	// 博主内容监控
