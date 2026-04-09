@@ -70,7 +70,7 @@ features:
       plan: "numind-server/docs/superpowers/plans/self-service-config-plan.md"
       review_spec_compliance: null
       review_code_quality: null
-      qa: "S5 QA pass — 4 bugs found and fixed (JSON serialization, user_id extraction, chat field name, billing metadata)"
+      qa: "docs/superpowers/qa/self-service-config-qa-report.md"
     progress:
       total_tasks: 14
       completed_tasks: 14
