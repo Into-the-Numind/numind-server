@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -80,6 +81,10 @@ type ISopStore interface {
 	ListBookmarksByUserAndTemplate(userID, templateID uint) ([]model.SopNodeBookmark, error)
 	UpdateBookmark(id uint, updates map[string]interface{}) error
 	DeleteBookmark(id uint) error
+
+	// B-end template operations
+	ListTemplatesByCreator(ctx context.Context, creatorID uint, offset, limit int) ([]model.SopTemplate, int64, error)
+	CountNodesByTemplate(ctx context.Context, templateID uint) (int64, error)
 
 	// Cleanup operations
 	DeleteRun(runID uint) error
@@ -824,4 +829,29 @@ func (s *sopStore) UpdateBookmark(id uint, updates map[string]interface{}) error
 // DeleteBookmark 删除书签
 func (s *sopStore) DeleteBookmark(id uint) error {
 	return s.db.Delete(&model.SopNodeBookmark{}, id).Error
+}
+
+// ListTemplatesByCreator 按创建者查询模板列表（B端SOP配置）
+func (s *sopStore) ListTemplatesByCreator(_ context.Context, creatorID uint, offset, limit int) ([]model.SopTemplate, int64, error) {
+	var templates []model.SopTemplate
+	var total int64
+
+	query := s.db.Model(&model.SopTemplate{}).Where("creator_user_id = ? AND deleted_at IS NULL", creatorID)
+
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	if err := query.Offset(offset).Limit(defaultLimit(limit)).Order("created_at DESC").Find(&templates).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return templates, total, nil
+}
+
+// CountNodesByTemplate 统计模板下的节点数量
+func (s *sopStore) CountNodesByTemplate(_ context.Context, templateID uint) (int64, error) {
+	var count int64
+	err := s.db.Model(&model.SopNode{}).Where("template_id = ? AND deleted_at IS NULL", templateID).Count(&count).Error
+	return count, err
 }

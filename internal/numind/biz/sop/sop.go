@@ -14,6 +14,7 @@ import (
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/billing"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
@@ -65,6 +66,12 @@ type ISopBiz interface {
 	DeleteRun(ctx context.Context, runID uint, userID uint) error
 	DeleteRuns(ctx context.Context, runIDs []uint, userID uint) error
 	CleanZombieRuns(ctx context.Context, timeout time.Duration) error
+
+	// B-end SOP config operations
+	CreateTemplateByUser(ctx context.Context, userID uint, req *CreateTemplateByUserReq) (*model.SopTemplate, error)
+	ListTemplatesByCreator(ctx context.Context, creatorID uint, offset, limit int) ([]model.SopTemplate, int64, error)
+	PublishTemplate(ctx context.Context, userID uint, templateID uint) error
+	UnpublishTemplate(ctx context.Context, userID uint, templateID uint) error
 
 	// Bookmark operations
 	SaveNodeBookmark(ctx context.Context, userID, nodeRunID uint, bookmarkName, description string) (*model.SopNodeBookmark, error)
@@ -140,6 +147,15 @@ func (b *sopBiz) CreateNode(ctx context.Context, node *model.SopNode) (*model.So
 			return nil, fmt.Errorf("template not found")
 		}
 		return nil, err
+	}
+
+	// 检查模板下节点数量是否已达上限（最多20个）
+	nodeCount, err := b.ds.Sop().CountNodesByTemplate(ctx, node.TemplateID)
+	if err != nil {
+		return nil, fmt.Errorf("CreateNode: count nodes: %w", err)
+	}
+	if nodeCount >= 20 {
+		return nil, errno.ErrMaxNodesExceeded
 	}
 
 	// 如果没有父节点，设置为根节点
@@ -250,7 +266,7 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 	}()
 	// #endregion
 	// 验证模板是否存在
-	_, err = b.ds.Sop().GetTemplate(templateID)
+	template, err := b.ds.Sop().GetTemplate(templateID)
 	// #region agent log
 	func() {
 		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -269,6 +285,11 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 	// #endregion
 	if err != nil {
 		return nil, fmt.Errorf("template not found: %w", err)
+	}
+
+	// B端模板发布状态检查：如果模板有创建者（B端创建），则必须是已发布状态才允许运行
+	if template.CreatorUserID != nil && template.PublishStatus != model.SopPublishStatusPublished {
+		return nil, errno.ErrTemplateNotPublished
 	}
 
 	// 生成唯一的conversation_id（改用纳秒级时间戳，彻底解决碰撞问题）
@@ -1834,4 +1855,93 @@ func cleanPDFFormatCode(content string) string {
 
 	// 如果内容看起来正常，返回原内容
 	return content
+}
+
+// ==================== B-end SOP Config Methods ====================
+
+// CreateTemplateByUserReq B端用户创建SOP模板的请求参数
+type CreateTemplateByUserReq struct {
+	Name        string `json:"name" binding:"required"`
+	Description string `json:"description"`
+}
+
+// CreateTemplateByUser B端用户创建SOP模板
+func (b *sopBiz) CreateTemplateByUser(ctx context.Context, userID uint, req *CreateTemplateByUserReq) (*model.SopTemplate, error) {
+	template := &model.SopTemplate{
+		Name:          req.Name,
+		Description:   req.Description,
+		CreatorUserID: &userID,
+		PublishStatus: model.SopPublishStatusDraft,
+		Status:        "active",
+	}
+
+	if err := b.ds.Sop().CreateTemplate(template); err != nil {
+		return nil, fmt.Errorf("CreateTemplateByUser: %w", err)
+	}
+
+	log.C(ctx).Infow("B-end user created SOP template", "user_id", userID, "template_id", template.ID, "name", req.Name)
+	return template, nil
+}
+
+// ListTemplatesByCreator 列出B端用户创建的SOP模板
+func (b *sopBiz) ListTemplatesByCreator(ctx context.Context, creatorID uint, offset, limit int) ([]model.SopTemplate, int64, error) {
+	return b.ds.Sop().ListTemplatesByCreator(ctx, creatorID, offset, limit)
+}
+
+// PublishTemplate 发布B端用户创建的SOP模板，并自动授权给所有子用户
+func (b *sopBiz) PublishTemplate(ctx context.Context, userID uint, templateID uint) error {
+	template, err := b.ds.Sop().GetTemplate(templateID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return fmt.Errorf("template not found")
+		}
+		return fmt.Errorf("PublishTemplate: get template: %w", err)
+	}
+
+	// 验证模板归属：必须是B端创建且属于当前用户
+	if template.CreatorUserID == nil || *template.CreatorUserID != userID {
+		return fmt.Errorf("您没有权限操作此模板")
+	}
+
+	// 更新发布状态
+	if err := b.ds.Sop().UpdateTemplate(templateID, map[string]interface{}{
+		"publish_status": model.SopPublishStatusPublished,
+	}); err != nil {
+		return fmt.Errorf("PublishTemplate: update status: %w", err)
+	}
+
+	// 自动授权给所有子用户
+	if err := b.ds.Customers().GrantTemplateToAllSubUsers(ctx, userID, templateID); err != nil {
+		log.C(ctx).Errorw("PublishTemplate: grant to sub users failed (non-blocking)", "user_id", userID, "template_id", templateID, "err", err)
+		// 授权失败不阻塞发布，但记录错误
+	}
+
+	log.C(ctx).Infow("B-end template published", "user_id", userID, "template_id", templateID)
+	return nil
+}
+
+// UnpublishTemplate 下线B端用户创建的SOP模板（不撤销已有授权）
+func (b *sopBiz) UnpublishTemplate(ctx context.Context, userID uint, templateID uint) error {
+	template, err := b.ds.Sop().GetTemplate(templateID)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return fmt.Errorf("template not found")
+		}
+		return fmt.Errorf("UnpublishTemplate: get template: %w", err)
+	}
+
+	// 验证模板归属
+	if template.CreatorUserID == nil || *template.CreatorUserID != userID {
+		return fmt.Errorf("您没有权限操作此模板")
+	}
+
+	// 更新为下线状态，不撤销已有权限
+	if err := b.ds.Sop().UpdateTemplate(templateID, map[string]interface{}{
+		"publish_status": model.SopPublishStatusOffline,
+	}); err != nil {
+		return fmt.Errorf("UnpublishTemplate: update status: %w", err)
+	}
+
+	log.C(ctx).Infow("B-end template unpublished", "user_id", userID, "template_id", templateID)
+	return nil
 }
