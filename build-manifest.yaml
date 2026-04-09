@@ -93,9 +93,9 @@ features:
     ndf_version: "1.0"
     description: "LLM 模型切换 — SOP 和智能体支持用户选择不同 LLM 模型（Claude/GPT/Gemini/豆包），通过 DMXAPI 统一调用"
     track: "standard"
-    stage: "S2"
+    stage: "S3"
     classification_reason: "涉及新表（模型配置+用户偏好）、新 API 端点、跨仓库改动（server+web），影响文件 15+"
-    last_updated_by: "ai-s2"
+    last_updated_by: "ai-s3"
     last_updated_at: "2026-04-10T00:00:00+08:00"
     repos:
       - numind-server
@@ -107,12 +107,12 @@ features:
       requirement: "numind-server/requirements/llm-model-switch.md"
       proposal: "numind-server/proposals/llm-model-switch-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-04-10-llm-model-switch-design.md"
-      plan: null
+      plan: "numind-server/docs/superpowers/plans/llm-model-switch-plan.md"
       review_spec_compliance: null
       review_code_quality: null
       qa: null
     progress:
-      total_tasks: 0
+      total_tasks: 17
       completed_tasks: 0
       reviewed_tasks: 0
       current_task: null
