@@ -28,6 +28,9 @@ type IStore interface {
 	Credits() CreditStore
 	Orders() OrderStore
 	Monitor() IMonitorStore
+	KnowledgeBase() IKnowledgeBaseStore
+	ChatbotConfig() IChatbotConfigStore
+	ChatbotSession() IChatbotSessionStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -106,4 +109,19 @@ func (ds *datastore) Orders() OrderStore {
 // Monitor 返回一个实现了 IMonitorStore 接口的实例.
 func (ds *datastore) Monitor() IMonitorStore {
 	return NewMonitorStore(ds.db)
+}
+
+// KnowledgeBase 返回一个实现了 IKnowledgeBaseStore 接口的实例.
+func (ds *datastore) KnowledgeBase() IKnowledgeBaseStore {
+	return NewKnowledgeBaseStore(ds.db)
+}
+
+// ChatbotConfig 返回一个实现了 IChatbotConfigStore 接口的实例.
+func (ds *datastore) ChatbotConfig() IChatbotConfigStore {
+	return NewChatbotConfigStore(ds.db)
+}
+
+// ChatbotSession 返回一个实现了 IChatbotSessionStore 接口的实例.
+func (ds *datastore) ChatbotSession() IChatbotSessionStore {
+	return NewChatbotSessionStore(ds.db)
 }

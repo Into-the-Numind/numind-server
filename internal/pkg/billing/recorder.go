@@ -160,7 +160,10 @@ func (r *UsageRecorder) buildRecord(event *UsageEvent) *model.UsageRecord {
 				"error", err,
 				"user_id", event.UserID,
 				"operation", event.Operation)
+			record.Metadata = "{}"
 		}
+	} else {
+		record.Metadata = "{}"
 	}
 
 	// 计算预估成本和收入

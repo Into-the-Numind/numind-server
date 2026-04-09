@@ -9,10 +9,12 @@ import (
 // SopTemplate SOP模板表
 type SopTemplate struct {
 	gorm.Model
-	Name        string `gorm:"size:100;not null;index" json:"name"`
-	Description string `gorm:"type:text" json:"description"`
-	Status      string `gorm:"size:20;default:'active';index" json:"status"` // active, inactive
-	Prompt      string `gorm:"type:text" json:"prompt"`                      // 预处理提示词，在执行第一个节点前发送
+	Name          string `gorm:"size:100;not null;index" json:"name"`
+	Description   string `gorm:"type:text" json:"description"`
+	Status        string `gorm:"size:20;default:'active';index" json:"status"` // active, inactive
+	Prompt        string `gorm:"type:text" json:"prompt"`                      // 预处理提示词，在执行第一个节点前发送
+	CreatorUserID *uint  `gorm:"index:idx_st_creator" json:"creator_user_id"`  // B端创建者用户ID
+	PublishStatus string `gorm:"size:20;default:''" json:"publish_status"` // draft/published/offline; empty = admin-created
 }
 
 func (SopTemplate) TableName() string {
@@ -207,4 +209,11 @@ const (
 
 	SopNodeStatusActive   = "active"
 	SopNodeStatusInactive = "inactive"
+)
+
+// SOP发布状态常量
+const (
+	SopPublishStatusDraft     = "draft"
+	SopPublishStatusPublished = "published"
+	SopPublishStatusOffline   = "offline"
 )

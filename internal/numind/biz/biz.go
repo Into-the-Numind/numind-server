@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz/ali"
+	chatbotbiz "numind-server/internal/numind/biz/chatbot"
 	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/numind/biz/credit"
 	customerbiz "numind-server/internal/numind/biz/customer"
+	kbbiz "numind-server/internal/numind/biz/knowledgebase"
 	"numind-server/internal/numind/biz/monitor"
 	"numind-server/internal/numind/biz/payment"
 	"numind-server/internal/numind/biz/salesrag"
@@ -38,8 +40,10 @@ type IBiz interface {
 	Customers() customerbiz.ICustomerBiz // 客户管理服务
 	SalesRAG() salesrag.SalesRAGBiz      // 销售 RAG 服务
 	Credit() credit.ICreditBiz           // 积分服务
-	Payment() payment.IPaymentBiz        // 支付服务
-	Monitor() monitor.IMonitorBiz        // 博主监控服务
+	Payment() payment.IPaymentBiz              // 支付服务
+	Monitor() monitor.IMonitorBiz              // 博主监控服务
+	KnowledgeBase() kbbiz.IKnowledgeBaseBiz    // 知识库服务
+	Chatbot() chatbotbiz.IChatbotBiz           // 智能体服务
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -53,6 +57,8 @@ type biz struct {
 	credit          credit.ICreditBiz
 	payment         payment.IPaymentBiz
 	monitorService  monitor.IMonitorBiz
+	kbService       kbbiz.IKnowledgeBaseBiz
+	chatbotService  chatbotbiz.IChatbotBiz
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -155,6 +161,12 @@ func NewBiz(ds store.IStore) *biz {
 
 	b.salesRAGService = salesrag.NewSalesRAGBiz(b.ds, pipeline, salesRAGSvc, b.Volc(), b.Ali(), salesSessionStore, parser)
 
+	// 初始化知识库服务
+	b.kbService = kbbiz.NewKnowledgeBaseBiz(ds, b.salesRAGService)
+
+	// 初始化智能体服务（注入 VolcBiz + VectorStore + Embedder 用于 ChatStream）
+	b.chatbotService = chatbotbiz.NewChatbotBiz(ds, b.Volc(), vStore, embedder)
+
 	// 初始化博主监控服务
 	llmClient := llm.NewDMXAPIClient()
 	monitorCooldown := monitor.NewCooldownManager(
@@ -247,4 +259,14 @@ func (b *biz) Payment() payment.IPaymentBiz {
 // Monitor 返回博主监控服务实例.
 func (b *biz) Monitor() monitor.IMonitorBiz {
 	return b.monitorService
+}
+
+// KnowledgeBase 返回知识库服务实例.
+func (b *biz) KnowledgeBase() kbbiz.IKnowledgeBaseBiz {
+	return b.kbService
+}
+
+// Chatbot 返回智能体服务实例.
+func (b *biz) Chatbot() chatbotbiz.IChatbotBiz {
+	return b.chatbotService
 }
