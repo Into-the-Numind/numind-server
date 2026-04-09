@@ -23,7 +23,7 @@ type UsageRecord struct {
 	BizRefType            string    `gorm:"size:50" json:"biz_ref_type"`      // 关联业务对象类型: sop_run, sales_session 等
 	BizRefID              uint      `gorm:"default:0" json:"biz_ref_id"`      // 关联业务对象 ID
 	IsFallback            bool      `gorm:"default:false" json:"is_fallback"` // 是否为降级调用
-	Metadata              string    `gorm:"type:json" json:"metadata"`        // 额外上下文 JSON
+	Metadata              string    `gorm:"type:json" json:"metadata"` // 额外上下文 JSON
 	CreatedAt             time.Time `gorm:"index:idx_ur_user_created" json:"created_at"`
 }
 
