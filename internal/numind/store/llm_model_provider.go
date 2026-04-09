@@ -53,7 +53,7 @@ func (s *llmModelProviderStore) ListActiveByModel(ctx context.Context, modelID u
 	}
 
 	// 过滤掉因供应商未激活导致 Provider 为 nil 的记录
-	active := mps[:0]
+	active := make([]model.LLMModelProvider, 0, len(mps))
 	for _, mp := range mps {
 		if mp.Provider != nil {
 			active = append(active, mp)
