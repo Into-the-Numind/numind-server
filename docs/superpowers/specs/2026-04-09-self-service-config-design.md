@@ -203,6 +203,47 @@ const FeatureKeySelfServiceConfig = "self_service_config"
 
 status 转换规则：`draft→published`（首次发布）、`published→offline`（下线）、`offline→published`（重新上线）。
 
+**Create Chatbot Request Body:**
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | required | 名称，最长 100 字符 |
+| description | string | optional | 描述，最长 1024 字符 |
+| avatar | string | optional | 头像 URL |
+| system_prompt | string | required | 系统提示词 |
+| knowledge_base_ids | []uint | optional | 挂载的知识库 ID 列表 |
+
+**Chatbot Detail Response Schema:**
+```json
+{
+  "id": 1,
+  "user_id": 100,
+  "name": "产品咨询助手",
+  "description": "解答产品相关问题",
+  "avatar": "https://...",
+  "system_prompt": "你是一个专业的产品咨询顾问...",
+  "status": "draft",
+  "knowledge_bases": [
+    {"id": 1, "name": "产品文档库", "description": "...", "status": "active"}
+  ],
+  "created_at": "2026-04-09T12:00:00Z",
+  "updated_at": "2026-04-09T12:00:00Z"
+}
+```
+
+**Chatbot List Item Response Schema（不含 knowledge_bases）:**
+```json
+{
+  "id": 1,
+  "user_id": 100,
+  "name": "产品咨询助手",
+  "description": "解答产品相关问题",
+  "avatar": "https://...",
+  "status": "draft",
+  "created_at": "2026-04-09T12:00:00Z",
+  "updated_at": "2026-04-09T12:00:00Z"
+}
+```
+
 #### SOP 模板
 
 | Method | Path | Body | Response |
@@ -217,6 +258,58 @@ status 转换规则：`draft→published`（首次发布）、`published→offli
 | PUT | `/v1/config/sop-templates/:id/nodes/:nodeId` | partial update | ok |
 | DELETE | `/v1/config/sop-templates/:id/nodes/:nodeId` | — | ok |
 | PUT | `/v1/config/sop-templates/:id/nodes/batch-sort` | `[{"id":1,"sort":0},{"id":2,"sort":1}]` | ok |
+
+**Create SOP Template Request Body:**
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | required | 名称，最长 100 字符 |
+| description | string | optional | 描述 |
+
+**Create Node Request Body:**
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| prompt | string | required | 步骤提示词 |
+| sort | int | optional | 排序序号，默认追加末尾 |
+
+**SOP Template Detail Response Schema:**
+```json
+{
+  "id": 1,
+  "name": "客户跟进流程",
+  "description": "...",
+  "creator_user_id": 100,
+  "publish_status": "draft",
+  "status": "active",
+  "nodes": [
+    {"id": 1, "prompt": "分析客户背景...", "sort": 0},
+    {"id": 2, "prompt": "生成跟进方案...", "sort": 1}
+  ],
+  "created_at": "2026-04-09T12:00:00Z",
+  "updated_at": "2026-04-09T12:00:00Z"
+}
+```
+
+**Create KB Request Body:**
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | required | 知识库名称，最长 100 字符 |
+| description | string | optional | 描述 |
+
+**KB Detail Response Schema:**
+```json
+{
+  "id": 1,
+  "user_id": 100,
+  "name": "产品文档库",
+  "description": "...",
+  "status": "active",
+  "documents": [
+    {"id": 1, "name": "产品手册.pdf", "status": "COMPLETED", "file_size": 1024000, "chunk_count": 45, "created_at": "2026-04-09T12:00:00Z"}
+  ],
+  "created_at": "2026-04-09T12:00:00Z",
+  "updated_at": "2026-04-09T12:00:00Z"
+}
+```
 
 SOP 步骤上限：biz 层 `CreateNode` 校验当前模板节点数 `>= 20` 时返回 `errno.ErrMaxNodesExceeded`。
 
@@ -368,7 +461,9 @@ type IChatbotConfigStore interface {
     UnmountAllByKB(ctx context.Context, kbID uint) error  // KB 删除时级联解挂
 
     // C 端查询
-    ListPublishedByUser(ctx context.Context, userID uint) ([]model.ChatbotConfig, error)
+    // ListPublishedByOwner 查询指定 owner（父用户）已发布的 chatbot
+    // C 端子用户调用时，biz 层负责传入 user.ParentUserID（而非子用户自身 ID）
+    ListPublishedByOwner(ctx context.Context, ownerUserID uint) ([]model.ChatbotConfig, error)
 }
 ```
 
@@ -533,15 +628,15 @@ ChatStream(ctx, userID, sessionID, message, handler)
 
 func ParentUserOnly() gin.HandlerFunc {
     return func(c *gin.Context) {
-        userID := c.GetUint("userID")
-        // 查用户 parent_user_id
-        user, err := store.User().Get(ctx, userID)
-        if err != nil {
-            core.WriteResponse(c, errno.ErrUserNotFound, nil)
+        // 从 context 读取已有的 user 对象（AuthMiddleware 已加载），不额外查 DB
+        user, exists := c.Get("current_user")
+        if !exists {
+            core.WriteResponse(c, errno.ErrTokenInvalid, nil)
             c.Abort()
             return
         }
-        if user.ParentUserID != nil {
+        u := user.(*model.User)
+        if u.ParentUserID != nil {
             core.WriteResponse(c, errno.ErrForbidden.SetMessage("仅限主账号操作"), nil)
             c.Abort()
             return
@@ -698,7 +793,7 @@ export const useChatbotStore = defineStore('chatbot', () => {
 
 **智能体管理（ChatbotList.vue）：**
 - 表格列：名称、状态（draft/published/offline badge）、知识库数、创建时间、操作
-- 操作：编辑、发布/下线、删除（确认对话框）
+- 操作：编辑、测试对话（跳转 `/chatbot/:id`，仅 draft/published 状态可用）、发布/下线、删除（确认对话框）
 - 顶部：新建按钮
 - 4 状态处理：loading 骨架屏 / empty 引导+创建按钮 / error 重试 / success 正常渲染
 
@@ -885,7 +980,9 @@ ON DUPLICATE KEY UPDATE updated_at = NOW();
 | B 端未创建任何配置 | C 端首页对应区域显示空状态（引导文案） |
 | 知识库文档解析未完成就挂载到 chatbot | 允许挂载；ChatStream 步骤 5 仅查 `status = COMPLETED` 的文档 |
 | SOP 步骤超过 20 个 | `CreateNode` biz 层拒绝，返回 `ErrMaxNodesExceeded` |
-| SSE 连接中断 | 不扣积分（stream 完成后才扣费） |
+| SSE 连接中断 | 不扣积分（stream 完成后才扣费）。Langfuse generation 在 defer 中调用 `EndGeneration`：正常完成记 token counts，中断时记 `output: {"error": "client disconnected"}` |
 | 删除对话会话 | 软删 session + 硬删 messages（追加型表，无需保留） |
 | 父用户测试 draft chatbot | 允许（`ListVisibleChatbots` 对父用户返回全部状态） |
 | 子用户尝试访问 /config/* | `ParentUserOnly` 中间件拦截，返回 403 |
+| 父用户删除 chatbot 后已有 sessions | sessions 保留（chatbot 软删除），ListSessions 正常展示历史会话，但无法发起新对话（CreateSession 检查 chatbot 存在性） |
+| SalesRAG 删除底层文档 | chatbot 检索时查 `knowledge_document.status = COMPLETED`，已删除文档（deleted_at 非空）被 GORM 自动过滤，不影响 chatbot |
