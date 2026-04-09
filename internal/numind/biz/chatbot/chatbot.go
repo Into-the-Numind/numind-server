@@ -211,7 +211,7 @@ func (b *chatbotBiz) ListVisibleChatbots(ctx context.Context, user *model.User) 
 		return configs, nil
 	}
 	// 主用户：返回自己的全部智能体（不分页，C 端展示用）
-	configs, _, err := b.ds.ChatbotConfig().List(ctx, user.ID, 0, 100)
+	configs, _, err := b.ds.ChatbotConfig().List(ctx, user.ID, 0, 1000)
 	if err != nil {
 		return nil, fmt.Errorf("ListVisibleChatbots: %w", err)
 	}
