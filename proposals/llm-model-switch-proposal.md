@@ -96,7 +96,8 @@
 | id | uint | 主键 |
 | user_id | uint | 用户 ID |
 | feature | string | 功能标识（chatbot / sop） |
-| model_key | string | 选择的逻辑模型标识 |
+| model_key | string | 选择的基础模型标识（如 deepseek-v3.2） |
+| thinking | bool | 是否启用深度思考 |
 | updated_at | datetime | 最后更新时间 |
 
 ### 路由算法
@@ -124,15 +125,24 @@
 
 ### UI 行为规格
 
-#### 用户端 — 模型选择器（智能体 + SOP 共用组件）
-- 页面位置：输入框工具栏区域（send 按钮左侧）
+#### 用户端 — 输入框工具栏（智能体 + SOP 共用）
+- 页面位置：输入框工具栏区域
+
+##### 模型选择器
 - 布局要求：紧凑型下拉按钮（pill 样式），显示当前模型名称 + 下拉箭头
-- 交互模式：点击展开模型列表，选择后收起，立即生效于下次发送/执行
+- 交互模式：点击展开模型列表（4 个模型），选择后收起，立即生效于下次发送/执行
+- 选择器只展示 4 个基础模型，不展示 thinking 变体
 - 状态处理：
   - loading：模型列表加载时显示 skeleton
   - empty：无可用模型时隐藏选择器，使用默认模型
   - error：加载失败时使用默认模型，不阻塞使用
   - success：显示模型列表，标记当前选中项
+
+##### "深度思考"按钮
+- 布局要求：toggle 按钮（图标+文字），与模型选择器并排
+- 交互模式：点击切换 on/off 状态，视觉上明确区分开启/关闭
+- 功能逻辑：开启时，后端将用户选择的模型 key 映射到对应的 thinking 变体（如 `deepseek-v3.2` → `deepseek-v3.2-thinking`）
+- 状态记忆：深度思考开关状态也随模型偏好一起持久化
 
 #### 管理端 — 供应商管理页面
 - 表格展示所有供应商（名称、API 地址、状态）
@@ -151,12 +161,15 @@
 
 ### 初期开放模型列表
 
-| 显示名称 | 逻辑模型 key | 初始供应商 |
-|----------|-------------|-----------|
-| Claude Sonnet 4.6 Thinking | claude-sonnet-4-6-thinking | DMXAPI / LinkAPI |
-| Gemini 3.1 Pro | gemini-3.1-pro-preview | DMXAPI / LinkAPI |
-| DeepSeek V3.2 | deepseek-v3.2 | DMXAPI / LinkAPI |
-| GPT 5.4 | gpt-5.4 | DMXAPI / LinkAPI |
-| DeepSeek V3.2 Thinking | deepseek-v3.2-thinking | DMXAPI / LinkAPI |
+用户端模型选择器展示 4 个基础模型，"深度思考"按钮控制 thinking 变体：
 
-> 注：具体模型 ID 和供应商路由在管理端配置，以上为初始候选列表。每个模型可配置多个供应商路由，按价格优先级自动选择。
+| 显示名称 | 基础 key | Thinking key | 初始供应商 |
+|----------|---------|-------------|-----------|
+| Claude Sonnet 4.6 | claude-sonnet-4-6 | claude-sonnet-4-6-thinking | DMXAPI / LinkAPI |
+| Gemini 3.1 Pro | gemini-3.1-pro-preview | gemini-3.1-pro-preview-thinking | DMXAPI / LinkAPI |
+| DeepSeek V3.2 | deepseek-v3.2 | deepseek-v3.2-thinking | DMXAPI / LinkAPI |
+| GPT 5.4 | gpt-5.4 | gpt-5.4-thinking | DMXAPI / LinkAPI |
+
+数据库共 8 条 llm_model 记录（4 基础 + 4 thinking），路由映射各自独立配置。
+
+> 注：具体 provider_model_id 和供应商路由在管理端配置。每个模型可配置多个供应商路由，按价格优先级自动选择。
