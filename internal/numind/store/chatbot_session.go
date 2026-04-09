@@ -74,7 +74,7 @@ func (s *chatbotSessionStore) IncrementMessageCount(ctx context.Context, session
 	return s.db.WithContext(ctx).
 		Model(&model.ChatbotSession{}).
 		Where("id = ?", sessionID).
-		Update("message_count", gorm.Expr("message_count + ?", 1)).Error
+		UpdateColumn("message_count", gorm.Expr("message_count + ?", 1)).Error
 }
 
 // CreateMessage 创建消息
@@ -102,7 +102,7 @@ func (s *chatbotSessionStore) ListMessages(ctx context.Context, sessionID uint, 
 
 // DeleteMessagesBySession 硬删除会话的所有消息
 func (s *chatbotSessionStore) DeleteMessagesBySession(ctx context.Context, sessionID uint) error {
-	return s.db.WithContext(ctx).
+	return s.db.WithContext(ctx).Unscoped().
 		Where("session_id = ?", sessionID).
 		Delete(&model.ChatbotMessage{}).Error
 }

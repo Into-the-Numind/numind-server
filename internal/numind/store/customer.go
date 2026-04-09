@@ -385,17 +385,17 @@ func (c *customerStore) ListUserFeatures(ctx context.Context, subUserID uint) ([
 
 // GrantTemplateToAllSubUsers 将模板授权给指定父用户的所有子用户（跳过已有授权）
 func (c *customerStore) GrantTemplateToAllSubUsers(ctx context.Context, parentUserID uint, templateID uint) error {
-	// 查询所有子用户
-	var subUsers []model.User
-	if err := c.db.WithContext(ctx).Where("parent_user_id = ?", parentUserID).Find(&subUsers).Error; err != nil {
-		return fmt.Errorf("GrantTemplateToAllSubUsers: query sub users: %w", err)
-	}
-
-	if len(subUsers) == 0 {
-		return nil
-	}
-
 	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 在事务内查询子用户，避免 TOCTOU 竞态
+		var subUsers []model.User
+		if err := tx.Where("parent_user_id = ?", parentUserID).Find(&subUsers).Error; err != nil {
+			return fmt.Errorf("GrantTemplateToAllSubUsers: query sub users: %w", err)
+		}
+
+		if len(subUsers) == 0 {
+			return nil
+		}
+
 		for _, u := range subUsers {
 			permission := &model.UserTemplatePermission{
 				ParentUserID: parentUserID,
