@@ -74,6 +74,12 @@ func (ctrl *SopConfigController) Get(c *gin.Context) {
 	core.WriteResponse(c, nil, gin.H{"template": template, "nodes": nodes})
 }
 
+// updateTemplateReq SOP模板更新请求
+type updateTemplateReq struct {
+	Name        *string `json:"name"`
+	Description *string `json:"description"`
+}
+
 // Update 更新SOP模板
 func (ctrl *SopConfigController) Update(c *gin.Context) {
 	id, ok := parseUintParam(c, "id")
@@ -81,10 +87,18 @@ func (ctrl *SopConfigController) Update(c *gin.Context) {
 		return
 	}
 
-	var updates map[string]interface{}
-	if err := c.ShouldBindJSON(&updates); err != nil {
+	var req updateTemplateReq
+	if err := c.ShouldBindJSON(&req); err != nil {
 		core.WriteResponse(c, errno.ErrBind.SetMessage("参数绑定失败: %s", err.Error()), nil)
 		return
+	}
+
+	updates := make(map[string]interface{})
+	if req.Name != nil {
+		updates["name"] = *req.Name
+	}
+	if req.Description != nil {
+		updates["description"] = *req.Description
 	}
 
 	if err := ctrl.sopBiz.UpdateTemplate(c, id, updates); err != nil {
@@ -171,6 +185,12 @@ func (ctrl *SopConfigController) CreateNode(c *gin.Context) {
 	core.WriteResponse(c, nil, created)
 }
 
+// updateNodeReq SOP节点更新请求
+type updateNodeReq struct {
+	Prompt *string `json:"prompt"`
+	Sort   *int    `json:"sort"`
+}
+
 // UpdateNode 更新SOP节点
 func (ctrl *SopConfigController) UpdateNode(c *gin.Context) {
 	_, ok := parseUintParam(c, "id")
@@ -182,10 +202,18 @@ func (ctrl *SopConfigController) UpdateNode(c *gin.Context) {
 		return
 	}
 
-	var updates map[string]interface{}
-	if err := c.ShouldBindJSON(&updates); err != nil {
+	var req updateNodeReq
+	if err := c.ShouldBindJSON(&req); err != nil {
 		core.WriteResponse(c, errno.ErrBind.SetMessage("参数绑定失败: %s", err.Error()), nil)
 		return
+	}
+
+	updates := make(map[string]interface{})
+	if req.Prompt != nil {
+		updates["prompt"] = *req.Prompt
+	}
+	if req.Sort != nil {
+		updates["sort"] = *req.Sort
 	}
 
 	if err := ctrl.sopBiz.UpdateNode(c, nodeID, updates); err != nil {
