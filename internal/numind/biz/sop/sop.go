@@ -158,9 +158,11 @@ func (b *sopBiz) CreateNode(ctx context.Context, node *model.SopNode) (*model.So
 		return nil, errno.ErrMaxNodesExceeded
 	}
 
-	// 如果没有父节点，设置为根节点
-	if node.ParentID == nil {
+	// 只有模板下第一个节点（无其他节点且无父节点）才是根节点
+	if node.ParentID == nil && nodeCount == 0 {
 		node.IsRoot = true
+	} else {
+		node.IsRoot = false
 	}
 
 	if err := b.ds.Sop().CreateNode(node); err != nil {

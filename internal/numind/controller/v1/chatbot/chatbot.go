@@ -171,10 +171,17 @@ func (ctrl *ChatbotController) Chat(c *gin.Context) {
 			var marshalErr error
 
 			switch eventType {
-			case "token":
+			case "token", "thinking":
+				// biz 层传入 map[string]string{"content": "..."}, 提取实际文本
+				text := ""
+				if m, ok := data.(map[string]string); ok {
+					text = m["content"]
+				} else if s, ok := data.(string); ok {
+					text = s
+				}
 				eventData, marshalErr = json.Marshal(map[string]interface{}{
-					"type":    "token",
-					"content": data,
+					"type": eventType,
+					"data": text,
 				})
 			case "done":
 				// biz 层传入的 doneData 是 map[string]interface{}，补充 type 字段

@@ -18,6 +18,7 @@ type IChatbotConfigStore interface {
 
 	// KB 挂载
 	MountKnowledgeBases(ctx context.Context, chatbotID uint, kbIDs []uint) error
+	ReplaceKnowledgeBases(ctx context.Context, chatbotID uint, kbIDs []uint) error
 	UnmountKnowledgeBase(ctx context.Context, chatbotID uint, kbID uint) error
 	ListMountedKBs(ctx context.Context, chatbotID uint) ([]model.KnowledgeBase, error)
 	UnmountAllByKB(ctx context.Context, kbID uint) error
@@ -99,6 +100,29 @@ func (s *chatbotConfigStore) MountKnowledgeBases(ctx context.Context, chatbotID 
 	}
 
 	return s.db.WithContext(ctx).Create(&mounts).Error
+}
+
+// ReplaceKnowledgeBases 替换智能体的知识库挂载（事务：先清除再重建）
+func (s *chatbotConfigStore) ReplaceKnowledgeBases(ctx context.Context, chatbotID uint, kbIDs []uint) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 清除所有现有挂载
+		if err := tx.Where("chatbot_id = ?", chatbotID).Delete(&model.ChatbotKnowledgeBase{}).Error; err != nil {
+			return err
+		}
+
+		// 重建挂载
+		if len(kbIDs) == 0 {
+			return nil
+		}
+		var mounts []model.ChatbotKnowledgeBase
+		for _, kbID := range kbIDs {
+			mounts = append(mounts, model.ChatbotKnowledgeBase{
+				ChatbotID:       chatbotID,
+				KnowledgeBaseID: kbID,
+			})
+		}
+		return tx.Create(&mounts).Error
+	})
 }
 
 // UnmountKnowledgeBase 卸载智能体的单个知识库

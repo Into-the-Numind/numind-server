@@ -32,10 +32,11 @@ type CreateChatbotReq struct {
 
 // UpdateChatbotReq 更新智能体请求
 type UpdateChatbotReq struct {
-	Name         *string `json:"name"`
-	Description  *string `json:"description"`
-	Avatar       *string `json:"avatar"`
-	SystemPrompt *string `json:"system_prompt"`
+	Name             *string `json:"name"`
+	Description      *string `json:"description"`
+	Avatar           *string `json:"avatar"`
+	SystemPrompt     *string `json:"system_prompt"`
+	KnowledgeBaseIDs *[]uint `json:"knowledge_base_ids"`
 }
 
 // ChatbotDetail 智能体详情（含知识库列表）
@@ -161,6 +162,14 @@ func (b *chatbotBiz) UpdateChatbot(ctx context.Context, userID uint, id uint, re
 	if err := b.ds.ChatbotConfig().Update(ctx, config); err != nil {
 		return fmt.Errorf("UpdateChatbot: %w", err)
 	}
+
+	// 更新知识库挂载（先清除再重建）
+	if req.KnowledgeBaseIDs != nil {
+		if err := b.ds.ChatbotConfig().ReplaceKnowledgeBases(ctx, id, *req.KnowledgeBaseIDs); err != nil {
+			return fmt.Errorf("UpdateChatbot: replace KBs: %w", err)
+		}
+	}
+
 	return nil
 }
 

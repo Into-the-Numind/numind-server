@@ -27,6 +27,7 @@ type SopNode struct {
 	TemplateID     uint   `gorm:"not null;index:idx_template_sort" json:"template_id"`
 	ParentID       *uint  `gorm:"index" json:"parent_id"`                        // NULL表示根节点
 	Name           string `gorm:"size:100;not null" json:"name"`                 // 节点名称
+	Description    string `gorm:"type:text" json:"description"`                  // 节点描述（步骤说明）
 	Status         string `gorm:"size:20;default:'active'" json:"status"`        // active, inactive
 	BaseURL        string `gorm:"size:255;not null" json:"base_url"`             // AI服务地址
 	ModelName      string `gorm:"size:100;not null" json:"model_name"`           // 模型名称

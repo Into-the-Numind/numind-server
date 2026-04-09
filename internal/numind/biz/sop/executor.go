@@ -17,6 +17,8 @@ import (
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/tokenizer"
+
+	"github.com/spf13/viper"
 )
 
 // SopExecutor SOP执行器
@@ -75,8 +77,30 @@ type StreamHandler func(event string, chunk string) error
 // TokenUsage Token使用统计信息（类型别名，实际定义在 billing 包中）
 type TokenUsage = billing.TokenUsage
 
+// applyDefaultLLMConfig 当节点未配置 LLM 信息时，使用系统默认配置（volc.*）
+func applyDefaultLLMConfig(node *model.SopNode) {
+	if node.APIKey == "" {
+		node.APIKey = viper.GetString("volc.api_key")
+	}
+	if node.BaseURL == "" {
+		baseURL := viper.GetString("volc.base_url")
+		if baseURL != "" {
+			node.BaseURL = strings.TrimSuffix(baseURL, "/") + "/chat/completions"
+		}
+	}
+	if node.ModelName == "" {
+		node.ModelName = viper.GetString("volc.model")
+		if node.ModelName == "" {
+			node.ModelName = "deepseek-v3-250324"
+		}
+	}
+}
+
 // ExecuteNodeStream 流式执行单个节点（公开方法）
 func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, handler StreamHandler) (string, *TokenUsage, error) {
+	// 节点未配置 LLM 信息时，使用系统默认配置
+	applyDefaultLLMConfig(node)
+
 	// 检查API密钥是否配置
 	if node.APIKey == "" {
 		log.C(ctx).Errorw("Node API key is empty", "node_id", node.ID, "node_name", node.Name)
@@ -366,6 +390,9 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 // deepThinking: 是否开启深度思考模式（阿里百炼 enable_thinking）
 // 返回: output, thinking, usage, error
 func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, handler StreamHandler, isLastNode bool, deepThinking bool, conversationID string) (string, string, *TokenUsage, error) {
+	// 节点未配置 LLM 信息时，使用系统默认配置
+	applyDefaultLLMConfig(node)
+
 	// 检查API密钥是否配置
 	if node.APIKey == "" {
 		log.C(ctx).Errorw("Node API key is empty", "node_id", node.ID, "node_name", node.Name)

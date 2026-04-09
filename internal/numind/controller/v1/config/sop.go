@@ -187,8 +187,10 @@ func (ctrl *SopConfigController) CreateNode(c *gin.Context) {
 
 // updateNodeReq SOP节点更新请求
 type updateNodeReq struct {
-	Prompt *string `json:"prompt"`
-	Sort   *int    `json:"sort"`
+	Name        *string `json:"name"`
+	Description *string `json:"description"`
+	Prompt      *string `json:"prompt"`
+	Sort        *int    `json:"sort"`
 }
 
 // UpdateNode 更新SOP节点
@@ -209,6 +211,12 @@ func (ctrl *SopConfigController) UpdateNode(c *gin.Context) {
 	}
 
 	updates := make(map[string]interface{})
+	if req.Name != nil {
+		updates["name"] = *req.Name
+	}
+	if req.Description != nil {
+		updates["description"] = *req.Description
+	}
 	if req.Prompt != nil {
 		updates["prompt"] = *req.Prompt
 	}
@@ -249,6 +257,11 @@ type nodeSortItem struct {
 	Sort int  `json:"sort"`
 }
 
+// batchSortReq wraps the items array to match the frontend payload { items: [...] }
+type batchSortReq struct {
+	Items []nodeSortItem `json:"items" binding:"required"`
+}
+
 // BatchSortNodes 批量更新节点排序
 func (ctrl *SopConfigController) BatchSortNodes(c *gin.Context) {
 	_, ok := parseUintParam(c, "id")
@@ -256,11 +269,12 @@ func (ctrl *SopConfigController) BatchSortNodes(c *gin.Context) {
 		return
 	}
 
-	var items []nodeSortItem
-	if err := c.ShouldBindJSON(&items); err != nil {
+	var req batchSortReq
+	if err := c.ShouldBindJSON(&req); err != nil {
 		core.WriteResponse(c, errno.ErrBind.SetMessage("参数绑定失败: %s", err.Error()), nil)
 		return
 	}
+	items := req.Items
 
 	for _, item := range items {
 		updates := map[string]interface{}{"sort": item.Sort}
