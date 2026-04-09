@@ -18,7 +18,7 @@ features:
       numind-server: "feature/content-monitor"
       numind-web-v3: "feature/content-monitor"
     artifacts:
-      requirement: "requirements/content-monitor.md"
+      requirement: "numind-server/requirements/content-monitor.md"
       proposal: "proposals/content-monitor-proposal.md"
       spec: "docs/superpowers/specs/2026-04-04-content-monitor-design.md"
       plan: "docs/superpowers/plans/content-monitor-plan.md"
@@ -62,7 +62,7 @@ features:
       - numind-admin-web
     branches: {}
     artifacts:
-      requirement: "requirements/self-service-config.md"
+      requirement: "numind-server/requirements/self-service-config.md"
       proposal: null
       spec: null
       plan: null
