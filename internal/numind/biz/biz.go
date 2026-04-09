@@ -168,8 +168,8 @@ func NewBiz(ds store.IStore) *biz {
 	// 初始化知识库服务
 	b.kbService = kbbiz.NewKnowledgeBaseBiz(ds, b.salesRAGService)
 
-	// 初始化智能体服务（注入 VolcBiz + VectorStore + Embedder 用于 ChatStream）
-	b.chatbotService = chatbotbiz.NewChatbotBiz(ds, b.Volc(), vStore, embedder)
+	// 初始化智能体服务（注入 LLMRouter + VectorStore + Embedder 用于 ChatStream）
+	b.chatbotService = chatbotbiz.NewChatbotBiz(ds, b.llmRouterSvc, vStore, embedder)
 
 	// 初始化博主监控服务
 	llmClient := llm.NewDMXAPIClient()

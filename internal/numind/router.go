@@ -61,7 +61,7 @@ func installNumindRouters(g *gin.Engine) error {
 	configSopCtrl := config.NewSopConfigController(b.Sop())
 
 	// 初始化C端智能体对话控制器
-	chatbotCtrl := chatbotcontroller.NewChatbotController(b.Chatbot())
+	chatbotCtrl := chatbotcontroller.NewChatbotController(b.Chatbot(), b.LLMRouter())
 
 	// 初始化 LLM 模型与偏好控制器
 	llmCtrl := llmcontroller.NewLLMController(b.LLMRouter())

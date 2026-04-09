@@ -12,6 +12,7 @@ import (
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
+	"numind-server/internal/pkg/llm"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 
@@ -21,14 +22,11 @@ import (
 // chatStreamMaxHistory 历史消息上下文窗口（最近 N 条消息）
 const chatStreamMaxHistory = 20
 
-// chatStreamDefaultModel LLM 模型选择
-const chatStreamDefaultModel = "deepseek-v3-2-251201"
-
 // chatStreamMaxChunks 向量检索最大返回切片数
 const chatStreamMaxChunks = 6
 
 // ChatStream 执行流式对话：向量检索 → 组装 prompt → LLM 流式输出 → 持久化消息
-func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint, message string, handler StreamHandler) error {
+func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint, message string, modelKey string, thinking bool, handler StreamHandler) error {
 	// 1. 获取会话并验证所有权
 	session, err := b.ds.ChatbotSession().GetSession(ctx, sessionID)
 	if err != nil {
@@ -145,33 +143,23 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 	// 结束 context-assembly span
 	langfuse.EndSpan(assemblySpanID)
 
-	// 7. 创建 generation span
-	genID := langfuse.SpanID()
-	langfuse.CreateGeneration(traceID, genID,
-		langfuse.WithGenName("chatbot-llm-call"),
-		langfuse.WithGenModel(chatStreamDefaultModel),
-		langfuse.WithGenInput(messages),
-	)
-
-	// defer EndGeneration 处理意外断开
-	var genEnded bool
-	defer func() {
-		if !genEnded {
-			langfuse.EndGeneration(genID,
-				langfuse.WithGenOutput(map[string]string{"status": "client_disconnected"}),
-			)
-		}
-	}()
-
-	// 8. 注入计费上下文，调用 LLM 流式输出
+	// 7. 注入计费上下文，调用 LLM 流式输出（LLMRouter 负责 Langfuse generation 记录）
 	ctx = billing.WithBilling(ctx, userID, "chatbot_chat")
-	// 恢复 parent 到 trace 级别（generation 由 StreamChatWithModel 内部自动创建）
-	ctx = langfuse.WithTraceAndParent(ctx, traceID, genID)
+	// ParentObservationID 设为空字符串，使 LLMRouter 创建的 generation 直接挂在 trace 根节点下
+	ctx = langfuse.WithTraceAndParent(ctx, traceID, "")
+
+	// 将 messages ([]map[string]interface{}) 转换为 []llm.ChatMessage
+	chatMessages := make([]llm.ChatMessage, 0, len(messages))
+	for _, m := range messages {
+		role, _ := m["role"].(string)
+		content, _ := m["content"].(string)
+		chatMessages = append(chatMessages, llm.ChatMessage{Role: role, Content: content})
+	}
 
 	var fullContent strings.Builder
 	var thinkingContent strings.Builder
 
-	result, usage, llmErr := b.volcBiz.StreamChatWithModel(ctx, messages, chatStreamDefaultModel, 0, 0.7, "minimal",
+	_, usage, llmErr := b.llmRouter.StreamChat(ctx, modelKey, thinking, chatMessages, 0.7, 0,
 		func(eventType, content string) error {
 			if eventType == "thinking" {
 				thinkingContent.WriteString(content)
@@ -184,24 +172,8 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 	)
 
 	if llmErr != nil {
-		// 记录 generation 错误
-		langfuse.EndGeneration(genID,
-			langfuse.WithGenOutput(map[string]string{"error": llmErr.Error()}),
-			langfuse.WithGenError(llmErr.Error()),
-		)
-		genEnded = true
 		return fmt.Errorf("ChatStream: LLM call failed: %w", llmErr)
 	}
-
-	// 正常结束 generation
-	genOpts := []langfuse.GenOption{
-		langfuse.WithGenOutput(result),
-	}
-	if usage != nil {
-		genOpts = append(genOpts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
-	}
-	langfuse.EndGeneration(genID, genOpts...)
-	genEnded = true
 
 	// 9. 持久化消息（用户消息 + 助手消息）
 	maxSeq, seqErr := b.ds.ChatbotSession().GetMaxSeq(ctx, sessionID)
