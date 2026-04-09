@@ -101,8 +101,9 @@ features:
       - numind-server
       - numind-web-v3
     branches:
-      numind-server: null
-      numind-web-v3: null
+      numind-server: "feature/llm-model-switch"
+      numind-web-v3: "feature/llm-model-switch"
+      numind-admin-web: "feature/llm-model-switch"
     artifacts:
       requirement: "numind-server/requirements/llm-model-switch.md"
       proposal: "numind-server/proposals/llm-model-switch-proposal.md"
