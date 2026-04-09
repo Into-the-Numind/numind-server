@@ -28,6 +28,7 @@ features:
     progress:
       total_tasks: 15
       completed_tasks: 15
+      reviewed_tasks: 15
       current_task: null
     rollback: null
     last_verified:
@@ -73,7 +74,8 @@ features:
     progress:
       total_tasks: 14
       completed_tasks: 0
-      current_task: null
+      reviewed_tasks: 0
+      current_task: "Task 1: Migration SQL + Models + Error Codes"
     rollback: null
     last_verified: null
     decisions: []
