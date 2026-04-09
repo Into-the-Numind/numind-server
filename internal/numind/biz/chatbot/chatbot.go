@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 
+	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
@@ -15,6 +17,9 @@ import (
 
 // StreamHandler 流式输出回调函数
 type StreamHandler func(event string, data interface{}) error
+
+// Embedder 向量化函数签名
+type Embedder func(ctx context.Context, text string) ([]float32, error)
 
 // CreateChatbotReq 创建智能体请求
 type CreateChatbotReq struct {
@@ -59,14 +64,22 @@ type IChatbotBiz interface {
 }
 
 type chatbotBiz struct {
-	ds store.IStore
+	ds          store.IStore
+	volcBiz     volc.VolcBiz
+	vectorStore port.VectorStore
+	embedder    Embedder
 }
 
 var _ IChatbotBiz = (*chatbotBiz)(nil)
 
 // NewChatbotBiz 创建智能体业务层实例
-func NewChatbotBiz(ds store.IStore) IChatbotBiz {
-	return &chatbotBiz{ds: ds}
+func NewChatbotBiz(ds store.IStore, volcBiz volc.VolcBiz, vectorStore port.VectorStore, embedder Embedder) IChatbotBiz {
+	return &chatbotBiz{
+		ds:          ds,
+		volcBiz:     volcBiz,
+		vectorStore: vectorStore,
+		embedder:    embedder,
+	}
 }
 
 // ============================================================
@@ -182,37 +195,110 @@ func (b *chatbotBiz) UpdateStatus(ctx context.Context, userID uint, id uint, sta
 }
 
 // ============================================================
-// C端：对话会话（Task 7 实现）
+// C端：对话会话
 // ============================================================
 
 // ListVisibleChatbots 获取用户可见的智能体列表（C端）
-func (b *chatbotBiz) ListVisibleChatbots(_ context.Context, _ *model.User) ([]model.ChatbotConfig, error) {
-	return nil, fmt.Errorf("ListVisibleChatbots: not implemented")
+// 主用户（ParentUserID == nil）: 返回自己所有智能体（全状态）
+// 子用户（ParentUserID != nil）: 仅返回父用户已发布的智能体
+func (b *chatbotBiz) ListVisibleChatbots(ctx context.Context, user *model.User) ([]model.ChatbotConfig, error) {
+	if user.ParentUserID != nil {
+		// 子用户：返回父用户的已发布智能体
+		configs, err := b.ds.ChatbotConfig().ListPublishedByOwner(ctx, *user.ParentUserID)
+		if err != nil {
+			return nil, fmt.Errorf("ListVisibleChatbots: %w", err)
+		}
+		return configs, nil
+	}
+	// 主用户：返回自己的全部智能体（不分页，C 端展示用）
+	configs, _, err := b.ds.ChatbotConfig().List(ctx, user.ID, 0, 100)
+	if err != nil {
+		return nil, fmt.Errorf("ListVisibleChatbots: %w", err)
+	}
+	return configs, nil
 }
 
 // CreateSession 创建对话会话
-func (b *chatbotBiz) CreateSession(_ context.Context, _ uint, _ uint) (*model.ChatbotSession, error) {
-	return nil, fmt.Errorf("CreateSession: not implemented")
+func (b *chatbotBiz) CreateSession(ctx context.Context, userID uint, chatbotID uint) (*model.ChatbotSession, error) {
+	// 验证智能体存在且可访问
+	config, err := b.ds.ChatbotConfig().Get(ctx, chatbotID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errno.ErrChatbotNotFound
+		}
+		return nil, fmt.Errorf("CreateSession: %w", err)
+	}
+
+	// 检查访问权限：已发布 或 草稿+本人
+	if config.Status != model.ChatbotStatusPublished {
+		if config.UserID != userID {
+			return nil, errno.ErrChatbotNotPublished
+		}
+	}
+
+	session := &model.ChatbotSession{
+		UserID:    userID,
+		ChatbotID: chatbotID,
+		Title:     config.Name,
+		Status:    "active",
+	}
+	if err := b.ds.ChatbotSession().CreateSession(ctx, session); err != nil {
+		return nil, fmt.Errorf("CreateSession: %w", err)
+	}
+	return session, nil
 }
 
 // ListSessions 获取用户的对话会话列表
-func (b *chatbotBiz) ListSessions(_ context.Context, _ uint, _ int, _ int) ([]model.ChatbotSession, int64, error) {
-	return nil, 0, fmt.Errorf("ListSessions: not implemented")
+func (b *chatbotBiz) ListSessions(ctx context.Context, userID uint, offset, limit int) ([]model.ChatbotSession, int64, error) {
+	sessions, total, err := b.ds.ChatbotSession().ListSessions(ctx, userID, offset, limit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("ListSessions: %w", err)
+	}
+	return sessions, total, nil
 }
 
 // DeleteSession 删除对话会话
-func (b *chatbotBiz) DeleteSession(_ context.Context, _ uint, _ uint) error {
-	return fmt.Errorf("DeleteSession: not implemented")
+func (b *chatbotBiz) DeleteSession(ctx context.Context, userID uint, sessionID uint) error {
+	session, err := b.ds.ChatbotSession().GetSession(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errno.ErrSessionNotFound
+		}
+		return fmt.Errorf("DeleteSession: %w", err)
+	}
+	if session.UserID != userID {
+		return errno.ErrForbidden
+	}
+
+	// 先硬删除消息，再软删除会话
+	if err := b.ds.ChatbotSession().DeleteMessagesBySession(ctx, sessionID); err != nil {
+		return fmt.Errorf("DeleteSession: delete messages: %w", err)
+	}
+	if err := b.ds.ChatbotSession().DeleteSession(ctx, sessionID); err != nil {
+		return fmt.Errorf("DeleteSession: %w", err)
+	}
+	return nil
 }
 
 // ListMessages 获取会话消息列表
-func (b *chatbotBiz) ListMessages(_ context.Context, _ uint, _ uint, _ int, _ int) ([]model.ChatbotMessage, int64, error) {
-	return nil, 0, fmt.Errorf("ListMessages: not implemented")
-}
+func (b *chatbotBiz) ListMessages(ctx context.Context, userID uint, sessionID uint, offset, limit int) ([]model.ChatbotMessage, int64, error) {
+	// 验证会话所有权
+	session, err := b.ds.ChatbotSession().GetSession(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, 0, errno.ErrSessionNotFound
+		}
+		return nil, 0, fmt.Errorf("ListMessages: %w", err)
+	}
+	if session.UserID != userID {
+		return nil, 0, errno.ErrForbidden
+	}
 
-// ChatStream 流式对话
-func (b *chatbotBiz) ChatStream(_ context.Context, _ uint, _ uint, _ string, _ StreamHandler) error {
-	return fmt.Errorf("ChatStream: not implemented")
+	messages, total, err := b.ds.ChatbotSession().ListMessages(ctx, sessionID, offset, limit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("ListMessages: %w", err)
+	}
+	return messages, total, nil
 }
 
 // ============================================================
