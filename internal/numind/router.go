@@ -298,6 +298,13 @@ func installNumindRouters(g *gin.Engine) error {
 		monitorGroup.GET("/config", monitorCtrl.GetConfig)
 		monitorGroup.PUT("/config", monitorCtrl.UpdateConfig)
 		monitorGroup.GET("/stats", monitorCtrl.GetStats)
+
+		// XHS account binding (QR code login)
+		monitorGroup.POST("/xhs/qr/create", monitorCtrl.CreateXhsQR)
+		monitorGroup.GET("/xhs/qr/status/:qr_id", monitorCtrl.CheckXhsQRStatus)
+		monitorGroup.POST("/xhs/qr/complete/:qr_id", monitorCtrl.CompleteXhsQR)
+		monitorGroup.GET("/xhs/bind-status", monitorCtrl.GetXhsBindStatus)
+		monitorGroup.POST("/xhs/unbind", monitorCtrl.UnbindXhs)
 	}
 
 	// 支付回调（无需鉴权）

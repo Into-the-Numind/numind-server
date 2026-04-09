@@ -97,6 +97,9 @@ type MonitorConfig struct {
 	FeishuWebhook       string         `gorm:"size:500" json:"feishu_webhook"`
 	FeishuBitableConfig datatypes.JSON `json:"feishu_bitable_config"`
 	NotifyOnUpdate      bool           `gorm:"default:true" json:"notify_on_update"`
+	XhsCookies          string         `gorm:"type:text" json:"-"`              // stored but never sent to frontend
+	XhsNickname         string         `gorm:"size:200" json:"xhs_nickname"`    // display name of bound XHS account
+	XhsUserID           string         `gorm:"size:100" json:"xhs_user_id"`     // XHS user ID of bound account
 	CreatedAt           time.Time      `json:"created_at"`
 	UpdatedAt           time.Time      `json:"updated_at"`
 }

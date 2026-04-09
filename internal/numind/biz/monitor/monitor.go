@@ -40,6 +40,13 @@ type IMonitorBiz interface {
 	GetConfig(ctx context.Context, userID uint) (*model.MonitorConfig, error)
 	UpdateConfig(ctx context.Context, userID uint, cfg *model.MonitorConfig) error
 
+	// XHS Account Binding (QR Login)
+	CreateQRLogin(ctx context.Context, userID uint) (qrID, code, qrURL string, err error)
+	CheckQRStatus(ctx context.Context, userID uint, qrID string) (status int, message string, err error)
+	CompleteQRLogin(ctx context.Context, userID uint, qrID string) error
+	GetXhsBindStatus(ctx context.Context, userID uint) (bound bool, nickname, xhsUserID string, err error)
+	UnbindXhs(ctx context.Context, userID uint) error
+
 	// Stats
 	GetStats(ctx context.Context, userID uint) (*store.MonitorStats, error)
 

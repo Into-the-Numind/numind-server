@@ -480,6 +480,119 @@ func (ctrl *MonitorController) GetStats(c *gin.Context) {
 	core.WriteResponse(c, nil, stats)
 }
 
+// ========== XHS Account Binding endpoints ==========
+
+// CreateXhsQR starts a QR code login flow for XHS account binding.
+// POST /monitor/xhs/qr/create
+func (ctrl *MonitorController) CreateXhsQR(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+
+	qrID, code, qrURL, err := ctrl.monitorBiz.CreateQRLogin(c, userID)
+	if err != nil {
+		log.C(c).Errorw("CreateXhsQR failed", "user_id", userID, "err", err)
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"qr_id":  qrID,
+		"code":   code,
+		"qr_url": qrURL,
+	})
+}
+
+// CheckXhsQRStatus polls the QR scan status.
+// GET /monitor/xhs/qr/status/:qr_id
+func (ctrl *MonitorController) CheckXhsQRStatus(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+
+	qrID := c.Param("qr_id")
+	if qrID == "" {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("missing qr_id"), nil)
+		return
+	}
+
+	status, message, err := ctrl.monitorBiz.CheckQRStatus(c, userID, qrID)
+	if err != nil {
+		log.C(c).Errorw("CheckXhsQRStatus failed", "user_id", userID, "qr_id", qrID, "err", err)
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"status":  status,
+		"message": message,
+	})
+}
+
+// CompleteXhsQR completes the QR login after user confirms.
+// POST /monitor/xhs/qr/complete/:qr_id
+func (ctrl *MonitorController) CompleteXhsQR(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+
+	qrID := c.Param("qr_id")
+	if qrID == "" {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("missing qr_id"), nil)
+		return
+	}
+
+	if err := ctrl.monitorBiz.CompleteQRLogin(c, userID, qrID); err != nil {
+		log.C(c).Errorw("CompleteXhsQR failed", "user_id", userID, "qr_id", qrID, "err", err)
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{"message": "ok"})
+}
+
+// GetXhsBindStatus returns the XHS account bind status for the current user.
+// GET /monitor/xhs/bind-status
+func (ctrl *MonitorController) GetXhsBindStatus(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+
+	bound, nickname, xhsUserID, err := ctrl.monitorBiz.GetXhsBindStatus(c, userID)
+	if err != nil {
+		log.C(c).Errorw("GetXhsBindStatus failed", "user_id", userID, "err", err)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"bound":       bound,
+		"nickname":    nickname,
+		"xhs_user_id": xhsUserID,
+	})
+}
+
+// UnbindXhs removes the XHS account binding.
+// POST /monitor/xhs/unbind
+func (ctrl *MonitorController) UnbindXhs(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+
+	if err := ctrl.monitorBiz.UnbindXhs(c, userID); err != nil {
+		log.C(c).Errorw("UnbindXhs failed", "user_id", userID, "err", err)
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{"message": "ok"})
+}
+
 // ========== Admin endpoints ==========
 
 // AdminOverview returns a system-wide monitor overview.
