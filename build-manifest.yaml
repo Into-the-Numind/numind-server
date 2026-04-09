@@ -70,14 +70,19 @@ features:
       plan: "numind-server/docs/superpowers/plans/self-service-config-plan.md"
       review_spec_compliance: null
       review_code_quality: null
-      qa: null
+      qa: "S5 QA pass — 4 bugs found and fixed (JSON serialization, user_id extraction, chat field name, billing metadata)"
     progress:
       total_tasks: 14
       completed_tasks: 14
       reviewed_tasks: 14
       current_task: null
     rollback: null
-    last_verified: null
+    last_verified:
+      at: "2026-04-09T19:10:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: "pass (salesrag pre-existing failures excluded)"
+      test_summary: "go vet pass, go test pass (2 pre-existing salesrag failures), npm run lint pass, npm run type-check pass, browser QA 7/7 paths verified"
     decisions: []
     deferred: []
     blockers: []
