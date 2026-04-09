@@ -6,6 +6,7 @@ import (
 	"numind-server/internal/numind/biz/knowledgebase"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/model"
 
 	"github.com/gin-gonic/gin"
 )
@@ -22,7 +23,7 @@ func NewKnowledgeBaseController(kbBiz knowledgebase.IKnowledgeBaseBiz) *Knowledg
 
 // Create 创建知识库
 func (ctrl *KnowledgeBaseController) Create(c *gin.Context) {
-	userID := c.GetUint("userID")
+	userID := currentUserID(c)
 
 	var req knowledgebase.CreateKBReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -41,7 +42,7 @@ func (ctrl *KnowledgeBaseController) Create(c *gin.Context) {
 
 // List 获取知识库列表
 func (ctrl *KnowledgeBaseController) List(c *gin.Context) {
-	userID := c.GetUint("userID")
+	userID := currentUserID(c)
 	offset, limit := parsePagination(c)
 
 	list, total, err := ctrl.kbBiz.List(c, userID, offset, limit)
@@ -55,7 +56,7 @@ func (ctrl *KnowledgeBaseController) List(c *gin.Context) {
 
 // Get 获取知识库详情
 func (ctrl *KnowledgeBaseController) Get(c *gin.Context) {
-	userID := c.GetUint("userID")
+	userID := currentUserID(c)
 	id, ok := parseUintParam(c, "id")
 	if !ok {
 		return
@@ -72,7 +73,7 @@ func (ctrl *KnowledgeBaseController) Get(c *gin.Context) {
 
 // Update 更新知识库
 func (ctrl *KnowledgeBaseController) Update(c *gin.Context) {
-	userID := c.GetUint("userID")
+	userID := currentUserID(c)
 	id, ok := parseUintParam(c, "id")
 	if !ok {
 		return
@@ -94,7 +95,7 @@ func (ctrl *KnowledgeBaseController) Update(c *gin.Context) {
 
 // Delete 删除知识库
 func (ctrl *KnowledgeBaseController) Delete(c *gin.Context) {
-	userID := c.GetUint("userID")
+	userID := currentUserID(c)
 	id, ok := parseUintParam(c, "id")
 	if !ok {
 		return
@@ -110,7 +111,7 @@ func (ctrl *KnowledgeBaseController) Delete(c *gin.Context) {
 
 // UploadDocument 上传知识库文档
 func (ctrl *KnowledgeBaseController) UploadDocument(c *gin.Context) {
-	userID := c.GetUint("userID")
+	userID := currentUserID(c)
 	id, ok := parseUintParam(c, "id")
 	if !ok {
 		return
@@ -134,7 +135,7 @@ func (ctrl *KnowledgeBaseController) UploadDocument(c *gin.Context) {
 
 // RemoveDocument 删除知识库文档
 func (ctrl *KnowledgeBaseController) RemoveDocument(c *gin.Context) {
-	userID := c.GetUint("userID")
+	userID := currentUserID(c)
 	id, ok := parseUintParam(c, "id")
 	if !ok {
 		return
@@ -160,6 +161,18 @@ func parseUintParam(c *gin.Context, name string) (uint, bool) {
 		return 0, false
 	}
 	return uint(v), true
+}
+
+// currentUserID 从 middleware 设置的 current_user 中提取用户 ID
+func currentUserID(c *gin.Context) uint {
+	u, exists := c.Get("current_user")
+	if !exists {
+		return 0
+	}
+	if user, ok := u.(*model.User); ok {
+		return user.ID
+	}
+	return 0
 }
 
 // parsePagination 解析分页参数

@@ -17,8 +17,11 @@ const (
 
 // ChatbotConfig 智能体配置
 type ChatbotConfig struct {
-	gorm.Model
-	UserID       uint   `gorm:"not null;index:idx_cc_user_status" json:"user_id"`
+	ID        uint           `gorm:"primaryKey" json:"id"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	UserID    uint           `gorm:"not null;index:idx_cc_user_status" json:"user_id"`
 	Name         string `gorm:"size:100;not null" json:"name"`
 	Description  string `gorm:"size:1024" json:"description"`
 	Avatar       string `gorm:"size:500" json:"avatar"`
@@ -42,8 +45,11 @@ func (ChatbotKnowledgeBase) TableName() string { return "chatbot_knowledge_base"
 
 // ChatbotSession 对话会话
 type ChatbotSession struct {
-	gorm.Model
-	UserID       uint   `gorm:"not null;index:idx_cs_user_chatbot" json:"user_id"`
+	ID        uint           `gorm:"primaryKey" json:"id"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	UserID    uint           `gorm:"not null;index:idx_cs_user_chatbot" json:"user_id"`
 	ChatbotID    uint   `gorm:"not null;index:idx_cs_user_chatbot" json:"chatbot_id"`
 	Title        string `gorm:"size:200" json:"title"`
 	Status       string `gorm:"size:20;not null;default:'active'" json:"status"`

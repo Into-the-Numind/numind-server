@@ -21,7 +21,7 @@ func NewSopConfigController(sopBiz sop.ISopBiz) *SopConfigController {
 
 // Create 创建SOP模板
 func (ctrl *SopConfigController) Create(c *gin.Context) {
-	userID := c.GetUint("userID")
+	userID := currentUserID(c)
 
 	var req sop.CreateTemplateByUserReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -40,7 +40,7 @@ func (ctrl *SopConfigController) Create(c *gin.Context) {
 
 // List 获取当前用户创建的SOP模板列表
 func (ctrl *SopConfigController) List(c *gin.Context) {
-	userID := c.GetUint("userID")
+	userID := currentUserID(c)
 	offset, limit := parsePagination(c)
 
 	list, total, err := ctrl.sopBiz.ListTemplatesByCreator(c, userID, offset, limit)
@@ -131,7 +131,7 @@ type sopStatusReq struct {
 
 // UpdateStatus 更新SOP模板状态（发布/下线）
 func (ctrl *SopConfigController) UpdateStatus(c *gin.Context) {
-	userID := c.GetUint("userID")
+	userID := currentUserID(c)
 	id, ok := parseUintParam(c, "id")
 	if !ok {
 		return

@@ -53,9 +53,9 @@ features:
     ndf_version: "1.0"
     description: "B端自助配置工具 — Chatbot智能体配置器 + SOP步骤工作流配置器，B2B2C模式"
     track: "standard"
-    stage: "S4"
+    stage: "S5"
     classification_reason: "涉及多张新表、大量新API、多租户隔离、C端积分扣费，影响文件30+"
-    last_updated_by: "ai-s4"
+    last_updated_by: "ai-s5"
     last_updated_at: "2026-04-09T00:00:00+08:00"
     repos:
       - numind-server
@@ -73,9 +73,9 @@ features:
       qa: null
     progress:
       total_tasks: 14
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task: "Task 1: Migration SQL + Models + Error Codes"
+      completed_tasks: 14
+      reviewed_tasks: 14
+      current_task: null
     rollback: null
     last_verified: null
     decisions: []

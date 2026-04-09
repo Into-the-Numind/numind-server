@@ -20,7 +20,7 @@ func NewChatbotConfigController(chatbotBiz chatbot.IChatbotBiz) *ChatbotConfigCo
 
 // Create 创建智能体
 func (ctrl *ChatbotConfigController) Create(c *gin.Context) {
-	userID := c.GetUint("userID")
+	userID := currentUserID(c)
 
 	var req chatbot.CreateChatbotReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -39,7 +39,7 @@ func (ctrl *ChatbotConfigController) Create(c *gin.Context) {
 
 // List 获取智能体列表
 func (ctrl *ChatbotConfigController) List(c *gin.Context) {
-	userID := c.GetUint("userID")
+	userID := currentUserID(c)
 	offset, limit := parsePagination(c)
 
 	list, total, err := ctrl.chatbotBiz.ListChatbots(c, userID, offset, limit)
@@ -53,7 +53,7 @@ func (ctrl *ChatbotConfigController) List(c *gin.Context) {
 
 // Get 获取智能体详情
 func (ctrl *ChatbotConfigController) Get(c *gin.Context) {
-	userID := c.GetUint("userID")
+	userID := currentUserID(c)
 	id, ok := parseUintParam(c, "id")
 	if !ok {
 		return
@@ -70,7 +70,7 @@ func (ctrl *ChatbotConfigController) Get(c *gin.Context) {
 
 // Update 更新智能体
 func (ctrl *ChatbotConfigController) Update(c *gin.Context) {
-	userID := c.GetUint("userID")
+	userID := currentUserID(c)
 	id, ok := parseUintParam(c, "id")
 	if !ok {
 		return
@@ -92,7 +92,7 @@ func (ctrl *ChatbotConfigController) Update(c *gin.Context) {
 
 // Delete 删除智能体
 func (ctrl *ChatbotConfigController) Delete(c *gin.Context) {
-	userID := c.GetUint("userID")
+	userID := currentUserID(c)
 	id, ok := parseUintParam(c, "id")
 	if !ok {
 		return
@@ -113,7 +113,7 @@ type updateStatusReq struct {
 
 // UpdateStatus 更新智能体状态（发布/下线）
 func (ctrl *ChatbotConfigController) UpdateStatus(c *gin.Context) {
-	userID := c.GetUint("userID")
+	userID := currentUserID(c)
 	id, ok := parseUintParam(c, "id")
 	if !ok {
 		return

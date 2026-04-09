@@ -13,8 +13,11 @@ const (
 
 // KnowledgeBase 知识库（文档分组抽象）
 type KnowledgeBase struct {
-	gorm.Model
-	UserID      uint   `gorm:"not null;index:idx_kb_user_id" json:"user_id"`
+	ID        uint           `gorm:"primaryKey" json:"id"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	UserID    uint           `gorm:"not null;index:idx_kb_user_id" json:"user_id"`
 	Name        string `gorm:"size:100;not null" json:"name"`
 	Description string `gorm:"size:1024" json:"description"`
 	Status      string `gorm:"size:20;not null;default:'active'" json:"status"`
