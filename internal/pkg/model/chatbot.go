@@ -10,6 +10,9 @@ const (
 	ChatbotStatusDraft     = "draft"
 	ChatbotStatusPublished = "published"
 	ChatbotStatusOffline   = "offline"
+
+	ChatbotSessionStatusActive = "active"
+	ChatbotSessionStatusClosed = "closed"
 )
 
 // ChatbotConfig 智能体配置
@@ -59,9 +62,9 @@ type ChatbotMessage struct {
 	Content          string    `gorm:"type:longtext" json:"content"`
 	Thinking         string    `gorm:"type:longtext" json:"thinking"`
 	TraceID          string    `gorm:"size:100" json:"trace_id"`
-	Seq              int       `gorm:"default:0;index:idx_cm_session_seq" json:"seq"`
-	PromptTokens     int       `gorm:"default:0" json:"prompt_tokens"`
-	CompletionTokens int       `gorm:"default:0" json:"completion_tokens"`
+	Seq              int       `gorm:"not null;default:0;index:idx_cm_session_seq" json:"seq"`
+	PromptTokens     int       `gorm:"not null;default:0" json:"prompt_tokens"`
+	CompletionTokens int       `gorm:"not null;default:0" json:"completion_tokens"`
 	CreatedAt        time.Time `json:"created_at"`
 }
 

@@ -77,7 +77,14 @@ CREATE TABLE IF NOT EXISTS chatbot_message (
     INDEX idx_cm_user_id (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- SOP 模板扩展
-ALTER TABLE sop_template ADD COLUMN creator_user_id INT UNSIGNED DEFAULT NULL;
-ALTER TABLE sop_template ADD COLUMN publish_status VARCHAR(20) DEFAULT '';
-ALTER TABLE sop_template ADD INDEX idx_st_creator (creator_user_id);
+-- SOP 模板扩展（幂等）
+ALTER TABLE sop_template ADD COLUMN IF NOT EXISTS creator_user_id INT UNSIGNED DEFAULT NULL;
+ALTER TABLE sop_template ADD COLUMN IF NOT EXISTS publish_status VARCHAR(20) DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_st_creator ON sop_template (creator_user_id);
+
+-- Feature permission seed
+INSERT INTO user_feature_permission (parent_user_id, sub_user_id, feature_key, created_at, updated_at)
+SELECT id, 0, 'self_service_config', NOW(), NOW()
+FROM user WHERE parent_user_id IS NULL
+ON DUPLICATE KEY UPDATE updated_at = NOW();
+-- 注意：上面是示例 seed，实际需要通过 admin 手动授权给指定 B 端客户
