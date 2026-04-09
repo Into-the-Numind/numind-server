@@ -51,7 +51,7 @@ type ISopBiz interface {
 	// Step-by-step execution operations
 	CreateRun(ctx context.Context, templateID, userID uint, text string) (*model.SopRun, error)
 	GetNextNode(ctx context.Context, runID uint) (*model.SopNode, bool, error)
-	ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text string, handler func(event string, chunk string) error) error
+	ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text string, modelKey string, thinkingMode bool, handler func(event string, chunk string) error) error
 	GetRunStatus(ctx context.Context, runID uint) (*RunStatus, error)
 
 	// Note operations
@@ -398,7 +398,9 @@ func (b *sopBiz) GetNextNode(ctx context.Context, runID uint) (*model.SopNode, b
 }
 
 // ExecuteNodeStream 流式执行指定节点
-func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text string, handler func(event string, chunk string) error) error {
+// modelKey: 用户选择的模型 key（空字符串表示使用节点默认配置）
+// thinkingMode: 是否开启深度思考模式
+func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text string, modelKey string, thinkingMode bool, handler func(event string, chunk string) error) error {
 	// 互斥锁检测：防止同一个 RunID 的任务在后台并发执行（解决“执行互斥锁”问题）
 	if _, loaded := b.runningRuns.LoadOrStore(runID, struct{}{}); loaded {
 		log.C(ctx).Warnw("Detected concurrent execution attempt", "run_id", runID)
@@ -690,11 +692,21 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		langfuse.WithTraceTags("sop"),
 	)
 	ctx = langfuse.WithTrace(ctx, traceID)
-	// 深度思考模式：开启 enable_thinking
-	output, thinking, usage, err := b.executor.ExecuteNodeStreamWithThinking(ctx, node, currentInput, conversationHistory, func(event string, chunk string) error {
-		// 直接透传事件给上层 handler
-		return handler(event, chunk)
-	}, isLastNode, true, run.ConversationID)
+
+	var output, thinking string
+	var usage *TokenUsage
+	if modelKey != "" {
+		// LLMRouter 路径：用户选择了特定模型，调用 ExecuteNodeStream（内含 executeViaRouter）
+		output, usage, err = b.executor.ExecuteNodeStream(ctx, node, currentInput, conversationHistory, modelKey, thinkingMode, func(event string, chunk string) error {
+			return handler(event, chunk)
+		})
+	} else {
+		// 默认路径：使用节点配置的 LLM，深度思考模式开启 enable_thinking
+		output, thinking, usage, err = b.executor.ExecuteNodeStreamWithThinking(ctx, node, currentInput, conversationHistory, func(event string, chunk string) error {
+			// 直接透传事件给上层 handler
+			return handler(event, chunk)
+		}, isLastNode, true, run.ConversationID)
+	}
 	nodeEndTime := time.Now()
 	latency := nodeEndTime.Sub(startTime).Milliseconds()
 

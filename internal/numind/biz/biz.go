@@ -80,8 +80,8 @@ func NewBiz(ds store.IStore) *biz {
 	// 创建 ConfigReader，用于从 Redis → MySQL → Viper 读取配置
 	_ = config.NewConfigReader(b.Configs())
 
-	// 初始化SOP服务
-	sopExecutor := sopbiz.NewSopExecutor(b.ds)
+	// 初始化SOP服务（注入 LLMRouter 以支持用户选择模型）
+	sopExecutor := sopbiz.NewSopExecutor(b.ds, b.llmRouterSvc)
 	b.sopService = sopbiz.NewSopBiz(b.ds, sopExecutor, b.credit)
 
 	// 初始化销售 RAG 服务
