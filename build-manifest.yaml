@@ -52,9 +52,9 @@ features:
     ndf_version: "1.0"
     description: "B端自助配置工具 — Chatbot智能体配置器 + SOP步骤工作流配置器，B2B2C模式"
     track: "standard"
-    stage: "S2"
+    stage: "S3"
     classification_reason: "涉及多张新表、大量新API、多租户隔离、C端积分扣费，影响文件30+"
-    last_updated_by: "ai-s2"
+    last_updated_by: "ai-s3"
     last_updated_at: "2026-04-09T00:00:00+08:00"
     repos:
       - numind-server
@@ -64,12 +64,12 @@ features:
       requirement: "numind-server/requirements/self-service-config.md"
       proposal: "numind-server/proposals/self-service-config-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-04-09-self-service-config-design.md"
-      plan: null
+      plan: "numind-server/docs/superpowers/plans/self-service-config-plan.md"
       review_spec_compliance: null
       review_code_quality: null
       qa: null
     progress:
-      total_tasks: 0
+      total_tasks: 14
       completed_tasks: 0
       current_task: null
     rollback: null
