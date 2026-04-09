@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz/ali"
+	chatbotbiz "numind-server/internal/numind/biz/chatbot"
 	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/numind/biz/credit"
 	customerbiz "numind-server/internal/numind/biz/customer"
@@ -42,6 +43,7 @@ type IBiz interface {
 	Payment() payment.IPaymentBiz              // 支付服务
 	Monitor() monitor.IMonitorBiz              // 博主监控服务
 	KnowledgeBase() kbbiz.IKnowledgeBaseBiz    // 知识库服务
+	Chatbot() chatbotbiz.IChatbotBiz           // 智能体服务
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -56,6 +58,7 @@ type biz struct {
 	payment         payment.IPaymentBiz
 	monitorService  monitor.IMonitorBiz
 	kbService       kbbiz.IKnowledgeBaseBiz
+	chatbotService  chatbotbiz.IChatbotBiz
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -161,6 +164,9 @@ func NewBiz(ds store.IStore) *biz {
 	// 初始化知识库服务
 	b.kbService = kbbiz.NewKnowledgeBaseBiz(ds, b.salesRAGService)
 
+	// 初始化智能体服务
+	b.chatbotService = chatbotbiz.NewChatbotBiz(ds)
+
 	// 初始化博主监控服务
 	llmClient := llm.NewDMXAPIClient()
 	monitorCooldown := monitor.NewCooldownManager(
@@ -258,4 +264,9 @@ func (b *biz) Monitor() monitor.IMonitorBiz {
 // KnowledgeBase 返回知识库服务实例.
 func (b *biz) KnowledgeBase() kbbiz.IKnowledgeBaseBiz {
 	return b.kbService
+}
+
+// Chatbot 返回智能体服务实例.
+func (b *biz) Chatbot() chatbotbiz.IChatbotBiz {
+	return b.chatbotService
 }
