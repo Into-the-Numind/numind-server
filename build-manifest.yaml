@@ -118,7 +118,12 @@ features:
       reviewed_tasks: 16
       current_task: null
     rollback: null
-    last_verified: null
+    last_verified:
+      at: "2026-04-10T02:06:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: "pass (pre-existing salesrag failures excluded)"
+      test_summary: "go vet pass, npm lint pass (web+admin), npm type-check pass (web+admin), API curl verification pass (user+admin endpoints)"
     decisions: []
     deferred: []
     blockers: []
