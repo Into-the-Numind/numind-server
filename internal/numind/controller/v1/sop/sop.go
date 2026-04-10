@@ -105,7 +105,20 @@ func (ctrl *SopController) CheckTemplatePermission(c *gin.Context) {
 	}
 	user := currentUser.(*model.User)
 
-	// 如果用户是直接客户(parent_user_id为NULL)，则有权限执行所有模板
+	// 模板必须是 active 且已发布 才能在工作区运行；草稿/下线的模板一律无权限
+	template, err := ctrl.sopBiz.GetTemplate(c, uint(templateID))
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("模板不存在"), nil)
+		return
+	}
+	if template.Status != "active" || template.PublishStatus != model.SopPublishStatusPublished {
+		core.WriteResponse(c, nil, gin.H{
+			"has_permission": false,
+		})
+		return
+	}
+
+	// 如果用户是直接客户(parent_user_id为NULL)，则有权限执行所有已发布模板
 	if user.ParentUserID == nil {
 		core.WriteResponse(c, nil, gin.H{
 			"has_permission": true,
@@ -437,7 +450,8 @@ func (ctrl *SopController) GetNote(c *gin.Context) {
 	core.WriteResponse(c, nil, note)
 }
 
-// ListTemplates 获取可用的SOP模板列表（用户端，只显示active的）
+// ListTemplates 获取可用的SOP模板列表（用户端，只显示已发布的 active 模板）
+// 草稿/下线状态的模板不会出现在工作区，需从配置中心管理入口访问。
 func (ctrl *SopController) ListTemplates(c *gin.Context) {
 	log.C(c).Infow("User list SOP templates called")
 
@@ -450,17 +464,17 @@ func (ctrl *SopController) ListTemplates(c *gin.Context) {
 		return
 	}
 
-	// 只返回active状态的模板
-	activeTemplates := []interface{}{}
+	// 只返回 active 且 已发布 的模板
+	visibleTemplates := []interface{}{}
 	for _, t := range templates {
-		if t.Status == "active" {
-			activeTemplates = append(activeTemplates, t)
+		if t.Status == "active" && t.PublishStatus == model.SopPublishStatusPublished {
+			visibleTemplates = append(visibleTemplates, t)
 		}
 	}
 
 	core.WriteResponse(c, nil, gin.H{
-		"total":     len(activeTemplates),
-		"templates": activeTemplates,
+		"total":     len(visibleTemplates),
+		"templates": visibleTemplates,
 	})
 }
 
@@ -481,9 +495,13 @@ func (ctrl *SopController) GetTemplateNodes(c *gin.Context) {
 		return
 	}
 
-	// 只允许获取active状态的模板节点
+	// 只允许获取 active 且已发布的模板节点
 	if template.Status != "active" {
 		core.WriteResponse(c, errno.ErrForbidden.SetMessage("模板未激活"), nil)
+		return
+	}
+	if template.PublishStatus != model.SopPublishStatusPublished {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("模板未发布"), nil)
 		return
 	}
 
@@ -570,6 +588,17 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 		}
 	}()
 	// #endregion
+
+	// 模板必须是 active 且已发布 才能创建运行；阻止草稿/下线模板被绕过 URL 执行
+	templateToRun, err := ctrl.sopBiz.GetTemplate(c, req.TemplateID)
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("模板不存在"), nil)
+		return
+	}
+	if templateToRun.Status != "active" || templateToRun.PublishStatus != model.SopPublishStatusPublished {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("模板未发布，无法运行"), nil)
+		return
+	}
 
 	// 支持书签功能：创建 Run 并自动应用书签
 	run, appliedBookmarkIDs, err := ctrl.sopBiz.CreateRunWithBookmarks(c.Request.Context(), req.TemplateID, user.ID, req.Text, req.AutoApplyBookmarks)

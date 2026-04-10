@@ -208,19 +208,15 @@ func (b *chatbotBiz) UpdateStatus(ctx context.Context, userID uint, id uint, sta
 // ============================================================
 
 // ListVisibleChatbots 获取用户可见的智能体列表（C端）
-// 主用户（ParentUserID == nil）: 返回自己所有智能体（全状态）
+// 主用户（ParentUserID == nil）: 仅返回自己已发布的智能体
 // 子用户（ParentUserID != nil）: 仅返回父用户已发布的智能体
+// 注：工作区只展示已发布的配置；草稿/下线状态的智能体需从配置中心管理入口访问。
 func (b *chatbotBiz) ListVisibleChatbots(ctx context.Context, user *model.User) ([]model.ChatbotConfig, error) {
+	ownerID := user.ID
 	if user.ParentUserID != nil {
-		// 子用户：返回父用户的已发布智能体
-		configs, err := b.ds.ChatbotConfig().ListPublishedByOwner(ctx, *user.ParentUserID)
-		if err != nil {
-			return nil, fmt.Errorf("ListVisibleChatbots: %w", err)
-		}
-		return configs, nil
+		ownerID = *user.ParentUserID
 	}
-	// 主用户：返回自己的全部智能体（不分页，C 端展示用）
-	configs, _, err := b.ds.ChatbotConfig().List(ctx, user.ID, 0, 1000)
+	configs, err := b.ds.ChatbotConfig().ListPublishedByOwner(ctx, ownerID)
 	if err != nil {
 		return nil, fmt.Errorf("ListVisibleChatbots: %w", err)
 	}
@@ -238,11 +234,10 @@ func (b *chatbotBiz) CreateSession(ctx context.Context, userID uint, chatbotID u
 		return nil, fmt.Errorf("CreateSession: %w", err)
 	}
 
-	// 检查访问权限：已发布 或 草稿+本人
+	// 访问权限：只有已发布状态才允许创建会话；草稿/下线的智能体一律禁止运行
+	// （即便是创建者本人也不能运行自己的草稿，需先在配置中心发布）
 	if config.Status != model.ChatbotStatusPublished {
-		if config.UserID != userID {
-			return nil, errno.ErrChatbotNotPublished
-		}
+		return nil, errno.ErrChatbotNotPublished
 	}
 
 	session := &model.ChatbotSession{
