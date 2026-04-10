@@ -515,6 +515,7 @@ features:
       - "2026-04-11 (S2 spec reviewer 修订): sop_run.template_id FK 是 RESTRICT 不是 SET NULL；UpdateNode 已有白名单无需修改"
       - "2026-04-11 (S2→S3 用户决策): src/stores/sop.ts 实测确认 273 行全是 legacy hydration 胶水（0 业务状态），删除 + 新建 sopRun.ts。ConfirmModal/AppNotification 选择新建组件方案（A），不用 window.confirm()"
       - "2026-04-11 (S3 plan reviewer 修订): 前端无 vitest 基础设施，task 5 扩展为 vitest 安装+配置+sanity 测试+types+store 骨架；调试日志范围扩大为 14 处跨 4 文件（biz/sop.go/controller/sop.go/store/sop.go/local_deploy.sh），spec §2.1 错把 biz 行号标为 controller 已修正"
+      - "2026-04-11 (S4 task 1 reviewer 发现 P0): Beacon ?token= 路由当前不可用 — POST /v1/sop/runs/:id/draft 在 authGroup 内，AuthMiddleware token header 缺失时提前 abort，bookmark.go fallback 是 dead code。task 4 必须扩展：把 POST 路由从 authGroup 移到 OptionalAuthMiddleware 组。reviewer 抓出我的'未实测就声明事实'失误第 3 次复发"
       - "2026-04-11 (proposal review 修订): trace 创建实际位置在 biz/sop/sop.go ExecuteNodeStream 行 686-695（不是 executor.go ExecuteNodeRun，该方法不存在）"
     deferred:
       - "S2 必须将 Subagent 1 的 legacy feature inventory 转化为完整保留功能清单"

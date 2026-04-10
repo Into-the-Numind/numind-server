@@ -239,20 +239,23 @@ NDF: sop-runtime-vue-rewrite task 3
 
 ---
 
-## Task 4: 后端 CreateNode 字段守卫 + 调试日志清理
+## Task 4: 后端 CreateNode 字段守卫 + Beacon 路由修复 + 调试日志清理
 
 **依赖：** Task 1, Task 2
 **仓库：** numind-server
 **文件：**
-- 修改：`internal/numind/controller/v1/config/sop.go`（CreateNode）
+- 修改：`internal/numind/controller/v1/config/sop.go`（CreateNode 白名单）
+- 修改：`internal/numind/router.go`（**Beacon POST 路由从 authGroup 移出**，task 1 reviewer 发现的 P0）
 - 修改：`internal/numind/biz/sop/sop.go`（清理 **5 处** `~/Desktop/...` 调试日志，行 262/275/311/323/337）
 - 修改：`internal/numind/controller/v1/sop/sop.go`（清理 **6 处** `~/Desktop/...` 调试日志）
 - 修改：`internal/numind/store/sop.go`（清理 **2 处** `~/Desktop/...` 调试日志）
 - 修改：`local_deploy.sh`（清理 1 处 `Desktop/莫小派合作` 引用，如适用）
 
-**约工作量：** 0.5 天
+**约工作量：** 0.6 天（+0.1 来自 Beacon 路由修复）
 
 > 实测：`grep -rn "Desktop/莫小派合作" numind-server/` 命中 **14 处跨 4 个 .go/.sh 文件**，spec §2.1 和初版 plan 错把行号 262/275/311/323/337 标为 `controller/v1/sop/sop.go`，实际是 `biz/sop/sop.go`。已修正。
+>
+> **task 1 reviewer 发现 P0（必须包含在本 task）**：`POST /v1/sop/runs/:id/draft?token=xxx` 当前在 authGroup 内，AuthMiddleware 在 token header 缺失时 c.Abort() 提前 401，bookmark.go 里的 query token fallback 是 dead code。task 8 的 Beacon 清理依赖修复此问题。修复方案：把 POST 路由从 authGroup 移到 OptionalAuthMiddleware 组（DELETE 路由保留 authGroup）。详见 task 1 research 文档 Step 3。
 
 ### Steps
 
@@ -277,7 +280,44 @@ var req struct {
 - 给 CreateNode 发送一个含 `api_key="evil"` 的 JSON body → 调用后从 DB 读出新建的 node → assert `node.APIKey == ""`
 - 同理测 base_url / model_name / timeout_seconds
 
-- [ ] **Step 3：清理调试日志**
+- [ ] **Step 3：Beacon 路由修复（task 1 reviewer 发现的 P0）**
+
+修改 `internal/numind/router.go`：
+
+```go
+// 找到当前的：
+// authGroup.DELETE("/sop/runs/:id/draft", userSopc.DeleteDraftRun)
+// authGroup.POST("/sop/runs/:id/draft", userSopc.DeleteDraftRun)
+
+// 改为：
+authGroup.DELETE("/sop/runs/:id/draft", userSopc.DeleteDraftRun)  // 保留：标准 fetch 调用走 header
+// POST 路由独立出来，使用 OptionalAuthMiddleware（不强制 header），
+// 由 controller 自己处理 query token fallback
+beaconGroup := v1Group.Group("")
+beaconGroup.Use(importMw.OptionalAuthMiddleware())
+beaconGroup.POST("/sop/runs/:id/draft", userSopc.DeleteDraftRun)
+```
+
+**curl 实测验证：**
+```bash
+# 启动 dev 后
+TOKEN=<dev token>
+
+# 测试 1：标准 header（DELETE 路由），应 200
+curl -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://49.233.219.254:9091/v1/sop/runs/<draft_run_id>/draft" -i
+# 期望：200 OK 或 200 错误信息（如 run 不存在）
+
+# 测试 2：Beacon 路径（POST + query token，无 header），应 200
+curl -X POST "http://49.233.219.254:9091/v1/sop/runs/<draft_run_id>/draft?token=$TOKEN" -i
+# 期望：200（不是 401！）
+
+# 测试 3：POST 既无 header 又无 query token，应 401
+curl -X POST "http://49.233.219.254:9091/v1/sop/runs/<draft_run_id>/draft" -i
+# 期望：401 未提供认证信息
+```
+
+- [ ] **Step 4：清理调试日志**
 
 实测位置（共 14 处跨 4 文件）：删除所有 `func() { logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/...") }()` 块及包裹它的 `// #region agent log` / `// #endregion` 注释。
 

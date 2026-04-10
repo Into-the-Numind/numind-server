@@ -41,7 +41,10 @@
 `TrailingChatPanel.vue` 加载流程：
 ```typescript
 onMounted(async () => {
-  // 1. conversation_id 来自 store.currentRun，不需要单独 API 调用
+  // 1. conversation_id 将从 store.currentRun.conversation_id 读取
+  //    （注：当前前端代码 grep conversation_id 0 命中，意味着这是新引入的字段消费，
+  //     不是已有行为的迁移。task 20 implementer 必须确认 GetRun 端点已返回此字段
+  //     —— 实测 sop_run 表有 conversation_id 列，且 SopRun model 的 json tag 暴露此字段）
   conversationId.value = store.currentRun?.conversation_id ?? ''
 
   // 2. 加载历史消息
@@ -51,6 +54,8 @@ onMounted(async () => {
 ```
 
 **关键纠正**：spec §8.2 之前注释 "chat 的 done meta 不含 conversation_id —— 需要实测确认" → 已确认 done 事件**只含** `{status:"completed"}`，conversation_id 通过 run 对象传递。前端**不需要**从 SSE 流提取 conversation_id。
+
+**Reviewer 措辞纠正**：原本 research 写"前端通过 GetRun API 获取"暗示前端已在使用，但实测前端 grep `conversation_id` 0 命中，应改为"将"通过 GetRun / store.currentRun 读取（新引入的字段消费）。
 
 ### 衍生发现
 
@@ -86,7 +91,7 @@ type updateNodeReq struct {
 
 ---
 
-## Step 3: Beacon `?token=` query 后端支持 ✅
+## Step 3: Beacon `?token=` query 后端支持 ⚠️ 部分支持，需后端修复
 
 ### 实测代码位置
 
@@ -135,20 +140,39 @@ function cleanupDraft() {
 
 **注意**：`navigator.sendBeacon` 默认 POST，不能用 DELETE method，所以必须打到 `POST /v1/sop/runs/:id/draft`（router 已注册的 Beacon 路径）。
 
+### ⚠️ P0 发现（task 1 reviewer 加测，2026-04-11）
+
+**Reviewer 实测纠正**：之前推断"middleware 失败后不会立即返回 401"是错的。实际：
+
+- **`internal/pkg/middleware/middleware.go:55-74`** AuthMiddleware：token 为空时**立即** `c.Abort()` + 返回 401
+- **`internal/pkg/middleware/middleware.go:117-130`** extractToken：**只读 `Authorization` header，零 query 兜底**
+- **`internal/numind/router.go:75-76`** authGroup 强制 AuthMiddleware
+
+**结论**：`POST /v1/sop/runs/:id/draft?token=xxx` 在没有 Authorization header 时**会被 middleware 提前 abort**，bookmark.go 里的 query-token fallback 是 **dead code**。
+
+**这意味着 plan task 8 (useDraftLifecycle 的 Beacon 清理) 在当前 server 状态下根本无法工作**。
+
+### 必须的后端修复（升级到 task 4）
+
+**方案 A（推荐，最小改动）**：把 `POST /v1/sop/runs/:id/draft` 路由从 authGroup 移出，单独注册不带 AuthMiddleware（或带 OptionalAuthMiddleware），由 controller 自己处理 query token 校验。
+
+```go
+// router.go 修改
+// 旧：authGroup.POST("/sop/runs/:id/draft", userSopc.DeleteDraftRun)
+// 新：把 POST 路由从 authGroup 移出
+beaconGroup := v1Group.Group("")
+beaconGroup.Use(importMw.OptionalAuthMiddleware())
+beaconGroup.POST("/sop/runs/:id/draft", userSopc.DeleteDraftRun)
+// DELETE 路由保留在 authGroup（标准 fetch 调用）
+```
+
+**方案 B（不推荐）**：在 `extractToken` 里加 query 参数兜底。会影响所有路由的 auth 行为，副作用大。
+
+**决策：方案 A**。Task 4 (后端 CreateNode 守卫 + 调试日志清理) 必须扩展为包含此修复。Plan 已同步更新。
+
 ### 衍生发现
 
-`current_user` middleware 是否对 `POST /v1/sop/runs/:id/draft` 路径执行 Authorization header 检查？需要确认 middleware 是否会因为 token 缺失而提前 reject 请求。读 `internal/pkg/middleware/middleware.go` 的 user_token middleware：
-
-未细查，但从代码逻辑推断：authGroup 应用了 user_token middleware，但 middleware 失败后不会立即返回 401（否则上述 fallback 永远不会触发）。需要 S4 实测时**用真实 token query 调用** + **不带 Authorization header 调用**两种场景验证。
-
-**P2 deferred**：在 task 8（useDraftLifecycle）实现完成后，用 curl 实测：
-```bash
-TOKEN=<dev token>
-# 测试 1：无 header，仅 query token
-curl -X POST -i "http://49.233.219.254:9091/v1/sop/runs/<draft_run_id>/draft?token=$TOKEN"
-# 期望：200 OK
-```
-如果失败，需要后端 middleware 调整或单独路由跳过 middleware。
+reviewer 的实测过程暴露了 research Step 3 的失误模式：**"看到 controller 里有 fallback 就声明完全支持"**，没有读上游 middleware。这是与 S2 spec 的 SSE 协议错误同源的"未实测就声明事实"问题，已记入 manifest decisions 作为长期警示。
 
 ---
 
@@ -261,14 +285,13 @@ WHERE template_id NOT IN (1,2)
 |---|---|---|
 | 1. chat conversation_id 机制 | ✅ 通过 run 对象传递，不需 SSE 事件 | task 20 实现按本文更新 |
 | 2. UpdateNode 白名单 | ✅ 100% 保留 | task 4 仅核验，不修改 |
-| 3. Beacon ?token= 后端支持 | ✅ 完全支持，双路径 auth | task 8 按 spec 实现即可，加 1 个 deferred curl 实测 |
+| 3. Beacon ?token= 后端支持 | ⚠️ **P0：controller 有 fallback 但 middleware 提前 abort，dead code** | **task 4 必须扩展**：把 POST /sop/runs/:id/draft 路由从 authGroup 移出 |
 | 4. trailing chat 视觉 | ✅ CSS 静态分析完成 | task 20 DOM 结构按本文 |
 | 5. 历史 sop_node 数据污染 | ✅ 0 行污染 | task 4 不需要数据清理 task |
 
-**所有 5 项核对未发现需要回退 spec / plan 的 P0/P1 问题**。可以放心进入 task 2。
+**1 项 P0 已被 reviewer 抓出并修正**：Beacon 路由 middleware 不兼容。Plan task 4 已升级。
 
-**唯一新增的 deferred 项**：
-- 在 task 8 完成后用 curl 实测 Beacon endpoint 的 middleware 兼容性（无 Authorization header + ?token= query）
+**研究失误模式（已记入 manifest）**：Step 3 偷懒"看到 controller fallback 就声明完全支持"，没读 middleware —— 这是与 S2 spec 同源的"未实测就声明事实"问题第 3 次复发，必须严格警惕。
 
 ## 给后续 implementer 的关键提示
 
