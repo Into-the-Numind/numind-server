@@ -25,7 +25,6 @@ type Embedder func(ctx context.Context, text string) ([]float32, error)
 type CreateChatbotReq struct {
 	Name             string `json:"name" binding:"required"`
 	Description      string `json:"description"`
-	Avatar           string `json:"avatar"`
 	SystemPrompt     string `json:"system_prompt" binding:"required"`
 	KnowledgeBaseIDs []uint `json:"knowledge_base_ids"`
 }
@@ -34,7 +33,6 @@ type CreateChatbotReq struct {
 type UpdateChatbotReq struct {
 	Name             *string `json:"name"`
 	Description      *string `json:"description"`
-	Avatar           *string `json:"avatar"`
 	SystemPrompt     *string `json:"system_prompt"`
 	KnowledgeBaseIDs *[]uint `json:"knowledge_base_ids"`
 }
@@ -93,7 +91,6 @@ func (b *chatbotBiz) CreateChatbot(ctx context.Context, userID uint, req *Create
 		UserID:       userID,
 		Name:         req.Name,
 		Description:  req.Description,
-		Avatar:       req.Avatar,
 		SystemPrompt: req.SystemPrompt,
 		Status:       model.ChatbotStatusDraft,
 	}
@@ -151,9 +148,6 @@ func (b *chatbotBiz) UpdateChatbot(ctx context.Context, userID uint, id uint, re
 	}
 	if req.Description != nil {
 		config.Description = *req.Description
-	}
-	if req.Avatar != nil {
-		config.Avatar = *req.Avatar
 	}
 	if req.SystemPrompt != nil {
 		config.SystemPrompt = *req.SystemPrompt

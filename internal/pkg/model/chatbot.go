@@ -24,7 +24,6 @@ type ChatbotConfig struct {
 	UserID    uint           `gorm:"not null;index:idx_cc_user_status" json:"user_id"`
 	Name         string `gorm:"size:100;not null" json:"name"`
 	Description  string `gorm:"size:1024" json:"description"`
-	Avatar       string `gorm:"size:500" json:"avatar"`
 	SystemPrompt string `gorm:"type:longtext;not null" json:"system_prompt"`
 	Status       string `gorm:"size:20;not null;default:'draft';index:idx_cc_user_status" json:"status"`
 }
