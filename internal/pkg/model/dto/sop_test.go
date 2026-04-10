@@ -142,6 +142,105 @@ func TestToSopTemplatePublicDTO_NilInput(t *testing.T) {
 	}
 }
 
+// TestToSopNodeEditDTO_HidesInfraFieldsKeepsPrompt 验证 B 端编辑器 DTO：
+// 隐藏 4 基础设施字段（api_key/base_url/model_name/timeout_seconds），
+// **保留** prompt 字段（与 PublicDTO 的关键差异）。
+func TestToSopNodeEditDTO_HidesInfraFieldsKeepsPrompt(t *testing.T) {
+	now := time.Now()
+	node := &model.SopNode{
+		Model: gorm.Model{
+			ID:        42,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		TemplateID:     5,
+		Name:           "AI拆解产品",
+		Description:    "分析产品卖点",
+		Status:         "active",
+		Sort:           0,
+		BaseURL:        "https://ark.cn-beijing.volces.com/api/v3",
+		ModelName:      "deepseek-v3-2-251201",
+		APIKey:         "sk-secret-token-1234567890abcdef0000",
+		TimeoutSeconds: 60,
+		Prompt:         "你是产品分析专家，请分析以下产品的核心卖点...",
+	}
+
+	dtoObj := ToSopNodeEditDTO(node)
+	jsonBytes, err := json.Marshal(dtoObj)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	jsonStr := string(jsonBytes)
+
+	// 必须隐藏：4 个基础设施字段
+	forbidden := []string{
+		"api_key", "APIKey",
+		"base_url", "BaseURL",
+		"model_name", "ModelName",
+		"timeout_seconds", "TimeoutSeconds",
+		"sk-secret",
+		"ark.cn-beijing",
+		"deepseek-v3",
+	}
+	for _, f := range forbidden {
+		if strings.Contains(jsonStr, f) {
+			t.Errorf("EditDTO leaks %q: %s", f, jsonStr)
+		}
+	}
+
+	// 必须保留：prompt（与 PublicDTO 的关键差异）
+	required := []string{
+		`"id":42`,
+		`"template_id":5`,
+		`"name":"AI拆解产品"`,
+		`"description":"分析产品卖点"`,
+		`"prompt":"你是产品分析专家`, // prompt 必须存在
+		`"sort":0`,
+		`"status":"active"`,
+	}
+	for _, r := range required {
+		if !strings.Contains(jsonStr, r) {
+			t.Errorf("EditDTO missing %q: %s", r, jsonStr)
+		}
+	}
+}
+
+// TestToSopNodeEditDTO_NilInput 验证 nil 防御。
+func TestToSopNodeEditDTO_NilInput(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("ToSopNodeEditDTO(nil) panicked: %v", r)
+		}
+	}()
+	dtoObj := ToSopNodeEditDTO(nil)
+	if dtoObj.ID != 0 || dtoObj.Name != "" || dtoObj.Prompt != "" {
+		t.Errorf("expected zero-value DTO, got: %+v", dtoObj)
+	}
+}
+
+// TestToSopNodeEditDTOList_BatchConversion 批量转换正确性 + prompt 保留。
+func TestToSopNodeEditDTOList_BatchConversion(t *testing.T) {
+	nodes := []model.SopNode{
+		{Model: gorm.Model{ID: 1}, Name: "Step 1", Prompt: "prompt-1", APIKey: "secret1"},
+		{Model: gorm.Model{ID: 2}, Name: "Step 2", Prompt: "prompt-2", APIKey: "secret2"},
+	}
+	dtos := ToSopNodeEditDTOList(nodes)
+	if len(dtos) != 2 {
+		t.Fatalf("expected 2 DTOs, got %d", len(dtos))
+	}
+	jsonBytes, _ := json.Marshal(dtos)
+	jsonStr := string(jsonBytes)
+
+	// 不应有 secret
+	if strings.Contains(jsonStr, "secret") || strings.Contains(jsonStr, "api_key") {
+		t.Errorf("EditDTO batch leaks secrets: %s", jsonStr)
+	}
+	// 必须有 prompt
+	if !strings.Contains(jsonStr, "prompt-1") || !strings.Contains(jsonStr, "prompt-2") {
+		t.Errorf("EditDTO batch missing prompts: %s", jsonStr)
+	}
+}
+
 // TestToSopNodePublicDTOList_BatchConversion 验证批量转换函数正确性。
 func TestToSopNodePublicDTOList_BatchConversion(t *testing.T) {
 	nodes := []model.SopNode{

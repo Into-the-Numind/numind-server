@@ -39,6 +39,58 @@ type SopNodePublicDTO struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+// SopNodeEditDTO 是 SopNode 的 B 端配置器视图。
+//
+// 与 SopNodePublicDTO 的关键差异：**保留 prompt 字段**。
+// 因为 B 端创建者需要在 SopTemplateEdit.vue 编辑器中读取并修改 prompt
+// 模板（这是其 SOP 的核心 IP，但创建者拥有它）。
+//
+// 隐藏的字段（4 个基础设施字段）：
+//   - APIKey, BaseURL, ModelName, TimeoutSeconds
+//
+// 这些是平台后端的 LLM 服务配置，B 端不应也不能修改（CreateNode/UpdateNode
+// 字段白名单已强制此约束），所以在 read 路径同样不暴露。
+type SopNodeEditDTO struct {
+	ID          uint      `json:"id"`
+	TemplateID  uint      `json:"template_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Prompt      string    `json:"prompt"` // 与 PublicDTO 的关键差异：B 端创建者可见
+	Sort        int       `json:"sort"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// ToSopNodeEditDTO 将 model.SopNode 转换为 B 端编辑器 DTO。
+//
+// nil 输入返回零值 DTO。与 ToSopNodePublicDTO 行为一致。
+func ToSopNodeEditDTO(node *model.SopNode) SopNodeEditDTO {
+	if node == nil {
+		return SopNodeEditDTO{}
+	}
+	return SopNodeEditDTO{
+		ID:          node.ID,
+		TemplateID:  node.TemplateID,
+		Name:        node.Name,
+		Description: node.Description,
+		Prompt:      node.Prompt,
+		Sort:        node.Sort,
+		Status:      node.Status,
+		CreatedAt:   node.CreatedAt,
+		UpdatedAt:   node.UpdatedAt,
+	}
+}
+
+// ToSopNodeEditDTOList 批量转换为 B 端编辑器 DTO。
+func ToSopNodeEditDTOList(nodes []model.SopNode) []SopNodeEditDTO {
+	dtos := make([]SopNodeEditDTO, 0, len(nodes))
+	for i := range nodes {
+		dtos = append(dtos, ToSopNodeEditDTO(&nodes[i]))
+	}
+	return dtos
+}
+
 // SopTemplatePublicDTO 是 SopTemplate 的 C 端公开视图。
 //
 // 隐藏的字段（2 个）：
