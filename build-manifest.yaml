@@ -464,3 +464,63 @@ features:
       - "依赖 frontend-design-system 完成（已完成 2026-04-10），DESIGN.md 是本 feature 的实施依据"
     created_at: "2026-04-10T00:00:00+08:00"
     completed_at: null
+
+  - id: "sop-runtime-vue-rewrite"
+    ndf_version: "1.0"
+    description: "SOP 运行页 Vue 3 完整重写 — 退役 7518 行 legacy vanilla JS，消除双渲染路径与硬编码模板，让 self-service-config 的配置真正在 C 端生效"
+    track: "standard"
+    stage: "S4"
+    classification_reason: "完整重写 SOP 运行页，预计 15-25 文件；可能涉及后端 API 字段补齐；间接影响计费/配额/Langfuse 链路，回归风险高"
+    last_updated_by: "ai-s4-task1"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+      - numind-server
+    branches:
+      numind-web-v3: "feature/sop-runtime-vue-rewrite (待创建)"
+      numind-server: "feature/sop-runtime-vue-rewrite (S1 评估后决定是否需要)"
+    artifacts:
+      requirement: "numind-server/requirements/sop-runtime-vue-rewrite.md"
+      proposal: "numind-server/proposals/sop-runtime-vue-rewrite-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-04-11-sop-runtime-vue-rewrite-design.md"
+      plan: "numind-server/docs/superpowers/plans/sop-runtime-vue-rewrite-plan.md"
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 25
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "task 1: 事实核对前置调研"
+    rollback: "git revert <merge-commit> on numind-server/develop and numind-web-v3/develop, push triggers dev redeploy (~5-15min window)"
+    last_verified: null
+    decisions:
+      - "2026-04-10: Triage 经修订 —— AI 初判 Hotfix → 用户挑战 → 代码调查发现 7518 行 legacy JS + 双渲染路径 → 改判 Standard"
+      - "2026-04-10: 方向确定为完整 Vue 重写（方向 B），而非外科手术式部分迁移（方向 B'）"
+      - "2026-04-10: 侧边栏绿色卡片处理 = 直接删除（方向 C），不替换为其他数据展示"
+      - "2026-04-11: P0 安全漏洞（GetTemplateNodes 泄露 api_key/base_url/model_name）并入本次重写 S2 spec，不拆独立 hotfix"
+      - "2026-04-11: 数据真相源 = 数据库唯一，前端零硬编码 —— 这是本次重写的根本原则"
+      - "2026-04-11: 实测 dev DB 推翻 Subagent 错误结论 —— templateId=1, 2 真实存在于 sop_template/sop_node 表（早期由 admin 硬编码代码搭建，后手动改 creator_user_id=25），非数据库无记录。Subagent 之前的'迁移到数据库'建议作废"
+      - "2026-04-11: templateId=1, 2 的 sop_node.description 全为 NULL（因为 add_sop_node_description migration 未 backfill），UI 优雅退化处理，不做 SQL backfill"
+      - "2026-04-11: B 端可配置字段范围 = prompt/name/description/顺序，CreateNode/UpdateNode 必须 reject base_url/model_name/api_key"
+      - "2026-04-11 (proposal review 修订): SopNodeDTO 隐藏字段从 4 个扩展为 5 个，加上 prompt（B 端核心 IP，比 api_key 更敏感）—— Reviewer 发现遗漏"
+      - "2026-04-11 (proposal review 修订): SOPView.vue 不是空壳，是 1019 行 Vue hydration wrapper，S2 重写时要 own its own state"
+      - "2026-04-11 (用户终决): 多 tab 竞态不考虑、不修复、不实测。决策人判断该场景不会发生，发生了也无所谓"
+      - "2026-04-11 (用户终决): Rollback 策略 = 全量切换。无双轨 / 无 feature flag / 无灰度。依赖 git revert + redeploy 紧急回退"
+      - "2026-04-11 (用户决策): Single-session 强制下线作为独立 Standard 功能（在 SOP 重写之后），策略 = 强制下线"
+      - "2026-04-11 (S2 spec reviewer 修订): SSE 协议实测后修正，thinking/error data 是 JSON-encoded 字符串，message 无 event 行，done 发送两次需幂等，心跳 :\\n\\n 必须忽略"
+      - "2026-04-11 (S2 spec reviewer 修订): Draft 是后端独立 SopStatusDraft 状态，不是 pending+counted 组合。TS SopRunStatus 必须含 'draft'"
+      - "2026-04-11 (S2 spec reviewer 修订): numind 错误约定 = HTTP 200+business code，无 HTTP 402/403。InsufficientCreditsDialog 改 Pinia 事件总线触发"
+      - "2026-04-11 (S2 spec reviewer 修订): ConfirmModal/AppNotification 不存在，task 13 新建。task 总数从 19 增至 25"
+      - "2026-04-11 (S2 spec reviewer 修订): sop_run.template_id FK 是 RESTRICT 不是 SET NULL；UpdateNode 已有白名单无需修改"
+      - "2026-04-11 (S2→S3 用户决策): src/stores/sop.ts 实测确认 273 行全是 legacy hydration 胶水（0 业务状态），删除 + 新建 sopRun.ts。ConfirmModal/AppNotification 选择新建组件方案（A），不用 window.confirm()"
+      - "2026-04-11 (S3 plan reviewer 修订): 前端无 vitest 基础设施，task 5 扩展为 vitest 安装+配置+sanity 测试+types+store 骨架；调试日志范围扩大为 14 处跨 4 文件（biz/sop.go/controller/sop.go/store/sop.go/local_deploy.sh），spec §2.1 错把 biz 行号标为 controller 已修正"
+      - "2026-04-11 (proposal review 修订): trace 创建实际位置在 biz/sop/sop.go ExecuteNodeStream 行 686-695（不是 executor.go ExecuteNodeRun，该方法不存在）"
+    deferred:
+      - "S2 必须将 Subagent 1 的 legacy feature inventory 转化为完整保留功能清单"
+      - "S2 待解决的开放问题见 proposal §8（共 8 项）"
+      - "S2 解决的 P2 问题见 proposal §9（trial 配额机制 / dead fields / 验收可测性 / Desktop 调试日志 / 端点数修正）"
+      - "(本功能不解决) 多 tab 并发执行虽不影响配额计数（IncrementSopRunCount 由 run.Counted flag 保护），但仍可能产生双倍 LLM 调用成本和重复 sop_node_run 记录。Single-session 强制下线功能上线后自动消解"
+    blockers: []
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: null
