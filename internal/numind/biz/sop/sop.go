@@ -1210,9 +1210,14 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	}
 
 	// 获取模板、节点、节点执行记录
-	_, err = b.ds.Sop().GetTemplate(run.TemplateID)
+	template, err := b.ds.Sop().GetTemplate(run.TemplateID)
 	if err != nil {
 		return fmt.Errorf("template not found: %w", err)
+	}
+	// 防御性检查：若模板关闭了末尾 AI 聊天开关，直接拒绝对话请求（防 API 直连绕过）
+	if !template.TrailingChatEnabled {
+		log.C(ctx).Warnw("ChatAfterRunStream rejected: trailing chat disabled", "run_id", runID, "template_id", run.TemplateID)
+		return fmt.Errorf("该 SOP 未启用末尾 AI 聊天")
 	}
 	nodes, err := b.ds.Sop().ListNodesByTemplate(run.TemplateID)
 	if err != nil {
@@ -1876,18 +1881,26 @@ func cleanPDFFormatCode(content string) string {
 
 // CreateTemplateByUserReq B端用户创建SOP模板的请求参数
 type CreateTemplateByUserReq struct {
-	Name        string `json:"name" binding:"required"`
-	Description string `json:"description"`
+	Name                string `json:"name" binding:"required"`
+	Description         string `json:"description"`
+	TrailingChatEnabled *bool  `json:"trailing_chat_enabled"` // 可选；不传则默认 true 保持向后兼容
 }
 
 // CreateTemplateByUser B端用户创建SOP模板
 func (b *sopBiz) CreateTemplateByUser(ctx context.Context, userID uint, req *CreateTemplateByUserReq) (*model.SopTemplate, error) {
+	// 未显式传入时默认开启，保持与历史行为一致
+	trailingChat := true
+	if req.TrailingChatEnabled != nil {
+		trailingChat = *req.TrailingChatEnabled
+	}
+
 	template := &model.SopTemplate{
-		Name:          req.Name,
-		Description:   req.Description,
-		CreatorUserID: &userID,
-		PublishStatus: model.SopPublishStatusDraft,
-		Status:        "active",
+		Name:                req.Name,
+		Description:         req.Description,
+		CreatorUserID:       &userID,
+		PublishStatus:       model.SopPublishStatusDraft,
+		Status:              "active",
+		TrailingChatEnabled: trailingChat,
 	}
 
 	if err := b.ds.Sop().CreateTemplate(template); err != nil {

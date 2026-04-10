@@ -76,8 +76,9 @@ func (ctrl *SopConfigController) Get(c *gin.Context) {
 
 // updateTemplateReq SOP模板更新请求
 type updateTemplateReq struct {
-	Name        *string `json:"name"`
-	Description *string `json:"description"`
+	Name                *string `json:"name"`
+	Description         *string `json:"description"`
+	TrailingChatEnabled *bool   `json:"trailing_chat_enabled"`
 }
 
 // Update 更新SOP模板
@@ -99,6 +100,9 @@ func (ctrl *SopConfigController) Update(c *gin.Context) {
 	}
 	if req.Description != nil {
 		updates["description"] = *req.Description
+	}
+	if req.TrailingChatEnabled != nil {
+		updates["trailing_chat_enabled"] = *req.TrailingChatEnabled
 	}
 
 	if err := ctrl.sopBiz.UpdateTemplate(c, id, updates); err != nil {
