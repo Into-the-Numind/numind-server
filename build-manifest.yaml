@@ -357,8 +357,8 @@ features:
       - numind-server
       - numind-web-v3
     branches:
-      numind-server: "merged to develop (pending)"
-      numind-web-v3: "merged to develop (pending)"
+      numind-server: "merged to develop (c8f3f78)"
+      numind-web-v3: "merged to develop (f144a27)"
     hotfix_artifacts:
       diagnosis: "inline-triage (chat history 2026-04-10)"
       review: "inline (single-developer mode)"
