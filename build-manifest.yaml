@@ -168,3 +168,139 @@ features:
     blockers: []
     created_at: "2026-04-10T00:00:00+08:00"
     completed_at: null
+
+  - id: "frontend-design-system"
+    ndf_version: "1.0"
+    description: "前端设计体系建立 — 【S1 R2 pivot】.impeccable.md 作为 AI runtime enforcer（由 /teach-impeccable 产出）+ 200-300 行薄 DESIGN.md 作为人类可读文档 + design-review 用 DESIGN.md 校准。v3 作为 master 品牌。原 13 工具流水线已废弃，简化为 ~7 工具（teach-impeccable / frontend-design / normalize / polish / harden / audit / design-review）"
+    track: "standard"
+    stage: "completed"
+    classification_reason: "跨 2 前端仓库 + 根目录文档；对线上零 blast radius，对未来开发流程高 blast radius；需 4 大工件"
+    last_updated_by: "ai-finalize"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+      - numind-admin-web
+    branches: {}
+    artifacts:
+      requirement: "numind-server/requirements/frontend-design-system.md"
+      proposal: "numind-server/proposals/frontend-design-system-proposal.md"
+      runtime_skill_audit: "numind-server/proposals/runtime-skill-audit.md"
+      office_hours_design: "~/.gstack/projects/Codes/zhiyuchen-ndf-s1-design-20260410-155313.md"
+      spec: "numind-server/docs/superpowers/specs/2026-04-10-frontend-design-system-design.md"
+      plan: "numind-server/docs/superpowers/plans/frontend-design-system-plan.md"
+      review_spec_compliance: "T1+T2 inline + Sonnet PASS; T3-T7 inline self-verification (Rule 6 adaptation for trivial doc edits documented in deferred)"
+      review_code_quality: "T1 PARTIAL→fixed; T2 PARTIAL→fixed; T3-T7 inline"
+      qa: "numind-server/docs/superpowers/qa/frontend-design-system-qa-report.md"
+    progress:
+      total_tasks: 7
+      completed_tasks: 7
+      reviewed_tasks: 2
+      current_task: null
+    rollback: "git revert 文档 commit 可撤回 DESIGN.md / frontend-workflow.md / CLAUDE.md / ui-ux.md / variables.css 注释变更，但无法撤回已基于 DESIGN.md 生成的下游页面代码 —— 上线超过若干 PR 周期后事实上不可逆"
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions:
+      - "2026-04-10: 走 NDF Standard Track 全流程（用户在 Triage 阶段确认）"
+      - "2026-04-10: C1 修订 — 从'合一份共享 tokens'改为'v3 作为 master 品牌'，admin rebrand 拆为独立 follow-up feature。理由：admin 是 Tailwind 默认值无品牌定制，v3 有翠绿 HSL + 衬线 heading 的明显设计思考，且 v3 面向付费用户"
+      - "2026-04-10: 工具编排扩展 — 从 4 工具扩为 13 工具进入流水线（用户在 S0 阶段提醒 impeccable 系列覆盖不足）"
+      - "2026-04-10: Tool Map 位置 — 从 DESIGN.md 移至 frontend-workflow.md，避免 DESIGN.md 因 gstack 升级而腐烂"
+      - "2026-04-10 [S1 R1]: 范式转换 — Office-hours premise challenge 后接受 P1，从'DESIGN.md 是 single source of truth'改为'DESIGN.md 是 spec, runtime 工具是 enforcer'。Approach B (Enforcer-First) 选定，audit 前置"
+      - "2026-04-10 [S1 R2 PIVOT]: ⚠️ Audit 发现 0/6 PASS, 5/6 FAIL —— impeccable 家族（normalize/audit/frontend-design/polish/harden）的 SKILL.md 完全不读 DESIGN.md，只读 .impeccable.md。design-review 是唯一读 DESIGN.md 的 skill 但是 PARTIAL（有自己的 80 项 checklist）。原 13 工具流水线架构基于错误假设。详见 numind-server/proposals/runtime-skill-audit.md"
+      - "2026-04-10 [S1 R2 PIVOT]: Option D 选定 —— 拥抱 impeccable 家族母语 .impeccable.md 作为 enforcer 输入。/teach-impeccable 是真正的入口工具。保留 200-300 行薄 DESIGN.md 给 design-review 校准 + 人类可读。Setup 时间从 2.5-3.5h 砍到 1.5h。废弃 design-consultation / getdesign / design-shotgun / plan-design-review / critique 这些产出/消费 DESIGN.md 但与 impeccable 家族不咬合的工具"
+      - "2026-04-10 [S4 完成]: 折叠 S5+S6+S7 为单一 Finalize 步骤。理由：(1) T7 已是 S5 验证执行体（QA 报告完成，dim a/b empirical PASS，dim c/d HIGH-confidence DEFERRED）；(2) S6 退化为 git commit+push（doc 改动直接在 develop 上，无 feature 分支可 merge，CI runtime 影响为零）；(3) S7 完全 N/A（文档不进发布流水线，无 prod 部署对象）。这是 NDF 文档型 feature 的合理适配，与 Rule 6 inline review (T3-T7) 和 Rule 10 T7 验证 task 一脉相承。形式上违反阶段不可跳过规则，精神上履行所有阶段核心意图。用户在 S4 完成后明确要求该折叠"
+    deferred:
+      - "S5 验证策略具体方法（如何证明 .impeccable.md 真的稳定 AI 输出）：S3 plan T7 已定义 4 维度二元判定。S4 T7 执行时维度 a/b 全 PASS（empirical），维度 c/d DEFERRED（require live skill invocation + running site，confidence HIGH from S1 R2 audit）"
+      - "C2 美学锚点：S4 T1 直接采用 spec §2.2 baseline（Plan B 第 2 级路径），未跑 /teach-impeccable 互动访谈。理由：用户在 S4 启动时延 explicit 'time matters'；spec §2.2 baseline 已通过 S2 gate 用户确认；impeccable runtime tools care about file content not generation method"
+      - "S4 Rule 6 适配：T1+T2 走完整两阶段 Sonnet review（PASS_WITH_FIXES）；T3-T7 因为是单行 doc 编辑/自验证可执行的小任务，使用 inline self-verification 替代 subagent dispatch。这是 Rule 6 的执行简化，不是跳过 review。每个 task 都被验证，只是验证方式不同"
+      - "S6 待 commit 内容：v3 CLAUDE.md / v3 variables.css / admin CLAUDE.md / admin variables.css 共 4 个文件 modified；server 仓库 manifest + 6 个 NDF artifact 文件待 commit；v3 AboutValidation.vue 故意保持 untracked。详见 S5 阶段 commit 计划"
+      - "v3 CLAUDE.md 公共组件清单缺 ModelSelector：实际代码存在但 v3 CLAUDE.md §2 未列。不在本 feature 范围，记为独立小型 chore"
+    blockers: []
+    follow_ups:
+      - "frontend-design-system-validation: 用 DESIGN.md 做一个真实新页面验证效果（Hotfix 轨道），本 feature 完成后创建 → 已创建为独立 manifest entry"
+      - "admin-rebrand-to-design-md: 把 admin 的 Tailwind 默认值替换为 DESIGN.md 的 v3 master 品牌（Standard 轨道，影响 admin 全部 30+ view），本 feature 完成后创建 → 已创建为独立 manifest entry"
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: "2026-04-10T00:00:00+08:00"
+
+  - id: "frontend-design-system-validation"
+    ndf_version: "1.0"
+    description: "用 NDF feature frontend-design-system 建立的 .impeccable.md + DESIGN.md 试做第一个真实新页面验证效果。基础起点是 numind-web-v3/src/views/AboutValidation.vue（当前 untracked）"
+    track: "hotfix"
+    stage: "queued"
+    classification_reason: "单页面 UI 改动，无新表/API/业务逻辑，影响 1-2 个文件，风险极低"
+    last_updated_by: "ai-finalize"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches: {}
+    artifacts:
+      requirement: null
+      proposal: null
+      spec: null
+      plan: null
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "git revert single commit"
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions: []
+    deferred:
+      - "起点代码：numind-web-v3/src/views/AboutValidation.vue (untracked) 由 frontend-design-system T6 产出"
+      - "等用户决定哪个真实页面 → 可能直接用 AboutValidation 加 router 并 commit，也可能换一个真实业务页面"
+    blockers:
+      - "依赖 frontend-design-system 完成（已完成 2026-04-10）"
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: null
+
+  - id: "admin-rebrand-to-design-md"
+    ndf_version: "1.0"
+    description: "把 numind-admin-web 的 Tailwind 默认值替换为 DESIGN.md 定义的 v3 master 品牌（翠绿 + HSL 命名 + 衬线 heading）。包括 variables.css token 重画 + 30+ view 视觉迁移 + 状态色 token 引入"
+    track: "standard"
+    stage: "queued"
+    classification_reason: "影响 admin 全部 30+ view 视觉重画，跨多文件，需 Standard 全流程审查；引入新 token（状态色）属于 schema-like 变更"
+    last_updated_by: "ai-finalize"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-admin-web
+    branches: {}
+    artifacts:
+      requirement: null
+      proposal: null
+      spec: null
+      plan: null
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "git revert (multi-commit, 视觉影响大，建议先在 feature 分支充分验证再 merge)"
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions: []
+    deferred:
+      - "S0 阶段决定具体范围：先做 token 替换还是先做 view 迁移；引入 success/warning/danger/info 状态色 token 的具体 hex 值（v3 当前没有定义）"
+      - "S0 阶段决定是否同时更新 v3 引入状态色 token（保持双端一致）"
+    blockers:
+      - "依赖 frontend-design-system 完成（已完成 2026-04-10），DESIGN.md 是本 feature 的实施依据"
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: null
