@@ -37,6 +37,7 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/model/dto"
 	"numind-server/internal/pkg/util"
 	v1 "numind-server/pkg/api/numind/v1"
 )
@@ -519,12 +520,13 @@ func (ctrl *SopController) GetTemplateNodes(c *gin.Context) {
 		return sortedNodes[i].Sort < sortedNodes[j].Sort
 	})
 
+	// P0 安全：禁止直接序列化 model.SopNode（含 api_key/base_url/model_name/
+	// timeout_seconds/prompt 五个敏感字段），统一通过 dto 包转换隐藏字段。
+	// 详见 docs/superpowers/specs/2026-04-11-sop-runtime-vue-rewrite-design.md §1
 	core.WriteResponse(c, nil, gin.H{
-		"template_id":           templateID,
-		"template_name":         template.Name,
-		"trailing_chat_enabled": template.TrailingChatEnabled,
-		"nodes":                 sortedNodes,
-		"total":                 len(sortedNodes),
+		"template": dto.ToSopTemplatePublicDTO(template),
+		"nodes":    dto.ToSopNodePublicDTOList(sortedNodes),
+		"total":    len(sortedNodes),
 	})
 }
 
