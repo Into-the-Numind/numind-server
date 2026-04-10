@@ -489,9 +489,9 @@ features:
       qa: null
     progress:
       total_tasks: 25
-      completed_tasks: 4
-      reviewed_tasks: 4
-      current_task: "task 5: 前端 vitest 基础设施 + types + sopRun store 骨架"
+      completed_tasks: 5
+      reviewed_tasks: 5
+      current_task: "task 6: useSSEStream composable + 单测"
     rollback: "git revert <merge-commit> on numind-server/develop and numind-web-v3/develop, push triggers dev redeploy (~5-15min window)"
     last_verified: null
     decisions:
