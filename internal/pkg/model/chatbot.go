@@ -22,10 +22,12 @@ type ChatbotConfig struct {
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 	UserID    uint           `gorm:"not null;index:idx_cc_user_status" json:"user_id"`
-	Name         string `gorm:"size:100;not null" json:"name"`
-	Description  string `gorm:"size:1024" json:"description"`
-	SystemPrompt string `gorm:"type:longtext;not null" json:"system_prompt"`
-	Status       string `gorm:"size:20;not null;default:'draft';index:idx_cc_user_status" json:"status"`
+	Name            string `gorm:"size:100;not null" json:"name"`
+	Description     string `gorm:"size:1024" json:"description"`
+	SystemPrompt    string `gorm:"type:longtext;not null" json:"system_prompt"`
+	Status          string `gorm:"size:20;not null;default:'draft';index:idx_cc_user_status" json:"status"`
+	GreetingEnabled bool   `gorm:"not null;default:0" json:"greeting_enabled"`
+	GreetingMessage string `gorm:"type:text" json:"greeting_message"`
 }
 
 // TableName returns the table name for ChatbotConfig.

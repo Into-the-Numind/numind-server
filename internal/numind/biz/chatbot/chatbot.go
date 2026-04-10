@@ -5,11 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"numind-server/internal/numind/biz/llmrouter"
 	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 
 	"gorm.io/gorm"
@@ -27,6 +30,8 @@ type CreateChatbotReq struct {
 	Description      string `json:"description"`
 	SystemPrompt     string `json:"system_prompt" binding:"required"`
 	KnowledgeBaseIDs []uint `json:"knowledge_base_ids"`
+	GreetingEnabled  bool   `json:"greeting_enabled"`
+	GreetingMessage  string `json:"greeting_message"`
 }
 
 // UpdateChatbotReq 更新智能体请求
@@ -35,6 +40,8 @@ type UpdateChatbotReq struct {
 	Description      *string `json:"description"`
 	SystemPrompt     *string `json:"system_prompt"`
 	KnowledgeBaseIDs *[]uint `json:"knowledge_base_ids"`
+	GreetingEnabled  *bool   `json:"greeting_enabled"`
+	GreetingMessage  *string `json:"greeting_message"`
 }
 
 // ChatbotDetail 智能体详情（含知识库列表）
@@ -88,11 +95,13 @@ func NewChatbotBiz(ds store.IStore, llmRouter *llmrouter.Router, vectorStore por
 // CreateChatbot 创建智能体配置，可选挂载知识库
 func (b *chatbotBiz) CreateChatbot(ctx context.Context, userID uint, req *CreateChatbotReq) (*model.ChatbotConfig, error) {
 	config := &model.ChatbotConfig{
-		UserID:       userID,
-		Name:         req.Name,
-		Description:  req.Description,
-		SystemPrompt: req.SystemPrompt,
-		Status:       model.ChatbotStatusDraft,
+		UserID:          userID,
+		Name:            req.Name,
+		Description:     req.Description,
+		SystemPrompt:    req.SystemPrompt,
+		Status:          model.ChatbotStatusDraft,
+		GreetingEnabled: req.GreetingEnabled,
+		GreetingMessage: req.GreetingMessage,
 	}
 
 	if err := b.ds.ChatbotConfig().Create(ctx, config); err != nil {
@@ -151,6 +160,12 @@ func (b *chatbotBiz) UpdateChatbot(ctx context.Context, userID uint, id uint, re
 	}
 	if req.SystemPrompt != nil {
 		config.SystemPrompt = *req.SystemPrompt
+	}
+	if req.GreetingEnabled != nil {
+		config.GreetingEnabled = *req.GreetingEnabled
+	}
+	if req.GreetingMessage != nil {
+		config.GreetingMessage = *req.GreetingMessage
 	}
 
 	if err := b.ds.ChatbotConfig().Update(ctx, config); err != nil {
@@ -243,6 +258,26 @@ func (b *chatbotBiz) CreateSession(ctx context.Context, userID uint, chatbotID u
 	if err := b.ds.ChatbotSession().CreateSession(ctx, session); err != nil {
 		return nil, fmt.Errorf("CreateSession: %w", err)
 	}
+
+	// 若开启打招呼，写入一条 assistant 首条消息（seq=1）。
+	// 写失败不影响 session 创建，仅告警；后续 ChatStream 从 DB 读历史时会自然带上此消息。
+	if config.GreetingEnabled && strings.TrimSpace(config.GreetingMessage) != "" {
+		greetingMsg := &model.ChatbotMessage{
+			SessionID: session.ID,
+			UserID:    userID,
+			Role:      "assistant",
+			Content:   config.GreetingMessage,
+			Seq:       1,
+			CreatedAt: time.Now(),
+		}
+		if err := b.ds.ChatbotSession().CreateMessage(ctx, greetingMsg); err != nil {
+			log.C(ctx).Warnw("CreateSession: save greeting message failed",
+				"session_id", session.ID, "chatbot_id", chatbotID, "error", err)
+		} else {
+			_ = b.ds.ChatbotSession().IncrementMessageCount(ctx, session.ID)
+		}
+	}
+
 	return session, nil
 }
 
