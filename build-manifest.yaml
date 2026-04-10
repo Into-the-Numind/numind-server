@@ -385,6 +385,46 @@ features:
     created_at: "2026-04-10T00:00:00+08:00"
     completed_at: "2026-04-10T00:00:00+08:00"
 
+  - id: "sop-trailing-chat-toggle"
+    ndf_version: "1.0"
+    description: "SOP 末尾 AI 聊天步骤可选 — B 端 SopTemplate 新增 trailing_chat_enabled 开关（默认 true 保持兼容），C 端 legacy runner 按开关跳过虚拟 chat step"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "字段扩展 + 前端开关判断，与 agent-greeting 同形态；无新表/新 API，跨 server+web-v3 约 7 文件，可枚举"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "feature/sop-trailing-chat-toggle"
+      numind-web-v3: "feature/sop-trailing-chat-toggle"
+    hotfix_artifacts:
+      diagnosis: "inline-triage (chat history 2026-04-10): trailing chat 是 sop-legacy.js L2241-2264 frontend-injected 虚拟步骤，不是后端 SopNode；ChatAfterRunStream 是独立 biz 能力"
+      review: null
+    progress:
+      total_tasks: 6
+      completed_tasks: 6
+      reviewed_tasks: 6
+      current_task: null
+    rollback: "git revert merge commits on develop (server + web-v3) + DROP COLUMN sop_template.trailing_chat_enabled"
+    last_verified:
+      at: "2026-04-10T00:00:00+08:00"
+      lint: "pass (go vet clean; npm run lint pass)"
+      type_check: "pass (go build ./... clean; npm run type-check pass)"
+      tests: "n/a (no existing tests in affected packages; dev DB migration applied via SSH, 4 existing templates verified with trailing_chat_enabled=1)"
+      test_summary: "go build + go vet clean; npm lint+type-check pass; dev MySQL ALTER applied, DESC sop_template confirms column, all 4 live rows default=1"
+    decisions:
+      - "2026-04-10: 默认 true 保持向后兼容（用户确认）"
+      - "2026-04-10: 开关 UI 位于 SopTemplateEdit.vue 节点列表尾部（用户确认）"
+      - "2026-04-10: 仅 B 端配置入口，admin 侧不改（用户确认）"
+      - "2026-04-10: 后端 ChatAfterRunStream 加 defensive guard — 开关 off 时拒绝请求，防 API 直连绕过"
+      - "2026-04-10: 后端 bool 字段始终显式返回（不用 omitempty），避免前端 undefined 歧义"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: null
+
   - id: "admin-rebrand-to-design-md"
     ndf_version: "1.0"
     description: "把 numind-admin-web 的 Tailwind 默认值替换为 DESIGN.md 定义的 v3 master 品牌（翠绿 + HSL 命名 + 衬线 heading）。包括 variables.css token 重画 + 30+ view 视觉迁移 + 状态色 token 引入"

@@ -520,10 +520,11 @@ func (ctrl *SopController) GetTemplateNodes(c *gin.Context) {
 	})
 
 	core.WriteResponse(c, nil, gin.H{
-		"template_id":   templateID,
-		"template_name": template.Name,
-		"nodes":         sortedNodes,
-		"total":         len(sortedNodes),
+		"template_id":           templateID,
+		"template_name":         template.Name,
+		"trailing_chat_enabled": template.TrailingChatEnabled,
+		"nodes":                 sortedNodes,
+		"total":                 len(sortedNodes),
 	})
 }
 
