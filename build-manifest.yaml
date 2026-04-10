@@ -345,6 +345,46 @@ features:
     created_at: "2026-04-10T00:00:00+08:00"
     completed_at: "2026-04-10T00:00:00+08:00"
 
+  - id: "agent-greeting"
+    ndf_version: "1.0"
+    description: "智能体打招呼 — B端编辑页新增开关+打招呼文案配置；C端新建会话时自动作为首条 assistant 消息持久化（仅第一次），后续 ChatStream 自动将其纳入历史上下文"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "无新表/新API，字段扩展 + CreateSession 插入一条消息；跨 server+web-v3 单一可枚举改动（~7 文件）；风险面：会话首开语义 + 老数据 default off"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "merged to develop (pending)"
+      numind-web-v3: "merged to develop (pending)"
+    hotfix_artifacts:
+      diagnosis: "inline-triage (chat history 2026-04-10)"
+      review: "inline (single-developer mode)"
+    progress:
+      total_tasks: 5
+      completed_tasks: 5
+      reviewed_tasks: 5
+      current_task: null
+    rollback: "git revert merge commits on develop + 重跑 migration 的反向 ALTER (DROP COLUMN greeting_enabled, greeting_message)"
+    last_verified:
+      at: "2026-04-10T00:00:00+08:00"
+      lint: "pass (go vet clean; npm run lint pass)"
+      type_check: "pass (go build ./... clean; npm run type-check pass)"
+      tests: "n/a (no existing tests in affected packages)"
+      test_summary: "go build ./... pass (sqlite-vec cgo warnings pre-existing); go vet ./... clean; npm lint+type-check pass; dev DB ALTER applied via SSH, columns verified via DESC"
+    decisions:
+      - "2026-04-10: 打招呼作为真实 assistant 消息持久化而非运行时拼接 — 统一历史语义，ChatStream 无需特殊分支，前端 ListMessages 直出"
+      - "2026-04-10: '第一次打开'语义落地为 CreateSession 时立即插入 seq=1 greeting；已有 session 的 ListMessages 自然不会重发"
+      - "2026-04-10: CreateSession 中 greeting 写失败不影响 session 创建 — greeting 是 nice-to-have，写失败 log.Warnw 后继续返回 session"
+      - "2026-04-10: Migration 去掉 ADD COLUMN IF NOT EXISTS — MySQL 8.4 不支持该语法（仅 MariaDB 支持）。项目内其他 migration 虽写了 IF NOT EXISTS 但均为首次执行成功，未验证重跑路径"
+    deferred:
+      - "chatbot_config.avatar 列仍存在于 dev DB（20260410_000002_drop_chatbot_avatar.sql 未应用），与本功能无关"
+    blockers: []
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: "2026-04-10T00:00:00+08:00"
+
   - id: "admin-rebrand-to-design-md"
     ndf_version: "1.0"
     description: "把 numind-admin-web 的 Tailwind 默认值替换为 DESIGN.md 定义的 v3 master 品牌（翠绿 + HSL 命名 + 衬线 heading）。包括 variables.css token 重画 + 30+ view 视觉迁移 + 状态色 token 引入"
