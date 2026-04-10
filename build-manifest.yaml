@@ -265,6 +265,46 @@ features:
     created_at: "2026-04-10T00:00:00+08:00"
     completed_at: null
 
+  - id: "workspace-published-only"
+    ndf_version: "1.0"
+    description: "工作区只显示已发布的 SOP/Chatbot — B 端草稿对所有 C 端入口不可见（含主用户自己）"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "无 schema 变更、无新 API、单仓库后端 filter 语义收紧；风险在于需覆盖所有 C 端入口漏洞（list/check-permission/get-nodes/create-run），漏一处即越权"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "committed to develop (pending)"
+    hotfix_artifacts:
+      diagnosis: "inline-triage"
+      review: "sonnet code-review pass (1 P0 fixed: chatbot CreateSession owner bypass; 1 P1 deferred: ListBookmarksByTemplate; 1 P1 kept as codebase-consistency: errno code for GetTemplate-not-found keeps existing pattern)"
+    progress:
+      total_tasks: 6
+      completed_tasks: 6
+      reviewed_tasks: 6
+      current_task: null
+    rollback: "git revert single commit on develop"
+    last_verified:
+      at: "2026-04-10T00:00:00+08:00"
+      lint: "pass (go vet; golangci-lint not installed locally)"
+      type_check: "pass (go build ./...)"
+      tests: "n/a (no existing tests in affected packages)"
+      test_summary: "go build + go vet clean on all packages"
+    decisions:
+      - "2026-04-10 D1: 严格模式 — 主用户在工作区也看不到自己的草稿，符合'绝对不能'"
+      - "2026-04-10 D2: SOP 配置中心'预览运行'入口延后，本次只做过滤收紧，不引入新入口"
+      - "2026-04-10: admin_router + customer.go 的 ListTemplates 调用保持不变（管理视角应看到全部），过滤在 C 端 controller/biz 层独立实现"
+      - "2026-04-10 review fix P0: 移除 chatbot CreateSession 的 owner bypass 分支（原本允许创建者通过直链 ID 测试自己的草稿），改为全员严格要求 published。副作用：ChatbotList.vue 的 '测试对话' 按钮对 draft 状态的 chatbot 会返回 ErrChatbotNotPublished，用户必须先发布才能测试。这与 D1 strict 一致"
+    deferred:
+      - "errno code inconsistency: GetTemplate 失败时沿用现有代码模式返回 InternalServerError + '模板不存在'。改为 ErrForbidden/ErrNotFound 需要同时修改多处现有代码，属于 codebase-wide consistency issue，不在本 hotfix 范围"
+      - "ListBookmarksByTemplate (/v1/sop/templates/:id/bookmarks): 未加 publish 过滤。Bookmarks 属于用户个人数据（类似历史 runs），符合'历史数据访问不受影响'的 carve-out。若后续认为应同步封禁，开独立 follow-up"
+      - "运行中的 Run 模板被下线后是否允许继续执行 node: 现状允许（run-scoped 的 ExecuteNodeStream/NextNode 按 runID 鉴权，不检查模板当前 publish_status）。这保护了进行中的合法会话，符合'历史访问不受影响'精神"
+    blockers: []
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: "2026-04-10T00:00:00+08:00"
+
   - id: "admin-rebrand-to-design-md"
     ndf_version: "1.0"
     description: "把 numind-admin-web 的 Tailwind 默认值替换为 DESIGN.md 定义的 v3 master 品牌（翠绿 + HSL 命名 + 衬线 heading）。包括 variables.css token 重画 + 30+ view 视觉迁移 + 状态色 token 引入"
