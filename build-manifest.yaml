@@ -397,11 +397,11 @@ features:
       - numind-server
       - numind-web-v3
     branches:
-      numind-server: "feature/sop-trailing-chat-toggle"
-      numind-web-v3: "feature/sop-trailing-chat-toggle"
+      numind-server: "merged to develop (45277d9)"
+      numind-web-v3: "merged to develop (070459e)"
     hotfix_artifacts:
       diagnosis: "inline-triage (chat history 2026-04-10): trailing chat 是 sop-legacy.js L2241-2264 frontend-injected 虚拟步骤，不是后端 SopNode；ChatAfterRunStream 是独立 biz 能力"
-      review: null
+      review: "inline (single-developer mode, no PR)"
     progress:
       total_tasks: 6
       completed_tasks: 6
@@ -423,7 +423,7 @@ features:
     deferred: []
     blockers: []
     created_at: "2026-04-10T00:00:00+08:00"
-    completed_at: null
+    completed_at: "2026-04-10T00:00:00+08:00"
 
   - id: "admin-rebrand-to-design-md"
     ndf_version: "1.0"
