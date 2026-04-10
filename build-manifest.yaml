@@ -89,6 +89,45 @@ features:
     created_at: "2026-04-09T00:00:00+08:00"
     completed_at: null
 
+  - id: "homepage-simplify"
+    ndf_version: "1.0"
+    track: "hotfix"
+    description: "首页改版 — 保留两个区块：AI 工作流（原 SOP 工作流重命名）和 AI 智能体（合并自定义智能体），删除即将上线"
+    stage: "H3-done"
+    classification_reason: "纯前端单仓库 UI 改动，无新表/API/业务逻辑，影响 1 个文件，风险极低"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "merged to develop (d947784)"
+    artifacts:
+      requirement: null
+      proposal: null
+      spec: null
+      plan: null
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert d947784 on develop"
+    last_verified:
+      at: "2026-04-10T00:00:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: "n/a (UI-only change, no test logic affected)"
+      test_summary: "npm run lint pass, npm run type-check pass"
+    decisions:
+      - "2026-04-10: chatbots 并入 AI 智能体 feature-cards 同一网格，保持原 3 列布局，不新增 section"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: "2026-04-10T00:00:00+08:00"
+
   - id: "llm-model-switch"
     ndf_version: "1.0"
     description: "LLM 模型切换 — SOP 和智能体支持用户选择不同 LLM 模型（Claude/GPT/Gemini/豆包），通过 DMXAPI 统一调用"
