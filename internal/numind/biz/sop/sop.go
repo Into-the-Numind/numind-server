@@ -105,10 +105,11 @@ func NewSopBiz(ds store.IStore, executor *SopExecutor, creditBiz credit.ICreditB
 // Template operations
 func (b *sopBiz) CreateTemplate(ctx context.Context, name, description, prompt string) (*model.SopTemplate, error) {
 	template := &model.SopTemplate{
-		Name:        name,
-		Description: description,
-		Prompt:      prompt,
-		Status:      model.SopNodeStatusActive,
+		Name:          name,
+		Description:   description,
+		Prompt:        prompt,
+		Status:        model.SopNodeStatusActive,
+		PublishStatus: model.SopPublishStatusPublished, // admin 创建的模板默认对用户可见（无 publish 流程）
 	}
 
 	if err := b.ds.Sop().CreateTemplate(template); err != nil {
@@ -1949,9 +1950,9 @@ func (b *sopBiz) UnpublishTemplate(ctx context.Context, userID uint, templateID 
 		return fmt.Errorf("您没有权限操作此模板")
 	}
 
-	// 更新为下线状态，不撤销已有权限
+	// 回退到 draft 状态，不撤销已有授权（grants 表保留不动）
 	if err := b.ds.Sop().UpdateTemplate(templateID, map[string]interface{}{
-		"publish_status": model.SopPublishStatusOffline,
+		"publish_status": model.SopPublishStatusDraft,
 	}); err != nil {
 		return fmt.Errorf("UnpublishTemplate: update status: %w", err)
 	}

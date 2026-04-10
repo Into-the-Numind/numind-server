@@ -325,15 +325,13 @@ func (b *chatbotBiz) getAndCheckOwnership(ctx context.Context, userID uint, id u
 }
 
 // isValidStatusTransition 检查状态转换是否合法
-// 合法转换：draft→published, published→offline, offline→published
+// 2 态合法转换：draft↔published 双向
 func isValidStatusTransition(from, to string) bool {
 	switch from {
 	case model.ChatbotStatusDraft:
 		return to == model.ChatbotStatusPublished
 	case model.ChatbotStatusPublished:
-		return to == model.ChatbotStatusOffline
-	case model.ChatbotStatusOffline:
-		return to == model.ChatbotStatusPublished
+		return to == model.ChatbotStatusDraft
 	default:
 		return false
 	}

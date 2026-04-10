@@ -147,10 +147,10 @@ func (ctrl *SopConfigController) UpdateStatus(c *gin.Context) {
 	switch req.Status {
 	case "published":
 		err = ctrl.sopBiz.PublishTemplate(c, userID, id)
-	case "offline":
+	case "draft":
 		err = ctrl.sopBiz.UnpublishTemplate(c, userID, id)
 	default:
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("无效状态: %s，仅支持 published/offline", req.Status), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("无效状态: %s，仅支持 published/draft", req.Status), nil)
 		return
 	}
 

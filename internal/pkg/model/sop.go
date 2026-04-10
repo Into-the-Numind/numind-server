@@ -14,7 +14,7 @@ type SopTemplate struct {
 	Status        string `gorm:"size:20;default:'active';index" json:"status"` // active, inactive
 	Prompt        string `gorm:"type:text" json:"prompt"`                      // 预处理提示词，在执行第一个节点前发送
 	CreatorUserID *uint  `gorm:"index:idx_st_creator" json:"creator_user_id"`  // B端创建者用户ID
-	PublishStatus string `gorm:"size:20;default:''" json:"publish_status"` // draft/published/offline; empty = admin-created
+	PublishStatus string `gorm:"size:20;not null;default:'published'" json:"publish_status"` // draft | published
 }
 
 func (SopTemplate) TableName() string {
@@ -212,9 +212,8 @@ const (
 	SopNodeStatusInactive = "inactive"
 )
 
-// SOP发布状态常量
+// SOP发布状态常量（2 态：draft = 未发布，published = 已发布）
 const (
 	SopPublishStatusDraft     = "draft"
 	SopPublishStatusPublished = "published"
-	SopPublishStatusOffline   = "offline"
 )
