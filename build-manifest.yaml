@@ -305,6 +305,46 @@ features:
     created_at: "2026-04-10T00:00:00+08:00"
     completed_at: "2026-04-10T00:00:00+08:00"
 
+  - id: "sop-chatbot-publish-status-cleanup"
+    ndf_version: "1.0"
+    description: "清理 SOP + Chatbot 的 publish_status 冗余态 — 删除 offline 枚举值（业务上与 draft 等价）、修掉 admin CreateTemplate 的空字符串 bypass bug、把 migration 默认值从 '' 改为 'published' 并 NOT NULL"
+    track: "hotfix"
+    stage: "H2-in-progress"
+    classification_reason: "bug fix + 相邻领域一并清理；无新表/新 API/新业务逻辑；改动面可枚举（8~10 文件），风险点在于 API 合约变化（config UpdateStatus 接受的 status 值 offline→draft）和前后端同步发布；前端当前 UI 按钮逻辑已经是二元（published vs 其他），合并后无视觉回归"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "fix/sop-chatbot-publish-status-cleanup"
+      numind-web-v3: "fix/sop-chatbot-publish-status-cleanup"
+    hotfix_artifacts:
+      diagnosis: "inline-triage (chat history 2026-04-10)"
+      review: null
+    progress:
+      total_tasks: 9
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "git revert single commit per repo"
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions:
+      - "2026-04-10: 路线 B 选定 — 简化为 2 态（draft/published），删除 offline。理由：offline 与 draft 在所有可见性检查 (!= Published) 中完全等价；UI 按钮逻辑也是二元；保留 3 态是 SOP 首次引入 publish_status 时从 chatbot 复制过来的未审查冗余"
+      - "2026-04-10: chatbot 一并清理 — 与 SOP 对称；若只改 SOP 会产生'SOP 2 态 / chatbot 3 态'的无理由不对称，加重维护心智负担"
+      - "2026-04-10: 修改原 migration 文件而非新增补丁 migration — prod 未跑过 20260409，qa 未跑过；只有 dev 已跑，dev 走手动 MODIFY 同步。保持 migration 历史线性清晰"
+      - "2026-04-10: Admin CreateTemplate 同步修复 — 该路径原本未显式设置 PublishStatus，靠 GORM DEFAULT '' 被过滤器误杀，导致所有 admin 创建的模板都不可见。这是原本未被发现的隐藏 bug，本次一并修掉（显式设为 published）"
+      - "2026-04-10: 迁移策略 idempotent 三段式 — (1) ADD COLUMN IF NOT EXISTS with new schema (2) UPDATE 回填历史空串 (3) MODIFY COLUMN 强制新 schema。对 fresh prod 和已迁移 dev 都安全"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: null
+
   - id: "admin-rebrand-to-design-md"
     ndf_version: "1.0"
     description: "把 numind-admin-web 的 Tailwind 默认值替换为 DESIGN.md 定义的 v3 master 品牌（翠绿 + HSL 命名 + 衬线 heading）。包括 variables.css token 重画 + 30+ view 视觉迁移 + 状态色 token 引入"

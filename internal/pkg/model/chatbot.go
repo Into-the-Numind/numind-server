@@ -7,9 +7,9 @@ import (
 )
 
 const (
+	// 智能体发布状态（2 态：draft = 未发布，published = 已发布）
 	ChatbotStatusDraft     = "draft"
 	ChatbotStatusPublished = "published"
-	ChatbotStatusOffline   = "offline"
 
 	ChatbotSessionStatusActive = "active"
 	ChatbotSessionStatusClosed = "closed"

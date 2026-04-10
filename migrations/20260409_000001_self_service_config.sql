@@ -79,8 +79,19 @@ CREATE TABLE IF NOT EXISTS chatbot_message (
 
 -- SOP 模板扩展（幂等）
 ALTER TABLE sop_template ADD COLUMN IF NOT EXISTS creator_user_id INT UNSIGNED DEFAULT NULL;
-ALTER TABLE sop_template ADD COLUMN IF NOT EXISTS publish_status VARCHAR(20) DEFAULT '';
+-- publish_status: 2 态 draft/published（offline 已废弃，与 draft 等价合并）
+-- 老 admin 创建的模板（无 publish_status 概念）默认视为 published，保留历史可见性
+ALTER TABLE sop_template ADD COLUMN IF NOT EXISTS publish_status VARCHAR(20) NOT NULL DEFAULT 'published';
+-- 回填历史空字符串/NULL（曾用 DEFAULT '' 的环境）→ published
+UPDATE sop_template SET publish_status = 'published' WHERE publish_status IS NULL OR publish_status = '';
+-- 兼容 offline 历史值 → draft（当前代码已不再产生 offline，但防止任何环境残留）
+UPDATE sop_template SET publish_status = 'draft' WHERE publish_status = 'offline';
+-- 强制 schema 一致性（对已存在旧 schema 的 dev 环境生效；fresh 环境是 no-op）
+ALTER TABLE sop_template MODIFY COLUMN publish_status VARCHAR(20) NOT NULL DEFAULT 'published';
 CREATE INDEX IF NOT EXISTS idx_st_creator ON sop_template (creator_user_id);
+
+-- chatbot_config status: offline 历史值 → draft（与 SOP 对称简化为 2 态）
+UPDATE chatbot_config SET status = 'draft' WHERE status = 'offline';
 
 -- Feature permission seed
 INSERT INTO user_feature_permission (parent_user_id, sub_user_id, feature_key, created_at, updated_at)
