@@ -489,9 +489,9 @@ features:
       qa: null
     progress:
       total_tasks: 25
-      completed_tasks: 3
-      reviewed_tasks: 3
-      current_task: "task 4: CreateNode 守卫 + EditDTO + Beacon 路由修复 + 调试日志清理"
+      completed_tasks: 4
+      reviewed_tasks: 4
+      current_task: "task 5: 前端 vitest 基础设施 + types + sopRun store 骨架"
     rollback: "git revert <merge-commit> on numind-server/develop and numind-web-v3/develop, push triggers dev redeploy (~5-15min window)"
     last_verified: null
     decisions:
@@ -523,6 +523,7 @@ features:
       - "S2 待解决的开放问题见 proposal §8（共 8 项）"
       - "S2 解决的 P2 问题见 proposal §9（trial 配额机制 / dead fields / 验收可测性 / Desktop 调试日志 / 端点数修正）"
       - "(本功能不解决) 多 tab 并发执行虽不影响配额计数（IncrementSopRunCount 由 run.Counted flag 保护），但仍可能产生双倍 LLM 调用成本和重复 sop_node_run 记录。Single-session 强制下线功能上线后自动消解"
+      - "(P2 backlog, task 4 reviewer 发现) admin_sop/sop.go 的 GetNode/ListNodesByTemplate/CreateNode 也直接序列化 model.SopNode 泄露 5 字段。但 admin_token middleware 保护 + 管理员业务上需要这些字段，可接受。建议未来独立 task 用 SopNodeAdminDTO 处理（或直接保留现状）"
     blockers: []
     created_at: "2026-04-10T00:00:00+08:00"
     completed_at: null
