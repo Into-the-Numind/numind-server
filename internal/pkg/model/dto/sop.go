@@ -59,7 +59,12 @@ type SopTemplatePublicDTO struct {
 //
 // 此函数是字段隐藏的唯一入口。任何返回 SopNode 列表的 controller
 // 都必须通过此函数转换，禁止直接序列化 model.SopNode。
+//
+// nil 输入返回零值 DTO，防止上游 store 异常时 panic 扩散到 HTTP 响应层。
 func ToSopNodePublicDTO(node *model.SopNode) SopNodePublicDTO {
+	if node == nil {
+		return SopNodePublicDTO{}
+	}
 	return SopNodePublicDTO{
 		ID:          node.ID,
 		TemplateID:  node.TemplateID,
@@ -82,7 +87,12 @@ func ToSopNodePublicDTOList(nodes []model.SopNode) []SopNodePublicDTO {
 }
 
 // ToSopTemplatePublicDTO 将 model.SopTemplate 转换为 C 端公开 DTO。
+//
+// nil 输入返回零值 DTO，与 ToSopNodePublicDTO 行为一致。
 func ToSopTemplatePublicDTO(t *model.SopTemplate) SopTemplatePublicDTO {
+	if t == nil {
+		return SopTemplatePublicDTO{}
+	}
 	return SopTemplatePublicDTO{
 		ID:                  t.ID,
 		Name:                t.Name,

@@ -100,7 +100,10 @@ func TestToSopNodePublicDTO_EmptyDescription(t *testing.T) {
 		Description: "", // 空 description
 	}
 	dtoObj := ToSopNodePublicDTO(node)
-	jsonBytes, _ := json.Marshal(dtoObj)
+	jsonBytes, err := json.Marshal(dtoObj)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
 	jsonStr := string(jsonBytes)
 
 	if !strings.Contains(jsonStr, `"description":""`) {
@@ -108,6 +111,34 @@ func TestToSopNodePublicDTO_EmptyDescription(t *testing.T) {
 	}
 	if strings.Contains(jsonStr, `"description":null`) {
 		t.Errorf("description should not be null in JSON: %s", jsonStr)
+	}
+}
+
+// TestToSopNodePublicDTO_NilInput 验证 nil 输入返回零值 DTO 而非 panic。
+//
+// 防御性测试：上游 store 异常返回 nil 时，转换函数不应 panic 扩散到 HTTP 层。
+func TestToSopNodePublicDTO_NilInput(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("ToSopNodePublicDTO(nil) panicked: %v", r)
+		}
+	}()
+	dtoObj := ToSopNodePublicDTO(nil)
+	if dtoObj.ID != 0 || dtoObj.Name != "" {
+		t.Errorf("expected zero-value DTO, got: %+v", dtoObj)
+	}
+}
+
+// TestToSopTemplatePublicDTO_NilInput 同 ToSopNodePublicDTO 的 nil 防御。
+func TestToSopTemplatePublicDTO_NilInput(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("ToSopTemplatePublicDTO(nil) panicked: %v", r)
+		}
+	}()
+	dtoObj := ToSopTemplatePublicDTO(nil)
+	if dtoObj.ID != 0 || dtoObj.Name != "" {
+		t.Errorf("expected zero-value DTO, got: %+v", dtoObj)
 	}
 }
 
