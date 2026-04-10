@@ -56,9 +56,9 @@ dmxapi:
   base_url: "https://www.dmxapi.cn/v1"
 
 volc:
-  api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
+  api_key: "716dc07a-b121-4bae-a132-497117f74c7a"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "deepseek-v3-1-terminus"  # 使用的AI模型
+  model: "deepseek-v3-2-251201"
   temperature: 0.5 # 生成文本的随机性，值越高随机性越大
   tokens: 2000 # 生成文本的最大长度
   timeout: 300s  # 超时时间，改为300s以支持视觉模型OCR

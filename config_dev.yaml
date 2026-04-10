@@ -62,9 +62,9 @@ dmxapi:
   base_url: "https://www.dmxapi.cn/v1"
 
 volc:
-  api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
+  api_key: "716dc07a-b121-4bae-a132-497117f74c7a"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "glm-4-7-251222"  # 测试阶段使用智谱GLM-4-7模型
+  model: "deepseek-v3-2-251201"
   temperature: 0.7
   tokens: 4000
   timeout: 300s
