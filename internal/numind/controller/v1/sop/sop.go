@@ -13,7 +13,6 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -37,6 +36,7 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/model/dto"
 	"numind-server/internal/pkg/util"
 	v1 "numind-server/pkg/api/numind/v1"
 )
@@ -519,43 +519,22 @@ func (ctrl *SopController) GetTemplateNodes(c *gin.Context) {
 		return sortedNodes[i].Sort < sortedNodes[j].Sort
 	})
 
+	// P0 安全：禁止直接序列化 model.SopNode（含 api_key/base_url/model_name/
+	// timeout_seconds/prompt 五个敏感字段），统一通过 dto 包转换隐藏字段。
+	// 详见 docs/superpowers/specs/2026-04-11-sop-runtime-vue-rewrite-design.md §1
 	core.WriteResponse(c, nil, gin.H{
-		"template_id":           templateID,
-		"template_name":         template.Name,
-		"trailing_chat_enabled": template.TrailingChatEnabled,
-		"nodes":                 sortedNodes,
-		"total":                 len(sortedNodes),
+		"template": dto.ToSopTemplatePublicDTO(template),
+		"nodes":    dto.ToSopNodePublicDTOList(sortedNodes),
+		"total":    len(sortedNodes),
 	})
 }
 
 // CreateRun 创建SOP执行（不立即执行）
 func (ctrl *SopController) CreateRun(c *gin.Context) {
-	// #region agent log
-	func() {
-		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if logFile != nil {
-			defer logFile.Close()
-			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:382","message":"CreateRun handler entry","data":{"hypothesisId":"B","path":%q},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), c.Request.URL.Path)
-			_, _ = logFile.WriteString(logEntry)
-		}
-	}()
-	// #endregion
 	log.C(c).Infow("User create SOP run called")
 
 	// 从token获取当前用户
 	currentUser, exists := c.Get("current_user")
-	// #region agent log
-	func() {
-		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if logFile != nil {
-			defer logFile.Close()
-			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:387","message":"Auth check result","data":{"hypothesisId":"D","exists":%t},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), exists)
-			_, _ = logFile.WriteString(logEntry)
-		}
-	}()
-	// #endregion
 	if !exists {
 		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
 		return
@@ -564,31 +543,9 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 
 	var req v1.CreateSopRunRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		// #region agent log
-		func() {
-			logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if logFile != nil {
-				defer logFile.Close()
-				logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:394","message":"JSON bind error","data":{"hypothesisId":"B","error":%q},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), err.Error())
-				_, _ = logFile.WriteString(logEntry)
-			}
-		}()
-		// #endregion
 		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
 		return
 	}
-	// #region agent log
-	func() {
-		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if logFile != nil {
-			defer logFile.Close()
-			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:397","message":"Request parsed","data":{"hypothesisId":"B","templateID":%d,"userID":%d},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), req.TemplateID, user.ID)
-			_, _ = logFile.WriteString(logEntry)
-		}
-	}()
-	// #endregion
 
 	// 模板必须是 active 且已发布 才能创建运行；阻止草稿/下线模板被绕过 URL 执行
 	templateToRun, err := ctrl.sopBiz.GetTemplate(c, req.TemplateID)
@@ -603,42 +560,11 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 
 	// 支持书签功能：创建 Run 并自动应用书签
 	run, appliedBookmarkIDs, err := ctrl.sopBiz.CreateRunWithBookmarks(c.Request.Context(), req.TemplateID, user.ID, req.Text, req.AutoApplyBookmarks)
-	// #region agent log
-	func() {
-		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if logFile != nil {
-			defer logFile.Close()
-			hasErr := err != nil
-			runID := uint(0)
-			if run != nil {
-				runID = run.ID
-			}
-			errMsg := ""
-			if err != nil {
-				errMsg = err.Error()
-			}
-			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:399","message":"CreateRun biz result","data":{"hypothesisId":"B","error":%t,"errorMsg":%q,"runID":%d,"autoAppliedCount":%d},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), hasErr, errMsg, runID, len(appliedBookmarkIDs))
-			_, _ = logFile.WriteString(logEntry)
-		}
-	}()
-	// #endregion
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
-	// #region agent log
-	func() {
-		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if logFile != nil {
-			defer logFile.Close()
-			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:405","message":"CreateRun handler exit","data":{"hypothesisId":"B","runID":%d,"success":true,"autoAppliedCount":%d},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), run.ID, len(appliedBookmarkIDs))
-			_, _ = logFile.WriteString(logEntry)
-		}
-	}()
-	// #endregion
 	core.WriteResponse(c, nil, gin.H{
 		"id":                 run.ID,
 		"template_id":        run.TemplateID,

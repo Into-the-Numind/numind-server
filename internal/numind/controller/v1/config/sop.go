@@ -5,6 +5,7 @@ import (
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/model/dto"
 
 	"github.com/gin-gonic/gin"
 )
@@ -71,7 +72,13 @@ func (ctrl *SopConfigController) Get(c *gin.Context) {
 		return
 	}
 
-	core.WriteResponse(c, nil, gin.H{"template": template, "nodes": nodes})
+	// P0 安全：禁止直接序列化 model.SopNode（含 api_key/base_url/model_name/
+	// timeout_seconds 4 个基础设施字段）。B 端编辑器需要 prompt 字段，所以
+	// 使用 SopNodeEditDTO（保留 prompt，隐藏 4 个基础设施字段）。
+	core.WriteResponse(c, nil, gin.H{
+		"template": dto.ToSopTemplatePublicDTO(template),
+		"nodes":    dto.ToSopNodeEditDTOList(nodes),
+	})
 }
 
 // updateTemplateReq SOP模板更新请求
@@ -173,20 +180,38 @@ func (ctrl *SopConfigController) CreateNode(c *gin.Context) {
 		return
 	}
 
-	var node model.SopNode
-	if err := c.ShouldBindJSON(&node); err != nil {
+	// 白名单 binding：拒绝 B 端写入 base_url/model_name/api_key/timeout_seconds
+	// 这些字段是平台后端的 LLM 服务配置，B 端不应也不能修改。
+	// 即使前端发送了这些字段，也会被 anonymous struct 丢弃。
+	// 详见 spec §2.2 + 用户决策"B 端可配置字段范围 = prompt/name/description/顺序"
+	var req struct {
+		Name        string `json:"name" binding:"required"`
+		Description string `json:"description"`
+		Prompt      string `json:"prompt" binding:"required"`
+		Sort        int    `json:"sort"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
 		core.WriteResponse(c, errno.ErrBind.SetMessage("参数绑定失败: %s", err.Error()), nil)
 		return
 	}
-	node.TemplateID = templateID
 
-	created, err := ctrl.sopBiz.CreateNode(c, &node)
+	node := &model.SopNode{
+		TemplateID:  templateID,
+		Name:        req.Name,
+		Description: req.Description,
+		Prompt:      req.Prompt,
+		Sort:        req.Sort,
+		Status:      "active",
+	}
+
+	created, err := ctrl.sopBiz.CreateNode(c, node)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
 	}
 
-	core.WriteResponse(c, nil, created)
+	// P0 安全：返回 EditDTO 而非 *model.SopNode
+	core.WriteResponse(c, nil, dto.ToSopNodeEditDTO(created))
 }
 
 // updateNodeReq SOP节点更新请求

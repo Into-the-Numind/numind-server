@@ -164,8 +164,13 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/sop/runs/:id/next-node", userSopc.GetNextNode)                        // 获取下一个待执行节点
 		authGroup.POST("/sop/runs/:id/nodes/:node_id/execute", userSopc.ExecuteNodeStream)    // 流式执行指定节点（支持文件上传）
 		authGroup.POST("/sop/runs/:id/nodes/:node_id/apply-bookmark", userSopc.ApplyBookmark) // 应用书签到节点
-		authGroup.DELETE("/sop/runs/:id/draft", userSopc.DeleteDraftRun)                      // 删除草稿状态的run
-		authGroup.POST("/sop/runs/:id/draft", userSopc.DeleteDraftRun)                        // 删除草稿状态的run（Beacon方式）
+		authGroup.DELETE("/sop/runs/:id/draft", userSopc.DeleteDraftRun) // 删除草稿状态的run（标准 fetch 走 Authorization header）
+		// POST 路由不能放在 authGroup 内，因为 navigator.sendBeacon 无法设置 Authorization header。
+		// AuthMiddleware 会在 token header 缺失时立即 c.Abort() + 401，导致 controller 里的
+		// query token fallback 是 dead code。下方独立组使用 OptionalAuthMiddleware 让请求穿透到
+		// controller，由 controller (bookmark.go:347-374) 自己处理 ?token=xxx query 兜底。
+		// 详见 task 1 reviewer 发现 P0 + spec §5.1
+
 		authGroup.POST("/sop/files/check-quality", userSopc.CheckFileQuality)                 // 检测上传文件质量
 		authGroup.POST("/sop/files/parse-text", userSopc.ParseFileText)                       // 上传文件解析文本（返回文本用于回填）
 		authGroup.POST("/sop/files/parse-text/query", userSopc.ParseFileTextQuery)            // 轮询qwen-long解析结果
@@ -326,6 +331,16 @@ func installNumindRouters(g *gin.Engine) error {
 		paymentCtrl := paymentcontroller.New(b.Payment())
 		v1Group.POST("/payment/wechat/notify", paymentCtrl.WechatNotify)
 		v1Group.POST("/payment/alipay/notify", paymentCtrl.AlipayNotify)
+	}
+
+	// Beacon 路由组（OptionalAuthMiddleware，让 controller 自己处理 query token）
+	// navigator.sendBeacon 无法设置 Authorization header，必须通过 query 参数传 token。
+	// AuthMiddleware 在 token header 缺失时会立即 401 abort，所以这些路由必须独立出来。
+	// controller (bookmark.go DeleteDraftRun) 会从 ?token=xxx query 提取 token 并校验。
+	{
+		beaconGroup := v1Group.Group("")
+		beaconGroup.Use(importMw.OptionalAuthMiddleware())
+		beaconGroup.POST("/sop/runs/:id/draft", userSopc.DeleteDraftRun) // Beacon 方式删除草稿
 	}
 
 	return nil

@@ -239,19 +239,21 @@ NDF: sop-runtime-vue-rewrite task 3
 
 ---
 
-## Task 4: 后端 CreateNode 字段守卫 + Beacon 路由修复 + 调试日志清理
+## Task 4: 后端 CreateNode 字段守卫 + B 端 SopNodeEditDTO + Beacon 路由修复 + 调试日志清理
 
-**依赖：** Task 1, Task 2
+**依赖：** Task 1, Task 2, Task 3
 **仓库：** numind-server
 **文件：**
-- 修改：`internal/numind/controller/v1/config/sop.go`（CreateNode 白名单）
+- 修改：`internal/pkg/model/dto/sop.go`（**新增 SopNodeEditDTO + ToSopNodeEditDTO**，task 3 reviewer 发现的 P1）
+- 修改：`internal/pkg/model/dto/sop_test.go`（新增 EditDTO 单测）
+- 修改：`internal/numind/controller/v1/config/sop.go`（CreateNode 白名单 + **Get / CreateNode response 改用 EditDTO**）
 - 修改：`internal/numind/router.go`（**Beacon POST 路由从 authGroup 移出**，task 1 reviewer 发现的 P0）
 - 修改：`internal/numind/biz/sop/sop.go`（清理 **5 处** `~/Desktop/...` 调试日志，行 262/275/311/323/337）
 - 修改：`internal/numind/controller/v1/sop/sop.go`（清理 **6 处** `~/Desktop/...` 调试日志）
 - 修改：`internal/numind/store/sop.go`（清理 **2 处** `~/Desktop/...` 调试日志）
 - 修改：`local_deploy.sh`（清理 1 处 `Desktop/莫小派合作` 引用，如适用）
 
-**约工作量：** 0.6 天（+0.1 来自 Beacon 路由修复）
+**约工作量：** 0.8 天（+0.1 Beacon 路由 +0.2 SopNodeEditDTO 实现 + Get/CreateNode 改造 + 单测）
 
 > 实测：`grep -rn "Desktop/莫小派合作" numind-server/` 命中 **14 处跨 4 个 .go/.sh 文件**，spec §2.1 和初版 plan 错把行号 262/275/311/323/337 标为 `controller/v1/sop/sop.go`，实际是 `biz/sop/sop.go`。已修正。
 >
@@ -259,7 +261,39 @@ NDF: sop-runtime-vue-rewrite task 3
 
 ### Steps
 
-- [ ] **Step 1：CreateNode 改为白名单 binding**
+- [ ] **Step 0：实现 SopNodeEditDTO（task 3 reviewer 发现的 P1）**
+
+参考 spec §1.1 表格。在 `internal/pkg/model/dto/sop.go` 添加：
+
+```go
+// SopNodeEditDTO 是 SopNode 的 B 端编辑器视图。
+//
+// 隐藏的字段（4 个基础设施字段）：
+//   - APIKey, BaseURL, ModelName, TimeoutSeconds
+//
+// 暴露的字段（含 prompt）：B 端创建者需要编辑 prompt（这是模板核心 IP，
+// 但创建者拥有它）
+type SopNodeEditDTO struct {
+    ID          uint      `json:"id"`
+    TemplateID  uint      `json:"template_id"`
+    Name        string    `json:"name"`
+    Description string    `json:"description"`
+    Prompt      string    `json:"prompt"`  // 与 Public 版的关键差异
+    Sort        int       `json:"sort"`
+    Status      string    `json:"status"`
+    CreatedAt   time.Time `json:"created_at"`
+    UpdatedAt   time.Time `json:"updated_at"`
+}
+
+func ToSopNodeEditDTO(node *model.SopNode) SopNodeEditDTO { ... }
+func ToSopNodeEditDTOList(nodes []model.SopNode) []SopNodeEditDTO { ... }
+```
+
+并在 `sop_test.go` 加单测：
+- 验证 EditDTO **不**包含 api_key/base_url/model_name/timeout_seconds
+- 验证 EditDTO **包含** prompt（这是与 PublicDTO 的关键差异）
+
+- [ ] **Step 1：CreateNode 改为白名单 binding 并使用 EditDTO 返回**
 
 参考 spec §2.2。把直接 `c.ShouldBindJSON(&node)` 到 `model.SopNode` 改为 anonymous struct 白名单：
 ```go
@@ -274,11 +308,36 @@ var req struct {
 
 然后构造 `&model.SopNode{...}` 时只填白名单字段。即使前端发了 base_url/model_name/api_key/timeout_seconds，也被丢弃。
 
+**CreateNode 的响应体**也必须改用 EditDTO（不要返回 `created` 直接 = `*model.SopNode`）：
+
+```go
+created, err := ctrl.sopBiz.CreateNode(c, &node)
+if err != nil { ... }
+core.WriteResponse(c, nil, dto.ToSopNodeEditDTO(created))
+```
+
+- [ ] **Step 1.5：B 端 Get 端点改用 EditDTO**
+
+修改 `controller/v1/config/sop.go` 的 `Get` 函数（line 56-75）：
+
+```go
+// 旧：core.WriteResponse(c, nil, gin.H{"template": template, "nodes": nodes})
+// 新：
+core.WriteResponse(c, nil, gin.H{
+    "template": dto.ToSopTemplatePublicDTO(template),
+    "nodes":    dto.ToSopNodeEditDTOList(nodes),
+})
+```
+
+注意 template 复用 SopTemplatePublicDTO（B 端不需要 prompt 字段，spec §1.3 已包含全部 B 端需要的 template 字段）。
+
 - [ ] **Step 2：单元测试**
 
 测试用例：
 - 给 CreateNode 发送一个含 `api_key="evil"` 的 JSON body → 调用后从 DB 读出新建的 node → assert `node.APIKey == ""`
 - 同理测 base_url / model_name / timeout_seconds
+- Get 端点的 nodes 响应中**不**包含 api_key/base_url/model_name/timeout_seconds 字段
+- Get 端点的 nodes 响应中**包含** prompt 字段（与 Public 版的关键差异）
 
 - [ ] **Step 3：Beacon 路由修复（task 1 reviewer 发现的 P0）**
 
