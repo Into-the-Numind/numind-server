@@ -210,6 +210,9 @@ type CompletedNodeInfo struct {
 	FromBookmark bool   `json:"from_bookmark"`         // 是否从书签恢复
 	BookmarkID   *uint  `json:"bookmark_id,omitempty"` // 关联的书签ID
 	IsAccessible bool   `json:"is_accessible"`         // 是否可访问（前面所有节点都已完成）
+	ModelName    string `json:"model_name"`            // 实际调用的模型名称（B5）
+	LatencyMs    int64  `json:"latency_ms"`            // 执行耗时（毫秒）（B5）
+	TotalTokens  int    `json:"total_tokens"`          // 总 tokens（B5）
 }
 
 // NextNodeInfo 下一个节点信息
@@ -789,6 +792,9 @@ func (b *sopBiz) GetRunStatus(ctx context.Context, runID uint) (*RunStatus, erro
 				Thinking:     nodeRun.Thinking,
 				FromBookmark: nodeRun.FromBookmark, // 是否从书签恢复
 				BookmarkID:   nodeRun.BookmarkID,   // 关联的书签ID
+				ModelName:    nodeRun.ModelName,    // B5: 实际调用的模型名称
+				LatencyMs:    nodeRun.LatencyMs,    // B5: 执行耗时
+				TotalTokens:  nodeRun.TotalTokens,  // B5: 总 tokens（绕过 model json:"-"）
 			})
 			if nodeRun.Sort > currentNodeSort {
 				currentNodeSort = nodeRun.Sort
