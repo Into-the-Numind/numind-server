@@ -592,29 +592,36 @@ features:
 
   - id: "sop-runtime-visual-redesign"
     ndf_version: "1.0"
-    description: "SOP 运行页视觉/布局重设计 — 覆盖 (a) 视觉打磨：间距/字号/配色/层次/动效 (b) 设计体系对齐：DESIGN.md token + .impeccable.md (c) 结构/布局重设计。功能不动，纯 UI/UX。范围：SOPRunView.vue 及所有子组件，含 trailing chat 区域"
+    description: "SOP 运行页视觉/布局重设计 — 覆盖 (a) 视觉打磨：间距/字号/配色/层次/动效 (b) 设计体系对齐：DESIGN.md token + .impeccable.md (c) 结构/布局重设计 γ Focused (左 nav + 单步聚焦)。范围扩展为跨仓库：前端视觉重写 + 后端 sop_node_run.model_name + sop_chat_message.model_name/duration_ms 字段补齐 + CompletedNodeInfo DTO 透出 token/model/latency"
     track: "standard"
-    stage: "S0"
-    classification_reason: "纯前端单仓库，但 (c) 结构重设计 + 影响 10-20 个组件文件超出 hotfix 范围；刚 S5 完的页面动视觉需要先有方向再实施，需 S0/S1 探索阶段"
-    last_updated_by: "ai-triage"
-    last_updated_at: "2026-04-11T16:30:00+08:00"
+    stage: "S4"
+    classification_reason: "跨 2 仓库：前端 18 个组件 + 后端 2 个 migration + biz 写入 + DTO 透出。S2/S3 reviewer PASS_WITH_FIXES 后修订全部 P0/P1/P2，进入 S4 实施"
+    last_updated_by: "ai-s4-start"
+    last_updated_at: "2026-04-11T18:50:00+08:00"
     repos:
       - numind-web-v3
+      - numind-server
     branches:
       numind-web-v3: "feature/sop-runtime-visual-redesign (待创建)"
+      numind-server: "feature/sop-runtime-visual-redesign (待创建)"
     artifacts:
-      requirement: null
-      proposal: null
-      spec: null
-      plan: null
+      requirement: "numind-server/requirements/sop-runtime-visual-redesign.md"
+      proposal: "numind-server/proposals/sop-runtime-visual-redesign-proposal.md"
+      backend_audit: "numind-server/proposals/sop-runtime-visual-redesign-backend-audit.md"
+      mockups:
+        - "numind-server/proposals/sop-runtime-visual-redesign-mockups/01-active-and-history.html"
+        - "numind-server/proposals/sop-runtime-visual-redesign-mockups/02-additional-states.html"
+      spec: "numind-server/docs/superpowers/specs/2026-04-11-sop-runtime-visual-redesign-design.md"
+      plan: "numind-server/docs/superpowers/plans/sop-runtime-visual-redesign-plan.md"
+      s2s3_gate_review: "numind-server/proposals/sop-runtime-visual-redesign-s2s3-review.md (PASS_WITH_FIXES → 修复后 PASS)"
       review_spec_compliance: null
       review_code_quality: null
       qa: null
     progress:
-      total_tasks: 0
+      total_tasks: 20
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "S0 需求采集：截图现状 + 用户口述痛点 + 范围边界确认"
+      current_task: "S4 task 1: B1 migration sop_node_run 加 model_name (待 dispatch)"
     rollback: null
     last_verified:
       at: null
@@ -625,6 +632,9 @@ features:
     decisions:
       - "2026-04-11 Triage: Standard 精简版（视觉工作需 S0/S1 探索方向，Hotfix 会变成 AI 拍脑袋）"
       - "2026-04-11 Triage 默认假设（用户'开始'时未逐条确认，按 AI 推荐默认）：范围 = SOP 运行页全部子组件含 trailing chat；设计参考 = 无，S1 用 /design-shotgun 探索"
+      - "2026-04-11 S0 文字采集失败：用户反馈文字让选无法决策，切换为视觉对齐（subagent 生成 HTML mockup → 用户视觉选型）"
+      - "2026-04-11 Round 1 用户关键修正：(1) 每步只展示 标题/描述/输入区(active 时)/AI 输出/可选元信息，**不展示 prompt** (2) 单步输出长度不可预测可能非常长，长内容处理是核心约束"
+      - "2026-04-11 Round 2 结构方案锁定：γ Focused（左 vertical step nav + 右主区单步聚焦）。理由：单步占用整个 viewport 自然承载长内容；N 步骤扩展性好；左 nav 一键切换任意步骤；read-only 历史步骤无输入框、状态切换有明确 context strip"
     deferred:
       - "S0 待确认：本次是否包含 trailing chat 区域、是否有具体设计参考产品"
     blockers:
