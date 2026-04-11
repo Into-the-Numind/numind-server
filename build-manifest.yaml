@@ -555,6 +555,43 @@ features:
     created_at: "2026-04-10T00:00:00+08:00"
     completed_at: null
 
+  - id: "kb-upload-status-polling"
+    ndf_version: "1.0"
+    description: "配置中心知识库详情页上传后状态轮询 — 后端 ingestionPipeline 异步处理 pending→parsing→embedding→completed，原实现上传后只 loadDetail 一次，状态停在 pending 须手动 F5；新增 1s 轮询至终态，最多 90 次超时停止"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "单文件纯前端改动，无 schema/API/业务逻辑变更，风险极低"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-12T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "committed to develop (641eb1a)"
+    hotfix_artifacts:
+      diagnosis: "inline code trace — salesrag.go:333 Ingest 调 ingestionPipeline.Submit 异步返回；KnowledgeBaseDetail.vue:272 上传后只 loadDetail 一次无轮询"
+      review: "inline (single-developer mode)"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert 641eb1a on develop"
+    last_verified:
+      at: "2026-04-12T00:00:00+08:00"
+      lint: "pass (npm run lint)"
+      type_check: "pass (npm run type-check / vue-tsc)"
+      tests: "n/a"
+      test_summary: "lint + type-check pass; 根因来自后端异步 pipeline 与前端单次刷新的不匹配，修复方向由代码链路推定非静态推理（后端 Submit 是 fire-and-forget，前端无事件订阅）"
+    decisions:
+      - "2026-04-12: 选择前端轮询而非 SSE — 后端 pipeline 当前无事件推送通道，加 SSE 超出 hotfix scope；1s 间隔 + 90s 超时由用户拍板"
+      - "2026-04-12: 不引入全局 store 状态，局部组件 ref + onUnmounted 清理 timer 即可，scope 最小化"
+      - "2026-04-12: onMounted 也调用 schedulePoll — 从列表返回时若仍有进行中的文档也能自动刷新"
+    deferred:
+      - "后端 ingestion 事件推送（SSE/WebSocket）：若未来需要真实时反馈可开独立 feature，现状前端轮询已够用"
+    blockers: []
+    created_at: "2026-04-12T00:00:00+08:00"
+    completed_at: "2026-04-12T00:00:00+08:00"
+
   - id: "dmx-event-name-consistency"
     ndf_version: "1.0"
     description: "修复 DMXAPIClient 流式 content chunk 事件名不一致 — emit 'content' 与调用方约定的 'message' 不符，导致 SOP ExecuteNodeStream controller 在 event name 路由时把 LLM 的所有 content chunk 静默丢弃，客户端表现为执行后没有任何输出（billing/usage_record 却正常落库）"
