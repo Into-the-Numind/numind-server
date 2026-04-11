@@ -489,9 +489,9 @@ features:
       qa: null
     progress:
       total_tasks: 25
-      completed_tasks: 17
-      reviewed_tasks: 17
-      current_task: "task 18: ToolbarActions + EmptyStateCard + ScrollFollowButton"
+      completed_tasks: 18
+      reviewed_tasks: 18
+      current_task: "task 19: HistoryModal.vue 组件"
     rollback: "git revert <merge-commit> on numind-server/develop and numind-web-v3/develop, push triggers dev redeploy (~5-15min window)"
     last_verified: null
     decisions:
