@@ -200,6 +200,9 @@ type CompletedNodeInfo struct {
 	FromBookmark bool   `json:"from_bookmark"`         // 是否从书签恢复
 	BookmarkID   *uint  `json:"bookmark_id,omitempty"` // 关联的书签ID
 	IsAccessible bool   `json:"is_accessible"`         // 是否可访问（前面所有节点都已完成）
+	ModelName    string `json:"model_name"`            // 实际调用的模型名称（B5）
+	LatencyMs    int64  `json:"latency_ms"`            // 执行耗时（毫秒）（B5）
+	TotalTokens  int    `json:"total_tokens"`          // 总 tokens（B5，绕过 model 层 json:"-"）
 }
 
 // BookmarkInfo 书签信息（用于状态响应）
@@ -327,6 +330,8 @@ type RunChatMessageItem struct {
 	TotalTokens           int    `json:"total_tokens"`            // 总 tokens
 	ReasoningTokens       int    `json:"reasoning_tokens"`        // 思考过程 tokens
 	EstimatedPromptTokens int    `json:"estimated_prompt_tokens"` // 预估输入 tokens
+	ModelName             string `json:"model_name"`              // 实际调用的模型名称（B5）
+	DurationMs            int64  `json:"duration_ms"`             // 耗时（毫秒）（B5）
 }
 
 // RunChatMessagesResponse Run对话消息列表响应

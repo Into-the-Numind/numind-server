@@ -266,6 +266,11 @@ export interface SaveBookmarkRequest {
   bookmark_name?: string
   description?: string
 }
+// 注：F2 实施时按 backend bookmark.go 完整 DTO 镜像（superset of below），更安全。
+// 完整字段：id / user_id / template_id / node_id / node_sort / node_name? /
+//          input / output / thinking / prompt_tokens / completion_tokens / total_tokens /
+//          bookmark_name / description / created_at / updated_at
+// 下面是最小必需子集。
 export interface SaveBookmarkResponse {
   id: number
   node_id: number
@@ -344,9 +349,9 @@ export interface SopChatMessageMeta {
 ```sql
 -- 加 model_name 列到 sop_node_run，用于前端 mockup 元信息 footer 展示
 -- 当前前端需要从 sop_node.model_id 反查，性能差且模板更换模型会污染历史记录。
--- 冗余落在 node_run 上即可。
+-- 冗余落在 node_run 上即可。长度对齐 sop_node.model_name (VARCHAR(100))，避免截断。
 ALTER TABLE sop_node_run
-  ADD COLUMN model_name VARCHAR(64) NOT NULL DEFAULT '' AFTER latency_ms;
+  ADD COLUMN model_name VARCHAR(100) NOT NULL DEFAULT '' AFTER latency_ms;
 
 -- 回滚: ALTER TABLE sop_node_run DROP COLUMN model_name;
 ```

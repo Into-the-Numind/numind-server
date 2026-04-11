@@ -135,7 +135,7 @@ B2 migration sop_chat_message.duration_ms                                  │
 
 #### Scope
 
-加一列 `model_name VARCHAR(64) NOT NULL DEFAULT ''` 到 `sop_node_run` 表。用于前端 mockup E 态 footer 展示。虽然可以从 `sop_node.model_id` 反查，但反查性能差且模板换模型后会污染历史记录；冗余落在 node_run 上最合理。**见 spec §4.1**。
+加一列 `model_name VARCHAR(100) NOT NULL DEFAULT ''` 到 `sop_node_run` 表。用于前端 mockup E 态 footer 展示。虽然可以从 `sop_node.model_id` 反查，但反查性能差且模板换模型后会污染历史记录；冗余落在 node_run 上最合理。长度对齐 `sop_node.model_name`（GORM size:100），避免截断。**见 spec §4.1**。
 
 #### 文件
 
@@ -145,7 +145,7 @@ B2 migration sop_chat_message.duration_ms                                  │
 
 ```sql
 ALTER TABLE sop_node_run
-  ADD COLUMN model_name VARCHAR(64) NOT NULL DEFAULT '' AFTER latency_ms;
+  ADD COLUMN model_name VARCHAR(100) NOT NULL DEFAULT '' AFTER latency_ms;
 -- 回滚：ALTER TABLE sop_node_run DROP COLUMN model_name;
 ```
 

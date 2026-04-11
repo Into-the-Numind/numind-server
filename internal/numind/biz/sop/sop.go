@@ -210,6 +210,9 @@ type CompletedNodeInfo struct {
 	FromBookmark bool   `json:"from_bookmark"`         // 是否从书签恢复
 	BookmarkID   *uint  `json:"bookmark_id,omitempty"` // 关联的书签ID
 	IsAccessible bool   `json:"is_accessible"`         // 是否可访问（前面所有节点都已完成）
+	ModelName    string `json:"model_name"`            // 实际调用的模型名称（B5）
+	LatencyMs    int64  `json:"latency_ms"`            // 执行耗时（毫秒）（B5）
+	TotalTokens  int    `json:"total_tokens"`          // 总 tokens（B5）
 }
 
 // NextNodeInfo 下一个节点信息
@@ -660,6 +663,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 			"error_message": err.Error(),
 			"latency_ms":    latency,
 			"finished_at":   nodeEndTime,
+			"model_name":    node.ModelName, // B4: 持久化实际调用的模型名（失败路径也落，方便前端 MetaFooter）
 		}
 		if usage != nil {
 			updateData["prompt_tokens"] = usage.PromptTokens
@@ -679,6 +683,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		"thinking":    thinking,
 		"latency_ms":  latency,
 		"finished_at": nodeEndTime,
+		"model_name":  node.ModelName, // B4: 持久化实际调用的模型名，前端 MetaFooter 使用
 	}
 
 	// 保存 token 使用统计（如果存在）
@@ -787,6 +792,9 @@ func (b *sopBiz) GetRunStatus(ctx context.Context, runID uint) (*RunStatus, erro
 				Thinking:     nodeRun.Thinking,
 				FromBookmark: nodeRun.FromBookmark, // 是否从书签恢复
 				BookmarkID:   nodeRun.BookmarkID,   // 关联的书签ID
+				ModelName:    nodeRun.ModelName,    // B5: 实际调用的模型名称
+				LatencyMs:    nodeRun.LatencyMs,    // B5: 执行耗时
+				TotalTokens:  nodeRun.TotalTokens,  // B5: 总 tokens（绕过 model json:"-"）
 			})
 			if nodeRun.Sort > currentNodeSort {
 				currentNodeSort = nodeRun.Sort
@@ -1277,6 +1285,7 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 		billing.Metadata("run_id", billing.FormatUint(runID), "conversation_id", conversationID))
 	// 传入空字符串作为 input，这样执行器不会拼装节点的 Prompt，AI 保持普通助手身份
 	var answerBuf strings.Builder
+	chatStart := time.Now() // B4: 记录 chat LLM 调用起始时间，用于 duration_ms 持久化
 	_, thinking, usage, err := b.executor.ExecuteNodeStreamWithThinking(
 		ctx,
 		&lastNode,
@@ -1308,6 +1317,8 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 		Content:        answerBuf.String(),
 		Thinking:       thinking, // 保存思考过程
 		Seq:            maxSeq + 2,
+		ModelName:      lastNode.ModelName,                   // B4: 持久化实际调用的模型名
+		DurationMs:     time.Since(chatStart).Milliseconds(), // B4: LLM 流式总耗时
 	}
 
 	// 保存 token 使用统计（如果存在）

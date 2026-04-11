@@ -1997,6 +1997,9 @@ func (ctrl *SopController) GetRunStatus(c *gin.Context) {
 			Thinking:     node.Thinking,
 			FromBookmark: node.FromBookmark,
 			BookmarkID:   node.BookmarkID,
+			ModelName:    node.ModelName,   // B5
+			LatencyMs:    node.LatencyMs,   // B5
+			TotalTokens:  node.TotalTokens, // B5
 		}
 	}
 	response.CompletedNodes = completedNodes
@@ -2443,6 +2446,8 @@ func (ctrl *SopController) ListRunChatMessages(c *gin.Context) {
 			TotalTokens:           msg.TotalTokens,
 			ReasoningTokens:       msg.ReasoningTokens,
 			EstimatedPromptTokens: msg.EstimatedPromptTokens,
+			ModelName:             msg.ModelName,  // B5
+			DurationMs:            msg.DurationMs, // B5
 		}
 	}
 

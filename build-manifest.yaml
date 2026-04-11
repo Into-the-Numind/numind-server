@@ -594,7 +594,7 @@ features:
     ndf_version: "1.0"
     description: "SOP 运行页视觉/布局重设计 — 覆盖 (a) 视觉打磨：间距/字号/配色/层次/动效 (b) 设计体系对齐：DESIGN.md token + .impeccable.md (c) 结构/布局重设计 γ Focused (左 nav + 单步聚焦)。范围扩展为跨仓库：前端视觉重写 + 后端 sop_node_run.model_name + sop_chat_message.model_name/duration_ms 字段补齐 + CompletedNodeInfo DTO 透出 token/model/latency"
     track: "standard"
-    stage: "S4"
+    stage: "S4-done-pending-gate"
     classification_reason: "跨 2 仓库：前端 18 个组件 + 后端 2 个 migration + biz 写入 + DTO 透出。S2/S3 reviewer PASS_WITH_FIXES 后修订全部 P0/P1/P2，进入 S4 实施"
     last_updated_by: "ai-s4-start"
     last_updated_at: "2026-04-11T18:50:00+08:00"
@@ -614,14 +614,15 @@ features:
       spec: "numind-server/docs/superpowers/specs/2026-04-11-sop-runtime-visual-redesign-design.md"
       plan: "numind-server/docs/superpowers/plans/sop-runtime-visual-redesign-plan.md"
       s2s3_gate_review: "numind-server/proposals/sop-runtime-visual-redesign-s2s3-review.md (PASS_WITH_FIXES → 修复后 PASS)"
-      review_spec_compliance: null
-      review_code_quality: null
+      verification: "numind-server/docs/superpowers/plans/sop-runtime-visual-redesign-verification.md (V1 task)"
+      review_spec_compliance: "20/20 task PASS (含 13 处 P1/P2 fix)"
+      review_code_quality: "20/20 task PASS"
       qa: null
     progress:
       total_tasks: 20
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task: "S4 task 1: B1 migration sop_node_run 加 model_name (待 dispatch)"
+      completed_tasks: 20
+      reviewed_tasks: 20
+      current_task: "S4 全部完成 (20/20)。等待 cross-repo gate + S5 验证执行"
     rollback: null
     last_verified:
       at: null
