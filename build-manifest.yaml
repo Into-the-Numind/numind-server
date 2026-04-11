@@ -594,7 +594,7 @@ features:
     ndf_version: "1.0"
     description: "SOP 运行页视觉/布局重设计 — 覆盖 (a) 视觉打磨：间距/字号/配色/层次/动效 (b) 设计体系对齐：DESIGN.md token + .impeccable.md (c) 结构/布局重设计 γ Focused (左 nav + 单步聚焦)。范围扩展为跨仓库：前端视觉重写 + 后端 sop_node_run.model_name + sop_chat_message.model_name/duration_ms 字段补齐 + CompletedNodeInfo DTO 透出 token/model/latency"
     track: "standard"
-    stage: "S4-done-pending-gate"
+    stage: "S5-pending-execution"
     classification_reason: "跨 2 仓库：前端 18 个组件 + 后端 2 个 migration + biz 写入 + DTO 透出。S2/S3 reviewer PASS_WITH_FIXES 后修订全部 P0/P1/P2，进入 S4 实施"
     last_updated_by: "ai-s4-start"
     last_updated_at: "2026-04-11T18:50:00+08:00"
@@ -622,7 +622,23 @@ features:
       total_tasks: 20
       completed_tasks: 20
       reviewed_tasks: 20
-      current_task: "S4 全部完成 (20/20)。等待 cross-repo gate + S5 验证执行"
+      current_task: "Cross-repo gate PASS。等待 S5 用户验证 (Playwright + gstack /qa + 端到端 curl)"
+    cross_repo_gate:
+      status: "PASS"
+      verified_at: "2026-04-11T22:15:00+08:00"
+      numind_server_commit: "a72751d (merge) on develop, pushed"
+      numind_web_v3_commit: "f1b3587 (merge) on develop, pushed"
+      ci_runs:
+        numind_server: "24284105513 success in 5m20s"
+        numind_web_v3: "24284108604 success in 2m37s"
+      dev_containers:
+        - "numind-server-dev: pmtmyaggy/numind-server:develop healthy"
+        - "numind-web-v3-dev: pmtmyaggy/numind-web-v3:f1b3587 healthy"
+      schema_verified:
+        - "sop_node_run.model_name VARCHAR(100) ✓ (AutoMigrate)"
+        - "sop_chat_message.model_name VARCHAR(100) ✓ (AutoMigrate)"
+        - "sop_chat_message.duration_ms BIGINT ✓ (AutoMigrate)"
+      end_to_end_curl: "deferred to S5 — admin user credentials needed; schema + binary verified"
     rollback: null
     last_verified:
       at: null
