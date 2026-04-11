@@ -489,9 +489,9 @@ features:
       qa: null
     progress:
       total_tasks: 25
-      completed_tasks: 12
-      reviewed_tasks: 12
-      current_task: "task 13: ConfirmModal + AppNotification 通用组件"
+      completed_tasks: 13
+      reviewed_tasks: 13
+      current_task: "task 14: stores/uiDialogs + App.vue InsufficientCreditsDialog 接入"
     rollback: "git revert <merge-commit> on numind-server/develop and numind-web-v3/develop, push triggers dev redeploy (~5-15min window)"
     last_verified: null
     decisions:
