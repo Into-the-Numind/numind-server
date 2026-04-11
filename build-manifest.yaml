@@ -555,6 +555,41 @@ features:
     created_at: "2026-04-10T00:00:00+08:00"
     completed_at: null
 
+  - id: "sop-run-no-auto-advance"
+    ndf_version: "1.0"
+    description: "SOP 运行页节点完成后不自动跳到下一步 — 移除 SOPRunView executeNode onDone 里的 store.advanceCurrentStep() 调用；完成节点后保留在当前步骤（done-current 态），用户手动点'下一步'按钮前进"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "单文件 1 行删除 + 注释更新，无 schema/API/业务逻辑变更；handlePrimary 仍保留 advanceCurrentStep 调用（手动前进路径），风险极低"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-12T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "committed to develop (e6cc98b)"
+    hotfix_artifacts:
+      diagnosis: "inline code trace — SOPRunView.vue:430 onDone 调 advanceCurrentStep (currentStep += 1 && viewingStep 同步)，强制视图前进；回归自 sop-runtime-visual-redesign 重构，覆盖了 sop-runtime-vue-rewrite F4 的精神"
+      review: "inline (single-developer mode)"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert e6cc98b on develop"
+    last_verified:
+      at: "2026-04-12T00:00:00+08:00"
+      lint: "pass (npm run lint)"
+      type_check: "pass (npm run type-check / vue-tsc)"
+      tests: "n/a (sop-runtime.spec.ts Path 6 依赖 data-step-state=done 来自 markNodeComplete 而非 currentStep，不受影响)"
+      test_summary: "lint + type-check pass"
+    decisions:
+      - "2026-04-12: 不改 store.advanceCurrentStep 函数本身 — handlePrimary 'done-current 下一步按钮'仍需该能力，只移除 onDone 里的自动调用"
+      - "2026-04-12: 不动 e2e sop-runtime.spec.ts Path 6 — 该测试断言 data-step-state=done（来自 completedNodeIds/markNodeComplete），与 currentStep 前进与否无关"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-12T00:00:00+08:00"
+    completed_at: "2026-04-12T00:00:00+08:00"
+
   - id: "kb-upload-status-polling"
     ndf_version: "1.0"
     description: "配置中心知识库详情页上传后状态轮询 — 后端 ingestionPipeline 异步处理 pending→parsing→embedding→completed，原实现上传后只 loadDetail 一次，状态停在 pending 须手动 F5；新增 1s 轮询至终态，最多 90 次超时停止"
