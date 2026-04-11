@@ -344,9 +344,9 @@ export interface SopChatMessageMeta {
 ```sql
 -- 加 model_name 列到 sop_node_run，用于前端 mockup 元信息 footer 展示
 -- 当前前端需要从 sop_node.model_id 反查，性能差且模板更换模型会污染历史记录。
--- 冗余落在 node_run 上即可。
+-- 冗余落在 node_run 上即可。长度对齐 sop_node.model_name (VARCHAR(100))，避免截断。
 ALTER TABLE sop_node_run
-  ADD COLUMN model_name VARCHAR(64) NOT NULL DEFAULT '' AFTER latency_ms;
+  ADD COLUMN model_name VARCHAR(100) NOT NULL DEFAULT '' AFTER latency_ms;
 
 -- 回滚: ALTER TABLE sop_node_run DROP COLUMN model_name;
 ```

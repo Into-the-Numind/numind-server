@@ -8,4 +8,4 @@
 --   ALTER TABLE sop_node_run DROP COLUMN model_name;
 
 ALTER TABLE sop_node_run
-    ADD COLUMN model_name VARCHAR(64) NOT NULL DEFAULT '' COMMENT '本次节点运行实际使用的 LLM 模型标识' AFTER latency_ms;
+    ADD COLUMN model_name VARCHAR(100) NOT NULL DEFAULT '' COMMENT '本次节点运行实际使用的 LLM 模型标识（长度对齐 sop_node.model_name）' AFTER latency_ms;
