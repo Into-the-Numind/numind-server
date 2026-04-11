@@ -489,9 +489,9 @@ features:
       qa: null
     progress:
       total_tasks: 25
-      completed_tasks: 10
-      reviewed_tasks: 10
-      current_task: "task 11: useStepNavigation composable"
+      completed_tasks: 11
+      reviewed_tasks: 11
+      current_task: "task 12: markdown.ts util"
     rollback: "git revert <merge-commit> on numind-server/develop and numind-web-v3/develop, push triggers dev redeploy (~5-15min window)"
     last_verified: null
     decisions:
