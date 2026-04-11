@@ -489,9 +489,9 @@ features:
       qa: null
     progress:
       total_tasks: 25
-      completed_tasks: 13
-      reviewed_tasks: 13
-      current_task: "task 14: stores/uiDialogs + App.vue InsufficientCreditsDialog 接入"
+      completed_tasks: 14
+      reviewed_tasks: 14
+      current_task: "task 15: StepperPanel.vue 组件"
     rollback: "git revert <merge-commit> on numind-server/develop and numind-web-v3/develop, push triggers dev redeploy (~5-15min window)"
     last_verified: null
     decisions:
@@ -524,6 +524,7 @@ features:
       - "S2 解决的 P2 问题见 proposal §9（trial 配额机制 / dead fields / 验收可测性 / Desktop 调试日志 / 端点数修正）"
       - "(本功能不解决) 多 tab 并发执行虽不影响配额计数（IncrementSopRunCount 由 run.Counted flag 保护），但仍可能产生双倍 LLM 调用成本和重复 sop_node_run 记录。Single-session 强制下线功能上线后自动消解"
       - "(P2 backlog, task 4 reviewer 发现) admin_sop/sop.go 的 GetNode/ListNodesByTemplate/CreateNode 也直接序列化 model.SopNode 泄露 5 字段。但 admin_token middleware 保护 + 管理员业务上需要这些字段，可接受。建议未来独立 task 用 SopNodeAdminDTO 处理（或直接保留现状）"
+      - "(task 14 reviewer 发现，对 task 17/20 重要) task 3 reviewer 曾说'numind 全部 HTTP 200 + business code'不完全准确。实测 src/api/request.ts:203-219 确认额度不足时后端返回 HTTP 403，前端通过 axios 拦截器 switch(response.status) 处理。未来 SOP SSE 节点执行的 error handling 需同时处理 HTTP 403（axios error path）和 SSE error 事件（stream path），task 17/20 实现时需注意"
     blockers: []
     created_at: "2026-04-10T00:00:00+08:00"
     completed_at: null
