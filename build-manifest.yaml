@@ -469,10 +469,10 @@ features:
     ndf_version: "1.0"
     description: "SOP 运行页 Vue 3 完整重写 — 退役 7518 行 legacy vanilla JS，消除双渲染路径与硬编码模板，让 self-service-config 的配置真正在 C 端生效"
     track: "standard"
-    stage: "S4"
+    stage: "S4-complete"
     classification_reason: "完整重写 SOP 运行页，预计 15-25 文件；可能涉及后端 API 字段补齐；间接影响计费/配额/Langfuse 链路，回归风险高"
-    last_updated_by: "ai-s4-task1"
-    last_updated_at: "2026-04-10T00:00:00+08:00"
+    last_updated_by: "ai-s4-task24"
+    last_updated_at: "2026-04-11T14:00:00+08:00"
     repos:
       - numind-web-v3
       - numind-server
@@ -489,11 +489,25 @@ features:
       qa: null
     progress:
       total_tasks: 25
-      completed_tasks: 20
-      reviewed_tasks: 20
-      current_task: "task 21: SOPRunView.vue 主集成 + 路由"
+      completed_tasks: 24
+      reviewed_tasks: 24
+      current_task: "task 25: 部署 dev + curl 安全验证 + 多账号冒烟"
     rollback: "git revert <merge-commit> on numind-server/develop and numind-web-v3/develop, push triggers dev redeploy (~5-15min window)"
-    last_verified: null
+    last_verified:
+      timestamp: "2026-04-11T14:00:00+08:00"
+      commits:
+        numind-web-v3: "661f7e4"
+        numind-server: "6035101"
+      gates:
+        backend_vet: "pass"
+        backend_tests: "pass (exclude pre-existing DMX config-dependent failures)"
+        frontend_lint: "pass"
+        frontend_typecheck: "pass"
+        frontend_unit: "270/270 pass"
+        frontend_build: "pass (SOPRunView bundle 41.45 KB / 14.57 KB gzip)"
+        frontend_e2e_sop_runtime: "12 pass + 2 documented skip/fixme"
+        frontend_e2e_sop_history: "4 pre-existing failures on develop baseline, unrelated"
+        frontend_e2e_customers: "30s timeouts, pre-existing, unrelated to task"
     decisions:
       - "2026-04-10: Triage 经修订 —— AI 初判 Hotfix → 用户挑战 → 代码调查发现 7518 行 legacy JS + 双渲染路径 → 改判 Standard"
       - "2026-04-10: 方向确定为完整 Vue 重写（方向 B），而非外科手术式部分迁移（方向 B'）"
