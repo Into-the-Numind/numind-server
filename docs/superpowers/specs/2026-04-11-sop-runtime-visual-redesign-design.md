@@ -266,6 +266,11 @@ export interface SaveBookmarkRequest {
   bookmark_name?: string
   description?: string
 }
+// 注：F2 实施时按 backend bookmark.go 完整 DTO 镜像（superset of below），更安全。
+// 完整字段：id / user_id / template_id / node_id / node_sort / node_name? /
+//          input / output / thinking / prompt_tokens / completion_tokens / total_tokens /
+//          bookmark_name / description / created_at / updated_at
+// 下面是最小必需子集。
 export interface SaveBookmarkResponse {
   id: number
   node_id: number
