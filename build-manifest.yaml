@@ -471,8 +471,8 @@ features:
     track: "standard"
     stage: "S4-complete"
     classification_reason: "完整重写 SOP 运行页，预计 15-25 文件；可能涉及后端 API 字段补齐；间接影响计费/配额/Langfuse 链路，回归风险高"
-    last_updated_by: "ai-s4-task24"
-    last_updated_at: "2026-04-11T14:00:00+08:00"
+    last_updated_by: "ai-s5-findings"
+    last_updated_at: "2026-04-11T15:45:00+08:00"
     repos:
       - numind-web-v3
       - numind-server
@@ -541,6 +541,49 @@ features:
       - "(task 14 reviewer 发现，对 task 17/20 重要) task 3 reviewer 曾说'numind 全部 HTTP 200 + business code'不完全准确。实测 src/api/request.ts:203-219 确认额度不足时后端返回 HTTP 403，前端通过 axios 拦截器 switch(response.status) 处理。未来 SOP SSE 节点执行的 error handling 需同时处理 HTTP 403（axios error path）和 SSE error 事件（stream path），task 17/20 实现时需注意"
       - "(task 16 backlog, reviewer P2) StepInput.vue 使用 emoji 图标（📎 🖼 📄 ⏳ ⚠），违反项目 Lucide 图标体系。建议未来统一改为 Lucide 组件（Paperclip/Image/FileText/Loader/AlertTriangle）。优先级低，视觉一致性 refactor"
       - "(task 17 backlog, reviewer P2) StepOutput.vue 的思维链独立滚动区（max-height:240px overflow-y:auto）在流式增量时不会自动滚到底，用户需手动下拉看最新推理。task 20 ChatBubble 设计时统一决策是否对 thinking 区域也装 scrollFollow。不阻塞 task 17"
+    s5_findings:
+      - "2026-04-11 本地联调发现 4 处 defect（已修复，feature 范围内）："
+      - "[F1] StepInput.vue / SOPRunView.vue — draft 模式首次上传文件前需 lazyCreateRun（b2ae3c9 已合入前）"
+      - "[F2] SOPRunView.vue route watcher — ensureRun 触发的 router.replace 会让 watcher 调用 store.reset()，误清掉 currentRun + 卸载 StepInput 导致上传 items 丢失。watcher 现在跳过'lazyCreateRun 自己写 URL'的特例"
+      - "[F3] sopRun.ts enterDraftMode — 原先把 nextNodeId 设为 null，导致 draft 模式第一步 canExecute 为 false，ToolbarActions 无可点按钮。修复：指向 nodes[0].id"
+      - "[F4] SOPRunView.vue executeCurrentNode onDone — 原先自动前进到下一步，用户刚生成的结果被 step 2 空态覆盖，感官上是'没有任何内容'。修复：不再 auto-advance，只更新 nextNodeId"
+      - "[F5] api/sop.ts batchDeleteRuns — 前端 run_id 全程 string，后端 BatchDeleteRuns 要求 []uint，发送前需转 number[]"
+      - "[EXTRA] 后端 DMX event name 偏差（'content' vs 'message'）不属本 feature scope，拆 dmx-event-name-consistency Hotfix 独立处理"
     blockers: []
     created_at: "2026-04-10T00:00:00+08:00"
     completed_at: null
+
+  - id: "dmx-event-name-consistency"
+    ndf_version: "1.0"
+    description: "修复 DMXAPIClient 流式 content chunk 事件名不一致 — emit 'content' 与调用方约定的 'message' 不符，导致 SOP ExecuteNodeStream controller 在 event name 路由时把 LLM 的所有 content chunk 静默丢弃，客户端表现为执行后没有任何输出（billing/usage_record 却正常落库）"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "单文件 2 行改动；pre-existing bug，由 SOP Vue 重写功能 S5 联调暴露；风险面可枚举（仅 chatbot/stream.go 和 sop controller 两处 consumer）"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-11T15:45:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "待 commit（develop 直接推）"
+    hotfix_artifacts:
+      diagnosis: "inline-playwright-trace (本地联调发现：LLM 返回 103 completion tokens 已记入 usage_record，但 SSE 响应体只有 heartbeat + final done，零 message 事件)"
+      review: "inline (single-developer mode)"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert <fix-commit> — 单点改动无副作用"
+    last_verified:
+      at: "2026-04-11T15:45:00+08:00"
+      lint: "pass (go vet clean; golangci-lint run ./internal/pkg/llm/... clean)"
+      type_check: "pass (go build clean)"
+      tests: "manual (Playwright 本地端到端验证 SOP execute 正常流式输出)"
+      test_summary: "修复前：执行 step 1 后客户端 SSE 只收到 heartbeat + done，output 为空。修复后：观察到 100+ data: \"xxx\" message chunk，.step-output 成功显示 LLM 生成内容"
+    decisions:
+      - "2026-04-11: 修复方向选 A（改 DMX 发 'message'）而非 B（改 SOP controller 认 'content'）。理由：整个 biz/sop/executor.go (msg 'message')、volc.go、ali.go 全部使用 'message'，DMX 是唯一偏差；统一到 'message' 消除歧义；chatbot/stream.go 没做 event name 显式比对所以不受影响"
+      - "2026-04-11: 不走 S0-S7 正式流程。此 bug 由更大功能的 S5 验证期发现，但 scope 仅 2 行；如果并入 sop-runtime-vue-rewrite 会污染该 feature 的 s5_findings（使其混合 feature 内 defect + 外部 pre-existing bug）。按 CLAUDE.md §4 快车道规则走 Hotfix Track 独立记录"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-11T15:45:00+08:00"
+    completed_at: "2026-04-11T15:45:00+08:00"

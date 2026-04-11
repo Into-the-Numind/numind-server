@@ -387,7 +387,9 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 						if realContent != "" {
 							fullContent.WriteString(realContent)
 							if onEvent != nil {
-								_ = onEvent("content", realContent)
+								// 统一使用 "message" 事件名（与 executor.go / volc / ali 保持一致）；
+								// SOP controller 只识别 "message"，若发 "content" 会被静默丢弃。
+								_ = onEvent("message", realContent)
 							}
 						}
 					}
@@ -404,7 +406,8 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 					// 正常内容
 					fullContent.WriteString(content)
 					if onEvent != nil {
-						_ = onEvent("content", content)
+						// 统一使用 "message" 事件名（与 executor.go / volc / ali 保持一致）
+						_ = onEvent("message", content)
 					}
 				}
 			}
