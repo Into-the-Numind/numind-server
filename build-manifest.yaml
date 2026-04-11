@@ -469,10 +469,10 @@ features:
     ndf_version: "1.0"
     description: "SOP 运行页 Vue 3 完整重写 — 退役 7518 行 legacy vanilla JS，消除双渲染路径与硬编码模板，让 self-service-config 的配置真正在 C 端生效"
     track: "standard"
-    stage: "S4-complete"
+    stage: "S5"
     classification_reason: "完整重写 SOP 运行页，预计 15-25 文件；可能涉及后端 API 字段补齐；间接影响计费/配额/Langfuse 链路，回归风险高"
-    last_updated_by: "ai-s5-findings"
-    last_updated_at: "2026-04-11T15:45:00+08:00"
+    last_updated_by: "ai-s5-start"
+    last_updated_at: "2026-04-11T16:00:00+08:00"
     repos:
       - numind-web-v3
       - numind-server
@@ -491,13 +491,13 @@ features:
       total_tasks: 25
       completed_tasks: 24
       reviewed_tasks: 24
-      current_task: "task 25: 部署 dev + curl 安全验证 + 多账号冒烟"
+      current_task: "S5 验证：dev 部署等待 + curl 安全复验 + Playwright E2E 11 路径 + gstack /qa 冒烟"
     rollback: "git revert <merge-commit> on numind-server/develop and numind-web-v3/develop, push triggers dev redeploy (~5-15min window)"
     last_verified:
-      timestamp: "2026-04-11T14:00:00+08:00"
+      timestamp: "2026-04-11T16:30:00+08:00"
       commits:
-        numind-web-v3: "661f7e4"
-        numind-server: "6035101"
+        numind-web-v3: "cd3d8e9"
+        numind-server: "3cfce53"
       gates:
         backend_vet: "pass"
         backend_tests: "pass (exclude pre-existing DMX config-dependent failures)"
@@ -505,9 +505,11 @@ features:
         frontend_typecheck: "pass"
         frontend_unit: "270/270 pass"
         frontend_build: "pass (SOPRunView bundle 41.45 KB / 14.57 KB gzip)"
-        frontend_e2e_sop_runtime: "12 pass + 2 documented skip/fixme"
+        frontend_e2e_sop_runtime: "13 pass + 1 skip (Path 10 fixme 已翻开通过；Path 11 ModelSelector 依赖跳过)"
         frontend_e2e_sop_history: "4 pre-existing failures on develop baseline, unrelated"
         frontend_e2e_customers: "30s timeouts, pre-existing, unrelated to task"
+        s5_dev_curl_security: "pass (DTO wrapper + 0 敏感字段泄露；curl /v1/sop/templates/1/nodes 返回 {template, nodes, total}，node 字段仅含 id/template_id/name/description/sort/status/created_at/updated_at)"
+        s5_dev_smoke_11_checks: "11/11 pass (F1-F5 全覆盖：F1 draft 上传触发 lazyCreateRun；F2 route watcher 不误卸载 StepInput；F3 draft 首步执行按钮；F4 execute 不 auto-advance + DOM 渲染内容；F5 管理模式 checkbox + string→number 转换)"
     decisions:
       - "2026-04-10: Triage 经修订 —— AI 初判 Hotfix → 用户挑战 → 代码调查发现 7518 行 legacy JS + 双渲染路径 → 改判 Standard"
       - "2026-04-10: 方向确定为完整 Vue 重写（方向 B），而非外科手术式部分迁移（方向 B'）"
@@ -587,3 +589,45 @@ features:
     blockers: []
     created_at: "2026-04-11T15:45:00+08:00"
     completed_at: "2026-04-11T15:45:00+08:00"
+
+  - id: "sop-runtime-visual-redesign"
+    ndf_version: "1.0"
+    description: "SOP 运行页视觉/布局重设计 — 覆盖 (a) 视觉打磨：间距/字号/配色/层次/动效 (b) 设计体系对齐：DESIGN.md token + .impeccable.md (c) 结构/布局重设计。功能不动，纯 UI/UX。范围：SOPRunView.vue 及所有子组件，含 trailing chat 区域"
+    track: "standard"
+    stage: "S0"
+    classification_reason: "纯前端单仓库，但 (c) 结构重设计 + 影响 10-20 个组件文件超出 hotfix 范围；刚 S5 完的页面动视觉需要先有方向再实施，需 S0/S1 探索阶段"
+    last_updated_by: "ai-triage"
+    last_updated_at: "2026-04-11T16:30:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "feature/sop-runtime-visual-redesign (待创建)"
+    artifacts:
+      requirement: null
+      proposal: null
+      spec: null
+      plan: null
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "S0 需求采集：截图现状 + 用户口述痛点 + 范围边界确认"
+    rollback: null
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions:
+      - "2026-04-11 Triage: Standard 精简版（视觉工作需 S0/S1 探索方向，Hotfix 会变成 AI 拍脑袋）"
+      - "2026-04-11 Triage 默认假设（用户'开始'时未逐条确认，按 AI 推荐默认）：范围 = SOP 运行页全部子组件含 trailing chat；设计参考 = 无，S1 用 /design-shotgun 探索"
+    deferred:
+      - "S0 待确认：本次是否包含 trailing chat 区域、是否有具体设计参考产品"
+    blockers:
+      - "前置依赖 sop-runtime-vue-rewrite 完成（当前 S5 验证中，24/25 task done）— 视觉重设计需要在功能稳定的代码上做"
+    created_at: "2026-04-11T16:30:00+08:00"
+    completed_at: null
