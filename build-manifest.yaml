@@ -555,6 +555,44 @@ features:
     created_at: "2026-04-10T00:00:00+08:00"
     completed_at: null
 
+  - id: "sop-run-icons-and-labels-polish"
+    ndf_version: "1.0"
+    description: "SOP 运行页图标统一到 Lucide + 冗长按钮文案精简 — 消化 sop-runtime-vue-rewrite task 16 backlog 的 P2 deferred 项（StepInput 📎/🖼/📄/⏳/⚠/× emoji），同时扩展覆盖 ChatBubble/StepOutput/EmptyStateCard/HistoryModal；按钮文案'执行这一步'→'生成'，'停止生成'→'停止'"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "纯 UI 打磨，无 schema/API/业务逻辑变更；影响 9 个前端文件（8 组件 + 1 测试），改动面可枚举，风险极低"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-12T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "committed to develop (fedc25f)"
+    hotfix_artifacts:
+      diagnosis: "inline grep scan — 枚举 SOP 运行页组件里非 Lucide 的 emoji/unicode 图标 + 冗长按钮文案"
+      review: "inline (single-developer mode)"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert fedc25f on develop"
+    last_verified:
+      at: "2026-04-12T00:00:00+08:00"
+      lint: "pass (npm run lint)"
+      type_check: "pass (npm run type-check / vue-tsc)"
+      tests: "pass (271/271 unit tests via vitest run)"
+      test_summary: "EmptyStateCard 测试改用 findComponent(Inbox/AlertTriangle) 代替 class 名字符串匹配；E2E 全部用 data-testid 选择器不受文案/图标替换影响"
+    decisions:
+      - "2026-04-12: EmptyStateCard 保留 icon?: string prop 允许消费者传自定义 emoji 字符串（向后兼容），仅默认变体改用 Lucide Inbox/AlertTriangle"
+      - "2026-04-12: 生成按钮 icon 从 ArrowRight 换成 Sparkles — '生成'语义偏 AI 创造而非'前进'，Sparkles 更契合"
+      - "2026-04-12: Loader2 配 spin 动画通过 scoped @keyframes step-input-spin 实现，未引入全局 animation 类"
+      - "2026-04-12: EmptyStateCard 测试从 class 名字符串匹配改为 findComponent — Lucide svg class 命名不稳定，组件引用匹配更可靠"
+      - "2026-04-12: '重新生成'/'下一步' 按钮文案保留（已经简洁）；只清理真正冗长的'执行这一步'/'停止生成'"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-12T00:00:00+08:00"
+    completed_at: "2026-04-12T00:00:00+08:00"
+
   - id: "sop-run-no-auto-advance"
     ndf_version: "1.0"
     description: "SOP 运行页节点完成后不自动跳到下一步 — 移除 SOPRunView executeNode onDone 里的 store.advanceCurrentStep() 调用；完成节点后保留在当前步骤（done-current 态），用户手动点'下一步'按钮前进"
