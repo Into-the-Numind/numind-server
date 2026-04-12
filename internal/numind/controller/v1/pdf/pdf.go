@@ -28,7 +28,7 @@ import (
 	"numind-server/internal/pkg/util"
 )
 
-// 常量定义（与 SOP 模块保持一致）
+// 常量定义
 const (
 	MaxFileSize          = 10 * 1024 * 1024 // 10MB
 	MaxTextContentLength = 100000           // 文本内容最大长度
@@ -295,6 +295,123 @@ func (ctrl *PdfController) ConvertToText(c *gin.Context) {
 		"has_content", content != "")
 
 	// 18. 返回结果（最简化格式，直接返回文本字符串）
+	core.WriteResponse(c, nil, text)
+}
+
+// ExtractText 轻量文档转文本接口，不需要 run_id/node_id，不创建 SopFile 记录，不上传 COS。
+// 支持格式: .pdf, .txt, .md, .docx, .doc
+// 成功时直接返回提取的文本字符串。
+func (ctrl *PdfController) ExtractText(c *gin.Context) {
+	log.C(c).Infow("ExtractText called", "user_id", c.GetUint("userID"))
+
+	// 1. 获取上传的文件
+	file, err := c.FormFile("file")
+	if err != nil {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("请上传文件"), nil)
+		return
+	}
+
+	// 2. 验证文件扩展名
+	ext := strings.ToLower(filepath.Ext(file.Filename))
+	supportedExts := []string{".pdf", ".txt", ".md", ".docx", ".doc"}
+	isSupported := false
+	for _, supportedExt := range supportedExts {
+		if ext == supportedExt {
+			isSupported = true
+			break
+		}
+	}
+	if !isSupported {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("不支持的文件格式，支持格式: .pdf, .txt, .md, .docx, .doc"), nil)
+		return
+	}
+
+	// 3. 验证文件大小
+	if file.Size <= 0 {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文件为空"), nil)
+		return
+	}
+	if file.Size > MaxFileSize {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文件大小超过限制（最大%dMB）", MaxFileSize/(1024*1024)), nil)
+		return
+	}
+
+	// 4. 打开并读取文件内容
+	src, err := file.Open()
+	if err != nil {
+		log.C(c).Errorw("打开文件失败", "error", err)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("打开文件失败"), nil)
+		return
+	}
+	defer src.Close()
+
+	limitedReader := io.LimitReader(src, MaxFileSize+1)
+	fileData, err := io.ReadAll(limitedReader)
+	if err != nil {
+		log.C(c).Errorw("读取文件失败", "error", err)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("读取文件失败"), nil)
+		return
+	}
+	if int64(len(fileData)) > MaxFileSize {
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("文件大小超过限制"), nil)
+		return
+	}
+
+	// 5. 根据文件类型提取文本
+	var text string
+	switch ext {
+	case ".pdf":
+		text, _, err = extractTextFromPDF(fileData)
+		if err != nil {
+			log.C(c).Errorw("PDF文本提取失败", "error", err, "filename", file.Filename)
+			core.WriteResponse(c, errno.ErrInternalServer.SetMessage("PDF文本提取失败: %s", err.Error()), nil)
+			return
+		}
+		text = formatPdfText(text)
+	case ".txt", ".md":
+		text = string(fileData)
+		if !utf8.ValidString(text) {
+			text = strings.ToValidUTF8(text, "")
+		}
+		text = formatText(text)
+	case ".docx":
+		text, err = extractTextFromDOCX(fileData)
+		if err != nil {
+			log.C(c).Errorw("DOCX文本提取失败", "error", err, "filename", file.Filename)
+			core.WriteResponse(c, errno.ErrInternalServer.SetMessage("DOCX文本提取失败: %s", err.Error()), nil)
+			return
+		}
+		text = formatText(text)
+	case ".doc":
+		text, err = extractTextFromDOC(fileData)
+		if err != nil {
+			log.C(c).Errorw("DOC文本提取失败", "error", err, "filename", file.Filename)
+			core.WriteResponse(c, errno.ErrInternalServer.SetMessage("DOC文本提取失败: %s（建议转换为DOCX格式）", err.Error()), nil)
+			return
+		}
+		text = formatText(text)
+	default:
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("不支持的文件格式"), nil)
+		return
+	}
+
+	// 6. 验证提取结果
+	if text == "" {
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("未能从文件中提取到文本内容"), nil)
+		return
+	}
+
+	// 7. 清理并截断文本
+	text = sanitizeUTF8ForDatabase(text)
+	if len(text) > MaxTextContentLength {
+		text = text[:MaxTextContentLength] + "...(内容过长已截断)"
+	}
+	if !utf8.ValidString(text) {
+		text = strings.ToValidUTF8(text, "")
+		text = sanitizeUTF8ForDatabase(text)
+	}
+
+	log.C(c).Infow("ExtractText 成功", "filename", file.Filename, "text_len", len(text))
 	core.WriteResponse(c, nil, text)
 }
 

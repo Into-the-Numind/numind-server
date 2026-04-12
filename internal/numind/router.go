@@ -142,6 +142,7 @@ func installNumindRouters(g *gin.Engine) error {
 	// 文档转文字相关（支持 PDF、Word、TXT、MD、RTF 等格式）
 	{
 		authGroup.POST("/pdf/convert-to-text", pdfc.ConvertToText) // 文档转文字（支持 .pdf, .txt, .md, .docx, .doc, .rtf）
+		authGroup.POST("/files/extract-text", pdfc.ExtractText)    // 轻量文档转文本（无 run_id/node_id，不存储，支持 .pdf, .txt, .md, .docx, .doc）
 	}
 
 	// SOP相关（用户端接口）
