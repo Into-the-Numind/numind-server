@@ -256,14 +256,16 @@ func (c *DMXAPIClient) ChatCompletionWithThinking(ctx context.Context, model str
 func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int, enableThinking bool, onEvent func(eventType, content string) error) (string, *billing.TokenUsage, error) {
 	// 构建请求体（手动构建以添加 stream_options）
 	bodyMap := map[string]interface{}{
-		"model":           model,
-		"messages":        messages,
-		"temperature":     temperature,
-		"stream":          true,
-		"enable_thinking": enableThinking,
+		"model":       model,
+		"messages":    messages,
+		"temperature": temperature,
+		"stream":      true,
 		"stream_options": map[string]interface{}{
 			"include_usage": true,
 		},
+	}
+	if enableThinking {
+		bodyMap["enable_thinking"] = true
 	}
 	if maxTokens > 0 {
 		bodyMap["max_tokens"] = maxTokens
