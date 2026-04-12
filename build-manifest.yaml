@@ -555,6 +555,45 @@ features:
     created_at: "2026-04-10T00:00:00+08:00"
     completed_at: null
 
+  - id: "hotfixes-review-followup"
+    ndf_version: "1.0"
+    description: "对今天 3 个 hotfix (kb-upload-status-polling / sop-run-no-auto-advance / sop-run-icons-and-labels-polish) 的 Sonnet code review 发现的 12 个 findings 全量修复（1 P1 + 7 P2 + 4 Nit）"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "跨 3 个前端 hotfix 的 review fix；纯前端多文件改动；无 schema/API 变更；P1 fix 是 race condition（轮询 unmount 泄漏），其余为可维护性/一致性打磨"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-12T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "committed to develop (5864f5c)"
+    hotfix_artifacts:
+      diagnosis: "sonnet code review agent (subagent_type=superpowers:code-reviewer) — 输出 PASS_WITH_FIXES + 12 findings 分级"
+      review: "inline (single-developer mode)"
+    progress:
+      total_tasks: 12
+      completed_tasks: 12
+      reviewed_tasks: 12
+      current_task: null
+    rollback: "git revert 5864f5c on develop"
+    last_verified:
+      at: "2026-04-12T00:00:00+08:00"
+      lint: "pass (npm run lint)"
+      type_check: "pass (npm run type-check / vue-tsc)"
+      tests: "pass (272/272 vitest — 包含 1 条新增 onDone 契约回归测试)"
+      test_summary: "所有前置 hotfix 测试依然通过；新增 sopRun.spec.ts 锁定 'markNodeComplete 即可进入 done-current' 契约防 F4 第三次复发"
+    decisions:
+      - "2026-04-12: P1 #1 unmount race 修复方案 = cancelled 闭包 flag + schedulePoll/tick 起点 early return，而非用 Promise abort / AbortController（成本更高且 store.fetchKBDetail 不支持 signal）"
+      - "2026-04-12: P2 #2 超时 fallback = 静态 banner + 手动刷新按钮，而非指数退避继续轮询（后者会让 API 调用无限持续，对后端不友好）"
+      - "2026-04-12: P2 #6 最后一步'完成'按钮 = 直接 router.push('/') 回首页，不引入 SOP 完成状态卡或 celebration 动画（超出 hotfix scope，可未来开 standard track）"
+      - "2026-04-12: P2 #7 回归测试锁定在 store 层契约而非 SOPRunView 组件测试 — 组件级测试需要 mock useSSEStream + 完整 mount，成本过高；store 级契约文档测试足以在重构时产生 diff 信号"
+      - "2026-04-12: Nit #9 spin util 提升到 main.css 全局 .u-spin + @keyframes u-spin，废弃 StepInput 局部 keyframes；未来其它组件的 loading 状态可直接复用"
+      - "2026-04-12: Nit #12 EmptyStateCard icon prop 扩展为 string | Component，保留向后兼容（现有调用全部不传 icon 走默认变体）"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-12T00:00:00+08:00"
+    completed_at: "2026-04-12T00:00:00+08:00"
+
   - id: "sop-run-icons-and-labels-polish"
     ndf_version: "1.0"
     description: "SOP 运行页图标统一到 Lucide + 冗长按钮文案精简 — 消化 sop-runtime-vue-rewrite task 16 backlog 的 P2 deferred 项（StepInput 📎/🖼/📄/⏳/⚠/× emoji），同时扩展覆盖 ChatBubble/StepOutput/EmptyStateCard/HistoryModal；按钮文案'执行这一步'→'生成'，'停止生成'→'停止'"
