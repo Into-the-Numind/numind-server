@@ -807,3 +807,36 @@ features:
       - "前置依赖 sop-runtime-vue-rewrite 完成（当前 S5 验证中，24/25 task done）— 视觉重设计需要在功能稳定的代码上做"
     created_at: "2026-04-11T16:30:00+08:00"
     completed_at: null
+
+  - id: "trailing-chat-gemini-style"
+    ndf_version: "1.0"
+    description: "继续问AI页面重构 — 参考 Google Gemini 风格：左侧流程 nav 不变，右侧改为全屏聊天记录区 + 悬浮输入框（复用智能体聊天输入框设计）"
+    track: "hotfix"
+    stage: "H2"
+    classification_reason: "纯前端 UI 重构，无 schema/API/业务逻辑变更；影响 TrailingChat.vue + ChatComposer.vue + SOPRunView.vue 布局部分，可枚举"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-13T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "fix/trailing-chat-gemini-style"
+    hotfix_artifacts:
+      diagnosis: "inline-triage: 纯 UI 布局重构，参考 Gemini 聊天风格 + 复用 ChatbotChat 输入框设计"
+      review: null
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 0
+      current_task: "H2 验收"
+    rollback: "git revert on develop"
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions: []
+    deferred: []
+    blockers: []
+    created_at: "2026-04-13T00:00:00+08:00"
+    completed_at: null

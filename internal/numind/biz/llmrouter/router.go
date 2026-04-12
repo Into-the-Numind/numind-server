@@ -156,6 +156,11 @@ func (r *Router) StreamChat(
 			billing.RecordLLM(bc.UserID, route.ProviderName, route.ProviderModelID, bc.Operation, usage, bc.Meta)
 		}
 
+		// 5. 回写实际使用的模型名到 usage，供上层持久化
+		if usage != nil {
+			usage.ModelName = route.ProviderModelID
+		}
+
 		return content, usage, nil
 	}
 

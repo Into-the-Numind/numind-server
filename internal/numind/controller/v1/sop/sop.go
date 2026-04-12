@@ -1997,6 +1997,7 @@ func (ctrl *SopController) GetRunStatus(c *gin.Context) {
 			Thinking:     node.Thinking,
 			FromBookmark: node.FromBookmark,
 			BookmarkID:   node.BookmarkID,
+			IsAccessible: node.IsAccessible,
 			ModelName:    node.ModelName,   // B5
 			LatencyMs:    node.LatencyMs,   // B5
 			TotalTokens:  node.TotalTokens, // B5

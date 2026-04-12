@@ -654,6 +654,12 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	nodeEndTime := time.Now()
 	latency := nodeEndTime.Sub(startTime).Milliseconds()
 
+	// 确定实际使用的模型名：LLMRouter 路径从 usage.ModelName 获取，默认路径从 node.ModelName 获取
+	actualModelName := node.ModelName
+	if usage != nil && usage.ModelName != "" {
+		actualModelName = usage.ModelName
+	}
+
 	if err != nil {
 		// 节点执行失败，但仍然尝试保存已生成的中间内容和 Token 消耗（Issue 3 & 4）
 		updateData := map[string]interface{}{
@@ -663,7 +669,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 			"error_message": err.Error(),
 			"latency_ms":    latency,
 			"finished_at":   nodeEndTime,
-			"model_name":    node.ModelName, // B4: 持久化实际调用的模型名（失败路径也落，方便前端 MetaFooter）
+			"model_name":    actualModelName,
 		}
 		if usage != nil {
 			updateData["prompt_tokens"] = usage.PromptTokens
@@ -683,7 +689,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		"thinking":    thinking,
 		"latency_ms":  latency,
 		"finished_at": nodeEndTime,
-		"model_name":  node.ModelName, // B4: 持久化实际调用的模型名，前端 MetaFooter 使用
+		"model_name":  actualModelName,
 	}
 
 	// 保存 token 使用统计（如果存在）

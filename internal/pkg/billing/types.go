@@ -8,7 +8,8 @@ type TokenUsage struct {
 	CompletionTokens      int `json:"completion_tokens"` // 输出 tokens
 	TotalTokens           int `json:"total_tokens"`      // 总 tokens
 	ReasoningTokens       int `json:"reasoning_tokens"`  // 思考过程 tokens（某些模型直接返回）
-	EstimatedPromptTokens int `json:"-"`                 // 预估输入 tokens（内部使用）
+	EstimatedPromptTokens int    `json:"-"`                 // 预估输入 tokens（内部使用）
+	ModelName             string `json:"-"`                 // 实际调用的模型名称（内部使用，不序列化）
 
 	// Volcengine/OpenAI 兼容的嵌套结构
 	CompletionTokensDetails struct {
