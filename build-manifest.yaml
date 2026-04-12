@@ -840,3 +840,40 @@ features:
     blockers: []
     created_at: "2026-04-13T00:00:00+08:00"
     completed_at: null
+
+  - id: "chatbot-file-attachment"
+    ndf_version: "1.0"
+    description: "智能体聊天附件上传 — 输入框支持上传/粘贴/拖入 TXT/MD/PDF/Word 附件，解析为文本拼接到消息末尾"
+    track: "hotfix"
+    stage: "H2"
+    classification_reason: "前端为主改动（新 composable + ChatbotChat.vue 改造），后端仅新增 1 个轻量端点复用现有 EnhancedParser 提取逻辑；无 schema 变更；影响面可枚举"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-13T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "fix/chatbot-file-attachment"
+      numind-web-v3: "fix/chatbot-file-attachment"
+    hotfix_artifacts:
+      diagnosis: "inline-triage: /v1/pdf/convert-to-text 依赖 run_id 不可复用，需新建轻量端点 POST /v1/files/extract-text"
+      review: "Sonnet code-review: PASS_WITH_FIXES — 3 P1 + 4 P2 found, all fixed"
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 3
+      current_task: "H2 review fixes applied, ready for commit"
+    rollback: "git revert on develop (server + web-v3)"
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions:
+      - "2026-04-13: 新建 /v1/files/extract-text 而非改造现有 /v1/pdf/convert-to-text（避免耦合 SOP 语义）"
+      - "2026-04-13: 附件限制 5 个/次、10MB/文件，格式 .txt/.md/.pdf/.doc/.docx"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-13T00:00:00+08:00"
+    completed_at: null
