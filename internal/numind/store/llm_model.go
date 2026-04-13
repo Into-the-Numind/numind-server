@@ -77,9 +77,17 @@ func (s *llmModelStore) Update(ctx context.Context, m *model.LLMModel) error {
 	return s.db.WithContext(ctx).Save(m).Error
 }
 
-// Delete 删除模型
+// Delete 删除模型（事务内先清理关联路由和 base_model_id 引用）
 func (s *llmModelStore) Delete(ctx context.Context, id uint64) error {
-	return s.db.WithContext(ctx).Delete(&model.LLMModel{}, id).Error
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("model_id = ?", id).Delete(&model.LLMModelProvider{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&model.LLMModel{}).Where("base_model_id = ?", id).Update("base_model_id", nil).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&model.LLMModel{}, id).Error
+	})
 }
 
 // ListActiveBase 查询所有激活的基础模型（非思考模式变体），按 sort_order 排序
