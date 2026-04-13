@@ -641,15 +641,21 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	var usage *TokenUsage
 	if modelKey != "" {
 		// LLMRouter 路径：用户选择了特定模型，调用 ExecuteNodeStream（内含 executeViaRouter）
+		// 通过 handler 拦截 thinking 事件来积累思考内容，确保能持久化到数据库
+		var thinkingBuf strings.Builder
 		output, usage, err = b.executor.ExecuteNodeStream(ctx, node, currentInput, conversationHistory, modelKey, thinkingMode, func(event string, chunk string) error {
+			if event == "thinking" {
+				thinkingBuf.WriteString(chunk)
+			}
 			return handler(event, chunk)
 		})
+		thinking = thinkingBuf.String()
 	} else {
-		// 默认路径：使用节点配置的 LLM，深度思考模式开启 enable_thinking
+		// 默认路径：使用节点配置的 LLM，根据用户设置决定是否开启深度思考
 		output, thinking, usage, err = b.executor.ExecuteNodeStreamWithThinking(ctx, node, currentInput, conversationHistory, func(event string, chunk string) error {
 			// 直接透传事件给上层 handler
 			return handler(event, chunk)
-		}, isLastNode, true, run.ConversationID)
+		}, isLastNode, thinkingMode, run.ConversationID)
 	}
 	nodeEndTime := time.Now()
 	latency := nodeEndTime.Sub(startTime).Milliseconds()
