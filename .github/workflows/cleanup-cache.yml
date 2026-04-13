@@ -1,0 +1,83 @@
+name: Cleanup Caches
+
+on:
+  # 定期每周清理一次（避免配额满）
+  schedule:
+    - cron: '0 2 * * 0'  # 每周日凌晨 2 点
+  
+  # 手动触发清理
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: '要清理缓存的分支（默认全部分支）'
+        required: false
+        default: ''
+      keep_latest:
+        description: '保留最近几个缓存'
+        required: false
+        default: '3'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cleanup caches
+        run: |
+          BRANCH="${{ github.event.inputs.branch }}"
+          KEEP_LATEST="${{ github.event.inputs.keep_latest || '3' }}"
+          
+          echo "🔍 开始清理缓存..."
+          
+          # 获取所有缓存列表
+          if [ -n "$BRANCH" ]; then
+            echo "📌 清理分支: $BRANCH"
+            CACHES=$(gh cache list --repo ${{ github.repository }} --json key,id,createdAt --jq ".[] | select(.key | contains(\"$BRANCH\")) | [.id, .key, .createdAt] | @tsv" | sort -k3 -r)
+          else
+            echo "📌 清理所有分支缓存"
+            CACHES=$(gh cache list --repo ${{ github.repository }} --json key,id,createdAt --jq '.[] | [.id, .key, .createdAt] | @tsv' | sort -k3 -r)
+          fi
+          
+          # 统计缓存数量
+          TOTAL=$(echo "$CACHES" | wc -l)
+          echo "📊 发现 $TOTAL 个缓存"
+          
+          if [ "$TOTAL" -le "$KEEP_LATEST" ]; then
+            echo "✅ 缓存数量较少（$TOTAL <= $KEEP_LATEST），无需清理"
+            exit 0
+          fi
+          
+          # 保留最新的几个，删除其余的
+          TO_DELETE=$(echo "$CACHES" | tail -n +$((KEEP_LATEST + 1)))
+          DELETE_COUNT=$(echo "$TO_DELETE" | wc -l)
+          
+          echo "🗑️  将删除 $DELETE_COUNT 个旧缓存"
+          
+          # 逐个删除
+          echo "$TO_DELETE" | while IFS=$'\t' read -r ID KEY CREATED; do
+            echo "  删除: $KEY (创建于 $CREATED)"
+            gh cache delete "$ID" --repo ${{ github.repository }} || echo "  ⚠️ 删除失败: $ID"
+          done
+          
+          echo "✅ 缓存清理完成"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 清理旧的 workflow 运行记录（可选）
+  cleanup-runs:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'  # 只在定时任务时执行
+    steps:
+      - name: Delete old workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          retain_days: 30
+          keep_minimum_runs: 10

@@ -1,12 +1,12 @@
 package main
 
 import (
-	numindadmin "numind-server/internal/numind-admin"
+	"numind-server/internal/numind"
 	"os"
 )
 
 func main() {
-	command := numindadmin.NewNumindAdminCommand()
+	command := numind.NewAdminCommand()
 	if err := command.Execute(); err != nil {
 		os.Exit(2)
 	}

@@ -78,7 +78,7 @@ func (r *JSONRepairEngine) cleanUTF8Issues(input string) string {
 		// 转换为byte数组并清理
 		bytes := []byte(input)
 		cleaned := make([]byte, 0, len(bytes))
-		
+
 		for len(bytes) > 0 {
 			r, size := utf8.DecodeRune(bytes)
 			if r == utf8.RuneError && size == 1 {
@@ -100,20 +100,20 @@ func (r *JSONRepairEngine) cleanUTF8Issues(input string) string {
 // smartTruncationRecovery 智能截断恢复
 func (r *JSONRepairEngine) smartTruncationRecovery(input string) string {
 	trimmed := strings.TrimSpace(input)
-	
+
 	// 检查是否是对象或数组的开始
 	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
 		// 尝试找到第一个{或[
 		objectStart := strings.Index(trimmed, "{")
 		arrayStart := strings.Index(trimmed, "[")
-		
+
 		var start int = -1
 		if objectStart != -1 && (arrayStart == -1 || objectStart < arrayStart) {
 			start = objectStart
 		} else if arrayStart != -1 {
 			start = arrayStart
 		}
-		
+
 		if start > 0 {
 			trimmed = trimmed[start:]
 		}
@@ -187,7 +187,7 @@ func (r *JSONRepairEngine) repairJSONObject(input string) string {
 	// 截取到最后一个有效位置
 	if lastValidPos > 0 && lastValidPos < len(input) {
 		truncated := input[:lastValidPos+1]
-		
+
 		// 尝试补全缺失的结构
 		for len(braceStack) > 0 {
 			last := braceStack[len(braceStack)-1]
@@ -224,7 +224,7 @@ func (r *JSONRepairEngine) fallbackRepair(input string) string {
 
 	// 尝试找到最后一个完整的JSON结构
 	input = strings.TrimSpace(input)
-	
+
 	// 找到最后一个完整的对象或值
 	lastComplete := r.findLastCompleteStructure(input)
 	if lastComplete != "" {
@@ -254,23 +254,23 @@ func (r *JSONRepairEngine) repairStringEnding(input string) string {
 	if lastQuote > 0 {
 		// 检查引号前的字符
 		beforeQuote := input[:lastQuote]
-		
+
 		// 如果看起来像是在字符串值中截断，尝试修复
 		if strings.HasSuffix(beforeQuote, ": \"") || strings.HasSuffix(beforeQuote, ", \"") {
 			// 这看起来像是在字符串值中截断了
 			repaired := beforeQuote + "\""
-			
+
 			// 尝试补全结构
 			openBraces := strings.Count(repaired, "{") - strings.Count(repaired, "}")
 			openBrackets := strings.Count(repaired, "[") - strings.Count(repaired, "]")
-			
+
 			for i := 0; i < openBraces; i++ {
 				repaired += "}"
 			}
 			for i := 0; i < openBrackets; i++ {
 				repaired += "]"
 			}
-			
+
 			return repaired
 		}
 	}
@@ -286,14 +286,14 @@ func (r *JSONRepairEngine) extractCompleteJSON(input string) string {
 
 	// 使用正则表达式找到可能的JSON结构
 	patterns := []string{
-		`\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}`, // 简单对象
+		`\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}`,       // 简单对象
 		`\[[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]`, // 简单数组
 	}
 
 	for _, pattern := range patterns {
 		re := regexp.MustCompile(pattern)
 		matches := re.FindAllString(input, -1)
-		
+
 		for _, match := range matches {
 			if r.isValidJSON(match) {
 				return match
@@ -325,7 +325,7 @@ func NewAdvancedJSONExtractor() *AdvancedJSONExtractor {
 // ExtractValidJSON 从响应中提取有效的JSON
 func (e *AdvancedJSONExtractor) ExtractValidJSON(response []byte) ([]byte, error) {
 	responseStr := string(response)
-	
+
 	// 1. 尝试修复
 	repaired, err := e.RepairEngine.RepairTruncatedJSON(responseStr)
 	if err == nil {
@@ -339,11 +339,11 @@ func (e *AdvancedJSONExtractor) ExtractValidJSON(response []byte) ([]byte, error
 // extractByPatternMatching 通过模式匹配提取JSON
 func (e *AdvancedJSONExtractor) extractByPatternMatching(response []byte) ([]byte, error) {
 	responseStr := string(response)
-	
+
 	// 寻找structured_text_array模式
 	pattern := `"structured_text_array"\s*:\s*\[`
 	re := regexp.MustCompile(pattern)
-	
+
 	loc := re.FindStringIndex(responseStr)
 	if loc == nil {
 		return nil, fmt.Errorf("structured_text_array not found")
@@ -351,7 +351,7 @@ func (e *AdvancedJSONExtractor) extractByPatternMatching(response []byte) ([]byt
 
 	// 从找到的位置开始，尝试提取完整的数组
 	start := loc[0]
-	
+
 	// 向前找到对象的开始
 	for i := start - 1; i >= 0; i-- {
 		if responseStr[i] == '{' {

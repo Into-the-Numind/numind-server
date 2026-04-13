@@ -1,159 +1,72 @@
-# CLAUDE.md
+# numind-server — Go 后端约束文件
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+---
 
-## Development Commands
+## 1. 技术栈声明
 
-### Task Runner
-This project uses Taskfile (task) for build automation:
+Go 1.24 | Gin | GORM | MySQL 8.0 | Redis | JWT | Viper | Zap
+
+---
+
+## 2. 架构分层规则
+
+三层架构，**单向依赖**：controller → biz → store，不可反向调用。
+
+| 层 | 职责 | 禁止事项 |
+|----|------|---------|
+| **controller** (`internal/numind/controller/v1/`) | 参数校验 + 响应格式化 | 禁止写业务逻辑 |
+| **biz** (`internal/numind/biz/`) | 业务逻辑层，核心代码写这里 | 禁止直接操作 HTTP 请求/响应 |
+| **store** (`internal/numind/store/`) | 数据访问层，数据库操作 | 禁止包含业务判断 |
+
+> **关键规则：不要在 controller 层写业务逻辑，业务逻辑统一放 biz 层。**
+
+---
+
+## 3. 编码规范
+
+- 错误处理：使用 `fmt.Errorf("xxx: %w", err)` 链式包装，保留错误链
+- 导出函数必须带注释，以函数名开头（Go doc 规范）
+- 新增 API 端点必须在 `internal/numind/router.go` 中注册
+- 涉及数据库 schema 变更必须创建 migration SQL 文件，放在 `migrations/` 目录
+- **不要修改 `config_prod.yaml`**
+- **不要在代码中硬编码 API 密钥、数据库密码等敏感信息**
+- 修改 Go 代码后必须运行 `task lint` 通过后再提交
+
+---
+
+## 4. 开发命令
 
 ```bash
-# Install dependencies and setup development environment
-task deps           # Download Go modules
-task setup-dev      # Install linting tools and setup .env
-
-# Development workflow
-task dev            # Run in development mode with go run
-task build          # Build for current platform
-task build-linux    # Build for Linux (production deployment)
-task fmt            # Format Go code
-task lint           # Run golangci-lint checks
-task test           # Run tests with coverage
-
-# Docker commands
-task docker-build   # Build Docker image
-task docker-run     # Run Docker container
-task docker-stop    # Stop and remove container
-
-# Complete workflows
-task all            # Clean, lint, test, and build
+task dev            # 开发模式运行
+task lint           # 代码检查（go vet + golangci-lint）
+task fmt            # 代码格式化
+task build          # 构建（含依赖安装 + 格式化）
+go test ./...       # 轻量测试
+task test           # 完整测试（含 race detection + coverage）
+task deps           # 安装/整理 Go 依赖
 ```
 
-### Running the Application
-```bash
-# Development with auto-reload
-task dev
+---
 
-# Specific environment configs
-go run cmd/numind/main.go -c config_dev.yaml
-go run cmd/numind/main.go -c config_prod.yaml
-go run cmd/numind/main.go -c config_qa.yaml
+## 5. 项目结构速查
+
 ```
-
-### Testing and Quality
-```bash
-# Run all tests
-task test
-
-# Individual commands
-go test -v ./...                    # Basic tests
-go test -v -race ./...              # Race condition tests
-go test -v -coverprofile=coverage.out ./...  # Coverage tests
-go tool cover -html=coverage.out -o coverage.html  # HTML coverage report
-
-# Linting
-task lint
-golangci-lint run ./...
+cmd/numind/                     # 主服务入口
+cmd/numind-admin/               # 管理后台入口
+internal/numind/biz/            # 业务逻辑层
+internal/numind/controller/v1/  # API 控制器
+internal/numind/store/          # 数据访问层
+internal/numind/router.go       # 路由配置（用户端）
+internal/numind/admin_router.go # 路由配置（管理端）
+internal/pkg/                   # 内部公共包
+├── core/                       #   响应处理
+├── errno/                      #   错误码定义
+├── middleware/                  #   中间件（JWT、CORS 等）
+├── model/                      #   数据模型
+├── log/                        #   日志（Zap）
+├── redis/                      #   Redis 工具
+└── util/                       #   通用工具函数
+internal/service/               # 外部服务调用（AI、向量数据库等）
+migrations/                     # 数据库迁移 SQL
+config_*.yaml                   # 环境配置（local/dev/qa/prod）
 ```
-
-## Architecture Overview
-
-### Project Structure
-- **cmd/numind/**: Application entry point
-- **internal/numind/**: Core application logic
-  - **biz/**: Business logic layer with domain-specific modules
-  - **store/**: Data access layer with GORM
-  - **controller/v1/**: HTTP handlers and API endpoints
-- **pkg/**: Shared utilities and external packages
-- **docs/**: Technical documentation
-- **scripts/**: Deployment and utility scripts
-
-### Core Architecture Pattern
-This project follows a **Clean Architecture** pattern with three main layers:
-
-1. **Controller Layer** (`internal/numind/controller/v1/`): HTTP handlers, request/response handling
-2. **Business Layer** (`internal/numind/biz/`): Domain logic, business rules
-3. **Store Layer** (`internal/numind/store/`): Data access, database operations
-
-### Key Technologies
-- **Web Framework**: Gin (HTTP router and middleware)
-- **ORM**: GORM with MySQL driver
-- **Authentication**: JWT tokens
-- **Configuration**: Viper (YAML configs)
-- **Logging**: Zap structured logging
-- **Image Processing**: ChromeDP for headless browser rendering
-- **Payment**: WeChat Pay integration
-- **Real-time**: WebSocket support for chat features
-
-### Business Modules
-The application is organized into these main business domains:
-
-- **User Management**: WeChat login, profiles, authentication
-- **Image Processing**: Upload, AI processing, OCR
-- **Card System**: AI-generated cards from images
-- **Book System**: Collections of cards organized into books
-- **Chat System**: AI chat with context awareness
-- **Payment System**: WeChat Pay integration
-- **Template System**: Card and book templates
-- **Category System**: Organization and classification
-
-### Key Components
-
-#### Card Rendering System
-Located in `internal/numind/biz/card/`, this is a complex system with multiple renderers:
-- **ChromeDP Renderer**: Uses headless Chrome for high-quality HTML-to-image conversion
-- **WebP Renderer**: Optimized WebP output
-- **Dynamic Renderer**: Handles variable content layouts
-- **Browser-free Renderer**: Fallback without browser dependencies
-
-#### AI Integration
-- **Ali (Alibaba Cloud)**: Text processing and generation
-- **Baidu**: OCR and text analysis  
-- **Volc (ByteDance)**: Additional AI services
-- **WeChat**: Mini-program integration
-
-#### Database Design
-Multi-table design supporting the image → card → book workflow:
-- Users authenticate via WeChat OpenID
-- Images are processed through AI pipeline
-- Cards are generated from processed images
-- Books collect multiple cards with organization features
-
-## Development Guidelines
-
-### Configuration Management
-- Environment-specific configs: `config_dev.yaml`, `config_prod.yaml`, `config_qa.yaml`
-- Local overrides: `config_local.yaml` (gitignored)
-- Use Viper for accessing config values: `viper.GetString("key")`
-
-### Database Access Patterns
-- Use the store pattern: `store.S` global instance
-- Business logic in biz layer, not controllers
-- GORM for ORM operations
-- Transaction handling in business layer
-
-### Error Handling
-- Custom error types in `internal/pkg/errno/`
-- Use structured logging with Zap
-- HTTP responses via `core.WriteResponse()`
-
-### Adding New Features
-1. Create business logic in `internal/numind/biz/[module]/`
-2. Add data access in `internal/numind/store/[module].go`
-3. Create HTTP handlers in `internal/numind/controller/v1/[module]/`
-4. Register routes in `internal/numind/router.go`
-5. Add tests following existing patterns
-
-### Image Processing Pipeline
-When working with card rendering:
-- Multiple renderer implementations exist in `biz/card/`
-- Use coordinator pattern for renderer selection
-- Handle both sync and async processing
-- WebP optimization for performance
-- Chrome headless rendering requires proper Docker setup
-
-### Performance Considerations
-- Use pagination for list endpoints
-- Implement caching for frequently accessed data
-- Optimize image processing with background jobs
-- Monitor Chrome processes in production

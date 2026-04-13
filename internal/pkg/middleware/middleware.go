@@ -61,7 +61,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		user, err := validateToken(c.Request.Context(), token)
+		user, err := ValidateToken(c.Request.Context(), token)
 		if err != nil {
 			core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("无效的认证令牌"), nil)
 			c.Abort()
@@ -78,7 +78,7 @@ func OptionalAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractToken(c)
 		if token != "" {
-			if user, err := validateToken(c.Request.Context(), token); err == nil {
+			if user, err := ValidateToken(c.Request.Context(), token); err == nil {
 				c.Set("current_user", user)
 			}
 		}
@@ -96,7 +96,7 @@ func AdminAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		user, err := validateToken(c.Request.Context(), token)
+		user, err := ValidateToken(c.Request.Context(), token)
 		if err != nil {
 			core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("无效的认证令牌"), nil)
 			c.Abort()
@@ -129,9 +129,9 @@ func extractToken(c *gin.Context) string {
 	return parts[1]
 }
 
-// validateToken 验证JWT token并返回用户信息
-// 从数据库验证用户是否存在，并验证openid是否匹配
-func validateToken(ctx context.Context, tokenString string) (*model.User, error) {
+// ValidateToken 验证JWT token并返回用户信息
+// 从数据库验证用户是否存在
+func ValidateToken(ctx context.Context, tokenString string) (*model.User, error) {
 	// 检查token是否在黑名单中
 	blacklist := GetTokenBlacklist()
 	if blacklist.IsTokenBlacklisted(tokenString) {
@@ -175,24 +175,12 @@ func validateToken(ctx context.Context, tokenString string) (*model.User, error)
 			return nil, fmt.Errorf("invalid user_id type in token: %T", v)
 		}
 
-		// 安全地获取 openid（避免panic）
-		openIDValue, exists := claims["openid"]
-		if !exists {
-			return nil, fmt.Errorf("openid not found in token")
-		}
-
-		openID, ok := openIDValue.(string)
-		if !ok {
-			return nil, fmt.Errorf("invalid openid type in token: %T", openIDValue)
-		}
-
-		// 从数据库验证用户是否存在，并验证openid是否匹配
+		// 从数据库验证用户是否存在
 		if store.S == nil {
 			log.C(ctx).Warnw("store.S未初始化，跳过数据库验证")
 			// 如果store未初始化，返回简化的用户对象（向后兼容）
 			user := &model.User{}
 			user.ID = userID
-			user.OpenID = openID
 			return user, nil
 		}
 
@@ -204,12 +192,6 @@ func validateToken(ctx context.Context, tokenString string) (*model.User, error)
 			}
 			log.C(ctx).Errorw("查询用户失败", "user_id", userID, "error", err)
 			return nil, fmt.Errorf("查询用户失败: %v", err)
-		}
-
-		// 验证openid是否匹配（防止token被篡改）
-		if user.OpenID != openID {
-			log.C(ctx).Warnw("token中的openid与数据库不匹配", "user_id", userID, "token_openid", openID, "db_openid", user.OpenID)
-			return nil, fmt.Errorf("token无效：openid不匹配")
 		}
 
 		return user, nil
@@ -225,4 +207,32 @@ func GetCurrentUser(c *gin.Context) *model.User {
 		return nil
 	}
 	return user.(*model.User)
+}
+
+// FeaturePermission 功能权限中间件，检查当前用户是否有指定功能的使用权限
+func FeaturePermission(featureKey string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		user := GetCurrentUser(c)
+		if user == nil {
+			core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+			c.Abort()
+			return
+		}
+
+		hasPermission, err := store.S.Customers().HasFeaturePermission(c, user.ID, featureKey)
+		if err != nil {
+			log.C(c).Errorw("Failed to check feature permission", "user_id", user.ID, "feature_key", featureKey, "err", err)
+			core.WriteResponse(c, errno.ErrInternalServer, nil)
+			c.Abort()
+			return
+		}
+
+		if !hasPermission {
+			core.WriteResponse(c, errno.ErrForbidden.SetMessage("未开通该功能权限，请联系管理员"), nil)
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
 }

@@ -1,0 +1,100 @@
+#!/usr/bin/expect -f
+
+set timeout 60
+set password "Numind2025"
+set host "62.234.165.77"
+
+spawn ssh root@$host
+
+expect {
+    "password:" {
+        send "$password\r"
+        exp_continue
+    }
+    "yes/no" {
+        send "yes\r"
+        exp_continue
+    }
+    "#" {
+        send "cd /root/numind-server\r"
+        expect "#"
+        
+        send "mkdir -p nginx web\r"
+        expect "#"
+        
+        send "cat > nginx/nginx.conf <<'EOF'\r"
+        send "user nginx;\r"
+        send "worker_processes auto;\r"
+        send "error_log /var/log/nginx/error.log warn;\r"
+        send "pid /var/run/nginx.pid;\r"
+        send "events { worker_connections 1024; }\r"
+        send "http {\r"
+        send "    include /etc/nginx/mime.types;\r"
+        send "    default_type application/octet-stream;\r"
+        send "    sendfile on;\r"
+        send "    keepalive_timeout 65;\r"
+        send "    client_max_body_size 100M;\r"
+        send "    server {\r"
+        send "        listen 9200;\r"
+        send "        root /usr/share/nginx/html;\r"
+        send "        index index.html login.html;\r"
+        send "        location ~ ^/(v1|api)/ {\r"
+        send "            proxy_pass http://numind-server:8000;\r"
+        send "            proxy_set_header Host \\\$host;\r"
+        send "            proxy_set_header X-Real-IP \\\$remote_addr;\r"
+        send "            proxy_http_version 1.1;\r"
+        send "            proxy_set_header Upgrade \\\$http_upgrade;\r"
+        send "            proxy_set_header Connection \"upgrade\";\r"
+        send "        }\r"
+        send "        location = /healthz { proxy_pass http://numind-server:8000; }\r"
+        send "        location / { try_files \\\$uri \\\$uri/ /index.html; }\r"
+        send "    }\r"
+        send "}\r"
+        send "EOF\r"
+        expect "#"
+        
+        send "echo '>>> 查找前端文件...'\r"
+        expect "#"
+        
+        send "LOGIN=\$(find /root -name \"login.html\" -type f 2>/dev/null | grep -v node_modules | head -1)\r"
+        expect "#"
+        
+        send "if \[ -n \"\$LOGIN\" \]; then cp -r \$(dirname \"\$LOGIN\")/* web/; echo '✅ 前端文件已复制'; else echo '⚠️ 未找到login.html'; fi\r"
+        expect "#"
+        
+        send "echo '>>> 更新docker-compose.yml...'\r"
+        expect "#"
+        
+        send "grep -q \"./web:/usr/share/nginx/html\" docker-compose.yml || sed -i '/nginx:/,/networks:/{ /volumes:/a\\      - ./web:/usr/share/nginx/html:ro' docker-compose.yml\r"
+        expect "#"
+        
+        send "echo '>>> 重启服务...'\r"
+        expect "#"
+        
+        send "docker-compose down\r"
+        expect "#" timeout 30
+        
+        send "sleep 2\r"
+        expect "#"
+        
+        send "docker-compose up -d\r"
+        expect "#" timeout 60
+        
+        send "sleep 10\r"
+        expect "#"
+        
+        send "echo ''\r"
+        send "echo '================================================'\r"
+        send "echo '✅ 修复完成！'\r"
+        send "echo '请访问: http://62.234.165.77:9200/login.html'\r"
+        send "echo '================================================'\r"
+        expect "#"
+        
+        send "docker-compose ps\r"
+        expect "#"
+        
+        send "exit\r"
+    }
+}
+
+expect eof

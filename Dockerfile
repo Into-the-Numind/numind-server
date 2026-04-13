@@ -1,9 +1,41 @@
-# 外部构建阶段 - 用于 CI/CD 中使用预构建的二进制文件
-FROM scratch AS external-binary
-ARG BINARY_PATH
-COPY $BINARY_PATH /app/numind
+# 构建阶段 - 在容器内编译源码
+FROM golang:1.24-bookworm AS builder
 
-# 运行阶段 - 基于Ubuntu以获得更好的Chrome支持
+# 安装必要的构建工具
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libc6-dev \
+    libmupdf-dev \
+    libsqlite3-dev \
+    git
+
+# =====================================================
+# Docker 分层缓存优化说明
+# =====================================================
+# 第 1 层：依赖层（go.mod/sum 不变时缓存命中）
+# - go mod download 结果会被缓存
+# - 只有修改 go.mod 时才会重新下载
+#
+# 第 2 层：构建层（每次代码变更都会重建）
+# - 源码变更触发重新编译
+# - 依赖未变时使用缓存的依赖层
+#
+# 手动刷新缓存：修改此行时间戳 -> # Cache Bust: 2026-02-26-001
+# =====================================================
+
+WORKDIR /app
+
+# 第 1 层：复制依赖文件并下载（缓存层）
+COPY go.mod go.sum ./
+ENV GOPROXY=https://proxy.golang.org,direct
+RUN go mod download
+
+# 第 2 层：复制源码并编译（非缓存层，每次重新构建）
+COPY . .
+# CGO_ENABLED=1 是必须的，因为使用了 go-fitz (libmupdf) 和 sqlite-vec
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o numind cmd/numind/main.go
+
+# 运行阶段
 FROM ubuntu:22.04
 
 # 设置环境变量避免交互式安装
@@ -11,95 +43,54 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
 
 # 安装系统依赖
+# 注意: libmupdf-dev 不需要 — go-fitz 使用自带的预编译静态库，MuPDF 已嵌入 Go 二进制
+# 注意: python3-pip 仅在下方 pip install 阶段需要，安装完成后移除以节省空间
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
-    wget \
-    unzip \
-    gnupg \
-    bash \
-    file \
     tzdata \
+    python3 \
+    python3-pip \
+    antiword \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# 安装Chrome依赖和字体
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    fonts-liberation \
-    fonts-noto-cjk \
-    fonts-wqy-microhei \
-    fonts-wqy-zenhei \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libatspi2.0-0 \
-    libcups2 \
-    libdbus-1-3 \
-    libdrm2 \
-    libgbm1 \
-    libgtk-3-0 \
-    libnspr4 \
-    libnss3 \
-    libx11-6 \
-    libxcb1 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxkbcommon0 \
-    libxrandr2 \
-    xdg-utils \
-    && rm -rf /var/lib/apt/lists/*
+# 安装 Python 依赖 - 第一层：基础核心库 (变化频率低，体积大)
+# 强制使用 CPU 版本以减小镜像体积
+RUN pip3 install --no-cache-dir --upgrade pip && \
+    pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
-# 只下载必要的思源宋体文件（不下载整个包）
-RUN wget -O /tmp/SourceHanSerifSC-Regular.otf "https://github.com/adobe-fonts/source-han-serif/raw/release/OTF/SimplifiedChinese/SourceHanSerifSC-Regular.otf" && \
-    wget -O /tmp/SourceHanSerifSC-Bold.otf "https://github.com/adobe-fonts/source-han-serif/raw/release/OTF/SimplifiedChinese/SourceHanSerifSC-Bold.otf" && \
-    cp /tmp/SourceHanSerifSC-Regular.otf /usr/share/fonts/truetype/ && \
-    cp /tmp/SourceHanSerifSC-Bold.otf /usr/share/fonts/truetype/ && \
-    rm -f /tmp/SourceHanSerifSC-*.otf && \
-    fc-cache -fv && \
-    echo "✅ 思源宋体字体安装完成" && \
-    echo "字体文件位置验证:" && \
-    ls -la /usr/share/fonts/truetype/SourceHanSerifSC-*.otf && \
-    fc-list | grep -i "SourceHanSerif\|思源" || echo "字体列表中没有找到思源宋体"
+# 安装 Python 依赖 - 第二层：功能库
+RUN pip3 install --no-cache-dir \
+    pymupdf \
+    python-docx \
+    sentence-transformers \
+    numpy \
+    fastapi \
+    uvicorn \
+    python-multipart \
+    "markitdown[pdf]" && \
+    pip3 uninstall -y pip setuptools && \
+    rm -rf /usr/lib/python3/dist-packages/pip /usr/lib/python3/dist-packages/setuptools
 
+# 第三层：预下载语义切分模型 (实现 99.9% 可用性)
+# 将模型固化在镜像中，避免由于网络问题导致的生产环境失效
+ENV SENTENCE_TRANSFORMERS_HOME=/app/model_cache
+ENV HF_HOME=/app/model_cache
+ENV HF_ENDPOINT=https://hf-mirror.com
 
-# 安装Google Chrome (支持多架构)
-RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && (apt-get install -y --no-install-recommends google-chrome-stable || apt-get install -y --no-install-recommends chromium-browser) \
-    && rm -rf /var/lib/apt/lists/*
+# 创建用户
+RUN groupadd -g 1001 numind && useradd -m -u 1001 -g numind -G audio,video numind
+
+# 创建缓存目录并赋予权限
+RUN mkdir -p /app/model_cache && chown -R numind:numind /app/model_cache
+
+# 复制下载脚本 (用于运行时自动修复/首次初始化)
+COPY scripts/download_models.py /app/scripts/download_models.py
+RUN chmod +x /app/scripts/download_models.py
 
 # 设置时区
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
-
-# 验证时区设置
-RUN date && echo "当前时区: $(cat /etc/timezone)" && echo "✅ 时区设置验证成功"
-
-# 验证Chrome安装
-RUN google-chrome --version && echo "Chrome installation successful"
-
-# 预加载字体，避免运行时加载延迟
-RUN fc-cache -fv && \
-    echo "✅ 字体预加载完成" && \
-    fc-list | head -20 && \
-    echo "✅ 字体缓存验证成功"
-
-# 创建Chrome优化启动脚本
-RUN echo '#!/bin/bash' > /usr/local/bin/chrome-headless
-RUN echo 'google-chrome --headless --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-web-security --disable-features=VizDisplayCompositor,Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints,AudioServiceOutOfProcess --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --disable-ipc-flooding-protection --max_old_space_size=4096 --memory-pressure-off --disable-background-networking --disable-default-apps --disable-sync --no-first-run --disable-logging --disable-breakpad --disable-hang-monitor --disable-prompt-on-repost --disable-domain-reliability --disable-blink-features=AutomationControlled --disable-field-trial-config --disable-background-mode --disable-software-rasterizer --disable-canvas-aa --disable-2d-canvas-clip-aa --disable-gl-drawing-for-tests --window-size=1920,1080 --remote-debugging-port=9222 "$@"' >> /usr/local/bin/chrome-headless
-RUN chmod +x /usr/local/bin/chrome-headless
-RUN echo "✅ Chrome优化启动脚本创建成功"
-
-# 设置Chrome环境变量
-ENV CHROME_BIN=/usr/local/bin/chrome-headless
-
-# 创建非 root 用户 - 确保UID为1001，与CI/CD配置一致
-RUN groupadd -g 1001 numind && useradd -u 1001 -g numind -G audio,video numind
-
-# 创建Chrome数据目录并设置权限
-RUN mkdir -p /home/numind/.config/google-chrome \
-    && chown -R numind:numind /home/numind
 
 # 设置工作目录
 WORKDIR /app
@@ -108,37 +99,21 @@ WORKDIR /app
 ARG ENV=dev
 
 # 根据环境复制对应的配置文件
-COPY config_${ENV}.yaml /app/config_${ENV}.yaml
+COPY config_*.yaml ./
 
-# 根据构建参数选择二进制文件来源
-ARG BINARY_SOURCE=external-binary
-# 使用条件复制，根据 BINARY_SOURCE 参数选择来源
-COPY --from=external-binary /app/numind /app/numind
-
-# 验证配置文件复制成功
-RUN ls -la /app/config_*.yaml && \
-    echo "✅ 配置文件复制成功" && \
-    echo "=== 验证特殊渲染规则配置 ===" && \
-    if [ -f "/app/config_${ENV}.yaml" ]; then \
-        echo "✅ 目标配置文件存在: /app/config_${ENV}.yaml"; \
-        echo "特殊渲染规则配置:"; \
-        grep -A 10 "special_rules:" "/app/config_${ENV}.yaml" || echo "未找到special_rules配置"; \
-    else \
-        echo "❌ 目标配置文件不存在: /app/config_${ENV}.yaml"; \
-    fi && \
-    echo "================================"
+# 从构建阶段复制编译好的二进制文件
+COPY --from=builder /app/numind /app/numind
+COPY scripts /app/scripts
+# Copy jieba dictionary files
+COPY --from=builder /go/pkg/mod/github.com/yanyiwu/gojieba@v1.4.6/deps/cppjieba/dict /app/dict
+RUN chown -R numind:numind /app/dict
 
 # 预创建图片输出目录，避免运行期权限问题
-# 确保/opt目录权限正确，然后创建子目录
 RUN chmod 755 /opt && \
-    mkdir -p /opt/numind/dev/image/upload/card && \
-    mkdir -p /opt/numind/dev/image/upload/book && \
-    mkdir -p /opt/numind/prod/image/upload/card && \
-    mkdir -p /opt/numind/prod/image/upload/book && \
-    mkdir -p /opt/numind/qa/image/upload/card && \
-    mkdir -p /opt/numind/qa/image/upload/book && \
-    mkdir -p /opt/numind/image/upload/card && \
-    mkdir -p /opt/numind/image/upload/book && \
+    mkdir -p /opt/numind/dev/image/upload && \
+    mkdir -p /opt/numind/prod/image/upload && \
+    mkdir -p /opt/numind/qa/image/upload && \
+    mkdir -p /opt/numind/image/upload && \
     mkdir -p /app/logs && \
     mkdir -p /app/temp
 
@@ -148,19 +123,15 @@ RUN chown -R numind:numind /opt/numind && \
     chmod -R 775 /opt/numind && \
     chmod -R 775 /app/logs && \
     chmod -R 775 /app/temp && \
-    chmod +x /app/numind && \
-    # 确保父目录也有正确权限
-    chmod 775 /opt/numind/dev && \
-    chmod 775 /opt/numind/dev/image && \
-    chmod 775 /opt/numind/dev/image/upload && \
-    chmod 775 /opt/numind/dev/image/upload/card && \
-    chmod 775 /opt/numind/dev/image/upload/book
+    chmod +x /app/numind
 
 # 验证二进制文件存在且可执行
 RUN ls -la /app/numind && \
-    file /app/numind && \
-    ldd /app/numind 2>/dev/null || echo "Static linked or no dependencies" && \
     echo "✅ 运行阶段二进制文件验证成功"
+
+# 复制启动脚本（包含语义切分模型检查）- 必须在 USER 切换之前
+COPY scripts/docker-entrypoint.sh /app/start.sh
+RUN chmod +x /app/start.sh && chown numind:numind /app/start.sh
 
 # 切换到非 root 用户
 USER numind
@@ -173,51 +144,13 @@ ENV GIN_MODE=release
 ENV PORT=9091
 ENV TZ=Asia/Shanghai
 
-# Chrome headless环境变量 - 针对分页渲染优化
-ENV CHROME_BIN=/usr/bin/google-chrome
-ENV CHROME_PATH=/usr/bin/google-chrome
-ENV CHROMIUM_FLAGS="--headless --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-web-security --disable-features=VizDisplayCompositor,Translate,BackForwardCache --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --disable-ipc-flooding-protection --max_old_space_size=16384 --memory-pressure-off --disable-background-networking --disable-default-apps --disable-extensions --disable-sync --metrics-recording-only --no-first-run --disable-logging --disable-breakpad --disable-plugins --disable-component-extensions-with-background-pages --disable-client-side-phishing-detection --disable-hang-monitor --disable-prompt-on-repost --disable-domain-reliability --disable-field-trial-config --disable-background-mode --disable-software-rasterizer --disable-canvas-aa --disable-2d-canvas-clip-aa --disable-gl-drawing-for-tests --disable-features=AudioServiceOutOfProcess --disable-blink-features=AutomationControlled"
-
-# 设置内存限制和性能优化
-ENV NODE_OPTIONS="--max-old-space-size=16384"
+# 性能优化
 ENV GOGC=50
 ENV GOMEMLIMIT=16GiB
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:9091/healthz || exit 1
-
-# 创建启动脚本
-RUN echo '#!/bin/bash\n\
-# 根据环境变量选择配置文件\n\
-if [ -n "$APP_ENV" ]; then\n\
-    CONFIG_FILE="/app/config_${APP_ENV}.yaml"\n\
-else\n\
-    CONFIG_FILE="/app/config_dev.yaml"\n\
-fi\n\
-\n\
-# 检查配置文件是否存在\n\
-if [ ! -f "$CONFIG_FILE" ]; then\n\
-    echo "错误: 配置文件不存在: $CONFIG_FILE"\n\
-    echo "可用的配置文件:"\n\
-    ls -la /app/config_*.yaml\n\
-    exit 1\n\
-fi\n\
-\n\
-echo "使用配置文件: $CONFIG_FILE"\n\
-exec /app/numind -c "$CONFIG_FILE" "$@"' > /app/start.sh && \
-    chmod +x /app/start.sh
-
-# 清理缓存和临时文件，进一步减少镜像大小
-RUN apt-get clean && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
-    rm -rf /var/cache/apt/archives/* && \
-    rm -rf /usr/share/doc/* && \
-    rm -rf /usr/share/man/* && \
-    rm -rf /usr/share/locale/* && \
-    find /usr -name "*.pyc" -delete && \
-    find /usr -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true && \
-    echo "✅ 系统清理完成"
 
 # 启动应用
 ENTRYPOINT ["/app/start.sh"]

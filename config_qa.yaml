@@ -11,19 +11,9 @@ jwt:
   secret: Rtg8BPKNEf2mB4mgvKONGPZZQSaJWNLijxR42qRgq0iBb5 # JWT 签发密钥
   expire-hours: 24 # JWT 过期时间，单位：小时
 
-# HTTPS 服务器相关配置
-tls:
-  addr: :9092 # HTTPS 服务器监听地址
-  cert: /etc/ssl/certimate/youshu.asia/cert.crt # 证书
-  key: /etc/ssl/certimate/youshu.asia/cert.key # 证书 Key 文件
-
-# GRPC 相关配置
-grpc:
-  addr: :9090 # GRPC 服务器监听地址
-
 # MySQL 数据库相关配置
 db:
-  host: 49.233.219.254:13306  # MySQL 机器 IP 和端口，默认 127.0.0.1:3306
+  host: numind-mysql-dev:3306  # 复用 dev 的 MySQL 容器（Docker 内部端口）
   username: root # MySQL 用户名(建议授权最小权限集)
   password: Numind2025 # MySQL 用户密码
   database: numind-qa # miniblog 系统所用的数据库名
@@ -36,14 +26,14 @@ db:
 log:
   disable-caller: false # 是否开启 caller，如果开启会在日志中显示调用日志所在的文件和行号
   disable-stacktrace: false # 是否禁止在 panic 及以上级别打印堆栈信息
-  level: debug # 指定日志级别，可选值：debug, info, warn, error, dpanic, panic, fatal
+  level: info # 指定日志级别，可选值：debug, info, warn, error, dpanic, panic, fatal
   format: console # 指定日志显示格式，可选值：console, json
   output-paths: [./numind.log, stdout] # 指定日志输出位置，多个输出，用 `逗号 + 空格` 分开。stdout：标准输出，
 
 # Redis 缓存相关配置
 redis:
-  host: 49.233.219.254  # Redis 机器 IP
-  port: 26739           # Redis 端口
+  host: numind-redis-dev  # 复用 dev 的 Redis 容器（Docker 内部服务名）
+  port: 6379           # Redis 内部端口
   password: Numind2025  # Redis 密码
   db: 2                 # Redis 数据库编号，QA环境使用 2
   pool_size: 10        # Redis 连接池大小
@@ -61,27 +51,27 @@ wechat:
     # 使用微信支付公钥模式（推荐，避免证书过期问题）
     use_wechatpay_public_key: "true"
 
-oss:
-  endpoint: ""
-  access_key_id: ""
-  access_key_secret: ""
-  bucket_name: ""
-
-# 书籍处理配置
-book:
-    use_simplified_processing: true  # 启用简化处理模式
+dmxapi:
+  api_key: "sk-XgINDoE22MHQfcSZnToYICS4rNnoknIrXhZHZYs3VQM9DP25"
+  base_url: "https://www.dmxapi.cn/v1"
 
 volc:
-  api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
+  api_key: "716dc07a-b121-4bae-a132-497117f74c7a"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "deepseek-v3-1-terminus"  # 使用的AI模型
+  model: "deepseek-v3-2-251201"
   temperature: 0.5 # 生成文本的随机性，值越高随机性越大
   tokens: 2000 # 生成文本的最大长度
-  timeout: 120s  # 超时时间，从30s改为120s
+  timeout: 300s  # 超时时间，改为300s以支持视觉模型OCR
   max_retries: 3
 
 resource:
   image_path: "/opt/numind/qa/image/upload"  # 图片上传路径（持久化）
+
+# SalesRAG 向量数据库配置（sqlite-vec 本地方案）
+salesrag:
+  vector_store:
+    type: "sqlitevec"   # sqlitevec | dashvector | memory
+    path: "/opt/numind/qa/sales_vector.db"
 
 # RAG 向量数据库配置
 rag:
@@ -99,314 +89,29 @@ cos:
   region: "ap-chengdu"    # 地域，如 ap-chengdu（成都）
 
 baidu:
-  api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
-  secret_key: "nH84dnA8SRK5WL1dASJxxumI9eOcj2dO"
+  api_key: "CkJCFXHinJLBsnEFT9lscwZr"
+  secret_key: "YbJZuvunKGhlSwTZpotTKZxkty0h5enU"
 
 # 阿里云配置 - 优化后的统一配置
 ali:
   # 通用配置（所有服务共用）
+  access_key_id: "LTAI5t7S7S7S7S7S7S7S7S7S" # 阿里云 AccessKey ID
+  access_key_secret: "S7S7S7S7S7S7S7S7S7S7S7S7S7" # 阿里云 AccessKey Secret
+  workspace_id: "ws-7s7s7s7s7s7s" # 百炼 Workspace ID
   api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"  # 文本服务API密钥
-  api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"  # 统一API地址
-  
   # 文本生成服务
   text:
-    model: "qwen-plus"  # 修复：使用正确的阿里千问模型
+    model: "qwen-plus"  # 千问文本模型
     timeout: 180s        # 文本生成超时时间
-  
-  # 图像生成服务
-  image:
-    api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"  # 图像服务专用API密钥
-    model: "wanx2.1-t2i-turbo"  # 万象图像模型
-    timeout: 180s        # 图像生成超时时间
-  
-  # Stable Diffusion服务
-  stable_diffusion:
-    api_key: "sk-4b081bdaaa14454ca19d1ed5d031cd10"  # 使用相同的API key
-    model: "wan2.2-t2i-flash"  # SD模型
-    timeout: 300s        # SD生成超时时间（5分钟）
 
-# 卡片配置 - 统一的卡片渲染和分页配置中心
-card:
-  # 基础尺寸配置（所有组件共用）
-  dimensions:
-    width: 1080   # 标准尺寸: 1080×1440（3:4比例）
-    height: 1440  # 基础高度，实际使用动态高度
-    padding:
-      top: 50     # 标准内边距: 60px 50px
-      right: 50
-      bottom: 50
-      left: 50
-  
-  # 渲染器配置
-  rendering:
-    enable_flow_renderer: true      # 是否启用流式分页渲染器（优先于环境变量）
-    quality: 85            # 图片质量（1-100）
-    format: "webp"         # 图片格式
-    zoom: 1.0              # 缩放比例
-    timeout: 30            # 超时时间（秒）
-    
-  # 分页算法参数
-  pagination:
-    algorithm: "line_based"         # 分页算法：line_based（逐字符→逐行→逐页）或 dynamic
-    char_width_factor: 1.05         # 字符宽度系数（估算每个字符的像素宽度，影响换行与行数）
-    overflow_tolerance: 0.05        # 溢出容错比例（保留配置；当前贪心分页未使用，可后续接入）
-    high_utilization_threshold: 85.0 # 高利用率阈值（保留配置；当前贪心分页未使用，可后续接入）
-    min_chars_per_line: 20          # 最少每行字符数下限（仅作为安全兜底）
-    list_item_spacing: 8            # 列表项额外行距（渲染细节，分页按正文行高估算）
-    
-  # 动态分页特有参数
-  dynamic_pagination:
-    min_height: 720          # 最小卡片高度
-    max_height: 4320         # 最大卡片高度（3倍标准高度）
-    min_bottom_padding: 40   # 最小底部留白，确保文字不被遮挡
-    max_images_per_card: 2   # 每张卡片最大图片数
-    max_text_length: 2000    # 每张卡片最大文本长度
-    base_height: 1440        # 基础高度（用于规范化）
-    base_image_height: 400   # 基础图片高度
-    image_margin_top: 20     # 图片上边距
-    image_margin_bottom: 20  # 图片下边距
+  # 视觉理解服务
+  vision:
+    api_key: "sk-31f08fc72a594fbca4e827d5465a941b"  # 视觉服务专用API密钥
+    model: "qwen3-vl-flash-2026-01-22" # 视觉模型
+    timeout: 180s
 
-  # 统一的字体和样式配置
-  typography:
-    # 段落处理策略配置
-    paragraph_strategy: "markdown"  # "markdown"(默认，空行分段) 或 "single_newline"(单换行即段落)
-    # 字体族配置
-    font_family: "'SourceHanSerifSC', 'STFangsong', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif"
-    base_font_size: 36        # 基础字体大小（全局 body 备用，内容按下方 sizes/line_heights）
-    line_height_ratio: 1.1   # 基础行高比例（全局 body 备用）
-    
-    # 字体大小配置
-    sizes:
-      title: 120             # 标题字号（仅封面H1使用；正文卡片不渲染H1）
-      subtitle: 36           # 副标题字号（##/###）
-      h3: 36                 # 三级标题字号（###），默认与subtitle一致
-      body: 36               # 正文字号
-      list: 36               # 列表字号
-      quote: 36              # 引用字号
-      tag: 36                # 标签字号
-      number: 36             # 数字字号
-    
-    # 行高配置
-    line_heights:
-      title: 160             # 标题行高（像素）。分页按：行高倍数=160/120
-      subtitle: 60           # 副标题行高（像素）
-      h3: 60                 # 三级标题行高（像素），默认与subtitle一致
-      body: 60               # 正文行高（像素）
-      list: 60               # 列表行高（像素）
-      quote: 60              # 引用行高（像素）
-      tag: 60                # 标签行高（像素）
-      number: 60             # 数字行高（像素）
-    
-    # 间距配置
-    spacing:
-      base_margin: 0         # 基础段后距（默认应用到 title/subtitle/body，下面的 margins 可覆盖）
-      global_multiplier: 1.0 # 统一设为 1.0，避免旧路径的倍数干扰，确保分页=渲染
-      # 各元素类型的间距调整（可选，用于精确控制）
-      # adjustments:
-      #   title:
-      #     margin_top_multiplier: 1.0    # 标题上边距倍数
-      #     margin_bottom_multiplier: 1.0 # 标题下边距倍数
-      #     line_height_multiplier: 1.0   # 标题行高倍数
-      # 边距配置 - 优化间距
-      margins:
-        title_bottom: 40     # 标题段后距（像素，仅封面H1卡片有效）
-        subtitle_bottom: 0   # 副标题段后距（像素，分页最后一行才计入）
-        h3_bottom: 0         # 三级标题段后距（像素），默认与subtitle一致
-        body_bottom: 60      # 正文段后距（像素，分页最后一行才计入）
-    
-    # 颜色配置
-    colors:
-      text: "#333333"        # 主文本颜色
-      secondary: "#1278B8"   # 次要文本颜色
-      accent: "#1E90FF"      # 强调色（蓝色）
-      
-    # 对齐配置
-    alignments:
-      title: "justify"       # 标题对齐
-      subtitle: "justify"    # 副标题对齐
-      body: "justify"        # 正文对齐
-      list: "justify"        # 列表对齐
-      quote: "justify"       # 引用对齐
-      tag: "left"            # 标签对齐
-      number: "justify"      # 数字对齐
-      
-    # 其他样式配置
-    styles:
-      list_indent: 0         # 列表缩进
-
-  # 页码配置
-  page_number:
-    enabled: true            # 是否启用页码显示
-    font_size: 24           # 页码字号
-    color: "#666666"        # 页码颜色
-    font_weight: "normal"   # 页码粗细：normal, bold
-    position:
-      bottom: 30            # 距离底部边距
-      right: 50             # 距离右侧边距
-    format: "{current}/{total}"  # 页码格式：{current}当前页，{total}总页数
-
-# 特殊渲染规则配置
-special_rules:
-  cover_card:
-    width: 1080          # 封面卡片宽度
-    height: 1440         # 封面卡片高度（3:4比例）
-    title_section:
-      font_size: 120            # 封面标题字体大小
-      line_height: 160          # 封面标题行高
-      color: "#000000"         # 封面标题颜色
-      background: "rgba(255, 255, 255, 0.9)"  # 标题区域半透明背景
-      backdrop_filter: "blur(0px)"            # 背景模糊效果
-      box_shadow: "0 4px 20px rgba(0, 0, 0, 0.1)"  # 阴影效果
-    image_section:
-      background: "transparent"                # 图片区域透明背景
-  
-  content_card:
-    safe_area_margin: 0                       # 内容安全区域边距
-    max_content_height: 1360                  # 内容最大高度
-    overflow_behavior: "create_new_card"      # 溢出行为：创建新卡片
-
-# AI提示词配置
-ai_prompts:
-  text_processing: |
-    # 角色
-
-    你是一位极其严谨的数字排版专家、结构分析师及文本校对员。你的使命是将一段通过OCR识别出的、混乱且可能包含细微错误的纯文本，精准地还原成一篇结构清晰、格式正确、标点规范的Markdown笔记。
-
-    你的原则是"结构还原，有限修正"。一切操作都必须基于原文结构。严禁对原文进行任何主观性的总结、改写或补充。你的修正权限，仅限于处理可预测的OCR识别错误。
-
-    # 工作流程
-
-    你必须严格按照以下四个步骤，顺序处理输入的文本：
-
-    ## 步骤一：识别并剔除噪音
-
-    通读全文，识别并删除明显不属于正文内容的"噪音"。这些噪音是OCR过程带来的副产品。
-
-    需要剔除的噪音类型包括但不限于：
-    - 水印文字：如"仅供参考"、"内部资料"、"@用户名"等
-    - 页码与页眉页脚：如"第 5 页"、"Chapter 3"、"版权所有"等
-    - UI元素残留：如"点赞"、"分享"、"评论"、"查看原文"、"关注公众号"等交互按钮的文字
-    - 系统提示与时间戳：如"截屏时间 2025-10-19"、"网络连接失败"等
-    - 无关联的广告语：穿插在正文中的、与上下文无逻辑关联的简短推广信息
-
-    执行标准：此步骤只做减法，不做任何改动。如果一段文字不确定是否为噪音，应倾向于保留。
-
-    ## 步骤二：内容校正
-
-    此步骤旨在修复OCR识别过程中常见的、可预测的标点和符号错误，以提升最终笔记的可读性和规范性。
-
-    1.  破折号修正：将被误识别为中文汉字"一"或短横线"-"的单个字符，根据上下文语境智能判断是否应还原为标准的中文破折号"——"
-    2.  标点规范化：根据上下文语境，统一标点符号的规范性。主要原则是：在中文语境的段落中，应使用全角标点（如 `，` `。` `：` `（` `）` `？`）。将混杂在中文段落中的半角标点（`,` `.` `:` `()` `?`）进行替换，确保格式统一。反之，如果段落是纯英文，则保持半角标点
-    3.  其他常见错误修正：修正其他可能的、高频的OCR识别错误，但前提是这种修正是机械性的、确定性的，而非主观判断
-
-    执行标准：此步骤仅限于符号和标点的修正，严禁对文字内容本身进行任何改动。
-
-    ## 步骤三：解构原文逻辑
-
-    在完成净化与校正的文本基础上，分析其内在的逻辑层级和内容类型。
-
-    1.  标题识别：
-        -   寻找那些在格式上（如独占一行、字数较少、语气概括）或内容上（如总领全文或某个章节）明显扮演标题角色de 句子
-        -   判断标题的层级。是统领全文的一级标题，还是开启某个特定板块的二级标题
-
-    2.  正文识别：
-        -   构成文章主体的连贯段落
-
-    3.  引用识别：
-        -   寻找被明确标记（如使用引号）或在上下文中明显是引述他人观点、书籍原文的段落
-
-    ## 步骤四：应用Markdown语法格式化输出
-
-    根据步骤三的分析结果，使用有且仅有的以下Markdown格式，将文本转换为最终输出。
-
-    -   一级标题：使用 `# 标题`，并且输出在最开头
-    -   二级标题：使用 `## 标题`
-    -   正文：无特殊格式。重要！：段落与段落之间必须使用两个换行符 `\n\n`分隔。所有换行必须使用两个换行符
-    -   引用：在段落前使用 `> `
-
-    # 强制规则
-
-    1.  内容修正原则：严禁对原文的词汇、语序和句子结构进行任何主观性的改写、总结或重组。修改权限仅限于执行【步骤二】中明确定义的、客观的标点与符号校正任务。除此以外，净化后的每一个字都必须与原文保持一致
-    2.  格式极简原则：
-        -   全文有且仅能有一个 `#` 一级标题。若原文素材包含多个独立主题，则应为每个主题设立一个 `##` 二级标题，并共同置于一个概括性的 `#` 一级标题之下
-        -   绝对禁止使用 `###` 三级及以下标题、加粗、斜体、分割线等任何未在"格式化输出"步骤中明确允许的格式
-    3.  无创造原则：严禁添加任何原文以外的文本，包括但不限于摘要、前言、目录、索引或你的任何评论
-    4.  无效内容处理：如果输入文本在净化后，剩余有效字符少于50个字符或为无意义的乱码，则直接输出原始文本，不做任何格式化
-    5.  输出格式：直接生成纯净的、可被渲染的Markdown文本，不要包含任何解释性语言或代码块标记
-
-    # 待处理文本：{content}
-  image_generation: "基于以下文本生成一张精美的配图：{content}"
-
-# JSON处理配置 - 控制JSON响应解析和字符过滤行为
-json_processing:
-  # 字符过滤配置
-  character_filtering:
-    # 是否启用严格的控制字符过滤
-    strict_control_chars: true
-    # 是否启用扩展ASCII字符过滤
-    filter_extended_ascii: true
-    # 是否启用Unicode替换字符过滤
-    filter_unicode_replacement: true
-    # 允许的控制字符列表（除了换行符和制表符）
-    allowed_control_chars: ["\n", "\t"]
-    # 允许的Unicode范围
-    allowed_unicode_ranges:
-      # 中文字符范围
-      chinese: [0x4E00, 0x9FFF]
-      # 中文标点符号范围
-      chinese_punctuation: [0x3000, 0x303F]
-      # 全角字符范围
-      fullwidth: [0xFF00, 0xFFEF]
-      # 拉丁字母扩展范围
-      latin_extended: 
-        - [0x00C0, 0x00FF]
-        - [0x0100, 0x017F]
-        - [0x0180, 0x024F]
-      # 阿拉伯文范围
-      arabic: [0x0600, 0x06FF]
-      # 西里尔文范围
-      cyrillic: [0x0400, 0x04FF]
-      # 希腊文范围
-      greek: [0x0370, 0x03FF]
-      # 希伯来文范围
-      hebrew: [0x0590, 0x05FF]
-      # 泰文范围
-      thai: [0x0E00, 0x0E7F]
-      # 韩文范围
-      korean: [0xAC00, 0xD7AF]
-      # 日文平假名范围
-      japanese_hiragana: [0x3040, 0x309F]
-      # 日文片假名范围
-      japanese_katakana: [0x30A0, 0x30FF]
-  
-  # JSON修复配置
-  json_repair:
-    # 是否启用深度JSON修复
-    enable_deep_repair: true
-    # 是否启用字段优先提取
-    enable_field_based_extraction: true
-    # 是否启用保守修复策略
-    enable_conservative_fix: true
-    # 最大修复尝试次数
-    max_repair_attempts: 3
-    # 是否启用日志记录
-    enable_logging: true
-  
-  # 响应处理配置
-  response_processing:
-    # 是否检查Content-Length
-    check_content_length: true
-    # 是否尝试恢复不完整响应
-    enable_response_recovery: true
-    # 响应超时时间
-    timeout: "30s"
-    # 最大响应大小（字节）
-    max_response_size: 1048576  # 1MB
-
-# HTML转换器配置 - 现在从card配置中继承，保留特定配置项
-html_converter:
-  # HTML转换特有配置
-  available_width: 900          # 可用宽度
-  max_content_height: 1400       # 最大内容高度
-  # 注意：其他配置项（字体、行高、边距等）现在从card配置中继承
-
+  # DashVector 向量数据库配置
+  dashvector:
+    endpoint: "https://vrs-cn-62l4mht1d0001e.dashvector.cn-hangzhou.aliyuncs.com" # DashVector Endpoint
+    api_key: "sk-gMsgxE1A1QzoxexCdtuTaVjuF6w8Z52890CC5F85411F08940FAD61112A032"
+    collection: "sales_rag_qa"

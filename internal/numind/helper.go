@@ -145,233 +145,302 @@ func autoMigrate(db *gorm.DB) error {
 	// 获取数据库字符集配置
 	charsetConfig := getDatabaseCharsetConfig()
 
-	// 1. 强制检查和修复数据库字符集（启动时）
-	log.Infow("Starting database charset verification and repair...")
-	if err := forceEnsureDatabaseCharset(db, charsetConfig); err != nil {
-		log.Warnw("Failed to ensure database charset, continuing with migration", "error", err)
-	} else {
-		log.Infow("Database charset verification and repair completed")
-	}
+	// 1.5 企业微信相关表迁移前的字段处理 (已禁用，使用 numind_user_id 作为列名)
+	// log.Infow("Running custom migrations for Wecom tables...")
+	// if err := migrateWecomUsersTable(db); err != nil {
+	// 	log.Errorw("Failed to run custom Wecom migration", "error", err)
+	// 	// 仍然尝试继续 AutoMigrate
+	// }
 
 	// 2. 自动迁移所有模型
 	log.Infow("Starting database schema migration...")
+
+	// 先迁移基础表
 	err := db.AutoMigrate(
-		&model.User{},
-		&model.CategoryM{},
-		&model.ArticleM{},
-		&model.Favorite{},
+		// &model.User{}, // 暂时跳过 User 表迁移以避免 Error 3780 外键冲突
 		&model.SystemConfigM{},
-		&model.ProxyServerM{},
-		&model.Feedback{},
-		&model.AboutUsM{},
-		&model.Agreement{},
-		&model.BookM{},
-		&model.CardM{},
-		&model.ImageM{},
-		&model.Template{},
-		&model.ChatSession{},
-		&model.ChatMessage{},
-		&model.AccountRecord{},
-		&model.PaymentM{},
-		&model.Admin{},
+		&model.KnowledgeDocument{},
+		&model.SalesSession{},
+		&model.SalesMessage{},
+		&model.LanguageStyle{},
+		&model.KnowledgeChunk{},
+		&model.OpinionTrack{},
 	)
 	if err != nil {
-		return fmt.Errorf("failed to migrate database: %v", err)
+		return fmt.Errorf("failed to migrate basic tables: %v", err)
 	}
-	log.Infow("Database schema migration completed")
 
-	// 3. 迁移后强制再次确保字符集正确
-	log.Infow("Post-migration charset verification and repair...")
-	if err := forceEnsureDatabaseCharset(db, charsetConfig); err != nil {
+	// 单独迁移SOP相关表，按依赖顺序分步骤创建
+	log.Infow("Migrating SOP tables...")
+
+	// 第一步：创建模板表（无外键依赖）
+	if err := db.AutoMigrate(&model.SopTemplate{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_template: %v", err)
+	}
+
+	// 第二步：创建节点表（依赖模板表）
+	if err := db.AutoMigrate(&model.SopNode{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_node: %v", err)
+	}
+
+	// 第三步：创建执行记录表（依赖模板表和用户表）
+	if err := db.AutoMigrate(&model.SopRun{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_run: %v", err)
+	}
+
+	// 第四步：创建节点执行记录表（依赖上面所有表）
+	if err := db.AutoMigrate(&model.SopNodeRun{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_node_run: %v", err)
+	}
+
+	// 修复 sop_node_run 表的 input 和 output 字段类型（从 TEXT 改为 LONGTEXT）
+	// 注意：GORM的AutoMigrate可能不会自动修改字段类型，需要手动修复
+	if err := fixSopNodeRunTextFields(db); err != nil {
+		log.Warnw("Failed to fix sop_node_run text fields, continuing", "error", err)
+		// 不返回错误，继续执行，因为可能是字段已经是正确的类型
+	} else {
+		log.Infow("Sop_node_run text fields fixed successfully")
+	}
+
+	// 修复 knowledge_chunk 表的 content 字段类型（从 TEXT 改为 LONGTEXT）
+	if err := fixKnowledgeChunkTextFields(db); err != nil {
+		log.Warnw("Failed to fix knowledge_chunk text fields, continuing", "error", err)
+	} else {
+		log.Infow("Knowledge_chunk text fields fixed successfully")
+	}
+
+	// 第五步：创建笔记表（依赖执行记录表）
+	if err := db.AutoMigrate(&model.SopNote{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_note: %v", err)
+	}
+
+	// 第六步：创建文件表（依赖执行记录表和节点表）
+	if err := db.AutoMigrate(&model.SopFile{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_file: %v", err)
+	}
+
+	// 修复 sop_file 表的 file_type 字段长度（从 50 增加到 255）
+	if err := fixSopFileFields(db); err != nil {
+		log.Warnw("Failed to fix sop_file fields, continuing", "error", err)
+	} else {
+		log.Infow("Sop_file fields fixed successfully")
+	}
+
+	// 第七步:创建对话消息表（依赖执行记录表和用户表）
+	if err := db.AutoMigrate(&model.SopChatMsg{}); err != nil {
+		return fmt.Errorf("failed to migrate sop_chat_message: %v", err)
+	}
+
+	// 第八步:创建用户模板权限表（依赖用户表和模板表）
+	// if err := db.AutoMigrate(&model.UserTemplatePermission{}); err != nil {
+	// 	return fmt.Errorf("failed to migrate user_template_permission: %v", err)
+	// }
+
+	log.Infow("SOP tables migration completed")
+
+	// 功能权限表（先清理可能残留的外键约束，忽略不存在的错误）
+	for _, fk := range []string{"fk_user_feature_permission_parent_user", "fk_user_feature_permission_sub_user"} {
+		_ = db.Exec("ALTER TABLE `user_feature_permission` DROP FOREIGN KEY `" + fk + "`").Error
+	}
+	if err := db.AutoMigrate(&model.UserFeaturePermission{}); err != nil {
+		return fmt.Errorf("failed to migrate user_feature_permission: %v", err)
+	}
+
+	// 迁移等级变更日志表
+	if err := db.AutoMigrate(&model.TierChangeLog{}); err != nil {
+		return fmt.Errorf("failed to migrate tier_change_log: %v", err)
+	}
+
+	// 迁移计费相关表
+	log.Infow("Migrating billing tables...")
+	if err := db.AutoMigrate(&model.UsageRecord{}, &model.BillingAccount{}, &model.PricingRule{}, &model.CreditAccount{}, &model.CreditPackage{}, &model.CreditTransaction{}, &model.Order{}); err != nil {
+		return fmt.Errorf("failed to migrate billing tables: %v", err)
+	}
+
+	log.Infow("All database schema migration completed")
+
+	// 3. 迁移后验证字符集
+	// 关键：必须在 AutoMigrate 之后执行，确保新创建的表也能被正确修复
+	log.Infow("Post-migration charset verification...")
+	if err := ensureDatabaseCharset(db, charsetConfig); err != nil {
 		log.Warnw("Failed to ensure database charset after migration", "error", err)
 	} else {
-		log.Infow("Post-migration charset verification and repair completed")
-	}
-
-	// 4. 特别强制修复chat_message表（这是出错的主要表）
-	log.Infow("Force fixing chat_message table charset...")
-	if err := forceFixChatMessageTable(db, charsetConfig); err != nil {
-		log.Warnw("Failed to force fix chat_message table", "error", err)
-	} else {
-		log.Infow("Chat_message table charset force fix completed")
-	}
-
-	// 5. 验证修复结果
-	log.Infow("Verifying charset repair results...")
-	if err := verifyCharsetRepair(db, charsetConfig); err != nil {
-		log.Warnw("Charset repair verification failed", "error", err)
-	} else {
-		log.Infow("Charset repair verification completed successfully")
+		log.Infow("Post-migration charset verification completed")
 	}
 
 	log.Infow("Database migration and charset repair completed successfully")
 	return nil
 }
 
-// forceEnsureDatabaseCharset 强制确保数据库使用正确的字符集
-func forceEnsureDatabaseCharset(db *gorm.DB, charsetConfig *config.DatabaseCharsetConfig) error {
-	log.Infow("Force ensuring database charset...",
-		"target_charset", charsetConfig.TargetCharset,
-		"target_collation", charsetConfig.TargetCollation)
+// fixKnowledgeChunkTextFields 修复 knowledge_chunk 表的 content 字段类型
+// 将 TEXT 类型改为 LONGTEXT 以支持超长文本分片
+func fixKnowledgeChunkTextFields(db *gorm.DB) error {
+	tableName := "knowledge_chunk"
+	var contentType string
 
-	// 强制设置连接的字符集（每次操作前都设置）
-	log.Infow("Setting connection charset...")
-	if err := db.Exec("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci").Error; err != nil {
-		log.Warnw("Failed to set connection charset", "error", err)
-	} else {
-		log.Infow("Connection charset set successfully")
+	// 检查当前字段类型
+	err := db.Raw(`
+		SELECT DATA_TYPE 
+		FROM information_schema.COLUMNS 
+		WHERE TABLE_SCHEMA = DATABASE() 
+			AND TABLE_NAME = ? 
+			AND COLUMN_NAME = 'content'
+	`, tableName).Scan(&contentType).Error
+
+	if err != nil {
+		return fmt.Errorf("failed to check content field type: %v", err)
 	}
 
-	// 强制修复数据库字符集
-	log.Infow("Force updating database charset...")
-	alterSQL := charsetConfig.GetAlterDatabaseSQL()
-	if err := db.Exec(alterSQL).Error; err != nil {
-		log.Warnw("Failed to force update database charset", "error", err)
-	} else {
-		log.Infow("Database charset force updated successfully")
-	}
-
-	// 强制修复所有关键表的字符集
-	for _, tableName := range charsetConfig.CriticalTables {
-		if err := forceFixTableCharset(db, tableName, charsetConfig); err != nil {
-			log.Warnw("Failed to force fix table charset", "table", tableName, "error", err)
-			continue
+	// 如果不是 LONGTEXT，则升级
+	if strings.ToLower(contentType) != "longtext" {
+		log.Infow("Upgrading knowledge_chunk content field to LONGTEXT", "current_type", contentType)
+		if err := db.Exec("ALTER TABLE knowledge_chunk MODIFY COLUMN content LONGTEXT").Error; err != nil {
+			return fmt.Errorf("failed to upgrade content field to LONGTEXT: %v", err)
 		}
+		log.Infow("knowledge_chunk content field upgraded to LONGTEXT successfully")
 	}
 
 	return nil
 }
 
-// forceFixTableCharset 强制修复表字符集
-func forceFixTableCharset(db *gorm.DB, tableName string, charsetConfig *config.DatabaseCharsetConfig) error {
+// fixSopNodeRunTextFields 修复 sop_node_run 表的 input 和 output 字段类型
+// 将 TEXT 类型改为 LONGTEXT 以支持超长文本
+func fixSopNodeRunTextFields(db *gorm.DB) error {
+	tableName := "sop_node_run"
+
 	// 检查表是否存在
 	var count int64
-	err := db.Raw("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?", tableName).Scan(&count).Error
+	err := db.Raw(`
+		SELECT COUNT(*) 
+		FROM information_schema.TABLES 
+		WHERE TABLE_SCHEMA = DATABASE() 
+			AND TABLE_NAME = ?
+	`, tableName).Scan(&count).Error
+
 	if err != nil {
 		return fmt.Errorf("failed to check table existence: %v", err)
 	}
 
 	if count == 0 {
-		log.Infow("Table does not exist, skipping charset fix", "table", tableName)
+		log.Infow("Table does not exist, skipping text fields fix", "table", tableName)
 		return nil
 	}
 
-	// 强制设置连接的字符集（每次操作前都设置）
-	if err := db.Exec("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci").Error; err != nil {
-		log.Warnw("Failed to set connection charset for table operation", "table", tableName, "error", err)
+	// 检查字段当前类型
+	var inputType, outputType, thinkingType string
+	err = db.Raw(`
+		SELECT DATA_TYPE 
+		FROM information_schema.COLUMNS 
+		WHERE TABLE_SCHEMA = DATABASE() 
+			AND TABLE_NAME = ? 
+			AND COLUMN_NAME = 'input'
+	`, tableName).Scan(&inputType).Error
+
+	if err != nil {
+		return fmt.Errorf("failed to check input field type: %v", err)
 	}
 
-	log.Infow("Force fixing table charset", "table", tableName)
+	err = db.Raw(`
+		SELECT DATA_TYPE 
+		FROM information_schema.COLUMNS 
+		WHERE TABLE_SCHEMA = DATABASE() 
+			AND TABLE_NAME = ? 
+			AND COLUMN_NAME = 'output'
+	`, tableName).Scan(&outputType).Error
 
-	// 强制修复表字符集
-	alterSQL := charsetConfig.GetAlterTableSQL(tableName)
-	if err := db.Exec(alterSQL).Error; err != nil {
-		return fmt.Errorf("failed to force update table charset: %v", err)
+	if err != nil {
+		return fmt.Errorf("failed to check output field type: %v", err)
 	}
 
-	log.Infow("Table charset force updated successfully", "table", tableName)
+	// 检查 thinking 字段是否存在
+	var thinkingExists int64
+	err = db.Raw(`
+		SELECT COUNT(*) 
+		FROM information_schema.COLUMNS 
+		WHERE TABLE_SCHEMA = DATABASE() 
+			AND TABLE_NAME = ? 
+			AND COLUMN_NAME = 'thinking'
+	`, tableName).Scan(&thinkingExists).Error
 
-	// 特别处理chat_message表的content字段
-	if tableName == "chat_message" {
-		if err := forceFixContentField(db, charsetConfig); err != nil {
-			log.Warnw("Failed to force fix content field", "error", err)
+	if err == nil && thinkingExists > 0 {
+		err = db.Raw(`
+			SELECT DATA_TYPE 
+			FROM information_schema.COLUMNS 
+			WHERE TABLE_SCHEMA = DATABASE() 
+				AND TABLE_NAME = ? 
+				AND COLUMN_NAME = 'thinking'
+		`, tableName).Scan(&thinkingType).Error
+		if err != nil {
+			return fmt.Errorf("failed to check thinking field type: %v", err)
 		}
 	}
 
-	return nil
-}
-
-// forceFixContentField 强制修复content字段字符集
-func forceFixContentField(db *gorm.DB, charsetConfig *config.DatabaseCharsetConfig) error {
-	log.Infow("Force fixing content field charset...")
-
-	// 强制设置连接的字符集（每次操作前都设置）
-	if err := db.Exec("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci").Error; err != nil {
-		log.Warnw("Failed to set connection charset for content field operation", "error", err)
-	}
-
-	// 强制修复字段字符集
-	alterSQL := charsetConfig.GetAlterColumnSQL("chat_message", "content", "TEXT")
-	if err := db.Exec(alterSQL).Error; err != nil {
-		return fmt.Errorf("failed to force update content field charset: %v", err)
-	}
-
-	log.Infow("Content field charset force updated successfully")
-	return nil
-}
-
-// forceFixChatMessageTable 特别强制修复chat_message表
-func forceFixChatMessageTable(db *gorm.DB, charsetConfig *config.DatabaseCharsetConfig) error {
-	log.Infow("Force fixing chat_message table with multiple approaches...")
-
-	// 强制设置连接的字符集（每次操作前都设置）
-	if err := db.Exec("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci").Error; err != nil {
-		log.Warnw("Failed to set connection charset for chat_message table operation", "error", err)
-	}
-
-	// 方法1: 强制转换表字符集
-	alterTableSQL := charsetConfig.GetAlterTableSQL("chat_message")
-	if err := db.Exec(alterTableSQL).Error; err != nil {
-		log.Warnw("Method 1 failed: force alter table", "error", err)
-	} else {
-		log.Infow("Method 1 completed: table charset updated")
-	}
-
-	// 方法2: 强制修改content字段
-	alterColumnSQL := charsetConfig.GetAlterColumnSQL("chat_message", "content", "TEXT")
-	if err := db.Exec(alterColumnSQL).Error; err != nil {
-		log.Warnw("Method 2 failed: force alter column", "error", err)
-	} else {
-		log.Infow("Method 2 completed: content column charset updated")
-	}
-
-	// 方法3: 强制修改所有TEXT字段
-	textFields := []string{"content", "title", "description", "tags"}
-	for _, field := range textFields {
-		alterFieldSQL := charsetConfig.GetAlterColumnSQL("chat_message", field, "TEXT")
-		if err := db.Exec(alterFieldSQL).Error; err != nil {
-			log.Debugw("Field charset update skipped", "field", field, "error", err)
-		} else {
-			log.Infow("Field charset updated", "field", field)
+	// 如果字段类型不是 LONGTEXT，则修改
+	if inputType != "longtext" {
+		log.Infow("Fixing input field type", "from", inputType, "to", "longtext")
+		if err := db.Exec(`
+			ALTER TABLE ` + tableName + ` 
+			MODIFY COLUMN input LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+		`).Error; err != nil {
+			return fmt.Errorf("failed to modify input field: %v", err)
 		}
+		log.Infow("Input field type fixed successfully")
+	}
+
+	if outputType != "longtext" {
+		log.Infow("Fixing output field type", "from", outputType, "to", "longtext")
+		if err := db.Exec(`
+			ALTER TABLE ` + tableName + ` 
+			MODIFY COLUMN output LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+		`).Error; err != nil {
+			return fmt.Errorf("failed to modify output field: %v", err)
+		}
+		log.Infow("Output field type fixed successfully")
+	}
+
+	// 如果 thinking 字段存在但类型不是 LONGTEXT，则修改
+	if thinkingExists > 0 && thinkingType != "longtext" {
+		log.Infow("Fixing thinking field type", "from", thinkingType, "to", "longtext")
+		if err := db.Exec(`
+			ALTER TABLE ` + tableName + ` 
+			MODIFY COLUMN thinking LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+		`).Error; err != nil {
+			return fmt.Errorf("failed to modify thinking field: %v", err)
+		}
+		log.Infow("Thinking field type fixed successfully")
 	}
 
 	return nil
 }
 
-// verifyCharsetRepair 验证字符集修复结果
-func verifyCharsetRepair(db *gorm.DB, charsetConfig *config.DatabaseCharsetConfig) error {
-	log.Infow("Verifying charset repair results...")
+// fixSopFileFields 修复 sop_file 表的字段长度
+func fixSopFileFields(db *gorm.DB) error {
+	tableName := "sop_file"
 
-	// 验证数据库字符集
-	dbCharset, dbCollation, err := config.GetDatabaseCharsetInfo(db)
+	// 检查表是否存在
+	var count int64
+	err := db.Raw(`
+		SELECT COUNT(*) 
+		FROM information_schema.TABLES 
+		WHERE TABLE_SCHEMA = DATABASE() 
+			AND TABLE_NAME = ?
+	`, tableName).Scan(&count).Error
+
 	if err != nil {
-		return fmt.Errorf("failed to verify database charset: %v", err)
+		return fmt.Errorf("failed to check table existence: %v", err)
 	}
 
-	log.Infow("Database charset verification result",
-		"current_charset", dbCharset,
-		"current_collation", dbCollation,
-		"target_charset", charsetConfig.TargetCharset)
-
-	// 验证chat_message表字符集
-	tableCharset, tableCollation, err := config.GetTableCharsetInfo(db, "chat_message")
-	if err != nil {
-		log.Warnw("Failed to verify chat_message table charset", "error", err)
-	} else {
-		log.Infow("Chat_message table charset verification result",
-			"current_charset", tableCharset,
-			"current_collation", tableCollation)
+	if count == 0 {
+		return nil
 	}
 
-	// 验证content字段字符集
-	fieldCharset, fieldCollation, err := config.GetColumnCharsetInfo(db, "chat_message", "content")
-	if err != nil {
-		log.Warnw("Failed to verify content field charset", "error", err)
-	} else {
-		log.Infow("Content field charset verification result",
-			"current_charset", fieldCharset,
-			"current_collation", fieldCollation)
+	// 强制修改 file_type 字段长度为 255
+	log.Infow("Ensuring file_type column length is 255", "table", tableName)
+	if err := db.Exec(`
+		ALTER TABLE ` + tableName + ` 
+		MODIFY COLUMN file_type VARCHAR(255)
+	`).Error; err != nil {
+		return fmt.Errorf("failed to modify file_type field: %v", err)
 	}
 
 	return nil
@@ -499,88 +568,6 @@ func ensureTableCharset(db *gorm.DB, tableName string, charsetConfig *config.Dat
 		log.Infow("Table charset updated successfully", "table", tableName)
 	}
 
-	// 特别处理chat_message表的content字段
-	if tableName == "chat_message" {
-		if err := ensureContentFieldCharset(db, charsetConfig); err != nil {
-			log.Warnw("Failed to ensure content field charset", "error", err)
-		}
-	}
-
-	return nil
-}
-
-// ensureContentFieldCharset 确保content字段使用正确的字符集
-func ensureContentFieldCharset(db *gorm.DB, charsetConfig *config.DatabaseCharsetConfig) error {
-	// 检查content字段是否存在
-	var count int64
-	err := db.Raw(`
-		SELECT COUNT(*) 
-		FROM information_schema.COLUMNS 
-		WHERE TABLE_SCHEMA = DATABASE() 
-			AND TABLE_NAME = 'chat_message' 
-			AND COLUMN_NAME = 'content'
-	`).Scan(&count).Error
-
-	if err != nil {
-		return fmt.Errorf("failed to check content field existence: %v", err)
-	}
-
-	if count == 0 {
-		log.Infow("Content field does not exist, skipping charset check")
-		return nil
-	}
-
-	// 检查content字段字符集
-	currentCharset, currentCollation, err := config.GetColumnCharsetInfo(db, "chat_message", "content")
-	if err != nil {
-		return fmt.Errorf("failed to check content field charset: %v", err)
-	}
-
-	log.Infow("Content field charset info",
-		"charset", currentCharset,
-		"collation", currentCollation)
-
-	// 如果字段字符集不是目标字符集，则修复
-	if currentCharset != charsetConfig.TargetCharset {
-		log.Infow("Updating content field charset",
-			"from", currentCharset,
-			"to", charsetConfig.TargetCharset)
-
-		// 修复字段字符集
-		alterSQL := charsetConfig.GetAlterColumnSQL("chat_message", "content", "TEXT")
-		if err := db.Exec(alterSQL).Error; err != nil {
-			return fmt.Errorf("failed to update content field charset: %v", err)
-		}
-
-		log.Infow("Content field charset updated successfully")
-	}
-
-	return nil
-}
-
-// initUploadDirectories 初始化上传目录
-func initUploadDirectories() error {
-	imagePath := viper.GetString("resource.image_path")
-	if imagePath == "" {
-		imagePath = "/opt/numind/image/upload" // 默认路径
-	}
-
-	// 创建图片上传目录
-	uploadDirs := []string{
-		imagePath,
-		filepath.Join(imagePath, "avatars"),
-		filepath.Join(imagePath, "card"),
-		filepath.Join(imagePath, "book"),
-	}
-
-	for _, dir := range uploadDirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			log.Errorw("Failed to create upload directory", "dir", dir, "error", err.Error())
-			return fmt.Errorf("failed to create upload directory %s: %v", dir, err)
-		}
-		log.Infow("Created upload directory", "dir", dir)
-	}
-
 	return nil
 }
 
@@ -592,3 +579,39 @@ func InitCOS() {
 		log.Infow("Tencent COS disabled or not configured")
 	}
 }
+
+// migrateWecomUsersTable 处理 wecom_users 表的字段重命名 (numind_user_id -> user_id)
+// 这是一个自定义的迁移函数，因为 GORM's AutoMigrate 不支持重命名列。
+// 注意：此函数已被禁用，因为我们决定使用 numind_user_id 作为数据库列名
+/*
+func migrateWecomUsersTable(db *gorm.DB) error {
+	tableName := "wecom_users"
+
+	// 1. 检查表是否存在
+	if !db.Migrator().HasTable(tableName) {
+		log.Infow("wecom_users table does not exist, skipping rename logic", "table", tableName)
+		return nil
+	}
+
+	// 2. 检查旧字段 numind_user_id 是否存在
+	if db.Migrator().HasColumn(tableName, "numind_user_id") {
+		// 3. 检查新字段 user_id 是否已存在 (如果已存在，可能已经更名过了)
+		if !db.Migrator().HasColumn(tableName, "user_id") {
+			log.Infow("Renaming numind_user_id to user_id in wecom_users table...")
+			// 执行重命名 SQL
+			// 注意: MySQL 8.0+ 支持 RENAME COLUMN，但为了兼容性，使用 CHANGE
+			err := db.Exec(fmt.Sprintf("ALTER TABLE %s CHANGE numind_user_id user_id bigint(20)", tableName)).Error
+			if err != nil {
+				return fmt.Errorf("failed to rename column: %v", err)
+			}
+			log.Infow("Successfully renamed numind_user_id to user_id")
+		} else {
+			log.Infow("Both numind_user_id and user_id exist, skipping rename to avoid conflict")
+		}
+	} else {
+		log.Debugw("numind_user_id not found in wecom_users, maybe already renamed")
+	}
+
+	return nil
+}
+*/

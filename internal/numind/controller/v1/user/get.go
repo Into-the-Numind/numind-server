@@ -45,34 +45,25 @@ func (ctrl *UserController) GetCurrentUser(c *gin.Context) {
 		core.WriteResponse(c, err, nil)
 		return
 	}
-
-	// 转换头像URL用于展示（优先使用COS链接）
 	if userWithStats.AvatarURL != "" {
 		userWithStats.AvatarURL = util.GetAvatarWithCOS(c, userWithStats.ID, userWithStats.AvatarURL)
 	}
 
-	// 构建响应数据，确保包含id字段（小写）
+	// 构建响应数据，包含 SOP 统计和会员等级
 	response := gin.H{
-		"id":                           userWithStats.ID,
-		"openid":                       userWithStats.OpenID,
-		"unionid":                      userWithStats.UnionID,
-		"phone":                        userWithStats.Phone,
-		"nickname":                     userWithStats.Nickname,
-		"avatar_url":                   userWithStats.AvatarURL,
-		"is_pro":                       userWithStats.IsPro,
-		"membership_type":              userWithStats.MembershipType,
-		"membership_expires":           userWithStats.MembershipExpires,
-		"membership_start_date":        userWithStats.MembershipStartDate,
-		"package_count":                userWithStats.PackageCount,
-		"book_num":                     userWithStats.BookNum,
-		"book_all_num":                 userWithStats.BookAllNum,
-		"monthly_book_count":           userWithStats.MonthlyBookCount,
-		"free_user_monthly_book_count": userWithStats.FreeUserMonthlyBookCount,
-		"free_user_last_reset_date":    userWithStats.FreeUserLastResetDate,
-		"card_num":                     userWithStats.CardNum,
-		"chat_num":                     userWithStats.ChatNum,
-		"created_at":                   userWithStats.CreatedAt,
-		"updated_at":                   userWithStats.UpdatedAt,
+		"id":         userWithStats.ID,
+		"phone":      userWithStats.Phone,
+		"nickname":   userWithStats.Nickname,
+		"avatar_url": userWithStats.AvatarURL,
+		"created_at": userWithStats.CreatedAt,
+		"updated_at": userWithStats.UpdatedAt,
+
+		// SOP 统计与等级信息
+		"user_tier":          userWithStats.GetActualUserTier(),
+		"tier_expires":       userWithStats.TierExpires,
+		"total_sop_runs":     userWithStats.TotalSopRuns,
+		"monthly_sop_runs":   userWithStats.MonthlySopRuns,
+		"remaining_sop_runs": userWithStats.GetRemainingSOPRuns(),
 	}
 
 	core.WriteResponse(c, nil, response)

@@ -10,8 +10,6 @@ import (
 	v1 "numind-server/pkg/api/numind/v1"
 )
 
-const defaultMethods = "(GET)|(POST)|(PUT)|(DELETE)"
-
 // Create 创建一个新的用户.
 func (ctrl *UserController) Create(c *gin.Context) {
 	log.C(c).Infow("Create user function called")
@@ -26,7 +24,7 @@ func (ctrl *UserController) Create(c *gin.Context) {
 
 	// 参数校验
 	if _, err := govalidator.ValidateStruct(r); err != nil {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage(err.Error()), nil)
+		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("%s", err.Error()), nil)
 
 		return
 	}

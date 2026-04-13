@@ -14,6 +14,10 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"numind-server/internal/numind/biz"
+	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/billing"
+	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	mw "numind-server/internal/pkg/middleware"
 	"numind-server/pkg/version/verflag"
@@ -77,14 +81,26 @@ func NewNumindCommand() *cobra.Command {
 
 // run 函数是实际的业务代码入口函数.
 func run() error {
+	// #region agent log
+	log.Infow("[DEBUG] run() function entry", "hypothesisId", "A", "location", "numind.go:79", "runId", "startup")
+	// #endregion
 	// 服务启动打印banner
 	banner := figure.NewColorFigure("Numind Server", "", "green", true)
 	banner.Print()
 
 	// 初始化 store 层
+	// #region agent log
+	log.Infow("[DEBUG] Before initStore", "hypothesisId", "A", "location", "numind.go:85", "runId", "startup")
+	// #endregion
 	if err := initStore(); err != nil {
+		// #region agent log
+		log.Errorw("[DEBUG] initStore failed", "hypothesisId", "A", "location", "numind.go:86", "runId", "startup", "error", err)
+		// #endregion
 		return err
 	}
+	// #region agent log
+	log.Infow("[DEBUG] After initStore success", "hypothesisId", "A", "location", "numind.go:87", "runId", "startup")
+	// #endregion
 
 	// 初始化上传目录 - 暂时注释掉，避免权限问题
 	// if err := initUploadDirectories(); err != nil {
@@ -102,18 +118,69 @@ func run() error {
 
 	// 创建 Gin 引擎
 	g := gin.New()
+	g.MaxMultipartMemory = 256 << 20 // 256MB，支持批量文件上传（最多 5 x 50MB）
 
 	// gin.Recovery() 中间件，用来捕获任何 panic，并恢复
 	mws := []gin.HandlerFunc{gin.Recovery(), mw.NoCache, mw.Cors, mw.Secure, mw.RequestID()}
 
 	g.Use(mws...)
 
+	// #region agent log
+	log.Infow("[DEBUG] Before installNumindRouters", "hypothesisId", "C", "location", "numind.go:111", "runId", "startup")
+	// #endregion
 	if err := installNumindRouters(g); err != nil {
+		// #region agent log
+		log.Errorw("[DEBUG] installNumindRouters failed", "hypothesisId", "C", "location", "numind.go:112", "runId", "startup", "error", err)
+		// #endregion
 		return err
 	}
+	// #region agent log
+	log.Infow("[DEBUG] After installNumindRouters success", "hypothesisId", "C", "location", "numind.go:113", "runId", "startup")
+	// #endregion
 
 	// 创建并运行 HTTP 服务器
+	// #region agent log
+	log.Infow("[DEBUG] Before startInsecureServer", "hypothesisId", "C", "location", "numind.go:116", "runId", "startup")
+	// #endregion
 	httpsrv := startInsecureServer(g)
+	// #region agent log
+	log.Infow("[DEBUG] After startInsecureServer", "hypothesisId", "C", "location", "numind.go:117", "runId", "startup", "serverCreated", true)
+	// #endregion
+
+	// 初始化计费用量记录器
+	billing.InitRecorder(store.S.Billing())
+
+	// 初始化 Langfuse AI 可观测性客户端
+	langfuse.Init(langfuse.LoadConfig())
+
+	// 启动 SOP draft 清理任务（每2小时清理一次超过8小时的草稿）
+	bizLayer := biz.NewBiz(store.S)
+
+	// 启动博主监控 cron 调度器
+	go func() {
+		if err := bizLayer.Monitor().StartScheduler(context.Background()); err != nil {
+			log.Errorw("Failed to start monitor scheduler", "error", err)
+		}
+	}()
+
+	go func() {
+		ticker := time.NewTicker(2 * time.Hour)
+		defer ticker.Stop()
+
+		log.Infow("SOP draft cleanup task started", "interval", "2 hours", "timeout", "8 hours")
+
+		// 启动时立即执行一次清理
+		if err := bizLayer.Sop().CleanupDraftRuns(context.Background(), 8*time.Hour); err != nil {
+			log.Errorw("Initial draft cleanup failed", "error", err)
+		}
+
+		// 然后定期执行
+		for range ticker.C {
+			if err := bizLayer.Sop().CleanupDraftRuns(context.Background(), 8*time.Hour); err != nil {
+				log.Errorw("Draft cleanup failed", "error", err)
+			}
+		}
+	}()
 
 	// 创建并运行 HTTPS 服务器
 	//httpssrv := startSecureServer(g)
@@ -147,6 +214,15 @@ func run() error {
 
 	//grpcsrv.GracefulStop()
 
+	// 优雅关闭博主监控调度器
+	bizLayer.Monitor().StopScheduler()
+
+	// 优雅关闭 Langfuse 客户端
+	langfuse.C.Stop()
+
+	// 优雅关闭计费记录器，确保所有待写入事件落盘
+	billing.R.Stop()
+
 	log.Infow("Server exiting")
 
 	return nil
@@ -155,38 +231,37 @@ func run() error {
 // startInsecureServer 创建并运行 HTTP 服务器.
 func startInsecureServer(g *gin.Engine) *http.Server {
 	// 创建 HTTP Server 实例
-	httpsrv := &http.Server{Addr: viper.GetString("addr"), Handler: g}
+	// 对于 SSE 流式响应，需要设置较长的超时时间
+	httpsrv := &http.Server{
+		Addr:         viper.GetString("addr"),
+		Handler:      g,
+		ReadTimeout:  600 * time.Second,  // 10分钟读取超时（支持长流式响应）
+		WriteTimeout: 1200 * time.Second, // 20分钟写入超时（支持长流式响应）
+		IdleTimeout:  120 * time.Second,  // 2分钟空闲超时
+	}
 
 	// 运行 HTTP 服务器。在 goroutine 中启动服务器，它不会阻止下面的正常关闭处理流程
 	// 打印一条日志，用来提示 HTTP 服务已经起来，方便排障
 	log.Infow("Start to listening the incoming requests on http address", "addr", viper.GetString("addr"))
+	// #region agent log
+	log.Infow("[DEBUG] Before ListenAndServe goroutine", "hypothesisId", "C", "location", "numind.go:267", "runId", "startup", "addr", viper.GetString("addr"))
+	// #endregion
 	go func() {
+		// #region agent log
+		log.Infow("[DEBUG] ListenAndServe goroutine started", "hypothesisId", "C", "location", "numind.go:270", "runId", "startup")
+		// #endregion
 		if err := httpsrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			// #region agent log
+			log.Errorw("[DEBUG] ListenAndServe error", "hypothesisId", "C", "location", "numind.go:272", "runId", "startup", "error", err)
+			// #endregion
 			log.Fatalw(err.Error())
 		}
 	}()
+	// #region agent log
+	log.Infow("[DEBUG] After ListenAndServe goroutine", "hypothesisId", "C", "location", "numind.go:275", "runId", "startup")
+	// #endregion
 
 	return httpsrv
-}
-
-// startSecureServer 创建并运行 HTTPS 服务器.
-func startSecureServer(g *gin.Engine) *http.Server {
-	// 创建 HTTPS Server 实例
-	httpssrv := &http.Server{Addr: viper.GetString("tls.addr"), Handler: g}
-
-	// 运行 HTTPS 服务器。在 goroutine 中启动服务器，它不会阻止下面的正常关闭处理流程
-	// 打印一条日志，用来提示 HTTPS 服务已经起来，方便排障
-	log.Infow("Start to listening the incoming requests on https address", "addr", viper.GetString("tls.addr"))
-	cert, key := viper.GetString("tls.cert"), viper.GetString("tls.key")
-	if cert != "" && key != "" {
-		go func() {
-			if err := httpssrv.ListenAndServeTLS(cert, key); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Fatalw(err.Error())
-			}
-		}()
-	}
-
-	return httpssrv
 }
 
 // startGRPCServer 创建并运行 GRPC 服务器.

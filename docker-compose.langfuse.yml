@@ -1,0 +1,178 @@
+# Langfuse AI 可观测性服务栈
+# 独立于主 docker-compose.yml，避免干扰现有服务
+# 启动: docker compose -f docker-compose.langfuse.yml up -d
+#
+# ��️ 升级说明（从无密码 ClickHouse 迁移）:
+#   如果 ClickHouse 已有数据且之前密码为空，需要先进入容器重置密码：
+#   1. docker exec -it langfuse-clickhouse clickhouse-client
+#   2. ALTER USER default IDENTIFIED BY 'changeme';
+#   3. 然后 docker compose -f docker-compose.langfuse.yml up -d 重启服务
+
+x-langfuse-common: &langfuse-common
+  restart: unless-stopped
+  networks:
+    - numind-network
+
+services:
+  langfuse-web:
+    <<: *langfuse-common
+    image: langfuse/langfuse:3
+    container_name: langfuse-web
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-minio:
+        condition: service_started
+    ports:
+      - "3100:3000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://langfuse:langfuse_pwd@langfuse-postgres:5432/langfuse
+      - CLICKHOUSE_URL=http://langfuse-clickhouse:8123
+      - CLICKHOUSE_MIGRATION_URL=clickhouse://langfuse-clickhouse:9000
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=changeme
+      - REDIS_CONNECTION_STRING=redis://langfuse-redis:6379/0
+      - LANGFUSE_S3_EVENT_UPLOAD_ENABLED=true
+      - LANGFUSE_S3_EVENT_UPLOAD_BUCKET=langfuse
+      - LANGFUSE_S3_EVENT_UPLOAD_REGION=auto
+      - LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT=http://langfuse-minio:9000
+      - LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID=langfuse
+      - LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY=langfuse_minio_pwd
+      - LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE=true
+      - LANGFUSE_S3_MEDIA_UPLOAD_ENABLED=true
+      - LANGFUSE_S3_MEDIA_UPLOAD_BUCKET=langfuse-media
+      - LANGFUSE_S3_MEDIA_UPLOAD_REGION=auto
+      - LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT=http://langfuse-minio:9000
+      - LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID=langfuse
+      - LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY=langfuse_minio_pwd
+      - LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE=true
+      - NEXTAUTH_SECRET=numind-langfuse-secret-key-2025
+      - NEXTAUTH_URL=http://localhost:3100
+      - ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000000
+      - SALT=salt-numind-langfuse
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/public/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  langfuse-worker:
+    <<: *langfuse-common
+    image: langfuse/langfuse-worker:3
+    container_name: langfuse-worker
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-minio:
+        condition: service_started
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://langfuse:langfuse_pwd@langfuse-postgres:5432/langfuse
+      - CLICKHOUSE_URL=http://langfuse-clickhouse:8123
+      - CLICKHOUSE_MIGRATION_URL=clickhouse://langfuse-clickhouse:9000
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=changeme
+      - REDIS_CONNECTION_STRING=redis://langfuse-redis:6379/0
+      - LANGFUSE_S3_EVENT_UPLOAD_ENABLED=true
+      - LANGFUSE_S3_EVENT_UPLOAD_BUCKET=langfuse
+      - LANGFUSE_S3_EVENT_UPLOAD_REGION=auto
+      - LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT=http://langfuse-minio:9000
+      - LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID=langfuse
+      - LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY=langfuse_minio_pwd
+      - LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE=true
+      - LANGFUSE_S3_MEDIA_UPLOAD_ENABLED=true
+      - LANGFUSE_S3_MEDIA_UPLOAD_BUCKET=langfuse-media
+      - LANGFUSE_S3_MEDIA_UPLOAD_REGION=auto
+      - LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT=http://langfuse-minio:9000
+      - LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID=langfuse
+      - LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY=langfuse_minio_pwd
+      - LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE=true
+      - ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000000
+      - SALT=salt-numind-langfuse
+
+  langfuse-postgres:
+    <<: *langfuse-common
+    image: postgres:16-alpine
+    container_name: langfuse-postgres
+    volumes:
+      - langfuse-pg-data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_USER=langfuse
+      - POSTGRES_PASSWORD=langfuse_pwd
+      - POSTGRES_DB=langfuse
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  langfuse-clickhouse:
+    <<: *langfuse-common
+    image: clickhouse/clickhouse-server:24.3
+    container_name: langfuse-clickhouse
+    volumes:
+      - langfuse-ch-data:/var/lib/clickhouse
+      - langfuse-ch-logs:/var/log/clickhouse-server
+      - ./clickhouse-config/keeper.xml:/etc/clickhouse-server/config.d/keeper.xml:ro
+    environment:
+      - CLICKHOUSE_DB=langfuse
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=changeme
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  langfuse-redis:
+    <<: *langfuse-common
+    image: redis:7-alpine
+    container_name: langfuse-redis
+    ports:
+      - "6380:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  langfuse-minio:
+    <<: *langfuse-common
+    image: minio/minio:latest
+    container_name: langfuse-minio
+    ports:
+      - "9190:9000"
+    entrypoint: sh
+    command: >
+      -c 'mkdir -p /data/langfuse /data/langfuse-media && minio server /data --console-address ":9001"'
+    environment:
+      - MINIO_ROOT_USER=langfuse
+      - MINIO_ROOT_PASSWORD=langfuse_minio_pwd
+    volumes:
+      - langfuse-minio-data:/data
+
+volumes:
+  langfuse-pg-data:
+  langfuse-ch-data:
+  langfuse-ch-logs:
+  langfuse-minio-data:
+
+networks:
+  numind-network:
+    external: true

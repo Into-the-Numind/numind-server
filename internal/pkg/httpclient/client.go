@@ -2,6 +2,7 @@ package httpclient
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -24,6 +25,7 @@ type Config struct {
 	TLSHandshakeTimeout   time.Duration `yaml:"tls_handshake_timeout"`
 	IdleConnTimeout       time.Duration `yaml:"idle_conn_timeout"`
 	MaxIdleConns          int           `yaml:"max_idle_conns"`
+	MaxIdleConnsPerHost   int           `yaml:"max_idle_conns_per_host"`
 	MaxRetries            int           `yaml:"max_retries"`
 	RetryDelay            time.Duration `yaml:"retry_delay"`
 	RetryBackoff          float64       `yaml:"retry_backoff"`
@@ -40,6 +42,7 @@ func DefaultConfig() *Config {
 		TLSHandshakeTimeout:   10 * time.Second,
 		IdleConnTimeout:       90 * time.Second,
 		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
 		MaxRetries:            3,
 		RetryDelay:            1 * time.Second,
 		RetryBackoff:          2.0,
@@ -66,6 +69,7 @@ func NewClient(config *Config) *Client {
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		MaxIdleConns:          config.MaxIdleConns,
+		MaxIdleConnsPerHost:   config.MaxIdleConnsPerHost,
 		IdleConnTimeout:       config.IdleConnTimeout,
 		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
 		ResponseHeaderTimeout: config.ResponseHeaderTimeout,
@@ -136,17 +140,32 @@ func (c *Client) Do(req *Request) (*http.Response, error) {
 		req.RetryPolicy = DefaultRetryPolicy()
 	}
 
+	// 预读 body 以支持重试时重建 reader（io.Reader 读取后即耗尽）
+	var bodyBytes []byte
+	if req.Body != nil {
+		var err error
+		bodyBytes, err = io.ReadAll(req.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read request body: %w", err)
+		}
+	}
+
 	var lastErr error
 	delay := req.RetryPolicy.RetryDelay
 
 	for attempt := 0; attempt <= req.RetryPolicy.MaxRetries; attempt++ {
-		httpReq, err := http.NewRequestWithContext(req.Context, req.Method, req.URL, req.Body)
+		var bodyReader io.Reader
+		if bodyBytes != nil {
+			bodyReader = bytes.NewReader(bodyBytes)
+		}
+
+		httpReq, err := http.NewRequestWithContext(req.Context, req.Method, req.URL, bodyReader)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
 
 		httpReq.Header.Set("User-Agent", c.config.UserAgent)
-		if req.Body != nil {
+		if bodyBytes != nil {
 			httpReq.Header.Set("Content-Type", "application/json")
 		}
 
@@ -156,20 +175,25 @@ func (c *Client) Do(req *Request) (*http.Response, error) {
 
 		resp, err := c.client.Do(httpReq)
 		if err == nil {
-			return resp, nil
+			if c.shouldRetryByStatus(resp.StatusCode) && attempt < req.RetryPolicy.MaxRetries {
+				log.C(req.Context).Infow("HTTP request failed with status, retrying",
+					"status", resp.StatusCode,
+					"attempt", attempt+1,
+					"delay", delay)
+				resp.Body.Close()
+			} else {
+				return resp, nil
+			}
+		} else {
+			lastErr = err
+			if !c.shouldRetry(err, attempt, req.RetryPolicy) {
+				break
+			}
+			log.C(req.Context).Infow("HTTP request failed with error, retrying",
+				"attempt", attempt+1,
+				"error", err.Error(),
+				"delay", delay)
 		}
-
-		lastErr = err
-
-		if !c.shouldRetry(err, attempt, req.RetryPolicy) {
-			break
-		}
-
-		log.Infow("HTTP request failed, retrying",
-			"attempt", attempt+1,
-			"max_retries", req.RetryPolicy.MaxRetries,
-			"error", err.Error(),
-			"delay", delay)
 
 		select {
 		case <-req.Context.Done():
@@ -202,16 +226,29 @@ func (c *Client) DoWithJSONResponse(req *Request) ([]byte, error) {
 	return processor.ProcessResponse(resp)
 }
 
-// shouldRetry 判断是否应该重试
+// shouldRetry 判断是否应该重试（基于错误）
 func (c *Client) shouldRetry(err error, attempt int, policy *RetryPolicy) bool {
 	if attempt >= policy.MaxRetries {
 		return false
 	}
 
 	if netErr, ok := err.(net.Error); ok {
-		return netErr.Temporary() || netErr.Timeout()
+		return netErr.Timeout()
 	}
 
+	return false
+}
+
+// shouldRetryByStatus 判断是否应该根据状态码重试
+func (c *Client) shouldRetryByStatus(statusCode int) bool {
+	// 429 Too Many Requests
+	if statusCode == http.StatusTooManyRequests {
+		return true
+	}
+	// 5xx Server Errors
+	if statusCode >= 500 && statusCode <= 599 {
+		return true
+	}
 	return false
 }
 
@@ -244,6 +281,11 @@ func (c *Client) StreamRequest(req *Request) (<-chan StreamResponse, error) {
 		for scanner.Scan() {
 			line := scanner.Text()
 
+			// 过滤 SSE 注释行（以 : 开头）和空行，防止心跳等注释内容混入输出
+			if strings.HasPrefix(line, ":") || line == "" {
+				continue
+			}
+
 			if strings.HasPrefix(line, "data: ") {
 				data := strings.TrimPrefix(line, "data: ")
 				if data == "[DONE]" {
@@ -252,7 +294,7 @@ func (c *Client) StreamRequest(req *Request) (<-chan StreamResponse, error) {
 				}
 
 				stream <- StreamResponse{Data: []byte(data)}
-			} else if line != "" {
+			} else {
 				stream <- StreamResponse{Data: []byte(line)}
 			}
 		}

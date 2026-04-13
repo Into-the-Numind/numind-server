@@ -16,16 +16,9 @@ type ConfigDefinition struct {
 
 // GetManagedConfigDefinitions 获取需要管理的配置项定义列表
 // 这些配置项会在程序启动时与数据库同步
-// 包含 volc、ali、ai_prompts 节点下的所有配置项
+// 包含 volc、ali 节点下的 AI 工作台相关配置项
 func GetManagedConfigDefinitions() []ConfigDefinition {
 	return []ConfigDefinition{
-		// AI提示词配置
-		{
-			Key:          "ai_prompts.text_processing",
-			Title:        "AI文本处理提示词",
-			DefaultValue: getDefaultValue("ai_prompts.text_processing", ""),
-			Description:  "AI文本处理提示词，用于指导AI如何处理用户输入的文本内容。此提示词定义了AI在处理笔记时的行为规则和输出格式要求。",
-		},
 		// 火山引擎配置
 		{
 			Key:          "volc.api_key",
@@ -76,13 +69,7 @@ func GetManagedConfigDefinitions() []ConfigDefinition {
 			DefaultValue: getDefaultValue("ali.api_key", ""),
 			Description:  "阿里云文本服务API密钥，用于身份验证。",
 		},
-		{
-			Key:          "ali.api_url",
-			Title:        "阿里云API地址",
-			DefaultValue: getDefaultValue("ali.api_url", "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"),
-			Description:  "阿里云API的统一地址。",
-		},
-		// 阿里云文本生成服务
+		// 阿里云文本生成服务（火山引擎降级备选）
 		{
 			Key:          "ali.text.model",
 			Title:        "阿里云文本模型",
@@ -94,38 +81,6 @@ func GetManagedConfigDefinitions() []ConfigDefinition {
 			Title:        "阿里云文本生成超时时间",
 			DefaultValue: getDefaultValue("ali.text.timeout", "180s"),
 			Description:  "阿里云文本生成服务的超时时间。",
-		},
-		// 阿里云图像生成服务
-		{
-			Key:          "ali.image.api_key",
-			Title:        "阿里云图像服务API密钥",
-			DefaultValue: getDefaultValue("ali.image.api_key", ""),
-			Description:  "阿里云图像生成服务专用的API密钥。",
-		},
-		{
-			Key:          "ali.image.model",
-			Title:        "阿里云图像生成模型",
-			DefaultValue: getDefaultValue("ali.image.model", "wanx2.1-t2i-turbo"),
-			Description:  "阿里云图像生成模型名称（万象模型）。",
-		},
-		{
-			Key:          "ali.image.timeout",
-			Title:        "阿里云图像生成超时时间",
-			DefaultValue: getDefaultValue("ali.image.timeout", "180s"),
-			Description:  "阿里云图像生成服务的超时时间。",
-		},
-		// 阿里云Stable Diffusion服务
-		{
-			Key:          "ali.stable_diffusion.model",
-			Title:        "阿里云Stable Diffusion模型",
-			DefaultValue: getDefaultValue("ali.stable_diffusion.model", "stable-diffusion-3.5-large-turbo"),
-			Description:  "阿里云Stable Diffusion模型名称。",
-		},
-		{
-			Key:          "ali.stable_diffusion.timeout",
-			Title:        "阿里云Stable Diffusion超时时间",
-			DefaultValue: getDefaultValue("ali.stable_diffusion.timeout", "300s"),
-			Description:  "阿里云Stable Diffusion服务的超时时间（5分钟）。",
 		},
 	}
 }

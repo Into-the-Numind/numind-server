@@ -19,11 +19,11 @@ func CompressRequest(data interface{}) ([]byte, error) {
 	// 使用gzip压缩
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
-	
+
 	if _, err := gw.Write(jsonData); err != nil {
 		return nil, fmt.Errorf("failed to write to gzip writer: %w", err)
 	}
-	
+
 	if err := gw.Close(); err != nil {
 		return nil, fmt.Errorf("failed to close gzip writer: %w", err)
 	}
@@ -35,11 +35,11 @@ func CompressRequest(data interface{}) ([]byte, error) {
 func CompressText(text string) ([]byte, error) {
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
-	
+
 	if _, err := gw.Write([]byte(text)); err != nil {
 		return nil, fmt.Errorf("failed to write text to gzip writer: %w", err)
 	}
-	
+
 	if err := gw.Close(); err != nil {
 		return nil, fmt.Errorf("failed to close gzip writer: %w", err)
 	}
@@ -74,7 +74,7 @@ func CompressMessages(messages []map[string]string) ([]byte, error) {
 
 	// 计算压缩率
 	compressionRatio := float64(len(compressedData)) / float64(originalSize) * 100
-	
+
 	// 如果压缩效果不好（压缩后反而更大），返回原始数据
 	if compressionRatio > 90 {
 		jsonData, err := json.Marshal(messages)
@@ -102,7 +102,7 @@ func CompressPrompt(prompt string) ([]byte, error) {
 
 	// 计算压缩率
 	compressionRatio := float64(len(compressedData)) / float64(len(prompt)) * 100
-	
+
 	// 如果压缩效果不好，返回原始数据
 	if compressionRatio > 90 {
 		return []byte(prompt), nil
@@ -146,10 +146,10 @@ func isGzipCompressed(data []byte) bool {
 func GetCompressionStats(originalData, compressedData []byte) map[string]interface{} {
 	originalSize := len(originalData)
 	compressedSize := len(compressedData)
-	
+
 	compressionRatio := float64(compressedSize) / float64(originalSize) * 100
 	bytesSaved := originalSize - compressedSize
-	
+
 	return map[string]interface{}{
 		"original_size":     originalSize,
 		"compressed_size":   compressedSize,

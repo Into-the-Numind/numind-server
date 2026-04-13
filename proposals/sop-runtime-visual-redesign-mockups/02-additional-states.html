@@ -1,0 +1,1434 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>莫小派 · SOP 运行页 · 方案 γ v2 · 补充状态 C D E F</title>
+<style>
+  :root {
+    /* background & surface — ALL WHITE */
+    --bg: #FFFFFF;          /* page background */
+    --surface: #FFFFFF;     /* all cards, header, nav, inputs */
+    --surface-hover: #F4F5F8;  /* subtle hover state only */
+
+    /* text */
+    --text: #1A1D26;
+    --text-secondary: #5F6577;
+    --text-muted: #8B90A0;
+
+    /* brand */
+    --accent: hsl(160, 75%, 44%);
+    --accent-hover: hsl(160, 75%, 38%);
+    --accent-soft: hsl(160, 60%, 93%);
+    --accent-light: hsl(160, 70%, 68%);
+    --accent-link: hsl(160, 75%, 38%);
+    --accent-ultra-soft: hsl(160, 60%, 95%);
+    --primary: hsl(160, 72%, 40%);
+    --primary-hover: hsl(160, 72%, 34%);
+    --primary-foreground: #FFFFFF;
+
+    /* borders */
+    --border: #E2E4EA;
+    --border-light: #EEEFF3;
+    --divider: #F0F1F5;
+
+    /* spacing */
+    --space-xs: 4px;
+    --space-sm: 8px;
+    --space-md: 12px;
+    --space-lg: 16px;
+    --space-xl: 24px;
+    --space-2xl: 32px;
+    --space-3xl: 40px;
+    --space-4xl: 48px;
+
+    /* radius */
+    --radius-sm: 6px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-xl: 20px;
+    --radius-pill: 999px;
+
+    /* shadow */
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.03);
+    --shadow-md: 0 2px 8px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04);
+    --shadow-lg: 0 8px 24px rgba(0,0,0,0.06), 0 2px 8px rgba(0,0,0,0.03);
+    --shadow-focus: 0 0 0 4px hsl(158 50% 92% / 0.5);
+
+    /* fonts — sans is default for ALL UI */
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+                 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', sans-serif;
+    --font-serif: Georgia, 'Times New Roman', 'Songti SC', 'SimSun', serif;
+    --font-mono: 'JetBrains Mono', SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+    /* transitions */
+    --transition-fast: 150ms ease;
+    --transition-base: 250ms ease;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------- page scaffold ---------- */
+  .page {
+    width: 1440px;
+    margin: 0 auto;
+    padding: 48px 24px 80px;
+  }
+
+  .stage-label {
+    font-family: var(--font-sans);
+    font-size: 13px;
+    color: var(--text-muted);
+    margin: 0 0 14px 4px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .stage-label strong {
+    color: var(--primary);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    padding: 3px 9px;
+    border: 1px solid var(--accent-soft);
+    background: var(--accent-ultra-soft);
+    border-radius: var(--radius-pill);
+    font-weight: 600;
+  }
+  .stage-label span.desc {
+    color: var(--text-secondary);
+    font-size: 13px;
+  }
+
+  .app {
+    width: 1392px;
+    margin: 0 auto 56px;
+    background: var(--surface);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+  }
+
+  /* ---------- header (slim, 3 items only) ---------- */
+  .header {
+    height: 56px;
+    display: flex;
+    align-items: center;
+    padding: 0 24px;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--surface);
+    gap: 20px;
+  }
+  .header__back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    padding: 6px 10px 6px 6px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background var(--transition-fast);
+  }
+  .header__back:hover { background: var(--surface-hover); color: var(--text); }
+
+  .header__divider {
+    width: 1px;
+    height: 18px;
+    background: var(--divider);
+  }
+
+  .header__title {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: 0.01em;
+  }
+
+  .header__right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .icon-btn {
+    width: 32px; height: 32px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background var(--transition-fast);
+  }
+  .icon-btn:hover { background: var(--surface-hover); color: var(--text); }
+
+  /* ---------- body split ---------- */
+  .body {
+    display: grid;
+    grid-template-columns: 264px 1fr;
+    min-height: 780px;
+  }
+
+  /* ---------- left nav (no brand header) ---------- */
+  .nav {
+    border-right: 1px solid var(--border-light);
+    background: var(--surface);
+    padding: 20px 14px 16px;
+    display: flex;
+    flex-direction: column;
+  }
+  .nav__group-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    padding: 6px 10px 8px;
+  }
+  .nav__group-label:not(:first-child) {
+    padding-top: 18px;
+  }
+
+  .step {
+    position: relative;
+    padding: 12px 12px 12px 16px;
+    margin: 2px 0;
+    border-radius: var(--radius-md);
+    display: grid;
+    grid-template-columns: 22px 1fr;
+    gap: 10px;
+    cursor: pointer;
+    transition: background var(--transition-fast);
+  }
+  .step:hover { background: var(--surface-hover); }
+  .step__marker {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 1px;
+  }
+  .step__dot {
+    width: 22px; height: 22px;
+    border-radius: var(--radius-pill);
+    border: 1.5px solid var(--border);
+    background: var(--surface);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+  .step--done .step__dot {
+    border-color: var(--primary);
+    background: var(--primary);
+    color: #fff;
+  }
+  .step--active .step__dot {
+    border-color: var(--primary);
+    background: var(--accent-ultra-soft);
+    color: var(--primary-hover);
+    box-shadow: var(--shadow-focus);
+  }
+  .step--disabled .step__dot {
+    border-style: dashed;
+  }
+
+  .step__body .step__title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0 0 3px;
+    line-height: 1.35;
+  }
+  .step__body .step__desc {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    line-height: 1.45;
+    margin: 0;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .step__status {
+    font-size: 10.5px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    letter-spacing: 0.01em;
+    margin-top: 5px;
+  }
+  .step__status.is-live {
+    color: var(--primary);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .step__status.is-live::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--primary);
+    animation: pulse-dot 1.4s ease-in-out infinite;
+  }
+
+  .step--active {
+    background: var(--accent-ultra-soft);
+  }
+  .step--active::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 8px;
+    bottom: 8px;
+    width: 3px;
+    background: var(--primary);
+    border-radius: 0 3px 3px 0;
+  }
+  .step--active .step__title { color: var(--primary-hover); }
+
+  .step--disabled { opacity: 0.52; cursor: not-allowed; }
+  .step--disabled .step__title { color: var(--text-secondary); }
+
+  /* viewing state — neutral grey, no amber */
+  .step--viewing {
+    background: var(--surface);
+    border: 1px solid var(--border);
+  }
+  .step--viewing::before {
+    content: "";
+    position: absolute;
+    left: -1px;
+    top: 8px;
+    bottom: 8px;
+    width: 3px;
+    background: var(--text-muted);
+    border-radius: 0 3px 3px 0;
+  }
+  .step--pending-return {
+    background: transparent;
+    border: 1px dashed var(--accent-light);
+  }
+  .step--pending-return::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 8px;
+    bottom: 8px;
+    width: 3px;
+    background: var(--accent-light);
+    border-radius: 0 3px 3px 0;
+    opacity: 0.6;
+  }
+  .step--pending-return .step__title { color: var(--primary-hover); }
+
+  /* ---------- main area ---------- */
+  .main {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+  }
+
+  .canvas {
+    padding: 40px 56px 48px;
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* ---------- step header ---------- */
+  .step-header {
+    max-width: 980px;
+    margin-bottom: 24px;
+  }
+  .step-header__title {
+    font-family: var(--font-sans);
+    font-size: 22px;
+    font-weight: 600;
+    margin: 0 0 8px;
+    color: var(--text);
+    letter-spacing: -0.005em;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .step-header__title .check {
+    width: 24px; height: 24px;
+    border-radius: var(--radius-pill);
+    background: var(--primary);
+    color: #fff;
+    display: inline-flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .step-header__desc {
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    margin: 0;
+    max-width: 720px;
+  }
+
+  /* ---------- input card ---------- */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    padding: 22px 24px;
+    max-width: 980px;
+    margin-bottom: 20px;
+  }
+  .card__label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0 0 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .card__label .hint { font-weight: 400; color: var(--text-muted); font-size: 12px; }
+
+  textarea.input {
+    width: 100%;
+    min-height: 200px;
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    padding: 16px 18px;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    color: var(--text);
+    line-height: 1.65;
+    resize: vertical;
+    transition: all var(--transition-base);
+  }
+  textarea.input::placeholder { color: var(--text-muted); }
+  textarea.input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: var(--shadow-focus);
+  }
+  textarea.input.is-locked {
+    background: var(--surface-hover);
+    color: var(--text-secondary);
+    cursor: not-allowed;
+  }
+
+  .toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 14px;
+    gap: 12px;
+  }
+  .toolbar__left { display: flex; gap: 10px; align-items: center; }
+  .toolbar__right { display: flex; gap: 10px; align-items: center; }
+  .toolbar .count {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .upload {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    color: var(--text-secondary);
+    border: 1px dashed var(--border);
+    background: var(--surface);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+  }
+  .upload:hover { border-color: var(--accent-light); color: var(--primary-hover); background: var(--accent-ultra-soft); }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 9px 18px;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 600;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: all var(--transition-base);
+    font-family: var(--font-sans);
+  }
+  .btn--primary {
+    background: var(--primary);
+    color: var(--primary-foreground);
+    box-shadow: 0 1px 2px hsl(160 72% 30% / 0.18);
+  }
+  .btn--primary:hover { background: var(--primary-hover); }
+  .btn--primary.is-loading {
+    background: var(--primary-hover);
+    opacity: 0.82;
+    cursor: not-allowed;
+  }
+  .btn--primary.is-loading .spinner {
+    animation: spin 0.9s linear infinite;
+  }
+  .btn--ghost {
+    background: var(--surface);
+    color: var(--text-secondary);
+    border-color: var(--border);
+  }
+  .btn--ghost:hover { color: var(--text); background: var(--surface-hover); }
+
+  /* output placeholder */
+  .output-empty {
+    max-width: 980px;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    padding: 36px 32px;
+    text-align: center;
+    color: var(--text-muted);
+  }
+  .output-empty .glyph {
+    width: 36px; height: 36px;
+    border-radius: var(--radius-pill);
+    background: var(--surface);
+    border: 1px solid var(--border-light);
+    color: var(--text-muted);
+    display: inline-flex; align-items: center; justify-content: center;
+    margin-bottom: 10px;
+  }
+  .output-empty h4 {
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin: 0 0 4px;
+  }
+  .output-empty p {
+    font-size: 12px;
+    margin: 0;
+    color: var(--text-muted);
+  }
+
+  /* ---------- output block ---------- */
+  .output {
+    max-width: 980px;
+    background: var(--surface);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+    overflow: hidden;
+    margin-bottom: 20px;
+  }
+  .output--streaming {
+    border-color: var(--accent-soft);
+    box-shadow: 0 2px 8px hsl(160 72% 40% / 0.08), 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .output__head {
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border-light);
+  }
+  .output__head-left {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+  .output__head-left .sparkle { color: var(--primary); }
+  .output__head-left .live-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: var(--primary);
+    animation: pulse-dot 1.4s ease-in-out infinite;
+    margin-left: 2px;
+  }
+  .output__head-left .live-label {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--primary);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .output__head-right {
+    display: inline-flex; align-items: center; gap: 2px;
+  }
+  .tiny-btn {
+    padding: 5px 10px;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    display: inline-flex; align-items: center; gap: 4px;
+    transition: all var(--transition-fast);
+    font-family: var(--font-sans);
+  }
+  .tiny-btn:hover { background: var(--surface); border-color: var(--border); color: var(--text); }
+  .tiny-btn--star.is-active { color: var(--primary); }
+  .tiny-btn--star.is-active:hover { color: var(--primary-hover); background: var(--accent-ultra-soft); border-color: var(--accent-soft); }
+
+  .output__body {
+    padding: 28px 40px 32px;
+    max-height: 620px;
+    overflow-y: auto;
+  }
+
+  /* Markdown body — sans only */
+  .md h1 {
+    font-family: var(--font-sans);
+    font-size: 26px;
+    font-weight: 600;
+    margin: 0 0 16px;
+    letter-spacing: 0.01em;
+    color: var(--text);
+  }
+  .md h2 {
+    font-family: var(--font-sans);
+    font-size: 18px;
+    font-weight: 600;
+    margin: 26px 0 12px;
+    color: var(--text);
+  }
+  .md p {
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.8;
+    color: var(--text);
+    margin: 0 0 14px;
+  }
+  .md strong { color: var(--text); font-weight: 700; }
+  .md .tagline {
+    font-family: var(--font-sans);
+    font-size: 16px;
+    color: var(--primary-hover);
+    font-weight: 600;
+    margin: 0 0 16px;
+  }
+  .md ul {
+    margin: 0 0 14px;
+    padding-left: 20px;
+  }
+  .md li {
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.8;
+    color: var(--text);
+    margin-bottom: 6px;
+  }
+  .md li::marker { color: var(--accent); }
+  .md .coda {
+    margin-top: 22px;
+    padding-top: 18px;
+    border-top: 1px solid var(--divider);
+    font-family: var(--font-sans);
+    font-size: 14.5px;
+    color: var(--text-secondary);
+    line-height: 1.8;
+  }
+  .md .caret {
+    display: inline-block;
+    width: 2px;
+    height: 1.05em;
+    vertical-align: text-bottom;
+    background: var(--primary);
+    margin-left: 2px;
+    animation: caret-blink 1s steps(1) infinite;
+  }
+
+  /* output footer */
+  .output__foot {
+    padding: 12px 20px;
+    border-top: 1px solid var(--border-light);
+    background: var(--surface);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--text-muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+  }
+  .output__foot .sep { color: var(--border); }
+  .output__foot span { display: inline-flex; align-items: center; gap: 5px; }
+
+  /* ---------- action row (state E) — primary actions below output ---------- */
+  .action-row {
+    max-width: 980px;
+    margin-top: 20px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+  }
+
+  /* ---------- chat (state F) — fills main area, no step-header ---------- */
+  .chat {
+    /* fill main area completely; no max-width, no card chrome */
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 620px;
+  }
+  /* state F main area: chat fills it entirely, no canvas padding waste */
+  .main--chat .canvas {
+    padding: 24px 28px;
+    display: flex;
+    flex-direction: column;
+  }
+  .chat__history {
+    flex: 1;
+    padding: 28px 32px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    overflow-y: auto;
+    background: var(--surface);
+  }
+  .msg {
+    display: flex;
+    gap: 10px;
+    max-width: 78%;
+  }
+  .msg--user {
+    align-self: flex-end;
+    flex-direction: row-reverse;
+  }
+  .msg--ai {
+    align-self: flex-start;
+  }
+  .avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-pill);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 600;
+    flex-shrink: 0;
+    margin-top: 2px;
+    letter-spacing: 0.02em;
+  }
+  .msg--user .avatar {
+    background: var(--accent-ultra-soft);
+    color: var(--primary-hover);
+    border: 1px solid var(--accent-soft);
+  }
+  .msg--ai .avatar {
+    background: var(--surface);
+    color: var(--primary);
+    border: 1px solid var(--accent-soft);
+  }
+  .bubble {
+    padding: 12px 16px;
+    border-radius: var(--radius-md);
+    font-size: 14px;
+    line-height: 1.65;
+    word-break: break-word;
+  }
+  .msg--user .bubble {
+    background: var(--primary);
+    color: var(--primary-foreground);
+    border-top-right-radius: 4px;
+    box-shadow: 0 1px 2px hsl(160 72% 30% / 0.18);
+  }
+  .msg--ai .bubble {
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-top-left-radius: 4px;
+  }
+  .msg--ai .bubble p {
+    margin: 0 0 8px;
+    font-size: 14px;
+    line-height: 1.7;
+  }
+  .msg--ai .bubble p:last-child { margin-bottom: 0; }
+  .msg--ai .bubble strong { color: var(--text); font-weight: 700; }
+  .msg__meta {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--text-muted);
+    margin-top: 6px;
+    letter-spacing: 0.01em;
+  }
+  .msg--user .msg__meta { text-align: right; }
+
+  .chat__composer {
+    border-top: 1px solid var(--border-light);
+    background: var(--surface);
+    padding: 14px 18px 16px;
+    display: flex;
+    gap: 12px;
+    align-items: flex-end;
+  }
+  .chat__composer textarea {
+    flex: 1;
+    min-height: 52px;
+    max-height: 140px;
+    border: 1.5px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    padding: 12px 14px;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    color: var(--text);
+    line-height: 1.6;
+    resize: none;
+    transition: all var(--transition-base);
+  }
+  .chat__composer textarea::placeholder { color: var(--text-muted); }
+  .chat__composer textarea:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: var(--shadow-focus);
+  }
+  .chat__composer .btn { flex-shrink: 0; padding: 11px 20px; }
+
+  /* ---------- helpers & animations ---------- */
+  svg { display: block; }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.45; transform: scale(0.85); }
+  }
+  @keyframes caret-blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  /* divider between states */
+  .state-divider {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    font-weight: 600;
+    margin: 48px auto 20px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    width: 1392px;
+  }
+  .state-divider::before, .state-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border), transparent);
+  }
+</style>
+</head>
+<body>
+
+<!-- SVG icon defs (Lucide) -->
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="i-arrow-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>
+    </symbol>
+    <symbol id="i-arrow-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 6 9 17l-5-5"/>
+    </symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect width="14" height="14" x="8" y="8" rx="2" ry="2"/>
+      <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>
+    </symbol>
+    <symbol id="i-paperclip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 17.93 8.83l-8.58 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+    </symbol>
+    <symbol id="i-sparkles" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/>
+    </symbol>
+    <symbol id="i-message" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/>
+    </symbol>
+    <symbol id="i-rotate" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+      <path d="M21 3v5h-5"/>
+    </symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+    </symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect width="16" height="16" x="4" y="4" rx="2"/>
+      <rect x="9" y="9" width="6" height="6"/>
+      <path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/>
+    </symbol>
+    <symbol id="i-history" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>
+    </symbol>
+    <symbol id="i-coin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/><path d="M9 10a3 3 0 0 1 6 0"/><path d="M9 14a3 3 0 0 0 6 0"/>
+    </symbol>
+    <symbol id="i-loader" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+    </symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+      <rect x="6" y="6" width="12" height="12" rx="1.5"/>
+    </symbol>
+    <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/>
+      <path d="m21.854 2.147-10.94 10.939"/>
+    </symbol>
+    <symbol id="i-star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+    </symbol>
+    <symbol id="i-star-fill" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+    </symbol>
+  </defs>
+</svg>
+
+<!-- ================================================== STATE C ================================================== -->
+<div class="page">
+  <div class="stage-label">
+    <strong>状态 C · Draft 入口</strong>
+    <span class="desc">用户刚进入页面 · 左 nav 高亮 Step 1 · 主区聚焦 Step 1 输入任务 · 后续步骤待解锁</span>
+  </div>
+
+  <div class="app">
+    <div class="header">
+      <div class="header__back">
+        <svg width="16" height="16"><use href="#i-arrow-left"/></svg> 返回首页
+      </div>
+      <div class="header__divider"></div>
+      <h1 class="header__title">文章优化助手</h1>
+      <div class="header__right">
+        <div class="icon-btn" title="运行历史">
+          <svg width="16" height="16"><use href="#i-history"/></svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="body">
+      <aside class="nav">
+        <div class="nav__group-label">主流程</div>
+
+        <!-- Step 1 — active (entry point) -->
+        <div class="step step--active">
+          <div class="step__marker">
+            <span class="step__dot">1</span>
+          </div>
+          <div class="step__body">
+            <div class="step__title">步骤优化 1</div>
+            <div class="step__desc">把粗糙描述润色成可交付的文案</div>
+            <div class="step__status">等待输入</div>
+          </div>
+        </div>
+
+        <div class="step step--disabled">
+          <div class="step__marker">
+            <span class="step__dot">2</span>
+          </div>
+          <div class="step__body">
+            <div class="step__title">步骤优化 2</div>
+            <div class="step__desc">基于上一步的优化结果，进一步精炼措辞，让表达更有冲击力</div>
+            <div class="step__status">等待解锁</div>
+          </div>
+        </div>
+
+        <div class="step step--disabled">
+          <div class="step__marker">
+            <span class="step__dot">3</span>
+          </div>
+          <div class="step__body">
+            <div class="step__title">步骤优化 3</div>
+            <div class="step__desc">产出多条标题方案</div>
+            <div class="step__status">等待解锁</div>
+          </div>
+        </div>
+
+        <div class="nav__group-label">追问</div>
+
+        <div class="step step--disabled">
+          <div class="step__marker">
+            <span class="step__dot"><svg width="11" height="11"><use href="#i-message"/></svg></span>
+          </div>
+          <div class="step__body">
+            <div class="step__title">继续问 AI</div>
+            <div class="step__desc">针对结果继续追问</div>
+            <div class="step__status">完成主流程后开启</div>
+          </div>
+        </div>
+      </aside>
+
+      <section class="main">
+        <div class="canvas">
+          <div class="step-header">
+            <h2 class="step-header__title">步骤优化 1</h2>
+            <p class="step-header__desc">把粗糙描述润色成可交付的文案。</p>
+          </div>
+
+          <div class="card">
+            <div class="card__label">
+              <span>你的原始描述</span>
+              <span class="hint">必填 · 直接粘贴草稿即可</span>
+            </div>
+            <textarea class="input" placeholder="粘贴你想要优化的原始文案；或者简单描述你要写什么，例如：帮我写一段介绍莫小派的文案，给企业客户看的…"></textarea>
+            <div class="toolbar">
+              <div class="toolbar__left">
+                <button class="upload">
+                  <svg width="13" height="13"><use href="#i-paperclip"/></svg>
+                  上传参考文件
+                </button>
+                <span class="count">0 / 2000</span>
+              </div>
+              <div class="toolbar__right">
+                <button class="btn btn--primary">
+                  <svg width="14" height="14"><use href="#i-sparkles"/></svg>
+                  执行这一步
+                </button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ================================================== STATE D ================================================== -->
+  <div class="state-divider">状态 D · 执行中流式</div>
+
+  <div class="stage-label">
+    <strong>状态 D · 执行中流式</strong>
+    <span class="desc">用户已提交 · 输入区隐藏（执行后不可改） · 主区只剩流式输出 + 停止生成 · 左 nav Step 2 显示 generating</span>
+  </div>
+
+  <div class="app">
+    <div class="header">
+      <div class="header__back">
+        <svg width="16" height="16"><use href="#i-arrow-left"/></svg> 返回首页
+      </div>
+      <div class="header__divider"></div>
+      <h1 class="header__title">文章优化助手</h1>
+      <div class="header__right">
+        <div class="icon-btn" title="运行历史">
+          <svg width="16" height="16"><use href="#i-history"/></svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="body">
+      <aside class="nav">
+        <div class="nav__group-label">主流程</div>
+
+        <div class="step step--done">
+          <div class="step__marker">
+            <span class="step__dot"><svg width="12" height="12"><use href="#i-check"/></svg></span>
+          </div>
+          <div class="step__body">
+            <div class="step__title">步骤优化 1</div>
+            <div class="step__desc">把粗糙描述润色成可交付的文案</div>
+            <div class="step__status">已完成 · 7.4s</div>
+          </div>
+        </div>
+
+        <!-- Step 2 — active + generating -->
+        <div class="step step--active">
+          <div class="step__marker">
+            <span class="step__dot">2</span>
+          </div>
+          <div class="step__body">
+            <div class="step__title">步骤优化 2</div>
+            <div class="step__desc">基于上一步的优化结果，进一步精炼措辞，让表达更有冲击力</div>
+            <div class="step__status is-live">生成中…</div>
+          </div>
+        </div>
+
+        <div class="step step--disabled">
+          <div class="step__marker">
+            <span class="step__dot">3</span>
+          </div>
+          <div class="step__body">
+            <div class="step__title">步骤优化 3</div>
+            <div class="step__desc">产出多条标题方案</div>
+            <div class="step__status">等待解锁</div>
+          </div>
+        </div>
+
+        <div class="nav__group-label">追问</div>
+
+        <div class="step step--disabled">
+          <div class="step__marker">
+            <span class="step__dot"><svg width="11" height="11"><use href="#i-message"/></svg></span>
+          </div>
+          <div class="step__body">
+            <div class="step__title">继续问 AI</div>
+            <div class="step__desc">针对结果继续追问</div>
+            <div class="step__status">完成主流程后开启</div>
+          </div>
+        </div>
+      </aside>
+
+      <section class="main">
+        <div class="canvas">
+          <div class="step-header">
+            <h2 class="step-header__title">步骤优化 2</h2>
+            <p class="step-header__desc">基于上一步的优化结果，进一步精炼措辞，让表达更有冲击力。</p>
+          </div>
+
+          <!-- OUTPUT — streaming (input card removed: 执行后不可修改) -->
+          <div class="output output--streaming">
+            <div class="output__head">
+              <div class="output__head-left">
+                <span class="sparkle"><svg width="14" height="14"><use href="#i-sparkles"/></svg></span>
+                AI 输出
+                <span class="live-dot"></span>
+                <span class="live-label">live</span>
+              </div>
+              <div class="output__head-right">
+                <button class="btn btn--ghost">
+                  <svg width="12" height="12"><use href="#i-stop"/></svg>
+                  停止生成
+                </button>
+              </div>
+            </div>
+            <div class="output__body">
+              <div class="md">
+                <h1>莫小派</h1>
+                <p class="tagline">一个打工人，顶替整个 SOP 部门。</p>
+                <p>AI 工作流 × 智能体 × 知识库，三合一全能工作台——你负责摸鱼，它负责把企业标准流程跑得比你还勤快。</p>
+
+                <h2>它能干什么</h2>
+                <ul>
+                  <li><strong>AI 工作流</strong>：把你脑子里那套"先做 A 再做 B 最后产出 C"的标准动作，一次配好，往后每次只点一下"运行"</li>
+                  <li><strong>智能体</strong>：B 端配置一次，C 端用户开箱即用，再也不用每次都把 prompt 翻出来抄一遍</li>
+                  <li><strong>知识库</strong>：销售在外面跑客户，知识库在背后接茬<span class="caret"></span></li>
+                </ul>
+              </div>
+            </div>
+            <!-- no footer while streaming -->
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ================================================== STATE E ================================================== -->
+  <div class="state-divider">状态 E · 当前步骤完成</div>
+
+  <div class="stage-label">
+    <strong>状态 E · 当前步骤完成</strong>
+    <span class="desc">Step 2 已生成 · 输出完整展示 · 输入区隐藏（执行后不可改） · 重新生成 = 用同一份输入重跑，下一步 = 进入 Step 3</span>
+  </div>
+
+  <div class="app">
+    <div class="header">
+      <div class="header__back">
+        <svg width="16" height="16"><use href="#i-arrow-left"/></svg> 返回首页
+      </div>
+      <div class="header__divider"></div>
+      <h1 class="header__title">文章优化助手</h1>
+      <div class="header__right">
+        <div class="icon-btn" title="运行历史">
+          <svg width="16" height="16"><use href="#i-history"/></svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="body">
+      <aside class="nav">
+        <div class="nav__group-label">主流程</div>
+
+        <div class="step step--done">
+          <div class="step__marker">
+            <span class="step__dot"><svg width="12" height="12"><use href="#i-check"/></svg></span>
+          </div>
+          <div class="step__body">
+            <div class="step__title">步骤优化 1</div>
+            <div class="step__desc">把粗糙描述润色成可交付的文案</div>
+            <div class="step__status">已完成 · 7.4s</div>
+          </div>
+        </div>
+
+        <!-- Step 2 — active AND done -->
+        <div class="step step--active step--done">
+          <div class="step__marker">
+            <span class="step__dot"><svg width="12" height="12"><use href="#i-check"/></svg></span>
+          </div>
+          <div class="step__body">
+            <div class="step__title">步骤优化 2</div>
+            <div class="step__desc">基于上一步的优化结果，进一步精炼措辞，让表达更有冲击力</div>
+            <div class="step__status">已完成 · 8.2s · 642 tokens</div>
+          </div>
+        </div>
+
+        <div class="step step--disabled">
+          <div class="step__marker">
+            <span class="step__dot">3</span>
+          </div>
+          <div class="step__body">
+            <div class="step__title">步骤优化 3</div>
+            <div class="step__desc">产出多条标题方案</div>
+            <div class="step__status">等待解锁</div>
+          </div>
+        </div>
+
+        <div class="nav__group-label">追问</div>
+
+        <div class="step step--disabled">
+          <div class="step__marker">
+            <span class="step__dot"><svg width="11" height="11"><use href="#i-message"/></svg></span>
+          </div>
+          <div class="step__body">
+            <div class="step__title">继续问 AI</div>
+            <div class="step__desc">针对结果继续追问</div>
+            <div class="step__status">完成主流程后开启</div>
+          </div>
+        </div>
+      </aside>
+
+      <section class="main">
+        <div class="canvas">
+          <div class="step-header">
+            <h2 class="step-header__title">
+              <span class="check"><svg width="14" height="14"><use href="#i-check"/></svg></span>
+              步骤优化 2
+            </h2>
+            <p class="step-header__desc">基于上一步的优化结果，进一步精炼措辞，让表达更有冲击力。</p>
+          </div>
+
+          <!-- OUTPUT — complete (input card removed: 执行后不可改) -->
+          <div class="output">
+            <div class="output__head">
+              <div class="output__head-left">
+                <span class="sparkle"><svg width="14" height="14"><use href="#i-sparkles"/></svg></span>
+                AI 输出
+              </div>
+              <div class="output__head-right">
+                <button class="tiny-btn tiny-btn--star" title="保存为书签 · 下次新建 run 时自动应用，跳过 LLM 调用">
+                  <svg width="13" height="13"><use href="#i-star"/></svg>
+                  收藏
+                </button>
+                <button class="tiny-btn">
+                  <svg width="12" height="12"><use href="#i-copy"/></svg>
+                  复制
+                </button>
+              </div>
+            </div>
+            <div class="output__body">
+              <div class="md">
+                <h1>莫小派</h1>
+                <p class="tagline">一个打工人，顶替整个 SOP 部门。</p>
+                <p>AI 工作流 × 智能体 × 知识库，三合一全能工作台——你负责摸鱼，它负责把企业标准流程跑得比你还勤快。</p>
+
+                <h2>它能干什么</h2>
+                <ul>
+                  <li><strong>AI 工作流</strong>：把你脑子里那套"先做 A 再做 B 最后产出 C"的标准动作，一次配好，往后每次只点一下"运行"</li>
+                  <li><strong>智能体</strong>：B 端配置一次，C 端用户开箱即用，再也不用每次都把 prompt 翻出来抄一遍</li>
+                  <li><strong>知识库</strong>：销售在外面跑客户，知识库在背后接茬，问什么都答得上来</li>
+                  <li><strong>卡片生成</strong>：一段 markdown，一秒变图片，发朋友圈/工作群直接抛</li>
+                </ul>
+
+                <h2>谁最该用</h2>
+                <ul>
+                  <li>反复执行同一套流程的运营 / 内容 / 销售团队</li>
+                  <li>已经被 AI 工具淹没但还没把它们串成生产力的人</li>
+                  <li>老板希望"流程沉淀下来不依赖人"的小团队</li>
+                </ul>
+
+                <div class="coda">
+                  把流程交给它，把自己还给自己。<br/>
+                  毕竟，人类不该为重复而存在。
+                </div>
+              </div>
+            </div>
+            <div class="output__foot">
+              <span><svg width="11" height="11"><use href="#i-clock"/></svg>耗时 8.2s</span>
+              <span class="sep">·</span>
+              <span><svg width="11" height="11"><use href="#i-cpu"/></svg>glm-4-7</span>
+              <span class="sep">·</span>
+              <span><svg width="11" height="11"><use href="#i-coin"/></svg>642 tokens</span>
+              <span class="sep">·</span>
+              <span>14:41:27 完成</span>
+            </div>
+          </div>
+
+          <!-- ACTION ROW — 重新生成 (re-run same input) + 下一步 -->
+          <div class="action-row">
+            <button class="btn btn--ghost">
+              <svg width="13" height="13"><use href="#i-rotate"/></svg>
+              重新生成
+            </button>
+            <button class="btn btn--primary">
+              下一步
+              <svg width="14" height="14"><use href="#i-arrow-right"/></svg>
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- ================================================== STATE F ================================================== -->
+  <div class="state-divider">状态 F · 继续问 AI</div>
+
+  <div class="stage-label">
+    <strong>状态 F · 继续问 AI</strong>
+    <span class="desc">主流程全部 ✓ · Step 4 聊天态 active · chat 占满主区（无标题/描述，左 nav 已标识）</span>
+  </div>
+
+  <div class="app">
+    <div class="header">
+      <div class="header__back">
+        <svg width="16" height="16"><use href="#i-arrow-left"/></svg> 返回首页
+      </div>
+      <div class="header__divider"></div>
+      <h1 class="header__title">文章优化助手</h1>
+      <div class="header__right">
+        <div class="icon-btn" title="运行历史">
+          <svg width="16" height="16"><use href="#i-history"/></svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="body">
+      <aside class="nav">
+        <div class="nav__group-label">主流程</div>
+
+        <div class="step step--done">
+          <div class="step__marker">
+            <span class="step__dot"><svg width="12" height="12"><use href="#i-check"/></svg></span>
+          </div>
+          <div class="step__body">
+            <div class="step__title">步骤优化 1</div>
+            <div class="step__desc">把粗糙描述润色成可交付的文案</div>
+            <div class="step__status">已完成 · 7.4s</div>
+          </div>
+        </div>
+
+        <div class="step step--done">
+          <div class="step__marker">
+            <span class="step__dot"><svg width="12" height="12"><use href="#i-check"/></svg></span>
+          </div>
+          <div class="step__body">
+            <div class="step__title">步骤优化 2</div>
+            <div class="step__desc">基于上一步的优化结果，进一步精炼措辞，让表达更有冲击力</div>
+            <div class="step__status">已完成 · 8.2s</div>
+          </div>
+        </div>
+
+        <div class="step step--done">
+          <div class="step__marker">
+            <span class="step__dot"><svg width="12" height="12"><use href="#i-check"/></svg></span>
+          </div>
+          <div class="step__body">
+            <div class="step__title">步骤优化 3</div>
+            <div class="step__desc">产出多条标题方案</div>
+            <div class="step__status">已完成 · 6.1s</div>
+          </div>
+        </div>
+
+        <div class="nav__group-label">追问</div>
+
+        <!-- Step 4 — active chat -->
+        <div class="step step--active">
+          <div class="step__marker">
+            <span class="step__dot"><svg width="11" height="11"><use href="#i-message"/></svg></span>
+          </div>
+          <div class="step__body">
+            <div class="step__title">继续问 AI</div>
+            <div class="step__desc">针对结果继续追问</div>
+            <div class="step__status">2 条消息</div>
+          </div>
+        </div>
+      </aside>
+
+      <section class="main main--chat">
+        <div class="canvas">
+          <!-- step-header 已移除：左 nav 已经标识"继续问 AI"，主区直接全幅 chat -->
+          <!-- CHAT — 占满主区 -->
+          <div class="chat">
+            <div class="chat__history">
+
+              <!-- user msg -->
+              <div class="msg msg--user">
+                <div class="avatar">我</div>
+                <div>
+                  <div class="bubble">刚才的优化结果还能再有趣一点吗？我想投朋友圈。</div>
+                  <div class="msg__meta">14:42:03</div>
+                </div>
+              </div>
+
+              <!-- ai msg -->
+              <div class="msg msg--ai">
+                <div class="avatar">AI</div>
+                <div>
+                  <div class="bubble">
+                    <p>可以。朋友圈那个场域，三行以内才是极限，读者滑到第四行已经在点赞下一个人了。</p>
+                    <p>给你一版更轻的：</p>
+                    <p><strong>「莫小派 · 一个打工人顶替整个 SOP 部门。</strong>你负责摸鱼，它负责把流程跑完。人类，不该为重复而存在。」</p>
+                    <p>要更贱一点，还是更温柔一点？</p>
+                  </div>
+                  <div class="msg__meta">14:42:11 · glm-4-7 · 3.2s</div>
+                </div>
+              </div>
+
+              <!-- user msg -->
+              <div class="msg msg--user">
+                <div class="avatar">我</div>
+                <div>
+                  <div class="bubble">更贱一点，但别冒犯客户。</div>
+                  <div class="msg__meta">14:42:38</div>
+                </div>
+              </div>
+
+              <!-- ai msg -->
+              <div class="msg msg--ai">
+                <div class="avatar">AI</div>
+                <div>
+                  <div class="bubble">
+                    <p>懂了，既要又要那一挂。试试这个：</p>
+                    <p><strong>「SOP 这种活，应该交给不会辞职的那位。</strong>莫小派 · AI 工作流 × 智能体 × 知识库。你还在，它已经把事做完了。」</p>
+                    <p>够贱但指向机器，人类体面保住了。</p>
+                  </div>
+                  <div class="msg__meta">14:42:49 · glm-4-7 · 2.8s</div>
+                </div>
+              </div>
+
+            </div>
+
+            <div class="chat__composer">
+              <textarea placeholder="输入你的问题，Enter 发送，Shift+Enter 换行"></textarea>
+              <button class="btn btn--primary">
+                发送
+                <svg width="13" height="13"><use href="#i-send"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

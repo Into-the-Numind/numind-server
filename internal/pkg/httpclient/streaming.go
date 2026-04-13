@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -57,11 +58,18 @@ func (sse *SSEProcessor) ProcessSSE(req *Request, eventHandler func(*SSEEvent) e
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 32*1024), 2*1024*1024)
 	var currentEvent SSEEvent
 	var currentData strings.Builder
+	sawDone := false
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
+
+		// 过滤 SSE 注释行（以 : 开头），防止心跳等注释内容混入输出
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
 
 		if line == "" {
 			if currentData.Len() > 0 {
@@ -83,14 +91,26 @@ func (sse *SSEProcessor) ProcessSSE(req *Request, eventHandler func(*SSEEvent) e
 		} else if strings.HasPrefix(line, "data:") {
 			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if data == "[DONE]" {
-				return nil
+				sawDone = true
+				break
 			}
 			currentData.WriteString(data)
 		}
 	}
 
+	if currentData.Len() > 0 {
+		currentEvent.Data = json.RawMessage(currentData.String())
+		if err := eventHandler(&currentEvent); err != nil {
+			log.Warnw("Error handling SSE event", "error", err)
+		}
+	}
+
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("scanner error: %w", err)
+	}
+
+	if !sawDone {
+		return fmt.Errorf("sse stream ended unexpectedly: %w", io.ErrUnexpectedEOF)
 	}
 
 	return nil
@@ -121,17 +141,22 @@ func (jsp *JSONStreamProcessor) ProcessJSONStream(req *Request, jsonHandler func
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 32*1024), 2*1024*1024)
+	sawDone := false
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
+
+		// 过滤 SSE 注释行（以 : 开头）和空行，防止心跳等注释内容混入输出
+		if strings.HasPrefix(line, ":") || line == "" {
 			continue
 		}
 
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
-				return nil
+				sawDone = true
+				break
 			}
 
 			var jsonData json.RawMessage
@@ -160,6 +185,10 @@ func (jsp *JSONStreamProcessor) ProcessJSONStream(req *Request, jsonHandler func
 
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("scanner error: %w", err)
+	}
+
+	if !sawDone {
+		return fmt.Errorf("json stream ended unexpectedly: %w", io.ErrUnexpectedEOF)
 	}
 
 	return nil

@@ -18,20 +18,23 @@ var (
 type IStore interface {
 	DB() *gorm.DB
 	Users() UserStore
-	Images() ImageStore
-	Cards() CardStore
-	Books() BookStore
-	Orders() OrderStore
-	Categories() CategoryStore
-	Templates() TemplateStore
-	Feedbacks() FeedbackStore
-	Chats() ChatStore
-	AccountRecords() AccountRecordStore
-	Article() IArticleStore
-	Admin() IAdminStore
-	AdminAccounts() AdminAccountStore
 	Configs() ConfigStore
-	Payments() PaymentStore
+	Sop() ISopStore
+	Customers() ICustomerStore
+	KnowledgeDocuments() KnowledgeDocumentStore
+	KnowledgeChunks() KnowledgeChunkStore
+	LanguageStyles() LanguageStyleStore
+	Billing() BillingStore
+	Credits() CreditStore
+	Orders() OrderStore
+	Monitor() IMonitorStore
+	KnowledgeBase() IKnowledgeBaseStore
+	ChatbotConfig() IChatbotConfigStore
+	ChatbotSession() IChatbotSessionStore
+	LLMProvider() ILLMProviderStore
+	LLMModel() ILLMModelStore
+	LLMModelProvider() ILLMModelProviderStore
+	UserModelPreference() IUserModelPreferenceStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -62,58 +65,87 @@ func (ds *datastore) Users() UserStore {
 	return newUsers(ds.db)
 }
 
-func (ds *datastore) Images() ImageStore {
-	return NewImageStore(ds.db)
-}
-
-func (ds *datastore) Cards() CardStore {
-	return NewCardStore(ds.db)
-}
-
-func (ds *datastore) Books() BookStore {
-	return NewBookStore(ds.db)
-}
-
-func (ds *datastore) Orders() OrderStore {
-	return NewOrderStore(ds.db)
-}
-
-func (ds *datastore) Categories() CategoryStore {
-	return NewCategoryStore(ds.db)
-}
-
-func (ds *datastore) Templates() TemplateStore {
-	return NewTemplateStore(ds.db)
-}
-
-func (ds *datastore) Feedbacks() FeedbackStore {
-	return newFeedbacks(ds.db)
-}
-
-func (ds *datastore) Chats() ChatStore {
-	return NewChatStore(ds.db)
-}
-
-func (ds *datastore) AccountRecords() AccountRecordStore {
-	return NewAccountRecordStore(ds.db)
-}
-
-func (ds *datastore) Article() IArticleStore {
-	return NewArticleStore(ds.db)
-}
-
-func (ds *datastore) Admin() IAdminStore {
-	return NewAdminStore(ds.db)
-}
-
-func (ds *datastore) AdminAccounts() AdminAccountStore {
-	return NewAdminAccountStore(ds.db)
-}
-
+// Configs 返回一个实现了 ConfigStore 接口的实例.
 func (ds *datastore) Configs() ConfigStore {
 	return NewConfigStore(ds.db)
 }
 
-func (ds *datastore) Payments() PaymentStore {
-	return NewPaymentStore(ds.db)
+// Sop 返回一个实现了 ISopStore 接口的实例.
+func (ds *datastore) Sop() ISopStore {
+	return NewSopStore(ds.db)
+}
+
+// Customers 返回一个实现了 ICustomerStore 接口的实例.
+func (ds *datastore) Customers() ICustomerStore {
+	return NewCustomerStore(ds.db)
+}
+
+// KnowledgeDocuments 返回一个实现了 KnowledgeDocumentStore 接口的实例.
+func (ds *datastore) KnowledgeDocuments() KnowledgeDocumentStore {
+	return newKnowledgeDocuments(ds.db)
+}
+
+// KnowledgeChunks 返回一个实现了 KnowledgeChunkStore 接口的实例.
+func (ds *datastore) KnowledgeChunks() KnowledgeChunkStore {
+	return newKnowledgeChunks(ds.db)
+}
+
+// LanguageStyles 返回一个实现了 LanguageStyleStore 接口的实例.
+func (ds *datastore) LanguageStyles() LanguageStyleStore {
+	return NewLanguageStyleStore(ds.db)
+}
+
+// Billing 返回一个实现了 BillingStore 接口的实例.
+func (ds *datastore) Billing() BillingStore {
+	return newBillingStore(ds.db)
+}
+
+// Credits 返回一个实现了 CreditStore 接口的实例.
+func (ds *datastore) Credits() CreditStore {
+	return newCreditStore(ds.db)
+}
+
+// Orders 返回一个实现了 OrderStore 接口的实例.
+func (ds *datastore) Orders() OrderStore {
+	return newOrderStore(ds.db)
+}
+
+// Monitor 返回一个实现了 IMonitorStore 接口的实例.
+func (ds *datastore) Monitor() IMonitorStore {
+	return NewMonitorStore(ds.db)
+}
+
+// KnowledgeBase 返回一个实现了 IKnowledgeBaseStore 接口的实例.
+func (ds *datastore) KnowledgeBase() IKnowledgeBaseStore {
+	return NewKnowledgeBaseStore(ds.db)
+}
+
+// ChatbotConfig 返回一个实现了 IChatbotConfigStore 接口的实例.
+func (ds *datastore) ChatbotConfig() IChatbotConfigStore {
+	return NewChatbotConfigStore(ds.db)
+}
+
+// ChatbotSession 返回一个实现了 IChatbotSessionStore 接口的实例.
+func (ds *datastore) ChatbotSession() IChatbotSessionStore {
+	return NewChatbotSessionStore(ds.db)
+}
+
+// LLMProvider 返回一个实现了 ILLMProviderStore 接口的实例.
+func (ds *datastore) LLMProvider() ILLMProviderStore {
+	return NewLLMProviderStore(ds.db)
+}
+
+// LLMModel 返回一个实现了 ILLMModelStore 接口的实例.
+func (ds *datastore) LLMModel() ILLMModelStore {
+	return NewLLMModelStore(ds.db)
+}
+
+// LLMModelProvider 返回一个实现了 ILLMModelProviderStore 接口的实例.
+func (ds *datastore) LLMModelProvider() ILLMModelProviderStore {
+	return NewLLMModelProviderStore(ds.db)
+}
+
+// UserModelPreference 返回一个实现了 IUserModelPreferenceStore 接口的实例.
+func (ds *datastore) UserModelPreference() IUserModelPreferenceStore {
+	return NewUserModelPreferenceStore(ds.db)
 }

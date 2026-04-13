@@ -676,125 +676,6 @@ func (p *JSONResponseProcessor) cleanExtractedJSON(jsonStr string) string {
 	return cleaned
 }
 
-// isJSONStructureProblem 检查是否是JSON结构中的问题字符
-func (p *JSONResponseProcessor) isJSONStructureProblem(char rune, jsonStr string, position int) bool {
-	// 检查是否是JSON结构中的常见问题字符
-	problemChars := []rune{'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z'}
-
-	// 检查是否是问题字符
-	for _, problemChar := range problemChars {
-		if char == problemChar {
-			// 进一步检查上下文，判断是否真的是问题字符
-			return p.isContextuallyProblematic(jsonStr, position, char)
-		}
-	}
-
-	return false
-}
-
-// isContextuallyProblematic 检查字符在上下文中是否真的有问题
-func (p *JSONResponseProcessor) isContextuallyProblematic(jsonStr string, position int, char rune) bool {
-	// 检查字符前后的上下文
-	before := ""
-	after := ""
-
-	if position > 0 {
-		before = string(jsonStr[position-1])
-	}
-	if position < len(jsonStr)-1 {
-		after = string(jsonStr[position+1])
-	}
-
-	// 如果字符前后都是有效的JSON字符，那么它可能不是问题字符
-	validBefore := p.isValidJSONContext(before)
-	validAfter := p.isValidJSONContext(after)
-
-	// 如果前后都是有效的，那么这个字符可能不是问题
-	if validBefore && validAfter {
-		return false
-	}
-
-	// 检查是否在JSON字符串中
-	inString := p.isInJSONString(jsonStr, position)
-	if inString {
-		// 在JSON字符串中的字符通常是有效的
-		return false
-	}
-
-	// 检查是否在JSON对象或数组的键值对中
-	if p.isInJSONKeyValue(jsonStr, position) {
-		// 在键值对中的字符可能是问题字符
-		return true
-	}
-
-	return false
-}
-
-// isValidJSONContext 检查字符是否是有效的JSON上下文
-func (p *JSONResponseProcessor) isValidJSONContext(char string) bool {
-	if char == "" {
-		return true
-	}
-
-	validChars := []string{`"`, `{`, `}`, `[`, `]`, `:`, `,`, ` `, `\n`, `\t`}
-	for _, valid := range validChars {
-		if char == valid {
-			return true
-		}
-	}
-
-	return false
-}
-
-// isInJSONString 检查位置是否在JSON字符串中
-func (p *JSONResponseProcessor) isInJSONString(jsonStr string, position int) bool {
-	// 计算当前位置之前的引号数量
-	quoteCount := 0
-	escaped := false
-
-	for i := 0; i < position; i++ {
-		if jsonStr[i] == '\\' && !escaped {
-			escaped = true
-			continue
-		}
-
-		if jsonStr[i] == '"' && !escaped {
-			quoteCount++
-		}
-
-		escaped = false
-	}
-
-	// 如果引号数量是奇数，说明在字符串中
-	return quoteCount%2 == 1
-}
-
-// isInJSONKeyValue 检查位置是否在JSON键值对中
-func (p *JSONResponseProcessor) isInJSONKeyValue(jsonStr string, position int) bool {
-	// 查找最近的冒号
-	colonPos := -1
-	for i := position; i >= 0; i-- {
-		if jsonStr[i] == ':' {
-			colonPos = i
-			break
-		}
-	}
-
-	if colonPos == -1 {
-		return false
-	}
-
-	// 查找冒号后的下一个引号或大括号
-	for i := colonPos + 1; i < len(jsonStr); i++ {
-		if jsonStr[i] == '"' || jsonStr[i] == '{' || jsonStr[i] == '[' {
-			// 如果当前位置在这个范围内，说明在键值对中
-			return position > colonPos && position < i
-		}
-	}
-
-	return false
-}
-
 // isValidCharacter 判断字符是否有效
 func (p *JSONResponseProcessor) isValidCharacter(char rune) bool {
 	config := p.Config.CharacterFiltering
@@ -953,9 +834,7 @@ func (p *JSONResponseProcessor) basicCleanup(body string) string {
 	content := body
 
 	// 移除BOM
-	if strings.HasPrefix(content, "\uFEFF") {
-		content = content[3:]
-	}
+	content = strings.TrimPrefix(content, "\uFEFF")
 
 	// 移除前后空白
 	content = strings.TrimSpace(content)

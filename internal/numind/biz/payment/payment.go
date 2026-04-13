@@ -3,493 +3,247 @@ package payment
 import (
 	"context"
 	"fmt"
-	"numind-server/internal/numind/store"
-	"numind-server/internal/pkg/model"
+	"net/http"
 	"time"
 
-	"numind-server/internal/pkg/log"
+	"gorm.io/gorm"
 
-	"github.com/spf13/viper"
+	"numind-server/internal/numind/biz/credit"
+	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/model"
+
+	"github.com/google/uuid"
 )
 
-// PaymentBiz 支付业务接口
-type PaymentBiz interface {
-	CreatePayment(ctx context.Context, req *model.CreatePaymentRequest, userID uint) (*model.CreatePaymentResponse, error)
-	GetPaymentByOutTradeNo(ctx context.Context, outTradeNo string) (*model.PaymentM, error)
-	GetPaymentByID(ctx context.Context, id uint) (*model.PaymentM, error)
-	UpdatePaymentStatus(ctx context.Context, outTradeNo, status, transactionID string, paidAt *time.Time) error
-	ListPaymentsByUser(ctx context.Context, userID uint, offset, limit int) ([]*model.PaymentM, error)
-	ListPaymentsByStatus(ctx context.Context, status string, offset, limit int) ([]*model.PaymentM, error)
-	ListPayments(ctx context.Context, req *store.AdminPaymentListRequest) ([]*model.PaymentM, int64, error)
-	CountPaymentsByUser(ctx context.Context, userID uint) (int64, error)
-	CountPaymentsByStatus(ctx context.Context, status string) (int64, error)
-	DeletePayment(ctx context.Context, id uint) error
+// IPaymentBiz 支付业务逻辑接口
+type IPaymentBiz interface {
+	CreateOrder(ctx context.Context, payerID, userID uint, productType string, months int, payChannel string) (*model.Order, error)
+	HandleWechatNotify(ctx context.Context, request *http.Request) error
+	HandleAlipayNotify(ctx context.Context, request *http.Request) error
+	GetOrder(ctx context.Context, orderID uint64) (*model.Order, error)
+	ListOrdersByPayer(ctx context.Context, payerID uint, offset, limit int) ([]model.Order, int64, error)
+	CloseExpiredOrders(ctx context.Context) error
 }
 
-// paymentBiz 支付业务实现
 type paymentBiz struct {
-	ds             store.IStore
-	priceValidator *PriceValidator
+	ds        store.IStore
+	creditBiz credit.ICreditBiz
+	wechat    *WechatPayClient
+	alipay    *AlipayClient
 }
 
-// NewPaymentBiz 创建支付业务实例
-func NewPaymentBiz(ds store.IStore) PaymentBiz {
-	return &paymentBiz{
-		ds:             ds,
-		priceValidator: NewPriceValidator(),
-	}
-}
-
-// CreatePayment 创建支付记录
-func (b *paymentBiz) CreatePayment(ctx context.Context, req *model.CreatePaymentRequest, userID uint) (*model.CreatePaymentResponse, error) {
-	// 检查订单号是否已存在
-	existingPayment, err := b.ds.Payments().GetByOutTradeNo(ctx, req.OutTradeNo)
-	if err == nil && existingPayment != nil {
-		return nil, fmt.Errorf("订单号 %s 已存在", req.OutTradeNo)
+// NewPaymentBiz 创建支付业务逻辑实例
+func NewPaymentBiz(ds store.IStore, creditBiz credit.ICreditBiz) IPaymentBiz {
+	b := &paymentBiz{
+		ds:        ds,
+		creditBiz: creditBiz,
 	}
 
-	// 严格验证价格和会员类型的对应关系
-	if err := b.validatePaymentRequest(req); err != nil {
-		log.C(ctx).Warnw("支付请求验证失败", "error", err.Error(), "user_id", userID, "amount", req.Amount, "membership_type", req.MembershipType)
-		return nil, fmt.Errorf("支付请求验证失败: %w", err)
-	}
-
-	// 创建支付记录
-	payment := &model.PaymentM{
-		OutTradeNo:       req.OutTradeNo,
-		UserID:           userID,
-		Amount:           req.Amount,
-		Description:      req.Description,
-		Channel:          model.PaymentChannelWechat, // 默认微信支付
-		Status:           model.PaymentStatusPending,
-		PayMethod:        req.PayMethod,
-		OpenID:           req.OpenID,
-		MembershipType:   req.MembershipType,
-		PackageCount:     req.PackageCount,
-		SubscriptionDays: req.SubscriptionDays,
-		ExpireAt:         &time.Time{}, // 设置过期时间
-	}
-
-	// 设置过期时间为30分钟后
-	*payment.ExpireAt = time.Now().Add(30 * time.Minute)
-
-	if err := b.ds.Payments().Create(ctx, payment); err != nil {
-		log.C(ctx).Errorw("Failed to create payment record", "error", err.Error(), "out_trade_no", req.OutTradeNo)
-		return nil, fmt.Errorf("创建支付记录失败: %w", err)
-	}
-
-	// 根据支付方式返回不同的响应
-	response := &model.CreatePaymentResponse{
-		OutTradeNo: req.OutTradeNo,
-	}
-
-	// 这里可以根据不同的支付方式调用对应的支付接口
-	// 暂时返回基础信息，具体的支付接口调用在controller层处理
-	return response, nil
-}
-
-// GetPaymentByOutTradeNo 根据商户订单号获取支付记录
-func (b *paymentBiz) GetPaymentByOutTradeNo(ctx context.Context, outTradeNo string) (*model.PaymentM, error) {
-	return b.ds.Payments().GetByOutTradeNo(ctx, outTradeNo)
-}
-
-// GetPaymentByID 根据ID获取支付记录（管理员）
-func (b *paymentBiz) GetPaymentByID(ctx context.Context, id uint) (*model.PaymentM, error) {
-	return b.ds.Payments().GetByID(ctx, id)
-}
-
-// UpdatePaymentStatus 更新支付状态
-func (b *paymentBiz) UpdatePaymentStatus(ctx context.Context, outTradeNo, status, transactionID string, paidAt *time.Time) error {
-	log.C(ctx).Infow("UpdatePaymentStatus called",
-		"out_trade_no", outTradeNo,
-		"status", status,
-		"transaction_id", transactionID,
-		"paid_at", paidAt)
-
-	// 获取支付记录
-	payment, err := b.ds.Payments().GetByOutTradeNo(ctx, outTradeNo)
+	// 初始化微信支付客户端（可选，失败不影响启动）
+	wechat, err := NewWechatPayClient()
 	if err != nil {
-		log.C(ctx).Errorw("Payment record not found",
-			"out_trade_no", outTradeNo,
-			"error", err.Error())
-		return fmt.Errorf("支付记录不存在: %w", err)
-	}
-
-	log.C(ctx).Infow("Payment record found",
-		"payment_id", payment.ID,
-		"user_id", payment.UserID,
-		"current_status", payment.Status,
-		"amount", payment.Amount,
-		"membership_type", payment.MembershipType,
-		"subscription_days", payment.SubscriptionDays)
-
-	// 检查状态转换是否合法
-	if !isValidStatusTransition(payment.Status, status) {
-		log.C(ctx).Errorw("Invalid status transition",
-			"current_status", payment.Status,
-			"target_status", status,
-			"out_trade_no", outTradeNo)
-		return fmt.Errorf("非法的状态转换: %s -> %s", payment.Status, status)
-	}
-
-	// 更新状态
-	log.C(ctx).Infow("Updating payment status in database",
-		"out_trade_no", outTradeNo,
-		"from_status", payment.Status,
-		"to_status", status)
-
-	if err := b.ds.Payments().UpdateStatus(ctx, outTradeNo, status, transactionID, paidAt); err != nil {
-		log.C(ctx).Errorw("Failed to update payment status in database",
-			"error", err.Error(),
-			"out_trade_no", outTradeNo,
-			"status", status)
-		return fmt.Errorf("更新支付状态失败: %w", err)
-	}
-
-	log.C(ctx).Infow("Payment status updated in database successfully",
-		"out_trade_no", outTradeNo,
-		"status", status)
-
-	// 记录支付状态变更审计日志
-	if err := b.logPaymentAudit(ctx, payment, status, transactionID, paidAt); err != nil {
-		log.C(ctx).Errorw("Failed to log payment audit",
-			"error", err.Error(),
-			"out_trade_no", outTradeNo)
-		// 审计日志记录失败不影响支付流程
+		log.Errorw("Failed to initialize WechatPayClient, wechat payment disabled", "error", err)
 	} else {
-		log.C(ctx).Infow("Payment audit logged successfully", "out_trade_no", outTradeNo)
+		b.wechat = wechat
 	}
 
-	// 如果支付成功，可以在这里添加其他业务逻辑
-	if status == model.PaymentStatusSuccess {
-		log.C(ctx).Infow("Payment successful, processing membership purchase",
-			"out_trade_no", outTradeNo,
-			"transaction_id", transactionID,
-			"user_id", payment.UserID,
-			"membership_type", payment.MembershipType)
-
-		// 这里可以添加支付成功后的业务逻辑，比如更新订单状态、发送通知等
-		// 处理会员购买逻辑
-		if err := b.handleMembershipPurchase(ctx, payment); err != nil {
-			log.C(ctx).Errorw("Failed to handle membership purchase",
-				"error", err.Error(),
-				"out_trade_no", outTradeNo,
-				"user_id", payment.UserID,
-				"membership_type", payment.MembershipType,
-				"amount", payment.Amount)
-			// 记录错误但不影响支付状态更新
-		} else {
-			log.C(ctx).Infow("Membership purchase handled successfully",
-				"out_trade_no", outTradeNo,
-				"user_id", payment.UserID)
-		}
-	}
-
-	return nil
-}
-
-// ListPaymentsByUser 获取用户的支付记录列表
-func (b *paymentBiz) ListPaymentsByUser(ctx context.Context, userID uint, offset, limit int) ([]*model.PaymentM, error) {
-	return b.ds.Payments().ListByUser(ctx, userID, offset, limit)
-}
-
-// ListPaymentsByStatus 根据状态获取支付记录列表
-func (b *paymentBiz) ListPaymentsByStatus(ctx context.Context, status string, offset, limit int) ([]*model.PaymentM, error) {
-	return b.ds.Payments().ListByStatus(ctx, status, offset, limit)
-}
-
-// ListPayments 获取支付记录列表（管理员，支持多条件筛选）
-func (b *paymentBiz) ListPayments(ctx context.Context, req *store.AdminPaymentListRequest) ([]*model.PaymentM, int64, error) {
-	return b.ds.Payments().List(ctx, req)
-}
-
-// CountPaymentsByUser 统计用户的支付记录数量
-func (b *paymentBiz) CountPaymentsByUser(ctx context.Context, userID uint) (int64, error) {
-	return b.ds.Payments().CountByUser(ctx, userID)
-}
-
-// CountPaymentsByStatus 根据状态统计支付记录数量
-func (b *paymentBiz) CountPaymentsByStatus(ctx context.Context, status string) (int64, error) {
-	return b.ds.Payments().CountByStatus(ctx, status)
-}
-
-// DeletePayment 删除支付记录
-func (b *paymentBiz) DeletePayment(ctx context.Context, id uint) error {
-	return b.ds.Payments().Delete(ctx, id)
-}
-
-// isValidStatusTransition 检查状态转换是否合法
-func isValidStatusTransition(fromStatus, toStatus string) bool {
-	validTransitions := map[string][]string{
-		model.PaymentStatusPending: {
-			model.PaymentStatusSuccess,
-			model.PaymentStatusFailed,
-			model.PaymentStatusCancelled,
-		},
-		model.PaymentStatusSuccess: {
-			// 支付成功后不能转换为其他状态
-		},
-		model.PaymentStatusFailed: {
-			model.PaymentStatusPending, // 失败后可以重试
-		},
-		model.PaymentStatusCancelled: {
-			// 取消后不能转换为其他状态
-		},
-	}
-
-	allowedStatuses, exists := validTransitions[fromStatus]
-	if !exists {
-		return false
-	}
-
-	for _, allowed := range allowedStatuses {
-		if allowed == toStatus {
-			return true
-		}
-	}
-
-	return false
-}
-
-// handleMembershipPurchase 处理会员购买
-func (b *paymentBiz) handleMembershipPurchase(ctx context.Context, payment *model.PaymentM) error {
-	log.C(ctx).Infow("handleMembershipPurchase called",
-		"payment_id", payment.ID,
-		"user_id", payment.UserID,
-		"membership_type", payment.MembershipType,
-		"amount", payment.Amount,
-		"subscription_days", payment.SubscriptionDays,
-		"package_count", payment.PackageCount)
-
-	// 获取用户信息
-	user, err := b.ds.Users().GetUserByID(ctx, payment.UserID)
+	// 初始化支付宝客户端（可选，失败不影响启动）
+	alipay, err := NewAlipayClient()
 	if err != nil {
-		log.C(ctx).Errorw("Failed to get user info",
-			"user_id", payment.UserID,
-			"error", err.Error())
-		return fmt.Errorf("获取用户信息失败: %w", err)
+		log.Errorw("Failed to initialize AlipayClient, alipay payment disabled", "error", err)
+	} else {
+		b.alipay = alipay
 	}
 
-	log.C(ctx).Infow("User info retrieved",
-		"user_id", user.ID,
-		"current_membership_type", user.MembershipType,
-		"current_is_pro", user.IsPro,
-		"current_membership_expires", user.MembershipExpires)
+	return b
+}
 
-	// 根据会员类型更新用户状态
-	switch payment.MembershipType {
-	case model.MembershipTypeSubscription:
-		// 订阅会员 - 使用天数累加
-		now := time.Now()
+// CreateOrder 创建支付订单
+func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, productType string, months int, payChannel string) (*model.Order, error) {
+	// 校验产品类型
+	amount := model.GetProductAmount(productType, months)
+	if amount <= 0 {
+		return nil, fmt.Errorf("invalid product type: %s", productType)
+	}
 
-		// 根据订阅天数计算到期时间
-		days := payment.SubscriptionDays
-		if days <= 0 {
-			// 如果没有传递天数，根据金额判断（兼容旧逻辑）
-			log.C(ctx).Warnw("Subscription days is 0 or negative, inferring from amount",
-				"subscription_days", payment.SubscriptionDays,
-				"amount", payment.Amount)
-			// 检查是否为开发环境
-			runmode := viper.GetString("runmode")
-			if runmode == "debug" {
-				// 开发环境：1元（100分），默认30天
-				if payment.Amount == 100 {
-					days = 30 // 开发环境默认30天
-				} else {
-					days = 30 // 默认30天
-				}
-			} else {
-				// 生产环境：正常价格
-				if payment.Amount == 1600 {
-					days = 30
-				} else if payment.Amount == 11900 {
-					days = 365
-				} else {
-					days = 30 // 默认30天
-				}
-			}
-			log.C(ctx).Infow("Inferred subscription days from amount",
-				"amount", payment.Amount,
-				"inferred_days", days)
-		} else {
-			log.C(ctx).Infow("Using subscription days from payment",
-				"subscription_days", days)
-		}
-
-		// 确定新的会员类型
-		var newMembershipType string = model.MembershipTypeSubscription
-
-		// 计算新的到期时间
-		// 如果用户已有订阅会员且未过期，在现有到期时间基础上累加天数
-		// 否则从当前时间开始计算
-		var expiresAt *time.Time
-		if user.MembershipExpires != nil && user.MembershipExpires.After(now) {
-			// 在现有到期时间基础上累加天数（续费）
-			newExpires := user.MembershipExpires.AddDate(0, 0, days)
-			expiresAt = &newExpires
-			log.C(ctx).Infow("Renewing subscription",
-				"user_id", user.ID,
-				"old_expires", user.MembershipExpires,
-				"new_expires", newExpires,
-				"days_added", days)
-		} else {
-			// 从当前时间开始计算（新购买或已过期）
-			expires := now.AddDate(0, 0, days)
-			expiresAt = &expires
-			log.C(ctx).Infow("New subscription purchase",
-				"user_id", user.ID,
-				"new_expires", expires,
-				"days", days)
-		}
-
-		// 更新用户会员信息
-		updateData := map[string]interface{}{
-			"membership_type":    newMembershipType,
-			"is_pro":             true,
-			"membership_expires": expiresAt,
-		}
-
-		// 如果是新订阅用户或订阅已过期，设置/重置会员开始时间和月度计数
-		isNewSubscription := user.MembershipType != model.MembershipTypeSubscription && user.MembershipType != model.MembershipTypeBoth
-		isExpired := user.MembershipExpires == nil || !user.MembershipExpires.After(now)
-
-		if isNewSubscription || isExpired {
-			updateData["membership_start_date"] = &now
-			updateData["monthly_book_count"] = 0 // 重置月度计数
-			log.C(ctx).Infow("Reset membership start date and monthly count",
-				"user_id", user.ID,
-				"is_new", isNewSubscription,
-				"is_expired", isExpired)
-		}
-
-		log.C(ctx).Infow("Updating user membership",
-			"user_id", payment.UserID,
-			"update_data", updateData)
-
-		if err := b.ds.DB().Model(&model.User{}).Where("id = ?", payment.UserID).
-			Updates(updateData).Error; err != nil {
-			log.C(ctx).Errorw("Failed to update user membership in database",
-				"user_id", payment.UserID,
-				"error", err.Error(),
-				"update_data", updateData)
-			return fmt.Errorf("更新用户会员状态失败: %w", err)
-		}
-
-		log.C(ctx).Infow("User membership updated successfully",
-			"user_id", payment.UserID,
-			"new_membership_type", newMembershipType,
-			"new_expires_at", expiresAt)
-
-		// 重新获取用户信息，验证更新结果
-		updatedUser, err := b.ds.Users().GetUserByID(ctx, payment.UserID)
+	// 购买限制检查
+	switch productType {
+	case model.ProductTypeTrial:
+		hasTrial, err := b.ds.Credits().HasTrialPackage(ctx, userID)
 		if err != nil {
-			log.C(ctx).Errorw("Failed to get updated user info for verification",
-				"user_id", payment.UserID,
-				"error", err.Error())
-		} else {
-			log.C(ctx).Infow("User membership updated and verified",
-				"user_id", updatedUser.ID,
-				"membership_type", updatedUser.MembershipType,
-				"is_pro", updatedUser.IsPro,
-				"membership_expires", updatedUser.MembershipExpires,
-				"is_membership_active", updatedUser.IsMembershipActive(),
-				"can_use_subscription", updatedUser.CanUseSubscription())
+			return nil, fmt.Errorf("check trial package: %w", err)
 		}
-
-	default:
-		log.C(ctx).Errorw("Unsupported membership type",
-			"membership_type", payment.MembershipType,
-			"payment_id", payment.ID)
-		return fmt.Errorf("不支持的会员类型: %s", payment.MembershipType)
+		if hasTrial {
+			return nil, fmt.Errorf("用户已购买过体验卡，不可重复购买")
+		}
+	case model.ProductTypeMonthly, model.ProductTypeYearly:
+		hasActive, err := b.ds.Credits().HasActiveSubscription(ctx, userID)
+		if err != nil {
+			return nil, fmt.Errorf("check active subscription: %w", err)
+		}
+		if hasActive {
+			return nil, fmt.Errorf("用户已有生效中的订阅，请到期后再购买")
+		}
 	}
 
-	log.C(ctx).Infow("Membership purchase processed successfully",
-		"user_id", payment.UserID,
-		"membership_type", payment.MembershipType,
-		"amount", payment.Amount,
-		"package_count", payment.PackageCount)
+	// 生成订单号
+	orderNo := generateOrderNo()
+	productName := model.GetProductName(productType, months)
 
+	// 调用支付渠道创建预付单
+	var codeURL string
+	switch payChannel {
+	case model.PayChannelWechat:
+		if b.wechat == nil {
+			return nil, fmt.Errorf("微信支付未配置")
+		}
+		var err error
+		codeURL, err = b.wechat.NativePrepay(ctx, orderNo, amount, productName)
+		if err != nil {
+			return nil, fmt.Errorf("wechat prepay: %w", err)
+		}
+	case model.PayChannelAlipay:
+		if b.alipay == nil {
+			return nil, fmt.Errorf("支付宝未配置")
+		}
+		var err error
+		codeURL, err = b.alipay.PagePay(ctx, orderNo, amount, productName)
+		if err != nil {
+			return nil, fmt.Errorf("alipay page pay: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported pay channel: %s", payChannel)
+	}
+
+	// 创建订单记录
+	order := &model.Order{
+		OrderNo:     orderNo,
+		UserID:      userID,
+		PayerID:     payerID,
+		ProductType: productType,
+		Months:      months,
+		Amount:      amount,
+		PayChannel:  payChannel,
+		PayStatus:   model.OrderStatusPending,
+		CodeURL:     codeURL,
+		ExpiredAt:   time.Now().Add(30 * time.Minute),
+	}
+
+	if err := b.ds.Orders().Create(ctx, order); err != nil {
+		return nil, fmt.Errorf("create order: %w", err)
+	}
+
+	return order, nil
+}
+
+// HandleWechatNotify 处理微信支付回调通知
+func (b *paymentBiz) HandleWechatNotify(ctx context.Context, request *http.Request) error {
+	if b.wechat == nil {
+		return fmt.Errorf("wechat pay client not initialized")
+	}
+
+	outTradeNo, transactionID, err := b.wechat.ParseNotifyRequest(ctx, request)
+	if err != nil {
+		return fmt.Errorf("parse wechat notify: %w", err)
+	}
+
+	return b.fulfillOrder(ctx, outTradeNo, transactionID)
+}
+
+// HandleAlipayNotify 处理支付宝回调通知
+func (b *paymentBiz) HandleAlipayNotify(ctx context.Context, request *http.Request) error {
+	if b.alipay == nil {
+		return fmt.Errorf("alipay client not initialized")
+	}
+
+	notification, err := b.alipay.VerifyNotify(request)
+	if err != nil {
+		return fmt.Errorf("verify alipay notify: %w", err)
+	}
+
+	// 只处理交易成功的通知
+	if notification.TradeStatus != "TRADE_SUCCESS" && notification.TradeStatus != "TRADE_FINISHED" {
+		log.Infow("Alipay notification ignored, trade not successful", "trade_status", notification.TradeStatus, "out_trade_no", notification.OutTradeNo)
+		return nil
+	}
+
+	return b.fulfillOrder(ctx, notification.OutTradeNo, notification.TradeNo)
+}
+
+// fulfillOrder 支付成功后的履约逻辑（更新订单状态 + 发放积分包，在同一事务中）
+func (b *paymentBiz) fulfillOrder(ctx context.Context, orderNo string, tradeNo string) error {
+	// 查询订单
+	order, err := b.ds.Orders().GetByOrderNo(ctx, orderNo)
+	if err != nil {
+		return fmt.Errorf("get order by order_no %s: %w", orderNo, err)
+	}
+
+	// 幂等检查：已支付则跳过
+	if order.PayStatus != model.OrderStatusPending {
+		log.Infow("Order already processed, skipping", "order_no", orderNo, "pay_status", order.PayStatus)
+		return nil
+	}
+
+	// 在单个事务中完成订单更新和积分发放
+	now := time.Now()
+	err = b.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 更新订单状态为已支付（原子幂等：WHERE pay_status = pending + 检查 RowsAffected）
+		result := tx.Model(&model.Order{}).Where("id = ? AND pay_status = ?", order.ID, model.OrderStatusPending).
+			Updates(map[string]interface{}{
+				"pay_status": model.OrderStatusPaid,
+				"trade_no":   tradeNo,
+				"paid_at":    now,
+				"updated_at": now,
+			})
+		if result.Error != nil {
+			return fmt.Errorf("update order status: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			// 并发回调已处理此订单，跳过
+			log.Infow("Order already fulfilled by concurrent callback", "order_no", orderNo)
+			return nil
+		}
+
+		// 发放积分包（使用同一个事务）
+		if err := b.creditBiz.RechargeWithOrderTx(ctx, tx, order.UserID, order.ID, order.ProductType, order.Months); err != nil {
+			return fmt.Errorf("recharge credits: %w", err)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("fulfill order %s: %w", orderNo, err)
+	}
+
+	log.Infow("Order fulfilled successfully", "order_no", orderNo, "trade_no", tradeNo, "user_id", order.UserID, "product_type", order.ProductType)
 	return nil
 }
 
-// validatePaymentRequest 验证支付请求的价格和参数
-func (b *paymentBiz) validatePaymentRequest(req *model.CreatePaymentRequest) error {
-	switch req.MembershipType {
-	case model.MembershipTypeSubscription:
-		// 验证订阅会员价格和天数
-		log.C(context.Background()).Infow("支付验证订阅天数", "subscription_days", req.SubscriptionDays, "type", fmt.Sprintf("%T", req.SubscriptionDays))
-		if req.SubscriptionDays <= 0 {
-			return fmt.Errorf("订阅天数必须大于0")
-		}
-		if req.SubscriptionDays != 30 && req.SubscriptionDays != 365 {
-			return fmt.Errorf("订阅天数只支持30天和365天，当前值: %d", req.SubscriptionDays)
-		}
+// GetOrder 查询订单详情
+func (b *paymentBiz) GetOrder(ctx context.Context, orderID uint64) (*model.Order, error) {
+	return b.ds.Orders().GetByID(ctx, orderID)
+}
 
-		// 验证价格是否与天数匹配
-		expectedPrice, err := b.priceValidator.GetSubscriptionPrice(req.SubscriptionDays)
-		if err != nil {
-			b.priceValidator.LogPriceValidation(context.Background(), req.MembershipType, req.Amount, req.SubscriptionDays, false, err)
-			return err
-		}
-		if req.Amount != expectedPrice {
-			return fmt.Errorf("订阅价格不匹配: 期望%d分，实际%d分", expectedPrice, req.Amount)
-		}
+// ListOrdersByPayer 查询付款人的订单列表
+func (b *paymentBiz) ListOrdersByPayer(ctx context.Context, payerID uint, offset, limit int) ([]model.Order, int64, error) {
+	return b.ds.Orders().ListByPayer(ctx, payerID, offset, limit)
+}
 
-		b.priceValidator.LogPriceValidation(context.Background(), req.MembershipType, req.Amount, req.SubscriptionDays, true, nil)
-
-	default:
-		return fmt.Errorf("不支持的会员类型: %s", req.MembershipType)
+// CloseExpiredOrders 关闭超时未支付的订单
+func (b *paymentBiz) CloseExpiredOrders(ctx context.Context) error {
+	affected, err := b.ds.Orders().CloseExpiredOrders(ctx)
+	if err != nil {
+		return fmt.Errorf("close expired orders: %w", err)
 	}
-
+	if affected > 0 {
+		log.Infow("Closed expired orders", "count", affected)
+	}
 	return nil
 }
 
-// logPaymentAudit 记录支付审计日志
-func (b *paymentBiz) logPaymentAudit(ctx context.Context, payment *model.PaymentM, status, transactionID string, paidAt *time.Time) error {
-	// 使用支付记录中的订阅天数
-	subscriptionDays := payment.SubscriptionDays
-	if subscriptionDays <= 0 && payment.MembershipType == model.MembershipTypeSubscription {
-		// 如果没有记录天数，根据金额计算（兼容旧逻辑）
-		runmode := viper.GetString("runmode")
-		if runmode == "debug" {
-			// 开发环境：1元（100分），默认30天
-			if payment.Amount == 100 {
-				subscriptionDays = 30
-			}
-		} else {
-			// 生产环境：正常价格
-			if payment.Amount == 1600 {
-				subscriptionDays = 30
-			} else if payment.Amount == 11900 {
-				subscriptionDays = 365
-			}
-		}
-	}
-
-	auditLog := &model.PaymentAuditLog{
-		OutTradeNo:       payment.OutTradeNo,
-		UserID:           payment.UserID,
-		Amount:           payment.Amount,
-		MembershipType:   payment.MembershipType,
-		PackageCount:     payment.PackageCount,
-		SubscriptionDays: subscriptionDays,
-		Status:           status,
-		TransactionID:    transactionID,
-		PaidAt:           paidAt,
-	}
-
-	// 这里应该调用数据存储层的方法来保存审计日志
-	// 由于当前没有对应的存储方法，我们先用日志记录
-	log.C(ctx).Infow("Payment audit log",
-		"out_trade_no", auditLog.OutTradeNo,
-		"user_id", auditLog.UserID,
-		"amount", auditLog.Amount,
-		"membership_type", auditLog.MembershipType,
-		"package_count", auditLog.PackageCount,
-		"subscription_days", auditLog.SubscriptionDays,
-		"status", auditLog.Status,
-		"transaction_id", auditLog.TransactionID,
-		"paid_at", auditLog.PaidAt)
-
-	return nil
+// generateOrderNo 生成订单号: NU + 时间戳 + uuid前8位
+func generateOrderNo() string {
+	return fmt.Sprintf("NU%s%s", time.Now().Format("20060102150405"), uuid.New().String()[:8])
 }

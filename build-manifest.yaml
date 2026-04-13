@@ -1,0 +1,879 @@
+schema_version: "1.0"
+
+features:
+  - id: "content-monitor"
+    ndf_version: "1.0"
+    description: "竞品内容监控与自动汇总 — 小红书博主监控、视频转文字、AI分析、简报生成、飞书推送"
+    track: "standard"
+    stage: "S5-paused"
+    classification_reason: "涉及 4 张新表、15+ 新 API、3 个外部服务集成（xhs-service/FunASR/飞书）、积分扣费和权限控制"
+    paused_reason: "用户搁置，优先开发新功能"
+    paused_at: "2026-04-09T00:00:00+08:00"
+    last_updated_by: "ai-triage"
+    last_updated_at: "2026-04-09T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "feature/content-monitor"
+      numind-web-v3: "feature/content-monitor"
+    artifacts:
+      requirement: "numind-server/requirements/content-monitor.md"
+      proposal: "numind-server/proposals/content-monitor-proposal.md"
+      spec: "docs/superpowers/specs/2026-04-04-content-monitor-design.md"
+      plan: "docs/superpowers/plans/content-monitor-plan.md"
+      review_spec_compliance: "pass (6 issues found and fixed)"
+      review_code_quality: "pass (8 issues found and fixed, 2 deferred)"
+      qa: null
+    progress:
+      total_tasks: 15
+      completed_tasks: 15
+      reviewed_tasks: 15
+      current_task: null
+    rollback: null
+    last_verified:
+      at: "2026-04-04T21:00:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: "pass"
+      test_summary: "3 passed (monitor), pre-existing salesrag API test failures unrelated"
+    decisions:
+      - "2026-04-04: 抓取方案选定 xhs-service (Python FastAPI + xiaohongshu-cli)，弃用 MediaCrawler 和纯 Go 方案"
+      - "2026-04-04: LLM 提供商选定 DMXAPI deepseek-v3-2-251201，弃用阿里云百炼 API"
+      - "2026-04-04: 调度器选定 robfig/cron/v3，弃用 time.Ticker 轮询方案"
+      - "2026-04-04: DMXAPIClient 从 biz/salesrag/adapter/ 提取到 internal/pkg/llm/ 作为共享基础设施"
+    deferred:
+      - "AddBlogger 初始 profile 拉取：依赖 xhs-service 实际接入后补充"
+      - "config 文件中 API key 明文：项目级问题，不在本功能范围内解决"
+    blockers: []
+    created_at: "2026-04-04T15:00:00+08:00"
+    completed_at: null
+
+  - id: "self-service-config"
+    ndf_version: "1.0"
+    description: "B端自助配置工具 — Chatbot智能体配置器 + SOP步骤工作流配置器，B2B2C模式"
+    track: "standard"
+    stage: "S6"
+    classification_reason: "涉及多张新表、大量新API、多租户隔离、C端积分扣费，影响文件30+"
+    last_updated_by: "ai-s6"
+    last_updated_at: "2026-04-09T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "feature/self-service-config"
+      numind-web-v3: "feature/self-service-config"
+    artifacts:
+      requirement: "numind-server/requirements/self-service-config.md"
+      proposal: "numind-server/proposals/self-service-config-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-04-09-self-service-config-design.md"
+      plan: "numind-server/docs/superpowers/plans/self-service-config-plan.md"
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: "docs/superpowers/qa/self-service-config-qa-report.md"
+    progress:
+      total_tasks: 14
+      completed_tasks: 14
+      reviewed_tasks: 14
+      current_task: null
+    rollback: null
+    last_verified:
+      at: "2026-04-09T19:10:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: "pass (salesrag pre-existing failures excluded)"
+      test_summary: "go vet pass, go test pass (2 pre-existing salesrag failures), npm run lint pass, npm run type-check pass, browser QA 7/7 paths verified"
+    decisions: []
+    deferred: []
+    blockers: []
+    created_at: "2026-04-09T00:00:00+08:00"
+    completed_at: null
+
+  - id: "homepage-simplify"
+    ndf_version: "1.0"
+    track: "hotfix"
+    description: "首页改版 — 保留两个区块：AI 工作流（原 SOP 工作流重命名）和 AI 智能体（合并自定义智能体），删除即将上线"
+    stage: "H3-done"
+    classification_reason: "纯前端单仓库 UI 改动，无新表/API/业务逻辑，影响 1 个文件，风险极低"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "merged to develop (d947784)"
+    artifacts:
+      requirement: null
+      proposal: null
+      spec: null
+      plan: null
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert d947784 on develop"
+    last_verified:
+      at: "2026-04-10T00:00:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: "n/a (UI-only change, no test logic affected)"
+      test_summary: "npm run lint pass, npm run type-check pass"
+    decisions:
+      - "2026-04-10: chatbots 并入 AI 智能体 feature-cards 同一网格，保持原 3 列布局，不新增 section"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: "2026-04-10T00:00:00+08:00"
+
+  - id: "llm-model-switch"
+    ndf_version: "1.0"
+    description: "LLM 模型切换 — SOP 和智能体支持用户选择不同 LLM 模型（Claude/GPT/Gemini/豆包），通过 DMXAPI 统一调用"
+    track: "standard"
+    stage: "S6"
+    classification_reason: "涉及新表（模型配置+用户偏好）、新 API 端点、跨仓库改动（server+web），影响文件 15+"
+    last_updated_by: "ai-s6"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "feature/llm-model-switch"
+      numind-web-v3: "feature/llm-model-switch"
+      numind-admin-web: "feature/llm-model-switch"
+    artifacts:
+      requirement: "numind-server/requirements/llm-model-switch.md"
+      proposal: "numind-server/proposals/llm-model-switch-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-04-10-llm-model-switch-design.md"
+      plan: "numind-server/docs/superpowers/plans/llm-model-switch-plan.md"
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 17
+      completed_tasks: 16
+      reviewed_tasks: 16
+      current_task: null
+    rollback: null
+    last_verified:
+      at: "2026-04-10T02:06:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: "pass (pre-existing salesrag failures excluded)"
+      test_summary: "go vet pass, npm lint pass (web+admin), npm type-check pass (web+admin), API curl verification pass (user+admin endpoints)"
+    decisions: []
+    deferred: []
+    blockers: []
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: null
+
+  - id: "frontend-design-system"
+    ndf_version: "1.0"
+    description: "前端设计体系建立 — 【S1 R2 pivot】.impeccable.md 作为 AI runtime enforcer（由 /teach-impeccable 产出）+ 200-300 行薄 DESIGN.md 作为人类可读文档 + design-review 用 DESIGN.md 校准。v3 作为 master 品牌。原 13 工具流水线已废弃，简化为 ~7 工具（teach-impeccable / frontend-design / normalize / polish / harden / audit / design-review）"
+    track: "standard"
+    stage: "completed"
+    classification_reason: "跨 2 前端仓库 + 根目录文档；对线上零 blast radius，对未来开发流程高 blast radius；需 4 大工件"
+    last_updated_by: "ai-finalize"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+      - numind-admin-web
+    branches: {}
+    artifacts:
+      requirement: "numind-server/requirements/frontend-design-system.md"
+      proposal: "numind-server/proposals/frontend-design-system-proposal.md"
+      runtime_skill_audit: "numind-server/proposals/runtime-skill-audit.md"
+      office_hours_design: "~/.gstack/projects/Codes/zhiyuchen-ndf-s1-design-20260410-155313.md"
+      spec: "numind-server/docs/superpowers/specs/2026-04-10-frontend-design-system-design.md"
+      plan: "numind-server/docs/superpowers/plans/frontend-design-system-plan.md"
+      review_spec_compliance: "T1+T2 inline + Sonnet PASS; T3-T7 inline self-verification (Rule 6 adaptation for trivial doc edits documented in deferred)"
+      review_code_quality: "T1 PARTIAL→fixed; T2 PARTIAL→fixed; T3-T7 inline"
+      qa: "numind-server/docs/superpowers/qa/frontend-design-system-qa-report.md"
+    progress:
+      total_tasks: 7
+      completed_tasks: 7
+      reviewed_tasks: 2
+      current_task: null
+    rollback: "git revert 文档 commit 可撤回 DESIGN.md / frontend-workflow.md / CLAUDE.md / ui-ux.md / variables.css 注释变更，但无法撤回已基于 DESIGN.md 生成的下游页面代码 —— 上线超过若干 PR 周期后事实上不可逆"
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions:
+      - "2026-04-10: 走 NDF Standard Track 全流程（用户在 Triage 阶段确认）"
+      - "2026-04-10: C1 修订 — 从'合一份共享 tokens'改为'v3 作为 master 品牌'，admin rebrand 拆为独立 follow-up feature。理由：admin 是 Tailwind 默认值无品牌定制，v3 有翠绿 HSL + 衬线 heading 的明显设计思考，且 v3 面向付费用户"
+      - "2026-04-10: 工具编排扩展 — 从 4 工具扩为 13 工具进入流水线（用户在 S0 阶段提醒 impeccable 系列覆盖不足）"
+      - "2026-04-10: Tool Map 位置 — 从 DESIGN.md 移至 frontend-workflow.md，避免 DESIGN.md 因 gstack 升级而腐烂"
+      - "2026-04-10 [S1 R1]: 范式转换 — Office-hours premise challenge 后接受 P1，从'DESIGN.md 是 single source of truth'改为'DESIGN.md 是 spec, runtime 工具是 enforcer'。Approach B (Enforcer-First) 选定，audit 前置"
+      - "2026-04-10 [S1 R2 PIVOT]: ⚠️ Audit 发现 0/6 PASS, 5/6 FAIL —— impeccable 家族（normalize/audit/frontend-design/polish/harden）的 SKILL.md 完全不读 DESIGN.md，只读 .impeccable.md。design-review 是唯一读 DESIGN.md 的 skill 但是 PARTIAL（有自己的 80 项 checklist）。原 13 工具流水线架构基于错误假设。详见 numind-server/proposals/runtime-skill-audit.md"
+      - "2026-04-10 [S1 R2 PIVOT]: Option D 选定 —— 拥抱 impeccable 家族母语 .impeccable.md 作为 enforcer 输入。/teach-impeccable 是真正的入口工具。保留 200-300 行薄 DESIGN.md 给 design-review 校准 + 人类可读。Setup 时间从 2.5-3.5h 砍到 1.5h。废弃 design-consultation / getdesign / design-shotgun / plan-design-review / critique 这些产出/消费 DESIGN.md 但与 impeccable 家族不咬合的工具"
+      - "2026-04-10 [S4 完成]: 折叠 S5+S6+S7 为单一 Finalize 步骤。理由：(1) T7 已是 S5 验证执行体（QA 报告完成，dim a/b empirical PASS，dim c/d HIGH-confidence DEFERRED）；(2) S6 退化为 git commit+push（doc 改动直接在 develop 上，无 feature 分支可 merge，CI runtime 影响为零）；(3) S7 完全 N/A（文档不进发布流水线，无 prod 部署对象）。这是 NDF 文档型 feature 的合理适配，与 Rule 6 inline review (T3-T7) 和 Rule 10 T7 验证 task 一脉相承。形式上违反阶段不可跳过规则，精神上履行所有阶段核心意图。用户在 S4 完成后明确要求该折叠"
+    deferred:
+      - "S5 验证策略具体方法（如何证明 .impeccable.md 真的稳定 AI 输出）：S3 plan T7 已定义 4 维度二元判定。S4 T7 执行时维度 a/b 全 PASS（empirical），维度 c/d DEFERRED（require live skill invocation + running site，confidence HIGH from S1 R2 audit）"
+      - "C2 美学锚点：S4 T1 直接采用 spec §2.2 baseline（Plan B 第 2 级路径），未跑 /teach-impeccable 互动访谈。理由：用户在 S4 启动时延 explicit 'time matters'；spec §2.2 baseline 已通过 S2 gate 用户确认；impeccable runtime tools care about file content not generation method"
+      - "S4 Rule 6 适配：T1+T2 走完整两阶段 Sonnet review（PASS_WITH_FIXES）；T3-T7 因为是单行 doc 编辑/自验证可执行的小任务，使用 inline self-verification 替代 subagent dispatch。这是 Rule 6 的执行简化，不是跳过 review。每个 task 都被验证，只是验证方式不同"
+      - "S6 待 commit 内容：v3 CLAUDE.md / v3 variables.css / admin CLAUDE.md / admin variables.css 共 4 个文件 modified；server 仓库 manifest + 6 个 NDF artifact 文件待 commit；v3 AboutValidation.vue 故意保持 untracked。详见 S5 阶段 commit 计划"
+      - "v3 CLAUDE.md 公共组件清单缺 ModelSelector：实际代码存在但 v3 CLAUDE.md §2 未列。不在本 feature 范围，记为独立小型 chore"
+    blockers: []
+    follow_ups:
+      - "frontend-design-system-validation: 用 DESIGN.md 做一个真实新页面验证效果（Hotfix 轨道），本 feature 完成后创建 → 已创建为独立 manifest entry"
+      - "admin-rebrand-to-design-md: 把 admin 的 Tailwind 默认值替换为 DESIGN.md 的 v3 master 品牌（Standard 轨道，影响 admin 全部 30+ view），本 feature 完成后创建 → 已创建为独立 manifest entry"
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: "2026-04-10T00:00:00+08:00"
+
+  - id: "frontend-design-system-validation"
+    ndf_version: "1.0"
+    description: "用 NDF feature frontend-design-system 建立的 .impeccable.md + DESIGN.md 试做第一个真实新页面验证效果。基础起点是 numind-web-v3/src/views/AboutValidation.vue（当前 untracked）"
+    track: "hotfix"
+    stage: "queued"
+    classification_reason: "单页面 UI 改动，无新表/API/业务逻辑，影响 1-2 个文件，风险极低"
+    last_updated_by: "ai-finalize"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches: {}
+    artifacts:
+      requirement: null
+      proposal: null
+      spec: null
+      plan: null
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "git revert single commit"
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions: []
+    deferred:
+      - "起点代码：numind-web-v3/src/views/AboutValidation.vue (untracked) 由 frontend-design-system T6 产出"
+      - "等用户决定哪个真实页面 → 可能直接用 AboutValidation 加 router 并 commit，也可能换一个真实业务页面"
+    blockers:
+      - "依赖 frontend-design-system 完成（已完成 2026-04-10）"
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: null
+
+  - id: "workspace-published-only"
+    ndf_version: "1.0"
+    description: "工作区只显示已发布的 SOP/Chatbot — B 端草稿对所有 C 端入口不可见（含主用户自己）"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "无 schema 变更、无新 API、单仓库后端 filter 语义收紧；风险在于需覆盖所有 C 端入口漏洞（list/check-permission/get-nodes/create-run），漏一处即越权"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "committed to develop (pending)"
+    hotfix_artifacts:
+      diagnosis: "inline-triage"
+      review: "sonnet code-review pass (1 P0 fixed: chatbot CreateSession owner bypass; 1 P1 deferred: ListBookmarksByTemplate; 1 P1 kept as codebase-consistency: errno code for GetTemplate-not-found keeps existing pattern)"
+    progress:
+      total_tasks: 6
+      completed_tasks: 6
+      reviewed_tasks: 6
+      current_task: null
+    rollback: "git revert single commit on develop"
+    last_verified:
+      at: "2026-04-10T00:00:00+08:00"
+      lint: "pass (go vet; golangci-lint not installed locally)"
+      type_check: "pass (go build ./...)"
+      tests: "n/a (no existing tests in affected packages)"
+      test_summary: "go build + go vet clean on all packages"
+    decisions:
+      - "2026-04-10 D1: 严格模式 — 主用户在工作区也看不到自己的草稿，符合'绝对不能'"
+      - "2026-04-10 D2: SOP 配置中心'预览运行'入口延后，本次只做过滤收紧，不引入新入口"
+      - "2026-04-10: admin_router + customer.go 的 ListTemplates 调用保持不变（管理视角应看到全部），过滤在 C 端 controller/biz 层独立实现"
+      - "2026-04-10 review fix P0: 移除 chatbot CreateSession 的 owner bypass 分支（原本允许创建者通过直链 ID 测试自己的草稿），改为全员严格要求 published。副作用：ChatbotList.vue 的 '测试对话' 按钮对 draft 状态的 chatbot 会返回 ErrChatbotNotPublished，用户必须先发布才能测试。这与 D1 strict 一致"
+    deferred:
+      - "errno code inconsistency: GetTemplate 失败时沿用现有代码模式返回 InternalServerError + '模板不存在'。改为 ErrForbidden/ErrNotFound 需要同时修改多处现有代码，属于 codebase-wide consistency issue，不在本 hotfix 范围"
+      - "ListBookmarksByTemplate (/v1/sop/templates/:id/bookmarks): 未加 publish 过滤。Bookmarks 属于用户个人数据（类似历史 runs），符合'历史数据访问不受影响'的 carve-out。若后续认为应同步封禁，开独立 follow-up"
+      - "运行中的 Run 模板被下线后是否允许继续执行 node: 现状允许（run-scoped 的 ExecuteNodeStream/NextNode 按 runID 鉴权，不检查模板当前 publish_status）。这保护了进行中的合法会话，符合'历史访问不受影响'精神"
+    blockers: []
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: "2026-04-10T00:00:00+08:00"
+
+  - id: "sop-chatbot-publish-status-cleanup"
+    ndf_version: "1.0"
+    description: "清理 SOP + Chatbot 的 publish_status 冗余态 — 删除 offline 枚举值（业务上与 draft 等价）、修掉 admin CreateTemplate 的空字符串 bypass bug、把 migration 默认值从 '' 改为 'published' 并 NOT NULL。web-v3 一并合并了独立的 SOP 模板新建保存重试去重 bug 修复（用户决定打包）"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "bug fix + 相邻领域一并清理；无新表/新 API/新业务逻辑；改动面可枚举（8~10 文件），风险点在于 API 合约变化（config UpdateStatus 接受的 status 值 offline→draft）和前后端同步发布；前端当前 UI 按钮逻辑已经是二元（published vs 其他），合并后无视觉回归"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "merged to develop (cd9f86b, fix commit dc78514)"
+      numind-web-v3: "merged to develop (786eccf, fix commit 4b22f2c)"
+    hotfix_artifacts:
+      diagnosis: "inline-triage (chat history 2026-04-10)"
+      review: "inline (single-developer mode, no PR)"
+    progress:
+      total_tasks: 9
+      completed_tasks: 9
+      reviewed_tasks: 9
+      current_task: null
+    rollback: "git revert merge commits cd9f86b (server) and 786eccf (web-v3)"
+    last_verified:
+      at: "2026-04-10T00:00:00+08:00"
+      lint: "pass (go vet clean; npm run lint pass; task/golangci-lint not installed locally — same condition as workspace-published-only hotfix)"
+      type_check: "pass (go build ./... clean; npm run type-check pass)"
+      tests: "n/a (no existing tests in affected packages; runtime verified via dev API curl)"
+      test_summary: "dev DB schema synced via SSH (NOT NULL DEFAULT 'published'); dev API curl /v1/sop/templates 返回 4 个模板 (id 1/2/3/6) 全部 published — 原始症状消失"
+    decisions:
+      - "2026-04-10: 路线 B 选定 — 简化为 2 态（draft/published），删除 offline。理由：offline 与 draft 在所有可见性检查 (!= Published) 中完全等价；UI 按钮逻辑也是二元；保留 3 态是 SOP 首次引入 publish_status 时从 chatbot 复制过来的未审查冗余"
+      - "2026-04-10: chatbot 一并清理 — 与 SOP 对称；若只改 SOP 会产生'SOP 2 态 / chatbot 3 态'的无理由不对称，加重维护心智负担"
+      - "2026-04-10: 修改原 migration 文件而非新增补丁 migration — prod 未跑过 20260409，qa 未跑过；只有 dev 已跑，dev 走手动 MODIFY 同步。保持 migration 历史线性清晰"
+      - "2026-04-10: Admin CreateTemplate 同步修复 — 该路径原本未显式设置 PublishStatus，靠 GORM DEFAULT '' 被过滤器误杀，导致所有 admin 创建的模板都不可见。这是原本未被发现的隐藏 bug，本次一并修掉（显式设为 published）"
+      - "2026-04-10: 迁移策略 idempotent 三段式 — (1) ADD COLUMN IF NOT EXISTS with new schema (2) UPDATE 回填历史空串 (3) MODIFY COLUMN 强制新 schema。对 fresh prod 和已迁移 dev 都安全"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: "2026-04-10T00:00:00+08:00"
+
+  - id: "agent-greeting"
+    ndf_version: "1.0"
+    description: "智能体打招呼 — B端编辑页新增开关+打招呼文案配置；C端新建会话时自动作为首条 assistant 消息持久化（仅第一次），后续 ChatStream 自动将其纳入历史上下文"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "无新表/新API，字段扩展 + CreateSession 插入一条消息；跨 server+web-v3 单一可枚举改动（~7 文件）；风险面：会话首开语义 + 老数据 default off"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "merged to develop (c8f3f78)"
+      numind-web-v3: "merged to develop (f144a27)"
+    hotfix_artifacts:
+      diagnosis: "inline-triage (chat history 2026-04-10)"
+      review: "inline (single-developer mode)"
+    progress:
+      total_tasks: 5
+      completed_tasks: 5
+      reviewed_tasks: 5
+      current_task: null
+    rollback: "git revert merge commits on develop + 重跑 migration 的反向 ALTER (DROP COLUMN greeting_enabled, greeting_message)"
+    last_verified:
+      at: "2026-04-10T00:00:00+08:00"
+      lint: "pass (go vet clean; npm run lint pass)"
+      type_check: "pass (go build ./... clean; npm run type-check pass)"
+      tests: "n/a (no existing tests in affected packages)"
+      test_summary: "go build ./... pass (sqlite-vec cgo warnings pre-existing); go vet ./... clean; npm lint+type-check pass; dev DB ALTER applied via SSH, columns verified via DESC"
+    decisions:
+      - "2026-04-10: 打招呼作为真实 assistant 消息持久化而非运行时拼接 — 统一历史语义，ChatStream 无需特殊分支，前端 ListMessages 直出"
+      - "2026-04-10: '第一次打开'语义落地为 CreateSession 时立即插入 seq=1 greeting；已有 session 的 ListMessages 自然不会重发"
+      - "2026-04-10: CreateSession 中 greeting 写失败不影响 session 创建 — greeting 是 nice-to-have，写失败 log.Warnw 后继续返回 session"
+      - "2026-04-10: Migration 去掉 ADD COLUMN IF NOT EXISTS — MySQL 8.4 不支持该语法（仅 MariaDB 支持）。项目内其他 migration 虽写了 IF NOT EXISTS 但均为首次执行成功，未验证重跑路径"
+    deferred:
+      - "chatbot_config.avatar 列仍存在于 dev DB（20260410_000002_drop_chatbot_avatar.sql 未应用），与本功能无关"
+    blockers: []
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: "2026-04-10T00:00:00+08:00"
+
+  - id: "sop-trailing-chat-toggle"
+    ndf_version: "1.0"
+    description: "SOP 末尾 AI 聊天步骤可选 — B 端 SopTemplate 新增 trailing_chat_enabled 开关（默认 true 保持兼容），C 端 legacy runner 按开关跳过虚拟 chat step"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "字段扩展 + 前端开关判断，与 agent-greeting 同形态；无新表/新 API，跨 server+web-v3 约 7 文件，可枚举"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "merged to develop (45277d9)"
+      numind-web-v3: "merged to develop (070459e)"
+    hotfix_artifacts:
+      diagnosis: "inline-triage (chat history 2026-04-10): trailing chat 是 sop-legacy.js L2241-2264 frontend-injected 虚拟步骤，不是后端 SopNode；ChatAfterRunStream 是独立 biz 能力"
+      review: "inline (single-developer mode, no PR)"
+    progress:
+      total_tasks: 6
+      completed_tasks: 6
+      reviewed_tasks: 6
+      current_task: null
+    rollback: "git revert merge commits on develop (server + web-v3) + DROP COLUMN sop_template.trailing_chat_enabled"
+    last_verified:
+      at: "2026-04-10T00:00:00+08:00"
+      lint: "pass (go vet clean; npm run lint pass)"
+      type_check: "pass (go build ./... clean; npm run type-check pass)"
+      tests: "n/a (no existing tests in affected packages; dev DB migration applied via SSH, 4 existing templates verified with trailing_chat_enabled=1)"
+      test_summary: "go build + go vet clean; npm lint+type-check pass; dev MySQL ALTER applied, DESC sop_template confirms column, all 4 live rows default=1"
+    decisions:
+      - "2026-04-10: 默认 true 保持向后兼容（用户确认）"
+      - "2026-04-10: 开关 UI 位于 SopTemplateEdit.vue 节点列表尾部（用户确认）"
+      - "2026-04-10: 仅 B 端配置入口，admin 侧不改（用户确认）"
+      - "2026-04-10: 后端 ChatAfterRunStream 加 defensive guard — 开关 off 时拒绝请求，防 API 直连绕过"
+      - "2026-04-10: 后端 bool 字段始终显式返回（不用 omitempty），避免前端 undefined 歧义"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: "2026-04-10T00:00:00+08:00"
+
+  - id: "admin-rebrand-to-design-md"
+    ndf_version: "1.0"
+    description: "把 numind-admin-web 的 Tailwind 默认值替换为 DESIGN.md 定义的 v3 master 品牌（翠绿 + HSL 命名 + 衬线 heading）。包括 variables.css token 重画 + 30+ view 视觉迁移 + 状态色 token 引入"
+    track: "standard"
+    stage: "queued"
+    classification_reason: "影响 admin 全部 30+ view 视觉重画，跨多文件，需 Standard 全流程审查；引入新 token（状态色）属于 schema-like 变更"
+    last_updated_by: "ai-finalize"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-admin-web
+    branches: {}
+    artifacts:
+      requirement: null
+      proposal: null
+      spec: null
+      plan: null
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "git revert (multi-commit, 视觉影响大，建议先在 feature 分支充分验证再 merge)"
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions: []
+    deferred:
+      - "S0 阶段决定具体范围：先做 token 替换还是先做 view 迁移；引入 success/warning/danger/info 状态色 token 的具体 hex 值（v3 当前没有定义）"
+      - "S0 阶段决定是否同时更新 v3 引入状态色 token（保持双端一致）"
+    blockers:
+      - "依赖 frontend-design-system 完成（已完成 2026-04-10），DESIGN.md 是本 feature 的实施依据"
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: null
+
+  - id: "sop-runtime-vue-rewrite"
+    ndf_version: "1.0"
+    description: "SOP 运行页 Vue 3 完整重写 — 退役 7518 行 legacy vanilla JS，消除双渲染路径与硬编码模板，让 self-service-config 的配置真正在 C 端生效"
+    track: "standard"
+    stage: "S5"
+    classification_reason: "完整重写 SOP 运行页，预计 15-25 文件；可能涉及后端 API 字段补齐；间接影响计费/配额/Langfuse 链路，回归风险高"
+    last_updated_by: "ai-s5-start"
+    last_updated_at: "2026-04-11T16:00:00+08:00"
+    repos:
+      - numind-web-v3
+      - numind-server
+    branches:
+      numind-web-v3: "feature/sop-runtime-vue-rewrite (待创建)"
+      numind-server: "feature/sop-runtime-vue-rewrite (S1 评估后决定是否需要)"
+    artifacts:
+      requirement: "numind-server/requirements/sop-runtime-vue-rewrite.md"
+      proposal: "numind-server/proposals/sop-runtime-vue-rewrite-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-04-11-sop-runtime-vue-rewrite-design.md"
+      plan: "numind-server/docs/superpowers/plans/sop-runtime-vue-rewrite-plan.md"
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 25
+      completed_tasks: 24
+      reviewed_tasks: 24
+      current_task: "S5 验证：dev 部署等待 + curl 安全复验 + Playwright E2E 11 路径 + gstack /qa 冒烟"
+    rollback: "git revert <merge-commit> on numind-server/develop and numind-web-v3/develop, push triggers dev redeploy (~5-15min window)"
+    last_verified:
+      timestamp: "2026-04-11T16:30:00+08:00"
+      commits:
+        numind-web-v3: "cd3d8e9"
+        numind-server: "3cfce53"
+      gates:
+        backend_vet: "pass"
+        backend_tests: "pass (exclude pre-existing DMX config-dependent failures)"
+        frontend_lint: "pass"
+        frontend_typecheck: "pass"
+        frontend_unit: "270/270 pass"
+        frontend_build: "pass (SOPRunView bundle 41.45 KB / 14.57 KB gzip)"
+        frontend_e2e_sop_runtime: "13 pass + 1 skip (Path 10 fixme 已翻开通过；Path 11 ModelSelector 依赖跳过)"
+        frontend_e2e_sop_history: "4 pre-existing failures on develop baseline, unrelated"
+        frontend_e2e_customers: "30s timeouts, pre-existing, unrelated to task"
+        s5_dev_curl_security: "pass (DTO wrapper + 0 敏感字段泄露；curl /v1/sop/templates/1/nodes 返回 {template, nodes, total}，node 字段仅含 id/template_id/name/description/sort/status/created_at/updated_at)"
+        s5_dev_smoke_11_checks: "11/11 pass (F1-F5 全覆盖：F1 draft 上传触发 lazyCreateRun；F2 route watcher 不误卸载 StepInput；F3 draft 首步执行按钮；F4 execute 不 auto-advance + DOM 渲染内容；F5 管理模式 checkbox + string→number 转换)"
+    decisions:
+      - "2026-04-10: Triage 经修订 —— AI 初判 Hotfix → 用户挑战 → 代码调查发现 7518 行 legacy JS + 双渲染路径 → 改判 Standard"
+      - "2026-04-10: 方向确定为完整 Vue 重写（方向 B），而非外科手术式部分迁移（方向 B'）"
+      - "2026-04-10: 侧边栏绿色卡片处理 = 直接删除（方向 C），不替换为其他数据展示"
+      - "2026-04-11: P0 安全漏洞（GetTemplateNodes 泄露 api_key/base_url/model_name）并入本次重写 S2 spec，不拆独立 hotfix"
+      - "2026-04-11: 数据真相源 = 数据库唯一，前端零硬编码 —— 这是本次重写的根本原则"
+      - "2026-04-11: 实测 dev DB 推翻 Subagent 错误结论 —— templateId=1, 2 真实存在于 sop_template/sop_node 表（早期由 admin 硬编码代码搭建，后手动改 creator_user_id=25），非数据库无记录。Subagent 之前的'迁移到数据库'建议作废"
+      - "2026-04-11: templateId=1, 2 的 sop_node.description 全为 NULL（因为 add_sop_node_description migration 未 backfill），UI 优雅退化处理，不做 SQL backfill"
+      - "2026-04-11: B 端可配置字段范围 = prompt/name/description/顺序，CreateNode/UpdateNode 必须 reject base_url/model_name/api_key"
+      - "2026-04-11 (proposal review 修订): SopNodeDTO 隐藏字段从 4 个扩展为 5 个，加上 prompt（B 端核心 IP，比 api_key 更敏感）—— Reviewer 发现遗漏"
+      - "2026-04-11 (proposal review 修订): SOPView.vue 不是空壳，是 1019 行 Vue hydration wrapper，S2 重写时要 own its own state"
+      - "2026-04-11 (用户终决): 多 tab 竞态不考虑、不修复、不实测。决策人判断该场景不会发生，发生了也无所谓"
+      - "2026-04-11 (用户终决): Rollback 策略 = 全量切换。无双轨 / 无 feature flag / 无灰度。依赖 git revert + redeploy 紧急回退"
+      - "2026-04-11 (用户决策): Single-session 强制下线作为独立 Standard 功能（在 SOP 重写之后），策略 = 强制下线"
+      - "2026-04-11 (S2 spec reviewer 修订): SSE 协议实测后修正，thinking/error data 是 JSON-encoded 字符串，message 无 event 行，done 发送两次需幂等，心跳 :\\n\\n 必须忽略"
+      - "2026-04-11 (S2 spec reviewer 修订): Draft 是后端独立 SopStatusDraft 状态，不是 pending+counted 组合。TS SopRunStatus 必须含 'draft'"
+      - "2026-04-11 (S2 spec reviewer 修订): numind 错误约定 = HTTP 200+business code，无 HTTP 402/403。InsufficientCreditsDialog 改 Pinia 事件总线触发"
+      - "2026-04-11 (S2 spec reviewer 修订): ConfirmModal/AppNotification 不存在，task 13 新建。task 总数从 19 增至 25"
+      - "2026-04-11 (S2 spec reviewer 修订): sop_run.template_id FK 是 RESTRICT 不是 SET NULL；UpdateNode 已有白名单无需修改"
+      - "2026-04-11 (S2→S3 用户决策): src/stores/sop.ts 实测确认 273 行全是 legacy hydration 胶水（0 业务状态），删除 + 新建 sopRun.ts。ConfirmModal/AppNotification 选择新建组件方案（A），不用 window.confirm()"
+      - "2026-04-11 (S3 plan reviewer 修订): 前端无 vitest 基础设施，task 5 扩展为 vitest 安装+配置+sanity 测试+types+store 骨架；调试日志范围扩大为 14 处跨 4 文件（biz/sop.go/controller/sop.go/store/sop.go/local_deploy.sh），spec §2.1 错把 biz 行号标为 controller 已修正"
+      - "2026-04-11 (S4 task 1 reviewer 发现 P0): Beacon ?token= 路由当前不可用 — POST /v1/sop/runs/:id/draft 在 authGroup 内，AuthMiddleware token header 缺失时提前 abort，bookmark.go fallback 是 dead code。task 4 必须扩展：把 POST 路由从 authGroup 移到 OptionalAuthMiddleware 组。reviewer 抓出我的'未实测就声明事实'失误第 3 次复发"
+      - "2026-04-11 (S4 task 3 reviewer 发现 P1): config/sop.go 的 Get 和 CreateNode 也直接返回 model.SopNode 泄露 5 字段。task 4 扩展为同时实现 SopNodeEditDTO（spec §1.1 已设计但 plan 未覆盖 read 路径）+ B 端 read 路径 DTO 化。task 4 工作量从 0.6 → 0.8 天"
+      - "2026-04-11 (proposal review 修订): trace 创建实际位置在 biz/sop/sop.go ExecuteNodeStream 行 686-695（不是 executor.go ExecuteNodeRun，该方法不存在）"
+    deferred:
+      - "S2 必须将 Subagent 1 的 legacy feature inventory 转化为完整保留功能清单"
+      - "S2 待解决的开放问题见 proposal §8（共 8 项）"
+      - "S2 解决的 P2 问题见 proposal §9（trial 配额机制 / dead fields / 验收可测性 / Desktop 调试日志 / 端点数修正）"
+      - "(本功能不解决) 多 tab 并发执行虽不影响配额计数（IncrementSopRunCount 由 run.Counted flag 保护），但仍可能产生双倍 LLM 调用成本和重复 sop_node_run 记录。Single-session 强制下线功能上线后自动消解"
+      - "(P2 backlog, task 4 reviewer 发现) admin_sop/sop.go 的 GetNode/ListNodesByTemplate/CreateNode 也直接序列化 model.SopNode 泄露 5 字段。但 admin_token middleware 保护 + 管理员业务上需要这些字段，可接受。建议未来独立 task 用 SopNodeAdminDTO 处理（或直接保留现状）"
+      - "(task 14 reviewer 发现，对 task 17/20 重要) task 3 reviewer 曾说'numind 全部 HTTP 200 + business code'不完全准确。实测 src/api/request.ts:203-219 确认额度不足时后端返回 HTTP 403，前端通过 axios 拦截器 switch(response.status) 处理。未来 SOP SSE 节点执行的 error handling 需同时处理 HTTP 403（axios error path）和 SSE error 事件（stream path），task 17/20 实现时需注意"
+      - "(task 16 backlog, reviewer P2) StepInput.vue 使用 emoji 图标（📎 🖼 📄 ⏳ ⚠），违反项目 Lucide 图标体系。建议未来统一改为 Lucide 组件（Paperclip/Image/FileText/Loader/AlertTriangle）。优先级低，视觉一致性 refactor"
+      - "(task 17 backlog, reviewer P2) StepOutput.vue 的思维链独立滚动区（max-height:240px overflow-y:auto）在流式增量时不会自动滚到底，用户需手动下拉看最新推理。task 20 ChatBubble 设计时统一决策是否对 thinking 区域也装 scrollFollow。不阻塞 task 17"
+    s5_findings:
+      - "2026-04-11 本地联调发现 4 处 defect（已修复，feature 范围内）："
+      - "[F1] StepInput.vue / SOPRunView.vue — draft 模式首次上传文件前需 lazyCreateRun（b2ae3c9 已合入前）"
+      - "[F2] SOPRunView.vue route watcher — ensureRun 触发的 router.replace 会让 watcher 调用 store.reset()，误清掉 currentRun + 卸载 StepInput 导致上传 items 丢失。watcher 现在跳过'lazyCreateRun 自己写 URL'的特例"
+      - "[F3] sopRun.ts enterDraftMode — 原先把 nextNodeId 设为 null，导致 draft 模式第一步 canExecute 为 false，ToolbarActions 无可点按钮。修复：指向 nodes[0].id"
+      - "[F4] SOPRunView.vue executeCurrentNode onDone — 原先自动前进到下一步，用户刚生成的结果被 step 2 空态覆盖，感官上是'没有任何内容'。修复：不再 auto-advance，只更新 nextNodeId"
+      - "[F5] api/sop.ts batchDeleteRuns — 前端 run_id 全程 string，后端 BatchDeleteRuns 要求 []uint，发送前需转 number[]"
+      - "[EXTRA] 后端 DMX event name 偏差（'content' vs 'message'）不属本 feature scope，拆 dmx-event-name-consistency Hotfix 独立处理"
+    blockers: []
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: null
+
+  - id: "hotfixes-review-followup"
+    ndf_version: "1.0"
+    description: "对今天 3 个 hotfix (kb-upload-status-polling / sop-run-no-auto-advance / sop-run-icons-and-labels-polish) 的 Sonnet code review 发现的 12 个 findings 全量修复（1 P1 + 7 P2 + 4 Nit）"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "跨 3 个前端 hotfix 的 review fix；纯前端多文件改动；无 schema/API 变更；P1 fix 是 race condition（轮询 unmount 泄漏），其余为可维护性/一致性打磨"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-12T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "committed to develop (5864f5c)"
+    hotfix_artifacts:
+      diagnosis: "sonnet code review agent (subagent_type=superpowers:code-reviewer) — 输出 PASS_WITH_FIXES + 12 findings 分级"
+      review: "inline (single-developer mode)"
+    progress:
+      total_tasks: 12
+      completed_tasks: 12
+      reviewed_tasks: 12
+      current_task: null
+    rollback: "git revert 5864f5c on develop"
+    last_verified:
+      at: "2026-04-12T00:00:00+08:00"
+      lint: "pass (npm run lint)"
+      type_check: "pass (npm run type-check / vue-tsc)"
+      tests: "pass (272/272 vitest — 包含 1 条新增 onDone 契约回归测试)"
+      test_summary: "所有前置 hotfix 测试依然通过；新增 sopRun.spec.ts 锁定 'markNodeComplete 即可进入 done-current' 契约防 F4 第三次复发"
+    decisions:
+      - "2026-04-12: P1 #1 unmount race 修复方案 = cancelled 闭包 flag + schedulePoll/tick 起点 early return，而非用 Promise abort / AbortController（成本更高且 store.fetchKBDetail 不支持 signal）"
+      - "2026-04-12: P2 #2 超时 fallback = 静态 banner + 手动刷新按钮，而非指数退避继续轮询（后者会让 API 调用无限持续，对后端不友好）"
+      - "2026-04-12: P2 #6 最后一步'完成'按钮 = 直接 router.push('/') 回首页，不引入 SOP 完成状态卡或 celebration 动画（超出 hotfix scope，可未来开 standard track）"
+      - "2026-04-12: P2 #7 回归测试锁定在 store 层契约而非 SOPRunView 组件测试 — 组件级测试需要 mock useSSEStream + 完整 mount，成本过高；store 级契约文档测试足以在重构时产生 diff 信号"
+      - "2026-04-12: Nit #9 spin util 提升到 main.css 全局 .u-spin + @keyframes u-spin，废弃 StepInput 局部 keyframes；未来其它组件的 loading 状态可直接复用"
+      - "2026-04-12: Nit #12 EmptyStateCard icon prop 扩展为 string | Component，保留向后兼容（现有调用全部不传 icon 走默认变体）"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-12T00:00:00+08:00"
+    completed_at: "2026-04-12T00:00:00+08:00"
+
+  - id: "sop-run-icons-and-labels-polish"
+    ndf_version: "1.0"
+    description: "SOP 运行页图标统一到 Lucide + 冗长按钮文案精简 — 消化 sop-runtime-vue-rewrite task 16 backlog 的 P2 deferred 项（StepInput 📎/🖼/📄/⏳/⚠/× emoji），同时扩展覆盖 ChatBubble/StepOutput/EmptyStateCard/HistoryModal；按钮文案'执行这一步'→'生成'，'停止生成'→'停止'"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "纯 UI 打磨，无 schema/API/业务逻辑变更；影响 9 个前端文件（8 组件 + 1 测试），改动面可枚举，风险极低"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-12T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "committed to develop (fedc25f)"
+    hotfix_artifacts:
+      diagnosis: "inline grep scan — 枚举 SOP 运行页组件里非 Lucide 的 emoji/unicode 图标 + 冗长按钮文案"
+      review: "inline (single-developer mode)"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert fedc25f on develop"
+    last_verified:
+      at: "2026-04-12T00:00:00+08:00"
+      lint: "pass (npm run lint)"
+      type_check: "pass (npm run type-check / vue-tsc)"
+      tests: "pass (271/271 unit tests via vitest run)"
+      test_summary: "EmptyStateCard 测试改用 findComponent(Inbox/AlertTriangle) 代替 class 名字符串匹配；E2E 全部用 data-testid 选择器不受文案/图标替换影响"
+    decisions:
+      - "2026-04-12: EmptyStateCard 保留 icon?: string prop 允许消费者传自定义 emoji 字符串（向后兼容），仅默认变体改用 Lucide Inbox/AlertTriangle"
+      - "2026-04-12: 生成按钮 icon 从 ArrowRight 换成 Sparkles — '生成'语义偏 AI 创造而非'前进'，Sparkles 更契合"
+      - "2026-04-12: Loader2 配 spin 动画通过 scoped @keyframes step-input-spin 实现，未引入全局 animation 类"
+      - "2026-04-12: EmptyStateCard 测试从 class 名字符串匹配改为 findComponent — Lucide svg class 命名不稳定，组件引用匹配更可靠"
+      - "2026-04-12: '重新生成'/'下一步' 按钮文案保留（已经简洁）；只清理真正冗长的'执行这一步'/'停止生成'"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-12T00:00:00+08:00"
+    completed_at: "2026-04-12T00:00:00+08:00"
+
+  - id: "sop-run-no-auto-advance"
+    ndf_version: "1.0"
+    description: "SOP 运行页节点完成后不自动跳到下一步 — 移除 SOPRunView executeNode onDone 里的 store.advanceCurrentStep() 调用；完成节点后保留在当前步骤（done-current 态），用户手动点'下一步'按钮前进"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "单文件 1 行删除 + 注释更新，无 schema/API/业务逻辑变更；handlePrimary 仍保留 advanceCurrentStep 调用（手动前进路径），风险极低"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-12T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "committed to develop (e6cc98b)"
+    hotfix_artifacts:
+      diagnosis: "inline code trace — SOPRunView.vue:430 onDone 调 advanceCurrentStep (currentStep += 1 && viewingStep 同步)，强制视图前进；回归自 sop-runtime-visual-redesign 重构，覆盖了 sop-runtime-vue-rewrite F4 的精神"
+      review: "inline (single-developer mode)"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert e6cc98b on develop"
+    last_verified:
+      at: "2026-04-12T00:00:00+08:00"
+      lint: "pass (npm run lint)"
+      type_check: "pass (npm run type-check / vue-tsc)"
+      tests: "n/a (sop-runtime.spec.ts Path 6 依赖 data-step-state=done 来自 markNodeComplete 而非 currentStep，不受影响)"
+      test_summary: "lint + type-check pass"
+    decisions:
+      - "2026-04-12: 不改 store.advanceCurrentStep 函数本身 — handlePrimary 'done-current 下一步按钮'仍需该能力，只移除 onDone 里的自动调用"
+      - "2026-04-12: 不动 e2e sop-runtime.spec.ts Path 6 — 该测试断言 data-step-state=done（来自 completedNodeIds/markNodeComplete），与 currentStep 前进与否无关"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-12T00:00:00+08:00"
+    completed_at: "2026-04-12T00:00:00+08:00"
+
+  - id: "kb-upload-status-polling"
+    ndf_version: "1.0"
+    description: "配置中心知识库详情页上传后状态轮询 — 后端 ingestionPipeline 异步处理 pending→parsing→embedding→completed，原实现上传后只 loadDetail 一次，状态停在 pending 须手动 F5；新增 1s 轮询至终态，最多 90 次超时停止"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "单文件纯前端改动，无 schema/API/业务逻辑变更，风险极低"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-12T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "committed to develop (641eb1a)"
+    hotfix_artifacts:
+      diagnosis: "inline code trace — salesrag.go:333 Ingest 调 ingestionPipeline.Submit 异步返回；KnowledgeBaseDetail.vue:272 上传后只 loadDetail 一次无轮询"
+      review: "inline (single-developer mode)"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert 641eb1a on develop"
+    last_verified:
+      at: "2026-04-12T00:00:00+08:00"
+      lint: "pass (npm run lint)"
+      type_check: "pass (npm run type-check / vue-tsc)"
+      tests: "n/a"
+      test_summary: "lint + type-check pass; 根因来自后端异步 pipeline 与前端单次刷新的不匹配，修复方向由代码链路推定非静态推理（后端 Submit 是 fire-and-forget，前端无事件订阅）"
+    decisions:
+      - "2026-04-12: 选择前端轮询而非 SSE — 后端 pipeline 当前无事件推送通道，加 SSE 超出 hotfix scope；1s 间隔 + 90s 超时由用户拍板"
+      - "2026-04-12: 不引入全局 store 状态，局部组件 ref + onUnmounted 清理 timer 即可，scope 最小化"
+      - "2026-04-12: onMounted 也调用 schedulePoll — 从列表返回时若仍有进行中的文档也能自动刷新"
+    deferred:
+      - "后端 ingestion 事件推送（SSE/WebSocket）：若未来需要真实时反馈可开独立 feature，现状前端轮询已够用"
+    blockers: []
+    created_at: "2026-04-12T00:00:00+08:00"
+    completed_at: "2026-04-12T00:00:00+08:00"
+
+  - id: "dmx-event-name-consistency"
+    ndf_version: "1.0"
+    description: "修复 DMXAPIClient 流式 content chunk 事件名不一致 — emit 'content' 与调用方约定的 'message' 不符，导致 SOP ExecuteNodeStream controller 在 event name 路由时把 LLM 的所有 content chunk 静默丢弃，客户端表现为执行后没有任何输出（billing/usage_record 却正常落库）"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "单文件 2 行改动；pre-existing bug，由 SOP Vue 重写功能 S5 联调暴露；风险面可枚举（仅 chatbot/stream.go 和 sop controller 两处 consumer）"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-11T15:45:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "待 commit（develop 直接推）"
+    hotfix_artifacts:
+      diagnosis: "inline-playwright-trace (本地联调发现：LLM 返回 103 completion tokens 已记入 usage_record，但 SSE 响应体只有 heartbeat + final done，零 message 事件)"
+      review: "inline (single-developer mode)"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert <fix-commit> — 单点改动无副作用"
+    last_verified:
+      at: "2026-04-11T15:45:00+08:00"
+      lint: "pass (go vet clean; golangci-lint run ./internal/pkg/llm/... clean)"
+      type_check: "pass (go build clean)"
+      tests: "manual (Playwright 本地端到端验证 SOP execute 正常流式输出)"
+      test_summary: "修复前：执行 step 1 后客户端 SSE 只收到 heartbeat + done，output 为空。修复后：观察到 100+ data: \"xxx\" message chunk，.step-output 成功显示 LLM 生成内容"
+    decisions:
+      - "2026-04-11: 修复方向选 A（改 DMX 发 'message'）而非 B（改 SOP controller 认 'content'）。理由：整个 biz/sop/executor.go (msg 'message')、volc.go、ali.go 全部使用 'message'，DMX 是唯一偏差；统一到 'message' 消除歧义；chatbot/stream.go 没做 event name 显式比对所以不受影响"
+      - "2026-04-11: 不走 S0-S7 正式流程。此 bug 由更大功能的 S5 验证期发现，但 scope 仅 2 行；如果并入 sop-runtime-vue-rewrite 会污染该 feature 的 s5_findings（使其混合 feature 内 defect + 外部 pre-existing bug）。按 CLAUDE.md §4 快车道规则走 Hotfix Track 独立记录"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-11T15:45:00+08:00"
+    completed_at: "2026-04-11T15:45:00+08:00"
+
+  - id: "sop-runtime-visual-redesign"
+    ndf_version: "1.0"
+    description: "SOP 运行页视觉/布局重设计 — 覆盖 (a) 视觉打磨：间距/字号/配色/层次/动效 (b) 设计体系对齐：DESIGN.md token + .impeccable.md (c) 结构/布局重设计 γ Focused (左 nav + 单步聚焦)。范围扩展为跨仓库：前端视觉重写 + 后端 sop_node_run.model_name + sop_chat_message.model_name/duration_ms 字段补齐 + CompletedNodeInfo DTO 透出 token/model/latency"
+    track: "standard"
+    stage: "S5-pending-execution"
+    classification_reason: "跨 2 仓库：前端 18 个组件 + 后端 2 个 migration + biz 写入 + DTO 透出。S2/S3 reviewer PASS_WITH_FIXES 后修订全部 P0/P1/P2，进入 S4 实施"
+    last_updated_by: "ai-s4-start"
+    last_updated_at: "2026-04-11T18:50:00+08:00"
+    repos:
+      - numind-web-v3
+      - numind-server
+    branches:
+      numind-web-v3: "feature/sop-runtime-visual-redesign (待创建)"
+      numind-server: "feature/sop-runtime-visual-redesign (待创建)"
+    artifacts:
+      requirement: "numind-server/requirements/sop-runtime-visual-redesign.md"
+      proposal: "numind-server/proposals/sop-runtime-visual-redesign-proposal.md"
+      backend_audit: "numind-server/proposals/sop-runtime-visual-redesign-backend-audit.md"
+      mockups:
+        - "numind-server/proposals/sop-runtime-visual-redesign-mockups/01-active-and-history.html"
+        - "numind-server/proposals/sop-runtime-visual-redesign-mockups/02-additional-states.html"
+      spec: "numind-server/docs/superpowers/specs/2026-04-11-sop-runtime-visual-redesign-design.md"
+      plan: "numind-server/docs/superpowers/plans/sop-runtime-visual-redesign-plan.md"
+      s2s3_gate_review: "numind-server/proposals/sop-runtime-visual-redesign-s2s3-review.md (PASS_WITH_FIXES → 修复后 PASS)"
+      verification: "numind-server/docs/superpowers/plans/sop-runtime-visual-redesign-verification.md (V1 task)"
+      review_spec_compliance: "20/20 task PASS (含 13 处 P1/P2 fix)"
+      review_code_quality: "20/20 task PASS"
+      qa: null
+    progress:
+      total_tasks: 20
+      completed_tasks: 20
+      reviewed_tasks: 20
+      current_task: "Cross-repo gate PASS。等待 S5 用户验证 (Playwright + gstack /qa + 端到端 curl)"
+    cross_repo_gate:
+      status: "PASS"
+      verified_at: "2026-04-11T22:15:00+08:00"
+      numind_server_commit: "a72751d (merge) on develop, pushed"
+      numind_web_v3_commit: "f1b3587 (merge) on develop, pushed"
+      ci_runs:
+        numind_server: "24284105513 success in 5m20s"
+        numind_web_v3: "24284108604 success in 2m37s"
+      dev_containers:
+        - "numind-server-dev: pmtmyaggy/numind-server:develop healthy"
+        - "numind-web-v3-dev: pmtmyaggy/numind-web-v3:f1b3587 healthy"
+      schema_verified:
+        - "sop_node_run.model_name VARCHAR(100) ✓ (AutoMigrate)"
+        - "sop_chat_message.model_name VARCHAR(100) ✓ (AutoMigrate)"
+        - "sop_chat_message.duration_ms BIGINT ✓ (AutoMigrate)"
+      end_to_end_curl: "deferred to S5 — admin user credentials needed; schema + binary verified"
+    rollback: null
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions:
+      - "2026-04-11 Triage: Standard 精简版（视觉工作需 S0/S1 探索方向，Hotfix 会变成 AI 拍脑袋）"
+      - "2026-04-11 Triage 默认假设（用户'开始'时未逐条确认，按 AI 推荐默认）：范围 = SOP 运行页全部子组件含 trailing chat；设计参考 = 无，S1 用 /design-shotgun 探索"
+      - "2026-04-11 S0 文字采集失败：用户反馈文字让选无法决策，切换为视觉对齐（subagent 生成 HTML mockup → 用户视觉选型）"
+      - "2026-04-11 Round 1 用户关键修正：(1) 每步只展示 标题/描述/输入区(active 时)/AI 输出/可选元信息，**不展示 prompt** (2) 单步输出长度不可预测可能非常长，长内容处理是核心约束"
+      - "2026-04-11 Round 2 结构方案锁定：γ Focused（左 vertical step nav + 右主区单步聚焦）。理由：单步占用整个 viewport 自然承载长内容；N 步骤扩展性好；左 nav 一键切换任意步骤；read-only 历史步骤无输入框、状态切换有明确 context strip"
+    deferred:
+      - "S0 待确认：本次是否包含 trailing chat 区域、是否有具体设计参考产品"
+    blockers:
+      - "前置依赖 sop-runtime-vue-rewrite 完成（当前 S5 验证中，24/25 task done）— 视觉重设计需要在功能稳定的代码上做"
+    created_at: "2026-04-11T16:30:00+08:00"
+    completed_at: null
+
+  - id: "trailing-chat-gemini-style"
+    ndf_version: "1.0"
+    description: "继续问AI页面重构 — 参考 Google Gemini 风格：左侧流程 nav 不变，右侧改为全屏聊天记录区 + 悬浮输入框（复用智能体聊天输入框设计）"
+    track: "hotfix"
+    stage: "H2"
+    classification_reason: "纯前端 UI 重构，无 schema/API/业务逻辑变更；影响 TrailingChat.vue + ChatComposer.vue + SOPRunView.vue 布局部分，可枚举"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-13T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "fix/trailing-chat-gemini-style"
+    hotfix_artifacts:
+      diagnosis: "inline-triage: 纯 UI 布局重构，参考 Gemini 聊天风格 + 复用 ChatbotChat 输入框设计"
+      review: null
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 0
+      current_task: "H2 验收"
+    rollback: "git revert on develop"
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions: []
+    deferred: []
+    blockers: []
+    created_at: "2026-04-13T00:00:00+08:00"
+    completed_at: null
+
+  - id: "chatbot-file-attachment"
+    ndf_version: "1.0"
+    description: "智能体聊天附件上传 — 输入框支持上传/粘贴/拖入 TXT/MD/PDF/Word 附件，解析为文本拼接到消息末尾"
+    track: "hotfix"
+    stage: "H2"
+    classification_reason: "前端为主改动（新 composable + ChatbotChat.vue 改造），后端仅新增 1 个轻量端点复用现有 EnhancedParser 提取逻辑；无 schema 变更；影响面可枚举"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-13T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "fix/chatbot-file-attachment"
+      numind-web-v3: "fix/chatbot-file-attachment"
+    hotfix_artifacts:
+      diagnosis: "inline-triage: /v1/pdf/convert-to-text 依赖 run_id 不可复用，需新建轻量端点 POST /v1/files/extract-text"
+      review: "Sonnet code-review: PASS_WITH_FIXES — 3 P1 + 4 P2 found, all fixed"
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 3
+      current_task: "H2 review fixes applied, ready for commit"
+    rollback: "git revert on develop (server + web-v3)"
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions:
+      - "2026-04-13: 新建 /v1/files/extract-text 而非改造现有 /v1/pdf/convert-to-text（避免耦合 SOP 语义）"
+      - "2026-04-13: 附件限制 5 个/次、10MB/文件，格式 .txt/.md/.pdf/.doc/.docx"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-13T00:00:00+08:00"
+    completed_at: null

@@ -159,10 +159,8 @@ func loadUnicodeRangesConfig(config *JSONProcessingConfig) {
 		config.CharacterFiltering.AllowedUnicodeRanges.Fullwidth = viper.GetIntSlice("json_processing.character_filtering.allowed_unicode_ranges.fullwidth")
 	}
 	// 注意：latin_extended 是嵌套数组，需要特殊处理
-	if viper.IsSet("json_processing.character_filtering.allowed_unicode_ranges.latin_extended") {
-		// 这里需要手动处理嵌套数组，暂时保持默认值
-		// TODO: 实现嵌套数组的配置加载
-	}
+	// latin_extended 是嵌套数组，需要特殊处理
+	// TODO: 实现嵌套数组的配置加载
 	if viper.IsSet("json_processing.character_filtering.allowed_unicode_ranges.arabic") {
 		config.CharacterFiltering.AllowedUnicodeRanges.Arabic = viper.GetIntSlice("json_processing.character_filtering.allowed_unicode_ranges.arabic")
 	}

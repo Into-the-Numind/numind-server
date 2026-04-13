@@ -9,7 +9,7 @@ admin:
 
 jwt:
   secret: Rtg8BPKNEf2mB4mgvKONGPZZQSaJWNLijxR42qRgq0iBb5 # JWT 签发密钥
-  expire-hours: 24 # JWT 过期时间，单位：小时
+  expire-hours: 12 # JWT Token 过期时间，单位：小时
 
 # HTTPS 服务器相关配置
 tls:
@@ -23,7 +23,7 @@ grpc:
 
 # MySQL 数据库相关配置
 db:
-  host: 49.233.219.254:13306  # MySQL 机器 IP 和端口，默认 127.0.0.1:3306
+  host: numind-mysql-prod:3306  # 使用 Docker 内部服务名
   username: root # MySQL 用户名(建议授权最小权限集)
   password: Numind2025 # MySQL 用户密码
   database: numind-prod # miniblog 系统所用的数据库名
@@ -36,14 +36,14 @@ db:
 log:
   disable-caller: false # 是否开启 caller，如果开启会在日志中显示调用日志所在的文件和行号
   disable-stacktrace: false # 是否禁止在 panic 及以上级别打印堆栈信息
-  level: debug # 指定日志级别，可选值：debug, info, warn, error, dpanic, panic, fatal
+  level: info # 指定日志级别，可选值：debug, info, warn, error, dpanic, panic, fatal
   format: console # 指定日志显示格式，可选值：console, json
   output-paths: [./numind.log, stdout] # 指定日志输出位置，多个输出，用 `逗号 + 空格` 分开。stdout：标准输出，
 
 # Redis 缓存相关配置
 redis:
-  host: 49.233.219.254  # Redis 机器 IP
-  port: 26739           # Redis 端口
+  host: numind-redis-prod  # 使用 Docker 内部服务名
+  port: 6379           # Redis 内部端口
   password: Numind2025  # Redis 密码
   db: 3                 # Redis 数据库编号，生产环境使用 3
   pool_size: 10        # Redis 连接池大小
@@ -72,16 +72,22 @@ book:
     use_simplified_processing: true  # 启用简化处理模式
 
 volc:
-  api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
+  api_key: "716dc07a-b121-4bae-a132-497117f74c7a"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "doubao-seed-1-6-flash-250828"
-  temperature: 0.5
-  tokens: 2000
+  model: "deepseek-v3-2-251201"
+  temperature: 0.7
+  tokens: 4000
   timeout: 180s
   max_retries: 3
 
 resource:
   image_path: "/opt/numind/prod/image/upload"  # 图片上传路径（持久化）
+
+# SalesRAG 向量数据库配置（sqlite-vec 本地方案）
+salesrag:
+  vector_store:
+    type: "sqlitevec"   # sqlitevec | dashvector | memory
+    path: "/opt/numind/prod/sales_vector.db"
 
 # RAG 向量数据库配置
 rag:
@@ -96,15 +102,18 @@ cos:
   secret_id: "AKID26xnQq2ziEYeVAh3B6oIbwHh06zf7LMA"           # API 密钥 SecretId
   secret_key: "e4FNTPI90jNzQfjbFgHk3CRaYMxRuFP5"          # API 密钥 SecretKey
   bucket: "numind-product-1334169463" # BucketName-APPID 形式
-  region: "ap-beijing"    # 地域，如 ap-chengdu（成都）
+  region: "ap-beijing"    # 地域，北京（与实际 Bucket 所在区域一致）
 
 baidu:
-  api_key: "6pMBiDFnNVBfW5wq9GBjEZAk"
-  secret_key: "nH84dnA8SRK5WL1dASJxxumI9eOcj2dO"
+  api_key: "CkJCFXHinJLBsnEFT9lscwZr"
+  secret_key: "YbJZuvunKGhlSwTZpotTKZxkty0h5enU"
 
 # 阿里云配置 - 优化后的统一配置
 ali:
   # 通用配置（所有服务共用）
+  access_key_id: "LTAI5t7S7S7S7S7S7S7S7S7S" # 阿里云 AccessKey ID
+  access_key_secret: "S7S7S7S7S7S7S7S7S7S7S7S7S7" # 阿里云 AccessKey Secret
+  workspace_id: "ws-7s7s7s7s7s7s" # 百炼 Workspace ID
   api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"  # 文本服务API密钥
   api_url: "https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"  # 统一API地址
   
@@ -125,6 +134,18 @@ ali:
     model: "wan2.2-t2i-flash"  # SD模型
     timeout: 300s        # SD生成超时时间（5分钟）
 
+  # 视觉理解服务
+  vision:
+    api_key: "sk-31f08fc72a594fbca4e827d5465a941b"  # 视觉服务专用API密钥
+    model: "qwen3-vl-flash-2026-01-22" # 视觉模型
+    timeout: 180s
+
+  # DashVector 向量数据库配置
+  dashvector:
+    endpoint: "https://vrs-cn-62l4mht1d0001e.dashvector.cn-hangzhou.aliyuncs.com" # DashVector Endpoint
+    api_key: "sk-gMsgxE1A1QzoxexCdtuTaVjuF6w8Z52890CC5F85411F08940FAD61112A032"
+    collection: "sales_rag_prod"
+
 # 卡片配置 - 统一的卡片渲染和分页配置中心
 card:
   # 基础尺寸配置（所有组件共用）
@@ -144,7 +165,8 @@ card:
     format: "webp"         # 图片格式
     zoom: 1.0              # 缩放比例
     timeout: 30            # 超时时间（秒）
-    
+    max_concurrent: 2      # 最大并发渲染数（容器环境建议2，避免fork失败）
+
   # 分页算法参数
   pagination:
     algorithm: "line_based"         # 分页算法：line_based（逐字符→逐行→逐页）或 dynamic
@@ -408,6 +430,6 @@ json_processing:
 html_converter:
   # HTML转换特有配置
   available_width: 900          # 可用宽度
-  max_content_height: 1400       # 最大内容高度
+  max_content_height: 1360       # 最大内容高度
   # 注意：其他配置项（字体、行高、边距等）现在从card配置中继承
 

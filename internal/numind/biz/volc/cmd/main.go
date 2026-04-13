@@ -14,7 +14,7 @@ func main() {
 	messages := []map[string]string{
 		{"role": "user", "content": "请用一句话介绍火山引擎"},
 	}
-	text, err := biz.VolcTextStream(ctx, messages, 256, 0.5)
+	text, _, err := biz.VolcTextStream(ctx, messages, 256, 0.5)
 	if err != nil {
 		fmt.Println("火山引擎流式调用失败:", err)
 	} else {
@@ -23,6 +23,7 @@ func main() {
 
 	// 通用内容生成示例
 	content, err := biz.GenerateArticleContent(
+		context.Background(),
 		"这是一段测试文本，用于验证火山引擎的内容生成功能。",
 		"summary",
 		100,
