@@ -193,6 +193,7 @@ type createModelReq struct {
 	IsThinking       bool    `json:"is_thinking"`
 	BaseModelID      *uint64 `json:"base_model_id"`
 	SupportsThinking bool    `json:"supports_thinking"`
+	ThinkingOnly     bool    `json:"thinking_only"`
 	Icon             string  `json:"icon"`
 	SortOrder        int     `json:"sort_order"`
 }
@@ -213,6 +214,7 @@ func (ctrl *AdminLLMController) CreateModel(c *gin.Context) {
 		IsThinking:       req.IsThinking,
 		BaseModelID:      req.BaseModelID,
 		SupportsThinking: req.SupportsThinking,
+		ThinkingOnly:     req.ThinkingOnly,
 		Icon:             req.Icon,
 		SortOrder:        req.SortOrder,
 		IsActive:         true,
@@ -235,6 +237,7 @@ type updateModelReq struct {
 	SortOrder        *int    `json:"sort_order"`
 	IsActive         *bool   `json:"is_active"`
 	SupportsThinking *bool   `json:"supports_thinking"`
+	ThinkingOnly     *bool   `json:"thinking_only"`
 	BaseModelID      *uint64 `json:"base_model_id"`
 	IsThinking       *bool   `json:"is_thinking"`
 }
@@ -260,6 +263,7 @@ func (ctrl *AdminLLMController) UpdateModel(c *gin.Context) {
 		"icon":              req.Icon,
 		"is_active":         req.IsActive,
 		"supports_thinking": req.SupportsThinking,
+		"thinking_only":     req.ThinkingOnly,
 		"base_model_id":     req.BaseModelID,
 		"is_thinking":       req.IsThinking,
 	}

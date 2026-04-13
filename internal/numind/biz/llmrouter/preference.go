@@ -103,8 +103,13 @@ func (r *Router) SavePreference(ctx context.Context, userID uint, feature, model
 		return fmt.Errorf("model %q is a thinking variant, must use a base model", modelKey)
 	}
 
+	// thinking_only 模型始终强制 thinking=true
+	if m.ThinkingOnly {
+		thinking = true
+	}
+
 	// 若请求开启 thinking，验证模型是否支持
-	if thinking && !m.SupportsThinking {
+	if thinking && !m.SupportsThinking && !m.ThinkingOnly {
 		return fmt.Errorf("model %q does not support thinking mode", modelKey)
 	}
 

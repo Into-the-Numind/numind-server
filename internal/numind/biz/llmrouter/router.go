@@ -37,7 +37,8 @@ func (r *Router) Resolve(ctx context.Context, modelKey string, thinking bool) ([
 	// 2. 确定实际使用的模型 ID（可能是 thinking 变体）
 	targetModelID := baseModel.ID
 
-	if thinking && baseModel.SupportsThinking {
+	// thinking_only 模型始终启用思考，无需查找变体
+	if !baseModel.ThinkingOnly && thinking && baseModel.SupportsThinking {
 		variant, err := r.ds.LLMModel().GetThinkingVariant(ctx, baseModel.ID)
 		if err != nil {
 			// thinking 变体未找到，fallback 到基础模型
@@ -76,7 +77,7 @@ func (r *Router) Resolve(ctx context.Context, modelKey string, thinking bool) ([
 			APIKey:          mp.Provider.APIKey,
 			ProviderModelID: mp.ProviderModelID,
 			ProviderName:    mp.Provider.Name,
-			EnableThinking:  thinking && targetModelID != baseModel.ID,
+			EnableThinking:  baseModel.ThinkingOnly || (thinking && targetModelID != baseModel.ID),
 		})
 	}
 

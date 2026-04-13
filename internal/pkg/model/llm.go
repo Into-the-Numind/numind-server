@@ -33,6 +33,7 @@ type LLMModel struct {
 	IsThinking       bool      `gorm:"default:false" json:"is_thinking"`
 	BaseModelID      *uint64   `gorm:"index:idx_base_model" json:"base_model_id"`
 	SupportsThinking bool      `gorm:"default:false" json:"supports_thinking"`
+	ThinkingOnly     bool      `gorm:"default:false" json:"thinking_only"`
 	Icon             string    `gorm:"size:50" json:"icon"`
 	SortOrder        int       `gorm:"default:0" json:"sort_order"`
 	IsActive         bool      `gorm:"default:true" json:"is_active"`

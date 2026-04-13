@@ -65,8 +65,19 @@ func (r *Router) ListModels(ctx context.Context, offset, limit int) ([]model.LLM
 	return models, total, nil
 }
 
+// normalizeThinkingFlags 统一处理 thinking_only 与其他标志的互斥关系：
+// thinking_only 模型不能是 thinking 变体，且天然支持思考。
+func normalizeThinkingFlags(m *model.LLMModel) {
+	if m.ThinkingOnly {
+		m.IsThinking = false
+		m.BaseModelID = nil
+		m.SupportsThinking = true
+	}
+}
+
 // CreateModel 创建 LLM 模型
 func (r *Router) CreateModel(ctx context.Context, m *model.LLMModel) error {
+	normalizeThinkingFlags(m)
 	if err := r.ds.LLMModel().Create(ctx, m); err != nil {
 		return fmt.Errorf("llmrouter.CreateModel: %w", err)
 	}
@@ -100,6 +111,10 @@ func (r *Router) UpdateModel(ctx context.Context, id uint64, updates map[string]
 	if v, ok := updates["is_thinking"].(*bool); ok && v != nil {
 		m.IsThinking = *v
 	}
+	if v, ok := updates["thinking_only"].(*bool); ok && v != nil {
+		m.ThinkingOnly = *v
+	}
+	normalizeThinkingFlags(m)
 	if err := r.ds.LLMModel().Update(ctx, m); err != nil {
 		return fmt.Errorf("llmrouter.UpdateModel: save: %w", err)
 	}
