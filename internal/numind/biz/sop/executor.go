@@ -580,9 +580,11 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 	return output, thinking, usage, nil
 }
 
-// extractThinkingContent 从完整输出中提取思考内容
+// extractThinkingContent 从完整输出中提取思考内容（兼容旧模型不发 reasoning_content 的情况）
 func extractThinkingContent(output string) string {
 	// 查找思考部分的开始标记
+	// 顺序重要："已思考" 必须在 "思考" 前面，因为 "思考" 是 "已思考" 的子串，
+	// 放后面会导致匹配位置提前、多截取内容
 	thinkingMarkers := []string{
 		"已思考",
 		"**已思考**",
@@ -875,13 +877,23 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 
 				if endMarkerIndex != -1 {
 					// 遇到结束标记，需要拆分当前 chunk
-					// 计算结束标记在当前chunk中的相对位置
+					// relativePos: 结束标记起始位置在当前 chunk 中的偏移
 					relativePos := endMarkerIndex - prevLen
+					// splitEnd: 结束标记末尾在当前 chunk 中的偏移（message 从此处开始）
+					splitEnd := relativePos + len(endMarker)
 
-					if relativePos >= 0 && relativePos < len(content) {
-						// 结束标记在当前chunk中，需要拆分
-						thinkingPart := content[:relativePos+len(endMarker)]
-						messagePart := content[relativePos+len(endMarker):]
+					// 标记跨越 chunk 边界时需要 clamp，防止越界切片
+					if relativePos < 0 {
+						relativePos = 0
+					}
+					if splitEnd > len(content) {
+						splitEnd = len(content)
+					}
+
+					if relativePos < len(content) {
+						// 结束标记（至少部分）在当前 chunk 中，拆分
+						thinkingPart := content[:splitEnd]
+						messagePart := content[splitEnd:]
 
 						// 发送思考部分
 						if thinkingPart != "" {
@@ -915,14 +927,15 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 							}
 						}
 					} else {
-						// 结束标记不在当前chunk中，但已检测到
-						// 这种情况不应该发生，但为了安全还是处理
+						// 结束标记完全在之前的 chunk 中（当前 chunk 全部属于 message）
 						thinkingEnded = true
 						messageChunks++
 						messageBuf.WriteString(content)
-						log.C(ctx).Warnw("Unexpected: end marker found but not in current chunk",
+						log.C(ctx).Infow("End marker in previous chunk, current chunk is message",
 							"node_id", node.ID,
-							"node_name", node.Name)
+							"node_name", node.Name,
+							"chunk_index", messageChunks,
+							"chunk_length", len(content))
 						if err := handler("message", content); err != nil {
 							return nil, err
 						}
