@@ -6,8 +6,10 @@ const (
 	ThinkingNone = ""
 	// ThinkingEnableField 使用 enable_thinking: true（Gemini、Qwen 等通过 DMXAPI）
 	ThinkingEnableField = "enable_thinking"
-	// ThinkingAnthropic 使用 thinking: {type:"enabled", budget_tokens:N}（Claude 通过 DMXAPI）
+	// ThinkingAnthropic Claude 专用，走 /v1/messages 端点 + thinking:{type:"adaptive"}
 	ThinkingAnthropic = "anthropic"
+	// ThinkingDoubao 豆包：走 /v1/chat/completions + thinking:{type:"enabled"}
+	ThinkingDoubao = "doubao"
 )
 
 // ResolvedRoute 解析后的路由信息，包含调用 LLM 所需的完整凭据和参数
