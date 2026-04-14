@@ -224,8 +224,8 @@ func (c *DMXAPIClient) ChatCompletion(ctx context.Context, model string, message
 func (c *DMXAPIClient) ChatCompletionWithThinking(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int) (string, *billing.TokenUsage, error) {
 	var fullThinking strings.Builder
 
-	// 调用增强后的 StreamChatCompletion
-	content, usage, err := c.StreamChatCompletion(ctx, model, messages, temperature, maxTokens, true, func(eventType, chunk string) error {
+	// 调用增强后的 StreamChatCompletion（SalesRAG 内部调用，默认 enable_thinking 格式）
+	content, usage, err := c.StreamChatCompletion(ctx, model, messages, temperature, maxTokens, "enable_thinking", func(eventType, chunk string) error {
 		if eventType == "thinking" {
 			fullThinking.WriteString(chunk)
 		}
@@ -249,11 +249,10 @@ func (c *DMXAPIClient) ChatCompletionWithThinking(ctx context.Context, model str
 }
 
 // StreamChatCompletion 调用聊天接口（流式）
-// onEvent: 回调函数，参数为 content 片段
-// StreamChatCompletion 调用聊天接口（流式）
 // onEvent: 回调函数，参数为 (eventType string, content string)
-// eventType: "thinking" (思维链内容) 或 "content" (正文内容)
-func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int, enableThinking bool, onEvent func(eventType, content string) error) (string, *billing.TokenUsage, error) {
+// eventType: "thinking" (思维链内容) 或 "message" (正文内容)
+// thinkingFormat: "" (不启用), "enable_thinking" (Gemini/Qwen), "anthropic" (Claude)
+func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int, thinkingFormat string, onEvent func(eventType, content string) error) (string, *billing.TokenUsage, error) {
 	// 构建请求体（手动构建以添加 stream_options）
 	bodyMap := map[string]interface{}{
 		"model":       model,
@@ -264,8 +263,15 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 			"include_usage": true,
 		},
 	}
-	if enableThinking {
+	switch thinkingFormat {
+	case "enable_thinking":
 		bodyMap["enable_thinking"] = true
+	case "anthropic":
+		// Claude 通过 DMXAPI 使用 Anthropic 格式的 extended thinking
+		bodyMap["thinking"] = map[string]interface{}{
+			"type":          "enabled",
+			"budget_tokens": 8192,
+		}
 	}
 	if maxTokens > 0 {
 		bodyMap["max_tokens"] = maxTokens
@@ -293,6 +299,17 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
+
+		// 安全网：如果 thinking 参数导致 400 错误，去掉 thinking 参数重试
+		if resp.StatusCode == http.StatusBadRequest && thinkingFormat != "" &&
+			(strings.Contains(string(respBody), "enable_thinking") ||
+				strings.Contains(string(respBody), "thinking") ||
+				strings.Contains(string(respBody), "unknown_parameter")) {
+			log.Warnw("Thinking parameter rejected by provider, retrying without thinking",
+				"model", model, "thinking_format", thinkingFormat, "status", resp.StatusCode)
+			return c.StreamChatCompletion(ctx, model, messages, temperature, maxTokens, "", onEvent)
+		}
+
 		return "", nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
