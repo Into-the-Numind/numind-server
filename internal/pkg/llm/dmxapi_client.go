@@ -811,8 +811,8 @@ func (c *DMXAPIClient) StreamGPTResponses(ctx context.Context, model string, mes
 		bodyMap["reasoning"] = map[string]interface{}{
 			"effort": reasoningEffort,
 		}
-	}
-	if temperature > 0 {
+		// GPT reasoning 模型不支持 temperature 参数
+	} else if temperature > 0 {
 		bodyMap["temperature"] = temperature
 	}
 
