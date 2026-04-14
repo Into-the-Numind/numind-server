@@ -141,6 +141,6 @@ monitor:
 # Langfuse AI 可观测性配置
 langfuse:
   enabled: true
-  base_url: "http://langfuse-web:3100"  # Docker 内部网络访问
-  public_key: ""   # 在 Langfuse UI 创建项目后填入
-  secret_key: ""   # 在 Langfuse UI 创建项目后填入
+  base_url: "http://110.42.221.25:3100"
+  public_key: "pk-lf-41015256-bdc3-46aa-92b7-6ffe8de9605a"
+  secret_key: "sk-lf-5a6c2185-d8ce-4903-9930-c9d72a9d0112"

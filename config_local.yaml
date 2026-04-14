@@ -118,6 +118,9 @@ ali:
     api_key: "sk-gMsgxE1A1QzoxexCdtuTaVjuF6w8Z52890CC5F85411F08940FAD61112A032"
     collection: "sales_rag"
 
-# Langfuse AI 可观测性配置（本地默认关闭）
+# Langfuse AI 可观测性配置
 langfuse:
   enabled: true
+  base_url: "http://110.42.221.25:3100"
+  public_key: "pk-lf-41015256-bdc3-46aa-92b7-6ffe8de9605a"
+  secret_key: "sk-lf-5a6c2185-d8ce-4903-9930-c9d72a9d0112"
