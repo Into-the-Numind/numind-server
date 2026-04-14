@@ -898,18 +898,20 @@ features:
       completed_tasks: 3
       reviewed_tasks: 3
       current_task: null
-    rollback: "git revert 3ffeddd on develop (numind-web-v3)"
+    rollback: "git revert 9db299f 3ffeddd on develop (numind-web-v3) — 两次 merge 按顺序 revert"
     last_verified:
       at: "2026-04-13T00:00:00+08:00"
       lint: "pass (npm run lint — 0 errors; 1 pre-existing warning in unrelated KnowledgeBaseDetail.vue)"
       type_check: "pass (npm run type-check / vue-tsc --build --force)"
-      tests: "n/a (纯 CSS/spacing 调整；E2E 选择器 data-testid 未变更；computeStatusLine done 态仅被内部渲染消费，无测试依赖该字面量)"
-      test_summary: "gstack browse 实时验证：empty-input state 无左条、textarea 单框、header rhythm 改善；done-current state 外框消失、head/foot 薄分隔线保留、TopBar 模板名权重提升"
+      tests: "n/a (纯 CSS/spacing/scroll 调整；E2E 选择器 data-testid 未变更；computeStatusLine done 态仅被内部渲染消费，无测试依赖该字面量)"
+      test_summary: "gstack browse --viewport 截图验证：(1) 完成态 OutputCard 内无任何横向分割线、(2) body 级滚动工作，sidebar + TopBar 在 scrollY>0 时 rect.y=0 保持可见、(3) 完成态 ActionRow 随内容进入 body 底部可见"
     decisions:
       - "2026-04-13: StepNavItem active/viewing 态视觉区分改用 'bg + 字重 700 + dot ring' 组合，不用任何 border-left/::before 装饰条（impeccable 禁令）"
       - "2026-04-13: InputCard/OutputCard 去 card shell 后，StepInput 自带的 dropzone border 和 OutputCard head/foot 的 1px 分隔线承担分组职责，避免双重边框"
       - "2026-04-13: computeStatusLine('done') 从 '已完成' 改为 ''，绿 ✓ 图标已表达完成语义；sop-history.spec.ts:132 检查的是 SOPHistoryView 的 statusBadge 不受影响"
       - "2026-04-13: 保留 OutputCard AI icon 的 CDN 图片（未换 Lucide Sparkles）— 出于保守避免影响品牌资产和 E2E 选择器"
+      - "2026-04-13 (follow-up merge 9db299f): OutputCard head/foot 两条分隔线全部移除（包括 MetaFooter 自带 border-top，在 OutputCard scope 用 :deep 覆盖；ChatBubble 上下文保留默认）；纯留白 + 字体对比做分组"
+      - "2026-04-13 (follow-up merge 9db299f): 三栏从 canvas 内滚改为 body 级滚动；.sop-run-view-v2 min-height:100vh、StepNav/.nav 与 TopBar/.header 改 position:sticky；trailing-chat 模式保留 canvas height:calc(100vh - 56px) + overflow:hidden 以兼容聊天输入贴底行为"
     deferred:
       - "空输入态下 viewport 底部 ~370px dead white：本质是 textarea 固定高度 + 内容稀疏，非本次布局 bug 范围，若需填充可在 follow-up 加入 tips/history-preview/quick-actions 区"
     blockers: []
