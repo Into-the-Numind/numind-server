@@ -425,6 +425,44 @@ features:
     created_at: "2026-04-10T00:00:00+08:00"
     completed_at: "2026-04-10T00:00:00+08:00"
 
+  - id: "followup-use-user-model"
+    ndf_version: "1.0"
+    description: "SOP 追问 AI 尊重用户模型选择 — 修复 ChatAfterRunStream 硬编码使用最后一个节点模型配置、忽略用户 LLM 偏好的设计缺陷"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "明确 bug + 修复路径确定（对齐正常节点执行的 ResolveUserModel 流程）；无新表/新 API，跨 server+web-v3 仅 3 文件"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-14T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "fix/followup-use-user-model"
+      numind-web-v3: "fix/followup-use-user-model"
+    hotfix_artifacts:
+      diagnosis: "追问 AI 的 controller/biz 未调 ResolveUserModel，biz 直接用 lastNode.ModelName/BaseURL/APIKey；前端 body 也未带 model_key。对比正常节点执行（ExecuteNodeStream 路径）是三级 fallback 解析后走 llmRouter。"
+      review: "inline (single-developer mode, no PR)"
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 3
+      current_task: null
+    rollback: "git revert merge commits on develop (server + web-v3)"
+    last_verified:
+      at: "2026-04-14T00:00:00+08:00"
+      lint: "pass (go vet clean; npm run lint pass)"
+      type_check: "pass (go build ./... clean; npm run type-check pass)"
+      tests: "n/a (后端 biz 层无现有单测；S5 验证策略 — 用户手动验证追问切模型生效)"
+      test_summary: "go build + go vet clean; npm lint+type-check pass"
+    decisions:
+      - "2026-04-14: 追问沿用正常节点执行的三级 fallback（query/body → 用户偏好 → 系统默认），与 ExecuteNodeStream 路径一致"
+      - "2026-04-14: modelKey != '' 走 executor.ExecuteNodeStream（router 路径）；空则保留 ExecuteNodeStreamWithThinking（最后节点默认配置），向后兼容旧前端"
+      - "2026-04-14: 持久化 ModelName 优先使用 usage.ModelName（router 路径下准确），fallback 到 lastNode.ModelName"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-14T00:00:00+08:00"
+    completed_at: "2026-04-14T00:00:00+08:00"
+
   - id: "admin-rebrand-to-design-md"
     ndf_version: "1.0"
     description: "把 numind-admin-web 的 Tailwind 默认值替换为 DESIGN.md 定义的 v3 master 品牌（翠绿 + HSL 命名 + 衬线 heading）。包括 variables.css token 重画 + 30+ view 视觉迁移 + 状态色 token 引入"
