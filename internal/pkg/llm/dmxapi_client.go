@@ -720,6 +720,17 @@ func (c *DMXAPIClient) StreamGeminiGenerate(ctx context.Context, model string, m
 			}
 		}
 
+		// DEBUG: 打印前几个 chunk 的原始数据
+		if fullThinking.Len() == 0 && fullContent.Len() < 100 {
+			preview := data
+			if len(preview) > 500 {
+				preview = preview[:500] + "..."
+			}
+			log.Infow("StreamGeminiGenerate: SSE chunk",
+				"candidates_count", len(chunk.Candidates),
+				"raw_data", preview)
+		}
+
 		// 提取 thinking / text
 		if len(chunk.Candidates) > 0 {
 			for _, part := range chunk.Candidates[0].Content.Parts {
