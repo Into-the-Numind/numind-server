@@ -598,3 +598,184 @@ func (c *DMXAPIClient) Rerank(ctx context.Context, query string, documents []str
 
 	return results, len(documents), nil
 }
+
+// StreamGeminiGenerate 调用 Gemini 原生 API（/v1beta/models/{model}:streamGenerateContent）
+// Gemini thinking 内容通过 part.thought=true 属性标识，OpenAI 兼容端点不透传此内容
+// onEvent: 回调函数，eventType 为 "thinking" 或 "message"
+func (c *DMXAPIClient) StreamGeminiGenerate(ctx context.Context, model string, messages []ChatMessage, onEvent func(eventType, content string) error) (string, *billing.TokenUsage, error) {
+	// 构建 Gemini 原生格式：system_instruction + contents
+	var systemText string
+	var contents []map[string]interface{}
+	for _, msg := range messages {
+		if msg.Role == "system" {
+			systemText = msg.Content
+			continue
+		}
+		role := msg.Role
+		if role == "assistant" {
+			role = "model" // Gemini 用 "model" 而非 "assistant"
+		}
+		contents = append(contents, map[string]interface{}{
+			"role":  role,
+			"parts": []map[string]interface{}{{"text": msg.Content}},
+		})
+	}
+
+	bodyMap := map[string]interface{}{
+		"contents": contents,
+	}
+	if systemText != "" {
+		bodyMap["system_instruction"] = map[string]interface{}{
+			"parts": []map[string]interface{}{{"text": systemText}},
+		}
+	}
+
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return "", nil, fmt.Errorf("marshal request failed: %w", err)
+	}
+
+	// Gemini 端点：/v1beta/models/{model}:streamGenerateContent?key={apiKey}&alt=sse
+	baseURL := strings.TrimSuffix(c.baseURL, "/v1")
+	endpoint := fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?key=%s&alt=sse", baseURL, model, c.apiKey)
+
+	log.Infow("StreamGeminiGenerate: sending request",
+		"model", model,
+		"contents_count", len(contents),
+		"has_system", systemText != "")
+
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", nil, fmt.Errorf("create request failed: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var fullContent strings.Builder
+	var fullThinking strings.Builder
+	var usage *billing.TokenUsage
+	reader := bufio.NewReader(resp.Body)
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fullContent.String(), usage, fmt.Errorf("read stream failed: %w", err)
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		// Gemini SSE: {candidates: [{content: {parts: [{text, thought}]}}], usageMetadata: {...}}
+		var chunk struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text    string `json:"text"`
+						Thought bool   `json:"thought"`
+					} `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+			UsageMetadata *struct {
+				PromptTokenCount     int `json:"promptTokenCount"`
+				CandidatesTokenCount int `json:"candidatesTokenCount"`
+				TotalTokenCount      int `json:"totalTokenCount"`
+				ThinkingTokenCount   int `json:"thinkingTokenCount"`
+			} `json:"usageMetadata"`
+		}
+
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+
+		// 提取 usage
+		if chunk.UsageMetadata != nil {
+			usage = &billing.TokenUsage{
+				PromptTokens:     chunk.UsageMetadata.PromptTokenCount,
+				CompletionTokens: chunk.UsageMetadata.CandidatesTokenCount,
+				TotalTokens:      chunk.UsageMetadata.TotalTokenCount,
+				ReasoningTokens:  chunk.UsageMetadata.ThinkingTokenCount,
+			}
+		}
+
+		// 提取 thinking / text
+		if len(chunk.Candidates) > 0 {
+			for _, part := range chunk.Candidates[0].Content.Parts {
+				if part.Text == "" {
+					continue
+				}
+				if part.Thought {
+					fullThinking.WriteString(part.Text)
+					if onEvent != nil {
+						if err := onEvent("thinking", part.Text); err != nil {
+							return fullContent.String(), usage, err
+						}
+					}
+				} else {
+					fullContent.WriteString(part.Text)
+					if onEvent != nil {
+						if err := onEvent("message", part.Text); err != nil {
+							return fullContent.String(), usage, err
+						}
+					}
+				}
+			}
+		}
+	}
+
+	log.Infow("StreamGeminiGenerate: stream completed",
+		"model", model,
+		"content_length", fullContent.Len(),
+		"thinking_length", fullThinking.Len(),
+		"has_usage", usage != nil)
+
+	// 自动计费（LLMRouter 调用时跳过）
+	if !isFromLLMRouter(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+			billing.RecordLLM(bc.UserID, "dmxapi", model, bc.Operation, usage, bc.Meta)
+		}
+	}
+
+	// Langfuse generation 追踪（LLMRouter 调用时跳过）
+	if !isFromLLMRouter(ctx) {
+		if tc := langfuse.FromContext(ctx); tc != nil {
+			genID := langfuse.SpanID()
+			opts := []langfuse.GenOption{
+				langfuse.WithGenParent(tc.ParentObservationID),
+				langfuse.WithGenName("dmxapi-gemini-stream"),
+				langfuse.WithGenModel(model),
+				langfuse.WithGenInput(messages),
+				langfuse.WithGenOutput(fullContent.String()),
+			}
+			if usage != nil {
+				opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
+			}
+			langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+			langfuse.EndGeneration(genID)
+		}
+	}
+
+	return fullContent.String(), usage, nil
+}
