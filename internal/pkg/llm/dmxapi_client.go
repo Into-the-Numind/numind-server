@@ -264,20 +264,18 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 		},
 	}
 
-	// Claude -thinking 后缀模型：DMXAPI 通过后缀激活思考，但 Claude 要求 temperature=1
-	if strings.HasSuffix(strings.ToLower(model), "-thinking") {
-		bodyMap["temperature"] = 1
-	}
-
 	switch thinkingFormat {
 	case "enable_thinking":
 		bodyMap["enable_thinking"] = true
 	case "anthropic":
-		// Claude/Doubao 通过参数激活 extended thinking（非后缀方式时使用）
-		bodyMap["temperature"] = 1
+		// Claude: adaptive thinking（DMXAPI 文档推荐方式）
+		// thinking 模式下不发 temperature，由 API 自行处理
+		delete(bodyMap, "temperature")
 		bodyMap["thinking"] = map[string]interface{}{
-			"type":          "enabled",
-			"budget_tokens": 8192,
+			"type": "adaptive",
+		}
+		bodyMap["output_config"] = map[string]interface{}{
+			"effort": "high",
 		}
 	}
 	if maxTokens > 0 {
