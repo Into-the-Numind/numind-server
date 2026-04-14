@@ -634,7 +634,13 @@ func (c *DMXAPIClient) StreamAnthropicMessages(ctx context.Context, model string
 
 	// Anthropic Messages 端点：baseURL 去掉 /v1 后拼 /v1/messages
 	baseURL := strings.TrimSuffix(c.baseURL, "/v1")
-	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/v1/messages", bytes.NewBuffer(bodyBytes))
+	endpoint := baseURL + "/v1/messages"
+	log.Infow("StreamAnthropicMessages: sending request",
+		"endpoint", endpoint,
+		"model", model,
+		"enable_thinking", enableThinking,
+		"body_length", len(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(bodyBytes))
 	if err != nil {
 		return "", nil, fmt.Errorf("create request failed: %w", err)
 	}
@@ -781,6 +787,12 @@ func (c *DMXAPIClient) StreamAnthropicMessages(ctx context.Context, model string
 			// 流结束
 		}
 	}
+
+	log.Infow("StreamAnthropicMessages: stream completed",
+		"model", model,
+		"content_length", fullContent.Len(),
+		"thinking_length", fullThinking.Len(),
+		"has_usage", usage != nil)
 
 	// 如果有 thinking 内容，记录 reasoning_tokens（估算）
 	if usage != nil && fullThinking.Len() > 0 {

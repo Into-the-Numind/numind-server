@@ -124,6 +124,13 @@ func (r *Router) StreamChat(
 		var usage *billing.TokenUsage
 		var callErr error
 
+		log.Infow("LLMRouter: dispatching request",
+			"provider", route.ProviderName,
+			"model", route.ProviderModelID,
+			"thinking_format", route.ThinkingFormat,
+			"is_anthropic", route.ThinkingFormat == ThinkingAnthropic,
+		)
+
 		if route.ThinkingFormat == ThinkingAnthropic {
 			// Claude：走 Anthropic Messages API（/v1/messages），支持 adaptive thinking
 			content, usage, callErr = client.StreamAnthropicMessages(
