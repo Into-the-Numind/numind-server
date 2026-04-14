@@ -785,5 +785,34 @@ func (c *DMXAPIClient) StreamAnthropicMessages(ctx context.Context, model string
 		usage.ReasoningTokens = fullThinking.Len() / 3
 	}
 
+	// 自动计费（LLMRouter 调用时跳过，由 Router 统一处理）
+	if !isFromLLMRouter(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+			billing.RecordLLM(bc.UserID, "dmxapi", model, bc.Operation, usage, bc.Meta)
+		}
+	}
+
+	// Langfuse generation 追踪（LLMRouter 调用时跳过，由 Router 统一处理）
+	if !isFromLLMRouter(ctx) {
+		if tc := langfuse.FromContext(ctx); tc != nil {
+			genID := langfuse.SpanID()
+			opts := []langfuse.GenOption{
+				langfuse.WithGenParent(tc.ParentObservationID),
+				langfuse.WithGenName("dmxapi-anthropic-stream"),
+				langfuse.WithGenModel(model),
+				langfuse.WithGenInput(messages),
+				langfuse.WithGenOutput(fullContent.String()),
+			}
+			if usage != nil {
+				opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
+			}
+			if tc.PromptName != "" {
+				opts = append(opts, langfuse.WithGenPromptName(tc.PromptName, tc.PromptVersion))
+			}
+			langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+			langfuse.EndGeneration(genID)
+		}
+	}
+
 	return fullContent.String(), usage, nil
 }
