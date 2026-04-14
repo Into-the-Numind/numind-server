@@ -1031,28 +1031,38 @@ features:
 
   - id: "sop-trailing-chat-thinking-and-scroll-follow"
     ndf_version: "1.0"
-    description: "SOP '继续问 AI' 聊天面板的 4 个 UI/UX bug：(1) 思考过程框游离于聊天气泡外（应在气泡内）；(2) 思考过程 max-height:200px 固定高度 + 无自动滚底；(3) 聊天气泡主体流式时无底部跟随（或不稳）；(4) 底部跟随缺少用户上滑打断后滑回底部自动恢复能力（同仓 useScrollFollow 已具备此能力但 TrailingChat 未接入）"
+    description: "SOP '继续问 AI' 聊天面板的 4 个 UI/UX bug + 用户追加要求：(1) 思考过程框游离于聊天气泡外（应在气泡内）；(2) 思考过程 max-height:200px 固定高度 + 无自动滚底；(3) 聊天气泡主体流式时无底部跟随；(4) 底部跟随缺少用户上滑打断后滑回底部自动恢复能力；(extra) 深度思考结束（首 content token 到达）→ 思考面板自动折叠让出正文位置"
     track: "hotfix"
-    stage: "H1"
-    classification_reason: "前端单仓 UI/UX bug 集群；无 schema/API/业务逻辑变更；影响 2 个组件（ChatBubble.vue、TrailingChat.vue）；可复用 2026-04-13 hotfix 升级后的 useScrollFollow（HTMLElement|Window + interrupt + movingDown + resume）；风险低，可视化可验证"
+    stage: "H3-done"
+    classification_reason: "前端单仓 UI/UX bug 集群；无 schema/API/业务逻辑变更；影响 2 个组件（ChatBubble.vue、TrailingChat.vue）；复用 2026-04-13 hotfix 升级后的 useScrollFollow（HTMLElement|Window + interrupt + movingDown + resume）；风险低，可视化可验证"
     last_updated_by: "ai-hotfix"
     last_updated_at: "2026-04-14T00:00:00+08:00"
     repos:
       - numind-web-v3
     branches:
-      numind-web-v3: "pending (fix/sop-trailing-chat-scroll)"
+      numind-web-v3: "merged to develop (9742af9, fix commit a9b88c3)"
     hotfix_artifacts:
-      diagnosis: null
-      review: null
+      diagnosis: "gstack Playwright 实流验证：DOM 结构 + CSS computed style + streaming 阶段 dFromBottom + interrupt/resume 全链路"
+      review: "inline (single-developer mode, no PR)"
     progress:
-      total_tasks: 4
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task: "H2-diagnosis"
-    rollback: null
-    last_verified: null
-    decisions: []
+      total_tasks: 5
+      completed_tasks: 5
+      reviewed_tasks: 5
+      current_task: null
+    rollback: "git revert 9742af9 on develop (numind-web-v3)"
+    last_verified:
+      at: "2026-04-14T00:00:00+08:00"
+      lint: "pass (eslint 0 errors, 1 pre-existing unrelated warning)"
+      type_check: "pass (vue-tsc --build --force)"
+      tests: "gstack Playwright 实流：thinking 阶段跟随 dBot=0（thinkingLen 312→557），content 首字 collapsed false→true，上滑 interrupt top=0 锁定，滑回近底 resume dBot 40→0"
+      test_summary: "4 bugs + 1 extra requirement 全部 Playwright 实流通过"
+    decisions:
+      - "2026-04-14: 思考面板从 chat-bubble-body 直接子元素移入 chat-bubble-content 气泡内，样式弱化为气泡内子区块（去独立边框/背景，保留 header toggle），展开+有正文时加底部分隔线"
+      - "2026-04-14: 移除 .chat-bubble-thinking-content max-height:200px 固定盖，改为自然扩展由外层 .chat__history 统一滚动（与 Bug1 方案耦合：既在气泡内就不应再造二级滚动）"
+      - "2026-04-14: 新增 content 首字到达 watcher 而非等 streaming 结束，避免思考过程挤压正文"
+      - "2026-04-14: TrailingChat scroll-follow 监听扩展到 content + thinking（之前仅 watch content，导致思考阶段只有 thinking 在长时不跟随）"
+      - "2026-04-14: 发现并行 AI session WIP（SOPRunView.vue + 新增 useTypewriterReveal.ts，对应今早 54f2ee1 遗漏的 trailing-chat 打字机平滑），未纳入本 hotfix commit，原样保留在工作树供另一 session 处理"
     deferred: []
     blockers: []
     created_at: "2026-04-14T00:00:00+08:00"
-    completed_at: null
+    completed_at: "2026-04-14T00:00:00+08:00"
