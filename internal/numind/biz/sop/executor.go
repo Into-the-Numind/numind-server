@@ -417,7 +417,7 @@ func (e *SopExecutor) executeViaRouter(ctx context.Context, node *model.SopNode,
 	}
 
 	// 调用 LLMRouter.StreamChat，透传 StreamHandler
-	content, usage, err := e.llmRouter.StreamChat(ctx, modelKey, thinking, messages, 0.5, 0, func(eventType, chunk string) error {
+	content, usage, err := e.llmRouter.StreamChat(ctx, modelKey, thinking, messages, 0.7, 0, func(eventType, chunk string) error {
 		return handler(eventType, chunk)
 	})
 	if err != nil {

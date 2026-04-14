@@ -769,7 +769,10 @@ func (c *DMXAPIClient) StreamAnthropicMessages(ctx context.Context, model string
 
 		case "message_delta":
 			// 更新 usage（补充 output_tokens）
-			if event.Usage != nil && usage != nil {
+			if event.Usage != nil {
+				if usage == nil {
+					usage = &billing.TokenUsage{}
+				}
 				usage.CompletionTokens = event.Usage.OutputTokens
 				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 			}
