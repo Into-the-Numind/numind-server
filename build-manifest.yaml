@@ -1066,3 +1066,40 @@ features:
     blockers: []
     created_at: "2026-04-14T00:00:00+08:00"
     completed_at: "2026-04-14T00:00:00+08:00"
+
+  - id: "sop-trailing-chat-sse-smoothing"
+    ndf_version: "1.0"
+    description: "SOP 追问 AI（trailing chat）SSE 流式爆裂抵达 — 复用 54f2ee1 节点输出的打字机平滑方案，提取为 useTypewriterReveal composable 并接到 chat 流式路径"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "前端纯 UI 感知问题；无 schema/API/业务逻辑变更；1 个新 composable + 1 处 SOPRunView 流式回调改写；与并行 session 的 ChatBubble/TrailingChat 重构不重叠（分别落于不同文件）"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-14T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "直接 commit 到 develop (816a4f7) — 并行 session 刚 merge 回 develop，工作树已在 develop 上"
+    hotfix_artifacts:
+      diagnosis: "gstack 轮询 .chat-bubble-content 文字长度：修复前直接 += chunk 等同于 node 流式（250ms/13字 爆裂）；修复后 update_rate 25.9/s、growth_median 2 chars、gap_median 16.3ms，帧 p95 9.2ms 零 >17ms"
+      review: "inline"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert 816a4f7 on develop (numind-web-v3)"
+    last_verified:
+      at: "2026-04-14T00:00:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: "n/a（与 54f2ee1 共用 reveal 逻辑，之前 sopRun.spec 通过；本 commit 不改 store）"
+      test_summary: "gstack 实测 template 8 trailing chat：25.9/s 更新、2字/次、16.3ms 间隔，视觉完全平滑"
+    decisions:
+      - "2026-04-14: 把 sopRun.ts 里的 rAF reveal 逻辑提取为 useTypewriterReveal composable 而非再塞进 store，chat 流式状态本就在 SOPRunView 本地 ref，保持位置一致；两个独立实例分别管 thinking 和 content"
+      - "2026-04-14: watch 用 flush: 'sync' 同步到 chatStreamingMessage，保证 onDone 里 flush() 之后紧接的 null 赋值前，displayed 的完整尾巴已经落到 message 上；默认 pre-flush 会晚于 null 赋值，用户看不到完整文本"
+      - "2026-04-14: 并行另一 AI session 同时在改 ChatBubble.vue + TrailingChat.vue（气泡结构重构 + 滚动跟随），文件不重叠、关注点分离；确认无冲突后直接 commit 到 develop"
+    deferred:
+      - "sopRun.ts 里的 reveal 逻辑可以在未来一次清理中也切到 useTypewriterReveal composable 以消除重复（~60 LOC），本 hotfix 不动能用的代码"
+    blockers: []
+    created_at: "2026-04-14T00:00:00+08:00"
+    completed_at: "2026-04-14T00:00:00+08:00"
