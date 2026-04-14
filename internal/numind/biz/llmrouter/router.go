@@ -183,21 +183,16 @@ func (r *Router) InvalidateCache() {
 // inferThinkingFormat 根据 DMXAPI 供应商侧模型 ID 推断 thinking 激活方式
 //
 // DMXAPI 文档参考：
-//   - Claude: 用模型名后缀 -thinking（推荐），或 thinking: {type:"enabled", budget_tokens:N}
-//   - Gemini: 用模型名后缀 -thinking，或 enable_thinking: true
-//   - Qwen:   用 extra_body.enable_thinking: true（enable_thinking 顶层也兼容）
-//   - Doubao: 用 thinking: {type:"enabled"}
+//   - Claude: thinking: {type:"adaptive"} + output_config: {effort:"high"}
+//   - Gemini: enable_thinking: true
+//   - Qwen:   enable_thinking: true
+//   - Doubao: thinking: {type:"enabled"}（与 anthropic 格式类似）
 //   - GPT:    thinking-only 模型，不接受任何 thinking 参数（会 400）
-//   - DeepSeek: DMXAPI 无 thinking 文档，参数被静默忽略
+//   - DeepSeek: OpenAI 通用格式，DMXAPI 无单独 thinking 文档
 func inferThinkingFormat(providerModelID string) string {
 	id := strings.ToLower(providerModelID)
 
-	// 已通过 -thinking 后缀激活的模型（DMXAPI 推荐方式），不需要额外参数
-	if strings.HasSuffix(id, "-thinking") {
-		return ThinkingNone
-	}
-
-	// Claude（未带后缀）：用 Anthropic 格式参数激活
+	// Claude：用 adaptive thinking 参数激活
 	if strings.Contains(id, "claude") {
 		return ThinkingAnthropic
 	}
@@ -207,16 +202,16 @@ func inferThinkingFormat(providerModelID string) string {
 		return ThinkingNone
 	}
 
-	// DeepSeek：DMXAPI 无 thinking 文档支持，参数被静默忽略，不发
+	// DeepSeek：OpenAI 通用格式，DMXAPI 无 thinking 参数支持
 	if strings.Contains(id, "deepseek") {
 		return ThinkingNone
 	}
 
-	// Doubao / 豆包：用与 Anthropic 相同的 thinking: {type:"enabled"} 格式
+	// Doubao / 豆包：thinking: {type:"enabled"}
 	if strings.Contains(id, "doubao") {
 		return ThinkingAnthropic
 	}
 
-	// Gemini、Qwen 等：用 enable_thinking: true
+	// Gemini、Qwen 等：enable_thinking: true
 	return ThinkingEnableField
 }
