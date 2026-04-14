@@ -372,6 +372,19 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 		if len(chunk.Choices) > 0 {
 			delta := chunk.Choices[0].Delta
 
+			// DEBUG: 打印前 3 个 delta 的原始 JSON，定位 thinking 字段名
+			if fullThinking.Len() == 0 && fullContent.Len() == 0 {
+				preview := data
+				if len(preview) > 500 {
+					preview = preview[:500] + "..."
+				}
+				log.Infow("StreamChatCompletion: first delta",
+					"model", model,
+					"raw_data", preview,
+					"delta_content_len", len(delta.Content),
+					"delta_thinking_len", len(delta.Thinking))
+			}
+
 			// 1. 处理显式的 reasoning_content 字段
 			if delta.Thinking != "" {
 				fullThinking.WriteString(delta.Thinking)
