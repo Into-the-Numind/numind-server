@@ -918,3 +918,37 @@ features:
     blockers: []
     created_at: "2026-04-13T00:00:00+08:00"
     completed_at: "2026-04-13T00:00:00+08:00"
+
+  - id: "sop-run-disable-generate-while-parsing"
+    ndf_version: "1.0"
+    description: "SOP 执行页：附件解析期间禁用生成按钮 — 防止用户在 StepInput 文件识别中阶段提交，避免 compose() 丢失未解析文件内容"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "单文件 CSS/逻辑微调，禁用按钮 + 双重守卫 handleExecute；无 schema/API/业务逻辑变更"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-13T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "merged to develop (f2016ed)"
+    hotfix_artifacts:
+      diagnosis: "gstack upload 真实文件验证：上传瞬间 data-testid=input-execute 的 disabled=true，解析完成（useFileUpload.isUploading→false）后自动变回 false"
+      review: "inline"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert f2016ed on develop (numind-web-v3)"
+    last_verified:
+      at: "2026-04-13T00:00:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: "n/a"
+      test_summary: "gstack upload /tmp/test-upload.txt 后 disabled=true；4s 后解析完成 disabled=false"
+    decisions:
+      - "2026-04-13: 用 computed filesUploading 兼容两种 Vue template ref unwrap 行为（ComputedRef<boolean> 可能已 unwrap 为 boolean 也可能仍是 Ref），handleExecute 同时做防御性守卫避免时序竞态"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-13T00:00:00+08:00"
+    completed_at: "2026-04-13T00:00:00+08:00"
