@@ -955,31 +955,41 @@ features:
 
   - id: "sop-run-sse-streaming-perf"
     ndf_version: "1.0"
-    description: "SOP 运行页 SSE 流式输出卡顿/掉帧 — 用户报告流式渲染过程肉眼可见的掉帧感"
+    description: "SOP 运行页 SSE 流式输出卡顿/掉帧 — 后端爆裂式抵达（250ms/13字）被感知为卡顿，修复为前端 rAF 打字机平滑揭示"
     track: "hotfix"
-    stage: "H1"
-    classification_reason: "前端性能问题，无 schema/API/业务逻辑变更；范围限定在 SOP 运行页的 SSE 事件处理与 Markdown 流式渲染路径"
+    stage: "H3-done"
+    classification_reason: "前端性能感知问题，无 schema/API/业务逻辑变更；Pinia store 内 rAF reveal 循环 + flushStreaming 保证 onDone/onError 落库不丢尾"
     last_updated_by: "ai-hotfix"
     last_updated_at: "2026-04-14T00:00:00+08:00"
     repos:
       - numind-web-v3
     branches:
-      numind-web-v3: "pending"
+      numind-web-v3: "merged to develop (8312376)"
     hotfix_artifacts:
-      diagnosis: "pending — gstack + Performance API 在 $DEV_SITE_URL 抓取 SSE 流式输出过程的帧率/长任务/渲染瓶颈"
-      review: null
+      diagnosis: "gstack 实测 localhost:5173：rAF 帧 120fps 零掉帧、零 long task；但 SSE chunk 间隔 median 250ms / max 1258ms，每次 DOM 更新新增 13 字。结论：爆裂抵达被感知为卡顿，非渲染瓶颈"
+      review: "inline"
     progress:
       total_tasks: 1
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task: "H1 诊断：抓取 SSE 流式输出的 performance trace，定位卡顿根因"
-    rollback: null
-    last_verified: null
-    decisions: []
-    deferred: []
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert 8312376 on develop (numind-web-v3)"
+    last_verified:
+      at: "2026-04-14T00:00:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: "pass (sopRun.spec 23/23; OutputCard 4 failures pre-existing on develop)"
+      test_summary: "After fix: DOM updates 3.9/s→15.7/s, update gap median 250ms→8.4ms, avg growth 13→1 chars, frame p95 unchanged at 9.2ms"
+    decisions:
+      - "2026-04-14: 揭示速率 80 cps（平均到达 52 cps 的 ~1.5x），保证流动感同时不积压到肉眼可见落后"
+      - "2026-04-14: dt>300ms 阈值识别 tab backgrounded → 直接同步到 target，避免切回后缓慢滴字"
+      - "2026-04-14: onDone/onError 前先 flushStreaming() 再读 streamingContent，防止揭示队列尾部丢失导致落库内容不完整"
+    deferred:
+      - "后端 flush 粒度优化（若 LLM provider 端可 per-token flush 则可进一步提升）— 不阻塞本 hotfix"
+      - "Dev 环境 POST /api/v1/web/login 返回 404（疑似 nginx 或路由断）— 独立基础设施问题，不在本功能范围"
     blockers: []
     created_at: "2026-04-14T00:00:00+08:00"
-    completed_at: null
+    completed_at: "2026-04-14T00:00:00+08:00"
 
   - id: "sop-run-thinking-ux-and-autofollow"
     ndf_version: "1.0"
@@ -1018,3 +1028,31 @@ features:
     blockers: []
     created_at: "2026-04-13T00:00:00+08:00"
     completed_at: "2026-04-13T00:00:00+08:00"
+
+  - id: "sop-trailing-chat-thinking-and-scroll-follow"
+    ndf_version: "1.0"
+    description: "SOP '继续问 AI' 聊天面板的 4 个 UI/UX bug：(1) 思考过程框游离于聊天气泡外（应在气泡内）；(2) 思考过程 max-height:200px 固定高度 + 无自动滚底；(3) 聊天气泡主体流式时无底部跟随（或不稳）；(4) 底部跟随缺少用户上滑打断后滑回底部自动恢复能力（同仓 useScrollFollow 已具备此能力但 TrailingChat 未接入）"
+    track: "hotfix"
+    stage: "H1"
+    classification_reason: "前端单仓 UI/UX bug 集群；无 schema/API/业务逻辑变更；影响 2 个组件（ChatBubble.vue、TrailingChat.vue）；可复用 2026-04-13 hotfix 升级后的 useScrollFollow（HTMLElement|Window + interrupt + movingDown + resume）；风险低，可视化可验证"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-14T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "pending (fix/sop-trailing-chat-scroll)"
+    hotfix_artifacts:
+      diagnosis: null
+      review: null
+    progress:
+      total_tasks: 4
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "H2-diagnosis"
+    rollback: null
+    last_verified: null
+    decisions: []
+    deferred: []
+    blockers: []
+    created_at: "2026-04-14T00:00:00+08:00"
+    completed_at: null
