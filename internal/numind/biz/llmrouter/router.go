@@ -180,21 +180,43 @@ func (r *Router) InvalidateCache() {
 	r.cache.Invalidate()
 }
 
-// inferThinkingFormat 根据供应商侧模型 ID 推断 thinking 激活方式
-// 不同 LLM 供应商通过 DMXAPI 聚合平台的 thinking 参数格式不同
+// inferThinkingFormat 根据 DMXAPI 供应商侧模型 ID 推断 thinking 激活方式
+//
+// DMXAPI 文档参考：
+//   - Claude: 用模型名后缀 -thinking（推荐），或 thinking: {type:"enabled", budget_tokens:N}
+//   - Gemini: 用模型名后缀 -thinking，或 enable_thinking: true
+//   - Qwen:   用 extra_body.enable_thinking: true（enable_thinking 顶层也兼容）
+//   - Doubao: 用 thinking: {type:"enabled"}
+//   - GPT:    thinking-only 模型，不接受任何 thinking 参数（会 400）
+//   - DeepSeek: DMXAPI 无 thinking 文档，参数被静默忽略
 func inferThinkingFormat(providerModelID string) string {
 	id := strings.ToLower(providerModelID)
 
-	// Claude 使用 Anthropic 专有 thinking 格式
+	// 已通过 -thinking 后缀激活的模型（DMXAPI 推荐方式），不需要额外参数
+	if strings.HasSuffix(id, "-thinking") {
+		return ThinkingNone
+	}
+
+	// Claude（未带后缀）：用 Anthropic 格式参数激活
 	if strings.Contains(id, "claude") {
 		return ThinkingAnthropic
 	}
 
-	// GPT/OpenAI 系列不支持 enable_thinking 参数（会返回 400）
-	if strings.Contains(id, "gpt") || strings.Contains(id, "o1") || strings.Contains(id, "o3") || strings.Contains(id, "o4") {
+	// GPT / OpenAI o-系列：thinking-only 模型，发任何 thinking 参数会 400
+	if strings.Contains(id, "gpt") || strings.HasPrefix(id, "o1") || strings.HasPrefix(id, "o3") || strings.HasPrefix(id, "o4") {
 		return ThinkingNone
 	}
 
-	// Gemini、Qwen、DeepSeek 等通过 DMXAPI 支持 enable_thinking
+	// DeepSeek：DMXAPI 无 thinking 文档支持，参数被静默忽略，不发
+	if strings.Contains(id, "deepseek") {
+		return ThinkingNone
+	}
+
+	// Doubao / 豆包：用与 Anthropic 相同的 thinking: {type:"enabled"} 格式
+	if strings.Contains(id, "doubao") {
+		return ThinkingAnthropic
+	}
+
+	// Gemini、Qwen 等：用 enable_thinking: true
 	return ThinkingEnableField
 }
