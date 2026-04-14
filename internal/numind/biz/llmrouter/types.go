@@ -10,6 +10,8 @@ const (
 	ThinkingDoubao = "doubao"
 	// ThinkingGemini Gemini：走原生 /v1beta/models/{model}:streamGenerateContent 端点
 	ThinkingGemini = "gemini"
+	// ThinkingGPT GPT-5/O 系列：走 /v1/responses 端点 + reasoning:{effort}
+	ThinkingGPT = "gpt"
 )
 
 // ResolvedRoute 解析后的路由信息，包含调用 LLM 所需的完整凭据和参数

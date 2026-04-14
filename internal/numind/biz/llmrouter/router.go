@@ -130,7 +130,8 @@ func (r *Router) StreamChat(
 			"thinking_format", route.ThinkingFormat,
 		)
 
-		if route.ThinkingFormat == ThinkingGemini {
+		switch route.ThinkingFormat {
+		case ThinkingGemini:
 			// Gemini：走原生端点 /v1beta/models/{model}:streamGenerateContent
 			content, usage, callErr = client.StreamGeminiGenerate(
 				routerCtx,
@@ -138,8 +139,18 @@ func (r *Router) StreamChat(
 				messages,
 				onEvent,
 			)
-		} else {
-			// 其他模型：走 OpenAI 兼容端点 /v1/chat/completions
+		case ThinkingGPT:
+			// GPT-5/O 系列：走 /v1/responses + reasoning:{effort:"high"}
+			content, usage, callErr = client.StreamGPTResponses(
+				routerCtx,
+				route.ProviderModelID,
+				messages,
+				temperature,
+				"high",
+				onEvent,
+			)
+		default:
+			// Claude(-thinking 后缀)、Qwen、Doubao、DeepSeek 等：走 /v1/chat/completions
 			content, usage, callErr = client.StreamChatCompletion(
 				routerCtx,
 				route.ProviderModelID,
@@ -219,9 +230,9 @@ func inferThinkingFormat(providerModelID string) string {
 		return ThinkingNone
 	}
 
-	// GPT / OpenAI o-系列：thinking-only 模型，发任何 thinking 参数会 400
+	// GPT-5 / OpenAI o-系列：走 /v1/responses 端点 + reasoning 参数
 	if strings.Contains(id, "gpt") || strings.HasPrefix(id, "o1") || strings.HasPrefix(id, "o3") || strings.HasPrefix(id, "o4") {
-		return ThinkingNone
+		return ThinkingGPT
 	}
 
 	// DeepSeek：OpenAI 通用格式，DMXAPI 无 thinking 参数支持

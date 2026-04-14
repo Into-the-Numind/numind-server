@@ -790,3 +790,183 @@ func (c *DMXAPIClient) StreamGeminiGenerate(ctx context.Context, model string, m
 
 	return fullContent.String(), usage, nil
 }
+
+// StreamGPTResponses 调用 OpenAI Responses API（/v1/responses）
+// GPT-5 系列和 O 系列通过此端点，支持 reasoning 参数控制思考深度
+func (c *DMXAPIClient) StreamGPTResponses(ctx context.Context, model string, messages []ChatMessage, temperature float64, reasoningEffort string, onEvent func(eventType, content string) error) (string, *billing.TokenUsage, error) {
+	input := make([]map[string]interface{}, 0, len(messages))
+	for _, msg := range messages {
+		input = append(input, map[string]interface{}{
+			"role":    msg.Role,
+			"content": msg.Content,
+		})
+	}
+
+	bodyMap := map[string]interface{}{
+		"model":  model,
+		"input":  input,
+		"stream": true,
+	}
+	if reasoningEffort != "" {
+		bodyMap["reasoning"] = map[string]interface{}{
+			"effort": reasoningEffort,
+		}
+	}
+	if temperature > 0 {
+		bodyMap["temperature"] = temperature
+	}
+
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return "", nil, fmt.Errorf("marshal request failed: %w", err)
+	}
+
+	baseURL := strings.TrimSuffix(c.baseURL, "/v1")
+	endpoint := baseURL + "/v1/responses"
+
+	log.Infow("StreamGPTResponses: sending request",
+		"endpoint", endpoint,
+		"model", model,
+		"reasoning_effort", reasoningEffort)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", nil, fmt.Errorf("create request failed: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var fullContent strings.Builder
+	var fullThinking strings.Builder
+	var usage *billing.TokenUsage
+	reader := bufio.NewReader(resp.Body)
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fullContent.String(), usage, fmt.Errorf("read stream failed: %w", err)
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		if strings.HasPrefix(line, "event:") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var event struct {
+			Type     string `json:"type"`
+			Delta    string `json:"delta"`
+			Response *struct {
+				Usage *struct {
+					InputTokens     int `json:"input_tokens"`
+					OutputTokens    int `json:"output_tokens"`
+					TotalTokens     int `json:"total_tokens"`
+					ReasoningTokens int `json:"reasoning_tokens"`
+				} `json:"usage"`
+			} `json:"response"`
+		}
+
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
+		}
+
+		// DEBUG: 打印前几个事件的原始数据
+		if fullThinking.Len() == 0 && fullContent.Len() < 50 {
+			preview := data
+			if len(preview) > 500 {
+				preview = preview[:500] + "..."
+			}
+			log.Infow("StreamGPTResponses: SSE event",
+				"type", event.Type,
+				"raw_data", preview)
+		}
+
+		switch event.Type {
+		case "response.output_text.delta":
+			if event.Delta != "" {
+				fullContent.WriteString(event.Delta)
+				if onEvent != nil {
+					if err := onEvent("message", event.Delta); err != nil {
+						return fullContent.String(), usage, err
+					}
+				}
+			}
+
+		case "response.reasoning_summary_text.delta":
+			if event.Delta != "" {
+				fullThinking.WriteString(event.Delta)
+				if onEvent != nil {
+					if err := onEvent("thinking", event.Delta); err != nil {
+						return fullContent.String(), usage, err
+					}
+				}
+			}
+
+		case "response.completed":
+			if event.Response != nil && event.Response.Usage != nil {
+				u := event.Response.Usage
+				usage = &billing.TokenUsage{
+					PromptTokens:     u.InputTokens,
+					CompletionTokens: u.OutputTokens,
+					TotalTokens:      u.TotalTokens,
+					ReasoningTokens:  u.ReasoningTokens,
+				}
+			}
+		}
+	}
+
+	log.Infow("StreamGPTResponses: stream completed",
+		"model", model,
+		"content_length", fullContent.Len(),
+		"thinking_length", fullThinking.Len(),
+		"has_usage", usage != nil)
+
+	if !isFromLLMRouter(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+			billing.RecordLLM(bc.UserID, "dmxapi", model, bc.Operation, usage, bc.Meta)
+		}
+	}
+	if !isFromLLMRouter(ctx) {
+		if tc := langfuse.FromContext(ctx); tc != nil {
+			genID := langfuse.SpanID()
+			opts := []langfuse.GenOption{
+				langfuse.WithGenParent(tc.ParentObservationID),
+				langfuse.WithGenName("dmxapi-gpt-responses"),
+				langfuse.WithGenModel(model),
+				langfuse.WithGenInput(messages),
+				langfuse.WithGenOutput(fullContent.String()),
+			}
+			if usage != nil {
+				opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
+			}
+			langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+			langfuse.EndGeneration(genID)
+		}
+	}
+
+	return fullContent.String(), usage, nil
+}
