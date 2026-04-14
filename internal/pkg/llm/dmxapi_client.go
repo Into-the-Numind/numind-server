@@ -264,9 +264,9 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 		},
 	}
 
-	// Claude -thinking 后缀模型：DMXAPI 通过后缀激活思考
+	// Claude -thinking 后缀模型：thinking 模式要求 temperature 必须为 1
 	if strings.HasSuffix(strings.ToLower(model), "-thinking") {
-		bodyMap["temperature"] = 0.6
+		bodyMap["temperature"] = 1
 	}
 
 	switch thinkingFormat {
