@@ -58,7 +58,7 @@ type ISopBiz interface {
 	ListNotesByUser(ctx context.Context, userID uint, offset, limit int) ([]model.SopNote, int64, error)
 
 	// Chat operations
-	ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, deepThinking bool, regenerateMsgID uint, handler func(event string, chunk string) error) error
+	ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, modelKey string, deepThinking bool, regenerateMsgID uint, handler func(event string, chunk string) error) error
 	ListChatMessages(ctx context.Context, runID uint, userID uint) ([]model.SopChatMsg, error)
 
 	// Admin operations
@@ -1135,7 +1135,8 @@ func (b *sopBiz) ListTemplateRunsWithDetails(ctx context.Context, userID, templa
 }
 
 // ChatAfterRunStream Run完成后的对话流式接口
-func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, deepThinking bool, regenerateMsgID uint, handler func(event string, chunk string) error) error {
+// modelKey: 用户选择的模型 key（空字符串表示使用最后一个节点的默认配置）
+func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, modelKey string, deepThinking bool, regenerateMsgID uint, handler func(event string, chunk string) error) error {
 	// 互斥锁检测（解决“执行互斥锁”问题）
 	if _, loaded := b.runningRuns.LoadOrStore(runID, struct{}{}); loaded {
 		log.C(ctx).Warnw("Detected concurrent chat attempt", "run_id", runID)
@@ -1296,26 +1297,40 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	ctx = billing.WithBillingMeta(ctx, userID, "sop_chat_stream",
 		billing.Metadata("run_id", billing.FormatUint(runID), "conversation_id", conversationID))
 	// 传入空字符串作为 input，这样执行器不会拼装节点的 Prompt，AI 保持普通助手身份
-	var answerBuf strings.Builder
+	var answerBuf, thinkingBuf strings.Builder
 	chatStart := time.Now() // B4: 记录 chat LLM 调用起始时间，用于 duration_ms 持久化
-	_, thinking, usage, err := b.executor.ExecuteNodeStreamWithThinking(
-		ctx,
-		&lastNode,
-		"", // 传入空字符串，避免触发 node.Prompt 拼接
-		history,
-		func(event string, chunk string) error {
-			if event == "message" {
-				answerBuf.WriteString(chunk)
-			}
-			if event == "done" {
-				return nil // 拦截 done 事件，稍后随着 ID 一起发送
-			}
-			return handler(event, chunk)
-		},
-		true,         // isLastNode：标记为最后一个节点（用于日志和统计，所有节点统一使用 prompt + input 格式）
-		deepThinking, // deepThinking
-		conversationID,
-	)
+	streamHandler := func(event string, chunk string) error {
+		if event == "message" {
+			answerBuf.WriteString(chunk)
+		}
+		if event == "thinking" {
+			thinkingBuf.WriteString(chunk)
+		}
+		if event == "done" {
+			return nil // 拦截 done 事件，稍后随着 ID 一起发送
+		}
+		return handler(event, chunk)
+	}
+
+	var thinking string
+	var usage *TokenUsage
+	if modelKey != "" {
+		// LLMRouter 路径：用户选择了特定模型，调用 ExecuteNodeStream（内含 executeViaRouter）
+		_, usage, err = b.executor.ExecuteNodeStream(ctx, &lastNode, "", history, modelKey, deepThinking, streamHandler)
+		thinking = thinkingBuf.String()
+	} else {
+		// 默认路径：使用最后一个节点配置的 LLM
+		_, thinking, usage, err = b.executor.ExecuteNodeStreamWithThinking(
+			ctx,
+			&lastNode,
+			"", // 传入空字符串，避免触发 node.Prompt 拼接
+			history,
+			streamHandler,
+			true,         // isLastNode
+			deepThinking, // deepThinking
+			conversationID,
+		)
+	}
 	if err != nil {
 		return err
 	}
@@ -1329,12 +1344,15 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 		Content:        answerBuf.String(),
 		Thinking:       thinking, // 保存思考过程
 		Seq:            maxSeq + 2,
-		ModelName:      lastNode.ModelName,                   // B4: 持久化实际调用的模型名
+		ModelName:      lastNode.ModelName,                   // B4: 持久化实际调用的模型名（router 路径下若 usage.ModelName 非空会在下方覆盖）
 		DurationMs:     time.Since(chatStart).Milliseconds(), // B4: LLM 流式总耗时
 	}
 
 	// 保存 token 使用统计（如果存在）
 	if usage != nil {
+		if usage.ModelName != "" {
+			assistantMsg.ModelName = usage.ModelName
+		}
 		assistantMsg.PromptTokens = usage.PromptTokens
 		assistantMsg.CompletionTokens = usage.CompletionTokens
 		assistantMsg.TotalTokens = usage.TotalTokens
