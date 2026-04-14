@@ -2317,8 +2317,10 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 		c.Request.Context(), user.ID, "sop", req.ModelKey, deepThinkingPtr)
 	if resolveErr != nil {
 		log.C(c).Warnw("LLMRouter.ResolveUserModel failed, falling back to last node default", "error", resolveErr)
+		// 与 ExecuteNodeStream 控制器（见本文件 :821）保持一致：解析失败时 thinking=false，避免
+		// 在无法确认用户偏好的情况下意外开启深度思考（成本更高、部分模型不支持）
 		resolvedModelKey = ""
-		resolvedThinking = deepThinking
+		resolvedThinking = false
 	}
 	deepThinking = resolvedThinking
 
