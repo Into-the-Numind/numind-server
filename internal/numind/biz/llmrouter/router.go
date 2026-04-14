@@ -3,6 +3,7 @@ package llmrouter
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/billing"
@@ -67,17 +68,22 @@ func (r *Router) Resolve(ctx context.Context, modelKey string, thinking bool) ([
 	}
 
 	// 5. 转换为 ResolvedRoute 列表
+	wantThinking := baseModel.ThinkingOnly || (thinking && targetModelID != baseModel.ID)
 	routes := make([]ResolvedRoute, 0, len(mps))
 	for _, mp := range mps {
 		if mp.Provider == nil {
 			continue
+		}
+		tf := ThinkingNone
+		if wantThinking {
+			tf = inferThinkingFormat(mp.ProviderModelID)
 		}
 		routes = append(routes, ResolvedRoute{
 			BaseURL:         mp.Provider.BaseURL,
 			APIKey:          mp.Provider.APIKey,
 			ProviderModelID: mp.ProviderModelID,
 			ProviderName:    mp.Provider.Name,
-			EnableThinking:  baseModel.ThinkingOnly || (thinking && targetModelID != baseModel.ID),
+			ThinkingFormat:  tf,
 		})
 	}
 
@@ -120,7 +126,7 @@ func (r *Router) StreamChat(
 			messages,
 			temperature,
 			maxTokens,
-			route.EnableThinking,
+			route.ThinkingFormat,
 			onEvent,
 		)
 
@@ -172,4 +178,23 @@ func (r *Router) StreamChat(
 // InvalidateCache 清空路由缓存，使下次调用重新从 DB 加载
 func (r *Router) InvalidateCache() {
 	r.cache.Invalidate()
+}
+
+// inferThinkingFormat 根据供应商侧模型 ID 推断 thinking 激活方式
+// 不同 LLM 供应商通过 DMXAPI 聚合平台的 thinking 参数格式不同
+func inferThinkingFormat(providerModelID string) string {
+	id := strings.ToLower(providerModelID)
+
+	// Claude 使用 Anthropic 专有 thinking 格式
+	if strings.Contains(id, "claude") {
+		return ThinkingAnthropic
+	}
+
+	// GPT/OpenAI 系列不支持 enable_thinking 参数（会返回 400）
+	if strings.Contains(id, "gpt") || strings.Contains(id, "o1") || strings.Contains(id, "o3") || strings.Contains(id, "o4") {
+		return ThinkingNone
+	}
+
+	// Gemini、Qwen、DeepSeek 等通过 DMXAPI 支持 enable_thinking
+	return ThinkingEnableField
 }
