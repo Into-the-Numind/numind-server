@@ -877,3 +877,41 @@ features:
     blockers: []
     created_at: "2026-04-13T00:00:00+08:00"
     completed_at: null
+
+  - id: "sop-run-layout-rework"
+    ndf_version: "1.0"
+    description: "SOP 执行页 (SOPRunView) 布局重构 — 用户反馈当前信息呈现不合理，需基于浏览器截图诊断后重排空间节奏、层级与密度；改动仅限 numind-web-v3 视图层组件"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "纯前端布局调整，无 schema/API/业务逻辑变更，不涉及权限或计费，改动面可枚举；由用户要求'立即执行'走快车道"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-13T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "merged to develop (3ffeddd)"
+    hotfix_artifacts:
+      diagnosis: "gstack browse 浏览器诊断 — 两个关键状态（empty-input / done-current）截图定位 6 个问题：1) StepNavItem active/viewing 左 3px 绿条（impeccable 绝对禁令 side-stripe borders）2) step-header title↔desc↔card 节奏失衡 3) InputCard/OutputCard 冗余 card shell 违反 'DO NOT wrap everything in cards' 4) TopBar 模板名 15px 权重不足 5) stepNavState done 态 '已完成' 与绿 ✓ 图标重复 6) 空输入态下方大片 dead white（source-of-truth 是 card 外框 + 固定 max-width，不可 100% 消除）"
+      review: "inline (single-developer mode; 3 atomic commits on fix branch, reviewed per-commit)"
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 3
+      current_task: null
+    rollback: "git revert 3ffeddd on develop (numind-web-v3)"
+    last_verified:
+      at: "2026-04-13T00:00:00+08:00"
+      lint: "pass (npm run lint — 0 errors; 1 pre-existing warning in unrelated KnowledgeBaseDetail.vue)"
+      type_check: "pass (npm run type-check / vue-tsc --build --force)"
+      tests: "n/a (纯 CSS/spacing 调整；E2E 选择器 data-testid 未变更；computeStatusLine done 态仅被内部渲染消费，无测试依赖该字面量)"
+      test_summary: "gstack browse 实时验证：empty-input state 无左条、textarea 单框、header rhythm 改善；done-current state 外框消失、head/foot 薄分隔线保留、TopBar 模板名权重提升"
+    decisions:
+      - "2026-04-13: StepNavItem active/viewing 态视觉区分改用 'bg + 字重 700 + dot ring' 组合，不用任何 border-left/::before 装饰条（impeccable 禁令）"
+      - "2026-04-13: InputCard/OutputCard 去 card shell 后，StepInput 自带的 dropzone border 和 OutputCard head/foot 的 1px 分隔线承担分组职责，避免双重边框"
+      - "2026-04-13: computeStatusLine('done') 从 '已完成' 改为 ''，绿 ✓ 图标已表达完成语义；sop-history.spec.ts:132 检查的是 SOPHistoryView 的 statusBadge 不受影响"
+      - "2026-04-13: 保留 OutputCard AI icon 的 CDN 图片（未换 Lucide Sparkles）— 出于保守避免影响品牌资产和 E2E 选择器"
+    deferred:
+      - "空输入态下 viewport 底部 ~370px dead white：本质是 textarea 固定高度 + 内容稀疏，非本次布局 bug 范围，若需填充可在 follow-up 加入 tips/history-preview/quick-actions 区"
+    blockers: []
+    created_at: "2026-04-13T00:00:00+08:00"
+    completed_at: "2026-04-13T00:00:00+08:00"
