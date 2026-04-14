@@ -952,3 +952,69 @@ features:
     blockers: []
     created_at: "2026-04-13T00:00:00+08:00"
     completed_at: "2026-04-13T00:00:00+08:00"
+
+  - id: "sop-run-sse-streaming-perf"
+    ndf_version: "1.0"
+    description: "SOP 运行页 SSE 流式输出卡顿/掉帧 — 用户报告流式渲染过程肉眼可见的掉帧感"
+    track: "hotfix"
+    stage: "H1"
+    classification_reason: "前端性能问题，无 schema/API/业务逻辑变更；范围限定在 SOP 运行页的 SSE 事件处理与 Markdown 流式渲染路径"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-14T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "pending"
+    hotfix_artifacts:
+      diagnosis: "pending — gstack + Performance API 在 $DEV_SITE_URL 抓取 SSE 流式输出过程的帧率/长任务/渲染瓶颈"
+      review: null
+    progress:
+      total_tasks: 1
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "H1 诊断：抓取 SSE 流式输出的 performance trace，定位卡顿根因"
+    rollback: null
+    last_verified: null
+    decisions: []
+    deferred: []
+    blockers: []
+    created_at: "2026-04-14T00:00:00+08:00"
+    completed_at: null
+
+  - id: "sop-run-thinking-ux-and-autofollow"
+    ndf_version: "1.0"
+    description: "SOP 执行页两组追加：(a) 思考面板段距收紧 + 复制/收藏移到正文底部 + 生成完成自动折叠；(b) body 级自动跟随底部 + 上滑打断 + 滑回底部恢复"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "纯前端：CSS 调整 + 1 个 composable 扩展（window 支持）+ 1 个 UI 组件微调；无 schema/API/业务逻辑变更"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-13T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "merged to develop (9f5a2a6)"
+    hotfix_artifacts:
+      diagnosis: "gstack 浏览器 dispatch WheelEvent + scrollTo 序列化探测：暴露 scrollFollow 到 window.__sfDebug 观察 isInterrupted 与 scrollY/docH 三变量；发现 checkAndScroll 里 atBottom<=4 判定在 scrollHeight 刚 > clientHeight 几像素时误重置 interrupt，把 auto-resume 全部迁到 onScroll 并引入 movingDown 方向检测"
+      review: "inline"
+    progress:
+      total_tasks: 2
+      completed_tasks: 2
+      reviewed_tasks: 2
+      current_task: null
+    rollback: "git revert 9f5a2a6 on develop (numind-web-v3)"
+    last_verified:
+      at: "2026-04-13T00:00:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: "n/a (E2E data-testid 未变更；useScrollFollow 现有单测签名 install(HTMLElement) 与 install(target: ScrollTarget) 兼容)"
+      test_summary: "gstack 七阶段状态机验证：stream 启动→自动跟随→wheel 打断→scrollTo(0)→body 生长→scrollTo(400) 触发 resume→auto-follow 恢复，每步 isInterrupted/scrollY/docH 三变量全部符合预期"
+    decisions:
+      - "2026-04-13: auto-resume 完全迁到 onScroll 并要求 movingDown（scrollTop > lastScrollTop），避免 body 刚长出来时 scrollY=0 落在阈值内被误判"
+      - "2026-04-13: RESUME_NEAR_BOTTOM_THRESHOLD 80px 取代原 BOTTOM_THRESHOLD 4px（更宽容的 resume 区间；流式期间 body 每帧可增长几十像素，4px 太严格）"
+      - "2026-04-13: useScrollFollow.install 签名从 HTMLElement 扩展为 HTMLElement | Window；Window 通过 document.documentElement 读取滚动尺寸，window.scrollTo 执行滚动"
+      - "2026-04-13: 思考面板自动折叠 watch 恢复为 'thinkingCollapsed = !streaming'（上次 dd18f16 对用户反馈理解偏差，本次纠正）"
+    deferred:
+      - "ScrollFollowButton 组件目前未在 SOPRunView 挂载（发现于搜索，文件已存在但无引用）；若未来需要显式'跳到最新'按钮可直接接 scrollFollow.isInterrupted / scrollFollow.resume(window)"
+    blockers: []
+    created_at: "2026-04-13T00:00:00+08:00"
+    completed_at: "2026-04-13T00:00:00+08:00"
