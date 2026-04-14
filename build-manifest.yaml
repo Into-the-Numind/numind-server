@@ -912,6 +912,7 @@ features:
       - "2026-04-13: 保留 OutputCard AI icon 的 CDN 图片（未换 Lucide Sparkles）— 出于保守避免影响品牌资产和 E2E 选择器"
       - "2026-04-13 (follow-up merge 9db299f): OutputCard head/foot 两条分隔线全部移除（包括 MetaFooter 自带 border-top，在 OutputCard scope 用 :deep 覆盖；ChatBubble 上下文保留默认）；纯留白 + 字体对比做分组"
       - "2026-04-13 (follow-up merge 9db299f): 三栏从 canvas 内滚改为 body 级滚动；.sop-run-view-v2 min-height:100vh、StepNav/.nav 与 TopBar/.header 改 position:sticky；trailing-chat 模式保留 canvas height:calc(100vh - 56px) + overflow:hidden 以兼容聊天输入贴底行为"
+      - "2026-04-13 (follow-up merge dd18f16): 修用户反馈的流式 UI 3 个问题中的 2 个 —— (a) 点击生成立即出现大绿框：本质是上一次 T2 引入的 .output--streaming 背景色 + StepOutput 硬编码 height:520px；移除两者让 .thinking-container 自己承担绿底（仅在 thinking 数据到达才渲染），高度动态。(b) '生成结束思考内容消失'：根因是 StepOutput watch streaming true→false 时强制折叠 .thinking-container，现只在流式开始时自动展开，结束后保留用户状态。(c) Bug 2 'AI 正常回复内容被当成深度思考内容' 需后端排查（biz/sop/sop.go:645-652 或 extractThinkingContent 文本标记），UI 层 onThinking/onMessage 分离无误"
     deferred:
       - "空输入态下 viewport 底部 ~370px dead white：本质是 textarea 固定高度 + 内容稀疏，非本次布局 bug 范围，若需填充可在 follow-up 加入 tips/history-preview/quick-actions 区"
     blockers: []
