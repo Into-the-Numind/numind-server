@@ -727,6 +727,17 @@ func (c *DMXAPIClient) StreamAnthropicMessages(ctx context.Context, model string
 			continue
 		}
 
+		// DEBUG: 打印前几个 SSE 事件的原始内容，帮助定位格式问题
+		if event.Type == "content_block_start" || event.Type == "content_block_delta" {
+			preview := data
+			if len(preview) > 300 {
+				preview = preview[:300] + "..."
+			}
+			log.Infow("StreamAnthropicMessages: SSE event",
+				"type", event.Type,
+				"raw_data", preview)
+		}
+
 		switch event.Type {
 		case "message_start":
 			if event.Message != nil && event.Message.Usage != nil {
