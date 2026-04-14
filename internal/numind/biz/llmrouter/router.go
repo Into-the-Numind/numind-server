@@ -225,9 +225,9 @@ func inferThinkingFormat(providerModelID string) string {
 		return ThinkingNone
 	}
 
-	// Doubao / 豆包：thinking: {type:"enabled"}
+	// Doubao / 豆包：thinking:{type:"enabled"}，走 OpenAI 兼容端点
 	if strings.Contains(id, "doubao") {
-		return ThinkingAnthropic
+		return ThinkingDoubao
 	}
 
 	// Gemini、Qwen 等：enable_thinking: true

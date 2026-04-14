@@ -267,16 +267,13 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 	switch thinkingFormat {
 	case "enable_thinking":
 		bodyMap["enable_thinking"] = true
-	case "anthropic":
-		// Claude: adaptive thinking（DMXAPI 文档推荐方式）
-		// thinking 模式下不发 temperature，由 API 自行处理
-		delete(bodyMap, "temperature")
+	case "doubao":
+		// Doubao / 豆包：thinking:{type:"enabled"}，走 OpenAI 兼容端点
 		bodyMap["thinking"] = map[string]interface{}{
-			"type": "adaptive",
+			"type": "enabled",
 		}
-		bodyMap["output_config"] = map[string]interface{}{
-			"effort": "high",
-		}
+	// 注意：ThinkingAnthropic ("anthropic") 不会走到这里——
+	// Router 会把 Claude 路由到 StreamAnthropicMessages()
 	}
 	if maxTokens > 0 {
 		bodyMap["max_tokens"] = maxTokens
@@ -643,7 +640,7 @@ func (c *DMXAPIClient) StreamAnthropicMessages(ctx context.Context, model string
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("%s", c.apiKey))
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Accept", "text/event-stream")
 
 	resp, err := c.httpClient.Do(req)
@@ -661,9 +658,6 @@ func (c *DMXAPIClient) StreamAnthropicMessages(ctx context.Context, model string
 	var fullThinking strings.Builder
 	var usage *billing.TokenUsage
 	reader := bufio.NewReader(resp.Body)
-
-	// 当前正在处理的 content_block 类型（"thinking" 或 "text"）
-	currentBlockType := ""
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -694,8 +688,12 @@ func (c *DMXAPIClient) StreamAnthropicMessages(ctx context.Context, model string
 		}
 
 		var event struct {
-			Type  string `json:"type"`
-			Index int    `json:"index"`
+			Type    string `json:"type"`
+			Index   int    `json:"index"`
+			Error   *struct {
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			} `json:"error"`
 			// content_block_start
 			ContentBlock *struct {
 				Type string `json:"type"` // "thinking" 或 "text"
@@ -731,10 +729,15 @@ func (c *DMXAPIClient) StreamAnthropicMessages(ctx context.Context, model string
 				}
 			}
 
-		case "content_block_start":
-			if event.ContentBlock != nil {
-				currentBlockType = event.ContentBlock.Type
+		case "error":
+			errMsg := "unknown Anthropic API error"
+			if event.Error != nil {
+				errMsg = fmt.Sprintf("%s: %s", event.Error.Type, event.Error.Message)
 			}
+			return fullContent.String(), usage, fmt.Errorf("Anthropic stream error: %s", errMsg)
+
+		case "content_block_start":
+			// content_block 类型由 delta.Type 判断，无需单独追踪
 
 		case "content_block_delta":
 			if event.Delta == nil {
@@ -762,7 +765,7 @@ func (c *DMXAPIClient) StreamAnthropicMessages(ctx context.Context, model string
 			}
 
 		case "content_block_stop":
-			currentBlockType = ""
+			// no-op
 
 		case "message_delta":
 			// 更新 usage（补充 output_tokens）
@@ -781,8 +784,6 @@ func (c *DMXAPIClient) StreamAnthropicMessages(ctx context.Context, model string
 		// Anthropic 不单独返回 reasoning_tokens，用 thinking 字符数估算
 		usage.ReasoningTokens = fullThinking.Len() / 3
 	}
-
-	_ = currentBlockType // suppress unused warning
 
 	return fullContent.String(), usage, nil
 }
