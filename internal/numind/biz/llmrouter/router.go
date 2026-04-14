@@ -130,16 +130,26 @@ func (r *Router) StreamChat(
 			"thinking_format", route.ThinkingFormat,
 		)
 
-		// 所有模型统一走 OpenAI 兼容端点 /v1/chat/completions
-		content, usage, callErr = client.StreamChatCompletion(
-			routerCtx,
-			route.ProviderModelID,
-			messages,
-			temperature,
-			maxTokens,
-			route.ThinkingFormat,
-			onEvent,
-		)
+		if route.ThinkingFormat == ThinkingGemini {
+			// Gemini：走原生端点 /v1beta/models/{model}:streamGenerateContent
+			content, usage, callErr = client.StreamGeminiGenerate(
+				routerCtx,
+				route.ProviderModelID,
+				messages,
+				onEvent,
+			)
+		} else {
+			// 其他模型：走 OpenAI 兼容端点 /v1/chat/completions
+			content, usage, callErr = client.StreamChatCompletion(
+				routerCtx,
+				route.ProviderModelID,
+				messages,
+				temperature,
+				maxTokens,
+				route.ThinkingFormat,
+				onEvent,
+			)
+		}
 
 		if callErr != nil {
 			log.Warnw("LLMRouter: route failed, trying next",
@@ -194,10 +204,10 @@ func (r *Router) InvalidateCache() {
 // inferThinkingFormat 根据 DMXAPI 供应商侧模型 ID 推断 thinking 激活方式
 //
 // DMXAPI 文档参考：
-//   - Claude: thinking: {type:"adaptive"} + output_config: {effort:"high"}
-//   - Gemini: enable_thinking: true
-//   - Qwen:   enable_thinking: true
-//   - Doubao: thinking: {type:"enabled"}（与 anthropic 格式类似）
+//   - Claude: -thinking 模型名后缀，走 /v1/chat/completions，reasoning_content 字段
+//   - Gemini: 原生 /v1beta/models/{model}:streamGenerateContent 端点，part.thought 属性
+//   - Qwen:   enable_thinking: true，走 /v1/chat/completions
+//   - Doubao: thinking: {type:"enabled"}，走 /v1/chat/completions
 //   - GPT:    thinking-only 模型，不接受任何 thinking 参数（会 400）
 //   - DeepSeek: OpenAI 通用格式，DMXAPI 无单独 thinking 文档
 func inferThinkingFormat(providerModelID string) string {
@@ -224,6 +234,11 @@ func inferThinkingFormat(providerModelID string) string {
 		return ThinkingDoubao
 	}
 
-	// Gemini、Qwen 等：enable_thinking: true
+	// Gemini：原生端点，thinking 通过 part.thought 属性返回
+	if strings.Contains(id, "gemini") {
+		return ThinkingGemini
+	}
+
+	// Qwen 等：enable_thinking: true
 	return ThinkingEnableField
 }
