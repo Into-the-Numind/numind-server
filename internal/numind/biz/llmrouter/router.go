@@ -120,15 +120,33 @@ func (r *Router) StreamChat(
 		client := llm.NewDMXAPIClientWithConfig(route.BaseURL, route.APIKey)
 		routerCtx := llm.WithLLMRouterMark(ctx)
 
-		content, usage, callErr := client.StreamChatCompletion(
-			routerCtx,
-			route.ProviderModelID,
-			messages,
-			temperature,
-			maxTokens,
-			route.ThinkingFormat,
-			onEvent,
-		)
+		var content string
+		var usage *billing.TokenUsage
+		var callErr error
+
+		if route.ThinkingFormat == ThinkingAnthropic {
+			// Claude：走 Anthropic Messages API（/v1/messages），支持 adaptive thinking
+			content, usage, callErr = client.StreamAnthropicMessages(
+				routerCtx,
+				route.ProviderModelID,
+				messages,
+				temperature,
+				maxTokens,
+				true, // enableThinking
+				onEvent,
+			)
+		} else {
+			// 其他模型：走 OpenAI 格式（/v1/chat/completions）
+			content, usage, callErr = client.StreamChatCompletion(
+				routerCtx,
+				route.ProviderModelID,
+				messages,
+				temperature,
+				maxTokens,
+				route.ThinkingFormat,
+				onEvent,
+			)
+		}
 
 		if callErr != nil {
 			log.Warnw("LLMRouter: route failed, trying next",

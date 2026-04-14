@@ -586,3 +586,203 @@ func (c *DMXAPIClient) Rerank(ctx context.Context, query string, documents []str
 
 	return results, len(documents), nil
 }
+
+// StreamAnthropicMessages 调用 Anthropic Messages API（/v1/messages）流式接口
+// 用于 Claude 模型，支持 adaptive thinking
+// onEvent: 回调函数，eventType 为 "thinking" 或 "message"
+func (c *DMXAPIClient) StreamAnthropicMessages(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int, enableThinking bool, onEvent func(eventType, content string) error) (string, *billing.TokenUsage, error) {
+	// 构建 Anthropic Messages 格式的消息
+	anthMessages := make([]map[string]interface{}, 0, len(messages))
+	var systemPrompt string
+	for _, msg := range messages {
+		if msg.Role == "system" {
+			systemPrompt = msg.Content
+			continue
+		}
+		anthMessages = append(anthMessages, map[string]interface{}{
+			"role":    msg.Role,
+			"content": msg.Content,
+		})
+	}
+
+	// Anthropic Messages API 要求 max_tokens 必填且 > 0
+	if maxTokens <= 0 {
+		maxTokens = 16000
+	}
+	bodyMap := map[string]interface{}{
+		"model":      model,
+		"messages":   anthMessages,
+		"max_tokens": maxTokens,
+		"stream":     true,
+	}
+	if systemPrompt != "" {
+		bodyMap["system"] = systemPrompt
+	}
+	if enableThinking {
+		// Anthropic adaptive thinking：不发 temperature（API 要求）
+		bodyMap["thinking"] = map[string]interface{}{
+			"type": "adaptive",
+		}
+		bodyMap["output_config"] = map[string]interface{}{
+			"effort": "high",
+		}
+	} else {
+		bodyMap["temperature"] = temperature
+	}
+
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return "", nil, fmt.Errorf("marshal request failed: %w", err)
+	}
+
+	// Anthropic Messages 端点：baseURL 去掉 /v1 后拼 /v1/messages
+	baseURL := strings.TrimSuffix(c.baseURL, "/v1")
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/v1/messages", bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", nil, fmt.Errorf("create request failed: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("%s", c.apiKey))
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var fullContent strings.Builder
+	var fullThinking strings.Builder
+	var usage *billing.TokenUsage
+	reader := bufio.NewReader(resp.Body)
+
+	// 当前正在处理的 content_block 类型（"thinking" 或 "text"）
+	currentBlockType := ""
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fullContent.String(), usage, fmt.Errorf("read stream failed: %w", err)
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+
+		// Anthropic SSE 格式: event: xxx 和 data: {...}
+		if strings.HasPrefix(line, "event:") {
+			continue // 事件类型由 data 中的 type 字段决定
+		}
+
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var event struct {
+			Type  string `json:"type"`
+			Index int    `json:"index"`
+			// content_block_start
+			ContentBlock *struct {
+				Type string `json:"type"` // "thinking" 或 "text"
+			} `json:"content_block"`
+			// content_block_delta
+			Delta *struct {
+				Type     string `json:"type"`     // "thinking_delta" 或 "text_delta"
+				Thinking string `json:"thinking"` // thinking_delta 的内容
+				Text     string `json:"text"`     // text_delta 的内容
+			} `json:"delta"`
+			// message_start → message.usage
+			Message *struct {
+				Usage *struct {
+					InputTokens  int `json:"input_tokens"`
+					OutputTokens int `json:"output_tokens"`
+				} `json:"usage"`
+			} `json:"message"`
+			// message_delta → usage
+			Usage *struct {
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		}
+
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
+		}
+
+		switch event.Type {
+		case "message_start":
+			if event.Message != nil && event.Message.Usage != nil {
+				usage = &billing.TokenUsage{
+					PromptTokens: event.Message.Usage.InputTokens,
+				}
+			}
+
+		case "content_block_start":
+			if event.ContentBlock != nil {
+				currentBlockType = event.ContentBlock.Type
+			}
+
+		case "content_block_delta":
+			if event.Delta == nil {
+				continue
+			}
+			switch event.Delta.Type {
+			case "thinking_delta":
+				if event.Delta.Thinking != "" {
+					fullThinking.WriteString(event.Delta.Thinking)
+					if onEvent != nil {
+						if err := onEvent("thinking", event.Delta.Thinking); err != nil {
+							return fullContent.String(), usage, err
+						}
+					}
+				}
+			case "text_delta":
+				if event.Delta.Text != "" {
+					fullContent.WriteString(event.Delta.Text)
+					if onEvent != nil {
+						if err := onEvent("message", event.Delta.Text); err != nil {
+							return fullContent.String(), usage, err
+						}
+					}
+				}
+			}
+
+		case "content_block_stop":
+			currentBlockType = ""
+
+		case "message_delta":
+			// 更新 usage（补充 output_tokens）
+			if event.Usage != nil && usage != nil {
+				usage.CompletionTokens = event.Usage.OutputTokens
+				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+			}
+
+		case "message_stop":
+			// 流结束
+		}
+	}
+
+	// 如果有 thinking 内容，记录 reasoning_tokens（估算）
+	if usage != nil && fullThinking.Len() > 0 {
+		// Anthropic 不单独返回 reasoning_tokens，用 thinking 字符数估算
+		usage.ReasoningTokens = fullThinking.Len() / 3
+	}
+
+	_ = currentBlockType // suppress unused warning
+
+	return fullContent.String(), usage, nil
+}
