@@ -128,32 +128,18 @@ func (r *Router) StreamChat(
 			"provider", route.ProviderName,
 			"model", route.ProviderModelID,
 			"thinking_format", route.ThinkingFormat,
-			"is_anthropic", route.ThinkingFormat == ThinkingAnthropic,
 		)
 
-		if route.ThinkingFormat == ThinkingAnthropic {
-			// Claude：走 Anthropic Messages API（/v1/messages），支持 adaptive thinking
-			content, usage, callErr = client.StreamAnthropicMessages(
-				routerCtx,
-				route.ProviderModelID,
-				messages,
-				temperature,
-				maxTokens,
-				true, // enableThinking
-				onEvent,
-			)
-		} else {
-			// 其他模型：走 OpenAI 格式（/v1/chat/completions）
-			content, usage, callErr = client.StreamChatCompletion(
-				routerCtx,
-				route.ProviderModelID,
-				messages,
-				temperature,
-				maxTokens,
-				route.ThinkingFormat,
-				onEvent,
-			)
-		}
+		// 所有模型统一走 OpenAI 兼容端点 /v1/chat/completions
+		content, usage, callErr = client.StreamChatCompletion(
+			routerCtx,
+			route.ProviderModelID,
+			messages,
+			temperature,
+			maxTokens,
+			route.ThinkingFormat,
+			onEvent,
+		)
 
 		if callErr != nil {
 			log.Warnw("LLMRouter: route failed, trying next",
@@ -217,9 +203,10 @@ func (r *Router) InvalidateCache() {
 func inferThinkingFormat(providerModelID string) string {
 	id := strings.ToLower(providerModelID)
 
-	// Claude：用 adaptive thinking 参数激活
+	// Claude：通过 DMXAPI 模型名后缀 -thinking 激活（provider_model_id 已含后缀）
+	// 不需要额外参数，但 temperature 必须为 1（在 StreamChatCompletion 中处理）
 	if strings.Contains(id, "claude") {
-		return ThinkingAnthropic
+		return ThinkingNone
 	}
 
 	// GPT / OpenAI o-系列：thinking-only 模型，发任何 thinking 参数会 400

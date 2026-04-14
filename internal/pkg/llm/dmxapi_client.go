@@ -264,6 +264,11 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 		},
 	}
 
+	// Claude -thinking 后缀模型：DMXAPI 通过后缀激活思考，Claude 要求 temperature=1
+	if strings.HasSuffix(strings.ToLower(model), "-thinking") {
+		bodyMap["temperature"] = 1
+	}
+
 	switch thinkingFormat {
 	case "enable_thinking":
 		bodyMap["enable_thinking"] = true
@@ -272,8 +277,6 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 		bodyMap["thinking"] = map[string]interface{}{
 			"type": "enabled",
 		}
-	// 注意：ThinkingAnthropic ("anthropic") 不会走到这里——
-	// Router 会把 Claude 路由到 StreamAnthropicMessages()
 	}
 	if maxTokens > 0 {
 		bodyMap["max_tokens"] = maxTokens
