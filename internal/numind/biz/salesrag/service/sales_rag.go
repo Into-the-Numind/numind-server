@@ -7,9 +7,11 @@ import (
 
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/pkg/aiservice"
+	aismw "numind-server/internal/pkg/aiservice/middleware"
+	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/langfuse"
-	"numind-server/internal/pkg/llm"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 )
@@ -44,7 +46,6 @@ type RetrievalVerdict struct {
 type SalesRAGService struct {
 	store       port.VectorStore
 	router      port.IntentRouter
-	dmxClient   *llm.DMXAPIClient
 	strategySvc *StrategyService // 策略引擎
 }
 
@@ -53,7 +54,6 @@ func NewSalesRAGService(store port.VectorStore, router port.IntentRouter) *Sales
 	return &SalesRAGService{
 		store:       store,
 		router:      router,
-		dmxClient:   llm.NewDMXAPIClient(),
 		strategySvc: NewStrategyService(),
 	}
 }
@@ -341,10 +341,12 @@ func (s *SalesRAGService) rerankWithLimit(
 		documents[i] = chunk.Content
 	}
 
-	// 注入计费上下文
+	// 注入 aiservice 上下文：userID + skip-legacy-billing
 	if uid, ok := middleware.UserIDFromCtx(ctx); ok && uid > 0 {
+		ctx = aismw.WithUserID(ctx, uid)
 		ctx = billing.WithBilling(ctx, uid, "salesrag_rerank")
 	}
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
 
 	// Langfuse rerank span
 	var rerankSpanID string
@@ -357,20 +359,25 @@ func (s *SalesRAGService) rerankWithLimit(
 		ctx = langfuse.WithTraceAndParent(ctx, tc.TraceID, rerankSpanID)
 	}
 
-	rerankResults, _, err := s.dmxClient.Rerank(ctx, query, documents, topN)
+	// 通过 AI Gateway 调用 Rerank（profile.SalesragRerank）
+	rerankResp, err := aiservice.Rerank(ctx, profile.SalesragRerank, aiservice.RerankRequest{
+		Query:     query,
+		Documents: documents,
+		TopN:      topN,
+	})
 	if rerankSpanID != "" {
 		if err != nil {
 			langfuse.EndSpan(rerankSpanID, langfuse.WithSpanError(err.Error()))
 		} else {
-			langfuse.EndSpan(rerankSpanID, langfuse.WithSpanOutput(map[string]interface{}{"result_count": len(rerankResults)}))
+			langfuse.EndSpan(rerankSpanID, langfuse.WithSpanOutput(map[string]interface{}{"result_count": len(rerankResp.Results)}))
 		}
 	}
 	if err != nil {
 		return nil, err
 	}
 
-	result := make([]domain.KnowledgeChunk, 0, len(rerankResults))
-	for i, rr := range rerankResults {
+	result := make([]domain.KnowledgeChunk, 0, len(rerankResp.Results))
+	for i, rr := range rerankResp.Results {
 		if rr.Index < 0 || rr.Index >= len(chunks) {
 			continue
 		}
@@ -384,11 +391,11 @@ func (s *SalesRAGService) rerankWithLimit(
 	}
 
 	// 安全兜底：至少返回 1 条
-	if len(result) == 0 && len(rerankResults) > 0 {
-		bestIdx := rerankResults[0].Index
+	if len(result) == 0 && len(rerankResp.Results) > 0 {
+		bestIdx := rerankResp.Results[0].Index
 		if bestIdx >= 0 && bestIdx < len(chunks) {
 			chunk := chunks[bestIdx]
-			chunk.Score = float32(rerankResults[0].Score)
+			chunk.Score = float32(rerankResp.Results[0].Score)
 			result = append(result, chunk)
 		}
 	}
@@ -398,8 +405,8 @@ func (s *SalesRAGService) rerankWithLimit(
 		"output_count", len(result),
 		"threshold", rerankScoreThreshold,
 		"top_score", func() float64 {
-			if len(rerankResults) > 0 {
-				return rerankResults[0].Score
+			if len(rerankResp.Results) > 0 {
+				return rerankResp.Results[0].Score
 			}
 			return 0
 		}())

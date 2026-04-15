@@ -17,9 +17,11 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz/salesrag/domain"
-	"numind-server/internal/pkg/llm"
 	"numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
+	aismw "numind-server/internal/pkg/aiservice/middleware"
+	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
@@ -208,7 +210,6 @@ type salesRAGBiz struct {
 	aliBiz            ali.AliBiz // 阿里云 API 客户端
 	sessionStore      store.SalesSessionStore
 	parser            service.PipelineParser
-	dmxClient         *llm.DMXAPIClient // DMXAPI 客户端（用于 DeepSeek-V3.2）
 }
 
 // VolcBiz 火山引擎服务接口（避免循环依赖）
@@ -235,7 +236,6 @@ func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *s
 		aliBiz:            ali,
 		sessionStore:      sessionStore,
 		parser:            parser,
-		dmxClient:         llm.NewDMXAPIClient(),
 	}
 }
 
@@ -762,21 +762,40 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 	// 10. 构建 prompt 并流式生成回答（用 promptQuery + OCR文字）
 	messages := b.buildPromptMessagesV2(promptQuery, ocrTexts, verdict, customerProfile, languageStyle, salesStage)
 
-	// 11. 调用火山方舟 deepseek-v3-2-251201 流式聊天（纯文本，图片通过OCR文字传入）
-	reasoningEffort := "minimal"
-	if deepThinking {
-		reasoningEffort = "high"
-	}
+	// 11. 通过 AI Gateway 流式生成回答（profile.SalesragChat）
 	ctx = billing.WithBilling(ctx, userID, "salesrag_chat_generate")
-	_, _, err = b.volcBiz.StreamChatWithModel(ctx, messages, "deepseek-v3-2-251201", 0, 0.7, reasoningEffort, func(eventType, content string) error {
-		if eventType == "thinking" {
-			return onEvent("thinking", content)
-		}
-		// eventType == "message"
-		return onEvent("token", content)
+	ctx = aismw.WithUserID(ctx, userID)
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
+
+	// 将 []map[string]interface{} 转换为 []aiservice.ChatMessage
+	aiMessages := make([]aiservice.ChatMessage, 0, len(messages))
+	for _, m := range messages {
+		role, _ := m["role"].(string)
+		content, _ := m["content"].(string)
+		aiMessages = append(aiMessages, aiservice.ChatMessage{
+			Role:    aiservice.MessageRole(role),
+			Content: aiservice.MessageContent{Text: content},
+		})
+	}
+
+	ch, chatErr := aiservice.ChatStream(ctx, profile.SalesragChat, aiservice.ChatRequest{
+		Messages:    aiMessages,
+		Temperature: 0.7,
 	})
-	if err != nil {
-		return onEvent("error", fmt.Sprintf("stream chat failed: %v", err))
+	if chatErr != nil {
+		return onEvent("error", fmt.Sprintf("stream chat failed: %v", chatErr))
+	}
+	for chunk := range ch {
+		if chunk.ReasoningDelta != "" {
+			if evErr := onEvent("thinking", chunk.ReasoningDelta); evErr != nil {
+				return evErr
+			}
+		}
+		if chunk.Delta != "" {
+			if evErr := onEvent("token", chunk.Delta); evErr != nil {
+				return evErr
+			}
+		}
 	}
 
 	// 12. 发送完成事件
