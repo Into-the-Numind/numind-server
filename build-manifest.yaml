@@ -132,7 +132,10 @@ features:
     ndf_version: "1.0"
     description: "LLM 模型切换 — SOP 和智能体支持用户选择不同 LLM 模型（Claude/GPT/Gemini/豆包），通过 DMXAPI 统一调用"
     track: "standard"
-    stage: "S6"
+    stage: "superseded"
+    superseded_by: "ai-service-manager"
+    superseded_at: "2026-04-15T00:00:00+08:00"
+    superseded_reason: "该功能是 AI 服务统一化的早期尝试（把 DMXAPIClient 提取到 internal/pkg/llm/ 并支持用户选模型）。现演进为完整的 AI Service Manager，覆盖所有 AI 服务提供者（LLM + OCR + ASR）+ 管理端 Registry + Capability Matching + 统一中间件链。本功能的产出（DMXAPIClient、模型表）作为 ai-service-manager 的起点继续演进，不回滚。"
     classification_reason: "涉及新表（模型配置+用户偏好）、新 API 端点、跨仓库改动（server+web），影响文件 15+"
     last_updated_by: "ai-s6"
     last_updated_at: "2026-04-10T00:00:00+08:00"
@@ -1284,3 +1287,55 @@ features:
     blockers: []
     created_at: "2026-04-15T00:00:00+08:00"
     completed_at: "2026-04-15T00:00:00+08:00"
+
+  - id: "ai-service-manager"
+    ndf_version: "1.0"
+    description: "AI 服务统一化管理 — 扩展现有 internal/pkg/llm 为统一 AI Service Gateway，覆盖 LLM（ali/volc/dmxapi/bailian）+ OCR（baidu）+ ASR（FunASR）等全部 AI 服务提供者；Service Registry 入库（能力矩阵 + pricing），Task Profile 声明每个业务场景的能力需求；管理端 CRUD；中间件链统一处理 tracing/billing/retry/fallback；吸收 llm-model-switch"
+    track: "standard"
+    stage: "S4"
+    classification_reason: "跨 6+ biz 模块的 infra 重构（ali/volc/baidu/salesrag/sop/monitor/chatbot），影响所有 AI 调用路径；新增 Service Registry + Task Profile 两张核心表及管理端 CRUD；架构决策密集；工时多天；涉及 Langfuse 观测和 billing 全链路；吸收线上功能 llm-model-switch 需做 schema/API inventory"
+    last_updated_by: "ai-s4"
+    last_updated_at: "2026-04-15T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-admin-web
+    branches:
+      numind-server: "feature/ai-service-manager"
+      numind-admin-web: "feature/ai-service-manager"
+    artifacts:
+      requirement: "numind-server/requirements/ai-service-manager.md"
+      proposal: "numind-server/proposals/ai-service-manager-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-04-15-ai-service-manager-design.md"
+      plan: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md"
+      plan: null
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 23
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task:
+        index: 1
+        title: "Task 1a: Migration SQL + Rollback SQL + docker 演练"
+        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-1a"
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-04-15: Phase 1 不做语义缓存和 cost-aware 自动路由，留到 Phase 2 基于观测数据再做"
+      - "2026-04-15: Service Registry 存 DB（非 config），支持管理端零发版上下架"
+      - "2026-04-15: 前端 C 端用户选择 UI 本期不动，只做后端 infra + 管理端"
+      - "2026-04-15: 吸收 llm-model-switch，不保留独立功能；DMXAPIClient / 现有模型表演进为本功能基础"
+      - "2026-04-15: 范围扩展到 OCR + ASR（原计划仅 LLM），因此从 llm-model-manager 改名为 ai-service-manager"
+      - "2026-04-15: Capability Matching 保留为 Phase 1 核心（非 stretch），避免管理员绑定不兼容模型"
+      - "2026-04-15: S0 review 已由 code-reviewer 完成，11 条建议中采纳 9 条（详见 requirement card §备注）"
+    deferred:
+      - "语义缓存（Phase 2）"
+      - "Cost-aware 自动路由（Phase 2）"
+      - "C 端用户模型选择 UI 改版（不在本期范围）"
+      - "Guardrails/PII 过滤（Phase 2+）"
+      - "模型质量自动评测 / A-B 对比（Phase 2+）"
+      - "新 Provider 接入（本期不新增，只收编现有的）"
+    blockers: []
+    created_at: "2026-04-15T00:00:00+08:00"
+    completed_at: null
