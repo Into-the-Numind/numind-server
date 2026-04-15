@@ -319,6 +319,7 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 				strings.Contains(string(respBody), "unknown_parameter")) {
 			log.Warnw("Thinking parameter rejected by provider, retrying without thinking",
 				"model", model, "thinking_format", thinkingFormat, "status", resp.StatusCode)
+			// 递归调用传空 thinkingFormat，外层条件 thinkingFormat != "" 在第二次不成立，最多两跳，无无限递归风险
 			return c.StreamChatCompletion(ctx, model, messages, temperature, maxTokens, "", onEvent)
 		}
 
