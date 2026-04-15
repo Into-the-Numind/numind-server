@@ -1,8 +1,10 @@
 # .doc（旧版 Word）文档解析严重失败 — Bug 记录
 
 **发现日期**：2026-04-15
+**修复日期**：2026-04-16
 **优先级**：P0（客户上传的 .doc 文件产出完全无法使用的内容）
-**影响范围**：SOP / Chatbot 知识库 / SalesRAG **三条链路**（共用底层解析器）
+**影响范围**：**仅 SOP 链路**（`/v1/pdf/convert-to-text` 和 `/v1/files/extract-text`）。SalesRAG 和 Chatbot KB 共用的 `EnhancedParser` 实现正确，不受影响
+**状态**：✅ 已修复（见文末 Resolution 节）
 
 ---
 
@@ -94,5 +96,42 @@ open reports/$(ls -1t reports | head -1)/report.html
 后续优化：
 - 增加"二进制签名检测"：出现 `Root Entry`、`WordDocument`、`SummaryInformation`、`PK\x03\x04`（ZIP）、`%PDF` 等结构名但上下文非代码时，判为 dump 失败
 - 增加"CJK 密度异常"：中文文档（根据文件名/上下文可推断）若 CJK 占比极低（<5%），提示可疑
+
+## 7. Resolution（2026-04-16 复盘与修复）
+
+**前述第 2 节的根因分析是错的**，实际不是缺依赖的问题，是调用代码的 bug。
+
+### 真实根因
+
+`internal/numind/controller/v1/pdf/pdf.go` 的 `extractTextFromPDFEnhanced` 函数内部用 `os.CreateTemp("", "pdf_upload_*.pdf")` **硬编码了 `.pdf` 扩展名**。`extractTextFromDOC` 和 `extractTextFromDOCX` 为图方便都复用了这个函数（见原代码注释"复用已有的外部脚本执行逻辑"）。
+
+结果：
+1. .doc 文件进来 → 写临时文件 `xxx.pdf` → 传给 `document_parser.py`
+2. Python 脚本按扩展名分派：`if ext == ".doc": use antiword; else: use MarkItDown`
+3. 看到 `.pdf` → 走 MarkItDown → MarkItDown 认不出 OLE2 二进制 → 失败
+4. Go 端 fallback 到 `extractTextFromDOCLegacy` → `extractPrintableText` 在 OLE2 字节上跑 → 产出我们看到的"Root Entry / WordDocument"垃圾
+
+### 为什么 SalesRAG / Chatbot KB 不受影响
+
+它们共用 `internal/numind/biz/salesrag/adapter/enhanced_parser.go`，该文件有独立实现，`extractTextFromDOC` 正确使用 `os.CreateTemp("", "doc_upload_*.doc")`——`.doc` 后缀。Python 正确路由到 antiword，解析成功。
+
+### 修复
+
+将 `extractTextFromPDFEnhanced` 重命名为 `runDocumentParser(data []byte, ext string)`，让 3 个调用方各自传入正确的扩展名（`.pdf` / `.docx` / `.doc`）。
+
+```diff
+- func extractTextFromPDFEnhanced(data []byte) (string, int, error) {
+-     tmpFile, err := os.CreateTemp("", "pdf_upload_*.pdf")
++ func runDocumentParser(data []byte, ext string) (string, int, error) {
++     tmpFile, err := os.CreateTemp("", "upload_*"+ext)
+```
+
+`antiword` 已在 `Dockerfile` line 54 安装（`apt-get install -y ... antiword`），不需要额外部署动作，镜像重建即可。
+
+### 教训
+
+- **假 P0 警告**：修复前我判断"影响三条链路"——因为假定底层解析器共用。实际上 SOP 自己实现了一套，和 SalesRAG/Chatbot 的 `EnhancedParser` 是两份代码，两者只是巧合地都叫"增强解析器"
+- **Cargo-cult 复用**：`extractTextFromPDFEnhanced` 被 DOC/DOCX 复用时没人发现文件名后缀硬编码的影响
+- **测试缺失**：SOP pipeline 没有针对 .doc 的回归测试；只有在我们用 `parse_eval` 工具手工跑时才暴露
 
 这个优化独立于本 bug，应作为 `parse_eval` 工具的增强项另开 task。
