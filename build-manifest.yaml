@@ -1313,12 +1313,12 @@ features:
       qa: null
     progress:
       total_tasks: 23
-      completed_tasks: 0
-      reviewed_tasks: 0
+      completed_tasks: 1
+      reviewed_tasks: 1
       current_task:
-        index: 1
-        title: "Task 1a: Migration SQL + Rollback SQL + docker 演练"
-        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-1a"
+        index: 2
+        title: "Task 1b: GORM Models + 兼容 smoke"
+        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-1b"
     rollback: null
     last_verified: null
     decisions:

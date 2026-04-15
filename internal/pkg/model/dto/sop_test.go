@@ -29,10 +29,10 @@ func TestToSopNodePublicDTO_HidesSensitiveFields(t *testing.T) {
 		Status:         "active",
 		Sort:           0,
 		BaseURL:        "https://ark.cn-beijing.volces.com/api/v3", // 应被隐藏
-		ModelName:      "deepseek-v3-2-251201",                    // 应被隐藏
-		APIKey:         "sk-secret-token-1234567890abcdef0000",    // 应被隐藏
-		TimeoutSeconds: 60,                                        // 应被隐藏
-		Prompt:         "你是产品分析专家，请分析以下产品的核心卖点...", // 应被隐藏（B 端 IP）
+		ModelName:      "deepseek-v3-2-251201",                     // 应被隐藏
+		APIKey:         "sk-secret-token-1234567890abcdef0000",     // 应被隐藏
+		TimeoutSeconds: 60,                                         // 应被隐藏
+		Prompt:         "你是产品分析专家，请分析以下产品的核心卖点...",                 // 应被隐藏（B 端 IP）
 		IsRoot:         true,                                       // 应被排除（dead field）
 	}
 
@@ -275,7 +275,7 @@ func TestToSopTemplatePublicDTO_HidesSensitiveFields(t *testing.T) {
 		PublishStatus:       "published",
 		TrailingChatEnabled: true,
 		Prompt:              "你是一名口播文案专家...", // 应被隐藏
-		CreatorUserID:       &creatorID,           // 应被隐藏
+		CreatorUserID:       &creatorID,      // 应被隐藏
 	}
 	dtoObj := ToSopTemplatePublicDTO(tmpl)
 	jsonBytes, _ := json.Marshal(dtoObj)
