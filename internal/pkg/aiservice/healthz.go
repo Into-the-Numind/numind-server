@@ -24,7 +24,7 @@ import (
 //	  "adapter_count":   6
 //	}
 func HealthzHandler(c *gin.Context) {
-	p := defaultGateway // atomic read via package-level var (compare with Default())
+	p := defaultGateway.Load() // atomic load via atomic.Pointer[Gateway]
 	if p == nil {
 		c.JSON(503, gin.H{
 			"status":          "degraded",
@@ -36,8 +36,7 @@ func HealthzHandler(c *gin.Context) {
 		return
 	}
 
-	gw := Default()
-	names := gw.AdapterNames()
+	names := p.AdapterNames()
 	sort.Strings(names)
 
 	c.JSON(200, gin.H{

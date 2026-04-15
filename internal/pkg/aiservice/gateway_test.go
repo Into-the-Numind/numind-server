@@ -11,7 +11,7 @@ import (
 )
 
 // ----------------------------------------------------------------------------
-// Mock Provider
+// Mock Provider (Chat)
 // ----------------------------------------------------------------------------
 
 type mockProvider struct {
@@ -28,6 +28,74 @@ func (m *mockProvider) Chat(_ context.Context, _ *registry.ResolvedRoute, _ aise
 }
 func (m *mockProvider) ChatStream(_ context.Context, _ *registry.ResolvedRoute, _ aiservice.ChatRequest) (<-chan aiservice.ChatChunk, error) {
 	return nil, errors.New("mock: stream not implemented")
+}
+
+// ----------------------------------------------------------------------------
+// Mock Embed Provider
+// ----------------------------------------------------------------------------
+
+type mockEmbedProvider struct {
+	name      string
+	embedResp *aiservice.EmbedResponse
+	embedErr  error
+}
+
+func (m *mockEmbedProvider) Name() string           { return m.name }
+func (m *mockEmbedProvider) ProviderType() string   { return "mock" }
+func (m *mockEmbedProvider) Capabilities() []string { return []string{"embed"} }
+func (m *mockEmbedProvider) Embed(_ context.Context, _ *registry.ResolvedRoute, _ aiservice.EmbedRequest) (*aiservice.EmbedResponse, error) {
+	return m.embedResp, m.embedErr
+}
+
+// ----------------------------------------------------------------------------
+// Mock Rerank Provider
+// ----------------------------------------------------------------------------
+
+type mockRerankProvider struct {
+	name       string
+	rerankResp *aiservice.RerankResponse
+	rerankErr  error
+}
+
+func (m *mockRerankProvider) Name() string           { return m.name }
+func (m *mockRerankProvider) ProviderType() string   { return "mock" }
+func (m *mockRerankProvider) Capabilities() []string { return []string{"rerank"} }
+func (m *mockRerankProvider) Rerank(_ context.Context, _ *registry.ResolvedRoute, _ aiservice.RerankRequest) (*aiservice.RerankResponse, error) {
+	return m.rerankResp, m.rerankErr
+}
+
+// ----------------------------------------------------------------------------
+// Mock OCR Provider
+// ----------------------------------------------------------------------------
+
+type mockOCRProvider struct {
+	name    string
+	ocrResp *aiservice.OCRResponse
+	ocrErr  error
+}
+
+func (m *mockOCRProvider) Name() string           { return m.name }
+func (m *mockOCRProvider) ProviderType() string   { return "mock" }
+func (m *mockOCRProvider) Capabilities() []string { return []string{"ocr"} }
+func (m *mockOCRProvider) OCR(_ context.Context, _ *registry.ResolvedRoute, _ aiservice.OCRRequest) (*aiservice.OCRResponse, error) {
+	return m.ocrResp, m.ocrErr
+}
+
+// ----------------------------------------------------------------------------
+// Mock ASR Provider
+// ----------------------------------------------------------------------------
+
+type mockASRProvider struct {
+	name    string
+	asrResp *aiservice.ASRResponse
+	asrErr  error
+}
+
+func (m *mockASRProvider) Name() string           { return m.name }
+func (m *mockASRProvider) ProviderType() string   { return "mock" }
+func (m *mockASRProvider) Capabilities() []string { return []string{"asr"} }
+func (m *mockASRProvider) ASR(_ context.Context, _ *registry.ResolvedRoute, _ aiservice.ASRRequest) (*aiservice.ASRResponse, error) {
+	return m.asrResp, m.asrErr
 }
 
 // ----------------------------------------------------------------------------
@@ -181,8 +249,12 @@ func TestGateway_AdapterNames(t *testing.T) {
 	}
 }
 
-// TestGateway_SetDefault_Singleton verifies SetDefault/Default work correctly.
+// TestGateway_SetDefault_Singleton verifies SetDefault/Default work correctly
+// without polluting the global singleton between test runs.
 func TestGateway_SetDefault_Singleton(t *testing.T) {
+	// Restore nil after the test so other tests that expect no singleton don't panic.
+	t.Cleanup(func() { aiservice.SetDefault(nil) })
+
 	gw1 := aiservice.Build(aiservice.Deps{})
 	aiservice.SetDefault(gw1)
 	if aiservice.Default() != gw1 {
@@ -195,7 +267,113 @@ func TestGateway_SetDefault_Singleton(t *testing.T) {
 	if aiservice.Default() != gw2 {
 		t.Error("Default() did not return the replaced gateway")
 	}
+}
 
-	// Restore original to avoid polluting other test runs.
-	aiservice.SetDefault(gw1)
+// passthrough returns a MiddlewareChainFunc that calls next directly (no-op chain).
+func passthrough() aiservice.MiddlewareChainFunc {
+	return func(next aiservice.GatewayHandler) aiservice.GatewayHandler { return next }
+}
+
+// makeRoute returns a minimal ResolvedRoute pointing at the given provider name.
+func makeRoute(providerName string) *registry.ResolvedRoute {
+	return &registry.ResolvedRoute{
+		TaskID:   "test.task",
+		Provider: registry.ProviderInfo{Name: providerName},
+	}
+}
+
+// TestGateway_Embed_Dispatch verifies the Embed dispatch path through Gateway.
+func TestGateway_Embed_Dispatch(t *testing.T) {
+	wantVec := []float32{0.1, 0.2, 0.3}
+	prov := &mockEmbedProvider{
+		name: "embed-provider",
+		embedResp: &aiservice.EmbedResponse{
+			Embeddings: [][]float32{wantVec},
+			Provider:   "embed-provider",
+		},
+	}
+	reg := &mockRegistry{primary: makeRoute("embed-provider")}
+	gw := aiservice.Build(aiservice.Deps{Registry: reg})
+	gw.SetMiddlewareChain(passthrough())
+	gw.RegisterProvider(prov)
+
+	resp, err := gw.Embed(context.Background(), "test.task", aiservice.EmbedRequest{Texts: []string{"hello"}})
+	if err != nil {
+		t.Fatalf("Embed returned error: %v", err)
+	}
+	if len(resp.Embeddings) == 0 || resp.Embeddings[0][0] != wantVec[0] {
+		t.Errorf("unexpected embeddings: %v", resp.Embeddings)
+	}
+}
+
+// TestGateway_Rerank_Dispatch verifies the Rerank dispatch path through Gateway.
+func TestGateway_Rerank_Dispatch(t *testing.T) {
+	prov := &mockRerankProvider{
+		name: "rerank-provider",
+		rerankResp: &aiservice.RerankResponse{
+			Results:  []aiservice.RerankResult{{Index: 0, Score: 0.95}},
+			Provider: "rerank-provider",
+		},
+	}
+	reg := &mockRegistry{primary: makeRoute("rerank-provider")}
+	gw := aiservice.Build(aiservice.Deps{Registry: reg})
+	gw.SetMiddlewareChain(passthrough())
+	gw.RegisterProvider(prov)
+
+	resp, err := gw.Rerank(context.Background(), "test.task", aiservice.RerankRequest{
+		Query:     "test query",
+		Documents: []string{"doc1"},
+	})
+	if err != nil {
+		t.Fatalf("Rerank returned error: %v", err)
+	}
+	if len(resp.Results) == 0 || resp.Results[0].Score != 0.95 {
+		t.Errorf("unexpected results: %v", resp.Results)
+	}
+}
+
+// TestGateway_OCR_Dispatch verifies the OCR dispatch path through Gateway.
+func TestGateway_OCR_Dispatch(t *testing.T) {
+	prov := &mockOCRProvider{
+		name: "ocr-provider",
+		ocrResp: &aiservice.OCRResponse{
+			Text:     "recognized text",
+			Provider: "ocr-provider",
+		},
+	}
+	reg := &mockRegistry{primary: makeRoute("ocr-provider")}
+	gw := aiservice.Build(aiservice.Deps{Registry: reg})
+	gw.SetMiddlewareChain(passthrough())
+	gw.RegisterProvider(prov)
+
+	resp, err := gw.OCR(context.Background(), "test.task", aiservice.OCRRequest{ImageURL: "https://example.com/img.png"})
+	if err != nil {
+		t.Fatalf("OCR returned error: %v", err)
+	}
+	if resp.Text != "recognized text" {
+		t.Errorf("unexpected Text: %q", resp.Text)
+	}
+}
+
+// TestGateway_ASR_Dispatch verifies the ASR dispatch path through Gateway.
+func TestGateway_ASR_Dispatch(t *testing.T) {
+	prov := &mockASRProvider{
+		name: "asr-provider",
+		asrResp: &aiservice.ASRResponse{
+			Text:     "hello world",
+			Provider: "asr-provider",
+		},
+	}
+	reg := &mockRegistry{primary: makeRoute("asr-provider")}
+	gw := aiservice.Build(aiservice.Deps{Registry: reg})
+	gw.SetMiddlewareChain(passthrough())
+	gw.RegisterProvider(prov)
+
+	resp, err := gw.ASR(context.Background(), "test.task", aiservice.ASRRequest{AudioURL: "https://example.com/audio.mp3"})
+	if err != nil {
+		t.Fatalf("ASR returned error: %v", err)
+	}
+	if resp.Text != "hello world" {
+		t.Errorf("unexpected Text: %q", resp.Text)
+	}
 }

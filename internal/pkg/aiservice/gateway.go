@@ -24,10 +24,8 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
-	"unsafe"
 
 	"numind-server/internal/pkg/aiservice/registry"
-	"numind-server/internal/pkg/log"
 )
 
 // ----------------------------------------------------------------------------
@@ -374,22 +372,21 @@ func (g *Gateway) ASR(ctx context.Context, taskID string, req ASRRequest) (*ASRR
 // ----------------------------------------------------------------------------
 
 // defaultGateway holds the process-wide Gateway singleton.
-// Stored as unsafe.Pointer for atomic load/store (lock-free reads on hot paths).
-var defaultGateway unsafe.Pointer // *Gateway
+// Uses atomic.Pointer for type-safe, race-free load/store without unsafe.
+var defaultGateway atomic.Pointer[Gateway]
 
 // SetDefault installs g as the process-wide Gateway singleton.
 // Must be called once during startup (before any AI calls are made).
 // Safe for concurrent use.
-func SetDefault(g *Gateway) {
-	atomic.StorePointer(&defaultGateway, unsafe.Pointer(g))
-}
+func SetDefault(g *Gateway) { defaultGateway.Store(g) }
 
 // Default returns the process-wide Gateway singleton.
-// Panics if SetDefault has not been called yet.
+// Panics if SetDefault has not been called yet — panic (not log.Fatalw) so
+// test runners can recover from it rather than having the process killed.
 func Default() *Gateway {
-	p := atomic.LoadPointer(&defaultGateway)
-	if p == nil {
-		log.Fatalw("aiservice.Default() called before aiservice.SetDefault() — check startup order")
+	g := defaultGateway.Load()
+	if g == nil {
+		panic("aiservice.Default() called before SetDefault() — check startup order")
 	}
-	return (*Gateway)(p)
+	return g
 }

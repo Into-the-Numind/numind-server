@@ -85,26 +85,14 @@ func NewNumindCommand() *cobra.Command {
 
 // run 函数是实际的业务代码入口函数.
 func run() error {
-	// #region agent log
-	log.Infow("[DEBUG] run() function entry", "hypothesisId", "A", "location", "numind.go:79", "runId", "startup")
-	// #endregion
 	// 服务启动打印banner
 	banner := figure.NewColorFigure("Numind Server", "", "green", true)
 	banner.Print()
 
 	// 初始化 store 层
-	// #region agent log
-	log.Infow("[DEBUG] Before initStore", "hypothesisId", "A", "location", "numind.go:85", "runId", "startup")
-	// #endregion
 	if err := initStore(); err != nil {
-		// #region agent log
-		log.Errorw("[DEBUG] initStore failed", "hypothesisId", "A", "location", "numind.go:86", "runId", "startup", "error", err)
-		// #endregion
 		return err
 	}
-	// #region agent log
-	log.Infow("[DEBUG] After initStore success", "hypothesisId", "A", "location", "numind.go:87", "runId", "startup")
-	// #endregion
 
 	// 初始化上传目录 - 暂时注释掉，避免权限问题
 	// if err := initUploadDirectories(); err != nil {
@@ -129,35 +117,14 @@ func run() error {
 
 	g.Use(mws...)
 
-	// #region agent log
-	log.Infow("[DEBUG] Before installNumindRouters", "hypothesisId", "C", "location", "numind.go:111", "runId", "startup")
-	// #endregion
-	if err := installNumindRouters(g); err != nil {
-		// #region agent log
-		log.Errorw("[DEBUG] installNumindRouters failed", "hypothesisId", "C", "location", "numind.go:112", "runId", "startup", "error", err)
-		// #endregion
-		return err
-	}
-	// #region agent log
-	log.Infow("[DEBUG] After installNumindRouters success", "hypothesisId", "C", "location", "numind.go:113", "runId", "startup")
-	// #endregion
-
-	// 创建并运行 HTTP 服务器
-	// #region agent log
-	log.Infow("[DEBUG] Before startInsecureServer", "hypothesisId", "C", "location", "numind.go:116", "runId", "startup")
-	// #endregion
-	httpsrv := startInsecureServer(g)
-	// #region agent log
-	log.Infow("[DEBUG] After startInsecureServer", "hypothesisId", "C", "location", "numind.go:117", "runId", "startup", "serverCreated", true)
-	// #endregion
-
 	// 初始化计费用量记录器
 	billing.InitRecorder(store.S.Billing())
 
 	// 初始化 Langfuse AI 可观测性客户端
 	langfuse.Init(langfuse.LoadConfig())
 
-	// 初始化 AI Service Gateway（DB ready 后，早于路由注册）
+	// 初始化 AI Service Gateway（DB ready 后，早于路由注册和服务器启动，
+	// 确保 Default() 在第一个请求到来前已就绪）
 	reg := registry.New(store.S.DB())
 	gateway := aiservice.Build(aiservice.Deps{Registry: reg})
 
@@ -189,6 +156,13 @@ func run() error {
 		log.Errorw("Failed to sync AI provider credentials, continuing", "error", err)
 		// Non-fatal: service continues; /healthz/ai will show degraded state.
 	}
+
+	if err := installNumindRouters(g); err != nil {
+		return err
+	}
+
+	// 创建并运行 HTTP 服务器
+	httpsrv := startInsecureServer(g)
 
 	// 启动 SOP draft 清理任务（每2小时清理一次超过8小时的草稿）
 	bizLayer := biz.NewBiz(store.S)
@@ -280,23 +254,11 @@ func startInsecureServer(g *gin.Engine) *http.Server {
 	// 运行 HTTP 服务器。在 goroutine 中启动服务器，它不会阻止下面的正常关闭处理流程
 	// 打印一条日志，用来提示 HTTP 服务已经起来，方便排障
 	log.Infow("Start to listening the incoming requests on http address", "addr", viper.GetString("addr"))
-	// #region agent log
-	log.Infow("[DEBUG] Before ListenAndServe goroutine", "hypothesisId", "C", "location", "numind.go:267", "runId", "startup", "addr", viper.GetString("addr"))
-	// #endregion
 	go func() {
-		// #region agent log
-		log.Infow("[DEBUG] ListenAndServe goroutine started", "hypothesisId", "C", "location", "numind.go:270", "runId", "startup")
-		// #endregion
 		if err := httpsrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			// #region agent log
-			log.Errorw("[DEBUG] ListenAndServe error", "hypothesisId", "C", "location", "numind.go:272", "runId", "startup", "error", err)
-			// #endregion
 			log.Fatalw(err.Error())
 		}
 	}()
-	// #region agent log
-	log.Infow("[DEBUG] After ListenAndServe goroutine", "hypothesisId", "C", "location", "numind.go:275", "runId", "startup")
-	// #endregion
 
 	return httpsrv
 }

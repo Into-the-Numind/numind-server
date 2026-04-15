@@ -2,6 +2,8 @@ package aiservice
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/spf13/viper"
 	"gorm.io/gorm"
@@ -23,6 +25,10 @@ type providerSeedEntry struct {
 	// When non-empty, it is appended to the api_key field as ":secret_key" to
 	// keep both values in the existing single-column schema.
 	cfgKeySecretKey string
+	// cfgKeyWorkspaceID is the viper path for a workspace / tenant ID (Bailian).
+	// When non-empty, it is appended to the base_url field as "|workspace=ID" so
+	// that the value is preserved in the DB for future adapter use (Task 9-11).
+	cfgKeyWorkspaceID string
 }
 
 // providerSeedEntries lists all providers whose credentials are synced from
@@ -52,9 +58,13 @@ var providerSeedEntries = []providerSeedEntry{
 		cfgKeySecretKey: "ai_providers.baidu.secret_key",
 	},
 	{
-		name:          "bailian-file",
-		cfgKeyAPIKey:  "ai_providers.bailian.api_key",
-		cfgKeyBaseURL: "ai_providers.bailian.base_url",
+		name:              "bailian-file",
+		cfgKeyAPIKey:      "ai_providers.bailian.api_key",
+		cfgKeyBaseURL:     "ai_providers.bailian.base_url",
+		// workspace_id is stored in base_url as "|workspace=<id>" suffix so
+		// it survives in the DB without a schema change.  Adapters that need it
+		// (Tasks 9-11) should parse it from base_url using strings.Split("|").
+		cfgKeyWorkspaceID: "ai_providers.bailian.workspace_id",
 	},
 	{
 		name:          "funasr-local",
@@ -83,7 +93,7 @@ func SyncProviderCredentials(ctx context.Context, db *gorm.DB, cfg *viper.Viper)
 		return nil
 	}
 	if cfg == nil {
-		cfg = viper.GetViper()
+		return fmt.Errorf("SyncProviderCredentials: cfg required")
 	}
 
 	synced := 0
@@ -98,6 +108,14 @@ func SyncProviderCredentials(ctx context.Context, db *gorm.DB, cfg *viper.Viper)
 		baseURL := ""
 		if entry.cfgKeyBaseURL != "" {
 			baseURL = cfg.GetString(entry.cfgKeyBaseURL)
+		}
+		// Append workspace_id to base_url as "|workspace=<id>" so the value is
+		// persisted in the DB without a schema change.  Downstream adapters that
+		// require it (Tasks 9-11) should parse it via strings.SplitN(baseURL, "|", 2).
+		if entry.cfgKeyWorkspaceID != "" {
+			if wsID := cfg.GetString(entry.cfgKeyWorkspaceID); wsID != "" {
+				baseURL = strings.TrimRight(baseURL, "/") + "|workspace=" + wsID
+			}
 		}
 
 		// For Baidu: encode both keys into a single api_key field as "key:secret".
