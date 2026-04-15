@@ -149,6 +149,12 @@ type ChatChunk struct {
 	// the field is omitted from JSON on non-final chunks (struct zero value
 	// does not satisfy omitempty for a non-pointer struct).
 	Usage *TokenUsage `json:"usage,omitempty"`
+	// Model is the actual model name reported by the provider for this stream.
+	// Populated on every chunk once the provider reports it; falls back to the
+	// configured ProviderModelID when the provider omits it.
+	Model string `json:"model,omitempty"`
+	// Provider is the adapter name that produced this chunk (e.g. "ali", "volc").
+	Provider string `json:"provider,omitempty"`
 }
 
 // EmbedRequest is the unified request for text embedding calls.

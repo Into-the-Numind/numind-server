@@ -173,16 +173,15 @@ func ptrFloat64(v float64) *float64 {
 }
 
 // ----------------------------------------------------------------------------
-// Additional context keys used by Billing and Retry for streaming
+// Additional context keys used by Billing for streaming
 // ----------------------------------------------------------------------------
 
-type ctxKeyFirstChunkSent struct{}
-type ctxKeyAccumulatedContentLen struct{}
+// Note: ctxKeyFirstChunkSent and WithFirstChunkSent are defined in retry.go
+// (same package) because they are semantically a retry-layer concern.
+// Billing reads ctxKeyFirstChunkSent to decide whether to estimate token counts
+// on streaming interruption.
 
-// withFirstChunkSent marks that the first streaming chunk has been delivered.
-func withFirstChunkSent(ctx context.Context) context.Context {
-	return context.WithValue(ctx, ctxKeyFirstChunkSent{}, true)
-}
+type ctxKeyAccumulatedContentLen struct{}
 
 // WithAccumulatedContentLen stores a pointer to the caller's content-length counter
 // for streaming estimation when the context is cancelled.

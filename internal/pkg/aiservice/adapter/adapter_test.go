@@ -7,8 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"numind-server/internal/pkg/aiservice"
@@ -532,4 +534,366 @@ func TestAdapterInterfaceCompliance(t *testing.T) {
 	var _ ChatAdapter = NewDMXAPIAdapter()
 	var _ EmbedAdapter = NewDMXAPIAdapter()
 	var _ RerankAdapter = NewDMXAPIAdapter()
+}
+
+// ----------------------------------------------------------------------------
+// Stream: no spurious duplicate IsFinal chunk (P1#2)
+// ----------------------------------------------------------------------------
+
+// writeChatStreamWithSeparateFinish simulates a provider that sends a
+// finish_reason chunk first, then a [DONE] line — the common OpenAI behaviour.
+// The test verifies that runOAIStream emits exactly one IsFinal=true chunk.
+func writeChatStreamWithSeparateFinish(w http.ResponseWriter, content, model string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+
+	// Chunk 1: content delta with no finish_reason.
+	delta := oaiStreamChunk{
+		ID:    "chatcmpl-test",
+		Model: model,
+		Choices: []struct {
+			Delta struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"delta"`
+			FinishReason string `json:"finish_reason"`
+		}{
+			{
+				Delta: struct {
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
+				}{Content: content},
+			},
+		},
+	}
+	b, _ := json.Marshal(delta)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
+
+	// Chunk 2: finish_reason="stop" with usage.
+	finish := oaiStreamChunk{
+		ID:    "chatcmpl-test",
+		Model: model,
+		Choices: []struct {
+			Delta struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"delta"`
+			FinishReason string `json:"finish_reason"`
+		}{
+			{
+				FinishReason: "stop",
+			},
+		},
+		Usage: &oaiUsage{PromptTokens: 5, CompletionTokens: 3, TotalTokens: 8},
+	}
+	b, _ = json.Marshal(finish)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
+
+	// [DONE] sentinel follows the finish_reason chunk.
+	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func TestRunOAIStream_NoSpuriousDuplicateFinalChunk(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatStreamWithSeparateFinish(w, "hello", "test-model")
+	}))
+	defer srv.Close()
+
+	a := NewAliAdapter()
+	route := mockRoute(srv.URL, "test-key", "test-model")
+
+	ch, err := a.ChatStream(context.Background(), route, aiservice.ChatRequest{
+		Messages: sampleMessages(),
+	})
+	if err != nil {
+		t.Fatalf("ChatStream: unexpected error: %v", err)
+	}
+
+	finalCount := 0
+	for c := range ch {
+		if c.IsFinal {
+			finalCount++
+		}
+	}
+
+	if finalCount != 1 {
+		t.Errorf("IsFinal chunk count = %d; want exactly 1 (no spurious duplicate)", finalCount)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Stream: Provider and Model fields propagated on every chunk (P1#1)
+// ----------------------------------------------------------------------------
+
+func TestRunOAIStream_ProviderModelPropagated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatStream(w, "chunk content", "actual-model-from-provider", 4, 6)
+	}))
+	defer srv.Close()
+
+	a := NewAliAdapter()
+	// The route has a different default model to confirm provider-reported model wins.
+	route := mockRoute(srv.URL, "test-key", "default-model")
+
+	ch, err := a.ChatStream(context.Background(), route, aiservice.ChatRequest{
+		Messages: sampleMessages(),
+	})
+	if err != nil {
+		t.Fatalf("ChatStream: unexpected error: %v", err)
+	}
+
+	for c := range ch {
+		if c.Provider != "ali" {
+			t.Errorf("chunk.Provider = %q; want %q", c.Provider, "ali")
+		}
+		if c.IsFinal {
+			// The model from the SSE chunk should override the default.
+			if c.Model != "actual-model-from-provider" {
+				t.Errorf("final chunk.Model = %q; want %q", c.Model, "actual-model-from-provider")
+			}
+		}
+	}
+}
+
+// ----------------------------------------------------------------------------
+// AliAdapter.Embed: roundtrip test with httptest server (P1#4)
+// ----------------------------------------------------------------------------
+
+// writeDashScopeEmbedJSON writes a DashScope native embedding response.
+func writeDashScopeEmbedJSON(w http.ResponseWriter, vecs [][]float32, totalTokens int) {
+	type embedding struct {
+		TextIndex int       `json:"text_index"`
+		Embedding []float32 `json:"embedding"`
+	}
+	type output struct {
+		Embeddings []embedding `json:"embeddings"`
+	}
+	type usage struct {
+		TotalTokens int `json:"total_tokens"`
+	}
+	type resp struct {
+		Output output `json:"output"`
+		Usage  usage  `json:"usage"`
+	}
+
+	r := resp{Usage: usage{TotalTokens: totalTokens}}
+	for i, v := range vecs {
+		r.Output.Embeddings = append(r.Output.Embeddings, embedding{TextIndex: i, Embedding: v})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(r)
+}
+
+func TestAliAdapter_Embed_Roundtrip(t *testing.T) {
+	vec := []float32{0.1, 0.2, 0.3}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify it hits the native embed path (derived from BaseURL).
+		if !strings.Contains(r.URL.Path, "text-embedding") {
+			http.NotFound(w, r)
+			return
+		}
+		// Verify request body has the model and texts.
+		body, _ := io.ReadAll(r.Body)
+		var req dashscopeEmbedRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if req.Model != "text-embedding-v4" {
+			http.Error(w, "unexpected model", http.StatusBadRequest)
+			return
+		}
+		if len(req.Input.Texts) != 1 || req.Input.Texts[0] != "hello embed" {
+			http.Error(w, "unexpected texts", http.StatusBadRequest)
+			return
+		}
+		writeDashScopeEmbedJSON(w, [][]float32{vec}, 10)
+	}))
+	defer srv.Close()
+
+	a := NewAliAdapter()
+	// BaseURL uses the OAI-compat path; Embed should replace it to derive native path.
+	route := &registry.ResolvedRoute{
+		ProviderModelID: "text-embedding-v4",
+		Provider: registry.ProviderInfo{
+			// Simulate the compatible-mode base URL that production uses.
+			BaseURL: srv.URL + "/compatible-mode/v1",
+			APIKey:  "test-key",
+		},
+	}
+
+	resp, err := a.Embed(context.Background(), route, aiservice.EmbedRequest{
+		Texts:     []string{"hello embed"},
+		Dimension: 3,
+	})
+	if err != nil {
+		t.Fatalf("Embed: unexpected error: %v", err)
+	}
+	if len(resp.Embeddings) != 1 {
+		t.Fatalf("embeddings count = %d; want 1", len(resp.Embeddings))
+	}
+	if resp.Embeddings[0][0] != 0.1 {
+		t.Errorf("Embeddings[0][0] = %f; want 0.1", resp.Embeddings[0][0])
+	}
+	if resp.Dimension != 3 {
+		t.Errorf("Dimension = %d; want 3", resp.Dimension)
+	}
+	if resp.TotalTokens != 10 {
+		t.Errorf("TotalTokens = %d; want 10", resp.TotalTokens)
+	}
+	if resp.Provider != "ali" {
+		t.Errorf("Provider = %q; want ali", resp.Provider)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// buildOAIMessages: table-driven tests (P2#6)
+// ----------------------------------------------------------------------------
+
+func TestBuildOAIMessages_TableDriven(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   []aiservice.ChatMessage
+		wantLen int
+		check   func(t *testing.T, out []oaiMessage)
+	}{
+		{
+			name: "text-only message",
+			input: []aiservice.ChatMessage{
+				{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: "hello"}},
+			},
+			wantLen: 1,
+			check: func(t *testing.T, out []oaiMessage) {
+				t.Helper()
+				if out[0].Content != "hello" {
+					t.Errorf("content = %v; want %q", out[0].Content, "hello")
+				}
+				if out[0].Role != "user" {
+					t.Errorf("role = %q; want user", out[0].Role)
+				}
+			},
+		},
+		{
+			name: "text + image_url parts",
+			input: []aiservice.ChatMessage{
+				{
+					Role: aiservice.MessageRoleUser,
+					Content: aiservice.MessageContent{
+						Parts: []aiservice.MessagePart{
+							{Type: aiservice.MessagePartTypeText, Text: "describe"},
+							{Type: aiservice.MessagePartTypeImageURL, ImageURL: &aiservice.ImageURL{URL: "https://example.com/img.jpg"}},
+						},
+					},
+				},
+			},
+			wantLen: 1,
+			check: func(t *testing.T, out []oaiMessage) {
+				t.Helper()
+				parts, ok := out[0].Content.([]oaiContentPart)
+				if !ok {
+					t.Fatalf("content is not []oaiContentPart; got %T", out[0].Content)
+				}
+				if len(parts) != 2 {
+					t.Fatalf("parts count = %d; want 2", len(parts))
+				}
+				if parts[0].Type != "text" || parts[0].Text != "describe" {
+					t.Errorf("parts[0] = %+v; want text 'describe'", parts[0])
+				}
+				if parts[1].Type != "image_url" || parts[1].ImageURL == nil || parts[1].ImageURL.URL != "https://example.com/img.jpg" {
+					t.Errorf("parts[1] = %+v; want image_url", parts[1])
+				}
+			},
+		},
+		{
+			name: "empty Parts falls back to Text",
+			input: []aiservice.ChatMessage{
+				{
+					Role: aiservice.MessageRoleAssistant,
+					Content: aiservice.MessageContent{
+						Text:  "fallback text",
+						Parts: nil,
+					},
+				},
+			},
+			wantLen: 1,
+			check: func(t *testing.T, out []oaiMessage) {
+				t.Helper()
+				if out[0].Content != "fallback text" {
+					t.Errorf("content = %v; want %q", out[0].Content, "fallback text")
+				}
+			},
+		},
+		{
+			name: "ImageURL nil guard — image_url part without ImageURL is skipped",
+			input: []aiservice.ChatMessage{
+				{
+					Role: aiservice.MessageRoleUser,
+					Content: aiservice.MessageContent{
+						Parts: []aiservice.MessagePart{
+							{Type: aiservice.MessagePartTypeText, Text: "text only"},
+							{Type: aiservice.MessagePartTypeImageURL, ImageURL: nil}, // nil → should be skipped
+						},
+					},
+				},
+			},
+			wantLen: 1,
+			check: func(t *testing.T, out []oaiMessage) {
+				t.Helper()
+				parts, ok := out[0].Content.([]oaiContentPart)
+				if !ok {
+					t.Fatalf("content is not []oaiContentPart; got %T", out[0].Content)
+				}
+				// The nil image_url part should be skipped — only the text part remains.
+				if len(parts) != 1 {
+					t.Errorf("parts count = %d; want 1 (nil image_url skipped)", len(parts))
+				}
+				if parts[0].Type != "text" {
+					t.Errorf("parts[0].Type = %q; want text", parts[0].Type)
+				}
+			},
+		},
+		{
+			name: "unknown MessagePartType is skipped",
+			input: []aiservice.ChatMessage{
+				{
+					Role: aiservice.MessageRoleUser,
+					Content: aiservice.MessageContent{
+						Parts: []aiservice.MessagePart{
+							{Type: aiservice.MessagePartTypeText, Text: "valid"},
+							{Type: aiservice.MessagePartType("unknown_type"), Text: "ignored"},
+						},
+					},
+				},
+			},
+			wantLen: 1,
+			check: func(t *testing.T, out []oaiMessage) {
+				t.Helper()
+				parts, ok := out[0].Content.([]oaiContentPart)
+				if !ok {
+					t.Fatalf("content is not []oaiContentPart; got %T", out[0].Content)
+				}
+				// Unknown part type should be silently skipped.
+				if len(parts) != 1 {
+					t.Errorf("parts count = %d; want 1 (unknown type skipped)", len(parts))
+				}
+				if parts[0].Text != "valid" {
+					t.Errorf("parts[0].Text = %q; want valid", parts[0].Text)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := buildOAIMessages(tc.input)
+			if len(out) != tc.wantLen {
+				t.Fatalf("len(out) = %d; want %d", len(out), tc.wantLen)
+			}
+			tc.check(t, out)
+		})
+	}
 }

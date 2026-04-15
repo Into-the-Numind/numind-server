@@ -84,6 +84,26 @@ func shouldSkipRetry(ctx context.Context) bool {
 	return v
 }
 
+// ctxKeyFirstChunkSent is the context key that marks whether the first
+// streaming chunk has been delivered to the caller.  It lives here (retry.go)
+// because it is semantically a retry-layer concern: once the first chunk is
+// sent, the response can no longer be retried (the stream has started).
+// billing.go reads this key to decide whether to estimate token counts on
+// streaming interruption.
+type ctxKeyFirstChunkSent struct{}
+
+// WithFirstChunkSent returns a derived context that signals the first
+// streaming chunk has been delivered.  Exported so that streaming adapter
+// wrappers (and billing.go) can mark and read this flag.
+func WithFirstChunkSent(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyFirstChunkSent{}, true)
+}
+
+// withFirstChunkSent is the package-internal alias used by the Retry middleware.
+func withFirstChunkSent(ctx context.Context) context.Context {
+	return WithFirstChunkSent(ctx)
+}
+
 // ----------------------------------------------------------------------------
 // Middleware
 // ----------------------------------------------------------------------------

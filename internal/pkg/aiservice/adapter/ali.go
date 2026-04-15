@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strings"
 
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/registry"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/httpclient"
 )
 
@@ -149,15 +152,26 @@ func (a *AliAdapter) ChatStream(ctx context.Context, route *registry.ResolvedRou
 }
 
 // Embed converts texts to vectors using the DashScope native embedding API.
-// The OpenAI-compatible /embeddings endpoint does not support the dimension
-// parameter required for text-embedding-v4, so we call the native path.
+//
+// DashScope exposes two base paths:
+//   - OpenAI-compatible: {base}/compatible-mode/v1  (used for Chat/ChatStream)
+//   - Native:            {base}/api/v1              (required for Embed)
+//
+// The OpenAI-compatible /embeddings endpoint does not support the `dimension`
+// parameter required by text-embedding-v4, so we must call the native path.
+// We derive the native base from Provider.BaseURL by replacing the compat
+// path segment; this avoids hardcoding the hostname and keeps the URL in sync
+// with config changes.
 func (a *AliAdapter) Embed(ctx context.Context, route *registry.ResolvedRoute, req aiservice.EmbedRequest) (*aiservice.EmbedResponse, error) {
 	if len(req.Texts) == 0 {
 		return &aiservice.EmbedResponse{Provider: a.Name()}, nil
 	}
 
-	// DashScope native embedding endpoint — not OpenAI-compat.
-	embedURL := "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
+	// DashScope has two endpoints: OAI compatible (compatible-mode/v1) and native (api/v1).
+	// Embedding must use the native path because the OAI-compat path does not
+	// support the dimension parameter required for text-embedding-v4.
+	nativeBase := strings.Replace(route.Provider.BaseURL, "/compatible-mode/v1", "/api/v1", 1)
+	embedURL := nativeBase + "/services/embeddings/text-embedding/text-embedding"
 
 	var dsReq dashscopeEmbedRequest
 	dsReq.Model = route.ProviderModelID
@@ -229,13 +243,13 @@ func (a *AliAdapter) doPost(ctx context.Context, route *registry.ResolvedRoute, 
 		RetryPolicy: &httpclient.RetryPolicy{MaxRetries: 0},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("doPost %s: %w", path, err)
+		return nil, wrapHTTPClientErr(fmt.Sprintf("doPost %s", path), err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("doPost %s: HTTP %d: %s", path, resp.StatusCode, string(b))
+		return nil, wrapHTTPStatusErr(fmt.Sprintf("doPost %s", path), resp.StatusCode, b)
 	}
 
 	return io.ReadAll(resp.Body)
@@ -243,12 +257,11 @@ func (a *AliAdapter) doPost(ctx context.Context, route *registry.ResolvedRoute, 
 
 // doStream sends a streaming POST and returns the raw *http.Response so the
 // caller can read the SSE body.  The caller is responsible for closing resp.Body.
+//
+// We disable retries (MaxRetries: 0) because a streaming response cannot be replayed.
 func (a *AliAdapter) doStream(ctx context.Context, route *registry.ResolvedRoute, path string, body []byte) (*http.Response, error) {
 	url := route.Provider.BaseURL + path
 
-	// For streaming we bypass the httpclient retry layer (retry cannot replay a
-	// streaming body) and call the underlying transport directly via a zero-retry
-	// Request.
 	resp, err := a.client.Do(&httpclient.Request{
 		Method:  "POST",
 		URL:     url,
@@ -262,13 +275,13 @@ func (a *AliAdapter) doStream(ctx context.Context, route *registry.ResolvedRoute
 		RetryPolicy: &httpclient.RetryPolicy{MaxRetries: 0},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("doStream %s: %w", path, err)
+		return nil, wrapHTTPClientErr(fmt.Sprintf("doStream %s", path), err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("doStream %s: HTTP %d: %s", path, resp.StatusCode, string(b))
+		return nil, wrapHTTPStatusErr(fmt.Sprintf("doStream %s", path), resp.StatusCode, b)
 	}
 
 	return resp, nil
@@ -288,13 +301,49 @@ func (a *AliAdapter) doRawPost(ctx context.Context, apiKey, url string, body []b
 		RetryPolicy: &httpclient.RetryPolicy{MaxRetries: 0},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("doRawPost: %w", err)
+		return nil, wrapHTTPClientErr("doRawPost", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("doRawPost: HTTP %d: %s", resp.StatusCode, string(b))
+		return nil, wrapHTTPStatusErr("doRawPost", resp.StatusCode, b)
 	}
 	return io.ReadAll(resp.Body)
+}
+
+// ----------------------------------------------------------------------------
+// Shared HTTP error helpers (package-level, used by all three adapters)
+// ----------------------------------------------------------------------------
+
+// wrapHTTPClientErr maps network/transport errors to typed errno values so that
+// middleware/retry.go's retryableError() can identify retriable failures.
+//   - net.Error timeout or context.DeadlineExceeded → ErrAIProviderTimeout
+//   - other transport errors                        → ErrAIProviderError
+func wrapHTTPClientErr(op string, err error) error {
+	if isTimeoutErr(err) {
+		return errno.ErrAIProviderTimeout.SetMessage("%s: %v", op, err)
+	}
+	return errno.ErrAIProviderError.SetMessage("%s: %v", op, err)
+}
+
+// wrapHTTPStatusErr maps HTTP status codes to typed errno values.
+//   - 5xx → ErrAIProviderError (retriable)
+//   - 4xx → plain fmt.Errorf (not retriable)
+func wrapHTTPStatusErr(op string, statusCode int, body []byte) error {
+	if statusCode >= 500 {
+		return errno.ErrAIProviderError.SetMessage("%s: HTTP %d: %s", op, statusCode, string(body))
+	}
+	return fmt.Errorf("%s: HTTP %d: %s", op, statusCode, string(body))
+}
+
+// isTimeoutErr returns true for network timeouts and context deadline exceeded.
+func isTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return true
+	}
+	return false
 }

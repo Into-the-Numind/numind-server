@@ -13,6 +13,9 @@ import (
 	"numind-server/internal/pkg/httpclient"
 )
 
+// Note: HTTP error helpers (wrapHTTPClientErr, wrapHTTPStatusErr, isTimeoutErr)
+// are defined in ali.go (same package) and shared across all three adapters.
+
 // Compile-time interface checks.
 var _ ChatAdapter = (*DMXAPIAdapter)(nil)
 var _ EmbedAdapter = (*DMXAPIAdapter)(nil)
@@ -268,13 +271,13 @@ func (d *DMXAPIAdapter) doPost(ctx context.Context, route *registry.ResolvedRout
 		RetryPolicy: &httpclient.RetryPolicy{MaxRetries: 0},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("doPost %s: %w", path, err)
+		return nil, wrapHTTPClientErr(fmt.Sprintf("doPost %s", path), err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("doPost %s: HTTP %d: %s", path, resp.StatusCode, string(b))
+		return nil, wrapHTTPStatusErr(fmt.Sprintf("doPost %s", path), resp.StatusCode, b)
 	}
 
 	return io.ReadAll(resp.Body)
@@ -282,6 +285,8 @@ func (d *DMXAPIAdapter) doPost(ctx context.Context, route *registry.ResolvedRout
 
 // doStream sends a streaming POST and returns the raw *http.Response.
 // The caller is responsible for closing resp.Body.
+//
+// We disable retries (MaxRetries: 0) because a streaming response cannot be replayed.
 func (d *DMXAPIAdapter) doStream(ctx context.Context, route *registry.ResolvedRoute, path string, body []byte) (*http.Response, error) {
 	url := route.Provider.BaseURL + path
 
@@ -298,13 +303,13 @@ func (d *DMXAPIAdapter) doStream(ctx context.Context, route *registry.ResolvedRo
 		RetryPolicy: &httpclient.RetryPolicy{MaxRetries: 0},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("doStream %s: %w", path, err)
+		return nil, wrapHTTPClientErr(fmt.Sprintf("doStream %s", path), err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("doStream %s: HTTP %d: %s", path, resp.StatusCode, string(b))
+		return nil, wrapHTTPStatusErr(fmt.Sprintf("doStream %s", path), resp.StatusCode, b)
 	}
 
 	return resp, nil
