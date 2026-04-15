@@ -1312,12 +1312,15 @@ features:
       qa: null
     progress:
       total_tasks: 23
-      completed_tasks: 7
-      reviewed_tasks: 7
+      completed_tasks: 8
+      reviewed_tasks: 8
       current_task:
-        index: 8
-        title: "Task 7: Legacy billing ctx skip flag"
-        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-7"
+        index: 9
+        title: "Task 8: Gateway entry + Config struct + seed live"
+        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-8"
+    tech_debt_added_in_s4:
+      - "VectorDB billing (RecordCOS/RecordVectorDB) in salesrag/* not unified — out of Gateway scope (LLM/OCR/ASR only); document for Phase 2"
+      - "volc.GenerateArticleContent has no billing call — pre-existing tech debt, not introduced by this batch"
     pending_spec_updates:
       - "2026-04-15: spec §4.3 errno 数字 code 改为字符串 code（项目约定）— 留 Task 15b"
       - "2026-04-15: spec §2.1.2 补 thinking_only 列到字段清单 — 留 Task 15b"
