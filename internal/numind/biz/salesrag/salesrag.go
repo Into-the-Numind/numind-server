@@ -2174,36 +2174,23 @@ func (b *salesRAGBiz) AnalyzeProfileText(ctx context.Context, userID uint, text 
 		},
 	}
 
-	messages := []map[string]interface{}{
-		{
-			"role":    "system",
-			"content": fetchProfilePrompt(),
-		},
-		{
-			"role":    "user",
-			"content": contentParts,
-		},
-	}
-
 	log.Printf("[AnalyzeProfileText] Calling AI Gateway (profile.SalesragProfile)")
 	ctx = billing.WithBilling(ctx, userID, "salesrag_analyze_profile_text")
 	ctx = aismw.WithUserID(ctx, userID)
 	ctx = aiservice.WithSkipLegacyBilling(ctx)
 
-	systemPromptText, _ := messages[0]["content"].(string)
-	userContentParts, _ := messages[1]["content"].([]map[string]interface{})
-	aiParts := make([]aiservice.MessagePart, 0, len(userContentParts))
-	for _, p := range userContentParts {
-		text, _ := p["text"].(string)
+	aiParts := make([]aiservice.MessagePart, 0, len(contentParts))
+	for _, p := range contentParts {
+		t, _ := p["text"].(string)
 		aiParts = append(aiParts, aiservice.MessagePart{
 			Type: aiservice.MessagePartTypeText,
-			Text: text,
+			Text: t,
 		})
 	}
 	aiMessages := []aiservice.ChatMessage{
 		{
 			Role:    aiservice.MessageRoleSystem,
-			Content: aiservice.MessageContent{Text: systemPromptText},
+			Content: aiservice.MessageContent{Text: fetchProfilePrompt()},
 		},
 		{
 			Role:    aiservice.MessageRoleUser,
@@ -2231,7 +2218,7 @@ func (b *salesRAGBiz) AnalyzeProfileText(ctx context.Context, userID uint, text 
 }
 
 // AnalyzeChatStyleStream 流式分析聊天风格（语言指纹分析）
-// 图片使用阿里云 qwen3-vl-flash-2026-01-22，文本使用 dmxapi qwen-turbo（均为流式）
+// 图片通过 Gateway profile.SalesragChatstyle 路由（vision），文本通过 Gateway profile.SalesragChatstyle 路由（均为流式）
 func (b *salesRAGBiz) AnalyzeChatStyleStream(ctx context.Context, userID uint, file io.Reader, filename string, onToken func(token string) error) (string, error) {
 	log.Printf("[AnalyzeChatStyleStream] Starting analysis for user %d, filename: %s", userID, filename)
 
@@ -2248,7 +2235,7 @@ func (b *salesRAGBiz) AnalyzeChatStyleStream(ctx context.Context, userID uint, f
 		return b.analyzeChatStyleImageStream(ctx, userID, data, onToken)
 	}
 
-	// 文本文件使用 dmxapi 流式输出
+	// 文本文件通过 Gateway profile.SalesragChatstyle 路由
 	log.Printf("[AnalyzeChatStyleStream] Text file detected, using text stream for user %d", userID)
 	return b.analyzeChatStyleTextStream(ctx, userID, bytes.NewReader(data), filename, onToken)
 }
