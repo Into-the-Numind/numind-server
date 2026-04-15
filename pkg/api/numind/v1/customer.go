@@ -3,6 +3,7 @@ package v1
 // SubUserInfo 子用户信息
 type SubUserInfo struct {
 	UserID              uint   `json:"user_id"`
+	Username            string `json:"username"`
 	Nickname            string `json:"nickname"`
 	Phone               string `json:"phone"`
 	Avatar              string `json:"avatar"`
