@@ -418,7 +418,7 @@ func (ctrl *PdfController) ExtractText(c *gin.Context) {
 // extractTextFromPDF 尝试使用 Python 增强解析，如果失败则降级到 go-fitz
 func extractTextFromPDF(data []byte) (string, int, error) {
 	// 1. 尝试使用 Python 增强解析 (PyMuPDF blocks 模式)
-	text, pages, err := extractTextFromPDFEnhanced(data)
+	text, pages, err := runDocumentParser(data, ".pdf")
 	if err == nil && text != "" {
 		log.Infow("Successfully extracted PDF using enhanced Python parser", "pages", pages)
 		return text, pages, nil
@@ -429,10 +429,13 @@ func extractTextFromPDF(data []byte) (string, int, error) {
 	return extractTextFromPDFLegacy(data)
 }
 
-// extractTextFromPDFEnhanced 使用外部 Python 脚本进行高质量解析
-func extractTextFromPDFEnhanced(data []byte) (string, int, error) {
-	// 创建临时文件
-	tmpFile, err := os.CreateTemp("", "pdf_upload_*.pdf")
+// runDocumentParser 使用外部 Python 脚本 document_parser.py 解析文档。
+// ext 必须以 "." 开头（如 ".pdf" / ".doc" / ".docx"），Python 端按扩展名分派
+// 到对应的解析器（PDF/DOCX/XLSX → MarkItDown，旧版 .doc → antiword）。
+// 临时文件必须保留正确的扩展名，否则 Python 端会误判格式。
+func runDocumentParser(data []byte, ext string) (string, int, error) {
+	// 创建带正确扩展名的临时文件
+	tmpFile, err := os.CreateTemp("", "upload_*"+ext)
 	if err != nil {
 		return "", 0, fmt.Errorf("failed to create temp file: %w", err)
 	}
@@ -819,8 +822,8 @@ func formatText(text string) string {
 
 // extractTextFromDOCX 从DOCX文件中提取文本，优先使用 Python 增强解析
 func extractTextFromDOCX(data []byte) (string, error) {
-	// 1. 尝试使用 Python 增强解析 (python-docx)
-	text, _, err := extractTextFromPDFEnhanced(data) // 复用已有的外部脚本执行逻辑
+	// 1. 尝试使用 Python 增强解析 (MarkItDown 处理 .docx)
+	text, _, err := runDocumentParser(data, ".docx")
 	if err == nil && text != "" {
 		log.Infow("Successfully extracted DOCX using enhanced Python parser")
 		return text, nil
@@ -957,8 +960,8 @@ func decodeXMLEntities(text string) string {
 
 // extractTextFromDOC 从旧版Word文档(.doc)中提取文本，优先使用 Python 增强解析
 func extractTextFromDOC(data []byte) (string, error) {
-	// 1. 尝试使用 Python 增强解析 (antiword)
-	text, _, err := extractTextFromPDFEnhanced(data) // 复用已有的外部脚本执行逻辑
+	// 1. 尝试使用 Python 增强解析 (antiword — Python 脚本按 .doc 扩展名分派到 antiword)
+	text, _, err := runDocumentParser(data, ".doc")
 	if err == nil && text != "" {
 		log.Infow("Successfully extracted DOC using enhanced Python parser (antiword)")
 		return text, nil
