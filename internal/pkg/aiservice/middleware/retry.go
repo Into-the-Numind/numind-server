@@ -3,7 +3,7 @@ package middleware
 import (
 	"context"
 	"errors"
-	"math/rand"
+	"math/rand/v2"
 	"time"
 
 	"numind-server/internal/pkg/aiservice/registry"
@@ -40,7 +40,7 @@ func (p RetryPolicy) maxJitter() time.Duration {
 // retryDelay returns the back-off duration for the first (and only) retry:
 // baseDelay + random jitter in [0, maxJitter).
 func (p RetryPolicy) retryDelay() time.Duration {
-	jitter := time.Duration(rand.Int63n(int64(p.maxJitter())))
+	jitter := time.Duration(rand.Int64N(int64(p.maxJitter())))
 	return p.baseDelay() + jitter
 }
 

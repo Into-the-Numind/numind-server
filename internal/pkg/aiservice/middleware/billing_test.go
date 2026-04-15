@@ -315,6 +315,80 @@ func TestBilling_StoreError_DoesNotBlockResponse(t *testing.T) {
 	}
 }
 
+// TestBilling_StreamingInterruption_EstimatesFromPointer verifies that when a streaming
+// call is interrupted (context cancelled after first chunk), the Billing middleware
+// reads the accumulated byte count via the *int pointer and estimates completion tokens
+// as ceil(bytes/2), and sets IsEstimated=true.
+func TestBilling_StreamingInterruption_EstimatesFromPointer(t *testing.T) {
+	store := &mockUsageStore{}
+	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
+	mw := Billing(deps)
+
+	// Simulate: adapter accumulated 200 bytes before interruption.
+	accLen := 200
+
+	// Use a cancellable context so ctx.Err() != nil after cancel.
+	ctx, cancel := context.WithCancel(context.Background())
+	ctx = WithUserID(ctx, 10)
+	ctx = withFirstChunkSent(ctx) // mark that at least one chunk was sent
+	ctx = WithAccumulatedContentLen(ctx, &accLen)
+
+	// Cancel immediately so ctx.Err() is non-nil when Billing reads it.
+	cancel()
+
+	// Adapter returns nil (streaming interrupted — no ChatResponse).
+	inner := Handler(func(_ context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+		return nil, nil
+	})
+	handler := mw(inner)
+
+	_, _ = handler(ctx, llmRoute(), nil)
+
+	if len(store.records) != 1 {
+		t.Fatalf("expected 1 usage record, got %d", len(store.records))
+	}
+	r := store.records[0]
+	// ceil(200 / 2) = 100
+	if r.CompletionTokens != 100 {
+		t.Errorf("CompletionTokens: got %d, want 100 (estimated from 200 bytes)", r.CompletionTokens)
+	}
+	if !r.IsEstimated {
+		t.Error("IsEstimated should be true for streaming interruption")
+	}
+}
+
+// TestBilling_IsFallback_SetWhenFallbackCtxPresent verifies that UsageRecords created
+// during a fallback call (ctxKeyFallbackFromServiceID set) have IsFallback=true.
+func TestBilling_IsFallback_SetWhenFallbackCtxPresent(t *testing.T) {
+	store := &mockUsageStore{}
+	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
+	mw := Billing(deps)
+
+	// Inject fallback-from context key (simulates Fallback middleware).
+	ctx := WithUserID(context.Background(), 1)
+	ctx = withFallbackFromServiceID(ctx, 99) // 99 = primary service ID
+
+	chatResp := &aiservice.ChatResponse{
+		Content: "fallback answer",
+		Usage:   aiservice.TokenUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+	}
+	inner := Handler(func(_ context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+		return chatResp, nil
+	})
+	handler := mw(inner)
+
+	_, err := handler(ctx, llmRoute(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(store.records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(store.records))
+	}
+	if !store.records[0].IsFallback {
+		t.Error("IsFallback should be true when ctxKeyFallbackFromServiceID is set")
+	}
+}
+
 // TestBilling_NilStore_LogsWarn verifies graceful degradation when no UsageStore is set.
 func TestBilling_NilStore_LogsWarn(t *testing.T) {
 	logger := &mockLogger{}

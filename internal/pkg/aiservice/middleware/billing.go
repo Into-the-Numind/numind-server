@@ -30,13 +30,13 @@ func Billing(deps Deps) Middleware {
 			userID, _ := ctx.Value(ctxKeyUserID{}).(uint)
 
 			// Prepare the skeleton UsageRecord from the route's pricing snapshot.
-			record := buildBaseRecord(route, userID, deps.clock())
+			record := buildBaseRecord(route, userID, deps.clock(), ctx)
 
 			// Call the next handler.
 			resp, err = next(ctx, route, req)
 
 			// Populate usage fields from the response.
-			populateUsage(record, route.ServiceType, resp, err, ctx)
+			populateUsage(ctx, record, route.ServiceType, resp, err)
 
 			// Persist — best-effort, non-blocking.
 			if deps.UsageStore != nil {
@@ -66,10 +66,17 @@ func Billing(deps Deps) Middleware {
 // buildBaseRecord constructs a UsageRecord skeleton from route metadata.
 // Usage fields (tokens, call_count, duration_seconds) are left at zero / nil
 // until the response is available.
-func buildBaseRecord(route *registry.ResolvedRoute, userID uint, clk Clock) *model.UsageRecord {
+// IsFallback is set to true when ctx carries a non-zero ctxKeyFallbackFromServiceID,
+// i.e. this call was triggered by the Fallback middleware as a backup for a failed primary.
+func buildBaseRecord(route *registry.ResolvedRoute, userID uint, clk Clock, ctx context.Context) *model.UsageRecord {
 	taskID := route.TaskID
 	unit := route.Pricing.Unit
 	svcType := route.ServiceType
+
+	isFallback := false
+	if fallbackFrom, _ := ctx.Value(ctxKeyFallbackFromServiceID{}).(uint64); fallbackFrom != 0 {
+		isFallback = true
+	}
 
 	r := &model.UsageRecord{
 		UserID:      userID,
@@ -77,6 +84,7 @@ func buildBaseRecord(route *registry.ResolvedRoute, userID uint, clk Clock) *mod
 		Provider:    route.Provider.Name,
 		Model:       route.ServiceKey,
 		Operation:   route.TaskID,
+		IsFallback:  isFallback,
 		// AI Service Manager extension fields.
 		TaskID: &taskID,
 		Unit:   &unit,
@@ -97,13 +105,13 @@ func buildBaseRecord(route *registry.ResolvedRoute, userID uint, clk Clock) *mod
 		}
 	}
 
-	_ = clk // reserved for explicit timestamp injection if needed
+	r.CreatedAt = clk.Now()
 	return r
 }
 
 // populateUsage fills in the usage-specific fields of a UsageRecord once the
 // response (or error) from the adapter is known.
-func populateUsage(r *model.UsageRecord, serviceType string, resp interface{}, callErr error, ctx context.Context) {
+func populateUsage(ctx context.Context, r *model.UsageRecord, serviceType string, resp interface{}, callErr error) {
 	switch serviceType {
 	case "llm":
 		populateLLMUsage(r, resp, callErr, ctx)
@@ -135,12 +143,8 @@ func populateLLMUsage(r *model.UsageRecord, resp interface{}, callErr error, ctx
 	// Streaming interruption: context cancelled after first chunk was sent.
 	if ctx.Err() != nil {
 		if firstChunkSent, _ := ctx.Value(ctxKeyFirstChunkSent{}).(bool); firstChunkSent {
-			// Estimate from accumulated content length.
-			contentLen := 0
-			if cl, ok := ctx.Value(ctxKeyAccumulatedContentLen{}).(int); ok {
-				contentLen = cl
-			}
-			estimated := int(math.Ceil(float64(contentLen) / 2.0))
+			// Estimate from accumulated content length via pointer.
+			estimated := int(math.Ceil(float64(accumulatedContentLen(ctx)) / 2.0))
 			r.CompletionTokens = estimated
 			r.TotalTokens = r.PromptTokens + estimated
 			r.IsEstimated = true
@@ -180,9 +184,28 @@ func withFirstChunkSent(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxKeyFirstChunkSent{}, true)
 }
 
-// WithAccumulatedContentLen stores the accumulated content length for streaming
-// estimation when the context is cancelled.  Called by adapter streaming wrappers
-// (Task 5/6) that track the bytes streamed so far.
-func WithAccumulatedContentLen(ctx context.Context, n int) context.Context {
-	return context.WithValue(ctx, ctxKeyAccumulatedContentLen{}, n)
+// WithAccumulatedContentLen stores a pointer to the caller's content-length counter
+// for streaming estimation when the context is cancelled.
+//
+// Usage by adapter streaming wrappers (Task 5/6):
+//
+//	var n int
+//	ctx = aiservice.WithAccumulatedContentLen(ctx, &n)
+//	// inside chunk loop:
+//	n += len(chunkContent)
+//
+// The Billing middleware reads *ptr when ctx.Done triggers to get the most
+// up-to-date byte count. Passing a *int (not int) ensures mutations made by the
+// adapter after this call are visible to the middleware.
+func WithAccumulatedContentLen(ctx context.Context, lenPtr *int) context.Context {
+	return context.WithValue(ctx, ctxKeyAccumulatedContentLen{}, lenPtr)
+}
+
+// accumulatedContentLen reads the current byte count from the pointer stored in ctx.
+// Returns 0 when no pointer is present or the pointer is nil.
+func accumulatedContentLen(ctx context.Context) int {
+	if p, ok := ctx.Value(ctxKeyAccumulatedContentLen{}).(*int); ok && p != nil {
+		return *p
+	}
+	return 0
 }

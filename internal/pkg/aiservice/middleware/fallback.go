@@ -50,6 +50,7 @@ func Fallback(deps Deps) Middleware {
 			}
 
 			// Take the highest-priority fallback (first in the ordered slice).
+			// fallbacks[0] is the highest-priority backup (Task 3 ResolveTask sorts by priority ASC).
 			fbRoute := fallbacks[0]
 
 			// Log fallback trigger.

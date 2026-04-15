@@ -50,6 +50,7 @@ type ResolvedRoute struct {
 	TaskID          string
 	ServiceID       uint64
 	ServiceKey      string // ai_service.model_key
+	DisplayName     string // ai_service.display_name — human-readable label for tracing/logging
 	ServiceType     string // llm | ocr | asr
 	LatencyTier     string
 	QualityTier     string
@@ -385,6 +386,7 @@ func buildResolvedRoute(taskID string, row *resolvedRouteRow) ResolvedRoute {
 		TaskID:      taskID,
 		ServiceID:   row.ServiceID,
 		ServiceKey:  row.ModelKey,
+		DisplayName: row.DisplayName,
 		ServiceType: row.ServiceType,
 		LatencyTier: row.LatencyTier,
 		QualityTier: row.QualityTier,

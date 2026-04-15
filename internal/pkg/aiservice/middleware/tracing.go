@@ -3,27 +3,24 @@ package middleware
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/langfuse"
 )
 
-// langfuseCallTimeout is the hard deadline for every individual Langfuse SDK call.
-// If the Langfuse ingestion endpoint is slow/down, we abandon the call and keep
-// the main request flowing.
-const langfuseCallTimeout = 2 * time.Second
-
 // Tracing returns a Middleware that creates a Langfuse generation (for LLM/vision/embed
 // calls) or span (for OCR/ASR/rerank calls) around each adapter invocation.
 //
 // Fault-tolerance contract (spec §6.2 hardcoded rules):
-//  1. Every Langfuse SDK call runs inside context.WithTimeout(2 s).
-//  2. The entire tracing block is wrapped in a recover() — a panic in the SDK
+//  1. The entire tracing block is wrapped in a recover() — a panic in the SDK
 //     never crashes the server.
-//  3. Any error from Langfuse is swallowed (logged at WARN).  The main request
+//  2. Any error from Langfuse is swallowed (logged at WARN).  The main request
 //     result is always returned regardless of tracing outcomes.
+//
+// Note: The Langfuse SDK enqueues observations asynchronously, so a synchronous
+// timeout is not needed here. If the SDK adds synchronous flushing in the future,
+// add a context.WithTimeout(ctx, 2s) around the SDK calls at that time.
 func Tracing(deps Deps) Middleware {
 	return func(next Handler) Handler {
 		return func(ctx context.Context, route *registry.ResolvedRoute, req interface{}) (resp interface{}, err error) {
@@ -56,12 +53,8 @@ func Tracing(deps Deps) Middleware {
 				observationID = langfuse.SpanID()
 				meta := buildMeta(route, userID, featureRef, "")
 
-				// Enforce 2 s timeout on Langfuse calls (spec §6.2 hardcoded rule).
-				// The Langfuse SDK enqueues asynchronously, so the timeout guards
-				// any synchronous work inside the SDK helper (none currently).
-				_, cancel := context.WithTimeout(ctx, langfuseCallTimeout)
-				defer cancel()
-
+				// Langfuse SDK is async enqueue; recover() guards against panics
+				// from nil/internal errors. No synchronous timeout needed.
 				if isGeneration {
 					langfuse.CreateGeneration(tc.TraceID, observationID,
 						langfuse.WithGenParent(tc.ParentObservationID),
@@ -181,11 +174,16 @@ func isLLMType(serviceType string) bool {
 }
 
 // buildMeta constructs the Langfuse metadata map from a resolved route.
+// service_name prefers DisplayName (human-readable) and falls back to ServiceKey.
 func buildMeta(route *registry.ResolvedRoute, userID uint, featureRef map[string]interface{}, fallbackFrom string) map[string]interface{} {
+	serviceName := route.DisplayName
+	if serviceName == "" {
+		serviceName = route.ServiceKey
+	}
 	m := map[string]interface{}{
 		"task_id":      route.TaskID,
 		"service_id":   route.ServiceID,
-		"service_name": route.ServiceKey,
+		"service_name": serviceName,
 		"provider":     route.Provider.Name,
 		"user_id":      userID,
 	}

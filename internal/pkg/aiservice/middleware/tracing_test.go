@@ -106,10 +106,10 @@ func TestTracing_LangfuseTimeoutDoesNotBlockMain(t *testing.T) {
 	}
 }
 
-// TestTracing_PanicRecovery verifies that a panic inside the Langfuse SDK
-// callback (simulated via a deferred recover in the Tracing middleware) is
-// recovered and does not propagate to the caller.
-func TestTracing_PanicRecovery(t *testing.T) {
+// TestTracing_NoOpWhenLangfuseNil verifies that when the Langfuse client is nil
+// the Tracing middleware is a transparent passthrough and does not panic.
+// (Full panic-injection testing requires a Langfuse SDK mock — deferred.)
+func TestTracing_NoOpWhenLangfuseNil(t *testing.T) {
 	origC := langfuse.C
 	langfuse.C = nil
 	defer func() { langfuse.C = origC }()

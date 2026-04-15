@@ -76,6 +76,7 @@ type TaskBinding struct {
 type resolvedRouteRow struct {
 	ServiceID          uint64
 	ModelKey           string
+	DisplayName        string
 	ServiceType        string
 	CapabilityJSON     model.JSONMap
 	LatencyTier        string
@@ -248,6 +249,7 @@ func (s *gormStore) GetResolvedRoute(ctx context.Context, serviceID uint64) (*re
 SELECT
   s.id                     AS service_id,
   s.model_key              AS model_key,
+  s.display_name           AS display_name,
   s.service_type           AS service_type,
   s.capability_json        AS capability_json,
   s.latency_tier           AS latency_tier,
@@ -278,6 +280,7 @@ LIMIT 1
 	type rawRow struct {
 		ServiceID          uint64     `gorm:"column:service_id"`
 		ModelKey           string     `gorm:"column:model_key"`
+		DisplayName        string     `gorm:"column:display_name"`
 		ServiceType        string     `gorm:"column:service_type"`
 		CapabilityJSONStr  *string    `gorm:"column:capability_json"`
 		LatencyTier        string     `gorm:"column:latency_tier"`
@@ -318,6 +321,7 @@ LIMIT 1
 	return &resolvedRouteRow{
 		ServiceID:          row.ServiceID,
 		ModelKey:           row.ModelKey,
+		DisplayName:        row.DisplayName,
 		ServiceType:        row.ServiceType,
 		CapabilityJSON:     capJSON,
 		LatencyTier:        row.LatencyTier,

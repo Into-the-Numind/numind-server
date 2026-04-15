@@ -3,9 +3,12 @@ package middleware
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"numind-server/internal/pkg/aiservice/registry"
+	"numind-server/internal/pkg/langfuse"
+	"numind-server/internal/pkg/model"
 )
 
 // buildTestRoute returns a minimal ResolvedRoute for use in tests.
@@ -103,5 +106,83 @@ func TestChain_ErrorPropagation(t *testing.T) {
 	_, err := handler(ctx, route, nil)
 	if !errors.Is(err, sentinel) {
 		t.Errorf("expected sentinel error, got %v", err)
+	}
+}
+
+// spyUsageStore records CreateUsageRecord calls and their invocation order.
+type spyUsageStore struct {
+	callOrder *[]string
+}
+
+func (s *spyUsageStore) CreateUsageRecord(_ context.Context, _ *model.UsageRecord) error {
+	*s.callOrder = append(*s.callOrder, "billing")
+	return nil
+}
+
+// TestBuildDefault_OrderingMatchesSpec verifies that BuildDefault assembles the chain
+// in the correct order: Tracing → Billing → Fallback → Retry → Adapter.
+// We verify this by checking that billing (UsageStore write) happens after the adapter
+// call, confirming Billing wraps the inner handlers; and that the overall chain still
+// produces a successful response.
+func TestBuildDefault_OrderingMatchesSpec(t *testing.T) {
+	// Disable Langfuse so Tracing becomes a no-op (no real SDK calls).
+	origC := langfuse.C
+	langfuse.C = nil
+	defer func() { langfuse.C = origC }()
+
+	var callOrder []string
+	var adapterCalled atomic.Bool
+
+	store := &spyUsageStore{callOrder: &callOrder}
+	deps := Deps{
+		UsageStore: store,
+		Clock:      fixedClock{},
+		Logger:     &mockLogger{},
+	}
+
+	mw := BuildDefault(deps)
+
+	// Adapter (innermost) records its call before returning.
+	adapter := Handler(func(_ context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+		adapterCalled.Store(true)
+		callOrder = append(callOrder, "adapter")
+		return "result", nil
+	})
+
+	handler := mw(adapter)
+	route := buildTestRoute("llm")
+	ctx := context.Background()
+
+	resp, err := handler(ctx, route, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp != "result" {
+		t.Errorf("unexpected response: %v", resp)
+	}
+	if !adapterCalled.Load() {
+		t.Error("adapter was not called")
+	}
+
+	// Verify adapter called before billing (Billing wraps inward from adapter).
+	adapterIdx := -1
+	billingIdx := -1
+	for i, s := range callOrder {
+		switch s {
+		case "adapter":
+			adapterIdx = i
+		case "billing":
+			billingIdx = i
+		}
+	}
+	if adapterIdx == -1 {
+		t.Error("adapter call not recorded")
+	}
+	if billingIdx == -1 {
+		t.Error("billing (UsageStore.CreateUsageRecord) not called — Billing middleware may be missing from chain")
+	}
+	if adapterIdx >= billingIdx {
+		t.Errorf("expected adapter (%d) to be called before billing (%d) in call order %v",
+			adapterIdx, billingIdx, callOrder)
 	}
 }
