@@ -17,6 +17,7 @@ import (
 	"numind-server/internal/numind/controller/v1/user"
 	"numind-server/internal/numind/controller/v1/user_billing"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
@@ -40,6 +41,9 @@ func installNumindRouters(g *gin.Engine) error {
 		log.C(c).Infow("Healthz function called")
 		core.WriteResponse(c, nil, map[string]string{"status": "ok"})
 	})
+
+	// 注册 /healthz/ai handler (免鉴权).
+	g.GET("/healthz/ai", aiservice.HealthzHandler)
 
 	// 注册 pprof 路由
 	pprof.Register(g)

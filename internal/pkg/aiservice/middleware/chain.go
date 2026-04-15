@@ -13,6 +13,9 @@ import (
 	"context"
 	"time"
 
+	"gorm.io/gorm"
+
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
@@ -146,4 +149,44 @@ func BuildDefault(deps Deps) Middleware {
 		Fallback(deps),
 		Retry(deps),
 	)
+}
+
+// AsGatewayChain converts a Middleware into an aiservice.MiddlewareChainFunc.
+//
+// Because aiservice.GatewayHandler and middleware.Handler have identical
+// underlying function types, this conversion is valid and zero-cost at runtime.
+// The conversion is isolated here so that the aiservice package (parent) does
+// not need to import its own sub-packages.
+func AsGatewayChain(m Middleware) aiservice.MiddlewareChainFunc {
+	return func(next aiservice.GatewayHandler) aiservice.GatewayHandler {
+		// Convert aiservice.GatewayHandler → middleware.Handler (same underlying type).
+		innerHandler := Handler(next)
+		// Apply the middleware chain.
+		wrapped := m(innerHandler)
+		// Convert the result back.
+		return aiservice.GatewayHandler(wrapped)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// DB-backed UsageStore (defined here to keep billing wiring in one place)
+// ----------------------------------------------------------------------------
+
+// dbUsageStore is a thin GORM-backed implementation of UsageStore used in
+// production.  It is created by NewDBUsageStore.
+type dbUsageStore struct {
+	db *gorm.DB
+}
+
+// CreateUsageRecord persists a single usage record. Failures are non-fatal.
+func (s *dbUsageStore) CreateUsageRecord(ctx context.Context, r *model.UsageRecord) error {
+	return s.db.WithContext(ctx).Create(r).Error
+}
+
+// Ensure dbUsageStore satisfies the interface.
+var _ UsageStore = (*dbUsageStore)(nil)
+
+// NewDBUsageStore creates a UsageStore backed by the given *gorm.DB.
+func NewDBUsageStore(db *gorm.DB) UsageStore {
+	return &dbUsageStore{db: db}
 }

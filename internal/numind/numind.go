@@ -16,6 +16,10 @@ import (
 
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/aiservice/adapter"
+	aimw "numind-server/internal/pkg/aiservice/middleware"
+	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
@@ -152,6 +156,39 @@ func run() error {
 
 	// 初始化 Langfuse AI 可观测性客户端
 	langfuse.Init(langfuse.LoadConfig())
+
+	// 初始化 AI Service Gateway（DB ready 后，早于路由注册）
+	reg := registry.New(store.S.DB())
+	gateway := aiservice.Build(aiservice.Deps{Registry: reg})
+
+	// Wire middleware chain (done here to avoid import cycle: aiservice ↛ middleware).
+	usageStore := aimw.NewDBUsageStore(store.S.DB())
+	mwChain := aimw.BuildDefault(aimw.Deps{
+		Langfuse:   langfuse.C,
+		UsageStore: usageStore,
+		Resolver:   reg,
+	})
+	gateway.SetMiddlewareChain(aimw.AsGatewayChain(mwChain))
+
+	// Register all built-in provider adapters.
+	for _, p := range []aiservice.Provider{
+		adapter.NewAliAdapter(),
+		adapter.NewVolcAdapter(),
+		adapter.NewDMXAPIAdapter(),
+		adapter.NewBaiduOCRAdapter(),
+		adapter.NewBailianFileAdapter(),
+		adapter.NewFunASRAdapter(),
+	} {
+		gateway.RegisterProvider(p)
+	}
+	aiservice.SetDefault(gateway)
+	log.Infow("AI Service Gateway initialised", "adapters", gateway.AdapterNames())
+
+	// 同步 provider 凭据（config → llm_provider 表）
+	if err := aiservice.SyncProviderCredentials(context.Background(), store.S.DB(), viper.GetViper()); err != nil {
+		log.Errorw("Failed to sync AI provider credentials, continuing", "error", err)
+		// Non-fatal: service continues; /healthz/ai will show degraded state.
+	}
 
 	// 启动 SOP draft 清理任务（每2小时清理一次超过8小时的草稿）
 	bizLayer := biz.NewBiz(store.S)
