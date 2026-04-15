@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
+	"time"
 
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/registry"
@@ -41,9 +42,15 @@ type FunASRAdapter struct {
 }
 
 // NewFunASRAdapter creates a FunASRAdapter backed by the shared httpclient pool.
+// An explicit 5-minute timeout is used: audio transcription of long recordings
+// can be slow, especially on CPU-only self-hosted FunASR instances. The default
+// 120 s would prematurely abort such requests.
 func NewFunASRAdapter() *FunASRAdapter {
+	cfg := httpclient.DefaultConfig()
+	cfg.Timeout = 5 * time.Minute
+	cfg.ResponseHeaderTimeout = 5 * time.Minute
 	return &FunASRAdapter{
-		client: httpclient.NewClient(nil),
+		client: httpclient.NewClient(cfg),
 	}
 }
 

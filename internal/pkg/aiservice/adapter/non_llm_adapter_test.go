@@ -3,7 +3,6 @@ package adapter
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -200,6 +199,47 @@ func TestBaiduOCRAdapter_OCR_BadCredentials(t *testing.T) {
 	}
 }
 
+// TestBaiduOCRAdapter_OCR_BusinessError verifies that a Baidu business-level error
+// (HTTP 200 + JSON {"error_code": N, "error_msg": "..."}) is propagated as a Go
+// error containing the error_msg text.  This is how Baidu signals 4xx-equivalent
+// conditions (e.g. image too large, invalid format).
+func TestBaiduOCRAdapter_OCR_BusinessError(t *testing.T) {
+	const (
+		baiduErrorCode = 282811
+		baiduErrorMsg  = "image size error"
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/oauth/2.0/token"):
+			writeBaiduTokenResponse(w, "tok", 2592000)
+		case strings.Contains(r.URL.Path, "/rest/2.0/ocr/v1/accurate"):
+			// Baidu returns HTTP 200 even for application-level errors.
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"error_code": baiduErrorCode,
+				"error_msg":  baiduErrorMsg,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	a := NewBaiduOCRAdapter()
+	route := mockRouteWithModel(srv.URL, "api-key:secret-key", "")
+
+	_, err := a.OCR(context.Background(), route, aiservice.OCRRequest{
+		ImageBytes: []byte("fake-image"),
+	})
+	if err == nil {
+		t.Fatal("expected error for Baidu business error; got nil")
+	}
+	if !strings.Contains(err.Error(), baiduErrorMsg) {
+		t.Errorf("error = %q; want it to contain %q", err.Error(), baiduErrorMsg)
+	}
+}
+
 // ----------------------------------------------------------------------------
 // FunASRAdapter tests
 // ----------------------------------------------------------------------------
@@ -334,61 +374,6 @@ func TestBailianFileAdapter_UploadFile_Roundtrip(t *testing.T) {
 
 	var ossCallCount int
 
-	// Main Bailian API server (handles lease + confirm).
-	bailianSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		action := r.Header.Get("x-acs-action")
-		switch action {
-		case "ApplyFileUploadLease":
-			// Verify Authorization header is present.
-			if r.Header.Get("Authorization") == "" {
-				http.Error(w, "missing auth", http.StatusUnauthorized)
-				return
-			}
-			// Return a pre-signed URL pointing to our OSS mock.
-			ossURL := fmt.Sprintf("http://%s/oss-bucket/test-file", r.Host)
-			resp := map[string]interface{}{
-				"Code": "Success",
-				"Data": map[string]interface{}{
-					"FileUploadLeaseId": testLeaseID,
-					"Param": map[string]interface{}{
-						"Url":     ossURL,
-						"Headers": map[string]string{"x-oss-object-acl": "public-read"},
-					},
-				},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
-
-		case "AddFile":
-			// Verify lease ID in body.
-			var body map[string]interface{}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				http.Error(w, "decode: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-			if body["FileUploadLeaseId"] != testLeaseID {
-				http.Error(w, "wrong lease ID", http.StatusBadRequest)
-				return
-			}
-			resp := map[string]interface{}{
-				"Code": "Success",
-				"Data": map[string]interface{}{
-					"FileId": testFileID,
-				},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
-
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer bailianSrv.Close()
-
 	// OSS server (handles PUT).
 	ossSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
@@ -399,11 +384,6 @@ func TestBailianFileAdapter_UploadFile_Roundtrip(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer ossSrv.Close()
-
-	// bailianSrv and bailianHost are superseded by combinedSrv below.
-	// Close the earlier server and discard the host variable.
-	bailianSrv.Close()
-	_ = bailianSrv
 
 	a := NewBailianFileAdapter()
 

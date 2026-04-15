@@ -43,13 +43,6 @@ func (c *baiduTokenCache) get() (string, bool) {
 	return "", false
 }
 
-func (c *baiduTokenCache) set(token string, expiresIn int64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.token = token
-	c.expiresAt = time.Now().Add(time.Duration(expiresIn-3600) * time.Second)
-}
-
 // baiduOCRResult is the raw Baidu OCR API response.
 type baiduOCRResult struct {
 	LogID          uint64         `json:"log_id"`
@@ -89,13 +82,21 @@ type BaiduOCRAdapter struct {
 	// tokenCacheMu guards tokenCaches.
 	tokenCacheMu sync.Mutex
 	// tokenCaches maps "apiKey:secretKey" to a per-credential token cache.
+	// NOTE: tokenCaches grows unbounded across distinct credentials.
+	// Acceptable in single-tenant deployment. Multi-tenant would require LRU eviction.
+	// Token writes happen only inside getOrRefreshToken while holding cache.mu.Lock().
 	tokenCaches map[string]*baiduTokenCache
 }
 
 // NewBaiduOCRAdapter creates a BaiduOCRAdapter backed by the shared httpclient pool.
+// An explicit 30-second timeout is used: OCR requests are short-lived and any
+// longer wait almost certainly indicates a network or provider issue.
 func NewBaiduOCRAdapter() *BaiduOCRAdapter {
+	cfg := httpclient.DefaultConfig()
+	cfg.Timeout = 30 * time.Second
+	cfg.ResponseHeaderTimeout = 30 * time.Second
 	return &BaiduOCRAdapter{
-		client:      httpclient.NewClient(nil),
+		client:      httpclient.NewClient(cfg),
 		tokenCaches: make(map[string]*baiduTokenCache),
 	}
 }

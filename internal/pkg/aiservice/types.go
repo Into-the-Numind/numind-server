@@ -218,8 +218,7 @@ type OCRWord struct {
 type OCRRequest struct {
 	// ImageURL is a publicly accessible image URL or a base64-encoded data URI.
 	ImageURL string `json:"image_url,omitempty"`
-	// ImageBytes holds raw image bytes when a URL is not available.
-	// Mutually exclusive with ImageURL; ImageURL takes precedence if both are set.
+	// ImageBytes holds raw image bytes. Used when ImageURL is empty.
 	ImageBytes []byte `json:"image_bytes,omitempty"`
 	// ImageFormat hints the image format ("jpg" | "png" | "bmp" | "pdf").
 	// Providers may auto-detect if omitted.

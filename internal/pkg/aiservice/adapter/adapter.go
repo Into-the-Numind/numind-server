@@ -21,6 +21,10 @@
 //
 //	var _ ChatAdapter  = (*AliAdapter)(nil)
 //	var _ EmbedAdapter = (*AliAdapter)(nil)
+//
+// Each adapter method receives a *registry.ResolvedRoute (resolved by the
+// Registry package from the ai_service + route DB tables) that carries the
+// provider credentials, base URL, and the resolved model ID.
 package adapter
 
 import (

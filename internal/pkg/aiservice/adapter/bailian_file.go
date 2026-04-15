@@ -45,9 +45,15 @@ type BailianFileAdapter struct {
 }
 
 // NewBailianFileAdapter creates a BailianFileAdapter backed by the shared httpclient pool.
+// An explicit 60-second timeout covers the full three-step upload flow
+// (getLease + OSS PUT + confirmFile). The OSS PUT of large documents may take
+// several seconds; 60 s provides a comfortable margin.
 func NewBailianFileAdapter() *BailianFileAdapter {
+	cfg := httpclient.DefaultConfig()
+	cfg.Timeout = 60 * time.Second
+	cfg.ResponseHeaderTimeout = 60 * time.Second
 	return &BailianFileAdapter{
-		client: httpclient.NewClient(nil),
+		client: httpclient.NewClient(cfg),
 	}
 }
 
@@ -233,7 +239,7 @@ func (b *BailianFileAdapter) getLease(ctx context.Context, akID, akSecret, baseU
 		return "", nil, "", fmt.Errorf("getLease: sign: %w", err)
 	}
 
-	apiURL := baseURL + "/"
+	apiURL := baseURL + "/" // trailing slash is load-bearing for ACS3 canonical URI signature
 	resp, err := b.client.Do(&httpclient.Request{
 		Method:      "POST",
 		URL:         apiURL,
@@ -327,7 +333,7 @@ func (b *BailianFileAdapter) confirmFile(ctx context.Context, akID, akSecret, ba
 		return "", fmt.Errorf("confirmFile: sign: %w", err)
 	}
 
-	apiURL := baseURL + "/"
+	apiURL := baseURL + "/" // trailing slash is load-bearing for ACS3 canonical URI signature
 	resp, err := b.client.Do(&httpclient.Request{
 		Method:      "POST",
 		URL:         apiURL,
