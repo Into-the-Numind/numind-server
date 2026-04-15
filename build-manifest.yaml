@@ -1141,3 +1141,38 @@ features:
     blockers: []
     created_at: "2026-04-14T00:00:00+08:00"
     completed_at: "2026-04-14T00:00:00+08:00"
+
+  - id: "sop-thinking-cleanup"
+    ndf_version: "1.0"
+    description: "SOP 运行页清理深度思考 UI — 隐藏模型下拉里的（思考/仅思考）徽章，删除深度思考切换按钮，永远默认开启深度思考"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "纯前端单仓库 UI 改动（ModelSelector 条件渲染），无 schema/API/业务逻辑变更，影响 1 个文件"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-15T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "merged to develop (074c492)"
+    hotfix_artifacts:
+      diagnosis: "inline-triage"
+      review: "inline"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert 074c492 on develop"
+    last_verified:
+      at: "2026-04-15T00:00:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: "n/a (UI-only conditional render)"
+      test_summary: "npm run lint pass (1 pre-existing unrelated warning), npm run type-check pass"
+    decisions:
+      - "2026-04-15: 改动只 scope 到 feature==='sop'，chatbot 入口保留徽章和深度思考按钮（用户原话仅提及 SOP 运行页）"
+      - "2026-04-15: 默认开启深度思考依赖 SOPRunView onMounted 已有逻辑（行 625-629），无需新增逻辑"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-15T00:00:00+08:00"
+    completed_at: null
