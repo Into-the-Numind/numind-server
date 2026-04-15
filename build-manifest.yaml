@@ -1307,18 +1307,20 @@ features:
       proposal: "numind-server/proposals/ai-service-manager-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-04-15-ai-service-manager-design.md"
       plan: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md"
-      plan: null
       review_spec_compliance: null
       review_code_quality: null
       qa: null
     progress:
       total_tasks: 23
-      completed_tasks: 1
-      reviewed_tasks: 1
+      completed_tasks: 2
+      reviewed_tasks: 2
       current_task:
-        index: 2
-        title: "Task 1b: GORM Models + 兼容 smoke"
-        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-1b"
+        index: 3
+        title: "Task 2: Gateway 骨架 + Capability Schema + Matching"
+        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-2"
+    pending_spec_updates:
+      - "2026-04-15: spec §4.3 errno 数字 code 改为字符串 code（项目约定）— 留 Task 15b"
+      - "2026-04-15: spec §2.1.2 补 thinking_only 列到字段清单 — 留 Task 15b"
     rollback: null
     last_verified: null
     decisions:
