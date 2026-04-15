@@ -36,23 +36,31 @@ const (
 	OcrBaidu = "ocr.baidu"
 )
 
+// allTaskIDsList is the canonical ordered list of all task IDs.
+// IMPORTANT: if you add a new task ID constant above, you MUST also add it here.
+// AllTaskIDs() returns a copy of this slice to prevent callers from modifying it.
+var allTaskIDsList = []string{
+	SopText,
+	SopVision,
+	ChatbotStream,
+	SalesragIntent,
+	SalesragChat,
+	SalesragRerank,
+	SalesragEmbed,
+	SalesragTagging,
+	SalesragProfile,
+	SalesragChatstyle,
+	MonitorBriefing,
+	MonitorAnalyze,
+	MonitorTranscribe,
+	OcrBaidu,
+}
+
 // AllTaskIDs returns all 14 task ID strings in a stable order.
 // Useful for validation, seeding, or iterating over all known profiles.
+// Returns a copy — callers may not modify the returned slice.
 func AllTaskIDs() []string {
-	return []string{
-		SopText,
-		SopVision,
-		ChatbotStream,
-		SalesragIntent,
-		SalesragChat,
-		SalesragRerank,
-		SalesragEmbed,
-		SalesragTagging,
-		SalesragProfile,
-		SalesragChatstyle,
-		MonitorBriefing,
-		MonitorAnalyze,
-		MonitorTranscribe,
-		OcrBaidu,
-	}
+	out := make([]string, len(allTaskIDsList))
+	copy(out, allTaskIDsList)
+	return out
 }

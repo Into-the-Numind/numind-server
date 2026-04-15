@@ -145,8 +145,10 @@ type ChatChunk struct {
 	FinishReason string `json:"finish_reason,omitempty"`
 	// IsFinal marks the last chunk in the stream.
 	IsFinal bool `json:"is_final"`
-	// Usage is populated on the final chunk (IsFinal=true).
-	Usage TokenUsage `json:"usage,omitempty"`
+	// Usage is populated on the final chunk (IsFinal=true). Pointer so that
+	// the field is omitted from JSON on non-final chunks (struct zero value
+	// does not satisfy omitempty for a non-pointer struct).
+	Usage *TokenUsage `json:"usage,omitempty"`
 }
 
 // EmbedRequest is the unified request for text embedding calls.

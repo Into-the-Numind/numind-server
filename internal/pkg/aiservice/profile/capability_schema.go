@@ -29,9 +29,10 @@ type CapabilitySchema struct {
 	Fields []CapabilityField
 }
 
-// LLMSchema is the capability schema for service_type = "llm".
+// llmSchema is the capability schema for service_type = "llm".
 // It covers chat, embedding, rerank and vision services.
-var LLMSchema = CapabilitySchema{
+// External callers should use SchemaFor("llm") instead of accessing this directly.
+var llmSchema = CapabilitySchema{
 	ServiceType: "llm",
 	Fields: []CapabilityField{
 		{
@@ -82,8 +83,9 @@ var LLMSchema = CapabilitySchema{
 	},
 }
 
-// OCRSchema is the capability schema for service_type = "ocr".
-var OCRSchema = CapabilitySchema{
+// ocrSchema is the capability schema for service_type = "ocr".
+// External callers should use SchemaFor("ocr") instead of accessing this directly.
+var ocrSchema = CapabilitySchema{
 	ServiceType: "ocr",
 	Fields: []CapabilityField{
 		{
@@ -115,8 +117,9 @@ var OCRSchema = CapabilitySchema{
 	},
 }
 
-// ASRSchema is the capability schema for service_type = "asr".
-var ASRSchema = CapabilitySchema{
+// asrSchema is the capability schema for service_type = "asr".
+// External callers should use SchemaFor("asr") instead of accessing this directly.
+var asrSchema = CapabilitySchema{
 	ServiceType: "asr",
 	Fields: []CapabilityField{
 		{
@@ -154,19 +157,19 @@ var ASRSchema = CapabilitySchema{
 	},
 }
 
-// AllSchemas returns every registered CapabilitySchema keyed by service_type.
-// This is the single source of truth consumed by both the admin API (Task 13)
-// and the Capability Matching algorithm (capability.go).
-var AllSchemas = map[string]*CapabilitySchema{
-	"llm": &LLMSchema,
-	"ocr": &OCRSchema,
-	"asr": &ASRSchema,
+// allSchemas is the single source of truth for registered CapabilitySchemas,
+// keyed by service_type. Consumed by SchemaFor. External callers should use
+// SchemaFor rather than accessing this map directly.
+var allSchemas = map[string]*CapabilitySchema{
+	"llm": &llmSchema,
+	"ocr": &ocrSchema,
+	"asr": &asrSchema,
 }
 
 // SchemaFor returns the CapabilitySchema for the given service_type.
 // Returns an error if the service_type is not recognised.
 func SchemaFor(serviceType string) (*CapabilitySchema, error) {
-	s, ok := AllSchemas[serviceType]
+	s, ok := allSchemas[serviceType]
 	if !ok {
 		return nil, fmt.Errorf("unknown service_type %q: supported types are llm, ocr, asr", serviceType)
 	}

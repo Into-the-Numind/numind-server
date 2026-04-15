@@ -41,6 +41,10 @@ type Requirements struct {
 // ServiceCapability represents the service-side capability document stored in
 // ai_service.capability_json. Fields are populated according to the service_type.
 type ServiceCapability struct {
+	// ServiceType mirrors ai_service.service_type (llm | ocr | asr).
+	// When non-empty, Match uses it to detect caller/service type mismatches.
+	ServiceType string `json:"service_type,omitempty"`
+
 	// LLM fields
 	InputModalities  []string        `json:"input_modalities,omitempty"`
 	OutputModalities []string        `json:"output_modalities,omitempty"`
@@ -83,6 +87,19 @@ type MatchResult struct {
 //     dimension must be identical.
 func Match(serviceType string, req Requirements, svc ServiceCapability) MatchResult {
 	var reasons []string
+
+	// Guard: if the service document carries its own service_type, verify it matches
+	// the caller's intent. A mismatch means the wrong service was selected (e.g. the
+	// router handed an OCR service to an LLM task), and all further field checks would
+	// be meaningless — return early with a single diagnostic reason.
+	if svc.ServiceType != "" && svc.ServiceType != serviceType {
+		return MatchResult{
+			Compatible: false,
+			Reasons: []string{fmt.Sprintf(
+				"service_type 不一致（期望 %s，服务为 %s）", serviceType, svc.ServiceType,
+			)},
+		}
+	}
 
 	switch serviceType {
 	case "llm":
@@ -151,9 +168,9 @@ func matchOCR(req Requirements, svc ServiceCapability) []string {
 
 	// 1. Image formats: every format the task may submit must be supported.
 	svcFmtSet := toSet(svc.ImageFormats)
-	for _, fmt := range req.ImageFormats {
-		if !svcFmtSet[fmt] {
-			reasons = append(reasons, "不支持图像格式: "+fmt)
+	for _, imgFmt := range req.ImageFormats {
+		if !svcFmtSet[imgFmt] {
+			reasons = append(reasons, "不支持图像格式: "+imgFmt)
 		}
 	}
 
@@ -166,7 +183,9 @@ func matchOCR(req Requirements, svc ServiceCapability) []string {
 
 	// 3. File size: service must meet or exceed the task's maximum.
 	if req.MaxFileSizeMB > 0 && svc.MaxFileSizeMB < req.MaxFileSizeMB {
-		reasons = append(reasons, "服务文件大小上限不足")
+		reasons = append(reasons, fmt.Sprintf(
+			"服务文件大小上限不足（需要 ≥%d MB，服务为 %d MB）", req.MaxFileSizeMB, svc.MaxFileSizeMB,
+		))
 	}
 
 	return reasons
@@ -178,9 +197,9 @@ func matchASR(req Requirements, svc ServiceCapability) []string {
 
 	// 1. Audio formats: every format the task may submit must be supported.
 	svcFmtSet := toSet(svc.AudioFormats)
-	for _, fmt := range req.AudioFormats {
-		if !svcFmtSet[fmt] {
-			reasons = append(reasons, "不支持音频格式: "+fmt)
+	for _, audioFmt := range req.AudioFormats {
+		if !svcFmtSet[audioFmt] {
+			reasons = append(reasons, "不支持音频格式: "+audioFmt)
 		}
 	}
 
