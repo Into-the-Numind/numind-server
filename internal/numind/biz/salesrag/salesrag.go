@@ -2687,6 +2687,7 @@ func (b *salesRAGBiz) ocrWithBaidu(ctx context.Context, userID uint, imageData [
 	}
 
 	// 注入 Gateway 中间件上下文
+	ctx = billing.WithBilling(ctx, userID, "salesrag_ocr")
 	ctx = aismw.WithUserID(ctx, userID)
 	ctx = aiservice.WithSkipLegacyBilling(ctx)
 

@@ -134,6 +134,8 @@ func (mb *MonitorBiz) TranscribeVideo(ctx context.Context, note *model.MonitorNo
 	asrCtx := ctx
 	if bc := billing.FromContext(ctx); bc != nil {
 		asrCtx = aismw.WithUserID(asrCtx, bc.UserID)
+	} else {
+		log.C(ctx).Warnw("billing context missing, userID injection skipped", "func", "TranscribeVideo", "noteID", note.ID)
 	}
 	asrCtx = aiservice.WithSkipLegacyBilling(asrCtx)
 

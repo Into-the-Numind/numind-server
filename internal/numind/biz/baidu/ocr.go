@@ -29,14 +29,11 @@ const (
 	overlapHeight = 300  // 相邻段重叠高度（避免切断气泡）
 )
 
-
 // OCRResult 百度 OCR 响应结构（高精度含位置版）
 type OCRResult struct {
 	LogID          uint64      `json:"log_id"`
 	WordsResultNum int         `json:"words_result_num"`
 	WordsResult    []WordsItem `json:"words_result"`
-	ErrorCode      int         `json:"error_code,omitempty"`
-	ErrorMsg       string      `json:"error_msg,omitempty"`
 }
 
 // WordsItem 单条识别结果（含位置信息）
@@ -52,7 +49,6 @@ type Location struct {
 	Width  int `json:"width"`
 	Height int `json:"height"`
 }
-
 
 // encodeImageForOCR 将图片编码为 JPEG 并确保 base64 ≤ 10MB
 func encodeImageForOCR(img image.Image) ([]byte, error) {
@@ -230,6 +226,7 @@ func deduplicateItems(items []WordsItem) []WordsItem {
 }
 
 // RecognizeText 调用百度 OCR（经由 AI Gateway）并返回纯文本（无说话人标注）。
+// 当前由 ocr.go 内部使用；保留为公开 API 以便其他模块调用 baidu OCR 单页。
 // ctx 应已注入 aismw.WithUserID + aiservice.WithSkipLegacyBilling（由调用方负责）。
 func RecognizeText(ctx context.Context, imageData []byte) (string, error) {
 	items, _, err := recognizeImage(ctx, imageData)

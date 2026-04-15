@@ -47,6 +47,8 @@ func (mb *MonitorBiz) AnalyzeSingleNote(ctx context.Context, note *model.Monitor
 	// 注入 Gateway 中间件上下文（userID 从 billing context 读取）
 	if bc := billing.FromContext(ctx); bc != nil {
 		ctx = aismw.WithUserID(ctx, bc.UserID)
+	} else {
+		log.C(ctx).Warnw("billing context missing, userID injection skipped", "func", "AnalyzeSingleNote")
 	}
 	ctx = aiservice.WithSkipLegacyBilling(ctx)
 
