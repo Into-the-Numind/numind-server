@@ -65,7 +65,7 @@ BEGIN
     ) THEN
       ALTER TABLE llm_model
         ADD COLUMN service_type VARCHAR(20) NOT NULL DEFAULT 'llm'
-          COMMENT 'llm | ocr | asr（区分能力大类）';
+          COMMENT 'llm | ocr | asr（区分能力大类） [ai-service-manager:v1]';
     END IF;
 
     IF NOT EXISTS (
@@ -115,16 +115,16 @@ BEGIN
 
     IF NOT EXISTS (
       SELECT 1 FROM information_schema.STATISTICS
-      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'llm_model' AND INDEX_NAME = 'idx_service_type'
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'llm_model' AND INDEX_NAME = 'idx_as_service_type'
     ) THEN
-      ALTER TABLE llm_model ADD INDEX idx_service_type (service_type);
+      ALTER TABLE llm_model ADD INDEX idx_as_service_type (service_type);
     END IF;
 
     IF NOT EXISTS (
       SELECT 1 FROM information_schema.STATISTICS
-      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'llm_model' AND INDEX_NAME = 'idx_deprecated'
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'llm_model' AND INDEX_NAME = 'idx_as_deprecated'
     ) THEN
-      ALTER TABLE llm_model ADD INDEX idx_deprecated (deprecated_at);
+      ALTER TABLE llm_model ADD INDEX idx_as_deprecated (deprecated_at);
     END IF;
   END IF;
 
@@ -223,7 +223,7 @@ BEGIN
   ) THEN
     ALTER TABLE ai_service
       ADD COLUMN service_type VARCHAR(20) NOT NULL DEFAULT 'llm'
-        COMMENT 'llm | ocr | asr（区分能力大类）';
+        COMMENT 'llm | ocr | asr（区分能力大类） [ai-service-manager:v1]';
   END IF;
 
   IF NOT EXISTS (
@@ -265,16 +265,16 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.STATISTICS
-    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ai_service' AND INDEX_NAME = 'idx_service_type'
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ai_service' AND INDEX_NAME = 'idx_as_service_type'
   ) THEN
-    ALTER TABLE ai_service ADD INDEX idx_service_type (service_type);
+    ALTER TABLE ai_service ADD INDEX idx_as_service_type (service_type);
   END IF;
 
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.STATISTICS
-    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ai_service' AND INDEX_NAME = 'idx_deprecated'
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ai_service' AND INDEX_NAME = 'idx_as_deprecated'
   ) THEN
-    ALTER TABLE ai_service ADD INDEX idx_deprecated (deprecated_at);
+    ALTER TABLE ai_service ADD INDEX idx_as_deprecated (deprecated_at);
   END IF;
 
   -- ai_service_route 新列
@@ -332,7 +332,7 @@ CREATE TABLE IF NOT EXISTS task_profile (
                              COMMENT '逃生舱字段',
     created_at              DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at              DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_service_type (service_type),
+    INDEX idx_tp_service_type (service_type),
     CONSTRAINT fk_default_service
       FOREIGN KEY (default_service_id) REFERENCES ai_service(id)
       ON DELETE SET NULL
@@ -349,7 +349,7 @@ CREATE TABLE IF NOT EXISTS task_profile_service (
                        COMMENT 'fallback 优先级（0 最高）；allowed 下用于排序展示',
     created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_profile_service_role (task_profile_id, service_id, role),
-    INDEX idx_profile_role (task_profile_id, role),
+    INDEX idx_tps_profile_role (task_profile_id, role),
     CONSTRAINT fk_tps_profile FOREIGN KEY (task_profile_id) REFERENCES task_profile(id) ON DELETE CASCADE,
     CONSTRAINT fk_tps_service FOREIGN KEY (service_id) REFERENCES ai_service(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -366,8 +366,8 @@ CREATE TABLE IF NOT EXISTS ai_service_audit_log (
     diff_json     JSON COMMENT '变更前/后的 diff',
     reason        TEXT COMMENT '可选原因（capability override 时必填）',
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_actor_created (actor_id, created_at),
-    INDEX idx_target (target_type, target_id)
+    INDEX idx_asal_actor_created (actor_id, created_at),
+    INDEX idx_asal_target (target_type, target_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- D4: usage_record 扩展（支持 OCR/ASR 计费维度 + 任务溯源）

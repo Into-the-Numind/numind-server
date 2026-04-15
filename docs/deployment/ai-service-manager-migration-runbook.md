@@ -155,6 +155,12 @@ docker stop numind-mig-test
 
 > ⚠ **本 migration 需要短暂维护窗口（2-3 分钟）**。MySQL DDL（ALTER/RENAME）是非事务性的，在线执行会造成不可预期的时间窗问题。
 
+> **前置要求**：执行本节任何 Prod 步骤前，必须先在本地 shell 设置环境变量：
+> ```bash
+> export PROD_DB_PASS=<实际生产数据库密码>
+> ```
+> 密码从团队密钥管理工具获取，禁止硬编码到任何文件或脚本中。
+
 ### 部署前检查清单
 
 - [ ] 已在 dev 环境（基于 dev DB snapshot）完整演练 migration + rollback
@@ -168,7 +174,7 @@ docker stop numind-mig-test
 
 ```bash
 sshpass -p "$PROD_SSH_PASS" ssh -o StrictHostKeyChecking=no "$PROD_SSH_USER@$PROD_SSH_HOST" \
-  'docker exec numind-mysql-prod mysqldump -uroot -p<PROD_DB_PASS> \
+  'docker exec numind-mysql-prod mysqldump -uroot -p"$PROD_DB_PASS" \
     --single-transaction --routines --triggers numind-prod \
     > /root/backup/numind_pre_ai_service_manager_$(date +%Y%m%d_%H%M%S).sql'
 ```
@@ -200,7 +206,7 @@ sshpass -p "$PROD_SSH_PASS" scp -o StrictHostKeyChecking=no \
 
 ```bash
 sshpass -p "$PROD_SSH_PASS" ssh -o StrictHostKeyChecking=no "$PROD_SSH_USER@$PROD_SSH_HOST" \
-  'docker exec -i numind-mysql-prod mysql -uroot -p<PROD_DB_PASS> numind-prod \
+  'docker exec -i numind-mysql-prod mysql -uroot -p"$PROD_DB_PASS" numind-prod \
     < /root/numind/migrations/20260416_000001_ai_service_manager.sql'
 ```
 
@@ -208,7 +214,7 @@ sshpass -p "$PROD_SSH_PASS" ssh -o StrictHostKeyChecking=no "$PROD_SSH_USER@$PRO
 
 ```bash
 sshpass -p "$PROD_SSH_PASS" ssh -o StrictHostKeyChecking=no "$PROD_SSH_USER@$PROD_SSH_HOST" \
-  'docker exec numind-mysql-prod mysql -uroot -p<PROD_DB_PASS> numind-prod -e "
+  'docker exec numind-mysql-prod mysql -uroot -p"$PROD_DB_PASS" numind-prod -e "
     SELECT COUNT(*) as task_profile_count FROM task_profile;
     SELECT COUNT(*) as non_llm_providers FROM llm_provider WHERE provider_type != '\''llm'\'';
     SHOW FULL TABLES WHERE Tables_in_numind IN (
@@ -272,7 +278,7 @@ sshpass -p "$PROD_SSH_PASS" scp -o StrictHostKeyChecking=no \
 
 ```bash
 sshpass -p "$PROD_SSH_PASS" ssh -o StrictHostKeyChecking=no "$PROD_SSH_USER@$PROD_SSH_HOST" \
-  'docker exec -i numind-mysql-prod mysql -uroot -p<PROD_DB_PASS> numind-prod \
+  'docker exec -i numind-mysql-prod mysql -uroot -p"$PROD_DB_PASS" numind-prod \
     < /root/numind/migrations/20260416_000001_ai_service_manager_rollback.sql'
 ```
 
@@ -280,7 +286,7 @@ sshpass -p "$PROD_SSH_PASS" ssh -o StrictHostKeyChecking=no "$PROD_SSH_USER@$PRO
 
 ```bash
 sshpass -p "$PROD_SSH_PASS" ssh -o StrictHostKeyChecking=no "$PROD_SSH_USER@$PROD_SSH_HOST" \
-  'docker exec numind-mysql-prod mysql -uroot -p<PROD_DB_PASS> numind-prod -e "
+  'docker exec numind-mysql-prod mysql -uroot -p"$PROD_DB_PASS" numind-prod -e "
     SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES
       WHERE TABLE_SCHEMA=DATABASE()
       AND TABLE_NAME IN ('\''llm_model'\'','\''llm_model_provider'\'','\''ai_service'\'','\''task_profile'\'');
@@ -301,6 +307,8 @@ sshpass -p "$PROD_SSH_PASS" ssh -o StrictHostKeyChecking=no "$PROD_SSH_USER@$PRO
 ## 注意事项
 
 ### AMBIGUITY 记录
+
+⚠️ **BLOCKER: Task 1a 完成后，`task_profile` 表的 14 条数据为"半成品状态"——所有 `default_service_id=NULL` 且 `task_profile_service` 为空。在 Task 8（Gateway 入口 + seed 生效）完成之前，任何直接读取 `task_profile` 的代码必须容错 NULL。业务调用路径在 Task 8 前仍走老 llmrouter 不受影响。**
 
 1. **task_profile.default_service_id 留 NULL**：spec §5.1 中指定的默认服务（如 deepseek-v3、qwen-plus）在 `ai_service` 表中的 `model_key` 尚未确认存在。migration 将 `default_service_id` 留为 NULL，待 Task 8 的 `SyncProviderCredentials` 或运营通过管理端完成绑定。
 

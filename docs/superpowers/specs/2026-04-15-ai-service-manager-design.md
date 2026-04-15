@@ -102,8 +102,8 @@ ALTER TABLE ai_service
     COMMENT '自由标签，如 ["chinese-optimized", "cheap"]',
   ADD COLUMN deprecated_at DATETIME DEFAULT NULL
     COMMENT '软删除时间；非 NULL 表示已下架',
-  ADD INDEX idx_service_type (service_type),
-  ADD INDEX idx_deprecated (deprecated_at);
+  ADD INDEX idx_as_service_type (service_type),
+  ADD INDEX idx_as_deprecated (deprecated_at);
 
 -- 读兼容 VIEW（旧代码路径读 llm_model 仍能工作）
 CREATE OR REPLACE VIEW llm_model AS
@@ -161,7 +161,7 @@ CREATE TABLE task_profile (
                      COMMENT '逃生舱字段',
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_service_type (service_type),
+    INDEX idx_tp_service_type (service_type),
     CONSTRAINT fk_default_service
       FOREIGN KEY (default_service_id) REFERENCES ai_service(id)
       ON DELETE SET NULL
@@ -181,7 +181,7 @@ CREATE TABLE task_profile_service (
                        COMMENT 'fallback 优先级（0 最高）；allowed 下用于排序展示',
     created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_profile_service_role (task_profile_id, service_id, role),
-    INDEX idx_profile_role (task_profile_id, role),
+    INDEX idx_tps_profile_role (task_profile_id, role),
     CONSTRAINT fk_tps_profile FOREIGN KEY (task_profile_id) REFERENCES task_profile(id) ON DELETE CASCADE,
     CONSTRAINT fk_tps_service FOREIGN KEY (service_id) REFERENCES ai_service(id) ON DELETE CASCADE
 );
@@ -201,8 +201,8 @@ CREATE TABLE ai_service_audit_log (
     diff_json     JSON COMMENT '变更前/后的 diff',
     reason        TEXT COMMENT '可选原因（capability override 时必填）',
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_actor_created (actor_id, created_at),
-    INDEX idx_target (target_type, target_id)
+    INDEX idx_asal_actor_created (actor_id, created_at),
+    INDEX idx_asal_target (target_type, target_id)
 );
 ```
 
@@ -227,7 +227,7 @@ ALTER TABLE usage_record
   ADD COLUMN is_estimated TINYINT(1) DEFAULT 0
     COMMENT '流式中断估算补记时为 1',
   ADD INDEX idx_task_created (task_id, created_at),
-  ADD INDEX idx_service_type (service_type);
+  ADD INDEX idx_ur_service_type (service_type);
 ```
 
 **历史数据**：不 backfill（新字段 null）；跨版本按 feature 维度聚合仍可用，按 task_id 聚合仅新数据。
@@ -255,9 +255,9 @@ VALUES
 INSERT INTO ai_service (model_key, display_name, service_type, capability_json, is_active)
 VALUES
   ('baidu-ocr-accurate', '百度 OCR 高精度含位置版', 'ocr',
-    '{"image_formats":["jpg","png","bmp"],"max_resolution":4096,"max_file_size_mb":10}', 1),
+    '{"image_formats":["jpg","png","bmp"],"max_resolution":4096,"max_file_size_mb":10,"capabilities":["ocr"]}', 1),
   ('funasr-paraformer', 'FunASR Paraformer', 'asr',
-    '{"audio_formats":["wav","mp3","m4a"],"max_duration_sec":3600,"languages":["zh","en"],"realtime":false}', 1);
+    '{"audio_formats":["wav","mp3","m4a"],"max_duration_sec":3600,"languages":["zh","en"],"realtime":false,"capabilities":["asr"]}', 1);
 ```
 
 **Task Profile 种子**（14 条，详见 §5）— 通过 migration 插入。
@@ -1125,6 +1125,10 @@ langfuse:
 | Langfuse prompt 管理空白 | P2 | ✅ §13.5 明确"不纳入 Task Profile" |
 | Race test 未规划 | P2 | ✅ §12 加 `go test -race` 要求 |
 | idx/errno/MySQL 版本等细节 | P2 | ⏩ S3 task 备注中补 |
+| OCR/ASR capability_json 缺 capabilities 字段（§2.4 与 migration 不一致） | P1 | ✅ 2026-04-15 Task 1a fix：§2.4 seed SQL 补加 `"capabilities":["ocr"]` / `"capabilities":["asr"]`，与 migration 保持一致 |
+| Rollback DROP INDEX/COLUMN 不幂等，service_type 误删 dev 已有数据 | P1 | ✅ 2026-04-15 Task 1a fix：rollback.sql 改为 PROCEDURE 条件 DDL；service_type 列 COMMENT 含 tag `ai-service-manager:v1`，rollback 精确检查 tag 后才删 |
+| 索引命名缺表别名前缀（违反 database.md 约定） | P2 | ✅ 2026-04-15 Task 1a fix：migration/rollback/spec 中 idx_service_type→idx_as_service_type、idx_deprecated→idx_as_deprecated、idx_profile_role→idx_tps_profile_role、idx_actor_created→idx_asal_actor_created、idx_target→idx_asal_target |
+| Runbook `<PROD_DB_PASS>` 硬编码占位符 | P2 | ✅ 2026-04-15 Task 1a fix：改为 `"$PROD_DB_PASS"` 环境变量引用 |
 
 ---
 
@@ -1157,7 +1161,7 @@ ALTER TABLE ai_service_route RENAME TO llm_model_provider;
 -- 恢复 ai_service → llm_model
 DROP VIEW IF EXISTS llm_model;
 ALTER TABLE ai_service
-  DROP INDEX idx_deprecated, DROP INDEX idx_service_type,
+  DROP INDEX idx_as_deprecated, DROP INDEX idx_as_service_type,
   DROP COLUMN deprecated_at, DROP COLUMN tags, DROP COLUMN quality_tier,
   DROP COLUMN latency_tier, DROP COLUMN capability_json, DROP COLUMN service_type;
 ALTER TABLE ai_service RENAME TO llm_model;
