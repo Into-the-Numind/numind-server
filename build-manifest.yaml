@@ -1378,19 +1378,19 @@ features:
 
   - id: "aihubmix-provider"
     ndf_version: "1.0"
-    description: "接入 AiHubMix 作为新 LLM 聚合提供商，与 DMXAPI 并行。4 个模型（claude-sonnet-4-6 / gemini-3.1-pro-preview / gpt-5.4-mini / DeepSeek-V3）以 AiHubMix 为主路由、DMXAPI 为 failover，统一 OpenAI /chat/completions + reasoning_effort 协议"
+    description: "接入 AiHubMix 作为新 LLM 聚合提供商，与 DMXAPI 并行。4 个模型（claude-sonnet-4-6 / gemini-3.1-pro-preview / gpt-5.4 / deepseek-v3.2）以 AiHubMix 为主路由（priority=10）、DMXAPI 为 failover，统一 OpenAI /chat/completions；Claude thinking 通过 -think 后缀变体，其余 3 个通过 reasoning_effort 参数"
     track: "standard"
-    stage: "S1"
+    stage: "S2"
     classification_reason: "涉及新外部服务集成（AiHubMix）+ 影响文件数 >3（dmxapi_client.go / llmrouter 映射 / config×4 / seed SQL），2 条 Triage 标准不满足。用户确认 Standard 快节奏推进"
-    last_updated_by: "ai-s1"
-    last_updated_at: "2026-04-16T01:00:00+08:00"
+    last_updated_by: "ai-s2"
+    last_updated_at: "2026-04-16T02:00:00+08:00"
     repos:
       - numind-server
     branches: {}
     artifacts:
       requirement: "numind-server/requirements/aihubmix-provider.md"
       proposal: "numind-server/proposals/aihubmix-provider-proposal.md"
-      spec: null
+      spec: "numind-server/docs/superpowers/specs/2026-04-16-aihubmix-provider-design.md"
       plan: null
       review_spec_compliance: null
       review_code_quality: null
@@ -1407,6 +1407,10 @@ features:
       - "2026-04-16: AiHubMix 为新增主路由、DMXAPI 作 failover 保留（不替换）"
       - "2026-04-16: 统一走 OpenAI /chat/completions，thinking 用 reasoning_effort:'high'，不走原生 Gemini/GPT Responses 端点"
       - "2026-04-16: 与活跃功能 ai-service-manager 的关系 — 选方案 A：当前在旧 llm_provider 表上接入，日后随 ai-service-manager 迁移"
+      - "2026-04-16 (S2): 模型名修正 — DeepSeek 选 deepseek-v3.2（非 DeepSeek-V3）/ GPT 选 gpt-5.4（非 gpt-5.4-mini）/ Claude 的 AiHubMix provider_model_id 是 claude-sonnet-4-6-think（-think 无 ing，与 DMXAPI 的 -thinking 后缀不同）"
+      - "2026-04-16 (S2): 4 模型定价（×7.2 CNY）— Claude $3/$15 flat、DeepSeek $0.30/$0.45 flat、Gemini tiered($2/$12 ≤200K, $4/$18 >200K)、GPT tiered($2.50/$15 ≤272K, $5/$22.50 >272K)"
+      - "2026-04-16 (S2): ThinkingFormat 分派从模型名维度升级为 provider+模型 维度 — inferThinkingFormat 新增 providerName 参数；AiHubMix 走 ThinkingReasoningEffort，-think 后缀跳过 reasoning_effort（已内置 thinking）"
+      - "2026-04-16 (S2): API key 字面值直写 config_*.yaml（含 prod）— 本次豁免 CLAUDE.md §3 禁止硬编码规则"
     deferred: []
     blockers: []
     created_at: "2026-04-16T00:00:00+08:00"
