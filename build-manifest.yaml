@@ -1214,6 +1214,41 @@ features:
     created_at: "2026-04-15T00:00:00+08:00"
     completed_at: null
 
+  - id: "sse-stream-smooth-rendering"
+    ndf_version: "1.0"
+    description: "智能体/销售 SSE 流式渲染掉帧 — 复用 SOP 的 useTypewriterReveal（rAF 80 cps）把后端 ~250ms × ~13 字 burst 平滑成连续流动"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "纯前端单仓 UI 渲染优化；无 schema/API/biz 变更；3 个文件（含 1 个 composable 位置移动）；已有成熟蓝本（SOP 侧同方案）；Sonnet reviewer PASS"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-15T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "merged to develop (67056c8, merge commit 65acf38)"
+    hotfix_artifacts:
+      diagnosis: "静态比对：SOP 用 useTypewriterReveal（rAF 驱动 80 cps）平滑 SSE burst；chatbot/sales 直接赋值 streamContent.value = content 导致 UI 跟随 burst 跳动。根因锁定 stores/chatbot.ts 和 stores/sales.ts 的 token 事件 handler"
+      review: "Sonnet code reviewer 首轮 PASS 无 P0，2 个 P1（rAF 泄漏：两组件都缺 onBeforeUnmount dispose）已当场修复"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert 65acf38 on develop (numind-web-v3)"
+    last_verified:
+      at: "2026-04-15T00:00:00+08:00"
+      lint: "pass (0 errors, 1 pre-existing unrelated warning)"
+      type_check: "pass (vue-tsc --build --force)"
+      tests: "lint + type-check 通过；未做 Playwright E2E（纯 UI 动画，效果需人眼观察，本地启动后由用户验证）"
+      test_summary: "工件级静态验证通过；实机 SSE 流畅度需 dev 部署后观察"
+    decisions:
+      - "2026-04-15: 采用 view 层 reveal 而非 store 层 — 对齐 SOP 已验证的模式，且 store 保留累积字符串作为源真值便于历史回显与 session 切换恢复"
+      - "2026-04-15: 用 watch(streamContent, (next, prev)) + startsWith 检测增量并 append，而非重构 store 暴露 delta — 改动面更小、对 sales 的 per-session activeStreams 模式非侵入；非增量分支走 reset(next) 兼容会话切换"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-15T00:00:00+08:00"
+    completed_at: "2026-04-15T00:00:00+08:00"
+
   - id: "sop-trailing-chat-post-stream-scroll"
     ndf_version: "1.0"
     description: "SOP '继续问 AI' 发送消息后不贴底、流式结束 reload 后 scrollTop=0 导致看不见最新回复；附带修复初始 mount 不贴底问题"
