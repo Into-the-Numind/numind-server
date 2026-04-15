@@ -1312,12 +1312,12 @@ features:
       qa: null
     progress:
       total_tasks: 23
-      completed_tasks: 13
-      reviewed_tasks: 13
+      completed_tasks: 14
+      reviewed_tasks: 14
       current_task:
-        index: 14
-        title: "Task 11: 迁移 Monitor + Baidu OCR"
-        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-11"
+        index: 15
+        title: "Task 12: Admin API — Services CRUD"
+        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-12"
     tech_debt_added_in_s4:
       - "VectorDB billing (RecordCOS/RecordVectorDB) in salesrag/* not unified — out of Gateway scope (LLM/OCR/ASR only); document for Phase 2"
       - "volc.GenerateArticleContent has no billing call — pre-existing tech debt, not introduced by this batch"
