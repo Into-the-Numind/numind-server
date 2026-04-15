@@ -1293,9 +1293,24 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	history = append(history, LLMMessage{Role: "user", Content: question})
 
 	// 调用模型流式生成回答
+	// 注入 Langfuse trace（追问路径可观测性，与节点执行路径对齐）
+	traceID := langfuse.TraceID()
+	langfuse.CreateTrace(traceID, "sop_chat",
+		langfuse.WithUserID(userID),
+		langfuse.WithTraceInput(map[string]interface{}{
+			"run_id":          runID,
+			"conversation_id": conversationID,
+			"question":        question,
+			"history_len":     len(history),
+			"model_key":       modelKey,
+			"deep_thinking":   deepThinking,
+		}),
+		langfuse.WithTraceTags("sop", "chat"),
+	)
+	ctx = langfuse.WithTrace(ctx, traceID)
 	// 注入计费上下文
 	ctx = billing.WithBillingMeta(ctx, userID, "sop_chat_stream",
-		billing.Metadata("run_id", billing.FormatUint(runID), "conversation_id", conversationID))
+		billing.Metadata("run_id", billing.FormatUint(runID), "conversation_id", conversationID, "trace_id", traceID))
 	// 传入空字符串作为 input，这样执行器不会拼装节点的 Prompt，AI 保持普通助手身份
 	var answerBuf, thinkingBuf strings.Builder
 	chatStart := time.Now() // B4: 记录 chat LLM 调用起始时间，用于 duration_ms 持久化
@@ -1369,6 +1384,19 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	if err := b.ds.Sop().CreateChatMessage(assistantMsg); err != nil {
 		return fmt.Errorf("failed to save assistant message: %w", err)
 	}
+
+	// 更新 trace output（token 用量与响应长度）
+	traceOutput := map[string]interface{}{
+		"response_length": answerBuf.Len(),
+		"model_name":      assistantMsg.ModelName,
+		"duration_ms":     assistantMsg.DurationMs,
+	}
+	if usage != nil {
+		traceOutput["prompt_tokens"] = usage.PromptTokens
+		traceOutput["completion_tokens"] = usage.CompletionTokens
+		traceOutput["total_tokens"] = usage.TotalTokens
+	}
+	langfuse.CreateTrace(traceID, "sop_chat", langfuse.WithTraceOutput(traceOutput))
 
 	// ===== 积分扣减（新用户走积分，旧会员跳过）=====
 	b.deductCreditsForSop(ctx, userID, "sop_chat", "sop_chat", fmt.Sprintf("%d", runID))
