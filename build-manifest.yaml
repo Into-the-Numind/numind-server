@@ -1380,16 +1380,16 @@ features:
     ndf_version: "1.0"
     description: "接入 AiHubMix 作为新 LLM 聚合提供商，与 DMXAPI 并行。4 个模型（claude-sonnet-4-6 / gemini-3.1-pro-preview / gpt-5.4-mini / DeepSeek-V3）以 AiHubMix 为主路由、DMXAPI 为 failover，统一 OpenAI /chat/completions + reasoning_effort 协议"
     track: "standard"
-    stage: "S0"
+    stage: "S1"
     classification_reason: "涉及新外部服务集成（AiHubMix）+ 影响文件数 >3（dmxapi_client.go / llmrouter 映射 / config×4 / seed SQL），2 条 Triage 标准不满足。用户确认 Standard 快节奏推进"
-    last_updated_by: "ai-s0"
-    last_updated_at: "2026-04-16T00:00:00+08:00"
+    last_updated_by: "ai-s1"
+    last_updated_at: "2026-04-16T01:00:00+08:00"
     repos:
       - numind-server
     branches: {}
     artifacts:
       requirement: "numind-server/requirements/aihubmix-provider.md"
-      proposal: null
+      proposal: "numind-server/proposals/aihubmix-provider-proposal.md"
       spec: null
       plan: null
       review_spec_compliance: null
