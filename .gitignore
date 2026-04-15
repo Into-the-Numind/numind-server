@@ -64,3 +64,11 @@ PROJECT_BREAKDOWN.md
 cmd/numind/data/.worktrees/
 backup-wecom-*.tar.gz
 .gstack/
+
+# parse_eval tool
+scripts/parse_eval/samples/real/*
+!scripts/parse_eval/samples/real/.gitkeep
+scripts/parse_eval/reports/
+scripts/parse_eval/.venv/
+scripts/parse_eval/**/__pycache__/
+scripts/parse_eval/.pytest_cache/
