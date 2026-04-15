@@ -45,9 +45,11 @@ T1 必须最先完成（它决定 T2 的 priority 取值）。T2、T3、T4、T5 
 
 **验收条件**：
 - [x] 已确认 DMXAPI priority = 10（用户提供）
-- [ ] T2 seed SQL 的 priority 值填为 5
+- [x] AiHubMix priority 取值已确定为 5（< 10，保证主路由优先）
 
-**Commit**：无（纯预检，信息记入 spec §11）。
+> **注**：priority=5 的实际写入是 T2 的责任，不在此 task 验收范畴。
+
+**Commit**：无（纯预检，信息已记入 manifest decisions）。
 
 ---
 
@@ -211,11 +213,13 @@ aihubmix:
   api_key: "sk-vduyVKfBuiI5p4P5B030A80938924aFe87Af360473612f68"
 ```
 
-**注意**：
-- 当前 api_key 通过 seed SQL 直接 INSERT 到 `llm_provider.api_key`，config 中的 api_key 是冗余占位（未被 runtime 读取）。保留它是为：
-  - (a) 未来 ai-service-manager 的 `SyncProviderCredentials` 会读取 config 刷新 DB
+**注意（与 S1 proposal §3.2 的对齐说明）**：
+- S1 proposal §3.2 原写"seed SQL 从配置读取 api_key 而非写死"。**该假设在 S3 预研后被推翻**：`internal/pkg/aiservice/seed.go:SyncProviderCredentials` 目前是 stub（ai-service-manager 功能未实现），config → DB 同步路径不存在。
+- **最终方案**：seed SQL（T2）直接 INSERT 字面值 api_key 到 `llm_provider.api_key`；config 中的 `aihubmix.api_key` 是**冗余占位**，未被 runtime 读取。保留原因：
+  - (a) 未来 ai-service-manager 的 `SyncProviderCredentials` 实现后会读取 config 刷新 DB
   - (b) 运维文档一致性（所有 provider 凭据都在 config 可见）
-- Viper 不解析 `${AIHUBMIX_API_KEY}` 环境变量引用（用户选字面值）
+- Viper 不解析 `${AIHUBMIX_API_KEY}` 环境变量引用（用户选字面值，参见 manifest decisions）
+- 该不一致属于**已知技术债**，随 ai-service-manager 完成 `SyncProviderCredentials` 后自动解决
 
 **涉及文件**：
 - 修改：4 个 config 文件

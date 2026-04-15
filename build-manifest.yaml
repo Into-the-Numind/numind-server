@@ -1414,6 +1414,7 @@ features:
       - "2026-04-16 (S3): AiHubMix priority=5（DMXAPI 现为 10，用户确认）"
       - "2026-04-16 (S3): config→DB api_key 同步机制不存在（SyncProviderCredentials 是 ai-service-manager 未实现的 stub）→ seed SQL 直接 INSERT 字面值 api_key"
       - "2026-04-16 (S3): S5 验证策略=gstack /qa + 手动故障注入；不选 Playwright E2E（工时 >1 天超过本功能总工时）；不选纯后端 TDD（无法验证前端渲染）"
+      - "2026-04-16 (S3 review): 独立 Sonnet reviewer 审查 plan — PASS_WITH_CONCERNS；F-01(P1) 用户已豁免不处理；F-02/F-03(P2) 即时修复；F-02 根因：S1 proposal §3.2 假设被 S3 预研推翻（SyncProviderCredentials 是 stub），转为已知技术债待 ai-service-manager 解决"
     deferred: []
     blockers: []
     created_at: "2026-04-16T00:00:00+08:00"
