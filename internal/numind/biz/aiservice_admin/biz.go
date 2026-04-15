@@ -185,7 +185,7 @@ func (b *aiServiceAdminBiz) DeprecateService(ctx context.Context, id uint64, act
 // RestoreService clears deprecated_at.
 func (b *aiServiceAdminBiz) RestoreService(ctx context.Context, id uint64, actorID uint64, actorName string, reason string) error {
 	if reason == "" {
-		return errno.ErrAICapabilityOverrideRequiresReason.SetMessage("恢复服务必须填写原因")
+		return errno.ErrAIRestoreRequiresReason.SetMessage("恢复服务必须填写原因")
 	}
 	if err := b.reg.RestoreService(ctx, id, actorID, actorName, reason); err != nil {
 		return fmt.Errorf("aiservice_admin.RestoreService: %w", err)

@@ -12,6 +12,7 @@
 package admin_ai
 
 import (
+	"errors"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -52,19 +53,34 @@ func actorFromContext(c *gin.Context) (actorID uint64, actorName string) {
 
 // ListServices returns a paginated, optionally filtered list of AI services.
 // Query params:
-//   - service_type  — llm | ocr | asr (optional)
-//   - status        — active | deprecated (optional; default: active only)
-//   - page          — 1-based page number (default 1)
-//   - page_size     — items per page (default 20, max 100)
+//   - service_type       — llm | ocr | asr (optional)
+//   - status             — active | deprecated | all (optional; default: active only)
+//   - include_deprecated — true to include deprecated alongside active (legacy alias)
+//   - page               — 1-based page number (default 1)
+//   - page_size          — items per page (default 20, max 100)
 func (ctrl *AIServiceController) ListServices(c *gin.Context) {
 	log.C(c).Infow("Admin list AI services called")
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
 
+	status := c.Query("status")
+	includeDep := c.Query("include_deprecated") == "true"
+
 	filter := registry.ServiceFilter{
-		ServiceType:       c.Query("service_type"),
-		IncludeDeprecated: c.Query("status") == "deprecated" || c.Query("include_deprecated") == "true",
+		ServiceType: c.Query("service_type"),
+	}
+	switch status {
+	case "deprecated":
+		filter.OnlyDeprecated = true
+		filter.IncludeDeprecated = true
+	case "all":
+		filter.IncludeDeprecated = true
+	default:
+		// "active" or empty → active only (both flags remain false)
+		if includeDep {
+			filter.IncludeDeprecated = true
+		}
 	}
 
 	result, err := ctrl.biz.ListServices(c.Request.Context(), filter, page, pageSize)
@@ -93,7 +109,7 @@ func (ctrl *AIServiceController) GetService(c *gin.Context) {
 
 	detail, bizErr := ctrl.biz.GetService(c.Request.Context(), id)
 	if bizErr != nil {
-		if bizErr == errno.ErrAIServiceNotFound {
+		if errors.Is(bizErr, errno.ErrAIServiceNotFound) {
 			core.WriteResponse(c, errno.ErrAIServiceNotFound, nil)
 			return
 		}
@@ -111,19 +127,19 @@ func (ctrl *AIServiceController) GetService(c *gin.Context) {
 
 // createServiceReq is the request body for CreateService.
 type createServiceReq struct {
-	ModelKey       string          `json:"model_key"    binding:"required"`
-	DisplayName    string          `json:"display_name" binding:"required"`
-	ServiceType    string          `json:"service_type" binding:"required"`
-	CapabilityJSON model.JSONMap   `json:"capability_json"`
-	LatencyTier    string          `json:"latency_tier"`
-	QualityTier    string          `json:"quality_tier"`
-	Tags           model.JSONStringSlice `json:"tags"`
-	IsThinking     bool            `json:"is_thinking"`
-	SupportsThinking bool          `json:"supports_thinking"`
-	ThinkingOnly   bool            `json:"thinking_only"`
-	Icon           string          `json:"icon"`
-	SortOrder      int             `json:"sort_order"`
-	IsActive       *bool           `json:"is_active"`
+	ModelKey         string                `json:"model_key"    binding:"required"`
+	DisplayName      string                `json:"display_name" binding:"required"`
+	ServiceType      string                `json:"service_type" binding:"required"`
+	CapabilityJSON   model.JSONMap         `json:"capability_json"`
+	LatencyTier      string                `json:"latency_tier"`
+	QualityTier      string                `json:"quality_tier"`
+	Tags             model.JSONStringSlice `json:"tags"`
+	IsThinking       bool                  `json:"is_thinking"`
+	SupportsThinking bool                  `json:"supports_thinking"`
+	ThinkingOnly     bool                  `json:"thinking_only"`
+	Icon             string                `json:"icon"`
+	SortOrder        int                   `json:"sort_order"`
+	IsActive         *bool                 `json:"is_active"`
 }
 
 // CreateService creates a new AI service record.
@@ -178,19 +194,19 @@ func (ctrl *AIServiceController) CreateService(c *gin.Context) {
 
 // updateServiceReq is the request body for UpdateService.
 type updateServiceReq struct {
-	ModelKey         *string                `json:"model_key"`
-	DisplayName      *string                `json:"display_name"`
-	ServiceType      *string                `json:"service_type"`
-	CapabilityJSON   model.JSONMap          `json:"capability_json"`
-	LatencyTier      *string                `json:"latency_tier"`
-	QualityTier      *string                `json:"quality_tier"`
-	Tags             model.JSONStringSlice  `json:"tags"`
-	IsThinking       *bool                  `json:"is_thinking"`
-	SupportsThinking *bool                  `json:"supports_thinking"`
-	ThinkingOnly     *bool                  `json:"thinking_only"`
-	Icon             *string                `json:"icon"`
-	SortOrder        *int                   `json:"sort_order"`
-	IsActive         *bool                  `json:"is_active"`
+	ModelKey         *string               `json:"model_key"`
+	DisplayName      *string               `json:"display_name"`
+	ServiceType      *string               `json:"service_type"`
+	CapabilityJSON   model.JSONMap         `json:"capability_json"`
+	LatencyTier      *string               `json:"latency_tier"`
+	QualityTier      *string               `json:"quality_tier"`
+	Tags             model.JSONStringSlice `json:"tags"`
+	IsThinking       *bool                 `json:"is_thinking"`
+	SupportsThinking *bool                 `json:"supports_thinking"`
+	ThinkingOnly     *bool                 `json:"thinking_only"`
+	Icon             *string               `json:"icon"`
+	SortOrder        *int                  `json:"sort_order"`
+	IsActive         *bool                 `json:"is_active"`
 }
 
 // UpdateService updates an existing AI service.
@@ -212,7 +228,7 @@ func (ctrl *AIServiceController) UpdateService(c *gin.Context) {
 	// Load existing record first.
 	existing, bizErr := ctrl.biz.GetService(c.Request.Context(), id)
 	if bizErr != nil {
-		if bizErr == errno.ErrAIServiceNotFound {
+		if errors.Is(bizErr, errno.ErrAIServiceNotFound) {
 			core.WriteResponse(c, errno.ErrAIServiceNotFound, nil)
 			return
 		}
@@ -282,6 +298,7 @@ func (ctrl *AIServiceController) UpdateService(c *gin.Context) {
 // ----------------------------------------------------------------------------
 
 // DeprecateService soft-deletes an AI service (sets deprecated_at = now).
+// Body (optional): {"reason": "..."}
 func (ctrl *AIServiceController) DeprecateService(c *gin.Context) {
 	log.C(c).Infow("Admin deprecate AI service called")
 
@@ -291,9 +308,14 @@ func (ctrl *AIServiceController) DeprecateService(c *gin.Context) {
 		return
 	}
 
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	_ = c.ShouldBindJSON(&req) // optional body — ignore bind error
+
 	actorID, actorName := actorFromContext(c)
-	if err := ctrl.biz.DeprecateService(c.Request.Context(), id, actorID, actorName, ""); err != nil {
-		if err == errno.ErrAIServiceNotFound {
+	if err := ctrl.biz.DeprecateService(c.Request.Context(), id, actorID, actorName, req.Reason); err != nil {
+		if errors.Is(err, errno.ErrAIServiceNotFound) {
 			core.WriteResponse(c, errno.ErrAIServiceNotFound, nil)
 			return
 		}

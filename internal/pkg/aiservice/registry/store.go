@@ -60,8 +60,10 @@ type IStore interface {
 type ServiceFilter struct {
 	// ServiceType, when non-empty, filters to a specific type (llm | ocr | asr).
 	ServiceType string
-	// IncludeDeprecated, when true, also returns deprecated services.
+	// IncludeDeprecated, when true, also returns deprecated services alongside active ones.
 	IncludeDeprecated bool
+	// OnlyDeprecated, when true, returns only deprecated services (implies IncludeDeprecated).
+	OnlyDeprecated bool
 }
 
 // TaskBinding captures a single service binding for a task profile.
@@ -130,8 +132,14 @@ func (s *gormStore) ListServices(ctx context.Context, filter ServiceFilter) ([]*
 	if filter.ServiceType != "" {
 		q = q.Where("service_type = ?", filter.ServiceType)
 	}
-	if !filter.IncludeDeprecated {
+	switch {
+	case filter.OnlyDeprecated:
+		// Return only deprecated services (deprecated_at IS NOT NULL).
+		q = q.Where("deprecated_at IS NOT NULL")
+	case !filter.IncludeDeprecated:
+		// Default: active only.
 		q = q.Where("deprecated_at IS NULL")
+		// filter.IncludeDeprecated == true and OnlyDeprecated == false → no extra WHERE clause.
 	}
 	var services []*model.AIService
 	if err := q.Order("sort_order ASC, id ASC").Find(&services).Error; err != nil {

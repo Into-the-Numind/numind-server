@@ -1319,6 +1319,7 @@ features:
         title: "Task 12: Admin API — Services CRUD"
         plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-12"
     tech_debt_added_in_s4:
+      - "Task 12: ListServices in-memory pagination — registry interface 需扩展支持 DB-level offset/limit，scale > 100 服务后必须改"
       - "VectorDB billing (RecordCOS/RecordVectorDB) in salesrag/* not unified — out of Gateway scope (LLM/OCR/ASR only); document for Phase 2"
       - "volc.GenerateArticleContent has no billing call — pre-existing tech debt, not introduced by this batch"
       - "Task 9: modelKey 未接通 Gateway ModelOverride（spec §3.2 约定 user model preference）— S5 前 or Phase 2 补"
