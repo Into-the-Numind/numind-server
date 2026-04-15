@@ -1213,3 +1213,39 @@ features:
     blockers: []
     created_at: "2026-04-15T00:00:00+08:00"
     completed_at: null
+
+  - id: "sop-trailing-chat-post-stream-scroll"
+    ndf_version: "1.0"
+    description: "SOP '继续问 AI' 发送消息后不贴底、流式结束 reload 后 scrollTop=0 导致看不见最新回复；附带修复初始 mount 不贴底问题"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "纯前端单仓 UI 时序 bug；无 schema/API/biz 变更；1 个文件 TrailingChat.vue；Sonnet reviewer PASS"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-15T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "merged to develop (97f45f3, merge commit afbb8b5)"
+    hotfix_artifacts:
+      diagnosis: "gstack Playwright 实流：根因锁定在 loadHistory 的 loading.value=false 被放在 finally 块，resume 时 v-if loading 仍 true，消息容器未挂载 scrollHeight==clientHeight=558，scrollTop 被 clamp 为 0"
+      review: "Sonnet code reviewer PASS，无 P0/P1，1 个 P2（scrollToBottom expose 应走 resumeAfterLayout）已当场修复"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert afbb8b5 on develop (numind-web-v3)"
+    last_verified:
+      at: "2026-04-15T00:00:00+08:00"
+      lint: "pass (0 errors, 1 pre-existing unrelated warning)"
+      type_check: "pass (vue-tsc --build --force)"
+      tests: "gstack Playwright 实流：initial mount dBot 0→0（修前 379），send→stream→reload dBot 0→0（修前 590），中途上滑 interrupt 锁定（sH 1580 scrollTop 872 稳定），回滑 dBot=30 resume 后续流式贴底（sH 1854 scrollTop 1296 dBot=0）"
+      test_summary: "5 个场景（initial mount、send 瞬间、流式中、流式后 reload、interrupt+resume）全部 Playwright 实测通过"
+    decisions:
+      - "2026-04-15: loading.value = false 从 finally 块前移到 try 的 resume 之前，是修复的关键 one-liner。finally 的原始用意是统一兜底清零 loading，但因为 finally 晚于 resume，反而制造了 scrollHeight 尚未稳定的时间窗。catch 里显式补一条 loading=false 保持错误路径兜底"
+      - "2026-04-15: resumeAfterLayout 用 nextTick + 2x rAF 而非 ResizeObserver——marked/highlight.js 是 sync 的，2 帧足够等到第一次绘制稳定；ResizeObserver 方案更健壮但对此场景过度设计（Sonnet reviewer 同意）"
+      - "2026-04-15: 新增 pendingUserMessage.id watcher 把发送瞬间的贴底从『靠 streamingMessage null→{} 顺带 checkAndScroll』的侥幸副作用变成显式契约——父组件一旦改变赋值顺序或 await 间隔，原先的意外修复就会失效"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-15T00:00:00+08:00"
+    completed_at: "2026-04-15T00:00:00+08:00"
