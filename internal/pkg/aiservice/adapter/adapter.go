@@ -80,6 +80,34 @@ type RerankAdapter interface {
 	Rerank(ctx context.Context, route *registry.ResolvedRoute, req aiservice.RerankRequest) (*aiservice.RerankResponse, error)
 }
 
+// OCRAdapter is implemented by adapters that support optical character recognition.
+type OCRAdapter interface {
+	Adapter
+
+	// OCR extracts text from an image, optionally returning per-word bounding boxes.
+	OCR(ctx context.Context, route *registry.ResolvedRoute, req aiservice.OCRRequest) (*aiservice.OCRResponse, error)
+}
+
+// ASRAdapter is implemented by adapters that support automatic speech recognition.
+type ASRAdapter interface {
+	Adapter
+
+	// ASR transcribes an audio clip to text.
+	ASR(ctx context.Context, route *registry.ResolvedRoute, req aiservice.ASRRequest) (*aiservice.ASRResponse, error)
+}
+
+// FileServiceAdapter is implemented by adapters that support file upload services.
+// It is distinct from LLM/OCR/ASR adapters and is used to upload files to a
+// provider-managed store (e.g. Alibaba Bailian) and obtain a stable FileID that
+// can be referenced in subsequent LLM calls.
+type FileServiceAdapter interface {
+	Adapter
+
+	// UploadFile uploads raw file bytes (or a file at a local path) to the
+	// provider and returns a FileUploadResponse containing the remote FileID.
+	UploadFile(ctx context.Context, route *registry.ResolvedRoute, req aiservice.FileUploadRequest) (*aiservice.FileUploadResponse, error)
+}
+
 // ----------------------------------------------------------------------------
 // OpenAI-compatible wire types (shared across ali / volc / dmxapi adapters)
 // ----------------------------------------------------------------------------

@@ -256,3 +256,23 @@ type ASRResponse struct {
 	DurationSeconds float64 `json:"duration_seconds,omitempty"`
 	Provider        string  `json:"provider"`
 }
+
+// FileUploadRequest is the unified request for file upload calls.
+type FileUploadRequest struct {
+	// FileBytes holds the raw file contents to upload.
+	FileBytes []byte `json:"file_bytes,omitempty"`
+	// FileName is the logical file name (with extension), e.g. "document.pdf".
+	FileName string `json:"file_name"`
+	// MimeType is the MIME content type, e.g. "application/pdf" or "text/plain".
+	// Providers may auto-detect if empty.
+	MimeType string `json:"mime_type,omitempty"`
+}
+
+// FileUploadResponse is the unified response for file upload calls.
+type FileUploadResponse struct {
+	// FileID is the provider-assigned stable identifier for the uploaded file.
+	// Use this ID when referencing the file in subsequent LLM calls.
+	FileID     string `json:"file_id"`
+	Provider   string `json:"provider"`
+	UploadedAt string `json:"uploaded_at,omitempty"` // RFC3339 timestamp, if provided by the provider
+}
