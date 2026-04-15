@@ -10,6 +10,7 @@ import (
 
 	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/pkg/aiservice"
+	aismw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/errno"
@@ -146,6 +147,8 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 
 	// 7. 注入计费上下文 + skip-legacy-billing 标记，通过 AI Gateway 调用流式 LLM
 	ctx = billing.WithBilling(ctx, userID, "chatbot_chat")
+	// 将 userID 注入 aiservice middleware context，使 Tracing/Billing 中间件能正确读取（避免 user_id=0）
+	ctx = aismw.WithUserID(ctx, userID)
 	// ParentObservationID 设为空字符串，使 Gateway 创建的 generation 直接挂在 trace 根节点下
 	ctx = langfuse.WithTraceAndParent(ctx, traceID, "")
 	// 注入 skip-legacy-billing：Gateway 已统一记账，防止旧 billing 路径双记
@@ -200,6 +203,9 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 				ReasoningTokens:  chunk.Usage.ReasoningTokens,
 			}
 		}
+	}
+	if gatewayUsage == nil {
+		log.C(ctx).Warnw("ChatStream: stream ended without final usage chunk", "session_id", sessionID)
 	}
 	usage := gatewayUsage
 

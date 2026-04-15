@@ -14,6 +14,7 @@ import (
 	"numind-server/internal/numind/biz/llmrouter"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
+	aismw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/langfuse"
@@ -38,7 +39,7 @@ func NewSopExecutor(ds store.IStore, _ *llmrouter.Router) *SopExecutor {
 		// Log error but don't fail startup, just degrade gracefully (we can add checks later)
 		// For now, assume it works or we'll panic/error on first use if nil.
 		// Better to just log.
-		fmt.Printf("Failed to initialize tokenizer: %v\n", err)
+		log.Errorw("failed to initialize tokenizer", "error", err)
 	}
 	return &SopExecutor{
 		ds:        ds,
@@ -103,9 +104,11 @@ func applyDefaultLLMConfig(node *model.SopNode) {
 // ExecuteNodeStream 流式执行单个节点（公开方法）
 // 优先通过 AI Gateway 路由执行（modelKey != ""）；否则保留原有直连逻辑。
 func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, modelKey string, thinking bool, handler StreamHandler) (string, *TokenUsage, error) {
+	_ = thinking // 待 Task 9 后续接通 Gateway thinking 模式
+
 	// Gateway 路径：用户选择了特定模型
 	if modelKey != "" {
-		return e.executeViaGateway(ctx, node, input, history, handler)
+		return e.executeViaGateway(ctx, node, input, history, modelKey, handler)
 	}
 
 	// 节点未配置 LLM 信息时，使用系统默认配置
@@ -403,10 +406,18 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 //   - SopText：其余所有情况（纯文本）
 //
 // 调用前注入 WithSkipLegacyBilling，防止 LLMRouter 旧路径与 Gateway 双记账。
-func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, handler StreamHandler) (string, *TokenUsage, error) {
+// modelKey 参数当前未接通 Gateway ModelOverride（billing-baseline.md BLOCKER 3）；预留供未来扩展。
+func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, modelKey string, handler StreamHandler) (string, *TokenUsage, error) {
+	_ = modelKey // 当前 Gateway 通过 task profile 静态绑定模型；ModelOverride 接通见 billing-baseline.md BLOCKER 3
+
 	log.C(ctx).Infow("ExecuteNodeStream via AI Gateway",
 		"node_id", node.ID,
 		"node_name", node.Name)
+
+	// 0. 将 billing context 中的 userID 注入 aiservice middleware，确保 Tracing/Billing 中间件能正确读取
+	if bc := billing.FromContext(ctx); bc != nil {
+		ctx = aismw.WithUserID(ctx, bc.UserID)
+	}
 
 	// 1. 构建 aiservice.ChatMessage 列表：system prompt → history → user input
 	var aiMessages []aiservice.ChatMessage
@@ -482,6 +493,10 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 				ReasoningTokens:  chunk.Usage.ReasoningTokens,
 			}
 		}
+	}
+
+	if fullContent.Len() == 0 && finalUsage == nil {
+		return "", nil, fmt.Errorf("executeViaGateway: empty response from Gateway (no chunks received)")
 	}
 
 	return fullContent.String(), finalUsage, nil
