@@ -1375,3 +1375,39 @@ features:
     blockers: []
     created_at: "2026-04-16T00:00:00+08:00"
     completed_at: "2026-04-16T00:00:00+08:00"
+
+  - id: "aihubmix-provider"
+    ndf_version: "1.0"
+    description: "接入 AiHubMix 作为新 LLM 聚合提供商，与 DMXAPI 并行。4 个模型（claude-sonnet-4-6 / gemini-3.1-pro-preview / gpt-5.4-mini / DeepSeek-V3）以 AiHubMix 为主路由、DMXAPI 为 failover，统一 OpenAI /chat/completions + reasoning_effort 协议"
+    track: "standard"
+    stage: "S0"
+    classification_reason: "涉及新外部服务集成（AiHubMix）+ 影响文件数 >3（dmxapi_client.go / llmrouter 映射 / config×4 / seed SQL），2 条 Triage 标准不满足。用户确认 Standard 快节奏推进"
+    last_updated_by: "ai-s0"
+    last_updated_at: "2026-04-16T00:00:00+08:00"
+    repos:
+      - numind-server
+    branches: {}
+    artifacts:
+      requirement: "numind-server/requirements/aihubmix-provider.md"
+      proposal: null
+      spec: null
+      plan: null
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: null
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-04-16: 走 Standard 不走 Hotfix（2 条 Triage 标准不满足，不可降级）"
+      - "2026-04-16: AiHubMix 为新增主路由、DMXAPI 作 failover 保留（不替换）"
+      - "2026-04-16: 统一走 OpenAI /chat/completions，thinking 用 reasoning_effort:'high'，不走原生 Gemini/GPT Responses 端点"
+      - "2026-04-16: 与活跃功能 ai-service-manager 的关系 — 选方案 A：当前在旧 llm_provider 表上接入，日后随 ai-service-manager 迁移"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-16T00:00:00+08:00"
+    completed_at: null
