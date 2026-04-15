@@ -1176,3 +1176,40 @@ features:
     blockers: []
     created_at: "2026-04-15T00:00:00+08:00"
     completed_at: null
+
+  - id: "sop-chat-langfuse-trace"
+    ndf_version: "1.0"
+    description: "SOP 继续问 AI（ChatAfterRunStream）缺失 Langfuse 埋点 — 节点执行路径有 trace，追问路径无 trace，导致追问的 LLM 调用是线上黑盒，无法定位 prompt 污染/token 消耗/错误"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "纯后端单仓库 observability 补丁，无 schema/API/业务逻辑变更，影响 1 个文件（sop.go），风险极低（langfuse 调用已有 tc != nil 兜底）"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-15T00:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/sop-chat-langfuse-trace"
+    hotfix_artifacts:
+      diagnosis: "inline-triage"
+      review: "inline"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert 该 commit on develop"
+    last_verified:
+      at: "2026-04-15T00:00:00+08:00"
+      lint: "go vet pass（只有既存的 sqlite cgo deprecated 警告，与本次改动无关）"
+      type_check: "go build pass"
+      tests: "n/a（observability-only，无业务逻辑）"
+      test_summary: "go build ./internal/numind/biz/sop/... pass, go vet ./... pass"
+    decisions:
+      - "2026-04-15: trace name 选 'sop_chat' 以与节点执行的 'sop_execute' 区分，tags 用 ['sop','chat']"
+      - "2026-04-15: trace output 在 assistant message 保存后更新（参照 chatbot/stream.go:224 模式），记录 token 用量+响应长度+duration"
+      - "2026-04-15: billing metadata 追加 trace_id，便于 billing 与 langfuse 关联追踪"
+    deferred:
+      - "污染感的根因验证（前序节点 output 塞入 history 作为 assistant 消息导致 in-context 模仿）：需在 Langfuse UI 上实际抓一条 trace 观察 messages 数组后再决定是否做 prompt 改造，不在本 hotfix 范围"
+    blockers: []
+    created_at: "2026-04-15T00:00:00+08:00"
+    completed_at: null
