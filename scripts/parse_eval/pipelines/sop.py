@@ -1,12 +1,14 @@
 import time
-import uuid
 from pathlib import Path
 
 import requests
 
 from .base import Pipeline, ParseResult
 
-SOP_ENDPOINT = "/v1/pdf/convert-to-text"
+# Lightweight variant of /v1/pdf/convert-to-text — same underlying parser
+# (MarkItDown → go-fitz) without the SOP run_id/node_id binding and
+# without COS upload. Suitable for standalone parse quality evaluation.
+SOP_ENDPOINT = "/v1/files/extract-text"
 
 
 class SopPipeline(Pipeline):
@@ -18,14 +20,11 @@ class SopPipeline(Pipeline):
 
     def parse(self, sample_path: Path) -> ParseResult:
         started = time.time()
-        run_id = f"eval-{uuid.uuid4().hex[:8]}"
-        node_id = "eval-node"
         try:
             with open(sample_path, "rb") as f:
                 resp = requests.post(
                     f"{self.base_url}{SOP_ENDPOINT}",
                     headers={"Authorization": f"Bearer {self.token}"},
-                    data={"run_id": run_id, "node_id": node_id},
                     files={"file": (sample_path.name, f)},
                     timeout=120,
                 )
