@@ -15,14 +15,20 @@ const (
 	MessageRoleAssistant MessageRole = "assistant"
 )
 
+// MessagePart represents a single part of a multipart message (text or image_url).
+// TODO(Task 2): expand fields (type, text, image_url struct, etc.) when vision API is implemented.
+type MessagePart struct {
+	// TODO(Task 2): add Type, Text, ImageURL fields.
+}
+
 // MessageContent holds either a plain text string or a multipart slice.
 // When Content is non-empty, Parts is ignored (and vice versa).
 type MessageContent struct {
 	// Text is a plain text message (used when there are no image/file parts).
 	Text string `json:"text,omitempty"`
 	// Parts holds multipart content (text + images). Used for vision calls.
-	// Each part is a map with "type" ("text"|"image_url") and associated data.
-	Parts []map[string]interface{} `json:"parts,omitempty"`
+	// TODO(Task 2): populate MessagePart fields when vision API is implemented.
+	Parts []MessagePart `json:"parts,omitempty"`
 }
 
 // ChatMessage is a single turn in a conversation.
@@ -113,11 +119,17 @@ type OCRRequest struct {
 	ImageFormat string `json:"image_format,omitempty"`
 }
 
+// OCRWord represents a single word with its bounding box from an OCR response.
+// TODO(Task 2): add BoundingBox, Confidence, and other provider-specific fields.
+type OCRWord struct {
+	// TODO(Task 2): add Word, BoundingBox, Confidence fields.
+}
+
 // OCRResponse is the unified response for OCR calls.
 type OCRResponse struct {
-	Text     string                   `json:"text"`
-	Words    []map[string]interface{} `json:"words,omitempty"` // per-word bounding boxes (provider-specific)
-	Provider string                   `json:"provider"`
+	Text     string    `json:"text"`
+	Words    []OCRWord `json:"words,omitempty"` // per-word bounding boxes (provider-specific)
+	Provider string    `json:"provider"`
 }
 
 // ASRRequest is the unified request for ASR (speech-to-text) calls.

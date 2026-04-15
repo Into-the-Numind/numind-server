@@ -27,9 +27,11 @@ type UsageRecord struct {
 
 	// AI Service Manager 扩展字段（nullable；历史数据保持 null）
 	// TaskID links to task_profile.task_id; null = legacy data or non-AI call.
-	TaskID string `gorm:"column:task_id;size:80;default:null" json:"task_id,omitempty"`
+	// *string so zero value writes SQL NULL (not empty string) for legacy records.
+	TaskID *string `gorm:"column:task_id;size:80;default:null" json:"task_id,omitempty"`
 	// Unit describes how the call is priced: per_1m_tokens | per_call | per_second.
-	Unit string `gorm:"column:unit;size:20;default:null" json:"unit,omitempty"`
+	// *string so zero value writes SQL NULL (not empty string) for legacy records.
+	Unit *string `gorm:"column:unit;size:20;default:null" json:"unit,omitempty"`
 	// CallCount is the number of API calls for per_call billing (OCR etc.).
 	CallCount *int `gorm:"column:call_count;default:null" json:"call_count,omitempty"`
 	// DurationSeconds is the audio duration for per_second billing (ASR etc.).

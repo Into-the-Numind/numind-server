@@ -16,13 +16,13 @@ import "context"
 //	// The new Gateway, if also called, checks ShouldSkipLegacyBilling(ctx)
 //	// to avoid double-billing.
 
-type ctxKey int
+// skipLegacyBillingKeyType is an unexported struct used as the context key type.
+// Using an opaque struct (instead of a built-in type like int) prevents collisions
+// with context keys defined in other packages.
+type skipLegacyBillingKeyType struct{}
 
-const ctxKeySkipLegacyBilling ctxKey = iota
-
-// CtxKeySkipLegacyBilling is the context key used to signal that legacy billing
-// should be skipped for the current request. Exported for use in biz layer tests.
-const CtxKeySkipLegacyBilling = ctxKeySkipLegacyBilling
+// ctxKeySkipLegacyBilling is the singleton key instance; unexported to prevent misuse.
+var ctxKeySkipLegacyBilling = skipLegacyBillingKeyType{}
 
 // WithSkipLegacyBilling returns a new context with the skip-legacy-billing flag set.
 // Call this before delegating to a legacy billing path that has already been migrated

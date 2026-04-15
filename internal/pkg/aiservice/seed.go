@@ -2,9 +2,11 @@ package aiservice
 
 import (
 	"context"
-	"log"
 
+	"github.com/spf13/viper"
 	"gorm.io/gorm"
+
+	"numind-server/internal/pkg/log"
 )
 
 // SyncProviderCredentials syncs provider API keys from application config into the
@@ -21,8 +23,8 @@ import (
 // The /healthz/ai endpoint (Task 8) exposes seed status for monitoring.
 //
 // TODO(Task 8): Implement the actual UPSERT logic using viper config + gorm DB.
-func SyncProviderCredentials(ctx context.Context, db *gorm.DB) error {
+func SyncProviderCredentials(ctx context.Context, db *gorm.DB, cfg *viper.Viper) error {
 	// Placeholder implementation — Task 8 will fill this in.
-	log.Println("[aiservice] SyncProviderCredentials: stub — no-op until Task 8")
+	log.Infow("[aiservice] SyncProviderCredentials: stub — no-op until Task 8")
 	return nil
 }

@@ -13,9 +13,11 @@ import (
 type JSONMap map[string]interface{}
 
 // Value implements the driver.Valuer interface for database writes.
+// A nil JSONMap writes SQL NULL (not "{}") so that optional JSON columns store
+// a true NULL rather than an empty-object string for unset values.
 func (j JSONMap) Value() (driver.Value, error) {
 	if j == nil {
-		return "{}", nil
+		return nil, nil
 	}
 	b, err := json.Marshal(j)
 	if err != nil {
@@ -46,9 +48,11 @@ func (j *JSONMap) Scan(val interface{}) error {
 type JSONStringSlice []string
 
 // Value implements the driver.Valuer interface for database writes.
+// A nil JSONStringSlice writes SQL NULL (not "[]") so that optional JSON columns
+// store a true NULL rather than an empty-array string for unset values.
 func (j JSONStringSlice) Value() (driver.Value, error) {
 	if j == nil {
-		return "[]", nil
+		return nil, nil
 	}
 	b, err := json.Marshal(j)
 	if err != nil {
