@@ -1312,12 +1312,12 @@ features:
       qa: null
     progress:
       total_tasks: 23
-      completed_tasks: 2
-      reviewed_tasks: 2
+      completed_tasks: 3
+      reviewed_tasks: 3
       current_task:
-        index: 3
-        title: "Task 2: Gateway 骨架 + Capability Schema + Matching"
-        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-2"
+        index: 4
+        title: "Task 3: Registry + Task Profile Resolver"
+        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-3"
     pending_spec_updates:
       - "2026-04-15: spec §4.3 errno 数字 code 改为字符串 code（项目约定）— 留 Task 15b"
       - "2026-04-15: spec §2.1.2 补 thinking_only 列到字段清单 — 留 Task 15b"
