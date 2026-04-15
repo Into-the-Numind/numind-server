@@ -16,6 +16,13 @@
 -- 1. llm_provider — 新增 AiHubMix 供应商（1 行）
 -- ============================================================
 -- name 列有 UNIQUE 约束，INSERT IGNORE 保证幂等
+--
+-- 安全豁免：api_key 以字面值直写（违反 CLAUDE.md §3 "禁止硬编码 API 密钥"）。
+-- 本次用户已明示豁免，记录于：
+--   - docs/superpowers/specs/2026-04-16-aihubmix-provider-design.md §D6
+--   - build-manifest.yaml 条目 aihubmix-provider.decisions（2026-04-16 S2）
+-- 未来 ai-service-manager 的 SyncProviderCredentials 实装后可清除此字面值，
+-- 改由启动时从 config 读取。
 INSERT IGNORE INTO llm_provider (name, display_name, base_url, api_key, is_active)
 VALUES (
   'aihubmix',
@@ -109,7 +116,7 @@ VALUES
 -- Claude: billing_mode=flat，直接在 pricing_rule 记录价格
 -- DeepSeek: billing_mode=flat，直接在 pricing_rule 记录价格
 -- Gemini/GPT: billing_mode=tiered_token，头表价格填 0，实际价格走 pricing_rule_tier 子表
-INSERT INTO pricing_rule
+INSERT IGNORE INTO pricing_rule
   (service_type, provider, model, billing_mode, flat_unit,
    input_price_per_m_tok, output_price_per_m_tok, price_per_call, price_per_gb,
    sell_input_price_per_m_tok, sell_output_price_per_m_tok, sell_price_per_call, sell_price_per_gb,
@@ -160,7 +167,7 @@ VALUES
 -- GPT 5.4 定价（汇率 ×7.2 换算为人民币）：
 --   input: ≤272K → ¥18.00/M；>272K → ¥36.00/M
 --   output: ≤272K → ¥108.00/M；>272K → ¥162.00/M
-INSERT INTO pricing_rule_tier
+INSERT IGNORE INTO pricing_rule_tier
   (rule_id, token_type, min_tokens, max_tokens, cost_per_mtok, sell_per_mtok)
 VALUES
   -- Gemini input 档一：0 ~ 200000
