@@ -77,6 +77,7 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 
 		subUsers = append(subUsers, v1.SubUserInfo{
 			UserID:              user.ID,
+			Username:            user.Username,
 			Nickname:            user.Nickname,
 			Phone:               user.Phone,
 			Avatar:              user.AvatarURL,
