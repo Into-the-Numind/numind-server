@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Parse Eval Report — {{ run_id }}</title>
+<style>
+body { font-family: -apple-system, sans-serif; margin: 24px; color: #1a1a1a; }
+h1 { font-size: 22px; }
+table { border-collapse: collapse; margin: 16px 0; }
+th, td { padding: 8px 12px; border: 1px solid #ddd; font-size: 13px; text-align: center; }
+th { background: #f5f5f5; }
+td.excellent { background: #d4edda; }
+td.good { background: #fff3cd; }
+td.needsreview { background: #fbdcb0; }
+td.fail { background: #f8d7da; color: #721c24; font-weight: bold; }
+.sample { margin: 24px 0; padding: 12px; border: 1px solid #e0e0e0; border-radius: 6px; }
+.sample h3 { margin: 0 0 8px 0; }
+.cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.col { background: #fafafa; padding: 8px; font-size: 12px; font-family: ui-monospace, monospace; white-space: pre-wrap; max-height: 400px; overflow: auto; }
+.notes { color: #856404; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>Document Parsing Evaluation — {{ run_id }}</h1>
+<p>Pipelines: {{ pipelines | join(', ') }} | Samples: {{ samples | length }}</p>
+
+<h2>Score Matrix</h2>
+<table>
+<thead>
+<tr><th>Sample</th>{% for p in pipelines %}<th>{{ p }}</th>{% endfor %}</tr>
+</thead>
+<tbody>
+{% for sample in samples %}
+<tr>
+<td style="text-align:left">{{ sample }}</td>
+{% for p in pipelines %}
+{% set row = matrix[sample].get(p) %}
+{% if row %}
+<td class="{{ row.grade | lower }}">{{ '%.1f' | format(row.total_score) }}<br><small>{{ row.grade }}</small></td>
+{% else %}
+<td>—</td>
+{% endif %}
+{% endfor %}
+</tr>
+{% endfor %}
+</tbody>
+</table>
+
+<h2>Per-Sample Detail</h2>
+{% for sample in samples %}
+<div class="sample">
+<h3>{{ sample }}</h3>
+<div class="cols">
+{% for p in pipelines %}
+{% set row = matrix[sample].get(p) %}
+<div>
+<strong>{{ p }}</strong>
+{% if row %}
+— {{ '%.1f' | format(row.total_score) }} ({{ row.grade }})<br>
+<small>enc {{ '%.1f' | format(row.encoding_score) }} | struct {{ '%.1f' | format(row.structure_score) }} | comp {{ '%.1f' | format(row.completeness_score) }} | {{ '%.1fs' | format(row.elapsed_seconds) }}</small>
+{% if row.notes %}<div class="notes">{{ row.notes | join('; ') }}</div>{% endif %}
+<div class="col">{{ outputs.get(sample, {}).get(p, '') | truncate(3000) }}</div>
+{% else %}
+<div class="notes">no result</div>
+{% endif %}
+</div>
+{% endfor %}
+</div>
+</div>
+{% endfor %}
+
+</body>
+</html>
