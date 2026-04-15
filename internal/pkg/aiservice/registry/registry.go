@@ -1,3 +1,10 @@
+// Package registry provides DB access, in-memory caching, and task-profile
+// resolution for the AI Service Manager.
+//
+// Audit log policy: InsertAuditLog is best-effort. Write failures are logged
+// at WARN level but do NOT block the primary business operation. This ensures
+// that transient DB hiccups on the audit table never prevent service
+// configuration changes.
 package registry
 
 import (
@@ -10,6 +17,7 @@ import (
 
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
 
@@ -28,7 +36,7 @@ type ProviderInfo struct {
 
 // PricingInfo summarises the billing parameters for a specific route.
 type PricingInfo struct {
-	Unit               string   // "per_1m_tokens" | "per_call" | "per_second"
+	Unit               string // "per_1m_tokens" | "per_call" | "per_second"
 	InputPricePerMTok  float64
 	OutputPricePerMTok float64
 	PricePerCall       *float64
@@ -43,6 +51,8 @@ type ResolvedRoute struct {
 	ServiceID       uint64
 	ServiceKey      string // ai_service.model_key
 	ServiceType     string // llm | ocr | asr
+	LatencyTier     string
+	QualityTier     string
 	Provider        ProviderInfo
 	ProviderModelID string // the model identifier sent to the provider API
 	Capability      profile.ServiceCapability
@@ -63,13 +73,17 @@ type Registry interface {
 	ListServices(ctx context.Context, filter ServiceFilter) ([]*model.AIService, error)
 
 	// SaveService creates or updates a service and invalidates related caches.
-	SaveService(ctx context.Context, svc *model.AIService, actorID uint64) error
+	// actorID and actorName identify the admin user performing the action and are
+	// recorded in the audit log.
+	SaveService(ctx context.Context, svc *model.AIService, actorID uint64, actorName string) error
 
 	// DeprecateService marks a service as deprecated (soft-delete) and writes an audit log.
-	DeprecateService(ctx context.Context, id uint64, actorID uint64, reason string) error
+	// actorID and actorName identify the admin user performing the action.
+	DeprecateService(ctx context.Context, id uint64, actorID uint64, actorName string, reason string) error
 
 	// RestoreService clears the deprecated_at flag and writes an audit log.
-	RestoreService(ctx context.Context, id uint64, actorID uint64, reason string) error
+	// actorID and actorName identify the admin user performing the action.
+	RestoreService(ctx context.Context, id uint64, actorID uint64, actorName string, reason string) error
 
 	// GetTaskProfile returns a single TaskProfile by task_id.
 	GetTaskProfile(ctx context.Context, taskID string) (*model.TaskProfile, error)
@@ -77,17 +91,21 @@ type Registry interface {
 	// ListTaskProfiles returns all task profiles.
 	ListTaskProfiles(ctx context.Context) ([]*model.TaskProfile, error)
 
-	// SaveTaskProfile creates or updates a task profile and replaces its service bindings.
-	SaveTaskProfile(ctx context.Context, tp *model.TaskProfile, bindings []TaskBinding) error
+	// SaveTaskProfile creates or updates a task profile and atomically replaces its
+	// service bindings. actorID and actorName are recorded in the audit log.
+	SaveTaskProfile(ctx context.Context, tp *model.TaskProfile, bindings []TaskBinding, actorID uint64, actorName string) error
 
 	// ResolveTask looks up the task profile for taskID and resolves the primary +
 	// fallback service routes. The primary route is returned as the first value;
-	// fallback routes (ordered by priority DESC) are the second value.
+	// fallback routes (ordered by priority ASC, 0 = highest) are the second value.
 	//
 	// Errors:
 	//   - errno.ErrAITaskNotFound      — no TaskProfile row for taskID
-	//   - errno.ErrAIServiceNotFound   — default_service_id is NULL or the service
-	//                                    is deprecated / inactive
+	//   - errno.ErrAIServiceUnbound    — default_service_id is NULL (not yet bound)
+	//   - errno.ErrAIServiceNotFound   — the bound service is deprecated / inactive
+	//
+	// Note: Capability Matching is intentionally NOT performed at resolve time
+	// (per spec §6.5: trust persisted state, validate only at admin save time).
 	ResolveTask(ctx context.Context, taskID string) (*ResolvedRoute, []ResolvedRoute, error)
 }
 
@@ -140,64 +158,109 @@ func (r *registryImpl) ListServices(ctx context.Context, filter ServiceFilter) (
 }
 
 // SaveService creates or updates a service, then invalidates the cache for that service
-// and all task entries that reference it.
-func (r *registryImpl) SaveService(ctx context.Context, svc *model.AIService, actorID uint64) error {
+// and all task entries that reference it. actorID and actorName are recorded in the audit log.
+func (r *registryImpl) SaveService(ctx context.Context, svc *model.AIService, actorID uint64, actorName string) error {
 	isCreate := svc.ID == 0
+
+	// For updates, load the old state to build a diff.
+	var diffJSON model.JSONMap
+	if !isCreate {
+		if old, err := r.store.GetService(ctx, svc.ID); err == nil {
+			diffJSON = buildServiceDiff(old, svc)
+		}
+	}
+
 	if err := r.store.SaveService(ctx, svc); err != nil {
 		return fmt.Errorf("registry.SaveService: %w", err)
 	}
 	// Invalidate cache for this service ID.
 	r.cache.InvalidateService(svc.ID)
 
-	// Write audit log.
+	// Write audit log (best-effort — failure is logged but does not block).
 	action := model.AuditActionServiceCreate
 	if !isCreate {
 		action = model.AuditActionServiceUpdate
 	}
-	_ = r.store.InsertAuditLog(ctx, &model.AIServiceAuditLog{
+	if err := r.store.InsertAuditLog(ctx, &model.AIServiceAuditLog{
 		ActorID:    actorID,
-		ActorName:  "",
+		ActorName:  actorName,
 		Action:     action,
 		TargetType: model.AuditTargetService,
 		TargetID:   svc.ID,
-	})
+		DiffJSON:   diffJSON,
+	}); err != nil {
+		log.Warnw("failed to write audit log",
+			"action", action,
+			"target_id", svc.ID,
+			"error", err,
+		)
+	}
 	return nil
 }
 
 // DeprecateService sets deprecated_at to now and writes an audit log entry.
-func (r *registryImpl) DeprecateService(ctx context.Context, id uint64, actorID uint64, reason string) error {
+// actorID and actorName identify the admin user performing the action.
+func (r *registryImpl) DeprecateService(ctx context.Context, id uint64, actorID uint64, actorName string, reason string) error {
+	// Load old state for diff.
+	var diffJSON model.JSONMap
+	if old, err := r.store.GetService(ctx, id); err == nil {
+		diffJSON = model.JSONMap{"before": map[string]interface{}{"deprecated_at": nil}, "after": map[string]interface{}{"deprecated_at": "now"}}
+		_ = old // used to confirm existence; diff content is fixed for deprecation
+	}
+
 	now := time.Now()
 	if err := r.store.SetServiceDeprecated(ctx, id, &now); err != nil {
 		return fmt.Errorf("registry.DeprecateService: %w", err)
 	}
 	r.cache.InvalidateService(id)
 
-	_ = r.store.InsertAuditLog(ctx, &model.AIServiceAuditLog{
+	if err := r.store.InsertAuditLog(ctx, &model.AIServiceAuditLog{
 		ActorID:    actorID,
-		ActorName:  "",
+		ActorName:  actorName,
 		Action:     model.AuditActionServiceDeprecate,
 		TargetType: model.AuditTargetService,
 		TargetID:   id,
 		Reason:     reason,
-	})
+		DiffJSON:   diffJSON,
+	}); err != nil {
+		log.Warnw("failed to write audit log",
+			"action", model.AuditActionServiceDeprecate,
+			"target_id", id,
+			"error", err,
+		)
+	}
 	return nil
 }
 
 // RestoreService clears deprecated_at and writes an audit log entry.
-func (r *registryImpl) RestoreService(ctx context.Context, id uint64, actorID uint64, reason string) error {
+// actorID and actorName identify the admin user performing the action.
+func (r *registryImpl) RestoreService(ctx context.Context, id uint64, actorID uint64, actorName string, reason string) error {
+	// Load old state for diff.
+	var diffJSON model.JSONMap
+	if old, err := r.store.GetService(ctx, id); err == nil {
+		diffJSON = model.JSONMap{"before": map[string]interface{}{"deprecated_at": old.DeprecatedAt}, "after": map[string]interface{}{"deprecated_at": nil}}
+	}
+
 	if err := r.store.SetServiceDeprecated(ctx, id, nil); err != nil {
 		return fmt.Errorf("registry.RestoreService: %w", err)
 	}
 	r.cache.InvalidateService(id)
 
-	_ = r.store.InsertAuditLog(ctx, &model.AIServiceAuditLog{
+	if err := r.store.InsertAuditLog(ctx, &model.AIServiceAuditLog{
 		ActorID:    actorID,
-		ActorName:  "",
+		ActorName:  actorName,
 		Action:     model.AuditActionServiceRestore,
 		TargetType: model.AuditTargetService,
 		TargetID:   id,
 		Reason:     reason,
-	})
+		DiffJSON:   diffJSON,
+	}); err != nil {
+		log.Warnw("failed to write audit log",
+			"action", model.AuditActionServiceRestore,
+			"target_id", id,
+			"error", err,
+		)
+	}
 	return nil
 }
 
@@ -215,24 +278,28 @@ func (r *registryImpl) ListTaskProfiles(ctx context.Context) ([]*model.TaskProfi
 	return r.store.ListTaskProfiles(ctx)
 }
 
-// SaveTaskProfile creates or updates a task profile and atomically replaces its
-// service bindings, then invalidates the task cache entry.
-func (r *registryImpl) SaveTaskProfile(ctx context.Context, tp *model.TaskProfile, bindings []TaskBinding) error {
-	if err := r.store.UpsertTaskProfile(ctx, tp); err != nil {
+// SaveTaskProfile atomically upserts a task profile and replaces its service
+// bindings within a single DB transaction, then invalidates the task cache entry.
+// actorID and actorName are recorded in the audit log.
+func (r *registryImpl) SaveTaskProfile(ctx context.Context, tp *model.TaskProfile, bindings []TaskBinding, actorID uint64, actorName string) error {
+	if err := r.store.SaveTaskProfileWithBindings(ctx, tp, bindings); err != nil {
 		return fmt.Errorf("registry.SaveTaskProfile: %w", err)
-	}
-	if err := r.store.ReplaceTaskBindings(ctx, tp.ID, bindings); err != nil {
-		return fmt.Errorf("registry.SaveTaskProfile (bindings): %w", err)
 	}
 	r.cache.InvalidateTask(tp.TaskID)
 
-	_ = r.store.InsertAuditLog(ctx, &model.AIServiceAuditLog{
-		ActorID:    0,
-		ActorName:  "",
+	if err := r.store.InsertAuditLog(ctx, &model.AIServiceAuditLog{
+		ActorID:    actorID,
+		ActorName:  actorName,
 		Action:     model.AuditActionTaskBind,
 		TargetType: model.AuditTargetTaskProfile,
 		TargetID:   tp.ID,
-	})
+	}); err != nil {
+		log.Warnw("failed to write audit log",
+			"action", model.AuditActionTaskBind,
+			"target_id", tp.ID,
+			"error", err,
+		)
+	}
 	return nil
 }
 
@@ -244,14 +311,17 @@ func (r *registryImpl) SaveTaskProfile(ctx context.Context, tp *model.TaskProfil
 //
 // Resolution algorithm:
 //  1. Fetch TaskProfile by taskID (errno.ErrAITaskNotFound if missing).
-//  2. If default_service_id is NULL → return errno.ErrAIServiceNotFound.
+//  2. If default_service_id is NULL → return errno.ErrAIServiceUnbound.
 //  3. Resolve primary service: call GetResolvedRoute(default_service_id).
 //     If the service is missing, deprecated, or inactive, return errno.ErrAIServiceNotFound.
-//  4. Fetch TaskProfileService rows with role="fallback", ordered by priority DESC.
+//  4. Fetch TaskProfileService rows with role="fallback", ordered by priority ASC.
 //     Attempt to resolve each; silently skip services that are deprecated/inactive.
 //  5. Return (primary, fallbacks, nil).
 //
 // Results are cached for the configured TTL. Cache miss triggers a full DB load.
+//
+// Note: Capability Matching is intentionally NOT performed at resolve time
+// (per spec §6.5: trust persisted state, validate only at admin save time).
 func (r *registryImpl) ResolveTask(ctx context.Context, taskID string) (*ResolvedRoute, []ResolvedRoute, error) {
 	// Cache lookup.
 	if primary, fallbacks, ok := r.cache.GetTask(taskID); ok {
@@ -266,7 +336,7 @@ func (r *registryImpl) ResolveTask(ctx context.Context, taskID string) (*Resolve
 
 	// Require a non-NULL default service.
 	if tp.DefaultServiceID == nil {
-		return nil, nil, errno.ErrAIServiceNotFound
+		return nil, nil, errno.ErrAIServiceUnbound
 	}
 
 	// Resolve primary route.
@@ -276,8 +346,8 @@ func (r *registryImpl) ResolveTask(ctx context.Context, taskID string) (*Resolve
 	}
 	primaryRoute := buildResolvedRoute(taskID, primaryRow)
 
-	// Fetch fallback bindings from DB.
-	fallbackBindings, err := r.loadFallbackBindings(ctx, tp.ID)
+	// Fetch fallback bindings via IStore (ordered by priority ASC, 0 = highest).
+	fallbackBindings, err := r.store.ListTaskBindings(ctx, tp.ID, model.TaskProfileRoleFallback)
 	if err != nil {
 		return nil, nil, fmt.Errorf("registry.ResolveTask (fallbacks): %w", err)
 	}
@@ -303,45 +373,9 @@ func (r *registryImpl) ResolveTask(ctx context.Context, taskID string) (*Resolve
 	return &primaryRoute, fallbacks, nil
 }
 
-// loadFallbackBindings fetches TaskProfileService rows for the given profile ID
-// where role = "fallback", ordered by priority DESC.
-func (r *registryImpl) loadFallbackBindings(ctx context.Context, taskProfileID uint64) ([]TaskBinding, error) {
-	// We access the store's underlying DB indirectly. Because IStore does not
-	// expose a generic query method, we query task_profile_service through a
-	// type-assertion to the concrete store for the list query.
-	//
-	// Design note: we keep the list query here in the registry (not in IStore)
-	// to avoid bloating the interface with rarely-needed methods. In the production
-	// path the store is always a *gormStore; in tests the mock implements the
-	// full IStore which includes this data via GetTaskProfile's side-effects.
-	//
-	// The concrete path uses the gormStore's db field via a type assertion.
-	gs, ok := r.store.(*gormStore)
-	if !ok {
-		// Allow test mocks that embed fake binding data via a different mechanism.
-		return nil, nil
-	}
-
-	type tpsRow struct {
-		ServiceID uint64 `gorm:"column:service_id"`
-		Priority  int    `gorm:"column:priority"`
-	}
-	var rows []tpsRow
-	err := gs.db.Table("task_profile_service").
-		Select("service_id, priority").
-		Where("task_profile_id = ? AND role = ?", taskProfileID, model.TaskProfileRoleFallback).
-		Order("priority DESC").
-		Scan(&rows).Error
-	if err != nil {
-		return nil, fmt.Errorf("loadFallbackBindings: %w", err)
-	}
-
-	bindings := make([]TaskBinding, len(rows))
-	for i, row := range rows {
-		bindings[i] = TaskBinding{ServiceID: row.ServiceID, Role: model.TaskProfileRoleFallback, Priority: row.Priority}
-	}
-	return bindings, nil
-}
+// ----------------------------------------------------------------------------
+// Internal helpers
+// ----------------------------------------------------------------------------
 
 // buildResolvedRoute converts a resolvedRouteRow into the exported ResolvedRoute type,
 // unmarshaling the capability JSON into a profile.ServiceCapability struct.
@@ -352,6 +386,8 @@ func buildResolvedRoute(taskID string, row *resolvedRouteRow) ResolvedRoute {
 		ServiceID:   row.ServiceID,
 		ServiceKey:  row.ModelKey,
 		ServiceType: row.ServiceType,
+		LatencyTier: row.LatencyTier,
+		QualityTier: row.QualityTier,
 		Provider: ProviderInfo{
 			ID:      row.ProviderID,
 			Name:    row.ProviderName,
@@ -371,7 +407,7 @@ func buildResolvedRoute(taskID string, row *resolvedRouteRow) ResolvedRoute {
 }
 
 // unmarshalCapability converts a model.JSONMap (read from capability_json) into a
-// profile.ServiceCapability struct. Errors are silently swallowed — a partially
+// profile.ServiceCapability struct. Errors are logged at WARN level — a partially
 // populated struct is better than an opaque failure at resolve-time. The JSONMap
 // is re-serialised to JSON and then decoded into the struct, reusing existing
 // JSON marshaling tags on ServiceCapability.
@@ -384,10 +420,18 @@ func unmarshalCapability(m model.JSONMap, serviceType string) profile.ServiceCap
 	// Re-marshal to JSON then unmarshal into the typed struct.
 	b, err := json.Marshal(m)
 	if err != nil {
+		log.Warnw("failed to unmarshal capability_json",
+			"service_type", serviceType,
+			"error", err,
+		)
 		cap.ServiceType = serviceType
 		return cap
 	}
 	if err := json.Unmarshal(b, &cap); err != nil {
+		log.Warnw("failed to unmarshal capability_json",
+			"service_type", serviceType,
+			"error", err,
+		)
 		cap.ServiceType = serviceType
 		return cap
 	}
@@ -396,4 +440,20 @@ func unmarshalCapability(m model.JSONMap, serviceType string) profile.ServiceCap
 		cap.ServiceType = serviceType
 	}
 	return cap
+}
+
+// buildServiceDiff constructs a before/after diff map for audit logging of service updates.
+// Only key identifying fields are included to keep the diff compact.
+func buildServiceDiff(old, newSvc *model.AIService) model.JSONMap {
+	before := map[string]interface{}{
+		"model_key":    old.ModelKey,
+		"service_type": old.ServiceType,
+		"is_active":    old.IsActive,
+	}
+	after := map[string]interface{}{
+		"model_key":    newSvc.ModelKey,
+		"service_type": newSvc.ServiceType,
+		"is_active":    newSvc.IsActive,
+	}
+	return model.JSONMap{"before": before, "after": after}
 }

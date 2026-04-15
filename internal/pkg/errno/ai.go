@@ -30,4 +30,7 @@ var (
 	// ErrAICapabilityOverrideRequiresReason is returned when a force-bind operation
 	// (capability.override) is attempted without providing a reason.
 	ErrAICapabilityOverrideRequiresReason = &Errno{HTTP: 400, Code: "AIService.OverrideRequiresReason", Message: "强制覆盖操作必须填写原因"}
+
+	// ErrAIServiceUnbound is returned when a Task Profile has no default_service_id bound.
+	ErrAIServiceUnbound = &Errno{HTTP: 424, Code: "AIService.Unbound", Message: "Task Profile 未绑定服务"}
 )

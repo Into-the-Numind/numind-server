@@ -2,6 +2,8 @@ package registry
 
 import (
 	"context"
+	"errors"
+	"sort"
 	"testing"
 	"time"
 
@@ -19,12 +21,12 @@ import (
 // mockStore implements IStore with simple in-memory maps.
 // Tests populate the maps before calling Registry methods.
 type mockStore struct {
-	services        map[uint64]*model.AIService
-	taskProfiles    map[string]*model.TaskProfile // keyed by task_id
-	taskBindings    map[uint64][]TaskBinding       // keyed by task_profile_id
-	resolvedRoutes  map[uint64]*resolvedRouteRow   // keyed by service_id
-	auditLogs       []*model.AIServiceAuditLog
-	dbCallCount     map[string]int // tracks how many times each method was called
+	services       map[uint64]*model.AIService
+	taskProfiles   map[string]*model.TaskProfile // keyed by task_id
+	taskBindings   map[uint64][]TaskBinding      // keyed by task_profile_id
+	resolvedRoutes map[uint64]*resolvedRouteRow  // keyed by service_id
+	auditLogs      []*model.AIServiceAuditLog
+	dbCallCount    map[string]int // tracks how many times each method was called
 }
 
 func newMockStore() *mockStore {
@@ -113,6 +115,31 @@ func (m *mockStore) ReplaceTaskBindings(_ context.Context, taskProfileID uint64,
 	return nil
 }
 
+// ListTaskBindings returns bindings for a task profile filtered by role, ordered by priority ASC.
+func (m *mockStore) ListTaskBindings(_ context.Context, taskProfileID uint64, role string) ([]TaskBinding, error) {
+	m.dbCallCount["ListTaskBindings"]++
+	var out []TaskBinding
+	for _, b := range m.taskBindings[taskProfileID] {
+		if role == "" || b.Role == role {
+			out = append(out, b)
+		}
+	}
+	// Sort by priority ASC to match production behaviour.
+	sort.Slice(out, func(i, j int) bool { return out[i].Priority < out[j].Priority })
+	return out, nil
+}
+
+// SaveTaskProfileWithBindings atomically upserts tp and replaces bindings.
+func (m *mockStore) SaveTaskProfileWithBindings(_ context.Context, tp *model.TaskProfile, bindings []TaskBinding) error {
+	m.dbCallCount["SaveTaskProfileWithBindings"]++
+	if tp.ID == 0 {
+		tp.ID = uint64(len(m.taskProfiles) + 1)
+	}
+	m.taskProfiles[tp.TaskID] = tp
+	m.taskBindings[tp.ID] = bindings
+	return nil
+}
+
 func (m *mockStore) GetResolvedRoute(_ context.Context, serviceID uint64) (*resolvedRouteRow, error) {
 	m.dbCallCount["GetResolvedRoute"]++
 	row, ok := m.resolvedRoutes[serviceID]
@@ -126,83 +153,6 @@ func (m *mockStore) InsertAuditLog(_ context.Context, entry *model.AIServiceAudi
 	m.dbCallCount["InsertAuditLog"]++
 	m.auditLogs = append(m.auditLogs, entry)
 	return nil
-}
-
-// mockStoreWithFallbacks extends mockStore to expose fallback bindings through
-// the registry's internal loadFallbackBindings path. Because loadFallbackBindings
-// type-asserts to *gormStore to access the raw DB, we override ResolveTask at the
-// registry level by using a custom registryImplWithFallbacks that directly calls
-// GetResolvedRoute for pre-configured fallback IDs.
-//
-// Design: tests use the fakeFallbackRegistry helper below instead of injecting
-// fallback bindings through a gormStore.
-
-// ----------------------------------------------------------------------------
-// fakeFallbackRegistry wraps registryImpl but overrides loadFallbackBindings
-// so tests can supply fallback bindings without needing a real *gorm.DB.
-// ----------------------------------------------------------------------------
-
-type fakeFallbackRegistry struct {
-	*registryImpl
-	fallbackBindings map[uint64][]TaskBinding // taskProfileID → bindings
-}
-
-func (f *fakeFallbackRegistry) loadFallbackBindings(_ context.Context, taskProfileID uint64) ([]TaskBinding, error) {
-	return f.fallbackBindings[taskProfileID], nil
-}
-
-// ResolveTask re-implements the resolution to use our override.
-func (f *fakeFallbackRegistry) ResolveTask(ctx context.Context, taskID string) (*ResolvedRoute, []ResolvedRoute, error) {
-	// Cache lookup.
-	if primary, fallbacks, ok := f.cache.GetTask(taskID); ok {
-		return primary, fallbacks, nil
-	}
-
-	tp, err := f.store.GetTaskProfile(ctx, taskID)
-	if err != nil {
-		return nil, nil, err
-	}
-	if tp.DefaultServiceID == nil {
-		return nil, nil, errno.ErrAIServiceNotFound
-	}
-
-	primaryRow, err := f.store.GetResolvedRoute(ctx, *tp.DefaultServiceID)
-	if err != nil {
-		return nil, nil, err
-	}
-	primaryRoute := buildResolvedRoute(taskID, primaryRow)
-
-	fallbackBindings, err := f.loadFallbackBindings(ctx, tp.ID)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	var fallbacks []ResolvedRoute
-	var allSvcIDs []uint64
-	allSvcIDs = append(allSvcIDs, *tp.DefaultServiceID)
-	for _, b := range fallbackBindings {
-		row, err := f.store.GetResolvedRoute(ctx, b.ServiceID)
-		if err != nil {
-			continue
-		}
-		fallbacks = append(fallbacks, buildResolvedRoute(taskID, row))
-		allSvcIDs = append(allSvcIDs, b.ServiceID)
-	}
-
-	f.cache.SetTask(taskID, &primaryRoute, fallbacks, allSvcIDs)
-	return &primaryRoute, fallbacks, nil
-}
-
-// newFakeRegistry builds a fakeFallbackRegistry backed by the given mockStore.
-func newFakeRegistry(ms *mockStore, fallbacks map[uint64][]TaskBinding, ttl time.Duration) *fakeFallbackRegistry {
-	impl := &registryImpl{
-		store: ms,
-		cache: newCache(ttl),
-	}
-	return &fakeFallbackRegistry{
-		registryImpl:     impl,
-		fallbackBindings: fallbacks,
-	}
 }
 
 // ----------------------------------------------------------------------------
@@ -234,7 +184,10 @@ func makeResolvedRow(id uint64, modelKey string) *resolvedRouteRow {
 	}
 }
 
-func ptr[T any](v T) *T { return &v }
+// newTestRegistry creates a Registry backed by ms with the given TTL.
+func newTestRegistry(ms *mockStore, ttl time.Duration) Registry {
+	return NewWithStore(ms, ttl)
+}
 
 // ----------------------------------------------------------------------------
 // Tests: ResolveTask — basic paths
@@ -252,11 +205,11 @@ func TestResolveTask_PrimaryAndFallbacks(t *testing.T) {
 	}
 	ms.resolvedRoutes[svcID1] = makeResolvedRow(svcID1, "glm-4")
 	ms.resolvedRoutes[svcID2] = makeResolvedRow(svcID2, "deepseek-v3")
-
-	fallbacks := map[uint64][]TaskBinding{
-		100: {{ServiceID: svcID2, Role: model.TaskProfileRoleFallback, Priority: 10}},
+	ms.taskBindings[100] = []TaskBinding{
+		{ServiceID: svcID2, Role: model.TaskProfileRoleFallback, Priority: 10},
 	}
-	reg := newFakeRegistry(ms, fallbacks, 0)
+
+	reg := newTestRegistry(ms, 0)
 
 	primary, fbs, err := reg.ResolveTask(context.Background(), "sop.text")
 	require.NoError(t, err)
@@ -268,7 +221,7 @@ func TestResolveTask_PrimaryAndFallbacks(t *testing.T) {
 	assert.Equal(t, svcID2, fbs[0].ServiceID)
 }
 
-func TestResolveTask_NullDefaultService_ReturnsError(t *testing.T) {
+func TestResolveTask_NullDefaultService_ReturnsUnbound(t *testing.T) {
 	ms := newMockStore()
 	ms.taskProfiles["sop.text"] = &model.TaskProfile{
 		ID:               101,
@@ -276,20 +229,20 @@ func TestResolveTask_NullDefaultService_ReturnsError(t *testing.T) {
 		ServiceType:      "llm",
 		DefaultServiceID: nil, // NULL — not yet bound
 	}
-	reg := newFakeRegistry(ms, nil, 0)
+	reg := newTestRegistry(ms, 0)
 
 	primary, fbs, err := reg.ResolveTask(context.Background(), "sop.text")
 	assert.Nil(t, primary)
 	assert.Nil(t, fbs)
-	assert.Equal(t, errno.ErrAIServiceNotFound, err)
+	assert.Equal(t, errno.ErrAIServiceUnbound, err)
 }
 
 func TestResolveTask_UnknownTaskID_ReturnsNotFound(t *testing.T) {
 	ms := newMockStore()
-	reg := newFakeRegistry(ms, nil, 0)
+	reg := newTestRegistry(ms, 0)
 
 	_, _, err := reg.ResolveTask(context.Background(), "does.not.exist")
-	assert.Equal(t, errno.ErrAITaskNotFound, err)
+	assert.True(t, errors.Is(err, errno.ErrAITaskNotFound), "expected ErrAITaskNotFound, got: %v", err)
 }
 
 func TestResolveTask_PrimaryDeprecated_ReturnsError(t *testing.T) {
@@ -301,10 +254,10 @@ func TestResolveTask_PrimaryDeprecated_ReturnsError(t *testing.T) {
 		DefaultServiceID: &svcID3,
 	}
 	// svcID3 has no resolvedRoute entry — simulates deprecated/missing service.
-	reg := newFakeRegistry(ms, nil, 0)
+	reg := newTestRegistry(ms, 0)
 
 	_, _, err := reg.ResolveTask(context.Background(), "sop.text")
-	assert.Equal(t, errno.ErrAIServiceNotFound, err)
+	assert.True(t, errors.Is(err, errno.ErrAIServiceNotFound), "expected ErrAIServiceNotFound, got: %v", err)
 }
 
 func TestResolveTask_FallbackDeprecatedIsSkipped(t *testing.T) {
@@ -319,14 +272,11 @@ func TestResolveTask_FallbackDeprecatedIsSkipped(t *testing.T) {
 	// svcID3 is the fallback but has NO resolvedRoute → should be silently skipped.
 	// svcID2 is a healthy second fallback.
 	ms.resolvedRoutes[svcID2] = makeResolvedRow(svcID2, "deepseek-v3")
-
-	fallbacks := map[uint64][]TaskBinding{
-		103: {
-			{ServiceID: svcID3, Role: model.TaskProfileRoleFallback, Priority: 20}, // deprecated/missing
-			{ServiceID: svcID2, Role: model.TaskProfileRoleFallback, Priority: 10},
-		},
+	ms.taskBindings[103] = []TaskBinding{
+		{ServiceID: svcID3, Role: model.TaskProfileRoleFallback, Priority: 5}, // deprecated/missing
+		{ServiceID: svcID2, Role: model.TaskProfileRoleFallback, Priority: 10},
 	}
-	reg := newFakeRegistry(ms, fallbacks, 0)
+	reg := newTestRegistry(ms, 0)
 
 	primary, fbs, err := reg.ResolveTask(context.Background(), "sop.text")
 	require.NoError(t, err)
@@ -337,19 +287,80 @@ func TestResolveTask_FallbackDeprecatedIsSkipped(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
+// Tests: Priority ordering — spec §2.2.2 (0 = highest priority)
+// ----------------------------------------------------------------------------
+
+// TestResolveTask_FallbackPriorityOrder verifies that fallback[0] is the service
+// with the lowest priority value (i.e. priority=0 comes before priority=10).
+func TestResolveTask_FallbackPriorityOrder(t *testing.T) {
+	ms := newMockStore()
+
+	var svcHigh uint64 = 10 // priority = 0  → should be first
+	var svcLow uint64 = 11  // priority = 10 → should be second
+
+	ms.taskProfiles["sop.vision"] = &model.TaskProfile{
+		ID:               200,
+		TaskID:           "sop.vision",
+		ServiceType:      "llm",
+		DefaultServiceID: &svcID1,
+	}
+	ms.resolvedRoutes[svcID1] = makeResolvedRow(svcID1, "primary-model")
+	ms.resolvedRoutes[svcHigh] = makeResolvedRow(svcHigh, "high-priority-fallback")
+	ms.resolvedRoutes[svcLow] = makeResolvedRow(svcLow, "low-priority-fallback")
+
+	// Store bindings: svcLow registered first but with higher priority number.
+	ms.taskBindings[200] = []TaskBinding{
+		{ServiceID: svcLow, Role: model.TaskProfileRoleFallback, Priority: 10},
+		{ServiceID: svcHigh, Role: model.TaskProfileRoleFallback, Priority: 0},
+	}
+	reg := newTestRegistry(ms, 0)
+
+	_, fbs, err := reg.ResolveTask(context.Background(), "sop.vision")
+	require.NoError(t, err)
+	require.Len(t, fbs, 2)
+	// The fallback with priority=0 must come first (highest priority = lowest value).
+	assert.Equal(t, svcHigh, fbs[0].ServiceID, "priority=0 service should be first fallback")
+	assert.Equal(t, svcLow, fbs[1].ServiceID, "priority=10 service should be second fallback")
+}
+
+// ----------------------------------------------------------------------------
+// Tests: ResolvedRoute fields — LatencyTier + QualityTier populated
+// ----------------------------------------------------------------------------
+
+func TestResolveTask_ResolvedRouteHasTierFields(t *testing.T) {
+	ms := newMockStore()
+	row := makeResolvedRow(svcID1, "glm-4")
+	row.LatencyTier = "fast"
+	row.QualityTier = "premium"
+	ms.taskProfiles["sop.text"] = &model.TaskProfile{
+		ID:               300,
+		TaskID:           "sop.text",
+		ServiceType:      "llm",
+		DefaultServiceID: &svcID1,
+	}
+	ms.resolvedRoutes[svcID1] = row
+
+	reg := newTestRegistry(ms, 0)
+	primary, _, err := reg.ResolveTask(context.Background(), "sop.text")
+	require.NoError(t, err)
+	assert.Equal(t, "fast", primary.LatencyTier)
+	assert.Equal(t, "premium", primary.QualityTier)
+}
+
+// ----------------------------------------------------------------------------
 // Tests: Cache TTL and invalidation
 // ----------------------------------------------------------------------------
 
 func TestCache_Miss_ThenHit(t *testing.T) {
 	ms := newMockStore()
 	ms.taskProfiles["sop.text"] = &model.TaskProfile{
-		ID:               200,
+		ID:               400,
 		TaskID:           "sop.text",
 		DefaultServiceID: &svcID1,
 	}
 	ms.resolvedRoutes[svcID1] = makeResolvedRow(svcID1, "glm-4")
 
-	reg := newFakeRegistry(ms, nil, 10*time.Second)
+	reg := newTestRegistry(ms, 10*time.Second)
 
 	// First call — must hit DB.
 	_, _, err := reg.ResolveTask(context.Background(), "sop.text")
@@ -367,14 +378,14 @@ func TestCache_Miss_ThenHit(t *testing.T) {
 func TestCache_TTLExpiry_RefetchesFromDB(t *testing.T) {
 	ms := newMockStore()
 	ms.taskProfiles["sop.text"] = &model.TaskProfile{
-		ID:               201,
+		ID:               401,
 		TaskID:           "sop.text",
 		DefaultServiceID: &svcID1,
 	}
 	ms.resolvedRoutes[svcID1] = makeResolvedRow(svcID1, "glm-4")
 
 	// Use a very short TTL (1 ms) so it expires immediately.
-	reg := newFakeRegistry(ms, nil, 1*time.Millisecond)
+	reg := newTestRegistry(ms, 1*time.Millisecond)
 
 	// First call — populates cache.
 	_, _, err := reg.ResolveTask(context.Background(), "sop.text")
@@ -393,14 +404,14 @@ func TestCache_TTLExpiry_RefetchesFromDB(t *testing.T) {
 func TestCache_SaveService_InvalidatesTask(t *testing.T) {
 	ms := newMockStore()
 	ms.taskProfiles["sop.text"] = &model.TaskProfile{
-		ID:               202,
+		ID:               402,
 		TaskID:           "sop.text",
 		DefaultServiceID: &svcID1,
 	}
 	ms.resolvedRoutes[svcID1] = makeResolvedRow(svcID1, "glm-4")
 	ms.services[svcID1] = &model.AIService{ID: svcID1, ModelKey: "glm-4"}
 
-	reg := newFakeRegistry(ms, nil, 10*time.Second)
+	reg := newTestRegistry(ms, 10*time.Second)
 
 	// Warm the cache.
 	_, _, err := reg.ResolveTask(context.Background(), "sop.text")
@@ -409,7 +420,7 @@ func TestCache_SaveService_InvalidatesTask(t *testing.T) {
 
 	// Write to the service (simulates an admin update).
 	svc := &model.AIService{ID: svcID1, ModelKey: "glm-4-updated", ServiceType: "llm"}
-	err = reg.SaveService(context.Background(), svc, 1)
+	err = reg.SaveService(context.Background(), svc, 1, "admin")
 	require.NoError(t, err)
 
 	// ResolveTask must now bypass cache and hit DB again.
@@ -419,25 +430,27 @@ func TestCache_SaveService_InvalidatesTask(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// Tests: AuditLog — DeprecateService writes audit entry
+// Tests: AuditLog — writes correct fields
 // ----------------------------------------------------------------------------
 
 func TestDeprecateService_WritesAuditLog(t *testing.T) {
 	ms := newMockStore()
 	ms.services[svcID1] = &model.AIService{ID: svcID1, ModelKey: "glm-4"}
 
-	reg := newFakeRegistry(ms, nil, 0)
+	reg := newTestRegistry(ms, 0)
 
-	err := reg.DeprecateService(context.Background(), svcID1, 42, "switching to new model")
+	err := reg.DeprecateService(context.Background(), svcID1, 42, "alice", "switching to new model")
 	require.NoError(t, err)
 
 	require.Len(t, ms.auditLogs, 1)
-	log := ms.auditLogs[0]
-	assert.Equal(t, uint64(42), log.ActorID)
-	assert.Equal(t, model.AuditActionServiceDeprecate, log.Action)
-	assert.Equal(t, model.AuditTargetService, log.TargetType)
-	assert.Equal(t, svcID1, log.TargetID)
-	assert.Equal(t, "switching to new model", log.Reason)
+	entry := ms.auditLogs[0]
+	assert.Equal(t, uint64(42), entry.ActorID)
+	assert.Equal(t, "alice", entry.ActorName)
+	assert.Equal(t, model.AuditActionServiceDeprecate, entry.Action)
+	assert.Equal(t, model.AuditTargetService, entry.TargetType)
+	assert.Equal(t, svcID1, entry.TargetID)
+	assert.Equal(t, "switching to new model", entry.Reason)
+	assert.NotNil(t, entry.DiffJSON)
 }
 
 func TestRestoreService_WritesAuditLog(t *testing.T) {
@@ -445,15 +458,53 @@ func TestRestoreService_WritesAuditLog(t *testing.T) {
 	ms := newMockStore()
 	ms.services[svcID1] = &model.AIService{ID: svcID1, ModelKey: "glm-4", DeprecatedAt: &now}
 
-	reg := newFakeRegistry(ms, nil, 0)
+	reg := newTestRegistry(ms, 0)
 
-	err := reg.RestoreService(context.Background(), svcID1, 99, "re-activating")
+	err := reg.RestoreService(context.Background(), svcID1, 99, "bob", "re-activating")
 	require.NoError(t, err)
 
 	require.Len(t, ms.auditLogs, 1)
-	assert.Equal(t, model.AuditActionServiceRestore, ms.auditLogs[0].Action)
+	entry := ms.auditLogs[0]
+	assert.Equal(t, model.AuditActionServiceRestore, entry.Action)
+	assert.Equal(t, "bob", entry.ActorName)
+	assert.NotNil(t, entry.DiffJSON)
 	// Service should no longer be deprecated.
 	assert.Nil(t, ms.services[svcID1].DeprecatedAt)
+}
+
+func TestSaveService_WritesAuditLogWithActorName(t *testing.T) {
+	ms := newMockStore()
+	ms.services[svcID1] = &model.AIService{ID: svcID1, ModelKey: "glm-4", ServiceType: "llm"}
+
+	reg := newTestRegistry(ms, 0)
+
+	// Update an existing service.
+	svc := &model.AIService{ID: svcID1, ModelKey: "glm-4-v2", ServiceType: "llm"}
+	err := reg.SaveService(context.Background(), svc, 7, "carol")
+	require.NoError(t, err)
+
+	require.Len(t, ms.auditLogs, 1)
+	entry := ms.auditLogs[0]
+	assert.Equal(t, uint64(7), entry.ActorID)
+	assert.Equal(t, "carol", entry.ActorName)
+	assert.Equal(t, model.AuditActionServiceUpdate, entry.Action)
+	assert.NotNil(t, entry.DiffJSON)
+}
+
+func TestSaveTaskProfile_WritesAuditLogWithActorID(t *testing.T) {
+	ms := newMockStore()
+
+	reg := newTestRegistry(ms, 0)
+
+	tp := &model.TaskProfile{TaskID: "sop.new", ServiceType: "llm"}
+	err := reg.SaveTaskProfile(context.Background(), tp, nil, 5, "dave")
+	require.NoError(t, err)
+
+	require.Len(t, ms.auditLogs, 1)
+	entry := ms.auditLogs[0]
+	assert.Equal(t, uint64(5), entry.ActorID)
+	assert.Equal(t, "dave", entry.ActorName)
+	assert.Equal(t, model.AuditActionTaskBind, entry.Action)
 }
 
 // ----------------------------------------------------------------------------

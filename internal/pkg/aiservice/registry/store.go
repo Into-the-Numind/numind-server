@@ -5,6 +5,7 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -34,6 +35,15 @@ type IStore interface {
 
 	// Task Profile ↔ Service bindings
 	ReplaceTaskBindings(ctx context.Context, taskProfileID uint64, bindings []TaskBinding) error
+
+	// ListTaskBindings returns the service bindings for a task profile, optionally
+	// filtered by role. Pass an empty role string to return all bindings.
+	// Results are ordered by priority ASC (0 = highest priority).
+	ListTaskBindings(ctx context.Context, taskProfileID uint64, role string) ([]TaskBinding, error)
+
+	// SaveTaskProfileWithBindings atomically upserts a TaskProfile and replaces its
+	// service bindings within a single DB transaction.
+	SaveTaskProfileWithBindings(ctx context.Context, tp *model.TaskProfile, bindings []TaskBinding) error
 
 	// Route resolution helper: loads a fully-joined AIService + AIServiceRoute + LLMProvider.
 	GetResolvedRoute(ctx context.Context, serviceID uint64) (*resolvedRouteRow, error)
@@ -262,30 +272,30 @@ JOIN llm_provider p ON p.id = r.provider_id AND p.is_active = true
 WHERE s.id = ?
   AND s.deprecated_at IS NULL
   AND s.is_active = true
-ORDER BY r.priority DESC, r.id ASC
+ORDER BY r.priority ASC, r.id ASC
 LIMIT 1
 `
 	type rawRow struct {
-		ServiceID          uint64         `gorm:"column:service_id"`
-		ModelKey           string         `gorm:"column:model_key"`
-		ServiceType        string         `gorm:"column:service_type"`
-		CapabilityJSONStr  *string        `gorm:"column:capability_json"`
-		LatencyTier        string         `gorm:"column:latency_tier"`
-		QualityTier        string         `gorm:"column:quality_tier"`
-		DeprecatedAt       *time.Time     `gorm:"column:deprecated_at"`
-		IsActive           bool           `gorm:"column:is_active"`
-		ProviderID         uint64         `gorm:"column:provider_id"`
-		ProviderName       string         `gorm:"column:provider_name"`
-		ProviderBaseURL    string         `gorm:"column:provider_base_url"`
-		ProviderAPIKey     string         `gorm:"column:provider_api_key"`
-		ProviderModelID    string         `gorm:"column:provider_model_id"`
-		RoutePriority      int            `gorm:"column:route_priority"`
-		RouteIsActive      bool           `gorm:"column:route_is_active"`
-		PricingUnit        string         `gorm:"column:pricing_unit"`
-		InputPricePerMTok  float64        `gorm:"column:input_price_per_mtok"`
-		OutputPricePerMTok float64        `gorm:"column:output_price_per_mtok"`
-		PricePerCall       *float64       `gorm:"column:price_per_call"`
-		PricePerSecond     *float64       `gorm:"column:price_per_second"`
+		ServiceID          uint64     `gorm:"column:service_id"`
+		ModelKey           string     `gorm:"column:model_key"`
+		ServiceType        string     `gorm:"column:service_type"`
+		CapabilityJSONStr  *string    `gorm:"column:capability_json"`
+		LatencyTier        string     `gorm:"column:latency_tier"`
+		QualityTier        string     `gorm:"column:quality_tier"`
+		DeprecatedAt       *time.Time `gorm:"column:deprecated_at"`
+		IsActive           bool       `gorm:"column:is_active"`
+		ProviderID         uint64     `gorm:"column:provider_id"`
+		ProviderName       string     `gorm:"column:provider_name"`
+		ProviderBaseURL    string     `gorm:"column:provider_base_url"`
+		ProviderAPIKey     string     `gorm:"column:provider_api_key"`
+		ProviderModelID    string     `gorm:"column:provider_model_id"`
+		RoutePriority      int        `gorm:"column:route_priority"`
+		RouteIsActive      bool       `gorm:"column:route_is_active"`
+		PricingUnit        string     `gorm:"column:pricing_unit"`
+		InputPricePerMTok  float64    `gorm:"column:input_price_per_mtok"`
+		OutputPricePerMTok float64    `gorm:"column:output_price_per_mtok"`
+		PricePerCall       *float64   `gorm:"column:price_per_call"`
+		PricePerSecond     *float64   `gorm:"column:price_per_second"`
 	}
 
 	var row rawRow
@@ -341,7 +351,68 @@ func (s *gormStore) InsertAuditLog(ctx context.Context, entry *model.AIServiceAu
 // Helpers
 // ----------------------------------------------------------------------------
 
+// ListTaskBindings returns service bindings for a task profile, filtered by role
+// when role is non-empty. Results are ordered by priority ASC (0 = highest priority).
+func (s *gormStore) ListTaskBindings(ctx context.Context, taskProfileID uint64, role string) ([]TaskBinding, error) {
+	q := s.db.WithContext(ctx).Table("task_profile_service").
+		Select("service_id, role, priority").
+		Where("task_profile_id = ?", taskProfileID)
+	if role != "" {
+		q = q.Where("role = ?", role)
+	}
+	// taskBindingRow mirrors TaskBinding but with GORM column tags for scanning.
+	type taskBindingRow struct {
+		ServiceID uint64 `gorm:"column:service_id"`
+		Role      string `gorm:"column:role"`
+		Priority  int    `gorm:"column:priority"`
+	}
+	var rows []taskBindingRow
+	if err := q.Order("priority ASC").Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("gormStore.ListTaskBindings: %w", err)
+	}
+	bindings := make([]TaskBinding, len(rows))
+	for i, r := range rows {
+		bindings[i] = TaskBinding(r) //nolint:govet // field order matches exactly
+	}
+	return bindings, nil
+}
+
+// SaveTaskProfileWithBindings atomically upserts a TaskProfile and replaces its
+// service bindings within a single DB transaction.
+func (s *gormStore) SaveTaskProfileWithBindings(ctx context.Context, tp *model.TaskProfile, bindings []TaskBinding) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Upsert task profile.
+		if tp.ID == 0 {
+			if err := tx.Create(tp).Error; err != nil {
+				return fmt.Errorf("SaveTaskProfileWithBindings (create profile): %w", err)
+			}
+		} else {
+			if err := tx.Save(tp).Error; err != nil {
+				return fmt.Errorf("SaveTaskProfileWithBindings (update profile): %w", err)
+			}
+		}
+		// Delete existing bindings.
+		if err := tx.Where("task_profile_id = ?", tp.ID).
+			Delete(&model.TaskProfileService{}).Error; err != nil {
+			return fmt.Errorf("SaveTaskProfileWithBindings (delete bindings): %w", err)
+		}
+		// Insert new bindings.
+		for _, b := range bindings {
+			row := model.TaskProfileService{
+				TaskProfileID: tp.ID,
+				ServiceID:     b.ServiceID,
+				Role:          b.Role,
+				Priority:      b.Priority,
+			}
+			if err := tx.Create(&row).Error; err != nil {
+				return fmt.Errorf("SaveTaskProfileWithBindings (insert serviceID=%d): %w", b.ServiceID, err)
+			}
+		}
+		return nil
+	})
+}
+
 // isNotFound reports whether a GORM error indicates a missing record.
 func isNotFound(err error) bool {
-	return err == gorm.ErrRecordNotFound
+	return errors.Is(err, gorm.ErrRecordNotFound)
 }

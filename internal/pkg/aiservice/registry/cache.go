@@ -2,6 +2,7 @@ package registry
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"numind-server/internal/pkg/model"
@@ -80,13 +81,11 @@ func (c *cache) GetService(id uint64) (*model.AIService, bool) {
 		if entry2, ok2 := c.services[id]; ok2 && time.Now().After(entry2.expireAt) {
 			delete(c.services, id)
 		}
-		c.misses++
 		c.mu.Unlock()
+		atomic.AddInt64(&c.misses, 1)
 		return nil, false
 	}
-	c.mu.Lock()
-	c.hits++
-	c.mu.Unlock()
+	atomic.AddInt64(&c.hits, 1)
 	return entry.svc, true
 }
 
@@ -133,13 +132,11 @@ func (c *cache) GetTask(taskID string) (*ResolvedRoute, []ResolvedRoute, bool) {
 		if entry2, ok2 := c.tasks[taskID]; ok2 && time.Now().After(entry2.expireAt) {
 			delete(c.tasks, taskID)
 		}
-		c.misses++
 		c.mu.Unlock()
+		atomic.AddInt64(&c.misses, 1)
 		return nil, nil, false
 	}
-	c.mu.Lock()
-	c.hits++
-	c.mu.Unlock()
+	atomic.AddInt64(&c.hits, 1)
 	return entry.primary, entry.fallbacks, true
 }
 
@@ -175,11 +172,11 @@ func (c *cache) InvalidateTask(taskID string) {
 // Metrics (unexported accessors — used in tests only for now)
 // ----------------------------------------------------------------------------
 
-// stats returns the cumulative hit/miss counts. Not thread-safe on its own —
-// callers that need precise counts must hold the lock externally; for test
-// assertions approximate values are sufficient.
+// stats returns the cumulative hit/miss counts using atomic loads.
+// Called by the Task 8 /healthz endpoint; the nolint suppresses the "unused"
+// warning until that endpoint is wired up.
+//
+//nolint:unused
 func (c *cache) stats() (hits, misses int64) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.hits, c.misses
+	return atomic.LoadInt64(&c.hits), atomic.LoadInt64(&c.misses)
 }
