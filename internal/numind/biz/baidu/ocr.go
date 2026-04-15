@@ -312,6 +312,9 @@ func deduplicateItems(items []WordsItem) []WordsItem {
 	return result
 }
 
+// no-op for now: baidu OCR billing will be handled by Gateway middleware after Task 11.
+// The OCR API charges per image (not token-based), so no UsageRecord writes exist here.
+
 // RecognizeText 调用百度 OCR 并返回纯文本（无说话人标注）
 func RecognizeText(imageData []byte) (string, error) {
 	items, _, err := recognizeImage(imageData)

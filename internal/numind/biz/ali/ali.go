@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/service"
 	"os"
@@ -227,8 +228,10 @@ func (a *aliBiz) QianwenTextStream(ctx context.Context, messages []map[string]st
 	}
 
 	// 自动计费
-	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
-		billing.RecordLLM(bc.UserID, "ali", modelName, bc.Operation, usage, bc.Meta)
+	if !aiservice.ShouldSkipLegacyBilling(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+			billing.RecordLLM(bc.UserID, "ali", modelName, bc.Operation, usage, bc.Meta)
+		}
 	}
 
 	// Langfuse generation 追踪
@@ -344,8 +347,10 @@ func (a *aliBiz) QianwenEmbedding(ctx context.Context, text string) ([]float32, 
 	embUsage := &billing.EmbeddingUsage{TotalTokens: result.Usage.TotalTokens}
 
 	// 自动计费
-	if bc := billing.FromContext(ctx); bc != nil && embUsage != nil {
-		billing.RecordEmbedding(bc.UserID, "ali", modelName, bc.Operation, embUsage, bc.Meta)
+	if !aiservice.ShouldSkipLegacyBilling(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && embUsage != nil {
+			billing.RecordEmbedding(bc.UserID, "ali", modelName, bc.Operation, embUsage, bc.Meta)
+		}
 	}
 
 	return result.Output.Embeddings[0].Embedding, embUsage, nil
@@ -454,8 +459,10 @@ func (a *aliBiz) QianwenVision(ctx context.Context, imageURL string, prompt stri
 	}
 
 	// 自动计费
-	if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
-		billing.RecordVision(bc.UserID, "ali", model, bc.Operation, result.Usage, bc.Meta)
+	if !aiservice.ShouldSkipLegacyBilling(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
+			billing.RecordVision(bc.UserID, "ali", model, bc.Operation, result.Usage, bc.Meta)
+		}
 	}
 
 	visionContent := result.Choices[0].Message.Content
@@ -635,8 +642,10 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 	}
 
 	// 自动计费
-	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
-		billing.RecordVision(bc.UserID, "ali", model, bc.Operation, usage, bc.Meta)
+	if !aiservice.ShouldSkipLegacyBilling(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+			billing.RecordVision(bc.UserID, "ali", model, bc.Operation, usage, bc.Meta)
+		}
 	}
 
 	// Langfuse generation 追踪

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/httpclient"
 	"numind-server/internal/pkg/langfuse"
@@ -306,8 +307,10 @@ func (v *volcBiz) VolcTextStream(ctx context.Context, messages []map[string]stri
 	}
 
 	// 自动计费
-	if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
-		billing.RecordLLM(bc.UserID, "volc", viper.GetString("volc.model"), bc.Operation, result.Usage, bc.Meta)
+	if !aiservice.ShouldSkipLegacyBilling(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
+			billing.RecordLLM(bc.UserID, "volc", viper.GetString("volc.model"), bc.Operation, result.Usage, bc.Meta)
+		}
 	}
 
 	// Langfuse generation 追踪
@@ -435,8 +438,10 @@ func (v *volcBiz) DoubaoEmbedding(ctx context.Context, text string) ([]float32, 
 	}
 
 	// 自动计费
-	if bc := billing.FromContext(ctx); bc != nil && embUsage != nil {
-		billing.RecordEmbedding(bc.UserID, "volc", embeddingModel, bc.Operation, embUsage, bc.Meta)
+	if !aiservice.ShouldSkipLegacyBilling(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && embUsage != nil {
+			billing.RecordEmbedding(bc.UserID, "volc", embeddingModel, bc.Operation, embUsage, bc.Meta)
+		}
 	}
 
 	log.C(ctx).Debugw("Embedding成功", "vector_dim", len(vector))
@@ -591,8 +596,10 @@ func (v *volcBiz) StreamChat(ctx context.Context, messages []map[string]interfac
 	}
 
 	// 自动计费
-	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
-		billing.RecordLLM(bc.UserID, "volc", viper.GetString("volc.model"), bc.Operation, usage, bc.Meta)
+	if !aiservice.ShouldSkipLegacyBilling(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+			billing.RecordLLM(bc.UserID, "volc", viper.GetString("volc.model"), bc.Operation, usage, bc.Meta)
+		}
 	}
 
 	// Langfuse generation 追踪
@@ -731,8 +738,10 @@ func (v *volcBiz) VisionAnalyze(ctx context.Context, imageURL string, prompt str
 	}
 
 	// 自动计费
-	if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
-		billing.RecordVision(bc.UserID, "volc", model, bc.Operation, result.Usage, bc.Meta)
+	if !aiservice.ShouldSkipLegacyBilling(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
+			billing.RecordVision(bc.UserID, "volc", model, bc.Operation, result.Usage, bc.Meta)
+		}
 	}
 
 	content := result.Choices[0].Message.Content
@@ -901,8 +910,10 @@ func (v *volcBiz) VisionAnalyzeStream(ctx context.Context, imageURL string, prom
 	}
 
 	// 自动计费
-	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
-		billing.RecordVision(bc.UserID, "volc", model, bc.Operation, usage, bc.Meta)
+	if !aiservice.ShouldSkipLegacyBilling(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+			billing.RecordVision(bc.UserID, "volc", model, bc.Operation, usage, bc.Meta)
+		}
 	}
 
 	log.C(ctx).Debugw("流式视觉分析完成", "content_len", fullContent.Len())
@@ -987,8 +998,10 @@ func (v *volcBiz) ChatWithModel(ctx context.Context, messages []map[string]inter
 	}
 
 	// 自动计费
-	if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
-		billing.RecordLLM(bc.UserID, "volc", model, bc.Operation, result.Usage, bc.Meta)
+	if !aiservice.ShouldSkipLegacyBilling(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
+			billing.RecordLLM(bc.UserID, "volc", model, bc.Operation, result.Usage, bc.Meta)
+		}
 	}
 
 	return result.Choices[0].Message.Content, result.Usage, nil
@@ -1142,8 +1155,10 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 	}
 
 	// 自动计费
-	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
-		billing.RecordLLM(bc.UserID, "volc", model, bc.Operation, usage, bc.Meta)
+	if !aiservice.ShouldSkipLegacyBilling(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+			billing.RecordLLM(bc.UserID, "volc", model, bc.Operation, usage, bc.Meta)
+		}
 	}
 
 	// Langfuse generation 追踪
