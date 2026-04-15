@@ -1380,25 +1380,26 @@ features:
     ndf_version: "1.0"
     description: "接入 AiHubMix 作为新 LLM 聚合提供商，与 DMXAPI 并行。4 个模型（claude-sonnet-4-6 / gemini-3.1-pro-preview / gpt-5.4 / deepseek-v3.2）以 AiHubMix 为主路由（priority=10）、DMXAPI 为 failover，统一 OpenAI /chat/completions；Claude thinking 通过 -think 后缀变体，其余 3 个通过 reasoning_effort 参数"
     track: "standard"
-    stage: "S3"
+    stage: "S4-done"
     classification_reason: "涉及新外部服务集成（AiHubMix）+ 影响文件数 >3（dmxapi_client.go / llmrouter 映射 / config×4 / seed SQL），2 条 Triage 标准不满足。用户确认 Standard 快节奏推进"
-    last_updated_by: "ai-s3"
-    last_updated_at: "2026-04-16T03:00:00+08:00"
+    last_updated_by: "ai-s4"
+    last_updated_at: "2026-04-16T04:30:00+08:00"
     repos:
       - numind-server
-    branches: {}
+    branches:
+      numind-server: "feature/aihubmix-provider"
     artifacts:
       requirement: "numind-server/requirements/aihubmix-provider.md"
       proposal: "numind-server/proposals/aihubmix-provider-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-04-16-aihubmix-provider-design.md"
       plan: "numind-server/docs/superpowers/plans/aihubmix-provider-plan.md"
-      review_spec_compliance: null
-      review_code_quality: null
+      review_spec_compliance: "PASS (T2/T3/T4/T5 全部 PASS 或 PASS_WITH_CONCERNS 无 P0)"
+      review_code_quality: "PASS_WITH_CONCERNS (T2 P1 修复：pricing_rule INSERT IGNORE + api_key 豁免注释；T3 P2 加递归安全注释；其余 P2 均为风格/可读性建议，低影响)"
       qa: null
     progress:
       total_tasks: 6
-      completed_tasks: 0
-      reviewed_tasks: 0
+      completed_tasks: 4
+      reviewed_tasks: 4
       current_task: null
     rollback: null
     last_verified: null
@@ -1415,7 +1416,12 @@ features:
       - "2026-04-16 (S3): config→DB api_key 同步机制不存在（SyncProviderCredentials 是 ai-service-manager 未实现的 stub）→ seed SQL 直接 INSERT 字面值 api_key"
       - "2026-04-16 (S3): S5 验证策略=gstack /qa + 手动故障注入；不选 Playwright E2E（工时 >1 天超过本功能总工时）；不选纯后端 TDD（无法验证前端渲染）"
       - "2026-04-16 (S3 review): 独立 Sonnet reviewer 审查 plan — PASS_WITH_CONCERNS；F-01(P1) 用户已豁免不处理；F-02/F-03(P2) 即时修复；F-02 根因：S1 proposal §3.2 假设被 S3 预研推翻（SyncProviderCredentials 是 stub），转为已知技术债待 ai-service-manager 解决"
-    deferred: []
+      - "2026-04-16 (S4): 4 commits on feature/aihubmix-provider — T2=c5689a1(seed SQL+P1 fix)、T3=f060982(client extend+P2 comment)、T4=a0b4ee9(router signature)、T5=db6c74f(config×4)"
+      - "2026-04-16 (S4): 所有 task 两阶段 review 完成；T2 P1 idempotency 修复；T3/T4 P2 均为风格建议不阻塞；go vet + golangci-lint clean on touched packages"
+      - "2026-04-16 (S4): go test ./... 13 packages pass；1 package fail (salesrag/service) 为 pre-existing 外部 API 依赖问题（与本功能无关，content-monitor manifest 同样标记）"
+    deferred:
+      - "T3 code quality P2：switch case 大小写归一、table-driven 重构 4 个 test、400 fallback body 读取风格 — 低影响风格建议"
+      - "T4 code quality P2：DMXAPI Claude 测试注释说明、inferThinkingFormat 调用前提注释 — 可读性建议"
     blockers: []
     created_at: "2026-04-16T00:00:00+08:00"
     completed_at: null
