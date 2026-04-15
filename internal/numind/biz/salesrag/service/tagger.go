@@ -11,7 +11,6 @@ import (
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
-	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/langfuse"
 )
 
@@ -40,7 +39,7 @@ func (t *ContentTagger) TagChunks(ctx context.Context, chunks []*domain.Knowledg
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			// 2. Call LLM (Now DMXAPI)
+			// 2. Call LLM via AI Gateway (profile.SalesragTagging)
 			res, err := t.analyze(ctx, chunk.Content)
 			if err != nil {
 				// Fallback or Log
@@ -101,12 +100,7 @@ func (t *ContentTagger) analyze(ctx context.Context, text string) (*TaggingResul
 	}
 
 	for i := 0; i < maxRetries; i++ {
-		// 设置计费上下文（如果尚未设置）
-		tagCtx := tagCtxBase
-		if billing.FromContext(tagCtx) == nil {
-			tagCtx = billing.WithBilling(tagCtx, 0, "salesrag_tagging")
-		}
-		chatResp, err := aiservice.Chat(tagCtx, profile.SalesragTagging, aiservice.ChatRequest{
+		chatResp, err := aiservice.Chat(tagCtxBase, profile.SalesragTagging, aiservice.ChatRequest{
 			Messages: []aiservice.ChatMessage{
 				{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: prompt}},
 			},

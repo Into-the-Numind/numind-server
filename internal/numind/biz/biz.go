@@ -67,9 +67,6 @@ type biz struct {
 	llmRouterSvc    *llmrouter.Router
 }
 
-// 确保 biz 实现了 IBiz 接口.
-var _ IBiz = (*biz)(nil)
-
 // NewBiz 创建一个 IBiz 类型的实例.
 func NewBiz(ds store.IStore) *biz {
 	creditBiz := credit.NewCreditBiz(ds)
