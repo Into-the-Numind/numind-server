@@ -1,0 +1,33 @@
+package errno
+
+// AI Service Manager errors.
+//
+// Namespace: AIService.*
+// Spec reference: docs/superpowers/specs/2026-04-15-ai-service-manager-design.md §4.3
+//
+// Note: The existing codebase uses string-based Code values (e.g. "Monitor.XhsFetchFailed")
+// rather than numeric codes. These errors follow the same convention. The spec referenced
+// codes 41001-41006 as numeric identifiers; this implementation maps them to the string
+// naming pattern used project-wide.
+
+var (
+	// ErrAIServiceNotFound is returned when a requested AI service does not exist.
+	ErrAIServiceNotFound = &Errno{HTTP: 404, Code: "AIService.ServiceNotFound", Message: "AI 服务不存在"}
+
+	// ErrAITaskNotFound is returned when a requested task profile does not exist.
+	ErrAITaskNotFound = &Errno{HTTP: 404, Code: "AIService.TaskNotFound", Message: "Task Profile 不存在"}
+
+	// ErrAICapabilityMismatch is returned when the task's capability requirements
+	// cannot be satisfied by the target service.
+	ErrAICapabilityMismatch = &Errno{HTTP: 422, Code: "AIService.CapabilityMismatch", Message: "AI 服务能力不匹配，任务需求无法满足"}
+
+	// ErrAIFallbackExhausted is returned when both primary and all fallback services fail.
+	ErrAIFallbackExhausted = &Errno{HTTP: 502, Code: "AIService.FallbackExhausted", Message: "所有 AI 服务（含 fallback）均不可用"}
+
+	// ErrAIServiceDeprecated is returned when an attempt is made to use a deprecated service.
+	ErrAIServiceDeprecated = &Errno{HTTP: 410, Code: "AIService.ServiceDeprecated", Message: "AI 服务已下架"}
+
+	// ErrAICapabilityOverrideRequiresReason is returned when a force-bind operation
+	// (capability.override) is attempted without providing a reason.
+	ErrAICapabilityOverrideRequiresReason = &Errno{HTTP: 400, Code: "AIService.OverrideRequiresReason", Message: "强制覆盖操作必须填写原因"}
+)
