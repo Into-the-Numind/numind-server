@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/llm"
@@ -190,9 +191,11 @@ func (r *Router) StreamChat(
 			langfuse.EndGeneration(genID, endOpts...)
 		}
 
-		// 4. 成功：记录 billing 用量
-		if bc := billing.FromContext(ctx); bc != nil && usage != nil {
-			billing.RecordLLM(bc.UserID, route.ProviderName, route.ProviderModelID, bc.Operation, usage, bc.Meta)
+		// 4. 成功：记录 billing 用量（若上层 Gateway 已记账则跳过，避免双记）
+		if !aiservice.ShouldSkipLegacyBilling(ctx) {
+			if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+				billing.RecordLLM(bc.UserID, route.ProviderName, route.ProviderModelID, bc.Operation, usage, bc.Meta)
+			}
 		}
 
 		// 5. 回写实际使用的模型名到 usage，供上层持久化
