@@ -729,7 +729,7 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 				"opinion_count":  len(verdict.OpinionEvidence),
 			}))
 		}
-		// 恢复 parent 到 trace 级别（后续 generation 不嵌套在 retrieval 下）
+		// 重置 ParentObservationID — 让后续 chat generation 作为 trace 根的兄弟 span，而非 retrieval span 子节点
 		if tc := langfuse.FromContext(ctx); tc != nil {
 			ctx = langfuse.WithTrace(ctx, tc.TraceID)
 		}
@@ -778,6 +778,8 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 		})
 	}
 
+	// Mid-stream errors surface as channel close without final usage; treated as silent partial response.
+	// Pre-stream errors (e.g. auth, routing) are returned synchronously via chatErr below.
 	ch, chatErr := aiservice.ChatStream(ctx, profile.SalesragChat, aiservice.ChatRequest{
 		Messages:    aiMessages,
 		Temperature: 0.7,
@@ -785,6 +787,7 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 	if chatErr != nil {
 		return onEvent("error", fmt.Sprintf("stream chat failed: %v", chatErr))
 	}
+	var receivedTokens bool
 	for chunk := range ch {
 		if chunk.ReasoningDelta != "" {
 			if evErr := onEvent("thinking", chunk.ReasoningDelta); evErr != nil {
@@ -792,10 +795,14 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 			}
 		}
 		if chunk.Delta != "" {
+			receivedTokens = true
 			if evErr := onEvent("token", chunk.Delta); evErr != nil {
 				return evErr
 			}
 		}
+	}
+	if !receivedTokens {
+		log.Printf("[RetrieveStream] Warning: chat stream ended without any tokens — possible mid-stream error or empty model response")
 	}
 
 	// 12. 发送完成事件

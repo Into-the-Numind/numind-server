@@ -325,12 +325,17 @@ func (s *SalesRAGService) parallelSearch(
 const rerankScoreThreshold = 0.3
 
 // rerankWithLimit 通用 Rerank：按 topN 截断 + 分数阈值过滤 + 兜底至少 1 条
+//
+// billingLabel is used to tag the billing record for cost attribution.
+// Different call sites pass distinct labels (e.g. "salesrag_rerank" vs
+// "salesrag_rerank_opinion") so that spend can be broken down by use-case.
 func (s *SalesRAGService) rerankWithLimit(
 	ctx context.Context,
 	query string,
 	chunks []domain.KnowledgeChunk,
 	topN int,
 	label string,
+	billingLabel string,
 ) ([]domain.KnowledgeChunk, error) {
 	if len(chunks) <= 1 {
 		return chunks, nil
@@ -344,7 +349,7 @@ func (s *SalesRAGService) rerankWithLimit(
 	// 注入 aiservice 上下文：userID + skip-legacy-billing
 	if uid, ok := middleware.UserIDFromCtx(ctx); ok && uid > 0 {
 		ctx = aismw.WithUserID(ctx, uid)
-		ctx = billing.WithBilling(ctx, uid, "salesrag_rerank")
+		ctx = billing.WithBilling(ctx, uid, billingLabel)
 	}
 	ctx = aiservice.WithSkipLegacyBilling(ctx)
 
@@ -416,10 +421,10 @@ func (s *SalesRAGService) rerankWithLimit(
 
 // rerankChunks 使用 Rerank 模型进行重排序（top 5）
 func (s *SalesRAGService) rerankChunks(ctx context.Context, query string, chunks []domain.KnowledgeChunk) ([]domain.KnowledgeChunk, error) {
-	return s.rerankWithLimit(ctx, query, chunks, 5, "Rerank")
+	return s.rerankWithLimit(ctx, query, chunks, 5, "Rerank", "salesrag_rerank")
 }
 
 // rerankOpinionChunks 观点库专用 Rerank（top 2）
 func (s *SalesRAGService) rerankOpinionChunks(ctx context.Context, query string, chunks []domain.KnowledgeChunk) ([]domain.KnowledgeChunk, error) {
-	return s.rerankWithLimit(ctx, query, chunks, 2, "Opinion rerank")
+	return s.rerankWithLimit(ctx, query, chunks, 2, "Opinion rerank", "salesrag_rerank_opinion")
 }
