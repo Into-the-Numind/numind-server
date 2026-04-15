@@ -1312,12 +1312,17 @@ features:
       qa: null
     progress:
       total_tasks: 23
-      completed_tasks: 5
-      reviewed_tasks: 5
-      current_task: null  # paused after Task 4 per user instruction (1a→4 done)
+      completed_tasks: 6
+      reviewed_tasks: 6
+      current_task:
+        index: 7
+        title: "Task 6: OCR/ASR/Bailian adapters"
+        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-6"
     pending_spec_updates:
       - "2026-04-15: spec §4.3 errno 数字 code 改为字符串 code（项目约定）— 留 Task 15b"
       - "2026-04-15: spec §2.1.2 补 thinking_only 列到字段清单 — 留 Task 15b"
+      - "2026-04-15: spec §3.4 ServiceSpec 命名实际用 *registry.ResolvedRoute — Task 15b 同步"
+      - "2026-04-15: spec §5.2 vs §6.5 矛盾 — runtime Capability Matching skip per §6.5；§5.2 第三调用时机应删 — Task 15b"
     rollback: null
     last_verified: null
     decisions:
@@ -1337,4 +1342,40 @@ features:
       - "新 Provider 接入（本期不新增，只收编现有的）"
     blockers: []
     created_at: "2026-04-15T00:00:00+08:00"
+    completed_at: null
+
+  - id: "aihubmix-provider"
+    ndf_version: "1.0"
+    description: "接入 AiHubMix 作为新 LLM 聚合提供商，与 DMXAPI 并行。4 个模型（claude-sonnet-4-6 / gemini-3.1-pro-preview / gpt-5.4-mini / DeepSeek-V3）以 AiHubMix 为主路由、DMXAPI 为 failover，统一 OpenAI /chat/completions + reasoning_effort 协议"
+    track: "standard"
+    stage: "S0"
+    classification_reason: "涉及新外部服务集成（AiHubMix）+ 影响文件数 >3（dmxapi_client.go / llmrouter 映射 / config×4 / seed SQL），2 条 Triage 标准不满足。用户确认 Standard 快节奏推进"
+    last_updated_by: "ai-s0"
+    last_updated_at: "2026-04-16T00:00:00+08:00"
+    repos:
+      - numind-server
+    branches: {}
+    artifacts:
+      requirement: "numind-server/requirements/aihubmix-provider.md"
+      proposal: null
+      spec: null
+      plan: null
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: null
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-04-16: 走 Standard 不走 Hotfix（2 条 Triage 标准不满足，不可降级）"
+      - "2026-04-16: AiHubMix 为新增主路由、DMXAPI 作 failover 保留（不替换）"
+      - "2026-04-16: 统一走 OpenAI /chat/completions，thinking 用 reasoning_effort:'high'，不走原生 Gemini/GPT Responses 端点"
+      - "2026-04-16: 与活跃功能 ai-service-manager 的关系 — 选方案 A：当前在旧 llm_provider 表上接入，日后随 ai-service-manager 迁移"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-16T00:00:00+08:00"
     completed_at: null
