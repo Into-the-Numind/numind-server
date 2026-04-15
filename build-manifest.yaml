@@ -1312,12 +1312,12 @@ features:
       qa: null
     progress:
       total_tasks: 23
-      completed_tasks: 6
-      reviewed_tasks: 6
+      completed_tasks: 7
+      reviewed_tasks: 7
       current_task:
-        index: 7
-        title: "Task 6: OCR/ASR/Bailian adapters"
-        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-6"
+        index: 8
+        title: "Task 7: Legacy billing ctx skip flag"
+        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-7"
     pending_spec_updates:
       - "2026-04-15: spec §4.3 errno 数字 code 改为字符串 code（项目约定）— 留 Task 15b"
       - "2026-04-15: spec §2.1.2 补 thinking_only 列到字段清单 — 留 Task 15b"
