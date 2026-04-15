@@ -33,4 +33,11 @@ var (
 
 	// ErrAIServiceUnbound is returned when a Task Profile has no default_service_id bound.
 	ErrAIServiceUnbound = &Errno{HTTP: 424, Code: "AIService.Unbound", Message: "Task Profile 未绑定服务"}
+
+	// ErrAIProviderTimeout is returned when the upstream AI provider call times out.
+	ErrAIProviderTimeout = &Errno{HTTP: 504, Code: "AIService.ProviderTimeout", Message: "AI 服务调用超时"}
+
+	// ErrAIProviderError is returned when the upstream AI provider returns a 5xx or
+	// network-level error.
+	ErrAIProviderError = &Errno{HTTP: 502, Code: "AIService.ProviderError", Message: "AI 服务调用失败"}
 )
