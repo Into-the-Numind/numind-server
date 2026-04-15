@@ -1339,3 +1339,39 @@ features:
     blockers: []
     created_at: "2026-04-15T00:00:00+08:00"
     completed_at: null
+
+  - id: "clipboard-http-fallback"
+    ndf_version: "1.0"
+    description: "修复 SOP 追问 AI 复制按钮在 HTTP 环境下报「复制失败」— navigator.clipboard 仅在 secure context（HTTPS/localhost）可用，dev/qa 走 HTTP IP 时 API 不可用直接进 catch；新增 src/utils/clipboard.ts 工具函数，优先 navigator.clipboard，失败/不可用时降级到 document.execCommand('copy') + 临时 textarea，统一替换 3 处调用点（TrailingChat / SOPRunView / KnowledgeView）"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "纯前端 utility + 3 处调用点替换，无 schema/API/业务逻辑变更，根因明确（HTTP 非 secure context）"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-16T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "fix/clipboard-http-fallback → merged to develop"
+    hotfix_artifacts:
+      diagnosis: "代码定位：TrailingChat.vue:213 / SOPRunView.vue:294 / KnowledgeView.vue:962 均直接 await navigator.clipboard.writeText；MDN 明确 navigator.clipboard 仅在 secure context 暴露；dev 站点 49.233.219.254:9200 是 HTTP IP 非 secure context"
+      review: "inline (single-developer mode)"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert <merge-commit> on develop"
+    last_verified:
+      at: "2026-04-16T00:00:00+08:00"
+      lint: "pass (npm run lint, 仅 1 个 pre-existing warning 与本次修复无关)"
+      type_check: "pass (vue-tsc)"
+      tests: "n/a"
+      test_summary: "lint + type-check pass；execCommand fallback 在所有现代浏览器仍可用（虽已 deprecated，仍是 HTTP 环境唯一可行方案）"
+    decisions:
+      - "2026-04-16: 不上线 HTTPS 来彻底解决 — 超出 hotfix scope，且 dev/qa 走 HTTP IP 是基础设施约定，前端兼容更经济"
+      - "2026-04-16: 抽到 utils/clipboard.ts 而非各组件内联 — 3 处调用避免重复，未来新增复制场景统一调用"
+    deferred:
+      - "彻底切 HTTPS 后可移除 fallback（无紧迫性）"
+    blockers: []
+    created_at: "2026-04-16T00:00:00+08:00"
+    completed_at: "2026-04-16T00:00:00+08:00"
