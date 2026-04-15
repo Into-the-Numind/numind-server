@@ -14,6 +14,8 @@ import (
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
+	aismw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
 )
@@ -80,7 +82,11 @@ func (p *IngestionPipeline) Submit(doc *domain.KnowledgeDocument) {
 
 func (p *IngestionPipeline) worker() {
 	for doc := range p.docChan {
+		// Inject userID and skip-legacy-billing so that the embedder closure
+		// routed through the AI Gateway can perform per-user billing correctly.
 		ctx := context.Background()
+		ctx = aismw.WithUserID(ctx, doc.UserID)
+		ctx = aiservice.WithSkipLegacyBilling(ctx)
 		p.process(ctx, doc)
 	}
 }

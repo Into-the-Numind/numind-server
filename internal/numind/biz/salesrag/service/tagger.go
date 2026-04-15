@@ -9,17 +9,16 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz/salesrag/domain"
+	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/langfuse"
-	"numind-server/internal/pkg/llm"
 )
 
-type ContentTagger struct {
-	dmxClient *llm.DMXAPIClient
-}
+type ContentTagger struct{}
 
 func NewContentTagger() *ContentTagger {
-	return &ContentTagger{dmxClient: llm.NewDMXAPIClient()}
+	return &ContentTagger{}
 }
 
 // TaggingResult structure matching JSON output from LLM
@@ -107,8 +106,13 @@ func (t *ContentTagger) analyze(ctx context.Context, text string) (*TaggingResul
 		if billing.FromContext(tagCtx) == nil {
 			tagCtx = billing.WithBilling(tagCtx, 0, "salesrag_tagging")
 		}
-		messages := []llm.ChatMessage{{Role: "user", Content: prompt}}
-		respStr, _, err := t.dmxClient.ChatCompletion(tagCtx, "qwen-turbo-latest", messages, 0.1, 1024)
+		chatResp, err := aiservice.Chat(tagCtx, profile.SalesragTagging, aiservice.ChatRequest{
+			Messages: []aiservice.ChatMessage{
+				{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: prompt}},
+			},
+			Temperature: 0.1,
+			MaxTokens:   1024,
+		})
 		if err != nil {
 			lastErr = err
 			time.Sleep(500 * time.Millisecond)
@@ -116,10 +120,10 @@ func (t *ContentTagger) analyze(ctx context.Context, text string) (*TaggingResul
 		}
 
 		// Parse JSON
-		cleaned := cleanJSON(respStr)
+		cleaned := cleanJSON(chatResp.Content)
 		var result TaggingResult
 		if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
-			lastErr = fmt.Errorf("json parse error: %w, raw: %s", err, respStr)
+			lastErr = fmt.Errorf("json parse error: %w, raw: %s", err, chatResp.Content)
 			// If parse failed, retry
 			time.Sleep(500 * time.Millisecond)
 			continue

@@ -4,6 +4,7 @@ package biz
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"time"
 
@@ -25,6 +26,8 @@ import (
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/llm"
 	"numind-server/internal/pkg/log"
 
@@ -37,15 +40,15 @@ type IBiz interface {
 	Ali() ali.AliBiz
 	Volc() volc.VolcBiz
 	Configs() config.ConfigBiz
-	Sop() sopbiz.ISopBiz                 // SOP服务
-	Customers() customerbiz.ICustomerBiz // 客户管理服务
-	SalesRAG() salesrag.SalesRAGBiz      // 销售 RAG 服务
-	Credit() credit.ICreditBiz           // 积分服务
-	Payment() payment.IPaymentBiz              // 支付服务
-	Monitor() monitor.IMonitorBiz              // 博主监控服务
-	KnowledgeBase() kbbiz.IKnowledgeBaseBiz    // 知识库服务
-	Chatbot() chatbotbiz.IChatbotBiz           // 智能体服务
-	LLMRouter() *llmrouter.Router              // LLM 路由服务
+	Sop() sopbiz.ISopBiz                    // SOP服务
+	Customers() customerbiz.ICustomerBiz    // 客户管理服务
+	SalesRAG() salesrag.SalesRAGBiz         // 销售 RAG 服务
+	Credit() credit.ICreditBiz              // 积分服务
+	Payment() payment.IPaymentBiz           // 支付服务
+	Monitor() monitor.IMonitorBiz           // 博主监控服务
+	KnowledgeBase() kbbiz.IKnowledgeBaseBiz // 知识库服务
+	Chatbot() chatbotbiz.IChatbotBiz        // 智能体服务
+	LLMRouter() *llmrouter.Router           // LLM 路由服务
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -88,10 +91,20 @@ func NewBiz(ds store.IStore) *biz {
 	// 向量库支持 sqlitevec（默认）、dashvector（回退兼容）、memory（测试）
 	var vStore port.VectorStore
 
-	// Define Embedder using Qwen
+	// Define Embedder via AI Gateway (profile.SalesragEmbed).
+	// Context arriving here from pipeline.worker() already carries
+	// aismw.WithUserID + aiservice.WithSkipLegacyBilling.
 	embedder := func(ctx context.Context, text string) ([]float32, error) {
-		vec, _, err := b.Ali().QianwenEmbedding(ctx, text)
-		return vec, err
+		resp, err := aiservice.Embed(ctx, profile.SalesragEmbed, aiservice.EmbedRequest{
+			Texts: []string{text},
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(resp.Embeddings) == 0 {
+			return nil, fmt.Errorf("salesrag embed: empty embedding response")
+		}
+		return resp.Embeddings[0], nil
 	}
 
 	vectorStoreType := viper.GetString("salesrag.vector_store.type")
