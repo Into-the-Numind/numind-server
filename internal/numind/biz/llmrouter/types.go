@@ -12,6 +12,8 @@ const (
 	ThinkingGemini = "gemini"
 	// ThinkingGPT GPT-5/O 系列：走 /v1/responses 端点 + reasoning:{effort}
 	ThinkingGPT = "gpt"
+	// ThinkingReasoningEffort AiHubMix 统一推理协议：通过 reasoning_effort 参数激活
+	ThinkingReasoningEffort = "reasoning_effort"
 )
 
 // ResolvedRoute 解析后的路由信息，包含调用 LLM 所需的完整凭据和参数

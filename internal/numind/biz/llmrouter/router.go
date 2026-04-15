@@ -76,7 +76,7 @@ func (r *Router) Resolve(ctx context.Context, modelKey string, thinking bool) ([
 		}
 		tf := ThinkingNone
 		if wantThinking {
-			tf = inferThinkingFormat(mp.ProviderModelID)
+			tf = inferThinkingFormat(mp.Provider.Name, mp.ProviderModelID)
 		}
 		routes = append(routes, ResolvedRoute{
 			BaseURL:         mp.Provider.BaseURL,
@@ -212,17 +212,31 @@ func (r *Router) InvalidateCache() {
 	r.cache.Invalidate()
 }
 
-// inferThinkingFormat 根据 DMXAPI 供应商侧模型 ID 推断 thinking 激活方式
+// inferThinkingFormat 根据供应商名称和供应商侧模型 ID 推断 thinking 激活方式
 //
-// DMXAPI 文档参考：
+// AiHubMix 统一使用 /chat/completions + reasoning_effort 协议，例外：
+//   - Claude -think 变体（如 claude-sonnet-4-6-think）thinking 已内置，不传 reasoning_effort
+//
+// DMXAPI 文档参考（其他 provider 保持原有分支）：
 //   - Claude: -thinking 模型名后缀，走 /v1/chat/completions，reasoning_content 字段
 //   - Gemini: 原生 /v1beta/models/{model}:streamGenerateContent 端点，part.thought 属性
 //   - Qwen:   enable_thinking: true，走 /v1/chat/completions
 //   - Doubao: thinking: {type:"enabled"}，走 /v1/chat/completions
 //   - GPT:    thinking-only 模型，不接受任何 thinking 参数（会 400）
 //   - DeepSeek: OpenAI 通用格式，DMXAPI 无单独 thinking 文档
-func inferThinkingFormat(providerModelID string) string {
+func inferThinkingFormat(providerName, providerModelID string) string {
 	id := strings.ToLower(providerModelID)
+
+	// AiHubMix: 统一 /chat/completions + reasoning_effort 协议
+	// 例外：Claude -think 变体（如 claude-sonnet-4-6-think）thinking 已内置，不传 reasoning_effort
+	if strings.ToLower(providerName) == "aihubmix" {
+		if strings.HasSuffix(id, "-think") {
+			return ThinkingNone
+		}
+		return ThinkingReasoningEffort
+	}
+
+	// 其他 provider 沿用现有按 providerModelID 推断
 
 	// Claude：通过 DMXAPI 模型名后缀 -thinking 激活（provider_model_id 已含后缀）
 	// 不需要额外参数，但 temperature 必须为 1（在 StreamChatCompletion 中处理）

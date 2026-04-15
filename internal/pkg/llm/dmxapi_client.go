@@ -251,7 +251,9 @@ func (c *DMXAPIClient) ChatCompletionWithThinking(ctx context.Context, model str
 // StreamChatCompletion 调用聊天接口（流式）
 // onEvent: 回调函数，参数为 (eventType string, content string)
 // eventType: "thinking" (思维链内容) 或 "message" (正文内容)
-// thinkingFormat: "" (不启用), "enable_thinking" (Gemini/Qwen), "anthropic" (Claude)
+// thinkingFormat: "" (不启用), "enable_thinking" (Gemini/Qwen), "anthropic" (Claude),
+//
+//	"reasoning_effort" (AiHubMix 统一推理协议，注入 reasoning_effort:"high")
 func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int, thinkingFormat string, onEvent func(eventType, content string) error) (string, *billing.TokenUsage, error) {
 	// 构建请求体（手动构建以添加 stream_options）
 	bodyMap := map[string]interface{}{
@@ -264,8 +266,9 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 		},
 	}
 
-	// Claude -thinking 后缀模型：thinking 模式要求 temperature 必须为 1
-	if strings.HasSuffix(strings.ToLower(model), "-thinking") {
+	// Claude -thinking / -think 后缀模型：thinking 模式要求 temperature 必须为 1
+	lowerModel := strings.ToLower(model)
+	if strings.HasSuffix(lowerModel, "-thinking") || strings.HasSuffix(lowerModel, "-think") {
 		bodyMap["temperature"] = 1
 	}
 
@@ -277,6 +280,9 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 		bodyMap["thinking"] = map[string]interface{}{
 			"type": "enabled",
 		}
+	case "reasoning_effort":
+		// AiHubMix 统一推理协议：通过 reasoning_effort 字段激活模型推理能力
+		bodyMap["reasoning_effort"] = "high"
 	}
 	if maxTokens > 0 {
 		bodyMap["max_tokens"] = maxTokens
@@ -309,9 +315,11 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 		if resp.StatusCode == http.StatusBadRequest && thinkingFormat != "" &&
 			(strings.Contains(string(respBody), "enable_thinking") ||
 				strings.Contains(string(respBody), "thinking") ||
+				strings.Contains(string(respBody), "reasoning_effort") ||
 				strings.Contains(string(respBody), "unknown_parameter")) {
 			log.Warnw("Thinking parameter rejected by provider, retrying without thinking",
 				"model", model, "thinking_format", thinkingFormat, "status", resp.StatusCode)
+			// 递归调用传空 thinkingFormat，外层条件 thinkingFormat != "" 在第二次不成立，最多两跳，无无限递归风险
 			return c.StreamChatCompletion(ctx, model, messages, temperature, maxTokens, "", onEvent)
 		}
 
