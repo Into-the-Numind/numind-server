@@ -1312,12 +1312,12 @@ features:
       qa: null
     progress:
       total_tasks: 23
-      completed_tasks: 9
-      reviewed_tasks: 9
+      completed_tasks: 10
+      reviewed_tasks: 10
       current_task:
-        index: 10
-        title: "Task 9: 迁移 SOP + ChatBot + billing 对账"
-        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-9"
+        index: 11
+        title: "Task 10a: 迁移 SalesRAG 问答（intent + chat + rerank）"
+        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-10a"
     tech_debt_added_in_s4:
       - "VectorDB billing (RecordCOS/RecordVectorDB) in salesrag/* not unified — out of Gateway scope (LLM/OCR/ASR only); document for Phase 2"
       - "volc.GenerateArticleContent has no billing call — pre-existing tech debt, not introduced by this batch"
