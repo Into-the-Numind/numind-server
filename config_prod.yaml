@@ -440,3 +440,11 @@ langfuse:
   public_key: "pk-lf-41015256-bdc3-46aa-92b7-6ffe8de9605a"
   secret_key: "sk-lf-5a6c2185-d8ce-4903-9930-c9d72a9d0112"
 
+# AiHubMix（OpenAI 兼容聚合平台）— 当前作为 claude-sonnet-4-6 / gemini-3.1-pro-preview /
+# gpt-5.4 / deepseek-v3.2 的主路由（priority=5），DMXAPI 作 failover（priority=10）。
+# 注：runtime 实际读取 llm_provider.api_key（DB 列），此配置仅作占位与运维文档一致性；
+# 未来 ai-service-manager 的 SyncProviderCredentials 实装后会读取此配置刷新 DB。
+aihubmix:
+  base_url: "https://aihubmix.com/v1"
+  api_key: "sk-vduyVKfBuiI5p4P5B030A80938924aFe87Af360473612f68"
+
