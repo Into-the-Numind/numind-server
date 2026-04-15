@@ -28,7 +28,6 @@ import (
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
-	"numind-server/internal/pkg/llm"
 	"numind-server/internal/pkg/log"
 
 	"github.com/spf13/viper"
@@ -182,12 +181,11 @@ func NewBiz(ds store.IStore) *biz {
 	b.chatbotService = chatbotbiz.NewChatbotBiz(ds, b.llmRouterSvc, vStore, embedder)
 
 	// 初始化博主监控服务
-	llmClient := llm.NewDMXAPIClient()
 	monitorCooldown := monitor.NewCooldownManager(
 		viper.GetInt("monitor.cooldown.check_minutes"),
 		viper.GetInt("monitor.cooldown.analyze_minutes"),
 	)
-	b.monitorService = monitor.NewMonitorBiz(ds, llmClient, monitorCooldown)
+	b.monitorService = monitor.NewMonitorBiz(ds, monitorCooldown)
 
 	// 系统内置观点赛道初始化（异步，不阻塞启动，5 分钟超时保护）
 	go func() {

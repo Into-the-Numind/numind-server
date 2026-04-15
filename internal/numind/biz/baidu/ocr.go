@@ -2,24 +2,21 @@ package baidu
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"image"
 	"image/jpeg"
-	"io"
-	"net/http"
-	"net/url"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
+	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/log"
 
 	"github.com/disintegration/imaging"
-	"github.com/spf13/viper"
 )
 
 // 百度 OCR 高精度含位置版图片限制
@@ -32,14 +29,6 @@ const (
 	overlapHeight = 300  // 相邻段重叠高度（避免切断气泡）
 )
 
-// accessTokenCache 缓存百度 access_token（有效期 30 天）
-type accessTokenCache struct {
-	mu        sync.RWMutex
-	token     string
-	expiresAt time.Time
-}
-
-var tokenCache accessTokenCache
 
 // OCRResult 百度 OCR 响应结构（高精度含位置版）
 type OCRResult struct {
@@ -64,67 +53,6 @@ type Location struct {
 	Height int `json:"height"`
 }
 
-// getAccessToken 获取或刷新百度 access_token
-func getAccessToken() (string, error) {
-	tokenCache.mu.RLock()
-	if tokenCache.token != "" && time.Now().Before(tokenCache.expiresAt) {
-		token := tokenCache.token
-		tokenCache.mu.RUnlock()
-		return token, nil
-	}
-	tokenCache.mu.RUnlock()
-
-	tokenCache.mu.Lock()
-	defer tokenCache.mu.Unlock()
-
-	if tokenCache.token != "" && time.Now().Before(tokenCache.expiresAt) {
-		return tokenCache.token, nil
-	}
-
-	apiKey := viper.GetString("baidu.api_key")
-	secretKey := viper.GetString("baidu.secret_key")
-	if apiKey == "" || secretKey == "" {
-		return "", fmt.Errorf("百度 OCR 未配置 api_key 或 secret_key")
-	}
-
-	tokenURL := fmt.Sprintf(
-		"https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id=%s&client_secret=%s",
-		url.QueryEscape(apiKey), url.QueryEscape(secretKey),
-	)
-
-	resp, err := http.Post(tokenURL, "application/x-www-form-urlencoded", nil)
-	if err != nil {
-		return "", fmt.Errorf("获取百度 access_token 失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("读取百度 token 响应失败: %w", err)
-	}
-
-	var tokenResp struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int64  `json:"expires_in"`
-		Error       string `json:"error,omitempty"`
-		ErrorDesc   string `json:"error_description,omitempty"`
-	}
-	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		return "", fmt.Errorf("解析百度 token 响应失败: %w", err)
-	}
-	if tokenResp.Error != "" {
-		return "", fmt.Errorf("百度 token 请求错误: %s - %s", tokenResp.Error, tokenResp.ErrorDesc)
-	}
-	if tokenResp.AccessToken == "" {
-		return "", fmt.Errorf("百度 token 响应中无 access_token")
-	}
-
-	tokenCache.token = tokenResp.AccessToken
-	tokenCache.expiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn-3600) * time.Second)
-
-	log.Infow("百度 access_token 已刷新", "expires_in", tokenResp.ExpiresIn)
-	return tokenCache.token, nil
-}
 
 // encodeImageForOCR 将图片编码为 JPEG 并确保 base64 ≤ 10MB
 func encodeImageForOCR(img image.Image) ([]byte, error) {
@@ -182,44 +110,33 @@ func splitImage(img image.Image) (segments [][]byte, yOffsets []int, err error) 
 	return segments, yOffsets, nil
 }
 
-// callOCRAPI 调用百度 OCR API，返回原始结果
-func callOCRAPI(imageData []byte) (*OCRResult, error) {
-	token, err := getAccessToken()
-	if err != nil {
-		return nil, err
-	}
-
-	ocrURL := "https://aip.baidubce.com/rest/2.0/ocr/v1/accurate?access_token=" + url.QueryEscape(token)
-
-	b64 := base64.StdEncoding.EncodeToString(imageData)
-
-	formData := url.Values{}
-	formData.Set("image", b64)
-	formData.Set("language_type", "CHN_ENG")
-	formData.Set("detect_direction", "true")
-	formData.Set("paragraph", "true")
-
-	resp, err := http.Post(ocrURL, "application/x-www-form-urlencoded", strings.NewReader(formData.Encode()))
+// callOCRAPI 通过 AI Gateway 调用百度 OCR，返回识别结果。
+// ctx 应已注入 aismw.WithUserID + aiservice.WithSkipLegacyBilling（由上层调用方负责注入）。
+func callOCRAPI(ctx context.Context, imageData []byte) (*OCRResult, error) {
+	resp, err := aiservice.OCR(ctx, profile.OcrBaidu, aiservice.OCRRequest{
+		ImageBytes: imageData,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("百度 OCR 请求失败: %w", err)
 	}
-	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("读取百度 OCR 响应失败: %w", err)
+	// 将 aiservice.OCRResponse 转换为本包内的 OCRResult（保留位置信息）
+	result := &OCRResult{
+		WordsResultNum: len(resp.Words),
 	}
-
-	var result OCRResult
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("解析百度 OCR 响应失败: %w", err)
+	for _, w := range resp.Words {
+		item := WordsItem{Words: w.Word}
+		if len(w.BoundingBox) == 4 {
+			item.Location = Location{
+				Left:   w.BoundingBox[0],
+				Top:    w.BoundingBox[1],
+				Width:  w.BoundingBox[2] - w.BoundingBox[0],
+				Height: w.BoundingBox[3] - w.BoundingBox[1],
+			}
+		}
+		result.WordsResult = append(result.WordsResult, item)
 	}
-
-	if result.ErrorCode != 0 {
-		return nil, fmt.Errorf("百度 OCR 错误 %d: %s", result.ErrorCode, result.ErrorMsg)
-	}
-
-	return &result, nil
+	return result, nil
 }
 
 // segmentResult 存储单个分段的 OCR 结果
@@ -230,7 +147,7 @@ type segmentResult struct {
 }
 
 // recognizeSegments 并发调用 OCR 识别多个分段（受限于百度 API 2 QPS），合并结果并将坐标映射回原图
-func recognizeSegments(segments [][]byte, yOffsets []int) ([]WordsItem, error) {
+func recognizeSegments(ctx context.Context, segments [][]byte, yOffsets []int) ([]WordsItem, error) {
 	results := make([]segmentResult, len(segments))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 2) // 百度 OCR 限制 2 QPS
@@ -241,7 +158,7 @@ func recognizeSegments(segments [][]byte, yOffsets []int) ([]WordsItem, error) {
 		go func(idx int, data []byte) {
 			defer wg.Done()
 			defer func() { <-sem }() // 释放信号量
-			result, err := callOCRAPI(data)
+			result, err := callOCRAPI(ctx, data)
 			if err != nil {
 				results[idx] = segmentResult{index: idx, err: err}
 				return
@@ -312,12 +229,10 @@ func deduplicateItems(items []WordsItem) []WordsItem {
 	return result
 }
 
-// no-op for now: baidu OCR billing will be handled by Gateway middleware after Task 11.
-// The OCR API charges per image (not token-based), so no UsageRecord writes exist here.
-
-// RecognizeText 调用百度 OCR 并返回纯文本（无说话人标注）
-func RecognizeText(imageData []byte) (string, error) {
-	items, _, err := recognizeImage(imageData)
+// RecognizeText 调用百度 OCR（经由 AI Gateway）并返回纯文本（无说话人标注）。
+// ctx 应已注入 aismw.WithUserID + aiservice.WithSkipLegacyBilling（由调用方负责）。
+func RecognizeText(ctx context.Context, imageData []byte) (string, error) {
+	items, _, err := recognizeImage(ctx, imageData)
 	if err != nil {
 		return "", err
 	}
@@ -332,10 +247,11 @@ func RecognizeText(imageData []byte) (string, error) {
 	return strings.Join(lines, "\n"), nil
 }
 
-// RecognizeChatText 调用百度 OCR 识别微信聊天截图，根据文字位置自动标注说话人
-// 返回格式: "客户：xxx\n销售：xxx\n..."
-func RecognizeChatText(imageData []byte, imageWidth int) (string, error) {
-	items, width, err := recognizeImage(imageData)
+// RecognizeChatText 调用百度 OCR（经由 AI Gateway）识别微信聊天截图，根据文字位置自动标注说话人。
+// 返回格式: "左侧消息\n右侧消息\n..."
+// ctx 应已注入 aismw.WithUserID + aiservice.WithSkipLegacyBilling（由调用方负责）。
+func RecognizeChatText(ctx context.Context, imageData []byte, imageWidth int) (string, error) {
+	items, width, err := recognizeImage(ctx, imageData)
 	if err != nil {
 		return "", err
 	}
@@ -352,11 +268,11 @@ func RecognizeChatText(imageData []byte, imageWidth int) (string, error) {
 
 // recognizeImage 统一入口：解码图片 → 判断是否需要分段 → 调用 OCR → 返回结果
 // 返回: (识别结果, 图片宽度, 错误)
-func recognizeImage(imageData []byte) ([]WordsItem, int, error) {
+func recognizeImage(ctx context.Context, imageData []byte) ([]WordsItem, int, error) {
 	img, err := imaging.Decode(bytes.NewReader(imageData))
 	if err != nil {
 		// 解码失败，直接发原图（可能是 OCR 支持但 imaging 不支持的格式）
-		result, ocrErr := callOCRAPI(imageData)
+		result, ocrErr := callOCRAPI(ctx, imageData)
 		if ocrErr != nil {
 			return nil, 0, ocrErr
 		}
@@ -377,7 +293,7 @@ func recognizeImage(imageData []byte) ([]WordsItem, int, error) {
 			}
 		}
 
-		result, ocrErr := callOCRAPI(imageData)
+		result, ocrErr := callOCRAPI(ctx, imageData)
 		if ocrErr != nil {
 			return nil, 0, ocrErr
 		}
@@ -393,7 +309,7 @@ func recognizeImage(imageData []byte) ([]WordsItem, int, error) {
 		return nil, 0, splitErr
 	}
 
-	items, mergeErr := recognizeSegments(segments, yOffsets)
+	items, mergeErr := recognizeSegments(ctx, segments, yOffsets)
 	if mergeErr != nil {
 		return nil, 0, mergeErr
 	}

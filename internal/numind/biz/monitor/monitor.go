@@ -9,7 +9,6 @@ import (
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
-	"numind-server/internal/pkg/llm"
 	"numind-server/internal/pkg/model"
 )
 
@@ -62,7 +61,6 @@ type IMonitorBiz interface {
 // MonitorBiz implements IMonitorBiz
 type MonitorBiz struct {
 	store     store.IStore
-	llm       *llm.DMXAPIClient
 	cooldown  *CooldownManager
 	scheduler *MonitorScheduler
 }
@@ -71,10 +69,9 @@ type MonitorBiz struct {
 var _ IMonitorBiz = (*MonitorBiz)(nil)
 
 // NewMonitorBiz 创建 MonitorBiz 实例
-func NewMonitorBiz(s store.IStore, llmClient *llm.DMXAPIClient, cooldown *CooldownManager) *MonitorBiz {
+func NewMonitorBiz(s store.IStore, cooldown *CooldownManager) *MonitorBiz {
 	return &MonitorBiz{
 		store:    s,
-		llm:      llmClient,
 		cooldown: cooldown,
 	}
 }

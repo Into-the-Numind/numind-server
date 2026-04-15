@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	"numind-server/internal/pkg/llm"
+	"numind-server/internal/pkg/aiservice"
+	aismw "numind-server/internal/pkg/aiservice/middleware"
+	"numind-server/internal/pkg/aiservice/profile"
+	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 
@@ -36,16 +39,27 @@ func (mb *MonitorBiz) AnalyzeSingleNote(ctx context.Context, note *model.Monitor
 		userMsg.WriteString(fmt.Sprintf("视频转录文字：%s\n", note.Transcript))
 	}
 
-	messages := []llm.ChatMessage{
-		{Role: "system", Content: analyzeSystemPrompt},
-		{Role: "user", Content: userMsg.String()},
+	aiMessages := []aiservice.ChatMessage{
+		{Role: aiservice.MessageRoleSystem, Content: aiservice.MessageContent{Text: analyzeSystemPrompt}},
+		{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: userMsg.String()}},
 	}
 
-	// 调用 LLM
-	resp, _, err := mb.llm.ChatCompletion(ctx, "deepseek-v3-2-251201", messages, 0.3, 1000)
+	// 注入 Gateway 中间件上下文（userID 从 billing context 读取）
+	if bc := billing.FromContext(ctx); bc != nil {
+		ctx = aismw.WithUserID(ctx, bc.UserID)
+	}
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
+
+	// 调用 AI Gateway
+	chatResp, err := aiservice.Chat(ctx, profile.MonitorAnalyze, aiservice.ChatRequest{
+		Messages:    aiMessages,
+		Temperature: 0.3,
+		MaxTokens:   1000,
+	})
 	if err != nil {
 		return fmt.Errorf("AnalyzeSingleNote: llm call: %w", err)
 	}
+	resp := chatResp.Content
 
 	// 尝试解析 JSON 响应
 	// 处理可能被 markdown 代码块包裹的情况
