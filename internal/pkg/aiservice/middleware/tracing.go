@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"numind-server/internal/pkg/aiservice"
@@ -60,13 +61,13 @@ func Tracing(deps Deps) Middleware {
 						langfuse.WithGenParent(tc.ParentObservationID),
 						langfuse.WithGenName(route.TaskID),
 						langfuse.WithGenModel(route.ServiceKey),
-						langfuse.WithGenInput(map[string]interface{}{"request": req}),
+						langfuse.WithGenInput(safeInput(req)),
 						langfuse.WithGenOutput(map[string]interface{}{"metadata": meta}),
 					)
 				} else {
 					langfuse.CreateSpan(tc.TraceID, observationID, route.TaskID,
 						langfuse.WithSpanParent(tc.ParentObservationID),
-						langfuse.WithSpanInput(map[string]interface{}{"request": req, "metadata": meta}),
+						langfuse.WithSpanInput(safeInput(req)),
 					)
 				}
 			}()
@@ -109,7 +110,7 @@ func Tracing(deps Deps) Middleware {
 					} else {
 						usage := extractUsage(resp)
 						opts := []langfuse.GenOption{
-							langfuse.WithGenOutput(map[string]interface{}{"response": resp, "metadata": meta}),
+							langfuse.WithGenOutput(safeOutput(resp, meta)),
 						}
 						if usage != nil {
 							opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
@@ -171,6 +172,46 @@ func withFallbackFromServiceID(ctx context.Context, id uint64) context.Context {
 // (LLM chat/vision/embed). OCR/ASR/rerank use Span instead.
 func isLLMType(serviceType string) bool {
 	return serviceType == "llm"
+}
+
+// safeInput converts a request to a JSON-safe map for Langfuse input.
+// Channels and other non-serializable types are excluded.
+func safeInput(req interface{}) map[string]interface{} {
+	if req == nil {
+		return map[string]interface{}{}
+	}
+	// Try JSON marshal to check if it's safe; if not, return type name only
+	data, err := json.Marshal(req)
+	if err != nil {
+		return map[string]interface{}{"type": fmt.Sprintf("%T", req), "note": "not serializable"}
+	}
+	var result map[string]interface{}
+	if json.Unmarshal(data, &result) == nil {
+		return result
+	}
+	return map[string]interface{}{"raw": string(data)}
+}
+
+// safeOutput converts a response to a JSON-safe map for Langfuse output.
+// Channels (<-chan ChatChunk) are replaced with a placeholder.
+func safeOutput(resp interface{}, meta map[string]interface{}) map[string]interface{} {
+	out := map[string]interface{}{"metadata": meta}
+	if resp == nil {
+		return out
+	}
+	data, err := json.Marshal(resp)
+	if err != nil {
+		out["type"] = fmt.Sprintf("%T", resp)
+		out["note"] = "not serializable (stream response)"
+		return out
+	}
+	var parsed interface{}
+	if json.Unmarshal(data, &parsed) == nil {
+		out["response"] = parsed
+	} else {
+		out["raw"] = string(data)
+	}
+	return out
 }
 
 // buildMeta constructs the Langfuse metadata map from a resolved route.
