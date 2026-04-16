@@ -148,6 +148,10 @@ func run() error {
 	} {
 		gateway.RegisterProvider(p)
 	}
+	// Register aliases for providers that share the same adapter protocol
+	gateway.RegisterProviderAlias("dmxapi-ssvip", "dmxapi")
+	gateway.RegisterProviderAlias("aihubmix", "dmxapi")
+
 	aiservice.SetDefault(gateway)
 	log.Infow("AI Service Gateway initialised", "adapters", gateway.AdapterNames())
 

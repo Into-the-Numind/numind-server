@@ -149,6 +149,33 @@ func (g *Gateway) RegisterProvider(p Provider) {
 	g.mu.Unlock()
 }
 
+// RegisterProviderAlias registers an additional name mapping to an existing provider.
+// Useful when multiple llm_provider rows (dmxapi, dmxapi-ssvip, aihubmix) share
+// the same adapter protocol (OpenAI-compatible).
+func (g *Gateway) RegisterProviderAlias(alias string, adapterName string) {
+	g.mu.Lock()
+	if p, ok := g.providers[adapterName]; ok {
+		g.providers[alias] = p
+	}
+	g.mu.Unlock()
+}
+
+// findAdapterByPrefix returns the first adapter whose name is a prefix of providerName.
+// E.g., provider "dmxapi-ssvip" matches adapter "dmxapi".
+// Caller must hold g.mu.RLock.
+func (g *Gateway) findAdapterByPrefix(providerName string) Provider {
+	for name, p := range g.providers {
+		if len(name) > 0 && len(providerName) > len(name) && providerName[:len(name)] == name {
+			return p
+		}
+	}
+	// Fallback: all OpenAI-compatible providers can use dmxapi adapter
+	if p, ok := g.providers["dmxapi"]; ok {
+		return p
+	}
+	return nil
+}
+
 // AdapterNames returns the names of all registered providers (for health checks).
 func (g *Gateway) AdapterNames() []string {
 	g.mu.RLock()
@@ -182,6 +209,10 @@ func (g *Gateway) resolveAndRun(
 
 	g.mu.RLock()
 	p, ok := g.providers[primary.Provider.Name]
+	if !ok {
+		p = g.findAdapterByPrefix(primary.Provider.Name)
+		ok = p != nil
+	}
 	chainFn := g.chain
 	g.mu.RUnlock()
 
@@ -237,6 +268,10 @@ func (g *Gateway) ChatStream(ctx context.Context, taskID string, req ChatRequest
 
 	g.mu.RLock()
 	p, ok := g.providers[primary.Provider.Name]
+	if !ok {
+		p = g.findAdapterByPrefix(primary.Provider.Name)
+		ok = p != nil
+	}
 	chainFn := g.chain
 	g.mu.RUnlock()
 
