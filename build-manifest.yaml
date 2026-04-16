@@ -468,28 +468,29 @@ features:
 
   - id: "admin-rebrand-to-design-md"
     ndf_version: "1.0"
-    description: "把 numind-admin-web 的 Tailwind 默认值替换为 DESIGN.md 定义的 v3 master 品牌（翠绿 + HSL 命名 + 衬线 heading）。包括 variables.css token 重画 + 30+ view 视觉迁移 + 状态色 token 引入"
+    description: "管理端品牌重构：Tailwind 默认紫蓝 → 企业蓝灰工业风格（Superclaw OS 参考）。variables.css 全面替换 + 17 view 视觉迁移 + Sidebar 浅色化 + 字体系统引入"
     track: "standard"
-    stage: "queued"
-    classification_reason: "影响 admin 全部 30+ view 视觉重画，跨多文件，需 Standard 全流程审查；引入新 token（状态色）属于 schema-like 变更"
-    last_updated_by: "ai-finalize"
-    last_updated_at: "2026-04-10T00:00:00+08:00"
+    stage: "S4"
+    classification_reason: "影响 admin 全部 17 个 view 的视觉统一重构，跨多文件，需 Standard 全流程审查；引入新 token（状态色）属于 schema-like 变更"
+    last_updated_by: "ai-s4"
+    last_updated_at: "2026-04-16T00:00:00+08:00"
     repos:
       - numind-admin-web
-    branches: {}
+    branches:
+      numind-admin-web: "feature/admin-rebrand"
     artifacts:
-      requirement: null
-      proposal: null
-      spec: null
-      plan: null
+      requirement: "numind-admin-web/requirements/admin-rebrand-to-design-md.md"
+      proposal: "numind-admin-web/proposals/admin-rebrand-proposal.md"
+      spec: "docs/superpowers/specs/2026-04-16-admin-rebrand-design.md"
+      plan: "docs/superpowers/plans/admin-rebrand-plan.md"
       review_spec_compliance: null
       review_code_quality: null
       qa: null
     progress:
-      total_tasks: 0
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task: null
+      total_tasks: 14
+      completed_tasks: 10
+      reviewed_tasks: 9
+      current_task: "T11"
     rollback: "git revert (multi-commit, 视觉影响大，建议先在 feature 分支充分验证再 merge)"
     last_verified:
       at: null
@@ -497,12 +498,13 @@ features:
       type_check: null
       tests: null
       test_summary: null
-    decisions: []
-    deferred:
-      - "S0 阶段决定具体范围：先做 token 替换还是先做 view 迁移；引入 success/warning/danger/info 状态色 token 的具体 hex 值（v3 当前没有定义）"
-      - "S0 阶段决定是否同时更新 v3 引入状态色 token（保持双端一致）"
-    blockers:
-      - "依赖 frontend-design-system 完成（已完成 2026-04-10），DESIGN.md 是本 feature 的实施依据"
+    decisions:
+      - "2026-04-16: 设计方向改为企业蓝灰工业风格（Superclaw OS 参考），不再照搬用户端翠绿品牌"
+      - "2026-04-16: 管理端走独立设计语言，用户端 numind-web-v3 不受影响"
+      - "2026-04-16: 图标库维持 Lucide，不换 Material Symbols"
+      - "2026-04-16: 字体使用 Google Fonts 免费字体（Manrope/Inter/Space Grotesk/JetBrains Mono/Noto Sans SC）"
+    deferred: []
+    blockers: []
     created_at: "2026-04-10T00:00:00+08:00"
     completed_at: null
 
@@ -1325,6 +1327,14 @@ features:
       - "langfuse.base_url 内网 IP — prod config fix needed"
       - "llmrouter 包最终拆除 — Phase 2 评估"
       - "Playwright E2E for admin-web TaskBindingEditor — skipped in S4, add Phase 2"
+    next_session_task: |
+      legacy-llm-cleanup: 删除旧 llm-model-switch 兼容层。范围：
+      1. DB: 删除 llm_model VIEW + llm_model_provider VIEW
+      2. 后端: 删除 /v1/admin/llm/* 12个端点 + llmrouter 包；/v1/llm/models 改读 ai_service + task profile allowed 过滤
+      3. C端 (numind-web-v3): ModelSelector 改调新端点，按 task profile 的 allowed 列表过滤
+      4. 管理端: 删除 LLM供应商 + LLM模型 页面，侧边栏只留 AI服务 + 任务配置
+      5. user_model_preference 表保留，读写逻辑适配新表
+      预估 2-3 天，建议走 NDF Standard 或 Hotfix
     pending_spec_updates:
       - "spec §4.3 errno 数字 code 改为字符串 code"
       - "spec §2.1.2 补 thinking_only 列"
