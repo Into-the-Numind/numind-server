@@ -17,6 +17,7 @@ type UsageStore interface {
 	CreateUsageRecord(ctx context.Context, record *model.UsageRecord) error
 	CreateUsageRecords(ctx context.Context, records []*model.UsageRecord) error
 	GetPricingRule(ctx context.Context, serviceType, provider, modelName string) (*model.PricingRule, error)
+	GetPricingRuleTiers(ctx context.Context, ruleID uint) ([]model.PricingRuleTier, error)
 }
 
 // UsageRecorder 用量记录器 — 异步批量写入，不阻塞主流程
@@ -198,11 +199,14 @@ func (r *UsageRecorder) calculateCostAndRevenue(record *model.UsageRecord) (int6
 
 	switch {
 	case record.PromptTokens > 0 || record.CompletionTokens > 0:
-		// Token 计费: 每百万 tokens 价格
-		costYuan = float64(record.PromptTokens)/1_000_000*rule.InputPricePerMTok +
-			float64(record.CompletionTokens)/1_000_000*rule.OutputPricePerMTok
-		revenueYuan = float64(record.PromptTokens)/1_000_000*rule.SellInputPricePerMTok +
-			float64(record.CompletionTokens)/1_000_000*rule.SellOutputPricePerMTok
+		if rule.BillingMode == "tiered_token" {
+			costYuan, revenueYuan = r.calculateTieredCost(ctx, rule.ID, record.PromptTokens, record.CompletionTokens)
+		} else {
+			costYuan = float64(record.PromptTokens)/1_000_000*rule.InputPricePerMTok +
+				float64(record.CompletionTokens)/1_000_000*rule.OutputPricePerMTok
+			revenueYuan = float64(record.PromptTokens)/1_000_000*rule.SellInputPricePerMTok +
+				float64(record.CompletionTokens)/1_000_000*rule.SellOutputPricePerMTok
+		}
 	case record.TotalTokens > 0:
 		// Embedding 计费: 只有 total_tokens，用 input 价格
 		costYuan = float64(record.TotalTokens) / 1_000_000 * rule.InputPricePerMTok
@@ -223,6 +227,34 @@ func (r *UsageRecorder) calculateCostAndRevenue(record *model.UsageRecord) (int6
 	}
 
 	return int64(math.Round(costYuan * 100)), int64(math.Round(revenueYuan * 100))
+}
+
+// calculateTieredCost 从 pricing_rule_tier 子表查找匹配档位计算分段价格。
+// 档位以 input token 数为索引：input 和 output 的价格都按 promptTokens 所属档位取值。
+func (r *UsageRecorder) calculateTieredCost(ctx context.Context, ruleID uint, promptTokens, completionTokens int) (costYuan, revenueYuan float64) {
+	tiers, err := r.store.GetPricingRuleTiers(ctx, ruleID)
+	if err != nil || len(tiers) == 0 {
+		return 0, 0
+	}
+
+	lookup := func(tokenType string) (cost, sell float64) {
+		for _, tier := range tiers {
+			if tier.TokenType != tokenType {
+				continue
+			}
+			if uint(promptTokens) >= tier.MinTokens && (tier.MaxTokens == nil || uint(promptTokens) <= *tier.MaxTokens) {
+				return tier.CostPerMTok, tier.SellPerMTok
+			}
+		}
+		return 0, 0
+	}
+
+	inputCost, inputSell := lookup("input")
+	outputCost, outputSell := lookup("output")
+
+	costYuan = float64(promptTokens)/1_000_000*inputCost + float64(completionTokens)/1_000_000*outputCost
+	revenueYuan = float64(promptTokens)/1_000_000*inputSell + float64(completionTokens)/1_000_000*outputSell
+	return costYuan, revenueYuan
 }
 
 // RecordLLM 便捷方法：记录 LLM 调用

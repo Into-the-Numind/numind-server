@@ -24,10 +24,16 @@ func Test_InferThinkingFormat_Aihubmix(t *testing.T) {
 			want:            ThinkingReasoningEffort,
 		},
 		{
-			name:            "WithoutThinkSuffix_GPT_ReturnsReasoningEffort",
+			name:            "GPT_ReturnsThinkingGPT",
 			providerName:    "aihubmix",
 			providerModelID: "gpt-5.4",
-			want:            ThinkingReasoningEffort,
+			want:            ThinkingGPT,
+		},
+		{
+			name:            "O3_ReturnsThinkingGPT",
+			providerName:    "aihubmix",
+			providerModelID: "o3-mini",
+			want:            ThinkingGPT,
 		},
 		{
 			name:            "WithoutThinkSuffix_DeepSeek_ReturnsReasoningEffort",
