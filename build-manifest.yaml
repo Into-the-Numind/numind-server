@@ -488,9 +488,9 @@ features:
       qa: null
     progress:
       total_tasks: 14
-      completed_tasks: 11
-      reviewed_tasks: 10
-      current_task: "T12"
+      completed_tasks: 14
+      reviewed_tasks: 13
+      current_task: null
     rollback: "git revert (multi-commit, 视觉影响大，建议先在 feature 分支充分验证再 merge)"
     last_verified:
       at: null
