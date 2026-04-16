@@ -71,7 +71,6 @@ type IChatbotBiz interface {
 
 type chatbotBiz struct {
 	ds          store.IStore
-	llmRouter   *llmrouter.Router
 	vectorStore port.VectorStore
 	embedder    Embedder
 }
@@ -79,10 +78,10 @@ type chatbotBiz struct {
 var _ IChatbotBiz = (*chatbotBiz)(nil)
 
 // NewChatbotBiz 创建智能体业务层实例
-func NewChatbotBiz(ds store.IStore, llmRouter *llmrouter.Router, vectorStore port.VectorStore, embedder Embedder) IChatbotBiz {
+// llmRouter 参数已废弃（Task 9 迁移至 AI Gateway），保留签名兼容调用方，传 nil 即可。
+func NewChatbotBiz(ds store.IStore, _ *llmrouter.Router, vectorStore port.VectorStore, embedder Embedder) IChatbotBiz {
 	return &chatbotBiz{
 		ds:          ds,
-		llmRouter:   llmRouter,
 		vectorStore: vectorStore,
 		embedder:    embedder,
 	}

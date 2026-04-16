@@ -2,12 +2,22 @@ package adapter
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"numind-server/internal/numind/biz/salesrag/domain"
+	aiservice "numind-server/internal/pkg/aiservice"
 
 	"github.com/stretchr/testify/assert"
 )
+
+// TestMain initialises a minimal aiservice singleton so that tests which
+// exercise code paths reaching the AI Gateway do not panic on Default().
+func TestMain(m *testing.M) {
+	gw := aiservice.Build(aiservice.Deps{})
+	aiservice.SetDefault(gw)
+	os.Exit(m.Run())
+}
 
 func TestStrategyRouter_SelectMetaStrategy(t *testing.T) {
 	router := NewStrategyRouter()

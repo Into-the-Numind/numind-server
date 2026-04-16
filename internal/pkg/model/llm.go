@@ -26,10 +26,17 @@ func (p *LLMProvider) MaskedAPIKey() string {
 }
 
 // LLMModel LLM 逻辑模型
+//
+// TableName points to the llm_model VIEW (which filters ai_service to service_type='llm'
+// AND deprecated_at IS NULL), ensuring backwards-compatible reads without any code changes.
+// All writes (Create/Update/Delete) must eventually migrate to AIService — handled in Task 14.
+// The ServiceType field is declared for future Gateway use; it will be zero-value on reads
+// from the VIEW because the VIEW does not expose that column.
 type LLMModel struct {
 	ID               uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
 	ModelKey         string    `gorm:"size:100;not null;uniqueIndex" json:"model_key"`
 	DisplayName      string    `gorm:"size:100;not null" json:"display_name"`
+	ServiceType      string    `gorm:"size:20;column:service_type" json:"service_type,omitempty"` // "llm" for all rows; zero-value when read from VIEW
 	IsThinking       bool      `gorm:"default:false" json:"is_thinking"`
 	BaseModelID      *uint64   `gorm:"index:idx_base_model" json:"base_model_id"`
 	SupportsThinking bool      `gorm:"default:false" json:"supports_thinking"`
@@ -42,9 +49,13 @@ type LLMModel struct {
 }
 
 // TableName returns the table name for LLMModel.
+// Points to the llm_model VIEW for backwards-compatible reads.
 func (LLMModel) TableName() string { return "llm_model" }
 
 // LLMModelProvider 模型×供应商路由映射
+//
+// TableName points to the llm_model_provider VIEW for backwards-compatible reads.
+// Writes must migrate to AIServiceRoute — handled in Task 14.
 type LLMModelProvider struct {
 	ID                 uint64       `gorm:"primaryKey;autoIncrement" json:"id"`
 	ModelID            uint64       `gorm:"not null;uniqueIndex:uk_model_provider" json:"model_id"`
@@ -61,6 +72,7 @@ type LLMModelProvider struct {
 }
 
 // TableName returns the table name for LLMModelProvider.
+// Points to the llm_model_provider VIEW for backwards-compatible reads.
 func (LLMModelProvider) TableName() string { return "llm_model_provider" }
 
 // UserModelPreference 用户模型偏好

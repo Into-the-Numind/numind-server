@@ -9,13 +9,13 @@ import (
 // SopTemplate SOP模板表
 type SopTemplate struct {
 	gorm.Model
-	Name          string `gorm:"size:100;not null;index" json:"name"`
-	Description   string `gorm:"type:text" json:"description"`
-	Status        string `gorm:"size:20;default:'active';index" json:"status"` // active, inactive
-	Prompt        string `gorm:"type:text" json:"prompt"`                      // 预处理提示词，在执行第一个节点前发送
-	CreatorUserID *uint  `gorm:"index:idx_st_creator" json:"creator_user_id"`  // B端创建者用户ID
-	PublishStatus string `gorm:"size:20;not null;default:'published'" json:"publish_status"` // draft | published
-	TrailingChatEnabled bool `gorm:"not null;default:true" json:"trailing_chat_enabled"` // 是否在流程末尾追加 AI 聊天步骤
+	Name                string `gorm:"size:100;not null;index" json:"name"`
+	Description         string `gorm:"type:text" json:"description"`
+	Status              string `gorm:"size:20;default:'active';index" json:"status"`               // active, inactive
+	Prompt              string `gorm:"type:text" json:"prompt"`                                    // 预处理提示词，在执行第一个节点前发送
+	CreatorUserID       *uint  `gorm:"index:idx_st_creator" json:"creator_user_id"`                // B端创建者用户ID
+	PublishStatus       string `gorm:"size:20;not null;default:'published'" json:"publish_status"` // draft | published
+	TrailingChatEnabled bool   `gorm:"not null;default:true" json:"trailing_chat_enabled"`         // 是否在流程末尾追加 AI 聊天步骤
 }
 
 func (SopTemplate) TableName() string {

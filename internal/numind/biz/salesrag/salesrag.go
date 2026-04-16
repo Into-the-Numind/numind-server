@@ -17,9 +17,11 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz/salesrag/domain"
-	"numind-server/internal/pkg/llm"
 	"numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
+	aismw "numind-server/internal/pkg/aiservice/middleware"
+	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
@@ -208,7 +210,6 @@ type salesRAGBiz struct {
 	aliBiz            ali.AliBiz // 阿里云 API 客户端
 	sessionStore      store.SalesSessionStore
 	parser            service.PipelineParser
-	dmxClient         *llm.DMXAPIClient // DMXAPI 客户端（用于 DeepSeek-V3.2）
 }
 
 // VolcBiz 火山引擎服务接口（避免循环依赖）
@@ -235,7 +236,6 @@ func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *s
 		aliBiz:            ali,
 		sessionStore:      sessionStore,
 		parser:            parser,
-		dmxClient:         llm.NewDMXAPIClient(),
 	}
 }
 
@@ -729,7 +729,7 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 				"opinion_count":  len(verdict.OpinionEvidence),
 			}))
 		}
-		// 恢复 parent 到 trace 级别（后续 generation 不嵌套在 retrieval 下）
+		// 重置 ParentObservationID — 让后续 chat generation 作为 trace 根的兄弟 span，而非 retrieval span 子节点
 		if tc := langfuse.FromContext(ctx); tc != nil {
 			ctx = langfuse.WithTrace(ctx, tc.TraceID)
 		}
@@ -762,21 +762,47 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 	// 10. 构建 prompt 并流式生成回答（用 promptQuery + OCR文字）
 	messages := b.buildPromptMessagesV2(promptQuery, ocrTexts, verdict, customerProfile, languageStyle, salesStage)
 
-	// 11. 调用火山方舟 deepseek-v3-2-251201 流式聊天（纯文本，图片通过OCR文字传入）
-	reasoningEffort := "minimal"
-	if deepThinking {
-		reasoningEffort = "high"
-	}
+	// 11. 通过 AI Gateway 流式生成回答（profile.SalesragChat）
 	ctx = billing.WithBilling(ctx, userID, "salesrag_chat_generate")
-	_, _, err = b.volcBiz.StreamChatWithModel(ctx, messages, "deepseek-v3-2-251201", 0, 0.7, reasoningEffort, func(eventType, content string) error {
-		if eventType == "thinking" {
-			return onEvent("thinking", content)
-		}
-		// eventType == "message"
-		return onEvent("token", content)
+	ctx = aismw.WithUserID(ctx, userID)
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
+
+	// 将 []map[string]interface{} 转换为 []aiservice.ChatMessage
+	aiMessages := make([]aiservice.ChatMessage, 0, len(messages))
+	for _, m := range messages {
+		role, _ := m["role"].(string)
+		content, _ := m["content"].(string)
+		aiMessages = append(aiMessages, aiservice.ChatMessage{
+			Role:    aiservice.MessageRole(role),
+			Content: aiservice.MessageContent{Text: content},
+		})
+	}
+
+	// Mid-stream errors surface as channel close without final usage; treated as silent partial response.
+	// Pre-stream errors (e.g. auth, routing) are returned synchronously via chatErr below.
+	ch, chatErr := aiservice.ChatStream(ctx, profile.SalesragChat, aiservice.ChatRequest{
+		Messages:    aiMessages,
+		Temperature: 0.7,
 	})
-	if err != nil {
-		return onEvent("error", fmt.Sprintf("stream chat failed: %v", err))
+	if chatErr != nil {
+		return onEvent("error", fmt.Sprintf("stream chat failed: %v", chatErr))
+	}
+	var receivedTokens bool
+	for chunk := range ch {
+		if chunk.ReasoningDelta != "" {
+			if evErr := onEvent("thinking", chunk.ReasoningDelta); evErr != nil {
+				return evErr
+			}
+		}
+		if chunk.Delta != "" {
+			receivedTokens = true
+			if evErr := onEvent("token", chunk.Delta); evErr != nil {
+				return evErr
+			}
+		}
+	}
+	if !receivedTokens {
+		log.Printf("[RetrieveStream] Warning: chat stream ended without any tokens — possible mid-stream error or empty model response")
 	}
 
 	// 12. 发送完成事件
@@ -2073,15 +2099,61 @@ func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint,
 		},
 	}
 
-	log.Printf("[AnalyzeProfileMultiFiles] Calling Volc StreamChatWithModel with %d content parts", len(contentParts))
+	log.Printf("[AnalyzeProfileMultiFiles] Calling AI Gateway (profile.SalesragProfile) with %d content parts", len(contentParts))
 	ctx = billing.WithBilling(ctx, userID, "salesrag_analyze_profile")
-	result, _, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "medium", func(event string, token string) error {
-		if event == "message" {
-			return onToken(token)
+	ctx = aismw.WithUserID(ctx, userID)
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
+
+	// 转换 contentParts ([]map[string]interface{}) 为 aiservice.MessagePart 切片
+	aiParts := make([]aiservice.MessagePart, 0, len(contentParts))
+	for _, p := range contentParts {
+		partType, _ := p["type"].(string)
+		switch partType {
+		case "text":
+			text, _ := p["text"].(string)
+			aiParts = append(aiParts, aiservice.MessagePart{
+				Type: aiservice.MessagePartTypeText,
+				Text: text,
+			})
+		case "image_url":
+			imgMap, _ := p["image_url"].(map[string]string)
+			url := imgMap["url"]
+			aiParts = append(aiParts, aiservice.MessagePart{
+				Type:     aiservice.MessagePartTypeImageURL,
+				ImageURL: &aiservice.ImageURL{URL: url},
+			})
 		}
-		return nil
+	}
+
+	systemPromptText, _ := messages[0]["content"].(string)
+	aiMessages := []aiservice.ChatMessage{
+		{
+			Role:    aiservice.MessageRoleSystem,
+			Content: aiservice.MessageContent{Text: systemPromptText},
+		},
+		{
+			Role:    aiservice.MessageRoleUser,
+			Content: aiservice.MessageContent{Parts: aiParts},
+		},
+	}
+
+	ch, err := aiservice.ChatStream(ctx, profile.SalesragProfile, aiservice.ChatRequest{
+		Messages:    aiMessages,
+		Temperature: 0.5,
 	})
-	return result, err
+	if err != nil {
+		return "", fmt.Errorf("AI Gateway profile stream failed: %w", err)
+	}
+	var result string
+	for chunk := range ch {
+		if chunk.Delta != "" {
+			result += chunk.Delta
+			if err := onToken(chunk.Delta); err != nil {
+				return result, err
+			}
+		}
+	}
+	return result, nil
 }
 
 // AnalyzeProfileText 纯文本分析生成客户档案
@@ -2102,30 +2174,51 @@ func (b *salesRAGBiz) AnalyzeProfileText(ctx context.Context, userID uint, text 
 		},
 	}
 
-	messages := []map[string]interface{}{
+	log.Printf("[AnalyzeProfileText] Calling AI Gateway (profile.SalesragProfile)")
+	ctx = billing.WithBilling(ctx, userID, "salesrag_analyze_profile_text")
+	ctx = aismw.WithUserID(ctx, userID)
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
+
+	aiParts := make([]aiservice.MessagePart, 0, len(contentParts))
+	for _, p := range contentParts {
+		t, _ := p["text"].(string)
+		aiParts = append(aiParts, aiservice.MessagePart{
+			Type: aiservice.MessagePartTypeText,
+			Text: t,
+		})
+	}
+	aiMessages := []aiservice.ChatMessage{
 		{
-			"role":    "system",
-			"content": fetchProfilePrompt(),
+			Role:    aiservice.MessageRoleSystem,
+			Content: aiservice.MessageContent{Text: fetchProfilePrompt()},
 		},
 		{
-			"role":    "user",
-			"content": contentParts,
+			Role:    aiservice.MessageRoleUser,
+			Content: aiservice.MessageContent{Parts: aiParts},
 		},
 	}
 
-	log.Printf("[AnalyzeProfileText] Calling Volc StreamChatWithModel")
-	ctx = billing.WithBilling(ctx, userID, "salesrag_analyze_profile_text")
-	result, _, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "medium", func(event string, token string) error {
-		if event == "message" {
-			return onToken(token)
-		}
-		return nil
+	ch, err := aiservice.ChatStream(ctx, profile.SalesragProfile, aiservice.ChatRequest{
+		Messages:    aiMessages,
+		Temperature: 0.5,
 	})
-	return result, err
+	if err != nil {
+		return "", fmt.Errorf("AI Gateway profile text stream failed: %w", err)
+	}
+	var result string
+	for chunk := range ch {
+		if chunk.Delta != "" {
+			result += chunk.Delta
+			if err := onToken(chunk.Delta); err != nil {
+				return result, err
+			}
+		}
+	}
+	return result, nil
 }
 
 // AnalyzeChatStyleStream 流式分析聊天风格（语言指纹分析）
-// 图片使用阿里云 qwen3-vl-flash-2026-01-22，文本使用 dmxapi qwen-turbo（均为流式）
+// 图片通过 Gateway profile.SalesragChatstyle 路由（vision），文本通过 Gateway profile.SalesragChatstyle 路由（均为流式）
 func (b *salesRAGBiz) AnalyzeChatStyleStream(ctx context.Context, userID uint, file io.Reader, filename string, onToken func(token string) error) (string, error) {
 	log.Printf("[AnalyzeChatStyleStream] Starting analysis for user %d, filename: %s", userID, filename)
 
@@ -2142,7 +2235,7 @@ func (b *salesRAGBiz) AnalyzeChatStyleStream(ctx context.Context, userID uint, f
 		return b.analyzeChatStyleImageStream(ctx, userID, data, onToken)
 	}
 
-	// 文本文件使用 dmxapi 流式输出
+	// 文本文件通过 Gateway profile.SalesragChatstyle 路由
 	log.Printf("[AnalyzeChatStyleStream] Text file detected, using text stream for user %d", userID)
 	return b.analyzeChatStyleTextStream(ctx, userID, bytes.NewReader(data), filename, onToken)
 }
@@ -2199,24 +2292,39 @@ func (b *salesRAGBiz) analyzeChatStyleTextStream(ctx context.Context, userID uin
 - 直接输出 Markdown 格式的风格说明书，严禁开场白和任何提示语
 - 字数控制在 500 字以内`
 
-	// 4. 调用火山方舟模型（流式输出）
-	log.Printf("[analyzeChatStyleTextStream] Calling Volc StreamChatWithModel for user %d", userID)
+	// 4. 通过 AI Gateway 调用（profile.SalesragChatstyle，流式输出）
+	log.Printf("[analyzeChatStyleTextStream] Calling AI Gateway (profile.SalesragChatstyle) for user %d", userID)
 	ctx = billing.WithBilling(ctx, userID, "salesrag_chat_style_text")
-	messages := []map[string]interface{}{
-		{"role": "system", "content": systemPrompt},
-		{"role": "user", "content": text},
+	ctx = aismw.WithUserID(ctx, userID)
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
+	aiMessages := []aiservice.ChatMessage{
+		{
+			Role:    aiservice.MessageRoleSystem,
+			Content: aiservice.MessageContent{Text: systemPrompt},
+		},
+		{
+			Role:    aiservice.MessageRoleUser,
+			Content: aiservice.MessageContent{Text: text},
+		},
 	}
-	analysis, _, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "high", func(event string, token string) error {
-		if event == "message" {
-			return onToken(token)
-		}
-		return nil
+	ch, err := aiservice.ChatStream(ctx, profile.SalesragChatstyle, aiservice.ChatRequest{
+		Messages:    aiMessages,
+		Temperature: 0.5,
 	})
 	if err != nil {
-		log.Printf("[analyzeChatStyleTextStream] Volc StreamChat failed for user %d: %v", userID, err)
+		log.Printf("[analyzeChatStyleTextStream] AI Gateway stream failed for user %d: %v", userID, err)
 		return "", fmt.Errorf("AI 分析服务调用失败: %w", err)
 	}
-	log.Printf("[analyzeChatStyleTextStream] Volc StreamChat success, result length: %d", len(analysis))
+	var analysis string
+	for chunk := range ch {
+		if chunk.Delta != "" {
+			analysis += chunk.Delta
+			if err := onToken(chunk.Delta); err != nil {
+				return analysis, err
+			}
+		}
+	}
+	log.Printf("[analyzeChatStyleTextStream] AI Gateway success, result length: %d", len(analysis))
 
 	// 5. 保存到数据库
 	style := &model.LanguageStyle{
@@ -2382,16 +2490,46 @@ func (b *salesRAGBiz) analyzeChatStyleImageStream(ctx context.Context, userID ui
 - 字数控制在 500 字以内
 - 只分析销售人员（右边绿色气泡）的语言风格`
 
-	// 5. 调用火山方舟视觉模型（doubao-seed-2-0-lite-260215，与客户档案分析保持一致）
-	const visionModel = "doubao-seed-2-0-lite-260215"
+	// 5. 通过 AI Gateway 调用视觉模型（profile.SalesragChatstyle，流式输出）
 	ctx = billing.WithBilling(ctx, userID, "salesrag_chat_style_image")
-	result, _, err := b.volcBiz.VisionAnalyzeStream(ctx, dataURL, systemPrompt, visionModel, 0, "medium", onToken)
+	ctx = aismw.WithUserID(ctx, userID)
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
+	visionMessages := []aiservice.ChatMessage{
+		{
+			Role:    aiservice.MessageRoleSystem,
+			Content: aiservice.MessageContent{Text: systemPrompt},
+		},
+		{
+			Role: aiservice.MessageRoleUser,
+			Content: aiservice.MessageContent{
+				Parts: []aiservice.MessagePart{
+					{
+						Type:     aiservice.MessagePartTypeImageURL,
+						ImageURL: &aiservice.ImageURL{URL: dataURL},
+					},
+				},
+			},
+		},
+	}
+	visionCh, err := aiservice.ChatStream(ctx, profile.SalesragChatstyle, aiservice.ChatRequest{
+		Messages:    visionMessages,
+		Temperature: 0.5,
+	})
 	if err != nil {
-		log.Printf("[analyzeChatStyleImageStream] Volc VisionAnalyzeStream error: %v", err)
+		log.Printf("[analyzeChatStyleImageStream] AI Gateway vision stream error: %v", err)
 		return "", fmt.Errorf("视觉模型分析失败: %w", err)
 	}
+	var result string
+	for chunk := range visionCh {
+		if chunk.Delta != "" {
+			result += chunk.Delta
+			if err := onToken(chunk.Delta); err != nil {
+				return result, err
+			}
+		}
+	}
 
-	log.Printf("[analyzeChatStyleImageStream] QianwenVisionStream completed, result length: %d", len(result))
+	log.Printf("[analyzeChatStyleImageStream] AI Gateway vision stream completed, result length: %d", len(result))
 
 	// 3. 保存到数据库
 	style := &model.LanguageStyle{
@@ -2538,7 +2676,7 @@ func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []b
 	}
 }
 
-// ocrWithBaidu 使用百度光学 OCR 识别微信聊天截图（根据文字位置自动标注说话人）
+// ocrWithBaidu 使用百度光学 OCR 识别微信聊天截图（经由 AI Gateway）
 func (b *salesRAGBiz) ocrWithBaidu(ctx context.Context, userID uint, imageData []byte, frontendURL string) (string, string, error) {
 	log.Printf("[OCRAnalyze] Using Baidu OCR engine, user_id: %d, image_size: %d", userID, len(imageData))
 
@@ -2548,7 +2686,12 @@ func (b *salesRAGBiz) ocrWithBaidu(ctx context.Context, userID uint, imageData [
 		imageWidth = img.Bounds().Dx()
 	}
 
-	ocrText, err := baidu.RecognizeChatText(imageData, imageWidth)
+	// 注入 Gateway 中间件上下文
+	ctx = billing.WithBilling(ctx, userID, "salesrag_ocr")
+	ctx = aismw.WithUserID(ctx, userID)
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
+
+	ocrText, err := baidu.RecognizeChatText(ctx, imageData, imageWidth)
 	if err != nil {
 		log.Printf("[OCRAnalyze] Baidu OCR failed, user_id: %d, error: %v", userID, err)
 		return "", "", fmt.Errorf("百度 OCR 识别失败: %w", err)

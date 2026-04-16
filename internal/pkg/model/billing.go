@@ -4,27 +4,50 @@ import "time"
 
 // UsageRecord 用量明细记录表 — 每次外部 API 调用记录一条
 type UsageRecord struct {
-	ID                    uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserID                uint      `gorm:"not null;index:idx_ur_user_created" json:"user_id"`
-	ServiceType           string    `gorm:"size:50;not null;index:idx_ur_service" json:"service_type"` // llm_chat, llm_vision, embedding, rerank, cos_upload, file_extract, vector_db
-	Provider              string    `gorm:"size:50;not null" json:"provider"`                          // ali, volc, dmxapi, cos, vikingdb, dashvector, bailian
-	Model                 string    `gorm:"size:100" json:"model"`                                     // 模型名称，如 qwen-turbo, deepseek-v3-250324
-	Operation             string    `gorm:"size:100;not null;index:idx_ur_operation" json:"operation"` // 业务扣费点: sop_node_execute, salesrag_chat 等
-	PromptTokens          int       `gorm:"default:0" json:"prompt_tokens"`
-	CompletionTokens      int       `gorm:"default:0" json:"completion_tokens"`
-	TotalTokens           int       `gorm:"default:0" json:"total_tokens"`
-	ReasoningTokens       int       `gorm:"default:0" json:"reasoning_tokens"`
-	EstimatedPromptTokens int       `gorm:"default:0" json:"estimated_prompt_tokens"`
-	BytesUploaded         int64     `gorm:"default:0" json:"bytes_uploaded"`  // COS 上传字节数
-	ItemCount             int       `gorm:"default:0" json:"item_count"`      // 向量操作条数 / Rerank 文档数
-	CostCents             int64     `gorm:"default:0" json:"cost_cents"`      // 预估成本（分）
-	RevenueCents          int64     `gorm:"default:0" json:"revenue_cents"`   // 客户计费金额（分）
-	CreditsDeducted       int64     `gorm:"default:0" json:"credits_deducted"` // 本次操作扣减的积分数
-	BizRefType            string    `gorm:"size:50" json:"biz_ref_type"`      // 关联业务对象类型: sop_run, sales_session 等
-	BizRefID              uint      `gorm:"default:0" json:"biz_ref_id"`      // 关联业务对象 ID
-	IsFallback            bool      `gorm:"default:false" json:"is_fallback"` // 是否为降级调用
-	Metadata              string    `gorm:"type:json" json:"metadata"` // 额外上下文 JSON
-	CreatedAt             time.Time `gorm:"index:idx_ur_user_created" json:"created_at"`
+	ID                    uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
+	UserID                uint   `gorm:"not null;index:idx_ur_user_created" json:"user_id"`
+	ServiceType           string `gorm:"size:50;not null;index:idx_ur_service" json:"service_type"` // llm_chat, llm_vision, embedding, rerank, cos_upload, file_extract, vector_db
+	Provider              string `gorm:"size:50;not null" json:"provider"`                          // ali, volc, dmxapi, cos, vikingdb, dashvector, bailian
+	Model                 string `gorm:"size:100" json:"model"`                                     // 模型名称，如 qwen-turbo, deepseek-v3-250324
+	Operation             string `gorm:"size:100;not null;index:idx_ur_operation" json:"operation"` // 业务扣费点: sop_node_execute, salesrag_chat 等
+	PromptTokens          int    `gorm:"default:0" json:"prompt_tokens"`
+	CompletionTokens      int    `gorm:"default:0" json:"completion_tokens"`
+	TotalTokens           int    `gorm:"default:0" json:"total_tokens"`
+	ReasoningTokens       int    `gorm:"default:0" json:"reasoning_tokens"`
+	EstimatedPromptTokens int    `gorm:"default:0" json:"estimated_prompt_tokens"`
+	BytesUploaded         int64  `gorm:"default:0" json:"bytes_uploaded"`   // COS 上传字节数
+	ItemCount             int    `gorm:"default:0" json:"item_count"`       // 向量操作条数 / Rerank 文档数
+	CostCents             int64  `gorm:"default:0" json:"cost_cents"`       // 预估成本（分）
+	RevenueCents          int64  `gorm:"default:0" json:"revenue_cents"`    // 客户计费金额（分）
+	CreditsDeducted       int64  `gorm:"default:0" json:"credits_deducted"` // 本次操作扣减的积分数
+	BizRefType            string `gorm:"size:50" json:"biz_ref_type"`       // 关联业务对象类型: sop_run, sales_session 等
+	BizRefID              uint   `gorm:"default:0" json:"biz_ref_id"`       // 关联业务对象 ID
+	IsFallback            bool   `gorm:"default:false" json:"is_fallback"`  // 是否为降级调用
+	Metadata              string `gorm:"type:json" json:"metadata"`         // 额外上下文 JSON
+
+	// AI Service Manager 扩展字段（nullable；历史数据保持 null）
+	// TaskID links to task_profile.task_id; null = legacy data or non-AI call.
+	// *string so zero value writes SQL NULL (not empty string) for legacy records.
+	TaskID *string `gorm:"column:task_id;size:80;default:null" json:"task_id,omitempty"`
+	// Unit describes how the call is priced: per_1m_tokens | per_call | per_second.
+	// *string so zero value writes SQL NULL (not empty string) for legacy records.
+	Unit *string `gorm:"column:unit;size:20;default:null" json:"unit,omitempty"`
+	// CallCount is the number of API calls for per_call billing (OCR etc.).
+	CallCount *int `gorm:"column:call_count;default:null" json:"call_count,omitempty"`
+	// DurationSeconds is the audio duration for per_second billing (ASR etc.).
+	DurationSeconds *float64 `gorm:"column:duration_seconds;type:decimal(10,3);default:null" json:"duration_seconds,omitempty"`
+	// PricingInputSnapshot records the input token price at time of call.
+	PricingInputSnapshot *float64 `gorm:"column:pricing_input_snapshot;type:decimal(10,6);default:null" json:"pricing_input_snapshot,omitempty"`
+	// PricingOutputSnapshot records the output token price at time of call.
+	PricingOutputSnapshot *float64 `gorm:"column:pricing_output_snapshot;type:decimal(10,6);default:null" json:"pricing_output_snapshot,omitempty"`
+	// PricingCallSnapshot records the per-call price at time of call.
+	PricingCallSnapshot *float64 `gorm:"column:pricing_call_snapshot;type:decimal(10,6);default:null" json:"pricing_call_snapshot,omitempty"`
+	// PricingSecondSnapshot records the per-second price at time of call.
+	PricingSecondSnapshot *float64 `gorm:"column:pricing_second_snapshot;type:decimal(10,6);default:null" json:"pricing_second_snapshot,omitempty"`
+	// IsEstimated is true when streaming was interrupted and token count is estimated.
+	IsEstimated bool `gorm:"column:is_estimated;default:false" json:"is_estimated"`
+
+	CreatedAt time.Time `gorm:"index:idx_ur_user_created" json:"created_at"`
 }
 
 // TableName 指定表名

@@ -2,6 +2,8 @@ package numind
 
 import (
 	"numind-server/internal/numind/biz"
+	"numind-server/internal/numind/biz/aiservice_admin"
+	"numind-server/internal/numind/controller/v1/admin_ai"
 	"numind-server/internal/numind/controller/v1/admin_billing"
 	"numind-server/internal/numind/controller/v1/admin_credit"
 	"numind-server/internal/numind/controller/v1/admin_dashboard"
@@ -12,6 +14,7 @@ import (
 	"numind-server/internal/numind/controller/v1/admin_user"
 	monitorcontroller "numind-server/internal/numind/controller/v1/monitor"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
@@ -140,6 +143,26 @@ func installAdminRouters(g *gin.Engine) error {
 		adminMonitorGroup.GET("/briefings", monitorCtrl.AdminListBriefings)
 		adminMonitorGroup.GET("/users/:user_id/config", monitorCtrl.AdminGetUserConfig)
 		adminMonitorGroup.PUT("/users/:user_id/config", monitorCtrl.AdminUpdateUserConfig)
+	}
+
+	// AI Service Manager — 服务 CRUD（Task 12）+ Task Profile（Task 13）
+	{
+		reg := registry.New(store.S.DB())
+		aiSvcBiz := aiservice_admin.New(reg, store.S.DB())
+		aiSvcCtrl := admin_ai.NewAIServiceController(aiSvcBiz)
+		aiTaskCtrl := admin_ai.NewTaskProfileController(aiSvcBiz)
+		aiGroup := adminGroup.Group("/ai")
+		aiGroup.GET("/services", aiSvcCtrl.ListServices)
+		aiGroup.GET("/services/:id", aiSvcCtrl.GetService)
+		aiGroup.POST("/services", aiSvcCtrl.CreateService)
+		aiGroup.PUT("/services/:id", aiSvcCtrl.UpdateService)
+		aiGroup.DELETE("/services/:id", aiSvcCtrl.DeprecateService)
+		aiGroup.POST("/services/:id/restore", aiSvcCtrl.RestoreService)
+		aiGroup.POST("/services/:id/validate-against/:task_id", aiTaskCtrl.ValidateAgainst)
+		aiGroup.GET("/capability-schema", aiSvcCtrl.GetCapabilitySchema)
+		aiGroup.GET("/tasks", aiTaskCtrl.ListTasks)
+		aiGroup.GET("/tasks/:id", aiTaskCtrl.GetTask)
+		aiGroup.PUT("/tasks/:id", aiTaskCtrl.UpdateTask)
 	}
 
 	// LLM 供应商/模型/路由管理

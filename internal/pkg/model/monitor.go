@@ -21,23 +21,23 @@ const (
 
 // MonitorBlogger 监控博主（显式字段 + 软删除，确保 JSON tag 一致性）
 type MonitorBlogger struct {
-	ID        uint           `gorm:"primarykey" json:"id"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at"`
-	UserID              uint       `gorm:"not null;uniqueIndex:uk_user_blogger" json:"user_id"`
-	XhsUserID           string     `gorm:"size:100;not null;uniqueIndex:uk_user_blogger" json:"xhs_user_id"`
-	Nickname            string     `gorm:"size:200" json:"nickname"`
-	AvatarURL           string     `gorm:"size:500" json:"avatar_url"`
-	Bio                 string     `gorm:"type:text" json:"bio"`
-	Followers           uint       `gorm:"default:0" json:"followers"`
-	Category            string     `gorm:"size:100" json:"category"`
-	IsActive            bool       `gorm:"default:true;index:idx_blogger_active" json:"is_active"`
-	CheckError          string     `gorm:"size:500" json:"check_error"`
-	ConsecutiveFailures uint       `gorm:"default:0" json:"consecutive_failures"`
-	LastCheckAt         *time.Time `json:"last_check_at"`
-	LastNoteAt          *time.Time `json:"last_note_at"`
-	NextCheckAt         *time.Time `json:"next_check_at"`
+	ID                  uint           `gorm:"primarykey" json:"id"`
+	CreatedAt           time.Time      `json:"created_at"`
+	UpdatedAt           time.Time      `json:"updated_at"`
+	DeletedAt           gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	UserID              uint           `gorm:"not null;uniqueIndex:uk_user_blogger" json:"user_id"`
+	XhsUserID           string         `gorm:"size:100;not null;uniqueIndex:uk_user_blogger" json:"xhs_user_id"`
+	Nickname            string         `gorm:"size:200" json:"nickname"`
+	AvatarURL           string         `gorm:"size:500" json:"avatar_url"`
+	Bio                 string         `gorm:"type:text" json:"bio"`
+	Followers           uint           `gorm:"default:0" json:"followers"`
+	Category            string         `gorm:"size:100" json:"category"`
+	IsActive            bool           `gorm:"default:true;index:idx_blogger_active" json:"is_active"`
+	CheckError          string         `gorm:"size:500" json:"check_error"`
+	ConsecutiveFailures uint           `gorm:"default:0" json:"consecutive_failures"`
+	LastCheckAt         *time.Time     `json:"last_check_at"`
+	LastNoteAt          *time.Time     `json:"last_note_at"`
+	NextCheckAt         *time.Time     `json:"next_check_at"`
 }
 
 func (MonitorBlogger) TableName() string { return "monitor_blogger" }
@@ -97,9 +97,9 @@ type MonitorConfig struct {
 	FeishuWebhook       string         `gorm:"size:500" json:"feishu_webhook"`
 	FeishuBitableConfig datatypes.JSON `json:"feishu_bitable_config"`
 	NotifyOnUpdate      bool           `gorm:"default:true" json:"notify_on_update"`
-	XhsCookies          string         `gorm:"type:text" json:"-"`              // stored but never sent to frontend
-	XhsNickname         string         `gorm:"size:200" json:"xhs_nickname"`    // display name of bound XHS account
-	XhsUserID           string         `gorm:"size:100" json:"xhs_user_id"`     // XHS user ID of bound account
+	XhsCookies          string         `gorm:"type:text" json:"-"`           // stored but never sent to frontend
+	XhsNickname         string         `gorm:"size:200" json:"xhs_nickname"` // display name of bound XHS account
+	XhsUserID           string         `gorm:"size:100" json:"xhs_user_id"`  // XHS user ID of bound account
 	CreatedAt           time.Time      `json:"created_at"`
 	UpdatedAt           time.Time      `json:"updated_at"`
 }

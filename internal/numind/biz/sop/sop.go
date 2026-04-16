@@ -640,7 +640,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	var output, thinking string
 	var usage *TokenUsage
 	if modelKey != "" {
-		// LLMRouter 路径：用户选择了特定模型，调用 ExecuteNodeStream（内含 executeViaRouter）
+		// Gateway 路径：用户选择了特定模型，调用 ExecuteNodeStream（内含 executeViaGateway）
 		// 通过 handler 拦截 thinking 事件来积累思考内容，确保能持久化到数据库
 		var thinkingBuf strings.Builder
 		output, usage, err = b.executor.ExecuteNodeStream(ctx, node, currentInput, conversationHistory, modelKey, thinkingMode, func(event string, chunk string) error {
@@ -660,7 +660,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	nodeEndTime := time.Now()
 	latency := nodeEndTime.Sub(startTime).Milliseconds()
 
-	// 确定实际使用的模型名：LLMRouter 路径从 usage.ModelName 获取，默认路径从 node.ModelName 获取
+	// 确定实际使用的模型名：Gateway 路径从 usage.ModelName 获取，默认路径从 node.ModelName 获取
 	actualModelName := node.ModelName
 	if usage != nil && usage.ModelName != "" {
 		actualModelName = usage.ModelName
@@ -1330,7 +1330,7 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	var thinking string
 	var usage *TokenUsage
 	if modelKey != "" {
-		// LLMRouter 路径：用户选择了特定模型，调用 ExecuteNodeStream（内含 executeViaRouter）
+		// Gateway 路径：用户选择了特定模型，调用 ExecuteNodeStream（内含 executeViaGateway）
 		_, usage, err = b.executor.ExecuteNodeStream(ctx, &lastNode, "", history, modelKey, deepThinking, streamHandler)
 		thinking = thinkingBuf.String()
 	} else {

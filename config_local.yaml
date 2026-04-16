@@ -60,7 +60,7 @@ alipay:
 volc:
   api_key: "716dc07a-b121-4bae-a132-497117f74c7a"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "deepseek-v3-2-251201"
+  # model: 已由 AI Gateway Registry + Task Profile 管理，此字段不再读取
   temperature: 0.7
   tokens: 4000
   timeout: 300s
@@ -103,13 +103,13 @@ ali:
   api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"  # 文本服务API密钥
   # 文本生成服务
   text:
-    model: "qwen-turbo"  # 千问文本模型
+    # model: 已由 AI Gateway Registry + Task Profile 管理，此字段不再读取
     timeout: 180s        # 文本生成超时时间
 
   # 视觉理解服务
   vision:
     api_key: "sk-31f08fc72a594fbca4e827d5465a941b"  # 视觉服务专用API密钥
-    model: "qwen3-vl-flash-2026-01-22" # 视觉模型
+    # model: 已由 AI Gateway Registry + Task Profile 管理，此字段不再读取
     timeout: 180s
 
   # DashVector 向量数据库配置
@@ -117,6 +117,29 @@ ali:
     endpoint: "https://vrs-cn-62l4mht1d0001e.dashvector.cn-hangzhou.aliyuncs.com" # DashVector Endpoint
     api_key: "sk-gMsgxE1A1QzoxexCdtuTaVjuF6w8Z52890CC5F85411F08940FAD61112A032"
     collection: "sales_rag"
+
+# AI 服务提供商凭据（Task 15a）
+# SyncProviderCredentials 在启动时读取此段，写入 llm_provider 表。
+# 运行时 Gateway 从 DB 读取（单一来源），此段仅用于初始化/密钥轮换。
+ai_providers:
+  ali:
+    api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"   # 与 ali.api_key 同值（ali-dashscope 行）
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  volc:
+    api_key: "716dc07a-b121-4bae-a132-497117f74c7a"  # 与 volc.api_key 同值（volc-ark 行）
+    base_url: "https://ark.cn-beijing.volces.com/api/v3"
+  dmxapi:
+    api_key: ""  # 本地不使用 DMXAPI，dev 环境填入真实 key
+    base_url: "https://www.dmxapi.cn/v1"
+  baidu:
+    api_key: "CkJCFXHinJLBsnEFT9lscwZr"             # 与 baidu.api_key 同值
+    secret_key: "YbJZuvunKGhlSwTZpotTKZxkty0h5enU"  # 与 baidu.secret_key 同值（baidu-ocr 行）
+  bailian:
+    api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"   # 复用 ali api_key（百炼同一账号）
+    base_url: "https://bailian.cn-hangzhou.aliyuncs.com"
+    workspace_id: "ws-7s7s7s7s7s7s"                 # 与 ali.workspace_id 同值
+  funasr:
+    base_url: "http://localhost:10095"               # FunASR 本地服务地址
 
 # Langfuse AI 可观测性配置
 langfuse:

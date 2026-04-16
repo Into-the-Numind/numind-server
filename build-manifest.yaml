@@ -1292,10 +1292,10 @@ features:
     ndf_version: "1.0"
     description: "AI 服务统一化管理 — 扩展现有 internal/pkg/llm 为统一 AI Service Gateway，覆盖 LLM（ali/volc/dmxapi/bailian）+ OCR（baidu）+ ASR（FunASR）等全部 AI 服务提供者；Service Registry 入库（能力矩阵 + pricing），Task Profile 声明每个业务场景的能力需求；管理端 CRUD；中间件链统一处理 tracing/billing/retry/fallback；吸收 llm-model-switch"
     track: "standard"
-    stage: "S4"
+    stage: "S4-done"
     classification_reason: "跨 6+ biz 模块的 infra 重构（ali/volc/baidu/salesrag/sop/monitor/chatbot），影响所有 AI 调用路径；新增 Service Registry + Task Profile 两张核心表及管理端 CRUD；架构决策密集；工时多天；涉及 Langfuse 观测和 billing 全链路；吸收线上功能 llm-model-switch 需做 schema/API inventory"
-    last_updated_by: "ai-s4"
-    last_updated_at: "2026-04-15T00:00:00+08:00"
+    last_updated_by: "ai-s4-complete"
+    last_updated_at: "2026-04-16T00:00:00+08:00"
     repos:
       - numind-server
       - numind-admin-web
@@ -1307,18 +1307,31 @@ features:
       proposal: "numind-server/proposals/ai-service-manager-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-04-15-ai-service-manager-design.md"
       plan: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md"
-      plan: null
       review_spec_compliance: null
       review_code_quality: null
       qa: null
     progress:
       total_tasks: 23
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task:
-        index: 1
-        title: "Task 1a: Migration SQL + Rollback SQL + docker 演练"
-        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-1a"
+      completed_tasks: 23
+      reviewed_tasks: 23
+      current_task: null
+    tech_debt_added_in_s4:
+      - "VectorDB billing (RecordCOS/RecordVectorDB) not unified — Phase 2"
+      - "volc.GenerateArticleContent has no billing call — pre-existing"
+      - "modelKey 未接通 Gateway ModelOverride — Phase 2"
+      - "ChatRequest 缺 ResponseFormat 字段 — Phase 2"
+      - "ChatChunk 无 Err 字段，mid-stream errors via channel close — Phase 2"
+      - "ListServices in-memory pagination — Phase 2"
+      - "langfuse.base_url 内网 IP — prod config fix needed"
+      - "llmrouter 包最终拆除 — Phase 2 评估"
+      - "Playwright E2E for admin-web TaskBindingEditor — skipped in S4, add Phase 2"
+    pending_spec_updates:
+      - "spec §4.3 errno 数字 code 改为字符串 code"
+      - "spec §2.1.2 补 thinking_only 列"
+      - "spec §3.4 ServiceSpec → ResolvedRoute"
+      - "spec §5.2 vs §6.5 矛盾清理"
+      - "spec §3.2 pointer return vs value return"
+      - "spec §4.2 healthz response 增 error rate"
     rollback: null
     last_verified: null
     decisions:
@@ -1328,7 +1341,7 @@ features:
       - "2026-04-15: 吸收 llm-model-switch，不保留独立功能；DMXAPIClient / 现有模型表演进为本功能基础"
       - "2026-04-15: 范围扩展到 OCR + ASR（原计划仅 LLM），因此从 llm-model-manager 改名为 ai-service-manager"
       - "2026-04-15: Capability Matching 保留为 Phase 1 核心（非 stretch），避免管理员绑定不兼容模型"
-      - "2026-04-15: S0 review 已由 code-reviewer 完成，11 条建议中采纳 9 条（详见 requirement card §备注）"
+      - "2026-04-15: S4 完成（23 tasks, 55 server commits + 4 admin-web commits）"
     deferred:
       - "语义缓存（Phase 2）"
       - "Cost-aware 自动路由（Phase 2）"
