@@ -48,6 +48,10 @@ type IStore interface {
 	// Route resolution helper: loads a fully-joined AIService + AIServiceRoute + LLMProvider.
 	GetResolvedRoute(ctx context.Context, serviceID uint64) (*resolvedRouteRow, error)
 
+	// GetResolvedRouteByModelKey resolves a route by model_key instead of service ID.
+	// Returns errno.ErrAIServiceNotFound when no active route exists for the given key.
+	GetResolvedRouteByModelKey(ctx context.Context, modelKey string) (*resolvedRouteRow, error)
+
 	// Audit log
 	InsertAuditLog(ctx context.Context, entry *model.AIServiceAuditLog) error
 }
@@ -323,6 +327,108 @@ LIMIT 1
 	if row.CapabilityJSONStr != nil && *row.CapabilityJSONStr != "" {
 		if err := json.Unmarshal([]byte(*row.CapabilityJSONStr), &capJSON); err != nil {
 			return nil, fmt.Errorf("gormStore.GetResolvedRoute: unmarshal capability_json: %w", err)
+		}
+	}
+
+	return &resolvedRouteRow{
+		ServiceID:          row.ServiceID,
+		ModelKey:           row.ModelKey,
+		DisplayName:        row.DisplayName,
+		ServiceType:        row.ServiceType,
+		CapabilityJSON:     capJSON,
+		LatencyTier:        row.LatencyTier,
+		QualityTier:        row.QualityTier,
+		DeprecatedAt:       row.DeprecatedAt,
+		IsActive:           row.IsActive,
+		ProviderID:         row.ProviderID,
+		ProviderName:       row.ProviderName,
+		ProviderBaseURL:    row.ProviderBaseURL,
+		ProviderAPIKey:     row.ProviderAPIKey,
+		ProviderModelID:    row.ProviderModelID,
+		RoutePriority:      row.RoutePriority,
+		RouteIsActive:      row.RouteIsActive,
+		PricingUnit:        row.PricingUnit,
+		InputPricePerMTok:  row.InputPricePerMTok,
+		OutputPricePerMTok: row.OutputPricePerMTok,
+		PricePerCall:       row.PricePerCall,
+		PricePerSecond:     row.PricePerSecond,
+	}, nil
+}
+
+// GetResolvedRouteByModelKey loads the route resolution data for a service identified
+// by model_key, joining ai_service → ai_service_route → llm_provider. It picks the
+// route with the highest priority and only returns active, non-deprecated services.
+//
+// Returns errno.ErrAIServiceNotFound when no active route can be found.
+func (s *gormStore) GetResolvedRouteByModelKey(ctx context.Context, modelKey string) (*resolvedRouteRow, error) {
+	const q = `
+SELECT
+  s.id                     AS service_id,
+  s.model_key              AS model_key,
+  s.display_name           AS display_name,
+  s.service_type           AS service_type,
+  s.capability_json        AS capability_json,
+  s.latency_tier           AS latency_tier,
+  s.quality_tier           AS quality_tier,
+  s.deprecated_at          AS deprecated_at,
+  s.is_active              AS is_active,
+  p.id                     AS provider_id,
+  p.name                   AS provider_name,
+  p.base_url               AS provider_base_url,
+  p.api_key                AS provider_api_key,
+  r.provider_model_id      AS provider_model_id,
+  r.priority               AS route_priority,
+  r.is_active              AS route_is_active,
+  r.pricing_unit           AS pricing_unit,
+  r.input_price_per_mtok   AS input_price_per_mtok,
+  r.output_price_per_mtok  AS output_price_per_mtok,
+  r.price_per_call         AS price_per_call,
+  r.price_per_second       AS price_per_second
+FROM ai_service s
+JOIN ai_service_route r ON r.model_id = s.id AND r.is_active = true
+JOIN llm_provider p ON p.id = r.provider_id AND p.is_active = true
+WHERE s.model_key = ?
+  AND s.deprecated_at IS NULL
+  AND s.is_active = true
+ORDER BY r.priority DESC, r.id ASC
+LIMIT 1
+`
+	type rawRow struct {
+		ServiceID          uint64     `gorm:"column:service_id"`
+		ModelKey           string     `gorm:"column:model_key"`
+		DisplayName        string     `gorm:"column:display_name"`
+		ServiceType        string     `gorm:"column:service_type"`
+		CapabilityJSONStr  *string    `gorm:"column:capability_json"`
+		LatencyTier        string     `gorm:"column:latency_tier"`
+		QualityTier        string     `gorm:"column:quality_tier"`
+		DeprecatedAt       *time.Time `gorm:"column:deprecated_at"`
+		IsActive           bool       `gorm:"column:is_active"`
+		ProviderID         uint64     `gorm:"column:provider_id"`
+		ProviderName       string     `gorm:"column:provider_name"`
+		ProviderBaseURL    string     `gorm:"column:provider_base_url"`
+		ProviderAPIKey     string     `gorm:"column:provider_api_key"`
+		ProviderModelID    string     `gorm:"column:provider_model_id"`
+		RoutePriority      int        `gorm:"column:route_priority"`
+		RouteIsActive      bool       `gorm:"column:route_is_active"`
+		PricingUnit        string     `gorm:"column:pricing_unit"`
+		InputPricePerMTok  float64    `gorm:"column:input_price_per_mtok"`
+		OutputPricePerMTok float64    `gorm:"column:output_price_per_mtok"`
+		PricePerCall       *float64   `gorm:"column:price_per_call"`
+		PricePerSecond     *float64   `gorm:"column:price_per_second"`
+	}
+
+	var row rawRow
+	if err := s.db.WithContext(ctx).Raw(q, modelKey).Scan(&row).Error; err != nil {
+		return nil, fmt.Errorf("gormStore.GetResolvedRouteByModelKey: %w", err)
+	}
+	if row.ServiceID == 0 {
+		return nil, errno.ErrAIServiceNotFound
+	}
+
+	var capJSON model.JSONMap
+	if row.CapabilityJSONStr != nil && *row.CapabilityJSONStr != "" {
+		if err := json.Unmarshal([]byte(*row.CapabilityJSONStr), &capJSON); err != nil {
+			return nil, fmt.Errorf("gormStore.GetResolvedRouteByModelKey: unmarshal capability_json: %w", err)
 		}
 	}
 

@@ -135,6 +135,10 @@ func (m *mockRegistry) ResolveTask(_ context.Context, _ string) (*registry.Resol
 	panic("not implemented in mock")
 }
 
+func (m *mockRegistry) ResolveByModelKey(_ context.Context, _ string, _ string) (*registry.ResolvedRoute, error) {
+	panic("not implemented in mock")
+}
+
 // ----------------------------------------------------------------------------
 // Tests
 // ----------------------------------------------------------------------------

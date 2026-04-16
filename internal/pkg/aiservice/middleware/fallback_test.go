@@ -52,6 +52,11 @@ func (r *registryStub) ResolveTask(_ context.Context, _ string) (*registry.Resol
 	return r.primaryRoute, r.fallbackRoutes, nil
 }
 
+func (r *registryStub) ResolveByModelKey(_ context.Context, _ string, _ string) (*registry.ResolvedRoute, error) {
+	// stub: always return not-found so gateway falls back to profile default
+	return nil, errno.ErrAIServiceNotFound
+}
+
 // ----------------------------------------------------------------------------
 // Helpers
 // ----------------------------------------------------------------------------

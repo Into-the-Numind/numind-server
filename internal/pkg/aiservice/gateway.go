@@ -207,6 +207,14 @@ func (g *Gateway) resolveAndRun(
 		return nil, fmt.Errorf("gateway.ResolveTask(%s): %w", taskID, err)
 	}
 
+	// Check for model override (user selected a specific model via ModelSelector).
+	// If override resolution fails, fall through silently to the profile default.
+	if chatReq, ok := req.(ChatRequest); ok && chatReq.ModelOverride != "" {
+		if overrideRoute, overrideErr := g.registry.ResolveByModelKey(ctx, taskID, chatReq.ModelOverride); overrideErr == nil {
+			primary = overrideRoute
+		}
+	}
+
 	g.mu.RLock()
 	p, ok := g.providers[primary.Provider.Name]
 	if !ok {
@@ -264,6 +272,14 @@ func (g *Gateway) ChatStream(ctx context.Context, taskID string, req ChatRequest
 	primary, _, err := g.registry.ResolveTask(ctx, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("gateway.ResolveTask(%s): %w", taskID, err)
+	}
+
+	// Check for model override (user selected a specific model via ModelSelector).
+	// If override resolution fails, fall through silently to the profile default.
+	if req.ModelOverride != "" {
+		if overrideRoute, overrideErr := g.registry.ResolveByModelKey(ctx, taskID, req.ModelOverride); overrideErr == nil {
+			primary = overrideRoute
+		}
 	}
 
 	g.mu.RLock()

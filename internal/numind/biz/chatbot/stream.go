@@ -170,11 +170,11 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 
 	// 调用 Gateway ChatStream（profile.ChatbotStream 任务配置由 Registry 解析模型）
 	gatewayReq := aiservice.ChatRequest{
-		Messages:    aiMessages,
-		Temperature: 0.7,
+		Messages:      aiMessages,
+		Temperature:   0.7,
+		ModelOverride: modelKey, // pass user's model choice; empty = use task profile default
 	}
-	_ = modelKey  // modelKey 当前保留供未来 ModelOverride 扩展；Gateway 通过 profile 解析
-	_ = thinking  // thinking 标志当前保留供未来扩展；Gateway provider adapter 按 profile 配置处理
+	_ = thinking // thinking 标志当前保留供未来扩展；Gateway provider adapter 按 profile 配置处理
 
 	ch, llmErr := aiservice.ChatStream(ctx, profile.ChatbotStream, gatewayReq)
 	if llmErr != nil {

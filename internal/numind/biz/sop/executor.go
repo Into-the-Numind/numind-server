@@ -410,7 +410,6 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 // 调用前注入 WithSkipLegacyBilling，防止 LLMRouter 旧路径与 Gateway 双记账。
 // modelKey 参数当前未接通 Gateway ModelOverride（billing-baseline.md BLOCKER 3）；预留供未来扩展。
 func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, modelKey string, handler StreamHandler) (string, *TokenUsage, error) {
-	_ = modelKey // 当前 Gateway 通过 task profile 静态绑定模型；ModelOverride 接通见 billing-baseline.md BLOCKER 3
 
 	log.C(ctx).Infow("ExecuteNodeStream via AI Gateway",
 		"node_id", node.ID,
@@ -462,8 +461,9 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 
 	// 4. 调用 Gateway ChatStream
 	req := aiservice.ChatRequest{
-		Messages:    aiMessages,
-		Temperature: 0.7,
+		Messages:      aiMessages,
+		Temperature:   0.7,
+		ModelOverride: modelKey, // pass user's model choice; empty = use task profile default
 	}
 	ch, err := aiservice.ChatStream(ctx, taskID, req)
 	if err != nil {

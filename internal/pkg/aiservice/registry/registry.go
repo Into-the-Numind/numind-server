@@ -108,6 +108,15 @@ type Registry interface {
 	// Note: Capability Matching is intentionally NOT performed at resolve time
 	// (per spec §6.5: trust persisted state, validate only at admin save time).
 	ResolveTask(ctx context.Context, taskID string) (*ResolvedRoute, []ResolvedRoute, error)
+
+	// ResolveByModelKey looks up a service by model_key and builds a ResolvedRoute
+	// with the given taskID. Used to honour ChatRequest.ModelOverride — when a user
+	// selects a specific model, the gateway calls this instead of using the task
+	// profile's default_service_id.
+	//
+	// Errors:
+	//   - errno.ErrAIServiceNotFound — no active service with the given model_key
+	ResolveByModelKey(ctx context.Context, taskID string, modelKey string) (*ResolvedRoute, error)
 }
 
 // ----------------------------------------------------------------------------
@@ -372,6 +381,21 @@ func (r *registryImpl) ResolveTask(ctx context.Context, taskID string) (*Resolve
 	r.cache.SetTask(taskID, &primaryRoute, fallbacks, allServiceIDs)
 
 	return &primaryRoute, fallbacks, nil
+}
+
+// ResolveByModelKey resolves a route by model_key and associates it with the provided taskID.
+// This is used by the gateway when a ChatRequest.ModelOverride is set — the user explicitly
+// selected a model, so we bypass the task profile's default_service_id.
+//
+// The result is NOT cached (model-key overrides are per-call user selections that should
+// always reflect the latest DB state).
+func (r *registryImpl) ResolveByModelKey(ctx context.Context, taskID string, modelKey string) (*ResolvedRoute, error) {
+	row, err := r.store.GetResolvedRouteByModelKey(ctx, modelKey)
+	if err != nil {
+		return nil, fmt.Errorf("registry.ResolveByModelKey(%s): %w", modelKey, err)
+	}
+	route := buildResolvedRoute(taskID, row)
+	return &route, nil
 }
 
 // ----------------------------------------------------------------------------

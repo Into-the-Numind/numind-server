@@ -7,6 +7,7 @@ import (
 
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/registry"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
 
@@ -136,6 +137,11 @@ func (r *mockRegistry) ResolveTask(_ context.Context, _ string) (*registry.Resol
 		return nil, nil, r.err
 	}
 	return r.primary, nil, nil
+}
+
+func (r *mockRegistry) ResolveByModelKey(_ context.Context, _ string, _ string) (*registry.ResolvedRoute, error) {
+	// stub: always return not-found so gateway falls back to profile default
+	return nil, errno.ErrAIServiceNotFound
 }
 
 // ----------------------------------------------------------------------------

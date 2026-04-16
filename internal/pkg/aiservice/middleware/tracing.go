@@ -75,7 +75,60 @@ func Tracing(deps Deps) Middleware {
 			// --- call the next handler (adapter or inner middleware) ---
 			resp, err = next(ctx, route, req)
 
-			// --- close observation (best-effort) ---
+			// --- For stream responses, wrap the channel to capture usage on the final chunk ---
+			// next() returns immediately for streams — real usage data arrives in the last chunk.
+			// We wrap the channel and close the Langfuse observation only after draining it.
+			if ch, ok := resp.(<-chan aiservice.ChatChunk); ok && err == nil {
+				wrappedCh := make(chan aiservice.ChatChunk, 1)
+				go func() {
+					defer close(wrappedCh)
+					var lastUsage *aiservice.TokenUsage
+					var lastModel string
+					for chunk := range ch {
+						if chunk.Usage != nil {
+							lastUsage = chunk.Usage
+						}
+						if chunk.Model != "" {
+							lastModel = chunk.Model
+						}
+						wrappedCh <- chunk
+					}
+					// Stream fully consumed — close the Langfuse generation with actual usage.
+					func() {
+						defer func() {
+							if r := recover(); r != nil {
+								deps.warnw("tracing: panic in stream close observation, recovered",
+									"recover", fmt.Sprintf("%v", r),
+									"task_id", route.TaskID,
+								)
+							}
+						}()
+						if observationID == "" {
+							return
+						}
+						tc := langfuse.FromContext(ctx)
+						if tc == nil {
+							return
+						}
+						fallbackFrom, _ := ctx.Value(ctxKeyFallbackFromServiceID{}).(uint64)
+						meta := buildMeta(route, userID, featureRef, fmt.Sprintf("%d", fallbackFrom))
+						opts := []langfuse.GenOption{
+							langfuse.WithGenOutput(safeOutput(nil, meta)),
+						}
+						if lastUsage != nil {
+							opts = append(opts, langfuse.WithGenUsage(lastUsage.PromptTokens, lastUsage.CompletionTokens))
+						}
+						if lastModel != "" {
+							opts = append(opts, langfuse.WithGenModel(lastModel))
+						}
+						langfuse.EndGeneration(observationID, opts...)
+					}()
+				}()
+				resp = (<-chan aiservice.ChatChunk)(wrappedCh)
+				return resp, nil
+			}
+
+			// --- close observation (best-effort) for non-stream responses ---
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
