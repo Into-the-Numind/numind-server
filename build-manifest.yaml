@@ -1325,6 +1325,8 @@ features:
       - "Task 9: modelKey 未接通 Gateway ModelOverride（spec §3.2 约定 user model preference）— S5 前 or Phase 2 补"
       - "Task 10c: ChatRequest 缺 ResponseFormat 字段（json_mode 启用需要）— SalesragIntent profile 标了 json_mode capability 但 caller 无法 request；Phase 2 补"
       - "Task 10c: ChatChunk 无 Err 字段，mid-stream 错误通过 channel close 静默传达 — gateway 设计缺口，Phase 2 评估"
+      - "langfuse.base_url 内网 IP（config_prod.yaml）— 下期修正"
+      - "llmrouter 包最终拆除决策 — Phase 2 评估"
     pending_spec_updates:
       - "2026-04-15: spec §4.3 errno 数字 code 改为字符串 code（项目约定）— 留 Task 15b"
       - "2026-04-15: spec §2.1.2 补 thinking_only 列到字段清单 — 留 Task 15b"
