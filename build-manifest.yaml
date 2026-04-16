@@ -1292,9 +1292,9 @@ features:
     ndf_version: "1.0"
     description: "AI 服务统一化管理 — 扩展现有 internal/pkg/llm 为统一 AI Service Gateway，覆盖 LLM（ali/volc/dmxapi/bailian）+ OCR（baidu）+ ASR（FunASR）等全部 AI 服务提供者；Service Registry 入库（能力矩阵 + pricing），Task Profile 声明每个业务场景的能力需求；管理端 CRUD；中间件链统一处理 tracing/billing/retry/fallback；吸收 llm-model-switch"
     track: "standard"
-    stage: "S4-done"
+    stage: "S5-partial"
     classification_reason: "跨 6+ biz 模块的 infra 重构（ali/volc/baidu/salesrag/sop/monitor/chatbot），影响所有 AI 调用路径；新增 Service Registry + Task Profile 两张核心表及管理端 CRUD；架构决策密集；工时多天；涉及 Langfuse 观测和 billing 全链路；吸收线上功能 llm-model-switch 需做 schema/API inventory"
-    last_updated_by: "ai-s4-complete"
+    last_updated_by: "ai-s5"
     last_updated_at: "2026-04-16T00:00:00+08:00"
     repos:
       - numind-server
@@ -1333,7 +1333,15 @@ features:
       - "spec §3.2 pointer return vs value return"
       - "spec §4.2 healthz response 增 error rate"
     rollback: null
-    last_verified: null
+    last_verified:
+      at: "2026-04-16T12:10:00+08:00"
+      migration: "pass (dev DB numind-dev, 14 task_profiles + 10 ai_services + tables created)"
+      healthz: "pass (/healthz/ai returns 6 adapters loaded)"
+      compat_smoke: "pass (/v1/llm/models = 4 models, /v1/llm/preference = chatbot+sop)"
+      admin_services: "pass (10 services listed, OCR+ASR included)"
+      admin_tasks: "pass (14 task profiles with correct requirements)"
+      admin_schema: "pass (llm/ocr/asr schemas returned)"
+      s5_remaining: "Paths 1-9,12-15 require Task Profile default_service binding (admin UI operation) — partial S5, user will complete binding + full path validation"
     decisions:
       - "2026-04-15: Phase 1 不做语义缓存和 cost-aware 自动路由，留到 Phase 2 基于观测数据再做"
       - "2026-04-15: Service Registry 存 DB（非 config），支持管理端零发版上下架"
