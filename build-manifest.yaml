@@ -1312,12 +1312,12 @@ features:
       qa: null
     progress:
       total_tasks: 23
-      completed_tasks: 16
-      reviewed_tasks: 16
+      completed_tasks: 19
+      reviewed_tasks: 19
       current_task:
-        index: 17
-        title: "Task 14: 兼容层清理"
-        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-14"
+        index: 20
+        title: "Task 16: admin-web API client + types + capability schema store"
+        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-16"
     tech_debt_added_in_s4:
       - "Task 12: ListServices in-memory pagination — registry interface 需扩展支持 DB-level offset/limit，scale > 100 服务后必须改"
       - "VectorDB billing (RecordCOS/RecordVectorDB) in salesrag/* not unified — out of Gateway scope (LLM/OCR/ASR only); document for Phase 2"
