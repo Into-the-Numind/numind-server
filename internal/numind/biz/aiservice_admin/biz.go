@@ -13,6 +13,7 @@ import (
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
 
@@ -311,6 +312,7 @@ func (b *aiServiceAdminBiz) GetTask(ctx context.Context, taskID string) (*TaskDe
 	for _, row := range rows {
 		svc, svcErr := b.reg.GetService(ctx, row.ServiceID)
 		if svcErr != nil {
+			log.C(ctx).Warnw("GetTask: failed to load service binding", "task_id", taskID, "service_id", row.ServiceID, "err", svcErr)
 			continue
 		}
 		switch row.Role {
@@ -427,30 +429,28 @@ func (b *aiServiceAdminBiz) UpdateTask(ctx context.Context, taskID string, req U
 		})
 	}
 
-	// Determine audit action.
-	auditActorName := actorName
-	if force && len(incompatible) > 0 {
-		auditActorName = actorName // capability.override audit written by registry via Reason field
+	// Guard: force override requires a reason before any DB write.
+	if force && len(incompatible) > 0 && req.Reason == "" {
+		return nil, errno.ErrAICapabilityOverrideRequiresReason.SetMessage("强制覆盖不兼容绑定必须填写原因")
 	}
 
 	// Persist via registry.SaveTaskProfile.
-	if saveErr := b.reg.SaveTaskProfile(ctx, tp, bindings, actorID, auditActorName); saveErr != nil {
+	if saveErr := b.reg.SaveTaskProfile(ctx, tp, bindings, actorID, actorName); saveErr != nil {
 		return nil, fmt.Errorf("aiservice_admin.UpdateTask: %w", saveErr)
 	}
 
 	// If force override was used, write a second audit log entry with action=capability.override.
 	if force && len(incompatible) > 0 {
-		if req.Reason == "" {
-			return nil, errno.ErrAICapabilityOverrideRequiresReason
-		}
-		_ = b.db.WithContext(ctx).Create(&model.AIServiceAuditLog{
+		if err := b.db.WithContext(ctx).Create(&model.AIServiceAuditLog{
 			ActorID:    actorID,
 			ActorName:  actorName,
 			Action:     model.AuditActionCapabilityOverride,
 			TargetType: model.AuditTargetTaskProfile,
 			TargetID:   tp.ID,
 			Reason:     req.Reason,
-		}).Error
+		}).Error; err != nil {
+			log.C(ctx).Warnw("UpdateTask: failed to write capability.override audit log", "task_id", taskID, "actor_id", actorID, "err", err)
+		}
 	}
 
 	return &UpdateTaskResult{Compatible: true}, nil

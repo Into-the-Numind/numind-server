@@ -401,9 +401,9 @@ func parseID(c *gin.Context) (uint64, error) {
 	return id, nil
 }
 
-// isErrno reports whether err is a typed *errno.Errno that should be forwarded
-// directly to the caller rather than replaced with a generic 500.
+// isErrno reports whether err is (or wraps) a typed *errno.Errno that should be
+// forwarded directly to the caller rather than replaced with a generic 500.
 func isErrno(err error) bool {
-	_, ok := err.(*errno.Errno)
-	return ok
+	var e *errno.Errno
+	return errors.As(err, &e)
 }

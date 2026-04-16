@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 
 	"numind-server/internal/numind/biz/aiservice_admin"
 	"numind-server/internal/pkg/aiservice/profile"
@@ -14,6 +16,15 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
+
+// newTestDB opens a SQLite :memory: DB and migrates AIServiceAuditLog.
+func newTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err, "open sqlite in-memory DB")
+	require.NoError(t, db.AutoMigrate(&model.AIServiceAuditLog{}), "migrate AIServiceAuditLog")
+	return db
+}
 
 // mockRegistry is a minimal Registry implementation for unit tests.
 // Only the methods exercised by aiservice_admin are wired up; others panic.
