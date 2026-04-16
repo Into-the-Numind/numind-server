@@ -94,6 +94,8 @@ func applyDefaultLLMConfig(node *model.SopNode) {
 		}
 	}
 	if node.ModelName == "" {
+		// TODO(Task 15a): 此处仍从旧 volc.model 读取作为兜底；
+		// Gateway 已接管模型选择（via Task Profile），此路径预期不再触发。
 		node.ModelName = viper.GetString("volc.model")
 		if node.ModelName == "" {
 			node.ModelName = "deepseek-v3-250324"

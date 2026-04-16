@@ -63,12 +63,14 @@ func NewVolcBiz(ds store.IStore) VolcBiz {
 }
 
 // GenerateArticleContent 通用内容生成函数
+// NOTE(Task 15a): volc.model 已由 AI Gateway Registry + Task Profile 接管。
+// 此处仍从旧 config 读取作为兜底（非 Gateway 路径），预期逐步迁移后删除。
 func (v *volcBiz) GenerateArticleContent(ctx context.Context, content string, contentType string, maxLength int, cfg *OpenAIConfig, prompt string) (string, error) {
 	if cfg == nil {
 		cfg = &OpenAIConfig{
 			APIKey:      viper.GetString("volc.api_key"),
 			APIBase:     viper.GetString("volc.base_url"),
-			Model:       viper.GetString("volc.model"),
+			Model:       viper.GetString("volc.model"), // Gateway 已接管；此为非 Gateway 调用路径兜底
 			Temperature: viper.GetFloat64("volc.temperature"),
 			MaxTokens:   viper.GetInt("volc.tokens"),
 		}
@@ -182,7 +184,7 @@ func (v *volcBiz) GenerateArticleContent(ctx context.Context, content string, co
 func (v *volcBiz) VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, *billing.TokenUsage, error) {
 	url := viper.GetString("volc.base_url") + "/chat/completions"
 	bodyMap := map[string]interface{}{
-		"model":       viper.GetString("volc.model"),
+		"model":       viper.GetString("volc.model"), // Gateway 已接管；此为非 Gateway 调用路径兜底
 		"messages":    messages,
 		"max_tokens":  maxTokens,
 		"temperature": temperature,
@@ -460,7 +462,7 @@ func (v *volcBiz) StreamChat(ctx context.Context, messages []map[string]interfac
 	}
 
 	bodyMap := map[string]interface{}{
-		"model":       viper.GetString("volc.model"),
+		"model":       viper.GetString("volc.model"), // Gateway 已接管；此为非 Gateway 调用路径兜底
 		"messages":    messages,
 		"max_tokens":  maxTokens,
 		"temperature": temperature,
@@ -923,6 +925,7 @@ func (v *volcBiz) VisionAnalyzeStream(ctx context.Context, imageURL string, prom
 // ChatWithModel 非流式聊天，支持指定模型
 func (v *volcBiz) ChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64) (string, *billing.TokenUsage, error) {
 	if model == "" {
+		// Gateway 已接管模型选择；此处为未经 Gateway 的直接调用兜底
 		model = viper.GetString("volc.model")
 	}
 	if model == "" {
@@ -1010,6 +1013,7 @@ func (v *volcBiz) ChatWithModel(ctx context.Context, messages []map[string]inter
 // StreamChatWithModel 流式聊天，支持指定模型和思考程度
 func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string]interface{}, model string, maxTokens int, temperature float64, reasoningEffort string, onEvent func(event string, token string) error) (string, *billing.TokenUsage, error) {
 	if model == "" {
+		// Gateway 已接管模型选择；此处为未经 Gateway 的直接调用兜底
 		model = viper.GetString("volc.model")
 	}
 
