@@ -227,11 +227,16 @@ func (r *Router) InvalidateCache() {
 func inferThinkingFormat(providerName, providerModelID string) string {
 	id := strings.ToLower(providerModelID)
 
-	// AiHubMix: 统一 /chat/completions + reasoning_effort 协议
-	// 例外：Claude -think 变体（如 claude-sonnet-4-6-think）thinking 已内置，不传 reasoning_effort
+	// AiHubMix 走 /chat/completions + reasoning_effort 统一协议，有两个例外：
+	//   - Claude -think 变体：thinking 已内置于模型，不传额外参数
+	//   - GPT 系列：AiHubMix 不在 /chat/completions 返回 reasoning_content，
+	//     须走 /v1/responses 端点（与 DMXAPI 同路径）
 	if strings.ToLower(providerName) == "aihubmix" {
 		if strings.HasSuffix(id, "-think") {
 			return ThinkingNone
+		}
+		if strings.Contains(id, "gpt") || strings.HasPrefix(id, "o1") || strings.HasPrefix(id, "o3") || strings.HasPrefix(id, "o4") {
+			return ThinkingGPT
 		}
 		return ThinkingReasoningEffort
 	}

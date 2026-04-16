@@ -55,56 +55,56 @@ VALUES
     (SELECT id FROM llm_model    WHERE model_key = 'claude-sonnet-4-6'),
     (SELECT id FROM llm_provider WHERE name      = 'aihubmix'),
     'claude-sonnet-4-6',
-    5, 0, 0, 1
+    100, 0, 0, 1
   ),
   -- Claude Sonnet 4.6 Thinking（-think 后缀触发 temperature=1，不传 reasoning_effort）
   (
     (SELECT id FROM llm_model    WHERE model_key = 'claude-sonnet-4-6-thinking'),
     (SELECT id FROM llm_provider WHERE name      = 'aihubmix'),
     'claude-sonnet-4-6-think',
-    5, 0, 0, 1
+    100, 0, 0, 1
   ),
   -- Gemini 3.1 Pro Preview（基础）
   (
     (SELECT id FROM llm_model    WHERE model_key = 'gemini-3.1-pro-preview'),
     (SELECT id FROM llm_provider WHERE name      = 'aihubmix'),
     'gemini-3.1-pro-preview',
-    5, 0, 0, 1
+    100, 0, 0, 1
   ),
   -- Gemini 3.1 Pro Preview Thinking（与 base 同 provider_model_id，reasoning_effort 区分）
   (
     (SELECT id FROM llm_model    WHERE model_key = 'gemini-3.1-pro-preview-thinking'),
     (SELECT id FROM llm_provider WHERE name      = 'aihubmix'),
     'gemini-3.1-pro-preview',
-    5, 0, 0, 1
+    100, 0, 0, 1
   ),
   -- DeepSeek V3.2（基础）
   (
     (SELECT id FROM llm_model    WHERE model_key = 'deepseek-v3.2'),
     (SELECT id FROM llm_provider WHERE name      = 'aihubmix'),
     'deepseek-v3.2',
-    5, 0, 0, 1
+    100, 0, 0, 1
   ),
   -- DeepSeek V3.2 Thinking（与 base 同 provider_model_id，reasoning_effort 区分）
   (
     (SELECT id FROM llm_model    WHERE model_key = 'deepseek-v3.2-thinking'),
     (SELECT id FROM llm_provider WHERE name      = 'aihubmix'),
     'deepseek-v3.2',
-    5, 0, 0, 1
+    100, 0, 0, 1
   ),
   -- GPT 5.4（基础）
   (
     (SELECT id FROM llm_model    WHERE model_key = 'gpt-5.4'),
     (SELECT id FROM llm_provider WHERE name      = 'aihubmix'),
     'gpt-5.4',
-    5, 0, 0, 1
+    100, 0, 0, 1
   ),
   -- GPT 5.4 Thinking（与 base 同 provider_model_id，reasoning_effort 区分）
   (
     (SELECT id FROM llm_model    WHERE model_key = 'gpt-5.4-thinking'),
     (SELECT id FROM llm_provider WHERE name      = 'aihubmix'),
     'gpt-5.4',
-    5, 0, 0, 1
+    100, 0, 0, 1
   );
 
 -- ============================================================

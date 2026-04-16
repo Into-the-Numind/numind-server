@@ -26,6 +26,8 @@ type BillingStore interface {
 	GetOrCreateAccount(ctx context.Context, userID uint) (*model.BillingAccount, error)
 	// GetPricingRule 获取匹配的定价规则
 	GetPricingRule(ctx context.Context, serviceType, provider, modelName string) (*model.PricingRule, error)
+	// GetPricingRuleTiers 获取指定定价规则的分段配置
+	GetPricingRuleTiers(ctx context.Context, ruleID uint) ([]model.PricingRuleTier, error)
 
 	// ListUsageRecords 管理端用量记录分页查询（支持多条件过滤）
 	ListUsageRecords(ctx context.Context, filter UsageRecordFilter) ([]model.UsageRecord, int64, error)
@@ -319,6 +321,19 @@ func (s *billingStore) GetPricingRule(ctx context.Context, serviceType, provider
 		return nil, err
 	}
 	return &rule, nil
+}
+
+// GetPricingRuleTiers 获取指定定价规则的分段配置（用于 tiered_token 模式）
+func (s *billingStore) GetPricingRuleTiers(ctx context.Context, ruleID uint) ([]model.PricingRuleTier, error) {
+	var tiers []model.PricingRuleTier
+	err := s.db.WithContext(ctx).
+		Where("rule_id = ?", ruleID).
+		Order("token_type, min_tokens").
+		Find(&tiers).Error
+	if err != nil {
+		return nil, err
+	}
+	return tiers, nil
 }
 
 // ListUsageRecords 管理端用量记录分页查询（支持多条件过滤）
