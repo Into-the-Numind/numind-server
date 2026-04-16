@@ -1292,7 +1292,7 @@ features:
     ndf_version: "1.0"
     description: "AI 服务统一化管理 — 扩展现有 internal/pkg/llm 为统一 AI Service Gateway，覆盖 LLM（ali/volc/dmxapi/bailian）+ OCR（baidu）+ ASR（FunASR）等全部 AI 服务提供者；Service Registry 入库（能力矩阵 + pricing），Task Profile 声明每个业务场景的能力需求；管理端 CRUD；中间件链统一处理 tracing/billing/retry/fallback；吸收 llm-model-switch"
     track: "standard"
-    stage: "S4"
+    stage: "S4-done"
     classification_reason: "跨 6+ biz 模块的 infra 重构（ali/volc/baidu/salesrag/sop/monitor/chatbot），影响所有 AI 调用路径；新增 Service Registry + Task Profile 两张核心表及管理端 CRUD；架构决策密集；工时多天；涉及 Langfuse 观测和 billing 全链路；吸收线上功能 llm-model-switch 需做 schema/API inventory"
     last_updated_by: "ai-s4"
     last_updated_at: "2026-04-15T00:00:00+08:00"
@@ -1312,12 +1312,9 @@ features:
       qa: null
     progress:
       total_tasks: 23
-      completed_tasks: 19
-      reviewed_tasks: 19
-      current_task:
-        index: 20
-        title: "Task 16: admin-web API client + types + capability schema store"
-        plan_ref: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md#task-16"
+      completed_tasks: 23
+      reviewed_tasks: 23
+      current_task: null
     tech_debt_added_in_s4:
       - "Task 12: ListServices in-memory pagination — registry interface 需扩展支持 DB-level offset/limit，scale > 100 服务后必须改"
       - "VectorDB billing (RecordCOS/RecordVectorDB) in salesrag/* not unified — out of Gateway scope (LLM/OCR/ASR only); document for Phase 2"
