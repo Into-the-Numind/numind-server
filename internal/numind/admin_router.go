@@ -145,11 +145,12 @@ func installAdminRouters(g *gin.Engine) error {
 		adminMonitorGroup.PUT("/users/:user_id/config", monitorCtrl.AdminUpdateUserConfig)
 	}
 
-	// AI Service Manager — 服务 CRUD（Task 12）
+	// AI Service Manager — 服务 CRUD（Task 12）+ Task Profile（Task 13）
 	{
 		reg := registry.New(store.S.DB())
 		aiSvcBiz := aiservice_admin.New(reg, store.S.DB())
 		aiSvcCtrl := admin_ai.NewAIServiceController(aiSvcBiz)
+		aiTaskCtrl := admin_ai.NewTaskProfileController(aiSvcBiz)
 		aiGroup := adminGroup.Group("/ai")
 		aiGroup.GET("/services", aiSvcCtrl.ListServices)
 		aiGroup.GET("/services/:id", aiSvcCtrl.GetService)
@@ -157,7 +158,11 @@ func installAdminRouters(g *gin.Engine) error {
 		aiGroup.PUT("/services/:id", aiSvcCtrl.UpdateService)
 		aiGroup.DELETE("/services/:id", aiSvcCtrl.DeprecateService)
 		aiGroup.POST("/services/:id/restore", aiSvcCtrl.RestoreService)
+		aiGroup.POST("/services/:id/validate-against/:task_id", aiTaskCtrl.ValidateAgainst)
 		aiGroup.GET("/capability-schema", aiSvcCtrl.GetCapabilitySchema)
+		aiGroup.GET("/tasks", aiTaskCtrl.ListTasks)
+		aiGroup.GET("/tasks/:id", aiTaskCtrl.GetTask)
+		aiGroup.PUT("/tasks/:id", aiTaskCtrl.UpdateTask)
 	}
 
 	// LLM 供应商/模型/路由管理
