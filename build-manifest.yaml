@@ -470,9 +470,9 @@ features:
     ndf_version: "1.0"
     description: "管理端品牌重构：Tailwind 默认紫蓝 → 企业蓝灰工业风格（Superclaw OS 参考）。variables.css 全面替换 + 17 view 视觉迁移 + Sidebar 浅色化 + 字体系统引入"
     track: "standard"
-    stage: "S4"
+    stage: "S6"
     classification_reason: "影响 admin 全部 17 个 view 的视觉统一重构，跨多文件，需 Standard 全流程审查；引入新 token（状态色）属于 schema-like 变更"
-    last_updated_by: "ai-s4"
+    last_updated_by: "ai-s6"
     last_updated_at: "2026-04-16T00:00:00+08:00"
     repos:
       - numind-admin-web
@@ -1327,6 +1327,10 @@ features:
       - "langfuse.base_url 内网 IP — prod config fix needed"
       - "llmrouter 包最终拆除 — Phase 2 评估"
       - "Playwright E2E for admin-web TaskBindingEditor — skipped in S4, add Phase 2"
+      - "admin-web TasksList 允许服务数列硬编码 0 — 需后端 list API 返回计数或前端逐条查 detail"
+      - "admin-web ServiceEdit 表单字段与后端 ai_service 表不完全对齐（capability_json 编辑不完整）— 需重做表单"
+      - "modelKey 已接通 ModelOverride（f5c4c92）— 从 tech debt 升级为已修复，待 dev 验证"
+      - "C 端 SOP 运行页 token/用时/模型信息显示可能缺失 — 需验证 executeViaGateway 返回的 usage 是否被前端正确读取"
     next_session_task: |
       legacy-llm-cleanup: 删除旧 llm-model-switch 兼容层。范围：
       1. DB: 删除 llm_model VIEW + llm_model_provider VIEW
