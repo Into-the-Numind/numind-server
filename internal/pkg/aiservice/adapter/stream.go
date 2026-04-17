@@ -11,17 +11,28 @@ import (
 )
 
 // runOAIStream reads an OpenAI-compatible SSE stream from r and sends
-// aiservice.ChatChunk values to ch.  It closes ch when the stream ends or an
+// aiservice.ChatChunk values to ch. It closes ch when the stream ends or an
 // error occurs.
 //
-// The last chunk before [DONE] typically carries a non-nil usage object
-// (when stream_options.include_usage=true was sent in the request).  That
-// usage is attached to the final sentinel chunk (IsFinal=true).
+// Emit contract:
+//   - Content and reasoning deltas are streamed as-is with IsFinal=false.
+//   - Exactly one IsFinal=true chunk is emitted, after the stream ends, and it
+//     carries the finish_reason + the most recent usage (nil if the provider
+//     never sent one).
+//
+// Why a single terminal chunk: some providers (e.g. DMXAPI-proxied DeepSeek)
+// send the finish_reason chunk BEFORE an independent usage-only chunk
+// (choices=[], usage populated). Other providers bundle them. Collecting the
+// finish_reason and usage separately inside the loop and emitting a single
+// terminal chunk handles both patterns uniformly and avoids the previous bug
+// where usage on a separate late chunk was silently dropped, making
+// sop_node_run.total_tokens stay 0.
 //
 // provider is the adapter name (e.g. "ali", "volc") and defaultModel is the
-// configured ProviderModelID used as fallback when the provider omits chunk.Model.
-// The actual model name is read from each chunk's Model field when non-empty.
-// Both Provider and Model are propagated to every emitted ChatChunk.
+// configured ProviderModelID used as fallback when the provider omits
+// chunk.Model. The actual model name is read from each chunk's Model field
+// when non-empty. Both Provider and Model are propagated to every emitted
+// ChatChunk including the terminal one.
 func runOAIStream(r io.ReadCloser, ch chan<- aiservice.ChatChunk, provider string, defaultModel string) {
 	defer r.Close()
 	defer close(ch)
@@ -35,9 +46,9 @@ func runOAIStream(r io.ReadCloser, ch chan<- aiservice.ChatChunk, provider strin
 	var lastUsage *aiservice.TokenUsage
 	// resolvedModel tracks the most recent non-empty model name from the provider.
 	resolvedModel := defaultModel
-	// finalSent guards against sending two IsFinal=true chunks when a
-	// finish_reason chunk is followed by the [DONE] sentinel path below.
-	finalSent := false
+	// finishReason is captured from whichever chunk reports it; emitted on the
+	// terminal chunk after the loop.
+	finishReason := ""
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -58,10 +69,13 @@ func runOAIStream(r io.ReadCloser, ch chan<- aiservice.ChatChunk, provider strin
 
 		var chunk oaiStreamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			// Parse error: emit a terminal chunk with any usage captured so far
+			// and return. Content chunks emitted before this point stay valid.
 			ch <- aiservice.ChatChunk{
 				Index:        index,
 				FinishReason: fmt.Sprintf("parse_error: %v", err),
 				IsFinal:      true,
+				Usage:        lastUsage,
 				Provider:     provider,
 				Model:        resolvedModel,
 			}
@@ -73,7 +87,8 @@ func runOAIStream(r io.ReadCloser, ch chan<- aiservice.ChatChunk, provider strin
 			resolvedModel = chunk.Model
 		}
 
-		// Capture usage from chunks that include it (final chunk).
+		// Capture usage from any chunk that includes it (may be the finish
+		// chunk, may be a later usage-only chunk with choices=[]).
 		if chunk.Usage != nil {
 			lastUsage = &aiservice.TokenUsage{
 				PromptTokens:     chunk.Usage.PromptTokens,
@@ -83,33 +98,31 @@ func runOAIStream(r io.ReadCloser, ch chan<- aiservice.ChatChunk, provider strin
 		}
 
 		if len(chunk.Choices) == 0 {
-			// Pure usage chunk — no content delta.
+			// Pure usage/metadata chunk — no content to emit, state already
+			// captured above.
 			continue
 		}
 
 		choice := chunk.Choices[0]
 		delta := choice.Delta.Content
 		reasoningDelta := choice.Delta.ReasoningContent
-		finishReason := choice.FinishReason
-
-		isFinal := finishReason != ""
-
-		c := aiservice.ChatChunk{
-			Delta:          delta,
-			ReasoningDelta: reasoningDelta,
-			Index:          index,
-			FinishReason:   finishReason,
-			IsFinal:        isFinal,
-			Provider:       provider,
-			Model:          resolvedModel,
+		if choice.FinishReason != "" {
+			finishReason = choice.FinishReason
 		}
-		if isFinal && lastUsage != nil {
-			c.Usage = lastUsage
-		}
-		ch <- c
-		index++
-		if isFinal {
-			finalSent = true
+
+		// Emit content chunks with IsFinal=false; the terminal chunk is
+		// emitted once below after the stream ends, carrying finish_reason
+		// and the final usage together.
+		if delta != "" || reasoningDelta != "" {
+			ch <- aiservice.ChatChunk{
+				Delta:          delta,
+				ReasoningDelta: reasoningDelta,
+				Index:          index,
+				IsFinal:        false,
+				Provider:       provider,
+				Model:          resolvedModel,
+			}
+			index++
 		}
 	}
 
@@ -118,24 +131,21 @@ func runOAIStream(r io.ReadCloser, ch chan<- aiservice.ChatChunk, provider strin
 			Index:        index,
 			FinishReason: fmt.Sprintf("scan_error: %v", err),
 			IsFinal:      true,
+			Usage:        lastUsage,
 			Provider:     provider,
 			Model:        resolvedModel,
 		}
 		return
 	}
 
-	// If no finish_reason chunk was emitted (some providers skip it),
-	// emit a terminal chunk with the accumulated usage.
-	// Guard against emitting a duplicate final chunk when the finish_reason
-	// chunk was already sent above (some providers send finish_reason then [DONE]).
-	if !finalSent {
-		ch <- aiservice.ChatChunk{
-			Index:    index,
-			IsFinal:  true,
-			Usage:    lastUsage,
-			Delta:    "",
-			Provider: provider,
-			Model:    resolvedModel,
-		}
+	// Terminal chunk: always emit exactly one IsFinal=true chunk with the
+	// aggregated finish_reason and usage.
+	ch <- aiservice.ChatChunk{
+		Index:        index,
+		FinishReason: finishReason,
+		IsFinal:      true,
+		Usage:        lastUsage,
+		Provider:     provider,
+		Model:        resolvedModel,
 	}
 }

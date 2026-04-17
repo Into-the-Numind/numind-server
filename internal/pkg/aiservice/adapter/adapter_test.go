@@ -597,6 +597,107 @@ func writeChatStreamWithSeparateFinish(w http.ResponseWriter, content, model str
 	}
 }
 
+// writeChatStreamWithLateUsage simulates a provider that sends a
+// finish_reason chunk first, THEN a separate usage-only chunk (choices=[]),
+// THEN [DONE]. This mirrors real DMXAPI-proxied DeepSeek / some Claude
+// variants. Before the 2026-04-17 fix the late usage chunk was silently
+// dropped, causing sop_node_run.total_tokens to stay 0 in production.
+func writeChatStreamWithLateUsage(w http.ResponseWriter, content, model string, prompt, completion int) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+
+	// Chunk 1: content delta, no finish_reason, no usage.
+	delta := oaiStreamChunk{
+		ID:    "chatcmpl-test",
+		Model: model,
+		Choices: []struct {
+			Delta struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"delta"`
+			FinishReason string `json:"finish_reason"`
+		}{
+			{Delta: struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+			}{Content: content}},
+		},
+	}
+	b, _ := json.Marshal(delta)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
+
+	// Chunk 2: finish_reason="stop" WITHOUT usage.
+	finish := oaiStreamChunk{
+		ID:    "chatcmpl-test",
+		Model: model,
+		Choices: []struct {
+			Delta struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"delta"`
+			FinishReason string `json:"finish_reason"`
+		}{
+			{FinishReason: "stop"},
+		},
+	}
+	b, _ = json.Marshal(finish)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
+
+	// Chunk 3: usage-only chunk (choices=[]).
+	usageOnly := oaiStreamChunk{
+		ID:    "chatcmpl-test",
+		Model: model,
+		Usage: &oaiUsage{PromptTokens: prompt, CompletionTokens: completion, TotalTokens: prompt + completion},
+	}
+	b, _ = json.Marshal(usageOnly)
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
+
+	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// TestRunOAIStream_LateUsageChunkCaptured regression-tests the late-usage bug
+// where a provider sends usage in a separate chunk after the finish_reason
+// chunk. Before the fix, the usage-only chunk was silently dropped and
+// sop_node_run.total_tokens stayed 0. The fix defers IsFinal to a single
+// terminal chunk emitted after the loop that carries the aggregated usage.
+func TestRunOAIStream_LateUsageChunkCaptured(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatStreamWithLateUsage(w, "hello", "test-model", 5, 3)
+	}))
+	defer srv.Close()
+
+	a := NewAliAdapter()
+	route := mockRoute(srv.URL, "test-key", "test-model")
+
+	ch, err := a.ChatStream(context.Background(), route, aiservice.ChatRequest{
+		Messages: sampleMessages(),
+	})
+	if err != nil {
+		t.Fatalf("ChatStream: unexpected error: %v", err)
+	}
+
+	content, usage := drainStream(t, ch)
+	if content != "hello" {
+		t.Errorf("content = %q; want %q", content, "hello")
+	}
+	if usage == nil {
+		t.Fatal("usage = nil; want non-nil (late usage chunk should be captured)")
+	}
+	if usage.TotalTokens != 8 {
+		t.Errorf("usage.TotalTokens = %d; want 8", usage.TotalTokens)
+	}
+	if usage.PromptTokens != 5 {
+		t.Errorf("usage.PromptTokens = %d; want 5", usage.PromptTokens)
+	}
+	if usage.CompletionTokens != 3 {
+		t.Errorf("usage.CompletionTokens = %d; want 3", usage.CompletionTokens)
+	}
+}
+
 func TestRunOAIStream_NoSpuriousDuplicateFinalChunk(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeChatStreamWithSeparateFinish(w, "hello", "test-model")
@@ -646,15 +747,15 @@ func TestRunOAIStream_ProviderModelPropagated(t *testing.T) {
 		t.Fatalf("ChatStream: unexpected error: %v", err)
 	}
 
+	// Contract: Provider and Model propagate on EVERY emitted chunk (final and non-final).
+	// Model tracks the provider-reported value (resolvedModel) with the route's
+	// default as the initial fallback, so it's never empty.
 	for c := range ch {
 		if c.Provider != "ali" {
 			t.Errorf("chunk.Provider = %q; want %q", c.Provider, "ali")
 		}
-		if c.IsFinal {
-			// The model from the SSE chunk should override the default.
-			if c.Model != "actual-model-from-provider" {
-				t.Errorf("final chunk.Model = %q; want %q", c.Model, "actual-model-from-provider")
-			}
+		if c.Model != "actual-model-from-provider" {
+			t.Errorf("chunk.Model = %q; want %q (IsFinal=%v)", c.Model, "actual-model-from-provider", c.IsFinal)
 		}
 	}
 }
