@@ -407,7 +407,7 @@ features:
     stage: "S5-partial"
     classification_reason: "跨 6+ biz 模块的 infra 重构（ali/volc/baidu/salesrag/sop/monitor/chatbot），影响所有 AI 调用路径；新增 Service Registry + Task Profile 两张核心表及管理端 CRUD；架构决策密集；工时多天；涉及 Langfuse 观测和 billing 全链路；吸收线上功能 llm-model-switch 需做 schema/API inventory"
     last_updated_by: "ai-s5"
-    last_updated_at: "2026-04-17T00:00:00+08:00"
+    last_updated_at: "2026-04-17T13:04:00+08:00"
     repos:
       - numind-server
       - numind-admin-web
