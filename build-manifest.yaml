@@ -407,7 +407,7 @@ features:
     stage: "S5-partial"
     classification_reason: "跨 6+ biz 模块的 infra 重构（ali/volc/baidu/salesrag/sop/monitor/chatbot），影响所有 AI 调用路径；新增 Service Registry + Task Profile 两张核心表及管理端 CRUD；架构决策密集；工时多天；涉及 Langfuse 观测和 billing 全链路；吸收线上功能 llm-model-switch 需做 schema/API inventory"
     last_updated_by: "ai-s5"
-    last_updated_at: "2026-04-17T16:11:00+08:00"
+    last_updated_at: "2026-04-17T17:08:00+08:00"
     repos:
       - numind-server
       - numind-admin-web
@@ -446,6 +446,7 @@ features:
       - "新 debt：model.ChatbotMessage 缺 model_name 列 —— chatbot 流里已捕获 gatewayUsage.ModelName 但无处写入。Phase 2 或 chatbot 相关功能触发时加列 + 迁移 + biz 写入"
       - "新 debt：Gateway 路径 sop_node_run.total_tokens 有时为 0（2026-04-17 dev DB 抽查）—— 部分 stream 请求 IsFinal chunk 的 Usage 未被 provider adapter 填充。与 TokenUsage.ModelName 不同，这是 adapter 层 stream 解析问题，范围更深。Phase 2 排查"
       - "admin-web Playwright E2E 基础设施缺失（2026-04-17 调查）—— 原 debt 第 9 条建议加 TaskBindingEditor E2E，但 admin-web 根本没有 Playwright（无 e2e/ 目录、无 playwright.config、package.json 无 @playwright/test）。需独立 infra task 搭建（~2-3h）再加测试（~1h），不属于本期 tech debt 清理范围"
+      - "新 debt（2026-04-17 spec review 发现）：core.WriteResponse err != nil 时强制发 {code:1, data:null}，丢弃 Errno.Code 字符串和附加 data。影响：(1) 前端 error.code 永远是整数 1，admin-web 的 err.code === 'AIService.CapabilityMismatch' 字符串匹配永远 false，TaskEdit force override dialog 无法触发；(2) incompatible_bindings 详情无法到达前端。这是项目级 wire format 限制，需独立修 core.WriteResponse（影响所有 error 响应），范围较大故不在本期。临时 workaround：前端按 HTTP 422 或 message 文本粗略判断"
     next_session_task: |
       legacy-llm-cleanup: 删除旧 llm-model-switch 兼容层。范围：
       1. DB: 删除 llm_model VIEW + llm_model_provider VIEW
@@ -454,13 +455,14 @@ features:
       4. 管理端: 删除 LLM供应商 + LLM模型 页面，侧边栏只留 AI服务 + 任务配置
       5. user_model_preference 表保留，读写逻辑适配新表
       预估 2-3 天，建议走 NDF Standard 或 Hotfix
-    pending_spec_updates:
-      - "spec §4.3 errno 数字 code 改为字符串 code"
-      - "spec §2.1.2 补 thinking_only 列"
-      - "spec §3.4 ServiceSpec → ResolvedRoute"
-      - "spec §5.2 vs §6.5 矛盾清理"
-      - "spec §3.2 pointer return vs value return"
-      - "spec §4.2 healthz response 增 error rate"
+    pending_spec_updates: []  # 全部处理完（server 7949293 on 2026-04-17）
+    completed_spec_updates:
+      - "spec §4.3 errno 数字 code 改为字符串 code（已修 + 文档 core.WriteResponse 限制）"
+      - "spec §2.1.2 补 thinking_only 列（已修：文档表示 ai_service 继承 llm_model 列）"
+      - "spec §3.4 ServiceSpec → ResolvedRoute + Adapter → Provider 对齐实际代码"
+      - "spec §5.2 vs §6.5 矛盾清理（§5.2 明确 Capability Matching 仅保存时调用）"
+      - "spec §3.2 pointer return vs value return（对齐 aiservice/ai.go 实际签名）"
+      - "spec §4.2 healthz response：去掉臆想的 error_rate，反映 Phase 1 实际 {status, gateway_ready, adapters_loaded, adapter_count}；adapters 名字用下划线不是连字符；count 包括 alias=8"
     rollback: null
     last_verified:
       at: "2026-04-16T12:10:00+08:00"
