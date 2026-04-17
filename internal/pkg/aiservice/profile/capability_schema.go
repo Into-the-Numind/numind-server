@@ -5,28 +5,28 @@ import "fmt"
 // CapabilityField describes a single field in a service capability JSON document.
 type CapabilityField struct {
 	// Name is the JSON key of the field (snake_case).
-	Name string
+	Name string `json:"name"`
 	// Type describes the logical data type. Recognised values:
 	//   "modalities"    — []string, constrained to known modality values
 	//   "string_list"   — []string, free-form
 	//   "int"           — integer (capacity or dimension)
 	//   "bool"          — boolean flag
 	//   "feature_map"   — map[string]bool
-	Type string
+	Type string `json:"type"`
 	// Required indicates whether this field must be present for a valid capability document.
-	Required bool
+	Required bool `json:"required"`
 	// EnumValues, when non-empty, lists the only accepted string values for this field.
-	EnumValues []string
+	EnumValues []string `json:"enum_values,omitempty"`
 	// Description is a short human-readable annotation used in admin UI tooltips.
-	Description string
+	Description string `json:"description"`
 }
 
 // CapabilitySchema defines the expected shape of capability_json for a given service_type.
 type CapabilitySchema struct {
 	// ServiceType must match ai_service.service_type (llm | ocr | asr).
-	ServiceType string
+	ServiceType string `json:"service_type"`
 	// Fields lists all recognised capability fields for this service type.
-	Fields []CapabilityField
+	Fields []CapabilityField `json:"fields"`
 }
 
 // llmSchema is the capability schema for service_type = "llm".
