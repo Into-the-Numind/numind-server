@@ -45,8 +45,16 @@ func Test_ReasoningEffort_InjectedWhenFormatIsReasoningEffort(t *testing.T) {
 	if !ok {
 		t.Fatal("expected reasoning_effort field in request body, but it was absent")
 	}
-	if val != "high" {
-		t.Fatalf("expected reasoning_effort='high', got %v", val)
+	if val != "medium" {
+		t.Fatalf("expected reasoning_effort='medium', got %v", val)
+	}
+
+	maxComp, ok := body["max_completion_tokens"]
+	if !ok {
+		t.Fatal("expected max_completion_tokens field for reasoning token cap")
+	}
+	if maxComp != float64(1000) {
+		t.Fatalf("expected max_completion_tokens=1000, got %v", maxComp)
 	}
 }
 
