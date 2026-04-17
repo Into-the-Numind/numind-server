@@ -70,6 +70,9 @@ type ChatbotMessage struct {
 	Thinking         string    `gorm:"type:longtext" json:"thinking"`
 	TraceID          string    `gorm:"size:100" json:"trace_id"`
 	Seq              int       `gorm:"not null;default:0;index:idx_cm_session_seq" json:"seq"`
+	// ModelName 记录生成 assistant 消息时实际使用的模型（Gateway 路径填充；
+	// user 消息留空）。用于审计、按模型切片分析和历史记录展示。
+	ModelName        string    `gorm:"size:100;not null;default:''" json:"model_name"`
 	PromptTokens     int       `gorm:"not null;default:0" json:"prompt_tokens"`
 	CompletionTokens int       `gorm:"not null;default:0" json:"completion_tokens"`
 	CreatedAt        time.Time `json:"created_at"`

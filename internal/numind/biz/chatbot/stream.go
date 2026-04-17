@@ -205,10 +205,7 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 				CompletionTokens: chunk.Usage.CompletionTokens,
 				TotalTokens:      chunk.Usage.TotalTokens,
 				ReasoningTokens:  chunk.Usage.ReasoningTokens,
-				// ModelName captured but currently inert: model.ChatbotMessage
-				// has no model_name column. Forward-compatible once that schema
-				// lands. Tracked as tech debt in manifest.
-				ModelName: modelName,
+				ModelName:        modelName,
 			}
 		}
 	}
@@ -237,9 +234,11 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 	}
 
 	var promptTokens, completionTokens int
+	var assistantModelName string
 	if usage != nil {
 		promptTokens = usage.PromptTokens
 		completionTokens = usage.CompletionTokens
+		assistantModelName = usage.ModelName
 	}
 
 	assistantMsg := &model.ChatbotMessage{
@@ -250,6 +249,7 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 		Thinking:         thinkingContent.String(),
 		TraceID:          traceID,
 		Seq:              maxSeq + 2,
+		ModelName:        assistantModelName,
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
 		CreatedAt:        time.Now(),
