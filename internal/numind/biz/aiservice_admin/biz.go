@@ -55,14 +55,24 @@ type TaskDetail struct {
 	Allowed        []*model.AIService `json:"allowed"`
 }
 
+// TaskProfileListItem is the list-row shape returned by ListTasks. It embeds
+// the base TaskProfile and adds aggregated counts of bound services by role so
+// the admin table can render "fallback / allowed service count" columns
+// without a separate detail fetch per row.
+type TaskProfileListItem struct {
+	*model.TaskProfile
+	FallbackCount int `json:"fallback_count"`
+	AllowedCount  int `json:"allowed_count"`
+}
+
 // UpdateTaskRequest is the request body for updating a task profile's
 // requirements and/or service bindings.
 type UpdateTaskRequest struct {
 	Requirements       model.JSONMap `json:"requirements"`
-	DefaultServiceID   *uint64      `json:"default_service_id"`
-	FallbackServiceIDs []uint64     `json:"fallback_service_ids"`
-	AllowedServiceIDs  []uint64     `json:"allowed_service_ids"`
-	Reason             string       `json:"reason"`
+	DefaultServiceID   *uint64       `json:"default_service_id"`
+	FallbackServiceIDs []uint64      `json:"fallback_service_ids"`
+	AllowedServiceIDs  []uint64      `json:"allowed_service_ids"`
+	Reason             string        `json:"reason"`
 }
 
 // IncompatibleBinding describes a single binding that failed capability matching.
@@ -82,10 +92,10 @@ type UpdateTaskResult struct {
 
 // ValidateResult is returned by ValidateServiceAgainstTask.
 type ValidateResult struct {
-	Compatible           bool                       `json:"compatible"`
-	Reasons              []string                   `json:"reasons"`
-	TaskRequirements     profile.Requirements       `json:"task_requirements"`
-	ServiceCapabilities  profile.ServiceCapability  `json:"service_capabilities"`
+	Compatible          bool                      `json:"compatible"`
+	Reasons             []string                  `json:"reasons"`
+	TaskRequirements    profile.Requirements      `json:"task_requirements"`
+	ServiceCapabilities profile.ServiceCapability `json:"service_capabilities"`
 }
 
 // IAIServiceAdminBiz is the biz interface for admin AI service CRUD.
@@ -113,8 +123,9 @@ type IAIServiceAdminBiz interface {
 	// GetCapabilitySchemas returns the capability schema for each service type.
 	GetCapabilitySchemas(ctx context.Context) (map[string]*profile.CapabilitySchema, error)
 
-	// ListTasks returns all task profiles (no pagination — fixed set of ~14 rows).
-	ListTasks(ctx context.Context) ([]*model.TaskProfile, error)
+	// ListTasks returns all task profiles (no pagination — fixed set of ~14 rows),
+	// each annotated with aggregated binding counts (fallback / allowed).
+	ListTasks(ctx context.Context) ([]*TaskProfileListItem, error)
 
 	// GetTask returns a single task profile with its bound services resolved.
 	GetTask(ctx context.Context, taskID string) (*TaskDetail, error)
@@ -267,13 +278,45 @@ func (b *aiServiceAdminBiz) GetCapabilitySchemas(_ context.Context) (map[string]
 	return schemas, nil
 }
 
-// ListTasks returns all task profiles.
-func (b *aiServiceAdminBiz) ListTasks(ctx context.Context) ([]*model.TaskProfile, error) {
+// ListTasks returns all task profiles with aggregated binding counts
+// (fallback / allowed) resolved via a single GROUP BY on task_profile_service.
+func (b *aiServiceAdminBiz) ListTasks(ctx context.Context) ([]*TaskProfileListItem, error) {
 	profiles, err := b.reg.ListTaskProfiles(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("aiservice_admin.ListTasks: %w", err)
 	}
-	return profiles, nil
+
+	type countRow struct {
+		TaskProfileID uint64 `gorm:"column:task_profile_id"`
+		Role          string `gorm:"column:role"`
+		Cnt           int    `gorm:"column:cnt"`
+	}
+	var rows []countRow
+	if err := b.db.WithContext(ctx).
+		Table("task_profile_service").
+		Select("task_profile_id, role, COUNT(*) AS cnt").
+		Group("task_profile_id, role").
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("aiservice_admin.ListTasks: aggregate bindings: %w", err)
+	}
+	counts := make(map[uint64]map[string]int, len(rows))
+	for _, r := range rows {
+		if counts[r.TaskProfileID] == nil {
+			counts[r.TaskProfileID] = make(map[string]int, 2)
+		}
+		counts[r.TaskProfileID][r.Role] = r.Cnt
+	}
+
+	result := make([]*TaskProfileListItem, 0, len(profiles))
+	for _, p := range profiles {
+		c := counts[p.ID]
+		result = append(result, &TaskProfileListItem{
+			TaskProfile:   p,
+			FallbackCount: c[model.TaskProfileRoleFallback],
+			AllowedCount:  c[model.TaskProfileRoleAllowed],
+		})
+	}
+	return result, nil
 }
 
 // GetTask returns a single task profile with its bound services resolved.
