@@ -407,7 +407,7 @@ features:
     stage: "S5-partial"
     classification_reason: "跨 6+ biz 模块的 infra 重构（ali/volc/baidu/salesrag/sop/monitor/chatbot），影响所有 AI 调用路径；新增 Service Registry + Task Profile 两张核心表及管理端 CRUD；架构决策密集；工时多天；涉及 Langfuse 观测和 billing 全链路；吸收线上功能 llm-model-switch 需做 schema/API inventory"
     last_updated_by: "ai-s5"
-    last_updated_at: "2026-04-16T00:00:00+08:00"
+    last_updated_at: "2026-04-17T00:00:00+08:00"
     repos:
       - numind-server
       - numind-admin-web
@@ -437,8 +437,8 @@ features:
       - "langfuse.base_url 内网 IP — prod config fix needed"
       - "llmrouter 包最终拆除 — Phase 2 评估"
       - "Playwright E2E for admin-web TaskBindingEditor — skipped in S4, add Phase 2"
-      - "admin-web TasksList 允许服务数列硬编码 0 — 需后端 list API 返回计数或前端逐条查 detail"
-      - "admin-web ServiceEdit 表单字段与后端 ai_service 表不完全对齐（capability_json 编辑不完整）— 需重做表单"
+      - "admin-web TasksList 允许服务数列硬编码 0（cd1b80e + f2715c8 已修）— 从 tech debt 升级为已修复，待 dev 验证"
+      - "admin-web ServiceEdit 表单字段与后端 ai_service 表不完全对齐 — 选方案 A 延后：真修需重做表单 + 独立 routes 管理页，并入 legacy-llm-cleanup 范围一起处理"
       - "modelKey 已接通 ModelOverride（f5c4c92）— 从 tech debt 升级为已修复，待 dev 验证"
       - "C 端 SOP 运行页 token/用时/模型信息显示可能缺失 — 需验证 executeViaGateway 返回的 usage 是否被前端正确读取"
     next_session_task: |
@@ -474,6 +474,7 @@ features:
       - "2026-04-15: 范围扩展到 OCR + ASR（原计划仅 LLM），因此从 llm-model-manager 改名为 ai-service-manager"
       - "2026-04-15: Capability Matching 保留为 Phase 1 核心（非 stretch），避免管理员绑定不兼容模型"
       - "2026-04-15: S4 完成（23 tasks, 55 server commits + 4 admin-web commits）"
+      - "2026-04-17: TasksList binding count tech debt 选方案 A（后端 ListTasks 响应加 fallback_count/allowed_count 聚合字段）；ServiceEdit 表单对齐延后到 legacy-llm-cleanup 一起重做"
     deferred:
       - "语义缓存（Phase 2）"
       - "Cost-aware 自动路由（Phase 2）"
