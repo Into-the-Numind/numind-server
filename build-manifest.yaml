@@ -407,7 +407,7 @@ features:
     stage: "S5-partial"
     classification_reason: "跨 6+ biz 模块的 infra 重构（ali/volc/baidu/salesrag/sop/monitor/chatbot），影响所有 AI 调用路径；新增 Service Registry + Task Profile 两张核心表及管理端 CRUD；架构决策密集；工时多天；涉及 Langfuse 观测和 billing 全链路；吸收线上功能 llm-model-switch 需做 schema/API inventory"
     last_updated_by: "ai-s5"
-    last_updated_at: "2026-04-17T15:35:00+08:00"
+    last_updated_at: "2026-04-17T16:11:00+08:00"
     repos:
       - numind-server
       - numind-admin-web
@@ -429,7 +429,7 @@ features:
       current_task: null
     tech_debt_added_in_s4:
       - "VectorDB billing (RecordCOS/RecordVectorDB) not unified — Phase 2"
-      - "volc.GenerateArticleContent has no billing call — pre-existing"
+      - "volc.GenerateArticleContent has no billing call — pre-existing（2026-04-17 诊断推翻 + 清理 ae992d6）：原描述错误。该函数仅被本地 CLI（cmd/main.go）调用，线上从无流量；另有 controller/v1/volc 是无路由注册的 dead code 且硬编码 API key。已删除 dead controller + 给 biz 加注释说明。ACTION：Volc API key 60dbceec-... 在 git history 可见，需运营轮换"
       - "modelKey 未接通 Gateway ModelOverride — Phase 2"
       - "ChatRequest 缺 ResponseFormat 字段 — Phase 2"
       - "ChatChunk 无 Err 字段，mid-stream errors via channel close — Phase 2"
@@ -441,8 +441,11 @@ features:
       - "admin-web ServiceEdit 表单字段与后端 ai_service 表不完全对齐（admin-web e7ab5a9 已修）— 方案 B 完整重建：types/api/ServicesList/ServiceEdit 全部对齐；routes CRUD 保留在 legacy /admin/llm 待 legacy-llm-cleanup"
       - "admin-web TaskEdit 保存时每次清空所有绑定（admin-web d292701 已修）— 原 save() 构造 {binding,override_reason} 被后端完全忽略；改为扁平 UpdateTaskRequest + force 走 query param"
       - "admin-web interceptor error.code 类型为 number 但后端 errno 已改为字符串（admin-web d292701 已修）— interceptor 类型改为 number | string，TaskEdit 按 AIService.CapabilityMismatch 匹配"
-      - "modelKey 已接通 ModelOverride（f5c4c92）— 从 tech debt 升级为已修复，待 dev 验证"
-      - "C 端 SOP 运行页 token/用时/模型信息显示可能缺失 — 需验证 executeViaGateway 返回的 usage 是否被前端正确读取"
+      - "modelKey 已接通 ModelOverride（f5c4c92 + 2026-04-17 验证 dev 容器 07:40 已部署）— 已修复并验证"
+      - "C 端 SOP 运行页 token/用时/模型信息显示（2026-04-17 验证 + 修 8e35a52）：前端渲染 OK；后端写入路径 OK；但发现 executeViaGateway 未把 chunk.Model 搬到 billing.TokenUsage.ModelName，导致 Gateway 上线后 sop_node_run.model_name 全空。已在 sop executor + chatbot stream 两处修复。注：chatbot 路径修复目前 inert（ChatbotMessage 无 model_name 列）—— 独立 debt 条目见下"
+      - "新 debt：model.ChatbotMessage 缺 model_name 列 —— chatbot 流里已捕获 gatewayUsage.ModelName 但无处写入。Phase 2 或 chatbot 相关功能触发时加列 + 迁移 + biz 写入"
+      - "新 debt：Gateway 路径 sop_node_run.total_tokens 有时为 0（2026-04-17 dev DB 抽查）—— 部分 stream 请求 IsFinal chunk 的 Usage 未被 provider adapter 填充。与 TokenUsage.ModelName 不同，这是 adapter 层 stream 解析问题，范围更深。Phase 2 排查"
+      - "admin-web Playwright E2E 基础设施缺失（2026-04-17 调查）—— 原 debt 第 9 条建议加 TaskBindingEditor E2E，但 admin-web 根本没有 Playwright（无 e2e/ 目录、无 playwright.config、package.json 无 @playwright/test）。需独立 infra task 搭建（~2-3h）再加测试（~1h），不属于本期 tech debt 清理范围"
     next_session_task: |
       legacy-llm-cleanup: 删除旧 llm-model-switch 兼容层。范围：
       1. DB: 删除 llm_model VIEW + llm_model_provider VIEW
