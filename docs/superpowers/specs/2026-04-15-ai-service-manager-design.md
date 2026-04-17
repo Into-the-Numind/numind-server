@@ -115,6 +115,10 @@ CREATE OR REPLACE VIEW llm_model AS
 -- ⚠ VIEW 仅只读使用。所有 INSERT/UPDATE/DELETE 走新 GORM model 直指 ai_service。
 ```
 
+> **继承列说明**：`ai_service` 表除上面 ADD 的列外，还继承原 `llm_model` 的所有列：
+> `id / model_key / display_name / is_thinking / base_model_id / supports_thinking / thinking_only / icon / sort_order / is_active / created_at / updated_at`。
+> 其中 `thinking_only` 是 2026-04-13 独立 migration（`20260413_000001_add_thinking_only_to_llm_model.sql`）加入的 `TINYINT(1) DEFAULT 0`，对应 Go struct `model.AIService.ThinkingOnly bool`。`llm_model` 兼容 VIEW 目前**未**包含 `thinking_only`，因为 legacy 路径不读该字段；若 legacy 代码未来需要读，VIEW 需补列。
+
 #### 2.1.3 `llm_model_provider` → 改名 `ai_service_route`
 
 ```sql
@@ -356,13 +360,14 @@ internal/pkg/aiservice/
 ```go
 package aiservice
 
-// 统一入口函数签名（pseudo-code；S4 精确实现）
-func Chat(ctx context.Context, taskID string, req ChatRequest) (ChatResponse, error)
+// 统一入口函数签名（与 internal/pkg/aiservice/ai.go 实际实现一致）
+// 非流式调用返回 pointer（允许 nil 表示空响应），流式调用返回 channel。
+func Chat(ctx context.Context, taskID string, req ChatRequest) (*ChatResponse, error)
 func ChatStream(ctx context.Context, taskID string, req ChatRequest) (<-chan ChatChunk, error)
-func Embed(ctx context.Context, taskID string, req EmbedRequest) (EmbedResponse, error)
-func Rerank(ctx context.Context, taskID string, req RerankRequest) (RerankResponse, error)
-func OCR(ctx context.Context, taskID string, req OCRRequest) (OCRResponse, error)
-func ASR(ctx context.Context, taskID string, req ASRRequest) (ASRResponse, error)
+func Embed(ctx context.Context, taskID string, req EmbedRequest) (*EmbedResponse, error)
+func Rerank(ctx context.Context, taskID string, req RerankRequest) (*RerankResponse, error)
+func OCR(ctx context.Context, taskID string, req OCRRequest) (*OCRResponse, error)
+func ASR(ctx context.Context, taskID string, req ASRRequest) (*ASRResponse, error)
 ```
 
 **Chat 合入 Vision**：`ChatRequest.Messages` 允许 content 为 multipart（文本 + 图片 url/base64），业务层不区分 chat/vision。Task Profile 的 requirements 决定是否允许多模态。
@@ -394,65 +399,70 @@ const (
 
 业务层 `ai.Chat(ctx, profile.SopText, req)` 获得 IDE 补全 + 拼写检查。
 
-### 3.4 Provider Adapter interface（按能力拆分，遵循 ISP）
+### 3.4 Provider interface（按能力拆分，遵循 ISP）
+
+> **命名说明（2026-04-17 spec 修订）**：S2 原 spec 用 `Adapter` / `ServiceSpec` 两个命名；S4 实施时在 `internal/pkg/aiservice/gateway.go` 统一为 **`Provider`** / **`*registry.ResolvedRoute`**。本节以实际代码为准。
 
 ```go
-package adapter
+package aiservice
 
-// 基础 interface：所有 adapter 都实现
-type Adapter interface {
-    Name() string                      // "ali" / "volc" / ...
+// 基础 interface：所有 provider 都实现
+type Provider interface {
+    Name() string                      // "ali" / "volc" / "baidu" / "dmxapi" / ...
     ProviderType() string              // "llm" / "ocr" / "asr"
     Capabilities() []string            // ["chat", "embed", "rerank"]
 }
 
-// 能力子接口：adapter 按实际能力选择性实现
-type ChatAdapter interface {
-    Adapter
-    Chat(ctx, spec ServiceSpec, req ChatRequest) (ChatResponse, error)
-    ChatStream(ctx, spec ServiceSpec, req ChatRequest) (<-chan ChatChunk, error)
+// 能力子接口：provider 按实际能力选择性实现
+type ChatProvider interface {
+    Provider
+    Chat(ctx context.Context, route *registry.ResolvedRoute, req ChatRequest) (*ChatResponse, error)
+    ChatStream(ctx context.Context, route *registry.ResolvedRoute, req ChatRequest) (<-chan ChatChunk, error)
 }
 
-type EmbedAdapter interface {
-    Adapter
-    Embed(ctx, spec ServiceSpec, req EmbedRequest) (EmbedResponse, error)
+type EmbedProvider interface {
+    Provider
+    Embed(ctx context.Context, route *registry.ResolvedRoute, req EmbedRequest) (*EmbedResponse, error)
 }
 
-type RerankAdapter interface {
-    Adapter
-    Rerank(ctx, spec ServiceSpec, req RerankRequest) (RerankResponse, error)
+type RerankProvider interface {
+    Provider
+    Rerank(ctx context.Context, route *registry.ResolvedRoute, req RerankRequest) (*RerankResponse, error)
 }
 
-type OCRAdapter interface {
-    Adapter
-    OCR(ctx, spec ServiceSpec, req OCRRequest) (OCRResponse, error)
+type OCRProvider interface {
+    Provider
+    OCR(ctx context.Context, route *registry.ResolvedRoute, req OCRRequest) (*OCRResponse, error)
 }
 
-type ASRAdapter interface {
-    Adapter
-    ASR(ctx, spec ServiceSpec, req ASRRequest) (ASRResponse, error)
+type ASRProvider interface {
+    Provider
+    ASR(ctx context.Context, route *registry.ResolvedRoute, req ASRRequest) (*ASRResponse, error)
 }
 
-// ServiceSpec = Registry 里读出的一条 ai_service + route（含 provider 凭据）
+// ResolvedRoute = Registry 把 task_profile + ai_service + ai_service_route
+// + llm_provider 合并后的 call-ready 描述（含 provider 凭据）。详见
+// internal/pkg/aiservice/registry/registry.go。
 ```
 
-Gateway 在路由到 adapter 时使用 **type assertion**：
+Gateway 在路由到 provider 时使用 **type assertion**：
 ```go
 // 伪代码
-func (g *Gateway) Chat(ctx, taskID, req) (..., error) {
-    spec := g.resolver.Resolve(taskID)
-    adp := g.registry.GetAdapter(spec.ProviderName)
-    chatAdp, ok := adp.(ChatAdapter)
+func (g *Gateway) Chat(ctx context.Context, taskID string, req ChatRequest) (*ChatResponse, error) {
+    route, _, err := g.registry.ResolveTask(ctx, taskID)
+    if err != nil { return nil, err }
+    p := g.providers[route.Provider.Name]
+    chat, ok := p.(ChatProvider)
     if !ok {
-        return nil, ErrCapabilityMismatch  // 不会发生，除非 DB 数据被手改
+        return nil, ErrAICapabilityMismatch  // 不会发生，除非 DB 数据被手改
     }
-    return chatAdp.Chat(ctx, spec, req)
+    return chat.Chat(ctx, route, req)
 }
 ```
 
-**好处**：baidu OCR adapter 不需要实现 Chat/Embed 的 stub；新增能力类型（如 TTS）只需定义新 interface，现有 adapter 不动。
+**好处**：baidu OCR provider 不需要实现 Chat/Embed 的 stub；新增能力类型（如 TTS）只需定义新 interface，现有 provider 不动。
 
-Adapter 不做 retry、不做 tracing、不做 billing（上层中间件负责），只做"把 Gateway 请求翻译成 provider API 调用并解析回 Gateway 响应"。
+Provider 不做 retry、不做 tracing、不做 billing（上层中间件负责），只做"把 Gateway 请求翻译成 provider API 调用并解析回 Gateway 响应"。
 
 ---
 
@@ -510,21 +520,49 @@ Adapter 不做 retry、不做 tracing、不做 billing（上层中间件负责�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/healthz/ai` | 无鉴权，返回各 provider 最近 1 分钟的错误率 + Registry 缓存命中率 |
+| GET | `/healthz/ai` | 无鉴权。**Phase 1 实际实现**：返回 `{status, gateway_ready, adapters_loaded, adapter_count}`，仅反映 Gateway 单例是否初始化 + 已注册 adapter 列表。**Phase 2 待加**：按 provider 的最近 1 分钟错误率、Registry 缓存命中率 —— 需要滚动窗口计数器，Task-8 后独立实现（见代码注释 `healthz.go`） |
+
+**Phase 1 响应示例**（字段名从实际 adapter `Name()` 取；按字母排序）：
+
+```json
+{
+  "status": "ok",
+  "gateway_ready": true,
+  "adapters_loaded": ["aihubmix","ali","baidu_ocr","bailian_file","dmxapi","dmxapi-ssvip","funasr","volc"],
+  "adapter_count": 8
+}
+```
+
+> `adapter_count = 8` 因 `numind.go` 注册了 6 个 base adapter + 2 个 alias（`aihubmix` 和 `dmxapi-ssvip` 都指向 `dmxapi`），`AdapterNames()` 遍历 providers map 包含 alias。Gateway 未初始化时返回 HTTP 503 + `status: "degraded"` + `message` 字段。
 
 ### 4.3 Response 格式
 
-统一走 `core.WriteResponse`（项目规范）。错误码使用 `errno.ErrXxx`，新增的错误码：
+统一走 `core.WriteResponse`（项目规范）。错误码采用项目惯用的**字符串 code**（`AIService.*` 命名空间），与 `Monitor.*`、`Credits.*` 等保持一致。
+
+实际实现（`internal/pkg/errno/ai.go`）：
 
 ```go
-// internal/pkg/errno/ai.go
-ErrAICapabilityMismatch = errno.New(41001, "服务能力不满足任务要求")
-ErrAIProfileNotFound    = errno.New(41002, "Task Profile 不存在")
-ErrAIServiceDeprecated  = errno.New(41003, "服务已下架")
-ErrAIProviderTimeout    = errno.New(41004, "AI 服务调用超时")
-ErrAIProviderError      = errno.New(41005, "AI 服务调用失败")
-ErrAIFallbackExhausted  = errno.New(41006, "所有 fallback 服务均不可用")
+var (
+  ErrAIServiceNotFound                = &Errno{HTTP: 404, Code: "AIService.ServiceNotFound",          Message: "AI 服务不存在"}
+  ErrAITaskNotFound                   = &Errno{HTTP: 404, Code: "AIService.TaskNotFound",             Message: "Task Profile 不存在"}
+  ErrAICapabilityMismatch             = &Errno{HTTP: 422, Code: "AIService.CapabilityMismatch",       Message: "AI 服务能力不匹配，任务需求无法满足"}
+  ErrAIFallbackExhausted              = &Errno{HTTP: 502, Code: "AIService.FallbackExhausted",        Message: "所有 AI 服务（含 fallback）均不可用"}
+  ErrAIServiceDeprecated              = &Errno{HTTP: 410, Code: "AIService.ServiceDeprecated",        Message: "AI 服务已下架"}
+  ErrAICapabilityOverrideRequiresReason = &Errno{HTTP: 400, Code: "AIService.OverrideRequiresReason", Message: "强制覆盖操作必须填写原因"}
+  ErrAIServiceUnbound                 = &Errno{HTTP: 424, Code: "AIService.Unbound",                  Message: "Task Profile 未绑定服务"}
+  ErrAIProviderTimeout                = &Errno{HTTP: 504, Code: "AIService.ProviderTimeout",          Message: "AI 服务调用超时"}
+  ErrAIProviderError                  = &Errno{HTTP: 502, Code: "AIService.ProviderError",            Message: "AI 服务调用失败"}
+  ErrAIRestoreRequiresReason          = &Errno{HTTP: 400, Code: "AIService.RestoreRequiresReason",    Message: "恢复操作必须填写原因"}
+)
 ```
+
+> **注 1**：原 S2 spec 把 code 写成数字 `41001`-`41006`，与项目字符串 code 惯例不一致。S4 实施时改为字符串 code，spec 2026-04-17 同步修订。
+>
+> **注 2（wire format 实测）**：`core.WriteResponse` 在 err != nil 分支**始终**写 `{"code": 1, "message": "...", "data": null}` —— 整数 `1` 作为错误哨兵，`Errno.Code` 字符串和附加 `data` 都被 **drop**。意思是前端收到的 `error.code` 是整数 `1`，**没有** `"AIService.CapabilityMismatch"` 字符串可匹配。这是项目级 wire format 限制，会导致：
+> - 前端只能用 `message` 文本粗略区分业务错误（脆弱）
+> - `incompatible_bindings` 等 error-side 详情无法到达前端（见下方 422 示例说明）
+>
+> 这是一个**已知运行时限制**，不是本功能的 bug；需要独立改 `core.WriteResponse` 让它在 err 时也透出 `Errno.Code` 和 error data（作为独立 tech debt 处理）。
 
 ### 4.4 关键端点 Response 示例
 
@@ -557,23 +595,32 @@ ErrAIFallbackExhausted  = errno.New(41006, "所有 fallback 服务均不可用")
 }
 ```
 
-**`PUT /v1/admin/ai/tasks/:id`（绑定不兼容时的错误响应）**
+**`PUT /v1/admin/ai/tasks/:id`（绑定不兼容时的错误响应，HTTP 422）**
+
+**实际 wire format（受 `core.WriteResponse` 限制）：**
 ```json
 {
-  "code": 41001,
-  "message": "服务能力不满足任务要求",
+  "code": 1,
+  "message": "AI 服务能力不匹配，任务需求无法满足",
+  "data": null
+}
+```
+
+**设计意图（当前无法实现 —— 依赖独立修 `core.WriteResponse`）：**
+```json
+{
+  "code": "AIService.CapabilityMismatch",
+  "message": "...",
   "data": {
-    "task_id": "sop.vision",
     "incompatible_bindings": [
-      {
-        "role": "default",
-        "service_id": 42, "service_name": "deepseek-v3",
-        "reasons": ["缺少输入模态: image", "缺少特性: vision"]
-      }
+      {"role": "default", "service_id": 42, "service_name": "deepseek-v3",
+       "reasons": ["缺少输入模态: image", "缺少特性: vision"]}
     ]
   }
 }
 ```
+
+> **影响**：`controller/v1/admin_ai/task_profile.go UpdateTask` 把 `IncompatibleBindings` 传给 `core.WriteResponse(c, err, gin.H{"incompatible_bindings": ...})`，但 `err != nil` 分支强制 `data: null`，这个详情在 wire 上丢失。管理端 TaskEdit 的"force override"确认对话框现在**无法通过响应详情触发**——仅能通过 HTTP 422 + message 文本粗略判断。记入独立 tech debt（见 manifest）。
 
 **`POST /v1/admin/ai/services/:id/validate-against/:task_id`**
 ```json
@@ -722,12 +769,13 @@ function Match(req, svc) -> (bool, reasons):
 }
 ```
 
-同一份 schema 同时驱动：管理端表单渲染、Capability Matching 校验、Gateway 运行前检查。**代码实现位置**：`aiservice/profile/capability_schema.go` 单一数据源。
+同一份 schema 同时驱动：管理端表单渲染、管理端 Capability Matching 保存时校验、C 端 ModelSelector 预过滤。**代码实现位置**：`aiservice/profile/capability_schema.go` 单一数据源。
 
-**调用时机**：
-- 管理端保存 Task Profile 时（PUT）
-- 管理端下拉选 service 时（前端预过滤）
-- Gateway 运行时（主 service 执行前再校验一次，防止 DB 数据被手动改出不一致状态）
+**Capability Matching 调用时机**：
+- 管理端保存 Task Profile 时（PUT，不兼容返回 HTTP 422）
+- 管理端 C 端 ModelSelector 列表的 `allowed_service_ids` 过滤（保存时已校验，此处仅做服务类型/下架过滤）
+
+**不在运行时重复调用**（§6.5 决策）：信任保存时校验结果，避免每次 Gateway 调用的冗余开销。如果 DBA 手工改 DB 导致 binding 不一致，运行时可能出错，由运营承担风险。
 
 ### 5.3 ModelSelector 集成
 
