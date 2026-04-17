@@ -29,6 +29,8 @@ type OpenAIConfig struct {
 }
 
 type VolcBiz interface {
+	// GenerateArticleContent 仅供本地 CLI 测试工具使用，无线上路由；
+	// 如需扩展为线上接口，应走 aiservice Gateway 路径（见实现注释）。
 	GenerateArticleContent(ctx context.Context, content string, contentType string, maxLength int, cfg *OpenAIConfig, prompt string) (string, error)
 	// 新增流式文本生成方法，与ali的QianwenTextStream保持一致
 	VolcTextStream(ctx context.Context, messages []map[string]string, maxTokens int, temperature float64) (string, *billing.TokenUsage, error)
@@ -63,8 +65,9 @@ func NewVolcBiz(ds store.IStore) VolcBiz {
 }
 
 // GenerateArticleContent 通用内容生成函数
-// NOTE(Task 15a): volc.model 已由 AI Gateway Registry + Task Profile 接管。
-// 此处仍从旧 config 读取作为兜底（非 Gateway 路径），预期逐步迁移后删除。
+// 仅供 cmd/main.go 本地 CLI 测试工具使用，无线上路由。因此无 billing 记账逻辑
+// 并非遗漏 —— 本地测试不应扣用户额度。如需扩展为线上接口，应走
+// aiservice Gateway 路径（会统一处理 billing + tracing + fallback）。
 func (v *volcBiz) GenerateArticleContent(ctx context.Context, content string, contentType string, maxLength int, cfg *OpenAIConfig, prompt string) (string, error) {
 	if cfg == nil {
 		cfg = &OpenAIConfig{
