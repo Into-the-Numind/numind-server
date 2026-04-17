@@ -407,7 +407,7 @@ features:
     stage: "S5-partial"
     classification_reason: "跨 6+ biz 模块的 infra 重构（ali/volc/baidu/salesrag/sop/monitor/chatbot），影响所有 AI 调用路径；新增 Service Registry + Task Profile 两张核心表及管理端 CRUD；架构决策密集；工时多天；涉及 Langfuse 观测和 billing 全链路；吸收线上功能 llm-model-switch 需做 schema/API inventory"
     last_updated_by: "ai-s5"
-    last_updated_at: "2026-04-17T13:04:00+08:00"
+    last_updated_at: "2026-04-17T13:47:00+08:00"
     repos:
       - numind-server
       - numind-admin-web
@@ -434,7 +434,7 @@ features:
       - "ChatRequest 缺 ResponseFormat 字段 — Phase 2"
       - "ChatChunk 无 Err 字段，mid-stream errors via channel close — Phase 2"
       - "ListServices in-memory pagination — Phase 2"
-      - "langfuse.base_url 内网 IP — prod config fix needed"
+      - "langfuse.base_url 内网 IP — prod config fix needed（2026-04-17 复查：诊断错误，110.42.221.25 是公网 IP，prod 服务器 curl http://110.42.221.25:3100/api/public/health 返回 HTTP 200；prod config 无需改。Prod 容器当前 up 3 weeks 尚未部署带 Langfuse 的新代码，待下次 prod 发版时自动启用）"
       - "llmrouter 包最终拆除 — Phase 2 评估"
       - "Playwright E2E for admin-web TaskBindingEditor — skipped in S4, add Phase 2"
       - "admin-web TasksList 允许服务数列硬编码 0（cd1b80e + f2715c8 已修）— 从 tech debt 升级为已修复，待 dev 验证"
