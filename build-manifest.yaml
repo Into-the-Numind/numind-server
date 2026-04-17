@@ -545,3 +545,48 @@ features:
     created_at: "2026-04-16T00:00:00+08:00"
     completed_at: null
 
+  - id: "legacy-llm-cleanup"
+    ndf_version: "1.0"
+    description: "删除旧 llm-model-switch 兼容层 — 管理端 LLM 页面 / 后端 12 个 /v1/admin/llm/* 端点 + llmrouter 残留 / C 端 ModelSelector 适配 / DROP llm_model + llm_model_provider 2 个 VIEW。吸收自 ai-service-manager next_session_task"
+    track: "standard"
+    stage: "S4"
+    classification_reason: "5/5 Triage 标准不满足 Hotfix：跨 3 repo（server + admin-web + web-v3）；DROP 2 VIEW schema 破坏性变更；12 个 admin 端点移除 + /v1/llm/models 公开 API 语义迁移；C 端 ModelSelector 用户可见；工时 4-5h"
+    last_updated_by: "ai-s4"
+    last_updated_at: "2026-04-17T17:30:00+08:00"
+    repos:
+      - numind-server
+      - numind-admin-web
+      - numind-web-v3
+    branches:
+      numind-admin-web: "fix/remove-admin-llm-pages (merged 461e5ee)"
+    artifacts:
+      requirement: null
+      proposal: null
+      spec: null
+      plan: null
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 6
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: "T2: Remove server /v1/admin/llm/* 12 endpoints"
+    rollback: "逐 task git revert；T5 DB migration 备 rollback SQL（CREATE VIEW 原定义）"
+    last_verified: null
+    task_breakdown:
+      - "T1 (admin-web, 461e5ee, 已完成): 删除 LLMProvidersView + LLMModelsView + 两条路由 + 两个 sidebar 项 + src/api/llm.ts + 未用 Lucide 图标"
+      - "T2 (server, 进行中): 删 controller/v1/admin_llm/ + biz/llmrouter/admin.go + admin_router.go 12 路由注册"
+      - "T3 (server, 待做): /v1/llm/models 改读 ai_service + task_profile_service.allowed；保持 response shape 向后兼容 v3"
+      - "T4 (web-v3, 待做，条件依赖 T3): 若 /v1/llm/models response 变，改 ModelSelector；否则跳过"
+      - "T5 (server migration, 最后做): DROP llm_model + llm_model_provider VIEW + rollback SQL"
+      - "T6 (server, 最后做): 清理 biz/llmrouter 残留（保留 preference.go/types.go 供 /v1/llm/preference 用）"
+    decisions:
+      - "2026-04-17 Triage: Standard。范围吸收自 ai-service-manager 既定决策 + 定型为 mechanical deletion，走精简 Standard：跳过 S0/S1 brainstorming，S2 就是 6 task 拆分，S3 就是 task list，直接进 S4 逐 task 执行"
+      - "2026-04-17 工时修订: ai-service-manager 原估 2-3 天偏悲观。Part A/B 已理顺前后端模型后，本功能实际 4-5h"
+      - "2026-04-17 顺序: admin-web 先（T1）→ server 后（T2-T3）→ v3 条件依赖（T4）→ DB migration 最后（T5 代码无人读 VIEW 才能 DROP）→ llmrouter 残留清理（T6）"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-17T17:30:00+08:00"
+    completed_at: null
+
