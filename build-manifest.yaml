@@ -407,7 +407,7 @@ features:
     stage: "S5-partial"
     classification_reason: "跨 6+ biz 模块的 infra 重构（ali/volc/baidu/salesrag/sop/monitor/chatbot），影响所有 AI 调用路径；新增 Service Registry + Task Profile 两张核心表及管理端 CRUD；架构决策密集；工时多天；涉及 Langfuse 观测和 billing 全链路；吸收线上功能 llm-model-switch 需做 schema/API inventory"
     last_updated_by: "ai-s5"
-    last_updated_at: "2026-04-17T13:47:00+08:00"
+    last_updated_at: "2026-04-17T15:26:00+08:00"
     repos:
       - numind-server
       - numind-admin-web
@@ -467,7 +467,7 @@ features:
       admin_services: "pass (10 services listed, OCR+ASR included)"
       admin_tasks: "pass (14 task profiles with correct requirements)"
       admin_schema: "pass (llm/ocr/asr schemas returned)"
-      s5_remaining: "Paths 1-9,12-15 require Task Profile default_service binding (admin UI operation) — partial S5, user will complete binding + full path validation"
+      s5_remaining: "Task Profile default_service binding 已全部完成 (14/14 on 2026-04-17 dev DB 查询结果)。Fallback 绑定全 0（产品决策待定）；Allowed 仅 chatbot.stream + sop.text 各 4 个（符合'C 端选择 UI 本期不动'决策）。剩余：完整业务路径端到端验证"
     decisions:
       - "2026-04-15: Phase 1 不做语义缓存和 cost-aware 自动路由，留到 Phase 2 基于观测数据再做"
       - "2026-04-15: Service Registry 存 DB（非 config），支持管理端零发版上下架"
