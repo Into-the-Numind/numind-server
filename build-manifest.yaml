@@ -407,7 +407,7 @@ features:
     stage: "S5-partial"
     classification_reason: "跨 6+ biz 模块的 infra 重构（ali/volc/baidu/salesrag/sop/monitor/chatbot），影响所有 AI 调用路径；新增 Service Registry + Task Profile 两张核心表及管理端 CRUD；架构决策密集；工时多天；涉及 Langfuse 观测和 billing 全链路；吸收线上功能 llm-model-switch 需做 schema/API inventory"
     last_updated_by: "ai-s5"
-    last_updated_at: "2026-04-17T15:26:00+08:00"
+    last_updated_at: "2026-04-17T15:35:00+08:00"
     repos:
       - numind-server
       - numind-admin-web
@@ -478,6 +478,7 @@ features:
       - "2026-04-15: S4 完成（23 tasks, 55 server commits + 4 admin-web commits）"
       - "2026-04-17: TasksList binding count tech debt 选方案 A（后端 ListTasks 响应加 fallback_count/allowed_count 聚合字段）；ServiceEdit 表单对齐延后到 legacy-llm-cleanup 一起重做"
       - "2026-04-17: 反悔延后决定，改走方案 B 完整对齐 admin-web ↔ backend：重建 AIService/TaskProfile types，重建 ServiceEdit 表单（capability_json 动态 schema 渲染），修复 TaskEdit save 静默清空绑定的数据丢失 bug，对齐 errno 字符串 code。Routes CRUD 仍保留在 legacy /admin/llm 待 legacy-llm-cleanup"
+      - "2026-04-17: CapabilitySchema wire format 统一 snake_case — 后端加 json tag（server 2430dae），前端消费改回 snake_case（admin-web 792dc91），加 marshal 回归测试防止 tag 意外变更"
     deferred:
       - "语义缓存（Phase 2）"
       - "Cost-aware 自动路由（Phase 2）"
