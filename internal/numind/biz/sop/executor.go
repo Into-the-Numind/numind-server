@@ -473,7 +473,11 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 	// 5. 消费 channel，将 ChatChunk 转换为 StreamHandler 回调
 	var fullContent strings.Builder
 	var finalUsage *TokenUsage
+	var modelName string
 	for chunk := range ch {
+		if chunk.Model != "" {
+			modelName = chunk.Model
+		}
 		if chunk.ReasoningDelta != "" {
 			if handlerErr := handler("thinking", chunk.ReasoningDelta); handlerErr != nil {
 				log.C(ctx).Warnw("executeViaGateway: stream handler error on thinking chunk",
@@ -493,6 +497,7 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 				CompletionTokens: chunk.Usage.CompletionTokens,
 				TotalTokens:      chunk.Usage.TotalTokens,
 				ReasoningTokens:  chunk.Usage.ReasoningTokens,
+				ModelName:        modelName,
 			}
 		}
 	}

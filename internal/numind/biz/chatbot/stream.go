@@ -182,7 +182,11 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 	}
 
 	var gatewayUsage *billing.TokenUsage
+	var modelName string
 	for chunk := range ch {
+		if chunk.Model != "" {
+			modelName = chunk.Model
+		}
 		if chunk.ReasoningDelta != "" {
 			thinkingContent.WriteString(chunk.ReasoningDelta)
 			if handlerErr := handler("thinking", map[string]string{"content": chunk.ReasoningDelta}); handlerErr != nil {
@@ -201,6 +205,10 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 				CompletionTokens: chunk.Usage.CompletionTokens,
 				TotalTokens:      chunk.Usage.TotalTokens,
 				ReasoningTokens:  chunk.Usage.ReasoningTokens,
+				// ModelName captured but currently inert: model.ChatbotMessage
+				// has no model_name column. Forward-compatible once that schema
+				// lands. Tracked as tech debt in manifest.
+				ModelName: modelName,
 			}
 		}
 	}
