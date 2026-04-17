@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"errors"
+
 	"numind-server/internal/numind/biz/llmrouter"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
@@ -19,11 +21,17 @@ func NewLLMController(router *llmrouter.Router) *LLMController {
 	return &LLMController{router: router}
 }
 
-// ListModels 获取可用的 LLM 模型列表
-// GET /v1/llm/models
+// ListModels 获取某 feature（chatbot / sop）下的可选 LLM 模型列表
+// GET /v1/llm/models?feature=chatbot
+// feature 缺省时按 "chatbot" 处理（向后兼容 v3 旧调用）
 func (ctrl *LLMController) ListModels(c *gin.Context) {
-	models, defaultKey, err := ctrl.router.GetModels(c.Request.Context())
+	feature := c.Query("feature")
+	models, defaultKey, err := ctrl.router.GetModels(c.Request.Context(), feature)
 	if err != nil {
+		if errors.Is(err, llmrouter.ErrInvalidFeature) {
+			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("%s", err.Error()), nil)
+			return
+		}
 		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("%s", err.Error()), nil)
 		return
 	}

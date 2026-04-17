@@ -2,6 +2,7 @@ package llmrouter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"numind-server/internal/pkg/model"
@@ -9,11 +10,27 @@ import (
 	"gorm.io/gorm"
 )
 
-// validFeatures 是允许的功能键集合
-var validFeatures = map[string]struct{}{
-	"chatbot": {},
-	"sop":     {},
+// featureToTaskID maps C-side feature keys to Task Profile IDs.
+// Source of truth: manifest decisions — ai-service-manager inherits
+// `user_selectable=true` only for chatbot.stream + sop.text (see §5.3 of
+// the ai-service-manager design spec).
+var featureToTaskID = map[string]string{
+	"chatbot": "chatbot.stream",
+	"sop":     "sop.text",
 }
+
+// validFeatures is derived from featureToTaskID so the two stay in sync.
+var validFeatures = func() map[string]struct{} {
+	m := make(map[string]struct{}, len(featureToTaskID))
+	for k := range featureToTaskID {
+		m[k] = struct{}{}
+	}
+	return m
+}()
+
+// ErrInvalidFeature indicates the caller supplied a feature string that is not
+// in the allowed set (chatbot / sop). Controllers should map this to HTTP 400.
+var ErrInvalidFeature = errors.New("invalid feature: must be one of chatbot, sop")
 
 // PreferenceResult 用户模型偏好查询结果
 type PreferenceResult struct {
@@ -21,16 +38,66 @@ type PreferenceResult struct {
 	Thinking bool   `json:"thinking"`
 }
 
-// GetModels 返回所有激活的基础模型列表（is_thinking=false, is_active=true），按 sort_order 排序。
-// 同时返回默认模型 key（列表中第一个模型的 model_key）。
-func (r *Router) GetModels(ctx context.Context) ([]model.LLMModel, string, error) {
-	models, err := r.ds.LLMModel().ListActiveBase(ctx)
-	if err != nil {
-		return nil, "", fmt.Errorf("llmrouter.GetModels: %w", err)
+// GetModels 返回该 feature 对应的 Task Profile 的 allowed services（过滤 active
+// 且未 deprecated），按 sort_order 排序。默认模型取 Task Profile 的
+// default_service（若它不在 allowed 列表则降级为 list[0]）。
+//
+// feature 为空时兼容老调用方，按 "chatbot" 处理。
+func (r *Router) GetModels(ctx context.Context, feature string) ([]model.LLMModel, string, error) {
+	if feature == "" {
+		feature = "chatbot"
+	}
+	taskID, ok := featureToTaskID[feature]
+	if !ok {
+		return nil, "", fmt.Errorf("llmrouter.GetModels: %w (got %q)", ErrInvalidFeature, feature)
 	}
 
+	// 1. 查 Task Profile（拿 id + default_service_id）
+	var tp model.TaskProfile
+	if err := r.ds.DB().WithContext(ctx).
+		Where("task_id = ?", taskID).
+		First(&tp).Error; err != nil {
+		return nil, "", fmt.Errorf("llmrouter.GetModels: task profile %q not found: %w", taskID, err)
+	}
+
+	// 2. 查该 task 的 allowed services（JOIN ai_service 过滤 active + 未 deprecated）
+	var services []model.AIService
+	if err := r.ds.DB().WithContext(ctx).
+		Table("ai_service AS s").
+		Joins("JOIN task_profile_service tps ON tps.service_id = s.id").
+		Where("tps.task_profile_id = ? AND tps.role = ? AND s.is_active = ? AND s.deprecated_at IS NULL",
+			tp.ID, model.TaskProfileRoleAllowed, true).
+		Order("s.sort_order ASC, s.id ASC").
+		Select("s.*").
+		Scan(&services).Error; err != nil {
+		return nil, "", fmt.Errorf("llmrouter.GetModels: list allowed services for task %q: %w", taskID, err)
+	}
+
+	// 3. 映射 ai_service → LLMModel（保持 response shape 向后兼容 v3 ModelSelector）
+	models := make([]model.LLMModel, 0, len(services))
 	defaultKey := ""
-	if len(models) > 0 {
+	for _, s := range services {
+		models = append(models, model.LLMModel{
+			ID:               s.ID,
+			ModelKey:         s.ModelKey,
+			DisplayName:      s.DisplayName,
+			IsThinking:       s.IsThinking,
+			BaseModelID:      s.BaseModelID,
+			SupportsThinking: s.SupportsThinking,
+			ThinkingOnly:     s.ThinkingOnly,
+			Icon:             s.Icon,
+			SortOrder:        s.SortOrder,
+			IsActive:         s.IsActive,
+			CreatedAt:        s.CreatedAt,
+			UpdatedAt:        s.UpdatedAt,
+		})
+		if tp.DefaultServiceID != nil && s.ID == *tp.DefaultServiceID {
+			defaultKey = s.ModelKey
+		}
+	}
+
+	// 4. 若 default_service 不在 allowed 列表（管理员配置缺失），降级到 list[0]
+	if defaultKey == "" && len(models) > 0 {
 		defaultKey = models[0].ModelKey
 	}
 
