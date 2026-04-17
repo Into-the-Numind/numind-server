@@ -549,44 +549,59 @@ features:
     ndf_version: "1.0"
     description: "删除旧 llm-model-switch 兼容层 — 管理端 LLM 页面 / 后端 12 个 /v1/admin/llm/* 端点 + llmrouter 残留 / C 端 ModelSelector 适配 / DROP llm_model + llm_model_provider 2 个 VIEW。吸收自 ai-service-manager next_session_task"
     track: "standard"
-    stage: "S4"
-    classification_reason: "5/5 Triage 标准不满足 Hotfix：跨 3 repo（server + admin-web + web-v3）；DROP 2 VIEW schema 破坏性变更；12 个 admin 端点移除 + /v1/llm/models 公开 API 语义迁移；C 端 ModelSelector 用户可见；工时 4-5h"
-    last_updated_by: "ai-s4"
-    last_updated_at: "2026-04-17T17:30:00+08:00"
+    stage: "S7-dev-done"
+    classification_reason: "5/5 Triage 标准不满足 Hotfix：跨 3 repo（server + admin-web + web-v3）；DROP 2 VIEW schema 破坏性变更；12 个 admin 端点移除 + /v1/llm/models 公开 API 语义迁移；C 端 ModelSelector 用户可见；实际工时 4.5h（vs 原估 2-3 天）"
+    last_updated_by: "ai-s7"
+    last_updated_at: "2026-04-17T22:38:00+08:00"
     repos:
       - numind-server
       - numind-admin-web
       - numind-web-v3
     branches:
-      numind-admin-web: "fix/remove-admin-llm-pages (merged 461e5ee)"
+      numind-admin-web: "fix/remove-admin-llm-pages → develop 461e5ee"
+      numind-server: "fix/remove-admin-llm-endpoints → develop f67e066；fix/llm-models-use-ai-service → develop 3dd04a8；fix/llmrouter-cleanup → develop 315b1a0；fix/drop-llm-compat-views → develop 8df0408"
+      numind-web-v3: "fix/model-selector-feature-param → develop 7cd83c5"
     artifacts:
       requirement: null
       proposal: null
       spec: null
-      plan: null
+      plan: "inline 6-task breakdown in this manifest entry"
       review_spec_compliance: null
-      review_code_quality: null
+      review_code_quality: "all 6 tasks reviewed by Sonnet subagent, all P0/P1 fixed, P2 applied in-context where cheap"
       qa: null
     progress:
       total_tasks: 6
-      completed_tasks: 1
-      reviewed_tasks: 1
-      current_task: "T2: Remove server /v1/admin/llm/* 12 endpoints"
-    rollback: "逐 task git revert；T5 DB migration 备 rollback SQL（CREATE VIEW 原定义）"
-    last_verified: null
+      completed_tasks: 6
+      reviewed_tasks: 6
+      current_task: null
+    rollback: "逐 task git revert per repo (T6→T2 顺序)；T5 备了 rollback SQL（CREATE VIEW × 2 with original DDL）。Rollback 操作文档在 migration 文件头部注释"
+    last_verified:
+      at: "2026-04-17T22:30:00+08:00"
+      env: "dev"
+      smoke:
+        - "/healthz/ai = 200, adapter_count=8, adapters_loaded 正确"
+        - "/v1/llm/models?feature=chatbot = 4 allowed services, default_model_key=deepseek-v3.2 (匹配 task profile)"
+        - "dev mysql DROP VIEW 已执行，SHOW FULL TABLES WHERE Table_type='VIEW' 返回空"
+      prod_status: "prod 容器 up 3+ weeks 未部署；DROP VIEW migration 禁止在 prod 发版前执行（forward SQL 文件头部已警告）"
     task_breakdown:
-      - "T1 (admin-web, 461e5ee, 已完成): 删除 LLMProvidersView + LLMModelsView + 两条路由 + 两个 sidebar 项 + src/api/llm.ts + 未用 Lucide 图标"
-      - "T2 (server, 进行中): 删 controller/v1/admin_llm/ + biz/llmrouter/admin.go + admin_router.go 12 路由注册"
-      - "T3 (server, 待做): /v1/llm/models 改读 ai_service + task_profile_service.allowed；保持 response shape 向后兼容 v3"
-      - "T4 (web-v3, 待做，条件依赖 T3): 若 /v1/llm/models response 变，改 ModelSelector；否则跳过"
-      - "T5 (server migration, 最后做): DROP llm_model + llm_model_provider VIEW + rollback SQL"
-      - "T6 (server, 最后做): 清理 biz/llmrouter 残留（保留 preference.go/types.go 供 /v1/llm/preference 用）"
+      - "T1 (admin-web, 461e5ee): 删除 LLMProvidersView + LLMModelsView + 两条路由 + 两个 sidebar 项 + src/api/llm.ts"
+      - "T2 (server, f67e066): 删 controller/v1/admin_llm/ + biz/llmrouter/admin.go + 12 路由注册，-621 行"
+      - "T3 (server, 3dd04a8): /v1/llm/models 改读 ai_service + task_profile_service.allowed；按 feature 过滤；default 取 task profile default_service"
+      - "T4 (web-v3, 7cd83c5): api/llm.ts + store/llmModel.ts + ModelSelector + ChatbotChat 全部按 feature 调用"
+      - "T6 (server, 315b1a0): 删 Router.Resolve/StreamChat/cache/types/aihubmix_test；preference.go 三方法改读 ai_service（resolveFeatureDefault + isAllowedForFeature helpers）；NewChatbotBiz/NewSopExecutor 移除 unused llmrouter 参数。-352 行"
+      - "T5 (server migration, 8df0408): DROP VIEW llm_model + llm_model_provider 的 forward + rollback SQL，dev 已执行"
     decisions:
       - "2026-04-17 Triage: Standard。范围吸收自 ai-service-manager 既定决策 + 定型为 mechanical deletion，走精简 Standard：跳过 S0/S1 brainstorming，S2 就是 6 task 拆分，S3 就是 task list，直接进 S4 逐 task 执行"
-      - "2026-04-17 工时修订: ai-service-manager 原估 2-3 天偏悲观。Part A/B 已理顺前后端模型后，本功能实际 4-5h"
-      - "2026-04-17 顺序: admin-web 先（T1）→ server 后（T2-T3）→ v3 条件依赖（T4）→ DB migration 最后（T5 代码无人读 VIEW 才能 DROP）→ llmrouter 残留清理（T6）"
-    deferred: []
+      - "2026-04-17 工时修订: ai-service-manager 原估 2-3 天偏悲观。Part A/B 已理顺前后端模型后，实际 4.5h"
+      - "2026-04-17 顺序调整: 原计划 T5 最后，实际跑成 T1→T2→T3→T4→T6→T5。理由：T5 DROP VIEW 前必须 T6 把 preference.go 彻底迁离 VIEW，所以 T6 作为 T5 pre-requisite 排到 T5 之前"
+      - "2026-04-17 /v1/llm/models deploy window: 后端 feature 参数缺失时默认 chatbot，保证 server-before-v3 部署顺序安全"
+    deferred:
+      - "dmxapi_client.go 里 WithLLMRouterMark + isFromLLMRouter + 8 处 ctx guard 是 T6 连带死代码（之前只被 Router.StreamChat 用）。全部永远 false，benign 但值得独立清理 commit"
     blockers: []
+    prod_checklist:
+      - "prod 发版 tag 必须包含 server 的 T2/T3/T6 + admin-web T1 + web-v3 T4 五个 commit"
+      - "发版部署完成 + 业务冒烟验证通过后，再手动跑 migration 20260417_180000_drop_llm_compat_views.sql"
+      - "如需回滚：rollback SQL 在同 migration 目录；同时 revert 5 个 commit（顺序见 rollback SQL 注释）"
     created_at: "2026-04-17T17:30:00+08:00"
-    completed_at: null
+    completed_at: "2026-04-17T22:38:00+08:00"
 
