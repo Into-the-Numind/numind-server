@@ -4,6 +4,7 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -207,6 +208,45 @@ func TestAliAdapter_ChatStream(t *testing.T) {
 		t.Error("final chunk usage is nil; want non-nil")
 	} else if usage.PromptTokens != 4 {
 		t.Errorf("usage.PromptTokens = %d; want 4", usage.PromptTokens)
+	}
+}
+
+// TestAliAdapter_Chat_ResponseFormat_JSON verifies the ResponseFormat field
+// is translated to OpenAI-compatible {"type":"json_object"} on the wire and
+// omitted entirely when the caller doesn't set it.
+func TestAliAdapter_Chat_ResponseFormat_JSON(t *testing.T) {
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		writeChatJSON(w, `{"k":"v"}`, "qwen-turbo", 1, 1)
+	}))
+	defer srv.Close()
+
+	a := NewAliAdapter()
+	route := mockRoute(srv.URL, "test-key", "qwen-turbo")
+
+	// With json_object → body must contain "response_format":{"type":"json_object"}.
+	_, err := a.Chat(context.Background(), route, aiservice.ChatRequest{
+		Messages:       sampleMessages(),
+		ResponseFormat: aiservice.ResponseFormatJSONObject,
+	})
+	if err != nil {
+		t.Fatalf("Chat (json_object): %v", err)
+	}
+	if !bytes.Contains(gotBody, []byte(`"response_format":{"type":"json_object"}`)) {
+		t.Errorf("json_object body missing response_format; got: %s", gotBody)
+	}
+
+	// Without ResponseFormat → field must be omitted (not "text", not empty object).
+	gotBody = nil
+	_, err = a.Chat(context.Background(), route, aiservice.ChatRequest{
+		Messages: sampleMessages(),
+	})
+	if err != nil {
+		t.Fatalf("Chat (default): %v", err)
+	}
+	if bytes.Contains(gotBody, []byte(`"response_format"`)) {
+		t.Errorf("default body should omit response_format; got: %s", gotBody)
 	}
 }
 

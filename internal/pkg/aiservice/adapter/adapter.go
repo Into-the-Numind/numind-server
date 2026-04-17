@@ -143,11 +143,41 @@ type oaiChatRequest struct {
 	Stream      bool         `json:"stream"`
 	// StreamOptions is only sent when Stream==true (include_usage for final chunk).
 	StreamOptions *oaiStreamOptions `json:"stream_options,omitempty"`
+	// ResponseFormat is emitted only when the caller requested a structured
+	// output. Omitted (via omitempty) when the pointer is nil so providers that
+	// don't know this field just ignore it.
+	ResponseFormat *oaiResponseFormat `json:"response_format,omitempty"`
 }
 
 // oaiStreamOptions instructs the provider to include usage in the final chunk.
 type oaiStreamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
+}
+
+// oaiResponseFormat is the OpenAI-compatible response_format wire shape.
+// Currently supports {"type":"json_object"} (and implicit default "text").
+type oaiResponseFormat struct {
+	Type string `json:"type"`
+}
+
+// translateResponseFormat maps an aiservice.ResponseFormatType to the
+// OpenAI-compatible wire body. Returns nil for empty / "text" so the field
+// is omitted entirely (unknown field is safer than an explicit "text" value
+// for providers that only whitelist "json_object").
+//
+// Guard against regression: adding `case aiservice.ResponseFormatText:
+// return &oaiResponseFormat{Type: "text"}` would re-introduce the "send text
+// to strict providers" 400-error class. Keep the default branch swallowing it.
+func translateResponseFormat(rf aiservice.ResponseFormatType) *oaiResponseFormat {
+	switch rf {
+	case aiservice.ResponseFormatJSONObject:
+		return &oaiResponseFormat{Type: "json_object"}
+	case aiservice.ResponseFormatText, "":
+		return nil
+	default:
+		// Unknown type — safer to omit than to send to the provider.
+		return nil
+	}
 }
 
 // oaiChatResponse is the OpenAI-compatible non-streaming response body.

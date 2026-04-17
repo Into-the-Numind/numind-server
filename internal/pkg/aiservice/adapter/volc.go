@@ -49,11 +49,12 @@ func (v *VolcAdapter) Capabilities() []string { return []string{"chat", "embed"}
 // OpenAI-compatible endpoint.
 func (v *VolcAdapter) Chat(ctx context.Context, route *registry.ResolvedRoute, req aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
 	body, err := json.Marshal(oaiChatRequest{
-		Model:       route.ProviderModelID,
-		Messages:    buildOAIMessages(req.Messages),
-		MaxTokens:   req.MaxTokens,
-		Temperature: req.Temperature,
-		Stream:      false,
+		Model:          route.ProviderModelID,
+		Messages:       buildOAIMessages(req.Messages),
+		MaxTokens:      req.MaxTokens,
+		Temperature:    req.Temperature,
+		Stream:         false,
+		ResponseFormat: translateResponseFormat(req.ResponseFormat),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("volc.Chat: marshal: %w", err)
@@ -106,6 +107,7 @@ func (v *VolcAdapter) ChatStream(ctx context.Context, route *registry.ResolvedRo
 		StreamOptions: &oaiStreamOptions{
 			IncludeUsage: true,
 		},
+		ResponseFormat: translateResponseFormat(req.ResponseFormat),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("volc.ChatStream: marshal: %w", err)

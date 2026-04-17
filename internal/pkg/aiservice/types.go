@@ -101,6 +101,24 @@ type TokenUsage struct {
 	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
+// ResponseFormatType enumerates the structured-output modes the Gateway
+// knows how to translate for OpenAI-compatible providers.
+type ResponseFormatType string
+
+const (
+	// ResponseFormatText is the provider default (free-form text). Leave empty
+	// or set to this explicitly.
+	ResponseFormatText ResponseFormatType = "text"
+	// ResponseFormatJSONObject asks the provider to guarantee the response is a
+	// valid JSON object. Maps to OpenAI's {"type":"json_object"} response_format.
+	// Supported by: Ali DashScope (compatible-mode), Volc Ark, DMXAPI-proxied
+	// DeepSeek / Qwen. Gemini uses responseMimeType="application/json" natively
+	// but when called via DMXAPI OpenAI-compatible endpoint this hint is still
+	// honoured. Callers should still include an explicit "return JSON" instruction
+	// in the prompt for best results.
+	ResponseFormatJSONObject ResponseFormatType = "json_object"
+)
+
 // ChatRequest is the unified request type for Chat and Vision calls.
 // Vision is handled transparently: include image parts in MessageContent.Parts.
 type ChatRequest struct {
@@ -115,6 +133,11 @@ type ChatRequest struct {
 	// ModelOverride allows the caller to request a specific model key.
 	// If empty, the Task Profile's default service is used.
 	ModelOverride string `json:"model_override,omitempty"`
+	// ResponseFormat asks the provider for a specific output shape.
+	// Empty = provider default (free text). See ResponseFormatType constants.
+	// The json tag is for trace/log serialisation only; ChatRequest is an
+	// internal type, never bound from HTTP.
+	ResponseFormat ResponseFormatType `json:"response_format,omitempty"`
 }
 
 // ChatResponse is the unified response type for non-streaming Chat calls.

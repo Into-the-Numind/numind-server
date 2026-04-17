@@ -78,11 +78,12 @@ func (a *AliAdapter) Capabilities() []string { return []string{"chat", "embed"} 
 // OpenAI-compatible endpoint.
 func (a *AliAdapter) Chat(ctx context.Context, route *registry.ResolvedRoute, req aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
 	body, err := json.Marshal(oaiChatRequest{
-		Model:       route.ProviderModelID,
-		Messages:    buildOAIMessages(req.Messages),
-		MaxTokens:   req.MaxTokens,
-		Temperature: req.Temperature,
-		Stream:      false,
+		Model:          route.ProviderModelID,
+		Messages:       buildOAIMessages(req.Messages),
+		MaxTokens:      req.MaxTokens,
+		Temperature:    req.Temperature,
+		Stream:         false,
+		ResponseFormat: translateResponseFormat(req.ResponseFormat),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("ali.Chat: marshal: %w", err)
@@ -136,6 +137,7 @@ func (a *AliAdapter) ChatStream(ctx context.Context, route *registry.ResolvedRou
 		StreamOptions: &oaiStreamOptions{
 			IncludeUsage: true,
 		},
+		ResponseFormat: translateResponseFormat(req.ResponseFormat),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("ali.ChatStream: marshal: %w", err)

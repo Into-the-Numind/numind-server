@@ -69,11 +69,12 @@ func (d *DMXAPIAdapter) Capabilities() []string { return []string{"chat", "embed
 // Chat performs a non-streaming chat completion against the DMXAPI OpenAI-compatible endpoint.
 func (d *DMXAPIAdapter) Chat(ctx context.Context, route *registry.ResolvedRoute, req aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
 	body, err := json.Marshal(oaiChatRequest{
-		Model:       route.ProviderModelID,
-		Messages:    buildOAIMessages(req.Messages),
-		MaxTokens:   req.MaxTokens,
-		Temperature: req.Temperature,
-		Stream:      false,
+		Model:          route.ProviderModelID,
+		Messages:       buildOAIMessages(req.Messages),
+		MaxTokens:      req.MaxTokens,
+		Temperature:    req.Temperature,
+		Stream:         false,
+		ResponseFormat: translateResponseFormat(req.ResponseFormat),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dmxapi.Chat: marshal: %w", err)
@@ -126,6 +127,7 @@ func (d *DMXAPIAdapter) ChatStream(ctx context.Context, route *registry.Resolved
 		StreamOptions: &oaiStreamOptions{
 			IncludeUsage: true,
 		},
+		ResponseFormat: translateResponseFormat(req.ResponseFormat),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dmxapi.ChatStream: marshal: %w", err)
