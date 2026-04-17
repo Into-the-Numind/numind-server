@@ -79,8 +79,8 @@ func NewBiz(ds store.IStore) *biz {
 	// 创建 ConfigReader，用于从 Redis → MySQL → Viper 读取配置
 	_ = config.NewConfigReader(b.Configs())
 
-	// 初始化SOP服务（注入 LLMRouter 以支持用户选择模型）
-	sopExecutor := sopbiz.NewSopExecutor(b.ds, b.llmRouterSvc)
+	// 初始化SOP服务。LLM 调用统一走 aiservice Gateway，不再需要 LLMRouter 参数。
+	sopExecutor := sopbiz.NewSopExecutor(b.ds)
 	b.sopService = sopbiz.NewSopBiz(b.ds, sopExecutor, b.credit)
 
 	// 初始化销售 RAG 服务
@@ -177,8 +177,9 @@ func NewBiz(ds store.IStore) *biz {
 	// 初始化知识库服务
 	b.kbService = kbbiz.NewKnowledgeBaseBiz(ds, b.salesRAGService)
 
-	// 初始化智能体服务（注入 LLMRouter + VectorStore + Embedder 用于 ChatStream）
-	b.chatbotService = chatbotbiz.NewChatbotBiz(ds, b.llmRouterSvc, vStore, embedder)
+	// 初始化智能体服务。LLM 调用统一走 aiservice Gateway（Task 9 起），
+	// LLMRouter 参数已移除；此处仅需 VectorStore + Embedder。
+	b.chatbotService = chatbotbiz.NewChatbotBiz(ds, vStore, embedder)
 
 	// 初始化博主监控服务
 	monitorCooldown := monitor.NewCooldownManager(

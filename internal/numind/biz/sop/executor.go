@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"numind-server/internal/numind/biz/llmrouter"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
 	aismw "numind-server/internal/pkg/aiservice/middleware"
@@ -31,9 +30,10 @@ type SopExecutor struct {
 	tokenizer *tokenizer.Tokenizer
 }
 
-// NewSopExecutor 创建SOP执行器
-// llmRouter 参数已废弃（Task 9 迁移至 AI Gateway），保留签名兼容调用方，传 nil 即可。
-func NewSopExecutor(ds store.IStore, _ *llmrouter.Router) *SopExecutor {
+// NewSopExecutor 创建SOP执行器。
+// 历史：曾接受 *llmrouter.Router 参数（老版 LLM 路由），ai-service-manager 上线后
+// 所有 LLM 调用改走 internal/pkg/aiservice Gateway，参数已移除。
+func NewSopExecutor(ds store.IStore) *SopExecutor {
 	tk, err := tokenizer.NewTokenizer()
 	if err != nil {
 		// Log error but don't fail startup, just degrade gracefully (we can add checks later)

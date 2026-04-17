@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"numind-server/internal/numind/biz/llmrouter"
 	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
@@ -79,7 +78,7 @@ var _ IChatbotBiz = (*chatbotBiz)(nil)
 
 // NewChatbotBiz 创建智能体业务层实例
 // llmRouter 参数已废弃（Task 9 迁移至 AI Gateway），保留签名兼容调用方，传 nil 即可。
-func NewChatbotBiz(ds store.IStore, _ *llmrouter.Router, vectorStore port.VectorStore, embedder Embedder) IChatbotBiz {
+func NewChatbotBiz(ds store.IStore, vectorStore port.VectorStore, embedder Embedder) IChatbotBiz {
 	return &chatbotBiz{
 		ds:          ds,
 		vectorStore: vectorStore,
