@@ -281,8 +281,9 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 			"type": "enabled",
 		}
 	case "reasoning_effort":
-		// AiHubMix 统一推理协议：通过 reasoning_effort 字段激活模型推理能力
-		bodyMap["reasoning_effort"] = "high"
+		// AiHubMix 统一推理协议：reasoning_effort 控制推理强度，max_tokens 限制推理 token 上限
+		bodyMap["reasoning_effort"] = "medium"
+		bodyMap["max_completion_tokens"] = 1000
 	}
 	if maxTokens > 0 {
 		bodyMap["max_tokens"] = maxTokens
@@ -817,7 +818,8 @@ func (c *DMXAPIClient) StreamGPTResponses(ctx context.Context, model string, mes
 	}
 	if reasoningEffort != "" {
 		bodyMap["reasoning"] = map[string]interface{}{
-			"effort": reasoningEffort,
+			"effort":     reasoningEffort,
+			"max_tokens": 1000,
 		}
 		// GPT reasoning 模型不支持 temperature 参数
 	} else if temperature > 0 {

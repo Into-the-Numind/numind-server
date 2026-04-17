@@ -140,13 +140,13 @@ func (r *Router) StreamChat(
 				onEvent,
 			)
 		case ThinkingGPT:
-			// GPT-5/O 系列：走 /v1/responses + reasoning:{effort:"high"}
+			// GPT-5/O 系列：走 /v1/responses + reasoning:{effort:"medium"}
 			content, usage, callErr = client.StreamGPTResponses(
 				routerCtx,
 				route.ProviderModelID,
 				messages,
 				temperature,
-				"high",
+				"medium",
 				onEvent,
 			)
 		default:
