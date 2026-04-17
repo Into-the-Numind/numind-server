@@ -114,6 +114,9 @@ func (r *mockRegistry) GetService(_ context.Context, _ uint64) (*model.AIService
 func (r *mockRegistry) ListServices(_ context.Context, _ registry.ServiceFilter) ([]*model.AIService, error) {
 	return nil, nil
 }
+func (r *mockRegistry) ListServicesPaginated(_ context.Context, _ registry.ServiceFilter, _, _ int) ([]*model.AIService, int64, error) {
+	return nil, 0, nil
+}
 func (r *mockRegistry) SaveService(_ context.Context, _ *model.AIService, _ uint64, _ string) error {
 	return nil
 }
@@ -199,7 +202,7 @@ func TestGateway_Chat_ProviderError(t *testing.T) {
 		chatErr: errors.New("upstream timeout"),
 	}
 	route := &registry.ResolvedRoute{
-		TaskID: "test.err",
+		TaskID:   "test.err",
 		Provider: registry.ProviderInfo{Name: "err-provider"},
 	}
 	reg := &mockRegistry{primary: route}
@@ -222,7 +225,7 @@ func TestGateway_Chat_ProviderError(t *testing.T) {
 // TestGateway_Chat_NoProvider verifies that a missing provider returns an error.
 func TestGateway_Chat_NoProvider(t *testing.T) {
 	route := &registry.ResolvedRoute{
-		TaskID: "test.missing",
+		TaskID:   "test.missing",
 		Provider: registry.ProviderInfo{Name: "nonexistent"},
 	}
 	reg := &mockRegistry{primary: route}

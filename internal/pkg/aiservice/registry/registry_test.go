@@ -55,12 +55,40 @@ func (m *mockStore) ListServices(_ context.Context, filter ServiceFilter) ([]*mo
 		if filter.ServiceType != "" && svc.ServiceType != filter.ServiceType {
 			continue
 		}
-		if !filter.IncludeDeprecated && svc.DeprecatedAt != nil {
-			continue
+		// Mirrors gormStore.buildServiceQuery filter semantics.
+		switch {
+		case filter.OnlyDeprecated:
+			if svc.DeprecatedAt == nil {
+				continue
+			}
+		case !filter.IncludeDeprecated:
+			if svc.DeprecatedAt != nil {
+				continue
+			}
 		}
 		out = append(out, svc)
 	}
 	return out, nil
+}
+
+func (m *mockStore) ListServicesPaginated(ctx context.Context, filter ServiceFilter, offset, limit int) ([]*model.AIService, int64, error) {
+	m.dbCallCount["ListServicesPaginated"]++
+	all, err := m.ListServices(ctx, filter)
+	if err != nil {
+		return nil, 0, err
+	}
+	total := int64(len(all))
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(all) || limit <= 0 {
+		return []*model.AIService{}, total, nil
+	}
+	end := offset + limit
+	if end > len(all) {
+		end = len(all)
+	}
+	return all[offset:end], total, nil
 }
 
 func (m *mockStore) SaveService(_ context.Context, svc *model.AIService) error {

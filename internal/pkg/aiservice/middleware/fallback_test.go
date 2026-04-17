@@ -27,6 +27,9 @@ func (r *registryStub) GetService(_ context.Context, _ uint64) (*model.AIService
 func (r *registryStub) ListServices(_ context.Context, _ registry.ServiceFilter) ([]*model.AIService, error) {
 	return nil, nil
 }
+func (r *registryStub) ListServicesPaginated(_ context.Context, _ registry.ServiceFilter, _, _ int) ([]*model.AIService, int64, error) {
+	return nil, 0, nil
+}
 func (r *registryStub) SaveService(_ context.Context, _ *model.AIService, _ uint64, _ string) error {
 	return nil
 }

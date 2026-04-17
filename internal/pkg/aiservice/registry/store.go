@@ -25,6 +25,9 @@ type IStore interface {
 	// Service CRUD
 	GetService(ctx context.Context, id uint64) (*model.AIService, error)
 	ListServices(ctx context.Context, filter ServiceFilter) ([]*model.AIService, error)
+	// ListServicesPaginated returns a page of services matching the filter along
+	// with the total match count. offset is 0-based; limit must be > 0.
+	ListServicesPaginated(ctx context.Context, filter ServiceFilter, offset, limit int) ([]*model.AIService, int64, error)
 	SaveService(ctx context.Context, svc *model.AIService) error
 	SetServiceDeprecated(ctx context.Context, id uint64, deprecatedAt *time.Time) error
 
@@ -130,26 +133,61 @@ func (s *gormStore) GetService(ctx context.Context, id uint64) (*model.AIService
 	return &svc, nil
 }
 
-// ListServices returns all AIService records matching the filter.
-func (s *gormStore) ListServices(ctx context.Context, filter ServiceFilter) ([]*model.AIService, error) {
+// buildServiceQuery composes the shared WHERE clauses used by ListServices
+// and ListServicesPaginated so the filter semantics stay in one place.
+func (s *gormStore) buildServiceQuery(ctx context.Context, filter ServiceFilter) *gorm.DB {
 	q := s.db.WithContext(ctx).Model(&model.AIService{})
 	if filter.ServiceType != "" {
 		q = q.Where("service_type = ?", filter.ServiceType)
 	}
 	switch {
 	case filter.OnlyDeprecated:
-		// Return only deprecated services (deprecated_at IS NOT NULL).
 		q = q.Where("deprecated_at IS NOT NULL")
 	case !filter.IncludeDeprecated:
-		// Default: active only.
 		q = q.Where("deprecated_at IS NULL")
-		// filter.IncludeDeprecated == true and OnlyDeprecated == false → no extra WHERE clause.
+		// filter.IncludeDeprecated == true and OnlyDeprecated == false → no extra WHERE.
 	}
+	return q
+}
+
+// ListServices returns all AIService records matching the filter.
+func (s *gormStore) ListServices(ctx context.Context, filter ServiceFilter) ([]*model.AIService, error) {
 	var services []*model.AIService
-	if err := q.Order("sort_order ASC, id ASC").Find(&services).Error; err != nil {
+	if err := s.buildServiceQuery(ctx, filter).
+		Order("sort_order ASC, id ASC").
+		Find(&services).Error; err != nil {
 		return nil, fmt.Errorf("gormStore.ListServices: %w", err)
 	}
 	return services, nil
+}
+
+// ListServicesPaginated returns a single page of services (ORDER BY sort_order ASC,
+// id ASC) plus the total match count, both computed at the DB layer. Callers that
+// need offset/limit pagination should use this instead of ListServices + in-memory
+// slice so memory use stays bounded as service count grows.
+func (s *gormStore) ListServicesPaginated(ctx context.Context, filter ServiceFilter, offset, limit int) ([]*model.AIService, int64, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		return nil, 0, fmt.Errorf("gormStore.ListServicesPaginated: limit must be > 0 (got %d)", limit)
+	}
+
+	// Count uses a separate query so pagination doesn't affect the total.
+	var total int64
+	if err := s.buildServiceQuery(ctx, filter).Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("gormStore.ListServicesPaginated: count: %w", err)
+	}
+
+	var services []*model.AIService
+	if err := s.buildServiceQuery(ctx, filter).
+		Order("sort_order ASC, id ASC").
+		Offset(offset).
+		Limit(limit).
+		Find(&services).Error; err != nil {
+		return nil, 0, fmt.Errorf("gormStore.ListServicesPaginated: page: %w", err)
+	}
+	return services, total, nil
 }
 
 // SaveService creates or updates an AIService (upsert by primary key).

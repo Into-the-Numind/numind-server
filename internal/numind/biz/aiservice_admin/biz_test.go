@@ -7,8 +7,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
 
 	"numind-server/internal/numind/biz/aiservice_admin"
 	"numind-server/internal/pkg/aiservice/profile"
@@ -16,15 +14,6 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
-
-// newTestDB opens a SQLite :memory: DB and migrates AIServiceAuditLog.
-func newTestDB(t *testing.T) *gorm.DB {
-	t.Helper()
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err, "open sqlite in-memory DB")
-	require.NoError(t, db.AutoMigrate(&model.AIServiceAuditLog{}), "migrate AIServiceAuditLog")
-	return db
-}
 
 // mockRegistry is a minimal Registry implementation for unit tests.
 // Only the methods exercised by aiservice_admin are wired up; others panic.
@@ -60,12 +49,42 @@ func (m *mockRegistry) ListServices(_ context.Context, filter registry.ServiceFi
 		if filter.ServiceType != "" && svc.ServiceType != filter.ServiceType {
 			continue
 		}
-		if !filter.IncludeDeprecated && svc.DeprecatedAt != nil {
-			continue
+		// Keep filter semantics in sync with gormStore.buildServiceQuery:
+		//   OnlyDeprecated → only deprecated rows
+		//   else if !IncludeDeprecated → active only
+		//   else (IncludeDeprecated) → all
+		switch {
+		case filter.OnlyDeprecated:
+			if svc.DeprecatedAt == nil {
+				continue
+			}
+		case !filter.IncludeDeprecated:
+			if svc.DeprecatedAt != nil {
+				continue
+			}
 		}
 		result = append(result, svc)
 	}
 	return result, nil
+}
+
+func (m *mockRegistry) ListServicesPaginated(ctx context.Context, filter registry.ServiceFilter, offset, limit int) ([]*model.AIService, int64, error) {
+	all, err := m.ListServices(ctx, filter)
+	if err != nil {
+		return nil, 0, err
+	}
+	total := int64(len(all))
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(all) || limit <= 0 {
+		return []*model.AIService{}, total, nil
+	}
+	end := offset + limit
+	if end > len(all) {
+		end = len(all)
+	}
+	return all[offset:end], total, nil
 }
 
 func (m *mockRegistry) SaveService(_ context.Context, svc *model.AIService, _ uint64, actorName string) error {

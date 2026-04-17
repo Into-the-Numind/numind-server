@@ -73,6 +73,10 @@ type Registry interface {
 	// ListServices returns all services that match the filter.
 	ListServices(ctx context.Context, filter ServiceFilter) ([]*model.AIService, error)
 
+	// ListServicesPaginated returns a page of services matching the filter along
+	// with the total match count. offset is 0-based; limit must be > 0.
+	ListServicesPaginated(ctx context.Context, filter ServiceFilter, offset, limit int) ([]*model.AIService, int64, error)
+
 	// SaveService creates or updates a service and invalidates related caches.
 	// actorID and actorName identify the admin user performing the action and are
 	// recorded in the audit log.
@@ -165,6 +169,12 @@ func (r *registryImpl) GetService(ctx context.Context, id uint64) (*model.AIServ
 // (list queries are admin-facing and relatively infrequent).
 func (r *registryImpl) ListServices(ctx context.Context, filter ServiceFilter) ([]*model.AIService, error) {
 	return r.store.ListServices(ctx, filter)
+}
+
+// ListServicesPaginated delegates to the store so admin list queries pull
+// only one page at a time instead of the full service set.
+func (r *registryImpl) ListServicesPaginated(ctx context.Context, filter ServiceFilter, offset, limit int) ([]*model.AIService, int64, error) {
+	return r.store.ListServicesPaginated(ctx, filter, offset, limit)
 }
 
 // SaveService creates or updates a service, then invalidates the cache for that service

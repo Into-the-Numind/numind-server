@@ -155,7 +155,8 @@ func New(reg registry.Registry, db *gorm.DB) IAIServiceAdminBiz {
 }
 
 // ListServices returns a paginated slice of AI services matching the filter.
-// page is 1-based; pageSize is capped to 100.
+// page is 1-based; pageSize is capped to 100. Pagination happens at the DB
+// layer so memory use stays bounded as service count grows.
 func (b *aiServiceAdminBiz) ListServices(ctx context.Context, filter registry.ServiceFilter, page, pageSize int) (*ListServicesResult, error) {
 	if page < 1 {
 		page = 1
@@ -164,23 +165,17 @@ func (b *aiServiceAdminBiz) ListServices(ctx context.Context, filter registry.Se
 		pageSize = 20
 	}
 
-	// Fetch all matching services from the registry (no pagination at the registry layer).
-	all, err := b.reg.ListServices(ctx, filter)
+	offset := (page - 1) * pageSize
+	list, total, err := b.reg.ListServicesPaginated(ctx, filter, offset, pageSize)
 	if err != nil {
 		return nil, fmt.Errorf("aiservice_admin.ListServices: %w", err)
 	}
-
-	total := int64(len(all))
-	offset := (page - 1) * pageSize
-	if offset >= len(all) {
-		return &ListServicesResult{List: []*model.AIService{}, Total: total}, nil
+	// GORM Find always initialises the slice; this guard protects JSON consumers
+	// against any mock that returns nil instead of an empty slice.
+	if list == nil {
+		list = []*model.AIService{}
 	}
-	end := offset + pageSize
-	if end > len(all) {
-		end = len(all)
-	}
-
-	return &ListServicesResult{List: all[offset:end], Total: total}, nil
+	return &ListServicesResult{List: list, Total: total}, nil
 }
 
 // GetService returns a single AI service with its associated routes.
