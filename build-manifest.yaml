@@ -977,6 +977,11 @@ features:
       - "2026-04-19: 工作量修正 12-15 天 → 14-18 天（+3 天吸收 pricing 模块 + 控制流反转）；交付时间线 2026-05-08 → 2026-05-11"
       - "2026-04-19: 工作量变更已被客户（即本人）在 Section 3 选择 Direction 3 时隐式确认，不走 NDF §6 formal 回退 S1 Gate 流程（客户即开发者场景）"
       - "2026-04-19: Section 3 v2 back-propagation 完成：§1.8 PreCheckResult 补 Reason 字段；§1.11 新增外部依赖声明（pricing.CalculateCost 来源）；§3.11 明确 IPromptEstimator 位于 biz/credit/prompt_estimator.go（biz 层，遵循 business-logic.md 硬规则）"
+      - "2026-04-19: S2 Section 4 经 Opus round 1 FAIL（4 P0：402 拦截器缺失/estimate 聚合口径未定/free 与余额0 不可区分/MigrationsView 一次性按钮 UX 未定义；5 P1：GET packages 契约/SopEstimateBar 挂载条件/历史版本 endpoint/TS 字段名不对齐/卡片清理违反 scope）"
+      - "2026-04-19: Section 4 v2 FINAL 修复全部 4 P0+5 P1：402 case 新增识别 Credits.Insufficient；estimate 整单聚合（reference_id=sop_template_id 遍历 node 求和 + first_node_estimate + node_count）；free 态通过跨 store 读 user.tier === 'free' 判断（不加后端字段）；MigrationsView 三态状态机（PENDING/EXECUTING/EXECUTED）+ GET status endpoint；复用现有 InsufficientCreditsDialog 不新建；SopEstimateBar 仅详情页 + debounce 300ms + billing_mode guard；历史版本独立 endpoint；卡片清理拆独立 commit；middleware 名字对齐（AuthMiddleware/AdminAuthMiddleware/authGroup）"
+      - "2026-04-19: Section 4 审计纠错：第一轮审计说 card_config.go 存在实际不存在（ls 已确认空），仅需清理 CLAUDE.md §1 核心功能描述"
+      - "2026-04-19: Section 4 back-prop 完成：§1.8 BalanceBreakdown 和 §2.11.1 QuotaBreakdown 字段名从 SubscriptionTotal/Remaining 改为 SubTotal/SubRemain（JSON 与现有 credits.ts 一致，避免 breaking rename）"
+      - "2026-04-19: 工作量修正 14-18 → 18-23 天（+5 天吸收 Section 4 P0 修订 + reviewer 建议前端工作量）；交付时间线 2026-05-11 → 2026-05-16"
     blockers: []
     created_at: "2026-04-18T12:00:00+08:00"
     completed_at: null

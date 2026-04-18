@@ -94,7 +94,7 @@ func (s *creditService) CheckAndEstimate(ctx, user, op, in) (*PreCheckResult, er
 | `Reconcile` | 读 reservation → 比对 actual 与 reserved → 差额补扣/退还（原路退到 item.package_id）；状态 `reserved → reconciled` |
 | `Refund` | 标记 `reserved → refunded`，按 item.seq ASC 原路退还 |
 | `FinalizeReservation` | 唯一出口：opErr 非 nil → Refund；actualCost 已采集 → Reconcile；否则 Refund with reason=no_actual_cost |
-| `GetBalance` | 查 credit_package 返回 `{BillingMode: credits, SubscriptionTotal/Remaining, BoosterTotal/Remaining/EarliestExpires, ...}` |
+| `GetBalance` | 查 credit_package 返回 `{BillingMode: credits, SubTotal/SubRemain, BoosterTotal/BoosterRemain/BoosterEarliestExpiresAt, ...}` |
 
 ### 1.5 `billing_mode` 读取规则
 
@@ -196,17 +196,17 @@ type ReservationItem struct {
 }
 
 type BalanceBreakdown struct {
-    BillingMode string  // "credits" | "legacy_tier"
-    // credits 字段
-    SubscriptionRemaining    int64
-    SubscriptionTotal        int64
-    SubscriptionExpiresAt    *time.Time
-    BoosterRemaining         int64
-    BoosterTotal             int64
-    BoosterEarliestExpiresAt *time.Time
+    BillingMode string  `json:"billing_mode"` // "credits" | "legacy_tier"
+    // credits 字段（JSON 短名与现有前端 credits.ts 对齐）
+    SubRemain                int64      `json:"sub_remain"`
+    SubTotal                 int64      `json:"sub_total"`
+    SubExpiresAt             *time.Time `json:"sub_expires_at,omitempty"`
+    BoosterRemain            int64      `json:"booster_remain"`
+    BoosterTotal             int64      `json:"booster_total"`
+    BoosterEarliestExpiresAt *time.Time `json:"booster_earliest_expires_at,omitempty"`
     // legacy_tier 字段
-    RemainingRuns *int  // nil 表示 premium unlimited
-    MonthlyLimit  *int
+    RemainingRuns *int `json:"remaining_runs,omitempty"` // nil 表示 premium unlimited
+    MonthlyLimit  *int `json:"monthly_limit,omitempty"`
 }
 ```
 
@@ -505,16 +505,19 @@ func (CreditReservationItem) TableName() string { return "credit_reservation_ite
 **扩展现有 `QuotaBreakdown` 结构**（非破坏性，新增字段，老调用方无感）：
 
 ```go
+// 对齐现有 numind-web-v3/src/api/credits.ts 的 JSON 短字段名（非破坏扩展）
 type QuotaBreakdown struct {
-    Balance               int64 `json:"balance"`
-    SubscriptionTotal     int64 `json:"subscription_total"`
-    SubscriptionRemaining int64 `json:"subscription_remaining"`
-    BoosterTotal          int64 `json:"booster_total"`
-    BoosterRemaining      int64 `json:"booster_remaining"`
-    // v3 新增字段
-    BillingMode    string `json:"billing_mode"`              // "credits" | "legacy_tier"
-    RemainingRuns  *int   `json:"remaining_runs,omitempty"`  // 仅 legacy_tier；nil=无限
-    MonthlyLimit   *int   `json:"monthly_limit,omitempty"`   // 仅 legacy_tier
+    Balance       int64 `json:"balance"`
+    SubTotal      int64 `json:"sub_total"`
+    SubRemain     int64 `json:"sub_remain"`
+    BoosterTotal  int64 `json:"booster_total"`
+    BoosterRemain int64 `json:"booster_remain"`
+    // v3 新增字段（可选，老前端不读即可）
+    BillingMode              string     `json:"billing_mode"`                           // "credits" | "legacy_tier"
+    RemainingRuns            *int       `json:"remaining_runs,omitempty"`               // 仅 legacy_tier；nil=无限
+    MonthlyLimit             *int       `json:"monthly_limit,omitempty"`                // 仅 legacy_tier
+    SubExpiresAt             *time.Time `json:"sub_expires_at,omitempty"`               // credits 月底过期展示
+    BoosterEarliestExpiresAt *time.Time `json:"booster_earliest_expires_at,omitempty"`  // 最早过期 booster
 }
 ```
 
@@ -1241,9 +1244,385 @@ var (
 - 现有 `credit_account.balance_cents` 字段：保持和 credit_package.remain_credits 的既有同步逻辑，不重写
 - 现有 `credit_transaction` 表：所有新扣减路径（Reserve/Reconcile/Refund）必须写入（审计轨迹），但表结构不改
 
-## §4 跨仓库集成（HTTP API + Admin UI + 前端）（TBD）
+## §4 跨仓库集成（HTTP API / Admin UI / 前端）（v2 FINAL）
 
-_待 Section 4 brainstorming 完成后填充_
+> Section 4 经 Opus round 1 FAIL（4 P0 + 5 P1）后按现实代码契约修订：前端字段名对齐、402 拦截器设计、estimate 聚合口径、三态判断、MigrationsView 状态机、middleware 命名修正。工作量上调到 18-23 天。
+
+### 4.0 v2 相对 v1 的主要变更
+
+| # | 变更 | 理由 |
+|---|------|------|
+| 1 | 前端字段名保持现有短名（`sub_total`/`sub_remain`/`booster_total`/`booster_remain`），新增字段用项目惯例 snake_case（`billing_mode`/`remaining_runs`/`monthly_limit`）| P1-D：`credits.ts` 现有前端在 prod，breaking rename 风险高 |
+| 2 | 402 拦截器新增 `case 402` + `code === 'Credits.Insufficient'` 识别 + 派发 `insufficient-credits` 事件 | P0-A：现有 request.ts 不识别 402 |
+| 3 | `estimate` 聚合口径：SOP 整单（遍历所有 node）返回 `total_estimated_credits` + `node_count` + `first_node_estimate` | P0-B：预估条数字必须对用户有意义 |
+| 4 | `CreditBalanceCard` 三态判断改为**跨 store 读 `user.tier === 'free'`**（不新增后端字段） | P0-C：billing_mode enum 2 值不够，跨 store 判断最简单 |
+| 5 | `MigrationsView` 定义完整 UI 状态机：PENDING/EXECUTING/EXECUTED | P0-D：一次性操作需明确 UX |
+| 6 | middleware 示例改为 `AuthMiddleware()` / `AdminAuthMiddleware()`；路由 group 改为 `authGroup` | P2：与现有代码一致 |
+| 7 | 组件位置 `SopEstimateBar` 改 `src/views/sop/components/`（非 `src/components/sop/`） | P2：项目无 `src/components/sop/` 目录 |
+| 8 | 复用现有 `InsufficientCreditsDialog`（teleport + `show(msg)`），不新建 `InsufficientCreditsModal` | P2：已存在组件 |
+| 9 | `SopEstimateBar` 挂载条件：仅详情页、debounce 300ms、billing_mode guard | P1-B：避免列表页爆炸 |
+| 10 | 新增 `GET /v1/admin/estimation-coefficients/history?provider=X&model=Y&operation=Z` endpoint | P1-C：历史版本查询需独立 |
+| 11 | `GET /v1/credits/packages` 完整契约（分页 + 筛选 + 排序） | P1-A：§3 未定义 |
+| 12 | 卡片清理退出本 feature scope（独立 commit）；`card_config.go` 审计确认已不存在（无需删除），仅清理 `CLAUDE.md` §1 描述 | P1-E 违反 §3.14；审计纠错 |
+| 13 | 工作量 14-18 → **18-23 天**；交付时间线 2026-05-11 → 2026-05-16 | 吸收 P0 修订 + reviewer 建议的前端改造工作量 |
+
+### 4.1 HTTP API 统一视图（v2）
+
+| Method | Path | 仓库责任 | Middleware | Status | 说明 |
+|--------|------|---------|-----------|--------|------|
+| POST | `/v1/credits/estimate` | numind-server 新增 | `AuthMiddleware()` | §3.11 定义 | 整单估算（§4.3） |
+| GET | `/v1/credits/balance` | numind-server **改造** | `AuthMiddleware()` | §2.11.1 + §4.2.1 | QuotaBreakdown 扩展 3 新字段 |
+| GET | `/v1/credits/packages` | numind-server 新增 | `AuthMiddleware()` | §4.1.1 | 分页+筛选+排序 |
+| POST | `/v1/orders`（productType=booster） | numind-server **改造** | `AuthMiddleware()` | §3.7 定义 | 加门槛校验 |
+| POST | `/v1/orders`（其他 productType） | numind-server **改造** | `AuthMiddleware()` | §3.9 定义 | 防提前续费 |
+| GET | `/v1/admin/estimation-coefficients` | numind-server 新增 | `AdminAuthMiddleware()` | §4.1.2 | 分页 + query：is_active（默认 1），支持 all |
+| GET | `/v1/admin/estimation-coefficients/history` | numind-server 新增 | `AdminAuthMiddleware()` | §4.1.2 | 按 (provider, model, operation) 分组查所有 version |
+| POST | `/v1/admin/estimation-coefficients` | numind-server 新增 | `AdminAuthMiddleware()` | §3.11 + §2.11.6 | 新增（触发 UpdateCoefficient retry）|
+| PUT | `/v1/admin/estimation-coefficients/:id` | numind-server 新增 | `AdminAuthMiddleware()` | §2.11.6 | 编辑（append-only version bump）|
+| DELETE | `/v1/admin/estimation-coefficients/:id` | numind-server 新增 | `AdminAuthMiddleware()` | §4.1.2 | 软删（is_active=0） |
+| POST | `/v1/admin/migrations/billing-mode-init` | numind-server 新增 | `AdminAuthMiddleware()` | §4.4.3 | 含幂等状态返回 |
+| GET | `/v1/admin/migrations/billing-mode-init/status` | numind-server 新增 | `AdminAuthMiddleware()` | §4.4.3 | 查询当前迁移分布（按钮状态依据） |
+
+#### 4.1.1 `GET /v1/credits/packages` 契约
+
+```go
+// Query params
+type ListPackagesReq struct {
+    Page     int    `form:"page,default=1"`
+    PageSize int    `form:"page_size,default=20"`       // max 100
+    Status   string `form:"status,omitempty"`           // active/expired/revoked，空为全部
+    Type     string `form:"type,omitempty"`             // trial/subscription/booster，空为全部
+    Sort     string `form:"sort,default=expires_at:asc"` // expires_at:asc/desc, created_at:asc/desc
+}
+
+// Response
+type ListPackagesResp struct {
+    List  []CreditPackageItem `json:"list"`
+    Total int64               `json:"total"`
+}
+
+type CreditPackageItem struct {
+    ID            uint64     `json:"id"`
+    Type          string     `json:"type"`
+    TotalCredits  int64      `json:"total_credits"`
+    RemainCredits int64      `json:"remain_credits"`
+    ActivatedAt   time.Time  `json:"activated_at"`
+    ExpiresAt     time.Time  `json:"expires_at"`
+    Status        string     `json:"status"`
+    OrderID       *uint64    `json:"order_id,omitempty"`
+    CreatedAt     time.Time  `json:"created_at"`
+}
+```
+
+**安全：** 必须 `WHERE user_id = :current_user_id`，不得跨用户。
+
+#### 4.1.2 系数管理 endpoint
+
+```go
+// GET /v1/admin/estimation-coefficients?is_active=1&provider=X&model=Y&operation=Z&page=1
+// 默认 is_active=1（仅列当前启用）；is_active=all 列所有 version（供管理端普通列表查询）
+
+// GET /v1/admin/estimation-coefficients/history?provider=X&model=Y&operation=Z
+// 返回该 (provider, model, operation) 的所有 version（含 is_active=0 的历史），按 version DESC 排序
+// 专供 admin UI 历史 drawer
+type CoefficientHistoryResp struct {
+    List []CoefficientVersion `json:"list"`
+}
+```
+
+### 4.2 numind-web-v3 前端改造
+
+#### 4.2.1 TypeScript 类型（保持现有字段名 + 新增字段）
+
+```typescript
+// src/api/credits.ts — 扩展（非破坏）
+export interface QuotaBreakdown {
+  // 现有字段（保留，不动）
+  balance: number
+  sub_total: number
+  sub_remain: number
+  booster_total: number
+  booster_remain: number
+  // v3 新增（可选；老代码不读即可）
+  billing_mode?: 'credits' | 'legacy_tier'
+  remaining_runs?: number | null      // null = premium unlimited
+  monthly_limit?: number | null
+  sub_expires_at?: string             // 会员积分月底过期（展示用）
+  booster_earliest_expires_at?: string // 最早过期的 booster
+}
+
+// 新增 EstimateResp（v2 改：含整单聚合字段）
+export interface EstimateResp {
+  total_estimated_credits: number       // SOP 整单估算（N 个 node 之和）
+  first_node_estimate?: number           // 首 node 估算（用户提前预览）
+  node_count?: number                    // N（仅 sop_run 有效）
+  sufficient: boolean
+  skip_deduction: boolean                // legacy_tier=true
+  reason?: string                        // legacy_tier 次数不足原因
+  balance: QuotaBreakdown
+  coefficient_id: number
+}
+
+export function estimateCredits(operation: string, reference_id: string): Promise<EstimateResp> {
+  return request.post('/v1/credits/estimate', { operation, reference_id })
+}
+```
+
+#### 4.2.2 402 拦截器改造（P0-A 修复）
+
+```typescript
+// src/api/request.ts — 响应拦截器新增 case
+// ... 现有 case 401/403/500 保留 ...
+switch (response.status) {
+  case 402:
+    if (response.data?.code === 'Credits.Insufficient') {
+      eventBus.emit('insufficient-credits', {
+        message: response.data.message || '积分不足',
+        reason: response.data.reason,
+      })
+      return Promise.reject(response.data)
+    }
+    // fallthrough 到 default
+  case 403:
+    // 现有"额度不足"子串匹配保留一个 release 作为 fallback
+    if (typeof response.data?.message === 'string' && response.data.message.includes('额度不足')) {
+      eventBus.emit('insufficient-credits', { message: response.data.message })
+      return Promise.reject(response.data)
+    }
+    // ... 现有 403 处理 ...
+  // ... 其他 ...
+}
+```
+
+**App.vue** 保留现有 `insufficient-credits` 事件监听 → 触发 `InsufficientCreditsDialog.show(msg)`。
+
+#### 4.2.3 组件清单与位置（修正 P2）
+
+| 组件 | 位置 | 类型 |
+|------|------|------|
+| `CreditBalanceCard.vue` | `src/components/credit/` 新建目录 | 新组件 |
+| `SopEstimateBar.vue` | `src/views/sop/components/` （遵循项目现状） | 新组件 |
+| `BoosterPurchaseCard.vue` | `src/components/credit/` | 新组件 |
+| `InsufficientCreditsDialog.vue` | `src/components/common/` 已存在 | **复用不新建** |
+| `SettingsView.vue` | `src/views/` 已存在 | 改造（嵌入 BalanceCard + BoosterCard） |
+| SOP 运行页 | `src/views/sop/` 相关 | 改造（嵌入 EstimateBar） |
+
+#### 4.2.4 `CreditBalanceCard` 三态判断（P0-C 修复，跨 store）
+
+```vue
+<script setup lang="ts">
+import { computed } from 'vue'
+import { useUserStore } from '@/stores/user'
+import { useCreditsStore } from '@/stores/credits'
+
+const user = useUserStore()
+const credits = useCreditsStore()
+
+// 三态判断（按优先级）
+const cardState = computed(() => {
+  if (user.tier === 'free') return 'free'                              // 未购买过任何付费
+  if (credits.balance?.billing_mode === 'legacy_tier') return 'legacy' // Grandfathering 老会员
+  return 'credits'                                                     // 新制会员 / trial
+})
+</script>
+
+<template>
+  <div class="credit-balance-card">
+    <!-- credits 模式 -->
+    <template v-if="cardState === 'credits'">
+      <div class="subscription">
+        <span class="label">会员积分</span>
+        <span class="value">{{ credits.balance.sub_remain }} / {{ credits.balance.sub_total }}</span>
+        <span class="sublabel">{{ formatMonthEnd(credits.balance.sub_expires_at) }} 过期</span>
+      </div>
+      <div class="booster" v-if="credits.balance.booster_total > 0">
+        <span class="label">加量包</span>
+        <span class="value">{{ credits.balance.booster_remain }} / {{ credits.balance.booster_total }}</span>
+        <span class="sublabel">最早 {{ formatDate(credits.balance.booster_earliest_expires_at) }} 过期</span>
+      </div>
+    </template>
+    <!-- legacy_tier -->
+    <template v-else-if="cardState === 'legacy'">
+      <span v-if="credits.balance.monthly_limit === null">本月运行次数：无限</span>
+      <span v-else>本月已用 {{ (credits.balance.monthly_limit ?? 0) - (credits.balance.remaining_runs ?? 0) }} / {{ credits.balance.monthly_limit }}</span>
+    </template>
+    <!-- free -->
+    <template v-else>
+      <p>成为会员解锁 AI 能力</p>
+      <AppButton @click="goToMembership">升级会员</AppButton>
+    </template>
+  </div>
+</template>
+```
+
+#### 4.2.5 `SopEstimateBar` 挂载条件 + debounce（P1-B 修复）
+
+```vue
+<script setup lang="ts">
+import { ref, watch, onMounted } from 'vue'
+import { useDebounceFn } from '@vueuse/core'
+import { useCreditsStore } from '@/stores/credits'
+import { useUserStore } from '@/stores/user'
+
+const props = defineProps<{ sopTemplateId: string }>()
+const credits = useCreditsStore()
+const user = useUserStore()
+const estimate = ref<EstimateResp | null>(null)
+
+const shouldEstimate = computed(() =>
+  user.tier !== 'free' &&
+  credits.balance?.billing_mode !== 'legacy_tier'
+)
+
+const fetchEstimate = useDebounceFn(async () => {
+  if (!shouldEstimate.value) return
+  estimate.value = await estimateCredits('sop_run', props.sopTemplateId)
+}, 300)
+
+onMounted(() => {
+  // 仅在 SopRunView 详情页挂载；禁止在列表/首页使用
+  if (shouldEstimate.value) fetchEstimate()
+})
+watch(() => props.sopTemplateId, fetchEstimate)
+</script>
+
+<template>
+  <!-- legacy_tier 或 free 时不渲染 -->
+  <div v-if="estimate && !estimate.skip_deduction" class="estimate-bar">
+    <span>预估消耗 {{ estimate.total_estimated_credits }} 积分（{{ estimate.node_count }} 步）</span>
+    <span>当前余额 {{ (credits.balance?.sub_remain ?? 0) + (credits.balance?.booster_remain ?? 0) }}</span>
+    <AppButton :disabled="!estimate.sufficient" @click="$emit('start')">
+      {{ estimate.sufficient ? '开始运行' : '积分不足，购买加量包' }}
+    </AppButton>
+  </div>
+</template>
+```
+
+**挂载约束（code review 检查项）：**
+- 禁止 SopEstimateBar 出现在 `HomeView.vue` / SOP 列表页 / 任何循环渲染的容器内
+- 仅允许在 SopRunView（单模板详情页）
+
+#### 4.2.6 `BoosterPurchaseCard` 灰态交互（P2 补）
+
+- `credits` 模式会员：卡片可点，点击走现有订单流程
+- `free` / `trial`：灰态 + tooltip "升级为正式会员（standard/premium）后可购买加量包"，点击跳转会员购买
+- `legacy_tier`：灰态 + tooltip "老会员制暂不支持加量包，到期升级后可购买"，点击**不跳转**（无操作）
+
+### 4.3 `POST /v1/credits/estimate` 聚合口径（P0-B 修复）
+
+**reference_id 语义按 operation 分发：**
+
+| Operation | reference_id 语义 | 后端行为 |
+|-----------|------------------|---------|
+| `sop_run` | `sop_template_id` | 遍历该模板所有 node，每个 node 调 IPromptEstimator 渲染 → 求和 total_estimated_credits + 返回 first_node_estimate + node_count |
+| `sop_chat` | `sop_run_id` | 取 sop_run.last_context 渲染 → 单次估算 |
+| `salesrag_chat` | `session_id` | 取 session 近 N 轮上下文 → 单次估算 |
+| 其他（profile_analysis/file_parse/...）| 各自 resource_id | 单次估算 |
+
+**Response：**
+- SOP 场景：`total_estimated_credits` 是用户看到的数字（N 步总和），`first_node_estimate` 是"跑第一步扣多少"供快速预览
+- 非 SOP 场景：`total_estimated_credits = first_node_estimate`，`node_count = 1`
+
+**UI 展示（SOP）：** "预估消耗 **XX** 积分（**N** 步）"。如 `sufficient=false` → 按钮禁用提示 "积分不足"。
+
+### 4.4 numind-admin-web 管理端
+
+#### 4.4.1 `EstimationCoefficientView` 菜单归属
+
+放在现有 "AIServices" 组下（路由 `/ai-services/coefficients`，菜单项 "估算系数"），与 `ai-services/*` / `ai-providers/*` / `ai-tasks/*` / `ai-audit-logs` 同级。
+
+**Sidebar 改造：** 在 `AdminSidebar.vue` 的 "AIServices" 子菜单中追加一项（单行 diff）。
+
+#### 4.4.2 历史版本 drawer endpoint
+
+当管理员点击某系数行 "历史版本" 按钮：
+- 前端调 `GET /v1/admin/estimation-coefficients/history?provider=X&model=Y&operation=Z`
+- 返回所有 version（含 is_active=0）倒序，展示在 side drawer
+- 列：Version / IsActive / Values / ChangeReason / UpdatedBy / UpdatedAt
+
+#### 4.4.3 `MigrationsView` 状态机（P0-D 修复）
+
+**路由：** `/system-tools/migrations`（系统工具组，如无则新建菜单项）
+
+**状态：**
+
+| State | 条件 | 按钮表现 | UI 显示 |
+|-------|------|---------|---------|
+| `PENDING` | 尚未执行：查 `GET .../status` 返回 `pre_migration_stats` | 启用 | 展示"待迁移用户 N 人（分布：standard X / premium Y / trial Z）" + "执行" 按钮 |
+| `EXECUTING` | 点击按钮后 | 禁用 + spinner | "正在迁移..." |
+| `EXECUTED` | 执行完成，status 返回 `already_executed: true` | 永久禁用 | "已迁移 N 人 / 时间：YYYY-MM-DD HH:MM:SS / 执行人：admin_username" |
+
+**后端判定 `already_executed`：** `COUNT(*)` from `user` where `billing_mode='legacy_tier'` > 0（迁移成功后至少有 N 人是 legacy_tier，未执行时为 0）
+
+```go
+// 状态查询 API
+type MigrationStatusResp struct {
+    AlreadyExecuted     bool       `json:"already_executed"`
+    ExecutedAt          *time.Time `json:"executed_at,omitempty"`
+    ExecutedBy          *string    `json:"executed_by,omitempty"`
+    PreMigrationStats   *MigrationStatsPerTier `json:"pre_migration_stats,omitempty"`
+    MigratedCount       int64      `json:"migrated_count"`
+}
+```
+
+`executed_at` / `executed_by` 写入 `admin_audit_log`（现有表）。
+
+#### 4.4.4 `CreditUsersView` 增强
+
+在现有用户详情页顶部加 banner：
+```vue
+<div v-if="user.billing_mode === 'legacy_tier'" class="banner legacy-tier">
+  此用户为 legacy_tier 老会员制（Grandfathering）。credit_package 自然过期不扣减，到期后下次购买进入积分制。
+</div>
+```
+
+新增 Tab "活跃 Reservation"：列出 `status='reserved'` 的 credit_reservation（便于排障）。
+
+### 4.5 路由注册（numind-server，修正 middleware/group）
+
+```go
+// internal/numind/router.go 的 authGroup 下追加
+authGroup.POST("/credits/estimate", creditController.Estimate)
+authGroup.GET("/credits/packages", creditController.ListPackages)
+// /credits/balance 已在 authGroup 下，controller 内部改造支持 extended fields
+
+// internal/numind/admin_router.go 的 adminAuthGroup 下追加
+adminAuthGroup.GET("/estimation-coefficients", adminCreditController.ListCoefficients)
+adminAuthGroup.GET("/estimation-coefficients/history", adminCreditController.ListCoefficientHistory)
+adminAuthGroup.POST("/estimation-coefficients", adminCreditController.CreateCoefficient)
+adminAuthGroup.PUT("/estimation-coefficients/:id", adminCreditController.UpdateCoefficient)
+adminAuthGroup.DELETE("/estimation-coefficients/:id", adminCreditController.DeleteCoefficient)
+adminAuthGroup.POST("/migrations/billing-mode-init", adminMigrationController.InitBillingMode)
+adminAuthGroup.GET("/migrations/billing-mode-init/status", adminMigrationController.GetInitStatus)
+```
+
+**middleware 命名注意：** Section 4 v1 用的 `userTokenMiddleware` / `adminTokenMiddleware` 是伪命名——实际是项目内 `importMw.AuthMiddleware()` / `importMw.AdminAuthMiddleware()`，已在各 group 上绑定，新 endpoint 只需追加到对应 group。
+
+### 4.6 卡片残留清理（退出本 feature scope）
+
+**审计纠错：** 第二轮 reviewer 发现 `internal/pkg/model/card_config.go` **实际不存在**（第一轮审计误报）。验证：`ls internal/pkg/model/card*.go` 无匹配。
+
+**本 feature 范围内剩余动作（仅 CLAUDE.md 修正）：**
+- 修 `CLAUDE.md` §1 "核心功能"列表，移除"卡片生成（Markdown → 图片）"一项
+
+**拆出本 feature 的动作：** 独立 `chore(cleanup): remove card generation references from CLAUDE.md` commit，与 credits-system feature 解耦。遵循 §3.14 scope 声明 + CLAUDE.md "不混 feature 和 bugfix" 硬规则。
+
+### 4.7 工作分工（v2 再估算：18-23 天）
+
+| 仓库 | 主要工作 | 预估天数 |
+|------|---------|---------|
+| **numind-server** | pricing 模块 + biz/credit 扩展 + ICreditService 实装 + SalesRAG 接入 + controller + 12 migration + R2 spike + promptEstimator + admin endpoints + retry 封装 | **11-14 天** |
+| **numind-web-v3** | 3 新组件（BalanceCard/EstimateBar/BoosterCard）+ 2 改造（SettingsView/SopRunView）+ TS 类型扩展 + 402 拦截器改造 + 复用 InsufficientCreditsDialog + Playwright E2E | **5-6 天** |
+| **numind-admin-web** | CoefficientView（DataTable + 历史 drawer + 编辑 modal）+ MigrationsView 状态机 + CreditUsersView banner + Sidebar 菜单 | **2.5-3 天** |
+| **独立 commit** | CLAUDE.md 卡片清理 | 0.1 天（当天 |
+
+**合计 18-23 天**（与 Opus reviewer 建议一致），超 §2 预估 14-18 天约 **4-5 天**。承认 S1 工作量估算**进一步低估**——根因：Section 4 发现前端 402 拦截器、estimate 聚合、字段命名对齐、MigrationsView 状态机都需要独立设计。交付时间 2026-05-11 → **2026-05-16**。
+
+### 4.8 前端 breaking 兼容策略（P1-D 跟进）
+
+现有 `sub_total` / `sub_remain` / `booster_total` / `booster_remain` 短名**保留不改**，新增字段 `billing_mode` / `remaining_runs` / `monthly_limit` / `sub_expires_at` / `booster_earliest_expires_at` 作为可选字段。老代码零影响，新组件消费新字段。
+
+**spec §2.11.1 内部一致性**：v2 back-prop 已完成——`SubscriptionTotal/SubscriptionRemaining` → `SubTotal/SubRemain`（§1.8 `BalanceBreakdown` + §2.11.1 `QuotaBreakdown` + §1.4 方法行为描述都已对齐），JSON 字段与现有 `credits.ts` 一致，无 breaking rename。
 
 ## §5 可观测性 + 边界 + E2E 测试策略（TBD）
 
