@@ -908,6 +908,17 @@ func (b *aiServiceAdminBiz) CreateRoute(ctx context.Context, serviceID uint64, r
 	if err := b.db.WithContext(ctx).Create(route).Error; err != nil {
 		return nil, nil, fmt.Errorf("aiservice_admin.CreateRoute: create: %w", err)
 	}
+	// GORM v2 skips bool zero value (false) when the field has a `default:true`
+	// tag (see model.AIServiceRoute.IsActive), silently falling back to the DB
+	// default of true. Forcing a follow-up UpdateColumn restores the requested
+	// value. Cheap (single UPDATE) and only triggers when the request explicitly
+	// asked for is_active=false.
+	if !isActive && route.IsActive {
+		if err := b.db.WithContext(ctx).Model(route).UpdateColumn("is_active", false).Error; err != nil {
+			return nil, nil, fmt.Errorf("aiservice_admin.CreateRoute: fixup is_active: %w", err)
+		}
+		route.IsActive = false
+	}
 
 	// Attach provider name for DTO.
 	route.Provider = &provider

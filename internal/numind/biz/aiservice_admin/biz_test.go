@@ -805,6 +805,37 @@ func TestRouteCRUD_CreateSuccess(t *testing.T) {
 	assert.Empty(t, warnings, "no conflict on first route")
 }
 
+// TestRouteCRUD_CreateWithIsActiveFalse verifies that a route created with
+// is_active=false is actually persisted as inactive. Regression for the GORM
+// `default:true` tag gotcha: without Select-forced column inclusion, GORM v2
+// treats bool zero value (false) as "not set" and falls back to the DB default
+// of true.
+func TestRouteCRUD_CreateWithIsActiveFalse(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	serviceID := seedServiceInReg(reg, db, "svc-inactive-create")
+	providerID := seedProvider(t, db, "provider-inactive-create")
+
+	b := aiservice_admin.New(reg, db)
+
+	isActive := false
+	req := aiservice_admin.CreateRouteRequest{
+		ProviderID:      providerID,
+		ProviderModelID: "claude-3",
+		Priority:        0,
+		IsActive:        &isActive, // explicitly false
+	}
+	dto, _, err := b.CreateRoute(context.Background(), serviceID, req, 1, "admin")
+	require.NoError(t, err)
+	require.NotNil(t, dto)
+	assert.False(t, dto.IsActive, "is_active=false in request should persist as false (not defaulted to true)")
+
+	// Double-check the actual DB row.
+	var row model.AIServiceRoute
+	require.NoError(t, db.First(&row, dto.ID).Error)
+	assert.False(t, row.IsActive, "DB row should have is_active=false")
+}
+
 // TestRouteCRUD_ProviderNotFound verifies that CreateRoute rejects an unknown provider_id.
 func TestRouteCRUD_ProviderNotFound(t *testing.T) {
 	db := newTestDB(t)
