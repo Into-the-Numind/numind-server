@@ -924,10 +924,10 @@ features:
     ndf_version: "1.0"
     description: "积分计费系统 — 从阶梯制（free/trial/standard/premium）迁移到会员+积分+加量包体系。Grandfathering 双制并存、R2 字符数估算预扣、¥29.9/600 积分加量包（3月有效期、仅会员可购）、扣减优先级（会员 > 加量包）"
     track: "standard"
-    stage: "S2"
+    stage: "S3"
     classification_reason: "跨 3 仓库预估 20+ 文件、涉及支付+权限+会员资格门槛+老用户迁移等高风险业务逻辑，5 条 Triage 标准中 4 条触发 Standard"
-    last_updated_by: "ai-s2-sections-1-2"
-    last_updated_at: "2026-04-18T18:00:00+08:00"
+    last_updated_by: "ai-s3-plan"
+    last_updated_at: "2026-04-19T14:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -937,11 +937,26 @@ features:
       requirement: "numind-server/requirements/credits-system.md"
       proposal: "numind-server/proposals/credits-system-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-04-18-credits-system-design.md"
-      plan: null
+      plan: "numind-server/docs/superpowers/plans/credits-system-plan.md"
       review_spec_compliance: null
       review_code_quality: null
       qa: null
-    progress: null
+    progress:
+      total_tasks: 40
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_phase: "0"
+      tracks:
+        A: { total: 5, completed: 0 }
+        B: { total: 4, completed: 0 }
+        C: { total: 8, completed: 0 }
+        D: { total: 4, completed: 0 }
+        E: { total: 6, completed: 0 }
+        F: { total: 4, completed: 0 }
+        G: { total: 2, completed: 0 }
+      phase2_tasks: 6
+      phase3_tasks: 4
+      current_task: null
     rollback: null
     last_verified: null
     decisions:
@@ -985,6 +1000,10 @@ features:
       - "2026-04-19: S2 Section 5 完成（可观测性 + 边界 + E2E）。Langfuse 新增 4 个 span：credit-estimate/credit-reserve/credit-reconcile/credit-refund 含完整字段 schema；7 项迁移数据观察指标；12 项扩展边界情况矩阵；6 条 Playwright E2E 路径（credits 正常流 / 跨池扣减 / 非会员拒 / legacy_tier 零扣减 / SalesRAG 漏洞修复 / trial 完整生命周期）；数据 spike 产出 6 项验证清单；S5 Gate 8 项验证计划"
       - "2026-04-19: Section 5 按用户要求不再独立 review，直接落盘进入 S2 Gate"
       - "2026-04-19: S2 spec 5 sections 全部完成；DRAFT Complete，等待 S2 Gate 人类确认设计方向"
+      - "2026-04-19: S2 Gate 通过（用户确认设计方向）"
+      - "2026-04-19: S3 plan 完成，采用 Hybrid Parallel 执行模型：Phase 0 契约冻结（serial）+ Phase 1 7 条 track（分两批 dispatch，Batch 1={A,B,E,F,G}, Batch 2={C,D}）+ Phase 2 Integration（serial）+ Phase 3 Verification"
+      - "2026-04-19: S3 plan 经 Sonnet 独立 reviewer PASS_WITH_CONCERNS，修复全部 4 个 P1：Task 2.0 补 GetBalance endpoint 改造 + cron 接线；Track C 补 C.8 Langfuse span 埋点专项 task（4 span + trace metadata）；Phase 1 明确分两批 dispatch 策略；Track D 的 cron fallback 拆到独立文件 cron_billing.go 避免与 Track C 共改 credit.go"
+      - "2026-04-19: Plan 总 task 数 38 → 40（+C.8 + Task 2.0）；Phase 2 6 tasks；Phase 3 4 tasks"
     blockers: []
     created_at: "2026-04-18T12:00:00+08:00"
     completed_at: null
