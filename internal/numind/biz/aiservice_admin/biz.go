@@ -19,18 +19,15 @@ import (
 
 // RouteItem is the wire-format representation of a single ai_service_route row
 // returned inside the service detail response (spec §4.4).
+// Pricing fields were removed in T-arch (pricing_architecture_decision "搞法 2"):
+// they are now read from pricing_rule, not ai_service_route.
 type RouteItem struct {
-	ID                 uint64   `json:"id"`
-	ProviderID         uint64   `json:"provider_id"`
-	ProviderName       string   `json:"provider_name"`
-	ProviderModelID    string   `json:"provider_model_id"`
-	Priority           int      `json:"priority"`
-	PricingUnit        string   `json:"pricing_unit"`
-	InputPricePerMTok  float64  `json:"input_price_per_mtok"`
-	OutputPricePerMTok float64  `json:"output_price_per_mtok"`
-	PricePerCall       *float64 `json:"price_per_call,omitempty"`
-	PricePerSecond     *float64 `json:"price_per_second,omitempty"`
-	IsActive           bool     `json:"is_active"`
+	ID              uint64 `json:"id"`
+	ProviderID      uint64 `json:"provider_id"`
+	ProviderName    string `json:"provider_name"`
+	ProviderModelID string `json:"provider_model_id"`
+	Priority        int    `json:"priority"`
+	IsActive        bool   `json:"is_active"`
 }
 
 // ServiceDetail is the wire-format representation of a single ai_service row with
@@ -198,16 +195,11 @@ func (b *aiServiceAdminBiz) GetService(ctx context.Context, id uint64) (*Service
 	routeItems := make([]RouteItem, 0, len(routes))
 	for _, r := range routes {
 		item := RouteItem{
-			ID:                 r.ID,
-			ProviderID:         r.ProviderID,
-			ProviderModelID:    r.ProviderModelID,
-			Priority:           r.Priority,
-			PricingUnit:        r.PricingUnit,
-			InputPricePerMTok:  r.InputPricePerMTok,
-			OutputPricePerMTok: r.OutputPricePerMTok,
-			PricePerCall:       r.PricePerCall,
-			PricePerSecond:     r.PricePerSecond,
-			IsActive:           r.IsActive,
+			ID:              r.ID,
+			ProviderID:      r.ProviderID,
+			ProviderModelID: r.ProviderModelID,
+			Priority:        r.Priority,
+			IsActive:        r.IsActive,
 		}
 		if r.Provider != nil {
 			item.ProviderName = r.Provider.Name

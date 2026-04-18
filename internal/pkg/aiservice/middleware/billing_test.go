@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
+
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/billing"
@@ -17,8 +19,9 @@ import (
 // ----------------------------------------------------------------------------
 
 type mockUsageStore struct {
-	records []*model.UsageRecord
-	err     error
+	records      []*model.UsageRecord
+	err          error
+	pricingRules map[string]*model.PricingRule // key: "serviceType|provider|model"
 }
 
 func (m *mockUsageStore) CreateUsageRecord(_ context.Context, r *model.UsageRecord) error {
@@ -27,6 +30,52 @@ func (m *mockUsageStore) CreateUsageRecord(_ context.Context, r *model.UsageReco
 	}
 	m.records = append(m.records, r)
 	return nil
+}
+
+func (m *mockUsageStore) GetPricingRule(_ context.Context, serviceType, provider, modelName string) (*model.PricingRule, error) {
+	if m.pricingRules == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	key := serviceType + "|" + provider + "|" + modelName
+	rule, ok := m.pricingRules[key]
+	if !ok {
+		// Try provider-level default (empty model).
+		key = serviceType + "|" + provider + "|"
+		rule, ok = m.pricingRules[key]
+	}
+	if !ok {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return rule, nil
+}
+
+// newMockStoreWithPricing creates a mockUsageStore pre-seeded with the three
+// pricing rules used by the default test routes (llm, ocr, asr).
+func newMockStoreWithPricing() *mockUsageStore {
+	pcall := 0.03
+	return &mockUsageStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm|dmxapi|deepseek-v3": {
+				BillingMode:       "flat",
+				FlatUnit:          "call",
+				InputPricePerMTok: 1.0,
+				OutputPricePerMTok: 4.0,
+				IsActive:          true,
+			},
+			"ocr|baidu|baidu-ocr-accurate": {
+				BillingMode:  "flat",
+				FlatUnit:     "call",
+				PricePerCall: pcall,
+				IsActive:     true,
+			},
+			"asr|funasr|funasr-paraformer": {
+				BillingMode:  "flat",
+				FlatUnit:     "call",
+				PricePerCall: 0.002,
+				IsActive:     true,
+			},
+		},
+	}
 }
 
 // ----------------------------------------------------------------------------
@@ -48,41 +97,32 @@ func llmRoute() *registry.ResolvedRoute {
 		ServiceKey:  "deepseek-v3",
 		ServiceType: "llm",
 		Provider:    registry.ProviderInfo{Name: "dmxapi"},
-		Pricing: registry.PricingInfo{
-			Unit:               "per_1m_tokens",
-			InputPricePerMTok:  1.0,
-			OutputPricePerMTok: 4.0,
-		},
+		// Pricing amounts resolved from pricing_rule at call time (T-arch).
+		Pricing: registry.PricingInfo{},
 	}
 }
 
 func ocrRoute() *registry.ResolvedRoute {
-	pc := 0.03
 	return &registry.ResolvedRoute{
 		TaskID:      "ocr.baidu",
 		ServiceID:   2,
 		ServiceKey:  "baidu-ocr-accurate",
 		ServiceType: "ocr",
 		Provider:    registry.ProviderInfo{Name: "baidu"},
-		Pricing: registry.PricingInfo{
-			Unit:         "per_call",
-			PricePerCall: &pc,
-		},
+		// Pricing amounts resolved from pricing_rule at call time (T-arch).
+		Pricing: registry.PricingInfo{},
 	}
 }
 
 func asrRoute() *registry.ResolvedRoute {
-	ps := 0.002
 	return &registry.ResolvedRoute{
 		TaskID:      "monitor.transcribe",
 		ServiceID:   3,
 		ServiceKey:  "funasr-paraformer",
 		ServiceType: "asr",
 		Provider:    registry.ProviderInfo{Name: "funasr"},
-		Pricing: registry.PricingInfo{
-			Unit:           "per_second",
-			PricePerSecond: &ps,
-		},
+		// Pricing amounts resolved from pricing_rule at call time (T-arch).
+		Pricing: registry.PricingInfo{},
 	}
 }
 
@@ -91,9 +131,9 @@ func asrRoute() *registry.ResolvedRoute {
 // ----------------------------------------------------------------------------
 
 // TestBilling_LLM_Success verifies that a successful LLM call persists the
-// correct token counts and pricing snapshot.
+// correct token counts and pricing snapshot (resolved from pricing_rule mock).
 func TestBilling_LLM_Success(t *testing.T) {
-	store := &mockUsageStore{}
+	store := newMockStoreWithPricing()
 	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
 	mw := Billing(deps)
 
@@ -156,7 +196,7 @@ func TestBilling_LLM_Success(t *testing.T) {
 // TestBilling_LLM_AdapterError verifies that when the adapter fails, a usage
 // record is still attempted (with zero tokens) and the error is propagated.
 func TestBilling_LLM_AdapterError(t *testing.T) {
-	store := &mockUsageStore{}
+	store := newMockStoreWithPricing()
 	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
 	mw := Billing(deps)
 
@@ -182,7 +222,7 @@ func TestBilling_LLM_AdapterError(t *testing.T) {
 
 // TestBilling_OCR_Success verifies per_call billing for OCR.
 func TestBilling_OCR_Success(t *testing.T) {
-	store := &mockUsageStore{}
+	store := newMockStoreWithPricing()
 	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
 	mw := Billing(deps)
 
@@ -217,7 +257,7 @@ func TestBilling_OCR_Success(t *testing.T) {
 
 // TestBilling_OCR_AdapterError verifies that OCR errors still write a record.
 func TestBilling_OCR_AdapterError(t *testing.T) {
-	store := &mockUsageStore{}
+	store := newMockStoreWithPricing()
 	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
 	mw := Billing(deps)
 
@@ -239,7 +279,7 @@ func TestBilling_OCR_AdapterError(t *testing.T) {
 
 // TestBilling_ASR_Success verifies per_second billing for ASR.
 func TestBilling_ASR_Success(t *testing.T) {
-	store := &mockUsageStore{}
+	store := newMockStoreWithPricing()
 	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
 	mw := Billing(deps)
 
@@ -264,17 +304,20 @@ func TestBilling_ASR_Success(t *testing.T) {
 	if r.DurationSeconds == nil || *r.DurationSeconds != dur {
 		t.Errorf("DurationSeconds: got %v, want %v", r.DurationSeconds, dur)
 	}
-	if r.PricingSecondSnapshot == nil {
-		t.Errorf("PricingSecondSnapshot should be set")
+	// pricing_rule has no per_second price; unit resolves to per_call from
+	// rule.PricePerCall. PricingCallSnapshot should be set; PricingSecondSnapshot
+	// is not populated (pricing_rule table does not have a price_per_second column).
+	if r.PricingCallSnapshot == nil {
+		t.Errorf("PricingCallSnapshot should be set for ASR (maps to per_call in pricing_rule)")
 	}
-	if r.Unit == nil || *r.Unit != "per_second" {
-		t.Errorf("Unit: got %v, want per_second", r.Unit)
+	if r.Unit == nil || *r.Unit != "per_call" {
+		t.Errorf("Unit: got %v, want per_call", r.Unit)
 	}
 }
 
 // TestBilling_ASR_AdapterError verifies that ASR errors still write a record.
 func TestBilling_ASR_AdapterError(t *testing.T) {
-	store := &mockUsageStore{}
+	store := newMockStoreWithPricing()
 	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
 	mw := Billing(deps)
 
@@ -295,6 +338,7 @@ func TestBilling_ASR_AdapterError(t *testing.T) {
 func TestBilling_StoreError_DoesNotBlockResponse(t *testing.T) {
 	store := &mockUsageStore{err: errors.New("db down")}
 	logger := &mockLogger{}
+	// No pricingRules → GetPricingRule returns ErrRecordNotFound (silent, non-fatal).
 	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: logger}
 	mw := Billing(deps)
 
@@ -329,10 +373,11 @@ func (m *mockBillingStore) CreateUsageRecords(_ context.Context, recs []*model.U
 	return nil
 }
 
+// GetPricingRule on mockBillingStore satisfies billing.UsageStore (used by the
+// async recorder path). Returns ErrRecordNotFound so calculateCostAndRevenue
+// short-circuits to 0/0 without panicking on a nil rule.
 func (m *mockBillingStore) GetPricingRule(_ context.Context, _, _, _ string) (*model.PricingRule, error) {
-	// Return a sentinel error so calculateCostAndRevenue short-circuits to 0/0
-	// without trying to dereference a nil rule.
-	return nil, errors.New("no pricing rule (mock)")
+	return nil, gorm.ErrRecordNotFound
 }
 
 func (m *mockBillingStore) GetPricingRuleTiers(_ context.Context, _ uint) ([]model.PricingRuleTier, error) {
@@ -411,6 +456,8 @@ func TestBilling_PrefersRecorderWhenInitialized(t *testing.T) {
 // reads the accumulated byte count via the *int pointer and estimates completion tokens
 // as ceil(bytes/2), and sets IsEstimated=true.
 func TestBilling_StreamingInterruption_EstimatesFromPointer(t *testing.T) {
+	// No pricing rules needed — the cancelled ctx will short-circuit the lookup,
+	// leaving snapshots nil; this test only asserts on IsEstimated + token count.
 	store := &mockUsageStore{}
 	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
 	mw := Billing(deps)
@@ -451,7 +498,7 @@ func TestBilling_StreamingInterruption_EstimatesFromPointer(t *testing.T) {
 // TestBilling_IsFallback_SetWhenFallbackCtxPresent verifies that UsageRecords created
 // during a fallback call (ctxKeyFallbackFromServiceID set) have IsFallback=true.
 func TestBilling_IsFallback_SetWhenFallbackCtxPresent(t *testing.T) {
-	store := &mockUsageStore{}
+	store := newMockStoreWithPricing()
 	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
 	mw := Billing(deps)
 
@@ -608,5 +655,120 @@ func TestBilling_AllBackendsUnconfigured_LogsError(t *testing.T) {
 	}
 	if len(logger.errors) == 0 {
 		t.Error("expected error log when both recorder and UsageStore are unconfigured")
+	}
+}
+
+// ============================================================================
+// Phase 3 (T-arch): pricing snapshot populated from pricing_rule
+// ============================================================================
+
+// TestBuildBaseRecord_PricingSnapshot_Flat verifies that buildBaseRecord reads
+// the pricing_rule table at call time and writes the correct snapshot fields for
+// a flat-billed LLM service (billing_mode = "flat", input/output prices > 0).
+func TestBuildBaseRecord_PricingSnapshot_Flat(t *testing.T) {
+	inputPrice := 2.5
+	outputPrice := 7.0
+	store := &mockUsageStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm|volc|my-model": {
+				BillingMode:        "flat",
+				FlatUnit:           "call",
+				InputPricePerMTok:  inputPrice,
+				OutputPricePerMTok: outputPrice,
+				IsActive:           true,
+			},
+		},
+	}
+	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
+
+	route := &registry.ResolvedRoute{
+		TaskID:      "sop.text",
+		ServiceID:   10,
+		ServiceKey:  "my-model",
+		ServiceType: "llm",
+		Provider:    registry.ProviderInfo{Name: "volc"},
+	}
+	r := buildBaseRecord(route, 1, deps, context.Background(), nil)
+
+	if r.PricingInputSnapshot == nil || *r.PricingInputSnapshot != inputPrice {
+		t.Errorf("PricingInputSnapshot: got %v, want %v", r.PricingInputSnapshot, inputPrice)
+	}
+	if r.PricingOutputSnapshot == nil || *r.PricingOutputSnapshot != outputPrice {
+		t.Errorf("PricingOutputSnapshot: got %v, want %v", r.PricingOutputSnapshot, outputPrice)
+	}
+	if r.PricingCallSnapshot != nil {
+		t.Errorf("PricingCallSnapshot: expected nil for per_1m_tokens billing, got %v", r.PricingCallSnapshot)
+	}
+	if r.Unit == nil || *r.Unit != "per_1m_tokens" {
+		t.Errorf("Unit: got %v, want per_1m_tokens", r.Unit)
+	}
+}
+
+// TestBuildBaseRecord_PricingSnapshot_Tiered verifies that buildBaseRecord leaves
+// all pricing snapshot fields nil for a tiered_token service, because the actual
+// cost is computed at flush time by calculateTieredCost in billing.Recorder.
+func TestBuildBaseRecord_PricingSnapshot_Tiered(t *testing.T) {
+	store := &mockUsageStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm|volc|tiered-model": {
+				BillingMode:       "tiered_token",
+				FlatUnit:          "call",
+				InputPricePerMTok: 1.0, // ignored for snapshot when tiered
+				IsActive:          true,
+			},
+		},
+	}
+	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
+
+	route := &registry.ResolvedRoute{
+		TaskID:      "sop.text",
+		ServiceID:   11,
+		ServiceKey:  "tiered-model",
+		ServiceType: "llm",
+		Provider:    registry.ProviderInfo{Name: "volc"},
+	}
+	r := buildBaseRecord(route, 1, deps, context.Background(), nil)
+
+	if r.PricingInputSnapshot != nil {
+		t.Errorf("PricingInputSnapshot: expected nil for tiered_token billing, got %v", r.PricingInputSnapshot)
+	}
+	if r.PricingOutputSnapshot != nil {
+		t.Errorf("PricingOutputSnapshot: expected nil for tiered_token billing, got %v", r.PricingOutputSnapshot)
+	}
+	if r.PricingCallSnapshot != nil {
+		t.Errorf("PricingCallSnapshot: expected nil for tiered_token billing, got %v", r.PricingCallSnapshot)
+	}
+	// Unit is still set (derived from pricing_rule) even for tiered mode.
+	if r.Unit == nil || *r.Unit != "per_1m_tokens" {
+		t.Errorf("Unit: got %v, want per_1m_tokens", r.Unit)
+	}
+}
+
+// TestBuildBaseRecord_PricingSnapshot_NoMatch verifies that buildBaseRecord leaves
+// all snapshot fields nil and Unit nil when no pricing_rule matches the route.
+func TestBuildBaseRecord_PricingSnapshot_NoMatch(t *testing.T) {
+	store := &mockUsageStore{} // no pricing rules configured
+	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
+
+	route := &registry.ResolvedRoute{
+		TaskID:      "sop.text",
+		ServiceID:   12,
+		ServiceKey:  "unknown-model",
+		ServiceType: "llm",
+		Provider:    registry.ProviderInfo{Name: "volc"},
+	}
+	r := buildBaseRecord(route, 1, deps, context.Background(), nil)
+
+	if r.PricingInputSnapshot != nil {
+		t.Errorf("PricingInputSnapshot: expected nil on no-match, got %v", r.PricingInputSnapshot)
+	}
+	if r.PricingOutputSnapshot != nil {
+		t.Errorf("PricingOutputSnapshot: expected nil on no-match, got %v", r.PricingOutputSnapshot)
+	}
+	if r.PricingCallSnapshot != nil {
+		t.Errorf("PricingCallSnapshot: expected nil on no-match, got %v", r.PricingCallSnapshot)
+	}
+	if r.Unit != nil {
+		t.Errorf("Unit: expected nil on no-match, got %v", r.Unit)
 	}
 }

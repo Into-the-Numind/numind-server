@@ -79,6 +79,13 @@ type UsageStore interface {
 	// CreateUsageRecord persists a single usage record.  Failures are non-fatal;
 	// callers should log the error but must not propagate it to the user.
 	CreateUsageRecord(ctx context.Context, r *model.UsageRecord) error
+
+	// GetPricingRule returns the matching pricing_rule for a
+	// (serviceType, provider, modelName) triple, with exact-model match preferred
+	// over the default empty-model fallback.
+	// Returns gorm.ErrRecordNotFound when no rule exists (billing falls back to
+	// leaving snapshots nil — cost recorded as 0, non-fatal).
+	GetPricingRule(ctx context.Context, serviceType, provider, modelName string) (*model.PricingRule, error)
 }
 
 // Deps carries the injected dependencies required by the standard middleware set.
@@ -181,6 +188,21 @@ type dbUsageStore struct {
 // CreateUsageRecord persists a single usage record. Failures are non-fatal.
 func (s *dbUsageStore) CreateUsageRecord(ctx context.Context, r *model.UsageRecord) error {
 	return s.db.WithContext(ctx).Create(r).Error
+}
+
+// GetPricingRule returns the best-matching pricing_rule row, preferring an
+// exact model match over the provider-level default (empty model string).
+func (s *dbUsageStore) GetPricingRule(ctx context.Context, serviceType, provider, modelName string) (*model.PricingRule, error) {
+	var rule model.PricingRule
+	err := s.db.WithContext(ctx).
+		Where("service_type = ? AND provider = ? AND model IN (?, '') AND is_active = ?",
+			serviceType, provider, modelName, true).
+		Order("CASE WHEN model = '' THEN 1 ELSE 0 END").
+		First(&rule).Error
+	if err != nil {
+		return nil, err
+	}
+	return &rule, nil
 }
 
 // Ensure dbUsageStore satisfies the interface.

@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"gorm.io/gorm"
+
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/model"
@@ -13,7 +15,6 @@ import (
 
 // buildTestRoute returns a minimal ResolvedRoute for use in tests.
 func buildTestRoute(serviceType string) *registry.ResolvedRoute {
-	unit := "per_1m_tokens"
 	return &registry.ResolvedRoute{
 		TaskID:      "test.task",
 		ServiceID:   42,
@@ -24,11 +25,9 @@ func buildTestRoute(serviceType string) *registry.ResolvedRoute {
 			Name: "test-provider",
 		},
 		ProviderModelID: "test-model-id",
-		Pricing: registry.PricingInfo{
-			Unit:               unit,
-			InputPricePerMTok:  1.0,
-			OutputPricePerMTok: 4.0,
-		},
+		// Pricing amounts removed from route in T-arch; billing middleware
+		// resolves them from pricing_rule at call time.
+		Pricing: registry.PricingInfo{Unit: "per_1m_tokens"},
 	}
 }
 
@@ -117,6 +116,12 @@ type spyUsageStore struct {
 func (s *spyUsageStore) CreateUsageRecord(_ context.Context, _ *model.UsageRecord) error {
 	*s.callOrder = append(*s.callOrder, "billing")
 	return nil
+}
+
+// GetPricingRule satisfies the updated UsageStore interface.
+// Returns ErrRecordNotFound so buildBaseRecord leaves snapshots nil (non-fatal).
+func (s *spyUsageStore) GetPricingRule(_ context.Context, _, _, _ string) (*model.PricingRule, error) {
+	return nil, gorm.ErrRecordNotFound
 }
 
 // TestBuildDefault_OrderingMatchesSpec verifies that BuildDefault assembles the chain

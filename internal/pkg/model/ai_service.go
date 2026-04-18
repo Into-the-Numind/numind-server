@@ -116,17 +116,12 @@ func ScopeOnlyLLM(db *gorm.DB) *gorm.DB {
 // AIServiceRoute maps to the ai_service_route table (renamed from llm_model_provider).
 // Stores provider routing mappings for all service types.
 type AIServiceRoute struct {
-	ID                 uint64       `gorm:"primaryKey;autoIncrement" json:"id"`
-	ModelID            uint64       `gorm:"not null;uniqueIndex:uk_model_provider" json:"model_id"`
-	ProviderID         uint64       `gorm:"not null;uniqueIndex:uk_model_provider" json:"provider_id"`
-	ProviderModelID    string       `gorm:"size:100;not null" json:"provider_model_id"`
-	Priority           int          `gorm:"default:0" json:"priority"`
-	InputPricePerMTok  float64      `gorm:"column:input_price_per_mtok;type:decimal(10,4);default:0" json:"input_price_per_mtok"`
-	OutputPricePerMTok float64      `gorm:"column:output_price_per_mtok;type:decimal(10,4);default:0" json:"output_price_per_mtok"`
-	PricingUnit        string       `gorm:"size:20;not null;default:'per_1m_tokens'" json:"pricing_unit"`
-	PricePerCall       *float64     `gorm:"column:price_per_call;type:decimal(10,6)" json:"price_per_call"`
-	PricePerSecond     *float64     `gorm:"column:price_per_second;type:decimal(10,6)" json:"price_per_second"`
-	IsActive           bool         `gorm:"default:true" json:"is_active"`
+	ID              uint64       `gorm:"primaryKey;autoIncrement" json:"id"`
+	ModelID         uint64       `gorm:"not null;uniqueIndex:uk_model_provider" json:"model_id"`
+	ProviderID      uint64       `gorm:"not null;uniqueIndex:uk_model_provider" json:"provider_id"`
+	ProviderModelID string       `gorm:"size:100;not null" json:"provider_model_id"`
+	Priority        int          `gorm:"default:0" json:"priority"`
+	IsActive        bool         `gorm:"default:true" json:"is_active"`
 	CreatedAt          time.Time    `json:"created_at"`
 	UpdatedAt          time.Time    `json:"updated_at"`
 	Provider           *LLMProvider `gorm:"foreignKey:ProviderID" json:"provider,omitempty"`

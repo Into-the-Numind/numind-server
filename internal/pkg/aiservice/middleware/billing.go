@@ -3,6 +3,9 @@ package middleware
 import (
 	"context"
 	"math"
+	"time"
+
+	"gorm.io/gorm"
 
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/registry"
@@ -30,11 +33,10 @@ func Billing(deps Deps) Middleware {
 		return func(ctx context.Context, route *registry.ResolvedRoute, req interface{}) (resp interface{}, err error) {
 			userID, _ := ctx.Value(ctxKeyUserID{}).(uint)
 
-			// Prepare the skeleton UsageRecord from the route's pricing snapshot.
-			// classifyServiceType is called here (before the adapter call) so the
-			// fine-grained service_type is stored in the record and used for
-			// pricing_rule lookup in the async recorder.
-			record := buildBaseRecord(route, userID, deps.clock(), ctx, req)
+			// Prepare the skeleton UsageRecord from route metadata + live pricing_rule lookup.
+			// classifyServiceType is called inside buildBaseRecord (before the adapter call) so the
+			// fine-grained service_type is stored in the record and used for the pricing_rule lookup.
+			record := buildBaseRecord(route, userID, deps, ctx, req)
 
 			// Call the next handler.
 			resp, err = next(ctx, route, req)
@@ -157,11 +159,13 @@ func classifyChatRequest(r aiservice.ChatRequest) string {
 // req is used by classifyServiceType to derive the fine-grained service_type
 // (llm_chat/llm_vision/embedding/rerank/ocr/asr) that pricing_rule uses,
 // normalising the vocabulary drift from ai_service.service_type (coarse: llm/ocr/asr).
-func buildBaseRecord(route *registry.ResolvedRoute, userID uint, clk Clock, ctx context.Context, req interface{}) *model.UsageRecord {
+//
+// Pricing snapshots are populated by querying pricing_rule at call time.
+// Pricing columns were removed from ai_service_route in T-arch; the inline lookup
+// uses route.ProviderModelID (already resolved by the registry) as a fallback key,
+// which is equivalent to billing.ResolvePricingRule without the extra DB round-trip.
+func buildBaseRecord(route *registry.ResolvedRoute, userID uint, deps Deps, ctx context.Context, req interface{}) *model.UsageRecord {
 	taskID := route.TaskID
-	unit := route.Pricing.Unit
-	// TODO(T-arch-merge): buildBaseRecord also needs to read pricing_rule snapshot using
-	// classifyServiceType result for PricingXSnapshot columns — T-arch owns that.
 	svcType := classifyServiceType(req, route.ServiceType)
 
 	isFallback := false
@@ -178,26 +182,90 @@ func buildBaseRecord(route *registry.ResolvedRoute, userID uint, clk Clock, ctx 
 		IsFallback:  isFallback,
 		// AI Service Manager extension fields.
 		TaskID: &taskID,
-		Unit:   &unit,
 	}
 
-	// Populate pricing snapshots based on billing unit.
-	switch unit {
-	case "per_1m_tokens":
-		r.PricingInputSnapshot = ptrFloat64(route.Pricing.InputPricePerMTok)
-		r.PricingOutputSnapshot = ptrFloat64(route.Pricing.OutputPricePerMTok)
-	case "per_call":
-		if route.Pricing.PricePerCall != nil {
-			r.PricingCallSnapshot = route.Pricing.PricePerCall
+	// Populate pricing snapshots by reading pricing_rule at call time.
+	// This replaces the old behaviour of reading dead columns from ai_service_route.
+	if deps.UsageStore != nil {
+		lookupCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+		defer cancel()
+
+		rule, err := deps.UsageStore.GetPricingRule(lookupCtx, svcType, route.Provider.Name, route.ServiceKey)
+
+		// T-arch-prereq fixed the dev-DB so all active routes now have a matching
+		// pricing_rule.  On ErrRecordNotFound we attempt a second lookup using the
+		// provider_model_id (the identifier actually sent to the provider) as a
+		// fallback key.  This handles the edge case where pricing_rule.model stores
+		// a provider-native key rather than ai_service.model_key.  Using
+		// route.ProviderModelID (already resolved by the registry) avoids an extra
+		// DB round-trip compared to billing.ResolvePricingRule.
+		if err != nil && isNotFoundErr(err) {
+			rule, err = deps.UsageStore.GetPricingRule(lookupCtx, svcType, route.Provider.Name, route.ProviderModelID)
 		}
-	case "per_second":
-		if route.Pricing.PricePerSecond != nil {
-			r.PricingSecondSnapshot = route.Pricing.PricePerSecond
+
+		if err == nil && rule != nil {
+			// Derive billing unit from the rule's flat_unit / billing_mode combination.
+			// pricing_rule.flat_unit = "call" → per_call, "gb" → per_gb (not used here).
+			// For token-based pricing we check input/output prices > 0.
+			var unit string
+			switch {
+			case rule.BillingMode == "tiered_token" || rule.InputPricePerMTok > 0 || rule.OutputPricePerMTok > 0:
+				unit = "per_1m_tokens"
+			case rule.PricePerCall > 0:
+				unit = "per_call"
+			default:
+				unit = rule.FlatUnit
+			}
+			r.Unit = &unit
+
+			// Write pricing snapshots.  For tiered_token mode the actual cost is
+			// computed at flush time by calculateTieredCost; snapshotting a single
+			// tier range here would be misleading — leave all snapshots nil.
+			if rule.BillingMode != "tiered_token" {
+				switch unit {
+				case "per_1m_tokens":
+					if rule.InputPricePerMTok > 0 {
+						r.PricingInputSnapshot = ptrFloat64(rule.InputPricePerMTok)
+					}
+					if rule.OutputPricePerMTok > 0 {
+						r.PricingOutputSnapshot = ptrFloat64(rule.OutputPricePerMTok)
+					}
+				case "per_call":
+					if rule.PricePerCall > 0 {
+						r.PricingCallSnapshot = ptrFloat64(rule.PricePerCall)
+					}
+				}
+			}
 		}
+		// On no match: leave all snapshots nil and Unit nil (0 cost; non-fatal).
 	}
 
-	r.CreatedAt = clk.Now()
+	r.CreatedAt = deps.clock().Now()
 	return r
+}
+
+// isNotFoundErr returns true for gorm.ErrRecordNotFound and any error that
+// wraps it, so the billing middleware can fall through to the provider_model_id
+// fallback lookup without treating a missing rule as a hard error.
+func isNotFoundErr(err error) bool {
+	return err != nil && (err == gorm.ErrRecordNotFound || isGORMNotFound(err))
+}
+
+// isGORMNotFound uses errors.Is semantics to unwrap gorm.ErrRecordNotFound.
+func isGORMNotFound(err error) bool {
+	target := gorm.ErrRecordNotFound
+	for err != nil {
+		if err == target {
+			return true
+		}
+		type unwrapper interface{ Unwrap() error }
+		u, ok := err.(unwrapper)
+		if !ok {
+			break
+		}
+		err = u.Unwrap()
+	}
+	return false
 }
 
 // populateUsage fills in the usage-specific fields of a UsageRecord once the

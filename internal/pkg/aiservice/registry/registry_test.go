@@ -203,22 +203,21 @@ var svcID3 uint64 = 3 // deprecated service
 
 func makeResolvedRow(id uint64, modelKey string) *resolvedRouteRow {
 	return &resolvedRouteRow{
-		ServiceID:          id,
-		ModelKey:           modelKey,
-		ServiceType:        "llm",
-		CapabilityJSON:     model.JSONMap{"context_window": 65536},
-		LatencyTier:        "standard",
-		QualityTier:        "standard",
-		ProviderID:         10,
-		ProviderName:       "volc",
-		ProviderBaseURL:    "https://ark.volces.com/api/v3",
-		ProviderAPIKey:     "test-key",
-		ProviderModelID:    "deepseek-v3-" + modelKey,
-		RoutePriority:      0,
-		RouteIsActive:      true,
-		PricingUnit:        "per_1m_tokens",
-		InputPricePerMTok:  1.0,
-		OutputPricePerMTok: 2.0,
+		ServiceID:       id,
+		ModelKey:        modelKey,
+		ServiceType:     "llm",
+		CapabilityJSON:  model.JSONMap{"context_window": 65536},
+		LatencyTier:     "standard",
+		QualityTier:     "standard",
+		ProviderID:      10,
+		ProviderName:    "volc",
+		ProviderBaseURL: "https://ark.volces.com/api/v3",
+		ProviderAPIKey:  "test-key",
+		ProviderModelID: "deepseek-v3-" + modelKey,
+		RoutePriority:   0,
+		RouteIsActive:   true,
+		// Pricing fields removed from ai_service_route in T-arch.
+		// Snapshots are now read from pricing_rule by billing middleware.
 	}
 }
 

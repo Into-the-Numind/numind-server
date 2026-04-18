@@ -71,11 +71,9 @@ func fallbackRoute() registry.ResolvedRoute {
 		ServiceKey:  "fallback-model",
 		ServiceType: "llm",
 		Provider:    registry.ProviderInfo{Name: "fallback-provider"},
-		Pricing: registry.PricingInfo{
-			Unit:               "per_1m_tokens",
-			InputPricePerMTok:  2.0,
-			OutputPricePerMTok: 6.0,
-		},
+		// Pricing amounts removed from route in T-arch; billing middleware
+		// resolves them from pricing_rule at call time.
+		Pricing: registry.PricingInfo{Unit: "per_1m_tokens"},
 	}
 }
 

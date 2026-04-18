@@ -92,18 +92,13 @@ type resolvedRouteRow struct {
 	QualityTier        string
 	DeprecatedAt       *time.Time
 	IsActive           bool
-	ProviderID         uint64
-	ProviderName       string
-	ProviderBaseURL    string
-	ProviderAPIKey     string
-	ProviderModelID    string
-	RoutePriority      int
-	RouteIsActive      bool
-	PricingUnit        string
-	InputPricePerMTok  float64
-	OutputPricePerMTok float64
-	PricePerCall       *float64
-	PricePerSecond     *float64
+	ProviderID      uint64
+	ProviderName    string
+	ProviderBaseURL string
+	ProviderAPIKey  string
+	ProviderModelID string
+	RoutePriority   int
+	RouteIsActive   bool
 }
 
 // ----------------------------------------------------------------------------
@@ -312,12 +307,7 @@ SELECT
   p.api_key                AS provider_api_key,
   r.provider_model_id      AS provider_model_id,
   r.priority               AS route_priority,
-  r.is_active              AS route_is_active,
-  r.pricing_unit           AS pricing_unit,
-  r.input_price_per_mtok   AS input_price_per_mtok,
-  r.output_price_per_mtok  AS output_price_per_mtok,
-  r.price_per_call         AS price_per_call,
-  r.price_per_second       AS price_per_second
+  r.is_active              AS route_is_active
 FROM ai_service s
 JOIN ai_service_route r ON r.model_id = s.id AND r.is_active = true
 JOIN llm_provider p ON p.id = r.provider_id AND p.is_active = true
@@ -328,27 +318,22 @@ ORDER BY r.priority DESC, r.id ASC
 LIMIT 1
 `
 	type rawRow struct {
-		ServiceID          uint64     `gorm:"column:service_id"`
-		ModelKey           string     `gorm:"column:model_key"`
-		DisplayName        string     `gorm:"column:display_name"`
-		ServiceType        string     `gorm:"column:service_type"`
-		CapabilityJSONStr  *string    `gorm:"column:capability_json"`
-		LatencyTier        string     `gorm:"column:latency_tier"`
-		QualityTier        string     `gorm:"column:quality_tier"`
-		DeprecatedAt       *time.Time `gorm:"column:deprecated_at"`
-		IsActive           bool       `gorm:"column:is_active"`
-		ProviderID         uint64     `gorm:"column:provider_id"`
-		ProviderName       string     `gorm:"column:provider_name"`
-		ProviderBaseURL    string     `gorm:"column:provider_base_url"`
-		ProviderAPIKey     string     `gorm:"column:provider_api_key"`
-		ProviderModelID    string     `gorm:"column:provider_model_id"`
-		RoutePriority      int        `gorm:"column:route_priority"`
-		RouteIsActive      bool       `gorm:"column:route_is_active"`
-		PricingUnit        string     `gorm:"column:pricing_unit"`
-		InputPricePerMTok  float64    `gorm:"column:input_price_per_mtok"`
-		OutputPricePerMTok float64    `gorm:"column:output_price_per_mtok"`
-		PricePerCall       *float64   `gorm:"column:price_per_call"`
-		PricePerSecond     *float64   `gorm:"column:price_per_second"`
+		ServiceID         uint64     `gorm:"column:service_id"`
+		ModelKey          string     `gorm:"column:model_key"`
+		DisplayName       string     `gorm:"column:display_name"`
+		ServiceType       string     `gorm:"column:service_type"`
+		CapabilityJSONStr *string    `gorm:"column:capability_json"`
+		LatencyTier       string     `gorm:"column:latency_tier"`
+		QualityTier       string     `gorm:"column:quality_tier"`
+		DeprecatedAt      *time.Time `gorm:"column:deprecated_at"`
+		IsActive          bool       `gorm:"column:is_active"`
+		ProviderID        uint64     `gorm:"column:provider_id"`
+		ProviderName      string     `gorm:"column:provider_name"`
+		ProviderBaseURL   string     `gorm:"column:provider_base_url"`
+		ProviderAPIKey    string     `gorm:"column:provider_api_key"`
+		ProviderModelID   string     `gorm:"column:provider_model_id"`
+		RoutePriority     int        `gorm:"column:route_priority"`
+		RouteIsActive     bool       `gorm:"column:route_is_active"`
 	}
 
 	var row rawRow
@@ -369,27 +354,22 @@ LIMIT 1
 	}
 
 	return &resolvedRouteRow{
-		ServiceID:          row.ServiceID,
-		ModelKey:           row.ModelKey,
-		DisplayName:        row.DisplayName,
-		ServiceType:        row.ServiceType,
-		CapabilityJSON:     capJSON,
-		LatencyTier:        row.LatencyTier,
-		QualityTier:        row.QualityTier,
-		DeprecatedAt:       row.DeprecatedAt,
-		IsActive:           row.IsActive,
-		ProviderID:         row.ProviderID,
-		ProviderName:       row.ProviderName,
-		ProviderBaseURL:    row.ProviderBaseURL,
-		ProviderAPIKey:     row.ProviderAPIKey,
-		ProviderModelID:    row.ProviderModelID,
-		RoutePriority:      row.RoutePriority,
-		RouteIsActive:      row.RouteIsActive,
-		PricingUnit:        row.PricingUnit,
-		InputPricePerMTok:  row.InputPricePerMTok,
-		OutputPricePerMTok: row.OutputPricePerMTok,
-		PricePerCall:       row.PricePerCall,
-		PricePerSecond:     row.PricePerSecond,
+		ServiceID:       row.ServiceID,
+		ModelKey:        row.ModelKey,
+		DisplayName:     row.DisplayName,
+		ServiceType:     row.ServiceType,
+		CapabilityJSON:  capJSON,
+		LatencyTier:     row.LatencyTier,
+		QualityTier:     row.QualityTier,
+		DeprecatedAt:    row.DeprecatedAt,
+		IsActive:        row.IsActive,
+		ProviderID:      row.ProviderID,
+		ProviderName:    row.ProviderName,
+		ProviderBaseURL: row.ProviderBaseURL,
+		ProviderAPIKey:  row.ProviderAPIKey,
+		ProviderModelID: row.ProviderModelID,
+		RoutePriority:   row.RoutePriority,
+		RouteIsActive:   row.RouteIsActive,
 	}, nil
 }
 
@@ -416,12 +396,7 @@ SELECT
   p.api_key                AS provider_api_key,
   r.provider_model_id      AS provider_model_id,
   r.priority               AS route_priority,
-  r.is_active              AS route_is_active,
-  r.pricing_unit           AS pricing_unit,
-  r.input_price_per_mtok   AS input_price_per_mtok,
-  r.output_price_per_mtok  AS output_price_per_mtok,
-  r.price_per_call         AS price_per_call,
-  r.price_per_second       AS price_per_second
+  r.is_active              AS route_is_active
 FROM ai_service s
 JOIN ai_service_route r ON r.model_id = s.id AND r.is_active = true
 JOIN llm_provider p ON p.id = r.provider_id AND p.is_active = true
@@ -432,27 +407,22 @@ ORDER BY r.priority DESC, r.id ASC
 LIMIT 1
 `
 	type rawRow struct {
-		ServiceID          uint64     `gorm:"column:service_id"`
-		ModelKey           string     `gorm:"column:model_key"`
-		DisplayName        string     `gorm:"column:display_name"`
-		ServiceType        string     `gorm:"column:service_type"`
-		CapabilityJSONStr  *string    `gorm:"column:capability_json"`
-		LatencyTier        string     `gorm:"column:latency_tier"`
-		QualityTier        string     `gorm:"column:quality_tier"`
-		DeprecatedAt       *time.Time `gorm:"column:deprecated_at"`
-		IsActive           bool       `gorm:"column:is_active"`
-		ProviderID         uint64     `gorm:"column:provider_id"`
-		ProviderName       string     `gorm:"column:provider_name"`
-		ProviderBaseURL    string     `gorm:"column:provider_base_url"`
-		ProviderAPIKey     string     `gorm:"column:provider_api_key"`
-		ProviderModelID    string     `gorm:"column:provider_model_id"`
-		RoutePriority      int        `gorm:"column:route_priority"`
-		RouteIsActive      bool       `gorm:"column:route_is_active"`
-		PricingUnit        string     `gorm:"column:pricing_unit"`
-		InputPricePerMTok  float64    `gorm:"column:input_price_per_mtok"`
-		OutputPricePerMTok float64    `gorm:"column:output_price_per_mtok"`
-		PricePerCall       *float64   `gorm:"column:price_per_call"`
-		PricePerSecond     *float64   `gorm:"column:price_per_second"`
+		ServiceID         uint64     `gorm:"column:service_id"`
+		ModelKey          string     `gorm:"column:model_key"`
+		DisplayName       string     `gorm:"column:display_name"`
+		ServiceType       string     `gorm:"column:service_type"`
+		CapabilityJSONStr *string    `gorm:"column:capability_json"`
+		LatencyTier       string     `gorm:"column:latency_tier"`
+		QualityTier       string     `gorm:"column:quality_tier"`
+		DeprecatedAt      *time.Time `gorm:"column:deprecated_at"`
+		IsActive          bool       `gorm:"column:is_active"`
+		ProviderID        uint64     `gorm:"column:provider_id"`
+		ProviderName      string     `gorm:"column:provider_name"`
+		ProviderBaseURL   string     `gorm:"column:provider_base_url"`
+		ProviderAPIKey    string     `gorm:"column:provider_api_key"`
+		ProviderModelID   string     `gorm:"column:provider_model_id"`
+		RoutePriority     int        `gorm:"column:route_priority"`
+		RouteIsActive     bool       `gorm:"column:route_is_active"`
 	}
 
 	var row rawRow
@@ -471,27 +441,22 @@ LIMIT 1
 	}
 
 	return &resolvedRouteRow{
-		ServiceID:          row.ServiceID,
-		ModelKey:           row.ModelKey,
-		DisplayName:        row.DisplayName,
-		ServiceType:        row.ServiceType,
-		CapabilityJSON:     capJSON,
-		LatencyTier:        row.LatencyTier,
-		QualityTier:        row.QualityTier,
-		DeprecatedAt:       row.DeprecatedAt,
-		IsActive:           row.IsActive,
-		ProviderID:         row.ProviderID,
-		ProviderName:       row.ProviderName,
-		ProviderBaseURL:    row.ProviderBaseURL,
-		ProviderAPIKey:     row.ProviderAPIKey,
-		ProviderModelID:    row.ProviderModelID,
-		RoutePriority:      row.RoutePriority,
-		RouteIsActive:      row.RouteIsActive,
-		PricingUnit:        row.PricingUnit,
-		InputPricePerMTok:  row.InputPricePerMTok,
-		OutputPricePerMTok: row.OutputPricePerMTok,
-		PricePerCall:       row.PricePerCall,
-		PricePerSecond:     row.PricePerSecond,
+		ServiceID:       row.ServiceID,
+		ModelKey:        row.ModelKey,
+		DisplayName:     row.DisplayName,
+		ServiceType:     row.ServiceType,
+		CapabilityJSON:  capJSON,
+		LatencyTier:     row.LatencyTier,
+		QualityTier:     row.QualityTier,
+		DeprecatedAt:    row.DeprecatedAt,
+		IsActive:        row.IsActive,
+		ProviderID:      row.ProviderID,
+		ProviderName:    row.ProviderName,
+		ProviderBaseURL: row.ProviderBaseURL,
+		ProviderAPIKey:  row.ProviderAPIKey,
+		ProviderModelID: row.ProviderModelID,
+		RoutePriority:   row.RoutePriority,
+		RouteIsActive:   row.RouteIsActive,
 	}, nil
 }
 

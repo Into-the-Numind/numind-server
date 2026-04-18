@@ -34,13 +34,15 @@ type ProviderInfo struct {
 	APIKey  string
 }
 
-// PricingInfo summarises the billing parameters for a specific route.
+// PricingInfo summarises the billing unit for a specific route.
+// Pricing amounts are no longer stored on ai_service_route; they are resolved
+// at call time from pricing_rule by the billing middleware.
+// Unit is still carried here so middleware can choose the correct snapshot field
+// (per_1m_tokens → PricingInputSnapshot/PricingOutputSnapshot,
+//
+//	per_call → PricingCallSnapshot, per_second → PricingSecondSnapshot).
 type PricingInfo struct {
-	Unit               string // "per_1m_tokens" | "per_call" | "per_second"
-	InputPricePerMTok  float64
-	OutputPricePerMTok float64
-	PricePerCall       *float64
-	PricePerSecond     *float64
+	Unit string // "per_1m_tokens" | "per_call" | "per_second"
 }
 
 // ResolvedRoute is a call-ready description of a single AI service route.
@@ -432,13 +434,11 @@ func buildResolvedRoute(taskID string, row *resolvedRouteRow) ResolvedRoute {
 		},
 		ProviderModelID: row.ProviderModelID,
 		Capability:      cap,
-		Pricing: PricingInfo{
-			Unit:               row.PricingUnit,
-			InputPricePerMTok:  row.InputPricePerMTok,
-			OutputPricePerMTok: row.OutputPricePerMTok,
-			PricePerCall:       row.PricePerCall,
-			PricePerSecond:     row.PricePerSecond,
-		},
+		// Pricing.Unit is resolved from pricing_rule at call time by the billing
+		// middleware. The column was removed from ai_service_route in T-arch.
+		// TODO(T-arch-merge): populate Unit by joining pricing_rule here, or accept
+		// that the billing middleware derives Unit from the rule it fetches.
+		Pricing: PricingInfo{},
 	}
 }
 
