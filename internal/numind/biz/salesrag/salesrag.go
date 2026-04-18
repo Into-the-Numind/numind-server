@@ -778,8 +778,10 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 		})
 	}
 
-	// Mid-stream errors surface as channel close without final usage; treated as silent partial response.
-	// Pre-stream errors (e.g. auth, routing) are returned synchronously via chatErr below.
+	// Pre-stream errors (auth, routing) return synchronously via chatErr.
+	// Mid-stream errors surface via chunk.IsFinal && chunk.Err on the terminal
+	// chunk (A3 contract) — forward to the client as an "error" event instead
+	// of silently returning a truncated reply.
 	ch, chatErr := aiservice.ChatStream(ctx, profile.SalesragChat, aiservice.ChatRequest{
 		Messages:    aiMessages,
 		Temperature: 0.7,
@@ -788,6 +790,7 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 		return onEvent("error", fmt.Sprintf("stream chat failed: %v", chatErr))
 	}
 	var receivedTokens bool
+	var streamErr error
 	for chunk := range ch {
 		if chunk.ReasoningDelta != "" {
 			if evErr := onEvent("thinking", chunk.ReasoningDelta); evErr != nil {
@@ -800,6 +803,12 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 				return evErr
 			}
 		}
+		if chunk.IsFinal && chunk.Err != nil {
+			streamErr = chunk.Err
+		}
+	}
+	if streamErr != nil {
+		return onEvent("error", fmt.Sprintf("stream chat failed mid-flight: %v", streamErr))
 	}
 	if !receivedTokens {
 		log.Printf("[RetrieveStream] Warning: chat stream ended without any tokens — possible mid-stream error or empty model response")
@@ -2145,6 +2154,7 @@ func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint,
 		return "", fmt.Errorf("AI Gateway profile stream failed: %w", err)
 	}
 	var result string
+	var streamErr error
 	for chunk := range ch {
 		if chunk.Delta != "" {
 			result += chunk.Delta
@@ -2152,6 +2162,15 @@ func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint,
 				return result, err
 			}
 		}
+		if chunk.IsFinal && chunk.Err != nil {
+			streamErr = chunk.Err
+		}
+	}
+	if streamErr != nil {
+		// Refuse to return a partial profile that the caller would treat as
+		// a complete analysis — surface the failure so upstream retries or
+		// marks the job as failed.
+		return result, fmt.Errorf("AnalyzeProfileMultiFiles: stream error: %w", streamErr)
 	}
 	return result, nil
 }
@@ -2206,6 +2225,7 @@ func (b *salesRAGBiz) AnalyzeProfileText(ctx context.Context, userID uint, text 
 		return "", fmt.Errorf("AI Gateway profile text stream failed: %w", err)
 	}
 	var result string
+	var streamErr error
 	for chunk := range ch {
 		if chunk.Delta != "" {
 			result += chunk.Delta
@@ -2213,6 +2233,12 @@ func (b *salesRAGBiz) AnalyzeProfileText(ctx context.Context, userID uint, text 
 				return result, err
 			}
 		}
+		if chunk.IsFinal && chunk.Err != nil {
+			streamErr = chunk.Err
+		}
+	}
+	if streamErr != nil {
+		return result, fmt.Errorf("AnalyzeProfileText: stream error: %w", streamErr)
 	}
 	return result, nil
 }
@@ -2316,6 +2342,7 @@ func (b *salesRAGBiz) analyzeChatStyleTextStream(ctx context.Context, userID uin
 		return "", fmt.Errorf("AI 分析服务调用失败: %w", err)
 	}
 	var analysis string
+	var streamErr error
 	for chunk := range ch {
 		if chunk.Delta != "" {
 			analysis += chunk.Delta
@@ -2323,6 +2350,15 @@ func (b *salesRAGBiz) analyzeChatStyleTextStream(ctx context.Context, userID uin
 				return analysis, err
 			}
 		}
+		if chunk.IsFinal && chunk.Err != nil {
+			streamErr = chunk.Err
+		}
+	}
+	if streamErr != nil {
+		// Don't persist a half-built language style; propagate up so the
+		// caller can retry or surface the error to the user.
+		log.Printf("[analyzeChatStyleTextStream] stream error for user %d: %v", userID, streamErr)
+		return analysis, fmt.Errorf("analyzeChatStyleTextStream: stream error: %w", streamErr)
 	}
 	log.Printf("[analyzeChatStyleTextStream] AI Gateway success, result length: %d", len(analysis))
 
@@ -2520,6 +2556,7 @@ func (b *salesRAGBiz) analyzeChatStyleImageStream(ctx context.Context, userID ui
 		return "", fmt.Errorf("视觉模型分析失败: %w", err)
 	}
 	var result string
+	var visionStreamErr error
 	for chunk := range visionCh {
 		if chunk.Delta != "" {
 			result += chunk.Delta
@@ -2527,6 +2564,15 @@ func (b *salesRAGBiz) analyzeChatStyleImageStream(ctx context.Context, userID ui
 				return result, err
 			}
 		}
+		if chunk.IsFinal && chunk.Err != nil {
+			visionStreamErr = chunk.Err
+		}
+	}
+	if visionStreamErr != nil {
+		// Same fail-fast contract as the text path: don't persist a half-built
+		// language style on mid-stream failure.
+		log.Printf("[analyzeChatStyleImageStream] stream error for user %d: %v", userID, visionStreamErr)
+		return result, fmt.Errorf("analyzeChatStyleImageStream: stream error: %w", visionStreamErr)
 	}
 
 	log.Printf("[analyzeChatStyleImageStream] AI Gateway vision stream completed, result length: %d", len(result))
