@@ -971,6 +971,10 @@ features:
       - "2026-04-18: S2 Section 2 关键决策：3 张新表（coefficient/reservation/item）+ user.billing_mode 字段；FK 应用层保证（项目惯例）；operation VARCHAR+CHECK（MySQL 8.0.16+ 条件）；12 个 migration 文件（6 对 DDL+rollback）"
       - "2026-04-18: proposal v2 和 requirement 的 sub_user→user 残留已修正（全局 replace_all）"
       - "2026-04-18: Section 3-5 进行中；spec 文件已落盘带 TBD 标记，按 section 完成后追加"
+      - "2026-04-19: S2 Section 3 经 Opus round 1 FAIL（5 P0：cost 采集虚构/控制流反转低估/idempotency key 自相矛盾/reason 字段缺失/重复发明 store 方法）"
+      - "2026-04-19: Section 3 选 Direction 3（同步 pricing.CalculateCost）：新建 internal/pkg/pricing 模块，recorder 解耦 cost 计算；控制流反转 Reserve 前/Reconcile 后；sop.go runNode/runChat 和 salesrag.go Chat/ChatStream 调用链重写"
+      - "2026-04-19: Section 3 v2 FINAL 修复全部 5 P0+6 P1：idempotency key caller 传入 {run_id,node_id}；PreCheckResult 加 Reason 字段；复用现有 HasActiveSubscription；errno 改字符串 code；prompt_chars 改后端渲染（IPromptEstimator 接口）；billing_mode 独立短事务切换；ChatStream drain + context cancel；DeductCreditsTx 外部 tx 支持；防提前续费 tier rank 校验"
+      - "2026-04-19: 工作量修正 12-15 天 → 14-18 天（+3 天吸收 pricing 模块 + 控制流反转）；交付时间线 2026-05-08 → 2026-05-11"
     blockers: []
     created_at: "2026-04-18T12:00:00+08:00"
     completed_at: null

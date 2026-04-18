@@ -648,9 +648,589 @@ envsubst '${MIGRATION_CUTOFF}' < migrations/20260419_100500_init_billing_mode_va
 
 ---
 
-## §3 核心 biz API + 时序图（TBD — 进行中）
+## §3 核心 biz API + 时序图（v2 FINAL，Direction 3）
 
-_待 Section 3 brainstorming 完成后填充_
+> Section 3 经 Opus round 1 FAIL（5 P0）后按 **Direction 3 同步 pricing 计算**方向重写。核心决策：cost 计算从 recorder 解耦为独立 `pricing` 模块，调用方 LLM 返回后**同步**计算 actualCost，保留"用多少付多少"UX 承诺。工作量从 12-15 天修正为 **14-18 天**。
+
+### 3.0 actualCost 采集契约（v2 新增，解决 P0-1）
+
+#### 3.0.1 问题陈述
+
+现有 `UsageRecorder` 是 channel 异步批量 flusher（`recorder.go:220` buildRecord + flushBatch）。LLM 调用返回时 cost 未算出、未落库。defer FinalizeReservation 拿不到 actualCost。
+
+#### 3.0.2 决策：cost 计算解耦为同步 pure 函数
+
+新建 `internal/pkg/pricing/` 包，提取 `recorder.calculateCostAndRevenue` 的核心逻辑为公共函数。Recorder 保持异步批量持久化职责，不再做 cost 计算。
+
+```go
+// internal/pkg/pricing/pricing.go (新建)
+package pricing
+
+type ICalculator interface {
+    CalculateCost(ctx context.Context, serviceType, provider, model string,
+                  promptTokens, completionTokens int) (costCents int64, err error)
+}
+
+type calculator struct {
+    store store.IPricingStore
+    cache *lru.Cache[string, *model.PricingRule]  // key = serviceType+provider+model, 5min TTL
+}
+
+func NewCalculator(ds store.IStore) ICalculator {
+    return &calculator{store: ds.Pricing(), cache: lru.New(500)}
+}
+
+func (c *calculator) CalculateCost(ctx, serviceType, provider, model string, promptTokens, completionTokens int) (int64, error) {
+    rule, err := c.resolvePricingRuleCached(ctx, serviceType, provider, model)
+    if err != nil { return 0, err }
+    yuan := float64(promptTokens)/1_000_000*rule.InputPricePerMTok +
+            float64(completionTokens)/1_000_000*rule.OutputPricePerMTok
+    return int64(math.Round(yuan * 100)), nil
+}
+```
+
+#### 3.0.3 Recorder 改造（最小）
+
+`recorder.buildRecord` 改调 `pricing.CalculateCost`（单一数据源），recorder.go 内部不再维护 cost 计算。两处调用路径（recorder 异步入库 + biz/sop 同步拿值）共享同一公式。
+
+#### 3.0.4 Pricing 缓存策略
+
+`pricing_rule` 表是运营低频改动。用 in-process LRU 缓存（500 条容量，5 分钟 TTL）。LLM 调用前先查缓存命中率预期 99%+。缓存失效策略：被动 TTL 过期；管理端修改规则时通过 `pubsub.Publish("pricing_rule_changed")` 主动失效（现有 Redis pubsub 基础设施可用）。
+
+### 3.1 控制流反转影响范围（承认 P0-2）
+
+**诚实声明：** 这是调用链重写，不是签名调整。
+
+**重写的函数：**
+| 函数 | 改动性质 |
+|------|---------|
+| `biz/sop/sop.go runNode()` | 重写主循环：Reserve 前置 + LLM 调用 + 同步 pricing.CalculateCost + defer Reconcile |
+| `biz/sop/sop.go runChat()` | 同上（operation=sop_chat） |
+| `biz/salesrag/salesrag.go Chat()` | 新建完整 Reserve/Reconcile 包装（当前零扣减） |
+| `biz/salesrag/salesrag.go ChatStream()` | 新建完整包装 + stream drain 后 defer 触发 |
+| `biz/sop/sop.go deductCreditsForSop()` | 废弃（旧 fire-and-forget 风格语义变化，保留同名但内部重写） |
+| `biz/credit/credit.go CanPerformAIOperation()` | 1 release 过渡，内部转调 CheckAndEstimate，之后删 |
+
+### 3.2 场景 A：credits 正常 SOP 流程（v2）
+
+```
+┌────────────┐    ┌────────────┐    ┌──────────┐    ┌──────────────┐    ┌─────────────┐
+│  前端      │    │ controller │    │ biz/sop  │    │ biz/credit   │    │ pricing     │
+└─────┬──────┘    └─────┬──────┘    └────┬─────┘    └──────┬───────┘    └──────┬──────┘
+      │ POST /v1/credits/estimate (operation, reference_id)│                    │
+      ├────────────────────►│                    │                  │                    │
+      │                     │ 后端自己渲染 prompt 估算字符数               │                    │
+      │                     ├───────────────►│                  │                    │
+      │                     │                │ CheckAndEstimate │                    │
+      │                     │                ├─────────────────►│                    │
+      │                     │                │                  │ 查 coefficient + balance
+      │                     │                │                  │ 返回 PreCheckResult │
+      │                     │◄───────────────┤◄─────────────────┤                    │
+      │ {estimated: 180, sufficient, balance, coefficient_id, reason?} │             │
+      │◄────────────────────┤                │                  │                    │
+      │ 用户确认"开始运行"   │                │                  │                    │
+      │ POST /v1/sop/runs   │                │                  │                    │
+      ├────────────────────►│                │                  │                    │
+      │                     │ runNode loop   │                  │                    │
+      │                     ├───────────────►│                  │                    │
+      │                     │                │ 1. CheckAndEstimate (per-node)│       │
+      │                     │                │ 2. Reserve (idempKey=sop_run:{run_id}:{node_id})│
+      │                     │                │    TX: DeductCreditsTx + INSERT rsv + items
+      │                     │                │ 3. defer FinalizeReservation │        │
+      │                     │                │ 4. LLM 调用 (existing Langfuse trace) │
+      │                     │                │ 5. pricing.CalculateCost(serviceType, provider, model, pt, ct)│
+      │                     │                ├──────────────────────────────────────►│
+      │                     │                │                                       │ 查缓存/pricing_rule
+      │                     │                │◄──────────────────────────────────────┤
+      │                     │                │    actualCost = 150 cents             │
+      │                     │                │ 6. defer 触发 Reconcile(rsv, 150) │    │
+      │                     │                │    TX: 读 rsv+items，delta=150-180=-30 → 按 seq ASC 退还│
+      │                     │                │    UPDATE rsv SET status='reconciled'│
+      │                     │◄───────────────┤                                       │
+      │◄────────────────────┤ run result + 实际消耗 150 积分             │           │
+```
+
+#### 代码骨架（新 runNode 核心段）
+
+```go
+// biz/sop/sop.go
+func (b *sopBiz) runNode(ctx context.Context, run *model.SopRun, node *model.SopNode, user *model.User) (err error) {
+    // 1. 渲染 prompt（后端）+ 预估
+    promptText := b.renderNodePrompt(ctx, run, node)
+    pre, err := b.creditSvc.CheckAndEstimate(ctx, user, credit.OpSopRun, credit.EstimationInput{
+        PromptChars: utf8.RuneCountInString(promptText),
+        Model:       node.Model,
+        Provider:    node.Provider,
+    })
+    if err != nil {
+        // ErrInsufficientCredits 或 legacy_tier 次数用尽 → wrap with pre.Reason（P0-4）
+        return b.wrapCreditError(err, pre)
+    }
+
+    // 2. Reserve（legacy_tier 跳过）
+    var rsv *credit.Reservation
+    if !pre.SkipDeduction {
+        idempKey := fmt.Sprintf("sop_run:%d:%d", run.ID, node.ID)  // P0-3: caller 传稳定 key
+        rsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSopRun,
+            pre.EstimatedCredits, pre.CoefficientID, &idempKey)
+        if err != nil { return err }
+    }
+
+    // 3. defer Finalize（nil-safe for legacy_tier）
+    var actualCost int64
+    var opErr error
+    defer func() {
+        if rsv != nil {
+            _ = b.creditSvc.FinalizeReservation(ctx, rsv, &actualCost, &opErr)
+        }
+    }()
+
+    // 4. LLM 调用（现有代码，带 Langfuse trace）
+    resp, llmErr := b.llmAdapter.Chat(ctx, node.Model, promptText, ...)
+    if llmErr != nil {
+        opErr = llmErr  // defer 触发 Refund
+        return llmErr
+    }
+
+    // 5. 同步计算 cost（Direction 3）
+    if rsv != nil {
+        cost, err := b.pricing.CalculateCost(ctx, "llm_chat", resp.Provider, resp.Model,
+            resp.PromptTokens, resp.CompletionTokens)
+        if err != nil {
+            // pricing 失败不阻塞业务，走 Refund（no_actual_cost）
+            opErr = fmt.Errorf("pricing calc: %w", err)
+        } else {
+            actualCost = cost  // defer 触发 Reconcile
+        }
+    }
+
+    // 6. legacy_tier 仍需 MonthlySopRuns++
+    if pre.SkipDeduction {
+        _ = b.store.User().IncrementMonthlySopRuns(ctx, user.ID)
+    }
+
+    // ... 节点后续处理 ...
+    return nil
+}
+```
+
+### 3.3 场景 B：SOP 失败/取消 → Refund
+
+`opErr != nil` → defer FinalizeReservation 走 Refund：
+- LLM 调用失败（provider_timeout 等）
+- 用户 context.Cancelled（前端断开）
+- pricing 计算失败
+
+`FinalizeReservation` 内部逻辑：
+```go
+func (s *creditService) FinalizeReservation(ctx, rsv *Reservation, actualCost *int64, opErr *error) error {
+    if rsv == nil { return nil }
+    if *opErr != nil {
+        return s.Refund(ctx, rsv.ID, classifyReason(*opErr))
+    }
+    if actualCost == nil || *actualCost == 0 {
+        return s.Refund(ctx, rsv.ID, "no_actual_cost")  // 兜底防 pricing 失败误扣
+    }
+    return s.Reconcile(ctx, rsv.ID, *actualCost)
+}
+
+func classifyReason(err error) string {
+    if errors.Is(err, context.Canceled) { return "user_cancelled" }
+    if errors.Is(err, context.DeadlineExceeded) { return "provider_timeout" }
+    return "op_failed"
+}
+```
+
+Refund 按 `item.seq ASC` 遍历，原路退还到 `item.package_id`。如该 package 已过期：视为无操作（§2 边界表已说明）。
+
+### 3.4 场景 C：SalesRAG Chat 接入（prod 漏洞修复）
+
+```go
+// biz/salesrag/salesrag.go
+func (b *salesragBiz) Chat(ctx context.Context, req ChatReq) (resp *ChatResp, err error) {
+    user, err := b.store.User().GetByID(ctx, req.UserID)
+    if err != nil { return nil, err }
+
+    // RAG 召回先做（估算 prompt 含召回上下文）
+    ragCtx, err := b.retriever.Retrieve(ctx, req.SessionID, req.Message)
+    if err != nil { return nil, err }
+
+    promptChars := utf8.RuneCountInString(req.Message) + utf8.RuneCountInString(ragCtx)
+    pre, err := b.creditSvc.CheckAndEstimate(ctx, user, credit.OpSalesragChat, credit.EstimationInput{
+        PromptChars: promptChars,
+        Model:       b.defaultModel,
+        Provider:    b.defaultProvider,
+    })
+    if err != nil { return nil, b.wrapCreditError(err, pre) }
+
+    var rsv *credit.Reservation
+    if !pre.SkipDeduction {
+        requestUUID := getRequestUUIDFromCtx(ctx)  // middleware 注入的 X-Request-ID
+        idempKey := fmt.Sprintf("salesrag_chat:%s:%s", req.SessionID, requestUUID)
+        rsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSalesragChat,
+            pre.EstimatedCredits, pre.CoefficientID, &idempKey)
+        if err != nil { return nil, err }
+    }
+
+    var actualCost int64
+    var opErr error
+    defer func() {
+        if rsv != nil {
+            _ = b.creditSvc.FinalizeReservation(ctx, rsv, &actualCost, &opErr)
+        }
+    }()
+
+    resp, err = b.callLLM(ctx, req, ragCtx)
+    if err != nil { opErr = err; return nil, err }
+
+    if rsv != nil {
+        actualCost, _ = b.pricing.CalculateCost(ctx, "llm_chat",
+            resp.Provider, resp.Model, resp.PromptTokens, resp.CompletionTokens)
+    }
+    return resp, nil
+}
+```
+
+### 3.5 场景 D：ChatStream 流式特殊处理（P1-3 修正）
+
+```go
+func (b *salesragBiz) ChatStream(ctx context.Context, req ChatReq, ch chan<- Event) (err error) {
+    user, err := b.store.User().GetByID(ctx, req.UserID)
+    if err != nil { return err }
+
+    ragCtx, err := b.retriever.Retrieve(ctx, req.SessionID, req.Message)
+    if err != nil { return err }
+
+    pre, err := b.creditSvc.CheckAndEstimate(ctx, user, credit.OpSalesragChat, credit.EstimationInput{
+        PromptChars: utf8.RuneCountInString(req.Message) + utf8.RuneCountInString(ragCtx),
+        Model:       b.defaultModel,
+        Provider:    b.defaultProvider,
+    })
+    if err != nil { return b.wrapCreditError(err, pre) }
+
+    var rsv *credit.Reservation
+    if !pre.SkipDeduction {
+        idempKey := fmt.Sprintf("salesrag_chat:%s:%s", req.SessionID, getRequestUUIDFromCtx(ctx))
+        rsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSalesragChat,
+            pre.EstimatedCredits, pre.CoefficientID, &idempKey)
+        if err != nil { return err }
+    }
+
+    var actualCost int64
+    var opErr error
+    defer func() {
+        if rsv != nil {
+            _ = b.creditSvc.FinalizeReservation(ctx, rsv, &actualCost, &opErr)
+        }
+    }()
+
+    // Stream drain with token accumulator
+    var promptTokens, completionTokens int
+    streamErr := b.callLLMStream(ctx, req, ragCtx, func(chunk *StreamChunk) {
+        // chunk.PromptTokens 通常在首 chunk 给出，completionTokens 累加
+        if chunk.PromptTokens > 0 { promptTokens = chunk.PromptTokens }
+        completionTokens += chunk.CompletionTokens
+        ch <- Event{Type: "chunk", Data: chunk.Content}
+    })
+
+    // context cancelled (client disconnect) / 或 stream 错误 → Refund
+    if streamErr != nil {
+        opErr = streamErr  // 含 context.Canceled 分类
+        return streamErr
+    }
+
+    // 正常 drain 完成，同步计算 cost
+    if rsv != nil && promptTokens > 0 {
+        actualCost, _ = b.pricing.CalculateCost(ctx, "llm_chat",
+            b.defaultProvider, b.defaultModel, promptTokens, completionTokens)
+    }
+    return nil
+}
+```
+
+**关键：** defer 在 handler 函数返回时触发——无论 stream 是 drain 完成还是 client 中途断开（context.Canceled），都能走到 defer。drain 未完成时 `actualCost=0 → no_actual_cost` Refund（保守退还）。
+
+### 3.6 场景 E：legacy_tier SOP + reason 传递（P0-4 修正）
+
+```go
+// internal/numind/biz/credit/credit_service.go
+type PreCheckResult struct {
+    SkipDeduction    bool
+    Sufficient       bool
+    EstimatedCredits int64
+    CoefficientID    uint64
+    Balance          BalanceBreakdown
+    Reason           string  // P0-4: legacy_tier 次数不足时填入 CanRunSOP() 中文原因，前端直接展示
+}
+
+func (s *creditService) legacyCheckAndEstimate(ctx, user *model.User, op Operation) (*PreCheckResult, error) {
+    canRun, reason := user.CanRunSOP()  // 现有方法 user.go:89
+    if !canRun {
+        return &PreCheckResult{
+            SkipDeduction: true,
+            Sufficient:    false,
+            Reason:        reason,   // 如 "体验会员运行次数已达上限"
+            Balance:       s.buildLegacyBalance(user),
+        }, fmt.Errorf("%w: %s", ErrInsufficientCredits, reason)
+    }
+    return &PreCheckResult{
+        SkipDeduction: true,
+        Sufficient:    true,
+        Balance:       s.buildLegacyBalance(user),
+    }, nil
+}
+
+// biz 层统一 wrap helper
+func (b *sopBiz) wrapCreditError(err error, pre *credit.PreCheckResult) error {
+    if pre != nil && pre.Reason != "" && errors.Is(err, credit.ErrInsufficientCredits) {
+        return errno.ErrInsufficientCredits.SetMessage(pre.Reason)  // 前端看到中文原因
+    }
+    return err
+}
+```
+
+### 3.7 场景 F：Booster 购买会员门槛（P0-5 修正：复用 HasActiveSubscription）
+
+```go
+// biz/payment/payment.go CreateOrder 新增 Booster case（现有 switch 无此 case）
+case model.ProductTypeBooster:
+    // P0-5: 复用现有 creditStore.HasActiveSubscription（不新建 HasActiveSubscriptionPackage）
+    hasActive, err := b.creditStore.HasActiveSubscription(ctx, userID)
+    if err != nil { return nil, err }
+    if !hasActive {
+        return nil, errno.ErrMembershipRequired
+    }
+
+    user, err := b.store.User().GetByID(ctx, userID)
+    if err != nil { return nil, err }
+    if user.BillingMode == model.BillingModeLegacyTier {
+        return nil, errno.ErrBoosterNotAvailableForLegacy
+    }
+
+    // ... 现有订单创建逻辑（生成订单号、发起支付）不变 ...
+```
+
+### 3.8 billing_mode 切换时机（P1-4 修正：独立短事务）
+
+不在 `RechargeWithOrderTx` 的订单事务内切换（避免 User 锁争用导致订单回滚）。由 `biz/order.OnPaymentSuccess` webhook 处理流程分两步：
+
+```go
+// biz/order/order.go
+func (b *orderBiz) OnPaymentSuccess(ctx context.Context, orderID uint64) error {
+    // 1. 现有：RechargeWithOrderTx 发放 credit_package
+    if err := b.creditBiz.RechargeWithOrderTx(ctx, orderID, ...); err != nil {
+        return err  // 订单处理失败，整个回滚
+    }
+
+    // 2. 独立短事务切换 billing_mode（幂等；失败不影响订单结果）
+    if err := b.switchBillingModeIfLegacy(ctx, userID); err != nil {
+        logger.Warn("switch billing_mode failed; cron fallback will retry",
+            "user_id", userID, "order_id", orderID, "err", err)
+    }
+    return nil
+}
+
+func (b *orderBiz) switchBillingModeIfLegacy(ctx context.Context, userID uint) error {
+    return b.store.DB().WithContext(ctx).
+        Model(&model.User{}).
+        Where("id = ? AND billing_mode = ?", userID, model.BillingModeLegacyTier).
+        Update("billing_mode", model.BillingModeCredits).Error
+}
+```
+
+**兜底 cron**（避免切换失败导致用户永远留在 legacy_tier）：在 `biz/credit/RunCronTasks` 内新增 daily job，扫描 `billing_mode='legacy_tier' AND 存在 active subscription credit_package` 的用户，批量切换。
+
+### 3.9 防提前续费（P1-5 展开）
+
+```go
+// biz/payment/payment.go CreateOrder 内在所有 tier 相关分支前置校验
+case model.ProductTypeMonthly, model.ProductTypeYearly:
+    user, _ := b.store.User().GetByID(ctx, userID)
+    if user.Tier != model.TierFree && user.TierExpires != nil && user.TierExpires.After(time.Now()) {
+        targetRank := tierRank(req.ProductType)  // monthly → standard=2 / yearly → standard=2 / premium_yearly → premium=3
+        currentRank := tierRank(user.Tier)
+        if targetRank <= currentRank {
+            return nil, errno.ErrTierInPeriod  // 在期不允许同类或降级购买
+        }
+        // 允许升级（如 standard → premium）
+    }
+
+case model.ProductTypeTrial:
+    if b.creditStore.HasTrialPackage(ctx, userID) {  // 现有方法
+        return nil, errno.ErrTrialAlreadyPurchased
+    }
+    user, _ := b.store.User().GetByID(ctx, userID)
+    if user.Tier != model.TierFree && user.TierExpires != nil && user.TierExpires.After(time.Now()) {
+        return nil, errno.ErrTrialNotAvailableInPeriod  // 在期会员不能"降级购买 trial"
+    }
+```
+
+`tierRank`/`isEqualOrLowerTier` helper 放 `model/user.go`（和现有 tier 定义同位置）。
+
+### 3.10 Reserve 事务嵌套契约（P1-6 修正）
+
+**不嵌套事务。** 改造现有 `DeductCredits` 为支持外部 tx 传入：
+
+```go
+// biz/credit/credit.go 现有：
+func (b *creditBiz) DeductCredits(ctx, userID, credits int64, reason string) error {
+    return b.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+        return b.deductCreditsTx(ctx, tx, userID, credits, reason)
+    })
+}
+
+// 新增 public 方法供 Reserve 调用
+func (b *creditBiz) DeductCreditsTx(ctx context.Context, tx *gorm.DB, userID uint, credits int64, reason string) (items []credit.PackageDeduction, err error) {
+    // 原 Transaction 内部逻辑提取到这里
+    // 额外返回 items 列表供 Reserve 写入 credit_reservation_item
+}
+```
+
+Reserve 实装：
+
+```go
+func (s *creditService) creditsReserve(ctx, user, op, estimated, coefID, idempKey) (*Reservation, error) {
+    return s.store.DB().Transaction(func(tx *gorm.DB) error {
+        // 1. DeductCreditsTx（返回 FIFO 扣减的 items）
+        items, err := s.biz.DeductCreditsTx(ctx, tx, user.ID, estimated, "reserve:"+string(op))
+        if err != nil { return nil, err }  // ErrInsufficientCredits
+
+        // 2. INSERT credit_reservation
+        rsv := &model.CreditReservation{...}
+        if err := tx.Create(rsv).Error; err != nil { return nil, err }
+
+        // 3. INSERT credit_reservation_item × len(items)
+        for i, item := range items {
+            _ = tx.Create(&model.CreditReservationItem{
+                ReservationID: rsv.ID,
+                PackageID:     item.PackageID,
+                Credits:       item.Credits,
+                PackageType:   item.PackageType,
+                PackageExpiresAt: item.ExpiresAt,
+                Seq:           i + 1,  // FIFO 顺序号
+            }).Error
+        }
+
+        return rsv, nil
+    })
+}
+```
+
+### 3.11 HTTP Controller 契约（P1-2 修正：后端渲染 prompt）
+
+#### 新增：`POST /v1/credits/estimate`
+
+```go
+type EstimateReq struct {
+    Operation   string `json:"operation" binding:"required"`
+    ReferenceID string `json:"reference_id" binding:"required"`  // sop_template_id / session_id / node_id
+    // 不收 prompt_chars：由后端根据 operation+reference_id 自己渲染
+}
+
+type EstimateResp struct {
+    EstimatedCredits int64                   `json:"estimated_credits"`
+    Sufficient       bool                    `json:"sufficient"`
+    SkipDeduction    bool                    `json:"skip_deduction"`
+    Reason           string                  `json:"reason,omitempty"`  // legacy_tier 次数不足原因
+    Balance          credit.BalanceBreakdown `json:"balance"`
+    CoefficientID    uint64                  `json:"coefficient_id"`
+}
+
+func (ctl *CreditController) Estimate(c *gin.Context) {
+    var req EstimateReq
+    if err := c.ShouldBindJSON(&req); err != nil {
+        core.WriteResponse(c, errno.ErrBind.SetMessage(err.Error()), nil); return
+    }
+    userID := c.GetUint("userID")
+    user, _ := ctl.userStore.GetByID(c, userID)
+
+    // 后端渲染 prompt 字符数
+    promptChars, model, provider, err := ctl.promptEstimator.Estimate(c, req.Operation, req.ReferenceID)
+    if err != nil {
+        core.WriteResponse(c, err, nil); return
+    }
+
+    pre, err := ctl.creditSvc.CheckAndEstimate(c, user, credit.Operation(req.Operation), credit.EstimationInput{
+        PromptChars: promptChars, Model: model, Provider: provider,
+    })
+    if err != nil && !errors.Is(err, credit.ErrInsufficientCredits) {
+        core.WriteResponse(c, err, nil); return
+    }
+    // ErrInsufficientCredits 场景：仍返回 200 + sufficient=false + reason
+    core.WriteResponse(c, nil, EstimateResp{
+        EstimatedCredits: pre.EstimatedCredits, Sufficient: pre.Sufficient,
+        SkipDeduction: pre.SkipDeduction, Reason: pre.Reason,
+        Balance: pre.Balance, CoefficientID: pre.CoefficientID,
+    })
+}
+```
+
+**router.go：** `apiV1.POST("/credits/estimate", userTokenMiddleware, creditController.Estimate)`
+
+**`promptEstimator` 接口**（新增）：
+
+```go
+type IPromptEstimator interface {
+    Estimate(ctx context.Context, operation, referenceID string) (chars int, model, provider string, err error)
+}
+// 实现按 operation 分发：
+// - sop_run: 查 sop_template + 默认变量渲染估算字符数
+// - sop_chat: 取 sop_run.last_context 估算
+// - salesrag_chat: 取 session 近 N 轮上下文估算
+// 不精确但比前端传 0 强；真实 cost 由 Reconcile 兜底
+```
+
+#### 扩展：`GET /v1/credits/balance`（复用现有）
+
+返回扩展后的 `QuotaBreakdown`（含 `billing_mode` / `remaining_runs` / `monthly_limit` 非破坏字段，见 §2.11.1）。
+
+#### 管理端：`POST/PUT/GET/DELETE /v1/admin/estimation-coefficients`
+
+CRUD，内部调 `UpdateCoefficient`（含 §2.11.6 retry）。3 次失败返 HTTP 503 + `Coefficient.Concurrent` code。
+
+### 3.12 errno 条目（P1-1 修正：项目风格字符串 code）
+
+```go
+// internal/pkg/errno/code.go 新增
+var (
+    ErrInsufficientCredits          = &Errno{HTTP: 402, Code: "Credits.Insufficient", Message: "积分不足"}
+    ErrMembershipRequired           = &Errno{HTTP: 403, Code: "Membership.Required", Message: "需要会员资格才能购买加量包"}
+    ErrBoosterNotAvailableForLegacy = &Errno{HTTP: 403, Code: "Booster.LegacyTierNotAllowed", Message: "老会员制暂不支持加量包，到期升级后可购"}
+    ErrCoefficientConcurrent        = &Errno{HTTP: 503, Code: "Coefficient.Concurrent", Message: "系数更新繁忙，请稍后重试"}
+    ErrTierInPeriod                 = &Errno{HTTP: 400, Code: "Tier.InPeriod",           Message: "当前会员在期，不可购买同类或更低类型"}
+    ErrTrialAlreadyPurchased        = &Errno{HTTP: 400, Code: "Trial.AlreadyPurchased",  Message: "您已购买过体验卡"}
+    ErrTrialNotAvailableInPeriod    = &Errno{HTTP: 400, Code: "Trial.NotAvailableInPeriod", Message: "在期会员不支持购买体验卡"}
+)
+```
+
+### 3.13 helper 改造契约总览（v2 FINAL）
+
+| 文件 | 原实现 | v2 改造 |
+|------|-------|--------|
+| `biz/sop/sop.go runNode` | fire-and-forget deductCreditsForSop after LLM | **重写控制流**：CheckAndEstimate → Reserve → LLM → pricing.CalculateCost → defer Reconcile |
+| `biz/sop/sop.go runChat` | 同上 | 同上（operation=sop_chat） |
+| `biz/sop/sop.go deductCreditsForSop` | 直接调 DeductCredits | **废弃**：新路径内联在 runNode |
+| `biz/salesrag/salesrag.go Chat` | **零扣减（prod 漏洞）** | **新建完整包装** |
+| `biz/salesrag/salesrag.go ChatStream` | **零扣减（prod 漏洞）** | **新建完整包装** + drain 处理 |
+| `biz/credit/credit.go CanPerformAIOperation` | HasActiveMembership 分支 | 内部转调 CheckAndEstimate，1 release 过渡后删 |
+| `biz/credit/credit.go DeductCredits` | 自己开事务 | 保留签名不动，内部转调 DeductCreditsTx |
+| `biz/credit/credit.go DeductCreditsTx` | 不存在 | **新增**：接受外部 tx，返回 items 供 Reserve 用 |
+| `biz/credit/credit_service.go creditService` | 不存在 | **新建**：实现 ICreditService，含 Reserve/Reconcile/Refund/FinalizeReservation |
+| `biz/credit/credit.go RechargeWithOrderTx` | 发 credit_package | 不动 |
+| `biz/order/order.go OnPaymentSuccess` | 调 RechargeWithOrderTx | **新增 billing_mode 独立切换** + cron fallback |
+| `biz/payment/payment.go CreateOrder` | 无 booster case、无防提前续费 | **新增** booster 会员校验 + 防提前续费（所有 tier 产品） |
+| `internal/pkg/pricing/pricing.go` | 不存在 | **新建** `pricing.CalculateCost` + LRU 缓存 |
+| `internal/pkg/billing/recorder.go buildRecord` | 内置 cost 计算 | 改调 `pricing.CalculateCost`（单一数据源） |
+| `biz/credit/estimation.go UpdateCoefficient` | 不存在 | **新建**（含 retry，见 §2.11.6） |
+| `controller/v1/credit/credit.go Estimate` | 不存在 | **新建** HTTP endpoint |
+| `controller/v1/admin_credit/coefficients.go` | 不存在 | **新建** CRUD endpoints |
+| `internal/pkg/errno/code.go` | — | **新增** 7 个错误码 |
+
+### 3.14 不在本 feature scope 的改动（防范围蔓延）
+
+- 现有前端多处消费 `QuotaBreakdown`：只扩展字段（非破坏），不 breaking change
+- 现有 `credit_account.balance_cents` 字段：保持和 credit_package.remain_credits 的既有同步逻辑，不重写
+- 现有 `credit_transaction` 表：所有新扣减路径（Reserve/Reconcile/Refund）必须写入（审计轨迹），但表结构不改
 
 ## §4 跨仓库集成（HTTP API + Admin UI + 前端）（TBD）
 
