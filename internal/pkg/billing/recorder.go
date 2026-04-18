@@ -233,6 +233,14 @@ func (r *UsageRecorder) buildRecord(event *UsageEvent) *model.UsageRecord {
 		if record.CreatedAt.IsZero() {
 			record.CreatedAt = time.Now()
 		}
+		// Defense-in-depth: usage_record.metadata is a MySQL json column that
+		// rejects empty string ("Invalid JSON text: The document is empty").
+		// Middleware should initialise Metadata="{}", but a future Prebuilt
+		// caller may forget — sanitise here to prevent silent INSERT failures
+		// (we paid for one such regression at c3d68ec on 2026-04-18).
+		if record.Metadata == "" {
+			record.Metadata = "{}"
+		}
 		// Only compute if caller didn't already. Middlewares that snapshot
 		// pricing typically leave cost/revenue zeroed for the recorder to fill.
 		//

@@ -39,11 +39,16 @@ type ProviderDTO struct {
 }
 
 // CreateProviderRequest is the request body for creating a new provider.
+//
+// APIKey enforces min=8 to align with the admin-web ProviderEdit form's
+// client-side guard. The minimum is a heuristic for "user accidentally
+// pasted truncated key"; if a future provider legitimately uses shorter
+// credentials, relax this here and on the frontend together.
 type CreateProviderRequest struct {
 	Name        string `json:"name"         binding:"required"`
 	DisplayName string `json:"display_name" binding:"required"`
 	BaseURL     string `json:"base_url"     binding:"required"`
-	APIKey      string `json:"api_key"      binding:"required"`
+	APIKey      string `json:"api_key"      binding:"required,min=8"`
 	IsActive    *bool  `json:"is_active"`
 }
 
