@@ -388,6 +388,33 @@ func TestProvider_MaskedKeyInListResponse(t *testing.T) {
 	assert.NotContains(t, providers[0].APIKey, "supersecret")
 }
 
+// TestProvider_CreateWithIsActiveFalse verifies that a provider created with
+// is_active=false is actually persisted as inactive. Regression for the same
+// GORM default:true gotcha that affected Route (fix 2c20398). LLMProvider.IsActive
+// carries the same tag (internal/pkg/model/llm.go:12).
+func TestProvider_CreateWithIsActiveFalse(t *testing.T) {
+	db := newTestDB(t)
+	b := aiservice_admin.New(newMockRegistry(), db)
+
+	isActive := false
+	req := aiservice_admin.CreateProviderRequest{
+		Name:        "test-inactive-provider",
+		DisplayName: "Test Inactive",
+		BaseURL:     "https://example.com/v1",
+		APIKey:      "sk-test1234",
+		IsActive:    &isActive, // explicitly false
+	}
+	dto, err := b.CreateProvider(context.Background(), req, 1, "admin")
+	require.NoError(t, err)
+	require.NotNil(t, dto)
+	assert.False(t, dto.IsActive, "is_active=false in request should persist as false")
+
+	// Double-check the actual DB row.
+	var row model.LLMProvider
+	require.NoError(t, db.First(&row, dto.ID).Error)
+	assert.False(t, row.IsActive, "DB row should have is_active=false")
+}
+
 // TestProvider_EmptyAPIKeyOnUpdatePreservesExisting verifies that passing an empty
 // string for api_key in an update request does NOT overwrite the stored key.
 func TestProvider_EmptyAPIKeyOnUpdatePreservesExisting(t *testing.T) {

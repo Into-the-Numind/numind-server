@@ -1130,6 +1130,15 @@ func (b *aiServiceAdminBiz) CreateProvider(ctx context.Context, req CreateProvid
 	if err := b.db.WithContext(ctx).Create(&p).Error; err != nil {
 		return nil, fmt.Errorf("aiservice_admin.CreateProvider: %w", err)
 	}
+	// Same GORM default:true gotcha as AIServiceRoute.IsActive: if the caller
+	// explicitly asked for is_active=false, GORM's default handling persisted
+	// true. Apply a follow-up UpdateColumn to honour the request.
+	if !isActive && p.IsActive {
+		if err := b.db.WithContext(ctx).Model(&p).UpdateColumn("is_active", false).Error; err != nil {
+			return nil, fmt.Errorf("aiservice_admin.CreateProvider: fixup is_active: %w", err)
+		}
+		p.IsActive = false
+	}
 
 	// Write audit log entry.
 	_ = b.db.WithContext(ctx).Create(&model.AIServiceAuditLog{
