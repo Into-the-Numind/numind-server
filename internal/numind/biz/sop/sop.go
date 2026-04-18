@@ -2025,44 +2025,14 @@ func wrapCreditError(err error, pre *credit.PreCheckResult) error {
 	return err
 }
 
-// deductCreditsForSop 扣减积分（旧会员跳过，新用户按预估积分扣减）
-func (b *sopBiz) deductCreditsForSop(ctx context.Context, userID uint, operation, bizRefType, bizRefID string) {
-	if b.creditBiz == nil {
-		return
-	}
-
-	// 查询用户信息，判断是否为旧会员
-	user, err := b.ds.Users().GetByID(ctx, userID)
-	if err != nil {
-		log.C(ctx).Errorw("Failed to get user for credit deduction", "user_id", userID, "error", err)
-		return
-	}
-
-	// 旧会员走旧逻辑，不扣积分
-	if user.HasActiveMembership() {
-		return
-	}
-
-	// 使用预估积分作为扣减数值（cost_cents 来自异步 billing recorder，无法同步获取）
-	estimated := credit.GetEstimatedCredits(operation)
-	if estimated <= 0 {
-		return
-	}
-
-	if err := b.creditBiz.DeductCredits(ctx, userID, estimated, operation, bizRefType, bizRefID, nil); err != nil {
-		log.C(ctx).Errorw("Failed to deduct credits",
-			"user_id", userID,
-			"operation", operation,
-			"estimated_credits", estimated,
-			"error", err)
-		// 不阻断主流程，仅记录错误
-	} else {
-		log.C(ctx).Infow("Credits deducted successfully",
-			"user_id", userID,
-			"operation", operation,
-			"credits_deducted", estimated)
-	}
-}
+// deductCreditsForSop was the Phase 1 fire-and-forget credit deduction helper.
+// It has been removed in Phase 2 Task 2.1 — runNode (ExecuteNodeStream) and
+// runChat (ChatAfterRunStream) now drive deduction synchronously via
+// ICreditService.Reserve + FinalizeReservation (Reconcile or Refund) using
+// actual pricing.CalculateCost output. See spec §3.2 / §3.3 for the new flow.
+//
+// Keeping this comment intentionally (no code) as a grep-breadcrumb so anyone
+// searching for the old helper lands on the replacement rationale.
 
 // cleanPDFFormatCode 清理PDF格式代码等无效内容
 // 如果检测到内容是PDF格式代码（如FilterFlateDecode、stream、endstream等），返回空字符串
