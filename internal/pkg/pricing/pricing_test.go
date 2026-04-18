@@ -389,6 +389,230 @@ func TestCalculateCost_TieredBilling(t *testing.T) {
 	}
 }
 
+// ----------------------------------------------------------------------------
+// Task B.3: LRU cache — hit behaviour, TTL, and pubsub invalidation
+// ----------------------------------------------------------------------------
+
+// TestCache_RepeatedLookupsHitCache verifies that three calls to CalculateCost
+// for the same (serviceType, provider, model) triple result in only one DB
+// round-trip via GetPricingRule — the subsequent two serve from LRU.
+func TestCache_RepeatedLookupsHitCache(t *testing.T) {
+	store := &stubPricingStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_chat|ali|qwen-turbo": flatRule(1, 0.3, 0.6, 0.5, 1.0),
+		},
+	}
+	calc := NewCalculator(store)
+
+	for i := 0; i < 3; i++ {
+		_, err := calc.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-turbo",
+			1_000_000, 500_000)
+		if err != nil {
+			t.Fatalf("call %d: unexpected error %v", i+1, err)
+		}
+	}
+
+	if got := store.getPricingRuleCalls.Load(); got != 1 {
+		t.Errorf("GetPricingRule called %d times, want 1 (cache should absorb calls 2 and 3)", got)
+	}
+}
+
+// TestCache_TTLExpiry verifies that entries older than the configured TTL are
+// treated as expired and trigger a fresh DB lookup on next access. The cache
+// here is constructed directly with a short TTL so the test does not need to
+// sleep for the production 5-minute TTL.
+func TestCache_TTLExpiry(t *testing.T) {
+	rc := newRuleCache(10, 20*time.Millisecond)
+	rule := flatRule(1, 0.1, 0.2, 0.15, 0.3)
+	rc.Put("k1", rule)
+
+	if _, ok := rc.Get("k1"); !ok {
+		t.Fatal("Get immediately after Put should hit cache")
+	}
+
+	time.Sleep(30 * time.Millisecond) // exceed TTL
+
+	if _, ok := rc.Get("k1"); ok {
+		t.Error("Get after TTL should miss cache")
+	}
+}
+
+// TestCache_TTLExpiryThroughCalculator exercises the TTL path end-to-end: a
+// fresh Calculator observes the second call hitting the DB again once the
+// cache has expired.
+func TestCache_TTLExpiryThroughCalculator(t *testing.T) {
+	store := &stubPricingStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_chat|ali|qwen-turbo": flatRule(1, 0.3, 0.6, 0.5, 1.0),
+		},
+	}
+
+	// Build a calculator with a 15ms TTL cache by injecting ruleCache manually
+	// via the unexported field. This is intentional — we don't expose a
+	// test-configurable TTL on the public API to avoid polluting production
+	// callers with a parameter they never need.
+	calc := &calculator{
+		store: store,
+		cache: newRuleCache(10, 15*time.Millisecond),
+	}
+	registerCache(calc.cache)
+	defer unregisterCache(calc.cache)
+
+	if _, err := calc.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-turbo", 1_000, 500); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := calc.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-turbo", 1_000, 500); err != nil {
+		t.Fatal(err)
+	}
+	// Two immediate calls → 1 DB hit.
+	if got := store.getPricingRuleCalls.Load(); got != 1 {
+		t.Errorf("before expiry: GetPricingRule calls = %d, want 1", got)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	if _, err := calc.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-turbo", 1_000, 500); err != nil {
+		t.Fatal(err)
+	}
+	// After TTL: cache entry evicted, DB re-hit.
+	if got := store.getPricingRuleCalls.Load(); got != 2 {
+		t.Errorf("after expiry: GetPricingRule calls = %d, want 2", got)
+	}
+}
+
+// TestInvalidateCache_EvictsEntry exercises the pubsub-driven invalidation
+// contract: after a rule is cached, InvalidateCache for the same triple
+// removes the entry and the next CalculateCost re-queries the DB.
+func TestInvalidateCache_EvictsEntry(t *testing.T) {
+	store := &stubPricingStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_chat|ali|qwen-turbo": flatRule(1, 0.3, 0.6, 0.5, 1.0),
+		},
+	}
+	calc := NewCalculator(store)
+
+	// Warm cache.
+	if _, err := calc.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-turbo", 1_000, 500); err != nil {
+		t.Fatal(err)
+	}
+	// Second call served from cache.
+	if _, err := calc.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-turbo", 1_000, 500); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.getPricingRuleCalls.Load(); got != 1 {
+		t.Fatalf("warmed cache: calls = %d, want 1", got)
+	}
+
+	// Evict exactly this triple.
+	InvalidateCache("llm_chat", "ali", "qwen-turbo")
+
+	if _, err := calc.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-turbo", 1_000, 500); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.getPricingRuleCalls.Load(); got != 2 {
+		t.Errorf("after InvalidateCache: calls = %d, want 2", got)
+	}
+}
+
+// TestInvalidateCache_OnlyEvictsNamedKey verifies that invalidating one triple
+// does not disturb cached entries for other triples (operator-edit precision).
+func TestInvalidateCache_OnlyEvictsNamedKey(t *testing.T) {
+	store := &stubPricingStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_chat|ali|qwen-turbo": flatRule(1, 0.3, 0.6, 0.5, 1.0),
+			"llm_chat|ali|qwen-plus":  flatRule(2, 0.8, 2.0, 1.5, 3.0),
+		},
+	}
+	calc := NewCalculator(store)
+
+	// Warm both entries.
+	_, _ = calc.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-turbo", 100, 50)
+	_, _ = calc.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-plus", 100, 50)
+	before := store.getPricingRuleCalls.Load()
+	if before != 2 {
+		t.Fatalf("warm cache: calls = %d, want 2", before)
+	}
+
+	// Invalidate only qwen-turbo; qwen-plus should still be cached.
+	InvalidateCache("llm_chat", "ali", "qwen-turbo")
+
+	_, _ = calc.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-plus", 100, 50)
+	if got := store.getPricingRuleCalls.Load(); got != 2 {
+		t.Errorf("qwen-plus should have stayed cached: calls = %d, want 2", got)
+	}
+
+	_, _ = calc.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-turbo", 100, 50)
+	if got := store.getPricingRuleCalls.Load(); got != 3 {
+		t.Errorf("qwen-turbo should have re-fetched: calls = %d, want 3", got)
+	}
+}
+
+// TestInvalidateCache_FanoutAcrossCalculators exercises the global registry:
+// two Calculators share the same invalidation fan-out, so admin CRUD fires
+// once and every replica / instance evicts simultaneously.
+func TestInvalidateCache_FanoutAcrossCalculators(t *testing.T) {
+	store1 := &stubPricingStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_chat|ali|qwen-turbo": flatRule(1, 0.3, 0.6, 0.5, 1.0),
+		},
+	}
+	store2 := &stubPricingStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_chat|ali|qwen-turbo": flatRule(2, 0.3, 0.6, 0.5, 1.0),
+		},
+	}
+
+	calc1 := NewCalculator(store1)
+	calc2 := NewCalculator(store2)
+
+	// Warm both caches.
+	_, _ = calc1.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-turbo", 100, 50)
+	_, _ = calc2.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-turbo", 100, 50)
+
+	InvalidateCache("llm_chat", "ali", "qwen-turbo")
+
+	_, _ = calc1.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-turbo", 100, 50)
+	_, _ = calc2.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-turbo", 100, 50)
+
+	if got := store1.getPricingRuleCalls.Load(); got != 2 {
+		t.Errorf("store1 calls = %d, want 2 (warm + re-fetch after invalidate)", got)
+	}
+	if got := store2.getPricingRuleCalls.Load(); got != 2 {
+		t.Errorf("store2 calls = %d, want 2 (warm + re-fetch after invalidate)", got)
+	}
+}
+
+// TestInvalidateCache_UnknownKeyIsNoop ensures the API is a safe no-op when
+// called for a triple that was never cached (callers don't have to check).
+func TestInvalidateCache_UnknownKeyIsNoop(t *testing.T) {
+	// No panic, no error path — just call it.
+	InvalidateCache("llm_chat", "ghost", "nowhere")
+}
+
+// TestPurgeAllCaches drops every cached entry across every calculator. Used
+// for admin-wide pricing reload (e.g. bulk CSV import).
+func TestPurgeAllCaches(t *testing.T) {
+	store := &stubPricingStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_chat|ali|qwen-turbo": flatRule(1, 0.3, 0.6, 0.5, 1.0),
+			"llm_chat|ali|qwen-plus":  flatRule(2, 0.8, 2.0, 1.5, 3.0),
+		},
+	}
+	calc := NewCalculator(store)
+	_, _ = calc.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-turbo", 100, 50)
+	_, _ = calc.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-plus", 100, 50)
+	if got := store.getPricingRuleCalls.Load(); got != 2 {
+		t.Fatalf("warm: calls = %d, want 2", got)
+	}
+
+	PurgeAllCaches()
+
+	_, _ = calc.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-turbo", 100, 50)
+	_, _ = calc.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-plus", 100, 50)
+	if got := store.getPricingRuleCalls.Load(); got != 4 {
+		t.Errorf("after purge: calls = %d, want 4", got)
+	}
+}
+
 // TestCalculateCost_TieredBillingMissingTiers confirms that a tiered rule with
 // no tier sub-rows returns an error (data integrity violation) rather than
 // silently billing ¥0.
