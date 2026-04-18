@@ -178,6 +178,15 @@ type ChatChunk struct {
 	Model string `json:"model,omitempty"`
 	// Provider is the adapter name that produced this chunk (e.g. "ali", "volc").
 	Provider string `json:"provider,omitempty"`
+	// Err carries a mid-stream failure distinctly from "stream ended normally".
+	// Only populated on the terminal chunk (IsFinal=true). Consumers should check
+	// `if chunk.IsFinal && chunk.Err != nil` to distinguish graceful end from
+	// error termination. Before this field was added, errors were signaled only
+	// by a FinishReason string prefix ("parse_error:", "scan_error:") which
+	// forced consumers to string-match to differentiate. The json tag is "-"
+	// because `error` does not round-trip through JSON; for wire/log use,
+	// FinishReason still carries a human-readable summary.
+	Err error `json:"-"`
 }
 
 // EmbedRequest is the unified request for text embedding calls.

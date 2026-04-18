@@ -738,6 +738,45 @@ func TestRunOAIStream_LateUsageChunkCaptured(t *testing.T) {
 	}
 }
 
+// TestRunOAIStream_ParseError_PopulatesErrField checks that a malformed SSE
+// frame produces a terminal chunk with Err set to a non-nil error — so
+// consumers can do `if chunk.IsFinal && chunk.Err != nil` instead of string-
+// matching FinishReason prefixes like "parse_error:".
+func TestRunOAIStream_ParseError_PopulatesErrField(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {not valid json\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+	defer srv.Close()
+
+	a := NewAliAdapter()
+	route := mockRoute(srv.URL, "test-key", "test-model")
+
+	ch, err := a.ChatStream(context.Background(), route, aiservice.ChatRequest{
+		Messages: sampleMessages(),
+	})
+	if err != nil {
+		t.Fatalf("ChatStream: unexpected error: %v", err)
+	}
+
+	var terminal aiservice.ChatChunk
+	for c := range ch {
+		if c.IsFinal {
+			terminal = c
+		}
+	}
+
+	if terminal.Err == nil {
+		t.Fatal("terminal.Err is nil; expected non-nil on parse error")
+	}
+	if !strings.Contains(terminal.FinishReason, "parse_error") {
+		t.Errorf("FinishReason = %q; expected to contain 'parse_error'", terminal.FinishReason)
+	}
+}
+
 func TestRunOAIStream_NoSpuriousDuplicateFinalChunk(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeChatStreamWithSeparateFinish(w, "hello", "test-model")

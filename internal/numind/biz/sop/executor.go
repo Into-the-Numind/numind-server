@@ -474,6 +474,7 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 	var fullContent strings.Builder
 	var finalUsage *TokenUsage
 	var modelName string
+	var streamErr error
 	for chunk := range ch {
 		if chunk.Model != "" {
 			modelName = chunk.Model
@@ -491,17 +492,27 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 					"node_id", node.ID, "error", handlerErr)
 			}
 		}
-		if chunk.IsFinal && chunk.Usage != nil {
-			finalUsage = &billing.TokenUsage{
-				PromptTokens:     chunk.Usage.PromptTokens,
-				CompletionTokens: chunk.Usage.CompletionTokens,
-				TotalTokens:      chunk.Usage.TotalTokens,
-				ReasoningTokens:  chunk.Usage.ReasoningTokens,
-				ModelName:        modelName,
+		if chunk.IsFinal {
+			if chunk.Err != nil {
+				streamErr = chunk.Err
+			}
+			if chunk.Usage != nil {
+				finalUsage = &billing.TokenUsage{
+					PromptTokens:     chunk.Usage.PromptTokens,
+					CompletionTokens: chunk.Usage.CompletionTokens,
+					TotalTokens:      chunk.Usage.TotalTokens,
+					ReasoningTokens:  chunk.Usage.ReasoningTokens,
+					ModelName:        modelName,
+				}
 			}
 		}
 	}
 
+	// Mid-stream failure: propagate so the caller can fail the node rather
+	// than accepting a truncated output as "success".
+	if streamErr != nil {
+		return fullContent.String(), finalUsage, fmt.Errorf("executeViaGateway: stream error: %w", streamErr)
+	}
 	if fullContent.Len() == 0 && finalUsage == nil {
 		return "", nil, fmt.Errorf("executeViaGateway: empty response from Gateway (no chunks received)")
 	}

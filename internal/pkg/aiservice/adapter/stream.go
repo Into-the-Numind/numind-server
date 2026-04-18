@@ -78,6 +78,7 @@ func runOAIStream(r io.ReadCloser, ch chan<- aiservice.ChatChunk, provider strin
 				Usage:        lastUsage,
 				Provider:     provider,
 				Model:        resolvedModel,
+				Err:          fmt.Errorf("aiservice stream parse error: %w", err),
 			}
 			return
 		}
@@ -134,6 +135,7 @@ func runOAIStream(r io.ReadCloser, ch chan<- aiservice.ChatChunk, provider strin
 			Usage:        lastUsage,
 			Provider:     provider,
 			Model:        resolvedModel,
+			Err:          fmt.Errorf("aiservice stream scan error: %w", err),
 		}
 		return
 	}

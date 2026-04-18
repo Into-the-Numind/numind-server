@@ -183,6 +183,7 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 
 	var gatewayUsage *billing.TokenUsage
 	var modelName string
+	var streamErr error
 	for chunk := range ch {
 		if chunk.Model != "" {
 			modelName = chunk.Model
@@ -199,15 +200,27 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 				log.C(ctx).Warnw("ChatStream: handler error on token chunk", "error", handlerErr)
 			}
 		}
-		if chunk.IsFinal && chunk.Usage != nil {
-			gatewayUsage = &billing.TokenUsage{
-				PromptTokens:     chunk.Usage.PromptTokens,
-				CompletionTokens: chunk.Usage.CompletionTokens,
-				TotalTokens:      chunk.Usage.TotalTokens,
-				ReasoningTokens:  chunk.Usage.ReasoningTokens,
-				ModelName:        modelName,
+		if chunk.IsFinal {
+			if chunk.Err != nil {
+				streamErr = chunk.Err
+			}
+			if chunk.Usage != nil {
+				gatewayUsage = &billing.TokenUsage{
+					PromptTokens:     chunk.Usage.PromptTokens,
+					CompletionTokens: chunk.Usage.CompletionTokens,
+					TotalTokens:      chunk.Usage.TotalTokens,
+					ReasoningTokens:  chunk.Usage.ReasoningTokens,
+					ModelName:        modelName,
+				}
 			}
 		}
+	}
+	if streamErr != nil {
+		// Log and return so the SSE handler can emit an error event to the
+		// client instead of silently treating a truncated reply as success.
+		log.C(ctx).Warnw("ChatStream: stream ended with error",
+			"session_id", sessionID, "error", streamErr)
+		return fmt.Errorf("ChatStream: stream error: %w", streamErr)
 	}
 	if gatewayUsage == nil {
 		log.C(ctx).Warnw("ChatStream: stream ended without final usage chunk", "session_id", sessionID)
