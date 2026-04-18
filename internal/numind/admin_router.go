@@ -162,8 +162,15 @@ func installAdminRouters(g *gin.Engine) error {
 		aiGroup.GET("/tasks", aiTaskCtrl.ListTasks)
 		aiGroup.GET("/tasks/:id", aiTaskCtrl.GetTask)
 		aiGroup.PUT("/tasks/:id", aiTaskCtrl.UpdateTask)
+		// Audit Logs (T1)
 		auditCtrl := admin_ai.NewAuditLogController(aiSvcBiz)
 		aiGroup.GET("/audit-logs", auditCtrl.ListLogs)
+		// Route CRUD (T2)
+		routeCtrl := admin_ai.NewRouteController(aiSvcBiz)
+		aiGroup.POST("/services/:id/routes", routeCtrl.Create)
+		aiGroup.PUT("/routes/:route_id", routeCtrl.Update)
+		aiGroup.DELETE("/routes/:route_id", routeCtrl.Delete)
+		aiGroup.POST("/routes/:route_id/toggle", routeCtrl.Toggle)
 	}
 
 	return nil

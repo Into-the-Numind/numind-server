@@ -35,3 +35,14 @@ const (
 	AuditTargetService     = "service"
 	AuditTargetTaskProfile = "task_profile"
 )
+
+// Route audit action constants (T2: ai_service_route CRUD).
+const (
+	AuditActionRouteCreate = "route.create"
+	AuditActionRouteUpdate = "route.update"
+	AuditActionRouteDelete = "route.delete"
+	AuditActionRouteToggle = "route.toggle"
+)
+
+// AuditTargetRoute is the target_type value for ai_service_route audit entries.
+const AuditTargetRoute = "route"

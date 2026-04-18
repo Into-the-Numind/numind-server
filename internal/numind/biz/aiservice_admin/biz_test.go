@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 
 	"numind-server/internal/numind/biz/aiservice_admin"
 	"numind-server/internal/pkg/aiservice/profile"
@@ -18,19 +19,23 @@ import (
 )
 
 // newTestDB creates an isolated in-memory SQLite database pre-migrated with the
-// tables required by ListAuditLogs tests. Each call opens a fresh unnamed
-// ":memory:" connection so tests never share data, even under -count > 1 or
-// parallel runs.
+// tables required by audit log and route CRUD tests. Each call opens a fresh
+// unnamed ":memory:" connection so tests never share data, even under -count > 1
+// or parallel runs.
 func newTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-	err = db.AutoMigrate(
-		&model.AIServiceAuditLog{},
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err, "open sqlite in-memory DB")
+
+	require.NoError(t, db.AutoMigrate(
+		&model.LLMProvider{},
 		&model.AIService{},
+		&model.AIServiceRoute{},
+		&model.AIServiceAuditLog{},
 		&model.TaskProfile{},
-	)
-	require.NoError(t, err)
+	), "auto-migrate")
 
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
@@ -526,4 +531,322 @@ func TestListAuditLogs_TargetIDIsString(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, res.Items, 1)
 	assert.Equal(t, "42", res.Items[0].TargetID)
+}
+
+// ----------------------------------------------------------------------------
+// Route CRUD helpers
+// ----------------------------------------------------------------------------
+
+// seedProvider inserts a LLMProvider and returns its ID.
+func seedProvider(t *testing.T, db *gorm.DB, name string) uint64 {
+	t.Helper()
+	p := &model.LLMProvider{Name: name, DisplayName: name, BaseURL: "http://example.com", APIKey: "key", IsActive: true}
+	require.NoError(t, db.Create(p).Error)
+	return p.ID
+}
+
+// seedService inserts an AIService into the mock registry and returns its ID.
+func seedServiceInReg(reg *mockRegistry, db *gorm.DB, key string) uint64 {
+	svc := &model.AIService{ModelKey: key, DisplayName: key, ServiceType: "llm", IsActive: true}
+	_ = reg.SaveService(context.Background(), svc, 1, "test")
+	// Also insert into SQLite so routes can reference it (FK-like check).
+	_ = db.Create(svc)
+	return svc.ID
+}
+
+// ----------------------------------------------------------------------------
+// TestRouteCRUD_* tests
+// ----------------------------------------------------------------------------
+
+// TestRouteCRUD_CreateSuccess verifies that a route can be created with valid inputs.
+func TestRouteCRUD_CreateSuccess(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	serviceID := seedServiceInReg(reg, db, "svc-create")
+	providerID := seedProvider(t, db, "provider-create")
+
+	b := aiservice_admin.New(reg, db)
+
+	isActive := true
+	req := aiservice_admin.CreateRouteRequest{
+		ProviderID:      providerID,
+		ProviderModelID: "gpt-4o",
+		Priority:        0,
+		IsActive:        &isActive,
+	}
+	dto, warnings, err := b.CreateRoute(context.Background(), serviceID, req, 1, "admin")
+	require.NoError(t, err)
+	require.NotNil(t, dto)
+	assert.Equal(t, serviceID, dto.ServiceID)
+	assert.Equal(t, providerID, dto.ProviderID)
+	assert.Equal(t, "gpt-4o", dto.ProviderModelID)
+	assert.True(t, dto.IsActive)
+	assert.Empty(t, warnings, "no conflict on first route")
+}
+
+// TestRouteCRUD_ProviderNotFound verifies that CreateRoute rejects an unknown provider_id.
+func TestRouteCRUD_ProviderNotFound(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	serviceID := seedServiceInReg(reg, db, "svc-bad-provider")
+
+	b := aiservice_admin.New(reg, db)
+
+	isActive := true
+	req := aiservice_admin.CreateRouteRequest{
+		ProviderID:      99999, // does not exist
+		ProviderModelID: "gpt-4o",
+		IsActive:        &isActive,
+	}
+	_, _, err := b.CreateRoute(context.Background(), serviceID, req, 1, "admin")
+	require.Error(t, err)
+	var e *errno.Errno
+	require.ErrorAs(t, err, &e)
+	assert.Equal(t, 400, e.HTTP)
+}
+
+// TestRouteCRUD_ServiceNotFound verifies that CreateRoute rejects an unknown service ID.
+func TestRouteCRUD_ServiceNotFound(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	providerID := seedProvider(t, db, "provider-svc-missing")
+
+	b := aiservice_admin.New(reg, db)
+
+	isActive := true
+	req := aiservice_admin.CreateRouteRequest{
+		ProviderID:      providerID,
+		ProviderModelID: "gpt-4o",
+		IsActive:        &isActive,
+	}
+	_, _, err := b.CreateRoute(context.Background(), 99999, req, 1, "admin")
+	require.Error(t, err)
+}
+
+// TestRouteCRUD_PriorityConflictWarning verifies that creating a second active route
+// with the same priority emits a non-blocking warning but does NOT fail the request.
+func TestRouteCRUD_PriorityConflictWarning(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	serviceID := seedServiceInReg(reg, db, "svc-priority-conflict")
+	// Use two distinct providers so the uk_model_provider unique constraint is not violated.
+	providerIDA := seedProvider(t, db, "provider-priority-a")
+	providerIDB := seedProvider(t, db, "provider-priority-b")
+
+	b := aiservice_admin.New(reg, db)
+
+	isActive := true
+	reqFirst := aiservice_admin.CreateRouteRequest{
+		ProviderID:      providerIDA,
+		ProviderModelID: "model-a",
+		Priority:        5,
+		IsActive:        &isActive,
+	}
+	dtoFirst, _, err := b.CreateRoute(context.Background(), serviceID, reqFirst, 1, "admin")
+	require.NoError(t, err)
+	require.NotNil(t, dtoFirst)
+
+	reqSecond := aiservice_admin.CreateRouteRequest{
+		ProviderID:      providerIDB,
+		ProviderModelID: "model-b",
+		Priority:        5, // same priority → conflict warning
+		IsActive:        &isActive,
+	}
+	dto, warnings, err := b.CreateRoute(context.Background(), serviceID, reqSecond, 1, "admin")
+	require.NoError(t, err, "priority conflict must not fail the request")
+	require.NotNil(t, dto)
+	require.NotEmpty(t, warnings, "expected priority conflict warning")
+	assert.Contains(t, warnings[0], "priority 5 conflicts with route")
+}
+
+// TestRouteCRUD_LastActiveGuardOnDelete verifies that deleting the last active route
+// is rejected with an error message about keeping at least one active route.
+func TestRouteCRUD_LastActiveGuardOnDelete(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	serviceID := seedServiceInReg(reg, db, "svc-last-active")
+	providerID := seedProvider(t, db, "provider-last-active")
+
+	b := aiservice_admin.New(reg, db)
+
+	// Create a single active route.
+	isActive := true
+	req := aiservice_admin.CreateRouteRequest{
+		ProviderID:      providerID,
+		ProviderModelID: "solo-model",
+		Priority:        0,
+		IsActive:        &isActive,
+	}
+	dto, _, err := b.CreateRoute(context.Background(), serviceID, req, 1, "admin")
+	require.NoError(t, err)
+
+	// Attempt to delete the only active route — must be rejected.
+	err = b.DeleteRoute(context.Background(), dto.ID, 1, "admin")
+	require.Error(t, err)
+	var e *errno.Errno
+	require.ErrorAs(t, err, &e)
+	assert.Equal(t, 400, e.HTTP)
+	assert.Contains(t, e.Message, "至少保留一条激活路由")
+}
+
+// TestRouteCRUD_DeleteSuccessWithMultipleRoutes verifies that a route CAN be deleted
+// when at least one other active route remains.
+func TestRouteCRUD_DeleteSuccessWithMultipleRoutes(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	serviceID := seedServiceInReg(reg, db, "svc-multi-delete")
+	// Two distinct providers to avoid the uk_model_provider unique constraint.
+	providerID1 := seedProvider(t, db, "provider-multi-delete-1")
+	providerID2 := seedProvider(t, db, "provider-multi-delete-2")
+
+	b := aiservice_admin.New(reg, db)
+
+	isActive := true
+	createRoute := func(pID uint64, modelID string, priority int) *aiservice_admin.RouteDTO {
+		req := aiservice_admin.CreateRouteRequest{
+			ProviderID:      pID,
+			ProviderModelID: modelID,
+			Priority:        priority,
+			IsActive:        &isActive,
+		}
+		dto, _, err := b.CreateRoute(context.Background(), serviceID, req, 1, "admin")
+		require.NoError(t, err)
+		return dto
+	}
+
+	first := createRoute(providerID1, "model-1", 0)
+	second := createRoute(providerID2, "model-2", 1)
+	_ = second
+
+	// Delete the first — second remains, so guard passes.
+	err := b.DeleteRoute(context.Background(), first.ID, 1, "admin")
+	require.NoError(t, err)
+}
+
+// TestRouteCRUD_UpdateSuccess verifies partial update of provider_model_id and priority.
+func TestRouteCRUD_UpdateSuccess(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	serviceID := seedServiceInReg(reg, db, "svc-update")
+	providerID := seedProvider(t, db, "provider-update")
+
+	b := aiservice_admin.New(reg, db)
+
+	isActive := true
+	createReq := aiservice_admin.CreateRouteRequest{
+		ProviderID:      providerID,
+		ProviderModelID: "old-model",
+		Priority:        0,
+		IsActive:        &isActive,
+	}
+	created, _, err := b.CreateRoute(context.Background(), serviceID, createReq, 1, "admin")
+	require.NoError(t, err)
+
+	newModel := "new-model"
+	newPriority := 10
+	updateReq := aiservice_admin.UpdateRouteRequest{
+		ProviderModelID: &newModel,
+		Priority:        &newPriority,
+	}
+	updated, warnings, err := b.UpdateRoute(context.Background(), created.ID, updateReq, 1, "admin")
+	require.NoError(t, err)
+	require.NotNil(t, updated)
+	assert.Equal(t, "new-model", updated.ProviderModelID)
+	assert.Equal(t, 10, updated.Priority)
+	assert.Empty(t, warnings)
+}
+
+// TestRouteCRUD_LastActiveGuardOnToggle verifies that toggling the last active route
+// to inactive is rejected.
+func TestRouteCRUD_LastActiveGuardOnToggle(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	serviceID := seedServiceInReg(reg, db, "svc-toggle-guard")
+	providerID := seedProvider(t, db, "provider-toggle")
+
+	b := aiservice_admin.New(reg, db)
+
+	isActive := true
+	req := aiservice_admin.CreateRouteRequest{
+		ProviderID:      providerID,
+		ProviderModelID: "toggle-model",
+		Priority:        0,
+		IsActive:        &isActive,
+	}
+	dto, _, err := b.CreateRoute(context.Background(), serviceID, req, 1, "admin")
+	require.NoError(t, err)
+
+	// Toggle the only active route to inactive — must be rejected.
+	_, err = b.ToggleRoute(context.Background(), dto.ID, 1, "admin")
+	require.Error(t, err)
+	var e *errno.Errno
+	require.ErrorAs(t, err, &e)
+	assert.Contains(t, e.Message, "至少保留一条激活路由")
+}
+
+// TestRouteCRUD_ToggleSuccess verifies that toggling works when another active route exists.
+func TestRouteCRUD_ToggleSuccess(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	serviceID := seedServiceInReg(reg, db, "svc-toggle-ok")
+	// Two distinct providers to avoid the uk_model_provider unique constraint.
+	providerIDA := seedProvider(t, db, "provider-toggle-ok-a")
+	providerIDB := seedProvider(t, db, "provider-toggle-ok-b")
+
+	b := aiservice_admin.New(reg, db)
+
+	isActive := true
+	first := func() *aiservice_admin.RouteDTO {
+		req := aiservice_admin.CreateRouteRequest{
+			ProviderID: providerIDA, ProviderModelID: "alpha", Priority: 0, IsActive: &isActive,
+		}
+		dto, _, err := b.CreateRoute(context.Background(), serviceID, req, 1, "admin")
+		require.NoError(t, err)
+		return dto
+	}()
+	_ = func() *aiservice_admin.RouteDTO {
+		req := aiservice_admin.CreateRouteRequest{
+			ProviderID: providerIDB, ProviderModelID: "beta", Priority: 1, IsActive: &isActive,
+		}
+		dto, _, err := b.CreateRoute(context.Background(), serviceID, req, 1, "admin")
+		require.NoError(t, err)
+		return dto
+	}()
+
+	// Toggle first to inactive — beta remains active, so guard passes.
+	toggled, err := b.ToggleRoute(context.Background(), first.ID, 1, "admin")
+	require.NoError(t, err)
+	require.NotNil(t, toggled)
+	assert.False(t, toggled.IsActive, "should now be inactive")
+
+	// Toggle back to active.
+	toggled2, err := b.ToggleRoute(context.Background(), first.ID, 1, "admin")
+	require.NoError(t, err)
+	assert.True(t, toggled2.IsActive, "should be active again")
+}
+
+// TestRouteCRUD_LastActiveGuardOnUpdateDeactivate verifies that setting is_active=false
+// via UpdateRoute on the last active route is rejected.
+func TestRouteCRUD_LastActiveGuardOnUpdateDeactivate(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	serviceID := seedServiceInReg(reg, db, "svc-update-deactivate")
+	providerID := seedProvider(t, db, "provider-deactivate")
+
+	b := aiservice_admin.New(reg, db)
+
+	isActive := true
+	req := aiservice_admin.CreateRouteRequest{
+		ProviderID: providerID, ProviderModelID: "solo", Priority: 0, IsActive: &isActive,
+	}
+	dto, _, err := b.CreateRoute(context.Background(), serviceID, req, 1, "admin")
+	require.NoError(t, err)
+
+	inactive := false
+	updateReq := aiservice_admin.UpdateRouteRequest{IsActive: &inactive}
+	_, _, err = b.UpdateRoute(context.Background(), dto.ID, updateReq, 1, "admin")
+	require.Error(t, err)
+	var e *errno.Errno
+	require.ErrorAs(t, err, &e)
+	assert.Contains(t, e.Message, "至少保留一条激活路由")
 }

@@ -32,6 +32,35 @@ type RouteItem struct {
 	IsActive        bool   `json:"is_active"`
 }
 
+// RouteDTO is a slim DTO for route CRUD responses that intentionally omits
+// pricing fields. T-arch is dropping those columns from ai_service_route in
+// parallel; this struct will remain valid after that migration.
+type RouteDTO struct {
+	ID              uint64 `json:"id"`
+	ServiceID       uint64 `json:"service_id"`
+	ProviderID      uint64 `json:"provider_id"`
+	ProviderName    string `json:"provider_name"`
+	ProviderModelID string `json:"provider_model_id"`
+	Priority        int    `json:"priority"`
+	IsActive        bool   `json:"is_active"`
+}
+
+// CreateRouteRequest is the request body for creating a new ai_service_route.
+type CreateRouteRequest struct {
+	ProviderID      uint64 `json:"provider_id" binding:"required"`
+	ProviderModelID string `json:"provider_model_id" binding:"required"`
+	Priority        int    `json:"priority"`  // default 0
+	IsActive        *bool  `json:"is_active"` // default true; pointer to distinguish unset
+}
+
+// UpdateRouteRequest is the request body for partially updating an ai_service_route.
+// provider_id is immutable after create (requires delete + recreate).
+type UpdateRouteRequest struct {
+	ProviderModelID *string `json:"provider_model_id,omitempty"`
+	Priority        *int    `json:"priority,omitempty"`
+	IsActive        *bool   `json:"is_active,omitempty"`
+}
+
 // ServiceDetail is the wire-format representation of a single ai_service row with
 // its associated routes (spec §4.4 GET /v1/admin/ai/services/:id).
 type ServiceDetail struct {
@@ -172,6 +201,20 @@ type IAIServiceAdminBiz interface {
 	// filters (actor LIKE, target_type exact, date range). Results are sorted
 	// by created_at DESC. TargetName is resolved via a batched IN query per target_type.
 	ListAuditLogs(ctx context.Context, filter AuditLogFilter, page, pageSize int) (*ListAuditLogsResult, error)
+
+	// CreateRoute creates a new ai_service_route for the given service.
+	// Returns the created RouteDTO, optional priority-conflict warnings, and any error.
+	CreateRoute(ctx context.Context, serviceID uint64, req CreateRouteRequest, actorID uint64, actorName string) (*RouteDTO, []string, error)
+
+	// UpdateRoute partially updates an existing ai_service_route.
+	// Returns the updated RouteDTO, optional priority-conflict warnings, and any error.
+	UpdateRoute(ctx context.Context, routeID uint64, req UpdateRouteRequest, actorID uint64, actorName string) (*RouteDTO, []string, error)
+
+	// DeleteRoute removes a route after verifying the last-active guard.
+	DeleteRoute(ctx context.Context, routeID uint64, actorID uint64, actorName string) error
+
+	// ToggleRoute flips the is_active flag on a route after verifying the last-active guard.
+	ToggleRoute(ctx context.Context, routeID uint64, actorID uint64, actorName string) (*RouteDTO, error)
 }
 
 // aiServiceAdminBiz is the concrete implementation of IAIServiceAdminBiz.
@@ -681,6 +724,245 @@ func (b *aiServiceAdminBiz) resolveTargetNames(ctx context.Context, rows []model
 		}
 	}
 	return nameByTypeID
+}
+
+// routeDTOFromModel converts an AIServiceRoute model (with optional Provider preload)
+// to the slim RouteDTO used in CRUD responses.
+func routeDTOFromModel(r *model.AIServiceRoute) *RouteDTO {
+	dto := &RouteDTO{
+		ID:              r.ID,
+		ServiceID:       r.ModelID,
+		ProviderID:      r.ProviderID,
+		ProviderModelID: r.ProviderModelID,
+		Priority:        r.Priority,
+		IsActive:        r.IsActive,
+	}
+	if r.Provider != nil {
+		dto.ProviderName = r.Provider.Name
+	}
+	return dto
+}
+
+// checkPriorityConflicts returns warning strings when another active route on
+// the same service shares the same priority as the given route.
+func (b *aiServiceAdminBiz) checkPriorityConflicts(ctx context.Context, serviceID uint64, excludeRouteID uint64, priority int) ([]string, error) {
+	type conflictRow struct {
+		ID              uint64 `gorm:"column:id"`
+		ProviderModelID string `gorm:"column:provider_model_id"`
+	}
+	var conflicts []conflictRow
+	q := b.db.WithContext(ctx).
+		Table("ai_service_route").
+		Select("id, provider_model_id").
+		Where("model_id = ? AND is_active = true AND priority = ?", serviceID, priority)
+	if excludeRouteID > 0 {
+		q = q.Where("id != ?", excludeRouteID)
+	}
+	if err := q.Scan(&conflicts).Error; err != nil {
+		return nil, fmt.Errorf("checkPriorityConflicts: %w", err)
+	}
+	var warnings []string
+	for _, c := range conflicts {
+		warnings = append(warnings, fmt.Sprintf("priority %d conflicts with route %d (%s)", priority, c.ID, c.ProviderModelID))
+	}
+	return warnings, nil
+}
+
+// countOtherActiveRoutes returns the number of active routes for serviceID
+// excluding the given routeID. Used by the last-active guard.
+func (b *aiServiceAdminBiz) countOtherActiveRoutes(ctx context.Context, serviceID uint64, excludeRouteID uint64) (int64, error) {
+	var count int64
+	err := b.db.WithContext(ctx).
+		Table("ai_service_route").
+		Where("model_id = ? AND is_active = true AND id != ?", serviceID, excludeRouteID).
+		Count(&count).Error
+	if err != nil {
+		return 0, fmt.Errorf("countOtherActiveRoutes: %w", err)
+	}
+	return count, nil
+}
+
+// writeRouteAudit writes a single audit log entry for a route mutation.
+func (b *aiServiceAdminBiz) writeRouteAudit(ctx context.Context, action string, routeID uint64, before, after interface{}, actorID uint64, actorName string) {
+	diff := model.JSONMap{}
+	if before != nil {
+		diff["before"] = before
+	}
+	if after != nil {
+		diff["after"] = after
+	}
+	entry := &model.AIServiceAuditLog{
+		ActorID:    actorID,
+		ActorName:  actorName,
+		Action:     action,
+		TargetType: model.AuditTargetRoute,
+		TargetID:   routeID,
+		DiffJSON:   diff,
+	}
+	if err := b.db.WithContext(ctx).Create(entry).Error; err != nil {
+		log.C(ctx).Warnw("writeRouteAudit: failed to write audit log", "action", action, "route_id", routeID, "err", err)
+	}
+}
+
+// CreateRoute creates a new ai_service_route for the given service.
+func (b *aiServiceAdminBiz) CreateRoute(ctx context.Context, serviceID uint64, req CreateRouteRequest, actorID uint64, actorName string) (*RouteDTO, []string, error) {
+	// Validate service exists.
+	if _, err := b.reg.GetService(ctx, serviceID); err != nil {
+		return nil, nil, fmt.Errorf("aiservice_admin.CreateRoute: %w", err)
+	}
+
+	// Validate provider exists.
+	var provider model.LLMProvider
+	if err := b.db.WithContext(ctx).First(&provider, req.ProviderID).Error; err != nil {
+		return nil, nil, errno.ErrInvalidParameter.SetMessage("provider_id %d 不存在", req.ProviderID)
+	}
+
+	isActive := true
+	if req.IsActive != nil {
+		isActive = *req.IsActive
+	}
+
+	route := &model.AIServiceRoute{
+		ModelID:         serviceID,
+		ProviderID:      req.ProviderID,
+		ProviderModelID: req.ProviderModelID,
+		Priority:        req.Priority,
+		IsActive:        isActive,
+	}
+	if err := b.db.WithContext(ctx).Create(route).Error; err != nil {
+		return nil, nil, fmt.Errorf("aiservice_admin.CreateRoute: create: %w", err)
+	}
+
+	// Attach provider name for DTO.
+	route.Provider = &provider
+
+	// Write audit log.
+	b.writeRouteAudit(ctx, model.AuditActionRouteCreate, route.ID, nil, routeDTOFromModel(route), actorID, actorName)
+
+	// Non-blocking priority conflict check.
+	var warnings []string
+	if isActive {
+		w, wErr := b.checkPriorityConflicts(ctx, serviceID, route.ID, route.Priority)
+		if wErr == nil {
+			warnings = w
+		}
+	}
+
+	return routeDTOFromModel(route), warnings, nil
+}
+
+// UpdateRoute partially updates an existing ai_service_route.
+func (b *aiServiceAdminBiz) UpdateRoute(ctx context.Context, routeID uint64, req UpdateRouteRequest, actorID uint64, actorName string) (*RouteDTO, []string, error) {
+	var route model.AIServiceRoute
+	if err := b.db.WithContext(ctx).Preload("Provider").First(&route, routeID).Error; err != nil {
+		return nil, nil, errno.ErrInvalidParameter.SetMessage("路由 %d 不存在", routeID)
+	}
+	before := routeDTOFromModel(&route)
+
+	// Last-active guard: reject if setting is_active=false would leave 0 active routes.
+	if req.IsActive != nil && !*req.IsActive && route.IsActive {
+		count, err := b.countOtherActiveRoutes(ctx, route.ModelID, routeID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("aiservice_admin.UpdateRoute: %w", err)
+		}
+		if count == 0 {
+			return nil, nil, errno.ErrInvalidParameter.SetMessage("至少保留一条激活路由")
+		}
+	}
+
+	// Apply partial updates.
+	updates := map[string]interface{}{}
+	if req.ProviderModelID != nil {
+		updates["provider_model_id"] = *req.ProviderModelID
+		route.ProviderModelID = *req.ProviderModelID
+	}
+	if req.Priority != nil {
+		updates["priority"] = *req.Priority
+		route.Priority = *req.Priority
+	}
+	if req.IsActive != nil {
+		updates["is_active"] = *req.IsActive
+		route.IsActive = *req.IsActive
+	}
+
+	if len(updates) > 0 {
+		if err := b.db.WithContext(ctx).Model(&route).Updates(updates).Error; err != nil {
+			return nil, nil, fmt.Errorf("aiservice_admin.UpdateRoute: update: %w", err)
+		}
+	}
+
+	after := routeDTOFromModel(&route)
+	b.writeRouteAudit(ctx, model.AuditActionRouteUpdate, routeID, before, after, actorID, actorName)
+
+	// Non-blocking priority conflict check (only when resulting route is active).
+	var warnings []string
+	if route.IsActive {
+		w, wErr := b.checkPriorityConflicts(ctx, route.ModelID, routeID, route.Priority)
+		if wErr == nil {
+			warnings = w
+		}
+	}
+
+	return after, warnings, nil
+}
+
+// DeleteRoute removes a route after verifying the last-active guard.
+func (b *aiServiceAdminBiz) DeleteRoute(ctx context.Context, routeID uint64, actorID uint64, actorName string) error {
+	var route model.AIServiceRoute
+	if err := b.db.WithContext(ctx).First(&route, routeID).Error; err != nil {
+		return errno.ErrInvalidParameter.SetMessage("路由 %d 不存在", routeID)
+	}
+
+	// Last-active guard: only applies when the route is currently active.
+	if route.IsActive {
+		count, err := b.countOtherActiveRoutes(ctx, route.ModelID, routeID)
+		if err != nil {
+			return fmt.Errorf("aiservice_admin.DeleteRoute: %w", err)
+		}
+		if count == 0 {
+			return errno.ErrInvalidParameter.SetMessage("至少保留一条激活路由")
+		}
+	}
+
+	before := routeDTOFromModel(&route)
+	if err := b.db.WithContext(ctx).Delete(&route).Error; err != nil {
+		return fmt.Errorf("aiservice_admin.DeleteRoute: delete: %w", err)
+	}
+
+	b.writeRouteAudit(ctx, model.AuditActionRouteDelete, routeID, before, nil, actorID, actorName)
+	return nil
+}
+
+// ToggleRoute flips the is_active flag on a route after verifying the last-active guard.
+func (b *aiServiceAdminBiz) ToggleRoute(ctx context.Context, routeID uint64, actorID uint64, actorName string) (*RouteDTO, error) {
+	var route model.AIServiceRoute
+	if err := b.db.WithContext(ctx).Preload("Provider").First(&route, routeID).Error; err != nil {
+		return nil, errno.ErrInvalidParameter.SetMessage("路由 %d 不存在", routeID)
+	}
+	before := routeDTOFromModel(&route)
+
+	newActive := !route.IsActive
+
+	// Last-active guard: reject toggling active→inactive when it would leave 0 active routes.
+	if route.IsActive && !newActive {
+		count, err := b.countOtherActiveRoutes(ctx, route.ModelID, routeID)
+		if err != nil {
+			return nil, fmt.Errorf("aiservice_admin.ToggleRoute: %w", err)
+		}
+		if count == 0 {
+			return nil, errno.ErrInvalidParameter.SetMessage("至少保留一条激活路由")
+		}
+	}
+
+	if err := b.db.WithContext(ctx).Model(&route).Update("is_active", newActive).Error; err != nil {
+		return nil, fmt.Errorf("aiservice_admin.ToggleRoute: update: %w", err)
+	}
+	route.IsActive = newActive
+
+	after := routeDTOFromModel(&route)
+	b.writeRouteAudit(ctx, model.AuditActionRouteToggle, routeID, before, after, actorID, actorName)
+
+	return after, nil
 }
 
 // validateServiceType returns an error when serviceType is not one of llm | ocr | asr.
