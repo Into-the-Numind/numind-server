@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/store"
@@ -374,7 +375,7 @@ func (b *sopBiz) GetNextNode(ctx context.Context, runID uint) (*model.SopNode, b
 // ExecuteNodeStream 流式执行指定节点
 // modelKey: 用户选择的模型 key（空字符串表示使用节点默认配置）
 // thinkingMode: 是否开启深度思考模式
-func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text string, modelKey string, thinkingMode bool, handler func(event string, chunk string) error) error {
+func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text string, modelKey string, thinkingMode bool, handler func(event string, chunk string) error) (retErr error) {
 	// 互斥锁检测：防止同一个 RunID 的任务在后台并发执行（解决“执行互斥锁”问题）
 	if _, loaded := b.runningRuns.LoadOrStore(runID, struct{}{}); loaded {
 		log.C(ctx).Warnw("Detected concurrent execution attempt", "run_id", runID)
@@ -667,6 +668,49 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	)
 	ctx = langfuse.WithTrace(ctx, traceID)
 
+	// ===== Phase 2 Task 2.1: Reserve → LLM → Reconcile 控制流 =====
+	// 在 LLM 调用前：CheckAndEstimate + Reserve（legacy_tier 自动跳过，SkipDeduction=true）
+	// defer FinalizeReservation 在函数返回时对账：
+	//   - actualCost 非零 → Reconcile（delta 回补/退还）
+	//   - opErr 非空    → Refund（分类 user_cancelled / provider_timeout / op_failed）
+	//   - 两者都空       → Refund("no_actual_cost")（pricing 失败兜底）
+	// 注入点：在 langfuse trace 建立后，以便 credits span 挂到同一 trace 下。
+	var (
+		rsv        *credit.Reservation
+		actualCost int64
+		opErr      error
+	)
+	defer func() {
+		if rsv != nil && b.creditSvc != nil {
+			_ = b.creditSvc.FinalizeReservation(ctx, rsv, &actualCost, &opErr)
+		}
+	}()
+	if b.creditSvc != nil {
+		user, uerr := b.ds.Users().GetByID(ctx, run.UserID)
+		if uerr != nil {
+			log.C(ctx).Warnw("Failed to load user for credits pre-check; skipping Reserve",
+				"user_id", run.UserID, "err", uerr)
+		} else {
+			promptChars := computeSopPromptChars(template, node, conversationHistory, currentInput)
+			pre, err := b.creditSvc.CheckAndEstimate(ctx, user, credit.OpSopRun, credit.EstimationInput{
+				PromptChars: promptChars,
+				Model:       node.ModelName,
+				Provider:    providerFromModelName(node.ModelName),
+			})
+			if err != nil {
+				return wrapCreditError(err, pre)
+			}
+			if !pre.SkipDeduction {
+				idempKey := fmt.Sprintf("sop_run:%d:%d", runID, nodeID)
+				rsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSopRun,
+					pre.EstimatedCredits, pre.CoefficientID, &idempKey)
+				if err != nil {
+					return err // ErrInsufficientCredits race 等
+				}
+			}
+		}
+	}
+
 	var output, thinking string
 	var usage *TokenUsage
 	if modelKey != "" {
@@ -697,6 +741,9 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	}
 
 	if err != nil {
+		// LLM 调用失败 → defer FinalizeReservation 走 Refund 分支
+		opErr = err
+
 		// 节点执行失败，但仍然尝试保存已生成的中间内容和 Token 消耗（Issue 3 & 4）
 		updateData := map[string]interface{}{
 			"status":        model.SopStatusFailed,
@@ -748,8 +795,27 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		return fmt.Errorf("failed to update node run: %w", err)
 	}
 
-	// ===== 积分扣减（新用户走积分，旧会员跳过）=====
-	b.deductCreditsForSop(ctx, run.UserID, "sop_run", "sop_run", fmt.Sprintf("%d", runID))
+	// ===== Phase 2 Task 2.1: 同步计算 actualCost 供 defer Reconcile 使用 =====
+	// LLM 成功返回后，从 pricing.CalculateCost 拿真实 cost。失败时：
+	//   - 有 rsv：opErr 置位 → defer 触发 Refund("op_failed") 防误扣
+	//   - 无 rsv（legacy_tier / creditSvc=nil）：直接跳过
+	if rsv != nil && b.pricing != nil {
+		if usage != nil && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
+			cost, pErr := b.pricing.CalculateCost(ctx, "llm_chat",
+				providerFromModelName(actualModelName), actualModelName,
+				usage.PromptTokens, usage.CompletionTokens)
+			if pErr != nil {
+				// pricing 失败不阻塞业务，defer 走 Refund("op_failed")
+				opErr = fmt.Errorf("sop_run pricing calc: %w", pErr)
+				log.C(ctx).Warnw("Pricing calc failed; defer will Refund",
+					"run_id", runID, "node_id", nodeID,
+					"model", actualModelName, "err", pErr)
+			} else {
+				actualCost = cost
+			}
+		}
+		// usage 为空或 tokens 全 0：actualCost=0 → defer 走 Refund("no_actual_cost")
+	}
 
 	// 节点执行成功后，检查是否需要计入运行次数（首次成功运行节点时计入）
 	// 条件：run.Counted = false 表示此run尚未计入运行次数
@@ -1826,6 +1892,66 @@ func (b *sopBiz) DeleteDraftRun(ctx context.Context, runID, userID uint) error {
 
 	log.C(ctx).Infow("Draft run deleted", "run_id", runID, "user_id", userID)
 	return nil
+}
+
+// ----------------------------------------------------------------------------
+// Phase 2 Task 2.1 helpers — credits Reserve/Reconcile 控制流
+// ----------------------------------------------------------------------------
+
+// computeSopPromptChars 统计 SOP 节点执行时送入 LLM 的 prompt 大致字符数。
+// 用途：喂给 credit.CheckAndEstimate 的 EstimationInput.PromptChars 做 R2 预估。
+// 口径：模板系统提示 + 节点 prompt + 全部 history message + 当前输入。
+// 不追求逐 token 精确（safety_buffer_pct 覆盖），只要稳定即可。
+func computeSopPromptChars(template *model.SopTemplate, node *model.SopNode,
+	history []LLMMessage, currentInput string,
+) int {
+	chars := 0
+	if template != nil {
+		chars += utf8.RuneCountInString(template.Prompt)
+	}
+	if node != nil {
+		chars += utf8.RuneCountInString(node.Prompt)
+	}
+	for _, m := range history {
+		chars += utf8.RuneCountInString(m.Content)
+	}
+	chars += utf8.RuneCountInString(currentInput)
+	return chars
+}
+
+// providerFromModelName best-effort 根据模型前缀推断 provider。与
+// credit/prompt_estimator.go 的私有 providerFromModel 口径一致（副本，避免
+// 跨包导出仅为单个 caller 使用的 helper）。未知时返回空字符串——
+// credit 层会降级到 global fallback coefficient + pricing_rule。
+func providerFromModelName(modelName string) string {
+	switch {
+	case modelName == "":
+		return ""
+	case strings.HasPrefix(modelName, "qwen") || strings.HasPrefix(modelName, "text-embedding-v"):
+		return "ali"
+	case strings.HasPrefix(modelName, "deepseek") || strings.HasPrefix(modelName, "doubao") ||
+		strings.HasPrefix(modelName, "glm-"):
+		return "volc"
+	case strings.HasPrefix(modelName, "claude-") || strings.HasPrefix(modelName, "gemini-"):
+		return "dmxapi"
+	default:
+		return ""
+	}
+}
+
+// wrapCreditError 将 credit 层返回的业务错误翻译为 errno 可承载的 HTTP 响应。
+// 重点是 legacy_tier 次数不足时把 CanRunSOP 的中文原因回传给前端（spec §3.6）。
+func wrapCreditError(err error, pre *credit.PreCheckResult) error {
+	if err == nil {
+		return nil
+	}
+	if pre != nil && pre.Reason != "" && errors.Is(err, credit.ErrInsufficientCredits) {
+		return errno.ErrInsufficientCredits.SetMessage("%s", pre.Reason)
+	}
+	if errors.Is(err, credit.ErrInsufficientCredits) {
+		return errno.ErrInsufficientCredits
+	}
+	return err
 }
 
 // deductCreditsForSop 扣减积分（旧会员跳过，新用户按预估积分扣减）
