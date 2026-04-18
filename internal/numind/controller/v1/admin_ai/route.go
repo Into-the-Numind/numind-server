@@ -170,5 +170,5 @@ func (ctrl *RouteController) Toggle(c *gin.Context) {
 		return
 	}
 
-	core.WriteResponse(c, nil, dto)
+	core.WriteResponse(c, nil, gin.H{"route": dto})
 }

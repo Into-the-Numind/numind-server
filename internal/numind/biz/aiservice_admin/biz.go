@@ -48,7 +48,7 @@ type RouteDTO struct {
 // CreateRouteRequest is the request body for creating a new ai_service_route.
 type CreateRouteRequest struct {
 	ProviderID      uint64 `json:"provider_id" binding:"required"`
-	ProviderModelID string `json:"provider_model_id" binding:"required"`
+	ProviderModelID string `json:"provider_model_id" binding:"required,min=1"`
 	Priority        int    `json:"priority"`  // default 0
 	IsActive        *bool  `json:"is_active"` // default true; pointer to distinguish unset
 }
@@ -770,6 +770,12 @@ func (b *aiServiceAdminBiz) checkPriorityConflicts(ctx context.Context, serviceI
 
 // countOtherActiveRoutes returns the number of active routes for serviceID
 // excluding the given routeID. Used by the last-active guard.
+//
+// countOtherActiveRoutes is a best-effort check; it does NOT protect
+// against concurrent Delete/Toggle-off requests racing past the guard
+// and leaving the service with 0 active routes. For a low-traffic
+// admin panel this risk is accepted. Hard enforcement would require
+// a DB-level trigger or SELECT FOR UPDATE transaction.
 func (b *aiServiceAdminBiz) countOtherActiveRoutes(ctx context.Context, serviceID uint64, excludeRouteID uint64) (int64, error) {
 	var count int64
 	err := b.db.WithContext(ctx).
@@ -782,7 +788,10 @@ func (b *aiServiceAdminBiz) countOtherActiveRoutes(ctx context.Context, serviceI
 	return count, nil
 }
 
-// writeRouteAudit writes a single audit log entry for a route mutation.
+// writeRouteAudit writes an audit log entry best-effort. If the audit
+// INSERT fails (disk pressure, table lock), it logs a Warn and the
+// mutation remains committed without an audit trail. Do NOT add retry
+// logic here — that could cause double-auditing under transient failures.
 func (b *aiServiceAdminBiz) writeRouteAudit(ctx context.Context, action string, routeID uint64, before, after interface{}, actorID uint64, actorName string) {
 	diff := model.JSONMap{}
 	if before != nil {
@@ -853,6 +862,12 @@ func (b *aiServiceAdminBiz) CreateRoute(ctx context.Context, serviceID uint64, r
 
 // UpdateRoute partially updates an existing ai_service_route.
 func (b *aiServiceAdminBiz) UpdateRoute(ctx context.Context, routeID uint64, req UpdateRouteRequest, actorID uint64, actorName string) (*RouteDTO, []string, error) {
+	// Reject explicit empty string for provider_model_id even though it is a pointer field
+	// (binding:"required" only guards Create; here we guard the update path explicitly).
+	if req.ProviderModelID != nil && *req.ProviderModelID == "" {
+		return nil, nil, errno.ErrInvalidParameter.SetMessage("provider_model_id 不能为空字符串")
+	}
+
 	var route model.AIServiceRoute
 	if err := b.db.WithContext(ctx).Preload("Provider").First(&route, routeID).Error; err != nil {
 		return nil, nil, errno.ErrInvalidParameter.SetMessage("路由 %d 不存在", routeID)
