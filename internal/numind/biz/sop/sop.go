@@ -17,6 +17,7 @@ import (
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/pricing"
 	v1 "numind-server/pkg/api/numind/v1"
 
 	"gorm.io/gorm"
@@ -72,6 +73,10 @@ type ISopBiz interface {
 	PublishTemplate(ctx context.Context, userID uint, templateID uint) error
 	UnpublishTemplate(ctx context.Context, userID uint, templateID uint) error
 
+	// WithCreditService 注入 Phase 2 Task 2.1 的 credits Reserve/Reconcile 控制流依赖。
+	// 调用方：wire（biz.go）在构造 sopBiz 后立即调用。返回自身以支持链式。
+	WithCreditService(svc credit.ICreditService, pc pricing.ICalculator) ISopBiz
+
 	// Bookmark operations
 	SaveNodeBookmark(ctx context.Context, userID, nodeRunID uint, bookmarkName, description string) (*model.SopNodeBookmark, error)
 	SaveNodeBookmarkByRunAndNode(ctx context.Context, userID, runID, nodeID uint, bookmarkName, description string) (*model.SopNodeBookmark, error)
@@ -88,17 +93,42 @@ type sopBiz struct {
 	ds        store.IStore
 	executor  *SopExecutor
 	creditBiz credit.ICreditBiz
+	// creditSvc 用于 Phase 2 的 Reserve → LLM → Reconcile 控制流
+	// nil 时退化为旧 fire-and-forget 路径（兼容 sop_test.go 等不关心 credits 的测试）
+	creditSvc credit.ICreditService
+	// pricing 用于 LLM 调用完成后同步计算实际 cost（Reconcile 输入）
+	// nil 时走 Refund("no_actual_cost") 兜底
+	pricing pricing.ICalculator
 	// runningRuns 用于存储正在执行的任务 ID，防止并发冲突（互斥锁）
 	runningRuns sync.Map
 }
 
-// NewSopBiz 创建SOP业务逻辑实例
+// NewSopBiz 创建SOP业务逻辑实例（向后兼容构造函数）
+//
+// 对于 Phase 2 Task 2.1 的 credits Reserve/Reconcile 控制流，调用方应在构造
+// 之后调用 WithCreditService(svc, pc) 注入额外依赖。保持此签名不动是为了兼容
+// 已存在的 sop_test.go 和其他可能尚未迁移的测试。
 func NewSopBiz(ds store.IStore, executor *SopExecutor, creditBiz credit.ICreditBiz) ISopBiz {
 	return &sopBiz{
 		ds:        ds,
 		executor:  executor,
 		creditBiz: creditBiz,
 	}
+}
+
+// WithCreditService 注入 Phase 2 Task 2.1 的 credits 控制流依赖。
+//
+// 返回值仍是 *sopBiz（通过 ISopBiz 接口暴露）以支持链式调用。传 nil 会保留
+// 旧路径（runNode/runChat 会跳过 Reserve 并通过 IncrementSopRunCount 记录运行）。
+//
+// 典型调用（见 biz.go）：
+//
+//	b.sopService = sopbiz.NewSopBiz(ds, executor, creditBiz).
+//	    WithCreditService(creditSvc, pricingCalc)
+func (b *sopBiz) WithCreditService(svc credit.ICreditService, pc pricing.ICalculator) ISopBiz {
+	b.creditSvc = svc
+	b.pricing = pc
+	return b
 }
 
 // Template operations

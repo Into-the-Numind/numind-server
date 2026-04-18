@@ -29,6 +29,7 @@ import (
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/pricing"
 
 	"github.com/spf13/viper"
 )
@@ -80,8 +81,15 @@ func NewBiz(ds store.IStore) *biz {
 	_ = config.NewConfigReader(b.Configs())
 
 	// 初始化SOP服务。LLM 调用统一走 aiservice Gateway，不再需要 LLMRouter 参数。
+	//
+	// Phase 2 Task 2.1: 构造 credits Reserve/Reconcile 控制流所需依赖并注入。
+	//   - pricingCalc: 从 billing store 读 pricing_rule，含 LRU 缓存
+	//   - creditSvc:   统一 credits 入口，按 user.BillingMode 分发到 legacy/credits 路径
+	pricingCalc := pricing.NewCalculator(b.ds.Billing())
+	creditSvc := credit.NewCreditService(b.ds, b.credit, pricingCalc)
 	sopExecutor := sopbiz.NewSopExecutor(b.ds)
-	b.sopService = sopbiz.NewSopBiz(b.ds, sopExecutor, b.credit)
+	b.sopService = sopbiz.NewSopBiz(b.ds, sopExecutor, b.credit).
+		WithCreditService(creditSvc, pricingCalc)
 
 	// 初始化销售 RAG 服务
 	// 向量库支持 sqlitevec（默认）、dashvector（回退兼容）、memory（测试）
