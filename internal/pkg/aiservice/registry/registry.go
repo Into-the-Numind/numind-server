@@ -435,9 +435,9 @@ func buildResolvedRoute(taskID string, row *resolvedRouteRow) ResolvedRoute {
 		ProviderModelID: row.ProviderModelID,
 		Capability:      cap,
 		// Pricing.Unit is resolved from pricing_rule at call time by the billing
-		// middleware. The column was removed from ai_service_route in T-arch.
-		// TODO(T-arch-merge): populate Unit by joining pricing_rule here, or accept
-		// that the billing middleware derives Unit from the rule it fetches.
+		// middleware (buildBaseRecord). The column was removed from ai_service_route
+		// in T-arch; the billing middleware performs the lookup and writes Unit into
+		// the UsageRecord.
 		Pricing: PricingInfo{},
 	}
 }
