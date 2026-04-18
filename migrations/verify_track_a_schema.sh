@@ -140,6 +140,23 @@ assert_no_column() {
     fi
 }
 
+verify_envsubst_whitelist() {
+    # envsubst '${MIGRATION_CUTOFF}' 必须只替换该占位符，保留其他 $(...) 不动。
+    local out
+    out=$(MIGRATION_CUTOFF="2026-05-08 00:00:00" envsubst '${MIGRATION_CUTOFF}' < 20260419_100500_init_billing_mode_values.sql)
+
+    if ! echo "$out" | grep -q "'2026-05-08 00:00:00'"; then
+        echo "!! envsubst did not substitute MIGRATION_CUTOFF"
+        exit 1
+    fi
+    # 注释里的 $(date -u ...) 应被保留（白名单模式只替换指定变量）
+    if ! echo "$out" | grep -q '\$(date'; then
+        echo "!! envsubst whitelist leaked — other \$ sequences were clobbered"
+        exit 1
+    fi
+    echo ">> envsubst whitelist OK (MIGRATION_CUTOFF replaced, \$(date ...) preserved)"
+}
+
 main() {
     start_container
     bootstrap_user_table
@@ -165,7 +182,12 @@ main() {
     assert_tables "user credit_estimation_coefficient credit_reservation credit_reservation_item"
 
     echo ""
-    echo "SUCCESS: migrations 100000-100300 apply + rollback + re-apply all clean."
+    echo "== PHASE 4: envsubst whitelist verification for 100500 =="
+    verify_envsubst_whitelist
+
+    echo ""
+    echo "SUCCESS: migrations 100000-100300 apply + rollback + re-apply all clean;"
+    echo "         envsubst whitelist substitution for 100500 verified."
 }
 
 main "$@"
