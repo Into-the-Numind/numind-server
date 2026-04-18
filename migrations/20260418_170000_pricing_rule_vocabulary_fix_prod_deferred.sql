@@ -135,7 +135,10 @@ WHERE service_type = 'llm_chat'
   AND is_active = TRUE;
 
 -- dmxapi-ssvip tiers: gemini-3.1-pro-preview
-INSERT IGNORE INTO pricing_rule_tier
+-- WHERE NOT EXISTS guard: pricing_rule_tier has no unique key on
+-- (rule_id, token_type, min_tokens), so INSERT IGNORE would not prevent
+-- duplicate tier rows on re-run. Explicit NOT EXISTS check ensures idempotency.
+INSERT INTO pricing_rule_tier
   (rule_id, token_type, min_tokens, max_tokens, cost_per_mtok, sell_per_mtok)
 SELECT
   new_rule.id,
@@ -155,10 +158,16 @@ JOIN pricing_rule new_rule
   ON new_rule.service_type = 'llm_chat'
   AND new_rule.provider = 'dmxapi-ssvip'
   AND new_rule.model = 'gemini-3.1-pro-preview'
-  AND new_rule.is_active = TRUE;
+  AND new_rule.is_active = TRUE
+WHERE NOT EXISTS (
+  SELECT 1 FROM pricing_rule_tier t2
+  WHERE t2.rule_id    = new_rule.id
+    AND t2.token_type  = src_tier.token_type
+    AND t2.min_tokens  = src_tier.min_tokens
+);
 
 -- dmxapi-ssvip tiers: gpt-5.4
-INSERT IGNORE INTO pricing_rule_tier
+INSERT INTO pricing_rule_tier
   (rule_id, token_type, min_tokens, max_tokens, cost_per_mtok, sell_per_mtok)
 SELECT
   new_rule.id,
@@ -178,7 +187,13 @@ JOIN pricing_rule new_rule
   ON new_rule.service_type = 'llm_chat'
   AND new_rule.provider = 'dmxapi-ssvip'
   AND new_rule.model = 'gpt-5.4'
-  AND new_rule.is_active = TRUE;
+  AND new_rule.is_active = TRUE
+WHERE NOT EXISTS (
+  SELECT 1 FROM pricing_rule_tier t2
+  WHERE t2.rule_id    = new_rule.id
+    AND t2.token_type  = src_tier.token_type
+    AND t2.min_tokens  = src_tier.min_tokens
+);
 
 -- -----------------------------------------------------------------------
 -- Fix 3: Add aihubmix thinking model variants
@@ -206,7 +221,7 @@ WHERE service_type = 'llm_chat'
   AND is_active = TRUE;
 
 -- aihubmix: gemini-3.1-pro-preview-thinking tiers
-INSERT IGNORE INTO pricing_rule_tier
+INSERT INTO pricing_rule_tier
   (rule_id, token_type, min_tokens, max_tokens, cost_per_mtok, sell_per_mtok)
 SELECT
   new_rule.id,
@@ -226,7 +241,13 @@ JOIN pricing_rule new_rule
   ON new_rule.service_type = 'llm_chat'
   AND new_rule.provider = 'aihubmix'
   AND new_rule.model = 'gemini-3.1-pro-preview-thinking'
-  AND new_rule.is_active = TRUE;
+  AND new_rule.is_active = TRUE
+WHERE NOT EXISTS (
+  SELECT 1 FROM pricing_rule_tier t2
+  WHERE t2.rule_id    = new_rule.id
+    AND t2.token_type  = src_tier.token_type
+    AND t2.min_tokens  = src_tier.min_tokens
+);
 
 -- aihubmix: deepseek-v3.2-thinking (flat)
 INSERT IGNORE INTO pricing_rule
@@ -271,7 +292,7 @@ WHERE service_type = 'llm_chat'
   AND is_active = TRUE;
 
 -- aihubmix: gpt-5.4-thinking tiers
-INSERT IGNORE INTO pricing_rule_tier
+INSERT INTO pricing_rule_tier
   (rule_id, token_type, min_tokens, max_tokens, cost_per_mtok, sell_per_mtok)
 SELECT
   new_rule.id,
@@ -291,6 +312,12 @@ JOIN pricing_rule new_rule
   ON new_rule.service_type = 'llm_chat'
   AND new_rule.provider = 'aihubmix'
   AND new_rule.model = 'gpt-5.4-thinking'
-  AND new_rule.is_active = TRUE;
+  AND new_rule.is_active = TRUE
+WHERE NOT EXISTS (
+  SELECT 1 FROM pricing_rule_tier t2
+  WHERE t2.rule_id    = new_rule.id
+    AND t2.token_type  = src_tier.token_type
+    AND t2.min_tokens  = src_tier.min_tokens
+);
 
 COMMIT;

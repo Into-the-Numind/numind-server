@@ -480,6 +480,105 @@ func TestBilling_IsFallback_SetWhenFallbackCtxPresent(t *testing.T) {
 	}
 }
 
+// TestBilling_ChatText_ServiceType verifies end-to-end wiring between the Billing
+// middleware and classifyServiceType: passing a real aiservice.ChatRequest with
+// text-only messages must produce a UsageRecord.ServiceType of "llm_chat".
+// This exercises the actual call-site in buildBaseRecord, so if someone breaks
+// the classifyServiceType call the test fails regardless of unit coverage.
+func TestBilling_ChatText_ServiceType(t *testing.T) {
+	store := &mockUsageStore{}
+	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
+	mw := Billing(deps)
+
+	chatResp := &aiservice.ChatResponse{
+		Content: "text-only answer",
+		Usage:   aiservice.TokenUsage{PromptTokens: 20, CompletionTokens: 10, TotalTokens: 30},
+	}
+	inner := Handler(func(_ context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+		return chatResp, nil
+	})
+	handler := mw(inner)
+
+	// Pass a real ChatRequest with text-only messages (no image parts).
+	req := aiservice.ChatRequest{
+		Messages: []aiservice.ChatMessage{
+			{
+				Role:    aiservice.MessageRoleUser,
+				Content: aiservice.MessageContent{Text: "What is the capital of France?"},
+			},
+		},
+	}
+
+	ctx := WithUserID(context.Background(), 11)
+	_, err := handler(ctx, llmRoute(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(store.records) != 1 {
+		t.Fatalf("expected 1 usage record, got %d", len(store.records))
+	}
+	if got := store.records[0].ServiceType; got != "llm_chat" {
+		t.Errorf("ServiceType: got %q, want %q", got, "llm_chat")
+	}
+	if store.records[0].PromptTokens != 20 {
+		t.Errorf("PromptTokens: got %d, want 20", store.records[0].PromptTokens)
+	}
+}
+
+// TestBilling_ChatVision_ServiceType verifies end-to-end wiring between the Billing
+// middleware and classifyServiceType: passing a real aiservice.ChatRequest that
+// contains an image_url part must produce a UsageRecord.ServiceType of "llm_vision".
+// This guards the call site in buildBaseRecord — if classifyServiceType is
+// accidentally removed or bypassed, the record will have "llm" (coarse fallback)
+// instead of "llm_vision", and this test will fail.
+func TestBilling_ChatVision_ServiceType(t *testing.T) {
+	store := &mockUsageStore{}
+	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
+	mw := Billing(deps)
+
+	chatResp := &aiservice.ChatResponse{
+		Content: "vision answer",
+		Usage:   aiservice.TokenUsage{PromptTokens: 500, CompletionTokens: 100, TotalTokens: 600},
+	}
+	inner := Handler(func(_ context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+		return chatResp, nil
+	})
+	handler := mw(inner)
+
+	// Pass a real ChatRequest with an image_url part to trigger vision path.
+	req := aiservice.ChatRequest{
+		Messages: []aiservice.ChatMessage{
+			{
+				Role: aiservice.MessageRoleUser,
+				Content: aiservice.MessageContent{
+					Parts: []aiservice.MessagePart{
+						{Type: aiservice.MessagePartTypeText, Text: "Describe this image"},
+						{
+							Type:     aiservice.MessagePartTypeImageURL,
+							ImageURL: &aiservice.ImageURL{URL: "https://example.com/photo.jpg"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctx := WithUserID(context.Background(), 12)
+	_, err := handler(ctx, llmRoute(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(store.records) != 1 {
+		t.Fatalf("expected 1 usage record, got %d", len(store.records))
+	}
+	if got := store.records[0].ServiceType; got != "llm_vision" {
+		t.Errorf("ServiceType: got %q, want %q", got, "llm_vision")
+	}
+	if store.records[0].PromptTokens != 500 {
+		t.Errorf("PromptTokens: got %d, want 500", store.records[0].PromptTokens)
+	}
+}
+
 // TestBilling_AllBackendsUnconfigured_LogsError verifies graceful degradation
 // when NEITHER billing.R nor deps.UsageStore is set — a pure-misconfig scenario.
 // Silent billing drop in prod is a data loss event, so the middleware logs at
