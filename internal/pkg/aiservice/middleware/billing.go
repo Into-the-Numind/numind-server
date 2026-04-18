@@ -31,13 +31,17 @@ func Billing(deps Deps) Middleware {
 			userID, _ := ctx.Value(ctxKeyUserID{}).(uint)
 
 			// Prepare the skeleton UsageRecord from the route's pricing snapshot.
-			record := buildBaseRecord(route, userID, deps.clock(), ctx)
+			// classifyServiceType is called here (before the adapter call) so the
+			// fine-grained service_type is stored in the record and used for
+			// pricing_rule lookup in the async recorder.
+			record := buildBaseRecord(route, userID, deps.clock(), ctx, req)
 
 			// Call the next handler.
 			resp, err = next(ctx, route, req)
 
 			// Populate usage fields from the response.
-			populateUsage(ctx, record, route.ServiceType, resp, err)
+			// Use record.ServiceType (already fine-grained) instead of route.ServiceType (coarse).
+			populateUsage(ctx, record, record.ServiceType, resp, err)
 
 			// Persist — unified with RecordCOS / RecordVectorDB on the async
 			// batched recorder path. Submitting a Prebuilt record lets the
@@ -76,15 +80,89 @@ func Billing(deps Deps) Middleware {
 // Helpers
 // ----------------------------------------------------------------------------
 
+// classifyServiceType maps a raw AI request to the fine-grained service_type
+// used by pricing_rule. This normalises the vocabulary drift between
+// ai_service.service_type (coarse: llm/ocr/asr) and pricing_rule.service_type
+// (fine: llm_chat/llm_vision/embedding/rerank/ocr/asr/...).
+//
+// Returns one of: llm_chat | llm_vision | embedding | rerank | ocr | asr
+//
+// Mapping rules:
+//   - OCRRequest    → "ocr"
+//   - ASRRequest    → "asr"
+//   - EmbedRequest  → "embedding"
+//   - RerankRequest → "rerank"
+//   - ChatRequest with any image_url part in any message → "llm_vision"
+//   - ChatRequest text-only → "llm_chat"
+//
+// Unknown request types fall back to fallbackServiceType (the coarse value
+// from the registry entry). This is safe: if the coarse value already matches
+// a pricing_rule row the calculation succeeds; if not, cost defaults to 0
+// and a more specific mapping can be added later.
+func classifyServiceType(req any, fallbackServiceType string) string {
+	switch r := req.(type) {
+	case aiservice.OCRRequest:
+		return "ocr"
+	case *aiservice.OCRRequest:
+		if r != nil {
+			return "ocr"
+		}
+	case aiservice.ASRRequest:
+		return "asr"
+	case *aiservice.ASRRequest:
+		if r != nil {
+			return "asr"
+		}
+	case aiservice.EmbedRequest:
+		return "embedding"
+	case *aiservice.EmbedRequest:
+		if r != nil {
+			return "embedding"
+		}
+	case aiservice.RerankRequest:
+		return "rerank"
+	case *aiservice.RerankRequest:
+		if r != nil {
+			return "rerank"
+		}
+	case aiservice.ChatRequest:
+		return classifyChatRequest(r)
+	case *aiservice.ChatRequest:
+		if r != nil {
+			return classifyChatRequest(*r)
+		}
+	}
+	return fallbackServiceType
+}
+
+// classifyChatRequest returns "llm_vision" if any message contains an
+// image_url part; otherwise "llm_chat".
+func classifyChatRequest(r aiservice.ChatRequest) string {
+	for _, msg := range r.Messages {
+		for _, part := range msg.Content.Parts {
+			if part.Type == aiservice.MessagePartTypeImageURL {
+				return "llm_vision"
+			}
+		}
+	}
+	return "llm_chat"
+}
+
 // buildBaseRecord constructs a UsageRecord skeleton from route metadata.
 // Usage fields (tokens, call_count, duration_seconds) are left at zero / nil
 // until the response is available.
 // IsFallback is set to true when ctx carries a non-zero ctxKeyFallbackFromServiceID,
 // i.e. this call was triggered by the Fallback middleware as a backup for a failed primary.
-func buildBaseRecord(route *registry.ResolvedRoute, userID uint, clk Clock, ctx context.Context) *model.UsageRecord {
+//
+// req is used by classifyServiceType to derive the fine-grained service_type
+// (llm_chat/llm_vision/embedding/rerank/ocr/asr) that pricing_rule uses,
+// normalising the vocabulary drift from ai_service.service_type (coarse: llm/ocr/asr).
+func buildBaseRecord(route *registry.ResolvedRoute, userID uint, clk Clock, ctx context.Context, req interface{}) *model.UsageRecord {
 	taskID := route.TaskID
 	unit := route.Pricing.Unit
-	svcType := route.ServiceType
+	// TODO(T-arch-merge): buildBaseRecord also needs to read pricing_rule snapshot using
+	// classifyServiceType result for PricingXSnapshot columns — T-arch owns that.
+	svcType := classifyServiceType(req, route.ServiceType)
 
 	isFallback := false
 	if fallbackFrom, _ := ctx.Value(ctxKeyFallbackFromServiceID{}).(uint64); fallbackFrom != 0 {
@@ -124,9 +202,13 @@ func buildBaseRecord(route *registry.ResolvedRoute, userID uint, clk Clock, ctx 
 
 // populateUsage fills in the usage-specific fields of a UsageRecord once the
 // response (or error) from the adapter is known.
+//
+// serviceType must be the fine-grained value from classifyServiceType
+// (llm_chat/llm_vision/embedding/rerank/ocr/asr). The legacy coarse values
+// "llm", "ocr", "asr" are also handled for backwards compatibility.
 func populateUsage(ctx context.Context, r *model.UsageRecord, serviceType string, resp interface{}, callErr error) {
 	switch serviceType {
-	case "llm":
+	case "llm", "llm_chat", "llm_vision":
 		populateLLMUsage(r, resp, callErr, ctx)
 	case "ocr":
 		c := 1
