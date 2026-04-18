@@ -29,12 +29,15 @@ type UsageRecord struct {
 	// TaskID links to task_profile.task_id; null = legacy data or non-AI call.
 	// *string so zero value writes SQL NULL (not empty string) for legacy records.
 	TaskID *string `gorm:"column:task_id;size:80;default:null" json:"task_id,omitempty"`
-	// Unit describes how the call is priced: per_1m_tokens | per_call | per_second.
+	// Unit describes how the call is priced: per_1m_tokens | per_call.
 	// *string so zero value writes SQL NULL (not empty string) for legacy records.
 	Unit *string `gorm:"column:unit;size:20;default:null" json:"unit,omitempty"`
 	// CallCount is the number of API calls for per_call billing (OCR etc.).
 	CallCount *int `gorm:"column:call_count;default:null" json:"call_count,omitempty"`
-	// DurationSeconds is the audio duration for per_second billing (ASR etc.).
+	// DurationSeconds is the audio duration (seconds) of an ASR response, written
+	// for business-analysis metadata (e.g. "total audio minutes processed this
+	// month", long-audio investigations). It is NOT used by the billing path —
+	// ASR billing is per_call via pricing_rule. Left here as analytic observability.
 	DurationSeconds *float64 `gorm:"column:duration_seconds;type:decimal(10,3);default:null" json:"duration_seconds,omitempty"`
 	// PricingInputSnapshot records the input token price at time of call.
 	PricingInputSnapshot *float64 `gorm:"column:pricing_input_snapshot;type:decimal(10,6);default:null" json:"pricing_input_snapshot,omitempty"`
@@ -42,8 +45,6 @@ type UsageRecord struct {
 	PricingOutputSnapshot *float64 `gorm:"column:pricing_output_snapshot;type:decimal(10,6);default:null" json:"pricing_output_snapshot,omitempty"`
 	// PricingCallSnapshot records the per-call price at time of call.
 	PricingCallSnapshot *float64 `gorm:"column:pricing_call_snapshot;type:decimal(10,6);default:null" json:"pricing_call_snapshot,omitempty"`
-	// PricingSecondSnapshot records the per-second price at time of call.
-	PricingSecondSnapshot *float64 `gorm:"column:pricing_second_snapshot;type:decimal(10,6);default:null" json:"pricing_second_snapshot,omitempty"`
 	// IsEstimated is true when streaming was interrupted and token count is estimated.
 	IsEstimated bool `gorm:"column:is_estimated;default:false" json:"is_estimated"`
 

@@ -277,7 +277,8 @@ func TestBilling_OCR_AdapterError(t *testing.T) {
 // ASR billing tests
 // ----------------------------------------------------------------------------
 
-// TestBilling_ASR_Success verifies per_second billing for ASR.
+// TestBilling_ASR_Success verifies per_call billing for ASR and that DurationSeconds
+// is written as business-analysis metadata (not used in billing calculation).
 func TestBilling_ASR_Success(t *testing.T) {
 	store := newMockStoreWithPricing()
 	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
@@ -304,9 +305,8 @@ func TestBilling_ASR_Success(t *testing.T) {
 	if r.DurationSeconds == nil || *r.DurationSeconds != dur {
 		t.Errorf("DurationSeconds: got %v, want %v", r.DurationSeconds, dur)
 	}
-	// pricing_rule has no per_second price; unit resolves to per_call from
-	// rule.PricePerCall. PricingCallSnapshot should be set; PricingSecondSnapshot
-	// is not populated (pricing_rule table does not have a price_per_second column).
+	// ASR billing uses per_call via pricing_rule (no price_per_second column exists).
+	// PricingCallSnapshot must be set; DurationSeconds is metadata-only.
 	if r.PricingCallSnapshot == nil {
 		t.Errorf("PricingCallSnapshot should be set for ASR (maps to per_call in pricing_rule)")
 	}

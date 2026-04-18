@@ -37,12 +37,12 @@ type ProviderInfo struct {
 // PricingInfo summarises the billing unit for a specific route.
 // Pricing amounts are no longer stored on ai_service_route; they are resolved
 // at call time from pricing_rule by the billing middleware.
-// Unit is still carried here so middleware can choose the correct snapshot field
+// Unit is carried here as informational metadata; the billing middleware derives
+// the actual unit directly from the pricing_rule it fetches at call time
 // (per_1m_tokens → PricingInputSnapshot/PricingOutputSnapshot,
-//
-//	per_call → PricingCallSnapshot, per_second → PricingSecondSnapshot).
+// per_call → PricingCallSnapshot).
 type PricingInfo struct {
-	Unit string // "per_1m_tokens" | "per_call" | "per_second"
+	Unit string // "per_1m_tokens" | "per_call"
 }
 
 // ResolvedRoute is a call-ready description of a single AI service route.
