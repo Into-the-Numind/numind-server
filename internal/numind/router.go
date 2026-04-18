@@ -203,7 +203,7 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 积分查询
 	{
-		creditCtrl := creditcontroller.New(b.Credit())
+		creditCtrl := creditcontroller.New(b.Credit(), b.CreditService())
 		authGroup.GET("/credits/balance", creditCtrl.GetBalance)
 	}
 
