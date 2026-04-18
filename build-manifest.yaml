@@ -879,3 +879,38 @@ features:
     blockers: []
     created_at: "2026-04-16T01:00:00+08:00"
     completed_at: "2026-04-16T01:20:00+08:00"
+
+  - id: "credits-system"
+    ndf_version: "1.0"
+    description: "积分计费系统 — 从阶梯制（free/trial/standard/premium）迁移到会员+积分+加量包体系。Grandfathering 双制并存、R2 字符数估算预扣、¥29.9/600 积分加量包（3月有效期、仅会员可购）、扣减优先级（会员 > 加量包）"
+    track: "standard"
+    stage: "S0"
+    classification_reason: "跨 3 仓库预估 20+ 文件、涉及支付+权限+会员资格门槛+老用户迁移等高风险业务逻辑，5 条 Triage 标准中 4 条触发 Standard"
+    last_updated_by: "ai-triage"
+    last_updated_at: "2026-04-18T12:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+      - numind-admin-web
+    branches: {}
+    artifacts:
+      requirement: "numind-server/requirements/credits-system.md"
+      proposal: null
+      spec: null
+      plan: null
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress: null
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-04-18: D1 会员月度额度锁定 2000 积分（追认现有硬编码，基于 ¥99 月卡毛利率 80% 反推）"
+      - "2026-04-18: D2 估算机制选 R2（字符数 × 经验系数 + 事后对账），不引入 tiktoken"
+      - "2026-04-18: D3 加量包定价 ¥29.9/600 积分/3 月有效期"
+      - "2026-04-18: D4 扣减优先级：会员积分 > 加量包积分"
+      - "2026-04-18: D5 老用户策略 Grandfathering（旧会员到期前沿用旧规则）"
+      - "2026-04-18: D6 加量包仅限有效会员购买和使用"
+    blockers: []
+    created_at: "2026-04-18T12:00:00+08:00"
+    completed_at: null
