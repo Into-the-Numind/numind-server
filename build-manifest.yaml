@@ -894,8 +894,8 @@ features:
     track: "standard"
     stage: "S1"
     classification_reason: "跨 3 仓库预估 20+ 文件、涉及支付+权限+会员资格门槛+老用户迁移等高风险业务逻辑，5 条 Triage 标准中 4 条触发 Standard"
-    last_updated_by: "ai-s1"
-    last_updated_at: "2026-04-18T14:00:00+08:00"
+    last_updated_by: "ai-s1-rev2"
+    last_updated_at: "2026-04-18T15:30:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -922,6 +922,16 @@ features:
       - "2026-04-18: S1 选定 Approach A（一步到位：Grandfathering + 加量包 + R2 估算 + 对账）"
       - "2026-04-18: S3 plan 的 Task 1 必须是 R2 估算系数数据 spike，基于历史 usage_record 算出各模型 completion/prompt 比值"
       - "2026-04-18: 不支持提前续费——确保所有用户有干净的旧→新制切换时点"
+      - "2026-04-18 AUDIT: 积分基础设施 80% 已在 prod（credit_account/credit_package/credit_transaction/pricing_rule 表、RechargeWithOrderTx 支持 trial/monthly/yearly/booster、DeductCredits FIFO 扣减、GetQuotaBreakdown、Admin 积分 UI）。proposal v2 重新聚焦真实缺口"
+      - "2026-04-18 AUDIT: Trial 是新制成员（¥9.9/200 积分/3 天，ProductTypeTrial 已完整落地在 model/order.go:56-75 + biz/credit/credit.go:205-217），非 legacy_tier。P4d 修正"
+      - "2026-04-18 AUDIT: 加量包现有命名是 'booster'（非 addon_package），所有代码/文档对齐此命名"
+      - "2026-04-18 AUDIT: SalesRAG Chat 路径完全未接入积分扣减（prod 漏洞），本 feature 一并修复"
+      - "2026-04-18 AUDIT: 卡片生成功能已完全删除，仅剩 card_config.go 孤立文件 + CLAUDE.md L11 过时描述，本 feature 顺手清理（P4b）"
+      - "2026-04-18: P4a 确认 legacy_tier 会员不可购买 booster"
+      - "2026-04-18: P4c 确认加量包过期用 Lazy check + daily cron 标记"
+      - "2026-04-18: 工作量重新估算 12-15 天（原 18-20 天高估），交付时间线调整为 2026-05-08"
+      - "2026-04-18: 优先级扣减（会员>加量包）已由现有 DeductCredits FIFO by ExpiresAt 隐式满足，无需新增代码，S5 验收"
+      - "2026-04-18: 新增 P4e 待 S1 Gate 裁决——legacy_tier 下 SalesRAG 扣减策略（建议 A 保持免费）"
     blockers: []
     created_at: "2026-04-18T12:00:00+08:00"
     completed_at: null

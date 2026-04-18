@@ -1,254 +1,285 @@
-# 积分计费系统（会员 + 积分 + 加量包）— 提案
+# 积分计费系统完善 — 提案（v2，基于 prod 现状审计修订）
+
+> **修订说明（2026-04-18）**：S1 审计发现积分基础设施 80% 已在 prod（`credit_package`/`credit_account`/`pricing_rule` 表、`RechargeWithOrderTx` 已支持 booster、`DeductCredits` 已 FIFO 扣减、Admin 积分管理已实装、Trial ¥9.9/200/3 天已完整落地）。本 proposal 聚焦**真实缺口**，非从零搭建。
 
 ## §1 方案概述 [客户可见]
 
-将计费体系从旧的"会员阶梯制按次数"平滑迁移到新的"会员 + 积分 + 加量包"体系。老会员无感知（自然到期后进入新制），新制上线当天起所有新购会员按新规则执行。
+**背景：** 新积分机制已部分上线 prod（2000 积分/月会员、¥9.9/200 积分/3 天 trial、¥29.9/600 积分/3 月 booster 加量包的骨架已运行），但存在若干影响业务闭环的缺口需要完善。
 
-**新制对用户的价值：**
-- **用多少付多少**：不再是"20 次/月"的模糊额度，而是按真实 AI 资源消耗扣减积分
-- **运行前可预知成本**：SOP 运行前展示预估消耗的积分，用户知情决定是否执行
-- **加量包救急**：会员当月积分耗尽后，可 ¥29.9 购买 600 积分（3 个月有效期）继续使用
+**本次完善围绕 6 个目标：**
 
-**对业务方的价值：**
-- 消除旧制下"重度用户击穿毛利率"的隐患
-- 开辟会员费之外的第二条收入曲线（加量包）
-- 支持后续运营精细化（不同模型成本透明、可差异化定价）
+1. **补齐扣减漏洞**：SalesRAG 知识库对话当前**完全未扣积分**（prod 环境漏洞，立即止血）
+2. **加量包会员门槛**：当前任何用户都可购买 booster，需加"必须有效订阅会员"校验
+3. **精确计费**：从 operation 级固定预估值（SOP 固定扣 20 积分）升级为 R2 字符数估算 + 事后对账，按真实消耗扣减
+4. **显性化 billing_mode**：在 `sub_user` 表新增计费模式字段，支持 `legacy_tier`（旧次数制老会员）和 `credits`（新积分制）双制并存，老会员到期后自然迁移
+5. **补齐前端 UI**：账户中心积分余额卡、加量包购买入口（含非会员阻断）、SOP 运行前预估条、积分不足弹窗——当前**前端积分 UI 几乎为零**
+6. **顺手清理**：卡片生成功能已是死代码（审计确认），移除 `card_config.go` 孤立文件 + 更新 `CLAUDE.md` 过时描述
 
-**迁移策略（Grandfathering，老会员零感知）：**
-- 现有 `standard` / `premium` 会员在到期前继续按旧规则（20 次/月或无限次）
-- 到期降级为 `free` 后，下次购买（续费或新购）一律进入新制
-- 现有 `trial` 会员（3 天体验）正常到期，后续购买进入新制
-- **不支持提前续费**：确保每个用户有干净的旧制→新制切换时点
+**对用户价值：**
+- 运行 SOP 前知情预估成本（不会扣莫名数字）
+- 会员月底积分耗尽可用加量包续命
+- 老会员零感知（legacy_tier 到期前完全按旧规则）
+
+**对业务价值：**
+- 消除 SalesRAG 不扣费的 prod 漏洞
+- 加量包会员门槛保护会员产品定位
+- R2 估算 + 对账为未来差异化定价打底
 
 ## §2 工作量与时间线 [客户可见]
 
-- 预估工作量：**18-20 天**（AI 辅助开发，跨 3 仓库）
-- 交付时间线：**2026-05-12** 上线 dev 环境
-- Beta 观察期：上线后 2-4 周收集真实扣减数据，运营侧可调整估算系数和定价规则
+- 预估工作量：**12-15 天**（AI 辅助开发，跨 3 仓库）
+- 交付时间线：**2026-05-08 前上线 dev 环境**
+- Beta 观察期：上线后 2-4 周收集真实扣减数据，运营侧可 calibrate R2 系数
 
 ## §3 技术可行性 [AI 内部]
 
-### 现有功能复用
+### 已在 prod 可直接复用（审计于 2026-04-18 确认）
 
-| 模块 | 复用内容 | 改造点 |
-|------|---------|--------|
-| 计费基础设施 | `BillingAccount.balance_cents`（¥0.01 = 1 积分 已成为隐性约定）、`UsageRecord`（含 token 计数、异步 cost 计算）、`pricing_rule` 表 | 需新增 `credit_estimation_coefficient` 配置表（每模型的 completion/prompt 比值）；把 `2000` 硬编码抽到 `membership_config` 表 |
-| 积分账户 | `CreditPackage` 表（已区分 `subscription` / `addon` 类型、已有 `ActivatedAt` / `ExpiresAt`）、`credit.DeductCredits()` | 扩展 `Type` 加入加量包区分；改造 Deduct 支持"预扣 + 对账"两阶段；新增扣减优先级（会员 > 加量包） |
-| Langfuse 可观测性 | 现有 trace/generation 贯穿 SOP / SalesRAG 的所有 LLM 调用 | 新增 `span:credit-estimate` 和 `span:credit-reconcile` 标注预扣和对账事件 |
-| 订单支付 | `ProductTypeMonthly` / `ProductTypeYearly` 已打通订单→充值链路 | 新增 `ProductTypeAddon` 类型及其校验（仅会员可购）；扩展 `RechargeWithOrderTx` 支持加量包 |
-| 用户 tier 体系 | `sub_user.tier` / `tier_expires` 的到期自动降级逻辑 | 新增 `billing_mode enum('legacy_tier', 'credits')` 字段，权限检查分派到不同 biz 函数 |
-| 前端账户中心 | 现有会员中心页、订单列表 | 新增"积分余额"卡片（分会员/加量包两档显示+倒计时）、加量包购买入口 |
-| 前端 SOP 运行页 | 现有 SOP 启动流程 | 运行前展示"预估消耗 XX 积分"的确认条 |
+| 模块 | 证据 |
+|------|------|
+| `credit_account` / `credit_package` / `credit_transaction` / `pricing_rule` 四张表 | `migrations/add_credits_system.sql:16-32`, `migrations/seed_pricing_rules.sql` |
+| `ProductTypeBooster`（¥29.9 / 600 积分 / 90 天） | `model/order.go:40`, `biz/credit/credit.go:260-272`（RechargeWithOrderTx 已支持） |
+| `ProductTypeTrial`（¥9.9 / 200 积分 / 3 天） | `model/order.go:56-75`, `biz/credit/credit.go:205-217` |
+| `DeductCredits` FIFO by ExpiresAt（天然优先级：会员积分月底过期 > booster 3 月过期，扣减顺序已对） | `biz/credit/credit.go` |
+| `GetBalance` + `GetQuotaBreakdown`（已按 subscription/booster 分类返回） | `biz/credit/credit.go`, `numind-web-v3/src/api/credits.ts` |
+| Admin 用户积分查询 + 手动充值弹窗 | `numind-admin-web/src/views/CreditUsersView.vue` |
+| 订单支付闭环 | `biz/payment/`, `RechargeWithOrderTx` 分月 pending+active 激活逻辑 |
+
+> **关键观察：** `DeductCredits` 当前 FIFO 按 `expires_at` 升序扣减——因为会员积分（月底过期）比 booster（3 月过期）先到期，**扣减顺序天然就是"会员 > 加量包"**，D4 决策无需新增代码，只需验收测试确认。
+
+### 本次改造清单
+
+| # | 改造点 | 预估 |
+|---|--------|------|
+| 1 | 新增 `sub_user.billing_mode enum('legacy_tier','credits')` 字段 + migration | 0.5 天 |
+| 2 | 新增 `credit_reservation` 表（预扣记录） | 0.5 天 |
+| 3 | 新增 `credit_estimation_coefficient` 表（R2 系数配置） | 0.5 天 |
+| 4 | **R2 数据 spike**：基于 prod `usage_record` 历史算各模型 completion/prompt 比值，导出为 coefficient 表 seed | 1 天 |
+| 5 | `biz/credit.EstimateCredits`（字符数 × 系数估算） | 1 天 |
+| 6 | `biz/credit.ReserveCredits` + `ReconcileReservation`（预扣+对账两阶段） | 1.5 天 |
+| 7 | `CanPerformAIOperation` 增加 `billing_mode` 分支（legacy_tier 走旧 `CanRunSOP`，credits 走积分校验） | 0.5 天 |
+| 8 | `biz/payment` 新增 `ProductTypeBooster` 的会员资格校验 | 0.5 天 |
+| 9 | SOP 执行 (`sop.go:722`) + SOP Chat (`sop.go:1402`) 扣减路径改造为 Reserve + Reconcile | 1.5 天 |
+| 10 | **SalesRAG Chat 接入扣减**（prod 漏洞修复：当前 `salesrag.go` 未调用 DeductCredits） | 1 天 |
+| 11 | Langfuse 新增 `span:credit-estimate` + `span:credit-reconcile` | 0.5 天 |
+| 12 | 管理端"估算系数管理" UI（DataTable CRUD + 审计日志） | 1 天 |
+| 13 | 用户端 UI：账户中心余额卡 + SOP 运行前预估条 + 积分不足弹窗 + 加量包购买入口 | 3 天 |
+| 14 | 一次性数据迁移脚本：现有非 free 用户 `billing_mode='legacy_tier'`，其余 `credits` | 0.5 天 |
+| 15 | **卡片残留清理**：删除 `card_config.go` + 更新 `CLAUDE.md` L11 | 0.5 天 |
+| 16 | Playwright E2E（6 条关键路径） | 2 天 |
+
+**合计：14 天**（预留 1 天 buffer 到上限 15 天）
 
 ### 技术风险
 
-| 风险 | 等级 | 缓解方案 |
-|------|------|---------|
-| R2 字符数估算精度不可控（completion token 方差大） | **高** | **S3 plan Task 1 必须是数据 spike**：基于 `usage_record` 历史数据统计各模型的 `completion_tokens / prompt_tokens` 均值和标准差，导出成 `credit_estimation_coefficient` 表初始值。后续 2-4 周观察期继续 calibration |
-| `billing_mode` 字段分支逻辑穿透多处（权限检查、扣减、余额展示） | 中 | 抽象 `CreditService` 统一接口，`legacy_tier` 和 `credits` 两个实现；上层调用方只知道接口不关心具体分支 |
-| 预扣与实际成本不一致导致账务漂移 | 中 | 每次 LLM 调用完成后在 billing recorder 中计算差额：actual_cost > reserved → 继续扣；actual_cost < reserved → 退还到原账户（同优先级原则） |
-| 加量包 3 月过期涉及定时批量清理 | 低 | 使用 lazy check：扣减时检查 ExpiresAt，过期直接视为 0；额外一个 daily cron 做 status 字段标记（不做资金变动，只维持数据整洁） |
-| 旧制用户"未消费额度"是否允许主动切换到新制 | 中 | **本次不做主动切换入口**（保留未来功能）；到期自然迁移是唯一路径，避免 UX 复杂度爆炸 |
-| 管理端数据迁移工具（为现有会员生成 billing_mode） | 低 | 一次性脚本：所有现有非 free 用户 billing_mode 设为 `legacy_tier`；free 用户设为 `credits`（反正不能用） |
+| 风险 | 等级 | 缓解 |
+|------|------|------|
+| R2 字符数估算精度不可控（completion token 方差大） | 中 | S3 plan Task 1 = 数据 spike 基于 prod 历史算 model 级均值+标准差；估算时加 safety_buffer（如 20%）向上取整 |
+| `billing_mode` 分支逻辑穿透权限检查/扣减/UI 多处 | 中 | 抽象 `CreditService` 接口，`legacyTierImpl` 和 `creditsImpl` 两个实现；上层调用只认接口 |
+| 预扣后 SOP 失败 / 用户取消 / 跨月完成 | 中 | ReconcileReservation 幂等（防重复）；跨月退还读"扣减时原账户"（credit_package_id 硬绑定），过期账户视为无操作 |
+| SalesRAG 扣减接入后老会员可见费用上涨 | 低 | **参见 P4e 决策**——建议 legacy_tier 下 SalesRAG 保持免费 |
 
 ### 涉及仓库
 
-- [x] numind-server（DB migration、biz/credit、biz/billing、biz/sop 扣减路径、controller、store）
-- [x] numind-web-v3（加量包购买页、积分余额展示、SOP 运行前预估条、积分不足弹窗）
-- [x] numind-admin-web（定价规则管理 UI、估算系数管理 UI、历史用户迁移工具、积分调试工具）
+- [x] numind-server（数据层 + biz/credit + biz/payment + 扣减路径 + SalesRAG 集成 + 卡片清理 + 迁移脚本）
+- [x] numind-web-v3（余额卡、预估条、购买入口、积分不足弹窗）
+- [x] numind-admin-web（估算系数管理 UI）
 
-### AI 可观测性（功能涉及 LLM 调用）
+### AI 可观测性（涉及 LLM 调用）
 
-- [x] 涉及 LLM 调用：是（本功能不新增 LLM 调用，但**改造了所有 LLM 调用的扣减路径**）
-- **复用现有 trace**：SOP/SalesRAG/SubAgent 等已有 trace 不变
-- **新增 span**（在现有 trace 内，标注扣减生命周期）：
-  - `span:credit-estimate`（LLM 调用前）：`credits_reserved`、`estimated_prompt_tokens`、`estimated_completion_tokens`、`estimation_model_coefficient_version`
-  - `span:credit-reconcile`（LLM 调用后）：`actual_credits`、`delta`（退还或补扣）、`reconcile_direction`
-- **关键元数据**：`billing_mode`（legacy_tier / credits）、`deducted_from`（subscription / addon / mixed）、`user_id`
-- 这些 span 支撑后续估算系数 calibration 和财务对账
+- [x] 本次**不新增 LLM 调用**，但改造了所有现有 LLM 调用的扣减生命周期
+- **复用现有 trace**（SOP / SalesRAG / SubAgent 等 trace 不变）
+- **在现有 trace 内新增 2 类 span：**
+  - `span:credit-estimate`（LLM 调用前）：`credits_reserved`, `estimated_prompt_tokens`, `estimated_completion_tokens`, `coefficient_version`, `billing_mode`, `from_subscription_credits`, `from_booster_credits`
+  - `span:credit-reconcile`（LLM 调用后）：`actual_credits`, `delta`, `reconcile_direction`（refund/topup/noop）, `refunded_to_subscription`, `refunded_to_booster`
+- 元数据支撑后续系数 calibration 和财务对账
 
 ## §4 产品需求定义 — PRD [AI 内部 — 不要为可读性简化]
 
 ### 用户故事
 
-**C 端用户（所有等级）：**
-- 作为 free 用户，我需要看到"非会员不可使用 SOP/不可购买加量包"的明确提示和升级入口，以便我知道如何开始使用
-- 作为新购会员（新制），我需要每月自动获得 2000 积分，并能在账户中心清晰看到"会员积分剩余"和"本月过期时间"
-- 作为新制会员，我需要在 SOP 运行前看到"预估消耗 XX 积分"的确认条，以便决定是否执行
-- 作为新制会员，我需要在积分接近耗尽时收到提示（低于 20% 或固定阈值），并能一键购买加量包
-- 作为新制会员，我需要购买 ¥29.9 / 600 积分 / 3 月有效期的加量包，并看到加量包余额、购买时间、过期时间
-- 作为新制会员，我需要在扣减时优先扣会员积分，会员积分不足时自动扣加量包积分
-- 作为旧制老会员（legacy_tier），我的使用体验完全不变，直到会员到期
+**C 端用户：**
+- 作为 **free** 用户，我访问 SOP 或加量包购买入口时看到"成为会员解锁"引导和升级路径
+- 作为 **trial 新制用户**（¥9.9/200 积分/3 天），我和新制会员规则一致，只是额度更小、3 天到期，到期自然降级到 free
+- 作为 **credits 会员**，我在账户中心看到"会员积分 X/2000（本月 MM-DD 过期）" + "加量包积分 Y（最早 YYYY-MM-DD 过期）"两档独立展示
+- 作为 **credits 会员**，我运行 SOP 前看到"预估消耗 XX 积分（当前余额 YY）"，决定是否执行
+- 作为 **credits 会员**，我积分不足时看到弹窗一键跳转加量包购买
+- 作为 **credits 会员**，我运行 SalesRAG 知识库对话会按真实消耗扣积分（现在是免费 bug）
+- 作为 **legacy_tier 老会员**，我的使用体验完全不变，到期降级 free 后下次购买进入 credits 新制
 
-**B 端父用户（B2B2C 场景）：**
-- 作为 B 端父用户，本次不改变 B2B2C 分账逻辑（C 端用户消耗积分算在 C 端用户头上）
-
-**管理员（内部运维）：**
-- 作为管理员，我需要在管理端配置"每模型的估算系数"并可随时调整（不改代码即可更新）
-- 作为管理员，我需要在管理端调整会员月度积分额度（如未来从 2000 改为 2500），改动需记录审计日志
-- 作为管理员，我需要一个"用户积分调试工具"：查询用户积分明细、手动发放/回收积分（带理由记录）
-- 作为管理员，我需要一个一次性迁移工具为所有现有用户写入 `billing_mode` 初始值
+**管理员：**
+- 作为管理员，我可以配置每个模型的 R2 估算系数（provider+model 粒度），修改后实时生效，带审计日志
+- 作为管理员，我可以一次性执行数据迁移脚本（幂等）为所有现有用户写入 `billing_mode` 初始值
+- 作为管理员，现有的用户积分查询和手动充值功能**完全保留**
 
 ### 验收标准
 
-**新制核心流程：**
-- [ ] 新购 `standard` / `premium` 会员后，`sub_user.billing_mode = 'credits'`，并自动发放 2000 积分（按月数重复发放）
-- [ ] 会员积分的 `ExpiresAt` = 当月月末，月底自动清零（不累积）
-- [ ] 加量包购买成功后，积分 `ExpiresAt` = 购买时刻 + 3 个月
-- [ ] SOP 运行前调用估算函数，展示"预估消耗 XX 积分"确认条，用户确认后才真正发起
-- [ ] LLM 调用前预扣积分（优先会员 > 加量包），调用完成后 reconcile 差额（多退少补，退还遵循同优先级）
-- [ ] 积分不足时拒绝运行，弹出"积分不足 + 购买加量包"弹窗
+**核心扣减流程（新）：**
+- [ ] `billing_mode='credits'` 用户运行 SOP：Reserve → LLM 调用 → Reconcile（多退少补）；退还回原扣减的 credit_package（精确到 package_id）
+- [ ] `billing_mode='legacy_tier'` 用户运行 SOP：走现有 `CanRunSOP()` 旧规则，**不触发积分预扣/对账**
+- [ ] 前端 SOP 启动前调用 `POST /v1/credits/estimate`，返回预估值 + 当前余额
+- [ ] 余额不足时后端返回 4xx + 明确 error code，前端弹 `ConfirmModal` 跳转加量包购买
 
-**Grandfathering：**
-- [ ] 现有所有非 free 用户迁移脚本执行后，`billing_mode = 'legacy_tier'`
-- [ ] `legacy_tier` 用户的 SOP 运行走旧规则（20 次/月或无限），不触发积分扣减
-- [ ] 到期降级为 free 时，`billing_mode` 不变（还是 legacy_tier，因为 free 无所谓）；**下次购买**时 `billing_mode` 切换为 `credits`
+**SalesRAG 扣减（prod 漏洞修复）：**
+- [ ] SalesRAG Chat 路径（`biz/salesrag/salesrag.go`）接入 Reserve + Reconcile
+- [ ] Langfuse 配对 `credit-estimate` / `credit-reconcile` span
+- [ ] 余额不足时 SalesRAG Chat 拒绝（与 SOP 一致）
+- [ ] **legacy_tier 用户的 SalesRAG 行为**：待 P4e 决策（见末尾）
 
 **加量包会员门槛：**
-- [ ] free 用户访问加量包购买页：UI 不展示加量包商品卡片，展示"成为会员后可购买"提示
-- [ ] 非会员直接 POST 加量包订单 API：返回 403 with error code
-- [ ] `legacy_tier` 会员**也可购买加量包**（购买后他们即成为混合状态：按旧制运行 + 加量包积分仅在进入新制后才能使用）——**或** `legacy_tier` 禁止购买加量包（需在 S1 Gate 由客户拍板）
-- [ ] `credits` 会员到期降级为 free 后，**已购买未使用的加量包积分依然可用**（直到 3 月过期），但不能购买新的加量包
+- [ ] `ProductTypeBooster` 订单创建前校验：必须有未过期订阅（`credit_package.type='subscription'` + `status='active'` + `ExpiresAt > now`）
+- [ ] 非会员创建 booster 订单：返回 403 + 明确 error code
+- [ ] 前端购买卡片：非会员看到灰态 + "成为会员后可购买" + 会员跳转入口
+- [ ] legacy_tier 会员**不可**购买 booster（P4a 决策）
+- [ ] trial 用户**不可**购买 booster（trial 是过渡态，不应叠加加量）
+
+**Billing Mode + Grandfathering：**
+- [ ] 一次性迁移：所有现有非 free 用户 → `legacy_tier`；其余 → `credits`
+- [ ] legacy_tier 到期降级 free 时 billing_mode 保持不变（free 无所谓）
+- [ ] legacy_tier 降级 free 后**下次购买**时 billing_mode 切换为 credits
+- [ ] 不支持提前续费：在期用户 POST 同类或更低类型订单被拒
 
 **R2 估算 + 对账：**
-- [ ] 估算系数从 `credit_estimation_coefficient` 表读取（每个 provider+model 组合一行），不硬编码
-- [ ] 预扣值 = 估算 prompt_tokens × 系数 + 估算 completion_tokens × 系数，向上取整为积分
-- [ ] 调用完成后触发 reconcile：actual_cost 从 `pricing_rule` 计算得出，与预扣值比对后多退少补
-- [ ] 退还/补扣遵循原扣减优先级（会员积分先退还，加量包次之）
-- [ ] Langfuse 必须有 `credit-estimate` 和 `credit-reconcile` 两个 span 配对
+- [ ] 估算系数从 `credit_estimation_coefficient` 表读取（按 provider+model+version），不硬编码
+- [ ] 预估公式：`ceil(prompt_chars × char_to_token_ratio × (1 + completion_prompt_ratio)) × unit_price + safety_buffer_pct`
+- [ ] LLM 调用完成后，billing recorder 计算 actual_cost，与 reservation 比对
+- [ ] Reconcile 幂等（用 reservation_id 防重复）
+- [ ] 数据 spike 产出的 seed 系数带 provenance（统计 SQL、样本数、时间范围记录在 migration 注释）
 
-**管理端：**
-- [ ] 管理端"AI 服务管理"增加"估算系数"tab，CRUD 各模型的系数行
-- [ ] 管理端"会员配置"页可修改月度积分额度（修改仅影响此后发放，已发放不变）
-- [ ] 管理端"积分调试"页可按 user_id 查询所有 credit_package、手动发放/回收积分（必填原因）
-- [ ] 管理端"数据迁移"页有"执行 billing_mode 初始化"按钮（一次性，有幂等性保护）
+**UI：**
+- [ ] 账户中心三态余额卡：credits（双档）/ legacy_tier（次数用量）/ free（升级引导）；trial 用 credits 相同模板但额度 200 + 倒计时
+- [ ] SOP 运行前预估条：credits/trial 展示，legacy_tier 不展示（保持旧 UX）
+- [ ] 加量包购买入口：账户中心余额卡下方 + 积分不足弹窗内
+- [ ] 管理端估算系数 CRUD：`DataTable`（硬规则），修改需填 `change_reason`
+
+**清理：**
+- [ ] 删除 `numind-server` 中未使用的 `card_config.go`
+- [ ] `CLAUDE.md` §1 核心功能列表移除"卡片生成（Markdown → 图片）"
 
 ### 边界情况
 
-| 场景 | 处理方式 |
-|------|---------|
-| 用户月底 23:59 开始一次长 SOP，跨月完成 | 预扣发生在月底前（扣会员积分），reconcile 发生在跨月后（会员积分已清零）→ reconcile 退还逻辑需读取"扣减时原账户"而非"当前账户"，退还到已清零的账户视为无操作 |
-| 预扣后 SOP 中途失败 | 失败时立即触发 reconcile（本质是 refund），差额 = reserved（因为实际消耗部分可能很小但仍要记录真实 cost） |
-| 用户在预扣和实际调用之间手动取消 | 同上：立即 refund，actual_cost = 0 |
-| 加量包购买成功但支付回调丢失 | 沿用现有订单兜底机制（订单对账任务） |
-| `legacy_tier` 用户在新制上线**当天**正好会员到期 | 到期时刻严格切换：`billing_mode` 在 tier_expires 精确时刻由后台任务切换 |
-| `credits` 用户的 2000 积分在月中被调整（如管理员手动追加） | 管理员追加积分时指定目标账户（会员或加量包），不触发优先级重算 |
-| 同一次 LLM 调用需同时扣会员 + 加量包积分（混扣） | 扣减函数支持"拆单"：先扣会员剩余，不足部分从加量包扣；reconcile 按原扣减比例退还 |
-| 多个加量包共存（3 个月过期的在不同时间购买） | 同优先级内按 **FIFO**（最早过期的先扣）—— 避免"用户账户里有 3 个加量包但最老那个眼看过期没用上"的浪费 |
-| 非会员直接访问"加量包购买"页 URL | 前端路由守卫拦截 + 后端 API 再次校验（双保险） |
+| 场景 | 处理 |
+|------|------|
+| 月底 23:59 开始长 SOP、跨月完成 | Reserve 在月底前（扣 expiring subscription pkg），Reconcile 跨月后退还到已过期 pkg → 视为无操作（不补偿） |
+| 预扣后 LLM 调用失败 / 网络断开 | Reconcile with actual_cost=0 → 全额退还到原 pkg |
+| 用户手动取消 SOP 执行（前端主动调取消） | 同上 |
+| `billing_mode='legacy_tier'` 用户调 `POST /v1/credits/estimate` | 返回 `{estimated_credits: 0, skip_deduction: true}` |
+| 非会员创建 booster 订单 | 返回 403 with code `MEMBERSHIP_REQUIRED` |
+| `credit_reservation` 超过 24 小时未 reconcile | 后台 cron 扫描 → 假定调用失败 → 自动 refund |
+| 用户有多个 subscription pkg（续费叠加） | FIFO by ExpiresAt 已覆盖 |
+| 用户有多个 booster pkg（多次购买） | FIFO by ExpiresAt 已覆盖，最早过期先扣 |
+| Admin 改系数时有 reservation 在飞 | reservation 记录 `coefficient_version`，Reconcile 用 reserved 当时的 version 不受新系数影响 |
+| 会员到期精确时刻 + 正在运行 SOP | Reserve 发生在"到期前"按 credits，Reconcile 在"到期后"退还到已 expired pkg → 视为无操作 |
 
-### 权限规则
+### 权限规则（修订：trial 归新制 credits）
 
-| 操作 | free | trial (legacy) | standard / premium (legacy_tier) | standard / premium (credits) | admin |
-|------|------|----------------|----------------------------------|------------------------------|-------|
-| 运行 SOP | ❌ | ✅（≤10 次） | ✅（旧制计数） | ✅（扣积分） | ✅ |
-| 查看账户中心 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 购买会员 | ✅ → 进入新制 | ✅ → 进入新制 | ❌（到期后才能续） | ❌（到期后才能续） | — |
-| 购买加量包 | ❌ | ❌ | **待客户 S1 Gate 拍板** | ✅ | — |
-| 使用加量包积分 | ✅（已买且未过期） | ✅（已买且未过期） | ❌（旧制不扣积分） | ✅ | — |
+| 操作 | free | **trial (credits)** | standard/premium (legacy_tier) | standard/premium (credits) | admin |
+|------|------|---------------------|-------------------------------|----------------------------|-------|
+| 运行 SOP | ❌ | ✅（扣 credits） | ✅（旧制次数 20/月 或 无限） | ✅（扣 credits） | ✅ |
+| 运行 SalesRAG Chat | ❌ | ✅（扣 credits） | **P4e 待定** | ✅（扣 credits） | ✅ |
+| 购买会员（monthly/yearly） | ✅（→credits） | ❌（trial 不可重复购，可升级 standard/premium） | ❌（在期禁续费） | ❌（在期禁续费） | — |
+| 购买加量包 booster | ❌ | ❌ | ❌（P4a 决策） | ✅ | — |
+| 运行 SOP 前预估 API | ❌ | ✅ | 返回 skip_deduction=true | ✅ | — |
 | 配置估算系数 | ❌ | ❌ | ❌ | ❌ | ✅ |
-| 手动调整用户积分 | ❌ | ❌ | ❌ | ❌ | ✅ |
 
 ### UI 行为规格
 
-**账户中心（C 端 `numind-web-v3`）：**
-- 页面位置：现有账户中心页顶部新增"积分余额"卡片
-- `credits` 用户：展示两个数字 `会员积分 X / 2000`（带"月末清零"副标题+倒计时）和 `加量包积分 Y`（若有，带"最早 YYYY-MM-DD 过期"副标题）
-- `legacy_tier` 用户：不展示积分余额卡片，展示原有的"本月已用 X / 20"或"无限"
-- free 用户：展示"成为会员解锁 AI 能力"引导
-- 状态处理：loading 骨架屏 / error 重试
+**账户中心积分余额卡（`numind-web-v3`）：**
+- 位置：现有账户中心页顶部
+- **credits 用户**：双档展示——"会员积分 X / 2000"（副标题"本月 MM-DD 过期"+ 倒计时） + "加量包积分 Y"（若有，副标题"最早 YYYY-MM-DD 过期"）
+- **trial 用户**（credits 新制）：单档"体验积分 X / 200"（副标题"3 天到期，还剩 XX 小时" + CTA"升级为正式会员"）
+- **legacy_tier 用户**：不展示积分卡，展示原有"本月已用 X / 20"或"无限"
+- **free 用户**：展示"成为会员解锁 AI 能力"引导 + 会员购买入口
+- 状态处理：loading 骨架 / error 重试
 
-**加量包购买入口（C 端）：**
-- 位置：账户中心"积分余额"卡片下方 + SOP 执行"积分不足"弹窗
-- 非会员看到：灰态加量包卡片 + "成为会员后可购买"提示 + 跳转会员购买
-- 会员看到：加量包卡片（¥29.9 / 600 积分 / 3 个月）+ 购买按钮
-- 点击购买：走现有支付流程，支付成功后账户中心实时更新
+**加量包购买入口（`numind-web-v3`）：**
+- 位置 1：账户中心余额卡下方
+- 位置 2：SOP 积分不足弹窗内
+- **credits 会员**：卡片（¥29.9 / 600 积分 / 3 个月）+ 购买按钮
+- **free / trial / legacy_tier**：灰态卡片 + "需成为正式会员后购买" + 会员购买跳转
+- 点击购买：走现有订单流程
 
-**SOP 运行前预估条（C 端）：**
+**SOP 运行前预估条（`numind-web-v3`）：**
 - 位置：SOP 启动按钮上方
-- 展示："预估消耗 XX 积分（当前余额 YY）" + 启动按钮
-- 如果预估 > 余额：按钮禁用 + 提示"积分不足，购买加量包"
-- `legacy_tier` 用户不展示该条（保持旧 UX）
+- **credits/trial**：展示"预估消耗 XX 积分 | 当前余额 YY"
+- 若预估 > 余额：按钮禁用 + 显示"积分不足，购买加量包"
+- **legacy_tier**：不展示（保持旧 UX）
 
-**积分不足弹窗（C 端）：**
-- 触发：运行 SOP 时后端返回积分不足
+**积分不足弹窗：**
+- 触发：后端返回 insufficient_credits error code
 - 使用 `ConfirmModal`（硬规则）
-- 内容：差多少积分 + "购买加量包 / 取消"两个按钮
+- 内容：显示缺多少积分 + 当前余额 + "购买加量包 / 取消"两按钮
 
-**管理端 — 估算系数管理（`numind-admin-web`）：**
-- 页面位置："AI 服务管理"下新增"估算系数"tab
-- 布局：表格列表（provider / model / completion_prompt_ratio / updated_by / updated_at），使用 `DataTable`（硬规则）
-- 操作：编辑数值、新增行、删除行；改动需填 change_reason
+**管理端估算系数管理（`numind-admin-web`）：**
+- 位置："AI 服务管理"下新增"估算系数"tab
+- 布局：`DataTable`（provider / model / char_to_token_ratio / completion_prompt_ratio / safety_buffer_pct / version / updated_by / updated_at）
+- 操作：新增行 / 编辑 / 停用；修改时必填 `change_reason`（写入审计日志）
+- 无定价规则 CRUD UI（复用现有 SQL 维护，不在本次 scope）
 
-**管理端 — 会员配置：**
-- 页面位置：管理端"全局配置"页
-- 布局：表单（月度积分额度、加量包价格、加量包积分数、加量包有效期月数）
-- 提交：记录 audit log；修改后展示 banner"已修改，仅影响此后发放"
-
-**管理端 — 积分调试工具：**
-- 页面位置：管理端"用户管理"→ 点击用户 → "积分明细"tab
-- 布局：表格展示所有 CreditPackage（类型、初始/剩余、激活/过期、订单 ID、状态）
-- 操作："手动发放积分"按钮（表单：数量、类型 subscription/addon、过期时间、原因）+ "回收积分"按钮
-
-**管理端 — 数据迁移工具：**
-- 页面位置：管理端"系统工具"→ "数据迁移"tab
-- 布局：按钮"执行 billing_mode 初始化"+ 说明文字 + 执行结果展示
-- 幂等性：按钮仅在所有用户 billing_mode 为 NULL 时可用；执行后按钮不可用
-
-### 数据模型概要
+### 数据模型（仅列新增/修改）
 
 **修改现有表：**
-- `sub_user`：新增 `billing_mode enum('legacy_tier', 'credits') NOT NULL DEFAULT 'credits'`
-- `credit_package.Type`：扩展枚举，明确区分 `subscription_membership`（会员积分）和 `addon_package`（加量包）
-- `credit_package`：新增 `status` 字段（active/expired/revoked）
+- `sub_user`：新增 `billing_mode enum('legacy_tier','credits') NOT NULL DEFAULT 'credits'`
+- `credit_package`：确认现有 `status` 字段，如无则新增 `enum('active','expired','revoked')`
 
 **新增表：**
-| 表名 | 核心字段 | 说明 |
-|------|---------|------|
-| `membership_config` | id, key（如 `monthly_credits`, `addon_price_cents`, `addon_credits`, `addon_validity_months`）, value, updated_by, updated_at | 运营可编辑配置 |
-| `credit_estimation_coefficient` | id, provider, model, completion_prompt_ratio, prompt_char_to_token_ratio, version, updated_by, updated_at | R2 估算系数 |
-| `credit_reservation` | id, user_id, reference_type（sop_run/sop_chat/salesrag/...）, reference_id, reserved_credits, reserved_from_subscription, reserved_from_addon, status（reserved/reconciled/refunded）, created_at, reconciled_at | 预扣记录，事后对账依据 |
-| `tier_change_log`（可能已存在，待确认） | user_id, from_tier, to_tier, from_billing_mode, to_billing_mode, reason, created_at | 扩展现有 TierChangeLog 以记录 billing_mode 切换 |
 
-### API 端点概要（新增）
+| 表 | 核心字段 | 说明 |
+|----|---------|------|
+| `credit_estimation_coefficient` | id, provider, model, char_to_token_ratio, completion_prompt_ratio, safety_buffer_pct, version, is_active, updated_by, updated_at, change_reason | R2 系数配置，按 version 冻结 |
+| `credit_reservation` | id, user_id, reference_type, reference_id, reserved_credits, reserved_from_packages (JSON: [{package_id, credits}]), coefficient_version, status enum('reserved','reconciled','refunded','expired'), actual_cost_cents, delta, created_at, reconciled_at | 预扣记录；`reserved_from_packages` 记录具体从哪些 pkg 扣的，Reconcile 按原路退还 |
 
-**C 端（`/v1/credits/*`）：**
-- `GET /v1/credits/balance` — 返回当前用户积分明细（会员积分、加量包积分、各自过期时间）
-- `POST /v1/credits/estimate` — 接收 operation + context（如 sop_template_id），返回预估积分数
-- `POST /v1/credits/addon-orders` — 创建加量包订单（会员资格校验）
-- `GET /v1/credits/packages` — 返回用户所有 CreditPackage 列表（历史记录）
+**复用现有表（不新增）：**
+- `credit_package`（type: trial/subscription/booster 均已支持）
+- `credit_account` / `credit_transaction` / `pricing_rule` / `usage_record` / `billing_record` / `user_billing`
 
-**管理端（`/v1/admin/*`）：**
-- `POST/GET/PUT/DELETE /v1/admin/estimation-coefficients` — 估算系数 CRUD
-- `GET/PUT /v1/admin/membership-config` — 会员配置读取/更新（带 audit log）
-- `POST /v1/admin/users/:id/credits/grant` — 手动发放积分
-- `POST /v1/admin/users/:id/credits/revoke` — 手动回收积分
-- `GET /v1/admin/users/:id/credit-packages` — 查看用户所有积分包
-- `POST /v1/admin/migrations/billing-mode-init` — 一次性迁移工具（幂等）
+### API 端点（仅列新增/修改）
 
-**内部调用（供 biz/sop 等复用，不暴露 HTTP）：**
-- `biz/credit.EstimateCredits(ctx, operation, prompt string, modelKey string) (int64, error)`
-- `biz/credit.ReserveCredits(ctx, userID, credits, referenceType, referenceID) (*Reservation, error)`
-- `biz/credit.ReconcileReservation(ctx, reservationID, actualCostCents int64) error`
+**C 端新增：**
+- `POST /v1/credits/estimate` — body: `{operation, reference_id, prompt_preview}`；返回 `{estimated_credits, current_balance, breakdown, skip_deduction}`
 
-### S5 验证策略（预判，S3 将正式定义）
+**管理端新增：**
+- `GET/POST/PUT/DELETE /v1/admin/estimation-coefficients` — CRUD + 审计日志
+- `POST /v1/admin/migrations/billing-mode-init` — 一次性幂等执行
 
-**必须 Playwright E2E 持久回归**（参照 `.claude/rules/ndf-enforcement.md` 规则 10）：
-- 涉及支付、权限、会员等级的高风险业务逻辑
-- 关键 E2E 路径：新购会员后积分余额正确 / 会员运行 SOP 扣减正确 / 会员购买加量包成功 / 积分耗尽后弹窗 / 旧制用户运行无积分扣减 / 非会员购买加量包被拒绝
+**现有端点需改造：**
+- `POST /v1/orders`（productType=booster 路径）：新增会员资格校验；否则逻辑不变
 
-### 需要客户在 S1 Gate 拍板的开放问题
+**完全不动的（已在 prod）：**
+- `GET /v1/credits/balance`
+- `GET /v1/admin/credits/users` / `GET /v1/admin/credits/users/:id`
+- `POST /v1/admin/credits/users/:id/recharge`
 
-1. **P4a：`legacy_tier` 会员是否可购买加量包？**
-   - 可以：混合使用（旧制跑 SOP + 加量包积分等到期后再用）
-   - 不可以：加量包只卖给 `credits` 用户
-   - **建议：不可以**（避免状态混乱，加量包只在新制内有语义）
-2. **P4b：卡片生成是否走 LLM？**
-   - 需确认 `biz/sop` 中卡片生成路径是否涉及 LLM 调用。如是：需计费。如否：不计费
-   - **建议：S3 plan Task 2 做代码审计确认**
-3. **P4c：加量包过期清理归属**
-   - Lazy check（扣减时判断过期）+ daily cron 做 status 字段标记
-   - **建议：采用此方案**（免除实时批量删除风险）
-4. **P4d：首次上线时已有的 `trial` 用户如何处理？**
-   - 维持 `legacy_tier`（沿用旧 trial 规则到期）
-   - **建议：采用此方案**
+### 内部 biz API（新增）
+
+```go
+biz/credit.EstimateCredits(ctx, operation string, promptChars int, modelKey string) (credits int64, coefVersion int, err error)
+biz/credit.ReserveCredits(ctx, userID uint, credits int64, refType, refID string, coefVersion int) (*Reservation, error)
+biz/credit.ReconcileReservation(ctx, reservationID uint64, actualCostCents int64) error
+```
+
+### S5 验证策略
+
+**必须 Playwright E2E 持久回归**（符合 `.claude/rules/ndf-enforcement.md` 规则 10），覆盖 6 条关键路径：
+1. 新购 credits 会员 → 账户中心展示 2000 积分 → 跑一个 SOP → 扣减正确（reserved → reconciled 全链路）
+2. credits 会员购买 booster → 余额双档展示 → 跑 SOP 跨池扣减（会员先扣完才扣 booster）
+3. 非会员（free/trial/legacy_tier）尝试购买 booster → API 返回 403 + 前端灰态
+4. legacy_tier 老会员跑 SOP → 走旧制 CanRunSOP 不扣积分（向后兼容）
+5. SalesRAG Chat 扣减新路径 → credits 用户扣减正确 + Langfuse span 完整
+6. Trial 完整生命周期：¥9.9 购买 → 跑 SOP 扣 credits → 3 天后到期降级 free → 再次购买进入 credits
+
+### S1 Gate 待客户裁决的开放问题（修订后剩 1 个）
+
+原 P4a/P4b/P4c/P4d 已在本轮讨论确认：
+- P4a ✅ legacy_tier 会员不可买 booster
+- P4b ✅ 卡片生成是死代码（审计确认），顺手清理合入本 scope
+- P4c ✅ 加量包过期用 Lazy check + daily cron 标记
+- P4d ✅ Trial 是新制（不是 legacy_tier），本 proposal 权限表已修正
+
+**P4e（本轮审计新发现）：legacy_tier 用户的 SalesRAG 扣减策略**
+
+审计发现 SalesRAG Chat 当前完全未扣积分（prod 漏洞）。修复时 legacy_tier 老会员（旧次数制）在 SalesRAG 的扣减方式需明确：
+
+- **A**：legacy_tier 的 SalesRAG 保持免费（完整零感知，保护老会员体验）
+- **B**：legacy_tier 的 SalesRAG 也扣 credits（可能从未扣升级到扣，引发老用户感知）
+- **🎯 建议 A**：legacy_tier 是"即将 sunset 的过渡态"，不引入新感知；到期迁移到 credits 后统一开始收费
