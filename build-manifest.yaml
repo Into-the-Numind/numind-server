@@ -640,9 +640,17 @@ features:
       qa: null
     progress:
       total_tasks: 11
-      completed_tasks: 4
-      reviewed_tasks: 0
-      current_task: "Wave 1: 4/5 implemented (T-bug d8d2eeb / T1 8066463 / T2 aabcecd / T4 bb32079); T-arch halted at gate (c3d8e96); T-arch-prereq dispatched; 8 Sonnet reviewers running in parallel for A/B/C/D"
+      completed_tasks: 6
+      reviewed_tasks: 4
+      current_task: |
+        Wave 1 all 6 implementations complete:
+        T-bug d8d2eeb → fix d809a17 (P0 DB error swallow fixed + P1 tests + P2 cleanup)
+        T1 8066463 → fix 7544685 (P1 SQLite isolation + P2 date guard + P2 composite name key)
+        T2 aabcecd → fix 4926cf1 (P1 Toggle envelope + P2 min=1 + P2 TOCTOU/audit doc comments)
+        T4 bb32079 → fix 4b17bd2 (P1 isOpenAICompatible prefix match + P1 errors.Is + P2 nil-guard + P2 audit diff)
+        T-arch-prereq 7dfeb0d (dev SQL executed, gate re-run PASS, middleware classifyServiceType + 12 tests)
+        T-arch 8a2eed1 (migration + model cleanup + middleware buildBaseRecord snapshot + RouteItem cleanup + registry stripping, 11 files)
+        Pending: T-arch-prereq × 2 reviewers + T-arch × 2 reviewers = 4 dispatched; then rebase-merge A → T-arch-prereq → E → B → C → D
     rollback: "逐 task 独立 commit + 独立 sub-branch，review 未过时 git branch -D；T-arch migration 附 rollback SQL"
     last_verified: null
     gap_audit:
@@ -747,6 +755,9 @@ features:
       - "2026-04-18 (Q3 model 截断): 修 pricing_rule row 补齐 claude-sonnet-4-6-thinking"
       - "2026-04-18 (merge 顺序更新): A → T-arch-prereq → E → B → C → D"
       - "2026-04-18 (Critical prod finding): dev DB 所有 UsageRecord cost_cents=0，prod 大概率同病。T-arch-prereq 产出 prod 数据修复 SQL，prod 发版后必须手动执行"
+      - "2026-04-18 (Wave 1 fix round 1): A fix d809a17（P0 DB 错误传播 + 2 新测）/ B fix 7544685（SQLite 隔离 + date 守卫 + composite key）/ C fix 4926cf1（Toggle envelope + validation + doc）/ D fix 4b17bd2（isOpenAICompatible prefix + errors.Is + nil guard + diff 扩充）"
+      - "2026-04-18 (T-arch-prereq review): Spec PASS / Code PASS_WITH_FIXES — P1×2 pending fix: (1) billing_test 集成测试用真 ChatRequest 验证 classifyServiceType wire (2) pricing_rule_tier 缺 unique key 导致 INSERT IGNORE 重跑会双插 tier 行"
+      - "2026-04-18 (T-arch review): Spec PASS / Code PASS_WITH_FIXES — P1.1 isNotFoundErr 用 errors.Is 替代 / P1.2 per_second 语义回归需用户决策（pricing_rule 从无 price_per_second 列，UsageRecord.PricingSecondSnapshot 成 dead field）"
     deferred:
       - "T8 pricing_rule_id FK migration — 搞法 2 选定后不做（字符串匹配足够）"
       - "/healthz/ai 可视化 dashboard — Phase 2"
