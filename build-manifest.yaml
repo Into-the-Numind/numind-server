@@ -620,10 +620,10 @@ features:
     ndf_version: "1.0"
     description: "admin-web 对 AI service 配置的全面管理能力补齐 — Route CRUD（priority/is_active，不含 pricing）/ Provider CRUD（api_key/base_url）+ 测试连接 / Audit Log 端点修复 / Task Fallback 多选 / PricingRule 与 AIService 关联可视化 + billing 架构重建（扔 B 列+重建真快照） + recorder pricing fallback bug 修复"
     track: "standard"
-    stage: "S6-dev-validated"
-    classification_reason: "Wave 1 + Wave 2 全部 10 task 实施 + review + fix + rebase-merge 完成；dev 部署 + 端到端验证（chatbot stream cost_cents>0 + PricingXSnapshot 一致 + 全部新端点 200 + UI QA Playwright 8/8 通过）；2 个 hotfix（metadata / stream wrap）+ 2 个 minor fix（is_active / api_key min-length）+ Opus 4.7 review 发现的 1 个 sibling fix（CreateProvider）全部落地。剩余系统性 `default:true` 审查推迟到独立 hotfix"
-    last_updated_by: "ai-s6-verified"
-    last_updated_at: "2026-04-18T21:30:00+08:00"
+    stage: "S7-dev-done"
+    classification_reason: "全部 dev 工作收尾：Wave 1+2 实施 / 端到端验证 / 2 hotfix / 4 minor+sibling fix / 1 系统性 default:true 扫除（4 sibling 修+5 skip）/ Opus deferred 收尾。dev develop 上所有 commit 落地 + 全部 worktree 与 sub-branch 清理。等 prod 发版"
+    last_updated_by: "ai-s7-cleanup"
+    last_updated_at: "2026-04-18T22:30:00+08:00"
     wave1_verification_done:
       end_to_end_evidence:
         - "dev usage_record row 284: service_type='llm_chat' / provider='aihubmix' / model='claude-sonnet-4-6' / cost_cents=2 / revenue_cents=2 / pricing_input_snapshot=21.6 / pricing_output_snapshot=108 / prompt_tokens=765 / completion_tokens=22"
@@ -640,11 +640,22 @@ features:
       - "2c20398: CreateRoute is_active=false 被 GORM default:true 吞（UpdateColumn fixup）— PASS_WITH_FIXES（Opus 发现 sibling bug）"
       - "3403e96: ProviderEdit create-mode api_key min=8 — PASS（P1 backend min=8 defense-in-depth 推迟）"
       - "9a4199d: CreateProvider 同样 is_active=false 修复（Opus 4.7 review 发现的 sibling）— PASS"
-    opus_review_findings_deferred:
-      systemic_default_true_audit: "repo 里共 11 处 `default:true` bool 字段 + 剩余 9 个 Create 路径（AIService / SopTemplate / Blogger / OpinionTrack / KnowledgeDocument / PricingRule 等）可能有同样 GORM gotcha。超出本 feature scope，建议独立 hotfix 扫一遍所有 bool Create + 统一用 `Select(\"*\").Create()` 或 UpdateColumn fixup"
-      backend_apikey_min8: "CreateProviderRequest.APIKey 只有 binding:required，前端 min=8 是 UX 指引；是否后端也 enforce min-length 依产品规则（某些 provider 可能接受短 key），需产品确认"
-      recorder_prebuilt_metadata_guard: "recorder.Record 的 Prebuilt 分支信任 caller 的 Metadata；加一行 `if record.Metadata == \"\" { record.Metadata = \"{}\" }` 作为 belt-and-suspenders 防未来 regression"
-      gorm_gotcha_doc: "将 default:true + bool Create 问题写入 `.claude/rules/database.md`"
+    opus_review_findings_resolved:
+      systemic_default_true_audit: "✅ 376486c — 扫描 11 处 `default:true` bool 字段 + 修 4 sibling Create（SopTemplate.TrailingChatEnabled / AIService.IsActive / PricingRule.IsActive / MonitorConfig.NotifyOnUpdate）+ 5 处 skip（hardcoded true / VIEW-backed / system seeder，含 reason）+ 全部 sibling 加回归测试"
+      backend_apikey_min8: "✅ 936951a — CreateProviderRequest.APIKey 加 binding:required,min=8；comment 注明 'min=8 是启发式而非 provider 规范，未来如某 provider 用短 key 一并放宽前后端'"
+      recorder_prebuilt_metadata_guard: "✅ 936951a — recorder.go buildRecord Prebuilt 分支加 `if record.Metadata == \"\" { record.Metadata = \"{}\" }` belt-and-suspenders；comment 引用 c3d68ec 事故"
+      gorm_gotcha_doc: "✅ 本地 .claude/rules/database.md §6 — 安全 Create 模式 + 测试模式 + 何时跳过 + Select(\"*\") 替代讨论；非 git 仓库故未提交"
+    final_session_state:
+      last_commits:
+        numind-server:
+          - "1c73e7b (S5→S6 manifest)"
+          - "376486c (default:true sweep, 4 sibling fix + 5 skip)"
+          - "936951a (Opus deferred close: recorder Metadata guard + api_key min=8 backend)"
+        numind-admin-web:
+          - "3403e96 (api_key min=8 frontend)"
+      cleanup_done:
+        worktrees_removed: "10 (server: wt-T-bug/T1/T2/T4/T-arch/T-arch-prereq; admin-web: wt-admin-T3/T5/T6/T7)"
+        local_branches_removed: "12 (server: feature/ai-service-admin-complete + 6 sub; admin-web: feature/ai-service-admin-complete + 4 sub)"
     wave1_verification_deferred:
       reason: "用户暂无时间跑 dev 4 项手动调用（chat/vision/ocr/asr），Wave 2 前端独立推进不阻塞"
       verification_protocol_preserved: "见本 entry verification_protocol 字段；用户就绪后按协议跑 4 项 + SQL 核对"
