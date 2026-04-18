@@ -620,10 +620,39 @@ features:
     ndf_version: "1.0"
     description: "admin-web 对 AI service 配置的全面管理能力补齐 — Route CRUD（priority/is_active，不含 pricing）/ Provider CRUD（api_key/base_url）+ 测试连接 / Audit Log 端点修复 / Task Fallback 多选 / PricingRule 与 AIService 关联可视化 + billing 架构重建（扔 B 列+重建真快照） + recorder pricing fallback bug 修复"
     track: "standard"
-    stage: "S4-wave1-review-and-prereq"
-    classification_reason: "Standard 精简版：跨 server + admin-web 两仓库；Wave 1 并行 5 task；gate 失败触发追加 T-arch-prereq 修 pricing_rule 三维度词表不一致（service_type / provider name / model 截断）"
-    last_updated_by: "ai-s4-wave1"
-    last_updated_at: "2026-04-18T17:00:00+08:00"
+    stage: "S5-awaiting-dev-verification"
+    classification_reason: "Wave 1 全部 6 task + 2 fix rounds rebase-merged（linear history）合入 develop（FF merge fbbe398），已 push origin/develop 触发 CI+dev 部署。等待 4 项手动 AI 调用验证后进 Wave 2"
+    last_updated_by: "ai-s5-pre-verify"
+    last_updated_at: "2026-04-18T18:30:00+08:00"
+    wave1_merge_complete:
+      rebase_agent_tip: "1657a7a (before rebase onto develop)"
+      post_rebase_tip: "fbbe398 (18 commits, linear onto develop 48f0e6d)"
+      develop_tip_pushed: "fbbe398"
+      push_at: "2026-04-18T18:30:00+08:00"
+      merge_conflicts_resolved: "billing.go supplier-consumer / biz.go T2+T4 append+pricing-removal / admin_router.go keep-all / ai_service_audit.go const block merge / biz_test.go newTestDB dedup / T4 PricingUnit test cleanup / route_test.go stubBiz extended"
+      stats: "30 files changed, +4536 -253 lines, 11 new files"
+      tests: "go vet + go test ./... all pass; task lint not found, golangci-lint shows only 4 pre-existing issues"
+    dev_deploy_migrations_status:
+      executed_on_dev:
+        - "20260418_170000_pricing_rule_vocabulary_fix.sql (T-arch-prereq, executed via SSH on 2026-04-18)"
+      pending_on_dev:
+        - "20260418_180000_drop_route_pricing_columns.sql — NOT required for dev runtime; Go struct already stripped so columns are ignored; prod deploy runs this"
+        - "20260418_190000_drop_usage_record_pricing_second_snapshot.sql — NOT required for dev runtime; same reason; prod deploy runs this"
+      note: "All schema-drop migrations are defensive cleanup; the deployed Go code doesn't reference the dropped columns so dev runtime is unaffected without executing them."
+    verification_protocol:
+      wait_for_ci: "~5-10 min for numind-server-dev container image build + deploy"
+      test_calls:
+        - "1. Chat: trigger a sop text node execution OR direct chat endpoint → UsageRecord.ServiceType = 'llm_chat' / cost_cents > 0 / PricingInputSnapshot + PricingOutputSnapshot populated"
+        - "2. Vision: trigger a sop node with image input (image message in ChatRequest) → UsageRecord.ServiceType = 'llm_vision' / cost_cents > 0 / PricingXSnapshot populated"
+        - "3. OCR: trigger a document parse that routes to baidu OCR → UsageRecord.ServiceType = 'ocr' / cost_cents > 0 / PricingCallSnapshot populated"
+        - "4. ASR: trigger an ASR call → UsageRecord.ServiceType = 'asr' / cost_cents > 0 (per_call billing) / PricingCallSnapshot populated / DurationSeconds also populated (metadata)"
+      sanity_sql: |
+        SELECT id, service_type, provider, model, cost_cents, revenue_cents,
+               pricing_input_snapshot, pricing_output_snapshot, pricing_call_snapshot,
+               duration_seconds, created_at
+        FROM usage_record
+        ORDER BY id DESC LIMIT 20;
+      success_criteria: "4 新 UsageRecord 行（chat/vision/ocr/asr 各 1）cost_cents > 0 且 PricingXSnapshot 与 pricing_rule 当时价格一致；ASR 行 DurationSeconds 非 null；所有行 service_type 为细粒度（llm_chat/llm_vision/ocr/asr 而非 'llm'）"
     repos:
       - numind-server
       - numind-admin-web
