@@ -36,13 +36,22 @@ type creditService struct {
 // quota queries), and a pricing.ICalculator (used by credits leg for R2
 // estimation). pricing may be nil — the legacy leg never touches it, so
 // legacy-only callers in tests can pass nil.
+//
+// The estimation biz is built internally from ds + pc so callers don't need
+// to know about the sub-dependency. If pc is nil, the estimation leg is also
+// nil and creditsImpl.CheckAndEstimate returns a config error rather than
+// panicking — legacy-only tests exercise this path safely.
 func NewCreditService(ds store.IStore, biz ICreditBiz, pc pricing.ICalculator) ICreditService {
+	var est IEstimationBiz
+	if pc != nil {
+		est = NewEstimationBiz(ds, pc)
+	}
 	return &creditService{
 		store:   ds,
 		biz:     biz,
 		pricing: pc,
 		legacy:  &legacyTierImpl{biz: biz},
-		credits: &creditsImpl{store: ds, biz: biz, pricing: pc},
+		credits: &creditsImpl{store: ds, biz: biz, pricing: pc, estimation: est},
 	}
 }
 
@@ -191,17 +200,77 @@ func (b BalanceBreakdown) Ptr() *BalanceBreakdown { return &b }
 // ---------------------------------------------------------------------------
 
 type creditsImpl struct {
-	store   store.IStore
-	biz     ICreditBiz
-	pricing pricing.ICalculator
+	store      store.IStore
+	biz        ICreditBiz
+	pricing    pricing.ICalculator
+	estimation IEstimationBiz // wired in NewCreditService
 }
 
-// CheckAndEstimate — Task C.5 fills in the R2 formula. For now Task C.3 only
-// needs a stub that returns a minimal "sufficient" result so the Reserve
-// path can be exercised end-to-end in tests. The real implementation lands
-// in Task C.5 and replaces this body.
-func (c *creditsImpl) CheckAndEstimate(_ context.Context, _ *model.User, _ Operation, _ EstimationInput) (*PreCheckResult, error) {
-	return nil, fmt.Errorf("creditsImpl.CheckAndEstimate: not yet implemented (Task C.5)")
+// CheckAndEstimate — credits mode. Computes R2 estimate via the estimation
+// biz layer, fetches the current balance snapshot, and returns PreCheckResult
+// with Sufficient derived from a simple balance >= estimated check.
+// ErrInsufficientCredits is wrapped + returned on shortfall so the caller's
+// wrapCreditError helper can surface a zh message.
+//
+// Emits:
+//   - trace-level metadata: billing_mode / deducted_from / credit_balance_at_start
+//     (spec §5.1.5)
+//   - span: credit-estimate (spec §5.1.1) with input {operation, prompt_chars,
+//     model, provider, billing_mode} and output {estimated_credits, sufficient,
+//     skip_deduction, coefficient_id, char_to_token_ratio,
+//     completion_prompt_ratio, safety_buffer_pct, sub_remain_before,
+//     booster_remain_before}.
+func (c *creditsImpl) CheckAndEstimate(ctx context.Context, user *model.User, op Operation, in EstimationInput) (*PreCheckResult, error) {
+	if c.estimation == nil {
+		return nil, fmt.Errorf("creditsImpl.CheckAndEstimate: estimation biz not configured (wire error)")
+	}
+	bal, err := c.GetBalance(ctx, user)
+	if err != nil {
+		return nil, fmt.Errorf("checkAndEstimate: balance: %w", err)
+	}
+	// Trace metadata added BEFORE the span so both are visible on the trace
+	// root even if estimation errors mid-flight.
+	updateTraceMetadataForCredits(ctx, user, *bal)
+
+	estimated, coefID, err := c.estimation.EstimateCredits(ctx, op, in.PromptChars, in.Model, in.Provider)
+	if err != nil {
+		return nil, fmt.Errorf("checkAndEstimate: estimate: %w", err)
+	}
+	total := bal.SubRemain + bal.BoosterRemain
+	pre := &PreCheckResult{
+		SkipDeduction:    false,
+		Sufficient:       total >= estimated,
+		EstimatedCredits: estimated,
+		CoefficientID:    coefID,
+		Balance:          *bal,
+	}
+
+	// Load the coefficient row for span emission (char/prompt/buffer values).
+	// Cheap: coef lookup is already cached by the estimation biz in prod.
+	var coef *model.CreditEstimationCoefficient
+	if impl := c.estimationImpl(); impl != nil {
+		if row, coefErr := impl.getActiveCoefficient(ctx, in.Provider, in.Model, string(op)); coefErr == nil {
+			coef = row
+		}
+	}
+	emitCreditEstimateSpan(ctx, user, op, in, pre, coef)
+
+	if !pre.Sufficient {
+		return pre, fmt.Errorf("%w: need %d credits, have %d", ErrInsufficientCredits, estimated, total)
+	}
+	return pre, nil
+}
+
+// estimationImpl is a narrow escape hatch exposing the concrete estimationBiz
+// so CheckAndEstimate can re-use its getActiveCoefficient helper for span
+// emission. If a different IEstimationBiz implementation is wired at test
+// time, this returns nil and span emission falls back to nil coef (no
+// detail fields) rather than crashing.
+func (c *creditsImpl) estimationImpl() *estimationBiz {
+	if impl, ok := c.estimation.(*estimationBiz); ok {
+		return impl
+	}
+	return nil
 }
 
 // Reserve: same-transaction (DeductCreditsTx + INSERT credit_reservation +
@@ -313,7 +382,7 @@ func (c *creditsImpl) Reserve(
 		return nil, txErr
 	}
 
-	return &Reservation{
+	result := &Reservation{
 		ID:              rsvRow.ID,
 		UserID:          rsvRow.UserID,
 		ReferenceType:   rsvRow.ReferenceType,
@@ -325,7 +394,17 @@ func (c *creditsImpl) Reserve(
 		IdempotencyKey:  rsvRow.IdempotencyKey,
 		Items:           toReservationItems(items),
 		CreatedAt:       rsvRow.CreatedAt,
-	}, nil
+	}
+
+	// Post-commit balance snapshot for span output (spec §5.1.2).
+	subAfter, boosterAfter := int64(0), int64(0)
+	if bal, berr := c.GetBalance(ctx, user); berr == nil {
+		subAfter = bal.SubRemain
+		boosterAfter = bal.BoosterRemain
+	}
+	emitCreditReserveSpan(ctx, user, result, subAfter, boosterAfter)
+
+	return result, nil
 }
 
 // Reconcile adjusts the reservation against the actual LLM cost:
@@ -343,7 +422,13 @@ func (c *creditsImpl) Reserve(
 // actual_cost_cents / delta / reconciled_at / finalize_reason='normal'
 // atomically inside a single transaction. Spec §1.4 / §3.3.
 func (c *creditsImpl) Reconcile(ctx context.Context, reservationID uint64, actualCostCents int64) error {
-	return c.store.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	var (
+		reservedCredits    int64
+		delta              int64
+		reconcileDirection string
+		refundedPackages   []map[string]interface{}
+	)
+	txErr := c.store.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		_, row, err := c.loadReservationForUpdate(ctx, tx, reservationID)
 		if err != nil {
 			return err
@@ -359,13 +444,18 @@ func (c *creditsImpl) Reconcile(ctx context.Context, reservationID uint64, actua
 			return fmt.Errorf("load items: %w", err)
 		}
 
-		delta := actualCostCents - row.ReservedCredits
+		reservedCredits = row.ReservedCredits
+		delta = actualCostCents - row.ReservedCredits
 		switch {
 		case delta < 0:
+			reconcileDirection = "refund"
 			if err := c.refundToItems(ctx, tx, row.UserID, items, -delta); err != nil {
 				return err
 			}
+			// Build the refunded_to_packages span output snapshot.
+			refundedPackages = snapshotItemsAsMap(items, -delta)
 		case delta > 0:
+			reconcileDirection = "topup"
 			// Top-up: FIFO debit from whatever packages are active NOW.
 			if _, err := c.biz.DeductCreditsTx(ctx, tx, row.UserID, delta,
 				"reconcile:"+row.Operation); err != nil {
@@ -384,6 +474,8 @@ func (c *creditsImpl) Reconcile(ctx context.Context, reservationID uint64, actua
 				log.Warnw("Reconcile top-up insufficient — recording as debt",
 					"reservation_id", reservationID, "delta", delta, "err", err)
 			}
+		default:
+			reconcileDirection = "noop"
 		}
 
 		finalizeReason := "normal"
@@ -402,13 +494,54 @@ func (c *creditsImpl) Reconcile(ctx context.Context, reservationID uint64, actua
 		}
 		return nil
 	})
+	if txErr != nil {
+		return txErr
+	}
+	// Emit span only on successful reconcile (spec §5.1.3).
+	// actual_prompt_tokens / actual_completion_tokens are unavailable here —
+	// ICreditService.Reconcile only receives costCents. They'll be added when
+	// the caller wires the full cost metadata (future expansion).
+	emitCreditReconcileSpan(ctx, reservationID,
+		reservedCredits, actualCostCents, delta,
+		0, 0, // token counts not threaded through this API yet
+		reconcileDirection, refundedPackages)
+	return nil
+}
+
+// snapshotItemsAsMap builds the span-output representation of the items
+// affected by a refund / reconcile. When amount is smaller than the item's
+// credits the returned entry reflects the actually-refunded portion.
+func snapshotItemsAsMap(items []model.CreditReservationItem, amount int64) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(items))
+	remaining := amount
+	for _, item := range items {
+		if remaining <= 0 {
+			break
+		}
+		this := remaining
+		if this > item.Credits {
+			this = item.Credits
+		}
+		out = append(out, map[string]interface{}{
+			"package_id":   item.PackageID,
+			"credits":      this,
+			"package_type": item.PackageType,
+			"seq":          item.Seq,
+		})
+		remaining -= this
+	}
+	return out
 }
 
 // Refund transitions reserved → refunded and restores each item.credits back
 // to its original package_id (seq ASC). If a package is already expired, the
 // refund to that package is a no-op per spec §2.4 (expired_by_cron etc.).
 func (c *creditsImpl) Refund(ctx context.Context, reservationID uint64, reason string) error {
-	return c.store.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	var (
+		totalRefunded   int64
+		refundedItemMap []map[string]interface{}
+	)
+	txErr := c.store.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		_, row, err := c.loadReservationForUpdate(ctx, tx, reservationID)
 		if err != nil {
 			return err
@@ -424,13 +557,19 @@ func (c *creditsImpl) Refund(ctx context.Context, reservationID uint64, reason s
 			return fmt.Errorf("load items: %w", err)
 		}
 
-		var totalRefunded int64
+		refundedItemMap = make([]map[string]interface{}, 0, len(items))
 		for _, item := range items {
 			refunded, err := c.refundOneItem(ctx, tx, row.UserID, item, item.Credits)
 			if err != nil {
 				return err
 			}
 			totalRefunded += refunded
+			refundedItemMap = append(refundedItemMap, map[string]interface{}{
+				"package_id":   item.PackageID,
+				"credits":      refunded, // actually-refunded amount (may be 0 if package expired)
+				"package_type": item.PackageType,
+				"seq":          item.Seq,
+			})
 		}
 
 		now := time.Now()
@@ -446,6 +585,11 @@ func (c *creditsImpl) Refund(ctx context.Context, reservationID uint64, reason s
 		}
 		return nil
 	})
+	if txErr != nil {
+		return txErr
+	}
+	emitCreditRefundSpan(ctx, reservationID, reason, totalRefunded, refundedItemMap)
+	return nil
 }
 
 // refundToItems walks items seq ASC and refunds up to `amount` credits total.

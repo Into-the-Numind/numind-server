@@ -85,6 +85,32 @@ func WithTraceTags(tags ...string) TraceOption {
 	}
 }
 
+// UpdateTraceMetadata 追加 / 更新 trace-level metadata after creation.
+// Langfuse's ingestion API accepts a "trace-create" event for the same trace
+// ID twice; the second call merges fields. We re-use the same event type so
+// downstream processing is unchanged.
+//
+// Used by credits-system Task C.8 (spec §5.1.5) to stamp billing_mode,
+// deducted_from, and credit_balance_at_start onto the existing SOP/SalesRAG
+// trace root WITHOUT requiring the original trace-create call site to know
+// about credits.
+func UpdateTraceMetadata(traceID string, metadata map[string]string) {
+	if C == nil || !C.enabled || traceID == "" || len(metadata) == 0 {
+		return
+	}
+	body := &TraceBody{
+		ID:        traceID,
+		Metadata:  metadata,
+		Timestamp: time.Now(),
+	}
+	C.Enqueue(&IngestionEvent{
+		ID:   uuid.New().String(),
+		Type: "trace-create", // Langfuse merges same-ID traces; see API docs.
+		Body: body,
+		Time: time.Now(),
+	})
+}
+
 // --- Span ---
 
 // CreateSpan 创建 Span 事件
@@ -158,6 +184,13 @@ func WithSpanOutput(output interface{}) SpanOption {
 func WithSpanLevel(level string) SpanOption {
 	return func(s *SpanBody) {
 		s.Level = level
+	}
+}
+
+// WithSpanMetadata 设置 span 元数据
+func WithSpanMetadata(meta map[string]string) SpanOption {
+	return func(s *SpanBody) {
+		s.Metadata = meta
 	}
 }
 
