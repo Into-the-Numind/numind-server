@@ -238,6 +238,9 @@ func TestInitBillingMode_Success(t *testing.T) {
 }
 
 // TestInitBillingMode_Idempotent — re-running migrates 0 more users.
+// Uses a fresh gin.Engine per request to avoid a benign gin/sql goroutine
+// race where sql.Rows.awaitDone from the first request outlives its context
+// and reads c.Request while the engine is processing the next request.
 func TestInitBillingMode_Idempotent(t *testing.T) {
 	db := newTestDB(t)
 	ds := store.NewTestStore(db)
@@ -246,31 +249,36 @@ func TestInitBillingMode_Idempotent(t *testing.T) {
 	seedUser(t, db, 1, model.UserTierStandard, model.BillingModeCredits, &future)
 
 	ctrl := admin_migration.NewMigrationController(ds)
-	r := newRouter(ctrl)
 
-	// First call
-	req := httptest.NewRequest(http.MethodPost, "/v1/admin/migrations/billing-mode-init", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	require.Equal(t, http.StatusOK, w.Code)
+	// First call on its own router
+	{
+		r := newRouter(ctrl)
+		req := httptest.NewRequest(http.MethodPost, "/v1/admin/migrations/billing-mode-init", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
 
-	var env1 struct {
-		Data admin_migration.MigrationRunResp `json:"data"`
+		var env1 struct {
+			Data admin_migration.MigrationRunResp `json:"data"`
+		}
+		require.NoError(t, json.NewDecoder(w.Body).Decode(&env1))
+		assert.Equal(t, int64(1), env1.Data.MigratedCount)
 	}
-	require.NoError(t, json.NewDecoder(w.Body).Decode(&env1))
-	assert.Equal(t, int64(1), env1.Data.MigratedCount)
 
-	// Second call — WHERE billing_mode='credits' guard must zero the count
-	req2 := httptest.NewRequest(http.MethodPost, "/v1/admin/migrations/billing-mode-init", nil)
-	w2 := httptest.NewRecorder()
-	r.ServeHTTP(w2, req2)
-	require.Equal(t, http.StatusOK, w2.Code, "body: %s", w2.Body.String())
+	// Second call on a fresh router — WHERE billing_mode='credits' guard zeros the count
+	{
+		r := newRouter(ctrl)
+		req2 := httptest.NewRequest(http.MethodPost, "/v1/admin/migrations/billing-mode-init", nil)
+		w2 := httptest.NewRecorder()
+		r.ServeHTTP(w2, req2)
+		require.Equal(t, http.StatusOK, w2.Code, "body: %s", w2.Body.String())
 
-	var env2 struct {
-		Data admin_migration.MigrationRunResp `json:"data"`
+		var env2 struct {
+			Data admin_migration.MigrationRunResp `json:"data"`
+		}
+		require.NoError(t, json.NewDecoder(w2.Body).Decode(&env2))
+		assert.Equal(t, int64(0), env2.Data.MigratedCount, "re-run is no-op")
 	}
-	require.NoError(t, json.NewDecoder(w2.Body).Decode(&env2))
-	assert.Equal(t, int64(0), env2.Data.MigratedCount, "re-run is no-op")
 }
 
 // ---------------------------------------------------------------------------
