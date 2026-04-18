@@ -127,6 +127,9 @@ func (f *fakeCreditBiz) CanPerformAIOperation(ctx context.Context, user *model.U
 func (f *fakeCreditBiz) DeductCredits(ctx context.Context, userID uint, costCents int64, operation, bizRefType, bizRefID string, usageRecordID *uint64) error {
 	return nil
 }
+func (f *fakeCreditBiz) DeductCreditsTx(ctx context.Context, tx *gorm.DB, userID uint, credits int64, reason string) ([]credit.PackageDeduction, error) {
+	return nil, nil
+}
 func (f *fakeCreditBiz) GetBalance(ctx context.Context, userID uint) (int64, error) {
 	return 0, nil
 }
