@@ -55,6 +55,12 @@ func NewStore(db *gorm.DB) *datastore {
 	return S
 }
 
+// NewTestStore creates a fresh IStore instance backed by the given DB without
+// the singleton constraint. Use only in tests.
+func NewTestStore(db *gorm.DB) IStore {
+	return &datastore{db: db}
+}
+
 // DB 返回存储在 datastore 中的 *gorm.DB.
 func (ds *datastore) DB() *gorm.DB {
 	return ds.db

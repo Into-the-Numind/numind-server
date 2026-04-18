@@ -475,7 +475,6 @@ func TestProvider_DeleteGuardWithActiveRoute(t *testing.T) {
 		ProviderID:      p.ID,
 		ProviderModelID: "qwen-turbo",
 		IsActive:        true,
-
 	}
 	require.NoError(t, db.Create(&route).Error)
 
@@ -569,7 +568,6 @@ func TestProvider_TestConnectionOpenAISucceeds(t *testing.T) {
 		ProviderID:      p.ID,
 		ProviderModelID: "test-model-v1",
 		IsActive:        true,
-
 	}
 	require.NoError(t, db.Create(&route).Error)
 
@@ -1128,4 +1126,35 @@ func TestRouteCRUD_LastActiveGuardOnUpdateDeactivate(t *testing.T) {
 	var e *errno.Errno
 	require.ErrorAs(t, err, &e)
 	assert.Contains(t, e.Message, "至少保留一条激活路由")
+}
+
+// TestCreateService_IsActiveFalse verifies that an AIService created with
+// is_active=false is actually persisted as false. Regression for the GORM
+// `default:true` gotcha: without the UpdateColumn fixup in gormStore.SaveService,
+// GORM v2 treats bool zero value (false) as "not set" and falls back to the DB
+// default of true for model.AIService.IsActive.
+func TestCreateService_IsActiveFalse(t *testing.T) {
+	db := newTestDB(t)
+	// Use a real registry backed by SQLite so the gormStore.SaveService path is exercised.
+	reg := registry.New(db)
+	b := aiservice_admin.New(reg, db)
+
+	svc := &model.AIService{
+		ModelKey:    "test-inactive-service",
+		DisplayName: "Test Inactive Service",
+		ServiceType: "llm",
+		IsActive:    false,
+	}
+
+	created, err := b.CreateService(context.Background(), svc, 1, "admin")
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	assert.False(t, created.IsActive,
+		"returned service should have is_active=false")
+
+	// Double-check the actual DB row.
+	var row model.AIService
+	require.NoError(t, db.First(&row, created.ID).Error)
+	assert.False(t, row.IsActive,
+		"DB row should persist is_active=false (not defaulted to true)")
 }

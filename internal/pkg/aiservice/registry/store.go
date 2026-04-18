@@ -83,15 +83,15 @@ type TaskBinding struct {
 // resolvedRouteRow is the internal flat struct populated by the JOIN query in GetResolvedRoute.
 // It is not exported; callers receive ResolvedRoute (see registry.go).
 type resolvedRouteRow struct {
-	ServiceID          uint64
-	ModelKey           string
-	DisplayName        string
-	ServiceType        string
-	CapabilityJSON     model.JSONMap
-	LatencyTier        string
-	QualityTier        string
-	DeprecatedAt       *time.Time
-	IsActive           bool
+	ServiceID       uint64
+	ModelKey        string
+	DisplayName     string
+	ServiceType     string
+	CapabilityJSON  model.JSONMap
+	LatencyTier     string
+	QualityTier     string
+	DeprecatedAt    *time.Time
+	IsActive        bool
 	ProviderID      uint64
 	ProviderName    string
 	ProviderBaseURL string
@@ -189,8 +189,21 @@ func (s *gormStore) ListServicesPaginated(ctx context.Context, filter ServiceFil
 // If svc.ID == 0, a new record is created; otherwise the existing record is updated.
 func (s *gormStore) SaveService(ctx context.Context, svc *model.AIService) error {
 	if svc.ID == 0 {
+		// Capture intended value before Create; GORM may overwrite the struct field with
+		// the DB default when the field has `gorm:"default:true"` and the value is false.
+		wantActive := svc.IsActive
 		if err := s.db.WithContext(ctx).Create(svc).Error; err != nil {
 			return fmt.Errorf("gormStore.SaveService (create): %w", err)
+		}
+		// GORM v2 skips bool zero value (false) when the field has a `default:true` tag
+		// (model.AIService.IsActive). If the caller explicitly set is_active=false, GORM
+		// silently falls back to the DB default of true. A follow-up UpdateColumn restores
+		// the requested value.
+		if !wantActive && svc.IsActive {
+			if err := s.db.WithContext(ctx).Model(svc).UpdateColumn("is_active", false).Error; err != nil {
+				return fmt.Errorf("gormStore.SaveService (fixup is_active): %w", err)
+			}
+			svc.IsActive = false
 		}
 	} else {
 		if err := s.db.WithContext(ctx).Save(svc).Error; err != nil {

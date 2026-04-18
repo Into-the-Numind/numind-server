@@ -1915,6 +1915,16 @@ func (b *sopBiz) CreateTemplateByUser(ctx context.Context, userID uint, req *Cre
 	if err := b.ds.Sop().CreateTemplate(template); err != nil {
 		return nil, fmt.Errorf("CreateTemplateByUser: %w", err)
 	}
+	// GORM v2 skips bool zero value (false) when the field has a `default:true` tag
+	// (model.SopTemplate.TrailingChatEnabled). If the user explicitly asked for
+	// trailing_chat_enabled=false, GORM silently falls back to the DB default of true.
+	// A follow-up UpdateColumn restores the requested value.
+	if !trailingChat && template.TrailingChatEnabled {
+		if err := b.ds.DB().WithContext(ctx).Model(template).UpdateColumn("trailing_chat_enabled", false).Error; err != nil {
+			return nil, fmt.Errorf("CreateTemplateByUser: fixup trailing_chat_enabled: %w", err)
+		}
+		template.TrailingChatEnabled = false
+	}
 
 	log.C(ctx).Infow("B-end user created SOP template", "user_id", userID, "template_id", template.ID, "name", req.Name)
 	return template, nil

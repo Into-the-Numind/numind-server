@@ -580,7 +580,23 @@ func (s *billingStore) ListPricingRules(ctx context.Context, offset, limit int) 
 
 // CreatePricingRule 创建定价规则
 func (s *billingStore) CreatePricingRule(ctx context.Context, rule *model.PricingRule) error {
-	return s.db.WithContext(ctx).Create(rule).Error
+	// Capture intended value before Create; GORM may overwrite the struct field with the
+	// DB default when the field has `gorm:"default:true"` and the value is false.
+	wantActive := rule.IsActive
+	if err := s.db.WithContext(ctx).Create(rule).Error; err != nil {
+		return err
+	}
+	// GORM v2 skips bool zero value (false) when the field has a `default:true` tag
+	// (model.PricingRule.IsActive). If the caller explicitly set is_active=false, GORM
+	// silently falls back to the DB default of true. A follow-up UpdateColumn restores
+	// the requested value.
+	if !wantActive && rule.IsActive {
+		if err := s.db.WithContext(ctx).Model(rule).UpdateColumn("is_active", false).Error; err != nil {
+			return fmt.Errorf("CreatePricingRule: fixup is_active: %w", err)
+		}
+		rule.IsActive = false
+	}
+	return nil
 }
 
 // UpdatePricingRule 更新定价规则
