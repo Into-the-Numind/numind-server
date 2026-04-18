@@ -562,7 +562,14 @@ func (b *aiServiceAdminBiz) ValidateServiceAgainstTask(ctx context.Context, serv
 // ListAuditLogs returns a paginated, filtered list of audit log entries sorted by
 // created_at DESC. TargetName is resolved by batching one IN query per target_type
 // against the appropriate name table (ai_service, task_profile, llm_provider).
+//
+// Note on pagination: biz enforces canonical defaults (page ≥ 1, 1 ≤ pageSize ≤ 100).
+// The controller pre-clamps inputs to the same bounds to reduce unnecessary DB round-trips,
+// but biz is the authoritative enforcement point.
 func (b *aiServiceAdminBiz) ListAuditLogs(ctx context.Context, filter AuditLogFilter, page, pageSize int) (*ListAuditLogsResult, error) {
+	if filter.DateFrom != nil && filter.DateTo != nil && filter.DateFrom.After(*filter.DateTo) {
+		return nil, errno.ErrInvalidParameter.SetMessage("date_from 不能晚于 date_to")
+	}
 	if page < 1 {
 		page = 1
 	}
@@ -598,17 +605,18 @@ func (b *aiServiceAdminBiz) ListAuditLogs(ctx context.Context, filter AuditLogFi
 	}
 
 	// Batch-resolve target names per target_type.
-	nameByID := b.resolveTargetNames(ctx, rows)
+	nameByTypeID := b.resolveTargetNames(ctx, rows)
 
 	items := make([]AuditLogItem, 0, len(rows))
 	for _, r := range rows {
+		compositeKey := fmt.Sprintf("%s:%d", r.TargetType, r.TargetID)
 		item := AuditLogItem{
 			ID:         r.ID,
 			Actor:      r.ActorName,
 			Action:     r.Action,
 			TargetType: r.TargetType,
 			TargetID:   strconv.FormatUint(r.TargetID, 10),
-			TargetName: nameByID[r.TargetID],
+			TargetName: nameByTypeID[compositeKey],
 			Reason:     r.Reason,
 			CreatedAt:  r.CreatedAt,
 		}
@@ -623,11 +631,13 @@ func (b *aiServiceAdminBiz) ListAuditLogs(ctx context.Context, filter AuditLogFi
 }
 
 // resolveTargetNames collects target IDs grouped by target_type from the given audit rows,
-// then performs one IN query per type to fetch display names. Returns a map of ID → name.
-func (b *aiServiceAdminBiz) resolveTargetNames(ctx context.Context, rows []model.AIServiceAuditLog) map[uint64]string {
-	nameByID := make(map[uint64]string, len(rows))
+// then performs one IN query per type to fetch display names. Returns a composite-key map
+// keyed by "target_type:id" to prevent aliasing when two different target types share the
+// same numeric ID (e.g. a service with id=5 and a task_profile with id=5).
+func (b *aiServiceAdminBiz) resolveTargetNames(ctx context.Context, rows []model.AIServiceAuditLog) map[string]string {
+	nameByTypeID := make(map[string]string, len(rows))
 	if len(rows) == 0 {
-		return nameByID
+		return nameByTypeID
 	}
 
 	// Group IDs by target_type.
@@ -667,10 +677,10 @@ func (b *aiServiceAdminBiz) resolveTargetNames(ctx context.Context, rows []model
 			continue
 		}
 		for _, nr := range nameRows {
-			nameByID[nr.ID] = nr.DisplayName
+			nameByTypeID[fmt.Sprintf("%s:%d", targetType, nr.ID)] = nr.DisplayName
 		}
 	}
-	return nameByID
+	return nameByTypeID
 }
 
 // validateServiceType returns an error when serviceType is not one of llm | ocr | asr.

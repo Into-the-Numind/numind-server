@@ -17,12 +17,13 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
-// newTestDB creates an in-memory SQLite database pre-migrated with the tables
-// required by ListAuditLogs tests. Uses file::memory:?cache=shared with a
-// unique name per call to avoid cross-test interference.
+// newTestDB creates an isolated in-memory SQLite database pre-migrated with the
+// tables required by ListAuditLogs tests. Each call opens a fresh unnamed
+// ":memory:" connection so tests never share data, even under -count > 1 or
+// parallel runs.
 func newTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared&_foreign_keys=off"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
 	err = db.AutoMigrate(
 		&model.AIServiceAuditLog{},
@@ -31,10 +32,8 @@ func newTestDB(t *testing.T) *gorm.DB {
 	)
 	require.NoError(t, err)
 
-	// Give each test its own DB connection pool to isolate data.
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
-	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return db
 }
