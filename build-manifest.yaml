@@ -618,32 +618,32 @@ features:
 
   - id: "ai-service-admin-complete"
     ndf_version: "1.0"
-    description: "admin-web 对 AI service 配置的全面管理能力补齐 — Route CRUD（priority/pricing/is_active）/ Provider CRUD（api_key/base_url）/ Audit Log 端点修复 / Task Fallback 多选 / PricingRule 与 AIService 关联可视化 + tier pricing 架构决策"
+    description: "admin-web 对 AI service 配置的全面管理能力补齐 — Route CRUD（priority/is_active，不含 pricing）/ Provider CRUD（api_key/base_url）+ 测试连接 / Audit Log 端点修复 / Task Fallback 多选 / PricingRule 与 AIService 关联可视化 + billing 架构重建（扔 B 列+重建真快照） + recorder pricing fallback bug 修复"
     track: "standard"
-    stage: "queued"
-    classification_reason: "Standard 精简版：跨 server + admin-web 两仓库；Route CRUD 涉及 prod 流量路由回归风险；Provider 管理涉及 api_key 数据安全；tier pricing 架构关系需 inline proposal 决策。不改 schema 所以走精简（不走完整 Standard）"
-    last_updated_by: "ai-triage"
-    last_updated_at: "2026-04-18T11:30:00+08:00"
+    stage: "S4-wave1-dispatch"
+    classification_reason: "Standard 精简版：跨 server + admin-web 两仓库；Route CRUD 涉及 prod 流量路由回归；Provider 管理涉及 api_key 数据安全；billing 架构重建（删 ai_service_route 5 pricing 列 + middleware 改从 pricing_rule 读快照）涉及 schema 变更+回归风险；Wave-1 五任务并行 dispatch"
+    last_updated_by: "ai-s2"
+    last_updated_at: "2026-04-18T14:30:00+08:00"
     repos:
       - numind-server
       - numind-admin-web
     branches:
-      numind-server: "feature/ai-service-admin-complete (待创建)"
-      numind-admin-web: "feature/ai-service-admin-complete (待创建)"
+      numind-server: "feature/ai-service-admin-complete (主) + sub-branches per task"
+      numind-admin-web: "feature/ai-service-admin-complete (Wave 2 启动时创建)"
     artifacts:
       requirement: "numind-server/requirements/ai-service-admin-complete.md"
-      proposal: null
-      spec: null
-      plan: null
+      proposal: "inline in this manifest entry (tier_pricing_context.t0_decisions_made + bug_fix_decision + pricing_architecture_decision)"
+      spec: "inline task_breakdown (3 waves, 10 tasks)"
+      plan: "inline — sub-branch per task, parallel dispatch within wave, rebase merge order A→E→B→C→D in Wave 1"
       review_spec_compliance: null
       review_code_quality: null
       qa: null
     progress:
-      total_tasks: 9
+      total_tasks: 10
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: null
-    rollback: "逐 task 独立 commit + 独立 fix/xxx 分支，有问题 git revert per task"
+      current_task: "Wave 1 parallel dispatch: T-bug / T1 / T2 / T4 / T-arch"
+    rollback: "逐 task 独立 commit + 独立 sub-branch，review 未过时 git branch -D；T-arch migration 附 rollback SQL"
     last_verified: null
     gap_audit:
       p0_missing:
@@ -667,41 +667,61 @@ features:
         - "pricing_rule（真实计费）和 ai_service_route.pricing（只作 snapshot）是两套定价，靠字符串匹配关联（service_type + provider + model）不是 FK"
         - "管理员从 ServiceEdit 看不到 service 关联哪条 pricing_rule，容易配错"
         - "ai_service_route.pricing 只支持 flat rate，tiered 模型的 snapshot 会失真（但实际计费走 pricing_rule 所以计费正确）"
-      t0_decisions_required:
-        - "定价真相源：pricing_rule 为准（建议保持现状）vs ai_service_route 为准"
-        - "两表关联：字符串匹配（建议本期保持）vs FK 强约束（T8，留给未来）"
-        - "ServiceEdit 页面如何展示关联 pricing_rule（建议加卡片：显示 billing_mode / tier 数 / 跳转 PricingRulesView 的链接）"
+      t0_decisions_made:
+        - "Q1 定价真相源：pricing_rule 为准（保持现状，billing/recorder.go 已实现 tier 分派）"
+        - "Q2 两表关联：字符串匹配保持，不做 FK（T8 不纳入本期）"
+        - "Q3 ServiceEdit 展示：路由区改可编辑（不含 pricing 字段） + 新增'计费规则'只读卡片显示 billing_mode/tier 数/跳转链接"
+    bug_fix_decision:
+      approach: "方案 B — recorder.GetPricingRule 加 fallback"
+      chosen_at: "2026-04-18"
+      rationale: "billing middleware 继续写 record.Model = route.ServiceKey（逻辑名 model_key），不改 middleware 写入语义；recorder.GetPricingRule 加 fallback：先按 model_key 查 pricing_rule.model，不中再按 provider_model_id（从 ai_service_route 反查）再查一次。老数据 cost_cents=0 不回填"
+      implemented_in: "T-bug"
+    pricing_architecture_decision:
+      approach: "搞法 2 — 扔 B 列 + 重建真快照"
+      chosen_at: "2026-04-18"
+      rationale: "ai_service_route.pricing 5 列从未被 billing 消费，保留只造成'似是而非的 snapshot' 语义歧义；删除后 middleware/billing.go buildBaseRecord 每次 call 时从 pricing_rule 当时价格读快照写入 UsageRecord.PricingXSnapshot，保证快照 = 实际扣费一致"
+      migration_plan:
+        - "Gate: dev DB 预检 — 所有 is_active=true 的 ai_service_route 都能在 pricing_rule 匹配到规则；不中则补规则或暂停路由"
+        - "migration 删除 ai_service_route 5 列：input_price_per_mtok / output_price_per_mtok / price_per_call / price_per_second / pricing_unit（附 rollback SQL 注释）"
+        - "middleware/billing.go buildBaseRecord 改为：按 (service_type, provider, model_key) 查 pricing_rule → 按 billing_mode 填 UsageRecord.PricingXSnapshot（flat 模式读 pricing_rule 对应列；tiered_token 模式保持 null/0，实际 cost 走 calculateTieredCost）"
+        - "老数据（cost_cents=0 或 PricingXSnapshot=null）不回填；仅新数据按新路径走"
+      implemented_in: "T-arch"
     task_breakdown:
-      - "T0 架构决策 inline proposal（tier pricing 相关 3 问）— 0.3d"
-      - "T1 server: Audit Log controller + 端点注册（修 /admin/ai/audit-logs 404）— 0.2d"
-      - "T2 server: Route CRUD 端点（Create/Update/Delete/Toggle + priority 重复校验）— 0.4d"
-      - "T3 admin-web: ServiceEdit 路由区改可编辑 + 关联 pricing_rule 卡片 + 跳转链接 + Playwright E2E — 0.5d"
-      - "T4 server: Provider CRUD 端点（List/Get/Create/Update/Delete，api_key 掩码）— 0.4d"
-      - "T5 admin-web: ProvidersList + ProviderEdit 页面 + 路由 + sidebar 项 — 0.4d"
-      - "T6 admin-web: TaskEdit fallback_service 单选改多选 — 0.1d"
-      - "T7 admin-web: PricingRulesView 增强（显示关联 AI service 列表 + 按 service 筛选）— 0.3d"
-      - "T8（条件）ai_service_route + pricing_rule_id FK migration — 0.5d（T0 决策后定）"
-      - "T9 S5 验证（gstack /qa + curl tiered 计费端到端 Gemini 3.1 Pro / GPT 5.4 tier 触发）— 0.3d"
+      - "# Wave 1（并行 dispatch，5 agent）"
+      - "T-bug [0.3d, agent A, sub-branch feature/ai-service-admin-complete-T-bug] server: recorder.GetPricingRule 加 model_key→provider_model_id fallback + 回归单测"
+      - "T1 [0.2d, agent B, sub-branch feature/ai-service-admin-complete-T1] server: Audit Log controller + /admin/ai/audit-logs 端点注册 + biz.ListAuditLogs"
+      - "T2 [0.4d, agent C, sub-branch feature/ai-service-admin-complete-T2] server: Route CRUD 4 端点（Create/Update/Delete/Toggle，Request DTO 不含 pricing 字段，priority 重复校验+警告，至少保留一条 active route 校验）"
+      - "T4 [0.6d, agent D, sub-branch feature/ai-service-admin-complete-T4] server: Provider CRUD 5 端点 + POST /providers/:id/test-connection + AuditTargetProvider 常量 + 三处 audit 写入 + api_key 空串保留原值 + MaskedAPIKey 读路径"
+      - "T-arch [0.7d, agent E, sub-branch feature/ai-service-admin-complete-T-arch] server: (1) dev DB 路由-规则预检脚本 gate (2) migration 删 ai_service_route 5 pricing 列 (3) middleware/billing.go buildBaseRecord 从 pricing_rule 读快照"
+      - "Wave 1 merge 顺序（每次 merge 前 rebase onto 最新 feature 分支）: A → E → B → C → D"
+      - "# Wave 2（并行 dispatch，4 agent，依赖 Wave 1 全合并+dev 部署+手动回归通过）"
+      - "T3 [0.6d, agent F] admin-web: ServiceEdit 路由区可编辑 + 计费规则只读卡片 + 跳转 PricingRulesView 链接 + Playwright E2E"
+      - "T5 [0.6d, agent G] admin-web: ProvidersList + ProviderEdit（api_key 掩码 placeholder + 重置 Key 按钮 + 测试连接按钮）+ 路由 + sidebar + api/ai.ts 扩展"
+      - "T6 [0.1d, agent H] admin-web: TaskEdit fallback_service 单选改 <select multiple> 原生多选"
+      - "T7 [0.3d, agent I] admin-web: PricingRulesView 增强（每条规则显示关联 AI service 列表 + 按 service 筛选）"
+      - "# Wave 3（单 agent，依赖 Wave 2 合并+dev 部署）"
+      - "T9 [0.3d] S5 验证：gstack /qa 关键路径 + 手动故障注入 + curl tiered 计价端到端 + Provider 测试连接实测"
+      - "# 总工时 4.1d 实施 + review 往返 0.5-1d = 4.5-5.1d"
     decisions:
-      - "2026-04-18 Triage: Standard 精简版。范围明确（inline proposal + inline task list），跳过 S0/S1 brainstorming，S2 就是 task 拆分，直接进 S4"
-      - "2026-04-18: T0 架构决策预设倾向 — 保持 pricing_rule 为计费真相源 + 字符串匹配 + ServiceEdit 加关联展示，不做 FK 改造（T8 不纳入本期），待新 session AI 在 T0 阶段正式输出决策"
-      - "2026-04-18: 吸收 ai-service-manager 遗留 gap — P0 全部 3 项 + P1 全部 2 项；P2 不做"
+      - "2026-04-18 Triage: Standard 精简版。inline proposal + inline task breakdown + 跳过 S0/S1 brainstorming"
+      - "2026-04-18 (T0 三问最终): Q1 pricing_rule 为计费真相源 / Q2 字符串匹配保持（T8 FK 不做） / Q3 ServiceEdit 路由区可编辑 + 计费规则只读卡片"
+      - "2026-04-18 (Bug 修复): 方案 B — recorder.GetPricingRule 加 model_key→provider_model_id fallback；middleware 写入语义不改；老数据不回填"
+      - "2026-04-18 (价目表架构): 搞法 2 — 扔 B 列 + 重建真快照。删 ai_service_route 5 pricing 列；middleware buildBaseRecord 改从 pricing_rule 读 PricingXSnapshot；前置 gate = dev DB 预检"
+      - "2026-04-18 (UX OQ2): Fallback 多选用 <select multiple> 原生，不自研 MultiSelect"
+      - "2026-04-18 (UX OQ3): Provider api_key 写入空字符串 = 保留原值；前端 placeholder=MaskedAPIKey() + 单独'重置 Key' 按钮"
+      - "2026-04-18 (UX OQ4): model.AuditTargetProvider='provider' 常量在 T4 添加；AuditTargetRoute='route' 常量在 T2 添加"
+      - "2026-04-18 (Q4 新增): Provider 测试连接按钮，POST /v1/admin/ai/providers/:id/test-connection 发轻量 1-token chat 探测请求验证 key（OpenAI 兼容 provider 发真实请求，其他返回 skip）"
+      - "2026-04-18 (并行策略): Wave 1 5 agent 同时 dispatch（A/B/C/D/E），各自 sub-branch；merge 顺序 A→E→B→C→D 减冲突"
     deferred:
-      - "T8 pricing_rule_id FK migration — 依赖 T0 决策"
+      - "T8 pricing_rule_id FK migration — 搞法 2 选定后不做（字符串匹配足够）"
       - "/healthz/ai 可视化 dashboard — Phase 2"
       - "批量操作 UI — Phase 2"
+      - "老 UsageRecord cost_cents=0 回填 — 不做（成本太高）"
     blockers: []
     prerequisite_context:
       - "ai-service-manager S7-dev-done（2026-04-18），所有 S4 tech debt 清理完成"
       - "legacy-llm-cleanup S7-dev-done（2026-04-17），旧 llm_provider / llm_model 兼容层已删除"
       - "本功能是 ai-service-manager 的 follow_up_feature，补齐原 feature 未交付的管理能力"
-    next_session_startup: |
-      用户可在新 session 直接粘贴以下 prompt 启动：
-
-      「我要开始做 ai-service-admin-complete 功能，已在 build-manifest.yaml 预登记（stage=queued），
-      requirement 已写好在 numind-server/requirements/ai-service-admin-complete.md。
-      请按 NDF 流程从 S0 进入：读 manifest → 读 requirement → 进入 S1 proposal
-      （重点是 T0 的架构决策：pricing_rule vs ai_service_route.pricing 的关系）。」
     created_at: "2026-04-18T11:30:00+08:00"
     completed_at: null
 
