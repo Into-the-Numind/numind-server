@@ -10,6 +10,7 @@ import (
 
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 
@@ -75,7 +76,7 @@ func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, prod
 			return nil, fmt.Errorf("check trial package: %w", err)
 		}
 		if hasTrial {
-			return nil, fmt.Errorf("用户已购买过体验卡，不可重复购买")
+			return nil, errno.ErrTrialAlreadyPurchased
 		}
 	case model.ProductTypeMonthly, model.ProductTypeYearly:
 		hasActive, err := b.ds.Credits().HasActiveSubscription(ctx, userID)
@@ -84,6 +85,24 @@ func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, prod
 		}
 		if hasActive {
 			return nil, fmt.Errorf("用户已有生效中的订阅，请到期后再购买")
+		}
+	case model.ProductTypeBooster:
+		// spec §3.7: 加量包需要会员资格（active subscription credit package）
+		// 复用现有 HasActiveSubscription；不新发明 HasActiveSubscriptionPackage
+		hasActive, err := b.ds.Credits().HasActiveSubscription(ctx, userID)
+		if err != nil {
+			return nil, fmt.Errorf("check active subscription: %w", err)
+		}
+		if !hasActive {
+			return nil, errno.ErrMembershipRequired
+		}
+		// P4a 决策：legacy_tier 用户不支持加量包
+		user, err := b.ds.Users().GetByID(ctx, userID)
+		if err != nil {
+			return nil, fmt.Errorf("get user: %w", err)
+		}
+		if user.BillingMode == model.BillingModeLegacyTier {
+			return nil, errno.ErrBoosterNotAvailableForLegacy
 		}
 	}
 
