@@ -153,6 +153,88 @@ func TestCreateOrder_Booster_CreditsWithSubscription_PassesValidation(t *testing
 	assert.NotErrorIs(t, err, errno.ErrBoosterNotAvailableForLegacy)
 }
 
+// ---------- D.2: 防提前续费 ----------
+
+func TestCreateOrder_AntiEarlyRenewal(t *testing.T) {
+	ctx := context.Background()
+	past := time.Now().Add(-24 * time.Hour)
+	future := time.Now().Add(30 * 24 * time.Hour)
+
+	type scenario struct {
+		name        string
+		tier        string
+		tierExpires *time.Time
+		productType string
+		expectErr   error // if nil → validation should pass (channel error expected)
+	}
+
+	cases := []scenario{
+		// Monthly purchases
+		{"free_user_buys_monthly_passes", model.UserTierFree, nil, model.ProductTypeMonthly, nil},
+		{"expired_standard_buys_monthly_passes", model.UserTierStandard, &past, model.ProductTypeMonthly, nil},
+		{"in_period_standard_buys_monthly_blocked", model.UserTierStandard, &future, model.ProductTypeMonthly, errno.ErrTierInPeriod},
+		{"in_period_premium_buys_monthly_blocked", model.UserTierPremium, &future, model.ProductTypeMonthly, errno.ErrTierInPeriod},
+		{"in_period_trial_buys_monthly_upgrade_passes", model.UserTierTrial, &future, model.ProductTypeMonthly, nil},
+
+		// Yearly purchases (yearly currently maps to standard tier rank=2)
+		{"free_user_buys_yearly_passes", model.UserTierFree, nil, model.ProductTypeYearly, nil},
+		{"in_period_standard_buys_yearly_blocked", model.UserTierStandard, &future, model.ProductTypeYearly, errno.ErrTierInPeriod},
+		{"in_period_premium_buys_yearly_blocked", model.UserTierPremium, &future, model.ProductTypeYearly, errno.ErrTierInPeriod},
+		{"in_period_trial_buys_yearly_upgrade_passes", model.UserTierTrial, &future, model.ProductTypeYearly, nil},
+
+		// Trial purchases
+		{"free_user_buys_trial_passes", model.UserTierFree, nil, model.ProductTypeTrial, nil},
+		{"in_period_trial_buys_trial_blocked", model.UserTierTrial, &future, model.ProductTypeTrial, errno.ErrTrialNotAvailableInPeriod},
+		{"in_period_standard_buys_trial_blocked", model.UserTierStandard, &future, model.ProductTypeTrial, errno.ErrTrialNotAvailableInPeriod},
+		{"in_period_premium_buys_trial_blocked", model.UserTierPremium, &future, model.ProductTypeTrial, errno.ErrTrialNotAvailableInPeriod},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newPaymentTestDB(t)
+			ds := store.NewTestStore(db)
+			b := newPaymentBizForTest(ds)
+
+			uid := mustCreateUser(t, db, tc.tier, model.BillingModeCredits, tc.tierExpires)
+
+			_, err := b.CreateOrder(ctx, uid, uid, tc.productType, 1, model.PayChannelWechat)
+			require.Error(t, err, "CreateOrder should always error in tests (channel not configured when validation passes)")
+
+			if tc.expectErr != nil {
+				assert.ErrorIs(t, err, tc.expectErr, "expected sentinel error")
+			} else {
+				assert.NotErrorIs(t, err, errno.ErrTierInPeriod)
+				assert.NotErrorIs(t, err, errno.ErrTrialNotAvailableInPeriod)
+				assert.NotErrorIs(t, err, errno.ErrTrialAlreadyPurchased)
+			}
+		})
+	}
+}
+
+// HasTrialPackage existing check still fires even for a free user when a trial
+// credit package already exists on the account. Regression guard.
+func TestCreateOrder_Trial_AlreadyPurchased_FreeUser(t *testing.T) {
+	db := newPaymentTestDB(t)
+	ds := store.NewTestStore(db)
+	b := newPaymentBizForTest(ds)
+
+	uid := mustCreateUser(t, db, model.UserTierFree, model.BillingModeCredits, nil)
+	now := time.Now()
+	require.NoError(t, db.Create(&model.CreditPackage{
+		UserID:        uid,
+		Type:          model.CreditTypeTrial,
+		TotalCredits:  200,
+		RemainCredits: 100,
+		ActivatedAt:   now,
+		ExpiresAt:     now.Add(3 * 24 * time.Hour),
+		Status:        model.CreditPackageExhausted,
+	}).Error)
+
+	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeTrial, 0, model.PayChannelWechat)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errno.ErrTrialAlreadyPurchased)
+}
+
 func TestCreateOrder_Booster_TrialPackageOnly_NotSubscription_Rejected(t *testing.T) {
 	db := newPaymentTestDB(t)
 	ds := store.NewTestStore(db)

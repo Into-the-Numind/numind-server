@@ -78,6 +78,14 @@ func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, prod
 		if hasTrial {
 			return nil, errno.ErrTrialAlreadyPurchased
 		}
+		// spec §3.9: 在期会员不能"降级购买 trial"
+		user, err := b.ds.Users().GetByID(ctx, userID)
+		if err != nil {
+			return nil, fmt.Errorf("get user: %w", err)
+		}
+		if user.UserTier != model.UserTierFree && user.TierExpires != nil && user.TierExpires.After(time.Now()) {
+			return nil, errno.ErrTrialNotAvailableInPeriod
+		}
 	case model.ProductTypeMonthly, model.ProductTypeYearly:
 		hasActive, err := b.ds.Credits().HasActiveSubscription(ctx, userID)
 		if err != nil {
@@ -85,6 +93,19 @@ func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, prod
 		}
 		if hasActive {
 			return nil, fmt.Errorf("用户已有生效中的订阅，请到期后再购买")
+		}
+		// spec §3.9: 在期会员购买同类或更低类型会员被拒（升级放行）
+		user, err := b.ds.Users().GetByID(ctx, userID)
+		if err != nil {
+			return nil, fmt.Errorf("get user: %w", err)
+		}
+		if user.UserTier != model.UserTierFree && user.TierExpires != nil && user.TierExpires.After(time.Now()) {
+			targetRank := productTypeToTierRank(productType)
+			currentRank := model.TierRank(user.UserTier)
+			if targetRank <= currentRank {
+				return nil, errno.ErrTierInPeriod
+			}
+			// 升级场景（如 trial → standard / standard → premium）放行
 		}
 	case model.ProductTypeBooster:
 		// spec §3.7: 加量包需要会员资格（active subscription credit package）
@@ -265,4 +286,16 @@ func (b *paymentBiz) CloseExpiredOrders(ctx context.Context) error {
 // generateOrderNo 生成订单号: NU + 时间戳 + uuid前8位
 func generateOrderNo() string {
 	return fmt.Sprintf("NU%s%s", time.Now().Format("20060102150405"), uuid.New().String()[:8])
+}
+
+// productTypeToTierRank 将会员类产品映射到目标 tier 的 rank（spec §3.9 防提前续费）
+// monthly → standard=2 / yearly → standard=2（未来 premium_yearly → premium=3）
+// 返回 0 表示未知产品类型（由调用方保证只在 Monthly/Yearly 分支调用）
+func productTypeToTierRank(productType string) int {
+	switch productType {
+	case model.ProductTypeMonthly, model.ProductTypeYearly:
+		return model.TierRank(model.UserTierStandard)
+	default:
+		return 0
+	}
 }
