@@ -144,12 +144,13 @@ func installAdminRouters(g *gin.Engine) error {
 		adminMonitorGroup.PUT("/users/:user_id/config", monitorCtrl.AdminUpdateUserConfig)
 	}
 
-	// AI Service Manager — 服务 CRUD（Task 12）+ Task Profile（Task 13）
+	// AI Service Manager — 服务 CRUD（Task 12）+ Task Profile（Task 13）+ Provider CRUD（Task 4）
 	{
 		reg := registry.New(store.S.DB())
 		aiSvcBiz := aiservice_admin.New(reg, store.S.DB())
 		aiSvcCtrl := admin_ai.NewAIServiceController(aiSvcBiz)
 		aiTaskCtrl := admin_ai.NewTaskProfileController(aiSvcBiz)
+		aiProviderCtrl := admin_ai.NewProviderController(aiSvcBiz)
 		aiGroup := adminGroup.Group("/ai")
 		aiGroup.GET("/services", aiSvcCtrl.ListServices)
 		aiGroup.GET("/services/:id", aiSvcCtrl.GetService)
@@ -171,6 +172,13 @@ func installAdminRouters(g *gin.Engine) error {
 		aiGroup.PUT("/routes/:route_id", routeCtrl.Update)
 		aiGroup.DELETE("/routes/:route_id", routeCtrl.Delete)
 		aiGroup.POST("/routes/:route_id/toggle", routeCtrl.Toggle)
+		// Provider CRUD (T4)
+		aiGroup.GET("/providers", aiProviderCtrl.ListProviders)
+		aiGroup.GET("/providers/:id", aiProviderCtrl.GetProvider)
+		aiGroup.POST("/providers", aiProviderCtrl.CreateProvider)
+		aiGroup.PUT("/providers/:id", aiProviderCtrl.UpdateProvider)
+		aiGroup.DELETE("/providers/:id", aiProviderCtrl.DeleteProvider)
+		aiGroup.POST("/providers/:id/test-connection", aiProviderCtrl.TestProviderConnection)
 	}
 
 	return nil

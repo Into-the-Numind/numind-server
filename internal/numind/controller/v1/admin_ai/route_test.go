@@ -77,6 +77,27 @@ func (s *stubBiz) UpdateRoute(_ context.Context, _ uint64, _ aiservice_admin.Upd
 func (s *stubBiz) DeleteRoute(_ context.Context, _ uint64, _ uint64, _ string) error {
 	panic("not implemented")
 }
+func (s *stubBiz) ListAuditLogs(_ context.Context, _ aiservice_admin.AuditLogFilter, _, _ int) (*aiservice_admin.ListAuditLogsResult, error) {
+	panic("not implemented")
+}
+func (s *stubBiz) ListProviders(_ context.Context) ([]aiservice_admin.ProviderDTO, error) {
+	panic("not implemented")
+}
+func (s *stubBiz) GetProvider(_ context.Context, _ uint64) (*aiservice_admin.ProviderDTO, error) {
+	panic("not implemented")
+}
+func (s *stubBiz) CreateProvider(_ context.Context, _ aiservice_admin.CreateProviderRequest, _ uint64, _ string) (*aiservice_admin.ProviderDTO, error) {
+	panic("not implemented")
+}
+func (s *stubBiz) UpdateProvider(_ context.Context, _ uint64, _ aiservice_admin.UpdateProviderRequest, _ uint64, _ string) (*aiservice_admin.ProviderDTO, error) {
+	panic("not implemented")
+}
+func (s *stubBiz) DeleteProvider(_ context.Context, _ uint64, _ uint64, _ string) error {
+	panic("not implemented")
+}
+func (s *stubBiz) TestProviderConnection(_ context.Context, _ uint64) (aiservice_admin.TestConnectionResult, error) {
+	panic("not implemented")
+}
 
 // ----------------------------------------------------------------------------
 // TestToggleRouteHandler_ResponseEnvelope verifies that the Toggle handler wraps

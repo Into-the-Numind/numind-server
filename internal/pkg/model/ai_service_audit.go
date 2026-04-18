@@ -36,13 +36,19 @@ const (
 	AuditTargetTaskProfile = "task_profile"
 )
 
-// Route audit action constants (T2: ai_service_route CRUD).
+// Route and provider audit action constants (T2: route CRUD; T4: provider CRUD).
 const (
-	AuditActionRouteCreate = "route.create"
-	AuditActionRouteUpdate = "route.update"
-	AuditActionRouteDelete = "route.delete"
-	AuditActionRouteToggle = "route.toggle"
+	AuditActionRouteCreate    = "route.create"
+	AuditActionRouteUpdate    = "route.update"
+	AuditActionRouteDelete    = "route.delete"
+	AuditActionRouteToggle    = "route.toggle"
+	AuditActionProviderCreate = "provider.create"
+	AuditActionProviderUpdate = "provider.update"
+	AuditActionProviderDelete = "provider.delete"
 )
 
 // AuditTargetRoute is the target_type value for ai_service_route audit entries.
 const AuditTargetRoute = "route"
+
+// AuditTargetProvider is the target_type value for llm_provider audit entries.
+const AuditTargetProvider = "provider"

@@ -44,4 +44,11 @@ var (
 	// ErrAIRestoreRequiresReason is returned when a restore operation is attempted
 	// without providing a reason.
 	ErrAIRestoreRequiresReason = &Errno{HTTP: 400, Code: "AIService.RestoreRequiresReason", Message: "恢复操作必须填写原因"}
+
+	// ErrAIProviderNotFound is returned when a requested llm_provider does not exist.
+	ErrAIProviderNotFound = &Errno{HTTP: 404, Code: "AIService.ProviderNotFound", Message: "AI 供应商不存在"}
+
+	// ErrAIProviderInUse is returned when a provider delete is attempted but active routes
+	// still reference the provider.
+	ErrAIProviderInUse = &Errno{HTTP: 409, Code: "AIService.ProviderInUse", Message: "AI 供应商被路由引用，无法删除"}
 )

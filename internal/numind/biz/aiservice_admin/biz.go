@@ -4,10 +4,14 @@
 package aiservice_admin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -15,9 +19,50 @@ import (
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/httpclient"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
+
+// ProviderDTO is the wire-format representation of an llm_provider row.
+// api_key is always masked (MaskedAPIKey output) — raw key never leaves the server.
+type ProviderDTO struct {
+	ID          uint64    `json:"id"`
+	Name        string    `json:"name"`
+	DisplayName string    `json:"display_name"`
+	BaseURL     string    `json:"base_url"`
+	APIKey      string    `json:"api_key"` // MaskedAPIKey() result, e.g. "****abcd"
+	IsActive    bool      `json:"is_active"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// CreateProviderRequest is the request body for creating a new provider.
+type CreateProviderRequest struct {
+	Name        string `json:"name"         binding:"required"`
+	DisplayName string `json:"display_name" binding:"required"`
+	BaseURL     string `json:"base_url"     binding:"required"`
+	APIKey      string `json:"api_key"      binding:"required"`
+	IsActive    *bool  `json:"is_active"`
+}
+
+// UpdateProviderRequest is the request body for updating a provider.
+// Pointer fields: nil = preserve existing; non-nil empty string for APIKey = preserve existing;
+// non-nil non-empty APIKey = update.
+type UpdateProviderRequest struct {
+	DisplayName *string `json:"display_name,omitempty"`
+	BaseURL     *string `json:"base_url,omitempty"`
+	APIKey      *string `json:"api_key,omitempty"`
+	IsActive    *bool   `json:"is_active,omitempty"`
+}
+
+// TestConnectionResult is the result of probing an OpenAI-compatible provider endpoint.
+type TestConnectionResult struct {
+	Success    bool   `json:"success"`
+	LatencyMs  int64  `json:"latency_ms,omitempty"`
+	Error      string `json:"error,omitempty"`
+	HTTPStatus int    `json:"http_status,omitempty"`
+}
 
 // RouteItem is the wire-format representation of a single ai_service_route row
 // returned inside the service detail response (spec §4.4).
@@ -215,6 +260,27 @@ type IAIServiceAdminBiz interface {
 
 	// ToggleRoute flips the is_active flag on a route after verifying the last-active guard.
 	ToggleRoute(ctx context.Context, routeID uint64, actorID uint64, actorName string) (*RouteDTO, error)
+
+	// ListProviders returns all llm_provider rows with api_key masked.
+	ListProviders(ctx context.Context) ([]ProviderDTO, error)
+
+	// GetProvider returns a single llm_provider by ID with api_key masked.
+	GetProvider(ctx context.Context, id uint64) (*ProviderDTO, error)
+
+	// CreateProvider creates a new llm_provider and returns the masked DTO.
+	CreateProvider(ctx context.Context, req CreateProviderRequest, actorID uint64, actorName string) (*ProviderDTO, error)
+
+	// UpdateProvider applies a partial update to a provider. An empty or nil APIKey
+	// field preserves the existing key; a non-empty value replaces it.
+	UpdateProvider(ctx context.Context, id uint64, req UpdateProviderRequest, actorID uint64, actorName string) (*ProviderDTO, error)
+
+	// DeleteProvider hard-deletes a provider. Returns an error if any ai_service_route
+	// rows reference the provider (delete guard).
+	DeleteProvider(ctx context.Context, id uint64, actorID uint64, actorName string) error
+
+	// TestProviderConnection probes an OpenAI-compatible endpoint with a 1-token request.
+	// Returns success=false with a descriptive error for non-OpenAI-compatible providers.
+	TestProviderConnection(ctx context.Context, id uint64) (TestConnectionResult, error)
 }
 
 // aiServiceAdminBiz is the concrete implementation of IAIServiceAdminBiz.
@@ -988,4 +1054,311 @@ func validateServiceType(serviceType string) error {
 	default:
 		return errno.ErrInvalidParameter.SetMessage("service_type 必须为 llm、ocr 或 asr")
 	}
+}
+
+// ----------------------------------------------------------------------------
+// Provider CRUD — implementations
+// ----------------------------------------------------------------------------
+
+// providerToDTO converts a model.LLMProvider to a ProviderDTO with masked API key.
+func providerToDTO(p *model.LLMProvider) ProviderDTO {
+	return ProviderDTO{
+		ID:          p.ID,
+		Name:        p.Name,
+		DisplayName: p.DisplayName,
+		BaseURL:     p.BaseURL,
+		APIKey:      p.MaskedAPIKey(),
+		IsActive:    p.IsActive,
+		CreatedAt:   p.CreatedAt,
+		UpdatedAt:   p.UpdatedAt,
+	}
+}
+
+// ListProviders returns all llm_provider rows with api_key masked.
+func (b *aiServiceAdminBiz) ListProviders(ctx context.Context) ([]ProviderDTO, error) {
+	var providers []model.LLMProvider
+	if err := b.db.WithContext(ctx).Order("id ASC").Find(&providers).Error; err != nil {
+		return nil, fmt.Errorf("aiservice_admin.ListProviders: %w", err)
+	}
+	result := make([]ProviderDTO, 0, len(providers))
+	for i := range providers {
+		result = append(result, providerToDTO(&providers[i]))
+	}
+	return result, nil
+}
+
+// GetProvider returns a single llm_provider by ID with api_key masked.
+func (b *aiServiceAdminBiz) GetProvider(ctx context.Context, id uint64) (*ProviderDTO, error) {
+	var p model.LLMProvider
+	if err := b.db.WithContext(ctx).First(&p, id).Error; err != nil {
+		if isNotFound(err) {
+			return nil, errno.ErrAIProviderNotFound
+		}
+		return nil, fmt.Errorf("aiservice_admin.GetProvider: %w", err)
+	}
+	dto := providerToDTO(&p)
+	return &dto, nil
+}
+
+// CreateProvider creates a new llm_provider and returns the masked DTO.
+func (b *aiServiceAdminBiz) CreateProvider(ctx context.Context, req CreateProviderRequest, actorID uint64, actorName string) (*ProviderDTO, error) {
+	isActive := true
+	if req.IsActive != nil {
+		isActive = *req.IsActive
+	}
+
+	p := model.LLMProvider{
+		Name:        req.Name,
+		DisplayName: req.DisplayName,
+		BaseURL:     req.BaseURL,
+		APIKey:      req.APIKey,
+		IsActive:    isActive,
+	}
+
+	if err := b.db.WithContext(ctx).Create(&p).Error; err != nil {
+		return nil, fmt.Errorf("aiservice_admin.CreateProvider: %w", err)
+	}
+
+	// Write audit log entry.
+	_ = b.db.WithContext(ctx).Create(&model.AIServiceAuditLog{
+		ActorID:    actorID,
+		ActorName:  actorName,
+		Action:     model.AuditActionProviderCreate,
+		TargetType: model.AuditTargetProvider,
+		TargetID:   p.ID,
+		DiffJSON: model.JSONMap{
+			"name":         req.Name,
+			"display_name": req.DisplayName,
+			"base_url":     req.BaseURL,
+			"api_key":      p.MaskedAPIKey(),
+		},
+	}).Error
+
+	dto := providerToDTO(&p)
+	return &dto, nil
+}
+
+// UpdateProvider applies a partial update. Empty or nil APIKey preserves existing key.
+func (b *aiServiceAdminBiz) UpdateProvider(ctx context.Context, id uint64, req UpdateProviderRequest, actorID uint64, actorName string) (*ProviderDTO, error) {
+	var p model.LLMProvider
+	if err := b.db.WithContext(ctx).First(&p, id).Error; err != nil {
+		if isNotFound(err) {
+			return nil, errno.ErrAIProviderNotFound
+		}
+		return nil, fmt.Errorf("aiservice_admin.UpdateProvider: fetch: %w", err)
+	}
+
+	beforeMasked := p.MaskedAPIKey()
+	diff := model.JSONMap{}
+
+	if req.DisplayName != nil {
+		diff["display_name"] = map[string]interface{}{"before": p.DisplayName, "after": *req.DisplayName}
+		p.DisplayName = *req.DisplayName
+	}
+	if req.BaseURL != nil {
+		diff["base_url"] = map[string]interface{}{"before": p.BaseURL, "after": *req.BaseURL}
+		p.BaseURL = *req.BaseURL
+	}
+	if req.APIKey != nil && *req.APIKey != "" {
+		// Show masked before/after in audit; never expose raw key.
+		newMasked := maskedKey(*req.APIKey)
+		diff["api_key"] = map[string]interface{}{"before": beforeMasked, "after": newMasked}
+		p.APIKey = *req.APIKey
+	}
+	if req.IsActive != nil {
+		diff["is_active"] = map[string]interface{}{"before": p.IsActive, "after": *req.IsActive}
+		p.IsActive = *req.IsActive
+	}
+
+	if err := b.db.WithContext(ctx).Save(&p).Error; err != nil {
+		return nil, fmt.Errorf("aiservice_admin.UpdateProvider: save: %w", err)
+	}
+
+	// Write audit log entry.
+	_ = b.db.WithContext(ctx).Create(&model.AIServiceAuditLog{
+		ActorID:    actorID,
+		ActorName:  actorName,
+		Action:     model.AuditActionProviderUpdate,
+		TargetType: model.AuditTargetProvider,
+		TargetID:   p.ID,
+		DiffJSON:   diff,
+	}).Error
+
+	dto := providerToDTO(&p)
+	return &dto, nil
+}
+
+// DeleteProvider hard-deletes a provider. Rejects if any ai_service_route references it.
+func (b *aiServiceAdminBiz) DeleteProvider(ctx context.Context, id uint64, actorID uint64, actorName string) error {
+	// Fetch the provider first (needed for audit log; also validates existence).
+	var p model.LLMProvider
+	if err := b.db.WithContext(ctx).First(&p, id).Error; err != nil {
+		if isNotFound(err) {
+			return errno.ErrAIProviderNotFound
+		}
+		return fmt.Errorf("aiservice_admin.DeleteProvider: fetch: %w", err)
+	}
+
+	// Guard: reject if any route references this provider.
+	var routeCount int64
+	if err := b.db.WithContext(ctx).
+		Model(&model.AIServiceRoute{}).
+		Where("provider_id = ?", id).
+		Count(&routeCount).Error; err != nil {
+		return fmt.Errorf("aiservice_admin.DeleteProvider: route count: %w", err)
+	}
+	if routeCount > 0 {
+		return errno.ErrAIProviderInUse.SetMessage("该供应商被 %d 条路由引用，无法删除，请先删除相关路由", routeCount)
+	}
+
+	if err := b.db.WithContext(ctx).Delete(&p).Error; err != nil {
+		return fmt.Errorf("aiservice_admin.DeleteProvider: delete: %w", err)
+	}
+
+	// Write audit log entry.
+	_ = b.db.WithContext(ctx).Create(&model.AIServiceAuditLog{
+		ActorID:    actorID,
+		ActorName:  actorName,
+		Action:     model.AuditActionProviderDelete,
+		TargetType: model.AuditTargetProvider,
+		TargetID:   id,
+		DiffJSON:   model.JSONMap{"name": p.Name, "display_name": p.DisplayName},
+	}).Error
+
+	return nil
+}
+
+// TestProviderConnection probes an OpenAI-compatible provider with a 1-token request.
+// Non-OpenAI-compatible providers (baidu, bailian) return success=false with a helpful message.
+func (b *aiServiceAdminBiz) TestProviderConnection(ctx context.Context, id uint64) (TestConnectionResult, error) {
+	// Fetch the provider (with raw API key for the probe).
+	var p model.LLMProvider
+	if err := b.db.WithContext(ctx).First(&p, id).Error; err != nil {
+		if isNotFound(err) {
+			return TestConnectionResult{}, errno.ErrAIProviderNotFound
+		}
+		return TestConnectionResult{}, fmt.Errorf("aiservice_admin.TestProviderConnection: %w", err)
+	}
+
+	// Check if the provider is OpenAI-compatible.
+	if !isOpenAICompatible(&p) {
+		return TestConnectionResult{
+			Success: false,
+			Error:   "provider type not testable (only OpenAI-compatible providers supported)",
+		}, nil
+	}
+
+	// Find the first active route for this provider to get a model ID.
+	type routeRow struct {
+		ProviderModelID string `gorm:"column:provider_model_id"`
+	}
+	var row routeRow
+	if err := b.db.WithContext(ctx).
+		Table("ai_service_route").
+		Select("provider_model_id").
+		Where("provider_id = ? AND is_active = true", id).
+		Order("priority DESC").
+		Limit(1).
+		Scan(&row).Error; err != nil {
+		return TestConnectionResult{}, fmt.Errorf("aiservice_admin.TestProviderConnection: route query: %w", err)
+	}
+	if row.ProviderModelID == "" {
+		return TestConnectionResult{
+			Success: false,
+			Error:   "no active route references this provider — cannot probe",
+		}, nil
+	}
+
+	// Build 5-second-timeout probe context.
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	// Build the request body.
+	reqBody, _ := json.Marshal(map[string]interface{}{
+		"model":       row.ProviderModelID,
+		"messages":    []map[string]string{{"role": "user", "content": "ping"}},
+		"max_tokens":  1,
+		"temperature": 0,
+	})
+
+	// Normalise base URL: strip trailing slash.
+	baseURL := strings.TrimRight(p.BaseURL, "/")
+	probeURL := baseURL + "/chat/completions"
+
+	hc := httpclient.NewClient(&httpclient.Config{
+		Timeout:        5 * time.Second,
+		ConnectTimeout: 5 * time.Second,
+		MaxRetries:     0, // probe should not retry — measure raw latency
+	})
+
+	start := time.Now()
+	resp, err := hc.Do(&httpclient.Request{
+		Method:  http.MethodPost,
+		URL:     probeURL,
+		Headers: map[string]string{"Authorization": "Bearer " + p.APIKey},
+		Body:    bytes.NewReader(reqBody),
+		Context: probeCtx,
+		RetryPolicy: &httpclient.RetryPolicy{
+			MaxRetries: 0,
+		},
+	})
+	latencyMs := time.Since(start).Milliseconds()
+
+	if err != nil {
+		log.C(ctx).Warnw("Provider test-connection failed", "provider_id", id, "error", err)
+		return TestConnectionResult{
+			Success:   false,
+			LatencyMs: latencyMs,
+			Error:     truncate(err.Error(), 200),
+		}, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return TestConnectionResult{
+			Success:    true,
+			LatencyMs:  latencyMs,
+			HTTPStatus: resp.StatusCode,
+		}, nil
+	}
+
+	// Non-2xx: read body for error detail.
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	return TestConnectionResult{
+		Success:    false,
+		LatencyMs:  latencyMs,
+		HTTPStatus: resp.StatusCode,
+		Error:      truncate(string(bodyBytes), 200),
+	}, nil
+}
+
+// isOpenAICompatible returns true for providers using OpenAI-compatible chat completions API.
+// Providers named "baidu" or "bailian" are known non-compatible providers.
+func isOpenAICompatible(p *model.LLMProvider) bool {
+	name := strings.ToLower(p.Name)
+	if name == "baidu" || name == "bailian" {
+		return false
+	}
+	return true
+}
+
+// maskedKey returns a masked representation of the given raw API key.
+func maskedKey(key string) string {
+	if len(key) <= 4 {
+		return "****"
+	}
+	return "****" + key[len(key)-4:]
+}
+
+// truncate limits a string to at most n bytes.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
+// isNotFound reports whether a GORM error is a "record not found" error.
+func isNotFound(err error) bool {
+	return err != nil && err.Error() == "record not found"
 }

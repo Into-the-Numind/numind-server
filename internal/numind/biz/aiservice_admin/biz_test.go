@@ -2,6 +2,9 @@ package aiservice_admin_test
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -19,9 +22,9 @@ import (
 )
 
 // newTestDB creates an isolated in-memory SQLite database pre-migrated with the
-// tables required by audit log and route CRUD tests. Each call opens a fresh
-// unnamed ":memory:" connection so tests never share data, even under -count > 1
-// or parallel runs.
+// tables required by audit log, route CRUD, and provider CRUD tests. Each call
+// opens a fresh unnamed ":memory:" connection so tests never share data, even
+// under -count > 1 or parallel runs.
 func newTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
@@ -355,6 +358,199 @@ func TestUpdateTask_IncompatibleWithoutForce(t *testing.T) {
 
 	// No save should have occurred.
 	assert.NotContains(t, reg.auditLog, "save_task:admin", "profile must not be saved without force")
+}
+
+// ----------------------------------------------------------------------------
+// Provider CRUD tests
+// ----------------------------------------------------------------------------
+
+// TestProvider_MaskedKeyInListResponse verifies that List returns a masked api_key.
+func TestProvider_MaskedKeyInListResponse(t *testing.T) {
+	db := newTestDB(t)
+	b := aiservice_admin.New(newMockRegistry(), db)
+
+	// Create a provider directly in DB so we have a raw key.
+	p := model.LLMProvider{
+		Name:        "openai",
+		DisplayName: "OpenAI",
+		BaseURL:     "https://api.openai.com/v1",
+		APIKey:      "sk-supersecretkey1234",
+		IsActive:    true,
+	}
+	require.NoError(t, db.Create(&p).Error)
+
+	providers, err := b.ListProviders(context.Background())
+	require.NoError(t, err)
+	require.Len(t, providers, 1)
+
+	// APIKey field in DTO must be masked, not the raw key.
+	assert.Equal(t, "****1234", providers[0].APIKey)
+	assert.NotContains(t, providers[0].APIKey, "supersecret")
+}
+
+// TestProvider_EmptyAPIKeyOnUpdatePreservesExisting verifies that passing an empty
+// string for api_key in an update request does NOT overwrite the stored key.
+func TestProvider_EmptyAPIKeyOnUpdatePreservesExisting(t *testing.T) {
+	db := newTestDB(t)
+	b := aiservice_admin.New(newMockRegistry(), db)
+
+	rawKey := "sk-originalkey9999"
+	p := model.LLMProvider{
+		Name:        "volc",
+		DisplayName: "Volc Engine",
+		BaseURL:     "https://ark.cn-beijing.volces.com/api/v3",
+		APIKey:      rawKey,
+		IsActive:    true,
+	}
+	require.NoError(t, db.Create(&p).Error)
+
+	// Update with empty api_key string — should preserve.
+	emptyKey := ""
+	_, err := b.UpdateProvider(context.Background(), p.ID, aiservice_admin.UpdateProviderRequest{
+		APIKey: &emptyKey,
+	}, 1, "admin")
+	require.NoError(t, err)
+
+	// Fetch from DB and verify raw key is unchanged.
+	var updated model.LLMProvider
+	require.NoError(t, db.First(&updated, p.ID).Error)
+	assert.Equal(t, rawKey, updated.APIKey)
+}
+
+// TestProvider_DeleteGuardWithActiveRoute verifies that deleting a provider that
+// is referenced by at least one ai_service_route returns ErrAIProviderInUse.
+func TestProvider_DeleteGuardWithActiveRoute(t *testing.T) {
+	db := newTestDB(t)
+	b := aiservice_admin.New(newMockRegistry(), db)
+
+	// Create a provider.
+	p := model.LLMProvider{
+		Name:        "ali",
+		DisplayName: "Alibaba Cloud",
+		BaseURL:     "https://dashscope.aliyuncs.com/compatible-mode/v1",
+		APIKey:      "sk-alibaba1234",
+		IsActive:    true,
+	}
+	require.NoError(t, db.Create(&p).Error)
+
+	// Create an AIService to satisfy the FK on AIServiceRoute.
+	svc := model.AIService{
+		ModelKey:    "qwen-turbo",
+		DisplayName: "Qwen Turbo",
+		ServiceType: "llm",
+		IsActive:    true,
+	}
+	require.NoError(t, db.Create(&svc).Error)
+
+	// Create a route referencing this provider.
+	route := model.AIServiceRoute{
+		ModelID:         svc.ID,
+		ProviderID:      p.ID,
+		ProviderModelID: "qwen-turbo",
+		IsActive:        true,
+
+	}
+	require.NoError(t, db.Create(&route).Error)
+
+	// Attempt delete — should fail with ErrAIProviderInUse.
+	err := b.DeleteProvider(context.Background(), p.ID, 1, "admin")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errno.ErrAIProviderInUse),
+		"expected ErrAIProviderInUse, got: %v", err)
+}
+
+// TestProvider_DeleteAllowedWithNoRoutes verifies that a provider with no routes
+// can be deleted successfully.
+func TestProvider_DeleteAllowedWithNoRoutes(t *testing.T) {
+	db := newTestDB(t)
+	b := aiservice_admin.New(newMockRegistry(), db)
+
+	p := model.LLMProvider{
+		Name:        "unused",
+		DisplayName: "Unused Provider",
+		BaseURL:     "https://example.com/v1",
+		APIKey:      "sk-unused1234",
+		IsActive:    true,
+	}
+	require.NoError(t, db.Create(&p).Error)
+
+	err := b.DeleteProvider(context.Background(), p.ID, 1, "admin")
+	require.NoError(t, err)
+
+	// Provider must no longer exist in DB.
+	var check model.LLMProvider
+	res := db.First(&check, p.ID)
+	assert.ErrorIs(t, res.Error, gorm.ErrRecordNotFound)
+}
+
+// TestProvider_TestConnectionNotOpenAICompatible verifies that providers named
+// "baidu" or "bailian" return success=false with a helpful error, not a network failure.
+func TestProvider_TestConnectionNotOpenAICompatible(t *testing.T) {
+	db := newTestDB(t)
+	b := aiservice_admin.New(newMockRegistry(), db)
+
+	for _, name := range []string{"baidu", "bailian"} {
+		p := model.LLMProvider{
+			Name:        name,
+			DisplayName: name + " Provider",
+			BaseURL:     "https://" + name + ".example.com/v1",
+			APIKey:      "sk-" + name + "1234",
+			IsActive:    true,
+		}
+		require.NoError(t, db.Create(&p).Error)
+
+		result, err := b.TestProviderConnection(context.Background(), p.ID)
+		require.NoError(t, err, "TestProviderConnection must not return an error for non-compatible provider")
+		assert.False(t, result.Success, "success must be false for non-OpenAI-compatible provider %q", name)
+		assert.Contains(t, result.Error, "not testable")
+	}
+}
+
+// TestProvider_TestConnectionOpenAISucceeds verifies that a provider with an active
+// route hits the test-connection HTTP endpoint and reports latency.
+func TestProvider_TestConnectionOpenAISucceeds(t *testing.T) {
+	db := newTestDB(t)
+	b := aiservice_admin.New(newMockRegistry(), db)
+
+	// Stand up a fake OpenAI-compatible endpoint.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"test","choices":[{"message":{"role":"assistant","content":""}}]}`))
+	}))
+	defer srv.Close()
+
+	p := model.LLMProvider{
+		Name:        "testprovider",
+		DisplayName: "Test Provider",
+		BaseURL:     srv.URL,
+		APIKey:      "sk-test1234",
+		IsActive:    true,
+	}
+	require.NoError(t, db.Create(&p).Error)
+
+	// Create AIService + Route to allow the probe to find a model ID.
+	svc := model.AIService{
+		ModelKey:    "test-model",
+		DisplayName: "Test Model",
+		ServiceType: "llm",
+		IsActive:    true,
+	}
+	require.NoError(t, db.Create(&svc).Error)
+	route := model.AIServiceRoute{
+		ModelID:         svc.ID,
+		ProviderID:      p.ID,
+		ProviderModelID: "test-model-v1",
+		IsActive:        true,
+
+	}
+	require.NoError(t, db.Create(&route).Error)
+
+	result, err := b.TestProviderConnection(context.Background(), p.ID)
+	require.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.Greater(t, result.LatencyMs, int64(0))
+	assert.Equal(t, http.StatusOK, result.HTTPStatus)
 }
 
 // TestUpdateTask_IncompatibleWithForce verifies that when force=true is set,
