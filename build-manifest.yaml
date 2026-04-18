@@ -924,15 +924,35 @@ features:
     ndf_version: "1.0"
     description: "积分计费系统 — 从阶梯制（free/trial/standard/premium）迁移到会员+积分+加量包体系。Grandfathering 双制并存、R2 字符数估算预扣、¥29.9/600 积分加量包（3月有效期、仅会员可购）、扣减优先级（会员 > 加量包）"
     track: "standard"
-    stage: "S3"
+    stage: "S4"
     classification_reason: "跨 3 仓库预估 20+ 文件、涉及支付+权限+会员资格门槛+老用户迁移等高风险业务逻辑，5 条 Triage 标准中 4 条触发 Standard"
-    last_updated_by: "ai-s3-plan"
-    last_updated_at: "2026-04-19T14:00:00+08:00"
+    last_updated_by: "ai-s4-phase0-done"
+    last_updated_at: "2026-04-19T15:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
       - numind-admin-web
-    branches: {}
+    branches:
+      numind-server:
+        track-A: "feature/credits-system-track-A"
+        track-B: "feature/credits-system-track-B"
+        track-C: "feature/credits-system-track-C"
+        track-D: "feature/credits-system-track-D"
+        track-G: "feature/credits-system-track-G"
+      numind-web-v3:
+        track-E: "feature/credits-system-track-E"
+      numind-admin-web:
+        track-F: "feature/credits-system-track-F"
+    worktrees:
+      active:
+        - "numind-server-track-A"
+        - "numind-server-track-B"
+        - "numind-server-track-G"
+        - "numind-web-v3-track-E"
+        - "numind-admin-web-track-F"
+      pending_batch_2:
+        - "numind-server-track-C"
+        - "numind-server-track-D"
     artifacts:
       requirement: "numind-server/requirements/credits-system.md"
       proposal: "numind-server/proposals/credits-system-proposal.md"
@@ -1004,6 +1024,10 @@ features:
       - "2026-04-19: S3 plan 完成，采用 Hybrid Parallel 执行模型：Phase 0 契约冻结（serial）+ Phase 1 7 条 track（分两批 dispatch，Batch 1={A,B,E,F,G}, Batch 2={C,D}）+ Phase 2 Integration（serial）+ Phase 3 Verification"
       - "2026-04-19: S3 plan 经 Sonnet 独立 reviewer PASS_WITH_CONCERNS，修复全部 4 个 P1：Task 2.0 补 GetBalance endpoint 改造 + cron 接线；Track C 补 C.8 Langfuse span 埋点专项 task（4 span + trace metadata）；Phase 1 明确分两批 dispatch 策略；Track D 的 cron fallback 拆到独立文件 cron_billing.go 避免与 Track C 共改 credit.go"
       - "2026-04-19: Plan 总 task 数 38 → 40（+C.8 + Task 2.0）；Phase 2 6 tasks；Phase 3 4 tasks"
+      - "2026-04-19: S3 Gate 通过（用户确认进入 S4，按 Batch 1 dispatch）"
+      - "2026-04-19: S4 Phase 0 契约冻结完成（commits 42e2b9e + 91479b5 + f8c49ce + 245649c 跨 3 仓库），Tasks 0.1-0.4 done"
+      - "2026-04-19: S4 Phase 0 Task 0.5 完成：7 条 track 分支创建 + push（server 5 / web-v3 1 / admin-web 1）；5 个 worktrees 创建（Batch 1 用），2 个 Batch 2 分支待创建 worktree"
+      - "2026-04-19: 准备 dispatch Batch 1 parallel 5 个 agent teams（Track A/B/G/E/F），Track C/D 待 A+B merge 后 dispatch"
     blockers: []
     created_at: "2026-04-18T12:00:00+08:00"
     completed_at: null
