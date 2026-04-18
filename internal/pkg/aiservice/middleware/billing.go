@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"math"
 	"time"
 
@@ -244,28 +245,11 @@ func buildBaseRecord(route *registry.ResolvedRoute, userID uint, deps Deps, ctx 
 	return r
 }
 
-// isNotFoundErr returns true for gorm.ErrRecordNotFound and any error that
-// wraps it, so the billing middleware can fall through to the provider_model_id
-// fallback lookup without treating a missing rule as a hard error.
+// isNotFoundErr reports whether err wraps gorm.ErrRecordNotFound.
+// Uses errors.Is which handles both single-error wraps (Go 1.13+) and
+// joined errors (Go 1.20+ errors.Join / Unwrap() []error).
 func isNotFoundErr(err error) bool {
-	return err != nil && (err == gorm.ErrRecordNotFound || isGORMNotFound(err))
-}
-
-// isGORMNotFound uses errors.Is semantics to unwrap gorm.ErrRecordNotFound.
-func isGORMNotFound(err error) bool {
-	target := gorm.ErrRecordNotFound
-	for err != nil {
-		if err == target {
-			return true
-		}
-		type unwrapper interface{ Unwrap() error }
-		u, ok := err.(unwrapper)
-		if !ok {
-			break
-		}
-		err = u.Unwrap()
-	}
-	return false
+	return errors.Is(err, gorm.ErrRecordNotFound)
 }
 
 // populateUsage fills in the usage-specific fields of a UsageRecord once the
