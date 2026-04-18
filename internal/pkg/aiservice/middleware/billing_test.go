@@ -56,11 +56,11 @@ func newMockStoreWithPricing() *mockUsageStore {
 	return &mockUsageStore{
 		pricingRules: map[string]*model.PricingRule{
 			"llm|dmxapi|deepseek-v3": {
-				BillingMode:       "flat",
-				FlatUnit:          "call",
-				InputPricePerMTok: 1.0,
+				BillingMode:        "flat",
+				FlatUnit:           "call",
+				InputPricePerMTok:  1.0,
 				OutputPricePerMTok: 4.0,
-				IsActive:          true,
+				IsActive:           true,
 			},
 			"ocr|baidu|baidu-ocr-accurate": {
 				BillingMode:  "flat",
@@ -741,6 +741,215 @@ func TestBuildBaseRecord_PricingSnapshot_Tiered(t *testing.T) {
 	// Unit is still set (derived from pricing_rule) even for tiered mode.
 	if r.Unit == nil || *r.Unit != "per_1m_tokens" {
 		t.Errorf("Unit: got %v, want per_1m_tokens", r.Unit)
+	}
+}
+
+// ============================================================================
+// Streaming billing tests (wrapStreamForBilling)
+// ============================================================================
+
+// streamHandler returns a Handler that emits the given chunks on a channel and
+// returns that channel as the response (simulating a streaming LLM adapter).
+func streamHandler(chunks []aiservice.ChatChunk) Handler {
+	return func(_ context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+		ch := make(chan aiservice.ChatChunk, len(chunks))
+		for _, c := range chunks {
+			ch <- c
+		}
+		close(ch)
+		// Return as read-only channel — matches the real ChatStream return type.
+		return (<-chan aiservice.ChatChunk)(ch), nil
+	}
+}
+
+// TestBilling_Stream_CaptureFinalUsage verifies that token counts from the
+// final chunk's Usage field are written into the UsageRecord.
+func TestBilling_Stream_CaptureFinalUsage(t *testing.T) {
+	store := newMockStoreWithPricing()
+	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
+	mw := Billing(deps)
+
+	chunks := []aiservice.ChatChunk{
+		{Delta: "Hello", Index: 0},
+		{Delta: " world", Index: 1},
+		{
+			Delta:        "",
+			Index:        2,
+			IsFinal:      true,
+			FinishReason: "stop",
+			Usage: &aiservice.TokenUsage{
+				PromptTokens:     724,
+				CompletionTokens: 23,
+				TotalTokens:      747,
+			},
+		},
+	}
+
+	handler := mw(streamHandler(chunks))
+	ctx := WithUserID(context.Background(), 7)
+
+	resp, err := handler(ctx, llmRoute(), aiservice.ChatRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Drain the wrapped channel (channel close is the synchronisation point:
+	// the goroutine calls persistRecord then closes dst, so store.records is
+	// visible without a race once the range exits).
+	ch, ok := resp.(<-chan aiservice.ChatChunk)
+	if !ok {
+		t.Fatalf("expected <-chan ChatChunk, got %T", resp)
+	}
+	for range ch {
+	}
+
+	if len(store.records) != 1 {
+		t.Fatalf("expected 1 usage record after stream close, got %d", len(store.records))
+	}
+	r := store.records[0]
+	if r.PromptTokens != 724 {
+		t.Errorf("PromptTokens: got %d, want 724", r.PromptTokens)
+	}
+	if r.CompletionTokens != 23 {
+		t.Errorf("CompletionTokens: got %d, want 23", r.CompletionTokens)
+	}
+	if r.TotalTokens != 747 {
+		t.Errorf("TotalTokens: got %d, want 747", r.TotalTokens)
+	}
+	if r.IsEstimated {
+		t.Error("IsEstimated should be false when final Usage chunk was received")
+	}
+}
+
+// TestBilling_Stream_ForwardsAllChunks verifies the wrapper forwards every
+// chunk from the inner channel to the caller without dropping or modifying them.
+func TestBilling_Stream_ForwardsAllChunks(t *testing.T) {
+	store := newMockStoreWithPricing()
+	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
+	mw := Billing(deps)
+
+	chunks := []aiservice.ChatChunk{
+		{Delta: "chunk0", Index: 0},
+		{Delta: "chunk1", Index: 1},
+		{Delta: "chunk2", Index: 2, IsFinal: true, Usage: &aiservice.TokenUsage{
+			PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15,
+		}},
+	}
+
+	handler := mw(streamHandler(chunks))
+	resp, err := handler(WithUserID(context.Background(), 1), llmRoute(), aiservice.ChatRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ch, ok := resp.(<-chan aiservice.ChatChunk)
+	if !ok {
+		t.Fatalf("expected <-chan ChatChunk, got %T", resp)
+	}
+
+	var received []aiservice.ChatChunk
+	for c := range ch {
+		received = append(received, c)
+	}
+
+	if len(received) != len(chunks) {
+		t.Fatalf("forwarded %d chunks, want %d", len(received), len(chunks))
+	}
+	for i, want := range chunks {
+		got := received[i]
+		if got.Delta != want.Delta || got.Index != want.Index || got.IsFinal != want.IsFinal {
+			t.Errorf("chunk[%d] mismatch: got %+v, want %+v", i, got, want)
+		}
+	}
+}
+
+// TestBilling_Stream_PersistsAfterClose verifies that the usage record is
+// persisted exactly once after the inner channel closes.
+func TestBilling_Stream_PersistsAfterClose(t *testing.T) {
+	store := newMockStoreWithPricing()
+	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
+	mw := Billing(deps)
+
+	chunks := []aiservice.ChatChunk{
+		{Delta: "Hi", Index: 0},
+		{Delta: "", Index: 1, IsFinal: true, Usage: &aiservice.TokenUsage{
+			PromptTokens: 50, CompletionTokens: 10, TotalTokens: 60,
+		}},
+	}
+
+	handler := mw(streamHandler(chunks))
+	resp, err := handler(WithUserID(context.Background(), 3), llmRoute(), aiservice.ChatRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ch := resp.(<-chan aiservice.ChatChunk)
+	// Draining the wrapped channel until close is the synchronisation point:
+	// the billing goroutine calls persistRecord and then closes the channel,
+	// so after this loop returns, store.records is visible without a race.
+	for range ch {
+	}
+
+	if len(store.records) != 1 {
+		t.Fatalf("expected exactly 1 record after stream close, got %d", len(store.records))
+	}
+}
+
+// TestBilling_Stream_InterruptionEstimatesTokens verifies that when the caller
+// context is cancelled before the final Usage chunk arrives, the middleware
+// falls back to char-count estimation and sets IsEstimated=true.
+func TestBilling_Stream_InterruptionEstimatesTokens(t *testing.T) {
+	store := &mockUsageStore{}
+	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
+	mw := Billing(deps)
+
+	// Buffered inner channel: we'll close it after cancel to simulate the
+	// provider side closing the stream once it notices the disconnection.
+	innerCh := make(chan aiservice.ChatChunk, 1)
+	slowHandler := Handler(func(_ context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+		return (<-chan aiservice.ChatChunk)(innerCh), nil
+	})
+
+	// Accumulated byte count (200 bytes → estimated 100 tokens).
+	accLen := 200
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx = WithUserID(ctx, 5)
+	ctx = withFirstChunkSent(ctx)
+	ctx = WithAccumulatedContentLen(ctx, &accLen)
+
+	handler := mw(slowHandler)
+	resp, err := handler(ctx, llmRoute(), aiservice.ChatRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ch := resp.(<-chan aiservice.ChatChunk)
+
+	// Send one non-final chunk (buffered, won't block).
+	innerCh <- aiservice.ChatChunk{Delta: "Hello", Index: 0}
+
+	// Cancel context so the wrapper goroutine takes the ctx.Done() path.
+	cancel()
+
+	// Close the inner channel so the wrapper goroutine's drain loop exits.
+	close(innerCh)
+
+	// Drain the wrapper channel — it will close once the goroutine exits.
+	// Channel close is the synchronisation point: persistRecord completes
+	// before close(dst), so store.records is visible without a race.
+	for range ch {
+	}
+
+	if len(store.records) != 1 {
+		t.Fatalf("expected 1 record after interruption, got %d", len(store.records))
+	}
+	r := store.records[0]
+	if r.CompletionTokens != 100 {
+		t.Errorf("CompletionTokens: got %d, want 100 (ceil(200/2))", r.CompletionTokens)
+	}
+	if !r.IsEstimated {
+		t.Error("IsEstimated should be true for streaming interruption")
 	}
 }
 

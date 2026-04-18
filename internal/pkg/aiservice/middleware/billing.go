@@ -17,13 +17,19 @@ import (
 // Billing returns a Middleware that writes a UsageRecord for every AI service
 // call.  The record captures the pricing snapshot at call time and fills the
 // usage fields appropriate for the service_type:
-//   - llm  → tokens_input / tokens_output (from ChatResponse.Usage)
+//   - llm  → tokens_input / tokens_output (from ChatResponse.Usage or final ChatChunk.Usage)
 //   - ocr  → call_count = 1
 //   - asr  → duration_seconds (from ASRResponse.DurationSeconds)
 //
 // Failure contract (spec §6.3):
 //   - DB write failures are logged at ERROR but never propagated to the caller.
 //   - The main request response is always returned regardless of billing outcome.
+//
+// Streaming:
+//   - For streaming LLM calls, the response from next() is an <-chan ChatChunk.
+//     The middleware wraps the channel and inspects each chunk; when the final
+//     chunk (IsFinal=true) carries Usage, those token counts are written to the
+//     record and the record is persisted after the inner channel closes.
 //
 // Streaming interruption:
 //   - When the caller's context is cancelled after at least one chunk was sent,
@@ -42,40 +48,115 @@ func Billing(deps Deps) Middleware {
 			// Call the next handler.
 			resp, err = next(ctx, route, req)
 
-			// Populate usage fields from the response.
-			// Use record.ServiceType (already fine-grained) instead of route.ServiceType (coarse).
-			populateUsage(ctx, record, record.ServiceType, resp, err)
-
-			// Persist — unified with RecordCOS / RecordVectorDB on the async
-			// batched recorder path. Submitting a Prebuilt record lets the
-			// recorder skip its UsageEvent→UsageRecord mapping and only fill
-			// in cost/revenue + CreatedAt.
-			//
-			// Fallback to deps.UsageStore.CreateUsageRecord (sync) when the
-			// global recorder isn't initialised — this keeps unit tests that
-			// inject a fake UsageStore working without needing a recorder.
-			switch {
-			case billing.R != nil:
-				billing.R.Record(&billing.UsageEvent{Prebuilt: record})
-			case deps.UsageStore != nil:
-				if writeErr := deps.UsageStore.CreateUsageRecord(ctx, record); writeErr != nil {
-					deps.errorw("billing: failed to write usage record",
-						"task_id", route.TaskID,
-						"service_id", route.ServiceID,
-						"user_id", userID,
-						"error", writeErr,
-					)
-				}
-			default:
-				// Prod misconfiguration: silently dropping billing is a data
-				// loss event for operations. Emit at ERROR so alerting catches it.
-				deps.errorw("billing: no recorder or UsageStore configured, skipping usage record",
-					"task_id", route.TaskID,
-				)
+			// Streaming LLM path: next() returned a read-only chunk channel.
+			// Wrap the channel so we can observe the final Usage chunk and
+			// persist the record after the stream completes.
+			if ch, isStream := resp.(<-chan aiservice.ChatChunk); isStream {
+				wrapped := wrapStreamForBilling(ctx, ch, record, route, userID, deps)
+				return wrapped, err
 			}
+
+			// Non-streaming path (existing behaviour): populate + persist synchronously.
+			populateUsage(ctx, record, record.ServiceType, resp, err)
+			persistRecord(ctx, record, route, userID, deps)
 
 			return resp, err
 		}
+	}
+}
+
+// wrapStreamForBilling wraps src to capture the final Usage chunk into record
+// and persist the billing record once the inner channel closes.
+// It forwards all chunks unmodified to the returned channel so downstream
+// consumers (biz layer) see the identical stream.
+func wrapStreamForBilling(
+	ctx context.Context,
+	src <-chan aiservice.ChatChunk,
+	record *model.UsageRecord,
+	route *registry.ResolvedRoute,
+	userID uint,
+	deps Deps,
+) <-chan aiservice.ChatChunk {
+	// Buffer matches src so we don't add artificial back-pressure.
+	dst := make(chan aiservice.ChatChunk, cap(src))
+	go func() {
+		var finalSeen bool
+		for chunk := range src {
+			// Capture token usage from the final chunk before forwarding.
+			if chunk.IsFinal && chunk.Usage != nil {
+				record.PromptTokens = chunk.Usage.PromptTokens
+				record.CompletionTokens = chunk.Usage.CompletionTokens
+				record.TotalTokens = chunk.Usage.TotalTokens
+				record.ReasoningTokens = chunk.Usage.ReasoningTokens
+				finalSeen = true
+			}
+			// Forward the chunk to the downstream consumer.
+			// If the caller's context was already cancelled, drain src to
+			// completion so the provider HTTP stream is not leaked, but stop
+			// sending to dst (nobody is listening).
+			select {
+			case dst <- chunk:
+			case <-ctx.Done():
+				// Drain remaining src without blocking.
+				for range src {
+				}
+				// Fall through to persist with whatever we have.
+				goto persist
+			}
+		}
+	persist:
+		// src closed (or ctx cancelled). If we never saw a final Usage chunk,
+		// fall back to the streaming-interruption char-count estimate.
+		if !finalSeen {
+			if firstChunkSent, _ := ctx.Value(ctxKeyFirstChunkSent{}).(bool); firstChunkSent {
+				estimated := int(math.Ceil(float64(accumulatedContentLen(ctx)) / 2.0))
+				record.CompletionTokens = estimated
+				record.TotalTokens = record.PromptTokens + estimated
+				record.IsEstimated = true
+			}
+		}
+		// Persist the billing record before closing dst.
+		// Closing dst is the synchronisation point for callers that drain the
+		// channel and then read billing state (e.g. tests). persistRecord must
+		// complete before close(dst) so that billing data is visible to any
+		// code that synchronises on channel close.
+		persistRecord(ctx, record, route, userID, deps)
+		close(dst)
+	}()
+	return dst
+}
+
+// persistRecord submits record to the async recorder (billing.R) when
+// initialised, or falls back to a synchronous UsageStore write.
+// Errors are logged but never returned — billing failures must not affect the
+// caller's response.
+func persistRecord(ctx context.Context, record *model.UsageRecord, route *registry.ResolvedRoute, userID uint, deps Deps) {
+	// Persist — unified with RecordCOS / RecordVectorDB on the async
+	// batched recorder path. Submitting a Prebuilt record lets the
+	// recorder skip its UsageEvent→UsageRecord mapping and only fill
+	// in cost/revenue + CreatedAt.
+	//
+	// Fallback to deps.UsageStore.CreateUsageRecord (sync) when the
+	// global recorder isn't initialised — this keeps unit tests that
+	// inject a fake UsageStore working without needing a recorder.
+	switch {
+	case billing.R != nil:
+		billing.R.Record(&billing.UsageEvent{Prebuilt: record})
+	case deps.UsageStore != nil:
+		if writeErr := deps.UsageStore.CreateUsageRecord(ctx, record); writeErr != nil {
+			deps.errorw("billing: failed to write usage record",
+				"task_id", route.TaskID,
+				"service_id", route.ServiceID,
+				"user_id", userID,
+				"error", writeErr,
+			)
+		}
+	default:
+		// Prod misconfiguration: silently dropping billing is a data
+		// loss event for operations. Emit at ERROR so alerting catches it.
+		deps.errorw("billing: no recorder or UsageStore configured, skipping usage record",
+			"task_id", route.TaskID,
+		)
 	}
 }
 
