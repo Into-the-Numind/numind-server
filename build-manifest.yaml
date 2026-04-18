@@ -404,10 +404,10 @@ features:
     ndf_version: "1.0"
     description: "AI 服务统一化管理 — 扩展现有 internal/pkg/llm 为统一 AI Service Gateway，覆盖 LLM（ali/volc/dmxapi/bailian）+ OCR（baidu）+ ASR（FunASR）等全部 AI 服务提供者；Service Registry 入库（能力矩阵 + pricing），Task Profile 声明每个业务场景的能力需求；管理端 CRUD；中间件链统一处理 tracing/billing/retry/fallback；吸收 llm-model-switch"
     track: "standard"
-    stage: "S5-partial"
+    stage: "S7-dev-done"
     classification_reason: "跨 6+ biz 模块的 infra 重构（ali/volc/baidu/salesrag/sop/monitor/chatbot），影响所有 AI 调用路径；新增 Service Registry + Task Profile 两张核心表及管理端 CRUD；架构决策密集；工时多天；涉及 Langfuse 观测和 billing 全链路；吸收线上功能 llm-model-switch 需做 schema/API inventory"
-    last_updated_by: "ai-s5"
-    last_updated_at: "2026-04-17T23:13:00+08:00"
+    last_updated_by: "ai-s7"
+    last_updated_at: "2026-04-18T10:46:00+08:00"
     repos:
       - numind-server
       - numind-admin-web
@@ -428,12 +428,12 @@ features:
       reviewed_tasks: 23
       current_task: null
     tech_debt_added_in_s4:
-      - "VectorDB billing (RecordCOS/RecordVectorDB) not unified — Phase 2"
+      - "VectorDB billing (RecordCOS/RecordVectorDB) not unified（Phase-2 A4, server f0d6483 已修）— 诊断澄清：两条路径都写 usage_record 表，真实痛点是 LLM 走 sync DB 写、VectorDB 走 async batched。加 UsageEvent.Prebuilt 字段让 middleware.Billing 也走 billing.R.Record 异步路径；fallback 到 deps.UsageStore.CreateUsageRecord 仅保留给测试注入。prod 的 LLM 请求去掉同步 DB 延迟"
       - "volc.GenerateArticleContent has no billing call — pre-existing（2026-04-17 诊断推翻 + 清理 ae992d6）：原描述错误。该函数仅被本地 CLI（cmd/main.go）调用，线上从无流量；另有 controller/v1/volc 是无路由注册的 dead code 且硬编码 API key。已删除 dead controller + 给 biz 加注释说明。ACTION：Volc API key 60dbceec-... 在 git history 可见，需运营轮换"
       - "modelKey 未接通 Gateway ModelOverride — Phase 2"
-      - "ChatRequest 缺 ResponseFormat 字段 — Phase 2"
-      - "ChatChunk 无 Err 字段，mid-stream errors via channel close — Phase 2"
-      - "ListServices in-memory pagination — Phase 2"
+      - "ChatRequest 缺 ResponseFormat 字段（Phase-2 A2, server 37013a9 已修）— 新 ResponseFormatType 枚举（text / json_object），3 adapter × 2 方法（ali/volc/dmxapi × Chat/ChatStream）全接通；oaiResponseFormat 指针+omitempty 所以空值不发字段。业务层 opt-in 使用。注：prod 还没数据，现在没 consumer 用"
+      - "ChatChunk 无 Err 字段 mid-stream errors via channel close（Phase-2 A3, server bb60f46 + 0861dc2 已修）— adapter/stream.go 的 parse_error + scan_error 两条路径填 chunk.Err；sop/executor + chatbot/stream + salesrag 5 个 consumer（RetrieveStream / AnalyzeProfileMultiFiles / AnalyzeProfileText / analyzeChatStyleTextStream / analyzeChatStyleImageStream）全部识别并 fail-fast。regression test TestRunOAIStream_ParseError_PopulatesErrField 锁契约"
+      - "ListServices in-memory pagination（Phase-2 A1, server 74a5a85 已修）— 在 IStore 加 ListServicesPaginated(offset, limit)，gormStore 用 COUNT + LIMIT/OFFSET 两个 query 做 DB 层分页；buildServiceQuery 共享 filter 语义（OnlyDeprecated / IncludeDeprecated）"
       - "langfuse.base_url 内网 IP — prod config fix needed（2026-04-17 复查：诊断错误，110.42.221.25 是公网 IP，prod 服务器 curl http://110.42.221.25:3100/api/public/health 返回 HTTP 200；prod config 无需改。Prod 容器当前 up 3 weeks 尚未部署带 Langfuse 的新代码，待下次 prod 发版时自动启用）"
       - "llmrouter 包最终拆除 — Phase 2 评估"
       - "Playwright E2E for admin-web TaskBindingEditor — skipped in S4, add Phase 2（admin-web c86550f 已完成）：搭建 @playwright/test + config + auth.setup.ts + TaskBindingEditor 回归 test（防 save 清空绑定 bug 再发），dev 2/2 通过"
@@ -484,14 +484,22 @@ features:
       - "2026-04-17: TasksList binding count tech debt 选方案 A（后端 ListTasks 响应加 fallback_count/allowed_count 聚合字段）；ServiceEdit 表单对齐延后到 legacy-llm-cleanup 一起重做"
       - "2026-04-17: 反悔延后决定，改走方案 B 完整对齐 admin-web ↔ backend：重建 AIService/TaskProfile types，重建 ServiceEdit 表单（capability_json 动态 schema 渲染），修复 TaskEdit save 静默清空绑定的数据丢失 bug，对齐 errno 字符串 code。Routes CRUD 仍保留在 legacy /admin/llm 待 legacy-llm-cleanup"
       - "2026-04-17: CapabilitySchema wire format 统一 snake_case — 后端加 json tag（server 2430dae），前端消费改回 snake_case（admin-web 792dc91），加 marshal 回归测试防止 tag 意外变更"
+      - "2026-04-17/18: Phase-2 A 区（补齐型 tech debt）全部完成 — A1 ListServices DB 分页（74a5a85）、A2 ChatRequest.ResponseFormat（37013a9）、A3 ChatChunk.Err + sop/chatbot consumer（bb60f46）+ salesrag 5 consumer 补齐（0861dc2）、A4 billing 中间件走 billing.R 异步批处理（f0d6483）。每项均过 Sonnet subagent review + 修 P1/P2"
+      - "2026-04-18: ai-service-manager 进入 S7-dev-done — 所有 S4 tech debt 清理完成；所有 pending_spec_updates 关闭；legacy-llm-cleanup 完成；Phase-2 A 区完成；prod 发版待用户节奏。S7 剩余事项：Volc API key 轮换（git history 可见，运营 action）+ core.WriteResponse wire format 改造（独立 NDF Standard feature，影响范围大，等用户决策）"
     deferred:
-      - "语义缓存（Phase 2）"
-      - "Cost-aware 自动路由（Phase 2）"
+      - "Phase 2 B 区（条件依赖 prod 数据）：语义缓存、Cost-aware 自动路由 — 需 prod 跑 2-4 周 Langfuse 积累真实调用数据后才能基于观测决策"
+      - "Phase 2 B 区（条件依赖产品需求）：Guardrails / PII 过滤 — B 端合规需求触发时再做"
+      - "模型质量自动评测 / A-B 对比 — 建议砍掉，用公开 LLM Arena 替代；自建工具 ROI 低"
       - "C 端用户模型选择 UI 改版（不在本期范围）"
-      - "Guardrails/PII 过滤（Phase 2+）"
-      - "模型质量自动评测 / A-B 对比（Phase 2+）"
       - "新 Provider 接入（本期不新增，只收编现有的）"
+      - "core.WriteResponse err 分支丢弃 Errno.Code 字符串 + data 详情 — 需独立 NDF Standard feature 修（跨前后端全局 error 处理协议），范围大，待用户决策"
     blockers: []
+    prod_checklist:
+      - "prod 发版 tag 必须包含本 session 产出的全部 commit（2026-04-17/18 区间）— server：ae992d6 / 36bb044 / 7949293 / 6120c40 / b3cf1c0 / f67e066 / 3dd04a8 / 315b1a0 / 8df0408 / e3cc6b7 / 42e7375 / 6bf34af / 4614d83 / ff6abf6 / 850be79 / 74a5a85 / 37013a9 / bb60f46 / f0d6483 / 0861dc2；admin-web：本 session 相关 commit 见 legacy-llm-cleanup task_breakdown；web-v3：7cd83c5 / f235beb"
+      - "prod DB migration 顺序（发版后执行）：(1) 20260417_230000_add_model_name_to_chatbot_message.sql 先跑（ChatbotMessage.model_name 列，INFORMATION_SCHEMA 守护幂等）；(2) 业务冒烟验证通过；(3) 再跑 20260417_180000_drop_llm_compat_views.sql（DROP llm_model + llm_model_provider 两个 VIEW，破坏性）"
+      - "Volc API key 轮换 — 60dbceec-... 在 git history 可见（ae992d6 前的 controller/v1/volc dead code），运营需轮换"
+      - "回滚顺序：若发版失败，先回滚 migration（20260417_180000 的 rollback SQL 在同目录），再按 commit 倒序 revert"
+      - "Langfuse prod 部署：prod 容器 up 3+ weeks 尚未部署带 Langfuse 的新代码，下次发版自动启用，base_url=110.42.221.25:3100 已复查无需改"
     created_at: "2026-04-15T00:00:00+08:00"
     completed_at: null
 
