@@ -144,11 +144,11 @@ func TestCalculateCost_TableDriven(t *testing.T) {
 	rules := map[string]*model.PricingRule{
 		// Flat-rate LLM rules with clean numbers so hand-calculated expected
 		// costs are obvious from the formula.
-		"llm_chat|ali|qwen-turbo":               flatRule(1, 0.3, 0.6, 0.5, 1.0),
-		"llm_chat|ali|qwen-plus":                flatRule(2, 0.8, 2.0, 1.5, 3.0),
-		"llm_chat|volc|deepseek-v3-2-251201":    flatRule(3, 2.0, 8.0, 3.0, 10.0),
-		"llm_chat|dmxapi|qwen-turbo-latest":     flatRule(4, 0.5, 1.0, 0.8, 1.5),
-		"embedding|ali|text-embedding-v4":       flatRule(5, 0.07, 0, 0.1, 0),
+		"llm_chat|ali|qwen-turbo":            flatRule(1, 0.3, 0.6, 0.5, 1.0),
+		"llm_chat|ali|qwen-plus":             flatRule(2, 0.8, 2.0, 1.5, 3.0),
+		"llm_chat|volc|deepseek-v3-2-251201": flatRule(3, 2.0, 8.0, 3.0, 10.0),
+		"llm_chat|dmxapi|qwen-turbo-latest":  flatRule(4, 0.5, 1.0, 0.8, 1.5),
+		"embedding|ali|text-embedding-v4":    flatRule(5, 0.07, 0, 0.1, 0),
 	}
 
 	// Helper to build a fresh calculator per subtest so cache state does not
