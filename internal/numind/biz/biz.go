@@ -29,6 +29,7 @@ import (
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/pricing"
 
 	"github.com/spf13/viper"
 )
@@ -43,6 +44,8 @@ type IBiz interface {
 	Customers() customerbiz.ICustomerBiz    // 客户管理服务
 	SalesRAG() salesrag.SalesRAGBiz         // 销售 RAG 服务
 	Credit() credit.ICreditBiz              // 积分服务
+	CreditService() credit.ICreditService   // credits-system ICreditService 统一入口
+	Pricing() pricing.ICalculator           // pricing 同步成本计算
 	Payment() payment.IPaymentBiz           // 支付服务
 	Monitor() monitor.IMonitorBiz           // 博主监控服务
 	KnowledgeBase() kbbiz.IKnowledgeBaseBiz // 知识库服务
@@ -59,6 +62,8 @@ type biz struct {
 	sopService      sopbiz.ISopBiz
 	salesRAGService salesrag.SalesRAGBiz
 	credit          credit.ICreditBiz
+	creditService   credit.ICreditService
+	pricing         pricing.ICalculator
 	payment         payment.IPaymentBiz
 	monitorService  monitor.IMonitorBiz
 	kbService       kbbiz.IKnowledgeBaseBiz
@@ -69,11 +74,17 @@ type biz struct {
 // NewBiz 创建一个 IBiz 类型的实例.
 func NewBiz(ds store.IStore) *biz {
 	creditBiz := credit.NewCreditBiz(ds)
+	// pricing.NewCalculator takes a local PricingStore interface (subset of full store).
+	// ds.Billing() structurally satisfies PricingStore (per Track B design).
+	pricingCalc := pricing.NewCalculator(ds.Billing())
+	creditSvc := credit.NewCreditService(ds, creditBiz, pricingCalc)
 	b := &biz{
-		ds:           ds,
-		credit:       creditBiz,
-		payment:      payment.NewPaymentBiz(ds, creditBiz),
-		llmRouterSvc: llmrouter.New(ds),
+		ds:            ds,
+		credit:        creditBiz,
+		creditService: creditSvc,
+		pricing:       pricingCalc,
+		payment:       payment.NewPaymentBiz(ds, creditBiz),
+		llmRouterSvc:  llmrouter.New(ds),
 	}
 
 	// 创建 ConfigReader，用于从 Redis → MySQL → Viper 读取配置
@@ -262,6 +273,16 @@ func (b *biz) SalesRAG() salesrag.SalesRAGBiz {
 // Credit 返回积分服务实例.
 func (b *biz) Credit() credit.ICreditBiz {
 	return b.credit
+}
+
+// CreditService 返回 credits-system ICreditService 统一入口.
+func (b *biz) CreditService() credit.ICreditService {
+	return b.creditService
+}
+
+// Pricing 返回 pricing.ICalculator 实例（同步成本计算）.
+func (b *biz) Pricing() pricing.ICalculator {
+	return b.pricing
 }
 
 // Payment 返回支付服务实例.

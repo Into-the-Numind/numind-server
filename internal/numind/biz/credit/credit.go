@@ -413,5 +413,12 @@ func (b *creditBiz) RunCronTasks(ctx context.Context) error {
 		}
 	}
 
+	// Phase 2 Task 2.0 wiring: Track D 的 reconcileBillingMode 兜底切换
+	// 扫 billing_mode=legacy_tier 但有 active subscription credit_package 的用户
+	// 补切到 credits（订单 webhook 路径若 switch 失败，这里兜底）
+	if err := b.reconcileBillingMode(ctx); err != nil {
+		log.Errorw("Failed to reconcile billing_mode", "error", err)
+	}
+
 	return nil
 }
