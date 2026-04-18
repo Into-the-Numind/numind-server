@@ -181,6 +181,10 @@ func buildBaseRecord(route *registry.ResolvedRoute, userID uint, deps Deps, ctx 
 		Model:       route.ServiceKey,
 		Operation:   route.TaskID,
 		IsFallback:  isFallback,
+		// Metadata is a json-typed column; MySQL rejects empty string, so
+		// default to "{}" (valid JSON null-object). Consumers that want to
+		// attach structured metadata overwrite this before the recorder flush.
+		Metadata: "{}",
 		// AI Service Manager extension fields.
 		TaskID: &taskID,
 	}
