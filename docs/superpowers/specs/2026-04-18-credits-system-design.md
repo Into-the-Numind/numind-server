@@ -3,7 +3,7 @@
 > NDF S2 技术设计文档（feature: `credits-system`）
 > Created: 2026-04-18
 > 输入：`numind-server/requirements/credits-system.md` + `numind-server/proposals/credits-system-proposal.md`
-> Status: **DRAFT — Sections 1-2 已完成并经独立 Opus reviewer 迭代 3 轮 review；Sections 3-5 进行中**
+> Status: **DRAFT Complete — 5 Sections 全部 brainstorm 完成并经独立 Opus reviewer 多轮 review + back-prop；等待 S2 Gate 人类确认设计方向**
 
 ---
 
@@ -1624,9 +1624,179 @@ adminAuthGroup.GET("/migrations/billing-mode-init/status", adminMigrationControl
 
 **spec §2.11.1 内部一致性**：v2 back-prop 已完成——`SubscriptionTotal/SubscriptionRemaining` → `SubTotal/SubRemain`（§1.8 `BalanceBreakdown` + §2.11.1 `QuotaBreakdown` + §1.4 方法行为描述都已对齐），JSON 字段与现有 `credits.ts` 一致，无 breaking rename。
 
-## §5 可观测性 + 边界 + E2E 测试策略（TBD）
+## §5 可观测性 + 边界 + E2E 测试策略
 
-_待 Section 5 brainstorming 完成后填充_
+### 5.1 Langfuse 可观测性（延伸 §3 trace topology）
+
+#### 5.1.1 `span:credit-estimate`（LLM 调用前）
+
+```go
+if tc := langfuse.FromContext(ctx); tc != nil {
+    spanID := langfuse.SpanID()
+    langfuse.CreateSpan(tc.TraceID, spanID,
+        langfuse.WithSpanParent(tc.ParentObservationID),
+        langfuse.WithSpanName("credit-estimate"),
+        langfuse.WithSpanInput(map[string]any{
+            "operation":    string(op),
+            "prompt_chars": in.PromptChars,
+            "model":        in.Model,
+            "provider":     in.Provider,
+            "billing_mode": user.BillingMode,
+        }),
+        langfuse.WithSpanOutput(map[string]any{
+            "estimated_credits":       pre.EstimatedCredits,
+            "sufficient":              pre.Sufficient,
+            "skip_deduction":          pre.SkipDeduction,
+            "coefficient_id":          pre.CoefficientID,
+            "char_to_token_ratio":     coef.CharToTokenRatio,
+            "completion_prompt_ratio": coef.CompletionPromptRatio,
+            "safety_buffer_pct":       coef.SafetyBufferPct,
+            "sub_remain_before":       pre.Balance.SubRemain,
+            "booster_remain_before":   pre.Balance.BoosterRemain,
+        }),
+    )
+    langfuse.EndSpan(spanID)
+}
+```
+
+#### 5.1.2 `span:credit-reserve`（扣减写入后）
+
+记录：`reservation_id`, `reserved_credits`, `idempotency_key`, `reserved_from_packages`（FIFO 扣减明细数组）, `sub_remain_after`, `booster_remain_after`
+
+#### 5.1.3 `span:credit-reconcile`（LLM 调用后对账）
+
+Input: `reservation_id`, `reserved_credits`, `actual_cost_cents`, `actual_prompt_tokens`, `actual_completion_tokens`
+Output: `delta` (actual - reserved), `reconcile_direction` (refund/topup/noop), `refunded_to_packages`（若 delta<0 按 seq 退还的 pkg 列表）, `final_status=reconciled`
+
+#### 5.1.4 `span:credit-refund`（失败/取消路径）
+
+Input: `reservation_id`, `reason`（ENUM：op_failed/user_cancelled/provider_timeout/no_actual_cost/expired_by_cron/manual_refund）
+Output: `refunded_credits`, `refunded_items`, `final_status=refunded`
+
+#### 5.1.5 Trace-level metadata（全局）
+
+所有 SOP/SalesRAG trace root 的 metadata 追加：
+- `billing_mode`: legacy_tier / credits
+- `deducted_from`: subscription / booster / mixed / none(legacy)
+- `credit_balance_at_start`: 快照运行开始时余额
+
+### 5.2 迁移数据观察指标
+
+上线后运营需要监控：
+
+| 指标 | 查询 | 用途 |
+|------|------|------|
+| 每日新制用户数 | `COUNT(user WHERE billing_mode='credits' AND created_at > today)` | 迁移速度 |
+| 老会员剩余数 | `COUNT(user WHERE billing_mode='legacy_tier' AND tier_expires > NOW())` | 自然衰减监控 |
+| 每日 Reserve 总积分 | `SUM(reserved_credits) FROM credit_reservation WHERE created_at > today` | 消费总量 |
+| 每日 Reconcile delta 分布 | `avg/p50/p95/p99(delta)` | R2 估算精度（应逐步收敛到 ±10%） |
+| 加量包转化率 | `COUNT(booster orders) / COUNT(active subscription users)` | 产品 PMF |
+| 24h 未 reconcile reservation | `COUNT(WHERE status='reserved' AND created_at < NOW-24h)` | 异常告警 |
+| 按模型的估算偏差 | `GROUP BY (provider, model, operation), avg(delta)` | calibration 依据 |
+
+可用 Grafana dashboard（推荐）或 Langfuse trace analytics（已有基础设施）。
+
+### 5.3 边界情况矩阵（扩展 §2.4）
+
+| 场景 | 预期行为 | 回归测试 |
+|------|---------|---------|
+| 未登录调 `/v1/credits/estimate` | 401 Unauthorized（现有 middleware） | 现有 E2E 覆盖 |
+| free 用户调 estimate | 返回 `{sufficient:false, reason:'需要会员资格'}` + balance 0/0 | 新增 E2E |
+| legacy_tier 用户调 estimate | 返回 `{skip_deduction:true, sufficient: per CanRunSOP}` | 新增 E2E |
+| Reserve 时余额刚好耗尽（race） | DeductCredits `FOR UPDATE` 行锁保证原子；返回 `ErrInsufficientCredits` | 压测（手工，S5 外） |
+| Reconcile 时 reservation 已终态 | 返回 `ErrAlreadyFinalized`，defer 忽略 | 单元测试 |
+| delta 极大（actual >> reserved 10x） | 按 actual 补扣；超 balance 留负债 credit_transaction type='reconcile_debt' | 单元测试 |
+| 同 SOP run 重试（双击） | `uk_idempotency_key` 命中，返回已存在 reservation，不重复扣 | E2E |
+| Admin 改系数后新 Reserve 用新 version，in-flight Reservation 用老 version Reconcile | `coefficient_id` 冻结快照保证 | 单元测试 |
+| Cron 扫 24h 未 reconcile | 自动 Refund `reason=expired_by_cron` | 单元 + 定时任务集成测试 |
+| SOP 跨月（Reserve 4/30 23:59，Reconcile 5/1 00:01） | 按 `reserved_from_packages` 精确退原 pkg；原 pkg 已过期则退还 no-op | E2E（若可构造） |
+| 会员到期瞬间发起 SOP | CheckAndEstimate 读 fresh user（§1.5）；到期则 BillingMode 已切换 | 单元测试 |
+| MySQL 连接池耗尽 Reserve 失败 | 返回 500 + 不产生 reservation；前端弹"系统繁忙" | 单元测试（mock） |
+| Admin GDPR 批量删除积分 | 先清零 reserved（防 dangling），再物理删 credit_package | 运维手册（非 E2E） |
+
+### 5.4 E2E 测试策略（6 条 Playwright 路径）
+
+**位置：** `numind-web-v3/e2e/credits-system.spec.ts`（单文件 6 组 test）
+**依赖：** 现有 `e2e/auth.setup.ts` + `$E2E_USERNAME` / `$E2E_PASSWORD` 环境变量（`.claude/rules/testing.md §2`）
+
+#### Path 1：credits 会员新购 + SOP 正常扣减
+
+- 前置 force tier=free → 购买 monthly 会员（mock 支付成功） → 验证余额 2000/2000
+- 进 SOP 详情页 → `SopEstimateBar` 展示预估 → 启动 → 运行完成
+- 回账户中心验证余额减少；查 `credit_reservation` status=reconciled
+
+#### Path 2：跨池扣减（会员 + booster FIFO 顺序）
+
+- 前置：sub_remain=50, booster_remain=600
+- 跑 SOP 扣 150 → 验证 sub_remain=0, booster_remain=500
+- 验证 `credit_reservation_item` 2 行：seq=1 from sub_pkg credits=50, seq=2 from booster_pkg credits=100
+
+#### Path 3：非会员购买 booster 被拒
+
+- 前置：free 用户
+- 访问加量包入口 → 灰态 + 提示 + 跳转会员购买
+- 直接 `POST /v1/orders?productType=booster` → 403 `Membership.Required`
+
+#### Path 4：legacy_tier 老会员 SOP（零扣减）
+
+- 前置手工 SET billing_mode='legacy_tier', tier='standard', tier_expires=future
+- SOP 详情页 → SopEstimateBar **不渲染**（skip_deduction=true）
+- 跑 SOP → 成功 + monthly_sop_runs +1；账户中心展示"本月已用 X/20"
+
+#### Path 5：SalesRAG Chat 新扣减（prod 漏洞修复验证）
+
+- 前置：credits 用户 sub_remain=100
+- SalesRAG 对话发一条消息 → LLM 响应 → 验证 sub_remain 下降
+- Langfuse 验证 credit-estimate / credit-reserve / credit-reconcile 三 span
+
+#### Path 6：trial 完整生命周期
+
+- free 用户购买 trial（¥9.9）→ 验证 billing_mode=credits, sub_remain=200, expires=now+3d
+- 跑 SOP 扣减 → 手工快进时间 force tier_expires=past → trial 到期
+- 再跑 SOP → 提示积分不足 → 购买 standard → 余额变 2000
+
+### 5.5 数据 spike 产出验证清单（S3 plan Task 1）
+
+| 验证项 | 标准 |
+|-------|------|
+| 样本时间范围 | 最近 90 天 `usage_record` |
+| 样本量下限 | 每个 `(provider, model, operation)` ≥ 30 条；< 30 用保守默认 (1.5, 0.5, 0.3) |
+| `completion_prompt_ratio` 范围 | [0.05, 3.0]；超出需人工 review |
+| `safety_buffer_pct` 初值 | 2σ 覆盖（≈ 20-30%） |
+| 覆盖度 | 必须包含 `seed_pricing_rules.sql` 所有活跃 (provider, model) 组合 |
+| Provenance | migration 注释或伴随 md 记录统计 SQL、样本数、时间范围、执行时间 |
+
+上线后 2-4 周 beta，对比 reservation delta 分布 → 首次 calibration（管理员触发 append-only 新 version）。
+
+### 5.6 回归测试策略
+
+**单元测试（Go，`*_test.go`）：**
+- `biz/credit/credit_service_test.go`：ICreditService 全方法 happy/unhappy path（表驱动）
+- `biz/credit/estimation_test.go`：R2 估算 + UpdateCoefficient 并发 retry
+- `internal/pkg/pricing/pricing_test.go`：CalculateCost 公式 + 缓存失效
+- `biz/payment/payment_test.go`：Booster 会员门槛 + 防提前续费
+
+**集成测试：**
+- 12 个 migration 顺序执行 + rollback（MySQL testcontainer）
+
+**E2E 测试：** 上述 6 条 Playwright 路径（持久回归）
+
+**性能测试（手工，S5 外）：** 验证 Reserve/Reconcile 延迟 < 100ms
+
+### 5.7 S5 Gate 验证计划
+
+对照 `.claude/skills/ndf-workflow.md` §3 S5 清单：
+
+- [ ] `task lint` + `task test`（完整版 race detection + coverage）退出码 0
+- [ ] `npm run lint` + `npm run type-check`（web-v3 + admin-web 两仓库）退出码 0
+- [ ] `npm run test:e2e`（6 条关键路径）退出码 0
+- [ ] gstack `/qa` 浏览器截图 QA（本地 localhost:5173）无 P0 视觉/功能回归
+- [ ] Langfuse local stack（docker compose -f docker-compose.langfuse.yml up -d）验证 credit-estimate / credit-reserve / credit-reconcile / credit-refund span 出现
+- [ ] 可观测性检查：所有 span 字段齐全（参照 §5.1 schema）
+- [ ] 数据 spike 产出验证（§5.5 清单 6 项全过）
+- [ ] migration rollback 演练（本地 MySQL forward + rollback 一轮不报错）
+
+**E2E 必须 Playwright 持久回归**（符合 `.claude/rules/ndf-enforcement.md` 规则 10，涉及支付 + 权限 + 会员高风险业务逻辑）。
 
 ---
 
@@ -1637,4 +1807,9 @@ _待 Section 5 brainstorming 完成后填充_
 - **Section 2 round 1**（数据模型 v1）：FAIL → 3 个 P0 (P0-1 表名 sub_user、P0-2 并发锁缺失、P0-3 Trial 切换语义断层)
 - **Section 2 round 2**（v2）：PASS_WITH_CONCERNS → v2 新 P0 (GetBalance 分发未定)、P0-2 retry 未完全、P1-5 @migration_cutoff 手工替换
 - **Section 2 round 3**（v3）：FAIL → 3 个新 P0 (CalcMonthlyRemainingRuns 不存在、sub_user 残留在 proposal、GetBalance 接口兼容性未答)
-- **Section 2 v4**（本文档 current）：folded 所有 P0 修复，未再独立 review（user 选择 A：fold + 进 Section 3）
+- **Section 2 v4**（current）：folded 所有 P0 修复，未再独立 review（user 选择 A：fold + 进 Section 3）
+- **Section 3 round 1**（核心 biz API + 时序）：FAIL → 5 个 P0 (P0-1 getBillingCostFromRecorder 虚构 / P0-2 控制流反转被当签名调整 / P0-3 idempotency key 与 §2.11.3 矛盾 / P0-4 PreCheckResult 缺 Reason 字段 / P0-5 重复发明 HasActiveSubscription)
+- **Section 3 v2**（current）：选 Direction 3 同步 pricing，folded 所有 P0+P1 修复；back-prop §1.8（PreCheckResult.Reason）+ §1.11（pricing 依赖声明）+ §3.11（IPromptEstimator 位置）
+- **Section 4 round 1**（跨仓库集成）：FAIL → 4 个 P0 (P0-A 402 拦截器缺失 / P0-B estimate 聚合口径未定 / P0-C free 与余额 0 不可区分 / P0-D MigrationsView UI 未定义) + 5 P1
+- **Section 4 v2**（current）：folded 所有 P0+P1 修复；back-prop §1.8 + §2.11.1（BalanceBreakdown/QuotaBreakdown 字段名 Subscription* → Sub* 对齐现有 credits.ts）
+- **Section 5**（可观测性 + 边界 + E2E）：按用户要求不再 review，直接落盘进入 S2 Gate

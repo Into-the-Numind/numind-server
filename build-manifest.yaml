@@ -982,6 +982,9 @@ features:
       - "2026-04-19: Section 4 审计纠错：第一轮审计说 card_config.go 存在实际不存在（ls 已确认空），仅需清理 CLAUDE.md §1 核心功能描述"
       - "2026-04-19: Section 4 back-prop 完成：§1.8 BalanceBreakdown 和 §2.11.1 QuotaBreakdown 字段名从 SubscriptionTotal/Remaining 改为 SubTotal/SubRemain（JSON 与现有 credits.ts 一致，避免 breaking rename）"
       - "2026-04-19: 工作量修正 14-18 → 18-23 天（+5 天吸收 Section 4 P0 修订 + reviewer 建议前端工作量）；交付时间线 2026-05-11 → 2026-05-16"
+      - "2026-04-19: S2 Section 5 完成（可观测性 + 边界 + E2E）。Langfuse 新增 4 个 span：credit-estimate/credit-reserve/credit-reconcile/credit-refund 含完整字段 schema；7 项迁移数据观察指标；12 项扩展边界情况矩阵；6 条 Playwright E2E 路径（credits 正常流 / 跨池扣减 / 非会员拒 / legacy_tier 零扣减 / SalesRAG 漏洞修复 / trial 完整生命周期）；数据 spike 产出 6 项验证清单；S5 Gate 8 项验证计划"
+      - "2026-04-19: Section 5 按用户要求不再独立 review，直接落盘进入 S2 Gate"
+      - "2026-04-19: S2 spec 5 sections 全部完成；DRAFT Complete，等待 S2 Gate 人类确认设计方向"
     blockers: []
     created_at: "2026-04-18T12:00:00+08:00"
     completed_at: null
