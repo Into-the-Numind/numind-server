@@ -725,3 +725,77 @@ features:
     created_at: "2026-04-18T11:30:00+08:00"
     completed_at: null
 
+  - id: "doc-parsing-fix"
+    ndf_version: "1.0"
+    description: "修复 SOP 链路 .doc 旧版 Word 解析乱码 — extractTextFromPDFEnhanced 硬编码 .pdf 临时文件后缀，导致 .doc 文件被路由到 MarkItDown 而非 antiword，fallback 到 extractPrintableText 产出 OLE2 二进制垃圾"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "单文件改动（pdf.go），函数签名重构 + 3 处调用方更新；影响 SOP /v1/files/extract-text 和 /v1/pdf/convert-to-text 的 .doc/.docx 解析"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-16T00:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/doc-parsing"
+    hotfix_artifacts:
+      diagnosis: "requirements/doc-format-parsing-broken.md §7 — 含误诊复盘"
+      review: "Sonnet code-review: APPROVE_WITH_FOLLOWUPS — 0 blocker, 2 important (ext 校验 + fallback 二进制签名检测)"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert on develop"
+    last_verified:
+      at: "2026-04-16T01:10:00+08:00"
+      lint: "pass (go build + go vet)"
+      type_check: null
+      tests: null
+      test_summary: "手动 curl 验证：dev 环境 /v1/files/extract-text 对 为什么找我来买房.doc 返回 609 字符可读中文正文，无二进制签名泄漏"
+    decisions:
+      - "2026-04-16: 重命名 extractTextFromPDFEnhanced → runDocumentParser(data, ext)，而非修 temp 文件名不改签名——使契约更清晰"
+      - "2026-04-16: SalesRAG EnhancedParser 已有正确实现（doc_upload_*.doc），不需要同步修改"
+    deferred:
+      - "runDocumentParser 加 ext 入参校验（ext 必须以 . 开头）"
+      - "extractTextFromDOCLegacy fallback 加二进制签名检测（Root Entry / WordDocument），antiword 失败时返回错误而非 dump OLE2 字节"
+    blockers: []
+    created_at: "2026-04-15T23:30:00+08:00"
+    completed_at: "2026-04-16T01:10:00+08:00"
+
+  - id: "chatbot-upload-safety"
+    ndf_version: "1.0"
+    description: "修复 /chatbot 页面多文件上传的两个静默丢弃 bug — P0: 文件仍在解析时点发送导致 compose() 跳过在途文件；P1: 解析失败的文件被静默排除无确认"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "前端 2 文件改动（useDocUpload.ts + ChatbotChat.vue），新增 hasErrors/errorFileNames computed + ConfirmModal 确认流程"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-16T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "fix/chatbot-upload-safety"
+    hotfix_artifacts:
+      diagnosis: "inline: Explore agent 追踪 handleSend → compose → clearItems 同步链路发现 uploading 状态文件被跳过"
+      review: "Sonnet code-review: YELLOW → 修 cancel 状态泄漏后 APPROVE — 重构去掉 pendingSendText/pendingSendErrorNames 从根本消除泄漏"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert on develop (numind-web-v3)"
+    last_verified:
+      at: "2026-04-16T01:20:00+08:00"
+      lint: "pass (0 errors, 1 pre-existing warning in unrelated file)"
+      type_check: "pass (vue-tsc)"
+      tests: null
+      test_summary: "CI 自动部署到 dev:9200 成功（容器重启确认），等用户手工测试 P0/P1 场景"
+    decisions:
+      - "2026-04-16: canSend 排除 isUploading（最简单有效），不做 handleSend 内 await（会改变用户交互模型）"
+      - "2026-04-16: 使用 ConfirmModal（项目已有组件）而非 window.confirm（UX 更一致）"
+      - "2026-04-16: Review 后重构：去掉 pendingSendText/pendingSendErrorNames，confirm 时直接从 live state 读取，消除 cancel 泄漏风险"
+    deferred:
+      - "mobile 用户 title tooltip 不可见（send 按钮已禁用所以不影响 P0 功能，UX polish 可另做）"
+      - "all-error edge case 的 confirm 文案可以更精确（'所有附件均解析失败，仅发送文字内容'）"
+    blockers: []
+    created_at: "2026-04-16T01:00:00+08:00"
+    completed_at: "2026-04-16T01:20:00+08:00"
