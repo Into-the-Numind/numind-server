@@ -49,7 +49,8 @@ func (s *stubEstimationBiz) UpdateCoefficient(_ context.Context, _ *model.Credit
 
 func newTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared&_foreign_keys=on"), &gorm.Config{
+	// Per-test in-memory DB for race safety (see comments in admin_migration/migrations_test.go).
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err)

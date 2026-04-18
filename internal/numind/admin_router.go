@@ -8,6 +8,7 @@ import (
 	"numind-server/internal/numind/controller/v1/admin_billing"
 	"numind-server/internal/numind/controller/v1/admin_credit"
 	"numind-server/internal/numind/controller/v1/admin_dashboard"
+	"numind-server/internal/numind/controller/v1/admin_migration"
 	"numind-server/internal/numind/controller/v1/admin_login"
 	"numind-server/internal/numind/controller/v1/admin_order"
 	"numind-server/internal/numind/controller/v1/admin_sop"
@@ -124,6 +125,13 @@ func installAdminRouters(g *gin.Engine) error {
 		adminGroup.POST("/estimation-coefficients", coefficientCtrl.CreateCoefficient)
 		adminGroup.PUT("/estimation-coefficients/:id", coefficientCtrl.UpdateCoefficient)
 		adminGroup.DELETE("/estimation-coefficients/:id", coefficientCtrl.DeleteCoefficient)
+	}
+
+	// Phase 2 T2.3: billing-mode-init migration (spec §4.4.3, one-shot)
+	{
+		migrationCtrl := admin_migration.NewMigrationController(store.S)
+		adminGroup.GET("/migrations/billing-mode-init/status", migrationCtrl.GetInitStatus)
+		adminGroup.POST("/migrations/billing-mode-init", migrationCtrl.InitBillingMode)
 	}
 
 	// 订单管理

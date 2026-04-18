@@ -80,9 +80,11 @@ type stubCreditBiz struct{}
 // newTestDB creates an in-memory SQLite DB with only the tables the handler
 // touches (credit_package + sop_template + sop_node). We hand-roll the tables
 // to avoid AutoMigrating models that depend on MySQL ENUM types (e.g. User).
+// Uses a per-test in-memory DB (no cache=shared) so parallel test runs under
+// -race don't cross-pollinate one another's writes.
 func newTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared&_foreign_keys=on"), &gorm.Config{
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err)
