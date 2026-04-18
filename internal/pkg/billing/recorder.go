@@ -3,10 +3,13 @@ package billing
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sync"
 	"time"
+
+	"gorm.io/gorm"
 
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
@@ -18,6 +21,87 @@ type UsageStore interface {
 	CreateUsageRecords(ctx context.Context, records []*model.UsageRecord) error
 	GetPricingRule(ctx context.Context, serviceType, provider, modelName string) (*model.PricingRule, error)
 	GetPricingRuleTiers(ctx context.Context, ruleID uint) ([]model.PricingRuleTier, error)
+	// GetProviderModelID resolves the provider-specific model ID for the given
+	// logical model key and provider name. It joins ai_service and
+	// ai_service_route (via llm_provider.name) to retrieve provider_model_id.
+	// Returns ("", gorm.ErrRecordNotFound) when no mapping exists.
+	GetProviderModelID(ctx context.Context, modelKey, providerName string) (string, error)
+}
+
+// pricingCacheEntry caches a resolved PricingRule with a 5-minute TTL.
+type pricingCacheEntry struct {
+	rule      *model.PricingRule
+	expiresAt time.Time
+}
+
+// pricingCache is a thread-safe in-process cache for pricing rule lookups.
+// Key format: "<serviceType>|<provider>|<resolvedModel>".
+var pricingCache sync.Map // map[string]pricingCacheEntry
+
+const pricingCacheTTL = 5 * time.Minute
+
+// ResolvePricingRule looks up the pricing rule for a given (serviceType, provider,
+// modelKey) triple, applying a two-step fallback when the first lookup misses:
+//
+//  1. Direct lookup by (serviceType, provider, modelKey).
+//  2. If gorm.ErrRecordNotFound: resolve provider_model_id via GetProviderModelID
+//     and retry with that ID.
+//
+// Results (including successful lookups) are cached for 5 minutes keyed by the
+// lookup string that produced a hit, so both paths share the same cache slot.
+//
+// Returns (nil, gorm.ErrRecordNotFound) when neither path finds a rule.
+// This function is exported so that the billing middleware (T-arch) can call it
+// when building the pricing snapshot on the hot path.
+func ResolvePricingRule(ctx context.Context, store UsageStore, serviceType, provider, modelKey string) (*model.PricingRule, error) {
+	// --- Step 1: direct lookup with cache check ---
+	directKey := serviceType + "|" + provider + "|" + modelKey
+	if entry, ok := pricingCache.Load(directKey); ok {
+		e := entry.(pricingCacheEntry)
+		if time.Now().Before(e.expiresAt) {
+			return e.rule, nil
+		}
+		pricingCache.Delete(directKey)
+	}
+
+	rule, err := store.GetPricingRule(ctx, serviceType, provider, modelKey)
+	if err == nil {
+		// Cache the hit under the direct key.
+		pricingCache.Store(directKey, pricingCacheEntry{rule: rule, expiresAt: time.Now().Add(pricingCacheTTL)})
+		return rule, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		// Unexpected DB error — don't cache, surface to caller.
+		return nil, err
+	}
+
+	// --- Step 2: resolve provider_model_id and retry ---
+	providerModelID, resolveErr := store.GetProviderModelID(ctx, modelKey, provider)
+	if resolveErr != nil {
+		// No mapping found or DB error — return the original not-found.
+		return nil, gorm.ErrRecordNotFound
+	}
+	if providerModelID == modelKey {
+		// Avoid an identical second lookup that would also miss.
+		return nil, gorm.ErrRecordNotFound
+	}
+
+	fallbackKey := serviceType + "|" + provider + "|" + providerModelID
+	if entry, ok := pricingCache.Load(fallbackKey); ok {
+		e := entry.(pricingCacheEntry)
+		if time.Now().Before(e.expiresAt) {
+			return e.rule, nil
+		}
+		pricingCache.Delete(fallbackKey)
+	}
+
+	rule, err = store.GetPricingRule(ctx, serviceType, provider, providerModelID)
+	if err == nil {
+		// Cache under the fallback key so subsequent calls with the same
+		// provider_model_id also hit cache immediately.
+		pricingCache.Store(fallbackKey, pricingCacheEntry{rule: rule, expiresAt: time.Now().Add(pricingCacheTTL)})
+	}
+	return rule, err
 }
 
 // UsageRecorder 用量记录器 — 异步批量写入，不阻塞主流程
@@ -223,7 +307,7 @@ func (r *UsageRecorder) calculateCostAndRevenue(record *model.UsageRecord) (int6
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	rule, err := r.store.GetPricingRule(ctx, record.ServiceType, record.Provider, record.Model)
+	rule, err := ResolvePricingRule(ctx, r.store, record.ServiceType, record.Provider, record.Model)
 	if err != nil {
 		return 0, 0 // 无定价规则，成本和收入为 0（不影响记录）
 	}

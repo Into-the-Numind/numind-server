@@ -339,6 +339,10 @@ func (m *mockBillingStore) GetPricingRuleTiers(_ context.Context, _ uint) ([]mod
 	return nil, nil
 }
 
+func (m *mockBillingStore) GetProviderModelID(_ context.Context, _, _ string) (string, error) {
+	return "", errors.New("no provider model id (mock)")
+}
+
 // TestBilling_PrefersRecorderWhenInitialized verifies the unification contract:
 // when billing.R is initialized, the middleware submits the prebuilt UsageRecord
 // to the async batched recorder instead of calling deps.UsageStore directly.

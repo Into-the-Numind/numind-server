@@ -28,6 +28,11 @@ type BillingStore interface {
 	GetPricingRule(ctx context.Context, serviceType, provider, modelName string) (*model.PricingRule, error)
 	// GetPricingRuleTiers 获取指定定价规则的分段配置
 	GetPricingRuleTiers(ctx context.Context, ruleID uint) ([]model.PricingRuleTier, error)
+	// GetProviderModelID resolves the provider-specific model ID (provider_model_id)
+	// for the given logical model key and provider name by joining ai_service and
+	// ai_service_route via llm_provider. Returns ("", gorm.ErrRecordNotFound) when
+	// no mapping exists.
+	GetProviderModelID(ctx context.Context, modelKey, providerName string) (string, error)
 
 	// ListUsageRecords 管理端用量记录分页查询（支持多条件过滤）
 	ListUsageRecords(ctx context.Context, filter UsageRecordFilter) ([]model.UsageRecord, int64, error)
@@ -885,6 +890,29 @@ func (s *billingStore) ListTierChangeLogs(ctx context.Context, filter TierChange
 		return nil, 0, fmt.Errorf("list tier change logs: %w", err)
 	}
 	return items, total, nil
+}
+
+// GetProviderModelID resolves the provider-specific model ID (provider_model_id) for the
+// given logical model key and provider name. It joins ai_service → ai_service_route →
+// llm_provider to find the matching row.
+// Returns ("", gorm.ErrRecordNotFound) when no mapping exists.
+func (s *billingStore) GetProviderModelID(ctx context.Context, modelKey, providerName string) (string, error) {
+	var providerModelID string
+	err := s.db.WithContext(ctx).
+		Table("ai_service_route asr").
+		Joins("JOIN ai_service ais ON ais.id = asr.model_id").
+		Joins("JOIN llm_provider lp ON lp.id = asr.provider_id").
+		Where("ais.model_key = ? AND lp.name = ?", modelKey, providerName).
+		Select("asr.provider_model_id").
+		Limit(1).
+		Scan(&providerModelID).Error
+	if err != nil {
+		return "", fmt.Errorf("GetProviderModelID: %w", err)
+	}
+	if providerModelID == "" {
+		return "", gorm.ErrRecordNotFound
+	}
+	return providerModelID, nil
 }
 
 // GetTierChangeStats 获取等级变更月度统计（用于计算收入）
