@@ -3,12 +3,14 @@ package billing
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"gorm.io/gorm"
 
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/pricing"
 )
 
 // ----------------------------------------------------------------------------
@@ -268,6 +270,244 @@ func TestResolvePricingRule_DirectDBError(t *testing.T) {
 // ----------------------------------------------------------------------------
 // TestResolvePricingRule_ProviderModelIDDBError
 // ----------------------------------------------------------------------------
+
+// ----------------------------------------------------------------------------
+// Task B.4: Recorder uses pricing.CalculateCost (single source of truth)
+// ----------------------------------------------------------------------------
+
+// spyCalculator counts calls to CalculateCost and returns a fixed cost so the
+// recorder test can verify buildRecord delegated to the injected calculator
+// instead of running its own cost math.
+type spyCalculator struct {
+	calls       atomic.Int64
+	lastArgs    atomic.Value // []interface{}{serviceType, provider, model, pt, ct}
+	returnCost  int64
+	returnError error
+}
+
+func (s *spyCalculator) CalculateCost(_ context.Context, serviceType, provider, model string,
+	promptTokens, completionTokens int,
+) (int64, error) {
+	s.calls.Add(1)
+	s.lastArgs.Store([]interface{}{serviceType, provider, model, promptTokens, completionTokens})
+	return s.returnCost, s.returnError
+}
+
+// TestBuildRecord_CallsPricingCalculator verifies that the recorder, after
+// Task B.4, delegates cost calculation to the injected pricing.ICalculator on
+// the LLM path (prompt + completion tokens). The stub calculator records the
+// exact arguments so reviewers can confirm the (service_type, provider,
+// model) triple matches what the recorder persists on usage_record.
+func TestBuildRecord_CallsPricingCalculator(t *testing.T) {
+	clearPricingCache()
+
+	store := &stubUsageStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_chat|ali|qwen-turbo": pricingRule(1, 0.3, 0.6),
+		},
+	}
+	spy := &spyCalculator{returnCost: 123}
+
+	r := &UsageRecorder{
+		store: store,
+		calc:  spy,
+		ch:    make(chan *UsageEvent, 1),
+		done:  make(chan struct{}),
+	}
+
+	event := &UsageEvent{
+		UserID:      42,
+		ServiceType: "llm_chat",
+		Provider:    "ali",
+		Model:       "qwen-turbo",
+		Operation:   "sop_node_execute",
+		Usage: &TokenUsage{
+			PromptTokens:     500,
+			CompletionTokens: 200,
+			TotalTokens:      700,
+		},
+	}
+
+	record := r.buildRecord(event)
+
+	if got := spy.calls.Load(); got != 1 {
+		t.Errorf("CalculateCost called %d times, want 1", got)
+	}
+	args, ok := spy.lastArgs.Load().([]interface{})
+	if !ok {
+		t.Fatal("spy.lastArgs did not record call args")
+	}
+	if args[0] != "llm_chat" || args[1] != "ali" || args[2] != "qwen-turbo" ||
+		args[3].(int) != 500 || args[4].(int) != 200 {
+		t.Errorf("calculator args = %v, want [llm_chat ali qwen-turbo 500 200]", args)
+	}
+	if record.CostCents != 123 {
+		t.Errorf("record.CostCents = %d, want 123 (from spy)", record.CostCents)
+	}
+}
+
+// TestBuildRecord_CalculatorErrorFallsBackToZero ensures a pricing lookup
+// failure (unknown model, DB error) does not block the batch insert — the
+// record is still saved with CostCents=0 and a log warning, matching the
+// existing recorder contract that cost is best-effort metadata, not
+// load-bearing for the write.
+func TestBuildRecord_CalculatorErrorFallsBackToZero(t *testing.T) {
+	clearPricingCache()
+
+	store := &stubUsageStore{}
+	spy := &spyCalculator{returnError: gorm.ErrRecordNotFound}
+
+	r := &UsageRecorder{
+		store: store,
+		calc:  spy,
+		ch:    make(chan *UsageEvent, 1),
+		done:  make(chan struct{}),
+	}
+
+	event := &UsageEvent{
+		UserID:      42,
+		ServiceType: "llm_chat",
+		Provider:    "unknown",
+		Model:       "also-unknown",
+		Usage:       &TokenUsage{PromptTokens: 100, CompletionTokens: 50},
+	}
+
+	record := r.buildRecord(event)
+
+	if record.CostCents != 0 {
+		t.Errorf("CostCents on lookup failure = %d, want 0", record.CostCents)
+	}
+	if record.UserID != 42 {
+		t.Errorf("record should still be populated despite cost miss, got user %d", record.UserID)
+	}
+}
+
+// TestCostConsistency_RecorderVsPricingDirect is the end-to-end consistency
+// check required by Track B spec §3.0: biz/sop (calling pricing directly) and
+// the async recorder (calling pricing internally) must agree on cost cents for
+// identical (service_type, provider, model, pt, ct) inputs. This test proves
+// the single-source-of-truth property.
+func TestCostConsistency_RecorderVsPricingDirect(t *testing.T) {
+	clearPricingCache()
+
+	rule := &model.PricingRule{
+		ID:                     1,
+		BillingMode:            "flat",
+		InputPricePerMTok:      0.3,
+		OutputPricePerMTok:     0.6,
+		SellInputPricePerMTok:  0.5,
+		SellOutputPricePerMTok: 1.0,
+		IsActive:               true,
+		CreatedAt:              time.Now(),
+		UpdatedAt:              time.Now(),
+	}
+	store := &stubUsageStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_chat|ali|qwen-turbo": rule,
+		},
+	}
+	// Share one calculator across the direct path and the recorder path so the
+	// cache (and rule lookup) is identical — if they ever diverge, this test
+	// will fail at the first byte of mismatch.
+	calc := pricing.NewCalculator(store)
+
+	r := &UsageRecorder{
+		store: store,
+		calc:  calc,
+		ch:    make(chan *UsageEvent, 1),
+		done:  make(chan struct{}),
+	}
+
+	ptCt := []struct{ pt, ct int }{
+		{100, 50},
+		{1_000, 2_000},
+		{500_000, 100_000},
+		{1_000_000, 1_000_000},
+	}
+
+	for _, tc := range ptCt {
+		// Path 1: biz/sop-style direct pricing call.
+		directCost, err := calc.CalculateCost(context.Background(), "llm_chat", "ali", "qwen-turbo", tc.pt, tc.ct)
+		if err != nil {
+			t.Fatalf("direct cost (%d,%d): %v", tc.pt, tc.ct, err)
+		}
+
+		// Path 2: recorder-style buildRecord from a UsageEvent.
+		event := &UsageEvent{
+			UserID:      1,
+			ServiceType: "llm_chat",
+			Provider:    "ali",
+			Model:       "qwen-turbo",
+			Usage:       &TokenUsage{PromptTokens: tc.pt, CompletionTokens: tc.ct},
+		}
+		record := r.buildRecord(event)
+
+		if record.CostCents != directCost {
+			t.Errorf("pt=%d ct=%d: recorder cost %d != direct cost %d (divergent source of truth!)",
+				tc.pt, tc.ct, record.CostCents, directCost)
+		}
+	}
+}
+
+// TestBuildRecord_RevenueCalculation verifies that the recorder still computes
+// revenue (sell prices) locally since pricing.CalculateCost is cost-only per
+// spec §3.0. This test is the back-compat guard for the existing
+// usage_record.revenue_cents column.
+func TestBuildRecord_RevenueCalculation(t *testing.T) {
+	clearPricingCache()
+
+	// Use the real ResolvePricingRule path (not the spy) to exercise the
+	// recorder's revenue branch end-to-end. The spy is wired for cost so the
+	// two calculations stay independent.
+	rule := &model.PricingRule{
+		ID:                     1,
+		BillingMode:            "flat",
+		InputPricePerMTok:      0.3,
+		OutputPricePerMTok:     0.6,
+		SellInputPricePerMTok:  0.5,
+		SellOutputPricePerMTok: 1.0,
+		IsActive:               true,
+		CreatedAt:              time.Now(),
+		UpdatedAt:              time.Now(),
+	}
+	store := &stubUsageStore{
+		pricingRules: map[string]*model.PricingRule{
+			"llm_chat|ali|qwen-turbo": rule,
+		},
+	}
+	// Pricing calculator using the same store — cost goes through the real
+	// pricing path so record.CostCents is deterministic.
+	calc := pricing.NewCalculator(store)
+
+	r := &UsageRecorder{
+		store: store,
+		calc:  calc,
+		ch:    make(chan *UsageEvent, 1),
+		done:  make(chan struct{}),
+	}
+
+	event := &UsageEvent{
+		UserID:      42,
+		ServiceType: "llm_chat",
+		Provider:    "ali",
+		Model:       "qwen-turbo",
+		Usage: &TokenUsage{
+			PromptTokens:     1_000_000,
+			CompletionTokens: 1_000_000,
+		},
+	}
+
+	record := r.buildRecord(event)
+
+	// Cost: (1M/1M*0.3 + 1M/1M*0.6) yuan = 0.9 yuan = 90 cents.
+	if record.CostCents != 90 {
+		t.Errorf("CostCents = %d, want 90", record.CostCents)
+	}
+	// Revenue: (1M/1M*0.5 + 1M/1M*1.0) yuan = 1.5 yuan = 150 cents.
+	if record.RevenueCents != 150 {
+		t.Errorf("RevenueCents = %d, want 150", record.RevenueCents)
+	}
+}
 
 // TestResolvePricingRule_ProviderModelIDDBError verifies that when the first
 // GetPricingRule call returns ErrRecordNotFound (triggering the fallback) but

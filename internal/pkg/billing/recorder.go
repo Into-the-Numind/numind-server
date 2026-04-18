@@ -13,6 +13,7 @@ import (
 
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/pricing"
 )
 
 // UsageStore 定义计费存储接口（避免与 store 包循环引用）
@@ -110,8 +111,14 @@ func ResolvePricingRule(ctx context.Context, store UsageStore, serviceType, prov
 }
 
 // UsageRecorder 用量记录器 — 异步批量写入，不阻塞主流程
+//
+// calc 字段是 Track B 引入的 cost 计算入口（pricing.ICalculator）：recorder
+// 的 LLM 路径不再内联 cost 公式，改调 calc.CalculateCost 以保证与 biz/sop
+// 同步扣减路径（spec §3.0）共用单一数据源。revenue/非-LLM 路径仍在本文件内
+// 计算，因为 pricing.ICalculator 只负责 cost 维度。
 type UsageRecorder struct {
 	store UsageStore
+	calc  pricing.ICalculator
 	ch    chan *UsageEvent
 	done  chan struct{}
 	wg    sync.WaitGroup
@@ -155,10 +162,13 @@ const flushInterval = 3 * time.Second
 // R 全局用量记录器实例
 var R *UsageRecorder
 
-// InitRecorder 初始化全局用量记录器
+// InitRecorder 初始化全局用量记录器。内部构造 pricing.Calculator 以便
+// buildRecord 的 LLM 路径直接调用同步 cost 计算（spec §3.0）。store 需满足
+// pricing.PricingStore 接口（UsageStore 已经满足，见方法签名）。
 func InitRecorder(store UsageStore) {
 	R = &UsageRecorder{
 		store: store,
+		calc:  pricing.NewCalculator(store),
 		ch:    make(chan *UsageEvent, 2000),
 		done:  make(chan struct{}),
 	}
@@ -315,76 +325,129 @@ func (r *UsageRecorder) flushBatch(batch []*model.UsageRecord) {
 	}
 }
 
-// calculateCostAndRevenue 根据定价规则计算预估成本和收入（分）
+// calculateCostAndRevenue 根据定价规则计算预估成本和收入（分）。
+//
+// 自 Track B 起：LLM（prompt+completion）路径的 cost 计算委派给
+// pricing.Calculator（`r.calc.CalculateCost`），以保证 biz/sop 同步扣减路径与
+// recorder 异步入库使用同一公式（spec §3.0 单一数据源）。revenue 和非-LLM
+// 路径（embedding/storage/per-call）暂留在 recorder 内部，因为
+// pricing.ICalculator 只面向 cost 维度；后续 track 如需统一，再在 pricing
+// 包里扩展 CalculateRevenue / CalculatePerCall。
+//
+// cost == 0 的容错行为保持不变：pricing 返回错误时视作"无定价规则"，记录
+// CostCents=0 落库即可，不阻塞 usage_record 插入。
 func (r *UsageRecorder) calculateCostAndRevenue(record *model.UsageRecord) (int64, int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	rule, err := ResolvePricingRule(ctx, r.store, record.ServiceType, record.Provider, record.Model)
-	if err != nil {
-		return 0, 0 // 无定价规则，成本和收入为 0（不影响记录）
+	costCents := r.computeCost(ctx, record)
+	revenueCents := r.computeRevenue(ctx, record)
+
+	// 如果售价未设置（为0），fallback 到成本价，保持现有行为。
+	if revenueCents == 0 && costCents > 0 {
+		revenueCents = costCents
 	}
 
-	var costYuan, revenueYuan float64
+	return costCents, revenueCents
+}
 
+// computeCost returns the cost in cents for the given usage_record, delegating
+// the LLM (prompt+completion) path to pricing.Calculator and falling back to
+// the non-LLM pricing formulas (embedding / storage / per-call) for other
+// service types. On any lookup error the function returns 0 — cost is
+// best-effort telemetry, not load-bearing for the insert.
+func (r *UsageRecorder) computeCost(ctx context.Context, record *model.UsageRecord) int64 {
+	// LLM path: single source of truth via pricing.Calculator.
+	if record.PromptTokens > 0 || record.CompletionTokens > 0 {
+		if r.calc == nil {
+			return 0 // Defensive: tests may build a UsageRecorder without wiring calc.
+		}
+		costCents, err := r.calc.CalculateCost(ctx, record.ServiceType, record.Provider, record.Model,
+			record.PromptTokens, record.CompletionTokens)
+		if err != nil {
+			return 0
+		}
+		return costCents
+	}
+
+	// Non-LLM paths still need the raw pricing_rule for embedding /storage /
+	// per-call formulas. ResolvePricingRule stays in this package (see file
+	// header) and shares the LRU cache so non-LLM traffic also benefits.
+	rule, err := ResolvePricingRule(ctx, r.store, record.ServiceType, record.Provider, record.Model)
+	if err != nil {
+		return 0
+	}
+
+	var costYuan float64
+	switch {
+	case record.TotalTokens > 0:
+		// Embedding: only total_tokens populated, reuse input price column.
+		costYuan = float64(record.TotalTokens) / 1_000_000 * rule.InputPricePerMTok
+	case record.BytesUploaded > 0:
+		// Storage (COS): price per GB.
+		costYuan = float64(record.BytesUploaded) / (1024 * 1024 * 1024) * rule.PricePerGB
+	default:
+		// Flat per-call (file_extract, rerank, etc.).
+		costYuan = rule.PricePerCall
+	}
+	return int64(math.Round(costYuan * 100))
+}
+
+// computeRevenue returns revenue in cents using the sell-price columns on the
+// pricing_rule row. pricing.Calculator intentionally does not cover this
+// dimension (spec §3.0 is cost-only), so the formula stays inline and shares
+// the ResolvePricingRule cache with computeCost.
+func (r *UsageRecorder) computeRevenue(ctx context.Context, record *model.UsageRecord) int64 {
+	rule, err := ResolvePricingRule(ctx, r.store, record.ServiceType, record.Provider, record.Model)
+	if err != nil {
+		return 0
+	}
+
+	var revenueYuan float64
 	switch {
 	case record.PromptTokens > 0 || record.CompletionTokens > 0:
 		if rule.BillingMode == "tiered_token" {
-			costYuan, revenueYuan = r.calculateTieredCost(ctx, rule.ID, record.PromptTokens, record.CompletionTokens)
+			revenueYuan = r.calculateTieredRevenue(ctx, rule.ID, record.PromptTokens, record.CompletionTokens)
 		} else {
-			costYuan = float64(record.PromptTokens)/1_000_000*rule.InputPricePerMTok +
-				float64(record.CompletionTokens)/1_000_000*rule.OutputPricePerMTok
 			revenueYuan = float64(record.PromptTokens)/1_000_000*rule.SellInputPricePerMTok +
 				float64(record.CompletionTokens)/1_000_000*rule.SellOutputPricePerMTok
 		}
 	case record.TotalTokens > 0:
-		// Embedding 计费: 只有 total_tokens，用 input 价格
-		costYuan = float64(record.TotalTokens) / 1_000_000 * rule.InputPricePerMTok
 		revenueYuan = float64(record.TotalTokens) / 1_000_000 * rule.SellInputPricePerMTok
 	case record.BytesUploaded > 0:
-		// 存储计费: 每 GB 价格
-		costYuan = float64(record.BytesUploaded) / (1024 * 1024 * 1024) * rule.PricePerGB
 		revenueYuan = float64(record.BytesUploaded) / (1024 * 1024 * 1024) * rule.SellPricePerGB
 	default:
-		// 按次计费
-		costYuan = rule.PricePerCall
 		revenueYuan = rule.SellPricePerCall
 	}
-
-	// 如果售价未设置（为0），fallback 到成本价
-	if revenueYuan == 0 && costYuan > 0 {
-		revenueYuan = costYuan
-	}
-
-	return int64(math.Round(costYuan * 100)), int64(math.Round(revenueYuan * 100))
+	return int64(math.Round(revenueYuan * 100))
 }
 
-// calculateTieredCost 从 pricing_rule_tier 子表查找匹配档位计算分段价格。
-// 档位以 input token 数为索引：input 和 output 的价格都按 promptTokens 所属档位取值。
-func (r *UsageRecorder) calculateTieredCost(ctx context.Context, ruleID uint, promptTokens, completionTokens int) (costYuan, revenueYuan float64) {
+// calculateTieredRevenue looks up the sell-price tier for a tiered_token rule.
+// Mirrors the cost-side tier lookup in pricing.calculator.calculateTieredCost
+// so operator-visible billing (revenue) stays consistent with the bracket
+// selected by prompt-token count.
+func (r *UsageRecorder) calculateTieredRevenue(ctx context.Context, ruleID uint, promptTokens, completionTokens int) float64 {
 	tiers, err := r.store.GetPricingRuleTiers(ctx, ruleID)
 	if err != nil || len(tiers) == 0 {
-		return 0, 0
+		return 0
 	}
 
-	lookup := func(tokenType string) (cost, sell float64) {
+	lookup := func(tokenType string) float64 {
 		for _, tier := range tiers {
 			if tier.TokenType != tokenType {
 				continue
 			}
-			if uint(promptTokens) >= tier.MinTokens && (tier.MaxTokens == nil || uint(promptTokens) <= *tier.MaxTokens) {
-				return tier.CostPerMTok, tier.SellPerMTok
+			if uint(promptTokens) >= tier.MinTokens &&
+				(tier.MaxTokens == nil || uint(promptTokens) <= *tier.MaxTokens) {
+				return tier.SellPerMTok
 			}
 		}
-		return 0, 0
+		return 0
 	}
 
-	inputCost, inputSell := lookup("input")
-	outputCost, outputSell := lookup("output")
-
-	costYuan = float64(promptTokens)/1_000_000*inputCost + float64(completionTokens)/1_000_000*outputCost
-	revenueYuan = float64(promptTokens)/1_000_000*inputSell + float64(completionTokens)/1_000_000*outputSell
-	return costYuan, revenueYuan
+	inputSell := lookup("input")
+	outputSell := lookup("output")
+	return float64(promptTokens)/1_000_000*inputSell + float64(completionTokens)/1_000_000*outputSell
 }
 
 // RecordLLM 便捷方法：记录 LLM 调用
