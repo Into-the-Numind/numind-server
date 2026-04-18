@@ -1232,7 +1232,7 @@ func (b *sopBiz) ListTemplateRunsWithDetails(ctx context.Context, userID, templa
 
 // ChatAfterRunStream Run完成后的对话流式接口
 // modelKey: 用户选择的模型 key（空字符串表示使用最后一个节点的默认配置）
-func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, modelKey string, deepThinking bool, regenerateMsgID uint, handler func(event string, chunk string) error) error {
+func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversationID string, question string, userID uint, modelKey string, deepThinking bool, regenerateMsgID uint, handler func(event string, chunk string) error) (retErr error) {
 	// 互斥锁检测（解决“执行互斥锁”问题）
 	if _, loaded := b.runningRuns.LoadOrStore(runID, struct{}{}); loaded {
 		log.C(ctx).Warnw("Detected concurrent chat attempt", "run_id", runID)
@@ -1407,6 +1407,47 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	// 注入计费上下文
 	ctx = billing.WithBillingMeta(ctx, userID, "sop_chat_stream",
 		billing.Metadata("run_id", billing.FormatUint(runID), "conversation_id", conversationID, "trace_id", traceID))
+
+	// ===== Phase 2 Task 2.1: Reserve → LLM → Reconcile 控制流 =====
+	// 与 ExecuteNodeStream 同构（operation=OpSopChat）。idempKey 基于 run + 新 user message seq
+	// （maxSeq+1 就是上面 userMsg.Seq），保证同一追问重试不会二次扣减。
+	var (
+		chatRsv        *credit.Reservation
+		chatActualCost int64
+		chatOpErr      error
+	)
+	defer func() {
+		if chatRsv != nil && b.creditSvc != nil {
+			_ = b.creditSvc.FinalizeReservation(ctx, chatRsv, &chatActualCost, &chatOpErr)
+		}
+	}()
+	if b.creditSvc != nil {
+		user, uerr := b.ds.Users().GetByID(ctx, userID)
+		if uerr != nil {
+			log.C(ctx).Warnw("Failed to load user for credits pre-check; skipping Reserve",
+				"user_id", userID, "err", uerr)
+		} else {
+			chatPromptChars := computeSopChatPromptChars(history)
+			chatModel := lastNode.ModelName
+			pre, err := b.creditSvc.CheckAndEstimate(ctx, user, credit.OpSopChat, credit.EstimationInput{
+				PromptChars: chatPromptChars,
+				Model:       chatModel,
+				Provider:    providerFromModelName(chatModel),
+			})
+			if err != nil {
+				return wrapCreditError(err, pre)
+			}
+			if !pre.SkipDeduction {
+				idempKey := fmt.Sprintf("sop_chat:%d:%d", runID, userMsg.Seq)
+				chatRsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSopChat,
+					pre.EstimatedCredits, pre.CoefficientID, &idempKey)
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+
 	// 传入空字符串作为 input，这样执行器不会拼装节点的 Prompt，AI 保持普通助手身份
 	var answerBuf, thinkingBuf strings.Builder
 	chatStart := time.Now() // B4: 记录 chat LLM 调用起始时间，用于 duration_ms 持久化
@@ -1443,6 +1484,9 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 		)
 	}
 	if err != nil {
+		// LLM 调用失败或客户端断连 → defer FinalizeReservation 走 Refund 分支
+		// classifyReason 会把 context.Canceled 归类为 user_cancelled。
+		chatOpErr = err
 		return err
 	}
 
@@ -1494,8 +1538,25 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	}
 	langfuse.CreateTrace(traceID, "sop_chat", langfuse.WithTraceOutput(traceOutput))
 
-	// ===== 积分扣减（新用户走积分，旧会员跳过）=====
-	b.deductCreditsForSop(ctx, userID, "sop_chat", "sop_chat", fmt.Sprintf("%d", runID))
+	// ===== Phase 2 Task 2.1: 同步计算 actualCost 供 defer Reconcile 使用 =====
+	if chatRsv != nil && b.pricing != nil {
+		if usage != nil && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
+			effectiveModel := lastNode.ModelName
+			if usage.ModelName != "" {
+				effectiveModel = usage.ModelName
+			}
+			cost, pErr := b.pricing.CalculateCost(ctx, "llm_chat",
+				providerFromModelName(effectiveModel), effectiveModel,
+				usage.PromptTokens, usage.CompletionTokens)
+			if pErr != nil {
+				chatOpErr = fmt.Errorf("sop_chat pricing calc: %w", pErr)
+				log.C(ctx).Warnw("Pricing calc failed; defer will Refund",
+					"run_id", runID, "model", effectiveModel, "err", pErr)
+			} else {
+				chatActualCost = cost
+			}
+		}
+	}
 
 	// 发送包含 message_id 的完成事件
 	donePayload := fmt.Sprintf(`{"status":"completed","message_id":%d}`, assistantMsg.ID)
@@ -1916,6 +1977,16 @@ func computeSopPromptChars(template *model.SopTemplate, node *model.SopNode,
 		chars += utf8.RuneCountInString(m.Content)
 	}
 	chars += utf8.RuneCountInString(currentInput)
+	return chars
+}
+
+// computeSopChatPromptChars 统计 sop_chat 追问送入 LLM 的 prompt 字符数。
+// history 此时已包含系统/用户消息拼接 + 当前 question，直接求和即可。
+func computeSopChatPromptChars(history []LLMMessage) int {
+	chars := 0
+	for _, m := range history {
+		chars += utf8.RuneCountInString(m.Content)
+	}
 	return chars
 }
 
