@@ -493,9 +493,10 @@ features:
       - "C 端用户模型选择 UI 改版（不在本期范围）"
       - "新 Provider 接入（本期不新增，只收编现有的）"
       - "core.WriteResponse err 分支丢弃 Errno.Code 字符串 + data 详情 — 需独立 NDF Standard feature 修（跨前后端全局 error 处理协议），范围大，待用户决策"
+    follow_up_feature: "ai-service-admin-complete（2026-04-18 queued）— 补齐 Route CRUD / Provider CRUD / Audit Log 端点 / Fallback 多选 / Pricing Rule 关联展示 + tier pricing 架构决策"
     blockers: []
     prod_checklist:
-      - "prod 发版 tag 必须包含本 session 产出的全部 commit（2026-04-17/18 区间）— server：ae992d6 / 36bb044 / 7949293 / 6120c40 / b3cf1c0 / f67e066 / 3dd04a8 / 315b1a0 / 8df0408 / e3cc6b7 / 42e7375 / 6bf34af / 4614d83 / ff6abf6 / 850be79 / 74a5a85 / 37013a9 / bb60f46 / f0d6483 / 0861dc2；admin-web：本 session 相关 commit 见 legacy-llm-cleanup task_breakdown；web-v3：7cd83c5 / f235beb"
+      - "prod 发版 tag 必须包含本 session 产出的全部 commit（2026-04-17/18 区间）— server：ae992d6 / 36bb044 / 7949293 / 6120c40 / b3cf1c0 / f67e066 / 3dd04a8 / 315b1a0 / 8df0408 / e3cc6b7 / 42e7375 / 6bf34af / 4614d83 / ff6abf6 / 850be79 / 74a5a85 / 37013a9 / bb60f46 / f0d6483 / 0861dc2 / 7fded5d；admin-web：本 session 相关 commit 见 legacy-llm-cleanup task_breakdown；web-v3：7cd83c5 / f235beb"
       - "prod DB migration 顺序（发版后执行）：(1) 20260417_230000_add_model_name_to_chatbot_message.sql 先跑（ChatbotMessage.model_name 列，INFORMATION_SCHEMA 守护幂等）；(2) 业务冒烟验证通过；(3) 再跑 20260417_180000_drop_llm_compat_views.sql（DROP llm_model + llm_model_provider 两个 VIEW，破坏性）"
       - "Volc API key 轮换 — 60dbceec-... 在 git history 可见（ae992d6 前的 controller/v1/volc dead code），运营需轮换"
       - "回滚顺序：若发版失败，先回滚 migration（20260417_180000 的 rollback SQL 在同目录），再按 commit 倒序 revert"
@@ -614,4 +615,93 @@ features:
       - "如需回滚：rollback SQL 在同 migration 目录；同时 revert 5 个 commit（顺序见 rollback SQL 注释）"
     created_at: "2026-04-17T17:30:00+08:00"
     completed_at: "2026-04-17T22:38:00+08:00"
+
+  - id: "ai-service-admin-complete"
+    ndf_version: "1.0"
+    description: "admin-web 对 AI service 配置的全面管理能力补齐 — Route CRUD（priority/pricing/is_active）/ Provider CRUD（api_key/base_url）/ Audit Log 端点修复 / Task Fallback 多选 / PricingRule 与 AIService 关联可视化 + tier pricing 架构决策"
+    track: "standard"
+    stage: "queued"
+    classification_reason: "Standard 精简版：跨 server + admin-web 两仓库；Route CRUD 涉及 prod 流量路由回归风险；Provider 管理涉及 api_key 数据安全；tier pricing 架构关系需 inline proposal 决策。不改 schema 所以走精简（不走完整 Standard）"
+    last_updated_by: "ai-triage"
+    last_updated_at: "2026-04-18T11:30:00+08:00"
+    repos:
+      - numind-server
+      - numind-admin-web
+    branches:
+      numind-server: "feature/ai-service-admin-complete (待创建)"
+      numind-admin-web: "feature/ai-service-admin-complete (待创建)"
+    artifacts:
+      requirement: "numind-server/requirements/ai-service-admin-complete.md"
+      proposal: null
+      spec: null
+      plan: null
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 9
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "逐 task 独立 commit + 独立 fix/xxx 分支，有问题 git revert per task"
+    last_verified: null
+    gap_audit:
+      p0_missing:
+        - "Route CRUD 完全缺失 — ServiceEdit.vue L557-589 只读，后端无 Create/Update/Delete/Toggle 端点。改 priority / pricing / is_active 当前只能 SQL"
+        - "Audit Log 端点未注册 — 前端 AuditLogs.vue 已写会 404；model + biz 层都在但 controller + route 缺失"
+        - "Provider CRUD 页面完全缺失 — llm_provider 表仍活着（api_key / base_url / is_active），legacy-llm-cleanup 删了旧页面，换 key / 换 base_url 只能 SQL"
+      p1_missing:
+        - "TaskEdit fallback_service 单选，后端支持多选"
+        - "Pricing Rule ↔ AI Service 关联 UI 不可见（靠 service_type + provider + model 字符串匹配）"
+      p2_deferred:
+        - "/healthz/ai 可视化 dashboard"
+        - "批量操作（批量 toggle / 批量改 pricing）"
+        - "ai_service_route 加 pricing_rule_id FK migration（T8，T0 决策后定）"
+    tier_pricing_context:
+      backend_ready:
+        - "pricing_rule.billing_mode = 'flat' | 'tiered_token' 已实现"
+        - "pricing_rule_tier 子表存 min_tokens / max_tokens / cost_per_mtok / sell_per_mtok"
+        - "billing/recorder.go:221 calculateCostAndRevenue 按 billing_mode 分派到 calculateTieredCost"
+        - "admin-web PricingRulesView.vue 已有 tier drawer UI（L262+）管理 tier 配置"
+      gap:
+        - "pricing_rule（真实计费）和 ai_service_route.pricing（只作 snapshot）是两套定价，靠字符串匹配关联（service_type + provider + model）不是 FK"
+        - "管理员从 ServiceEdit 看不到 service 关联哪条 pricing_rule，容易配错"
+        - "ai_service_route.pricing 只支持 flat rate，tiered 模型的 snapshot 会失真（但实际计费走 pricing_rule 所以计费正确）"
+      t0_decisions_required:
+        - "定价真相源：pricing_rule 为准（建议保持现状）vs ai_service_route 为准"
+        - "两表关联：字符串匹配（建议本期保持）vs FK 强约束（T8，留给未来）"
+        - "ServiceEdit 页面如何展示关联 pricing_rule（建议加卡片：显示 billing_mode / tier 数 / 跳转 PricingRulesView 的链接）"
+    task_breakdown:
+      - "T0 架构决策 inline proposal（tier pricing 相关 3 问）— 0.3d"
+      - "T1 server: Audit Log controller + 端点注册（修 /admin/ai/audit-logs 404）— 0.2d"
+      - "T2 server: Route CRUD 端点（Create/Update/Delete/Toggle + priority 重复校验）— 0.4d"
+      - "T3 admin-web: ServiceEdit 路由区改可编辑 + 关联 pricing_rule 卡片 + 跳转链接 + Playwright E2E — 0.5d"
+      - "T4 server: Provider CRUD 端点（List/Get/Create/Update/Delete，api_key 掩码）— 0.4d"
+      - "T5 admin-web: ProvidersList + ProviderEdit 页面 + 路由 + sidebar 项 — 0.4d"
+      - "T6 admin-web: TaskEdit fallback_service 单选改多选 — 0.1d"
+      - "T7 admin-web: PricingRulesView 增强（显示关联 AI service 列表 + 按 service 筛选）— 0.3d"
+      - "T8（条件）ai_service_route + pricing_rule_id FK migration — 0.5d（T0 决策后定）"
+      - "T9 S5 验证（gstack /qa + curl tiered 计费端到端 Gemini 3.1 Pro / GPT 5.4 tier 触发）— 0.3d"
+    decisions:
+      - "2026-04-18 Triage: Standard 精简版。范围明确（inline proposal + inline task list），跳过 S0/S1 brainstorming，S2 就是 task 拆分，直接进 S4"
+      - "2026-04-18: T0 架构决策预设倾向 — 保持 pricing_rule 为计费真相源 + 字符串匹配 + ServiceEdit 加关联展示，不做 FK 改造（T8 不纳入本期），待新 session AI 在 T0 阶段正式输出决策"
+      - "2026-04-18: 吸收 ai-service-manager 遗留 gap — P0 全部 3 项 + P1 全部 2 项；P2 不做"
+    deferred:
+      - "T8 pricing_rule_id FK migration — 依赖 T0 决策"
+      - "/healthz/ai 可视化 dashboard — Phase 2"
+      - "批量操作 UI — Phase 2"
+    blockers: []
+    prerequisite_context:
+      - "ai-service-manager S7-dev-done（2026-04-18），所有 S4 tech debt 清理完成"
+      - "legacy-llm-cleanup S7-dev-done（2026-04-17），旧 llm_provider / llm_model 兼容层已删除"
+      - "本功能是 ai-service-manager 的 follow_up_feature，补齐原 feature 未交付的管理能力"
+    next_session_startup: |
+      用户可在新 session 直接粘贴以下 prompt 启动：
+
+      「我要开始做 ai-service-admin-complete 功能，已在 build-manifest.yaml 预登记（stage=queued），
+      requirement 已写好在 numind-server/requirements/ai-service-admin-complete.md。
+      请按 NDF 流程从 S0 进入：读 manifest → 读 requirement → 进入 S1 proposal
+      （重点是 T0 的架构决策：pricing_rule vs ai_service_route.pricing 的关系）。」
+    created_at: "2026-04-18T11:30:00+08:00"
+    completed_at: null
 
