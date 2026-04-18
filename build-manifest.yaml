@@ -926,8 +926,8 @@ features:
     track: "standard"
     stage: "S4"
     classification_reason: "跨 3 仓库预估 20+ 文件、涉及支付+权限+会员资格门槛+老用户迁移等高风险业务逻辑，5 条 Triage 标准中 4 条触发 Standard"
-    last_updated_by: "ai-s4-batch12-done"
-    last_updated_at: "2026-04-19T18:00:00+08:00"
+    last_updated_by: "ai-s4-phase2-done"
+    last_updated_at: "2026-04-19T20:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -977,11 +977,11 @@ features:
       phase0_tasks: 5
       phase0_completed: 5
       phase2_tasks: 6
-      phase2_completed: 0
+      phase2_completed: 6
       phase3_tasks: 4
-      phase3_completed: 0
-      current_task: "Phase 2 T2.0 (integration wiring)"
-      notes: "Batch 1+2 complete (33 tasks), integration fix (fakeCreditBiz DeductCreditsTx) applied. Phase 2 starting."
+      phase3_completed: 2   # T3.2 (全套测试) + T3.4 (card cleanup) done；T3.1/T3.3 需人工运行本地环境
+      current_task: "Phase 3 T3.1 (Langfuse 本地验证) / T3.3 (migration rollback 演练) — 需人工运行 docker + MySQL 容器"
+      notes: "Phase 2 全部 6 tasks merged to develop（T2.0 wiring / T2.1 SOP inversion / T2.2 SalesRAG 接入 / T2.3 9 endpoints / T2.4 前端集成 / T2.5 Playwright E2E）。Phase 3 自动化部分（T3.2 go test + npm lint/type-check + T3.4 card cleanup）完成。剩 T3.1 和 T3.3 需人工。"
     rollback: null
     last_verified: null
     decisions:
@@ -1040,6 +1040,10 @@ features:
       - "2026-04-19: Batch 2 全部完成（C: 8 tasks + Langfuse 4 span + 35 tests；D: 4 tasks + cron_billing.go 独立文件）。D/C 无文件冲突如约"
       - "2026-04-19: Batch 2 merge 完成（numind-server 06f45b6/b913b0d）。Integration fix b913b0d 修 Track C 扩展 ICreditBiz 接口后 Track D fakeCreditBiz 缺 DeductCreditsTx 实现"
       - "2026-04-19: Phase 0 + Batch 1 + Batch 2 合计 33/33 tasks 完成。进入 Phase 2 integration"
+      - "2026-04-19: Phase 2 完成 6/6 tasks（T2.0 integration wiring done by main AI；T2.1 SOP 控制流反转 agent; T2.2 SalesRAG 接入 agent; T2.3 9 个 HTTP endpoints agent; T2.4 前端集成 agent; T2.5 Playwright E2E 9 tests agent）"
+      - "2026-04-19: Phase 2 integration fixes：fakeCreditBiz DeductCreditsTx stub (commit b913b0d)、biz.go 合并 duplicate pricingCalc/creditSvc 声明（amend 6f142d8）、salesrag NewSalesRAGBizWithCredits wiring（96c3223）、T2.0 controller/router follow-up（bcf5420）"
+      - "2026-04-19: Phase 3 自动化部分完成：T3.2 完整测试套件（numind-server go test 全绿 + web-v3 lint/type-check 通过 + admin-web lint/type-check 通过）；T3.4 Card cleanup（Codes/CLAUDE.md §1 移除卡片生成描述）"
+      - "2026-04-19: Phase 3 人工部分待运行：T3.1 Langfuse 本地 docker stack 验证 span + T3.3 Migration rollback 演练 on 本地 MySQL container"
     blockers: []
     created_at: "2026-04-18T12:00:00+08:00"
     completed_at: null
