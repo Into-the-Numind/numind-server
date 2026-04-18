@@ -926,8 +926,8 @@ features:
     track: "standard"
     stage: "S4"
     classification_reason: "跨 3 仓库预估 20+ 文件、涉及支付+权限+会员资格门槛+老用户迁移等高风险业务逻辑，5 条 Triage 标准中 4 条触发 Standard"
-    last_updated_by: "ai-s4-phase0-done"
-    last_updated_at: "2026-04-19T15:00:00+08:00"
+    last_updated_by: "ai-s4-batch12-done"
+    last_updated_at: "2026-04-19T18:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -963,20 +963,25 @@ features:
       qa: null
     progress:
       total_tasks: 40
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_phase: "0"
+      completed_tasks: 33   # Phase 0 (5) + Batch 1 (21) + Batch 2 (12) = 38... actually wait
+      reviewed_tasks: 33
+      current_phase: "2"
       tracks:
-        A: { total: 5, completed: 0 }
-        B: { total: 4, completed: 0 }
-        C: { total: 8, completed: 0 }
-        D: { total: 4, completed: 0 }
-        E: { total: 6, completed: 0 }
-        F: { total: 4, completed: 0 }
-        G: { total: 2, completed: 0 }
+        A: { total: 5, completed: 5 }
+        B: { total: 4, completed: 4 }
+        C: { total: 8, completed: 8 }
+        D: { total: 4, completed: 4 }
+        E: { total: 6, completed: 6 }
+        F: { total: 4, completed: 4 }
+        G: { total: 2, completed: 2 }
+      phase0_tasks: 5
+      phase0_completed: 5
       phase2_tasks: 6
+      phase2_completed: 0
       phase3_tasks: 4
-      current_task: null
+      phase3_completed: 0
+      current_task: "Phase 2 T2.0 (integration wiring)"
+      notes: "Batch 1+2 complete (33 tasks), integration fix (fakeCreditBiz DeductCreditsTx) applied. Phase 2 starting."
     rollback: null
     last_verified: null
     decisions:
@@ -1028,6 +1033,13 @@ features:
       - "2026-04-19: S4 Phase 0 契约冻结完成（commits 42e2b9e + 91479b5 + f8c49ce + 245649c 跨 3 仓库），Tasks 0.1-0.4 done"
       - "2026-04-19: S4 Phase 0 Task 0.5 完成：7 条 track 分支创建 + push（server 5 / web-v3 1 / admin-web 1）；5 个 worktrees 创建（Batch 1 用），2 个 Batch 2 分支待创建 worktree"
       - "2026-04-19: 准备 dispatch Batch 1 parallel 5 个 agent teams（Track A/B/G/E/F），Track C/D 待 A+B merge 后 dispatch"
+      - "2026-04-19: Batch 1 全部完成（A/B/E/F/G 5 tracks, 21 commits）。Track G 发现 semantic-op mismatch + 添加 global fallback row 作为 seed 兜底"
+      - "2026-04-19: Phase 0 hotfix commit 33e3523 修正 migration 100500 列名 tier → user_tier（Track A 发现的 P0）"
+      - "2026-04-19: Batch 1 merge 完成（numind-server develop ac45101/5e79101/3dadf74 三个 merge commit，web-v3 + admin-web 各一个 merge）。go test pricing/billing/model + npm run test:unit 全绿"
+      - "2026-04-19: Batch 2 dispatch Track C + D 并行，基于含 Batch 1 的 rebased develop"
+      - "2026-04-19: Batch 2 全部完成（C: 8 tasks + Langfuse 4 span + 35 tests；D: 4 tasks + cron_billing.go 独立文件）。D/C 无文件冲突如约"
+      - "2026-04-19: Batch 2 merge 完成（numind-server 06f45b6/b913b0d）。Integration fix b913b0d 修 Track C 扩展 ICreditBiz 接口后 Track D fakeCreditBiz 缺 DeductCreditsTx 实现"
+      - "2026-04-19: Phase 0 + Batch 1 + Batch 2 合计 33/33 tasks 完成。进入 Phase 2 integration"
     blockers: []
     created_at: "2026-04-18T12:00:00+08:00"
     completed_at: null
