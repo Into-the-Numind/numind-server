@@ -6,6 +6,7 @@ import (
 
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/registry"
+	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/model"
 )
 
@@ -38,8 +39,18 @@ func Billing(deps Deps) Middleware {
 			// Populate usage fields from the response.
 			populateUsage(ctx, record, route.ServiceType, resp, err)
 
-			// Persist — best-effort, non-blocking.
-			if deps.UsageStore != nil {
+			// Persist — unified with RecordCOS / RecordVectorDB on the async
+			// batched recorder path. Submitting a Prebuilt record lets the
+			// recorder skip its UsageEvent→UsageRecord mapping and only fill
+			// in cost/revenue + CreatedAt.
+			//
+			// Fallback to deps.UsageStore.CreateUsageRecord (sync) when the
+			// global recorder isn't initialised — this keeps unit tests that
+			// inject a fake UsageStore working without needing a recorder.
+			switch {
+			case billing.R != nil:
+				billing.R.Record(&billing.UsageEvent{Prebuilt: record})
+			case deps.UsageStore != nil:
 				if writeErr := deps.UsageStore.CreateUsageRecord(ctx, record); writeErr != nil {
 					deps.errorw("billing: failed to write usage record",
 						"task_id", route.TaskID,
@@ -48,8 +59,10 @@ func Billing(deps Deps) Middleware {
 						"error", writeErr,
 					)
 				}
-			} else {
-				deps.warnw("billing: no UsageStore configured, skipping usage record",
+			default:
+				// Prod misconfiguration: silently dropping billing is a data
+				// loss event for operations. Emit at ERROR so alerting catches it.
+				deps.errorw("billing: no recorder or UsageStore configured, skipping usage record",
 					"task_id", route.TaskID,
 				)
 			}

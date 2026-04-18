@@ -43,6 +43,18 @@ type UsageEvent struct {
 	BizRefID    uint              // 关联业务对象 ID
 	IsFallback  bool              // 是否为降级调用
 	Metadata    map[string]string // 额外上下文
+
+	// Prebuilt lets callers submit an already-populated UsageRecord and
+	// bypass buildRecord. When non-nil, every other field on the event is
+	// ignored and the recorder only runs cost/revenue calculation (if not
+	// already set) before batching the row.
+	//
+	// Use case: aiservice Gateway billing middleware constructs the record
+	// with AI-Service-Manager-specific fields (task_id, unit, pricing
+	// snapshots, is_estimated) that don't fit in the UsageEvent shape.
+	// Going through this path unifies LLM + VectorDB + COS billing on the
+	// same async batched pipeline.
+	Prebuilt *model.UsageRecord
 }
 
 // batchSize 批量写入阈值
@@ -124,8 +136,29 @@ func (r *UsageRecorder) processLoop() {
 	}
 }
 
-// buildRecord 将 UsageEvent 转换为 UsageRecord
+// buildRecord 将 UsageEvent 转换为 UsageRecord。
+// Prebuilt 事件跳过字段映射，仅补齐 cost/revenue 和 CreatedAt。
 func (r *UsageRecorder) buildRecord(event *UsageEvent) *model.UsageRecord {
+	if event.Prebuilt != nil {
+		record := event.Prebuilt
+		if record.CreatedAt.IsZero() {
+			record.CreatedAt = time.Now()
+		}
+		// Only compute if caller didn't already. Middlewares that snapshot
+		// pricing typically leave cost/revenue zeroed for the recorder to fill.
+		//
+		// Known limitation: a legitimately-zero cost (free-tier model, or an
+		// error-path record with zero tokens) will re-trigger calculation,
+		// which is idempotent but redundant. Accept the churn to keep the
+		// "caller said 'please compute'" signal simple. Callers that need to
+		// assert "my computed 0 is final" can set a dummy sentinel cost that
+		// rounds back to 0 at the int64 conversion.
+		if record.CostCents == 0 && record.RevenueCents == 0 {
+			record.CostCents, record.RevenueCents = r.calculateCostAndRevenue(record)
+		}
+		return record
+	}
+
 	record := &model.UsageRecord{
 		UserID:        event.UserID,
 		ServiceType:   event.ServiceType,

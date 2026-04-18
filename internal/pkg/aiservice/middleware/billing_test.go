@@ -8,6 +8,7 @@ import (
 
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/registry"
+	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/model"
 )
 
@@ -315,6 +316,92 @@ func TestBilling_StoreError_DoesNotBlockResponse(t *testing.T) {
 	}
 }
 
+// mockBillingStore adapts mockUsageStore to the billing.UsageStore interface
+// (which requires extra methods used by the async recorder path).
+type mockBillingStore struct {
+	mockUsageStore
+	batches [][]*model.UsageRecord
+}
+
+func (m *mockBillingStore) CreateUsageRecords(_ context.Context, recs []*model.UsageRecord) error {
+	cp := append([]*model.UsageRecord(nil), recs...)
+	m.batches = append(m.batches, cp)
+	return nil
+}
+
+func (m *mockBillingStore) GetPricingRule(_ context.Context, _, _, _ string) (*model.PricingRule, error) {
+	// Return a sentinel error so calculateCostAndRevenue short-circuits to 0/0
+	// without trying to dereference a nil rule.
+	return nil, errors.New("no pricing rule (mock)")
+}
+
+func (m *mockBillingStore) GetPricingRuleTiers(_ context.Context, _ uint) ([]model.PricingRuleTier, error) {
+	return nil, nil
+}
+
+// TestBilling_PrefersRecorderWhenInitialized verifies the unification contract:
+// when billing.R is initialized, the middleware submits the prebuilt UsageRecord
+// to the async batched recorder instead of calling deps.UsageStore directly.
+// This guarantees LLM billing shares the same pipeline as VectorDB / COS billing.
+func TestBilling_PrefersRecorderWhenInitialized(t *testing.T) {
+	// Global singleton protection: reset on cleanup.
+	prev := billing.R
+	t.Cleanup(func() { billing.R = prev })
+
+	recorderStore := &mockBillingStore{}
+	billing.InitRecorder(recorderStore)
+	t.Cleanup(func() {
+		if billing.R != nil {
+			billing.R.Stop()
+		}
+	})
+
+	// The sync store should NOT receive any writes when R is initialized.
+	syncStore := &mockUsageStore{}
+	deps := Deps{UsageStore: syncStore, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
+	mw := Billing(deps)
+
+	chatResp := &aiservice.ChatResponse{
+		Content: "answer",
+		Usage: aiservice.TokenUsage{
+			PromptTokens:     10,
+			CompletionTokens: 20,
+			TotalTokens:      30,
+		},
+	}
+	inner := Handler(func(_ context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+		return chatResp, nil
+	})
+	handler := mw(inner)
+
+	_, err := handler(WithUserID(context.Background(), 42), llmRoute(), "req")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Flush + verify: the sync store stays empty; the recorder received the record.
+	billing.R.Stop()
+	billing.R = nil // prevent second Stop via cleanup
+
+	if len(syncStore.records) != 0 {
+		t.Errorf("sync UsageStore should receive 0 records when recorder is active; got %d", len(syncStore.records))
+	}
+	// Batches may be split across flushes; flatten.
+	var flat []*model.UsageRecord
+	for _, b := range recorderStore.batches {
+		flat = append(flat, b...)
+	}
+	if len(flat) != 1 {
+		t.Fatalf("recorder store: expected 1 record, got %d", len(flat))
+	}
+	if flat[0].PromptTokens != 10 || flat[0].CompletionTokens != 20 {
+		t.Errorf("record tokens mismatch: got %d/%d, want 10/20", flat[0].PromptTokens, flat[0].CompletionTokens)
+	}
+	if flat[0].TaskID == nil || *flat[0].TaskID != "sop.text" {
+		t.Errorf("TaskID lost through recorder path")
+	}
+}
+
 // TestBilling_StreamingInterruption_EstimatesFromPointer verifies that when a streaming
 // call is interrupted (context cancelled after first chunk), the Billing middleware
 // reads the accumulated byte count via the *int pointer and estimates completion tokens
@@ -389,10 +476,19 @@ func TestBilling_IsFallback_SetWhenFallbackCtxPresent(t *testing.T) {
 	}
 }
 
-// TestBilling_NilStore_LogsWarn verifies graceful degradation when no UsageStore is set.
-func TestBilling_NilStore_LogsWarn(t *testing.T) {
+// TestBilling_AllBackendsUnconfigured_LogsError verifies graceful degradation
+// when NEITHER billing.R nor deps.UsageStore is set — a pure-misconfig scenario.
+// Silent billing drop in prod is a data loss event, so the middleware logs at
+// ERROR (raised from WARN in A4 so alerting catches it).
+//
+// Guards billing.R to isolate from other tests in this package that may init it.
+func TestBilling_AllBackendsUnconfigured_LogsError(t *testing.T) {
+	prev := billing.R
+	billing.R = nil
+	t.Cleanup(func() { billing.R = prev })
+
 	logger := &mockLogger{}
-	deps := Deps{Logger: logger} // no UsageStore
+	deps := Deps{Logger: logger} // no UsageStore, no recorder
 	mw := Billing(deps)
 
 	inner := Handler(func(_ context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
@@ -407,7 +503,7 @@ func TestBilling_NilStore_LogsWarn(t *testing.T) {
 	if resp != "ok" {
 		t.Errorf("unexpected response: %v", resp)
 	}
-	if len(logger.warns) == 0 {
-		t.Error("expected warn log when UsageStore is nil")
+	if len(logger.errors) == 0 {
+		t.Error("expected error log when both recorder and UsageStore are unconfigured")
 	}
 }
