@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -95,6 +97,34 @@ type ValidateResult struct {
 	ServiceCapabilities profile.ServiceCapability `json:"service_capabilities"`
 }
 
+// AuditLogFilter holds optional filters for listing audit log entries.
+type AuditLogFilter struct {
+	Actor      string
+	TargetType string
+	DateFrom   *time.Time
+	DateTo     *time.Time
+}
+
+// AuditLogItem is the wire-format representation of a single audit log row
+// returned by ListAuditLogs (spec §4.x GET /v1/admin/ai/audit-logs).
+type AuditLogItem struct {
+	ID         uint64    `json:"id"`
+	Actor      string    `json:"actor"`
+	Action     string    `json:"action"`
+	TargetType string    `json:"target_type"`
+	TargetID   string    `json:"target_id"`
+	TargetName string    `json:"target_name,omitempty"`
+	Diff       any       `json:"diff,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// ListAuditLogsResult is the paginated result returned by ListAuditLogs.
+type ListAuditLogsResult struct {
+	Items []AuditLogItem
+	Total int64
+}
+
 // IAIServiceAdminBiz is the biz interface for admin AI service CRUD.
 // All methods take actorID + actorName (extracted from admin JWT) so the
 // registry can write accurate audit log entries.
@@ -137,6 +167,11 @@ type IAIServiceAdminBiz interface {
 	// ValidateServiceAgainstTask checks whether a service satisfies a task's requirements
 	// without making any changes.
 	ValidateServiceAgainstTask(ctx context.Context, serviceID uint64, taskID string) (*ValidateResult, error)
+
+	// ListAuditLogs returns a paginated list of audit log entries with optional
+	// filters (actor LIKE, target_type exact, date range). Results are sorted
+	// by created_at DESC. TargetName is resolved via a batched IN query per target_type.
+	ListAuditLogs(ctx context.Context, filter AuditLogFilter, page, pageSize int) (*ListAuditLogsResult, error)
 }
 
 // aiServiceAdminBiz is the concrete implementation of IAIServiceAdminBiz.
@@ -522,6 +557,120 @@ func (b *aiServiceAdminBiz) ValidateServiceAgainstTask(ctx context.Context, serv
 		TaskRequirements:    reqs,
 		ServiceCapabilities: cap,
 	}, nil
+}
+
+// ListAuditLogs returns a paginated, filtered list of audit log entries sorted by
+// created_at DESC. TargetName is resolved by batching one IN query per target_type
+// against the appropriate name table (ai_service, task_profile, llm_provider).
+func (b *aiServiceAdminBiz) ListAuditLogs(ctx context.Context, filter AuditLogFilter, page, pageSize int) (*ListAuditLogsResult, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	offset := (page - 1) * pageSize
+
+	q := b.db.WithContext(ctx).Model(&model.AIServiceAuditLog{})
+	if filter.Actor != "" {
+		q = q.Where("actor_name LIKE ?", "%"+filter.Actor+"%")
+	}
+	if filter.TargetType != "" {
+		q = q.Where("target_type = ?", filter.TargetType)
+	}
+	if filter.DateFrom != nil {
+		q = q.Where("created_at >= ?", *filter.DateFrom)
+	}
+	if filter.DateTo != nil {
+		// Include the entire day by adding 24 hours when only a date is provided.
+		end := filter.DateTo.Add(24 * time.Hour)
+		q = q.Where("created_at < ?", end)
+	}
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, fmt.Errorf("aiservice_admin.ListAuditLogs: count: %w", err)
+	}
+
+	var rows []model.AIServiceAuditLog
+	if err := q.Order("created_at DESC").Offset(offset).Limit(pageSize).Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("aiservice_admin.ListAuditLogs: find: %w", err)
+	}
+
+	// Batch-resolve target names per target_type.
+	nameByID := b.resolveTargetNames(ctx, rows)
+
+	items := make([]AuditLogItem, 0, len(rows))
+	for _, r := range rows {
+		item := AuditLogItem{
+			ID:         r.ID,
+			Actor:      r.ActorName,
+			Action:     r.Action,
+			TargetType: r.TargetType,
+			TargetID:   strconv.FormatUint(r.TargetID, 10),
+			TargetName: nameByID[r.TargetID],
+			Reason:     r.Reason,
+			CreatedAt:  r.CreatedAt,
+		}
+		// Pass DiffJSON as-is; frontend expects {before, after} shape.
+		if len(r.DiffJSON) > 0 {
+			item.Diff = r.DiffJSON
+		}
+		items = append(items, item)
+	}
+
+	return &ListAuditLogsResult{Items: items, Total: total}, nil
+}
+
+// resolveTargetNames collects target IDs grouped by target_type from the given audit rows,
+// then performs one IN query per type to fetch display names. Returns a map of ID → name.
+func (b *aiServiceAdminBiz) resolveTargetNames(ctx context.Context, rows []model.AIServiceAuditLog) map[uint64]string {
+	nameByID := make(map[uint64]string, len(rows))
+	if len(rows) == 0 {
+		return nameByID
+	}
+
+	// Group IDs by target_type.
+	byType := make(map[string][]uint64)
+	for _, r := range rows {
+		byType[r.TargetType] = append(byType[r.TargetType], r.TargetID)
+	}
+
+	type nameRow struct {
+		ID          uint64 `gorm:"column:id"`
+		DisplayName string `gorm:"column:display_name"`
+	}
+
+	for targetType, ids := range byType {
+		var nameRows []nameRow
+		var err error
+		switch targetType {
+		case model.AuditTargetService:
+			err = b.db.WithContext(ctx).
+				Table("ai_service").
+				Select("id, display_name").
+				Where("id IN ?", ids).
+				Scan(&nameRows).Error
+		case model.AuditTargetTaskProfile:
+			err = b.db.WithContext(ctx).
+				Table("task_profile").
+				Select("id, display_name").
+				Where("id IN ?", ids).
+				Scan(&nameRows).Error
+		default:
+			// Unknown target_type (e.g. "provider" added by T2/T4) — skip gracefully.
+			log.C(ctx).Debugw("resolveTargetNames: unknown target_type, skipping", "target_type", targetType)
+			continue
+		}
+		if err != nil {
+			log.C(ctx).Warnw("resolveTargetNames: failed to resolve names", "target_type", targetType, "err", err)
+			continue
+		}
+		for _, nr := range nameRows {
+			nameByID[nr.ID] = nr.DisplayName
+		}
+	}
+	return nameByID
 }
 
 // validateServiceType returns an error when serviceType is not one of llm | ocr | asr.

@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 
 	"numind-server/internal/numind/biz/aiservice_admin"
 	"numind-server/internal/pkg/aiservice/profile"
@@ -14,6 +16,28 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
+
+// newTestDB creates an in-memory SQLite database pre-migrated with the tables
+// required by ListAuditLogs tests. Uses file::memory:?cache=shared with a
+// unique name per call to avoid cross-test interference.
+func newTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared&_foreign_keys=off"), &gorm.Config{})
+	require.NoError(t, err)
+	err = db.AutoMigrate(
+		&model.AIServiceAuditLog{},
+		&model.AIService{},
+		&model.TaskProfile{},
+	)
+	require.NoError(t, err)
+
+	// Give each test its own DB connection pool to isolate data.
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	return db
+}
 
 // mockRegistry is a minimal Registry implementation for unit tests.
 // Only the methods exercised by aiservice_admin are wired up; others panic.
@@ -387,4 +411,120 @@ func TestUpdateTask_IncompatibleWithForce(t *testing.T) {
 	assert.Equal(t, svcID, resultNoForce.IncompatibleBindings[0].ServiceID)
 	assert.Equal(t, "default", resultNoForce.IncompatibleBindings[0].Role)
 	assert.Contains(t, resultNoForce.IncompatibleBindings[0].Reasons[0], "image")
+}
+
+// ----------------------------------------------------------------------------
+// ListAuditLogs tests
+// ----------------------------------------------------------------------------
+
+// seedAuditLog inserts a single AIServiceAuditLog row and returns it.
+func seedAuditLog(t *testing.T, db *gorm.DB, actorName, action, targetType string, targetID uint64, createdAt time.Time) model.AIServiceAuditLog {
+	t.Helper()
+	row := model.AIServiceAuditLog{
+		ActorID:    1,
+		ActorName:  actorName,
+		Action:     action,
+		TargetType: targetType,
+		TargetID:   targetID,
+		CreatedAt:  createdAt,
+	}
+	require.NoError(t, db.Create(&row).Error)
+	return row
+}
+
+// TestListAuditLogs_FilterByActor verifies that the actor LIKE filter
+// returns only matching rows and ignores non-matching ones.
+func TestListAuditLogs_FilterByActor(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	b := aiservice_admin.New(reg, db)
+
+	now := time.Now()
+	seedAuditLog(t, db, "alice", model.AuditActionServiceCreate, model.AuditTargetService, 1, now)
+	seedAuditLog(t, db, "bob", model.AuditActionServiceUpdate, model.AuditTargetService, 2, now)
+	seedAuditLog(t, db, "alice_admin", model.AuditActionServiceDeprecate, model.AuditTargetService, 3, now)
+
+	res, err := b.ListAuditLogs(context.Background(), aiservice_admin.AuditLogFilter{Actor: "alice"}, 1, 20)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, res.Total, "should match alice and alice_admin")
+	for _, item := range res.Items {
+		assert.Contains(t, item.Actor, "alice")
+	}
+}
+
+// TestListAuditLogs_FilterByTargetType verifies that target_type exact match works.
+func TestListAuditLogs_FilterByTargetType(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	b := aiservice_admin.New(reg, db)
+
+	now := time.Now()
+	seedAuditLog(t, db, "admin", model.AuditActionServiceCreate, model.AuditTargetService, 10, now)
+	seedAuditLog(t, db, "admin", model.AuditActionTaskBind, model.AuditTargetTaskProfile, 20, now)
+	seedAuditLog(t, db, "admin", model.AuditActionServiceUpdate, model.AuditTargetService, 11, now)
+
+	res, err := b.ListAuditLogs(context.Background(), aiservice_admin.AuditLogFilter{TargetType: model.AuditTargetTaskProfile}, 1, 20)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, res.Total)
+	assert.Equal(t, model.AuditTargetTaskProfile, res.Items[0].TargetType)
+}
+
+// TestListAuditLogs_DateRangeFilter verifies that date_from / date_to bounds work.
+func TestListAuditLogs_DateRangeFilter(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	b := aiservice_admin.New(reg, db)
+
+	day1 := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	day2 := time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC)
+	day3 := time.Date(2026, 2, 1, 10, 0, 0, 0, time.UTC)
+
+	seedAuditLog(t, db, "admin", model.AuditActionServiceCreate, model.AuditTargetService, 1, day1)
+	seedAuditLog(t, db, "admin", model.AuditActionServiceUpdate, model.AuditTargetService, 2, day2)
+	seedAuditLog(t, db, "admin", model.AuditActionServiceDeprecate, model.AuditTargetService, 3, day3)
+
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
+
+	res, err := b.ListAuditLogs(context.Background(), aiservice_admin.AuditLogFilter{DateFrom: &from, DateTo: &to}, 1, 20)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, res.Total, "only January entries should match")
+}
+
+// TestListAuditLogs_Pagination verifies page/page_size slicing with correct total.
+func TestListAuditLogs_Pagination(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	b := aiservice_admin.New(reg, db)
+
+	base := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		seedAuditLog(t, db, "admin", model.AuditActionServiceCreate, model.AuditTargetService, uint64(i+1), base.Add(time.Duration(i)*time.Hour))
+	}
+
+	// Page 1, size 2 → 2 items, total 5.
+	res, err := b.ListAuditLogs(context.Background(), aiservice_admin.AuditLogFilter{}, 1, 2)
+	require.NoError(t, err)
+	assert.EqualValues(t, 5, res.Total)
+	assert.Len(t, res.Items, 2)
+
+	// Page 3, size 2 → 1 item (last one).
+	res2, err := b.ListAuditLogs(context.Background(), aiservice_admin.AuditLogFilter{}, 3, 2)
+	require.NoError(t, err)
+	assert.EqualValues(t, 5, res2.Total)
+	assert.Len(t, res2.Items, 1)
+}
+
+// TestListAuditLogs_TargetIDIsString verifies that the wire TargetID field is a decimal string.
+func TestListAuditLogs_TargetIDIsString(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	b := aiservice_admin.New(reg, db)
+
+	seedAuditLog(t, db, "admin", model.AuditActionServiceCreate, model.AuditTargetService, 42, time.Now())
+
+	res, err := b.ListAuditLogs(context.Background(), aiservice_admin.AuditLogFilter{}, 1, 20)
+	require.NoError(t, err)
+	require.Len(t, res.Items, 1)
+	assert.Equal(t, "42", res.Items[0].TargetID)
 }

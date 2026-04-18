@@ -162,6 +162,8 @@ func installAdminRouters(g *gin.Engine) error {
 		aiGroup.GET("/tasks", aiTaskCtrl.ListTasks)
 		aiGroup.GET("/tasks/:id", aiTaskCtrl.GetTask)
 		aiGroup.PUT("/tasks/:id", aiTaskCtrl.UpdateTask)
+		auditCtrl := admin_ai.NewAuditLogController(aiSvcBiz)
+		aiGroup.GET("/audit-logs", auditCtrl.ListLogs)
 	}
 
 	return nil
