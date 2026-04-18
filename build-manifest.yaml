@@ -975,6 +975,8 @@ features:
       - "2026-04-19: Section 3 选 Direction 3（同步 pricing.CalculateCost）：新建 internal/pkg/pricing 模块，recorder 解耦 cost 计算；控制流反转 Reserve 前/Reconcile 后；sop.go runNode/runChat 和 salesrag.go Chat/ChatStream 调用链重写"
       - "2026-04-19: Section 3 v2 FINAL 修复全部 5 P0+6 P1：idempotency key caller 传入 {run_id,node_id}；PreCheckResult 加 Reason 字段；复用现有 HasActiveSubscription；errno 改字符串 code；prompt_chars 改后端渲染（IPromptEstimator 接口）；billing_mode 独立短事务切换；ChatStream drain + context cancel；DeductCreditsTx 外部 tx 支持；防提前续费 tier rank 校验"
       - "2026-04-19: 工作量修正 12-15 天 → 14-18 天（+3 天吸收 pricing 模块 + 控制流反转）；交付时间线 2026-05-08 → 2026-05-11"
+      - "2026-04-19: 工作量变更已被客户（即本人）在 Section 3 选择 Direction 3 时隐式确认，不走 NDF §6 formal 回退 S1 Gate 流程（客户即开发者场景）"
+      - "2026-04-19: Section 3 v2 back-propagation 完成：§1.8 PreCheckResult 补 Reason 字段；§1.11 新增外部依赖声明（pricing.CalculateCost 来源）；§3.11 明确 IPromptEstimator 位于 biz/credit/prompt_estimator.go（biz 层，遵循 business-logic.md 硬规则）"
     blockers: []
     created_at: "2026-04-18T12:00:00+08:00"
     completed_at: null

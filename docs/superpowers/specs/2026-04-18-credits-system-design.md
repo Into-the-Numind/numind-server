@@ -166,6 +166,7 @@ type PreCheckResult struct {
     EstimatedCredits int64
     CoefficientID    uint64     // 外键 credit_estimation_coefficient.id
     Balance          BalanceBreakdown
+    Reason           string     // legacy_tier 次数不足时填入 user.CanRunSOP() 返回的中文原因；调用方可直接用于前端 message（见 §3.6）
 }
 
 type Reservation struct {
@@ -228,6 +229,10 @@ var (
 - **Reserve 事务**：复用现有 `GetActivePackagesForUpdate` 的 `SELECT ... FOR UPDATE` 行锁，保证 concurrent Reserve 串行化
 - **Reconcile/Refund 事务**：`SELECT ... FOR UPDATE` on `credit_reservation.status`，原子切换状态
 - **CheckAndEstimate → Reserve 间 TOCTOU race**：Reserve 失败返回 `ErrInsufficientCredits`，前端据此降级到"余额刚好不够，购买加量包"弹窗
+
+### 1.11 外部依赖声明
+
+`ICreditService.Reconcile(rsv, actualCostCents)` 的 `actualCostCents` **必须由调用方同步采集后传入**。本 spec §3.0 定义了采集机制：新建 `internal/pkg/pricing` 模块，`pricing.CalculateCost(serviceType, provider, model, promptTokens, completionTokens) → costCents` 作为纯函数同步返回。`biz/sop` 和 `biz/salesrag` 在 LLM 调用完成后立即调此函数，传给 `FinalizeReservation`。现有 `UsageRecorder` 保持异步职责，不参与 cost 采集热路径。
 
 ---
 
@@ -1167,18 +1172,22 @@ func (ctl *CreditController) Estimate(c *gin.Context) {
 
 **router.go：** `apiV1.POST("/credits/estimate", userTokenMiddleware, creditController.Estimate)`
 
-**`promptEstimator` 接口**（新增）：
+**`IPromptEstimator` 接口**（新增，**位于 `biz/credit/prompt_estimator.go`**，biz 层而非 controller）：
 
 ```go
+// biz/credit/prompt_estimator.go (新建)
 type IPromptEstimator interface {
     Estimate(ctx context.Context, operation, referenceID string) (chars int, model, provider string, err error)
 }
-// 实现按 operation 分发：
-// - sop_run: 查 sop_template + 默认变量渲染估算字符数
-// - sop_chat: 取 sop_run.last_context 估算
-// - salesrag_chat: 取 session 近 N 轮上下文估算
+
+// 实装 promptEstimator 按 operation 分发调用各业务 store：
+// - sop_run: 查 sop_template + 默认变量渲染 → 估算字符数
+// - sop_chat: 取 sop_run.last_context → 估算
+// - salesrag_chat: 取 session 近 N 轮上下文 → 估算
 // 不精确但比前端传 0 强；真实 cost 由 Reconcile 兜底
 ```
+
+**位置原则**：遵循 `.claude/rules/business-logic.md`（"业务逻辑统一放 biz 层"）——controller 只负责参数绑定和响应格式化，估算逻辑涉及 SOP 模板渲染、session 上下文读取，属于业务层职责。
 
 #### 扩展：`GET /v1/credits/balance`（复用现有）
 
