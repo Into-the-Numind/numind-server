@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1148,6 +1149,14 @@ func (b *aiServiceAdminBiz) UpdateProvider(ctx context.Context, id uint64, req U
 		return nil, fmt.Errorf("aiservice_admin.UpdateProvider: fetch: %w", err)
 	}
 
+	// Early return if no fields are actually changing — avoids a spurious Save()
+	// (which bumps updated_at) and an empty audit log entry.
+	if req.DisplayName == nil && req.BaseURL == nil &&
+		(req.APIKey == nil || *req.APIKey == "") && req.IsActive == nil {
+		currentDTO := providerToDTO(&p)
+		return &currentDTO, nil
+	}
+
 	beforeMasked := p.MaskedAPIKey()
 	diff := model.JSONMap{}
 
@@ -1215,14 +1224,22 @@ func (b *aiServiceAdminBiz) DeleteProvider(ctx context.Context, id uint64, actor
 		return fmt.Errorf("aiservice_admin.DeleteProvider: delete: %w", err)
 	}
 
-	// Write audit log entry.
+	// Write audit log entry. api_key is intentionally omitted (never log raw/masked keys on delete).
 	_ = b.db.WithContext(ctx).Create(&model.AIServiceAuditLog{
 		ActorID:    actorID,
 		ActorName:  actorName,
 		Action:     model.AuditActionProviderDelete,
 		TargetType: model.AuditTargetProvider,
 		TargetID:   id,
-		DiffJSON:   model.JSONMap{"name": p.Name, "display_name": p.DisplayName},
+		DiffJSON: model.JSONMap{
+			"before": map[string]any{
+				"name":         p.Name,
+				"display_name": p.DisplayName,
+				"base_url":     p.BaseURL,
+				"is_active":    p.IsActive,
+				// api_key intentionally omitted (masked elsewhere)
+			},
+		},
 	}).Error
 
 	return nil
@@ -1333,10 +1350,11 @@ func (b *aiServiceAdminBiz) TestProviderConnection(ctx context.Context, id uint6
 }
 
 // isOpenAICompatible returns true for providers using OpenAI-compatible chat completions API.
-// Providers named "baidu" or "bailian" are known non-compatible providers.
+// Providers whose names start with "baidu" or "bailian" (e.g. "baidu-ocr", "bailian-file")
+// are known non-compatible providers and are excluded from OpenAI-style probing.
 func isOpenAICompatible(p *model.LLMProvider) bool {
-	name := strings.ToLower(p.Name)
-	if name == "baidu" || name == "bailian" {
+	lower := strings.ToLower(p.Name)
+	if strings.HasPrefix(lower, "baidu") || strings.HasPrefix(lower, "bailian") {
 		return false
 	}
 	return true
@@ -1360,5 +1378,5 @@ func truncate(s string, n int) string {
 
 // isNotFound reports whether a GORM error is a "record not found" error.
 func isNotFound(err error) bool {
-	return err != nil && err.Error() == "record not found"
+	return errors.Is(err, gorm.ErrRecordNotFound)
 }

@@ -549,8 +549,33 @@ func TestProvider_TestConnectionOpenAISucceeds(t *testing.T) {
 	result, err := b.TestProviderConnection(context.Background(), p.ID)
 	require.NoError(t, err)
 	assert.True(t, result.Success)
-	assert.Greater(t, result.LatencyMs, int64(0))
+	// LatencyMs may be 0 on fast loopback under race detector — assert non-negative only.
+	assert.GreaterOrEqual(t, result.LatencyMs, int64(0))
 	assert.Equal(t, http.StatusOK, result.HTTPStatus)
+}
+
+// TestProviderTestConnection_NonOpenAICompat_WithSuffix verifies that provider names
+// with a suffix (e.g. "baidu-ocr", "bailian-file") are still recognised as non-OpenAI-
+// compatible and return success=false without making any outbound HTTP calls.
+func TestProviderTestConnection_NonOpenAICompat_WithSuffix(t *testing.T) {
+	db := newTestDB(t)
+	b := aiservice_admin.New(newMockRegistry(), db)
+
+	for _, name := range []string{"baidu-ocr", "bailian-file", "baidu-asr", "bailian-upload"} {
+		p := model.LLMProvider{
+			Name:        name,
+			DisplayName: name + " Provider",
+			BaseURL:     "https://" + name + ".example.com/v1",
+			APIKey:      "sk-" + name + "-key",
+			IsActive:    true,
+		}
+		require.NoError(t, db.Create(&p).Error)
+
+		result, err := b.TestProviderConnection(context.Background(), p.ID)
+		require.NoError(t, err, "TestProviderConnection must not return an error for non-compatible provider %q", name)
+		assert.False(t, result.Success, "success must be false for non-OpenAI-compatible provider %q", name)
+		assert.Contains(t, result.Error, "not testable", "error message should mention not testable for %q", name)
+	}
 }
 
 // TestUpdateTask_IncompatibleWithForce verifies that when force=true is set,
