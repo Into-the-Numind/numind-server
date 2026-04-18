@@ -913,10 +913,10 @@ features:
     ndf_version: "1.0"
     description: "积分计费系统 — 从阶梯制（free/trial/standard/premium）迁移到会员+积分+加量包体系。Grandfathering 双制并存、R2 字符数估算预扣、¥29.9/600 积分加量包（3月有效期、仅会员可购）、扣减优先级（会员 > 加量包）"
     track: "standard"
-    stage: "S1"
+    stage: "S2"
     classification_reason: "跨 3 仓库预估 20+ 文件、涉及支付+权限+会员资格门槛+老用户迁移等高风险业务逻辑，5 条 Triage 标准中 4 条触发 Standard"
-    last_updated_by: "ai-s1-rev2"
-    last_updated_at: "2026-04-18T15:30:00+08:00"
+    last_updated_by: "ai-s2-sections-1-2"
+    last_updated_at: "2026-04-18T18:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -925,7 +925,7 @@ features:
     artifacts:
       requirement: "numind-server/requirements/credits-system.md"
       proposal: "numind-server/proposals/credits-system-proposal.md"
-      spec: null
+      spec: "numind-server/docs/superpowers/specs/2026-04-18-credits-system-design.md"
       plan: null
       review_spec_compliance: null
       review_code_quality: null
@@ -953,6 +953,13 @@ features:
       - "2026-04-18: 工作量重新估算 12-15 天（原 18-20 天高估），交付时间线调整为 2026-05-08"
       - "2026-04-18: 优先级扣减（会员>加量包）已由现有 DeductCredits FIFO by ExpiresAt 隐式满足，无需新增代码，S5 验收"
       - "2026-04-18: 新增 P4e 待 S1 Gate 裁决——legacy_tier 下 SalesRAG 扣减策略（建议 A 保持免费）"
+      - "2026-04-18: S1 Gate 通过，P4e=A（legacy_tier SalesRAG 保持免费）"
+      - "2026-04-18: S2 Section 1 架构选 Approach B（ICreditService 整洁抽象 + 线性 R2 + Eager Reserve + append-only coefficient version），经 Opus round 1 FAIL→round 2 PASS"
+      - "2026-04-18: S2 Section 1 关键决策：ICreditService 单 singleton + 内部 billing_mode 分发；legacy_tier 的 Reserve/Reconcile/Refund 会 panic（SkipDeduction 守卫）；FinalizeReservation 作为唯一出口解决 defer 竞态"
+      - "2026-04-18: S2 Section 2 数据模型经 Opus 3 轮 review（v1 FAIL→v2 PASS_WITH_CONCERNS→v3 FAIL→v4 folded），所有 P0 修复：表名 user、append-only 加锁 + duplicate-key retry、Trial 纳入 Grandfathering Option E、JSON 拆独立 credit_reservation_item 表、coefficient_id 代替 version、GetBalance 扩展 QuotaBreakdown 非破坏字段、envsubst 占位符"
+      - "2026-04-18: S2 Section 2 关键决策：3 张新表（coefficient/reservation/item）+ user.billing_mode 字段；FK 应用层保证（项目惯例）；operation VARCHAR+CHECK（MySQL 8.0.16+ 条件）；12 个 migration 文件（6 对 DDL+rollback）"
+      - "2026-04-18: proposal v2 和 requirement 的 sub_user→user 残留已修正（全局 replace_all）"
+      - "2026-04-18: Section 3-5 进行中；spec 文件已落盘带 TBD 标记，按 section 完成后追加"
     blockers: []
     created_at: "2026-04-18T12:00:00+08:00"
     completed_at: null

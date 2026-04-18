@@ -11,7 +11,7 @@
 1. **补齐扣减漏洞**：SalesRAG 知识库对话当前**完全未扣积分**（prod 环境漏洞，立即止血）
 2. **加量包会员门槛**：当前任何用户都可购买 booster，需加"必须有效订阅会员"校验
 3. **精确计费**：从 operation 级固定预估值（SOP 固定扣 20 积分）升级为 R2 字符数估算 + 事后对账，按真实消耗扣减
-4. **显性化 billing_mode**：在 `sub_user` 表新增计费模式字段，支持 `legacy_tier`（旧次数制老会员）和 `credits`（新积分制）双制并存，老会员到期后自然迁移
+4. **显性化 billing_mode**：在 `user` 表新增计费模式字段，支持 `legacy_tier`（旧次数制老会员）和 `credits`（新积分制）双制并存，老会员到期后自然迁移
 5. **补齐前端 UI**：账户中心积分余额卡、加量包购买入口（含非会员阻断）、SOP 运行前预估条、积分不足弹窗——当前**前端积分 UI 几乎为零**
 6. **顺手清理**：卡片生成功能已是死代码（审计确认），移除 `card_config.go` 孤立文件 + 更新 `CLAUDE.md` 过时描述
 
@@ -51,7 +51,7 @@
 
 | # | 改造点 | 预估 |
 |---|--------|------|
-| 1 | 新增 `sub_user.billing_mode enum('legacy_tier','credits')` 字段 + migration | 0.5 天 |
+| 1 | 新增 `user.billing_mode enum('legacy_tier','credits')` 字段 + migration | 0.5 天 |
 | 2 | 新增 `credit_reservation` 表（预扣记录） | 0.5 天 |
 | 3 | 新增 `credit_estimation_coefficient` 表（R2 系数配置） | 0.5 天 |
 | 4 | **R2 数据 spike**：基于 prod `usage_record` 历史算各模型 completion/prompt 比值，导出为 coefficient 表 seed | 1 天 |
@@ -219,7 +219,7 @@
 ### 数据模型（仅列新增/修改）
 
 **修改现有表：**
-- `sub_user`：新增 `billing_mode enum('legacy_tier','credits') NOT NULL DEFAULT 'credits'`
+- `user`：新增 `billing_mode enum('legacy_tier','credits') NOT NULL DEFAULT 'credits'`
 - `credit_package`：确认现有 `status` 字段，如无则新增 `enum('active','expired','revoked')`
 
 **新增表：**
