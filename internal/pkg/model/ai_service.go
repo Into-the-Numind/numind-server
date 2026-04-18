@@ -122,10 +122,10 @@ type AIServiceRoute struct {
 	ProviderModelID string       `gorm:"size:100;not null" json:"provider_model_id"`
 	Priority        int          `gorm:"default:0" json:"priority"`
 	IsActive        bool         `gorm:"default:true" json:"is_active"`
-	CreatedAt          time.Time    `json:"created_at"`
-	UpdatedAt          time.Time    `json:"updated_at"`
-	Provider           *LLMProvider `gorm:"foreignKey:ProviderID" json:"provider,omitempty"`
-	Service            *AIService   `gorm:"foreignKey:ModelID" json:"service,omitempty"`
+	CreatedAt       time.Time    `json:"created_at"`
+	UpdatedAt       time.Time    `json:"updated_at"`
+	Provider        *LLMProvider `gorm:"foreignKey:ProviderID" json:"provider,omitempty"`
+	Service         *AIService   `gorm:"foreignKey:ModelID" json:"service,omitempty"`
 }
 
 // TableName returns the table name for AIServiceRoute.
