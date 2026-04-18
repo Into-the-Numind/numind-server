@@ -78,8 +78,13 @@ func ResolvePricingRule(ctx context.Context, store UsageStore, serviceType, prov
 	// --- Step 2: resolve provider_model_id and retry ---
 	providerModelID, resolveErr := store.GetProviderModelID(ctx, modelKey, provider)
 	if resolveErr != nil {
-		// No mapping found or DB error — return the original not-found.
-		return nil, gorm.ErrRecordNotFound
+		if errors.Is(resolveErr, gorm.ErrRecordNotFound) {
+			// No mapping exists — truly not found.
+			return nil, gorm.ErrRecordNotFound
+		}
+		// Real DB error (network failure, context cancelled, etc.) — propagate so
+		// the caller can retry or alert instead of silently billing at ¥0.
+		return nil, resolveErr
 	}
 	if providerModelID == modelKey {
 		// Avoid an identical second lookup that would also miss.

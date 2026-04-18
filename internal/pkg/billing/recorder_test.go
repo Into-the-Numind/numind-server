@@ -158,19 +158,6 @@ func TestResolvePricingRule_ProviderModelIdFallback(t *testing.T) {
 		t.Errorf("rule ID: got %d, want 42", got.ID)
 	}
 
-	// Second call: result should be served from cache (clear pricingRules to verify).
-	store.pricingRules = nil
-	store.providerModelIDs = nil
-	got2, err2 := ResolvePricingRule(context.Background(), store, "llm", "aihubmix", "claude-sonnet-4-6-think")
-	// Note: the cache was keyed by the fallback key "llm|aihubmix|claude-sonnet-4-6",
-	// not the model_key. So the direct-key cache will miss and we'll call
-	// GetProviderModelID again. Since store.providerModelIDs is nil it returns
-	// ErrRecordNotFound, meaning we won't get a result from the cleared store.
-	// This is acceptable behavior: the cache TTL covers the normal hot path.
-	// What matters is: no panic, and the function returns consistently.
-	_ = got2
-	_ = err2
-
 	// Re-populate the fallback key to verify it was cached there.
 	clearPricingCache()
 	store.providerModelIDs = map[string]string{
@@ -245,5 +232,67 @@ func TestResolvePricingRule_ProviderModelIdSameAsModelKey(t *testing.T) {
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Errorf("expected gorm.ErrRecordNotFound, got %v", err)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// TestResolvePricingRule_DirectDBError
+// ----------------------------------------------------------------------------
+
+// TestResolvePricingRule_DirectDBError verifies that when GetPricingRule returns
+// a real DB error (not ErrRecordNotFound), ResolvePricingRule propagates that
+// error rather than silently treating it as a not-found and billing at ¥0.
+func TestResolvePricingRule_DirectDBError(t *testing.T) {
+	clearPricingCache()
+
+	dbErr := errors.New("connection refused")
+	store := &stubUsageStore{
+		pricingErr: dbErr, // first call returns a real DB error
+	}
+
+	got, err := ResolvePricingRule(context.Background(), store, "llm", "someprovider", "some-model")
+	if got != nil {
+		t.Errorf("expected nil rule on DB error, got %+v", got)
+	}
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Errorf("DB error must not be masked as ErrRecordNotFound; got %v", err)
+	}
+	if !errors.Is(err, dbErr) {
+		t.Errorf("expected original DB error to be in the chain; got %v", err)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// TestResolvePricingRule_ProviderModelIDDBError
+// ----------------------------------------------------------------------------
+
+// TestResolvePricingRule_ProviderModelIDDBError verifies that when the first
+// GetPricingRule call returns ErrRecordNotFound (triggering the fallback) but
+// the subsequent GetProviderModelID call returns a real DB error, that error is
+// propagated — not masked as ErrRecordNotFound.
+func TestResolvePricingRule_ProviderModelIDDBError(t *testing.T) {
+	clearPricingCache()
+
+	connErr := errors.New("connection refused")
+	store := &stubUsageStore{
+		pricingRules:       map[string]*model.PricingRule{}, // empty → ErrRecordNotFound on first call
+		providerModelIDErr: connErr,                         // second call returns real DB error
+	}
+
+	got, err := ResolvePricingRule(context.Background(), store, "llm", "someprovider", "some-model")
+	if got != nil {
+		t.Errorf("expected nil rule on DB error, got %+v", got)
+	}
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Errorf("connection error must not be masked as ErrRecordNotFound; got %v", err)
+	}
+	if !errors.Is(err, connErr) {
+		t.Errorf("expected connection error to be in the chain; got %v", err)
 	}
 }

@@ -910,6 +910,7 @@ func (s *billingStore) GetProviderModelID(ctx context.Context, modelKey, provide
 		return "", fmt.Errorf("GetProviderModelID: %w", err)
 	}
 	if providerModelID == "" {
+		// Return the sentinel bare; callers use errors.Is to detect not-found.
 		return "", gorm.ErrRecordNotFound
 	}
 	return providerModelID, nil
