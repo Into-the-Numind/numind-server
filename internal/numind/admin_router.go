@@ -3,6 +3,7 @@ package numind
 import (
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/aiservice_admin"
+	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/controller/v1/admin_ai"
 	"numind-server/internal/numind/controller/v1/admin_billing"
 	"numind-server/internal/numind/controller/v1/admin_credit"
@@ -46,6 +47,14 @@ func installAdminRouters(g *gin.Engine) error {
 	b := biz.NewBiz(store.S)
 	sopCtrl := admin_sop.NewSopController(b.Sop())
 	adminCreditCtrl := admin_credit.New(b.Credit(), store.S)
+
+	// Phase 2 T2.3: coefficient CRUD. EstimationBiz is constructed ad-hoc here
+	// rather than threaded through biz.NewBiz to avoid expanding the IBiz
+	// interface surface for a single admin concern.
+	coefficientCtrl := admin_credit.NewCoefficientController(
+		credit.NewEstimationBiz(store.S, b.Pricing()),
+		store.S,
+	)
 
 	v1Group := g.Group("/v1")
 
@@ -106,6 +115,15 @@ func installAdminRouters(g *gin.Engine) error {
 		adminGroup.GET("/credits/users", adminCreditCtrl.ListUsers)
 		adminGroup.GET("/credits/users/:id", adminCreditCtrl.GetUserDetail)
 		adminGroup.POST("/credits/users/:id/recharge", adminCreditCtrl.Recharge)
+	}
+
+	// Phase 2 T2.3: estimation-coefficient CRUD (spec §3.11 + §4.1.2)
+	{
+		adminGroup.GET("/estimation-coefficients", coefficientCtrl.ListCoefficients)
+		adminGroup.GET("/estimation-coefficients/history", coefficientCtrl.ListCoefficientHistory)
+		adminGroup.POST("/estimation-coefficients", coefficientCtrl.CreateCoefficient)
+		adminGroup.PUT("/estimation-coefficients/:id", coefficientCtrl.UpdateCoefficient)
+		adminGroup.DELETE("/estimation-coefficients/:id", coefficientCtrl.DeleteCoefficient)
 	}
 
 	// 订单管理
