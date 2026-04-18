@@ -620,10 +620,10 @@ features:
     ndf_version: "1.0"
     description: "admin-web 对 AI service 配置的全面管理能力补齐 — Route CRUD（priority/is_active，不含 pricing）/ Provider CRUD（api_key/base_url）+ 测试连接 / Audit Log 端点修复 / Task Fallback 多选 / PricingRule 与 AIService 关联可视化 + billing 架构重建（扔 B 列+重建真快照） + recorder pricing fallback bug 修复"
     track: "standard"
-    stage: "S4-wave1-dispatch"
-    classification_reason: "Standard 精简版：跨 server + admin-web 两仓库；Route CRUD 涉及 prod 流量路由回归；Provider 管理涉及 api_key 数据安全；billing 架构重建（删 ai_service_route 5 pricing 列 + middleware 改从 pricing_rule 读快照）涉及 schema 变更+回归风险；Wave-1 五任务并行 dispatch"
-    last_updated_by: "ai-s2"
-    last_updated_at: "2026-04-18T14:30:00+08:00"
+    stage: "S4-wave1-review-and-prereq"
+    classification_reason: "Standard 精简版：跨 server + admin-web 两仓库；Wave 1 并行 5 task；gate 失败触发追加 T-arch-prereq 修 pricing_rule 三维度词表不一致（service_type / provider name / model 截断）"
+    last_updated_by: "ai-s4-wave1"
+    last_updated_at: "2026-04-18T17:00:00+08:00"
     repos:
       - numind-server
       - numind-admin-web
@@ -639,10 +639,10 @@ features:
       review_code_quality: null
       qa: null
     progress:
-      total_tasks: 10
-      completed_tasks: 0
+      total_tasks: 11
+      completed_tasks: 4
       reviewed_tasks: 0
-      current_task: "Wave 1 parallel dispatch: T-bug / T1 / T2 / T4 / T-arch"
+      current_task: "Wave 1: 4/5 implemented (T-bug d8d2eeb / T1 8066463 / T2 aabcecd / T4 bb32079); T-arch halted at gate (c3d8e96); T-arch-prereq dispatched; 8 Sonnet reviewers running in parallel for A/B/C/D"
     rollback: "逐 task 独立 commit + 独立 sub-branch，review 未过时 git branch -D；T-arch migration 附 rollback SQL"
     last_verified: null
     gap_audit:
@@ -686,14 +686,42 @@ features:
         - "middleware/billing.go buildBaseRecord 改为：按 (service_type, provider, model_key) 查 pricing_rule → 按 billing_mode 填 UsageRecord.PricingXSnapshot（flat 模式读 pricing_rule 对应列；tiered_token 模式保持 null/0，实际 cost 走 calculateTieredCost）"
         - "老数据（cost_cents=0 或 PricingXSnapshot=null）不回填；仅新数据按新路径走"
       implemented_in: "T-arch"
+    gate_findings_2026_04_18:
+      status: "FAIL - triggered追加 T-arch-prereq"
+      scope: "dev DB 所有 13 条 active ai_service_route 在 pricing_rule 匹配计数 0（既不按 model_key 也不按 provider_model_id）。推断：dev 迄今所有 LLM 调用 cost_cents = 0"
+      root_cause_1_service_type:
+        description: "ai_service.service_type='llm' 粗粒度 vs pricing_rule.service_type='llm_chat/llm_vision/...' 细粒度"
+        impact: "全部 13 行"
+        fix: "(Q1 = a) middleware 加 classifyServiceType 映射请求类型到细粒度；pricing_rule 保持细粒度不动；billing middleware 写入 UsageRecord.ServiceType 用映射结果"
+      root_cause_2_provider_name:
+        description: "llm_provider.name 带后缀（dmxapi-ssvip/ali-dashscope/volc-ark/baidu-ocr/bailian-file）vs pricing_rule.provider 基础名（dmxapi/ali/volc/baidu/bailian）"
+        impact: "5 行 dmxapi-ssvip + 其他带后缀 provider 的 route"
+        fix: "(Q2 = a) 补 pricing_rule 带后缀 row；价格先复制基础 provider（'同价不同行'），以后发现差异再改"
+      root_cause_3_model_truncation:
+        description: "ai_service_route.provider_model_id='claude-sonnet-4-6-thinking' (26 字符) vs pricing_rule.model='claude-sonnet-4-6-think' (24 字符截断)"
+        impact: "1 行"
+        fix: "(Q3 = a) 修正 pricing_rule row 补齐 thinking"
+      full_offending_list: "wt-T-arch/docs/t-arch-gate-result.txt (commit c3d8e96)"
+    vocabulary_decisions_2026_04_18:
+      service_type:
+        canonical: "pricing_rule 的细粒度集合：llm_chat / llm_vision / embedding / rerank / ocr / asr / cos_upload / file_extract / vector_db"
+        ai_service_value: "保持 llm / ocr / asr 粗粒度（ai_service 表不动）"
+        mapping_layer: "middleware/billing.go 新增 classifyServiceType(req) 根据请求类型返回细粒度；billing 写入 UsageRecord.ServiceType 用映射结果"
+      provider_name:
+        canonical: "llm_provider.name 带后缀形式为权威（dmxapi-ssvip ≠ dmxapi，可能对应不同 base_url/api_key）"
+        action: "补 pricing_rule 带后缀 row，数据层对齐"
+      model_identity:
+        canonical: "完整 provider_model_id（不截断）"
+        action: "修 pricing_rule row 补齐 thinking 后缀；后续 seed 文件禁止截断"
     task_breakdown:
       - "# Wave 1（并行 dispatch，5 agent）"
       - "T-bug [0.3d, agent A, sub-branch feature/ai-service-admin-complete-T-bug] server: recorder.GetPricingRule 加 model_key→provider_model_id fallback + 回归单测"
       - "T1 [0.2d, agent B, sub-branch feature/ai-service-admin-complete-T1] server: Audit Log controller + /admin/ai/audit-logs 端点注册 + biz.ListAuditLogs"
       - "T2 [0.4d, agent C, sub-branch feature/ai-service-admin-complete-T2] server: Route CRUD 4 端点（Create/Update/Delete/Toggle，Request DTO 不含 pricing 字段，priority 重复校验+警告，至少保留一条 active route 校验）"
       - "T4 [0.6d, agent D, sub-branch feature/ai-service-admin-complete-T4] server: Provider CRUD 5 端点 + POST /providers/:id/test-connection + AuditTargetProvider 常量 + 三处 audit 写入 + api_key 空串保留原值 + MaskedAPIKey 读路径"
-      - "T-arch [0.7d, agent E, sub-branch feature/ai-service-admin-complete-T-arch] server: (1) dev DB 路由-规则预检脚本 gate (2) migration 删 ai_service_route 5 pricing 列 (3) middleware/billing.go buildBaseRecord 从 pricing_rule 读快照"
-      - "Wave 1 merge 顺序（每次 merge 前 rebase onto 最新 feature 分支）: A → E → B → C → D"
+      - "T-arch-prereq [0.5d, agent P, sub-branch feature/ai-service-admin-complete-T-arch-prereq] server: (1) dev 数据修复 SQL 幂等（pricing_rule 补细粒度 service_type + 补带后缀 provider + 修 claude-sonnet-4-6-thinking 截断）(2) prod 对应修复 SQL 产出不执行（*_prod_deferred.sql）(3) middleware 新增 classifyServiceType + buildBaseRecord 写细粒度 UsageRecord.ServiceType + 5 种请求类型单测 (4) 回归验证 dev chat/vision/ocr 调用 cost_cents > 0"
+      - "T-arch [0.7d, agent E, sub-branch feature/ai-service-admin-complete-T-arch] server: (1) 复跑 gate 通过 (2) migration 删 ai_service_route 5 pricing 列 (3) middleware/billing.go buildBaseRecord 从 pricing_rule 读快照 (4) 顺手删 RouteItem 结构的 5 个 pricing 字段（T2 已标记该处将在 T-arch 删列时 break）"
+      - "Wave 1 merge 顺序（每次 merge 前 rebase onto 最新 feature 分支）: A → T-arch-prereq → E → B → C → D"
       - "# Wave 2（并行 dispatch，4 agent，依赖 Wave 1 全合并+dev 部署+手动回归通过）"
       - "T3 [0.6d, agent F] admin-web: ServiceEdit 路由区可编辑 + 计费规则只读卡片 + 跳转 PricingRulesView 链接 + Playwright E2E"
       - "T5 [0.6d, agent G] admin-web: ProvidersList + ProviderEdit（api_key 掩码 placeholder + 重置 Key 按钮 + 测试连接按钮）+ 路由 + sidebar + api/ai.ts 扩展"
@@ -712,6 +740,13 @@ features:
       - "2026-04-18 (UX OQ4): model.AuditTargetProvider='provider' 常量在 T4 添加；AuditTargetRoute='route' 常量在 T2 添加"
       - "2026-04-18 (Q4 新增): Provider 测试连接按钮，POST /v1/admin/ai/providers/:id/test-connection 发轻量 1-token chat 探测请求验证 key（OpenAI 兼容 provider 发真实请求，其他返回 skip）"
       - "2026-04-18 (并行策略): Wave 1 5 agent 同时 dispatch（A/B/C/D/E），各自 sub-branch；merge 顺序 A→E→B→C→D 减冲突"
+      - "2026-04-18 (Wave 1 结果): T-bug d8d2eeb / T1 8066463 / T2 aabcecd / T4 bb32079 四 task 实现完成；T-arch gate FAIL 于 c3d8e96，halted"
+      - "2026-04-18 (追加 T-arch-prereq): 0.5d 修 dev DB 三维度词表不一致 + middleware 加 classifyServiceType + 回归验证"
+      - "2026-04-18 (Q1 service_type): middleware 写细粒度 (classifyServiceType)；pricing_rule 保细粒度；ai_service 保粗粒度；5 种请求类型单测覆盖"
+      - "2026-04-18 (Q2 provider name): pricing_rule 补带后缀 row（同价不同行），不做 strip 逻辑"
+      - "2026-04-18 (Q3 model 截断): 修 pricing_rule row 补齐 claude-sonnet-4-6-thinking"
+      - "2026-04-18 (merge 顺序更新): A → T-arch-prereq → E → B → C → D"
+      - "2026-04-18 (Critical prod finding): dev DB 所有 UsageRecord cost_cents=0，prod 大概率同病。T-arch-prereq 产出 prod 数据修复 SQL，prod 发版后必须手动执行"
     deferred:
       - "T8 pricing_rule_id FK migration — 搞法 2 选定后不做（字符串匹配足够）"
       - "/healthz/ai 可视化 dashboard — Phase 2"
@@ -722,6 +757,11 @@ features:
       - "ai-service-manager S7-dev-done（2026-04-18），所有 S4 tech debt 清理完成"
       - "legacy-llm-cleanup S7-dev-done（2026-04-17），旧 llm_provider / llm_model 兼容层已删除"
       - "本功能是 ai-service-manager 的 follow_up_feature，补齐原 feature 未交付的管理能力"
+    prod_checklist:
+      - "⚠️ CRITICAL 2026-04-18: dev DB 所有 UsageRecord.cost_cents=0，追溯 pricing_rule 三维度不对齐导致（service_type/provider name/model 截断）。prod 大概率同病。T-arch-prereq 产出的 prod 数据修复 SQL（migrations/*_prod_deferred.sql）必须在 prod 发版后、功能冒烟验证之前手动执行；不执行则新 Gateway 调用继续 cost_cents=0"
+      - "prod 发版 tag 必须包含 Wave 1 合并后 feature 分支全部 commit（A/T-arch-prereq/E/B/C/D）"
+      - "prod 发版顺序：(1) 部署代码（含 middleware classifyServiceType 改造） (2) 执行 pricing_rule 数据修复 SQL (3) 执行 ai_service_route 删 5 列的 migration (4) 冒烟验证 chat/vision/ocr 调用 cost_cents > 0"
+      - "回滚顺序（若发版失败）: 先回滚 migration（drop columns 的 rollback SQL 在 migration 文件头）→ 再 revert code commit → pricing_rule 数据不回滚（只 INSERT/UPDATE 幂等）"
     created_at: "2026-04-18T11:30:00+08:00"
     completed_at: null
 
