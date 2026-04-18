@@ -2,6 +2,7 @@ package numind
 
 import (
 	"numind-server/internal/numind/biz"
+	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/controller/v1/ali"
 	chatbotcontroller "numind-server/internal/numind/controller/v1/chatbot"
 	"numind-server/internal/numind/controller/v1/config"
@@ -203,8 +204,15 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 积分查询
 	{
-		creditCtrl := creditcontroller.New(b.Credit(), b.CreditService())
+		creditCtrl := creditcontroller.New(
+			b.Credit(),
+			b.CreditService(),
+			credit.NewPromptEstimator(store.S),
+			store.S,
+		)
 		authGroup.GET("/credits/balance", creditCtrl.GetBalance)
+		authGroup.POST("/credits/estimate", creditCtrl.Estimate)   // Phase 2 T2.3：运行前估算（spec §3.11 + §4.3）
+		authGroup.GET("/credits/packages", creditCtrl.ListPackages) // Phase 2 T2.3：积分包列表（spec §4.1.1）
 	}
 
 	// 订单管理（B 客户）
