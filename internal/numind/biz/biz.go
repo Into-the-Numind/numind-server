@@ -91,8 +91,12 @@ func NewBiz(ds store.IStore) *biz {
 	_ = config.NewConfigReader(b.Configs())
 
 	// 初始化SOP服务。LLM 调用统一走 aiservice Gateway，不再需要 LLMRouter 参数。
+	//
+	// Phase 2 Task 2.0/2.1: pricingCalc + creditSvc 已在本函数顶部构造（注入 b.pricing /
+	// b.creditService 字段）。此处仅用于 sopBiz 的 fluent WithCreditService setter。
 	sopExecutor := sopbiz.NewSopExecutor(b.ds)
-	b.sopService = sopbiz.NewSopBiz(b.ds, sopExecutor, b.credit)
+	b.sopService = sopbiz.NewSopBiz(b.ds, sopExecutor, b.credit).
+		WithCreditService(creditSvc, pricingCalc)
 
 	// 初始化销售 RAG 服务
 	// 向量库支持 sqlitevec（默认）、dashvector（回退兼容）、memory（测试）
