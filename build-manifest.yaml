@@ -620,10 +620,14 @@ features:
     ndf_version: "1.0"
     description: "admin-web 对 AI service 配置的全面管理能力补齐 — Route CRUD（priority/is_active，不含 pricing）/ Provider CRUD（api_key/base_url）+ 测试连接 / Audit Log 端点修复 / Task Fallback 多选 / PricingRule 与 AIService 关联可视化 + billing 架构重建（扔 B 列+重建真快照） + recorder pricing fallback bug 修复"
     track: "standard"
-    stage: "S5-awaiting-dev-verification"
-    classification_reason: "Wave 1 全部 6 task + 2 fix rounds rebase-merged（linear history）合入 develop（FF merge fbbe398），已 push origin/develop 触发 CI+dev 部署。等待 4 项手动 AI 调用验证后进 Wave 2"
-    last_updated_by: "ai-s5-pre-verify"
-    last_updated_at: "2026-04-18T18:30:00+08:00"
+    stage: "S4-wave2-dispatch"
+    classification_reason: "Wave 1 全 merge + push develop（fbbe398 → 649d371）+ CI build success。Wave 1 手动 AI 验证因用户时间约束暂缓——Wave 2 纯前端 CRUD，不依赖 billing 路径，可并行推进。Wave 2 admin-web 4 agent 并行 dispatch"
+    last_updated_by: "ai-s4-wave2-start"
+    last_updated_at: "2026-04-18T19:00:00+08:00"
+    wave1_verification_deferred:
+      reason: "用户暂无时间跑 dev 4 项手动调用（chat/vision/ocr/asr），Wave 2 前端独立推进不阻塞"
+      verification_protocol_preserved: "见本 entry verification_protocol 字段；用户就绪后按协议跑 4 项 + SQL 核对"
+      risk: "若 Wave 1 billing 路径有 bug（unlikely 基于 15-task sonnet review 全过），Wave 2 UI 功能不受影响；billing 问题可独立修复。Wave 2 的 T3 Playwright E2E 不依赖 cost_cents 为正"
     wave1_merge_complete:
       rebase_agent_tip: "1657a7a (before rebase onto develop)"
       post_rebase_tip: "fbbe398 (18 commits, linear onto develop 48f0e6d)"
