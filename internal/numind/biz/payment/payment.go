@@ -257,8 +257,26 @@ func (b *paymentBiz) fulfillOrder(ctx context.Context, orderNo string, tradeNo s
 		return fmt.Errorf("fulfill order %s: %w", orderNo, err)
 	}
 
+	// spec §3.8: 独立短事务切换 billing_mode（不嵌套进订单事务，避免 User 行锁争用）
+	// 切换失败不影响订单结果——由 D.4 cron 兜底
+	if switchErr := b.switchBillingModeIfLegacy(ctx, order.UserID); switchErr != nil {
+		log.Warnw("switch billing_mode failed; cron fallback will retry",
+			"user_id", order.UserID, "order_id", order.ID, "order_no", orderNo, "error", switchErr)
+	}
+
 	log.Infow("Order fulfilled successfully", "order_no", orderNo, "trade_no", tradeNo, "user_id", order.UserID, "product_type", order.ProductType)
 	return nil
+}
+
+// switchBillingModeIfLegacy 在独立短事务中将 legacy_tier 用户切换为 credits 模式。
+// 幂等且安全：非 legacy_tier 用户或不存在的用户都匹配 0 行，Update 本身不会报错。
+// 调用方（fulfillOrder）对返回的 error 仅记录 log warn，由 cron 兜底（D.4）。
+// 见 spec §3.8。
+func (b *paymentBiz) switchBillingModeIfLegacy(ctx context.Context, userID uint) error {
+	return b.ds.DB().WithContext(ctx).
+		Model(&model.User{}).
+		Where("id = ? AND billing_mode = ?", userID, model.BillingModeLegacyTier).
+		Update("billing_mode", model.BillingModeCredits).Error
 }
 
 // GetOrder 查询订单详情

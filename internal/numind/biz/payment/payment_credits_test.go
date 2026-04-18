@@ -26,10 +26,15 @@ import (
 // AutoMigrate for the simpler tables.
 func newPaymentTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+	// File-backed sqlite in a tmpdir so every connection sees the same DB.
+	// All fulfillOrder-flavored tests use fakeCreditBiz to avoid the nested
+	// non-tx write deadlock in RechargeWithOrderTx's GetOrCreateAccount (which
+	// cannot be fixed without touching biz/credit/credit.go — Track C territory).
+	tmp := t.TempDir()
+	db, err := gorm.Open(sqlite.Open(tmp+"/payment_test.db?_busy_timeout=5000"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
-	require.NoError(t, err, "open sqlite in-memory DB")
+	require.NoError(t, err, "open sqlite file DB")
 
 	// Hand-rolled user table (sqlite can't parse MySQL enum syntax).
 	require.NoError(t, db.Exec(`
@@ -106,6 +111,43 @@ func newPaymentBizForTest(ds store.IStore) *paymentBiz {
 		ds:        ds,
 		creditBiz: credit.NewCreditBiz(ds),
 	}
+}
+
+// fakeCreditBiz is a test stub for credit.ICreditBiz that bypasses the nested
+// non-tx write in RechargeWithOrderTx (which would deadlock SQLite in tests).
+// RechargeWithOrderTx here is a no-op, letting fulfillOrder focus on its own
+// responsibilities (updating order status + calling switchBillingModeIfLegacy).
+type fakeCreditBiz struct {
+	rechargeCalls int
+}
+
+func (f *fakeCreditBiz) CanPerformAIOperation(ctx context.Context, user *model.User, operation string) (bool, string) {
+	return true, ""
+}
+func (f *fakeCreditBiz) DeductCredits(ctx context.Context, userID uint, costCents int64, operation, bizRefType, bizRefID string, usageRecordID *uint64) error {
+	return nil
+}
+func (f *fakeCreditBiz) GetBalance(ctx context.Context, userID uint) (int64, error) {
+	return 0, nil
+}
+func (f *fakeCreditBiz) RechargeCredits(ctx context.Context, userID uint, packageType string, totalCredits int64, expiresAt time.Time) error {
+	return nil
+}
+func (f *fakeCreditBiz) RechargeWithOrderTx(ctx context.Context, tx *gorm.DB, userID uint, orderID uint64, productType string, months int) error {
+	f.rechargeCalls++
+	return nil
+}
+func (f *fakeCreditBiz) RunCronTasks(ctx context.Context) error { return nil }
+func (f *fakeCreditBiz) GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error) {
+	return 0, 0, 0, 0, nil
+}
+
+// newPaymentBizWithFakeCredit builds a paymentBiz whose creditBiz is a stub.
+// Use this for fulfillOrder-shaped tests that need to exercise the transaction
+// callback without tripping over the SQLite nested-write deadlock.
+func newPaymentBizWithFakeCredit(ds store.IStore) (*paymentBiz, *fakeCreditBiz) {
+	fake := &fakeCreditBiz{}
+	return &paymentBiz{ds: ds, creditBiz: fake}, fake
 }
 
 // ---------- D.1: Booster 会员门槛 ----------
@@ -257,4 +299,109 @@ func TestCreateOrder_Booster_TrialPackageOnly_NotSubscription_Rejected(t *testin
 	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 0, model.PayChannelWechat)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errno.ErrMembershipRequired, "trial user without subscription must be rejected")
+}
+
+// ---------- D.3: OnPaymentSuccess billing_mode switch ----------
+
+// readBillingMode fetches billing_mode directly from DB (avoids GORM enum mismatch
+// when scanning into *model.User via sqlite).
+func readBillingMode(t *testing.T, db *gorm.DB, userID uint) string {
+	t.Helper()
+	var mode string
+	require.NoError(t, db.Raw("SELECT billing_mode FROM user WHERE id = ?", userID).Scan(&mode).Error)
+	return mode
+}
+
+// mustCreatePendingOrder inserts a pending order that fulfillOrder can consume.
+func mustCreatePendingOrder(t *testing.T, db *gorm.DB, userID uint, productType string, months int) *model.Order {
+	t.Helper()
+	order := &model.Order{
+		OrderNo:     "TEST" + time.Now().Format("150405.000000") + "X",
+		UserID:      userID,
+		PayerID:     userID,
+		ProductType: productType,
+		Months:      months,
+		Amount:      model.GetProductAmount(productType, months),
+		PayChannel:  model.PayChannelWechat,
+		PayStatus:   model.OrderStatusPending,
+		ExpiredAt:   time.Now().Add(30 * time.Minute),
+	}
+	require.NoError(t, db.Create(order).Error)
+	return order
+}
+
+func TestFulfillOrder_LegacyTierUser_BillingModeSwitchedToCredits(t *testing.T) {
+	db := newPaymentTestDB(t)
+	ds := store.NewTestStore(db)
+	b, fake := newPaymentBizWithFakeCredit(ds)
+
+	future := time.Now().Add(30 * 24 * time.Hour)
+	uid := mustCreateUser(t, db, model.UserTierStandard, model.BillingModeLegacyTier, &future)
+
+	order := mustCreatePendingOrder(t, db, uid, model.ProductTypeMonthly, 1)
+
+	require.NoError(t, b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_TEST_1"))
+	assert.Equal(t, 1, fake.rechargeCalls, "RechargeWithOrderTx should have been invoked")
+
+	// billing_mode should have been switched to credits after order success
+	assert.Equal(t, model.BillingModeCredits, readBillingMode(t, db, uid),
+		"legacy_tier user should have billing_mode switched to credits after order success")
+
+	// Order status should be paid
+	var updated model.Order
+	require.NoError(t, db.First(&updated, order.ID).Error)
+	assert.Equal(t, model.OrderStatusPaid, updated.PayStatus)
+}
+
+func TestFulfillOrder_CreditsUser_BillingModeUnchanged(t *testing.T) {
+	db := newPaymentTestDB(t)
+	ds := store.NewTestStore(db)
+	b, _ := newPaymentBizWithFakeCredit(ds)
+
+	uid := mustCreateUser(t, db, model.UserTierFree, model.BillingModeCredits, nil)
+
+	order := mustCreatePendingOrder(t, db, uid, model.ProductTypeMonthly, 1)
+
+	require.NoError(t, b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_TEST_2"))
+
+	assert.Equal(t, model.BillingModeCredits, readBillingMode(t, db, uid),
+		"credits user should remain credits (idempotent no-op on switch)")
+}
+
+// switchBillingModeIfLegacy on a non-existent user should not error
+// (matches 0 rows, Update is idempotent). Real DB failures only log a warning
+// and never fail the order — covered by the log.Warn branch.
+func TestSwitchBillingModeIfLegacy_NoMatchingRow_Ok(t *testing.T) {
+	db := newPaymentTestDB(t)
+	ds := store.NewTestStore(db)
+	b, _ := newPaymentBizWithFakeCredit(ds)
+
+	err := b.switchBillingModeIfLegacy(context.Background(), 999999)
+	assert.NoError(t, err, "must tolerate missing user rows")
+}
+
+// When the fulfill transaction succeeds but the switch fails (DB closed),
+// the order is still marked paid. This isolates the separate-tx semantic:
+// switch failure is warn-only.
+func TestFulfillOrder_SwitchFailureLogsButOrderSucceeds(t *testing.T) {
+	db := newPaymentTestDB(t)
+	ds := store.NewTestStore(db)
+	b, _ := newPaymentBizWithFakeCredit(ds)
+
+	future := time.Now().Add(30 * 24 * time.Hour)
+	uid := mustCreateUser(t, db, model.UserTierStandard, model.BillingModeLegacyTier, &future)
+
+	order := mustCreatePendingOrder(t, db, uid, model.ProductTypeMonthly, 1)
+
+	// Drop the `user` table to simulate a DB-level failure for switchBillingModeIfLegacy.
+	// This happens AFTER the tx commit; fulfillOrder should still return nil.
+	require.NoError(t, db.Exec("DROP TABLE user").Error)
+
+	err := b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_TEST_3")
+	require.NoError(t, err, "switch failure must not fail the order")
+
+	var updated model.Order
+	require.NoError(t, db.First(&updated, order.ID).Error)
+	assert.Equal(t, model.OrderStatusPaid, updated.PayStatus,
+		"order should still be paid when switch fails")
 }
