@@ -1,4 +1,4 @@
-package adapter
+package parser
 
 import (
 	"archive/zip"
@@ -22,15 +22,15 @@ import (
 	"github.com/gen2brain/go-fitz"
 )
 
-// EnhancedParser 增强型文档解析器
+// DocumentParser 增强型文档解析器
 // 移植自 SOP PdfController，支持 Python 增强解析和文本清洗
-type EnhancedParser struct{}
+type DocumentParser struct{}
 
-func NewEnhancedParser() *EnhancedParser {
-	return &EnhancedParser{}
+func NewDocumentParser() *DocumentParser {
+	return &DocumentParser{}
 }
 
-func (p *EnhancedParser) Parse(ctx context.Context, file io.Reader, filename string) (string, error) {
+func (p *DocumentParser) Parse(ctx context.Context, file io.Reader, filename string) (string, error) {
 	// 1. 读取全部内容到内存
 	var data []byte
 	var err error
@@ -120,7 +120,7 @@ func (p *EnhancedParser) Parse(ctx context.Context, file io.Reader, filename str
 
 // extractTextFromPDF 尝试使用 Python 增强解析 (MarkItDown)，如果失败则降级到 go-fitz
 // 调用链: Go -> Python脚本(document_parser.py) -> MarkItDown -> (失败) -> go-fitz
-func (p *EnhancedParser) extractTextFromPDF(data []byte) (string, int, error) {
+func (p *DocumentParser) extractTextFromPDF(data []byte) (string, int, error) {
 	// 1. 尝试使用 Python 增强解析 (MarkItDown 模式，支持多格式统一解析)
 	text, pages, err := p.extractTextFromPDFEnhanced(data)
 	if err == nil && text != "" {
@@ -136,7 +136,7 @@ func (p *EnhancedParser) extractTextFromPDF(data []byte) (string, int, error) {
 // extractTextFromPDFEnhanced 使用外部 Python 脚本进行高质量解析
 // 脚本内部使用 MarkItDown 库处理 PDF/DOCX/XLSX/PPTX 等多种格式
 // MarkItDown: 微软出品的文档转 Markdown 工具，统一处理多格式文档
-func (p *EnhancedParser) extractTextFromPDFEnhanced(data []byte) (string, int, error) {
+func (p *DocumentParser) extractTextFromPDFEnhanced(data []byte) (string, int, error) {
 	// 创建临时文件
 	tmpFile, err := os.CreateTemp("", "pdf_upload_*.pdf")
 	if err != nil {
@@ -190,7 +190,7 @@ func (p *EnhancedParser) extractTextFromPDFEnhanced(data []byte) (string, int, e
 }
 
 // extractTextFromPDFLegacy 使用原本的 go-fitz 提取 PDF 文本（作为降级方案）
-func (p *EnhancedParser) extractTextFromPDFLegacy(data []byte) (string, int, error) {
+func (p *DocumentParser) extractTextFromPDFLegacy(data []byte) (string, int, error) {
 	// 从内存中打开PDF文档
 	doc, err := fitz.NewFromMemory(data)
 	if err != nil {
@@ -229,7 +229,7 @@ func (p *EnhancedParser) extractTextFromPDFLegacy(data []byte) (string, int, err
 }
 
 // formatPdfText 格式化PDF文本，保留原格式但清理多余空格和空行，并合并被截断的段落
-func (p *EnhancedParser) formatPdfText(text string) string {
+func (p *DocumentParser) formatPdfText(text string) string {
 	// 第一步：确保字符串是有效的UTF-8
 	if !utf8.ValidString(text) {
 		text = strings.ToValidUTF8(text, "")
@@ -280,7 +280,7 @@ func (p *EnhancedParser) formatPdfText(text string) string {
 }
 
 // isGarbageLine 判断是否为垃圾行（乱码、二进制残留）
-func (p *EnhancedParser) isGarbageLine(line string) bool {
+func (p *DocumentParser) isGarbageLine(line string) bool {
 	totalCount := 0
 	validCount := 0  // CJK, Letters, Numbers
 	symbolCount := 0 // Crazy symbols
@@ -348,7 +348,7 @@ func (p *EnhancedParser) isGarbageLine(line string) bool {
 }
 
 // mergeParagraphs 智能合并被断行的段落
-func (p *EnhancedParser) mergeParagraphs(lines []string) string {
+func (p *DocumentParser) mergeParagraphs(lines []string) string {
 	var result strings.Builder
 	var pendingLine string
 
@@ -391,7 +391,7 @@ func (p *EnhancedParser) mergeParagraphs(lines []string) string {
 	return result.String()
 }
 
-func (p *EnhancedParser) shouldMerge(prev, next string) bool {
+func (p *DocumentParser) shouldMerge(prev, next string) bool {
 	if p.isListItem(next) {
 		return false
 	}
@@ -401,12 +401,12 @@ func (p *EnhancedParser) shouldMerge(prev, next string) bool {
 	return true
 }
 
-func (p *EnhancedParser) isListItem(s string) bool {
+func (p *DocumentParser) isListItem(s string) bool {
 	matched, _ := regexp.MatchString(`^(\d+[\.\)]|•|\-|\*|·)\s`, s)
 	return matched
 }
 
-func (p *EnhancedParser) isSentenceEnd(s string) bool {
+func (p *DocumentParser) isSentenceEnd(s string) bool {
 	if s == "" {
 		return false
 	}
@@ -420,7 +420,7 @@ func (p *EnhancedParser) isSentenceEnd(s string) bool {
 	return false
 }
 
-func (p *EnhancedParser) isCJKEnd(s string) bool {
+func (p *DocumentParser) isCJKEnd(s string) bool {
 	if s == "" {
 		return false
 	}
@@ -428,7 +428,7 @@ func (p *EnhancedParser) isCJKEnd(s string) bool {
 	return unicode.Is(unicode.Han, r)
 }
 
-func (p *EnhancedParser) isCJKStart(s string) bool {
+func (p *DocumentParser) isCJKStart(s string) bool {
 	if s == "" {
 		return false
 	}
@@ -436,7 +436,7 @@ func (p *EnhancedParser) isCJKStart(s string) bool {
 	return unicode.Is(unicode.Han, r)
 }
 
-func (p *EnhancedParser) isPageFooter(s string) bool {
+func (p *DocumentParser) isPageFooter(s string) bool {
 	if _, err := strconv.Atoi(s); err == nil {
 		return true
 	}
@@ -446,7 +446,7 @@ func (p *EnhancedParser) isPageFooter(s string) bool {
 	return false
 }
 
-func (p *EnhancedParser) formatText(text string) string {
+func (p *DocumentParser) formatText(text string) string {
 	if !utf8.ValidString(text) {
 		text = strings.ToValidUTF8(text, "")
 	}
@@ -468,7 +468,7 @@ func (p *EnhancedParser) formatText(text string) string {
 
 // extractTextFromDOCX 从DOCX文件中提取文本，优先使用 Python 增强解析 (MarkItDown)
 // 调用链: Go -> Python脚本(document_parser.py) -> MarkItDown -> (失败) -> XML解析
-func (p *EnhancedParser) extractTextFromDOCX(data []byte) (string, error) {
+func (p *DocumentParser) extractTextFromDOCX(data []byte) (string, error) {
 	// 使用 MarkItDown 进行高质量解析
 	text, err := p.extractTextFromDOCXEnhanced(data)
 	if err == nil && text != "" {
@@ -482,7 +482,7 @@ func (p *EnhancedParser) extractTextFromDOCX(data []byte) (string, error) {
 
 // extractTextFromDOCXEnhanced 使用外部 Python 脚本进行 DOCX 高质量解析
 // 脚本内部使用 MarkItDown 库统一处理文档解析
-func (p *EnhancedParser) extractTextFromDOCXEnhanced(data []byte) (string, error) {
+func (p *DocumentParser) extractTextFromDOCXEnhanced(data []byte) (string, error) {
 	// 创建临时文件 - 注意使用 .docx 后缀，这样 MarkItDown 才能正确识别文件类型
 	tmpFile, err := os.CreateTemp("", "docx_upload_*.docx")
 	if err != nil {
@@ -534,7 +534,7 @@ func (p *EnhancedParser) extractTextFromDOCXEnhanced(data []byte) (string, error
 }
 
 // extractTextFromDOCXLegacy 原有的 DOCX XML 解析逻辑
-func (p *EnhancedParser) extractTextFromDOCXLegacy(data []byte) (string, error) {
+func (p *DocumentParser) extractTextFromDOCXLegacy(data []byte) (string, error) {
 	zipReader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return "", fmt.Errorf("无法读取DOCX文件（ZIP格式错误）: %w", err)
@@ -570,7 +570,7 @@ func (p *EnhancedParser) extractTextFromDOCXLegacy(data []byte) (string, error) 
 	return text, nil
 }
 
-func (p *EnhancedParser) extractTextFromDOCXXML(xmlData []byte) (string, error) {
+func (p *DocumentParser) extractTextFromDOCXXML(xmlData []byte) (string, error) {
 	var result strings.Builder
 	textPattern := regexp.MustCompile(`<w:t[^>]*>([^<]*)</w:t>`)
 	matches := textPattern.FindAllStringSubmatch(string(xmlData), -1)
@@ -603,7 +603,7 @@ func (p *EnhancedParser) extractTextFromDOCXXML(xmlData []byte) (string, error) 
 	return result.String(), nil
 }
 
-func (p *EnhancedParser) parseDOCXXMLWithParser(xmlData []byte) (string, error) {
+func (p *DocumentParser) parseDOCXXMLWithParser(xmlData []byte) (string, error) {
 	var result strings.Builder
 	decoder := xml.NewDecoder(bytes.NewReader(xmlData))
 	for {
@@ -630,7 +630,7 @@ func (p *EnhancedParser) parseDOCXXMLWithParser(xmlData []byte) (string, error) 
 
 // extractTextFromDOC 使用 Python + antiword 解析旧版 DOC 文件
 // 注意：MarkItDown 不支持旧版 .doc 格式，因此使用 antiword 工具
-func (p *EnhancedParser) extractTextFromDOC(data []byte) (string, error) {
+func (p *DocumentParser) extractTextFromDOC(data []byte) (string, error) {
 	// 创建临时文件 - 使用 .doc 后缀以便 Python 脚本识别
 	tmpFile, err := os.CreateTemp("", "doc_upload_*.doc")
 	if err != nil {
@@ -681,6 +681,6 @@ func (p *EnhancedParser) extractTextFromDOC(data []byte) (string, error) {
 }
 
 // extractTextFromRTF 占位
-func (p *EnhancedParser) extractTextFromRTF(data []byte) (string, error) {
+func (p *DocumentParser) extractTextFromRTF(data []byte) (string, error) {
 	return "", fmt.Errorf("RTF format not supported yet")
 }
