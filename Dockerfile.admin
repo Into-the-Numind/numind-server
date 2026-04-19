@@ -60,8 +60,11 @@ EXPOSE 9099
 ENV GIN_MODE=release
 ENV PORT=9099
 
+# 不用 wget --spider：它对 Content-Type: application/json 的 200 响应会判为
+# "broken link" 并 exit 8，导致 docker ps 永久 unhealthy（服务本身 OK）。
+# 改用 wget -qO /dev/null 发完整 GET 请求，只看 HTTP status。
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:9099/healthz || exit 1
+    CMD wget -qO /dev/null http://localhost:9099/healthz || exit 1
 
 ENTRYPOINT ["/app/start.sh"]
 CMD []
