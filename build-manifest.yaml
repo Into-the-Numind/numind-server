@@ -1228,6 +1228,41 @@ features:
     created_at: "2026-04-19T04:50:00+08:00"
     completed_at: "2026-04-19T05:22:00+08:00"
 
+  - id: "remove-sop-estimate-bar"
+    ndf_version: "1.0"
+    description: "SOP 运行页移除预估消耗 + 余额 + 开始运行 bar（SopEstimateBar），credits-system Phase 2 引入的 UX，用户决定完全去掉"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "单仓库 UX 删除，~40 行（删 view 挂载 + 组件文件 + 死代码 + 调整 e2e）"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-19T23:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "fix/remove-sop-estimate-bar"
+    hotfix_artifacts:
+      diagnosis: "用户要求：SOP 运行时每个步骤的预估消耗/当前余额/开始运行 bar 完全不需要，去掉"
+      review: "pass (lint 0 errors + type-check pass)"
+    progress:
+      total_tasks: 4
+      completed_tasks: 4
+      reviewed_tasks: 4
+      current_task: null
+    rollback: "git revert merge commit"
+    last_verified:
+      at: "2026-04-19T23:00:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: null
+      test_summary: "commit d52441d, 4 files changed +7/-242"
+    decisions:
+      - "2026-04-19: 删除 SopEstimateBar.vue 组件文件 + 清理 stores/credits.ts 的 estimate/fetchEstimate 死代码（grep 确认无其他引用）"
+      - "2026-04-19: credits-system.spec.ts Path 1 + Path 4 的 estimateBar 断言一并移除，不替换新断言（对应 UI 已不存在）"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-19T22:45:00+08:00"
+    completed_at: "2026-04-19T23:00:00+08:00"
+
   - id: "nginx-dns-refresh"
     ndf_version: "1.0"
     description: "前端 nginx 用 resolver + 变量 proxy_pass，根治后端容器重建后前端 502（Docker bridge 内网 DNS 缓存问题）"
