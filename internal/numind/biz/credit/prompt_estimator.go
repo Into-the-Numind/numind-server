@@ -109,7 +109,7 @@ func (p *promptEstimator) estimateSopRun(_ context.Context, referenceID string) 
 			modelName = n.ModelName
 		}
 	}
-	return chars, modelName, providerFromModel(modelName), nil
+	return chars, modelName, ProviderFromModel(modelName), nil
 }
 
 // estimateSopChat uses the SopRun's chat message history. reference_id is
@@ -149,7 +149,7 @@ func (p *promptEstimator) estimateSopChat(ctx context.Context, referenceID strin
 		// Empty chat — estimate against the template instead.
 		return p.estimateSopRun(ctx, strconv.FormatUint(uint64(run.TemplateID), 10))
 	}
-	return chars, modelName, providerFromModel(modelName), nil
+	return chars, modelName, ProviderFromModel(modelName), nil
 }
 
 // estimateSalesragChat sums the last N messages of the session. reference_id
@@ -186,34 +186,6 @@ func parseUintRef(s string) (uint, error) {
 		return 0, err
 	}
 	return uint(n), nil
-}
-
-// providerFromModel is a best-effort provider lookup from a model name.
-// A complete solution would query ai_service_route; this shortcut covers
-// the prod model set and returns "" (→ global fallback coefficient) for
-// unknown values.
-func providerFromModel(modelName string) string {
-	switch {
-	case modelName == "":
-		return ""
-	case startsWith(modelName, "qwen") || startsWith(modelName, "text-embedding-v"):
-		return "ali"
-	case startsWith(modelName, "deepseek") || startsWith(modelName, "doubao") ||
-		startsWith(modelName, "glm-"):
-		return "volc"
-	case startsWith(modelName, "claude-") || startsWith(modelName, "gemini-"):
-		return "dmxapi"
-	default:
-		return ""
-	}
-}
-
-// startsWith is a tiny helper to avoid importing "strings" for one prefix check.
-func startsWith(s, prefix string) bool {
-	if len(s) < len(prefix) {
-		return false
-	}
-	return s[:len(prefix)] == prefix
 }
 
 // Type guard — ensure promptEstimator satisfies IPromptEstimator.

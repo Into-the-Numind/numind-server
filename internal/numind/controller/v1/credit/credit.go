@@ -172,7 +172,7 @@ func (c *CreditController) firstNodeAndCount(ctx *gin.Context, user *model.User,
 	pre, err := c.creditSvc.CheckAndEstimate(ctx, user, creditbiz.OpSopRun, creditbiz.EstimationInput{
 		PromptChars: firstChars,
 		Model:       firstNode.ModelName,
-		Provider:    providerFromModel(firstNode.ModelName),
+		Provider:    creditbiz.ProviderFromModel(firstNode.ModelName),
 	})
 	if err != nil && !errors.Is(err, creditbiz.ErrInsufficientCredits) {
 		// 首 node 估算失败不阻塞主响应；返回 total 作为 fallback
@@ -191,23 +191,6 @@ func runeCountMany(ss ...string) int {
 		n += len([]rune(s))
 	}
 	return n
-}
-
-// providerFromModel best-effort model → provider 映射（与 biz/credit/prompt_estimator.go 一致）
-func providerFromModel(modelName string) string {
-	switch {
-	case modelName == "":
-		return ""
-	case strings.HasPrefix(modelName, "qwen") || strings.HasPrefix(modelName, "text-embedding-v"):
-		return "ali"
-	case strings.HasPrefix(modelName, "deepseek") || strings.HasPrefix(modelName, "doubao") ||
-		strings.HasPrefix(modelName, "glm-"):
-		return "volc"
-	case strings.HasPrefix(modelName, "claude-") || strings.HasPrefix(modelName, "gemini-"):
-		return "dmxapi"
-	default:
-		return ""
-	}
 }
 
 // ListPackages GET /v1/credits/packages — C 用户查看自己的 credit_package 列表

@@ -202,7 +202,7 @@ func TestProviderFromModelName_KnownPrefixes(t *testing.T) {
 		"some-custom-model":       "",
 	}
 	for in, want := range cases {
-		assert.Equal(t, want, providerFromModelName(in), "model=%s", in)
+		assert.Equal(t, want, credit.ProviderFromModel(in), "model=%s", in)
 	}
 }
 

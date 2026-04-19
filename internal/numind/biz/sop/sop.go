@@ -695,7 +695,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 			pre, err := b.creditSvc.CheckAndEstimate(ctx, user, credit.OpSopRun, credit.EstimationInput{
 				PromptChars: promptChars,
 				Model:       node.ModelName,
-				Provider:    providerFromModelName(node.ModelName),
+				Provider:    credit.ProviderFromModel(node.ModelName),
 			})
 			if err != nil {
 				return wrapCreditError(err, pre)
@@ -802,7 +802,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	if rsv != nil && b.pricing != nil {
 		if usage != nil && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
 			cost, pErr := b.pricing.CalculateCost(ctx, "llm_chat",
-				providerFromModelName(actualModelName), actualModelName,
+				credit.ProviderFromModel(actualModelName), actualModelName,
 				usage.PromptTokens, usage.CompletionTokens)
 			if pErr != nil {
 				// pricing 失败不阻塞业务，defer 走 Refund("op_failed")
@@ -1432,7 +1432,7 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 			pre, err := b.creditSvc.CheckAndEstimate(ctx, user, credit.OpSopChat, credit.EstimationInput{
 				PromptChars: chatPromptChars,
 				Model:       chatModel,
-				Provider:    providerFromModelName(chatModel),
+				Provider:    credit.ProviderFromModel(chatModel),
 			})
 			if err != nil {
 				return wrapCreditError(err, pre)
@@ -1546,7 +1546,7 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 				effectiveModel = usage.ModelName
 			}
 			cost, pErr := b.pricing.CalculateCost(ctx, "llm_chat",
-				providerFromModelName(effectiveModel), effectiveModel,
+				credit.ProviderFromModel(effectiveModel), effectiveModel,
 				usage.PromptTokens, usage.CompletionTokens)
 			if pErr != nil {
 				chatOpErr = fmt.Errorf("sop_chat pricing calc: %w", pErr)
@@ -1988,26 +1988,6 @@ func computeSopChatPromptChars(history []LLMMessage) int {
 		chars += utf8.RuneCountInString(m.Content)
 	}
 	return chars
-}
-
-// providerFromModelName best-effort 根据模型前缀推断 provider。与
-// credit/prompt_estimator.go 的私有 providerFromModel 口径一致（副本，避免
-// 跨包导出仅为单个 caller 使用的 helper）。未知时返回空字符串——
-// credit 层会降级到 global fallback coefficient + pricing_rule。
-func providerFromModelName(modelName string) string {
-	switch {
-	case modelName == "":
-		return ""
-	case strings.HasPrefix(modelName, "qwen") || strings.HasPrefix(modelName, "text-embedding-v"):
-		return "ali"
-	case strings.HasPrefix(modelName, "deepseek") || strings.HasPrefix(modelName, "doubao") ||
-		strings.HasPrefix(modelName, "glm-"):
-		return "volc"
-	case strings.HasPrefix(modelName, "claude-") || strings.HasPrefix(modelName, "gemini-"):
-		return "dmxapi"
-	default:
-		return ""
-	}
 }
 
 // wrapCreditError 将 credit 层返回的业务错误翻译为 errno 可承载的 HTTP 响应。
