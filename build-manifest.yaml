@@ -5,9 +5,9 @@ features:
     ndf_version: "1.1"
     description: "设置页加量包购买支付弹窗 — credits 制会员点击 BoosterPurchaseCard → 下单 → 微信/支付宝 QR 扫码 → 轮询订单状态 → 支付成功后加量包到账并刷新余额"
     track: "standard"
-    stage: "S2-done"
+    stage: "S4"
     classification_reason: "轻量 Standard：仅前端改动（numind-web-v3），无 DB schema、无新后端 API（复用现有 /v1/orders + 回调）；但触及真钱支付流水，支付状态机需严谨设计"
-    last_updated_by: "ai-triage"
+    last_updated_by: "ai-s3"
     last_updated_at: "2026-04-20T00:00:00+08:00"
     repos:
       - numind-web-v3
@@ -17,11 +17,18 @@ features:
       requirement: "numind-server/requirements/booster-payment-ui.md"
       proposal: "numind-server/proposals/booster-payment-ui-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-04-20-booster-payment-ui-design.md"
-      plan: null
+      plan: "numind-server/docs/superpowers/plans/booster-payment-ui-plan.md"
       review_spec_compliance: null
       review_code_quality: null
       qa: null
-    progress: null
+    progress:
+      total_tasks: 5
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task:
+        index: 1
+        title: "PaymentQRModal 骨架 + 状态机"
+        plan_ref: "numind-server/docs/superpowers/plans/booster-payment-ui-plan.md#task-1"
     rollback: null
     last_verified: null
     decisions:
@@ -29,6 +36,7 @@ features:
       - "2026-04-20: S1 技术调查确认基础设施齐备 — GET /v1/orders/:id 存在、qrcode v1.5.4 已装、XhsBindModal 有 QR 渲染示例、订单 30min 后端自动过期"
       - "2026-04-20: S1 关键决策 — 前端轮询 2s 间隔 + 5min 倒计时（短于后端 30min，提前提示用户）；支付宝 PagePay 新标签页跳转（非 iframe）；关闭弹窗不主动取消订单（后端 cron 自然过期）"
       - "2026-04-20: S2 决策 — 6 态状态机（idle/creating/pending/paid/expired/error/closed）；Tab 切换重下单（后端 order 已绑 pay_channel，无法复用）；不做 pending-order 复用检测（GET /v1/orders 不支持 filter，ROI 低）"
+      - "2026-04-20: S3 plan 拆 5 个 task（骨架/API/UI+tab/SettingsView+E2E/Vitest）。Sonnet reviewer PASS_WITH_CONCERNS，3 个 P1 已就地修复：tab-watch 挪到 Task 3、orders.ts 前置确认、快速连点防重复（spec §6 #13）；Vitest 单测从'可选'升为默认任务（真钱回归保护唯一抓手）"
     blockers: []
     created_at: "2026-04-20T00:00:00+08:00"
     completed_at: null
@@ -1758,11 +1766,11 @@ features:
       numind-server: "fix/user-info-missing-parent-user-id"
     hotfix_artifacts:
       diagnosis: "controller/v1/user/get.go:53-67 GetCurrentUser 用 gin.H 手动白名单拼响应，遗漏 parent_user_id 字段。model.User.ParentUserID 字段存在（user.go:19 *uint json:parent_user_id,omitempty），login 路径返回完整 &user 正常；但 /v1/users/me 调用会覆写前端 userInfo，parent_user_id 变 undefined。前端 src/stores/user.ts:33 isParentUser = userInfo.value?.parent_user_id == null，undefined == null 为 true → 子账户被判为父账户 → AppSidebar.vue:189-210 两个 tab 照常渲染"
-      review: null
+      review: "Sonnet code-reviewer PASS: ParentUserID 字段命名对齐，GetUserByID plain First 载入所有列，gin.H map 不受 omitempty 影响 → 子账户恒有 parent_user_id: <int>，父账户恒有 parent_user_id: null。前端 == null 判断精确。无额外字段泄漏"
     progress:
       total_tasks: 1
       completed_tasks: 1
-      reviewed_tasks: 0
+      reviewed_tasks: 1
       current_task: null
     rollback: "git revert（单行 gin.H 字段增补，无 schema / 无 API 变更）"
     last_verified:
@@ -1792,11 +1800,11 @@ features:
       numind-server: "fix/sales-rag-open-to-all-accounts"
     hotfix_artifacts:
       diagnosis: "router.go:99 salesGroup 挂 FeaturePermission(FeatureKeySalesAgent) 中间件。middleware.go:213-238 → store/customer.go:312-337 HasFeaturePermission 逻辑：parent_user_id=NULL 自动通过，子账户须 user_feature_permission 表有显式记录否则 403。AppSidebar.vue 知识库 tab 对所有账户可见（无 isParentUser 守卫），前端 SalesView.vue:177 / HomeView.vue:420 又用 checkSalesPermission 决定 UI 显隐，子账户两头都被拦。完整数据隔离审计：26 个 /sales-rag/* 路由全部在 biz/store 层按 user_id 过滤；KnowledgeDocument / KnowledgeChunk / SalesSession / SalesMessage / SalesMessageFeedback / LanguageStyle 均有 user_id 列和严格 WHERE 过滤；sqlitevec_store chunks 表含 user_id 索引 + biz 层白名单预过滤；无跨账户引用路径"
-      review: null
+      review: "Sonnet code-reviewer PASS_WITH_CONCERNS（Ship to prod）：独立抽样 3 条路由（GET/DELETE /documents/:id, GET /sessions/:id/messages）全部验证 user_id 过滤；跨账户三向泄漏测试（父→子/子→父/子→兄弟子）全部 NO LEAK；vector store Retrieve/RetrieveStream 两条调用链均先做 ListByUser 白名单再传 docIDs。Important: sqlitevec_store.go:314-326 当 DocumentIDs 非空时故意跳过 user_id 过滤，依赖 biz 层白名单契约 — 无回归测试保护，未来新 code path 绕过白名单即静默跨账户泄漏。Minor: GetByIDs 无 user_id 过滤需 doc comment 标注 safe call sites"
     progress:
       total_tasks: 2
       completed_tasks: 2
-      reviewed_tasks: 0
+      reviewed_tasks: 2
       current_task: null
     rollback: "git revert（纯路由/controller 改动，无 DB schema 变更，数据隔离原本就在 biz+store 层）"
     last_verified:
