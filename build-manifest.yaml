@@ -1814,3 +1814,54 @@ features:
     blockers: []
     created_at: "2026-04-20T03:15:00+08:00"
     completed_at: "2026-04-20T03:15:00+08:00"
+
+  - id: "seed-drift-pricing-rules"
+    ndf_version: "1.0"
+    description: "修复 pricing_rule seed drift：dev DB 通过管理端人工添加了 5 条价格规则但未回写 seed 文件，导致 QA/prod 新环境部署时 salesrag.chat / sop / chatbot 全部报 'pricing lookup: record not found' 500（与 salesrag-pricing-resolve-route 同根因，不同表现）。同时补一条 ('llm_chat','','') 全局兜底作 defensive layer"
+    track: "hotfix"
+    stage: "H2-done"
+    classification_reason: "纯 SQL migration，幂等 INSERT IGNORE + NOT EXISTS 子查询；(1) 不动业务代码 (2) 不新增 API (3) 不接外部服务 (4) 影响 2 文件（migration + rollback）(5) 修复方向是补齐缺失数据，无业务逻辑风险"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-20T02:55:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "develop（直接 commit）"
+    hotfix_artifacts:
+      diagnosis: "通过 SELECT * FROM pricing_rule WHERE is_active=1 与 seed_pricing_rules.sql + 20260416_100000_seed_aihubmix_provider.sql 对比，发现 dev DB 有 5 条规则未在任何 seed 文件出现：(1) llm_chat/aihubmix/claude-sonnet-4-6-thinking ¥21.60/¥108 (2) llm_chat/aihubmix/deepseek-v3.2-thinking ¥2.16/¥3.24 (3) llm_chat/aihubmix/gemini-3.1-pro-preview-thinking tiered (4) llm_chat/aihubmix/gpt-5.4-thinking tiered (5) llm_vision/ali-dashscope/qwen3-vl-flash ¥0.15/¥1.50。原因：seed_aihubmix_provider.sql 用的是 -think 短后缀（provider_model_id 维度），但 billing middleware 查 pricing 用 model_key 长后缀 -thinking，且 qwen3-vl-flash 是用户今天通过管理端临时加的"
+      review: null
+    progress:
+      total_tasks: 4
+      completed_tasks: 4
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "migrations/20260420_030000_seed_drift_pricing_rules_rollback.sql（DELETE 6 父规则，FK CASCADE 自动清理 8 条 tier 子行）"
+    last_verified:
+      at: "2026-04-20T02:55:00+08:00"
+      lint: null
+      type_check: null
+      tests: "在 dev DB apply migration 第一次 → 6 父行 + 8 tier 子行符合预期；apply 第二次 → 行数不变（6+8）确认幂等性（INSERT IGNORE + NOT EXISTS 子查询都正确生效）"
+      test_summary: "纯数据 migration，无 Go 测试涉及；幂等性已在 dev 双重 apply 验证"
+    decisions:
+      - "2026-04-20: 选独立 migration 而非修改 20260416_100000_seed_aihubmix_provider.sql — 项目无自动 migration runner（参见 dead-code-cleanup-p1 之前发现），修改既有 migration 对已部署环境零作用，反而破坏审计；新 migration 是单一更新路径"
+      - "2026-04-20: 加 ('llm_chat','','') 全局兜底 — Plan B（ResolveTask）是主路径用精确价格，全局兜底仅在 ResolveTask 失败 / 未来代码漏传 provider 时兜住，按保守 ¥3/¥10 估算（Reconcile 真实成本多退少补）。两者不冲突，defensive layer"
+      - "2026-04-20: 不更新 seed_pricing_rules.sql — 那是 'fresh install canonical seed'，与 migration 是两个独立路径。本次 migration 是给已存在环境补漂移；fresh install 走 seed 文件应该独立审计"
+      - "2026-04-20: tier 子表 INSERT 用 SELECT...NOT EXISTS 而非 INSERT IGNORE — pricing_rule_tier 无 UNIQUE 约束（仅 idx_rule_type 索引），INSERT IGNORE 在子表无效会插重复行；NOT EXISTS 子查询是唯一可靠的幂等手段"
+    deploy_checklist:
+      dev:
+        status: "applied"
+        applied_at: "2026-04-20T02:55:00+08:00"
+        method: "sshpass → docker cp + docker exec mysql < migrations/20260420_030000_seed_drift_pricing_rules.sql；二次 apply 验证 6+8 行数不变，幂等性 OK"
+      qa:
+        status: "PENDING_MANUAL_APPLY"
+        warning: "未应用前 QA 环境调用 deepseek-v3.2-thinking / claude-sonnet-4-6-thinking / qwen3-vl-flash 等会因 pricing lookup 500"
+        command: "sshpass -p \"$DEV_SSH_PASS\" ssh \"$DEV_SSH_USER@$DEV_SSH_HOST\" \"docker cp numind-server/migrations/20260420_030000_seed_drift_pricing_rules.sql numind-mysql-qa:/tmp/a.sql && docker exec -i numind-mysql-qa sh -c 'MYSQL_PWD=<qa-pwd> mysql -uroot numind-qa < /tmp/a.sql'\""
+      prod:
+        status: "PENDING_MANUAL_APPLY"
+        warning: "生产环境 — 须运维授权，低峰窗口执行；纯 INSERT IGNORE 无锁风险；执行后建议立即跑验证 SELECT 确认 6 父 + 8 tier 行存在"
+        command: "sshpass -p \"$PROD_SSH_PASS\" ssh \"$PROD_SSH_USER@$PROD_SSH_HOST\" \"docker cp numind-server/migrations/20260420_030000_seed_drift_pricing_rules.sql numind-mysql-prod:/tmp/a.sql && docker exec -i numind-mysql-prod sh -c 'MYSQL_PWD=<prod-pwd> mysql -uroot numind-prod < /tmp/a.sql'\""
+    deferred:
+      - "fresh install seed canonical 化 — seed_pricing_rules.sql 与 20260416_100000_seed_aihubmix_provider.sql 应该补齐这 5+1 条，让全新部署一次到位。属于另一个 hotfix 范畴"
+    blockers: []
+    created_at: "2026-04-20T02:50:00+08:00"
+    completed_at: "2026-04-20T02:55:00+08:00"
