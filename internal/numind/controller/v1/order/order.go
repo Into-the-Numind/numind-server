@@ -50,7 +50,9 @@ func (ctrl *OrderController) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	// 校验子用户归属：子用户必须属于当前付款人
+	// 校验归属：两种合法身份
+	//   1. 自购（C 端）：payer.ID == req.UserID（加量包可自购，biz 层 Q1 会拒掉 trial/monthly/yearly）
+	//   2. 代付（B 端 for C）：subUser.ParentUserID == payer.ID
 	subUser, err := ctrl.ds.Users().GetUserByID(c, req.UserID)
 	if err != nil {
 		log.C(c).Errorw("Failed to get sub user", "user_id", req.UserID, "err", err)
@@ -58,9 +60,12 @@ func (ctrl *OrderController) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	if subUser.ParentUserID == nil || *subUser.ParentUserID != payer.ID {
-		core.WriteResponse(c, errno.ErrForbidden.SetMessage("无权为该用户创建订单"), nil)
-		return
+	if payer.ID != subUser.ID {
+		// 非自购：必须是 B 为 C 代付，校验 parent-child 关系
+		if subUser.ParentUserID == nil || *subUser.ParentUserID != payer.ID {
+			core.WriteResponse(c, errno.ErrForbidden.SetMessage("无权为该用户创建订单"), nil)
+			return
+		}
 	}
 
 	order, err := ctrl.paymentBiz.CreateOrder(c, payer.ID, req.UserID, req.ProductType, req.Months, req.PayChannel)
