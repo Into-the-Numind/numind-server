@@ -105,12 +105,16 @@ func emitCreditReserveSpan(
 
 // emitCreditReconcileSpan emits the credit-reconcile span per spec §5.1.3.
 // reconcileDirection is one of "refund" / "topup" / "noop".
+// hasDebt=true signals Reconcile top-up silently continued after
+// ErrInsufficientCredits (review P1-2 / spec §5.3 tech debt marker — no
+// reconcile_debt ledger row is written in R1; monitor this flag to audit debt).
 func emitCreditReconcileSpan(
 	ctx context.Context, reservationID uint64,
 	reserved, actualCostCents, delta int64,
 	actualPromptTokens, actualCompletionTokens int,
 	reconcileDirection string,
 	refundedPackages []map[string]interface{},
+	hasDebt bool,
 ) {
 	tc := langfuse.FromContext(ctx)
 	if tc == nil {
@@ -130,6 +134,7 @@ func emitCreditReconcileSpan(
 		"reconcile_direction":  reconcileDirection,
 		"refunded_to_packages": refundedPackages,
 		"final_status":         string(StatusReconciled),
+		"has_debt":             hasDebt, // P1-2 audit marker (spec §5.3)
 	}
 
 	langfuse.CreateSpan(tc.TraceID, spanID, "credit-reconcile",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -426,6 +427,7 @@ func (c *creditsImpl) Reconcile(ctx context.Context, reservationID uint64, actua
 		reservedCredits    int64
 		delta              int64
 		reconcileDirection string
+		hasDebt            bool // P1-2: set true when top-up ran into ErrInsufficientCredits
 		refundedPackages   []map[string]interface{}
 	)
 	txErr := c.store.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -471,6 +473,10 @@ func (c *creditsImpl) Reconcile(ctx context.Context, reservationID uint64, actua
 					return err
 				}
 				// For ErrInsufficientCredits we log + continue (partial debt).
+				// P1-2 tech debt: no reconcile_debt CreditTransaction row is
+				// written here (spec §5.3 follow-up). hasDebt=true surfaces via
+				// Langfuse span so ops can audit until the ledger is built.
+				hasDebt = true
 				log.Warnw("Reconcile top-up insufficient — recording as debt",
 					"reservation_id", reservationID, "delta", delta, "err", err)
 			}
@@ -504,7 +510,7 @@ func (c *creditsImpl) Reconcile(ctx context.Context, reservationID uint64, actua
 	emitCreditReconcileSpan(ctx, reservationID,
 		reservedCredits, actualCostCents, delta,
 		0, 0, // token counts not threaded through this API yet
-		reconcileDirection, refundedPackages)
+		reconcileDirection, refundedPackages, hasDebt)
 	return nil
 }
 
@@ -704,7 +710,9 @@ func classifyReason(err error) string {
 }
 
 // GetBalance returns the credit_package breakdown (sub + booster). The same
-// fields are consumed by the frontend credits.ts store (spec §1.8).
+// fields are consumed by the frontend credits.ts store (spec §1.8 + §2.11.1).
+// SubExpiresAt / BoosterEarliestExpiresAt fill expiry timestamps so the front-
+// end can show "本月 MM-DD 过期" / "最早 YYYY-MM-DD 过期" badges (review P1-A fix).
 func (c *creditsImpl) GetBalance(ctx context.Context, user *model.User) (*BalanceBreakdown, error) {
 	subTotal, subRemain, boosterTotal, boosterRemain, err := c.store.Credits().GetQuotaBreakdown(ctx, user.ID)
 	if err != nil {
@@ -716,6 +724,38 @@ func (c *creditsImpl) GetBalance(ctx context.Context, user *model.User) (*Balanc
 		SubRemain:     subRemain,
 		BoosterTotal:  boosterTotal,
 		BoosterRemain: boosterRemain,
+	}
+
+	// P1-A fix: query earliest-expiring active package per type to fill the
+	// expiry fields (best-effort; if query fails we log and return bal with
+	// nil expiry fields — the spec marks them optional).
+	db := c.store.DB().WithContext(ctx)
+	type expiryRow struct {
+		ExpiresAt time.Time
+	}
+	var subRow expiryRow
+	if err := db.Raw(
+		`SELECT expires_at FROM credit_package
+		 WHERE user_id = ? AND type = ? AND status = 'active' AND expires_at > NOW()
+		 ORDER BY expires_at ASC LIMIT 1`,
+		user.ID, model.CreditTypeSubscription,
+	).Scan(&subRow).Error; err != nil {
+		log.Warnw("creditsImpl.GetBalance: sub expires_at query failed", "user_id", user.ID, "err", err)
+	} else if !subRow.ExpiresAt.IsZero() {
+		t := subRow.ExpiresAt
+		bal.SubExpiresAt = &t
+	}
+	var boosterRow expiryRow
+	if err := db.Raw(
+		`SELECT expires_at FROM credit_package
+		 WHERE user_id = ? AND type = ? AND status = 'active' AND expires_at > NOW()
+		 ORDER BY expires_at ASC LIMIT 1`,
+		user.ID, model.CreditTypeBooster,
+	).Scan(&boosterRow).Error; err != nil {
+		log.Warnw("creditsImpl.GetBalance: booster expires_at query failed", "user_id", user.ID, "err", err)
+	} else if !boosterRow.ExpiresAt.IsZero() {
+		t := boosterRow.ExpiresAt
+		bal.BoosterEarliestExpiresAt = &t
 	}
 	return bal, nil
 }
@@ -766,33 +806,17 @@ func isUniqueKeyViolation(err error) bool {
 		return false
 	}
 	s := err.Error()
-	return containsAny(s, "UNIQUE constraint failed", "Duplicate entry",
-		"duplicate key value", "1062")
-}
-
-func containsAny(s string, needles ...string) bool {
-	for _, n := range needles {
-		if n == "" {
-			continue
-		}
-		if idx := indexOf(s, n); idx >= 0 {
+	for _, needle := range []string{
+		"UNIQUE constraint failed",
+		"Duplicate entry",
+		"duplicate key value",
+		"1062",
+	} {
+		if strings.Contains(s, needle) {
 			return true
 		}
 	}
 	return false
-}
-
-// indexOf is a tiny Grep helper to avoid pulling "strings" for one call.
-func indexOf(hay, needle string) int {
-	if len(needle) == 0 {
-		return 0
-	}
-	for i := 0; i+len(needle) <= len(hay); i++ {
-		if hay[i:i+len(needle)] == needle {
-			return i
-		}
-	}
-	return -1
 }
 
 // findReservationByIdempKey looks up an existing credit_reservation + its

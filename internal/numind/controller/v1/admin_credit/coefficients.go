@@ -134,6 +134,8 @@ func (c *CoefficientController) ListCoefficients(ctx *gin.Context) {
 	}
 
 	// Independent count query (avoid GORM session pollution).
+	// Must mirror the `db` query's is_active switch (including "all" → no filter)
+	// to keep pagination total accurate (review P2-1 fix).
 	var total int64
 	countDB := c.ds.DB().WithContext(ctx).Model(&model.CreditEstimationCoefficient{})
 	switch req.IsActive {
@@ -141,6 +143,8 @@ func (c *CoefficientController) ListCoefficients(ctx *gin.Context) {
 		countDB = countDB.Where("is_active = ?", true)
 	case "0":
 		countDB = countDB.Where("is_active = ?", false)
+	case "all":
+		// no filter (matches list query's semantics)
 	}
 	if req.Provider != "" {
 		countDB = countDB.Where("provider = ?", req.Provider)
