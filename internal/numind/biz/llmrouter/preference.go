@@ -65,8 +65,8 @@ func (r *Router) GetModels(ctx context.Context, feature string) ([]model.LLMMode
 	if err := r.ds.DB().WithContext(ctx).
 		Table("ai_service AS s").
 		Joins("JOIN task_profile_service tps ON tps.service_id = s.id").
-		Where("tps.task_profile_id = ? AND tps.role = ? AND s.is_active = ? AND s.deprecated_at IS NULL",
-			tp.ID, model.TaskProfileRoleAllowed, true).
+		Where("tps.task_profile_id = ? AND tps.role = ? AND s.is_active = ? AND s.deprecated_at IS NULL AND s.is_thinking = ?",
+			tp.ID, model.TaskProfileRoleAllowed, true, false).
 		Order("s.sort_order ASC, s.id ASC").
 		Select("s.*").
 		Scan(&services).Error; err != nil {
@@ -210,9 +210,11 @@ func (r *Router) GetPreferences(ctx context.Context, userID uint) (map[string]Pr
 			result[feature] = PreferenceResult{}
 			continue
 		}
+		// 前端已隐藏深度思考开关（ModelSelector.vue），默认始终开启深度思考；
+		// 若模型不支持 thinking，SavePreference 会拒绝，此默认只影响 supports_thinking=1 的路径
 		result[feature] = PreferenceResult{
 			ModelKey: svc.ModelKey,
-			Thinking: false,
+			Thinking: true,
 		}
 	}
 

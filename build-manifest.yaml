@@ -1,6 +1,38 @@
 schema_version: "1.0"
 
 features:
+  - id: "hotfix-default-thinking-mode"
+    ndf_version: "1.1"
+    description: "SOP/Chatbot 默认开启深度思考模式：ModelSelector 下拉过滤 thinking 变体（避免用户选中 -thinking 模型触发 400），后端 GetPreferences 默认 thinking=true，存量 user_model_preference 数据批量翻转 thinking=1"
+    track: "hotfix"
+    stage: "H2"
+    classification_reason: "小改动：仅 numind-server 1 仓库，biz/llmrouter/preference.go 2 处 edit + 1 个轻量 data migration（UPDATE 单句），零业务逻辑风险；前端无需改动（store 已默认 thinking=true 回退）"
+    last_updated_by: "ai-h1"
+    last_updated_at: "2026-04-20T00:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/default-thinking-mode"
+    artifacts: {}
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 0
+      current_task: "H2: 等 H3 merge-push 触发 dev 部署后做 gstack /qa"
+    rollback: "revert fix commit on develop；若 migration 已应用，DB 侧执行 UPDATE user_model_preference SET thinking = 0 WHERE thinking = 1（但这会丢失 hotfix 后用户真实偏好，慎用）"
+    last_verified:
+      at: "2026-04-20T00:00:00+08:00"
+      method: "go build ./... + go vet ./... 全绿；dev DB 现有 4 条 user_model_preference 记录（1 chatbot + 3 sop）全部已 thinking=1 → migration 在 dev 为 no-op（prod 上线时应用保障存量）"
+      lint: "pass (go build 无 error；cgo sqlite-vec deprecated warning 与本 hotfix 无关)"
+      type_check: "n/a (Go)"
+      tests: "pre-existing TestCreateRun_FreeUserReturnsTypedError 在 develop 原样 FAIL（commit 9870d7b 引入，不属本 hotfix 范畴）；llmrouter 无 test 文件"
+    decisions:
+      - "2026-04-20: Triage 5 条标准全绿 → Hotfix；用户需求是默认深度思考，且前端深度思考开关已隐藏（ModelSelector.vue:91 v-if=\"false\"），只能从后端默认值切入"
+      - "2026-04-20: 诊断发现 3 个点 → (1) GetModels 下拉返回了 is_thinking=true 的变体 → 用户点击触发 SavePreference 第 235 行拒绝；(2) GetPreferences 默认 Thinking=false → 前端 store 收到 false 后盖掉 ?? true 回退；(3) 存量数据已有 thinking=0 记录。修复：GetModels SQL 加过滤 + GetPreferences 默认 true + migration UPDATE 存量"
+      - "2026-04-20: H2 验证 — dev DB 无需迁移（全 thinking=1），代码 build 通过；等 H3 merge-push 后 gstack /qa 走一次 SOP 页面 ModelSelector 下拉流程做端到端验证"
+    blockers: []
+    created_at: "2026-04-20T00:00:00+08:00"
+
   - id: "hotfix-model-selector-overflow"
     ndf_version: "1.1"
     description: "SOP 顶栏 ModelSelector 下拉弹窗右侧溢出视口被裁切（pill 在 .header__right 右对齐，但 .model-dropdown 用 left:0 向右展开）"
