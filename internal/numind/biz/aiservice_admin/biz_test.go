@@ -1128,6 +1128,201 @@ func TestRouteCRUD_LastActiveGuardOnUpdateDeactivate(t *testing.T) {
 	assert.Contains(t, e.Message, "至少保留一条激活路由")
 }
 
+// ----------------------------------------------------------------------------
+// CreateServiceWithRoute tests — atomic service + route INSERT
+// ----------------------------------------------------------------------------
+
+// TestCreateServiceWithRoute_Atomic_Success verifies that a valid request creates
+// both the ai_service row and the ai_service_route row in one transaction, and
+// that both end up wired together (route.model_id == service.id).
+func TestCreateServiceWithRoute_Atomic_Success(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	b := aiservice_admin.New(reg, db)
+
+	// Seed a provider so the FK check passes.
+	providerID := seedProvider(t, db, "provider-with-route")
+
+	svcActive := true
+	routeActive := true
+	req := aiservice_admin.CreateServiceWithRouteRequest{
+		Service: aiservice_admin.CreateServiceInner{
+			ModelKey:    "new-service-key",
+			DisplayName: "New Service",
+			ServiceType: "llm",
+			IsActive:    &svcActive,
+		},
+		Route: aiservice_admin.CreateRouteInner{
+			ProviderID:      providerID,
+			ProviderModelID: "upstream-model-id",
+			Priority:        5,
+			IsActive:        &routeActive,
+		},
+	}
+	result, err := b.CreateServiceWithRoute(context.Background(), req, 1, "admin")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.Service)
+	require.NotNil(t, result.Route)
+
+	assert.Equal(t, "new-service-key", result.Service.ModelKey)
+	assert.True(t, result.Service.IsActive)
+	assert.Equal(t, result.Service.ID, result.Route.ServiceID, "route.model_id must reference the new service")
+	assert.Equal(t, "upstream-model-id", result.Route.ProviderModelID)
+	assert.Equal(t, 5, result.Route.Priority)
+	assert.True(t, result.Route.IsActive)
+
+	// Verify both rows are actually persisted.
+	var svcRow model.AIService
+	require.NoError(t, db.First(&svcRow, result.Service.ID).Error)
+	assert.Equal(t, "new-service-key", svcRow.ModelKey)
+
+	var routeRow model.AIServiceRoute
+	require.NoError(t, db.First(&routeRow, result.Route.ID).Error)
+	assert.Equal(t, svcRow.ID, routeRow.ModelID)
+	assert.Equal(t, providerID, routeRow.ProviderID)
+
+	// Both audit log entries should exist.
+	var auditCount int64
+	require.NoError(t, db.Model(&model.AIServiceAuditLog{}).
+		Where("target_type = ? AND target_id = ?", model.AuditTargetService, svcRow.ID).
+		Count(&auditCount).Error)
+	assert.EqualValues(t, 1, auditCount, "service.create audit log must be written")
+
+	var routeAuditCount int64
+	require.NoError(t, db.Model(&model.AIServiceAuditLog{}).
+		Where("target_type = ? AND target_id = ?", model.AuditTargetRoute, routeRow.ID).
+		Count(&routeAuditCount).Error)
+	assert.EqualValues(t, 1, routeAuditCount, "route.create audit log must be written")
+}
+
+// TestCreateServiceWithRoute_RouteFailure_RollsBack verifies that when the route
+// INSERT fails (here: FK-like guard surfaces as 400 before the transaction even
+// starts for unknown provider), the service row is NOT left dangling.
+func TestCreateServiceWithRoute_RouteFailure_RollsBack(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	b := aiservice_admin.New(reg, db)
+
+	// No provider seeded — provider_id=99999 does not exist.
+	req := aiservice_admin.CreateServiceWithRouteRequest{
+		Service: aiservice_admin.CreateServiceInner{
+			ModelKey:    "rollback-test-key",
+			DisplayName: "Rollback Test",
+			ServiceType: "llm",
+		},
+		Route: aiservice_admin.CreateRouteInner{
+			ProviderID:      99999, // does not exist
+			ProviderModelID: "upstream-x",
+		},
+	}
+	_, err := b.CreateServiceWithRoute(context.Background(), req, 1, "admin")
+	require.Error(t, err, "must fail when provider does not exist")
+	var e *errno.Errno
+	require.ErrorAs(t, err, &e)
+	assert.Equal(t, 400, e.HTTP)
+
+	// Service must NOT be persisted.
+	var count int64
+	require.NoError(t, db.Model(&model.AIService{}).
+		Where("model_key = ?", "rollback-test-key").
+		Count(&count).Error)
+	assert.EqualValues(t, 0, count, "service must be rolled back (or never inserted) on route failure")
+
+	// And of course no route row either.
+	var routeCount int64
+	require.NoError(t, db.Model(&model.AIServiceRoute{}).
+		Where("provider_model_id = ?", "upstream-x").
+		Count(&routeCount).Error)
+	assert.EqualValues(t, 0, routeCount)
+}
+
+// TestCreateServiceWithRoute_DuplicateModelKey returns 409 when model_key already
+// exists, regardless of whether the pre-existing row was created via this endpoint
+// or direct INSERT.
+func TestCreateServiceWithRoute_DuplicateModelKey(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	b := aiservice_admin.New(reg, db)
+
+	providerID := seedProvider(t, db, "provider-dup-key")
+	// Pre-seed a service with the same model_key.
+	existing := &model.AIService{ModelKey: "dup-key", DisplayName: "Existing", ServiceType: "llm", IsActive: true}
+	require.NoError(t, db.Create(existing).Error)
+
+	req := aiservice_admin.CreateServiceWithRouteRequest{
+		Service: aiservice_admin.CreateServiceInner{
+			ModelKey:    "dup-key",
+			DisplayName: "Duplicate",
+			ServiceType: "llm",
+		},
+		Route: aiservice_admin.CreateRouteInner{
+			ProviderID:      providerID,
+			ProviderModelID: "anything",
+		},
+	}
+	_, err := b.CreateServiceWithRoute(context.Background(), req, 1, "admin")
+	require.Error(t, err)
+	var e *errno.Errno
+	require.ErrorAs(t, err, &e)
+	assert.Equal(t, 409, e.HTTP)
+	assert.Equal(t, "AIService.ModelKeyExists", e.Code)
+}
+
+// ----------------------------------------------------------------------------
+// ListServices route_count tests — route_count must come back on every list row
+// ----------------------------------------------------------------------------
+
+// TestListServices_RouteCountPopulated verifies that each returned ServiceListItem
+// carries RouteCount equal to the number of *active* routes targeting that service.
+// Orphan services (no active routes) report RouteCount=0 so the admin UI can flag them.
+func TestListServices_RouteCountPopulated(t *testing.T) {
+	db := newTestDB(t)
+	reg := newMockRegistry()
+	providerID := seedProvider(t, db, "provider-for-route-count")
+
+	// Service with 2 active routes.
+	svcWithRoutes := &model.AIService{ModelKey: "svc-with-routes", DisplayName: "With Routes", ServiceType: "llm", IsActive: true}
+	require.NoError(t, db.Create(svcWithRoutes).Error)
+	_ = reg.SaveService(context.Background(), svcWithRoutes, 1, "test") // mirror into reg so mock ListServices sees it
+	providerID2 := seedProvider(t, db, "provider-for-route-count-2")
+	require.NoError(t, db.Create(&model.AIServiceRoute{ModelID: svcWithRoutes.ID, ProviderID: providerID, ProviderModelID: "m1", IsActive: true}).Error)
+	require.NoError(t, db.Create(&model.AIServiceRoute{ModelID: svcWithRoutes.ID, ProviderID: providerID2, ProviderModelID: "m2", IsActive: true}).Error)
+
+	// Service with 1 inactive route → RouteCount must be 0 (active-only count).
+	svcInactiveRoute := &model.AIService{ModelKey: "svc-inactive-route", DisplayName: "Inactive", ServiceType: "llm", IsActive: true}
+	require.NoError(t, db.Create(svcInactiveRoute).Error)
+	_ = reg.SaveService(context.Background(), svcInactiveRoute, 1, "test")
+	inactiveRoute := &model.AIServiceRoute{ModelID: svcInactiveRoute.ID, ProviderID: providerID, ProviderModelID: "m3", IsActive: false}
+	require.NoError(t, db.Create(inactiveRoute).Error)
+	// Workaround for the GORM `default:true` bool gotcha — see CLAUDE.md database.md §6.
+	// Create() silently writes is_active=true even though the struct says false; fix with UpdateColumn.
+	require.NoError(t, db.Model(inactiveRoute).UpdateColumn("is_active", false).Error)
+
+	// Orphan service (no route) — this is the exact failure mode from 2026-04-19.
+	svcOrphan := &model.AIService{ModelKey: "svc-orphan", DisplayName: "Orphan", ServiceType: "llm", IsActive: true}
+	require.NoError(t, db.Create(svcOrphan).Error)
+	_ = reg.SaveService(context.Background(), svcOrphan, 1, "test")
+
+	b := aiservice_admin.New(reg, db)
+	res, err := b.ListServices(context.Background(), registry.ServiceFilter{}, 1, 50)
+	require.NoError(t, err)
+
+	byKey := make(map[string]*aiservice_admin.ServiceListItem)
+	for _, item := range res.List {
+		byKey[item.ModelKey] = item
+	}
+
+	require.Contains(t, byKey, "svc-with-routes")
+	assert.Equal(t, 2, byKey["svc-with-routes"].RouteCount)
+
+	require.Contains(t, byKey, "svc-inactive-route")
+	assert.Equal(t, 0, byKey["svc-inactive-route"].RouteCount, "inactive routes must NOT count")
+
+	require.Contains(t, byKey, "svc-orphan")
+	assert.Equal(t, 0, byKey["svc-orphan"].RouteCount, "orphan service must report 0")
+}
+
 // TestCreateService_IsActiveFalse verifies that an AIService created with
 // is_active=false is actually persisted as false. Regression for the GORM
 // `default:true` gotcha: without the UpdateColumn fixup in gormStore.SaveService,

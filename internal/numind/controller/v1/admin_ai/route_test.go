@@ -44,6 +44,9 @@ func (s *stubBiz) GetService(_ context.Context, _ uint64) (*aiservice_admin.Serv
 func (s *stubBiz) CreateService(_ context.Context, _ *model.AIService, _ uint64, _ string) (*model.AIService, error) {
 	panic("not implemented")
 }
+func (s *stubBiz) CreateServiceWithRoute(_ context.Context, _ aiservice_admin.CreateServiceWithRouteRequest, _ uint64, _ string) (*aiservice_admin.CreateServiceWithRouteResult, error) {
+	panic("not implemented")
+}
 func (s *stubBiz) UpdateService(_ context.Context, _ *model.AIService, _ uint64, _ string) error {
 	panic("not implemented")
 }

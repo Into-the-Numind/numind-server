@@ -189,6 +189,46 @@ func (ctrl *AIServiceController) CreateService(c *gin.Context) {
 }
 
 // ----------------------------------------------------------------------------
+// POST /v1/admin/ai/services-with-route
+// ----------------------------------------------------------------------------
+
+// CreateServiceWithRoute atomically creates a service and its first route in a
+// single transaction. Plugs the hole that caused the 2026-04-19 SalesRAG outage
+// (ai_service rows created via manual SQL without paired ai_service_route rows).
+//
+// Body:
+//
+//	{
+//	  "service": { model_key, display_name, service_type, ... },
+//	  "route":   { provider_id, provider_model_id, priority, is_active }
+//	}
+//
+// Response data: {"service": AIService, "route": RouteDTO}
+func (ctrl *AIServiceController) CreateServiceWithRoute(c *gin.Context) {
+	log.C(c).Infow("Admin create AI service with route called")
+
+	var req aiservice_admin.CreateServiceWithRouteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
+		return
+	}
+
+	actorID, actorName := actorFromContext(c)
+	result, bizErr := ctrl.biz.CreateServiceWithRoute(c.Request.Context(), req, actorID, actorName)
+	if bizErr != nil {
+		if isErrno(bizErr) {
+			core.WriteResponse(c, bizErr, nil)
+			return
+		}
+		log.C(c).Errorw("Failed to create AI service with route", "error", bizErr)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("创建失败，请稍后重试"), nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{"service": result.Service, "route": result.Route})
+}
+
+// ----------------------------------------------------------------------------
 // PUT /v1/admin/ai/services/:id
 // ----------------------------------------------------------------------------
 

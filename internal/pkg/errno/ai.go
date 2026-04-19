@@ -51,4 +51,8 @@ var (
 	// ErrAIProviderInUse is returned when a provider delete is attempted but active routes
 	// still reference the provider.
 	ErrAIProviderInUse = &Errno{HTTP: 409, Code: "AIService.ProviderInUse", Message: "AI 供应商被路由引用，无法删除"}
+
+	// ErrAIServiceModelKeyExists is returned when a service create is attempted with a
+	// model_key that already exists in ai_service (unique index violation).
+	ErrAIServiceModelKeyExists = &Errno{HTTP: 409, Code: "AIService.ModelKeyExists", Message: "AI 服务 model_key 已存在"}
 )
