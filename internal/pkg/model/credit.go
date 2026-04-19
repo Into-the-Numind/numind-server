@@ -63,6 +63,15 @@ const (
 	GrantSourceB2BGrant     = "b2b_grant"
 )
 
+// CreditTransaction Operation 前缀。普通扣减 / 退还使用业务 op 名（如
+// "sop_run"）；reconcile top-up 补扣使用 "reconcile:" 前缀；reconcile 补扣
+// 时余额不足产生的债记账使用 "reconcile_debt:" 前缀（spec §5.3）。
+// 查询债记账：WHERE operation LIKE 'reconcile_debt:%'。
+const (
+	CreditTxOpPrefixReconcile     = "reconcile:"
+	CreditTxOpPrefixReconcileDebt = "reconcile_debt:"
+)
+
 // CreditTransaction 积分流水
 type CreditTransaction struct {
 	ID            uint64    `gorm:"primaryKey;autoIncrement" json:"id"`

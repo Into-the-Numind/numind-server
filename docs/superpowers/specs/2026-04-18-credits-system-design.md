@@ -1705,7 +1705,7 @@ Output: `refunded_credits`, `refunded_items`, `final_status=refunded`
 | legacy_tier 用户调 estimate | 返回 `{skip_deduction:true, sufficient: per CanRunSOP}` | 新增 E2E |
 | Reserve 时余额刚好耗尽（race） | DeductCredits `FOR UPDATE` 行锁保证原子；返回 `ErrInsufficientCredits` | 压测（手工，S5 外） |
 | Reconcile 时 reservation 已终态 | 返回 `ErrAlreadyFinalized`，defer 忽略 | 单元测试 |
-| delta 极大（actual >> reserved 10x） | 按 actual 补扣；超 balance 留负债 credit_transaction type='reconcile_debt' | 单元测试 |
+| delta 极大（actual >> reserved 10x） | 按 actual 补扣；超 balance 时写 credit_transaction `operation='reconcile_debt:<op>'` + `amount=delta`（正），reservation 仍然 reconciled，不阻塞业务。查询：`WHERE operation LIKE 'reconcile_debt:%'`（2026-04-19 AI-6 实施） | 单元测试 TestReconcile_Topup_Insufficient_WritesDebtLedger |
 | 同 SOP run 重试（双击） | `uk_idempotency_key` 命中，返回已存在 reservation，不重复扣 | E2E |
 | Admin 改系数后新 Reserve 用新 version，in-flight Reservation 用老 version Reconcile | `coefficient_id` 冻结快照保证 | 单元测试 |
 | Cron 扫 24h 未 reconcile | 自动 Refund `reason=expired_by_cron` | 单元 + 定时任务集成测试 |

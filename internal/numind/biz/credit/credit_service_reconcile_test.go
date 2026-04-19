@@ -98,6 +98,48 @@ func TestReconcile_ActualGreaterThanReserved_TopsUp(t *testing.T) {
 	assert.EqualValues(t, 870, acc.Balance)
 }
 
+// --- AI-6: Reconcile top-up with insufficient balance writes debt ledger ---
+
+// TestReconcile_Topup_Insufficient_WritesDebtLedger verifies that when
+// Reconcile top-up runs into ErrInsufficientCredits, the service:
+//  1. Does NOT fail the reservation (business already succeeded).
+//  2. Writes a CreditTransaction row with operation='reconcile_debt:<op>'
+//     and amount=delta (spec §5.3).
+//  3. Keeps the reservation state=reconciled so ops can audit the debt
+//     via `WHERE operation LIKE 'reconcile_debt:%'`.
+func TestReconcile_Topup_Insufficient_WritesDebtLedger(t *testing.T) {
+	now := time.Now()
+	// Seed a package with only 105 credits (barely enough to reserve 100,
+	// but not enough for the subsequent top-up of +30 → 130 actual).
+	svc, ds, rsv := setupReservation(t, 310, 100, []model.CreditPackage{
+		{Type: model.CreditTypeSubscription, TotalCredits: 105, RemainCredits: 105,
+			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
+	})
+
+	// After Reserve(100): package 105→5 remain, account 105→5. Now Reconcile
+	// with actual=130 → delta=+30, but only 5 left → ErrInsufficientCredits
+	// inside DeductCreditsTx → debt path.
+	err := svc.Reconcile(context.Background(), rsv.ID, 130)
+	require.NoError(t, err, "debt path should NOT fail reconcile; business already succeeded")
+
+	// Reservation transitioned to reconciled (not blocked by debt).
+	var row model.CreditReservation
+	require.NoError(t, ds.DB().First(&row, rsv.ID).Error)
+	assert.Equal(t, "reconciled", row.Status, "reservation must still finalize")
+	require.NotNil(t, row.Delta)
+	assert.EqualValues(t, 30, *row.Delta)
+
+	// Debt row written with operation prefix + amount=delta + biz ref to rsv.
+	var debts []model.CreditTransaction
+	require.NoError(t, ds.DB().
+		Where("user_id = ? AND operation LIKE ?", uint(310), model.CreditTxOpPrefixReconcileDebt+"%").
+		Find(&debts).Error)
+	require.Len(t, debts, 1, "exactly one reconcile_debt row expected")
+	assert.EqualValues(t, 30, debts[0].Amount, "amount should equal unpaid delta")
+	assert.Equal(t, model.CreditTxOpPrefixReconcileDebt+string(credit.OpSopRun), debts[0].Operation)
+	assert.Equal(t, "reservation", debts[0].BizRefType)
+}
+
 // --- Task C.4: Reconcile exact-match path (delta=0, no-op on balances) ---
 
 func TestReconcile_ActualEqualsReserved_Noop(t *testing.T) {

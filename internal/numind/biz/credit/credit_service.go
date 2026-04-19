@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -478,24 +479,34 @@ func (c *creditsImpl) reconcileWithTokens(
 			reconcileDirection = "topup"
 			// Top-up: FIFO debit from whatever packages are active NOW.
 			if _, err := c.biz.DeductCreditsTx(ctx, tx, row.UserID, delta,
-				"reconcile:"+row.Operation); err != nil {
+				model.CreditTxOpPrefixReconcile+row.Operation); err != nil {
 				// If the user no longer has enough credits, we still reconcile
 				// (record the debt via delta) rather than blocking completion —
 				// the operation already succeeded and the user owes credits.
-				// Per spec §5.3: "type='reconcile_debt'".
-				// Simplest honest implementation: just surface the error and
-				// let the caller decide (the defer path treats errors as fatal
-				// and fails the reservation). For R1 we accept this — expand to
-				// debt-tracking in a follow-up.
 				if !errors.Is(err, ErrInsufficientCredits) {
 					return err
 				}
-				// For ErrInsufficientCredits we log + continue (partial debt).
-				// P1-2 tech debt: no reconcile_debt CreditTransaction row is
-				// written here (spec §5.3 follow-up). hasDebt=true surfaces via
-				// Langfuse span so ops can audit until the ledger is built.
+				// ErrInsufficientCredits → log + continue + 写 debt 台账（spec §5.3）。
+				// CreditTransaction 以 amount=delta（正，表示欠多少）+
+				// operation="reconcile_debt:<op>" 记录，供 ops 事后按
+				// `WHERE operation LIKE 'reconcile_debt:%'` 审计与追收。
+				// hasDebt=true 同时上报 Langfuse span。
 				hasDebt = true
-				log.Warnw("Reconcile top-up insufficient — recording as debt",
+				debtRow := &model.CreditTransaction{
+					UserID:     row.UserID,
+					PackageID:  0, // 无具体 package（扣不到任何包才进这条分支）
+					Amount:     delta,
+					Operation:  model.CreditTxOpPrefixReconcileDebt + row.Operation,
+					BizRefType: "reservation",
+					BizRefID:   strconv.FormatUint(reservationID, 10),
+					CreatedAt:  time.Now(),
+				}
+				if derr := c.store.Credits().CreateTransaction(ctx, tx, debtRow); derr != nil {
+					// 台账失败不阻塞对账（span has_debt=true 已是兜底），但记 error log。
+					log.Errorw("Reconcile debt ledger write failed",
+						"reservation_id", reservationID, "delta", delta, "err", derr)
+				}
+				log.Warnw("Reconcile top-up insufficient — recorded as debt",
 					"reservation_id", reservationID, "delta", delta, "err", err)
 			}
 		default:
