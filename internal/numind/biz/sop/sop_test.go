@@ -86,14 +86,11 @@ func TestCreateTemplateByUser_TrailingChatDefaultsToTrue(t *testing.T) {
 	assert.True(t, tmpl.TrailingChatEnabled, "omitted trailing_chat_enabled should default to true")
 }
 
-// TestCreateRun_FreeUserReturnsTypedError verifies that a free-tier user hitting
-// CreateRun gets a typed *errno.Errno (SOP.RunDenied, HTTP 403), not a plain
-// errors.New. Regression for the bug where controller mapped biz denial to 500.
-//
-// user table is hand-rolled via raw SQL because model.User has a GORM
-// `type:enum('legacy_tier','credits')` tag on billing_mode that SQLite
-// AutoMigrate cannot parse. Same pattern as biz/credit/grant_membership_test.go.
-func TestCreateRun_FreeUserReturnsTypedError(t *testing.T) {
+// newCreateRunTestDB sets up an in-memory SQLite with the hand-rolled user
+// table (MySQL ENUM on billing_mode can't AutoMigrate on SQLite — same pattern
+// as biz/credit/grant_membership_test.go) plus AutoMigrate for non-ENUM models.
+func newCreateRunTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
@@ -125,16 +122,30 @@ func TestCreateRun_FreeUserReturnsTypedError(t *testing.T) {
 			last_login      DATETIME
 		)`).Error)
 
+	require.NoError(t, db.AutoMigrate(
+		&model.UserTemplatePermission{},
+		&model.SopTemplate{},
+	), "auto-migrate")
+
+	return db
+}
+
+// TestCreateRun_FreeUserReturnsTypedError verifies that a free-tier user hitting
+// CreateRun gets a typed *errno.Errno (SOP.RunDenied, HTTP 403), not a plain
+// errors.New. Regression for the bug where controller mapped biz denial to 500.
+func TestCreateRun_FreeUserReturnsTypedError(t *testing.T) {
+	db := newCreateRunTestDB(t)
+
 	require.NoError(t, db.Exec(
-		`INSERT INTO user (created_at, updated_at, user_tier, billing_mode, monthly_sop_runs)
-		 VALUES (?, ?, 'free', 'credits', 0)`,
+		`INSERT INTO user (id, created_at, updated_at, user_tier, billing_mode, monthly_sop_runs)
+		 VALUES (1, ?, ?, 'free', 'credits', 0)`,
 		time.Now(), time.Now(),
 	).Error)
 
 	ds := store.NewTestStore(db)
 	b := sop.NewSopBiz(ds, nil, nil)
 
-	_, err = b.CreateRun(context.Background(), uint(1), uint(1), "any text")
+	_, err := b.CreateRun(context.Background(), uint(1), uint(1), "any text")
 	require.Error(t, err, "free-tier user must be denied")
 
 	var e *errno.Errno
@@ -142,4 +153,46 @@ func TestCreateRun_FreeUserReturnsTypedError(t *testing.T) {
 	assert.Equal(t, "SOP.RunDenied", e.Code, "error code should be SOP.RunDenied")
 	assert.Equal(t, 403, e.HTTP, "HTTP status should be 403 (Forbidden), not 500")
 	assert.Contains(t, e.Message, "免费用户", "message should preserve Chinese reason for user display")
+}
+
+// TestCreateRun_TemplateUnauthorizedReturnsTypedError verifies that a sub-user
+// who has permission records configured but not for the requested template
+// gets *errno.Errno{Code:"Config.TemplateUnauthorized", HTTP:403} — not 500.
+// Regression for the same 500-wrapping bug, template-permission branch.
+func TestCreateRun_TemplateUnauthorizedReturnsTypedError(t *testing.T) {
+	db := newCreateRunTestDB(t)
+
+	future := time.Now().Add(24 * time.Hour)
+	// Parent (id=1): primary customer, passes HasTemplatePermission fast path,
+	// exists here only so the sub-user's parent_user_id FK is satisfiable logically.
+	require.NoError(t, db.Exec(
+		`INSERT INTO user (id, created_at, updated_at, user_tier, tier_expires, billing_mode)
+		 VALUES (1, ?, ?, 'premium', ?, 'credits')`,
+		time.Now(), time.Now(), future,
+	).Error)
+	// Sub-user (id=2): premium so CanRunSOP passes → we reach the template check.
+	require.NoError(t, db.Exec(
+		`INSERT INTO user (id, created_at, updated_at, parent_user_id, user_tier, tier_expires, billing_mode)
+		 VALUES (2, ?, ?, 1, 'premium', ?, 'credits')`,
+		time.Now(), time.Now(), future,
+	).Error)
+
+	// Grant sub-user permission ONLY for template 99 — requesting template 1
+	// must be denied.
+	require.NoError(t, db.Create(&model.UserTemplatePermission{
+		ParentUserID: 1,
+		SubUserID:    2,
+		TemplateID:   99,
+	}).Error)
+
+	ds := store.NewTestStore(db)
+	b := sop.NewSopBiz(ds, nil, nil)
+
+	_, err := b.CreateRun(context.Background(), uint(1), uint(2), "any text")
+	require.Error(t, err, "sub-user without permission for template 1 must be denied")
+
+	var e *errno.Errno
+	require.True(t, errors.As(err, &e), "biz should return *errno.Errno, got %T: %v", err, err)
+	assert.Equal(t, "Config.TemplateUnauthorized", e.Code)
+	assert.Equal(t, 403, e.HTTP, "HTTP status should be 403 (Forbidden), not 500")
 }
