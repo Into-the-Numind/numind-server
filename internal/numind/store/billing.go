@@ -314,13 +314,35 @@ func (s *billingStore) GetOrCreateAccount(ctx context.Context, userID uint) (*mo
 	return &result, nil
 }
 
-// GetPricingRule 获取匹配的定价规则（单次查询，精确匹配优先，fallback 到默认）
+// GetPricingRule 获取匹配的定价规则。三级 fallback（优先级从高到低）：
+//  1. 精确匹配 (service_type, provider, model)
+//  2. provider 通配 (service_type, provider, '')
+//  3. 全局兜底 (service_type, '', '')
+//
+// 全局兜底行由 migrations/seed_pricing_rules.sql 保证存在。任何未知
+// (provider, model) 都能命中全局行（保守价格 ~ ¥3/MTok input, ¥10/MTok
+// output），Reconcile 按真实 cost 多退少补。避免 ProviderFromModel 猜错
+// 导致 SOP/SalesRAG 在 CheckAndEstimate 就失败的生产事故。
 func (s *billingStore) GetPricingRule(ctx context.Context, serviceType, provider, modelName string) (*model.PricingRule, error) {
 	var rule model.PricingRule
+	// 一条 SQL 同时查三级命中，ORDER BY 选最精确的。
+	// 用 gorm.Expr 构造 CASE 表达式（Order 不支持 variadic 参数，用 Expr 占位）。
 	err := s.db.WithContext(ctx).
-		Where("service_type = ? AND provider = ? AND model IN (?, '') AND is_active = ?",
-			serviceType, provider, modelName, true).
-		Order("CASE WHEN model = '' THEN 1 ELSE 0 END").
+		Where(`service_type = ? AND is_active = ?
+			AND (
+				(provider = ? AND model = ?)
+				OR (provider = ? AND model = '')
+				OR (provider = '' AND model = '')
+			)`,
+			serviceType, true,
+			provider, modelName,
+			provider,
+		).
+		Order(gorm.Expr(`CASE
+			WHEN provider = ? AND model = ? THEN 0
+			WHEN provider = ? AND model = '' THEN 1
+			ELSE 2
+		END`, provider, modelName, provider)).
 		First(&rule).Error
 	if err != nil {
 		return nil, err

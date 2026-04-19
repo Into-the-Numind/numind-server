@@ -52,6 +52,17 @@ VALUES
   0.3, 0.6, 0, 0,
   1, NOW(), NOW()),
 
+-- 全局 LLM chat fallback —— 任何未知 (provider, model) 都命中这条。
+-- 定价按 prod 中等模型的保守上限（claude/gpt 档）估算：
+--   input ¥3/MTok，output ¥10/MTok
+-- 作用：防止 ProviderFromModel 猜错 + pricing_rule 未 seed 的新模型
+-- 导致 CheckAndEstimate 直接失败阻塞 SOP/SalesRAG。
+-- Reconcile 用真实 cost 多退少补——这里保守一点不会过度扣款。
+('llm_chat', '', '', 'flat', 'call',
+  3.0, 10.0, 0, 0,
+  3.0, 10.0, 0, 0,
+  1, NOW(), NOW()),
+
 -- ============================================================
 -- 2. LLM Vision 服务
 -- ============================================================

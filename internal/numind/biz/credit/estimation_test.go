@@ -130,6 +130,40 @@ func TestEstimateCredits_CeilRounding(t *testing.T) {
 	assert.EqualValues(t, 250, credits)
 }
 
+// TestEstimateCredits_ClampsToAtLeastOne verifies the floor behavior:
+// when cost rounds to 0 cents for very short prompts, the estimate is
+// clamped to 1 credit so Reserve's "estimated > 0" sanity check doesn't
+// reject legitimate short-prompt SOP runs (prod data shows ~30% nodes
+// have prompt < 200 chars).
+func TestEstimateCredits_ClampsToAtLeastOne(t *testing.T) {
+	db := newEstimationTestDB(t)
+	ds := store.NewTestStore(db)
+	calc := pricing.NewCalculator(ds.Billing())
+	biz := credit.NewEstimationBiz(ds, calc)
+
+	// Cheap pricing: 1¥/MTok input, 2¥/MTok output. Buffer 0.3.
+	seedCoefficient(t, db, "volc", "deepseek-v3-2-251201", "sop_run", 1.5, 0.5, 0.3, 1, true)
+	seedPricingRule(t, db, "llm_chat", "volc", "deepseek-v3-2-251201", 1, 2)
+
+	// promptChars=100 → promptTokens=150, completionTokens=75
+	// costYuan = (150/1e6 * 1) + (75/1e6 * 2) = 0.000300 yuan
+	// costCents = round(0.0300) = 0
+	// estimated (pre-floor) = ceil(0 * 1.3) = 0
+	// After floor: 1
+	credits, _, err := biz.EstimateCredits(context.Background(),
+		credit.OpSopRun, 100, "deepseek-v3-2-251201", "volc")
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, credits,
+		"short prompt that rounds to 0¢ should clamp to 1 credit so Reserve doesn't reject")
+
+	// promptChars=0 → still 0 (no clamp for zero-length; no real LLM call)
+	creditsZero, _, err := biz.EstimateCredits(context.Background(),
+		credit.OpSopRun, 0, "deepseek-v3-2-251201", "volc")
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, creditsZero,
+		"zero-length prompt should not be clamped (no LLM call will happen)")
+}
+
 // TestEstimateCredits_FallbackLookup verifies that when the exact
 // (provider, model, operation) is NOT seeded but the global fallback row
 // ('', '', '') IS seeded, the fallback is returned.

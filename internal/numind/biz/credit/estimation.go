@@ -102,6 +102,14 @@ func (b *estimationBiz) EstimateCredits(
 	// Apply safety buffer with ceil (conservative — over-reserve, refund
 	// delta at Reconcile).
 	estimated := int64(math.Ceil(float64(costCents) * (1 + coef.SafetyBufferPct)))
+
+	// Floor: 任何非零 prompt 都保证 ≥ 1 credit（最小扣减单位）。LLM 调用
+	// 即使极短也要扣 1 分（≈ 0.01 元），Reconcile 会按真实 cost 多退少补。
+	// 这个 floor 避免了 Reserve 阶段的 "estimated must be > 0" 硬检查在短
+	// prompt 场景误伤用户——生产数据上 ~30% 节点 prompt < 200 字符。
+	if estimated <= 0 && promptChars > 0 {
+		estimated = 1
+	}
 	return estimated, coef.ID, nil
 }
 
