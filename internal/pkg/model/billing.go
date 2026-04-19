@@ -81,14 +81,14 @@ type PricingRule struct {
 	Model                  string    `gorm:"size:100;uniqueIndex:uk_pricing_lookup" json:"model"`            // 空字符串 = 该 service+provider 的默认价格
 	BillingMode            string    `gorm:"size:20;not null;default:'flat'" json:"billing_mode"`            // tiered_token | flat
 	FlatUnit               string    `gorm:"size:10;not null;default:'call'" json:"flat_unit"`               // call | gb
-	InputPricePerMTok      float64   `gorm:"type:decimal(10,4);default:0" json:"input_price_per_mtok"`       // 每百万输入 tokens 价格（元）
-	OutputPricePerMTok     float64   `gorm:"type:decimal(10,4);default:0" json:"output_price_per_mtok"`      // 每百万输出 tokens 价格（元）
-	PricePerCall           float64   `gorm:"type:decimal(10,4);default:0" json:"price_per_call"`             // 每次调用价格（元）
-	PricePerGB             float64   `gorm:"type:decimal(10,4);default:0" json:"price_per_gb"`               // 每 GB 价格（元，COS 用）
-	SellInputPricePerMTok  float64   `gorm:"type:decimal(10,4);default:0" json:"sell_input_price_per_mtok"`  // 售价：每百万输入 tokens（元）
-	SellOutputPricePerMTok float64   `gorm:"type:decimal(10,4);default:0" json:"sell_output_price_per_mtok"` // 售价：每百万输出 tokens（元）
-	SellPricePerCall       float64   `gorm:"type:decimal(10,4);default:0" json:"sell_price_per_call"`        // 售价：每次调用（元）
-	SellPricePerGB         float64   `gorm:"type:decimal(10,4);default:0" json:"sell_price_per_gb"`          // 售价：每 GB（元）
+	InputPricePerMTok      float64   `gorm:"column:input_price_per_m_tok;type:decimal(10,4);default:0" json:"input_price_per_mtok"`       // 每百万输入 tokens 价格（元）
+	OutputPricePerMTok     float64   `gorm:"column:output_price_per_m_tok;type:decimal(10,4);default:0" json:"output_price_per_mtok"`      // 每百万输出 tokens 价格（元）
+	PricePerCall           float64   `gorm:"column:price_per_call;type:decimal(10,4);default:0" json:"price_per_call"`             // 每次调用价格（元）
+	PricePerGB             float64   `gorm:"column:price_per_gb;type:decimal(10,4);default:0" json:"price_per_gb"`               // 每 GB 价格（元，COS 用）
+	SellInputPricePerMTok  float64   `gorm:"column:sell_input_price_per_m_tok;type:decimal(10,4);default:0" json:"sell_input_price_per_mtok"`  // 售价：每百万输入 tokens（元）
+	SellOutputPricePerMTok float64   `gorm:"column:sell_output_price_per_m_tok;type:decimal(10,4);default:0" json:"sell_output_price_per_mtok"` // 售价：每百万输出 tokens（元）
+	SellPricePerCall       float64   `gorm:"column:sell_price_per_call;type:decimal(10,4);default:0" json:"sell_price_per_call"`        // 售价：每次调用（元）
+	SellPricePerGB         float64   `gorm:"column:sell_price_per_gb;type:decimal(10,4);default:0" json:"sell_price_per_gb"`          // 售价：每 GB（元）
 	IsActive               bool      `gorm:"default:true" json:"is_active"`
 	CreatedAt              time.Time `json:"created_at"`
 	UpdatedAt              time.Time `json:"updated_at"`
@@ -106,8 +106,8 @@ type PricingRuleTier struct {
 	TokenType   string    `gorm:"size:10;not null;index:idx_rule_type" json:"token_type"` // input | output
 	MinTokens   uint      `gorm:"not null;default:0" json:"min_tokens"`
 	MaxTokens   *uint     `json:"max_tokens"` // nil = 不限
-	CostPerMTok float64   `gorm:"type:decimal(12,6);not null;default:0" json:"cost_per_mtok"`
-	SellPerMTok float64   `gorm:"type:decimal(12,6);not null;default:0" json:"sell_per_mtok"`
+	CostPerMTok float64   `gorm:"column:cost_per_mtok;type:decimal(12,6);not null;default:0" json:"cost_per_mtok"`
+	SellPerMTok float64   `gorm:"column:sell_per_mtok;type:decimal(12,6);not null;default:0" json:"sell_per_mtok"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
