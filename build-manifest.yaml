@@ -1711,3 +1711,37 @@ features:
     blockers: []
     created_at: "2026-04-20T02:30:00+08:00"
     completed_at: null
+
+  - id: "user-info-missing-parent-user-id"
+    ndf_version: "1.0"
+    description: "修复 B2B2C 权限泄露 — GET /v1/users/me 白名单响应漏返 parent_user_id 导致子账户被误判为父账户，首页「客户管理」「配置中心」tab 对子账户可见"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "P0 权限 bug：(1) 单文件单行修复 (2) 不改 schema (3) 不新增 API (4) 无外部服务 (5) 修复方向是补齐字段，无新风险"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-20T03:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/user-info-missing-parent-user-id"
+    hotfix_artifacts:
+      diagnosis: "controller/v1/user/get.go:53-67 GetCurrentUser 用 gin.H 手动白名单拼响应，遗漏 parent_user_id 字段。model.User.ParentUserID 字段存在（user.go:19 *uint json:parent_user_id,omitempty），login 路径返回完整 &user 正常；但 /v1/users/me 调用会覆写前端 userInfo，parent_user_id 变 undefined。前端 src/stores/user.ts:33 isParentUser = userInfo.value?.parent_user_id == null，undefined == null 为 true → 子账户被判为父账户 → AppSidebar.vue:189-210 两个 tab 照常渲染"
+      review: null
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "git revert（单行 gin.H 字段增补，无 schema / 无 API 变更）"
+    last_verified:
+      at: "2026-04-20T03:00:00+08:00"
+      lint: "go vet ./internal/numind/controller/v1/user/... pass"
+      type_check: "go build ./... pass（仅 sqlite-vec cgo deprecated 警告，pre-existing）"
+      tests: null
+      test_summary: "纯字段补齐，无业务分支新增；子账户可见性 end-to-end 由前端登录后肉眼验证"
+    decisions:
+      - "2026-04-20: 选最小修复面 — 只补 gin.H 一个字段，不重构 handler 返回 model.User 整体。避免一次性暴露无关字段（password_hash 等），保留白名单 shape"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-20T03:00:00+08:00"
+    completed_at: "2026-04-20T03:00:00+08:00"
