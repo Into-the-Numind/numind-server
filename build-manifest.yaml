@@ -1310,3 +1310,53 @@ features:
     blockers: []
     created_at: "2026-04-19T17:45:00+08:00"
     completed_at: "2026-04-19T18:00:00+08:00"
+
+  - id: "sop-runs-error-mapping"
+    ndf_version: "1.0"
+    description: "POST /v1/sop/runs 对 free/无权用户业务拒绝误报 500，改为返回 403 + 结构化 errno code"
+    track: "hotfix"
+    stage: "H2"
+    classification_reason: "单仓库，3 文件改动（errno + biz + controller），不涉及 schema/API 新增/外部服务/支付逻辑。权限拦截逻辑零变更，仅改错误类型映射"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-19T22:15:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/sop-runs-error-mapping"
+    hotfix_artifacts:
+      diagnosis: |
+        dev 环境 POST /v1/sop/runs 返回 500。server 日志 22:00:51 显示：
+          warn sop/sop.go:270 User cannot run SOP
+          {"user_id":28, "user_tier":"free", "reason":"免费用户无法运行SOP，请升级为会员"}
+        业务拦截正确（free tier 不能跑 SOP），但响应 HTTP 是 500。
+        根因：
+        - biz/sop/sop.go::CreateRun 等级拒绝 (line 275) 和模板无权 (line 290)
+          返回 errors.New/fmt.Errorf 无类型 error
+        - controller/v1/sop/sop.go::CreateRun (line 564) 把所有 biz err 用
+          errno.InternalServerError.SetMessage("%s", err.Error()) 包装
+        - 结果：任何业务拒绝（free / 过期 / 次数耗尽 / 模板无权）统统报 500，
+          前端无法区分"服务器坏了"和"你要升级会员"
+      review: null
+    progress:
+      total_tasks: 4
+      completed_tasks: 4
+      reviewed_tasks: 4
+      current_task: null
+    rollback: "git revert merge commit on develop"
+    last_verified:
+      at: "2026-04-19T22:15:00+08:00"
+      lint: "pass (go vet clean；golangci-lint 两条 warning 为 pre-existing，非本 fix 引入)"
+      type_check: null
+      tests: "pass (go test ./... + 新增 TestCreateRun_FreeUserReturnsTypedError)"
+      test_summary: "单元断言 free 用户收到 *errno.Errno (Code=SOP.RunDenied, HTTP=403, message 含'免费用户')。dev 端 curl 验证待 CI 部署"
+    decisions:
+      - "2026-04-19: errno 新增 ErrSOPRunDenied (HTTP 403, SOP.RunDenied) + ErrTemplateUnauthorized (HTTP 403)。放在 config.go 与 ErrTemplateNotPublished 同文件，便于 SOP 相关错误归类"
+      - "2026-04-19: controller 改为 core.WriteResponse(c, err, nil) 直接透传。errno.Decode 按 *Errno 类型命中正确 HTTP；非 typed error 走 default 分支兜底 500，等价旧行为"
+      - "2026-04-19: scope 仅 CreateRun 一条调用链。其他 handler（GetNextNode/ExecuteNodeStream/GetRun/DeleteRun 等）同模式问题登记为 tech debt，避免本 hotfix diff 膨胀"
+    deferred:
+      - "controller/v1/sop/sop.go 其他 handler（GetNextNode/ExecuteNodeStream/ApplyBookmark/GetRun/DeleteRun/BatchDeleteRuns/GetRunDetail/ListMyRuns/ListRunChatMessages/GetRunStatus 等约 15 处）均使用 errno.InternalServerError 一刀切包装，存在同类 500-vs-403 误报风险。建议另开 hotfix 批量改为 core.WriteResponse(c, err, nil) 透传模式"
+      - "biz/sop/sop.go 其他方法（DeleteRun line 1610、BatchDeleteRuns line 1953）仍用 errors.New；若上述 controller 改造推进，biz 侧相应改为 typed errno（如 ErrForbidden）"
+      - "errno.Decode 基于 type switch 而非 errors.As，`fmt.Errorf(\"...: %w\", errno.Err)` 包装会降级为 500。当前调用点均返回 unwrapped errno，不受影响；如未来增加 wrap 需更新 Decode"
+    blockers: []
+    created_at: "2026-04-19T22:15:00+08:00"
+    completed_at: null
