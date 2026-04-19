@@ -1054,3 +1054,74 @@ features:
     blockers: []
     created_at: "2026-04-18T12:00:00+08:00"
     completed_at: null
+
+  - id: "markitdown-all-deps"
+    ndf_version: "1.0"
+    description: "Dockerfile 安装 markitdown[all] 替代 markitdown[pdf]，启用 DOCX/XLSX/PPTX 的 MarkItDown 原生转换器"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "Dockerfile 单行改动，Docker 层缓存重建"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-19T00:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/markitdown-all-deps"
+    hotfix_artifacts:
+      diagnosis: "document_parser.py 容器内直测：DOCX/XLSX/PPTX 报 MissingDependencyException，因 Dockerfile L72 只装 markitdown[pdf]"
+      review: null
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "Dockerfile 改回 markitdown[pdf]"
+    last_verified:
+      at: "2026-04-19T04:30:00+08:00"
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: "容器内 document_parser.py 直测 complex_table.docx/data.xlsx/slides.pptx 全部 success"
+    decisions: []
+    deferred: []
+    blockers: []
+    created_at: "2026-04-19T04:20:00+08:00"
+    completed_at: "2026-04-19T04:30:00+08:00"
+
+  - id: "unify-document-parser"
+    ndf_version: "1.0"
+    description: "统一文档解析器 — 将 EnhancedParser 从 biz/salesrag/adapter/ 搬到 internal/pkg/parser/，SOP 端点改用共享 parser，删除 pdf.go ~800 行重复代码，新增 xlsx/pptx/rtf 支持"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "架构重构（消除重复代码），单仓库改动，不改变外部 API"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-19T00:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/unify-document-parser"
+    hotfix_artifacts:
+      diagnosis: "docs/superpowers/specs/2026-04-19-unify-document-parser-spec.md"
+      review: "Sonnet code-review: 1 BLOCKER (RTF stub) + 2 IMPORTANT (xlsx/pptx no switch case, ext validation) — all fixed in follow-up commit 0c1006a"
+    progress:
+      total_tasks: 5
+      completed_tasks: 5
+      reviewed_tasks: 5
+      current_task: null
+    rollback: "git revert merge commit on develop"
+    last_verified:
+      at: "2026-04-19T05:22:00+08:00"
+      lint: "pass"
+      type_check: null
+      tests: null
+      test_summary: "parse_eval 基线对比：cn_en_mixed.pdf 97=, complex_table.docx 97=, legacy.doc 100=, long_doc_80p.pdf 81.5=, data.xlsx 0→84↑, slides.pptx 0→97↑. 无退化"
+    decisions:
+      - "2026-04-19: EnhancedParser 改名 DocumentParser，搬到 internal/pkg/parser/（controller + biz 都可 import）"
+      - "2026-04-19: 提取 runPythonParser(data, ext) 通用辅助函数，消除 3 处重复的 temp-file→Python→JSON 逻辑"
+      - "2026-04-19: RTF/XLSX/PPTX 统一走 runPythonParser → MarkItDown"
+    deferred:
+      - "sop.go 中仍有独立的 extractPrintableTextFromPDF (L2952)，与本次重构无关但属于残留重复代码"
+      - "port.DocumentParser 接口（返回 []KnowledgeChunk）与新 parser.DocumentParser（返回 string）签名不同，ingestion.go 是死代码待清理"
+    blockers: []
+    created_at: "2026-04-19T04:50:00+08:00"
+    completed_at: "2026-04-19T05:22:00+08:00"
