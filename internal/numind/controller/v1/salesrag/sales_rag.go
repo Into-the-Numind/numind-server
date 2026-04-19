@@ -1018,6 +1018,7 @@ func (ctrl *SalesRAGController) SaveLanguageStyle(c *gin.Context) {
 }
 
 // CheckSalesPermission 检查当前用户是否有销售智能体使用权限
+// 销售智能体/知识库已对所有登录用户开放（数据按 user_id 隔离），保留端点以兼容前端 UI gating
 func (ctrl *SalesRAGController) CheckSalesPermission(c *gin.Context) {
 	user := middleware.GetCurrentUser(c)
 	if user == nil {
@@ -1025,15 +1026,8 @@ func (ctrl *SalesRAGController) CheckSalesPermission(c *gin.Context) {
 		return
 	}
 
-	hasPermission, err := ctrl.b.Customers().CheckFeaturePermission(c, user.ID, model.FeatureKeySalesAgent)
-	if err != nil {
-		log.Errorw("Failed to check sales permission", "user_id", user.ID, "err", err)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("权限检查失败"), nil)
-		return
-	}
-
 	core.WriteResponse(c, nil, gin.H{
-		"has_permission": hasPermission,
+		"has_permission": true,
 	})
 }
 
