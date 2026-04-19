@@ -245,7 +245,11 @@ func TestCreateOrder_AntiEarlyRenewal(t *testing.T) {
 
 			uid := mustCreateUser(t, db, tc.tier, model.BillingModeCredits, tc.tierExpires)
 
-			_, err := b.CreateOrder(ctx, uid, uid, tc.productType, 1, model.PayChannelWechat)
+			// Q1: trial/monthly/yearly self-purchase is blocked for external callers.
+			// These tests pre-date Q1 and exercise the anti-early-renewal validation
+			// inside CreateOrder, so we mark the context as internal to bypass the
+			// Q1 gate and reach the legacy validation branches.
+			_, err := b.CreateOrder(WithInternalCaller(ctx), uid, uid, tc.productType, 1, model.PayChannelWechat)
 			require.Error(t, err, "CreateOrder should always error in tests (channel not configured when validation passes)")
 
 			if tc.expectErr != nil {
@@ -278,7 +282,9 @@ func TestCreateOrder_Trial_AlreadyPurchased_FreeUser(t *testing.T) {
 		Status:        model.CreditPackageExhausted,
 	}).Error)
 
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeTrial, 0, model.PayChannelWechat)
+	// Q1: internal caller bypasses self-purchase block so we can reach the
+	// HasTrialPackage guard (the original intent of this test).
+	_, err := b.CreateOrder(WithInternalCaller(context.Background()), uid, uid, model.ProductTypeTrial, 0, model.PayChannelWechat)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errno.ErrTrialAlreadyPurchased)
 }
@@ -305,6 +311,69 @@ func TestCreateOrder_Booster_TrialPackageOnly_NotSubscription_Rejected(t *testin
 	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 0, model.PayChannelWechat)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errno.ErrMembershipRequired, "trial user without subscription must be rejected")
+}
+
+// ---------- Q1.5: C-end self-purchase block ----------
+
+// Q1 business redesign: trial / monthly / yearly memberships must be granted
+// via parent's B2B grant path (biz/credit.GrantMembership), not purchased
+// by the C-end user. CreateOrder defensively rejects these product types
+// for external callers (no WithInternalCaller on ctx).
+func TestCreateOrder_Q1_SelfPurchaseDisabled(t *testing.T) {
+	cases := []struct {
+		name        string
+		productType string
+		months      int
+	}{
+		{"trial_rejected", model.ProductTypeTrial, 0},
+		{"monthly_rejected", model.ProductTypeMonthly, 1},
+		{"yearly_rejected", model.ProductTypeYearly, 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newPaymentTestDB(t)
+			ds := store.NewTestStore(db)
+			b := newPaymentBizForTest(ds)
+
+			uid := mustCreateUser(t, db, model.UserTierFree, model.BillingModeCredits, nil)
+
+			_, err := b.CreateOrder(context.Background(), uid, uid, tc.productType, tc.months, model.PayChannelWechat)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, errno.ErrMembershipSelfPurchaseDisabled,
+				"Q1 must reject external %s self-purchase", tc.productType)
+		})
+	}
+}
+
+// Booster remains self-purchasable under Q1.
+func TestCreateOrder_Q1_BoosterStillAllowed(t *testing.T) {
+	db := newPaymentTestDB(t)
+	ds := store.NewTestStore(db)
+	b := newPaymentBizForTest(ds)
+
+	future := time.Now().Add(30 * 24 * time.Hour)
+	uid := mustCreateUser(t, db, model.UserTierStandard, model.BillingModeCredits, &future)
+	mustCreateActiveSubscriptionPackage(t, db, uid)
+
+	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 0, model.PayChannelWechat)
+	require.Error(t, err, "expected channel-not-configured error (Q1 gate must not trip for booster)")
+	assert.NotErrorIs(t, err, errno.ErrMembershipSelfPurchaseDisabled,
+		"booster must not hit the Q1 self-purchase block")
+}
+
+// Internal callers (WithInternalCaller) bypass the Q1 block.
+func TestCreateOrder_Q1_InternalCallerBypass(t *testing.T) {
+	db := newPaymentTestDB(t)
+	ds := store.NewTestStore(db)
+	b := newPaymentBizForTest(ds)
+
+	uid := mustCreateUser(t, db, model.UserTierFree, model.BillingModeCredits, nil)
+
+	_, err := b.CreateOrder(WithInternalCaller(context.Background()), uid, uid, model.ProductTypeMonthly, 1, model.PayChannelWechat)
+	require.Error(t, err, "expected channel-not-configured (validation passes for internal caller)")
+	assert.NotErrorIs(t, err, errno.ErrMembershipSelfPurchaseDisabled,
+		"internal caller must bypass Q1 block")
 }
 
 // ---------- D.3: OnPaymentSuccess billing_mode switch ----------

@@ -60,12 +60,45 @@ func NewPaymentBiz(ds store.IStore, creditBiz credit.ICreditBiz) IPaymentBiz {
 	return b
 }
 
+// internalCallerKey is the context key that suppresses the Q1 C-end
+// self-purchase block. Set via WithInternalCaller(ctx) when invoking
+// CreateOrder from inside the server (e.g. historical flows, admin
+// operations). External API callers never set this — the authGroup
+// controllers build the context without the key, so the block triggers.
+type internalCallerKey struct{}
+
+// WithInternalCaller marks a context as an internal-caller context, allowing
+// CreateOrder to bypass the Q1 C-end self-purchase block for trial/monthly/yearly.
+// This is required because Q1 redesigned the business flow: C-end users no longer
+// self-purchase memberships (they go through B2B grant), but the server still
+// exercises the full payment path in tests and potentially in legacy admin flows.
+func WithInternalCaller(ctx context.Context) context.Context {
+	return context.WithValue(ctx, internalCallerKey{}, true)
+}
+
+// IsInternalCaller reports whether the context was marked as internal.
+func IsInternalCaller(ctx context.Context) bool {
+	v, _ := ctx.Value(internalCallerKey{}).(bool)
+	return v
+}
+
 // CreateOrder 创建支付订单
 func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, productType string, months int, payChannel string) (*model.Order, error) {
 	// 校验产品类型
 	amount := model.GetProductAmount(productType, months)
 	if amount <= 0 {
 		return nil, fmt.Errorf("invalid product type: %s", productType)
+	}
+
+	// Q1 B2B2C 防御性封禁: C 端不支持自购会员（trial/monthly/yearly）。
+	// 会员只能通过父账户"帮开通"路径（credit.GrantMembership）赋予。
+	// Booster(加量包) 保持 C 端自购（spec §3.7）。
+	// 内部调用（WithInternalCaller）可绕过此检查。
+	if !IsInternalCaller(ctx) {
+		switch productType {
+		case model.ProductTypeTrial, model.ProductTypeMonthly, model.ProductTypeYearly:
+			return nil, errno.ErrMembershipSelfPurchaseDisabled
+		}
 	}
 
 	// 购买限制检查
