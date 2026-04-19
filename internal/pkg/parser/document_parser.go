@@ -101,9 +101,16 @@ func (p *DocumentParser) Parse(ctx context.Context, file io.Reader, filename str
 		text = string(data)
 		text = p.formatText(text)
 
+	case ".xlsx", ".pptx":
+		// Excel / PowerPoint 通过 Python MarkItDown 解析
+		text, _, err = p.runPythonParser(data, ext)
+		if err != nil {
+			return "", fmt.Errorf("%s parsing failed: %w", ext, err)
+		}
+		text = p.formatText(text)
+
 	default:
-		// 不支持的文件类型，返回明确错误而不是强制转换
-		return "", fmt.Errorf("unsupported file type: %s (extension: %s). Supported: .pdf, .docx, .doc, .txt, .md, .html, .xlsx, .pptx", filename, ext)
+		return "", fmt.Errorf("unsupported file type: %s (extension: %s). Supported: .pdf, .docx, .doc, .rtf, .txt, .md, .html, .xlsx, .pptx", filename, ext)
 	}
 
 	// 4. 最终 UTF-8 清洗确保安全
@@ -133,12 +140,15 @@ func (p *DocumentParser) extractTextFromPDF(data []byte) (string, int, error) {
 	return p.extractTextFromPDFLegacy(data)
 }
 
-// extractTextFromPDFEnhanced 使用外部 Python 脚本进行高质量解析
-// 脚本内部使用 MarkItDown 库处理 PDF/DOCX/XLSX/PPTX 等多种格式
-// MarkItDown: 微软出品的文档转 Markdown 工具，统一处理多格式文档
-func (p *DocumentParser) extractTextFromPDFEnhanced(data []byte) (string, int, error) {
-	// 创建临时文件
-	tmpFile, err := os.CreateTemp("", "pdf_upload_*.pdf")
+// runPythonParser 通用 Python 文档解析入口。
+// ext 必须以 "." 开头（如 ".pdf" / ".doc" / ".xlsx"），Python 端按扩展名
+// 分派到对应解析器（.doc → antiword，其他 → MarkItDown）。
+func (p *DocumentParser) runPythonParser(data []byte, ext string) (string, int, error) {
+	if len(ext) == 0 || ext[0] != '.' {
+		return "", 0, fmt.Errorf("ext must start with '.', got %q", ext)
+	}
+
+	tmpFile, err := os.CreateTemp("", "upload_*"+ext)
 	if err != nil {
 		return "", 0, fmt.Errorf("failed to create temp file: %w", err)
 	}
@@ -187,6 +197,11 @@ func (p *DocumentParser) extractTextFromPDFEnhanced(data []byte) (string, int, e
 	}
 
 	return result.Content, result.PageCount, nil
+}
+
+// extractTextFromPDFEnhanced 调用 Python MarkItDown 解析 PDF（保持向后兼容的入口名）
+func (p *DocumentParser) extractTextFromPDFEnhanced(data []byte) (string, int, error) {
+	return p.runPythonParser(data, ".pdf")
 }
 
 // extractTextFromPDFLegacy 使用原本的 go-fitz 提取 PDF 文本（作为降级方案）
@@ -629,58 +644,13 @@ func (p *DocumentParser) parseDOCXXMLWithParser(xmlData []byte) (string, error) 
 }
 
 // extractTextFromDOC 使用 Python + antiword 解析旧版 DOC 文件
-// 注意：MarkItDown 不支持旧版 .doc 格式，因此使用 antiword 工具
 func (p *DocumentParser) extractTextFromDOC(data []byte) (string, error) {
-	// 创建临时文件 - 使用 .doc 后缀以便 Python 脚本识别
-	tmpFile, err := os.CreateTemp("", "doc_upload_*.doc")
-	if err != nil {
-		return "", fmt.Errorf("failed to create temp file: %w", err)
-	}
-	defer os.Remove(tmpFile.Name())
-	defer tmpFile.Close()
-
-	if _, err := tmpFile.Write(data); err != nil {
-		return "", fmt.Errorf("failed to write data to temp file: %w", err)
-	}
-
-	// 执行 Python 脚本 (document_parser.py 内部对 .doc 使用 antiword，其他格式使用 MarkItDown)
-	scriptPath := "scripts/document_parser.py"
-	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		// 尝试 Docker 容器内的常见路径
-		scriptPath = "/app/scripts/document_parser.py"
-		if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-			return "", fmt.Errorf("python parser script not found")
-		}
-	}
-
-	cmd := exec.Command("python3", scriptPath, tmpFile.Name())
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("python script execution failed: %v, stderr: %s", err, stderr.String())
-	}
-
-	// 解析输出的 JSON
-	var result struct {
-		Success bool   `json:"success"`
-		Content string `json:"content"`
-		Error   string `json:"error"`
-	}
-
-	if err := json.Unmarshal([]byte(stdout.String()), &result); err != nil {
-		return "", fmt.Errorf("failed to parse python output: %w", err)
-	}
-
-	if !result.Success {
-		return "", fmt.Errorf("DOC extraction error: %s", result.Error)
-	}
-
-	return result.Content, nil
+	content, _, err := p.runPythonParser(data, ".doc")
+	return content, err
 }
 
-// extractTextFromRTF 占位
+// extractTextFromRTF 通过 Python MarkItDown 解析 RTF 文件
 func (p *DocumentParser) extractTextFromRTF(data []byte) (string, error) {
-	return "", fmt.Errorf("RTF format not supported yet")
+	content, _, err := p.runPythonParser(data, ".rtf")
+	return content, err
 }
