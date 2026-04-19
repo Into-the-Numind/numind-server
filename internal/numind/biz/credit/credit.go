@@ -51,28 +51,27 @@ func NewCreditBiz(ds store.IStore) ICreditBiz {
 }
 
 // CanPerformAIOperation 检查用户是否可以执行 AI 操作
-// 旧会员走旧逻辑，新用户走积分逻辑
+// legacy_tier 走旧逻辑（CanRunSOP + 次数制），credits 走积分余额预检。
+// 注意：这是 controller 层的粗检，biz 层的 CheckAndEstimate 才是权威检查。
 func (b *creditBiz) CanPerformAIOperation(ctx context.Context, user *model.User, operation string) (bool, string) {
-	// 旧会员：走旧逻辑
-	if user.HasActiveMembership() {
+	if user.BillingMode == model.BillingModeLegacyTier {
+		// legacy_tier：SOP 走 CanRunSOP（次数 + 过期检查），非 SOP 不限制
 		if IsSopOperation(operation) {
 			return user.CanRunSOP()
 		}
-		// 旧会员对非 SOP 操作不做限制
 		return true, ""
 	}
 
-	// 新用户（free）：走积分逻辑
+	// credits 模式：粗粒度余额预检（hardcoded estimate vs credit_account.balance）
 	estimated := GetEstimatedCredits(operation)
 	balance, err := b.ds.Credits().GetBalance(ctx, user.ID)
 	if err != nil {
 		log.Errorw("Failed to get credit balance", "user_id", user.ID, "error", err)
-		// 查不到余额时也返回不足，避免免费使用
-		return false, "额度不足，请联系管理员充值"
+		return false, "积分余额查询失败，请稍后重试"
 	}
 
 	if balance < estimated {
-		return false, "额度不足，请联系管理员充值"
+		return false, "积分不足，请购买积分包或联系管理员"
 	}
 
 	return true, ""

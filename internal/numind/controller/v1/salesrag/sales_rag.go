@@ -220,10 +220,9 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 		})
 		fmt.Fprintf(w, "data: %s\n\n", errData)
 		w.Flush()
-	} else {
-		// 积分扣减（旧会员跳过）— 仅在聊天成功完成后扣减
-		deductCredits(c, ctrl.creditBiz, user, "salesrag_chat", "salesrag_chat", fmt.Sprintf("%d", sessionID))
 	}
+	// salesrag_chat 积分扣减已由 biz 层 acquireSalesragCredits (Reserve/Reconcile) 处理，
+	// 此处不再调用 deductCredits，避免双重扣费。
 }
 
 // ListDocuments 获取文档列表
@@ -1155,9 +1154,11 @@ func (ctrl *SalesRAGController) GetFeedback(c *gin.Context) {
 	})
 }
 
-// deductCredits 积分扣减辅助函数（旧会员跳过，失败不阻塞主流程）
+// deductCredits 积分扣减辅助函数（legacy_tier 跳过，失败不阻塞主流程）
+// 仅用于尚未接入 biz 层 Reserve/Reconcile 的操作（file_parse, profile_analysis, style_analysis, ocr）。
+// salesrag_chat 已由 biz 层 acquireSalesragCredits 处理，不应再调用此函数（会导致双重扣费）。
 func deductCredits(c *gin.Context, creditBiz credit.ICreditBiz, user *model.User, operation, bizRefType, bizRefID string) {
-	if user.HasActiveMembership() {
+	if user.BillingMode == model.BillingModeLegacyTier {
 		return
 	}
 	estimatedCost := credit.GetEstimatedCredits(operation)

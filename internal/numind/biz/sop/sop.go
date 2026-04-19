@@ -264,20 +264,38 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 		return nil, fmt.Errorf("获取用户信息失败: %w", err)
 	}
 
-	// 检查用户是否可以运行SOP（基于用户等级和月度次数限制）
-	canRun, reason := user.CanRunSOP()
-	if !canRun {
-		log.C(ctx).Warnw("User cannot run SOP",
+	// legacy_tier 用户：基于用户等级和月度次数限制检查
+	// credits 用户：跳过此检查，权限由 ExecuteNode 中的 creditSvc.CheckAndEstimate 控制
+	if user.BillingMode == model.BillingModeLegacyTier {
+		canRun, reason := user.CanRunSOP()
+		if !canRun {
+			log.C(ctx).Warnw("User cannot run SOP",
+				"user_id", userID,
+				"user_tier", user.UserTier,
+				"monthly_sop_runs", user.MonthlySopRuns,
+				"reason", reason)
+			return nil, errno.ErrSOPRunDenied.SetMessage("%s", reason)
+		}
+		log.C(ctx).Infow("Legacy user SOP permission check passed",
 			"user_id", userID,
-			"user_tier", user.UserTier,
-			"monthly_sop_runs", user.MonthlySopRuns,
-			"reason", reason)
-		return nil, errno.ErrSOPRunDenied.SetMessage("%s", reason)
+			"user_tier", user.GetActualUserTier(),
+			"remaining_runs", user.GetRemainingSOPRuns())
+	} else if b.creditSvc != nil {
+		// credits 用户：粗粒度余额预检，避免零余额时创建 orphan pending run
+		// （精确检查由 ExecuteNode 中的 creditSvc.CheckAndEstimate 负责）
+		bal, balErr := b.creditSvc.GetBalance(ctx, user)
+		if balErr != nil {
+			log.C(ctx).Warnw("Credits pre-check: failed to get balance, allowing run creation",
+				"user_id", userID, "err", balErr)
+		} else if bal.SubRemain+bal.BoosterRemain <= 0 {
+			log.C(ctx).Warnw("Credits pre-check: zero balance",
+				"user_id", userID, "sub_remain", bal.SubRemain, "booster_remain", bal.BoosterRemain)
+			return nil, errno.ErrInsufficientCredits.SetMessage("积分不足，请购买积分包或联系管理员")
+		} else {
+			log.C(ctx).Infow("Credits user balance pre-check passed",
+				"user_id", userID, "total_remain", bal.SubRemain+bal.BoosterRemain)
+		}
 	}
-	log.C(ctx).Infow("User SOP permission check passed",
-		"user_id", userID,
-		"user_tier", user.GetActualUserTier(),
-		"remaining_runs", user.GetRemainingSOPRuns())
 
 	// ===== 模板权限检查 =====
 	// 权限验证:检查用户是否有权限执行此模板
