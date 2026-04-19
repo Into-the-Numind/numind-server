@@ -1285,11 +1285,11 @@ features:
     stage: "H3-done"
     classification_reason: "单点序列化 bug，单仓库改动（admin_sop 控制器），无 schema/业务逻辑变更，~90 行 DTO + mapper"
     last_updated_by: "ai-hotfix"
-    last_updated_at: "2026-04-19T18:00:00+08:00"
+    last_updated_at: "2026-04-19T18:30:00+08:00"
     repos:
       - numind-server
     branches:
-      numind-server: "fix/admin-sop-run-id-serialization"
+      numind-server: "fix/admin-sop-run-id-serialization + fix/admin-sop-run-review-followup"
     hotfix_artifacts:
       diagnosis: |
         admin-web RunsView 展开详情请求 GET /v1/admin/sop/runs/undefined/detail → 400。
@@ -1298,26 +1298,36 @@ features:
         admin 前端 runs.ts 声明 id: number（lowercase），run.id === undefined。
         对比 admin_user.ListUsers 已显式映射 AdminUserItem DTO — 此处应沿用相同模式。
         不改 model.SopRun（会波及 numind-web-v3 已消费 run.ID 的 sopRun.ts）。
-      review: null
+      review: |
+        两个 Sonnet subagent 并行 review:
+        1. Spec 合规: PASS. 字段全覆盖、嵌套 shape 正确、GetRunsStats 单 ID 调用安全、
+           无其他 admin-web 消费者读被 DTO 省略的字段（conversation_id 等）、model/user-side 无波及。
+        2. Code quality: PASS-WITH-CONCERNS. 2 个 P1 已在 followup commit 修复。
+      review_p1_fixed:
+        - "DTO 挪到 pkg/api/numind/v1/admin.go（AdminRunItem/AdminNodeRunItem/AdminRunTemplateRef/AdminRunUserRef），与 AdminUserItem 同侧"
+        - "GetRun/GetRunDetail 的 GetRunsStats 调用抽成 fetchRunStats helper，失败时 log.Warnw 记录（原实现静默吞错）"
     progress:
-      total_tasks: 1
-      completed_tasks: 1
-      reviewed_tasks: 1
+      total_tasks: 2
+      completed_tasks: 2
+      reviewed_tasks: 2
       current_task: null
-    rollback: "git revert merge commit on develop"
+    rollback: "git revert merge commit on develop (两次 merge 各一次 revert)"
     last_verified:
-      at: "2026-04-19T18:00:00+08:00"
-      lint: "pass (go vet + golangci-lint on admin_sop package)"
+      at: "2026-04-19T18:30:00+08:00"
+      lint: "pass (go vet + golangci-lint on admin_sop + v1 pkg)"
       type_check: null
       tests: null
-      test_summary: "本地 go build ./... 通过；前端 /v1/admin/sop/runs 响应 id 字段现为 lowercase，待 dev 部署后复验"
+      test_summary: "本地 go build ./... 通过；subagent review PASS。待 dev 部署后前端复验"
     decisions:
-      - "2026-04-19: 新增本地 DTO（adminRunItem/adminNodeRunItem + mapper），不动 model.SopRun，不影响用户端"
-      - "2026-04-19: GetRun / GetRunDetail 顺便补上 total_tokens / cost_cents 字段（调用 GetRunsStats 单 ID），保持响应 shape 一致"
-    deferred: []
+      - "2026-04-19: 沿用 admin_user 模式，DTO 放 pkg/api/numind/v1/admin.go，mapper 保留 controller 本地"
+      - "2026-04-19: GetRun / GetRunDetail 补 total_tokens / cost_cents（调用 GetRunsStats 单 ID，fetchRunStats helper 封装）"
+      - "2026-04-19: stats 查询失败不阻断响应，走 log.Warnw + 零值回退（与 ListRuns 行为一致）"
+    deferred:
+      - "P2: template/user omitempty 在前端 TS interface 声明为非可选 — 当前 ListRuns/GetRun/GetRunDetail 均 Preload 不会为 nil，记为潜在 latent crash path"
+      - "P2: toAdminRunItem 的 nil-branch 和 GetRunsStats 单 ID 路径无单测 — hotfix 轨道不强制，日后补上可防回归"
     blockers: []
     created_at: "2026-04-19T17:45:00+08:00"
-    completed_at: "2026-04-19T18:00:00+08:00"
+    completed_at: "2026-04-19T18:30:00+08:00"
 
   - id: "sop-runs-error-mapping"
     ndf_version: "1.0"
