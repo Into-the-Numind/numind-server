@@ -20,6 +20,7 @@ import (
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/numind/biz/salesrag/port"
+	docparser "numind-server/internal/pkg/parser"
 	"numind-server/internal/numind/biz/salesrag/seed"
 	salesragservice "numind-server/internal/numind/biz/salesrag/service"
 	sopbiz "numind-server/internal/numind/biz/sop"
@@ -170,7 +171,7 @@ func NewBiz(ds store.IStore) *biz {
 	llmRouter := adapter.NewLLMRouter()
 
 	// Initialize Pipeline Components
-	parser := adapter.NewEnhancedParser()
+	parser := docparser.NewDocumentParser()
 	// 使用增强版切分器（支持中文分词、语义边界、100字符重叠、Markdown分级）
 	splitter := salesragservice.NewCompatibilitySplitter(salesragservice.SplitterConfig{
 		MaxChunkSize: 1000,
