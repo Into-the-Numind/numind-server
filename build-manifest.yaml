@@ -1,6 +1,38 @@
 schema_version: "1.0"
 
 features:
+  - id: "hotfix-model-selector-overflow"
+    ndf_version: "1.1"
+    description: "SOP 顶栏 ModelSelector 下拉弹窗右侧溢出视口被裁切（pill 在 .header__right 右对齐，但 .model-dropdown 用 left:0 向右展开）"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "纯前端 CSS 修复，单文件改动 ModelSelector.vue，无 DB/API 变更，零业务逻辑风险"
+    last_updated_by: "ai-h3"
+    last_updated_at: "2026-04-20T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "hotfix/model-selector-dropdown-overflow (merged to develop @ 44d809c)"
+    artifacts: {}
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "revert merge commit 44d809c on numind-web-v3 develop"
+    last_verified:
+      at: "2026-04-20T00:00:00+08:00"
+      method: "gstack browse 浏览器实测"
+      lint: "pass"
+      type_check: "pass"
+      visual: "dropdown right=1219px viewport=1280px (61px margin), 4 model names display fully"
+    decisions:
+      - "2026-04-20: H1 浏览器诊断确认 dropdown 因 .header__right 右对齐 + left:0 anchor 导致溢出视口"
+      - "2026-04-20: H2 修复方案：feature='sop' 时加 align-right class（left:auto;right:0），feature='chatbot' 走 drop-up 不变，无回归风险"
+    blockers: []
+    created_at: "2026-04-20T00:00:00+08:00"
+    completed_at: "2026-04-20T00:00:00+08:00"
+
   - id: "booster-payment-ui"
     ndf_version: "1.1"
     description: "设置页加量包购买支付弹窗 — credits 制会员点击 BoosterPurchaseCard → 下单 → 微信/支付宝 QR 扫码 → 轮询订单状态 → 支付成功后加量包到账并刷新余额"
