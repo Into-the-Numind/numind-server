@@ -2,7 +2,6 @@ package admin_sop
 
 import (
 	"strconv"
-	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -14,48 +13,8 @@ import (
 	v1 "numind-server/pkg/api/numind/v1"
 )
 
-// adminRunTemplateRef / adminRunUserRef / adminRunItem / adminNodeRunItem
-// 用于 admin-web 的响应 DTO。不直接序列化 model.SopRun / model.SopNodeRun,
-// 因为它们嵌入 gorm.Model，默认会输出 "ID"/"CreatedAt" 等 PascalCase 字段,
-// 导致 admin 前端 run.id 为 undefined（见 RunsView.vue）。
-type adminRunTemplateRef struct {
-	ID   uint   `json:"id"`
-	Name string `json:"name"`
-}
-
-type adminRunUserRef struct {
-	ID       uint   `json:"id"`
-	Nickname string `json:"nickname"`
-}
-
-type adminRunItem struct {
-	ID           uint                 `json:"id"`
-	TemplateID   uint                 `json:"template_id"`
-	UserID       uint                 `json:"user_id"`
-	Status       string               `json:"status"`
-	StartedAt    *time.Time           `json:"started_at"`
-	FinishedAt   *time.Time           `json:"finished_at"`
-	ErrorMessage string               `json:"error_message"`
-	CreatedAt    time.Time            `json:"created_at"`
-	Template     *adminRunTemplateRef `json:"template,omitempty"`
-	User         *adminRunUserRef     `json:"user,omitempty"`
-	TotalTokens  int64                `json:"total_tokens"`
-	CostCents    int64                `json:"cost_cents"`
-}
-
-type adminNodeRunItem struct {
-	ID        uint   `json:"id"`
-	NodeID    uint   `json:"node_id"`
-	Status    string `json:"status"`
-	Input     string `json:"input"`
-	Output    string `json:"output"`
-	Thinking  string `json:"thinking"`
-	LatencyMs int64  `json:"latency_ms"`
-	Sort      int    `json:"sort"`
-}
-
-func toAdminRunItem(r *model.SopRun, totalTokens, costCents int64) adminRunItem {
-	item := adminRunItem{
+func toAdminRunItem(r *model.SopRun, totalTokens, costCents int64) v1.AdminRunItem {
+	item := v1.AdminRunItem{
 		ID:           r.ID,
 		TemplateID:   r.TemplateID,
 		UserID:       r.UserID,
@@ -68,16 +27,16 @@ func toAdminRunItem(r *model.SopRun, totalTokens, costCents int64) adminRunItem 
 		CostCents:    costCents,
 	}
 	if r.Template != nil {
-		item.Template = &adminRunTemplateRef{ID: r.Template.ID, Name: r.Template.Name}
+		item.Template = &v1.AdminRunTemplateRef{ID: r.Template.ID, Name: r.Template.Name}
 	}
 	if r.User != nil {
-		item.User = &adminRunUserRef{ID: r.User.ID, Nickname: r.User.Nickname}
+		item.User = &v1.AdminRunUserRef{ID: r.User.ID, Nickname: r.User.Nickname}
 	}
 	return item
 }
 
-func toAdminNodeRunItem(nr model.SopNodeRun) adminNodeRunItem {
-	return adminNodeRunItem{
+func toAdminNodeRunItem(nr *model.SopNodeRun) v1.AdminNodeRunItem {
+	return v1.AdminNodeRunItem{
 		ID:        nr.ID,
 		NodeID:    nr.NodeID,
 		Status:    nr.Status,
@@ -376,13 +335,7 @@ func (ctrl *SopController) GetRun(c *gin.Context) {
 		return
 	}
 
-	var totalTokens, costCents int64
-	if stats, err := ctrl.sopBiz.GetRunsStats(c, []uint{run.ID}); err == nil {
-		if s, ok := stats[run.ID]; ok {
-			totalTokens = s.TotalTokens
-			costCents = s.CostCents
-		}
-	}
+	totalTokens, costCents := fetchRunStats(c, ctrl.sopBiz, run.ID)
 
 	core.WriteResponse(c, nil, toAdminRunItem(run, totalTokens, costCents))
 }
@@ -403,23 +356,32 @@ func (ctrl *SopController) GetRunDetail(c *gin.Context) {
 		return
 	}
 
-	var totalTokens, costCents int64
-	if stats, err := ctrl.sopBiz.GetRunsStats(c, []uint{run.ID}); err == nil {
-		if s, ok := stats[run.ID]; ok {
-			totalTokens = s.TotalTokens
-			costCents = s.CostCents
-		}
-	}
+	totalTokens, costCents := fetchRunStats(c, ctrl.sopBiz, run.ID)
 
-	nodeItems := make([]adminNodeRunItem, len(nodeRuns))
-	for i, nr := range nodeRuns {
-		nodeItems[i] = toAdminNodeRunItem(nr)
+	nodeItems := make([]v1.AdminNodeRunItem, len(nodeRuns))
+	for i := range nodeRuns {
+		nodeItems[i] = toAdminNodeRunItem(&nodeRuns[i])
 	}
 
 	core.WriteResponse(c, nil, gin.H{
 		"run":       toAdminRunItem(run, totalTokens, costCents),
 		"node_runs": nodeItems,
 	})
+}
+
+// fetchRunStats 单 run 维度获取 token/cost 统计。失败时记录 warn 并返回零值，
+// 不阻断响应 — 统计缺失的可观测性价值低于整个详情接口 200 返回的可用性。
+func fetchRunStats(c *gin.Context, sopBiz sop.ISopBiz, runID uint) (int64, int64) {
+	stats, err := sopBiz.GetRunsStats(c, []uint{runID})
+	if err != nil {
+		log.C(c).Warnw("Failed to get run stats", "run_id", runID, "error", err)
+		return 0, 0
+	}
+	s, ok := stats[runID]
+	if !ok {
+		return 0, 0
+	}
+	return s.TotalTokens, s.CostCents
 }
 
 // ListRuns 获取SOP执行记录列表
@@ -457,11 +419,10 @@ func (ctrl *SopController) ListRuns(c *gin.Context) {
 		stats = map[uint]sop.RunStats{}
 	}
 
-	items := make([]adminRunItem, len(runs))
+	items := make([]v1.AdminRunItem, len(runs))
 	for i := range runs {
-		r := runs[i]
-		s := stats[r.ID]
-		items[i] = toAdminRunItem(&r, s.TotalTokens, s.CostCents)
+		s := stats[runs[i].ID]
+		items[i] = toAdminRunItem(&runs[i], s.TotalTokens, s.CostCents)
 	}
 
 	core.WriteResponse(c, nil, gin.H{
