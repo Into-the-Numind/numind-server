@@ -91,12 +91,11 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 销售智能体 RAG 相关
 	{
-		// 权限检查（不需要功能权限中间件，供前端查询权限状态）
+		// 权限检查（保留端点供前端 UI gating，现已对所有登录用户开放）
 		authGroup.GET("/sales-rag/check-permission", salesRAGc.CheckSalesPermission)
 
-		// 以下所有销售智能体路由需要功能权限检查
+		// 所有登录用户均可使用销售智能体/知识库（数据按 user_id 严格隔离，各账号独立）
 		salesGroup := authGroup.Group("/sales-rag")
-		salesGroup.Use(importMw.FeaturePermission(model.FeatureKeySalesAgent))
 
 		// 文档管理
 		salesGroup.POST("/ingest", salesRAGc.Ingest)                  // 上传并解析文档

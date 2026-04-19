@@ -1,6 +1,38 @@
 schema_version: "1.0"
 
 features:
+  - id: "booster-payment-ui"
+    ndf_version: "1.1"
+    description: "设置页加量包购买支付弹窗 — credits 制会员点击 BoosterPurchaseCard → 下单 → 微信/支付宝 QR 扫码 → 轮询订单状态 → 支付成功后加量包到账并刷新余额"
+    track: "standard"
+    stage: "S2-done"
+    classification_reason: "轻量 Standard：仅前端改动（numind-web-v3），无 DB schema、无新后端 API（复用现有 /v1/orders + 回调）；但触及真钱支付流水，支付状态机需严谨设计"
+    last_updated_by: "ai-triage"
+    last_updated_at: "2026-04-20T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "feature/booster-payment-ui"
+    artifacts:
+      requirement: "numind-server/requirements/booster-payment-ui.md"
+      proposal: "numind-server/proposals/booster-payment-ui-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-04-20-booster-payment-ui-design.md"
+      plan: null
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress: null
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-04-20: S0 需求卡确认 Standard 轻量版（仅 numind-web-v3 前端，后端 0 改动）"
+      - "2026-04-20: S1 技术调查确认基础设施齐备 — GET /v1/orders/:id 存在、qrcode v1.5.4 已装、XhsBindModal 有 QR 渲染示例、订单 30min 后端自动过期"
+      - "2026-04-20: S1 关键决策 — 前端轮询 2s 间隔 + 5min 倒计时（短于后端 30min，提前提示用户）；支付宝 PagePay 新标签页跳转（非 iframe）；关闭弹窗不主动取消订单（后端 cron 自然过期）"
+      - "2026-04-20: S2 决策 — 6 态状态机（idle/creating/pending/paid/expired/error/closed）；Tab 切换重下单（后端 order 已绑 pay_channel，无法复用）；不做 pending-order 复用检测（GET /v1/orders 不支持 filter，ROI 低）"
+    blockers: []
+    created_at: "2026-04-20T00:00:00+08:00"
+    completed_at: null
+
   - id: "content-monitor"
     ndf_version: "1.0"
     description: "竞品内容监控与自动汇总 — 小红书博主监控、视频转文字、AI分析、简报生成、飞书推送"
@@ -1745,3 +1777,40 @@ features:
     blockers: []
     created_at: "2026-04-20T03:00:00+08:00"
     completed_at: "2026-04-20T03:00:00+08:00"
+
+  - id: "sales-rag-open-to-all-accounts"
+    ndf_version: "1.0"
+    description: "销售智能体/知识库对所有登录用户开放 — 移除 FeaturePermission(sales_agent) 中间件，子账户 403 修复；各账号 user_id 独立隔离"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "P1 UX 阻塞：B2B2C 子账户访问 /v1/sales-rag/documents 403。(1) 不改 schema (2) 不新增 API (3) 无外部服务 (4) 影响 2 文件 (5) 数据隔离层已在 biz+store 严格 user_id 过滤，审计清白；移除中间件无数据泄漏风险"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-20T03:15:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/sales-rag-open-to-all-accounts"
+    hotfix_artifacts:
+      diagnosis: "router.go:99 salesGroup 挂 FeaturePermission(FeatureKeySalesAgent) 中间件。middleware.go:213-238 → store/customer.go:312-337 HasFeaturePermission 逻辑：parent_user_id=NULL 自动通过，子账户须 user_feature_permission 表有显式记录否则 403。AppSidebar.vue 知识库 tab 对所有账户可见（无 isParentUser 守卫），前端 SalesView.vue:177 / HomeView.vue:420 又用 checkSalesPermission 决定 UI 显隐，子账户两头都被拦。完整数据隔离审计：26 个 /sales-rag/* 路由全部在 biz/store 层按 user_id 过滤；KnowledgeDocument / KnowledgeChunk / SalesSession / SalesMessage / SalesMessageFeedback / LanguageStyle 均有 user_id 列和严格 WHERE 过滤；sqlitevec_store chunks 表含 user_id 索引 + biz 层白名单预过滤；无跨账户引用路径"
+      review: null
+    progress:
+      total_tasks: 2
+      completed_tasks: 2
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "git revert（纯路由/controller 改动，无 DB schema 变更，数据隔离原本就在 biz+store 层）"
+    last_verified:
+      at: "2026-04-20T03:15:00+08:00"
+      lint: "go vet ./internal/numind/controller/v1/salesrag/... ./internal/numind/ pass"
+      type_check: "go build ./... pass（仅 sqlite-vec cgo deprecated 警告，pre-existing）"
+      tests: null
+      test_summary: "单测未新增；线上 dev 部署后由用户子账户登录验证知识库可访问"
+    decisions:
+      - "2026-04-20: 选方案 A（全员开放+按账户隔离）而非方案 B（父账户授权子账户）或方案 C（前端对子账户隐藏）。用户产品决策：每个账号（含子账户）应有独立知识库，互不互通"
+      - "2026-04-20: CheckSalesPermission 端点保留但硬编码 has_permission=true，避免前端 SalesView.vue / HomeView.vue 的 UI gating 反向屏蔽子账户。未删除端点以免引发前端 404，保持最小改动面"
+      - "2026-04-20: FeatureKeySalesAgent 常量及 user_feature_permission 表保留 — 未来若引入其他分级 feature 仍需复用该基础设施；本次仅对 sales_agent 这一 key 停用"
+    deferred:
+      - "清理 CheckSalesPermission 端点及前端 checkSalesPermission / hasSalesPermission 状态 — 属死代码清理，不在本 hotfix 范围"
+    blockers: []
+    created_at: "2026-04-20T03:15:00+08:00"
+    completed_at: "2026-04-20T03:15:00+08:00"
