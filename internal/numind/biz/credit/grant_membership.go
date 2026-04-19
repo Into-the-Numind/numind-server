@@ -3,6 +3,7 @@ package credit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,6 +11,23 @@ import (
 
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+)
+
+// GrantMembership 相关哨兵错误。Controller 层使用 errors.Is 识别后
+// 映射到对应 HTTP 状态 (400/403/404/409)，避免全部落到 500。
+var (
+	// ErrGrantChildNotFound 子账户不存在。映射 HTTP 404。
+	ErrGrantChildNotFound = errors.New("grant: child user not found")
+	// ErrGrantForbidden 子账户不属于当前父账户。映射 HTTP 403。
+	ErrGrantForbidden = errors.New("grant: child does not belong to caller")
+	// ErrGrantInvalidProductType 不支持的产品类型（yearly/booster/其它）。映射 HTTP 400。
+	ErrGrantInvalidProductType = errors.New("grant: product_type not supported by grant path")
+	// ErrGrantInvalidMonths monthly 的 months 参数越界。映射 HTTP 400。
+	ErrGrantInvalidMonths = errors.New("grant: months must be in [1,12]")
+	// ErrGrantTrialAlreadyPurchased 子账户已用过 trial（lifetime 限一次）。映射 HTTP 409。
+	ErrGrantTrialAlreadyPurchased = errors.New("grant: child already consumed trial (lifetime single-use)")
+	// ErrGrantActiveSubscription 子账户已有在期订阅，不能重复开通。映射 HTTP 409。
+	ErrGrantActiveSubscription = errors.New("grant: child already has an active subscription")
 )
 
 // GrantMembershipReq 父账户（B 端）帮子账户开通会员的请求参数。
@@ -53,21 +71,32 @@ func (b *creditBiz) GrantMembership(ctx context.Context, req GrantMembershipReq)
 	// Step 2: verify parent-child relationship (spec Q1: child must belong to caller)
 	child, err := b.ds.Users().GetByID(ctx, req.ChildUserID)
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("%w: child_id=%d", ErrGrantChildNotFound, req.ChildUserID)
+		}
 		return fmt.Errorf("GrantMembership: get child user %d: %w", req.ChildUserID, err)
 	}
 	if child.ParentUserID == nil || *child.ParentUserID != req.ParentUserID {
-		return fmt.Errorf("GrantMembership: child %d does not belong to parent %d", req.ChildUserID, req.ParentUserID)
+		return fmt.Errorf("%w: child=%d parent=%d", ErrGrantForbidden, req.ChildUserID, req.ParentUserID)
 	}
 
 	// Step 3: anti-duplicate checks (mirror payment.CreateOrder Trial/Monthly guards)
 	switch req.ProductType {
 	case model.ProductTypeTrial:
+		// Spec §3.9: trial not available in-period — if child has an active subscription, reject.
+		hasActive, err := b.ds.Credits().HasActiveSubscription(ctx, req.ChildUserID)
+		if err != nil {
+			return fmt.Errorf("GrantMembership: check active subscription for trial: %w", err)
+		}
+		if hasActive {
+			return fmt.Errorf("%w: child=%d (active subscription blocks trial)", ErrGrantActiveSubscription, req.ChildUserID)
+		}
 		hasTrial, err := b.ds.Credits().HasTrialPackage(ctx, req.ChildUserID)
 		if err != nil {
 			return fmt.Errorf("GrantMembership: check trial package: %w", err)
 		}
 		if hasTrial {
-			return fmt.Errorf("GrantMembership: child %d already has a trial package (lifetime single-use)", req.ChildUserID)
+			return fmt.Errorf("%w: child=%d", ErrGrantTrialAlreadyPurchased, req.ChildUserID)
 		}
 	case model.ProductTypeMonthly:
 		hasActive, err := b.ds.Credits().HasActiveSubscription(ctx, req.ChildUserID)
@@ -75,7 +104,7 @@ func (b *creditBiz) GrantMembership(ctx context.Context, req GrantMembershipReq)
 			return fmt.Errorf("GrantMembership: check active subscription: %w", err)
 		}
 		if hasActive {
-			return fmt.Errorf("GrantMembership: child %d already has an active/pending subscription", req.ChildUserID)
+			return fmt.Errorf("%w: child=%d", ErrGrantActiveSubscription, req.ChildUserID)
 		}
 	}
 
@@ -164,11 +193,11 @@ func validateGrantProductType(req GrantMembershipReq) error {
 		return nil
 	case model.ProductTypeMonthly:
 		if req.Months < 1 || req.Months > 12 {
-			return fmt.Errorf("GrantMembership: months must be in [1,12], got %d", req.Months)
+			return fmt.Errorf("%w: got %d", ErrGrantInvalidMonths, req.Months)
 		}
 		return nil
 	default:
-		return fmt.Errorf("GrantMembership: product_type %q not supported by grant path (only trial/monthly)", req.ProductType)
+		return fmt.Errorf("%w: got %q (allowed: trial, monthly)", ErrGrantInvalidProductType, req.ProductType)
 	}
 }
 

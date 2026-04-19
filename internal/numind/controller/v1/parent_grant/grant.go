@@ -1,6 +1,7 @@
 package parent_grant
 
 import (
+	"errors"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -11,6 +12,33 @@ import (
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
+
+// mapGrantError 把 credit 层的 grant 哨兵错误映射到对应的 errno（含 HTTP 状态）。
+// 未识别的错误返回 InternalServerError 让上层记录原始 error 详情。
+func mapGrantError(err error) *errno.Errno {
+	switch {
+	case errors.Is(err, credit.ErrGrantChildNotFound):
+		// HTTP 404
+		return errno.ErrUserNotFound.SetMessage("子账户不存在")
+	case errors.Is(err, credit.ErrGrantForbidden):
+		// HTTP 403
+		return errno.ErrForbidden.SetMessage("该子账户不属于当前账户")
+	case errors.Is(err, credit.ErrGrantInvalidProductType):
+		// HTTP 400
+		return errno.ErrBind.SetMessage("不支持的产品类型（仅支持 trial / monthly）")
+	case errors.Is(err, credit.ErrGrantInvalidMonths):
+		// HTTP 400
+		return errno.ErrBind.SetMessage("月数必须在 1-12 之间")
+	case errors.Is(err, credit.ErrGrantTrialAlreadyPurchased):
+		// HTTP 400（复用 credits 错误码，与 payment 路径一致）
+		return errno.ErrTrialAlreadyPurchased
+	case errors.Is(err, credit.ErrGrantActiveSubscription):
+		// HTTP 400（防提前续费 / trial 期间不可再开）
+		return errno.ErrTierInPeriod
+	default:
+		return errno.InternalServerError.SetMessage("%s", err.Error())
+	}
+}
 
 // ParentGrantController 父账户(B 端)为子账户赋予会员的控制器。
 // 对应路由 POST /v1/users/children/:child_id/grant-membership
@@ -80,7 +108,7 @@ func (ctrl *ParentGrantController) GrantMembership(c *gin.Context) {
 			"product_type", req.ProductType,
 			"months", req.Months,
 			"err", err)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
+		core.WriteResponse(c, mapGrantError(err), nil)
 		return
 	}
 

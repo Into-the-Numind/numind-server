@@ -248,6 +248,9 @@ func installNumindRouters(g *gin.Engine) error {
 	// B2B2C 会员赋予（Q1）：父账户为子账户开通会员，不走支付流程
 	{
 		parentGrantCtrl := parent_grant.New(b.Credit())
+		// 子账户列表别名（前端 /v1/users/children，Q2 新增），复用 CustomerController.ListSubUsers
+		childListCtrl := customercontroller.NewCustomerController(b.Customers(), b.Users())
+		authGroup.GET("/users/children", childListCtrl.ListSubUsers)
 		authGroup.POST("/users/children/:child_id/grant-membership", parentGrantCtrl.GrantMembership)
 	}
 
