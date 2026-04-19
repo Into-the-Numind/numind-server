@@ -1315,7 +1315,7 @@ features:
     ndf_version: "1.0"
     description: "POST /v1/sop/runs 对 free/无权用户业务拒绝误报 500，改为返回 403 + 结构化 errno code"
     track: "hotfix"
-    stage: "H2"
+    stage: "H3-pending-user-verify"
     classification_reason: "单仓库，3 文件改动（errno + biz + controller），不涉及 schema/API 新增/外部服务/支付逻辑。权限拦截逻辑零变更，仅改错误类型映射"
     last_updated_by: "ai-hotfix"
     last_updated_at: "2026-04-19T22:15:00+08:00"
@@ -1344,11 +1344,11 @@ features:
       current_task: null
     rollback: "git revert merge commit on develop"
     last_verified:
-      at: "2026-04-19T22:15:00+08:00"
+      at: "2026-04-19T22:19:00+08:00"
       lint: "pass (go vet clean；golangci-lint 两条 warning 为 pre-existing，非本 fix 引入)"
       type_check: null
       tests: "pass (go test ./... + 新增 TestCreateRun_FreeUserReturnsTypedError)"
-      test_summary: "单元断言 free 用户收到 *errno.Errno (Code=SOP.RunDenied, HTTP=403, message 含'免费用户')。dev 端 curl 验证待 CI 部署"
+      test_summary: "单元断言 free 用户收到 *errno.Errno (Code=SOP.RunDenied, HTTP=403, message 含'免费用户')。CI deploy_dev 24631111001 成功，numind-server-dev 于 22:17:59 重启携带新代码。待用户用 free 账号在前端复现 POST /v1/sop/runs 确认 403"
     decisions:
       - "2026-04-19: errno 新增 ErrSOPRunDenied (HTTP 403, SOP.RunDenied) + ErrTemplateUnauthorized (HTTP 403)。放在 config.go 与 ErrTemplateNotPublished 同文件，便于 SOP 相关错误归类"
       - "2026-04-19: controller 改为 core.WriteResponse(c, err, nil) 直接透传。errno.Decode 按 *Errno 类型命中正确 HTTP；非 typed error 走 default 分支兜底 500，等价旧行为"
