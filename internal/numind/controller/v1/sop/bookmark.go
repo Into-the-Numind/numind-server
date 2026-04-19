@@ -11,7 +11,6 @@ import (
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
-	v1 "numind-server/pkg/api/numind/v1"
 )
 
 // SaveBookmarkRequest 保存书签请求
@@ -274,18 +273,6 @@ func (ctrl *SopController) DeleteBookmark(c *gin.Context) {
 	core.WriteResponse(c, nil, gin.H{
 		"message": "删除成功",
 	})
-}
-
-// CreateRunWithBookmarks 创建Run并支持自动应用书签
-// 这个方法会替代原有的CreateRun方法调用
-func (ctrl *SopController) CreateRunWithBookmarks(c *gin.Context, req v1.CreateSopRunRequest, user *model.User) (*model.SopRun, []uint, error) {
-	// 调用业务逻辑创建Run并自动应用书签
-	run, appliedBookmarkIDs, err := ctrl.sopBiz.CreateRunWithBookmarks(c.Request.Context(), req.TemplateID, user.ID, req.Text, req.AutoApplyBookmarks)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return run, appliedBookmarkIDs, nil
 }
 
 // ApplyBookmark 应用书签到当前Run
