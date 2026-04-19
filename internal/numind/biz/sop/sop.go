@@ -812,6 +812,10 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 					"model", actualModelName, "err", pErr)
 			} else {
 				actualCost = cost
+				// 将真实 token 数回写到 rsv，FinalizeReservation 会把它们
+				// 透传到 credit-reconcile span metadata（spec §5.1.3）。
+				rsv.ActualPromptTokens = usage.PromptTokens
+				rsv.ActualCompletionTokens = usage.CompletionTokens
 			}
 		}
 		// usage 为空或 tokens 全 0：actualCost=0 → defer 走 Refund("no_actual_cost")
@@ -1554,6 +1558,9 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 					"run_id", runID, "model", effectiveModel, "err", pErr)
 			} else {
 				chatActualCost = cost
+				// 把真实 token 数透传到 credit-reconcile span metadata（spec §5.1.3）。
+				chatRsv.ActualPromptTokens = usage.PromptTokens
+				chatRsv.ActualCompletionTokens = usage.CompletionTokens
 			}
 		}
 	}

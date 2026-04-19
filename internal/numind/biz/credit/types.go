@@ -61,6 +61,14 @@ type Reservation struct {
 	Items           []ReservationItem // FIFO 扣减明细
 	CreatedAt       time.Time
 	ReconciledAt    *time.Time
+
+	// ActualPromptTokens / ActualCompletionTokens — caller 在 LLM 调用完成后、
+	// defer FinalizeReservation 触发前写入；FinalizeReservation 把这两个值
+	// 透传到 credit-reconcile span 的 metadata，用于 Langfuse 线上排障按真实
+	// token 数对账 estimated vs actual。默认 0（未填写时 span 字段为 0，
+	// 与改造前行为一致）。
+	ActualPromptTokens     int
+	ActualCompletionTokens int
 }
 
 // ReservationItem FIFO 扣减单项（快照）

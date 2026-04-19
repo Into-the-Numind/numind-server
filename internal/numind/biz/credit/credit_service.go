@@ -427,6 +427,20 @@ func (c *creditsImpl) Reserve(
 // actual_cost_cents / delta / reconciled_at / finalize_reason='normal'
 // atomically inside a single transaction. Spec §1.4 / §3.3.
 func (c *creditsImpl) Reconcile(ctx context.Context, reservationID uint64, actualCostCents int64) error {
+	// ICreditService.Reconcile public entry — token counts unknown at this call
+	// site; delegates to reconcileWithTokens with 0/0. Callers routing through
+	// FinalizeReservation should set rsv.ActualPromptTokens / ActualCompletionTokens
+	// so tokens reach the credit-reconcile span metadata.
+	return c.reconcileWithTokens(ctx, reservationID, actualCostCents, 0, 0)
+}
+
+// reconcileWithTokens is the internal Reconcile implementation. Separated from
+// the public Reconcile so FinalizeReservation can thread token metadata to the
+// credit-reconcile span without widening the ICreditService interface.
+func (c *creditsImpl) reconcileWithTokens(
+	ctx context.Context, reservationID uint64, actualCostCents int64,
+	actualPromptTokens, actualCompletionTokens int,
+) error {
 	var (
 		reservedCredits    int64
 		delta              int64
@@ -507,13 +521,12 @@ func (c *creditsImpl) Reconcile(ctx context.Context, reservationID uint64, actua
 	if txErr != nil {
 		return txErr
 	}
-	// Emit span only on successful reconcile (spec §5.1.3).
-	// actual_prompt_tokens / actual_completion_tokens are unavailable here —
-	// ICreditService.Reconcile only receives costCents. They'll be added when
-	// the caller wires the full cost metadata (future expansion).
+	// Emit span only on successful reconcile (spec §5.1.3). Token counts are
+	// threaded from FinalizeReservation via rsv.ActualPromptTokens /
+	// ActualCompletionTokens; absent callers pass 0.
 	emitCreditReconcileSpan(ctx, reservationID,
 		reservedCredits, actualCostCents, delta,
-		0, 0, // token counts not threaded through this API yet
+		actualPromptTokens, actualCompletionTokens,
 		reconcileDirection, refundedPackages, hasDebt)
 	return nil
 }
@@ -697,7 +710,8 @@ func (c *creditsImpl) FinalizeReservation(
 	if actualCostCents == nil || *actualCostCents == 0 {
 		return c.Refund(ctx, rsv.ID, "no_actual_cost")
 	}
-	return c.Reconcile(ctx, rsv.ID, *actualCostCents)
+	return c.reconcileWithTokens(ctx, rsv.ID, *actualCostCents,
+		rsv.ActualPromptTokens, rsv.ActualCompletionTokens)
 }
 
 // classifyReason maps a Go error into one of the spec §5.1.4 refund reason

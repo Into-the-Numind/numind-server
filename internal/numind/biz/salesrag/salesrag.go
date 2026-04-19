@@ -417,6 +417,10 @@ func (cc *salesragCreditContext) recordLLMResult(
 		return
 	}
 	cc.actualCost = cost
+	// 把真实 token 数写到 rsv，FinalizeReservation 会透传到
+	// credit-reconcile span metadata（spec §5.1.3）。
+	cc.rsv.ActualPromptTokens = promptTokens
+	cc.rsv.ActualCompletionTokens = completionTokens
 }
 
 // finalize runs ICreditService.FinalizeReservation with a detached context

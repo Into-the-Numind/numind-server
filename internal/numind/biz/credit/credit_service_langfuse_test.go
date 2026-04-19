@@ -212,6 +212,43 @@ func TestLangfuse_Reconcile_EmitsReconcileSpan(t *testing.T) {
 	assert.Equal(t, string(credit.StatusReconciled), output["final_status"])
 }
 
+// TestLangfuse_FinalizeReservation_ThreadsTokensToReconcileSpan verifies
+// that actual_prompt_tokens / actual_completion_tokens set on the Reservation
+// pre-defer are visible in the credit-reconcile span metadata. This guards
+// against regression of the AI-5 token-threading fix (span metadata used to
+// always show 0/0).
+func TestLangfuse_FinalizeReservation_ThreadsTokensToReconcileSpan(t *testing.T) {
+	traceID := "trace-reconcile-tokens-test"
+	getEvents, cleanup := langfuseCapture(t, traceID)
+	defer cleanup()
+
+	svc, _, user := newCreditSvcWithLangfuseDB(t, 902, 2000)
+	ctx := contextWithTrace(traceID)
+
+	rsv, err := svc.Reserve(ctx, user, credit.OpSopRun, 150, 1, nil)
+	require.NoError(t, err)
+
+	// Caller populates token counts on the Reservation before defer fires
+	// (production pattern in sop.go / salesrag.go after the LLM call).
+	rsv.ActualPromptTokens = 1234
+	rsv.ActualCompletionTokens = 567
+
+	actual := int64(100)
+	var opErr error
+	require.NoError(t, svc.FinalizeReservation(ctx, rsv, &actual, &opErr))
+
+	events := getEvents()
+	span := findSpanByName(events, "credit-reconcile", "span-create")
+	require.NotNil(t, span)
+
+	input, _ := span.Input.(map[string]interface{})
+	require.NotNil(t, input)
+	assert.Equal(t, 1234, input["actual_prompt_tokens"],
+		"token count set on rsv should propagate to reconcile span input")
+	assert.Equal(t, 567, input["actual_completion_tokens"],
+		"token count set on rsv should propagate to reconcile span input")
+}
+
 // TestLangfuse_Refund_EmitsRefundSpan verifies credit-refund span via
 // FinalizeReservation's opErr dispatch.
 func TestLangfuse_Refund_EmitsRefundSpan(t *testing.T) {
