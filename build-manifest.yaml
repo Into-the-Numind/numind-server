@@ -1,35 +1,71 @@
 schema_version: "1.0"
 
 features:
-  - id: "hotfix-default-thinking-mode"
+  - id: "openrouter-provider"
     ndf_version: "1.1"
-    description: "SOP/Chatbot 默认开启深度思考模式：ModelSelector 下拉过滤 thinking 变体（避免用户选中 -thinking 模型触发 400），后端 GetPreferences 默认 thinking=true，存量 user_model_preference 数据批量翻转 thinking=1"
-    track: "hotfix"
-    stage: "H2"
-    classification_reason: "小改动：仅 numind-server 1 仓库，biz/llmrouter/preference.go 2 处 edit + 1 个轻量 data migration（UPDATE 单句），零业务逻辑风险；前端无需改动（store 已默认 thinking=true 回退）"
-    last_updated_by: "ai-h1"
+    description: "接入 OpenRouter (https://openrouter.ai/api/v1) 作为新的最高优先级 LLM 聚合主路由，与 AiHubMix (priority=5) / DMXAPI (priority=10) 并行。4 个模型（anthropic/claude-sonnet-4.6 / google/gemini-3.1-pro-preview / openai/gpt-5.4 / deepseek/deepseek-v3.2）统一走 OpenAI /chat/completions，thinking 通过 reasoning_effort 激活；凭据走 SyncProviderCredentials（config→DB，不硬编码，比 aihubmix 更洁净）"
+    track: "standard"
+    stage: "S1-done"
+    classification_reason: "涉及新外部服务集成（OpenRouter）+ 影响文件数 >3（seed SQL / seed.go / numind.go alias / config×2 / dmxapi_client SSE struct），2 条 Triage 标准不满足。用户要求加速推进"
+    last_updated_by: "ai-s1"
     last_updated_at: "2026-04-20T00:00:00+08:00"
     repos:
       - numind-server
     branches:
-      numind-server: "fix/default-thinking-mode"
+      numind-server: "feature/openrouter-provider"
+    artifacts:
+      requirement: "numind-server/requirements/openrouter-provider.md"
+      proposal: "numind-server/proposals/openrouter-provider-proposal.md"
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "S1 proposal 已产出，等待 S2 gate"
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-04-20 (S0): Triage 5 条标准评估 → Standard（2 条不满足：新外部服务 + 文件数 >3）"
+      - "2026-04-20 (S0): 用户确认 Standard 加速推进，借用 aihubmix-provider 工件模板"
+      - "2026-04-20 (S0): 相对 aihubmix 的关键差异 — (1) API key 走 SyncProviderCredentials 机制（清洁路径，不硬编码）；(2) Claude thinking 复用同 provider_model_id + reasoning_effort，不走 -think 后缀变体；(3) priority=1（最高优先，高于 AiHubMix=5 和 DMXAPI=10）"
+      - "2026-04-20 (S0): OpenRouter API key sk-or-v1-1a7c... 用户已授权 dev + prod 明文配置到 config_*.yaml"
+      - "2026-04-20 (S1): 真实 API 调查 — 4 slug 全部有效；API key 可用；成本与 AiHubMix 同型号基本持平（Claude 50tok out ≈ $0.00075）"
+      - "2026-04-20 (S1): ⚠️ 协议差异发现 — OpenRouter 流式用 delta.reasoning（非 reasoning_content），必须改 dmxapi_client.go SSE 结构。双字段保留向后兼容 AiHubMix"
+      - "2026-04-20 (S1): Pricing 方案确认 C — 与 aihubmix 同价（管理简单，成本实测吻合）"
+      - "2026-04-20 (S1): Attribution header（HTTP-Referer/X-Title）不加 — 保持 adapter 三方共用通用性"
+      - "2026-04-20 (S1): 预计改动文件 6 个（2 新增 migration + 4 改动：dmxapi_client/seed.go/numind.go/config×2）"
+    blockers: []
+    created_at: "2026-04-20T00:00:00+08:00"
+
+  - id: "hotfix-default-thinking-mode"
+    ndf_version: "1.1"
+    description: "SOP/Chatbot 默认开启深度思考模式：ModelSelector 下拉过滤 thinking 变体（避免用户选中 -thinking 模型触发 400），后端 GetPreferences 默认 thinking=true，存量 user_model_preference 数据批量翻转 thinking=1"
+    track: "hotfix"
+    stage: "H3-done"
+    completed_at: "2026-04-20T05:35:00+08:00"
+    classification_reason: "小改动：仅 numind-server 1 仓库，biz/llmrouter/preference.go 2 处 edit + 1 个轻量 data migration（UPDATE 单句），零业务逻辑风险；前端无需改动（store 已默认 thinking=true 回退）"
+    last_updated_by: "ai-h3"
+    last_updated_at: "2026-04-20T05:35:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/default-thinking-mode (merged 68dcae7, pending cleanup)"
     artifacts: {}
     progress:
       total_tasks: 1
       completed_tasks: 1
-      reviewed_tasks: 0
-      current_task: "H2: 等 H3 merge-push 触发 dev 部署后做 gstack /qa"
-    rollback: "revert fix commit on develop；若 migration 已应用，DB 侧执行 UPDATE user_model_preference SET thinking = 0 WHERE thinking = 1（但这会丢失 hotfix 后用户真实偏好，慎用）"
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "revert merge commit 68dcae7；若 prod migration 已应用，执行 rollback.sql 把 thinking=1 翻回 0（会丢失用户真实偏好，慎用）"
     last_verified:
-      at: "2026-04-20T00:00:00+08:00"
-      method: "go build ./... + go vet ./... 全绿；dev DB 现有 4 条 user_model_preference 记录（1 chatbot + 3 sop）全部已 thinking=1 → migration 在 dev 为 no-op（prod 上线时应用保障存量）"
-      lint: "pass (go build 无 error；cgo sqlite-vec deprecated warning 与本 hotfix 无关)"
+      at: "2026-04-20T05:35:00+08:00"
+      method: "dev gstack /qa 浏览器验证 — 登录 → /sop/run?templateId=3 → 打开 ModelSelector 下拉：SOP 列表仅 [DeepSeek v3.2, Claude Sonnet 4.6] 两 base 模型；chatbot 列表仅 [gemini-3.1-pro-preview, gpt-5.4, claude-sonnet-4-6]，均无 thinking 变体。选中 DeepSeek v3.2 → PUT /api/v1/llm/preference → 200（55ms, code:0）。screenshot: .gstack/qa-reports/screenshots/06-dropdown-open.png"
+      lint: "pass (go build ./... 全绿)"
       type_check: "n/a (Go)"
-      tests: "pre-existing TestCreateRun_FreeUserReturnsTypedError 在 develop 原样 FAIL（commit 9870d7b 引入，不属本 hotfix 范畴）；llmrouter 无 test 文件"
+      tests: "llmrouter 无 test 文件；sop 包 TestCreateRun_FreeUserReturnsTypedError 在 develop 原样 FAIL（commit 9870d7b 引入，不属本 hotfix 范畴，已登记）"
     decisions:
       - "2026-04-20: Triage 5 条标准全绿 → Hotfix；用户需求是默认深度思考，且前端深度思考开关已隐藏（ModelSelector.vue:91 v-if=\"false\"），只能从后端默认值切入"
-      - "2026-04-20: 诊断发现 3 个点 → (1) GetModels 下拉返回了 is_thinking=true 的变体 → 用户点击触发 SavePreference 第 235 行拒绝；(2) GetPreferences 默认 Thinking=false → 前端 store 收到 false 后盖掉 ?? true 回退；(3) 存量数据已有 thinking=0 记录。修复：GetModels SQL 加过滤 + GetPreferences 默认 true + migration UPDATE 存量"
-      - "2026-04-20: H2 验证 — dev DB 无需迁移（全 thinking=1），代码 build 通过；等 H3 merge-push 后 gstack /qa 走一次 SOP 页面 ModelSelector 下拉流程做端到端验证"
+      - "2026-04-20: 诊断发现 3 个点 → (1) GetModels 下拉返回了 is_thinking=true 的变体 → 用户点击触发 SavePreference 第 235 行拒绝；(2) GetPreferences 默认 Thinking=false → 前端 store 收到 false 后盖掉 ?? true 回退；(3) 存量数据可能有 thinking=0 记录。修复：GetModels SQL 加过滤 + GetPreferences 默认 true + migration UPDATE 存量"
+      - "2026-04-20 H3: 部署后 QA 发现 DB 冲突 — 用户今日早些时候通过管理端 deprecated 了 4 个 base 模型（claude-sonnet-4-6 / gpt-5.4 / gemini-3.1-pro-preview / deepseek-v3.2），只留 thinking 变体 active，导致本 hotfix 过滤后下拉空列表。用户确认当时是自己的操作但此时决定走 Option B：恢复 base 模型。在 dev 执行 UPDATE ai_service SET deprecated_at = NULL WHERE is_thinking = 0 AND model_key IN ('claude-sonnet-4-6','gpt-5.4','gemini-3.1-pro-preview','deepseek-v3.2'); hotfix 随即恢复预期行为，QA 通过。prod 上线前需：(1) 跑本 hotfix 的 thinking=1 migration；(2) 确认 prod 的 ai_service base 模型未被 deprecated，如已 deprecated 需同步恢复。"
     blockers: []
     created_at: "2026-04-20T00:00:00+08:00"
 
