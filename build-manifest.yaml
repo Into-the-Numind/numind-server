@@ -1228,6 +1228,101 @@ features:
     created_at: "2026-04-19T04:50:00+08:00"
     completed_at: "2026-04-19T05:22:00+08:00"
 
+  - id: "salesrag-restore-routes-and-panic-fix"
+    ndf_version: "1.0"
+    description: "SalesRAG 发消息无反应 — 补 ai_service_route 缺失 seed（services 18-23）+ 修 billing middleware typed-nil panic"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "P0 事故 — dev SalesRAG 完全不能用。两层修复：数据 seed（migration）+ 代码 panic 防御（billing middleware）"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-19T23:50:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/billing-typed-nil-panic"
+    hotfix_artifacts:
+      diagnosis: |
+        用户报告 SalesRAG 发消息后无反应。浏览器 + curl 诊断：
+        1) 后端 SSE 返 error event "retrieval failed: gateway.ResolveTask(salesrag.embed):
+           AI 服务不存在". DB 查实 ai_service_route 对 services 18-23 全部零行。
+        2) 追查根源：4/16 12:48:10 有人手工 SQL 只做了 2/3 步（INSERT ai_service +
+           UPDATE task_profile.default_service_id），漏了 INSERT ai_service_route。
+           audit_log 缺失证实绕过了 admin API。
+        3) 补 route 后触发第二 bug — billing middleware nil pointer panic at
+           billing.go:368. Stacktrace 指向 `asChatResponse(typed-nil)` 陷阱：
+           Ali.Chat 遇错返回 (nil, err)，Go typed-nil 进 interface{} 后 type
+           assertion 成功返回 (nil_ptr, true)，caller deref chatResp.Usage 崩。
+        4) 前端 sales store 同时存在 resetStreamState wipe streamError 的 bug，
+           导致用户完全看不到任何反馈（无气泡/无 loading/无错误）— 登记为 P1
+           follow-up（本 hotfix 暂不修，重点恢复后端功能）。
+      review: null
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 0
+      current_task: "pending subagent review"
+    rollback: "git revert merge commit + 跑 migrations/20260419_230000_seed_ai_service_routes_rollback.sql"
+    last_verified:
+      at: "2026-04-19T23:45:00+08:00"
+      lint: "pass (go vet clean)"
+      type_check: null
+      tests: "pass"
+      test_summary: |
+        - 2 regression test（TestPopulateLLMUsage_TypedNilResponse_NoPanic +
+          TestAsChatResponse_TypedNilGuard）全绿
+        - middleware 全套 test 全绿
+        - go vet 干净
+        - dev DB migration 手工执行过，6 条 route 落库，SELECT 验证过
+        - SSE 触发测试待 CI 部署后执行（本 manifest 更新时 CI 在跑）
+    decisions:
+      - "2026-04-19: migration 选择 dev 手工执行 + commit 一体，避免重复 4/16 绕过 migration 的错误"
+      - "2026-04-19: route 定价设 0，billing 真实走 pricing_rule 表（单一真源）"
+      - "2026-04-19: Provider 映射通过 JOIN llm_provider.name 避免硬编码 id"
+      - "2026-04-19: billing middleware 修两处（asChatResponse typed-nil guard + populateLLMUsage callErr early return）双保险"
+      - "2026-04-19: 前端 sales store resetStreamState wipe error 的 bug 登记为 P1 followup，不在本次 hotfix 范围（用户没授权）"
+    deferred:
+      - "前端 sales store 的 streamError wipe bug（用户看不到错误反馈）—— P1 followup"
+      - "admin-web UI 未强制'创建 service 后必须配 route'——P2 operational hardening"
+      - "pricing_rule 的 middleware/chain.go 简化 2-level fallback（vs store/billing.go 3-level）的不一致—— P2 代码合并 tech debt"
+    blockers: []
+    created_at: "2026-04-19T22:55:00+08:00"
+    completed_at: "2026-04-19T23:50:00+08:00"
+
+  - id: "salesrag-right-panel-bg-white"
+    ndf_version: "1.0"
+    description: "SalesRAG 页面右边区域背景灰色改纯白"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "单仓库 UI tweak，2 文件 3 行 CSS 改动"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-19T23:50:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "fix/salesrag-white-bg"
+    hotfix_artifacts:
+      diagnosis: "SalesView.vue .app-container 的 background: var(--bg) (#f7f8fb) 让右侧 chat 区域看起来灰。用户要求改纯白"
+      review: null
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "git revert merge commit"
+    last_verified:
+      at: "2026-04-19T23:50:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: null
+      test_summary: "lint 0 errors / type-check 通过 / 视觉验证待 CI 部署后浏览器确认"
+    decisions:
+      - "2026-04-19: 只覆盖 SalesView .app-container 背景，不动 --bg 全局 token（避免影响其他页面）"
+      - "2026-04-19: InputArea .input-stage::before fade gradient 同步改到 white 末端，避免输入框上方视觉断层"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-19T23:10:00+08:00"
+    completed_at: "2026-04-19T23:50:00+08:00"
+
   - id: "remove-sop-estimate-bar"
     ndf_version: "1.0"
     description: "SOP 运行页移除预估消耗 + 余额 + 开始运行 bar（SopEstimateBar），credits-system Phase 2 引入的 UX，用户决定完全去掉"
