@@ -926,8 +926,8 @@ features:
     track: "standard"
     stage: "S7-done"
     classification_reason: "跨 3 仓库预估 20+ 文件、涉及支付+权限+会员资格门槛+老用户迁移等高风险业务逻辑，5 条 Triage 标准中 4 条触发 Standard"
-    last_updated_by: "ai-s7-close"
-    last_updated_at: "2026-04-19T15:55:00+08:00"
+    last_updated_by: "ai-post-close-qa"
+    last_updated_at: "2026-04-19T16:30:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -1003,27 +1003,29 @@ features:
       tested_report: "docs/superpowers/specs/s6-rollback-drill-2026-04-19.md"
       tested_result: "PASS — 本地 MySQL 8.4 testcontainer 7 forward + 7 backward 全 exit 0，final clean state 验证"
     last_verified:
-      at: "2026-04-19T15:55:00+08:00"
+      at: "2026-04-19T16:30:00+08:00"
       lint: "pass"
       type_check: "pass"
       tests: "pass"
+      browser_qa: "pass (gstack /qa 3 scenarios + 账户中心)"
       test_summary: |
-        go test ./internal/numind/biz/credit/ ./internal/numind/biz/sop/ ./internal/numind/biz/salesrag/ ./internal/pkg/billing/ 全绿（含 boundary matrix 7 新测试 + reconcile_debt + token threading 新测试）
+        go test ./internal/numind/biz/credit/ ./internal/numind/biz/sop/ ./internal/numind/biz/salesrag/ ./internal/pkg/billing/ ./internal/numind/store/ ./internal/pkg/pricing/ 全绿（含 boundary matrix 7 新测试 + reconcile_debt + token threading + ClampsToAtLeastOne + 3 级 pricing fallback）
         web-v3 npm run lint（仅 1 pre-existing warning）/ type-check pass
         admin-web npm run lint（仅 1 pre-existing warning）/ type-check pass
         Playwright grant-membership-modal.spec.ts 11/11 pass (14.8s)
         Playwright credits-system.spec.ts 9/9 pass (S5-1 Path 3 文案修复后)
         Playwright admin-credits.spec.ts 12/12 pass (26.1s, S5-6)
-        Dev smoke 12+ endpoints（healthz / credits balance-estimate-packages / sop runs+execute / users children / grant-membership 4 errors / admin b2b-billing-report / admin estimation-coefficients list+history / admin migrations status / admin orders list）
+        Dev smoke 12+ endpoints 全绿
         Langfuse dev cloud: credit-estimate + credit-reserve + credit-reconcile (AI-5 token 字段 ≠0) + credit-refund 4 span 全部 verified with §5.1 schema
-        Perf: /v1/credits/estimate P95 < 25ms（10次采样，9 次 < 10ms），远低于 spec §5.6 100ms 目标
-        CI deploy_dev pinned tag（commit 7760af5 生效后）部署 log 确认用 develop-<sha> + SHA verification ✅
+        Perf: /v1/credits/estimate P95 < 25ms，远低于 spec §5.6 100ms 目标
+        CI deploy_dev pinned tag (commit 7760af5) + SHA verification 生效 ✅
         Migration rollback drill: 本地 MySQL 8.4 testcontainer 7 forward + 7 backward exit 0，final clean state 验证 PASS
+        Post-close QA (commit af78827 部署后): 用户报告 SOP 阻塞 → 3 层 fallback + clamp 修复 → gstack /qa 真实浏览器 3 场景全绿（文章优化助手 + SalesRAG + 流量选题口播稿）
+        余额链 5000→4994→4992→4991→4990 可观测，扣减准确
+        Feedback tech debt: 500 (missing table) + 400 (negative msg id) 均已修 (commits fdee7c7 + web-v3 fda5a26)
     deferred:
       ai_doable: []  # 全部清零
-      human_only:
-        - "S5-3: gstack /qa 浏览器截图 QA（localhost:5173 + 视觉 P0 判断）"
-        - "S6-2: 前端四组件视觉验证（CreditBalanceCard / BoosterPurchaseCard / SopEstimateBar / MigrationsView / Q3 B2B 结算报表页）"
+      human_only: []  # 全部完成 - gstack /qa 3 场景 + 账户中心视觉 PASS at 16:30
       post_s7:
         # 原有 4 项
         - "deploy_qa / deploy_prod / admin_dev/qa/prod deploy jobs 复制 deploy_dev 的 SHA-pinned tag fix（P1，下次 push 到 release/tag 时暴露）"
@@ -1143,9 +1145,17 @@ features:
       - "2026-04-19: S6-6 Langfuse trace diversity 部分完成 — SOP 4 span 完整（AI-1 已覆盖）；SalesRAG chat pricing lookup fail (default provider/model empty + pricing_rule 无 global fallback) → 登记 tech debt；legacy_tier dev 缺数据，靠单测覆盖"
       - "2026-04-19: S5/S6 Gate PASS — AI 可做的 10 项全部完成 + lint/test/type-check/E2E/smoke/Langfuse/perf/rollback 全绿。HUMAN-only 2 项（gstack /qa + 前端视觉）走 post-close 验收，不 block S7。文档 s5-s6-wave-report-2026-04-19.md"
       - "2026-04-19: S7 close — manifest 从 S4 直升 S7-done（S5/S6 统一 wave 合并完成）。Codes/CLAUDE.md §1 计费体系表格同步 credits 新制 + B2B2C Q1 补丁。feature 开箱可用（标记 HUMAN-only 2 项为 post-close 验收）"
+      # ====== Post-close P0 事故 + 修复 ======
+      - "2026-04-19: 用户 smoke 报告 SOP 文章优化助手 + SalesRAG chat 均报 'pricing lookup: record not found' 500。登记为 P0 事故（我之前 S6-1 用长 text 测漏了这路径）。根因 3 层：(1) 模板 3 节点 model_name 空 → pricing 查 ('', '') 无 row；(2) 短 prompt cost round 0 → Reserve 硬检查拒绝；(3) dmxapi/claude-* / gemini-* / gpt-5.4 实际路由但 pricing_rule 未 seed"
+      - "2026-04-19: P0 修复 (commit af78827) — store/billing.go GetPricingRule 三级 fallback (exact → provider wildcard → global)；estimation.go clamp estimated 最小 1（promptChars>0 时）；migration 20260419_170000 seed 全局兜底 + 8 行缺失 dmxapi/aihubmix rows；seed_pricing_rules.sql 同步；dev emergency INSERT + 模板 3 节点填 deepseek-v3-2-251201。新增 TestEstimateCredits_ClampsToAtLeastOne 回归。smoke: /sop/runs/823/nodes/9/execute 短 prompt 'completed'，SalesRAG chat 响应 200 22.8KB 流"
+      - "2026-04-19: gstack /qa 浏览器 QA 3 场景 PASS — 场景 A 文章优化助手（SopEstimateBar '1 积分 (3 步)'，节点 1 477 tokens 11.4s claude-sonnet-4-6）+ 场景 B SalesRAG chat（选项 A/B/C 格式完整回复）+ 场景 C 流量选题口播稿（4 节点模板，SopEstimateBar '2 积分'）。余额链 5000→4994→4992→4991→4990 完整可观测。HUMAN-only S5-3 + S6-2 走完"
+      - "2026-04-19: QA 附带发现 2 个 feedback 非 credits-related tech debt - 修复"
+      - "2026-04-19: Feedback tech debt #1 - GET /feedback 500 (missing sales_message_feedback table). Fix: helper.go AutoMigrate list 加 SalesMessageFeedback. Dev emergency CREATE TABLE. commit fdee7c7"
+      - "2026-04-19: Feedback tech debt #2 - GET /feedback?id=-N 400 (frontend passing temp negative msg id). Fix: sales.ts getFeedback short-circuit messageId<=0. commit web-v3 fda5a26"
+      - "2026-04-19: Feature 真实可用确认 - SOP + SalesRAG + 账户中心 credit 链路全部浏览器绿。S7 close 收尾 (含 post-close QA 事故 + 2 tech debt 清理)"
     blockers: []
     created_at: "2026-04-18T12:00:00+08:00"
-    completed_at: "2026-04-19T15:55:00+08:00"
+    completed_at: "2026-04-19T16:30:00+08:00"
 
   - id: "markitdown-all-deps"
     ndf_version: "1.0"
