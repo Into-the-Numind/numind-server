@@ -363,6 +363,14 @@ func populateUsage(ctx context.Context, r *model.UsageRecord, serviceType string
 // On streaming interruption (context cancelled after first chunk), it falls
 // back to character-count estimation (chars / 2) and sets IsEstimated = true.
 func populateLLMUsage(r *model.UsageRecord, resp interface{}, callErr error, ctx context.Context) {
+	// When the adapter returned an error, resp is a typed-nil *ChatResponse
+	// (Go idiom: `return nil, err`). Skip usage extraction — there's no
+	// response to read tokens from, and asChatResponse below would still
+	// succeed on typed-nil then crash on chatResp.Usage dereference.
+	if callErr != nil {
+		return
+	}
+
 	// Non-streaming: extract from ChatResponse.
 	if chatResp, ok := asChatResponse(resp); ok {
 		r.PromptTokens = chatResp.Usage.PromptTokens
@@ -390,6 +398,13 @@ func asChatResponse(resp interface{}) (*aiservice.ChatResponse, bool) {
 		return nil, false
 	}
 	if cr, ok := resp.(*aiservice.ChatResponse); ok {
+		// Typed-nil guard: an interface wrapping a nil concrete pointer is
+		// NOT == nil above, but dereferencing fields on it panics.
+		// This happens whenever an adapter returns (nil, err) — the caller
+		// wraps the typed-nil *ChatResponse into an interface{} parameter.
+		if cr == nil {
+			return nil, false
+		}
 		return cr, true
 	}
 	if cr, ok := resp.(aiservice.ChatResponse); ok {

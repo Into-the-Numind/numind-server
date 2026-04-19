@@ -981,3 +981,47 @@ func TestBuildBaseRecord_PricingSnapshot_NoMatch(t *testing.T) {
 		t.Errorf("Unit: expected nil on no-match, got %v", r.Unit)
 	}
 }
+
+// TestPopulateLLMUsage_TypedNilResponse_NoPanic is a regression test for the
+// 2026-04-19 SalesRAG incident where ali adapter returned (nil, error) and
+// the middleware panicked dereferencing chatResp.Usage on a typed-nil.
+//
+// Scenario: adapter returns (typed-nil *ChatResponse, non-nil error). Middleware
+// must NOT panic and MUST leave token fields zero.
+func TestPopulateLLMUsage_TypedNilResponse_NoPanic(t *testing.T) {
+	r := &model.UsageRecord{}
+
+	// Simulate Go typed-nil interface pattern:
+	//   var cr *aiservice.ChatResponse // nil
+	//   var resp interface{} = cr      // interface{} wrapping typed-nil — NOT == nil
+	var cr *aiservice.ChatResponse
+	var resp interface{} = cr
+	if resp == nil {
+		t.Fatal("sanity: typed-nil interface should not equal nil (Go semantics)")
+	}
+
+	// Must not panic.
+	populateLLMUsage(r, resp, errors.New("ali.Chat: provider error: quota exceeded"), context.Background())
+
+	// Token fields must stay zero (no response to read from).
+	if r.PromptTokens != 0 || r.CompletionTokens != 0 || r.TotalTokens != 0 {
+		t.Errorf("expected zero tokens on adapter error, got prompt=%d completion=%d total=%d",
+			r.PromptTokens, r.CompletionTokens, r.TotalTokens)
+	}
+}
+
+// TestAsChatResponse_TypedNilGuard verifies the typed-nil guard at the
+// assertion layer (defensive second layer beside callErr check).
+func TestAsChatResponse_TypedNilGuard(t *testing.T) {
+	var cr *aiservice.ChatResponse // nil
+	var resp interface{} = cr
+
+	got, ok := asChatResponse(resp)
+	if ok {
+		t.Errorf("expected ok=false for typed-nil *ChatResponse, got ok=true")
+	}
+	if got != nil {
+		t.Errorf("expected nil return for typed-nil *ChatResponse, got %v", got)
+	}
+}
+
