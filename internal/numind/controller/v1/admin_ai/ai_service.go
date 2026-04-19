@@ -214,6 +214,14 @@ func (ctrl *AIServiceController) CreateServiceWithRoute(c *gin.Context) {
 	}
 
 	actorID, actorName := actorFromContext(c)
+	// Defense-in-depth: admin_token 中间件理论上保证 actor 非空；但万一某次路由
+	// 注册漏了中间件，actor=0 会让 audit log 写匿名条目，丢失追溯。显式 reject
+	// 而不是沉默写 actor_id=0 的 audit log。Review P1 #5（2026-04-20）。
+	if actorID == 0 {
+		core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("未获取到管理员身份"), nil)
+		return
+	}
+
 	result, bizErr := ctrl.biz.CreateServiceWithRoute(c.Request.Context(), req, actorID, actorName)
 	if bizErr != nil {
 		if isErrno(bizErr) {

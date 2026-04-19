@@ -158,7 +158,10 @@ type CreateServiceInner struct {
 	Icon             string                `json:"icon"`
 	SortOrder        int                   `json:"sort_order"`
 	IsActive         *bool                 `json:"is_active"`
-	BaseModelID      *uint64               `json:"base_model_id"`
+	// BaseModelID removed: 跟 createServiceReq / updateServiceReq 一致（pre-existing
+	// admin UI 从未暴露该字段）。Thinking-variant 父子 FK 目前仅通过直接 DB 设置，
+	// 如果未来要通过 admin UI 管理，请一并给老的 createServiceReq / updateServiceReq
+	// 加回该字段，保证三个路径行为一致。Review P0 #1（2026-04-20）。
 }
 
 // CreateRouteInner is the route-half of CreateServiceWithRouteRequest.
@@ -508,7 +511,6 @@ func (b *aiServiceAdminBiz) CreateServiceWithRoute(ctx context.Context, req Crea
 		Icon:             req.Service.Icon,
 		SortOrder:        req.Service.SortOrder,
 		IsActive:         svcActive,
-		BaseModelID:      req.Service.BaseModelID,
 	}
 
 	// Provider FK existence check outside the transaction; cheap SELECT and
