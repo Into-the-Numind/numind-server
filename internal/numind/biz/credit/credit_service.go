@@ -193,11 +193,15 @@ func (l *legacyTierImpl) buildLegacyBalance(user *model.User) BalanceBreakdown {
 func (b BalanceBreakdown) Ptr() *BalanceBreakdown { return &b }
 
 // ---------------------------------------------------------------------------
-// creditsImpl — new-system credits mode (spec §1.4)
+// creditsImpl — new-system credits mode (spec §1.4).
 //
-// Stubs here; filled in by Tasks C.3 / C.4 / C.5 / C.8. Each method returns a
-// placeholder error for now so the service compiles and legacy-only tests
-// can exercise the dispatcher without requiring credits-mode infrastructure.
+// Implements ICreditService for users with billing_mode='credits':
+//   - Reserve → FIFO pre-deduct (DeductCreditsTx) + writes credit_reservation +
+//     items snapshot; emits credit-reserve span.
+//   - Reconcile → refund excess (reserved > actual) or top-up debt (reserved <
+//     actual). Debt overflow logs hasDebt + Langfuse span (§5.3 ledger follow-up).
+//   - Refund → full restore on cancellation via FinalizeReservation.
+//   - GetBalance → SubRemain + BoosterRemain + expires-at breakdown.
 // ---------------------------------------------------------------------------
 
 type creditsImpl struct {

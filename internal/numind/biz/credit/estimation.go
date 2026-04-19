@@ -143,7 +143,12 @@ func (b *estimationBiz) getActiveCoefficient(
 }
 
 // UpdateCoefficient — spec §2.11.6 retry with exponential backoff.
-// Attempts: 50 / 100 / 200 ms backoffs (total 3 tries).
+// Attempts: initial + 50 / 100 / 200 ms backoffs (4 tries total).
+//
+// Why 3 retries / exponential backoff: coefficient 写入是 admin 后台偶发操作
+// （非热路径），冲突窗口只有 "两个 admin 同时点提交" 这种场景。3 次
+// retry（总计 ≤350ms 等待）足够覆盖该概率；间隔指数避免惊群。超过则返回
+// ErrCoefficientConcurrent 让前端提示人类重试。
 func (b *estimationBiz) UpdateCoefficient(ctx context.Context, next *model.CreditEstimationCoefficient) (uint64, error) {
 	backoffs := []time.Duration{50 * time.Millisecond, 100 * time.Millisecond, 200 * time.Millisecond}
 	var lastErr error

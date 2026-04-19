@@ -13,6 +13,7 @@ package credit
 
 import (
 	"context"
+	"strconv"
 
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/model"
@@ -187,7 +188,7 @@ func updateTraceMetadataForCredits(ctx context.Context, user *model.User, balanc
 	metadata := map[string]string{
 		"billing_mode":            user.BillingMode,
 		"deducted_from":           classifyDeductedFrom(balance),
-		"credit_balance_at_start": int64ToStr(balance.SubRemain + balance.BoosterRemain),
+		"credit_balance_at_start": strconv.FormatInt(balance.SubRemain+balance.BoosterRemain, 10),
 	}
 	langfuse.UpdateTraceMetadata(tc.TraceID, metadata)
 }
@@ -224,27 +225,3 @@ func derefStr(s *string) string {
 	return *s
 }
 
-// int64ToStr turns an int64 into a decimal string without pulling strconv
-// into this file (the langfuse metadata map is map[string]string, a limitation
-// of langfuse.TraceBody.Metadata which we preserve).
-func int64ToStr(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	buf := [20]byte{}
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
-}
