@@ -234,6 +234,7 @@ type AdminCreatePricingRuleRequest struct {
 	ServiceType            string  `json:"service_type" binding:"required"`
 	Provider               string  `json:"provider" binding:"required"`
 	Model                  string  `json:"model"`
+	BillingMode            string  `json:"billing_mode"` // flat | tiered_token
 	InputPricePerMTok      float64 `json:"input_price_per_mtok"`
 	OutputPricePerMTok     float64 `json:"output_price_per_mtok"`
 	PricePerCall           float64 `json:"price_per_call"`
@@ -250,6 +251,7 @@ type AdminUpdatePricingRuleRequest struct {
 	ServiceType            *string  `json:"service_type"`
 	Provider               *string  `json:"provider"`
 	Model                  *string  `json:"model"`
+	BillingMode            *string  `json:"billing_mode"` // flat | tiered_token
 	InputPricePerMTok      *float64 `json:"input_price_per_mtok"`
 	OutputPricePerMTok     *float64 `json:"output_price_per_mtok"`
 	PricePerCall           *float64 `json:"price_per_call"`
