@@ -283,8 +283,23 @@ func (s *monitorStore) GetConfig(ctx context.Context, userID uint) (*model.Monit
 
 // UpsertConfig 创建或更新用户的监控配置
 func (s *monitorStore) UpsertConfig(ctx context.Context, c *model.MonitorConfig) error {
+	// Capture intended value before FirstOrCreate; GORM may overwrite the struct field
+	// with the DB default when the field has `gorm:"default:true"` and the value is false.
+	wantNotify := c.NotifyOnUpdate
 	if err := s.db.WithContext(ctx).Where("user_id = ?", c.UserID).Assign(*c).FirstOrCreate(c).Error; err != nil {
 		return fmt.Errorf("UpsertConfig: %w", err)
+	}
+	// GORM v2 skips bool zero value (false) when the field has a `default:true` tag
+	// (model.MonitorConfig.NotifyOnUpdate). When FirstOrCreate creates a new row and the
+	// caller explicitly set notify_on_update=false, GORM silently falls back to the DB
+	// default of true. A follow-up UpdateColumn restores the requested value.
+	// This is also safe for the update path (row already existed) since Assign does not
+	// persist bool false values either.
+	if !wantNotify && c.NotifyOnUpdate {
+		if err := s.db.WithContext(ctx).Model(c).UpdateColumn("notify_on_update", false).Error; err != nil {
+			return fmt.Errorf("UpsertConfig: fixup notify_on_update: %w", err)
+		}
+		c.NotifyOnUpdate = false
 	}
 	return nil
 }

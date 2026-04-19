@@ -60,7 +60,7 @@ alipay:
 volc:
   api_key: "716dc07a-b121-4bae-a132-497117f74c7a"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "deepseek-v3-2-251201"
+  # model: 已由 AI Gateway Registry + Task Profile 管理，此字段不再读取
   temperature: 0.7
   tokens: 4000
   timeout: 300s
@@ -103,13 +103,13 @@ ali:
   api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"  # 文本服务API密钥
   # 文本生成服务
   text:
-    model: "qwen-turbo"  # 千问文本模型
+    # model: 已由 AI Gateway Registry + Task Profile 管理，此字段不再读取
     timeout: 180s        # 文本生成超时时间
 
   # 视觉理解服务
   vision:
     api_key: "sk-31f08fc72a594fbca4e827d5465a941b"  # 视觉服务专用API密钥
-    model: "qwen3-vl-flash-2026-01-22" # 视觉模型
+    # model: 已由 AI Gateway Registry + Task Profile 管理，此字段不再读取
     timeout: 180s
 
   # DashVector 向量数据库配置
@@ -118,6 +118,40 @@ ali:
     api_key: "sk-gMsgxE1A1QzoxexCdtuTaVjuF6w8Z52890CC5F85411F08940FAD61112A032"
     collection: "sales_rag"
 
-# Langfuse AI 可观测性配置（本地默认关闭）
+# AI 服务提供商凭据（Task 15a）
+# SyncProviderCredentials 在启动时读取此段，写入 llm_provider 表。
+# 运行时 Gateway 从 DB 读取（单一来源），此段仅用于初始化/密钥轮换。
+ai_providers:
+  ali:
+    api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"   # 与 ali.api_key 同值（ali-dashscope 行）
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  volc:
+    api_key: "716dc07a-b121-4bae-a132-497117f74c7a"  # 与 volc.api_key 同值（volc-ark 行）
+    base_url: "https://ark.cn-beijing.volces.com/api/v3"
+  dmxapi:
+    api_key: ""  # 本地不使用 DMXAPI，dev 环境填入真实 key
+    base_url: "https://www.dmxapi.cn/v1"
+  baidu:
+    api_key: "CkJCFXHinJLBsnEFT9lscwZr"             # 与 baidu.api_key 同值
+    secret_key: "YbJZuvunKGhlSwTZpotTKZxkty0h5enU"  # 与 baidu.secret_key 同值（baidu-ocr 行）
+  bailian:
+    api_key: "sk-634923fe0bba4cb199c3f17eb9e7e749"   # 复用 ali api_key（百炼同一账号）
+    base_url: "https://bailian.cn-hangzhou.aliyuncs.com"
+    workspace_id: "ws-7s7s7s7s7s7s"                 # 与 ali.workspace_id 同值
+  funasr:
+    base_url: "http://localhost:10095"               # FunASR 本地服务地址
+
+# Langfuse AI 可观测性配置
 langfuse:
   enabled: true
+  base_url: "http://110.42.221.25:3100"
+  public_key: "pk-lf-41015256-bdc3-46aa-92b7-6ffe8de9605a"
+  secret_key: "sk-lf-5a6c2185-d8ce-4903-9930-c9d72a9d0112"
+
+# AiHubMix（OpenAI 兼容聚合平台）— 当前作为 claude-sonnet-4-6 / gemini-3.1-pro-preview /
+# gpt-5.4 / deepseek-v3.2 的主路由（priority=5），DMXAPI 作 failover（priority=10）。
+# 注：runtime 实际读取 llm_provider.api_key（DB 列），此配置仅作占位与运维文档一致性；
+# 未来 ai-service-manager 的 SyncProviderCredentials 实装后会读取此配置刷新 DB。
+aihubmix:
+  base_url: "https://aihubmix.com/v1"
+  api_key: "sk-vduyVKfBuiI5p4P5B030A80938924aFe87Af360473612f68"

@@ -1,0 +1,29 @@
+samples:
+  - file: cn_en_mixed.pdf
+    description: 中英混排文章（多巴胺与注意力主题）
+    keywords: [多巴胺, 电影, 倍速, 新京报, 奖励]
+    has_table: false
+  - file: scanned_image.pdf
+    description: 纯扫描件（图片型，无文本层）
+    keywords: [投资人, AI, 自媒体, 护城河, 飞轮]
+    has_table: false
+  - file: complex_table.docx
+    description: 员工信息表（合并单元格）
+    keywords: [张三, 技术部, 开发工程师, 李四, 财务部]
+    has_table: true
+  - file: long_doc_80p.pdf
+    description: 长文档，测漏页 / 页眉页脚重复
+    keywords: [第一章, 英伟达, 附录, 人工智能]
+    has_table: false
+  - file: legacy.doc
+    description: 老 Word 格式（.doc）
+    keywords: [英伟达, 超级赛道]
+    has_table: false
+  - file: data.xlsx
+    description: 季度营收表（多 sheet + 合并单元格）
+    keywords: [营收, 华北, 季度, 合计, 笔记本]
+    has_table: true
+  - file: slides.pptx
+    description: 会议效率主题 PPT（含备注）
+    keywords: [会议, 秘诀, 目标清晰, 议程]
+    has_table: false

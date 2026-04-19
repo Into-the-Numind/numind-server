@@ -234,6 +234,7 @@ type AdminCreatePricingRuleRequest struct {
 	ServiceType            string  `json:"service_type" binding:"required"`
 	Provider               string  `json:"provider" binding:"required"`
 	Model                  string  `json:"model"`
+	BillingMode            string  `json:"billing_mode"` // flat | tiered_token
 	InputPricePerMTok      float64 `json:"input_price_per_mtok"`
 	OutputPricePerMTok     float64 `json:"output_price_per_mtok"`
 	PricePerCall           float64 `json:"price_per_call"`
@@ -250,6 +251,7 @@ type AdminUpdatePricingRuleRequest struct {
 	ServiceType            *string  `json:"service_type"`
 	Provider               *string  `json:"provider"`
 	Model                  *string  `json:"model"`
+	BillingMode            *string  `json:"billing_mode"` // flat | tiered_token
 	InputPricePerMTok      *float64 `json:"input_price_per_mtok"`
 	OutputPricePerMTok     *float64 `json:"output_price_per_mtok"`
 	PricePerCall           *float64 `json:"price_per_call"`
@@ -400,4 +402,49 @@ type AdminTierBreakdownItem struct {
 	NewTier     string `json:"new_tier"`
 	Count       int64  `json:"count"`
 	TotalMonths int64  `json:"total_months"`
+}
+
+// ====== Admin SOP Runs ======
+// 显式 DTO 替代直接序列化 model.SopRun / model.SopNodeRun。
+// model.SopRun 嵌入 gorm.Model（ID/CreatedAt 无 json tag）会序列化成
+// PascalCase，admin 前端读 run.id 会拿到 undefined。
+
+// AdminRunTemplateRef 管理端运行记录里嵌套的模板引用
+type AdminRunTemplateRef struct {
+	ID   uint   `json:"id"`
+	Name string `json:"name"`
+}
+
+// AdminRunUserRef 管理端运行记录里嵌套的用户引用
+type AdminRunUserRef struct {
+	ID       uint   `json:"id"`
+	Nickname string `json:"nickname"`
+}
+
+// AdminRunItem 管理员视角的 SOP 运行记录
+type AdminRunItem struct {
+	ID           uint                 `json:"id"`
+	TemplateID   uint                 `json:"template_id"`
+	UserID       uint                 `json:"user_id"`
+	Status       string               `json:"status"`
+	StartedAt    *time.Time           `json:"started_at"`
+	FinishedAt   *time.Time           `json:"finished_at"`
+	ErrorMessage string               `json:"error_message"`
+	CreatedAt    time.Time            `json:"created_at"`
+	Template     *AdminRunTemplateRef `json:"template,omitempty"`
+	User         *AdminRunUserRef     `json:"user,omitempty"`
+	TotalTokens  int64                `json:"total_tokens"`
+	CostCents    int64                `json:"cost_cents"`
+}
+
+// AdminNodeRunItem 管理员视角的节点执行记录
+type AdminNodeRunItem struct {
+	ID        uint   `json:"id"`
+	NodeID    uint   `json:"node_id"`
+	Status    string `json:"status"`
+	Input     string `json:"input"`
+	Output    string `json:"output"`
+	Thinking  string `json:"thinking"`
+	LatencyMs int64  `json:"latency_ms"`
+	Sort      int    `json:"sort"`
 }

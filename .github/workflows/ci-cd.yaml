@@ -226,22 +226,45 @@ jobs:
           script: |
             # 设置环境变量
             export GITHUB_ACTOR="${{ github.actor }}"
+            EXPECTED_SHA="${{ github.sha }}"
+            SHORT_SHA=$(echo "$EXPECTED_SHA" | cut -c1-7)
+            # image_build 同时推送 develop（floating）和 develop-<short_sha>（pinned）两个 tag。
+            # 部署阶段优先拉 pinned tag，保证唯一确定来源，避免 mirror 未同步 develop 的 race。
+            PINNED_TAG="develop-$SHORT_SHA"
+            PINNED_REF="pmtmyaggy/numind-server:$PINNED_TAG"
 
             # 登录到Docker Hub
             echo "🔐 登录到Docker Hub..."
             echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin
-            
+
             # 验证登录状态
             echo "✅ Docker登录状态验证:"
             docker system info | grep -A 5 "Registry" || echo "无法获取Registry信息"
-            
-            # 【关键修复】强制删除旧镜像，避免缓存问题
-            echo "🗑️  删除旧镜像（如果存在）..."
-            docker rmi -f pmtmyaggy/numind-server:develop 2>/dev/null || echo "旧镜像不存在，跳过删除"
 
-            # 拉取最新镜像
-            echo "📦 拉取最新镜像..."
-            docker pull pmtmyaggy/numind-server:develop
+            # 【关键修复】强制删除旧镜像（develop + pinned），避免缓存问题
+            echo "🗑️  删除旧镜像（如果存在）..."
+            docker rmi -f pmtmyaggy/numind-server:develop 2>/dev/null || echo "floating tag 不存在"
+            docker rmi -f "$PINNED_REF" 2>/dev/null || echo "pinned tag 不存在"
+
+            # 拉取 pinned tag（带最多 3 次重试，应对 registry mirror 同步延迟）
+            echo "📦 拉取 pinned 镜像 $PINNED_REF ..."
+            PULL_OK=0
+            for attempt in 1 2 3; do
+              if docker pull "$PINNED_REF"; then
+                PULL_OK=1
+                break
+              fi
+              echo "⚠️  第 $attempt 次 pull 失败，10s 后重试..."
+              sleep 10
+            done
+            if [ "$PULL_OK" -ne 1 ]; then
+              echo "❌ pinned tag $PINNED_TAG 3 次 pull 失败；回退 develop floating tag"
+              docker pull pmtmyaggy/numind-server:develop
+              PINNED_REF="pmtmyaggy/numind-server:develop"
+            fi
+
+            # 把 pinned tag 重新打成 :develop，让下游 docker run ... :develop 取到正确版本
+            docker tag "$PINNED_REF" pmtmyaggy/numind-server:develop
 
             # 验证镜像拉取成功（包含 digest 确保是最新的）
             echo "🔍 验证镜像信息（包含内容哈希）..."
@@ -251,17 +274,17 @@ jobs:
             echo "📝 镜像标签信息:"
             docker inspect pmtmyaggy/numind-server:develop --format='{{json .Config.Labels}}' | jq -r 'to_entries[] | select(.key | startswith("git")) | "\(.key)=\(.value)"' || echo "无法获取 Git 标签"
 
-            # 验证镜像的 Git SHA 是否匹配当前提交
-            EXPECTED_SHA="${{ github.sha }}"
+            # 验证镜像的 Git SHA 是否匹配当前提交（pinned tag 应该天然匹配）
             IMAGE_SHA=$(docker inspect pmtmyaggy/numind-server:develop --format='{{index .Config.Labels "git.commit"}}' 2>/dev/null || echo "")
 
             if [ -n "$IMAGE_SHA" ] && [ "$IMAGE_SHA" = "$EXPECTED_SHA" ]; then
               echo "✅ 镜像 SHA 验证通过: $IMAGE_SHA"
             elif [ -n "$IMAGE_SHA" ]; then
-              echo "⚠️  警告: 镜像 SHA 不匹配!"
+              echo "❌ 镜像 SHA 不匹配，即使用了 pinned tag！"
               echo "   期望: $EXPECTED_SHA"
               echo "   实际: $IMAGE_SHA"
-              echo "   镜像可能未正确更新，请检查 Docker Hub 推送状态"
+              echo "   Docker Hub 可能严重滞后或 image_build job 未完成 push，部署终止"
+              exit 1
             else
               echo "⚠️  警告: 无法获取镜像的 Git SHA 标签"
               echo "   这可能是旧版本镜像，建议检查镜像构建日志"

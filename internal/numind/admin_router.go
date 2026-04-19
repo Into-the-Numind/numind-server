@@ -2,16 +2,22 @@ package numind
 
 import (
 	"numind-server/internal/numind/biz"
+	"numind-server/internal/numind/biz/aiservice_admin"
+	"numind-server/internal/numind/biz/b2b_billing"
+	"numind-server/internal/numind/biz/credit"
+	"numind-server/internal/numind/controller/v1/admin_ai"
+	"numind-server/internal/numind/controller/v1/admin_b2b"
 	"numind-server/internal/numind/controller/v1/admin_billing"
 	"numind-server/internal/numind/controller/v1/admin_credit"
 	"numind-server/internal/numind/controller/v1/admin_dashboard"
-	adminllm "numind-server/internal/numind/controller/v1/admin_llm"
+	"numind-server/internal/numind/controller/v1/admin_migration"
 	"numind-server/internal/numind/controller/v1/admin_login"
 	"numind-server/internal/numind/controller/v1/admin_order"
 	"numind-server/internal/numind/controller/v1/admin_sop"
 	"numind-server/internal/numind/controller/v1/admin_user"
 	monitorcontroller "numind-server/internal/numind/controller/v1/monitor"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
@@ -44,6 +50,14 @@ func installAdminRouters(g *gin.Engine) error {
 	b := biz.NewBiz(store.S)
 	sopCtrl := admin_sop.NewSopController(b.Sop())
 	adminCreditCtrl := admin_credit.New(b.Credit(), store.S)
+
+	// Phase 2 T2.3: coefficient CRUD. EstimationBiz is constructed ad-hoc here
+	// rather than threaded through biz.NewBiz to avoid expanding the IBiz
+	// interface surface for a single admin concern.
+	coefficientCtrl := admin_credit.NewCoefficientController(
+		credit.NewEstimationBiz(store.S, b.Pricing()),
+		store.S,
+	)
 
 	v1Group := g.Group("/v1")
 
@@ -106,11 +120,33 @@ func installAdminRouters(g *gin.Engine) error {
 		adminGroup.POST("/credits/users/:id/recharge", adminCreditCtrl.Recharge)
 	}
 
+	// Phase 2 T2.3: estimation-coefficient CRUD (spec §3.11 + §4.1.2)
+	{
+		adminGroup.GET("/estimation-coefficients", coefficientCtrl.ListCoefficients)
+		adminGroup.GET("/estimation-coefficients/history", coefficientCtrl.ListCoefficientHistory)
+		adminGroup.POST("/estimation-coefficients", coefficientCtrl.CreateCoefficient)
+		adminGroup.PUT("/estimation-coefficients/:id", coefficientCtrl.UpdateCoefficient)
+		adminGroup.DELETE("/estimation-coefficients/:id", coefficientCtrl.DeleteCoefficient)
+	}
+
+	// Phase 2 T2.3: billing-mode-init migration (spec §4.4.3, one-shot)
+	{
+		migrationCtrl := admin_migration.NewMigrationController(store.S)
+		adminGroup.GET("/migrations/billing-mode-init/status", migrationCtrl.GetInitStatus)
+		adminGroup.POST("/migrations/billing-mode-init", migrationCtrl.InitBillingMode)
+	}
+
 	// 订单管理
 	{
 		adminOrderCtrl := admin_order.New(store.S)
 		adminGroup.GET("/orders", adminOrderCtrl.ListOrders)
 		adminGroup.GET("/orders/:id", adminOrderCtrl.GetOrder)
+	}
+
+	// B2B 月度结算报表（Q1.4）: 父账户"帮开通"的 credit_package 按月聚合
+	{
+		adminB2BCtrl := admin_b2b.New(b2b_billing.New(store.S))
+		adminGroup.GET("/b2b-billing-report", adminB2BCtrl.GetBillingReport)
 	}
 
 	// 计费管理
@@ -142,24 +178,42 @@ func installAdminRouters(g *gin.Engine) error {
 		adminMonitorGroup.PUT("/users/:user_id/config", monitorCtrl.AdminUpdateUserConfig)
 	}
 
-	// LLM 供应商/模型/路由管理
+	// AI Service Manager — 服务 CRUD（Task 12）+ Task Profile（Task 13）+ Provider CRUD（Task 4）
 	{
-		adminLLMCtrl := adminllm.NewAdminLLMController(b.LLMRouter())
-		llmGroup := adminGroup.Group("/llm")
-		llmGroup.GET("/providers", adminLLMCtrl.ListProviders)
-		llmGroup.POST("/providers", adminLLMCtrl.CreateProvider)
-		llmGroup.PUT("/providers/:id", adminLLMCtrl.UpdateProvider)
-		llmGroup.DELETE("/providers/:id", adminLLMCtrl.DeleteProvider)
-
-		llmGroup.GET("/models", adminLLMCtrl.ListModels)
-		llmGroup.POST("/models", adminLLMCtrl.CreateModel)
-		llmGroup.PUT("/models/:id", adminLLMCtrl.UpdateModel)
-		llmGroup.DELETE("/models/:id", adminLLMCtrl.DeleteModel)
-
-		llmGroup.GET("/models/:id/routes", adminLLMCtrl.ListRoutes)
-		llmGroup.POST("/models/:id/routes", adminLLMCtrl.CreateRoute)
-		llmGroup.PUT("/models/:id/routes/:routeId", adminLLMCtrl.UpdateRoute)
-		llmGroup.DELETE("/models/:id/routes/:routeId", adminLLMCtrl.DeleteRoute)
+		reg := registry.New(store.S.DB())
+		aiSvcBiz := aiservice_admin.New(reg, store.S.DB())
+		aiSvcCtrl := admin_ai.NewAIServiceController(aiSvcBiz)
+		aiTaskCtrl := admin_ai.NewTaskProfileController(aiSvcBiz)
+		aiProviderCtrl := admin_ai.NewProviderController(aiSvcBiz)
+		aiGroup := adminGroup.Group("/ai")
+		aiGroup.GET("/services", aiSvcCtrl.ListServices)
+		aiGroup.GET("/services/:id", aiSvcCtrl.GetService)
+		aiGroup.POST("/services", aiSvcCtrl.CreateService)
+		aiGroup.POST("/services-with-route", aiSvcCtrl.CreateServiceWithRoute)
+		aiGroup.PUT("/services/:id", aiSvcCtrl.UpdateService)
+		aiGroup.DELETE("/services/:id", aiSvcCtrl.DeprecateService)
+		aiGroup.POST("/services/:id/restore", aiSvcCtrl.RestoreService)
+		aiGroup.POST("/services/:id/validate-against/:task_id", aiTaskCtrl.ValidateAgainst)
+		aiGroup.GET("/capability-schema", aiSvcCtrl.GetCapabilitySchema)
+		aiGroup.GET("/tasks", aiTaskCtrl.ListTasks)
+		aiGroup.GET("/tasks/:id", aiTaskCtrl.GetTask)
+		aiGroup.PUT("/tasks/:id", aiTaskCtrl.UpdateTask)
+		// Audit Logs (T1)
+		auditCtrl := admin_ai.NewAuditLogController(aiSvcBiz)
+		aiGroup.GET("/audit-logs", auditCtrl.ListLogs)
+		// Route CRUD (T2)
+		routeCtrl := admin_ai.NewRouteController(aiSvcBiz)
+		aiGroup.POST("/services/:id/routes", routeCtrl.Create)
+		aiGroup.PUT("/routes/:route_id", routeCtrl.Update)
+		aiGroup.DELETE("/routes/:route_id", routeCtrl.Delete)
+		aiGroup.POST("/routes/:route_id/toggle", routeCtrl.Toggle)
+		// Provider CRUD (T4)
+		aiGroup.GET("/providers", aiProviderCtrl.ListProviders)
+		aiGroup.GET("/providers/:id", aiProviderCtrl.GetProvider)
+		aiGroup.POST("/providers", aiProviderCtrl.CreateProvider)
+		aiGroup.PUT("/providers/:id", aiProviderCtrl.UpdateProvider)
+		aiGroup.DELETE("/providers/:id", aiProviderCtrl.DeleteProvider)
+		aiGroup.POST("/providers/:id/test-connection", aiProviderCtrl.TestProviderConnection)
 	}
 
 	return nil

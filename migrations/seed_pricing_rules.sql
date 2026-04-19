@@ -15,7 +15,7 @@ INSERT INTO pricing_rule (service_type, provider, model, billing_mode, flat_unit
   is_active, created_at, updated_at)
 VALUES
 -- DeepSeek V3 (Volc) — 使用加权平均价 (78.2% ≤32K + 21.8% >32K)
-('llm_chat', 'volc', 'deepseek-v3-2-251201', 'flat', 'call',
+('llm_chat', 'volc-ark', 'deepseek-v3-2-251201', 'flat', 'call',
   1.2184, 3.3080, 0, 0,
   1.2184, 3.3080, 0, 0,
   1, NOW(), NOW()),
@@ -35,21 +35,32 @@ VALUES
 
 -- Doubao-Seed-2-0-Lite (Volc, 客户画像/语言风格分析)
 -- 定价：input ¥0.3/MTok output ¥0.6/MTok
-('llm_chat', 'volc', 'doubao-seed-2-0-lite-260215', 'flat', 'call',
+('llm_chat', 'volc-ark', 'doubao-seed-2-0-lite-260215', 'flat', 'call',
   0.3, 0.6, 0, 0,
   0.3, 0.6, 0, 0,
   1, NOW(), NOW()),
 
 -- Volc 默认模型 (config 配置的 volc.model)
-('llm_chat', 'volc', '', 'flat', 'call',
+('llm_chat', 'volc-ark', '', 'flat', 'call',
   1.0, 2.0, 0, 0,
   1.0, 2.0, 0, 0,
   1, NOW(), NOW()),
 
 -- Ali 默认 LLM (config 配置)
-('llm_chat', 'ali', '', 'flat', 'call',
+('llm_chat', 'ali-dashscope', '', 'flat', 'call',
   0.3, 0.6, 0, 0,
   0.3, 0.6, 0, 0,
+  1, NOW(), NOW()),
+
+-- 全局 LLM chat fallback —— 任何未知 (provider, model) 都命中这条。
+-- 定价按 prod 中等模型的保守上限（claude/gpt 档）估算：
+--   input ¥3/MTok，output ¥10/MTok
+-- 作用：防止 ProviderFromModel 猜错 + pricing_rule 未 seed 的新模型
+-- 导致 CheckAndEstimate 直接失败阻塞 SOP/SalesRAG。
+-- Reconcile 用真实 cost 多退少补——这里保守一点不会过度扣款。
+('llm_chat', '', '', 'flat', 'call',
+  3.0, 10.0, 0, 0,
+  3.0, 10.0, 0, 0,
   1, NOW(), NOW()),
 
 -- ============================================================
@@ -57,25 +68,25 @@ VALUES
 -- ============================================================
 
 -- Qwen-VL-Plus (Ali)
-('llm_vision', 'ali', 'qwen-vl-plus', 'flat', 'call',
+('llm_vision', 'ali-dashscope', 'qwen-vl-plus', 'flat', 'call',
   3.0, 8.0, 0, 0,
   3.0, 8.0, 0, 0,
   1, NOW(), NOW()),
 
 -- Qwen3-VL (Ali)
-('llm_vision', 'ali', 'qwen3-vl', 'flat', 'call',
+('llm_vision', 'ali-dashscope', 'qwen3-vl', 'flat', 'call',
   1.5, 4.5, 0, 0,
   1.5, 4.5, 0, 0,
   1, NOW(), NOW()),
 
 -- Doubao Vision (Volc)
-('llm_vision', 'volc', 'doubao-seed-1-8-251228', 'flat', 'call',
+('llm_vision', 'volc-ark', 'doubao-seed-1-8-251228', 'flat', 'call',
   2.0, 6.0, 0, 0,
   2.0, 6.0, 0, 0,
   1, NOW(), NOW()),
 
 -- Volc 默认 Vision
-('llm_vision', 'volc', '', 'flat', 'call',
+('llm_vision', 'volc-ark', '', 'flat', 'call',
   2.0, 6.0, 0, 0,
   2.0, 6.0, 0, 0,
   1, NOW(), NOW()),
@@ -86,13 +97,13 @@ VALUES
 
 -- Text-Embedding-V4 (Ali)
 -- 定价：¥0.7/MTok
-('embedding', 'ali', 'text-embedding-v4', 'flat', 'call',
+('embedding', 'ali-dashscope', 'text-embedding-v4', 'flat', 'call',
   0.7, 0, 0, 0,
   0.7, 0, 0, 0,
   1, NOW(), NOW()),
 
 -- Doubao-Embedding-Vision (Volc)
-('embedding', 'volc', 'doubao-embedding-vision-250615', 'flat', 'call',
+('embedding', 'volc-ark', 'doubao-embedding-vision-250615', 'flat', 'call',
   0.35, 0, 0, 0,
   0.35, 0, 0, 0,
   1, NOW(), NOW()),
@@ -114,14 +125,14 @@ VALUES
 
 -- Qwen-Long (Ali Bailian, 文件解析)
 -- 定价：约 ¥0.03/次
-('file_extract', 'bailian', '', 'flat', 'call',
+('file_extract', 'bailian-file', '', 'flat', 'call',
   0, 0, 0.03, 0,
   0, 0, 0.03, 0,
   1, NOW(), NOW()),
 
 -- 百度 OCR (按次计费)
 -- 定价：¥0.01/次
-('file_extract', 'baidu', '', 'flat', 'call',
+('file_extract', 'baidu-ocr', '', 'flat', 'call',
   0, 0, 0.01, 0,
   0, 0, 0.01, 0,
   1, NOW(), NOW()),

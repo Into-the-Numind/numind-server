@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/pkg/aiservice"
+	aismw "numind-server/internal/pkg/aiservice/middleware"
+	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
-	"numind-server/internal/pkg/llm"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 
@@ -143,37 +145,87 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 	// 结束 context-assembly span
 	langfuse.EndSpan(assemblySpanID)
 
-	// 7. 注入计费上下文，调用 LLM 流式输出（LLMRouter 负责 Langfuse generation 记录）
+	// 7. 注入计费上下文 + skip-legacy-billing 标记，通过 AI Gateway 调用流式 LLM
 	ctx = billing.WithBilling(ctx, userID, "chatbot_chat")
-	// ParentObservationID 设为空字符串，使 LLMRouter 创建的 generation 直接挂在 trace 根节点下
+	// 将 userID 注入 aiservice middleware context，使 Tracing/Billing 中间件能正确读取（避免 user_id=0）
+	ctx = aismw.WithUserID(ctx, userID)
+	// ParentObservationID 设为空字符串，使 Gateway 创建的 generation 直接挂在 trace 根节点下
 	ctx = langfuse.WithTraceAndParent(ctx, traceID, "")
+	// 注入 skip-legacy-billing：Gateway 已统一记账，防止旧 billing 路径双记
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
 
-	// 将 messages ([]map[string]interface{}) 转换为 []llm.ChatMessage
-	chatMessages := make([]llm.ChatMessage, 0, len(messages))
+	// 将 messages ([]map[string]interface{}) 转换为 []aiservice.ChatMessage
+	aiMessages := make([]aiservice.ChatMessage, 0, len(messages))
 	for _, m := range messages {
 		role, _ := m["role"].(string)
 		content, _ := m["content"].(string)
-		chatMessages = append(chatMessages, llm.ChatMessage{Role: role, Content: content})
+		aiMessages = append(aiMessages, aiservice.ChatMessage{
+			Role:    aiservice.MessageRole(role),
+			Content: aiservice.MessageContent{Text: content},
+		})
 	}
 
 	var fullContent strings.Builder
 	var thinkingContent strings.Builder
 
-	_, usage, llmErr := b.llmRouter.StreamChat(ctx, modelKey, thinking, chatMessages, 0.7, 0,
-		func(eventType, content string) error {
-			if eventType == "thinking" {
-				thinkingContent.WriteString(content)
-				return handler("thinking", map[string]string{"content": content})
-			}
-			// eventType == "message"
-			fullContent.WriteString(content)
-			return handler("token", map[string]string{"content": content})
-		},
-	)
+	// 调用 Gateway ChatStream（profile.ChatbotStream 任务配置由 Registry 解析模型）
+	gatewayReq := aiservice.ChatRequest{
+		Messages:      aiMessages,
+		Temperature:   0.7,
+		ModelOverride: modelKey, // pass user's model choice; empty = use task profile default
+	}
+	_ = thinking // thinking 标志当前保留供未来扩展；Gateway provider adapter 按 profile 配置处理
 
+	ch, llmErr := aiservice.ChatStream(ctx, profile.ChatbotStream, gatewayReq)
 	if llmErr != nil {
 		return fmt.Errorf("ChatStream: LLM call failed: %w", llmErr)
 	}
+
+	var gatewayUsage *billing.TokenUsage
+	var modelName string
+	var streamErr error
+	for chunk := range ch {
+		if chunk.Model != "" {
+			modelName = chunk.Model
+		}
+		if chunk.ReasoningDelta != "" {
+			thinkingContent.WriteString(chunk.ReasoningDelta)
+			if handlerErr := handler("thinking", map[string]string{"content": chunk.ReasoningDelta}); handlerErr != nil {
+				log.C(ctx).Warnw("ChatStream: handler error on thinking chunk", "error", handlerErr)
+			}
+		}
+		if chunk.Delta != "" {
+			fullContent.WriteString(chunk.Delta)
+			if handlerErr := handler("token", map[string]string{"content": chunk.Delta}); handlerErr != nil {
+				log.C(ctx).Warnw("ChatStream: handler error on token chunk", "error", handlerErr)
+			}
+		}
+		if chunk.IsFinal {
+			if chunk.Err != nil {
+				streamErr = chunk.Err
+			}
+			if chunk.Usage != nil {
+				gatewayUsage = &billing.TokenUsage{
+					PromptTokens:     chunk.Usage.PromptTokens,
+					CompletionTokens: chunk.Usage.CompletionTokens,
+					TotalTokens:      chunk.Usage.TotalTokens,
+					ReasoningTokens:  chunk.Usage.ReasoningTokens,
+					ModelName:        modelName,
+				}
+			}
+		}
+	}
+	if streamErr != nil {
+		// Log and return so the SSE handler can emit an error event to the
+		// client instead of silently treating a truncated reply as success.
+		log.C(ctx).Warnw("ChatStream: stream ended with error",
+			"session_id", sessionID, "error", streamErr)
+		return fmt.Errorf("ChatStream: stream error: %w", streamErr)
+	}
+	if gatewayUsage == nil {
+		log.C(ctx).Warnw("ChatStream: stream ended without final usage chunk", "session_id", sessionID)
+	}
+	usage := gatewayUsage
 
 	// 9. 持久化消息（用户消息 + 助手消息）
 	maxSeq, seqErr := b.ds.ChatbotSession().GetMaxSeq(ctx, sessionID)
@@ -195,9 +247,11 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 	}
 
 	var promptTokens, completionTokens int
+	var assistantModelName string
 	if usage != nil {
 		promptTokens = usage.PromptTokens
 		completionTokens = usage.CompletionTokens
+		assistantModelName = usage.ModelName
 	}
 
 	assistantMsg := &model.ChatbotMessage{
@@ -208,6 +262,7 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 		Thinking:         thinkingContent.String(),
 		TraceID:          traceID,
 		Seq:              maxSeq + 2,
+		ModelName:        assistantModelName,
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
 		CreatedAt:        time.Now(),

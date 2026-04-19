@@ -2,6 +2,7 @@ package numind
 
 import (
 	"numind-server/internal/numind/biz"
+	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/controller/v1/ali"
 	chatbotcontroller "numind-server/internal/numind/controller/v1/chatbot"
 	"numind-server/internal/numind/controller/v1/config"
@@ -10,6 +11,7 @@ import (
 	llmcontroller "numind-server/internal/numind/controller/v1/llm"
 	monitorcontroller "numind-server/internal/numind/controller/v1/monitor"
 	ordercontroller "numind-server/internal/numind/controller/v1/order"
+	"numind-server/internal/numind/controller/v1/parent_grant"
 	paymentcontroller "numind-server/internal/numind/controller/v1/payment"
 	pdfcontroller "numind-server/internal/numind/controller/v1/pdf"
 	"numind-server/internal/numind/controller/v1/salesrag"
@@ -17,6 +19,7 @@ import (
 	"numind-server/internal/numind/controller/v1/user"
 	"numind-server/internal/numind/controller/v1/user_billing"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
@@ -40,6 +43,9 @@ func installNumindRouters(g *gin.Engine) error {
 		log.C(c).Infow("Healthz function called")
 		core.WriteResponse(c, nil, map[string]string{"status": "ok"})
 	})
+
+	// 注册 /healthz/ai handler (免鉴权).
+	g.GET("/healthz/ai", aiservice.HealthzHandler)
 
 	// 注册 pprof 路由
 	pprof.Register(g)
@@ -199,8 +205,15 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 积分查询
 	{
-		creditCtrl := creditcontroller.New(b.Credit())
+		creditCtrl := creditcontroller.New(
+			b.Credit(),
+			b.CreditService(),
+			credit.NewPromptEstimator(store.S),
+			store.S,
+		)
 		authGroup.GET("/credits/balance", creditCtrl.GetBalance)
+		authGroup.POST("/credits/estimate", creditCtrl.Estimate)   // Phase 2 T2.3：运行前估算（spec §3.11 + §4.3）
+		authGroup.GET("/credits/packages", creditCtrl.ListPackages) // Phase 2 T2.3：积分包列表（spec §4.1.1）
 	}
 
 	// 订单管理（B 客户）
@@ -230,6 +243,15 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/customers/sub-users/:user_id/features", customerCtrl.ListSubUserFeatures)
 		authGroup.POST("/customers/sub-users/:user_id/features", customerCtrl.GrantFeatures)
 		authGroup.DELETE("/customers/sub-users/:user_id/features", customerCtrl.RevokeFeatures)
+	}
+
+	// B2B2C 会员赋予（Q1）：父账户为子账户开通会员，不走支付流程
+	{
+		parentGrantCtrl := parent_grant.New(b.Credit())
+		// 子账户列表别名（前端 /v1/users/children，Q2 新增），复用 CustomerController.ListSubUsers
+		childListCtrl := customercontroller.NewCustomerController(b.Customers(), b.Users())
+		authGroup.GET("/users/children", childListCtrl.ListSubUsers)
+		authGroup.POST("/users/children/:child_id/grant-membership", parentGrantCtrl.GrantMembership)
 	}
 
 	// 自助配置中心（B端，需要主账号 + 功能权限）

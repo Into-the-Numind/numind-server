@@ -28,12 +28,12 @@ func NewLLMProviderStore(db *gorm.DB) ILLMProviderStore {
 	return &llmProviderStore{db: db}
 }
 
-// List 分页查询所有供应商
+// List 分页查询所有 LLM 类型供应商（provider_type = 'llm'），排除 OCR/ASR 等其他类型
 func (s *llmProviderStore) List(ctx context.Context, offset, limit int) ([]model.LLMProvider, int64, error) {
 	var providers []model.LLMProvider
 	var total int64
 
-	query := s.db.WithContext(ctx).Model(&model.LLMProvider{})
+	query := s.db.WithContext(ctx).Model(&model.LLMProvider{}).Where("provider_type = ?", "llm")
 
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
@@ -70,10 +70,10 @@ func (s *llmProviderStore) Delete(ctx context.Context, id uint64) error {
 	return s.db.WithContext(ctx).Delete(&model.LLMProvider{}, id).Error
 }
 
-// ListActive 查询所有激活的供应商
+// ListActive 查询所有激活的 LLM 类型供应商（provider_type = 'llm'），按 id 排序
 func (s *llmProviderStore) ListActive(ctx context.Context) ([]model.LLMProvider, error) {
 	var providers []model.LLMProvider
-	if err := s.db.WithContext(ctx).Where("is_active = ?", true).Order("id ASC").Find(&providers).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("provider_type = ? AND is_active = ?", "llm", true).Order("id ASC").Find(&providers).Error; err != nil {
 		return nil, err
 	}
 	return providers, nil

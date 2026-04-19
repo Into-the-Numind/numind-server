@@ -64,8 +64,11 @@ func (ctrl *AdminCreditController) ListUsers(c *gin.Context) {
 		return
 	}
 
+	// 同时返回 `items`（前端 DataTable 约定字段）和 `accounts`（向后兼容）。
+	// admin-web CreditUsersView 读 items.length — 不填会崩 DataTable。
 	core.WriteResponse(c, nil, gin.H{
 		"total":    total,
+		"items":    accounts,
 		"accounts": accounts,
 	})
 }

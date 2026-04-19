@@ -76,21 +76,6 @@ func NewDMXAPIClientWithConfig(baseURL, apiKey string) *DMXAPIClient {
 	}
 }
 
-// llmRouterCtxKey 是 LLMRouter 调用标记的 context key
-type llmRouterCtxKey struct{}
-
-// WithLLMRouterMark 在 context 中注入 LLMRouter 调用标记
-// LLMRouter 调用 DMXAPIClient 时须注入此标记，以跳过内部 Langfuse/billing（由 Router 统一处理，避免重复计费）
-func WithLLMRouterMark(ctx context.Context) context.Context {
-	return context.WithValue(ctx, llmRouterCtxKey{}, true)
-}
-
-// isFromLLMRouter 判断当前调用是否来自 LLMRouter
-func isFromLLMRouter(ctx context.Context) bool {
-	v, _ := ctx.Value(llmRouterCtxKey{}).(bool)
-	return v
-}
-
 // ChatMessage 聊天消息结构
 type ChatMessage struct {
 	Role    string `json:"role"`
@@ -182,34 +167,30 @@ func (c *DMXAPIClient) ChatCompletion(ctx context.Context, model string, message
 		result.Usage.Normalize()
 	}
 
-	// 自动计费（LLMRouter 调用时跳过，由 Router 统一处理）
-	if !isFromLLMRouter(ctx) {
-		if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
-			billing.RecordLLM(bc.UserID, "dmxapi", model, bc.Operation, result.Usage, bc.Meta)
-		}
+	// 自动计费
+	if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
+		billing.RecordLLM(bc.UserID, "dmxapi", model, bc.Operation, result.Usage, bc.Meta)
 	}
 
-	// Langfuse generation 追踪（LLMRouter 调用时跳过，由 Router 统一处理）
-	if !isFromLLMRouter(ctx) {
-		if tc := langfuse.FromContext(ctx); tc != nil {
-			genID := langfuse.SpanID()
-			genOpts := []langfuse.GenOption{
-				langfuse.WithGenParent(tc.ParentObservationID),
-				langfuse.WithGenName("dmxapi-chat"),
-				langfuse.WithGenModel(model),
-				langfuse.WithGenInput(messages),
-				langfuse.WithGenOutput(result.Choices[0].Message.Content),
-			}
-			if tc.PromptName != "" {
-				genOpts = append(genOpts, langfuse.WithGenPromptName(tc.PromptName, tc.PromptVersion))
-			}
-			langfuse.CreateGeneration(tc.TraceID, genID, genOpts...)
-			var endOpts []langfuse.GenOption
-			if result.Usage != nil {
-				endOpts = append(endOpts, langfuse.WithGenUsage(result.Usage.PromptTokens, result.Usage.CompletionTokens))
-			}
-			langfuse.EndGeneration(genID, endOpts...)
+	// Langfuse generation 追踪
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		genID := langfuse.SpanID()
+		genOpts := []langfuse.GenOption{
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("dmxapi-chat"),
+			langfuse.WithGenModel(model),
+			langfuse.WithGenInput(messages),
+			langfuse.WithGenOutput(result.Choices[0].Message.Content),
 		}
+		if tc.PromptName != "" {
+			genOpts = append(genOpts, langfuse.WithGenPromptName(tc.PromptName, tc.PromptVersion))
+		}
+		langfuse.CreateGeneration(tc.TraceID, genID, genOpts...)
+		var endOpts []langfuse.GenOption
+		if result.Usage != nil {
+			endOpts = append(endOpts, langfuse.WithGenUsage(result.Usage.PromptTokens, result.Usage.CompletionTokens))
+		}
+		langfuse.EndGeneration(genID, endOpts...)
 	}
 
 	return result.Choices[0].Message.Content, result.Usage, nil
@@ -224,8 +205,8 @@ func (c *DMXAPIClient) ChatCompletion(ctx context.Context, model string, message
 func (c *DMXAPIClient) ChatCompletionWithThinking(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int) (string, *billing.TokenUsage, error) {
 	var fullThinking strings.Builder
 
-	// 调用增强后的 StreamChatCompletion
-	content, usage, err := c.StreamChatCompletion(ctx, model, messages, temperature, maxTokens, true, func(eventType, chunk string) error {
+	// 调用增强后的 StreamChatCompletion（SalesRAG 内部调用，默认 enable_thinking 格式）
+	content, usage, err := c.StreamChatCompletion(ctx, model, messages, temperature, maxTokens, "enable_thinking", func(eventType, chunk string) error {
 		if eventType == "thinking" {
 			fullThinking.WriteString(chunk)
 		}
@@ -249,11 +230,12 @@ func (c *DMXAPIClient) ChatCompletionWithThinking(ctx context.Context, model str
 }
 
 // StreamChatCompletion 调用聊天接口（流式）
-// onEvent: 回调函数，参数为 content 片段
-// StreamChatCompletion 调用聊天接口（流式）
 // onEvent: 回调函数，参数为 (eventType string, content string)
-// eventType: "thinking" (思维链内容) 或 "content" (正文内容)
-func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int, enableThinking bool, onEvent func(eventType, content string) error) (string, *billing.TokenUsage, error) {
+// eventType: "thinking" (思维链内容) 或 "message" (正文内容)
+// thinkingFormat: "" (不启用), "enable_thinking" (Gemini/Qwen), "anthropic" (Claude),
+//
+//	"reasoning_effort" (AiHubMix 统一推理协议，注入 reasoning_effort:"high")
+func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, messages []ChatMessage, temperature float64, maxTokens int, thinkingFormat string, onEvent func(eventType, content string) error) (string, *billing.TokenUsage, error) {
 	// 构建请求体（手动构建以添加 stream_options）
 	bodyMap := map[string]interface{}{
 		"model":       model,
@@ -264,8 +246,25 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 			"include_usage": true,
 		},
 	}
-	if enableThinking {
+
+	// Claude -thinking / -think 后缀模型：thinking 模式要求 temperature 必须为 1
+	lowerModel := strings.ToLower(model)
+	if strings.HasSuffix(lowerModel, "-thinking") || strings.HasSuffix(lowerModel, "-think") {
+		bodyMap["temperature"] = 1
+	}
+
+	switch thinkingFormat {
+	case "enable_thinking":
 		bodyMap["enable_thinking"] = true
+	case "doubao":
+		// Doubao / 豆包：thinking:{type:"enabled"}，走 OpenAI 兼容端点
+		bodyMap["thinking"] = map[string]interface{}{
+			"type": "enabled",
+		}
+	case "reasoning_effort":
+		// AiHubMix 统一推理协议：reasoning_effort 控制推理强度，max_tokens 限制推理 token 上限
+		bodyMap["reasoning_effort"] = "medium"
+		bodyMap["max_completion_tokens"] = 1000
 	}
 	if maxTokens > 0 {
 		bodyMap["max_tokens"] = maxTokens
@@ -293,6 +292,19 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
+
+		// 安全网：如果 thinking 参数导致 400 错误，去掉 thinking 参数重试
+		if resp.StatusCode == http.StatusBadRequest && thinkingFormat != "" &&
+			(strings.Contains(string(respBody), "enable_thinking") ||
+				strings.Contains(string(respBody), "thinking") ||
+				strings.Contains(string(respBody), "reasoning_effort") ||
+				strings.Contains(string(respBody), "unknown_parameter")) {
+			log.Warnw("Thinking parameter rejected by provider, retrying without thinking",
+				"model", model, "thinking_format", thinkingFormat, "status", resp.StatusCode)
+			// 递归调用传空 thinkingFormat，外层条件 thinkingFormat != "" 在第二次不成立，最多两跳，无无限递归风险
+			return c.StreamChatCompletion(ctx, model, messages, temperature, maxTokens, "", onEvent)
+		}
+
 		return "", nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -345,6 +357,18 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			log.Warnw("Failed to parse SSE chunk", "data", data, "error", err)
 			continue
+		}
+
+		// DEBUG: 打印前几个 SSE chunk 的原始 JSON
+		if fullThinking.Len() == 0 && fullContent.Len() == 0 {
+			preview := data
+			if len(preview) > 500 {
+				preview = preview[:500] + "..."
+			}
+			log.Infow("DMXAPIClient: SSE chunk (early)",
+				"model", model,
+				"choices_count", len(chunk.Choices),
+				"raw_data", preview)
 		}
 
 		if len(chunk.Choices) > 0 {
@@ -416,33 +440,29 @@ func (c *DMXAPIClient) StreamChatCompletion(ctx context.Context, model string, m
 		}
 	}
 
-	// 自动计费（LLMRouter 调用时跳过，由 Router 统一处理）
-	if !isFromLLMRouter(ctx) {
-		if bc := billing.FromContext(ctx); bc != nil && usage != nil {
-			billing.RecordLLM(bc.UserID, "dmxapi", model, bc.Operation, usage, bc.Meta)
-		}
+	// 自动计费
+	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+		billing.RecordLLM(bc.UserID, "dmxapi", model, bc.Operation, usage, bc.Meta)
 	}
 
-	// Langfuse generation 追踪（LLMRouter 调用时跳过，由 Router 统一处理）
-	if !isFromLLMRouter(ctx) {
-		if tc := langfuse.FromContext(ctx); tc != nil {
-			genID := langfuse.SpanID()
-			opts := []langfuse.GenOption{
-				langfuse.WithGenParent(tc.ParentObservationID),
-				langfuse.WithGenName("dmxapi-stream"),
-				langfuse.WithGenModel(model),
-				langfuse.WithGenInput(messages),
-				langfuse.WithGenOutput(fullContent.String()),
-			}
-			if usage != nil {
-				opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
-			}
-			if tc.PromptName != "" {
-				opts = append(opts, langfuse.WithGenPromptName(tc.PromptName, tc.PromptVersion))
-			}
-			langfuse.CreateGeneration(tc.TraceID, genID, opts...)
-			langfuse.EndGeneration(genID)
+	// Langfuse generation 追踪
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		genID := langfuse.SpanID()
+		opts := []langfuse.GenOption{
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("dmxapi-stream"),
+			langfuse.WithGenModel(model),
+			langfuse.WithGenInput(messages),
+			langfuse.WithGenOutput(fullContent.String()),
 		}
+		if usage != nil {
+			opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
+		}
+		if tc.PromptName != "" {
+			opts = append(opts, langfuse.WithGenPromptName(tc.PromptName, tc.PromptVersion))
+		}
+		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+		langfuse.EndGeneration(genID)
 	}
 
 	return fullContent.String(), usage, nil
@@ -563,4 +583,369 @@ func (c *DMXAPIClient) Rerank(ctx context.Context, query string, documents []str
 	log.Infow("Rerank completed", "query_len", len(query), "doc_count", len(documents), "top_n", topN, "result_count", len(results))
 
 	return results, len(documents), nil
+}
+
+// StreamGeminiGenerate 调用 Gemini 原生 API（/v1beta/models/{model}:streamGenerateContent）
+// Gemini thinking 内容通过 part.thought=true 属性标识，OpenAI 兼容端点不透传此内容
+// onEvent: 回调函数，eventType 为 "thinking" 或 "message"
+func (c *DMXAPIClient) StreamGeminiGenerate(ctx context.Context, model string, messages []ChatMessage, onEvent func(eventType, content string) error) (string, *billing.TokenUsage, error) {
+	// 构建 Gemini 原生格式：system_instruction + contents
+	var systemText string
+	var contents []map[string]interface{}
+	for _, msg := range messages {
+		if msg.Role == "system" {
+			systemText = msg.Content
+			continue
+		}
+		role := msg.Role
+		if role == "assistant" {
+			role = "model" // Gemini 用 "model" 而非 "assistant"
+		}
+		contents = append(contents, map[string]interface{}{
+			"role":  role,
+			"parts": []map[string]interface{}{{"text": msg.Content}},
+		})
+	}
+
+	bodyMap := map[string]interface{}{
+		"contents": contents,
+	}
+	if systemText != "" {
+		bodyMap["system_instruction"] = map[string]interface{}{
+			"parts": []map[string]interface{}{{"text": systemText}},
+		}
+	}
+
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return "", nil, fmt.Errorf("marshal request failed: %w", err)
+	}
+
+	// Gemini 端点：/v1beta/models/{model}:streamGenerateContent?key={apiKey}&alt=sse
+	baseURL := strings.TrimSuffix(c.baseURL, "/v1")
+	endpoint := fmt.Sprintf("%s/v1beta/models/%s:streamGenerateContent?key=%s&alt=sse", baseURL, model, c.apiKey)
+
+	log.Infow("StreamGeminiGenerate: sending request",
+		"model", model,
+		"contents_count", len(contents),
+		"has_system", systemText != "")
+
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", nil, fmt.Errorf("create request failed: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var fullContent strings.Builder
+	var fullThinking strings.Builder
+	var usage *billing.TokenUsage
+	reader := bufio.NewReader(resp.Body)
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fullContent.String(), usage, fmt.Errorf("read stream failed: %w", err)
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		// Gemini SSE: {candidates: [{content: {parts: [{text, thought}]}}], usageMetadata: {...}}
+		var chunk struct {
+			Candidates []struct {
+				Content struct {
+					Parts []struct {
+						Text    string `json:"text"`
+						Thought bool   `json:"thought"`
+					} `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+			UsageMetadata *struct {
+				PromptTokenCount     int `json:"promptTokenCount"`
+				CandidatesTokenCount int `json:"candidatesTokenCount"`
+				TotalTokenCount      int `json:"totalTokenCount"`
+				ThinkingTokenCount   int `json:"thinkingTokenCount"`
+			} `json:"usageMetadata"`
+		}
+
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+
+		// 提取 usage
+		if chunk.UsageMetadata != nil {
+			usage = &billing.TokenUsage{
+				PromptTokens:     chunk.UsageMetadata.PromptTokenCount,
+				CompletionTokens: chunk.UsageMetadata.CandidatesTokenCount,
+				TotalTokens:      chunk.UsageMetadata.TotalTokenCount,
+				ReasoningTokens:  chunk.UsageMetadata.ThinkingTokenCount,
+			}
+		}
+
+		// DEBUG: 打印前几个 chunk 的原始数据
+		if fullThinking.Len() == 0 && fullContent.Len() < 100 {
+			preview := data
+			if len(preview) > 500 {
+				preview = preview[:500] + "..."
+			}
+			log.Infow("StreamGeminiGenerate: SSE chunk",
+				"candidates_count", len(chunk.Candidates),
+				"raw_data", preview)
+		}
+
+		// 提取 thinking / text
+		if len(chunk.Candidates) > 0 {
+			for _, part := range chunk.Candidates[0].Content.Parts {
+				if part.Text == "" {
+					continue
+				}
+				if part.Thought {
+					fullThinking.WriteString(part.Text)
+					if onEvent != nil {
+						if err := onEvent("thinking", part.Text); err != nil {
+							return fullContent.String(), usage, err
+						}
+					}
+				} else {
+					fullContent.WriteString(part.Text)
+					if onEvent != nil {
+						if err := onEvent("message", part.Text); err != nil {
+							return fullContent.String(), usage, err
+						}
+					}
+				}
+			}
+		}
+	}
+
+	log.Infow("StreamGeminiGenerate: stream completed",
+		"model", model,
+		"content_length", fullContent.Len(),
+		"thinking_length", fullThinking.Len(),
+		"has_usage", usage != nil)
+
+	// 自动计费
+	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+		billing.RecordLLM(bc.UserID, "dmxapi", model, bc.Operation, usage, bc.Meta)
+	}
+
+	// Langfuse generation 追踪
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		genID := langfuse.SpanID()
+		opts := []langfuse.GenOption{
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("dmxapi-gemini-stream"),
+			langfuse.WithGenModel(model),
+			langfuse.WithGenInput(messages),
+			langfuse.WithGenOutput(fullContent.String()),
+		}
+		if usage != nil {
+			opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
+		}
+		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+		langfuse.EndGeneration(genID)
+	}
+
+	return fullContent.String(), usage, nil
+}
+
+// StreamGPTResponses 调用 OpenAI Responses API（/v1/responses）
+// GPT-5 系列和 O 系列通过此端点，支持 reasoning 参数控制思考深度
+func (c *DMXAPIClient) StreamGPTResponses(ctx context.Context, model string, messages []ChatMessage, temperature float64, reasoningEffort string, onEvent func(eventType, content string) error) (string, *billing.TokenUsage, error) {
+	input := make([]map[string]interface{}, 0, len(messages))
+	for _, msg := range messages {
+		input = append(input, map[string]interface{}{
+			"role":    msg.Role,
+			"content": msg.Content,
+		})
+	}
+
+	bodyMap := map[string]interface{}{
+		"model":  model,
+		"input":  input,
+		"stream": true,
+	}
+	if reasoningEffort != "" {
+		bodyMap["reasoning"] = map[string]interface{}{
+			"effort":     reasoningEffort,
+			"max_tokens": 1000,
+		}
+		// GPT reasoning 模型不支持 temperature 参数
+	} else if temperature > 0 {
+		bodyMap["temperature"] = temperature
+	}
+
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return "", nil, fmt.Errorf("marshal request failed: %w", err)
+	}
+
+	baseURL := strings.TrimSuffix(c.baseURL, "/v1")
+	endpoint := baseURL + "/v1/responses"
+
+	log.Infow("StreamGPTResponses: sending request",
+		"endpoint", endpoint,
+		"model", model,
+		"reasoning_effort", reasoningEffort)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return "", nil, fmt.Errorf("create request failed: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var fullContent strings.Builder
+	var fullThinking strings.Builder
+	var usage *billing.TokenUsage
+	reader := bufio.NewReader(resp.Body)
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fullContent.String(), usage, fmt.Errorf("read stream failed: %w", err)
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		if strings.HasPrefix(line, "event:") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var event struct {
+			Type     string `json:"type"`
+			Delta    string `json:"delta"`
+			Response *struct {
+				Usage *struct {
+					InputTokens     int `json:"input_tokens"`
+					OutputTokens    int `json:"output_tokens"`
+					TotalTokens     int `json:"total_tokens"`
+					ReasoningTokens int `json:"reasoning_tokens"`
+				} `json:"usage"`
+			} `json:"response"`
+		}
+
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
+		}
+
+		// DEBUG: 打印前几个事件的原始数据
+		if fullThinking.Len() == 0 && fullContent.Len() < 50 {
+			preview := data
+			if len(preview) > 500 {
+				preview = preview[:500] + "..."
+			}
+			log.Infow("StreamGPTResponses: SSE event",
+				"type", event.Type,
+				"raw_data", preview)
+		}
+
+		switch event.Type {
+		case "response.output_text.delta":
+			if event.Delta != "" {
+				fullContent.WriteString(event.Delta)
+				if onEvent != nil {
+					if err := onEvent("message", event.Delta); err != nil {
+						return fullContent.String(), usage, err
+					}
+				}
+			}
+
+		case "response.reasoning_summary_text.delta":
+			if event.Delta != "" {
+				fullThinking.WriteString(event.Delta)
+				if onEvent != nil {
+					if err := onEvent("thinking", event.Delta); err != nil {
+						return fullContent.String(), usage, err
+					}
+				}
+			}
+
+		case "response.completed":
+			if event.Response != nil && event.Response.Usage != nil {
+				u := event.Response.Usage
+				usage = &billing.TokenUsage{
+					PromptTokens:     u.InputTokens,
+					CompletionTokens: u.OutputTokens,
+					TotalTokens:      u.TotalTokens,
+					ReasoningTokens:  u.ReasoningTokens,
+				}
+			}
+		}
+	}
+
+	log.Infow("StreamGPTResponses: stream completed",
+		"model", model,
+		"content_length", fullContent.Len(),
+		"thinking_length", fullThinking.Len(),
+		"has_usage", usage != nil)
+
+	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+		billing.RecordLLM(bc.UserID, "dmxapi", model, bc.Operation, usage, bc.Meta)
+	}
+	if tc := langfuse.FromContext(ctx); tc != nil {
+		genID := langfuse.SpanID()
+		opts := []langfuse.GenOption{
+			langfuse.WithGenParent(tc.ParentObservationID),
+			langfuse.WithGenName("dmxapi-gpt-responses"),
+			langfuse.WithGenModel(model),
+			langfuse.WithGenInput(messages),
+			langfuse.WithGenOutput(fullContent.String()),
+		}
+		if usage != nil {
+			opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
+		}
+		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
+		langfuse.EndGeneration(genID)
+	}
+
+	return fullContent.String(), usage, nil
 }

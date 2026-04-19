@@ -7,9 +7,11 @@ import (
 	"strings"
 	"time"
 
+	"numind-server/internal/pkg/aiservice"
+	aismw "numind-server/internal/pkg/aiservice/middleware"
+	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/langfuse"
-	"numind-server/internal/pkg/llm"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
@@ -108,19 +110,26 @@ func (mb *MonitorBiz) GenerateUserBriefing(ctx context.Context, userID uint, bri
 	}
 
 	systemPrompt := fmt.Sprintf(briefingSystemPromptTemplate, typeLabel)
-	messages := []llm.ChatMessage{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: userMsg.String()},
+	aiMessages := []aiservice.ChatMessage{
+		{Role: aiservice.MessageRoleSystem, Content: aiservice.MessageContent{Text: systemPrompt}},
+		{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: userMsg.String()}},
 	}
 
-	// 5. 注入计费上下文
+	// 5. 注入计费上下文 + Gateway 中间件上下文
 	ctx = billing.WithBilling(ctx, userID, "monitor_briefing")
+	ctx = aismw.WithUserID(ctx, userID)
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
 
-	// 6. 调用 LLM
-	content, _, err := mb.llm.ChatCompletion(ctx, "deepseek-v3-2-251201", messages, 0.5, 2000)
+	// 6. 调用 AI Gateway
+	resp, err := aiservice.Chat(ctx, profile.MonitorBriefing, aiservice.ChatRequest{
+		Messages:    aiMessages,
+		Temperature: 0.5,
+		MaxTokens:   2000,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("GenerateUserBriefing: llm call: %w", err)
 	}
+	content := resp.Content
 
 	// 7. 保存简报
 	periodStart := from

@@ -28,6 +28,12 @@ type User struct {
 	UserTier    string     `gorm:"size:20;default:'free';index" json:"user_tier"` // 用户等级：free, trial, standard, premium
 	TierExpires *time.Time `gorm:"index" json:"tier_expires"`                     // 等级到期时间
 
+	// 计费模式字段（credits-system feature）
+	// legacy_tier = Grandfathering 老会员（按次数制，不扣积分）
+	// credits     = 新积分制（默认；预扣 / 对账 / 退款机制）
+	// 详见 spec §2.2 / §2.7 (Option E Grandfathering)
+	BillingMode string `gorm:"column:billing_mode;type:enum('legacy_tier','credits');not null;default:'credits';index:idx_user_billing_mode,priority:1" json:"billing_mode"`
+
 	// 管理员相关字段
 	Username  string     `gorm:"size:50;uniqueIndex" json:"username,omitempty"`
 	Password  string     `gorm:"size:255" json:"-"`
@@ -46,6 +52,16 @@ const (
 	UserTierTrial    = "trial"    // 体验会员：3天10次SOP（¥9.9）
 	UserTierStandard = "standard" // 普通会员：每月20次SOP
 	UserTierPremium  = "premium"  // 高级会员：无限次SOP
+)
+
+// BillingMode 定义用户计费模式常量（credits-system feature）
+// legacy_tier: Grandfathering 老会员，按次数制（GetRemainingSOPRuns），不扣积分；
+//              老会员到期自动升级后切换到 credits 模式。
+// credits:     新积分制（默认）——Reserve/Reconcile 预扣对账 + FIFO 扣减。
+// 详见 spec §2.2 / §2.7。
+const (
+	BillingModeLegacyTier = "legacy_tier"
+	BillingModeCredits    = "credits"
 )
 
 // TrialUserSOPLimit 体验会员SOP运行次数上限

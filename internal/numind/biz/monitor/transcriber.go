@@ -1,12 +1,9 @@
 package monitor
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,6 +13,10 @@ import (
 
 	"github.com/spf13/viper"
 
+	"numind-server/internal/pkg/aiservice"
+	aismw "numind-server/internal/pkg/aiservice/middleware"
+	"numind-server/internal/pkg/aiservice/profile"
+	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
@@ -38,15 +39,6 @@ func initFFmpegSem() {
 // ensureFFmpegSem 惰性初始化 FFmpeg 信号量
 func ensureFFmpegSem() {
 	ffmpegSemOnce.Do(initFFmpegSem)
-}
-
-// funasrBaseURL 获取 FunASR 服务基础 URL
-func funasrBaseURL() string {
-	url := viper.GetString("monitor.funasr.base_url")
-	if url == "" {
-		return "http://localhost:10095"
-	}
-	return url
 }
 
 // ffmpegPath 获取 FFmpeg 可执行文件路径
@@ -131,12 +123,32 @@ func (mb *MonitorBiz) TranscribeVideo(ctx context.Context, note *model.MonitorNo
 	}
 	defer os.Remove(audioPath)
 
-	// 3. 发送到 FunASR 进行语音识别
-	transcript, err := mb.recognizeAudio(ctx, audioPath)
+	// 3. 读取音频文件字节并通过 AI Gateway 进行语音识别
+	audioBytes, err := os.ReadFile(audioPath)
+	if err != nil {
+		log.Errorw("TranscribeVideo: read audio file failed", "noteID", note.ID, "error", err)
+		return fmt.Errorf("TranscribeVideo: read audio: %w", err)
+	}
+
+	// 注入 Gateway 中间件上下文（userID 从 billing context 读取）
+	asrCtx := ctx
+	if bc := billing.FromContext(ctx); bc != nil {
+		asrCtx = aismw.WithUserID(asrCtx, bc.UserID)
+	} else {
+		log.C(ctx).Warnw("billing context missing, userID injection skipped", "func", "TranscribeVideo", "noteID", note.ID)
+	}
+	asrCtx = aiservice.WithSkipLegacyBilling(asrCtx)
+
+	asrResp, err := aiservice.ASR(asrCtx, profile.MonitorTranscribe, aiservice.ASRRequest{
+		AudioBytes:  audioBytes,
+		AudioFormat: "wav",
+		Language:    "zh",
+	})
 	if err != nil {
 		log.Errorw("TranscribeVideo: recognize audio failed", "noteID", note.ID, "error", err)
 		return fmt.Errorf("TranscribeVideo: recognize: %w", err)
 	}
+	transcript := asrResp.Text
 
 	// 4. 更新笔记的 Transcript 字段
 	note.Transcript = transcript
@@ -204,56 +216,3 @@ func (mb *MonitorBiz) extractAudio(ctx context.Context, videoPath, audioPath str
 	return nil
 }
 
-// funasrResponse FunASR 识别响应结构
-type funasrResponse struct {
-	Text string `json:"text"`
-}
-
-// recognizeAudio 发送音频到 FunASR 进行语音识别
-func (mb *MonitorBiz) recognizeAudio(ctx context.Context, audioPath string) (string, error) {
-	// 构建 multipart form
-	var buf bytes.Buffer
-	writer := multipart.NewWriter(&buf)
-
-	f, err := os.Open(audioPath)
-	if err != nil {
-		return "", fmt.Errorf("recognizeAudio: open audio: %w", err)
-	}
-	defer f.Close()
-
-	part, err := writer.CreateFormFile("audio", filepath.Base(audioPath))
-	if err != nil {
-		return "", fmt.Errorf("recognizeAudio: create form file: %w", err)
-	}
-	if _, err := io.Copy(part, f); err != nil {
-		return "", fmt.Errorf("recognizeAudio: copy audio data: %w", err)
-	}
-	if err := writer.Close(); err != nil {
-		return "", fmt.Errorf("recognizeAudio: close writer: %w", err)
-	}
-
-	url := fmt.Sprintf("%s/recognize", funasrBaseURL())
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &buf)
-	if err != nil {
-		return "", fmt.Errorf("recognizeAudio: build request: %w", err)
-	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-
-	client := &http.Client{Timeout: 120 * time.Second} // 语音识别可能较慢
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("recognizeAudio: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("recognizeAudio: status %d, body: %s", resp.StatusCode, string(body))
-	}
-
-	var result funasrResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("recognizeAudio: decode response: %w", err)
-	}
-	return result.Text, nil
-}

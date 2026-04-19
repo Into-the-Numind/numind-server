@@ -1,0 +1,38 @@
+-- ⚠ DEPLOYMENT ORDER (READ BEFORE RUNNING):
+--
+-- This migration MUST run AFTER the legacy-llm-cleanup code upgrades are LIVE
+-- on the target environment. Running this migration before the code deploy
+-- will 500 every request that touches the old llmrouter / admin LLM paths.
+--
+-- Required live commits on each target environment before DROP:
+--   numind-server:    f67e066 (T2) + 3dd04a8 (T3) + 315b1a0 (T6)
+--   numind-admin-web: 461e5ee (T1)
+--   numind-web-v3:    7cd83c5 (T4)
+--
+-- Dev:  已在 2026-04-17 手动执行 DROP（这些 commit 已部署到 dev）。
+-- Prod: DO NOT RUN 直到对应 prod 发版带上 T1-T4 + T6 的 tag 并已部署。
+-- Qa:   同 prod，先发版再跑 migration。
+--
+-- ---
+--
+-- legacy-llm-cleanup Task 5: drop the llm_model + llm_model_provider compat VIEWs.
+--
+-- Context: ai-service-manager (2026-04-16) introduced ai_service + ai_service_route
+-- tables and created two read-only VIEWs (llm_model / llm_model_provider) so the
+-- pre-migration code paths could keep reading through the old names while the biz
+-- layer migrated. After Tasks T1-T4 + T6 of legacy-llm-cleanup, no code calls
+-- ds.LLMModel() or ds.LLMModelProvider() anymore (verified 2026-04-17 by code review).
+-- The VIEWs are dead infra, safe to drop.
+--
+-- Forward (UP):
+--   DROP VIEW IF EXISTS llm_model;
+--   DROP VIEW IF EXISTS llm_model_provider;
+--
+-- Rollback (DOWN): see 20260417_180000_drop_llm_compat_views_rollback.sql
+-- (re-creates the VIEWs with the exact DDL from 20260416_000001_ai_service_manager.sql).
+--
+-- Idempotent (IF EXISTS) — safe to re-run. No data is lost because VIEWs are derived,
+-- not stored.
+
+DROP VIEW IF EXISTS llm_model;
+DROP VIEW IF EXISTS llm_model_provider;

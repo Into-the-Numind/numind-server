@@ -561,7 +561,9 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 	// 支持书签功能：创建 Run 并自动应用书签
 	run, appliedBookmarkIDs, err := ctrl.sopBiz.CreateRunWithBookmarks(c.Request.Context(), req.TemplateID, user.ID, req.Text, req.AutoApplyBookmarks)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
+		// 透传 biz 层错误：*errno.Errno 保留正确 HTTP 状态码（如 403 权限拒绝），
+		// 其他 error 由 errno.Decode 兜底为 500。避免把业务拒绝误报为 500
+		core.WriteResponse(c, err, nil)
 		return
 	}
 
@@ -2294,6 +2296,7 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 		RunID           uint   `json:"run_id"`
 		ConversationID  string `json:"conversation_id"`
 		Question        string `json:"question"`
+		ModelKey        string `json:"model_key"`         // 用户选择的模型 key（可选，走三级 fallback）
 		DeepThinking    *bool  `json:"deep_thinking"`     // 思考模式开关
 		RegenerateMsgID uint   `json:"regenerate_msg_id"` // 需要重新生成的AI消息ID（可选）
 	}
@@ -2305,9 +2308,23 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 
 	// 处理思考模式开关，默认关闭
 	deepThinking := false
+	var deepThinkingPtr *bool
 	if req.DeepThinking != nil {
 		deepThinking = *req.DeepThinking
+		deepThinkingPtr = req.DeepThinking
 	}
+
+	// 三级 fallback 解析用户选择的模型（query → 用户偏好 → 系统默认）
+	resolvedModelKey, resolvedThinking, resolveErr := ctrl.llmRouter.ResolveUserModel(
+		c.Request.Context(), user.ID, "sop", req.ModelKey, deepThinkingPtr)
+	if resolveErr != nil {
+		log.C(c).Warnw("LLMRouter.ResolveUserModel failed, falling back to last node default", "error", resolveErr)
+		// 与 ExecuteNodeStream 控制器（见本文件 :821）保持一致：解析失败时 thinking=false，避免
+		// 在无法确认用户偏好的情况下意外开启深度思考（成本更高、部分模型不支持）
+		resolvedModelKey = ""
+		resolvedThinking = false
+	}
+	deepThinking = resolvedThinking
 
 	// 设置SSE响应头
 	c.Header("Content-Type", "text/event-stream")
@@ -2357,7 +2374,7 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 	}()
 
 	// 执行业务流
-	err := ctrl.sopBiz.ChatAfterRunStream(heartbeatCtx, req.RunID, req.ConversationID, req.Question, user.ID, deepThinking, req.RegenerateMsgID, func(event string, chunk string) error {
+	err := ctrl.sopBiz.ChatAfterRunStream(heartbeatCtx, req.RunID, req.ConversationID, req.Question, user.ID, resolvedModelKey, deepThinking, req.RegenerateMsgID, func(event string, chunk string) error {
 		// 检查客户端连接
 		select {
 		case <-c.Request.Context().Done():

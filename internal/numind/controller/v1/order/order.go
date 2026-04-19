@@ -1,6 +1,7 @@
 package order
 
 import (
+	"errors"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -65,6 +66,14 @@ func (ctrl *OrderController) CreateOrder(c *gin.Context) {
 	order, err := ctrl.paymentBiz.CreateOrder(c, payer.ID, req.UserID, req.ProductType, req.Months, req.PayChannel)
 	if err != nil {
 		log.C(c).Errorw("Failed to create order", "payer_id", payer.ID, "user_id", req.UserID, "err", err)
+		// 如果是已定义的 errno（如 Membership.Required / Trial.AlreadyPurchased /
+		// Membership.SelfPurchaseDisabled 等），直接透传保留其原始 HTTP 状态码
+		// 和 errno code；否则才包成 InternalServerError 500。
+		var e *errno.Errno
+		if errors.As(err, &e) {
+			core.WriteResponse(c, e, nil)
+			return
+		}
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}

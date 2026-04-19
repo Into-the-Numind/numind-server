@@ -2,14 +2,27 @@ package service_test
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/service"
+	aiservice "numind-server/internal/pkg/aiservice"
 
 	"github.com/stretchr/testify/assert"
 )
+
+// TestMain initialises a minimal aiservice singleton so that tests which
+// exercise code paths reaching aiservice.Rerank() do not panic on Default().
+// The gateway has no registry and no providers, so Rerank calls return an
+// error rather than making real network requests — which is acceptable for
+// unit tests that only exercise the retrieval path (not the rerank path).
+func TestMain(m *testing.M) {
+	gw := aiservice.Build(aiservice.Deps{}) // no DB, no providers; Rerank returns error, not panic
+	aiservice.SetDefault(gw)
+	os.Exit(m.Run())
+}
 
 func TestSalesRAGService_RetrieveDualTrack(t *testing.T) {
 	// 1. Setup Mock Store & Router

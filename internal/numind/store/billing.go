@@ -26,6 +26,13 @@ type BillingStore interface {
 	GetOrCreateAccount(ctx context.Context, userID uint) (*model.BillingAccount, error)
 	// GetPricingRule 获取匹配的定价规则
 	GetPricingRule(ctx context.Context, serviceType, provider, modelName string) (*model.PricingRule, error)
+	// GetPricingRuleTiers 获取指定定价规则的分段配置
+	GetPricingRuleTiers(ctx context.Context, ruleID uint) ([]model.PricingRuleTier, error)
+	// GetProviderModelID resolves the provider-specific model ID (provider_model_id)
+	// for the given logical model key and provider name by joining ai_service and
+	// ai_service_route via llm_provider. Returns ("", gorm.ErrRecordNotFound) when
+	// no mapping exists.
+	GetProviderModelID(ctx context.Context, modelKey, providerName string) (string, error)
 
 	// ListUsageRecords 管理端用量记录分页查询（支持多条件过滤）
 	ListUsageRecords(ctx context.Context, filter UsageRecordFilter) ([]model.UsageRecord, int64, error)
@@ -307,18 +314,53 @@ func (s *billingStore) GetOrCreateAccount(ctx context.Context, userID uint) (*mo
 	return &result, nil
 }
 
-// GetPricingRule 获取匹配的定价规则（单次查询，精确匹配优先，fallback 到默认）
+// GetPricingRule 获取匹配的定价规则。三级 fallback（优先级从高到低）：
+//  1. 精确匹配 (service_type, provider, model)
+//  2. provider 通配 (service_type, provider, '')
+//  3. 全局兜底 (service_type, '', '')
+//
+// 全局兜底行由 migrations/seed_pricing_rules.sql 保证存在。任何未知
+// (provider, model) 都能命中全局行（保守价格 ~ ¥3/MTok input, ¥10/MTok
+// output），Reconcile 按真实 cost 多退少补。避免 ProviderFromModel 猜错
+// 导致 SOP/SalesRAG 在 CheckAndEstimate 就失败的生产事故。
 func (s *billingStore) GetPricingRule(ctx context.Context, serviceType, provider, modelName string) (*model.PricingRule, error) {
 	var rule model.PricingRule
+	// 一条 SQL 同时查三级命中，ORDER BY 选最精确的。
+	// 用 gorm.Expr 构造 CASE 表达式（Order 不支持 variadic 参数，用 Expr 占位）。
 	err := s.db.WithContext(ctx).
-		Where("service_type = ? AND provider = ? AND model IN (?, '') AND is_active = ?",
-			serviceType, provider, modelName, true).
-		Order("CASE WHEN model = '' THEN 1 ELSE 0 END").
+		Where(`service_type = ? AND is_active = ?
+			AND (
+				(provider = ? AND model = ?)
+				OR (provider = ? AND model = '')
+				OR (provider = '' AND model = '')
+			)`,
+			serviceType, true,
+			provider, modelName,
+			provider,
+		).
+		Order(gorm.Expr(`CASE
+			WHEN provider = ? AND model = ? THEN 0
+			WHEN provider = ? AND model = '' THEN 1
+			ELSE 2
+		END`, provider, modelName, provider)).
 		First(&rule).Error
 	if err != nil {
 		return nil, err
 	}
 	return &rule, nil
+}
+
+// GetPricingRuleTiers 获取指定定价规则的分段配置（用于 tiered_token 模式）
+func (s *billingStore) GetPricingRuleTiers(ctx context.Context, ruleID uint) ([]model.PricingRuleTier, error) {
+	var tiers []model.PricingRuleTier
+	err := s.db.WithContext(ctx).
+		Where("rule_id = ?", ruleID).
+		Order("token_type, min_tokens").
+		Find(&tiers).Error
+	if err != nil {
+		return nil, err
+	}
+	return tiers, nil
 }
 
 // ListUsageRecords 管理端用量记录分页查询（支持多条件过滤）
@@ -560,7 +602,23 @@ func (s *billingStore) ListPricingRules(ctx context.Context, offset, limit int) 
 
 // CreatePricingRule 创建定价规则
 func (s *billingStore) CreatePricingRule(ctx context.Context, rule *model.PricingRule) error {
-	return s.db.WithContext(ctx).Create(rule).Error
+	// Capture intended value before Create; GORM may overwrite the struct field with the
+	// DB default when the field has `gorm:"default:true"` and the value is false.
+	wantActive := rule.IsActive
+	if err := s.db.WithContext(ctx).Create(rule).Error; err != nil {
+		return err
+	}
+	// GORM v2 skips bool zero value (false) when the field has a `default:true` tag
+	// (model.PricingRule.IsActive). If the caller explicitly set is_active=false, GORM
+	// silently falls back to the DB default of true. A follow-up UpdateColumn restores
+	// the requested value.
+	if !wantActive && rule.IsActive {
+		if err := s.db.WithContext(ctx).Model(rule).UpdateColumn("is_active", false).Error; err != nil {
+			return fmt.Errorf("CreatePricingRule: fixup is_active: %w", err)
+		}
+		rule.IsActive = false
+	}
+	return nil
 }
 
 // UpdatePricingRule 更新定价规则
@@ -582,10 +640,10 @@ func (s *billingStore) UpdatePricingRule(ctx context.Context, id uint, update Pr
 		updates["flat_unit"] = *update.FlatUnit
 	}
 	if update.InputPricePerMTok != nil {
-		updates["input_price_per_mtok"] = *update.InputPricePerMTok
+		updates["input_price_per_m_tok"] = *update.InputPricePerMTok
 	}
 	if update.OutputPricePerMTok != nil {
-		updates["output_price_per_mtok"] = *update.OutputPricePerMTok
+		updates["output_price_per_m_tok"] = *update.OutputPricePerMTok
 	}
 	if update.PricePerCall != nil {
 		updates["price_per_call"] = *update.PricePerCall
@@ -594,10 +652,10 @@ func (s *billingStore) UpdatePricingRule(ctx context.Context, id uint, update Pr
 		updates["price_per_gb"] = *update.PricePerGB
 	}
 	if update.SellInputPricePerMTok != nil {
-		updates["sell_input_price_per_mtok"] = *update.SellInputPricePerMTok
+		updates["sell_input_price_per_m_tok"] = *update.SellInputPricePerMTok
 	}
 	if update.SellOutputPricePerMTok != nil {
-		updates["sell_output_price_per_mtok"] = *update.SellOutputPricePerMTok
+		updates["sell_output_price_per_m_tok"] = *update.SellOutputPricePerMTok
 	}
 	if update.SellPricePerCall != nil {
 		updates["sell_price_per_call"] = *update.SellPricePerCall
@@ -870,6 +928,30 @@ func (s *billingStore) ListTierChangeLogs(ctx context.Context, filter TierChange
 		return nil, 0, fmt.Errorf("list tier change logs: %w", err)
 	}
 	return items, total, nil
+}
+
+// GetProviderModelID resolves the provider-specific model ID (provider_model_id) for the
+// given logical model key and provider name. It joins ai_service → ai_service_route →
+// llm_provider to find the matching row.
+// Returns ("", gorm.ErrRecordNotFound) when no mapping exists.
+func (s *billingStore) GetProviderModelID(ctx context.Context, modelKey, providerName string) (string, error) {
+	var providerModelID string
+	err := s.db.WithContext(ctx).
+		Table("ai_service_route asr").
+		Joins("JOIN ai_service ais ON ais.id = asr.model_id").
+		Joins("JOIN llm_provider lp ON lp.id = asr.provider_id").
+		Where("ais.model_key = ? AND lp.name = ?", modelKey, providerName).
+		Select("asr.provider_model_id").
+		Limit(1).
+		Scan(&providerModelID).Error
+	if err != nil {
+		return "", fmt.Errorf("GetProviderModelID: %w", err)
+	}
+	if providerModelID == "" {
+		// Return the sentinel bare; callers use errors.Is to detect not-found.
+		return "", gorm.ErrRecordNotFound
+	}
+	return providerModelID, nil
 }
 
 // GetTierChangeStats 获取等级变更月度统计（用于计算收入）

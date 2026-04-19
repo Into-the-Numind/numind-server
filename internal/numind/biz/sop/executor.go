@@ -11,11 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"numind-server/internal/numind/biz/llmrouter"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
+	aismw "numind-server/internal/pkg/aiservice/middleware"
+	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/langfuse"
-	"numind-server/internal/pkg/llm"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/tokenizer"
@@ -27,22 +28,22 @@ import (
 type SopExecutor struct {
 	ds        store.IStore
 	tokenizer *tokenizer.Tokenizer
-	llmRouter *llmrouter.Router
 }
 
-// NewSopExecutor 创建SOP执行器
-func NewSopExecutor(ds store.IStore, llmRouter *llmrouter.Router) *SopExecutor {
+// NewSopExecutor 创建SOP执行器。
+// 历史：曾接受 *llmrouter.Router 参数（老版 LLM 路由），ai-service-manager 上线后
+// 所有 LLM 调用改走 internal/pkg/aiservice Gateway，参数已移除。
+func NewSopExecutor(ds store.IStore) *SopExecutor {
 	tk, err := tokenizer.NewTokenizer()
 	if err != nil {
 		// Log error but don't fail startup, just degrade gracefully (we can add checks later)
 		// For now, assume it works or we'll panic/error on first use if nil.
 		// Better to just log.
-		fmt.Printf("Failed to initialize tokenizer: %v\n", err)
+		log.Errorw("failed to initialize tokenizer", "error", err)
 	}
 	return &SopExecutor{
 		ds:        ds,
 		tokenizer: tk,
-		llmRouter: llmRouter,
 	}
 }
 
@@ -93,6 +94,8 @@ func applyDefaultLLMConfig(node *model.SopNode) {
 		}
 	}
 	if node.ModelName == "" {
+		// TODO(Task 15a): 此处仍从旧 volc.model 读取作为兜底；
+		// Gateway 已接管模型选择（via Task Profile），此路径预期不再触发。
 		node.ModelName = viper.GetString("volc.model")
 		if node.ModelName == "" {
 			node.ModelName = "deepseek-v3-250324"
@@ -101,11 +104,13 @@ func applyDefaultLLMConfig(node *model.SopNode) {
 }
 
 // ExecuteNodeStream 流式执行单个节点（公开方法）
-// 若 modelKey != "" 且 llmRouter 已注入，则通过 LLMRouter 路由执行；否则保留原有直连逻辑。
+// 优先通过 AI Gateway 路由执行（modelKey != ""）；否则保留原有直连逻辑。
 func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, modelKey string, thinking bool, handler StreamHandler) (string, *TokenUsage, error) {
-	// LLMRouter 路径：用户选择了特定模型
-	if modelKey != "" && e.llmRouter != nil {
-		return e.executeViaRouter(ctx, node, input, history, modelKey, thinking, handler)
+	_ = thinking // 待 Task 9 后续接通 Gateway thinking 模式
+
+	// Gateway 路径：用户选择了特定模型
+	if modelKey != "" {
+		return e.executeViaGateway(ctx, node, input, history, modelKey, handler)
 	}
 
 	// 节点未配置 LLM 信息时，使用系统默认配置
@@ -396,35 +401,128 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 	return output, usage, nil
 }
 
-// executeViaRouter 通过 LLMRouter 执行节点流式调用
-func (e *SopExecutor) executeViaRouter(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, modelKey string, thinking bool, handler StreamHandler) (string, *TokenUsage, error) {
-	log.C(ctx).Infow("ExecuteNodeStream via LLMRouter",
-		"node_id", node.ID,
-		"node_name", node.Name,
-		"model_key", modelKey,
-		"thinking", thinking)
+// executeViaGateway 通过 AI Gateway 执行节点流式调用（取代 executeViaRouter）
+//
+// Task Profile 选择规则：
+//   - SopVision：当任意消息含 image_url 类型的 MessagePart 时（视觉输入）
+//   - SopText：其余所有情况（纯文本）
+//
+// 调用前注入 WithSkipLegacyBilling，防止 LLMRouter 旧路径与 Gateway 双记账。
+// modelKey 参数当前未接通 Gateway ModelOverride（billing-baseline.md BLOCKER 3）；预留供未来扩展。
+func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, modelKey string, handler StreamHandler) (string, *TokenUsage, error) {
 
-	// 构建消息列表：system prompt → history → user input
-	var messages []llm.ChatMessage
+	log.C(ctx).Infow("ExecuteNodeStream via AI Gateway",
+		"node_id", node.ID,
+		"node_name", node.Name)
+
+	// 0. 将 billing context 中的 userID 注入 aiservice middleware，确保 Tracing/Billing 中间件能正确读取
+	if bc := billing.FromContext(ctx); bc != nil {
+		ctx = aismw.WithUserID(ctx, bc.UserID)
+	}
+
+	// 1. 构建 aiservice.ChatMessage 列表：system prompt → history → user input
+	var aiMessages []aiservice.ChatMessage
 	if node.Prompt != "" {
-		messages = append(messages, llm.ChatMessage{Role: "system", Content: node.Prompt})
+		aiMessages = append(aiMessages, aiservice.ChatMessage{
+			Role:    aiservice.MessageRoleSystem,
+			Content: aiservice.MessageContent{Text: node.Prompt},
+		})
 	}
 	for _, msg := range history {
-		messages = append(messages, llm.ChatMessage{Role: msg.Role, Content: msg.Content})
+		role := aiservice.MessageRole(msg.Role)
+		aiMessages = append(aiMessages, aiservice.ChatMessage{
+			Role:    role,
+			Content: aiservice.MessageContent{Text: msg.Content},
+		})
 	}
 	if input != "" {
-		messages = append(messages, llm.ChatMessage{Role: "user", Content: input})
+		aiMessages = append(aiMessages, aiservice.ChatMessage{
+			Role:    aiservice.MessageRoleUser,
+			Content: aiservice.MessageContent{Text: input},
+		})
 	}
 
-	// 调用 LLMRouter.StreamChat，透传 StreamHandler
-	content, usage, err := e.llmRouter.StreamChat(ctx, modelKey, thinking, messages, 0, 0, func(eventType, chunk string) error {
-		return handler(eventType, chunk)
-	})
+	// 2. 选择 Task Profile：任意消息含 image_url 部分 → SopVision，否则 SopText
+	taskID := profile.SopText
+	for _, m := range aiMessages {
+		for _, part := range m.Content.Parts {
+			if part.Type == aiservice.MessagePartTypeImageURL {
+				taskID = profile.SopVision
+				break
+			}
+		}
+		if taskID == profile.SopVision {
+			break
+		}
+	}
+
+	// 3. 注入 skip-legacy-billing 标记，防止 Gateway 与旧 billing 路径双记账
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
+
+	// 4. 调用 Gateway ChatStream
+	req := aiservice.ChatRequest{
+		Messages:      aiMessages,
+		Temperature:   0.7,
+		ModelOverride: modelKey, // pass user's model choice; empty = use task profile default
+	}
+	ch, err := aiservice.ChatStream(ctx, taskID, req)
 	if err != nil {
-		return "", nil, fmt.Errorf("executeViaRouter: %w", err)
+		return "", nil, fmt.Errorf("executeViaGateway: ChatStream: %w", err)
 	}
 
-	return content, usage, nil
+	// 5. 消费 channel，将 ChatChunk 转换为 StreamHandler 回调
+	var fullContent strings.Builder
+	var finalUsage *TokenUsage
+	var modelName string
+	var providerName string
+	var streamErr error
+	for chunk := range ch {
+		if chunk.Model != "" {
+			modelName = chunk.Model
+		}
+		if chunk.Provider != "" {
+			providerName = chunk.Provider
+		}
+		if chunk.ReasoningDelta != "" {
+			if handlerErr := handler("thinking", chunk.ReasoningDelta); handlerErr != nil {
+				log.C(ctx).Warnw("executeViaGateway: stream handler error on thinking chunk",
+					"node_id", node.ID, "error", handlerErr)
+			}
+		}
+		if chunk.Delta != "" {
+			fullContent.WriteString(chunk.Delta)
+			if handlerErr := handler("message", chunk.Delta); handlerErr != nil {
+				log.C(ctx).Warnw("executeViaGateway: stream handler error on message chunk",
+					"node_id", node.ID, "error", handlerErr)
+			}
+		}
+		if chunk.IsFinal {
+			if chunk.Err != nil {
+				streamErr = chunk.Err
+			}
+			if chunk.Usage != nil {
+				finalUsage = &billing.TokenUsage{
+					PromptTokens:     chunk.Usage.PromptTokens,
+					CompletionTokens: chunk.Usage.CompletionTokens,
+					TotalTokens:      chunk.Usage.TotalTokens,
+					ReasoningTokens:  chunk.Usage.ReasoningTokens,
+					ModelName:        modelName,
+					Provider:         providerName,
+				}
+			}
+		}
+	}
+
+	// Mid-stream failure: propagate so the caller can fail the node rather
+	// than accepting a truncated output as "success".
+	if streamErr != nil {
+		return fullContent.String(), finalUsage, fmt.Errorf("executeViaGateway: stream error: %w", streamErr)
+	}
+	if fullContent.Len() == 0 && finalUsage == nil {
+		return "", nil, fmt.Errorf("executeViaGateway: empty response from Gateway (no chunks received)")
+	}
+
+	return fullContent.String(), finalUsage, nil
 }
 
 // ExecuteNodeStreamWithThinking 流式执行单个节点，并分离思考内容和实际内容
@@ -580,9 +678,11 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 	return output, thinking, usage, nil
 }
 
-// extractThinkingContent 从完整输出中提取思考内容
+// extractThinkingContent 从完整输出中提取思考内容（兼容旧模型不发 reasoning_content 的情况）
 func extractThinkingContent(output string) string {
 	// 查找思考部分的开始标记
+	// 顺序重要："已思考" 必须在 "思考" 前面，因为 "思考" 是 "已思考" 的子串，
+	// 放后面会导致匹配位置提前、多截取内容
 	thinkingMarkers := []string{
 		"已思考",
 		"**已思考**",
@@ -875,13 +975,23 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 
 				if endMarkerIndex != -1 {
 					// 遇到结束标记，需要拆分当前 chunk
-					// 计算结束标记在当前chunk中的相对位置
+					// relativePos: 结束标记起始位置在当前 chunk 中的偏移
 					relativePos := endMarkerIndex - prevLen
+					// splitEnd: 结束标记末尾在当前 chunk 中的偏移（message 从此处开始）
+					splitEnd := relativePos + len(endMarker)
 
-					if relativePos >= 0 && relativePos < len(content) {
-						// 结束标记在当前chunk中，需要拆分
-						thinkingPart := content[:relativePos+len(endMarker)]
-						messagePart := content[relativePos+len(endMarker):]
+					// 标记跨越 chunk 边界时需要 clamp，防止越界切片
+					if relativePos < 0 {
+						relativePos = 0
+					}
+					if splitEnd > len(content) {
+						splitEnd = len(content)
+					}
+
+					if relativePos < len(content) {
+						// 结束标记（至少部分）在当前 chunk 中，拆分
+						thinkingPart := content[:splitEnd]
+						messagePart := content[splitEnd:]
 
 						// 发送思考部分
 						if thinkingPart != "" {
@@ -915,14 +1025,15 @@ func (e *SopExecutor) callAliDeepThinkingStream(ctx context.Context, node *model
 							}
 						}
 					} else {
-						// 结束标记不在当前chunk中，但已检测到
-						// 这种情况不应该发生，但为了安全还是处理
+						// 结束标记完全在之前的 chunk 中（当前 chunk 全部属于 message）
 						thinkingEnded = true
 						messageChunks++
 						messageBuf.WriteString(content)
-						log.C(ctx).Warnw("Unexpected: end marker found but not in current chunk",
+						log.C(ctx).Infow("End marker in previous chunk, current chunk is message",
 							"node_id", node.ID,
-							"node_name", node.Name)
+							"node_name", node.Name,
+							"chunk_index", messageChunks,
+							"chunk_length", len(content))
 						if err := handler("message", content); err != nil {
 							return nil, err
 						}

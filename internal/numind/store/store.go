@@ -32,8 +32,6 @@ type IStore interface {
 	ChatbotConfig() IChatbotConfigStore
 	ChatbotSession() IChatbotSessionStore
 	LLMProvider() ILLMProviderStore
-	LLMModel() ILLMModelStore
-	LLMModelProvider() ILLMModelProviderStore
 	UserModelPreference() IUserModelPreferenceStore
 }
 
@@ -53,6 +51,12 @@ func NewStore(db *gorm.DB) *datastore {
 	})
 
 	return S
+}
+
+// NewTestStore creates a fresh IStore instance backed by the given DB without
+// the singleton constraint. Use only in tests.
+func NewTestStore(db *gorm.DB) IStore {
+	return &datastore{db: db}
 }
 
 // DB 返回存储在 datastore 中的 *gorm.DB.
@@ -133,16 +137,6 @@ func (ds *datastore) ChatbotSession() IChatbotSessionStore {
 // LLMProvider 返回一个实现了 ILLMProviderStore 接口的实例.
 func (ds *datastore) LLMProvider() ILLMProviderStore {
 	return NewLLMProviderStore(ds.db)
-}
-
-// LLMModel 返回一个实现了 ILLMModelStore 接口的实例.
-func (ds *datastore) LLMModel() ILLMModelStore {
-	return NewLLMModelStore(ds.db)
-}
-
-// LLMModelProvider 返回一个实现了 ILLMModelProviderStore 接口的实例.
-func (ds *datastore) LLMModelProvider() ILLMModelProviderStore {
-	return NewLLMModelProviderStore(ds.db)
 }
 
 // UserModelPreference 返回一个实现了 IUserModelPreferenceStore 接口的实例.
