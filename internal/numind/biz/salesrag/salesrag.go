@@ -24,6 +24,7 @@ import (
 	"numind-server/internal/pkg/aiservice"
 	aismw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/aiservice/profile"
+	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/known"
@@ -222,8 +223,9 @@ type salesRAGBiz struct {
 	// flows through Reserve → LLM → Reconcile/Refund.
 	creditSvc       credit.ICreditService
 	pricing         pricing.ICalculator
-	defaultModel    string // fallback model tag for R2 estimation (empty → global coef)
-	defaultProvider string // fallback provider tag (empty → global coef)
+	registry        registry.Registry // resolves task_profile.salesrag.chat → real provider+model for CheckAndEstimate; nil-safe (test fixtures construct &salesRAGBiz{} without it)
+	defaultModel    string            // fallback model tag for R2 estimation (empty → global coef)
+	defaultProvider string            // fallback provider tag (empty → global coef)
 }
 
 // VolcBiz 火山引擎服务接口（避免循环依赖）
@@ -242,7 +244,7 @@ type VolcBiz interface {
 }
 
 func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *service.SalesRAGService, volc VolcBiz, ali ali.AliBiz, sessionStore store.SalesSessionStore, parser service.PipelineParser) SalesRAGBiz {
-	return NewSalesRAGBizWithCredits(ds, pipeline, rag, volc, ali, sessionStore, parser, nil, nil)
+	return NewSalesRAGBizWithCredits(ds, pipeline, rag, volc, ali, sessionStore, parser, nil, nil, nil)
 }
 
 // NewSalesRAGBizWithCredits constructs a SalesRAGBiz with the credits-system
@@ -259,6 +261,7 @@ func NewSalesRAGBizWithCredits(
 	parser service.PipelineParser,
 	creditSvc credit.ICreditService,
 	pc pricing.ICalculator,
+	reg registry.Registry,
 ) SalesRAGBiz {
 	return &salesRAGBiz{
 		ds:                ds,
@@ -270,9 +273,10 @@ func NewSalesRAGBizWithCredits(
 		parser:            parser,
 		creditSvc:         creditSvc,
 		pricing:           pc,
-		// Leave defaults empty — the estimation biz falls back to the global
-		// coefficient row when provider/model are both blank (per prompt_
-		// estimator.go `providerFromModel` returning "" + spec §3.11 fallback).
+		registry:          reg,
+		// defaultModel/defaultProvider stay empty: when registry is nil
+		// (test fixtures) acquireSalesragCredits falls back to passing them,
+		// which hits the ('llm_chat','','') global pricing row when seeded.
 	}
 }
 
@@ -351,10 +355,11 @@ func (b *salesRAGBiz) acquireSalesragCredits(
 	if err != nil {
 		return nil, fmt.Errorf("acquireSalesragCredits: load user: %w", err)
 	}
+	provider, modelName := b.resolveSalesragChatRoute(ctx)
 	pre, err := b.creditSvc.CheckAndEstimate(ctx, user, credit.OpSalesragChat, credit.EstimationInput{
 		PromptChars: promptChars,
-		Model:       b.defaultModel,
-		Provider:    b.defaultProvider,
+		Model:       modelName,
+		Provider:    provider,
 	})
 	if err != nil {
 		return &salesragCreditContext{biz: b, pre: pre}, b.wrapCreditError(err, pre)
@@ -380,6 +385,27 @@ func (b *salesRAGBiz) acquireSalesragCredits(
 	}
 	cc.rsv = rsv
 	return cc, nil
+}
+
+// resolveSalesragChatRoute looks up the current task_profile.salesrag.chat
+// binding so CheckAndEstimate hits the precise pricing rule (e.g.
+// aihubmix/deepseek-v3.2-thinking @ ¥2.16/¥3.24) instead of the
+// ('llm_chat','','') global fallback row — which is missing on dev DB and
+// caused "pricing lookup: record not found" 500s.
+//
+// Failures (registry nil, task unbound, network) fall back to ("","") so
+// the lookup degrades to whatever per-provider/global rows exist; the
+// callee surfaces ErrRecordNotFound only when no rule matches at all.
+func (b *salesRAGBiz) resolveSalesragChatRoute(ctx context.Context) (provider, modelName string) {
+	if b.registry == nil {
+		return "", ""
+	}
+	route, _, err := b.registry.ResolveTask(ctx, profile.SalesragChat)
+	if err != nil || route == nil {
+		log.Printf("[salesRAGBiz] resolveSalesragChatRoute(%s) fallback to empty: %v", profile.SalesragChat, err)
+		return "", ""
+	}
+	return route.Provider.Name, route.ServiceKey
 }
 
 // recordLLMResult mutates the credit context with the observed actual cost

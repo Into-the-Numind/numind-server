@@ -1674,3 +1674,40 @@ features:
     blockers: []
     created_at: "2026-04-20T01:20:00+08:00"
     completed_at: "2026-04-20T01:30:00+08:00"
+
+  - id: "salesrag-pricing-resolve-route"
+    ndf_version: "1.0"
+    description: "修复 salesrag 发消息 500：CheckAndEstimate pricing lookup record not found。改为在 Reserve 前调 registry.ResolveTask(salesrag.chat) 拿真实 provider+model 传给 EstimationInput，命中精确价格规则（aihubmix/deepseek-v3.2-thinking ¥2.16/¥3.24）而非空兜底"
+    track: "hotfix"
+    stage: "H2"
+    classification_reason: "P0 线上 bug：(1) 不涉及 schema 变更 (2) 不新增 API (3) 不接外部服务 (4) 影响 3 文件（salesrag.go + biz.go + 单测）(5) 计费方向是修复+更准，无新风险"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-20T02:30:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/salesrag-pricing-resolve-route"
+    hotfix_artifacts:
+      diagnosis: "salesrag.go:354 CheckAndEstimate 传 defaultProvider/defaultModel=空字符串，依赖 store.GetPricingRule 三级 fallback 命中 ('llm_chat','','') 全局兜底行；但 dev DB 该全局行不存在（仅有 ali-dashscope/'' 和 volc-ark/'' per-provider 默认行），SQL WHERE 三个 OR 条件 collapse 后只匹配 ('','')，查无记录返回 ErrRecordNotFound。salesrag.chat 实际通过 task_profile.default_service_id=16 路由到 aihubmix/deepseek-v3.2-thinking，pricing_rule 已为该 (provider,model) 配置 ¥2.16/¥3.24 但代码路径根本没问到。修复方向：注入 registry.Registry，Reserve 前 ResolveTask 拿到真实 provider+model 传入 EstimationInput"
+      review: null
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "git revert（纯代码改动，无 DB schema 变更；nil-safe registry 让回退完全可逆）"
+    last_verified:
+      at: "2026-04-20T02:35:00+08:00"
+      lint: "go vet ./... pass（仅 sqlite-vec cgo deprecated 警告，无关本次改动）"
+      type_check: "go build ./... pass"
+      tests: "go test ./internal/numind/biz/salesrag/ -v → 6/6 PASS（TestAcquireSalesragCredits_CreditsHappyPath / InsufficientBalance / LegacyTierFree / IdempotentReplay / LegacyTierFreeUserBlocked + TestFinalize_StreamErrorTriggersRefund）"
+      test_summary: "salesrag 包全绿；credit 包 2 个 fail（TestPromptEstimator_SopRun_SumsAllNodes / TestPromptEstimator_SopChat_EmptyFallsBackToTemplate）经 git stash 验证为 pre-existing — 来自 commit bae4921 provider 名对齐遗留，与本次修复无关"
+    decisions:
+      - "2026-04-20: 选 Plan B（代码层 ResolveTask）而非 Plan A（DB 加全局兜底行）— 用户授权。优势：(1) 命中精确价格 ¥2.16/¥3.24 而非保守兜底 ¥3/¥10，避免长期过度预扣；(2) 修复结构性问题不是数据补丁；(3) 未来运营在管理端切换路由 salesrag biz 自动跟随，无需追加 SQL"
+      - "2026-04-20: registry 字段做 nil-safe — 测试 fixture 直接构造 &salesRAGBiz{} 时 registry=nil，自动回退到 empty provider/model（保持原行为）。生产 NewSalesRAGBizWithCredits 必传，不影响线上路径"
+      - "2026-04-20: 不修 recordLLMResult 的 defaultProvider/defaultModel fallback — Reconcile 路径正常情况由 streamProvider/streamModel 提供真实值（salesrag.go:2099），fallback 仅在 stream 元数据缺失时触发（非主路径），本次 hotfix 不扩散范围"
+    deferred:
+      - "long term：销户 defaultProvider/defaultModel 字段（已无写入路径），改用 ResolveTask 单一来源；本次保留以保持 nil-safe 测试兼容"
+    blockers: []
+    created_at: "2026-04-20T02:30:00+08:00"
+    completed_at: null
