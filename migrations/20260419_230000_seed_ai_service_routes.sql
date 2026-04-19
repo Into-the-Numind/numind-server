@@ -36,61 +36,76 @@
 --
 -- # 定价
 --
--- ai_service_route.{input,output}_price_per_mtok 均设 0 —— 本次影响的
--- 服务类型（embedding/rerank/ocr/asr）真实计费走 pricing_rule 表，不依赖
--- route 表的字段。pricing_rule 已在 seed_pricing_rules.sql 配好对应 row
--- （见 text-embedding-v4 / qwen3-rerank 条目）。保持 route 侧 0 避免
--- 双源头价格不一致。
+-- 本 migration 只写 ai_service_route 的结构性列（model_id/provider_id/
+-- provider_model_id/priority/is_active）。pricing 字段由 migration
+-- 20260418_180000_drop_route_pricing_columns.sql 从表中删除，pricing_rule
+-- 表是唯一真源（参见 seed_pricing_rules.sql 的 text-embedding-v4 /
+-- qwen3-rerank 等行）。如果本 migration 在 drop_route_pricing_columns 之前
+-- 跑，dead 列仍存在且带 DB 默认值 0，不影响 pricing 逻辑。
+
+-- Pre-flight guard: 4 个必需 provider 都得在 llm_provider 表里，否则下面的
+-- INSERT ... SELECT JOIN 会 silently 插 0 行，事故回放风险。用 ASSERT 式查询：
+-- 若 4 个 provider 少任一个，触发 division by zero 让 migration 在此处 fail
+-- 而不是无声无息地完成。
+SELECT 1 / (
+  (SELECT COUNT(*) FROM llm_provider WHERE name IN
+    ('baidu-ocr', 'funasr-local', 'ali-dashscope', 'dmxapi'))
+  - 3
+) AS provider_guard_expect_4_rows_minus_3_equals_1_else_div_by_zero;
+-- 上式：期望 4 个 provider 全在 → 4-3=1 → 1/1 成功；
+-- 若缺一个 → 3-3=0 → 1/0 报错，migration abort。
 
 -- Service 18: baidu-ocr-accurate → baidu-ocr provider
 INSERT IGNORE INTO ai_service_route
-  (model_id, provider_id, provider_model_id, priority, input_price_per_mtok, output_price_per_mtok, is_active, pricing_unit)
-SELECT s.id, p.id, 'accurate', 5, 0.0000, 0.0000, 1, 'per_1m_tokens'
+  (model_id, provider_id, provider_model_id, priority, is_active)
+SELECT s.id, p.id, 'accurate', 5, 1
 FROM ai_service s
 JOIN llm_provider p ON p.name = 'baidu-ocr'
 WHERE s.model_key = 'baidu-ocr-accurate';
 
 -- Service 19: funasr-paraformer → funasr-local provider
 INSERT IGNORE INTO ai_service_route
-  (model_id, provider_id, provider_model_id, priority, input_price_per_mtok, output_price_per_mtok, is_active, pricing_unit)
-SELECT s.id, p.id, 'paraformer', 5, 0.0000, 0.0000, 1, 'per_1m_tokens'
+  (model_id, provider_id, provider_model_id, priority, is_active)
+SELECT s.id, p.id, 'paraformer', 5, 1
 FROM ai_service s
 JOIN llm_provider p ON p.name = 'funasr-local'
 WHERE s.model_key = 'funasr-paraformer';
 
 -- Service 20: qwen-turbo → ali-dashscope provider
 INSERT IGNORE INTO ai_service_route
-  (model_id, provider_id, provider_model_id, priority, input_price_per_mtok, output_price_per_mtok, is_active, pricing_unit)
-SELECT s.id, p.id, 'qwen-turbo', 5, 0.0000, 0.0000, 1, 'per_1m_tokens'
+  (model_id, provider_id, provider_model_id, priority, is_active)
+SELECT s.id, p.id, 'qwen-turbo', 5, 1
 FROM ai_service s
 JOIN llm_provider p ON p.name = 'ali-dashscope'
 WHERE s.model_key = 'qwen-turbo';
 
 -- Service 21: qwen3-vl-flash → ali-dashscope provider
 INSERT IGNORE INTO ai_service_route
-  (model_id, provider_id, provider_model_id, priority, input_price_per_mtok, output_price_per_mtok, is_active, pricing_unit)
-SELECT s.id, p.id, 'qwen3-vl-flash-2026-01-22', 5, 0.0000, 0.0000, 1, 'per_1m_tokens'
+  (model_id, provider_id, provider_model_id, priority, is_active)
+SELECT s.id, p.id, 'qwen3-vl-flash-2026-01-22', 5, 1
 FROM ai_service s
 JOIN llm_provider p ON p.name = 'ali-dashscope'
 WHERE s.model_key = 'qwen3-vl-flash';
 
 -- Service 22: qwen3-rerank → dmxapi provider
 INSERT IGNORE INTO ai_service_route
-  (model_id, provider_id, provider_model_id, priority, input_price_per_mtok, output_price_per_mtok, is_active, pricing_unit)
-SELECT s.id, p.id, 'qwen3-rerank', 5, 0.0000, 0.0000, 1, 'per_1m_tokens'
+  (model_id, provider_id, provider_model_id, priority, is_active)
+SELECT s.id, p.id, 'qwen3-rerank', 5, 1
 FROM ai_service s
 JOIN llm_provider p ON p.name = 'dmxapi'
 WHERE s.model_key = 'qwen3-rerank';
 
 -- Service 23: text-embedding-v4 → ali-dashscope provider (salesrag.embed 阻塞点)
 INSERT IGNORE INTO ai_service_route
-  (model_id, provider_id, provider_model_id, priority, input_price_per_mtok, output_price_per_mtok, is_active, pricing_unit)
-SELECT s.id, p.id, 'text-embedding-v4', 5, 0.0000, 0.0000, 1, 'per_1m_tokens'
+  (model_id, provider_id, provider_model_id, priority, is_active)
+SELECT s.id, p.id, 'text-embedding-v4', 5, 1
 FROM ai_service s
 JOIN llm_provider p ON p.name = 'ali-dashscope'
 WHERE s.model_key = 'text-embedding-v4';
 
--- 验证查询（本 migration 执行后应返回 6 行）：
+-- Post-flight verification：应返回 6 行。若少于 6 行，某个 service/provider
+-- 组合没匹配上（例如 task_profile 虽然写了 default_service_id 但 ai_service
+-- 表里对应 model_key 被改了）。手工执行本查询确认：
 --   SELECT s.model_key, p.name, r.provider_model_id, r.is_active
 --   FROM ai_service s
 --   JOIN ai_service_route r ON r.model_id = s.id

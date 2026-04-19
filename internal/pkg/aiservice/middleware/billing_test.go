@@ -1025,3 +1025,29 @@ func TestAsChatResponse_TypedNilGuard(t *testing.T) {
 	}
 }
 
+
+// TestPopulateLLMUsage_TypedNilResponse_NoError_NoPanic covers the path where
+// callErr IS nil but resp is still a typed-nil (e.g. a middleware transformation
+// or retry layer that unwraps errors into an alternate success shape). The
+// callErr != nil early-return does NOT fire here; the asChatResponse typed-nil
+// guard is the only thing preventing panic on chatResp.Usage deref.
+//
+// Without this test, one of the two defensive fixes would be untested — and a
+// future refactor removing the callErr early-return (thinking it's redundant)
+// would silently re-open the panic.
+func TestPopulateLLMUsage_TypedNilResponse_NoError_NoPanic(t *testing.T) {
+	r := &model.UsageRecord{}
+
+	var cr *aiservice.ChatResponse // nil
+	var resp interface{} = cr
+
+	// callErr == nil — early-return at top of populateLLMUsage does NOT fire.
+	// The only remaining guard is asChatResponse's cr == nil check.
+	populateLLMUsage(r, resp, nil, context.Background())
+
+	// Token fields must stay zero (no response to read from).
+	if r.PromptTokens != 0 || r.CompletionTokens != 0 || r.TotalTokens != 0 {
+		t.Errorf("expected zero tokens on typed-nil resp with nil err, got prompt=%d completion=%d total=%d",
+			r.PromptTokens, r.CompletionTokens, r.TotalTokens)
+	}
+}
