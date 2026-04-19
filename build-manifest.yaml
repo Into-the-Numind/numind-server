@@ -1047,6 +1047,10 @@ features:
       - "2026-04-19: T3.3 Migration rollback 演练 PASS — docker MySQL 8.0.45 + 12 个 migration 全部 forward 成功（含 envsubst MIGRATION_CUTOFF + 8 行 seed + billing_mode Option E 迁移验证：in-period standard/premium→legacy_tier）+ 反向 rollback 清除干净（user 表只剩 bootstrap 字段）。Phase 0 hotfix 列名 user_tier 修正生效。结果文档 /tmp/t3-3-rollback-result.md"
       - "2026-04-19: S4 两阶段 review dispatched（并行 Sonnet agents：spec compliance + code quality）"
       - "2026-04-19: S5 剩余 3 项（T3.1 Langfuse 本地 stack / Playwright E2E 执行 / gstack /qa 浏览器 QA）建议并入 S6 dev smoke test 执行，避免 session 内启多个 long-running 服务"
+      - "2026-04-19: S4 两阶段 review 完成（Sonnet subagent 并行）：Stage A Spec Compliance PASS_WITH_CONCERNS（1 P1 + 3 P2）；Stage B Code Quality PASS_WITH_CONCERNS（2 P1 + 5 P2）"
+      - "2026-04-19: S4 review P1 修复（commit 908b5af）：P1-1 indexOf→strings.Contains / P1-2 Reconcile top-up has_debt span 标注（spec §5.3 ledger follow-up）/ P1-A GetBalance 填充 SubExpiresAt+BoosterEarliestExpiresAt（前端 CreditBalanceCard 依赖）/ P2-1 countDB is_active=all filter 修正"
+      - "2026-04-19: S4 Gate 条件全部满足：lint/test/type-check 绿 + 两阶段 review PASS_WITH_CONCERNS 无 P0 + 38/40 tasks 完成（T3.1/E2E/gstack QA 延后至 S6 合并）"
+      - "2026-04-19: Deferred P2 items (非 blocker)：actual_prompt_tokens/completion_tokens=0 placeholder（Reconcile 签名扩展 follow-up）、int64ToStr 自造（下次 touch 同文件清理）、providerFromModel 重复（建议下沉 biz/credit）、UpdateCoefficient retry 次数注释、E2E mock not live（等 dev 环境）"
     blockers: []
     created_at: "2026-04-18T12:00:00+08:00"
     completed_at: null
