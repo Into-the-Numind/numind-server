@@ -1255,12 +1255,24 @@ features:
         4) 前端 sales store 同时存在 resetStreamState wipe streamError 的 bug，
            导致用户完全看不到任何反馈（无气泡/无 loading/无错误）— 登记为 P1
            follow-up（本 hotfix 暂不修，重点恢复后端功能）。
-      review: null
+      review: |
+        Sonnet subagent review 发现 1 P0 + 4 P1 + 6 P2。已全部处理：
+        - P0 #1: migration 写到已 drop 的 pricing 列 → 重写 INSERT 列表。commit 1fe2300
+        - P1 #2: migration provider 缺失 silent 0-row → 加 1/(count-3) guard。commit 1fe2300
+        - P1 #3: 第 3 条 regression test 覆盖 asChatResponse typed-nil guard 路径。commit 1fe2300
+        - P1 #4: 前端 streamError wipe bug → preserve across resetStreamState。commit web-v3 c759dac
+        - P2 #10: wrapStreamForBilling nil-src goroutine leak guard → 5 行防御。commit 1fe2300
+        - P2 #5/#6 minor 风格：保留不改（reviewer 自己标 Leave as-is）
+        - P2 #7 chain.go 2-level fallback deferred item：reviewer 说找不到对应代码，
+          从 manifest deferred 里删除（misattribution）
+        - P2 #8/#9 rollback 与 UNIQUE idempotency：reviewer confirm OK
+        - P1→P2 #11 admin UI enforcement：reviewer 建议升级 P1，但涉及 admin-web
+          仓库独立工作量，登记为下一个 hotfix（admin-ui-service-route-enforcement）
     progress:
       total_tasks: 3
       completed_tasks: 3
-      reviewed_tasks: 0
-      current_task: "pending subagent review"
+      reviewed_tasks: 3
+      current_task: null
     rollback: "git revert merge commit + 跑 migrations/20260419_230000_seed_ai_service_routes_rollback.sql"
     last_verified:
       at: "2026-04-19T23:45:00+08:00"
@@ -1281,9 +1293,7 @@ features:
       - "2026-04-19: billing middleware 修两处（asChatResponse typed-nil guard + populateLLMUsage callErr early return）双保险"
       - "2026-04-19: 前端 sales store resetStreamState wipe error 的 bug 登记为 P1 followup，不在本次 hotfix 范围（用户没授权）"
     deferred:
-      - "前端 sales store 的 streamError wipe bug（用户看不到错误反馈）—— P1 followup"
-      - "admin-web UI 未强制'创建 service 后必须配 route'——P2 operational hardening"
-      - "pricing_rule 的 middleware/chain.go 简化 2-level fallback（vs store/billing.go 3-level）的不一致—— P2 代码合并 tech debt"
+      - "admin-web UI 未强制'创建 service 后必须配 route'——next hotfix（reviewer 建议 P1，涉及 admin-web 仓库独立改动，登记为 admin-ui-service-route-enforcement）"
     blockers: []
     created_at: "2026-04-19T22:55:00+08:00"
     completed_at: "2026-04-19T23:50:00+08:00"
