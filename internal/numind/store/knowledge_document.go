@@ -40,6 +40,9 @@ func (s *knowledgeDocuments) GetByID(ctx context.Context, id uint) (*model.Knowl
 	return &doc, nil
 }
 
+// GetByIDs 按 ID 批量查询文档，不做 user_id 过滤。
+// ⚠️ 跨用户可见：调用方必须保证 ids 来自已按 user 过滤的上游（biz 白名单 / enrichChunksWithDocNames
+// 在 user-scoped chunks 之后调用）。新调用点必须确认来源安全或改用 ListByUser。
 func (s *knowledgeDocuments) GetByIDs(ctx context.Context, ids []uint) ([]*model.KnowledgeDocument, error) {
 	if len(ids) == 0 {
 		return nil, nil

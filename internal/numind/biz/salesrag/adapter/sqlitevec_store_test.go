@@ -232,6 +232,8 @@ func TestSQLiteVecStore_SearchStrictMode(t *testing.T) {
 }
 
 func TestSQLiteVecStore_SearchUserIsolation(t *testing.T) {
+	// 纵深防御回归测试：即使调用方传入属于他人用户的 DocumentID，
+	// 也不应检索到对方数据（biz 层白名单 + store 层 user_id 过滤双重保障）
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -243,14 +245,48 @@ func TestSQLiteVecStore_SearchUserIsolation(t *testing.T) {
 	}
 	require.NoError(t, store.Upsert(ctx, chunks))
 
-	// 有 DocumentIDs 时按文档过滤，不叠加 user_id（安全性由 biz 层白名单保证）
+	// 用户10 传入 DocumentIDs=[1]（两用户共用同一 doc ID 是人为构造场景，
+	// 模拟未来调用方绕过 biz 白名单的情况），只应拿到自己的 chunk
 	filter := port.SearchFilter{
 		UserID:      10,
 		DocumentIDs: []uint{1},
 	}
 	results, err := store.Search(ctx, "内容", filter, 10)
 	require.NoError(t, err)
-	assert.Len(t, results, 2)
+	assert.Len(t, results, 1, "应仅返回 user=10 的 chunk，user=20 的 chunk 被 store 层 user_id 过滤拦截")
+	for _, r := range results {
+		assert.Equal(t, uint(10), r.UserID)
+	}
+}
+
+func TestSQLiteVecStore_SearchSystemDocsPassthrough(t *testing.T) {
+	// 系统文档 (user_id=0) 应可被所有用户检索到
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	chunks := []domain.KnowledgeChunk{
+		{ID: "c1", DocumentID: 1, UserID: 10, Content: "用户10私有文档"},
+		{ID: "c2", DocumentID: 2, UserID: 0, Content: "系统内置观点库文档"},
+	}
+	require.NoError(t, store.Upsert(ctx, chunks))
+
+	// 用户10 同时检索自己的 doc 和系统 doc，两者都应返回
+	filter := port.SearchFilter{
+		UserID:      10,
+		DocumentIDs: []uint{1, 2},
+	}
+	results, err := store.Search(ctx, "文档", filter, 10)
+	require.NoError(t, err)
+	assert.Len(t, results, 2, "应同时返回自己的 doc 和系统 doc")
+
+	gotUserIDs := map[uint]bool{}
+	for _, r := range results {
+		gotUserIDs[r.UserID] = true
+	}
+	assert.True(t, gotUserIDs[10], "应包含用户自己的 chunk")
+	assert.True(t, gotUserIDs[0], "应包含系统文档 chunk")
 }
 
 func TestSQLiteVecStore_FetchByDocumentID(t *testing.T) {

@@ -1873,3 +1873,40 @@ features:
     blockers: []
     created_at: "2026-04-20T02:50:00+08:00"
     completed_at: "2026-04-20T02:55:00+08:00"
+
+  - id: "sales-rag-isolation-hardening"
+    ndf_version: "1.0"
+    description: "SalesRAG 跨账户隔离纵深防御 — sqlitevec_store 在 DocumentIDs 非空时叠加 user_id 过滤（系统文档 user_id=0 穿透），加回归测试保护；GetByIDs 补 doc comment 标注 safe call sites"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "跟进 sales-rag-open-to-all-accounts review 提出的 Important+Minor concerns。(1) 不改 schema (2) 不新增 API (3) 无外部服务 (4) 影响 3 文件 (5) 防御性 + 测试覆盖，无行为回退风险"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-20T03:45:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/sales-rag-isolation-hardening"
+    hotfix_artifacts:
+      diagnosis: "上一个 review（Sonnet code-reviewer PASS_WITH_CONCERNS）Important 条目：sqlitevec_store.go:314-326 当 DocumentIDs 非空时故意跳过 user_id 过滤，完全依赖 biz 层 ListByUser 白名单作为跨账户边界。当前调用链（Retrieve/RetrieveStream）安全，但无回归测试保护；未来新调用路径若传 DocumentIDs 而跳过白名单 → 静默跨账户泄漏。Minor 条目：knowledge_document.go:43 GetByIDs 无 user_id 过滤，虽然当前 enrichChunksWithDocNames 调用点 chunks 已 user-scoped，但语义缺失 doc 注释"
+      review: null
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "git revert（三处改动都是增量防御，无业务行为回滚依赖）"
+    last_verified:
+      at: "2026-04-20T03:45:00+08:00"
+      lint: "go vet ./internal/numind/biz/salesrag/adapter/ ./internal/numind/store/ pass"
+      type_check: null
+      tests: "go test ./internal/numind/biz/salesrag/adapter/ → PASS (含新增 TestSQLiteVecStore_SearchUserIsolation 翻转断言 + TestSQLiteVecStore_SearchSystemDocsPassthrough)"
+      test_summary: "包内 15 个测试全部 PASS；旧 TestSQLiteVecStore_SearchUserIsolation 原本断言 len=2（记录无隔离行为），现翻转断言 len=1（强制只返回调用方自己的 chunk）；新测试验证系统文档 user_id=0 能被所有用户检索"
+    decisions:
+      - "2026-04-20: 选『store 层防御性过滤』而非『新增 biz 层集成测试』— 前者是结构性保障（默认安全），后者只覆盖当下调用路径，不能保护未来新调用点。两者非互斥，store 层改动 + 新测试一起做"
+      - "2026-04-20: 系统文档 user_id=0 明确允许穿透 `(user_id = ? OR user_id = 0)` — 保持与现有 opinion-track 系统文档检索流程兼容；若完全禁 user_id=0 会破坏内置观点赛道功能"
+      - "2026-04-20: GetByIDs 未改签名（不强加 userID 参数）— 改签名影响 enrichChunksWithDocNames 等调用点，且 chunks 已 user-scoped 时 GetByIDs 的跨用户副作用为零；改用 doc comment + safe call sites 枚举作为守护"
+    deferred:
+      - "ChromemStore.matchFilter 的 user_id 过滤逻辑与 sqlitevec 对系统文档处理不一致（chromem 完全阻断 user_id=0，sqlitevec 允许穿透）— dev/prod 默认使用 sqlitevec，chromem 是备用；本次不碰，后续统一 port.VectorStore 语义时一并处理"
+    blockers: []
+    created_at: "2026-04-20T03:45:00+08:00"
+    completed_at: "2026-04-20T03:45:00+08:00"
