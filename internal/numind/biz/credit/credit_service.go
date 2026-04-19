@@ -57,18 +57,33 @@ func NewCreditService(ds store.IStore, biz ICreditBiz, pc pricing.ICalculator) I
 	}
 }
 
-// CheckAndEstimate dispatches to legacy or credits leg based on user.BillingMode.
-func (s *creditService) CheckAndEstimate(ctx context.Context, user *model.User, op Operation, in EstimationInput) (*PreCheckResult, error) {
+// isEffectiveLegacy returns true if the user should be treated as a legacy
+// tier member regardless of their billing_mode field. This enables a smooth
+// transition: users with an active legacy membership (tier not free, not
+// expired) are served by the legacy path even if billing_mode is still
+// "credits" (e.g. migration not yet run). Once their membership expires,
+// they naturally fall through to the credits path.
+func isEffectiveLegacy(user *model.User) bool {
 	if user.BillingMode == model.BillingModeLegacyTier {
+		return true
+	}
+	return user.HasActiveMembership()
+}
+
+// CheckAndEstimate dispatches to legacy or credits leg. Users with an active
+// legacy membership are always routed to the legacy leg for a smooth transition,
+// regardless of the billing_mode field value.
+func (s *creditService) CheckAndEstimate(ctx context.Context, user *model.User, op Operation, in EstimationInput) (*PreCheckResult, error) {
+	if isEffectiveLegacy(user) {
 		return s.legacy.CheckAndEstimate(ctx, user, op, in)
 	}
 	return s.credits.CheckAndEstimate(ctx, user, op, in)
 }
 
-// Reserve dispatches by billing_mode. legacy_tier MUST be guarded by the
+// Reserve dispatches by billing mode. legacy_tier MUST be guarded by the
 // caller via SkipDeduction — reaching legacy.Reserve panics by design.
 func (s *creditService) Reserve(ctx context.Context, user *model.User, op Operation, estimated int64, coefID uint64, idempotencyKey *string) (*Reservation, error) {
-	if user.BillingMode == model.BillingModeLegacyTier {
+	if isEffectiveLegacy(user) {
 		return s.legacy.Reserve(ctx, user, op, estimated, coefID, idempotencyKey)
 	}
 	return s.credits.Reserve(ctx, user, op, estimated, coefID, idempotencyKey)
@@ -97,11 +112,11 @@ func (s *creditService) FinalizeReservation(ctx context.Context, rsv *Reservatio
 	return s.credits.FinalizeReservation(ctx, rsv, actualCostCents, opErr)
 }
 
-// GetBalance dispatches by billing_mode. legacy_tier returns
+// GetBalance dispatches by effective billing mode. legacy_tier returns
 // RemainingRuns/MonthlyLimit snapshot; credits returns the credit_package
 // FIFO breakdown.
 func (s *creditService) GetBalance(ctx context.Context, user *model.User) (*BalanceBreakdown, error) {
-	if user.BillingMode == model.BillingModeLegacyTier {
+	if isEffectiveLegacy(user) {
 		return s.legacy.GetBalance(ctx, user)
 	}
 	return s.credits.GetBalance(ctx, user)

@@ -264,9 +264,10 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 		return nil, fmt.Errorf("获取用户信息失败: %w", err)
 	}
 
-	// legacy_tier 用户：基于用户等级和月度次数限制检查
-	// credits 用户：跳过此检查，权限由 ExecuteNode 中的 creditSvc.CheckAndEstimate 控制
-	if user.BillingMode == model.BillingModeLegacyTier {
+	// 有效 legacy 会员（含 billing_mode=credits 但会员仍在期的过渡用户）：
+	// 基于用户等级和月度次数限制检查。
+	// 纯 credits 用户：跳过此检查，权限由 ExecuteNode 中的 creditSvc.CheckAndEstimate 控制。
+	if user.HasActiveMembership() {
 		canRun, reason := user.CanRunSOP()
 		if !canRun {
 			log.C(ctx).Warnw("User cannot run SOP",
@@ -279,6 +280,7 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 		log.C(ctx).Infow("Legacy user SOP permission check passed",
 			"user_id", userID,
 			"user_tier", user.GetActualUserTier(),
+			"billing_mode", user.BillingMode,
 			"remaining_runs", user.GetRemainingSOPRuns())
 	} else if b.creditSvc != nil {
 		// credits 用户：粗粒度余额预检，避免零余额时创建 orphan pending run

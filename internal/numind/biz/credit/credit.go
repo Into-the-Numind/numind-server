@@ -54,8 +54,9 @@ func NewCreditBiz(ds store.IStore) ICreditBiz {
 // legacy_tier 走旧逻辑（CanRunSOP + 次数制），credits 走积分余额预检。
 // 注意：这是 controller 层的粗检，biz 层的 CheckAndEstimate 才是权威检查。
 func (b *creditBiz) CanPerformAIOperation(ctx context.Context, user *model.User, operation string) (bool, string) {
-	if user.BillingMode == model.BillingModeLegacyTier {
-		// legacy_tier：SOP 走 CanRunSOP（次数 + 过期检查），非 SOP 不限制
+	if isEffectiveLegacy(user) {
+		// legacy 会员（含 billing_mode=credits 但会员仍在期的过渡用户）：
+		// SOP 走 CanRunSOP（次数 + 过期检查），非 SOP 不限制
 		if IsSopOperation(operation) {
 			return user.CanRunSOP()
 		}

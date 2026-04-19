@@ -1158,7 +1158,7 @@ func (ctrl *SalesRAGController) GetFeedback(c *gin.Context) {
 // 仅用于尚未接入 biz 层 Reserve/Reconcile 的操作（file_parse, profile_analysis, style_analysis, ocr）。
 // salesrag_chat 已由 biz 层 acquireSalesragCredits 处理，不应再调用此函数（会导致双重扣费）。
 func deductCredits(c *gin.Context, creditBiz credit.ICreditBiz, user *model.User, operation, bizRefType, bizRefID string) {
-	if user.BillingMode == model.BillingModeLegacyTier {
+	if user.BillingMode == model.BillingModeLegacyTier || user.HasActiveMembership() {
 		return
 	}
 	estimatedCost := credit.GetEstimatedCredits(operation)
