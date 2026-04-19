@@ -922,12 +922,12 @@ features:
 
   - id: "credits-system"
     ndf_version: "1.0"
-    description: "积分计费系统 — 从阶梯制（free/trial/standard/premium）迁移到会员+积分+加量包体系。Grandfathering 双制并存、R2 字符数估算预扣、¥29.9/600 积分加量包（3月有效期、仅会员可购）、扣减优先级（会员 > 加量包）"
+    description: "积分计费系统 — 从阶梯制（free/trial/standard/premium）迁移到会员+积分+加量包体系。Grandfathering 双制并存、R2 字符数估算预扣、¥29.9/600 积分加量包（3月有效期、仅会员可购）、扣减优先级（会员 > 加量包）。B2B2C 补丁：C 端不可自购会员，父账户帮开通，月度对公结算"
     track: "standard"
-    stage: "S4"
+    stage: "S6-in-progress"
     classification_reason: "跨 3 仓库预估 20+ 文件、涉及支付+权限+会员资格门槛+老用户迁移等高风险业务逻辑，5 条 Triage 标准中 4 条触发 Standard"
-    last_updated_by: "ai-s4-phase2-done"
-    last_updated_at: "2026-04-19T20:00:00+08:00"
+    last_updated_by: "ai-s5-s6-batch"
+    last_updated_at: "2026-04-19T14:52:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -958,14 +958,15 @@ features:
       proposal: "numind-server/proposals/credits-system-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-04-18-credits-system-design.md"
       plan: "numind-server/docs/superpowers/plans/credits-system-plan.md"
-      review_spec_compliance: null
-      review_code_quality: null
-      qa: null
+      review_spec_compliance: "pass_with_concerns (1 P1 + 3 P2 fixed by commit 908b5af)"
+      review_code_quality: "pass_with_concerns (2 P1 + 5 P2; all resolved by AI-2~AI-6 batch)"
+      qa: "partial — smoke test 9 端点绿（see last_verified）；gstack /qa 待人工；Playwright grant-membership 11/11；credits-system.spec 8/9（Path 3 stale assertion 待 S5-1 修）"
+      langfuse_verification: "numind-server/docs/superpowers/specs/s5-langfuse-verification-2026-04-19.md"
     progress:
       total_tasks: 40
-      completed_tasks: 33   # Phase 0 (5) + Batch 1 (21) + Batch 2 (12) = 38... actually wait
-      reviewed_tasks: 33
-      current_phase: "2"
+      completed_tasks: 38   # Phase 0 (5) + Batch 1 (21) + Batch 2 (12) = 38; Phase 2 wiring 合入 T2.0; Phase 3 3/4 done
+      reviewed_tasks: 38
+      current_phase: "S5/S6 verification"
       tracks:
         A: { total: 5, completed: 5 }
         B: { total: 4, completed: 4 }
@@ -979,11 +980,54 @@ features:
       phase2_tasks: 6
       phase2_completed: 6
       phase3_tasks: 4
-      phase3_completed: 2   # T3.2 (全套测试) + T3.4 (card cleanup) done；T3.1/T3.3 需人工运行本地环境
-      current_task: "Phase 3 T3.1 (Langfuse 本地验证) / T3.3 (migration rollback 演练) — 需人工运行 docker + MySQL 容器"
-      notes: "Phase 2 全部 6 tasks merged to develop（T2.0 wiring / T2.1 SOP inversion / T2.2 SalesRAG 接入 / T2.3 9 endpoints / T2.4 前端集成 / T2.5 Playwright E2E）。Phase 3 自动化部分（T3.2 go test + npm lint/type-check + T3.4 card cleanup）完成。剩 T3.1 和 T3.3 需人工。"
-    rollback: null
-    last_verified: null
+      phase3_completed: 3   # T3.1 (Langfuse 云端验证 AI-1 commit 9bdd21c) + T3.2 + T3.3 (migration rollback PASS) + T3.4 全部完成；Phase 3 实质关门
+      post_review_tasks: 7   # AI-1 ~ AI-7（S4 review P2 清理 + Langfuse 验证 + E2E spec）
+      post_review_completed: 7
+      tech_debt_fixed: 2    # ProviderFromModel → usage.Provider；CI deploy_dev SHA-pinned tag
+      current_task: "S5 剩余 6 项（agent 并行）+ S6 smoke 扩展 + S7 收尾"
+      notes: |
+        Phase 0/1/2 全部落地。Phase 3 自动化 + T3.1/T3.3 均 PASS。
+        Q1/Q1.5/Q2/Q3 B2B2C gap-fill 全部完成（user smoke 指出 PRD flow 误解后追加）。
+        Q2 UX 二次迭代：独立页面 → 内联弹窗（客户管理 action 菜单触发）。
+        AI-1~AI-7 post-review tech debt 清理 + Langfuse 验证 + E2E spec 全部完成。
+        S5 尚有 7 项未完成（1 只有人能做 gstack /qa；6 AI 可做 —— 见 deferred）。
+        S6 尚有 5 项未完成（1 只有人能做 视觉验证；4 AI 可做 —— 见 deferred）。
+    rollback:
+      strategy: "migrations/*_rollback.sql 逐个反向执行；biz/credit 代码 git revert；billing_mode 字段保留不删（向后兼容）"
+      tested_at: null   # 待 S6-3 演练后填
+    last_verified:
+      at: "2026-04-19T14:41:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: "pass"
+      test_summary: |
+        go test ./internal/numind/biz/credit/ ./internal/numind/biz/sop/ ./internal/numind/biz/salesrag/ ./internal/pkg/billing/ 全绿
+        web-v3 npm run lint（仅 1 pre-existing warning）/ type-check pass
+        admin-web npm run lint（仅 1 pre-existing warning）/ type-check pass
+        Playwright grant-membership-modal.spec.ts 11/11 pass (14.8s)
+        Playwright credits-system.spec.ts 8/9 pass（1 fail = stale Path 3 文案，S5-1 待修）
+        Dev smoke: 9 endpoints green（healthz / credits balance-estimate-packages / sop runs+execute / users children / grant-membership 4 error codes / admin b2b-billing-report）
+        Langfuse dev cloud: credit-estimate + credit-reserve + credit-reconcile (AI-5 token 字段 ≠0) + credit-refund 4 span 全部 verified with §5.1 schema
+    deferred:
+      ai_doable:
+        - "S5-1: 修 credits-system.spec.ts Path 3 文案（'升级会员后可购买' → '请联系管理员开通会员'），对齐 Q1.5 B2B2C"
+        - "S5-2: 跑 task test（race detection + coverage 完整版）— 需装 Taskfile runner"
+        - "S5-4: 补 §5.3 边界矩阵剩余 11 项单测（401/free 拒/legacy_tier/race/idempotency/coefficient 冻结/cron refund/跨月/到期瞬间/连接池/GDPR）"
+        - "S5-5: 数据 spike 报告 §5.5 6 项（样本时间范围、每组 ≥30 条、ratio ∈ [0.05,3.0]、2σ safety buffer、pricing 覆盖度、provenance）"
+        - "S5-6: admin-web E2E spec（coefficient CRUD + migrations + B2B 结算 + orders）"
+        - "S5-7: Reserve/Reconcile P95 延迟压测，目标 < 100ms"
+        - "S6-1: 剩余 API smoke（admin coefficients CRUD / migrations / orders / SalesRAG chat / booster purchase / cron 24h refund）"
+        - "S6-3: Rollback 演练（LOCAL MySQL testcontainer，12 个 migration 全部 down + up）"
+        - "S6-6: Langfuse trace 多样本（长 SOP + legacy_tier deducted_from=none(legacy) + 多节点）"
+        - "S6-5: CI tag race 修复复测（commit 7760af5 触发后验证 deploy_dev 用 pinned tag）"
+      human_only:
+        - "S5-3: gstack /qa 浏览器截图 QA（localhost:5173 + 视觉 P0 判断）"
+        - "S6-2: 前端四组件视觉验证（CreditBalanceCard / BoosterPurchaseCard / SopEstimateBar / MigrationsView / Q3 B2B 结算报表页）"
+      post_s7:
+        - "deploy_qa / deploy_prod / admin deploy jobs 复制 deploy_dev 的 SHA-pinned tag fix"
+        - "Legacy SSE 路径（非 Gateway）的 usage.Provider 捕获尚缺，当前回退到 ProviderFromModel 猜测"
+        - "providerFromModel 对 gpt-5.4 / gemini-3.1-pro-preview 未映射（走 dmxapi 默认猜，未必正确）"
+        - "UpdateCoefficient retry 次数 3 次是否足够 — 尚未压测并发场景"
     decisions:
       - "2026-04-18: D1 会员月度额度锁定 2000 积分（追认现有硬编码，基于 ¥99 月卡毛利率 80% 反推）"
       - "2026-04-18: D2 估算机制选 R2（字符数 × 经验系数 + 事后对账），不引入 tiktoken"
@@ -1051,6 +1095,29 @@ features:
       - "2026-04-19: S4 review P1 修复（commit 908b5af）：P1-1 indexOf→strings.Contains / P1-2 Reconcile top-up has_debt span 标注（spec §5.3 ledger follow-up）/ P1-A GetBalance 填充 SubExpiresAt+BoosterEarliestExpiresAt（前端 CreditBalanceCard 依赖）/ P2-1 countDB is_active=all filter 修正"
       - "2026-04-19: S4 Gate 条件全部满足：lint/test/type-check 绿 + 两阶段 review PASS_WITH_CONCERNS 无 P0 + 38/40 tasks 完成（T3.1/E2E/gstack QA 延后至 S6 合并）"
       - "2026-04-19: Deferred P2 items (非 blocker)：actual_prompt_tokens/completion_tokens=0 placeholder（Reconcile 签名扩展 follow-up）、int64ToStr 自造（下次 touch 同文件清理）、providerFromModel 重复（建议下沉 biz/credit）、UpdateCoefficient retry 次数注释、E2E mock not live（等 dev 环境）"
+      # ====== Q1/Q1.5/Q2/Q3 B2B2C gap-fill ======
+      - "2026-04-19: Smoke test 发现 PRD flow 误解 — 原设计允许 C 端自购会员，但 B2B2C 模式下 C 端不可自购。追加 Q1/Q2/Q3 gap-fill 修正。"
+      - "2026-04-19: Q1.1 credit_package 加 grant_source + granter_user_id 字段（migration 20260420_100000）。commit 83d33cf"
+      - "2026-04-19: Q1.2 GrantMembership biz（父账户帮子账户开通会员，不走支付，写 action_log + credit_package grant_source=b2b_grant）。commit d6f8fe3"
+      - "2026-04-19: Q1.3 ParentGrantController + POST /v1/users/children/:child_id/grant-membership 路由。commit eb7f15c"
+      - "2026-04-19: Q1.4 Admin B2B 月度结算报表 GET /v1/admin/b2b-billing-report?month=YYYY-MM（按父账户聚合 credit_package.grant_source=b2b_grant）。commit deaaf62"
+      - "2026-04-19: Q1.5 封禁 C 端自购会员（payment.CreateOrder 对 trial/monthly/yearly 返回 ErrMembershipSelfPurchaseDisabled），booster 不受限，内部调用通过 WithInternalCaller ctx bypass。commit afba806"
+      - "2026-04-19: Q2 前端帮开通会员视图 ChildMembershipGrantView（/parent/children-membership 独立页面，最初版）"
+      - "2026-04-19: Q3 Admin B2B 结算报表前端视图 B2BBillingReportView"
+      # ====== S7 gap-fill post-smoke P0 修复 ======
+      - "2026-04-19: Gap-fill Opus review 发现 3 P0：P0-1 前端调 /v1/users/children 后端不存在 / P0-2 CustomersView 旧升级路径未清 / P0-3 grant controller 所有错误都返回 500。commit 0bb9b42 (server) + fd764b7 (web-v3) 修复 + P1-2 trial-in-period 守卫加强"
+      # ====== Q2 UX 二次迭代（用户反馈）======
+      - "2026-04-19: Q2 UX 重构（用户要求）— 删除独立 /parent/children-membership 页面，改为客户管理 action 菜单内联弹窗（体验会员 / 高级会员 + 1-12 月 + 备注，不走支付，对公月结算）。commit 3878d65"
+      # ====== S4 review post-work (AI-1 ~ AI-7) ======
+      - "2026-04-19: AI-3+AI-4 注释清理 — int64ToStr→strconv.FormatInt；UpdateCoefficient retry Why；creditsImpl stub 注释更新为反映现状。commit f9b9392"
+      - "2026-04-19: AI-2 providerFromModel 3 份拷贝下沉到 biz/credit.ProviderFromModel (public)，prompt_estimator + sop + controller 3 处 caller 改走。commit 10adde0"
+      - "2026-04-19: AI-5 reconcile span 透传真实 token counts — Reservation 加 ActualPromptTokens/CompletionTokens 字段，caller FinalizeReservation 前写入，内部 reconcileWithTokens 保持 ICreditService 接口稳定。span metadata actual_prompt_tokens 不再永远 0。+ TestLangfuse_FinalizeReservation_ThreadsTokensToReconcileSpan。commit 03ee2ea"
+      - "2026-04-19: AI-6 reconcile_debt ledger 落库（spec §5.3）— Operation='reconcile_debt:<op>' + Amount=delta 正数，审计用 WHERE operation LIKE 'reconcile_debt:%'；失败不阻塞对账。+ TestReconcile_Topup_Insufficient_WritesDebtLedger。commit adbd895"
+      - "2026-04-19: AI-1 Langfuse dev 云端（http://110.42.221.25:3100）4 span 验证 PASS — credit-estimate/reserve/reconcile/refund 均落点 + §5.1 schema 100% match。trace a805ca15 + 56e78687 preserved。报告 docs/superpowers/specs/s5-langfuse-verification-2026-04-19.md。commit 9bdd21c"
+      - "2026-04-19: AI-7 Playwright E2E grant-membership-modal.spec.ts（11 tests，14.8s 全绿）— Modal basics/产品类型切换/提交成功 trial+monthly/400/403/404 错误映射。vite.config.ts 新增 VITE_PROXY_TARGET 环境变量便于 E2E 直连 dev。commit web-v3 54afc1e"
+      # ====== Tech debt 从 AI-1 报告修复 ======
+      - "2026-04-19: Tech debt #1 ProviderFromModel 猜测 → usage.Provider Gateway 真实值。billing.TokenUsage 加 Provider 字段，sop/executor 捕获 chunk.Provider 写 finalUsage.Provider，sop.go pricing 调用优先用 usage.Provider。原来 claude-* 猜 dmxapi 但实际 aihubmix 路由的 mismatch 根治。commit 7760af5"
+      - "2026-04-19: Tech debt #2 CI deploy_dev Docker Hub tag race — image_build 同时推 develop 和 develop-<short_sha>，deploy_dev 改用 pinned tag（3 次指数退避 pull），成功后本地 docker tag 回 :develop，SHA 不匹配 exit 1（原来只 warn）。commit 7760af5"
     blockers: []
     created_at: "2026-04-18T12:00:00+08:00"
     completed_at: null
