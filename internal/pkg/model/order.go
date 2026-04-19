@@ -81,7 +81,9 @@ func GetProductAmount(productType string, months int) int64 {
 	case ProductTypeYearly:
 		return 94900
 	case ProductTypeBooster:
-		return 2990
+		// TEMPORARY FOR TESTING — MUST REVERT TO 2990 BEFORE PROD
+		// 原价：2990 (¥29.9)。临时改为 1 分便于 dev 扫码联调，测完立即 revert 本 commit。
+		return 1
 	default:
 		return 0
 	}
