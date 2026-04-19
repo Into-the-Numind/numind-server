@@ -26,4 +26,8 @@ var (
 
 	// ErrTrialNotAvailableInPeriod 在期会员不支持购买体验卡
 	ErrTrialNotAvailableInPeriod = &Errno{HTTP: 400, Code: "Trial.NotAvailableInPeriod", Message: "在期会员不支持购买体验卡"}
+
+	// ErrMembershipSelfPurchaseDisabled Q1 B2B2C: C 端不支持自购会员（trial/monthly/yearly），
+	// 只能通过父账户"帮开通"路径赋予。booster(加量包) 不受此限制。
+	ErrMembershipSelfPurchaseDisabled = &Errno{HTTP: 403, Code: "Membership.SelfPurchaseDisabled", Message: "请联系管理员开通会员"}
 )
