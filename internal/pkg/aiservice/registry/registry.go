@@ -104,7 +104,7 @@ type Registry interface {
 
 	// ResolveTask looks up the task profile for taskID and resolves the primary +
 	// fallback service routes. The primary route is returned as the first value;
-	// fallback routes (ordered by priority ASC, 0 = highest) are the second value.
+	// fallback routes (ordered by priority DESC, higher number = tried first) are the second value.
 	//
 	// Errors:
 	//   - errno.ErrAITaskNotFound      — no TaskProfile row for taskID
@@ -336,7 +336,7 @@ func (r *registryImpl) SaveTaskProfile(ctx context.Context, tp *model.TaskProfil
 //  2. If default_service_id is NULL → return errno.ErrAIServiceUnbound.
 //  3. Resolve primary service: call GetResolvedRoute(default_service_id).
 //     If the service is missing, deprecated, or inactive, return errno.ErrAIServiceNotFound.
-//  4. Fetch TaskProfileService rows with role="fallback", ordered by priority ASC.
+//  4. Fetch TaskProfileService rows with role="fallback", ordered by priority DESC (higher number = tried first).
 //     Attempt to resolve each; silently skip services that are deprecated/inactive.
 //  5. Return (primary, fallbacks, nil).
 //
@@ -368,7 +368,7 @@ func (r *registryImpl) ResolveTask(ctx context.Context, taskID string) (*Resolve
 	}
 	primaryRoute := buildResolvedRoute(taskID, primaryRow)
 
-	// Fetch fallback bindings via IStore (ordered by priority ASC, 0 = highest).
+	// Fetch fallback bindings via IStore (ordered by priority DESC, higher number = tried first).
 	fallbackBindings, err := r.store.ListTaskBindings(ctx, tp.ID, model.TaskProfileRoleFallback)
 	if err != nil {
 		return nil, nil, fmt.Errorf("registry.ResolveTask (fallbacks): %w", err)

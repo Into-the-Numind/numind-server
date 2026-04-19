@@ -41,7 +41,7 @@ type IStore interface {
 
 	// ListTaskBindings returns the service bindings for a task profile, optionally
 	// filtered by role. Pass an empty role string to return all bindings.
-	// Results are ordered by priority DESC (0 = highest priority).
+	// Results are ordered by priority DESC (higher number = higher priority = tried first).
 	ListTaskBindings(ctx context.Context, taskProfileID uint64, role string) ([]TaskBinding, error)
 
 	// SaveTaskProfileWithBindings atomically upserts a TaskProfile and replaces its
@@ -486,7 +486,7 @@ func (s *gormStore) InsertAuditLog(ctx context.Context, entry *model.AIServiceAu
 // ----------------------------------------------------------------------------
 
 // ListTaskBindings returns service bindings for a task profile, filtered by role
-// when role is non-empty. Results are ordered by priority DESC (0 = highest priority).
+// when role is non-empty. Results are ordered by priority DESC (higher number = higher priority = tried first).
 func (s *gormStore) ListTaskBindings(ctx context.Context, taskProfileID uint64, role string) ([]TaskBinding, error) {
 	q := s.db.WithContext(ctx).Table("task_profile_service").
 		Select("service_id, role, priority").
