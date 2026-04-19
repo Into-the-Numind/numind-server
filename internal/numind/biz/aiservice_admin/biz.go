@@ -119,10 +119,62 @@ type ServiceDetail struct {
 	Routes []RouteItem `json:"routes"`
 }
 
+// ServiceListItem embeds an AIService plus derived metadata for the admin list view.
+// RouteCount is the number of *active* ai_service_route rows pointing at this service;
+// the admin UI uses it to flag orphan services (route_count == 0), which caused the
+// 2026-04-19 SalesRAG outage.
+type ServiceListItem struct {
+	*model.AIService
+	RouteCount int `json:"route_count"`
+}
+
 // ListServicesResult is the paginated result returned by ListServices.
 type ListServicesResult struct {
-	List  []*model.AIService `json:"list"`
+	List  []*ServiceListItem `json:"list"`
 	Total int64              `json:"total"`
+}
+
+// CreateServiceWithRouteRequest is the request body for POST /v1/admin/ai/services-with-route.
+// Both nested payloads are validated, then persisted atomically within a single transaction
+// so admin UI can never produce an ai_service row without a matching ai_service_route.
+type CreateServiceWithRouteRequest struct {
+	Service CreateServiceInner `json:"service" binding:"required"`
+	Route   CreateRouteInner   `json:"route"   binding:"required"`
+}
+
+// CreateServiceInner mirrors controller.createServiceReq but lives in the biz package so
+// the atomic endpoint can reuse it without a controller→biz→controller detour.
+type CreateServiceInner struct {
+	ModelKey         string                `json:"model_key"        binding:"required"`
+	DisplayName      string                `json:"display_name"     binding:"required"`
+	ServiceType      string                `json:"service_type"     binding:"required"`
+	CapabilityJSON   model.JSONMap         `json:"capability_json"`
+	LatencyTier      string                `json:"latency_tier"`
+	QualityTier      string                `json:"quality_tier"`
+	Tags             model.JSONStringSlice `json:"tags"`
+	IsThinking       bool                  `json:"is_thinking"`
+	SupportsThinking bool                  `json:"supports_thinking"`
+	ThinkingOnly     bool                  `json:"thinking_only"`
+	Icon             string                `json:"icon"`
+	SortOrder        int                   `json:"sort_order"`
+	IsActive         *bool                 `json:"is_active"`
+	BaseModelID      *uint64               `json:"base_model_id"`
+}
+
+// CreateRouteInner is the route-half of CreateServiceWithRouteRequest.
+// Same semantics as CreateRouteRequest but omitted binding:"required" on nested struct
+// fields (Gin validates nested struct tags when the outer struct itself is non-empty).
+type CreateRouteInner struct {
+	ProviderID      uint64 `json:"provider_id"       binding:"required"`
+	ProviderModelID string `json:"provider_model_id" binding:"required,min=1"`
+	Priority        int    `json:"priority"`
+	IsActive        *bool  `json:"is_active"`
+}
+
+// CreateServiceWithRouteResult is the wire-format result of the atomic create.
+type CreateServiceWithRouteResult struct {
+	Service *model.AIService `json:"service"`
+	Route   *RouteDTO        `json:"route"`
 }
 
 // TaskDetail is the response shape for a single task profile, including its
@@ -217,6 +269,12 @@ type IAIServiceAdminBiz interface {
 
 	// CreateService creates a new AI service and returns the created record.
 	CreateService(ctx context.Context, svc *model.AIService, actorID uint64, actorName string) (*model.AIService, error)
+
+	// CreateServiceWithRoute atomically creates an ai_service row together with a
+	// paired ai_service_route row in a single DB transaction. Both INSERTs succeed
+	// or both roll back, guaranteeing admin UI cannot produce an orphan service.
+	// Audit log entries are written for BOTH service.create and route.create.
+	CreateServiceWithRoute(ctx context.Context, req CreateServiceWithRouteRequest, actorID uint64, actorName string) (*CreateServiceWithRouteResult, error)
 
 	// UpdateService updates an existing AI service.
 	UpdateService(ctx context.Context, svc *model.AIService, actorID uint64, actorName string) error
@@ -322,7 +380,42 @@ func (b *aiServiceAdminBiz) ListServices(ctx context.Context, filter registry.Se
 	if list == nil {
 		list = []*model.AIService{}
 	}
-	return &ListServicesResult{List: list, Total: total}, nil
+
+	// One batch query for all route counts — never N+1.
+	// `b.db == nil` is tolerated so that existing unit tests using aiservice_admin.New(reg, nil)
+	// keep working; in that case every item gets route_count=0.
+	counts := map[uint64]int{}
+	if b.db != nil && len(list) > 0 {
+		ids := make([]uint64, 0, len(list))
+		for _, svc := range list {
+			ids = append(ids, svc.ID)
+		}
+		type routeCountRow struct {
+			ModelID uint64 `gorm:"column:model_id"`
+			Cnt     int    `gorm:"column:cnt"`
+		}
+		var rows []routeCountRow
+		if err := b.db.WithContext(ctx).
+			Table("ai_service_route").
+			Select("model_id, COUNT(*) AS cnt").
+			Where("is_active = ? AND model_id IN ?", true, ids).
+			Group("model_id").
+			Scan(&rows).Error; err != nil {
+			return nil, fmt.Errorf("aiservice_admin.ListServices: route counts: %w", err)
+		}
+		for _, r := range rows {
+			counts[r.ModelID] = r.Cnt
+		}
+	}
+
+	items := make([]*ServiceListItem, 0, len(list))
+	for _, svc := range list {
+		items = append(items, &ServiceListItem{
+			AIService:  svc,
+			RouteCount: counts[svc.ID],
+		})
+	}
+	return &ListServicesResult{List: items, Total: total}, nil
 }
 
 // GetService returns a single AI service with its associated routes.
@@ -366,9 +459,135 @@ func (b *aiServiceAdminBiz) CreateService(ctx context.Context, svc *model.AIServ
 		return nil, err
 	}
 	if err := b.reg.SaveService(ctx, svc, actorID, actorName); err != nil {
+		if isUniqueKeyViolation(err) {
+			return nil, errno.ErrAIServiceModelKeyExists.SetMessage("model_key %s 已存在", svc.ModelKey)
+		}
 		return nil, fmt.Errorf("aiservice_admin.CreateService: %w", err)
 	}
 	return svc, nil
+}
+
+// CreateServiceWithRoute atomically creates an ai_service row together with an
+// ai_service_route pointing at it. Runs in a single GORM transaction so both
+// INSERTs succeed or both roll back — plugs the systemic hole that caused the
+// 2026-04-19 SalesRAG outage (service row existed, no route → resolver hit
+// "no active route" and user requests 500'd).
+//
+// Audit logs: writes BOTH service.create and route.create entries (best-effort,
+// outside the transaction — matches existing CreateRoute behaviour).
+func (b *aiServiceAdminBiz) CreateServiceWithRoute(ctx context.Context, req CreateServiceWithRouteRequest, actorID uint64, actorName string) (*CreateServiceWithRouteResult, error) {
+	// Up-front validation: service_type ∈ {llm, ocr, asr}.
+	if err := validateServiceType(req.Service.ServiceType); err != nil {
+		return nil, err
+	}
+	// provider_model_id must be non-empty (gin binding already enforces; guard also here for direct biz callers).
+	if req.Route.ProviderModelID == "" {
+		return nil, errno.ErrInvalidParameter.SetMessage("provider_model_id 不能为空")
+	}
+
+	svcActive := true
+	if req.Service.IsActive != nil {
+		svcActive = *req.Service.IsActive
+	}
+	routeActive := true
+	if req.Route.IsActive != nil {
+		routeActive = *req.Route.IsActive
+	}
+
+	svc := &model.AIService{
+		ModelKey:         req.Service.ModelKey,
+		DisplayName:      req.Service.DisplayName,
+		ServiceType:      req.Service.ServiceType,
+		CapabilityJSON:   req.Service.CapabilityJSON,
+		LatencyTier:      req.Service.LatencyTier,
+		QualityTier:      req.Service.QualityTier,
+		Tags:             req.Service.Tags,
+		IsThinking:       req.Service.IsThinking,
+		SupportsThinking: req.Service.SupportsThinking,
+		ThinkingOnly:     req.Service.ThinkingOnly,
+		Icon:             req.Service.Icon,
+		SortOrder:        req.Service.SortOrder,
+		IsActive:         svcActive,
+		BaseModelID:      req.Service.BaseModelID,
+	}
+
+	// Provider FK existence check outside the transaction; cheap SELECT and
+	// lets us surface a 400 with a human-friendly message instead of letting
+	// the INSERT blow up mid-transaction with a FK error that we'd have to parse.
+	var provider model.LLMProvider
+	if err := b.db.WithContext(ctx).First(&provider, req.Route.ProviderID).Error; err != nil {
+		return nil, errno.ErrInvalidParameter.SetMessage("provider_id %d 不存在", req.Route.ProviderID)
+	}
+
+	route := &model.AIServiceRoute{
+		ProviderID:      req.Route.ProviderID,
+		ProviderModelID: req.Route.ProviderModelID,
+		Priority:        req.Route.Priority,
+		IsActive:        routeActive,
+	}
+
+	// Transaction: service INSERT → route INSERT. Both or neither.
+	txErr := b.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Capture intended values before Create; GORM may overwrite bool fields
+		// marked `default:true` when the Go value is false — same gotcha as
+		// SaveService / CreateProvider / CreateRoute.
+		wantSvcActive := svc.IsActive
+		if err := tx.Create(svc).Error; err != nil {
+			return fmt.Errorf("create service: %w", err)
+		}
+		if !wantSvcActive && svc.IsActive {
+			if err := tx.Model(svc).UpdateColumn("is_active", false).Error; err != nil {
+				return fmt.Errorf("fixup service is_active: %w", err)
+			}
+			svc.IsActive = false
+		}
+
+		route.ModelID = svc.ID
+		wantRouteActive := route.IsActive
+		if err := tx.Create(route).Error; err != nil {
+			return fmt.Errorf("create route: %w", err)
+		}
+		if !wantRouteActive && route.IsActive {
+			if err := tx.Model(route).UpdateColumn("is_active", false).Error; err != nil {
+				return fmt.Errorf("fixup route is_active: %w", err)
+			}
+			route.IsActive = false
+		}
+		return nil
+	})
+	if txErr != nil {
+		if isUniqueKeyViolation(txErr) {
+			return nil, errno.ErrAIServiceModelKeyExists.SetMessage("model_key %s 已存在", req.Service.ModelKey)
+		}
+		return nil, fmt.Errorf("aiservice_admin.CreateServiceWithRoute: %w", txErr)
+	}
+
+	// Best-effort audit logs (same policy as CreateRoute / CreateProvider).
+	// Writes happen outside the transaction: audit failure must not roll back
+	// the actual change, but a commit guarantees we're recording a real row.
+	if err := b.db.WithContext(ctx).Create(&model.AIServiceAuditLog{
+		ActorID:    actorID,
+		ActorName:  actorName,
+		Action:     model.AuditActionServiceCreate,
+		TargetType: model.AuditTargetService,
+		TargetID:   svc.ID,
+		DiffJSON: model.JSONMap{
+			"model_key":    svc.ModelKey,
+			"display_name": svc.DisplayName,
+			"service_type": svc.ServiceType,
+			"is_active":    svc.IsActive,
+		},
+	}).Error; err != nil {
+		log.C(ctx).Warnw("CreateServiceWithRoute: service audit write failed", "service_id", svc.ID, "err", err)
+	}
+
+	route.Provider = &provider
+	b.writeRouteAudit(ctx, model.AuditActionRouteCreate, route.ID, nil, routeDTOFromModel(route), actorID, actorName)
+
+	return &CreateServiceWithRouteResult{
+		Service: svc,
+		Route:   routeDTOFromModel(route),
+	}, nil
 }
 
 // UpdateService validates service_type and delegates to the registry SaveService.
@@ -1404,4 +1623,27 @@ func truncate(s string, n int) string {
 // isNotFound reports whether a GORM error is a "record not found" error.
 func isNotFound(err error) bool {
 	return errors.Is(err, gorm.ErrRecordNotFound)
+}
+
+// isUniqueKeyViolation detects MySQL/SQLite unique-index violations without
+// importing driver-specific error types. Both drivers surface a string
+// containing "UNIQUE constraint failed" (SQLite) or "Duplicate entry" /
+// "1062" (MySQL). Keeping the detection string-based also keeps the admin biz
+// free of a direct go-sql-driver dependency.
+func isUniqueKeyViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	for _, needle := range []string{
+		"UNIQUE constraint failed",
+		"Duplicate entry",
+		"duplicate key value",
+		"1062",
+	} {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
 }

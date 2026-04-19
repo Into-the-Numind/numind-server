@@ -189,6 +189,7 @@ func installAdminRouters(g *gin.Engine) error {
 		aiGroup.GET("/services", aiSvcCtrl.ListServices)
 		aiGroup.GET("/services/:id", aiSvcCtrl.GetService)
 		aiGroup.POST("/services", aiSvcCtrl.CreateService)
+		aiGroup.POST("/services-with-route", aiSvcCtrl.CreateServiceWithRoute)
 		aiGroup.PUT("/services/:id", aiSvcCtrl.UpdateService)
 		aiGroup.DELETE("/services/:id", aiSvcCtrl.DeprecateService)
 		aiGroup.POST("/services/:id/restore", aiSvcCtrl.RestoreService)
