@@ -1585,3 +1585,54 @@ features:
     blockers: []
     created_at: "2026-04-19T22:15:00+08:00"
     completed_at: null
+
+  - id: "action-log-missing-migration"
+    ndf_version: "1.0"
+    description: "补建 action_log 表 migration — 修复 P0 回归：model.ActionLogM 在 2026-04-19 grant-membership 功能中使用，但建表 SQL 从未提交，dev/qa/prod 均无此表，parent 为 child 开通会员时 tx commit 失败"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "单文件 SQL migration + rollback；纯补 missing migration；无业务逻辑变更；影响面限定于已部署环境的 grant_membership 和 billing_mode_init 两条路径"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-20T01:05:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/action-log-missing-migration"
+    hotfix_artifacts:
+      diagnosis: "inline-triage + subagent 核实 — helper.go:159 autoMigrate 列表未包含 &model.ActionLogM{}，migrations/ 目录无 create action_log SQL；dev DB SHOW TABLES 确认无此表；in-memory SQLite test 自动 AutoMigrate 故单测通过，掩盖了真实环境的 Error 1146 崩溃"
+      review: null
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "migrations/20260420_110000_create_action_log_rollback.sql"
+    last_verified:
+      at: "2026-04-20T01:02:00+08:00"
+      lint: null
+      type_check: null
+      tests: "go test ./internal/numind/biz/credit/ -run TestGrantMembership -v → 9/9 PASS"
+      test_summary: "dev DB 已 apply migration，SHOW CREATE TABLE 确认结构符合 ActionLogM；smoke INSERT/SELECT/DELETE 成功；grant_membership 9 个单测全通过"
+    decisions:
+      - "2026-04-20: 选择独立 SQL migration 而非补 helper.go autoMigrate 列表 — 与 2026-04-19 全部 credit-system 新表迁移风格一致（credit_estimation_coefficient / credit_reservation / credit_reservation_item），migrations/ 作为单一事实源"
+      - "2026-04-20: BIGINT UNSIGNED 作为 id/user_id/target_id 类型 — 与 GORM uint on MySQL 默认映射一致"
+      - "2026-04-20: 纠正先前错误结论 — 本项目无自动 migration runner。Dockerfile 不复制 migrations/，docker-entrypoint.sh 只做 model/vector 初始化，CI/CD yaml 无 SQL 执行步骤，helper.go:159 AutoMigrate 白名单不含 ActionLogM（本次漏建根因）。所有 *.sql migration 均需人工 SSH 到目标环境 docker exec 执行"
+    deploy_checklist:
+      dev:
+        status: "applied"
+        applied_at: "2026-04-20T01:01:46+08:00"
+        method: "sshpass → docker cp + docker exec mysql < *.sql on numind-mysql-dev"
+      qa:
+        status: "PENDING_MANUAL_APPLY"
+        warning: "此 migration 未应用前，qa 环境调用 POST /v1/users/children/:child_id/grant-membership 或 admin billing-mode-init 端点会因 Error 1146: Table 'action_log' doesn't exist 而 tx rollback"
+        command: "sshpass -p \"$DEV_SSH_PASS\" ssh \"$DEV_SSH_USER@$DEV_SSH_HOST\" \"docker cp numind-server/migrations/20260420_110000_create_action_log.sql numind-mysql-qa:/tmp/a.sql && docker exec numind-mysql-qa bash -c 'mysql -uroot -p<qa-pwd> numind-qa < /tmp/a.sql'\""
+      prod:
+        status: "PENDING_MANUAL_APPLY"
+        warning: "生产高危操作 — 需运维/用户授权，低峰窗口执行；CREATE TABLE IF NOT EXISTS 对新表无锁风险；回滚使用 20260420_110000_create_action_log_rollback.sql（注意 rollback 后 grant_membership 会再次 crash）"
+        command: "sshpass -p \"$PROD_SSH_PASS\" ssh \"$PROD_SSH_USER@$PROD_SSH_HOST\" \"docker cp numind-server/migrations/20260420_110000_create_action_log.sql numind-mysql-prod:/tmp/a.sql && docker exec numind-mysql-prod bash -c 'mysql -uroot -p<prod-pwd> numind-prod < /tmp/a.sql'\""
+    deferred:
+      - "qa/prod DB 应用 migration — 详见 deploy_checklist.qa / deploy_checklist.prod。推 release 或 tag v* 不会自动执行此 SQL（项目无 auto runner）"
+      - "长期改进（非本 hotfix 范畴）：引入通用 migration runner（goose/golang-migrate），或把 &model.ActionLogM{} 加入 helper.go:159 AutoMigrate 白名单作兜底（对存量部署仍需手工 apply，但新环境首次启动可自愈）。当前保持与项目其他 migration 一致的纯手工风格"
+    blockers: []
+    created_at: "2026-04-20T01:00:00+08:00"
+    completed_at: "2026-04-20T01:05:00+08:00"
