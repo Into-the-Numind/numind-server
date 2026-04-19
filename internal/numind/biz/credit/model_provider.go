@@ -7,9 +7,9 @@ import "strings"
 // 或 pricing_rule（ai_service_route 表的规范化查询是 future work，暂时用
 // prefix 规则覆盖 prod 模型集）。
 //
-// 规则（与 spec §3.11 对齐）：
-//   - qwen* / text-embedding-v*                  → "ali"
-//   - deepseek* / doubao* / glm-*                → "volc"
+// 规则（与 llm_provider.name 对齐）：
+//   - qwen* / text-embedding-v*                  → "ali-dashscope"
+//   - deepseek* / doubao* / glm-*                → "volc-ark"
 //   - claude-* / gemini-*                        → "dmxapi"
 //   - 其它 / 空                                   → ""
 func ProviderFromModel(modelName string) string {
@@ -17,10 +17,10 @@ func ProviderFromModel(modelName string) string {
 	case modelName == "":
 		return ""
 	case strings.HasPrefix(modelName, "qwen") || strings.HasPrefix(modelName, "text-embedding-v"):
-		return "ali"
+		return "ali-dashscope"
 	case strings.HasPrefix(modelName, "deepseek") || strings.HasPrefix(modelName, "doubao") ||
 		strings.HasPrefix(modelName, "glm-"):
-		return "volc"
+		return "volc-ark"
 	case strings.HasPrefix(modelName, "claude-") || strings.HasPrefix(modelName, "gemini-"):
 		return "dmxapi"
 	default:
