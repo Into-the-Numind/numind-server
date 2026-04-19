@@ -1044,6 +1044,9 @@ features:
       - "2026-04-19: Phase 2 integration fixes：fakeCreditBiz DeductCreditsTx stub (commit b913b0d)、biz.go 合并 duplicate pricingCalc/creditSvc 声明（amend 6f142d8）、salesrag NewSalesRAGBizWithCredits wiring（96c3223）、T2.0 controller/router follow-up（bcf5420）"
       - "2026-04-19: Phase 3 自动化部分完成：T3.2 完整测试套件（numind-server go test 全绿 + web-v3 lint/type-check 通过 + admin-web lint/type-check 通过）；T3.4 Card cleanup（Codes/CLAUDE.md §1 移除卡片生成描述）"
       - "2026-04-19: Phase 3 人工部分待运行：T3.1 Langfuse 本地 docker stack 验证 span + T3.3 Migration rollback 演练 on 本地 MySQL container"
+      - "2026-04-19: T3.3 Migration rollback 演练 PASS — docker MySQL 8.0.45 + 12 个 migration 全部 forward 成功（含 envsubst MIGRATION_CUTOFF + 8 行 seed + billing_mode Option E 迁移验证：in-period standard/premium→legacy_tier）+ 反向 rollback 清除干净（user 表只剩 bootstrap 字段）。Phase 0 hotfix 列名 user_tier 修正生效。结果文档 /tmp/t3-3-rollback-result.md"
+      - "2026-04-19: S4 两阶段 review dispatched（并行 Sonnet agents：spec compliance + code quality）"
+      - "2026-04-19: S5 剩余 3 项（T3.1 Langfuse 本地 stack / Playwright E2E 执行 / gstack /qa 浏览器 QA）建议并入 S6 dev smoke test 执行，避免 session 内启多个 long-running 服务"
     blockers: []
     created_at: "2026-04-18T12:00:00+08:00"
     completed_at: null
