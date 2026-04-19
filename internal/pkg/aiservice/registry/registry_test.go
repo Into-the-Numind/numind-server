@@ -143,7 +143,8 @@ func (m *mockStore) ReplaceTaskBindings(_ context.Context, taskProfileID uint64,
 	return nil
 }
 
-// ListTaskBindings returns bindings for a task profile filtered by role, ordered by priority ASC.
+// ListTaskBindings returns bindings for a task profile filtered by role, ordered by priority DESC
+// (higher number = higher priority = tried first), matching production behaviour.
 func (m *mockStore) ListTaskBindings(_ context.Context, taskProfileID uint64, role string) ([]TaskBinding, error) {
 	m.dbCallCount["ListTaskBindings"]++
 	var out []TaskBinding
@@ -152,8 +153,8 @@ func (m *mockStore) ListTaskBindings(_ context.Context, taskProfileID uint64, ro
 			out = append(out, b)
 		}
 	}
-	// Sort by priority ASC to match production behaviour.
-	sort.Slice(out, func(i, j int) bool { return out[i].Priority < out[j].Priority })
+	// Sort by priority DESC to match production behaviour (higher number = tried first).
+	sort.Slice(out, func(i, j int) bool { return out[i].Priority > out[j].Priority })
 	return out, nil
 }
 
@@ -324,16 +325,16 @@ func TestResolveTask_FallbackDeprecatedIsSkipped(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// Tests: Priority ordering — spec §2.2.2 (0 = highest priority)
+// Tests: Priority ordering — higher priority number = tried first (ORDER BY priority DESC)
 // ----------------------------------------------------------------------------
 
 // TestResolveTask_FallbackPriorityOrder verifies that fallback[0] is the service
-// with the lowest priority value (i.e. priority=0 comes before priority=10).
+// with the highest priority value (i.e. priority=10 comes before priority=0).
 func TestResolveTask_FallbackPriorityOrder(t *testing.T) {
 	ms := newMockStore()
 
-	var svcHigh uint64 = 10 // priority = 0  → should be first
-	var svcLow uint64 = 11  // priority = 10 → should be second
+	var svcHighPrio uint64 = 10 // priority = 10 → should be first (higher number = tried first)
+	var svcLowPrio uint64 = 11  // priority = 0  → should be second
 
 	ms.taskProfiles["sop.vision"] = &model.TaskProfile{
 		ID:               200,
@@ -342,22 +343,22 @@ func TestResolveTask_FallbackPriorityOrder(t *testing.T) {
 		DefaultServiceID: &svcID1,
 	}
 	ms.resolvedRoutes[svcID1] = makeResolvedRow(svcID1, "primary-model")
-	ms.resolvedRoutes[svcHigh] = makeResolvedRow(svcHigh, "high-priority-fallback")
-	ms.resolvedRoutes[svcLow] = makeResolvedRow(svcLow, "low-priority-fallback")
+	ms.resolvedRoutes[svcHighPrio] = makeResolvedRow(svcHighPrio, "high-priority-fallback")
+	ms.resolvedRoutes[svcLowPrio] = makeResolvedRow(svcLowPrio, "low-priority-fallback")
 
-	// Store bindings: svcLow registered first but with higher priority number.
+	// Store bindings: svcLowPrio registered first but has a lower priority number.
 	ms.taskBindings[200] = []TaskBinding{
-		{ServiceID: svcLow, Role: model.TaskProfileRoleFallback, Priority: 10},
-		{ServiceID: svcHigh, Role: model.TaskProfileRoleFallback, Priority: 0},
+		{ServiceID: svcLowPrio, Role: model.TaskProfileRoleFallback, Priority: 0},
+		{ServiceID: svcHighPrio, Role: model.TaskProfileRoleFallback, Priority: 10},
 	}
 	reg := newTestRegistry(ms, 0)
 
 	_, fbs, err := reg.ResolveTask(context.Background(), "sop.vision")
 	require.NoError(t, err)
 	require.Len(t, fbs, 2)
-	// The fallback with priority=0 must come first (highest priority = lowest value).
-	assert.Equal(t, svcHigh, fbs[0].ServiceID, "priority=0 service should be first fallback")
-	assert.Equal(t, svcLow, fbs[1].ServiceID, "priority=10 service should be second fallback")
+	// The fallback with priority=10 must come first (higher number = higher priority = tried first).
+	assert.Equal(t, svcHighPrio, fbs[0].ServiceID, "priority=10 service should be first fallback")
+	assert.Equal(t, svcLowPrio, fbs[1].ServiceID, "priority=0 service should be second fallback")
 }
 
 // ----------------------------------------------------------------------------
