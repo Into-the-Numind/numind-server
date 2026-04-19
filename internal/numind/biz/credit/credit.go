@@ -34,6 +34,9 @@ type ICreditBiz interface {
 	GetBalance(ctx context.Context, userID uint) (int64, error)
 	RechargeCredits(ctx context.Context, userID uint, packageType string, totalCredits int64, expiresAt time.Time) error
 	RechargeWithOrderTx(ctx context.Context, tx *gorm.DB, userID uint, orderID uint64, productType string, months int) error
+	// GrantMembership is the B2B2C grant path (spec Q1): parent user
+	// grants membership to a child user without going through payment.
+	GrantMembership(ctx context.Context, req GrantMembershipReq) error
 	RunCronTasks(ctx context.Context) error
 	GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error)
 }

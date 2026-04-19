@@ -30,8 +30,11 @@ type CreditPackage struct {
 	// GrantSource='b2b_grant' 表示父账户通过"帮开通"赋予（不走支付），
 	//             'self_purchase' 表示 C 端自购（加量包路径）。
 	// GranterUserID 在 b2b_grant 时必填，指向 parent user ID；self_purchase 为 NULL。
-	GrantSource   string `gorm:"type:enum('self_purchase','b2b_grant');not null;default:'self_purchase';index:idx_grant_source_granter,priority:1" json:"grant_source"`
-	GranterUserID *uint  `gorm:"type:int unsigned;index:idx_grant_source_granter,priority:2" json:"granter_user_id,omitempty"`
+	//
+	// 注: DDL 的 MySQL ENUM 约束在 migration 20260420_100000 中定义；此 GORM tag
+	// 只声明字段存在性 + 索引，避免 SQLite 测试数据库无法识别 MySQL 的 ENUM 语法。
+	GrantSource   string `gorm:"size:20;not null;default:'self_purchase';index:idx_grant_source_granter,priority:1" json:"grant_source"`
+	GranterUserID *uint  `gorm:"index:idx_grant_source_granter,priority:2" json:"granter_user_id,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
