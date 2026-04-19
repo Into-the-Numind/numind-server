@@ -2,6 +2,7 @@ package admin_sop
 
 import (
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -12,6 +13,81 @@ import (
 	"numind-server/internal/pkg/model"
 	v1 "numind-server/pkg/api/numind/v1"
 )
+
+// adminRunTemplateRef / adminRunUserRef / adminRunItem / adminNodeRunItem
+// 用于 admin-web 的响应 DTO。不直接序列化 model.SopRun / model.SopNodeRun,
+// 因为它们嵌入 gorm.Model，默认会输出 "ID"/"CreatedAt" 等 PascalCase 字段,
+// 导致 admin 前端 run.id 为 undefined（见 RunsView.vue）。
+type adminRunTemplateRef struct {
+	ID   uint   `json:"id"`
+	Name string `json:"name"`
+}
+
+type adminRunUserRef struct {
+	ID       uint   `json:"id"`
+	Nickname string `json:"nickname"`
+}
+
+type adminRunItem struct {
+	ID           uint                 `json:"id"`
+	TemplateID   uint                 `json:"template_id"`
+	UserID       uint                 `json:"user_id"`
+	Status       string               `json:"status"`
+	StartedAt    *time.Time           `json:"started_at"`
+	FinishedAt   *time.Time           `json:"finished_at"`
+	ErrorMessage string               `json:"error_message"`
+	CreatedAt    time.Time            `json:"created_at"`
+	Template     *adminRunTemplateRef `json:"template,omitempty"`
+	User         *adminRunUserRef     `json:"user,omitempty"`
+	TotalTokens  int64                `json:"total_tokens"`
+	CostCents    int64                `json:"cost_cents"`
+}
+
+type adminNodeRunItem struct {
+	ID        uint   `json:"id"`
+	NodeID    uint   `json:"node_id"`
+	Status    string `json:"status"`
+	Input     string `json:"input"`
+	Output    string `json:"output"`
+	Thinking  string `json:"thinking"`
+	LatencyMs int64  `json:"latency_ms"`
+	Sort      int    `json:"sort"`
+}
+
+func toAdminRunItem(r *model.SopRun, totalTokens, costCents int64) adminRunItem {
+	item := adminRunItem{
+		ID:           r.ID,
+		TemplateID:   r.TemplateID,
+		UserID:       r.UserID,
+		Status:       r.Status,
+		StartedAt:    r.StartedAt,
+		FinishedAt:   r.FinishedAt,
+		ErrorMessage: r.ErrorMessage,
+		CreatedAt:    r.CreatedAt,
+		TotalTokens:  totalTokens,
+		CostCents:    costCents,
+	}
+	if r.Template != nil {
+		item.Template = &adminRunTemplateRef{ID: r.Template.ID, Name: r.Template.Name}
+	}
+	if r.User != nil {
+		item.User = &adminRunUserRef{ID: r.User.ID, Nickname: r.User.Nickname}
+	}
+	return item
+}
+
+func toAdminNodeRunItem(nr model.SopNodeRun) adminNodeRunItem {
+	return adminNodeRunItem{
+		ID:        nr.ID,
+		NodeID:    nr.NodeID,
+		Status:    nr.Status,
+		Input:     nr.Input,
+		Output:    nr.Output,
+		Thinking:  nr.Thinking,
+		LatencyMs: nr.LatencyMs,
+		Sort:      nr.Sort,
+	}
+}
 
 // SopController SOP控制器
 type SopController struct {
@@ -300,7 +376,15 @@ func (ctrl *SopController) GetRun(c *gin.Context) {
 		return
 	}
 
-	core.WriteResponse(c, nil, run)
+	var totalTokens, costCents int64
+	if stats, err := ctrl.sopBiz.GetRunsStats(c, []uint{run.ID}); err == nil {
+		if s, ok := stats[run.ID]; ok {
+			totalTokens = s.TotalTokens
+			costCents = s.CostCents
+		}
+	}
+
+	core.WriteResponse(c, nil, toAdminRunItem(run, totalTokens, costCents))
 }
 
 // GetRunDetail 获取SOP执行详情（包含节点执行记录）
@@ -319,9 +403,22 @@ func (ctrl *SopController) GetRunDetail(c *gin.Context) {
 		return
 	}
 
+	var totalTokens, costCents int64
+	if stats, err := ctrl.sopBiz.GetRunsStats(c, []uint{run.ID}); err == nil {
+		if s, ok := stats[run.ID]; ok {
+			totalTokens = s.TotalTokens
+			costCents = s.CostCents
+		}
+	}
+
+	nodeItems := make([]adminNodeRunItem, len(nodeRuns))
+	for i, nr := range nodeRuns {
+		nodeItems[i] = toAdminNodeRunItem(nr)
+	}
+
 	core.WriteResponse(c, nil, gin.H{
-		"run":       run,
-		"node_runs": nodeRuns,
+		"run":       toAdminRunItem(run, totalTokens, costCents),
+		"node_runs": nodeItems,
 	})
 }
 
@@ -360,25 +457,16 @@ func (ctrl *SopController) ListRuns(c *gin.Context) {
 		stats = map[uint]sop.RunStats{}
 	}
 
-	type runWithStats struct {
-		model.SopRun
-		TotalTokens int64 `json:"total_tokens"`
-		CostCents   int64 `json:"cost_cents"`
-	}
-
-	enriched := make([]runWithStats, len(runs))
-	for i, r := range runs {
+	items := make([]adminRunItem, len(runs))
+	for i := range runs {
+		r := runs[i]
 		s := stats[r.ID]
-		enriched[i] = runWithStats{
-			SopRun:      r,
-			TotalTokens: s.TotalTokens,
-			CostCents:   s.CostCents,
-		}
+		items[i] = toAdminRunItem(&r, s.TotalTokens, s.CostCents)
 	}
 
 	core.WriteResponse(c, nil, gin.H{
 		"total": total,
-		"runs":  enriched,
+		"runs":  items,
 	})
 }
 
