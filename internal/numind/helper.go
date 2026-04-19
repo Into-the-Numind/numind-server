@@ -162,6 +162,7 @@ func autoMigrate(db *gorm.DB) error {
 		&model.KnowledgeDocument{},
 		&model.SalesSession{},
 		&model.SalesMessage{},
+		&model.SalesMessageFeedback{},
 		&model.LanguageStyle{},
 		&model.KnowledgeChunk{},
 		&model.OpinionTrack{},
