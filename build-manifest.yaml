@@ -1248,7 +1248,7 @@ features:
         后端容器 docker rm + docker run 换 IP 后（CI deploy_prod 每次发版就会触发），
         前端 nginx 依然连旧 IP → 502。CI 同时重建前后端时自动修复，否则持续 502。
         实测：2026-04-19 dev 首页 5 个 xhr 全 502，nginx log 显示 connect() failed 到 172.20.0.4。
-      review: "pass (nginx -t 语法校验 + 真实 docker rm/run 重建触发测试 10/10 采样 HTTP 401)"
+      review: "pass (nginx -t + 真实 docker rm/run 触发测试 10/10 采样 HTTP 401)。Sonnet subagent review 发现 3 P1 + 4 P2，3 P1 + 2 低成本 P2 全部修复（resolver_timeout 5s / boot log / DO NOT INLINE 注释 / runbook 端口 typo / runbook 诊断命令）。commit web-v3 003e16e + admin-web b978c0b"
     progress:
       total_tasks: 4
       completed_tasks: 4

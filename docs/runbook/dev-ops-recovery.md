@@ -15,13 +15,15 @@
 下面的"历史现象 + 恢复步骤"仅供老版本 nginx 配置（<2026-04-19）或 rollback 场景参考。
 
 ### 历史现象
-后端容器 `docker rm + docker run` 或手工 `docker restart` 后，前端页面 502：
+后端容器 `docker rm + docker run` 或手工 `docker restart` 后，前端页面 502。
+nginx error log 示例（web-v3 上游 9091，admin-web 上游 9099 — 按链路区分）：
 ```
 connect() failed (111: Connection refused) while connecting to upstream,
-upstream: "http://172.20.0.X:9099/..."
+upstream: "http://172.20.0.X:9091/..."   # web-v3 → numind-server-dev
+upstream: "http://172.20.0.X:9099/..."   # admin-web → numind-admin-server-dev
 ```
 
-直连后端 `curl localhost:9091/healthz` 正常 200。
+直连后端 `curl localhost:9091/healthz`（或 `:9099/healthz`）正常 200。
 
 ### 历史根因
 静态 `proxy_pass http://numind-server-dev:9091/` 在 nginx 启动时解析 DNS 一次
@@ -40,6 +42,16 @@ docker restart numind-web-v3-dev numind-admin-web-dev
 1. 后端容器是否真的启动健康（`docker inspect numind-server-dev | grep IPAddress`）
 2. Docker network 是否正常（两容器是否在同一 `numind-network`）
 3. nginx log 是否显示 resolver 查询失败
+
+### 快速自检（一条命令确认 nginx DNS 全链路）
+```bash
+# web-v3 → numind-server-dev
+docker exec numind-web-v3-dev sh -c 'nginx -t && nslookup numind-server-dev 127.0.0.11'
+
+# admin-web → numind-admin-server-dev
+docker exec numind-admin-web-dev sh -c 'nginx -t && nslookup numind-admin-server-dev 127.0.0.11'
+```
+nginx -t 通过 + nslookup 返回 IP 即 DNS 链路正常。如果 nslookup 失败，检查容器是否在 Docker bridge 网络上（不能是 `--network=host/none`）。
 
 ---
 
