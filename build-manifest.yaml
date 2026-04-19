@@ -1320,11 +1320,13 @@ features:
     stage: "H3-done"
     classification_reason: "单点序列化 bug，单仓库改动（admin_sop 控制器），无 schema/业务逻辑变更，~90 行 DTO + mapper"
     last_updated_by: "ai-hotfix"
-    last_updated_at: "2026-04-19T18:30:00+08:00"
+    last_updated_at: "2026-04-19T19:00:00+08:00"
     repos:
       - numind-server
+      - numind-admin-web
     branches:
-      numind-server: "fix/admin-sop-run-id-serialization + fix/admin-sop-run-review-followup"
+      numind-server: "fix/admin-sop-run-id-serialization + fix/admin-sop-run-review-followup + fix/sop-runs-p2-cleanup"
+      numind-admin-web: "fix/runs-ts-optional-relations"
     hotfix_artifacts:
       diagnosis: |
         admin-web RunsView 展开详情请求 GET /v1/admin/sop/runs/undefined/detail → 400。
@@ -1337,32 +1339,34 @@ features:
         两个 Sonnet subagent 并行 review:
         1. Spec 合规: PASS. 字段全覆盖、嵌套 shape 正确、GetRunsStats 单 ID 调用安全、
            无其他 admin-web 消费者读被 DTO 省略的字段（conversation_id 等）、model/user-side 无波及。
-        2. Code quality: PASS-WITH-CONCERNS. 2 个 P1 已在 followup commit 修复。
+        2. Code quality: PASS-WITH-CONCERNS. 2 个 P1 + 2 个 P2 全部修复。
       review_p1_fixed:
         - "DTO 挪到 pkg/api/numind/v1/admin.go（AdminRunItem/AdminNodeRunItem/AdminRunTemplateRef/AdminRunUserRef），与 AdminUserItem 同侧"
         - "GetRun/GetRunDetail 的 GetRunsStats 调用抽成 fetchRunStats helper，失败时 log.Warnw 记录（原实现静默吞错）"
+      review_p2_fixed:
+        - "admin-web runs.ts 的 template/user 声明改为可选（template?:/user?:），匹配后端 omitempty 实际行为（soft-delete 场景）"
+        - "admin_sop/sop_test.go 新增 4 个 mapper 单测：toAdminRunItem 满字段 / nil Template / nil User + toAdminNodeRunItem（全过，0.48s）"
     progress:
-      total_tasks: 2
-      completed_tasks: 2
-      reviewed_tasks: 2
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 3
       current_task: null
-    rollback: "git revert merge commit on develop (两次 merge 各一次 revert)"
+    rollback: "git revert merge commit on develop（server 三次 merge + admin-web 一次 merge 各一次 revert）"
     last_verified:
-      at: "2026-04-19T18:30:00+08:00"
-      lint: "pass (go vet + golangci-lint on admin_sop + v1 pkg)"
-      type_check: null
-      tests: null
-      test_summary: "本地 go build ./... 通过；subagent review PASS。待 dev 部署后前端复验"
+      at: "2026-04-19T19:00:00+08:00"
+      lint: "pass (server: go vet + golangci-lint; admin-web: eslint + vue-tsc)"
+      type_check: "pass (admin-web vue-tsc)"
+      tests: "pass (admin_sop/sop_test.go 4/4 PASS)"
+      test_summary: "go build ./... 通过；subagent review PASS；mapper 单测全过；admin-web type-check 通过。待 dev 部署后前端复验"
     decisions:
       - "2026-04-19: 沿用 admin_user 模式，DTO 放 pkg/api/numind/v1/admin.go，mapper 保留 controller 本地"
       - "2026-04-19: GetRun / GetRunDetail 补 total_tokens / cost_cents（调用 GetRunsStats 单 ID，fetchRunStats helper 封装）"
       - "2026-04-19: stats 查询失败不阻断响应，走 log.Warnw + 零值回退（与 ListRuns 行为一致）"
-    deferred:
-      - "P2: template/user omitempty 在前端 TS interface 声明为非可选 — 当前 ListRuns/GetRun/GetRunDetail 均 Preload 不会为 nil，记为潜在 latent crash path"
-      - "P2: toAdminRunItem 的 nil-branch 和 GetRunsStats 单 ID 路径无单测 — hotfix 轨道不强制，日后补上可防回归"
+      - "2026-04-19: P2.1 走「类型诚实」方案（admin-web TS 改可选）而非「后端改行为」方案（去掉 omitempty）—— 前者零运行时成本，且 RunsView.vue 本就在用 ?. 访问"
+    deferred: []
     blockers: []
     created_at: "2026-04-19T17:45:00+08:00"
-    completed_at: "2026-04-19T18:30:00+08:00"
+    completed_at: "2026-04-19T19:00:00+08:00"
 
   - id: "sop-runs-error-mapping"
     ndf_version: "1.0"
