@@ -561,7 +561,9 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 	// 支持书签功能：创建 Run 并自动应用书签
 	run, appliedBookmarkIDs, err := ctrl.sopBiz.CreateRunWithBookmarks(c.Request.Context(), req.TemplateID, user.ID, req.Text, req.AutoApplyBookmarks)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
+		// 透传 biz 层错误：*errno.Errno 保留正确 HTTP 状态码（如 403 权限拒绝），
+		// 其他 error 由 errno.Decode 兜底为 500。避免把业务拒绝误报为 500
+		core.WriteResponse(c, err, nil)
 		return
 	}
 
