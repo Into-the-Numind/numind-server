@@ -474,10 +474,14 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 	var fullContent strings.Builder
 	var finalUsage *TokenUsage
 	var modelName string
+	var providerName string
 	var streamErr error
 	for chunk := range ch {
 		if chunk.Model != "" {
 			modelName = chunk.Model
+		}
+		if chunk.Provider != "" {
+			providerName = chunk.Provider
 		}
 		if chunk.ReasoningDelta != "" {
 			if handlerErr := handler("thinking", chunk.ReasoningDelta); handlerErr != nil {
@@ -503,6 +507,7 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 					TotalTokens:      chunk.Usage.TotalTokens,
 					ReasoningTokens:  chunk.Usage.ReasoningTokens,
 					ModelName:        modelName,
+					Provider:         providerName,
 				}
 			}
 		}

@@ -4,12 +4,13 @@ import "encoding/json"
 
 // TokenUsage Token使用统计信息（统一类型，供所有模块使用）
 type TokenUsage struct {
-	PromptTokens          int `json:"prompt_tokens"`     // 输入 tokens
-	CompletionTokens      int `json:"completion_tokens"` // 输出 tokens
-	TotalTokens           int `json:"total_tokens"`      // 总 tokens
-	ReasoningTokens       int `json:"reasoning_tokens"`  // 思考过程 tokens（某些模型直接返回）
+	PromptTokens          int    `json:"prompt_tokens"`     // 输入 tokens
+	CompletionTokens      int    `json:"completion_tokens"` // 输出 tokens
+	TotalTokens           int    `json:"total_tokens"`      // 总 tokens
+	ReasoningTokens       int    `json:"reasoning_tokens"`  // 思考过程 tokens（某些模型直接返回）
 	EstimatedPromptTokens int    `json:"-"`                 // 预估输入 tokens（内部使用）
 	ModelName             string `json:"-"`                 // 实际调用的模型名称（内部使用，不序列化）
+	Provider              string `json:"-"`                 // 实际 provider（如 aihubmix / volc / ali；内部使用，不序列化）
 
 	// Volcengine/OpenAI 兼容的嵌套结构
 	CompletionTokensDetails struct {

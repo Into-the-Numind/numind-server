@@ -801,15 +801,21 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	//   - 无 rsv（legacy_tier / creditSvc=nil）：直接跳过
 	if rsv != nil && b.pricing != nil {
 		if usage != nil && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
+			// 优先使用 Gateway 回传的真实 provider（aihubmix / volc / ...）；
+			// Gateway 未设置时回退到 ProviderFromModel 的 prefix 猜测。
+			provider := usage.Provider
+			if provider == "" {
+				provider = credit.ProviderFromModel(actualModelName)
+			}
 			cost, pErr := b.pricing.CalculateCost(ctx, "llm_chat",
-				credit.ProviderFromModel(actualModelName), actualModelName,
+				provider, actualModelName,
 				usage.PromptTokens, usage.CompletionTokens)
 			if pErr != nil {
 				// pricing 失败不阻塞业务，defer 走 Refund("op_failed")
 				opErr = fmt.Errorf("sop_run pricing calc: %w", pErr)
 				log.C(ctx).Warnw("Pricing calc failed; defer will Refund",
 					"run_id", runID, "node_id", nodeID,
-					"model", actualModelName, "err", pErr)
+					"provider", provider, "model", actualModelName, "err", pErr)
 			} else {
 				actualCost = cost
 				// 将真实 token 数回写到 rsv，FinalizeReservation 会把它们
@@ -1549,13 +1555,18 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 			if usage.ModelName != "" {
 				effectiveModel = usage.ModelName
 			}
+			// 优先使用 Gateway 回传的真实 provider；回退到 prefix 猜测。
+			provider := usage.Provider
+			if provider == "" {
+				provider = credit.ProviderFromModel(effectiveModel)
+			}
 			cost, pErr := b.pricing.CalculateCost(ctx, "llm_chat",
-				credit.ProviderFromModel(effectiveModel), effectiveModel,
+				provider, effectiveModel,
 				usage.PromptTokens, usage.CompletionTokens)
 			if pErr != nil {
 				chatOpErr = fmt.Errorf("sop_chat pricing calc: %w", pErr)
 				log.C(ctx).Warnw("Pricing calc failed; defer will Refund",
-					"run_id", runID, "model", effectiveModel, "err", pErr)
+					"run_id", runID, "provider", provider, "model", effectiveModel, "err", pErr)
 			} else {
 				chatActualCost = cost
 				// 把真实 token 数透传到 credit-reconcile span metadata（spec §5.1.3）。
