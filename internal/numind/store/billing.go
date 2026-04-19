@@ -640,10 +640,10 @@ func (s *billingStore) UpdatePricingRule(ctx context.Context, id uint, update Pr
 		updates["flat_unit"] = *update.FlatUnit
 	}
 	if update.InputPricePerMTok != nil {
-		updates["input_price_per_mtok"] = *update.InputPricePerMTok
+		updates["input_price_per_m_tok"] = *update.InputPricePerMTok
 	}
 	if update.OutputPricePerMTok != nil {
-		updates["output_price_per_mtok"] = *update.OutputPricePerMTok
+		updates["output_price_per_m_tok"] = *update.OutputPricePerMTok
 	}
 	if update.PricePerCall != nil {
 		updates["price_per_call"] = *update.PricePerCall
@@ -652,10 +652,10 @@ func (s *billingStore) UpdatePricingRule(ctx context.Context, id uint, update Pr
 		updates["price_per_gb"] = *update.PricePerGB
 	}
 	if update.SellInputPricePerMTok != nil {
-		updates["sell_input_price_per_mtok"] = *update.SellInputPricePerMTok
+		updates["sell_input_price_per_m_tok"] = *update.SellInputPricePerMTok
 	}
 	if update.SellOutputPricePerMTok != nil {
-		updates["sell_output_price_per_mtok"] = *update.SellOutputPricePerMTok
+		updates["sell_output_price_per_m_tok"] = *update.SellOutputPricePerMTok
 	}
 	if update.SellPricePerCall != nil {
 		updates["sell_price_per_call"] = *update.SellPricePerCall
