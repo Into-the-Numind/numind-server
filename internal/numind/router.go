@@ -11,6 +11,7 @@ import (
 	llmcontroller "numind-server/internal/numind/controller/v1/llm"
 	monitorcontroller "numind-server/internal/numind/controller/v1/monitor"
 	ordercontroller "numind-server/internal/numind/controller/v1/order"
+	"numind-server/internal/numind/controller/v1/parent_grant"
 	paymentcontroller "numind-server/internal/numind/controller/v1/payment"
 	pdfcontroller "numind-server/internal/numind/controller/v1/pdf"
 	"numind-server/internal/numind/controller/v1/salesrag"
@@ -242,6 +243,12 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/customers/sub-users/:user_id/features", customerCtrl.ListSubUserFeatures)
 		authGroup.POST("/customers/sub-users/:user_id/features", customerCtrl.GrantFeatures)
 		authGroup.DELETE("/customers/sub-users/:user_id/features", customerCtrl.RevokeFeatures)
+	}
+
+	// B2B2C 会员赋予（Q1）：父账户为子账户开通会员，不走支付流程
+	{
+		parentGrantCtrl := parent_grant.New(b.Credit())
+		authGroup.POST("/users/children/:child_id/grant-membership", parentGrantCtrl.GrantMembership)
 	}
 
 	// 自助配置中心（B端，需要主账号 + 功能权限）
