@@ -3,8 +3,10 @@ package numind
 import (
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/aiservice_admin"
+	"numind-server/internal/numind/biz/b2b_billing"
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/controller/v1/admin_ai"
+	"numind-server/internal/numind/controller/v1/admin_b2b"
 	"numind-server/internal/numind/controller/v1/admin_billing"
 	"numind-server/internal/numind/controller/v1/admin_credit"
 	"numind-server/internal/numind/controller/v1/admin_dashboard"
@@ -139,6 +141,12 @@ func installAdminRouters(g *gin.Engine) error {
 		adminOrderCtrl := admin_order.New(store.S)
 		adminGroup.GET("/orders", adminOrderCtrl.ListOrders)
 		adminGroup.GET("/orders/:id", adminOrderCtrl.GetOrder)
+	}
+
+	// B2B 月度结算报表（Q1.4）: 父账户"帮开通"的 credit_package 按月聚合
+	{
+		adminB2BCtrl := admin_b2b.New(b2b_billing.New(store.S))
+		adminGroup.GET("/b2b-billing-report", adminB2BCtrl.GetBillingReport)
 	}
 
 	// 计费管理
