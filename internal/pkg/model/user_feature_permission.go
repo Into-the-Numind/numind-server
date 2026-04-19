@@ -5,6 +5,8 @@ import (
 )
 
 const FeatureKeySalesAgent = "sales_agent"
+const FeatureKeyContentMonitor = "content_monitor"
+const FeatureKeySelfServiceConfig = "self_service_config"
 
 // UserFeaturePermission 用户功能权限表(白名单模式)
 type UserFeaturePermission struct {

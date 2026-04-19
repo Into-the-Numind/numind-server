@@ -12,6 +12,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/viper"
+
+	"numind-server/internal/numind/biz"
+	"numind-server/internal/numind/biz/credit"
+	"numind-server/internal/numind/store"
 )
 
 func startServer() error {
@@ -30,6 +34,40 @@ func startServer() error {
 		Handler: g,
 	}
 
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start monitor scheduler
+	bizLayer := biz.NewBiz(store.S)
+	go func() {
+		if err := bizLayer.Monitor().StartScheduler(context.Background()); err != nil {
+			log.Printf("Failed to start monitor scheduler: %v", err)
+		}
+	}()
+
+	// Start hourly cron for credit package lifecycle management
+	creditBiz := credit.NewCreditBiz(store.S)
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				creditBiz.RunCronTasks(ctx)
+				// 关闭过期未支付订单
+				if count, err := store.S.Orders().CloseExpiredOrders(ctx); err != nil {
+					log.Printf("Close expired orders error: %v", err)
+				} else if count > 0 {
+					log.Printf("Closed %d expired orders", count)
+				}
+				cancel()
+			case <-quit:
+				return
+			}
+		}
+	}()
+
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Failed to start server: %v", err)
@@ -38,11 +76,13 @@ func startServer() error {
 
 	log.Printf("Server started on port %s", port)
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	log.Println("Shutting down server...")
+
+	// Stop monitor scheduler
+	bizLayer.Monitor().StopScheduler()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/service"
 	"os"
@@ -42,12 +43,10 @@ type AliBiz interface {
 	QianwenVisionStream(ctx context.Context, imageURL string, prompt string, model string, onToken func(token string) error) (string, *billing.TokenUsage, error)
 	GetFileUploadLease(fileName string) (string, map[string]string, string, error)
 	AddFile(leaseId string) (string, error)
-	GetPromptManager() *PromptManager
 }
 
 type aliBiz struct {
 	ds            store.IStore
-	pm            *PromptManager
 	bailianClient *service.BailianHTTPClient
 	textClient    *httpclient.Client
 	visionClient  *httpclient.Client
@@ -56,7 +55,6 @@ type aliBiz struct {
 func NewAliBiz(ds store.IStore) AliBiz {
 	return &aliBiz{
 		ds: ds,
-		pm: NewPromptManager(),
 		bailianClient: service.NewBailianHTTPClient(
 			getAliConfig("common", "access_key_id"),
 			getAliConfig("common", "access_key_secret"),
@@ -230,8 +228,10 @@ func (a *aliBiz) QianwenTextStream(ctx context.Context, messages []map[string]st
 	}
 
 	// 自动计费
-	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
-		billing.RecordLLM(bc.UserID, "ali", modelName, bc.Operation, usage, bc.Meta)
+	if !aiservice.ShouldSkipLegacyBilling(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+			billing.RecordLLM(bc.UserID, "ali", modelName, bc.Operation, usage, bc.Meta)
+		}
 	}
 
 	// Langfuse generation 追踪
@@ -347,8 +347,10 @@ func (a *aliBiz) QianwenEmbedding(ctx context.Context, text string) ([]float32, 
 	embUsage := &billing.EmbeddingUsage{TotalTokens: result.Usage.TotalTokens}
 
 	// 自动计费
-	if bc := billing.FromContext(ctx); bc != nil && embUsage != nil {
-		billing.RecordEmbedding(bc.UserID, "ali", modelName, bc.Operation, embUsage, bc.Meta)
+	if !aiservice.ShouldSkipLegacyBilling(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && embUsage != nil {
+			billing.RecordEmbedding(bc.UserID, "ali", modelName, bc.Operation, embUsage, bc.Meta)
+		}
 	}
 
 	return result.Output.Embeddings[0].Embedding, embUsage, nil
@@ -457,8 +459,10 @@ func (a *aliBiz) QianwenVision(ctx context.Context, imageURL string, prompt stri
 	}
 
 	// 自动计费
-	if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
-		billing.RecordVision(bc.UserID, "ali", model, bc.Operation, result.Usage, bc.Meta)
+	if !aiservice.ShouldSkipLegacyBilling(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && result.Usage != nil {
+			billing.RecordVision(bc.UserID, "ali", model, bc.Operation, result.Usage, bc.Meta)
+		}
 	}
 
 	visionContent := result.Choices[0].Message.Content
@@ -638,8 +642,10 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 	}
 
 	// 自动计费
-	if bc := billing.FromContext(ctx); bc != nil && usage != nil {
-		billing.RecordVision(bc.UserID, "ali", model, bc.Operation, usage, bc.Meta)
+	if !aiservice.ShouldSkipLegacyBilling(ctx) {
+		if bc := billing.FromContext(ctx); bc != nil && usage != nil {
+			billing.RecordVision(bc.UserID, "ali", model, bc.Operation, usage, bc.Meta)
+		}
 	}
 
 	// Langfuse generation 追踪
@@ -676,6 +682,3 @@ func (a *aliBiz) AddFile(leaseId string) (string, error) {
 	return a.bailianClient.ConfirmFile(leaseId)
 }
 
-func (a *aliBiz) GetPromptManager() *PromptManager {
-	return a.pm
-}

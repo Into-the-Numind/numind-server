@@ -1,0 +1,92 @@
+T-ARCH-PREREQ GATE RE-RUN RESULT
+=================================
+Date: 2026-04-18
+Branch: feature/ai-service-admin-complete-T-arch-prereq
+Result: PASS
+
+GATE QUERY (adapted from t-arch-gate-result.txt, with collation fix and
+service_type mapping applied in the WHERE clause):
+
+  SELECT COUNT(*) AS routes_with_zero_matches FROM (
+    SELECT r.id FROM ai_service_route r
+    JOIN ai_service s ON r.model_id = s.id
+    JOIN llm_provider p ON r.provider_id = p.id
+    WHERE r.is_active = TRUE AND s.deprecated_at IS NULL AND p.is_active = TRUE
+      AND (
+        SELECT COUNT(*) FROM pricing_rule pr
+        WHERE pr.is_active = TRUE
+          AND CONVERT(pr.provider USING utf8mb4) COLLATE utf8mb4_0900_ai_ci = p.name
+          AND CONVERT(pr.model USING utf8mb4) COLLATE utf8mb4_0900_ai_ci IN (s.model_key, r.provider_model_id)
+          AND CONVERT(pr.service_type USING utf8mb4) COLLATE utf8mb4_0900_ai_ci
+              = CASE s.service_type
+                  WHEN 'llm' THEN 'llm_chat' WHEN 'ocr' THEN 'ocr' WHEN 'asr' THEN 'asr'
+                  ELSE s.service_type END
+      ) = 0
+  ) AS unmatched;
+
+RESULT: routes_with_zero_matches = 0  ← PASS
+
+DETAILED ROUTE MATCH TABLE (all 13 active routes):
+---------------------------------------------------
+route_id | provider_name | model_key                       | service_type | match_by_model_key | match_by_provider_model_id
+---------|---------------|--------------------------------|--------------|-------------------|---------------------------
+20       | aihubmix      | claude-sonnet-4-6              | llm          | 1                 | 1
+21       | aihubmix      | claude-sonnet-4-6-thinking     | llm          | 1                 | 0 (*)
+23       | aihubmix      | deepseek-v3.2                  | llm          | 1                 | 1
+29       | aihubmix      | deepseek-v3.2-thinking         | llm          | 1                 | 1
+22       | aihubmix      | gemini-3.1-pro-preview         | llm          | 1                 | 1
+28       | aihubmix      | gemini-3.1-pro-preview-thinking| llm          | 1                 | 1
+24       | aihubmix      | gpt-5.4                        | llm          | 1                 | 1
+30       | aihubmix      | gpt-5.4-thinking               | llm          | 1                 | 1
+9        | dmxapi-ssvip  | claude-sonnet-4-6              | llm          | 1                 | 1
+13       | dmxapi-ssvip  | claude-sonnet-4-6-thinking     | llm          | 1                 | 1
+18       | dmxapi-ssvip  | deepseek-v3.2                  | llm          | 1                 | 1
+17       | dmxapi-ssvip  | gemini-3.1-pro-preview         | llm          | 1                 | 1
+19       | dmxapi-ssvip  | gpt-5.4                        | llm          | 1                 | 1
+
+(*) Route 21: match_by_model_key=1 (sufficient). match_by_provider_model_id=0
+    because provider_model_id='claude-sonnet-4-6-think' (truncated in route row).
+    Billing middleware uses route.ServiceKey (=model_key='claude-sonnet-4-6-thinking')
+    for UsageRecord.Model, so pricing lookup is correct. The stale provider_model_id
+    in ai_service_route is a cosmetic data issue — harmless for billing but should
+    be cleaned up in a follow-up migration.
+
+WHAT WAS FIXED
+--------------
+1. service_type vocabulary drift (llm vs llm_chat):
+   Fixed in middleware: classifyServiceType() in
+   internal/pkg/aiservice/middleware/billing.go maps raw request type to
+   fine-grained service_type (llm_chat/llm_vision/embedding/rerank/ocr/asr)
+   before storing in UsageRecord. Gate query adapted to use the same mapping.
+
+2. provider name drift (dmxapi-ssvip missing from pricing_rule):
+   Fixed in SQL: migrations/20260418_170000_pricing_rule_vocabulary_fix.sql
+   INSERTs pricing_rule rows for provider='dmxapi-ssvip' (5 models), copying
+   aihubmix prices ("same price, different row").
+
+3. model truncation (claude-sonnet-4-6-think vs claude-sonnet-4-6-thinking):
+   Fixed in SQL: UPDATE pricing_rule SET model='claude-sonnet-4-6-thinking'
+   WHERE model='claude-sonnet-4-6-think'.
+
+4. BONUS (discovered during gate prep): aihubmix *-thinking model_key variants
+   (gemini-3.1-pro-preview-thinking, deepseek-v3.2-thinking, gpt-5.4-thinking)
+   also had no pricing_rule rows. Added in the same SQL migration.
+
+SQL EXECUTION LOG
+-----------------
+Dev SQL file: migrations/20260418_170000_pricing_rule_vocabulary_fix.sql
+Executed: 2026-04-18 via:
+  docker exec -i numind-mysql-dev mysql -uroot -pNumind2025 numind-dev < /tmp/pricing_vocab_fix.sql
+Result: No errors (exit 0, only MySQL password-in-CLI warning)
+
+Prod SQL file: migrations/20260418_170000_pricing_rule_vocabulary_fix_prod_deferred.sql
+Status: NOT EXECUTED — deferred until after prod code deploy.
+
+FOLLOW-UP ITEMS
+---------------
+- Post-prod-deploy: execute prod_deferred.sql before smoke testing new Gateway paths.
+- Cosmetic: update ai_service_route row 21 provider_model_id from
+  'claude-sonnet-4-6-think' to 'claude-sonnet-4-6-thinking' in a separate migration.
+- Full chat regression: send a real chat/vision/ocr call against dev after this
+  branch merges + dev deploy to confirm UsageRecord.cost_cents > 0.
+  (Cannot validate purely from SQL — requires live middleware execution.)

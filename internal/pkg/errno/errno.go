@@ -23,6 +23,17 @@ func (err *Errno) SetMessage(format string, args ...interface{}) *Errno {
 	}
 }
 
+// Is enables errors.Is matching by comparing Code fields.
+// This allows wrapped *Errno values (e.g. fmt.Errorf("...: %w", errno.ErrXxx))
+// to be matched with errors.Is(err, errno.ErrXxx).
+func (err *Errno) Is(target error) bool {
+	t, ok := target.(*Errno)
+	if !ok {
+		return false
+	}
+	return err.Code == t.Code
+}
+
 // Decode 尝试从 err 中解析出业务错误码和错误信息.
 func Decode(err error) (int, string, string) {
 	if err == nil {

@@ -1,0 +1,16 @@
+root = "."
+tmp_dir = "tmp/admin"
+
+[build]
+  cmd = "go build -o ./tmp/admin/numind-admin ./cmd/numind-admin"
+  bin = "./tmp/admin/numind-admin"
+  args_bin = ["--config", "config_local.yaml"]
+  include_ext = ["go", "yaml"]
+  exclude_dir = ["tmp", "data", "scripts", "docs", "migrations"]
+  delay = 1000
+
+[log]
+  time = false
+
+[misc]
+  clean_on_exit = true

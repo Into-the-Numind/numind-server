@@ -14,6 +14,9 @@ import (
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
+	aismw "numind-server/internal/pkg/aiservice/middleware"
+	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
 )
@@ -80,7 +83,11 @@ func (p *IngestionPipeline) Submit(doc *domain.KnowledgeDocument) {
 
 func (p *IngestionPipeline) worker() {
 	for doc := range p.docChan {
+		// Inject userID and skip-legacy-billing so that the embedder closure
+		// routed through the AI Gateway can perform per-user billing correctly.
 		ctx := context.Background()
+		ctx = aismw.WithUserID(ctx, doc.UserID)
+		ctx = aiservice.WithSkipLegacyBilling(ctx)
 		p.process(ctx, doc)
 	}
 }
@@ -198,7 +205,8 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 
 	log.Printf("Starting tagging for %d chunks (doc %d)", len(kChunks), doc.ID)
 
-	err = p.tagger.TagChunks(ctx, kChunks)
+	tagCtx := billing.WithBilling(ctx, doc.UserID, "salesrag_tagging")
+	err = p.tagger.TagChunks(tagCtx, kChunks)
 	if err != nil {
 		p.fail(doc, fmt.Errorf("tagging failed: %w", err))
 		return
@@ -258,7 +266,6 @@ func (p *IngestionPipeline) process(ctx context.Context, doc *domain.KnowledgeDo
 			}
 		}
 	}
-	log.Printf("Finished processing doc %d in %v. Stored %d chunks.", doc.ID, time.Since(startTime), len(kChunksVal))
 	log.Printf("Finished processing doc %d in %v. Stored %d chunks.", doc.ID, time.Since(startTime), len(kChunksVal))
 }
 

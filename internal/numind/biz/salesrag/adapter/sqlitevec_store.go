@@ -312,14 +312,18 @@ func (s *SQLiteVecStore) Search(ctx context.Context, query string, filter port.S
 		fmt.Sprintf("id IN (%s)", strings.Join(placeholders, ",")),
 	}
 	if len(filter.DocumentIDs) > 0 {
-		// 有精确文档 ID 时，仅用 document_id 过滤，不叠加 user_id
-		// （安全性由 biz 层白名单保证，系统文档 user_id=0 也能被检索）
 		docPlaceholders := make([]string, len(filter.DocumentIDs))
 		for i, id := range filter.DocumentIDs {
 			docPlaceholders[i] = "?"
 			args = append(args, id)
 		}
 		conditions = append(conditions, fmt.Sprintf("document_id IN (%s)", strings.Join(docPlaceholders, ",")))
+		// 纵深防御：biz 层白名单已按 user 过滤 docIDs，此处再叠加 user_id 隔离作为兜底
+		// 避免未来新调用路径绕过白名单导致跨账户检索。系统文档 user_id=0 允许穿透。
+		if filter.UserID > 0 {
+			conditions = append(conditions, "(user_id = ? OR user_id = 0)")
+			args = append(args, filter.UserID)
+		}
 	} else if filter.UserID > 0 {
 		conditions = append(conditions, "user_id = ?")
 		args = append(args, filter.UserID)

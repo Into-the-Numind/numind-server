@@ -72,8 +72,12 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 			expiresStr = user.TierExpires.Format("2006-01-02")
 		}
 
+		creditBalance, _ := c.ds.Credits().GetBalance(ctx, user.ID)
+		creditExpires, _ := c.ds.Credits().GetLatestCreditExpiry(ctx, user.ID)
+
 		subUsers = append(subUsers, v1.SubUserInfo{
 			UserID:              user.ID,
+			Username:            user.Username,
 			Nickname:            user.Nickname,
 			Phone:               user.Phone,
 			Avatar:              user.AvatarURL,
@@ -83,6 +87,8 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 			UserTier:            user.GetActualUserTier(),
 			TierExpires:         expiresStr,
 			RemainingSopRuns:    user.GetRemainingSOPRuns(),
+			CreditBalance:       creditBalance,
+			CreditExpires:       creditExpires,
 		})
 	}
 

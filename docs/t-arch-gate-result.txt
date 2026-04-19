@@ -1,0 +1,123 @@
+T-ARCH PHASE 1 GATE RESULT
+===========================
+Date: 2026-04-18
+Branch: feature/ai-service-admin-complete-T-arch
+Result: FAIL — DO NOT PROCEED TO PHASE 2/3
+
+GATE QUERY OUTPUT (with collation fix applied)
+-----------------------------------------------
+route_id | provider_name | model_key                      | provider_model_id              | service_type | match_by_model_key | match_by_provider_model_id
+---------|---------------|-------------------------------|--------------------------------|--------------|-------------------|---------------------------
+20       | aihubmix      | claude-sonnet-4-6              | claude-sonnet-4-6              | llm          | 0                 | 0
+21       | aihubmix      | claude-sonnet-4-6-thinking     | claude-sonnet-4-6-think        | llm          | 0                 | 0
+23       | aihubmix      | deepseek-v3.2                  | deepseek-v3.2                  | llm          | 0                 | 0
+29       | aihubmix      | deepseek-v3.2-thinking         | deepseek-v3.2                  | llm          | 0                 | 0
+22       | aihubmix      | gemini-3.1-pro-preview         | gemini-3.1-pro-preview         | llm          | 0                 | 0
+28       | aihubmix      | gemini-3.1-pro-preview-thinking| gemini-3.1-pro-preview         | llm          | 0                 | 0
+24       | aihubmix      | gpt-5.4                        | gpt-5.4                        | llm          | 0                 | 0
+30       | aihubmix      | gpt-5.4-thinking               | gpt-5.4                        | llm          | 0                 | 0
+9        | dmxapi-ssvip  | claude-sonnet-4-6              | claude-sonnet-4-6              | llm          | 0                 | 0
+13       | dmxapi-ssvip  | claude-sonnet-4-6-thinking     | claude-sonnet-4-6-thinking     | llm          | 0                 | 0
+18       | dmxapi-ssvip  | deepseek-v3.2                  | deepseek-v3.2                  | llm          | 0                 | 0
+17       | dmxapi-ssvip  | gemini-3.1-pro-preview         | gemini-3.1-pro-preview         | llm          | 0                 | 0
+19       | dmxapi-ssvip  | gpt-5.4                        | gpt-5.4                        | llm          | 0                 | 0
+
+All 13 rows have BOTH match counts = 0.
+
+ROOT CAUSE ANALYSIS
+-------------------
+Three separate data integrity problems were found:
+
+PROBLEM 1: service_type semantic mismatch (CRITICAL — affects all 13 rows)
+  - ai_service.service_type uses: "llm"
+  - pricing_rule.service_type uses: "llm_chat"
+  - The gate query joins on pr.service_type = s.service_type, which never matches
+    because these two tables use different service_type vocabularies.
+  - ACTION NEEDED: Either (a) update pricing_rule.service_type to use "llm" for LLM
+    rules, OR (b) update the gate query + billing middleware to use a service_type
+    mapping layer (e.g. "llm" → "llm_chat").
+    Note: recorder.go's billing events use "llm_chat" / "llm_vision" as service_type,
+    so the usage_record table uses the fine-grained vocabulary. The ai_service table
+    uses the coarse vocabulary ("llm"). The gate query uses ai_service.service_type
+    directly — this is the architectural inconsistency.
+
+PROBLEM 2: provider name mismatch (affects dmxapi-ssvip routes)
+  - llm_provider.name = "dmxapi-ssvip" (routes 9, 13, 17, 18, 19)
+  - pricing_rule.provider has "dmxapi" but no "dmxapi-ssvip" row
+  - Routes via provider "dmxapi-ssvip" would never match pricing_rule even if
+    service_type matched.
+  - ACTION NEEDED: Add pricing_rule rows for provider="dmxapi-ssvip" covering the
+    relevant models, OR merge dmxapi-ssvip routes under provider="dmxapi" in
+    pricing_rule.
+
+PROBLEM 3: provider_model_id truncation (affects route 21 — claude-sonnet-4-6-thinking)
+  - ai_service_route.provider_model_id = "claude-sonnet-4-6-thinking" (route 21)
+  - pricing_rule.model = "claude-sonnet-4-6-think" (truncated — 24 chars vs 26 chars)
+  - Even with problem 1 and 2 fixed, this route would still fail match_by_provider_model_id
+  - ACTION NEEDED: Fix pricing_rule row id=20 to set model="claude-sonnet-4-6-thinking"
+    (to match the full provider_model_id string), OR update the route's provider_model_id
+    to "claude-sonnet-4-6-think".
+
+OFFENDING TUPLES (for main thread coordination)
+------------------------------------------------
+All 13 active routes are offending. Complete list:
+
+(llm, aihubmix, claude-sonnet-4-6, claude-sonnet-4-6)
+(llm, aihubmix, claude-sonnet-4-6-thinking, claude-sonnet-4-6-think)        <- also truncation in provider_model_id
+(llm, aihubmix, deepseek-v3.2, deepseek-v3.2)
+(llm, aihubmix, deepseek-v3.2-thinking, deepseek-v3.2)
+(llm, aihubmix, gemini-3.1-pro-preview, gemini-3.1-pro-preview)
+(llm, aihubmix, gemini-3.1-pro-preview-thinking, gemini-3.1-pro-preview)
+(llm, aihubmix, gpt-5.4, gpt-5.4)
+(llm, aihubmix, gpt-5.4-thinking, gpt-5.4)
+(llm, dmxapi-ssvip, claude-sonnet-4-6, claude-sonnet-4-6)
+(llm, dmxapi-ssvip, claude-sonnet-4-6-thinking, claude-sonnet-4-6-thinking)
+(llm, dmxapi-ssvip, deepseek-v3.2, deepseek-v3.2)
+(llm, dmxapi-ssvip, gemini-3.1-pro-preview, gemini-3.1-pro-preview)
+(llm, dmxapi-ssvip, gpt-5.4, gpt-5.4)
+
+Format: (ai_service.service_type, llm_provider.name, ai_service.model_key, ai_service_route.provider_model_id)
+
+SUGGESTED REMEDIATION OPTIONS
+------------------------------
+Option A (recommended — fix the gate query / billing path to use service_type mapping):
+  The billing recorder already maps "llm" service_type to "llm_chat" when recording
+  events (see recorder.go RecordLLM/RecordVision). The gate predicate should mirror
+  this mapping. Rewrite the gate query subquery condition as:
+    pr.service_type = CASE s.service_type WHEN 'llm' THEN 'llm_chat' ELSE s.service_type END
+  AND update the billing middleware buildBaseRecord to derive UsageRecord.ServiceType
+  from the same mapping (not route.ServiceType directly).
+  Additionally: add pricing_rule rows for dmxapi-ssvip provider.
+  Additionally: fix the model truncation for claude-sonnet-4-6-thinking.
+
+Option B (simpler data fix — update pricing_rule to use coarse service_type):
+  Change pricing_rule.service_type from "llm_chat"/"llm_vision" to "llm" for
+  all LLM-family rows. However this would break the existing recorder billing
+  path which calls GetPricingRule with service_type="llm_chat".
+
+Option C (keep current data, add missing pricing_rule rows):
+  Add pricing_rule rows matching the exact (service_type=llm_chat, provider, model)
+  tuples that billing.R.Record actually emits. This requires understanding what
+  service_type string the billing middleware puts in UsageRecord.ServiceType
+  (which comes from route.ServiceType = "llm" per the current code).
+  This would require the middleware to be changed to emit "llm_chat" not "llm".
+
+DECISION REQUIRED FROM MAIN THREAD
+------------------------------------
+1. Which service_type vocabulary should be canonical?
+   - ai_service.service_type: coarse ("llm", "ocr", "asr")
+   - pricing_rule.service_type: fine-grained ("llm_chat", "llm_vision", ...)
+   - billing recorder events: fine-grained ("llm_chat", "llm_vision", ...)
+   - UsageRecord.ServiceType: fine-grained ("llm_chat", "llm_vision", ...)
+   The billing middleware currently copies route.ServiceType ("llm") into UsageRecord.
+   This means UsageRecord.ServiceType is "llm", which doesn't match pricing_rule.
+   This is a pre-existing billing accuracy bug independent of T-arch.
+
+2. Should dmxapi-ssvip get its own pricing_rule rows, or be aliased to dmxapi?
+
+3. Fix the claude-sonnet-4-6-thinking truncation: which side to fix?
+
+GATE CONCLUSION
+---------------
+HALT — No code changes or migrations were made.
+Wait for main thread to resolve the 3 data integrity issues above, then re-run gate.

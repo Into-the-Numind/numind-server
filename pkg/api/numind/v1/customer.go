@@ -3,6 +3,7 @@ package v1
 // SubUserInfo 子用户信息
 type SubUserInfo struct {
 	UserID              uint   `json:"user_id"`
+	Username            string `json:"username"`
 	Nickname            string `json:"nickname"`
 	Phone               string `json:"phone"`
 	Avatar              string `json:"avatar"`
@@ -12,6 +13,8 @@ type SubUserInfo struct {
 	MonthlySopRuns      int    `json:"monthly_sop_runs"`
 	AuthorizedTemplates int    `json:"authorized_templates"`
 	RemainingSopRuns    int    `json:"remaining_sop_runs"` // 剩余运行次数
+	CreditBalance       int64  `json:"credit_balance"`     // 额度余额
+	CreditExpires       string `json:"credit_expires"`     // 最晚额度包到期时间
 }
 
 // ListSubUsersResponse 获取子客户列表响应

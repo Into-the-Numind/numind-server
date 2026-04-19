@@ -15,16 +15,23 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
-	"numind-server/internal/numind/biz/salesrag/adapter"
+	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/service"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
+	aismw "numind-server/internal/pkg/aiservice/middleware"
+	"numind-server/internal/pkg/aiservice/profile"
+	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/known"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/pricing"
 	"numind-server/internal/pkg/util"
 
 	"numind-server/internal/numind/biz/ali"
@@ -208,7 +215,17 @@ type salesRAGBiz struct {
 	aliBiz            ali.AliBiz // 阿里云 API 客户端
 	sessionStore      store.SalesSessionStore
 	parser            service.PipelineParser
-	dmxClient         *adapter.DMXAPIClient // DMXAPI 客户端（用于 DeepSeek-V3.2）
+
+	// Credits-system wiring (Phase 2 Task 2.2). When creditSvc is nil the biz
+	// silently skips credit deduction (backward-compat for call sites that
+	// haven't been rewired yet, e.g. opinion track seeder + legacy tests).
+	// Once biz.go is updated to pass the new deps, every user-triggered Chat
+	// flows through Reserve → LLM → Reconcile/Refund.
+	creditSvc       credit.ICreditService
+	pricing         pricing.ICalculator
+	registry        registry.Registry // resolves task_profile.salesrag.chat → real provider+model for CheckAndEstimate; nil-safe (test fixtures construct &salesRAGBiz{} without it)
+	defaultModel    string            // fallback model tag for R2 estimation (empty → global coef)
+	defaultProvider string            // fallback provider tag (empty → global coef)
 }
 
 // VolcBiz 火山引擎服务接口（避免循环依赖）
@@ -227,6 +244,25 @@ type VolcBiz interface {
 }
 
 func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *service.SalesRAGService, volc VolcBiz, ali ali.AliBiz, sessionStore store.SalesSessionStore, parser service.PipelineParser) SalesRAGBiz {
+	return NewSalesRAGBizWithCredits(ds, pipeline, rag, volc, ali, sessionStore, parser, nil, nil, nil)
+}
+
+// NewSalesRAGBizWithCredits constructs a SalesRAGBiz with the credits-system
+// deps injected (Phase 2 Task 2.2). When either creditSvc or pc is nil, the
+// biz falls back to the legacy no-op behaviour so callers that haven't been
+// updated still compile and run. Production wiring in biz.go passes both.
+func NewSalesRAGBizWithCredits(
+	ds store.IStore,
+	pipeline *service.IngestionPipeline,
+	rag *service.SalesRAGService,
+	volc VolcBiz,
+	ali ali.AliBiz,
+	sessionStore store.SalesSessionStore,
+	parser service.PipelineParser,
+	creditSvc credit.ICreditService,
+	pc pricing.ICalculator,
+	reg registry.Registry,
+) SalesRAGBiz {
 	return &salesRAGBiz{
 		ds:                ds,
 		ingestionPipeline: pipeline,
@@ -235,8 +271,194 @@ func NewSalesRAGBiz(ds store.IStore, pipeline *service.IngestionPipeline, rag *s
 		aliBiz:            ali,
 		sessionStore:      sessionStore,
 		parser:            parser,
-		dmxClient:         adapter.NewDMXAPIClient(),
+		creditSvc:         creditSvc,
+		pricing:           pc,
+		registry:          reg,
+		// defaultModel/defaultProvider stay empty: when registry is nil
+		// (test fixtures) acquireSalesragCredits falls back to passing them,
+		// which hits the ('llm_chat','','') global pricing row when seeded.
 	}
+}
+
+// getRequestUUIDFromCtx extracts the X-Request-ID value the RequestID
+// middleware stores on the Gin context (and which the controller forwards
+// via `middleware.NewContextWithUserID(c.Request.Context(), ...)` so the
+// value must come from the Gin context before it is detached).
+//
+// Returns an empty string when the middleware is missing; callers that
+// build an idempotency key on top MUST gate on empty-string to avoid a
+// uniqueness-violating blank key.
+func getRequestUUIDFromCtx(ctx context.Context) string {
+	if v := ctx.Value(known.XRequestIDKey); v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+// wrapCreditError maps ICreditService denial errors onto the errno domain
+// error HTTP 402 (Credits.Insufficient). legacy_tier users carry the Chinese
+// `Reason` string from CanRunSOP; credits users get a default zh message.
+// Non-credit errors bubble through unchanged so the caller sees the original
+// failure (DB error, coefficient missing, etc.).
+func (b *salesRAGBiz) wrapCreditError(err error, pre *credit.PreCheckResult) error {
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, credit.ErrInsufficientCredits) {
+		return err
+	}
+	if pre != nil && pre.Reason != "" {
+		return errno.ErrInsufficientCredits.SetMessage("%s", pre.Reason)
+	}
+	return errno.ErrInsufficientCredits
+}
+
+// salesragCreditContext bundles the per-chat-call credit state so the
+// ChatWithSession wrapper can emit the full Reserve → LLM → Reconcile/Refund
+// pipeline while keeping the LLM-call body uncluttered.
+//
+// Lifecycle:
+//  1. acquireSalesragCredits() — runs CheckAndEstimate + Reserve; returns
+//     either (ctx, cc, nil) on success or (ctx, nil, err) on denial/failure.
+//  2. caller invokes LLM stream, captures usage + streamErr.
+//  3. caller invokes cc.recordLLMResult(usage, streamErr) which computes
+//     actualCost.
+//  4. deferred cc.finalize(ctx) runs Reconcile/Refund with the outcome.
+//
+// When creditSvc is nil, acquireSalesragCredits returns (ctx, nil, nil) and
+// the caller treats that as a no-op (legacy behaviour).
+type salesragCreditContext struct {
+	biz        *salesRAGBiz
+	rsv        *credit.Reservation
+	pre        *credit.PreCheckResult
+	actualCost int64
+	opErr      error
+}
+
+// acquireSalesragCredits performs the CheckAndEstimate + conditional Reserve
+// pair for a salesrag_chat call. sessionID and promptChars are caller-
+// provided; idempotency_key is derived from request_uuid via
+// getRequestUUIDFromCtx.
+//
+// The caller is responsible for invoking `defer cc.finalize(ctx)` on the
+// returned cc (when non-nil) BEFORE running the LLM, so client-disconnect
+// (context.Canceled) still trips the refund path.
+func (b *salesRAGBiz) acquireSalesragCredits(
+	ctx context.Context, userID uint, sessionID uint, promptChars int,
+) (*salesragCreditContext, error) {
+	if b.creditSvc == nil {
+		return nil, nil
+	}
+	user, err := b.ds.Users().GetByID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("acquireSalesragCredits: load user: %w", err)
+	}
+	provider, modelName := b.resolveSalesragChatRoute(ctx)
+	pre, err := b.creditSvc.CheckAndEstimate(ctx, user, credit.OpSalesragChat, credit.EstimationInput{
+		PromptChars: promptChars,
+		Model:       modelName,
+		Provider:    provider,
+	})
+	if err != nil {
+		return &salesragCreditContext{biz: b, pre: pre}, b.wrapCreditError(err, pre)
+	}
+	cc := &salesragCreditContext{biz: b, pre: pre}
+	if pre.SkipDeduction {
+		// legacy_tier path: no Reserve, defer-finalize is a no-op.
+		return cc, nil
+	}
+
+	var rsv *credit.Reservation
+	requestUUID := getRequestUUIDFromCtx(ctx)
+	if requestUUID == "" {
+		rsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSalesragChat,
+			pre.EstimatedCredits, pre.CoefficientID, nil)
+	} else {
+		idempKey := fmt.Sprintf("salesrag_chat:%d:%s", sessionID, requestUUID)
+		rsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSalesragChat,
+			pre.EstimatedCredits, pre.CoefficientID, &idempKey)
+	}
+	if err != nil {
+		return cc, b.wrapCreditError(err, pre)
+	}
+	cc.rsv = rsv
+	return cc, nil
+}
+
+// resolveSalesragChatRoute looks up the current task_profile.salesrag.chat
+// binding so CheckAndEstimate hits the precise pricing rule (e.g.
+// aihubmix/deepseek-v3.2-thinking @ ¥2.16/¥3.24) instead of the
+// ('llm_chat','','') global fallback row — which is missing on dev DB and
+// caused "pricing lookup: record not found" 500s.
+//
+// Failures (registry nil, task unbound, network) fall back to ("","") so
+// the lookup degrades to whatever per-provider/global rows exist; the
+// callee surfaces ErrRecordNotFound only when no rule matches at all.
+func (b *salesRAGBiz) resolveSalesragChatRoute(ctx context.Context) (provider, modelName string) {
+	if b.registry == nil {
+		return "", ""
+	}
+	route, _, err := b.registry.ResolveTask(ctx, profile.SalesragChat)
+	if err != nil || route == nil {
+		log.Printf("[salesRAGBiz] resolveSalesragChatRoute(%s) fallback to empty: %v", profile.SalesragChat, err)
+		return "", ""
+	}
+	return route.Provider.Name, route.ServiceKey
+}
+
+// recordLLMResult mutates the credit context with the observed actual cost
+// (pricing.CalculateCost over the streamed token counts) and any stream
+// error. Called once per chat after the LLM stream drains. Safe to call
+// even when cc == nil (no-op for legacy wiring).
+func (cc *salesragCreditContext) recordLLMResult(
+	ctx context.Context, streamErr error,
+	provider, modelName string,
+	promptTokens, completionTokens int,
+) {
+	if cc == nil || cc.rsv == nil {
+		return
+	}
+	if streamErr != nil {
+		cc.opErr = streamErr
+		return
+	}
+	if promptTokens <= 0 || cc.biz.pricing == nil {
+		// Leave actualCost=0 → defer path Refund(no_actual_cost).
+		return
+	}
+	if provider == "" {
+		provider = cc.biz.defaultProvider
+	}
+	if modelName == "" {
+		modelName = cc.biz.defaultModel
+	}
+	cost, err := cc.biz.pricing.CalculateCost(ctx, "llm_chat",
+		provider, modelName, promptTokens, completionTokens)
+	if err != nil {
+		log.Printf("[salesragCreditContext] pricing.CalculateCost failed provider=%s model=%s: %v",
+			provider, modelName, err)
+		// actualCost stays 0 → Refund(no_actual_cost).
+		return
+	}
+	cc.actualCost = cost
+	// 把真实 token 数写到 rsv，FinalizeReservation 会透传到
+	// credit-reconcile span metadata（spec §5.1.3）。
+	cc.rsv.ActualPromptTokens = promptTokens
+	cc.rsv.ActualCompletionTokens = completionTokens
+}
+
+// finalize runs ICreditService.FinalizeReservation with a detached context
+// (context.WithoutCancel) so the refund/reconcile DB writes complete even
+// when the caller's ctx has already been cancelled (client disconnect).
+// Safe to call with cc == nil.
+func (cc *salesragCreditContext) finalize(ctx context.Context) {
+	if cc == nil || cc.rsv == nil {
+		return
+	}
+	detached := context.WithoutCancel(ctx)
+	_ = cc.biz.creditSvc.FinalizeReservation(detached, cc.rsv, &cc.actualCost, &cc.opErr)
 }
 
 func (b *salesRAGBiz) Ingest(ctx context.Context, userID uint, filename string, displayName string, reader io.Reader, opts IngestOptions) (uint, error) {
@@ -729,7 +951,7 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 				"opinion_count":  len(verdict.OpinionEvidence),
 			}))
 		}
-		// 恢复 parent 到 trace 级别（后续 generation 不嵌套在 retrieval 下）
+		// 重置 ParentObservationID — 让后续 chat generation 作为 trace 根的兄弟 span，而非 retrieval span 子节点
 		if tc := langfuse.FromContext(ctx); tc != nil {
 			ctx = langfuse.WithTrace(ctx, tc.TraceID)
 		}
@@ -762,21 +984,97 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 	// 10. 构建 prompt 并流式生成回答（用 promptQuery + OCR文字）
 	messages := b.buildPromptMessagesV2(promptQuery, ocrTexts, verdict, customerProfile, languageStyle, salesStage)
 
-	// 11. 调用火山方舟 deepseek-v3-2-251201 流式聊天（纯文本，图片通过OCR文字传入）
-	reasoningEffort := "minimal"
-	if deepThinking {
-		reasoningEffort = "high"
-	}
+	// 11. 通过 AI Gateway 流式生成回答（profile.SalesragChat）
 	ctx = billing.WithBilling(ctx, userID, "salesrag_chat_generate")
-	_, _, err = b.volcBiz.StreamChatWithModel(ctx, messages, "deepseek-v3-2-251201", 0, 0.7, reasoningEffort, func(eventType, content string) error {
-		if eventType == "thinking" {
-			return onEvent("thinking", content)
-		}
-		// eventType == "message"
-		return onEvent("token", content)
+	ctx = aismw.WithUserID(ctx, userID)
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
+
+	// 将 []map[string]interface{} 转换为 []aiservice.ChatMessage
+	aiMessages := make([]aiservice.ChatMessage, 0, len(messages))
+	for _, m := range messages {
+		role, _ := m["role"].(string)
+		content, _ := m["content"].(string)
+		aiMessages = append(aiMessages, aiservice.ChatMessage{
+			Role:    aiservice.MessageRole(role),
+			Content: aiservice.MessageContent{Text: content},
+		})
+	}
+
+	// Pre-stream errors (auth, routing) return synchronously via chatErr.
+	// Mid-stream errors surface via chunk.IsFinal && chunk.Err on the terminal
+	// chunk (A3 contract) — forward to the client as an "error" event instead
+	// of silently returning a truncated reply.
+	ch, chatErr := aiservice.ChatStream(ctx, profile.SalesragChat, aiservice.ChatRequest{
+		Messages:    aiMessages,
+		Temperature: 0.7,
 	})
-	if err != nil {
-		return onEvent("error", fmt.Sprintf("stream chat failed: %v", err))
+	if chatErr != nil {
+		return onEvent("error", fmt.Sprintf("stream chat failed: %v", chatErr))
+	}
+	var receivedTokens bool
+	var streamErr error
+	// Token/model metadata captured from the final chunk (spec §3.5). Emitted
+	// as a "usage" event after stream drain so the caller (ChatWithSession)
+	// can compute actualCost → ICreditService.Reconcile.
+	var finalUsage *aiservice.TokenUsage
+	var finalModel, finalProvider string
+	for chunk := range ch {
+		if chunk.ReasoningDelta != "" {
+			if evErr := onEvent("thinking", chunk.ReasoningDelta); evErr != nil {
+				return evErr
+			}
+		}
+		if chunk.Delta != "" {
+			receivedTokens = true
+			if evErr := onEvent("token", chunk.Delta); evErr != nil {
+				return evErr
+			}
+		}
+		if chunk.Model != "" {
+			finalModel = chunk.Model
+		}
+		if chunk.Provider != "" {
+			finalProvider = chunk.Provider
+		}
+		if chunk.IsFinal {
+			if chunk.Usage != nil {
+				// Copy so downstream callers don't hold a pointer into the
+				// stream channel's memory.
+				u := *chunk.Usage
+				finalUsage = &u
+			}
+			if chunk.Err != nil {
+				streamErr = chunk.Err
+			}
+		}
+	}
+	// Emit a post-drain "usage" event so the ChatWithSession wrapper can
+	// synchronously compute actualCost via pricing.CalculateCost before the
+	// deferred Finalize fires. onEvent for unknown types is a no-op upstream,
+	// so legacy RetrieveStream callers that don't care about usage simply
+	// ignore this.
+	if finalUsage != nil {
+		usagePayload := map[string]interface{}{
+			"prompt_tokens":     finalUsage.PromptTokens,
+			"completion_tokens": finalUsage.CompletionTokens,
+			"total_tokens":      finalUsage.TotalTokens,
+			"model":             finalModel,
+			"provider":          finalProvider,
+		}
+		if evErr := onEvent("usage", usagePayload); evErr != nil {
+			return evErr
+		}
+	}
+	if streamErr != nil {
+		// Emit an internal-only "stream_error" event carrying the raw error so
+		// the ChatWithSession wrapper can capture it for credit Refund
+		// classification. The controller-facing error is still emitted so SSE
+		// clients see the same payload as before (backward compat).
+		_ = onEvent("stream_error", streamErr)
+		return onEvent("error", fmt.Sprintf("stream chat failed mid-flight: %v", streamErr))
+	}
+	if !receivedTokens {
+		log.Printf("[RetrieveStream] Warning: chat stream ended without any tokens — possible mid-stream error or empty model response")
 	}
 
 	// 12. 发送完成事件
@@ -1705,11 +2003,52 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 		bc.Meta["trace_id"] = traceID
 	}
 
+	// 4b. Credits-system pre-check + reservation (Phase 2 Task 2.2 / spec §3.5).
+	//
+	// Order of ops relative to SSE headers: the controller has already written
+	// SSE headers before we got here, so any credit-denial error returned from
+	// this function surfaces to the user as an SSE "error" event (via the
+	// controller's err-write path at sales_rag.go:216). That matches sop_run /
+	// sop_chat's behaviour post-integration.
+	//
+	// When creditSvc is nil (legacy wiring / tests without the new deps), this
+	// block is a no-op and the biz behaves exactly as before — the controller
+	// still invokes the old CanPerformAIOperation + DeductCredits fire-and-
+	// forget path, so prod traffic is never left un-billed even in a partial
+	// rollout.
+	//
+	// Prompt-char estimate based on user input + retrieval query + customer
+	// profile + history. The RAG-retrieved context is NOT yet known (retrieval
+	// happens inside RetrieveStream), so we add a small allowance for it;
+	// the R2 safety_buffer_pct (≥ 20%) covers residual under-estimation and
+	// the Reconcile delta trues up the final cost.
+	promptChars := utf8.RuneCountInString(retrievalQuery) +
+		utf8.RuneCountInString(session.CustomerProfile)
+	for _, h := range history {
+		promptChars += utf8.RuneCountInString(h)
+	}
+	const ragContextAllowance = 2000
+	promptChars += ragContextAllowance
+
+	cc, creditErr := b.acquireSalesragCredits(ctx, userID, sessionID, promptChars)
+	if creditErr != nil {
+		return creditErr
+	}
+	// defer FinalizeReservation using a detached context (done inside
+	// cc.finalize) so Refund/Reconcile still completes after the request
+	// context is cancelled (client disconnect = context.Canceled).
+	defer cc.finalize(ctx)
+
 	// 调用流式检索，累积内容
 	// 使用从数据库加载的 sessionDocIDs，而不是函数参数中的 docIDs
 	var fullContent strings.Builder
 	var verdictJSON string
 	var thinkingText string
+	// Stream metadata captured from RetrieveStream internal "usage" event —
+	// used post-drain to compute actualCost via pricing.CalculateCost.
+	var streamPromptTokens, streamCompletionTokens int
+	var streamModel, streamProvider string
+	var streamErr error
 
 	err = b.RetrieveStream(ctx, retrievalQuery, query, ocrTexts, history, sessionDocIDs, allOpinionDocIDs, docCategoryMap, deepThinking, chatMode, session.CustomerProfile, session.SalesStage, func(eventType string, data interface{}) error {
 		switch eventType {
@@ -1738,6 +2077,35 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 			// 继续传递给外部回调
 			return onEvent(eventType, data)
 
+		case "usage":
+			// Internal event emitted by RetrieveStream after stream drain.
+			// Swallow it here — not forwarded to the SSE client (no existing
+			// consumer expects this frame).
+			if usage, ok := data.(map[string]interface{}); ok {
+				if pt, ok := usage["prompt_tokens"].(int); ok {
+					streamPromptTokens = pt
+				}
+				if ct, ok := usage["completion_tokens"].(int); ok {
+					streamCompletionTokens = ct
+				}
+				if m, ok := usage["model"].(string); ok {
+					streamModel = m
+				}
+				if p, ok := usage["provider"].(string); ok {
+					streamProvider = p
+				}
+			}
+			return nil
+
+		case "stream_error":
+			// Internal event — capture the raw error for credit Refund
+			// classification but don't forward (the companion "error" event
+			// already reaches the SSE client via RetrieveStream).
+			if e, ok := data.(error); ok {
+				streamErr = e
+			}
+			return nil
+
 		case "error", "done":
 			// 直接传递
 			return onEvent(eventType, data)
@@ -1747,8 +2115,20 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 		}
 	})
 
-	if err != nil {
+	// Propagate stream outcomes to the credit context so FinalizeReservation
+	// (deferred above) fires the correct branch: Reconcile on success with an
+	// observed actualCost, Refund with classified reason on error / abort.
+	// Pre-stream errors (err != nil from RetrieveStream) take precedence
+	// because they represent hard failures that never reached the LLM.
+	switch {
+	case err != nil:
+		cc.recordLLMResult(ctx, err, streamProvider, streamModel, streamPromptTokens, streamCompletionTokens)
 		return err
+	case streamErr != nil:
+		cc.recordLLMResult(ctx, streamErr, streamProvider, streamModel, streamPromptTokens, streamCompletionTokens)
+		return streamErr
+	default:
+		cc.recordLLMResult(ctx, nil, streamProvider, streamModel, streamPromptTokens, streamCompletionTokens)
 	}
 
 	// 5. 保存助手消息（关联 Langfuse traceID，用于后续反馈评分）
@@ -2073,15 +2453,71 @@ func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint,
 		},
 	}
 
-	log.Printf("[AnalyzeProfileMultiFiles] Calling Volc StreamChatWithModel with %d content parts", len(contentParts))
+	log.Printf("[AnalyzeProfileMultiFiles] Calling AI Gateway (profile.SalesragProfile) with %d content parts", len(contentParts))
 	ctx = billing.WithBilling(ctx, userID, "salesrag_analyze_profile")
-	result, _, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "medium", func(event string, token string) error {
-		if event == "message" {
-			return onToken(token)
+	ctx = aismw.WithUserID(ctx, userID)
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
+
+	// 转换 contentParts ([]map[string]interface{}) 为 aiservice.MessagePart 切片
+	aiParts := make([]aiservice.MessagePart, 0, len(contentParts))
+	for _, p := range contentParts {
+		partType, _ := p["type"].(string)
+		switch partType {
+		case "text":
+			text, _ := p["text"].(string)
+			aiParts = append(aiParts, aiservice.MessagePart{
+				Type: aiservice.MessagePartTypeText,
+				Text: text,
+			})
+		case "image_url":
+			imgMap, _ := p["image_url"].(map[string]string)
+			url := imgMap["url"]
+			aiParts = append(aiParts, aiservice.MessagePart{
+				Type:     aiservice.MessagePartTypeImageURL,
+				ImageURL: &aiservice.ImageURL{URL: url},
+			})
 		}
-		return nil
+	}
+
+	systemPromptText, _ := messages[0]["content"].(string)
+	aiMessages := []aiservice.ChatMessage{
+		{
+			Role:    aiservice.MessageRoleSystem,
+			Content: aiservice.MessageContent{Text: systemPromptText},
+		},
+		{
+			Role:    aiservice.MessageRoleUser,
+			Content: aiservice.MessageContent{Parts: aiParts},
+		},
+	}
+
+	ch, err := aiservice.ChatStream(ctx, profile.SalesragProfile, aiservice.ChatRequest{
+		Messages:    aiMessages,
+		Temperature: 0.5,
 	})
-	return result, err
+	if err != nil {
+		return "", fmt.Errorf("AI Gateway profile stream failed: %w", err)
+	}
+	var result string
+	var streamErr error
+	for chunk := range ch {
+		if chunk.Delta != "" {
+			result += chunk.Delta
+			if err := onToken(chunk.Delta); err != nil {
+				return result, err
+			}
+		}
+		if chunk.IsFinal && chunk.Err != nil {
+			streamErr = chunk.Err
+		}
+	}
+	if streamErr != nil {
+		// Refuse to return a partial profile that the caller would treat as
+		// a complete analysis — surface the failure so upstream retries or
+		// marks the job as failed.
+		return result, fmt.Errorf("AnalyzeProfileMultiFiles: stream error: %w", streamErr)
+	}
+	return result, nil
 }
 
 // AnalyzeProfileText 纯文本分析生成客户档案
@@ -2102,30 +2538,58 @@ func (b *salesRAGBiz) AnalyzeProfileText(ctx context.Context, userID uint, text 
 		},
 	}
 
-	messages := []map[string]interface{}{
+	log.Printf("[AnalyzeProfileText] Calling AI Gateway (profile.SalesragProfile)")
+	ctx = billing.WithBilling(ctx, userID, "salesrag_analyze_profile_text")
+	ctx = aismw.WithUserID(ctx, userID)
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
+
+	aiParts := make([]aiservice.MessagePart, 0, len(contentParts))
+	for _, p := range contentParts {
+		t, _ := p["text"].(string)
+		aiParts = append(aiParts, aiservice.MessagePart{
+			Type: aiservice.MessagePartTypeText,
+			Text: t,
+		})
+	}
+	aiMessages := []aiservice.ChatMessage{
 		{
-			"role":    "system",
-			"content": fetchProfilePrompt(),
+			Role:    aiservice.MessageRoleSystem,
+			Content: aiservice.MessageContent{Text: fetchProfilePrompt()},
 		},
 		{
-			"role":    "user",
-			"content": contentParts,
+			Role:    aiservice.MessageRoleUser,
+			Content: aiservice.MessageContent{Parts: aiParts},
 		},
 	}
 
-	log.Printf("[AnalyzeProfileText] Calling Volc StreamChatWithModel")
-	ctx = billing.WithBilling(ctx, userID, "salesrag_analyze_profile_text")
-	result, _, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "medium", func(event string, token string) error {
-		if event == "message" {
-			return onToken(token)
-		}
-		return nil
+	ch, err := aiservice.ChatStream(ctx, profile.SalesragProfile, aiservice.ChatRequest{
+		Messages:    aiMessages,
+		Temperature: 0.5,
 	})
-	return result, err
+	if err != nil {
+		return "", fmt.Errorf("AI Gateway profile text stream failed: %w", err)
+	}
+	var result string
+	var streamErr error
+	for chunk := range ch {
+		if chunk.Delta != "" {
+			result += chunk.Delta
+			if err := onToken(chunk.Delta); err != nil {
+				return result, err
+			}
+		}
+		if chunk.IsFinal && chunk.Err != nil {
+			streamErr = chunk.Err
+		}
+	}
+	if streamErr != nil {
+		return result, fmt.Errorf("AnalyzeProfileText: stream error: %w", streamErr)
+	}
+	return result, nil
 }
 
 // AnalyzeChatStyleStream 流式分析聊天风格（语言指纹分析）
-// 图片使用阿里云 qwen3-vl-flash-2026-01-22，文本使用 dmxapi qwen-turbo（均为流式）
+// 图片通过 Gateway profile.SalesragChatstyle 路由（vision），文本通过 Gateway profile.SalesragChatstyle 路由（均为流式）
 func (b *salesRAGBiz) AnalyzeChatStyleStream(ctx context.Context, userID uint, file io.Reader, filename string, onToken func(token string) error) (string, error) {
 	log.Printf("[AnalyzeChatStyleStream] Starting analysis for user %d, filename: %s", userID, filename)
 
@@ -2142,7 +2606,7 @@ func (b *salesRAGBiz) AnalyzeChatStyleStream(ctx context.Context, userID uint, f
 		return b.analyzeChatStyleImageStream(ctx, userID, data, onToken)
 	}
 
-	// 文本文件使用 dmxapi 流式输出
+	// 文本文件通过 Gateway profile.SalesragChatstyle 路由
 	log.Printf("[AnalyzeChatStyleStream] Text file detected, using text stream for user %d", userID)
 	return b.analyzeChatStyleTextStream(ctx, userID, bytes.NewReader(data), filename, onToken)
 }
@@ -2199,24 +2663,49 @@ func (b *salesRAGBiz) analyzeChatStyleTextStream(ctx context.Context, userID uin
 - 直接输出 Markdown 格式的风格说明书，严禁开场白和任何提示语
 - 字数控制在 500 字以内`
 
-	// 4. 调用火山方舟模型（流式输出）
-	log.Printf("[analyzeChatStyleTextStream] Calling Volc StreamChatWithModel for user %d", userID)
+	// 4. 通过 AI Gateway 调用（profile.SalesragChatstyle，流式输出）
+	log.Printf("[analyzeChatStyleTextStream] Calling AI Gateway (profile.SalesragChatstyle) for user %d", userID)
 	ctx = billing.WithBilling(ctx, userID, "salesrag_chat_style_text")
-	messages := []map[string]interface{}{
-		{"role": "system", "content": systemPrompt},
-		{"role": "user", "content": text},
+	ctx = aismw.WithUserID(ctx, userID)
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
+	aiMessages := []aiservice.ChatMessage{
+		{
+			Role:    aiservice.MessageRoleSystem,
+			Content: aiservice.MessageContent{Text: systemPrompt},
+		},
+		{
+			Role:    aiservice.MessageRoleUser,
+			Content: aiservice.MessageContent{Text: text},
+		},
 	}
-	analysis, _, err := b.volcBiz.StreamChatWithModel(ctx, messages, "doubao-seed-2-0-lite-260215", 0, 0.5, "high", func(event string, token string) error {
-		if event == "message" {
-			return onToken(token)
-		}
-		return nil
+	ch, err := aiservice.ChatStream(ctx, profile.SalesragChatstyle, aiservice.ChatRequest{
+		Messages:    aiMessages,
+		Temperature: 0.5,
 	})
 	if err != nil {
-		log.Printf("[analyzeChatStyleTextStream] Volc StreamChat failed for user %d: %v", userID, err)
+		log.Printf("[analyzeChatStyleTextStream] AI Gateway stream failed for user %d: %v", userID, err)
 		return "", fmt.Errorf("AI 分析服务调用失败: %w", err)
 	}
-	log.Printf("[analyzeChatStyleTextStream] Volc StreamChat success, result length: %d", len(analysis))
+	var analysis string
+	var streamErr error
+	for chunk := range ch {
+		if chunk.Delta != "" {
+			analysis += chunk.Delta
+			if err := onToken(chunk.Delta); err != nil {
+				return analysis, err
+			}
+		}
+		if chunk.IsFinal && chunk.Err != nil {
+			streamErr = chunk.Err
+		}
+	}
+	if streamErr != nil {
+		// Don't persist a half-built language style; propagate up so the
+		// caller can retry or surface the error to the user.
+		log.Printf("[analyzeChatStyleTextStream] stream error for user %d: %v", userID, streamErr)
+		return analysis, fmt.Errorf("analyzeChatStyleTextStream: stream error: %w", streamErr)
+	}
+	log.Printf("[analyzeChatStyleTextStream] AI Gateway success, result length: %d", len(analysis))
 
 	// 5. 保存到数据库
 	style := &model.LanguageStyle{
@@ -2382,16 +2871,56 @@ func (b *salesRAGBiz) analyzeChatStyleImageStream(ctx context.Context, userID ui
 - 字数控制在 500 字以内
 - 只分析销售人员（右边绿色气泡）的语言风格`
 
-	// 5. 调用火山方舟视觉模型（doubao-seed-2-0-lite-260215，与客户档案分析保持一致）
-	const visionModel = "doubao-seed-2-0-lite-260215"
+	// 5. 通过 AI Gateway 调用视觉模型（profile.SalesragChatstyle，流式输出）
 	ctx = billing.WithBilling(ctx, userID, "salesrag_chat_style_image")
-	result, _, err := b.volcBiz.VisionAnalyzeStream(ctx, dataURL, systemPrompt, visionModel, 0, "medium", onToken)
+	ctx = aismw.WithUserID(ctx, userID)
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
+	visionMessages := []aiservice.ChatMessage{
+		{
+			Role:    aiservice.MessageRoleSystem,
+			Content: aiservice.MessageContent{Text: systemPrompt},
+		},
+		{
+			Role: aiservice.MessageRoleUser,
+			Content: aiservice.MessageContent{
+				Parts: []aiservice.MessagePart{
+					{
+						Type:     aiservice.MessagePartTypeImageURL,
+						ImageURL: &aiservice.ImageURL{URL: dataURL},
+					},
+				},
+			},
+		},
+	}
+	visionCh, err := aiservice.ChatStream(ctx, profile.SalesragChatstyle, aiservice.ChatRequest{
+		Messages:    visionMessages,
+		Temperature: 0.5,
+	})
 	if err != nil {
-		log.Printf("[analyzeChatStyleImageStream] Volc VisionAnalyzeStream error: %v", err)
+		log.Printf("[analyzeChatStyleImageStream] AI Gateway vision stream error: %v", err)
 		return "", fmt.Errorf("视觉模型分析失败: %w", err)
 	}
+	var result string
+	var visionStreamErr error
+	for chunk := range visionCh {
+		if chunk.Delta != "" {
+			result += chunk.Delta
+			if err := onToken(chunk.Delta); err != nil {
+				return result, err
+			}
+		}
+		if chunk.IsFinal && chunk.Err != nil {
+			visionStreamErr = chunk.Err
+		}
+	}
+	if visionStreamErr != nil {
+		// Same fail-fast contract as the text path: don't persist a half-built
+		// language style on mid-stream failure.
+		log.Printf("[analyzeChatStyleImageStream] stream error for user %d: %v", userID, visionStreamErr)
+		return result, fmt.Errorf("analyzeChatStyleImageStream: stream error: %w", visionStreamErr)
+	}
 
-	log.Printf("[analyzeChatStyleImageStream] QianwenVisionStream completed, result length: %d", len(result))
+	log.Printf("[analyzeChatStyleImageStream] AI Gateway vision stream completed, result length: %d", len(result))
 
 	// 3. 保存到数据库
 	style := &model.LanguageStyle{
@@ -2538,7 +3067,7 @@ func (b *salesRAGBiz) OCRAnalyze(ctx context.Context, userID uint, imageData []b
 	}
 }
 
-// ocrWithBaidu 使用百度光学 OCR 识别微信聊天截图（根据文字位置自动标注说话人）
+// ocrWithBaidu 使用百度光学 OCR 识别微信聊天截图（经由 AI Gateway）
 func (b *salesRAGBiz) ocrWithBaidu(ctx context.Context, userID uint, imageData []byte, frontendURL string) (string, string, error) {
 	log.Printf("[OCRAnalyze] Using Baidu OCR engine, user_id: %d, image_size: %d", userID, len(imageData))
 
@@ -2548,7 +3077,12 @@ func (b *salesRAGBiz) ocrWithBaidu(ctx context.Context, userID uint, imageData [
 		imageWidth = img.Bounds().Dx()
 	}
 
-	ocrText, err := baidu.RecognizeChatText(imageData, imageWidth)
+	// 注入 Gateway 中间件上下文
+	ctx = billing.WithBilling(ctx, userID, "salesrag_ocr")
+	ctx = aismw.WithUserID(ctx, userID)
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
+
+	ocrText, err := baidu.RecognizeChatText(ctx, imageData, imageWidth)
 	if err != nil {
 		log.Printf("[OCRAnalyze] Baidu OCR failed, user_id: %d, error: %v", userID, err)
 		return "", "", fmt.Errorf("百度 OCR 识别失败: %w", err)

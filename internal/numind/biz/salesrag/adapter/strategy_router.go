@@ -7,22 +7,21 @@ import (
 	"strings"
 
 	"numind-server/internal/numind/biz/salesrag/domain"
+	"numind-server/internal/pkg/aiservice"
+	aismw "numind-server/internal/pkg/aiservice/middleware"
+	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 )
 
 // StrategyRouter 基于LLM的策略路由器
-// 使用 qwen-turbo-latest 进行策略选择
-type StrategyRouter struct {
-	dmxClient *DMXAPIClient
-}
+// 使用 profile.SalesragIntent 进行策略选择（意图/策略分析，语义最接近）
+type StrategyRouter struct{}
 
 // NewStrategyRouter 创建新的策略路由器
 func NewStrategyRouter() *StrategyRouter {
-	return &StrategyRouter{
-		dmxClient: NewDMXAPIClient(),
-	}
+	return &StrategyRouter{}
 }
 
 // SelectMetaStrategy 从综合策略列表中选择最匹配的一个
@@ -63,16 +62,24 @@ func (r *StrategyRouter) SelectMetaStrategy(ctx context.Context, query string, h
 请严格按照以下JSON格式输出，不要包含其他内容：
 {"meta_id": "选中的策略ID", "reason": "选择理由"}`, options.String(), historyStr, query)
 
-	messages := []ChatMessage{
-		{Role: "user", Content: prompt},
-	}
-
 	// 注入计费上下文
 	if uid, ok := middleware.UserIDFromCtx(ctx); ok && uid > 0 {
 		ctx = billing.WithBilling(ctx, uid, "salesrag_strategy_select")
+		ctx = aismw.WithUserID(ctx, uid)
 	}
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
 
-	resp, _, err := r.dmxClient.ChatCompletionWithThinking(ctx, "qwen-turbo-latest", messages, 0.1, 200)
+	aiMessages := []aiservice.ChatMessage{
+		{
+			Role:    aiservice.MessageRoleUser,
+			Content: aiservice.MessageContent{Text: prompt},
+		},
+	}
+	resp, err := aiservice.Chat(ctx, profile.SalesragIntent, aiservice.ChatRequest{
+		Messages:    aiMessages,
+		Temperature: 0.1,
+		MaxTokens:   200,
+	})
 	if err != nil {
 		log.C(ctx).Warnw("Meta strategy selection LLM call failed", "error", err)
 		// Fallback: 返回第一个策略
@@ -80,13 +87,13 @@ func (r *StrategyRouter) SelectMetaStrategy(ctx context.Context, query string, h
 	}
 
 	// 解析JSON响应
-	jsonStr := extractJSON(resp)
+	jsonStr := extractJSON(resp.Content)
 	var result struct {
 		MetaID string `json:"meta_id"`
 		Reason string `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-		log.C(ctx).Warnw("Failed to parse meta strategy JSON", "response", resp, "error", err)
+		log.C(ctx).Warnw("Failed to parse meta strategy JSON", "response", resp.Content, "error", err)
 		return metas[0].ID, nil
 	}
 
@@ -150,29 +157,37 @@ func (r *StrategyRouter) SelectBasicStrategy(ctx context.Context, query string, 
 只输出 JSON：
 {"basic_id": "选中的策略ID", "reason": "基于决策树的判断依据"}`, decisionTree, options.String(), historyStr, query)
 
-	messages := []ChatMessage{
-		{Role: "user", Content: prompt},
-	}
-
 	// 注入计费上下文
 	if uid, ok := middleware.UserIDFromCtx(ctx); ok && uid > 0 {
 		ctx = billing.WithBilling(ctx, uid, "salesrag_strategy_select")
+		ctx = aismw.WithUserID(ctx, uid)
 	}
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
 
-	resp, _, err := r.dmxClient.ChatCompletionWithThinking(ctx, "qwen-turbo-latest", messages, 0.1, 200)
+	aiMessages := []aiservice.ChatMessage{
+		{
+			Role:    aiservice.MessageRoleUser,
+			Content: aiservice.MessageContent{Text: prompt},
+		},
+	}
+	resp, err := aiservice.Chat(ctx, profile.SalesragIntent, aiservice.ChatRequest{
+		Messages:    aiMessages,
+		Temperature: 0.1,
+		MaxTokens:   200,
+	})
 	if err != nil {
 		log.C(ctx).Warnw("Basic strategy selection LLM call failed", "error", err)
 		return basics[0].ID, nil
 	}
 
 	// 解析JSON响应
-	jsonStr := extractJSON(resp)
+	jsonStr := extractJSON(resp.Content)
 	var result struct {
 		BasicID string `json:"basic_id"`
 		Reason  string `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-		log.C(ctx).Warnw("Failed to parse basic strategy JSON", "response", resp, "error", err)
+		log.C(ctx).Warnw("Failed to parse basic strategy JSON", "response", resp.Content, "error", err)
 		return basics[0].ID, nil
 	}
 

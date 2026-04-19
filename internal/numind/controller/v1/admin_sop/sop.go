@@ -13,6 +13,41 @@ import (
 	v1 "numind-server/pkg/api/numind/v1"
 )
 
+func toAdminRunItem(r *model.SopRun, totalTokens, costCents int64) v1.AdminRunItem {
+	item := v1.AdminRunItem{
+		ID:           r.ID,
+		TemplateID:   r.TemplateID,
+		UserID:       r.UserID,
+		Status:       r.Status,
+		StartedAt:    r.StartedAt,
+		FinishedAt:   r.FinishedAt,
+		ErrorMessage: r.ErrorMessage,
+		CreatedAt:    r.CreatedAt,
+		TotalTokens:  totalTokens,
+		CostCents:    costCents,
+	}
+	if r.Template != nil {
+		item.Template = &v1.AdminRunTemplateRef{ID: r.Template.ID, Name: r.Template.Name}
+	}
+	if r.User != nil {
+		item.User = &v1.AdminRunUserRef{ID: r.User.ID, Nickname: r.User.Nickname}
+	}
+	return item
+}
+
+func toAdminNodeRunItem(nr *model.SopNodeRun) v1.AdminNodeRunItem {
+	return v1.AdminNodeRunItem{
+		ID:        nr.ID,
+		NodeID:    nr.NodeID,
+		Status:    nr.Status,
+		Input:     nr.Input,
+		Output:    nr.Output,
+		Thinking:  nr.Thinking,
+		LatencyMs: nr.LatencyMs,
+		Sort:      nr.Sort,
+	}
+}
+
 // SopController SOP控制器
 type SopController struct {
 	sopBiz sop.ISopBiz
@@ -300,7 +335,9 @@ func (ctrl *SopController) GetRun(c *gin.Context) {
 		return
 	}
 
-	core.WriteResponse(c, nil, run)
+	totalTokens, costCents := fetchRunStats(c, ctrl.sopBiz, run.ID)
+
+	core.WriteResponse(c, nil, toAdminRunItem(run, totalTokens, costCents))
 }
 
 // GetRunDetail 获取SOP执行详情（包含节点执行记录）
@@ -319,10 +356,32 @@ func (ctrl *SopController) GetRunDetail(c *gin.Context) {
 		return
 	}
 
+	totalTokens, costCents := fetchRunStats(c, ctrl.sopBiz, run.ID)
+
+	nodeItems := make([]v1.AdminNodeRunItem, len(nodeRuns))
+	for i := range nodeRuns {
+		nodeItems[i] = toAdminNodeRunItem(&nodeRuns[i])
+	}
+
 	core.WriteResponse(c, nil, gin.H{
-		"run":       run,
-		"node_runs": nodeRuns,
+		"run":       toAdminRunItem(run, totalTokens, costCents),
+		"node_runs": nodeItems,
 	})
+}
+
+// fetchRunStats 单 run 维度获取 token/cost 统计。失败时记录 warn 并返回零值，
+// 不阻断响应 — 统计缺失的可观测性价值低于整个详情接口 200 返回的可用性。
+func fetchRunStats(c *gin.Context, sopBiz sop.ISopBiz, runID uint) (int64, int64) {
+	stats, err := sopBiz.GetRunsStats(c, []uint{runID})
+	if err != nil {
+		log.C(c).Warnw("Failed to get run stats", "run_id", runID, "error", err)
+		return 0, 0
+	}
+	s, ok := stats[runID]
+	if !ok {
+		return 0, 0
+	}
+	return s.TotalTokens, s.CostCents
 }
 
 // ListRuns 获取SOP执行记录列表
@@ -360,25 +419,15 @@ func (ctrl *SopController) ListRuns(c *gin.Context) {
 		stats = map[uint]sop.RunStats{}
 	}
 
-	type runWithStats struct {
-		model.SopRun
-		TotalTokens int64 `json:"total_tokens"`
-		CostCents   int64 `json:"cost_cents"`
-	}
-
-	enriched := make([]runWithStats, len(runs))
-	for i, r := range runs {
-		s := stats[r.ID]
-		enriched[i] = runWithStats{
-			SopRun:      r,
-			TotalTokens: s.TotalTokens,
-			CostCents:   s.CostCents,
-		}
+	items := make([]v1.AdminRunItem, len(runs))
+	for i := range runs {
+		s := stats[runs[i].ID]
+		items[i] = toAdminRunItem(&runs[i], s.TotalTokens, s.CostCents)
 	}
 
 	core.WriteResponse(c, nil, gin.H{
 		"total": total,
-		"runs":  enriched,
+		"runs":  items,
 	})
 }
 

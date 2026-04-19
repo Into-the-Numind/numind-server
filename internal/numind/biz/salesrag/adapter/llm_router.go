@@ -7,6 +7,9 @@ import (
 	"strings"
 
 	"numind-server/internal/numind/biz/salesrag/port"
+	"numind-server/internal/pkg/aiservice"
+	aismw "numind-server/internal/pkg/aiservice/middleware"
+	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
@@ -14,16 +17,12 @@ import (
 )
 
 // LLMRouter 基于大模型的意图路由器 (V3 - CoT + HyDE)
-// 使用 DMXAPI 平台的 qwen-turbo-latest（深度思考模式）进行深度意图理解和查询改写
-type LLMRouter struct {
-	dmxClient *DMXAPIClient
-}
+// 通过 AI Gateway (profile.SalesragIntent) 进行深度意图理解和查询改写
+type LLMRouter struct{}
 
 // NewLLMRouter 创建新的 LLM意图路由器
 func NewLLMRouter() *LLMRouter {
-	return &LLMRouter{
-		dmxClient: NewDMXAPIClient(),
-	}
+	return &LLMRouter{}
 }
 
 // ========== 销售话术模式 Prompt (V3 - CoT + HyDE) ==========
@@ -161,14 +160,12 @@ func (r *LLMRouter) AnalyzeIntentV2(ctx context.Context, query string, history [
 		}
 	}
 
-	messages := []ChatMessage{
-		{Role: "user", Content: prompt},
-	}
-
-	// 注入计费上下文
+	// 注入 aiservice 上下文：userID + skip-legacy-billing
 	if uid, ok := middleware.UserIDFromCtx(ctx); ok && uid > 0 {
+		ctx = aismw.WithUserID(ctx, uid)
 		ctx = billing.WithBilling(ctx, uid, "salesrag_intent_analysis")
 	}
+	ctx = aiservice.WithSkipLegacyBilling(ctx)
 
 	// 注入 Langfuse span（intent_analysis 子步骤）
 	if tc := langfuse.FromContext(ctx); tc != nil {
@@ -192,8 +189,14 @@ func (r *LLMRouter) AnalyzeIntentV2(ctx context.Context, query string, history [
 		}()
 	}
 
-	// 调用 qwen-turbo-latest（深度思考模式）
-	resp, _, err := r.dmxClient.ChatCompletionWithThinking(ctx, "qwen-turbo-latest", messages, 0.1, 2000)
+	// 通过 AI Gateway 调用 SalesragIntent（非流式，JSON 响应）
+	gatewayResp, err := aiservice.Chat(ctx, profile.SalesragIntent, aiservice.ChatRequest{
+		Messages: []aiservice.ChatMessage{
+			{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: prompt}},
+		},
+		Temperature: 0.1,
+		MaxTokens:   2000,
+	})
 	if err != nil {
 		log.C(ctx).Errorw("LLM intent analysis failed", "error", err, "chatMode", chatMode)
 		// Fallback: 返回原始查询
@@ -201,6 +204,7 @@ func (r *LLMRouter) AnalyzeIntentV2(ctx context.Context, query string, history [
 			SearchQueries: []string{query},
 		}, nil
 	}
+	resp := gatewayResp.Content
 
 	// 解析 JSON 响应
 	jsonStr := extractJSON(resp)

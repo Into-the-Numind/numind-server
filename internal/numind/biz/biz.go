@@ -4,22 +4,34 @@ package biz
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"time"
 
 	"numind-server/internal/numind/biz/ali"
+	chatbotbiz "numind-server/internal/numind/biz/chatbot"
 	"numind-server/internal/numind/biz/config"
+	"numind-server/internal/numind/biz/credit"
 	customerbiz "numind-server/internal/numind/biz/customer"
+	kbbiz "numind-server/internal/numind/biz/knowledgebase"
+	"numind-server/internal/numind/biz/llmrouter"
+	"numind-server/internal/numind/biz/monitor"
+	"numind-server/internal/numind/biz/payment"
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/numind/biz/salesrag/port"
+	docparser "numind-server/internal/pkg/parser"
 	"numind-server/internal/numind/biz/salesrag/seed"
 	salesragservice "numind-server/internal/numind/biz/salesrag/service"
 	sopbiz "numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/aiservice/profile"
+	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/pricing"
 
 	"github.com/spf13/viper"
 )
@@ -30,9 +42,17 @@ type IBiz interface {
 	Ali() ali.AliBiz
 	Volc() volc.VolcBiz
 	Configs() config.ConfigBiz
-	Sop() sopbiz.ISopBiz                 // SOP服务
-	Customers() customerbiz.ICustomerBiz // 客户管理服务
-	SalesRAG() salesrag.SalesRAGBiz      // 销售 RAG 服务
+	Sop() sopbiz.ISopBiz                    // SOP服务
+	Customers() customerbiz.ICustomerBiz    // 客户管理服务
+	SalesRAG() salesrag.SalesRAGBiz         // 销售 RAG 服务
+	Credit() credit.ICreditBiz              // 积分服务
+	CreditService() credit.ICreditService   // credits-system ICreditService 统一入口
+	Pricing() pricing.ICalculator           // pricing 同步成本计算
+	Payment() payment.IPaymentBiz           // 支付服务
+	Monitor() monitor.IMonitorBiz           // 博主监控服务
+	KnowledgeBase() kbbiz.IKnowledgeBaseBiz // 知识库服务
+	Chatbot() chatbotbiz.IChatbotBiz        // 智能体服务
+	LLMRouter() *llmrouter.Router           // LLM 路由服务
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -43,30 +63,61 @@ type biz struct {
 	ds              store.IStore
 	sopService      sopbiz.ISopBiz
 	salesRAGService salesrag.SalesRAGBiz
+	credit          credit.ICreditBiz
+	creditService   credit.ICreditService
+	pricing         pricing.ICalculator
+	payment         payment.IPaymentBiz
+	monitorService  monitor.IMonitorBiz
+	kbService       kbbiz.IKnowledgeBaseBiz
+	chatbotService  chatbotbiz.IChatbotBiz
+	llmRouterSvc    *llmrouter.Router
 }
-
-// 确保 biz 实现了 IBiz 接口.
-var _ IBiz = (*biz)(nil)
 
 // NewBiz 创建一个 IBiz 类型的实例.
 func NewBiz(ds store.IStore) *biz {
-	b := &biz{ds: ds}
+	creditBiz := credit.NewCreditBiz(ds)
+	// pricing.NewCalculator takes a local PricingStore interface (subset of full store).
+	// ds.Billing() structurally satisfies PricingStore (per Track B design).
+	pricingCalc := pricing.NewCalculator(ds.Billing())
+	creditSvc := credit.NewCreditService(ds, creditBiz, pricingCalc)
+	b := &biz{
+		ds:            ds,
+		credit:        creditBiz,
+		creditService: creditSvc,
+		pricing:       pricingCalc,
+		payment:       payment.NewPaymentBiz(ds, creditBiz),
+		llmRouterSvc:  llmrouter.New(ds),
+	}
 
 	// 创建 ConfigReader，用于从 Redis → MySQL → Viper 读取配置
 	_ = config.NewConfigReader(b.Configs())
 
-	// 初始化SOP服务
+	// 初始化SOP服务。LLM 调用统一走 aiservice Gateway，不再需要 LLMRouter 参数。
+	//
+	// Phase 2 Task 2.0/2.1: pricingCalc + creditSvc 已在本函数顶部构造（注入 b.pricing /
+	// b.creditService 字段）。此处仅用于 sopBiz 的 fluent WithCreditService setter。
 	sopExecutor := sopbiz.NewSopExecutor(b.ds)
-	b.sopService = sopbiz.NewSopBiz(b.ds, sopExecutor)
+	b.sopService = sopbiz.NewSopBiz(b.ds, sopExecutor, b.credit).
+		WithCreditService(creditSvc, pricingCalc)
 
 	// 初始化销售 RAG 服务
 	// 向量库支持 sqlitevec（默认）、dashvector（回退兼容）、memory（测试）
 	var vStore port.VectorStore
 
-	// Define Embedder using Qwen
+	// Define Embedder via AI Gateway (profile.SalesragEmbed).
+	// Context arriving here from pipeline.worker() already carries
+	// aismw.WithUserID + aiservice.WithSkipLegacyBilling.
 	embedder := func(ctx context.Context, text string) ([]float32, error) {
-		vec, _, err := b.Ali().QianwenEmbedding(ctx, text)
-		return vec, err
+		resp, err := aiservice.Embed(ctx, profile.SalesragEmbed, aiservice.EmbedRequest{
+			Texts: []string{text},
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(resp.Embeddings) == 0 {
+			return nil, fmt.Errorf("salesrag embed: empty embedding response")
+		}
+		return resp.Embeddings[0], nil
 	}
 
 	vectorStoreType := viper.GetString("salesrag.vector_store.type")
@@ -121,7 +172,7 @@ func NewBiz(ds store.IStore) *biz {
 	llmRouter := adapter.NewLLMRouter()
 
 	// Initialize Pipeline Components
-	parser := adapter.NewEnhancedParser()
+	parser := docparser.NewDocumentParser()
 	// 使用增强版切分器（支持中文分词、语义边界、100字符重叠、Markdown分级）
 	splitter := salesragservice.NewCompatibilitySplitter(salesragservice.SplitterConfig{
 		MaxChunkSize: 1000,
@@ -138,7 +189,26 @@ func NewBiz(ds store.IStore) *biz {
 	// 创建 SalesSessionStore
 	salesSessionStore := store.NewSalesSessionStore(b.ds.DB())
 
-	b.salesRAGService = salesrag.NewSalesRAGBiz(b.ds, pipeline, salesRAGSvc, b.Volc(), b.Ali(), salesSessionStore, parser)
+	// Phase 2 Task 2.2 wiring: 传入 creditSvc + pricingCalc 激活 SalesRAG 积分扣减（prod 漏洞修复）
+	// reg: salesrag biz uses ResolveTask("salesrag.chat") so CheckAndEstimate hits
+	// the precise pricing rule for the currently-bound provider+model. Fix for
+	// fix/salesrag-pricing-resolve-route — see build-manifest.yaml.
+	salesragRegistry := registry.New(b.ds.DB())
+	b.salesRAGService = salesrag.NewSalesRAGBizWithCredits(b.ds, pipeline, salesRAGSvc, b.Volc(), b.Ali(), salesSessionStore, parser, creditSvc, pricingCalc, salesragRegistry)
+
+	// 初始化知识库服务
+	b.kbService = kbbiz.NewKnowledgeBaseBiz(ds, b.salesRAGService)
+
+	// 初始化智能体服务。LLM 调用统一走 aiservice Gateway（Task 9 起），
+	// LLMRouter 参数已移除；此处仅需 VectorStore + Embedder。
+	b.chatbotService = chatbotbiz.NewChatbotBiz(ds, vStore, embedder)
+
+	// 初始化博主监控服务
+	monitorCooldown := monitor.NewCooldownManager(
+		viper.GetInt("monitor.cooldown.check_minutes"),
+		viper.GetInt("monitor.cooldown.analyze_minutes"),
+	)
+	b.monitorService = monitor.NewMonitorBiz(ds, monitorCooldown)
 
 	// 系统内置观点赛道初始化（异步，不阻塞启动，5 分钟超时保护）
 	go func() {
@@ -209,4 +279,44 @@ func (b *biz) Customers() customerbiz.ICustomerBiz {
 // SalesRAG 返回销售 RAG 服务实例.
 func (b *biz) SalesRAG() salesrag.SalesRAGBiz {
 	return b.salesRAGService
+}
+
+// Credit 返回积分服务实例.
+func (b *biz) Credit() credit.ICreditBiz {
+	return b.credit
+}
+
+// CreditService 返回 credits-system ICreditService 统一入口.
+func (b *biz) CreditService() credit.ICreditService {
+	return b.creditService
+}
+
+// Pricing 返回 pricing.ICalculator 实例（同步成本计算）.
+func (b *biz) Pricing() pricing.ICalculator {
+	return b.pricing
+}
+
+// Payment 返回支付服务实例.
+func (b *biz) Payment() payment.IPaymentBiz {
+	return b.payment
+}
+
+// Monitor 返回博主监控服务实例.
+func (b *biz) Monitor() monitor.IMonitorBiz {
+	return b.monitorService
+}
+
+// KnowledgeBase 返回知识库服务实例.
+func (b *biz) KnowledgeBase() kbbiz.IKnowledgeBaseBiz {
+	return b.kbService
+}
+
+// Chatbot 返回智能体服务实例.
+func (b *biz) Chatbot() chatbotbiz.IChatbotBiz {
+	return b.chatbotService
+}
+
+// LLMRouter 返回 LLM 路由服务实例.
+func (b *biz) LLMRouter() *llmrouter.Router {
+	return b.llmRouterSvc
 }

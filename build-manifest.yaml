@@ -1,0 +1,2022 @@
+schema_version: "1.0"
+
+features:
+  - id: "openrouter-provider"
+    ndf_version: "1.1"
+    description: "接入 OpenRouter (https://openrouter.ai/api/v1) 作为新的最高优先级 LLM 聚合主路由，与 AiHubMix (priority=5) / DMXAPI (priority=10) 并行。4 个模型（anthropic/claude-sonnet-4.6 / google/gemini-3.1-pro-preview / openai/gpt-5.4 / deepseek/deepseek-v3.2）统一走 OpenAI /chat/completions，thinking 通过 reasoning_effort 激活；凭据走 SyncProviderCredentials（config→DB，不硬编码，比 aihubmix 更洁净）"
+    track: "standard"
+    stage: "S1-done"
+    classification_reason: "涉及新外部服务集成（OpenRouter）+ 影响文件数 >3（seed SQL / seed.go / numind.go alias / config×2 / dmxapi_client SSE struct），2 条 Triage 标准不满足。用户要求加速推进"
+    last_updated_by: "ai-s1"
+    last_updated_at: "2026-04-20T00:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "feature/openrouter-provider"
+    artifacts:
+      requirement: "numind-server/requirements/openrouter-provider.md"
+      proposal: "numind-server/proposals/openrouter-provider-proposal.md"
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "S1 proposal 已产出，等待 S2 gate"
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-04-20 (S0): Triage 5 条标准评估 → Standard（2 条不满足：新外部服务 + 文件数 >3）"
+      - "2026-04-20 (S0): 用户确认 Standard 加速推进，借用 aihubmix-provider 工件模板"
+      - "2026-04-20 (S0): 相对 aihubmix 的关键差异 — (1) API key 走 SyncProviderCredentials 机制（清洁路径，不硬编码）；(2) Claude thinking 复用同 provider_model_id + reasoning_effort，不走 -think 后缀变体；(3) priority=1（最高优先，高于 AiHubMix=5 和 DMXAPI=10）"
+      - "2026-04-20 (S0): OpenRouter API key sk-or-v1-1a7c... 用户已授权 dev + prod 明文配置到 config_*.yaml"
+      - "2026-04-20 (S1): 真实 API 调查 — 4 slug 全部有效；API key 可用；成本与 AiHubMix 同型号基本持平（Claude 50tok out ≈ $0.00075）"
+      - "2026-04-20 (S1): ⚠️ 协议差异发现 — OpenRouter 流式用 delta.reasoning（非 reasoning_content），必须改 dmxapi_client.go SSE 结构。双字段保留向后兼容 AiHubMix"
+      - "2026-04-20 (S1): Pricing 方案确认 C — 与 aihubmix 同价（管理简单，成本实测吻合）"
+      - "2026-04-20 (S1): Attribution header（HTTP-Referer/X-Title）不加 — 保持 adapter 三方共用通用性"
+      - "2026-04-20 (S1): 预计改动文件 6 个（2 新增 migration + 4 改动：dmxapi_client/seed.go/numind.go/config×2）"
+    blockers: []
+    created_at: "2026-04-20T00:00:00+08:00"
+
+  - id: "hotfix-default-thinking-mode"
+    ndf_version: "1.1"
+    description: "SOP/Chatbot 默认开启深度思考模式：ModelSelector 下拉过滤 thinking 变体（避免用户选中 -thinking 模型触发 400），后端 GetPreferences 默认 thinking=true，存量 user_model_preference 数据批量翻转 thinking=1"
+    track: "hotfix"
+    stage: "H3-done"
+    completed_at: "2026-04-20T05:35:00+08:00"
+    classification_reason: "小改动：仅 numind-server 1 仓库，biz/llmrouter/preference.go 2 处 edit + 1 个轻量 data migration（UPDATE 单句），零业务逻辑风险；前端无需改动（store 已默认 thinking=true 回退）"
+    last_updated_by: "ai-h3"
+    last_updated_at: "2026-04-20T05:35:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/default-thinking-mode (merged 68dcae7, pending cleanup)"
+    artifacts: {}
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "revert merge commit 68dcae7；若 prod migration 已应用，执行 rollback.sql 把 thinking=1 翻回 0（会丢失用户真实偏好，慎用）"
+    last_verified:
+      at: "2026-04-20T05:35:00+08:00"
+      method: "dev gstack /qa 浏览器验证 — 登录 → /sop/run?templateId=3 → 打开 ModelSelector 下拉：SOP 列表仅 [DeepSeek v3.2, Claude Sonnet 4.6] 两 base 模型；chatbot 列表仅 [gemini-3.1-pro-preview, gpt-5.4, claude-sonnet-4-6]，均无 thinking 变体。选中 DeepSeek v3.2 → PUT /api/v1/llm/preference → 200（55ms, code:0）。screenshot: .gstack/qa-reports/screenshots/06-dropdown-open.png"
+      lint: "pass (go build ./... 全绿)"
+      type_check: "n/a (Go)"
+      tests: "llmrouter 无 test 文件；sop 包 TestCreateRun_FreeUserReturnsTypedError 在 develop 原样 FAIL（commit 9870d7b 引入，不属本 hotfix 范畴，已登记）"
+    decisions:
+      - "2026-04-20: Triage 5 条标准全绿 → Hotfix；用户需求是默认深度思考，且前端深度思考开关已隐藏（ModelSelector.vue:91 v-if=\"false\"），只能从后端默认值切入"
+      - "2026-04-20: 诊断发现 3 个点 → (1) GetModels 下拉返回了 is_thinking=true 的变体 → 用户点击触发 SavePreference 第 235 行拒绝；(2) GetPreferences 默认 Thinking=false → 前端 store 收到 false 后盖掉 ?? true 回退；(3) 存量数据可能有 thinking=0 记录。修复：GetModels SQL 加过滤 + GetPreferences 默认 true + migration UPDATE 存量"
+      - "2026-04-20 H3: 部署后 QA 发现 DB 冲突 — 用户今日早些时候通过管理端 deprecated 了 4 个 base 模型（claude-sonnet-4-6 / gpt-5.4 / gemini-3.1-pro-preview / deepseek-v3.2），只留 thinking 变体 active，导致本 hotfix 过滤后下拉空列表。用户确认当时是自己的操作但此时决定走 Option B：恢复 base 模型。在 dev 执行 UPDATE ai_service SET deprecated_at = NULL WHERE is_thinking = 0 AND model_key IN ('claude-sonnet-4-6','gpt-5.4','gemini-3.1-pro-preview','deepseek-v3.2'); hotfix 随即恢复预期行为，QA 通过。prod 上线前需：(1) 跑本 hotfix 的 thinking=1 migration；(2) 确认 prod 的 ai_service base 模型未被 deprecated，如已 deprecated 需同步恢复。"
+      - "2026-04-20 POST-CLOSE 发现：用户报告 SOP 运行时无思考。深查发现 executor.go:108 ExecuteNodeStream 的 thinking 参数被 `_ = thinking` 直接丢弃（注释 `待 Task 9 后续接通 Gateway thinking 模式`），chatbot/stream.go:177 同样丢弃，且 aiservice.ChatRequest struct（types.go:124）没有 Thinking 字段。即本 hotfix 保证了 preference 层 thinking=true 正确保存与读出，但执行链路从未消费此 flag。Admin 之前 deprecate base 模型靠 -thinking 变体的 provider_model_id 映射走 provider 思考路由是当前唯一已接通的 thinking 实现。后续修复路径待定：(X) 回滚本 hotfix + 去掉 SavePreference IsThinking 拒绝 + 恢复 admin 的 deprecate；(Y) 新功能单独追：ChatRequest 加 Thinking 字段 + 各 adapter 按自家规则响应，并入 openrouter-provider S2 一并做；(Z) 在 executeViaGateway 临时把 base+thinking=true 改写为 thinking 变体 key。用户决定本 session 只 close 当前 hotfix，后续另议。"
+    blockers:
+      - "post-close: SOP/chatbot 执行链路未消费 user preference 的 thinking flag（executor.go:109、chatbot/stream.go:177、aiservice/types.go ChatRequest）。影响：用户实际运行时无思考，即使 preference 显示 thinking=true。跟踪在 decisions 最后一条"
+    created_at: "2026-04-20T00:00:00+08:00"
+
+  - id: "hotfix-model-selector-overflow"
+    ndf_version: "1.1"
+    description: "SOP 顶栏 ModelSelector 下拉弹窗右侧溢出视口被裁切（pill 在 .header__right 右对齐，但 .model-dropdown 用 left:0 向右展开）"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "纯前端 CSS 修复，单文件改动 ModelSelector.vue，无 DB/API 变更，零业务逻辑风险"
+    last_updated_by: "ai-h3"
+    last_updated_at: "2026-04-20T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "hotfix/model-selector-dropdown-overflow (merged to develop @ 44d809c)"
+    artifacts: {}
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "revert merge commit 44d809c on numind-web-v3 develop"
+    last_verified:
+      at: "2026-04-20T00:00:00+08:00"
+      method: "gstack browse 浏览器实测"
+      lint: "pass"
+      type_check: "pass"
+      visual: "dropdown right=1219px viewport=1280px (61px margin), 4 model names display fully"
+    decisions:
+      - "2026-04-20: H1 浏览器诊断确认 dropdown 因 .header__right 右对齐 + left:0 anchor 导致溢出视口"
+      - "2026-04-20: H2 修复方案：feature='sop' 时加 align-right class（left:auto;right:0），feature='chatbot' 走 drop-up 不变，无回归风险"
+    blockers: []
+    created_at: "2026-04-20T00:00:00+08:00"
+    completed_at: "2026-04-20T00:00:00+08:00"
+
+  - id: "booster-payment-ui"
+    ndf_version: "1.1"
+    description: "设置页加量包购买支付弹窗 — credits 制会员点击 BoosterPurchaseCard → 下单 → 微信/支付宝 QR 扫码 → 轮询订单状态 → 支付成功后加量包到账并刷新余额"
+    track: "standard"
+    stage: "S7-done"
+    classification_reason: "轻量 Standard：仅前端改动（numind-web-v3），无 DB schema、无新后端 API（复用现有 /v1/orders + 回调）；但触及真钱支付流水，支付状态机需严谨设计"
+    last_updated_by: "ai-s7"
+    last_updated_at: "2026-04-20T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+      - numind-server
+    branches:
+      numind-web-v3: "feature/booster-payment-ui (merged, deleted)"
+      numind-server: "fix/order-controller-self-purchase (S5-discovered bug, merged, deleted)"
+    artifacts:
+      requirement: "numind-server/requirements/booster-payment-ui.md"
+      proposal: "numind-server/proposals/booster-payment-ui-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-04-20-booster-payment-ui-design.md"
+      plan: "numind-server/docs/superpowers/plans/booster-payment-ui-plan.md"
+      review_spec_compliance: "pass (T1-T5 各自 Sonnet spec-compliance reviewer PASS/PASS_WITH_CONCERNS，所有 P0/P1/P2 就地修复)"
+      review_code_quality: "pass (T1-T5 各自 Sonnet code-quality reviewer PASS/PASS_WITH_CONCERNS，所有 P0/P1/P2 就地修复)"
+      qa: "S5 手动 E2E 通过 — dev 环境（价格临时改 1 分）真实微信扫码 ¥0.01 支付成功，600 积分 + 90 天 booster 包正确到账，余额刷新正确"
+    progress:
+      total_tasks: 5
+      completed_tasks: 5
+      reviewed_tasks: 5
+      current_task: null
+    rollback:
+      strategy: "前端 git revert merge commit 1a0f509；后端 git revert 6eb86a8 (temp-price 已于本 commit restore) 和 898a79e (order-controller-self-purchase)。无 DB schema 变更，无数据迁移。"
+    last_verified:
+      at: "2026-04-20T04:30:00+08:00"
+      lint: "pass (numind-web-v3 npm lint + numind-server go vet/build 全绿)"
+      type_check: "pass (npm type-check + go build)"
+      tests: "pass (PaymentQRModal.spec.ts 6/6 通过；biz/payment 既有测试全绿)"
+      test_summary: "Vitest 6/6 + Go biz 测试全绿 + S5 手动 E2E 真实扫码支付成功"
+    decisions:
+      - "2026-04-20: S0 需求卡确认 Standard 轻量版（仅 numind-web-v3 前端，后端 0 改动）"
+      - "2026-04-20: S1 技术调查确认基础设施齐备 — GET /v1/orders/:id 存在、qrcode v1.5.4 已装、XhsBindModal 有 QR 渲染示例、订单 30min 后端自动过期"
+      - "2026-04-20: S1 关键决策 — 前端轮询 2s 间隔 + 5min 倒计时（短于后端 30min，提前提示用户）；支付宝 PagePay 新标签页跳转（非 iframe）；关闭弹窗不主动取消订单（后端 cron 自然过期）"
+      - "2026-04-20: S2 决策 — 6 态状态机（idle/creating/pending/paid/expired/error/closed）；Tab 切换重下单（后端 order 已绑 pay_channel，无法复用）；不做 pending-order 复用检测（GET /v1/orders 不支持 filter，ROI 低）"
+      - "2026-04-20: S3 plan 拆 5 个 task（骨架/API/UI+tab/SettingsView+E2E/Vitest）。Sonnet reviewer PASS_WITH_CONCERNS，3 个 P1 已就地修复：tab-watch 挪到 Task 3、orders.ts 前置确认、快速连点防重复（spec §6 #13）；Vitest 单测从'可选'升为默认任务（真钱回归保护唯一抓手）"
+      - "2026-04-20: S4 5 个 task 全部完成（T1-T5 共 10 个 commit，5 个 feat/test + 5 个 review fix）。每 task 用并行 2 个 Sonnet reviewer（spec-compliance + code-quality），共 10 个 review 全 PASS/PASS_WITH_CONCERNS，P0=0、P1 全修、P2 就地修。自动化回归：PaymentQRModal.spec.ts 6 路径全绿"
+      - "2026-04-20: S5 E2E 发现 order controller 遗留缺陷 — /v1/orders handler 硬性要求 payer.ID != subUser.ID 时 subUser.ParentUserID == payer.ID，对 C 端自购路径（payer.ID == subUser.ID）直接 403。biz 层（payment.go:95）早已允许 booster 自购，但 controller 从未对齐。修复 commit `a53fc01`（fix/order-controller-self-purchase）后 S5 重试通过"
+      - "2026-04-20: S5 手动 E2E 验证方式 — dev 环境通过临时降价 booster ¥29.9→¥0.01 完成真实微信扫码支付全链路验证（commit `79b3e70` 临时，`6eb86a8` 已 revert 回 2990）。验证结果：扫码 → 实付 ¥0.01 → 后端回调 → booster 600 积分到账 + 90 天有效 + 前端余额刷新 + 成功 toast"
+    blockers: []
+    created_at: "2026-04-20T00:00:00+08:00"
+    completed_at: "2026-04-20T04:30:00+08:00"
+
+  - id: "content-monitor"
+    ndf_version: "1.0"
+    description: "竞品内容监控与自动汇总 — 小红书博主监控、视频转文字、AI分析、简报生成、飞书推送"
+    track: "standard"
+    stage: "S5-paused"
+    classification_reason: "涉及 4 张新表、15+ 新 API、3 个外部服务集成（xhs-service/FunASR/飞书）、积分扣费和权限控制"
+    paused_reason: "用户搁置，优先开发新功能"
+    paused_at: "2026-04-09T00:00:00+08:00"
+    last_updated_by: "ai-triage"
+    last_updated_at: "2026-04-09T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "feature/content-monitor"
+      numind-web-v3: "feature/content-monitor"
+    artifacts:
+      requirement: "numind-server/requirements/content-monitor.md"
+      proposal: "numind-server/proposals/content-monitor-proposal.md"
+      spec: "docs/superpowers/specs/2026-04-04-content-monitor-design.md"
+      plan: "docs/superpowers/plans/content-monitor-plan.md"
+      review_spec_compliance: "pass (6 issues found and fixed)"
+      review_code_quality: "pass (8 issues found and fixed, 2 deferred)"
+      qa: null
+    progress:
+      total_tasks: 15
+      completed_tasks: 15
+      reviewed_tasks: 15
+      current_task: null
+    rollback: null
+    last_verified:
+      at: "2026-04-04T21:00:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: "pass"
+      test_summary: "3 passed (monitor), pre-existing salesrag API test failures unrelated"
+    decisions:
+      - "2026-04-04: 抓取方案选定 xhs-service (Python FastAPI + xiaohongshu-cli)，弃用 MediaCrawler 和纯 Go 方案"
+      - "2026-04-04: LLM 提供商选定 DMXAPI deepseek-v3-2-251201，弃用阿里云百炼 API"
+      - "2026-04-04: 调度器选定 robfig/cron/v3，弃用 time.Ticker 轮询方案"
+      - "2026-04-04: DMXAPIClient 从 biz/salesrag/adapter/ 提取到 internal/pkg/llm/ 作为共享基础设施"
+    deferred:
+      - "AddBlogger 初始 profile 拉取：依赖 xhs-service 实际接入后补充"
+      - "config 文件中 API key 明文：项目级问题，不在本功能范围内解决"
+    blockers: []
+    created_at: "2026-04-04T15:00:00+08:00"
+    completed_at: null
+
+  - id: "self-service-config"
+    ndf_version: "1.0"
+    description: "B端自助配置工具 — Chatbot智能体配置器 + SOP步骤工作流配置器，B2B2C模式"
+    track: "standard"
+    stage: "S6"
+    classification_reason: "涉及多张新表、大量新API、多租户隔离、C端积分扣费，影响文件30+"
+    last_updated_by: "ai-s6"
+    last_updated_at: "2026-04-09T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "feature/self-service-config"
+      numind-web-v3: "feature/self-service-config"
+    artifacts:
+      requirement: "numind-server/requirements/self-service-config.md"
+      proposal: "numind-server/proposals/self-service-config-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-04-09-self-service-config-design.md"
+      plan: "numind-server/docs/superpowers/plans/self-service-config-plan.md"
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: "docs/superpowers/qa/self-service-config-qa-report.md"
+    progress:
+      total_tasks: 14
+      completed_tasks: 14
+      reviewed_tasks: 14
+      current_task: null
+    rollback: null
+    last_verified:
+      at: "2026-04-09T19:10:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: "pass (salesrag pre-existing failures excluded)"
+      test_summary: "go vet pass, go test pass (2 pre-existing salesrag failures), npm run lint pass, npm run type-check pass, browser QA 7/7 paths verified"
+    decisions: []
+    deferred: []
+    blockers: []
+    created_at: "2026-04-09T00:00:00+08:00"
+    completed_at: null
+
+  - id: "frontend-design-system-validation"
+    ndf_version: "1.0"
+    description: "用 NDF feature frontend-design-system 建立的 .impeccable.md + DESIGN.md 试做第一个真实新页面验证效果。基础起点是 numind-web-v3/src/views/AboutValidation.vue（当前 untracked）"
+    track: "hotfix"
+    stage: "queued"
+    classification_reason: "单页面 UI 改动，无新表/API/业务逻辑，影响 1-2 个文件，风险极低"
+    last_updated_by: "ai-finalize"
+    last_updated_at: "2026-04-10T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches: {}
+    artifacts:
+      requirement: null
+      proposal: null
+      spec: null
+      plan: null
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "git revert single commit"
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions: []
+    deferred:
+      - "起点代码：numind-web-v3/src/views/AboutValidation.vue (untracked) 由 frontend-design-system T6 产出"
+      - "等用户决定哪个真实页面 → 可能直接用 AboutValidation 加 router 并 commit，也可能换一个真实业务页面"
+    blockers:
+      - "依赖 frontend-design-system 完成（已完成 2026-04-10）"
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: null
+
+  - id: "admin-rebrand-to-design-md"
+    ndf_version: "1.0"
+    description: "管理端品牌重构：Tailwind 默认紫蓝 → 企业蓝灰工业风格（Superclaw OS 参考）。variables.css 全面替换 + 17 view 视觉迁移 + Sidebar 浅色化 + 字体系统引入"
+    track: "standard"
+    stage: "S6"
+    classification_reason: "影响 admin 全部 17 个 view 的视觉统一重构，跨多文件，需 Standard 全流程审查；引入新 token（状态色）属于 schema-like 变更"
+    last_updated_by: "ai-s6"
+    last_updated_at: "2026-04-16T00:00:00+08:00"
+    repos:
+      - numind-admin-web
+    branches:
+      numind-admin-web: "feature/admin-rebrand"
+    artifacts:
+      requirement: "numind-admin-web/requirements/admin-rebrand-to-design-md.md"
+      proposal: "numind-admin-web/proposals/admin-rebrand-proposal.md"
+      spec: "docs/superpowers/specs/2026-04-16-admin-rebrand-design.md"
+      plan: "docs/superpowers/plans/admin-rebrand-plan.md"
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 14
+      completed_tasks: 14
+      reviewed_tasks: 13
+      current_task: null
+    rollback: "git revert (multi-commit, 视觉影响大，建议先在 feature 分支充分验证再 merge)"
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions:
+      - "2026-04-16: 设计方向改为企业蓝灰工业风格（Superclaw OS 参考），不再照搬用户端翠绿品牌"
+      - "2026-04-16: 管理端走独立设计语言，用户端 numind-web-v3 不受影响"
+      - "2026-04-16: 图标库维持 Lucide，不换 Material Symbols"
+      - "2026-04-16: 字体使用 Google Fonts 免费字体（Manrope/Inter/Space Grotesk/JetBrains Mono/Noto Sans SC）"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: null
+
+  - id: "sop-runtime-vue-rewrite"
+    ndf_version: "1.0"
+    description: "SOP 运行页 Vue 3 完整重写 — 退役 7518 行 legacy vanilla JS，消除双渲染路径与硬编码模板，让 self-service-config 的配置真正在 C 端生效"
+    track: "standard"
+    stage: "S5"
+    classification_reason: "完整重写 SOP 运行页，预计 15-25 文件；可能涉及后端 API 字段补齐；间接影响计费/配额/Langfuse 链路，回归风险高"
+    last_updated_by: "ai-s5-start"
+    last_updated_at: "2026-04-11T16:00:00+08:00"
+    repos:
+      - numind-web-v3
+      - numind-server
+    branches:
+      numind-web-v3: "feature/sop-runtime-vue-rewrite (待创建)"
+      numind-server: "feature/sop-runtime-vue-rewrite (S1 评估后决定是否需要)"
+    artifacts:
+      requirement: "numind-server/requirements/sop-runtime-vue-rewrite.md"
+      proposal: "numind-server/proposals/sop-runtime-vue-rewrite-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-04-11-sop-runtime-vue-rewrite-design.md"
+      plan: "numind-server/docs/superpowers/plans/sop-runtime-vue-rewrite-plan.md"
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 25
+      completed_tasks: 24
+      reviewed_tasks: 24
+      current_task: "S5 验证：dev 部署等待 + curl 安全复验 + Playwright E2E 11 路径 + gstack /qa 冒烟"
+    rollback: "git revert <merge-commit> on numind-server/develop and numind-web-v3/develop, push triggers dev redeploy (~5-15min window)"
+    last_verified:
+      timestamp: "2026-04-11T16:30:00+08:00"
+      commits:
+        numind-web-v3: "cd3d8e9"
+        numind-server: "3cfce53"
+      gates:
+        backend_vet: "pass"
+        backend_tests: "pass (exclude pre-existing DMX config-dependent failures)"
+        frontend_lint: "pass"
+        frontend_typecheck: "pass"
+        frontend_unit: "270/270 pass"
+        frontend_build: "pass (SOPRunView bundle 41.45 KB / 14.57 KB gzip)"
+        frontend_e2e_sop_runtime: "13 pass + 1 skip (Path 10 fixme 已翻开通过；Path 11 ModelSelector 依赖跳过)"
+        frontend_e2e_sop_history: "4 pre-existing failures on develop baseline, unrelated"
+        frontend_e2e_customers: "30s timeouts, pre-existing, unrelated to task"
+        s5_dev_curl_security: "pass (DTO wrapper + 0 敏感字段泄露；curl /v1/sop/templates/1/nodes 返回 {template, nodes, total}，node 字段仅含 id/template_id/name/description/sort/status/created_at/updated_at)"
+        s5_dev_smoke_11_checks: "11/11 pass (F1-F5 全覆盖：F1 draft 上传触发 lazyCreateRun；F2 route watcher 不误卸载 StepInput；F3 draft 首步执行按钮；F4 execute 不 auto-advance + DOM 渲染内容；F5 管理模式 checkbox + string→number 转换)"
+    decisions:
+      - "2026-04-10: Triage 经修订 —— AI 初判 Hotfix → 用户挑战 → 代码调查发现 7518 行 legacy JS + 双渲染路径 → 改判 Standard"
+      - "2026-04-10: 方向确定为完整 Vue 重写（方向 B），而非外科手术式部分迁移（方向 B'）"
+      - "2026-04-10: 侧边栏绿色卡片处理 = 直接删除（方向 C），不替换为其他数据展示"
+      - "2026-04-11: P0 安全漏洞（GetTemplateNodes 泄露 api_key/base_url/model_name）并入本次重写 S2 spec，不拆独立 hotfix"
+      - "2026-04-11: 数据真相源 = 数据库唯一，前端零硬编码 —— 这是本次重写的根本原则"
+      - "2026-04-11: 实测 dev DB 推翻 Subagent 错误结论 —— templateId=1, 2 真实存在于 sop_template/sop_node 表（早期由 admin 硬编码代码搭建，后手动改 creator_user_id=25），非数据库无记录。Subagent 之前的'迁移到数据库'建议作废"
+      - "2026-04-11: templateId=1, 2 的 sop_node.description 全为 NULL（因为 add_sop_node_description migration 未 backfill），UI 优雅退化处理，不做 SQL backfill"
+      - "2026-04-11: B 端可配置字段范围 = prompt/name/description/顺序，CreateNode/UpdateNode 必须 reject base_url/model_name/api_key"
+      - "2026-04-11 (proposal review 修订): SopNodeDTO 隐藏字段从 4 个扩展为 5 个，加上 prompt（B 端核心 IP，比 api_key 更敏感）—— Reviewer 发现遗漏"
+      - "2026-04-11 (proposal review 修订): SOPView.vue 不是空壳，是 1019 行 Vue hydration wrapper，S2 重写时要 own its own state"
+      - "2026-04-11 (用户终决): 多 tab 竞态不考虑、不修复、不实测。决策人判断该场景不会发生，发生了也无所谓"
+      - "2026-04-11 (用户终决): Rollback 策略 = 全量切换。无双轨 / 无 feature flag / 无灰度。依赖 git revert + redeploy 紧急回退"
+      - "2026-04-11 (用户决策): Single-session 强制下线作为独立 Standard 功能（在 SOP 重写之后），策略 = 强制下线"
+      - "2026-04-11 (S2 spec reviewer 修订): SSE 协议实测后修正，thinking/error data 是 JSON-encoded 字符串，message 无 event 行，done 发送两次需幂等，心跳 :\\n\\n 必须忽略"
+      - "2026-04-11 (S2 spec reviewer 修订): Draft 是后端独立 SopStatusDraft 状态，不是 pending+counted 组合。TS SopRunStatus 必须含 'draft'"
+      - "2026-04-11 (S2 spec reviewer 修订): numind 错误约定 = HTTP 200+business code，无 HTTP 402/403。InsufficientCreditsDialog 改 Pinia 事件总线触发"
+      - "2026-04-11 (S2 spec reviewer 修订): ConfirmModal/AppNotification 不存在，task 13 新建。task 总数从 19 增至 25"
+      - "2026-04-11 (S2 spec reviewer 修订): sop_run.template_id FK 是 RESTRICT 不是 SET NULL；UpdateNode 已有白名单无需修改"
+      - "2026-04-11 (S2→S3 用户决策): src/stores/sop.ts 实测确认 273 行全是 legacy hydration 胶水（0 业务状态），删除 + 新建 sopRun.ts。ConfirmModal/AppNotification 选择新建组件方案（A），不用 window.confirm()"
+      - "2026-04-11 (S3 plan reviewer 修订): 前端无 vitest 基础设施，task 5 扩展为 vitest 安装+配置+sanity 测试+types+store 骨架；调试日志范围扩大为 14 处跨 4 文件（biz/sop.go/controller/sop.go/store/sop.go/local_deploy.sh），spec §2.1 错把 biz 行号标为 controller 已修正"
+      - "2026-04-11 (S4 task 1 reviewer 发现 P0): Beacon ?token= 路由当前不可用 — POST /v1/sop/runs/:id/draft 在 authGroup 内，AuthMiddleware token header 缺失时提前 abort，bookmark.go fallback 是 dead code。task 4 必须扩展：把 POST 路由从 authGroup 移到 OptionalAuthMiddleware 组。reviewer 抓出我的'未实测就声明事实'失误第 3 次复发"
+      - "2026-04-11 (S4 task 3 reviewer 发现 P1): config/sop.go 的 Get 和 CreateNode 也直接返回 model.SopNode 泄露 5 字段。task 4 扩展为同时实现 SopNodeEditDTO（spec §1.1 已设计但 plan 未覆盖 read 路径）+ B 端 read 路径 DTO 化。task 4 工作量从 0.6 → 0.8 天"
+      - "2026-04-11 (proposal review 修订): trace 创建实际位置在 biz/sop/sop.go ExecuteNodeStream 行 686-695（不是 executor.go ExecuteNodeRun，该方法不存在）"
+    deferred:
+      - "S2 必须将 Subagent 1 的 legacy feature inventory 转化为完整保留功能清单"
+      - "S2 待解决的开放问题见 proposal §8（共 8 项）"
+      - "S2 解决的 P2 问题见 proposal §9（trial 配额机制 / dead fields / 验收可测性 / Desktop 调试日志 / 端点数修正）"
+      - "(本功能不解决) 多 tab 并发执行虽不影响配额计数（IncrementSopRunCount 由 run.Counted flag 保护），但仍可能产生双倍 LLM 调用成本和重复 sop_node_run 记录。Single-session 强制下线功能上线后自动消解"
+      - "(P2 backlog, task 4 reviewer 发现) admin_sop/sop.go 的 GetNode/ListNodesByTemplate/CreateNode 也直接序列化 model.SopNode 泄露 5 字段。但 admin_token middleware 保护 + 管理员业务上需要这些字段，可接受。建议未来独立 task 用 SopNodeAdminDTO 处理（或直接保留现状）"
+      - "(task 14 reviewer 发现，对 task 17/20 重要) task 3 reviewer 曾说'numind 全部 HTTP 200 + business code'不完全准确。实测 src/api/request.ts:203-219 确认额度不足时后端返回 HTTP 403，前端通过 axios 拦截器 switch(response.status) 处理。未来 SOP SSE 节点执行的 error handling 需同时处理 HTTP 403（axios error path）和 SSE error 事件（stream path），task 17/20 实现时需注意"
+      - "(task 16 backlog, reviewer P2) StepInput.vue 使用 emoji 图标（📎 🖼 📄 ⏳ ⚠），违反项目 Lucide 图标体系。建议未来统一改为 Lucide 组件（Paperclip/Image/FileText/Loader/AlertTriangle）。优先级低，视觉一致性 refactor"
+      - "(task 17 backlog, reviewer P2) StepOutput.vue 的思维链独立滚动区（max-height:240px overflow-y:auto）在流式增量时不会自动滚到底，用户需手动下拉看最新推理。task 20 ChatBubble 设计时统一决策是否对 thinking 区域也装 scrollFollow。不阻塞 task 17"
+    s5_findings:
+      - "2026-04-11 本地联调发现 4 处 defect（已修复，feature 范围内）："
+      - "[F1] StepInput.vue / SOPRunView.vue — draft 模式首次上传文件前需 lazyCreateRun（b2ae3c9 已合入前）"
+      - "[F2] SOPRunView.vue route watcher — ensureRun 触发的 router.replace 会让 watcher 调用 store.reset()，误清掉 currentRun + 卸载 StepInput 导致上传 items 丢失。watcher 现在跳过'lazyCreateRun 自己写 URL'的特例"
+      - "[F3] sopRun.ts enterDraftMode — 原先把 nextNodeId 设为 null，导致 draft 模式第一步 canExecute 为 false，ToolbarActions 无可点按钮。修复：指向 nodes[0].id"
+      - "[F4] SOPRunView.vue executeCurrentNode onDone — 原先自动前进到下一步，用户刚生成的结果被 step 2 空态覆盖，感官上是'没有任何内容'。修复：不再 auto-advance，只更新 nextNodeId"
+      - "[F5] api/sop.ts batchDeleteRuns — 前端 run_id 全程 string，后端 BatchDeleteRuns 要求 []uint，发送前需转 number[]"
+      - "[EXTRA] 后端 DMX event name 偏差（'content' vs 'message'）不属本 feature scope，拆 dmx-event-name-consistency Hotfix 独立处理"
+    blockers: []
+    created_at: "2026-04-10T00:00:00+08:00"
+    completed_at: null
+
+  - id: "sop-runtime-visual-redesign"
+    ndf_version: "1.0"
+    description: "SOP 运行页视觉/布局重设计 — 覆盖 (a) 视觉打磨：间距/字号/配色/层次/动效 (b) 设计体系对齐：DESIGN.md token + .impeccable.md (c) 结构/布局重设计 γ Focused (左 nav + 单步聚焦)。范围扩展为跨仓库：前端视觉重写 + 后端 sop_node_run.model_name + sop_chat_message.model_name/duration_ms 字段补齐 + CompletedNodeInfo DTO 透出 token/model/latency"
+    track: "standard"
+    stage: "S5-pending-execution"
+    classification_reason: "跨 2 仓库：前端 18 个组件 + 后端 2 个 migration + biz 写入 + DTO 透出。S2/S3 reviewer PASS_WITH_FIXES 后修订全部 P0/P1/P2，进入 S4 实施"
+    last_updated_by: "ai-s4-start"
+    last_updated_at: "2026-04-11T18:50:00+08:00"
+    repos:
+      - numind-web-v3
+      - numind-server
+    branches:
+      numind-web-v3: "feature/sop-runtime-visual-redesign (待创建)"
+      numind-server: "feature/sop-runtime-visual-redesign (待创建)"
+    artifacts:
+      requirement: "numind-server/requirements/sop-runtime-visual-redesign.md"
+      proposal: "numind-server/proposals/sop-runtime-visual-redesign-proposal.md"
+      backend_audit: "numind-server/proposals/sop-runtime-visual-redesign-backend-audit.md"
+      mockups:
+        - "numind-server/proposals/sop-runtime-visual-redesign-mockups/01-active-and-history.html"
+        - "numind-server/proposals/sop-runtime-visual-redesign-mockups/02-additional-states.html"
+      spec: "numind-server/docs/superpowers/specs/2026-04-11-sop-runtime-visual-redesign-design.md"
+      plan: "numind-server/docs/superpowers/plans/sop-runtime-visual-redesign-plan.md"
+      s2s3_gate_review: "numind-server/proposals/sop-runtime-visual-redesign-s2s3-review.md (PASS_WITH_FIXES → 修复后 PASS)"
+      verification: "numind-server/docs/superpowers/plans/sop-runtime-visual-redesign-verification.md (V1 task)"
+      review_spec_compliance: "20/20 task PASS (含 13 处 P1/P2 fix)"
+      review_code_quality: "20/20 task PASS"
+      qa: null
+    progress:
+      total_tasks: 20
+      completed_tasks: 20
+      reviewed_tasks: 20
+      current_task: "Cross-repo gate PASS。等待 S5 用户验证 (Playwright + gstack /qa + 端到端 curl)"
+    cross_repo_gate:
+      status: "PASS"
+      verified_at: "2026-04-11T22:15:00+08:00"
+      numind_server_commit: "a72751d (merge) on develop, pushed"
+      numind_web_v3_commit: "f1b3587 (merge) on develop, pushed"
+      ci_runs:
+        numind_server: "24284105513 success in 5m20s"
+        numind_web_v3: "24284108604 success in 2m37s"
+      dev_containers:
+        - "numind-server-dev: pmtmyaggy/numind-server:develop healthy"
+        - "numind-web-v3-dev: pmtmyaggy/numind-web-v3:f1b3587 healthy"
+      schema_verified:
+        - "sop_node_run.model_name VARCHAR(100) ✓ (AutoMigrate)"
+        - "sop_chat_message.model_name VARCHAR(100) ✓ (AutoMigrate)"
+        - "sop_chat_message.duration_ms BIGINT ✓ (AutoMigrate)"
+      end_to_end_curl: "deferred to S5 — admin user credentials needed; schema + binary verified"
+    rollback: null
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions:
+      - "2026-04-11 Triage: Standard 精简版（视觉工作需 S0/S1 探索方向，Hotfix 会变成 AI 拍脑袋）"
+      - "2026-04-11 Triage 默认假设（用户'开始'时未逐条确认，按 AI 推荐默认）：范围 = SOP 运行页全部子组件含 trailing chat；设计参考 = 无，S1 用 /design-shotgun 探索"
+      - "2026-04-11 S0 文字采集失败：用户反馈文字让选无法决策，切换为视觉对齐（subagent 生成 HTML mockup → 用户视觉选型）"
+      - "2026-04-11 Round 1 用户关键修正：(1) 每步只展示 标题/描述/输入区(active 时)/AI 输出/可选元信息，**不展示 prompt** (2) 单步输出长度不可预测可能非常长，长内容处理是核心约束"
+      - "2026-04-11 Round 2 结构方案锁定：γ Focused（左 vertical step nav + 右主区单步聚焦）。理由：单步占用整个 viewport 自然承载长内容；N 步骤扩展性好；左 nav 一键切换任意步骤；read-only 历史步骤无输入框、状态切换有明确 context strip"
+    deferred:
+      - "S0 待确认：本次是否包含 trailing chat 区域、是否有具体设计参考产品"
+    blockers:
+      - "前置依赖 sop-runtime-vue-rewrite 完成（当前 S5 验证中，24/25 task done）— 视觉重设计需要在功能稳定的代码上做"
+    created_at: "2026-04-11T16:30:00+08:00"
+    completed_at: null
+
+  - id: "trailing-chat-gemini-style"
+    ndf_version: "1.0"
+    description: "继续问AI页面重构 — 参考 Google Gemini 风格：左侧流程 nav 不变，右侧改为全屏聊天记录区 + 悬浮输入框（复用智能体聊天输入框设计）"
+    track: "hotfix"
+    stage: "H2"
+    classification_reason: "纯前端 UI 重构，无 schema/API/业务逻辑变更；影响 TrailingChat.vue + ChatComposer.vue + SOPRunView.vue 布局部分，可枚举"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-13T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "fix/trailing-chat-gemini-style"
+    hotfix_artifacts:
+      diagnosis: "inline-triage: 纯 UI 布局重构，参考 Gemini 聊天风格 + 复用 ChatbotChat 输入框设计"
+      review: null
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 0
+      current_task: "H2 验收"
+    rollback: "git revert on develop"
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions: []
+    deferred: []
+    blockers: []
+    created_at: "2026-04-13T00:00:00+08:00"
+    completed_at: null
+
+  - id: "chatbot-file-attachment"
+    ndf_version: "1.0"
+    description: "智能体聊天附件上传 — 输入框支持上传/粘贴/拖入 TXT/MD/PDF/Word 附件，解析为文本拼接到消息末尾"
+    track: "hotfix"
+    stage: "H2"
+    classification_reason: "前端为主改动（新 composable + ChatbotChat.vue 改造），后端仅新增 1 个轻量端点复用现有 EnhancedParser 提取逻辑；无 schema 变更；影响面可枚举"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-13T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "fix/chatbot-file-attachment"
+      numind-web-v3: "fix/chatbot-file-attachment"
+    hotfix_artifacts:
+      diagnosis: "inline-triage: /v1/pdf/convert-to-text 依赖 run_id 不可复用，需新建轻量端点 POST /v1/files/extract-text"
+      review: "Sonnet code-review: PASS_WITH_FIXES — 3 P1 + 4 P2 found, all fixed"
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 3
+      current_task: "H2 review fixes applied, ready for commit"
+    rollback: "git revert on develop (server + web-v3)"
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions:
+      - "2026-04-13: 新建 /v1/files/extract-text 而非改造现有 /v1/pdf/convert-to-text（避免耦合 SOP 语义）"
+      - "2026-04-13: 附件限制 5 个/次、10MB/文件，格式 .txt/.md/.pdf/.doc/.docx"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-13T00:00:00+08:00"
+    completed_at: null
+
+  - id: "ai-service-manager"
+    ndf_version: "1.0"
+    description: "AI 服务统一化管理 — 扩展现有 internal/pkg/llm 为统一 AI Service Gateway，覆盖 LLM（ali/volc/dmxapi/bailian）+ OCR（baidu）+ ASR（FunASR）等全部 AI 服务提供者；Service Registry 入库（能力矩阵 + pricing），Task Profile 声明每个业务场景的能力需求；管理端 CRUD；中间件链统一处理 tracing/billing/retry/fallback；吸收 llm-model-switch"
+    track: "standard"
+    stage: "S7-dev-done"
+    classification_reason: "跨 6+ biz 模块的 infra 重构（ali/volc/baidu/salesrag/sop/monitor/chatbot），影响所有 AI 调用路径；新增 Service Registry + Task Profile 两张核心表及管理端 CRUD；架构决策密集；工时多天；涉及 Langfuse 观测和 billing 全链路；吸收线上功能 llm-model-switch 需做 schema/API inventory"
+    last_updated_by: "ai-s7"
+    last_updated_at: "2026-04-18T10:46:00+08:00"
+    repos:
+      - numind-server
+      - numind-admin-web
+    branches:
+      numind-server: "feature/ai-service-manager"
+      numind-admin-web: "feature/ai-service-manager"
+    artifacts:
+      requirement: "numind-server/requirements/ai-service-manager.md"
+      proposal: "numind-server/proposals/ai-service-manager-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-04-15-ai-service-manager-design.md"
+      plan: "numind-server/docs/superpowers/plans/ai-service-manager-plan.md"
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 23
+      completed_tasks: 23
+      reviewed_tasks: 23
+      current_task: null
+    tech_debt_added_in_s4:
+      - "VectorDB billing (RecordCOS/RecordVectorDB) not unified（Phase-2 A4, server f0d6483 已修）— 诊断澄清：两条路径都写 usage_record 表，真实痛点是 LLM 走 sync DB 写、VectorDB 走 async batched。加 UsageEvent.Prebuilt 字段让 middleware.Billing 也走 billing.R.Record 异步路径；fallback 到 deps.UsageStore.CreateUsageRecord 仅保留给测试注入。prod 的 LLM 请求去掉同步 DB 延迟"
+      - "volc.GenerateArticleContent has no billing call — pre-existing（2026-04-17 诊断推翻 + 清理 ae992d6）：原描述错误。该函数仅被本地 CLI（cmd/main.go）调用，线上从无流量；另有 controller/v1/volc 是无路由注册的 dead code 且硬编码 API key。已删除 dead controller + 给 biz 加注释说明。ACTION：Volc API key 60dbceec-... 在 git history 可见，需运营轮换"
+      - "modelKey 未接通 Gateway ModelOverride — Phase 2"
+      - "ChatRequest 缺 ResponseFormat 字段（Phase-2 A2, server 37013a9 已修）— 新 ResponseFormatType 枚举（text / json_object），3 adapter × 2 方法（ali/volc/dmxapi × Chat/ChatStream）全接通；oaiResponseFormat 指针+omitempty 所以空值不发字段。业务层 opt-in 使用。注：prod 还没数据，现在没 consumer 用"
+      - "ChatChunk 无 Err 字段 mid-stream errors via channel close（Phase-2 A3, server bb60f46 + 0861dc2 已修）— adapter/stream.go 的 parse_error + scan_error 两条路径填 chunk.Err；sop/executor + chatbot/stream + salesrag 5 个 consumer（RetrieveStream / AnalyzeProfileMultiFiles / AnalyzeProfileText / analyzeChatStyleTextStream / analyzeChatStyleImageStream）全部识别并 fail-fast。regression test TestRunOAIStream_ParseError_PopulatesErrField 锁契约"
+      - "ListServices in-memory pagination（Phase-2 A1, server 74a5a85 已修）— 在 IStore 加 ListServicesPaginated(offset, limit)，gormStore 用 COUNT + LIMIT/OFFSET 两个 query 做 DB 层分页；buildServiceQuery 共享 filter 语义（OnlyDeprecated / IncludeDeprecated）"
+      - "langfuse.base_url 内网 IP — prod config fix needed（2026-04-17 复查：诊断错误，110.42.221.25 是公网 IP，prod 服务器 curl http://110.42.221.25:3100/api/public/health 返回 HTTP 200；prod config 无需改。Prod 容器当前 up 3 weeks 尚未部署带 Langfuse 的新代码，待下次 prod 发版时自动启用）"
+      - "llmrouter 包最终拆除 — Phase 2 评估"
+      - "Playwright E2E for admin-web TaskBindingEditor — skipped in S4, add Phase 2（admin-web c86550f 已完成）：搭建 @playwright/test + config + auth.setup.ts + TaskBindingEditor 回归 test（防 save 清空绑定 bug 再发），dev 2/2 通过"
+      - "admin-web TasksList 允许服务数列硬编码 0（cd1b80e + f2715c8 已修）— 从 tech debt 升级为已修复，待 dev 验证"
+      - "admin-web ServiceEdit 表单字段与后端 ai_service 表不完全对齐（admin-web e7ab5a9 已修）— 方案 B 完整重建：types/api/ServicesList/ServiceEdit 全部对齐；routes CRUD 保留在 legacy /admin/llm 待 legacy-llm-cleanup"
+      - "admin-web TaskEdit 保存时每次清空所有绑定（admin-web d292701 已修）— 原 save() 构造 {binding,override_reason} 被后端完全忽略；改为扁平 UpdateTaskRequest + force 走 query param"
+      - "admin-web interceptor error.code 类型为 number 但后端 errno 已改为字符串（admin-web d292701 已修）— interceptor 类型改为 number | string，TaskEdit 按 AIService.CapabilityMismatch 匹配"
+      - "modelKey 已接通 ModelOverride（f5c4c92 + 2026-04-17 验证 dev 容器 07:40 已部署）— 已修复并验证"
+      - "C 端 SOP 运行页 token/用时/模型信息显示（2026-04-17 验证 + 修 8e35a52）：前端渲染 OK；后端写入路径 OK；但发现 executeViaGateway 未把 chunk.Model 搬到 billing.TokenUsage.ModelName，导致 Gateway 上线后 sop_node_run.model_name 全空。已在 sop executor + chatbot stream 两处修复。注：chatbot 路径修复目前 inert（ChatbotMessage 无 model_name 列）—— 独立 debt 条目见下"
+      - "model.ChatbotMessage 缺 model_name 列（server 4614d83 已修）—— 加 migration 20260417_230000 + struct field + biz 写入；dev DB 已执行"
+      - "Gateway 路径 sop_node_run.total_tokens 有时为 0（server ff6abf6 已修）—— 根因在 adapter/stream.go runOAIStream：provider 把 usage 放在 finish_reason 之后的独立 chunk，旧代码 emit 完 IsFinal 就 set finalSent=true 导致 late usage 被 continue 吞掉。改为单一 terminal chunk pattern（循环结束后 emit 一次 IsFinal + usage）。加 regression test TestRunOAIStream_LateUsageChunkCaptured"
+      - "admin-web Playwright E2E 基础设施（admin-web c86550f 已完成）—— 搭 @playwright/test + playwright.config + auth.setup + TaskBindingEditor regression test；dev 2/2 通过"
+      - "新 debt（2026-04-17 spec review 发现）：core.WriteResponse err != nil 时强制发 {code:1, data:null}，丢弃 Errno.Code 字符串和附加 data。影响：(1) 前端 error.code 永远是整数 1，admin-web 的 err.code === 'AIService.CapabilityMismatch' 字符串匹配永远 false，TaskEdit force override dialog 无法触发；(2) incompatible_bindings 详情无法到达前端。这是项目级 wire format 限制，需独立修 core.WriteResponse（影响所有 error 响应），范围较大故不在本期。临时 workaround：前端按 HTTP 422 或 message 文本粗略判断"
+    next_session_task: |
+      legacy-llm-cleanup: 删除旧 llm-model-switch 兼容层。范围：
+      1. DB: 删除 llm_model VIEW + llm_model_provider VIEW
+      2. 后端: 删除 /v1/admin/llm/* 12个端点 + llmrouter 包；/v1/llm/models 改读 ai_service + task profile allowed 过滤
+      3. C端 (numind-web-v3): ModelSelector 改调新端点，按 task profile 的 allowed 列表过滤
+      4. 管理端: 删除 LLM供应商 + LLM模型 页面，侧边栏只留 AI服务 + 任务配置
+      5. user_model_preference 表保留，读写逻辑适配新表
+      预估 2-3 天，建议走 NDF Standard 或 Hotfix
+    pending_spec_updates: []  # 全部处理完（server 7949293 on 2026-04-17）
+    completed_spec_updates:
+      - "spec §4.3 errno 数字 code 改为字符串 code（已修 + 文档 core.WriteResponse 限制）"
+      - "spec §2.1.2 补 thinking_only 列（已修：文档表示 ai_service 继承 llm_model 列）"
+      - "spec §3.4 ServiceSpec → ResolvedRoute + Adapter → Provider 对齐实际代码"
+      - "spec §5.2 vs §6.5 矛盾清理（§5.2 明确 Capability Matching 仅保存时调用）"
+      - "spec §3.2 pointer return vs value return（对齐 aiservice/ai.go 实际签名）"
+      - "spec §4.2 healthz response：去掉臆想的 error_rate，反映 Phase 1 实际 {status, gateway_ready, adapters_loaded, adapter_count}；adapters 名字用下划线不是连字符；count 包括 alias=8"
+    rollback: null
+    last_verified:
+      at: "2026-04-16T12:10:00+08:00"
+      migration: "pass (dev DB numind-dev, 14 task_profiles + 10 ai_services + tables created)"
+      healthz: "pass (/healthz/ai returns 6 adapters loaded)"
+      compat_smoke: "pass (/v1/llm/models = 4 models, /v1/llm/preference = chatbot+sop)"
+      admin_services: "pass (10 services listed, OCR+ASR included)"
+      admin_tasks: "pass (14 task profiles with correct requirements)"
+      admin_schema: "pass (llm/ocr/asr schemas returned)"
+      s5_remaining: "Task Profile default_service binding 已全部完成 (14/14 on 2026-04-17 dev DB 查询结果)。Fallback 绑定全 0（产品决策待定）；Allowed 仅 chatbot.stream + sop.text 各 4 个（符合'C 端选择 UI 本期不动'决策）。剩余：完整业务路径端到端验证"
+    decisions:
+      - "2026-04-15: Phase 1 不做语义缓存和 cost-aware 自动路由，留到 Phase 2 基于观测数据再做"
+      - "2026-04-15: Service Registry 存 DB（非 config），支持管理端零发版上下架"
+      - "2026-04-15: 前端 C 端用户选择 UI 本期不动，只做后端 infra + 管理端"
+      - "2026-04-15: 吸收 llm-model-switch，不保留独立功能；DMXAPIClient / 现有模型表演进为本功能基础"
+      - "2026-04-15: 范围扩展到 OCR + ASR（原计划仅 LLM），因此从 llm-model-manager 改名为 ai-service-manager"
+      - "2026-04-15: Capability Matching 保留为 Phase 1 核心（非 stretch），避免管理员绑定不兼容模型"
+      - "2026-04-15: S4 完成（23 tasks, 55 server commits + 4 admin-web commits）"
+      - "2026-04-17: TasksList binding count tech debt 选方案 A（后端 ListTasks 响应加 fallback_count/allowed_count 聚合字段）；ServiceEdit 表单对齐延后到 legacy-llm-cleanup 一起重做"
+      - "2026-04-17: 反悔延后决定，改走方案 B 完整对齐 admin-web ↔ backend：重建 AIService/TaskProfile types，重建 ServiceEdit 表单（capability_json 动态 schema 渲染），修复 TaskEdit save 静默清空绑定的数据丢失 bug，对齐 errno 字符串 code。Routes CRUD 仍保留在 legacy /admin/llm 待 legacy-llm-cleanup"
+      - "2026-04-17: CapabilitySchema wire format 统一 snake_case — 后端加 json tag（server 2430dae），前端消费改回 snake_case（admin-web 792dc91），加 marshal 回归测试防止 tag 意外变更"
+      - "2026-04-17/18: Phase-2 A 区（补齐型 tech debt）全部完成 — A1 ListServices DB 分页（74a5a85）、A2 ChatRequest.ResponseFormat（37013a9）、A3 ChatChunk.Err + sop/chatbot consumer（bb60f46）+ salesrag 5 consumer 补齐（0861dc2）、A4 billing 中间件走 billing.R 异步批处理（f0d6483）。每项均过 Sonnet subagent review + 修 P1/P2"
+      - "2026-04-18: ai-service-manager 进入 S7-dev-done — 所有 S4 tech debt 清理完成；所有 pending_spec_updates 关闭；legacy-llm-cleanup 完成；Phase-2 A 区完成；prod 发版待用户节奏。S7 剩余事项：Volc API key 轮换（git history 可见，运营 action）+ core.WriteResponse wire format 改造（独立 NDF Standard feature，影响范围大，等用户决策）"
+    deferred:
+      - "Phase 2 B 区（条件依赖 prod 数据）：语义缓存、Cost-aware 自动路由 — 需 prod 跑 2-4 周 Langfuse 积累真实调用数据后才能基于观测决策"
+      - "Phase 2 B 区（条件依赖产品需求）：Guardrails / PII 过滤 — B 端合规需求触发时再做"
+      - "模型质量自动评测 / A-B 对比 — 建议砍掉，用公开 LLM Arena 替代；自建工具 ROI 低"
+      - "C 端用户模型选择 UI 改版（不在本期范围）"
+      - "新 Provider 接入（本期不新增，只收编现有的）"
+      - "core.WriteResponse err 分支丢弃 Errno.Code 字符串 + data 详情 — 需独立 NDF Standard feature 修（跨前后端全局 error 处理协议），范围大，待用户决策"
+    follow_up_feature: "ai-service-admin-complete（2026-04-18 queued）— 补齐 Route CRUD / Provider CRUD / Audit Log 端点 / Fallback 多选 / Pricing Rule 关联展示 + tier pricing 架构决策"
+    blockers: []
+    prod_checklist:
+      - "prod 发版 tag 必须包含本 session 产出的全部 commit（2026-04-17/18 区间）— server：ae992d6 / 36bb044 / 7949293 / 6120c40 / b3cf1c0 / f67e066 / 3dd04a8 / 315b1a0 / 8df0408 / e3cc6b7 / 42e7375 / 6bf34af / 4614d83 / ff6abf6 / 850be79 / 74a5a85 / 37013a9 / bb60f46 / f0d6483 / 0861dc2 / 7fded5d；admin-web：本 session 相关 commit 见 legacy-llm-cleanup task_breakdown；web-v3：7cd83c5 / f235beb"
+      - "prod DB migration 顺序（发版后执行）：(1) 20260417_230000_add_model_name_to_chatbot_message.sql 先跑（ChatbotMessage.model_name 列，INFORMATION_SCHEMA 守护幂等）；(2) 业务冒烟验证通过；(3) 再跑 20260417_180000_drop_llm_compat_views.sql（DROP llm_model + llm_model_provider 两个 VIEW，破坏性）"
+      - "Volc API key 轮换 — 60dbceec-... 在 git history 可见（ae992d6 前的 controller/v1/volc dead code），运营需轮换"
+      - "回滚顺序：若发版失败，先回滚 migration（20260417_180000 的 rollback SQL 在同目录），再按 commit 倒序 revert"
+      - "Langfuse prod 部署：prod 容器 up 3+ weeks 尚未部署带 Langfuse 的新代码，下次发版自动启用，base_url=110.42.221.25:3100 已复查无需改"
+    created_at: "2026-04-15T00:00:00+08:00"
+    completed_at: null
+
+  - id: "aihubmix-provider"
+    ndf_version: "1.0"
+    description: "接入 AiHubMix 作为新 LLM 聚合提供商，与 DMXAPI 并行。4 个模型（claude-sonnet-4-6 / gemini-3.1-pro-preview / gpt-5.4 / deepseek-v3.2）以 AiHubMix 为主路由（priority=10）、DMXAPI 为 failover，统一 OpenAI /chat/completions；Claude thinking 通过 -think 后缀变体，其余 3 个通过 reasoning_effort 参数"
+    track: "standard"
+    stage: "S4-done"
+    classification_reason: "涉及新外部服务集成（AiHubMix）+ 影响文件数 >3（dmxapi_client.go / llmrouter 映射 / config×4 / seed SQL），2 条 Triage 标准不满足。用户确认 Standard 快节奏推进"
+    last_updated_by: "ai-s4"
+    last_updated_at: "2026-04-16T04:30:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "feature/aihubmix-provider"
+    artifacts:
+      requirement: "numind-server/requirements/aihubmix-provider.md"
+      proposal: "numind-server/proposals/aihubmix-provider-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-04-16-aihubmix-provider-design.md"
+      plan: "numind-server/docs/superpowers/plans/aihubmix-provider-plan.md"
+      review_spec_compliance: "PASS (T2/T3/T4/T5 全部 PASS 或 PASS_WITH_CONCERNS 无 P0)"
+      review_code_quality: "PASS_WITH_CONCERNS (T2 P1 修复：pricing_rule INSERT IGNORE + api_key 豁免注释；T3 P2 加递归安全注释；其余 P2 均为风格/可读性建议，低影响)"
+      qa: null
+    progress:
+      total_tasks: 6
+      completed_tasks: 4
+      reviewed_tasks: 4
+      current_task: null
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-04-16: 走 Standard 不走 Hotfix（2 条 Triage 标准不满足，不可降级）"
+      - "2026-04-16: AiHubMix 为新增主路由、DMXAPI 作 failover 保留（不替换）"
+      - "2026-04-16: 统一走 OpenAI /chat/completions，thinking 用 reasoning_effort:'high'，不走原生 Gemini/GPT Responses 端点"
+      - "2026-04-16: 与活跃功能 ai-service-manager 的关系 — 选方案 A：当前在旧 llm_provider 表上接入，日后随 ai-service-manager 迁移"
+      - "2026-04-16 (S2): 模型名修正 — DeepSeek 选 deepseek-v3.2（非 DeepSeek-V3）/ GPT 选 gpt-5.4（非 gpt-5.4-mini）/ Claude 的 AiHubMix provider_model_id 是 claude-sonnet-4-6-think（-think 无 ing，与 DMXAPI 的 -thinking 后缀不同）"
+      - "2026-04-16 (S2): 4 模型定价（×7.2 CNY）— Claude $3/$15 flat、DeepSeek $0.30/$0.45 flat、Gemini tiered($2/$12 ≤200K, $4/$18 >200K)、GPT tiered($2.50/$15 ≤272K, $5/$22.50 >272K)"
+      - "2026-04-16 (S2): ThinkingFormat 分派从模型名维度升级为 provider+模型 维度 — inferThinkingFormat 新增 providerName 参数；AiHubMix 走 ThinkingReasoningEffort，-think 后缀跳过 reasoning_effort（已内置 thinking）"
+      - "2026-04-16 (S2): API key 字面值直写 config_*.yaml（含 prod）— 本次豁免 CLAUDE.md §3 禁止硬编码规则"
+      - "2026-04-16 (S3): AiHubMix priority=5（DMXAPI 现为 10，用户确认）"
+      - "2026-04-16 (S3): config→DB api_key 同步机制不存在（SyncProviderCredentials 是 ai-service-manager 未实现的 stub）→ seed SQL 直接 INSERT 字面值 api_key"
+      - "2026-04-16 (S3): S5 验证策略=gstack /qa + 手动故障注入；不选 Playwright E2E（工时 >1 天超过本功能总工时）；不选纯后端 TDD（无法验证前端渲染）"
+      - "2026-04-16 (S3 review): 独立 Sonnet reviewer 审查 plan — PASS_WITH_CONCERNS；F-01(P1) 用户已豁免不处理；F-02/F-03(P2) 即时修复；F-02 根因：S1 proposal §3.2 假设被 S3 预研推翻（SyncProviderCredentials 是 stub），转为已知技术债待 ai-service-manager 解决"
+      - "2026-04-16 (S4): 4 commits on feature/aihubmix-provider — T2=c5689a1(seed SQL+P1 fix)、T3=f060982(client extend+P2 comment)、T4=a0b4ee9(router signature)、T5=db6c74f(config×4)"
+      - "2026-04-16 (S4): 所有 task 两阶段 review 完成；T2 P1 idempotency 修复；T3/T4 P2 均为风格建议不阻塞；go vet + golangci-lint clean on touched packages"
+      - "2026-04-16 (S4): go test ./... 13 packages pass；1 package fail (salesrag/service) 为 pre-existing 外部 API 依赖问题（与本功能无关，content-monitor manifest 同样标记）"
+    deferred:
+      - "T3 code quality P2：switch case 大小写归一、table-driven 重构 4 个 test、400 fallback body 读取风格 — 低影响风格建议"
+      - "T4 code quality P2：DMXAPI Claude 测试注释说明、inferThinkingFormat 调用前提注释 — 可读性建议"
+    blockers: []
+    created_at: "2026-04-16T00:00:00+08:00"
+    completed_at: null
+
+  - id: "legacy-llm-cleanup"
+    ndf_version: "1.0"
+    description: "删除旧 llm-model-switch 兼容层 — 管理端 LLM 页面 / 后端 12 个 /v1/admin/llm/* 端点 + llmrouter 残留 / C 端 ModelSelector 适配 / DROP llm_model + llm_model_provider 2 个 VIEW。吸收自 ai-service-manager next_session_task"
+    track: "standard"
+    stage: "S7-dev-done"
+    classification_reason: "5/5 Triage 标准不满足 Hotfix：跨 3 repo（server + admin-web + web-v3）；DROP 2 VIEW schema 破坏性变更；12 个 admin 端点移除 + /v1/llm/models 公开 API 语义迁移；C 端 ModelSelector 用户可见；实际工时 4.5h（vs 原估 2-3 天）"
+    last_updated_by: "ai-s7"
+    last_updated_at: "2026-04-17T23:05:00+08:00"
+    repos:
+      - numind-server
+      - numind-admin-web
+      - numind-web-v3
+    branches:
+      numind-admin-web: "fix/remove-admin-llm-pages → develop 461e5ee"
+      numind-server: "fix/remove-admin-llm-endpoints → develop f67e066；fix/llm-models-use-ai-service → develop 3dd04a8；fix/llmrouter-cleanup → develop 315b1a0；fix/drop-llm-compat-views → develop 8df0408"
+      numind-web-v3: "fix/model-selector-feature-param → develop 7cd83c5"
+    artifacts:
+      requirement: null
+      proposal: null
+      spec: null
+      plan: "inline 6-task breakdown in this manifest entry"
+      review_spec_compliance: null
+      review_code_quality: "all 6 tasks reviewed by Sonnet subagent, all P0/P1 fixed, P2 applied in-context where cheap"
+      qa: null
+    progress:
+      total_tasks: 6
+      completed_tasks: 6
+      reviewed_tasks: 6
+      current_task: null
+    rollback: "逐 task git revert per repo (T6→T2 顺序)；T5 备了 rollback SQL（CREATE VIEW × 2 with original DDL）。Rollback 操作文档在 migration 文件头部注释"
+    last_verified:
+      at: "2026-04-17T22:30:00+08:00"
+      env: "dev"
+      smoke:
+        - "/healthz/ai = 200, adapter_count=8, adapters_loaded 正确"
+        - "/v1/llm/models?feature=chatbot = 4 allowed services, default_model_key=deepseek-v3.2 (匹配 task profile)"
+        - "dev mysql DROP VIEW 已执行，SHOW FULL TABLES WHERE Table_type='VIEW' 返回空"
+      prod_status: "prod 容器 up 3+ weeks 未部署；DROP VIEW migration 禁止在 prod 发版前执行（forward SQL 文件头部已警告）"
+    task_breakdown:
+      - "T1 (admin-web, 461e5ee): 删除 LLMProvidersView + LLMModelsView + 两条路由 + 两个 sidebar 项 + src/api/llm.ts"
+      - "T2 (server, f67e066): 删 controller/v1/admin_llm/ + biz/llmrouter/admin.go + 12 路由注册，-621 行"
+      - "T3 (server, 3dd04a8): /v1/llm/models 改读 ai_service + task_profile_service.allowed；按 feature 过滤；default 取 task profile default_service"
+      - "T4 (web-v3, 7cd83c5): api/llm.ts + store/llmModel.ts + ModelSelector + ChatbotChat 全部按 feature 调用"
+      - "T6 (server, 315b1a0): 删 Router.Resolve/StreamChat/cache/types/aihubmix_test；preference.go 三方法改读 ai_service（resolveFeatureDefault + isAllowedForFeature helpers）；NewChatbotBiz/NewSopExecutor 移除 unused llmrouter 参数。-352 行"
+      - "T5 (server migration, 8df0408): DROP VIEW llm_model + llm_model_provider 的 forward + rollback SQL，dev 已执行"
+    decisions:
+      - "2026-04-17 Triage: Standard。范围吸收自 ai-service-manager 既定决策 + 定型为 mechanical deletion，走精简 Standard：跳过 S0/S1 brainstorming，S2 就是 6 task 拆分，S3 就是 task list，直接进 S4 逐 task 执行"
+      - "2026-04-17 工时修订: ai-service-manager 原估 2-3 天偏悲观。Part A/B 已理顺前后端模型后，实际 4.5h"
+      - "2026-04-17 顺序调整: 原计划 T5 最后，实际跑成 T1→T2→T3→T4→T6→T5。理由：T5 DROP VIEW 前必须 T6 把 preference.go 彻底迁离 VIEW，所以 T6 作为 T5 pre-requisite 排到 T5 之前"
+      - "2026-04-17 /v1/llm/models deploy window: 后端 feature 参数缺失时默认 chatbot，保证 server-before-v3 部署顺序安全"
+    deferred: []
+    resolved_followups:
+      - "2026-04-17 (server 42e7375): dmxapi_client.go 死代码清理完成 — 删除 WithLLMRouterMark + isFromLLMRouter + llmRouterCtxKey + 8 处永远 false 的 ctx guard 分支，-104 行"
+      - "2026-04-17 (web-v3 f235beb): llmModel store 全局 loading flag 改为 per-feature loadingByFeature + isLoading(feature) 接口（T4 reviewer P2 建议）"
+    blockers: []
+    prod_checklist:
+      - "prod 发版 tag 必须包含 server 的 T2/T3/T6 + admin-web T1 + web-v3 T4 五个 commit"
+      - "发版部署完成 + 业务冒烟验证通过后，再手动跑 migration 20260417_180000_drop_llm_compat_views.sql"
+      - "如需回滚：rollback SQL 在同 migration 目录；同时 revert 5 个 commit（顺序见 rollback SQL 注释）"
+    created_at: "2026-04-17T17:30:00+08:00"
+    completed_at: "2026-04-17T22:38:00+08:00"
+
+  - id: "ai-service-admin-complete"
+    ndf_version: "1.0"
+    description: "admin-web 对 AI service 配置的全面管理能力补齐 — Route CRUD（priority/is_active，不含 pricing）/ Provider CRUD（api_key/base_url）+ 测试连接 / Audit Log 端点修复 / Task Fallback 多选 / PricingRule 与 AIService 关联可视化 + billing 架构重建（扔 B 列+重建真快照） + recorder pricing fallback bug 修复"
+    track: "standard"
+    stage: "S7-dev-done"
+    classification_reason: "全部 dev 工作收尾：Wave 1+2 实施 / 端到端验证 / 2 hotfix / 4 minor+sibling fix / 1 系统性 default:true 扫除（4 sibling 修+5 skip）/ Opus deferred 收尾。dev develop 上所有 commit 落地 + 全部 worktree 与 sub-branch 清理。等 prod 发版"
+    last_updated_by: "ai-s7-cleanup"
+    last_updated_at: "2026-04-18T22:30:00+08:00"
+    wave1_verification_done:
+      end_to_end_evidence:
+        - "dev usage_record row 284: service_type='llm_chat' / provider='aihubmix' / model='claude-sonnet-4-6' / cost_cents=2 / revenue_cents=2 / pricing_input_snapshot=21.6 / pricing_output_snapshot=108 / prompt_tokens=765 / completion_tokens=22"
+        - "cost 计算吻合: 765/1M × 21.6 + 22/1M × 108 = 0.01652 + 0.002376 = ~1.89 分 → 四舍五入到 2 分 ✓"
+        - "classifyServiceType 工作: service_type='llm_chat' 细粒度（非 coarse 'llm'）"
+        - "T-bug ResolvePricingRule 工作: pricing_rule 匹配成功（否则 PricingXSnapshot 为 null）"
+        - "T-arch snapshot 路径工作: PricingXSnapshot 非 null 且值与 pricing_rule 一致"
+        - "T-arch-prereq 词表修复持久: dev gate 查询返回 0 unmatched active routes"
+        - "新端点冒烟全通过: audit-logs/providers/routes CRUD/test-connection（baidu/bailian prefix skip 生效）"
+        - "Wave 2 UI QA: Playwright 8 个 flow 全通过（ProvidersList/ProviderEdit/ServiceEdit routes/Audit/TaskEdit multi-select/PricingRulesView filter）"
+    hotfixes_and_minor:
+      - "c3d68ec: Metadata='' → '{}' (MySQL json 拒绝空串 regression) — PASS"
+      - "417204c: wrapStreamForBilling 捕获 final chunk Usage — PASS_WITH_FIXES（2 P2 defer，goroutine 在 pathological 消费者场景可能泄露但当前消费者都正确 drain）"
+      - "2c20398: CreateRoute is_active=false 被 GORM default:true 吞（UpdateColumn fixup）— PASS_WITH_FIXES（Opus 发现 sibling bug）"
+      - "3403e96: ProviderEdit create-mode api_key min=8 — PASS（P1 backend min=8 defense-in-depth 推迟）"
+      - "9a4199d: CreateProvider 同样 is_active=false 修复（Opus 4.7 review 发现的 sibling）— PASS"
+    opus_review_findings_resolved:
+      systemic_default_true_audit: "✅ 376486c — 扫描 11 处 `default:true` bool 字段 + 修 4 sibling Create（SopTemplate.TrailingChatEnabled / AIService.IsActive / PricingRule.IsActive / MonitorConfig.NotifyOnUpdate）+ 5 处 skip（hardcoded true / VIEW-backed / system seeder，含 reason）+ 全部 sibling 加回归测试"
+      backend_apikey_min8: "✅ 936951a — CreateProviderRequest.APIKey 加 binding:required,min=8；comment 注明 'min=8 是启发式而非 provider 规范，未来如某 provider 用短 key 一并放宽前后端'"
+      recorder_prebuilt_metadata_guard: "✅ 936951a — recorder.go buildRecord Prebuilt 分支加 `if record.Metadata == \"\" { record.Metadata = \"{}\" }` belt-and-suspenders；comment 引用 c3d68ec 事故"
+      gorm_gotcha_doc: "✅ 本地 .claude/rules/database.md §6 — 安全 Create 模式 + 测试模式 + 何时跳过 + Select(\"*\") 替代讨论；非 git 仓库故未提交"
+    final_session_state:
+      last_commits:
+        numind-server:
+          - "1c73e7b (S5→S6 manifest)"
+          - "376486c (default:true sweep, 4 sibling fix + 5 skip)"
+          - "936951a (Opus deferred close: recorder Metadata guard + api_key min=8 backend)"
+        numind-admin-web:
+          - "3403e96 (api_key min=8 frontend)"
+      cleanup_done:
+        worktrees_removed: "10 (server: wt-T-bug/T1/T2/T4/T-arch/T-arch-prereq; admin-web: wt-admin-T3/T5/T6/T7)"
+        local_branches_removed: "12 (server: feature/ai-service-admin-complete + 6 sub; admin-web: feature/ai-service-admin-complete + 4 sub)"
+    wave1_verification_deferred:
+      reason: "用户暂无时间跑 dev 4 项手动调用（chat/vision/ocr/asr），Wave 2 前端独立推进不阻塞"
+      verification_protocol_preserved: "见本 entry verification_protocol 字段；用户就绪后按协议跑 4 项 + SQL 核对"
+      risk: "若 Wave 1 billing 路径有 bug（unlikely 基于 15-task sonnet review 全过），Wave 2 UI 功能不受影响；billing 问题可独立修复。Wave 2 的 T3 Playwright E2E 不依赖 cost_cents 为正"
+    wave1_merge_complete:
+      rebase_agent_tip: "1657a7a (before rebase onto develop)"
+      post_rebase_tip: "fbbe398 (18 commits, linear onto develop 48f0e6d)"
+      develop_tip_pushed: "fbbe398"
+      push_at: "2026-04-18T18:30:00+08:00"
+      merge_conflicts_resolved: "billing.go supplier-consumer / biz.go T2+T4 append+pricing-removal / admin_router.go keep-all / ai_service_audit.go const block merge / biz_test.go newTestDB dedup / T4 PricingUnit test cleanup / route_test.go stubBiz extended"
+      stats: "30 files changed, +4536 -253 lines, 11 new files"
+      tests: "go vet + go test ./... all pass; task lint not found, golangci-lint shows only 4 pre-existing issues"
+    dev_deploy_migrations_status:
+      executed_on_dev:
+        - "20260418_170000_pricing_rule_vocabulary_fix.sql (T-arch-prereq, executed via SSH on 2026-04-18)"
+      pending_on_dev:
+        - "20260418_180000_drop_route_pricing_columns.sql — NOT required for dev runtime; Go struct already stripped so columns are ignored; prod deploy runs this"
+        - "20260418_190000_drop_usage_record_pricing_second_snapshot.sql — NOT required for dev runtime; same reason; prod deploy runs this"
+      note: "All schema-drop migrations are defensive cleanup; the deployed Go code doesn't reference the dropped columns so dev runtime is unaffected without executing them."
+    verification_protocol:
+      wait_for_ci: "~5-10 min for numind-server-dev container image build + deploy"
+      test_calls:
+        - "1. Chat: trigger a sop text node execution OR direct chat endpoint → UsageRecord.ServiceType = 'llm_chat' / cost_cents > 0 / PricingInputSnapshot + PricingOutputSnapshot populated"
+        - "2. Vision: trigger a sop node with image input (image message in ChatRequest) → UsageRecord.ServiceType = 'llm_vision' / cost_cents > 0 / PricingXSnapshot populated"
+        - "3. OCR: trigger a document parse that routes to baidu OCR → UsageRecord.ServiceType = 'ocr' / cost_cents > 0 / PricingCallSnapshot populated"
+        - "4. ASR: trigger an ASR call → UsageRecord.ServiceType = 'asr' / cost_cents > 0 (per_call billing) / PricingCallSnapshot populated / DurationSeconds also populated (metadata)"
+      sanity_sql: |
+        SELECT id, service_type, provider, model, cost_cents, revenue_cents,
+               pricing_input_snapshot, pricing_output_snapshot, pricing_call_snapshot,
+               duration_seconds, created_at
+        FROM usage_record
+        ORDER BY id DESC LIMIT 20;
+      success_criteria: "4 新 UsageRecord 行（chat/vision/ocr/asr 各 1）cost_cents > 0 且 PricingXSnapshot 与 pricing_rule 当时价格一致；ASR 行 DurationSeconds 非 null；所有行 service_type 为细粒度（llm_chat/llm_vision/ocr/asr 而非 'llm'）"
+    repos:
+      - numind-server
+      - numind-admin-web
+    branches:
+      numind-server: "feature/ai-service-admin-complete (主) + sub-branches per task"
+      numind-admin-web: "feature/ai-service-admin-complete (Wave 2 启动时创建)"
+    artifacts:
+      requirement: "numind-server/requirements/ai-service-admin-complete.md"
+      proposal: "inline in this manifest entry (tier_pricing_context.t0_decisions_made + bug_fix_decision + pricing_architecture_decision)"
+      spec: "inline task_breakdown (3 waves, 10 tasks)"
+      plan: "inline — sub-branch per task, parallel dispatch within wave, rebase merge order A→E→B→C→D in Wave 1"
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 11
+      completed_tasks: 6
+      reviewed_tasks: 4
+      current_task: |
+        Wave 1 all 6 implementations complete:
+        T-bug d8d2eeb → fix d809a17 (P0 DB error swallow fixed + P1 tests + P2 cleanup)
+        T1 8066463 → fix 7544685 (P1 SQLite isolation + P2 date guard + P2 composite name key)
+        T2 aabcecd → fix 4926cf1 (P1 Toggle envelope + P2 min=1 + P2 TOCTOU/audit doc comments)
+        T4 bb32079 → fix 4b17bd2 (P1 isOpenAICompatible prefix match + P1 errors.Is + P2 nil-guard + P2 audit diff)
+        T-arch-prereq 7dfeb0d (dev SQL executed, gate re-run PASS, middleware classifyServiceType + 12 tests)
+        T-arch 8a2eed1 (migration + model cleanup + middleware buildBaseRecord snapshot + RouteItem cleanup + registry stripping, 11 files)
+        Pending: T-arch-prereq × 2 reviewers + T-arch × 2 reviewers = 4 dispatched; then rebase-merge A → T-arch-prereq → E → B → C → D
+    rollback: "逐 task 独立 commit + 独立 sub-branch，review 未过时 git branch -D；T-arch migration 附 rollback SQL"
+    last_verified: null
+    gap_audit:
+      p0_missing:
+        - "Route CRUD 完全缺失 — ServiceEdit.vue L557-589 只读，后端无 Create/Update/Delete/Toggle 端点。改 priority / pricing / is_active 当前只能 SQL"
+        - "Audit Log 端点未注册 — 前端 AuditLogs.vue 已写会 404；model + biz 层都在但 controller + route 缺失"
+        - "Provider CRUD 页面完全缺失 — llm_provider 表仍活着（api_key / base_url / is_active），legacy-llm-cleanup 删了旧页面，换 key / 换 base_url 只能 SQL"
+      p1_missing:
+        - "TaskEdit fallback_service 单选，后端支持多选"
+        - "Pricing Rule ↔ AI Service 关联 UI 不可见（靠 service_type + provider + model 字符串匹配）"
+      p2_deferred:
+        - "/healthz/ai 可视化 dashboard"
+        - "批量操作（批量 toggle / 批量改 pricing）"
+        - "ai_service_route 加 pricing_rule_id FK migration（T8，T0 决策后定）"
+    tier_pricing_context:
+      backend_ready:
+        - "pricing_rule.billing_mode = 'flat' | 'tiered_token' 已实现"
+        - "pricing_rule_tier 子表存 min_tokens / max_tokens / cost_per_mtok / sell_per_mtok"
+        - "billing/recorder.go:221 calculateCostAndRevenue 按 billing_mode 分派到 calculateTieredCost"
+        - "admin-web PricingRulesView.vue 已有 tier drawer UI（L262+）管理 tier 配置"
+      gap:
+        - "pricing_rule（真实计费）和 ai_service_route.pricing（只作 snapshot）是两套定价，靠字符串匹配关联（service_type + provider + model）不是 FK"
+        - "管理员从 ServiceEdit 看不到 service 关联哪条 pricing_rule，容易配错"
+        - "ai_service_route.pricing 只支持 flat rate，tiered 模型的 snapshot 会失真（但实际计费走 pricing_rule 所以计费正确）"
+      t0_decisions_made:
+        - "Q1 定价真相源：pricing_rule 为准（保持现状，billing/recorder.go 已实现 tier 分派）"
+        - "Q2 两表关联：字符串匹配保持，不做 FK（T8 不纳入本期）"
+        - "Q3 ServiceEdit 展示：路由区改可编辑（不含 pricing 字段） + 新增'计费规则'只读卡片显示 billing_mode/tier 数/跳转链接"
+    bug_fix_decision:
+      approach: "方案 B — recorder.GetPricingRule 加 fallback"
+      chosen_at: "2026-04-18"
+      rationale: "billing middleware 继续写 record.Model = route.ServiceKey（逻辑名 model_key），不改 middleware 写入语义；recorder.GetPricingRule 加 fallback：先按 model_key 查 pricing_rule.model，不中再按 provider_model_id（从 ai_service_route 反查）再查一次。老数据 cost_cents=0 不回填"
+      implemented_in: "T-bug"
+    pricing_architecture_decision:
+      approach: "搞法 2 — 扔 B 列 + 重建真快照"
+      chosen_at: "2026-04-18"
+      rationale: "ai_service_route.pricing 5 列从未被 billing 消费，保留只造成'似是而非的 snapshot' 语义歧义；删除后 middleware/billing.go buildBaseRecord 每次 call 时从 pricing_rule 当时价格读快照写入 UsageRecord.PricingXSnapshot，保证快照 = 实际扣费一致"
+      migration_plan:
+        - "Gate: dev DB 预检 — 所有 is_active=true 的 ai_service_route 都能在 pricing_rule 匹配到规则；不中则补规则或暂停路由"
+        - "migration 删除 ai_service_route 5 列：input_price_per_mtok / output_price_per_mtok / price_per_call / price_per_second / pricing_unit（附 rollback SQL 注释）"
+        - "middleware/billing.go buildBaseRecord 改为：按 (service_type, provider, model_key) 查 pricing_rule → 按 billing_mode 填 UsageRecord.PricingXSnapshot（flat 模式读 pricing_rule 对应列；tiered_token 模式保持 null/0，实际 cost 走 calculateTieredCost）"
+        - "老数据（cost_cents=0 或 PricingXSnapshot=null）不回填；仅新数据按新路径走"
+      implemented_in: "T-arch"
+    gate_findings_2026_04_18:
+      status: "FAIL - triggered追加 T-arch-prereq"
+      scope: "dev DB 所有 13 条 active ai_service_route 在 pricing_rule 匹配计数 0（既不按 model_key 也不按 provider_model_id）。推断：dev 迄今所有 LLM 调用 cost_cents = 0"
+      root_cause_1_service_type:
+        description: "ai_service.service_type='llm' 粗粒度 vs pricing_rule.service_type='llm_chat/llm_vision/...' 细粒度"
+        impact: "全部 13 行"
+        fix: "(Q1 = a) middleware 加 classifyServiceType 映射请求类型到细粒度；pricing_rule 保持细粒度不动；billing middleware 写入 UsageRecord.ServiceType 用映射结果"
+      root_cause_2_provider_name:
+        description: "llm_provider.name 带后缀（dmxapi-ssvip/ali-dashscope/volc-ark/baidu-ocr/bailian-file）vs pricing_rule.provider 基础名（dmxapi/ali/volc/baidu/bailian）"
+        impact: "5 行 dmxapi-ssvip + 其他带后缀 provider 的 route"
+        fix: "(Q2 = a) 补 pricing_rule 带后缀 row；价格先复制基础 provider（'同价不同行'），以后发现差异再改"
+      root_cause_3_model_truncation:
+        description: "ai_service_route.provider_model_id='claude-sonnet-4-6-thinking' (26 字符) vs pricing_rule.model='claude-sonnet-4-6-think' (24 字符截断)"
+        impact: "1 行"
+        fix: "(Q3 = a) 修正 pricing_rule row 补齐 thinking"
+      full_offending_list: "wt-T-arch/docs/t-arch-gate-result.txt (commit c3d8e96)"
+    vocabulary_decisions_2026_04_18:
+      service_type:
+        canonical: "pricing_rule 的细粒度集合：llm_chat / llm_vision / embedding / rerank / ocr / asr / cos_upload / file_extract / vector_db"
+        ai_service_value: "保持 llm / ocr / asr 粗粒度（ai_service 表不动）"
+        mapping_layer: "middleware/billing.go 新增 classifyServiceType(req) 根据请求类型返回细粒度；billing 写入 UsageRecord.ServiceType 用映射结果"
+      provider_name:
+        canonical: "llm_provider.name 带后缀形式为权威（dmxapi-ssvip ≠ dmxapi，可能对应不同 base_url/api_key）"
+        action: "补 pricing_rule 带后缀 row，数据层对齐"
+      model_identity:
+        canonical: "完整 provider_model_id（不截断）"
+        action: "修 pricing_rule row 补齐 thinking 后缀；后续 seed 文件禁止截断"
+    task_breakdown:
+      - "# Wave 1（并行 dispatch，5 agent）"
+      - "T-bug [0.3d, agent A, sub-branch feature/ai-service-admin-complete-T-bug] server: recorder.GetPricingRule 加 model_key→provider_model_id fallback + 回归单测"
+      - "T1 [0.2d, agent B, sub-branch feature/ai-service-admin-complete-T1] server: Audit Log controller + /admin/ai/audit-logs 端点注册 + biz.ListAuditLogs"
+      - "T2 [0.4d, agent C, sub-branch feature/ai-service-admin-complete-T2] server: Route CRUD 4 端点（Create/Update/Delete/Toggle，Request DTO 不含 pricing 字段，priority 重复校验+警告，至少保留一条 active route 校验）"
+      - "T4 [0.6d, agent D, sub-branch feature/ai-service-admin-complete-T4] server: Provider CRUD 5 端点 + POST /providers/:id/test-connection + AuditTargetProvider 常量 + 三处 audit 写入 + api_key 空串保留原值 + MaskedAPIKey 读路径"
+      - "T-arch-prereq [0.5d, agent P, sub-branch feature/ai-service-admin-complete-T-arch-prereq] server: (1) dev 数据修复 SQL 幂等（pricing_rule 补细粒度 service_type + 补带后缀 provider + 修 claude-sonnet-4-6-thinking 截断）(2) prod 对应修复 SQL 产出不执行（*_prod_deferred.sql）(3) middleware 新增 classifyServiceType + buildBaseRecord 写细粒度 UsageRecord.ServiceType + 5 种请求类型单测 (4) 回归验证 dev chat/vision/ocr 调用 cost_cents > 0"
+      - "T-arch [0.7d, agent E, sub-branch feature/ai-service-admin-complete-T-arch] server: (1) 复跑 gate 通过 (2) migration 删 ai_service_route 5 pricing 列 (3) middleware/billing.go buildBaseRecord 从 pricing_rule 读快照 (4) 顺手删 RouteItem 结构的 5 个 pricing 字段（T2 已标记该处将在 T-arch 删列时 break）"
+      - "Wave 1 merge 顺序（每次 merge 前 rebase onto 最新 feature 分支）: A → T-arch-prereq → E → B → C → D"
+      - "# Wave 2（并行 dispatch，4 agent，依赖 Wave 1 全合并+dev 部署+手动回归通过）"
+      - "T3 [0.6d, agent F] admin-web: ServiceEdit 路由区可编辑 + 计费规则只读卡片 + 跳转 PricingRulesView 链接 + Playwright E2E"
+      - "T5 [0.6d, agent G] admin-web: ProvidersList + ProviderEdit（api_key 掩码 placeholder + 重置 Key 按钮 + 测试连接按钮）+ 路由 + sidebar + api/ai.ts 扩展"
+      - "T6 [0.1d, agent H] admin-web: TaskEdit fallback_service 单选改 <select multiple> 原生多选"
+      - "T7 [0.3d, agent I] admin-web: PricingRulesView 增强（每条规则显示关联 AI service 列表 + 按 service 筛选）"
+      - "# Wave 3（单 agent，依赖 Wave 2 合并+dev 部署）"
+      - "T9 [0.3d] S5 验证：gstack /qa 关键路径 + 手动故障注入 + curl tiered 计价端到端 + Provider 测试连接实测"
+      - "# 总工时 4.1d 实施 + review 往返 0.5-1d = 4.5-5.1d"
+    decisions:
+      - "2026-04-18 Triage: Standard 精简版。inline proposal + inline task breakdown + 跳过 S0/S1 brainstorming"
+      - "2026-04-18 (T0 三问最终): Q1 pricing_rule 为计费真相源 / Q2 字符串匹配保持（T8 FK 不做） / Q3 ServiceEdit 路由区可编辑 + 计费规则只读卡片"
+      - "2026-04-18 (Bug 修复): 方案 B — recorder.GetPricingRule 加 model_key→provider_model_id fallback；middleware 写入语义不改；老数据不回填"
+      - "2026-04-18 (价目表架构): 搞法 2 — 扔 B 列 + 重建真快照。删 ai_service_route 5 pricing 列；middleware buildBaseRecord 改从 pricing_rule 读 PricingXSnapshot；前置 gate = dev DB 预检"
+      - "2026-04-18 (UX OQ2): Fallback 多选用 <select multiple> 原生，不自研 MultiSelect"
+      - "2026-04-18 (UX OQ3): Provider api_key 写入空字符串 = 保留原值；前端 placeholder=MaskedAPIKey() + 单独'重置 Key' 按钮"
+      - "2026-04-18 (UX OQ4): model.AuditTargetProvider='provider' 常量在 T4 添加；AuditTargetRoute='route' 常量在 T2 添加"
+      - "2026-04-18 (Q4 新增): Provider 测试连接按钮，POST /v1/admin/ai/providers/:id/test-connection 发轻量 1-token chat 探测请求验证 key（OpenAI 兼容 provider 发真实请求，其他返回 skip）"
+      - "2026-04-18 (并行策略): Wave 1 5 agent 同时 dispatch（A/B/C/D/E），各自 sub-branch；merge 顺序 A→E→B→C→D 减冲突"
+      - "2026-04-18 (Wave 1 结果): T-bug d8d2eeb / T1 8066463 / T2 aabcecd / T4 bb32079 四 task 实现完成；T-arch gate FAIL 于 c3d8e96，halted"
+      - "2026-04-18 (追加 T-arch-prereq): 0.5d 修 dev DB 三维度词表不一致 + middleware 加 classifyServiceType + 回归验证"
+      - "2026-04-18 (Q1 service_type): middleware 写细粒度 (classifyServiceType)；pricing_rule 保细粒度；ai_service 保粗粒度；5 种请求类型单测覆盖"
+      - "2026-04-18 (Q2 provider name): pricing_rule 补带后缀 row（同价不同行），不做 strip 逻辑"
+      - "2026-04-18 (Q3 model 截断): 修 pricing_rule row 补齐 claude-sonnet-4-6-thinking"
+      - "2026-04-18 (merge 顺序更新): A → T-arch-prereq → E → B → C → D"
+      - "2026-04-18 (Critical prod finding): dev DB 所有 UsageRecord cost_cents=0，prod 大概率同病。T-arch-prereq 产出 prod 数据修复 SQL，prod 发版后必须手动执行"
+      - "2026-04-18 (Wave 1 fix round 1): A fix d809a17（P0 DB 错误传播 + 2 新测）/ B fix 7544685（SQLite 隔离 + date 守卫 + composite key）/ C fix 4926cf1（Toggle envelope + validation + doc）/ D fix 4b17bd2（isOpenAICompatible prefix + errors.Is + nil guard + diff 扩充）"
+      - "2026-04-18 (Wave 2 实施): T3 8a3558a（ServiceEdit 路由可编辑 + 计费规则卡片 + E2E）/ T5 08ba7d4（ProvidersList + ProviderEdit + 测试连接 + sidebar）/ T6 a922454（TaskEdit fallback 多选）/ T7 a689483（PricingRulesView 关联 AI 服务 + 筛选）"
+      - "2026-04-18 (Wave 2 review): T3 PASS_WITH_FIXES（P1×2 RouteDTO 类型）/ T5 PASS（仅 P2）/ T6 PASS（仅 P2）/ T7 PASS_WITH_FIXES（仅 P2）"
+      - "2026-04-18 (Wave 2 fix round): T3 fix 8b45359（删除 legacy AIServiceRoute 统一 RouteDTO + 计费 mode 标签修正 + 重 rebase TODO）/ T5 fix 80341c0（api_key type=password + error-alert flex + min-length 校验）/ T6 fix 1fda379（CSS token 修复 + a11y 标签 + 死 computed + size flash）/ T7 fix 298a8c0（matchedByRuleId computed Map + FINE_TO_COARSE lookup + sr-only 标签 + 筛选范围提示）"
+      - "2026-04-18 (Wave 2 rebase-merge): admin-web feature/ai-service-admin-complete 线性 merge T5→T3→T6→T7，T3/T5 的 src/api/ai.ts listProvidersApi 去重合并（保留 T5 canonical ProviderDTO 版本）；feature → develop FF merge；push f957ec6 触发 admin-web dev 部署"
+      - "2026-04-18 (T-arch-prereq review): Spec PASS / Code PASS_WITH_FIXES — P1×2 pending fix: (1) billing_test 集成测试用真 ChatRequest 验证 classifyServiceType wire (2) pricing_rule_tier 缺 unique key 导致 INSERT IGNORE 重跑会双插 tier 行"
+      - "2026-04-18 (T-arch review): Spec PASS / Code PASS_WITH_FIXES — P1.1 isNotFoundErr 用 errors.Is 替代 / P1.2 per_second 语义回归需用户决策（pricing_rule 从无 price_per_second 列，UsageRecord.PricingSecondSnapshot 成 dead field）"
+    deferred:
+      - "T8 pricing_rule_id FK migration — 搞法 2 选定后不做（字符串匹配足够）"
+      - "/healthz/ai 可视化 dashboard — Phase 2"
+      - "批量操作 UI — Phase 2"
+      - "老 UsageRecord cost_cents=0 回填 — 不做（成本太高）"
+    blockers: []
+    prerequisite_context:
+      - "ai-service-manager S7-dev-done（2026-04-18），所有 S4 tech debt 清理完成"
+      - "legacy-llm-cleanup S7-dev-done（2026-04-17），旧 llm_provider / llm_model 兼容层已删除"
+      - "本功能是 ai-service-manager 的 follow_up_feature，补齐原 feature 未交付的管理能力"
+    prod_checklist:
+      - "⚠️ CRITICAL 2026-04-18: dev DB 所有 UsageRecord.cost_cents=0，追溯 pricing_rule 三维度不对齐导致（service_type/provider name/model 截断）。prod 大概率同病。T-arch-prereq 产出的 prod 数据修复 SQL（migrations/*_prod_deferred.sql）必须在 prod 发版后、功能冒烟验证之前手动执行；不执行则新 Gateway 调用继续 cost_cents=0"
+      - "prod 发版 tag 必须包含 Wave 1 合并后 feature 分支全部 commit（A/T-arch-prereq/E/B/C/D）"
+      - "prod 发版顺序：(1) 部署代码（含 middleware classifyServiceType 改造） (2) 执行 pricing_rule 数据修复 SQL (3) 执行 ai_service_route 删 5 列的 migration (4) 冒烟验证 chat/vision/ocr 调用 cost_cents > 0"
+      - "回滚顺序（若发版失败）: 先回滚 migration（drop columns 的 rollback SQL 在 migration 文件头）→ 再 revert code commit → pricing_rule 数据不回滚（只 INSERT/UPDATE 幂等）"
+    created_at: "2026-04-18T11:30:00+08:00"
+    completed_at: null
+
+  - id: "doc-parsing-fix"
+    ndf_version: "1.0"
+    description: "修复 SOP 链路 .doc 旧版 Word 解析乱码 — extractTextFromPDFEnhanced 硬编码 .pdf 临时文件后缀，导致 .doc 文件被路由到 MarkItDown 而非 antiword，fallback 到 extractPrintableText 产出 OLE2 二进制垃圾"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "单文件改动（pdf.go），函数签名重构 + 3 处调用方更新；影响 SOP /v1/files/extract-text 和 /v1/pdf/convert-to-text 的 .doc/.docx 解析"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-16T00:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/doc-parsing"
+    hotfix_artifacts:
+      diagnosis: "requirements/doc-format-parsing-broken.md §7 — 含误诊复盘"
+      review: "Sonnet code-review: APPROVE_WITH_FOLLOWUPS — 0 blocker, 2 important (ext 校验 + fallback 二进制签名检测)"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert on develop"
+    last_verified:
+      at: "2026-04-16T01:10:00+08:00"
+      lint: "pass (go build + go vet)"
+      type_check: null
+      tests: null
+      test_summary: "手动 curl 验证：dev 环境 /v1/files/extract-text 对 为什么找我来买房.doc 返回 609 字符可读中文正文，无二进制签名泄漏"
+    decisions:
+      - "2026-04-16: 重命名 extractTextFromPDFEnhanced → runDocumentParser(data, ext)，而非修 temp 文件名不改签名——使契约更清晰"
+      - "2026-04-16: SalesRAG EnhancedParser 已有正确实现（doc_upload_*.doc），不需要同步修改"
+    deferred:
+      - "runDocumentParser 加 ext 入参校验（ext 必须以 . 开头）"
+      - "extractTextFromDOCLegacy fallback 加二进制签名检测（Root Entry / WordDocument），antiword 失败时返回错误而非 dump OLE2 字节"
+    blockers: []
+    created_at: "2026-04-15T23:30:00+08:00"
+    completed_at: "2026-04-16T01:10:00+08:00"
+
+  - id: "chatbot-upload-safety"
+    ndf_version: "1.0"
+    description: "修复 /chatbot 页面多文件上传的两个静默丢弃 bug — P0: 文件仍在解析时点发送导致 compose() 跳过在途文件；P1: 解析失败的文件被静默排除无确认"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "前端 2 文件改动（useDocUpload.ts + ChatbotChat.vue），新增 hasErrors/errorFileNames computed + ConfirmModal 确认流程"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-16T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "fix/chatbot-upload-safety"
+    hotfix_artifacts:
+      diagnosis: "inline: Explore agent 追踪 handleSend → compose → clearItems 同步链路发现 uploading 状态文件被跳过"
+      review: "Sonnet code-review: YELLOW → 修 cancel 状态泄漏后 APPROVE — 重构去掉 pendingSendText/pendingSendErrorNames 从根本消除泄漏"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert on develop (numind-web-v3)"
+    last_verified:
+      at: "2026-04-16T01:20:00+08:00"
+      lint: "pass (0 errors, 1 pre-existing warning in unrelated file)"
+      type_check: "pass (vue-tsc)"
+      tests: null
+      test_summary: "CI 自动部署到 dev:9200 成功（容器重启确认），等用户手工测试 P0/P1 场景"
+    decisions:
+      - "2026-04-16: canSend 排除 isUploading（最简单有效），不做 handleSend 内 await（会改变用户交互模型）"
+      - "2026-04-16: 使用 ConfirmModal（项目已有组件）而非 window.confirm（UX 更一致）"
+      - "2026-04-16: Review 后重构：去掉 pendingSendText/pendingSendErrorNames，confirm 时直接从 live state 读取，消除 cancel 泄漏风险"
+    deferred:
+      - "mobile 用户 title tooltip 不可见（send 按钮已禁用所以不影响 P0 功能，UX polish 可另做）"
+      - "all-error edge case 的 confirm 文案可以更精确（'所有附件均解析失败，仅发送文字内容'）"
+    blockers: []
+    created_at: "2026-04-16T01:00:00+08:00"
+    completed_at: "2026-04-16T01:20:00+08:00"
+
+  - id: "credits-system"
+    ndf_version: "1.0"
+    description: "积分计费系统 — 从阶梯制（free/trial/standard/premium）迁移到会员+积分+加量包体系。Grandfathering 双制并存、R2 字符数估算预扣、¥29.9/600 积分加量包（3月有效期、仅会员可购）、扣减优先级（会员 > 加量包）。B2B2C 补丁：C 端不可自购会员，父账户帮开通，月度对公结算"
+    track: "standard"
+    stage: "S7-done"
+    classification_reason: "跨 3 仓库预估 20+ 文件、涉及支付+权限+会员资格门槛+老用户迁移等高风险业务逻辑，5 条 Triage 标准中 4 条触发 Standard"
+    last_updated_by: "ai-post-close-qa"
+    last_updated_at: "2026-04-19T16:30:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+      - numind-admin-web
+    branches:
+      numind-server:
+        track-A: "feature/credits-system-track-A"
+        track-B: "feature/credits-system-track-B"
+        track-C: "feature/credits-system-track-C"
+        track-D: "feature/credits-system-track-D"
+        track-G: "feature/credits-system-track-G"
+      numind-web-v3:
+        track-E: "feature/credits-system-track-E"
+      numind-admin-web:
+        track-F: "feature/credits-system-track-F"
+    worktrees:
+      active:
+        - "numind-server-track-A"
+        - "numind-server-track-B"
+        - "numind-server-track-G"
+        - "numind-web-v3-track-E"
+        - "numind-admin-web-track-F"
+      pending_batch_2:
+        - "numind-server-track-C"
+        - "numind-server-track-D"
+    artifacts:
+      requirement: "numind-server/requirements/credits-system.md"
+      proposal: "numind-server/proposals/credits-system-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-04-18-credits-system-design.md"
+      plan: "numind-server/docs/superpowers/plans/credits-system-plan.md"
+      review_spec_compliance: "pass_with_concerns (1 P1 + 3 P2 fixed by commit 908b5af)"
+      review_code_quality: "pass_with_concerns (2 P1 + 5 P2; all resolved by AI-2~AI-6 batch)"
+      qa: "smoke + E2E 绿：web-v3 credits-system.spec 9/9 + grant-membership-modal 11/11；admin-web admin-credits.spec 12/12；dev smoke 12+ 端点。gstack /qa + 前端视觉验收 = HUMAN only，已列 deferred"
+      langfuse_verification: "numind-server/docs/superpowers/specs/s5-langfuse-verification-2026-04-19.md"
+      data_spike: "numind-server/docs/superpowers/specs/s5-data-spike-2026-04-19.md"
+      rollback_drill: "numind-server/docs/superpowers/specs/s6-rollback-drill-2026-04-19.md"
+      s5_s6_wave_report: "numind-server/docs/superpowers/specs/s5-s6-wave-report-2026-04-19.md"
+    progress:
+      total_tasks: 40
+      completed_tasks: 40   # Phase 0 (5) + Batch 1 (21) + Batch 2 (12) + Phase 2 (6) + Phase 3 4/4 全部
+      reviewed_tasks: 40
+      current_phase: "S7-done"
+      tracks:
+        A: { total: 5, completed: 5 }
+        B: { total: 4, completed: 4 }
+        C: { total: 8, completed: 8 }
+        D: { total: 4, completed: 4 }
+        E: { total: 6, completed: 6 }
+        F: { total: 4, completed: 4 }
+        G: { total: 2, completed: 2 }
+      phase0_tasks: 5
+      phase0_completed: 5
+      phase2_tasks: 6
+      phase2_completed: 6
+      phase3_tasks: 4
+      phase3_completed: 4   # T3.1 (Langfuse 云端 AI-1) + T3.2 + T3.3 (rollback PASS) + T3.4
+      post_review_tasks: 7   # AI-1 ~ AI-7（S4 review P2 清理 + Langfuse 验证 + E2E spec）
+      post_review_completed: 7
+      s5_s6_wave_tasks: 10  # S5-1/4/5/6/7 + S6-1/3/5/6 + (S5-2 skipped need Taskfile)
+      s5_s6_wave_completed: 10
+      tech_debt_fixed: 2    # ProviderFromModel → usage.Provider；CI deploy_dev SHA-pinned tag
+      current_task: null
+      notes: |
+        Phase 0/1/2/3 全部落地。
+        Q1/Q1.5/Q2/Q3 B2B2C gap-fill 全部完成（user smoke 指出 PRD flow 误解后追加）。
+        Q2 UX 二次迭代：独立页面 → 内联弹窗（客户管理 action 菜单触发）。
+        AI-1~AI-7 post-review tech debt 清理 + Langfuse 验证 + E2E spec 全部完成。
+        S5/S6 Phase 2 wave：3 agent 并行（A: boundary tests 7/11 + B: admin-web E2E 12/12 + C: spike+rollback PASS）+ main-thread 5 并发（S5-1 Path 3 / S5-7 perf P95<25ms / S6-1 admin smoke / S6-5 pinned tag 验证 / S6-6 trace diversity partial）。
+        Gate 状态：S5/S6 AI 端全绿；HUMAN only 2 项（gstack /qa + 前端视觉）走 post-close 验收，不 block S7 close。
+    rollback:
+      strategy: "migrations/*_rollback.sql 逐个反向执行；biz/credit 代码 git revert；billing_mode 字段保留不删（向后兼容）"
+      tested_at: "2026-04-19T15:20:00+08:00"
+      tested_report: "docs/superpowers/specs/s6-rollback-drill-2026-04-19.md"
+      tested_result: "PASS — 本地 MySQL 8.4 testcontainer 7 forward + 7 backward 全 exit 0，final clean state 验证"
+    last_verified:
+      at: "2026-04-19T16:30:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: "pass"
+      browser_qa: "pass (gstack /qa 3 scenarios + 账户中心)"
+      test_summary: |
+        go test ./internal/numind/biz/credit/ ./internal/numind/biz/sop/ ./internal/numind/biz/salesrag/ ./internal/pkg/billing/ ./internal/numind/store/ ./internal/pkg/pricing/ 全绿（含 boundary matrix 7 新测试 + reconcile_debt + token threading + ClampsToAtLeastOne + 3 级 pricing fallback）
+        web-v3 npm run lint（仅 1 pre-existing warning）/ type-check pass
+        admin-web npm run lint（仅 1 pre-existing warning）/ type-check pass
+        Playwright grant-membership-modal.spec.ts 11/11 pass (14.8s)
+        Playwright credits-system.spec.ts 9/9 pass (S5-1 Path 3 文案修复后)
+        Playwright admin-credits.spec.ts 12/12 pass (26.1s, S5-6)
+        Dev smoke 12+ endpoints 全绿
+        Langfuse dev cloud: credit-estimate + credit-reserve + credit-reconcile (AI-5 token 字段 ≠0) + credit-refund 4 span 全部 verified with §5.1 schema
+        Perf: /v1/credits/estimate P95 < 25ms，远低于 spec §5.6 100ms 目标
+        CI deploy_dev pinned tag (commit 7760af5) + SHA verification 生效 ✅
+        Migration rollback drill: 本地 MySQL 8.4 testcontainer 7 forward + 7 backward exit 0，final clean state 验证 PASS
+        Post-close QA (commit af78827 部署后): 用户报告 SOP 阻塞 → 3 层 fallback + clamp 修复 → gstack /qa 真实浏览器 3 场景全绿（文章优化助手 + SalesRAG + 流量选题口播稿）
+        余额链 5000→4994→4992→4991→4990 可观测，扣减准确
+        Feedback tech debt: 500 (missing table) + 400 (negative msg id) 均已修 (commits fdee7c7 + web-v3 fda5a26)
+    deferred:
+      ai_doable: []  # 全部清零
+      human_only: []  # 全部完成 - gstack /qa 3 场景 + 账户中心视觉 PASS at 16:30
+      post_s7:
+        # 原有 4 项
+        - "deploy_qa / deploy_prod / admin_dev/qa/prod deploy jobs 复制 deploy_dev 的 SHA-pinned tag fix（P1，下次 push 到 release/tag 时暴露）"
+        - "Legacy SSE 路径（非 Gateway）的 usage.Provider 捕获尚缺，当前回退到 ProviderFromModel 猜测"
+        - "providerFromModel 对 gpt-5.4 / gemini-3.1-pro-preview 未映射（走 dmxapi 默认猜）"
+        - "UpdateCoefficient retry 次数 3 次是否足够 — 尚未压测并发场景"
+        # S5/S6 wave 新发现 4 项
+        - "Order controller 错误映射：ErrMembershipRequired / ErrMembershipSelfPurchaseDisabled 的 errno.HTTP=403 但 handler 用 InternalServerError 包 → 实际返回 500（P2）"
+        - "SalesRAG default (provider='', model='') 无 pricing_rule fallback，CheckAndEstimate 直接 error；建议 seed (llm_chat, '', '') 兜底或允许 estimate cost 缺失时 fallback 为 credits-only"
+        - "admin-web vite.config.js/.d.ts 同时 track 源码+产物，建议 .gitignore 产物"
+        - "R2 spike 发现 19/39 组合 ratio 越界 [0.05, 3.0]，beta 2-4 周对比 reservation delta 后做首次 calibration（追加 admin append-only 新 version）"
+        # S5-4 boundary 的 4 跳过项（值得未来补）
+        - "§5.3 行 1: /v1/credits/estimate 401 未登录 middleware 层测试（deferred to handler/integration test）"
+        - "§5.3 行 8: 24h cron refund expired_by_cron（cron 扫描尚未实装在 RunCronTasks）"
+      post_close_human_tasks:
+        - "HUMAN-1 (S5-3 等价): 浏览器打开 http://49.233.219.254:9200（dev web-v3）走 3 条路径 — SOP run / SalesRAG chat / 客户管理帮开通，看是否有视觉 P0 bug"
+        - "HUMAN-2 (S6-2 等价): 账户中心 CreditBalanceCard / BoosterPurchaseCard / SopEstimateBar 四组件一眼过；admin 端 /v1/admin/b2b-billing-report 月份切换体验"
+    decisions:
+      - "2026-04-18: D1 会员月度额度锁定 2000 积分（追认现有硬编码，基于 ¥99 月卡毛利率 80% 反推）"
+      - "2026-04-18: D2 估算机制选 R2（字符数 × 经验系数 + 事后对账），不引入 tiktoken"
+      - "2026-04-18: D3 加量包定价 ¥29.9/600 积分/3 月有效期"
+      - "2026-04-18: D4 扣减优先级：会员积分 > 加量包积分"
+      - "2026-04-18: D5 老用户策略 Grandfathering（旧会员到期前沿用旧规则，到期后购买进入新制）"
+      - "2026-04-18: D6 加量包仅限有效会员购买和使用"
+      - "2026-04-18: S1 选定 Approach A（一步到位：Grandfathering + 加量包 + R2 估算 + 对账）"
+      - "2026-04-18: S3 plan 的 Task 1 必须是 R2 估算系数数据 spike，基于历史 usage_record 算出各模型 completion/prompt 比值"
+      - "2026-04-18: 不支持提前续费——确保所有用户有干净的旧→新制切换时点"
+      - "2026-04-18 AUDIT: 积分基础设施 80% 已在 prod（credit_account/credit_package/credit_transaction/pricing_rule 表、RechargeWithOrderTx 支持 trial/monthly/yearly/booster、DeductCredits FIFO 扣减、GetQuotaBreakdown、Admin 积分 UI）。proposal v2 重新聚焦真实缺口"
+      - "2026-04-18 AUDIT: Trial 是新制成员（¥9.9/200 积分/3 天，ProductTypeTrial 已完整落地在 model/order.go:56-75 + biz/credit/credit.go:205-217），非 legacy_tier。P4d 修正"
+      - "2026-04-18 AUDIT: 加量包现有命名是 'booster'（非 addon_package），所有代码/文档对齐此命名"
+      - "2026-04-18 AUDIT: SalesRAG Chat 路径完全未接入积分扣减（prod 漏洞），本 feature 一并修复"
+      - "2026-04-18 AUDIT: 卡片生成功能已完全删除，仅剩 card_config.go 孤立文件 + CLAUDE.md L11 过时描述，本 feature 顺手清理（P4b）"
+      - "2026-04-18: P4a 确认 legacy_tier 会员不可购买 booster"
+      - "2026-04-18: P4c 确认加量包过期用 Lazy check + daily cron 标记"
+      - "2026-04-18: 工作量重新估算 12-15 天（原 18-20 天高估），交付时间线调整为 2026-05-08"
+      - "2026-04-18: 优先级扣减（会员>加量包）已由现有 DeductCredits FIFO by ExpiresAt 隐式满足，无需新增代码，S5 验收"
+      - "2026-04-18: 新增 P4e 待 S1 Gate 裁决——legacy_tier 下 SalesRAG 扣减策略（建议 A 保持免费）"
+      - "2026-04-18: S1 Gate 通过，P4e=A（legacy_tier SalesRAG 保持免费）"
+      - "2026-04-18: S2 Section 1 架构选 Approach B（ICreditService 整洁抽象 + 线性 R2 + Eager Reserve + append-only coefficient version），经 Opus round 1 FAIL→round 2 PASS"
+      - "2026-04-18: S2 Section 1 关键决策：ICreditService 单 singleton + 内部 billing_mode 分发；legacy_tier 的 Reserve/Reconcile/Refund 会 panic（SkipDeduction 守卫）；FinalizeReservation 作为唯一出口解决 defer 竞态"
+      - "2026-04-18: S2 Section 2 数据模型经 Opus 3 轮 review（v1 FAIL→v2 PASS_WITH_CONCERNS→v3 FAIL→v4 folded），所有 P0 修复：表名 user、append-only 加锁 + duplicate-key retry、Trial 纳入 Grandfathering Option E、JSON 拆独立 credit_reservation_item 表、coefficient_id 代替 version、GetBalance 扩展 QuotaBreakdown 非破坏字段、envsubst 占位符"
+      - "2026-04-18: S2 Section 2 关键决策：3 张新表（coefficient/reservation/item）+ user.billing_mode 字段；FK 应用层保证（项目惯例）；operation VARCHAR+CHECK（MySQL 8.0.16+ 条件）；12 个 migration 文件（6 对 DDL+rollback）"
+      - "2026-04-18: proposal v2 和 requirement 的 sub_user→user 残留已修正（全局 replace_all）"
+      - "2026-04-18: Section 3-5 进行中；spec 文件已落盘带 TBD 标记，按 section 完成后追加"
+      - "2026-04-19: S2 Section 3 经 Opus round 1 FAIL（5 P0：cost 采集虚构/控制流反转低估/idempotency key 自相矛盾/reason 字段缺失/重复发明 store 方法）"
+      - "2026-04-19: Section 3 选 Direction 3（同步 pricing.CalculateCost）：新建 internal/pkg/pricing 模块，recorder 解耦 cost 计算；控制流反转 Reserve 前/Reconcile 后；sop.go runNode/runChat 和 salesrag.go Chat/ChatStream 调用链重写"
+      - "2026-04-19: Section 3 v2 FINAL 修复全部 5 P0+6 P1：idempotency key caller 传入 {run_id,node_id}；PreCheckResult 加 Reason 字段；复用现有 HasActiveSubscription；errno 改字符串 code；prompt_chars 改后端渲染（IPromptEstimator 接口）；billing_mode 独立短事务切换；ChatStream drain + context cancel；DeductCreditsTx 外部 tx 支持；防提前续费 tier rank 校验"
+      - "2026-04-19: 工作量修正 12-15 天 → 14-18 天（+3 天吸收 pricing 模块 + 控制流反转）；交付时间线 2026-05-08 → 2026-05-11"
+      - "2026-04-19: 工作量变更已被客户（即本人）在 Section 3 选择 Direction 3 时隐式确认，不走 NDF §6 formal 回退 S1 Gate 流程（客户即开发者场景）"
+      - "2026-04-19: Section 3 v2 back-propagation 完成：§1.8 PreCheckResult 补 Reason 字段；§1.11 新增外部依赖声明（pricing.CalculateCost 来源）；§3.11 明确 IPromptEstimator 位于 biz/credit/prompt_estimator.go（biz 层，遵循 business-logic.md 硬规则）"
+      - "2026-04-19: S2 Section 4 经 Opus round 1 FAIL（4 P0：402 拦截器缺失/estimate 聚合口径未定/free 与余额0 不可区分/MigrationsView 一次性按钮 UX 未定义；5 P1：GET packages 契约/SopEstimateBar 挂载条件/历史版本 endpoint/TS 字段名不对齐/卡片清理违反 scope）"
+      - "2026-04-19: Section 4 v2 FINAL 修复全部 4 P0+5 P1：402 case 新增识别 Credits.Insufficient；estimate 整单聚合（reference_id=sop_template_id 遍历 node 求和 + first_node_estimate + node_count）；free 态通过跨 store 读 user.tier === 'free' 判断（不加后端字段）；MigrationsView 三态状态机（PENDING/EXECUTING/EXECUTED）+ GET status endpoint；复用现有 InsufficientCreditsDialog 不新建；SopEstimateBar 仅详情页 + debounce 300ms + billing_mode guard；历史版本独立 endpoint；卡片清理拆独立 commit；middleware 名字对齐（AuthMiddleware/AdminAuthMiddleware/authGroup）"
+      - "2026-04-19: Section 4 审计纠错：第一轮审计说 card_config.go 存在实际不存在（ls 已确认空），仅需清理 CLAUDE.md §1 核心功能描述"
+      - "2026-04-19: Section 4 back-prop 完成：§1.8 BalanceBreakdown 和 §2.11.1 QuotaBreakdown 字段名从 SubscriptionTotal/Remaining 改为 SubTotal/SubRemain（JSON 与现有 credits.ts 一致，避免 breaking rename）"
+      - "2026-04-19: 工作量修正 14-18 → 18-23 天（+5 天吸收 Section 4 P0 修订 + reviewer 建议前端工作量）；交付时间线 2026-05-11 → 2026-05-16"
+      - "2026-04-19: S2 Section 5 完成（可观测性 + 边界 + E2E）。Langfuse 新增 4 个 span：credit-estimate/credit-reserve/credit-reconcile/credit-refund 含完整字段 schema；7 项迁移数据观察指标；12 项扩展边界情况矩阵；6 条 Playwright E2E 路径（credits 正常流 / 跨池扣减 / 非会员拒 / legacy_tier 零扣减 / SalesRAG 漏洞修复 / trial 完整生命周期）；数据 spike 产出 6 项验证清单；S5 Gate 8 项验证计划"
+      - "2026-04-19: Section 5 按用户要求不再独立 review，直接落盘进入 S2 Gate"
+      - "2026-04-19: S2 spec 5 sections 全部完成；DRAFT Complete，等待 S2 Gate 人类确认设计方向"
+      - "2026-04-19: S2 Gate 通过（用户确认设计方向）"
+      - "2026-04-19: S3 plan 完成，采用 Hybrid Parallel 执行模型：Phase 0 契约冻结（serial）+ Phase 1 7 条 track（分两批 dispatch，Batch 1={A,B,E,F,G}, Batch 2={C,D}）+ Phase 2 Integration（serial）+ Phase 3 Verification"
+      - "2026-04-19: S3 plan 经 Sonnet 独立 reviewer PASS_WITH_CONCERNS，修复全部 4 个 P1：Task 2.0 补 GetBalance endpoint 改造 + cron 接线；Track C 补 C.8 Langfuse span 埋点专项 task（4 span + trace metadata）；Phase 1 明确分两批 dispatch 策略；Track D 的 cron fallback 拆到独立文件 cron_billing.go 避免与 Track C 共改 credit.go"
+      - "2026-04-19: Plan 总 task 数 38 → 40（+C.8 + Task 2.0）；Phase 2 6 tasks；Phase 3 4 tasks"
+      - "2026-04-19: S3 Gate 通过（用户确认进入 S4，按 Batch 1 dispatch）"
+      - "2026-04-19: S4 Phase 0 契约冻结完成（commits 42e2b9e + 91479b5 + f8c49ce + 245649c 跨 3 仓库），Tasks 0.1-0.4 done"
+      - "2026-04-19: S4 Phase 0 Task 0.5 完成：7 条 track 分支创建 + push（server 5 / web-v3 1 / admin-web 1）；5 个 worktrees 创建（Batch 1 用），2 个 Batch 2 分支待创建 worktree"
+      - "2026-04-19: 准备 dispatch Batch 1 parallel 5 个 agent teams（Track A/B/G/E/F），Track C/D 待 A+B merge 后 dispatch"
+      - "2026-04-19: Batch 1 全部完成（A/B/E/F/G 5 tracks, 21 commits）。Track G 发现 semantic-op mismatch + 添加 global fallback row 作为 seed 兜底"
+      - "2026-04-19: Phase 0 hotfix commit 33e3523 修正 migration 100500 列名 tier → user_tier（Track A 发现的 P0）"
+      - "2026-04-19: Batch 1 merge 完成（numind-server develop ac45101/5e79101/3dadf74 三个 merge commit，web-v3 + admin-web 各一个 merge）。go test pricing/billing/model + npm run test:unit 全绿"
+      - "2026-04-19: Batch 2 dispatch Track C + D 并行，基于含 Batch 1 的 rebased develop"
+      - "2026-04-19: Batch 2 全部完成（C: 8 tasks + Langfuse 4 span + 35 tests；D: 4 tasks + cron_billing.go 独立文件）。D/C 无文件冲突如约"
+      - "2026-04-19: Batch 2 merge 完成（numind-server 06f45b6/b913b0d）。Integration fix b913b0d 修 Track C 扩展 ICreditBiz 接口后 Track D fakeCreditBiz 缺 DeductCreditsTx 实现"
+      - "2026-04-19: Phase 0 + Batch 1 + Batch 2 合计 33/33 tasks 完成。进入 Phase 2 integration"
+      - "2026-04-19: Phase 2 完成 6/6 tasks（T2.0 integration wiring done by main AI；T2.1 SOP 控制流反转 agent; T2.2 SalesRAG 接入 agent; T2.3 9 个 HTTP endpoints agent; T2.4 前端集成 agent; T2.5 Playwright E2E 9 tests agent）"
+      - "2026-04-19: Phase 2 integration fixes：fakeCreditBiz DeductCreditsTx stub (commit b913b0d)、biz.go 合并 duplicate pricingCalc/creditSvc 声明（amend 6f142d8）、salesrag NewSalesRAGBizWithCredits wiring（96c3223）、T2.0 controller/router follow-up（bcf5420）"
+      - "2026-04-19: Phase 3 自动化部分完成：T3.2 完整测试套件（numind-server go test 全绿 + web-v3 lint/type-check 通过 + admin-web lint/type-check 通过）；T3.4 Card cleanup（Codes/CLAUDE.md §1 移除卡片生成描述）"
+      - "2026-04-19: Phase 3 人工部分待运行：T3.1 Langfuse 本地 docker stack 验证 span + T3.3 Migration rollback 演练 on 本地 MySQL container"
+      - "2026-04-19: T3.3 Migration rollback 演练 PASS — docker MySQL 8.0.45 + 12 个 migration 全部 forward 成功（含 envsubst MIGRATION_CUTOFF + 8 行 seed + billing_mode Option E 迁移验证：in-period standard/premium→legacy_tier）+ 反向 rollback 清除干净（user 表只剩 bootstrap 字段）。Phase 0 hotfix 列名 user_tier 修正生效。结果文档 /tmp/t3-3-rollback-result.md"
+      - "2026-04-19: S4 两阶段 review dispatched（并行 Sonnet agents：spec compliance + code quality）"
+      - "2026-04-19: S5 剩余 3 项（T3.1 Langfuse 本地 stack / Playwright E2E 执行 / gstack /qa 浏览器 QA）建议并入 S6 dev smoke test 执行，避免 session 内启多个 long-running 服务"
+      - "2026-04-19: S4 两阶段 review 完成（Sonnet subagent 并行）：Stage A Spec Compliance PASS_WITH_CONCERNS（1 P1 + 3 P2）；Stage B Code Quality PASS_WITH_CONCERNS（2 P1 + 5 P2）"
+      - "2026-04-19: S4 review P1 修复（commit 908b5af）：P1-1 indexOf→strings.Contains / P1-2 Reconcile top-up has_debt span 标注（spec §5.3 ledger follow-up）/ P1-A GetBalance 填充 SubExpiresAt+BoosterEarliestExpiresAt（前端 CreditBalanceCard 依赖）/ P2-1 countDB is_active=all filter 修正"
+      - "2026-04-19: S4 Gate 条件全部满足：lint/test/type-check 绿 + 两阶段 review PASS_WITH_CONCERNS 无 P0 + 38/40 tasks 完成（T3.1/E2E/gstack QA 延后至 S6 合并）"
+      - "2026-04-19: Deferred P2 items (非 blocker)：actual_prompt_tokens/completion_tokens=0 placeholder（Reconcile 签名扩展 follow-up）、int64ToStr 自造（下次 touch 同文件清理）、providerFromModel 重复（建议下沉 biz/credit）、UpdateCoefficient retry 次数注释、E2E mock not live（等 dev 环境）"
+      # ====== Q1/Q1.5/Q2/Q3 B2B2C gap-fill ======
+      - "2026-04-19: Smoke test 发现 PRD flow 误解 — 原设计允许 C 端自购会员，但 B2B2C 模式下 C 端不可自购。追加 Q1/Q2/Q3 gap-fill 修正。"
+      - "2026-04-19: Q1.1 credit_package 加 grant_source + granter_user_id 字段（migration 20260420_100000）。commit 83d33cf"
+      - "2026-04-19: Q1.2 GrantMembership biz（父账户帮子账户开通会员，不走支付，写 action_log + credit_package grant_source=b2b_grant）。commit d6f8fe3"
+      - "2026-04-19: Q1.3 ParentGrantController + POST /v1/users/children/:child_id/grant-membership 路由。commit eb7f15c"
+      - "2026-04-19: Q1.4 Admin B2B 月度结算报表 GET /v1/admin/b2b-billing-report?month=YYYY-MM（按父账户聚合 credit_package.grant_source=b2b_grant）。commit deaaf62"
+      - "2026-04-19: Q1.5 封禁 C 端自购会员（payment.CreateOrder 对 trial/monthly/yearly 返回 ErrMembershipSelfPurchaseDisabled），booster 不受限，内部调用通过 WithInternalCaller ctx bypass。commit afba806"
+      - "2026-04-19: Q2 前端帮开通会员视图 ChildMembershipGrantView（/parent/children-membership 独立页面，最初版）"
+      - "2026-04-19: Q3 Admin B2B 结算报表前端视图 B2BBillingReportView"
+      # ====== S7 gap-fill post-smoke P0 修复 ======
+      - "2026-04-19: Gap-fill Opus review 发现 3 P0：P0-1 前端调 /v1/users/children 后端不存在 / P0-2 CustomersView 旧升级路径未清 / P0-3 grant controller 所有错误都返回 500。commit 0bb9b42 (server) + fd764b7 (web-v3) 修复 + P1-2 trial-in-period 守卫加强"
+      # ====== Q2 UX 二次迭代（用户反馈）======
+      - "2026-04-19: Q2 UX 重构（用户要求）— 删除独立 /parent/children-membership 页面，改为客户管理 action 菜单内联弹窗（体验会员 / 高级会员 + 1-12 月 + 备注，不走支付，对公月结算）。commit 3878d65"
+      # ====== S4 review post-work (AI-1 ~ AI-7) ======
+      - "2026-04-19: AI-3+AI-4 注释清理 — int64ToStr→strconv.FormatInt；UpdateCoefficient retry Why；creditsImpl stub 注释更新为反映现状。commit f9b9392"
+      - "2026-04-19: AI-2 providerFromModel 3 份拷贝下沉到 biz/credit.ProviderFromModel (public)，prompt_estimator + sop + controller 3 处 caller 改走。commit 10adde0"
+      - "2026-04-19: AI-5 reconcile span 透传真实 token counts — Reservation 加 ActualPromptTokens/CompletionTokens 字段，caller FinalizeReservation 前写入，内部 reconcileWithTokens 保持 ICreditService 接口稳定。span metadata actual_prompt_tokens 不再永远 0。+ TestLangfuse_FinalizeReservation_ThreadsTokensToReconcileSpan。commit 03ee2ea"
+      - "2026-04-19: AI-6 reconcile_debt ledger 落库（spec §5.3）— Operation='reconcile_debt:<op>' + Amount=delta 正数，审计用 WHERE operation LIKE 'reconcile_debt:%'；失败不阻塞对账。+ TestReconcile_Topup_Insufficient_WritesDebtLedger。commit adbd895"
+      - "2026-04-19: AI-1 Langfuse dev 云端（http://110.42.221.25:3100）4 span 验证 PASS — credit-estimate/reserve/reconcile/refund 均落点 + §5.1 schema 100% match。trace a805ca15 + 56e78687 preserved。报告 docs/superpowers/specs/s5-langfuse-verification-2026-04-19.md。commit 9bdd21c"
+      - "2026-04-19: AI-7 Playwright E2E grant-membership-modal.spec.ts（11 tests，14.8s 全绿）— Modal basics/产品类型切换/提交成功 trial+monthly/400/403/404 错误映射。vite.config.ts 新增 VITE_PROXY_TARGET 环境变量便于 E2E 直连 dev。commit web-v3 54afc1e"
+      # ====== Tech debt 从 AI-1 报告修复 ======
+      - "2026-04-19: Tech debt #1 ProviderFromModel 猜测 → usage.Provider Gateway 真实值。billing.TokenUsage 加 Provider 字段，sop/executor 捕获 chunk.Provider 写 finalUsage.Provider，sop.go pricing 调用优先用 usage.Provider。原来 claude-* 猜 dmxapi 但实际 aihubmix 路由的 mismatch 根治。commit 7760af5"
+      - "2026-04-19: Tech debt #2 CI deploy_dev Docker Hub tag race — image_build 同时推 develop 和 develop-<short_sha>，deploy_dev 改用 pinned tag（3 次指数退避 pull），成功后本地 docker tag 回 :develop，SHA 不匹配 exit 1（原来只 warn）。commit 7760af5"
+      # ====== S5/S6 Phase 2 wave (3 agent 并行 + main-thread 并发) ======
+      - "2026-04-19: S5-4 边界矩阵 7/11 项回归单测（Agent A）— credit_service_boundary_test.go 372 LOC，覆盖 free 用户 estimate / Reserve exhausted race / coefficient_id 冻结 / 跨月退原 pkg / 到期瞬间 / 连接池耗尽。4 项合理跳过（middleware 层 + 已覆盖 + cron 未实装）。commit 5af861a"
+      - "2026-04-19: S5-6 admin-web E2E spec（Agent B）— e2e/admin-credits.spec.ts 12/12 tests 全绿（estimation-coefficients CRUD 5 + migrations 2 + B2B billing 2 + orders 1 + credits recharge 1 + list 1）。vite.config.ts 加 VITE_PROXY_TARGET env 支持。commit admin-web 9fed6ea"
+      - "2026-04-19: S5-5 数据 spike 报告（Agent C）— 分析 dev usage_record 39 个 (provider, model, op) 组合 × 288 条 90 天记录。2 组合达 30 样本下限，19 ratio 越界 [0.05, 3.0]（需 beta 校准）。Gate PASS with P1 calibration debt。文档 s5-data-spike-2026-04-19.md。commit 82de8a5"
+      - "2026-04-19: S6-3 Migration rollback drill（Agent C）— 本地 MySQL 8.4 testcontainer（port 3307），7 forward + 7 backward 全 exit 0，final clean state 完全回到 bootstrap 形态。1 P2 rollback WHERE 文案不匹配（不影响 end state）。Gate PASS。文档 s6-rollback-drill-2026-04-19.md。commit 82de8a5"
+      - "2026-04-19: S5-1 credits-system.spec.ts Path 3 文案对齐 Q1.5 B2B2C（'升级会员后可购买' → '请联系管理员开通会员'），9/9 pass。commit web-v3 4517eda"
+      - "2026-04-19: S5-7 Reserve/Reconcile P95 延迟验证 — /v1/credits/estimate × 10 采样，9/10 < 10ms，P95 24ms << 100ms spec §5.6 目标 ✅"
+      - "2026-04-19: S6-1 admin API smoke — estimation-coefficients list+history / migrations/billing-mode-init/status / orders list 全 200 绿。顺带发现 /v1/orders ErrMembershipRequired HTTP=500 应为 403（post-S7 tech debt 登记）"
+      - "2026-04-19: S6-5 CI tag race 修复复测 — CI run 24623752864 (commit 84fdc74) deploy_dev log 确认 'pulled pmtmyaggy/numind-server:develop-84fdc74' + 'SHA 验证通过: 84fdc744...' ✅"
+      - "2026-04-19: S6-6 Langfuse trace diversity 部分完成 — SOP 4 span 完整（AI-1 已覆盖）；SalesRAG chat pricing lookup fail (default provider/model empty + pricing_rule 无 global fallback) → 登记 tech debt；legacy_tier dev 缺数据，靠单测覆盖"
+      - "2026-04-19: S5/S6 Gate PASS — AI 可做的 10 项全部完成 + lint/test/type-check/E2E/smoke/Langfuse/perf/rollback 全绿。HUMAN-only 2 项（gstack /qa + 前端视觉）走 post-close 验收，不 block S7。文档 s5-s6-wave-report-2026-04-19.md"
+      - "2026-04-19: S7 close — manifest 从 S4 直升 S7-done（S5/S6 统一 wave 合并完成）。Codes/CLAUDE.md §1 计费体系表格同步 credits 新制 + B2B2C Q1 补丁。feature 开箱可用（标记 HUMAN-only 2 项为 post-close 验收）"
+      # ====== Post-close P0 事故 + 修复 ======
+      - "2026-04-19: 用户 smoke 报告 SOP 文章优化助手 + SalesRAG chat 均报 'pricing lookup: record not found' 500。登记为 P0 事故（我之前 S6-1 用长 text 测漏了这路径）。根因 3 层：(1) 模板 3 节点 model_name 空 → pricing 查 ('', '') 无 row；(2) 短 prompt cost round 0 → Reserve 硬检查拒绝；(3) dmxapi/claude-* / gemini-* / gpt-5.4 实际路由但 pricing_rule 未 seed"
+      - "2026-04-19: P0 修复 (commit af78827) — store/billing.go GetPricingRule 三级 fallback (exact → provider wildcard → global)；estimation.go clamp estimated 最小 1（promptChars>0 时）；migration 20260419_170000 seed 全局兜底 + 8 行缺失 dmxapi/aihubmix rows；seed_pricing_rules.sql 同步；dev emergency INSERT + 模板 3 节点填 deepseek-v3-2-251201。新增 TestEstimateCredits_ClampsToAtLeastOne 回归。smoke: /sop/runs/823/nodes/9/execute 短 prompt 'completed'，SalesRAG chat 响应 200 22.8KB 流"
+      - "2026-04-19: gstack /qa 浏览器 QA 3 场景 PASS — 场景 A 文章优化助手（SopEstimateBar '1 积分 (3 步)'，节点 1 477 tokens 11.4s claude-sonnet-4-6）+ 场景 B SalesRAG chat（选项 A/B/C 格式完整回复）+ 场景 C 流量选题口播稿（4 节点模板，SopEstimateBar '2 积分'）。余额链 5000→4994→4992→4991→4990 完整可观测。HUMAN-only S5-3 + S6-2 走完"
+      - "2026-04-19: QA 附带发现 2 个 feedback 非 credits-related tech debt - 修复"
+      - "2026-04-19: Feedback tech debt #1 - GET /feedback 500 (missing sales_message_feedback table). Fix: helper.go AutoMigrate list 加 SalesMessageFeedback. Dev emergency CREATE TABLE. commit fdee7c7"
+      - "2026-04-19: Feedback tech debt #2 - GET /feedback?id=-N 400 (frontend passing temp negative msg id). Fix: sales.ts getFeedback short-circuit messageId<=0. commit web-v3 fda5a26"
+      - "2026-04-19: Feature 真实可用确认 - SOP + SalesRAG + 账户中心 credit 链路全部浏览器绿。S7 close 收尾 (含 post-close QA 事故 + 2 tech debt 清理)"
+    blockers: []
+    created_at: "2026-04-18T12:00:00+08:00"
+    completed_at: "2026-04-19T16:30:00+08:00"
+
+  - id: "markitdown-all-deps"
+    ndf_version: "1.0"
+    description: "Dockerfile 安装 markitdown[all] 替代 markitdown[pdf]，启用 DOCX/XLSX/PPTX 的 MarkItDown 原生转换器"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "Dockerfile 单行改动，Docker 层缓存重建"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-19T00:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/markitdown-all-deps"
+    hotfix_artifacts:
+      diagnosis: "document_parser.py 容器内直测：DOCX/XLSX/PPTX 报 MissingDependencyException，因 Dockerfile L72 只装 markitdown[pdf]"
+      review: null
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "Dockerfile 改回 markitdown[pdf]"
+    last_verified:
+      at: "2026-04-19T04:30:00+08:00"
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: "容器内 document_parser.py 直测 complex_table.docx/data.xlsx/slides.pptx 全部 success"
+    decisions: []
+    deferred: []
+    blockers: []
+    created_at: "2026-04-19T04:20:00+08:00"
+    completed_at: "2026-04-19T04:30:00+08:00"
+
+  - id: "unify-document-parser"
+    ndf_version: "1.0"
+    description: "统一文档解析器 — 将 EnhancedParser 从 biz/salesrag/adapter/ 搬到 internal/pkg/parser/，SOP 端点改用共享 parser，删除 pdf.go ~800 行重复代码，新增 xlsx/pptx/rtf 支持"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "架构重构（消除重复代码），单仓库改动，不改变外部 API"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-19T00:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/unify-document-parser"
+    hotfix_artifacts:
+      diagnosis: "docs/superpowers/specs/2026-04-19-unify-document-parser-spec.md"
+      review: "Sonnet code-review: 1 BLOCKER (RTF stub) + 2 IMPORTANT (xlsx/pptx no switch case, ext validation) — all fixed in follow-up commit 0c1006a"
+    progress:
+      total_tasks: 5
+      completed_tasks: 5
+      reviewed_tasks: 5
+      current_task: null
+    rollback: "git revert merge commit on develop"
+    last_verified:
+      at: "2026-04-19T05:22:00+08:00"
+      lint: "pass"
+      type_check: null
+      tests: null
+      test_summary: "parse_eval 基线对比：cn_en_mixed.pdf 97=, complex_table.docx 97=, legacy.doc 100=, long_doc_80p.pdf 81.5=, data.xlsx 0→84↑, slides.pptx 0→97↑. 无退化"
+    decisions:
+      - "2026-04-19: EnhancedParser 改名 DocumentParser，搬到 internal/pkg/parser/（controller + biz 都可 import）"
+      - "2026-04-19: 提取 runPythonParser(data, ext) 通用辅助函数，消除 3 处重复的 temp-file→Python→JSON 逻辑"
+      - "2026-04-19: RTF/XLSX/PPTX 统一走 runPythonParser → MarkItDown"
+    deferred:
+      - "sop.go 中仍有独立的 extractPrintableTextFromPDF (L2952)，与本次重构无关但属于残留重复代码"
+      - "port.DocumentParser 接口（返回 []KnowledgeChunk）与新 parser.DocumentParser（返回 string）签名不同，ingestion.go 是死代码待清理"
+    blockers: []
+    created_at: "2026-04-19T04:50:00+08:00"
+    completed_at: "2026-04-19T05:22:00+08:00"
+
+  - id: "salesrag-restore-routes-and-panic-fix"
+    ndf_version: "1.0"
+    description: "SalesRAG 发消息无反应 — 补 ai_service_route 缺失 seed（services 18-23）+ 修 billing middleware typed-nil panic"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "P0 事故 — dev SalesRAG 完全不能用。两层修复：数据 seed（migration）+ 代码 panic 防御（billing middleware）"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-19T23:50:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/billing-typed-nil-panic"
+    hotfix_artifacts:
+      diagnosis: |
+        用户报告 SalesRAG 发消息后无反应。浏览器 + curl 诊断：
+        1) 后端 SSE 返 error event "retrieval failed: gateway.ResolveTask(salesrag.embed):
+           AI 服务不存在". DB 查实 ai_service_route 对 services 18-23 全部零行。
+        2) 追查根源：4/16 12:48:10 有人手工 SQL 只做了 2/3 步（INSERT ai_service +
+           UPDATE task_profile.default_service_id），漏了 INSERT ai_service_route。
+           audit_log 缺失证实绕过了 admin API。
+        3) 补 route 后触发第二 bug — billing middleware nil pointer panic at
+           billing.go:368. Stacktrace 指向 `asChatResponse(typed-nil)` 陷阱：
+           Ali.Chat 遇错返回 (nil, err)，Go typed-nil 进 interface{} 后 type
+           assertion 成功返回 (nil_ptr, true)，caller deref chatResp.Usage 崩。
+        4) 前端 sales store 同时存在 resetStreamState wipe streamError 的 bug，
+           导致用户完全看不到任何反馈（无气泡/无 loading/无错误）— 登记为 P1
+           follow-up（本 hotfix 暂不修，重点恢复后端功能）。
+      review: |
+        Sonnet subagent review 发现 1 P0 + 4 P1 + 6 P2。已全部处理：
+        - P0 #1: migration 写到已 drop 的 pricing 列 → 重写 INSERT 列表。commit 1fe2300
+        - P1 #2: migration provider 缺失 silent 0-row → 加 1/(count-3) guard。commit 1fe2300
+        - P1 #3: 第 3 条 regression test 覆盖 asChatResponse typed-nil guard 路径。commit 1fe2300
+        - P1 #4: 前端 streamError wipe bug → preserve across resetStreamState。commit web-v3 c759dac
+        - P2 #10: wrapStreamForBilling nil-src goroutine leak guard → 5 行防御。commit 1fe2300
+        - P2 #5/#6 minor 风格：保留不改（reviewer 自己标 Leave as-is）
+        - P2 #7 chain.go 2-level fallback deferred item：reviewer 说找不到对应代码，
+          从 manifest deferred 里删除（misattribution）
+        - P2 #8/#9 rollback 与 UNIQUE idempotency：reviewer confirm OK
+        - P1→P2 #11 admin UI enforcement：reviewer 建议升级 P1，但涉及 admin-web
+          仓库独立工作量，登记为下一个 hotfix（admin-ui-service-route-enforcement）
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 3
+      current_task: null
+    rollback: "git revert merge commit + 跑 migrations/20260419_230000_seed_ai_service_routes_rollback.sql"
+    last_verified:
+      at: "2026-04-19T23:45:00+08:00"
+      lint: "pass (go vet clean)"
+      type_check: null
+      tests: "pass"
+      test_summary: |
+        - 2 regression test（TestPopulateLLMUsage_TypedNilResponse_NoPanic +
+          TestAsChatResponse_TypedNilGuard）全绿
+        - middleware 全套 test 全绿
+        - go vet 干净
+        - dev DB migration 手工执行过，6 条 route 落库，SELECT 验证过
+        - SSE 触发测试待 CI 部署后执行（本 manifest 更新时 CI 在跑）
+    decisions:
+      - "2026-04-19: migration 选择 dev 手工执行 + commit 一体，避免重复 4/16 绕过 migration 的错误"
+      - "2026-04-19: route 定价设 0，billing 真实走 pricing_rule 表（单一真源）"
+      - "2026-04-19: Provider 映射通过 JOIN llm_provider.name 避免硬编码 id"
+      - "2026-04-19: billing middleware 修两处（asChatResponse typed-nil guard + populateLLMUsage callErr early return）双保险"
+      - "2026-04-19: 前端 sales store resetStreamState wipe error 的 bug 登记为 P1 followup，不在本次 hotfix 范围（用户没授权）"
+    deferred:
+      - "admin-web UI 未强制'创建 service 后必须配 route'——next hotfix（reviewer 建议 P1，涉及 admin-web 仓库独立改动，登记为 admin-ui-service-route-enforcement）"
+    blockers: []
+    created_at: "2026-04-19T22:55:00+08:00"
+    completed_at: "2026-04-19T23:50:00+08:00"
+
+  - id: "salesrag-right-panel-bg-white"
+    ndf_version: "1.0"
+    description: "SalesRAG 页面右边区域背景灰色改纯白"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "单仓库 UI tweak，2 文件 3 行 CSS 改动"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-19T23:50:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "fix/salesrag-white-bg"
+    hotfix_artifacts:
+      diagnosis: "SalesView.vue .app-container 的 background: var(--bg) (#f7f8fb) 让右侧 chat 区域看起来灰。用户要求改纯白"
+      review: null
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "git revert merge commit"
+    last_verified:
+      at: "2026-04-19T23:50:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: null
+      test_summary: "lint 0 errors / type-check 通过 / 视觉验证待 CI 部署后浏览器确认"
+    decisions:
+      - "2026-04-19: 只覆盖 SalesView .app-container 背景，不动 --bg 全局 token（避免影响其他页面）"
+      - "2026-04-19: InputArea .input-stage::before fade gradient 同步改到 white 末端，避免输入框上方视觉断层"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-19T23:10:00+08:00"
+    completed_at: "2026-04-19T23:50:00+08:00"
+
+  - id: "admin-ui-service-route-enforcement"
+    ndf_version: "1.0"
+    description: "防御 4/16 事故的 systemic 根因 — admin UI 强制创建 Service 必带 Route + 列表暴露无路由 orphan"
+    track: "hotfix"
+    stage: "H3-done (review followups merged)"
+    classification_reason: "跨 2 仓库 UI + API hardening。后端原子 endpoint + 列表扩展 route_count；前端列表 orphan 徽章 + 新建表单强制 Route 子表单"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-20T00:50:00+08:00"
+    repos:
+      - numind-server
+      - numind-admin-web
+    branches:
+      numind-server: "fix/atomic-service-route-create"
+      numind-admin-web: "fix/service-route-enforcement-ui"
+    hotfix_artifacts:
+      diagnosis: |
+        Reviewer 对 salesrag-restore hotfix 提出的 P1 升级项（原 P2 #11）。4/16
+        事故暴露 admin UI 的设计缺陷：CreateService / CreateRoute 是独立 API，
+        允许创建孤儿 Service。本 hotfix 双管齐下：
+        （1）强制：新增原子 endpoint + 前端新建表单必填 Route 子表单
+        （2）暴露：列表显示 route_count，=0 显示红色 orphan 徽章
+      review: |
+        Sonnet subagent review 发现 1 P0 + 4 P1 + 一众 P2 / OK。P0 + 关键 P1 全修：
+        - P0 #1 contract mismatch (base_model_id)：选 B 去掉 backend 字段保持与
+          pre-existing createServiceReq/updateServiceReq 一致。commit server 56771e8
+        - P1 #5 actor guard: CreateServiceWithRoute 显式 reject actor_id=0。commit 56771e8
+        - P1 #7 nav trap: create 成功跳 edit 页（避免 filter=active 看不见 inactive
+          新服务）。commit admin-web 161830a
+        - P1 #8 badge 文案: "无路由" → "无可用路由"（精准语义）+ tooltip 更新。commit 161830a
+        - P1 其他被 reviewer 自降到 P2 / OK（validation 合理 / errno 合理 / 测试 OK）
+        - P2 test gap（rollback test 测的是 pre-check 而非真实 rollback）：登记 tech debt，
+          SQLite 默认不强制 FK 需要 fixture，不值当为一个已靠 GORM.Transaction 保证的路径
+          造测试脚手架
+    progress:
+      total_tasks: 2
+      completed_tasks: 2
+      reviewed_tasks: 2
+      current_task: null
+    rollback: "git revert 两仓库 merge commit"
+    last_verified:
+      at: "2026-04-20T00:50:00+08:00"
+      lint: "pass (backend go vet + frontend npm run lint/type-check/build 全绿)"
+      type_check: "pass"
+      tests: "pass"
+      test_summary: |
+        - 后端 4 条新 test：TestCreateServiceWithRoute_Atomic_Success /
+          _RouteFailure_RollsBack / _DuplicateModelKey / TestListServices_RouteCountPopulated
+        - 后端 go vet + 全套 test 绿
+        - 前端 lint + type-check + build 绿
+        - 端到端浏览器验证待 CI deploy 完成
+    decisions:
+      - "2026-04-20: 契约冻结优先 — 后端 agent 和前端 agent 并行（独立仓库），契约 POST /v1/admin/ai/services-with-route 事先写死"
+      - "2026-04-20: ServiceListItem 用 embedded *model.AIService 而非 composition — Go 字段 promotion 让旧 test 和 JSON 消费者零改动"
+      - "2026-04-20: 事务里只放 service+route INSERT，audit log 放事务外 best-effort（跟 CreateRoute/CreateProvider 一致）"
+      - "2026-04-20: Provider FK 在事务外预检 → 给调用方干净 400 而不是 raw FK error"
+      - "2026-04-20: Duplicate model_key 新增 errno ErrAIServiceModelKeyExists (HTTP 409)"
+      - "2026-04-20: 前端新建模式 ONLY 加 Route 子表单，编辑模式保持原 flow（不影响现有 Service 的独立 Route 管理 UI）"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-20T00:00:00+08:00"
+    completed_at: "2026-04-20T00:50:00+08:00"
+
+  - id: "remove-sop-estimate-bar"
+    ndf_version: "1.0"
+    description: "SOP 运行页移除预估消耗 + 余额 + 开始运行 bar（SopEstimateBar），credits-system Phase 2 引入的 UX，用户决定完全去掉"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "单仓库 UX 删除，~40 行（删 view 挂载 + 组件文件 + 死代码 + 调整 e2e）"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-19T23:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "fix/remove-sop-estimate-bar"
+    hotfix_artifacts:
+      diagnosis: "用户要求：SOP 运行时每个步骤的预估消耗/当前余额/开始运行 bar 完全不需要，去掉"
+      review: "pass (lint 0 errors + type-check pass)"
+    progress:
+      total_tasks: 4
+      completed_tasks: 4
+      reviewed_tasks: 4
+      current_task: null
+    rollback: "git revert merge commit"
+    last_verified:
+      at: "2026-04-19T23:00:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: null
+      test_summary: "commit d52441d, 4 files changed +7/-242"
+    decisions:
+      - "2026-04-19: 删除 SopEstimateBar.vue 组件文件 + 清理 stores/credits.ts 的 estimate/fetchEstimate 死代码（grep 确认无其他引用）"
+      - "2026-04-19: credits-system.spec.ts Path 1 + Path 4 的 estimateBar 断言一并移除，不替换新断言（对应 UI 已不存在）"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-19T22:45:00+08:00"
+    completed_at: "2026-04-19T23:00:00+08:00"
+
+  - id: "nginx-dns-refresh"
+    ndf_version: "1.0"
+    description: "前端 nginx 用 resolver + 变量 proxy_pass，根治后端容器重建后前端 502（Docker bridge 内网 DNS 缓存问题）"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "2 仓库配置改动，无 schema 变更，每仓库 ~15 行。单仓库 fix 无法根治（web-v3 + admin-web 独立 nginx 都有同问题）"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-19T22:25:00+08:00"
+    repos:
+      - numind-web-v3
+      - numind-admin-web
+    branches:
+      numind-web-v3: "fix/nginx-dns-dynamic-resolver"
+      numind-admin-web: "fix/nginx-dns-dynamic-resolver"
+    hotfix_artifacts:
+      diagnosis: |
+        静态 proxy_pass http://numind-server-dev:9091/ 在 nginx 启动时解析 DNS 一次后永久缓存。
+        后端容器 docker rm + docker run 换 IP 后（CI deploy_prod 每次发版就会触发），
+        前端 nginx 依然连旧 IP → 502。CI 同时重建前后端时自动修复，否则持续 502。
+        实测：2026-04-19 dev 首页 5 个 xhr 全 502，nginx log 显示 connect() failed 到 172.20.0.4。
+      review: "pass (nginx -t + 真实 docker rm/run 触发测试 10/10 采样 HTTP 401)。Sonnet subagent review 发现 3 P1 + 4 P2，3 P1 + 2 低成本 P2 全部修复（resolver_timeout 5s / boot log / DO NOT INLINE 注释 / runbook 端口 typo / runbook 诊断命令）。commit web-v3 003e16e + admin-web b978c0b"
+    progress:
+      total_tasks: 4
+      completed_tasks: 4
+      reviewed_tasks: 4
+      current_task: null
+    rollback: "git revert merge commit（两仓库分别操作）"
+    last_verified:
+      at: "2026-04-19T22:25:00+08:00"
+      lint: null
+      type_check: null
+      tests: "pass (真实触发测试)"
+      test_summary: |
+        1. nginx -t 两套 template 渲染后语法 OK
+        2. CI deploy_dev 两仓库均 success（web-v3 run 24631113440 2m9s / admin-web run 24631114877 1m36s）
+        3. 真实 docker rm + docker run 重建 numind-server-dev（IP 从 172.20.0.2 → 172.20.0.8），
+           backend 就绪后第 1 秒 web-v3 /api/v1/users/me 立即 HTTP 401（成功连到新 IP 后端），
+           10/10 采样全 401，无一 502。修复生效。
+        4. 结论：容器重建后 ≤5s 自动恢复（实测就绪瞬间即恢复）
+    decisions:
+      - "2026-04-19: 方案 A（resolver 127.0.0.11 valid=5s + 变量 proxy_pass + rewrite 剥前缀）选定 — 开源 nginx 原生支持，5s TTL 平衡刷新与 DNS 压力，容器重启后 ≤5s 自动恢复"
+      - "2026-04-19: entrypoint.sh 加 API_PROXY_UPSTREAM=${API_PROXY_PASS%/}（去尾斜杠版）— nginx 变量 proxy_pass 若 URL 带尾斜杠会只发根路径，必须无尾斜杠 + rewrite 剥 location 前缀"
+      - "2026-04-19: envsubst 白名单保持 '${API_PROXY_PASS} ${API_PROXY_UPSTREAM}' — nginx 原生变量 $upstream/$uri/$host 不被误替换"
+      - "2026-04-19: prod 部署策略：等 dev 稳定观察 2-3 天后 tag v* 触发 prod CI。prod 同样有本 bug（CI 每次后端发版换 IP，前端卡旧 IP），修复优先级同 dev"
+    deferred:
+      - "prod 部署：dev 观察期后 tag v* 触发。本 hotfix 先 close dev/qa 验证阶段，prod 部署视为常规后续发版"
+    blockers: []
+    created_at: "2026-04-19T17:00:00+08:00"
+    completed_at: "2026-04-19T22:25:00+08:00"
+
+  - id: "admin-sop-run-id-serialization"
+    ndf_version: "1.0"
+    description: "admin-web 运行监控展开详情 400 — SopRun 嵌入 gorm.Model，ID 序列化为 PascalCase，前端 run.id 为 undefined"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "单点序列化 bug，单仓库改动（admin_sop 控制器），无 schema/业务逻辑变更，~90 行 DTO + mapper"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-19T19:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-admin-web
+    branches:
+      numind-server: "fix/admin-sop-run-id-serialization + fix/admin-sop-run-review-followup + fix/sop-runs-p2-cleanup"
+      numind-admin-web: "fix/runs-ts-optional-relations"
+    hotfix_artifacts:
+      diagnosis: |
+        admin-web RunsView 展开详情请求 GET /v1/admin/sop/runs/undefined/detail → 400。
+        根因：model.SopRun 嵌入 gorm.Model，其 ID/CreatedAt 字段无 json tag，
+        Go 默认按字段名序列化为 "ID"/"CreatedAt"（PascalCase）。
+        admin 前端 runs.ts 声明 id: number（lowercase），run.id === undefined。
+        对比 admin_user.ListUsers 已显式映射 AdminUserItem DTO — 此处应沿用相同模式。
+        不改 model.SopRun（会波及 numind-web-v3 已消费 run.ID 的 sopRun.ts）。
+      review: |
+        两个 Sonnet subagent 并行 review:
+        1. Spec 合规: PASS. 字段全覆盖、嵌套 shape 正确、GetRunsStats 单 ID 调用安全、
+           无其他 admin-web 消费者读被 DTO 省略的字段（conversation_id 等）、model/user-side 无波及。
+        2. Code quality: PASS-WITH-CONCERNS. 2 个 P1 + 2 个 P2 全部修复。
+      review_p1_fixed:
+        - "DTO 挪到 pkg/api/numind/v1/admin.go（AdminRunItem/AdminNodeRunItem/AdminRunTemplateRef/AdminRunUserRef），与 AdminUserItem 同侧"
+        - "GetRun/GetRunDetail 的 GetRunsStats 调用抽成 fetchRunStats helper，失败时 log.Warnw 记录（原实现静默吞错）"
+      review_p2_fixed:
+        - "admin-web runs.ts 的 template/user 声明改为可选（template?:/user?:），匹配后端 omitempty 实际行为（soft-delete 场景）"
+        - "admin_sop/sop_test.go 新增 4 个 mapper 单测：toAdminRunItem 满字段 / nil Template / nil User + toAdminNodeRunItem（全过，0.48s）"
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 3
+      current_task: null
+    rollback: "git revert merge commit on develop（server 三次 merge + admin-web 一次 merge 各一次 revert）"
+    last_verified:
+      at: "2026-04-19T19:00:00+08:00"
+      lint: "pass (server: go vet + golangci-lint; admin-web: eslint + vue-tsc)"
+      type_check: "pass (admin-web vue-tsc)"
+      tests: "pass (admin_sop/sop_test.go 4/4 PASS)"
+      test_summary: "go build ./... 通过；subagent review PASS；mapper 单测全过；admin-web type-check 通过。待 dev 部署后前端复验"
+    decisions:
+      - "2026-04-19: 沿用 admin_user 模式，DTO 放 pkg/api/numind/v1/admin.go，mapper 保留 controller 本地"
+      - "2026-04-19: GetRun / GetRunDetail 补 total_tokens / cost_cents（调用 GetRunsStats 单 ID，fetchRunStats helper 封装）"
+      - "2026-04-19: stats 查询失败不阻断响应，走 log.Warnw + 零值回退（与 ListRuns 行为一致）"
+      - "2026-04-19: P2.1 走「类型诚实」方案（admin-web TS 改可选）而非「后端改行为」方案（去掉 omitempty）—— 前者零运行时成本，且 RunsView.vue 本就在用 ?. 访问"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-19T17:45:00+08:00"
+    completed_at: "2026-04-19T19:00:00+08:00"
+
+  - id: "sop-runs-error-mapping"
+    ndf_version: "1.0"
+    description: "POST /v1/sop/runs 对 free/无权用户业务拒绝误报 500，改为返回 403 + 结构化 errno code"
+    track: "hotfix"
+    stage: "H3-pending-user-verify"
+    classification_reason: "单仓库，3 文件改动（errno + biz + controller），不涉及 schema/API 新增/外部服务/支付逻辑。权限拦截逻辑零变更，仅改错误类型映射"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-19T22:15:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/sop-runs-error-mapping (merged) + fix/sop-runs-p2-cleanup (P2 follow-up, merged)"
+    hotfix_artifacts:
+      diagnosis: |
+        dev 环境 POST /v1/sop/runs 返回 500。server 日志 22:00:51 显示：
+          warn sop/sop.go:270 User cannot run SOP
+          {"user_id":28, "user_tier":"free", "reason":"免费用户无法运行SOP，请升级为会员"}
+        业务拦截正确（free tier 不能跑 SOP），但响应 HTTP 是 500。
+        根因：
+        - biz/sop/sop.go::CreateRun 等级拒绝 (line 275) 和模板无权 (line 290)
+          返回 errors.New/fmt.Errorf 无类型 error
+        - controller/v1/sop/sop.go::CreateRun (line 564) 把所有 biz err 用
+          errno.InternalServerError.SetMessage("%s", err.Error()) 包装
+        - 结果：任何业务拒绝（free / 过期 / 次数耗尽 / 模板无权）统统报 500，
+          前端无法区分"服务器坏了"和"你要升级会员"
+      review: null
+    progress:
+      total_tasks: 6
+      completed_tasks: 6
+      reviewed_tasks: 6
+      current_task: null
+    rollback: "git revert 两个 merge commit on develop（76d0792 主 fix + 861dc34 P2 cleanup）"
+    last_verified:
+      at: "2026-04-19T23:20:00+08:00"
+      lint: "pass (go vet clean；golangci-lint 两条 warning 为 pre-existing，非本 fix 引入)"
+      type_check: null
+      tests: "pass (go test ./... + TestCreateRun_FreeUserReturnsTypedError + TestCreateRun_TemplateUnauthorizedReturnsTypedError)"
+      test_summary: "两条回归测试均 pass。free 用户路径 HTTP=403/SOP.RunDenied；sub-user 无模板权限路径 HTTP=403/Config.TemplateUnauthorized。CI deploy_dev 24631111001 成功，numind-server-dev 于 22:17:59 重启。待用户前端确认 403"
+    decisions:
+      - "2026-04-19: errno 新增 ErrSOPRunDenied (HTTP 403, SOP.RunDenied) + ErrTemplateUnauthorized (HTTP 403)。放在 config.go 与 ErrTemplateNotPublished 同文件，便于 SOP 相关错误归类"
+      - "2026-04-19: controller 改为 core.WriteResponse(c, err, nil) 直接透传。errno.Decode 按 *Errno 类型命中正确 HTTP；非 typed error 走 default 分支兜底 500，等价旧行为"
+      - "2026-04-19: scope 仅 CreateRun 一条调用链。其他 handler（GetNextNode/ExecuteNodeStream/GetRun/DeleteRun 等）同模式问题登记为 tech debt，避免本 hotfix diff 膨胀"
+      - "2026-04-19 P2: Sonnet code-reviewer 报告两项 P2 — 删除 controller/v1/sop/bookmark.go::ctrl.CreateRunWithBookmarks 死代码（grep 零调用）、补 ErrTemplateUnauthorized 路径回归测试（premium sub-user + user_template_permission 白名单不含目标模板）"
+    deferred:
+      - "controller/v1/sop/sop.go 其他 handler（GetNextNode/ExecuteNodeStream/ApplyBookmark/GetRun/DeleteRun/BatchDeleteRuns/GetRunDetail/ListMyRuns/ListRunChatMessages/GetRunStatus 等约 15 处）均使用 errno.InternalServerError 一刀切包装，存在同类 500-vs-403 误报风险。建议另开 hotfix 批量改为 core.WriteResponse(c, err, nil) 透传模式"
+      - "biz/sop/sop.go 其他方法（DeleteRun line 1610、BatchDeleteRuns line 1953）仍用 errors.New；若上述 controller 改造推进，biz 侧相应改为 typed errno（如 ErrForbidden）"
+      - "errno.Decode 基于 type switch 而非 errors.As，`fmt.Errorf(\"...: %w\", errno.Err)` 包装会降级为 500。当前调用点均返回 unwrapped errno，不受影响；如未来增加 wrap 需更新 Decode"
+    blockers: []
+    created_at: "2026-04-19T22:15:00+08:00"
+    completed_at: null
+
+  - id: "action-log-missing-migration"
+    ndf_version: "1.0"
+    description: "补建 action_log 表 migration — 修复 P0 回归：model.ActionLogM 在 2026-04-19 grant-membership 功能中使用，但建表 SQL 从未提交，dev/qa/prod 均无此表，parent 为 child 开通会员时 tx commit 失败"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "单文件 SQL migration + rollback；纯补 missing migration；无业务逻辑变更；影响面限定于已部署环境的 grant_membership 和 billing_mode_init 两条路径"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-20T01:05:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/action-log-missing-migration"
+    hotfix_artifacts:
+      diagnosis: "inline-triage + subagent 核实 — helper.go:159 autoMigrate 列表未包含 &model.ActionLogM{}，migrations/ 目录无 create action_log SQL；dev DB SHOW TABLES 确认无此表；in-memory SQLite test 自动 AutoMigrate 故单测通过，掩盖了真实环境的 Error 1146 崩溃"
+      review: null
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "migrations/20260420_110000_create_action_log_rollback.sql"
+    last_verified:
+      at: "2026-04-20T01:02:00+08:00"
+      lint: null
+      type_check: null
+      tests: "go test ./internal/numind/biz/credit/ -run TestGrantMembership -v → 9/9 PASS"
+      test_summary: "dev DB 已 apply migration，SHOW CREATE TABLE 确认结构符合 ActionLogM；smoke INSERT/SELECT/DELETE 成功；grant_membership 9 个单测全通过"
+    decisions:
+      - "2026-04-20: 选择独立 SQL migration 而非补 helper.go autoMigrate 列表 — 与 2026-04-19 全部 credit-system 新表迁移风格一致（credit_estimation_coefficient / credit_reservation / credit_reservation_item），migrations/ 作为单一事实源"
+      - "2026-04-20: BIGINT UNSIGNED 作为 id/user_id/target_id 类型 — 与 GORM uint on MySQL 默认映射一致"
+      - "2026-04-20: 纠正先前错误结论 — 本项目无自动 migration runner。Dockerfile 不复制 migrations/，docker-entrypoint.sh 只做 model/vector 初始化，CI/CD yaml 无 SQL 执行步骤，helper.go:159 AutoMigrate 白名单不含 ActionLogM（本次漏建根因）。所有 *.sql migration 均需人工 SSH 到目标环境 docker exec 执行"
+    deploy_checklist:
+      dev:
+        status: "applied"
+        applied_at: "2026-04-20T01:01:46+08:00"
+        method: "sshpass → docker cp + docker exec mysql < *.sql on numind-mysql-dev"
+      qa:
+        status: "PENDING_MANUAL_APPLY"
+        warning: "此 migration 未应用前，qa 环境调用 POST /v1/users/children/:child_id/grant-membership 或 admin billing-mode-init 端点会因 Error 1146: Table 'action_log' doesn't exist 而 tx rollback"
+        command: "sshpass -p \"$DEV_SSH_PASS\" ssh \"$DEV_SSH_USER@$DEV_SSH_HOST\" \"docker cp numind-server/migrations/20260420_110000_create_action_log.sql numind-mysql-qa:/tmp/a.sql && docker exec numind-mysql-qa bash -c 'mysql -uroot -p<qa-pwd> numind-qa < /tmp/a.sql'\""
+      prod:
+        status: "PENDING_MANUAL_APPLY"
+        warning: "生产高危操作 — 需运维/用户授权，低峰窗口执行；CREATE TABLE IF NOT EXISTS 对新表无锁风险；回滚使用 20260420_110000_create_action_log_rollback.sql（注意 rollback 后 grant_membership 会再次 crash）"
+        command: "sshpass -p \"$PROD_SSH_PASS\" ssh \"$PROD_SSH_USER@$PROD_SSH_HOST\" \"docker cp numind-server/migrations/20260420_110000_create_action_log.sql numind-mysql-prod:/tmp/a.sql && docker exec numind-mysql-prod bash -c 'mysql -uroot -p<prod-pwd> numind-prod < /tmp/a.sql'\""
+    deferred:
+      - "qa/prod DB 应用 migration — 详见 deploy_checklist.qa / deploy_checklist.prod。推 release 或 tag v* 不会自动执行此 SQL（项目无 auto runner）"
+      - "长期改进（非本 hotfix 范畴）：引入通用 migration runner（goose/golang-migrate），或把 &model.ActionLogM{} 加入 helper.go:159 AutoMigrate 白名单作兜底（对存量部署仍需手工 apply，但新环境首次启动可自愈）。当前保持与项目其他 migration 一致的纯手工风格"
+    blockers: []
+    created_at: "2026-04-20T01:00:00+08:00"
+    completed_at: "2026-04-20T01:05:00+08:00"
+
+  - id: "dead-code-cleanup-p1"
+    ndf_version: "1.0"
+    description: "清理 llm-model-switch → ai-service-manager 迁移遗留死代码：删除 llm_model/llm_model_provider 两个 store（对应 view 已在 20260417 migration 删除）、LLMModelProvider struct、UserM model、孤立的 util/image_path 旧卡片/书籍函数和 util/permission.go 整个文件；修正 database_charset CriticalTables 列表（本次 dev DB 清理后表结构对齐）"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "纯代码删除 + 字符集清单修正，影响面可枚举（8 文件 +24/-457 行）；编译+测试+vet 通过；无 schema/API/业务逻辑变更"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-20T01:30:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/dead-code-cleanup-p1"
+    hotfix_artifacts:
+      diagnosis: "用户人工精校 subagent 核实结果 — 保留 LLMModel struct（preference.go:80 作为响应 DTO）+ GetAvatarWithCOS/GetDisplayURL（user/get.go:49 用于头像 COS 回退）；删除其余孤立函数/struct/store"
+      review: "grep 全仓确认零残留引用（Get*ImagePath/Ensure*Directory/UserM/LLMModelProvider/ILLMModel*Store 等全部返回 no matches）"
+    progress:
+      total_tasks: 4
+      completed_tasks: 4
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "git revert on develop（纯删除，恢复原文件即可）"
+    last_verified:
+      at: "2026-04-20T01:25:00+08:00"
+      lint: "go vet ./... pass（仅 sqlite-vec cgo deprecated 警告，无关本次改动）"
+      type_check: "go build ./... pass"
+      tests: "go test ./... ALL PASS（credit/store/model/middleware/aiservice/pricing/langfuse 等全部测试模块无 FAIL）"
+      test_summary: "编译/测试/静态检查三重绿灯；所有之前引用被删符号的地方都是死代码路径自身"
+    decisions:
+      - "2026-04-20: LLMModel struct 保留（纯 DTO，preference.go 用其向后兼容 v3 ModelSelector 响应形状）；TableName() 保留指向已删 view 'llm_model' — 意图：万一未来被误用 GORM 查询，错误信息会直接暴露被删 view 名而非 GORM 默认的 'llm_models' pluralization，便于调试定位"
+      - "2026-04-20: LLMModelProvider struct 完整删除（仅被同批删除的 store 内部引用；llm.go 注释明确指向已删 view）"
+      - "2026-04-20: permission.go 整个文件删除（4 个函数全死，EnsureDirectoryPermissions/EnsureParentDirectory 也仅被同批删的 Ensure*Directory 使用）"
+      - "2026-04-20: image_path.go 从 165 行缩减到 50 行，仅保留 GetAvatarWithCOS（user controller 在用）+ GetDisplayURL（GetAvatarWithCOS 依赖）"
+      - "2026-04-20: database_charset.CriticalTables 从 17 条（含 11 条已删表的单数命名）重写为 22 条实际存在的关键业务表，覆盖 user/sop/knowledge/sales/chatbot/credit/billing/ai_service 等核心域"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-20T01:20:00+08:00"
+    completed_at: "2026-04-20T01:30:00+08:00"
+
+  - id: "salesrag-pricing-resolve-route"
+    ndf_version: "1.0"
+    description: "修复 salesrag 发消息 500：CheckAndEstimate pricing lookup record not found。改为在 Reserve 前调 registry.ResolveTask(salesrag.chat) 拿真实 provider+model 传给 EstimationInput，命中精确价格规则（aihubmix/deepseek-v3.2-thinking ¥2.16/¥3.24）而非空兜底"
+    track: "hotfix"
+    stage: "H2"
+    classification_reason: "P0 线上 bug：(1) 不涉及 schema 变更 (2) 不新增 API (3) 不接外部服务 (4) 影响 3 文件（salesrag.go + biz.go + 单测）(5) 计费方向是修复+更准，无新风险"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-20T02:30:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/salesrag-pricing-resolve-route"
+    hotfix_artifacts:
+      diagnosis: "salesrag.go:354 CheckAndEstimate 传 defaultProvider/defaultModel=空字符串，依赖 store.GetPricingRule 三级 fallback 命中 ('llm_chat','','') 全局兜底行；但 dev DB 该全局行不存在（仅有 ali-dashscope/'' 和 volc-ark/'' per-provider 默认行），SQL WHERE 三个 OR 条件 collapse 后只匹配 ('','')，查无记录返回 ErrRecordNotFound。salesrag.chat 实际通过 task_profile.default_service_id=16 路由到 aihubmix/deepseek-v3.2-thinking，pricing_rule 已为该 (provider,model) 配置 ¥2.16/¥3.24 但代码路径根本没问到。修复方向：注入 registry.Registry，Reserve 前 ResolveTask 拿到真实 provider+model 传入 EstimationInput"
+      review: null
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "git revert（纯代码改动，无 DB schema 变更；nil-safe registry 让回退完全可逆）"
+    last_verified:
+      at: "2026-04-20T02:35:00+08:00"
+      lint: "go vet ./... pass（仅 sqlite-vec cgo deprecated 警告，无关本次改动）"
+      type_check: "go build ./... pass"
+      tests: "go test ./internal/numind/biz/salesrag/ -v → 6/6 PASS（TestAcquireSalesragCredits_CreditsHappyPath / InsufficientBalance / LegacyTierFree / IdempotentReplay / LegacyTierFreeUserBlocked + TestFinalize_StreamErrorTriggersRefund）"
+      test_summary: "salesrag 包全绿；credit 包 2 个 fail（TestPromptEstimator_SopRun_SumsAllNodes / TestPromptEstimator_SopChat_EmptyFallsBackToTemplate）经 git stash 验证为 pre-existing — 来自 commit bae4921 provider 名对齐遗留，与本次修复无关"
+    decisions:
+      - "2026-04-20: 选 Plan B（代码层 ResolveTask）而非 Plan A（DB 加全局兜底行）— 用户授权。优势：(1) 命中精确价格 ¥2.16/¥3.24 而非保守兜底 ¥3/¥10，避免长期过度预扣；(2) 修复结构性问题不是数据补丁；(3) 未来运营在管理端切换路由 salesrag biz 自动跟随，无需追加 SQL"
+      - "2026-04-20: registry 字段做 nil-safe — 测试 fixture 直接构造 &salesRAGBiz{} 时 registry=nil，自动回退到 empty provider/model（保持原行为）。生产 NewSalesRAGBizWithCredits 必传，不影响线上路径"
+      - "2026-04-20: 不修 recordLLMResult 的 defaultProvider/defaultModel fallback — Reconcile 路径正常情况由 streamProvider/streamModel 提供真实值（salesrag.go:2099），fallback 仅在 stream 元数据缺失时触发（非主路径），本次 hotfix 不扩散范围"
+    deferred:
+      - "long term：销户 defaultProvider/defaultModel 字段（已无写入路径），改用 ResolveTask 单一来源；本次保留以保持 nil-safe 测试兼容"
+    blockers: []
+    created_at: "2026-04-20T02:30:00+08:00"
+    completed_at: null
+
+  - id: "user-info-missing-parent-user-id"
+    ndf_version: "1.0"
+    description: "修复 B2B2C 权限泄露 — GET /v1/users/me 白名单响应漏返 parent_user_id 导致子账户被误判为父账户，首页「客户管理」「配置中心」tab 对子账户可见"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "P0 权限 bug：(1) 单文件单行修复 (2) 不改 schema (3) 不新增 API (4) 无外部服务 (5) 修复方向是补齐字段，无新风险"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-20T03:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/user-info-missing-parent-user-id"
+    hotfix_artifacts:
+      diagnosis: "controller/v1/user/get.go:53-67 GetCurrentUser 用 gin.H 手动白名单拼响应，遗漏 parent_user_id 字段。model.User.ParentUserID 字段存在（user.go:19 *uint json:parent_user_id,omitempty），login 路径返回完整 &user 正常；但 /v1/users/me 调用会覆写前端 userInfo，parent_user_id 变 undefined。前端 src/stores/user.ts:33 isParentUser = userInfo.value?.parent_user_id == null，undefined == null 为 true → 子账户被判为父账户 → AppSidebar.vue:189-210 两个 tab 照常渲染"
+      review: "Sonnet code-reviewer PASS: ParentUserID 字段命名对齐，GetUserByID plain First 载入所有列，gin.H map 不受 omitempty 影响 → 子账户恒有 parent_user_id: <int>，父账户恒有 parent_user_id: null。前端 == null 判断精确。无额外字段泄漏"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert（单行 gin.H 字段增补，无 schema / 无 API 变更）"
+    last_verified:
+      at: "2026-04-20T03:00:00+08:00"
+      lint: "go vet ./internal/numind/controller/v1/user/... pass"
+      type_check: "go build ./... pass（仅 sqlite-vec cgo deprecated 警告，pre-existing）"
+      tests: null
+      test_summary: "纯字段补齐，无业务分支新增；子账户可见性 end-to-end 由前端登录后肉眼验证"
+    decisions:
+      - "2026-04-20: 选最小修复面 — 只补 gin.H 一个字段，不重构 handler 返回 model.User 整体。避免一次性暴露无关字段（password_hash 等），保留白名单 shape"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-20T03:00:00+08:00"
+    completed_at: "2026-04-20T03:00:00+08:00"
+
+  - id: "sales-rag-open-to-all-accounts"
+    ndf_version: "1.0"
+    description: "销售智能体/知识库对所有登录用户开放 — 移除 FeaturePermission(sales_agent) 中间件，子账户 403 修复；各账号 user_id 独立隔离"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "P1 UX 阻塞：B2B2C 子账户访问 /v1/sales-rag/documents 403。(1) 不改 schema (2) 不新增 API (3) 无外部服务 (4) 影响 2 文件 (5) 数据隔离层已在 biz+store 严格 user_id 过滤，审计清白；移除中间件无数据泄漏风险"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-20T03:15:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/sales-rag-open-to-all-accounts"
+    hotfix_artifacts:
+      diagnosis: "router.go:99 salesGroup 挂 FeaturePermission(FeatureKeySalesAgent) 中间件。middleware.go:213-238 → store/customer.go:312-337 HasFeaturePermission 逻辑：parent_user_id=NULL 自动通过，子账户须 user_feature_permission 表有显式记录否则 403。AppSidebar.vue 知识库 tab 对所有账户可见（无 isParentUser 守卫），前端 SalesView.vue:177 / HomeView.vue:420 又用 checkSalesPermission 决定 UI 显隐，子账户两头都被拦。完整数据隔离审计：26 个 /sales-rag/* 路由全部在 biz/store 层按 user_id 过滤；KnowledgeDocument / KnowledgeChunk / SalesSession / SalesMessage / SalesMessageFeedback / LanguageStyle 均有 user_id 列和严格 WHERE 过滤；sqlitevec_store chunks 表含 user_id 索引 + biz 层白名单预过滤；无跨账户引用路径"
+      review: "Sonnet code-reviewer PASS_WITH_CONCERNS（Ship to prod）：独立抽样 3 条路由（GET/DELETE /documents/:id, GET /sessions/:id/messages）全部验证 user_id 过滤；跨账户三向泄漏测试（父→子/子→父/子→兄弟子）全部 NO LEAK；vector store Retrieve/RetrieveStream 两条调用链均先做 ListByUser 白名单再传 docIDs。Important: sqlitevec_store.go:314-326 当 DocumentIDs 非空时故意跳过 user_id 过滤，依赖 biz 层白名单契约 — 无回归测试保护，未来新 code path 绕过白名单即静默跨账户泄漏。Minor: GetByIDs 无 user_id 过滤需 doc comment 标注 safe call sites"
+    progress:
+      total_tasks: 2
+      completed_tasks: 2
+      reviewed_tasks: 2
+      current_task: null
+    rollback: "git revert（纯路由/controller 改动，无 DB schema 变更，数据隔离原本就在 biz+store 层）"
+    last_verified:
+      at: "2026-04-20T03:15:00+08:00"
+      lint: "go vet ./internal/numind/controller/v1/salesrag/... ./internal/numind/ pass"
+      type_check: "go build ./... pass（仅 sqlite-vec cgo deprecated 警告，pre-existing）"
+      tests: null
+      test_summary: "单测未新增；线上 dev 部署后由用户子账户登录验证知识库可访问"
+    decisions:
+      - "2026-04-20: 选方案 A（全员开放+按账户隔离）而非方案 B（父账户授权子账户）或方案 C（前端对子账户隐藏）。用户产品决策：每个账号（含子账户）应有独立知识库，互不互通"
+      - "2026-04-20: CheckSalesPermission 端点保留但硬编码 has_permission=true，避免前端 SalesView.vue / HomeView.vue 的 UI gating 反向屏蔽子账户。未删除端点以免引发前端 404，保持最小改动面"
+      - "2026-04-20: FeatureKeySalesAgent 常量及 user_feature_permission 表保留 — 未来若引入其他分级 feature 仍需复用该基础设施；本次仅对 sales_agent 这一 key 停用"
+    deferred:
+      - "清理 CheckSalesPermission 端点及前端 checkSalesPermission / hasSalesPermission 状态 — 属死代码清理，不在本 hotfix 范围"
+    blockers: []
+    created_at: "2026-04-20T03:15:00+08:00"
+    completed_at: "2026-04-20T03:15:00+08:00"
+
+  - id: "seed-drift-pricing-rules"
+    ndf_version: "1.0"
+    description: "修复 pricing_rule seed drift：dev DB 通过管理端人工添加了 5 条价格规则但未回写 seed 文件，导致 QA/prod 新环境部署时 salesrag.chat / sop / chatbot 全部报 'pricing lookup: record not found' 500（与 salesrag-pricing-resolve-route 同根因，不同表现）。同时补一条 ('llm_chat','','') 全局兜底作 defensive layer"
+    track: "hotfix"
+    stage: "H2-done"
+    classification_reason: "纯 SQL migration，幂等 INSERT IGNORE + NOT EXISTS 子查询；(1) 不动业务代码 (2) 不新增 API (3) 不接外部服务 (4) 影响 2 文件（migration + rollback）(5) 修复方向是补齐缺失数据，无业务逻辑风险"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-20T02:55:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "develop（直接 commit）"
+    hotfix_artifacts:
+      diagnosis: "通过 SELECT * FROM pricing_rule WHERE is_active=1 与 seed_pricing_rules.sql + 20260416_100000_seed_aihubmix_provider.sql 对比，发现 dev DB 有 5 条规则未在任何 seed 文件出现：(1) llm_chat/aihubmix/claude-sonnet-4-6-thinking ¥21.60/¥108 (2) llm_chat/aihubmix/deepseek-v3.2-thinking ¥2.16/¥3.24 (3) llm_chat/aihubmix/gemini-3.1-pro-preview-thinking tiered (4) llm_chat/aihubmix/gpt-5.4-thinking tiered (5) llm_vision/ali-dashscope/qwen3-vl-flash ¥0.15/¥1.50。原因：seed_aihubmix_provider.sql 用的是 -think 短后缀（provider_model_id 维度），但 billing middleware 查 pricing 用 model_key 长后缀 -thinking，且 qwen3-vl-flash 是用户今天通过管理端临时加的"
+      review: null
+    progress:
+      total_tasks: 4
+      completed_tasks: 4
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "migrations/20260420_030000_seed_drift_pricing_rules_rollback.sql（DELETE 6 父规则，FK CASCADE 自动清理 8 条 tier 子行）"
+    last_verified:
+      at: "2026-04-20T02:55:00+08:00"
+      lint: null
+      type_check: null
+      tests: "在 dev DB apply migration 第一次 → 6 父行 + 8 tier 子行符合预期；apply 第二次 → 行数不变（6+8）确认幂等性（INSERT IGNORE + NOT EXISTS 子查询都正确生效）"
+      test_summary: "纯数据 migration，无 Go 测试涉及；幂等性已在 dev 双重 apply 验证"
+    decisions:
+      - "2026-04-20: 选独立 migration 而非修改 20260416_100000_seed_aihubmix_provider.sql — 项目无自动 migration runner（参见 dead-code-cleanup-p1 之前发现），修改既有 migration 对已部署环境零作用，反而破坏审计；新 migration 是单一更新路径"
+      - "2026-04-20: 加 ('llm_chat','','') 全局兜底 — Plan B（ResolveTask）是主路径用精确价格，全局兜底仅在 ResolveTask 失败 / 未来代码漏传 provider 时兜住，按保守 ¥3/¥10 估算（Reconcile 真实成本多退少补）。两者不冲突，defensive layer"
+      - "2026-04-20: 不更新 seed_pricing_rules.sql — 那是 'fresh install canonical seed'，与 migration 是两个独立路径。本次 migration 是给已存在环境补漂移；fresh install 走 seed 文件应该独立审计"
+      - "2026-04-20: tier 子表 INSERT 用 SELECT...NOT EXISTS 而非 INSERT IGNORE — pricing_rule_tier 无 UNIQUE 约束（仅 idx_rule_type 索引），INSERT IGNORE 在子表无效会插重复行；NOT EXISTS 子查询是唯一可靠的幂等手段"
+    deploy_checklist:
+      dev:
+        status: "applied"
+        applied_at: "2026-04-20T02:55:00+08:00"
+        method: "sshpass → docker cp + docker exec mysql < migrations/20260420_030000_seed_drift_pricing_rules.sql；二次 apply 验证 6+8 行数不变，幂等性 OK"
+      qa:
+        status: "PENDING_MANUAL_APPLY"
+        warning: "未应用前 QA 环境调用 deepseek-v3.2-thinking / claude-sonnet-4-6-thinking / qwen3-vl-flash 等会因 pricing lookup 500"
+        command: "sshpass -p \"$DEV_SSH_PASS\" ssh \"$DEV_SSH_USER@$DEV_SSH_HOST\" \"docker cp numind-server/migrations/20260420_030000_seed_drift_pricing_rules.sql numind-mysql-qa:/tmp/a.sql && docker exec -i numind-mysql-qa sh -c 'MYSQL_PWD=<qa-pwd> mysql -uroot numind-qa < /tmp/a.sql'\""
+      prod:
+        status: "PENDING_MANUAL_APPLY"
+        warning: "生产环境 — 须运维授权，低峰窗口执行；纯 INSERT IGNORE 无锁风险；执行后建议立即跑验证 SELECT 确认 6 父 + 8 tier 行存在"
+        command: "sshpass -p \"$PROD_SSH_PASS\" ssh \"$PROD_SSH_USER@$PROD_SSH_HOST\" \"docker cp numind-server/migrations/20260420_030000_seed_drift_pricing_rules.sql numind-mysql-prod:/tmp/a.sql && docker exec -i numind-mysql-prod sh -c 'MYSQL_PWD=<prod-pwd> mysql -uroot numind-prod < /tmp/a.sql'\""
+    deferred:
+      - "fresh install seed canonical 化 — seed_pricing_rules.sql 与 20260416_100000_seed_aihubmix_provider.sql 应该补齐这 5+1 条，让全新部署一次到位。属于另一个 hotfix 范畴"
+    blockers: []
+    created_at: "2026-04-20T02:50:00+08:00"
+    completed_at: "2026-04-20T02:55:00+08:00"
+
+  - id: "sales-rag-isolation-hardening"
+    ndf_version: "1.0"
+    description: "SalesRAG 跨账户隔离纵深防御 — sqlitevec_store 在 DocumentIDs 非空时叠加 user_id 过滤（系统文档 user_id=0 穿透），加回归测试保护；GetByIDs 补 doc comment 标注 safe call sites"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "跟进 sales-rag-open-to-all-accounts review 提出的 Important+Minor concerns。(1) 不改 schema (2) 不新增 API (3) 无外部服务 (4) 影响 3 文件 (5) 防御性 + 测试覆盖，无行为回退风险"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-20T03:45:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/sales-rag-isolation-hardening"
+    hotfix_artifacts:
+      diagnosis: "上一个 review（Sonnet code-reviewer PASS_WITH_CONCERNS）Important 条目：sqlitevec_store.go:314-326 当 DocumentIDs 非空时故意跳过 user_id 过滤，完全依赖 biz 层 ListByUser 白名单作为跨账户边界。当前调用链（Retrieve/RetrieveStream）安全，但无回归测试保护；未来新调用路径若传 DocumentIDs 而跳过白名单 → 静默跨账户泄漏。Minor 条目：knowledge_document.go:43 GetByIDs 无 user_id 过滤，虽然当前 enrichChunksWithDocNames 调用点 chunks 已 user-scoped，但语义缺失 doc 注释"
+      review: null
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "git revert（三处改动都是增量防御，无业务行为回滚依赖）"
+    last_verified:
+      at: "2026-04-20T03:45:00+08:00"
+      lint: "go vet ./internal/numind/biz/salesrag/adapter/ ./internal/numind/store/ pass"
+      type_check: null
+      tests: "go test ./internal/numind/biz/salesrag/adapter/ → PASS (含新增 TestSQLiteVecStore_SearchUserIsolation 翻转断言 + TestSQLiteVecStore_SearchSystemDocsPassthrough)"
+      test_summary: "包内 15 个测试全部 PASS；旧 TestSQLiteVecStore_SearchUserIsolation 原本断言 len=2（记录无隔离行为），现翻转断言 len=1（强制只返回调用方自己的 chunk）；新测试验证系统文档 user_id=0 能被所有用户检索"
+    decisions:
+      - "2026-04-20: 选『store 层防御性过滤』而非『新增 biz 层集成测试』— 前者是结构性保障（默认安全），后者只覆盖当下调用路径，不能保护未来新调用点。两者非互斥，store 层改动 + 新测试一起做"
+      - "2026-04-20: 系统文档 user_id=0 明确允许穿透 `(user_id = ? OR user_id = 0)` — 保持与现有 opinion-track 系统文档检索流程兼容；若完全禁 user_id=0 会破坏内置观点赛道功能"
+      - "2026-04-20: GetByIDs 未改签名（不强加 userID 参数）— 改签名影响 enrichChunksWithDocNames 等调用点，且 chunks 已 user-scoped 时 GetByIDs 的跨用户副作用为零；改用 doc comment + safe call sites 枚举作为守护"
+    deferred:
+      - "ChromemStore.matchFilter 的 user_id 过滤逻辑与 sqlitevec 对系统文档处理不一致（chromem 完全阻断 user_id=0，sqlitevec 允许穿透）— dev/prod 默认使用 sqlitevec，chromem 是备用；本次不碰，后续统一 port.VectorStore 语义时一并处理"
+    blockers: []
+    created_at: "2026-04-20T03:45:00+08:00"
+    completed_at: "2026-04-20T03:45:00+08:00"

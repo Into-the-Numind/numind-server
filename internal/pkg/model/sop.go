@@ -9,10 +9,13 @@ import (
 // SopTemplate SOP模板表
 type SopTemplate struct {
 	gorm.Model
-	Name        string `gorm:"size:100;not null;index" json:"name"`
-	Description string `gorm:"type:text" json:"description"`
-	Status      string `gorm:"size:20;default:'active';index" json:"status"` // active, inactive
-	Prompt      string `gorm:"type:text" json:"prompt"`                      // 预处理提示词，在执行第一个节点前发送
+	Name                string `gorm:"size:100;not null;index" json:"name"`
+	Description         string `gorm:"type:text" json:"description"`
+	Status              string `gorm:"size:20;default:'active';index" json:"status"`               // active, inactive
+	Prompt              string `gorm:"type:text" json:"prompt"`                                    // 预处理提示词，在执行第一个节点前发送
+	CreatorUserID       *uint  `gorm:"index:idx_st_creator" json:"creator_user_id"`                // B端创建者用户ID
+	PublishStatus       string `gorm:"size:20;not null;default:'published'" json:"publish_status"` // draft | published
+	TrailingChatEnabled bool   `gorm:"not null;default:true" json:"trailing_chat_enabled"`         // 是否在流程末尾追加 AI 聊天步骤
 }
 
 func (SopTemplate) TableName() string {
@@ -25,6 +28,7 @@ type SopNode struct {
 	TemplateID     uint   `gorm:"not null;index:idx_template_sort" json:"template_id"`
 	ParentID       *uint  `gorm:"index" json:"parent_id"`                        // NULL表示根节点
 	Name           string `gorm:"size:100;not null" json:"name"`                 // 节点名称
+	Description    string `gorm:"type:text" json:"description"`                  // 节点描述（步骤说明）
 	Status         string `gorm:"size:20;default:'active'" json:"status"`        // active, inactive
 	BaseURL        string `gorm:"size:255;not null" json:"base_url"`             // AI服务地址
 	ModelName      string `gorm:"size:100;not null" json:"model_name"`           // 模型名称
@@ -81,6 +85,7 @@ type SopNodeRun struct {
 	Output                string     `gorm:"type:longtext" json:"output"`                   // 节点输出（使用LONGTEXT支持超长文本）
 	Thinking              string     `gorm:"type:longtext" json:"thinking"`                 // 思考过程内容（AI的思考部分，如"已思考"等）
 	LatencyMs             int64      `gorm:"default:0" json:"latency_ms"`                   // 执行耗时（毫秒）
+	ModelName             string     `gorm:"size:100;default:''" json:"model_name"`         // 实际调用的模型名称（B3）
 	ConversationID        string     `gorm:"size:100;index" json:"conversation_id"`         // 对话ID（与Run保持一致）
 	Sort                  int        `gorm:"default:0;index:idx_run_sort" json:"sort"`      // 执行顺序
 	StartedAt             *time.Time `json:"started_at"`
@@ -157,6 +162,8 @@ type SopChatMsg struct {
 	Role                  string `gorm:"size:20;not null" json:"role"` // user / assistant
 	Content               string `gorm:"type:longtext;not null" json:"content"`
 	Thinking              string `gorm:"type:longtext" json:"thinking,omitempty"` // 思考过程内容（可选）
+	ModelName             string `gorm:"size:100;default:''" json:"model_name"`   // 实际调用的模型名称（B3）
+	DurationMs            int64  `gorm:"default:0" json:"duration_ms"`            // 耗时（毫秒）（B3）
 	Seq                   int    `gorm:"default:0;index:idx_run_seq" json:"seq"`  // 顺序号，用于重建对话
 	PromptTokens          int    `gorm:"default:0;index" json:"-"`                // 输入 tokens
 	CompletionTokens      int    `gorm:"default:0;index" json:"-"`                // 输出 tokens
@@ -207,4 +214,10 @@ const (
 
 	SopNodeStatusActive   = "active"
 	SopNodeStatusInactive = "inactive"
+)
+
+// SOP发布状态常量（2 态：draft = 未发布，published = 已发布）
+const (
+	SopPublishStatusDraft     = "draft"
+	SopPublishStatusPublished = "published"
 )

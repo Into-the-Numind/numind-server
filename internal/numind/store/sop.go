@@ -1,8 +1,8 @@
 package store
 
 import (
+	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"numind-server/internal/pkg/model"
@@ -80,6 +80,10 @@ type ISopStore interface {
 	ListBookmarksByUserAndTemplate(userID, templateID uint) ([]model.SopNodeBookmark, error)
 	UpdateBookmark(id uint, updates map[string]interface{}) error
 	DeleteBookmark(id uint) error
+
+	// B-end template operations
+	ListTemplatesByCreator(ctx context.Context, creatorID uint, offset, limit int) ([]model.SopTemplate, int64, error)
+	CountNodesByTemplate(ctx context.Context, templateID uint) (int64, error)
 
 	// Cleanup operations
 	DeleteRun(runID uint) error
@@ -167,39 +171,7 @@ func (s *sopStore) DeleteNode(id uint) error {
 
 // Run operations
 func (s *sopStore) CreateRun(run *model.SopRun) error {
-	// #region agent log
-	func() {
-		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if logFile != nil {
-			defer logFile.Close()
-			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:132","message":"CreateRun store entry","data":{"hypothesisId":"E","templateID":%d,"userID":%d},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), run.TemplateID, run.UserID)
-			_, _ = logFile.WriteString(logEntry)
-		}
-	}()
-	// #endregion
-	err := s.db.Create(run).Error
-	// #region agent log
-	func() {
-		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if logFile != nil {
-			defer logFile.Close()
-			hasErr := err != nil
-			errMsg := ""
-			if err != nil {
-				errMsg = err.Error()
-			}
-			runID := uint(0)
-			if run != nil {
-				runID = run.ID
-			}
-			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:134","message":"CreateRun store result","data":{"hypothesisId":"E","error":%t,"errorMsg":%q,"runID":%d},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), hasErr, errMsg, runID)
-			_, _ = logFile.WriteString(logEntry)
-		}
-	}()
-	// #endregion
-	return err
+	return s.db.Create(run).Error
 }
 
 func (s *sopStore) GetRun(id uint) (*model.SopRun, error) {
@@ -824,4 +796,29 @@ func (s *sopStore) UpdateBookmark(id uint, updates map[string]interface{}) error
 // DeleteBookmark 删除书签
 func (s *sopStore) DeleteBookmark(id uint) error {
 	return s.db.Delete(&model.SopNodeBookmark{}, id).Error
+}
+
+// ListTemplatesByCreator 按创建者查询模板列表（B端SOP配置）
+func (s *sopStore) ListTemplatesByCreator(_ context.Context, creatorID uint, offset, limit int) ([]model.SopTemplate, int64, error) {
+	var templates []model.SopTemplate
+	var total int64
+
+	query := s.db.Model(&model.SopTemplate{}).Where("creator_user_id = ? AND deleted_at IS NULL", creatorID)
+
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	if err := query.Offset(offset).Limit(defaultLimit(limit)).Order("created_at DESC").Find(&templates).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return templates, total, nil
+}
+
+// CountNodesByTemplate 统计模板下的节点数量
+func (s *sopStore) CountNodesByTemplate(_ context.Context, templateID uint) (int64, error) {
+	var count int64
+	err := s.db.Model(&model.SopNode{}).Where("template_id = ? AND deleted_at IS NULL", templateID).Count(&count).Error
+	return count, err
 }

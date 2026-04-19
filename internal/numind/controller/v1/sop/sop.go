@@ -13,7 +13,6 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -27,6 +26,8 @@ import (
 	"github.com/spf13/viper"
 
 	"numind-server/internal/numind/biz/ali"
+	"numind-server/internal/numind/biz/credit"
+	"numind-server/internal/numind/biz/llmrouter"
 	"numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/biz/volc"
 	"numind-server/internal/numind/store"
@@ -35,6 +36,7 @@ import (
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/model/dto"
 	"numind-server/internal/pkg/util"
 	v1 "numind-server/pkg/api/numind/v1"
 )
@@ -55,17 +57,21 @@ const (
 
 // SopController 用户端SOP控制器
 type SopController struct {
-	sopBiz  sop.ISopBiz
-	aliBiz  ali.AliBiz
-	volcBiz volc.VolcBiz
+	sopBiz    sop.ISopBiz
+	aliBiz    ali.AliBiz
+	volcBiz   volc.VolcBiz
+	creditBiz credit.ICreditBiz
+	llmRouter *llmrouter.Router
 }
 
 // NewSopController 创建用户端SOP控制器
-func NewSopController(sopBiz sop.ISopBiz, aliBiz ali.AliBiz, volcBiz volc.VolcBiz) *SopController {
+func NewSopController(sopBiz sop.ISopBiz, aliBiz ali.AliBiz, volcBiz volc.VolcBiz, creditBiz credit.ICreditBiz, llmRouter *llmrouter.Router) *SopController {
 	return &SopController{
-		sopBiz:  sopBiz,
-		aliBiz:  aliBiz,
-		volcBiz: volcBiz,
+		sopBiz:    sopBiz,
+		aliBiz:    aliBiz,
+		volcBiz:   volcBiz,
+		creditBiz: creditBiz,
+		llmRouter: llmRouter,
 	}
 }
 
@@ -99,7 +105,20 @@ func (ctrl *SopController) CheckTemplatePermission(c *gin.Context) {
 	}
 	user := currentUser.(*model.User)
 
-	// 如果用户是直接客户(parent_user_id为NULL)，则有权限执行所有模板
+	// 模板必须是 active 且已发布 才能在工作区运行；草稿/下线的模板一律无权限
+	template, err := ctrl.sopBiz.GetTemplate(c, uint(templateID))
+	if err != nil {
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("模板不存在"), nil)
+		return
+	}
+	if template.Status != "active" || template.PublishStatus != model.SopPublishStatusPublished {
+		core.WriteResponse(c, nil, gin.H{
+			"has_permission": false,
+		})
+		return
+	}
+
+	// 如果用户是直接客户(parent_user_id为NULL)，则有权限执行所有已发布模板
 	if user.ParentUserID == nil {
 		core.WriteResponse(c, nil, gin.H{
 			"has_permission": true,
@@ -431,7 +450,8 @@ func (ctrl *SopController) GetNote(c *gin.Context) {
 	core.WriteResponse(c, nil, note)
 }
 
-// ListTemplates 获取可用的SOP模板列表（用户端，只显示active的）
+// ListTemplates 获取可用的SOP模板列表（用户端，只显示已发布的 active 模板）
+// 草稿/下线状态的模板不会出现在工作区，需从配置中心管理入口访问。
 func (ctrl *SopController) ListTemplates(c *gin.Context) {
 	log.C(c).Infow("User list SOP templates called")
 
@@ -444,17 +464,17 @@ func (ctrl *SopController) ListTemplates(c *gin.Context) {
 		return
 	}
 
-	// 只返回active状态的模板
-	activeTemplates := []interface{}{}
+	// 只返回 active 且 已发布 的模板
+	visibleTemplates := []interface{}{}
 	for _, t := range templates {
-		if t.Status == "active" {
-			activeTemplates = append(activeTemplates, t)
+		if t.Status == "active" && t.PublishStatus == model.SopPublishStatusPublished {
+			visibleTemplates = append(visibleTemplates, t)
 		}
 	}
 
 	core.WriteResponse(c, nil, gin.H{
-		"total":     len(activeTemplates),
-		"templates": activeTemplates,
+		"total":     len(visibleTemplates),
+		"templates": visibleTemplates,
 	})
 }
 
@@ -475,9 +495,13 @@ func (ctrl *SopController) GetTemplateNodes(c *gin.Context) {
 		return
 	}
 
-	// 只允许获取active状态的模板节点
+	// 只允许获取 active 且已发布的模板节点
 	if template.Status != "active" {
 		core.WriteResponse(c, errno.ErrForbidden.SetMessage("模板未激活"), nil)
+		return
+	}
+	if template.PublishStatus != model.SopPublishStatusPublished {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("模板未发布"), nil)
 		return
 	}
 
@@ -495,42 +519,22 @@ func (ctrl *SopController) GetTemplateNodes(c *gin.Context) {
 		return sortedNodes[i].Sort < sortedNodes[j].Sort
 	})
 
+	// P0 安全：禁止直接序列化 model.SopNode（含 api_key/base_url/model_name/
+	// timeout_seconds/prompt 五个敏感字段），统一通过 dto 包转换隐藏字段。
+	// 详见 docs/superpowers/specs/2026-04-11-sop-runtime-vue-rewrite-design.md §1
 	core.WriteResponse(c, nil, gin.H{
-		"template_id":   templateID,
-		"template_name": template.Name,
-		"nodes":         sortedNodes,
-		"total":         len(sortedNodes),
+		"template": dto.ToSopTemplatePublicDTO(template),
+		"nodes":    dto.ToSopNodePublicDTOList(sortedNodes),
+		"total":    len(sortedNodes),
 	})
 }
 
 // CreateRun 创建SOP执行（不立即执行）
 func (ctrl *SopController) CreateRun(c *gin.Context) {
-	// #region agent log
-	func() {
-		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if logFile != nil {
-			defer logFile.Close()
-			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:382","message":"CreateRun handler entry","data":{"hypothesisId":"B","path":%q},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), c.Request.URL.Path)
-			_, _ = logFile.WriteString(logEntry)
-		}
-	}()
-	// #endregion
 	log.C(c).Infow("User create SOP run called")
 
 	// 从token获取当前用户
 	currentUser, exists := c.Get("current_user")
-	// #region agent log
-	func() {
-		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if logFile != nil {
-			defer logFile.Close()
-			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:387","message":"Auth check result","data":{"hypothesisId":"D","exists":%t},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), exists)
-			_, _ = logFile.WriteString(logEntry)
-		}
-	}()
-	// #endregion
 	if !exists {
 		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
 		return
@@ -539,70 +543,30 @@ func (ctrl *SopController) CreateRun(c *gin.Context) {
 
 	var req v1.CreateSopRunRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		// #region agent log
-		func() {
-			logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if logFile != nil {
-				defer logFile.Close()
-				logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:394","message":"JSON bind error","data":{"hypothesisId":"B","error":%q},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), err.Error())
-				_, _ = logFile.WriteString(logEntry)
-			}
-		}()
-		// #endregion
 		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
 		return
 	}
-	// #region agent log
-	func() {
-		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if logFile != nil {
-			defer logFile.Close()
-			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:397","message":"Request parsed","data":{"hypothesisId":"B","templateID":%d,"userID":%d},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), req.TemplateID, user.ID)
-			_, _ = logFile.WriteString(logEntry)
-		}
-	}()
-	// #endregion
 
-	// 支持书签功能：创建 Run 并自动应用书签
-	run, appliedBookmarkIDs, err := ctrl.sopBiz.CreateRunWithBookmarks(c.Request.Context(), req.TemplateID, user.ID, req.Text, req.AutoApplyBookmarks)
-	// #region agent log
-	func() {
-		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if logFile != nil {
-			defer logFile.Close()
-			hasErr := err != nil
-			runID := uint(0)
-			if run != nil {
-				runID = run.ID
-			}
-			errMsg := ""
-			if err != nil {
-				errMsg = err.Error()
-			}
-			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:399","message":"CreateRun biz result","data":{"hypothesisId":"B","error":%t,"errorMsg":%q,"runID":%d,"autoAppliedCount":%d},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), hasErr, errMsg, runID, len(appliedBookmarkIDs))
-			_, _ = logFile.WriteString(logEntry)
-		}
-	}()
-	// #endregion
+	// 模板必须是 active 且已发布 才能创建运行；阻止草稿/下线模板被绕过 URL 执行
+	templateToRun, err := ctrl.sopBiz.GetTemplate(c, req.TemplateID)
 	if err != nil {
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
+		core.WriteResponse(c, errno.InternalServerError.SetMessage("模板不存在"), nil)
+		return
+	}
+	if templateToRun.Status != "active" || templateToRun.PublishStatus != model.SopPublishStatusPublished {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("模板未发布，无法运行"), nil)
 		return
 	}
 
-	// #region agent log
-	func() {
-		logFile, _ := os.OpenFile("/Users/zhiyuchen/Desktop/莫小派合作/numind-server/numind-server/.cursor/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if logFile != nil {
-			defer logFile.Close()
-			logEntry := fmt.Sprintf(`{"timestamp":%d,"location":"sop.go:405","message":"CreateRun handler exit","data":{"hypothesisId":"B","runID":%d,"success":true,"autoAppliedCount":%d},"sessionId":"debug-session","runId":"request"}
-`, time.Now().UnixMilli(), run.ID, len(appliedBookmarkIDs))
-			_, _ = logFile.WriteString(logEntry)
-		}
-	}()
-	// #endregion
+	// 支持书签功能：创建 Run 并自动应用书签
+	run, appliedBookmarkIDs, err := ctrl.sopBiz.CreateRunWithBookmarks(c.Request.Context(), req.TemplateID, user.ID, req.Text, req.AutoApplyBookmarks)
+	if err != nil {
+		// 透传 biz 层错误：*errno.Errno 保留正确 HTTP 状态码（如 403 权限拒绝），
+		// 其他 error 由 errno.Decode 兜底为 500。避免把业务拒绝误报为 500
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
 	core.WriteResponse(c, nil, gin.H{
 		"id":                 run.ID,
 		"template_id":        run.TemplateID,
@@ -698,6 +662,12 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 	}
 	if !hasAccess {
 		core.WriteResponse(c, errno.ErrForbidden.SetMessage("无权访问此记录"), nil)
+		return
+	}
+
+	// 积分预检：检查用户是否有足够积分执行 SOP 节点
+	if canPerform, reason := ctrl.creditBiz.CanPerformAIOperation(c, user, "sop_run"); !canPerform {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("%s", reason), nil)
 		return
 	}
 
@@ -835,8 +805,26 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 		}
 	}()
 
+	// 读取模型参数（可选），走三级 fallback 解析
+	queryModelKey := c.Query("model_key")
+	thinkingStr := c.Query("thinking")
+	queryThinking := thinkingStr == "1" || thinkingStr == "true"
+	var queryThinkingPtr *bool
+	if thinkingStr != "" {
+		queryThinkingPtr = &queryThinking
+	}
+
+	resolvedModelKey, resolvedThinking, resolveErr := ctrl.llmRouter.ResolveUserModel(
+		c.Request.Context(), user.ID, "sop", queryModelKey, queryThinkingPtr)
+	if resolveErr != nil {
+		log.C(c).Warnw("LLMRouter.ResolveUserModel failed, using node default config", "error", resolveErr)
+		// 解析失败不阻断执行，使用空 modelKey 回退到节点默认配置
+		resolvedModelKey = ""
+		resolvedThinking = false
+	}
+
 	// 流式执行节点
-	err = ctrl.sopBiz.ExecuteNodeStream(heartbeatCtx, uint(runID), uint(nodeID), inputText, func(event string, chunk string) error {
+	err = ctrl.sopBiz.ExecuteNodeStream(heartbeatCtx, uint(runID), uint(nodeID), inputText, resolvedModelKey, resolvedThinking, func(event string, chunk string) error {
 		// 检查客户端是否断开连接
 		select {
 		case <-c.Request.Context().Done():
@@ -2011,6 +1999,10 @@ func (ctrl *SopController) GetRunStatus(c *gin.Context) {
 			Thinking:     node.Thinking,
 			FromBookmark: node.FromBookmark,
 			BookmarkID:   node.BookmarkID,
+			IsAccessible: node.IsAccessible,
+			ModelName:    node.ModelName,   // B5
+			LatencyMs:    node.LatencyMs,   // B5
+			TotalTokens:  node.TotalTokens, // B5
 		}
 	}
 	response.CompletedNodes = completedNodes
@@ -2293,11 +2285,18 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 	}
 	user := currentUser.(*model.User)
 
+	// 积分预检：检查用户是否有足够积分执行追问
+	if canPerform, reason := ctrl.creditBiz.CanPerformAIOperation(c, user, "sop_chat"); !canPerform {
+		core.WriteResponse(c, errno.ErrForbidden.SetMessage("%s", reason), nil)
+		return
+	}
+
 	// 解析请求参数
 	var req struct {
 		RunID           uint   `json:"run_id"`
 		ConversationID  string `json:"conversation_id"`
 		Question        string `json:"question"`
+		ModelKey        string `json:"model_key"`         // 用户选择的模型 key（可选，走三级 fallback）
 		DeepThinking    *bool  `json:"deep_thinking"`     // 思考模式开关
 		RegenerateMsgID uint   `json:"regenerate_msg_id"` // 需要重新生成的AI消息ID（可选）
 	}
@@ -2309,9 +2308,23 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 
 	// 处理思考模式开关，默认关闭
 	deepThinking := false
+	var deepThinkingPtr *bool
 	if req.DeepThinking != nil {
 		deepThinking = *req.DeepThinking
+		deepThinkingPtr = req.DeepThinking
 	}
+
+	// 三级 fallback 解析用户选择的模型（query → 用户偏好 → 系统默认）
+	resolvedModelKey, resolvedThinking, resolveErr := ctrl.llmRouter.ResolveUserModel(
+		c.Request.Context(), user.ID, "sop", req.ModelKey, deepThinkingPtr)
+	if resolveErr != nil {
+		log.C(c).Warnw("LLMRouter.ResolveUserModel failed, falling back to last node default", "error", resolveErr)
+		// 与 ExecuteNodeStream 控制器（见本文件 :821）保持一致：解析失败时 thinking=false，避免
+		// 在无法确认用户偏好的情况下意外开启深度思考（成本更高、部分模型不支持）
+		resolvedModelKey = ""
+		resolvedThinking = false
+	}
+	deepThinking = resolvedThinking
 
 	// 设置SSE响应头
 	c.Header("Content-Type", "text/event-stream")
@@ -2361,7 +2374,7 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 	}()
 
 	// 执行业务流
-	err := ctrl.sopBiz.ChatAfterRunStream(heartbeatCtx, req.RunID, req.ConversationID, req.Question, user.ID, deepThinking, req.RegenerateMsgID, func(event string, chunk string) error {
+	err := ctrl.sopBiz.ChatAfterRunStream(heartbeatCtx, req.RunID, req.ConversationID, req.Question, user.ID, resolvedModelKey, deepThinking, req.RegenerateMsgID, func(event string, chunk string) error {
 		// 检查客户端连接
 		select {
 		case <-c.Request.Context().Done():
@@ -2451,6 +2464,8 @@ func (ctrl *SopController) ListRunChatMessages(c *gin.Context) {
 			TotalTokens:           msg.TotalTokens,
 			ReasoningTokens:       msg.ReasoningTokens,
 			EstimatedPromptTokens: msg.EstimatedPromptTokens,
+			ModelName:             msg.ModelName,  // B5
+			DurationMs:            msg.DurationMs, // B5
 		}
 	}
 

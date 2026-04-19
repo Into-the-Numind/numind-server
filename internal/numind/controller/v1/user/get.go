@@ -51,12 +51,13 @@ func (ctrl *UserController) GetCurrentUser(c *gin.Context) {
 
 	// 构建响应数据，包含 SOP 统计和会员等级
 	response := gin.H{
-		"id":         userWithStats.ID,
-		"phone":      userWithStats.Phone,
-		"nickname":   userWithStats.Nickname,
-		"avatar_url": userWithStats.AvatarURL,
-		"created_at": userWithStats.CreatedAt,
-		"updated_at": userWithStats.UpdatedAt,
+		"id":             userWithStats.ID,
+		"phone":          userWithStats.Phone,
+		"nickname":       userWithStats.Nickname,
+		"avatar_url":     userWithStats.AvatarURL,
+		"created_at":     userWithStats.CreatedAt,
+		"updated_at":     userWithStats.UpdatedAt,
+		"parent_user_id": userWithStats.ParentUserID,
 
 		// SOP 统计与等级信息
 		"user_tier":          userWithStats.GetActualUserTier(),

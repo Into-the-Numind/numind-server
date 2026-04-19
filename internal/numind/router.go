@@ -2,14 +2,24 @@ package numind
 
 import (
 	"numind-server/internal/numind/biz"
+	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/controller/v1/ali"
+	chatbotcontroller "numind-server/internal/numind/controller/v1/chatbot"
+	"numind-server/internal/numind/controller/v1/config"
+	creditcontroller "numind-server/internal/numind/controller/v1/credit"
 	customercontroller "numind-server/internal/numind/controller/v1/customer"
+	llmcontroller "numind-server/internal/numind/controller/v1/llm"
+	monitorcontroller "numind-server/internal/numind/controller/v1/monitor"
+	ordercontroller "numind-server/internal/numind/controller/v1/order"
+	"numind-server/internal/numind/controller/v1/parent_grant"
+	paymentcontroller "numind-server/internal/numind/controller/v1/payment"
 	pdfcontroller "numind-server/internal/numind/controller/v1/pdf"
 	"numind-server/internal/numind/controller/v1/salesrag"
 	sopcontroller "numind-server/internal/numind/controller/v1/sop"
 	"numind-server/internal/numind/controller/v1/user"
 	"numind-server/internal/numind/controller/v1/user_billing"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
@@ -34,19 +44,33 @@ func installNumindRouters(g *gin.Engine) error {
 		core.WriteResponse(c, nil, map[string]string{"status": "ok"})
 	})
 
+	// 注册 /healthz/ai handler (免鉴权).
+	g.GET("/healthz/ai", aiservice.HealthzHandler)
+
 	// 注册 pprof 路由
 	pprof.Register(g)
 
 	uc := user.New(store.S)
 	b := biz.NewBiz(store.S)
 	alic := ali.New(b.Ali())
-	salesRAGc := salesrag.NewSalesRAGController(b)
+	salesRAGc := salesrag.NewSalesRAGController(b, b.Credit())
 
 	// 初始化SOP控制器（用户端）
-	userSopc := sopcontroller.NewSopController(b.Sop(), b.Ali(), b.Volc())
+	userSopc := sopcontroller.NewSopController(b.Sop(), b.Ali(), b.Volc(), b.Credit(), b.LLMRouter())
 
 	// 初始化PDF控制器
 	pdfc := pdfcontroller.NewPdfController()
+
+	// 初始化自助配置控制器（B端）
+	kbCtrl := config.NewKnowledgeBaseController(b.KnowledgeBase())
+	configChatbotCtrl := config.NewChatbotConfigController(b.Chatbot())
+	configSopCtrl := config.NewSopConfigController(b.Sop())
+
+	// 初始化C端智能体对话控制器
+	chatbotCtrl := chatbotcontroller.NewChatbotController(b.Chatbot(), b.LLMRouter())
+
+	// 初始化 LLM 模型与偏好控制器
+	llmCtrl := llmcontroller.NewLLMController(b.LLMRouter())
 
 	v1Group := g.Group("/v1")
 
@@ -67,12 +91,11 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 销售智能体 RAG 相关
 	{
-		// 权限检查（不需要功能权限中间件，供前端查询权限状态）
+		// 权限检查（保留端点供前端 UI gating，现已对所有登录用户开放）
 		authGroup.GET("/sales-rag/check-permission", salesRAGc.CheckSalesPermission)
 
-		// 以下所有销售智能体路由需要功能权限检查
+		// 所有登录用户均可使用销售智能体/知识库（数据按 user_id 严格隔离，各账号独立）
 		salesGroup := authGroup.Group("/sales-rag")
-		salesGroup.Use(importMw.FeaturePermission(model.FeatureKeySalesAgent))
 
 		// 文档管理
 		salesGroup.POST("/ingest", salesRAGc.Ingest)                  // 上传并解析文档
@@ -124,6 +147,7 @@ func installNumindRouters(g *gin.Engine) error {
 	// 文档转文字相关（支持 PDF、Word、TXT、MD、RTF 等格式）
 	{
 		authGroup.POST("/pdf/convert-to-text", pdfc.ConvertToText) // 文档转文字（支持 .pdf, .txt, .md, .docx, .doc, .rtf）
+		authGroup.POST("/files/extract-text", pdfc.ExtractText)    // 轻量文档转文本（无 run_id/node_id，不存储，支持 .pdf, .txt, .md, .docx, .doc）
 	}
 
 	// SOP相关（用户端接口）
@@ -146,8 +170,13 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/sop/runs/:id/next-node", userSopc.GetNextNode)                        // 获取下一个待执行节点
 		authGroup.POST("/sop/runs/:id/nodes/:node_id/execute", userSopc.ExecuteNodeStream)    // 流式执行指定节点（支持文件上传）
 		authGroup.POST("/sop/runs/:id/nodes/:node_id/apply-bookmark", userSopc.ApplyBookmark) // 应用书签到节点
-		authGroup.DELETE("/sop/runs/:id/draft", userSopc.DeleteDraftRun)                      // 删除草稿状态的run
-		authGroup.POST("/sop/runs/:id/draft", userSopc.DeleteDraftRun)                        // 删除草稿状态的run（Beacon方式）
+		authGroup.DELETE("/sop/runs/:id/draft", userSopc.DeleteDraftRun) // 删除草稿状态的run（标准 fetch 走 Authorization header）
+		// POST 路由不能放在 authGroup 内，因为 navigator.sendBeacon 无法设置 Authorization header。
+		// AuthMiddleware 会在 token header 缺失时立即 c.Abort() + 401，导致 controller 里的
+		// query token fallback 是 dead code。下方独立组使用 OptionalAuthMiddleware 让请求穿透到
+		// controller，由 controller (bookmark.go:347-374) 自己处理 ?token=xxx query 兜底。
+		// 详见 task 1 reviewer 发现 P0 + spec §5.1
+
 		authGroup.POST("/sop/files/check-quality", userSopc.CheckFileQuality)                 // 检测上传文件质量
 		authGroup.POST("/sop/files/parse-text", userSopc.ParseFileText)                       // 上传文件解析文本（返回文本用于回填）
 		authGroup.POST("/sop/files/parse-text/query", userSopc.ParseFileTextQuery)            // 轮询qwen-long解析结果
@@ -173,6 +202,27 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/billing/records", billingCtrl.ListRecords)
 	}
 
+	// 积分查询
+	{
+		creditCtrl := creditcontroller.New(
+			b.Credit(),
+			b.CreditService(),
+			credit.NewPromptEstimator(store.S),
+			store.S,
+		)
+		authGroup.GET("/credits/balance", creditCtrl.GetBalance)
+		authGroup.POST("/credits/estimate", creditCtrl.Estimate)   // Phase 2 T2.3：运行前估算（spec §3.11 + §4.3）
+		authGroup.GET("/credits/packages", creditCtrl.ListPackages) // Phase 2 T2.3：积分包列表（spec §4.1.1）
+	}
+
+	// 订单管理（B 客户）
+	{
+		orderCtrl := ordercontroller.New(b.Payment(), store.S)
+		authGroup.POST("/orders", orderCtrl.CreateOrder)
+		authGroup.GET("/orders", orderCtrl.ListOrders)
+		authGroup.GET("/orders/:id", orderCtrl.GetOrder)
+	}
+
 	// 客户管理相关
 	{
 		customerCtrl := customercontroller.NewCustomerController(b.Customers(), b.Users())
@@ -192,6 +242,127 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/customers/sub-users/:user_id/features", customerCtrl.ListSubUserFeatures)
 		authGroup.POST("/customers/sub-users/:user_id/features", customerCtrl.GrantFeatures)
 		authGroup.DELETE("/customers/sub-users/:user_id/features", customerCtrl.RevokeFeatures)
+	}
+
+	// B2B2C 会员赋予（Q1）：父账户为子账户开通会员，不走支付流程
+	{
+		parentGrantCtrl := parent_grant.New(b.Credit())
+		// 子账户列表别名（前端 /v1/users/children，Q2 新增），复用 CustomerController.ListSubUsers
+		childListCtrl := customercontroller.NewCustomerController(b.Customers(), b.Users())
+		authGroup.GET("/users/children", childListCtrl.ListSubUsers)
+		authGroup.POST("/users/children/:child_id/grant-membership", parentGrantCtrl.GrantMembership)
+	}
+
+	// 自助配置中心（B端，需要主账号 + 功能权限）
+	{
+		configGroup := authGroup.Group("/config")
+		configGroup.Use(importMw.ParentUserOnly(), importMw.FeaturePermission(model.FeatureKeySelfServiceConfig))
+		{
+			// 知识库管理
+			configGroup.POST("/knowledge-bases", kbCtrl.Create)
+			configGroup.GET("/knowledge-bases", kbCtrl.List)
+			configGroup.GET("/knowledge-bases/:id", kbCtrl.Get)
+			configGroup.PUT("/knowledge-bases/:id", kbCtrl.Update)
+			configGroup.DELETE("/knowledge-bases/:id", kbCtrl.Delete)
+			configGroup.POST("/knowledge-bases/:id/documents", kbCtrl.UploadDocuments)
+			configGroup.DELETE("/knowledge-bases/:id/documents/:docId", kbCtrl.RemoveDocument)
+
+			// 智能体配置
+			configGroup.POST("/chatbots", configChatbotCtrl.Create)
+			configGroup.GET("/chatbots", configChatbotCtrl.List)
+			configGroup.GET("/chatbots/:id", configChatbotCtrl.Get)
+			configGroup.PUT("/chatbots/:id", configChatbotCtrl.Update)
+			configGroup.DELETE("/chatbots/:id", configChatbotCtrl.Delete)
+			configGroup.PUT("/chatbots/:id/status", configChatbotCtrl.UpdateStatus)
+
+			// SOP 模板配置
+			configGroup.POST("/sop-templates", configSopCtrl.Create)
+			configGroup.GET("/sop-templates", configSopCtrl.List)
+			configGroup.GET("/sop-templates/:id", configSopCtrl.Get)
+			configGroup.PUT("/sop-templates/:id", configSopCtrl.Update)
+			configGroup.DELETE("/sop-templates/:id", configSopCtrl.Delete)
+			configGroup.PUT("/sop-templates/:id/status", configSopCtrl.UpdateStatus)
+			configGroup.POST("/sop-templates/:id/nodes", configSopCtrl.CreateNode)
+			configGroup.PUT("/sop-templates/:id/nodes/batch-sort", configSopCtrl.BatchSortNodes) // 必须在 :nodeId 之前注册
+			configGroup.PUT("/sop-templates/:id/nodes/:nodeId", configSopCtrl.UpdateNode)
+			configGroup.DELETE("/sop-templates/:id/nodes/:nodeId", configSopCtrl.DeleteNode)
+		}
+	}
+
+	// C端智能体对话
+	{
+		chatbotGroup := authGroup.Group("/chatbot")
+		{
+			chatbotGroup.GET("/list", chatbotCtrl.List)
+			chatbotGroup.POST("/sessions", chatbotCtrl.CreateSession)
+			chatbotGroup.GET("/sessions", chatbotCtrl.ListSessions)
+			chatbotGroup.DELETE("/sessions/:id", chatbotCtrl.DeleteSession)
+			chatbotGroup.GET("/sessions/:id/messages", chatbotCtrl.ListMessages)
+			chatbotGroup.POST("/sessions/:id/chat", chatbotCtrl.Chat)
+		}
+	}
+
+	// LLM 模型列表与用户偏好
+	{
+		llmGroup := authGroup.Group("/llm")
+		{
+			llmGroup.GET("/models", llmCtrl.ListModels)
+			llmGroup.GET("/preference", llmCtrl.GetPreference)
+			llmGroup.PUT("/preference", llmCtrl.SavePreference)
+		}
+	}
+
+	// 博主内容监控
+	{
+		monitorCtrl := monitorcontroller.NewMonitorController(b.Monitor(), store.S)
+
+		// 权限检查（不需要功能权限中间件，供前端查询权限状态）
+		authGroup.GET("/monitor/check-permission", monitorCtrl.CheckPermission)
+
+		// 以下所有监控路由需要功能权限检查
+		monitorGroup := authGroup.Group("/monitor")
+		monitorGroup.Use(importMw.FeaturePermission(model.FeatureKeyContentMonitor))
+
+		monitorGroup.POST("/bloggers", monitorCtrl.AddBlogger)
+		monitorGroup.GET("/bloggers", monitorCtrl.ListBloggers)
+		monitorGroup.GET("/bloggers/:id", monitorCtrl.GetBlogger)
+		monitorGroup.PUT("/bloggers/:id", monitorCtrl.UpdateBlogger)
+		monitorGroup.DELETE("/bloggers/:id", monitorCtrl.DeleteBlogger)
+		monitorGroup.POST("/bloggers/:id/check", monitorCtrl.CheckBlogger)
+		monitorGroup.POST("/check-batch", monitorCtrl.CheckBatch)
+		monitorGroup.GET("/notes", monitorCtrl.ListNotes)
+		monitorGroup.GET("/notes/:id", monitorCtrl.GetNote)
+		monitorGroup.POST("/notes/:id/analyze", monitorCtrl.AnalyzeNote)
+		monitorGroup.GET("/briefings", monitorCtrl.ListBriefings)
+		monitorGroup.GET("/briefings/:id", monitorCtrl.GetBriefing)
+		monitorGroup.POST("/briefings/generate", monitorCtrl.GenerateBriefing)
+		monitorGroup.GET("/config", monitorCtrl.GetConfig)
+		monitorGroup.PUT("/config", monitorCtrl.UpdateConfig)
+		monitorGroup.GET("/stats", monitorCtrl.GetStats)
+
+		// XHS account binding (QR code login)
+		monitorGroup.POST("/xhs/qr/create", monitorCtrl.CreateXhsQR)
+		monitorGroup.GET("/xhs/qr/status/:qr_id", monitorCtrl.CheckXhsQRStatus)
+		monitorGroup.POST("/xhs/qr/complete/:qr_id", monitorCtrl.CompleteXhsQR)
+		monitorGroup.GET("/xhs/bind-status", monitorCtrl.GetXhsBindStatus)
+		monitorGroup.POST("/xhs/unbind", monitorCtrl.UnbindXhs)
+	}
+
+	// 支付回调（无需鉴权）
+	{
+		paymentCtrl := paymentcontroller.New(b.Payment())
+		v1Group.POST("/payment/wechat/notify", paymentCtrl.WechatNotify)
+		v1Group.POST("/payment/alipay/notify", paymentCtrl.AlipayNotify)
+	}
+
+	// Beacon 路由组（OptionalAuthMiddleware，让 controller 自己处理 query token）
+	// navigator.sendBeacon 无法设置 Authorization header，必须通过 query 参数传 token。
+	// AuthMiddleware 在 token header 缺失时会立即 401 abort，所以这些路由必须独立出来。
+	// controller (bookmark.go DeleteDraftRun) 会从 ?token=xxx query 提取 token 并校验。
+	{
+		beaconGroup := v1Group.Group("")
+		beaconGroup.Use(importMw.OptionalAuthMiddleware())
+		beaconGroup.POST("/sop/runs/:id/draft", userSopc.DeleteDraftRun) // Beacon 方式删除草稿
 	}
 
 	return nil

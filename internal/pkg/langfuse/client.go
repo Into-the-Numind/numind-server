@@ -22,6 +22,9 @@ type Client struct {
 	baseURL   string
 	publicKey string
 	secretKey string
+
+	mu      sync.Mutex
+	onEvent func(*IngestionEvent) // test hook; nil in production
 }
 
 // C 全局 Langfuse 客户端单例
@@ -54,14 +57,58 @@ func Init(cfg *Config) {
 }
 
 // Enqueue 非阻塞入队（参考 billing.Record）
+//
+// The onEvent hook (see InstallEventHook) is invoked synchronously BEFORE
+// normal channel dispatch. Used by test code to capture span/trace events
+// deterministically without spinning up an httptest server. Production uses
+// do not install a hook; hook is nil by default.
 func (c *Client) Enqueue(event *IngestionEvent) {
 	if c == nil || !c.enabled || event == nil {
 		return
+	}
+	if c.onEvent != nil {
+		c.onEvent(event)
 	}
 	select {
 	case c.ch <- event:
 	default:
 		log.Warnw("langfuse: channel full, dropping event", "type", event.Type)
+	}
+}
+
+// InstallEventHook registers a callback invoked synchronously on each Enqueue
+// call. Primary use: tests that want to assert on the exact events emitted
+// without network round-tripping. Pass nil to clear.
+//
+// Safe to call at any time; calls serialize on the mu mutex. The hook runs
+// inside Enqueue, so keep it lightweight — expensive work should be deferred
+// to a goroutine.
+func (c *Client) InstallEventHook(hook func(*IngestionEvent)) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.onEvent = hook
+	c.mu.Unlock()
+}
+
+// NewTestClient returns an "enabled" client that never dispatches to HTTP.
+// It creates a buffered channel but does NOT spawn the processLoop, so
+// tests stay deterministic and don't need Stop() to flush. Install a hook
+// via InstallEventHook to capture events. Replaces the global C for the
+// duration of the test; caller is responsible for restoring if needed.
+//
+// Example:
+//
+//	captured := []*IngestionEvent{}
+//	prev := langfuse.C
+//	langfuse.C = langfuse.NewTestClient()
+//	langfuse.C.InstallEventHook(func(e *IngestionEvent) { captured = append(captured, e) })
+//	defer func() { langfuse.C = prev }()
+func NewTestClient() *Client {
+	return &Client{
+		ch:      make(chan *IngestionEvent, channelSize),
+		enabled: true,
 	}
 }
 

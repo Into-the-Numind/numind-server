@@ -72,9 +72,9 @@ book:
     use_simplified_processing: true  # 启用简化处理模式
 
 volc:
-  api_key: "e709f501-2307-4e0c-9115-b6a3065ac06b"
+  api_key: "716dc07a-b121-4bae-a132-497117f74c7a"
   base_url: "https://ark.cn-beijing.volces.com/api/v3"
-  model: "glm-4-7-251222"  # 测试阶段使用智谱GLM-4-7模型
+  model: "deepseek-v3-2-251201"
   temperature: 0.7
   tokens: 4000
   timeout: 180s
@@ -432,4 +432,19 @@ html_converter:
   available_width: 900          # 可用宽度
   max_content_height: 1360       # 最大内容高度
   # 注意：其他配置项（字体、行高、边距等）现在从card配置中继承
+
+# Langfuse AI 可观测性配置
+langfuse:
+  enabled: true
+  base_url: "http://110.42.221.25:3100"
+  public_key: "pk-lf-41015256-bdc3-46aa-92b7-6ffe8de9605a"
+  secret_key: "sk-lf-5a6c2185-d8ce-4903-9930-c9d72a9d0112"
+
+# AiHubMix（OpenAI 兼容聚合平台）— 当前作为 claude-sonnet-4-6 / gemini-3.1-pro-preview /
+# gpt-5.4 / deepseek-v3.2 的主路由（priority=5），DMXAPI 作 failover（priority=10）。
+# 注：runtime 实际读取 llm_provider.api_key（DB 列），此配置仅作占位与运维文档一致性；
+# 未来 ai-service-manager 的 SyncProviderCredentials 实装后会读取此配置刷新 DB。
+aihubmix:
+  base_url: "https://aihubmix.com/v1"
+  api_key: "sk-vduyVKfBuiI5p4P5B030A80938924aFe87Af360473612f68"
 

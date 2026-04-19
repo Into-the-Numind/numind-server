@@ -233,6 +233,7 @@ func (ctrl *AdminBillingController) ListPricingRules(c *gin.Context) {
 			ServiceType:            r.ServiceType,
 			Provider:               r.Provider,
 			Model:                  r.Model,
+			BillingMode:            r.BillingMode,
 			InputPricePerMTok:      r.InputPricePerMTok,
 			OutputPricePerMTok:     r.OutputPricePerMTok,
 			PricePerCall:           r.PricePerCall,
@@ -271,10 +272,16 @@ func (ctrl *AdminBillingController) CreatePricingRule(c *gin.Context) {
 		isActive = *req.IsActive
 	}
 
+	billingMode := "flat"
+	if req.BillingMode == "tiered_token" {
+		billingMode = "tiered_token"
+	}
+
 	rule := &model.PricingRule{
 		ServiceType:            req.ServiceType,
 		Provider:               req.Provider,
 		Model:                  req.Model,
+		BillingMode:            billingMode,
 		InputPricePerMTok:      req.InputPricePerMTok,
 		OutputPricePerMTok:     req.OutputPricePerMTok,
 		PricePerCall:           req.PricePerCall,
@@ -297,6 +304,7 @@ func (ctrl *AdminBillingController) CreatePricingRule(c *gin.Context) {
 		ServiceType:            rule.ServiceType,
 		Provider:               rule.Provider,
 		Model:                  rule.Model,
+		BillingMode:            rule.BillingMode,
 		InputPricePerMTok:      rule.InputPricePerMTok,
 		OutputPricePerMTok:     rule.OutputPricePerMTok,
 		PricePerCall:           rule.PricePerCall,
@@ -331,6 +339,7 @@ func (ctrl *AdminBillingController) UpdatePricingRule(c *gin.Context) {
 		ServiceType:            req.ServiceType,
 		Provider:               req.Provider,
 		Model:                  req.Model,
+		BillingMode:            req.BillingMode,
 		InputPricePerMTok:      req.InputPricePerMTok,
 		OutputPricePerMTok:     req.OutputPricePerMTok,
 		PricePerCall:           req.PricePerCall,
