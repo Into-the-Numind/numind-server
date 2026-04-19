@@ -69,7 +69,7 @@ RUN pip3 install --no-cache-dir \
     fastapi \
     uvicorn \
     python-multipart \
-    "markitdown[pdf]" && \
+    "markitdown[all]" && \
     pip3 uninstall -y pip setuptools && \
     rm -rf /usr/lib/python3/dist-packages/pip /usr/lib/python3/dist-packages/setuptools
 
