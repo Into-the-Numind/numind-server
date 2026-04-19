@@ -209,6 +209,7 @@ type AdminPricingRuleItem struct {
 	ServiceType            string    `json:"service_type"`
 	Provider               string    `json:"provider"`
 	Model                  string    `json:"model"`
+	BillingMode            string    `json:"billing_mode"`
 	InputPricePerMTok      float64   `json:"input_price_per_mtok"`
 	OutputPricePerMTok     float64   `json:"output_price_per_mtok"`
 	PricePerCall           float64   `json:"price_per_call"`

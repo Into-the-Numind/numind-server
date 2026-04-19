@@ -118,7 +118,7 @@ func TestPromptEstimator_SopRun_SumsAllNodes(t *testing.T) {
 	// = 10 + 4 + 15 + 6 = 35
 	assert.Equal(t, 35, chars)
 	assert.Equal(t, "qwen-turbo", modelName)
-	assert.Equal(t, "ali", provider)
+	assert.Equal(t, "ali-dashscope", provider)
 }
 
 func TestPromptEstimator_SopRun_TemplateNotFound(t *testing.T) {
@@ -183,7 +183,7 @@ func TestPromptEstimator_SopChat_EmptyFallsBackToTemplate(t *testing.T) {
 	// template.Prompt(2) + node.Prompt(3) + node.Name(1) = 6
 	assert.Equal(t, 6, chars)
 	assert.Equal(t, "qwen-plus", modelName)
-	assert.Equal(t, "ali", provider)
+	assert.Equal(t, "ali-dashscope", provider)
 }
 
 func TestPromptEstimator_UnknownOperation(t *testing.T) {

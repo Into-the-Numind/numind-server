@@ -29,6 +29,7 @@ import (
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
+	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/pricing"
 
@@ -189,7 +190,11 @@ func NewBiz(ds store.IStore) *biz {
 	salesSessionStore := store.NewSalesSessionStore(b.ds.DB())
 
 	// Phase 2 Task 2.2 wiring: 传入 creditSvc + pricingCalc 激活 SalesRAG 积分扣减（prod 漏洞修复）
-	b.salesRAGService = salesrag.NewSalesRAGBizWithCredits(b.ds, pipeline, salesRAGSvc, b.Volc(), b.Ali(), salesSessionStore, parser, creditSvc, pricingCalc)
+	// reg: salesrag biz uses ResolveTask("salesrag.chat") so CheckAndEstimate hits
+	// the precise pricing rule for the currently-bound provider+model. Fix for
+	// fix/salesrag-pricing-resolve-route — see build-manifest.yaml.
+	salesragRegistry := registry.New(b.ds.DB())
+	b.salesRAGService = salesrag.NewSalesRAGBizWithCredits(b.ds, pipeline, salesRAGSvc, b.Volc(), b.Ali(), salesSessionStore, parser, creditSvc, pricingCalc, salesragRegistry)
 
 	// 初始化知识库服务
 	b.kbService = kbbiz.NewKnowledgeBaseBiz(ds, b.salesRAGService)
