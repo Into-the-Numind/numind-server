@@ -66,7 +66,9 @@ features:
       - "2026-04-20: Triage 5 条标准全绿 → Hotfix；用户需求是默认深度思考，且前端深度思考开关已隐藏（ModelSelector.vue:91 v-if=\"false\"），只能从后端默认值切入"
       - "2026-04-20: 诊断发现 3 个点 → (1) GetModels 下拉返回了 is_thinking=true 的变体 → 用户点击触发 SavePreference 第 235 行拒绝；(2) GetPreferences 默认 Thinking=false → 前端 store 收到 false 后盖掉 ?? true 回退；(3) 存量数据可能有 thinking=0 记录。修复：GetModels SQL 加过滤 + GetPreferences 默认 true + migration UPDATE 存量"
       - "2026-04-20 H3: 部署后 QA 发现 DB 冲突 — 用户今日早些时候通过管理端 deprecated 了 4 个 base 模型（claude-sonnet-4-6 / gpt-5.4 / gemini-3.1-pro-preview / deepseek-v3.2），只留 thinking 变体 active，导致本 hotfix 过滤后下拉空列表。用户确认当时是自己的操作但此时决定走 Option B：恢复 base 模型。在 dev 执行 UPDATE ai_service SET deprecated_at = NULL WHERE is_thinking = 0 AND model_key IN ('claude-sonnet-4-6','gpt-5.4','gemini-3.1-pro-preview','deepseek-v3.2'); hotfix 随即恢复预期行为，QA 通过。prod 上线前需：(1) 跑本 hotfix 的 thinking=1 migration；(2) 确认 prod 的 ai_service base 模型未被 deprecated，如已 deprecated 需同步恢复。"
-    blockers: []
+      - "2026-04-20 POST-CLOSE 发现：用户报告 SOP 运行时无思考。深查发现 executor.go:108 ExecuteNodeStream 的 thinking 参数被 `_ = thinking` 直接丢弃（注释 `待 Task 9 后续接通 Gateway thinking 模式`），chatbot/stream.go:177 同样丢弃，且 aiservice.ChatRequest struct（types.go:124）没有 Thinking 字段。即本 hotfix 保证了 preference 层 thinking=true 正确保存与读出，但执行链路从未消费此 flag。Admin 之前 deprecate base 模型靠 -thinking 变体的 provider_model_id 映射走 provider 思考路由是当前唯一已接通的 thinking 实现。后续修复路径待定：(X) 回滚本 hotfix + 去掉 SavePreference IsThinking 拒绝 + 恢复 admin 的 deprecate；(Y) 新功能单独追：ChatRequest 加 Thinking 字段 + 各 adapter 按自家规则响应，并入 openrouter-provider S2 一并做；(Z) 在 executeViaGateway 临时把 base+thinking=true 改写为 thinking 变体 key。用户决定本 session 只 close 当前 hotfix，后续另议。"
+    blockers:
+      - "post-close: SOP/chatbot 执行链路未消费 user preference 的 thinking flag（executor.go:109、chatbot/stream.go:177、aiservice/types.go ChatRequest）。影响：用户实际运行时无思考，即使 preference 显示 thinking=true。跟踪在 decisions 最后一条"
     created_at: "2026-04-20T00:00:00+08:00"
 
   - id: "hotfix-model-selector-overflow"
