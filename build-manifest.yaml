@@ -5,7 +5,7 @@ features:
     ndf_version: "1.1"
     description: "设置页加量包购买支付弹窗 — credits 制会员点击 BoosterPurchaseCard → 下单 → 微信/支付宝 QR 扫码 → 轮询订单状态 → 支付成功后加量包到账并刷新余额"
     track: "standard"
-    stage: "S4"
+    stage: "S4-done"
     classification_reason: "轻量 Standard：仅前端改动（numind-web-v3），无 DB schema、无新后端 API（复用现有 /v1/orders + 回调）；但触及真钱支付流水，支付状态机需严谨设计"
     last_updated_by: "ai-s3"
     last_updated_at: "2026-04-20T00:00:00+08:00"
@@ -23,12 +23,9 @@ features:
       qa: null
     progress:
       total_tasks: 5
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task:
-        index: 1
-        title: "PaymentQRModal 骨架 + 状态机"
-        plan_ref: "numind-server/docs/superpowers/plans/booster-payment-ui-plan.md#task-1"
+      completed_tasks: 5
+      reviewed_tasks: 5
+      current_task: null
     rollback: null
     last_verified: null
     decisions:
