@@ -2,7 +2,9 @@ package sop_test
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,6 +14,7 @@ import (
 
 	"numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
 
@@ -81,4 +84,62 @@ func TestCreateTemplateByUser_TrailingChatDefaultsToTrue(t *testing.T) {
 	tmpl, err := b.CreateTemplateByUser(context.Background(), uint(2), req)
 	require.NoError(t, err)
 	assert.True(t, tmpl.TrailingChatEnabled, "omitted trailing_chat_enabled should default to true")
+}
+
+// TestCreateRun_FreeUserReturnsTypedError verifies that a free-tier user hitting
+// CreateRun gets a typed *errno.Errno (SOP.RunDenied, HTTP 403), not a plain
+// errors.New. Regression for the bug where controller mapped biz denial to 500.
+//
+// user table is hand-rolled via raw SQL because model.User has a GORM
+// `type:enum('legacy_tier','credits')` tag on billing_mode that SQLite
+// AutoMigrate cannot parse. Same pattern as biz/credit/grant_membership_test.go.
+func TestCreateRun_FreeUserReturnsTypedError(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err, "open sqlite in-memory DB")
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	require.NoError(t, db.Exec(`
+		CREATE TABLE user (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at      DATETIME,
+			updated_at      DATETIME,
+			deleted_at      DATETIME,
+			phone           TEXT,
+			nickname        TEXT,
+			avatar_url      TEXT,
+			parent_user_id  INTEGER,
+			total_sop_runs  INTEGER DEFAULT 0,
+			monthly_sop_runs INTEGER DEFAULT 0,
+			monthly_reset_at DATETIME,
+			user_tier       TEXT DEFAULT 'free',
+			tier_expires    DATETIME,
+			billing_mode    TEXT NOT NULL DEFAULT 'credits',
+			username        TEXT,
+			password        TEXT,
+			is_admin        INTEGER DEFAULT 0,
+			status          INTEGER DEFAULT 0,
+			last_login      DATETIME
+		)`).Error)
+
+	require.NoError(t, db.Exec(
+		`INSERT INTO user (created_at, updated_at, user_tier, billing_mode, monthly_sop_runs)
+		 VALUES (?, ?, 'free', 'credits', 0)`,
+		time.Now(), time.Now(),
+	).Error)
+
+	ds := store.NewTestStore(db)
+	b := sop.NewSopBiz(ds, nil, nil)
+
+	_, err = b.CreateRun(context.Background(), uint(1), uint(1), "any text")
+	require.Error(t, err, "free-tier user must be denied")
+
+	var e *errno.Errno
+	require.True(t, errors.As(err, &e), "biz should return *errno.Errno, got %T: %v", err, err)
+	assert.Equal(t, "SOP.RunDenied", e.Code, "error code should be SOP.RunDenied")
+	assert.Equal(t, 403, e.HTTP, "HTTP status should be 403 (Forbidden), not 500")
+	assert.Contains(t, e.Message, "免费用户", "message should preserve Chinese reason for user display")
 }

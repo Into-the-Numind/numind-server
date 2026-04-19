@@ -272,7 +272,7 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 			"user_tier", user.UserTier,
 			"monthly_sop_runs", user.MonthlySopRuns,
 			"reason", reason)
-		return nil, errors.New(reason)
+		return nil, errno.ErrSOPRunDenied.SetMessage("%s", reason)
 	}
 	log.C(ctx).Infow("User SOP permission check passed",
 		"user_id", userID,
@@ -287,7 +287,7 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 	}
 	if !hasPermission {
 		log.C(ctx).Warnw("User has no permission to execute template", "user_id", userID, "template_id", templateID)
-		return nil, fmt.Errorf("您没有权限执行此模板")
+		return nil, errno.ErrTemplateUnauthorized
 	}
 	log.C(ctx).Infow("Template permission check passed", "user_id", userID, "template_id", templateID)
 
