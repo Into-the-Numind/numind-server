@@ -190,12 +190,12 @@ func TestComputeSopPromptChars_NilSafety(t *testing.T) {
 // empty / unknown fallbacks (spec §3.2 requires best-effort, not strict).
 func TestProviderFromModelName_KnownPrefixes(t *testing.T) {
 	cases := map[string]string{
-		"qwen-turbo":              "ali",
-		"qwen-plus":               "ali",
-		"text-embedding-v4":       "ali",
-		"deepseek-v3-2-251201":    "volc",
-		"doubao-seed-1-6-flash":   "volc",
-		"glm-4-7-251222":          "volc",
+		"qwen-turbo":              "ali-dashscope",
+		"qwen-plus":               "ali-dashscope",
+		"text-embedding-v4":       "ali-dashscope",
+		"deepseek-v3-2-251201":    "volc-ark",
+		"doubao-seed-1-6-flash":   "volc-ark",
+		"glm-4-7-251222":          "volc-ark",
 		"claude-3-5-sonnet":       "dmxapi",
 		"gemini-pro":              "dmxapi",
 		"":                        "",
