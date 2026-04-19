@@ -1636,3 +1636,41 @@ features:
     blockers: []
     created_at: "2026-04-20T01:00:00+08:00"
     completed_at: "2026-04-20T01:05:00+08:00"
+
+  - id: "dead-code-cleanup-p1"
+    ndf_version: "1.0"
+    description: "清理 llm-model-switch → ai-service-manager 迁移遗留死代码：删除 llm_model/llm_model_provider 两个 store（对应 view 已在 20260417 migration 删除）、LLMModelProvider struct、UserM model、孤立的 util/image_path 旧卡片/书籍函数和 util/permission.go 整个文件；修正 database_charset CriticalTables 列表（本次 dev DB 清理后表结构对齐）"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "纯代码删除 + 字符集清单修正，影响面可枚举（8 文件 +24/-457 行）；编译+测试+vet 通过；无 schema/API/业务逻辑变更"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-20T01:30:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/dead-code-cleanup-p1"
+    hotfix_artifacts:
+      diagnosis: "用户人工精校 subagent 核实结果 — 保留 LLMModel struct（preference.go:80 作为响应 DTO）+ GetAvatarWithCOS/GetDisplayURL（user/get.go:49 用于头像 COS 回退）；删除其余孤立函数/struct/store"
+      review: "grep 全仓确认零残留引用（Get*ImagePath/Ensure*Directory/UserM/LLMModelProvider/ILLMModel*Store 等全部返回 no matches）"
+    progress:
+      total_tasks: 4
+      completed_tasks: 4
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "git revert on develop（纯删除，恢复原文件即可）"
+    last_verified:
+      at: "2026-04-20T01:25:00+08:00"
+      lint: "go vet ./... pass（仅 sqlite-vec cgo deprecated 警告，无关本次改动）"
+      type_check: "go build ./... pass"
+      tests: "go test ./... ALL PASS（credit/store/model/middleware/aiservice/pricing/langfuse 等全部测试模块无 FAIL）"
+      test_summary: "编译/测试/静态检查三重绿灯；所有之前引用被删符号的地方都是死代码路径自身"
+    decisions:
+      - "2026-04-20: LLMModel struct 保留（纯 DTO，preference.go 用其向后兼容 v3 ModelSelector 响应形状）；TableName() 保留指向已删 view 'llm_model' — 意图：万一未来被误用 GORM 查询，错误信息会直接暴露被删 view 名而非 GORM 默认的 'llm_models' pluralization，便于调试定位"
+      - "2026-04-20: LLMModelProvider struct 完整删除（仅被同批删除的 store 内部引用；llm.go 注释明确指向已删 view）"
+      - "2026-04-20: permission.go 整个文件删除（4 个函数全死，EnsureDirectoryPermissions/EnsureParentDirectory 也仅被同批删的 Ensure*Directory 使用）"
+      - "2026-04-20: image_path.go 从 165 行缩减到 50 行，仅保留 GetAvatarWithCOS（user controller 在用）+ GetDisplayURL（GetAvatarWithCOS 依赖）"
+      - "2026-04-20: database_charset.CriticalTables 从 17 条（含 11 条已删表的单数命名）重写为 22 条实际存在的关键业务表，覆盖 user/sop/knowledge/sales/chatbot/credit/billing/ai_service 等核心域"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-20T01:20:00+08:00"
+    completed_at: "2026-04-20T01:30:00+08:00"

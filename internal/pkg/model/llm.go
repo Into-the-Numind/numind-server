@@ -25,13 +25,13 @@ func (p *LLMProvider) MaskedAPIKey() string {
 	return "****" + p.APIKey[len(p.APIKey)-4:]
 }
 
-// LLMModel LLM 逻辑模型
-//
-// TableName points to the llm_model VIEW (which filters ai_service to service_type='llm'
-// AND deprecated_at IS NULL), ensuring backwards-compatible reads without any code changes.
-// All writes (Create/Update/Delete) must eventually migrate to AIService — handled in Task 14.
-// The ServiceType field is declared for future Gateway use; it will be zero-value on reads
-// from the VIEW because the VIEW does not expose that column.
+// LLMModel is a pure response DTO used by biz/llmrouter to preserve the v3
+// ModelSelector response shape after the ai-service-manager migration.
+// The llm_model backing VIEW was dropped in migration 20260417_180000_drop_llm_compat_views.sql
+// — this struct must NOT be used with GORM (Find/Where/Create/etc.). Construct
+// it explicitly from model.AIService rows (see biz/llmrouter/preference.go:80).
+// TableName() is kept so any inadvertent GORM use surfaces the dropped-view
+// name in logs rather than the GORM-default "llm_models" pluralization.
 type LLMModel struct {
 	ID               uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
 	ModelKey         string    `gorm:"size:100;not null;uniqueIndex" json:"model_key"`
@@ -51,29 +51,6 @@ type LLMModel struct {
 // TableName returns the table name for LLMModel.
 // Points to the llm_model VIEW for backwards-compatible reads.
 func (LLMModel) TableName() string { return "llm_model" }
-
-// LLMModelProvider 模型×供应商路由映射
-//
-// TableName points to the llm_model_provider VIEW for backwards-compatible reads.
-// Writes must migrate to AIServiceRoute — handled in Task 14.
-type LLMModelProvider struct {
-	ID                 uint64       `gorm:"primaryKey;autoIncrement" json:"id"`
-	ModelID            uint64       `gorm:"not null;uniqueIndex:uk_model_provider" json:"model_id"`
-	ProviderID         uint64       `gorm:"not null;uniqueIndex:uk_model_provider" json:"provider_id"`
-	ProviderModelID    string       `gorm:"size:100;not null" json:"provider_model_id"`
-	Priority           int          `gorm:"default:0" json:"priority"`
-	InputPricePerMTok  float64      `gorm:"column:input_price_per_mtok;type:decimal(10,4);default:0" json:"input_price_per_mtok"`
-	OutputPricePerMTok float64      `gorm:"column:output_price_per_mtok;type:decimal(10,4);default:0" json:"output_price_per_mtok"`
-	IsActive           bool         `gorm:"default:true" json:"is_active"`
-	CreatedAt          time.Time    `json:"created_at"`
-	UpdatedAt          time.Time    `json:"updated_at"`
-	Provider           *LLMProvider `gorm:"foreignKey:ProviderID" json:"provider,omitempty"`
-	Model              *LLMModel    `gorm:"foreignKey:ModelID" json:"model,omitempty"`
-}
-
-// TableName returns the table name for LLMModelProvider.
-// Points to the llm_model_provider VIEW for backwards-compatible reads.
-func (LLMModelProvider) TableName() string { return "llm_model_provider" }
 
 // UserModelPreference 用户模型偏好
 type UserModelPreference struct {
