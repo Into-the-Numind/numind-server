@@ -1337,7 +1337,7 @@ features:
     ndf_version: "1.0"
     description: "防御 4/16 事故的 systemic 根因 — admin UI 强制创建 Service 必带 Route + 列表暴露无路由 orphan"
     track: "hotfix"
-    stage: "H3-done"
+    stage: "H3-done (review followups merged)"
     classification_reason: "跨 2 仓库 UI + API hardening。后端原子 endpoint + 列表扩展 route_count；前端列表 orphan 徽章 + 新建表单强制 Route 子表单"
     last_updated_by: "ai-hotfix"
     last_updated_at: "2026-04-20T00:50:00+08:00"
@@ -1354,12 +1354,23 @@ features:
         允许创建孤儿 Service。本 hotfix 双管齐下：
         （1）强制：新增原子 endpoint + 前端新建表单必填 Route 子表单
         （2）暴露：列表显示 route_count，=0 显示红色 orphan 徽章
-      review: null
+      review: |
+        Sonnet subagent review 发现 1 P0 + 4 P1 + 一众 P2 / OK。P0 + 关键 P1 全修：
+        - P0 #1 contract mismatch (base_model_id)：选 B 去掉 backend 字段保持与
+          pre-existing createServiceReq/updateServiceReq 一致。commit server 56771e8
+        - P1 #5 actor guard: CreateServiceWithRoute 显式 reject actor_id=0。commit 56771e8
+        - P1 #7 nav trap: create 成功跳 edit 页（避免 filter=active 看不见 inactive
+          新服务）。commit admin-web 161830a
+        - P1 #8 badge 文案: "无路由" → "无可用路由"（精准语义）+ tooltip 更新。commit 161830a
+        - P1 其他被 reviewer 自降到 P2 / OK（validation 合理 / errno 合理 / 测试 OK）
+        - P2 test gap（rollback test 测的是 pre-check 而非真实 rollback）：登记 tech debt，
+          SQLite 默认不强制 FK 需要 fixture，不值当为一个已靠 GORM.Transaction 保证的路径
+          造测试脚手架
     progress:
       total_tasks: 2
       completed_tasks: 2
-      reviewed_tasks: 0
-      current_task: "pending subagent review + browser verification"
+      reviewed_tasks: 2
+      current_task: null
     rollback: "git revert 两仓库 merge commit"
     last_verified:
       at: "2026-04-20T00:50:00+08:00"
