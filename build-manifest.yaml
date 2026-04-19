@@ -37,38 +37,49 @@ features:
     ndf_version: "1.1"
     description: "设置页加量包购买支付弹窗 — credits 制会员点击 BoosterPurchaseCard → 下单 → 微信/支付宝 QR 扫码 → 轮询订单状态 → 支付成功后加量包到账并刷新余额"
     track: "standard"
-    stage: "S4-done"
+    stage: "S7-done"
     classification_reason: "轻量 Standard：仅前端改动（numind-web-v3），无 DB schema、无新后端 API（复用现有 /v1/orders + 回调）；但触及真钱支付流水，支付状态机需严谨设计"
-    last_updated_by: "ai-s3"
+    last_updated_by: "ai-s7"
     last_updated_at: "2026-04-20T00:00:00+08:00"
     repos:
       - numind-web-v3
+      - numind-server
     branches:
-      numind-web-v3: "feature/booster-payment-ui"
+      numind-web-v3: "feature/booster-payment-ui (merged, deleted)"
+      numind-server: "fix/order-controller-self-purchase (S5-discovered bug, merged, deleted)"
     artifacts:
       requirement: "numind-server/requirements/booster-payment-ui.md"
       proposal: "numind-server/proposals/booster-payment-ui-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-04-20-booster-payment-ui-design.md"
       plan: "numind-server/docs/superpowers/plans/booster-payment-ui-plan.md"
-      review_spec_compliance: null
-      review_code_quality: null
-      qa: null
+      review_spec_compliance: "pass (T1-T5 各自 Sonnet spec-compliance reviewer PASS/PASS_WITH_CONCERNS，所有 P0/P1/P2 就地修复)"
+      review_code_quality: "pass (T1-T5 各自 Sonnet code-quality reviewer PASS/PASS_WITH_CONCERNS，所有 P0/P1/P2 就地修复)"
+      qa: "S5 手动 E2E 通过 — dev 环境（价格临时改 1 分）真实微信扫码 ¥0.01 支付成功，600 积分 + 90 天 booster 包正确到账，余额刷新正确"
     progress:
       total_tasks: 5
       completed_tasks: 5
       reviewed_tasks: 5
       current_task: null
-    rollback: null
-    last_verified: null
+    rollback:
+      strategy: "前端 git revert merge commit 1a0f509；后端 git revert 6eb86a8 (temp-price 已于本 commit restore) 和 898a79e (order-controller-self-purchase)。无 DB schema 变更，无数据迁移。"
+    last_verified:
+      at: "2026-04-20T04:30:00+08:00"
+      lint: "pass (numind-web-v3 npm lint + numind-server go vet/build 全绿)"
+      type_check: "pass (npm type-check + go build)"
+      tests: "pass (PaymentQRModal.spec.ts 6/6 通过；biz/payment 既有测试全绿)"
+      test_summary: "Vitest 6/6 + Go biz 测试全绿 + S5 手动 E2E 真实扫码支付成功"
     decisions:
       - "2026-04-20: S0 需求卡确认 Standard 轻量版（仅 numind-web-v3 前端，后端 0 改动）"
       - "2026-04-20: S1 技术调查确认基础设施齐备 — GET /v1/orders/:id 存在、qrcode v1.5.4 已装、XhsBindModal 有 QR 渲染示例、订单 30min 后端自动过期"
       - "2026-04-20: S1 关键决策 — 前端轮询 2s 间隔 + 5min 倒计时（短于后端 30min，提前提示用户）；支付宝 PagePay 新标签页跳转（非 iframe）；关闭弹窗不主动取消订单（后端 cron 自然过期）"
       - "2026-04-20: S2 决策 — 6 态状态机（idle/creating/pending/paid/expired/error/closed）；Tab 切换重下单（后端 order 已绑 pay_channel，无法复用）；不做 pending-order 复用检测（GET /v1/orders 不支持 filter，ROI 低）"
       - "2026-04-20: S3 plan 拆 5 个 task（骨架/API/UI+tab/SettingsView+E2E/Vitest）。Sonnet reviewer PASS_WITH_CONCERNS，3 个 P1 已就地修复：tab-watch 挪到 Task 3、orders.ts 前置确认、快速连点防重复（spec §6 #13）；Vitest 单测从'可选'升为默认任务（真钱回归保护唯一抓手）"
+      - "2026-04-20: S4 5 个 task 全部完成（T1-T5 共 10 个 commit，5 个 feat/test + 5 个 review fix）。每 task 用并行 2 个 Sonnet reviewer（spec-compliance + code-quality），共 10 个 review 全 PASS/PASS_WITH_CONCERNS，P0=0、P1 全修、P2 就地修。自动化回归：PaymentQRModal.spec.ts 6 路径全绿"
+      - "2026-04-20: S5 E2E 发现 order controller 遗留缺陷 — /v1/orders handler 硬性要求 payer.ID != subUser.ID 时 subUser.ParentUserID == payer.ID，对 C 端自购路径（payer.ID == subUser.ID）直接 403。biz 层（payment.go:95）早已允许 booster 自购，但 controller 从未对齐。修复 commit `a53fc01`（fix/order-controller-self-purchase）后 S5 重试通过"
+      - "2026-04-20: S5 手动 E2E 验证方式 — dev 环境通过临时降价 booster ¥29.9→¥0.01 完成真实微信扫码支付全链路验证（commit `79b3e70` 临时，`6eb86a8` 已 revert 回 2990）。验证结果：扫码 → 实付 ¥0.01 → 后端回调 → booster 600 积分到账 + 90 天有效 + 前端余额刷新 + 成功 toast"
     blockers: []
     created_at: "2026-04-20T00:00:00+08:00"
-    completed_at: null
+    completed_at: "2026-04-20T04:30:00+08:00"
 
   - id: "content-monitor"
     ndf_version: "1.0"
