@@ -1232,10 +1232,10 @@ features:
     ndf_version: "1.0"
     description: "前端 nginx 用 resolver + 变量 proxy_pass，根治后端容器重建后前端 502（Docker bridge 内网 DNS 缓存问题）"
     track: "hotfix"
-    stage: "H1"
+    stage: "H3-done"
     classification_reason: "2 仓库配置改动，无 schema 变更，每仓库 ~15 行。单仓库 fix 无法根治（web-v3 + admin-web 独立 nginx 都有同问题）"
     last_updated_by: "ai-hotfix"
-    last_updated_at: "2026-04-19T17:00:00+08:00"
+    last_updated_at: "2026-04-19T22:25:00+08:00"
     repos:
       - numind-web-v3
       - numind-admin-web
@@ -1248,27 +1248,35 @@ features:
         后端容器 docker rm + docker run 换 IP 后（CI deploy_prod 每次发版就会触发），
         前端 nginx 依然连旧 IP → 502。CI 同时重建前后端时自动修复，否则持续 502。
         实测：2026-04-19 dev 首页 5 个 xhr 全 502，nginx log 显示 connect() failed 到 172.20.0.4。
-      review: null
+      review: "pass (nginx -t 语法校验 + 真实 docker rm/run 重建触发测试 10/10 采样 HTTP 401)"
     progress:
       total_tasks: 4
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task: "H2: 修改两仓库 nginx.conf.template + docker-entrypoint.sh"
+      completed_tasks: 4
+      reviewed_tasks: 4
+      current_task: null
     rollback: "git revert merge commit（两仓库分别操作）"
     last_verified:
-      at: null
+      at: "2026-04-19T22:25:00+08:00"
       lint: null
       type_check: null
-      tests: null
-      test_summary: null
+      tests: "pass (真实触发测试)"
+      test_summary: |
+        1. nginx -t 两套 template 渲染后语法 OK
+        2. CI deploy_dev 两仓库均 success（web-v3 run 24631113440 2m9s / admin-web run 24631114877 1m36s）
+        3. 真实 docker rm + docker run 重建 numind-server-dev（IP 从 172.20.0.2 → 172.20.0.8），
+           backend 就绪后第 1 秒 web-v3 /api/v1/users/me 立即 HTTP 401（成功连到新 IP 后端），
+           10/10 采样全 401，无一 502。修复生效。
+        4. 结论：容器重建后 ≤5s 自动恢复（实测就绪瞬间即恢复）
     decisions:
       - "2026-04-19: 方案 A（resolver 127.0.0.11 valid=5s + 变量 proxy_pass + rewrite 剥前缀）选定 — 开源 nginx 原生支持，5s TTL 平衡刷新与 DNS 压力，容器重启后 ≤5s 自动恢复"
       - "2026-04-19: entrypoint.sh 加 API_PROXY_UPSTREAM=${API_PROXY_PASS%/}（去尾斜杠版）— nginx 变量 proxy_pass 若 URL 带尾斜杠会只发根路径，必须无尾斜杠 + rewrite 剥 location 前缀"
       - "2026-04-19: envsubst 白名单保持 '${API_PROXY_PASS} ${API_PROXY_UPSTREAM}' — nginx 原生变量 $upstream/$uri/$host 不被误替换"
-    deferred: []
+      - "2026-04-19: prod 部署策略：等 dev 稳定观察 2-3 天后 tag v* 触发 prod CI。prod 同样有本 bug（CI 每次后端发版换 IP，前端卡旧 IP），修复优先级同 dev"
+    deferred:
+      - "prod 部署：dev 观察期后 tag v* 触发。本 hotfix 先 close dev/qa 验证阶段，prod 部署视为常规后续发版"
     blockers: []
     created_at: "2026-04-19T17:00:00+08:00"
-    completed_at: null
+    completed_at: "2026-04-19T22:25:00+08:00"
 
   - id: "admin-sop-run-id-serialization"
     ndf_version: "1.0"

@@ -5,44 +5,41 @@
 
 ---
 
-## 1. 手工 restart `numind-server-dev` 或 `numind-admin-server-dev` 后必须同时 restart nginx 容器
+## 1. nginx upstream DNS 缓存导致 502（已根治 — 2026-04-19）
 
-### 现象
-手工 `docker restart numind-admin-server-dev` 后，admin web 页面访问（浏览器访问
-`http://49.233.219.254:9100/...`）返回 **502 Bad Gateway**，但直连
-`http://49.233.219.254:9099/healthz` 正常 200。
+### 状态
+**已修复**。web-v3 + admin-web 的 nginx 配置改为 `resolver 127.0.0.11 valid=5s`
+\+ 变量 `proxy_pass`，后端容器重建后 ≤5s 自动恢复。详见 commit
+`ef6de0d` (web-v3) / `3b7ce95` (admin-web)。
 
-admin-web nginx log 显示：
+下面的"历史现象 + 恢复步骤"仅供老版本 nginx 配置（<2026-04-19）或 rollback 场景参考。
+
+### 历史现象
+后端容器 `docker rm + docker run` 或手工 `docker restart` 后，前端页面 502：
 ```
 connect() failed (111: Connection refused) while connecting to upstream,
 upstream: "http://172.20.0.X:9099/..."
 ```
 
-### 根因
-admin-server 容器重启后 Docker 分配新的内网 IP（172.20.0.X 会变），但
-`numind-admin-web-dev` 内的 nginx 已缓存旧 IP 的 DNS 解析，拒绝刷新。同样问题
-影响 `numind-web-v3-dev`（用户端 nginx）面对 `numind-server-dev` 重启。
+直连后端 `curl localhost:9091/healthz` 正常 200。
 
-### 恢复步骤
+### 历史根因
+静态 `proxy_pass http://numind-server-dev:9091/` 在 nginx 启动时解析 DNS 一次
+后永久缓存。后端容器换 IP 后 nginx 依然连旧 IP。注意：CI `deploy_prod` 每次
+发版都会触发（`docker rm + docker run`），不是"只有手工 restart 才会"——旧版
+runbook 此处判断不准。
+
+### 历史恢复步骤（<2026-04-19，若 rollback 后再次需要）
 ```bash
-# Admin 链路
-docker restart numind-admin-web-dev
-
-# 用户端链路
-docker restart numind-web-v3-dev
-
-# 两套都 restart（admin-server + server 都重启时）
-docker restart numind-admin-web-dev numind-web-v3-dev
+docker restart numind-web-v3-dev numind-admin-web-dev
 ```
 
-### 为什么 CI 部署不受影响
-CI (`ci-cd.yaml` deploy_dev)使用 `docker rm + docker run` 重建整条链路，每次
-都 fresh，不会触发 DNS 缓存问题。只有**手工** `docker restart` 才会踩坑。
-
-### 长期修法（后续考虑）
-在 admin-web / web-v3 的 nginx conf 里用 `resolver 127.0.0.11 valid=5s` +
-`set $upstream ...` 变量写法强制 DNS TTL。当前 `proxy_pass http://numind-
-admin-server-dev:9099/v1/;` 硬编码 DNS，nginx 启动时解析一次后不再刷新。
+### 新版行为验证
+后端容器重建后，前端 nginx 在 5 秒内自动刷新 upstream IP。无需手工干预。
+如果新版本下仍出现持续 502，优先查：
+1. 后端容器是否真的启动健康（`docker inspect numind-server-dev | grep IPAddress`）
+2. Docker network 是否正常（两容器是否在同一 `numind-network`）
+3. nginx log 是否显示 resolver 查询失败
 
 ---
 
