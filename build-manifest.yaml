@@ -1227,3 +1227,86 @@ features:
     blockers: []
     created_at: "2026-04-19T04:50:00+08:00"
     completed_at: "2026-04-19T05:22:00+08:00"
+
+  - id: "nginx-dns-refresh"
+    ndf_version: "1.0"
+    description: "前端 nginx 用 resolver + 变量 proxy_pass，根治后端容器重建后前端 502（Docker bridge 内网 DNS 缓存问题）"
+    track: "hotfix"
+    stage: "H1"
+    classification_reason: "2 仓库配置改动，无 schema 变更，每仓库 ~15 行。单仓库 fix 无法根治（web-v3 + admin-web 独立 nginx 都有同问题）"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-19T17:00:00+08:00"
+    repos:
+      - numind-web-v3
+      - numind-admin-web
+    branches:
+      numind-web-v3: "fix/nginx-dns-dynamic-resolver"
+      numind-admin-web: "fix/nginx-dns-dynamic-resolver"
+    hotfix_artifacts:
+      diagnosis: |
+        静态 proxy_pass http://numind-server-dev:9091/ 在 nginx 启动时解析 DNS 一次后永久缓存。
+        后端容器 docker rm + docker run 换 IP 后（CI deploy_prod 每次发版就会触发），
+        前端 nginx 依然连旧 IP → 502。CI 同时重建前后端时自动修复，否则持续 502。
+        实测：2026-04-19 dev 首页 5 个 xhr 全 502，nginx log 显示 connect() failed 到 172.20.0.4。
+      review: null
+    progress:
+      total_tasks: 4
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "H2: 修改两仓库 nginx.conf.template + docker-entrypoint.sh"
+    rollback: "git revert merge commit（两仓库分别操作）"
+    last_verified:
+      at: null
+      lint: null
+      type_check: null
+      tests: null
+      test_summary: null
+    decisions:
+      - "2026-04-19: 方案 A（resolver 127.0.0.11 valid=5s + 变量 proxy_pass + rewrite 剥前缀）选定 — 开源 nginx 原生支持，5s TTL 平衡刷新与 DNS 压力，容器重启后 ≤5s 自动恢复"
+      - "2026-04-19: entrypoint.sh 加 API_PROXY_UPSTREAM=${API_PROXY_PASS%/}（去尾斜杠版）— nginx 变量 proxy_pass 若 URL 带尾斜杠会只发根路径，必须无尾斜杠 + rewrite 剥 location 前缀"
+      - "2026-04-19: envsubst 白名单保持 '${API_PROXY_PASS} ${API_PROXY_UPSTREAM}' — nginx 原生变量 $upstream/$uri/$host 不被误替换"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-19T17:00:00+08:00"
+    completed_at: null
+
+  - id: "admin-sop-run-id-serialization"
+    ndf_version: "1.0"
+    description: "admin-web 运行监控展开详情 400 — SopRun 嵌入 gorm.Model，ID 序列化为 PascalCase，前端 run.id 为 undefined"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "单点序列化 bug，单仓库改动（admin_sop 控制器），无 schema/业务逻辑变更，~90 行 DTO + mapper"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-19T18:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/admin-sop-run-id-serialization"
+    hotfix_artifacts:
+      diagnosis: |
+        admin-web RunsView 展开详情请求 GET /v1/admin/sop/runs/undefined/detail → 400。
+        根因：model.SopRun 嵌入 gorm.Model，其 ID/CreatedAt 字段无 json tag，
+        Go 默认按字段名序列化为 "ID"/"CreatedAt"（PascalCase）。
+        admin 前端 runs.ts 声明 id: number（lowercase），run.id === undefined。
+        对比 admin_user.ListUsers 已显式映射 AdminUserItem DTO — 此处应沿用相同模式。
+        不改 model.SopRun（会波及 numind-web-v3 已消费 run.ID 的 sopRun.ts）。
+      review: null
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert merge commit on develop"
+    last_verified:
+      at: "2026-04-19T18:00:00+08:00"
+      lint: "pass (go vet + golangci-lint on admin_sop package)"
+      type_check: null
+      tests: null
+      test_summary: "本地 go build ./... 通过；前端 /v1/admin/sop/runs 响应 id 字段现为 lowercase，待 dev 部署后复验"
+    decisions:
+      - "2026-04-19: 新增本地 DTO（adminRunItem/adminNodeRunItem + mapper），不动 model.SopRun，不影响用户端"
+      - "2026-04-19: GetRun / GetRunDetail 顺便补上 total_tokens / cost_cents 字段（调用 GetRunsStats 单 ID），保持响应 shape 一致"
+    deferred: []
+    blockers: []
+    created_at: "2026-04-19T17:45:00+08:00"
+    completed_at: "2026-04-19T18:00:00+08:00"
