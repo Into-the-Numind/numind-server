@@ -77,6 +77,18 @@ func wrapStreamForBilling(
 	userID uint,
 	deps Deps,
 ) <-chan aiservice.ChatChunk {
+	// Defensive guard: if src is typed-nil (upstream handler returned
+	// `return typedNilChan, err` without nil-wrapping), ranging over it
+	// blocks forever → goroutine leak per failed call. gateway.go:303-308
+	// currently launders this via `return nil, err`, but a future refactor
+	// there would silently break us. Short-circuit with a closed empty channel.
+	if src == nil {
+		persistRecord(ctx, record, route, userID, deps)
+		closed := make(chan aiservice.ChatChunk)
+		close(closed)
+		return closed
+	}
+
 	// Buffer matches src so we don't add artificial back-pressure.
 	dst := make(chan aiservice.ChatChunk, cap(src))
 	go func() {
