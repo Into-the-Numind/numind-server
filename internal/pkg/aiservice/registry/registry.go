@@ -60,6 +60,12 @@ type ResolvedRoute struct {
 	ProviderModelID string // the model identifier sent to the provider API
 	Capability      profile.ServiceCapability
 	Pricing         PricingInfo
+	// SupportsThinking mirrors ai_service.supports_thinking — model can produce chain-of-thought.
+	SupportsThinking bool
+	// ThinkingOnly mirrors ai_service.thinking_only — model always thinks; adapter should skip
+	// reasoning_effort injection (some intrinsic models like Gemini 3.1 reject minimal/none and
+	// would error if adapter tried to disable).
+	ThinkingOnly bool
 }
 
 // ----------------------------------------------------------------------------
@@ -438,7 +444,9 @@ func buildResolvedRoute(taskID string, row *resolvedRouteRow) ResolvedRoute {
 		// middleware (buildBaseRecord). The column was removed from ai_service_route
 		// in T-arch; the billing middleware performs the lookup and writes Unit into
 		// the UsageRecord.
-		Pricing: PricingInfo{},
+		Pricing:          PricingInfo{},
+		SupportsThinking: row.SupportsThinking,
+		ThinkingOnly:     row.ThinkingOnly,
 	}
 }
 

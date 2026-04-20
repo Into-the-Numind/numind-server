@@ -96,9 +96,11 @@ type resolvedRouteRow struct {
 	ProviderName    string
 	ProviderBaseURL string
 	ProviderAPIKey  string
-	ProviderModelID string
-	RoutePriority   int
-	RouteIsActive   bool
+	ProviderModelID  string
+	RoutePriority    int
+	RouteIsActive    bool
+	SupportsThinking bool
+	ThinkingOnly     bool
 }
 
 // ----------------------------------------------------------------------------
@@ -314,6 +316,8 @@ SELECT
   s.quality_tier           AS quality_tier,
   s.deprecated_at          AS deprecated_at,
   s.is_active              AS is_active,
+  s.supports_thinking      AS supports_thinking,
+  s.thinking_only          AS thinking_only,
   p.id                     AS provider_id,
   p.name                   AS provider_name,
   p.base_url               AS provider_base_url,
@@ -340,6 +344,8 @@ LIMIT 1
 		QualityTier       string     `gorm:"column:quality_tier"`
 		DeprecatedAt      *time.Time `gorm:"column:deprecated_at"`
 		IsActive          bool       `gorm:"column:is_active"`
+		SupportsThinking  bool       `gorm:"column:supports_thinking"`
+		ThinkingOnly      bool       `gorm:"column:thinking_only"`
 		ProviderID        uint64     `gorm:"column:provider_id"`
 		ProviderName      string     `gorm:"column:provider_name"`
 		ProviderBaseURL   string     `gorm:"column:provider_base_url"`
@@ -367,22 +373,24 @@ LIMIT 1
 	}
 
 	return &resolvedRouteRow{
-		ServiceID:       row.ServiceID,
-		ModelKey:        row.ModelKey,
-		DisplayName:     row.DisplayName,
-		ServiceType:     row.ServiceType,
-		CapabilityJSON:  capJSON,
-		LatencyTier:     row.LatencyTier,
-		QualityTier:     row.QualityTier,
-		DeprecatedAt:    row.DeprecatedAt,
-		IsActive:        row.IsActive,
-		ProviderID:      row.ProviderID,
-		ProviderName:    row.ProviderName,
-		ProviderBaseURL: row.ProviderBaseURL,
-		ProviderAPIKey:  row.ProviderAPIKey,
-		ProviderModelID: row.ProviderModelID,
-		RoutePriority:   row.RoutePriority,
-		RouteIsActive:   row.RouteIsActive,
+		ServiceID:        row.ServiceID,
+		ModelKey:         row.ModelKey,
+		DisplayName:      row.DisplayName,
+		ServiceType:      row.ServiceType,
+		CapabilityJSON:   capJSON,
+		LatencyTier:      row.LatencyTier,
+		QualityTier:      row.QualityTier,
+		DeprecatedAt:     row.DeprecatedAt,
+		IsActive:         row.IsActive,
+		ProviderID:       row.ProviderID,
+		ProviderName:     row.ProviderName,
+		ProviderBaseURL:  row.ProviderBaseURL,
+		ProviderAPIKey:   row.ProviderAPIKey,
+		ProviderModelID:  row.ProviderModelID,
+		RoutePriority:    row.RoutePriority,
+		RouteIsActive:    row.RouteIsActive,
+		SupportsThinking: row.SupportsThinking,
+		ThinkingOnly:     row.ThinkingOnly,
 	}, nil
 }
 
@@ -403,6 +411,8 @@ SELECT
   s.quality_tier           AS quality_tier,
   s.deprecated_at          AS deprecated_at,
   s.is_active              AS is_active,
+  s.supports_thinking      AS supports_thinking,
+  s.thinking_only          AS thinking_only,
   p.id                     AS provider_id,
   p.name                   AS provider_name,
   p.base_url               AS provider_base_url,
@@ -429,6 +439,8 @@ LIMIT 1
 		QualityTier       string     `gorm:"column:quality_tier"`
 		DeprecatedAt      *time.Time `gorm:"column:deprecated_at"`
 		IsActive          bool       `gorm:"column:is_active"`
+		SupportsThinking  bool       `gorm:"column:supports_thinking"`
+		ThinkingOnly      bool       `gorm:"column:thinking_only"`
 		ProviderID        uint64     `gorm:"column:provider_id"`
 		ProviderName      string     `gorm:"column:provider_name"`
 		ProviderBaseURL   string     `gorm:"column:provider_base_url"`
@@ -454,22 +466,24 @@ LIMIT 1
 	}
 
 	return &resolvedRouteRow{
-		ServiceID:       row.ServiceID,
-		ModelKey:        row.ModelKey,
-		DisplayName:     row.DisplayName,
-		ServiceType:     row.ServiceType,
-		CapabilityJSON:  capJSON,
-		LatencyTier:     row.LatencyTier,
-		QualityTier:     row.QualityTier,
-		DeprecatedAt:    row.DeprecatedAt,
-		IsActive:        row.IsActive,
-		ProviderID:      row.ProviderID,
-		ProviderName:    row.ProviderName,
-		ProviderBaseURL: row.ProviderBaseURL,
-		ProviderAPIKey:  row.ProviderAPIKey,
-		ProviderModelID: row.ProviderModelID,
-		RoutePriority:   row.RoutePriority,
-		RouteIsActive:   row.RouteIsActive,
+		ServiceID:        row.ServiceID,
+		ModelKey:         row.ModelKey,
+		DisplayName:      row.DisplayName,
+		ServiceType:      row.ServiceType,
+		CapabilityJSON:   capJSON,
+		LatencyTier:      row.LatencyTier,
+		QualityTier:      row.QualityTier,
+		DeprecatedAt:     row.DeprecatedAt,
+		IsActive:         row.IsActive,
+		ProviderID:       row.ProviderID,
+		ProviderName:     row.ProviderName,
+		ProviderBaseURL:  row.ProviderBaseURL,
+		ProviderAPIKey:   row.ProviderAPIKey,
+		ProviderModelID:  row.ProviderModelID,
+		RoutePriority:    row.RoutePriority,
+		RouteIsActive:    row.RouteIsActive,
+		SupportsThinking: row.SupportsThinking,
+		ThinkingOnly:     row.ThinkingOnly,
 	}, nil
 }
 
