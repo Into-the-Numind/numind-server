@@ -1,0 +1,6 @@
+user_id	feature	model_key	thinking	supports_thinking	thinking_only
+25	sop	deepseek-v3.2	1	1	0
+26	sop	deepseek-v3.2	1	1	0
+28	sop	deepseek-v3.2	1	1	0
+25	chatbot	gpt-5.4	1	1	0
+27	sop	gpt-5.4	1	1	0
