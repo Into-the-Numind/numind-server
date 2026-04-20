@@ -124,10 +124,10 @@ features:
     ndf_version: "1.1"
     description: "AiHubMix 聚合商协议与模型清单权威化 + 思考模式真实落地。(T2) 针对 AiHubMix 现有 4 模型（Claude 4.6 Sonnet / GPT 5.4 / Gemini 3.1 Pro / DeepSeek V3.2）做全面协议调研，产出 docs/aihubmix-protocol-reference.md 说明每个模型的正确调用方式（endpoint / 请求字段 / 响应字段 / thinking 激活机制）。(T1) 按调研发现修代码：修复 executor.go:109 和 chatbot/stream.go:177 丢弃 thinking flag 的 bug；adapter 按每模型正确协议分派请求构造；响应解析覆盖各种 reasoning 字段。产物：docs 协议文档 + 代码修改。"
     track: "standard"
-    stage: "S5-done"
+    stage: "S6-done"
     classification_reason: "2 条 Triage 标准不满足：文件数 >3（aiservice/types + adapter/adapter + adapter/dmxapi + adapter/stream + adapter/model_family 新文件 + registry/registry + registry/store + middleware/tracing + sop/executor + chatbot/stream + migrations × 2 = 12 文件 + 3 doc）+ 高风险业务逻辑（thinking flag 影响全线 AI 成本和用户感知行为；DB 标志校正修复线上 user-facing bug —— preference.go:246 对合法 thinking 变体 request 硬拒）。用户确认 Standard 加速推进"
-    last_updated_by: "ai-s5-done"
-    last_updated_at: "2026-04-21T04:00:00+08:00"
+    last_updated_by: "ai-s6-done"
+    last_updated_at: "2026-04-21T05:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -144,7 +144,7 @@ features:
       total_tasks: 11
       completed_tasks: 11
       reviewed_tasks: 9
-      current_task: "S5 done — dev 环境全面验证：migration 7a/7b 执行 ✅ / Claude thinking content 真实 ✅ / GPT 5.4 reasoning_tokens 70/246 记录 ✅ / Playwright Path 8 preference bug 回归 PASS ✅。2 非 block 项 defer 到 S6（Langfuse UI 手查 + AiHubMix dashboard 扣费核对）+ 1 frontend scope 外项（SOP 前端 thinking query param 注入，独立 hotfix）。可进 S6 merge"
+      current_task: "S6-done — 所有改动已 merge 到 develop（线性 16 commits），dev 环境 deployed + migrations 已执行。用户明示不进 prod release 分支（开发持续节奏，feature 在 dev 闭环）。3 个 follow-up 另立单（Langfuse stream EndGeneration pre-existing bug + SOP 前端 thinking query param + AiHubMix dashboard 计费对账）"
     rollback: null
     last_verified: null
     decisions:
@@ -185,7 +185,11 @@ features:
       - "2026-04-21 (S5 backend end-to-end curl 验证): 登录→创建 chatbot session→`POST /v1/chatbot/sessions/:id/chat?thinking=true&model_key=claude-sonnet-4-6` → 收到 3 个 type:thinking SSE events + 真实 Claude chain-of-thought 内容（trace_id=2d769ba5-...）。GPT 5.4 path 收 0 thinking event + 正常 content（trace_id=5b652f69-...，符合 T2 §2.4 加密推理预期）"
       - "2026-04-21 (S5 billing 验证): dev usage_record 查询 — gpt-5.4 id=354 记录 reasoning_tokens=70 / id=352 记录 reasoning_tokens=246；claude-sonnet-4-6 id=353 记录 reasoning_tokens=0（T2 §2.1 证实 Claude 不暴露，正确）。wire 从 oaiUsage.CompletionTokensDetails → TokenUsage.ReasoningTokens → usage_record 全通"
       - "2026-04-21 (S5 Playwright 跑 9 tests): Path 8 preference save thinking-variant bug 回归 PASS（最关键——证明 migration 7a 后 preference.go:246 bug 已修）；Path 2 SOP thinking FAIL（frontend 未附 ?thinking=true query param，hotfix-default-thinking 独立 follow-up scope 外）；Path 1/3/4/5/6/7 SKIP（UI ModelSelector 未暴露 Claude/GPT/Gemini model_key + thinking toggle v-if='false'）——后端 curl §2 完全替代 coverage"
-      - "2026-04-21 (S5-done): qa doc docs/superpowers/qa/2026-04-20-aihubmix-protocol-audit-qa.md 落盘 7 章完整结果。核心 feature 代码正确性全面验证；2 defer 项都是用户手工 Langfuse UI + AiHubMix dashboard，非代码 block。进 S6"
+      - "2026-04-21 (S5-done): qa doc docs/superpowers/qa/2026-04-20-aihubmix-protocol-audit-qa.md 落盘 7 章完整结果。核心 feature 代码正确性全面验证；2 defer 项都是用户手工 Langfuse UI + AiHubMix dashboard，非代码 block"
+      - "2026-04-21 (S5 Langfuse 诊断): Langfuse API 实测发现所有 Generation observations endTime=None（包括本 feature 前的 traces，如 2026-04-16 以来的流式调用）。Task 9 mergeTraceMetadata 代码正确（单测 PASS），但依赖上游 EndGeneration 触发——tracing.go stream wrapper goroutine 的 EndGeneration 调用从 commit f5c4c92 (2026-04-16) 起一直 broken。登记独立 hotfix-langfuse-stream-endgeneration 跟进，不在本 feature scope"
+      - "2026-04-21 (S5 用户前端实测验证): 3 模型思考渲染可见（Claude/DeepSeek/Gemini 前端 ThinkingBlock 有内容），GPT 5.4 无思考可见（符合 T2 §2.4 OpenAI 加密推理）。'假思考' bug 从用户感知层面彻底修复"
+      - "2026-04-21 (S5 billing 二次验证): usage_record 实时查询显示 reasoning_tokens 正确捕获所有模型（gpt-5.4=85/246, deepseek=448, gemini=1429, claude=0 符合 T2）。wire 解码 → TokenUsage → billing 全通"
+      - "2026-04-21 (S6-done): 全部改动 develop 线性（16 commits），dev 自动部署到 numind-server-dev 容器（22:54 CST rebuild 确认 binary 含 InferModelFamily/buildOAIRequest/mergeTraceMetadata 字符串）。用户明示不进 prod release 分支——feature 在 dev 闭环，本期 aihubmix-protocol-audit 正式完成"
     blockers: []
     created_at: "2026-04-20T23:30:00+08:00"
 
@@ -212,6 +216,30 @@ features:
     blockers:
       - "依赖 aihubmix-protocol-audit 的产出作为 LinkAPI 接入蓝本"
     created_at: "2026-04-20T23:30:00+08:00"
+
+  - id: "hotfix-langfuse-stream-endgeneration"
+    ndf_version: "1.1"
+    description: "修复 tracing.go 流式路径 EndGeneration 不触发的 pre-existing 基础设施 bug。Langfuse API 实测发现从 commit f5c4c92 (2026-04-16) 起，所有 stream generation observations 的 endTime=None（包括 Claude/Gemini/DeepSeek/GPT 的 chatbot.stream 调用）。根因初步判断：tracing.go:81 的 `resp.(<-chan aiservice.ChatChunk)` 类型断言可能失败（adapter 实际返回 `chan aiservice.ChatChunk` 双向通道），或 goroutine 等待 channel close 时死锁。本 hotfix 独立于 aihubmix-protocol-audit 追查修复——该 feature 的 Task 9 mergeTraceMetadata 代码正确（单测 5 cases PASS），但依赖本 bug 修好才能在 Langfuse UI 展示 resolved_* 字段"
+    track: "triage-pending"
+    stage: "triage-pending"
+    classification_reason: "待 Triage（需先定位根因深度评估 scope）"
+    last_updated_by: "ai-aihubmix-audit-followup"
+    last_updated_at: "2026-04-21T05:00:00+08:00"
+    repos:
+      - numind-server
+    branches: {}
+    artifacts: {}
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "等待 Triage"
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-04-21 (followup): 从 aihubmix-protocol-audit S5 验证发现。独立 hotfix 而非追加 aihubmix scope，因为：(1) 是 pre-existing bug（f5c4c92 起 4 天），不归本 feature；(2) 影响面超出本 feature（所有流式调用的 Langfuse 观测性都失效）；(3) 需要独立 Playwright/实时验证流程"
+    blockers: []
+    created_at: "2026-04-21T05:00:00+08:00"
 
   - id: "hotfix-default-thinking-mode"
     ndf_version: "1.1"
