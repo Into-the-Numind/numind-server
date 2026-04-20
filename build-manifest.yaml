@@ -2289,3 +2289,41 @@ features:
       - "2026-04-21 (S4 Task 7 done): Dev DB 已 apply 两个 migration —— create 表 + backfill 0-record 子账号。baseline total_active=114 rows 跨 20 子账号，backfill 为 no-op（dev 无 0 记录子账号），二次 apply 幂等（AFTER=114）。P0.1 前置条件满足（backfill 不会让任何账号掉成 0 记录 = deny-all 安全）。Playwright request-level E2E test.describe.skip 归档，P0.5/P0.6 由 biz 层 TestChatStream_AfterRevoke_Denied 单测 + gstack /qa 双重覆盖。QA report at docs/superpowers/qa/2026-04-20-child-run-permission-qa.md"
       - "2026-04-21 (S6 dev merge done): numind-server @ 7fc80f5 + numind-web-v3 @ 3828810。两仓库 push origin develop 完成，CI 自动触发 dev 部署。"
       - "2026-04-21 (S6 附带): 本 merge 把 feature branch 上误入的 2 个 aihubmix doc commits (1ba6b4b + 3a765de) 一并带入 develop —— 这些是并发 session 在 feature branch 误 commit 的 plan 文档，内容本来就要进 develop，提前到达无害，与其他 session 后续工作无冲突"
+
+  - id: "chatbot-list-symmetric-with-sop"
+    ndf_version: "1.1"
+    description: "Hotfix：翻转 child-run-permission 的 chatbot 列表语义。原设计子账号首页 chatbot 列表按白名单隐藏（default-deny 不可见），但用户实际 UX 意图是『所有 published 都看得到，点击时才校验权限』，与 SOP 侧既有 /v1/sop/templates + /check-permission 模式完全对称。改动：(1) 后端 biz/chatbot/chatbot.go ListVisibleChatbots 删除子账号白名单过滤分支，子账号返回父账号全部 published；(2) 新增 GET /v1/chatbots/:id/check-permission 端点（mirror SOP CheckTemplatePermission），调用 HasChatbotPermission；(3) 前端 HomeView.vue chatbot 卡片 @click 由 router.push 改为走 checkChatbotPermission → 无权限弹既有 permission-dialog。运行时 CreateSession / ChatStream 白名单守卫保留（纵深防御）。DB schema / 管理端授权 UI / backfill 全部不变。"
+    track: "hotfix"
+    stage: "H1-triaged"
+    classification_reason: "Hotfix：(1) 单特性范围（chatbot 首页列表 UX 反向修复）(2) 无 DB schema 变更 (3) 跨 2 仓库但改动局部 (4) 触及权限但仅是『放宽可见性』非权限模型翻转 (5) 方案清晰：对称 SOP 现有模式"
+    last_updated_by: "ai-h1-triage"
+    last_updated_at: "2026-04-21T14:30:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "hotfix/chatbot-list-symmetric-with-sop"
+      numind-web-v3: "hotfix/chatbot-list-symmetric-with-sop"
+    hotfix_artifacts:
+      diagnosis: |
+        gstack 诊断（API 级 4 象限）：
+        - test3 (bot_perms=0, tpl_perms=5): /v1/sop/templates 返回 5（全部 published），/v1/chatbot/list 返回 0（白名单过滤生效）
+        - user_777 (bot_perms=0): 同上
+        - 子账号 '2' (bot_perms=1): SOP 返回 5 / Chatbot 返回 1（白名单命中）
+        - 原子 revoke/restore 反证 SOP 端：test3 撤销 tpl=1 后，/v1/sop/templates 仍返回 5（含 tpl=1），check-permission 正确返回 false。证实 SOP 当前模式就是『全列 + 点击校验』
+        结论：chatbot 侧应对称改为相同模式，而非继续隐藏。
+      review: null
+    progress:
+      total_tasks: 3
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "H2-backend"
+    rollback: "git revert 两仓库对应 hotfix commit。无 DB/数据变更（仅查询过滤器 + 新端点），revert 即恢复。"
+    last_verified: null
+    decisions:
+      - "2026-04-21 (H1 诊断): API 级别 4 象限验证 + 代码审计确认。SOP 侧既有 /v1/sop/templates + /check-permission 模式是用户目标 UX，chatbot 侧 ListVisibleChatbots 的白名单过滤是 B 功能 over-engineering，需反向修复"
+      - "2026-04-21 (H1 轨道选择): Hotfix 非 Standard —— 无 schema 变更 / 方案明确对称既有模式 / 改动局部可预期。Track 4 of 5 criteria 未触发"
+      - "2026-04-21 (H2 实施原则): 保留运行时 CreateSession + ChatStream 守卫（纵深防御，客户端可被绕过）；仅改列表可见性 + 新增前置 check 端点；backfill 数据保留以备后续管理端授权 UI 使用"
+    blockers: []
+    created_at: "2026-04-21T14:30:00+08:00"
+    completed_at: null

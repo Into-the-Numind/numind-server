@@ -1,7 +1,9 @@
-// Package chatbot_test — biz/chatbot 运行时守卫测试（child-run-permission Task 4）。
+// Package chatbot_test — biz/chatbot 运行时守卫测试（child-run-permission Task 4 +
+// chatbot-list-symmetric-with-sop hotfix）。
 //
 // 覆盖场景：
-//   - ListVisibleChatbots：子账号被白名单过滤 / 父账号不受限
+//   - ListVisibleChatbots：子账号看到父账号全部 published（与 SOP 对称，不按白名单隐藏）
+//   - CheckChatbotPermission：父账号 bypass / 子账号授权命中 / 子账号未授权 / draft chatbot
 //   - CreateSession：未授权拒绝 / 已授权成功
 //   - ChatStream：撤权后即时生效（P1-B 关键回归）
 package chatbot_test
@@ -137,8 +139,10 @@ func newChatbotBiz(db *gorm.DB) chatbot.IChatbotBiz {
 // ListVisibleChatbots
 // ============================================================================
 
-// TestListVisibleChatbots_ChildFiltered 子账号仅看到白名单内的 published chatbot。
-func TestListVisibleChatbots_ChildFiltered(t *testing.T) {
+// TestListVisibleChatbots_ChildSeesAllPublished 子账号看到父账号全部 published chatbot。
+// 与 SOP /v1/sop/templates 对称：列表不按白名单隐藏，点击时走 CheckChatbotPermission。
+// 未授权的 chatbot 仍然可见，但点击后前端会弹"无权限"，运行时 CreateSession/ChatStream 拒绝。
+func TestListVisibleChatbots_ChildSeesAllPublished(t *testing.T) {
 	db := newChatbotTestDB(t)
 	b := newChatbotBiz(db)
 
@@ -150,11 +154,10 @@ func TestListVisibleChatbots_ChildFiltered(t *testing.T) {
 	cb2 := insertChatbotConfig(t, db, parent, "bot2", model.ChatbotStatusPublished)
 	cb3 := insertChatbotConfig(t, db, parent, "bot3", model.ChatbotStatusPublished)
 
-	// 子账号仅被授权 cb1 和 cb3
+	// 子账号仅被授权 cb1 和 cb3；cb2 未授权
 	grantChatbotPerm(t, db, child, cb1)
 	grantChatbotPerm(t, db, child, cb3)
 
-	// 构造子账号 model.User
 	childUser := makeUser(child, &parent)
 
 	got, err := b.ListVisibleChatbots(context.Background(), childUser)
@@ -164,8 +167,8 @@ func TestListVisibleChatbots_ChildFiltered(t *testing.T) {
 	for _, c := range got {
 		ids = append(ids, c.ID)
 	}
-	assert.ElementsMatch(t, []uint{cb1, cb3}, ids, "子账号应只看到白名单内的 chatbot")
-	assert.NotContains(t, ids, cb2, "未授权的 cb2 必须被过滤")
+	assert.ElementsMatch(t, []uint{cb1, cb2, cb3}, ids,
+		"子账号应看到父账号全部 published chatbot（含未授权的 cb2），权限校验在点击时进行")
 }
 
 // TestListVisibleChatbots_ParentAll 父账号（ParentUserID == nil）不走白名单过滤，
@@ -191,6 +194,78 @@ func TestListVisibleChatbots_ParentAll(t *testing.T) {
 		ids = append(ids, c.ID)
 	}
 	assert.ElementsMatch(t, []uint{cb1, cb2}, ids, "父账号应返回所有已发布的 chatbot（不受白名单限制）")
+}
+
+// ============================================================================
+// CheckChatbotPermission
+// ============================================================================
+
+// TestCheckChatbotPermission_ParentBypass 父账号对任意 published chatbot 都有权限（bypass 白名单）。
+func TestCheckChatbotPermission_ParentBypass(t *testing.T) {
+	db := newChatbotTestDB(t)
+	b := newChatbotBiz(db)
+
+	parent := insertUserRow(t, db, nil)
+	cbID := insertChatbotConfig(t, db, parent, "bot", model.ChatbotStatusPublished)
+
+	ok, err := b.CheckChatbotPermission(context.Background(), parent, cbID)
+	require.NoError(t, err)
+	assert.True(t, ok, "父账号对 published chatbot 应始终有权限")
+}
+
+// TestCheckChatbotPermission_ChildGranted 子账号命中白名单 → true。
+func TestCheckChatbotPermission_ChildGranted(t *testing.T) {
+	db := newChatbotTestDB(t)
+	b := newChatbotBiz(db)
+
+	parent := insertUserRow(t, db, nil)
+	child := insertUserRow(t, db, &parent)
+	cbID := insertChatbotConfig(t, db, parent, "bot", model.ChatbotStatusPublished)
+	grantChatbotPerm(t, db, child, cbID)
+
+	ok, err := b.CheckChatbotPermission(context.Background(), child, cbID)
+	require.NoError(t, err)
+	assert.True(t, ok, "子账号命中白名单应返回有权限")
+}
+
+// TestCheckChatbotPermission_ChildDenied 子账号无白名单记录 → false。
+func TestCheckChatbotPermission_ChildDenied(t *testing.T) {
+	db := newChatbotTestDB(t)
+	b := newChatbotBiz(db)
+
+	parent := insertUserRow(t, db, nil)
+	child := insertUserRow(t, db, &parent)
+	cbID := insertChatbotConfig(t, db, parent, "bot", model.ChatbotStatusPublished)
+	// 不授权
+
+	ok, err := b.CheckChatbotPermission(context.Background(), child, cbID)
+	require.NoError(t, err)
+	assert.False(t, ok, "子账号无白名单记录应返回无权限（default-deny）")
+}
+
+// TestCheckChatbotPermission_DraftDenied 任何用户对 draft chatbot 都无运行权限。
+func TestCheckChatbotPermission_DraftDenied(t *testing.T) {
+	db := newChatbotTestDB(t)
+	b := newChatbotBiz(db)
+
+	parent := insertUserRow(t, db, nil)
+	cbID := insertChatbotConfig(t, db, parent, "draft-bot", model.ChatbotStatusDraft)
+
+	ok, err := b.CheckChatbotPermission(context.Background(), parent, cbID)
+	require.NoError(t, err)
+	assert.False(t, ok, "draft chatbot 即使对父账号也应无运行权限")
+}
+
+// TestCheckChatbotPermission_NotFound chatbot 不存在返回 false + nil error。
+func TestCheckChatbotPermission_NotFound(t *testing.T) {
+	db := newChatbotTestDB(t)
+	b := newChatbotBiz(db)
+
+	parent := insertUserRow(t, db, nil)
+
+	ok, err := b.CheckChatbotPermission(context.Background(), parent, 9999)
+	require.NoError(t, err, "不存在的 chatbot 不应返回错误")
+	assert.False(t, ok)
 }
 
 // ============================================================================
