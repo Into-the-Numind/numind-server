@@ -2257,11 +2257,11 @@ features:
       qa: null
     progress:
       total_tasks: 7
-      completed_tasks: 5
-      reviewed_tasks: 5
+      completed_tasks: 6
+      reviewed_tasks: 6
       current_task:
-        index: 6
-        title: "Task 6: Frontend (api/customers.ts + CustomersView.vue chatbot section)"
+        index: 7
+        title: "Task 7: Dev migrate + E2E + merge (S5/S6 prep)"
     rollback: null
     last_verified: null
     decisions:
@@ -2286,3 +2286,4 @@ features:
       - "2026-04-21 (并发 session 冲突): 本仓库有另一个 Claude session 做 aihubmix feature，频繁 stash/checkout 切到 develop 导致 feature branch 编辑反复丢失。解决方案：review fixes 改由 isolated subagent 执行，每步 branch check + 立即 push 避免被后续 stash 吞"
       - "2026-04-21 (S4 Task 5 done+reviewed): commit 0c3eec2 implementer + 05cc585 review fixes。Spec Compliance PASS_WITH_CONCERNS 2 P2（file-private struct + List 响应返回对象数组而非 ID 数组，后者在 Task 6 自然对齐即可）；Code Quality PASS_WITH_CONCERNS 1 P1 + 3 P2，关键修复：批量 DoS 上限（50 chatbot / 100 user）+ duplicate request struct 合并 + total int64 对齐。Decline 错误透传改造 GrantTemplates 的 scope（既有 tech debt 不归 Task 5）"
       - "2026-04-21 (Task 5 改进): 新 chatbot controller 用 core.WriteResponse(c, err, nil) 透传 biz errno，正确映射 HTTP 403/404，而非既有 GrantTemplates 的 InternalServerError.SetMessage collapse 到 500。两套行为在同 controller 共存是 follow-up tech debt"
+      - "2026-04-21 (S4 Task 6 done+reviewed): 前端 commit 12aca77 implementer + 454f8d1 review fixes (+ spec doc b1534d1)。Spec Compliance PASS_WITH_CONCERNS (1 P1 §3.7 签名不一致 + 1 P2 feature grants 串行)；Code Quality PASS_WITH_CONCERNS (1 P1 savePermissions 混合并发/串行 + 3 P2 类型/UX/防御) 全修。Tasks 1-6 全部 done + reviewed。frontend 位于 numind-web-v3 feature/child-run-permission 分支，待 Task 7 联调 + S6 merge"
