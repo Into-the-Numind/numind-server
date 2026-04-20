@@ -124,10 +124,10 @@ features:
     ndf_version: "1.1"
     description: "AiHubMix 聚合商协议与模型清单权威化 + 思考模式真实落地。(T2) 针对 AiHubMix 现有 4 模型（Claude 4.6 Sonnet / GPT 5.4 / Gemini 3.1 Pro / DeepSeek V3.2）做全面协议调研，产出 docs/aihubmix-protocol-reference.md 说明每个模型的正确调用方式（endpoint / 请求字段 / 响应字段 / thinking 激活机制）。(T1) 按调研发现修代码：修复 executor.go:109 和 chatbot/stream.go:177 丢弃 thinking flag 的 bug；adapter 按每模型正确协议分派请求构造；响应解析覆盖各种 reasoning 字段。产物：docs 协议文档 + 代码修改。"
     track: "standard"
-    stage: "S3-draft"
+    stage: "S4"
     classification_reason: "2 条 Triage 标准不满足：文件数 >3（aiservice/types + adapter/adapter + adapter/dmxapi + adapter/stream + adapter/model_family 新文件 + registry/registry + registry/store + middleware/tracing + sop/executor + chatbot/stream + migrations × 2 = 12 文件 + 3 doc）+ 高风险业务逻辑（thinking flag 影响全线 AI 成本和用户感知行为；DB 标志校正修复线上 user-facing bug —— preference.go:246 对合法 thinking 变体 request 硬拒）。用户确认 Standard 加速推进"
-    last_updated_by: "ai-s3-draft"
-    last_updated_at: "2026-04-21T02:30:00+08:00"
+    last_updated_by: "ai-s4-wave1-start"
+    last_updated_at: "2026-04-21T03:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -142,7 +142,7 @@ features:
       total_tasks: 11
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "S3 plan 草稿完成（11 task，含 P1-6 修订 authoring/execution 依赖图）。等独立 Opus reviewer S3 gate 审核 → 用户最终确认 → 进 S4 编码"
+      current_task: "S4 Wave 1 — 并行 dispatch 3 implementer (Task 1 types / Task 2 model_family / Task 6 registry)，每个走 worktree 隔离"
     rollback: null
     last_verified: null
     decisions:
