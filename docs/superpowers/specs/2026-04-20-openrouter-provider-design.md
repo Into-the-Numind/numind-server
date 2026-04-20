@@ -93,7 +93,7 @@ S1 proposal 的标题是"OpenRouter Provider 接入"。经过 S2 brainstorming�
 | 通过聚合商调用 | OpenRouter (priority=1000) + AiHubMix (100) + DMXAPI (10) 三家并行 | S5 failover 演练 |
 | 思考模式真实生效 | `ai_service_route.reasoning_effort` + dmxapi adapter 注入 + SSE `reasoning` 字段合并 | S5 调一次 Claude，前端能看到思维链 + Langfuse trace `reasoning_tokens > 0` |
 | 管理员方便管理 | 后台新增"AI 矩阵视图"页面，单元格点击即编辑路由（含思考强度） | S5 浏览器 QA 走一遍"改 Claude 的 OpenRouter 路由思考强度" |
-| 思维链前端展示 | adapter 将 `reasoning` 合并进 `ReasoningContent` → `ChatChunk.ReasoningDelta` 流式透传 → 前端已有渲染逻辑 | S5 Playwright 验证 SOP 执行时思维链块可见 |
+| 思维链前端展示 | adapter 将 `reasoning` 合并进 `ReasoningContent` → `ChatChunk.ReasoningDelta` 流式透传 → 前端已有渲染逻辑。**GPT 5.4 例外**：OpenAI 加密推理不返回 reasoning_content，前端对空内容走 fallback（见 §14.2） | S5 Playwright 验证 Claude/Gemini/DeepSeek 思维链块可见；GPT 5.4 验证 fallback 显示 |
 | Token 消耗量 | 复用现有 `oaiUsage`（`PromptTokens/CompletionTokens/TotalTokens/ReasoningTokens`），已被 billing middleware 记录 | S5 查 `usage_record` 表，OpenRouter 调用有新记录 |
 | 成本统计 | `pricing_rule` seed OpenRouter 4 条父规则（Claude flat / DeepSeek flat / Gemini tiered / GPT tiered）+ `pricing_rule_tier` 8 条分档子规则；billing middleware 按规则计算 | S5 查 `billing_record`，单价 × token 量 = 合理金额 |
 | 耗时统计 | Langfuse generation 的 `startTime` + `endTime` 差值；已有基础设施 | S5 打开 Langfuse UI，generation 有 duration_ms |
@@ -192,20 +192,24 @@ SELECT COUNT(*) FROM user_model_preference WHERE model_key LIKE '%-thinking';
 ```
 预期今日 < 5 行（hotfix 后几乎为 0）。
 
-### 3.4.1 Thinking 合成规则（P0-2 待客户决策）
+### 3.4.1 Thinking 合成规则（决策已敲定）
 
-> **客户决策待定**：当 user 偏好 `thinking=false` 但 route `reasoning_effort='medium'` 时，最终请求的 `reasoning_effort` 值是什么？
+**规则**：adapter 只看 `route.ReasoningEffort`，`user_model_preference.thinking` 字段被彻底忽略。
 
-候选决策表（见本 spec 附录 §14）：
+**落地**：
+- `biz/sop/executor.go:109` 的 `_ = thinking` 保持不变（flag 继续丢弃，意图符合）
+- `aiservice.ChatRequest` 不新增 Thinking 字段
+- `user_model_preference.thinking` 列事实废弃，列入未来独立 tech debt
+- 矩阵视图的"思考强度"下拉是唯一控制入口
 
-| user pref.thinking | route.reasoning_effort | 最终注入 |
-|--------------------|----------------------|---------|
-| true | 'medium' | 'medium' |
-| false | 'medium' | ???（A=''、B='medium'、C='low'） |
-| true | '' | ???（D=''、E='medium'） |
-| false | '' | '' |
+**行为矩阵**：
 
-客户拍板前，S3 task 暂用**"路由级为准，忽略 user pref.thinking"**假设（最简单方案），等客户确认后同步修订 spec + adapter 注入逻辑。
+| route.reasoning_effort | 实际注入 | 行为 |
+|----------------------|--------|------|
+| `''` 或 NULL | 不发 reasoning_effort 字段 | 普通模式 |
+| `'low'/'medium'/'high'/'minimal'` | `reasoning_effort: "<值>"` | 思考模式 |
+
+（客户 2026-04-20 S2 review 时确认选方案 A，详见 §14 附录。）
 
 ### 3.5 新增 OpenRouter provider
 
@@ -344,21 +348,44 @@ r.reasoning_effort AS route_reasoning_effort
 
 **验证点**：registry cache 也要透传此字段（已按值拷贝，无需改动）。
 
-### 4.3 `oaiChatRequest` 加 `ReasoningEffort` 字段
+### 4.3 `oaiChatRequest` 加 `ReasoningEffort` + `MaxCompletionTokens` 字段
 
-**文件**：`internal/pkg/aiservice/adapter/adapter.go:137-150`
+**文件**：`internal/pkg/aiservice/adapter/adapter.go:138-150`
 
 ```go
 type oaiChatRequest struct {
-    Model          string       `json:"model"`
-    Messages       []oaiMessage `json:"messages"`
-    MaxTokens      int          `json:"max_tokens,omitempty"`
-    Temperature    float64      `json:"temperature,omitempty"`
-    Stream         bool         `json:"stream"`
-    StreamOptions  *oaiStreamOptions  `json:"stream_options,omitempty"`
+    Model string `json:"model"`
+    Messages []oaiMessage `json:"messages"`
+    // ───── 既有字段 ─────
+    MaxTokens int `json:"max_tokens,omitempty"`
+    Temperature float64 `json:"temperature,omitempty"`
+    Stream bool `json:"stream"`
+    StreamOptions *oaiStreamOptions `json:"stream_options,omitempty"`
     ResponseFormat *oaiResponseFormat `json:"response_format,omitempty"`
-    // 新增：OpenAI 兼容思考触发字段。当 route.ReasoningEffort 非空时设置。
+    // ───── 新增字段 ─────
+    // 思考强度：当 route.ReasoningEffort 非空时设置。omitempty 使空串不出现在 body
     ReasoningEffort string `json:"reasoning_effort,omitempty"`
+    // OpenAI 新一代推理模型专用（gpt-5.*、o1/o3/o4 系列），与 MaxTokens 互斥
+    // 详见 §14.1 对 GPT 5.4 实测发现的补丁说明
+    MaxCompletionTokens int `json:"max_completion_tokens,omitempty"`
+}
+```
+
+**字段选择逻辑**（见 §14.1 实测证据）：
+
+```go
+// adapter/dmxapi.go Chat / ChatStream 里构造请求时
+req := oaiChatRequest{Model: route.ProviderModelID, ...}
+if needsMaxCompletionTokens(route.ProviderModelID) {
+    req.MaxCompletionTokens = userMaxTokens  // gpt-5/o1/o3 系列
+} else {
+    req.MaxTokens = userMaxTokens            // 其他模型
+}
+
+func needsMaxCompletionTokens(modelID string) bool {
+    return strings.Contains(modelID, "gpt-5") ||
+           strings.Contains(modelID, "/o1") || strings.Contains(modelID, "/o3") ||
+           strings.Contains(modelID, "/o4")
 }
 ```
 
@@ -852,15 +879,18 @@ S3 writing-plans 阶段将拆分为以下 task（预估粒度，非最终）：
 
 1. **Task 1 — Migration SQL × 5 文件 + rollback 镜像**（1 天）
 2. **Task 2 — ResolvedRoute + registry SQL + adapter 请求注入**（0.8 天）
-3. **Task 3 — adapter 响应结构合并 + 400 兜底**（0.5 天）
-4. **Task 4 — `numind.go` alias + `seed.go` 条目 + config YAML**（0.3 天）
-5. **Task 5 — admin API 扩展（路由 PUT 支持 reasoning_effort + matrix 端点）**（1 天）
-6. **Task 6 — admin web 矩阵视图 + 抽屉编辑**（1.5 天）
-7. **Task 7 — admin web 模型能力编辑（supports_thinking/thinking_only 映射）**（0.5 天）
-8. **Task 8 — 单元测试 + E2E spec + gstack QA 场景脚本**（1.2 天）
-9. **Task 9 — S5 验证策略文档 + 回归 checklist**（0.2 天）
+3. **Task 2.5 — MaxCompletionTokens 分派逻辑（GPT-5/o1/o3 系列）+ 单测**（0.3 天，由 §14.1 实测驱动新增）
+4. **Task 3 — adapter 响应结构合并 + 400 兜底（含 max_tokens 关键词扩展）**（0.5 天）
+5. **Task 4 — `numind.go` alias + `seed.go` 条目 + config YAML**（0.3 天）
+6. **Task 5 — admin API 扩展（路由 PUT 支持 reasoning_effort + matrix 端点）**（1 天）
+7. **Task 6 — admin web 矩阵视图 + 抽屉编辑**（1.5 天）
+8. **Task 7 — admin web 模型能力编辑（supports_thinking/thinking_only 映射）**（0.5 天）
+9. **Task 8a — 后端 Go 单元测试**（0.5 天，从原 Task 8 拆出）
+10. **Task 8b — Playwright E2E spec（含 GPT 5.4 fallback 场景）**（0.5 天）
+11. **Task 8c — gstack /qa 浏览器场景脚本**（0.3 天）
+12. **Task 9 — S5 验证策略文档 + 回归 checklist**（0.2 天）
 
-**合计预估约 9 天**（与 brainstorming 最终确定一致）。
+**合计预估约 9.4 天**（含 §14.1 新增 Task 2.5 和 §14.2 前端 fallback 验证；Task 8 按 Opus review P2-5 建议拆成 8a/8b/8c）。
 
 ---
 
@@ -868,10 +898,11 @@ S3 writing-plans 阶段将拆分为以下 task（预估粒度，非最终）：
 
 S2 通过 gate 的条件：
 
-- [x] Spec 覆盖 PRD 全部用户故事：§2 映射表 8/8
+- [x] Spec 覆盖 PRD 全部用户故事：§2 映射表 8/8（GPT 5.4 思维链前端 fallback 已在映射表注明）
 - [x] 多仓库 API 契约定义：§5.5 + §5.6 的 admin API 合同明确
 - [x] AI 功能 trace topology 定义：§8 齐全
-- [ ] 客户（用户）确认设计方向 ← **S2 硬门禁**
+- [x] **Opus 4.7 独立 reviewer 审核通过**（2026-04-20 PASS_WITH_CONCERNS，P0/P1/P2 全部已消化或列入 S3 task）
+- [x] **客户确认设计方向**（2026-04-20 D1=A、D2=X 实测已完成）← S2 硬门禁 ✅
 
 ---
 
@@ -890,9 +921,127 @@ S2 通过 gate 的条件：
 
 ---
 
-## §14 附录：待客户确认的 P0 决策（Opus review 2026-04-20 提出）
+## §14 附录：P0 决策已敲定（2026-04-20）
 
-### 决策 D1：Thinking flag × reasoning_effort 合成规则
+### 决策 D1：Thinking flag × reasoning_effort 合成规则 → **A** ✅（客户 2026-04-20 拍板）
+
+**生效规则**：完全忽略 `user_model_preference.thinking`，adapter 只看 `route.ReasoningEffort`。
+
+**落地改动**：
+- `biz/sop/executor.go:109` 的 `_ = thinking` 保持不变（flag 继续丢弃）
+- `aiservice.ChatRequest` 不加 Thinking 字段
+- `user_model_preference.thinking` 列事实废弃，作为 tech debt 列入未来独立清理 feature
+- 矩阵视图是管理员控制思考开关的**唯一入口**
+
+详细方案见下文（撤销原候选 B/C 描述）。
+
+---
+
+### 决策 D2：AiHubMix base slug + reasoning_effort 可行性验证 → **X** ✅（2026-04-20 实测完成）
+
+**实测条件**：
+- AiHubMix base URL `https://aihubmix.com/v1/chat/completions`
+- API key 来自 `config_dev.yaml`
+- Payload: `{"model": "<base_slug>", "messages": [...], "max_tokens": 500, "reasoning_effort": "medium", "stream": false}`
+
+**实测结果**：
+
+| 模型 | base slug | HTTP | `reasoning_content` | `reasoning_tokens` | 结论 |
+|------|----------|------|---------------------|-------------------|------|
+| Claude 4.6 Sonnet | `claude-sonnet-4-6` | 200 | **40 字符**（非空） | — | ✅ base slug + reasoning_effort 触发思考 |
+| **GPT 5.4** | `gpt-5.4` | **400** | — | — | ❌ 报错 `max_tokens not supported, use max_completion_tokens`（见 §14.1） |
+| Gemini 3.1 Pro | `gemini-3.1-pro-preview` | 200 | **241 字符**（非空） | 291 | ✅ base slug + reasoning_effort 触发思考 |
+| DeepSeek V3.2 | `deepseek-v3.2` | 200 | **359 字符**（非空） | 131 | ✅ base slug + reasoning_effort 触发思考 |
+
+**结论**：
+- 3/4 模型（Claude / Gemini / DeepSeek）按 spec §3.7 原方案直接可用
+- **GPT 5.4 独立缺陷**：需要新增 §14.1 的补丁
+- Spec §3.3（软删 `-thinking` 变体）可以照推进，不会让 AiHubMix Claude 思考能力消失（本次实测证明 base slug 够用）
+
+### §14.1 补丁：GPT 5.4（及所有 `gpt-5.*` 思考模型）的 `max_completion_tokens` 特例
+
+**问题**：GPT 5.x 系列要求用 `max_completion_tokens` 字段传 token 上限，**拒绝** `max_tokens`（400 `unsupported_parameter`）。这是 OpenAI 新一代推理模型（o1/o3/gpt-5）的 API 惯例，与 legacy `llm/dmxapi_client.go:267` 的 `bodyMap["max_completion_tokens"] = 1000` 逻辑对齐——但新 aiservice adapter 路径当前**不做任何 max_completion_tokens 特殊处理**。
+
+**补充实测**（GPT 5.4 改用 `max_completion_tokens`）：
+```json
+{"model":"gpt-5.4","max_completion_tokens":500,"reasoning_effort":"medium"}
+→ HTTP 200, content_len=4, reasoning_tokens=28, reasoning_content_len=0
+```
+
+**关键发现**：GPT 5.x **确实执行了思考**（reasoning_tokens=28），但**不返回 `reasoning_content` 字段**（OpenAI "加密推理" 策略：只计费、不暴露）。
+
+**影响**：
+- 用户 must-have "前端看到思维链" 对 GPT 5.4 **无法满足**（OpenAI 官方限制，聚合商也透传）
+- 用户 must-have "Token 消耗统计" **仍满足**（reasoning_tokens 明确暴露）
+- 成本统计**仍准确**（按 completion_tokens 总数计费，含 reasoning_tokens）
+
+**补丁实施**：
+
+1. **`oaiChatRequest` 二选一字段**（`adapter/adapter.go`）：当 `ReasoningEffort != ""` **或** 检测到 provider_model_id 是 `gpt-5.*` / `openai/gpt-5.*` / `openai/o[1-9]` 系列 → 序列化 `MaxTokens` 为 `max_completion_tokens`；否则走原 `max_tokens`
+
+```go
+type oaiChatRequest struct {
+    Model string `json:"model"`
+    Messages []oaiMessage `json:"messages"`
+    // 按调用方式动态选择：普通模型用 MaxTokens，新一代推理模型用 MaxCompletionTokens
+    MaxTokens           int `json:"max_tokens,omitempty"`
+    MaxCompletionTokens int `json:"max_completion_tokens,omitempty"`
+    Temperature float64 `json:"temperature,omitempty"`
+    ReasoningEffort string `json:"reasoning_effort,omitempty"`
+    Stream bool `json:"stream"`
+    StreamOptions *oaiStreamOptions `json:"stream_options,omitempty"`
+    ResponseFormat *oaiResponseFormat `json:"response_format,omitempty"`
+}
+```
+
+2. **adapter.Chat / ChatStream 构造请求时的分派逻辑**：
+
+```go
+req := oaiChatRequest{
+    Model: route.ProviderModelID,
+    Messages: buildOAIMessages(...),
+    Temperature: ...,
+    ReasoningEffort: route.ReasoningEffort,
+    ...
+}
+if needsMaxCompletionTokens(route.ProviderModelID, route.ReasoningEffort) {
+    req.MaxCompletionTokens = userMaxTokens
+} else {
+    req.MaxTokens = userMaxTokens
+}
+
+// helper
+func needsMaxCompletionTokens(modelID, effort string) bool {
+    // 新一代 OpenAI 推理模型总是要求 max_completion_tokens
+    if strings.Contains(modelID, "gpt-5") || strings.Contains(modelID, "/o1") ||
+       strings.Contains(modelID, "/o3") || strings.Contains(modelID, "/o4") {
+        return true
+    }
+    // 其他模型：仅启用 reasoning 时使用（与 legacy 对齐，预留未来 provider 演进）
+    return effort != ""
+}
+```
+
+3. **400 兜底扩展**：除 `reasoning_effort` / `unknown_parameter` 关键词外，新增 `max_tokens` 关键词 → 检测到后切换为 `max_completion_tokens` 重试一次。避免 provider 规则变化导致全线 400。
+
+4. **Spec §11 S3 plan task 拆分调整**：Task 3（adapter 响应结构合并）之前增加 **Task 2.5：MaxCompletionTokens 分派逻辑 + 单测**（约 0.3 天，9 天总估算 → 9.3 天）。
+
+### §14.2 前端思维链展示的 per-model 差异说明
+
+Spec §2 "思维链前端展示" 实际情况：
+
+| 模型 | 前端能看到思维链？ | 依据 |
+|------|-----------------|------|
+| Claude 4.6 Sonnet | ✅ | 实测 reasoning_content 非空 |
+| GPT 5.4 | ❌ **仅显示 token 统计** | OpenAI 加密推理策略，aggregator 透传空字符串 |
+| Gemini 3.1 Pro | ✅ | 实测 reasoning_content 非空 |
+| DeepSeek V3.2 | ✅ | 实测 reasoning_content 非空 |
+
+**前端处理**：思维链区块在内容为空时自动隐藏（按钮显示 "思考已启用（X tokens）" 作为 fallback，给用户透明度但不虚假显示思考文本）。S5 QA 必须验证这个 fallback 行为。
+
+---
+
+### 原候选 D1（B/C）/ D2（Y/Z）描述已归档到 git history，本次 spec 不再保留
 
 **背景**：
 - `user_model_preference.thinking bool`：用户级意图（今早 hotfix 强制置 `true`）

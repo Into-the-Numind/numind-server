@@ -68,10 +68,10 @@ features:
     ndf_version: "1.1"
     description: "接入 OpenRouter (https://openrouter.ai/api/v1) 作为新主路由（priority=1000），与 AiHubMix (100) / DMXAPI (10) 并行。本期包含三件事：(1) OpenRouter 接入 + reasoning_effort 思考管道真实打通（修好今早 hotfix 的半拉子工程）(2) 顺带配置 AiHubMix 存量路由使其也真实思考 (3) 管理后台矩阵视图重构（消灭双 model_key 伪约束 + 可视化 3 级关系）。4 个模型（Claude 4.6 Sonnet / Gemini 3.1 Pro Preview / GPT 5.4 / DeepSeek V3.2）统一走 OpenAI /chat/completions，reasoning_effort 默认 medium。存量 -thinking 模型条目软删，能力表达收敛到 ai_service.supports_thinking + thinking_only 双布尔。凭据走 SyncProviderCredentials（config→DB，不硬编码）"
     track: "standard"
-    stage: "S2"
+    stage: "S2-done"
     classification_reason: "涉及新外部服务集成（OpenRouter）+ DB schema 变更（ai_service_route ADD reasoning_effort）+ 影响文件数 >3（migration × 5 / adapter / registry / admin API / admin web 矩阵视图 / config × 2），多条 Triage 标准不满足。用户要求加速推进"
-    last_updated_by: "ai-s2"
-    last_updated_at: "2026-04-20T22:00:00+08:00"
+    last_updated_by: "ai-s2-gate-pass"
+    last_updated_at: "2026-04-20T23:00:00+08:00"
     repos:
       - numind-server
       - numind-admin-web
@@ -83,10 +83,10 @@ features:
       proposal: "numind-server/proposals/openrouter-provider-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-04-20-openrouter-provider-design.md"
     progress:
-      total_tasks: 9
+      total_tasks: 12
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "S2 spec 已产出，等待客户（用户）确认设计方向进入 S3"
+      current_task: "S2 gate 通过，等待进入 S3 writing-plans"
     rollback: null
     last_verified: null
     decisions:
@@ -109,6 +109,12 @@ features:
       - "2026-04-20 (S2 范围确认): 新增第二仓库 numind-admin-web（矩阵视图 UI）。总 9 天估算（migration 1d + 后端 2.3d + admin 后端 1d + 矩阵前端 1.5d + 抽屉 0.8d + 模型能力编辑 0.5d + 测试 1.2d + 验证策略 0.2d + buffer 0.5d）"
       - "2026-04-20 (S2 OpenRouter 模型思考配置): Claude/GPT/Gemini/DeepSeek 四条 OpenRouter 路由全部 seed reasoning_effort='medium'（用户纠正 DeepSeek V3.2 也是思考模型）。DMXAPI 保持 reasoning_effort=NULL（failover 角色不启用思考）"
       - "2026-04-20 (S2 S5 策略决策): 选 Playwright E2E + gstack /qa 混合验证，理由：reasoning_effort 默认值改动属高风险业务逻辑（影响全线用户成本和 AI 行为），须有自动回归保护。后端单元测试覆盖 adapter 注入 + 合并 + 400 兜底 + admin API 校验"
+      - "2026-04-20 (S2 Opus review): 独立 Opus 4.7 reviewer PASS_WITH_CONCERNS — 3 P0（1 自修 SQL 字段名 + 2 客户决策）+ 6 P1 全部落回 spec + 6 P2 分流 S3/tech debt"
+      - "2026-04-20 (S2 客户决策 D1=A): Thinking 合成规则 — 完全忽略 user pref.thinking，adapter 只看 route.ReasoningEffort。executor.go:109 的 `_ = thinking` 保持；pref.thinking 字段事实废弃（tech debt 独立清理 feature 处理）"
+      - "2026-04-20 (S2 客户决策 D2=X + 实测): AiHubMix base slug + reasoning_effort='medium' 实测 — Claude ✅（reasoning_content 40 chars）/ Gemini ✅（241 chars + 291 reasoning_tokens）/ DeepSeek ✅（359 chars + 131 reasoning_tokens）/ GPT 5.4 ❌ 两个问题：(1) 拒绝 max_tokens 需改 max_completion_tokens；(2) 即便成功也不返回 reasoning_content（OpenAI 加密推理策略，只返回 reasoning_tokens=28）。前 3 个按 spec §3.7 原方案；GPT 5.4 在 §14.1 新增补丁 + Task 2.5"
+      - "2026-04-20 (S2 spec 补丁): §14.1 MaxCompletionTokens 分派（gpt-5/o1/o3/o4 系列走 max_completion_tokens，其他走 max_tokens）；§14.2 前端 GPT 5.4 思维链 fallback 显示（显示 reasoning_tokens 数量而非空白）；§11 新增 Task 2.5 + 拆 Task 8 → 8a/8b/8c。9 天 → 9.4 天"
+      - "2026-04-20 (S2 OpenRouter key 验证异常): proposal §1.6 记录的 OpenRouter sk-or-v1-1a7c... 今日 curl 返回 401 User not found。S3 task 4 开始前需联系用户重新获取或确认 key 仍可用"
+      - "2026-04-20 (S2 Gate PASS): 4 项 gate 条件全部满足（PRD 覆盖 / API 契约 / trace topology / Opus review + 客户确认）。进入 S3 writing-plans"
     blockers: []
     created_at: "2026-04-20T00:00:00+08:00"
 
