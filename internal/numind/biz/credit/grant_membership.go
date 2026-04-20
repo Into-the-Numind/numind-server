@@ -76,8 +76,19 @@ func (b *creditBiz) GrantMembership(ctx context.Context, req GrantMembershipReq)
 		}
 		return fmt.Errorf("GrantMembership: get child user %d: %w", req.ChildUserID, err)
 	}
-	if child.ParentUserID == nil || *child.ParentUserID != req.ParentUserID {
-		return fmt.Errorf("%w: child=%d parent=%d", ErrGrantForbidden, req.ChildUserID, req.ParentUserID)
+	if req.ChildUserID == req.ParentUserID {
+		// Self-grant: 仅允许父账户（parent_user_id IS NULL）给自己开通。
+		// 子账户 (parent_user_id != NULL) 禁止自开通，防越权。
+		if child.ParentUserID != nil {
+			return fmt.Errorf("%w: caller=%d is a sub-user, self-grant only allowed for parent accounts",
+				ErrGrantForbidden, req.ParentUserID)
+		}
+		// 放行：父账户 self-grant
+	} else {
+		// Delegate-grant: 目标必须是 caller 的子账户
+		if child.ParentUserID == nil || *child.ParentUserID != req.ParentUserID {
+			return fmt.Errorf("%w: child=%d parent=%d", ErrGrantForbidden, req.ChildUserID, req.ParentUserID)
+		}
 	}
 
 	// Step 3: anti-duplicate checks (mirror payment.CreateOrder Trial/Monthly guards)
