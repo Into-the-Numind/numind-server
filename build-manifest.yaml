@@ -124,7 +124,7 @@ features:
     ndf_version: "1.1"
     description: "AiHubMix 聚合商协议与模型清单权威化 + 思考模式真实落地。(T2) 针对 AiHubMix 现有 4 模型（Claude 4.6 Sonnet / GPT 5.4 / Gemini 3.1 Pro / DeepSeek V3.2）做全面协议调研，产出 docs/aihubmix-protocol-reference.md 说明每个模型的正确调用方式（endpoint / 请求字段 / 响应字段 / thinking 激活机制）。(T1) 按调研发现修代码：修复 executor.go:109 和 chatbot/stream.go:177 丢弃 thinking flag 的 bug；adapter 按每模型正确协议分派请求构造；响应解析覆盖各种 reasoning 字段。产物：docs 协议文档 + 代码修改。"
     track: "standard"
-    stage: "S4"
+    stage: "S4-done"
     classification_reason: "2 条 Triage 标准不满足：文件数 >3（aiservice/types + adapter/adapter + adapter/dmxapi + adapter/stream + adapter/model_family 新文件 + registry/registry + registry/store + middleware/tracing + sop/executor + chatbot/stream + migrations × 2 = 12 文件 + 3 doc）+ 高风险业务逻辑（thinking flag 影响全线 AI 成本和用户感知行为；DB 标志校正修复线上 user-facing bug —— preference.go:246 对合法 thinking 变体 request 硬拒）。用户确认 Standard 加速推进"
     last_updated_by: "ai-s4-wave1-start"
     last_updated_at: "2026-04-21T03:00:00+08:00"
@@ -140,9 +140,9 @@ features:
       plan: "numind-server/docs/superpowers/plans/2026-04-20-aihubmix-protocol-audit-plan.md"
     progress:
       total_tasks: 11
-      completed_tasks: 8
-      reviewed_tasks: 7
-      current_task: "Wave 3 启动 — Task 4+5 done (2bbb9b9 + P2-A fix e5904f6) / Task 7a+7b done (edd5a0b 自写 migrations) / Task 3 done + reviewed。待 dispatch Task 9 (tracing) + Task 10 (entry + E2E) 并行。Task 11 qa skeleton 本地自写"
+      completed_tasks: 11
+      reviewed_tasks: 9
+      current_task: "S4 全部 11 task 完成 — 5 code task 双阶段 review 全 PASS（T1/T2/T3/T4+5/T6/T9/T10）+ 3 SQL/spike/qa task 自验收（T7a/T7b/T8/T11）。S4-done，进 S5 用户验收（Playwright + Langfuse + DB migration 执行）"
     rollback: null
     last_verified: null
     decisions:
@@ -176,6 +176,9 @@ features:
       - "2026-04-21 (S3 P2-A 新增): §12 Tech Debt 章节 — 7 项明确登记不在本期（含 admin UI label tweak）"
       - "2026-04-21 (S3 Playwright 扩充): E2E 从 4 条扩到 8 条（加显式 thinking=false / Claude -think / Gemini intrinsic / 保存-变体回归）"
       - "2026-04-21 (S4 Wave 1 done): 3 implementer 并行 worktree isolation → 3 commit 线性 merge 到 develop。Task 1 c09686a（ChatRequest.Thinking + TraceMetadata types）/ Task 2 b3ce22b（InferModelFamily + 20 cases）+ 59c7b31（review fix: P1-2 godoc + text-embedding-v4 test + 2 P2 probes = 23 cases）/ Task 6 cad5511（ResolvedRoute.SupportsThinking/ThinkingOnly + 2 SELECT 补列 + 3 sub-case store test）。Task 1/2/6 两阶段 review 全 PASS（Task 1 仅 2 P2 cosmetic deferred；Task 2 P1 已修；Task 6 clean）"
+      - "2026-04-21 (S4 Wave 2 done): Task 3 2cdcf81（oaiChatRequest + oaiUsage + extractReasoningTokens 5 cases）+ Task 8 17fb5fe（2 对照 curl spike，等 dashboard 核对）+ Task 4+5 2bbb9b9（dmxapi buildOAIRequest + stream transport + 8 wire-level 矩阵 + 2 stream tests）+ e5904f6（P2-A fix: Claude temp override gate on SupportsThinking）+ Task 7a/7b edd5a0b（migrations 自写）。Task 3 + Task 4+5 两阶段 review 全 PASS"
+      - "2026-04-21 (S4 Wave 3 done): Task 9 d8f4f45（tracing.go merge TraceMetadata into Langfuse output.metadata via existing WithGenOutput pattern）+ 530447b（P2 补 mergeTraceMetadata 单测 5 cases）+ Task 11 4496813（S5 qa skeleton 6 sections）+ Task 10 1f67e06 server（executor/chatbot 删 _ = thinking + 3 preference regression tests）+ 974c338 web-v3（8 Playwright paths）。Task 9 + Task 10 两阶段 review 全 PASS"
+      - "2026-04-21 (S4-done): 11/11 tasks。9/11 经双 reviewer（code task）；2/11 自验收（SQL migrations + qa skeleton）。所有 Opus/Sonnet reviewer 无 P0 无 P1 阻塞，少量 P2 cosmetic 已处理或 documented。go build + vet + 全 package test 绿（cgo 警告是 pre-existing sqlite-vec 库，与本 feature 无关）"
     blockers: []
     created_at: "2026-04-20T23:30:00+08:00"
 
