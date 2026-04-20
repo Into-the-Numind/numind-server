@@ -140,9 +140,9 @@ features:
       plan: "numind-server/docs/superpowers/plans/2026-04-20-aihubmix-protocol-audit-plan.md"
     progress:
       total_tasks: 11
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task: "S4 Wave 1 — 并行 dispatch 3 implementer (Task 1 types / Task 2 model_family / Task 6 registry)，每个走 worktree 隔离"
+      completed_tasks: 3
+      reviewed_tasks: 3
+      current_task: "Wave 1 DONE（Task 1 c09686a / Task 2 b3ce22b + fix 59c7b31 / Task 6 cad5511）。启动 Wave 2 — Task 3 (oai wire types)"
     rollback: null
     last_verified: null
     decisions:
@@ -175,6 +175,7 @@ features:
       - "2026-04-21 (S3 P1-B 修复): migration 7a 执行时机从 Task 10 后提前到 Task 4+5 合并前，preference.go:246 bug 自愈窗口从数小时缩至秒级"
       - "2026-04-21 (S3 P2-A 新增): §12 Tech Debt 章节 — 7 项明确登记不在本期（含 admin UI label tweak）"
       - "2026-04-21 (S3 Playwright 扩充): E2E 从 4 条扩到 8 条（加显式 thinking=false / Claude -think / Gemini intrinsic / 保存-变体回归）"
+      - "2026-04-21 (S4 Wave 1 done): 3 implementer 并行 worktree isolation → 3 commit 线性 merge 到 develop。Task 1 c09686a（ChatRequest.Thinking + TraceMetadata types）/ Task 2 b3ce22b（InferModelFamily + 20 cases）+ 59c7b31（review fix: P1-2 godoc + text-embedding-v4 test + 2 P2 probes = 23 cases）/ Task 6 cad5511（ResolvedRoute.SupportsThinking/ThinkingOnly + 2 SELECT 补列 + 3 sub-case store test）。Task 1/2/6 两阶段 review 全 PASS（Task 1 仅 2 P2 cosmetic deferred；Task 2 P1 已修；Task 6 clean）"
     blockers: []
     created_at: "2026-04-20T23:30:00+08:00"
 
