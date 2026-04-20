@@ -390,7 +390,7 @@ func (b *salesRAGBiz) acquireSalesragCredits(
 // resolveSalesragChatRoute looks up the current task_profile.salesrag.chat
 // binding so CheckAndEstimate hits the precise pricing rule (e.g.
 // aihubmix/deepseek-v3.2-thinking @ ¥2.16/¥3.24) instead of the
-// ('llm_chat','','') global fallback row — which is missing on dev DB and
+// ('llm_chat',”,”) global fallback row — which is missing on dev DB and
 // caused "pricing lookup: record not found" 500s.
 //
 // Failures (registry nil, task unbound, network) fall back to ("","") so
@@ -930,9 +930,10 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 
 	// 6. 执行检索（使用 V2 版本，传递 chatMode 和 history）
 	// 注意：RetrieveForResponseV2 内部并行执行 RAG 检索、策略选择和观点库独立检索
-	var retrievalSpanID string
+	var retrievalSpanID, retrievalTraceID string
 	if tc := langfuse.FromContext(ctx); tc != nil {
 		retrievalSpanID = langfuse.SpanID()
+		retrievalTraceID = tc.TraceID
 		langfuse.CreateSpan(tc.TraceID, retrievalSpanID, "parallel_search",
 			langfuse.WithSpanParent(tc.ParentObservationID),
 			langfuse.WithSpanInput(map[string]interface{}{"query": retrievalQuery, "doc_count": len(filteredDocIDs)}),
@@ -944,9 +945,9 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 	})
 	if retrievalSpanID != "" {
 		if err != nil {
-			langfuse.EndSpan(retrievalSpanID, langfuse.WithSpanError(err.Error()))
+			langfuse.EndSpan(retrievalTraceID, retrievalSpanID, langfuse.WithSpanError(err.Error()))
 		} else {
-			langfuse.EndSpan(retrievalSpanID, langfuse.WithSpanOutput(map[string]interface{}{
+			langfuse.EndSpan(retrievalTraceID, retrievalSpanID, langfuse.WithSpanOutput(map[string]interface{}{
 				"evidence_count": len(verdict.Evidence),
 				"opinion_count":  len(verdict.OpinionEvidence),
 			}))

@@ -671,7 +671,7 @@ func (e *SopExecutor) ExecuteNodeStreamWithThinking(ctx context.Context, node *m
 			opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
 		}
 		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
-		langfuse.EndGeneration(genID)
+		langfuse.EndGeneration(tc.TraceID, genID)
 	}
 
 	return output, thinking, usage, nil

@@ -135,14 +135,18 @@ func CreateSpan(traceID, spanID, name string, opts ...SpanOption) {
 	})
 }
 
-// EndSpan 结束 Span（发送 span-update）
-func EndSpan(spanID string, opts ...SpanOption) {
+// EndSpan 结束 Span（发送 span-update）.
+// traceID must be the non-empty TraceID of the owning trace — Langfuse
+// ingestion rejects span-update events with an empty traceId (400
+// "Too small: expected string to have >=1 characters").
+func EndSpan(traceID, spanID string, opts ...SpanOption) {
 	if C == nil || !C.enabled {
 		return
 	}
 	now := time.Now()
 	body := &SpanBody{
 		ID:      spanID,
+		TraceID: traceID,
 		EndTime: &now,
 	}
 	for _, opt := range opts {
@@ -225,14 +229,18 @@ func CreateGeneration(traceID, genID string, opts ...GenOption) {
 	})
 }
 
-// EndGeneration 结束 Generation（发送 generation-update 附加 output/usage）
-func EndGeneration(genID string, opts ...GenOption) {
+// EndGeneration 结束 Generation（发送 generation-update 附加 output/usage）.
+// traceID must be the non-empty TraceID of the owning trace — Langfuse
+// ingestion rejects generation-update events with an empty traceId (400
+// "Too small: expected string to have >=1 characters").
+func EndGeneration(traceID, genID string, opts ...GenOption) {
 	if C == nil || !C.enabled {
 		return
 	}
 	now := time.Now()
 	body := &GenerationBody{
 		ID:      genID,
+		TraceID: traceID,
 		EndTime: &now,
 	}
 	for _, opt := range opts {

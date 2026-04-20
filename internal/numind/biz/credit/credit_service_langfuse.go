@@ -59,7 +59,7 @@ func emitCreditEstimateSpan(
 		langfuse.WithSpanInput(input),
 		langfuse.WithSpanOutput(output),
 	)
-	langfuse.EndSpan(spanID)
+	langfuse.EndSpan(tc.TraceID, spanID)
 }
 
 // emitCreditReserveSpan emits the credit-reserve span per spec §5.1.2.
@@ -101,7 +101,7 @@ func emitCreditReserveSpan(
 		langfuse.WithSpanInput(input),
 		langfuse.WithSpanOutput(output),
 	)
-	langfuse.EndSpan(spanID)
+	langfuse.EndSpan(tc.TraceID, spanID)
 }
 
 // emitCreditReconcileSpan emits the credit-reconcile span per spec §5.1.3.
@@ -143,7 +143,7 @@ func emitCreditReconcileSpan(
 		langfuse.WithSpanInput(input),
 		langfuse.WithSpanOutput(output),
 	)
-	langfuse.EndSpan(spanID)
+	langfuse.EndSpan(tc.TraceID, spanID)
 }
 
 // emitCreditRefundSpan emits the credit-refund span per spec §5.1.4.
@@ -174,7 +174,7 @@ func emitCreditRefundSpan(
 		langfuse.WithSpanInput(input),
 		langfuse.WithSpanOutput(output),
 	)
-	langfuse.EndSpan(spanID)
+	langfuse.EndSpan(tc.TraceID, spanID)
 }
 
 // updateTraceMetadataForCredits augments the existing SOP / SalesRAG trace
@@ -224,4 +224,3 @@ func derefStr(s *string) string {
 	}
 	return *s
 }
-

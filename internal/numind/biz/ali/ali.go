@@ -247,7 +247,7 @@ func (a *aliBiz) QianwenTextStream(ctx context.Context, messages []map[string]st
 			opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
 		}
 		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
-		langfuse.EndGeneration(genID)
+		langfuse.EndGeneration(tc.TraceID, genID)
 	}
 
 	return result.String(), usage, nil
@@ -480,7 +480,7 @@ func (a *aliBiz) QianwenVision(ctx context.Context, imageURL string, prompt stri
 			opts = append(opts, langfuse.WithGenUsage(result.Usage.PromptTokens, result.Usage.CompletionTokens))
 		}
 		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
-		langfuse.EndGeneration(genID)
+		langfuse.EndGeneration(tc.TraceID, genID)
 	}
 
 	return visionContent, result.Usage, nil
@@ -661,7 +661,7 @@ func (a *aliBiz) QianwenVisionStream(ctx context.Context, imageURL string, promp
 			opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
 		}
 		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
-		langfuse.EndGeneration(genID)
+		langfuse.EndGeneration(tc.TraceID, genID)
 	}
 
 	return fullContent.String(), usage, nil
@@ -681,4 +681,3 @@ func (a *aliBiz) GetFileUploadLease(fileName string) (string, map[string]string,
 func (a *aliBiz) AddFile(leaseId string) (string, error) {
 	return a.bailianClient.ConfirmFile(leaseId)
 }
-

@@ -130,7 +130,7 @@ func Tracing(deps Deps) Middleware {
 						if lastModel != "" {
 							opts = append(opts, langfuse.WithGenModel(lastModel))
 						}
-						langfuse.EndGeneration(observationID, opts...)
+						langfuse.EndGeneration(tc.TraceID, observationID, opts...)
 					}()
 				}()
 				resp = (<-chan aiservice.ChatChunk)(wrappedCh)
@@ -162,7 +162,7 @@ func Tracing(deps Deps) Middleware {
 
 				if isGeneration {
 					if err != nil {
-						langfuse.EndGeneration(observationID,
+						langfuse.EndGeneration(tc.TraceID, observationID,
 							langfuse.WithGenOutput(map[string]interface{}{
 								"error":    err.Error(),
 								"metadata": meta,
@@ -187,11 +187,11 @@ func Tracing(deps Deps) Middleware {
 						if usage != nil {
 							opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
 						}
-						langfuse.EndGeneration(observationID, opts...)
+						langfuse.EndGeneration(tc.TraceID, observationID, opts...)
 					}
 				} else {
 					if err != nil {
-						langfuse.EndSpan(observationID,
+						langfuse.EndSpan(tc.TraceID, observationID,
 							langfuse.WithSpanOutput(map[string]interface{}{
 								"error":    err.Error(),
 								"metadata": meta,
@@ -199,7 +199,7 @@ func Tracing(deps Deps) Middleware {
 							langfuse.WithSpanError(err.Error()),
 						)
 					} else {
-						langfuse.EndSpan(observationID,
+						langfuse.EndSpan(tc.TraceID, observationID,
 							langfuse.WithSpanOutput(map[string]interface{}{"response": resp, "metadata": meta}),
 						)
 					}

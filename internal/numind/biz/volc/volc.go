@@ -331,7 +331,7 @@ func (v *volcBiz) VolcTextStream(ctx context.Context, messages []map[string]stri
 			opts = append(opts, langfuse.WithGenUsage(result.Usage.PromptTokens, result.Usage.CompletionTokens))
 		}
 		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
-		langfuse.EndGeneration(genID)
+		langfuse.EndGeneration(tc.TraceID, genID)
 	}
 
 	log.C(ctx).Debugw("成功获取内容", "content_length", len(content))
@@ -620,7 +620,7 @@ func (v *volcBiz) StreamChat(ctx context.Context, messages []map[string]interfac
 			opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
 		}
 		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
-		langfuse.EndGeneration(genID)
+		langfuse.EndGeneration(tc.TraceID, genID)
 	}
 
 	log.C(ctx).Debugw("流式聊天完成", "content_len", fullContent.Len(), "thinking_len", thinkingContent.Len())
@@ -764,7 +764,7 @@ func (v *volcBiz) VisionAnalyze(ctx context.Context, imageURL string, prompt str
 			opts = append(opts, langfuse.WithGenUsage(result.Usage.PromptTokens, result.Usage.CompletionTokens))
 		}
 		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
-		langfuse.EndGeneration(genID)
+		langfuse.EndGeneration(tc.TraceID, genID)
 	}
 
 	log.C(ctx).Infow("视觉模型分析完成", "content_length", len(content))
@@ -1181,7 +1181,7 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 			opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
 		}
 		langfuse.CreateGeneration(tc.TraceID, genID, opts...)
-		langfuse.EndGeneration(genID)
+		langfuse.EndGeneration(tc.TraceID, genID)
 	}
 
 	result := fullContent.String()

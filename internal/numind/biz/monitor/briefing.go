@@ -168,7 +168,7 @@ func (mb *MonitorBiz) GenerateUserBriefing(ctx context.Context, userID uint, bri
 		langfuse.CreateSpan(tc.TraceID, spanID, "briefing-generated",
 			langfuse.WithSpanParent(tc.ParentObservationID),
 		)
-		langfuse.EndSpan(spanID)
+		langfuse.EndSpan(tc.TraceID, spanID)
 	}
 
 	return briefing, nil

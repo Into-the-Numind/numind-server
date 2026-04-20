@@ -354,9 +354,10 @@ func (s *SalesRAGService) rerankWithLimit(
 	ctx = aiservice.WithSkipLegacyBilling(ctx)
 
 	// Langfuse rerank span
-	var rerankSpanID string
+	var rerankSpanID, rerankTraceID string
 	if tc := langfuse.FromContext(ctx); tc != nil {
 		rerankSpanID = langfuse.SpanID()
+		rerankTraceID = tc.TraceID
 		langfuse.CreateSpan(tc.TraceID, rerankSpanID, "rerank",
 			langfuse.WithSpanParent(tc.ParentObservationID),
 			langfuse.WithSpanInput(map[string]interface{}{"query": query, "doc_count": len(documents), "topN": topN}),
@@ -372,9 +373,9 @@ func (s *SalesRAGService) rerankWithLimit(
 	})
 	if rerankSpanID != "" {
 		if err != nil {
-			langfuse.EndSpan(rerankSpanID, langfuse.WithSpanError(err.Error()))
+			langfuse.EndSpan(rerankTraceID, rerankSpanID, langfuse.WithSpanError(err.Error()))
 		} else {
-			langfuse.EndSpan(rerankSpanID, langfuse.WithSpanOutput(map[string]interface{}{"result_count": len(rerankResp.Results)}))
+			langfuse.EndSpan(rerankTraceID, rerankSpanID, langfuse.WithSpanOutput(map[string]interface{}{"result_count": len(rerankResp.Results)}))
 		}
 	}
 	if err != nil {

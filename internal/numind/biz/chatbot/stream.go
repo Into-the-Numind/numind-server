@@ -123,23 +123,23 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 			chunks, searchErr := b.vectorStore.Search(ctx, message, filter, chatStreamMaxChunks)
 			if searchErr != nil {
 				log.C(ctx).Warnw("ChatStream: vector search failed", "error", searchErr)
-				langfuse.EndSpan(vectorSpanID, langfuse.WithSpanError(searchErr.Error()))
+				langfuse.EndSpan(traceID, vectorSpanID, langfuse.WithSpanError(searchErr.Error()))
 			} else {
 				for _, chunk := range chunks {
 					retrievedChunks = append(retrievedChunks, chunk.Content)
 				}
-				langfuse.EndSpan(vectorSpanID, langfuse.WithSpanOutput(map[string]interface{}{
+				langfuse.EndSpan(traceID, vectorSpanID, langfuse.WithSpanOutput(map[string]interface{}{
 					"chunk_count": len(retrievedChunks),
 				}))
 			}
 		} else {
-			langfuse.EndSpan(vectorSpanID, langfuse.WithSpanOutput(map[string]interface{}{
+			langfuse.EndSpan(traceID, vectorSpanID, langfuse.WithSpanOutput(map[string]interface{}{
 				"chunk_count": 0,
 				"reason":      "no docs or vector store unavailable",
 			}))
 		}
 	} else {
-		langfuse.EndSpan(vectorSpanID, langfuse.WithSpanOutput(map[string]interface{}{
+		langfuse.EndSpan(traceID, vectorSpanID, langfuse.WithSpanOutput(map[string]interface{}{
 			"chunk_count": 0,
 			"reason":      "no KBs mounted",
 		}))
@@ -153,14 +153,14 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 
 	messages := b.buildChatMessages(ctx, config, session, message, retrievedChunks)
 
-	langfuse.EndSpan(promptSpanID, langfuse.WithSpanOutput(map[string]interface{}{
+	langfuse.EndSpan(traceID, promptSpanID, langfuse.WithSpanOutput(map[string]interface{}{
 		"message_count":   len(messages),
 		"has_context":     len(retrievedChunks) > 0,
 		"history_fetched": true,
 	}))
 
 	// 结束 context-assembly span
-	langfuse.EndSpan(assemblySpanID)
+	langfuse.EndSpan(traceID, assemblySpanID)
 
 	// 7. 注入计费上下文 + skip-legacy-billing 标记，通过 AI Gateway 调用流式 LLM
 	ctx = billing.WithBilling(ctx, userID, "chatbot_chat")

@@ -185,7 +185,7 @@ func (r *LLMRouter) AnalyzeIntentV2(ctx context.Context, query string, history [
 			newTC.PromptVersion = promptVersion
 		}
 		defer func() {
-			langfuse.EndSpan(spanID)
+			langfuse.EndSpan(tc.TraceID, spanID)
 		}()
 	}
 
