@@ -84,12 +84,19 @@ func Tracing(deps Deps) Middleware {
 					defer close(wrappedCh)
 					var lastUsage *aiservice.TokenUsage
 					var lastModel string
+					var lastTraceMeta *aiservice.TraceMetadata
 					for chunk := range ch {
 						if chunk.Usage != nil {
 							lastUsage = chunk.Usage
 						}
 						if chunk.Model != "" {
 							lastModel = chunk.Model
+						}
+						// TraceMetadata is only populated on the terminal chunk
+						// (IsFinal=true) per aiservice.ChatChunk contract, but
+						// we capture defensively on any chunk that carries it.
+						if chunk.TraceMetadata != nil {
+							lastTraceMeta = chunk.TraceMetadata
 						}
 						wrappedCh <- chunk
 					}
@@ -112,8 +119,10 @@ func Tracing(deps Deps) Middleware {
 						}
 						fallbackFrom, _ := ctx.Value(ctxKeyFallbackFromServiceID{}).(uint64)
 						meta := buildMeta(route, userID, featureRef, fmt.Sprintf("%d", fallbackFrom))
+						outputMap := safeOutput(nil, meta)
+						mergeTraceMetadata(outputMap, lastTraceMeta)
 						opts := []langfuse.GenOption{
-							langfuse.WithGenOutput(safeOutput(nil, meta)),
+							langfuse.WithGenOutput(outputMap),
 						}
 						if lastUsage != nil {
 							opts = append(opts, langfuse.WithGenUsage(lastUsage.PromptTokens, lastUsage.CompletionTokens))
@@ -162,8 +171,18 @@ func Tracing(deps Deps) Middleware {
 						)
 					} else {
 						usage := extractUsage(resp)
+						outputMap := safeOutput(resp, meta)
+						// Merge adapter-resolved TraceMetadata (reasoning effort,
+						// model family, temp override) into output.metadata. The
+						// Langfuse SDK does not expose WithGenMetadata, so we ride
+						// on the existing WithGenOutput(map{"metadata":...}) channel.
+						if cr, ok := resp.(*aiservice.ChatResponse); ok && cr != nil && cr.TraceMetadata != nil {
+							mergeTraceMetadata(outputMap, cr.TraceMetadata)
+						} else if cr, ok := resp.(aiservice.ChatResponse); ok && cr.TraceMetadata != nil {
+							mergeTraceMetadata(outputMap, cr.TraceMetadata)
+						}
 						opts := []langfuse.GenOption{
-							langfuse.WithGenOutput(safeOutput(resp, meta)),
+							langfuse.WithGenOutput(outputMap),
 						}
 						if usage != nil {
 							opts = append(opts, langfuse.WithGenUsage(usage.PromptTokens, usage.CompletionTokens))
@@ -288,6 +307,37 @@ func buildMeta(route *registry.ResolvedRoute, userID uint, featureRef map[string
 		m["fallback_from_service_id"] = fallbackFrom
 	}
 	return m
+}
+
+// mergeTraceMetadata merges adapter-resolved TraceMetadata fields into the
+// "metadata" sub-map of a Langfuse output payload produced by safeOutput.
+//
+// The Langfuse Go SDK (internal/pkg/langfuse/helpers.go) does not expose a
+// WithGenMetadata option nor an UpdateGeneration call, so we embed the
+// resolved fields inside the output.metadata map the adapter already uses.
+// Only non-zero fields are written — this keeps old traces (adapters that do
+// not populate TraceMetadata) byte-identical.
+//
+// No-op when tm is nil, preserving backward compatibility with ali/volc
+// adapters that do not populate TraceMetadata.
+func mergeTraceMetadata(outputMap map[string]interface{}, tm *aiservice.TraceMetadata) {
+	if tm == nil || outputMap == nil {
+		return
+	}
+	meta, _ := outputMap["metadata"].(map[string]interface{})
+	if meta == nil {
+		meta = map[string]interface{}{}
+	}
+	if tm.ResolvedReasoningEffort != "" {
+		meta["resolved_reasoning_effort"] = tm.ResolvedReasoningEffort
+	}
+	if tm.ResolvedModelFamily != "" {
+		meta["resolved_model_family"] = tm.ResolvedModelFamily
+	}
+	if tm.TempOverridden {
+		meta["temp_overridden"] = true
+	}
+	outputMap["metadata"] = meta
 }
 
 // extractUsage attempts to pull TokenUsage out of an adapter response.
