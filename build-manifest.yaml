@@ -20,11 +20,12 @@ features:
       proposal: "numind-server/proposals/parent-self-grant-membership-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-04-20-parent-self-grant-membership-design.md"
       plan: "numind-server/docs/superpowers/plans/2026-04-20-parent-self-grant-membership-plan.md"
+      qa: "numind-server/docs/superpowers/qa/2026-04-20-parent-self-grant-membership-qa.md"
     progress:
       total_tasks: 3
       completed_tasks: 3
       reviewed_tasks: 3
-      current_task: "S4 Gate 通过，进入 S5 本地验收"
+      current_task: "S5 降级完成（Option B，defer E2E 到 S6 dev CI），进入 S6"
     rollback: null
     last_verified: null
     decisions:
@@ -52,6 +53,14 @@ features:
       - "2026-04-20 (S4 Task 3 defer): P2 mockGrantSuccess 缺 isGrantPath 二次校验（glob pattern 已足够匹配，无功能 bug）非阻塞，defer"
       - "2026-04-20 (S4 Gate pass): go build ./... ✅ / go vet ./internal/numind/... ✅ / gofmt clean / 16 新测试全 PASS / 前端 lint type-check ✅。task lint 本地未装（用 go vet + gofmt 等效），S7 前会在 CI 跑完整 task lint"
       - "2026-04-20 (S4 pre-existing blocker): TestReserve_ExactlyExhaustedThenRetry_ReturnsInsufficientSentinel (credit_service_boundary_test.go:100) 在 develop base commit 8c7aec2 即失败，非本功能引入。panic: unreachable: legacy_tier must be guarded by SkipDeduction，credit_service.go:164。defer，建议独立 hotfix 处理"
+      - "2026-04-20 (S5 降级 Option B): 用户决策——本地 backend 启动会连 dev DB (config_local → 49.233.219.254:13306)，有污染风险。S5 只跑静态检查（16 新测试全 PASS + go build/vet/fmt 干净 + 前端 lint/type-check 干净 + playwright --list 加载成功），实际 E2E + 浏览器 QA defer 到 S6 post-merge dev CI/人工验收。偏离 NDF §3 S5 '本地验收'字面要求，记录理由"
+      - "2026-04-20 (S5): QA 报告生成 → numind-server/docs/superpowers/qa/2026-04-20-parent-self-grant-membership-qa.md，含 S6 验收补齐清单（6 步），后端 TDD 覆盖率+越权防线证据充分"
+    last_verified:
+      at: "2026-04-20T00:00:00+08:00"
+      method: "S5 静态验收（Option B 降级）— 16 新测试 PASS + go build/vet/fmt + 前端 lint/type-check + playwright --list。实际 E2E 延到 S6 dev"
+      lint: "pass (go vet + gofmt；前端 npm run lint 0 errors)"
+      type_check: "pass (vue-tsc exit 0；Go 无 type-check 概念)"
+      tests: "新增 16 tests PASS (15 grant_membership + 1 store/ListSubUsers)"
     created_at: "2026-04-20T00:00:00+08:00"
 
   - id: "openrouter-provider"
