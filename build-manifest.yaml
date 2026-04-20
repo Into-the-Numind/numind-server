@@ -2257,11 +2257,11 @@ features:
       qa: null
     progress:
       total_tasks: 7
-      completed_tasks: 4
-      reviewed_tasks: 4
+      completed_tasks: 5
+      reviewed_tasks: 5
       current_task:
-        index: 5
-        title: "Task 5: Controller + Router (ready to dispatch)"
+        index: 6
+        title: "Task 6: Frontend (api/customers.ts + CustomersView.vue chatbot section)"
     rollback: null
     last_verified: null
     decisions:
@@ -2284,3 +2284,5 @@ features:
       - "2026-04-21 (S4 Task 4 done+reviewed): commit eadd24a implementer + dcd59d9 review fixes。Spec Compliance PASS (含 1 P2 测试文件合并, accept)；Code Quality PASS_WITH_CONCERNS 4 P2（configs[:0] → make / 性能注释 / errors.Is informational / store error path test coverage informational），关键 P2 修完。5 单测全 PASS 含 P1-B 关键回归 TestChatStream_AfterRevoke_Denied"
       - "2026-04-21 (S4 并发处理): Tasks 3+4 并行 dispatch 成功。subagent 报告 working-tree 竞争 —— 互相碰对方未提交改动。通过 git reset/分文件 add 恢复，最终 744ec73 和 eadd24a 文件不重叠，干净。review fixes 合并 commit dcd59d9 同时修 Task 3+4 concerns"
       - "2026-04-21 (并发 session 冲突): 本仓库有另一个 Claude session 做 aihubmix feature，频繁 stash/checkout 切到 develop 导致 feature branch 编辑反复丢失。解决方案：review fixes 改由 isolated subagent 执行，每步 branch check + 立即 push 避免被后续 stash 吞"
+      - "2026-04-21 (S4 Task 5 done+reviewed): commit 0c3eec2 implementer + 05cc585 review fixes。Spec Compliance PASS_WITH_CONCERNS 2 P2（file-private struct + List 响应返回对象数组而非 ID 数组，后者在 Task 6 自然对齐即可）；Code Quality PASS_WITH_CONCERNS 1 P1 + 3 P2，关键修复：批量 DoS 上限（50 chatbot / 100 user）+ duplicate request struct 合并 + total int64 对齐。Decline 错误透传改造 GrantTemplates 的 scope（既有 tech debt 不归 Task 5）"
+      - "2026-04-21 (Task 5 改进): 新 chatbot controller 用 core.WriteResponse(c, err, nil) 透传 biz errno，正确映射 HTTP 403/404，而非既有 GrantTemplates 的 InternalServerError.SetMessage collapse 到 500。两套行为在同 controller 共存是 follow-up tech debt"
