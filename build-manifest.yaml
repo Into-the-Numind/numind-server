@@ -124,21 +124,23 @@ features:
     ndf_version: "1.1"
     description: "AiHubMix 聚合商协议与模型清单权威化 + 思考模式真实落地。(T2) 针对 AiHubMix 现有 4 模型（Claude 4.6 Sonnet / GPT 5.4 / Gemini 3.1 Pro / DeepSeek V3.2）做全面协议调研，产出 docs/aihubmix-protocol-reference.md 说明每个模型的正确调用方式（endpoint / 请求字段 / 响应字段 / thinking 激活机制）。(T1) 按调研发现修代码：修复 executor.go:109 和 chatbot/stream.go:177 丢弃 thinking flag 的 bug；adapter 按每模型正确协议分派请求构造；响应解析覆盖各种 reasoning 字段。产物：docs 协议文档 + 代码修改。"
     track: "standard"
-    stage: "S1-reviewed"
-    classification_reason: "2 条 Triage 标准不满足：文件数 >3（aiservice/types + adapter/adapter + adapter/dmxapi + adapter/stream + registry/registry + registry/store + middleware/tracing + sop/executor + chatbot/stream + migration = 10 文件 + 3 doc）+ 高风险业务逻辑（thinking flag 影响全线 AI 成本和用户感知行为，穿过 SOP/Chatbot 两大入口；wire-level reasoning_tokens 直接关联计费准确性）。用户确认 Standard 加速推进"
-    last_updated_by: "ai-s1-reviewed"
-    last_updated_at: "2026-04-21T00:30:00+08:00"
+    stage: "S2-draft"
+    classification_reason: "2 条 Triage 标准不满足：文件数 >3（aiservice/types + adapter/adapter + adapter/dmxapi + adapter/stream + adapter/model_family 新文件 + registry/registry + registry/store + middleware/tracing + sop/executor + chatbot/stream + migration = 11 文件 + 3 doc）+ 高风险业务逻辑（thinking flag 影响全线 AI 成本和用户感知行为；DB 标志校正修复线上 user-facing bug —— preference.go:246 对合法 thinking 变体 request 硬拒）。用户确认 Standard 加速推进"
+    last_updated_by: "ai-s2-draft"
+    last_updated_at: "2026-04-21T01:30:00+08:00"
     repos:
       - numind-server
     branches: {}
     artifacts:
       requirement: "numind-server/requirements/aihubmix-protocol-audit.md"
       proposal: "numind-server/proposals/aihubmix-protocol-audit-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-04-20-aihubmix-protocol-audit-design.md"
+      t2_reference: "numind-server/docs/aihubmix-protocol-reference.md"
     progress:
-      total_tasks: 0
+      total_tasks: 10
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "S1 proposal v2 完成（已落地 Opus P0×3 + P1×5 修订 + Q4/Q5/Q6 决策）。等用户最终确认 → S1 gate 进 S2"
+      current_task: "S2 spec 草稿完成（13 章 + 10 task 拆分）。等独立 Opus reviewer S2 gate 审核 → 用户最终确认 → 进 S3 writing-plans"
     rollback: null
     last_verified: null
     decisions:
@@ -153,6 +155,11 @@ features:
       - "2026-04-21 (S1 Q5=a): ResolvedRoute 扩展加 SupportsThinking/ThinkingOnly bool，registry store.go SQL JOIN 多选两列（清洁方案，为未来 OpenRouter 复用）"
       - "2026-04-21 (S1 Q6=A): T2 加计费对账 spike，产出 docs/aihubmix-billing-reconciliation-spike.md，实测 reasoning_token 计价是否独立 / 并入 completion"
       - "2026-04-21 (S1 scope 扩展): v1 5 天 → v2 6 天（加 wire 修正 oaiUsage.ReasoningTokens + ResolvedRoute 扩展 + 计费 spike + 标志校正 migration）"
+      - "2026-04-21 (S2 并行调研 3 agents): Agent A T2 协议实测（12 curl case + 8 额外探针）/ Agent B code change 深度验证（9 文件） / Agent C admin blast radius"
+      - "2026-04-21 (S2 T2 颠覆性发现): (1) Claude 不暴露 reasoning_tokens — 折叠入 completion_tokens；(2) Gemini 3.1 Pro 是真 intrinsic — reasoning_effort=none/minimal 返 400；(3) GPT 5.4 加密推理 — 只有 reasoning_tokens 无 reasoning_content；(4) -think 后缀仅 Claude/DeepSeek 有效；(5) 最终 migration 6 行校正（id 5/13/14/15/16/17）"
+      - "2026-04-21 (S2 code gap 识别): 3 处设计 gap — tracing middleware 时序（选方案 a: ChatResponse.TraceMetadata 回传）/ inferModelFamily 位置（adapter/model_family.go 新文件导出）/ oaiUsage wire 路径分派（extractReasoningTokens helper）"
+      - "2026-04-21 (S2 admin 影响): preference.go:246 硬拒当前正误伤 thinking 变体 → migration 自愈线上 bug。前端 ModelSelector.vue v-if='false' 当前不受影响。SELECT WHERE 无依赖"
+      - "2026-04-21 (S2 spec 产出): 13 章 spec + 10 task 拆分 + T2 协议文档 564 行"
     blockers: []
     created_at: "2026-04-20T23:30:00+08:00"
 
