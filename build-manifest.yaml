@@ -13,8 +13,8 @@ features:
       - numind-server
       - numind-web-v3
     branches:
-      numind-server: "feature/parent-self-grant-membership (worktree .worktrees/parent-self-grant-membership)"
-      numind-web-v3: "feature/parent-self-grant-e2e"
+      numind-server: "merged to develop @ 3590a2f (feature branch + worktree cleaned up)"
+      numind-web-v3: "merged to develop @ 76c48fd (feature branch cleaned up)"
     artifacts:
       requirement: "numind-server/requirements/parent-self-grant-membership.md"
       proposal: "numind-server/proposals/parent-self-grant-membership-proposal.md"
@@ -25,7 +25,7 @@ features:
       total_tasks: 3
       completed_tasks: 3
       reviewed_tasks: 3
-      current_task: "S5 降级完成（Option B，defer E2E 到 S6 dev CI），进入 S6"
+      current_task: "S6 merge 完成（numind-server 3590a2f + numind-web-v3 76c48fd），等 CI 部署 dev + 人工按 QA §S6 验收清单验证"
     rollback: null
     last_verified: null
     decisions:
@@ -55,6 +55,7 @@ features:
       - "2026-04-20 (S4 pre-existing blocker): TestReserve_ExactlyExhaustedThenRetry_ReturnsInsufficientSentinel (credit_service_boundary_test.go:100) 在 develop base commit 8c7aec2 即失败，非本功能引入。panic: unreachable: legacy_tier must be guarded by SkipDeduction，credit_service.go:164。defer，建议独立 hotfix 处理"
       - "2026-04-20 (S5 降级 Option B): 用户决策——本地 backend 启动会连 dev DB (config_local → 49.233.219.254:13306)，有污染风险。S5 只跑静态检查（16 新测试全 PASS + go build/vet/fmt 干净 + 前端 lint/type-check 干净 + playwright --list 加载成功），实际 E2E + 浏览器 QA defer 到 S6 post-merge dev CI/人工验收。偏离 NDF §3 S5 '本地验收'字面要求，记录理由"
       - "2026-04-20 (S5): QA 报告生成 → numind-server/docs/superpowers/qa/2026-04-20-parent-self-grant-membership-qa.md，含 S6 验收补齐清单（6 步），后端 TDD 覆盖率+越权防线证据充分"
+      - "2026-04-20 (S6 merge): numind-server feature/parent-self-grant-membership → develop @ 3590a2f + numind-web-v3 feature/parent-self-grant-e2e → develop @ 76c48fd。两仓库 push 完成，feature branches + worktree 已清理。等 CI 部署 dev 环境后人工验收"
     last_verified:
       at: "2026-04-20T00:00:00+08:00"
       method: "S5 静态验收（Option B 降级）— 16 新测试 PASS + go build/vet/fmt + 前端 lint/type-check + playwright --list。实际 E2E 延到 S6 dev"
