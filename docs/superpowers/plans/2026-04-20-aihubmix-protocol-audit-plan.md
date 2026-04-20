@@ -554,15 +554,35 @@ fake HTTP server 捕获出站 body，断言字段：
 
 - [ ] 按 S2 spec §5.1 写完整 SQL（含 pre/post guard + 6 UPDATE），Head comment 明确引用 T2 实测依据
 
-### Step 7a.2: 创建 rollback SQL
+### Step 7a.2: 创建 rollback SQL + pre-check guard (S3 P2-F)
 
-- [ ] 按 S2 spec §5.2 写回滚，注释说明回滚会还原 buggy 状态
+- [ ] 按 S2 spec §5.2 写回滚。**S3 P2-F 修订**：在 rollback 前加 pre-check guard，确认 migration 已完整执行（6 行全部更新成目标值）才允许 rollback：
+  ```sql
+  -- Pre-flight: 确认 migration 已完整执行（否则 rollback 会破坏半更新状态）
+  SELECT 1 / (
+    (SELECT COUNT(*) FROM ai_service
+     WHERE model_key = 'claude-sonnet-4-6-thinking' AND supports_thinking = 1 AND thinking_only = 1) +
+    (SELECT COUNT(*) FROM ai_service
+     WHERE model_key = 'deepseek-v3.2' AND supports_thinking = 1 AND thinking_only = 0) +
+    (SELECT COUNT(*) FROM ai_service
+     WHERE model_key = 'gpt-5.4' AND supports_thinking = 1 AND thinking_only = 0) +
+    (SELECT COUNT(*) FROM ai_service
+     WHERE model_key = 'gemini-3.1-pro-preview-thinking' AND supports_thinking = 1 AND thinking_only = 1) +
+    (SELECT COUNT(*) FROM ai_service
+     WHERE model_key = 'deepseek-v3.2-thinking' AND supports_thinking = 1 AND thinking_only = 1) +
+    (SELECT COUNT(*) FROM ai_service
+     WHERE model_key = 'gpt-5.4-thinking' AND supports_thinking = 1 AND thinking_only = 1)
+    - 5
+  ) AS rollback_prerequisite_check;
+  -- 期望 6 行全匹配 → 6-5=1 → 1/1 成功；若少于 6 → 除零失败，migration 未完整执行，拒绝 rollback
+  ```
 
-### Step 7a.3: Dev DB 执行（S4 后期，不在本 task 完成时执行）
+### Step 7a.3: Dev DB 执行时机
 
-- [ ] 本 task 产物只是 SQL 文件，不实际跑。**实际执行** 放到 Task 10 merge 后，作为 S6 的一部分
+- [ ] 本 task 产物只是 SQL 文件，不实际跑
+- [ ] **实际执行** 在 Task 4+5 合并之前（见部署序 Step 2），提前修 DB 让 preference.go:246 bug 自愈窗口最小化（S3 P1-B 修订）
 
-**Acceptance criteria**：SQL 语法正确（`mysql --dry-run` 或本地 sqlite 解析通过），rollback 对称。
+**Acceptance criteria**：SQL 语法正确（`mysql --dry-run` 或本地 sqlite 解析通过），rollback 含 pre-check guard。
 
 ---
 
@@ -596,26 +616,40 @@ fake HTTP server 捕获出站 body，断言字段：
   );
   ```
 
-  **Part B 条件 normalize**：
+  **Part B 防御性 normalize**（S3 P1-4 修订）：
   ```sql
-  -- 对 DeepSeek/GPT base（原 intrinsic 误标 → 新 optional）的存量偏好：
-  -- 如果用户显式存 thinking=false，migration 后会生效（原来被 thinking_only=1 覆盖）。
-  -- 为减少意外行为变更，把所有这些存量 thinking=false 值改为 NULL（让前端默认值生效，
-  -- 当前 hotfix-default-thinking 默认 ON）。
-  -- 注意：不修改 thinking=true 的偏好（那些一直是用户想要的）。
+  -- DeepSeek/GPT base 的存量偏好防御性处理：
+  -- 理论上：migration 7a 前，preference.go:242 会在 thinking_only=1 时强推 thinking=true，
+  -- 所以 user_model_preference 中这两个 model_key 的 thinking=false 行**理论上不存在**。
+  -- 实践上：如果手动 SQL / 旧代码缺陷 / migration 执行时机异常等导致存在 thinking=false 行，
+  -- migration 7a 后这些行会真的生效（原来被强推为 true）。为消除此不确定性，
+  -- 防御性把两个 base model 的 thinking=false 行改为 1，与用户原体验对齐。
+  -- 若执行后 affected_rows=0（预期情况），说明无历史缺陷，此步骤等同 no-op。
   UPDATE user_model_preference
   SET thinking = 1
   WHERE model_key IN ('deepseek-v3.2', 'gpt-5.4')
     AND thinking = 0;
+  -- 验证：SHOW WARNINGS; 或 SELECT ROW_COUNT(); 记录实际更新行数到 audit log
   ```
 
-- [ ] Head comment 说明 Q10=A 决策 + Part A 是审计、Part B 是 normalize 行为变更窗口
+- [ ] Head comment 说明 Q10=A 决策 + Part A 是审计、Part B 是防御性 normalize
 
-### Step 7b.2: Rollback
+### Step 7b.2: 审计输出 sink（S3 P2-E 修订）
+
+- [ ] Part A 的 SELECT 输出必须落盘，否则 migration runner 会丢弃。实施方式：
+  - 选项 A：migration 文件本身不含 Part A SELECT，而是在 `migrations/audit/` 新建独立 shell 脚本 `run_pref_audit.sh` 供运维手动跑并 tee 到 log
+  - 选项 B：migration 文件内 Part A 写成 `INSERT INTO audit_log (...) SELECT ...` 形式，让审计数据落到新建的 `audit_log` 表
+  - **本期选 A**：避免引入新表；产出：
+    - `migrations/audit/20260421_preference_audit.sh`（可执行 shell，含 `mysql ... | tee audit/20260421_preference_audit_output.log`）
+    - `.gitkeep` 在 `migrations/audit/` 目录（首次创建）
+    - SOP：S4 Task 7b 完成时手动执行该 shell，输出 log 可 commit 到 repo 作审计留存
+
+### Step 7b.3: Rollback
 
 - [ ] `migrations/20260421_000002_audit_user_model_preference_rollback.sql`：rollback 不恢复原数据（无法区分原来是 0 还是 1），说明"无法精准 rollback，仅还原结构"
+- [ ] Rollback 仅针对 Part B 的 UPDATE：`UPDATE user_model_preference SET thinking = 0 WHERE ...` **不可**，因为会把本来应为 1 的也改为 0。记录为"无 rollback，Part B 影响极小（预期 0 行受影响），不需逆操作"
 
-**Acceptance criteria**：SQL 语法正确，Part A 是纯 SELECT 无副作用，Part B 只动两个 model_key 的行。
+**Acceptance criteria**：SQL 语法正确，Part A SELECT 在 shell 脚本中可复现，Part B 只动两个 model_key 的行。
 
 ---
 
@@ -690,61 +724,84 @@ fake HTTP server 捕获出站 body，断言字段：
 
 ---
 
-## Task 9: Langfuse tracing middleware 改造 — P1-1 修订
+## Task 9: Langfuse tracing middleware 改造 — S3-review-v2 修订
 
-**目标**：把 `TraceMetadata` 写入 Langfuse generation metadata。**P1-1 修订**：本 task 先验证 Langfuse SDK surface，再分别处理非流式（读 ChatResponse.TraceMetadata）和流式（channel 拦截捕获 final chunk）。
+**目标**：把 `TraceMetadata` 写入 Langfuse generation 的 output map。**S3 review P0-2 修订**：实测 `internal/pkg/langfuse/helpers.go` 现有 SDK 不暴露 `UpdateGeneration` 或 `WithGenMetadata`。采用现有 pattern：沿用 `tracing.go:65` 的 `WithGenOutput(map{"metadata":...})` 把 resolved 字段嵌入 output map 的 metadata key。
 
 **Files**:
 - Modify: `internal/pkg/aiservice/middleware/tracing.go`
 
 **依赖**：Task 1（TraceMetadata 类型） + Task 4（adapter 填 TraceMetadata） + Task 5（stream final chunk 填 TraceMetadata）
 
-### Step 9.1: Langfuse SDK surface 验证
+### Step 9.1: SDK pattern 确认（S3 已完成）
 
-- [ ] grep `/Users/zhiyuchen/Documents/10_跃迁有数/有数AI工作台/莫小派/Codes/numind-server/internal/pkg/langfuse/` for function signatures:
-  - `CreateGeneration` 是否接受 `WithGenMetadata(map[string]any)` option？
-  - `EndGeneration` 接受哪些 options？
-  - 是否有 `UpdateGeneration` / `UpdateGenerationMetadata`？
-- [ ] 写下结论：例如"CreateGeneration 接受 WithGenMetadata，但 EndGeneration 不支持；middleware 需在 next handler 完成后用 CreateGeneration options 二次调用 UpdateGeneration"或类似
-- [ ] **若 SDK 不支持 metadata 追加**：降级方案——把 resolved 值编码到 generation.output JSON 里（作为附加字段，Langfuse UI 可展示）
+**S3 gate review 时实测 Langfuse SDK surface**（helpers.go）：
+- ✅ `CreateGeneration(traceID, genID, opts ...GenOption)` — 创建 generation
+- ✅ `EndGeneration(genID, opts ...GenOption)` — 结束 generation，支持 `WithGenOutput`
+- ❌ `UpdateGeneration` / `WithGenMetadata` / `UpdateGenerationMetadata` 均**不存在**
+- ✅ 现有 pattern（tracing.go:65）：`WithGenOutput(map[string]interface{}{"metadata": meta})` 把 metadata 嵌入 output map
 
-### Step 9.2: 非流式 response metadata 追加
+**决策**：沿用现有 pattern。在 `EndGeneration` 调用的 `WithGenOutput` map 里把 `resolved_reasoning_effort` / `resolved_model_family` / `temp_overridden` 作为 `metadata` sub-map 的 keys，与现有 meta 合并。Langfuse UI 会在 generation 的 output 标签页展示完整 JSON，运营人员可 grep/filter。
 
-- [ ] 在 ChatProvider 中间件 handler 的 response 处理分支：
+### Step 9.2: 非流式 response 嵌入 TraceMetadata
+
+- [ ] 在 tracing.go 非流式分支（~L156-171），修改 `safeOutput` 或直接扩展 `WithGenOutput` map：
   ```go
-  if chatResp, ok := resp.(*aiservice.ChatResponse); ok && chatResp.TraceMetadata != nil {
-      langfuse.UpdateGeneration(genID,
-          langfuse.WithGenMetadata(map[string]any{
-              "resolved_reasoning_effort": chatResp.TraceMetadata.ResolvedReasoningEffort,
-              "resolved_model_family":     chatResp.TraceMetadata.ResolvedModelFamily,
-              "temp_overridden":           chatResp.TraceMetadata.TempOverridden,
-          }),
-      )
+  // 构造 output map，合并 existing metadata 和 TraceMetadata
+  outputMap := safeOutput(resp, meta).(map[string]interface{})  // 需确认 safeOutput 返回 map
+  if cr, ok := resp.(*aiservice.ChatResponse); ok && cr.TraceMetadata != nil {
+      // 合并到 output.metadata 子 map
+      existingMeta, _ := outputMap["metadata"].(map[string]interface{})
+      if existingMeta == nil {
+          existingMeta = map[string]interface{}{}
+      }
+      existingMeta["resolved_reasoning_effort"] = cr.TraceMetadata.ResolvedReasoningEffort
+      existingMeta["resolved_model_family"] = cr.TraceMetadata.ResolvedModelFamily
+      existingMeta["temp_overridden"] = cr.TraceMetadata.TempOverridden
+      outputMap["metadata"] = existingMeta
   }
+  opts = append(opts, langfuse.WithGenOutput(outputMap))
+  langfuse.EndGeneration(observationID, opts...)
   ```
-  （具体调用语法按 Step 9.1 实测 SDK 调整）
+- [ ] 若 `safeOutput` 返回非 map 类型，先 read safeOutput 实现决定怎么改（S4 Step 9.2 打开该文件确认）
 
-### Step 9.3: 流式 channel 拦截
+### Step 9.3: 流式 channel 拦截 + final chunk TraceMetadata 捕获
 
-- [ ] 找到当前 stream middleware wrapper goroutine（tracing.go L81-129 附近）
-- [ ] 在捕获 `lastUsage`/`lastModel` 的循环中加 `lastTraceMeta`：
+- [ ] tracing.go stream middleware wrapper goroutine（~L81-129）在捕获 `lastUsage`/`lastModel` 的循环中加 `lastTraceMeta`：
   ```go
   var lastTraceMeta *aiservice.TraceMetadata
   for chunk := range upstreamCh {
-      if chunk.IsFinal && chunk.TraceMetadata != nil {
-          lastTraceMeta = chunk.TraceMetadata
+      if chunk.IsFinal {
+          if chunk.Usage != nil {
+              lastUsage = chunk.Usage
+          }
+          if chunk.Model != "" {
+              lastModel = chunk.Model
+          }
+          if chunk.TraceMetadata != nil {
+              lastTraceMeta = chunk.TraceMetadata
+          }
       }
       outCh <- chunk  // 透传
   }
   ```
-- [ ] 循环结束后调用 UpdateGeneration 写 metadata（同非流式方式）
+- [ ] 循环结束后构造 EndGeneration output map（同 Step 9.2 的方式）并调用：
+  ```go
+  outputMap := safeOutput(nil, meta).(map[string]interface{})
+  if lastTraceMeta != nil {
+      // 同 Step 9.2 合并逻辑
+      ...
+  }
+  opts = append(opts, langfuse.WithGenOutput(outputMap))
+  langfuse.EndGeneration(observationID, opts...)
+  ```
 
-### Step 9.4: 单元测试（可选，middleware 测试基础设施允许的情况下）
+### Step 9.4: 单元测试（可选）
 
-- [ ] 若 `tracing_test.go` 已存在且有 stub Langfuse client，加断言 "chat response with TraceMetadata ⇒ UpdateGeneration called with correct metadata map"
+- [ ] 若 `tracing_test.go` 已存在且有 stub Langfuse client，加断言 "chat response with TraceMetadata ⇒ EndGeneration output map contains `metadata.resolved_reasoning_effort`"
 - [ ] 若无测试基础设施，跳过（依靠 S5 dev Langfuse 实测验证）
 
-**Acceptance criteria**：Langfuse UI 对一次 Claude thinking 调用的 trace 面板能看到 `metadata.resolved_reasoning_effort="medium"`, `metadata.resolved_model_family="claude"`, `metadata.temp_overridden=true`（S5 验证）。
+**Acceptance criteria**：Langfuse UI 对一次 Claude thinking 调用的 trace 面板在 output 标签能看到 `{"metadata": {"resolved_reasoning_effort":"medium", "resolved_model_family":"claude", "temp_overridden":true}}`（S5 验证）。
 
 ---
 
@@ -776,23 +833,41 @@ fake HTTP server 捕获出站 body，断言字段：
 
 - [ ] `grep -r "_ = thinking" internal/numind/` → 期望 0 结果
 
-### Step 10.4: llmrouter preference 回归保护测试
+### Step 10.4: llmrouter preference 回归保护测试（S3 P1-D 修订：加反向 case）
 
 - [ ] `preference_test.go` 加 `TestSavePreference_ThinkingVariantModel_Accepts`：
   - Seed ai_service 一行 `model_key="claude-sonnet-4-6-thinking", supports_thinking=1, thinking_only=1`
   - 调 `SavePreference(userID, feature, "claude-sonnet-4-6-thinking", thinking=true)`
   - Assert: 无 error，DB 行 thinking=1
+- [ ] **P1-D 新增**：加 `TestSavePreference_ThinkingOnlyNoLongerForces_DeepSeek`：
+  - Seed post-migration 状态 `model_key="deepseek-v3.2", supports_thinking=1, thinking_only=0`（migration 7a 改为 optional 后）
+  - 调 `SavePreference(userID, feature, "deepseek-v3.2", thinking=false)`
+  - Assert: 无 error，DB 行 thinking=0（**不**被 `preference.go:242` 强推为 1；migration 7a 后该模型已非 thinking_only）
+- [ ] **P1-D 补充**：加 `TestSavePreference_ThinkingOnlyStillForces_Gemini`：
+  - Seed 维持状态 `model_key="gemini-3.1-pro-preview", supports_thinking=1, thinking_only=1`（migration 7a 不改 Gemini base）
+  - 调 `SavePreference(userID, feature, "gemini-3.1-pro-preview", thinking=false)`
+  - Assert: 无 error，DB 行 thinking=1（`preference.go:242` 仍强推为 1；Gemini intrinsic 保留该语义）
 
-### Step 10.5: Playwright E2E
+### Step 10.5: Playwright E2E（S3 P1/P2 修订：从 4 → 8 条路径）
 
-- [ ] 创建 `e2e/aihubmix-thinking-audit.spec.ts` 含 4 条路径（S2 spec §8.2）：
+- [ ] 创建 `e2e/aihubmix-thinking-audit.spec.ts` 含 **8 条路径**（原 4 + S3 新增 4）：
+
+  **原 4 条**：
   1. Claude thinking → 收到 thinking event + reasoning_content 非空
   2. SOP thinking → 收到 thinking SSE event
   3. GPT 5.4 → content 非空 + 前端不报错（无 reasoning_content 是预期）
   4. qwen-turbo（非 thinking 模型）→ 不收到 thinking event + 200
 
+  **S3 新增 4 条（P2-5 scenarios）**：
+  5. **Thinking=false 显式路径**：用户在 Chatbot 切到 Claude base → 关闭 thinking 开关 → 发消息 → 不收到 thinking event + content 非空 + 请求 body 不含 reasoning_effort（捕获 network request 断言）
+  6. **Claude -think 变体路径**：用户在 ModelSelector 选 `claude-sonnet-4-6-thinking`（若 UI 暴露该 model_key；若未暴露则跳过并在 qa doc §6 记录限制）→ 发消息 → 收到 thinking event（因 -think 变体原生思考）
+  7. **Gemini intrinsic 路径**：切到 Gemini base → 发消息 → **仍**收到 thinking event（因 intrinsic 思考不可关）+ 后端 trace metadata `resolved_reasoning_effort="intrinsic"`（可通过 qa doc §2 Langfuse 截图间接验证）
+  8. **Preference 保存-thinking 变体 bug 回归**：切到 Claude thinking 变体 → 打开 thinking 开关 → 保存 → **不**收到 400 错误（migration 7a 前会 400，本期修复后应 200）
+
 - [ ] 使用 `e2e/auth.setup.ts` 的 stored auth state
 - [ ] 使用 `$E2E_USERNAME` / `$E2E_PASSWORD` 环境变量登录（avoid hardcoded credentials）
+- [ ] 每条路径独立 `test(...)` block，失败隔离
+- [ ] 使用 Playwright network capture (`page.route` 或 `page.on('request')`) 验证出站 API body 含/不含 `reasoning_effort`（case 5 特别需要）
 
 ### Step 10.6: 编译 + 测试
 
@@ -852,22 +927,33 @@ Task 8 (spike) — 独立 authoring（S4 早期执行）
 Task 11 (S5 qa 骨架) — 独立 authoring
 ```
 
-### Execution / Deploy 序（P1-6 修订）
+### Execution / Deploy 序（S3 review-v2 修订 — P1-B pref bug 窗口最小化）
 
 ```
-1. Task 1-6 合并并部署到 dev（app 能读新列，还没激活 Thinking 管道）
-2. Task 10 合并并部署（Thinking 从 preference 真实流到 adapter）
-3. Task 7a migration 执行（标志校正，preference.go:246 bug 自愈）
-4. Task 7b migration 执行（存量 pref 审计 + normalize）
-5. Task 9 合并（Langfuse metadata，若之前没一起 merge）
-6. Task 8 spike 发起（实验 curl 可在 Task 4 merge 后任意时刻跑，dashboard 核对异步）
-7. Task 11 S5 qa 补填（整期代码部署完后）
+0. Task 8 spike 实验 curl：可在 S4 开始任意时刻发起（raw curl 不依赖 Numind 代码）
+1. Task 1+2+3+6 合并并部署到 dev（基础类型 + registry 两字段读）
+2. Task 7a migration 执行（DB 标志校正；此时 app 仍是旧代码拒 thinking=true，bug 未愈，但 DB 清洁）
+3. Task 7b migration 执行（pref 审计 + normalize；旧 app 读新值不崩，行为等同）
+4. Task 4+5 合并部署（adapter dispatch + stream transport — S3 P1-A：这两 task 签名互锁，MUST 同一 commit 或 back-to-back）
+5. Task 10 合并部署（Thinking 从 executor/stream.go 真实流到 adapter；此刻 preference.go:246 bug 彻底自愈 + Thinking 管道激活）
+6. Task 9 合并部署（Langfuse metadata 回传；可与 4+5 同批次）
+7. Task 11 S5 qa 补填（整期部署完后）
 ```
 
-**关键约束**：
-- Task 7a/7b SQL 文件 **authoring** 可提前到 Task 1-6 期间写，但 **execution** 必须在 Task 10 之后（否则用户能修偏好但 app 旧代码不读新标志会出现短窗口不一致）
-- Task 8 spike 实验可在 Task 4 merge 后即刻发起，dashboard 结算时延异步处理
+**P1-A 修订**：Task 4（dmxapi.go 调 `runOAIStream(..., traceMeta)`）与 Task 5（`runOAIStream` 加 traceMeta 参数）**必须同一 commit 或连续两 commit** — 签名互锁，中间状态 `go build` 失败。实施者选 **方案 A**（合并单 commit）或 **方案 B**（Task 5 先 commit 加参数但保留旧 4-arg 调用点的兼容 wrapper，Task 4 后 commit 移除兼容 wrapper）。本 plan 默认方案 A（简单）。
+
+**P1-B 修订**：Migration 7a 现在**提前**到 Task 4+5 部署之前。这样：
+- 部署窗口 0→2 之间：app 旧代码 + DB 旧值 → 用户看到旧 bug（保持现状，没变坏）
+- 部署窗口 2→4 之间：app 旧代码 + DB 新值 → 旧代码读新值不崩（preference.go:246 仍按新值做判断，thinking 变体现在 supports_thinking=1 因此请求通过）—— **bug 开始自愈**
+- 部署窗口 4→5 之间：app 新代码 + DB 新值 → 完全正常
+- 实际 user-facing bug 修复窗口：从 Task 7a migration 执行瞬间起（而非 Task 10 部署后）
+
+**P1-C 修订**：Task 8 spike 实验 curl 不需要任何 Numind 代码变化（直接打 aihubmix.com），可在 S4 第 0 天发起，与 app 开发并行。即使 dashboard 结算慢 1-3 天也不阻塞 S5。
+
+**其他关键约束**：
+- Task 7a/7b SQL 文件 authoring 可与 Task 1-6 并行
 - 全部完成后进入 S5 整体验证
+- 跨仓库：Task 10 Step 10.5 的 Playwright spec 文件在 **numind-web-v3 repo**，走该仓库自己的 develop 分支 commit 流程（不是 numind-server）
 
 ---
 
@@ -912,20 +998,53 @@ S4 结束时：
 
 ---
 
-## 已解决的 S2 review P1 / P2（本 plan 覆盖）
+## 已解决的 S2 + S3 review P0/P1/P2（本 plan v2 覆盖）
+
+### S2 Opus review（PASS_WITH_CONCERNS，0 P0 + 6 P1 + 7 P2）
 
 | S2 Issue | Plan 覆盖位置 |
 |----------|--------------|
-| P1-1 流式 tracing 具体实现 | Task 9 Step 9.1 Langfuse SDK 验证 + Step 9.3 stream wrapper |
+| P1-1 流式 tracing 具体实现 | Task 9 Step 9.1 Langfuse SDK 实测（已改为 S3 完成的实测结论）+ Step 9.3 stream wrapper |
 | P1-2 model family 前缀太宽松 | Task 2 Step 2.1 显式枚举 + Step 2.2 collision probe 测试 |
 | P1-3 Gemini intrinsic 信号表达 | Task 4 Step 4.1 `"intrinsic"` 哨兵值（Q8=B） |
 | P1-4 user_model_preference 存量审计 | Task 7b Q10=A |
 | P1-5 spike 方法学 | Task 8 Step 8.1 2 次对照实验 + Step 8.2 dashboard 时延实测 |
 | P1-6 Task 依赖图 authoring vs execution | 依赖图章节已分离 |
 | P2-1 `-think` 仅对 Claude 有效的 comment | Task 2 Step 2.1 godoc |
-| P2-2 `Tools` passthrough 缺失 | S2 §12 tech debt 已登记，不在本期 |
+| P2-2 `Tools` passthrough 缺失 | Tech debt 章节登记，不在本期 |
 | P2-3 temp override 对 temp=0 的影响 | 已接受（Q4=A 决策，godoc 声明） |
 | P2-4 `extractReasoningTokens` 是否简化 | 保留（防御性兼容 flat 写法） |
 | P2-5 Thinking bool omitempty | Task 1 Step 1.2 去 omitempty |
 | P2-6 Claude-think variant 测试 | Task 4 Step 4.4 case 7 |
 | P2-7 scope 检查 | Q11=A 确认保留 TraceMetadata |
+
+### S3 Opus review v1（FAIL，2 P0 + 4 P1 + 6 P2 — plan v2 修订）
+
+| S3 Issue | Plan v2 覆盖位置 |
+|----------|------------------|
+| **P0-1 spec 文件不存在** | 已恢复（`git checkout develop -- spec_path`），commit 7013e94 已在 develop |
+| **P0-2 Langfuse SDK 不匹配** | Task 9 Step 9.1 改为实测结论 + Step 9.2/9.3 用现有 `WithGenOutput(map{"metadata":...})` pattern，不需新 SDK |
+| P1-A Task 4+5 签名互锁 | 部署序 Step 4 明确"Task 4+5 MUST 同 commit 或 back-to-back" |
+| P1-B pref save bug 窗口 | 部署序修订：migration 7a 提前到 Task 4+5 合并之前，bug 自愈窗口从 Task 10 部署提前到 7a 执行瞬间 |
+| P1-C Task 8 独立启动 | 部署序 Step 0：spike 可在 S4 第 0 天发起，不依赖 Task 4 merge |
+| P1-D 反向测试 | Task 10 Step 10.4 加 2 个 case（ThinkingOnly 不再强推 + Gemini 仍强推） |
+| P2-A tech debt 章节 | 见下方新增"§12 Tech Debt（不在本期）"章节 |
+| P2-B Task 10 混合三事项 | 本期不拆（实施者可自行三 commit）；acceptance 按整体 task 验收 |
+| P2-C 跨仓库 e2e | 部署序"关键约束"明确 Playwright spec 在 numind-web-v3 repo |
+| P2-D 并行 authoring 冲突 | 部署序按顺序：Tasks 1+2+3+6 先部署（dmxapi.go/stream.go 不冲突），Task 4+5 后合并（修共享文件） |
+| P2-E audit SQL 输出 sink | Task 7b Step 7b.2 改为 shell 脚本 + log 落盘 |
+| P2-F rollback pre-check guard | Task 7a Step 7a.2 加 pre-check divide-by-zero guard |
+
+---
+
+## §12 Tech Debt（不在本期）
+
+以下项目 S2 spec 或 S3 review 明确识别但不在本 feature scope 内，记录以防 S4 意外扩张：
+
+1. **AiHubMix API key 硬编码**（`migrations/20260416_100000_seed_aihubmix_provider.sql`）→ 等 `SyncProviderCredentials` 机制完善后迁移，独立 hotfix
+2. **`reasoning_effort` 硬编码 medium** → 未来 openrouter-provider feature 恢复时做用户/admin 可调
+3. **`pricing_rule.reasoning_price_per_mtok` 缺列** → 若 Task 8 spike 判定 Option A（reasoning 独立计价），独立 hotfix 加列 + pricing migration
+4. **Gemini 伪流式渲染体验**（4 chunk 批量）→ 前端改动，独立 UX improvement feature
+5. **`ChatRequest.Tools` passthrough 缺失**（S2 review P2-2）→ dmxapi.go 当前忽略 `req.Tools`，独立 function-calling feature
+6. **admin ServiceEdit.vue 标签 `thinking_only（仅 thinking 模式可用）`** → 建议改为 `仅 thinking 模式专用，强制启用思考`（S3 Agent C 提议），独立 UI tweak hotfix
+7. **AiHubMix `-think` 后缀 on Gemini/GPT 返 400**（但 DB 不存在这些 provider_model_id，所以本期不触发）→ 未来 LinkAPI 接入时注意

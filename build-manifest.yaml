@@ -169,6 +169,12 @@ features:
       - "2026-04-21 (S2 Q11=A): TraceMetadata scope 保留（Langfuse 可见性是产品价值，6d 估算不变）"
       - "2026-04-21 (S3 plan 产出): 11 task（原 10 + 7b 存量 pref 审计）+ authoring/execution 依赖图分离 + 18 model_family 用例 + 8 wire-level 矩阵 + 5 extractReasoningTokens 用例 + spike 2 次对照实验协议"
       - "2026-04-21 (S3 incident): 平行 Claude session 在 commit 17a9421 中意外 revert 了 7013e94 的 S2 manifest 改动（同 aihubmix 条目编辑冲突）。本次 S3 manifest edit 合并恢复"
+      - "2026-04-21 (S3 Opus review v1): FAIL verdict — 2 P0（spec 文件磁盘丢失 / Langfuse SDK 不存在 UpdateGeneration+WithGenMetadata）+ 4 P1 + 6 P2。Plan v2 全部修订"
+      - "2026-04-21 (S3 P0-1 修复): git checkout develop -- 恢复 spec 文件到磁盘（另一 Claude session 意外删掉了工作副本）"
+      - "2026-04-21 (S3 P0-2 修复): 实测 Langfuse SDK 结论 — 用现有 WithGenOutput(map{metadata:...}) pattern（tracing.go:65 已有用法），不需新 SDK"
+      - "2026-04-21 (S3 P1-B 修复): migration 7a 执行时机从 Task 10 后提前到 Task 4+5 合并前，preference.go:246 bug 自愈窗口从数小时缩至秒级"
+      - "2026-04-21 (S3 P2-A 新增): §12 Tech Debt 章节 — 7 项明确登记不在本期（含 admin UI label tweak）"
+      - "2026-04-21 (S3 Playwright 扩充): E2E 从 4 条扩到 8 条（加显式 thinking=false / Claude -think / Gemini intrinsic / 保存-变体回归）"
     blockers: []
     created_at: "2026-04-20T23:30:00+08:00"
 
