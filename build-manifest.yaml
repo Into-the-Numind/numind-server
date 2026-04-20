@@ -222,12 +222,12 @@ features:
 
   - id: "hotfix-langfuse-stream-endgeneration"
     ndf_version: "1.1"
-    description: "修复 tracing.go 流式路径 EndGeneration 不触发的 pre-existing 基础设施 bug。Langfuse API 实测发现从 commit f5c4c92 (2026-04-16) 起，所有 stream generation observations 的 endTime=None（包括 Claude/Gemini/DeepSeek/GPT 的 chatbot.stream 调用）。根因初步判断：tracing.go:81 的 `resp.(<-chan aiservice.ChatChunk)` 类型断言可能失败（adapter 实际返回 `chan aiservice.ChatChunk` 双向通道），或 goroutine 等待 channel close 时死锁。本 hotfix 独立于 aihubmix-protocol-audit 追查修复——该 feature 的 Task 9 mergeTraceMetadata 代码正确（单测 5 cases PASS），但依赖本 bug 修好才能在 Langfuse UI 展示 resolved_* 字段"
-    track: "triage-pending"
-    stage: "triage-pending"
-    classification_reason: "待 Triage（需先定位根因深度评估 scope）"
-    last_updated_by: "ai-aihubmix-audit-followup"
-    last_updated_at: "2026-04-21T05:00:00+08:00"
+    description: "【根因已定位 2026-04-21】Langfuse SDK 的 EndGeneration/EndSpan 发送 generation-update/span-update 事件时未带 traceId，Langfuse 服务端 zod 校验拒绝（HTTP 400 per-event：'Too small: expected string to have >=1 characters, path: body.traceId'）。但批量响应整体 200，flush.go:44 丢弃 response body，错误完全静默。影响面：所有 Generation（stream + non-stream）和所有 Span 的 endTime 都丢失，Langfuse UI 全部显示 endTime=None。2026-04-21 curl 实测 100 generations + 50 spans 全部 endTime=None。原 hotfix 假设的'tracing.go stream goroutine deadlock'被证伪——真正 bug 在 helpers.go EndGeneration/EndSpan 签名，与 stream/非 stream 无关。名称保留向后兼容 (id 已引用)"
+    track: "hotfix"
+    stage: "H1"
+    classification_reason: "边界 Hotfix：影响文件 >3（helpers.go/flush.go + ~30 调用点），但 30 个调用点是机械 codemod（加 tc.TraceID 参数），编译器强制类型检查兜底。纯基础设施 bug、无 DB schema、无新 API、无新外部服务、无业务逻辑。用户确认 Hotfix 轨道"
+    last_updated_by: "ai-h1-diagnosis"
+    last_updated_at: "2026-04-21T10:30:00+08:00"
     repos:
       - numind-server
     branches: {}
@@ -236,11 +236,15 @@ features:
       total_tasks: 0
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "等待 Triage"
+      current_task: "H1 诊断完成，等用户确认修复方案后开工"
     rollback: null
     last_verified: null
     decisions:
       - "2026-04-21 (followup): 从 aihubmix-protocol-audit S5 验证发现。独立 hotfix 而非追加 aihubmix scope，因为：(1) 是 pre-existing bug（f5c4c92 起 4 天），不归本 feature；(2) 影响面超出本 feature（所有流式调用的 Langfuse 观测性都失效）；(3) 需要独立 Playwright/实时验证流程"
+      - "2026-04-21 (Triage): 用户确认 Hotfix 轨道，5 条标准 2 条边界（文件数、业务风险）但边界理由充分"
+      - "2026-04-21 (H1 诊断): 起初猜测根因在 tracing.go stream goroutine deadlock / 类型断言失败——全部证伪。adapters 均返回 <-chan 正确类型（ali/volc/dmxapi.go 验证）；middleware chain 顺序 Tracing→Billing→Fallback→Retry→Adapter 合理；caller 正常 drain 时 EndGeneration 路径能走到"
+      - "2026-04-21 (H1 根因): curl POST Langfuse /api/public/ingestion 实测——generation-update 带空 traceId 返回 400 'Too small'；带非空 traceId 返回 201 成功。零 startTime 不影响。bug 位于 helpers.go EndGeneration/EndSpan 构造 body 时只设了 ID+EndTime，TraceID 字段留空——Langfuse zod schema require traceId >=1 char"
+      - "2026-04-21 (H1 次级缺陷): flush.go:44 io.Copy(io.Discard, resp.Body) 吞掉响应体，flush.go:47 只在 StatusCode>=400 才 warn。但批量端点对 per-event 错误返回 200 with errors array。导致 4 天 0 告警。本 hotfix 顺带修 flush.go 解析 errors 数组并 warn"
     blockers: []
     created_at: "2026-04-21T05:00:00+08:00"
 
