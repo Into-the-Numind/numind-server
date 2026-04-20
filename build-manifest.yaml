@@ -124,23 +124,25 @@ features:
     ndf_version: "1.1"
     description: "AiHubMix 聚合商协议与模型清单权威化 + 思考模式真实落地。(T2) 针对 AiHubMix 现有 4 模型（Claude 4.6 Sonnet / GPT 5.4 / Gemini 3.1 Pro / DeepSeek V3.2）做全面协议调研，产出 docs/aihubmix-protocol-reference.md 说明每个模型的正确调用方式（endpoint / 请求字段 / 响应字段 / thinking 激活机制）。(T1) 按调研发现修代码：修复 executor.go:109 和 chatbot/stream.go:177 丢弃 thinking flag 的 bug；adapter 按每模型正确协议分派请求构造；响应解析覆盖各种 reasoning 字段。产物：docs 协议文档 + 代码修改。"
     track: "standard"
-    stage: "S2-draft"
-    classification_reason: "2 条 Triage 标准不满足：文件数 >3（aiservice/types + adapter/adapter + adapter/dmxapi + adapter/stream + adapter/model_family 新文件 + registry/registry + registry/store + middleware/tracing + sop/executor + chatbot/stream + migration = 11 文件 + 3 doc）+ 高风险业务逻辑（thinking flag 影响全线 AI 成本和用户感知行为；DB 标志校正修复线上 user-facing bug —— preference.go:246 对合法 thinking 变体 request 硬拒）。用户确认 Standard 加速推进"
-    last_updated_by: "ai-s2-draft"
-    last_updated_at: "2026-04-21T01:30:00+08:00"
+    stage: "S3-draft"
+    classification_reason: "2 条 Triage 标准不满足：文件数 >3（aiservice/types + adapter/adapter + adapter/dmxapi + adapter/stream + adapter/model_family 新文件 + registry/registry + registry/store + middleware/tracing + sop/executor + chatbot/stream + migrations × 2 = 12 文件 + 3 doc）+ 高风险业务逻辑（thinking flag 影响全线 AI 成本和用户感知行为；DB 标志校正修复线上 user-facing bug —— preference.go:246 对合法 thinking 变体 request 硬拒）。用户确认 Standard 加速推进"
+    last_updated_by: "ai-s3-draft"
+    last_updated_at: "2026-04-21T02:30:00+08:00"
     repos:
       - numind-server
+      - numind-web-v3
     branches: {}
     artifacts:
       requirement: "numind-server/requirements/aihubmix-protocol-audit.md"
       proposal: "numind-server/proposals/aihubmix-protocol-audit-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-04-20-aihubmix-protocol-audit-design.md"
       t2_reference: "numind-server/docs/aihubmix-protocol-reference.md"
+      plan: "numind-server/docs/superpowers/plans/2026-04-20-aihubmix-protocol-audit-plan.md"
     progress:
-      total_tasks: 10
+      total_tasks: 11
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "S2 spec 草稿完成（13 章 + 10 task 拆分）。等独立 Opus reviewer S2 gate 审核 → 用户最终确认 → 进 S3 writing-plans"
+      current_task: "S3 plan 草稿完成（11 task，含 P1-6 修订 authoring/execution 依赖图）。等独立 Opus reviewer S3 gate 审核 → 用户最终确认 → 进 S4 编码"
     rollback: null
     last_verified: null
     decisions:
@@ -160,6 +162,13 @@ features:
       - "2026-04-21 (S2 code gap 识别): 3 处设计 gap — tracing middleware 时序（选方案 a: ChatResponse.TraceMetadata 回传）/ inferModelFamily 位置（adapter/model_family.go 新文件导出）/ oaiUsage wire 路径分派（extractReasoningTokens helper）"
       - "2026-04-21 (S2 admin 影响): preference.go:246 硬拒当前正误伤 thinking 变体 → migration 自愈线上 bug。前端 ModelSelector.vue v-if='false' 当前不受影响。SELECT WHERE 无依赖"
       - "2026-04-21 (S2 spec 产出): 13 章 spec + 10 task 拆分 + T2 协议文档 564 行"
+      - "2026-04-21 (S2 Opus gate review): PASS_WITH_CONCERNS — 无 P0，6 P1 + 7 P2。推荐 P1-1/P1-3/P1-5/P1-6 在 S3 plan 中修订。4 核心决策留给用户"
+      - "2026-04-21 (S2 Q8=B): Gemini intrinsic 用 'intrinsic' 哨兵值（ResolvedReasoningEffort），不注入 reasoning_effort 到 wire"
+      - "2026-04-21 (S2 Q9=A): 计费对账 spike 提前到 S4 早期（Task 8），2 次对照 curl 规避 dashboard 结算时延风险"
+      - "2026-04-21 (S2 Q10=A): 新增 Task 7b user_model_preference 存量审计 migration（DeepSeek/GPT base 从 intrinsic 改 optional 有静默行为变更窗口）"
+      - "2026-04-21 (S2 Q11=A): TraceMetadata scope 保留（Langfuse 可见性是产品价值，6d 估算不变）"
+      - "2026-04-21 (S3 plan 产出): 11 task（原 10 + 7b 存量 pref 审计）+ authoring/execution 依赖图分离 + 18 model_family 用例 + 8 wire-level 矩阵 + 5 extractReasoningTokens 用例 + spike 2 次对照实验协议"
+      - "2026-04-21 (S3 incident): 平行 Claude session 在 commit 17a9421 中意外 revert 了 7013e94 的 S2 manifest 改动（同 aihubmix 条目编辑冲突）。本次 S3 manifest edit 合并恢复"
     blockers: []
     created_at: "2026-04-20T23:30:00+08:00"
 
@@ -2222,15 +2231,14 @@ features:
     ndf_version: "1.1"
     description: "父账号对子账号的 SOP 和 chatbot 运行权限管理。核心：(1) 新增 chatbot 白名单机制（新表 user_chatbot_permission + 新 API + 前端弹窗 chatbot 区块）(2) 翻转 SOP 和 chatbot 语义为『默认 deny』—— 子账号必须被父账号显式授予权限才能运行 (3) 一次性 backfill 迁移保护存量：对所有『0 条 user_template_permission 记录』的子账号 insert 所有父账号已发布 SOP 的授权记录（等同冻结他们当前的可见范围），上线后再新建的模板/chatbot 走默认 deny。效果：存量子账号现有权限完全保留；新建子账号或父账号新增资源时必须手动授权。"
     track: "standard"
-    stage: "S4"
+    stage: "S3-done"
     classification_reason: "Standard：(1) 文件数 >3（backend biz + store + controller + model + migration + 前端 view）(2) schema 变更：新增 user_chatbot_permission 表 + backfill migration (3) 跨 2 仓库（numind-server + numind-web-v3）(4) 高风险业务逻辑：权限模型翻转 + 存量数据迁移，错误会导致子账号误屏蔽或权限泄露 (5) 5 条 Triage 标准 4 条触发"
-    last_updated_by: "ai-s4-task2-done"
-    last_updated_at: "2026-04-21T00:30:00+08:00"
+    last_updated_by: "ai-s3-gate-fixes"
+    last_updated_at: "2026-04-20T23:30:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
-    branches:
-      numind-server: "feature/child-run-permission @ 49c1df8 (Task 1+2 done + reviewed)"
+    branches: {}
     artifacts:
       requirement: "numind-server/requirements/child-run-permission.md"
       proposal: "numind-server/proposals/child-run-permission-proposal.md"
@@ -2242,11 +2250,11 @@ features:
       qa: null
     progress:
       total_tasks: 7
-      completed_tasks: 2
-      reviewed_tasks: 2
+      completed_tasks: 0
+      reviewed_tasks: 0
       current_task:
-        index: 3
-        title: "Task 3+4 (并行): biz customer chatbot methods + biz chatbot runtime guards"
+        index: 1
+        title: "Task 1: DB migration + Go model (ready to dispatch)"
     rollback: null
     last_verified: null
     decisions:
@@ -2263,10 +2271,3 @@ features:
       - "2026-04-20 (S3 Gate 我自查追加): reviewer 未提及但同样严重 — user_template_permission 有 parent_user_id NOT NULL 列，初版 spec §3.2 backfill SQL 漏写，在 P0 修复时一并补齐（从 user.parent_user_id JOIN 取值）"
       - "2026-04-20 (S2 D5 翻转): chatbot 权限面板只列 published（不列 draft）。原 D5 想支持 draft 预授权被 reviewer P2-A 指出与 /v1/chatbot/list 接口行为矛盾。default-deny 下『发布 + 0 权限 = 零泄露』，发布后再设权限无风险，简化交互"
       - "2026-04-20 (S5 策略升级): reviewer 建议从 gstack /qa + SQL 升级为 + minimal Playwright request-level E2E（仅 2 个 test：P0.5 API 直连绕过 + P0.6 撤销即时生效）。单测追加 3 个缺口：WhitelistMissAfterSoftDelete / ChatStream_AfterRevoke_Denied / GrantChatbots_SelfParentBypassed"
-      - "2026-04-21 (S4 Task 1 done): migration + model commit 24612b4 on feature/child-run-permission。Dev DB 实地验证：114 行 baseline 幂等 + 软删除场景 P0 fix 生效（sub_user_id=51 所有权限软删后 backfill 正确写入 5 条新活跃行）"
-      - "2026-04-21 (S4 Task 1 review): Spec Compliance PASS 0 concerns；Code Quality PASS_WITH_CONCERNS 3 P1 + 2 P2。修复 commit 05362b2：ID uint64→uint (gorm.Model 对齐)、model 注释补 append-only 决策、rollback 改 MySQL @session vars (P2-A)、created_at 加 NOT NULL DEFAULT CURRENT_TIMESTAMP(3) (P2-B)。Decline P1-A COLLATE（既有 migrations 风格一致，current table 无 varchar）"
-      - "2026-04-21 (S4 Task 2 done): store/customer.go 扩展 4 个 chatbot 方法（HasChatbotPermission/ListSubUserChatbotIDs/Grant/Revoke）+ HasTemplatePermission 0 记录分支翻转 return true → false。13 单测 PASS 含软删除关键回归。Commit 1bac2b7。软删除处理依赖 GORM v2 Count 默认 scope 过滤 deleted_at，doc 明确声明"
-      - "2026-04-21 (S4 Task 2 review): Spec Compliance PASS；Code Quality PASS_WITH_CONCERNS 1 P1 + 2 P2。修复 commit 49c1df8：软删除 test 强化（用 db.Delete 触发 GORM 软删除路径而非 raw INSERT，future-proof）+ 4 个新方法统一 fmt.Errorf wrap (P2) + GrantChatbotPermissions 注释明确"no transaction by design" (P2)。13 测试仍全 PASS"
-    blockers: []
-    created_at: "2026-04-20T22:00:00+08:00"
-    completed_at: null
