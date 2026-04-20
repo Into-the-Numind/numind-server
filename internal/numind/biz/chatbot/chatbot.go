@@ -61,6 +61,7 @@ type IChatbotBiz interface {
 
 	// C端：对话会话（Task 7 实现）
 	ListVisibleChatbots(ctx context.Context, user *model.User) ([]model.ChatbotConfig, error)
+	CheckChatbotPermission(ctx context.Context, userID uint, chatbotID uint) (bool, error)
 	CreateSession(ctx context.Context, userID uint, chatbotID uint) (*model.ChatbotSession, error)
 	ListSessions(ctx context.Context, userID uint, offset, limit int) ([]model.ChatbotSession, int64, error)
 	DeleteSession(ctx context.Context, userID uint, sessionID uint) error
@@ -216,9 +217,10 @@ func (b *chatbotBiz) UpdateStatus(ctx context.Context, userID uint, id uint, sta
 
 // ListVisibleChatbots 获取用户可见的智能体列表（C端）
 // 主用户（ParentUserID == nil）: 仅返回自己已发布的智能体
-// 子用户（ParentUserID != nil）: 仅返回父用户已发布且被父账号显式授权（白名单）的智能体
+// 子用户（ParentUserID != nil）: 仅返回父用户已发布的智能体（不按白名单隐藏）
 // 注：工作区只展示已发布的配置；草稿/下线状态的智能体需从配置中心管理入口访问。
-// 子账号白名单由 user_chatbot_permission 表维护，0 记录 = deny-all（default-deny）。
+// 与 SOP /v1/sop/templates 对称：列表全量可见，点击时再走 /v1/chatbots/:id/check-permission
+// 与 CreateSession/ChatStream 的运行时白名单守卫共同构成纵深防御。
 func (b *chatbotBiz) ListVisibleChatbots(ctx context.Context, user *model.User) ([]model.ChatbotConfig, error) {
 	ownerID := user.ID
 	if user.ParentUserID != nil {
@@ -228,28 +230,29 @@ func (b *chatbotBiz) ListVisibleChatbots(ctx context.Context, user *model.User) 
 	if err != nil {
 		return nil, fmt.Errorf("ListVisibleChatbots: %w", err)
 	}
-
-	// 子账号：用白名单做 set 交集过滤；父账号不受限。
-	if user.ParentUserID != nil {
-		allowedIDs, err := b.ds.Customers().ListSubUserChatbotIDs(ctx, user.ID)
-		if err != nil {
-			return nil, fmt.Errorf("ListVisibleChatbots whitelist: %w", err)
-		}
-		allowed := make(map[uint]bool, len(allowedIDs))
-		for _, id := range allowedIDs {
-			allowed[id] = true
-		}
-		// 用新 slice 而非 configs[:0] —— 避免底层数组 aliasing 导致 caller 持有
-		// 的其他 slice 被 overwritten（defensive coding，即便当前 caller 不复用）。
-		filtered := make([]model.ChatbotConfig, 0, len(allowedIDs))
-		for _, c := range configs {
-			if allowed[c.ID] {
-				filtered = append(filtered, c)
-			}
-		}
-		configs = filtered
-	}
 	return configs, nil
+}
+
+// CheckChatbotPermission 检查用户是否有权运行指定 chatbot。
+// 用于前端在跳转 chatbot 聊天页前做权限预检，mirror SOP CheckTemplatePermission。
+// 父账号 bypass（永远返回 true）；子账号走 user_chatbot_permission 白名单。
+// chatbot 必须是 published 状态；草稿/下线均返回 false。
+func (b *chatbotBiz) CheckChatbotPermission(ctx context.Context, userID uint, chatbotID uint) (bool, error) {
+	config, err := b.ds.ChatbotConfig().Get(ctx, chatbotID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("CheckChatbotPermission: get chatbot %d: %w", chatbotID, err)
+	}
+	if config.Status != model.ChatbotStatusPublished {
+		return false, nil
+	}
+	ok, err := b.ds.Customers().HasChatbotPermission(ctx, userID, chatbotID)
+	if err != nil {
+		return false, fmt.Errorf("CheckChatbotPermission: %w", err)
+	}
+	return ok, nil
 }
 
 // CreateSession 创建对话会话

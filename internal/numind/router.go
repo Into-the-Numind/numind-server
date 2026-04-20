@@ -301,6 +301,7 @@ func installNumindRouters(g *gin.Engine) error {
 		chatbotGroup := authGroup.Group("/chatbot")
 		{
 			chatbotGroup.GET("/list", chatbotCtrl.List)
+			chatbotGroup.GET("/:id/check-permission", chatbotCtrl.CheckPermission) // 前端点击前权限预检（mirror SOP /check-permission）
 			chatbotGroup.POST("/sessions", chatbotCtrl.CreateSession)
 			chatbotGroup.GET("/sessions", chatbotCtrl.ListSessions)
 			chatbotGroup.DELETE("/sessions/:id", chatbotCtrl.DeleteSession)

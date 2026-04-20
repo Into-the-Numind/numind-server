@@ -43,6 +43,31 @@ func (ctrl *ChatbotController) List(c *gin.Context) {
 	core.WriteResponse(c, nil, list)
 }
 
+// CheckPermission 检查当前用户是否有权运行指定 chatbot
+// 用于前端在跳转 chatbot 聊天页前做权限预检，mirror SOP CheckTemplatePermission。
+func (ctrl *ChatbotController) CheckPermission(c *gin.Context) {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	chatbotID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	hasPermission, err := ctrl.chatbotBiz.CheckChatbotPermission(c, user.ID, chatbotID)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"has_permission": hasPermission,
+	})
+}
+
 // createSessionReq 创建会话请求
 type createSessionReq struct {
 	ChatbotID uint `json:"chatbot_id" binding:"required"`
