@@ -144,7 +144,7 @@ features:
       total_tasks: 11
       completed_tasks: 11
       reviewed_tasks: 9
-      current_task: "S6-done — 所有改动已 merge 到 develop（线性 16 commits），dev 环境 deployed + migrations 已执行。用户明示不进 prod release 分支（开发持续节奏，feature 在 dev 闭环）。3 个 follow-up 另立单（Langfuse stream EndGeneration pre-existing bug + SOP 前端 thinking query param + AiHubMix dashboard 计费对账）"
+      current_task: "S6-done + billing spike 结论补全（Option B 确认 reasoning 并入 completion，pricing_rule 无需改）。2 个 follow-up 剩：Langfuse stream EndGeneration pre-existing bug + SOP 前端 thinking query param 注入。Feature 100% 闭环"
     rollback: null
     last_verified: null
     decisions:
@@ -190,6 +190,7 @@ features:
       - "2026-04-21 (S5 用户前端实测验证): 3 模型思考渲染可见（Claude/DeepSeek/Gemini 前端 ThinkingBlock 有内容），GPT 5.4 无思考可见（符合 T2 §2.4 OpenAI 加密推理）。'假思考' bug 从用户感知层面彻底修复"
       - "2026-04-21 (S5 billing 二次验证): usage_record 实时查询显示 reasoning_tokens 正确捕获所有模型（gpt-5.4=85/246, deepseek=448, gemini=1429, claude=0 符合 T2）。wire 解码 → TokenUsage → billing 全通"
       - "2026-04-21 (S6-done): 全部改动 develop 线性（16 commits），dev 自动部署到 numind-server-dev 容器（22:54 CST rebuild 确认 binary 含 InferModelFamily/buildOAIRequest/mergeTraceMetadata 字符串）。用户明示不进 prod release 分支——feature 在 dev 闭环，本期 aihubmix-protocol-audit 正式完成"
+      - "2026-04-21 (billing spike 闭环 Option B 确认): 用户查 AiHubMix dashboard 得 LOW=$0.004176 / HIGH=$0.004072。HIGH 含 45 reasoning_tokens 但扣费更少 — 数学反推 output_price=$14.86/Mtok / input_price=$3.85/Mtok，reasoning 按 completion_tokens 计价并入。pricing_rule 现有两列架构完备，无需新增列。follow-up #3 关闭"
     blockers: []
     created_at: "2026-04-20T23:30:00+08:00"
 

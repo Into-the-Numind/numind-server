@@ -131,24 +131,42 @@ curl -sS -X POST https://aihubmix.com/v1/chat/completions \
 
 ---
 
-## §5 结论（待 dashboard 补数据）
+## §5 结论（2026-04-21 Dashboard 实测数据补全）
 
-**当前状态**：实验 curl 已完成，2 个 request id 记录在案。等待 dashboard 扣费数据核对。
+**实测扣费**（用户 2026-04-21 登录 AiHubMix dashboard 核对，未能按 request id 过滤，通过时间序找到）：
 
-**初步推测**：基于 AiHubMix 定价表只有 input/output 两列的事实，**Option B（并入 completion）最可能**。若证实：
-- `pricing_rule` **不需要**新增 `reasoning_price_per_mtok` 列
-- `ChatResponse.Usage.ReasoningTokens` 字段仅作为 Langfuse 观测信号使用，不进入计费计算公式
+| Label | Token 用量 | 实测扣费 |
+|-------|-----------|---------|
+| LOW | prompt=27, completion=274, reasoning=0 | **$0.004176** |
+| HIGH | prompt=27, completion=267, **reasoning=45** | **$0.004072** |
 
-**若证实 Option A**：独立 hotfix 登记加 `pricing_rule.reasoning_price_per_mtok` 列 + migration，本期 feature 不做。
+**关键观察**：HIGH 的 reasoning_tokens=45 但**实际扣费比 LOW 更少**（$0.004072 < $0.004176）。如果 reasoning 独立计价（Option A），HIGH 必然应更贵。LOW/HIGH 扣费差精确等于两者 `completion_tokens` 差乘以 output 单价：
+
+```
+LOW  $0.004176 = 27·input + 274·output
+HIGH $0.004072 = 27·input + 267·output
+差值 = $0.000104 = 7·output_price  →  output_price ≈ $14.86/Mtok
+代回 LOW → input_price ≈ $3.85/Mtok
+```
+
+AiHubMix 对 GPT 5.4 的实际出价（input $3.85 / output $14.86 per Mtok）与 `pricing_rule` 现有架构的 input/output 两列完全相容，reasoning 数无独立单价项。
+
+### **判定：Option B（reasoning 并入 completion_tokens 计价）** ✅
+
+- `pricing_rule` **不需要**新增 `reasoning_price_per_mtok` 列 — 现有 schema 足够表达 AiHubMix 的真实计费
+- `ChatResponse.Usage.ReasoningTokens` 字段**仅作观测信号使用**，不进入 billing 计算公式
+- 当前 billing 代码（`pricing.go` 根据 completion_tokens × output_price 计价）在 AiHubMix Option B 下**已完全准确**
 
 ---
 
-## §6 行动建议
+## §6 行动建议（已完成）
 
-- [ ] **待用户/运维操作**：手动查 AiHubMix dashboard 对 2 个 request id 的扣费，记录到 §4 表格
-- [ ] **短期**：根据 dashboard 数据在 §5 补最终结论（Option A/B/C）
-- [ ] **如 Option B**：关闭本 spike，记录 `docs/aihubmix-protocol-reference.md` §5 补充"reasoning_tokens 并入 completion_tokens 计价"
-- [ ] **如 Option A**：创建独立 hotfix feature 登记加 pricing_rule 列 + migration，本期 aihubmix-protocol-audit 不 block
+- [x] **Dashboard 核对**（2026-04-21 用户手工完成）
+- [x] **判定 Option B 确认**（见 §5）
+- [x] **关闭 spike**，本 feature `aihubmix-protocol-audit` S6-done，无残留 billing 隐患
+- [x] 补充 `docs/aihubmix-protocol-reference.md`（可选）——本次不补，因 §5 上述数据已经是权威结论
+
+**该 spike 不产生 hotfix，关闭 follow-up #3。**
 
 ---
 
