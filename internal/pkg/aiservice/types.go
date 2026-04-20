@@ -138,6 +138,18 @@ type ChatRequest struct {
 	// The json tag is for trace/log serialisation only; ChatRequest is an
 	// internal type, never bound from HTTP.
 	ResponseFormat ResponseFormatType `json:"response_format,omitempty"`
+	// Thinking requests that the model expose its reasoning process (chain of
+	// thought) when the underlying provider/model supports it. The adapter is
+	// responsible for translating this into provider-specific wire fields
+	// (e.g. OpenAI-compatible reasoning_effort, DashScope enable_thinking).
+	//
+	// For intrinsic-thinking models (thinking_only=true), this flag is
+	// advisory only — thinking always happens regardless of the value here.
+	//
+	// The json tag deliberately omits `omitempty`: traces must faithfully
+	// show explicit `thinking=false` choices so that route-level debugging
+	// can distinguish "caller did not opt in" from "field never serialised".
+	Thinking bool `json:"thinking"`
 }
 
 // ChatResponse is the unified response type for non-streaming Chat calls.
@@ -154,6 +166,12 @@ type ChatResponse struct {
 	Usage    TokenUsage `json:"usage"`
 	Model    string     `json:"model"`
 	Provider string     `json:"provider"`
+	// TraceMetadata carries adapter-resolved routing decisions (reasoning
+	// effort, model family, whether caller-supplied temperature was
+	// overridden). Pointer type so the whole field is omitted when the
+	// adapter did not populate it — keeps existing traces unchanged when
+	// there is nothing to report.
+	TraceMetadata *TraceMetadata `json:"trace_metadata,omitempty"`
 }
 
 // ChatChunk is a single streamed chunk emitted by ChatStream.
@@ -187,6 +205,10 @@ type ChatChunk struct {
 	// because `error` does not round-trip through JSON; for wire/log use,
 	// FinishReason still carries a human-readable summary.
 	Err error `json:"-"`
+	// TraceMetadata carries adapter-resolved routing decisions for the
+	// stream. Only populated on the terminal chunk (IsFinal=true); nil on
+	// all interim chunks. Same semantics as ChatResponse.TraceMetadata.
+	TraceMetadata *TraceMetadata `json:"trace_metadata,omitempty"`
 }
 
 // EmbedRequest is the unified request for text embedding calls.
@@ -306,4 +328,38 @@ type FileUploadResponse struct {
 	FileID     string `json:"file_id"`
 	Provider   string `json:"provider"`
 	UploadedAt string `json:"uploaded_at,omitempty"` // RFC3339 timestamp, if provided by the provider
+}
+
+// TraceMetadata captures the routing-level decisions the adapter made while
+// servicing a Chat call, surfaced back to callers (and into Langfuse traces)
+// so that behaviour around thinking-capable models is auditable.
+//
+// All fields are optional — adapters populate only the ones that apply for a
+// given model. Zero values mean "not reported" (rather than "explicitly
+// empty"), and the parent pointer on ChatResponse / ChatChunk is what
+// actually gates JSON emission.
+type TraceMetadata struct {
+	// ResolvedReasoningEffort records the final reasoning-effort value the
+	// adapter used for this call. Possible values:
+	//
+	//   ""          — not injected. Either the model does not support
+	//                 reasoning effort or the caller did not opt in.
+	//   "medium"    — injected into the upstream request (e.g. OpenAI-
+	//                 compatible `reasoning_effort: "medium"`). This is the
+	//                 only non-sentinel value the current Gateway emits.
+	//   "intrinsic" — Q8=B sentinel. The model is intrinsic-thinking
+	//                 (thinking_only=true), so reasoning always happens and
+	//                 no wire field is injected; this sentinel records that
+	//                 thinking was in effect conceptually even though the
+	//                 upstream request carries no reasoning_effort field.
+	ResolvedReasoningEffort string `json:"resolved_reasoning_effort,omitempty"`
+	// ResolvedModelFamily is the model family the adapter classified this
+	// call into (e.g. "deepseek", "qwen", "doubao"). Useful for trace-level
+	// grouping without having to parse the model name.
+	ResolvedModelFamily string `json:"resolved_model_family,omitempty"`
+	// TempOverridden is true when the adapter replaced the caller-supplied
+	// Temperature with a model-mandated value (for example, some
+	// thinking-only models require temperature=1.0). Callers can use this
+	// to detect "my temperature knob was ignored".
+	TempOverridden bool `json:"temp_overridden,omitempty"`
 }
