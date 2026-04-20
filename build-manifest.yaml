@@ -5,10 +5,11 @@ features:
     ndf_version: "1.1"
     description: "父账户（parent_user_id IS NULL）可在用户端客户管理页为自己开通会员。复用 POST /v1/users/children/:child_id/grant-membership（放开 self-grant 父子校验）+ GET /v1/customers/sub-users（WHERE 加 OR id=:parent，置顶自己）。前端零改动。不走支付，写 credit_package（grant_source='b2b_grant', granter=self）+ action_log，月末 B2B 对公结算自动按 granter 聚合。"
     track: "standard"
-    stage: "S3-done"
+    stage: "completed"
+    completed_at: "2026-04-21T00:00:00+08:00"
     classification_reason: "2 条 Triage 标准不满足：文件数 >3（backend biz + store + frontend view + tests + 可能 report SQL） + 高风险业务逻辑（会员开通 + 放开父子关系校验，B2B2C 权限模型扩展）。用户要求加速推进"
-    last_updated_by: "ai-s4"
-    last_updated_at: "2026-04-20T00:00:00+08:00"
+    last_updated_by: "ai-s7-close"
+    last_updated_at: "2026-04-21T00:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -25,9 +26,8 @@ features:
       total_tasks: 3
       completed_tasks: 3
       reviewed_tasks: 3
-      current_task: "S6 merge 完成（numind-server 3590a2f + numind-web-v3 76c48fd），等 CI 部署 dev + 人工按 QA §S6 验收清单验证"
+      current_task: null
     rollback: null
-    last_verified: null
     decisions:
       - "2026-04-20 (S0): Triage 5 条标准 → Standard（2 条不满足：文件数 + 高风险业务）。用户确认走 Standard 加速"
       - "2026-04-20 (S0 业务决策): 父账户买 booster 走现有支付链路（选项 a），不进帮升级弹窗"
@@ -56,9 +56,11 @@ features:
       - "2026-04-20 (S5 降级 Option B): 用户决策——本地 backend 启动会连 dev DB (config_local → 49.233.219.254:13306)，有污染风险。S5 只跑静态检查（16 新测试全 PASS + go build/vet/fmt 干净 + 前端 lint/type-check 干净 + playwright --list 加载成功），实际 E2E + 浏览器 QA defer 到 S6 post-merge dev CI/人工验收。偏离 NDF §3 S5 '本地验收'字面要求，记录理由"
       - "2026-04-20 (S5): QA 报告生成 → numind-server/docs/superpowers/qa/2026-04-20-parent-self-grant-membership-qa.md，含 S6 验收补齐清单（6 步），后端 TDD 覆盖率+越权防线证据充分"
       - "2026-04-20 (S6 merge): numind-server feature/parent-self-grant-membership → develop @ 3590a2f + numind-web-v3 feature/parent-self-grant-e2e → develop @ 76c48fd。两仓库 push 完成，feature branches + worktree 已清理。等 CI 部署 dev 环境后人工验收"
+      - "2026-04-21 (S6 人工验收 PASS): 用户在 dev 环境验证通过，一切正常符合预期，S6 硬门禁通过"
+      - "2026-04-21 (S7 偏离 NDF): 项目 release 分支长期停用不再作为 QA/prod 部署载体，S7 §1-3（develop→release→QA→tag→prod）整体 N/A。feature 以 S6 完成态关闭，未来若重启 release 流程再决定是否补 S7。Obsidian 功能笔记按 NDF §3 S7 item 4 未写，不阻塞关闭（可后补）"
     last_verified:
-      at: "2026-04-20T00:00:00+08:00"
-      method: "S5 静态验收（Option B 降级）— 16 新测试 PASS + go build/vet/fmt + 前端 lint/type-check + playwright --list。实际 E2E 延到 S6 dev"
+      at: "2026-04-21T00:00:00+08:00"
+      method: "S6 人工验收（dev 环境，feature merged at 3590a2f + 76c48fd）— 父账户自助开通 trial/monthly 成功，credit_package + action_log 正确写入，granter_user_id=self 归属符合预期。子账户开通回归 OK。用户确认'一切正常符合预期'"
       lint: "pass (go vet + gofmt；前端 npm run lint 0 errors)"
       type_check: "pass (vue-tsc exit 0；Go 无 type-check 概念)"
       tests: "新增 16 tests PASS (15 grant_membership + 1 store/ListSubUsers)"
