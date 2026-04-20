@@ -106,11 +106,9 @@ func applyDefaultLLMConfig(node *model.SopNode) {
 // ExecuteNodeStream 流式执行单个节点（公开方法）
 // 优先通过 AI Gateway 路由执行（modelKey != ""）；否则保留原有直连逻辑。
 func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, modelKey string, thinking bool, handler StreamHandler) (string, *TokenUsage, error) {
-	_ = thinking // 待 Task 9 后续接通 Gateway thinking 模式
-
 	// Gateway 路径：用户选择了特定模型
 	if modelKey != "" {
-		return e.executeViaGateway(ctx, node, input, history, modelKey, handler)
+		return e.executeViaGateway(ctx, node, input, history, modelKey, thinking, handler)
 	}
 
 	// 节点未配置 LLM 信息时，使用系统默认配置
@@ -409,7 +407,7 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 //
 // 调用前注入 WithSkipLegacyBilling，防止 LLMRouter 旧路径与 Gateway 双记账。
 // modelKey 参数当前未接通 Gateway ModelOverride（billing-baseline.md BLOCKER 3）；预留供未来扩展。
-func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, modelKey string, handler StreamHandler) (string, *TokenUsage, error) {
+func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, modelKey string, thinking bool, handler StreamHandler) (string, *TokenUsage, error) {
 
 	log.C(ctx).Infow("ExecuteNodeStream via AI Gateway",
 		"node_id", node.ID,
@@ -464,6 +462,7 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 		Messages:      aiMessages,
 		Temperature:   0.7,
 		ModelOverride: modelKey, // pass user's model choice; empty = use task profile default
+		Thinking:      thinking,
 	}
 	ch, err := aiservice.ChatStream(ctx, taskID, req)
 	if err != nil {

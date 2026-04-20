@@ -190,8 +190,8 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 		Messages:      aiMessages,
 		Temperature:   0.7,
 		ModelOverride: modelKey, // pass user's model choice; empty = use task profile default
+		Thinking:      thinking,
 	}
-	_ = thinking // thinking 标志当前保留供未来扩展；Gateway provider adapter 按 profile 配置处理
 
 	ch, llmErr := aiservice.ChatStream(ctx, profile.ChatbotStream, gatewayReq)
 	if llmErr != nil {
