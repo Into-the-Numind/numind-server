@@ -21,9 +21,9 @@ features:
       plan: "numind-server/docs/superpowers/plans/2026-04-20-parent-self-grant-membership-plan.md"
     progress:
       total_tasks: 3
-      completed_tasks: 1
-      reviewed_tasks: 1
-      current_task: "Task 1 done (commits b60ab5e + a3aeadc)，Task 2 store 开始"
+      completed_tasks: 2
+      reviewed_tasks: 2
+      current_task: "Task 1+2 done (biz + store)，Task 3 E2E 开始（numind-web-v3）"
     rollback: null
     last_verified: null
     decisions:
