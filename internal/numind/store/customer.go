@@ -478,7 +478,7 @@ func (c *customerStore) UpdateSubUserTierWithLog(ctx context.Context, subUserID 
 func (c *customerStore) HasChatbotPermission(ctx context.Context, userID, chatbotID uint) (bool, error) {
 	var user model.User
 	if err := c.db.WithContext(ctx).First(&user, userID).Error; err != nil {
-		return false, err
+		return false, fmt.Errorf("HasChatbotPermission: get user %d: %w", userID, err)
 	}
 
 	// 父账号 bypass
@@ -491,7 +491,7 @@ func (c *customerStore) HasChatbotPermission(ctx context.Context, userID, chatbo
 	if err := c.db.WithContext(ctx).Model(&model.UserChatbotPermission{}).
 		Where("sub_user_id = ? AND chatbot_id = ?", userID, chatbotID).
 		Count(&count).Error; err != nil {
-		return false, err
+		return false, fmt.Errorf("HasChatbotPermission: count whitelist: %w", err)
 	}
 	return count > 0, nil
 }
@@ -505,12 +505,19 @@ func (c *customerStore) ListSubUserChatbotIDs(ctx context.Context, subUserID uin
 	err := c.db.WithContext(ctx).Model(&model.UserChatbotPermission{}).
 		Where("sub_user_id = ?", subUserID).
 		Pluck("chatbot_id", &ids).Error
-	return ids, err
+	if err != nil {
+		return nil, fmt.Errorf("ListSubUserChatbotIDs: %w", err)
+	}
+	return ids, nil
 }
 
 // GrantChatbotPermissions 为子账号批量授权 chatbot（幂等）。
 // UNIQUE KEY (sub_user_id, chatbot_id) + ON CONFLICT DO NOTHING → 重复 grant
 // 不报错、不新增行。空数组提前返回 nil，避免无意义 SQL。
+//
+// 风格说明：不用 transaction，也不用 FirstOrCreate（参考 GrantTemplates 的风格）。
+// 单条 `INSERT ... ON CONFLICT DO NOTHING` 是 MySQL/PG 原生原子操作，天然幂等；
+// 相比 "查询已存在 → 逐条 insert" 模式少 N 次 RTT，并发写也安全（DB 级唯一约束兜底）。
 func (c *customerStore) GrantChatbotPermissions(ctx context.Context, subUserID uint, chatbotIDs []uint) error {
 	if len(chatbotIDs) == 0 {
 		return nil
@@ -524,9 +531,12 @@ func (c *customerStore) GrantChatbotPermissions(ctx context.Context, subUserID u
 			CreatedAt: now,
 		})
 	}
-	return c.db.WithContext(ctx).
+	if err := c.db.WithContext(ctx).
 		Clauses(clause.OnConflict{DoNothing: true}).
-		Create(&rows).Error
+		Create(&rows).Error; err != nil {
+		return fmt.Errorf("GrantChatbotPermissions: insert %d rows: %w", len(rows), err)
+	}
+	return nil
 }
 
 // RevokeChatbotPermissions 批量撤销子账号的 chatbot 权限。
@@ -537,7 +547,10 @@ func (c *customerStore) RevokeChatbotPermissions(ctx context.Context, subUserID 
 	if len(chatbotIDs) == 0 {
 		return nil
 	}
-	return c.db.WithContext(ctx).
+	if err := c.db.WithContext(ctx).
 		Where("sub_user_id = ? AND chatbot_id IN ?", subUserID, chatbotIDs).
-		Delete(&model.UserChatbotPermission{}).Error
+		Delete(&model.UserChatbotPermission{}).Error; err != nil {
+		return fmt.Errorf("RevokeChatbotPermissions: delete %d rows: %w", len(chatbotIDs), err)
+	}
+	return nil
 }

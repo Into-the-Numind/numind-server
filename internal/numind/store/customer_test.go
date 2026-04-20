@@ -230,9 +230,14 @@ func TestHasTemplatePermission_WhitelistMiss(t *testing.T) {
 	assert.False(t, ok, "白名单不含目标 → false")
 }
 
-// TestHasTemplatePermission_WhitelistMissAfterSoftDelete 【S3 Gate review 追加】
+// TestHasTemplatePermission_WhitelistMissAfterSoftDelete 【S3 Gate review 追加 + Task 2 code-review P1 强化】
 // 软删除后活跃记录 = 0（GORM 默认 scope 过滤掉 deleted_at 非空行），按翻转后的
 // default-deny 语义应返回 false。验证：被撤权的账号不会被误判为"新账号"放开权限。
+//
+// Task 2 code-review P1 强化：原版用 raw INSERT + deleted_at=NOW 模拟软删除，
+// 这只测试了 SQLite 列过滤行为，没测到 GORM 软删除语义本身。改为通过 GORM
+// `db.Delete(&model.UserTemplatePermission{...})` 触发真正的 GORM DeletedAt
+// 赋值路径，确保将来 GORM 升级改动 DeletedAt 类型时测试能跟着暴露问题。
 func TestHasTemplatePermission_WhitelistMissAfterSoftDelete(t *testing.T) {
 	db := newPermissionTestDB(t)
 	cs := NewCustomerStore(db)
@@ -240,9 +245,18 @@ func TestHasTemplatePermission_WhitelistMissAfterSoftDelete(t *testing.T) {
 	parent := insertUserForPerm(t, db, nil)
 	child := insertUserForPerm(t, db, &parent)
 
-	// 插入一条权限行，然后软删除（模拟 RevokeTemplates 效果）
-	softDeletedAt := time.Now()
-	insertTemplatePermissionRaw(t, db, parent, child, 7, &softDeletedAt)
+	// 用 GORM ORM 写入一条权限行（走 gorm.Model CreatedAt/UpdatedAt 自动填充路径）
+	perm := model.UserTemplatePermission{
+		ParentUserID: parent,
+		SubUserID:    child,
+		TemplateID:   7,
+	}
+	require.NoError(t, db.Create(&perm).Error)
+	require.NotZero(t, perm.ID, "Create should assign PK")
+
+	// 通过 GORM 触发真正的软删除（而非 raw SQL 写 deleted_at）
+	// 这测试了 HasTemplatePermission 的 Count 是否正确使用 GORM DeletedAt scope
+	require.NoError(t, db.Delete(&perm).Error)
 
 	// GORM Count 默认 scope 过滤软删除行 → totalPermissions = 0 → default-deny
 	ok, err := cs.HasTemplatePermission(context.Background(), child, 7)
@@ -251,11 +265,18 @@ func TestHasTemplatePermission_WhitelistMissAfterSoftDelete(t *testing.T) {
 		"所有权限软删除后活跃记录 = 0，应按 default-deny 返回 false；"+
 			"否则被撤权的账号会被误认为新账号而放开权限")
 
-	// Sanity check: 直接查表的 Unscoped 能看到硬删除前的行
+	// Sanity check: Unscoped 能看到软删除前的行（证明 soft-delete 生效而非 hard delete）
 	var rawCount int64
 	require.NoError(t, db.Unscoped().Model(&model.UserTemplatePermission{}).
 		Where("sub_user_id = ?", child).Count(&rawCount).Error)
 	assert.EqualValues(t, 1, rawCount, "unscoped 应看到软删除的行")
+
+	// 强化断言：Scoped Count 应为 0（即 GORM 软删除 scope 对 Count 生效）—— 这是 P0 修复的基础
+	var scopedCount int64
+	require.NoError(t, db.Model(&model.UserTemplatePermission{}).
+		Where("sub_user_id = ?", child).Count(&scopedCount).Error)
+	assert.EqualValues(t, 0, scopedCount,
+		"GORM Count 默认 scope 应过滤软删除行，这是 HasTemplatePermission P0 修复的基础")
 }
 
 // ============================================================================
