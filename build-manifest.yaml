@@ -14,6 +14,7 @@ features:
       - numind-web-v3
     branches:
       numind-server: "feature/parent-self-grant-membership (worktree .worktrees/parent-self-grant-membership)"
+      numind-web-v3: "feature/parent-self-grant-e2e"
     artifacts:
       requirement: "numind-server/requirements/parent-self-grant-membership.md"
       proposal: "numind-server/proposals/parent-self-grant-membership-proposal.md"
@@ -21,9 +22,9 @@ features:
       plan: "numind-server/docs/superpowers/plans/2026-04-20-parent-self-grant-membership-plan.md"
     progress:
       total_tasks: 3
-      completed_tasks: 2
-      reviewed_tasks: 2
-      current_task: "Task 1+2 done (biz + store)，Task 3 E2E 开始（numind-web-v3）"
+      completed_tasks: 3
+      reviewed_tasks: 3
+      current_task: "S4 Gate 通过，进入 S5 本地验收"
     rollback: null
     last_verified: null
     decisions:
@@ -47,6 +48,10 @@ features:
       - "2026-04-20 (S4 Task 1 defer): P2 #3 buildGrantPackages 循环中 &granter 共享指针是既有代码，reviewer 确认无 bug 仅防御性建议，defer 不在本 feature 范围修"
       - "2026-04-20 (S4 Task 2 done): store/customer.go ListSubUsers WHERE OR + ORDER BY CASE 置顶自己。commits 0a0fa78 (主实现) + e54eeee (P2 fix otherChild 非泄漏断言)。两阶段 review PASS_WITH_CONCERNS+PASS → 修复后 PASS"
       - "2026-04-20 (S4 Task 2 defer): P2 soft-delete 测试覆盖 + P2 insertCustomerTestUser 函数命名潜在冲突，均非阻塞，defer"
+      - "2026-04-20 (S4 Task 3 done): numind-web-v3 e2e/parent-self-grant.spec.ts 创建完成。commits 51b9493 (主实现) + 4776cd8 (fix P1 test.skip 时序污染 + Spec P2 弱列表刷新断言)。两阶段 review PASS_WITH_CONCERNS → 修复后 PASS"
+      - "2026-04-20 (S4 Task 3 defer): P2 mockGrantSuccess 缺 isGrantPath 二次校验（glob pattern 已足够匹配，无功能 bug）非阻塞，defer"
+      - "2026-04-20 (S4 Gate pass): go build ./... ✅ / go vet ./internal/numind/... ✅ / gofmt clean / 16 新测试全 PASS / 前端 lint type-check ✅。task lint 本地未装（用 go vet + gofmt 等效），S7 前会在 CI 跑完整 task lint"
+      - "2026-04-20 (S4 pre-existing blocker): TestReserve_ExactlyExhaustedThenRetry_ReturnsInsufficientSentinel (credit_service_boundary_test.go:100) 在 develop base commit 8c7aec2 即失败，非本功能引入。panic: unreachable: legacy_tier must be guarded by SkipDeduction，credit_service.go:164。defer，建议独立 hotfix 处理"
     created_at: "2026-04-20T00:00:00+08:00"
 
   - id: "openrouter-provider"
