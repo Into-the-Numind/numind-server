@@ -33,7 +33,20 @@ import (
 // chunk.Model. The actual model name is read from each chunk's Model field
 // when non-empty. Both Provider and Model are propagated to every emitted
 // ChatChunk including the terminal one.
-func runOAIStream(r io.ReadCloser, ch chan<- aiservice.ChatChunk, provider string, defaultModel string) {
+//
+// traceMeta carries adapter-resolved routing decisions (reasoning effort,
+// model family, temperature override). Only populated on the terminal
+// IsFinal=true chunk; may be nil when the adapter did not populate trace
+// metadata (e.g. the ali / volc adapters do not yet participate in the
+// thinking gating that produces TraceMetadata — they pass nil and the field
+// is omitted from downstream consumers).
+func runOAIStream(
+	r io.ReadCloser,
+	ch chan<- aiservice.ChatChunk,
+	provider string,
+	defaultModel string,
+	traceMeta *aiservice.TraceMetadata,
+) {
 	defer r.Close()
 	defer close(ch)
 
@@ -72,13 +85,14 @@ func runOAIStream(r io.ReadCloser, ch chan<- aiservice.ChatChunk, provider strin
 			// Parse error: emit a terminal chunk with any usage captured so far
 			// and return. Content chunks emitted before this point stay valid.
 			ch <- aiservice.ChatChunk{
-				Index:        index,
-				FinishReason: fmt.Sprintf("parse_error: %v", err),
-				IsFinal:      true,
-				Usage:        lastUsage,
-				Provider:     provider,
-				Model:        resolvedModel,
-				Err:          fmt.Errorf("aiservice stream parse error: %w", err),
+				Index:         index,
+				FinishReason:  fmt.Sprintf("parse_error: %v", err),
+				IsFinal:       true,
+				Usage:         lastUsage,
+				Provider:      provider,
+				Model:         resolvedModel,
+				Err:           fmt.Errorf("aiservice stream parse error: %w", err),
+				TraceMetadata: traceMeta,
 			}
 			return
 		}
@@ -95,6 +109,7 @@ func runOAIStream(r io.ReadCloser, ch chan<- aiservice.ChatChunk, provider strin
 				PromptTokens:     chunk.Usage.PromptTokens,
 				CompletionTokens: chunk.Usage.CompletionTokens,
 				TotalTokens:      chunk.Usage.TotalTokens,
+				ReasoningTokens:  chunk.Usage.extractReasoningTokens(),
 			}
 		}
 
@@ -129,13 +144,14 @@ func runOAIStream(r io.ReadCloser, ch chan<- aiservice.ChatChunk, provider strin
 
 	if err := scanner.Err(); err != nil {
 		ch <- aiservice.ChatChunk{
-			Index:        index,
-			FinishReason: fmt.Sprintf("scan_error: %v", err),
-			IsFinal:      true,
-			Usage:        lastUsage,
-			Provider:     provider,
-			Model:        resolvedModel,
-			Err:          fmt.Errorf("aiservice stream scan error: %w", err),
+			Index:         index,
+			FinishReason:  fmt.Sprintf("scan_error: %v", err),
+			IsFinal:       true,
+			Usage:         lastUsage,
+			Provider:      provider,
+			Model:         resolvedModel,
+			Err:           fmt.Errorf("aiservice stream scan error: %w", err),
+			TraceMetadata: traceMeta,
 		}
 		return
 	}
@@ -143,11 +159,12 @@ func runOAIStream(r io.ReadCloser, ch chan<- aiservice.ChatChunk, provider strin
 	// Terminal chunk: always emit exactly one IsFinal=true chunk with the
 	// aggregated finish_reason and usage.
 	ch <- aiservice.ChatChunk{
-		Index:        index,
-		FinishReason: finishReason,
-		IsFinal:      true,
-		Usage:        lastUsage,
-		Provider:     provider,
-		Model:        resolvedModel,
+		Index:         index,
+		FinishReason:  finishReason,
+		IsFinal:       true,
+		Usage:         lastUsage,
+		Provider:      provider,
+		Model:         resolvedModel,
+		TraceMetadata: traceMeta,
 	}
 }

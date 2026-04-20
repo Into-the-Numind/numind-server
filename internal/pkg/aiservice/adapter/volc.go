@@ -119,7 +119,9 @@ func (v *VolcAdapter) ChatStream(ctx context.Context, route *registry.ResolvedRo
 	}
 
 	ch := make(chan aiservice.ChatChunk, 64)
-	go runOAIStream(httpResp.Body, ch, v.Name(), route.ProviderModelID)
+	// volc adapter does not currently populate TraceMetadata (Thinking gating
+	// lives in the DMXAPI adapter); pass nil so the terminal chunk omits it.
+	go runOAIStream(httpResp.Body, ch, v.Name(), route.ProviderModelID, nil)
 	return ch, nil
 }
 

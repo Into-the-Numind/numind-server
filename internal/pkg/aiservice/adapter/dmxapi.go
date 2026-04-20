@@ -66,16 +66,87 @@ func (d *DMXAPIAdapter) ProviderType() string { return "dmxapi" }
 // Capabilities lists the capabilities this adapter supports.
 func (d *DMXAPIAdapter) Capabilities() []string { return []string{"chat", "embed", "rerank"} }
 
-// Chat performs a non-streaming chat completion against the DMXAPI OpenAI-compatible endpoint.
-func (d *DMXAPIAdapter) Chat(ctx context.Context, route *registry.ResolvedRoute, req aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
-	body, err := json.Marshal(oaiChatRequest{
+// buildOAIRequest assembles the OpenAI-compatible chat request payload and the
+// trace metadata record. Centralises per-family dispatch so that Chat and
+// ChatStream stay DRY and share the same thinking/temperature/max-tokens
+// decisions. See plan §3.2 "AiHubMix thinking gating decision table".
+//
+// Rules encoded here (stable contract tested by dmxapi_thinking_test.go):
+//
+//   - Family dispatch for max tokens: OpenAI reasoning family (gpt-5, o1, o3,
+//     o4) uses max_completion_tokens; all other families use max_tokens.
+//     Independent of the Thinking flag (P1-1) so that regular GPT-5 completions
+//     still use the correct field.
+//   - reasoning_effort injection: only when req.Thinking=true AND
+//     route.SupportsThinking=true AND route.ThinkingOnly=false (the
+//     optional-thinking set). Value is hardcoded "medium" for now; a future
+//     openrouter-provider feature will make this user-configurable.
+//   - Intrinsic-thinking models (route.ThinkingOnly=true) record the "intrinsic"
+//     sentinel in TraceMetadata but never inject the wire field (Q8=B; Gemini
+//     3.1 Pro rejects "minimal"/"none" and some AiHubMix intrinsic variants
+//     error on reasoning_effort at all).
+//   - Claude base + Thinking=true forces temperature=1 on the wire (Q4=A)
+//     because AiHubMix returns a 400 "claude thinking requires temperature=1"
+//     when the two conflict. The Claude -think suffix variant is detected as a
+//     separate family and intentionally skipped here — AiHubMix server-side
+//     forces temperature=1 for that slug variant so our adapter leaves the
+//     caller value alone.
+func (d *DMXAPIAdapter) buildOAIRequest(
+	route *registry.ResolvedRoute,
+	req aiservice.ChatRequest,
+	stream bool,
+) (oaiChatRequest, *aiservice.TraceMetadata) {
+	family := InferModelFamily(route.ProviderModelID)
+	meta := &aiservice.TraceMetadata{
+		ResolvedModelFamily: string(family),
+	}
+
+	oaiReq := oaiChatRequest{
 		Model:          route.ProviderModelID,
 		Messages:       buildOAIMessages(req.Messages),
-		MaxTokens:      req.MaxTokens,
 		Temperature:    req.Temperature,
-		Stream:         false,
+		Stream:         stream,
 		ResponseFormat: translateResponseFormat(req.ResponseFormat),
-	})
+	}
+	if stream {
+		oaiReq.StreamOptions = &oaiStreamOptions{IncludeUsage: true}
+	}
+
+	// Max tokens dispatch (family-based, independent of Thinking flag — P1-1).
+	if family == ModelFamilyOpenAIReasoning {
+		oaiReq.MaxCompletionTokens = req.MaxTokens
+	} else {
+		oaiReq.MaxTokens = req.MaxTokens
+	}
+
+	// Thinking → reasoning_effort gating (spec §3.2 decision table).
+	if req.Thinking && route.SupportsThinking {
+		if route.ThinkingOnly {
+			// Intrinsic-thinking model: record sentinel, do not inject wire field.
+			meta.ResolvedReasoningEffort = "intrinsic"
+		} else {
+			// Optional-thinking model: inject wire field so the provider actually thinks.
+			oaiReq.ReasoningEffort = "medium"
+			meta.ResolvedReasoningEffort = "medium"
+		}
+	}
+
+	// Claude base + Thinking=true → force temperature=1 (Q4=A).
+	// Note: Claude -think suffix variant has family=ModelFamilyClaudeThinkingSlug
+	// and falls outside this branch; AiHubMix forces temp=1 server-side for it.
+	if family == ModelFamilyClaude && req.Thinking && req.Temperature != 1 {
+		oaiReq.Temperature = 1
+		meta.TempOverridden = true
+	}
+
+	return oaiReq, meta
+}
+
+// Chat performs a non-streaming chat completion against the DMXAPI OpenAI-compatible endpoint.
+func (d *DMXAPIAdapter) Chat(ctx context.Context, route *registry.ResolvedRoute, req aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+	oaiReq, traceMeta := d.buildOAIRequest(route, req, false)
+
+	body, err := json.Marshal(oaiReq)
 	if err != nil {
 		return nil, fmt.Errorf("dmxapi.Chat: marshal: %w", err)
 	}
@@ -102,6 +173,7 @@ func (d *DMXAPIAdapter) Chat(ctx context.Context, route *registry.ResolvedRoute,
 			PromptTokens:     oaiResp.Usage.PromptTokens,
 			CompletionTokens: oaiResp.Usage.CompletionTokens,
 			TotalTokens:      oaiResp.Usage.TotalTokens,
+			ReasoningTokens:  oaiResp.Usage.extractReasoningTokens(),
 		}
 	}
 
@@ -112,23 +184,16 @@ func (d *DMXAPIAdapter) Chat(ctx context.Context, route *registry.ResolvedRoute,
 		Usage:            usage,
 		Model:            oaiResp.Model,
 		Provider:         d.Name(),
+		TraceMetadata:    traceMeta,
 	}, nil
 }
 
 // ChatStream starts a streaming chat completion.
 // stream_options.include_usage=true ensures the final SSE chunk carries usage.
 func (d *DMXAPIAdapter) ChatStream(ctx context.Context, route *registry.ResolvedRoute, req aiservice.ChatRequest) (<-chan aiservice.ChatChunk, error) {
-	body, err := json.Marshal(oaiChatRequest{
-		Model:       route.ProviderModelID,
-		Messages:    buildOAIMessages(req.Messages),
-		MaxTokens:   req.MaxTokens,
-		Temperature: req.Temperature,
-		Stream:      true,
-		StreamOptions: &oaiStreamOptions{
-			IncludeUsage: true,
-		},
-		ResponseFormat: translateResponseFormat(req.ResponseFormat),
-	})
+	oaiReq, traceMeta := d.buildOAIRequest(route, req, true)
+
+	body, err := json.Marshal(oaiReq)
 	if err != nil {
 		return nil, fmt.Errorf("dmxapi.ChatStream: marshal: %w", err)
 	}
@@ -139,7 +204,7 @@ func (d *DMXAPIAdapter) ChatStream(ctx context.Context, route *registry.Resolved
 	}
 
 	ch := make(chan aiservice.ChatChunk, 64)
-	go runOAIStream(httpResp.Body, ch, d.Name(), route.ProviderModelID)
+	go runOAIStream(httpResp.Body, ch, d.Name(), route.ProviderModelID, traceMeta)
 	return ch, nil
 }
 
