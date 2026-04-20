@@ -31,10 +31,16 @@ git checkout -b feature/child-run-permission
 - `numind-server/migrations/20260420_230001_backfill_default_template_permissions_rollback.sql`（新建）
 - `numind-server/internal/pkg/model/user_chatbot_permission.go`（新建）
 
+**【P0 review 修正点】**：
+- Backfill SQL 的 `NOT EXISTS` 子查询**必须**加 `AND p.deleted_at IS NULL` —— `user_template_permission` 嵌入 `gorm.Model` 有软删除，曾撤权的子账号活跃记录 = 0 但 hard rows 存在，若漏过滤会误判跳过
+- Backfill INSERT 列**必须**包含 `parent_user_id`（`NOT NULL` 列，从 `user.parent_user_id` JOIN 取值） + `updated_at` —— 初版 spec 漏写
+- 参考 spec §3.2 最新版 SQL 完整写法
+
 **验收**：
 - SQL 在 dev DB 运行成功（create + 二次 apply 验证幂等）
 - Go `go build ./...` pass
 - Migration 文件头部注释说明执行顺序（create 先、backfill 后）
+- 在 dev 上手动制造一个"所有权限记录都软删除的子账号"（`UPDATE user_template_permission SET deleted_at=NOW() WHERE sub_user_id=X`），再跑 backfill → 该子账号应被写入新的权限行
 
 **独立性**：纯 DDL/model，不依赖其他 task。
 
@@ -100,24 +106,31 @@ git checkout -b feature/child-run-permission
 
 ### Task 4 — Biz 层 chatbot 运行时守卫 （numind-server）
 
-**目标**：`chatbotBiz` 的 `ListVisibleChatbots` 加白名单过滤；`CreateSession` / `Chat` 加权限守卫。
+**目标**：`chatbotBiz` 的 `ListVisibleChatbots` 加白名单过滤；`CreateSession` / **`ChatStream`** 加权限守卫。
 
 **文件改动**：
-- `numind-server/internal/numind/biz/chatbot/chatbot.go`（修改）
-- `numind-server/internal/numind/biz/chatbot/chatbot_test.go`（新增 ~4 测试）
+- `numind-server/internal/numind/biz/chatbot/chatbot.go`（修改 `ListVisibleChatbots` + `CreateSession`）
+- `numind-server/internal/numind/biz/chatbot/stream.go`（修改 `ChatStream`）
+- `numind-server/internal/numind/biz/chatbot/chatbot_test.go`（新增测试）
+- `numind-server/internal/numind/biz/chatbot/stream_test.go`（新增 ChatStream 测试，若不存在则新建）
 - `numind-server/internal/pkg/errno/code.go` 或对应错误码文件（新增 `ErrChatbotRunDenied`）
+
+**【P1-B review 修正点】**：
+- 接口实际是 `ChatStream`（`stream.go:31`），不是 `Chat`，plan 初版引用错误
+- `ChatStream` 必须在 session 所有权校验之后、LLM 调用之前**显式调用** `ds.Customers().HasChatbotPermission(ctx, userID, session.ChatbotID)`。PRD AS-5 要求"撤销即时生效" —— 父账号撤权后子账号对已有 session 再发消息要被 403 拒绝
 
 **改造点**：
 1. `ListVisibleChatbots`: 子账号时用 `ds.Customers().ListSubUserChatbotIDs` 拉白名单，set 交集过滤
 2. `CreateSession(ctx, userID, chatbotID)`: entry 先调 `HasChatbotPermission`
-3. `Chat(ctx, userID, sessionID, ...)`: 通过 session → chatbotID → `HasChatbotPermission` 链式检查
-4. `ListSessions` / `ListMessages`: 不加额外守卫（session 已绑 user_id，无法访问别人的 session；父账号撤销权限后历史 session 仍可读，符合 PRD 的"撤销即时生效"= 阻止新运行而不销毁历史）
+3. **`ChatStream(ctx, userID, sessionID, ...)`**: session 所有权校验后增加 `HasChatbotPermission(userID, session.ChatbotID)` 检查
+4. `ListSessions` / `ListMessages`: 不加额外守卫（session 已绑 user_id，历史 session/messages 可读不等于能继续 chat —— 读权限 vs 运行权限解耦）
 
-**测试**：
-- `TestListVisibleChatbots_ChildFiltered`
-- `TestListVisibleChatbots_ParentAll`
-- `TestCreateSession_ChatbotRunDenied`
-- `TestCreateSession_ChatbotAllowed`
+**测试**（必须全部覆盖）：
+- `TestListVisibleChatbots_ChildFiltered`（子账号只看到白名单内）
+- `TestListVisibleChatbots_ParentAll`（父账号不受限）
+- `TestCreateSession_ChatbotRunDenied`（未授权 → 403）
+- `TestCreateSession_ChatbotAllowed`（授权 → 成功）
+- **`TestChatStream_AfterRevoke_Denied`**（新增 P1-B）—— 创建 session，父账号撤权，再调 ChatStream → 返回 ErrChatbotRunDenied
 
 **独立性**：依赖 Task 2 store + Task 3 biz 接口。
 
@@ -171,18 +184,22 @@ git checkout -b feature/child-run-permission
 
 ### Task 7 — Dev migration apply + 联调验证 （运维）
 
-**目标**：在 dev 环境运行 2 个 migration，执行端到端联调。
+**目标**：在 dev 环境**先**运行 migration **再**触发 code deploy，执行端到端联调。
 
-**步骤**：
-1. SSH dev，手动 apply create migration（`user_chatbot_permission` 表）
-2. 手动 apply backfill migration
-3. 验证存量子账号 before/after 的 `user_template_permission` 行数一致（抽 3 个子账号）
-4. 部署最新 develop（CI 自动触发）
-5. gstack /qa 走一遍关键流：
-   - 父账号打开弹窗 → 看到 10 SOP + 9+1 chatbot
+**【P1-A review 修正的执行顺序】**：原版把 SSH apply 和 merge 的顺序搞错 —— merge 触发 CI deploy 必须发生在 backfill 完成后，否则翻转代码会先于存量保护上线，造成 0 记录子账号临时 deny-all。
+
+**严格步骤顺序**：
+1. **Step 0** SSH dev，手动 apply `20260420_230000_create_user_chatbot_permission.sql`（创建 chatbot 权限表）
+2. **Step 1** SSH dev，手动 apply `20260420_230001_backfill_default_template_permissions.sql`（backfill 存量）
+3. **Step 2** 立即跑二次 apply 验证幂等（行数不变）
+4. **Step 3** 抽 3 个存量子账号，执行 `/v1/sop/templates` API（用各自 token）→ 记录 before/after 模板列表差异为 0
+5. **Step 4**【确认 Step 1-3 全部 PASS 后】merge feature branch → develop → push origin develop（CI 自动触发 dev deploy）
+6. **Step 5** CI deploy 完成后 gstack /qa 走关键流：
+   - 父账号打开弹窗 → 看到 10 SOP + 9 chatbot（只 published，per D5 修正）
    - 取消某个 SOP 的授权 → 子账号登录 → SOP 消失
    - 授权某个 chatbot → 子账号登录 → chatbot 出现 + 能开会话
-   - 撤销该 chatbot 授权 → 子账号尝试开会话 → 403
+   - **撤销该 chatbot 授权 → 子账号在已有 session 继续发送消息 → 返回 ErrChatbotRunDenied**（P1-B 新增关键路径）
+   - 子账号直连 API 传未授权 chatbot_id `POST /v1/chatbot/sessions` → 403（P0.5 路径，无法走 UI）
 
 **独立性**：依赖 Task 1~6 全部完成。
 
@@ -192,21 +209,40 @@ git checkout -b feature/child-run-permission
 
 **目标**：锁定 S5 验证方式，产出 `numind-server/docs/superpowers/qa/2026-04-20-child-run-permission-qa.md` 的验收清单模板。
 
-**选择**：**gstack /qa 浏览器手动验证 + backfill migration SQL 级验证**
+**选择**：**gstack /qa 浏览器手动验证 + backfill migration SQL 级验证 + minimal Playwright request-level E2E**
+
+**【S3 Gate reviewer 建议升级】**：纯 gstack /qa 对 API 直连和 ChatStream 撤销场景覆盖不稳定，加最小 Playwright 补齐。
 
 **理由**：
-1. 权限判定是后端核心，已由 Task 2~4 的 Go TDD 密集覆盖（~15 unit test），回归保护充分
+1. 权限判定是后端核心，已由 Task 2~4 的 Go TDD 密集覆盖（~18 unit test 含 review 追加的 3 个缺口），回归保护充分
 2. 前端弹窗新增 chatbot 区块是对称复制 SOP 区块，UI 回归面有限
-3. E2E Playwright 的维护成本对权限场景性价比低（权限组合爆炸，单测更适合）
-4. 然而存量保护（backfill 幂等性 + 子账号可见范围 0 差异）是核心 P0 约束，需要显式 SQL level 验证（pre/post count + diff 抽样）
+3. 然而存量保护 + 撤销即时生效是 P0 约束，需要显式 SQL 和 HTTP-level 验证
+4. Playwright request-level test 只跑 API 直调（不需要浏览器），维护成本低
+
+**分工**：
+- **gstack /qa**：UI 弹窗交互、列表渲染、勾选保存、子账号登录后可见性
+- **SQL pre/post 对比**：backfill 幂等 + 抽样 3-5 个存量子账号的 `user_template_permission` 行数 before/after
+- **Playwright request API**：高风险路径纯 HTTP 验证（不走 UI）
 
 **关键用户路径**（S5 必须验证）：
-- P0.1 backfill 前后任一存量子账号的 `/v1/sop/templates` 返回条目数 0 差异
-- P0.2 新建子账号默认 empty list（SOP + chatbot 都为空）
-- P0.3 父账号授权 + 子账号登录 → 能看到、能运行
-- P0.4 父账号撤销 + 子账号运行 → 403
-- P0.5 子账号直连 API `/v1/chatbot/sessions` 传未授权 chatbot_id → 403
-- P0.6 父账号自己调 API 不受限（regression 确认）
+
+| # | 路径 | 验证工具 |
+|---|------|---------|
+| P0.1 | backfill 前后任一存量子账号的 `/v1/sop/templates` 返回条目数 0 差异 | SQL + HTTP assertion |
+| P0.2 | 新建子账号默认 empty list（SOP + chatbot 都为空） | gstack /qa UI |
+| P0.3 | 父账号授权 + 子账号登录 → 能看到、能运行 | gstack /qa UI |
+| P0.4 | 父账号撤销 + 子账号运行 → 403 | gstack /qa UI |
+| **P0.5** | **子账号直连 API `/v1/chatbot/sessions` 传未授权 chatbot_id → 403** | **Playwright request-level**（必需，UI 测不到） |
+| **P0.6** | **撤销即时生效：已有 session + 撤权 + 再 chat → ErrChatbotRunDenied** | **Playwright request-level**（必需） |
+| P0.7 | 父账号自己调 API 不受限（regression 确认） | gstack /qa |
+
+**Playwright spec 文件**（Task 7 实施时创建）：
+- `numind-web-v3/e2e/child-run-permission-api.spec.ts` —— 纯 request.fetch，2 个 test 用例 P0.5 + P0.6
+
+**单测追加**（S3 Gate review 要求）：
+- `TestHasTemplatePermission_WhitelistMissAfterSoftDelete`（Task 2 加）—— 软删除的 permission 行应视为无效
+- `TestChatStream_AfterRevoke_Denied`（Task 4 加）—— 已在 Task 4 测试列表中
+- `TestGrantChatbots_SelfParentBypassed`（Task 3 加）—— 父账号调 grant 对自己不触发子账号校验
 
 ## §2 依赖关系
 
@@ -254,7 +290,11 @@ Task 1 (migration + model)
 - 合入 develop 之前所有 task 都在 `feature/child-run-permission` 分支
 - manifest 在每个 task 完成后更新 `progress.completed_tasks` 和 `progress.reviewed_tasks`
 - 每个 task 的 commit 顺序由依赖决定，但都可以随时 push feature branch 到 remote
-- S6 merge：两仓库同时 `git checkout develop && git merge --no-ff feature/child-run-permission && git push origin develop`
+- **【P1-A review 约束】S6 merge 必须满足前置**：
+  1. 先 SSH dev 手动 apply create + backfill migration（Task 7 Step 0-1）
+  2. SQL 级验证 P0.1 通过（backfill pre/post 0 差异）
+  3. **然后才能**执行 `git checkout develop && git merge --no-ff feature/child-run-permission && git push origin develop`
+  4. CI deploy 完成后跑 Playwright + gstack /qa 覆盖 P0.2-P0.7
 
 ## §5 Rollback 场景
 

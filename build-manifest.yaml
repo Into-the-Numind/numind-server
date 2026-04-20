@@ -2215,10 +2215,10 @@ features:
     ndf_version: "1.1"
     description: "父账号对子账号的 SOP 和 chatbot 运行权限管理。核心：(1) 新增 chatbot 白名单机制（新表 user_chatbot_permission + 新 API + 前端弹窗 chatbot 区块）(2) 翻转 SOP 和 chatbot 语义为『默认 deny』—— 子账号必须被父账号显式授予权限才能运行 (3) 一次性 backfill 迁移保护存量：对所有『0 条 user_template_permission 记录』的子账号 insert 所有父账号已发布 SOP 的授权记录（等同冻结他们当前的可见范围），上线后再新建的模板/chatbot 走默认 deny。效果：存量子账号现有权限完全保留；新建子账号或父账号新增资源时必须手动授权。"
     track: "standard"
-    stage: "S3-pending-review"
+    stage: "S3-done"
     classification_reason: "Standard：(1) 文件数 >3（backend biz + store + controller + model + migration + 前端 view）(2) schema 变更：新增 user_chatbot_permission 表 + backfill migration (3) 跨 2 仓库（numind-server + numind-web-v3）(4) 高风险业务逻辑：权限模型翻转 + 存量数据迁移，错误会导致子账号误屏蔽或权限泄露 (5) 5 条 Triage 标准 4 条触发"
-    last_updated_by: "ai-s3"
-    last_updated_at: "2026-04-20T23:00:00+08:00"
+    last_updated_by: "ai-s3-gate-fixes"
+    last_updated_at: "2026-04-20T23:30:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -2228,6 +2228,7 @@ features:
       proposal: "numind-server/proposals/child-run-permission-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-04-20-child-run-permission-design.md"
       plan: "numind-server/docs/superpowers/plans/2026-04-20-child-run-permission-plan.md"
+      review_s3_gate: "numind-server/docs/superpowers/reviews/2026-04-20-child-run-permission-s3-gate-review.md"
       review_spec_compliance: null
       review_code_quality: null
       qa: null
@@ -2236,8 +2237,8 @@ features:
       completed_tasks: 0
       reviewed_tasks: 0
       current_task:
-        index: 0
-        title: "S3 Gate：独立 Sonnet reviewer 审查 plan 原子性 + S5 策略合理性"
+        index: 1
+        title: "Task 1: DB migration + Go model (ready to dispatch)"
     rollback: null
     last_verified: null
     decisions:
@@ -2250,6 +2251,7 @@ features:
       - "2026-04-20 (S2 锁定): 9 条关键决策 D1-D9。核心：默认 deny 通过 HasTemplatePermission 翻转实现；chatbot 独立表；面板列 draft+published；不硬绑 FK；上线顺序必须 migration-first"
       - "2026-04-20 (S3 plan): 7 个实施 task + 1 个 S5 验证策略 task。依赖拓扑允许 Task 3 和 Task 4 并行 dispatch。S5 验证策略选 gstack /qa + SQL-level backfill 验证（理由：权限判定由 Go TDD 覆盖密集；UI 对称复制回归面有限；存量保护需显式 SQL pre/post 对比）"
       - "2026-04-20 (S3 待 review): 按 NDF 规则 10，plan 末尾的 S5 验证策略 task 需要由独立 Sonnet reviewer 审查（一并审 plan 原子性）后才能进 S4"
-    blockers: []
-    created_at: "2026-04-20T22:00:00+08:00"
-    completed_at: null
+      - "2026-04-20 (S3 Gate 结果): Sonnet reviewer verdict=PASS_WITH_CONCERNS (1 P0 + 2 P1 + 2 P2)。独立审查发现 backfill SQL 漏过滤 deleted_at（软删除漏洞）+ ChatStream 接口名错写成 Chat + 部署顺序反了 + D5 决策矛盾 + rollback 过度删除风险。所有问题在 spec + plan 直接修复（不动代码），修复后状态 review 也在报告内一并确认"
+      - "2026-04-20 (S3 Gate 我自查追加): reviewer 未提及但同样严重 — user_template_permission 有 parent_user_id NOT NULL 列，初版 spec §3.2 backfill SQL 漏写，在 P0 修复时一并补齐（从 user.parent_user_id JOIN 取值）"
+      - "2026-04-20 (S2 D5 翻转): chatbot 权限面板只列 published（不列 draft）。原 D5 想支持 draft 预授权被 reviewer P2-A 指出与 /v1/chatbot/list 接口行为矛盾。default-deny 下『发布 + 0 权限 = 零泄露』，发布后再设权限无风险，简化交互"
+      - "2026-04-20 (S5 策略升级): reviewer 建议从 gstack /qa + SQL 升级为 + minimal Playwright request-level E2E（仅 2 个 test：P0.5 API 直连绕过 + P0.6 撤销即时生效）。单测追加 3 个缺口：WhitelistMissAfterSoftDelete / ChatStream_AfterRevoke_Denied / GrantChatbots_SelfParentBypassed"

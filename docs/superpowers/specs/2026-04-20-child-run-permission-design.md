@@ -77,17 +77,21 @@ CREATE TABLE IF NOT EXISTS `user_chatbot_permission` (
 
 ### §3.2 Backfill migration
 
+**实际表结构确认**（S3 Gate review 发现 spec 初版错漏）：`user_template_permission` 嵌入 `gorm.Model`（含 `created_at / updated_at / deleted_at`）+ `parent_user_id NOT NULL` + `sub_user_id NOT NULL` + `template_id NOT NULL`。 UNIQUE KEY 在 `(sub_user_id, template_id)`。
+
 ```sql
 -- migrations/20260420_230001_backfill_default_template_permissions.sql
--- 目标：为所有 parent_user_id IS NOT NULL 且 user_template_permission 中 0 记录的子账号
---       写入父账号当前全部 active+published+not-deleted SOP 模板的授权行
--- 幂等：INSERT IGNORE + WHERE NOT EXISTS 双保险
+-- 目标：为所有『活跃权限 = 0』的子账号写入父账号当前已发布 SOP 的授权行
+-- 幂等保护：INSERT IGNORE（UNIQUE KEY 冲突跳过）+ NOT EXISTS（排除已有活跃记录的子账号）
+-- 软删除关键：NOT EXISTS 子查询必须加 deleted_at IS NULL，否则被撤权的子账号会被误判为"已有记录"从而跳过 backfill
 
-INSERT IGNORE INTO `user_template_permission` (`sub_user_id`, `template_id`, `created_at`)
+INSERT IGNORE INTO `user_template_permission` (`parent_user_id`, `sub_user_id`, `template_id`, `created_at`, `updated_at`)
 SELECT
+  u.parent_user_id AS parent_user_id,
   u.id AS sub_user_id,
   t.id AS template_id,
-  NOW(3) AS created_at
+  NOW(3) AS created_at,
+  NOW(3) AS updated_at
 FROM `user` u
 CROSS JOIN `sop_template` t
 WHERE
@@ -99,14 +103,17 @@ WHERE
   AND NOT EXISTS (
     SELECT 1 FROM `user_template_permission` p
     WHERE p.sub_user_id = u.id
+      AND p.deleted_at IS NULL     -- 关键：软删除过滤
     LIMIT 1
   );
 ```
 
 **关键约束**：
-- 只处理 0 记录子账号（`NOT EXISTS ... LIMIT 1`）
-- 产出行的 `created_at` 统一是 migration 执行时刻 —— 作为 rollback 标记（`DELETE WHERE created_at BETWEEN :start AND :end AND sub_user_id IN :backfilled_users`）
-- 子账号去向所有父账号的模板（不限定"自己父账号"，因为现有 SOP 白名单也不限定 `sop_template.creator_user_id` —— 现行查找语义就是 global published）
+- **P0 修复（review 要求）**：`NOT EXISTS` 子查询加 `AND p.deleted_at IS NULL`。`user_template_permission` 用软删除 —— 曾被父账号撤权的子账号，hard rows 还在但活跃记录为 0，如果不过滤 deleted_at 会被误判为"已有记录"跳过 backfill，翻转后 deny-all。
+- **parent_user_id 必填**：初版 spec 漏了这列，实际是 `NOT NULL`，从 `user.parent_user_id` JOIN 写入
+- 只处理"活跃记录 = 0"的子账号（软删除后 = 0 同样处理）
+- 产出行的 `created_at` 统一是 migration 执行时刻 —— 作为 rollback 的时间窗口标记
+- 子账号的权限不限定于自己父账号的模板（复用现有 `HasTemplatePermission` 不做 `creator_user_id` 校验的语义）
 - Chatbot 侧**不需要**backfill：上线前 prod 4 个 chatbot 全 draft，不可见；dev 也无非父非子账号对 chatbot 有依赖；新表从空起步，default-deny 即生效
 
 ### §3.3 Go Model
@@ -274,8 +281,26 @@ func (b *chatbotBiz) CreateSession(ctx context.Context, userID uint, chatbotID u
     // ... 既有逻辑
 }
 
-// Chat(sessionID, ...) 同样加权限检查
-// 通过 session -> chatbotID -> HasChatbotPermission 链式检查
+// ChatStream（stream.go:31）同样加权限检查
+// 【P1-B review 修正】：正确入口是 ChatStream，不是 Chat。接口定义在 chatbot.go:68
+// 目的：撤销即时生效（PRD AS-5）—— 父账号撤权后子账号对已有 session 再发消息 → 403
+func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint, message string, modelKey string, thinking bool, handler StreamHandler) error {
+    // 既有逻辑：get session + session.UserID != userID 校验（stream.go:40）
+    session, err := b.ds.ChatbotSession().Get(ctx, sessionID)
+    if err != nil { ... }
+    if session.UserID != userID { return ErrForbidden }
+
+    // 【新增】：权限检查 — 即使拥有 session 也要检查 chatbot 当前是否仍被授权
+    ok, err := b.ds.Customers().HasChatbotPermission(ctx, userID, session.ChatbotID)
+    if err != nil {
+        return fmt.Errorf("ChatStream permission: %w", err)
+    }
+    if !ok {
+        return errno.ErrChatbotRunDenied
+    }
+
+    // ... 既有的向量检索 / LLM 调用 / 持久化
+}
 ```
 
 **权限错误码**：新增 `errno.ErrChatbotRunDenied`（code: 和 `ErrSopRunDenied` 同段位）。Controller 返回 HTTP 403。
@@ -411,8 +436,11 @@ SELECT sub_user_id, template_id FROM user_template_permission ORDER BY sub_user_
 
 ## §6 部署流程（强约束顺序）
 
-1. 合并 feature 到 develop（触发 dev 环境 deploy）
-2. 在 dev DB 手动执行 backfill migration：
+**【P1-A review 修正】**：原步骤 1 和 2 顺序反了。Migration 必须在 CI deploy 之前完成，否则翻转代码会先于存量数据保护上线，所有 0 记录子账号临时被 deny-all。正确顺序：
+
+1. **先**在 dev DB 手动执行 create + backfill migration（SSH + docker exec mysql）
+2. **再**合并 feature 到 develop（CI 自动触发 dev 部署）
+3. ~~在 dev DB 手动执行 backfill migration：~~（原步骤移到 Step 1 前置）
    ```bash
    sshpass -p "$DEV_SSH_PASS" ssh ... "docker cp migrations/20260420_230001_backfill_default_template_permissions.sql numind-mysql-dev:/tmp/a.sql && docker exec ... mysql < /tmp/a.sql"
    ```
@@ -436,11 +464,20 @@ SELECT sub_user_id, template_id FROM user_template_permission ORDER BY sub_user_
 
 ```sql
 -- backfill_rollback.sql
+-- 【P2-B review 决策】：接受时间窗口过度删除的小风险，不加 source='backfill' 字段
+-- 缓解（必须按顺序执行）：
+--   1) backfill 执行窗口锁定在维护窗口（<2 分钟）
+--   2) 窗口期间不允许父账号做 grant/revoke 操作（运维公告 + UI 只读）
+--   3) rollback 前 dry-run：SELECT COUNT(*) FROM user_template_permission WHERE created_at BETWEEN :start AND :end → 人工确认行数合理再 DELETE
+
+-- Step 1: dry-run 打印待删除行数
+SELECT COUNT(*) AS will_delete FROM `user_template_permission`
+WHERE `created_at` BETWEEN :backfill_start_ts AND :backfill_end_ts;
+
+-- Step 2: 人工确认后真删
 DELETE FROM `user_template_permission`
 WHERE `created_at` BETWEEN :backfill_start_ts AND :backfill_end_ts
   AND `sub_user_id` IN (SELECT id FROM user WHERE parent_user_id IS NOT NULL AND deleted_at IS NULL);
--- 风险：若 backfill 期间有人工授权操作，created_at 可能落在同一窗口 → 过度删除
--- 缓解：backfill 执行窗口锁定在低峰期 ≤5 分钟；若担心，用 migration 加独立 source='backfill' 标记字段（S3 plan 决定是否采纳）
 ```
 
 ### 回滚后的状态语义
@@ -456,7 +493,7 @@ WHERE `created_at` BETWEEN :backfill_start_ts AND :backfill_end_ts
 | D2 | 一次性 backfill migration | 加 `permissions_initialized` 标记字段区分老/新账号 | backfill 是一次性迁移，数据模型统一；标记字段会让代码路径分叉，长期维护负担大 |
 | D3 | `user_chatbot_permission` 独立表 | 在 `user_template_permission` 加 `resource_type` 列 | SOP 和 chatbot 生命周期独立；独立表结构清晰，不污染现有表 |
 | D4 | 不硬绑 FK | 加 FK 到 `chatbot_config.id` | 对齐既有 `user_template_permission` 风格；chatbot 软删不触发级联；业务层保证引用完整性 |
-| D5 | 面板列出全部 chatbot（含 draft） | 只列 published | 用户可以给 draft chatbot 预授权，上线时生效，减少发布后的手动授权步骤 |
+| D5 | ~~面板列出全部 chatbot（含 draft）~~ **改为只列 published** | 含 draft 预授权 | 【P2-A review 修正】权限面板数据源 `/v1/chatbot/list` 既有接口只返 published，与原 D5 矛盾。default-deny 下"发布 + 0 权限 = 零泄露"，发布后设权限没风险，放弃 draft 预授权简化交互 |
 | D6 | Chatbot 侧不 backfill | 为 chatbot 也做对等 backfill | 上线前 prod chatbot 全 draft 对子账号不可见；dev 无重要子账号-chatbot 依赖；从空起步干净 |
 | D7 | `/v1/chatbot/list` 既有端点复用 | 新建 `/v1/chatbots/all` 专供权限面板 | `/v1/chatbot/list` 对父账号返回全部已发布 chatbot，语义已经满足；不增接口 |
 | D8 | 响应 `{chatbot_ids:[...]}` 而非对象数组 | 返回 `[{id, name, ...}]` 对象 | 面板拉两次：`fetchAllChatbots` 拿对象；`fetchUserChatbots` 拿 id 集用于 check 状态；分离职责 |
