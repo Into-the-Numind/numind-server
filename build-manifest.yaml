@@ -224,19 +224,20 @@ features:
     ndf_version: "1.1"
     description: "【根因已定位 2026-04-21】Langfuse SDK 的 EndGeneration/EndSpan 发送 generation-update/span-update 事件时未带 traceId，Langfuse 服务端 zod 校验拒绝（HTTP 400 per-event：'Too small: expected string to have >=1 characters, path: body.traceId'）。但批量响应整体 200，flush.go:44 丢弃 response body，错误完全静默。影响面：所有 Generation（stream + non-stream）和所有 Span 的 endTime 都丢失，Langfuse UI 全部显示 endTime=None。2026-04-21 curl 实测 100 generations + 50 spans 全部 endTime=None。原 hotfix 假设的'tracing.go stream goroutine deadlock'被证伪——真正 bug 在 helpers.go EndGeneration/EndSpan 签名，与 stream/非 stream 无关。名称保留向后兼容 (id 已引用)"
     track: "hotfix"
-    stage: "H1"
+    stage: "H2"
     classification_reason: "边界 Hotfix：影响文件 >3（helpers.go/flush.go + ~30 调用点），但 30 个调用点是机械 codemod（加 tc.TraceID 参数），编译器强制类型检查兜底。纯基础设施 bug、无 DB schema、无新 API、无新外部服务、无业务逻辑。用户确认 Hotfix 轨道"
-    last_updated_by: "ai-h1-diagnosis"
-    last_updated_at: "2026-04-21T10:30:00+08:00"
+    last_updated_by: "ai-h2-merged"
+    last_updated_at: "2026-04-21T00:50:00+08:00"
     repos:
       - numind-server
-    branches: {}
+    branches:
+      numind-server: "fix/langfuse-traceid-missing (merged FF to develop @ 9aa2df3, cleaned up)"
     artifacts: {}
     progress:
-      total_tasks: 0
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task: "H1 诊断完成，等用户确认修复方案后开工"
+      total_tasks: 2
+      completed_tasks: 2
+      reviewed_tasks: 2
+      current_task: "等 dev CI 部署 → curl Langfuse API 实测 endTime 落地（H3 人工验收）"
     rollback: null
     last_verified: null
     decisions:
@@ -245,6 +246,8 @@ features:
       - "2026-04-21 (H1 诊断): 起初猜测根因在 tracing.go stream goroutine deadlock / 类型断言失败——全部证伪。adapters 均返回 <-chan 正确类型（ali/volc/dmxapi.go 验证）；middleware chain 顺序 Tracing→Billing→Fallback→Retry→Adapter 合理；caller 正常 drain 时 EndGeneration 路径能走到"
       - "2026-04-21 (H1 根因): curl POST Langfuse /api/public/ingestion 实测——generation-update 带空 traceId 返回 400 'Too small'；带非空 traceId 返回 201 成功。零 startTime 不影响。bug 位于 helpers.go EndGeneration/EndSpan 构造 body 时只设了 ID+EndTime，TraceID 字段留空——Langfuse zod schema require traceId >=1 char"
       - "2026-04-21 (H1 次级缺陷): flush.go:44 io.Copy(io.Discard, resp.Body) 吞掉响应体，flush.go:47 只在 StatusCode>=400 才 warn。但批量端点对 per-event 错误返回 200 with errors array。导致 4 天 0 告警。本 hotfix 顺带修 flush.go 解析 errors 数组并 warn"
+      - "2026-04-21 (H2 实施): 2 commit on fix/langfuse-traceid-missing → FF merge develop@9aa2df3 → push。commits: baa6ffa chore 删 dead dmxapi_client (-1121 行)；9aa2df3 fix 改签名+解析 ingestion errors (13 文件 +148/-40)。25 个调用点机械加 tc.TraceID。新增 helpers_traceid_test.go 2 case 作 regression fence"
+      - "2026-04-21 (H2 静态验收): go build 全绿；gofmt + go vet 干净；新增 langfuse 单测 PASS；middleware/tracing 全 24 单测 PASS；pre-existing failures（credit/salesrag/sop tests）已确认在 develop base 同样 FAIL，非本次回归（manifest line 55 早记录）"
     blockers: []
     created_at: "2026-04-21T05:00:00+08:00"
 
