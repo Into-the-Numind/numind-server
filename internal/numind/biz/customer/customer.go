@@ -415,11 +415,9 @@ func (c *customerBiz) ListSubUserChatbots(ctx context.Context, parentUserID, sub
 	}
 
 	// 3. 批量查 chatbot_config 详情（限制 user_id = parentUserID 防止历史脏数据
-	//    泄漏非本父账号的 chatbot 详情）
-	var configs []model.ChatbotConfig
-	if err := c.ds.DB().WithContext(ctx).
-		Where("id IN ? AND user_id = ?", ids, parentUserID).
-		Find(&configs).Error; err != nil {
+	//    泄漏非本父账号的 chatbot 详情）。走 store 层保持 biz 不裸访问 DB。
+	configs, err := c.ds.ChatbotConfig().ListByIDsOwnedBy(ctx, ids, parentUserID)
+	if err != nil {
 		return nil, fmt.Errorf("ListSubUserChatbots fetch configs: %w", err)
 	}
 	return configs, nil
@@ -442,11 +440,8 @@ func (c *customerBiz) validateChatbotOwnership(ctx context.Context, parentUserID
 		unique = append(unique, id)
 	}
 
-	var count int64
-	if err := c.ds.DB().WithContext(ctx).
-		Model(&model.ChatbotConfig{}).
-		Where("id IN ? AND user_id = ?", unique, parentUserID).
-		Count(&count).Error; err != nil {
+	count, err := c.ds.ChatbotConfig().CountByIDsOwnedBy(ctx, unique, parentUserID)
+	if err != nil {
 		return fmt.Errorf("validateChatbotOwnership: %w", err)
 	}
 	if count != int64(len(unique)) {
@@ -461,6 +456,11 @@ func (c *customerBiz) validateChatbotOwnership(ctx context.Context, parentUserID
 }
 
 // GrantChatbots 为子账号授权 chatbot（幂等）
+//
+// 错误语义说明：本方法（以及 Revoke/Batch 同族方法）在父子关系校验失败时统一返回
+// errno.ErrForbidden，而非既有 GrantTemplates 的透传 raw err。这是有意的向前改进：
+// 避免内部 DB/GORM 错误细节（表名、SQL 片段、not-found 语义）泄漏到 HTTP client。
+// 调用方只需要区分「禁止」（403）和「内部错误」（500），这正是 errno 的定位。
 func (c *customerBiz) GrantChatbots(ctx context.Context, parentUserID, subUserID uint, chatbotIDs []uint) error {
 	// 1. 父子关系校验
 	if _, err := c.ds.Customers().GetSubUser(ctx, parentUserID, subUserID); err != nil {
@@ -508,6 +508,12 @@ func (c *customerBiz) RevokeChatbots(ctx context.Context, parentUserID, subUserI
 // 策略：先统一校验所有 chatbotIDs 的归属（1 次查询），再逐 subUser 做父子校验 +
 // grant 写入。任一子账号校验失败 → 立即返回错误，已处理的子账号权限已写入（接受
 // 与既有 BatchGrantTemplates 同级的部分成功语义，调用方可重试幂等）。
+//
+// Fail-fast 语义说明：本方法与既有 BatchGrantTemplates 的 continue-on-error 语义
+// 有意不同，采用「任一子账号失败立即返回错误」。配合 grant 写入自身的幂等（UNIQUE
+// 冲突 upsert），调用方发现错误后可安全重试——已成功写入的子账号二次 grant 不会
+// 产生副作用，失败点之后的子账号重试覆盖即可。这比 continue-on-error 更利于调用
+// 方感知和处理部分失败。
 func (c *customerBiz) BatchGrantChatbots(ctx context.Context, parentUserID uint, subUserIDs, chatbotIDs []uint) error {
 	// 1. Chatbot 归属统一校验（1 次 DB 查询）
 	if err := c.validateChatbotOwnership(ctx, parentUserID, chatbotIDs); err != nil {
@@ -533,6 +539,9 @@ func (c *customerBiz) BatchGrantChatbots(ctx context.Context, parentUserID uint,
 }
 
 // BatchRevokeChatbots 为多个子账号批量撤销多个 chatbot。
+//
+// Fail-fast 语义说明：与 BatchGrantChatbots 对称，任一子账号失败立即返回。Revoke
+// 本身幂等（DELETE WHERE 不存在行不报错），失败后重试安全。
 func (c *customerBiz) BatchRevokeChatbots(ctx context.Context, parentUserID uint, subUserIDs, chatbotIDs []uint) error {
 	// 1. Chatbot 归属统一校验
 	if err := c.validateChatbotOwnership(ctx, parentUserID, chatbotIDs); err != nil {

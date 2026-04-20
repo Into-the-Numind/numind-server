@@ -239,7 +239,9 @@ func (b *chatbotBiz) ListVisibleChatbots(ctx context.Context, user *model.User) 
 		for _, id := range allowedIDs {
 			allowed[id] = true
 		}
-		filtered := configs[:0]
+		// 用新 slice 而非 configs[:0] —— 避免底层数组 aliasing 导致 caller 持有
+		// 的其他 slice 被 overwritten（defensive coding，即便当前 caller 不复用）。
+		filtered := make([]model.ChatbotConfig, 0, len(allowedIDs))
 		for _, c := range configs {
 			if allowed[c.ID] {
 				filtered = append(filtered, c)

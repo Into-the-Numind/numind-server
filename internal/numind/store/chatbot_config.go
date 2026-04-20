@@ -25,6 +25,10 @@ type IChatbotConfigStore interface {
 
 	// C端查询
 	ListPublishedByOwner(ctx context.Context, ownerUserID uint) ([]model.ChatbotConfig, error)
+
+	// 批量 ID + owner 过滤（biz/customer 白名单详情/归属校验用；保持 biz 不裸访问 DB）
+	ListByIDsOwnedBy(ctx context.Context, ids []uint, ownerUserID uint) ([]model.ChatbotConfig, error)
+	CountByIDsOwnedBy(ctx context.Context, ids []uint, ownerUserID uint) (int64, error)
 }
 
 type chatbotConfigStore struct {
@@ -161,4 +165,31 @@ func (s *chatbotConfigStore) ListPublishedByOwner(ctx context.Context, ownerUser
 		Find(&configs).Error
 
 	return configs, err
+}
+
+// ListByIDsOwnedBy 批量查询指定 ID 列表中属于 ownerUserID 的 chatbot 详情。
+// 空 ids 返回空 slice + nil error。结果不强制包含所有 ID（缺失 ID = 不属于此 owner 或已删除）。
+func (s *chatbotConfigStore) ListByIDsOwnedBy(ctx context.Context, ids []uint, ownerUserID uint) ([]model.ChatbotConfig, error) {
+	if len(ids) == 0 {
+		return []model.ChatbotConfig{}, nil
+	}
+	var configs []model.ChatbotConfig
+	err := s.db.WithContext(ctx).
+		Where("id IN ? AND user_id = ?", ids, ownerUserID).
+		Find(&configs).Error
+	return configs, err
+}
+
+// CountByIDsOwnedBy 批量统计 ids 中属于 ownerUserID 的 chatbot 数量。
+// 空 ids 返回 0 + nil error。用于归属校验（count == len(ids) 则全部归属）。
+func (s *chatbotConfigStore) CountByIDsOwnedBy(ctx context.Context, ids []uint, ownerUserID uint) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	var count int64
+	err := s.db.WithContext(ctx).
+		Model(&model.ChatbotConfig{}).
+		Where("id IN ? AND user_id = ?", ids, ownerUserID).
+		Count(&count).Error
+	return count, err
 }
