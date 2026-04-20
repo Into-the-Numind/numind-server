@@ -75,7 +75,7 @@ S1 proposal 的标题是"OpenRouter Provider 接入"。经过 S2 brainstorming�
 | `ai_service_route` 2026-04-18 已删除定价列 | `migrations/20260418_180000_drop_route_pricing_columns.sql` | 定价**只能**在 `pricing_rule` |
 | `priority` 字段规则：**越大越优先**（DESC 排序） | `store.go:324` `ORDER BY r.priority DESC` | 新主路由数值要大于 100（aihubmix 当前值） |
 | 调用入口：`aiservice.ChatStream`，走 dmxapi adapter | `biz/sop/executor.go:468` · `biz/chatbot/stream.go:179` | SSE 解析在 `aiservice/adapter/adapter.go`，非 `llm/dmxapi_client.go` |
-| `llm/dmxapi_client.go` 在 `internal/` 下零引用 | grep 验证 | S1 proposal 建议改它是误导，**忽略** |
+| `llm/dmxapi_client.go` 在 `internal/` 非测试代码下零引用（仅自己的 `_test.go` 引用） | grep 验证 | S1 proposal 建议改它是误导，**忽略**；测试一并 defer 为未来 tech debt |
 | `oaiChatRequest` 当前无 `reasoning_effort` 字段 | `adapter/adapter.go:137-150` | 本次必须新增 |
 | `oaiStreamChunk.Delta` 只解析 `reasoning_content` | `adapter/adapter.go:198-210` | 本次新增 `reasoning` 字段合并 |
 | OpenRouter 流式用 `delta.reasoning` 字段 | S1 proposal §1.3 实测 | 必须加字段才能接收思维链 |
@@ -95,7 +95,7 @@ S1 proposal 的标题是"OpenRouter Provider 接入"。经过 S2 brainstorming�
 | 管理员方便管理 | 后台新增"AI 矩阵视图"页面，单元格点击即编辑路由（含思考强度） | S5 浏览器 QA 走一遍"改 Claude 的 OpenRouter 路由思考强度" |
 | 思维链前端展示 | adapter 将 `reasoning` 合并进 `ReasoningContent` → `ChatChunk.ReasoningDelta` 流式透传 → 前端已有渲染逻辑 | S5 Playwright 验证 SOP 执行时思维链块可见 |
 | Token 消耗量 | 复用现有 `oaiUsage`（`PromptTokens/CompletionTokens/TotalTokens/ReasoningTokens`），已被 billing middleware 记录 | S5 查 `usage_record` 表，OpenRouter 调用有新记录 |
-| 成本统计 | `pricing_rule` seed OpenRouter 5 条规则（Claude flat / DeepSeek flat / Gemini tiered / GPT tiered）；billing middleware 按规则计算 | S5 查 `billing_record`，单价 × token 量 = 合理金额 |
+| 成本统计 | `pricing_rule` seed OpenRouter 4 条父规则（Claude flat / DeepSeek flat / Gemini tiered / GPT tiered）+ `pricing_rule_tier` 8 条分档子规则；billing middleware 按规则计算 | S5 查 `billing_record`，单价 × token 量 = 合理金额 |
 | 耗时统计 | Langfuse generation 的 `startTime` + `endTime` 差值；已有基础设施 | S5 打开 Langfuse UI，generation 有 duration_ms |
 
 **零遗漏**：上述 8 条覆盖用户 must-have 全部。
@@ -174,17 +174,38 @@ WHERE s.deprecated_at IS NOT NULL;
 
 今早 hotfix 已经把大多数用户的偏好置为基础 model_key。本次补一条保险 UPDATE，防止残留：
 
+**正确 schema 确认**：表 `user_model_preference` 的列是 `model_key VARCHAR(100)` + `thinking TINYINT(1)`（见 `migrations/20260410_000001_add_llm_routing_tables.sql:56-65` 和 `internal/pkg/model/llm.go:55-64`）。
+
 ```sql
+-- 把残留的 -thinking 后缀 model_key 切换到 base 同时强制 thinking=1
+-- （本 feature 把"思考开关"上移到 route 层，user 偏好里的 thinking 字段保留语义=
+-- 用户选择的 base 模型 + 系统默认进入思考；若 user 主动改为 false，见 §3.4.1 合成规则）
 UPDATE user_model_preference
-SET preferred_model_key = REPLACE(preferred_model_key, '-thinking', '')
-WHERE preferred_model_key LIKE '%-thinking';
+SET model_key = REPLACE(model_key, '-thinking', ''),
+    thinking  = 1
+WHERE model_key LIKE '%-thinking';
 ```
 
 **影响面检查（S3 plan 先跑）**：
 ```sql
-SELECT COUNT(*) FROM user_model_preference WHERE preferred_model_key LIKE '%-thinking';
+SELECT COUNT(*) FROM user_model_preference WHERE model_key LIKE '%-thinking';
 ```
 预期今日 < 5 行（hotfix 后几乎为 0）。
+
+### 3.4.1 Thinking 合成规则（P0-2 待客户决策）
+
+> **客户决策待定**：当 user 偏好 `thinking=false` 但 route `reasoning_effort='medium'` 时，最终请求的 `reasoning_effort` 值是什么？
+
+候选决策表（见本 spec 附录 §14）：
+
+| user pref.thinking | route.reasoning_effort | 最终注入 |
+|--------------------|----------------------|---------|
+| true | 'medium' | 'medium' |
+| false | 'medium' | ???（A=''、B='medium'、C='low'） |
+| true | '' | ???（D=''、E='medium'） |
+| false | '' | '' |
+
+客户拍板前，S3 task 暂用**"路由级为准，忽略 user pref.thinking"**假设（最简单方案），等客户确认后同步修订 spec + adapter 注入逻辑。
 
 ### 3.5 新增 OpenRouter provider
 
@@ -205,6 +226,11 @@ VALUES (
 - `internal/pkg/aiservice/seed.go` 的 `providerSeedEntries` 追加 openrouter 条目
 - 启动时 `SyncProviderCredentials` UPSERT 到 `llm_provider.api_key`
 - **不走豁免**（与 aihubmix 字面值写 SQL 的做法相反）
+
+**命名一致性硬约束**（S3 task 4 验收条件）：
+- `llm_provider.name` 的值（migration SQL 里）**必须**等于 `providerSeedEntries[].name`（seed.go 里），严格字符串匹配 `openrouter`
+- 任一处拼写偏差（如 `open-router` / `openRouter`）会导致 `SyncProviderCredentials` UPSERT 找不到行 → api_key 永远为空 → 每次调用 401
+- S3 task 4 验收：启动一次 server，观察 `[aiservice] SyncProviderCredentials: completed synced=N` 的 N 相比前一次是否 +1（成功同步 openrouter）
 
 ### 3.6 新增 OpenRouter 路由（4 条 `ai_service_route`）
 
@@ -248,12 +274,12 @@ WHERE p.name = 'aihubmix'
 
 DMXAPI 路由不动（`reasoning_effort` 保持 NULL，failover 角色保持最小行为）。
 
-### 3.8 OpenRouter `pricing_rule` 5 条 + `pricing_rule_tier` 8 条
+### 3.8 OpenRouter `pricing_rule` 4 条父规则 + `pricing_rule_tier` 8 条分档子规则
 
 **结构完全对标 AiHubMix**（同价策略，用户 S1 确认）：
 
 ```sql
--- pricing_rule 5 条（3 flat + 2 tiered_token）
+-- pricing_rule 4 条（2 flat + 2 tiered_token）
 INSERT INTO pricing_rule
   (service_type, provider, model, billing_mode, flat_unit,
    input_price_per_m_tok, output_price_per_m_tok, price_per_call, price_per_gb,
@@ -413,15 +439,24 @@ body, err := json.Marshal(oaiChatRequest{
 
 如果 provider 返回 400 且 body 含 `reasoning_effort` 或 `unknown_parameter` 关键词 → 自动去掉 `ReasoningEffort` 重试一次。与 `llm/dmxapi_client.go:297-306` 的历史实现对齐（该逻辑新 adapter 路径当前**不存在**，本次必须补齐）。
 
+**trigger 条件必须两关键词 OR**（不同 provider 错误文案不一致）：
+
 ```go
 // 简化伪代码
-if status == 400 && strings.Contains(body, "reasoning_effort") {
+if status == 400 && req.ReasoningEffort != "" &&
+   (strings.Contains(body, "reasoning_effort") ||
+    strings.Contains(body, "unknown_parameter")) {
     log.Warnw("provider rejected reasoning_effort, retrying without",
-        "route", route.Provider.Name, "model", route.ProviderModelID)
+        "route", route.Provider.Name, "model", route.ProviderModelID,
+        "status", status, "body_preview", body[:min(200, len(body))])
     // 重试：ReasoningEffort 置空
     return d.doPostWithoutReasoning(ctx, route, path, originalBody)
 }
 ```
+
+S3 单测 `Test_400Fallback_On_ReasoningEffort_Rejected` 必须覆盖两种 body：
+- `{"error":"reasoning_effort: invalid_request_error"}`（OpenRouter 风格）
+- `{"error":"unknown_parameter: reasoning_effort"}`（AiHubMix proxy 风格）
 
 ### 4.7 OpenRouter alias 注册
 
@@ -628,7 +663,12 @@ ai_providers:
 
 **每个 migration 都配一个 `_rollback.sql`** 兄弟文件。
 
-**Migration 4 和 5 顺序**：Migration 2 必须在 3 之前（seed OpenRouter 先于 collapse thinking 变体，避免路由 seed 在 deprecated 模型上），4 和 5 可并行最后跑。
+**执行顺序约束**：
+- Migration 1 必须最先（字段要先存在才能在 2 中被 seed 赋值）
+- Migration 2 在 3 之前（seed OpenRouter 先于 collapse thinking 变体）
+- Migration 3 在 4 之后（先让 aihubmix 的 base 路由配置 reasoning_effort='medium'，再软禁用 -thinking 变体路由，避免"aihubmix 思考真空窗口"）
+- **推荐执行顺序：1 → 2 → 4 → 3 → 5**
+- **所有 5 个 migration 必须在同一次部署中原子性跑完**。禁止分批（如 CI/CD 只跑 1+2 后上线再跑 3+4+5），否则 OpenRouter 成主路由但 AiHubMix 未配 reasoning_effort，failover 场景会降级到"不思考"，用户体验打折
 
 ---
 
@@ -704,19 +744,21 @@ function allowedEffortOptions(model: Model): string[] {
 
 ### 8.2 本次需要记录到 Generation 的字段
 
-要求 `aiservice.Chat` / `ChatStream` 调用路径（或其 middleware）把以下字段写到 generation 的 input/output/metadata 中的合适位置：
+要求 `aiservice.Chat` / `ChatStream` 调用路径（或其 middleware）把以下字段写入 generation：
 
-| 字段 | 值 | 用途 |
-|------|-----|------|
-| `provider_name` | `openrouter` / `aihubmix` / ... | 按 provider 过滤调用 |
-| `provider_model_id` | `anthropic/claude-sonnet-4.6` | 区分不同 slug |
-| `reasoning_effort` | `medium` / `""` | 验证思考强度是否被注入 |
-| `reasoning_content` | 流式收集的思维链完整文本 | 审计思维链内容 |
-| `reasoning_tokens` | 从 provider `usage` 响应提取（若支持） | 成本核算 |
+| 字段 | 值 | 用途 | 注入位置 |
+|------|-----|------|---------|
+| `provider_name` | `openrouter` / `aihubmix` / ... | 按 provider 过滤 | `WithGenInput` 的 input 对象子字段 |
+| `provider_model_id` | `anthropic/claude-sonnet-4.6` | 区分不同 slug | 同上 |
+| `reasoning_effort` | `medium` / `""` | 验证思考强度是否被注入 | 同上 |
+| `reasoning_content` | 流式收集的思维链完整文本 | 审计思维链内容 | `WithGenOutput` 对象子字段 |
+| `model` | 模型 key（如 `claude-sonnet-4-6`） | 已有，沿用 | `WithGenModel` |
+| `prompt_tokens` / `completion_tokens` | | 已有，沿用 | `WithGenUsage(p, c)` |
+| `reasoning_tokens` | 从 provider `usage.completion_tokens_details.reasoning_tokens` 提取 | **S3 task 验证现有 `langfuse.WithGenUsage` 是否支持第 3 参数** | `WithGenUsage` 或新增 helper |
 
-**具体 Go API 选择**（例如 metadata 是 input/output 的子字段还是独立 metadata 槽位）留到 S3 plan 决定，对齐 `internal/pkg/langfuse` 既有方法签名。
+**S3 Task 约定**：如果现有 `internal/pkg/langfuse` 包的 `WithGenUsage` 只有 `(promptTokens, completionTokens)` 两参数，Task 2 或 Task 3 需在该包**新增**一个 `WithGenReasoningTokens(n int)` 或扩展 `WithGenUsage(p, c, r)`，具体 API 形式留给 implementer。spec 仅约束 **"reasoning_tokens 必须能被读到"**，不约束 Go 调用签名。
 
-**S5 验证**：打开 Langfuse UI → 搜索最新的 generation → 检查上述字段齐全 + duration_ms 非零。
+**S5 验证**：打开 Langfuse UI → 搜索最新的 generation → 检查 `input.reasoning_effort='medium'` + `output.reasoning_content` 非空 + `usage.reasoning_tokens > 0`（若 provider 返回）+ `duration_ms > 0`。
 
 ### 8.3 失败分支的 trace
 
@@ -753,7 +795,11 @@ function allowedEffortOptions(model: Model): string[] {
 在 dev 验证通过后，S6 merge develop 之前：
 - 确认 `config_prod.yaml` 的 `ai_providers.openrouter.api_key` 已就位
 - 确认 prod 数据库 migration 执行顺序与 dev 一致
-- 确认 prod 数据库中 `llm_compat` VIEW 已被 drop（2026-04-17 migration 已到 prod？）
+- **确认 prod 数据库中 `llm_compat` VIEW 已被 drop 的状态**（2026-04-17 migration 是否已到 prod）——**S3 第一个 task 开始前必做**，SSH prod 跑：
+  ```sql
+  SHOW FULL TABLES WHERE Table_type='VIEW' AND Tables_in_<db> LIKE 'llm_%';
+  ```
+  若 VIEW 仍存在，在本 feature 的 migration 之前先在 prod 补跑 `20260417_180000_drop_llm_compat_views.sql`；否则 Migration 3（软删 `-thinking` 变体）可能因 VIEW 依赖失败。
 
 ---
 
@@ -842,4 +888,90 @@ S2 通过 gate 的条件：
 
 ---
 
-*Last Updated: 2026-04-20 S2*
+---
+
+## §14 附录：待客户确认的 P0 决策（Opus review 2026-04-20 提出）
+
+### 决策 D1：Thinking flag × reasoning_effort 合成规则
+
+**背景**：
+- `user_model_preference.thinking bool`：用户级意图（今早 hotfix 强制置 `true`）
+- `ai_service_route.reasoning_effort`（新增）：路由级强度配置
+- `biz/sop/executor.go:109` 明确 `_ = thinking`（flag 当前被丢弃）
+
+**问题**：本 feature 把思考的主控权上移到 route 层之后，user pref.thinking 还起什么作用？
+
+**候选方案**：
+
+**A. 路由级为准，完全忽略 user pref.thinking**（推荐）
+- Adapter 只看 `route.ReasoningEffort`，user pref.thinking 字段保留但不再被任何路径读取
+- admin 矩阵视图的"思考强度"是唯一真相
+- Executor 第 109 行的 `_ = thinking` 保持不变（flag 依然丢弃）
+- 意义：管理员全权控制；用户不能单独关闭（符合用户 must-have "默认深度思考 ON"）
+- 副作用：pref.thinking 字段事实死亡，作为 tech debt 列入后续清理
+
+**B. User pref 可覆写为关闭**
+- 若 user pref.thinking=false → 强制 reasoning_effort=''（无论 route 配什么都不思考）
+- 若 user pref.thinking=true → 用 route.ReasoningEffort
+- Executor 需修 `_ = thinking`，让 thinking flag 流过 adapter
+- 意义：保留用户降级权（如用户自己想省 token）
+- 副作用：需要改 ChatRequest struct 加 `Thinking` 字段，scope 扩大 ~0.5 天
+
+**C. User pref 可覆写为开启但不能关闭**
+- user pref.thinking=true 且 route.reasoning_effort='' → 强制注入 'medium'（用户想思考但 admin 关了）
+- user pref.thinking=false → 无效，仍按 route 配置走
+- 意义：用户可"升级"但不能"降级"
+- 复杂度最高，不推荐
+
+**我的推荐**：**A**。
+理由：
+1. 用户明确"默认深度思考 ON，用户不能改回普通模式"——B 和 C 都允许用户绕过，与原意相悖
+2. A 的实施最简单（不改 ChatRequest，不改 executor）
+3. pref.thinking 字段列入 tech debt，留给未来独立清理 feature
+4. 矩阵视图的管理员自主权清晰
+
+---
+
+### 决策 D2：AiHubMix base slug + reasoning_effort 可行性验证
+
+**背景**：
+- 当前 AiHubMix 用 `-think` 后缀 provider_model_id（如 `claude-sonnet-4-6-think`）激活 Claude thinking，是历史固有方式
+- Spec §3.7 假设 AiHubMix base slug（无 `-think`）+ `reasoning_effort='medium'` 也能触发思考
+- **此假设未经真实 API 验证**。若不成立，§3.7 的 UPDATE 是空操作，AiHubMix Claude 的思考能力在 `-thinking` 变体软删后反而消失
+
+**候选方案**：
+
+**X. 实测后决定**（推荐）
+- S3 task 1 开始前跑一次 curl 到 `https://aihubmix.com/v1/chat/completions`，用 base slug `claude-sonnet-4-6` + `reasoning_effort='medium'`，检查响应含 `reasoning_content` 非空
+- 我（主控 AI）可以代跑，需要你授权 api_key 来源（`config_*.yaml` 或直接给）
+
+**Y. 保守路径：AiHubMix 保留 `-think` 后缀混搭**
+- AiHubMix × Claude：`provider_model_id='claude-sonnet-4-6-think'` + `reasoning_effort=NULL`（用后缀激活）
+- AiHubMix × GPT/Gemini/DeepSeek：base slug + `reasoning_effort='medium'`（根据 aihubmix "统一推理协议"文档，非 Claude 应支持）
+- 需要同步调整：
+  - Spec §3.3 保留 aihubmix Claude -thinking 路由 active（仅软删 claude-sonnet-4-6-thinking 的 **ai_service** 行，同时把 aihubmix base 路由的 provider_model_id 改为 `claude-sonnet-4-6-think`）
+  - Spec §3.7 UPDATE 排除 claude 行，只改 3 条
+- 好处：零风险（历史行为保持）
+- 坏处：admin 矩阵视图 aihubmix × Claude 单元格"思考强度"字段显示"关"但实际会思考 → 需要 UI tooltip 说明"此路由通过 provider_model_id 后缀固定启用思考"
+
+**Z. 激进路径：信任 AiHubMix 文档**
+- 按 spec 现状，所有 aihubmix 4 路由用 base slug + `reasoning_effort='medium'`
+- 若实际不生效，靠 400 兜底让 Claude 降级到不思考（差于历史状态）
+- 不推荐
+
+**我的推荐**：**X**。
+理由：
+1. 实测 5 分钟内完成，风险扫除
+2. 若实测通过 → spec 不改；实测失败 → 改为 Y 方案
+3. 依赖文档不如依赖事实
+
+---
+
+### 请客户回复
+
+**D1 选**：A / B / C
+**D2 选**：X / Y / Z（如选 X，确认我用 `config_dev.yaml` 里的 aihubmix api_key 代跑实测）
+
+---
+
+*Last Updated: 2026-04-20 S2 (Opus review 修订)*
