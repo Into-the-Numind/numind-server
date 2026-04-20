@@ -1077,3 +1077,103 @@ func TestBuildOAIMessages_TableDriven(t *testing.T) {
 		})
 	}
 }
+
+// ----------------------------------------------------------------------------
+// oaiUsage.extractReasoningTokens: T3 protocol audit coverage
+// ----------------------------------------------------------------------------
+
+// TestOAIUsage_ExtractReasoningTokens covers the five wire-path variants the
+// T2 AiHubMix protocol audit found in production:
+//   - nested OpenAI-style (gpt-5/o1/o3/o4)
+//   - flat DeepSeek-style
+//   - neither path present (Claude folds into completion_tokens)
+//   - nil receiver safety
+//   - nested=0 with non-zero flat (fallback)
+func TestOAIUsage_ExtractReasoningTokens(t *testing.T) {
+	cases := []struct {
+		name     string
+		payload  string // JSON to unmarshal
+		useNil   bool   // if true, call on nil receiver
+		expected int
+	}{
+		{
+			name:     "nested OpenAI-style",
+			payload:  `{"prompt_tokens":10,"completion_tokens":200,"total_tokens":210,"completion_tokens_details":{"reasoning_tokens":42}}`,
+			expected: 42,
+		},
+		{
+			name:     "flat DeepSeek-style",
+			payload:  `{"prompt_tokens":10,"completion_tokens":200,"total_tokens":210,"reasoning_tokens":17}`,
+			expected: 17,
+		},
+		{
+			name:     "none (Claude)",
+			payload:  `{"prompt_tokens":10,"completion_tokens":200,"total_tokens":210}`,
+			expected: 0,
+		},
+		{
+			name:     "nil receiver",
+			useNil:   true,
+			expected: 0,
+		},
+		{
+			name:     "nested=0 fallback to flat=5",
+			payload:  `{"completion_tokens_details":{"reasoning_tokens":0},"reasoning_tokens":5}`,
+			expected: 5,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got int
+			if tc.useNil {
+				var u *oaiUsage
+				got = u.extractReasoningTokens()
+			} else {
+				var u oaiUsage
+				if err := json.Unmarshal([]byte(tc.payload), &u); err != nil {
+					t.Fatalf("unmarshal failed: %v", err)
+				}
+				got = u.extractReasoningTokens()
+			}
+			if got != tc.expected {
+				t.Errorf("extractReasoningTokens() = %d, want %d", got, tc.expected)
+			}
+		})
+	}
+}
+
+// TestOAIChatRequest_ReasoningEffortOmitempty verifies that an empty
+// ReasoningEffort and MaxCompletionTokens=0 are omitted from the marshalled
+// JSON body so providers that don't know these fields just see a clean request.
+func TestOAIChatRequest_ReasoningEffortOmitempty(t *testing.T) {
+	req := oaiChatRequest{
+		Model:    "test-model",
+		Messages: []oaiMessage{{Role: "user", Content: "hi"}},
+		Stream:   false,
+		// ReasoningEffort and MaxCompletionTokens intentionally zero.
+	}
+	b, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if bytes.Contains(b, []byte(`"reasoning_effort"`)) {
+		t.Errorf("empty reasoning_effort should be omitted; got: %s", b)
+	}
+	if bytes.Contains(b, []byte(`"max_completion_tokens"`)) {
+		t.Errorf("zero max_completion_tokens should be omitted; got: %s", b)
+	}
+
+	// Sanity: when set, they must appear.
+	req.ReasoningEffort = "high"
+	req.MaxCompletionTokens = 1024
+	b, err = json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal (set) failed: %v", err)
+	}
+	if !bytes.Contains(b, []byte(`"reasoning_effort":"high"`)) {
+		t.Errorf("set reasoning_effort should appear; got: %s", b)
+	}
+	if !bytes.Contains(b, []byte(`"max_completion_tokens":1024`)) {
+		t.Errorf("set max_completion_tokens should appear; got: %s", b)
+	}
+}

@@ -147,6 +147,14 @@ type oaiChatRequest struct {
 	// output. Omitted (via omitempty) when the pointer is nil so providers that
 	// don't know this field just ignore it.
 	ResponseFormat *oaiResponseFormat `json:"response_format,omitempty"`
+	// MaxCompletionTokens is required for the OpenAI reasoning family (gpt-5/o1/o3/o4).
+	// When set, MaxTokens should be zero — OpenAI rejects both being present.
+	MaxCompletionTokens int `json:"max_completion_tokens,omitempty"`
+	// ReasoningEffort gates thinking mode for providers that accept the parameter
+	// (OpenAI reasoning series, DeepSeek V3.2, Gemini 3.1). Accepted values: "low", "medium", "high".
+	// Avoid "none"/"minimal" unless the provider is verified to accept them
+	// (Gemini 3.1 Pro rejects both). Empty string = do not send the field.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // oaiStreamOptions instructs the provider to include usage in the final chunk.
@@ -214,6 +222,35 @@ type oaiUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// CompletionTokensDetails carries the nested reasoning_tokens field used by
+	// OpenAI (gpt-5, o1, o3, o4) and — per T2 protocol audit — also by Gemini
+	// and DeepSeek via AiHubMix.
+	CompletionTokensDetails *oaiCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+	// ReasoningTokens is the flat (top-level) reasoning_tokens field used as
+	// defensive compatibility for providers that may expose it at usage root.
+	// extractReasoningTokens() prefers nested first.
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+}
+
+// oaiCompletionTokensDetails nests the reasoning_tokens field on providers that
+// use the OpenAI-standard wire path `usage.completion_tokens_details.reasoning_tokens`.
+type oaiCompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+}
+
+// extractReasoningTokens returns the reasoning token count from whichever wire
+// path the provider used. Prefers nested (completion_tokens_details.reasoning_tokens)
+// over flat (reasoning_tokens) to match the T2 protocol audit evidence.
+// Returns 0 when the provider surfaces reasoning tokens at neither path
+// (notably Claude via AiHubMix folds them into completion_tokens silently).
+func (u *oaiUsage) extractReasoningTokens() int {
+	if u == nil {
+		return 0
+	}
+	if u.CompletionTokensDetails != nil && u.CompletionTokensDetails.ReasoningTokens > 0 {
+		return u.CompletionTokensDetails.ReasoningTokens
+	}
+	return u.ReasoningTokens
 }
 
 // oaiError is the error payload in an OpenAI-compatible error response.
