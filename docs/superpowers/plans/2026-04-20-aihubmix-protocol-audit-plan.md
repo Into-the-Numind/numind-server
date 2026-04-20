@@ -32,7 +32,8 @@
 | `internal/pkg/aiservice/middleware/tracing.go` | Modify | 非流式 + 流式 response 中捕获 `TraceMetadata` 写入 Langfuse generation |
 | `migrations/20260421_000001_fix_ai_service_thinking_flags.sql` | **Create** | 6 行 UPDATE + pre/post guard |
 | `migrations/20260421_000001_fix_ai_service_thinking_flags_rollback.sql` | **Create** | 忠实还原 |
-| `migrations/20260421_000002_audit_user_model_preference.sql` | **Create** | Q10=A：SELECT 审计脚本 + 条件 UPDATE normalize（DeepSeek/GPT base 误拒修复） |
+| `migrations/20260421_000002_audit_user_model_preference.sql` | **Create** | Q10=A：SELECT 审计脚本 + 条件 UPDATE normalize（DeepSeek/GPT base 误拒修复）；**不产出** rollback SQL 文件（S3 v2 P2-4 决策，Part B 不可精准逆操作） |
+| `migrations/audit/20260421_preference_audit.sh` | **Create** | Task 7b Step 7b.2：shell 脚本运行 Part A SELECT 并 tee 到 log（migration runner 会吞掉 SELECT 输出） |
 | `internal/numind/biz/llmrouter/preference_test.go` | Modify | 加 thinking 变体 `SavePreference` 回归保护单测 |
 | `internal/numind/biz/sop/executor.go:108-113, 463-467` | Modify | 删 `_ = thinking`，`executeViaGateway` 接 thinking 参数，`ChatRequest{}` 加 `Thinking: thinking` |
 | `internal/numind/biz/chatbot/stream.go:172-177` | Modify | 同上 |
@@ -419,6 +420,8 @@ fake HTTP server 捕获出站 body，断言字段：
 **Files**:
 - Modify: `internal/pkg/aiservice/adapter/stream.go`
 - Modify: `internal/pkg/aiservice/adapter/stream_test.go`
+- Modify: `internal/pkg/aiservice/adapter/ali.go`（S3 v2 Q5：grep `runOAIStream\(` 所有调用点，对齐新 5 参数签名，传 nil 为 traceMeta）
+- Modify: `internal/pkg/aiservice/adapter/volc.go`（同上，若有 runOAIStream 调用）
 
 **依赖**：Task 1（TraceMetadata 类型） + Task 3（oaiUsage.extractReasoningTokens）
 
@@ -644,12 +647,11 @@ fake HTTP server 捕获出站 body，断言字段：
     - `.gitkeep` 在 `migrations/audit/` 目录（首次创建）
     - SOP：S4 Task 7b 完成时手动执行该 shell，输出 log 可 commit 到 repo 作审计留存
 
-### Step 7b.3: Rollback
+### Step 7b.3: Rollback（S3 v2 P2-4 修订）
 
-- [ ] `migrations/20260421_000002_audit_user_model_preference_rollback.sql`：rollback 不恢复原数据（无法区分原来是 0 还是 1），说明"无法精准 rollback，仅还原结构"
-- [ ] Rollback 仅针对 Part B 的 UPDATE：`UPDATE user_model_preference SET thinking = 0 WHERE ...` **不可**，因为会把本来应为 1 的也改为 0。记录为"无 rollback，Part B 影响极小（预期 0 行受影响），不需逆操作"
+Part B 的 UPDATE 无法精准 rollback（把 thinking=0→1 后无法区分原本是 0 还是 1）。决策：**不创建 rollback SQL 文件**（S3 v2 P2-4 一致性修订——§文件结构从此 plan 移除 rollback 文件的 create 项，仅主 migration 文件）。理由：Part B 预期 affected_rows=0，实际影响极小；若需撤销 Part B 效果，需走数据恢复流程（从备份还原 user_model_preference 表），非 SQL 逆操作可达成。
 
-**Acceptance criteria**：SQL 语法正确，Part A SELECT 在 shell 脚本中可复现，Part B 只动两个 model_key 的行。
+**Acceptance criteria**：主 migration SQL 语法正确，Part A SELECT 在 shell 脚本中可复现，Part B 只动两个 model_key 的行。**不产出** rollback SQL 文件。
 
 ---
 
@@ -801,7 +803,8 @@ fake HTTP server 捕获出站 body，断言字段：
 - [ ] 若 `tracing_test.go` 已存在且有 stub Langfuse client，加断言 "chat response with TraceMetadata ⇒ EndGeneration output map contains `metadata.resolved_reasoning_effort`"
 - [ ] 若无测试基础设施，跳过（依靠 S5 dev Langfuse 实测验证）
 
-**Acceptance criteria**：Langfuse UI 对一次 Claude thinking 调用的 trace 面板在 output 标签能看到 `{"metadata": {"resolved_reasoning_effort":"medium", "resolved_model_family":"claude", "temp_overridden":true}}`（S5 验证）。
+**Acceptance criteria**：Langfuse UI 对一次 Claude thinking 调用的 trace 面板**在 Output 标签（JSON viewer）**能看到 `{"metadata": {"resolved_reasoning_effort":"medium", "resolved_model_family":"claude", "temp_overridden":true}}`（S5 验证）。
+**S3 v2 P2-1 备注**：Langfuse 的 "Metadata" 标签是 SDK 原生 generation.metadata 字段，需 `WithGenMetadata` option 才能填充——但该 option 不存在。本 plan 选择把字段嵌入 output.metadata sub-map（复用现有 `buildMeta` pattern），运营/调试时在 **Output 标签的 JSON 视图**中查找（不是 Metadata 标签）。
 
 ---
 
@@ -835,6 +838,8 @@ fake HTTP server 捕获出站 body，断言字段：
 
 ### Step 10.4: llmrouter preference 回归保护测试（S3 P1-D 修订：加反向 case）
 
+**测试基础设施**（S3 v2 P2-2 备注）：复用 parent-self-grant feature 的 `newTestDB(t)` + `AutoMigrate(model.AIService{})` pattern（见 `internal/numind/biz/customer/*_test.go`），内存 SQLite + AutoMigrate 注入 ai_service 行。不需新 infra。
+
 - [ ] `preference_test.go` 加 `TestSavePreference_ThinkingVariantModel_Accepts`：
   - Seed ai_service 一行 `model_key="claude-sonnet-4-6-thinking", supports_thinking=1, thinking_only=1`
   - 调 `SavePreference(userID, feature, "claude-sonnet-4-6-thinking", thinking=true)`
@@ -863,6 +868,7 @@ fake HTTP server 捕获出站 body，断言字段：
   6. **Claude -think 变体路径**：用户在 ModelSelector 选 `claude-sonnet-4-6-thinking`（若 UI 暴露该 model_key；若未暴露则跳过并在 qa doc §6 记录限制）→ 发消息 → 收到 thinking event（因 -think 变体原生思考）
   7. **Gemini intrinsic 路径**：切到 Gemini base → 发消息 → **仍**收到 thinking event（因 intrinsic 思考不可关）+ 后端 trace metadata `resolved_reasoning_effort="intrinsic"`（可通过 qa doc §2 Langfuse 截图间接验证）
   8. **Preference 保存-thinking 变体 bug 回归**：切到 Claude thinking 变体 → 打开 thinking 开关 → 保存 → **不**收到 400 错误（migration 7a 前会 400，本期修复后应 200）
+     - **S3 v2 P2-3 fallback**：hotfix-default-thinking-mode 藏了前端 thinking toggle（ModelSelector.vue v-if='false'）。若 UI 实测不暴露 thinking 变体的 toggle 切换路径，**降级**为直接 POST `/v1/web/user-model-preferences` with `{"model_key":"claude-sonnet-4-6-thinking","thinking":true}` 用 Playwright request API（不依赖 UI 渲染）。这仍验证 preference.go:246 bug 修复。qa doc §6 记录选用路径
 
 - [ ] 使用 `e2e/auth.setup.ts` 的 stored auth state
 - [ ] 使用 `$E2E_USERNAME` / `$E2E_PASSWORD` 环境变量登录（avoid hardcoded credentials）
@@ -940,7 +946,10 @@ Task 11 (S5 qa 骨架) — 独立 authoring
 7. Task 11 S5 qa 补填（整期部署完后）
 ```
 
-**P1-A 修订**：Task 4（dmxapi.go 调 `runOAIStream(..., traceMeta)`）与 Task 5（`runOAIStream` 加 traceMeta 参数）**必须同一 commit 或连续两 commit** — 签名互锁，中间状态 `go build` 失败。实施者选 **方案 A**（合并单 commit）或 **方案 B**（Task 5 先 commit 加参数但保留旧 4-arg 调用点的兼容 wrapper，Task 4 后 commit 移除兼容 wrapper）。本 plan 默认方案 A（简单）。
+**P1-A 修订（S3 v2 review 收紧）**：Task 4（dmxapi.go 调 `runOAIStream(..., traceMeta)`）与 Task 5（`runOAIStream` 加 traceMeta 参数）签名互锁。**必须**选下列之一，**禁止**其他 ordering：
+- **方案 A（默认推荐）**：单 commit 合并 Task 4+5 全部文件改动
+- **方案 B（细粒度）**：Task 5 先 commit，signature 改为 5 参数**但**保留 4-arg 兼容 wrapper（旧调用者仍能编译）；Task 4 后 commit 修改 dmxapi.go 调用 5 参数版本并删除兼容 wrapper
+- **禁止**：两个 commit back-to-back 各自不完整（中间状态 `go build` 会失败，破坏 `git bisect`）
 
 **P1-B 修订**：Migration 7a 现在**提前**到 Task 4+5 部署之前。这样：
 - 部署窗口 0→2 之间：app 旧代码 + DB 旧值 → 用户看到旧 bug（保持现状，没变坏）
