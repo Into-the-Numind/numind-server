@@ -354,8 +354,9 @@ export const fetchAllChatbots = (): Promise<ApiResponse<any[]>> => {
   return request.get('/v1/chatbot/list')  // 既有端点，父账号调用返回自己全部已发布
 }
 
-// 获取子用户已授权 chatbot id 列表
-export const fetchUserChatbots = (userId: number | string): Promise<ApiResponse<{ chatbot_ids: number[] }>> => {
+// 注意：后端 Task 5 返回对象数组而非纯 ID 数组（Decision D8 落地）
+// 前端消费端从 chatbots[].id 提取 id 集做 diff
+export const fetchUserChatbots = (userId: number | string): Promise<ApiResponse<{ chatbots: ChatbotItem[]; total: number }>> => {
   return request.get(`/v1/customers/sub-users/${userId}/chatbots`)
 }
 
