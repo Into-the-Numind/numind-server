@@ -340,3 +340,212 @@ func TestGrantMembership_UnsupportedProductType_Rejected(t *testing.T) {
 		require.Error(t, err, "productType=%s must be rejected", pt)
 	}
 }
+
+// ---------- Self-Grant: Trial path ----------
+
+func TestGrantMembership_SelfGrant_Trial_Success(t *testing.T) {
+	db := newGrantTestDB(t)
+	ds := store.NewTestStore(db)
+	b := NewCreditBiz(ds).(*creditBiz)
+
+	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
+
+	err := b.GrantMembership(context.Background(), GrantMembershipReq{
+		ParentUserID: parent,
+		ChildUserID:  parent,
+		ProductType:  model.ProductTypeTrial,
+		Reason:       "self trial",
+	})
+	require.NoError(t, err, "parent self-granting trial must succeed")
+
+	var pkgs []model.CreditPackage
+	require.NoError(t, db.Where("user_id = ?", parent).Find(&pkgs).Error)
+	require.Len(t, pkgs, 1)
+	p := pkgs[0]
+	assert.Equal(t, model.CreditTypeTrial, p.Type)
+	assert.EqualValues(t, 200, p.TotalCredits)
+	assert.Equal(t, model.GrantSourceB2BGrant, p.GrantSource)
+	require.NotNil(t, p.GranterUserID)
+	assert.Equal(t, parent, *p.GranterUserID, "self-grant: granter_user_id == user_id")
+
+	var acc model.CreditAccount
+	require.NoError(t, db.Where("user_id = ?", parent).First(&acc).Error)
+	assert.EqualValues(t, 200, acc.Balance)
+
+	var logs []model.ActionLogM
+	require.NoError(t, db.Where("user_id = ? AND action = ?", parent, "grant_membership").Find(&logs).Error)
+	require.Len(t, logs, 1)
+	require.NotNil(t, logs[0].TargetID)
+	assert.Equal(t, parent, *logs[0].TargetID, "self-grant: target_id == user_id")
+}
+
+func TestGrantMembership_SelfGrant_Monthly_ThreeMonths_CreatesThreePackages(t *testing.T) {
+	db := newGrantTestDB(t)
+	ds := store.NewTestStore(db)
+	b := NewCreditBiz(ds).(*creditBiz)
+
+	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
+
+	err := b.GrantMembership(context.Background(), GrantMembershipReq{
+		ParentUserID: parent,
+		ChildUserID:  parent,
+		ProductType:  model.ProductTypeMonthly,
+		Months:       3,
+		Reason:       "self monthly 3m",
+	})
+	require.NoError(t, err)
+
+	var pkgs []model.CreditPackage
+	require.NoError(t, db.Where("user_id = ?", parent).Order("activated_at ASC").Find(&pkgs).Error)
+	require.Len(t, pkgs, 3, "3 monthly packages")
+
+	for i, p := range pkgs {
+		assert.Equal(t, model.CreditTypeSubscription, p.Type)
+		assert.EqualValues(t, 2000, p.TotalCredits)
+		assert.Equal(t, model.GrantSourceB2BGrant, p.GrantSource)
+		require.NotNil(t, p.GranterUserID)
+		assert.Equal(t, parent, *p.GranterUserID)
+		if i == 0 {
+			assert.Equal(t, model.CreditPackageActive, p.Status, "first month active")
+		} else {
+			assert.Equal(t, model.CreditPackagePending, p.Status, "subsequent months pending")
+		}
+	}
+
+	var acc model.CreditAccount
+	require.NoError(t, db.Where("user_id = ?", parent).First(&acc).Error)
+	assert.EqualValues(t, 2000, acc.Balance)
+}
+
+// ---------- Self-Grant: 越权防线 ----------
+
+func TestGrantMembership_SubUserSelfGrant_Rejected(t *testing.T) {
+	db := newGrantTestDB(t)
+	ds := store.NewTestStore(db)
+	b := NewCreditBiz(ds).(*creditBiz)
+
+	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
+	child := insertGrantTestUser(t, db, model.UserTierFree, &parent, model.BillingModeCredits, nil)
+
+	err := b.GrantMembership(context.Background(), GrantMembershipReq{
+		ParentUserID: child,
+		ChildUserID:  child,
+		ProductType:  model.ProductTypeTrial,
+		Reason:       "sub self-grant attempt",
+	})
+	require.Error(t, err, "sub-user self-grant must be rejected")
+	assert.ErrorIs(t, err, ErrGrantForbidden, "must return ErrGrantForbidden")
+
+	var count int64
+	require.NoError(t, db.Model(&model.CreditPackage{}).Where("user_id = ?", child).Count(&count).Error)
+	assert.EqualValues(t, 0, count, "no credit package written")
+}
+
+func TestGrantMembership_CrossParentGrant_Rejected(t *testing.T) {
+	db := newGrantTestDB(t)
+	ds := store.NewTestStore(db)
+	b := NewCreditBiz(ds).(*creditBiz)
+
+	parentA := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
+	parentB := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
+
+	err := b.GrantMembership(context.Background(), GrantMembershipReq{
+		ParentUserID: parentA,
+		ChildUserID:  parentB,
+		ProductType:  model.ProductTypeTrial,
+		Reason:       "cross-parent attempt",
+	})
+	require.Error(t, err, "parent A must not grant to parent B (both are parent accounts)")
+	assert.ErrorIs(t, err, ErrGrantForbidden)
+
+	var count int64
+	require.NoError(t, db.Model(&model.CreditPackage{}).Where("user_id = ?", parentB).Count(&count).Error)
+	assert.EqualValues(t, 0, count)
+}
+
+// ---------- Self-Grant: billing_mode switch ----------
+
+func TestGrantMembership_SelfGrant_BillingModeSwitch(t *testing.T) {
+	db := newGrantTestDB(t)
+	ds := store.NewTestStore(db)
+	b := NewCreditBiz(ds).(*creditBiz)
+
+	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeLegacyTier, nil)
+
+	err := b.GrantMembership(context.Background(), GrantMembershipReq{
+		ParentUserID: parent,
+		ChildUserID:  parent,
+		ProductType:  model.ProductTypeTrial,
+		Reason:       "legacy→credits switch on self-grant",
+	})
+	require.NoError(t, err)
+
+	var bm string
+	require.NoError(t, db.Raw("SELECT billing_mode FROM user WHERE id = ?", parent).Scan(&bm).Error)
+	assert.Equal(t, model.BillingModeCredits, bm, "billing_mode must switch legacy_tier → credits")
+}
+
+// ---------- Self-Grant: 防重复 ----------
+
+func TestGrantMembership_SelfGrant_TrialAlreadyPurchased_Rejected(t *testing.T) {
+	db := newGrantTestDB(t)
+	ds := store.NewTestStore(db)
+	b := NewCreditBiz(ds).(*creditBiz)
+
+	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
+
+	preexisting := &model.CreditPackage{
+		UserID:        parent,
+		Type:          model.CreditTypeTrial,
+		TotalCredits:  200,
+		RemainCredits: 200,
+		ActivatedAt:   time.Now().Add(-10 * 24 * time.Hour),
+		ExpiresAt:     time.Now().Add(-7 * 24 * time.Hour),
+		Status:        model.CreditPackageExpired,
+		GrantSource:   model.GrantSourceB2BGrant,
+	}
+	granter := parent
+	preexisting.GranterUserID = &granter
+	require.NoError(t, db.Create(preexisting).Error)
+
+	err := b.GrantMembership(context.Background(), GrantMembershipReq{
+		ParentUserID: parent,
+		ChildUserID:  parent,
+		ProductType:  model.ProductTypeTrial,
+		Reason:       "duplicate trial attempt",
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrGrantTrialAlreadyPurchased)
+}
+
+func TestGrantMembership_SelfGrant_ActiveSubscription_Rejected(t *testing.T) {
+	db := newGrantTestDB(t)
+	ds := store.NewTestStore(db)
+	b := NewCreditBiz(ds).(*creditBiz)
+
+	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
+
+	active := &model.CreditPackage{
+		UserID:        parent,
+		Type:          model.CreditTypeSubscription,
+		TotalCredits:  2000,
+		RemainCredits: 1500,
+		ActivatedAt:   time.Now().Add(-5 * 24 * time.Hour),
+		ExpiresAt:     time.Now().Add(25 * 24 * time.Hour),
+		Status:        model.CreditPackageActive,
+		GrantSource:   model.GrantSourceB2BGrant,
+	}
+	granter := parent
+	active.GranterUserID = &granter
+	require.NoError(t, db.Create(active).Error)
+
+	err := b.GrantMembership(context.Background(), GrantMembershipReq{
+		ParentUserID: parent,
+		ChildUserID:  parent,
+		ProductType:  model.ProductTypeMonthly,
+		Months:       1,
+		Reason:       "duplicate monthly attempt",
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrGrantActiveSubscription)
+}

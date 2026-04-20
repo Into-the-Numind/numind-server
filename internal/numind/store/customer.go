@@ -56,18 +56,24 @@ func NewCustomerStore(db *gorm.DB) *customerStore {
 	return &customerStore{db}
 }
 
-// ListSubUsers 获取指定直接客户的所有二级客户
+// ListSubUsers 获取指定直接客户的所有二级客户，包含父账户自己（self-grant 支持）。
+// 返回列表中父自己永远置顶，其它子账户按 created_at DESC 排序。
 func (c *customerStore) ListSubUsers(ctx context.Context, parentUserID uint, offset, limit int) ([]model.User, int64, error) {
 	var users []model.User
 	var total int64
 
-	query := c.db.WithContext(ctx).Model(&model.User{}).Where("parent_user_id = ?", parentUserID)
+	// 包含父自己（self-grant 支持）+ 其直接子账户
+	query := c.db.WithContext(ctx).Model(&model.User{}).
+		Where("parent_user_id = ? OR id = ?", parentUserID, parentUserID)
 
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
-	if err := query.Offset(offset).Limit(limit).Order("created_at DESC").Find(&users).Error; err != nil {
+	// 父自己永远置顶（CASE WHEN id=parent THEN 0 ELSE 1），其它子账户按 created_at DESC
+	// 用 fmt.Sprintf 拼接 parentUserID 是安全的——uint 类型不可承载 SQL 注入
+	orderClause := fmt.Sprintf("CASE WHEN id = %d THEN 0 ELSE 1 END, created_at DESC", parentUserID)
+	if err := query.Offset(offset).Limit(limit).Order(orderClause).Find(&users).Error; err != nil {
 		return nil, 0, err
 	}
 

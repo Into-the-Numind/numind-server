@@ -18,8 +18,8 @@ import (
 var (
 	// ErrGrantChildNotFound 子账户不存在。映射 HTTP 404。
 	ErrGrantChildNotFound = errors.New("grant: child user not found")
-	// ErrGrantForbidden 子账户不属于当前父账户。映射 HTTP 403。
-	ErrGrantForbidden = errors.New("grant: child does not belong to caller")
+	// ErrGrantForbidden 调用者无权为目标账户开通会员（跨父越权 / 子账户自开通）。映射 HTTP 403。
+	ErrGrantForbidden = errors.New("grant: caller does not have permission to grant to target")
 	// ErrGrantInvalidProductType 不支持的产品类型（yearly/booster/其它）。映射 HTTP 400。
 	ErrGrantInvalidProductType = errors.New("grant: product_type not supported by grant path")
 	// ErrGrantInvalidMonths monthly 的 months 参数越界。映射 HTTP 400。
@@ -76,8 +76,19 @@ func (b *creditBiz) GrantMembership(ctx context.Context, req GrantMembershipReq)
 		}
 		return fmt.Errorf("GrantMembership: get child user %d: %w", req.ChildUserID, err)
 	}
-	if child.ParentUserID == nil || *child.ParentUserID != req.ParentUserID {
-		return fmt.Errorf("%w: child=%d parent=%d", ErrGrantForbidden, req.ChildUserID, req.ParentUserID)
+	if req.ChildUserID == req.ParentUserID {
+		// Self-grant: 仅允许父账户（parent_user_id IS NULL）给自己开通。
+		// 子账户 (parent_user_id != NULL) 禁止自开通，防越权。
+		if child.ParentUserID != nil {
+			return fmt.Errorf("%w: caller=%d is a sub-user, self-grant only allowed for parent accounts",
+				ErrGrantForbidden, req.ParentUserID)
+		}
+		// 放行：父账户 self-grant
+	} else {
+		// Delegate-grant: 目标必须是 caller 的子账户
+		if child.ParentUserID == nil || *child.ParentUserID != req.ParentUserID {
+			return fmt.Errorf("%w: child=%d parent=%d", ErrGrantForbidden, req.ChildUserID, req.ParentUserID)
+		}
 	}
 
 	// Step 3: anti-duplicate checks (mirror payment.CreateOrder Trial/Monthly guards)
@@ -154,7 +165,10 @@ func (b *creditBiz) GrantMembership(ctx context.Context, req GrantMembershipReq)
 			"reason":       req.Reason,
 			"package_ids":  collectPackageIDs(packages),
 		}
-		detailJSON, _ := json.Marshal(detail)
+		detailJSON, err := json.Marshal(detail)
+		if err != nil {
+			return fmt.Errorf("marshal action log detail: %w", err)
+		}
 		childID := req.ChildUserID
 		actionLog := &model.ActionLogM{
 			UserID:    req.ParentUserID,
