@@ -72,3 +72,6 @@ scripts/parse_eval/reports/
 scripts/parse_eval/.venv/
 scripts/parse_eval/**/__pycache__/
 scripts/parse_eval/.pytest_cache/
+
+# Git worktrees for parallel feature development (superpowers)
+.worktrees/
