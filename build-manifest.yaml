@@ -140,9 +140,9 @@ features:
       plan: "numind-server/docs/superpowers/plans/2026-04-20-aihubmix-protocol-audit-plan.md"
     progress:
       total_tasks: 11
-      completed_tasks: 3
-      reviewed_tasks: 3
-      current_task: "Wave 1 DONE（Task 1 c09686a / Task 2 b3ce22b + fix 59c7b31 / Task 6 cad5511）。启动 Wave 2 — Task 3 (oai wire types)"
+      completed_tasks: 8
+      reviewed_tasks: 7
+      current_task: "Wave 3 启动 — Task 4+5 done (2bbb9b9 + P2-A fix e5904f6) / Task 7a+7b done (edd5a0b 自写 migrations) / Task 3 done + reviewed。待 dispatch Task 9 (tracing) + Task 10 (entry + E2E) 并行。Task 11 qa skeleton 本地自写"
     rollback: null
     last_verified: null
     decisions:
