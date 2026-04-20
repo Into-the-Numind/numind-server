@@ -14,10 +14,35 @@ import (
 	v1 "numind-server/pkg/api/numind/v1"
 )
 
+// 批量接口参数上限（防 DoS / 保护 DB）。
+// 实际业务场景父账号有限子账号 + 有限 chatbot，50/100 远超可预见业务需求。
+const (
+	maxChatbotIDsPerRequest = 50
+	maxSubUserIDsPerBatch   = 100
+)
+
 // CustomerController 客户管理控制器
 type CustomerController struct {
 	customerBiz customerbiz.ICustomerBiz
 	userBiz     userbiz.UserBiz
+}
+
+// chatbotIDsRequest chatbot 授权/撤销请求 body（单账号）
+// 对称 v1.GrantTemplateRequest，保持本 controller 的权限 request 结构相同风格。
+type chatbotIDsRequest struct {
+	ChatbotIDs []uint `json:"chatbot_ids" binding:"required"`
+}
+
+// batchGrantChatbotRequest 批量授权请求 body（多个子账号 × 多个 chatbot）
+type batchGrantChatbotRequest struct {
+	UserIDs    []uint `json:"user_ids" binding:"required"`
+	ChatbotIDs []uint `json:"chatbot_ids" binding:"required"`
+}
+
+// batchRevokeChatbotRequest 批量撤销请求 body
+type batchRevokeChatbotRequest struct {
+	UserIDs    []uint `json:"user_ids" binding:"required"`
+	ChatbotIDs []uint `json:"chatbot_ids" binding:"required"`
 }
 
 // NewCustomerController 创建客户管理控制器
@@ -288,6 +313,213 @@ func (ctrl *CustomerController) BatchRevokeTemplates(c *gin.Context) {
 	}
 
 	core.WriteResponse(c, nil, gin.H{
+		"message": "批量撤销成功",
+	})
+}
+
+// ListSubUserChatbots 获取二级客户的已授权 chatbot 列表
+// GET /v1/customers/sub-users/:user_id/chatbots
+func (ctrl *CustomerController) ListSubUserChatbots(c *gin.Context) {
+	log.C(c).Infow("List sub user chatbots called")
+
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	// 获取sub_user_id参数
+	subUserID, err := strconv.ParseUint(c.Param("user_id"), 10, 32)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的用户ID"), nil)
+		return
+	}
+
+	// 拉已授权 chatbot 详情（biz 层做父子校验，跨父账号 → ErrForbidden）
+	chatbots, err := ctrl.customerBiz.ListSubUserChatbots(c, user.ID, uint(subUserID))
+	if err != nil {
+		log.C(c).Errorw("Failed to list sub user chatbots", "parent_user_id", user.ID, "sub_user_id", subUserID, "err", err)
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"chatbots": chatbots,
+		"total":    int64(len(chatbots)),
+	})
+}
+
+// GrantChatbots 为二级客户授权 chatbot
+// POST /v1/customers/sub-users/:user_id/chatbots
+// Body: { "chatbot_ids": [1, 2, 3] }
+func (ctrl *CustomerController) GrantChatbots(c *gin.Context) {
+	log.C(c).Infow("Grant chatbots called")
+
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	// 获取sub_user_id参数
+	subUserID, err := strconv.ParseUint(c.Param("user_id"), 10, 32)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的用户ID"), nil)
+		return
+	}
+
+	// 绑定请求body
+	var req chatbotIDsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
+		return
+	}
+
+	if len(req.ChatbotIDs) > maxChatbotIDsPerRequest {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("批量数量超出限制"), nil)
+		return
+	}
+
+	// 执行授权（biz 层做父子校验 + chatbot 归属校验，返回 ErrForbidden/ErrChatbotNotFound）
+	if err := ctrl.customerBiz.GrantChatbots(c, user.ID, uint(subUserID), req.ChatbotIDs); err != nil {
+		log.C(c).Errorw("Failed to grant chatbots", "parent_user_id", user.ID, "sub_user_id", subUserID, "chatbot_ids", req.ChatbotIDs, "err", err)
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"granted": len(req.ChatbotIDs),
+		"message": "授权成功",
+	})
+}
+
+// RevokeChatbots 撤销二级客户的 chatbot 权限
+// DELETE /v1/customers/sub-users/:user_id/chatbots
+// Body: { "chatbot_ids": [1, 2] }
+func (ctrl *CustomerController) RevokeChatbots(c *gin.Context) {
+	log.C(c).Infow("Revoke chatbots called")
+
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	// 获取sub_user_id参数
+	subUserID, err := strconv.ParseUint(c.Param("user_id"), 10, 32)
+	if err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的用户ID"), nil)
+		return
+	}
+
+	// 绑定请求body
+	var req chatbotIDsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
+		return
+	}
+
+	if len(req.ChatbotIDs) > maxChatbotIDsPerRequest {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("批量数量超出限制"), nil)
+		return
+	}
+
+	log.C(c).Infow("Revoking chatbots", "parent_user_id", user.ID, "sub_user_id", subUserID, "chatbot_ids", req.ChatbotIDs)
+
+	// 执行撤销
+	if err := ctrl.customerBiz.RevokeChatbots(c, user.ID, uint(subUserID), req.ChatbotIDs); err != nil {
+		log.C(c).Errorw("Failed to revoke chatbots", "parent_user_id", user.ID, "sub_user_id", subUserID, "chatbot_ids", req.ChatbotIDs, "err", err)
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	log.C(c).Infow("Chatbots revoked successfully", "parent_user_id", user.ID, "sub_user_id", subUserID, "chatbot_ids", req.ChatbotIDs)
+	core.WriteResponse(c, nil, gin.H{
+		"revoked": len(req.ChatbotIDs),
+		"message": "撤销成功",
+	})
+}
+
+// BatchGrantChatbots 批量为多个二级客户授权多个 chatbot
+// POST /v1/customers/batch/grant-chatbots
+// Body: { "user_ids": [10, 20], "chatbot_ids": [1, 2] }
+func (ctrl *CustomerController) BatchGrantChatbots(c *gin.Context) {
+	log.C(c).Infow("Batch grant chatbots called")
+
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	// 绑定请求body
+	var req batchGrantChatbotRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
+		return
+	}
+
+	if len(req.UserIDs) > maxSubUserIDsPerBatch || len(req.ChatbotIDs) > maxChatbotIDsPerRequest {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("批量数量超出限制"), nil)
+		return
+	}
+
+	// 执行批量授权（biz 层 fail-fast：任一子账号/chatbot 不合法 → 立即返回）
+	if err := ctrl.customerBiz.BatchGrantChatbots(c, user.ID, req.UserIDs, req.ChatbotIDs); err != nil {
+		log.C(c).Errorw("Failed to batch grant chatbots", "parent_user_id", user.ID, "user_ids", req.UserIDs, "chatbot_ids", req.ChatbotIDs, "err", err)
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"granted": len(req.UserIDs) * len(req.ChatbotIDs),
+		"message": "批量授权成功",
+	})
+}
+
+// BatchRevokeChatbots 批量为多个二级客户撤销 chatbot 权限
+// POST /v1/customers/batch/revoke-chatbots
+// Body: { "user_ids": [10, 20], "chatbot_ids": [1, 2] }
+func (ctrl *CustomerController) BatchRevokeChatbots(c *gin.Context) {
+	log.C(c).Infow("Batch revoke chatbots called")
+
+	// 从token获取当前用户
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
+
+	// 绑定请求body
+	var req batchRevokeChatbotRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
+		return
+	}
+
+	if len(req.UserIDs) > maxSubUserIDsPerBatch || len(req.ChatbotIDs) > maxChatbotIDsPerRequest {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("批量数量超出限制"), nil)
+		return
+	}
+
+	// 执行批量撤销
+	if err := ctrl.customerBiz.BatchRevokeChatbots(c, user.ID, req.UserIDs, req.ChatbotIDs); err != nil {
+		log.C(c).Errorw("Failed to batch revoke chatbots", "parent_user_id", user.ID, "user_ids", req.UserIDs, "chatbot_ids", req.ChatbotIDs, "err", err)
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{
+		"revoked": len(req.UserIDs) * len(req.ChatbotIDs),
 		"message": "批量撤销成功",
 	})
 }
