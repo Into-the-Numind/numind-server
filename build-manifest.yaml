@@ -2292,18 +2292,22 @@ features:
 
   - id: "chatbot-list-symmetric-with-sop"
     ndf_version: "1.1"
-    description: "Hotfix：翻转 child-run-permission 的 chatbot 列表语义。原设计子账号首页 chatbot 列表按白名单隐藏（default-deny 不可见），但用户实际 UX 意图是『所有 published 都看得到，点击时才校验权限』，与 SOP 侧既有 /v1/sop/templates + /check-permission 模式完全对称。改动：(1) 后端 biz/chatbot/chatbot.go ListVisibleChatbots 删除子账号白名单过滤分支，子账号返回父账号全部 published；(2) 新增 GET /v1/chatbots/:id/check-permission 端点（mirror SOP CheckTemplatePermission），调用 HasChatbotPermission；(3) 前端 HomeView.vue chatbot 卡片 @click 由 router.push 改为走 checkChatbotPermission → 无权限弹既有 permission-dialog。运行时 CreateSession / ChatStream 白名单守卫保留（纵深防御）。DB schema / 管理端授权 UI / backfill 全部不变。"
+    description: "Hotfix：翻转 child-run-permission 的 chatbot 列表语义。原设计子账号首页 chatbot 列表按白名单隐藏（default-deny 不可见），但用户实际 UX 意图是『所有 published 都看得到，点击时才校验权限』，与 SOP 侧既有 /v1/sop/templates + /check-permission 模式完全对称。改动：(1) 后端 biz/chatbot/chatbot.go ListVisibleChatbots 删除子账号白名单过滤分支，子账号返回父账号全部 published；(2) 新增 GET /v1/chatbot/:id/check-permission 端点（mirror SOP CheckTemplatePermission），调用 HasChatbotPermission；(3) 前端 HomeView.vue chatbot 卡片 @click 由 router.push 改为走 checkChatbotPermission → 无权限弹既有 permission-dialog。运行时 CreateSession / ChatStream 白名单守卫保留（纵深防御）。DB schema / 管理端授权 UI / backfill 全部不变。"
     track: "hotfix"
-    stage: "H1-triaged"
+    stage: "H3-done"
     classification_reason: "Hotfix：(1) 单特性范围（chatbot 首页列表 UX 反向修复）(2) 无 DB schema 变更 (3) 跨 2 仓库但改动局部 (4) 触及权限但仅是『放宽可见性』非权限模型翻转 (5) 方案清晰：对称 SOP 现有模式"
-    last_updated_by: "ai-h1-triage"
-    last_updated_at: "2026-04-21T14:30:00+08:00"
+    last_updated_by: "ai-h3-verified"
+    last_updated_at: "2026-04-21T15:30:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
     branches:
-      numind-server: "hotfix/chatbot-list-symmetric-with-sop"
-      numind-web-v3: "hotfix/chatbot-list-symmetric-with-sop"
+      numind-server:
+        fix_commit: "6c6ee44"
+        merge_commit: "8c7f283"
+      numind-web-v3:
+        fix_commit: "cd39d98"
+        merge_commit: "9db562f"
     hotfix_artifacts:
       diagnosis: |
         gstack 诊断（API 级 4 象限）：
@@ -2312,18 +2316,30 @@ features:
         - 子账号 '2' (bot_perms=1): SOP 返回 5 / Chatbot 返回 1（白名单命中）
         - 原子 revoke/restore 反证 SOP 端：test3 撤销 tpl=1 后，/v1/sop/templates 仍返回 5（含 tpl=1），check-permission 正确返回 false。证实 SOP 当前模式就是『全列 + 点击校验』
         结论：chatbot 侧应对称改为相同模式，而非继续隐藏。
-      review: null
+      review: |
+        H3 dev 验证（2026-04-21 15:30 CST）：
+        - SOP 基线（不变）：test3/user_777/'2' 均返回 5 templates
+        - Chatbot 列表（翻转后）：test3/user_777/'2' 全部返回 9（published 全量）
+        - Chatbot check-permission 语义：
+          * test3（0 授权）对 id=2/3/9 全 false ✅
+          * 子账号 '2'（授权 id=9）对 id=9 true, id=2/3 false ✅
+          * 父账号 admin 对所有 published true ✅
+          * draft chatbot id=1 父账号也 false ✅
+        - 运行时纵深防御：test3 绕前端直 POST /v1/chatbot/sessions chatbot_id=2 → HTTP 403 "无权限运行此智能体" ✅
     progress:
       total_tasks: 3
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task: "H2-backend"
+      completed_tasks: 3
+      reviewed_tasks: 3
+      current_task: null
     rollback: "git revert 两仓库对应 hotfix commit。无 DB/数据变更（仅查询过滤器 + 新端点），revert 即恢复。"
     last_verified: null
     decisions:
       - "2026-04-21 (H1 诊断): API 级别 4 象限验证 + 代码审计确认。SOP 侧既有 /v1/sop/templates + /check-permission 模式是用户目标 UX，chatbot 侧 ListVisibleChatbots 的白名单过滤是 B 功能 over-engineering，需反向修复"
       - "2026-04-21 (H1 轨道选择): Hotfix 非 Standard —— 无 schema 变更 / 方案明确对称既有模式 / 改动局部可预期。Track 4 of 5 criteria 未触发"
       - "2026-04-21 (H2 实施原则): 保留运行时 CreateSession + ChatStream 守卫（纵深防御，客户端可被绕过）；仅改列表可见性 + 新增前置 check 端点；backfill 数据保留以备后续管理端授权 UI 使用"
+      - "2026-04-21 (H2 实施): numind-server 5 files / 171+29- @ commit 6c6ee44；numind-web-v3 2 files / 37+2- @ commit cd39d98。10 unit tests 全 PASS（7 chatbot biz + 3 pre-existing）。gofmt + go vet clean。frontend lint/type-check pass。无新 warning。"
+      - "2026-04-21 (H3 验证): dev CI 部署完成后 API 级 6 组测试全绿。列表 0→9 翻转生效，check-permission 4 类语义全对，运行时守卫仍 403。merge commit server@8c7f283 / web@9db562f"
+      - "2026-04-21 (tech debt 观察): dev DB 中用户 27 授权记录有 3 行 (1 active + 2 soft-deleted)，revoke/grant 循环会累积 tombstone。不影响查询（HasChatbotPermission 走 count WHERE deleted_at IS NULL），但长期会让 user_chatbot_permission 表膨胀。未来可考虑 upsert 模式或定期 hard-delete 清理。非 blocking。"
     blockers: []
     created_at: "2026-04-21T14:30:00+08:00"
-    completed_at: null
+    completed_at: "2026-04-21T15:30:00+08:00"
