@@ -41,6 +41,18 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 		return errno.ErrForbidden
 	}
 
+	// 1a. 运行时权限守卫 —— 即便持有 session，当前对 chatbot 的白名单也必须仍然命中。
+	// 实现 PRD AS-5「撤销即时生效」：父账号撤权后，子账号对已有 session 再发消息直接 403。
+	// 放在 session 所有权校验之后、获取 chatbot config / LLM 调用之前（child-run-permission §3.5，
+	// S3 Gate review P1-B 修正：原 plan 引用的 `Chat` 方法不存在，真正入口是 ChatStream）。
+	ok, err := b.ds.Customers().HasChatbotPermission(ctx, userID, session.ChatbotID)
+	if err != nil {
+		return fmt.Errorf("ChatStream permission: %w", err)
+	}
+	if !ok {
+		return errno.ErrChatbotRunDenied
+	}
+
 	// 2. 获取智能体配置并验证可访问性
 	config, err := b.ds.ChatbotConfig().Get(ctx, session.ChatbotID)
 	if err != nil {

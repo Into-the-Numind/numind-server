@@ -216,8 +216,9 @@ func (b *chatbotBiz) UpdateStatus(ctx context.Context, userID uint, id uint, sta
 
 // ListVisibleChatbots 获取用户可见的智能体列表（C端）
 // 主用户（ParentUserID == nil）: 仅返回自己已发布的智能体
-// 子用户（ParentUserID != nil）: 仅返回父用户已发布的智能体
+// 子用户（ParentUserID != nil）: 仅返回父用户已发布且被父账号显式授权（白名单）的智能体
 // 注：工作区只展示已发布的配置；草稿/下线状态的智能体需从配置中心管理入口访问。
+// 子账号白名单由 user_chatbot_permission 表维护，0 记录 = deny-all（default-deny）。
 func (b *chatbotBiz) ListVisibleChatbots(ctx context.Context, user *model.User) ([]model.ChatbotConfig, error) {
 	ownerID := user.ID
 	if user.ParentUserID != nil {
@@ -227,11 +228,41 @@ func (b *chatbotBiz) ListVisibleChatbots(ctx context.Context, user *model.User) 
 	if err != nil {
 		return nil, fmt.Errorf("ListVisibleChatbots: %w", err)
 	}
+
+	// 子账号：用白名单做 set 交集过滤；父账号不受限。
+	if user.ParentUserID != nil {
+		allowedIDs, err := b.ds.Customers().ListSubUserChatbotIDs(ctx, user.ID)
+		if err != nil {
+			return nil, fmt.Errorf("ListVisibleChatbots whitelist: %w", err)
+		}
+		allowed := make(map[uint]bool, len(allowedIDs))
+		for _, id := range allowedIDs {
+			allowed[id] = true
+		}
+		filtered := configs[:0]
+		for _, c := range configs {
+			if allowed[c.ID] {
+				filtered = append(filtered, c)
+			}
+		}
+		configs = filtered
+	}
 	return configs, nil
 }
 
 // CreateSession 创建对话会话
+// 权限模型：父账号永远放行；子账号必须命中 user_chatbot_permission 白名单（default-deny）。
+// 未授权 → ErrChatbotRunDenied（403）。
 func (b *chatbotBiz) CreateSession(ctx context.Context, userID uint, chatbotID uint) (*model.ChatbotSession, error) {
+	// 运行时权限守卫 —— 必须在任何 DB 写操作前执行（child-run-permission §3.5）。
+	ok, err := b.ds.Customers().HasChatbotPermission(ctx, userID, chatbotID)
+	if err != nil {
+		return nil, fmt.Errorf("CreateSession permission: %w", err)
+	}
+	if !ok {
+		return nil, errno.ErrChatbotRunDenied
+	}
+
 	// 验证智能体存在且可访问
 	config, err := b.ds.ChatbotConfig().Get(ctx, chatbotID)
 	if err != nil {
