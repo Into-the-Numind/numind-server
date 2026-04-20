@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS `user_chatbot_permission` (
   `id`          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `sub_user_id` BIGINT UNSIGNED NOT NULL COMMENT '子账号 user.id',
   `chatbot_id`  BIGINT UNSIGNED NOT NULL COMMENT 'chatbot_config.id',
-  `created_at`  DATETIME(3) NULL,
+  `created_at`  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_ucp_sub_chatbot` (`sub_user_id`, `chatbot_id`),
   KEY `idx_ucp_chatbot` (`chatbot_id`)
