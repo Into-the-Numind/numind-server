@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ICustomerStore 定义客户管理相关的数据库操作接口
@@ -44,6 +45,12 @@ type ICustomerStore interface {
 	GrantFeatures(ctx context.Context, parentUserID, subUserID uint, featureKeys []string) error
 	RevokeFeatures(ctx context.Context, parentUserID, subUserID uint, featureKeys []string) error
 	ListUserFeatures(ctx context.Context, subUserID uint) ([]string, error)
+
+	// Chatbot 运行权限管理（default-deny 白名单，spec §3.4 / child-run-permission）
+	HasChatbotPermission(ctx context.Context, userID, chatbotID uint) (bool, error)
+	ListSubUserChatbotIDs(ctx context.Context, subUserID uint) ([]uint, error)
+	GrantChatbotPermissions(ctx context.Context, subUserID uint, chatbotIDs []uint) error
+	RevokeChatbotPermissions(ctx context.Context, subUserID uint, chatbotIDs []uint) error
 }
 
 type customerStore struct {
@@ -175,7 +182,22 @@ func (c *customerStore) RevokeTemplates(ctx context.Context, parentUserID, subUs
 		Delete(&model.UserTemplatePermission{}).Error
 }
 
-// HasTemplatePermission 检查用户是否有模板权限
+// HasTemplatePermission 检查用户是否有模板权限。
+//
+// 语义（child-run-permission feature 翻转后）：
+//   - 父账号（parent_user_id IS NULL） → 永远放行
+//   - 子账号 0 活跃记录 → **deny**（default-deny，从原 default-allow 翻转）
+//   - 子账号有活跃记录但不含目标 templateID → deny
+//   - 子账号有活跃记录且含目标 templateID → allow
+//
+// 软删除：UserTemplatePermission 嵌入 gorm.Model（含 DeletedAt），GORM 默认 scope
+// 会自动过滤 deleted_at IS NOT NULL 的行 —— 所以 Count 返回的是"活跃记录数"。
+// 曾被父账号 RevokeTemplates 撤权（软删除）的子账号，活跃记录 = 0，按 default-deny
+// 被拒绝 —— 这是正确行为。
+//
+// 部署顺序约束：本翻转必须在 backfill migration
+// （20260420_230001_backfill_default_template_permissions.sql）之后上线，否则所有
+// 未显式授权的存量子账号会被临时 deny-all。详见 spec §6。
 func (c *customerStore) HasTemplatePermission(ctx context.Context, userID, templateID uint) (bool, error) {
 	// 先查询用户信息
 	var user model.User
@@ -188,7 +210,7 @@ func (c *customerStore) HasTemplatePermission(ctx context.Context, userID, templ
 		return true, nil
 	}
 
-	// 检查用户是否有任何权限配置记录
+	// 检查用户是否有任何活跃权限配置记录（软删除行由 GORM 默认 scope 过滤）
 	var totalPermissions int64
 	if err := c.db.WithContext(ctx).Model(&model.UserTemplatePermission{}).
 		Where("sub_user_id = ?", userID).
@@ -196,12 +218,12 @@ func (c *customerStore) HasTemplatePermission(ctx context.Context, userID, templ
 		return false, err
 	}
 
-	// 如果没有任何权限配置记录（新用户或被重置），允许所有
+	// child-run-permission: 0 活跃记录 → deny（default-deny，翻转）
 	if totalPermissions == 0 {
-		return true, nil
+		return false, nil
 	}
 
-	// 如果有配置记录，则检查白名单
+	// 有活跃记录 → 严格白名单检查
 	var count int64
 	err := c.db.WithContext(ctx).Model(&model.UserTemplatePermission{}).
 		Where("sub_user_id = ? AND template_id = ?", userID, templateID).
@@ -439,4 +461,83 @@ func (c *customerStore) UpdateSubUserTierWithLog(ctx context.Context, subUserID 
 
 		return nil
 	})
+}
+
+// ======================================================================
+// Chatbot 权限管理（child-run-permission feature，spec §3.4）
+//
+// 对称于 Template 权限但**无软删除**：UserChatbotPermission 表用物理 DELETE。
+// 语义：0 记录 → deny（default-deny 从起步就是，不像 Template 需要翻转 + backfill）。
+// 父账号永远 bypass。
+// ======================================================================
+
+// HasChatbotPermission 检查用户是否有权运行指定 chatbot。
+//
+// 父账号（parent_user_id IS NULL） → true（bypass，不查表）
+// 子账号 → 白名单查询 (sub_user_id, chatbot_id) 命中返回 true，否则 false
+func (c *customerStore) HasChatbotPermission(ctx context.Context, userID, chatbotID uint) (bool, error) {
+	var user model.User
+	if err := c.db.WithContext(ctx).First(&user, userID).Error; err != nil {
+		return false, err
+	}
+
+	// 父账号 bypass
+	if user.ParentUserID == nil {
+		return true, nil
+	}
+
+	// 子账号：必须有白名单记录（default-deny）
+	var count int64
+	if err := c.db.WithContext(ctx).Model(&model.UserChatbotPermission{}).
+		Where("sub_user_id = ? AND chatbot_id = ?", userID, chatbotID).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// ListSubUserChatbotIDs 返回子账号已授权的 chatbot ID 列表。
+// 供 biz 层做 ListVisibleChatbots 的白名单过滤。父账号也可调用，只是返回的是显式
+// 白名单（父账号没白名单表行，会返回空 —— 调用方应先根据 parent_user_id 判断是否
+// 需要 bypass）。
+func (c *customerStore) ListSubUserChatbotIDs(ctx context.Context, subUserID uint) ([]uint, error) {
+	var ids []uint
+	err := c.db.WithContext(ctx).Model(&model.UserChatbotPermission{}).
+		Where("sub_user_id = ?", subUserID).
+		Pluck("chatbot_id", &ids).Error
+	return ids, err
+}
+
+// GrantChatbotPermissions 为子账号批量授权 chatbot（幂等）。
+// UNIQUE KEY (sub_user_id, chatbot_id) + ON CONFLICT DO NOTHING → 重复 grant
+// 不报错、不新增行。空数组提前返回 nil，避免无意义 SQL。
+func (c *customerStore) GrantChatbotPermissions(ctx context.Context, subUserID uint, chatbotIDs []uint) error {
+	if len(chatbotIDs) == 0 {
+		return nil
+	}
+	rows := make([]model.UserChatbotPermission, 0, len(chatbotIDs))
+	now := time.Now()
+	for _, id := range chatbotIDs {
+		rows = append(rows, model.UserChatbotPermission{
+			SubUserID: subUserID,
+			ChatbotID: id,
+			CreatedAt: now,
+		})
+	}
+	return c.db.WithContext(ctx).
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&rows).Error
+}
+
+// RevokeChatbotPermissions 批量撤销子账号的 chatbot 权限。
+// UserChatbotPermission 表**无软删除**，这里是物理 DELETE。
+// 传入不存在的 chatbot_id 不会报错，DELETE ... WHERE IN (...) 会简单匹配 0 行返回。
+// 空数组提前返回 nil。
+func (c *customerStore) RevokeChatbotPermissions(ctx context.Context, subUserID uint, chatbotIDs []uint) error {
+	if len(chatbotIDs) == 0 {
+		return nil
+	}
+	return c.db.WithContext(ctx).
+		Where("sub_user_id = ? AND chatbot_id IN ?", subUserID, chatbotIDs).
+		Delete(&model.UserChatbotPermission{}).Error
 }
