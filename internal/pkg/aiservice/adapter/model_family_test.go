@@ -24,6 +24,8 @@ func TestInferModelFamily(t *testing.T) {
 		{"claude base", "claude-sonnet-4-6", ModelFamilyClaude},
 		{"claude-think variant", "claude-sonnet-4-6-think", ModelFamilyClaudeThinkingSlug},
 		{"claude haiku think", "claude-haiku-4-6-think", ModelFamilyClaudeThinkingSlug},
+		{"claude bare prefix", "claude-", ModelFamilyClaude},
+		{"claude think with trailing suffix", "claude-sonnet-4-6-think-preview", ModelFamilyClaude},
 		// Gemini family (note: -think suffix on gemini does NOT match claude-thinking-suffix)
 		{"gemini base", "gemini-3.1-pro-preview", ModelFamilyGemini},
 		{"gemini think fake", "gemini-3.1-pro-preview-think", ModelFamilyGemini},
@@ -32,6 +34,7 @@ func TestInferModelFamily(t *testing.T) {
 		{"deepseek think", "deepseek-v3.2-think", ModelFamilyDeepSeek},
 		// Generic / edge
 		{"qwen", "qwen-turbo", ModelFamilyGeneric},
+		{"text-embedding-v4", "text-embedding-v4", ModelFamilyGeneric},
 		{"empty string", "", ModelFamilyGeneric},
 	}
 	for _, tc := range cases {

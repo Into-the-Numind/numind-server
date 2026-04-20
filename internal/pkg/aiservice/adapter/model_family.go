@@ -17,14 +17,17 @@ const (
 
 // InferModelFamily dispatches based on provider_model_id prefix/suffix.
 //
+// Exported for unit tests (see model_family_test.go).
+//
 // Matching order:
 //  1. Claude -think suffix variant (exact Claude + suffix check) — e.g. "claude-sonnet-4-6-think"
 //     Per T2 protocol audit: only Claude and DeepSeek recognise the -think suffix at AiHubMix;
 //     however the Claude variant has special semantics (temp=1 server-forced) that we tag here.
 //     DeepSeek -think falls through to generic deepseek (no adapter-side special handling needed).
 //  2. OpenAI reasoning family — strict enumeration of gpt-5, gpt-5-, gpt-5., o1, o1-, o3, o3-, o4, o4-.
-//     Strict enumeration intentionally rejects "gpt-50-xxx" and "o10-xxx" collision probes
-//     (see test file).
+//     Strict prefix enumeration is the P1-2 plan tightening: it intentionally rejects
+//     "gpt-50-xxx" and "o10-xxx" collision probes that a loose HasPrefix("gpt-5") /
+//     HasPrefix("o1") would accept (see test file).
 //  3. Generic family prefixes (claude-, gemini-, deepseek-).
 //  4. Fallback Generic.
 func InferModelFamily(providerModelID string) ModelFamily {
