@@ -1,6 +1,37 @@
 schema_version: "1.0"
 
 features:
+  - id: "parent-self-grant-membership"
+    ndf_version: "1.1"
+    description: "父账户（parent_user_id IS NULL）可在用户端客户管理页为自己开通会员。复用 POST /v1/users/children/:child_id/grant-membership（放开 self-grant 父子校验）+ GET /v1/customers/sub-users（UNION 自己进列表）+ 前端 CustomersView 标记'我'。不走支付，写 credit_package（grant_source='b2b_grant', granter=self）+ action_log，月末 B2B 对公结算自动按 granter 聚合。"
+    track: "standard"
+    stage: "S0"
+    classification_reason: "2 条 Triage 标准不满足：文件数 >3（backend biz + store + frontend view + tests + 可能 report SQL） + 高风险业务逻辑（会员开通 + 放开父子关系校验，B2B2C 权限模型扩展）。用户要求加速推进"
+    last_updated_by: "ai-s0"
+    last_updated_at: "2026-04-20T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches: {}
+    artifacts:
+      requirement: "numind-server/requirements/parent-self-grant-membership.md"
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "S0 requirement card 已产出，等待 S0 gate"
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-04-20 (S0): Triage 5 条标准 → Standard（2 条不满足：文件数 + 高风险业务）。用户确认走 Standard 加速"
+      - "2026-04-20 (S0 业务决策): 父账户买 booster 走现有支付链路（选项 a），不进帮升级弹窗"
+      - "2026-04-20 (S0 业务决策): 防滥用复用现有 GrantMembership 校验（trial 终身一次 + monthly 在期不可重开）"
+      - "2026-04-20 (S0 业务决策): monthly 指新 credits 机制（ProductType='monthly' → credit_package.type='subscription'），不是 legacy tier"
+      - "2026-04-20 (S0 业务决策): self-grant 复用 grant_source='b2b_grant'，不新增枚举值；通过 user_id==granter_user_id 识别自用明细"
+      - "2026-04-20 (S0 业务决策): admin 残废接口 /v1/admin/users/:id/tier 的修复不在本需求范围，作为独立 hotfix 另处理"
+    blockers: []
+    created_at: "2026-04-20T00:00:00+08:00"
+
   - id: "openrouter-provider"
     ndf_version: "1.1"
     description: "接入 OpenRouter (https://openrouter.ai/api/v1) 作为新的最高优先级 LLM 聚合主路由，与 AiHubMix (priority=5) / DMXAPI (priority=10) 并行。4 个模型（anthropic/claude-sonnet-4.6 / google/gemini-3.1-pro-preview / openai/gpt-5.4 / deepseek/deepseek-v3.2）统一走 OpenAI /chat/completions，thinking 通过 reasoning_effort 激活；凭据走 SyncProviderCredentials（config→DB，不硬编码，比 aihubmix 更洁净）"
