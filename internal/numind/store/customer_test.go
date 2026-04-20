@@ -67,7 +67,7 @@ func TestListSubUsers_IncludesParentSelf_Ordered(t *testing.T) {
 
 	// Unrelated parent X and their child Y — must NOT appear in parent's list
 	otherParent := insertCustomerTestUser(t, db, nil, now, "OtherParent")
-	_ = insertCustomerTestUser(t, db, &otherParent, now, "OtherChild")
+	otherChild := insertCustomerTestUser(t, db, &otherParent, now, "OtherChild")
 
 	users, total, err := cs.ListSubUsers(context.Background(), parent, 0, 10)
 	require.NoError(t, err)
@@ -79,5 +79,6 @@ func TestListSubUsers_IncludesParentSelf_Ordered(t *testing.T) {
 
 	for _, u := range users {
 		assert.NotEqual(t, otherParent, u.ID, "otherParent must not leak")
+		assert.NotEqual(t, otherChild, u.ID, "otherChild must not leak")
 	}
 }
