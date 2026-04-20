@@ -134,7 +134,10 @@ func (d *DMXAPIAdapter) buildOAIRequest(
 	// Claude base + Thinking=true → force temperature=1 (Q4=A).
 	// Note: Claude -think suffix variant has family=ModelFamilyClaudeThinkingSlug
 	// and falls outside this branch; AiHubMix forces temp=1 server-side for it.
-	if family == ModelFamilyClaude && req.Thinking && req.Temperature != 1 {
+	// S3 v2 review P2-A fix: also gate on route.SupportsThinking so we don't force
+	// temp=1 on a Claude route whose reasoning_effort branch was skipped (no sense
+	// forcing temp without injection — would create inconsistent wire state).
+	if family == ModelFamilyClaude && req.Thinking && route.SupportsThinking && req.Temperature != 1 {
 		oaiReq.Temperature = 1
 		meta.TempOverridden = true
 	}
