@@ -452,29 +452,22 @@ func (ctrl *SopController) GetNote(c *gin.Context) {
 
 // ListTemplates 获取可用的SOP模板列表（用户端，只显示已发布的 active 模板）
 // 草稿/下线状态的模板不会出现在工作区，需从配置中心管理入口访问。
+// 默认 limit 为 500，覆盖权限弹窗等需要一次性拉全量的场景；管理端列表走独立端点。
 func (ctrl *SopController) ListTemplates(c *gin.Context) {
 	log.C(c).Infow("User list SOP templates called")
 
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "500"))
 
-	templates, _, err := ctrl.sopBiz.ListTemplates(c, offset, limit)
+	templates, total, err := ctrl.sopBiz.ListVisibleTemplates(c, offset, limit)
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
-	// 只返回 active 且 已发布 的模板
-	visibleTemplates := []interface{}{}
-	for _, t := range templates {
-		if t.Status == "active" && t.PublishStatus == model.SopPublishStatusPublished {
-			visibleTemplates = append(visibleTemplates, t)
-		}
-	}
-
 	core.WriteResponse(c, nil, gin.H{
-		"total":     len(visibleTemplates),
-		"templates": visibleTemplates,
+		"total":     total,
+		"templates": templates,
 	})
 }
 

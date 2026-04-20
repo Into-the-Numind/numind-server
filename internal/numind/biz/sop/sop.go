@@ -30,6 +30,9 @@ type ISopBiz interface {
 	CreateTemplate(ctx context.Context, name, description, prompt string) (*model.SopTemplate, error)
 	GetTemplate(ctx context.Context, id uint) (*model.SopTemplate, error)
 	ListTemplates(ctx context.Context, offset, limit int) ([]model.SopTemplate, int64, error)
+	// ListVisibleTemplates 列出 C 端用户可见的模板（status=active AND publish_status=published）。
+	// 仅供用户端 /v1/sop/templates；管理端和统计保持调用 ListTemplates 以看到全部状态。
+	ListVisibleTemplates(ctx context.Context, offset, limit int) ([]model.SopTemplate, int64, error)
 	UpdateTemplate(ctx context.Context, id uint, updates map[string]interface{}) error
 	DeleteTemplate(ctx context.Context, id uint) error
 
@@ -160,6 +163,10 @@ func (b *sopBiz) GetTemplate(ctx context.Context, id uint) (*model.SopTemplate, 
 
 func (b *sopBiz) ListTemplates(ctx context.Context, offset, limit int) ([]model.SopTemplate, int64, error) {
 	return b.ds.Sop().ListTemplates(offset, limit)
+}
+
+func (b *sopBiz) ListVisibleTemplates(ctx context.Context, offset, limit int) ([]model.SopTemplate, int64, error) {
+	return b.ds.Sop().ListVisibleTemplates(offset, limit)
 }
 
 func (b *sopBiz) UpdateTemplate(ctx context.Context, id uint, updates map[string]interface{}) error {
