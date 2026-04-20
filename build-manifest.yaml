@@ -5,9 +5,9 @@ features:
     ndf_version: "1.1"
     description: "父账户（parent_user_id IS NULL）可在用户端客户管理页为自己开通会员。复用 POST /v1/users/children/:child_id/grant-membership（放开 self-grant 父子校验）+ GET /v1/customers/sub-users（UNION 自己进列表）+ 前端 CustomersView 标记'我'。不走支付，写 credit_package（grant_source='b2b_grant', granter=self）+ action_log，月末 B2B 对公结算自动按 granter 聚合。"
     track: "standard"
-    stage: "S0"
+    stage: "S1-done"
     classification_reason: "2 条 Triage 标准不满足：文件数 >3（backend biz + store + frontend view + tests + 可能 report SQL） + 高风险业务逻辑（会员开通 + 放开父子关系校验，B2B2C 权限模型扩展）。用户要求加速推进"
-    last_updated_by: "ai-s0"
+    last_updated_by: "ai-s1"
     last_updated_at: "2026-04-20T00:00:00+08:00"
     repos:
       - numind-server
@@ -15,11 +15,12 @@ features:
     branches: {}
     artifacts:
       requirement: "numind-server/requirements/parent-self-grant-membership.md"
+      proposal: "numind-server/proposals/parent-self-grant-membership-proposal.md"
     progress:
       total_tasks: 0
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "S0 requirement card 已产出，等待 S0 gate"
+      current_task: "S1 proposal 已产出，等待 S1 gate（客户确认提案）"
     rollback: null
     last_verified: null
     decisions:
@@ -29,6 +30,9 @@ features:
       - "2026-04-20 (S0 业务决策): monthly 指新 credits 机制（ProductType='monthly' → credit_package.type='subscription'），不是 legacy tier"
       - "2026-04-20 (S0 业务决策): self-grant 复用 grant_source='b2b_grant'，不新增枚举值；通过 user_id==granter_user_id 识别自用明细"
       - "2026-04-20 (S0 业务决策): admin 残废接口 /v1/admin/users/:id/tier 的修复不在本需求范围，作为独立 hotfix 另处理"
+      - "2026-04-20 (S1): 用户要求加速，跳过 /office-hours（业务决策已在 S0 前对话中穷尽：选项 a/b/c、booster 走支付、monthly=credits 新制、self-grant 复用 b2b_grant）。薄版 proposal 聚焦封存决策 + 技术可行性 + 越权防线"
+      - "2026-04-20 (S1): 技术方案锁定 — backend biz(grant_membership.go:79-81 放开 self-grant) + backend store(customer.go ListSubUsers WHERE 加 OR id=:parent) + frontend(CustomersView 标记'我' + 允许自行 action) + tests 扩展。B2B 报表 SQL 明细 CASE 为可选增强，不阻塞主流程"
+      - "2026-04-20 (S1): 越权防线明确 — (1) 子账户不能自己给自己开通；(2) 父 A 不能给父 B 开通；(3) child_id 不存在返回 404。三条在 spec 必须逐条覆盖"
     blockers: []
     created_at: "2026-04-20T00:00:00+08:00"
 
