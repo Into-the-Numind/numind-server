@@ -212,3 +212,94 @@ func TestTracing_WithTraceContext(t *testing.T) {
 		t.Errorf("unexpected response: %v", resp)
 	}
 }
+
+// TestMergeTraceMetadata covers the Task 9 helper: merging resolved fields
+// into Langfuse output.metadata sub-map, with nil-safety + zero-value skip.
+func TestMergeTraceMetadata(t *testing.T) {
+	cases := []struct {
+		name        string
+		outputMap   map[string]interface{}
+		tm          *aiservice.TraceMetadata
+		wantKeys    map[string]interface{}
+		wantNoKeys  []string
+	}{
+		{
+			name:      "nil tm is no-op",
+			outputMap: map[string]interface{}{"metadata": map[string]interface{}{"existing": "v"}},
+			tm:        nil,
+			wantKeys:  map[string]interface{}{"existing": "v"},
+		},
+		{
+			name:       "nil outputMap is no-op",
+			outputMap:  nil,
+			tm:         &aiservice.TraceMetadata{ResolvedReasoningEffort: "medium"},
+			wantKeys:   nil, // nothing to assert, just no panic
+			wantNoKeys: nil,
+		},
+		{
+			name:      "all fields set",
+			outputMap: map[string]interface{}{"metadata": map[string]interface{}{}},
+			tm: &aiservice.TraceMetadata{
+				ResolvedReasoningEffort: "medium",
+				ResolvedModelFamily:     "claude",
+				TempOverridden:          true,
+			},
+			wantKeys: map[string]interface{}{
+				"resolved_reasoning_effort": "medium",
+				"resolved_model_family":     "claude",
+				"temp_overridden":           true,
+			},
+		},
+		{
+			name:      "zero values skipped",
+			outputMap: map[string]interface{}{"metadata": map[string]interface{}{"existing": "v"}},
+			tm: &aiservice.TraceMetadata{
+				ResolvedReasoningEffort: "",    // skip
+				ResolvedModelFamily:     "gpt", // keep
+				TempOverridden:          false, // skip
+			},
+			wantKeys: map[string]interface{}{
+				"existing":              "v",
+				"resolved_model_family": "gpt",
+			},
+			wantNoKeys: []string{"resolved_reasoning_effort", "temp_overridden"},
+		},
+		{
+			name:      "intrinsic sentinel",
+			outputMap: map[string]interface{}{"metadata": map[string]interface{}{}},
+			tm:        &aiservice.TraceMetadata{ResolvedReasoningEffort: "intrinsic"},
+			wantKeys: map[string]interface{}{
+				"resolved_reasoning_effort": "intrinsic",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Should not panic on nil inputs
+			mergeTraceMetadata(tc.outputMap, tc.tm)
+			if tc.outputMap == nil {
+				return
+			}
+			meta, ok := tc.outputMap["metadata"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("metadata key missing or wrong type: %#v", tc.outputMap["metadata"])
+			}
+			for k, want := range tc.wantKeys {
+				got, present := meta[k]
+				if !present {
+					t.Errorf("expected key %q not present in metadata: %#v", k, meta)
+					continue
+				}
+				if got != want {
+					t.Errorf("metadata[%q] = %v, want %v", k, got, want)
+				}
+			}
+			for _, k := range tc.wantNoKeys {
+				if _, present := meta[k]; present {
+					t.Errorf("unexpected key %q present (should be skipped for zero value)", k)
+				}
+			}
+		})
+	}
+}
