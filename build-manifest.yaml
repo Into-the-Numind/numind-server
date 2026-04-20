@@ -5,22 +5,24 @@ features:
     ndf_version: "1.1"
     description: "父账户（parent_user_id IS NULL）可在用户端客户管理页为自己开通会员。复用 POST /v1/users/children/:child_id/grant-membership（放开 self-grant 父子校验）+ GET /v1/customers/sub-users（WHERE 加 OR id=:parent，置顶自己）。前端零改动。不走支付，写 credit_package（grant_source='b2b_grant', granter=self）+ action_log，月末 B2B 对公结算自动按 granter 聚合。"
     track: "standard"
-    stage: "S2-done"
+    stage: "S3-done"
     classification_reason: "2 条 Triage 标准不满足：文件数 >3（backend biz + store + frontend view + tests + 可能 report SQL） + 高风险业务逻辑（会员开通 + 放开父子关系校验，B2B2C 权限模型扩展）。用户要求加速推进"
-    last_updated_by: "ai-s2"
+    last_updated_by: "ai-s3"
     last_updated_at: "2026-04-20T00:00:00+08:00"
     repos:
       - numind-server
+      - numind-web-v3
     branches: {}
     artifacts:
       requirement: "numind-server/requirements/parent-self-grant-membership.md"
       proposal: "numind-server/proposals/parent-self-grant-membership-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-04-20-parent-self-grant-membership-design.md"
+      plan: "numind-server/docs/superpowers/plans/2026-04-20-parent-self-grant-membership-plan.md"
     progress:
-      total_tasks: 0
+      total_tasks: 3
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "S2 spec 已产出，等待 S2 gate（人类确认设计方向）"
+      current_task: "S3 plan 已产出 + Sonnet reviewer 审查完成（PASS_WITH_CONCERNS 已修复），等待 S3 gate"
     rollback: null
     last_verified: null
     decisions:
@@ -36,6 +38,10 @@ features:
       - "2026-04-20 (S2): 用户反问'如果不需要额外样式，是不是就不需要区分是不是自己？' → 前端改动降级为零。取消 S1 PRD 的'我'标识需求，API 响应不新增 is_self 字段，CustomersView.vue 零代码改动"
       - "2026-04-20 (S2): repos 收窄为 [numind-server]，前端不再涉及。总改动面：grant_membership.go self-grant 分支 + store/customer.go ListSubUsers WHERE + ORDER + 7 个新单测 + 1 个 store 测试 + 3 个 E2E（E2E 跑在 numind-web-v3 的 e2e/ 目录，但不改前端源码）"
       - "2026-04-20 (S2): S5 验证策略选 Playwright E2E（非 gstack /qa），理由：会员开通属高风险业务逻辑，需要自动回归保护。S3 plan 必须包含独立 task 写 e2e/parent-self-grant.spec.ts"
+      - "2026-04-20 (S3): Plan 3 个实施 task（biz / store / e2e）+ 1 个 S5 策略文档 task。Sonnet reviewer 审查 PASS_WITH_CONCERNS"
+      - "2026-04-20 (S3 修复): reviewer P1 — spec §5.1 case #4 CrossParentGrant_Rejected（A→B 直接越权，B 也是父账户）与现有 ChildNotBelongingToParent_Rejected（A→B 的子账户）是不同场景，plan 补 Step 1.3b 显式实现"
+      - "2026-04-20 (S3 修复): reviewer P2-1 — E2E case 2 因 mock 限制无法验证列表刷新后状态，plan 补注释声明持久化验证由后端 TDD 覆盖"
+      - "2026-04-20 (S3 repos 恢复): repos 加回 numind-web-v3，因 E2E 文件创建在 numind-web-v3/e2e/（测试代码非功能代码，前端源码零改动原则保持）"
     blockers: []
     created_at: "2026-04-20T00:00:00+08:00"
 
