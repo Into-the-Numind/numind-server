@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 	v1 "numind-server/pkg/api/numind/v1"
@@ -35,6 +36,14 @@ type ICustomerBiz interface {
 	GrantFeatures(ctx context.Context, parentUserID, subUserID uint, featureKeys []string) error
 	RevokeFeatures(ctx context.Context, parentUserID, subUserID uint, featureKeys []string) error
 	ListUserFeatures(ctx context.Context, parentUserID, subUserID uint) ([]string, error)
+
+	// Chatbot 运行权限管理（child-run-permission spec §3.5）
+	CheckChatbotPermission(ctx context.Context, userID, chatbotID uint) (bool, error)
+	ListSubUserChatbots(ctx context.Context, parentUserID, subUserID uint) ([]model.ChatbotConfig, error)
+	GrantChatbots(ctx context.Context, parentUserID, subUserID uint, chatbotIDs []uint) error
+	RevokeChatbots(ctx context.Context, parentUserID, subUserID uint, chatbotIDs []uint) error
+	BatchGrantChatbots(ctx context.Context, parentUserID uint, subUserIDs, chatbotIDs []uint) error
+	BatchRevokeChatbots(ctx context.Context, parentUserID uint, subUserIDs, chatbotIDs []uint) error
 }
 
 type customerBiz struct {
@@ -366,4 +375,184 @@ func (c *customerBiz) ListUserFeatures(ctx context.Context, parentUserID, subUse
 	}
 
 	return c.ds.Customers().ListUserFeatures(ctx, subUserID)
+}
+
+// ============================================================================
+// Chatbot 运行权限管理（child-run-permission spec §3.5）
+//
+// 所有 Grant / Revoke 方法在 entry 处执行两道校验：
+//  1. 父子关系校验：subUser.ParentUserID == parentUserID（GetSubUser 实现）
+//     —— 父账号 A 不能给父账号 B 的子账号授权。失败 → errno.ErrForbidden。
+//     自我授权（parentID == subID）在 GetSubUser 层自然被拒绝，与既有
+//     GrantTemplates 语义一致（父账号 row 的 parent_user_id 为 NULL，
+//     不匹配 parentID）。
+//  2. Chatbot 归属校验：所有 chatbotIDs 的 chatbot_config.user_id 必须等于
+//     parentUserID。失败 → errno.ErrChatbotNotFound。
+// ============================================================================
+
+// CheckChatbotPermission 检查用户是否有权运行指定 chatbot（直接委托 store）
+func (c *customerBiz) CheckChatbotPermission(ctx context.Context, userID, chatbotID uint) (bool, error) {
+	return c.ds.Customers().HasChatbotPermission(ctx, userID, chatbotID)
+}
+
+// ListSubUserChatbots 列出子账号已授权的 chatbot 详情（JOIN chatbot_config）。
+// 校验：subUser 必须属于 parentUser。
+func (c *customerBiz) ListSubUserChatbots(ctx context.Context, parentUserID, subUserID uint) ([]model.ChatbotConfig, error) {
+	// 1. 验证父子关系
+	if _, err := c.ds.Customers().GetSubUser(ctx, parentUserID, subUserID); err != nil {
+		log.C(ctx).Errorw("Failed to verify sub user ownership for chatbot list",
+			"parent_user_id", parentUserID, "sub_user_id", subUserID, "err", err)
+		return nil, errno.ErrForbidden
+	}
+
+	// 2. 拿白名单 chatbot_id 列表
+	ids, err := c.ds.Customers().ListSubUserChatbotIDs(ctx, subUserID)
+	if err != nil {
+		return nil, fmt.Errorf("ListSubUserChatbots list ids: %w", err)
+	}
+	if len(ids) == 0 {
+		return []model.ChatbotConfig{}, nil
+	}
+
+	// 3. 批量查 chatbot_config 详情（限制 user_id = parentUserID 防止历史脏数据
+	//    泄漏非本父账号的 chatbot 详情）
+	var configs []model.ChatbotConfig
+	if err := c.ds.DB().WithContext(ctx).
+		Where("id IN ? AND user_id = ?", ids, parentUserID).
+		Find(&configs).Error; err != nil {
+		return nil, fmt.Errorf("ListSubUserChatbots fetch configs: %w", err)
+	}
+	return configs, nil
+}
+
+// validateChatbotOwnership 校验所有 chatbotIDs 都属于 parentUserID。
+// 返回 errno.ErrChatbotNotFound 如果有任何一个不匹配（包括不存在和跨父账号）。
+func (c *customerBiz) validateChatbotOwnership(ctx context.Context, parentUserID uint, chatbotIDs []uint) error {
+	if len(chatbotIDs) == 0 {
+		return nil
+	}
+	// 去重避免 count 比较出错（UNIQUE PK id 本不应有重复，但入参可能携带）
+	seen := make(map[uint]struct{}, len(chatbotIDs))
+	unique := make([]uint, 0, len(chatbotIDs))
+	for _, id := range chatbotIDs {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+
+	var count int64
+	if err := c.ds.DB().WithContext(ctx).
+		Model(&model.ChatbotConfig{}).
+		Where("id IN ? AND user_id = ?", unique, parentUserID).
+		Count(&count).Error; err != nil {
+		return fmt.Errorf("validateChatbotOwnership: %w", err)
+	}
+	if count != int64(len(unique)) {
+		log.C(ctx).Warnw("Chatbot ownership check failed",
+			"parent_user_id", parentUserID,
+			"requested_ids", unique,
+			"owned_count", count,
+		)
+		return errno.ErrChatbotNotFound
+	}
+	return nil
+}
+
+// GrantChatbots 为子账号授权 chatbot（幂等）
+func (c *customerBiz) GrantChatbots(ctx context.Context, parentUserID, subUserID uint, chatbotIDs []uint) error {
+	// 1. 父子关系校验
+	if _, err := c.ds.Customers().GetSubUser(ctx, parentUserID, subUserID); err != nil {
+		log.C(ctx).Errorw("GrantChatbots: sub user ownership check failed",
+			"parent_user_id", parentUserID, "sub_user_id", subUserID, "err", err)
+		return errno.ErrForbidden
+	}
+	// 2. Chatbot 归属校验
+	if err := c.validateChatbotOwnership(ctx, parentUserID, chatbotIDs); err != nil {
+		return err
+	}
+	// 3. 写入白名单
+	if err := c.ds.Customers().GrantChatbotPermissions(ctx, subUserID, chatbotIDs); err != nil {
+		return fmt.Errorf("GrantChatbots: %w", err)
+	}
+	log.C(ctx).Infow("Chatbots granted",
+		"parent_user_id", parentUserID, "sub_user_id", subUserID, "count", len(chatbotIDs))
+	return nil
+}
+
+// RevokeChatbots 撤销子账号的 chatbot 权限
+func (c *customerBiz) RevokeChatbots(ctx context.Context, parentUserID, subUserID uint, chatbotIDs []uint) error {
+	// 1. 父子关系校验
+	if _, err := c.ds.Customers().GetSubUser(ctx, parentUserID, subUserID); err != nil {
+		log.C(ctx).Errorw("RevokeChatbots: sub user ownership check failed",
+			"parent_user_id", parentUserID, "sub_user_id", subUserID, "err", err)
+		return errno.ErrForbidden
+	}
+	// 2. Chatbot 归属校验 —— 撤销动作也校验归属，防止攻击者绕过父子关系测试
+	//    传入别人的 chatbot_id（即便 revoke 写数据库时因 sub_user_id 约束不生效，
+	//    业务层仍应拒绝非法入参，与 Grant 对称）
+	if err := c.validateChatbotOwnership(ctx, parentUserID, chatbotIDs); err != nil {
+		return err
+	}
+	// 3. 删除白名单行
+	if err := c.ds.Customers().RevokeChatbotPermissions(ctx, subUserID, chatbotIDs); err != nil {
+		return fmt.Errorf("RevokeChatbots: %w", err)
+	}
+	log.C(ctx).Infow("Chatbots revoked",
+		"parent_user_id", parentUserID, "sub_user_id", subUserID, "count", len(chatbotIDs))
+	return nil
+}
+
+// BatchGrantChatbots 为多个子账号批量授权多个 chatbot。
+// 策略：先统一校验所有 chatbotIDs 的归属（1 次查询），再逐 subUser 做父子校验 +
+// grant 写入。任一子账号校验失败 → 立即返回错误，已处理的子账号权限已写入（接受
+// 与既有 BatchGrantTemplates 同级的部分成功语义，调用方可重试幂等）。
+func (c *customerBiz) BatchGrantChatbots(ctx context.Context, parentUserID uint, subUserIDs, chatbotIDs []uint) error {
+	// 1. Chatbot 归属统一校验（1 次 DB 查询）
+	if err := c.validateChatbotOwnership(ctx, parentUserID, chatbotIDs); err != nil {
+		return err
+	}
+	// 2. 逐子账号处理
+	for _, subUserID := range subUserIDs {
+		if _, err := c.ds.Customers().GetSubUser(ctx, parentUserID, subUserID); err != nil {
+			log.C(ctx).Errorw("BatchGrantChatbots: sub user ownership check failed",
+				"parent_user_id", parentUserID, "sub_user_id", subUserID, "err", err)
+			return errno.ErrForbidden
+		}
+		if err := c.ds.Customers().GrantChatbotPermissions(ctx, subUserID, chatbotIDs); err != nil {
+			return fmt.Errorf("BatchGrantChatbots sub_user=%d: %w", subUserID, err)
+		}
+	}
+	log.C(ctx).Infow("Batch chatbots granted",
+		"parent_user_id", parentUserID,
+		"sub_user_count", len(subUserIDs),
+		"chatbot_count", len(chatbotIDs),
+	)
+	return nil
+}
+
+// BatchRevokeChatbots 为多个子账号批量撤销多个 chatbot。
+func (c *customerBiz) BatchRevokeChatbots(ctx context.Context, parentUserID uint, subUserIDs, chatbotIDs []uint) error {
+	// 1. Chatbot 归属统一校验
+	if err := c.validateChatbotOwnership(ctx, parentUserID, chatbotIDs); err != nil {
+		return err
+	}
+	// 2. 逐子账号处理
+	for _, subUserID := range subUserIDs {
+		if _, err := c.ds.Customers().GetSubUser(ctx, parentUserID, subUserID); err != nil {
+			log.C(ctx).Errorw("BatchRevokeChatbots: sub user ownership check failed",
+				"parent_user_id", parentUserID, "sub_user_id", subUserID, "err", err)
+			return errno.ErrForbidden
+		}
+		if err := c.ds.Customers().RevokeChatbotPermissions(ctx, subUserID, chatbotIDs); err != nil {
+			return fmt.Errorf("BatchRevokeChatbots sub_user=%d: %w", subUserID, err)
+		}
+	}
+	log.C(ctx).Infow("Batch chatbots revoked",
+		"parent_user_id", parentUserID,
+		"sub_user_count", len(subUserIDs),
+		"chatbot_count", len(chatbotIDs),
+	)
+	return nil
 }
