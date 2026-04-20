@@ -66,24 +66,27 @@ features:
 
   - id: "openrouter-provider"
     ndf_version: "1.1"
-    description: "接入 OpenRouter (https://openrouter.ai/api/v1) 作为新的最高优先级 LLM 聚合主路由，与 AiHubMix (priority=5) / DMXAPI (priority=10) 并行。4 个模型（anthropic/claude-sonnet-4.6 / google/gemini-3.1-pro-preview / openai/gpt-5.4 / deepseek/deepseek-v3.2）统一走 OpenAI /chat/completions，thinking 通过 reasoning_effort 激活；凭据走 SyncProviderCredentials（config→DB，不硬编码，比 aihubmix 更洁净）"
+    description: "接入 OpenRouter (https://openrouter.ai/api/v1) 作为新主路由（priority=1000），与 AiHubMix (100) / DMXAPI (10) 并行。本期包含三件事：(1) OpenRouter 接入 + reasoning_effort 思考管道真实打通（修好今早 hotfix 的半拉子工程）(2) 顺带配置 AiHubMix 存量路由使其也真实思考 (3) 管理后台矩阵视图重构（消灭双 model_key 伪约束 + 可视化 3 级关系）。4 个模型（Claude 4.6 Sonnet / Gemini 3.1 Pro Preview / GPT 5.4 / DeepSeek V3.2）统一走 OpenAI /chat/completions，reasoning_effort 默认 medium。存量 -thinking 模型条目软删，能力表达收敛到 ai_service.supports_thinking + thinking_only 双布尔。凭据走 SyncProviderCredentials（config→DB，不硬编码）"
     track: "standard"
-    stage: "S1-done"
-    classification_reason: "涉及新外部服务集成（OpenRouter）+ 影响文件数 >3（seed SQL / seed.go / numind.go alias / config×2 / dmxapi_client SSE struct），2 条 Triage 标准不满足。用户要求加速推进"
-    last_updated_by: "ai-s1"
-    last_updated_at: "2026-04-20T00:00:00+08:00"
+    stage: "S2"
+    classification_reason: "涉及新外部服务集成（OpenRouter）+ DB schema 变更（ai_service_route ADD reasoning_effort）+ 影响文件数 >3（migration × 5 / adapter / registry / admin API / admin web 矩阵视图 / config × 2），多条 Triage 标准不满足。用户要求加速推进"
+    last_updated_by: "ai-s2"
+    last_updated_at: "2026-04-20T22:00:00+08:00"
     repos:
       - numind-server
+      - numind-admin-web
     branches:
       numind-server: "feature/openrouter-provider"
+      numind-admin-web: "feature/openrouter-provider-admin-ui"
     artifacts:
       requirement: "numind-server/requirements/openrouter-provider.md"
       proposal: "numind-server/proposals/openrouter-provider-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-04-20-openrouter-provider-design.md"
     progress:
-      total_tasks: 0
+      total_tasks: 9
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "S1 proposal 已产出，等待 S2 gate"
+      current_task: "S2 spec 已产出，等待客户（用户）确认设计方向进入 S3"
     rollback: null
     last_verified: null
     decisions:
@@ -96,6 +99,16 @@ features:
       - "2026-04-20 (S1): Pricing 方案确认 C — 与 aihubmix 同价（管理简单，成本实测吻合）"
       - "2026-04-20 (S1): Attribution header（HTTP-Referer/X-Title）不加 — 保持 adapter 三方共用通用性"
       - "2026-04-20 (S1): 预计改动文件 6 个（2 新增 migration + 4 改动：dmxapi_client/seed.go/numind.go/config×2）"
+      - "2026-04-20 (S2 架构校正): S1 proposal 基于老表 llm_model_provider/pricing_rule，S2 探索发现运行时已迁移到 ai_service/ai_service_route（2026-04-16 RENAME + VIEW passthrough；2026-04-17 drop VIEW；2026-04-18 delete pricing cols）。spec 所有 migration 改写到新表名。llm/dmxapi_client.go 在 internal/ 下零引用（死代码），本期不动；实际 SSE struct 改动位于 internal/pkg/aiservice/adapter/adapter.go"
+      - "2026-04-20 (S2 优先级方向校正): priority 是 DESC 排序（越大越优先），不是 S1 proposal 说的越小越优先。OpenRouter priority=1000（新主），AiHubMix=100（存量主降为备），DMXAPI=10（failover）"
+      - "2026-04-20 (S2 scope 扩展): 用户澄清今早 hotfix 原意是让深度思考默认 ON 但后端执行引擎忽略 thinking flag 导致实际跑普通模式。本期 scope 扩展：reasoning_effort 管道真实打通（含 AiHubMix 存量），消灭半拉子 hotfix"
+      - "2026-04-20 (S2 架构决策): reasoning_effort 作为路由级字段（ai_service_route.reasoning_effort VARCHAR(10) DEFAULT NULL），而非模型级或提供商级。理由：同模型不同 provider 可用不同强度；NULL=不发 reasoning_effort 字段"
+      - "2026-04-20 (S2 架构决策): 思考能力表达不新增 thinking_capability 列，复用 ai_service 现有 supports_thinking + thinking_only 双布尔。映射：(false,false)=none（不支持）；(true,false)=optional（可调）；(true,true)=intrinsic（天生思考）"
+      - "2026-04-20 (S2 架构决策): 值约束 5 档（'' | low | medium | high | minimal），不做自定义输入，不做通用 thinking_protocol 字段，不做 wire_protocol 字段。非 must-have，留待未来独立 feature"
+      - "2026-04-20 (S2 UX 决策): 管理后台新增矩阵视图（模型×提供商 2D 表格）消灭用户 B+F 痛点。单元格点击弹抽屉编辑路由（含 reasoning_effort 下拉，与模型能力联动）。模型表收敛为 4 行 base（-thinking 变体软删 deprecated_at=NOW）"
+      - "2026-04-20 (S2 范围确认): 新增第二仓库 numind-admin-web（矩阵视图 UI）。总 9 天估算（migration 1d + 后端 2.3d + admin 后端 1d + 矩阵前端 1.5d + 抽屉 0.8d + 模型能力编辑 0.5d + 测试 1.2d + 验证策略 0.2d + buffer 0.5d）"
+      - "2026-04-20 (S2 OpenRouter 模型思考配置): Claude/GPT/Gemini/DeepSeek 四条 OpenRouter 路由全部 seed reasoning_effort='medium'（用户纠正 DeepSeek V3.2 也是思考模型）。DMXAPI 保持 reasoning_effort=NULL（failover 角色不启用思考）"
+      - "2026-04-20 (S2 S5 策略决策): 选 Playwright E2E + gstack /qa 混合验证，理由：reasoning_effort 默认值改动属高风险业务逻辑（影响全线用户成本和 AI 行为），须有自动回归保护。后端单元测试覆盖 adapter 注入 + 合并 + 400 兜底 + admin API 校验"
     blockers: []
     created_at: "2026-04-20T00:00:00+08:00"
 
