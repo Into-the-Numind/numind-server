@@ -122,24 +122,28 @@ features:
 
   - id: "aihubmix-protocol-audit"
     ndf_version: "1.1"
-    description: "AiHubMix 聚合商协议与模型清单权威化 + 思考模式真实落地。Scope：(1) 针对 AiHubMix 现有 4 个模型（Claude 4.6 Sonnet / GPT 5.4 / Gemini 3.1 Pro / DeepSeek V3.2）做全面协议调研，产出权威文档说明每个模型的正确调用方式（endpoint / 请求字段 / 响应字段 / thinking 激活机制）。(2) 按调研发现修代码：修复 executor.go 和 chatbot/stream.go 丢弃 thinking flag 的 bug；adapter 按每模型正确协议分派请求构造；响应解析覆盖各种 reasoning 字段。产物：docs/ 下一份协议文档 + 代码修改。"
+    description: "AiHubMix 聚合商协议与模型清单权威化 + 思考模式真实落地。(T2) 针对 AiHubMix 现有 4 模型（Claude 4.6 Sonnet / GPT 5.4 / Gemini 3.1 Pro / DeepSeek V3.2）做全面协议调研，产出 docs/aihubmix-protocol-reference.md 说明每个模型的正确调用方式（endpoint / 请求字段 / 响应字段 / thinking 激活机制）。(T1) 按调研发现修代码：修复 executor.go:109 和 chatbot/stream.go:177 丢弃 thinking flag 的 bug；adapter 按每模型正确协议分派请求构造；响应解析覆盖各种 reasoning 字段。产物：docs 协议文档 + 代码修改。"
     track: "standard"
-    stage: "triage-pending"
-    classification_reason: "待 Triage"
-    last_updated_by: "ai-pivot-new-feature"
-    last_updated_at: "2026-04-20T23:30:00+08:00"
+    stage: "S0-done"
+    classification_reason: "2 条 Triage 标准不满足：文件数 >3（gateway + adapter×2 + executor + stream + 可能 registry = 5-6 Go 文件 + 1 doc）+ 高风险业务逻辑（thinking flag 影响全线 AI 成本和用户感知行为，穿过 SOP/Chatbot 两大入口）。用户确认 Standard 加速推进"
+    last_updated_by: "ai-s0-done"
+    last_updated_at: "2026-04-20T23:59:30+08:00"
     repos:
       - numind-server
     branches: {}
-    artifacts: {}
+    artifacts:
+      requirement: "numind-server/requirements/aihubmix-protocol-audit.md"
     progress:
       total_tasks: 0
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "等待 Triage 完成进入 S0"
+      current_task: "S0 done，等待进入 S1 proposal"
     rollback: null
     last_verified: null
-    decisions: []
+    decisions:
+      - "2026-04-20 (S0 Triage): 5 条标准评估 → 2 条不满足（文件数 + 高风险业务）→ Standard。用户确认"
+      - "2026-04-20 (S0 scope): pivot 自 openrouter-provider，合并 T1（思考管道修复）+ T2（AiHubMix 协议审计）。OpenRouter / 矩阵视图 / reasoning_effort DB schema 改造均不在本期"
+      - "2026-04-20 (S0 S1 待澄清): (1) thinking 载体设计 ChatRequest.Thinking bool vs ReasoningEffort string；(2) Claude -think 变体去留；(3) S5 验证策略 E2E vs gstack /qa"
     blockers: []
     created_at: "2026-04-20T23:30:00+08:00"
 
