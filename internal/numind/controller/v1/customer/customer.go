@@ -14,20 +14,22 @@ import (
 	v1 "numind-server/pkg/api/numind/v1"
 )
 
+// 批量接口参数上限（防 DoS / 保护 DB）。
+// 实际业务场景父账号有限子账号 + 有限 chatbot，50/100 远超可预见业务需求。
+const (
+	maxChatbotIDsPerRequest = 50
+	maxSubUserIDsPerBatch   = 100
+)
+
 // CustomerController 客户管理控制器
 type CustomerController struct {
 	customerBiz customerbiz.ICustomerBiz
 	userBiz     userbiz.UserBiz
 }
 
-// grantChatbotRequest 授权 chatbot 请求 body
+// chatbotIDsRequest chatbot 授权/撤销请求 body（单账号）
 // 对称 v1.GrantTemplateRequest，保持本 controller 的权限 request 结构相同风格。
-type grantChatbotRequest struct {
-	ChatbotIDs []uint `json:"chatbot_ids" binding:"required"`
-}
-
-// revokeChatbotRequest 撤销 chatbot 请求 body
-type revokeChatbotRequest struct {
+type chatbotIDsRequest struct {
 	ChatbotIDs []uint `json:"chatbot_ids" binding:"required"`
 }
 
@@ -345,7 +347,7 @@ func (ctrl *CustomerController) ListSubUserChatbots(c *gin.Context) {
 
 	core.WriteResponse(c, nil, gin.H{
 		"chatbots": chatbots,
-		"total":    len(chatbots),
+		"total":    int64(len(chatbots)),
 	})
 }
 
@@ -371,9 +373,14 @@ func (ctrl *CustomerController) GrantChatbots(c *gin.Context) {
 	}
 
 	// 绑定请求body
-	var req grantChatbotRequest
+	var req chatbotIDsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
+		return
+	}
+
+	if len(req.ChatbotIDs) > maxChatbotIDsPerRequest {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("批量数量超出限制"), nil)
 		return
 	}
 
@@ -412,9 +419,14 @@ func (ctrl *CustomerController) RevokeChatbots(c *gin.Context) {
 	}
 
 	// 绑定请求body
-	var req revokeChatbotRequest
+	var req chatbotIDsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
+		return
+	}
+
+	if len(req.ChatbotIDs) > maxChatbotIDsPerRequest {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("批量数量超出限制"), nil)
 		return
 	}
 
@@ -455,6 +467,11 @@ func (ctrl *CustomerController) BatchGrantChatbots(c *gin.Context) {
 		return
 	}
 
+	if len(req.UserIDs) > maxSubUserIDsPerBatch || len(req.ChatbotIDs) > maxChatbotIDsPerRequest {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("批量数量超出限制"), nil)
+		return
+	}
+
 	// 执行批量授权（biz 层 fail-fast：任一子账号/chatbot 不合法 → 立即返回）
 	if err := ctrl.customerBiz.BatchGrantChatbots(c, user.ID, req.UserIDs, req.ChatbotIDs); err != nil {
 		log.C(c).Errorw("Failed to batch grant chatbots", "parent_user_id", user.ID, "user_ids", req.UserIDs, "chatbot_ids", req.ChatbotIDs, "err", err)
@@ -486,6 +503,11 @@ func (ctrl *CustomerController) BatchRevokeChatbots(c *gin.Context) {
 	var req batchRevokeChatbotRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
+		return
+	}
+
+	if len(req.UserIDs) > maxSubUserIDsPerBatch || len(req.ChatbotIDs) > maxChatbotIDsPerRequest {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("批量数量超出限制"), nil)
 		return
 	}
 
