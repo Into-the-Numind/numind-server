@@ -2237,31 +2237,30 @@ features:
     ndf_version: "1.1"
     description: "父账号对子账号的 SOP 和 chatbot 运行权限管理。核心：(1) 新增 chatbot 白名单机制（新表 user_chatbot_permission + 新 API + 前端弹窗 chatbot 区块）(2) 翻转 SOP 和 chatbot 语义为『默认 deny』—— 子账号必须被父账号显式授予权限才能运行 (3) 一次性 backfill 迁移保护存量：对所有『0 条 user_template_permission 记录』的子账号 insert 所有父账号已发布 SOP 的授权记录（等同冻结他们当前的可见范围），上线后再新建的模板/chatbot 走默认 deny。效果：存量子账号现有权限完全保留；新建子账号或父账号新增资源时必须手动授权。"
     track: "standard"
-    stage: "S4"
+    stage: "S6-done"
     classification_reason: "Standard：(1) 文件数 >3（backend biz + store + controller + model + migration + 前端 view）(2) schema 变更：新增 user_chatbot_permission 表 + backfill migration (3) 跨 2 仓库（numind-server + numind-web-v3）(4) 高风险业务逻辑：权限模型翻转 + 存量数据迁移，错误会导致子账号误屏蔽或权限泄露 (5) 5 条 Triage 标准 4 条触发"
-    last_updated_by: "ai-s4-task4-done"
-    last_updated_at: "2026-04-21T01:00:00+08:00"
+    last_updated_by: "ai-s6-merged"
+    last_updated_at: "2026-04-21T02:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
     branches:
-      numind-server: "feature/child-run-permission @ dcd59d9 (Task 1-4 done + reviewed)"
+      numind-server: "merged to develop @ 7fc80f5 (Tasks 1-7 + review fixes)"
+      numind-web-v3: "merged to develop @ 3828810 (Task 6 + P1-B API E2E skipped)"
     artifacts:
       requirement: "numind-server/requirements/child-run-permission.md"
       proposal: "numind-server/proposals/child-run-permission-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-04-20-child-run-permission-design.md"
       plan: "numind-server/docs/superpowers/plans/2026-04-20-child-run-permission-plan.md"
       review_s3_gate: "numind-server/docs/superpowers/reviews/2026-04-20-child-run-permission-s3-gate-review.md"
-      review_spec_compliance: "Task 1-4 各自两阶段 review 全部 PASS/PASS_WITH_CONCERNS-then-fixed (inline in decisions)"
-      review_code_quality: "同上，P1/P2 修复 commit 05362b2/49c1df8/dcd59d9"
-      qa: null
+      review_spec_compliance: "Task 1-6 各自两阶段 review 全部 PASS/PASS_WITH_CONCERNS-then-fixed (inline in decisions)"
+      review_code_quality: "同上"
+      qa: "numind-server/docs/superpowers/qa/2026-04-20-child-run-permission-qa.md"
     progress:
       total_tasks: 7
-      completed_tasks: 6
-      reviewed_tasks: 6
-      current_task:
-        index: 7
-        title: "Task 7: Dev migrate + E2E + merge (S5/S6 prep)"
+      completed_tasks: 7
+      reviewed_tasks: 7
+      current_task: null
     rollback: null
     last_verified: null
     decisions:
@@ -2287,3 +2286,6 @@ features:
       - "2026-04-21 (S4 Task 5 done+reviewed): commit 0c3eec2 implementer + 05cc585 review fixes。Spec Compliance PASS_WITH_CONCERNS 2 P2（file-private struct + List 响应返回对象数组而非 ID 数组，后者在 Task 6 自然对齐即可）；Code Quality PASS_WITH_CONCERNS 1 P1 + 3 P2，关键修复：批量 DoS 上限（50 chatbot / 100 user）+ duplicate request struct 合并 + total int64 对齐。Decline 错误透传改造 GrantTemplates 的 scope（既有 tech debt 不归 Task 5）"
       - "2026-04-21 (Task 5 改进): 新 chatbot controller 用 core.WriteResponse(c, err, nil) 透传 biz errno，正确映射 HTTP 403/404，而非既有 GrantTemplates 的 InternalServerError.SetMessage collapse 到 500。两套行为在同 controller 共存是 follow-up tech debt"
       - "2026-04-21 (S4 Task 6 done+reviewed): 前端 commit 12aca77 implementer + 454f8d1 review fixes (+ spec doc b1534d1)。Spec Compliance PASS_WITH_CONCERNS (1 P1 §3.7 签名不一致 + 1 P2 feature grants 串行)；Code Quality PASS_WITH_CONCERNS (1 P1 savePermissions 混合并发/串行 + 3 P2 类型/UX/防御) 全修。Tasks 1-6 全部 done + reviewed。frontend 位于 numind-web-v3 feature/child-run-permission 分支，待 Task 7 联调 + S6 merge"
+      - "2026-04-21 (S4 Task 7 done): Dev DB 已 apply 两个 migration —— create 表 + backfill 0-record 子账号。baseline total_active=114 rows 跨 20 子账号，backfill 为 no-op（dev 无 0 记录子账号），二次 apply 幂等（AFTER=114）。P0.1 前置条件满足（backfill 不会让任何账号掉成 0 记录 = deny-all 安全）。Playwright request-level E2E test.describe.skip 归档，P0.5/P0.6 由 biz 层 TestChatStream_AfterRevoke_Denied 单测 + gstack /qa 双重覆盖。QA report at docs/superpowers/qa/2026-04-20-child-run-permission-qa.md"
+      - "2026-04-21 (S6 dev merge done): numind-server @ 7fc80f5 + numind-web-v3 @ 3828810。两仓库 push origin develop 完成，CI 自动触发 dev 部署。"
+      - "2026-04-21 (S6 附带): 本 merge 把 feature branch 上误入的 2 个 aihubmix doc commits (1ba6b4b + 3a765de) 一并带入 develop —— 这些是并发 session 在 feature branch 误 commit 的 plan 文档，内容本来就要进 develop，提前到达无害，与其他 session 后续工作无冲突"
