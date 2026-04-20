@@ -124,26 +124,29 @@ features:
     ndf_version: "1.1"
     description: "AiHubMix 聚合商协议与模型清单权威化 + 思考模式真实落地。(T2) 针对 AiHubMix 现有 4 模型（Claude 4.6 Sonnet / GPT 5.4 / Gemini 3.1 Pro / DeepSeek V3.2）做全面协议调研，产出 docs/aihubmix-protocol-reference.md 说明每个模型的正确调用方式（endpoint / 请求字段 / 响应字段 / thinking 激活机制）。(T1) 按调研发现修代码：修复 executor.go:109 和 chatbot/stream.go:177 丢弃 thinking flag 的 bug；adapter 按每模型正确协议分派请求构造；响应解析覆盖各种 reasoning 字段。产物：docs 协议文档 + 代码修改。"
     track: "standard"
-    stage: "S0-done"
+    stage: "S1-draft"
     classification_reason: "2 条 Triage 标准不满足：文件数 >3（gateway + adapter×2 + executor + stream + 可能 registry = 5-6 Go 文件 + 1 doc）+ 高风险业务逻辑（thinking flag 影响全线 AI 成本和用户感知行为，穿过 SOP/Chatbot 两大入口）。用户确认 Standard 加速推进"
-    last_updated_by: "ai-s0-done"
-    last_updated_at: "2026-04-20T23:59:30+08:00"
+    last_updated_by: "ai-s1-draft"
+    last_updated_at: "2026-04-20T23:59:45+08:00"
     repos:
       - numind-server
     branches: {}
     artifacts:
       requirement: "numind-server/requirements/aihubmix-protocol-audit.md"
+      proposal: "numind-server/proposals/aihubmix-protocol-audit-proposal.md"
     progress:
       total_tasks: 0
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "S0 done，等待进入 S1 proposal"
+      current_task: "S1 proposal 草稿完成，等独立 Opus reviewer 审核 → 用户确认 → S1 gate 进 S2"
     rollback: null
     last_verified: null
     decisions:
       - "2026-04-20 (S0 Triage): 5 条标准评估 → 2 条不满足（文件数 + 高风险业务）→ Standard。用户确认"
       - "2026-04-20 (S0 scope): pivot 自 openrouter-provider，合并 T1（思考管道修复）+ T2（AiHubMix 协议审计）。OpenRouter / 矩阵视图 / reasoning_effort DB schema 改造均不在本期"
-      - "2026-04-20 (S0 S1 待澄清): (1) thinking 载体设计 ChatRequest.Thinking bool vs ReasoningEffort string；(2) Claude -think 变体去留；(3) S5 验证策略 E2E vs gstack /qa"
+      - "2026-04-20 (S1 Q1=A): thinking 载体 = ChatRequest.Thinking bool（简单开关，强度在 adapter 层硬编码 medium）"
+      - "2026-04-20 (S1 Q2=A): Claude -think 后缀变体保留（不数据迁移），用户 pref + modelKey 选择 base vs -think 都能工作"
+      - "2026-04-20 (S1 Q3=A): S5 验证策略 = Playwright E2E（thinking 高风险业务逻辑需自动回归保护）"
     blockers: []
     created_at: "2026-04-20T23:30:00+08:00"
 
@@ -2155,3 +2158,82 @@ features:
     blockers: []
     created_at: "2026-04-20T03:45:00+08:00"
     completed_at: "2026-04-20T03:45:00+08:00"
+
+  - id: "sop-perm-dialog-show-all"
+    ndf_version: "1.1"
+    description: "权限管理弹窗 SOP 模板列表显示全部（不止前 20 条）。根因：/v1/sop/templates Controller 默认 limit=20，Store 层不过滤就分页，然后 Controller 内存过滤 status=active && publish_status=published —— 若总模板数 >20（含 draft/下线），已发布的可能被挤出。前端 fetchAllTemplates 又不传 limit。修复：Store 层下沉过滤到 DB 查询（仅 active+published+not-deleted），保持分页语义正确；Controller 默认 limit 保留但提升至 500 作为夹具；前端权限弹窗显式传 limit=500。用户声明当前仅 2 模板，但结构缺陷需彻底修。"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "Hotfix：(1) 单仓库 numind-server + 单仓库 numind-web-v3 各 1 文件改 (2) 不动 schema (3) 不新增 API (4) 不涉及外部服务 (5) 改动方向是修复既存过滤错位 + 提升 limit 上限，无新风险。H1 诊断在本 session 主对话内完成，直接进 H2"
+    last_updated_by: "ai-implementation"
+    last_updated_at: "2026-04-20T22:30:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server:
+        fix_commit: "7e80b2c"
+        merge_commit: "8236ebd"
+      numind-web-v3:
+        fix_commit: "5005520"
+        merge_commit: "1caf857"
+    hotfix_artifacts:
+      diagnosis: "主对话内诊断完成：controller/v1/sop/sop.go:461-473 先 Store 分页再内存过滤 active+published 是结构缺陷。Store 层 ListTemplates(offset,limit) 在 store/sop.go:121-133 不过滤直接分页。Prod DB 实测 2 条都 active+published 肉眼可见，但用户坚持修结构；prod chatbot_config 4 条全 draft 属正常（用户等待 chatbot 权限功能上线）。Dev DB 10 条 SOP 含 3 条 draft，正好暴露过滤错位。"
+      review: "subagent 实施 + 回归测试 TestListVisibleTemplates_FiltersInactiveAndDrafts 通过；lint/type-check/build 均 clean（pre-existing warnings 已确认与本次改动无关）"
+    progress:
+      total_tasks: 2
+      completed_tasks: 2
+      reviewed_tasks: 2
+      current_task: null
+    rollback: "git revert 两仓库对应 commit（无业务行为回滚依赖，纯查询过滤器调整）"
+    last_verified:
+      go_build: "pass（仅 sqlite-vec cgo deprecation 警告，与本次无关）"
+      go_vet: "pass"
+      gofmt: "pass（仅 billing.go/sop_credits_integration_test.go 有 pre-existing drift，本次未修改）"
+      golangci_lint: "本次改动零新增 warning（3 条 pre-existing：2 条 gofmt + 1 条 deepThinking ineffassign，develop 基线已验证）"
+      new_tests: "internal/numind/store/sop_template_visibility_test.go 新增 1 个表驱动测试：混入 draft/inactive 后 limit=1 仍能拿到最新 published + total 等于可见数"
+      pre_existing_test_failure_unrelated: "biz/sop/sop_credits_integration_test.go 3 个 credits integration 测试在 develop 基线已 panic（legacy_tier 相关），与本次改动无关"
+      frontend_lint: "pass（1 条 pre-existing KnowledgeBaseDetail.vue 的未使用 formatDate 警告）"
+      frontend_type_check: "pass"
+    decisions:
+      - "2026-04-20: 修复方案选『Store 层 DB 过滤 + 前端显式传 limit=500』而非『仅前端传大 limit』— 后者治标，Controller 内存过滤的 total 字段仍错。Store 下沉过滤是结构修复，前端 limit 是实用上限（用户当前 2 条，500 覆盖可预见未来）"
+      - "2026-04-20: limit 上限选 500 而非 1000（api-design.md 默认 max=100 规则）— 权限弹窗 use case 一次性拉全量，500 对实际业务充足；不改全局 max 上限规则，仅本端点 pragmatic 放宽"
+      - "2026-04-20 (H2 实施): 不直接改 sopStore.ListTemplates 签名/语义 —— 该方法被 admin 端 /v1/admin/sop/templates（controller/v1/admin_sop/sop.go:108）和客户统计（biz/customer/customer.go:167）复用，两者都需要看到全部状态（含 draft/inactive）。新增 ListVisibleTemplates 方法专供 C 端 /v1/sop/templates，隔离两种语义"
+      - "2026-04-20 (H2 实施): status 过滤用字面量 \"active\" 而非新建 SopStatusActive 常量 —— 模型文件仅为 Node 定义了 SopNodeStatusActive，Template status 历史上一直用字面量（Controller 旧代码 line 470 也是字面量）。避免本次 hotfix 越界扩大常量表，保持最小变更面"
+      - "2026-04-20 (H2 验证): 写 1 个回归测试足够 —— 用 AutoMigrate + in-memory SQLite，插入 4 种状态组合（active+published / active+draft / inactive+published / 第二条 active+published），limit=1 分页场景断言最新 published 在首页且 total=2。测试运行 10ms，无外部依赖"
+    blockers: []
+    created_at: "2026-04-20T22:00:00+08:00"
+    completed_at: "2026-04-20T22:30:00+08:00"
+
+  - id: "child-run-permission"
+    ndf_version: "1.1"
+    description: "父账号对子账号的 SOP 和 chatbot 运行权限管理。核心：(1) 新增 chatbot 白名单机制（新表 user_chatbot_permission + 新 API + 前端弹窗 chatbot 区块）(2) 翻转 SOP 和 chatbot 语义为『默认 deny』—— 子账号必须被父账号显式授予权限才能运行 (3) 一次性 backfill 迁移保护存量：对所有『0 条 user_template_permission 记录』的子账号 insert 所有父账号已发布 SOP 的授权记录（等同冻结他们当前的可见范围），上线后再新建的模板/chatbot 走默认 deny。效果：存量子账号现有权限完全保留；新建子账号或父账号新增资源时必须手动授权。"
+    track: "standard"
+    stage: "S0-done"
+    classification_reason: "Standard：(1) 文件数 >3（backend biz + store + controller + model + migration + 前端 view）(2) schema 变更：新增 user_chatbot_permission 表 + backfill migration (3) 跨 2 仓库（numind-server + numind-web-v3）(4) 高风险业务逻辑：权限模型翻转 + 存量数据迁移，错误会导致子账号误屏蔽或权限泄露 (5) 5 条 Triage 标准 4 条触发"
+    last_updated_by: "ai-s1"
+    last_updated_at: "2026-04-20T22:15:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches: {}
+    artifacts:
+      requirement: "numind-server/requirements/child-run-permission.md"
+      proposal: null
+      spec: null
+      plan: null
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress: null
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-04-20 (Triage): 用户澄清『dev 能管理 chatbot 权限』是记忆偏差 —— 代码层 dev/prod 完全一致，均无 chatbot 权限机制。真实情况：chatbot 从未有过 per-child 权限控制，用户看到的可见差异实际是 draft/published 状态 + 老的 sales_agent 功能开关（已于 2026-04-20 commit 23c3f94 移除）"
+      - "2026-04-20 (语义决策): 默认 deny + 手动开启，双资源（SOP 和 chatbot）语义对齐。与现有 SOP 白名单的『0 记录 → 默认允许』逻辑相反，必须翻转"
+      - "2026-04-20 (存量兼容): 采用 backfill migration 保护存量子账号 —— 对每个『0 条记录』的子账号写入所有父账号当前已发布 SOP 的权限行，冻结可见范围。上线后翻转默认语义。存量有记录的子账号不动。chatbot 存量为空（prod 4 个 chatbot 全 draft 不可见，用户等上线后再发布），无兼容负担"
+      - "2026-04-20 (S0): requirement card 产出 → numind-server/requirements/child-run-permission.md。Triage 5 条标准 4 条触发 → Standard，用户确认"
+      - "2026-04-20 (并行策略): A (sop-perm-dialog-show-all) 和 B (child-run-permission) 并行推进。A 走 Hotfix 快车道今日上线；B 走 Standard Track S0→S7，用 subagent teams 在 S4 任务级并行"
+    blockers: []
+    created_at: "2026-04-20T22:00:00+08:00"
+    completed_at: null
