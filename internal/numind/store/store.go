@@ -59,6 +59,14 @@ func NewTestStore(db *gorm.DB) IStore {
 	return &datastore{db: db}
 }
 
+// NewTestDataStore is identical to NewTestStore but returns the concrete
+// *datastore pointer so tests can assign it to the package-level `S` variable
+// (which is typed `*datastore`, not `IStore`). Use only in tests that need to
+// exercise code paths reading `store.S` directly (e.g. middleware.FeaturePermission).
+func NewTestDataStore(db *gorm.DB) *datastore {
+	return &datastore{db: db}
+}
+
 // DB 返回存储在 datastore 中的 *gorm.DB.
 func (ds *datastore) DB() *gorm.DB {
 	return ds.db

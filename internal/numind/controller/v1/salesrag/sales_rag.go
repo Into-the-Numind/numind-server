@@ -1016,8 +1016,9 @@ func (ctrl *SalesRAGController) SaveLanguageStyle(c *gin.Context) {
 	})
 }
 
-// CheckSalesPermission 检查当前用户是否有销售智能体使用权限
-// 销售智能体/知识库已对所有登录用户开放（数据按 user_id 隔离），保留端点以兼容前端 UI gating
+// CheckSalesPermission 检查当前用户是否有销售智能体使用权限。
+// 父账号（parent_user_id IS NULL）自动通过；子账号必须在 user_feature_permission
+// 表有 sales_agent 记录。走 biz 层（D6 同源保证），不直调 store（遵守 controller→biz→store 单向规则）。
 func (ctrl *SalesRAGController) CheckSalesPermission(c *gin.Context) {
 	user := middleware.GetCurrentUser(c)
 	if user == nil {
@@ -1025,8 +1026,15 @@ func (ctrl *SalesRAGController) CheckSalesPermission(c *gin.Context) {
 		return
 	}
 
+	hasPermission, err := ctrl.b.Customers().CheckFeaturePermission(c.Request.Context(), user.ID, model.FeatureKeySalesAgent)
+	if err != nil {
+		log.Errorw("CheckSalesPermission: check feature permission failed", "error", err, "user_id", user.ID)
+		core.WriteResponse(c, errno.ErrInternalServer, nil)
+		return
+	}
+
 	core.WriteResponse(c, nil, gin.H{
-		"has_permission": true,
+		"has_permission": hasPermission,
 	})
 }
 
