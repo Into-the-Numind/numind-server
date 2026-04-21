@@ -38,6 +38,7 @@ features:
       - "2026-04-21 (降级 Hotfix): 用户基于 S1 发现质疑 Standard 过度。重新 Triage——仅文件数临界不满足，改动实质 = UI polish + 非破坏性 DTO 扩展，无 schema / 无 endpoint / 无 LLM / 安全 gate 不动。用户确认 Hotfix。track: standard → hotfix，stage: S1 → H1。S0/S1 工件保留作 H1 实施上下文"
       - "2026-04-21 (H1 实施): 后端 4 文件 +103 行 -3 行（biz/chatbot + biz/sop 各加 DTO 类型 + *WithPermission 方法；两 controller 切到新 biz 方法）。ChatbotConfig/SopTemplate 原 Go struct 不动。后端 commit 1adff49。前端 2 文件 +93 行 -18 行（HomeView.vue 3 card 都加 lock badge conditional；types/config.ts ChatbotConfig 加 has_permission?: boolean；删除 CSS .no-permission opacity/grayscale，D5 修正）。前端 commit 0b70fe5。Backend go build/vet/gofmt 干净；Frontend lint 0 errors / type-check 干净"
       - "2026-04-21 (H3 merge): numind-server fix/homeview-locked-cards → develop @ 88bc947（no-ff merge）+ numind-web-v3 fix/homeview-locked-cards → develop @ bc22418（no-ff merge）。两仓库均 push origin，fix branches + numind-server worktree 已清理。等 CI 部署 dev 环境后人工验收"
+      - "2026-04-21 (H3 验收 PASS + 追加 polish): 用户 dev 验收所有 5 条通过，但提出 2 个 UX polish 要求：(1) 每个 section 内未锁卡片排在锁卡片前面（fetchTemplates + fetchChatbots stable sort by hasPermission desc）(2) 有权限运行的卡片默认就是绿色边框（原 hover 色 hsl(158,50%,78%)），denied 卡片边框退回灰色。纯前端 CSS+sort，单 commit cd5f17a → merge develop @ 5e8ca03（numind-web-v3），无 backend 改动"
     created_at: "2026-04-21T00:00:00+08:00"
 
   - id: "sales-agent-child-permission"
