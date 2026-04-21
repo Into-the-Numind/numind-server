@@ -2505,32 +2505,40 @@ features:
     ndf_version: "1.1"
     description: "修复老浏览器（Safari<15.4 / iOS 15.3- / 老版微信 X5 / 老 Android WebView）运行 marked v17 时报 TypeError: t.at is not a function 导致 SOP 流式回复白屏。根治方案：加 .browserslistrc 定义浏览器支持矩阵 + @vitejs/plugin-legacy 自动生成 legacy/modern 双包并按需注入 polyfill，一次性解决当前以及未来所有同类 ES 新语法兼容问题。"
     track: "hotfix"
-    stage: "H1"
+    stage: "H3-done"
     classification_reason: "Triage 5 条全满足 — 无 DB schema / 无新 API / 无新外部运行时服务（plugin-legacy 是构建期依赖）/ 影响文件 3 个（.browserslistrc + vite.config.ts + package.json）/ 无支付权限业务逻辑"
     last_updated_by: "ai-hotfix"
-    last_updated_at: "2026-04-21T17:00:00+08:00"
+    last_updated_at: "2026-04-21T17:20:00+08:00"
     repos:
       - numind-web-v3
     branches:
-      numind-web-v3: "fix/legacy-browser-compat"
+      numind-web-v3: "merged to develop @ 4bdf873 (fix/legacy-browser-compat, 2 commits)"
     hotfix_artifacts:
       diagnosis: |
         症状：SOP 页面流式接收 AI 回复时页面无任何渲染，浏览器 console 连续刷屏 TypeError: t.at is not a function (In 't.at(-1)', 't.at' is undefined) — marked.esm.js:46:645
         Root cause：marked v17 ESM 构建内部使用 Array/String.prototype.at(-1)（ES2022），老运行时无此方法，parse 抛异常 → 流式每个 token 都 re-parse 都抛 → 渲染结果为空
         影响面：Safari < 15.4 (iOS 15.3 及以下)、Chrome/Edge < 92、Firefox < 90、老版微信 X5/TBS 内核、企业微信/钉钉/飞书/QQ 旧 App WebView、Android 7 及以下老 ROM 自带浏览器
         为何用系统性方案：逐 feature 打 polyfill 治标不治本，下一个库升级用上 structuredClone / Promise.any 还会复发。browserslist + plugin-legacy 是 Vue 3 商业项目行业标准（Element Plus、Naive UI 等均采用），一次配置永久根治
+      review: "PASS — Spec Compliance (Sonnet): PASS / 1 P2 (DESIGN.md 同步，已修) ; Code Quality (Sonnet): PASS_WITH_CONCERNS / 2 P2 (browserslist 冗余行 + modernPolyfills 依赖注释缺失，均已修)。无 P0/P1。"
     progress:
       total_tasks: 2
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task:
-        index: 1
-        title: "安装 @vitejs/plugin-legacy + 新增 .browserslistrc + 改 vite.config.ts"
-    rollback: "git revert merge commit（仅 3 个文件，无数据/schema 变更）"
-    last_verified: null
+      completed_tasks: 2
+      reviewed_tasks: 2
+      current_task: null
+    rollback: "git revert merge commit 4bdf873（仅 3 个文件，无数据/schema 变更）"
+    last_verified:
+      at: "2026-04-21T17:15:00+08:00"
+      method: "静态验证 — dist/index.html 含 module + nomodule 双脚本；polyfills-R7ATviPV.js (113 KB modern, 含 .at 注册) 与 polyfills-legacy-DBsFTBDK.js (152 KB ES5 fallback) 并存；npm run preview HTTP 200 serve OK。未改 src/，H2 gate 不要求 /qa"
+      lint: "pass (0 errors, 1 pre-existing warning)"
+      type_check: "pass"
+      tests: null
+      test_summary: "build 169 assets, legacy chunks 72 个，modern + legacy polyfills 双 bundle 生成"
     decisions:
       - "2026-04-21 (Triage): 5 条标准全满足 → Hotfix 轨道；用户确认方案 1+2（支持矩阵文档 + 构建兜底），不做 Sentry/BrowserStack"
-      - "2026-04-21 (浏览器支持矩阵决策): defaults + not IE 11 + iOS >= 12 + Android >= 7 + last 2 ChromeAndroid versions — 覆盖国内 B 端常见老设备 + 微信 X5 内核场景，不做 IE 11 以避免 ES5 polyfill 包体爆炸"
+      - "2026-04-21 (浏览器支持矩阵决策): defaults + not IE 11 + iOS >= 12 + Safari >= 12 + ChromeAndroid >= 80 + Android >= 7 — 覆盖国内 B 端常见老设备 + 微信 X5 内核场景，不做 IE 11 以避免 ES5 polyfill 包体爆炸。解析后 98 targets，无 IE"
+      - "2026-04-21 (plugin-legacy 配置): modernPolyfills: true + renderLegacyChunks: true。前者对 modern bundle 也按 browserslist 注入 core-js polyfill，填补 Safari 14 支持 ESM 但缺 .at() 的场景；后者生成 nomodule 老包供 pre-ESM 浏览器"
+      - "2026-04-21 (review P2 修复): 删除 .browserslistrc 中 defaults 已覆盖的 last 2 X versions 冗余行；vite.config.ts 加内联注释说明 modernPolyfills 依赖 iOS>=12/Safari>=12 下限以防未来漂移；DESIGN.md §9 新增浏览器支持矩阵（DESIGN.md 位于 Codes/ 根目录非 git repo，改动为本地参考，未入 git）"
+      - "2026-04-21 (H3 完成): 2 commits merge to numind-web-v3/develop @ 4bdf873，已 push，CI 自动部署 dev (49.233.219.254:9200)"
     blockers: []
     created_at: "2026-04-21T17:00:00+08:00"
-    completed_at: null
+    completed_at: "2026-04-21T17:20:00+08:00"
