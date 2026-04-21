@@ -3,11 +3,11 @@ schema_version: "1.0"
 features:
   - id: "sales-agent-child-permission"
     ndf_version: "1.1"
-    description: "将销售智能体（SalesRAG）纳入父账号对子账号的运行权限管控。复用现有 user_feature_permission 表 + FeatureKeySalesAgent='sales_agent' 常量 + GrantFeatures/RevokeFeatures/HasFeaturePermission 基础设施（与 content_monitor 同一套路，已验证）。修复 CheckSalesPermission 硬编码 true + 所有 sales 运行端点挂 HasFeaturePermission gate + 前端客户管理弹窗加销售智能体开关。默认 deny-all（不 backfill），对齐 SOP/chatbot 权限语义。"
+    description: "将销售智能体（SalesRAG）纳入父账号对子账号的运行权限管控。复用现有 user_feature_permission 表 + FeatureKeySalesAgent='sales_agent' 常量 + GrantFeatures/RevokeFeatures/HasFeaturePermission 基础设施（与 content_monitor 同一套路，已验证）。修复 CheckSalesPermission 硬编码 true + salesGroup 一行 .Use(FeaturePermission) 挂 gate（对照 router.go:332 monitorGroup 先例）+ 前端客户管理弹窗 UI 已存在零改动。默认 deny-all（不 backfill），对齐 SOP/chatbot 权限语义。"
     track: "standard"
-    stage: "S0"
+    stage: "S1"
     classification_reason: "2 条 Triage 标准不满足：文件数 >3（sales_rag controller 11+ 端点 + CheckSalesPermission 修复 + 前端客户弹窗 + 回归测试）+ 高风险业务逻辑（权限默认 deny-all 翻转，改变线上子账号可见性）。用户确认走 Standard + 加速执行（跳过 /office-hours）"
-    last_updated_by: "ai-s0"
+    last_updated_by: "ai-s1"
     last_updated_at: "2026-04-21T00:00:00+08:00"
     repos:
       - numind-server
@@ -15,11 +15,12 @@ features:
     branches: {}
     artifacts:
       requirement: "numind-server/requirements/sales-agent-child-permission.md"
+      proposal: "numind-server/proposals/sales-agent-child-permission-proposal.md"
     progress:
       total_tasks: 0
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "等 S0 gate 确认（人类），然后进入 S1 薄版 proposal"
+      current_task: "等 S1 gate 确认（人类），然后进入 S2 spec"
     rollback: null
     last_verified: null
     decisions:
@@ -29,6 +30,11 @@ features:
       - "2026-04-21 (S0 业务决策 D3): 修复 sales_rag.go:1019-1031 CheckSalesPermission 硬编码 true 为真正查询"
       - "2026-04-21 (S0 业务决策 D4): 所有销售智能体运行端点统一挂 gate（与 chatbot HasChatbotPermission 对称覆盖策略）"
       - "2026-04-21 (S0 业务决策 D5): Gate 在 credit 预检之前（无权限直接 403，不浪费 credit 估算）"
+      - "2026-04-21 (S1): 用户要求加速，跳过 /office-hours（业务决策已在 S0 前对话中穷尽）。薄版 proposal 聚焦基础设施复用 + 技术风险 + 越权防线"
+      - "2026-04-21 (S1 发现): 前端客户管理弹窗 'sales_agent' 开关 UI 和 grantFeatures API 函数均已存在（CustomersView.vue:652,1084,1426,1482 / api/customers.ts:139），本次前端源码零改动"
+      - "2026-04-21 (S1 发现): salesGroup 挂 gate 的最优写法与 router.go:332 monitorGroup 完全对称，一行 .Use(FeaturePermission(FeatureKeySalesAgent))"
+      - "2026-04-21 (S1 风险 R1): check-permission 端点必须留在 authGroup，不可被 salesGroup gate 拦截，否则前端拿不到未授权信号"
+      - "2026-04-21 (S1 风险 R2): biz 层是否有 controller 之外的入口需 S2 spec 阶段审查，否则 gate 可能被绕过"
     created_at: "2026-04-21T00:00:00+08:00"
 
   - id: "parent-self-grant-membership"
