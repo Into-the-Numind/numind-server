@@ -3,11 +3,11 @@ schema_version: "1.0"
 features:
   - id: "homeview-locked-cards"
     ndf_version: "1.1"
-    description: "HomeView 统一 deny UX：被拒资源不再隐藏，正常显示 + 右上角 lock 标志 + 点击弹'未开通'。应用于 SOP workflows / sales-agent / chatbot 三类卡片（不含 content_monitor 侧边栏入口已禁用）。修正当前 sales-agent 的 .no-permission 灰化行为为正常颜色。后端 chatbot ListVisibleChatbots 和 SOP list 从'过滤 denied'改为'返回全部 + has_permission flag'（partial revert of child-run-permission 2026-04-20 visibility design，但安全 gate 不动）。前端 HomeView 大改 + 复用现有 .lock-badge。"
+    description: "HomeView 统一 deny UX：被拒资源不再隐藏，正常显示 + 右上角 lock 标志 + 点击弹'未开通'。应用于 SOP workflows / sales-agent / chatbot 三类卡片。修正当前 sales-agent 的 .no-permission 灰化行为为正常颜色。S1 发现现状比原估简单得多：后端 SOP templates list 和 chatbot listVisibleChatbots **本来就返回全部 published**（不按白名单过滤），前端点击时才 check-permission。本 feature 只需后端 list DTO 加 has_permission flag + 前端 HomeView lock badge 扩展 + 删灰化 CSS，共 ~100 行。"
     track: "standard"
-    stage: "S0"
-    classification_reason: "3 条 Triage 标准不满足：新 API 端点（chatbot/SOP list 改返回语义或加 list-all）+ 文件数 >3（后端 biz/store/DTO x2 + 前端 HomeView + API 类型 + E2E，估 6-10 文件）+ 高风险业务逻辑（信息可见性翻转 — 子账号现在能看到所有父账号创建的 chatbot/template 标题+描述；gate 不变）"
-    last_updated_by: "ai-s0"
+    stage: "S1"
+    classification_reason: "2 条 Triage 标准不满足：DTO 字段扩展（非破坏性，算弱'新 API'）+ 文件数 >3（后端 2 DTO + 前端 HomeView + 2 api types + E2E，估 4-6 文件）。原 S0 的'高风险可见性翻转'风险 S1 阶段消除——现状子账号已能看见 template/chatbot 全部标题描述，非本 feature 引入。"
+    last_updated_by: "ai-s1"
     last_updated_at: "2026-04-21T00:00:00+08:00"
     repos:
       - numind-server
@@ -15,11 +15,12 @@ features:
     branches: {}
     artifacts:
       requirement: "numind-server/requirements/homeview-locked-cards.md"
+      proposal: "numind-server/proposals/homeview-locked-cards-proposal.md"
     progress:
       total_tasks: 0
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "等 S0 gate 确认，然后进 S1 薄版 proposal（跳过 /office-hours — 4 条业务决策 D1-D5 已穷尽）"
+      current_task: "等 S1 gate 确认，然后进 S2 spec"
     rollback: null
     last_verified: null
     decisions:
@@ -30,6 +31,8 @@ features:
       - "2026-04-21 (S0 D4): 视图范围 = 仅 HomeView（/config/* 管理页不动，其他视图无资源列表入口）"
       - "2026-04-21 (S0 D5): UI 样式 = 正常颜色 + 右上角 lock，**去掉当前 sales-agent .no-permission 的 opacity/gray 样式**。修正既有设计而非叠加"
       - "2026-04-21 (S0 驱动事件): 用户在 sales-agent-child-permission S6 dev 验收时观察到 chatbot/sales-agent UX 不一致，独立提出本需求。与前 feature 无依赖，独立 feature"
+      - "2026-04-21 (S1 发现，改写 Triage): 核实现状——SOP list 和 chatbot list **本来就返回全部 published**，不按白名单过滤（biz/chatbot/chatbot_test.go:5 '与 SOP 对称，不按白名单隐藏'）。S0 Triage R1/R3 (partial revert chatbot 过滤逻辑) 作废；原 S0 高风险'可见性翻转'风险消除（现状即如此）。真正工作：后端 DTO 加 has_permission 字段（非破坏性）+ 前端 HomeView 3 处小改 + 删 .no-permission 灰化 CSS。工作量 0.5 天"
+      - "2026-04-21 (S1 技术决策): API 策略选'DTO 加字段'（R2），前端 TS 声明 has_permission?: boolean 兼容老后端；保留点击时二次 check-permission 调用作为 race-guard（R4）；batch has_permission 用单次 IN query O(N)，无 N+1（R1）；父账号 has_permission 永远 true 复用现有 HasTemplatePermission/HasChatbotPermission auto-pass（R3 字段名对齐 sales-agent 既有响应）"
     created_at: "2026-04-21T00:00:00+08:00"
 
   - id: "sales-agent-child-permission"
