@@ -36,9 +36,9 @@ type Config struct {
 // DefaultConfig 默认配置
 func DefaultConfig() *Config {
 	return &Config{
-		Timeout:               120 * time.Second,
+		Timeout:               300 * time.Second,
 		ConnectTimeout:        30 * time.Second,
-		ResponseHeaderTimeout: 120 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		IdleConnTimeout:       90 * time.Second,
 		MaxIdleConns:          100,

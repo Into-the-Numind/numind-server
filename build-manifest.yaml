@@ -220,6 +220,34 @@ features:
       - "依赖 aihubmix-protocol-audit 的产出作为 LinkAPI 接入蓝本"
     created_at: "2026-04-20T23:30:00+08:00"
 
+  - id: "hotfix-httpclient-timeout-300s"
+    ndf_version: "1.1"
+    description: "prod 客户报错：SOP 长文生成（爆款仿写/拆解类任务）120 秒整体超时，24h 内 8 次同型失败，全部命中 latency_ms=120004ms（deepseek-v3-2-251201）。根因：httpclient/client.go DefaultConfig.Timeout = 120s，aiservice 所有 adapter (volc/ali/bailian) 继承此默认值。Provider 侧健康（无 402/403/insufficient/余额信号，首 token 与大部分内容已吐出），纯客户端超时预算不足。hotfix：Timeout 120s→300s，ResponseHeaderTimeout 120s→60s（header 快速熔断，body 给长文留余量）"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "P0 生产事故 — 单文件 2 行改动（httpclient/client.go DefaultConfig），无 DB schema、无新 API、无业务逻辑。用户催单紧急修复"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-21T13:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "hotfix/httpclient-timeout-300s"
+    artifacts: {}
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "git revert <hotfix-commit> + 删 tag v2.1.9 + 回滚 prod 到 v2.1.8 镜像"
+    last_verified:
+      method: "待 CI 部署后 prod 实测长文 SOP 生成"
+    decisions:
+      - "2026-04-21 (根因定位): 扫 24h prod 日志 8 次错误，全部 latency_ms=120004（精确命中 120s 硬超时），model 统一 deepseek-v3-2，output 已有 2-5k 字说明首 token 和大部分内容已到。无任何 provider 拒付信号（insufficient/余额/402/403），排除外部欠费"
+      - "2026-04-21 (方案): 改 DefaultConfig Timeout 120s→300s（给 5 min 长文余量）；ResponseHeaderTimeout 120s→60s（health provider header 应秒回，快速熔断死 provider）。sop.go 4 处裸 http.Client{Timeout:120} 本次不改，记 tech debt"
+      - "2026-04-21 (Hotfix Track): 用户明确'必须马上'，单文件 2 行改动符合 Hotfix 5 条标准"
+    blockers: []
+    created_at: "2026-04-21T13:00:00+08:00"
+
   - id: "hotfix-langfuse-stream-endgeneration"
     ndf_version: "1.1"
     description: "【根因已定位 2026-04-21】Langfuse SDK 的 EndGeneration/EndSpan 发送 generation-update/span-update 事件时未带 traceId，Langfuse 服务端 zod 校验拒绝（HTTP 400 per-event：'Too small: expected string to have >=1 characters, path: body.traceId'）。但批量响应整体 200，flush.go:44 丢弃 response body，错误完全静默。影响面：所有 Generation（stream + non-stream）和所有 Span 的 endTime 都丢失，Langfuse UI 全部显示 endTime=None。2026-04-21 curl 实测 100 generations + 50 spans 全部 endTime=None。原 hotfix 假设的'tracing.go stream goroutine deadlock'被证伪——真正 bug 在 helpers.go EndGeneration/EndSpan 签名，与 stream/非 stream 无关。名称保留向后兼容 (id 已引用)"
