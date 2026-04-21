@@ -140,7 +140,12 @@ func testBiz(t *testing.T, db *gorm.DB) biz.IBiz {
 	return &realBizOnlyCustomers{customers: customerbiz.New(ds)}
 }
 
-func mustParent(id uint) *model.User { u := &model.User{}; u.ID = id; return u }
+func mustParent(id uint) *model.User {
+	u := &model.User{}
+	u.ID = id
+	return u
+}
+
 func mustSub(id, parentID uint) *model.User {
 	u := &model.User{ParentUserID: &parentID}
 	u.ID = id
