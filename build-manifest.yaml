@@ -5,14 +5,15 @@ features:
     ndf_version: "1.1"
     description: "将销售智能体（SalesRAG）纳入父账号对子账号的运行权限管控。复用现有 user_feature_permission 表 + FeatureKeySalesAgent='sales_agent' 常量 + GrantFeatures/RevokeFeatures/HasFeaturePermission 基础设施（与 content_monitor 同一套路，已验证）。修复 CheckSalesPermission 硬编码 true + salesGroup 一行 .Use(FeaturePermission) 挂 gate（对照 router.go:332 monitorGroup 先例）+ 前端客户管理弹窗 UI 已存在零改动。默认 deny-all（不 backfill），对齐 SOP/chatbot 权限语义。"
     track: "standard"
-    stage: "S3"
+    stage: "S4"
     classification_reason: "2 条 Triage 标准不满足：文件数 >3（sales_rag controller 11+ 端点 + CheckSalesPermission 修复 + 前端客户弹窗 + 回归测试）+ 高风险业务逻辑（权限默认 deny-all 翻转，改变线上子账号可见性）。用户确认走 Standard + 加速执行（跳过 /office-hours）"
-    last_updated_by: "ai-s3"
+    last_updated_by: "ai-s4-start"
     last_updated_at: "2026-04-21T00:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
-    branches: {}
+    branches:
+      numind-server: "feature/sales-agent-child-permission (worktree at .worktrees/sales-agent-child-permission, based on develop @ 64a690a)"
     artifacts:
       requirement: "numind-server/requirements/sales-agent-child-permission.md"
       proposal: "numind-server/proposals/sales-agent-child-permission-proposal.md"
