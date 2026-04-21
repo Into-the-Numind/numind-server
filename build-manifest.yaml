@@ -1,6 +1,37 @@
 schema_version: "1.0"
 
 features:
+  - id: "homeview-locked-cards"
+    ndf_version: "1.1"
+    description: "HomeView 统一 deny UX：被拒资源不再隐藏，正常显示 + 右上角 lock 标志 + 点击弹'未开通'。应用于 SOP workflows / sales-agent / chatbot 三类卡片（不含 content_monitor 侧边栏入口已禁用）。修正当前 sales-agent 的 .no-permission 灰化行为为正常颜色。后端 chatbot ListVisibleChatbots 和 SOP list 从'过滤 denied'改为'返回全部 + has_permission flag'（partial revert of child-run-permission 2026-04-20 visibility design，但安全 gate 不动）。前端 HomeView 大改 + 复用现有 .lock-badge。"
+    track: "standard"
+    stage: "S0"
+    classification_reason: "3 条 Triage 标准不满足：新 API 端点（chatbot/SOP list 改返回语义或加 list-all）+ 文件数 >3（后端 biz/store/DTO x2 + 前端 HomeView + API 类型 + E2E，估 6-10 文件）+ 高风险业务逻辑（信息可见性翻转 — 子账号现在能看到所有父账号创建的 chatbot/template 标题+描述；gate 不变）"
+    last_updated_by: "ai-s0"
+    last_updated_at: "2026-04-21T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches: {}
+    artifacts:
+      requirement: "numind-server/requirements/homeview-locked-cards.md"
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "等 S0 gate 确认，然后进 S1 薄版 proposal（跳过 /office-hours — 4 条业务决策 D1-D5 已穷尽）"
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-04-21 (S0): Triage 5 条 → Standard（3 条不满足：新 API + 文件数 + 高风险可见性翻转）。用户确认 Standard + 加速"
+      - "2026-04-21 (S0 D1): 范围 = SOP + sales-agent + chatbot，不含 content_monitor（侧边栏入口 AppSidebar.vue:201 已被注释停用，本需求不重启该功能入口）"
+      - "2026-04-21 (S0 D2): denied 卡片可见字段 = 全部（标题+描述+图标，与父账号视角相同）。父账号自行负责 chatbot 命名不暴露商业机密"
+      - "2026-04-21 (S0 D3): Hover tooltip 不显示，保持'点击才弹无权限提示'行为"
+      - "2026-04-21 (S0 D4): 视图范围 = 仅 HomeView（/config/* 管理页不动，其他视图无资源列表入口）"
+      - "2026-04-21 (S0 D5): UI 样式 = 正常颜色 + 右上角 lock，**去掉当前 sales-agent .no-permission 的 opacity/gray 样式**。修正既有设计而非叠加"
+      - "2026-04-21 (S0 驱动事件): 用户在 sales-agent-child-permission S6 dev 验收时观察到 chatbot/sales-agent UX 不一致，独立提出本需求。与前 feature 无依赖，独立 feature"
+    created_at: "2026-04-21T00:00:00+08:00"
+
   - id: "sales-agent-child-permission"
     ndf_version: "1.1"
     description: "将销售智能体（SalesRAG）纳入父账号对子账号的运行权限管控。复用现有 user_feature_permission 表 + FeatureKeySalesAgent='sales_agent' 常量 + GrantFeatures/RevokeFeatures/HasFeaturePermission 基础设施（与 content_monitor 同一套路，已验证）。修复 CheckSalesPermission 硬编码 true + salesGroup 一行 .Use(FeaturePermission) 挂 gate（对照 router.go:332 monitorGroup 先例）+ 前端客户管理弹窗 UI 已存在零改动。默认 deny-all（不 backfill），对齐 SOP/chatbot 权限语义。"
