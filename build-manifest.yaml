@@ -2463,27 +2463,38 @@ features:
 
   - id: "billing-cost-cents-underbilling-fix"
     ndf_version: "1.1"
-    description: "修复 usage_record.cost_cents 对 aihubmix 四模型（claude/gpt-5.4/gemini/deepseek）被低估的 bug。dev 观测：2026-04-20 17:02 容器重启后 chatbot.stream 记录的 cost 精确匹配全局兜底 id=43 (¥3/¥10) 而非 aihubmix 精确规则 id=61 (¥21.6/¥108)。middleware snapshot 写入正确（21.6/108），recorder 重算 cost 时拿到错误 pricing_rule。影响面：admin 费用报表严重低估真实成本 ~5x（claude/gpt-5.4）或 6x（gemini）。"
+    description: "修复 usage_record.cost_cents 对 aihubmix 四模型（claude/gpt-5.4/gemini/deepseek）被低估的 bug。Root cause：billingStore.GetPricingRule 用 Order(gorm.Expr(\"CASE...END\", args...)) 做 3 级优先级排序，但 GORM v2 First() 静默丢弃参数化 Order 表达式，只剩 ORDER BY id LIMIT 1。全局兜底行（provider='',model='')id 小于精确行 id 时，始终返回兜底 ¥3/¥10，claude 被低估 ~5x，gemini ~6x。修复：Find + Go 端按优先级选最精确行。"
     track: "hotfix"
-    stage: "H1"
+    stage: "completed"
+    completed_at: "2026-04-21T16:45:00+08:00"
     classification_reason: "Triage 5 条 4 条满足（无 schema / 无新端点 / 无新外部服务 / 文件数 ≤3）；第 5 条 billing 属边界情况，用户确认开 Hotfix（非新设计，是让现有计费恢复正确）"
-    last_updated_by: "ai-h1-start"
-    last_updated_at: "2026-04-21T16:00:00+08:00"
+    last_updated_by: "ai-h3-close"
+    last_updated_at: "2026-04-21T16:45:00+08:00"
     repos:
       - numind-server
     branches:
-      numind-server: "fix/billing-cost-cents-underbilling"
+      numind-server: "merged to develop @ e4281c6"
     artifacts: {}
     progress:
       total_tasks: 3
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task: "Task 1: 加诊断日志 + push dev + 复现观测"
-    rollback: "git revert commit；无 DB schema / 数据变更"
-    last_verified: null
+      completed_tasks: 3
+      reviewed_tasks: 3
+      current_task: null
+    rollback: "git revert e4281c6（纯代码改动无 schema / 数据变更）"
+    last_verified:
+      at: "2026-04-21T14:51:22+08:00"
+      method: "dev 端 e2e 复现：登录 → chatbot session 44 → POST chat?model_key=claude-sonnet-4-6 → usage_record id=365 prompt=1038 completion=7 cost_cents=2（= ¥21.6×1038/1M+¥108×7/1M ≈ ¥0.023 → round 2）✓。对照 fix 前 id=364 同路径 cost=0（¥3/¥10 兜底算 0.003x → round 0）— 证据链完整"
+      lint: "go vet pass"
+      type_check: "go build pass (Go 无 type-check 概念)"
+      tests: "新增 2 tests + 既有 billing/pricing/middleware/store 全套 PASS (0 regression)"
     decisions:
       - "2026-04-21 (triage): 10 min 静态诊断 + DB 取样发现 cost_cents=1 精确等于 prompt*3/1e6 + completion*10/1e6 取 round（¥3/¥10 全局兜底）。middleware 写入 snapshot 21.6/108 证明 middleware 层查 pricing_rule 成功；recorder.computeCost 重算时却用全局兜底 — 两层用相同参数查同 DB 但结果不同，静态推不出原因"
-      - "2026-04-21 (H1 approach): 开 fix 分支加临时诊断日志（middleware buildBaseRecord + recorder.computeCost + pricing.resolvePricingRule）→ push dev → 触发一次 chatbot.stream → tail 日志拿真实 rule.ID → 按实际 root cause 修代码 → 移除日志。3 个候选假设：provider 参数 mismatch / Calculator cache 污染 / 列名 tag mismatch 遗留"
-      - "2026-04-21 (out of scope): Finding A tier-1 价格校正（¥18→¥28）是独立 migration fix，不在本 hotfix 内；历史数据 backfill 默认不做"
+      - "2026-04-21 (H1 approach): 开 fix 分支加临时诊断日志 → merge 到 develop 让 CI 部署 → 触发一次 chatbot.stream → docker logs 拿真实 rule.ID"
+      - "2026-04-21 (H1 diag 结果): middleware 调 deps.UsageStore.GetPricingRule（dbUsageStore，2 级 SQL）返 rule_id=61 正确；recorder 调 pricing.Calculator → c.store.GetPricingRule（billingStore，3 级 SQL）返 rule_id=43 全局兜底。同参数同 DB 不同实现 → root cause 锁定在 billingStore SQL 的 ORDER BY CASE 被 GORM 丢弃"
+      - "2026-04-21 (H1 fix): store/billing.go GetPricingRule 改用 Find + Go 端按 priority 选最精确行。避开 GORM v2 对 Order(gorm.Expr, args...) 的静默丢弃，免 SQL injection 顾虑。候选集 ≤3 行无性能影响"
+      - "2026-04-21 (H2 验证): 2 个回归测试 PASS — (1) 精确行 id 大于全局兜底时仍命中精确行 (2) 全 3 级 fallback 链路正确。dev 复现 id=365 cost=2 符合 ¥21.6/¥108 公式"
+      - "2026-04-21 (H3): fix e4281c6 merge 到 develop + push + CI 部署 dev 完成 + e2e 复现验证通过"
+      - "2026-04-21 (scope 说明): 历史数据 backfill（4-20 起错误的 usage_record）用户未要求，defer；Finding A tier-1 价格校正（¥18→¥28）是独立 migration fix，不在本 hotfix 内"
+      - "2026-04-21 (tech debt 观察): numind.go:121 recorder.InitRecorder 用 billingStore（3 级 SQL），numind.go:132 middleware 用 dbUsageStore（2 级 SQL）— 两份 GetPricingRule 实现逻辑不一致是长期隐患。本次 fix 仅修 billingStore；后续可考虑统一或废弃 dbUsageStore"
     blockers: []
     created_at: "2026-04-21T16:00:00+08:00"
