@@ -21,9 +21,12 @@ features:
       plan: "numind-server/docs/superpowers/plans/2026-04-21-sales-agent-child-permission-plan.md"
     progress:
       total_tasks: 7
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task: "等 S3 gate 最终确认（原子性 reviewer 已 PASS_WITH_CONCERNS，P0/P1 修正已并入 plan，新增 Task 0 test infra helper → total_tasks 6→7），然后进入 S4 subagent-driven-development"
+      completed_tasks: 7
+      reviewed_tasks: 5
+      current_task: "S4 全部 7 tasks 完成。Task 6 (S5 验证策略) 在 S3 plan 末尾已内嵌（NDF Rule 10 在 plan 生成时即满足）。Task 5 (SSH baseline) 无代码产物不走双 review，故 reviewed_tasks=5（Task 0-4 各一次双 review 通过）。准备进入 S5 本地验证"
+    branches:
+      numind-server: "feature/sales-agent-child-permission (worktree at .worktrees/sales-agent-child-permission, based on develop @ 64a690a) — commits: 694474a Task0 / b52519e+7909672+d81424e Task1 / 6560905+c09b7ac Task2 / 5d6da18 Task3"
+      numind-web-v3: "feature/sales-agent-permission-e2e (based on develop @ 4bdf873) — commits: 7222dfb Task4 main / 5788011 Task4 P2 fixes"
     rollback: null
     last_verified: null
     decisions:
@@ -43,6 +46,7 @@ features:
       - "2026-04-21 (S2 spec): 组件扩展 C1-C4 → C1-C5（新增 C5 router_sales_gate_test.go httptest 集成测试）。§9 上线前 Go/No-Go SQL 检查写进 S3 plan 硬 task。Accepted Exposure 1（/v1/ali/bailian/ 未 gate，孤儿文件无法进入 sales 上下文）+ Exposure 2（SSE 宽松模式）文档化"
       - "2026-04-21 (S3 plan): 6 tasks 写定 — Task 1 (C1+C2 atomic) / Task 2 (C3 unit) / Task 3 (C5 httptest) / Task 4 (C4 E2E numind-web-v3) / Task 5 (pre-merge SSH SQL go/no-go) / Task 6 (S5 验证策略 NDF Rule 10 强制 doc task)。Task 1 atomicity 锁死：C1 单独上线 = 静默 403；C2 单独上线 = 端点裸奔说实话；必须同 commit"
       - "2026-04-21 (S3 reviewer PASS_WITH_CONCERNS): 独立 Sonnet reviewer 发现 2 P0 + 3 P1 + 2 P2。P0-1 store.S *datastore 类型不兼容 NewTestStore IStore → 新增 Task 0 加 NewTestDataStore 辅助（total_tasks 6→7）；P0-2 stubCustomerBiz 接口漂移严重（缺 9 方法 + 2 方法名错 + ListUserFeatures 签名错）→ Task 2 改用 real customerbiz + in-memory SQLite + 15 个方法的 realBizOnlyCustomers + 编译期 guard；P1-1 Task 5 DB 密码获取 → Step 1 从 config_dev.yaml 读取；P1-2 Task 4 E5 空断言 → 加 chat403Count + responseCode=100207 契约断言；P1-3 Task 4 selector 猜测 → reality-check 变硬性要求"
+      - "2026-04-21 (Task 5 SSH baseline, P0-Q9 硬闸): dev (numind-mysql-dev @ 49.233.219.254:13306) — sales_agent_grants=3, total_sub_users=20, parents_with_any_grants=1 → 17/20=85% dev sub-users 上线即 403。prod (numind-mysql-prod @ 129.28.125.51:13306) — sales_agent_grants=20, total_sub_users=94, parents_with_any_grants=2 → 74/94=79% prod sub-users 上线即 403。结论：不是 P0-Q9 worst-case 的 100% 全员被拒（前端 UI 确实有父账号用过），但仍是多数冲击。产品公告必须面向所有 sales_agent 使用者，而不是少量群体。dev/prod 比例一致（差 6pp），不触发 NDF §5 Pause-and-Ask。backfill 仍不做（D1 锁死），走产品公告路径"
     created_at: "2026-04-21T00:00:00+08:00"
 
   - id: "parent-self-grant-membership"
