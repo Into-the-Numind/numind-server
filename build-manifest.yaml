@@ -4,15 +4,17 @@ features:
   - id: "homeview-locked-cards"
     ndf_version: "1.1"
     description: "HomeView 统一 deny UX：被拒资源不再隐藏，正常显示 + 右上角 lock 标志 + 点击弹'未开通'。应用于 SOP workflows / sales-agent / chatbot 三类卡片。修正当前 sales-agent 的 .no-permission 灰化行为为正常颜色。S1 发现现状比原估简单得多：后端 SOP templates list 和 chatbot listVisibleChatbots **本来就返回全部 published**（不按白名单过滤），前端点击时才 check-permission。本 feature 只需后端 list DTO 加 has_permission flag + 前端 HomeView lock badge 扩展 + 删灰化 CSS，共 ~100 行。"
-    track: "standard"
-    stage: "S1"
-    classification_reason: "2 条 Triage 标准不满足：DTO 字段扩展（非破坏性，算弱'新 API'）+ 文件数 >3（后端 2 DTO + 前端 HomeView + 2 api types + E2E，估 4-6 文件）。原 S0 的'高风险可见性翻转'风险 S1 阶段消除——现状子账号已能看见 template/chatbot 全部标题描述，非本 feature 引入。"
-    last_updated_by: "ai-s1"
+    track: "hotfix"
+    stage: "H2"
+    classification_reason: "S1 核实事实后重新 Triage（非违反 NDF 不可降级原则——S0 Triage 基于错误假设，S1 核实后修正）：5 条标准仅文件数临界（4-6 files）勉强算不满足，其余全部满足。改动 = UI polish + 非破坏性 DTO 字段扩展，安全 gate 不动。用户确认降级到 Hotfix 快车道"
+    last_updated_by: "ai-hotfix-start"
     last_updated_at: "2026-04-21T00:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
-    branches: {}
+    branches:
+      numind-server: "fix/homeview-locked-cards (worktree .worktrees/homeview-locked-cards @ 1adff49 from develop 656ba02)"
+      numind-web-v3: "fix/homeview-locked-cards (@ 0b70fe5 from develop 4bdf873)"
     artifacts:
       requirement: "numind-server/requirements/homeview-locked-cards.md"
       proposal: "numind-server/proposals/homeview-locked-cards-proposal.md"
@@ -20,7 +22,7 @@ features:
       total_tasks: 0
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "等 S1 gate 确认，然后进 S2 spec"
+      current_task: "H2 自动验收（静态检查已过：backend go build/vet/gofmt 干净 + pre-existing 失败已确认；frontend lint 0 errors / type-check 干净）。下一步 merge+push develop"
     rollback: null
     last_verified: null
     decisions:
@@ -33,6 +35,8 @@ features:
       - "2026-04-21 (S0 驱动事件): 用户在 sales-agent-child-permission S6 dev 验收时观察到 chatbot/sales-agent UX 不一致，独立提出本需求。与前 feature 无依赖，独立 feature"
       - "2026-04-21 (S1 发现，改写 Triage): 核实现状——SOP list 和 chatbot list **本来就返回全部 published**，不按白名单过滤（biz/chatbot/chatbot_test.go:5 '与 SOP 对称，不按白名单隐藏'）。S0 Triage R1/R3 (partial revert chatbot 过滤逻辑) 作废；原 S0 高风险'可见性翻转'风险消除（现状即如此）。真正工作：后端 DTO 加 has_permission 字段（非破坏性）+ 前端 HomeView 3 处小改 + 删 .no-permission 灰化 CSS。工作量 0.5 天"
       - "2026-04-21 (S1 技术决策): API 策略选'DTO 加字段'（R2），前端 TS 声明 has_permission?: boolean 兼容老后端；保留点击时二次 check-permission 调用作为 race-guard（R4）；batch has_permission 用单次 IN query O(N)，无 N+1（R1）；父账号 has_permission 永远 true 复用现有 HasTemplatePermission/HasChatbotPermission auto-pass（R3 字段名对齐 sales-agent 既有响应）"
+      - "2026-04-21 (降级 Hotfix): 用户基于 S1 发现质疑 Standard 过度。重新 Triage——仅文件数临界不满足，改动实质 = UI polish + 非破坏性 DTO 扩展，无 schema / 无 endpoint / 无 LLM / 安全 gate 不动。用户确认 Hotfix。track: standard → hotfix，stage: S1 → H1。S0/S1 工件保留作 H1 实施上下文"
+      - "2026-04-21 (H1 实施): 后端 4 文件 +103 行 -3 行（biz/chatbot + biz/sop 各加 DTO 类型 + *WithPermission 方法；两 controller 切到新 biz 方法）。ChatbotConfig/SopTemplate 原 Go struct 不动。后端 commit 1adff49。前端 2 文件 +93 行 -18 行（HomeView.vue 3 card 都加 lock badge conditional；types/config.ts ChatbotConfig 加 has_permission?: boolean；删除 CSS .no-permission opacity/grayscale，D5 修正）。前端 commit 0b70fe5。Backend go build/vet/gofmt 干净；Frontend lint 0 errors / type-check 干净"
     created_at: "2026-04-21T00:00:00+08:00"
 
   - id: "sales-agent-child-permission"
@@ -285,7 +289,7 @@ features:
     ndf_version: "1.1"
     description: "接入 LinkAPI 作为新的聚合商，复刻 AiHubMix 4 模型（Claude 4.6 / GPT 5.4 / Gemini 3.1 / DeepSeek V3.2）。按 aihubmix-protocol-audit 确立的标准协议接入。API 文档在过程中研究。凭据走 aihubmix 同款豁免路径（字面值写 migration SQL，不走 SyncProviderCredentials）。"
     track: "hotfix"
-    stage: "H1"
+    stage: "H2"
     classification_reason: "纯数据层扩展（migration SQL INSERT），代码层零改动。aihubmix-protocol-audit 已将 adapter 标准化为 provider-agnostic，新 provider 只需 DB seed data"
     last_updated_by: "ai-triage-confirmed"
     last_updated_at: "2026-04-21T12:00:00+08:00"
