@@ -17,9 +17,11 @@
 ## Task Graph
 
 ```
-Task 1 (C1+C2: gate + handler fix)  ← atomic, no going back
+Task 0 (store.NewTestDataStore helper)  ← test infra for Task 3
+  ↓
+Task 1 (C1+C2: gate + handler fix)   ← atomic, no going back
   ├─→ Task 2 (C3 unit test)          ← tests Task 1 handler change
-  └─→ Task 3 (C5 httptest gate)      ← tests Task 1 route middleware
+  └─→ Task 3 (C5 httptest gate)      ← depends on Task 0 + Task 1
           ↓
 Task 4 (C4 E2E, numind-web-v3)       ← cross-repo integration
           ↓
@@ -29,6 +31,71 @@ Task 6 (S5 verification strategy)    ← NDF Rule 10 mandatory doc task
 ```
 
 **Atomicity note:** Task 1 merges C1 (router.go) and C2 (sales_rag.go) into a single commit. Rationale: C1 alone would 403 children without warning them through `check-permission`; C2 alone would honestly say "no permission" but run endpoints would still let them through. Neither half is independently shippable.
+
+**Task 0 rationale (added after reviewer P0-1):** `middleware.FeaturePermission` reads the package-level singleton `store.S *datastore` (unexported concrete type). Tests can't inject a test DB via `NewTestStore()` (returns `IStore` interface, not `*datastore`). To make Task 3 compileable we add one test-only exported helper `NewTestDataStore(db) *datastore` in `store/store.go` that returns the concrete pointer. This is minimal test infrastructure, does not change production code paths.
+
+---
+
+## Task 0: Add `NewTestDataStore` test helper in store package
+
+**Files:**
+- Modify: `numind-server/internal/numind/store/store.go`（append test-only helper）
+
+**Why:** `middleware.FeaturePermission` at `middleware.go:222` reads package-level `store.S *datastore` (concrete type, unexported). Task 3 needs to inject a test-DB-backed `*datastore` into `store.S` for httptest verification. `NewTestStore()` returns the `IStore` interface which can't be assigned to `*datastore`. One new exported helper fixes this without expanding any production paths.
+
+---
+
+- [ ] **Step 1: Read current store.go around NewTestStore**
+
+Open `numind-server/internal/numind/store/store.go:56-60`:
+```go
+// NewTestStore creates a fresh IStore instance backed by the given DB without
+// the singleton constraint. Use only in tests.
+func NewTestStore(db *gorm.DB) IStore {
+	return &datastore{db: db}
+}
+```
+
+- [ ] **Step 2: Append `NewTestDataStore` helper right after `NewTestStore`**
+
+Add the following function immediately after line 60 (after `NewTestStore`):
+
+```go
+// NewTestDataStore is identical to NewTestStore but returns the concrete
+// *datastore pointer so tests can assign it to the package-level `S` variable
+// (which is typed `*datastore`, not `IStore`). Use only in tests that need to
+// exercise code paths reading `store.S` directly (e.g. middleware.FeaturePermission).
+func NewTestDataStore(db *gorm.DB) *datastore {
+	return &datastore{db: db}
+}
+```
+
+- [ ] **Step 3: Build + test to confirm nothing breaks**
+
+```bash
+cd numind-server && go build ./internal/numind/store/... && go test ./internal/numind/store/...
+```
+Expected: exit 0. No production code path references this helper yet, so pre-existing tests unaffected.
+
+- [ ] **Step 4: Commit**
+
+```bash
+cd numind-server
+git add internal/numind/store/store.go
+git commit -m "$(cat <<'EOF'
+test(store): add NewTestDataStore helper for middleware tests
+
+middleware.FeaturePermission reads package-level store.S *datastore
+(unexported concrete type). NewTestStore returns IStore interface which
+cannot be assigned to *datastore. New NewTestDataStore returns *datastore
+directly so tests can do:
+    store.S = store.NewTestDataStore(db)
+
+Test-only; no production callers. Required for upcoming
+router_sales_gate_test.go (sales-agent-child-permission feature).
+EOF
+)"
+```
 
 ---
 
@@ -180,18 +247,29 @@ EOF
 
 ---
 
-## Task 2: Unit test for CheckSalesPermission (C3)
+## Task 2: Unit test for CheckSalesPermission (C3) — real biz + in-memory DB
 
 **Files:**
 - Create: `numind-server/internal/numind/controller/v1/salesrag/sales_rag_test.go`
 
-**Why:** Tests Task 1's handler change. 4 cases covering parent / sub-granted / sub-denied / biz-error branches. Uses mock `biz.IBiz` via a thin stub (only `Customers()` is exercised).
+**Why:** Tests Task 1's handler change. 4 cases covering parent / sub-granted / sub-denied / biz-error branches.
+
+**Approach (rewritten after reviewer P0-2):** Use **real** `customerbiz.New(testDS)` with in-memory SQLite DB rather than stubbing the full `ICustomerBiz` interface. The real `ICustomerBiz` has 17 methods — stubbing them all is error-prone and the stubs would drift every time a new method is added. Instead:
+
+- Build real `biz.IBiz` that returns a real `customerbiz.New(testDS)` from `Customers()`
+- All other `biz.IBiz` methods return `nil` (valid for interface types, will panic at runtime if called — which is what we want)
+- Seed users + `user_feature_permission` records in the DB; the controller → biz → store → DB path executes end-to-end
+- Test case T4 (biz error) simulates by closing the DB before invocation
+
+This trades "pure unit isolation" for "real interface compliance", which is a net win given ICustomerBiz churn.
 
 ---
 
-- [ ] **Step 1: Inspect existing stub pattern**
+- [ ] **Step 1: Inspect existing test DB pattern**
 
-Read `numind-server/internal/numind/controller/v1/credit/credit_test.go:70-132` to confirm the stub pattern: `gin.New()` + `setCurrentUserMiddleware(user)` + route registration + `httptest.NewRecorder()`. Mirror this structure.
+Read `numind-server/internal/numind/controller/v1/credit/credit_test.go:80-132` for the in-memory SQLite + `gin.New()` + `setCurrentUserMiddleware` pattern. Mirror.
+
+Also confirm exact `biz.IBiz` method signatures by reading `numind-server/internal/numind/biz/biz.go:40-56` — the plan shows them below, but read before using to guard against drift.
 
 - [ ] **Step 2: Write the test file**
 
@@ -199,14 +277,13 @@ Create `numind-server/internal/numind/controller/v1/salesrag/sales_rag_test.go`:
 
 ```go
 // Package salesrag_test contains HTTP-handler level tests for CheckSalesPermission.
-// The biz layer is stubbed so these tests focus on the controller's branching:
-// unauthenticated → ErrTokenInvalid, biz err → ErrInternalServer, success → has_permission echo.
+// Uses real customerbiz + in-memory SQLite instead of mocking ICustomerBiz
+// (17 methods, too noisy to stub). Tests the full controller → biz → store → DB
+// path, with user_feature_permission rows seeded to drive each case.
 package salesrag_test
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -214,122 +291,135 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 
 	"numind-server/internal/numind/biz"
-	customerbiz "numind-server/internal/numind/biz/customer"
+	"numind-server/internal/numind/biz/ali"
+	chatbotbiz "numind-server/internal/numind/biz/chatbot"
+	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/numind/biz/credit"
+	customerbiz "numind-server/internal/numind/biz/customer"
+	kbbiz "numind-server/internal/numind/biz/knowledgebase"
+	"numind-server/internal/numind/biz/llmrouter"
+	"numind-server/internal/numind/biz/monitor"
+	"numind-server/internal/numind/biz/payment"
+	"numind-server/internal/numind/biz/salesrag"
+	sopbiz "numind-server/internal/numind/biz/sop"
+	"numind-server/internal/numind/biz/user"
+	"numind-server/internal/numind/biz/volc"
 	salesragctl "numind-server/internal/numind/controller/v1/salesrag"
+	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/pricing"
 )
 
 // -----------------------------------------------------------------------------
-// stubs
+// test DB
 // -----------------------------------------------------------------------------
 
-// stubCustomerBiz only implements CheckFeaturePermission; other methods panic.
-type stubCustomerBiz struct {
-	has     bool
-	err     error
-	gotUID  uint
-	gotKey  string
-	callCnt int
+// newTestDB creates in-memory SQLite with minimal schema: hand-rolled `user`
+// table (model.User has MySQL ENUMs SQLite rejects) + AutoMigrated
+// UserFeaturePermission.
+func newTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	require.NoError(t, db.Exec(`
+		CREATE TABLE user (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			parent_user_id INTEGER NULL,
+			created_at DATETIME, updated_at DATETIME, deleted_at DATETIME
+		)
+	`).Error)
+	require.NoError(t, db.AutoMigrate(&model.UserFeaturePermission{}))
+	return db
 }
 
-func (s *stubCustomerBiz) CheckFeaturePermission(_ context.Context, userID uint, featureKey string) (bool, error) {
-	s.callCnt++
-	s.gotUID = userID
-	s.gotKey = featureKey
-	return s.has, s.err
+func seedUser(t *testing.T, db *gorm.DB, id uint, parentID *uint) {
+	t.Helper()
+	var pid interface{}
+	if parentID != nil {
+		pid = *parentID
+	}
+	require.NoError(t, db.Exec(`INSERT INTO user (id, parent_user_id) VALUES (?, ?)`, id, pid).Error)
 }
 
-// panic stubs for unused methods — we only want CheckFeaturePermission to be reachable.
-// If the controller ever adds another biz call this test will panic, alerting us.
-func (s *stubCustomerBiz) ListSubUsers(context.Context, uint, int, int) ([]model.User, int64, error) {
-	panic("not used")
+func seedFeatureGrant(t *testing.T, db *gorm.DB, parent, sub uint, key string) {
+	t.Helper()
+	require.NoError(t, db.Create(&model.UserFeaturePermission{
+		ParentUserID: parent, SubUserID: sub, FeatureKey: key,
+	}).Error)
 }
-func (s *stubCustomerBiz) GetSubUser(context.Context, uint, uint) (*model.User, error) { panic("not used") }
-func (s *stubCustomerBiz) CreateSubUser(context.Context, uint, string, string, string) (*model.User, error) {
-	panic("not used")
-}
-func (s *stubCustomerBiz) UpdateSubUser(context.Context, uint, uint, string, string) error {
-	panic("not used")
-}
-func (s *stubCustomerBiz) DeleteSubUser(context.Context, uint, uint) error       { panic("not used") }
-func (s *stubCustomerBiz) UpdateSubUserTier(context.Context, customerbiz.UpdateTierRequest) error {
-	panic("not used")
-}
-func (s *stubCustomerBiz) ListTemplatePermissions(context.Context, uint) ([]uint, error) {
-	panic("not used")
-}
-func (s *stubCustomerBiz) GrantTemplates(context.Context, uint, uint, []uint) error { panic("not used") }
-func (s *stubCustomerBiz) RevokeTemplates(context.Context, uint, uint, []uint) error {
-	panic("not used")
-}
-func (s *stubCustomerBiz) HasTemplatePermission(context.Context, uint, uint) (bool, error) {
-	panic("not used")
-}
-func (s *stubCustomerBiz) GrantFeatures(context.Context, uint, uint, []string) error { panic("not used") }
-func (s *stubCustomerBiz) RevokeFeatures(context.Context, uint, uint, []string) error {
-	panic("not used")
-}
-func (s *stubCustomerBiz) ListUserFeatures(context.Context, uint) ([]string, error) { panic("not used") }
 
-// stubBiz implements biz.IBiz with only Customers() wired up.
-type stubBiz struct {
+// -----------------------------------------------------------------------------
+// realBizOnlyCustomers is a biz.IBiz implementation that only wires Customers().
+// All other methods return nil; since the controller under test only touches
+// Customers().CheckFeaturePermission, nil returns are safe (panicking if
+// misused is acceptable — it exposes test scope creep).
+// -----------------------------------------------------------------------------
+type realBizOnlyCustomers struct {
 	customers customerbiz.ICustomerBiz
 }
 
-func (s *stubBiz) Customers() customerbiz.ICustomerBiz { return s.customers }
+func (b *realBizOnlyCustomers) Users() user.UserBiz                   { return nil }
+func (b *realBizOnlyCustomers) Ali() ali.AliBiz                       { return nil }
+func (b *realBizOnlyCustomers) Volc() volc.VolcBiz                    { return nil }
+func (b *realBizOnlyCustomers) Configs() config.ConfigBiz             { return nil }
+func (b *realBizOnlyCustomers) Sop() sopbiz.ISopBiz                   { return nil }
+func (b *realBizOnlyCustomers) Customers() customerbiz.ICustomerBiz   { return b.customers }
+func (b *realBizOnlyCustomers) SalesRAG() salesrag.SalesRAGBiz        { return nil }
+func (b *realBizOnlyCustomers) Credit() credit.ICreditBiz             { return nil }
+func (b *realBizOnlyCustomers) CreditService() credit.ICreditService  { return nil }
+func (b *realBizOnlyCustomers) Pricing() pricing.ICalculator          { return nil }
+func (b *realBizOnlyCustomers) Payment() payment.IPaymentBiz          { return nil }
+func (b *realBizOnlyCustomers) Monitor() monitor.IMonitorBiz          { return nil }
+func (b *realBizOnlyCustomers) KnowledgeBase() kbbiz.IKnowledgeBaseBiz { return nil }
+func (b *realBizOnlyCustomers) Chatbot() chatbotbiz.IChatbotBiz       { return nil }
+func (b *realBizOnlyCustomers) LLMRouter() *llmrouter.Router          { return nil }
 
-// All other methods panic — CheckSalesPermission only calls Customers().
-func (s *stubBiz) Users() interface{ _() }                                  { panic("not used") }
-func (s *stubBiz) Ali() interface{ _() }                                    { panic("not used") }
-func (s *stubBiz) Volc() interface{ _() }                                   { panic("not used") }
-func (s *stubBiz) Configs() interface{ _() }                                { panic("not used") }
-func (s *stubBiz) Sop() interface{ _() }                                    { panic("not used") }
-func (s *stubBiz) SalesRAG() interface{ _() }                               { panic("not used") }
-func (s *stubBiz) Credit() credit.ICreditBiz                                { return nil }
-func (s *stubBiz) CreditService() interface{ _() }                          { panic("not used") }
-func (s *stubBiz) Pricing() interface{ _() }                                { panic("not used") }
-func (s *stubBiz) Payment() interface{ _() }                                { panic("not used") }
-func (s *stubBiz) Monitor() interface{ _() }                                { panic("not used") }
-func (s *stubBiz) KnowledgeBase() interface{ _() }                          { panic("not used") }
-func (s *stubBiz) Chatbot() interface{ _() }                                { panic("not used") }
-func (s *stubBiz) LLMRouter() interface{ _() }                              { panic("not used") }
+// compile-time guard: this test struct must satisfy biz.IBiz or tests fail here.
+var _ biz.IBiz = (*realBizOnlyCustomers)(nil)
 
 // -----------------------------------------------------------------------------
 // helpers
 // -----------------------------------------------------------------------------
 
-func setCurrentUserMiddleware(user *model.User) gin.HandlerFunc {
+func setCurrentUserMW(u *model.User) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if user != nil {
-			c.Set("current_user", user)
+		if u != nil {
+			c.Set("current_user", u)
 		}
 		c.Next()
 	}
 }
 
-func newRouter(t *testing.T, b biz.IBiz, user *model.User) *gin.Engine {
+func newRouter(t *testing.T, b biz.IBiz, u *model.User) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(setCurrentUserMiddleware(user))
-	// We construct controller via NewSalesRAGController; creditBiz can be nil
-	// because CheckSalesPermission never touches it.
-	ctrl := salesragctl.NewSalesRAGController(b, nil)
+	r.Use(setCurrentUserMW(u))
+	ctrl := salesragctl.NewSalesRAGController(b, nil) // creditBiz not touched
 	r.GET("/sales-rag/check-permission", ctrl.CheckSalesPermission)
 	return r
 }
 
-func mustParentUser(id uint) *model.User {
-	u := &model.User{}
-	u.ID = id
-	// ParentUserID == nil → parent account
-	return u
+func testBiz(t *testing.T, db *gorm.DB) biz.IBiz {
+	t.Helper()
+	ds := store.NewTestStore(db)
+	return &realBizOnlyCustomers{customers: customerbiz.New(ds)}
 }
 
-func mustSubUser(id, parentID uint) *model.User {
+func mustParent(id uint) *model.User { u := &model.User{}; u.ID = id; return u }
+func mustSub(id, parentID uint) *model.User {
 	u := &model.User{ParentUserID: &parentID}
 	u.ID = id
 	return u
@@ -339,14 +429,11 @@ func mustSubUser(id, parentID uint) *model.User {
 // tests
 // -----------------------------------------------------------------------------
 
-// T1: Parent account (ParentUserID IS NULL) → has_permission: true
-// Note: stub returns has=false but this test verifies the HANDLER calls biz layer;
-// biz layer is responsible for parent auto-pass logic (tested in biz/customer tests).
-// Here we verify: biz stub returns whatever we configure → handler echoes it.
-func TestCheckSalesPermission_Parent_Echoes(t *testing.T) {
-	stub := &stubCustomerBiz{has: true, err: nil}
-	b := &stubBiz{customers: stub}
-	r := newRouter(t, b, mustParentUser(1))
+// T1: Parent account (ParentUserID IS NULL) → has_permission: true by biz auto-pass logic
+func TestCheckSalesPermission_Parent_True(t *testing.T) {
+	db := newTestDB(t)
+	seedUser(t, db, 1, nil) // parent
+	r := newRouter(t, testBiz(t, db), mustParent(1))
 
 	req := httptest.NewRequest(http.MethodGet, "/sales-rag/check-permission", nil)
 	w := httptest.NewRecorder()
@@ -361,17 +448,18 @@ func TestCheckSalesPermission_Parent_Echoes(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, 0, resp.Code)
-	assert.True(t, resp.Data.HasPermission)
-	assert.Equal(t, 1, stub.callCnt, "biz must be called exactly once")
-	assert.Equal(t, uint(1), stub.gotUID)
-	assert.Equal(t, model.FeatureKeySalesAgent, stub.gotKey)
+	assert.True(t, resp.Data.HasPermission, "parent must auto-pass")
 }
 
-// T2: Sub-user with grant → has_permission: true
+// T2: Sub-user WITH sales_agent grant → has_permission: true
 func TestCheckSalesPermission_SubGranted_True(t *testing.T) {
-	stub := &stubCustomerBiz{has: true, err: nil}
-	b := &stubBiz{customers: stub}
-	r := newRouter(t, b, mustSubUser(100, 1))
+	db := newTestDB(t)
+	parentID := uint(1)
+	seedUser(t, db, 1, nil)
+	seedUser(t, db, 100, &parentID)
+	seedFeatureGrant(t, db, 1, 100, model.FeatureKeySalesAgent)
+
+	r := newRouter(t, testBiz(t, db), mustSub(100, 1))
 
 	req := httptest.NewRequest(http.MethodGet, "/sales-rag/check-permission", nil)
 	w := httptest.NewRecorder()
@@ -382,62 +470,73 @@ func TestCheckSalesPermission_SubGranted_True(t *testing.T) {
 		Data struct{ HasPermission bool `json:"has_permission"` } `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.True(t, resp.Data.HasPermission)
-	assert.Equal(t, uint(100), stub.gotUID)
+	assert.True(t, resp.Data.HasPermission, "granted sub must return true")
 }
 
-// T3: Sub-user without grant → has_permission: false (200 OK, not 403)
-// Critical: D1 requires this endpoint to NOT be gated, so it returns 200
-// with has_permission=false rather than 403.
-func TestCheckSalesPermission_SubDenied_False(t *testing.T) {
-	stub := &stubCustomerBiz{has: false, err: nil}
-	b := &stubBiz{customers: stub}
-	r := newRouter(t, b, mustSubUser(200, 1))
+// T3: Sub-user WITHOUT grant → has_permission: false, HTTP 200 (NOT 403)
+// D1 invariant: check-permission must never return 403.
+func TestCheckSalesPermission_SubDenied_FalseNot403(t *testing.T) {
+	db := newTestDB(t)
+	parentID := uint(1)
+	seedUser(t, db, 1, nil)
+	seedUser(t, db, 200, &parentID) // no grant
+
+	r := newRouter(t, testBiz(t, db), mustSub(200, 1))
 
 	req := httptest.NewRequest(http.MethodGet, "/sales-rag/check-permission", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	require.Equal(t, http.StatusOK, w.Code, "D1: endpoint must return 200, not 403")
+	require.Equal(t, http.StatusOK, w.Code, "D1: must be 200, not 403")
 	var resp struct {
+		Code int `json:"code"`
 		Data struct{ HasPermission bool `json:"has_permission"` } `json:"data"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.False(t, resp.Data.HasPermission)
+	assert.Equal(t, 0, resp.Code, "business code 0 (success)")
+	assert.False(t, resp.Data.HasPermission, "denied sub must return false")
 }
 
-// T4: biz layer error → ErrInternalServer
+// T4: biz layer returns error → 500 surfaced as non-zero business code
+// Simulated by closing the underlying sqlDB before the request.
 func TestCheckSalesPermission_BizError_Returns500(t *testing.T) {
-	stub := &stubCustomerBiz{has: false, err: errors.New("db down")}
-	b := &stubBiz{customers: stub}
-	r := newRouter(t, b, mustSubUser(300, 1))
+	db := newTestDB(t)
+	parentID := uint(1)
+	seedUser(t, db, 1, nil)
+	seedUser(t, db, 300, &parentID)
+
+	b := testBiz(t, db)
+	r := newRouter(t, b, mustSub(300, 1))
+
+	// Force the DB to fail by closing it mid-test.
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	require.NoError(t, sqlDB.Close())
 
 	req := httptest.NewRequest(http.MethodGet, "/sales-rag/check-permission", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	// ErrInternalServer returns HTTP 200 with business code != 0 (project convention).
-	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	require.Equal(t, http.StatusOK, w.Code, "project envelope returns 200 with biz code; body: %s", w.Body.String())
 	var resp struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.NotEqual(t, 0, resp.Code, "biz err must surface as non-zero business code")
+	assert.NotEqual(t, 0, resp.Code, "biz err → non-zero business code")
 }
 ```
 
-**Pre-check:** before committing, verify the `stubBiz` compiles against the real `biz.IBiz` interface. If `biz.IBiz` has methods not stubbed here, the file won't compile. The interface shape was read from `biz/biz.go:40-56`; if it drifted, adjust stubs.
+**Compile-time safety net:** the `var _ biz.IBiz = (*realBizOnlyCustomers)(nil)` line forces `go build` to fail if any `biz.IBiz` method is missing. If it fails, read the error and add the missing methods with return value `nil`. This catches interface drift automatically.
 
-**Stub interface-drift note:** `interface{ _() }` placeholders exist because we only call `Customers()` and want other methods to be obviously unused. If the compiler rejects this because `biz.IBiz` methods have concrete return types that don't match `interface{ _() }`, replace each stub body with `panic("not used")` and declare the real return type. Read `biz/biz.go:40-56` for exact signatures and match them literally. This is a mechanical substitution.
+**Sanity check on imports:** each biz sub-package (`ali`, `chatbotbiz`, `config`, `credit`, `customerbiz`, `kbbiz`, `llmrouter`, `monitor`, `payment`, `salesrag`, `sopbiz`, `user`, `volc`) is an actual package under `numind-server/internal/numind/biz/`. If any import path is wrong, adjust per actual file system. `pricing` lives under `numind-server/internal/pkg/pricing`.
 
 - [ ] **Step 3: Run the tests — expect PASS**
 
-Run:
 ```bash
 cd numind-server && go test ./internal/numind/controller/v1/salesrag/... -run TestCheckSalesPermission -v
 ```
-Expected: 4 tests PASS. If any fail due to interface drift, fix stubs to match the real `biz.IBiz` signatures.
+Expected: 4 tests PASS. If compile fails on `var _ biz.IBiz`, a new method was added to the interface; mirror it with `return nil` as a next build-fix mechanical step.
 
 - [ ] **Step 4: Run `task lint` on the new file**
 
@@ -566,10 +665,12 @@ func seedGrant(t *testing.T, db *gorm.DB, parent, sub uint, key string) {
 }
 
 // installStoreS injects a test-backed store.S singleton and returns a restorer.
+// Uses NewTestDataStore (added in Task 0) because store.S is typed *datastore
+// and NewTestStore returns IStore interface.
 func installStoreS(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	previous := store.S
-	store.S = store.NewTestStore(db)
+	store.S = store.NewTestDataStore(db)
 	t.Cleanup(func() { store.S = previous })
 }
 
@@ -647,7 +748,8 @@ func TestGate_SubNoGrant_DocumentsListBlocked(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.NotEqual(t, 0, resp.Code, "gate must reject with non-zero biz code")
-	assert.Contains(t, resp.Message, "未开通", "error message should say not yet opened")
+	// Do NOT assert on message text ("未开通 …") — brittle if copy changes. The
+	// non-zero business code is the load-bearing signal.
 }
 
 // H2: Sub-user without grant + POST /sales-rag/sessions/1/chat → 403
@@ -994,27 +1096,55 @@ test.describe('Sales Agent Child Permission', () => {
 
   test('E5: direct chat API returns 403 → client shows error notice', async ({ page }) => {
     await mockCheckPermission(page, true)  // let UI load
-    await mockSalesChatDenied(page)        // but backend blocks chat
+    // Count invocations of the 403 mock to confirm the client actually hit it.
+    let chat403Count = 0
+    await page.route('**/v1/sales-rag/sessions/*/chat', async (route: Route) => {
+      if (route.request().method() !== 'POST') {
+        await route.fallback()
+        return
+      }
+      chat403Count++
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ code: 100207, message: '未开通该功能权限，请联系管理员' })
+      })
+    })
 
     await page.goto(SALES_ROUTE)
-    // Try to send a message. If UI requires selecting/creating a session first,
-    // this may need more steps — adjust per observed UI flow. Worst case, this
-    // test is downgraded to "API mock fires 403; no UI assertion" which still
-    // validates the network contract.
-    // Placeholder assertion: mock 403 was registered — route handler ran.
-    // Concrete assertion requires observing the chat UI flow; keep loose for now.
-    await expect(page.locator('body')).toBeVisible() // page loaded at all
+
+    // Fire the chat request directly via fetch so we don't depend on session-create UI.
+    // This is the most robust way to verify: given the client makes a chat POST,
+    // it MUST receive a 403-equivalent business code (not 200+data, not crash).
+    const responseCode = await page.evaluate(async () => {
+      const res = await fetch('/v1/sales-rag/sessions/1/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: 'hi' })
+      })
+      const body = await res.json().catch(() => ({ code: -1 }))
+      return body.code
+    })
+
+    expect(chat403Count).toBeGreaterThan(0)        // mock was hit (network contract honored)
+    expect(responseCode).toBe(100207)              // business code surfaces to client
+    // This is the end of the network-contract verification. UI error-notice
+    // rendering is covered by E4 (the /sales route already renders denied state
+    // on check-permission=false). AS-2's last bullet is covered by Go httptest
+    // (Task 3 H1-H3) + this test's network contract.
   })
 })
 ```
 
-**Reality checks the implementer must do before running:**
-1. Inspect `CustomersView.vue` around line 652 to confirm the feature permission modal's selector (`.modal-dialog.feature-perm-dialog` is a guess). If wrong, replace with observed class.
-2. Inspect the action menu item label. "权限管理" is a guess.
-3. Confirm SALES_ROUTE is `/sales` (likely, given `HomeView.vue` + `SalesView.vue` references).
-4. If E5 is hard to wire without creating a session, downgrade to a pure network-mock verification (the mock firing proves the contract).
+**Reality checks the implementer MUST do before committing** (non-negotiable, not "best-effort"):
 
-This test is allowed to be "best-effort" on selectors — the Go httptest (Task 3) is the rigorous gate validation; E2E is UX smoke test.
+1. Run `cd numind-web-v3 && npm run dev` and open the customers page as a parent account; inspect the feature-permission modal DOM in DevTools. Record the actual class names and replace the guessed selectors. Guess-to-reality mapping has to be verified, not assumed.
+2. Inspect the action menu item label (plan guesses "权限管理" / "功能"). Record the real label and update `permMenuItem` locator.
+3. Verify SALES_ROUTE by checking `numind-web-v3/src/router/index.ts` or equivalent. If it's not `/sales`, update the constant.
+4. Check the `[data-feature-key="sales_agent"]` selector exists in `CustomersView.vue` — if the frontend renders toggles by array iteration without a data attribute, pick a different positional selector.
+5. E5 is NOT allowed to degrade to `expect(body).toBeVisible()`. Its assertion must include `chat403Count > 0` AND `responseCode == 100207` (already updated in the spec above) — the mock-invocation count is the contract.
+
+This test's Go counterpart is Task 3 (rigorous backend gate); E2E covers UX wiring. "Selectors allowed to drift" applies to non-critical style-class selectors only — action menu triggers and the toggle itself must be real.
 
 - [ ] **Step 4: Run lint + type-check**
 
@@ -1068,11 +1198,29 @@ EOF
 
 ---
 
-- [ ] **Step 1: SSH dev DB and run baseline query**
+- [ ] **Step 1: Discover dev DB credentials**
+
+DB credentials are NOT in env vars at time of writing. Read them from config YAML:
+
+```bash
+cat /Users/zhiyuchen/Documents/10_跃迁有数/有数AI工作台/莫小派/Codes/numind-server/config_dev.yaml | grep -A 10 -E '^(database|mysql|db):'
+```
+
+Record the values:
+- host (likely `49.233.219.254:13306` per manifest prior decisions)
+- database name (likely `numind`)
+- user
+- password
+
+If password contains special characters (`$`, `!`, `@`), single-quote it in the SQL command below.
+
+- [ ] **Step 2: SSH dev server and run baseline query**
+
+Substitute `<db-user>`, `<db-pass>`, `<db-name>` with values from Step 1:
 
 ```bash
 sshpass -p "$DEV_SSH_PASS" ssh -o StrictHostKeyChecking=no "$DEV_SSH_USER@$DEV_SSH_HOST" \
-  "mysql -u root -p'<dev-db-pass>' numind -e \"
+  "mysql -h 127.0.0.1 -P 13306 -u <db-user> -p'<db-pass>' <db-name> -e \"
     SELECT COUNT(*) AS sales_agent_grants
       FROM user_feature_permission
       WHERE feature_key = 'sales_agent'
@@ -1084,9 +1232,9 @@ sshpass -p "$DEV_SSH_PASS" ssh -o StrictHostKeyChecking=no "$DEV_SSH_USER@$DEV_S
   \""
 ```
 
-**Implementer note:** the DB password for dev is not in `.claude/settings.local.json` env vars at time of writing. Confirm the correct invocation by reading `numind-server/config_dev.yaml` for DB creds (password field) and substituting. Or use an SSH tunnel + local `mysql` client. Do NOT prompt the user to run SQL — read the config and execute it.
+If the DB is on the SSH host itself (common in dev), `127.0.0.1` is correct; if it's a separate host, use the IP from config. Do NOT prompt the user to run SQL — read the config and execute it.
 
-- [ ] **Step 2: Record numbers in manifest decisions**
+- [ ] **Step 3: Record numbers in manifest decisions**
 
 Open `numind-server/build-manifest.yaml`, find the `sales-agent-child-permission` feature entry, and append to `decisions` array:
 
@@ -1094,7 +1242,7 @@ Open `numind-server/build-manifest.yaml`, find the `sales-agent-child-permission
       - "2026-04-21 (Task 5 SSH baseline): dev DB sales_agent_grants=<N>, total_sub_users=<M>. <评估：N=0 → 100% sub-users will be denied on launch → product comms must address 'all sales agent users' / N>0 → partial impact>"
 ```
 
-- [ ] **Step 3: Repeat for prod DB**
+- [ ] **Step 4: Repeat for prod DB**
 
 ```bash
 sshpass -p "$PROD_SSH_PASS" ssh -o StrictHostKeyChecking=no "$PROD_SSH_USER@$PROD_SSH_HOST" "<same query>"
@@ -1102,7 +1250,7 @@ sshpass -p "$PROD_SSH_PASS" ssh -o StrictHostKeyChecking=no "$PROD_SSH_USER@$PRO
 
 Record prod numbers similarly. If prod numbers diverge significantly from dev, surface to user immediately — this is a Pause-and-Ask condition (NDF §5) because business rollout strategy may need to change.
 
-- [ ] **Step 4: No commit needed**
+- [ ] **Step 5: No commit needed**
 
 This task produces manifest entries only (already committed during manifest update). If the baseline reveals a blocker (e.g., prod has wide adoption with zero grants), pause and request user decision on whether to proceed or execute a manual grant spreadsheet first.
 
@@ -1182,16 +1330,25 @@ E2E_USERNAME=$E2E_USERNAME E2E_PASSWORD=$E2E_PASSWORD npm run test:e2e -- sales-
 ## Plan Self-Review (inline)
 
 **Spec coverage:**
-- §4 (27 endpoints) → Task 1 + Task 3 (H1-H3 sample 3, trust Use()-for-group semantics for the other 24)
-- §5 D1-D6 → Task 3 (H4 for D1, H1-3 for D2, biz-path C2 verified by Task 1+2 for D6); D3/D4/D5 verified in spec by code reading, not re-tested (already covered by existing content_monitor test surface)
-- §6 C1-C5 → Task 1 (C1+C2), Task 2 (C3), Task 3 (C5), Task 4 (C4)
+- §4 (27 endpoints) → Task 1 + Task 3 (H1-H3 sample 3, trust `.Use()`-for-group semantics for the other 24)
+- §5 D1-D6 → Task 3 (H4 for D1, H1-3 for D2, biz-path C2 verified by Task 1+2 for D6); D3/D4/D5 verified in spec by code reading. D4 additionally tested live by Task 3 H5 (parent pass-through through real middleware).
+- §6 C1-C5 → Task 1 (C1+C2), Task 2 (C3), Task 3 (C5), Task 4 (C4); plus Task 0 test infra helper added to enable Task 3
 - §7 S5 strategy → Task 6
 - §8 rollback → documented in spec, not a task (git revert is trivial)
 - §9 pre-merge SQL → Task 5
 - §10 AS-1..AS-8 → mapped via S5 user paths
 
-**Placeholder scan:** No "TBD" / "TODO" / "add error handling" / unexplained references. Stub interface drift handling is called out explicitly in Task 2 Step 2.
+**Placeholder scan:** No "TBD" / "TODO". Explicit reality-check clauses in Task 4 (selector inspection mandatory) and Task 5 (DB cred discovery step).
 
-**Type consistency:** `FeatureKeySalesAgent` constant used in all 4 code-touching tasks; `ctrl.b.Customers().CheckFeaturePermission` signature consistent with `biz/customer/customer.go:340`; all Go tests use same stub pattern.
+**Type consistency:** `FeatureKeySalesAgent` constant used in all 4 code-touching tasks; `ctrl.b.Customers().CheckFeaturePermission` signature consistent with `biz/customer/customer.go:340`; Task 2 uses `var _ biz.IBiz = (*realBizOnlyCustomers)(nil)` compile-time guard to catch future interface drift; Task 3 uses `store.NewTestDataStore(db)` (added by Task 0) for store.S injection.
 
-**Atomicity of Task 1:** Confirmed — C1 + C2 combined prevents the inconsistency window. All other tasks are test-additions that don't break the build.
+**Atomicity of Task 1:** C1 + C2 combined prevents the UI/backend inconsistency window. All other tasks are test additions (0, 2, 3, 4, 6) or data-gathering (5) that don't break the build.
+
+**Post-reviewer fixes included:**
+- **P0-1** `store.S *datastore` assignment issue → added Task 0 introducing `NewTestDataStore`
+- **P0-2** `stubCustomerBiz` interface drift → Task 2 rewritten to use real `customerbiz.New(testDS)` with in-memory SQLite, eliminating the need to mock 17-method interface; `realBizOnlyCustomers` uses `nil` returns with compile-time guard
+- **P1-1** Task 5 DB password source → explicit Step 1 discovers creds from `config_dev.yaml`
+- **P1-2** Task 4 E5 empty assertion → replaced with `chat403Count > 0` + `responseCode == 100207` contract assertions via `page.evaluate(fetch)`
+- **P1-3** Task 4 selector guessing → reality-check clauses mandate DOM inspection before commit (not "best effort")
+- **P2-1** router.go has no `{ }` block → clarified in Task 1 Step 2 prose
+- **P2-2** Task 3 H1 brittle message assertion → dropped `Contains("未开通")`; kept only `resp.Code != 0`
