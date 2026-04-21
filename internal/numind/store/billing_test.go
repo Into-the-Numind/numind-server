@@ -85,3 +85,89 @@ func TestCreatePricingRule_IsActiveTrue(t *testing.T) {
 	require.NoError(t, db.First(&row, rule.ID).Error)
 	assert.True(t, row.IsActive, "DB row should have is_active=true")
 }
+
+// TestGetPricingRule_PrefersExactOverGlobalFallback_EvenWhenGlobalIDLower
+// is the regression guard for the cost_cents underbilling bug (dev usage_record
+// id=352-363, 2026-04-20/21). The original SQL used
+// Order(gorm.Expr("CASE ... END", args...)) which GORM v2 silently drops when
+// chained with First(), leaving just `ORDER BY id LIMIT 1`. When a global
+// fallback row (provider='', model='') gets a lower id than the model-specific
+// row — the common case, because the fallback was seeded earlier than per-model
+// aihubmix rows — GetPricingRule returned the fallback and every aihubmix call
+// billed at ¥3/¥10 instead of ¥21.60/¥108.
+//
+// The fix moves priority selection to Go, so this test both pins the "exact
+// wins over global" contract and makes sure a future SQL rewrite does not
+// silently drop CASE again.
+func TestGetPricingRule_PrefersExactOverGlobalFallback_EvenWhenGlobalIDLower(t *testing.T) {
+	db := newBillingTestDB(t)
+	s := newBillingStore(db)
+
+	// Insert global fallback FIRST so it gets the lower id.
+	global := &model.PricingRule{
+		ServiceType:        "llm_chat",
+		Provider:           "",
+		Model:              "",
+		BillingMode:        "flat",
+		FlatUnit:           "call",
+		InputPricePerMTok:  3.0,
+		OutputPricePerMTok: 10.0,
+		IsActive:           true,
+	}
+	require.NoError(t, s.CreatePricingRule(context.Background(), global))
+
+	// Insert exact-match row AFTER — gets higher id.
+	exact := &model.PricingRule{
+		ServiceType:        "llm_chat",
+		Provider:           "aihubmix",
+		Model:              "claude-sonnet-4-6",
+		BillingMode:        "flat",
+		FlatUnit:           "call",
+		InputPricePerMTok:  21.6,
+		OutputPricePerMTok: 108.0,
+		IsActive:           true,
+	}
+	require.NoError(t, s.CreatePricingRule(context.Background(), exact))
+
+	require.Less(t, global.ID, exact.ID,
+		"test setup invariant: global id must be lower than exact id")
+
+	got, err := s.GetPricingRule(context.Background(), "llm_chat", "aihubmix", "claude-sonnet-4-6")
+	require.NoError(t, err)
+	assert.Equal(t, exact.ID, got.ID,
+		"must return the exact (aihubmix, claude-sonnet-4-6) rule, not the lower-id global fallback")
+	assert.Equal(t, 21.6, got.InputPricePerMTok)
+	assert.Equal(t, 108.0, got.OutputPricePerMTok)
+}
+
+// TestGetPricingRule_FallsBackToProviderWildcardThenGlobal verifies the full
+// three-level fallback chain when no exact row exists.
+func TestGetPricingRule_FallsBackToProviderWildcardThenGlobal(t *testing.T) {
+	db := newBillingTestDB(t)
+	s := newBillingStore(db)
+
+	// Only global + provider-wildcard exist; no exact (provider, model) row.
+	require.NoError(t, s.CreatePricingRule(context.Background(), &model.PricingRule{
+		ServiceType: "llm_chat", Provider: "", Model: "",
+		BillingMode: "flat", FlatUnit: "call",
+		InputPricePerMTok: 3.0, OutputPricePerMTok: 10.0, IsActive: true,
+	}))
+	providerWildcard := &model.PricingRule{
+		ServiceType: "llm_chat", Provider: "volc-ark", Model: "",
+		BillingMode: "flat", FlatUnit: "call",
+		InputPricePerMTok: 1.0, OutputPricePerMTok: 2.0, IsActive: true,
+	}
+	require.NoError(t, s.CreatePricingRule(context.Background(), providerWildcard))
+
+	// Provider match beats global.
+	got, err := s.GetPricingRule(context.Background(), "llm_chat", "volc-ark", "any-unknown-model")
+	require.NoError(t, err)
+	assert.Equal(t, providerWildcard.ID, got.ID, "provider wildcard should beat global fallback")
+
+	// Unknown provider falls through to global.
+	got, err = s.GetPricingRule(context.Background(), "llm_chat", "unknown-provider", "any-model")
+	require.NoError(t, err)
+	assert.Equal(t, "", got.Provider)
+	assert.Equal(t, "", got.Model)
+	assert.Equal(t, 3.0, got.InputPricePerMTok)
+}

@@ -324,9 +324,18 @@ func (s *billingStore) GetOrCreateAccount(ctx context.Context, userID uint) (*mo
 // output），Reconcile 按真实 cost 多退少补。避免 ProviderFromModel 猜错
 // 导致 SOP/SalesRAG 在 CheckAndEstimate 就失败的生产事故。
 func (s *billingStore) GetPricingRule(ctx context.Context, serviceType, provider, modelName string) (*model.PricingRule, error) {
-	var rule model.PricingRule
-	// 一条 SQL 同时查三级命中，ORDER BY 选最精确的。
-	// 用 gorm.Expr 构造 CASE 表达式（Order 不支持 variadic 参数，用 Expr 占位）。
+	// 查三级候选（最多 3 条），在 Go 端选最精确的。
+	//
+	// 原实现用 Order(gorm.Expr("CASE ... END", args...)) 让 DB 排序，但 GORM v2
+	// 的 First() 会把带参数化的 Order 表达式静默丢弃，最终 SQL 只剩
+	// `ORDER BY pricing_rule.id LIMIT 1`。当全局兜底 (provider='', model='')
+	// 的 id 小于精确行（兜底通常早于模型 seed），精确规则被跳过，所有查询退
+	// 回兜底价 ¥3/¥10，usage_record.cost_cents 被低估 ~5x（dev id=352-363 证据）。
+	//
+	// 改为 Find 取候选集 + Go 端按优先级选：没有 ORDER BY CASE 可能丢失的风险，
+	// 也不需要在 CASE 里做字符串参数化（免 SQL injection 顾虑）。候选集最多 3 行，
+	// 无性能影响。
+	var rules []model.PricingRule
 	err := s.db.WithContext(ctx).
 		Where(`service_type = ? AND is_active = ?
 			AND (
@@ -338,16 +347,34 @@ func (s *billingStore) GetPricingRule(ctx context.Context, serviceType, provider
 			provider, modelName,
 			provider,
 		).
-		Order(gorm.Expr(`CASE
-			WHEN provider = ? AND model = ? THEN 0
-			WHEN provider = ? AND model = '' THEN 1
-			ELSE 2
-		END`, provider, modelName, provider)).
-		First(&rule).Error
+		Find(&rules).Error
 	if err != nil {
 		return nil, err
 	}
-	return &rule, nil
+	if len(rules) == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+
+	// Priority: 0 = exact (provider, model), 1 = (provider, ''), 2 = ('', '')
+	priority := func(r *model.PricingRule) int {
+		switch {
+		case r.Provider == provider && r.Model == modelName:
+			return 0
+		case r.Provider == provider && r.Model == "":
+			return 1
+		default:
+			return 2
+		}
+	}
+	best := &rules[0]
+	bestP := priority(best)
+	for i := 1; i < len(rules); i++ {
+		if p := priority(&rules[i]); p < bestP {
+			best = &rules[i]
+			bestP = p
+		}
+	}
+	return best, nil
 }
 
 // GetPricingRuleTiers 获取指定定价规则的分段配置（用于 tiered_token 模式）

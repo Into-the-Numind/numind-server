@@ -302,19 +302,6 @@ func buildBaseRecord(route *registry.ResolvedRoute, userID uint, deps Deps, ctx 
 		}
 
 		if err == nil && rule != nil {
-			// TEMP DIAG: cost-cents-underbilling hotfix — remove after root cause confirmed.
-			deps.errorw("DIAG middleware rule resolved",
-				"svcType", svcType,
-				"provider", route.Provider.Name,
-				"serviceKey", route.ServiceKey,
-				"providerModelID", route.ProviderModelID,
-				"rule_id", rule.ID,
-				"rule_provider", rule.Provider,
-				"rule_model", rule.Model,
-				"rule_billing_mode", rule.BillingMode,
-				"rule_input_price", rule.InputPricePerMTok,
-				"rule_output_price", rule.OutputPricePerMTok,
-			)
 			// Derive billing unit from the rule's flat_unit / billing_mode combination.
 			// pricing_rule.flat_unit = "call" → per_call, "gb" → per_gb (not used here).
 			// For token-based pricing we check input/output prices > 0.

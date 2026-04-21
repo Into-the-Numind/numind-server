@@ -171,60 +171,37 @@ func (c *calculator) calculateTieredCost(ctx context.Context, ruleID uint, promp
 func (c *calculator) resolvePricingRule(ctx context.Context, serviceType, provider, modelKey string) (*model.PricingRule, error) {
 	directKey := cacheKey(serviceType, provider, modelKey)
 	if rule, ok := c.cache.Get(directKey); ok {
-		// TEMP DIAG: cost-cents-underbilling hotfix
-		fmt.Printf("DIAG pricing.resolve cache-hit directKey=%q rule_id=%d rule_provider=%q rule_model=%q input=%.4f output=%.4f\n",
-			directKey, rule.ID, rule.Provider, rule.Model, rule.InputPricePerMTok, rule.OutputPricePerMTok)
 		return rule, nil
 	}
 
 	rule, err := c.store.GetPricingRule(ctx, serviceType, provider, modelKey)
 	if err == nil {
-		// TEMP DIAG
-		fmt.Printf("DIAG pricing.resolve direct-db-hit directKey=%q rule_id=%d rule_provider=%q rule_model=%q input=%.4f output=%.4f\n",
-			directKey, rule.ID, rule.Provider, rule.Model, rule.InputPricePerMTok, rule.OutputPricePerMTok)
 		c.cache.Put(directKey, rule)
 		return rule, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		// TEMP DIAG
-		fmt.Printf("DIAG pricing.resolve direct-db-err directKey=%q err=%v\n", directKey, err)
 		return nil, err
 	}
-	// TEMP DIAG: miss Level-1, enter fallback
-	fmt.Printf("DIAG pricing.resolve direct-db-notfound directKey=%q\n", directKey)
 
 	// Fallback: resolve provider-specific model ID and retry.
 	providerModelID, resolveErr := c.store.GetProviderModelID(ctx, modelKey, provider)
 	if resolveErr != nil {
-		// TEMP DIAG
-		fmt.Printf("DIAG pricing.resolve providerModelID-err directKey=%q err=%v\n", directKey, resolveErr)
 		if errors.Is(resolveErr, gorm.ErrRecordNotFound) {
 			return nil, gorm.ErrRecordNotFound
 		}
 		return nil, resolveErr
 	}
 	if providerModelID == modelKey {
-		// TEMP DIAG
-		fmt.Printf("DIAG pricing.resolve providerModelID=modelKey short-circuit directKey=%q\n", directKey)
 		return nil, gorm.ErrRecordNotFound
 	}
 
 	fallbackKey := cacheKey(serviceType, provider, providerModelID)
 	if rule, ok := c.cache.Get(fallbackKey); ok {
-		// TEMP DIAG
-		fmt.Printf("DIAG pricing.resolve fallback-cache-hit fallbackKey=%q rule_id=%d input=%.4f output=%.4f\n",
-			fallbackKey, rule.ID, rule.InputPricePerMTok, rule.OutputPricePerMTok)
 		return rule, nil
 	}
 	rule, err = c.store.GetPricingRule(ctx, serviceType, provider, providerModelID)
 	if err == nil {
-		// TEMP DIAG
-		fmt.Printf("DIAG pricing.resolve fallback-db-hit fallbackKey=%q rule_id=%d input=%.4f output=%.4f\n",
-			fallbackKey, rule.ID, rule.InputPricePerMTok, rule.OutputPricePerMTok)
 		c.cache.Put(fallbackKey, rule)
-	} else {
-		// TEMP DIAG
-		fmt.Printf("DIAG pricing.resolve fallback-db-err fallbackKey=%q err=%v\n", fallbackKey, err)
 	}
 	return rule, err
 }

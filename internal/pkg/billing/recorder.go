@@ -364,16 +364,6 @@ func (r *UsageRecorder) computeCost(ctx context.Context, record *model.UsageReco
 		}
 		costCents, err := r.calc.CalculateCost(ctx, record.ServiceType, record.Provider, record.Model,
 			record.PromptTokens, record.CompletionTokens)
-		// TEMP DIAG: cost-cents-underbilling hotfix — remove after root cause confirmed.
-		log.Errorw("DIAG recorder.computeCost",
-			"serviceType", record.ServiceType,
-			"provider", record.Provider,
-			"model", record.Model,
-			"prompt_tokens", record.PromptTokens,
-			"completion_tokens", record.CompletionTokens,
-			"resolved_cost_cents", costCents,
-			"err", err,
-		)
 		if err != nil {
 			return 0
 		}
