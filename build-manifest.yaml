@@ -220,6 +220,37 @@ features:
     blockers: []
     created_at: "2026-04-20T23:30:00+08:00"
 
+  - id: "hotfix-error-surface-L1-L2"
+    ndf_version: "1.1"
+    description: "客户 toast 显示无意义的 'HTTP 403:'（statusText 空字符串），且后端对 4xx/5xx 拒绝响应无结构化日志，运维无法定位'谁/哪个端点/什么原因被拒'。根因：(L1 前端) useSSEStream.ts:120 只用 response.status + response.statusText，忽略后端 JSON body 里的 message；(L2 后端) core.WriteResponse 直接 c.JSON 输出，未记录结构化上下文。hotfix 两层联动：L1 前端解析 body.message + 对 402/403(含积分/额度/充值关键字) 派发 insufficient-credits 事件，与 axios interceptor 行为对齐；L2 后端 WriteResponse/WriteCompressedResponse 追加 logErrorResponse helper，跳过 401/404 噪声，warn 级别记录 user_id/path/method/errno/message/client_ip"
+    track: "hotfix"
+    stage: "H3-done"
+    classification_reason: "两仓 2 文件改动，无 DB schema、无 API 契约变更、无业务逻辑变更。L1+L2 联动修 UX 盲区 + 运维盲区，用户在 L3（errno 重构）与 L1+L2 二选一讨论中确认走 L1+L2（L3 作为渐进 Strangler 长期 debt）"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-21T14:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "hotfix/error-surface-L1-L2"
+      numind-web-v3: "hotfix/error-surface-L1"
+    artifacts: {}
+    progress:
+      total_tasks: 2
+      completed_tasks: 2
+      reviewed_tasks: 2
+      current_task: null
+    rollback: "git revert 两仓各自的 hotfix commit；numind-server 删 tag v2.1.10 并回滚 prod 到 v2.1.9；numind-web-v3 走 develop revert push，CI 自动回滚 prod web 镜像"
+    last_verified:
+      method: "前端 npm run lint + npm run type-check PASS（只有 KnowledgeBaseDetail.vue 一条 pre-existing warning）；后端 gofmt + go vet + go build ./... 全绿。Prod 部署后需验证：(1) Wade 349 再次触发 sop/chat/stream 应看到真实 reason（非 'HTTP 403:'）且弹出 InsufficientCreditsDialog；(2) prod docker logs grep 'API error response' 能看到结构化 4xx/5xx warn"
+    decisions:
+      - "2026-04-21 (Triage): Wade 349 用户报错 HTTP 403 事件中发现两个盲区：用户端 toast 对业务错误无信息量；后端对拒绝响应无结构化日志。用户原本以为是 provider 余额问题，代码追溯证伪（provider 4xx 走 fmt.Errorf → SSE event:error HTTP 200，不会走 useSSEStream HTTP 403 toast 路径）。真凶是 Wade 的 credits 模式下 tier 早已过期（2026-04-08）、balance=0 被预检拒绝"
+      - "2026-04-21 (方案选型): 讨论 L1(前端 body 解析) vs L2(后端结构化日志) vs L3(errno 契约 category/action 重构)。L3 体量大、隐性契约多（几百处 SetMessage）、category 分类有歧义、前后端上线时序耦合，渐进 Strangler 需 2-3 周不适合 hotfix。用户拍板 L1+L2"
+      - "2026-04-21 (默认约定): 关键字白名单复用 axios interceptor（积分/额度/充值）；日志级别 warn（与'Credits pre-check: zero balance' 约定一致）；日志跳过 401/404 噪声"
+      - "2026-04-21 (波及面): WriteResponse 和 WriteCompressedResponse 都走 errno.Decode，统一通过 logErrorResponse helper 记录，避免复制粘贴"
+    blockers: []
+    created_at: "2026-04-21T14:00:00+08:00"
+
   - id: "hotfix-httpclient-timeout-300s"
     ndf_version: "1.1"
     description: "prod 客户报错：SOP 长文生成（爆款仿写/拆解类任务）120 秒整体超时，24h 内 8 次同型失败，全部命中 latency_ms=120004ms（deepseek-v3-2-251201）。根因：httpclient/client.go DefaultConfig.Timeout = 120s，aiservice 所有 adapter (volc/ali/bailian) 继承此默认值。Provider 侧健康（无 402/403/insufficient/余额信号，首 token 与大部分内容已吐出），纯客户端超时预算不足。hotfix：Timeout 120s→300s，ResponseHeaderTimeout 120s→60s（header 快速熔断，body 给长文留余量）"

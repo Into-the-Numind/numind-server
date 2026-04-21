@@ -7,6 +7,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/model"
 )
 
 // Response 定义统一的响应格式
@@ -19,10 +21,33 @@ type Response struct {
 	Data    interface{} `json:"data"`
 }
 
+// logErrorResponse 结构化记录 4xx/5xx 响应，方便线上定位"谁、什么端点、什么原因"。
+// 跳过 401（token 过期噪声）与 404（favicon / 不存在路由噪声）。
+func logErrorResponse(c *gin.Context, httpCode int, errCode, message string) {
+	if httpCode < 400 || httpCode == 401 || httpCode == 404 {
+		return
+	}
+	fields := []interface{}{
+		"http_code", httpCode,
+		"errno", errCode,
+		"message", message,
+		"path", c.Request.URL.Path,
+		"method", c.Request.Method,
+		"client_ip", c.ClientIP(),
+	}
+	if u, exists := c.Get("current_user"); exists {
+		if user, ok := u.(*model.User); ok {
+			fields = append(fields, "user_id", user.ID)
+		}
+	}
+	log.C(c).Warnw("API error response", fields...)
+}
+
 // WriteResponse 封装统一的响应格式
 func WriteResponse(c *gin.Context, err error, data interface{}) {
 	if err != nil {
-		httpCode, _, message := errno.Decode(err)
+		httpCode, errCode, message := errno.Decode(err)
+		logErrorResponse(c, httpCode, errCode, message)
 		c.JSON(httpCode, Response{
 			Code:    1,
 			Message: message,
@@ -48,7 +73,8 @@ func WriteCompressedResponse(c *gin.Context, err error, data interface{}) {
 	}
 
 	if err != nil {
-		httpCode, _, message := errno.Decode(err)
+		httpCode, errCode, message := errno.Decode(err)
+		logErrorResponse(c, httpCode, errCode, message)
 		response := Response{
 			Code:    1,
 			Message: message,
