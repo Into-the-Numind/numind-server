@@ -199,11 +199,11 @@ features:
   - id: "linkapi-provider"
     ndf_version: "1.1"
     description: "接入 LinkAPI 作为新的聚合商，复刻 AiHubMix 4 模型（Claude 4.6 / GPT 5.4 / Gemini 3.1 / DeepSeek V3.2）。按 aihubmix-protocol-audit 确立的标准协议接入。API 文档在过程中研究。凭据走 aihubmix 同款豁免路径（字面值写 migration SQL，不走 SyncProviderCredentials）。"
-    track: "standard"
-    stage: "planned-after-aihubmix-audit"
-    classification_reason: "待 Triage（需等 aihubmix-protocol-audit 完成后启动）"
-    last_updated_by: "ai-pivot-new-feature"
-    last_updated_at: "2026-04-20T23:30:00+08:00"
+    track: "hotfix"
+    stage: "H1"
+    classification_reason: "纯数据层扩展（migration SQL INSERT），代码层零改动。aihubmix-protocol-audit 已将 adapter 标准化为 provider-agnostic，新 provider 只需 DB seed data"
+    last_updated_by: "ai-triage-confirmed"
+    last_updated_at: "2026-04-21T12:00:00+08:00"
     repos:
       - numind-server
     branches: {}
@@ -212,12 +212,12 @@ features:
       total_tasks: 0
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "等 aihubmix-protocol-audit 完成后启动 Triage"
+      current_task: "H1 — 调研 LinkAPI 文档，确认 base_url / API key 格式 / 模型 ID"
     rollback: null
     last_verified: null
-    decisions: []
-    blockers:
-      - "依赖 aihubmix-protocol-audit 的产出作为 LinkAPI 接入蓝本"
+    decisions:
+      - "2026-04-21 (Triage): 用户确认 Hotfix 轨道。前置 aihubmix-protocol-audit 已 S6-done"
+    blockers: []
     created_at: "2026-04-20T23:30:00+08:00"
 
   - id: "hotfix-httpclient-timeout-300s"
@@ -2427,3 +2427,30 @@ features:
     blockers: []
     created_at: "2026-04-21T14:30:00+08:00"
     completed_at: "2026-04-21T15:30:00+08:00"
+
+  - id: "billing-cost-cents-underbilling-fix"
+    ndf_version: "1.1"
+    description: "修复 usage_record.cost_cents 对 aihubmix 四模型（claude/gpt-5.4/gemini/deepseek）被低估的 bug。dev 观测：2026-04-20 17:02 容器重启后 chatbot.stream 记录的 cost 精确匹配全局兜底 id=43 (¥3/¥10) 而非 aihubmix 精确规则 id=61 (¥21.6/¥108)。middleware snapshot 写入正确（21.6/108），recorder 重算 cost 时拿到错误 pricing_rule。影响面：admin 费用报表严重低估真实成本 ~5x（claude/gpt-5.4）或 6x（gemini）。"
+    track: "hotfix"
+    stage: "H1"
+    classification_reason: "Triage 5 条 4 条满足（无 schema / 无新端点 / 无新外部服务 / 文件数 ≤3）；第 5 条 billing 属边界情况，用户确认开 Hotfix（非新设计，是让现有计费恢复正确）"
+    last_updated_by: "ai-h1-start"
+    last_updated_at: "2026-04-21T16:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/billing-cost-cents-underbilling"
+    artifacts: {}
+    progress:
+      total_tasks: 3
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "Task 1: 加诊断日志 + push dev + 复现观测"
+    rollback: "git revert commit；无 DB schema / 数据变更"
+    last_verified: null
+    decisions:
+      - "2026-04-21 (triage): 10 min 静态诊断 + DB 取样发现 cost_cents=1 精确等于 prompt*3/1e6 + completion*10/1e6 取 round（¥3/¥10 全局兜底）。middleware 写入 snapshot 21.6/108 证明 middleware 层查 pricing_rule 成功；recorder.computeCost 重算时却用全局兜底 — 两层用相同参数查同 DB 但结果不同，静态推不出原因"
+      - "2026-04-21 (H1 approach): 开 fix 分支加临时诊断日志（middleware buildBaseRecord + recorder.computeCost + pricing.resolvePricingRule）→ push dev → 触发一次 chatbot.stream → tail 日志拿真实 rule.ID → 按实际 root cause 修代码 → 移除日志。3 个候选假设：provider 参数 mismatch / Calculator cache 污染 / 列名 tag mismatch 遗留"
+      - "2026-04-21 (out of scope): Finding A tier-1 价格校正（¥18→¥28）是独立 migration fix，不在本 hotfix 内；历史数据 backfill 默认不做"
+    blockers: []
+    created_at: "2026-04-21T16:00:00+08:00"
