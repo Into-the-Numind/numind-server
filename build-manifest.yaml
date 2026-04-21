@@ -5,28 +5,27 @@ features:
     ndf_version: "1.1"
     description: "将销售智能体（SalesRAG）纳入父账号对子账号的运行权限管控。复用现有 user_feature_permission 表 + FeatureKeySalesAgent='sales_agent' 常量 + GrantFeatures/RevokeFeatures/HasFeaturePermission 基础设施（与 content_monitor 同一套路，已验证）。修复 CheckSalesPermission 硬编码 true + salesGroup 一行 .Use(FeaturePermission) 挂 gate（对照 router.go:332 monitorGroup 先例）+ 前端客户管理弹窗 UI 已存在零改动。默认 deny-all（不 backfill），对齐 SOP/chatbot 权限语义。"
     track: "standard"
-    stage: "S4"
+    stage: "S5"
     classification_reason: "2 条 Triage 标准不满足：文件数 >3（sales_rag controller 11+ 端点 + CheckSalesPermission 修复 + 前端客户弹窗 + 回归测试）+ 高风险业务逻辑（权限默认 deny-all 翻转，改变线上子账号可见性）。用户确认走 Standard + 加速执行（跳过 /office-hours）"
-    last_updated_by: "ai-s4-start"
+    last_updated_by: "ai-s5"
     last_updated_at: "2026-04-21T00:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
     branches:
-      numind-server: "feature/sales-agent-child-permission (worktree at .worktrees/sales-agent-child-permission, based on develop @ 64a690a)"
+      numind-server: "feature/sales-agent-child-permission (worktree at .worktrees/sales-agent-child-permission, based on develop @ 64a690a) — commits: 694474a Task0 / b52519e+7909672+d81424e Task1 / 6560905+c09b7ac Task2 / 5d6da18 Task3"
+      numind-web-v3: "feature/sales-agent-permission-e2e (based on develop @ 4bdf873) — commits: 7222dfb Task4 main / 5788011 Task4 P2 fixes"
     artifacts:
       requirement: "numind-server/requirements/sales-agent-child-permission.md"
       proposal: "numind-server/proposals/sales-agent-child-permission-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-04-21-sales-agent-child-permission-design.md"
       plan: "numind-server/docs/superpowers/plans/2026-04-21-sales-agent-child-permission-plan.md"
+      qa: "numind-server/docs/superpowers/qa/2026-04-21-sales-agent-child-permission-qa.md"
     progress:
       total_tasks: 7
       completed_tasks: 7
       reviewed_tasks: 5
-      current_task: "S4 全部 7 tasks 完成。Task 6 (S5 验证策略) 在 S3 plan 末尾已内嵌（NDF Rule 10 在 plan 生成时即满足）。Task 5 (SSH baseline) 无代码产物不走双 review，故 reviewed_tasks=5（Task 0-4 各一次双 review 通过）。准备进入 S5 本地验证"
-    branches:
-      numind-server: "feature/sales-agent-child-permission (worktree at .worktrees/sales-agent-child-permission, based on develop @ 64a690a) — commits: 694474a Task0 / b52519e+7909672+d81424e Task1 / 6560905+c09b7ac Task2 / 5d6da18 Task3"
-      numind-web-v3: "feature/sales-agent-permission-e2e (based on develop @ 4bdf873) — commits: 7222dfb Task4 main / 5788011 Task4 P2 fixes"
+      current_task: "S5 DONE (Option B 降级 — 本地后端会连 dev DB 风险)。所有 10 个 feature 新测试全绿 race mode；lint/type-check 干净；Playwright 4 tests 加载 OK。6 个 pre-existing failures 在 develop base 64a690a 独立复现确认无关。QA 报告产出 docs/superpowers/qa/2026-04-21-sales-agent-child-permission-qa.md，含 S6 补齐清单（4 步 dev 实测）。准备进入 S6 merge"
     rollback: null
     last_verified: null
     decisions:
@@ -47,6 +46,7 @@ features:
       - "2026-04-21 (S3 plan): 6 tasks 写定 — Task 1 (C1+C2 atomic) / Task 2 (C3 unit) / Task 3 (C5 httptest) / Task 4 (C4 E2E numind-web-v3) / Task 5 (pre-merge SSH SQL go/no-go) / Task 6 (S5 验证策略 NDF Rule 10 强制 doc task)。Task 1 atomicity 锁死：C1 单独上线 = 静默 403；C2 单独上线 = 端点裸奔说实话；必须同 commit"
       - "2026-04-21 (S3 reviewer PASS_WITH_CONCERNS): 独立 Sonnet reviewer 发现 2 P0 + 3 P1 + 2 P2。P0-1 store.S *datastore 类型不兼容 NewTestStore IStore → 新增 Task 0 加 NewTestDataStore 辅助（total_tasks 6→7）；P0-2 stubCustomerBiz 接口漂移严重（缺 9 方法 + 2 方法名错 + ListUserFeatures 签名错）→ Task 2 改用 real customerbiz + in-memory SQLite + 15 个方法的 realBizOnlyCustomers + 编译期 guard；P1-1 Task 5 DB 密码获取 → Step 1 从 config_dev.yaml 读取；P1-2 Task 4 E5 空断言 → 加 chat403Count + responseCode=100207 契约断言；P1-3 Task 4 selector 猜测 → reality-check 变硬性要求"
       - "2026-04-21 (Task 5 SSH baseline, P0-Q9 硬闸): dev (numind-mysql-dev @ 49.233.219.254:13306) — sales_agent_grants=3, total_sub_users=20, parents_with_any_grants=1 → 17/20=85% dev sub-users 上线即 403。prod (numind-mysql-prod @ 129.28.125.51:13306) — sales_agent_grants=20, total_sub_users=94, parents_with_any_grants=2 → 74/94=79% prod sub-users 上线即 403。结论：不是 P0-Q9 worst-case 的 100% 全员被拒（前端 UI 确实有父账号用过），但仍是多数冲击。产品公告必须面向所有 sales_agent 使用者，而不是少量群体。dev/prod 比例一致（差 6pp），不触发 NDF §5 Pause-and-Ask。backfill 仍不做（D1 锁死），走产品公告路径"
+      - "2026-04-21 (S5 Option B 降级): 沿用 parent-self-grant-membership 2026-04-20 S5 先例。本地后端启动会连 dev DB (49.233.219.254:13306) 有污染风险，跳过真跑 E2E + 浏览器 QA，只做静态检查。所有 10 个 feature 新测试（C3 4 + C5 6）race mode 全绿；backend go build/vet/gofmt 干净；frontend lint（0 errors，1 pre-existing warning 非 feature 文件）/ type-check 干净；Playwright --list 4 tests 加载成功。6 个 develop base 已有的 credit/legacy_tier unreachable panic 测试已独立复现确认非 feature 引入（credit_service.go:164，建议独立 hotfix）"
     created_at: "2026-04-21T00:00:00+08:00"
 
   - id: "parent-self-grant-membership"
