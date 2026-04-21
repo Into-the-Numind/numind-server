@@ -5,9 +5,9 @@ features:
     ndf_version: "1.1"
     description: "将销售智能体（SalesRAG）纳入父账号对子账号的运行权限管控。复用现有 user_feature_permission 表 + FeatureKeySalesAgent='sales_agent' 常量 + GrantFeatures/RevokeFeatures/HasFeaturePermission 基础设施（与 content_monitor 同一套路，已验证）。修复 CheckSalesPermission 硬编码 true + salesGroup 一行 .Use(FeaturePermission) 挂 gate（对照 router.go:332 monitorGroup 先例）+ 前端客户管理弹窗 UI 已存在零改动。默认 deny-all（不 backfill），对齐 SOP/chatbot 权限语义。"
     track: "standard"
-    stage: "S1"
+    stage: "S2"
     classification_reason: "2 条 Triage 标准不满足：文件数 >3（sales_rag controller 11+ 端点 + CheckSalesPermission 修复 + 前端客户弹窗 + 回归测试）+ 高风险业务逻辑（权限默认 deny-all 翻转，改变线上子账号可见性）。用户确认走 Standard + 加速执行（跳过 /office-hours）"
-    last_updated_by: "ai-s1"
+    last_updated_by: "ai-s2"
     last_updated_at: "2026-04-21T00:00:00+08:00"
     repos:
       - numind-server
@@ -16,11 +16,12 @@ features:
     artifacts:
       requirement: "numind-server/requirements/sales-agent-child-permission.md"
       proposal: "numind-server/proposals/sales-agent-child-permission-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-04-21-sales-agent-child-permission-design.md"
     progress:
       total_tasks: 0
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "等 S1 gate 确认（人类），然后进入 S2 spec"
+      current_task: "等 S2 gate 确认（人类），然后进入 S3 plan"
     rollback: null
     last_verified: null
     decisions:
@@ -35,6 +36,9 @@ features:
       - "2026-04-21 (S1 发现): salesGroup 挂 gate 的最优写法与 router.go:332 monitorGroup 完全对称，一行 .Use(FeaturePermission(FeatureKeySalesAgent))"
       - "2026-04-21 (S1 风险 R1): check-permission 端点必须留在 authGroup，不可被 salesGroup gate 拦截，否则前端拿不到未授权信号"
       - "2026-04-21 (S1 风险 R2): biz 层是否有 controller 之外的入口需 S2 spec 阶段审查，否则 gate 可能被绕过"
+      - "2026-04-21 (S2 brainstorm): 决策点 A 宽松模式（SSE 流进行中撤权不中断当前流，下次请求 403）— 与 chatbot HasChatbotPermission 对称，侵入性低"
+      - "2026-04-21 (S2 reviewer PASS_WITH_CONCERNS): 独立 Sonnet reviewer 发现 3 个 P0/P1 + 2 个文档质量问题：P0 Q9 上线前需 SQL 确认 sales_agent 记录数（预期 0 意味着 100% 冲击）；P1 Q6 C2 必须走 biz 层 ctrl.b.Customers().CheckFeaturePermission 而非仿照 middleware 直调 store；P1 Q8 新增 C5 httptest 验证 salesGroup middleware 实际生效；Q2 端点数修正 11+ → 27；Q3 biz.go:226 opinion seeder 是 accepted side-entry"
+      - "2026-04-21 (S2 spec): 组件扩展 C1-C4 → C1-C5（新增 C5 router_sales_gate_test.go httptest 集成测试）。§9 上线前 Go/No-Go SQL 检查写进 S3 plan 硬 task。Accepted Exposure 1（/v1/ali/bailian/ 未 gate，孤儿文件无法进入 sales 上下文）+ Exposure 2（SSE 宽松模式）文档化"
     created_at: "2026-04-21T00:00:00+08:00"
 
   - id: "parent-self-grant-membership"
