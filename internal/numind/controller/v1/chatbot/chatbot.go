@@ -26,7 +26,9 @@ func NewChatbotController(chatbotBiz chatbot.IChatbotBiz, llmRouter *llmrouter.R
 	return &ChatbotController{chatbotBiz: chatbotBiz, llmRouter: llmRouter}
 }
 
-// List 获取当前用户可见的智能体列表
+// List 获取当前用户可见的智能体列表（每项含 has_permission 标志供 UI 显示锁）。
+// 父账号所有项为 true；子账号按 user_chatbot_permission 白名单批量判定。
+// 安全 gate 仍由 check-permission / CreateSession / ChatStream 强制，本端点仅影响 UI。
 func (ctrl *ChatbotController) List(c *gin.Context) {
 	user := middleware.GetCurrentUser(c)
 	if user == nil {
@@ -34,7 +36,7 @@ func (ctrl *ChatbotController) List(c *gin.Context) {
 		return
 	}
 
-	list, err := ctrl.chatbotBiz.ListVisibleChatbots(c, user)
+	list, err := ctrl.chatbotBiz.ListVisibleChatbotsWithPermission(c, user)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
