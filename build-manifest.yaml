@@ -5,7 +5,7 @@ features:
     ndf_version: "1.1"
     description: "HomeView 统一 deny UX：被拒资源不再隐藏，正常显示 + 右上角 lock 标志 + 点击弹'未开通'。应用于 SOP workflows / sales-agent / chatbot 三类卡片。修正当前 sales-agent 的 .no-permission 灰化行为为正常颜色。S1 发现现状比原估简单得多：后端 SOP templates list 和 chatbot listVisibleChatbots **本来就返回全部 published**（不按白名单过滤），前端点击时才 check-permission。本 feature 只需后端 list DTO 加 has_permission flag + 前端 HomeView lock badge 扩展 + 删灰化 CSS，共 ~100 行。"
     track: "hotfix"
-    stage: "H2"
+    stage: "H3"
     classification_reason: "S1 核实事实后重新 Triage（非违反 NDF 不可降级原则——S0 Triage 基于错误假设，S1 核实后修正）：5 条标准仅文件数临界（4-6 files）勉强算不满足，其余全部满足。改动 = UI polish + 非破坏性 DTO 字段扩展，安全 gate 不动。用户确认降级到 Hotfix 快车道"
     last_updated_by: "ai-hotfix-start"
     last_updated_at: "2026-04-21T00:00:00+08:00"
@@ -13,8 +13,8 @@ features:
       - numind-server
       - numind-web-v3
     branches:
-      numind-server: "fix/homeview-locked-cards (worktree .worktrees/homeview-locked-cards @ 1adff49 from develop 656ba02)"
-      numind-web-v3: "fix/homeview-locked-cards (@ 0b70fe5 from develop 4bdf873)"
+      numind-server: "merged to develop @ 88bc947 (fix branch + worktree cleaned)"
+      numind-web-v3: "merged to develop @ bc22418 (fix branch cleaned)"
     artifacts:
       requirement: "numind-server/requirements/homeview-locked-cards.md"
       proposal: "numind-server/proposals/homeview-locked-cards-proposal.md"
@@ -22,7 +22,7 @@ features:
       total_tasks: 0
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "H2 自动验收（静态检查已过：backend go build/vet/gofmt 干净 + pre-existing 失败已确认；frontend lint 0 errors / type-check 干净）。下一步 merge+push develop"
+      current_task: "H3 dev 人工验收：等 CI 部署 dev，用户在 /sales /sop / 首页验证 locked 卡片 UX"
     rollback: null
     last_verified: null
     decisions:
@@ -37,6 +37,7 @@ features:
       - "2026-04-21 (S1 技术决策): API 策略选'DTO 加字段'（R2），前端 TS 声明 has_permission?: boolean 兼容老后端；保留点击时二次 check-permission 调用作为 race-guard（R4）；batch has_permission 用单次 IN query O(N)，无 N+1（R1）；父账号 has_permission 永远 true 复用现有 HasTemplatePermission/HasChatbotPermission auto-pass（R3 字段名对齐 sales-agent 既有响应）"
       - "2026-04-21 (降级 Hotfix): 用户基于 S1 发现质疑 Standard 过度。重新 Triage——仅文件数临界不满足，改动实质 = UI polish + 非破坏性 DTO 扩展，无 schema / 无 endpoint / 无 LLM / 安全 gate 不动。用户确认 Hotfix。track: standard → hotfix，stage: S1 → H1。S0/S1 工件保留作 H1 实施上下文"
       - "2026-04-21 (H1 实施): 后端 4 文件 +103 行 -3 行（biz/chatbot + biz/sop 各加 DTO 类型 + *WithPermission 方法；两 controller 切到新 biz 方法）。ChatbotConfig/SopTemplate 原 Go struct 不动。后端 commit 1adff49。前端 2 文件 +93 行 -18 行（HomeView.vue 3 card 都加 lock badge conditional；types/config.ts ChatbotConfig 加 has_permission?: boolean；删除 CSS .no-permission opacity/grayscale，D5 修正）。前端 commit 0b70fe5。Backend go build/vet/gofmt 干净；Frontend lint 0 errors / type-check 干净"
+      - "2026-04-21 (H3 merge): numind-server fix/homeview-locked-cards → develop @ 88bc947（no-ff merge）+ numind-web-v3 fix/homeview-locked-cards → develop @ bc22418（no-ff merge）。两仓库均 push origin，fix branches + numind-server worktree 已清理。等 CI 部署 dev 环境后人工验收"
     created_at: "2026-04-21T00:00:00+08:00"
 
   - id: "sales-agent-child-permission"
@@ -289,7 +290,7 @@ features:
     ndf_version: "1.1"
     description: "接入 LinkAPI 作为新的聚合商，复刻 AiHubMix 4 模型（Claude 4.6 / GPT 5.4 / Gemini 3.1 / DeepSeek V3.2）。按 aihubmix-protocol-audit 确立的标准协议接入。API 文档在过程中研究。凭据走 aihubmix 同款豁免路径（字面值写 migration SQL，不走 SyncProviderCredentials）。"
     track: "hotfix"
-    stage: "H2"
+    stage: "H3"
     classification_reason: "纯数据层扩展（migration SQL INSERT），代码层零改动。aihubmix-protocol-audit 已将 adapter 标准化为 provider-agnostic，新 provider 只需 DB seed data"
     last_updated_by: "ai-triage-confirmed"
     last_updated_at: "2026-04-21T12:00:00+08:00"
@@ -313,7 +314,7 @@ features:
     ndf_version: "1.1"
     description: "客户 toast 显示无意义的 'HTTP 403:'（statusText 空字符串），且后端对 4xx/5xx 拒绝响应无结构化日志，运维无法定位'谁/哪个端点/什么原因被拒'。根因：(L1 前端) useSSEStream.ts:120 只用 response.status + response.statusText，忽略后端 JSON body 里的 message；(L2 后端) core.WriteResponse 直接 c.JSON 输出，未记录结构化上下文。hotfix 两层联动：L1 前端解析 body.message + 对 402/403(含积分/额度/充值关键字) 派发 insufficient-credits 事件，与 axios interceptor 行为对齐；L2 后端 WriteResponse/WriteCompressedResponse 追加 logErrorResponse helper，跳过 401/404 噪声，warn 级别记录 user_id/path/method/errno/message/client_ip"
     track: "hotfix"
-    stage: "H2"
+    stage: "H3"
     classification_reason: "两仓 2 文件改动，无 DB schema、无 API 契约变更、无业务逻辑变更。L1+L2 联动修 UX 盲区 + 运维盲区，用户在 L3（errno 重构）与 L1+L2 二选一讨论中确认走 L1+L2（L3 作为渐进 Strangler 长期 debt）"
     last_updated_by: "ai-hotfix"
     last_updated_at: "2026-04-21T14:30:00+08:00"
@@ -858,7 +859,7 @@ features:
     ndf_version: "1.0"
     description: "继续问AI页面重构 — 参考 Google Gemini 风格：左侧流程 nav 不变，右侧改为全屏聊天记录区 + 悬浮输入框（复用智能体聊天输入框设计）"
     track: "hotfix"
-    stage: "H2"
+    stage: "H3"
     classification_reason: "纯前端 UI 重构，无 schema/API/业务逻辑变更；影响 TrailingChat.vue + ChatComposer.vue + SOPRunView.vue 布局部分，可枚举"
     last_updated_by: "ai-hotfix"
     last_updated_at: "2026-04-13T00:00:00+08:00"
@@ -891,7 +892,7 @@ features:
     ndf_version: "1.0"
     description: "智能体聊天附件上传 — 输入框支持上传/粘贴/拖入 TXT/MD/PDF/Word 附件，解析为文本拼接到消息末尾"
     track: "hotfix"
-    stage: "H2"
+    stage: "H3"
     classification_reason: "前端为主改动（新 composable + ChatbotChat.vue 改造），后端仅新增 1 个轻量端点复用现有 EnhancedParser 提取逻辑；无 schema 变更；影响面可枚举"
     last_updated_by: "ai-hotfix"
     last_updated_at: "2026-04-13T00:00:00+08:00"
@@ -2203,7 +2204,7 @@ features:
     ndf_version: "1.0"
     description: "修复 salesrag 发消息 500：CheckAndEstimate pricing lookup record not found。改为在 Reserve 前调 registry.ResolveTask(salesrag.chat) 拿真实 provider+model 传给 EstimationInput，命中精确价格规则（aihubmix/deepseek-v3.2-thinking ¥2.16/¥3.24）而非空兜底"
     track: "hotfix"
-    stage: "H2"
+    stage: "H3"
     classification_reason: "P0 线上 bug：(1) 不涉及 schema 变更 (2) 不新增 API (3) 不接外部服务 (4) 影响 3 文件（salesrag.go + biz.go + 单测）(5) 计费方向是修复+更准，无新风险"
     last_updated_by: "ai-hotfix"
     last_updated_at: "2026-04-20T02:30:00+08:00"
