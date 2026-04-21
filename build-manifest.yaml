@@ -5,10 +5,11 @@ features:
     ndf_version: "1.1"
     description: "HomeView 统一 deny UX：被拒资源不再隐藏，正常显示 + 右上角 lock 标志 + 点击弹'未开通'。应用于 SOP workflows / sales-agent / chatbot 三类卡片。修正当前 sales-agent 的 .no-permission 灰化行为为正常颜色。S1 发现现状比原估简单得多：后端 SOP templates list 和 chatbot listVisibleChatbots **本来就返回全部 published**（不按白名单过滤），前端点击时才 check-permission。本 feature 只需后端 list DTO 加 has_permission flag + 前端 HomeView lock badge 扩展 + 删灰化 CSS，共 ~100 行。"
     track: "hotfix"
-    stage: "H3"
+    stage: "completed"
+    completed_at: "2026-04-22T00:00:00+08:00"
     classification_reason: "S1 核实事实后重新 Triage（非违反 NDF 不可降级原则——S0 Triage 基于错误假设，S1 核实后修正）：5 条标准仅文件数临界（4-6 files）勉强算不满足，其余全部满足。改动 = UI polish + 非破坏性 DTO 字段扩展，安全 gate 不动。用户确认降级到 Hotfix 快车道"
-    last_updated_by: "ai-hotfix-start"
-    last_updated_at: "2026-04-21T00:00:00+08:00"
+    last_updated_by: "ai-hotfix-close"
+    last_updated_at: "2026-04-22T00:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -22,7 +23,7 @@ features:
       total_tasks: 0
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "H3 dev 人工验收：等 CI 部署 dev，用户在 /sales /sop / 首页验证 locked 卡片 UX"
+      current_task: null
     rollback: null
     last_verified: null
     decisions:
@@ -40,6 +41,7 @@ features:
       - "2026-04-21 (H3 merge): numind-server fix/homeview-locked-cards → develop @ 88bc947（no-ff merge）+ numind-web-v3 fix/homeview-locked-cards → develop @ bc22418（no-ff merge）。两仓库均 push origin，fix branches + numind-server worktree 已清理。等 CI 部署 dev 环境后人工验收"
       - "2026-04-21 (H3 验收 PASS + 追加 polish): 用户 dev 验收所有 5 条通过，但提出 2 个 UX polish 要求：(1) 每个 section 内未锁卡片排在锁卡片前面（fetchTemplates + fetchChatbots stable sort by hasPermission desc）(2) 有权限运行的卡片默认就是绿色边框（原 hover 色 hsl(158,50%,78%)），denied 卡片边框退回灰色。纯前端 CSS+sort，单 commit cd5f17a → merge develop @ 5e8ca03（numind-web-v3），无 backend 改动"
       - "2026-04-21 (H3 polish 发现 bug): 用户测试发现销售智能体被 deny 时仍固定在 index 0（不随排序规则到末尾）。原因：模板里用了两个独立 v-for（agentWorkflows 仅含 sales + chatbots），sales 总是先渲染。修正：引入 AgentCard DTO + agentCards computed，把 sales 并入 chatbots 数组一起排序。单个 v-for 统一渲染（两者 SVG 图标本就相同）。handleChatbotClick 合并为 handleAgentCardClick 按 type 分派。numind-web-v3 develop @ 97de7e9（直接 commit 到 develop，无 feature branch — 单纯 polish 规模可容）"
+      - "2026-04-22 (close-out): 用户 dev 环境最终验收通过——销售智能体和 chatbot 统一排序行为符合预期（denied sales 排末尾，runnable 排前）。Hotfix 关闭，stage → completed。feature 涉及 commits 汇总：numind-server develop @ 88bc947 (backend DTO + *WithPermission biz methods); numind-web-v3 develop @ bc22418 (initial lock badge UX) → 5e8ca03 (green border + sort polish) → 97de7e9 (sales-agent unified sort fix)。Release/S7：沿用 sales-agent-child-permission 决策，release 分支停用，不走 tag prod 流程"
     created_at: "2026-04-21T00:00:00+08:00"
 
   - id: "sales-agent-child-permission"
