@@ -1028,7 +1028,7 @@ func (ctrl *SalesRAGController) CheckSalesPermission(c *gin.Context) {
 
 	hasPermission, err := ctrl.b.Customers().CheckFeaturePermission(c.Request.Context(), user.ID, model.FeatureKeySalesAgent)
 	if err != nil {
-		log.Errorw("CheckSalesPermission: check feature permission failed", "user_id", user.ID, "err", err)
+		log.Errorw("CheckSalesPermission: check feature permission failed", "error", err, "user_id", user.ID)
 		core.WriteResponse(c, errno.ErrInternalServer, nil)
 		return
 	}
