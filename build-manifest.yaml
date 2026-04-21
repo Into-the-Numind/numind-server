@@ -249,8 +249,10 @@ features:
       - "2026-04-21 (默认约定): 关键字白名单复用 axios interceptor（积分/额度/充值）；日志级别 warn（与'Credits pre-check: zero balance' 约定一致）；日志跳过 401/404 噪声"
       - "2026-04-21 (波及面): WriteResponse 和 WriteCompressedResponse 都走 errno.Decode，统一通过 logErrorResponse helper 记录，避免复制粘贴"
       - "2026-04-21 (prod 部署回退到 H2): 用户 cancel 了 tag v2.1.10 的 prod CI，理由'日志方面并不急，dev 环境开发测试好'。已删 remote tag v2.1.10（ee4f89c）。dev 已部署（server develop + web 37209b1），等 dev 验证稳定后再决定重新打 tag 上 prod"
+      - "2026-04-21 (补充测试 commit 85a0f16): (1) L2 dev curl 烟雾测试 — POST /v1/web/login 无效 body 触 400 产生完整结构化 warn（http_code/errno/message/path/method/client_ip 齐全），GET /v1/users/me 无 token 触 401 被过滤，GET /v1/nonexistent-xyz 触 404 被过滤，符合设计。(2) 抽出 buildErrorLogFields 纯函数 + 新增 core_test.go 5 test / 14 子断言全 PASS：200/302/401/404 skip；400/403/405/422/500/502 log；current_user 附加/缺失/类型错三条防御路径。(3) L1 浏览器手测留作用户 action（需要积分耗尽账号密码，AI 不自行改用户数据）"
     blockers:
       - "prod 部署待 dev 环境验证后再推进（用户指示）"
+      - "L1 浏览器 E2E 手测待用户执行（或提供 dev 测试账号凭据由 AI 用 gstack 自动跑）"
     created_at: "2026-04-21T14:00:00+08:00"
 
   - id: "hotfix-httpclient-timeout-300s"
