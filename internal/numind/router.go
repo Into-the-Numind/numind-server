@@ -96,6 +96,7 @@ func installNumindRouters(g *gin.Engine) error {
 
 		// 所有登录用户均可使用销售智能体/知识库（数据按 user_id 严格隔离，各账号独立）
 		salesGroup := authGroup.Group("/sales-rag")
+		salesGroup.Use(importMw.FeaturePermission(model.FeatureKeySalesAgent))
 
 		// 文档管理
 		salesGroup.POST("/ingest", salesRAGc.Ingest)                  // 上传并解析文档
