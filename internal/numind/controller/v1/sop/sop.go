@@ -453,13 +453,21 @@ func (ctrl *SopController) GetNote(c *gin.Context) {
 // ListTemplates 获取可用的SOP模板列表（用户端，只显示已发布的 active 模板）
 // 草稿/下线状态的模板不会出现在工作区，需从配置中心管理入口访问。
 // 默认 limit 为 500，覆盖权限弹窗等需要一次性拉全量的场景；管理端列表走独立端点。
+// 返回每项含 has_permission 供 UI 显示锁标志；安全 gate 仍由 check-permission / SOP 运行端点强制。
 func (ctrl *SopController) ListTemplates(c *gin.Context) {
 	log.C(c).Infow("User list SOP templates called")
+
+	currentUser, exists := c.Get("current_user")
+	if !exists {
+		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
+		return
+	}
+	user := currentUser.(*model.User)
 
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "500"))
 
-	templates, total, err := ctrl.sopBiz.ListVisibleTemplates(c, offset, limit)
+	templates, total, err := ctrl.sopBiz.ListVisibleTemplatesWithPermission(c, user, offset, limit)
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return

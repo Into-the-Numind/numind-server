@@ -33,6 +33,10 @@ type ISopBiz interface {
 	// ListVisibleTemplates 列出 C 端用户可见的模板（status=active AND publish_status=published）。
 	// 仅供用户端 /v1/sop/templates；管理端和统计保持调用 ListTemplates 以看到全部状态。
 	ListVisibleTemplates(ctx context.Context, offset, limit int) ([]model.SopTemplate, int64, error)
+	// ListVisibleTemplatesWithPermission 返回 C 端可见模板 + 每项的运行权限标志，供 UI 显示锁。
+	// 父账号全 true；子账号按 user_template_permission 白名单 O(N) 本地匹配，不走 N+1 查询。
+	// 安全 gate 仍由 CheckTemplatePermission + SOP 运行端点强制，本方法仅影响 UI 可见性。
+	ListVisibleTemplatesWithPermission(ctx context.Context, user *model.User, offset, limit int) ([]SopTemplateVisibleItem, int64, error)
 	UpdateTemplate(ctx context.Context, id uint, updates map[string]interface{}) error
 	DeleteTemplate(ctx context.Context, id uint) error
 
@@ -167,6 +171,47 @@ func (b *sopBiz) ListTemplates(ctx context.Context, offset, limit int) ([]model.
 
 func (b *sopBiz) ListVisibleTemplates(ctx context.Context, offset, limit int) ([]model.SopTemplate, int64, error) {
 	return b.ds.Sop().ListVisibleTemplates(offset, limit)
+}
+
+// SopTemplateVisibleItem 包装 SopTemplate 并附带当前用户对该模板的运行权限。
+// 用于首页 UI 显示锁标志（has_permission=false 时加锁徽章但卡片仍正常渲染）。
+// 安全 gate 仍在 CheckTemplatePermission + SOP 运行端点层强制执行。
+type SopTemplateVisibleItem struct {
+	model.SopTemplate
+	HasPermission bool `json:"has_permission"`
+}
+
+// ListVisibleTemplatesWithPermission 见接口注释。
+func (b *sopBiz) ListVisibleTemplatesWithPermission(ctx context.Context, user *model.User, offset, limit int) ([]SopTemplateVisibleItem, int64, error) {
+	templates, total, err := b.ds.Sop().ListVisibleTemplates(offset, limit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("ListVisibleTemplatesWithPermission: %w", err)
+	}
+
+	items := make([]SopTemplateVisibleItem, 0, len(templates))
+
+	// 父账号：全部 true，不查白名单
+	if user.ParentUserID == nil {
+		for _, t := range templates {
+			items = append(items, SopTemplateVisibleItem{SopTemplate: t, HasPermission: true})
+		}
+		return items, total, nil
+	}
+
+	// 子账号：一次查询白名单，建 set，本地匹配（对齐 HasTemplatePermission 语义）
+	perms, err := b.ds.Customers().ListUserTemplatePermissions(ctx, user.ID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("ListVisibleTemplatesWithPermission whitelist: %w", err)
+	}
+	allowed := make(map[uint]struct{}, len(perms))
+	for _, p := range perms {
+		allowed[p.TemplateID] = struct{}{}
+	}
+	for _, t := range templates {
+		_, ok := allowed[t.ID]
+		items = append(items, SopTemplateVisibleItem{SopTemplate: t, HasPermission: ok})
+	}
+	return items, total, nil
 }
 
 func (b *sopBiz) UpdateTemplate(ctx context.Context, id uint, updates map[string]interface{}) error {

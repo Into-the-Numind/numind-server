@@ -61,6 +61,7 @@ type IChatbotBiz interface {
 
 	// C端：对话会话（Task 7 实现）
 	ListVisibleChatbots(ctx context.Context, user *model.User) ([]model.ChatbotConfig, error)
+	ListVisibleChatbotsWithPermission(ctx context.Context, user *model.User) ([]ChatbotVisibleItem, error)
 	CheckChatbotPermission(ctx context.Context, userID uint, chatbotID uint) (bool, error)
 	CreateSession(ctx context.Context, userID uint, chatbotID uint) (*model.ChatbotSession, error)
 	ListSessions(ctx context.Context, userID uint, offset, limit int) ([]model.ChatbotSession, int64, error)
@@ -231,6 +232,50 @@ func (b *chatbotBiz) ListVisibleChatbots(ctx context.Context, user *model.User) 
 		return nil, fmt.Errorf("ListVisibleChatbots: %w", err)
 	}
 	return configs, nil
+}
+
+// ChatbotVisibleItem 包装 ChatbotConfig 并附带当前用户对该 chatbot 的运行权限。
+// 用于首页 UI 显示锁标志（has_permission=false 时加锁徽章但卡片仍正常渲染）。
+// 安全 gate 仍在 CheckChatbotPermission + CreateSession/ChatStream 层强制执行。
+type ChatbotVisibleItem struct {
+	model.ChatbotConfig
+	HasPermission bool `json:"has_permission"`
+}
+
+// ListVisibleChatbotsWithPermission 返回可见智能体列表 + 每项的运行权限标志。
+// 父账号（ParentUserID == nil）所有项 HasPermission=true，无需查询白名单。
+// 子账号一次性查询 user_chatbot_permission 白名单（O(N) 本地匹配），不走 N+1 查询。
+// 与 HasChatbotPermission 的单条判断语义一致（父账号 bypass + 白名单匹配）。
+func (b *chatbotBiz) ListVisibleChatbotsWithPermission(ctx context.Context, user *model.User) ([]ChatbotVisibleItem, error) {
+	configs, err := b.ListVisibleChatbots(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]ChatbotVisibleItem, 0, len(configs))
+
+	// 父账号：全部 true，不查白名单
+	if user.ParentUserID == nil {
+		for _, c := range configs {
+			items = append(items, ChatbotVisibleItem{ChatbotConfig: c, HasPermission: true})
+		}
+		return items, nil
+	}
+
+	// 子账号：一次查询白名单，建 set，本地匹配
+	ids, err := b.ds.Customers().ListSubUserChatbotIDs(ctx, user.ID)
+	if err != nil {
+		return nil, fmt.Errorf("ListVisibleChatbotsWithPermission: %w", err)
+	}
+	allowed := make(map[uint]struct{}, len(ids))
+	for _, id := range ids {
+		allowed[id] = struct{}{}
+	}
+	for _, c := range configs {
+		_, ok := allowed[c.ID]
+		items = append(items, ChatbotVisibleItem{ChatbotConfig: c, HasPermission: ok})
+	}
+	return items, nil
 }
 
 // CheckChatbotPermission 检查用户是否有权运行指定 chatbot。
