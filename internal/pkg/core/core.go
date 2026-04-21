@@ -21,11 +21,12 @@ type Response struct {
 	Data    interface{} `json:"data"`
 }
 
-// logErrorResponse 结构化记录 4xx/5xx 响应，方便线上定位"谁、什么端点、什么原因"。
+// buildErrorLogFields 构建结构化字段；返回 nil 表示该 httpCode 应当被跳过。
 // 跳过 401（token 过期噪声）与 404（favicon / 不存在路由噪声）。
-func logErrorResponse(c *gin.Context, httpCode int, errCode, message string) {
+// 拆成独立函数以便单测断言过滤行为与字段完整性。
+func buildErrorLogFields(c *gin.Context, httpCode int, errCode, message string) []interface{} {
 	if httpCode < 400 || httpCode == 401 || httpCode == 404 {
-		return
+		return nil
 	}
 	fields := []interface{}{
 		"http_code", httpCode,
@@ -39,6 +40,15 @@ func logErrorResponse(c *gin.Context, httpCode int, errCode, message string) {
 		if user, ok := u.(*model.User); ok {
 			fields = append(fields, "user_id", user.ID)
 		}
+	}
+	return fields
+}
+
+// logErrorResponse 结构化记录 4xx/5xx 响应，方便线上定位"谁、什么端点、什么原因"。
+func logErrorResponse(c *gin.Context, httpCode int, errCode, message string) {
+	fields := buildErrorLogFields(c, httpCode, errCode, message)
+	if fields == nil {
+		return
 	}
 	log.C(c).Warnw("API error response", fields...)
 }
