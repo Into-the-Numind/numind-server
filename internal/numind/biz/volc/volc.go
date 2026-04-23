@@ -1072,7 +1072,7 @@ func (v *volcBiz) StreamChatWithModel(ctx context.Context, messages []map[string
 	req.Header.Set("Authorization", "Bearer "+viper.GetString("volc.api_key"))
 
 	client := &http.Client{
-		Timeout: 300 * time.Second, // 增加超时时间以适应 deeply thinking
+		Timeout: 600 * time.Second, // 10 分钟：与前后端统一长流超时对齐（原 300s）
 	}
 	resp, err := client.Do(req)
 	if err != nil {
