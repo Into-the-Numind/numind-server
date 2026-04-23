@@ -1,6 +1,34 @@
 schema_version: "1.0"
 
 features:
+  - id: "unify-streaming-timeouts-10min"
+    ndf_version: "1.1"
+    description: "统一前后端各层长流 SOP 超时到 10 分钟（600s），对齐 host nginx 已有的 600s，给长 thinking + 长 content 的 SOP step 留足预算，避免未来再出现 SSE 断联场景。范围：(numind-server) internal/pkg/httpclient/client.go DefaultConfig.Timeout 300→600、internal/numind/biz/volc/volc.go 300→600、internal/numind/controller/v1/sop/sop.go 4 处裸 http.Client{Timeout:120s}→600s（file upload / AI call / volc / ali 各 1 处，原为 hotfix-httpclient-timeout-300s 遗留 tech debt）、numind-server/nginx/nginx.conf proxy_read/send_timeout 300→600（3 块）；(numind-web-v3) nginx.conf + nginx.conf.template proxy_read_timeout 300→600（每文件 2 处）。不动：ResponseHeaderTimeout 60s（header 应秒回）、AICallTimeout 30s（辅助 quality 检测非流式）、IdleTimeout 120s（keep-alive 闲置）、numind.go WriteTimeout 1200s（已超 10min）、admin.go 30/60/120s（管理后台 scope）、streaming loop readTimeout 3s（每 read 节流器，连续 3 次才放弃）。"
+    track: "hotfix"
+    stage: "H1"
+    classification_reason: "纯超时配置调整，两仓 7 文件改动：无 DB schema、无 API 契约、无业务逻辑、无安全 gate。是对已完成 hotfix sop-sse-abnormal-close-recovery 的配套防御加固：前者处理'流异常终止 UI 恢复'，本 hotfix 减少异常终止本身的触发面。和 aihubmix-protocol-audit / hotfix-httpclient-timeout-300s 共享上下文"
+    last_updated_by: "ai-triage"
+    last_updated_at: "2026-04-24T00:50:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "hotfix/unify-streaming-timeouts-10min"
+      numind-web-v3: "hotfix/unify-streaming-timeouts-10min"
+    artifacts: {}
+    progress:
+      total_tasks: 2
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "H2 — 两仓 7 文件改动 + go build/type-check 验证"
+    rollback: "两仓各自 git revert 单 hotfix commit；无 DB / 无 migration"
+    last_verified: null
+    decisions:
+      - "2026-04-24 (Triage): 用户在 sop-sse-abnormal-close-recovery hotfix merge 后提出'把前后端超时统一到 10 分钟'。scope = 所有长流 SOP 相关超时上浮至 600s，保留语义不同的超时（header / idle / 辅助调用 / per-read 节流器）"
+      - "2026-04-24 (范围): 扫出 numind-server 6 处 + numind-web-v3 4 处 300s 或 120s 超时。numind-server/internal/numind/numind.go 已有 ReadTimeout 600s + WriteTimeout 1200s（保留，更宽松）。host nginx /www/server/panel/vhost/nginx/youshu.asia.conf 已有 600s（不改 prod 手动配置）"
+    blockers: []
+    created_at: "2026-04-24T00:50:00+08:00"
+
   - id: "sop-sse-abnormal-close-recovery"
     ndf_version: "1.1"
     description: "前端 useSSEStream.ts streamPost 在 TCP 正常关闭但未收到 event:done 时静默返回：reader.read() 返回 {done:true} → while 循环正常退出 → 函数 return，onDone 和 onError 都不触发。上层 SOPRunView.executeNode 的 onDone 回调（flushStreaming/setNodeRun/markNodeComplete/clearStreamingState/refreshNodeRun）和 onError 回调都不跑，UI 永远停在 streaming 态；即使后端已完整 persist output 到 DB，前端也不感知。触发条件：任何 SSE 流末尾丢失 done event——中间 proxy idle timeout / nginx reload / 客户端移动网络 NAT 丢连接等。Prod 虽然还没找到 user 362 run 1474 具体触发的复现证据（nginx access log 显示 200/41940 bytes 正常完成），但代码缺陷真实存在且风险面广（所有 SSE 流都依赖 done 事件）。本 hotfix：(L1 主修复) useSSEStream while 后加 doneFired+errorFired 检测触发 onError；(L2 UX 改进) SOPRunView onError 先 await refreshNodeRun，若 status=succeeded 且 output 非空 → 静默恢复（info toast），否则才报错；(L3 回归测试) vitest 补 'stream closes without done event' case。"
@@ -17,8 +45,8 @@ features:
     progress:
       total_tasks: 3
       completed_tasks: 3
-      reviewed_tasks: 0
-      current_task: "H3 — commit/merge/push 到 develop + dev 部署验证"
+      reviewed_tasks: 3
+      current_task: "H3 — dev 部署验证（已 merge 到 develop @ 7ce4ef1，等 CI 部署）"
     rollback: "git revert 单 hotfix commit；无 DB / 无 migration / 无 API"
     last_verified: null
     decisions:

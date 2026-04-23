@@ -1337,7 +1337,7 @@ func uploadFileToDashScope(file *multipart.FileHeader) (string, error) {
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := &http.Client{Timeout: 600 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("调用上传接口失败: %w", err)
@@ -1413,7 +1413,7 @@ func extractPlainTextWithQwenLong(ctx context.Context, fileIDs []string) (string
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := &http.Client{Timeout: 600 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", nil, fmt.Errorf("调用qwen-long失败: %w", err)
@@ -2617,7 +2617,7 @@ func (ctrl *SopController) callVolcEditStream(ctx context.Context, messages []ma
 	req.Header.Set("Authorization", "Bearer "+viper.GetString("volc.api_key"))
 
 	client := &http.Client{
-		Timeout: 120 * time.Second,
+		Timeout: 600 * time.Second,
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -2772,7 +2772,7 @@ func (ctrl *SopController) callAliEditStream(ctx context.Context, messages []map
 	req.Header.Set("Authorization", "Bearer "+getAliConfig("text", "api_key"))
 
 	client := &http.Client{
-		Timeout: 120 * time.Second,
+		Timeout: 600 * time.Second,
 	}
 	resp, err := client.Do(req)
 	if err != nil {
