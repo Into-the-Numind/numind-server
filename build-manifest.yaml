@@ -54,6 +54,8 @@ features:
       - "2026-04-24 (Triage): 用户指示聚焦修复 useSSEStream latent bug（即便不是 user 362 的触发器，但是真实缺陷）。不修 prompt，不处理 '字数' issue 2。走 hotfix 轨道"
       - "2026-04-24 (Reviewer 独立审核): code-reviewer subagent 逐行核对 useSSEStream.ts:155-184、SOPRunView.vue:426-520、sopRun.ts streaming state 函数 + Fetch/ReadableStream 标准行为。确认 bug 真实存在（browser fetch 在 server TCP FIN 后 reader.read() 返回 {done:true}，函数静默 return 无 onDone/onError），确认修复点位（try 块内 while 后、catch 前）正确，AbortError 路径不会误触发。建议 onError 改智能 refresh：先 await refreshNodeRun，若 backend 已 persist 则静默恢复不弹错误 toast"
       - "2026-04-24 (方案拍板): A 主修复 + UX 智能恢复；不做 Plan B (backend deferred done - 对 transport 层断联无效) / Plan C (前端轮询 - 浪费 + race) / Plan D (新恢复端点 - refreshNodeRun 已覆盖) / Plan E (unmount 刷 - 与 loadRun 重复)。nginx 加固作 P2 defer（P1 证据不指向 nginx）"
+      - "2026-04-24 (Playwright E2E 发现 follow-up bug): 路径 B (error toast) PASS；路径 A (info toast 静默恢复) FAIL——实际弹 error 而非 info。根因：初版用 refreshNodeRun 检测'后端已 succeeded'不成立——refreshNodeRun 只 patch 三个 meta 字段（model_name/latency/tokens）且依赖 nodeRuns[nodeId] 已存在，异常终止场景下 setNodeRun 从未跑过，prev 为空时函数早退不写任何数据，导致 onError 里 `refreshed.status === 'succeeded'` 永远不为 true"
+      - "2026-04-24 (follow-up fix): 新增 store.recoverNodeRunFromServer(nodeId) helper，直接读 /v1/sop/runs/:id/status 的 completed_nodes 构造完整 SopNodeRun（含 status=succeeded + output + thinking）；onError 里用 recovered boolean 驱动 info toast 分支。保留 refreshNodeRun 原有窄语义（只补 meta），不影响其他 caller。commit b69d924 → merge ca9c325"
     blockers: []
     created_at: "2026-04-24T00:30:00+08:00"
 
