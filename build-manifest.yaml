@@ -1,6 +1,34 @@
 schema_version: "1.0"
 
 features:
+  - id: "sop-sse-abnormal-close-recovery"
+    ndf_version: "1.1"
+    description: "前端 useSSEStream.ts streamPost 在 TCP 正常关闭但未收到 event:done 时静默返回：reader.read() 返回 {done:true} → while 循环正常退出 → 函数 return，onDone 和 onError 都不触发。上层 SOPRunView.executeNode 的 onDone 回调（flushStreaming/setNodeRun/markNodeComplete/clearStreamingState/refreshNodeRun）和 onError 回调都不跑，UI 永远停在 streaming 态；即使后端已完整 persist output 到 DB，前端也不感知。触发条件：任何 SSE 流末尾丢失 done event——中间 proxy idle timeout / nginx reload / 客户端移动网络 NAT 丢连接等。Prod 虽然还没找到 user 362 run 1474 具体触发的复现证据（nginx access log 显示 200/41940 bytes 正常完成），但代码缺陷真实存在且风险面广（所有 SSE 流都依赖 done 事件）。本 hotfix：(L1 主修复) useSSEStream while 后加 doneFired+errorFired 检测触发 onError；(L2 UX 改进) SOPRunView onError 先 await refreshNodeRun，若 status=succeeded 且 output 非空 → 静默恢复（info toast），否则才报错；(L3 回归测试) vitest 补 'stream closes without done event' case。"
+    track: "hotfix"
+    stage: "H2"
+    classification_reason: "纯前端单仓 3 文件改动（useSSEStream.ts / SOPRunView.vue / useSSEStream.test.ts），无 DB schema、无 API 契约变更、无业务逻辑、无权限翻转。全部在客户端错误处理兜底层，行为是'流异常终止时尝试自愈而非静默卡死'。Reviewer 独立审核确认修复方向正确（A 方案），并建议 onError 智能 refreshNodeRun 恢复优于直接弹 toast"
+    last_updated_by: "ai-triage"
+    last_updated_at: "2026-04-24T00:30:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "hotfix/sop-sse-abnormal-close-recovery"
+    artifacts: {}
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 0
+      current_task: "H3 — commit/merge/push 到 develop + dev 部署验证"
+    rollback: "git revert 单 hotfix commit；无 DB / 无 migration / 无 API"
+    last_verified: null
+    decisions:
+      - "2026-04-23 (诊断起点): prod 用户 362 报告 template 1 step 4 'thinking 出了 content 没出'。DB 证据：sop_node_run step 4 output 完整 4592 字；bookmark 219 MD5 匹配 node_run output（用户手动保存书签证明 UI 实际看到了 content）；nginx access log HTTP 200 / 41940 bytes 正常完成。**用户 362 的主诉源于产品期望不符（prompt 输出结构 vs 用户期望），不是 SSE 断联**——但过程中发现了 useSSEStream 的真实 latent bug"
+      - "2026-04-24 (Triage): 用户指示聚焦修复 useSSEStream latent bug（即便不是 user 362 的触发器，但是真实缺陷）。不修 prompt，不处理 '字数' issue 2。走 hotfix 轨道"
+      - "2026-04-24 (Reviewer 独立审核): code-reviewer subagent 逐行核对 useSSEStream.ts:155-184、SOPRunView.vue:426-520、sopRun.ts streaming state 函数 + Fetch/ReadableStream 标准行为。确认 bug 真实存在（browser fetch 在 server TCP FIN 后 reader.read() 返回 {done:true}，函数静默 return 无 onDone/onError），确认修复点位（try 块内 while 后、catch 前）正确，AbortError 路径不会误触发。建议 onError 改智能 refresh：先 await refreshNodeRun，若 backend 已 persist 则静默恢复不弹错误 toast"
+      - "2026-04-24 (方案拍板): A 主修复 + UX 智能恢复；不做 Plan B (backend deferred done - 对 transport 层断联无效) / Plan C (前端轮询 - 浪费 + race) / Plan D (新恢复端点 - refreshNodeRun 已覆盖) / Plan E (unmount 刷 - 与 loadRun 重复)。nginx 加固作 P2 defer（P1 证据不指向 nginx）"
+    blockers: []
+    created_at: "2026-04-24T00:30:00+08:00"
+
   - id: "homeview-locked-cards"
     ndf_version: "1.1"
     description: "HomeView 统一 deny UX：被拒资源不再隐藏，正常显示 + 右上角 lock 标志 + 点击弹'未开通'。应用于 SOP workflows / sales-agent / chatbot 三类卡片。修正当前 sales-agent 的 .no-permission 灰化行为为正常颜色。S1 发现现状比原估简单得多：后端 SOP templates list 和 chatbot listVisibleChatbots **本来就返回全部 published**（不按白名单过滤），前端点击时才 check-permission。本 feature 只需后端 list DTO 加 has_permission flag + 前端 HomeView lock badge 扩展 + 删灰化 CSS，共 ~100 行。"
