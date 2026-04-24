@@ -1,6 +1,65 @@
 schema_version: "1.0"
 
 features:
+  - id: "seed-deepseek-v4-pro"
+    ndf_version: "1.1"
+    description: "在 DB Registry（ai_service + ai_service_route + pricing_rule）注册新模型 deepseek-v4-pro，双 provider 路由：dmxapi 主（priority=100）+ aihubmix 备（priority=10），flat 计费 ¥14/M input / ¥28/M output（cost=sell）。capability_json 带 1M context window + 384K max output + streaming/tool_use features。latency_tier/quality_tier 走 DB DEFAULT 'standard'（纯元数据、零 read、作为独立 backlog 任务下线）。"
+    track: "hotfix"
+    stage: "H1"
+    classification_reason: "Triage 5 条全满足 — (1) 纯 DB seed migration，无业务代码变更 (2) 不新增 API 端点 (3) 不接外部运行时服务（provider 已存在于 llm_provider 表）(4) 影响文件 2 个（migration + rollback）(5) 不涉及支付/权限/业务逻辑语义。参考历史 seed-drift-pricing-rules 先例。"
+    last_updated_by: "ai-triage"
+    last_updated_at: "2026-04-24T20:45:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "hotfix/seed-deepseek-v4-pro"
+    hotfix_artifacts:
+      diagnosis: "用户要求：接入 DeepSeek V4 Pro，双 provider（dmxapi + aihubmix）做主备。定价信息 flat ¥14/¥28 per MTok（同价）。provider dmxapi / aihubmix 均已在 llm_provider 表存在（aihubmix 由 20260416_100000_seed_aihubmix_provider.sql 建，dmxapi 更早存在）。"
+      review: null
+    progress:
+      total_tasks: 2
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "H2-migration-write"
+    rollback: "migrations/20260424_204500_seed_deepseek_v4_pro_rollback.sql（按 pricing_rule → ai_service_route → ai_service 逆序 DELETE，ai_service 用 WHERE model_key='deepseek-v4-pro' 精确定位）"
+    last_verified: null
+    decisions:
+      - "2026-04-24 (capability_json 审计): registry.go:426 + profile.Match() 实际使用 capability_json 做 task profile 绑定校验，不可删。按用户确认值填：context_window=1000000 / max_output_tokens=384000 / features={streaming:true, tool_use:true} / input_modalities=[text] / output_modalities=[text] / capabilities=[chat]"
+      - "2026-04-24 (latency/quality tier 审计): 两字段代码全链路零 read（仅 registry.ResolvedRoute 透传 + admin UI 表单展示），纯元数据。本次 migration 省略这两列 → DB DEFAULT 'standard' 自动填。同步登记 backlog 条目 remove-tier-fields 作为独立 Standard Track 任务。"
+      - "2026-04-24 (priority 方向): dmxapi=100 / aihubmix=10；registry/store.go:334 ORDER BY r.priority DESC 确认数字大优先（注意：20260416_100000_seed_aihubmix_provider.sql 的 SQL 注释文字 '升序遍历 AiHubMix 优先' 是错的，与代码相反 — 不信注释、信代码和 MEMORY.md/project_ai_service_route_priority.md）"
+      - "2026-04-24 (执行路径): 用户选 CI 路径 — push develop → dev CI 自动部署 → SSH 验证 DB 三表数据落库。本地 merge + push，不走 PR（符合用户 feedback_local_merge.md）"
+    blockers: []
+    created_at: "2026-04-24T20:45:00+08:00"
+
+  - id: "remove-tier-fields"
+    ndf_version: "1.1"
+    description: "下线 ai_service.latency_tier / quality_tier 两列 — 审计结果：全链路零 read（registry.ResolvedRoute 透传不用 + admin UI 仅展示 + 无路由/定价/降级/筛选逻辑依赖）。每次加新模型都要填这两个无意义字段是额外摩擦。范围：后端 struct 字段删除 + controller CRUD 不再接收 + admin Vue 表单/表格删除相关列 + migration DROP COLUMN + rollback。涉及 numind-server + numind-admin-web 两仓，属 Standard Track。"
+    track: "standard"
+    stage: "backlog"
+    classification_reason: "不满足 Hotfix Triage — (a) 跨两仓库（numind-server schema + numind-admin-web UI）(b) 改 API 契约（CreateService / UpdateService request/response struct 变动）(c) DROP COLUMN 属不可逆 schema 变更需 forward+rollback 双 migration + prod 准备"
+    last_updated_by: "ai-triage"
+    last_updated_at: "2026-04-24T20:45:00+08:00"
+    repos:
+      - numind-server
+      - numind-admin-web
+    branches: {}
+    artifacts: {}
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "TBD"
+    last_verified: null
+    decisions:
+      - "2026-04-24 (审计结论): Explore subagent 全仓搜索确认 LatencyTier/QualityTier 仅出现在 store.go SELECT 透传 + registry.ResolvedRoute struct + biz.go/controller CRUD + admin Vue 表单/表格 — 无任何业务分支依赖。迁移时可直接删除"
+      - "2026-04-24 (来源): 用户在 seed-deepseek-v4-pro 过程中提出 — 加模型要填无意义字段是摩擦，要求评估删除可行性"
+    deferred:
+      - "何时启动：下次管理端 ai-service UI 有其他改动时顺带做；或用户主动要求时"
+      - "触及范围清单（先验）：numind-server 内 ai_service.go:92-93 (struct), registry.go:57-58 + 433-434, store.go:91-92 + 315-316 + 343-344 + 381-382 + 410-411 + 438-439 + 474-475, biz/aiservice_admin/biz.go:152-153 + 505-506, controller/v1/admin_ai/ai_service.go:165-166 + 171-172, + forward migration ALTER TABLE ai_service DROP COLUMN latency_tier, DROP COLUMN quality_tier + rollback ADD COLUMN。numind-admin-web 内 ServiceEdit.vue 表单 / ServicesList.vue line 58 tier 列 / types/ai.ts LatencyTier+QualityTier 字段"
+    blockers: []
+    created_at: "2026-04-24T20:45:00+08:00"
+
   - id: "gateway-history-attachment-trim"
     ndf_version: "1.1"
     description: "Gateway 路径 (executeViaGateway) 跳过 prepareContext，导致历史累积 + 附件原文超过上游 provider input token 上限（aihubmix / deepseek-v3.2-thinking 上限 98304）时直接 HTTP 400。Prod 用户 600920v (id=348, Vicky) 连续 4 次在 template 2 'AI朋友圈：深度思考文案' node 8 'AI仿写朋友圈' 触发。本 hotfix 在 executeViaGateway 构建 aiMessages 前插入 5 级渐进式裁剪：(1) 从最早历史步骤开始整丢附件 block（=== filename.ext === 格式）并替换为 [附件已省略: xxx] 标签 (2) 逐步扩展到更晚历史步骤的附件 (3) 仍超 → 从最早整段丢历史消息对 (user+assistant) (4) 历史清空仍超 → 不调 LLM，返回 ErrInputTooLong 友好错误 (5) 当前步骤的任何内容永远不动。cap = 85000 cl100k tokens (~13k buffer below 98304)。每级裁剪打 warn 日志记录丢了什么、节省多少 tokens。"
