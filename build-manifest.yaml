@@ -1,6 +1,33 @@
 schema_version: "1.0"
 
 features:
+  - id: "gateway-history-attachment-trim"
+    ndf_version: "1.1"
+    description: "Gateway 路径 (executeViaGateway) 跳过 prepareContext，导致历史累积 + 附件原文超过上游 provider input token 上限（aihubmix / deepseek-v3.2-thinking 上限 98304）时直接 HTTP 400。Prod 用户 600920v (id=348, Vicky) 连续 4 次在 template 2 'AI朋友圈：深度思考文案' node 8 'AI仿写朋友圈' 触发。本 hotfix 在 executeViaGateway 构建 aiMessages 前插入 5 级渐进式裁剪：(1) 从最早历史步骤开始整丢附件 block（=== filename.ext === 格式）并替换为 [附件已省略: xxx] 标签 (2) 逐步扩展到更晚历史步骤的附件 (3) 仍超 → 从最早整段丢历史消息对 (user+assistant) (4) 历史清空仍超 → 不调 LLM，返回 ErrInputTooLong 友好错误 (5) 当前步骤的任何内容永远不动。cap = 85000 cl100k tokens (~13k buffer below 98304)。每级裁剪打 warn 日志记录丢了什么、节省多少 tokens。"
+    track: "hotfix"
+    stage: "H3"
+    classification_reason: "纯后端单仓单文件逻辑补丁（executor_helper.go 新增函数 + executor.go 一处插入调用）：无 DB schema、无 API 契约变更、无业务逻辑语义翻转、无权限 gate。是对 executeViaGateway 漏调 prepareContext 的补丁 + 针对 98304 上限的更精细裁剪策略。legacy ExecuteNodeStream 直连路径不改。"
+    last_updated_by: "ai-h2-done"
+    last_updated_at: "2026-04-24T15:15:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "hotfix/gateway-history-attachment-trim"
+    artifacts: {}
+    progress:
+      total_tasks: 4
+      completed_tasks: 4
+      reviewed_tasks: 4
+      current_task: "H3 — ship to develop + prod"
+    rollback: "git revert 单 hotfix commit；无 DB / 无 migration / 无 API"
+    last_verified: null
+    decisions:
+      - "2026-04-24 (根因): executeViaGateway (executor.go:410) 不调用 prepareContext，导致历史拼接直送 provider。aihubmix/deepseek-v3.2-thinking input 上限 98304；Vicky 节点 8 历史累积 (node 5/6/7 input+output) + 当前 input + system prompt 超限触发 HTTP 400"
+      - "2026-04-24 (策略讨论): 对比 RAG / 超大上下文 / 层级摘要 / 简单裁剪 四种工业方案。RAG 是长期正路但需要向量 DB + SOP 重构（2-4 周），超大上下文是最粗暴有效方案（换 Claude 200K），层级摘要需每节点额外 LLM 调用。今日 hotfix 选最低成本版：丢附件 + 标签，本质是 hierarchical summarization 的简化（节点的 AI output 就是天然摘要）"
+      - "2026-04-24 (优先级确认): 用户明确 (1) 历史步骤附件优先丢 (2) 按最早→最晚顺序 (3) 当前步骤永远不动。AI 补充兜底：历史附件清空仍超 → 丢整段历史；历史空仍超 → 返回友好错误而非 truncate 当前（避免违反用户规则 3）"
+    blockers: []
+    created_at: "2026-04-24T14:40:00+08:00"
+
   - id: "unify-streaming-timeouts-10min"
     ndf_version: "1.1"
     description: "统一前后端各层长流 SOP 超时到 10 分钟（600s），对齐 host nginx 已有的 600s，给长 thinking + 长 content 的 SOP step 留足预算，避免未来再出现 SSE 断联场景。范围：(numind-server) internal/pkg/httpclient/client.go DefaultConfig.Timeout 300→600、internal/numind/biz/volc/volc.go 300→600、internal/numind/controller/v1/sop/sop.go 4 处裸 http.Client{Timeout:120s}→600s（file upload / AI call / volc / ali 各 1 处，原为 hotfix-httpclient-timeout-300s 遗留 tech debt）、numind-server/nginx/nginx.conf proxy_read/send_timeout 300→600（3 块）；(numind-web-v3) nginx.conf + nginx.conf.template proxy_read_timeout 300→600（每文件 2 处）。不动：ResponseHeaderTimeout 60s（header 应秒回）、AICallTimeout 30s（辅助 quality 检测非流式）、IdleTimeout 120s（keep-alive 闲置）、numind.go WriteTimeout 1200s（已超 10min）、admin.go 30/60/120s（管理后台 scope）、streaming loop readTimeout 3s（每 read 节流器，连续 3 次才放弃）。"

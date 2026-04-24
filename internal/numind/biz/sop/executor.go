@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -418,25 +419,31 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 		ctx = aismw.WithUserID(ctx, bc.UserID)
 	}
 
-	// 1. 构建 aiservice.ChatMessage 列表：system prompt → history → user input
-	var aiMessages []aiservice.ChatMessage
+	// 1. 构建 LLMMessage 列表并对历史做渐进式裁剪（避免超过上游 provider input token 上限）
+	//    构造顺序：system prompt → history → 当前 user input（最后一条永远是当前步骤，裁剪时不动）
+	llmMessages := make([]LLMMessage, 0, len(history)+2)
 	if node.Prompt != "" {
-		aiMessages = append(aiMessages, aiservice.ChatMessage{
-			Role:    aiservice.MessageRoleSystem,
-			Content: aiservice.MessageContent{Text: node.Prompt},
-		})
+		llmMessages = append(llmMessages, LLMMessage{Role: "system", Content: node.Prompt})
 	}
-	for _, msg := range history {
-		role := aiservice.MessageRole(msg.Role)
-		aiMessages = append(aiMessages, aiservice.ChatMessage{
-			Role:    role,
-			Content: aiservice.MessageContent{Text: msg.Content},
-		})
-	}
+	llmMessages = append(llmMessages, history...)
 	if input != "" {
+		llmMessages = append(llmMessages, LLMMessage{Role: "user", Content: input})
+	}
+
+	trimmed, trimErr := e.trimHistoryForGateway(ctx, llmMessages)
+	if trimErr != nil {
+		if errors.Is(trimErr, ErrGatewayInputTooLong) {
+			return "", nil, fmt.Errorf("您本次输入的内容过长，请缩减后重试")
+		}
+		return "", nil, fmt.Errorf("executeViaGateway: trimHistoryForGateway: %w", trimErr)
+	}
+
+	// 2. 转成 aiservice.ChatMessage
+	aiMessages := make([]aiservice.ChatMessage, 0, len(trimmed))
+	for _, msg := range trimmed {
 		aiMessages = append(aiMessages, aiservice.ChatMessage{
-			Role:    aiservice.MessageRoleUser,
-			Content: aiservice.MessageContent{Text: input},
+			Role:    aiservice.MessageRole(msg.Role),
+			Content: aiservice.MessageContent{Text: msg.Content},
 		})
 	}
 
