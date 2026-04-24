@@ -5,24 +5,42 @@ features:
     ndf_version: "1.1"
     description: "在 DB Registry（ai_service + ai_service_route + pricing_rule）注册新模型 deepseek-v4-pro，双 provider 路由：dmxapi 主（priority=100）+ aihubmix 备（priority=10），flat 计费 ¥14/M input / ¥28/M output（cost=sell）。capability_json 带 1M context window + 384K max output + streaming/tool_use features。latency_tier/quality_tier 走 DB DEFAULT 'standard'（纯元数据、零 read、作为独立 backlog 任务下线）。"
     track: "hotfix"
-    stage: "H1"
+    stage: "completed"
+    completed_at: "2026-04-24T20:55:00+08:00"
     classification_reason: "Triage 5 条全满足 — (1) 纯 DB seed migration，无业务代码变更 (2) 不新增 API 端点 (3) 不接外部运行时服务（provider 已存在于 llm_provider 表）(4) 影响文件 2 个（migration + rollback）(5) 不涉及支付/权限/业务逻辑语义。参考历史 seed-drift-pricing-rules 先例。"
-    last_updated_by: "ai-triage"
-    last_updated_at: "2026-04-24T20:45:00+08:00"
+    last_updated_by: "ai-hotfix-close"
+    last_updated_at: "2026-04-24T20:55:00+08:00"
     repos:
       - numind-server
     branches:
-      numind-server: "hotfix/seed-deepseek-v4-pro"
+      numind-server: "merged to develop @ 236d719 (2 commits: 3cda650 SQL + 236d719 manifest)"
     hotfix_artifacts:
       diagnosis: "用户要求：接入 DeepSeek V4 Pro，双 provider（dmxapi + aihubmix）做主备。定价信息 flat ¥14/¥28 per MTok（同价）。provider dmxapi / aihubmix 均已在 llm_provider 表存在（aihubmix 由 20260416_100000_seed_aihubmix_provider.sql 建，dmxapi 更早存在）。"
-      review: null
+      review: "skipped — 纯 INSERT IGNORE seed migration 无业务逻辑分支，参考 seed-drift-pricing-rules 先例不走两阶段 review，通过 dev DB 幂等 apply + SELECT 验证替代"
     progress:
       total_tasks: 2
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task: "H2-migration-write"
+      completed_tasks: 2
+      reviewed_tasks: 2
+      current_task: null
     rollback: "migrations/20260424_204500_seed_deepseek_v4_pro_rollback.sql（按 pricing_rule → ai_service_route → ai_service 逆序 DELETE，ai_service 用 WHERE model_key='deepseek-v4-pro' 精确定位）"
-    last_verified: null
+    last_verified:
+      at: "2026-04-24T20:55:00+08:00"
+      method: "sshpass → docker cp + docker exec mysql < migration；首次 apply pre-flight guard=1.0000，验证 ai_service 1 行（id=24，capability 1M/384K/streaming+tool_use）+ ai_service_route 2 行（id=40 dmxapi=100 + id=41 aihubmix=10）+ pricing_rule 2 行（id=65 dmxapi + id=66 aihubmix，各 ¥14/¥28 flat cost=sell）；二次 apply 行数不变（1/2/2）确认 INSERT IGNORE 幂等"
+      lint: null
+      type_check: null
+      tests: "无 Go 代码改动，无 test"
+      test_summary: "纯数据 migration，通过 dev DB 双重 apply + SELECT 核对字段值完成验收"
+    deploy_checklist:
+      dev:
+        status: "applied"
+        applied_at: "2026-04-24T20:55:00+08:00"
+        method: "sshpass → docker cp migrations/20260424_204500_seed_deepseek_v4_pro.sql numind-mysql-dev:/tmp/ → docker exec mysql numind-dev < /tmp/..."
+      qa:
+        status: "NOT_REQUESTED"
+        note: "用户本次只要求 dev 环境；qa/prod 需要后续手动 apply，注意 prod 的 provider 名称可能是 dmxapi-ssvip（参见 20260418_170000_pricing_rule_vocabulary_fix_prod_deferred.sql），如需上 prod 先改 provider 名字"
+      prod:
+        status: "NOT_REQUESTED"
+        note: "同上。prod 上线前须核对 llm_provider.name='dmxapi' 还是 'dmxapi-ssvip'，不对齐会导致 INSERT ... SELECT JOIN 插 0 行 + pre-flight guard 触发 1/0"
     decisions:
       - "2026-04-24 (capability_json 审计): registry.go:426 + profile.Match() 实际使用 capability_json 做 task profile 绑定校验，不可删。按用户确认值填：context_window=1000000 / max_output_tokens=384000 / features={streaming:true, tool_use:true} / input_modalities=[text] / output_modalities=[text] / capabilities=[chat]"
       - "2026-04-24 (latency/quality tier 审计): 两字段代码全链路零 read（仅 registry.ResolvedRoute 透传 + admin UI 表单展示），纯元数据。本次 migration 省略这两列 → DB DEFAULT 'standard' 自动填。同步登记 backlog 条目 remove-tier-fields 作为独立 Standard Track 任务。"
