@@ -5,26 +5,28 @@ features:
     ndf_version: "1.1"
     description: "Gateway 路径 (executeViaGateway) 跳过 prepareContext，导致历史累积 + 附件原文超过上游 provider input token 上限（aihubmix / deepseek-v3.2-thinking 上限 98304）时直接 HTTP 400。Prod 用户 600920v (id=348, Vicky) 连续 4 次在 template 2 'AI朋友圈：深度思考文案' node 8 'AI仿写朋友圈' 触发。本 hotfix 在 executeViaGateway 构建 aiMessages 前插入 5 级渐进式裁剪：(1) 从最早历史步骤开始整丢附件 block（=== filename.ext === 格式）并替换为 [附件已省略: xxx] 标签 (2) 逐步扩展到更晚历史步骤的附件 (3) 仍超 → 从最早整段丢历史消息对 (user+assistant) (4) 历史清空仍超 → 不调 LLM，返回 ErrInputTooLong 友好错误 (5) 当前步骤的任何内容永远不动。cap = 85000 cl100k tokens (~13k buffer below 98304)。每级裁剪打 warn 日志记录丢了什么、节省多少 tokens。"
     track: "hotfix"
-    stage: "H3"
+    stage: "completed"
+    completed_at: "2026-04-24T15:50:00+08:00"
     classification_reason: "纯后端单仓单文件逻辑补丁（executor_helper.go 新增函数 + executor.go 一处插入调用）：无 DB schema、无 API 契约变更、无业务逻辑语义翻转、无权限 gate。是对 executeViaGateway 漏调 prepareContext 的补丁 + 针对 98304 上限的更精细裁剪策略。legacy ExecuteNodeStream 直连路径不改。"
-    last_updated_by: "ai-h2-done"
-    last_updated_at: "2026-04-24T15:15:00+08:00"
+    last_updated_by: "ai-hotfix-close"
+    last_updated_at: "2026-04-24T15:50:00+08:00"
     repos:
       - numind-server
     branches:
-      numind-server: "hotfix/gateway-history-attachment-trim"
+      numind-server: "merged to develop @ 5a5f579, tagged v2.1.12"
     artifacts: {}
     progress:
       total_tasks: 4
       completed_tasks: 4
       reviewed_tasks: 4
-      current_task: "H3 — ship to develop + prod"
-    rollback: "git revert 单 hotfix commit；无 DB / 无 migration / 无 API"
-    last_verified: null
+      current_task: "completed"
+    rollback: "git revert 5a5f579 + retag；无 DB / 无 migration / 无 API"
+    last_verified: "2026-04-24T15:50:00+08:00 prod container healthy (image=v2.1.12, git.commit=5a5f5790ed1479f8ddf707c477f73c57f0a42755), 0 SOP node failures since deploy"
     decisions:
       - "2026-04-24 (根因): executeViaGateway (executor.go:410) 不调用 prepareContext，导致历史拼接直送 provider。aihubmix/deepseek-v3.2-thinking input 上限 98304；Vicky 节点 8 历史累积 (node 5/6/7 input+output) + 当前 input + system prompt 超限触发 HTTP 400"
       - "2026-04-24 (策略讨论): 对比 RAG / 超大上下文 / 层级摘要 / 简单裁剪 四种工业方案。RAG 是长期正路但需要向量 DB + SOP 重构（2-4 周），超大上下文是最粗暴有效方案（换 Claude 200K），层级摘要需每节点额外 LLM 调用。今日 hotfix 选最低成本版：丢附件 + 标签，本质是 hierarchical summarization 的简化（节点的 AI output 就是天然摘要）"
       - "2026-04-24 (优先级确认): 用户明确 (1) 历史步骤附件优先丢 (2) 按最早→最晚顺序 (3) 当前步骤永远不动。AI 补充兜底：历史附件清空仍超 → 丢整段历史；历史空仍超 → 返回友好错误而非 truncate 当前（避免违反用户规则 3）"
+      - "2026-04-24 (部署): develop CI 三次重试——前两次 Docker Hub registry 502 + 从 prod 机拉镜像 docker.io 超时（dev 机也一样），手动 docker pull + CI rerun 后成功。tag v2.1.12 触发 prod CI 一次通过。prod 容器 2026-04-24T15:47 起健康运行"
     blockers: []
     created_at: "2026-04-24T14:40:00+08:00"
 
