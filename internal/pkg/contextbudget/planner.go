@@ -197,9 +197,18 @@ func applyPhase2Reference(state *planState, input PlanInput) {
 // applyPhase3Summarize marks compressible durable/recent/tool fragments for summarization.
 // Actual LLM summarization is performed by the caller; the planner only decides what to summarize.
 //
-// Spec §5.2 phase 3: eligible fragments are durable, recent, or tool-sourced.
-// RoleEvidence is handled in phase 2 (reference compression).
-// RoleWorking is handled in phase 5 (drop working).
+// Spec §5.2 phase 3: eligible fragments are durable, recent, or tool-sourced, with
+// Compressibility==CompressSummarize.
+//
+// Note (designed scope per spec §5.2):
+//   - RoleEvidence with CompressReference is handled by Phase 2 (reference compression).
+//   - RoleEvidence with CompressSummarize is NOT summarized here; spec only allows
+//     summarize for durable/recent/tool. Such evidence falls through to Phase 6
+//     minimal fallback (drop) if budget pressure forces it.
+//   - RoleWorking with CompressDrop is handled by Phase 5.
+//   - RoleWorking with CompressSummarize is NOT summarized here; same fallback rule.
+//   - Callers wanting evidence/working compressed should set CompressReference
+//     (with SourceReference) or CompressDrop accordingly.
 func applyPhase3Summarize(state *planState, input PlanInput) {
 	for _, f := range state.fragments {
 		if _, alreadyActed := state.actions[f.ID]; alreadyActed {
@@ -300,6 +309,10 @@ func applyPhase6MinimalFallback(state *planState, input PlanInput) {
 	}
 
 	// Drop everything not in mustKeep that hasn't been acted on yet.
+	// Phase 6 is the last-resort minimal fallback. It intentionally overrides
+	// prior non-Drop actions (Summarize/Reference) on non-critical fragments
+	// when budget cannot fit even after all earlier phases. Critical fragments
+	// are excluded by mustKeep.
 	for _, f := range state.fragments {
 		if mustKeep[f.ID] {
 			continue
@@ -347,8 +360,10 @@ func dropFragment(state *planState, f ContextFragment, reason string) {
 }
 
 // multiplierSafety extracts the safety multiplier from a profile, defaulting to 1.0.
+// SafetyMultiplier must be >= 1.0 per the TokenProfile doc; values below 1.0 are
+// clamped to 1.0 to preserve the conservative-estimate guarantee.
 func multiplierSafety(profile TokenProfile) float64 {
-	if profile.SafetyMultiplier <= 0 {
+	if profile.SafetyMultiplier < 1.0 {
 		return 1.0
 	}
 	return profile.SafetyMultiplier

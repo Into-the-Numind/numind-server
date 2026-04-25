@@ -300,6 +300,132 @@ func TestIsCriticalRespectsCriticalReasonMetadata(t *testing.T) {
 	}
 }
 
+// TestPlannerEvidenceSummarizeFallsThroughToPhase6 documents that RoleEvidence +
+// CompressSummarize (without SourceReference) is NOT picked up by Phase 3 (which only
+// handles durable/recent/tool per spec §5.2). Under tight budget the fragment falls
+// through all phases and is dropped by Phase 6. This is designed behavior — callers
+// should use CompressReference (with SourceReference set) to compress evidence.
+func TestPlannerEvidenceSummarizeFallsThroughToPhase6(t *testing.T) {
+	profile := makeProfile()
+
+	// A RoleEvidence + CompressSummarize fragment WITHOUT SourceReference.
+	// Phase 2 won't touch it (SourceReference is empty).
+	// Phase 3 won't touch it (role is not durable/recent; source is not SourceTool).
+	// Expected: Phase 6 drops it under tight budget.
+	evidenceFrag := contextbudget.ContextFragment{
+		ID:              "evidence-summarize",
+		Role:            contextbudget.RoleEvidence,
+		Source:          contextbudget.SourceKB,
+		ContentType:     contextbudget.ContentText,
+		Content:         repeat("e", 2000), // large enough to stress budget
+		Importance:      5,
+		Order:           10,
+		Compressibility: contextbudget.CompressSummarize,
+		Critical:        false,
+		SourceReference: "", // no reference — Phase 2 inapplicable
+	}
+
+	sysPrompt := contextbudget.ContextFragment{
+		ID:              "sys",
+		Role:            contextbudget.RoleImmutable,
+		Source:          contextbudget.SourceSystem,
+		ContentType:     contextbudget.ContentText,
+		Content:         "system",
+		Importance:      10,
+		Order:           0,
+		Compressibility: contextbudget.CompressNone,
+		Critical:        true,
+	}
+
+	// Very tight budget to force Phase 6.
+	budget := makeBudget(10)
+
+	plan, err := contextbudget.PlanCompression(contextbudget.PlanInput{
+		Fragments: []contextbudget.ContextFragment{sysPrompt, evidenceFrag},
+		Profile:   profile,
+		Budget:    budget,
+		Operation: "test-evidence-summarize-fallthrough",
+	})
+	if err != nil {
+		t.Fatalf("PlanCompression returned error: %v", err)
+	}
+
+	// The evidence fragment must NOT get ActionSummarize — Phase 3 does not handle it.
+	// Under this tight budget it must be ActionDrop from Phase 6.
+	var evidenceAction contextbudget.Action
+	for _, a := range plan.Actions {
+		if a.FragmentID == "evidence-summarize" {
+			evidenceAction = a
+			break
+		}
+	}
+	if evidenceAction.Type == contextbudget.ActionSummarize {
+		t.Errorf("RoleEvidence+CompressSummarize should NOT get ActionSummarize from Phase 3 (spec §5.2); got ActionSummarize")
+	}
+	if evidenceAction.Type != contextbudget.ActionDrop {
+		t.Errorf("under tight budget, RoleEvidence+CompressSummarize should fall through to Phase 6 drop; got action=%s", evidenceAction.Type)
+	}
+}
+
+// TestPlannerWorkingSummarizeFallsThroughToPhase6 documents that RoleWorking +
+// CompressSummarize is NOT picked up by Phase 3 (spec §5.2 only summarizes
+// durable/recent/tool) and NOT by Phase 5 (which only handles CompressDrop).
+// Under tight budget the fragment falls through to Phase 6 drop. Callers should
+// use CompressDrop for working fragments they want removed under pressure.
+func TestPlannerWorkingSummarizeFallsThroughToPhase6(t *testing.T) {
+	profile := makeProfile()
+
+	workingFrag := contextbudget.ContextFragment{
+		ID:              "working-summarize",
+		Role:            contextbudget.RoleWorking,
+		Source:          contextbudget.SourceUser,
+		ContentType:     contextbudget.ContentText,
+		Content:         repeat("w", 2000),
+		Importance:      5,
+		Order:           20,
+		Compressibility: contextbudget.CompressSummarize,
+		Critical:        false,
+	}
+
+	sysPrompt := contextbudget.ContextFragment{
+		ID:              "sys",
+		Role:            contextbudget.RoleImmutable,
+		Source:          contextbudget.SourceSystem,
+		ContentType:     contextbudget.ContentText,
+		Content:         "system",
+		Importance:      10,
+		Order:           0,
+		Compressibility: contextbudget.CompressNone,
+		Critical:        true,
+	}
+
+	budget := makeBudget(10)
+
+	plan, err := contextbudget.PlanCompression(contextbudget.PlanInput{
+		Fragments: []contextbudget.ContextFragment{sysPrompt, workingFrag},
+		Profile:   profile,
+		Budget:    budget,
+		Operation: "test-working-summarize-fallthrough",
+	})
+	if err != nil {
+		t.Fatalf("PlanCompression returned error: %v", err)
+	}
+
+	var workingAction contextbudget.Action
+	for _, a := range plan.Actions {
+		if a.FragmentID == "working-summarize" {
+			workingAction = a
+			break
+		}
+	}
+	if workingAction.Type == contextbudget.ActionSummarize {
+		t.Errorf("RoleWorking+CompressSummarize should NOT get ActionSummarize from Phase 3 (spec §5.2); got ActionSummarize")
+	}
+	if workingAction.Type != contextbudget.ActionDrop {
+		t.Errorf("under tight budget, RoleWorking+CompressSummarize should fall through to Phase 6 drop; got action=%s", workingAction.Type)
+	}
+}
+
 // repeat builds a string of n copies of s.
 func repeat(s string, n int) string {
 	result := make([]byte, n*len(s))

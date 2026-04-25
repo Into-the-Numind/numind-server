@@ -2,6 +2,7 @@ package contextbudget
 
 import (
 	"math"
+	"strings"
 	"unicode"
 )
 
@@ -46,7 +47,7 @@ type EstimateResult struct {
 //  5. Total = sum(per_fragment) + message_overhead_tokens * messageCount + fixedOverhead.
 func EstimateFragments(fragments []ContextFragment, profile TokenProfile, fixedOverhead int, messageCount int) EstimateResult {
 	safetyMul := profile.SafetyMultiplier
-	if safetyMul <= 0 {
+	if safetyMul < 1.0 {
 		safetyMul = 1.0
 	}
 	calMul := profile.CalibrationMultiplier
@@ -208,7 +209,7 @@ func classifyContent(content string) map[string]int {
 
 // isJSON returns true if the content looks like a JSON object or array.
 func isJSON(content string) bool {
-	trimmed := trimSpace(content)
+	trimmed := strings.TrimSpace(content)
 	if len(trimmed) == 0 {
 		return false
 	}
@@ -219,13 +220,7 @@ func isJSON(content string) bool {
 
 // hasCodeBlock returns true if content contains a fenced code block.
 func hasCodeBlock(content string) bool {
-	runes := []rune(content)
-	for i := 0; i+2 < len(runes); i++ {
-		if runes[i] == '`' && runes[i+1] == '`' && runes[i+2] == '`' {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(content, "```")
 }
 
 // hasMarkdownTable returns true if content contains markdown table syntax.
@@ -255,21 +250,4 @@ func isCJK(r rune) bool {
 		(r >= 0x2F800 && r <= 0x2FA1F) || // CJK Compatibility Supplement
 		(r >= 0x3000 && r <= 0x303F) || // CJK Symbols and Punctuation
 		(r >= 0xFF00 && r <= 0xFFEF) // Halfwidth and Fullwidth Forms
-}
-
-// trimSpace trims ASCII whitespace from a byte slice.
-func trimSpace(s string) string {
-	start := 0
-	for start < len(s) && isWhitespace(s[start]) {
-		start++
-	}
-	end := len(s)
-	for end > start && isWhitespace(s[end-1]) {
-		end--
-	}
-	return s[start:end]
-}
-
-func isWhitespace(b byte) bool {
-	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
 }
