@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -144,6 +145,19 @@ func run() error {
 		Logger:     stdLogger{},
 	})
 
+	// Wire background summary worker (Task 8).
+	// The worker shares cbStore and compressor with the Biz. It is started here
+	// and stopped via workerCancel when the server shuts down.
+	// Task 9/10 producers obtain the worker via SummaryWorkerInstance().
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	defer workerCancel()                                                       // error-path guard only; normal shutdown calls workerCancel() explicitly below
+	summaryWorker := cbbiz.NewSummaryWorker(cbStore, nil, cbbiz.WorkerOptions{ // compressor nil until Task 12
+		Logger: stdLogger{},
+	})
+	go summaryWorker.Run(workerCtx)
+	SetSummaryWorkerInstance(summaryWorker)
+	log.Infow("Context budget summary worker started")
+
 	// Build ContextBudgetCreditService adapter wrapping the ICreditService.
 	bizLayer := biz.NewBiz(store.S)
 	creditFacade := &creditServiceFacade{svc: bizLayer.CreditService()}
@@ -248,6 +262,10 @@ func run() error {
 
 	//grpcsrv.GracefulStop()
 
+	// 优雅关闭 summary worker（停止接收新 job，等 in-flight job 结束）
+	workerCancel()
+	log.Infow("Context budget summary worker stopped")
+
 	// 优雅关闭博主监控调度器
 	bizLayer.Monitor().StopScheduler()
 
@@ -260,6 +278,30 @@ func run() error {
 	log.Infow("Server exiting")
 
 	return nil
+}
+
+// ----------------------------------------------------------------------------
+// Summary worker package-level accessor
+// ----------------------------------------------------------------------------
+
+// summaryWorkerInst holds the singleton SummaryWorker once run() has wired it.
+// atomic.Pointer makes both Store and Load race-free without a mutex.
+var summaryWorkerInst atomic.Pointer[cbbiz.SummaryWorker]
+
+// SetSummaryWorkerInstance stores the worker singleton. Called once by run().
+// CompareAndSwap(nil, w) is equivalent to sync.Once — only the first call
+// succeeds; subsequent calls (e.g., parallel test instances) are silently
+// ignored.
+func SetSummaryWorkerInstance(w *cbbiz.SummaryWorker) {
+	summaryWorkerInst.CompareAndSwap(nil, w)
+}
+
+// SummaryWorkerInstance returns the running SummaryWorker so that SOP/chatbot
+// producers (Task 9/10) can enqueue jobs. Returns nil before run() completes,
+// which is safe — Enqueue on a nil worker would panic, but Task 9/10 producers
+// should guard with a nil check.
+func SummaryWorkerInstance() *cbbiz.SummaryWorker {
+	return summaryWorkerInst.Load()
 }
 
 // ----------------------------------------------------------------------------
