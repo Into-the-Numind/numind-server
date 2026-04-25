@@ -34,7 +34,7 @@ type ContextBudgetStore interface {
 
 	// FindReadySummary looks up a summary by (owner_user_id, scope_type, scope_id,
 	// source_hash) with status='ready'. Returns gorm.ErrRecordNotFound when absent.
-	FindReadySummary(ctx context.Context, ownerUserID uint64, scopeType, scopeID, sourceHash string) (*model.ContextSummary, error)
+	FindReadySummary(ctx context.Context, ownerUserID uint, scopeType, scopeID, sourceHash string) (*model.ContextSummary, error)
 
 	// UpsertSummary inserts or updates a context summary on conflict of the
 	// (owner_user_id, scope_type, scope_id, source_hash) unique key.
@@ -133,11 +133,7 @@ func (s *contextBudgetStore) GetActiveTokenProfile(ctx context.Context, key Toke
 			key.Provider, key.Model, key.ServiceType, true)
 	// P2-B: always filter is_fallback explicitly so exact lookups cannot match
 	// fallback rows and fallback lookups cannot match exact rows.
-	if key.IsFallback {
-		q = q.Where("is_fallback = ?", true)
-	} else {
-		q = q.Where("is_fallback = ?", false)
-	}
+	q = q.Where("is_fallback = ?", key.IsFallback)
 	if err := q.Order("version DESC, id DESC").Limit(2).Find(&profiles).Error; err != nil {
 		return nil, fmt.Errorf("GetActiveTokenProfile: %w", err)
 	}
@@ -160,11 +156,13 @@ func (s *contextBudgetStore) GetActiveTokenProfile(ctx context.Context, key Toke
 func (s *contextBudgetStore) SaveTokenProfileVersion(ctx context.Context, input SaveTokenProfileInput) (*model.TokenEstimationProfile, error) {
 	var saved *model.TokenEstimationProfile
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Lock all currently-active rows for this key.
+		// Lock all currently-active rows for this key, filtered by is_fallback to
+		// prevent accidentally deactivating fallback=true rows when saving a
+		// fallback=false version and vice versa. (F1 fix)
 		var existing []model.TokenEstimationProfile
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("provider = ? AND model = ? AND service_type = ? AND is_active = ?",
-				input.Provider, input.Model, input.ServiceType, true).
+			Where("provider = ? AND model = ? AND service_type = ? AND is_active = ? AND is_fallback = ?",
+				input.Provider, input.Model, input.ServiceType, true, input.IsFallback).
 			Find(&existing).Error; err != nil {
 			return err
 		}
@@ -257,13 +255,13 @@ func (s *contextBudgetStore) GetActivePolicy(ctx context.Context, operation stri
 // on Create and the DB DEFAULT TRUE silently wins. We capture caller intent
 // before Create and follow up with UpdateColumn to persist false.
 // See .claude/rules/database.md §6.
-func (s *contextBudgetStore) SavePolicyVersion(ctx context.Context, in SavePolicyInput) (*model.ContextBudgetPolicy, error) {
+func (s *contextBudgetStore) SavePolicyVersion(ctx context.Context, input SavePolicyInput) (*model.ContextBudgetPolicy, error) {
 	var saved *model.ContextBudgetPolicy
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Lock all currently-active rows for this operation.
 		var existing []model.ContextBudgetPolicy
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("operation = ? AND is_active = ?", in.Operation, true).
+			Where("operation = ? AND is_active = ?", input.Operation, true).
 			Find(&existing).Error; err != nil {
 			return err
 		}
@@ -290,22 +288,22 @@ func (s *contextBudgetStore) SavePolicyVersion(ctx context.Context, in SavePolic
 		}
 
 		// Capture caller's ChargeUser intent before Create (GORM default:true gotcha).
-		wantChargeUser := in.ChargeUser
+		wantChargeUser := input.ChargeUser
 
 		// Insert new active version.
 		newRow := &model.ContextBudgetPolicy{
-			Operation:            in.Operation,
-			ReservedOutputTokens: in.ReservedOutputTokens,
-			SafeRatio:            in.SafeRatio,
-			FixedOverheadTokens:  in.FixedOverheadTokens,
-			SoftThresholdRatio:   in.SoftThresholdRatio,
-			HardThresholdRatio:   in.HardThresholdRatio,
-			ChargeUser:           in.ChargeUser,
-			Description:          in.Description,
+			Operation:            input.Operation,
+			ReservedOutputTokens: input.ReservedOutputTokens,
+			SafeRatio:            input.SafeRatio,
+			FixedOverheadTokens:  input.FixedOverheadTokens,
+			SoftThresholdRatio:   input.SoftThresholdRatio,
+			HardThresholdRatio:   input.HardThresholdRatio,
+			ChargeUser:           input.ChargeUser,
+			Description:          input.Description,
 			Version:              nextVersion,
 			IsActive:             true,
-			ChangeReason:         in.ChangeReason,
-			UpdatedBy:            in.UpdatedBy,
+			ChangeReason:         input.ChangeReason,
+			UpdatedBy:            input.UpdatedBy,
 		}
 		if err := tx.Create(newRow).Error; err != nil {
 			return err
@@ -332,7 +330,7 @@ func (s *contextBudgetStore) SavePolicyVersion(ctx context.Context, in SavePolic
 // FindReadySummary looks up a context summary by the full tenant-scoped key
 // (owner_user_id, scope_type, scope_id, source_hash) with status='ready'.
 // Returns gorm.ErrRecordNotFound (wrapped) when no matching row exists.
-func (s *contextBudgetStore) FindReadySummary(ctx context.Context, ownerUserID uint64, scopeType, scopeID, sourceHash string) (*model.ContextSummary, error) {
+func (s *contextBudgetStore) FindReadySummary(ctx context.Context, ownerUserID uint, scopeType, scopeID, sourceHash string) (*model.ContextSummary, error) {
 	var summary model.ContextSummary
 	err := s.db.WithContext(ctx).
 		Where("owner_user_id = ? AND scope_type = ? AND scope_id = ? AND source_hash = ? AND status = ?",
@@ -384,6 +382,10 @@ func (s *contextBudgetStore) CreateEvent(ctx context.Context, event *model.Conte
 
 // PatchEvent updates only non-nil fields on the event identified by id.
 // Uses Updates(map) to skip zero-value fields and avoid overwriting unrelated columns.
+// Note: GORM `.Updates(map)` returns nil error even when 0 rows are affected
+// (the id does not exist). Callers that must distinguish "patched" from "id not
+// found" should check beforehand or use db.RowsAffected. This store layer does
+// not enforce existence.
 func (s *contextBudgetStore) PatchEvent(ctx context.Context, id uint64, patch EventPatch) error {
 	updates := make(map[string]interface{})
 

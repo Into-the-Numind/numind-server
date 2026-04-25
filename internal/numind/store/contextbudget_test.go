@@ -216,20 +216,20 @@ func TestContextBudgetStore_SummaryLookupRequiresOwnerScopeAndHash(t *testing.T)
 	assert.NotEqual(t, sum10.ID, sum20.ID, "distinct owners must produce distinct rows")
 
 	// Lookup with owner=10 must return the owner=10 row.
-	found, err := s.FindReadySummary(ctx, uint64(owner10), "sop_session", "sess-abc", "hash-xyz")
+	found, err := s.FindReadySummary(ctx, owner10, "sop_session", "sess-abc", "hash-xyz")
 	require.NoError(t, err)
 	require.NotNil(t, found, "should find a summary for owner=10")
 	assert.Equal(t, sum10.ID, found.ID, "must return the owner=10 row, not owner=20")
 	assert.Equal(t, "summary for owner 10", found.SummaryText)
 
 	// Lookup with owner=20 must return the owner=20 row.
-	found20, err := s.FindReadySummary(ctx, uint64(owner20), "sop_session", "sess-abc", "hash-xyz")
+	found20, err := s.FindReadySummary(ctx, owner20, "sop_session", "sess-abc", "hash-xyz")
 	require.NoError(t, err)
 	require.NotNil(t, found20)
 	assert.Equal(t, sum20.ID, found20.ID, "must return the owner=20 row")
 
 	// Lookup with a non-existent owner must return nil / not-found error.
-	_, err = s.FindReadySummary(ctx, 999, "sop_session", "sess-abc", "hash-xyz")
+	_, err = s.FindReadySummary(ctx, uint(999), "sop_session", "sess-abc", "hash-xyz")
 	assert.Error(t, err, "non-existent owner+scope+hash should return an error")
 }
 
@@ -420,4 +420,129 @@ func TestContextBudgetStore_CreateAndPatchEvent(t *testing.T) {
 	assert.Equal(t, "task-001", row.TaskID)
 	assert.Equal(t, 50000, row.EstimatedBefore)
 	assert.Nil(t, row.ReconcileDelta, "unpatched ReconcileDelta should remain nil")
+}
+
+// TestContextBudgetStore_SaveTokenProfile_DoesNotDeactivateOtherFallbackKind verifies
+// the F1 fix: when (provider, model, service_type) has both a fallback=true and a
+// fallback=false active row, saving a new fallback=false version must NOT deactivate
+// the fallback=true row.
+func TestContextBudgetStore_SaveTokenProfile_DoesNotDeactivateOtherFallbackKind(t *testing.T) {
+	db := newContextBudgetTestDB(t)
+	s := NewContextBudgetStore(db)
+	ctx := context.Background()
+
+	profileJSON := datatypes.JSON([]byte(`{}`))
+
+	// Directly insert two active rows: one is_fallback=false, one is_fallback=true.
+	exact := &model.TokenEstimationProfile{
+		Provider: "volc", Model: "deepseek-v3", ServiceType: "llm_chat",
+		SafetyMultiplier: 1.15, CalibrationMultiplier: 1.0,
+		ProfileJSON: profileJSON,
+		Version:     1, IsActive: true, IsFallback: false,
+	}
+	fallbackRow := &model.TokenEstimationProfile{
+		Provider: "volc", Model: "deepseek-v3", ServiceType: "llm_chat",
+		SafetyMultiplier: 1.30, CalibrationMultiplier: 1.0,
+		ProfileJSON: profileJSON,
+		Version:     1, IsActive: true, IsFallback: true,
+	}
+	require.NoError(t, db.Create(exact).Error)
+	require.NoError(t, db.Create(fallbackRow).Error)
+
+	// Save a new fallback=false version — must only deactivate the existing fallback=false row.
+	saved, err := s.SaveTokenProfileVersion(ctx, SaveTokenProfileInput{
+		Provider: "volc", Model: "deepseek-v3", ServiceType: "llm_chat",
+		SafetyMultiplier: 1.20, CalibrationMultiplier: 1.0,
+		ProfileJSON: profileJSON,
+		IsFallback:  false,
+	})
+	require.NoError(t, err)
+	require.True(t, saved.IsActive)
+	require.False(t, saved.IsFallback)
+	assert.Equal(t, uint(2), saved.Version, "version should increment from fallback=false v1")
+
+	// The fallback=true row must remain active (F1 fix).
+	var fallbackRefreshed model.TokenEstimationProfile
+	require.NoError(t, db.First(&fallbackRefreshed, fallbackRow.ID).Error)
+	assert.True(t, fallbackRefreshed.IsActive, "fallback=true row must remain active after saving fallback=false")
+
+	// The original fallback=false v1 row must be deactivated.
+	var exactRefreshed model.TokenEstimationProfile
+	require.NoError(t, db.First(&exactRefreshed, exact.ID).Error)
+	assert.False(t, exactRefreshed.IsActive, "fallback=false v1 must be deactivated")
+}
+
+// TestContextBudgetStore_PatchEvent_EmptyPatchIsNoop verifies that calling PatchEvent
+// with an all-nil EventPatch returns nil error and performs no UPDATE (short-circuit).
+func TestContextBudgetStore_PatchEvent_EmptyPatchIsNoop(t *testing.T) {
+	db := newContextBudgetTestDB(t)
+	s := NewContextBudgetStore(db)
+	ctx := context.Background()
+
+	uid := uint(7)
+	event := &model.ContextBudgetEvent{
+		UserID:               &uid,
+		Operation:            "sop_run",
+		TaskID:               "task-noop",
+		Provider:             "volc",
+		Model:                "deepseek-v3",
+		ContextWindow:        128000,
+		MaxOutputTokens:      2048,
+		ReservedOutputTokens: 256,
+		FixedOverheadTokens:  128,
+		SafeRatio:            0.85,
+		SafeInputBudget:      109184,
+		EstimatedBefore:      30000,
+		EstimatedAfter:       30000,
+		Status:               "ok",
+	}
+	require.NoError(t, s.CreateEvent(ctx, event))
+
+	// Apply an empty patch — all fields nil.
+	err := s.PatchEvent(ctx, event.ID, EventPatch{})
+	require.NoError(t, err, "empty patch must not return an error")
+
+	// Read back: all fields must be unchanged.
+	var row model.ContextBudgetEvent
+	require.NoError(t, db.First(&row, event.ID).Error)
+	assert.Equal(t, "ok", row.Status, "status must remain unchanged after empty patch")
+	assert.Equal(t, "task-noop", row.TaskID, "task_id must remain unchanged after empty patch")
+}
+
+// TestContextBudgetStore_FindReadySummary_StatusFiltering verifies that summaries
+// with status != 'ready' are not returned by FindReadySummary.
+func TestContextBudgetStore_FindReadySummary_StatusFiltering(t *testing.T) {
+	db := newContextBudgetTestDB(t)
+	s := NewContextBudgetStore(db)
+	ctx := context.Background()
+
+	ownerID := uint(55)
+	fragIDs := datatypes.JSON([]byte(`[10,20]`))
+
+	// Insert a summary with status='pending' (not 'ready').
+	pendingSummary := &model.ContextSummary{
+		UserID:            55,
+		OwnerUserID:       &ownerID,
+		ScopeType:         "sop_session",
+		ScopeID:           "sess-filter",
+		SourceHash:        "hash-filter",
+		SourceFragmentIDs: fragIDs,
+		SummaryText:       "pending summary",
+		Status:            "pending",
+	}
+	require.NoError(t, s.UpsertSummary(ctx, pendingSummary))
+	require.NotZero(t, pendingSummary.ID)
+
+	// FindReadySummary must return not-found because status != 'ready'.
+	_, err := s.FindReadySummary(ctx, ownerID, "sop_session", "sess-filter", "hash-filter")
+	require.Error(t, err, "pending summary must not be returned by FindReadySummary")
+	assert.ErrorContains(t, err, "not found", "error must indicate record not found")
+
+	// Now update status to 'ready' and verify it is now found.
+	require.NoError(t, db.Model(pendingSummary).UpdateColumn("status", "ready").Error)
+
+	found, err := s.FindReadySummary(ctx, ownerID, "sop_session", "sess-filter", "hash-filter")
+	require.NoError(t, err, "ready summary must be found")
+	require.NotNil(t, found)
+	assert.Equal(t, pendingSummary.ID, found.ID, "must return the same row after status update to ready")
 }
