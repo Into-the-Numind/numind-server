@@ -166,8 +166,9 @@ func (d Deps) errorw(msg string, kv ...interface{}) {
 // provider, Billing records the fallback provider/model/pricing rather than the
 // primary route.
 //
-// ContextBudgetCredits is currently a passthrough stub (Task 6 implements the
-// real budget/compression/Reserve-Reconcile/streaming logic).
+// ContextBudgetCredits implements the route-aware context budget gateway:
+// estimates token counts, runs the compression planner if needed, reserves
+// credits (ChargeUser=true ops), and reconciles/refunds after the provider call.
 //
 // The caller wraps the adapter handler (innermost) with the returned Middleware.
 func BuildDefault(deps Deps) Middleware {

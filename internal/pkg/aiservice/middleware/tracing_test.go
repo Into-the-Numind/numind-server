@@ -217,11 +217,11 @@ func TestTracing_WithTraceContext(t *testing.T) {
 // into Langfuse output.metadata sub-map, with nil-safety + zero-value skip.
 func TestMergeTraceMetadata(t *testing.T) {
 	cases := []struct {
-		name        string
-		outputMap   map[string]interface{}
-		tm          *aiservice.TraceMetadata
-		wantKeys    map[string]interface{}
-		wantNoKeys  []string
+		name       string
+		outputMap  map[string]interface{}
+		tm         *aiservice.TraceMetadata
+		wantKeys   map[string]interface{}
+		wantNoKeys []string
 	}{
 		{
 			name:      "nil tm is no-op",

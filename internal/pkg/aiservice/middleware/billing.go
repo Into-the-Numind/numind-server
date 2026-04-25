@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"time"
@@ -339,7 +340,72 @@ func buildBaseRecord(route *registry.ResolvedRoute, userID uint, deps Deps, ctx 
 	}
 
 	r.CreatedAt = deps.clock().Now()
+
+	// Merge context-budget metadata when ContextBudgetCredits middleware ran.
+	// The budget metadata is attached by ContextBudgetCredits via withBudgetMetadata
+	// before calling the inner chain so that Billing can attach event_id,
+	// token_profile_id, and compression metrics to usage_record.metadata.
+	if bm, ok := budgetMetadataFromCtx(ctx); ok {
+		r.Metadata = mergeBudgetMetadata(r.Metadata, bm)
+	}
+
 	return r
+}
+
+// mergeBudgetMetadata merges the budget metadata fields into the existing
+// metadata JSON string. Returns the merged JSON or the original on failure.
+//
+// Existing metadata is expected to be a valid JSON object (or "{}").
+// The budget fields are merged at the top level (shallow merge).
+func mergeBudgetMetadata(existing string, bm budgetMetadata) string {
+	// Decode existing metadata object.
+	existing = normalizeMetadataJSON(existing)
+	var base map[string]interface{}
+	if err := json.Unmarshal([]byte(existing), &base); err != nil {
+		base = make(map[string]interface{})
+	}
+
+	// Merge budget fields (only non-zero values to avoid polluting records
+	// where ContextBudgetCredits is a passthrough).
+	if bm.EventID != 0 {
+		base["context_budget_event_id"] = bm.EventID
+	}
+	if bm.TokenProfileID != 0 {
+		base["token_profile_id"] = bm.TokenProfileID
+	}
+	if bm.SafeInputBudget != 0 {
+		base["safe_input_budget"] = bm.SafeInputBudget
+	}
+	if bm.EstimatedPromptBefore != 0 {
+		base["estimated_prompt_tokens_before"] = bm.EstimatedPromptBefore
+	}
+	if bm.EstimatedPromptAfter != 0 {
+		base["estimated_prompt_tokens_after"] = bm.EstimatedPromptAfter
+	}
+	if bm.CompressionStatus != "" {
+		base["compression_status"] = bm.CompressionStatus
+	}
+	if bm.ReservedOutputTokens != 0 {
+		base["reserved_output_tokens"] = bm.ReservedOutputTokens
+	}
+	if bm.ReservationID != 0 {
+		base["reservation_id"] = bm.ReservationID
+	}
+
+	merged, err := json.Marshal(base)
+	if err != nil {
+		return existing
+	}
+	return string(merged)
+}
+
+// normalizeMetadataJSON ensures the input is a parseable JSON object string.
+// Returns "{}" when input is empty or not a JSON object.
+func normalizeMetadataJSON(s string) string {
+	if s == "" {
+		return "{}"
+	}
+	return s
 }
 
 // isNotFoundErr reports whether err wraps gorm.ErrRecordNotFound.
