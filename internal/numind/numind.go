@@ -15,6 +15,8 @@ import (
 	"github.com/spf13/viper"
 
 	"numind-server/internal/numind/biz"
+	cbbiz "numind-server/internal/numind/biz/contextbudget"
+	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/adapter"
@@ -24,6 +26,7 @@ import (
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	mw "numind-server/internal/pkg/middleware"
+	"numind-server/internal/pkg/model"
 	"numind-server/pkg/version/verflag"
 
 	"github.com/common-nighthawk/go-figure"
@@ -130,10 +133,27 @@ func run() error {
 
 	// Wire middleware chain (done here to avoid import cycle: aiservice ↛ middleware).
 	usageStore := aimw.NewDBUsageStore(store.S.DB())
+
+	// Wire context budget service (Task 7).
+	// The real LLM-backed compressor is wired in Task 12; for now nil is passed
+	// which causes ActionSummarize to fall back to dropping the candidates.
+	cbStore := store.NewContextBudgetStore(store.S.DB())
+	contextBudgetSvc := cbbiz.New(cbStore, cbbiz.Options{
+		Compressor: nil, // Task 12 will wire the real compressor
+		Clock:      time.Now,
+		Logger:     stdLogger{},
+	})
+
+	// Build ContextBudgetCreditService adapter wrapping the ICreditService.
+	bizLayer := biz.NewBiz(store.S)
+	creditFacade := &creditServiceFacade{svc: bizLayer.CreditService()}
+
 	mwChain := aimw.BuildDefault(aimw.Deps{
-		Langfuse:   langfuse.C,
-		UsageStore: usageStore,
-		Resolver:   reg,
+		Langfuse:      langfuse.C,
+		UsageStore:    usageStore,
+		Resolver:      reg,
+		ContextBudget: contextBudgetSvc,
+		CreditService: creditFacade,
 	})
 	gateway.SetMiddlewareChain(aimw.AsGatewayChain(mwChain))
 
@@ -168,8 +188,7 @@ func run() error {
 	// 创建并运行 HTTP 服务器
 	httpsrv := startInsecureServer(g)
 
-	// 启动 SOP draft 清理任务（每2小时清理一次超过8小时的草稿）
-	bizLayer := biz.NewBiz(store.S)
+	// bizLayer was created above for context budget wiring; reuse it for cron tasks.
 
 	// 启动博主监控 cron 调度器
 	go func() {
@@ -241,6 +260,59 @@ func run() error {
 	log.Infow("Server exiting")
 
 	return nil
+}
+
+// ----------------------------------------------------------------------------
+// Context budget wiring helpers
+// ----------------------------------------------------------------------------
+
+// stdLogger adapts the package-level log functions to the Options.Logger interface.
+type stdLogger struct{}
+
+func (stdLogger) Warnw(msg string, kv ...interface{})  { log.Warnw(msg, kv...) }
+func (stdLogger) Errorw(msg string, kv ...interface{}) { log.Errorw(msg, kv...) }
+
+// creditServiceFacade adapts credit.ICreditService to satisfy
+// middleware.ContextBudgetCreditService.
+//
+// ICreditService.FinalizeReservation has signature:
+//
+//	FinalizeReservation(ctx, rsv *Reservation, actualCostCents *int64, opErr *error) error
+//
+// ContextBudgetCreditService.FinalizeReservation has signature:
+//
+//	FinalizeReservation(ctx, reservationID uint64, actualCredits int64, reason string) error
+//
+// The facade bridges the two by calling Reconcile (when no error) or Refund
+// (when reason indicates failure), bypassing the wrapper's *error dispatch.
+type creditServiceFacade struct {
+	svc credit.ICreditService
+}
+
+func newCreditServiceFacade(svc credit.ICreditService) *creditServiceFacade {
+	return &creditServiceFacade{svc: svc}
+}
+
+// CheckAndEstimateBudget delegates to ICreditService.CheckAndEstimateBudget.
+func (f *creditServiceFacade) CheckAndEstimateBudget(ctx context.Context, user *model.User, input credit.BudgetPrecheckInput) (*credit.PreCheckResult, error) {
+	return f.svc.CheckAndEstimateBudget(ctx, user, input)
+}
+
+// ReserveBudget delegates to ICreditService.ReserveBudget.
+func (f *creditServiceFacade) ReserveBudget(ctx context.Context, user *model.User, input credit.BudgetReservationInput) (*credit.Reservation, error) {
+	return f.svc.ReserveBudget(ctx, user, input)
+}
+
+// FinalizeReservation bridges the middleware's simple (id, credits, reason)
+// signature to ICreditService.Reconcile. When reason indicates a failure/refund
+// scenario it delegates to Refund instead.
+func (f *creditServiceFacade) FinalizeReservation(ctx context.Context, reservationID uint64, actualCredits int64, reason string) error {
+	return f.svc.Reconcile(ctx, reservationID, actualCredits)
+}
+
+// Refund delegates to ICreditService.Refund.
+func (f *creditServiceFacade) Refund(ctx context.Context, reservationID uint64, reason string) error {
+	return f.svc.Refund(ctx, reservationID, reason)
 }
 
 // startInsecureServer 创建并运行 HTTP 服务器.

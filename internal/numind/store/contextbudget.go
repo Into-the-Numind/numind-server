@@ -45,6 +45,10 @@ type ContextBudgetStore interface {
 
 	// PatchEvent updates non-nil fields of an existing event identified by id.
 	PatchEvent(ctx context.Context, id uint64, patch EventPatch) error
+
+	// GetEvent returns the context budget event row for the given id.
+	// Returns gorm.ErrRecordNotFound (wrapped) when absent.
+	GetEvent(ctx context.Context, id uint64) (*model.ContextBudgetEvent, error)
 }
 
 // TokenProfileLookupKey carries the lookup dimensions for GetActiveTokenProfile.
@@ -378,6 +382,16 @@ func (s *contextBudgetStore) CreateEvent(ctx context.Context, event *model.Conte
 		return fmt.Errorf("CreateEvent: %w", err)
 	}
 	return nil
+}
+
+// GetEvent returns the context budget event row for the given id.
+// Returns gorm.ErrRecordNotFound (wrapped) when absent.
+func (s *contextBudgetStore) GetEvent(ctx context.Context, id uint64) (*model.ContextBudgetEvent, error) {
+	var event model.ContextBudgetEvent
+	if err := s.db.WithContext(ctx).First(&event, id).Error; err != nil {
+		return nil, fmt.Errorf("GetEvent: %w", err)
+	}
+	return &event, nil
 }
 
 // PatchEvent updates only non-nil fields on the event identified by id.
