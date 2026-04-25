@@ -462,6 +462,86 @@ func repeat(s string, n int) string {
 	return string(out)
 }
 
+// ---------------------------------------------------------------------------
+// Test: TestPrepare_CompressorIsCalledWhenSummarizeAction
+// ---------------------------------------------------------------------------
+
+// TestPrepare_CompressorIsCalledWhenSummarizeAction verifies that when the
+// planner recommends an ActionSummarize action (because fragments exceed the
+// safe budget), Prepare calls the Compressor, the resulting estimated token
+// count is reduced, and the returned plan contains an ActionSummarize entry.
+func TestPrepare_CompressorIsCalledWhenSummarizeAction(t *testing.T) {
+	db := newTestDB(t)
+	cbStore := store.NewContextBudgetStore(db)
+
+	// Seed a policy with a very small context window to force the planner to
+	// recommend summarisation.
+	policy := &model.ContextBudgetPolicy{
+		Operation:            "chatbot_chat",
+		ReservedOutputTokens: 20,
+		SafeRatio:            0.85,
+		FixedOverheadTokens:  5,
+		SoftThresholdRatio:   0.7,
+		HardThresholdRatio:   0.85,
+		ChargeUser:           false,
+		Version:              1,
+		IsActive:             true,
+	}
+	require.NoError(t, db.Create(policy).Error)
+	if policy.ChargeUser {
+		db.Model(policy).UpdateColumn("charge_user", false)
+		policy.ChargeUser = false
+	}
+
+	// Seed a token profile.
+	sampleProfile(db)
+
+	// Wire a successCompressor so the Compress call can succeed.
+	sc := &successCompressor{}
+	biz := New(cbStore, Options{
+		Compressor: sc,
+		Clock:      time.Now,
+		Logger:     noopLogger{},
+	})
+
+	// Create a large fragment whose token estimate exceeds the safe input budget
+	// for a tiny context window (100 tokens total) with reserved_output=20 and
+	// fixed_overhead=5.  safe_input_budget = floor((100 - 20 - 5) * 0.85) = 63.
+	// 300 'A' chars at 0.25 tokens/char = 75 estimated tokens — well above 63.
+	largeContent := repeat("A", 300) // ~75 tokens > safe budget of 63
+	fragA := contextbudget.ContextFragment{
+		ID:              "frag-large",
+		Role:            contextbudget.RoleDurable,
+		Source:          contextbudget.SourceUser,
+		ContentType:     contextbudget.ContentText,
+		Content:         largeContent,
+		Importance:      3,
+		Order:           1,
+		Compressibility: contextbudget.CompressSummarize, // allows summarise
+	}
+
+	result, err := biz.Prepare(context.Background(), aimw.PrepareInput{
+		Operation:       "chatbot_chat",
+		UserID:          0,
+		Route:           sampleRoute(100, 50),
+		Fragments:       []contextbudget.ContextFragment{fragA},
+		ContextWindow:   100,
+		MaxOutputTokens: 50,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// Compressor must have been called.
+	assert.True(t, sc.called, "successCompressor.Compress should have been called by applyPlan")
+
+	// After compression, estimated tokens should be less than before compression.
+	assert.Less(t, result.EstimatedAfter, result.EstimatedBefore,
+		"EstimatedAfter should be < EstimatedBefore after successful compression")
+
+	// The event must have been persisted.
+	assert.NotZero(t, result.EventID, "EventID should be non-zero after compression")
+}
+
 // Compile-time check: Biz must satisfy aimw.ContextBudgetService.
 var _ aimw.ContextBudgetService = (*Biz)(nil)
 

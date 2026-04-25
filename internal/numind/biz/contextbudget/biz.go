@@ -142,9 +142,17 @@ func (b *Biz) Prepare(ctx context.Context, input aimw.PrepareInput) (*aimw.Prepa
 		}, nil
 	}
 
-	// Step 2: normalise operation. For internal ops (context_compression) we allow
-	// them through without mapping to a credit.Operation.
-	normalizedOp := normalizeOperation(input.Operation)
+	// Step 2: normalise operation.
+	normalizedOp, normErr := normalizeOperation(input.Operation, input.UserID != 0)
+	if normErr != nil {
+		return nil, fmt.Errorf("Prepare: %w", normErr)
+	}
+
+	// Spec §5.4: when this Prepare is invoked from the compressor's own LLM call,
+	// we must NOT recursively run compression. Detect by the canonical operation name.
+	if normalizedOp == "context_compression" {
+		return b.prepareWithoutCompression(ctx, input, normalizedOp)
+	}
 
 	// Step 3: read route capability.
 	cap := contextbudget.ModelCapability{
@@ -180,7 +188,7 @@ func (b *Biz) Prepare(ctx context.Context, input aimw.PrepareInput) (*aimw.Prepa
 	policy := policyRowToBudgetPolicy(policyRow)
 
 	// Step 5: load active token profile (exact then fallback).
-	profileRow, tokenProfile := b.loadTokenProfile(ctx, input)
+	profileRow, tokenProfile, _ := b.loadTokenProfile(ctx, input)
 
 	// Step 6: estimate fragments.
 	budget, err := contextbudget.ComputeBudget(cap, policy)
@@ -276,6 +284,112 @@ func (b *Biz) Prepare(ctx context.Context, input aimw.PrepareInput) (*aimw.Prepa
 		NormalizedOp:    normalizedOp,
 		SkipBudget:      false,
 	}, nil
+}
+
+// prepareWithoutCompression is a trimmed Prepare path used when operation ==
+// "context_compression" (spec §5.4). It runs estimation and persists an event
+// but deliberately skips the compression loop to prevent recursive LLM calls.
+// If the estimate still exceeds the budget, ErrContextTooLarge is returned to
+// guard against runaway context growth.
+func (b *Biz) prepareWithoutCompression(ctx context.Context, input aimw.PrepareInput, normalizedOp string) (*aimw.PrepareResult, error) {
+	// Resolve model capability.
+	cap := contextbudget.ModelCapability{
+		ContextWindow:   input.ContextWindow,
+		MaxOutputTokens: input.MaxOutputTokens,
+	}
+	if input.Route != nil {
+		if input.Route.Capability.ContextWindow > 0 {
+			cap.ContextWindow = input.Route.Capability.ContextWindow
+		}
+		if input.Route.Capability.MaxOutputTokens > 0 {
+			cap.MaxOutputTokens = input.Route.Capability.MaxOutputTokens
+		}
+	}
+	if cap.ContextWindow <= 0 {
+		cap.ContextWindow = 128000
+	}
+	if cap.MaxOutputTokens <= 0 {
+		cap.MaxOutputTokens = 8192
+	}
+
+	// Load policy (fall back to default if not configured).
+	policyRow, err := b.store.GetActivePolicy(ctx, input.Operation)
+	if err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("prepareWithoutCompression: GetActivePolicy: %w", err)
+		}
+		policyRow = defaultPolicy(input.Operation, cap)
+	}
+	policy := policyRowToBudgetPolicy(policyRow)
+
+	// Load token profile.
+	profileRow, tokenProfile, _ := b.loadTokenProfile(ctx, input)
+
+	// Compute budget and estimate.
+	budget, err := contextbudget.ComputeBudget(cap, policy)
+	if err != nil {
+		return nil, fmt.Errorf("prepareWithoutCompression: ComputeBudget: %w", err)
+	}
+
+	fragments := make([]contextbudget.ContextFragment, len(input.Fragments))
+	copy(fragments, input.Fragments)
+
+	estResult := contextbudget.EstimateFragments(fragments, tokenProfile, policy.FixedOverheadTokens, 0)
+	estimatedBefore := estResult.PromptTokens
+
+	// Guard: even without compression, if input is too large return an error.
+	if estResult.PromptTokens > budget.SafeInputBudget {
+		return nil, fmt.Errorf("%w: estimated=%d safe=%d op=%s (context_compression: no recursive compression)",
+			contextbudget.ErrContextTooLarge, estResult.PromptTokens, budget.SafeInputBudget, normalizedOp)
+	}
+
+	// Persist event.
+	var profileID *uint64
+	if profileRow != nil {
+		profileID = &profileRow.ID
+	}
+	policyID := policyRow.ID
+
+	ev := b.buildEvent(input, &policyID, profileID, estimatedBefore, estResult.PromptTokens, "ok", "")
+	ev.SafeInputBudget = budget.SafeInputBudget
+	ev.ReservedOutputTokens = policy.ReservedOutputTokens
+	ev.SafeRatio = policy.SafeRatio
+	ev.FixedOverheadTokens = policy.FixedOverheadTokens
+
+	if err := b.store.CreateEvent(ctx, ev); err != nil {
+		return nil, fmt.Errorf("prepareWithoutCompression: CreateEvent: %w", err)
+	}
+
+	messages := aiservice.RenderContextFragments(fragments)
+
+	var tokenProfileID uint64
+	if profileRow != nil {
+		tokenProfileID = profileRow.ID
+	}
+
+	return &aimw.PrepareResult{
+		Fragments:       fragments,
+		Messages:        messages,
+		EstimatedBefore: estimatedBefore,
+		EstimatedAfter:  estResult.PromptTokens,
+		SafeInputBudget: budget.SafeInputBudget,
+		Policy:          policy,
+		PolicyID:        policyID,
+		TokenProfileID:  tokenProfileID,
+		EventID:         ev.ID,
+		NormalizedOp:    normalizedOp,
+		SkipBudget:      false,
+	}, nil
+}
+
+// deriveOwnerUserID returns the owner user ID for summary cache lookups.
+// For B2B2C child accounts (ParentUserID != nil), the owner is the parent.
+// For standalone users, the owner is the user themselves (spec §3.4).
+func deriveOwnerUserID(in aimw.PrepareInput) uint {
+	if in.User != nil && in.User.ParentUserID != nil && *in.User.ParentUserID != 0 {
+		return *in.User.ParentUserID
+	}
+	return in.UserID
 }
 
 // ---------------------------------------------------------------------------
@@ -458,42 +572,82 @@ func (b *Biz) Preview(_ context.Context, input PreviewInput) (*PreviewResult, er
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-// normalizeOperation maps raw billing operation strings to canonical names used
-// in event/metadata. Internal ops (context_compression) pass through unchanged.
-func normalizeOperation(op string) string {
-	if op == "" {
-		return "unknown"
-	}
-	return op
+// budgetOperationMap mirrors the spec §6.1.1 mapping table.
+// Kept as a plain string→string map to avoid importing biz/credit just for these constants.
+var budgetOperationMap = map[string]string{
+	"sop_node_execute":              "sop_run",
+	"sop_run":                       "sop_run",
+	"sop_chat":                      "sop_chat",
+	"sop_chat_stream":               "sop_chat",
+	"chatbot_chat":                  "chatbot_chat",
+	"chatbot.stream":                "chatbot_chat",
+	"salesrag_chat":                 "salesrag_chat",
+	"salesrag_chat_generate":        "salesrag_chat",
+	"salesrag_strategy_select":      "salesrag_chat",
+	"salesrag_analyze_profile":      "salesrag_chat",
+	"salesrag_analyze_profile_text": "salesrag_chat",
+	"salesrag_chat_style_text":      "salesrag_chat",
+	"context_compression":           "context_compression",
 }
 
-// loadTokenProfile attempts to load an exact token profile for the route's
-// provider/model, falling back to a fallback profile, then to a built-in default.
-func (b *Biz) loadTokenProfile(ctx context.Context, input aimw.PrepareInput) (*model.TokenEstimationProfile, contextbudget.TokenProfile) {
+// normalizeOperation maps raw billing operation strings to canonical context-budget
+// operation strings per spec §6.1.1.
+//
+// If the operation is not in the map:
+//   - hasUser=true  (caller has user billing context, i.e. would charge): returns
+//     ("", ErrContextConfigInvalid) — fail-closed; silently defaulting to
+//     "default_llm_chat" for a charged user call would be unsafe.
+//   - hasUser=false (internal/admin call, uncharged): returns "default_llm_chat".
+func normalizeOperation(op string, hasUser bool) (string, error) {
+	if normalized, ok := budgetOperationMap[op]; ok {
+		return normalized, nil
+	}
+	if hasUser {
+		return "", fmt.Errorf("normalizeOperation: %w: unknown operation %q for user billing context",
+			contextbudget.ErrContextConfigInvalid, op)
+	}
+	return "default_llm_chat", nil
+}
+
+// loadTokenProfile loads a token estimation profile for the route's provider/model.
+//
+// It performs spec §3.2 lookup levels 1, 3, and 4:
+//
+//  1. Exact:            (provider, model, service_type, is_fallback=false, is_active=true)
+//  2. (family-level skipped — deferred until admin can supply ModelFamily explicitly)
+//  3. Provider fallback: (provider, "",    service_type, is_fallback=true,  is_active=true)
+//  4. Global fallback:  ("",       "",    service_type, is_fallback=true,  is_active=true)
+//
+// Returns (row, profile, isFallback). isFallback=true when levels 3 or 4 were used.
+// When no DB row is found at any level, returns (nil, defaultTokenProfile(), true).
+func (b *Biz) loadTokenProfile(ctx context.Context, input aimw.PrepareInput) (*model.TokenEstimationProfile, contextbudget.TokenProfile, bool) {
 	if input.Route == nil {
-		return nil, defaultTokenProfile()
+		return nil, defaultTokenProfile(), true
 	}
 
 	provider := input.Route.Provider.Name
-	model := input.Route.ServiceKey
+	modelKey := input.Route.ServiceKey
 
-	// Try exact match.
+	// Level 1: exact match (provider, model).
 	row, err := b.store.GetActiveTokenProfile(ctx, store.TokenProfileLookupKey{
 		Provider:    provider,
-		Model:       model,
+		Model:       modelKey,
 		ServiceType: "llm_chat",
 		IsFallback:  false,
 	})
 	if err == nil {
-		p, parseErr := parseTokenProfile(row)
+		p, parseErr := parseTokenProfile(row, false)
 		if parseErr == nil {
-			return row, p
+			return row, p, false
 		}
 		b.logger.Warnw("loadTokenProfile: parse error for exact profile",
-			"provider", provider, "model", model, "error", parseErr)
+			"provider", provider, "model", modelKey, "error", parseErr)
 	}
 
-	// Try fallback profile.
+	// Level 3: provider-scoped fallback (provider, "").
+	// NOTE: level 2 (model-family lookup) is deferred until admin explicitly
+	// supplies a ModelFamily value; family derivation from model strings is
+	// unreliable across providers.
 	fallbackRow, err := b.store.GetActiveTokenProfile(ctx, store.TokenProfileLookupKey{
 		Provider:    provider,
 		Model:       "",
@@ -501,18 +655,34 @@ func (b *Biz) loadTokenProfile(ctx context.Context, input aimw.PrepareInput) (*m
 		IsFallback:  true,
 	})
 	if err == nil {
-		p, parseErr := parseTokenProfile(fallbackRow)
+		p, parseErr := parseTokenProfile(fallbackRow, true)
 		if parseErr == nil {
-			return fallbackRow, p
+			return fallbackRow, p, true
 		}
 	}
 
-	// Built-in safe default.
-	return nil, defaultTokenProfile()
+	// Level 4: global fallback ("", "").
+	globalRow, err := b.store.GetActiveTokenProfile(ctx, store.TokenProfileLookupKey{
+		Provider:    "",
+		Model:       "",
+		ServiceType: "llm_chat",
+		IsFallback:  true,
+	})
+	if err == nil {
+		p, parseErr := parseTokenProfile(globalRow, true)
+		if parseErr == nil {
+			return globalRow, p, true
+		}
+	}
+
+	// Built-in safe default (already conservative; treated as fallback).
+	return nil, defaultTokenProfile(), true
 }
 
 // parseTokenProfile deserialises the JSON profile embedded in a DB row.
-func parseTokenProfile(row *model.TokenEstimationProfile) (contextbudget.TokenProfile, error) {
+// When isFallback is true, the safety multiplier is raised to at least 1.30
+// per spec §3.2 to account for the higher estimation uncertainty of non-exact profiles.
+func parseTokenProfile(row *model.TokenEstimationProfile, isFallback bool) (contextbudget.TokenProfile, error) {
 	var tp contextbudget.TokenProfile
 	if err := json.Unmarshal(row.ProfileJSON, &tp); err != nil {
 		return contextbudget.TokenProfile{}, err
@@ -523,6 +693,10 @@ func parseTokenProfile(row *model.TokenEstimationProfile) (contextbudget.TokenPr
 	}
 	if row.CalibrationMultiplier > 0 {
 		tp.CalibrationMultiplier = row.CalibrationMultiplier
+	}
+	// Spec §3.2: when a fallback row is used, apply a minimum safety boost of 1.30.
+	if isFallback && tp.SafetyMultiplier < 1.30 {
+		tp.SafetyMultiplier = 1.30
 	}
 	return tp, nil
 }
@@ -594,12 +768,16 @@ func (b *Biz) loadSummaryCache(ctx context.Context, input aimw.PrepareInput, fra
 		return nil
 	}
 
+	// Derive owner: for B2B2C child accounts the cache is keyed by the parent
+	// (owner_user_id = parent_user_id), so child and parent share summaries (spec §3.4).
+	ownerUserID := deriveOwnerUserID(input)
+
 	cache := make(map[string]contextbudget.ContextFragment)
 	for _, f := range fragments {
 		if f.SourceReference == "" {
 			continue
 		}
-		summary, err := b.store.FindReadySummary(ctx, input.UserID, scopeType, scopeID, f.SourceReference)
+		summary, err := b.store.FindReadySummary(ctx, ownerUserID, scopeType, scopeID, f.SourceReference)
 		if err != nil {
 			continue // not found or error — skip
 		}
