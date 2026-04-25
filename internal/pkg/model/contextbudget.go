@@ -11,6 +11,13 @@ import (
 // SELECT ... FOR UPDATE + deactivate old + insert new within a transaction.
 // Query paths sort active rows by version DESC, id DESC.
 // See spec §3.2.
+//
+// GORM `default:true` bool gotcha (see .claude/rules/database.md §6): when admin CRUD
+// passes IsActive=false explicitly, GORM v2 treats the bool zero-value as "not set" and
+// the DB DEFAULT TRUE silently wins. Future implementers (Tasks 7/11) MUST capture caller
+// intent before Create and follow up with `UpdateColumn("is_active", false)` to persist
+// the false. The same applies to IsFallback when its column default is true (currently
+// false here, so safe).
 type TokenEstimationProfile struct {
 	ID                       uint64         `gorm:"primaryKey;autoIncrement" json:"id"`
 	Provider                 string         `gorm:"size:50;not null;default:''" json:"provider"`
@@ -39,6 +46,12 @@ func (TokenEstimationProfile) TableName() string { return "token_estimation_prof
 // ContextBudgetPolicy stores operation-level budget policies.
 // Versioning is append-only: upsert inserts a new version and deactivates prior active rows.
 // See spec §3.3.
+//
+// GORM `default:true` bool gotcha (see .claude/rules/database.md §6): both ChargeUser and
+// IsActive carry `default:true`. When admin CRUD or seeders pass false explicitly, the
+// false is silently flipped to true on Create. Critical for the `context_compression`
+// policy which MUST persist `charge_user=false`. Tasks 7/11 must follow the
+// capture-intent-then-UpdateColumn pattern from database.md §6.
 type ContextBudgetPolicy struct {
 	ID                   uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
 	Operation            string    `gorm:"size:80;not null" json:"operation"`
