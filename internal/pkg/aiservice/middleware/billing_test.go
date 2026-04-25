@@ -1025,7 +1025,6 @@ func TestAsChatResponse_TypedNilGuard(t *testing.T) {
 	}
 }
 
-
 // TestPopulateLLMUsage_TypedNilResponse_NoError_NoPanic covers the path where
 // callErr IS nil but resp is still a typed-nil (e.g. a middleware transformation
 // or retry layer that unwraps errors into an alternate success shape). The

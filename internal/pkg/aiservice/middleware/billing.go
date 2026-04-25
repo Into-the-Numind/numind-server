@@ -385,6 +385,12 @@ func mergeBudgetMetadata(existing string, bm budgetMetadata) string {
 	if bm.CompressionStatus != "" {
 		base["compression_status"] = bm.CompressionStatus
 	}
+	if bm.ReservedOutputTokens != 0 {
+		base["reserved_output_tokens"] = bm.ReservedOutputTokens
+	}
+	if bm.ReservationID != 0 {
+		base["reservation_id"] = bm.ReservationID
+	}
 
 	merged, err := json.Marshal(base)
 	if err != nil {

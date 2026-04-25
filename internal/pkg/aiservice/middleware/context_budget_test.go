@@ -535,6 +535,99 @@ func TestContextBudgetCredits_StreamCloseWithoutUsageFinalizesEstimated(t *testi
 }
 
 // ----------------------------------------------------------------------------
+// Test: budgetMetadata carries reserved_output_tokens, reservation_id, and
+//       compression_status (P2-A + P2-B + P2-C spec compliance fixes)
+// ----------------------------------------------------------------------------
+
+// TestContextBudgetCredits_BudgetMetadataIncludesReservedOutputAndReservationID
+// verifies that after a successful ChargeUser=true call where the planner
+// produced at least one non-keep action:
+//
+//   - budgetMetadata.ReservedOutputTokens == Policy.ReservedOutputTokens (P2-B)
+//   - budgetMetadata.ReservationID == reservation.ID (P2-C)
+//   - budgetMetadata.CompressionStatus == "compressed" (P2-A)
+func TestContextBudgetCredits_BudgetMetadataIncludesReservedOutputAndReservationID(t *testing.T) {
+	renderedMsgs := []aiservice.ChatMessage{
+		{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: "metadata test"}},
+	}
+
+	// Build PrepareResult with:
+	//   - a plan that has ActionKeep + ActionSummarize (to trigger "compressed")
+	//   - Policy.ReservedOutputTokens = 8192
+	prepResult := makePrepareResult(renderedMsgs, true)
+	prepResult.Plan.Actions = []contextbudget.Action{
+		{FragmentID: "f1", Type: contextbudget.ActionKeep},
+		{FragmentID: "f2", Type: contextbudget.ActionSummarize},
+	}
+	prepResult.Policy.ReservedOutputTokens = 8192
+
+	budgetSvc := &mockContextBudgetService{
+		prepareResult: prepResult,
+	}
+	// Reserve returns reservation.ID = 42.
+	creditSvc := &mockCreditService{
+		checkResult: &credit.PreCheckResult{
+			SkipDeduction:    false,
+			Sufficient:       true,
+			EstimatedCredits: 20,
+		},
+		reserveResult: &credit.Reservation{
+			ID:              42,
+			ReservedCredits: 20,
+			Status:          credit.StatusReserved,
+		},
+	}
+
+	deps := Deps{
+		ContextBudget: budgetSvc,
+		CreditService: creditSvc,
+		Logger:        &mockLogger{},
+		Clock:         fixedClock{t: time.Now()},
+	}
+
+	// Spy adapter: capture the ctx so we can extract budgetMetadata after next()
+	// is called (the middleware injects metadata into ctx before calling next).
+	var capturedBM budgetMetadata
+	var capturedBMOk bool
+	adapter := Handler(func(ctx context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+		capturedBM, capturedBMOk = budgetMetadataFromCtx(ctx)
+		return &aiservice.ChatResponse{Content: "ok"}, nil
+	})
+
+	mw := ContextBudgetCredits(deps)
+	handler := mw(adapter)
+
+	fragment := simpleFragment("f1", "metadata input")
+	req := chatReqWithFragments(fragment)
+	ctx := billing.WithBillingMeta(context.Background(), 9, "sop_run", nil)
+	ctx = WithUserID(ctx, 9)
+
+	_, err := handler(ctx, budgetRoute(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !capturedBMOk {
+		t.Fatal("budgetMetadata not found in ctx (withBudgetMetadata not called or ctx not forwarded)")
+	}
+
+	// P2-B: reserved_output_tokens must equal Policy.ReservedOutputTokens.
+	if capturedBM.ReservedOutputTokens != 8192 {
+		t.Errorf("budgetMetadata.ReservedOutputTokens: got %d, want 8192", capturedBM.ReservedOutputTokens)
+	}
+
+	// P2-C: reservation_id must equal the reservation.ID returned by ReserveBudget.
+	if capturedBM.ReservationID != 42 {
+		t.Errorf("budgetMetadata.ReservationID: got %d, want 42", capturedBM.ReservationID)
+	}
+
+	// P2-A: compression_status must be "compressed" because plan has ActionSummarize.
+	if capturedBM.CompressionStatus != "compressed" {
+		t.Errorf("budgetMetadata.CompressionStatus: got %q, want %q", capturedBM.CompressionStatus, "compressed")
+	}
+}
+
+// ----------------------------------------------------------------------------
 // Test: Context cancellation refunds without usage
 // ----------------------------------------------------------------------------
 

@@ -166,6 +166,11 @@ type budgetMetadata struct {
 	EstimatedPromptBefore int    `json:"estimated_prompt_tokens_before,omitempty"`
 	EstimatedPromptAfter  int    `json:"estimated_prompt_tokens_after,omitempty"`
 	CompressionStatus     string `json:"compression_status,omitempty"`
+	// ReservedOutputTokens is the output-token budget from the policy (spec §11.2).
+	ReservedOutputTokens int `json:"reserved_output_tokens,omitempty"`
+	// ReservationID is the credit_reservation.id created by ReserveBudget (0 = none).
+	// Non-zero only when ChargeUser=true and a reservation was successfully created.
+	ReservationID uint64 `json:"reservation_id,omitempty"`
 }
 
 // withBudgetMetadata injects budget metadata into ctx for the Billing middleware.
@@ -289,9 +294,17 @@ func ContextBudgetCredits(deps Deps) Middleware {
 			// ----------------------------------------------------------------
 			// Step 6: inject budget metadata into ctx for Billing middleware.
 			// ----------------------------------------------------------------
+			// compression_status is "compressed" when the planner produced at
+			// least one non-keep action (summarize/reference/drop/reuse_summary).
+			// Plan.Feasible is always true at this point — Prepare returns
+			// ErrContextTooLarge when infeasible, so checking !Feasible here
+			// would be dead code that never fires.
 			compressionStatus := "ok"
-			if !result.Plan.Feasible {
-				compressionStatus = "compressed"
+			for _, action := range result.Plan.Actions {
+				if action.Type != contextbudget.ActionKeep {
+					compressionStatus = "compressed"
+					break
+				}
 			}
 			ctx = withBudgetMetadata(ctx, budgetMetadata{
 				EventID:               result.EventID,
@@ -300,6 +313,8 @@ func ContextBudgetCredits(deps Deps) Middleware {
 				EstimatedPromptBefore: result.EstimatedBefore,
 				EstimatedPromptAfter:  result.EstimatedAfter,
 				CompressionStatus:     compressionStatus,
+				ReservedOutputTokens:  result.Policy.ReservedOutputTokens,
+				ReservationID:         reservationID,
 			})
 
 			// Build the base FinalizeInput that will be used by the finalizer.
@@ -586,4 +601,3 @@ func asChatReq(req interface{}) (aiservice.ChatRequest, bool) {
 	}
 	return aiservice.ChatRequest{}, false
 }
-
