@@ -123,6 +123,10 @@ type PrepareResult struct {
 	// for operations that do not yet participate in context budget.
 	// When true the middleware is a passthrough for the provider call.
 	SkipBudget bool
+	// PolicyID is the database ID of the context_budget_policy row used.
+	// 0 means a default/synthetic policy was applied (no DB row).
+	// Resolves Task 6 P2-D: budget_policy_id in usage_record metadata.
+	PolicyID uint64
 }
 
 // FinalizeInput is the argument passed to ContextBudgetService.Finalize.
@@ -177,6 +181,9 @@ type budgetMetadata struct {
 	// ReservationID is the credit_reservation.id created by ReserveBudget (0 = none).
 	// Non-zero only when ChargeUser=true and a reservation was successfully created.
 	ReservationID uint64 `json:"reservation_id,omitempty"`
+	// PolicyID is the context_budget_policy.id used for this request.
+	// Resolves Task 6 P2-D: budget_policy_id in usage_record metadata.
+	PolicyID uint64 `json:"budget_policy_id,omitempty"`
 }
 
 // withBudgetMetadata injects budget metadata into ctx for the Billing middleware.
@@ -327,6 +334,7 @@ func ContextBudgetCredits(deps Deps) Middleware {
 				CompressionStatus:     compressionStatus,
 				ReservedOutputTokens:  result.Policy.ReservedOutputTokens,
 				ReservationID:         reservationID,
+				PolicyID:              result.PolicyID,
 			})
 
 			// Build the base FinalizeInput that will be used by the finalizer.

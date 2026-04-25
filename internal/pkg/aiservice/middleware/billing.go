@@ -391,6 +391,9 @@ func mergeBudgetMetadata(existing string, bm budgetMetadata) string {
 	if bm.ReservationID != 0 {
 		base["reservation_id"] = bm.ReservationID
 	}
+	if bm.PolicyID != 0 {
+		base["budget_policy_id"] = bm.PolicyID
+	}
 
 	merged, err := json.Marshal(base)
 	if err != nil {
