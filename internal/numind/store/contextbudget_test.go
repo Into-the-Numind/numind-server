@@ -233,6 +233,132 @@ func TestContextBudgetStore_SummaryLookupRequiresOwnerScopeAndHash(t *testing.T)
 	assert.Error(t, err, "non-existent owner+scope+hash should return an error")
 }
 
+// TestContextBudgetStore_GetActiveTokenProfile_FiltersFallback verifies that
+// GetActiveTokenProfile with IsFallback=false only matches non-fallback rows, and
+// IsFallback=true only matches fallback rows, even when both exist for the same
+// (provider, model, service_type) key. (P2-B fix)
+func TestContextBudgetStore_GetActiveTokenProfile_FiltersFallback(t *testing.T) {
+	db := newContextBudgetTestDB(t)
+	s := NewContextBudgetStore(db)
+	ctx := context.Background()
+
+	profileJSON := datatypes.JSON([]byte(`{"avg_chars_per_token":4.0}`))
+
+	// Insert an exact (non-fallback) active row directly, bypassing SaveTokenProfileVersion
+	// to keep is_fallback=false explicit.
+	exact := &model.TokenEstimationProfile{
+		Provider:              "volc",
+		Model:                 "deepseek-v3",
+		ServiceType:           "llm_chat",
+		ModelFamily:           "deepseek",
+		ProfileJSON:           profileJSON,
+		SafetyMultiplier:      1.15,
+		CalibrationMultiplier: 1.0,
+		IsFallback:            false,
+		Version:               1,
+		IsActive:              true,
+		ChangeReason:          "exact",
+		UpdatedBy:             "test",
+	}
+	require.NoError(t, db.Create(exact).Error)
+
+	// Insert a fallback active row for the same key dimensions.
+	fallback := &model.TokenEstimationProfile{
+		Provider:              "volc",
+		Model:                 "deepseek-v3",
+		ServiceType:           "llm_chat",
+		ModelFamily:           "deepseek",
+		ProfileJSON:           profileJSON,
+		SafetyMultiplier:      1.30,
+		CalibrationMultiplier: 1.0,
+		IsFallback:            true,
+		Version:               1,
+		IsActive:              true,
+		ChangeReason:          "fallback",
+		UpdatedBy:             "test",
+	}
+	require.NoError(t, db.Create(fallback).Error)
+	// Correct GORM default:true gotcha for IsFallback if needed (IsFallback=true is non-zero, OK).
+
+	// Exact lookup (IsFallback=false) must return the exact row.
+	got, err := s.GetActiveTokenProfile(ctx, TokenProfileLookupKey{
+		Provider:    "volc",
+		Model:       "deepseek-v3",
+		ServiceType: "llm_chat",
+		IsFallback:  false,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, exact.ID, got.ID, "IsFallback=false should return non-fallback row")
+	assert.False(t, got.IsFallback, "returned row must have IsFallback=false")
+
+	// Fallback lookup (IsFallback=true) must return the fallback row.
+	gotFB, err := s.GetActiveTokenProfile(ctx, TokenProfileLookupKey{
+		Provider:    "volc",
+		Model:       "deepseek-v3",
+		ServiceType: "llm_chat",
+		IsFallback:  true,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, fallback.ID, gotFB.ID, "IsFallback=true should return fallback row")
+	assert.True(t, gotFB.IsFallback, "returned row must have IsFallback=true")
+}
+
+// TestContextBudgetStore_MultipleActiveProfilesReturnsNewest verifies that when
+// two active rows exist for the same key (data integrity anomaly), GetActiveTokenProfile
+// returns the newest one (highest version / id). (P2-A fix)
+func TestContextBudgetStore_MultipleActiveProfilesReturnsNewest(t *testing.T) {
+	db := newContextBudgetTestDB(t)
+	s := NewContextBudgetStore(db)
+	ctx := context.Background()
+
+	profileJSON := datatypes.JSON([]byte(`{"avg_chars_per_token":4.0}`))
+
+	// Insert two active rows directly, bypassing SaveTokenProfileVersion
+	// to simulate the anomaly (both active = data integrity issue).
+	older := &model.TokenEstimationProfile{
+		Provider:              "ali",
+		Model:                 "qwen-turbo",
+		ServiceType:           "llm_chat",
+		ModelFamily:           "qwen",
+		ProfileJSON:           profileJSON,
+		SafetyMultiplier:      1.10,
+		CalibrationMultiplier: 1.0,
+		IsFallback:            false,
+		Version:               1,
+		IsActive:              true,
+		ChangeReason:          "v1",
+		UpdatedBy:             "test",
+	}
+	require.NoError(t, db.Create(older).Error)
+
+	newer := &model.TokenEstimationProfile{
+		Provider:              "ali",
+		Model:                 "qwen-turbo",
+		ServiceType:           "llm_chat",
+		ModelFamily:           "qwen",
+		ProfileJSON:           profileJSON,
+		SafetyMultiplier:      1.20,
+		CalibrationMultiplier: 1.05,
+		IsFallback:            false,
+		Version:               2,
+		IsActive:              true, // anomaly: v1 was not deactivated
+		ChangeReason:          "v2",
+		UpdatedBy:             "test",
+	}
+	require.NoError(t, db.Create(newer).Error)
+	// newer has a higher ID and higher version — should be returned first by ORDER BY version DESC, id DESC.
+
+	got, err := s.GetActiveTokenProfile(ctx, TokenProfileLookupKey{
+		Provider:    "ali",
+		Model:       "qwen-turbo",
+		ServiceType: "llm_chat",
+		IsFallback:  false,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, newer.ID, got.ID, "should return newest (higher version) active row")
+	assert.Equal(t, uint(2), got.Version, "returned row must be version 2")
+}
+
 // TestContextBudgetStore_CreateAndPatchEvent verifies that an event can be created
 // and subsequently patched with partial field updates (nil fields are left untouched).
 func TestContextBudgetStore_CreateAndPatchEvent(t *testing.T) {

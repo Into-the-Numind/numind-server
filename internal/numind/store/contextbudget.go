@@ -8,6 +8,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
 
@@ -120,19 +121,36 @@ func NewContextBudgetStore(db *gorm.DB) ContextBudgetStore {
 // given key. Exact match on (provider, model, service_type) unless IsFallback
 // is set, in which case is_fallback=1 rows are queried. Rows are ordered by
 // version DESC, id DESC so the newest active version is returned first.
+//
+// Per spec §3.2: if more than one active row is found (data integrity anomaly),
+// a warning is logged and the newest row (by version DESC, id DESC) is returned.
+// P2-B: is_fallback is always filtered explicitly to prevent exact lookups from
+// accidentally matching fallback rows.
 func (s *contextBudgetStore) GetActiveTokenProfile(ctx context.Context, key TokenProfileLookupKey) (*model.TokenEstimationProfile, error) {
-	var profile model.TokenEstimationProfile
+	var profiles []model.TokenEstimationProfile
 	q := s.db.WithContext(ctx).
 		Where("provider = ? AND model = ? AND service_type = ? AND is_active = ?",
 			key.Provider, key.Model, key.ServiceType, true)
+	// P2-B: always filter is_fallback explicitly so exact lookups cannot match
+	// fallback rows and fallback lookups cannot match exact rows.
 	if key.IsFallback {
 		q = q.Where("is_fallback = ?", true)
+	} else {
+		q = q.Where("is_fallback = ?", false)
 	}
-	err := q.Order("version DESC, id DESC").First(&profile).Error
-	if err != nil {
+	if err := q.Order("version DESC, id DESC").Limit(2).Find(&profiles).Error; err != nil {
 		return nil, fmt.Errorf("GetActiveTokenProfile: %w", err)
 	}
-	return &profile, nil
+	if len(profiles) == 0 {
+		return nil, fmt.Errorf("GetActiveTokenProfile: %w", gorm.ErrRecordNotFound)
+	}
+	// P2-A: spec §3.2 — warn if more than one active row is found, then use the newest.
+	if len(profiles) > 1 {
+		log.Warnw("GetActiveTokenProfile: multiple active rows found (data integrity anomaly), using newest",
+			"provider", key.Provider, "model", key.Model, "service_type", key.ServiceType,
+			"newest_version", profiles[0].Version, "newest_id", profiles[0].ID)
+	}
+	return &profiles[0], nil
 }
 
 // SaveTokenProfileVersion creates a new active version of a token estimation
@@ -207,16 +225,27 @@ func (s *contextBudgetStore) SaveTokenProfileVersion(ctx context.Context, input 
 
 // GetActivePolicy returns the current active budget policy for the given operation,
 // ordered by version DESC, id DESC.
+//
+// Per spec §3.3: if more than one active row is found (data integrity anomaly),
+// a warning is logged and the newest row is returned.
 func (s *contextBudgetStore) GetActivePolicy(ctx context.Context, operation string) (*model.ContextBudgetPolicy, error) {
-	var policy model.ContextBudgetPolicy
-	err := s.db.WithContext(ctx).
+	var policies []model.ContextBudgetPolicy
+	if err := s.db.WithContext(ctx).
 		Where("operation = ? AND is_active = ?", operation, true).
 		Order("version DESC, id DESC").
-		First(&policy).Error
-	if err != nil {
+		Limit(2).Find(&policies).Error; err != nil {
 		return nil, fmt.Errorf("GetActivePolicy: %w", err)
 	}
-	return &policy, nil
+	if len(policies) == 0 {
+		return nil, fmt.Errorf("GetActivePolicy: %w", gorm.ErrRecordNotFound)
+	}
+	// P2-A: warn if more than one active row is found, then use the newest.
+	if len(policies) > 1 {
+		log.Warnw("GetActivePolicy: multiple active rows found (data integrity anomaly), using newest",
+			"operation", operation,
+			"newest_version", policies[0].Version, "newest_id", policies[0].ID)
+	}
+	return &policies[0], nil
 }
 
 // SavePolicyVersion creates a new active version of a budget policy. Within a
