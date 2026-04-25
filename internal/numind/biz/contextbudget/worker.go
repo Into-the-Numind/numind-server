@@ -39,6 +39,10 @@ type SummaryJob struct {
 	Fragments []contextbudget.ContextFragment
 	// Operation is the billing operation that triggered the summary (e.g., "chatbot_chat").
 	Operation string
+	// EventID is the ID of the context_budget_event row that triggered this job.
+	// When non-zero, storeFailed patches the event row to status='failed' per spec §5.4.
+	// Set to 0 if there is no associated event (e.g., tests that do not create an event).
+	EventID uint64
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +185,7 @@ func (w *SummaryWorker) processJob(ctx context.Context, job SummaryJob) {
 
 	// Step 2: require a compressor.
 	if w.compressor == nil {
-		w.storeFailed(ctx, summary, "compressor not configured")
+		w.storeFailed(ctx, summary, job.EventID, "compressor not configured")
 		return
 	}
 
@@ -191,7 +195,7 @@ func (w *SummaryWorker) processJob(ctx context.Context, job SummaryJob) {
 	// Step 4: run compression.
 	resultFrag, err := w.compressor.Compress(ctx, job.Fragments, targetTokens)
 	if err != nil {
-		w.storeFailed(ctx, summary, err.Error())
+		w.storeFailed(ctx, summary, job.EventID, err.Error())
 		return
 	}
 
@@ -209,8 +213,10 @@ func (w *SummaryWorker) processJob(ctx context.Context, job SummaryJob) {
 }
 
 // storeFailed persists a context_summary row with status='failed' and the given
-// error string. UpsertSummary errors are logged but not returned.
-func (w *SummaryWorker) storeFailed(ctx context.Context, summary *model.ContextSummary, errMsg string) {
+// error string. When eventID is non-zero it also patches the corresponding
+// context_budget_event row to status='failed' and error_code='compression_failed'
+// (spec §5.4 acceptance condition). All store errors are logged but not returned.
+func (w *SummaryWorker) storeFailed(ctx context.Context, summary *model.ContextSummary, eventID uint64, errMsg string) {
 	summary.Status = "failed"
 	summary.SummaryText = "" // empty on failure
 	summary.ErrorMessage = truncateError(errMsg, 500)
@@ -220,6 +226,21 @@ func (w *SummaryWorker) storeFailed(ctx context.Context, summary *model.ContextS
 			"scope_id", summary.ScopeID,
 			"error", err,
 		)
+	}
+
+	// Patch the associated event row if the caller provided one.
+	if eventID != 0 {
+		status := "failed"
+		errCode := "compression_failed"
+		if patchErr := w.store.PatchEvent(ctx, eventID, store.EventPatch{
+			Status:    &status,
+			ErrorCode: &errCode,
+		}); patchErr != nil {
+			w.logger.Errorw("summary worker: PatchEvent (failed) failed",
+				"event_id", eventID,
+				"error", patchErr,
+			)
+		}
 	}
 }
 

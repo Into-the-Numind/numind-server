@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -149,7 +150,7 @@ func run() error {
 	// and stopped via workerCancel when the server shuts down.
 	// Task 9/10 producers obtain the worker via SummaryWorkerInstance().
 	workerCtx, workerCancel := context.WithCancel(context.Background())
-	defer workerCancel()                                                       // ensure cancel is always called (context-leak guard)
+	defer workerCancel() // error-path guard only; normal shutdown calls workerCancel() explicitly below
 	summaryWorker := cbbiz.NewSummaryWorker(cbStore, nil, cbbiz.WorkerOptions{ // compressor nil until Task 12
 		Logger: stdLogger{},
 	})
@@ -283,13 +284,18 @@ func run() error {
 // Summary worker package-level accessor
 // ----------------------------------------------------------------------------
 
-// summaryWorkerSingleton holds the single SummaryWorker instance for this process.
-// It is set during run() initialisation and read by Task 9/10 producers.
-var summaryWorkerSingleton *cbbiz.SummaryWorker
+// summaryWorkerOnce guards the one-time initialisation of summaryWorkerInst.
+// Using sync.Once prevents data races when SetSummaryWorkerInstance is called
+// concurrently (e.g., tests spinning up multiple server instances in parallel).
+var (
+	summaryWorkerOnce sync.Once
+	summaryWorkerInst *cbbiz.SummaryWorker
+)
 
 // SetSummaryWorkerInstance stores the worker singleton. Called once by run().
+// Subsequent calls are silently ignored (sync.Once semantics).
 func SetSummaryWorkerInstance(w *cbbiz.SummaryWorker) {
-	summaryWorkerSingleton = w
+	summaryWorkerOnce.Do(func() { summaryWorkerInst = w })
 }
 
 // SummaryWorkerInstance returns the running SummaryWorker so that SOP/chatbot
@@ -297,7 +303,7 @@ func SetSummaryWorkerInstance(w *cbbiz.SummaryWorker) {
 // which is safe — Enqueue on a nil worker would panic, but Task 9/10 producers
 // should guard with a nil check.
 func SummaryWorkerInstance() *cbbiz.SummaryWorker {
-	return summaryWorkerSingleton
+	return summaryWorkerInst
 }
 
 // ----------------------------------------------------------------------------

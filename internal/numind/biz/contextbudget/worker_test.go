@@ -171,6 +171,55 @@ func TestSummaryWorkerFailureStoresFailedSummaryWithoutBlockingCaller(t *testing
 	assert.Equal(t, ownerUserID, *row.OwnerUserID)
 }
 
+// TestSummaryWorkerFailureAlsoPatchesEventStatus verifies that when compression fails
+// and the job carries a non-zero EventID, the worker patches the corresponding
+// context_budget_event row to status='failed' and error_code='compression_failed'
+// (spec §5.4 acceptance condition).
+func TestSummaryWorkerFailureAlsoPatchesEventStatus(t *testing.T) {
+	db := newWorkerTestDB(t)
+	cbStore := store.NewContextBudgetStore(db)
+	ctx := context.Background()
+
+	// Create a real event row so we have a valid ID to patch.
+	uid := uint(30)
+	event := &model.ContextBudgetEvent{
+		UserID:    &uid,
+		Operation: "chatbot_chat",
+		Provider:  "volc",
+		Model:     "deepseek-v3",
+		Status:    "pending",
+	}
+	require.NoError(t, cbStore.CreateEvent(ctx, event))
+	require.NotZero(t, event.ID)
+
+	compressor := &workerStubCompressor{err: errors.New("LLM unavailable")}
+
+	worker := NewSummaryWorker(cbStore, compressor, WorkerOptions{
+		QueueSize: 10,
+	})
+
+	ownerUserID := uint(30)
+	job := buildMinimalJob(ownerUserID, "chat_session", "session-event-patch", "hash-event-patch")
+	job.EventID = event.ID // associate the event
+
+	processJobSync(worker, job)
+
+	// Assert: context_summary row has status='failed'.
+	var summaryRow model.ContextSummary
+	err := db.Where("scope_type = ? AND scope_id = ? AND source_hash = ?",
+		"chat_session", "session-event-patch", "hash-event-patch").First(&summaryRow).Error
+	require.NoError(t, err, "expected context_summary row to be persisted")
+	assert.Equal(t, "failed", summaryRow.Status)
+
+	// Assert: event row was patched to status='failed' and error_code='compression_failed'.
+	var eventRow model.ContextBudgetEvent
+	require.NoError(t, db.First(&eventRow, event.ID).Error)
+	assert.Equal(t, "failed", eventRow.Status,
+		"context_budget_event.status must be 'failed' when compression fails")
+	assert.Equal(t, "compression_failed", eventRow.ErrorCode,
+		"context_budget_event.error_code must be 'compression_failed'")
+}
+
 // TestSummaryWorkerDoesNotLookupSummaryWithoutOwnerUserID verifies that a job
 // with OwnerUserID=0 is rejected defensively to prevent cross-tenant pollution.
 func TestSummaryWorkerDoesNotLookupSummaryWithoutOwnerUserID(t *testing.T) {
