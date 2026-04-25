@@ -2842,3 +2842,92 @@ features:
     blockers: []
     created_at: "2026-04-21T17:00:00+08:00"
     completed_at: "2026-04-21T17:20:00+08:00"
+
+  - id: "legacy-tier-to-credits-migration-20260424"
+    ndf_version: "1.1"
+    description: "一次性 prod 数据迁移：将 24 个 billing_mode='legacy_tier' 付费用户切换到 credits 体系。在期 15 premium + 5 standard 发放 subscription 包（2000/1000 积分，expires_at=原 tier_expires）；已过期 4 premium 仅切 billing_mode='credits' + user_tier='free' + tier_expires=NULL 不发包。所有 24 个用户都把 user_tier→free 是因为前端 SettingsView.vue:204 用 user_tier 而非 billing_mode 判 isOldMember，不动会显示 '无限次/X/20次' 而非积分余额。"
+    track: "hotfix"
+    stage: "completed"
+    completed_at: "2026-04-24T22:15:00+08:00"
+    classification_reason: "Triage 5 条评估 — (1) 无 schema 变更（仅创建一张临时 backup 表用于回滚） (2) 无新 API 端点 (3) 无新外部服务 (4) 影响文件：4 个 SQL + 1 README，零业务代码改动 (5) 涉及付费会员资产，但属于运营迁移而非代码逻辑变更，且复用现有 credit_package/credit_account schema 语义。判定 Hotfix 合理。"
+    last_updated_by: "ai-implementation"
+    last_updated_at: "2026-04-24T22:15:00+08:00"
+    repos:
+      - numind-server
+    branches: {}
+    hotfix_artifacts:
+      diagnosis: |
+        背景：credits-system 上线后采用 Grandfathering 双制并存，存量付费会员保留 billing_mode='legacy_tier'。运营决策将存量 24 个付费 legacy 用户全部切换到 credits 体系，premium 给 2000 积分、standard 给 1000 积分。
+        Prod 数据调研结果：legacy_tier 用户共 24 个（19 premium + 5 standard），其中在期 20 个（15 premium + 5 standard）+ 已过期 4 个（全 premium）。0 个 legacy 用户持有现存 credit_package（无冲突场景）。
+        前端关键发现：SettingsView.vue:204 isOldMember 判 user_tier 而非 billing_mode，若仅切 billing_mode 不切 user_tier，在期用户登录会看到 "无限次/X/20 次" 而非积分余额。修正方案：所有 24 个用户均 user_tier='free' + tier_expires=NULL。
+        实施：纯 SQL 方案（4 个文件 dry-run/apply/verify/rollback），所有写入在单个事务内，apply 第一步创建 legacy_tier_migration_backup_20260424 表保留 24 行原始快照供回滚。
+    last_verified:
+      at: "2026-04-24T22:14:00+08:00"
+      method: "prod 上跑 03-verify.sql：A 无 legacy_tier 行 (post: 330 free + 14 premium + 21 standard, +24 free 与预期吻合) / B 备份表 24 行 / C 全部 24 用户 user_check=OK / D 20 个新 package 合计 35000 积分 / E 20 行 balance integrity 全 OK"
+      tests: "n/a (data migration, no Go test)"
+      test_summary: "all 5 verify sections green; zero MISMATCH"
+    progress:
+      total_tasks: 4
+      completed_tasks: 4
+      reviewed_tasks: 4
+      current_task: null
+    rollback: "drop new packages + restore user table from legacy_tier_migration_backup_20260424；详见 04-rollback.sql"
+    decisions:
+      - "2026-04-24 (clarification): 用户确认 — 所有 24 个 legacy_tier 用户都翻牌；package 标签 type=subscription, grant_source=self_purchase；执行用 dry-run 方式；只在 prod 跑（dev/qa 不动）"
+      - "2026-04-24 (Q4 调查): 通过 SELECT 验证 prod 无任何 legacy_tier 用户持有 credit_package — 不存在 booster/trial 共存场景，无需特殊冲突处理"
+      - "2026-04-24 (前端 isOldMember bug 发现): grep monthly_sop_runs 时发现 SettingsView.vue:204-207 判定 isOldMember 用 user_tier 而非 billing_mode；若仅切 billing_mode 不切 user_tier，会导致严重 UI 错乱。决议：所有 24 个用户 user_tier='free' + tier_expires=NULL"
+      - "2026-04-24 (实现选型): 选 SQL 而非 Go 脚本 — 24 行确定操作，SQL 更直观可审，无需构建/部署/绑定 viper 配置；apply.sql 单事务保证原子性"
+      - "2026-04-24 (monthly_sop_runs 处理): 不清零 — sop.go:907 IncrementSopRunCount 在 credits 模式仍递增此字段作活跃度统计，CustomersView 列表展示 '本月运行次数'"
+      - "2026-04-24 (apply 完成): prod 上 02-apply.sql exit 0 + COMMIT，03-verify.sql 5 个 section 全绿。20 个新 credit_package id=10..29 共 35000 积分；4 个已过期 premium (id 364/365/366/367) 仅切 billing_mode + user_tier='free' 不发包符合预期"
+      - "2026-04-24 (后续观察): backup 表 legacy_tier_migration_backup_20260424 保留在 prod 用于审计，不主动 DROP；后续如发现问题可用 04-rollback.sql 一键还原（24h 内有效，过期后仍可还原但需手动核对 monthly_sop_runs 的最新值）"
+    blockers: []
+    created_at: "2026-04-24T21:00:00+08:00"
+
+  - id: "context-budget-compression"
+    ndf_version: "1.1"
+    description: "建立通用 Context Budget & Compression 系统：按模型维护 token 估算 profile 和动态校准参数；使用 DB 中 context_window + max_output_tokens 计算安全输入预算；admin web 支持模型能力与估算配置校验；后端在 LLM 调用前完成预扣 token 估算、上下文预算、触顶智能压缩；策略必须基于通用 context fragments，不得写死 SOP stage/node/template。"
+    track: "standard"
+    stage: "S3"
+    classification_reason: "Triage 5 条评估 — (1) 可能涉及 schema/config 扩展（token profile、compression summary/token stats） (2) admin web 可能需要新增或扩展配置 API (3) 无新外部服务强依赖，但 tokenizer/profile 机制需设计 (4) 跨 numind-server、numind-admin-web，可能涉及 numind-web-v3，影响文件数 >3 (5) 影响 credits 预扣费、LLM 上下文组装和模型能力配置，属于高风险业务路径。用户明确要求进入 Standard Track。"
+    last_updated_by: "ai-s3-plan-review-v2"
+    last_updated_at: "2026-04-25T19:30:00+08:00"
+    repos:
+      - numind-server
+      - numind-admin-web
+      - numind-web-v3
+    branches: {}
+    artifacts:
+      requirement: "requirements/context-budget-compression.md"
+      proposal: "proposals/context-budget-compression-proposal.md"
+      spec: "docs/superpowers/specs/2026-04-25-context-budget-compression-design.md"
+      plan: "docs/superpowers/plans/2026-04-25-context-budget-compression-plan.md"
+      review_spec_compliance: null
+      review_code_quality: null
+      qa: null
+    progress:
+      total_tasks: 15
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "S3 gate — 等待用户确认进入 S4"
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-04-25: 用户确认不能依赖 cl100k_base 作为跨模型真实 token guard；预扣费必须调用前估算，官方 usage 只能用于事后校准。"
+      - "2026-04-25: 用户确认 DB 已登记 context_window 和 max_output_tokens；context window 默认不 100% 放开，认可 85% safe ratio。"
+      - "2026-04-25: 用户确认不自动切模型，当前请求/当前步骤永远不裁剪。"
+      - "2026-04-25: 用户要求策略必须通用，基于 context fragment role，而非针对现有 SOP stage/node/template 做特殊裁剪。"
+      - "2026-04-25: 用户端输入计数倾向展示 x/y，y 默认 40000 字符；该限制是 UX 字符上限，不等同于后端 context budget。"
+      - "2026-04-25: admin web 必须纳入模型能力、max_output_tokens、token 估算参数和前端配置校验的设计范围。"
+      - "2026-04-25: 独立 subagent review 后补强 S0：Context Budget Manager 必须面向通用 ContextFragment，不得依赖 SOP stage/node/template 语义；SOP 仅作为 fragment producer。"
+      - "2026-04-25 (S1): 用户确认 S0 gate 已通过，进入 S1。提案采用通用 ContextFragment + Context Budget Manager 方案；token 估算 profile 与 credits Reserve/Reconcile 共享调用前估算口径；压缩策略不绑定 SOP stage/node/template。"
+      - "2026-04-25 (S2): 技术设计采用 Gateway `ContextBudgetCredits` middleware 方案，顺序为 Tracing → Fallback → ContextBudgetCredits → BillingUsageRecord → Retry → Adapter；business producer 只生成通用 ContextFragment。"
+      - "2026-04-25 (S2): 新增 token_estimation_profile / context_budget_policy / context_summary / context_budget_event；credit_reservation.coefficient_id 改 nullable 并新增 context budget 估算快照字段。"
+      - "2026-04-25 (S2): compression LLM 调用首版作为平台内部成本记录，usage_record 可观测但不对用户额外扣分；业务 LLM 调用仍按 context budget 估算 Reserve/Reconcile。"
+      - "2026-04-25 (S2 review): 独立 sub-agent review 发现 4 个 P1 + 2 个 P2，已回写 spec：避免 contextbudget↔aiservice import cycle；middleware 顺序修正为 Tracing → Fallback → ContextBudgetCredits → BillingUsageRecord → Retry → Adapter；补齐 streaming reservation finalization；补齐 operation normalization + legacy-tier dispatch；context_summary 加 user/owner tenant 字段；profile/policy active version 用事务锁保证。"
+      - "2026-04-25 (S3): 产出实施计划 docs/superpowers/plans/2026-04-25-context-budget-compression-plan.md；初版拆分为 14 个任务，依赖图无环，后端 schema/core/gateway/API 任务排在 admin-web 和 user-web 任务之前。"
+      - "2026-04-25 (S3 review): 独立 sub-agent review 发现 4 个 P1 + 2 个 P2，已修正 plan：admin API 合同对齐 S2（history query + service_id preview + events）；SalesRAG/server 与 Sales input 文件目标具体化；前端 unit tests 纳入验收命令；Task 7 拆分 prepare/finalize 与后台 summary worker，当前总任务数 15。"
+      - "2026-04-25 (S3 v2 review): 独立 Sonnet sub-agent 复核 v2 plan，verdict=PASS_WITH_MINOR；v1 4 个 P1 全部闭环、spec §14 PRD coverage 无遗漏；新发现 1 P1 (Task 15 缺 NDF Rule 10 验证方式声明) + 2 P2 (over-budget/stream close 触发说明、Spec Coverage Map streaming finalization 行)。三项已现修：Task 15 增加 'S5 验证策略' 段（Playwright 覆盖管理端 4 条路径 + 后端 TDD 覆盖核心业务 + gstack /qa 覆盖用户输入计数器，并诚实声明 gstack 路径无回归保护）+ 8 条关键用户路径列表 + Acceptance Conditions 增加 Playwright spec 与 gstack 截图证据；Smoke checklist 每条补具体触发方式；Spec Coverage Map streaming finalization 行改为 Tasks 6, 7。"
+    blockers:
+      - "S3 gate: 等待用户确认进入 S4 (v2 review PASS_WITH_MINOR，所有 finding 已修)。"
+    created_at: "2026-04-25T15:45:00+08:00"
+    completed_at: null
