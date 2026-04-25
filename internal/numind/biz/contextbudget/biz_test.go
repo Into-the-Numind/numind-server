@@ -547,3 +547,206 @@ var _ aimw.ContextBudgetService = (*Biz)(nil)
 
 // Compile-time check: RenderContextFragments should be accessible via aiservice.
 var _ = aiservice.RenderContextFragments
+
+// ---------------------------------------------------------------------------
+// Test: TestPrepare_GetActivePolicyUsesNormalizedOperation (P1-A regression)
+// ---------------------------------------------------------------------------
+
+// TestPrepare_GetActivePolicyUsesNormalizedOperation verifies that Prepare calls
+// GetActivePolicy with the canonical (normalized) operation string, not the raw
+// alias. Without this fix, "sop_node_execute" → policy miss → defaultPolicy;
+// with this fix, it maps to "sop_run" and correctly loads the seeded policy row.
+func TestPrepare_GetActivePolicyUsesNormalizedOperation(t *testing.T) {
+	db := newTestDB(t)
+	cbStore := store.NewContextBudgetStore(db)
+
+	// Seed a policy under the CANONICAL key "sop_run", NOT the raw "sop_node_execute".
+	// This mirrors what seed_context_budget_policies.sql does.
+	policy := samplePolicy(db, "sop_run")
+
+	sampleProfile(db)
+
+	biz := New(cbStore, Options{
+		Clock:  time.Now,
+		Logger: noopLogger{},
+	})
+
+	fragments := []contextbudget.ContextFragment{
+		sampleFragment("f1", "hello world"),
+	}
+
+	// Call Prepare with the RAW alias "sop_node_execute".
+	result, err := biz.Prepare(context.Background(), aimw.PrepareInput{
+		Operation:       "sop_node_execute", // raw alias → normalises to "sop_run"
+		UserID:          0,
+		Route:           sampleRoute(128000, 8192),
+		Fragments:       fragments,
+		ContextWindow:   128000,
+		MaxOutputTokens: 8192,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// NormalizedOp must be "sop_run", not the raw "sop_node_execute".
+	assert.Equal(t, "sop_run", result.NormalizedOp, "NormalizedOp must be canonical key")
+
+	// PolicyID must match the seeded policy (found by normalized op).
+	assert.Equal(t, policy.ID, result.PolicyID,
+		"PolicyID should match the seeded 'sop_run' policy, not fall back to synthetic default")
+}
+
+// ---------------------------------------------------------------------------
+// Test: TestPrepare_AppliesReuseSummaryFromCache (P1-B regression)
+// ---------------------------------------------------------------------------
+
+// TestPrepare_AppliesReuseSummaryFromCache verifies that when the planner
+// recommends ActionReuseSummary and a cached summary is available in the DB,
+// Prepare actually substitutes the fragment with the smaller cached summary,
+// reducing EstimatedAfter and not returning ErrContextTooLarge.
+func TestPrepare_AppliesReuseSummaryFromCache(t *testing.T) {
+	db := newTestDB(t)
+	cbStore := store.NewContextBudgetStore(db)
+
+	// Tiny context window: context_window=120, reserved_output=30, overhead=5
+	// safe_input_budget = floor((120 - 30 - 5) * 0.85) = floor(85*0.85) = 72
+	policy := &model.ContextBudgetPolicy{
+		Operation:            "chatbot_chat",
+		ReservedOutputTokens: 30,
+		SafeRatio:            0.85,
+		FixedOverheadTokens:  5,
+		SoftThresholdRatio:   0.7,
+		HardThresholdRatio:   0.85,
+		ChargeUser:           false,
+		Version:              1,
+		IsActive:             true,
+	}
+	require.NoError(t, db.Create(policy).Error)
+	if policy.ChargeUser {
+		db.Model(policy).UpdateColumn("charge_user", false)
+		policy.ChargeUser = false
+	}
+
+	// Seed token profile.
+	sampleProfile(db)
+
+	// Pre-populate a ready summary for the fragment.
+	ownerUserID := uint(55)
+	sourceHash := "reuse-hash-001"
+	summary := &model.ContextSummary{
+		UserID:                ownerUserID,
+		OwnerUserID:           ptrUint(ownerUserID),
+		ScopeType:             "chat_session",
+		ScopeID:               "sess-42",
+		SourceHash:            sourceHash,
+		SourceFragmentIDs:     datatypes.JSON(`["large-frag"]`),
+		SummaryText:           "short",
+		SummaryTokenEstimate:  5,
+		OriginalTokenEstimate: 500,
+		Model:                 "glm-4-7-251222",
+		Provider:              "volc",
+		Status:                "ready",
+		CreatedByOperation:    "chatbot_chat",
+	}
+	require.NoError(t, db.Create(summary).Error)
+
+	biz := New(cbStore, Options{
+		Clock:  time.Now,
+		Logger: noopLogger{},
+	})
+
+	// Large fragment: 400 chars × 0.25 tokens/char = ~100 estimated tokens,
+	// well above safe_input_budget=72. Mark as CompressSummarize with a
+	// SourceReference matching the seeded summary hash.
+	largeContent := repeat("B", 400)
+	largeFrag := contextbudget.ContextFragment{
+		ID:              "large-frag",
+		Role:            contextbudget.RoleDurable,
+		Source:          contextbudget.SourceUser,
+		ContentType:     contextbudget.ContentText,
+		Content:         largeContent,
+		Importance:      5,
+		Order:           1,
+		Compressibility: contextbudget.CompressSummarize,
+		SourceReference: sourceHash, // matches DB summary
+	}
+
+	result, err := biz.Prepare(context.Background(), aimw.PrepareInput{
+		Operation:       "chatbot_chat",
+		UserID:          ownerUserID,
+		Route:           sampleRoute(120, 60),
+		Fragments:       []contextbudget.ContextFragment{largeFrag},
+		ContextWindow:   120,
+		MaxOutputTokens: 60,
+		Metadata: map[string]string{
+			"chat_session_id": "sess-42",
+		},
+	})
+	require.NoError(t, err, "should not return ErrContextTooLarge when summary cache hits")
+	require.NotNil(t, result)
+
+	// Token count must have been reduced (summary replaced the large fragment).
+	assert.Less(t, result.EstimatedAfter, result.EstimatedBefore,
+		"EstimatedAfter should be < EstimatedBefore after ReuseSummary replacement")
+
+	// The result fragments must include the summary content, not the original large content.
+	foundLarge := false
+	for _, f := range result.Fragments {
+		if f.Content == largeContent {
+			foundLarge = true
+			break
+		}
+	}
+	assert.False(t, foundLarge, "original large fragment content should be replaced by cached summary")
+
+	assert.NotZero(t, result.EventID, "EventID should be set")
+}
+
+// ---------------------------------------------------------------------------
+// Test: TestFinalize_SetsReserveAmountAndReconcileDelta (P2-B regression)
+// ---------------------------------------------------------------------------
+
+// TestFinalize_SetsReserveAmountAndReconcileDelta verifies that Finalize patches
+// reserve_amount and reconcile_delta in the context_budget_event row.
+func TestFinalize_SetsReserveAmountAndReconcileDelta(t *testing.T) {
+	db := newTestDB(t)
+	cbStore := store.NewContextBudgetStore(db)
+
+	// Seed an event.
+	event := &model.ContextBudgetEvent{
+		Operation:       "chatbot_chat",
+		Provider:        "volc",
+		Model:           "glm-4-7-251222",
+		ContextWindow:   128000,
+		MaxOutputTokens: 8192,
+		EstimatedBefore: 300,
+		EstimatedAfter:  300,
+		SafeInputBudget: 90000,
+		Status:          "ok",
+	}
+	require.NoError(t, db.Create(event).Error)
+
+	biz := New(cbStore, Options{
+		Clock:  time.Now,
+		Logger: noopLogger{},
+	})
+
+	err := biz.Finalize(context.Background(), aimw.FinalizeInput{
+		EventID:                event.ID,
+		ActualPromptTokens:     280,
+		ActualCompletionTokens: 120,
+		EstimatedCredits:       100,
+		PricingCostCents:       110,
+		Status:                 "ok",
+	})
+	require.NoError(t, err)
+
+	var patched model.ContextBudgetEvent
+	require.NoError(t, db.First(&patched, event.ID).Error)
+
+	require.NotNil(t, patched.ReserveAmount, "ReserveAmount should be patched by Finalize")
+	assert.Equal(t, int64(100), *patched.ReserveAmount, "ReserveAmount should equal EstimatedCredits")
+
+	require.NotNil(t, patched.ReconcileDelta, "ReconcileDelta should be patched by Finalize")
+	assert.Equal(t, int64(10), *patched.ReconcileDelta,
+		"ReconcileDelta should equal PricingCostCents - EstimatedCredits (110 - 100 = 10)")
+}

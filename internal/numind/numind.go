@@ -272,6 +272,9 @@ type stdLogger struct{}
 func (stdLogger) Warnw(msg string, kv ...interface{})  { log.Warnw(msg, kv...) }
 func (stdLogger) Errorw(msg string, kv ...interface{}) { log.Errorw(msg, kv...) }
 
+// Compile-time assertion: creditServiceFacade must implement ContextBudgetCreditService.
+var _ aimw.ContextBudgetCreditService = (*creditServiceFacade)(nil)
+
 // creditServiceFacade adapts credit.ICreditService to satisfy
 // middleware.ContextBudgetCreditService.
 //
@@ -287,10 +290,6 @@ func (stdLogger) Errorw(msg string, kv ...interface{}) { log.Errorw(msg, kv...) 
 // (when reason indicates failure), bypassing the wrapper's *error dispatch.
 type creditServiceFacade struct {
 	svc credit.ICreditService
-}
-
-func newCreditServiceFacade(svc credit.ICreditService) *creditServiceFacade {
-	return &creditServiceFacade{svc: svc}
 }
 
 // CheckAndEstimateBudget delegates to ICreditService.CheckAndEstimateBudget.

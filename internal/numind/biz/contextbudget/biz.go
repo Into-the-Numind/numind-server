@@ -176,13 +176,16 @@ func (b *Biz) Prepare(ctx context.Context, input aimw.PrepareInput) (*aimw.Prepa
 	}
 
 	// Step 4: load active policy.
-	policyRow, err := b.store.GetActivePolicy(ctx, input.Operation)
+	// Use normalizedOp (canonical key) instead of raw input.Operation so that
+	// aliased raw ops (sop_node_execute, chatbot.stream, etc.) correctly hit
+	// the seeded policy rows keyed by canonical name (sop_run, chatbot_chat, …).
+	policyRow, err := b.store.GetActivePolicy(ctx, normalizedOp)
 	if err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, fmt.Errorf("Prepare: GetActivePolicy: %w", err)
 		}
 		// No policy configured → use a safe default and record event as "ok".
-		policyRow = defaultPolicy(input.Operation, cap)
+		policyRow = defaultPolicy(normalizedOp, cap)
 	}
 
 	policy := policyRowToBudgetPolicy(policyRow)
@@ -220,7 +223,7 @@ func (b *Biz) Prepare(ctx context.Context, input aimw.PrepareInput) (*aimw.Prepa
 		}
 
 		// Apply planner actions and, if Compressor is available, run LLM summaries.
-		fragments, estResult = b.applyPlan(ctx, plan, fragments, tokenProfile, policy.FixedOverheadTokens)
+		fragments, estResult = b.applyPlan(ctx, plan, fragments, summaryCache, tokenProfile, policy.FixedOverheadTokens)
 
 		if plan.Feasible {
 			break
@@ -313,12 +316,13 @@ func (b *Biz) prepareWithoutCompression(ctx context.Context, input aimw.PrepareI
 	}
 
 	// Load policy (fall back to default if not configured).
-	policyRow, err := b.store.GetActivePolicy(ctx, input.Operation)
+	// Use normalizedOp (already "context_compression") so the lookup is consistent.
+	policyRow, err := b.store.GetActivePolicy(ctx, normalizedOp)
 	if err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, fmt.Errorf("prepareWithoutCompression: GetActivePolicy: %w", err)
 		}
-		policyRow = defaultPolicy(input.Operation, cap)
+		policyRow = defaultPolicy(normalizedOp, cap)
 	}
 	policy := policyRowToBudgetPolicy(policyRow)
 
@@ -425,7 +429,9 @@ func (b *Biz) Finalize(ctx context.Context, input aimw.FinalizeInput) error {
 	}
 
 	// Actual usage.
-	if input.ActualPromptTokens > 0 || !input.CalibrationSkipped {
+	// Guard: do not write actual_prompt_tokens=0 when status="failed" — it would
+	// conflate "zero tokens used" with "call failed before any tokens were consumed".
+	if (input.ActualPromptTokens > 0 || !input.CalibrationSkipped) && input.Status != "failed" {
 		pt := input.ActualPromptTokens
 		ct := input.ActualCompletionTokens
 		patch.ActualPromptTokens = &pt
@@ -447,6 +453,18 @@ func (b *Biz) Finalize(ctx context.Context, input aimw.FinalizeInput) error {
 		if err == nil {
 			patch.CompressionActions = datatypes.JSON(actionsJSON)
 		}
+	}
+
+	// ReserveAmount and ReconcileDelta (spec verification condition).
+	// ReserveAmount = the pre-call credit estimate carried in FinalizeInput.
+	// ReconcileDelta = PricingCostCents − EstimatedCredits:
+	//   positive → actual cost exceeded estimate (under-reserved)
+	//   negative → actual cost less than estimate (over-reserved, partial refund)
+	if input.EstimatedCredits > 0 {
+		ra := input.EstimatedCredits
+		patch.ReserveAmount = &ra
+		rd := input.PricingCostCents - input.EstimatedCredits
+		patch.ReconcileDelta = &rd
 	}
 
 	// Reservation ID if present.
@@ -716,7 +734,7 @@ func defaultTokenProfile() contextbudget.TokenProfile {
 			"symbol": {TokenPerChar: 0.20},
 			"mixed":  {TokenPerChar: 0.45},
 		},
-		SafetyMultiplier:      1.15,
+		SafetyMultiplier:      1.30, // spec §3.2: fallback paths must apply max(orig, 1.30)
 		CalibrationMultiplier: 1.0,
 	}
 }
@@ -816,14 +834,22 @@ func extractScope(meta map[string]string) (string, string) {
 	return "", ""
 }
 
-// applyPlan executes planner actions in memory. For ActionSummarize actions it
-// calls the Compressor (if available); ActionDrop removes fragments; other
-// actions are handled by the planner's updated fragment content.
+// applyPlan executes planner actions in memory.
+//
+//   - ActionDrop:         removes the fragment entirely.
+//   - ActionSummarize:    calls the Compressor (if available); on failure drops candidate.
+//   - ActionReuseSummary: substitutes the fragment with the pre-loaded cached summary
+//     fragment from summaryCache (keyed by fragment.SourceReference).
+//   - ActionReference:    rewrites fragment.Content to a short "[ref: <sourceRef>]" form.
+//   - ActionKeep:         passes the fragment through unchanged.
+//
+// summaryCache maps SourceReference → cached summary fragment (loaded by loadSummaryCache).
 // Returns the updated fragment slice and a new EstimateResult.
 func (b *Biz) applyPlan(
 	ctx context.Context,
 	plan contextbudget.Plan,
 	fragments []contextbudget.ContextFragment,
+	summaryCache map[string]contextbudget.ContextFragment,
 	profile contextbudget.TokenProfile,
 	fixedOverhead int,
 ) ([]contextbudget.ContextFragment, contextbudget.EstimateResult) {
@@ -833,7 +859,12 @@ func (b *Biz) applyPlan(
 		fragMap[f.ID] = i
 	}
 
-	result := make([]contextbudget.ContextFragment, 0, len(fragments))
+	// Build an action-type index keyed by FragmentID.
+	actionByID := make(map[string]contextbudget.ActionType, len(plan.Actions))
+	for _, action := range plan.Actions {
+		actionByID[action.FragmentID] = action.Type
+	}
+
 	drop := make(map[string]bool)
 
 	// Collect summarize candidates for batch compression.
@@ -883,9 +914,31 @@ func (b *Biz) applyPlan(
 		}
 	}
 
-	// Rebuild fragment list.
+	// Rebuild fragment list, applying ReuseSummary and Reference in-order.
+	result := make([]contextbudget.ContextFragment, 0, len(fragments))
 	for _, f := range fragments {
-		if !drop[f.ID] {
+		if drop[f.ID] {
+			continue
+		}
+		switch actionByID[f.ID] {
+		case contextbudget.ActionReuseSummary:
+			// Replace with cached summary fragment if available.
+			if cached, ok := summaryCache[f.SourceReference]; ok {
+				result = append(result, cached)
+			} else {
+				// Cache miss (shouldn't happen if planner used cache correctly) — keep original.
+				b.logger.Warnw("applyPlan: ActionReuseSummary cache miss, keeping original",
+					"fragment_id", f.ID, "source_reference", f.SourceReference)
+				result = append(result, f)
+			}
+		case contextbudget.ActionReference:
+			// Replace long content with a short [ref: <sourceRef>] pointer.
+			shortened := f
+			if shortened.SourceReference != "" {
+				shortened.Content = fmt.Sprintf("[ref: %s]", shortened.SourceReference)
+			}
+			result = append(result, shortened)
+		default:
 			result = append(result, f)
 		}
 	}
