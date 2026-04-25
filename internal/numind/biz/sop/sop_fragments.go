@@ -14,6 +14,16 @@
 //	previous assistant output → RoleDurable,   SourceAssistant, CompressSummarize,  Critical=false
 //	previous user turns       → RoleDurable,   SourceUser,      CompressSummarize,  Critical=false
 //	file/attachment content   → RoleEvidence,  SourceFile,      CompressReference,  Critical=false
+//	image URL attachment      → RoleEvidence,  SourceFile,      CompressReference,  Critical=false
+//
+// P2-2 (reasoning fragments) deferred: historical reasoning content from prior
+// node runs is NOT stored in conversationHistory (only nodeRun.Output is
+// appended, not the thinking/reasoning field). There is therefore no reasoning
+// data flowing through buildSOPNodeFragments or buildSOPGatewayFragments at this
+// time. When reasoning history is added to conversation context, map it to
+// RoleWorking/SourceAssistant/ContentReasoning/CompressDrop per spec §9.1.
+// TODO(spec §9.1 reasoning mapping): wire reasoning history → RoleWorking fragments
+// when SOP conversation history starts carrying reasoning content.
 package sop
 
 import (
@@ -75,6 +85,9 @@ func buildSOPNodeFragments(
 			fragments = append(fragments, bizctx.NewImmutableSystemFragment(id, msg.Content))
 		case "user":
 			fragments = append(fragments, bizctx.NewDurableUserFragment(id, msg.Content, order, 5))
+			// P2-1 (spec §9.1): emit RoleEvidence/SourceFile fragments for any
+			// file-attachment blocks embedded in this historical user message.
+			fragments = append(fragments, attachmentEvidenceFragments(id, msg.Content, order)...)
 		case "assistant":
 			fragments = append(fragments, bizctx.NewDurableAssistantFragment(id, msg.Content, order, 5))
 		}
@@ -135,6 +148,9 @@ func buildSOPGatewayFragments(msgs []LLMMessage) []contextbudget.ContextFragment
 			} else {
 				// Historical user message — durable, compressible.
 				fragments = append(fragments, bizctx.NewDurableUserFragment(id, msg.Content, i, 5))
+				// P2-1 (spec §9.1): emit RoleEvidence/SourceFile fragments for any
+				// file-attachment blocks embedded in this historical user message.
+				fragments = append(fragments, attachmentEvidenceFragments(id, msg.Content, i)...)
 			}
 		case "assistant":
 			fragments = append(fragments, bizctx.NewDurableAssistantFragment(id, msg.Content, i, 5))
@@ -165,6 +181,9 @@ func buildSOPChatFragments(
 			fragments = append(fragments, bizctx.NewImmutableSystemFragment(id, msg.Content))
 		case "user":
 			fragments = append(fragments, bizctx.NewDurableUserFragment(id, msg.Content, order, 5))
+			// P2-1 (spec §9.1): emit RoleEvidence/SourceFile fragments for any
+			// file-attachment blocks embedded in this historical user message.
+			fragments = append(fragments, attachmentEvidenceFragments(id, msg.Content, order)...)
 		case "assistant":
 			fragments = append(fragments, bizctx.NewDurableAssistantFragment(id, msg.Content, order, 5))
 		}
@@ -180,6 +199,56 @@ func buildSOPChatFragments(
 	}
 
 	return fragments
+}
+
+// attachmentEvidenceFragments scans a user message content for file-attachment
+// blocks (format: `=== filename.ext ===\n<content>`) and emits one
+// RoleEvidence/SourceFile fragment per attachment.
+//
+// P2-1 (spec §9.1): previous attachments → evidence + file + reference|summarize.
+// The attachment block content is used as the fragment body; the filename is
+// stored as SourceReference to allow reference compression.
+//
+// If no attachment markers are found (normal text-only message), the function
+// returns nil.
+func attachmentEvidenceFragments(msgID string, content string, order int) []contextbudget.ContextFragment {
+	locs := attachmentMarkerRegex.FindAllStringSubmatchIndex(content, -1)
+	if len(locs) == 0 {
+		return nil
+	}
+
+	var result []contextbudget.ContextFragment
+	for i, loc := range locs {
+		filename := content[loc[2]:loc[3]]
+
+		// Determine the block body: from end of marker line to next marker or end of content.
+		blockStart := loc[1] // byte after the marker line (includes the newline terminator)
+		var blockEnd int
+		if i+1 < len(locs) {
+			blockEnd = locs[i+1][0] // start of next marker
+		} else {
+			blockEnd = len(content)
+		}
+
+		body := ""
+		if blockStart < blockEnd {
+			body = content[blockStart:blockEnd]
+		}
+
+		result = append(result, contextbudget.ContextFragment{
+			ID:              fmt.Sprintf("%s-attach-%d", msgID, i),
+			Role:            contextbudget.RoleEvidence,
+			Source:          contextbudget.SourceFile,
+			ContentType:     contextbudget.ContentAttachment,
+			Content:         body,
+			Importance:      50,
+			Order:           order,
+			Compressibility: contextbudget.CompressReference,
+			SourceReference: filename,
+			Critical:        false,
+		})
+	}
+	return result
 }
 
 // shouldSkipDirectReserveForGateway returns true when the caller has chosen the

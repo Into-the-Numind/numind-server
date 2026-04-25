@@ -437,10 +437,17 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 	}
 
 	// 2. 选择 Task Profile：任意消息含 image_url 类型内容 → SopVision，否则 SopText。
-	//    通过简单字符串检测判断（image_url 由前端注入，格式为 JSON Part）。
+	//    P2-3 (spec compliance): 优先尝试 JSON Part 解析精确检测；若 Content 不是合法 JSON
+	//    数组（普通字符串消息），才退化为 substring match。此双重检测确保：
+	//    (a) 正常 vision 路径（前端注入 JSON Part 数组）→ 精确匹配 type=="image_url"；
+	//    (b) 用户文本中碰巧包含字面量 "image_url" 的情况 → JSON parse 失败后才落回 substring
+	//        match，依然存在理论误判，但实际上前端对普通文本不会生成 JSON 数组格式，风险极低。
+	//    trade-off 注解：LLMMessage.Content 是 string（非 MessageContent.Parts），无法在 biz
+	//    层做零开销结构化判断；如需彻底消除误判，需将 LLMMessage 改为携带 Parts，属接口变更，
+	//    超出本次修复范围。
 	taskID := profile.SopText
 	for _, msg := range llmMessages {
-		if strings.Contains(msg.Content, "image_url") {
+		if contentHasImageURLPart(msg.Content) {
 			taskID = profile.SopVision
 			break
 		}
@@ -1347,6 +1354,42 @@ func getMapKeys(m map[string]interface{}) []string {
 func hasKey(m map[string]interface{}, key string) bool {
 	_, ok := m[key]
 	return ok
+}
+
+// contentHasImageURLPart reports whether a message content string contains an
+// image_url MessagePart.
+//
+// Detection strategy (P2-3 spec compliance):
+//  1. Try to JSON-unmarshal the content as a []map[string]interface{}. If it
+//     parses and any element has "type" == "image_url", return true. This is the
+//     precise path used when the frontend sends a multipart vision message whose
+//     content is a JSON-serialised Part array.
+//  2. Fall back to strings.Contains as a best-effort for edge cases where the
+//     content is not a valid JSON array but still signals vision input.
+//
+// Trade-off: LLMMessage.Content is a plain string; a user who literally types
+// "image_url" in plain text will trigger the fallback true. In practice the
+// frontend never serialises plain text as a JSON array, so the precise path
+// handles real vision messages, and the substring path only fires on
+// non-JSON content that already contains the literal string.
+func contentHasImageURLPart(content string) bool {
+	// Fast path: no occurrence at all → definitely not a vision message.
+	if !strings.Contains(content, "image_url") {
+		return false
+	}
+	// Precise path: attempt JSON parse as a Part array.
+	var parts []map[string]interface{}
+	if err := json.Unmarshal([]byte(content), &parts); err == nil {
+		for _, p := range parts {
+			if t, ok := p["type"].(string); ok && t == "image_url" {
+				return true
+			}
+		}
+		// Content parsed as JSON array but no image_url part found → not vision.
+		return false
+	}
+	// Fallback: non-JSON content that contains "image_url" substring.
+	return true
 }
 
 // CreateFinalNote 创建最终笔记（公开方法）
