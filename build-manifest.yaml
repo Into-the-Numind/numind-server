@@ -1,6 +1,48 @@
 schema_version: "1.0"
 
 features:
+  - id: "remove-customer-tier-filters"
+    ndf_version: "1.1"
+    description: "客户管理页面删除普通会员和高级会员筛选按钮，仅保留全部 / Free / Pro / 体验会员筛选；不影响列表中的会员状态展示，也不影响 action 菜单里的帮开通会员能力。"
+    track: "hotfix"
+    stage: "completed"
+    completed_at: "2026-04-25T00:25:00+08:00"
+    classification_reason: "Triage 5 条全满足 — (1) 无数据库 schema 变更 (2) 无新增 API 端点 (3) 无外部服务集成 (4) 预计仅修改 numind-web-v3/src/views/CustomersView.vue 1 个文件 (5) 不涉及支付/权限业务逻辑，仅删除前端筛选入口。用户确认“马上开始”。"
+    last_updated_by: "ai-hotfix-close"
+    last_updated_at: "2026-04-25T00:25:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "merged to develop @ 74c5d8b (fix branch commit 069930e)"
+    hotfix_artifacts:
+      diagnosis: "定位到客户管理页面为 numind-web-v3/src/views/CustomersView.vue；普通会员/高级会员是 filter bar 中 activeFilter=standard/premium 的两个按钮，而不是会员状态 badge 或帮开通会员弹窗。"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    rollback: "恢复 CustomersView.vue 中 standard/premium filter buttons、计数 computed 和 FilterValue union。"
+    last_verified:
+      at: "2026-04-25T00:20:00+08:00"
+      method: "npm run lint + npm run type-check；浏览器打开 http://127.0.0.1:5173/customers 命中登录页，未输入测试账号密码，因此本次不做登录态截图。静态 diff 确认仅删除 filter bar 的 standard/premium buttons、计数 computed 和 filter-dot CSS。"
+      lint: "PASS (0 errors; existing warnings: _work_sse_test unused vars, KnowledgeBaseDetail.vue unused formatDate)"
+      type_check: "PASS"
+      tests: "not run"
+      test_summary: "CustomersView.vue 目标改动通过 lint/type-check；本地浏览器因登录门禁未进入页面。"
+    deploy_checklist:
+      dev:
+        status: "pushed"
+        pushed_at: "2026-04-25T00:25:00+08:00"
+        commit: "74c5d8b"
+      qa:
+        status: "NOT_REQUESTED"
+      prod:
+        status: "NOT_REQUESTED"
+    decisions:
+      - "2026-04-25: 只删除客户管理 filter bar 的普通会员 / 高级会员筛选入口；保留列表状态标签、旧会员 quota/expiry 展示和 grant membership 弹窗中的高级会员开通能力。"
+    blockers: []
+    created_at: "2026-04-25T00:00:00+08:00"
+
   - id: "seed-deepseek-v4-pro"
     ndf_version: "1.1"
     description: "在 DB Registry（ai_service + ai_service_route + pricing_rule）注册新模型 deepseek-v4-pro，双 provider 路由：dmxapi 主（priority=100）+ aihubmix 备（priority=10），flat 计费 ¥14/M input / ¥28/M output（cost=sell）。capability_json 带 1M context window + 384K max output + streaming/tool_use features。latency_tier/quality_tier 走 DB DEFAULT 'standard'（纯元数据、零 read、作为独立 backlog 任务下线）。"
