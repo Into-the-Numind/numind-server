@@ -2889,8 +2889,8 @@ features:
     track: "standard"
     stage: "S3"
     classification_reason: "Triage 5 条评估 — (1) 可能涉及 schema/config 扩展（token profile、compression summary/token stats） (2) admin web 可能需要新增或扩展配置 API (3) 无新外部服务强依赖，但 tokenizer/profile 机制需设计 (4) 跨 numind-server、numind-admin-web，可能涉及 numind-web-v3，影响文件数 >3 (5) 影响 credits 预扣费、LLM 上下文组装和模型能力配置，属于高风险业务路径。用户明确要求进入 Standard Track。"
-    last_updated_by: "ai-s4-wave3-merge"
-    last_updated_at: "2026-04-25T23:30:00+08:00"
+    last_updated_by: "ai-s4-wave4-merge"
+    last_updated_at: "2026-04-25T23:55:00+08:00"
     stage: "S4"
     repos:
       - numind-server
@@ -2907,9 +2907,9 @@ features:
       qa: null
     progress:
       total_tasks: 15
-      completed_tasks: 5
-      reviewed_tasks: 5
-      current_task: "Wave 4: Task 6 (ContextBudgetCredits middleware) sequential"
+      completed_tasks: 6
+      reviewed_tasks: 6
+      current_task: "Wave 5: Task 7 (prepare/finalize biz) sequential"
     rollback: null
     last_verified: null
     decisions:
@@ -2932,6 +2932,7 @@ features:
       - "2026-04-25 (Wave 1 已知遗留)：(a) credit_reservation INSERT IGNORE 不依赖 UNIQUE 约束去重，依赖 migration runner 防重跑（spec §3.3 未要求 UNIQUE，遵循 spec）；(b) spec §3.4 user_id 用 BIGINT UNSIGNED 与项目其他 migration 的 INT UNSIGNED 惯例不一致，按 spec 实现；(c) budget.go 注释说 '8 spec constraints' 但代码 7 个显式 + 1 个派生（cosmetic，不修）；(d) develop 上 pre-existing TestReserve_ExactlyExhaustedThenRetry_ReturnsInsufficientSentinel panic 与本 feature 无关，但应在后续 task 中修复以保护本 feature 的 credit 路径。"
       - "2026-04-25 (S4 Wave 2): Task 3 (store) + Task 4 (credit budget API) 并行 dispatch 在两个独立 worktree，分支 feature/cb-task3-store + feature/cb-task4-credit。Task 3 review: spec PASS_WITH_MINOR (P2-A warn + P2-B is_fallback) → fix → code quality APPROVED_WITH_NITS (1 P1 F1 lock-query is_fallback + 5 nits) → fix → re-code-quality APPROVED (9 tests PASS)。Task 4 review: spec PASS_WITH_MINOR (3 P2 doc) → fix → code quality APPROVED_WITH_NITS (3 nits doc) → fix（re-review skipped per Rule 7，全 P2 doc）。两分支 merge 到 develop (commits ee84039, 8e9765c)。Wave 2 完成 progress=4/15。"
       - "2026-04-25 (S4 Wave 3): Task 5 (gateway types + middleware order) sequential dispatch。新 chain 顺序 Tracing → Fallback → ContextBudgetCredits → Billing → Retry → Adapter，Billing 移到 Fallback 内（route-aware billing）。ContextBudgetCredits 是 Task-6 占位 passthrough stub + 2 marker interface。新增 RenderContextFragments + ChatRequest.ContextFragments 字段。spec compliance review: PASS。code quality review: APPROVED_WITH_NITS (2 nits N-1 MessageRoleTool 常量 + N-2 BuildDefault 测试范围) → fix。merge develop (commit 80df966)。Wave 3 完成 progress=5/15。Task 6 进入时必须删除 marker interface 实现真实 Prepare/Finalize/Reserve/Reconcile 接口。"
+      - "2026-04-25 (S4 Wave 4): Task 6 (ContextBudgetCredits middleware) sequential — feature 最复杂 task (~1300 lines new code)。删除 Task 5 marker interface，定义真实 ContextBudgetService (Prepare+Finalize) 和 ContextBudgetCreditService (CheckAndEstimate+Reserve+Finalize+Refund)。13 步 spec §5.1 flow + spec §5.1.2 流式 finalize 用 sync.Once 幂等，4 触发条件 (final usage / final err+usage / final err+no usage / channel close / ctx cancel) 全覆盖。priority-check double-select 处理 cancel vs close race。budget metadata via ctx 注入 billing.go merge 到 usage_record.metadata (spec §11.2)。spec compliance review: PASS_WITH_MINOR (4 P2: P2-A compression_status 死代码 + P2-B reserved_output_tokens + P2-C reservation_id 修复；P2-D budget_policy_id 推迟 Task 7 + spec §5.1 step 1 empty fragments migrated 行为推迟 Task 9/10)。code quality review: APPROVED_WITH_NITS (5 nits: Nit-1 接口 doc + Nit-2/4 补 3 个 streaming/non-streaming error 测试 + Nit-5 步骤注释；Nit-3 EstimatedCredits 单位推迟 Task 7)。10 tests × 3 race iter = 30/30 PASS。merge develop (commit 84144af)。Wave 4 完成 progress=6/15。"
     blockers: []
     created_at: "2026-04-25T15:45:00+08:00"
     completed_at: null
