@@ -36,8 +36,8 @@ type TokenEstimationProfile struct {
 	IsFallback               bool           `gorm:"not null;default:false" json:"is_fallback"`
 	ChangeReason             string         `gorm:"size:255" json:"change_reason"`
 	UpdatedBy                string         `gorm:"size:80" json:"updated_by"`
-	CreatedAt                time.Time      `json:"created_at"`
-	UpdatedAt                time.Time      `json:"updated_at"`
+	CreatedAt                time.Time      `gorm:"autoCreateTime:milli" json:"created_at"`
+	UpdatedAt                time.Time      `gorm:"autoUpdateTime:milli" json:"updated_at"`
 }
 
 // TableName returns the table name for TokenEstimationProfile.
@@ -66,8 +66,8 @@ type ContextBudgetPolicy struct {
 	IsActive             bool      `gorm:"not null;default:true" json:"is_active"`
 	ChangeReason         string    `gorm:"size:255" json:"change_reason"`
 	UpdatedBy            string    `gorm:"size:80" json:"updated_by"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	CreatedAt            time.Time `gorm:"autoCreateTime:milli" json:"created_at"`
+	UpdatedAt            time.Time `gorm:"autoUpdateTime:milli" json:"updated_at"`
 }
 
 // TableName returns the table name for ContextBudgetPolicy.
@@ -78,11 +78,11 @@ func (ContextBudgetPolicy) TableName() string { return "context_budget_policy" }
 // See spec §3.4.
 type ContextSummary struct {
 	ID                    uint64         `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserID                uint64         `gorm:"not null" json:"user_id"`
-	OwnerUserID           *uint64        `gorm:"default:null" json:"owner_user_id"`
-	ScopeType             string         `gorm:"size:40;not null" json:"scope_type"`
-	ScopeID               string         `gorm:"size:100;not null" json:"scope_id"`
-	SourceHash            string         `gorm:"size:64;not null" json:"source_hash"`
+	UserID                uint           `gorm:"not null" json:"user_id"`
+	OwnerUserID           *uint          `gorm:"default:null;uniqueIndex:uk_summary_scope_hash,priority:1" json:"owner_user_id"`
+	ScopeType             string         `gorm:"size:40;not null;uniqueIndex:uk_summary_scope_hash,priority:2" json:"scope_type"`
+	ScopeID               string         `gorm:"size:100;not null;uniqueIndex:uk_summary_scope_hash,priority:3" json:"scope_id"`
+	SourceHash            string         `gorm:"size:64;not null;uniqueIndex:uk_summary_scope_hash,priority:4" json:"source_hash"`
 	SourceFragmentIDs     datatypes.JSON `gorm:"not null" json:"source_fragment_ids"`
 	SummaryText           string         `gorm:"type:mediumtext;not null" json:"summary_text"`
 	SummaryTokenEstimate  int            `gorm:"not null;default:0" json:"summary_token_estimate"`
@@ -93,8 +93,8 @@ type ContextSummary struct {
 	ErrorMessage          string         `gorm:"size:500" json:"error_message"`
 	CreatedByOperation    string         `gorm:"size:80;not null;default:''" json:"created_by_operation"`
 	ExpiresAt             *time.Time     `json:"expires_at"`
-	CreatedAt             time.Time      `json:"created_at"`
-	UpdatedAt             time.Time      `json:"updated_at"`
+	CreatedAt             time.Time      `gorm:"autoCreateTime:milli" json:"created_at"`
+	UpdatedAt             time.Time      `gorm:"autoUpdateTime:milli" json:"updated_at"`
 }
 
 // TableName returns the table name for ContextSummary.
@@ -105,7 +105,7 @@ func (ContextSummary) TableName() string { return "context_summary" }
 // See spec §3.5.
 type ContextBudgetEvent struct {
 	ID                      uint64         `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserID                  *uint64        `gorm:"default:null" json:"user_id"`
+	UserID                  *uint          `gorm:"default:null" json:"user_id"`
 	Operation               string         `gorm:"size:80;not null" json:"operation"`
 	TaskID                  string         `gorm:"size:80" json:"task_id"`
 	Provider                string         `gorm:"size:50;not null;default:''" json:"provider"`
@@ -134,7 +134,7 @@ type ContextBudgetEvent struct {
 	Status                  string         `gorm:"size:30;not null;default:'ok'" json:"status"`
 	ErrorCode               string         `gorm:"size:80" json:"error_code"`
 	Metadata                datatypes.JSON `gorm:"default:null" json:"metadata"`
-	CreatedAt               time.Time      `json:"created_at"`
+	CreatedAt               time.Time      `gorm:"autoCreateTime:milli" json:"created_at"`
 }
 
 // TableName returns the table name for ContextBudgetEvent.
