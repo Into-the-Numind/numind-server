@@ -338,14 +338,21 @@ type salesragCreditContext struct {
 	opErr      error
 }
 
-// acquireSalesragCredits performs the CheckAndEstimate + conditional Reserve
-// pair for a salesrag_chat call. sessionID and promptChars are caller-
-// provided; idempotency_key is derived from request_uuid via
-// getRequestUUIDFromCtx.
+// acquireSalesragCredits performs the CheckAndEstimate pre-flight check for a
+// salesrag_chat call. sessionID and promptChars are caller-provided.
 //
-// The caller is responsible for invoking `defer cc.finalize(ctx)` on the
-// returned cc (when non-nil) BEFORE running the LLM, so client-disconnect
-// (context.Canceled) still trips the refund path.
+// P1 fix (Task 10 spec compliance): RetrieveStream now always populates
+// ContextFragments, which means the Gateway middleware (ContextBudgetCredits)
+// runs doReserveBudget for credits-mode users. To prevent double-reservation,
+// this function performs CheckAndEstimate (early balance denial) but skips the
+// inline Reserve for credits users — the Gateway middleware owns the Reserve,
+// Reconcile, and Refund lifecycle for that path.
+//
+// Legacy-tier users are unaffected: SkipDeduction=true means no Reserve
+// happens either way, but CheckAndEstimate still runs CanRunSOP() gating.
+//
+// The caller still calls `defer cc.finalize(ctx)` — for legacy and test paths
+// where cc.rsv is nil, finalize is a safe no-op.
 func (b *salesRAGBiz) acquireSalesragCredits(
 	ctx context.Context, userID uint, sessionID uint, promptChars int,
 ) (*salesragCreditContext, error) {
@@ -370,21 +377,14 @@ func (b *salesRAGBiz) acquireSalesragCredits(
 		// legacy_tier path: no Reserve, defer-finalize is a no-op.
 		return cc, nil
 	}
-
-	var rsv *credit.Reservation
-	requestUUID := getRequestUUIDFromCtx(ctx)
-	if requestUUID == "" {
-		rsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSalesragChat,
-			pre.EstimatedCredits, pre.CoefficientID, nil)
-	} else {
-		idempKey := fmt.Sprintf("salesrag_chat:%d:%s", sessionID, requestUUID)
-		rsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSalesragChat,
-			pre.EstimatedCredits, pre.CoefficientID, &idempKey)
-	}
-	if err != nil {
-		return cc, b.wrapCreditError(err, pre)
-	}
-	cc.rsv = rsv
+	// credits-mode path: Reserve is delegated to the Gateway middleware
+	// (ContextBudgetCredits → doReserveBudget) which fires when
+	// ContextFragments is non-empty (always the case since Task 10).
+	// Returning cc with rsv=nil means cc.finalize is a no-op here; the
+	// middleware's Finalize handles Reconcile/Refund after the stream drains.
+	// sessionID is retained in the function signature for potential future use
+	// (e.g. middleware-level idempotency key correlation).
+	_ = sessionID
 	return cc, nil
 }
 
@@ -1083,13 +1083,20 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 	// Evidence chunks from verdict.Evidence carry score-based importance so the planner
 	// can prioritise high-relevance chunks under budget pressure.
 	// The system prompt and user query are also wrapped as typed fragments.
+	//
+	// P2-1 fix: the user fragment carries only the raw user query (promptQuery),
+	// NOT the full assembled user message that may include OCR text appended by
+	// buildPromptMessagesV2. OCR text is a retrieval aid, not the user's expressed
+	// intent, so it should not be tagged as SourceUser + Critical. The assembled
+	// messages slice (aiMessages) is still passed to the provider unchanged — this
+	// only affects how the context-budget middleware classifies fragments.
 	var salesragFragments []cb.ContextFragment
 	if len(messages) >= 2 {
 		sysMsgContent, _ := messages[0]["content"].(string)
-		usrMsgContent, _ := messages[1]["content"].(string)
 		salesragFragments = append(salesragFragments, buildSalesRAGSystemFragment("sys-0", sysMsgContent))
 		salesragFragments = append(salesragFragments, buildSalesRAGEvidenceFragments(verdict.Evidence)...)
-		salesragFragments = append(salesragFragments, buildSalesRAGUserFragment("cur-msg", usrMsgContent))
+		// Use promptQuery (raw user text only, no OCR suffix) as the SourceUser fragment.
+		salesragFragments = append(salesragFragments, buildSalesRAGUserFragment("cur-msg", promptQuery))
 	}
 
 	// Pre-stream errors (auth, routing) return synchronously via chatErr.

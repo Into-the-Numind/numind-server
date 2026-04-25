@@ -537,6 +537,68 @@ func TestSalesRAGBuildsEvidenceFragmentsWithoutSOPMetadata(t *testing.T) {
 	assert.NotEmpty(t, frags[2].SourceReference, "empty chunk ID must produce a non-empty SourceReference fallback")
 }
 
+// ============================================================================
+// Task 10: P1 — No double-reserve for credits-mode ChatWithSession
+// ============================================================================
+
+// TestSalesRAGChatWithSessionNoDoubleReserve verifies the P1 spec-compliance fix:
+// now that RetrieveStream always populates ContextFragments (Task 10), the
+// Gateway middleware's ContextBudgetCredits handles credit reservation.
+// acquireSalesragCredits must NOT also call Reserve for credits-mode users,
+// so the combined reservation count across both paths stays at most 1.
+//
+// Test model: we call acquireSalesragCredits directly (the only inline-Reserve
+// site) and assert that it does NOT create a reservation row for a credits-mode
+// user, even when CheckAndEstimate succeeds. The Gateway middleware path is
+// exercised in integration; here we verify the biz-layer contract that
+// cc.rsv is always nil for credits users post-fix.
+func TestSalesRAGChatWithSessionNoDoubleReserve(t *testing.T) {
+	db := newSalesragCreditsTestDB(t)
+	ds := store.NewTestStore(db)
+	calc := pricing.NewCalculator(ds.Billing())
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc)
+
+	// Seed a credits-mode user with ample balance.
+	userID := uint(2001)
+	seedCreditsUserWithPackage(t, db, userID, 5000)
+	seedSalesragCoefficient(t, db)
+
+	b := newTestSalesragBiz(ds, svc, calc)
+	ctx := ctxWithRequestID(context.Background(), "req-p1-fix")
+
+	// Call acquireSalesragCredits — CheckAndEstimate runs (early balance check)
+	// but Reserve must NOT fire (delegated to Gateway middleware since Task 10).
+	cc, err := b.acquireSalesragCredits(ctx, userID, 123, 500)
+	require.NoError(t, err, "credits-mode user with ample balance must not be denied")
+	require.NotNil(t, cc, "cc must be returned (carries PreCheckResult for logging)")
+
+	// KEY assertion: no reservation was created by the inline biz path.
+	assert.Nil(t, cc.rsv,
+		"credits-mode: Reserve must NOT be called by acquireSalesragCredits (Gateway middleware owns it)")
+
+	// Confirm zero reservation rows in DB — no double-reserve side-effect.
+	var count int64
+	db.Model(&model.CreditReservation{}).Where("user_id = ?", userID).Count(&count)
+	assert.EqualValues(t, 0, count,
+		"no credit_reservation row must be written by acquireSalesragCredits for credits users")
+
+	// finalize must be a safe no-op (cc.rsv == nil).
+	cc.finalize(ctx)
+	db.Model(&model.CreditReservation{}).Where("user_id = ?", userID).Count(&count)
+	assert.EqualValues(t, 0, count, "finalize with nil rsv must not write any DB rows")
+
+	// Legacy-tier users are unaffected: SkipDeduction=true means no Reserve
+	// either way, but CheckAndEstimate still runs the CanRunSOP gate.
+	legacyUserID := uint(2002)
+	seedLegacyTierUser(t, db, legacyUserID, model.UserTierStandard)
+
+	ccLegacy, errLegacy := b.acquireSalesragCredits(ctx, legacyUserID, 456, 200)
+	require.NoError(t, errLegacy, "legacy_tier standard user must pass CanRunSOP gate")
+	require.NotNil(t, ccLegacy)
+	assert.Nil(t, ccLegacy.rsv, "legacy_tier: no reservation (SkipDeduction path, unchanged)")
+	assert.True(t, ccLegacy.pre.SkipDeduction, "legacy_tier SkipDeduction must still be true")
+}
+
 // TestSalesRAGProfileAndChatStyleUseFragments verifies that the fragment helper
 // functions for profile-analysis and chat-style operations produce fragments
 // with the correct invariants: system prompt → RoleImmutable + Critical=true,

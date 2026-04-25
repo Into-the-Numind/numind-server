@@ -17,19 +17,66 @@ import (
 )
 
 // buildStrategySelectFragments constructs the ContextFragment slice for a
-// strategy-selection LLM call (operation=salesrag_strategy_select). The entire
-// prompt is a single user message with an embedded instruction; there is no
-// separate system turn.
+// strategy-selection LLM call (operation=salesrag_strategy_select).
+//
+// P2-2 fix (spec §9.2 system/user separation): the full prompt string encodes
+// both a system-level instruction block (role definition + strategy list +
+// output rules) and the user-supplied query. We split on the last occurrence of
+// "## 客户当前消息\n" so the instruction skeleton becomes a RoleImmutable system
+// fragment and the actual user query becomes a separate RoleRecent user fragment.
+//
+// Fallback: when the separator is not found (e.g. prompt template changed),
+// the whole prompt is kept as a single RoleImmutable system fragment with a
+// synthetic empty user fragment, preserving prior behaviour without panicking.
 func buildStrategySelectFragments(prompt string) []cb.ContextFragment {
+	const userQuerySeparator = "## 客户当前消息\n"
+	sepIdx := strings.LastIndex(prompt, userQuerySeparator)
+	if sepIdx < 0 {
+		// Fallback: treat entire prompt as system instruction.
+		return []cb.ContextFragment{
+			{
+				ID:              "strategy-sys",
+				Role:            cb.RoleImmutable,
+				Source:          cb.SourceSystem,
+				ContentType:     cb.ContentText,
+				Content:         prompt,
+				Importance:      10,
+				Order:           0,
+				Compressibility: cb.CompressNone,
+				Critical:        true,
+			},
+		}
+	}
+	sysContent := strings.TrimRight(prompt[:sepIdx], "\n ")
+	// Skip the separator line itself and the "## 输出要求" block that follows
+	// the user query to isolate just the user's current message.
+	afterSep := prompt[sepIdx+len(userQuerySeparator):]
+	// The user query ends at the next "## " heading (if any).
+	if nextSection := strings.Index(afterSep, "\n## "); nextSection >= 0 {
+		afterSep = afterSep[:nextSection]
+	}
+	userContent := strings.TrimSpace(afterSep)
+
 	return []cb.ContextFragment{
 		{
-			ID:              "strategy-prompt",
+			ID:              "strategy-sys",
+			Role:            cb.RoleImmutable,
+			Source:          cb.SourceSystem,
+			ContentType:     cb.ContentText,
+			Content:         sysContent,
+			Importance:      10,
+			Order:           0,
+			Compressibility: cb.CompressNone,
+			Critical:        true,
+		},
+		{
+			ID:              "strategy-user",
 			Role:            cb.RoleRecent,
 			Source:          cb.SourceUser,
 			ContentType:     cb.ContentText,
-			Content:         prompt,
+			Content:         userContent,
 			Importance:      9,
-			Order:           0,
+			Order:           1,
 			Compressibility: cb.CompressNone,
 			Critical:        true,
 		},
