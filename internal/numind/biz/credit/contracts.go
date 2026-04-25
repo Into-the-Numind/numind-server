@@ -56,4 +56,22 @@ type ICreditService interface {
 	// creditsImpl：查 credit_package 返回双档
 	// legacyTierImpl：调 user.GetRemainingSOPRuns() 返回次数，不查 credit_package
 	GetBalance(ctx context.Context, user *model.User) (*BalanceBreakdown, error)
+
+	// CheckAndEstimateBudget is the budget-aware precheck entry point. It
+	// normalizes the raw operation via budgetOperationMap (spec §6.1.1), then:
+	//   - legacy-tier users: returns SkipDeduction=true, EstimatedCredits=0.
+	//   - credits users: computes EstimatedCredits from token counts via pricing.
+	//   - unknown operations with user billing context: returns ErrUnknownBudgetOperation
+	//     (fail-closed — never silently bill via a default operation).
+	//
+	// Does NOT create a reservation. Callers check SkipDeduction before calling
+	// ReserveBudget. This is a parallel API to CheckAndEstimate — the R2
+	// char-based path is preserved unchanged.
+	CheckAndEstimateBudget(ctx context.Context, user *model.User, input BudgetPrecheckInput) (*PreCheckResult, error)
+
+	// ReserveBudget creates a credit_reservation with estimation_source='context_budget',
+	// coefficient_id=NULL, and the token-profile/event metadata from BudgetReservationInput.
+	// Legacy-tier users (SkipDeduction=true) are a no-op: returns (nil, nil).
+	// Spec §6.1.2.
+	ReserveBudget(ctx context.Context, user *model.User, input BudgetReservationInput) (*Reservation, error)
 }
