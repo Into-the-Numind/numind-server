@@ -5,6 +5,7 @@ var estimatedCredits = map[string]int64{
 	"sop_run":          20,
 	"sop_chat":         6,
 	"salesrag_chat":    6,
+	"chatbot_chat":     6, // aligned with sop_chat (both are interactive chat operations)
 	"profile_analysis": 2,
 	"style_analysis":   1,
 	"file_parse":       3,

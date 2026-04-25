@@ -184,7 +184,11 @@ func (s *creditService) CheckAndEstimateBudget(ctx context.Context, user *model.
 		costCents, err := s.pricing.CalculateCost(ctx, "llm_chat", input.Provider, input.Model,
 			input.EstimatedPromptTokens, input.EstimatedCompletionTokens)
 		if err == nil {
-			estimatedCredits = costCents // cost_cents are used directly as credits (1:1 in test env)
+			// credits == cost_cents in this system (1:1 system-wide, no environment-specific conversion).
+			// Note: this skips the R2 char-path safety buffer (1 + safetyBufferPct) because
+			// context budget provides token estimates that are already conservative — the
+			// buffer is built into TokenEstimationProfile.SafetyMultiplier upstream.
+			estimatedCredits = costCents
 		}
 	}
 	if estimatedCredits <= 0 {

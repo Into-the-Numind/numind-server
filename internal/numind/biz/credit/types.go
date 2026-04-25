@@ -53,7 +53,11 @@ type BudgetReservationInput struct {
 	BudgetPrecheckInput
 	EstimatedCredits int64
 	IdempotencyKey   string
-	Metadata         map[string]string
+	// Metadata is reserved for Task 5+ Gateway middleware to attach Langfuse
+	// span metadata or trace context. The current credit-layer implementation
+	// does NOT read this field — it is forwarded to UsageRecord/billing layer
+	// by the caller (Gateway middleware), not by ReserveBudget itself.
+	Metadata map[string]string
 }
 
 // ReservationStatus 预扣记录状态机：reserved → reconciled | refunded | expired
