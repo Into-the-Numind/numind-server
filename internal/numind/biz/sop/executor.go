@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -406,6 +405,12 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 //   - SopVision：当任意消息含 image_url 类型的 MessagePart 时（视觉输入）
 //   - SopText：其余所有情况（纯文本）
 //
+// Task 9 (SOP Gateway Producer Migration):
+// 消息构造改为 ContextFragment 切片（buildSOPGatewayFragments），交由
+// ContextBudgetCredits middleware 处理预算规划和 context 压缩。
+// 不再调用 trimHistoryForGateway（middleware 负责裁剪）；
+// 不再手动预构建 ChatMessage 列表（RenderContextFragments 由 middleware 执行）。
+//
 // 调用前注入 WithSkipLegacyBilling，防止 LLMRouter 旧路径与 Gateway 双记账。
 // modelKey 参数当前未接通 Gateway ModelOverride（billing-baseline.md BLOCKER 3）；预留供未来扩展。
 func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, modelKey string, thinking bool, handler StreamHandler) (string, *TokenUsage, error) {
@@ -419,8 +424,9 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 		ctx = aismw.WithUserID(ctx, bc.UserID)
 	}
 
-	// 1. 构建 LLMMessage 列表并对历史做渐进式裁剪（避免超过上游 provider input token 上限）
-	//    构造顺序：system prompt → history → 当前 user input（最后一条永远是当前步骤，裁剪时不动）
+	// 1. 构建有序 LLMMessage 列表（system → history → current input），
+	//    仅用于 Task Profile 选择（SopVision 检测）和 fragment 构建。
+	//    历史裁剪和 budget 规划由 ContextBudgetCredits middleware 负责。
 	llmMessages := make([]LLMMessage, 0, len(history)+2)
 	if node.Prompt != "" {
 		llmMessages = append(llmMessages, LLMMessage{Role: "system", Content: node.Prompt})
@@ -430,46 +436,31 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 		llmMessages = append(llmMessages, LLMMessage{Role: "user", Content: input})
 	}
 
-	trimmed, trimErr := e.trimHistoryForGateway(ctx, llmMessages)
-	if trimErr != nil {
-		if errors.Is(trimErr, ErrGatewayInputTooLong) {
-			return "", nil, fmt.Errorf("您本次输入的内容过长，请缩减后重试")
-		}
-		return "", nil, fmt.Errorf("executeViaGateway: trimHistoryForGateway: %w", trimErr)
-	}
-
-	// 2. 转成 aiservice.ChatMessage
-	aiMessages := make([]aiservice.ChatMessage, 0, len(trimmed))
-	for _, msg := range trimmed {
-		aiMessages = append(aiMessages, aiservice.ChatMessage{
-			Role:    aiservice.MessageRole(msg.Role),
-			Content: aiservice.MessageContent{Text: msg.Content},
-		})
-	}
-
-	// 2. 选择 Task Profile：任意消息含 image_url 部分 → SopVision，否则 SopText
+	// 2. 选择 Task Profile：任意消息含 image_url 类型内容 → SopVision，否则 SopText。
+	//    通过简单字符串检测判断（image_url 由前端注入，格式为 JSON Part）。
 	taskID := profile.SopText
-	for _, m := range aiMessages {
-		for _, part := range m.Content.Parts {
-			if part.Type == aiservice.MessagePartTypeImageURL {
-				taskID = profile.SopVision
-				break
-			}
-		}
-		if taskID == profile.SopVision {
+	for _, msg := range llmMessages {
+		if strings.Contains(msg.Content, "image_url") {
+			taskID = profile.SopVision
 			break
 		}
 	}
 
-	// 3. 注入 skip-legacy-billing 标记，防止 Gateway 与旧 billing 路径双记账
+	// 3. 构建 ContextFragment 切片（Task 9 核心变更）。
+	//    - system/node prompt → RoleImmutable, CompressNone, Critical=true
+	//    - 历史 user/assistant 消息 → RoleDurable, CompressSummarize
+	//    - 当前 user input（最后一条 user 消息）→ RoleRecent, CompressNone, Critical=true
+	fragments := buildSOPGatewayFragments(llmMessages)
+
+	// 4. 注入 skip-legacy-billing 标记，防止 Gateway 与旧 billing 路径双记账
 	ctx = aiservice.WithSkipLegacyBilling(ctx)
 
-	// 4. 调用 Gateway ChatStream
+	// 5. 调用 Gateway ChatStream（ContextFragments 由 middleware 处理预算规划和渲染）
 	req := aiservice.ChatRequest{
-		Messages:      aiMessages,
-		Temperature:   0.7,
-		ModelOverride: modelKey, // pass user's model choice; empty = use task profile default
-		Thinking:      thinking,
+		ContextFragments: fragments,
+		Temperature:      0.7,
+		ModelOverride:    modelKey, // pass user's model choice; empty = use task profile default
+		Thinking:         thinking,
 	}
 	ch, err := aiservice.ChatStream(ctx, taskID, req)
 	if err != nil {
