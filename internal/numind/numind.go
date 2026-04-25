@@ -144,6 +144,19 @@ func run() error {
 		Logger:     stdLogger{},
 	})
 
+	// Wire background summary worker (Task 8).
+	// The worker shares cbStore and compressor with the Biz. It is started here
+	// and stopped via workerCancel when the server shuts down.
+	// Task 9/10 producers obtain the worker via SummaryWorkerInstance().
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	defer workerCancel()                                                       // ensure cancel is always called (context-leak guard)
+	summaryWorker := cbbiz.NewSummaryWorker(cbStore, nil, cbbiz.WorkerOptions{ // compressor nil until Task 12
+		Logger: stdLogger{},
+	})
+	go summaryWorker.Run(workerCtx)
+	SetSummaryWorkerInstance(summaryWorker)
+	log.Infow("Context budget summary worker started")
+
 	// Build ContextBudgetCreditService adapter wrapping the ICreditService.
 	bizLayer := biz.NewBiz(store.S)
 	creditFacade := &creditServiceFacade{svc: bizLayer.CreditService()}
@@ -248,6 +261,10 @@ func run() error {
 
 	//grpcsrv.GracefulStop()
 
+	// 优雅关闭 summary worker（停止接收新 job，等 in-flight job 结束）
+	workerCancel()
+	log.Infow("Context budget summary worker stopped")
+
 	// 优雅关闭博主监控调度器
 	bizLayer.Monitor().StopScheduler()
 
@@ -260,6 +277,27 @@ func run() error {
 	log.Infow("Server exiting")
 
 	return nil
+}
+
+// ----------------------------------------------------------------------------
+// Summary worker package-level accessor
+// ----------------------------------------------------------------------------
+
+// summaryWorkerSingleton holds the single SummaryWorker instance for this process.
+// It is set during run() initialisation and read by Task 9/10 producers.
+var summaryWorkerSingleton *cbbiz.SummaryWorker
+
+// SetSummaryWorkerInstance stores the worker singleton. Called once by run().
+func SetSummaryWorkerInstance(w *cbbiz.SummaryWorker) {
+	summaryWorkerSingleton = w
+}
+
+// SummaryWorkerInstance returns the running SummaryWorker so that SOP/chatbot
+// producers (Task 9/10) can enqueue jobs. Returns nil before run() completes,
+// which is safe — Enqueue on a nil worker would panic, but Task 9/10 producers
+// should guard with a nil check.
+func SummaryWorkerInstance() *cbbiz.SummaryWorker {
+	return summaryWorkerSingleton
 }
 
 // ----------------------------------------------------------------------------
