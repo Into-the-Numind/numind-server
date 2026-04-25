@@ -2889,8 +2889,9 @@ features:
     track: "standard"
     stage: "S3"
     classification_reason: "Triage 5 条评估 — (1) 可能涉及 schema/config 扩展（token profile、compression summary/token stats） (2) admin web 可能需要新增或扩展配置 API (3) 无新外部服务强依赖，但 tokenizer/profile 机制需设计 (4) 跨 numind-server、numind-admin-web，可能涉及 numind-web-v3，影响文件数 >3 (5) 影响 credits 预扣费、LLM 上下文组装和模型能力配置，属于高风险业务路径。用户明确要求进入 Standard Track。"
-    last_updated_by: "ai-s3-plan-review-v2"
-    last_updated_at: "2026-04-25T19:30:00+08:00"
+    last_updated_by: "ai-s4-wave1-merge"
+    last_updated_at: "2026-04-25T22:00:00+08:00"
+    stage: "S4"
     repos:
       - numind-server
       - numind-admin-web
@@ -2901,14 +2902,14 @@ features:
       proposal: "proposals/context-budget-compression-proposal.md"
       spec: "docs/superpowers/specs/2026-04-25-context-budget-compression-design.md"
       plan: "docs/superpowers/plans/2026-04-25-context-budget-compression-plan.md"
-      review_spec_compliance: null
-      review_code_quality: null
+      review_spec_compliance: "inline (per-task subagent reviews)"
+      review_code_quality: "inline (per-task subagent reviews)"
       qa: null
     progress:
       total_tasks: 15
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task: "S3 gate — 等待用户确认进入 S4"
+      completed_tasks: 2
+      reviewed_tasks: 2
+      current_task: "Wave 2: Task 3 (store) + Task 4 (credit budget API) parallel"
     rollback: null
     last_verified: null
     decisions:
@@ -2927,7 +2928,8 @@ features:
       - "2026-04-25 (S3): 产出实施计划 docs/superpowers/plans/2026-04-25-context-budget-compression-plan.md；初版拆分为 14 个任务，依赖图无环，后端 schema/core/gateway/API 任务排在 admin-web 和 user-web 任务之前。"
       - "2026-04-25 (S3 review): 独立 sub-agent review 发现 4 个 P1 + 2 个 P2，已修正 plan：admin API 合同对齐 S2（history query + service_id preview + events）；SalesRAG/server 与 Sales input 文件目标具体化；前端 unit tests 纳入验收命令；Task 7 拆分 prepare/finalize 与后台 summary worker，当前总任务数 15。"
       - "2026-04-25 (S3 v2 review): 独立 Sonnet sub-agent 复核 v2 plan，verdict=PASS_WITH_MINOR；v1 4 个 P1 全部闭环、spec §14 PRD coverage 无遗漏；新发现 1 P1 (Task 15 缺 NDF Rule 10 验证方式声明) + 2 P2 (over-budget/stream close 触发说明、Spec Coverage Map streaming finalization 行)。三项已现修：Task 15 增加 'S5 验证策略' 段（Playwright 覆盖管理端 4 条路径 + 后端 TDD 覆盖核心业务 + gstack /qa 覆盖用户输入计数器，并诚实声明 gstack 路径无回归保护）+ 8 条关键用户路径列表 + Acceptance Conditions 增加 Playwright spec 与 gstack 截图证据；Smoke checklist 每条补具体触发方式；Spec Coverage Map streaming finalization 行改为 Tasks 6, 7。"
-    blockers:
-      - "S3 gate: 等待用户确认进入 S4 (v2 review PASS_WITH_MINOR，所有 finding 已修)。"
+      - "2026-04-25 (S4 Wave 1): agent teams 模式启动；Task 1 (schema) + Task 2 (contextbudget pure pkg) 并行 dispatch 在两个独立 git worktree (numind-server-cb-task1/2)，分支 feature/cb-task1-schema 和 feature/cb-task2-package。两个 implementer Sonnet subagent 并行完成；2 阶段 review (spec compliance + code quality) 各自串行进行。Task 1 review 共 5 finding (1 P0 + 1 P1 + 3 P2)，全部修复 + re-review APPROVED_WITH_NITS；Task 2 review 共 6 finding (1 P1 spec + 3 P2 spec + 2 Important code + 4 Nits)，全部修复 + re-review APPROVED。两分支 merge 到 develop (commits 27aa411, 19a8fdc)，worktree 已清理。"
+      - "2026-04-25 (Wave 1 已知遗留)：(a) credit_reservation INSERT IGNORE 不依赖 UNIQUE 约束去重，依赖 migration runner 防重跑（spec §3.3 未要求 UNIQUE，遵循 spec）；(b) spec §3.4 user_id 用 BIGINT UNSIGNED 与项目其他 migration 的 INT UNSIGNED 惯例不一致，按 spec 实现；(c) budget.go 注释说 '8 spec constraints' 但代码 7 个显式 + 1 个派生（cosmetic，不修）；(d) develop 上 pre-existing TestReserve_ExactlyExhaustedThenRetry_ReturnsInsufficientSentinel panic 与本 feature 无关，但应在后续 task 中修复以保护本 feature 的 credit 路径。"
+    blockers: []
     created_at: "2026-04-25T15:45:00+08:00"
     completed_at: null
