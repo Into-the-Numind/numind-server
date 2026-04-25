@@ -164,9 +164,13 @@ func (s *creditService) CheckAndEstimateBudget(ctx context.Context, user *model.
 	}
 
 	// Step 2: legacy-tier dispatch — preserve existing contract, no estimation.
+	// legacyTierImpl.CheckAndEstimate ignores EstimationInput entirely; gating
+	// is based on user.UserTier and user.CanRunSOP(). The PromptChars value
+	// here is unused and intentionally left as the token estimate to avoid an
+	// extra unit conversion.
 	if isEffectiveLegacy(user) {
 		return s.legacy.CheckAndEstimate(ctx, user, op, EstimationInput{
-			PromptChars: input.EstimatedPromptTokens, // unit mismatch is benign for legacy (ignored)
+			PromptChars: input.EstimatedPromptTokens, // EstimationInput is ignored by legacyTierImpl — it gates on user.CanRunSOP() only
 			Model:       input.Model,
 			Provider:    input.Provider,
 		})

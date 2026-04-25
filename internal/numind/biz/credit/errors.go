@@ -24,8 +24,15 @@ var (
 	ErrCoefficientConcurrent = errors.New("credit: coefficient update concurrent conflict, retry exhausted")
 
 	// ErrUnknownBudgetOperation is returned by CheckAndEstimateBudget when the
-	// supplied operation string cannot be normalized to a known credit Operation
-	// for a user with active billing context. Fail-closed: unknown operations
-	// MUST NOT silently bill via a default operation. Spec §6.1.1.
+	// caller passes a billing operation that is not in the budgetOperationMap
+	// AND user billing context is present (i.e., the caller intends to charge).
+	// Fail-closed: unknown operations MUST NOT silently bill via a default operation.
+	//
+	// Spec §6.1.1 names this error "ErrContextConfigInvalid" at the Gateway
+	// layer (defined in the contextbudget package, Task 5+). Future callers
+	// at the Gateway middleware boundary should wrap this credit-package
+	// error as contextbudget.ErrContextConfigInvalid to surface a uniform
+	// typed sentinel to upstream code without creating a credit→contextbudget
+	// import cycle. See spec §10.
 	ErrUnknownBudgetOperation = errors.New("credit: unknown budget operation — cannot normalize to a chargeable credit operation")
 )

@@ -21,6 +21,16 @@ const (
 // Unlike EstimationInput (which uses char count for R2 estimation), this input
 // carries pre-computed token estimates from the context budget planner.
 // Spec §6.1.1.
+//
+// Note (intentional divergence from spec §6.2 example): spec shows TokenProfileID
+// and ContextBudgetEventID as *uint64 to express "absent". This implementation
+// follows the S3 plan and uses value types with zero (0) as the absent sentinel:
+//   - TokenProfileID == 0 → "no profile id" (treated as NULL in DB)
+//   - ContextBudgetEventID == 0 → "no event id yet" (treated as NULL in DB)
+//
+// Callers from Gateway middleware (Task 5+) should pass 0 to signal absence,
+// not a nil pointer. The DB layer (Task 1's *uint64 columns) handles the
+// 0→NULL mapping inside reserveBudgetRow.
 type BudgetPrecheckInput struct {
 	UserID                    uint
 	Operation                 string // raw billing operation (not yet normalized)
@@ -32,7 +42,12 @@ type BudgetPrecheckInput struct {
 	ContextBudgetEventID      uint64 // 0 = no event id yet
 }
 
-// BudgetReservationInput extends BudgetPrecheckInput with reservation details.
+// BudgetReservationInput extends BudgetPrecheckInput with reservation-only
+// fields. Same value-vs-pointer convention as BudgetPrecheckInput; see its doc.
+//
+// IdempotencyKey == "" means "no idempotency key" (treated as no idempotency
+// constraint). Spec §6.2 example uses *string; this struct uses string.
+//
 // Spec §6.1.2.
 type BudgetReservationInput struct {
 	BudgetPrecheckInput
