@@ -42,6 +42,8 @@ func newCreditReserveTestDB(t *testing.T) *gorm.DB {
 	))
 
 	// Hand-roll the reservation tables so SQLite accepts the ENUM columns as TEXT.
+	// Includes context-budget extension columns (estimation_source, token_profile_id, etc.)
+	// added in Task 1 (feature: context-budget-compression).
 	require.NoError(t, db.Exec(`
 CREATE TABLE IF NOT EXISTS credit_reservation (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,7 +52,7 @@ CREATE TABLE IF NOT EXISTS credit_reservation (
     reference_id TEXT NOT NULL,
     operation TEXT NOT NULL,
     reserved_credits INTEGER NOT NULL,
-    coefficient_id INTEGER NOT NULL,
+    coefficient_id INTEGER,
     status TEXT NOT NULL DEFAULT 'reserved',
     actual_cost_cents INTEGER,
     delta INTEGER,
@@ -58,7 +60,14 @@ CREATE TABLE IF NOT EXISTS credit_reservation (
     idempotency_key TEXT,
     reconciled_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    estimation_source TEXT NOT NULL DEFAULT 'credit_coefficient',
+    token_profile_id INTEGER,
+    estimated_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_completion_tokens INTEGER NOT NULL DEFAULT 0,
+    provider TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    context_budget_event_id INTEGER
 );`).Error)
 	require.NoError(t, db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uk_idempotency_key ON credit_reservation(idempotency_key);`).Error)
 
@@ -263,4 +272,174 @@ func TestReserve_GetBalanceCredits(t *testing.T) {
 	assert.EqualValues(t, 600, bal.BoosterTotal)
 	assert.EqualValues(t, 300, bal.BoosterRemain)
 	assert.Nil(t, bal.RemainingRuns, "credits mode must not set RemainingRuns")
+}
+
+// --- Task 4: Budget-aware credit reservation API ---
+
+// newPureCreditsUser returns a user whose billing_mode=credits and UserTier=free,
+// so HasActiveMembership()=false and isEffectiveLegacy()=false. This ensures the
+// credits path (not the legacy path) is taken by CheckAndEstimateBudget /
+// ReserveBudget tests.
+func newPureCreditsUser(id uint) *model.User {
+	u := &model.User{
+		BillingMode: model.BillingModeCredits,
+		UserTier:    model.UserTierFree, // no active membership → not effective-legacy
+	}
+	u.ID = id
+	return u
+}
+
+// TestCheckAndEstimateBudget_NormalizesSopNodeExecuteToSopRun verifies that
+// CheckAndEstimateBudget normalizes the raw operation "sop_node_execute" to
+// OpSopRun and returns a successful precheck result for a user with sufficient
+// balance. Spec §6.1.1.
+func TestCheckAndEstimateBudget_NormalizesSopNodeExecuteToSopRun(t *testing.T) {
+	db := newCreditReserveTestDB(t)
+	ds := store.NewTestStore(db)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+
+	userID := uint(700)
+	user := newPureCreditsUser(userID)
+	now := time.Now()
+	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+		{Type: model.CreditTypeSubscription, TotalCredits: 2000, RemainCredits: 2000,
+			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
+	})
+
+	result, err := svc.CheckAndEstimateBudget(context.Background(), user, credit.BudgetPrecheckInput{
+		UserID:                    userID,
+		Operation:                 "sop_node_execute",
+		EstimatedPromptTokens:     1000,
+		EstimatedCompletionTokens: 200,
+		Provider:                  "volc",
+		Model:                     "glm-4-7-251222",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	// The result carries estimated credits > 0 because the operation normalized to OpSopRun.
+	// Legacy-only credits path: EstimatedCredits should reflect some positive estimate.
+	assert.False(t, result.SkipDeduction, "credits-mode user must NOT skip deduction")
+	assert.True(t, result.Sufficient, "user with 2000 credits must be sufficient for sop_node_execute")
+	assert.Greater(t, result.EstimatedCredits, int64(0), "normalized to OpSopRun → credits > 0")
+}
+
+// TestReserveBudget_WritesContextBudgetMetadata verifies that ReserveBudget
+// writes a credit_reservation row with estimation_source='context_budget',
+// coefficient_id=NULL, and the supplied token profile / event id fields.
+// Spec §6.1.2.
+func TestReserveBudget_WritesContextBudgetMetadata(t *testing.T) {
+	db := newCreditReserveTestDB(t)
+	ds := store.NewTestStore(db)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+
+	userID := uint(701)
+	user := newPureCreditsUser(userID)
+	now := time.Now()
+	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+		{Type: model.CreditTypeSubscription, TotalCredits: 2000, RemainCredits: 2000,
+			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
+	})
+
+	rsv, err := svc.ReserveBudget(context.Background(), user, credit.BudgetReservationInput{
+		BudgetPrecheckInput: credit.BudgetPrecheckInput{
+			UserID:                    userID,
+			Operation:                 "sop_node_execute",
+			EstimatedPromptTokens:     1000,
+			EstimatedCompletionTokens: 200,
+			Provider:                  "volc",
+			Model:                     "glm-4-7-251222",
+			TokenProfileID:            7,
+			ContextBudgetEventID:      42,
+		},
+		EstimatedCredits: 50,
+		IdempotencyKey:   "budget:test:701:1",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, rsv, "ReserveBudget must return a non-nil reservation for credits-mode user")
+
+	// Read back the DB row and verify context_budget metadata.
+	var dbRsv model.CreditReservation
+	require.NoError(t, db.First(&dbRsv, rsv.ID).Error)
+
+	assert.Equal(t, "context_budget", dbRsv.EstimationSource, "estimation_source must be 'context_budget'")
+	assert.Nil(t, dbRsv.CoefficientID, "coefficient_id must be NULL for context_budget reservations")
+	require.NotNil(t, dbRsv.TokenProfileID)
+	assert.EqualValues(t, 7, *dbRsv.TokenProfileID, "token_profile_id must match input")
+	assert.Greater(t, dbRsv.EstimatedPromptTokens, 0, "estimated_prompt_tokens must be persisted")
+	assert.Greater(t, dbRsv.EstimatedCompletionTokens, 0, "estimated_completion_tokens must be persisted")
+	assert.NotEmpty(t, dbRsv.Provider, "provider must be persisted")
+	assert.NotEmpty(t, dbRsv.Model, "model must be persisted")
+	require.NotNil(t, dbRsv.ContextBudgetEventID)
+	assert.EqualValues(t, 42, *dbRsv.ContextBudgetEventID, "context_budget_event_id must match input")
+}
+
+// TestCheckAndEstimateBudget_LegacyTierSkipsReserve verifies that a user with
+// BillingMode=legacy_tier and an active membership receives SkipDeduction=true
+// and no credit_reservation row is created. Spec §6.1.1 + §1.3 contract.
+func TestCheckAndEstimateBudget_LegacyTierSkipsReserve(t *testing.T) {
+	db := newCreditReserveTestDB(t)
+	ds := store.NewTestStore(db)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+
+	future := time.Now().Add(30 * 24 * time.Hour)
+	user := &model.User{
+		BillingMode: model.BillingModeLegacyTier,
+		UserTier:    model.UserTierStandard,
+		TierExpires: &future,
+	}
+	user.ID = 702
+
+	result, err := svc.CheckAndEstimateBudget(context.Background(), user, credit.BudgetPrecheckInput{
+		UserID:                    702,
+		Operation:                 "sop_node_execute",
+		EstimatedPromptTokens:     500,
+		EstimatedCompletionTokens: 100,
+		Provider:                  "volc",
+		Model:                     "glm-4-7-251222",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, result.SkipDeduction, "legacy_tier user must have SkipDeduction=true")
+
+	// No reservation row should have been created.
+	var count int64
+	require.NoError(t, db.Model(&model.CreditReservation{}).Where("user_id = ?", uint(702)).Count(&count).Error)
+	assert.EqualValues(t, 0, count, "CheckAndEstimateBudget must NOT create a reservation for legacy_tier")
+}
+
+// TestCheckAndEstimateBudget_UnknownChargedOperationFailsClosed verifies that
+// when a credits-mode user submits an unknown operation that cannot be
+// normalized, CheckAndEstimateBudget returns ErrUnknownBudgetOperation (typed)
+// rather than silently billing via a default operation. Spec §6.1.1.
+func TestCheckAndEstimateBudget_UnknownChargedOperationFailsClosed(t *testing.T) {
+	db := newCreditReserveTestDB(t)
+	ds := store.NewTestStore(db)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+
+	userID := uint(703)
+	user := newPureCreditsUser(userID)
+	now := time.Now()
+	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+		{Type: model.CreditTypeSubscription, TotalCredits: 2000, RemainCredits: 2000,
+			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
+	})
+
+	initialBalance := int64(2000)
+
+	_, err := svc.CheckAndEstimateBudget(context.Background(), user, credit.BudgetPrecheckInput{
+		UserID:                    userID,
+		Operation:                 "some_unknown_op",
+		EstimatedPromptTokens:     500,
+		EstimatedCompletionTokens: 100,
+		Provider:                  "volc",
+		Model:                     "glm-4-7-251222",
+	})
+	require.Error(t, err, "unknown operation must return an error")
+	require.True(t, errors.Is(err, credit.ErrUnknownBudgetOperation),
+		"expected ErrUnknownBudgetOperation, got %v", err)
+
+	// User balance must not have changed.
+	var acc model.CreditAccount
+	require.NoError(t, db.Where("user_id = ?", userID).First(&acc).Error)
+	assert.EqualValues(t, initialBalance, acc.Balance, "unknown operation must not modify user balance")
 }

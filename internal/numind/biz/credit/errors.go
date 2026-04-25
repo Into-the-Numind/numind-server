@@ -22,4 +22,10 @@ var (
 	// ErrCoefficientConcurrent UpdateCoefficient 并发 retry 3 次后仍失败
 	// HTTP 503 语义：建议 controller 层包装为 errno.ErrCoefficientConcurrent 返回给前端
 	ErrCoefficientConcurrent = errors.New("credit: coefficient update concurrent conflict, retry exhausted")
+
+	// ErrUnknownBudgetOperation is returned by CheckAndEstimateBudget when the
+	// supplied operation string cannot be normalized to a known credit Operation
+	// for a user with active billing context. Fail-closed: unknown operations
+	// MUST NOT silently bill via a default operation. Spec §6.1.1.
+	ErrUnknownBudgetOperation = errors.New("credit: unknown budget operation — cannot normalize to a chargeable credit operation")
 )

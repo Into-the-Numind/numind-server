@@ -10,11 +10,36 @@ const (
 	OpSopRun          Operation = "sop_run"
 	OpSopChat         Operation = "sop_chat"
 	OpSalesragChat    Operation = "salesrag_chat"
+	OpChatbotChat     Operation = "chatbot_chat" // chatbot conversation (context-budget-compression feature)
 	OpProfileAnalysis Operation = "profile_analysis"
 	OpFileParse       Operation = "file_parse"
 	OpStyleAnalysis   Operation = "style_analysis"
 	OpOCR             Operation = "ocr"
 )
+
+// BudgetPrecheckInput holds the token-based inputs for CheckAndEstimateBudget.
+// Unlike EstimationInput (which uses char count for R2 estimation), this input
+// carries pre-computed token estimates from the context budget planner.
+// Spec §6.1.1.
+type BudgetPrecheckInput struct {
+	UserID                    uint
+	Operation                 string // raw billing operation (not yet normalized)
+	EstimatedPromptTokens     int
+	EstimatedCompletionTokens int
+	Provider                  string
+	Model                     string
+	TokenProfileID            uint64 // 0 = no profile id
+	ContextBudgetEventID      uint64 // 0 = no event id yet
+}
+
+// BudgetReservationInput extends BudgetPrecheckInput with reservation details.
+// Spec §6.1.2.
+type BudgetReservationInput struct {
+	BudgetPrecheckInput
+	EstimatedCredits int64
+	IdempotencyKey   string
+	Metadata         map[string]string
+}
 
 // ReservationStatus 预扣记录状态机：reserved → reconciled | refunded | expired
 type ReservationStatus string
@@ -48,14 +73,14 @@ type PreCheckResult struct {
 type Reservation struct {
 	ID              uint64
 	UserID          uint
-	ReferenceType   string            // "sop_run" / "sop_chat" / "salesrag_chat"
-	ReferenceID     string            // 业务 ID
+	ReferenceType   string // "sop_run" / "sop_chat" / "salesrag_chat"
+	ReferenceID     string // 业务 ID
 	Operation       Operation
 	ReservedCredits int64
 	CoefficientID   uint64
 	Status          ReservationStatus
 	ActualCostCents *int64
-	Delta           *int64  // actual - reserved：正=补扣，负=退还
+	Delta           *int64 // actual - reserved：正=补扣，负=退还
 	FinalizeReason  *string
 	IdempotencyKey  *string
 	Items           []ReservationItem // FIFO 扣减明细

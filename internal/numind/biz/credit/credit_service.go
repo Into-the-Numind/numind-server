@@ -122,6 +122,131 @@ func (s *creditService) GetBalance(ctx context.Context, user *model.User) (*Bala
 	return s.credits.GetBalance(ctx, user)
 }
 
+// budgetOperationMap normalises raw billing operation strings (as they appear
+// in the context-budget event pipeline) to canonical credit.Operation values.
+// Spec §6.1.1 — one-to-one map, 12 entries.
+//
+// "context_compression" is intentionally absent: it is an internal pipeline
+// operation with no per-user credit charge. Callers that encounter an uncharged
+// operation should branch before reaching ICreditService entirely.
+var budgetOperationMap = map[string]Operation{
+	"sop_node_execute":              OpSopRun,
+	"sop_run":                       OpSopRun,
+	"sop_chat":                      OpSopChat,
+	"sop_chat_stream":               OpSopChat,
+	"chatbot_chat":                  OpChatbotChat,
+	"chatbot.stream":                OpChatbotChat,
+	"salesrag_chat":                 OpSalesragChat,
+	"salesrag_chat_generate":        OpSalesragChat,
+	"salesrag_strategy_select":      OpSalesragChat,
+	"salesrag_analyze_profile":      OpSalesragChat,
+	"salesrag_analyze_profile_text": OpSalesragChat,
+	"salesrag_chat_style_text":      OpSalesragChat,
+}
+
+// CheckAndEstimateBudget is the budget-aware precheck entry point. It
+// normalises the raw operation via budgetOperationMap, then dispatches:
+//   - legacy-tier users → SkipDeduction=true, no estimation performed.
+//   - credits users → computes EstimatedCredits from token counts (flat
+//     estimate: tokens × a fixed rate, falling back to GetEstimatedCredits
+//     if pricing.ICalculator is nil in tests).
+//   - unknown operation + user billing context → ErrUnknownBudgetOperation
+//     (fail-closed: never silently charge a default operation).
+//
+// This is a parallel API to CheckAndEstimate; the R2 char-based path is
+// preserved unchanged.
+func (s *creditService) CheckAndEstimateBudget(ctx context.Context, user *model.User, input BudgetPrecheckInput) (*PreCheckResult, error) {
+	// Step 1: normalize operation.
+	op, found := budgetOperationMap[input.Operation]
+	if !found {
+		// Unknown operation with a billing-context user: fail closed.
+		return nil, fmt.Errorf("%w: operation=%q", ErrUnknownBudgetOperation, input.Operation)
+	}
+
+	// Step 2: legacy-tier dispatch — preserve existing contract, no estimation.
+	if isEffectiveLegacy(user) {
+		return s.legacy.CheckAndEstimate(ctx, user, op, EstimationInput{
+			PromptChars: input.EstimatedPromptTokens, // unit mismatch is benign for legacy (ignored)
+			Model:       input.Model,
+			Provider:    input.Provider,
+		})
+	}
+
+	// Step 3: credits mode — estimate from token counts.
+	// Compute estimated credits: if pricing calculator available, use it;
+	// otherwise fall back to the flat table (test / local path).
+	var estimatedCredits int64
+	if s.pricing != nil {
+		costCents, err := s.pricing.CalculateCost(ctx, "llm_chat", input.Provider, input.Model,
+			input.EstimatedPromptTokens, input.EstimatedCompletionTokens)
+		if err == nil {
+			estimatedCredits = costCents // cost_cents are used directly as credits (1:1 in test env)
+		}
+	}
+	if estimatedCredits <= 0 {
+		// Fallback: use the flat table (useful when pricing DB is unavailable or in tests).
+		estimatedCredits = GetEstimatedCredits(string(op))
+	}
+
+	// Step 4: check balance.
+	bal, err := s.credits.GetBalance(ctx, user)
+	if err != nil {
+		return nil, fmt.Errorf("CheckAndEstimateBudget: balance: %w", err)
+	}
+	total := bal.SubRemain + bal.BoosterRemain
+	pre := &PreCheckResult{
+		SkipDeduction:    false,
+		Sufficient:       total >= estimatedCredits,
+		EstimatedCredits: estimatedCredits,
+		Balance:          *bal,
+	}
+	if !pre.Sufficient {
+		return pre, fmt.Errorf("%w: need %d credits, have %d", ErrInsufficientCredits, estimatedCredits, total)
+	}
+	return pre, nil
+}
+
+// ReserveBudget creates a credit_reservation with estimation_source='context_budget',
+// coefficient_id=NULL, and the token-profile/event metadata from the input.
+// Legacy-tier users (SkipDeduction path) are a safe no-op: returns (nil, nil).
+// Spec §6.1.2.
+func (s *creditService) ReserveBudget(ctx context.Context, user *model.User, input BudgetReservationInput) (*Reservation, error) {
+	// Precheck first to validate operation + check balance.
+	pre, err := s.CheckAndEstimateBudget(ctx, user, input.BudgetPrecheckInput)
+	if err != nil {
+		return nil, fmt.Errorf("ReserveBudget: precheck: %w", err)
+	}
+
+	// Legacy-tier: skip deduction entirely.
+	if pre.SkipDeduction {
+		return nil, nil
+	}
+
+	// Determine credits to reserve: caller may override the estimate.
+	estimated := input.EstimatedCredits
+	if estimated <= 0 {
+		estimated = pre.EstimatedCredits
+	}
+	if estimated <= 0 {
+		// Absolute fallback.
+		estimated = GetEstimatedCredits(string(budgetOperationMap[input.Operation]))
+	}
+
+	// Normalize operation for reference type / billing labelling.
+	op := budgetOperationMap[input.Operation]
+
+	// Delegate to the credits impl to do FIFO deduction + reservation insert,
+	// but we need to write context_budget-specific fields into the row.
+	// We call into credits.reserveBudgetRow which shares the FIFO tx logic but
+	// sets the context_budget metadata.
+	var idempKey *string
+	if input.IdempotencyKey != "" {
+		k := input.IdempotencyKey
+		idempKey = &k
+	}
+	return s.credits.reserveBudgetRow(ctx, user, op, estimated, input, idempKey)
+}
+
 // ---------------------------------------------------------------------------
 // legacyTierImpl — Grandfathering Option E (spec §1.3 / §3.6)
 //
@@ -998,6 +1123,128 @@ func toDBReservation(rsv *Reservation) model.CreditReservation {
 		ReconciledAt:    rsv.ReconciledAt,
 		CreatedAt:       rsv.CreatedAt,
 	}
+}
+
+// reserveBudgetRow is the creditsImpl entry point for context-budget reservations.
+// It mirrors the Reserve tx logic but writes estimation_source='context_budget'
+// and populates the token profile / event id / provider / model columns.
+// coefficient_id is left NULL (no R2 coefficient on the context-budget path).
+// Spec §6.1.2.
+func (c *creditsImpl) reserveBudgetRow(
+	ctx context.Context, user *model.User, op Operation,
+	estimated int64, input BudgetReservationInput, idempotencyKey *string,
+) (*Reservation, error) {
+	if estimated <= 0 {
+		return nil, fmt.Errorf("creditsImpl.reserveBudgetRow: estimated credits must be > 0, got %d", estimated)
+	}
+
+	// Idempotency fast path — same contract as Reserve.
+	if idempotencyKey != nil && *idempotencyKey != "" {
+		if existing, err := c.findReservationByIdempKey(ctx, *idempotencyKey); err == nil && existing != nil {
+			return existing, nil
+		}
+	}
+
+	// Ensure credit_account exists before opening the tx.
+	if _, err := c.store.Credits().GetOrCreateAccount(ctx, user.ID); err != nil {
+		return nil, fmt.Errorf("creditsImpl.reserveBudgetRow: ensure credit_account: %w", err)
+	}
+
+	reference := referenceFromOp(op)
+	rsvRow := &model.CreditReservation{
+		UserID:          user.ID,
+		ReferenceType:   reference.refType,
+		Operation:       string(op),
+		ReservedCredits: estimated,
+		CoefficientID:   nil, // context_budget path never uses R2 coefficient
+		Status:          string(StatusReserved),
+		IdempotencyKey:  idempotencyKey,
+		// Context-budget extension fields (spec §3.6).
+		EstimationSource:          "context_budget",
+		EstimatedPromptTokens:     input.EstimatedPromptTokens,
+		EstimatedCompletionTokens: input.EstimatedCompletionTokens,
+		Provider:                  input.Provider,
+		Model:                     input.Model,
+	}
+	if idempotencyKey != nil {
+		rsvRow.ReferenceID = *idempotencyKey
+	}
+	// Populate optional nullable FK fields only when non-zero.
+	if input.TokenProfileID != 0 {
+		v := input.TokenProfileID
+		rsvRow.TokenProfileID = &v
+	}
+	if input.ContextBudgetEventID != 0 {
+		v := input.ContextBudgetEventID
+		rsvRow.ContextBudgetEventID = &v
+	}
+
+	var items []PackageDeduction
+	txErr := c.store.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		debited, err := c.biz.DeductCreditsTx(ctx, tx, user.ID, estimated, "budget_reserve:"+string(op))
+		if err != nil {
+			return err
+		}
+		items = debited
+
+		if err := tx.Create(rsvRow).Error; err != nil {
+			if isUniqueKeyViolation(err) && idempotencyKey != nil {
+				existing, lookupErr := c.findReservationByIdempKeyTx(ctx, tx, *idempotencyKey)
+				if lookupErr != nil {
+					return fmt.Errorf("creditsImpl.reserveBudgetRow: idempotency lookup: %w", lookupErr)
+				}
+				if existing != nil {
+					*rsvRow = toDBReservation(existing)
+					return errReservationAlreadyExists
+				}
+			}
+			return fmt.Errorf("creditsImpl.reserveBudgetRow: insert credit_reservation: %w", err)
+		}
+
+		itemRows := make([]model.CreditReservationItem, 0, len(items))
+		for i, d := range items {
+			itemRows = append(itemRows, model.CreditReservationItem{
+				ReservationID:    rsvRow.ID,
+				PackageID:        d.PackageID,
+				Credits:          d.Credits,
+				PackageType:      d.PackageType,
+				PackageExpiresAt: d.ExpiresAt,
+				Seq:              i + 1,
+			})
+		}
+		if len(itemRows) > 0 {
+			if err := tx.Create(&itemRows).Error; err != nil {
+				return fmt.Errorf("creditsImpl.reserveBudgetRow: insert reservation items: %w", err)
+			}
+		}
+		return nil
+	})
+
+	if errors.Is(txErr, errReservationAlreadyExists) && idempotencyKey != nil {
+		existing, err := c.findReservationByIdempKey(ctx, *idempotencyKey)
+		if err != nil {
+			return nil, fmt.Errorf("creditsImpl.reserveBudgetRow: post-conflict lookup: %w", err)
+		}
+		return existing, nil
+	}
+	if txErr != nil {
+		return nil, txErr
+	}
+
+	result := &Reservation{
+		ID:              rsvRow.ID,
+		UserID:          rsvRow.UserID,
+		ReferenceType:   rsvRow.ReferenceType,
+		ReferenceID:     rsvRow.ReferenceID,
+		Operation:       Operation(rsvRow.Operation),
+		ReservedCredits: rsvRow.ReservedCredits,
+		CoefficientID:   0, // context_budget: no coefficient
+		Status:          StatusReserved,
+		IdempotencyKey:  rsvRow.IdempotencyKey,
+		Items:           toReservationItems(items),
+		CreatedAt:       rsvRow.CreatedAt,
+	}
+	return result, nil
 }
 
 // toReservationItems maps the FIFO debit []PackageDeduction into the
