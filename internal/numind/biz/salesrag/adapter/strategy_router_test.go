@@ -7,8 +7,10 @@ import (
 
 	"numind-server/internal/numind/biz/salesrag/domain"
 	aiservice "numind-server/internal/pkg/aiservice"
+	cb "numind-server/internal/pkg/contextbudget"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestMain initialises a minimal aiservice singleton so that tests which
@@ -46,4 +48,30 @@ func TestStrategyRouter_SelectBasicStrategy(t *testing.T) {
 	basicID, err := router.SelectBasicStrategy(context.Background(), "能打个电话聊聊吗", nil, dummyDecisionTree, basics)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, basicID)
+}
+
+// TestSalesRAGStrategyRouterUsesFragments verifies that buildStrategySelectFragments
+// produces a single RoleRecent + Critical + CompressNone fragment carrying the
+// full strategy selection prompt. The fragment must not contain any SOP-specific
+// or chatbot-specific metadata keys (spec §2.2: contextbudget must not branch on
+// business-domain metadata).
+func TestSalesRAGStrategyRouterUsesFragments(t *testing.T) {
+	prompt := "You are a strategy selector. Choose one: [A, B, C]\nCustomer: I need help."
+
+	frags := buildStrategySelectFragments(prompt)
+
+	require.Len(t, frags, 1, "strategy select must produce exactly one fragment")
+
+	f := frags[0]
+	assert.Equal(t, cb.RoleRecent, f.Role, "strategy fragment must be RoleRecent")
+	assert.Equal(t, cb.SourceUser, f.Source, "strategy fragment must be SourceUser")
+	assert.True(t, f.Critical, "strategy fragment must be Critical=true (must not be dropped under pressure)")
+	assert.Equal(t, cb.CompressNone, f.Compressibility, "strategy fragment must be CompressNone")
+	assert.Equal(t, prompt, f.Content, "fragment content must be the full prompt")
+
+	// No SOP-specific or chatbot-specific metadata.
+	for k := range f.Metadata {
+		assert.NotContains(t, k, "sop", "strategy fragment must not have SOP metadata (key=%q)", k)
+		assert.NotContains(t, k, "chatbot", "strategy fragment must not have chatbot metadata (key=%q)", k)
+	}
 }

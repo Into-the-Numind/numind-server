@@ -11,9 +11,30 @@ import (
 	aismw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/billing"
+	cb "numind-server/internal/pkg/contextbudget"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 )
+
+// buildStrategySelectFragments constructs the ContextFragment slice for a
+// strategy-selection LLM call (operation=salesrag_strategy_select). The entire
+// prompt is a single user message with an embedded instruction; there is no
+// separate system turn.
+func buildStrategySelectFragments(prompt string) []cb.ContextFragment {
+	return []cb.ContextFragment{
+		{
+			ID:              "strategy-prompt",
+			Role:            cb.RoleRecent,
+			Source:          cb.SourceUser,
+			ContentType:     cb.ContentText,
+			Content:         prompt,
+			Importance:      9,
+			Order:           0,
+			Compressibility: cb.CompressNone,
+			Critical:        true,
+		},
+	}
+}
 
 // StrategyRouter 基于LLM的策略路由器
 // 使用 profile.SalesragIntent 进行策略选择（意图/策略分析，语义最接近）
@@ -76,9 +97,10 @@ func (r *StrategyRouter) SelectMetaStrategy(ctx context.Context, query string, h
 		},
 	}
 	resp, err := aiservice.Chat(ctx, profile.SalesragIntent, aiservice.ChatRequest{
-		Messages:    aiMessages,
-		Temperature: 0.1,
-		MaxTokens:   200,
+		Messages:         aiMessages,
+		ContextFragments: buildStrategySelectFragments(prompt),
+		Temperature:      0.1,
+		MaxTokens:        200,
 	})
 	if err != nil {
 		log.C(ctx).Warnw("Meta strategy selection LLM call failed", "error", err)
@@ -171,9 +193,10 @@ func (r *StrategyRouter) SelectBasicStrategy(ctx context.Context, query string, 
 		},
 	}
 	resp, err := aiservice.Chat(ctx, profile.SalesragIntent, aiservice.ChatRequest{
-		Messages:    aiMessages,
-		Temperature: 0.1,
-		MaxTokens:   200,
+		Messages:         aiMessages,
+		ContextFragments: buildStrategySelectFragments(prompt),
+		Temperature:      0.1,
+		MaxTokens:        200,
 	})
 	if err != nil {
 		log.C(ctx).Warnw("Basic strategy selection LLM call failed", "error", err)
