@@ -14,7 +14,7 @@ type CreditReservation struct {
 	ReferenceID     string     `gorm:"size:100;not null" json:"reference_id"`
 	Operation       string     `gorm:"size:50;not null" json:"operation"`
 	ReservedCredits int64      `gorm:"not null" json:"reserved_credits"`
-	CoefficientID   uint64     `gorm:"not null;index:idx_coefficient" json:"coefficient_id"`
+	CoefficientID   *uint64    `gorm:"index:idx_coefficient" json:"coefficient_id"`
 	Status          string     `gorm:"type:enum('reserved','reconciled','refunded','expired');not null;default:'reserved';index:idx_user_status,priority:2;index:idx_status_created,priority:1" json:"status"`
 	ActualCostCents *int64     `json:"actual_cost_cents,omitempty"`
 	Delta           *int64     `json:"delta,omitempty"`
@@ -23,6 +23,17 @@ type CreditReservation struct {
 	ReconciledAt    *time.Time `json:"reconciled_at,omitempty"`
 	CreatedAt       time.Time  `gorm:"autoCreateTime:milli;index:idx_user_status,priority:3;index:idx_status_created,priority:2" json:"created_at"`
 	UpdatedAt       time.Time  `gorm:"autoUpdateTime:milli" json:"updated_at"`
+
+	// Context Budget extension fields (spec §3.6 / feature: context-budget-compression)
+	// estimation_source distinguishes legacy R2 coefficient path from new context budget path.
+	// New reservations use estimation_source='context_budget' with coefficient_id=NULL.
+	EstimationSource          string  `gorm:"size:30;not null;default:'credit_coefficient'" json:"estimation_source"`
+	TokenProfileID            *uint64 `gorm:"index:idx_cr_token_profile" json:"token_profile_id"`
+	EstimatedPromptTokens     int     `gorm:"not null;default:0" json:"estimated_prompt_tokens"`
+	EstimatedCompletionTokens int     `gorm:"not null;default:0" json:"estimated_completion_tokens"`
+	Provider                  string  `gorm:"size:50;not null;default:''" json:"provider"`
+	Model                     string  `gorm:"size:100;not null;default:''" json:"model"`
+	ContextBudgetEventID      *uint64 `gorm:"index:idx_cr_budget_event" json:"context_budget_event_id"`
 
 	// Items 外键关联（应用层保证 FK 到 credit_reservation_item.reservation_id）
 	Items []CreditReservationItem `gorm:"foreignKey:ReservationID" json:"items,omitempty"`

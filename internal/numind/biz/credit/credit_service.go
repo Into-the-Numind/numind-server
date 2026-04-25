@@ -331,7 +331,7 @@ func (c *creditsImpl) Reserve(
 		ReferenceID:     reference.refID, // filled in from idempotencyKey / "pending"
 		Operation:       string(op),
 		ReservedCredits: estimated,
-		CoefficientID:   coefID,
+		CoefficientID:   &coefID,
 		Status:          string(StatusReserved),
 		IdempotencyKey:  idempotencyKey,
 	}
@@ -403,6 +403,10 @@ func (c *creditsImpl) Reserve(
 		return nil, txErr
 	}
 
+	var resultCoefID uint64
+	if rsvRow.CoefficientID != nil {
+		resultCoefID = *rsvRow.CoefficientID
+	}
 	result := &Reservation{
 		ID:              rsvRow.ID,
 		UserID:          rsvRow.UserID,
@@ -410,7 +414,7 @@ func (c *creditsImpl) Reserve(
 		ReferenceID:     rsvRow.ReferenceID,
 		Operation:       Operation(rsvRow.Operation),
 		ReservedCredits: rsvRow.ReservedCredits,
-		CoefficientID:   rsvRow.CoefficientID,
+		CoefficientID:   resultCoefID,
 		Status:          StatusReserved,
 		IdempotencyKey:  rsvRow.IdempotencyKey,
 		Items:           toReservationItems(items),
@@ -936,6 +940,10 @@ func (c *creditsImpl) loadReservationForUpdate(ctx context.Context, tx *gorm.DB,
 
 // fromDBReservation maps the GORM model → domain struct.
 func fromDBReservation(row *model.CreditReservation, items []model.CreditReservationItem) *Reservation {
+	var coefID uint64
+	if row.CoefficientID != nil {
+		coefID = *row.CoefficientID
+	}
 	rsv := &Reservation{
 		ID:              row.ID,
 		UserID:          row.UserID,
@@ -943,7 +951,7 @@ func fromDBReservation(row *model.CreditReservation, items []model.CreditReserva
 		ReferenceID:     row.ReferenceID,
 		Operation:       Operation(row.Operation),
 		ReservedCredits: row.ReservedCredits,
-		CoefficientID:   row.CoefficientID,
+		CoefficientID:   coefID,
 		Status:          ReservationStatus(row.Status),
 		ActualCostCents: row.ActualCostCents,
 		Delta:           row.Delta,
@@ -970,6 +978,10 @@ func fromDBReservation(row *model.CreditReservation, items []model.CreditReserva
 // toDBReservation is the inverse — used only by the idempotency-conflict
 // recovery path to rehydrate the outer rsvRow from a domain object.
 func toDBReservation(rsv *Reservation) model.CreditReservation {
+	var coefID *uint64
+	if rsv.CoefficientID != 0 {
+		coefID = &rsv.CoefficientID
+	}
 	return model.CreditReservation{
 		ID:              rsv.ID,
 		UserID:          rsv.UserID,
@@ -977,7 +989,7 @@ func toDBReservation(rsv *Reservation) model.CreditReservation {
 		ReferenceID:     rsv.ReferenceID,
 		Operation:       string(rsv.Operation),
 		ReservedCredits: rsv.ReservedCredits,
-		CoefficientID:   rsv.CoefficientID,
+		CoefficientID:   coefID,
 		Status:          string(rsv.Status),
 		ActualCostCents: rsv.ActualCostCents,
 		Delta:           rsv.Delta,
@@ -1003,4 +1015,3 @@ func toReservationItems(items []PackageDeduction) []ReservationItem {
 	}
 	return out
 }
-

@@ -20,21 +20,28 @@ func migrateReservationSchema(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	ddl := []string{
 		`CREATE TABLE credit_reservation (
-			id                INTEGER PRIMARY KEY AUTOINCREMENT,
-			user_id           INTEGER NOT NULL,
-			reference_type    TEXT    NOT NULL,
-			reference_id      TEXT    NOT NULL,
-			operation         TEXT    NOT NULL,
-			reserved_credits  INTEGER NOT NULL,
-			coefficient_id    INTEGER NOT NULL,
-			status            TEXT    NOT NULL DEFAULT 'reserved',
-			actual_cost_cents INTEGER,
-			delta             INTEGER,
-			finalize_reason   TEXT,
-			idempotency_key   TEXT,
-			reconciled_at     DATETIME,
-			created_at        DATETIME,
-			updated_at        DATETIME
+			id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id                     INTEGER NOT NULL,
+			reference_type              TEXT    NOT NULL,
+			reference_id                TEXT    NOT NULL,
+			operation                   TEXT    NOT NULL,
+			reserved_credits            INTEGER NOT NULL,
+			coefficient_id              INTEGER,
+			status                      TEXT    NOT NULL DEFAULT 'reserved',
+			actual_cost_cents           INTEGER,
+			delta                       INTEGER,
+			finalize_reason             TEXT,
+			idempotency_key             TEXT,
+			reconciled_at               DATETIME,
+			created_at                  DATETIME,
+			updated_at                  DATETIME,
+			estimation_source           TEXT    NOT NULL DEFAULT 'credit_coefficient',
+			token_profile_id            INTEGER,
+			estimated_prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+			estimated_completion_tokens INTEGER NOT NULL DEFAULT 0,
+			provider                    TEXT    NOT NULL DEFAULT '',
+			model                       TEXT    NOT NULL DEFAULT '',
+			context_budget_event_id     INTEGER
 		)`,
 		`CREATE UNIQUE INDEX uk_idempotency_key ON credit_reservation (idempotency_key)`,
 		`CREATE INDEX idx_user_status ON credit_reservation (user_id, status, created_at)`,
@@ -71,6 +78,9 @@ func TestCreditReservation_ColumnsAndTables(t *testing.T) {
 		"reserved_credits", "coefficient_id", "status", "actual_cost_cents",
 		"delta", "finalize_reason", "idempotency_key", "reconciled_at",
 		"created_at", "updated_at",
+		// context-budget-compression extension columns (spec §3.6)
+		"estimation_source", "token_profile_id", "estimated_prompt_tokens",
+		"estimated_completion_tokens", "provider", "model", "context_budget_event_id",
 	} {
 		assert.True(t, db.Migrator().HasColumn(&CreditReservation{}, col),
 			"credit_reservation should have column %s", col)
@@ -94,6 +104,7 @@ func TestCreditReservation_CreateWithItemsAndSeqUniqueness(t *testing.T) {
 	db := newTestDB(t)
 	migrateReservationSchema(t, db)
 
+	coeffID := uint64(1)
 	future := time.Now().Add(30 * 24 * time.Hour)
 	rsv := &CreditReservation{
 		UserID:          42,
@@ -101,7 +112,7 @@ func TestCreditReservation_CreateWithItemsAndSeqUniqueness(t *testing.T) {
 		ReferenceID:     "run-abc-123",
 		Operation:       "sop_run",
 		ReservedCredits: 150,
-		CoefficientID:   1,
+		CoefficientID:   &coeffID,
 		Status:          "reserved",
 		Items: []CreditReservationItem{
 			{PackageID: 10, Credits: 50, PackageType: "trial", PackageExpiresAt: future, Seq: 1},
@@ -146,7 +157,7 @@ func TestCreditReservation_CreateWithItemsAndSeqUniqueness(t *testing.T) {
 		ReferenceID:     "run-xyz-456",
 		Operation:       "sop_run",
 		ReservedCredits: 10,
-		CoefficientID:   1,
+		CoefficientID:   &coeffID,
 		Status:          "reserved",
 	}
 	require.NoError(t, db.Create(rsv2).Error)
@@ -165,6 +176,7 @@ func TestCreditReservation_IdempotencyKeyUniqueness(t *testing.T) {
 	db := newTestDB(t)
 	migrateReservationSchema(t, db)
 
+	coeffID := uint64(1)
 	key := "idem-key-1"
 	r1 := &CreditReservation{
 		UserID:          1,
@@ -172,7 +184,7 @@ func TestCreditReservation_IdempotencyKeyUniqueness(t *testing.T) {
 		ReferenceID:     "r1",
 		Operation:       "sop_run",
 		ReservedCredits: 10,
-		CoefficientID:   1,
+		CoefficientID:   &coeffID,
 		Status:          "reserved",
 		IdempotencyKey:  &key,
 	}
@@ -184,7 +196,7 @@ func TestCreditReservation_IdempotencyKeyUniqueness(t *testing.T) {
 		ReferenceID:     "r2",
 		Operation:       "sop_run",
 		ReservedCredits: 20,
-		CoefficientID:   1,
+		CoefficientID:   &coeffID,
 		Status:          "reserved",
 		IdempotencyKey:  &key, // same key
 	}
@@ -193,11 +205,11 @@ func TestCreditReservation_IdempotencyKeyUniqueness(t *testing.T) {
 	// NULL idempotency_key 允许多行
 	n1 := &CreditReservation{
 		UserID: 2, ReferenceType: "sop_run", ReferenceID: "n1",
-		Operation: "sop_run", ReservedCredits: 5, CoefficientID: 1, Status: "reserved",
+		Operation: "sop_run", ReservedCredits: 5, CoefficientID: &coeffID, Status: "reserved",
 	}
 	n2 := &CreditReservation{
 		UserID: 2, ReferenceType: "sop_run", ReferenceID: "n2",
-		Operation: "sop_run", ReservedCredits: 5, CoefficientID: 1, Status: "reserved",
+		Operation: "sop_run", ReservedCredits: 5, CoefficientID: &coeffID, Status: "reserved",
 	}
 	assert.NoError(t, db.Create(n1).Error)
 	assert.NoError(t, db.Create(n2).Error, "NULL idempotency_key should allow multiple rows")
@@ -209,13 +221,14 @@ func TestCreditReservation_OptionalPointerFields(t *testing.T) {
 
 	// 创建时不填 actual_cost_cents / delta / finalize_reason / reconciled_at / idempotency_key
 	// 应允许 NULL
+	coeffID := uint64(2)
 	rsv := &CreditReservation{
 		UserID:          9,
 		ReferenceType:   "sop_chat",
 		ReferenceID:     "chat-1",
 		Operation:       "sop_chat",
 		ReservedCredits: 5,
-		CoefficientID:   2,
+		CoefficientID:   &coeffID,
 		Status:          "reserved",
 	}
 	require.NoError(t, db.Create(rsv).Error)
