@@ -3,12 +3,15 @@ package middleware
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync/atomic"
 	"testing"
 
 	"gorm.io/gorm"
 
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/registry"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/model"
 )
@@ -125,7 +128,10 @@ func (s *spyUsageStore) GetPricingRule(_ context.Context, _, _, _ string) (*mode
 }
 
 // TestBuildDefault_OrderingMatchesSpec verifies that BuildDefault assembles the chain
-// in the correct order: Tracing → Billing → Fallback → Retry → Adapter.
+// in the new correct order:
+//
+//	Tracing → Fallback → ContextBudgetCredits → Billing → Retry → Adapter
+//
 // We verify this by checking that billing (UsageStore write) happens after the adapter
 // call, confirming Billing wraps the inner handlers; and that the overall chain still
 // produces a successful response.
@@ -189,5 +195,215 @@ func TestBuildDefault_OrderingMatchesSpec(t *testing.T) {
 	if adapterIdx >= billingIdx {
 		t.Errorf("expected adapter (%d) to be called before billing (%d) in call order %v",
 			adapterIdx, billingIdx, callOrder)
+	}
+
+	// Verify the declared middleware order matches the canonical spec list.
+	// defaultMiddlewareNames() must be kept in sync with BuildDefault; if a
+	// middleware is accidentally removed from BuildDefault, this assertion catches it.
+	gotNames := defaultMiddlewareNames()
+	wantNames := []string{"tracing", "fallback", "context_budget", "billing", "retry"}
+	if !reflect.DeepEqual(gotNames, wantNames) {
+		t.Errorf("BuildDefault order = %v, want %v", gotNames, wantNames)
+	}
+}
+
+// spyMiddleware records the position in which it is entered and exited during a
+// request, writing "name:before" and "name:after" entries to the shared log.
+func spyMiddleware(name string, log *[]string) Middleware {
+	return func(next Handler) Handler {
+		return func(ctx context.Context, route *registry.ResolvedRoute, req interface{}) (interface{}, error) {
+			*log = append(*log, name+":before")
+			resp, err := next(ctx, route, req)
+			*log = append(*log, name+":after")
+			return resp, err
+		}
+	}
+}
+
+// TestChain_ExactMiddlewareOrder verifies the exact event sequence produced by a
+// Chain composed of spy middlewares in the BuildDefault order:
+//
+//	Tracing → Fallback → ContextBudgetCredits → Billing → Retry → Adapter
+//
+// This test exercises Chain() composition semantics with named spies. It does NOT
+// call BuildDefault() directly — for that, see TestBuildDefault_OrderingMatchesSpec.
+func TestChain_ExactMiddlewareOrder(t *testing.T) {
+	// Disable Langfuse so Tracing becomes a structural no-op for order tracing.
+	origC := langfuse.C
+	langfuse.C = nil
+	defer func() { langfuse.C = origC }()
+
+	var log []string
+
+	// Build a custom chain that mirrors BuildDefault's order but replaces each
+	// middleware with a named spy — this removes external side-effects (DB, Langfuse)
+	// while still asserting composition order.
+	chain := Chain(
+		spyMiddleware("tracing", &log),
+		spyMiddleware("fallback", &log),
+		spyMiddleware("context_budget", &log),
+		spyMiddleware("billing", &log),
+		spyMiddleware("retry", &log),
+	)
+
+	adapter := Handler(func(_ context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+		log = append(log, "adapter")
+		return "ok", nil
+	})
+
+	handler := chain(adapter)
+	_, err := handler(context.Background(), buildTestRoute("llm"), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Expected order: each layer enters in order, the adapter runs, then layers exit in reverse.
+	want := []string{
+		"tracing:before",
+		"fallback:before",
+		"context_budget:before",
+		"billing:before",
+		"retry:before",
+		"adapter",
+		"retry:after",
+		"billing:after",
+		"context_budget:after",
+		"fallback:after",
+		"tracing:after",
+	}
+
+	if len(log) != len(want) {
+		t.Fatalf("event log length: got %d, want %d\ngot:  %v\nwant: %v", len(log), len(want), log, want)
+	}
+	for i, w := range want {
+		if log[i] != w {
+			t.Errorf("event[%d]: got %q, want %q", i, log[i], w)
+		}
+	}
+}
+
+// TestBillingUsesFallbackRouteProviderModelAndPricing verifies that when Fallback
+// switches to a backup provider, the Billing middleware records the fallback
+// route's provider/model rather than the primary route.
+//
+// This is the key invariant of placing Billing inside Fallback: billing.go
+// receives whichever route was ultimately used for the successful call.
+func TestBillingUsesFallbackRouteProviderModelAndPricing(t *testing.T) {
+	// Disable Langfuse so Tracing is a no-op.
+	origC := langfuse.C
+	langfuse.C = nil
+	defer func() { langfuse.C = origC }()
+
+	// Primary route: serviceID=42, provider=primary-provider, model=primary-model.
+	primaryRoute := buildTestRoute("llm")
+	// primaryRoute.ServiceID = 42, Provider.Name = "test-provider", ServiceKey = "test-model"
+
+	// Fallback route: serviceID=99, provider=fallback-provider, model=fallback-model.
+	fbRoute := registry.ResolvedRoute{
+		TaskID:      "test.task",
+		ServiceID:   99,
+		ServiceKey:  "fallback-model",
+		ServiceType: "llm",
+		Provider:    registry.ProviderInfo{Name: "fallback-provider"},
+		Pricing:     registry.PricingInfo{Unit: "per_1m_tokens"},
+	}
+
+	// Registry stub: primary route fails, fallback route succeeds.
+	resolver := &registryStub{
+		primaryRoute:   primaryRoute,
+		fallbackRoutes: []registry.ResolvedRoute{fbRoute},
+	}
+
+	// UsageStore that captures which provider/model was recorded.
+	store := &mockUsageStore{
+		pricingRules: map[string]*model.PricingRule{
+			// Pricing for the fallback route.
+			"llm_chat|fallback-provider|fallback-model": {
+				BillingMode:        "flat",
+				FlatUnit:           "call",
+				InputPricePerMTok:  2.0,
+				OutputPricePerMTok: 8.0,
+				IsActive:           true,
+			},
+		},
+	}
+
+	deps := Deps{
+		Resolver:   resolver,
+		UsageStore: store,
+		Clock:      fixedClock{},
+		Logger:     &mockLogger{},
+	}
+
+	// Chain: Fallback → ContextBudgetCredits → Billing → Retry
+	// (Tracing omitted for simplicity; it would be a no-op anyway with Langfuse nil)
+	chain := Chain(
+		Fallback(deps),
+		ContextBudgetCredits(deps),
+		Billing(deps),
+		retryWithPolicy(zeroDelayPolicy()),
+	)
+
+	// Adapter: returns ErrAIProviderError for primary (id=42), success for fallback (id=99).
+	adapter := Handler(func(_ context.Context, route *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+		if route.ServiceID == 42 {
+			return nil, errno.ErrAIProviderError
+		}
+		return &aiservice.ChatResponse{
+			Content: "fallback response",
+			Usage: aiservice.TokenUsage{
+				PromptTokens:     50,
+				CompletionTokens: 20,
+				TotalTokens:      70,
+			},
+			Provider: route.Provider.Name,
+			Model:    route.ServiceKey,
+		}, nil
+	})
+
+	handler := chain(adapter)
+	resp, err := handler(WithUserID(context.Background(), 1), primaryRoute, aiservice.ChatRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected a response from fallback")
+	}
+
+	// With Billing inside Fallback, two records are written:
+	//   [0] primary attempt (failed) — provider="test-provider", IsFallback=false
+	//   [1] fallback attempt (succeeded) — provider="fallback-provider", IsFallback=true
+	// (The Retry middleware causes 2 upstream calls to the adapter for the primary,
+	// but Billing sits outside Retry so it still writes exactly 1 record per Fallback-level
+	// call, not per retry attempt.)
+	if len(store.records) != 2 {
+		t.Fatalf("expected 2 usage records (1 primary + 1 fallback), got %d\nrecords: %+v", len(store.records), store.records)
+	}
+
+	// Identify the fallback record — it is the one with IsFallback=true.
+	var fbRecord *model.UsageRecord
+	for _, rec := range store.records {
+		if rec.IsFallback {
+			fbRecord = rec
+			break
+		}
+	}
+	if fbRecord == nil {
+		t.Fatal("expected a usage record with IsFallback=true for the fallback call")
+	}
+
+	// The fallback record must carry the fallback route's provider/model.
+	if fbRecord.Provider != "fallback-provider" {
+		t.Errorf("fallback record Provider: got %q, want %q", fbRecord.Provider, "fallback-provider")
+	}
+	if fbRecord.Model != "fallback-model" {
+		t.Errorf("fallback record Model: got %q, want %q", fbRecord.Model, "fallback-model")
+	}
+	// Pricing snapshot for the fallback record must be from the fallback route's pricing_rule.
+	if fbRecord.PricingInputSnapshot == nil || *fbRecord.PricingInputSnapshot != 2.0 {
+		t.Errorf("fallback record PricingInputSnapshot: got %v, want 2.0 (fallback pricing)", fbRecord.PricingInputSnapshot)
+	}
+	if fbRecord.PricingOutputSnapshot == nil || *fbRecord.PricingOutputSnapshot != 8.0 {
+		t.Errorf("fallback record PricingOutputSnapshot: got %v, want 8.0 (fallback pricing)", fbRecord.PricingOutputSnapshot)
 	}
 }

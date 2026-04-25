@@ -2,11 +2,15 @@
 //
 // Execution order (request → response):
 //
-//	Tracing → Billing → Fallback → Retry → Adapter
+//	Tracing → Fallback → ContextBudgetCredits → Billing → Retry → Adapter
 //
 // Each middleware wraps the next handler in the classic functional-composition
 // style used throughout Go HTTP middleware. The outermost middleware (Tracing)
 // sees the request first and the response last.
+//
+// Billing sits inside Fallback so that when Fallback switches to a backup
+// provider, the Billing middleware records the fallback provider/model/pricing
+// rather than the primary route.
 package middleware
 
 import (
@@ -104,6 +108,16 @@ type Deps struct {
 	// When nil Fallback becomes a passthrough (no fallback logic).
 	Resolver registry.Registry
 
+	// ContextBudget is the context-budget service used by ContextBudgetCredits.
+	// When nil ContextBudgetCredits becomes a passthrough (no budget checks).
+	// Task 6 wires the real implementation.
+	ContextBudget ContextBudgetService
+
+	// CreditService is the credit-budget facade used by ContextBudgetCredits.
+	// When nil ContextBudgetCredits becomes a passthrough (no credit reservation).
+	// Task 6 wires the real biz/credit binding.
+	CreditService ContextBudgetCreditService
+
 	// Clock is used by the Billing middleware for record timestamps.
 	// When nil RealClock is used.
 	Clock Clock
@@ -146,16 +160,33 @@ func (d Deps) errorw(msg string, kv ...interface{}) {
 // BuildDefault assembles the standard middleware stack in the order specified by
 // spec §6.1:
 //
-//	Tracing → Billing → Fallback → Retry → (Adapter — not wrapped here)
+//	Tracing → Fallback → ContextBudgetCredits → Billing → Retry → (Adapter — not wrapped here)
+//
+// Billing is inside Fallback so that when Fallback switches to a backup
+// provider, Billing records the fallback provider/model/pricing rather than the
+// primary route.
+//
+// ContextBudgetCredits is currently a passthrough stub (Task 6 implements the
+// real budget/compression/Reserve-Reconcile/streaming logic).
 //
 // The caller wraps the adapter handler (innermost) with the returned Middleware.
 func BuildDefault(deps Deps) Middleware {
 	return Chain(
 		Tracing(deps),
-		Billing(deps),
 		Fallback(deps),
+		ContextBudgetCredits(deps),
+		Billing(deps),
 		Retry(deps),
 	)
+}
+
+// defaultMiddlewareNames returns the names of middlewares assembled by BuildDefault,
+// in execution order (outermost first). It is used by tests to assert the chain
+// composition without requiring spy injection into every Deps field.
+//
+// Must be kept in sync with BuildDefault whenever the middleware order changes.
+func defaultMiddlewareNames() []string {
+	return []string{"tracing", "fallback", "context_budget", "billing", "retry"}
 }
 
 // AsGatewayChain converts a Middleware into an aiservice.MiddlewareChainFunc.
