@@ -196,7 +196,13 @@ func TestSOPGatewayPathSendsContextFragments(t *testing.T) {
 // Test 3: Gateway path does NOT call creditSvc.Reserve (old R2 path)
 // ----------------------------------------------------------------------------
 
-// spyCreditService records all Reserve calls; ReserveBudget records its own calls.
+// spyCreditService is defined here for future integration-style tests that wire
+// a complete sopBiz instance. The current TestSOPGatewayPathDoesNotDoubleReserveCredits
+// only verifies the shouldSkipDirectReserveForGateway guard directly; full e2e
+// double-reserve assertion will land when SOP biz is refactored to accept an
+// injectable ICreditService in tests.
+//
+// It records all Reserve calls; ReserveBudget records its own calls.
 type spyCreditService struct {
 	reserveCalls       int
 	reserveBudgetCalls int

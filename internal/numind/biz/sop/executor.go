@@ -474,7 +474,7 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 		return "", nil, fmt.Errorf("executeViaGateway: ChatStream: %w", err)
 	}
 
-	// 5. 消费 channel，将 ChatChunk 转换为 StreamHandler 回调
+	// 6. 消费 channel，将 ChatChunk 转换为 StreamHandler 回调
 	var fullContent strings.Builder
 	var finalUsage *TokenUsage
 	var modelName string

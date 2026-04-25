@@ -38,8 +38,14 @@ import (
 // system prompt, node prompt, historical conversation turns, current user input)
 // into an ordered slice of ContextFragment values for the Gateway producer path.
 //
+// NOTE: this function is used only in tests today. The production path is
+// executeViaGateway → buildSOPGatewayFragments which works on pre-assembled
+// llmMessages. This helper exists as a reusable scaffold for future SOP
+// entrypoints (or test fixtures) that build fragments from raw NodeRun /
+// SopRun structs without the prompt-assembly step.
+//
 // Ordering:
-//  1. Template system prompt (if any) — immutable system fragment.
+//  1. Template system prompt (if any) — immutable system fragment (Order=0).
 //  2. Node prompt (if any) — immutable system fragment.
 //  3. Historical turns (user/assistant pairs from previous nodes) — durable.
 //  4. Current user input — critical user fragment (never compressible).
@@ -53,6 +59,9 @@ func buildSOPNodeFragments(
 	order := 0
 
 	// 1. Template-level system prompt.
+	// Immutable system fragment is intentionally placed at Order=0 — system prompts
+	// must always render first, and the planner uses Order ascending for deterministic
+	// rendering. Subsequent fragments use ascending Order from 1.
 	if template != nil && template.Prompt != "" {
 		fragments = append(fragments, bizctx.NewImmutableSystemFragment(
 			fmt.Sprintf("tmpl-sys-%d", template.ID),
@@ -162,6 +171,12 @@ func buildSOPGatewayFragments(msgs []LLMMessage) []contextbudget.ContextFragment
 
 // buildSOPChatFragments converts a SOP trailing-chat turn into ContextFragment
 // values for the Gateway producer path.
+//
+// NOTE: this function is used only in tests today. The production path is
+// executeViaGateway → buildSOPGatewayFragments which works on pre-assembled
+// llmMessages. This helper exists as a reusable scaffold for future SOP
+// chat entrypoints (or test fixtures) that build fragments from raw chat
+// history slices without the prompt-assembly step.
 //
 // The history slice contains ALL messages up to (but not including) the current
 // question — including both node execution messages (treated as durable run
