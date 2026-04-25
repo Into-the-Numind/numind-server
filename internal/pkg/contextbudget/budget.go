@@ -8,41 +8,41 @@ import (
 // ModelCapability describes the token limits of a specific AI model.
 type ModelCapability struct {
 	// ContextWindow is the maximum total tokens (input + output) the model supports.
-	ContextWindow int
+	ContextWindow int `json:"context_window"`
 	// MaxOutputTokens is the maximum number of tokens the model can generate in one response.
-	MaxOutputTokens int
+	MaxOutputTokens int `json:"max_output_tokens"`
 }
 
 // BudgetPolicy describes how the caller wants to allocate the context window.
 type BudgetPolicy struct {
 	// Operation is a human-readable name for the operation (used in error messages).
-	Operation string
+	Operation string `json:"operation"`
 	// ReservedOutputTokens is the number of tokens reserved for model output.
 	// Must be > 0 and <= MaxOutputTokens.
-	ReservedOutputTokens int
+	ReservedOutputTokens int `json:"reserved_output_tokens"`
 	// SafeRatio [0.50, 0.95] is applied to (ContextWindow - ReservedOutputTokens - FixedOverheadTokens)
 	// to derive the safe input budget.
-	SafeRatio float64
+	SafeRatio float64 `json:"safe_ratio"`
 	// FixedOverheadTokens is a constant overhead (e.g., chat formatting, tool definitions).
-	FixedOverheadTokens int
+	FixedOverheadTokens int `json:"fixed_overhead_tokens"`
 	// SoftThresholdRatio is the fraction of SafeInputBudget that triggers advisory warnings.
 	// Defaults to 0.7 if zero.
-	SoftThresholdRatio float64
+	SoftThresholdRatio float64 `json:"soft_threshold_ratio"`
 	// HardThresholdRatio is the fraction of SafeInputBudget that triggers active compression.
-	// Defaults to 0.9 if zero.
-	HardThresholdRatio float64
+	// Defaults to 0.85 if zero.
+	HardThresholdRatio float64 `json:"hard_threshold_ratio"`
 	// ChargeUser, when true, indicates that this operation is billable.
-	ChargeUser bool
+	ChargeUser bool `json:"charge_user"`
 }
 
 // Budget contains the computed token budget thresholds for an operation.
 type Budget struct {
 	// SafeInputBudget is the maximum tokens for the input side of the prompt.
-	SafeInputBudget int
+	SafeInputBudget int `json:"safe_input_budget"`
 	// SoftThreshold is the token count at which the caller should begin monitoring.
-	SoftThreshold int
+	SoftThreshold int `json:"soft_threshold"`
 	// HardThreshold is the token count at which active compression is required.
-	HardThreshold int
+	HardThreshold int `json:"hard_threshold"`
 }
 
 // ComputeBudget validates the policy and computes the token budget thresholds.
@@ -71,7 +71,7 @@ func ComputeBudget(cap ModelCapability, policy BudgetPolicy) (Budget, error) {
 	}
 	hardRatio := policy.HardThresholdRatio
 	if hardRatio <= 0 {
-		hardRatio = 0.9
+		hardRatio = 0.85
 	}
 
 	softThreshold := int(math.Floor(float64(safeInputBudget) * softRatio))

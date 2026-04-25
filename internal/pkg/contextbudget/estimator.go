@@ -8,32 +8,32 @@ import (
 // TokenClass holds the token-per-character rate for a character class.
 type TokenClass struct {
 	// TokenPerChar is the average number of tokens per character for this class.
-	TokenPerChar float64
+	TokenPerChar float64 `json:"token_per_char"`
 }
 
 // TokenProfile describes how to estimate token counts for a set of fragments.
 type TokenProfile struct {
 	// Method is a human-readable identifier for this estimation strategy.
-	Method string
+	Method string `json:"method"`
 	// MessageOverheadTokens is the fixed overhead added per message boundary.
-	MessageOverheadTokens int
+	MessageOverheadTokens int `json:"message_overhead_tokens"`
 	// FragmentOverheadTokens is the fixed overhead added per fragment.
-	FragmentOverheadTokens int
+	FragmentOverheadTokens int `json:"fragment_overhead_tokens"`
 	// Classes maps text class names to their TokenClass configuration.
 	// Expected keys: zh, en, code, json, markdown_table, symbol, mixed.
-	Classes map[string]TokenClass
+	Classes map[string]TokenClass `json:"classes"`
 	// SafetyMultiplier is applied after calibration to add an additional safety margin (>= 1.0).
-	SafetyMultiplier float64
+	SafetyMultiplier float64 `json:"safety_multiplier"`
 	// CalibrationMultiplier adjusts the raw estimate to account for model-specific tokenization drift.
-	CalibrationMultiplier float64
+	CalibrationMultiplier float64 `json:"calibration_multiplier"`
 }
 
 // EstimateResult holds the output of EstimateFragments.
 type EstimateResult struct {
 	// PromptTokens is the total estimated token count for the entire input.
-	PromptTokens int
+	PromptTokens int `json:"prompt_tokens"`
 	// PerFragmentMap maps each fragment ID to its individual token estimate.
-	PerFragmentMap map[string]int
+	PerFragmentMap map[string]int `json:"per_fragment_map"`
 }
 
 // EstimateFragments estimates the token count for a slice of ContextFragments.

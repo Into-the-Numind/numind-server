@@ -24,38 +24,38 @@ const (
 // Action is a single recommendation produced by the planner for one fragment.
 type Action struct {
 	// FragmentID is the ID of the target fragment.
-	FragmentID string
+	FragmentID string `json:"fragment_id"`
 	// Type is the recommended compression action.
-	Type ActionType
+	Type ActionType `json:"type"`
 	// Reason is a short human-readable explanation for the recommendation.
-	Reason string
+	Reason string `json:"reason"`
 }
 
 // Plan is the output of PlanCompression.
 type Plan struct {
 	// Actions is the ordered list of recommendations, one per fragment.
-	Actions []Action
+	Actions []Action `json:"actions"`
 	// EstimatedAfter is the estimated token count after applying all recommended actions.
-	EstimatedAfter int
+	EstimatedAfter int `json:"estimated_after"`
 	// Feasible is true when EstimatedAfter <= Budget.SafeInputBudget.
-	Feasible bool
+	Feasible bool `json:"feasible"`
 	// UnusedBudget is the remaining token budget after compression (negative if infeasible).
-	UnusedBudget int
+	UnusedBudget int `json:"unused_budget"`
 }
 
 // PlanInput bundles all inputs required by PlanCompression.
 type PlanInput struct {
 	// Fragments is the full list of fragments to plan over.
-	Fragments []ContextFragment
+	Fragments []ContextFragment `json:"fragments"`
 	// Profile is the token estimation profile.
-	Profile TokenProfile
+	Profile TokenProfile `json:"profile"`
 	// Budget contains the computed thresholds.
-	Budget Budget
+	Budget Budget `json:"budget"`
 	// Operation is a human-readable name for the operation (used in action reasons).
-	Operation string
+	Operation string `json:"operation"`
 	// SummaryCache maps a source_hash to a ready-made summary fragment.
 	// The planner uses this in Phase 1 to avoid redundant LLM summarization.
-	SummaryCache map[string]ContextFragment
+	SummaryCache map[string]ContextFragment `json:"summary_cache,omitempty"`
 }
 
 // planState tracks the mutable state during a planning run.
@@ -196,6 +196,10 @@ func applyPhase2Reference(state *planState, input PlanInput) {
 
 // applyPhase3Summarize marks compressible durable/recent/tool fragments for summarization.
 // Actual LLM summarization is performed by the caller; the planner only decides what to summarize.
+//
+// Spec §5.2 phase 3: eligible fragments are durable, recent, or tool-sourced.
+// RoleEvidence is handled in phase 2 (reference compression).
+// RoleWorking is handled in phase 5 (drop working).
 func applyPhase3Summarize(state *planState, input PlanInput) {
 	for _, f := range state.fragments {
 		if _, alreadyActed := state.actions[f.ID]; alreadyActed {
@@ -204,17 +208,15 @@ func applyPhase3Summarize(state *planState, input PlanInput) {
 		if f.Compressibility != CompressSummarize {
 			continue
 		}
-		// Eligible roles: durable, recent, working, evidence.
-		switch f.Role {
-		case RoleDurable, RoleRecent, RoleWorking, RoleEvidence:
-			// Proceed.
-		default:
+		// Eligible: durable role, recent role, or tool-sourced (spec §5.2 phase 3).
+		eligible := f.Role == RoleDurable || f.Role == RoleRecent || f.Source == SourceTool
+		if !eligible {
 			continue
 		}
 		state.actions[f.ID] = Action{
 			FragmentID: f.ID,
 			Type:       ActionSummarize,
-			Reason:     fmt.Sprintf("fragment role=%s is compressible via summarization", f.Role),
+			Reason:     fmt.Sprintf("fragment role=%s source=%s is compressible via summarization", f.Role, f.Source),
 		}
 		// Optimistically assume summarization reduces tokens by 60%.
 		oldEst := state.estimates[f.ID]

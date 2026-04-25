@@ -79,6 +79,8 @@ const (
 // The Metadata field may carry arbitrary business keys (e.g., sop_run_id, node_id,
 // chat_session_id) for caller tracing purposes. The planner and estimator MUST ignore
 // Metadata keys entirely — they must not influence token estimation or ranking.
+// Exception: the framework-level key "critical_reason" is read by isCritical() as
+// authorized by spec §2.2 — it marks a fragment as critical regardless of its Role.
 type ContextFragment struct {
 	// ID uniquely identifies this fragment within a planning session.
 	ID string `json:"id"`
@@ -116,6 +118,7 @@ type ContextFragment struct {
 //   - Critical field is true
 //   - Role is RoleImmutable
 //   - Source is SourceSystem and Compressibility is CompressNone
+//   - Metadata contains a non-empty "critical_reason" key (spec §2.2 framework exception)
 func isCritical(f ContextFragment) bool {
 	if f.Critical {
 		return true
@@ -124,6 +127,9 @@ func isCritical(f ContextFragment) bool {
 		return true
 	}
 	if f.Source == SourceSystem && f.Compressibility == CompressNone {
+		return true
+	}
+	if f.Metadata != nil && f.Metadata["critical_reason"] != "" {
 		return true
 	}
 	return false

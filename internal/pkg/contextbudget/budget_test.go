@@ -1,6 +1,7 @@
 package contextbudget_test
 
 import (
+	"math"
 	"testing"
 
 	"numind-server/internal/pkg/contextbudget"
@@ -167,5 +168,26 @@ func TestBudgetPolicyValidatesReservedOutputAndSafeRatio(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestComputeBudgetUsesDefaultHardRatio0_85(t *testing.T) {
+	// When policy.HardThresholdRatio==0, HardThreshold should equal floor(SafeInputBudget * 0.85).
+	cap := contextbudget.ModelCapability{ContextWindow: 100000, MaxOutputTokens: 16384}
+	policy := contextbudget.BudgetPolicy{
+		Operation:            "test",
+		ReservedOutputTokens: 8192,
+		SafeRatio:            0.85,
+		FixedOverheadTokens:  512,
+		SoftThresholdRatio:   0.70,
+		// HardThresholdRatio: 0 (not set — should default to 0.85)
+	}
+	b, err := contextbudget.ComputeBudget(cap, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := int(math.Floor(float64(b.SafeInputBudget) * 0.85))
+	if b.HardThreshold != want {
+		t.Fatalf("HardThreshold = %d, want %d (floor(safe*0.85))", b.HardThreshold, want)
 	}
 }

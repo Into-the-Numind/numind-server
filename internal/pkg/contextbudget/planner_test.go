@@ -217,6 +217,89 @@ func TestPlannerIgnoresBusinessMetadataForRanking(t *testing.T) {
 	}
 }
 
+func TestIsCriticalRespectsCriticalReasonMetadata(t *testing.T) {
+	// A fragment with metadata["critical_reason"] set should be treated as critical
+	// even when Critical=false and Role is RoleDiscardable (not immutable).
+	// Under a very tight budget, this fragment must NOT appear in ActionDrop.
+	profile := makeProfile()
+
+	sysPrompt := contextbudget.ContextFragment{
+		ID:              "sys",
+		Role:            contextbudget.RoleImmutable,
+		Source:          contextbudget.SourceSystem,
+		ContentType:     contextbudget.ContentText,
+		Content:         "system prompt",
+		Importance:      10,
+		Order:           0,
+		Compressibility: contextbudget.CompressNone,
+		Critical:        true,
+	}
+
+	// A discardable fragment with Critical=false but with critical_reason metadata.
+	lockedFrag := contextbudget.ContextFragment{
+		ID:              "locked-frag",
+		Role:            contextbudget.RoleDiscardable,
+		Source:          contextbudget.SourceUser,
+		ContentType:     contextbudget.ContentText,
+		Content:         repeat("x", 500),
+		Importance:      1,
+		Order:           5,
+		Compressibility: contextbudget.CompressDrop,
+		Critical:        false,
+		Metadata: map[string]string{
+			"critical_reason": "user_locked",
+		},
+	}
+
+	// A regular discardable fragment (no critical_reason) that should be dropped.
+	regularFrag := contextbudget.ContextFragment{
+		ID:              "regular-frag",
+		Role:            contextbudget.RoleDiscardable,
+		Source:          contextbudget.SourceUser,
+		ContentType:     contextbudget.ContentText,
+		Content:         repeat("y", 500),
+		Importance:      1,
+		Order:           6,
+		Compressibility: contextbudget.CompressDrop,
+		Critical:        false,
+	}
+
+	// Very tight budget to force aggressive compression.
+	budget := makeBudget(10)
+
+	plan, err := contextbudget.PlanCompression(contextbudget.PlanInput{
+		Fragments:    []contextbudget.ContextFragment{sysPrompt, lockedFrag, regularFrag},
+		Profile:      profile,
+		Budget:       budget,
+		Operation:    "test-critical-reason",
+		SummaryCache: nil,
+	})
+	if err != nil {
+		t.Fatalf("PlanCompression returned error: %v", err)
+	}
+
+	// Verify: the fragment with critical_reason metadata must NOT be dropped.
+	for _, action := range plan.Actions {
+		if action.FragmentID == "locked-frag" && action.Type == contextbudget.ActionDrop {
+			t.Errorf("fragment with metadata[\"critical_reason\"] must not be dropped, got action=%s reason=%s",
+				action.Type, action.Reason)
+		}
+	}
+
+	// Verify: the regular discardable fragment without critical_reason should be dropped.
+	regularDropped := false
+	for _, action := range plan.Actions {
+		if action.FragmentID == "regular-frag" && action.Type == contextbudget.ActionDrop {
+			regularDropped = true
+			break
+		}
+	}
+	if !regularDropped {
+		t.Log("WARNING: expected regular-frag to be dropped under tight budget, but it was not")
+		t.Logf("plan.Actions: %+v", plan.Actions)
+	}
+}
+
 // repeat builds a string of n copies of s.
 func repeat(s string, n int) string {
 	result := make([]byte, n*len(s))
