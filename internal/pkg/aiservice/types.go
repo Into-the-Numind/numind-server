@@ -5,6 +5,8 @@
 // This file defines the common request/response types used across all providers.
 package aiservice
 
+import "numind-server/internal/pkg/contextbudget"
+
 // MessageRole represents the role of a chat message participant.
 type MessageRole string
 
@@ -124,6 +126,12 @@ const (
 type ChatRequest struct {
 	// Messages is the full conversation history.
 	Messages []ChatMessage `json:"messages"`
+	// ContextFragments is the ordered list of generic context fragments produced
+	// by business code. The Gateway middleware (ContextBudgetCredits, Task 6)
+	// reads them for budget/compression; RenderContextFragments flattens them into
+	// ChatMessage entries when needed. May be nil for legacy callers; the
+	// chain treats nil as "no fragments to budget" and falls back to Messages.
+	ContextFragments []contextbudget.ContextFragment `json:"context_fragments,omitempty"`
 	// MaxTokens caps the number of tokens the model may generate. 0 = provider default.
 	MaxTokens int `json:"max_tokens,omitempty"`
 	// Temperature controls output randomness (0.0–2.0). 0 = provider default.
