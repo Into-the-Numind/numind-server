@@ -8,11 +8,14 @@ import (
 	"strings"
 	"time"
 
+	"numind-server/internal/numind/biz/contextbudget"
+	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/pkg/aiservice"
 	aismw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/billing"
+	cb "numind-server/internal/pkg/contextbudget"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
@@ -21,11 +24,120 @@ import (
 	"gorm.io/gorm"
 )
 
+// ChatbotChatOperation is the billing operation string used for chatbot chat calls.
+// Exported so tests can assert the operation without duplicating the constant.
+const ChatbotChatOperation = "chatbot_chat"
+
+// chatStreamRecentTurns is the number of most-recent history turns treated as
+// RoleRecent (the rest are classified as RoleDurable for compression purposes).
+const chatStreamRecentTurns = 10
+
 // chatStreamMaxHistory 历史消息上下文窗口（最近 N 条消息）
 const chatStreamMaxHistory = 20
 
 // chatStreamMaxChunks 向量检索最大返回切片数
 const chatStreamMaxChunks = 6
+
+// BuildChatContextFragments constructs the ordered ContextFragment slice for a
+// chatbot chat turn. This is the canonical fragment factory for the chatbot
+// producer (spec §9.2 Task 10 mapping).
+//
+// Fragment layout:
+//
+//	[0]   system prompt → RoleImmutable, CompressNone, Critical=true
+//	[1…N] history turns (oldest first):
+//	        older half → RoleDurable, CompressSummarize
+//	        recent half → RoleRecent, CompressSummarize
+//	[N+1] KB evidence chunks → RoleEvidence, SourceKB, CompressReference
+//	[last] current user message → RoleRecent, SourceUser, Critical=true, CompressNone
+//
+// history is the persisted message slice ordered oldest-first (role+content pairs
+// as model.ChatbotMessage). kbChunks is the list of retrieved knowledge chunks.
+// The recentThreshold parameter controls how many of the last history turns are
+// classified as RoleRecent vs RoleDurable; pass chatStreamRecentTurns for the
+// production default.
+func BuildChatContextFragments(
+	systemPrompt string,
+	history []model.ChatbotMessage,
+	currentMessage string,
+	kbChunks []domain.KnowledgeChunk,
+	recentThreshold int,
+) []cb.ContextFragment {
+	var frags []cb.ContextFragment
+	order := 0
+
+	// Fragment 0: system prompt (immutable, never compressed).
+	frags = append(frags, contextbudget.NewImmutableSystemFragment("sys-0", systemPrompt))
+	order++
+
+	// Fragments 1…N: history turns.
+	// The most recent `recentThreshold` turns are RoleRecent; older turns are RoleDurable.
+	histLen := len(history)
+	durableEnd := histLen - recentThreshold
+	if durableEnd < 0 {
+		durableEnd = 0
+	}
+
+	for i, msg := range history {
+		id := fmt.Sprintf("hist-%d", i)
+		if i < durableEnd {
+			// Older turn → durable (can be summarised).
+			if msg.Role == "assistant" {
+				frags = append(frags, contextbudget.NewDurableAssistantFragment(id, msg.Content, order, 4))
+			} else {
+				frags = append(frags, contextbudget.NewDurableUserFragment(id, msg.Content, order, 4))
+			}
+		} else {
+			// Recent turn → recent (preserve under moderate pressure).
+			src := cb.SourceUser
+			if msg.Role == "assistant" {
+				src = cb.SourceAssistant
+			}
+			frags = append(frags, cb.ContextFragment{
+				ID:              id,
+				Role:            cb.RoleRecent,
+				Source:          src,
+				ContentType:     cb.ContentText,
+				Content:         msg.Content,
+				Importance:      6,
+				Order:           order,
+				Compressibility: cb.CompressSummarize,
+			})
+		}
+		order++
+	}
+
+	// KB evidence chunks.
+	for i, chunk := range kbChunks {
+		chunkRef := chunk.ID
+		if chunkRef == "" {
+			chunkRef = fmt.Sprintf("kb-chunk-%d", i)
+		}
+		frags = append(frags, contextbudget.NewEvidenceReferenceFragment(
+			fmt.Sprintf("kb-%d", i),
+			chunkRef,
+			chunk.Content,
+			order,
+			7,
+		))
+		order++
+	}
+
+	// Current user message: critical, RoleRecent, CompressNone.
+	frags = append(frags, cb.ContextFragment{
+		ID:              "cur-msg",
+		Role:            cb.RoleRecent,
+		Source:          cb.SourceUser,
+		ContentType:     cb.ContentText,
+		Content:         currentMessage,
+		Importance:      9,
+		Order:           order,
+		Compressibility: cb.CompressNone,
+		Critical:        true,
+	})
+
+	return frags
+}
 
 // ChatStream 执行流式对话：向量检索 → 组装 prompt → LLM 流式输出 → 持久化消息
 func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint, message string, modelKey string, thinking bool, handler StreamHandler) error {
@@ -93,7 +205,10 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 	)
 
 	// 5. 向量检索（如果有挂载知识库）
-	var retrievedChunks []string
+	// retrievedChunks holds full domain.KnowledgeChunk values so we can build
+	// typed ContextFragments (ID + Score) alongside the legacy []string path.
+	var retrievedChunks []domain.KnowledgeChunk
+	var retrievedChunkContents []string // for buildChatMessages (legacy path)
 	vectorSpanID := langfuse.SpanID()
 	langfuse.CreateSpan(traceID, vectorSpanID, "vector-retrieval",
 		langfuse.WithSpanParent(assemblySpanID),
@@ -125,8 +240,9 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 				log.C(ctx).Warnw("ChatStream: vector search failed", "error", searchErr)
 				langfuse.EndSpan(traceID, vectorSpanID, langfuse.WithSpanError(searchErr.Error()))
 			} else {
+				retrievedChunks = chunks
 				for _, chunk := range chunks {
-					retrievedChunks = append(retrievedChunks, chunk.Content)
+					retrievedChunkContents = append(retrievedChunkContents, chunk.Content)
 				}
 				langfuse.EndSpan(traceID, vectorSpanID, langfuse.WithSpanOutput(map[string]interface{}{
 					"chunk_count": len(retrievedChunks),
@@ -145,16 +261,44 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 		}))
 	}
 
-	// 6. 构建 prompt
+	// 6. 构建 prompt (legacy path) + ContextFragments (budget path)
 	promptSpanID := langfuse.SpanID()
 	langfuse.CreateSpan(traceID, promptSpanID, "prompt-construction",
 		langfuse.WithSpanParent(assemblySpanID),
 	)
 
-	messages := b.buildChatMessages(ctx, config, session, message, retrievedChunks)
+	messages := b.buildChatMessages(ctx, config, session, message, retrievedChunkContents)
+
+	// Fetch history for the fragment builder (same window as buildChatMessages).
+	var historyMsgs []model.ChatbotMessage
+	histMsgs, total, histErr := b.ds.ChatbotSession().ListMessages(ctx, session.ID, 0, chatStreamMaxHistory)
+	if histErr != nil {
+		log.C(ctx).Warnw("ChatStream: fetch history for fragments failed", "error", histErr)
+	} else {
+		if total > int64(chatStreamMaxHistory) {
+			offset := int(total) - chatStreamMaxHistory
+			histMsgs, _, histErr = b.ds.ChatbotSession().ListMessages(ctx, session.ID, offset, chatStreamMaxHistory)
+			if histErr != nil {
+				histMsgs = nil
+			}
+		}
+		historyMsgs = histMsgs
+	}
+
+	// Build context fragments for the context-budget middleware.
+	// System prompt: config.SystemPrompt (KB context is embedded via KB evidence fragments,
+	// not prepended to system prompt here — the fragment renderer handles placement).
+	ctxFragments := BuildChatContextFragments(
+		config.SystemPrompt,
+		historyMsgs,
+		message,
+		retrievedChunks,
+		chatStreamRecentTurns,
+	)
 
 	langfuse.EndSpan(traceID, promptSpanID, langfuse.WithSpanOutput(map[string]interface{}{
 		"message_count":   len(messages),
+		"fragment_count":  len(ctxFragments),
 		"has_context":     len(retrievedChunks) > 0,
 		"history_fetched": true,
 	}))
@@ -163,7 +307,7 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 	langfuse.EndSpan(traceID, assemblySpanID)
 
 	// 7. 注入计费上下文 + skip-legacy-billing 标记，通过 AI Gateway 调用流式 LLM
-	ctx = billing.WithBilling(ctx, userID, "chatbot_chat")
+	ctx = billing.WithBilling(ctx, userID, ChatbotChatOperation)
 	// 将 userID 注入 aiservice middleware context，使 Tracing/Billing 中间件能正确读取（避免 user_id=0）
 	ctx = aismw.WithUserID(ctx, userID)
 	// ParentObservationID 设为空字符串，使 Gateway 创建的 generation 直接挂在 trace 根节点下
@@ -186,11 +330,13 @@ func (b *chatbotBiz) ChatStream(ctx context.Context, userID uint, sessionID uint
 	var thinkingContent strings.Builder
 
 	// 调用 Gateway ChatStream（profile.ChatbotStream 任务配置由 Registry 解析模型）
+	// ContextFragments 供 context-budget middleware 使用；Messages 保持向后兼容（nil fragments fallback）。
 	gatewayReq := aiservice.ChatRequest{
-		Messages:      aiMessages,
-		Temperature:   0.7,
-		ModelOverride: modelKey, // pass user's model choice; empty = use task profile default
-		Thinking:      thinking,
+		Messages:         aiMessages,
+		ContextFragments: ctxFragments,
+		Temperature:      0.7,
+		ModelOverride:    modelKey, // pass user's model choice; empty = use task profile default
+		Thinking:         thinking,
 	}
 
 	ch, llmErr := aiservice.ChatStream(ctx, profile.ChatbotStream, gatewayReq)

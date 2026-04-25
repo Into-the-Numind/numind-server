@@ -26,6 +26,7 @@ import (
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/billing"
+	cb "numind-server/internal/pkg/contextbudget"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/known"
 	"numind-server/internal/pkg/langfuse"
@@ -337,16 +338,24 @@ type salesragCreditContext struct {
 	opErr      error
 }
 
-// acquireSalesragCredits performs the CheckAndEstimate + conditional Reserve
-// pair for a salesrag_chat call. sessionID and promptChars are caller-
-// provided; idempotency_key is derived from request_uuid via
-// getRequestUUIDFromCtx.
+// acquireSalesragCredits performs the CheckAndEstimate pre-flight check for a
+// salesrag_chat call. promptChars is caller-provided. The sessionID parameter
+// is reserved for future scope-aware billing and is currently unused.
 //
-// The caller is responsible for invoking `defer cc.finalize(ctx)` on the
-// returned cc (when non-nil) BEFORE running the LLM, so client-disconnect
-// (context.Canceled) still trips the refund path.
+// P1 fix (Task 10 spec compliance): RetrieveStream now always populates
+// ContextFragments, which means the Gateway middleware (ContextBudgetCredits)
+// runs doReserveBudget for credits-mode users. To prevent double-reservation,
+// this function performs CheckAndEstimate (early balance denial) but skips the
+// inline Reserve for credits users — the Gateway middleware owns the Reserve,
+// Reconcile, and Refund lifecycle for that path.
+//
+// Legacy-tier users are unaffected: SkipDeduction=true means no Reserve
+// happens either way, but CheckAndEstimate still runs CanRunSOP() gating.
+//
+// The caller still calls `defer cc.finalize(ctx)` — for legacy and test paths
+// where cc.rsv is nil, finalize is a safe no-op.
 func (b *salesRAGBiz) acquireSalesragCredits(
-	ctx context.Context, userID uint, sessionID uint, promptChars int,
+	ctx context.Context, userID uint, _ uint, promptChars int,
 ) (*salesragCreditContext, error) {
 	if b.creditSvc == nil {
 		return nil, nil
@@ -369,21 +378,11 @@ func (b *salesRAGBiz) acquireSalesragCredits(
 		// legacy_tier path: no Reserve, defer-finalize is a no-op.
 		return cc, nil
 	}
-
-	var rsv *credit.Reservation
-	requestUUID := getRequestUUIDFromCtx(ctx)
-	if requestUUID == "" {
-		rsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSalesragChat,
-			pre.EstimatedCredits, pre.CoefficientID, nil)
-	} else {
-		idempKey := fmt.Sprintf("salesrag_chat:%d:%s", sessionID, requestUUID)
-		rsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSalesragChat,
-			pre.EstimatedCredits, pre.CoefficientID, &idempKey)
-	}
-	if err != nil {
-		return cc, b.wrapCreditError(err, pre)
-	}
-	cc.rsv = rsv
+	// credits-mode path: Reserve is delegated to the Gateway middleware
+	// (ContextBudgetCredits → doReserveBudget) which fires when
+	// ContextFragments is non-empty (always the case since Task 10).
+	// Returning cc with rsv=nil means cc.finalize is a no-op here; the
+	// middleware's Finalize handles Reconcile/Refund after the stream drains.
 	return cc, nil
 }
 
@@ -860,6 +859,89 @@ func (b *salesRAGBiz) generateAnswer(ctx context.Context, query string, verdict 
 	return result, err
 }
 
+// scoreToImportance maps a rerank score in [0.0, 1.0] to an integer importance
+// in [0, 10] for use in ContextFragment.Importance. A score of 1.0 maps to 10;
+// 0.0 maps to 0. Values outside [0.0, 1.0] are clamped.
+func scoreToImportance(score float32) int {
+	if score <= 0 {
+		return 0
+	}
+	if score >= 1.0 {
+		return 10
+	}
+	return int(score * 10)
+}
+
+// buildSalesRAGEvidenceFragments converts a slice of retrieved knowledge chunks
+// into ordered ContextFragment values for the context-budget middleware.
+//
+// Each chunk becomes a RoleEvidence + SourceKB + CompressReference fragment.
+// The Importance is derived from the chunk's rerank Score via scoreToImportance.
+// SourceReference is set to chunk.ID (the content-addressable vector DB key) so
+// the planner can replace the fragment with a lightweight "[ref: <id>]" pointer.
+//
+// NOTE: this function intentionally does NOT set any SOP-specific or chatbot-
+// specific metadata keys. The contextbudget package must never branch on
+// business-domain metadata keys (spec §2.2 enforcement rule).
+func buildSalesRAGEvidenceFragments(chunks []domain.KnowledgeChunk) []cb.ContextFragment {
+	frags := make([]cb.ContextFragment, 0, len(chunks))
+	for i, chunk := range chunks {
+		sourceRef := chunk.ID
+		if sourceRef == "" {
+			sourceRef = fmt.Sprintf("salesrag-chunk-%d", i)
+		}
+		frags = append(frags, cb.ContextFragment{
+			ID:              fmt.Sprintf("ev-%d", i),
+			Role:            cb.RoleEvidence,
+			Source:          cb.SourceKB,
+			ContentType:     cb.ContentText,
+			Content:         chunk.Content,
+			Importance:      scoreToImportance(chunk.Score),
+			Order:           100 + i, // evidence slots: 100, 101, 102... (between system@0 and user@1000)
+			Compressibility: cb.CompressReference,
+			SourceReference: sourceRef,
+		})
+	}
+	return frags
+}
+
+// buildSalesRAGSystemFragment returns a RoleImmutable system fragment for a
+// salesrag prompt. The content is treated as the top-level persona/instruction
+// that must always be present regardless of budget pressure.
+//
+// Rendering order: Order=0 (system < evidence@100+ < user@1000) per spec §9.2.
+func buildSalesRAGSystemFragment(id, systemPrompt string) cb.ContextFragment {
+	return cb.ContextFragment{
+		ID:              id,
+		Role:            cb.RoleImmutable,
+		Source:          cb.SourceSystem,
+		ContentType:     cb.ContentText,
+		Content:         systemPrompt,
+		Importance:      10,
+		Order:           0, // system always first; evidence @100+, user @1000
+		Compressibility: cb.CompressNone,
+		Critical:        true,
+	}
+}
+
+// buildSalesRAGUserFragment returns a RoleRecent + Critical user message fragment
+// for salesrag operations. The current user query must not be dropped.
+//
+// Rendering order: Order=1000 (always last, after system@0 and evidence@100+) per spec §9.2.
+func buildSalesRAGUserFragment(id, userMessage string) cb.ContextFragment {
+	return cb.ContextFragment{
+		ID:              id,
+		Role:            cb.RoleRecent,
+		Source:          cb.SourceUser,
+		ContentType:     cb.ContentText,
+		Content:         userMessage,
+		Importance:      9,
+		Order:           1000, // user query always last; system @0, evidence @100+
+		Compressibility: cb.CompressNone,
+		Critical:        true,
+	}
+}
+
 // RetrieveStream 流式检索知识并生成回答
 // 事件类型:
 // - "verdict": data 为 *service.RetrievalVerdict，检索结果
@@ -1001,13 +1083,34 @@ func (b *salesRAGBiz) RetrieveStream(ctx context.Context, retrievalQuery string,
 		})
 	}
 
+	// Build ContextFragments for the context-budget middleware (spec §9.2 Task 10).
+	// Evidence chunks from verdict.Evidence carry score-based importance so the planner
+	// can prioritise high-relevance chunks under budget pressure.
+	// The system prompt and user query are also wrapped as typed fragments.
+	//
+	// P2-1 fix: the user fragment carries only the raw user query (promptQuery),
+	// NOT the full assembled user message that may include OCR text appended by
+	// buildPromptMessagesV2. OCR text is a retrieval aid, not the user's expressed
+	// intent, so it should not be tagged as SourceUser + Critical. The assembled
+	// messages slice (aiMessages) is still passed to the provider unchanged — this
+	// only affects how the context-budget middleware classifies fragments.
+	var salesragFragments []cb.ContextFragment
+	if len(messages) >= 2 {
+		sysMsgContent, _ := messages[0]["content"].(string)
+		salesragFragments = append(salesragFragments, buildSalesRAGSystemFragment("sys-0", sysMsgContent))
+		salesragFragments = append(salesragFragments, buildSalesRAGEvidenceFragments(verdict.Evidence)...)
+		// Use promptQuery (raw user text only, no OCR suffix) as the SourceUser fragment.
+		salesragFragments = append(salesragFragments, buildSalesRAGUserFragment("cur-msg", promptQuery))
+	}
+
 	// Pre-stream errors (auth, routing) return synchronously via chatErr.
 	// Mid-stream errors surface via chunk.IsFinal && chunk.Err on the terminal
 	// chunk (A3 contract) — forward to the client as an "error" event instead
 	// of silently returning a truncated reply.
 	ch, chatErr := aiservice.ChatStream(ctx, profile.SalesragChat, aiservice.ChatRequest{
-		Messages:    aiMessages,
-		Temperature: 0.7,
+		Messages:         aiMessages,
+		ContextFragments: salesragFragments,
+		Temperature:      0.7,
 	})
 	if chatErr != nil {
 		return onEvent("error", fmt.Sprintf("stream chat failed: %v", chatErr))
@@ -2492,9 +2595,28 @@ func (b *salesRAGBiz) AnalyzeProfileMultiFiles(ctx context.Context, userID uint,
 		},
 	}
 
+	// Build ContextFragments for context-budget middleware (salesrag_analyze_profile).
+	// The user message contains multipart content (text + images); we represent it
+	// as a single RoleRecent + Critical fragment with the text portion for estimation.
+	// Vision/image parts cannot be token-estimated by the budget system, so we include
+	// only the text portion here; the legacy aiMessages path carries the full Parts payload.
+	var userTextForFragment string
+	for _, p := range contentParts {
+		if t, _ := p["type"].(string); t == "text" {
+			if txt, _ := p["text"].(string); txt != "" {
+				userTextForFragment += txt + "\n"
+			}
+		}
+	}
+	profileFragments := []cb.ContextFragment{
+		buildSalesRAGSystemFragment("sys-0", systemPromptText),
+		buildSalesRAGUserFragment("cur-msg", strings.TrimSpace(userTextForFragment)),
+	}
+
 	ch, err := aiservice.ChatStream(ctx, profile.SalesragProfile, aiservice.ChatRequest{
-		Messages:    aiMessages,
-		Temperature: 0.5,
+		Messages:         aiMessages,
+		ContextFragments: profileFragments,
+		Temperature:      0.5,
 	})
 	if err != nil {
 		return "", fmt.Errorf("AI Gateway profile stream failed: %w", err)
@@ -2552,10 +2674,11 @@ func (b *salesRAGBiz) AnalyzeProfileText(ctx context.Context, userID uint, text 
 			Text: t,
 		})
 	}
+	profilePrompt := fetchProfilePrompt()
 	aiMessages := []aiservice.ChatMessage{
 		{
 			Role:    aiservice.MessageRoleSystem,
-			Content: aiservice.MessageContent{Text: fetchProfilePrompt()},
+			Content: aiservice.MessageContent{Text: profilePrompt},
 		},
 		{
 			Role:    aiservice.MessageRoleUser,
@@ -2563,9 +2686,17 @@ func (b *salesRAGBiz) AnalyzeProfileText(ctx context.Context, userID uint, text 
 		},
 	}
 
+	// Build ContextFragments (salesrag_analyze_profile_text operation).
+	userText := "以下是该客户的相关资料：\n\n" + text
+	profileTextFragments := []cb.ContextFragment{
+		buildSalesRAGSystemFragment("sys-0", profilePrompt),
+		buildSalesRAGUserFragment("cur-msg", userText),
+	}
+
 	ch, err := aiservice.ChatStream(ctx, profile.SalesragProfile, aiservice.ChatRequest{
-		Messages:    aiMessages,
-		Temperature: 0.5,
+		Messages:         aiMessages,
+		ContextFragments: profileTextFragments,
+		Temperature:      0.5,
 	})
 	if err != nil {
 		return "", fmt.Errorf("AI Gateway profile text stream failed: %w", err)
@@ -2679,9 +2810,15 @@ func (b *salesRAGBiz) analyzeChatStyleTextStream(ctx context.Context, userID uin
 			Content: aiservice.MessageContent{Text: text},
 		},
 	}
+	// Build ContextFragments (salesrag_chat_style_text operation).
+	chatStyleFragments := []cb.ContextFragment{
+		buildSalesRAGSystemFragment("sys-0", systemPrompt),
+		buildSalesRAGUserFragment("cur-msg", text),
+	}
 	ch, err := aiservice.ChatStream(ctx, profile.SalesragChatstyle, aiservice.ChatRequest{
-		Messages:    aiMessages,
-		Temperature: 0.5,
+		Messages:         aiMessages,
+		ContextFragments: chatStyleFragments,
+		Temperature:      0.5,
 	})
 	if err != nil {
 		log.Printf("[analyzeChatStyleTextStream] AI Gateway stream failed for user %d: %v", userID, err)

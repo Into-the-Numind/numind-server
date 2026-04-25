@@ -1,11 +1,13 @@
 // Package chatbot_test — biz/chatbot 运行时守卫测试（child-run-permission Task 4 +
-// chatbot-list-symmetric-with-sop hotfix）。
+// chatbot-list-symmetric-with-sop hotfix + Task 10 fragment contract）。
 //
 // 覆盖场景：
 //   - ListVisibleChatbots：子账号看到父账号全部 published（与 SOP 对称，不按白名单隐藏）
 //   - CheckChatbotPermission：父账号 bypass / 子账号授权命中 / 子账号未授权 / draft chatbot
 //   - CreateSession：未授权拒绝 / 已授权成功
 //   - ChatStream：撤权后即时生效（P1-B 关键回归）
+//   - BuildChatContextFragments：当前消息为 critical fragment（Task 10）
+//   - ChatbotChatOperation：billing operation 常量值（Task 10）
 package chatbot_test
 
 import (
@@ -20,7 +22,9 @@ import (
 	"gorm.io/gorm/logger"
 
 	"numind-server/internal/numind/biz/chatbot"
+	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/store"
+	cb "numind-server/internal/pkg/contextbudget"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
@@ -357,4 +361,62 @@ func TestChatStream_AfterRevoke_Denied(t *testing.T) {
 	assert.True(t, errors.Is(err, errno.ErrChatbotRunDenied),
 		"撤权后 ChatStream 应返回 ErrChatbotRunDenied，实际=%v。"+
 			"如果实际错误来自 aiservice，说明权限守卫漏了（P1-B 回归）", err)
+}
+
+// ============================================================================
+// Task 10: Context Fragment Contract
+// ============================================================================
+
+// TestChatbotStreamBuildsCurrentMessageAsCriticalFragment verifies that
+// BuildChatContextFragments places the current user message as the last fragment
+// and that it is classified as RoleRecent + SourceUser + Critical=true with
+// CompressNone — matching spec §9.2 "current user message → recent + critical".
+func TestChatbotStreamBuildsCurrentMessageAsCriticalFragment(t *testing.T) {
+	history := []model.ChatbotMessage{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi there"},
+	}
+	kbChunks := []domain.KnowledgeChunk{
+		{ID: "chunk-1", Content: "Knowledge chunk one.", Score: 0.8},
+	}
+	currentMsg := "What is the pricing?"
+
+	frags := chatbot.BuildChatContextFragments("You are a helpful assistant.", history, currentMsg, kbChunks, 10)
+
+	require.NotEmpty(t, frags, "fragments must not be empty")
+
+	// Last fragment must be the current user message.
+	last := frags[len(frags)-1]
+	assert.Equal(t, currentMsg, last.Content, "last fragment must be the current user message")
+	assert.Equal(t, cb.RoleRecent, last.Role, "current message must be RoleRecent")
+	assert.Equal(t, cb.SourceUser, last.Source, "current message must be SourceUser")
+	assert.True(t, last.Critical, "current message must be Critical=true")
+	assert.Equal(t, cb.CompressNone, last.Compressibility, "current message must be CompressNone")
+
+	// System fragment must be immutable.
+	first := frags[0]
+	assert.Equal(t, cb.RoleImmutable, first.Role, "first fragment must be the system prompt (RoleImmutable)")
+
+	// KB evidence fragment must be RoleEvidence + SourceKB.
+	var evidenceFrags []cb.ContextFragment
+	for _, f := range frags {
+		if f.Role == cb.RoleEvidence {
+			evidenceFrags = append(evidenceFrags, f)
+		}
+	}
+	require.Len(t, evidenceFrags, 1, "one KB chunk → one evidence fragment")
+	assert.Equal(t, cb.SourceKB, evidenceFrags[0].Source, "KB fragment must be SourceKB")
+	assert.Equal(t, "chunk-1", evidenceFrags[0].SourceReference, "KB fragment SourceReference must be chunk ID")
+}
+
+// TestChatbotStreamUsesChatbotChatOperation verifies that the billing operation
+// constant exported from the chatbot package is "chatbot_chat", matching the
+// budgetOperationMap entry and the Langfuse trace tag (spec §6.1.1 + Task 10
+// normalisation requirement).
+func TestChatbotStreamUsesChatbotChatOperation(t *testing.T) {
+	// The constant is used in ChatStream's billing.WithBilling call.
+	// Verifying the exported constant ensures refactoring doesn't silently
+	// change the operation string and break the budgetOperationMap lookup.
+	assert.Equal(t, "chatbot_chat", chatbot.ChatbotChatOperation,
+		"ChatbotChatOperation must be 'chatbot_chat' to match budgetOperationMap")
 }

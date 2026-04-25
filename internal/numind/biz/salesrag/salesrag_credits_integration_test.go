@@ -29,7 +29,9 @@ import (
 	"gorm.io/gorm/logger"
 
 	"numind-server/internal/numind/biz/credit"
+	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/store"
+	cb "numind-server/internal/pkg/contextbudget"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/known"
 	"numind-server/internal/pkg/model"
@@ -178,7 +180,7 @@ func seedLegacyTierUser(t *testing.T, db *gorm.DB, userID uint, tier string) *mo
 // seedSalesragCoefficient inserts the credit_estimation_coefficient +
 // pricing_rule rows the credits flow looks up via a global-fallback lookup.
 // The salesrag biz passes empty provider/model (defaultModel/defaultProvider
-// unset in tests), so the ('', '', '') fallback row must exist.
+// unset in tests), so the (”, ”, ”) fallback row must exist.
 func seedSalesragCoefficient(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	// Coefficient: char2tok=1.5 comp/prompt=0.5 safety=0.2
@@ -489,4 +491,144 @@ func TestAcquireSalesragCredits_LegacyTierFreeUserBlocked(t *testing.T) {
 	require.NotNil(t, cc)
 	assert.True(t, cc.pre.SkipDeduction, "legacy_tier even when denied keeps SkipDeduction=true")
 	assert.Nil(t, cc.rsv, "no reservation written on denial")
+}
+
+// ============================================================================
+// Task 10: SalesRAG Fragment Contract
+// ============================================================================
+
+// TestSalesRAGBuildsEvidenceFragmentsWithoutSOPMetadata verifies that
+// buildSalesRAGEvidenceFragments constructs well-formed RoleEvidence fragments
+// from a slice of KnowledgeChunks, and that no SOP-specific or chatbot-specific
+// metadata keys are injected (spec §2.2 enforcement: contextbudget must not
+// branch on business-domain metadata).
+func TestSalesRAGBuildsEvidenceFragmentsWithoutSOPMetadata(t *testing.T) {
+	chunks := []domain.KnowledgeChunk{
+		{ID: "vec-001", Content: "Product pricing is $99/month.", Score: 0.9},
+		{ID: "vec-002", Content: "Supports up to 100 users.", Score: 0.5},
+		{ID: "", Content: "No ID chunk.", Score: 0.0},
+	}
+
+	frags := buildSalesRAGEvidenceFragments(chunks)
+
+	require.Len(t, frags, 3, "one fragment per chunk")
+
+	for i, f := range frags {
+		// Role + Source invariants.
+		assert.Equal(t, cb.RoleEvidence, f.Role, "fragment[%d] must be RoleEvidence", i)
+		assert.Equal(t, cb.SourceKB, f.Source, "fragment[%d] must be SourceKB", i)
+		assert.Equal(t, cb.CompressReference, f.Compressibility, "fragment[%d] must be CompressReference", i)
+
+		// No SOP-specific or chatbot-specific metadata.
+		for k := range f.Metadata {
+			assert.NotContains(t, k, "sop", "fragment metadata must not contain SOP keys (key=%q)", k)
+			assert.NotContains(t, k, "chatbot", "fragment metadata must not contain chatbot keys (key=%q)", k)
+			assert.NotContains(t, k, "node_id", "fragment metadata must not contain node_id key (key=%q)", k)
+		}
+	}
+
+	// Score-to-importance mapping.
+	assert.Equal(t, 9, frags[0].Importance, "score 0.9 → importance 9")
+	assert.Equal(t, 5, frags[1].Importance, "score 0.5 → importance 5")
+	assert.Equal(t, 0, frags[2].Importance, "score 0.0 → importance 0")
+
+	// SourceReference fallback when ID is empty.
+	assert.Equal(t, "vec-001", frags[0].SourceReference)
+	assert.NotEmpty(t, frags[2].SourceReference, "empty chunk ID must produce a non-empty SourceReference fallback")
+}
+
+// ============================================================================
+// Task 10: P1 — No double-reserve for credits-mode ChatWithSession
+// ============================================================================
+
+// TestSalesRAGChatWithSessionNoDoubleReserve verifies the P1 spec-compliance fix:
+// now that RetrieveStream always populates ContextFragments (Task 10), the
+// Gateway middleware's ContextBudgetCredits handles credit reservation.
+// acquireSalesragCredits must NOT also call Reserve for credits-mode users,
+// so the combined reservation count across both paths stays at most 1.
+//
+// Test model: we call acquireSalesragCredits directly (the only inline-Reserve
+// site) and assert that it does NOT create a reservation row for a credits-mode
+// user, even when CheckAndEstimate succeeds. The Gateway middleware path is
+// exercised in integration; here we verify the biz-layer contract that
+// cc.rsv is always nil for credits users post-fix.
+func TestSalesRAGChatWithSessionNoDoubleReserve(t *testing.T) {
+	db := newSalesragCreditsTestDB(t)
+	ds := store.NewTestStore(db)
+	calc := pricing.NewCalculator(ds.Billing())
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc)
+
+	// Seed a credits-mode user with ample balance.
+	userID := uint(2001)
+	seedCreditsUserWithPackage(t, db, userID, 5000)
+	seedSalesragCoefficient(t, db)
+
+	b := newTestSalesragBiz(ds, svc, calc)
+	ctx := ctxWithRequestID(context.Background(), "req-p1-fix")
+
+	// Call acquireSalesragCredits — CheckAndEstimate runs (early balance check)
+	// but Reserve must NOT fire (delegated to Gateway middleware since Task 10).
+	cc, err := b.acquireSalesragCredits(ctx, userID, 123, 500)
+	require.NoError(t, err, "credits-mode user with ample balance must not be denied")
+	require.NotNil(t, cc, "cc must be returned (carries PreCheckResult for logging)")
+
+	// KEY assertion: no reservation was created by the inline biz path.
+	assert.Nil(t, cc.rsv,
+		"credits-mode: Reserve must NOT be called by acquireSalesragCredits (Gateway middleware owns it)")
+
+	// Confirm zero reservation rows in DB — no double-reserve side-effect.
+	var count int64
+	db.Model(&model.CreditReservation{}).Where("user_id = ?", userID).Count(&count)
+	assert.EqualValues(t, 0, count,
+		"no credit_reservation row must be written by acquireSalesragCredits for credits users")
+
+	// finalize must be a safe no-op (cc.rsv == nil).
+	cc.finalize(ctx)
+	db.Model(&model.CreditReservation{}).Where("user_id = ?", userID).Count(&count)
+	assert.EqualValues(t, 0, count, "finalize with nil rsv must not write any DB rows")
+
+	// Legacy-tier users are unaffected: SkipDeduction=true means no Reserve
+	// either way, but CheckAndEstimate still runs the CanRunSOP gate.
+	legacyUserID := uint(2002)
+	seedLegacyTierUser(t, db, legacyUserID, model.UserTierStandard)
+
+	ccLegacy, errLegacy := b.acquireSalesragCredits(ctx, legacyUserID, 456, 200)
+	require.NoError(t, errLegacy, "legacy_tier standard user must pass CanRunSOP gate")
+	require.NotNil(t, ccLegacy)
+	assert.Nil(t, ccLegacy.rsv, "legacy_tier: no reservation (SkipDeduction path, unchanged)")
+	assert.True(t, ccLegacy.pre.SkipDeduction, "legacy_tier SkipDeduction must still be true")
+}
+
+// TestSalesRAGProfileAndChatStyleUseFragments verifies that the fragment helper
+// functions for profile-analysis and chat-style operations produce fragments
+// with the correct invariants: system prompt → RoleImmutable + Critical=true,
+// user message → RoleRecent + Critical=true + CompressNone. No SOP metadata.
+func TestSalesRAGProfileAndChatStyleUseFragments(t *testing.T) {
+	sysPrompt := "You are a customer profile analyst."
+	userMsg := "以下是该客户的相关资料：\n\nSample customer data."
+
+	sysF := buildSalesRAGSystemFragment("sys-0", sysPrompt)
+	usrF := buildSalesRAGUserFragment("cur-msg", userMsg)
+
+	// System fragment invariants.
+	assert.Equal(t, cb.RoleImmutable, sysF.Role, "system fragment must be RoleImmutable")
+	assert.Equal(t, cb.SourceSystem, sysF.Source)
+	assert.True(t, sysF.Critical, "system fragment must be Critical")
+	assert.Equal(t, cb.CompressNone, sysF.Compressibility)
+	assert.Equal(t, sysPrompt, sysF.Content)
+
+	// User fragment invariants.
+	assert.Equal(t, cb.RoleRecent, usrF.Role, "user fragment must be RoleRecent")
+	assert.Equal(t, cb.SourceUser, usrF.Source)
+	assert.True(t, usrF.Critical, "user fragment must be Critical")
+	assert.Equal(t, cb.CompressNone, usrF.Compressibility)
+	assert.Equal(t, userMsg, usrF.Content)
+
+	// Neither fragment must carry SOP metadata.
+	for k := range sysF.Metadata {
+		assert.NotContains(t, k, "sop")
+	}
+	for k := range usrF.Metadata {
+		assert.NotContains(t, k, "sop")
+	}
 }

@@ -11,9 +11,77 @@ import (
 	aismw "numind-server/internal/pkg/aiservice/middleware"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/billing"
+	cb "numind-server/internal/pkg/contextbudget"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 )
+
+// buildStrategySelectFragments constructs the ContextFragment slice for a
+// strategy-selection LLM call (operation=salesrag_strategy_select).
+//
+// P2-2 fix (spec §9.2 system/user separation): the full prompt string encodes
+// both a system-level instruction block (role definition + strategy list +
+// output rules) and the user-supplied query. We split on the last occurrence of
+// "## 客户当前消息\n" so the instruction skeleton becomes a RoleImmutable system
+// fragment and the actual user query becomes a separate RoleRecent user fragment.
+//
+// Fallback: when the separator is not found (e.g. prompt template changed),
+// the whole prompt is kept as a single RoleImmutable system fragment with a
+// synthetic empty user fragment, preserving prior behaviour without panicking.
+func buildStrategySelectFragments(prompt string) []cb.ContextFragment {
+	const userQuerySeparator = "## 客户当前消息\n"
+	sepIdx := strings.LastIndex(prompt, userQuerySeparator)
+	if sepIdx < 0 {
+		// Fallback: treat entire prompt as system instruction.
+		return []cb.ContextFragment{
+			{
+				ID:              "strategy-sys",
+				Role:            cb.RoleImmutable,
+				Source:          cb.SourceSystem,
+				ContentType:     cb.ContentText,
+				Content:         prompt,
+				Importance:      10,
+				Order:           0,
+				Compressibility: cb.CompressNone,
+				Critical:        true,
+			},
+		}
+	}
+	sysContent := strings.TrimRight(prompt[:sepIdx], "\n ")
+	// Skip the separator line itself and the "## 输出要求" block that follows
+	// the user query to isolate just the user's current message.
+	afterSep := prompt[sepIdx+len(userQuerySeparator):]
+	// The user query ends at the next "## " heading (if any).
+	if nextSection := strings.Index(afterSep, "\n## "); nextSection >= 0 {
+		afterSep = afterSep[:nextSection]
+	}
+	userContent := strings.TrimSpace(afterSep)
+
+	return []cb.ContextFragment{
+		{
+			ID:              "strategy-sys",
+			Role:            cb.RoleImmutable,
+			Source:          cb.SourceSystem,
+			ContentType:     cb.ContentText,
+			Content:         sysContent,
+			Importance:      10,
+			Order:           0,
+			Compressibility: cb.CompressNone,
+			Critical:        true,
+		},
+		{
+			ID:              "strategy-user",
+			Role:            cb.RoleRecent,
+			Source:          cb.SourceUser,
+			ContentType:     cb.ContentText,
+			Content:         userContent,
+			Importance:      9,
+			Order:           1,
+			Compressibility: cb.CompressNone,
+			Critical:        true,
+		},
+	}
+}
 
 // StrategyRouter 基于LLM的策略路由器
 // 使用 profile.SalesragIntent 进行策略选择（意图/策略分析，语义最接近）
@@ -76,9 +144,10 @@ func (r *StrategyRouter) SelectMetaStrategy(ctx context.Context, query string, h
 		},
 	}
 	resp, err := aiservice.Chat(ctx, profile.SalesragIntent, aiservice.ChatRequest{
-		Messages:    aiMessages,
-		Temperature: 0.1,
-		MaxTokens:   200,
+		Messages:         aiMessages,
+		ContextFragments: buildStrategySelectFragments(prompt),
+		Temperature:      0.1,
+		MaxTokens:        200,
 	})
 	if err != nil {
 		log.C(ctx).Warnw("Meta strategy selection LLM call failed", "error", err)
@@ -171,9 +240,10 @@ func (r *StrategyRouter) SelectBasicStrategy(ctx context.Context, query string, 
 		},
 	}
 	resp, err := aiservice.Chat(ctx, profile.SalesragIntent, aiservice.ChatRequest{
-		Messages:    aiMessages,
-		Temperature: 0.1,
-		MaxTokens:   200,
+		Messages:         aiMessages,
+		ContextFragments: buildStrategySelectFragments(prompt),
+		Temperature:      0.1,
+		MaxTokens:        200,
 	})
 	if err != nil {
 		log.C(ctx).Warnw("Basic strategy selection LLM call failed", "error", err)
