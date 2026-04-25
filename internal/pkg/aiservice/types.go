@@ -14,6 +14,7 @@ const (
 	MessageRoleSystem    MessageRole = "system"
 	MessageRoleUser      MessageRole = "user"
 	MessageRoleAssistant MessageRole = "assistant"
+	MessageRoleTool      MessageRole = "tool"
 )
 
 // MessagePartType distinguishes text content from image content in a multipart message.

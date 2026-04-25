@@ -45,7 +45,7 @@ func sourceToRole(src contextbudget.FragmentSource) MessageRole {
 	case contextbudget.SourceAssistant:
 		return MessageRoleAssistant
 	case contextbudget.SourceTool:
-		return MessageRole("tool")
+		return MessageRoleTool
 	default:
 		// SourceUser, SourceFile, SourceKB, SourceDB, SourceWeb, SourceInternal → "user"
 		return MessageRoleUser

@@ -180,6 +180,15 @@ func BuildDefault(deps Deps) Middleware {
 	)
 }
 
+// defaultMiddlewareNames returns the names of middlewares assembled by BuildDefault,
+// in execution order (outermost first). It is used by tests to assert the chain
+// composition without requiring spy injection into every Deps field.
+//
+// Must be kept in sync with BuildDefault whenever the middleware order changes.
+func defaultMiddlewareNames() []string {
+	return []string{"tracing", "fallback", "context_budget", "billing", "retry"}
+}
+
 // AsGatewayChain converts a Middleware into an aiservice.MiddlewareChainFunc.
 //
 // Because aiservice.GatewayHandler and middleware.Handler have identical

@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync/atomic"
 	"testing"
 
@@ -195,6 +196,15 @@ func TestBuildDefault_OrderingMatchesSpec(t *testing.T) {
 		t.Errorf("expected adapter (%d) to be called before billing (%d) in call order %v",
 			adapterIdx, billingIdx, callOrder)
 	}
+
+	// Verify the declared middleware order matches the canonical spec list.
+	// defaultMiddlewareNames() must be kept in sync with BuildDefault; if a
+	// middleware is accidentally removed from BuildDefault, this assertion catches it.
+	gotNames := defaultMiddlewareNames()
+	wantNames := []string{"tracing", "fallback", "context_budget", "billing", "retry"}
+	if !reflect.DeepEqual(gotNames, wantNames) {
+		t.Errorf("BuildDefault order = %v, want %v", gotNames, wantNames)
+	}
 }
 
 // spyMiddleware records the position in which it is entered and exited during a
@@ -210,14 +220,14 @@ func spyMiddleware(name string, log *[]string) Middleware {
 	}
 }
 
-// TestBuildDefaultMiddlewareOrder_ContextBudgetAfterFallbackBeforeBilling verifies
-// the exact chain order required by spec §6.1 (Task 5 revision):
+// TestChain_ExactMiddlewareOrder verifies the exact event sequence produced by a
+// Chain composed of spy middlewares in the BuildDefault order:
 //
 //	Tracing → Fallback → ContextBudgetCredits → Billing → Retry → Adapter
 //
-// The test replaces each middleware with a spy that records entry/exit events,
-// then asserts the observed event sequence matches the expected order.
-func TestBuildDefaultMiddlewareOrder_ContextBudgetAfterFallbackBeforeBilling(t *testing.T) {
+// This test exercises Chain() composition semantics with named spies. It does NOT
+// call BuildDefault() directly — for that, see TestBuildDefault_OrderingMatchesSpec.
+func TestChain_ExactMiddlewareOrder(t *testing.T) {
 	// Disable Langfuse so Tracing becomes a structural no-op for order tracing.
 	origC := langfuse.C
 	langfuse.C = nil
