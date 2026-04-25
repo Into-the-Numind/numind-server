@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -406,6 +405,12 @@ func (e *SopExecutor) ExecuteNodeStream(ctx context.Context, node *model.SopNode
 //   - SopVision：当任意消息含 image_url 类型的 MessagePart 时（视觉输入）
 //   - SopText：其余所有情况（纯文本）
 //
+// Task 9 (SOP Gateway Producer Migration):
+// 消息构造改为 ContextFragment 切片（buildSOPGatewayFragments），交由
+// ContextBudgetCredits middleware 处理预算规划和 context 压缩。
+// 不再调用 trimHistoryForGateway（middleware 负责裁剪）；
+// 不再手动预构建 ChatMessage 列表（RenderContextFragments 由 middleware 执行）。
+//
 // 调用前注入 WithSkipLegacyBilling，防止 LLMRouter 旧路径与 Gateway 双记账。
 // modelKey 参数当前未接通 Gateway ModelOverride（billing-baseline.md BLOCKER 3）；预留供未来扩展。
 func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode, input string, history []LLMMessage, modelKey string, thinking bool, handler StreamHandler) (string, *TokenUsage, error) {
@@ -419,8 +424,9 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 		ctx = aismw.WithUserID(ctx, bc.UserID)
 	}
 
-	// 1. 构建 LLMMessage 列表并对历史做渐进式裁剪（避免超过上游 provider input token 上限）
-	//    构造顺序：system prompt → history → 当前 user input（最后一条永远是当前步骤，裁剪时不动）
+	// 1. 构建有序 LLMMessage 列表（system → history → current input），
+	//    仅用于 Task Profile 选择（SopVision 检测）和 fragment 构建。
+	//    历史裁剪和 budget 规划由 ContextBudgetCredits middleware 负责。
 	llmMessages := make([]LLMMessage, 0, len(history)+2)
 	if node.Prompt != "" {
 		llmMessages = append(llmMessages, LLMMessage{Role: "system", Content: node.Prompt})
@@ -430,53 +436,45 @@ func (e *SopExecutor) executeViaGateway(ctx context.Context, node *model.SopNode
 		llmMessages = append(llmMessages, LLMMessage{Role: "user", Content: input})
 	}
 
-	trimmed, trimErr := e.trimHistoryForGateway(ctx, llmMessages)
-	if trimErr != nil {
-		if errors.Is(trimErr, ErrGatewayInputTooLong) {
-			return "", nil, fmt.Errorf("您本次输入的内容过长，请缩减后重试")
-		}
-		return "", nil, fmt.Errorf("executeViaGateway: trimHistoryForGateway: %w", trimErr)
-	}
-
-	// 2. 转成 aiservice.ChatMessage
-	aiMessages := make([]aiservice.ChatMessage, 0, len(trimmed))
-	for _, msg := range trimmed {
-		aiMessages = append(aiMessages, aiservice.ChatMessage{
-			Role:    aiservice.MessageRole(msg.Role),
-			Content: aiservice.MessageContent{Text: msg.Content},
-		})
-	}
-
-	// 2. 选择 Task Profile：任意消息含 image_url 部分 → SopVision，否则 SopText
+	// 2. 选择 Task Profile：任意消息含 image_url 类型内容 → SopVision，否则 SopText。
+	//    P2-3 (spec compliance): 优先尝试 JSON Part 解析精确检测；若 Content 不是合法 JSON
+	//    数组（普通字符串消息），才退化为 substring match。此双重检测确保：
+	//    (a) 正常 vision 路径（前端注入 JSON Part 数组）→ 精确匹配 type=="image_url"；
+	//    (b) 用户文本中碰巧包含字面量 "image_url" 的情况 → JSON parse 失败后才落回 substring
+	//        match，依然存在理论误判，但实际上前端对普通文本不会生成 JSON 数组格式，风险极低。
+	//    trade-off 注解：LLMMessage.Content 是 string（非 MessageContent.Parts），无法在 biz
+	//    层做零开销结构化判断；如需彻底消除误判，需将 LLMMessage 改为携带 Parts，属接口变更，
+	//    超出本次修复范围。
 	taskID := profile.SopText
-	for _, m := range aiMessages {
-		for _, part := range m.Content.Parts {
-			if part.Type == aiservice.MessagePartTypeImageURL {
-				taskID = profile.SopVision
-				break
-			}
-		}
-		if taskID == profile.SopVision {
+	for _, msg := range llmMessages {
+		if contentHasImageURLPart(msg.Content) {
+			taskID = profile.SopVision
 			break
 		}
 	}
 
-	// 3. 注入 skip-legacy-billing 标记，防止 Gateway 与旧 billing 路径双记账
+	// 3. 构建 ContextFragment 切片（Task 9 核心变更）。
+	//    - system/node prompt → RoleImmutable, CompressNone, Critical=true
+	//    - 历史 user/assistant 消息 → RoleDurable, CompressSummarize
+	//    - 当前 user input（最后一条 user 消息）→ RoleRecent, CompressNone, Critical=true
+	fragments := buildSOPGatewayFragments(llmMessages)
+
+	// 4. 注入 skip-legacy-billing 标记，防止 Gateway 与旧 billing 路径双记账
 	ctx = aiservice.WithSkipLegacyBilling(ctx)
 
-	// 4. 调用 Gateway ChatStream
+	// 5. 调用 Gateway ChatStream（ContextFragments 由 middleware 处理预算规划和渲染）
 	req := aiservice.ChatRequest{
-		Messages:      aiMessages,
-		Temperature:   0.7,
-		ModelOverride: modelKey, // pass user's model choice; empty = use task profile default
-		Thinking:      thinking,
+		ContextFragments: fragments,
+		Temperature:      0.7,
+		ModelOverride:    modelKey, // pass user's model choice; empty = use task profile default
+		Thinking:         thinking,
 	}
 	ch, err := aiservice.ChatStream(ctx, taskID, req)
 	if err != nil {
 		return "", nil, fmt.Errorf("executeViaGateway: ChatStream: %w", err)
 	}
 
-	// 5. 消费 channel，将 ChatChunk 转换为 StreamHandler 回调
+	// 6. 消费 channel，将 ChatChunk 转换为 StreamHandler 回调
 	var fullContent strings.Builder
 	var finalUsage *TokenUsage
 	var modelName string
@@ -1356,6 +1354,42 @@ func getMapKeys(m map[string]interface{}) []string {
 func hasKey(m map[string]interface{}, key string) bool {
 	_, ok := m[key]
 	return ok
+}
+
+// contentHasImageURLPart reports whether a message content string contains an
+// image_url MessagePart.
+//
+// Detection strategy (P2-3 spec compliance):
+//  1. Try to JSON-unmarshal the content as a []map[string]interface{}. If it
+//     parses and any element has "type" == "image_url", return true. This is the
+//     precise path used when the frontend sends a multipart vision message whose
+//     content is a JSON-serialised Part array.
+//  2. Fall back to strings.Contains as a best-effort for edge cases where the
+//     content is not a valid JSON array but still signals vision input.
+//
+// Trade-off: LLMMessage.Content is a plain string; a user who literally types
+// "image_url" in plain text will trigger the fallback true. In practice the
+// frontend never serialises plain text as a JSON array, so the precise path
+// handles real vision messages, and the substring path only fires on
+// non-JSON content that already contains the literal string.
+func contentHasImageURLPart(content string) bool {
+	// Fast path: no occurrence at all → definitely not a vision message.
+	if !strings.Contains(content, "image_url") {
+		return false
+	}
+	// Precise path: attempt JSON parse as a Part array.
+	var parts []map[string]interface{}
+	if err := json.Unmarshal([]byte(content), &parts); err == nil {
+		for _, p := range parts {
+			if t, ok := p["type"].(string); ok && t == "image_url" {
+				return true
+			}
+		}
+		// Content parsed as JSON array but no image_url part found → not vision.
+		return false
+	}
+	// Fallback: non-JSON content that contains "image_url" substring.
+	return true
 }
 
 // CreateFinalNote 创建最终笔记（公开方法）

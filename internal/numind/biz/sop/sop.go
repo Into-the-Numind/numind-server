@@ -747,6 +747,11 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	//   - opErr 非空    → Refund（分类 user_cancelled / provider_timeout / op_failed）
 	//   - 两者都空       → Refund("no_actual_cost")（pricing 失败兜底）
 	// 注入点：在 langfuse trace 建立后，以便 credits span 挂到同一 trace 下。
+	//
+	// Task 9 双 Reserve 防护：
+	//   Gateway 路径（modelKey != ""）时，ContextBudgetCredits middleware 通过
+	//   ReserveBudget（新 budget path）负责预扣。直接调用 creditSvc.Reserve（旧
+	//   R2 char-based path）会造成双重预扣，必须跳过。
 	var (
 		rsv        *credit.Reservation
 		actualCost int64
@@ -757,7 +762,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 			_ = b.creditSvc.FinalizeReservation(ctx, rsv, &actualCost, &opErr)
 		}
 	}()
-	if b.creditSvc != nil {
+	if b.creditSvc != nil && !shouldSkipDirectReserveForGateway(modelKey) {
 		user, uerr := b.ds.Users().GetByID(ctx, run.UserID)
 		if uerr != nil {
 			log.C(ctx).Warnw("Failed to load user for credits pre-check; skipping Reserve",
@@ -1493,6 +1498,10 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 	// ===== Phase 2 Task 2.1: Reserve → LLM → Reconcile 控制流 =====
 	// 与 ExecuteNodeStream 同构（operation=OpSopChat）。idempKey 基于 run + 新 user message seq
 	// （maxSeq+1 就是上面 userMsg.Seq），保证同一追问重试不会二次扣减。
+	//
+	// Task 9 双 Reserve 防护（chat 路径同节点执行路径）：
+	//   Gateway 路径（modelKey != ""）跳过 creditSvc.Reserve，由 middleware 的
+	//   ReserveBudget 负责预扣，避免双重扣减。
 	var (
 		chatRsv        *credit.Reservation
 		chatActualCost int64
@@ -1503,7 +1512,7 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 			_ = b.creditSvc.FinalizeReservation(ctx, chatRsv, &chatActualCost, &chatOpErr)
 		}
 	}()
-	if b.creditSvc != nil {
+	if b.creditSvc != nil && !shouldSkipDirectReserveForGateway(modelKey) {
 		user, uerr := b.ds.Users().GetByID(ctx, userID)
 		if uerr != nil {
 			log.C(ctx).Warnw("Failed to load user for credits pre-check; skipping Reserve",
