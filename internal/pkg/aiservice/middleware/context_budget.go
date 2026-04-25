@@ -40,9 +40,15 @@ type ContextBudgetService interface {
 	Finalize(ctx context.Context, input FinalizeInput) error
 }
 
-// ContextBudgetCreditService is the credit-budget facade required by
-// ContextBudgetCredits. It isolates the middleware from the concrete
-// ICreditService implementation and keeps the dependency surface minimal.
+// ContextBudgetCreditService is the credit-budget facade required by the
+// ContextBudgetCredits middleware.
+//
+// Note on method scope: CheckAndEstimateBudget and ReserveBudget are called
+// directly by the middleware before invoking the provider. FinalizeReservation
+// and Refund are NOT called by the middleware itself — they are required for
+// the biz/contextbudget package's Finalize implementation (Task 7), which
+// reconciles or refunds the reservation based on actual usage. They are
+// declared here so a single composable facade satisfies both consumers.
 type ContextBudgetCreditService interface {
 	// CheckAndEstimateBudget runs the pre-call balance check using token-based
 	// estimates. Returns SkipDeduction=true for legacy-tier users.
@@ -200,9 +206,15 @@ func budgetMetadataFromCtx(ctx context.Context) (budgetMetadata, bool) {
 //  5. If Policy.ChargeUser=true: run credit precheck + ReserveBudget.
 //  6. Inject budget metadata into ctx for the inner Billing middleware.
 //  7. Call next (provider via Billing→Retry→Adapter).
-//  8. Non-streaming: Finalize immediately.
+//  8. Non-streaming: Finalize immediately (steps 8-9 below).
 //  9. Streaming: wrap the channel; finalize on final usage / error / close /
 //     context cancellation (sync.Once guarantees idempotency).
+//
+// Steps 10-16 of spec §5.1 (record/persist context_budget_event, attach event
+// id to usage record metadata, observe streaming termination, refund/reconcile
+// reservation) are delegated to ContextBudgetService.Finalize (Task 7's
+// biz/contextbudget implementation). The middleware only triggers Finalize at
+// the right moment with FinalizeInput; the biz layer owns the data persistence.
 //
 // When Deps.ContextBudget is nil the middleware is a transparent passthrough
 // (useful for unit tests that wire only a subset of Deps).

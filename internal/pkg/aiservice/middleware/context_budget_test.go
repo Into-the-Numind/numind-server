@@ -706,3 +706,293 @@ func TestContextBudgetCredits_ContextCancelledRefundsWithoutUsage(t *testing.T) 
 		t.Errorf("FinalizeInput.ErrorCode: got %q, want %q", fi.ErrorCode, "user_cancelled")
 	}
 }
+
+// ----------------------------------------------------------------------------
+// Test: Streaming — final chunk with error AND usage → reconcile with error code
+// ----------------------------------------------------------------------------
+
+// TestContextBudgetCredits_StreamFinalErrWithUsageReconcilesWithErrorCode verifies
+// that when the upstream stream emits a final chunk with both an error and usage
+// data, the wrapper reconciles using the actual usage but tags the finalize
+// status with the provider error code, ensuring credits are charged for tokens
+// that were actually generated before the error occurred.
+func TestContextBudgetCredits_StreamFinalErrWithUsageReconcilesWithErrorCode(t *testing.T) {
+	renderedMsgs := []aiservice.ChatMessage{
+		{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: "stream with err+usage"}},
+	}
+
+	budgetSvc := &mockContextBudgetService{
+		prepareResult: makePrepareResult(renderedMsgs, true),
+	}
+	creditSvc := &mockCreditService{
+		checkResult: &credit.PreCheckResult{
+			SkipDeduction:    false,
+			Sufficient:       true,
+			EstimatedCredits: 12,
+		},
+		reserveResult: &credit.Reservation{
+			ID:              201,
+			ReservedCredits: 12,
+			Status:          credit.StatusReserved,
+		},
+	}
+
+	deps := Deps{
+		ContextBudget: budgetSvc,
+		CreditService: creditSvc,
+		Logger:        &mockLogger{},
+		Clock:         fixedClock{t: time.Now()},
+	}
+
+	// Stream emits a single IsFinal chunk with both Err and Usage (provider
+	// generated tokens but terminated with an error, e.g. a timeout mid-stream).
+	providerErr := errors.New("provider timeout")
+	chunks := []aiservice.ChatChunk{
+		{Delta: "partial output", Index: 0},
+		{
+			Delta:   "",
+			Index:   1,
+			IsFinal: true,
+			Err:     providerErr,
+			Usage: &aiservice.TokenUsage{
+				PromptTokens:     100,
+				CompletionTokens: 50,
+				TotalTokens:      150,
+			},
+		},
+	}
+	adapter := streamHandler(chunks)
+
+	mw := ContextBudgetCredits(deps)
+	handler := mw(adapter)
+
+	fragment := simpleFragment("f1", "stream err+usage input")
+	req := chatReqWithFragments(fragment)
+	ctx := billing.WithBillingMeta(context.Background(), 11, "sop_run", nil)
+	ctx = WithUserID(ctx, 11)
+
+	resp, err := handler(ctx, budgetRoute(), req)
+	if err != nil {
+		t.Fatalf("unexpected error from handler: %v", err)
+	}
+
+	ch, ok := resp.(<-chan aiservice.ChatChunk)
+	if !ok {
+		t.Fatalf("expected <-chan ChatChunk, got %T", resp)
+	}
+
+	// Drain the stream.
+	for range ch {
+	}
+
+	// Finalize must be called exactly once.
+	if budgetSvc.finalizeCallCount() != 1 {
+		t.Errorf("Finalize calls: got %d, want 1", budgetSvc.finalizeCallCount())
+	}
+	fi := budgetSvc.lastFinalizeInput()
+
+	// Actual token counts must be populated (reconcile, not refund).
+	if fi.ActualPromptTokens != 100 {
+		t.Errorf("FinalizeInput.ActualPromptTokens: got %d, want 100", fi.ActualPromptTokens)
+	}
+	if fi.ActualCompletionTokens != 50 {
+		t.Errorf("FinalizeInput.ActualCompletionTokens: got %d, want 50", fi.ActualCompletionTokens)
+	}
+
+	// Refund must be false — we have usage, so we reconcile.
+	if fi.Refund {
+		t.Error("FinalizeInput.Refund should be false when usage is present (reconcile path)")
+	}
+
+	// ErrorCode must be set to indicate the provider error.
+	if fi.ErrorCode != "provider_err" {
+		t.Errorf("FinalizeInput.ErrorCode: got %q, want %q", fi.ErrorCode, "provider_err")
+	}
+
+	// Status should reflect "ok" from the reconcile path (usage was captured).
+	if fi.Status != "ok" {
+		t.Errorf("FinalizeInput.Status: got %q, want %q", fi.Status, "ok")
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Test: Streaming — final chunk with error and NO usage → refund
+// ----------------------------------------------------------------------------
+
+// TestContextBudgetCredits_StreamFinalErrWithoutUsageRefunds verifies that when
+// the upstream stream emits a final chunk with an error but no usage data
+// (e.g., connection failed mid-stream before any tokens were accounted for),
+// the wrapper refunds the reservation instead of reconciling with stale estimates.
+func TestContextBudgetCredits_StreamFinalErrWithoutUsageRefunds(t *testing.T) {
+	renderedMsgs := []aiservice.ChatMessage{
+		{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: "stream err no-usage"}},
+	}
+
+	budgetSvc := &mockContextBudgetService{
+		prepareResult: makePrepareResult(renderedMsgs, true),
+	}
+	creditSvc := &mockCreditService{
+		checkResult: &credit.PreCheckResult{
+			SkipDeduction:    false,
+			Sufficient:       true,
+			EstimatedCredits: 8,
+		},
+		reserveResult: &credit.Reservation{
+			ID:              202,
+			ReservedCredits: 8,
+			Status:          credit.StatusReserved,
+		},
+	}
+
+	deps := Deps{
+		ContextBudget: budgetSvc,
+		CreditService: creditSvc,
+		Logger:        &mockLogger{},
+		Clock:         fixedClock{t: time.Now()},
+	}
+
+	// Stream emits a final chunk with Err but nil Usage — connection dropped
+	// before the provider reported any token usage.
+	chunks := []aiservice.ChatChunk{
+		{
+			Delta:   "",
+			Index:   0,
+			IsFinal: true,
+			Err:     errors.New("connection reset by provider"),
+			Usage:   nil,
+		},
+	}
+	adapter := streamHandler(chunks)
+
+	mw := ContextBudgetCredits(deps)
+	handler := mw(adapter)
+
+	fragment := simpleFragment("f1", "stream err no-usage input")
+	req := chatReqWithFragments(fragment)
+	ctx := billing.WithBillingMeta(context.Background(), 12, "sop_run", nil)
+	ctx = WithUserID(ctx, 12)
+
+	resp, err := handler(ctx, budgetRoute(), req)
+	if err != nil {
+		t.Fatalf("unexpected error from handler: %v", err)
+	}
+
+	ch, ok := resp.(<-chan aiservice.ChatChunk)
+	if !ok {
+		t.Fatalf("expected <-chan ChatChunk, got %T", resp)
+	}
+
+	// Drain the stream.
+	for range ch {
+	}
+
+	// Finalize must be called exactly once.
+	if budgetSvc.finalizeCallCount() != 1 {
+		t.Errorf("Finalize calls: got %d, want 1", budgetSvc.finalizeCallCount())
+	}
+	fi := budgetSvc.lastFinalizeInput()
+
+	// Refund must be true — no usage data, so we can't reconcile.
+	if !fi.Refund {
+		t.Error("FinalizeInput.Refund should be true when IsFinal has Err and no Usage")
+	}
+
+	// ErrorCode must be set to indicate the provider error.
+	if fi.ErrorCode != "provider_err" {
+		t.Errorf("FinalizeInput.ErrorCode: got %q, want %q", fi.ErrorCode, "provider_err")
+	}
+
+	// Status should be "failed".
+	if fi.Status != "failed" {
+		t.Errorf("FinalizeInput.Status: got %q, want %q", fi.Status, "failed")
+	}
+
+	// No actual tokens should be reported.
+	if fi.ActualPromptTokens != 0 || fi.ActualCompletionTokens != 0 {
+		t.Errorf("FinalizeInput token counts should be 0 on refund path, got prompt=%d completion=%d",
+			fi.ActualPromptTokens, fi.ActualCompletionTokens)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Test: Non-streaming — provider error triggers refund
+// ----------------------------------------------------------------------------
+
+// TestContextBudgetCredits_NonStreamingProviderErrorRefunds verifies that when
+// the inner adapter returns an error (no stream, no response), the middleware
+// refunds the reservation rather than reconciling.
+func TestContextBudgetCredits_NonStreamingProviderErrorRefunds(t *testing.T) {
+	renderedMsgs := []aiservice.ChatMessage{
+		{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: "non-streaming error"}},
+	}
+
+	budgetSvc := &mockContextBudgetService{
+		prepareResult: makePrepareResult(renderedMsgs, true),
+	}
+	creditSvc := &mockCreditService{
+		checkResult: &credit.PreCheckResult{
+			SkipDeduction:    false,
+			Sufficient:       true,
+			EstimatedCredits: 10,
+		},
+		reserveResult: &credit.Reservation{
+			ID:              301,
+			ReservedCredits: 10,
+			Status:          credit.StatusReserved,
+		},
+	}
+
+	deps := Deps{
+		ContextBudget: budgetSvc,
+		CreditService: creditSvc,
+		Logger:        &mockLogger{},
+		Clock:         fixedClock{t: time.Now()},
+	}
+
+	// Adapter returns an error — provider unavailable.
+	providerErr := errors.New("provider unavailable")
+	adapter := Handler(func(_ context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+		return nil, providerErr
+	})
+
+	mw := ContextBudgetCredits(deps)
+	handler := mw(adapter)
+
+	fragment := simpleFragment("f1", "non-streaming error input")
+	req := chatReqWithFragments(fragment)
+	ctx := billing.WithBillingMeta(context.Background(), 13, "sop_run", nil)
+	ctx = WithUserID(ctx, 13)
+
+	resp, err := handler(ctx, budgetRoute(), req)
+
+	// The middleware must propagate the provider error.
+	if err == nil {
+		t.Fatal("expected an error from provider, got nil")
+	}
+
+	// Response must be nil (no partial data to return).
+	if resp != nil {
+		t.Errorf("expected nil response on provider error, got %v", resp)
+	}
+
+	// Finalize must be called exactly once.
+	if budgetSvc.finalizeCallCount() != 1 {
+		t.Errorf("Finalize calls: got %d, want 1", budgetSvc.finalizeCallCount())
+	}
+	fi := budgetSvc.lastFinalizeInput()
+
+	// Refund must be true — provider returned an error, no tokens consumed.
+	if !fi.Refund {
+		t.Error("FinalizeInput.Refund should be true when provider returns an error")
+	}
+
+	// ErrorCode must be set.
+	if fi.ErrorCode != "provider_err" {
+		t.Errorf("FinalizeInput.ErrorCode: got %q, want %q", fi.ErrorCode, "provider_err")
+	}
+
+	// Status must be "failed".
+	if fi.Status != "failed" {
+		t.Errorf("FinalizeInput.Status: got %q, want %q", fi.Status, "failed")
+	}
+}
