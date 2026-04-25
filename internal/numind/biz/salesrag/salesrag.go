@@ -339,7 +339,8 @@ type salesragCreditContext struct {
 }
 
 // acquireSalesragCredits performs the CheckAndEstimate pre-flight check for a
-// salesrag_chat call. sessionID and promptChars are caller-provided.
+// salesrag_chat call. promptChars is caller-provided. The sessionID parameter
+// is reserved for future scope-aware billing and is currently unused.
 //
 // P1 fix (Task 10 spec compliance): RetrieveStream now always populates
 // ContextFragments, which means the Gateway middleware (ContextBudgetCredits)
@@ -354,7 +355,7 @@ type salesragCreditContext struct {
 // The caller still calls `defer cc.finalize(ctx)` — for legacy and test paths
 // where cc.rsv is nil, finalize is a safe no-op.
 func (b *salesRAGBiz) acquireSalesragCredits(
-	ctx context.Context, userID uint, sessionID uint, promptChars int,
+	ctx context.Context, userID uint, _ uint, promptChars int,
 ) (*salesragCreditContext, error) {
 	if b.creditSvc == nil {
 		return nil, nil
@@ -382,9 +383,6 @@ func (b *salesRAGBiz) acquireSalesragCredits(
 	// ContextFragments is non-empty (always the case since Task 10).
 	// Returning cc with rsv=nil means cc.finalize is a no-op here; the
 	// middleware's Finalize handles Reconcile/Refund after the stream drains.
-	// sessionID is retained in the function signature for potential future use
-	// (e.g. middleware-level idempotency key correlation).
-	_ = sessionID
 	return cc, nil
 }
 
@@ -899,7 +897,7 @@ func buildSalesRAGEvidenceFragments(chunks []domain.KnowledgeChunk) []cb.Context
 			ContentType:     cb.ContentText,
 			Content:         chunk.Content,
 			Importance:      scoreToImportance(chunk.Score),
-			Order:           i,
+			Order:           100 + i, // evidence slots: 100, 101, 102... (between system@0 and user@1000)
 			Compressibility: cb.CompressReference,
 			SourceReference: sourceRef,
 		})
@@ -910,6 +908,8 @@ func buildSalesRAGEvidenceFragments(chunks []domain.KnowledgeChunk) []cb.Context
 // buildSalesRAGSystemFragment returns a RoleImmutable system fragment for a
 // salesrag prompt. The content is treated as the top-level persona/instruction
 // that must always be present regardless of budget pressure.
+//
+// Rendering order: Order=0 (system < evidence@100+ < user@1000) per spec §9.2.
 func buildSalesRAGSystemFragment(id, systemPrompt string) cb.ContextFragment {
 	return cb.ContextFragment{
 		ID:              id,
@@ -918,6 +918,7 @@ func buildSalesRAGSystemFragment(id, systemPrompt string) cb.ContextFragment {
 		ContentType:     cb.ContentText,
 		Content:         systemPrompt,
 		Importance:      10,
+		Order:           0, // system always first; evidence @100+, user @1000
 		Compressibility: cb.CompressNone,
 		Critical:        true,
 	}
@@ -925,6 +926,8 @@ func buildSalesRAGSystemFragment(id, systemPrompt string) cb.ContextFragment {
 
 // buildSalesRAGUserFragment returns a RoleRecent + Critical user message fragment
 // for salesrag operations. The current user query must not be dropped.
+//
+// Rendering order: Order=1000 (always last, after system@0 and evidence@100+) per spec §9.2.
 func buildSalesRAGUserFragment(id, userMessage string) cb.ContextFragment {
 	return cb.ContextFragment{
 		ID:              id,
@@ -933,6 +936,7 @@ func buildSalesRAGUserFragment(id, userMessage string) cb.ContextFragment {
 		ContentType:     cb.ContentText,
 		Content:         userMessage,
 		Importance:      9,
+		Order:           1000, // user query always last; system @0, evidence @100+
 		Compressibility: cb.CompressNone,
 		Critical:        true,
 	}
