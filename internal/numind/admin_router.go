@@ -4,14 +4,16 @@ import (
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/aiservice_admin"
 	"numind-server/internal/numind/biz/b2b_billing"
+	bizcb "numind-server/internal/numind/biz/contextbudget"
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/controller/v1/admin_ai"
 	"numind-server/internal/numind/controller/v1/admin_b2b"
 	"numind-server/internal/numind/controller/v1/admin_billing"
+	"numind-server/internal/numind/controller/v1/admin_contextbudget"
 	"numind-server/internal/numind/controller/v1/admin_credit"
 	"numind-server/internal/numind/controller/v1/admin_dashboard"
-	"numind-server/internal/numind/controller/v1/admin_migration"
 	"numind-server/internal/numind/controller/v1/admin_login"
+	"numind-server/internal/numind/controller/v1/admin_migration"
 	"numind-server/internal/numind/controller/v1/admin_order"
 	"numind-server/internal/numind/controller/v1/admin_sop"
 	"numind-server/internal/numind/controller/v1/admin_user"
@@ -214,6 +216,24 @@ func installAdminRouters(g *gin.Engine) error {
 		aiGroup.PUT("/providers/:id", aiProviderCtrl.UpdateProvider)
 		aiGroup.DELETE("/providers/:id", aiProviderCtrl.DeleteProvider)
 		aiGroup.POST("/providers/:id/test-connection", aiProviderCtrl.TestProviderConnection)
+	}
+
+	// Context Budget Admin — token profiles, policies, preview, events (Task 11)
+	{
+		cbStore := store.NewContextBudgetStore(store.S.DB())
+		cbBiz := bizcb.New(cbStore, bizcb.Options{})
+		cbReg := registry.New(store.S.DB())
+		cbAiSvcBiz := aiservice_admin.New(cbReg, store.S.DB())
+		cbCtrl := admin_contextbudget.New(cbBiz, cbStore, cbAiSvcBiz, store.S.DB())
+		adminGroup.GET("/context-budget/token-profiles", cbCtrl.ListTokenProfiles)
+		adminGroup.POST("/context-budget/token-profiles", cbCtrl.CreateTokenProfile)
+		adminGroup.PUT("/context-budget/token-profiles/:id", cbCtrl.UpdateTokenProfile)
+		adminGroup.DELETE("/context-budget/token-profiles/:id", cbCtrl.DeleteTokenProfile)
+		adminGroup.GET("/context-budget/token-profiles/history", cbCtrl.GetTokenProfileHistory)
+		adminGroup.GET("/context-budget/policies", cbCtrl.ListPolicies)
+		adminGroup.PUT("/context-budget/policies/:operation", cbCtrl.UpsertPolicy)
+		adminGroup.POST("/context-budget/preview", cbCtrl.Preview)
+		adminGroup.GET("/context-budget/events", cbCtrl.ListEvents)
 	}
 
 	return nil

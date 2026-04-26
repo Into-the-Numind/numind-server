@@ -456,10 +456,18 @@ func (b *aiServiceAdminBiz) GetService(ctx context.Context, id uint64) (*Service
 	return &ServiceDetail{AIService: *svc, Routes: routeItems}, nil
 }
 
-// CreateService validates service_type and delegates to the registry SaveService.
+// CreateService validates service_type and, for LLM services, validates the
+// capability_json fields (context_window, max_output_tokens). Delegates to
+// the registry SaveService on success.
 func (b *aiServiceAdminBiz) CreateService(ctx context.Context, svc *model.AIService, actorID uint64, actorName string) (*model.AIService, error) {
 	if err := validateServiceType(svc.ServiceType); err != nil {
 		return nil, err
+	}
+	if svc.ServiceType == "llm" {
+		cap := parseCapabilityJSON(svc.CapabilityJSON)
+		if err := validateLLMCapability(cap); err != nil {
+			return nil, err
+		}
 	}
 	if err := b.reg.SaveService(ctx, svc, actorID, actorName); err != nil {
 		if isUniqueKeyViolation(err) {
@@ -482,6 +490,13 @@ func (b *aiServiceAdminBiz) CreateServiceWithRoute(ctx context.Context, req Crea
 	// Up-front validation: service_type ∈ {llm, ocr, asr}.
 	if err := validateServiceType(req.Service.ServiceType); err != nil {
 		return nil, err
+	}
+	// For LLM services, validate capability_json fields (context_window, max_output_tokens).
+	if req.Service.ServiceType == "llm" {
+		cap := parseCapabilityJSON(req.Service.CapabilityJSON)
+		if err := validateLLMCapability(cap); err != nil {
+			return nil, err
+		}
 	}
 	// provider_model_id must be non-empty (gin binding already enforces; guard also here for direct biz callers).
 	if req.Route.ProviderModelID == "" {
@@ -592,11 +607,19 @@ func (b *aiServiceAdminBiz) CreateServiceWithRoute(ctx context.Context, req Crea
 	}, nil
 }
 
-// UpdateService validates service_type and delegates to the registry SaveService.
+// UpdateService validates service_type and, for LLM services, validates the
+// capability_json fields (context_window, max_output_tokens). Delegates to
+// the registry SaveService on success.
 // The caller is responsible for loading the existing record and merging fields.
 func (b *aiServiceAdminBiz) UpdateService(ctx context.Context, svc *model.AIService, actorID uint64, actorName string) error {
 	if err := validateServiceType(svc.ServiceType); err != nil {
 		return err
+	}
+	if svc.ServiceType == "llm" {
+		cap := parseCapabilityJSON(svc.CapabilityJSON)
+		if err := validateLLMCapability(cap); err != nil {
+			return err
+		}
 	}
 	if err := b.reg.SaveService(ctx, svc, actorID, actorName); err != nil {
 		return fmt.Errorf("aiservice_admin.UpdateService: %w", err)
@@ -1292,6 +1315,43 @@ func validateServiceType(serviceType string) error {
 	default:
 		return errno.ErrInvalidParameter.SetMessage("service_type 必须为 llm、ocr 或 asr")
 	}
+}
+
+// validateLLMCapability checks that a capability document for an LLM service
+// carries valid context_window and max_output_tokens values (spec §7.4 / §3.1).
+//
+// Rules (applied only when service_type == "llm"):
+//   - context_window must be > 0.
+//   - max_output_tokens must be > 0 and < context_window.
+//
+// Non-LLM service types (ocr, asr, embed, rerank) do not require these fields.
+func validateLLMCapability(cap profile.ServiceCapability) error {
+	if cap.ContextWindow <= 0 {
+		return errno.ErrInvalidParameter.SetMessage("llm 服务必须提供 context_window（capability_json.context_window > 0）")
+	}
+	if cap.MaxOutputTokens <= 0 || cap.MaxOutputTokens >= cap.ContextWindow {
+		return errno.ErrInvalidParameter.SetMessage(
+			"max_output_tokens 必须大于 0 且小于 context_window（当前: max_output_tokens=%d, context_window=%d）",
+			cap.MaxOutputTokens, cap.ContextWindow,
+		)
+	}
+	return nil
+}
+
+// parseCapabilityJSON unmarshals the capability_json map into a profile.ServiceCapability.
+// Returns a zero-value ServiceCapability on nil input or parse error (callers
+// that need strict parsing should check the returned ServiceCapability fields).
+func parseCapabilityJSON(capJSON model.JSONMap) profile.ServiceCapability {
+	if capJSON == nil {
+		return profile.ServiceCapability{}
+	}
+	raw, err := json.Marshal(capJSON)
+	if err != nil {
+		return profile.ServiceCapability{}
+	}
+	var cap profile.ServiceCapability
+	_ = json.Unmarshal(raw, &cap)
+	return cap
 }
 
 // ----------------------------------------------------------------------------
