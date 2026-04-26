@@ -175,7 +175,16 @@ type budgetMetadata struct {
 	SafeInputBudget       int    `json:"safe_input_budget,omitempty"`
 	EstimatedPromptBefore int    `json:"estimated_prompt_tokens_before,omitempty"`
 	EstimatedPromptAfter  int    `json:"estimated_prompt_tokens_after,omitempty"`
-	CompressionStatus     string `json:"compression_status,omitempty"`
+	// EstimatedCompletionTokens mirrors ReservedOutputTokens today (both equal to
+	// policy.ReservedOutputTokens). They are kept as separate fields because
+	// spec §11.2 contracts on `estimated_completion_tokens` while older docs use
+	// `reserved_output_tokens`. TODO(S7): decouple when actual completion
+	// estimate becomes available from biz layer.
+	EstimatedCompletionTokens int    `json:"estimated_completion_tokens,omitempty"`
+	CompressionStatus         string `json:"compression_status,omitempty"`
+	// CompressionActions holds the list of non-keep action types applied by the planner.
+	// e.g. ["summarize", "reference", "drop"]
+	CompressionActions []string `json:"compression_actions,omitempty"`
 	// ReservedOutputTokens is the output-token budget from the policy (spec §11.2).
 	ReservedOutputTokens int `json:"reserved_output_tokens,omitempty"`
 	// ReservationID is the credit_reservation.id created by ReserveBudget (0 = none).
@@ -184,6 +193,29 @@ type budgetMetadata struct {
 	// PolicyID is the context_budget_policy.id used for this request.
 	// Resolves Task 6 P2-D: budget_policy_id in usage_record metadata.
 	PolicyID uint64 `json:"budget_policy_id,omitempty"`
+
+	// --- Langfuse tracing metadata fields (spec §11.1) ---
+	// These are populated by ContextBudgetCredits for the Tracing middleware.
+
+	// ContextWindow is the model context window size (from route.Capability.ContextWindow).
+	ContextWindow int `json:"context_window,omitempty"`
+	// MaxOutputTokens is the model maximum output tokens (from route.Capability.MaxOutputTokens).
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+	// SafeRatio is the safe ratio used in budget calculation (policy.SafeRatio).
+	SafeRatio float64 `json:"safe_ratio,omitempty"`
+	// FixedOverheadTokens is the fixed overhead added to every request.
+	FixedOverheadTokens int `json:"fixed_overhead_tokens,omitempty"`
+	// DroppedFragmentCount is the number of fragments with ActionDrop in the plan.
+	DroppedFragmentCount int `json:"dropped_fragment_count,omitempty"`
+	// SummarizedFragmentCount is the number of fragments with ActionSummarize in the plan.
+	SummarizedFragmentCount int `json:"summarized_fragment_count,omitempty"`
+	// CriticalFragmentCount is the number of fragments where isCritical==true.
+	// Populated by ContextBudgetCredits from the PrepareResult.
+	CriticalFragmentCount int `json:"critical_fragment_count,omitempty"`
+	// TokenProfileFallback is true when a fallback/default token profile was used.
+	TokenProfileFallback bool `json:"token_profile_fallback,omitempty"`
+	// CalibrationSkipped is true when the final actual token usage was unavailable.
+	CalibrationSkipped bool `json:"calibration_skipped,omitempty"`
 }
 
 // withBudgetMetadata injects budget metadata into ctx for the Billing middleware.
@@ -319,22 +351,57 @@ func ContextBudgetCredits(deps Deps) Middleware {
 			// ErrContextTooLarge when infeasible, so checking !Feasible here
 			// would be dead code that never fires.
 			compressionStatus := "ok"
+			// Build the deduped set of non-keep action type strings and count
+			// dropped / summarized / critical fragments for Langfuse metadata.
+			actionTypeSet := make(map[string]struct{})
+			droppedCount := 0
+			summarizedCount := 0
 			for _, action := range result.Plan.Actions {
 				if action.Type != contextbudget.ActionKeep {
 					compressionStatus = "compressed"
-					break
+					actionTypeSet[string(action.Type)] = struct{}{}
+				}
+				if action.Type == contextbudget.ActionDrop {
+					droppedCount++
+				}
+				if action.Type == contextbudget.ActionSummarize {
+					summarizedCount++
+				}
+			}
+			compressionActions := make([]string, 0, len(actionTypeSet))
+			for at := range actionTypeSet {
+				compressionActions = append(compressionActions, at)
+			}
+			// Count critical fragments (isCritical is package-level, not exported; we
+			// approximate via Role==RoleImmutable or Critical==true as a lightweight
+			// proxy that mirrors the isCritical logic visible from this package).
+			criticalCount := 0
+			for _, f := range result.Fragments {
+				if f.Critical || f.Role == contextbudget.RoleImmutable {
+					criticalCount++
 				}
 			}
 			ctx = withBudgetMetadata(ctx, budgetMetadata{
-				EventID:               result.EventID,
-				TokenProfileID:        result.TokenProfileID,
-				SafeInputBudget:       result.SafeInputBudget,
-				EstimatedPromptBefore: result.EstimatedBefore,
-				EstimatedPromptAfter:  result.EstimatedAfter,
-				CompressionStatus:     compressionStatus,
-				ReservedOutputTokens:  result.Policy.ReservedOutputTokens,
-				ReservationID:         reservationID,
-				PolicyID:              result.PolicyID,
+				EventID:                   result.EventID,
+				TokenProfileID:            result.TokenProfileID,
+				SafeInputBudget:           result.SafeInputBudget,
+				EstimatedPromptBefore:     result.EstimatedBefore,
+				EstimatedPromptAfter:      result.EstimatedAfter,
+				EstimatedCompletionTokens: result.Policy.ReservedOutputTokens,
+				CompressionStatus:         compressionStatus,
+				CompressionActions:        compressionActions,
+				ReservedOutputTokens:      result.Policy.ReservedOutputTokens,
+				ReservationID:             reservationID,
+				PolicyID:                  result.PolicyID,
+				ContextWindow:             prepIn.ContextWindow,
+				MaxOutputTokens:           prepIn.MaxOutputTokens,
+				SafeRatio:                 result.Policy.SafeRatio,
+				FixedOverheadTokens:       result.Policy.FixedOverheadTokens,
+				DroppedFragmentCount:      droppedCount,
+				SummarizedFragmentCount:   summarizedCount,
+				CriticalFragmentCount:     criticalCount,
+				// TokenProfileFallback: true when TokenProfileID == 0 (default profile used)
+				TokenProfileFallback: result.TokenProfileID == 0,
 			})
 
 			// Build the base FinalizeInput that will be used by the finalizer.

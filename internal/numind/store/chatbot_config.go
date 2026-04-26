@@ -26,7 +26,9 @@ type IChatbotConfigStore interface {
 	// C端查询
 	ListPublishedByOwner(ctx context.Context, ownerUserID uint) ([]model.ChatbotConfig, error)
 
-	// 批量 ID + owner 过滤（biz/customer 白名单详情/归属校验用；保持 biz 不裸访问 DB）
+	// 批量查询（按 ID 列表 + 归属过滤，用于 biz/customer chatbot 权限管理）。
+	// 返回的 chatbot 必须同时满足：id ∈ ids 且 user_id = ownerUserID。
+	// 用于两个场景：(1) 校验授权入参的 chatbot 都属于调用方 (2) JOIN 拉子账号已授权 chatbot 详情。
 	ListByIDsOwnedBy(ctx context.Context, ids []uint, ownerUserID uint) ([]model.ChatbotConfig, error)
 	CountByIDsOwnedBy(ctx context.Context, ids []uint, ownerUserID uint) (int64, error)
 }
@@ -168,7 +170,9 @@ func (s *chatbotConfigStore) ListPublishedByOwner(ctx context.Context, ownerUser
 }
 
 // ListByIDsOwnedBy 批量查询指定 ID 列表中属于 ownerUserID 的 chatbot 详情。
-// 空 ids 返回空 slice + nil error。结果不强制包含所有 ID（缺失 ID = 不属于此 owner 或已删除）。
+// 用于 biz/customer chatbot 权限管理 —— 避免 biz 层直接访问 *gorm.DB 违反分层规则。
+// 空 id 列表返回空 slice + nil error（避免无意义 SQL）。
+// 结果不强制包含所有 ID —— 调用方如需校验完整性应对比 len(result) 与 len(ids)。
 func (s *chatbotConfigStore) ListByIDsOwnedBy(ctx context.Context, ids []uint, ownerUserID uint) ([]model.ChatbotConfig, error) {
 	if len(ids) == 0 {
 		return []model.ChatbotConfig{}, nil
@@ -181,7 +185,8 @@ func (s *chatbotConfigStore) ListByIDsOwnedBy(ctx context.Context, ids []uint, o
 }
 
 // CountByIDsOwnedBy 批量统计 ids 中属于 ownerUserID 的 chatbot 数量。
-// 空 ids 返回 0 + nil error。用于归属校验（count == len(ids) 则全部归属）。
+// 用于 biz/customer 的 validateChatbotOwnership —— 比较 count 与入参去重后长度即可
+// 判定"所有入参 chatbot 是否都属于 owner"。空 id 列表返回 0 + nil error。
 func (s *chatbotConfigStore) CountByIDsOwnedBy(ctx context.Context, ids []uint, ownerUserID uint) (int64, error) {
 	if len(ids) == 0 {
 		return 0, nil

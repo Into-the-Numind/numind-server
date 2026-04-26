@@ -394,6 +394,12 @@ func mergeBudgetMetadata(existing string, bm budgetMetadata) string {
 	if bm.PolicyID != 0 {
 		base["budget_policy_id"] = bm.PolicyID
 	}
+	if bm.EstimatedCompletionTokens != 0 {
+		base["estimated_completion_tokens"] = bm.EstimatedCompletionTokens
+	}
+	if len(bm.CompressionActions) > 0 {
+		base["compression_actions"] = bm.CompressionActions
+	}
 
 	merged, err := json.Marshal(base)
 	if err != nil {

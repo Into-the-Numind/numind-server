@@ -119,6 +119,7 @@ func Tracing(deps Deps) Middleware {
 						}
 						fallbackFrom, _ := ctx.Value(ctxKeyFallbackFromServiceID{}).(uint64)
 						meta := buildMeta(route, userID, featureRef, fmt.Sprintf("%d", fallbackFrom))
+						mergeBudgetTracingMeta(ctx, meta)
 						outputMap := safeOutput(nil, meta)
 						mergeTraceMetadata(outputMap, lastTraceMeta)
 						opts := []langfuse.GenOption{
@@ -159,6 +160,7 @@ func Tracing(deps Deps) Middleware {
 
 				fallbackFrom, _ := ctx.Value(ctxKeyFallbackFromServiceID{}).(uint64)
 				meta := buildMeta(route, userID, featureRef, fmt.Sprintf("%d", fallbackFrom))
+				mergeBudgetTracingMeta(ctx, meta)
 
 				if isGeneration {
 					if err != nil {
@@ -338,6 +340,72 @@ func mergeTraceMetadata(outputMap map[string]interface{}, tm *aiservice.TraceMet
 		meta["temp_overridden"] = true
 	}
 	outputMap["metadata"] = meta
+}
+
+// mergeBudgetTracingMeta merges context-budget scalar IDs and counts into the
+// Langfuse metadata map built by buildMeta. Called by both the streaming and
+// non-streaming observation close paths so that generation metadata in Langfuse
+// always includes context-budget observability fields (spec §11.1).
+//
+// Privacy contract (spec §11.3): only scalar IDs, token counts, and flag fields
+// are written. Fragment content, rendered prompt text, and user data are NEVER
+// included. The function is a no-op when no budgetMetadata was injected into ctx
+// (i.e., the ContextBudgetCredits middleware was bypassed or ran as passthrough).
+func mergeBudgetTracingMeta(ctx context.Context, meta map[string]interface{}) {
+	bm, ok := budgetMetadataFromCtx(ctx)
+	if !ok || meta == nil {
+		return
+	}
+	// Only scalar IDs, counts, and flags — never prompt content.
+	if bm.EventID != 0 {
+		meta["context_budget_event_id"] = bm.EventID
+	}
+	if bm.ContextWindow != 0 {
+		meta["context_window"] = bm.ContextWindow
+	}
+	if bm.MaxOutputTokens != 0 {
+		meta["max_output_tokens"] = bm.MaxOutputTokens
+	}
+	if bm.ReservedOutputTokens != 0 {
+		meta["reserved_output_tokens"] = bm.ReservedOutputTokens
+	}
+	if bm.SafeRatio != 0 {
+		meta["safe_ratio"] = bm.SafeRatio
+	}
+	if bm.FixedOverheadTokens != 0 {
+		meta["fixed_overhead_tokens"] = bm.FixedOverheadTokens
+	}
+	if bm.SafeInputBudget != 0 {
+		meta["safe_input_budget"] = bm.SafeInputBudget
+	}
+	if bm.EstimatedPromptBefore != 0 {
+		meta["estimated_before"] = bm.EstimatedPromptBefore
+	}
+	if bm.EstimatedPromptAfter != 0 {
+		meta["estimated_after"] = bm.EstimatedPromptAfter
+	}
+	if len(bm.CompressionActions) > 0 {
+		meta["compression_actions"] = bm.CompressionActions
+	}
+	if bm.DroppedFragmentCount != 0 {
+		meta["dropped_fragment_count"] = bm.DroppedFragmentCount
+	}
+	if bm.SummarizedFragmentCount != 0 {
+		meta["summarized_fragment_count"] = bm.SummarizedFragmentCount
+	}
+	if bm.CriticalFragmentCount != 0 {
+		meta["critical_fragment_count"] = bm.CriticalFragmentCount
+	}
+	if bm.TokenProfileID != 0 {
+		meta["token_profile_id"] = bm.TokenProfileID
+	}
+	// Boolean flags: write unconditionally only when true (zero value = false = omit).
+	if bm.TokenProfileFallback {
+		meta["token_profile_fallback"] = true
+	}
+	if bm.CalibrationSkipped {
+		meta["calibration_skipped"] = true
+	}
 }
 
 // extractUsage attempts to pull TokenUsage out of an adapter response.
