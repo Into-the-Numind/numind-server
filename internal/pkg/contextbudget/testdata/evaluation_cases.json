@@ -1,0 +1,111 @@
+{
+  "description": "Token estimator evaluation dataset (spec §4.3). 9 text classes for P50/P90/P99 threshold validation.",
+  "profile": {
+    "method": "weighted_char",
+    "message_overhead_tokens": 4,
+    "fragment_overhead_tokens": 2,
+    "safety_multiplier": 1.0,
+    "calibration_multiplier": 1.0,
+    "classes": {
+      "zh":             {"token_per_char": 1.5},
+      "en":             {"token_per_char": 0.25},
+      "code":           {"token_per_char": 0.30},
+      "json":           {"token_per_char": 0.28},
+      "markdown_table": {"token_per_char": 0.30},
+      "symbol":         {"token_per_char": 0.20},
+      "mixed":          {"token_per_char": 0.50}
+    }
+  },
+  "cases": [
+    {
+      "name": "chinese_sales_copy",
+      "content_class": "zh",
+      "description": "Chinese marketing / sales copy text",
+      "content": "您好，欢迎使用莫小派AI工作台！我们提供最先进的销售知识管理和SOP自动化解决方案。通过我们的平台，您的销售团队可以快速获取产品知识、标准作业流程和客户案例，大幅提升销售效率和成单率。立即体验，开启智能销售新时代！",
+      "min_expected_tokens": 100,
+      "max_expected_tokens": 600,
+      "notes": "Pure CJK: ~140 chars * 1.5 t/c ≈ 210 tokens + overhead"
+    },
+    {
+      "name": "english_prose",
+      "content_class": "en",
+      "description": "English paragraph prose",
+      "content": "The context budget system is designed to manage token usage efficiently across large language model calls. By estimating token counts before making API requests, the system can proactively compress or truncate context fragments when the estimated total exceeds the safe input budget threshold. This prevents context overflow errors and reduces unnecessary API costs.",
+      "min_expected_tokens": 10,
+      "max_expected_tokens": 200,
+      "notes": "Pure English: ~340 chars * 0.25 t/c ≈ 85 tokens + overhead"
+    },
+    {
+      "name": "go_code",
+      "content_class": "code",
+      "description": "Go language source code fragment",
+      "content": "```go\nfunc EstimateFragments(fragments []ContextFragment, profile TokenProfile, fixedOverhead int, messageCount int) EstimateResult {\n\tsafetyMul := profile.SafetyMultiplier\n\tif safetyMul < 1.0 {\n\t\tsafetyMul = 1.0\n\t}\n\tperFragment := make(map[string]int, len(fragments))\n\ttotal := 0\n\tfor _, f := range fragments {\n\t\test := estimateSingleFragment(f.Content, profile, safetyMul, calMul)\n\t\tperFragment[f.ID] = est\n\t\ttotal += est\n\t}\n\treturn EstimateResult{PromptTokens: total, PerFragmentMap: perFragment}\n}\n```",
+      "min_expected_tokens": 10,
+      "max_expected_tokens": 300,
+      "notes": "Code block: ~420 chars * 0.30 t/c ≈ 126 tokens + overhead"
+    },
+    {
+      "name": "typescript_code",
+      "content_class": "code",
+      "description": "TypeScript interface and function definition",
+      "content": "```typescript\ninterface BudgetPolicy {\n  operation: string;\n  reservedOutputTokens: number;\n  safeRatio: number;\n  fixedOverheadTokens: number;\n  chargeUser: boolean;\n}\n\nasync function checkBudget(policy: BudgetPolicy, fragments: Fragment[]): Promise<BudgetResult> {\n  const estimated = await estimateTokens(fragments);\n  if (estimated > policy.reservedOutputTokens * policy.safeRatio) {\n    return { status: 'compress', estimated };\n  }\n  return { status: 'ok', estimated };\n}\n```",
+      "min_expected_tokens": 10,
+      "max_expected_tokens": 250,
+      "notes": "TypeScript code block: ~420 chars * 0.30 t/c ≈ 126 tokens + overhead"
+    },
+    {
+      "name": "markdown_table",
+      "content_class": "markdown_table",
+      "description": "Markdown formatted table with headers and rows",
+      "content": "| Field | Type | Description | Required |\n|-------|------|-------------|----------|\n| event_id | uint64 | Context budget event ID | Yes |\n| token_profile_id | uint64 | Token profile database ID | Yes |\n| safe_input_budget | int | Safe token budget threshold | Yes |\n| estimated_before | int | Estimated tokens before compression | Yes |\n| estimated_after | int | Estimated tokens after compression | Yes |\n| compression_actions | []string | Applied compression action types | No |\n| budget_policy_id | uint64 | Budget policy database ID | No |",
+      "min_expected_tokens": 10,
+      "max_expected_tokens": 300,
+      "notes": "Markdown table: ~480 chars * 0.30 t/c ≈ 144 tokens + overhead"
+    },
+    {
+      "name": "json_object",
+      "content_class": "json",
+      "description": "JSON object with nested fields",
+      "content": "{\"context_budget_event_id\": 123, \"context_window\": 1000000, \"max_output_tokens\": 384000, \"reserved_output_tokens\": 16384, \"safe_ratio\": 0.85, \"fixed_overhead_tokens\": 512, \"safe_input_budget\": 835638, \"estimated_before\": 120000, \"estimated_after\": 42000, \"compression_actions\": [\"summarize\", \"reference\"], \"dropped_fragment_count\": 2, \"token_profile_id\": 7}",
+      "min_expected_tokens": 5,
+      "max_expected_tokens": 200,
+      "notes": "JSON object: ~320 chars * 0.28 t/c ≈ 90 tokens + overhead"
+    },
+    {
+      "name": "symbol_heavy_text",
+      "content_class": "symbol",
+      "description": "Text with high density of symbols and punctuation",
+      "content": "!@#$%^&*()_+-=[]{}|;':\",./<>?!@#$%^&*()_+-=[]{}|;':\",./<>?!@#$%^&*()_+-=[]{}|;':\",./<>?--->>><<<===!!!???...,,,...",
+      "min_expected_tokens": 1,
+      "max_expected_tokens": 100,
+      "notes": "Symbol-heavy: ~115 chars * 0.20 t/c ≈ 23 tokens + overhead"
+    },
+    {
+      "name": "mixed_text",
+      "content_class": "mixed",
+      "description": "Mixed Chinese and English text with code snippets",
+      "content": "这是一个混合文本示例 (mixed text example)，包含中文字符、English words、数字123和特殊符号@#$。在实际的SOP工作流中，用户的对话内容通常是混合格式的。",
+      "min_expected_tokens": 20,
+      "max_expected_tokens": 300,
+      "notes": "Mixed CJK/EN: ~70 CJK chars * 1.5 + ~60 EN chars * 0.25 ≈ 120 tokens + overhead"
+    },
+    {
+      "name": "attachment_reference",
+      "content_class": "mixed",
+      "description": "Attachment metadata reference as would appear in SOP context",
+      "content": "[附件: 销售手册Q1-2024.pdf | 大小: 2.3MB | 页数: 45 | 上传时间: 2024-01-15 | 摘要: 本手册包含Q1季度销售目标、重点产品介绍和竞争对手分析。请参考第3章节了解新产品定价策略。]",
+      "min_expected_tokens": 20,
+      "max_expected_tokens": 300,
+      "notes": "Attachment reference: ~130 chars mixed CJK/EN/symbol ≈ 120 tokens + overhead"
+    },
+    {
+      "name": "rag_evidence_chunks",
+      "content_class": "mixed",
+      "description": "RAG retrieval evidence chunks as used in SalesRAG knowledge base queries",
+      "content": "【知识库检索结果 #1 (相似度: 0.92)】\n产品定价策略：标准版月费198元，含2000积分；专业版月费498元，含8000积分；企业版按需定制。积分用于AI功能调用，1积分≈1次简单查询或0.1次复杂分析。\n\n【知识库检索结果 #2 (相似度: 0.88)】\n常见问题解答：Q: 积分用完后怎么办？A: 可以购买加量包(29.9元/600积分)，或升级至更高档套餐。加量包有效期90天，与订阅独立计算。",
+      "min_expected_tokens": 50,
+      "max_expected_tokens": 600,
+      "notes": "RAG evidence: ~330 chars mixed CJK/symbol/numbers ≈ 320 tokens + overhead"
+    }
+  ]
+}
