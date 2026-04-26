@@ -17,7 +17,7 @@ Every AI service call that passes through the `ContextBudgetCredits` middleware 
 | `estimated_prompt_tokens_before` | int | Estimated tokens before compression planning |
 | `estimated_prompt_tokens_after` | int | Estimated tokens after accepted plan |
 | `estimated_completion_tokens` | int | Reserved output token budget from policy |
-| `reserved_output_tokens` | int | Same as estimated_completion_tokens |
+| `reserved_output_tokens` | int | (currently mirrors estimated_completion_tokens; will diverge when biz layer estimates output separately) |
 | `compression_status` | string | `"ok"` (no compression) or `"compressed"` |
 | `compression_actions` | []string | Action types applied: `summarize`, `reference`, `drop`, `reuse_summary` |
 | `reservation_id` | uint64 | Credit reservation ID (0 for legacy-tier users) |

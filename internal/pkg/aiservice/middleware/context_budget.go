@@ -175,8 +175,11 @@ type budgetMetadata struct {
 	SafeInputBudget       int    `json:"safe_input_budget,omitempty"`
 	EstimatedPromptBefore int    `json:"estimated_prompt_tokens_before,omitempty"`
 	EstimatedPromptAfter  int    `json:"estimated_prompt_tokens_after,omitempty"`
-	// EstimatedCompletionTokens is the reserved output token budget from the policy.
-	// Added in Task 12 to satisfy spec §11.2 usage_record.metadata contract.
+	// EstimatedCompletionTokens mirrors ReservedOutputTokens today (both equal to
+	// policy.ReservedOutputTokens). They are kept as separate fields because
+	// spec §11.2 contracts on `estimated_completion_tokens` while older docs use
+	// `reserved_output_tokens`. TODO(S7): decouple when actual completion
+	// estimate becomes available from biz layer.
 	EstimatedCompletionTokens int    `json:"estimated_completion_tokens,omitempty"`
 	CompressionStatus         string `json:"compression_status,omitempty"`
 	// CompressionActions holds the list of non-keep action types applied by the planner.

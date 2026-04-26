@@ -173,11 +173,19 @@ func TestTokenEstimatorEvaluationDatasetMeetsThresholds(t *testing.T) {
 	t.Logf("  P90 relative error = %.4f (%.1f%%)", p90, p90*100)
 	t.Logf("  P99 relative error = %.4f (%.1f%%)", p99, p99*100)
 
-	// Individual error breakdown.
-	for i, r := range results {
-		if i < len(relErrors) {
-			t.Logf("  %s: estimate=%d, rel_error=%.4f", r.name, r.estimate, relErrors[i])
+	// Individual error breakdown — compute each case's own relative error rather
+	// than indexing into the sorted relErrors slice (which would misalign names
+	// with values after sorting).
+	for _, r := range results {
+		if r.minExpected == 0 && r.maxExpected == 0 {
+			continue
 		}
+		midpoint := float64(r.minExpected+r.maxExpected) / 2.0
+		if midpoint <= 0 {
+			continue
+		}
+		relErr := math.Abs(float64(r.estimate)-midpoint) / midpoint
+		t.Logf("  %s: estimate=%d, rel_error=%.4f", r.name, r.estimate, relErr)
 	}
 
 	// Phase 1 thresholds (conservative — intended to PASS on all reasonable estimators).
