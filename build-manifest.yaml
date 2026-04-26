@@ -2889,8 +2889,8 @@ features:
     track: "standard"
     stage: "S3"
     classification_reason: "Triage 5 条评估 — (1) 可能涉及 schema/config 扩展（token profile、compression summary/token stats） (2) admin web 可能需要新增或扩展配置 API (3) 无新外部服务强依赖，但 tokenizer/profile 机制需设计 (4) 跨 numind-server、numind-admin-web，可能涉及 numind-web-v3，影响文件数 >3 (5) 影响 credits 预扣费、LLM 上下文组装和模型能力配置，属于高风险业务路径。用户明确要求进入 Standard Track。"
-    last_updated_by: "ai-s4-wave6-merge"
-    last_updated_at: "2026-04-26T02:30:00+08:00"
+    last_updated_by: "ai-s4-wave7-merge"
+    last_updated_at: "2026-04-26T03:30:00+08:00"
     stage: "S4"
     repos:
       - numind-server
@@ -2907,9 +2907,9 @@ features:
       qa: null
     progress:
       total_tasks: 15
-      completed_tasks: 10
-      reviewed_tasks: 10
-      current_task: "Wave 7: Task 11 (admin API) sequential"
+      completed_tasks: 11
+      reviewed_tasks: 11
+      current_task: "Wave 8: Task 12 (observability + evaluation) sequential"
     rollback: null
     last_verified: null
     decisions:
@@ -2935,6 +2935,7 @@ features:
       - "2026-04-25 (S4 Wave 4): Task 6 (ContextBudgetCredits middleware) sequential — feature 最复杂 task (~1300 lines new code)。删除 Task 5 marker interface，定义真实 ContextBudgetService (Prepare+Finalize) 和 ContextBudgetCreditService (CheckAndEstimate+Reserve+Finalize+Refund)。13 步 spec §5.1 flow + spec §5.1.2 流式 finalize 用 sync.Once 幂等，4 触发条件 (final usage / final err+usage / final err+no usage / channel close / ctx cancel) 全覆盖。priority-check double-select 处理 cancel vs close race。budget metadata via ctx 注入 billing.go merge 到 usage_record.metadata (spec §11.2)。spec compliance review: PASS_WITH_MINOR (4 P2: P2-A compression_status 死代码 + P2-B reserved_output_tokens + P2-C reservation_id 修复；P2-D budget_policy_id 推迟 Task 7 + spec §5.1 step 1 empty fragments migrated 行为推迟 Task 9/10)。code quality review: APPROVED_WITH_NITS (5 nits: Nit-1 接口 doc + Nit-2/4 补 3 个 streaming/non-streaming error 测试 + Nit-5 步骤注释；Nit-3 EstimatedCredits 单位推迟 Task 7)。10 tests × 3 race iter = 30/30 PASS。merge develop (commit 84144af)。Wave 4 完成 progress=6/15。"
       - "2026-04-26 (S4 Wave 5): Task 7 (Backend Context Budget Prepare/Finalize Biz) sequential — biz/contextbudget 包实现 ContextBudgetService 接口 (Prepare/Finalize/Preview) + 7 producer helpers + numind.go 接线 creditServiceFacade adapter (ICreditService → ContextBudgetCreditService)。同时解决 Task 6 P2-D (PolicyID merge 进 metadata)。spec compliance review: PASS_WITH_MINOR (5 P2 全 fixed: 13-entry operation map + context_compression guard + B2B2C ownerUserID 派生 + 3 级 token profile fallback + 1.30 boost + dead code 测试加强)。code quality review: NEEDS_FIX (2 真 P1 bug: P1-A GetActivePolicy 用 raw op 而非 normalizedOp → seeded policy 全失效；P1-B applyPlan 忽略 ActionReuseSummary/ActionReference → summary cache 永远无效) + 3 P2 + 3 nits → fix → re-code-quality APPROVED。9 tests PASS (6 原 + 3 新 regression for P1)。merge develop (commit 28d99de)。Wave 5 完成 progress=7/15。"
       - "2026-04-26 (S4 Wave 6): Task 8 (worker) + Task 9 (SOP producer) + Task 10 (chat/salesrag producer) 三 task 并行 dispatch。Task 8: spec PASS_W_MINOR (1 P1 PatchEvent on failure + 2 P2 fixed) → code quality APPROVED_W_NITS (2 nits: gofmt + atomic.Pointer for race-free singleton fixed)。4 tests PASS。Task 9: spec PASS_W_MINOR (3 P2: attachment evidence + SopVision precise detection fixed; reasoning RoleWorking 推迟 with TODO) → code quality PASS_W_MINOR (4 nits all fixed: dead-code annotation + spy comment + step renumber + Order intent doc)。4 tests PASS。Task 10: spec CONDITIONAL PASS (1 真 P1: ChatWithSession + acquireSalesragCredits + Gateway middleware 双 Reserve regression — option B fix: 删 inline Reserve 让 middleware 独家负责；2 P2 fixed) → code quality PASS (4 nits: 3 cosmetic fixed, 1 perf double-fetch 推迟到 refactor backlog)。7 new tests PASS。三分支 merge develop (commits 70b6502, a1e9044, 62f7855)。Wave 6 完成 progress=10/15。注意 pre-existing seed bug (newCreditsUser fixture 用 BillingMode=credits + UserTier=standard + TierExpires=nil → isEffectiveLegacy=true) 导致 4 个 salesrag 测试 + 1 个 SOP 测试在 develop 早就 fail (9f5f5ca 验证)，与本 feature 无关。"
+      - "2026-04-26 (S4 Wave 7): Task 11 (admin context budget API) sequential — 9 endpoints under /v1/admin/context-budget/* (token-profiles CRUD + history, policies GET/PUT, preview, events) + LLM service capability validation 在 CreateService/UpdateService/CreateServiceWithRoute 三处。spec compliance review: PASS_WITH_MINOR (3 P2: ListTokenProfiles 缺 spec §7.1 过滤+分页、ListPolicies 缺 is_active=all、Preview 用裸 DB 绕过 aiSvcBiz — 全 fixed)。code quality review: APPROVED_WITH_NITS (3 nits: ListEvents 分页风格不统一 + UpdateTokenProfile 不区分 404/500 + admin_router naming 一致性 — 全 fixed)。8 tests PASS (6 原 + 2 新 list filter + policies all)。merge develop (commit f82f940)。Wave 7 完成 progress=11/15。"
     blockers: []
     created_at: "2026-04-25T15:45:00+08:00"
     completed_at: null
