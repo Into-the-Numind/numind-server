@@ -1151,6 +1151,8 @@ func TestCreateServiceWithRoute_Atomic_Success(t *testing.T) {
 			DisplayName: "New Service",
 			ServiceType: "llm",
 			IsActive:    &svcActive,
+			// capability_json required for llm service_type validation (Task 11)
+			CapabilityJSON: model.JSONMap{"context_window": 128000, "max_output_tokens": 8192},
 		},
 		Route: aiservice_admin.CreateRouteInner{
 			ProviderID:      providerID,
@@ -1247,7 +1249,8 @@ func TestCreateServiceWithRoute_DuplicateModelKey(t *testing.T) {
 
 	providerID := seedProvider(t, db, "provider-dup-key")
 	// Pre-seed a service with the same model_key.
-	existing := &model.AIService{ModelKey: "dup-key", DisplayName: "Existing", ServiceType: "llm", IsActive: true}
+	existing := &model.AIService{ModelKey: "dup-key", DisplayName: "Existing", ServiceType: "llm", IsActive: true,
+		CapabilityJSON: model.JSONMap{"context_window": 128000, "max_output_tokens": 8192}}
 	require.NoError(t, db.Create(existing).Error)
 
 	req := aiservice_admin.CreateServiceWithRouteRequest{
@@ -1255,6 +1258,8 @@ func TestCreateServiceWithRoute_DuplicateModelKey(t *testing.T) {
 			ModelKey:    "dup-key",
 			DisplayName: "Duplicate",
 			ServiceType: "llm",
+			// capability_json required for llm service_type validation (Task 11)
+			CapabilityJSON: model.JSONMap{"context_window": 128000, "max_output_tokens": 8192},
 		},
 		Route: aiservice_admin.CreateRouteInner{
 			ProviderID:      providerID,
@@ -1339,6 +1344,8 @@ func TestCreateService_IsActiveFalse(t *testing.T) {
 		DisplayName: "Test Inactive Service",
 		ServiceType: "llm",
 		IsActive:    false,
+		// capability_json required for llm service_type validation (Task 11)
+		CapabilityJSON: model.JSONMap{"context_window": 128000, "max_output_tokens": 8192},
 	}
 
 	created, err := b.CreateService(context.Background(), svc, 1, "admin")

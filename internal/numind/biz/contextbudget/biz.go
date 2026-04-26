@@ -528,21 +528,21 @@ type PreviewInput struct {
 // PreviewResult carries the computed budget thresholds.
 type PreviewResult struct {
 	// ContextWindow is the model's total context window (tokens).
-	ContextWindow int
+	ContextWindow int `json:"context_window"`
 	// MaxOutputTokens is the model's maximum output capacity.
-	MaxOutputTokens int
+	MaxOutputTokens int `json:"max_output_tokens"`
 	// ReservedOutputTokens is the output token reservation used.
-	ReservedOutputTokens int
+	ReservedOutputTokens int `json:"reserved_output_tokens"`
 	// SafeInputBudget is the maximum tokens for the input side.
-	SafeInputBudget int
+	SafeInputBudget int `json:"safe_input_budget"`
 	// SoftThreshold is the monitoring threshold.
-	SoftThreshold int
+	SoftThreshold int `json:"soft_threshold"`
 	// HardThreshold is the compression trigger threshold.
-	HardThreshold int
+	HardThreshold int `json:"hard_threshold"`
 	// Valid is true when all inputs satisfy the spec §2.4 constraints.
-	Valid bool
+	Valid bool `json:"valid"`
 	// Warnings lists advisory messages (e.g. when safe_ratio is near limits).
-	Warnings []string
+	Warnings []string `json:"warnings"`
 }
 
 // Preview computes the token budget thresholds for a given model capability and
