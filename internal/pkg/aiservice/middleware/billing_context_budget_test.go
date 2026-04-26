@@ -148,3 +148,72 @@ func TestBillingMetadataIncludesContextBudgetIDsWithoutPromptContent(t *testing.
 		t.Errorf("metadata JSON must not contain prompt text %q — privacy rule spec §11.3", requestText)
 	}
 }
+
+// TestBillingMetadataIncludesReservationIDWhenChargedPathTaken verifies that when
+// a non-zero ReservationID is present in the budget metadata (credits-tier users
+// with an active credit reservation), the reservation_id field is written into
+// usage_record.metadata (spec §11.2: charged path).
+//
+// The previous test (TestBillingMetadataIncludesContextBudgetIDsWithoutPromptContent)
+// only exercised the legacy-tier path where ReservationID = 0. This test covers
+// the credits-tier charged path (ReservationID != 0).
+func TestBillingMetadataIncludesReservationIDWhenChargedPathTaken(t *testing.T) {
+	store := &mockUsageStore{}
+	deps := Deps{UsageStore: store, Clock: fixedClock{t: time.Now()}, Logger: &mockLogger{}}
+	mw := Billing(deps)
+
+	// Simulate credits-tier path: ReservationID is non-zero because Reconcile
+	// was called and a credit reservation exists.
+	bm := budgetMetadata{
+		EventID:           100,
+		ReservationID:     42,
+		CompressionStatus: "ok",
+	}
+	ctx := WithUserID(context.Background(), 10)
+	ctx = withBudgetMetadata(ctx, bm)
+
+	chatResp := &aiservice.ChatResponse{
+		Content: "ok",
+		Usage: aiservice.TokenUsage{
+			PromptTokens:     1000,
+			CompletionTokens: 200,
+			TotalTokens:      1200,
+		},
+	}
+	inner := func(_ context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+		return chatResp, nil
+	}
+	handler := mw(Handler(inner))
+
+	_, err := handler(ctx, llmRoute(), aiservice.ChatRequest{
+		Messages: []aiservice.ChatMessage{
+			{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: "hi"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(store.records) != 1 {
+		t.Fatalf("expected 1 usage record, got %d", len(store.records))
+	}
+
+	raw := store.records[0].Metadata
+	var meta map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+		t.Fatalf("metadata is not valid JSON: %v — raw: %q", err, raw)
+	}
+
+	// Assert reservation_id is present and matches the injected value.
+	got, ok := meta["reservation_id"]
+	if !ok {
+		t.Fatalf("metadata missing 'reservation_id' key for charged path (spec §11.2)")
+	}
+	if got != float64(42) {
+		t.Errorf("metadata['reservation_id'] = %v (%T), want %v", got, got, float64(42))
+	}
+
+	// Assert context_budget_event_id is also present (sanity check).
+	if _, ok := meta["context_budget_event_id"]; !ok {
+		t.Error("metadata missing 'context_budget_event_id' key")
+	}
+}

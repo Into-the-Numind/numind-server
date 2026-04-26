@@ -107,6 +107,7 @@ func TestTracingMetadataIncludesContextBudgetSummaryWithoutPromptContent(t *test
 		"prompt_text",
 		"message_content",
 		"raw_content",
+		"content",
 	}
 	for _, key := range prohibited {
 		if _, present := meta[key]; present {

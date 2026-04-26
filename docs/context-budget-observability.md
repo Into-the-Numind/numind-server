@@ -80,6 +80,9 @@ This is enforced structurally: `budgetMetadata` (the struct passed between middl
 
 ## Querying Budget Events
 
+**Admin API**: 通过 `GET /v1/admin/context-budget/events?operation=...&status=...&page=...` 查询近期 budget events，
+返回元数据（不含 prompt 内容）。详见 admin API 路由 `internal/numind/admin_router.go`。
+
 To investigate a specific budget event from its usage record:
 
 ```sql
