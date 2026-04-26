@@ -420,6 +420,169 @@ func TestAIServiceRejectsReservedOutputGreaterThanMaxOutputViaPolicyPreview(t *t
 }
 
 // ---------------------------------------------------------------------------
+// TestAdminContextBudgetListTokenProfilesFiltersByProviderAndPagination
+// ---------------------------------------------------------------------------
+
+// TestAdminContextBudgetListTokenProfilesFiltersByProviderAndPagination verifies
+// that ListTokenProfiles honours provider/model/service_type query filters and
+// returns a correct total + paginated list (spec §7.1).
+func TestAdminContextBudgetListTokenProfilesFiltersByProviderAndPagination(t *testing.T) {
+	db := newTestDB(t)
+	r := newRouter(db)
+
+	profileJSON := mustJSON(t, map[string]interface{}{
+		"method":                   "test",
+		"message_overhead_tokens":  4,
+		"fragment_overhead_tokens": 2,
+		"classes": map[string]interface{}{
+			"en": map[string]interface{}{"token_per_char": 0.25},
+		},
+		"safety_multiplier":      1.1,
+		"calibration_multiplier": 1.0,
+	})
+
+	// Seed 3 active volc profiles and 2 active ali profiles.
+	for i := uint(0); i < 3; i++ {
+		require.NoError(t, db.Create(&model.TokenEstimationProfile{
+			Provider: "volc", Model: "glm-4", ServiceType: "llm_chat",
+			ProfileJSON: profileJSON, SafetyMultiplier: 1.1, CalibrationMultiplier: 1.0,
+			Version: i + 1, IsActive: true,
+		}).Error)
+	}
+	for i := uint(0); i < 2; i++ {
+		require.NoError(t, db.Create(&model.TokenEstimationProfile{
+			Provider: "ali", Model: "qwen-plus", ServiceType: "llm_chat",
+			ProfileJSON: profileJSON, SafetyMultiplier: 1.1, CalibrationMultiplier: 1.0,
+			Version: i + 1, IsActive: true,
+		}).Error)
+	}
+
+	// Filter by provider=volc — should return exactly 3.
+	req := httptest.NewRequest(http.MethodGet,
+		"/v1/admin/context-budget/token-profiles?provider=volc",
+		nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	data := resp["data"].(map[string]interface{})
+	list := data["list"].([]interface{})
+	assert.Len(t, list, 3, "provider=volc filter should return 3 profiles")
+	assert.Equal(t, float64(3), data["total"], "total should reflect the filtered count")
+
+	// Pagination: page_size=2 should return 2 items even if total is 3.
+	req2 := httptest.NewRequest(http.MethodGet,
+		"/v1/admin/context-budget/token-profiles?provider=volc&page=1&page_size=2",
+		nil)
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+
+	require.Equal(t, http.StatusOK, w2.Code)
+	var resp2 map[string]interface{}
+	require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &resp2))
+	data2 := resp2["data"].(map[string]interface{})
+	list2 := data2["list"].([]interface{})
+	assert.Len(t, list2, 2, "page_size=2 should return 2 items")
+	assert.Equal(t, float64(3), data2["total"], "total should still be 3 (all matching rows)")
+
+	// is_active=inactive should return 0 (none inactive yet).
+	req3 := httptest.NewRequest(http.MethodGet,
+		"/v1/admin/context-budget/token-profiles?provider=volc&is_active=inactive",
+		nil)
+	w3 := httptest.NewRecorder()
+	r.ServeHTTP(w3, req3)
+
+	require.Equal(t, http.StatusOK, w3.Code)
+	var resp3 map[string]interface{}
+	require.NoError(t, json.Unmarshal(w3.Body.Bytes(), &resp3))
+	data3 := resp3["data"].(map[string]interface{})
+	assert.Equal(t, float64(0), data3["total"], "no inactive profiles should exist")
+
+	// is_active=all should return all 5 across both providers.
+	req4 := httptest.NewRequest(http.MethodGet,
+		"/v1/admin/context-budget/token-profiles?is_active=all",
+		nil)
+	w4 := httptest.NewRecorder()
+	r.ServeHTTP(w4, req4)
+
+	require.Equal(t, http.StatusOK, w4.Code)
+	var resp4 map[string]interface{}
+	require.NoError(t, json.Unmarshal(w4.Body.Bytes(), &resp4))
+	data4 := resp4["data"].(map[string]interface{})
+	assert.Equal(t, float64(5), data4["total"], "is_active=all should return all 5 profiles")
+}
+
+// ---------------------------------------------------------------------------
+// TestAdminContextBudgetListPoliciesAllReturnsHistory
+// ---------------------------------------------------------------------------
+
+// TestAdminContextBudgetListPoliciesAllReturnsHistory verifies that
+// ListPolicies with is_active=all exposes the full policy version history
+// (active + inactive rows) as required by spec §7.2.
+func TestAdminContextBudgetListPoliciesAllReturnsHistory(t *testing.T) {
+	db := newTestDB(t)
+	r := newRouter(db)
+
+	// Seed: one old (inactive) version and one active version for the same op.
+	// Use the two-step pattern (Create then UpdateColumn) to correctly persist
+	// IsActive=false. GORM v2 silently drops false when the column has default:true.
+	oldPolicy := &model.ContextBudgetPolicy{
+		Operation: "sop_run", ReservedOutputTokens: 1024, SafeRatio: 0.80,
+		SoftThresholdRatio: 0.70, HardThresholdRatio: 0.85,
+		Version: 1,
+	}
+	require.NoError(t, db.Create(oldPolicy).Error)
+	require.NoError(t, db.Model(oldPolicy).UpdateColumn("is_active", false).Error)
+
+	require.NoError(t, db.Create(&model.ContextBudgetPolicy{
+		Operation: "sop_run", ReservedOutputTokens: 2048, SafeRatio: 0.85,
+		SoftThresholdRatio: 0.70, HardThresholdRatio: 0.85,
+		IsActive: true, Version: 2,
+	}).Error)
+
+	// Default (is_active=active): should return only 1 active row.
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/context-budget/policies", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	data := resp["data"].(map[string]interface{})
+	assert.Equal(t, float64(1), data["total"], "default should return only 1 active policy")
+
+	// is_active=all: should return both versions (2 rows).
+	req2 := httptest.NewRequest(http.MethodGet,
+		"/v1/admin/context-budget/policies?is_active=all",
+		nil)
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+
+	require.Equal(t, http.StatusOK, w2.Code)
+	var resp2 map[string]interface{}
+	require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &resp2))
+	data2 := resp2["data"].(map[string]interface{})
+	list2 := data2["list"].([]interface{})
+	assert.Len(t, list2, 2, "is_active=all should return both active and inactive policy rows")
+	assert.Equal(t, float64(2), data2["total"], "total should be 2 for is_active=all")
+
+	// is_active=inactive: should return only the old version.
+	req3 := httptest.NewRequest(http.MethodGet,
+		"/v1/admin/context-budget/policies?is_active=inactive",
+		nil)
+	w3 := httptest.NewRecorder()
+	r.ServeHTTP(w3, req3)
+
+	require.Equal(t, http.StatusOK, w3.Code)
+	var resp3 map[string]interface{}
+	require.NoError(t, json.Unmarshal(w3.Body.Bytes(), &resp3))
+	data3 := resp3["data"].(map[string]interface{})
+	assert.Equal(t, float64(1), data3["total"], "is_active=inactive should return 1 old policy")
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

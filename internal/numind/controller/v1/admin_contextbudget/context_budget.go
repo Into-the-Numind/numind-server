@@ -36,7 +36,7 @@ import (
 type ContextBudgetController struct {
 	cbBiz    *bizcb.Biz
 	cbStore  store.ContextBudgetStore
-	aiSvcBiz aiservice_admin.IAIServiceAdminBiz //nolint:unused
+	aiSvcBiz aiservice_admin.IAIServiceAdminBiz
 	db       *gorm.DB
 }
 
@@ -59,15 +59,67 @@ func New(
 // GET /v1/admin/context-budget/token-profiles
 // ----------------------------------------------------------------------------
 
-// ListTokenProfiles returns all currently-active token estimation profiles,
-// ordered by (provider, model, service_type, version DESC).
+// listTokenProfilesQuery holds the optional query parameters for ListTokenProfiles.
+// is_active accepts "active" (default), "inactive", or "all".
+type listTokenProfilesQuery struct {
+	Provider    string `form:"provider"`
+	Model       string `form:"model"`
+	ServiceType string `form:"service_type"`
+	IsActive    string `form:"is_active"`
+	Page        int    `form:"page,default=1"`
+	PageSize    int    `form:"page_size,default=20"`
+}
+
+// ListTokenProfiles returns token estimation profiles with optional filtering by
+// provider, model, service_type, and is_active, with pagination (spec §7.1).
+// is_active defaults to "active"; pass "inactive" or "all" to include historical rows.
 func (ctrl *ContextBudgetController) ListTokenProfiles(c *gin.Context) {
 	log.C(c).Infow("Admin list token profiles called")
 
+	var q listTokenProfilesQuery
+	if err := c.ShouldBindQuery(&q); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
+		return
+	}
+	if q.Page < 1 {
+		q.Page = 1
+	}
+	if q.PageSize <= 0 || q.PageSize > 100 {
+		q.PageSize = 20
+	}
+
+	ctx := c.Request.Context()
+	db := ctrl.db.WithContext(ctx).Model(&model.TokenEstimationProfile{})
+
+	if q.Provider != "" {
+		db = db.Where("provider = ?", q.Provider)
+	}
+	if q.Model != "" {
+		db = db.Where("model = ?", q.Model)
+	}
+	if q.ServiceType != "" {
+		db = db.Where("service_type = ?", q.ServiceType)
+	}
+	switch q.IsActive {
+	case "inactive":
+		db = db.Where("is_active = ?", false)
+	case "all":
+		// no is_active filter
+	default: // "active" or empty
+		db = db.Where("is_active = ?", true)
+	}
+
+	var total int64
+	if err := db.Count(&total).Error; err != nil {
+		log.C(c).Errorw("Failed to count token profiles", "error", err)
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("查询失败"), nil)
+		return
+	}
+
 	var profiles []model.TokenEstimationProfile
-	if err := ctrl.db.WithContext(c.Request.Context()).
-		Where("is_active = ?", true).
-		Order("provider ASC, model ASC, service_type ASC, version DESC").
+	if err := db.Order("version DESC, id DESC").
+		Limit(q.PageSize).
+		Offset((q.Page - 1) * q.PageSize).
 		Find(&profiles).Error; err != nil {
 		log.C(c).Errorw("Failed to list token profiles", "error", err)
 		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("查询失败"), nil)
@@ -76,7 +128,7 @@ func (ctrl *ContextBudgetController) ListTokenProfiles(c *gin.Context) {
 	if profiles == nil {
 		profiles = []model.TokenEstimationProfile{}
 	}
-	core.WriteResponse(c, nil, gin.H{"list": profiles, "total": len(profiles)})
+	core.WriteResponse(c, nil, gin.H{"list": profiles, "total": total})
 }
 
 // ----------------------------------------------------------------------------
@@ -274,15 +326,27 @@ func (ctrl *ContextBudgetController) GetTokenProfileHistory(c *gin.Context) {
 // GET /v1/admin/context-budget/policies
 // ----------------------------------------------------------------------------
 
-// ListPolicies returns all currently-active budget policies, ordered by operation ASC.
+// ListPolicies returns budget policies ordered by operation ASC.
+// Query param is_active: "active" (default) returns only active policies;
+// "inactive" returns only deactivated policies; "all" returns the full
+// version history for all operations (spec §7.2).
 func (ctrl *ContextBudgetController) ListPolicies(c *gin.Context) {
 	log.C(c).Infow("Admin list context budget policies called")
 
+	isActive := c.Query("is_active")
+
+	db := ctrl.db.WithContext(c.Request.Context()).Model(&model.ContextBudgetPolicy{})
+	switch isActive {
+	case "inactive":
+		db = db.Where("is_active = ?", false)
+	case "all":
+		// no is_active filter — return full version history
+	default: // "active" or empty
+		db = db.Where("is_active = ?", true)
+	}
+
 	var policies []model.ContextBudgetPolicy
-	if err := ctrl.db.WithContext(c.Request.Context()).
-		Where("is_active = ?", true).
-		Order("operation ASC").
-		Find(&policies).Error; err != nil {
+	if err := db.Order("operation ASC").Find(&policies).Error; err != nil {
 		log.C(c).Errorw("Failed to list policies", "error", err)
 		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("查询失败"), nil)
 		return
@@ -391,15 +455,15 @@ func (ctrl *ContextBudgetController) Preview(c *gin.Context) {
 		return
 	}
 
-	// Load ai_service to resolve capability.
-	var svc model.AIService
-	if err := ctrl.db.WithContext(c.Request.Context()).First(&svc, req.ServiceID).Error; err != nil {
+	// Load ai_service via aiSvcBiz to go through registry cache/permission logic.
+	svcDetail, err := ctrl.aiSvcBiz.GetService(c.Request.Context(), req.ServiceID)
+	if err != nil {
 		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("ai_service 不存在: id=%d", req.ServiceID), nil)
 		return
 	}
 
 	// Parse context_window and max_output_tokens from capability_json.
-	ctxWindow, maxOutput := resolveCapability(svc.CapabilityJSON)
+	ctxWindow, maxOutput := resolveCapability(svcDetail.CapabilityJSON)
 
 	// Apply threshold defaults.
 	softRatio := req.SoftThresholdRatio
