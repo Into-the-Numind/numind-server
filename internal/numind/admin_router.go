@@ -222,9 +222,9 @@ func installAdminRouters(g *gin.Engine) error {
 	{
 		cbStore := store.NewContextBudgetStore(store.S.DB())
 		cbBiz := bizcb.New(cbStore, bizcb.Options{})
-		reg2 := registry.New(store.S.DB())
-		aiSvcBiz2 := aiservice_admin.New(reg2, store.S.DB())
-		cbCtrl := admin_contextbudget.New(cbBiz, cbStore, aiSvcBiz2, store.S.DB())
+		cbReg := registry.New(store.S.DB())
+		cbAiSvcBiz := aiservice_admin.New(cbReg, store.S.DB())
+		cbCtrl := admin_contextbudget.New(cbBiz, cbStore, cbAiSvcBiz, store.S.DB())
 		adminGroup.GET("/context-budget/token-profiles", cbCtrl.ListTokenProfiles)
 		adminGroup.POST("/context-budget/token-profiles", cbCtrl.CreateTokenProfile)
 		adminGroup.PUT("/context-budget/token-profiles/:id", cbCtrl.UpdateTokenProfile)

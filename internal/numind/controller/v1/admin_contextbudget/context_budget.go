@@ -15,6 +15,7 @@ package admin_contextbudget
 
 import (
 	"encoding/json"
+	"errors"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -226,7 +227,11 @@ func (ctrl *ContextBudgetController) UpdateTokenProfile(c *gin.Context) {
 	// Load existing row to derive lookup key.
 	var existing model.TokenEstimationProfile
 	if err := ctrl.db.WithContext(c.Request.Context()).First(&existing, id).Error; err != nil {
-		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("token profile 不存在: id=%d", id), nil)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("token profile 不存在: id=%d", id), nil)
+			return
+		}
+		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("查询 token profile 失败"), nil)
 		return
 	}
 
@@ -500,6 +505,16 @@ func (ctrl *ContextBudgetController) Preview(c *gin.Context) {
 // GET /v1/admin/context-budget/events
 // ----------------------------------------------------------------------------
 
+// listEventsQuery holds the optional query parameters for ListEvents.
+type listEventsQuery struct {
+	Operation string `form:"operation"`
+	Status    string `form:"status"`
+	Provider  string `form:"provider"`
+	Model     string `form:"model"`
+	Page      int    `form:"page,default=1"`
+	PageSize  int    `form:"page_size,default=20"`
+}
+
 // ListEvents returns recent context budget events, metadata only.
 // No prompt content, rendered messages, or fragment text is included.
 //
@@ -508,28 +523,31 @@ func (ctrl *ContextBudgetController) Preview(c *gin.Context) {
 func (ctrl *ContextBudgetController) ListEvents(c *gin.Context) {
 	log.C(c).Infow("Admin list context budget events called")
 
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
-	if page < 1 {
-		page = 1
+	var lq listEventsQuery
+	if err := c.ShouldBindQuery(&lq); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
+		return
 	}
-	if pageSize < 1 || pageSize > 100 {
-		pageSize = 20
+	if lq.Page < 1 {
+		lq.Page = 1
 	}
-	offset := (page - 1) * pageSize
+	if lq.PageSize <= 0 || lq.PageSize > 100 {
+		lq.PageSize = 20
+	}
+	offset := (lq.Page - 1) * lq.PageSize
 
 	q := ctrl.db.WithContext(c.Request.Context()).Model(&model.ContextBudgetEvent{})
-	if op := c.Query("operation"); op != "" {
-		q = q.Where("operation = ?", op)
+	if lq.Operation != "" {
+		q = q.Where("operation = ?", lq.Operation)
 	}
-	if status := c.Query("status"); status != "" {
-		q = q.Where("status = ?", status)
+	if lq.Status != "" {
+		q = q.Where("status = ?", lq.Status)
 	}
-	if provider := c.Query("provider"); provider != "" {
-		q = q.Where("provider = ?", provider)
+	if lq.Provider != "" {
+		q = q.Where("provider = ?", lq.Provider)
 	}
-	if modelKey := c.Query("model"); modelKey != "" {
-		q = q.Where("model = ?", modelKey)
+	if lq.Model != "" {
+		q = q.Where("model = ?", lq.Model)
 	}
 
 	var total int64
@@ -556,7 +574,7 @@ func (ctrl *ContextBudgetController) ListEvents(c *gin.Context) {
 		"status, error_code, created_at").
 		Order("id DESC").
 		Offset(offset).
-		Limit(pageSize).
+		Limit(lq.PageSize).
 		Scan(&events).Error; err != nil {
 		log.C(c).Errorw("Failed to list context budget events", "error", err)
 		core.WriteResponse(c, errno.ErrInternalServer.SetMessage("查询失败"), nil)
