@@ -64,6 +64,13 @@ func NewCreditService(ds store.IStore, biz ICreditBiz, pc pricing.ICalculator) I
 // "credits" (e.g. migration not yet run). Once their membership expires,
 // they naturally fall through to the credits path.
 func isEffectiveLegacy(user *model.User) bool {
+	// Defense-in-depth: nil user → treat as non-legacy. Middleware callers
+	// must load the user before calling (spec §6.1.2 step 1), but we don't
+	// want a nil-deref to crash the whole request if someone forgets — S5
+	// verification caught exactly that bug in ContextBudgetCredits.
+	if user == nil {
+		return false
+	}
 	if user.BillingMode == model.BillingModeLegacyTier {
 		return true
 	}

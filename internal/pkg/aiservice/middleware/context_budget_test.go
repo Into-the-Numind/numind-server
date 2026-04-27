@@ -73,6 +73,17 @@ type mockCreditService struct {
 	mu            sync.Mutex
 }
 
+// LoadUser returns a non-nil placeholder *model.User. Real CheckAndEstimateBudget
+// would dereference this for isEffectiveLegacy dispatch; the mock doesn't care
+// about its contents, but middleware code now calls LoadUser before
+// CheckAndEstimateBudget per spec §6.1.2 (S5 found a panic when user was nil).
+func (m *mockCreditService) LoadUser(_ context.Context, _ uint) (*model.User, error) {
+	// Returns a minimal non-nil user. The other mock methods don't dereference
+	// fields, and isEffectiveLegacy on a zero-valued user falls through to the
+	// credits path (BillingMode == "" != "legacy_tier", HasActiveMembership=false).
+	return &model.User{}, nil
+}
+
 func (m *mockCreditService) CheckAndEstimateBudget(_ context.Context, _ *model.User, _ credit.BudgetPrecheckInput) (*credit.PreCheckResult, error) {
 	return m.checkResult, m.checkErr
 }

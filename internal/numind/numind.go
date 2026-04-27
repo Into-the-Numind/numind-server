@@ -160,7 +160,10 @@ func run() error {
 
 	// Build ContextBudgetCreditService adapter wrapping the ICreditService.
 	bizLayer := biz.NewBiz(store.S)
-	creditFacade := &creditServiceFacade{svc: bizLayer.CreditService()}
+	creditFacade := &creditServiceFacade{
+		svc:       bizLayer.CreditService(),
+		userStore: store.S.Users(),
+	}
 
 	mwChain := aimw.BuildDefault(aimw.Deps{
 		Langfuse:      langfuse.C,
@@ -331,7 +334,24 @@ var _ aimw.ContextBudgetCreditService = (*creditServiceFacade)(nil)
 // The facade bridges the two by calling Reconcile (when no error) or Refund
 // (when reason indicates failure), bypassing the wrapper's *error dispatch.
 type creditServiceFacade struct {
-	svc credit.ICreditService
+	svc       credit.ICreditService
+	userStore store.UserStore
+}
+
+// LoadUser resolves a *model.User by primary key. Required by spec §6.1.2 step 1
+// so that CheckAndEstimateBudget / ReserveBudget can dispatch credits-vs-legacy
+// via isEffectiveLegacy(user). Discovered as a P0 panic during S5 verification:
+// the middleware previously passed nil here and tripped a nil-deref inside
+// credit.isEffectiveLegacy on the very first real chatbot call.
+func (f *creditServiceFacade) LoadUser(ctx context.Context, userID uint) (*model.User, error) {
+	if f.userStore == nil {
+		return nil, fmt.Errorf("creditServiceFacade.LoadUser: userStore not configured")
+	}
+	user, err := f.userStore.GetUserByID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("creditServiceFacade.LoadUser id=%d: %w", userID, err)
+	}
+	return user, nil
 }
 
 // CheckAndEstimateBudget delegates to ICreditService.CheckAndEstimateBudget.

@@ -50,6 +50,13 @@ type ContextBudgetService interface {
 // reconciles or refunds the reservation based on actual usage. They are
 // declared here so a single composable facade satisfies both consumers.
 type ContextBudgetCreditService interface {
+	// LoadUser resolves a *model.User by its primary key.
+	// Returns the user (with BillingMode + UserTier + TierExpires populated)
+	// so that downstream methods (CheckAndEstimateBudget / ReserveBudget) can
+	// route correctly via isEffectiveLegacy(user). Required because the
+	// middleware only carries userID through ctx.
+	LoadUser(ctx context.Context, userID uint) (*model.User, error)
+
 	// CheckAndEstimateBudget runs the pre-call balance check using token-based
 	// estimates. Returns SkipDeduction=true for legacy-tier users.
 	CheckAndEstimateBudget(ctx context.Context, user *model.User, input credit.BudgetPrecheckInput) (*credit.PreCheckResult, error)
@@ -468,7 +475,15 @@ func doReserveBudget(
 		ContextBudgetEventID:      result.EventID,
 	}
 
-	precheck, err := deps.CreditService.CheckAndEstimateBudget(ctx, nil, precheckIn)
+	// Spec §6.1.2 step 1: load a fresh user before Reserve so isEffectiveLegacy
+	// can dispatch credits vs legacy correctly. The middleware only has userID
+	// in ctx; the credit facade resolves it via the user store.
+	user, err := deps.CreditService.LoadUser(ctx, userID)
+	if err != nil {
+		return 0, fmt.Errorf("LoadUser: %w", err)
+	}
+
+	precheck, err := deps.CreditService.CheckAndEstimateBudget(ctx, user, precheckIn)
 	if err != nil {
 		return 0, err
 	}
@@ -482,7 +497,7 @@ func doReserveBudget(
 		BudgetPrecheckInput: precheckIn,
 		EstimatedCredits:    precheck.EstimatedCredits,
 	}
-	rsv, err := deps.CreditService.ReserveBudget(ctx, nil, reserveIn)
+	rsv, err := deps.CreditService.ReserveBudget(ctx, user, reserveIn)
 	if err != nil {
 		return 0, err
 	}
