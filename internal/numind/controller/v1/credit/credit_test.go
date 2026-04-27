@@ -58,6 +58,12 @@ func (s *stubCreditSvc) FinalizeReservation(_ context.Context, _ *creditbiz.Rese
 func (s *stubCreditSvc) GetBalance(_ context.Context, _ *model.User) (*creditbiz.BalanceBreakdown, error) {
 	return s.balance, s.balanceErr
 }
+func (s *stubCreditSvc) CheckAndEstimateBudget(_ context.Context, _ *model.User, _ creditbiz.BudgetPrecheckInput) (*creditbiz.PreCheckResult, error) {
+	panic("not used in tests")
+}
+func (s *stubCreditSvc) ReserveBudget(_ context.Context, _ *model.User, _ creditbiz.BudgetReservationInput) (*creditbiz.Reservation, error) {
+	panic("not used in tests")
+}
 
 // stubPromptEstimator always returns a fixed (chars, model, provider).
 type stubPromptEstimator struct {

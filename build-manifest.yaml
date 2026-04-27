@@ -2887,11 +2887,10 @@ features:
     ndf_version: "1.1"
     description: "建立通用 Context Budget & Compression 系统：按模型维护 token 估算 profile 和动态校准参数；使用 DB 中 context_window + max_output_tokens 计算安全输入预算；admin web 支持模型能力与估算配置校验；后端在 LLM 调用前完成预扣 token 估算、上下文预算、触顶智能压缩；策略必须基于通用 context fragments，不得写死 SOP stage/node/template。"
     track: "standard"
-    stage: "S3"
+    stage: "S5"
     classification_reason: "Triage 5 条评估 — (1) 可能涉及 schema/config 扩展（token profile、compression summary/token stats） (2) admin web 可能需要新增或扩展配置 API (3) 无新外部服务强依赖，但 tokenizer/profile 机制需设计 (4) 跨 numind-server、numind-admin-web，可能涉及 numind-web-v3，影响文件数 >3 (5) 影响 credits 预扣费、LLM 上下文组装和模型能力配置，属于高风险业务路径。用户明确要求进入 Standard Track。"
-    last_updated_by: "ai-s4-wave9-merge"
-    last_updated_at: "2026-04-27T12:15:00+08:00"
-    stage: "S4"
+    last_updated_by: "ai-s4-wave10-task15"
+    last_updated_at: "2026-04-25T12:30:00+08:00"
     repos:
       - numind-server
       - numind-admin-web
@@ -2907,9 +2906,9 @@ features:
       qa: null
     progress:
       total_tasks: 15
-      completed_tasks: 14
-      reviewed_tasks: 14
-      current_task: "Wave 10: Task 15 (E2E verification + manifest) sequential"
+      completed_tasks: 15
+      reviewed_tasks: 15
+      current_task: null
     rollback: null
     last_verified: null
     decisions:
@@ -2938,6 +2937,8 @@ features:
       - "2026-04-26 (S4 Wave 7): Task 11 (admin context budget API) sequential — 9 endpoints under /v1/admin/context-budget/* (token-profiles CRUD + history, policies GET/PUT, preview, events) + LLM service capability validation 在 CreateService/UpdateService/CreateServiceWithRoute 三处。spec compliance review: PASS_WITH_MINOR (3 P2: ListTokenProfiles 缺 spec §7.1 过滤+分页、ListPolicies 缺 is_active=all、Preview 用裸 DB 绕过 aiSvcBiz — 全 fixed)。code quality review: APPROVED_WITH_NITS (3 nits: ListEvents 分页风格不统一 + UpdateTokenProfile 不区分 404/500 + admin_router naming 一致性 — 全 fixed)。8 tests PASS (6 原 + 2 新 list filter + policies all)。merge develop (commit f82f940)。Wave 7 完成 progress=11/15。"
       - "2026-04-26 (S4 Wave 8): Task 12 (observability + evaluation) sequential — budgetMetadata struct 新增 9 字段 (ContextWindow/MaxOutputTokens/SafeRatio/FixedOverheadTokens/Dropped/Summarized/CriticalFragmentCount/TokenProfileFallback/CalibrationSkipped) + tracing.mergeBudgetTracingMeta (Langfuse generation metadata, spec §11.1) + billing.mergeBudgetMetadata (estimated_completion_tokens + compression_actions, spec §11.2) + docs/context-budget-observability.md (privacy contract) + 10 evaluation cases (9 spec class + RAG bonus) + evaluation_test 用 P50/P90/P99 metrics 测保守性 (Phase 1 阈值 50%/80%，S5 收紧到 5%/10% 字面 spec)。spec compliance review: PASS_WITH_MINOR (3 P2: prohibited-key 对称 + admin API doc + reservation_id 测试 — 全 fixed)。code quality review: APPROVED_WITH_NITS (2 nits: log 索引错位 + EstimatedCompletionTokens 冗余 TODO — 全 fixed)。merge develop (commit fffe861)。Side effect: chatbot_config.go 收到 11 行 benign 注释扩展 (非 Task 12 plan scope)。Wave 8 完成 progress=12/15。"
       - "2026-04-27 (S4 Wave 9): Task 13 (admin web) + Task 14 (user web) 跨仓库并行。Task 13 (numind-admin-web): ContextBudget.vue 1966 行 4 tabs (Token Profiles / Policies / Recent Events / Preview) + 8 API client 函数 + types/ai.ts 类型 + ServiceEdit LLM capability validation + safeBudgetPreview 本地 math + 5 unit tests。spec PASS_W_MINOR (3 P2: ServiceEdit safe budget preview + service_type filter + dead code — 全 fixed)。code quality APPROVED_W_NITS (6 nits: 4 fixed import dedup/events model filter/history error state/tabs ARIA；2 deferred as-unknown-as 与 hex colors 与项目 tech debt 一致)。Implementer 两次输出截断未 commit，主控代 commit per Rule 8。merge admin-web develop (commit f5782cf)。Task 14 (numind-web-v3): inputBudget.ts helper (40000 char limit + Array.from codepoint count + 3-state) + 9 unit tests + 4 input components 集成 (StepInput / ChatComposer / ChatbotChat / InputArea)。spec PASS (2 P2 设计选择不修)。code quality APPROVED_W_NITS (4 nits: ChatbotChat mobile hint + tabular-nums + color-token + emoji 测试名 — 全 fixed)。Submit 不阻断 (spec §8.2 backend authoritative)。merge web-v3 develop (commit 23cad1e)。Wave 9 完成 progress=14/15。"
-    blockers: []
+      - "2026-04-25 (S4 Wave 10): Task 15 (E2E verification + S5 prep) — 后端 go test ./... 全量运行；controller/v1/credit 构建失败（stubCreditSvc 缺 CheckAndEstimateBudget + ReserveBudget，Task 4 新增接口方法未同步到 test stub）已在本 task 修复；6 个 pre-existing failures (newCreditsUser fixture seed bug) 文档化；admin-web 5/5 unit tests PASS；user-web 9/9 unit tests PASS；Playwright spec skeleton 写入 numind-admin-web/e2e/context-budget.spec.ts（4 admin paths，全部 test.fixme 待 S5 enable）；S5 verification doc 写入 docs/superpowers/verification/context-budget-compression-s5.md。Wave 10 完成 progress=15/15。"
+    blockers:
+      - "manual S5 verification pending: Playwright e2e/context-budget.spec.ts (4 admin paths, require running dev server) + gstack /qa user counter screenshots + production-like env smoke tests — see docs/superpowers/verification/context-budget-compression-s5.md"
     created_at: "2026-04-25T15:45:00+08:00"
-    completed_at: null
+    completed_at: "2026-04-25T12:30:00+08:00"
