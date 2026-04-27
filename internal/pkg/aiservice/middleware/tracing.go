@@ -72,6 +72,16 @@ func Tracing(deps Deps) Middleware {
 				}
 			}()
 
+			// --- inject budget metadata holder before calling next (F-5 fix) ---
+			// ContextBudgetCredits is an inner middleware that appends to ctx via
+			// context.WithValue. The resulting child ctx is only visible to further
+			// inner middlewares (Billing, Retry, Adapter). We inject an empty
+			// *budgetMetadataHolder here so ContextBudgetCredits can write the
+			// populated budgetMetadata into it. Because we share the *pointer*
+			// (not a value), our close paths below can read from it even though we
+			// hold the original ctx.
+			ctx, _ = withBudgetMetadataHolder(ctx)
+
 			// --- call the next handler (adapter or inner middleware) ---
 			resp, err = next(ctx, route, req)
 
@@ -347,15 +357,44 @@ func mergeTraceMetadata(outputMap map[string]interface{}, tm *aiservice.TraceMet
 // non-streaming observation close paths so that generation metadata in Langfuse
 // always includes context-budget observability fields (spec §11.1).
 //
+// Source priority (F-5 fix):
+//  1. *budgetMetadataHolder injected by Tracing into the original ctx — this is
+//     the post-mutation source of truth set by ContextBudgetCredits.
+//  2. ctx-value path (withBudgetMetadata) — preserved for backward compatibility
+//     with unit tests (e.g. tracing_context_budget_test.go) that inject the
+//     metadata directly into ctx without wiring the full chain.
+//
 // Privacy contract (spec §11.3): only scalar IDs, token counts, and flag fields
 // are written. Fragment content, rendered prompt text, and user data are NEVER
 // included. The function is a no-op when no budgetMetadata was injected into ctx
-// (i.e., the ContextBudgetCredits middleware was bypassed or ran as passthrough).
+// via either path (i.e., the ContextBudgetCredits middleware was bypassed or ran
+// as passthrough).
 func mergeBudgetTracingMeta(ctx context.Context, meta map[string]interface{}) {
-	bm, ok := budgetMetadataFromCtx(ctx)
-	if !ok || meta == nil {
+	if meta == nil {
 		return
 	}
+
+	// Prefer the holder (F-5 fix): the holder is the post-mutation value written
+	// by ContextBudgetCredits into the *original* ctx that Tracing holds.
+	var bm budgetMetadata
+	if h, ok := budgetMetadataHolderFromCtx(ctx); ok {
+		if hm, set := h.Get(); set {
+			bm = hm
+			goto merge
+		}
+	}
+
+	// Fallback: ctx-value path written by withBudgetMetadata. Used by unit tests
+	// and code paths that inject budgetMetadata directly into ctx.
+	{
+		ctxBM, ok := budgetMetadataFromCtx(ctx)
+		if !ok {
+			return
+		}
+		bm = ctxBM
+	}
+
+merge:
 	// Only scalar IDs, counts, and flags — never prompt content.
 	if bm.EventID != 0 {
 		meta["context_budget_event_id"] = bm.EventID

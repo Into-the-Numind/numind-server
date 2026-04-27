@@ -207,6 +207,67 @@ func finalCostHolderFromCtx(ctx context.Context) *finalCostHolder {
 	return h
 }
 
+// ----------------------------------------------------------------------------
+// budgetMetadataHolder — shared mutable budget handoff (mirrors finalCostHolder)
+// ----------------------------------------------------------------------------
+
+// budgetMetadataHolder is a pointer-sized mutable struct injected into ctx by
+// the outer Tracing middleware BEFORE calling next. ContextBudgetCredits writes
+// the fully-populated budgetMetadata into the holder immediately after calling
+// withBudgetMetadata(ctx, ...) so that Tracing's close path (which holds the
+// *original* ctx) can read the budget fields without needing the child ctx.
+//
+// This solves F-5: ContextBudgetCredits returns a new ctx via context.WithValue
+// which is only visible to inner middlewares (Billing, Retry, Adapter). The outer
+// Tracing middleware closes the Langfuse generation with the original ctx where
+// budgetMetadataFromCtx returns ok=false. The holder bridges this gap.
+//
+// Thread-safety: Set is called from the ContextBudgetCredits goroutine; Get is
+// called from the Tracing close goroutine. The mutex makes the operation safe
+// even though in practice Set always happens-before Get (the channel close in
+// the streaming path is the synchronisation point — see memory ordering note
+// in wrapStreamForBilling).
+type budgetMetadataHolder struct {
+	mu   sync.Mutex
+	set  bool
+	meta budgetMetadata
+}
+
+// Set stores meta and marks the holder as set. Subsequent calls overwrite.
+func (h *budgetMetadataHolder) Set(m budgetMetadata) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.meta = m
+	h.set = true
+}
+
+// Get returns the stored metadata and true if Set was called at least once.
+// Returns zero value and false when the holder is empty.
+func (h *budgetMetadataHolder) Get() (budgetMetadata, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.meta, h.set
+}
+
+// ctxKeyBudgetMetadataHolder is the context key for *budgetMetadataHolder.
+// Using a private struct type avoids any collision with other packages.
+type ctxKeyBudgetMetadataHolder struct{}
+
+// withBudgetMetadataHolder injects a fresh *budgetMetadataHolder into ctx and
+// returns the new ctx together with a pointer to the holder so the caller can
+// read it later.
+func withBudgetMetadataHolder(ctx context.Context) (context.Context, *budgetMetadataHolder) {
+	h := &budgetMetadataHolder{}
+	return context.WithValue(ctx, ctxKeyBudgetMetadataHolder{}, h), h
+}
+
+// budgetMetadataHolderFromCtx extracts the *budgetMetadataHolder from ctx.
+// Returns (nil, false) when the holder was not injected.
+func budgetMetadataHolderFromCtx(ctx context.Context) (*budgetMetadataHolder, bool) {
+	h, ok := ctx.Value(ctxKeyBudgetMetadataHolder{}).(*budgetMetadataHolder)
+	return h, ok && h != nil
+}
+
 // budgetMetadata is the structured metadata attached to the context.
 type budgetMetadata struct {
 	EventID               uint64 `json:"event_id,omitempty"`
@@ -432,7 +493,7 @@ func ContextBudgetCredits(deps Deps) Middleware {
 					criticalCount++
 				}
 			}
-			ctx = withBudgetMetadata(ctx, budgetMetadata{
+			theBudgetMetadata := budgetMetadata{
 				EventID:                   result.EventID,
 				TokenProfileID:            result.TokenProfileID,
 				SafeInputBudget:           result.SafeInputBudget,
@@ -453,7 +514,21 @@ func ContextBudgetCredits(deps Deps) Middleware {
 				CriticalFragmentCount:     criticalCount,
 				// TokenProfileFallback: true when TokenProfileID == 0 (default profile used)
 				TokenProfileFallback: result.TokenProfileID == 0,
-			})
+			}
+			ctx = withBudgetMetadata(ctx, theBudgetMetadata)
+
+			// F-5 fix: also write into the *budgetMetadataHolder injected by the
+			// outer Tracing middleware (into the original ctx). This bridges the
+			// ctx-immutability gap: context.WithValue returns a new ctx that is
+			// only visible to inner middlewares; the outer Tracing close path holds
+			// the pre-mutation ctx and therefore budgetMetadataFromCtx(ctx)==false.
+			// The holder pointer in the original ctx is shared by reference, so
+			// writing here makes the metadata visible to Tracing without ctx mutation.
+			// Set is called BEFORE next(ctx, ...) so both streaming and non-streaming
+			// Tracing close paths are guaranteed to see the populated holder.
+			if h, ok := budgetMetadataHolderFromCtx(ctx); ok {
+				h.Set(theBudgetMetadata)
+			}
 
 			// Build the base FinalizeInput that will be used by the finalizer.
 			baseFI := buildBaseFinalizeInput(result, reservationID)

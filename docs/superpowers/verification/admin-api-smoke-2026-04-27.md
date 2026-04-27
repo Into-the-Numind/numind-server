@@ -262,9 +262,17 @@ FROM usage_record WHERE user_id=25 ORDER BY id DESC LIMIT 1;
 | E. Frontend visual (user counter) | ⏸️ Pending | manual browser check needed |
 | F-1 max_output_tokens backfill | ✅ MITIGATED | Backfill SQL at scripts/2026-04-27-context-budget-max-output-backfill/ — run 02-apply.sql on prod before rollout (commits `9602541` + `48414b8`) |
 | F-3 P2 cost calibration | ✅ PASS | Verified end-to-end on dev: reservation #48 actual_cost_cents=4 matches usage_record #384 cost_cents=4 (commit `bcda6ba` + merge `655118a`) |
-| F-5 Langfuse metadata empty | ⚠️ FOUND | New finding — see "F-5" section below. Generation `metadata={}`; budget IDs not attached. Spec §11.1 violation. P1 — does not block feature, blocks observability. |
+| F-5 Langfuse metadata empty | 🔧 FIX IN FLIGHT | New finding — see "F-5" section below. User chose to fix; agent dispatched. Spec §11.1 violation. P1. |
+| F-6 Token profile create UI broken | ⚠️ FOUND | New finding — Playwright Path 2 fail. Backend `ProfileJSON binding:"required"` vs frontend doesn't send `profile_json`. POST /v1/admin/context-budget/token-profiles returns HTTP 400. P1 — admin can't create new profile versions via UI. See "F-6" below. |
 
-**Verdict:** Backend feature is **production-ready pending the prod `max_output_tokens` backfill SQL run** and the deferred manual frontend checks (Playwright admin spec, gstack /qa user counter). All P0 bugs fixed and deployed; F-3 P2 cost-calibration fix merged and verified end-to-end on dev. **One new P1 finding (F-5) on Langfuse observability — feature works but observability layer is partially broken; decision pending: fix-now vs defer-as-followup.**
+**Playwright admin spec (S5 acceptance check 5):**
+- Path 1 (reject invalid LLM capability) — ✅ PASS, screenshot at `numind-admin-web/e2e/screenshots/context-budget-path1.png`
+- Path 2 (create token profile version) — ❌ FAIL, real product bug → F-6
+- Path 3 (edit policy → preview reflects safe_input_budget) — ✅ PASS, screenshot at `numind-admin-web/e2e/screenshots/context-budget-path3.png`
+- Path 4 (events list shows compression_actions, no prompt content) — ✅ PASS, screenshot at `numind-admin-web/e2e/screenshots/context-budget-path4.png`
+- Spec changes committed at `numind-admin-web` `8394608` (local develop, not pushed yet)
+
+**Verdict:** Backend feature is **production-ready pending the prod `max_output_tokens` backfill SQL run**. All P0 bugs fixed and deployed. New P1 findings: F-5 (Langfuse observability — fix in flight) and F-6 (admin UI token-profile create broken — decision pending).
 
 ---
 
@@ -297,7 +305,34 @@ DB state for the same call:
 
 **Estimated effort:** ~30-60 minutes including new integration test asserting end-to-end ctx propagation through the full chain.
 
-**Decision pending:** fix-now (during this S5 wave) vs defer-as-F-5-P1-followup (record + sign off S5 partial).
+**Decision:** fix-now. Agent dispatched on branch `fix/langfuse-budget-metadata-holder`. Will verify retest on dev once merged.
+
+---
+
+## F-6: Token profile create UI broken — backend/frontend contract mismatch (NEW finding)
+
+**Discovered during S5 step:** Playwright admin Path 2 (plan §1326 — "Admin → AIService → ContextBudget: 创建一个新的 `token_estimation_profile` 行").
+
+**Evidence:** When the admin UI form submits `POST /v1/admin/context-budget/token-profiles`, the backend returns HTTP 400:
+```json
+{"code":1,"message":"请求参数错误: Key: 'createTokenProfileReq.ProfileJSON' Error:Field validation for 'ProfileJSON' failed on the 'required' tag"}
+```
+
+**Root cause (confirmed):**
+- Backend at `internal/numind/controller/v1/admin_contextbudget/context_budget.go:145` declares `ProfileJSON datatypes.JSON `json:"profile_json" binding:"required"`. Same pattern at line 199 for the update endpoint.
+- Frontend `numind-admin-web/src/types/ai.ts` declares `profile_json?: ...` (optional).
+- Frontend `numind-admin-web/src/pages/admin/ai-services/ContextBudget.vue` form does NOT include `profile_json` in the create payload — it sends only `provider`, `model`, `model_family`, `service_type`, `safety_multiplier`, `calibration_multiplier`.
+
+**Production impact:** P1 — admin cannot create new `token_estimation_profile` versions through the UI. The active-version invariant only matters if the admin can rotate the profile; this bug blocks that operation. Workaround: create profiles via direct SQL or via curl with a hand-crafted `profile_json`.
+
+**Fix options (decision pending):**
+- **A. Backend relaxes binding** — change `binding:"required"` to omit on both Create and Update endpoints, accept empty/null `profile_json` and apply a sensible default (e.g., `{}` or the seed profile). Smallest blast radius. Requires checking that downstream estimator code can handle empty `profile_json`.
+- **B. Frontend sends profile_json** — update `ContextBudget.vue` form to either (i) add a JSON editor field for advanced users, or (ii) compute `profile_json` from the existing form fields (chars_per_token + boost into a structured config). Larger UX change.
+- **C. Both** — relax binding now (unblock admin), follow up with frontend UX.
+
+**Recommended:** Option C. Backend should never have hard-required a JSON blob the UI doesn't understand; relaxing it is correct. Frontend form should still expose profile_json as advanced/optional to make the spec §6.4.2 estimator config configurable.
+
+**Decision pending:** which option, and fix-now vs defer.
 
 ---
 
