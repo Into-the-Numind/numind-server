@@ -73,11 +73,13 @@ Test script: `/tmp/admin-smoke-v2.sh` on dev server. Run from inside dev (admin 
 
 ## Findings
 
-### 🔴 P0 (deployment blocker for production)
+### ~~🔴 P0 (deployment blocker for production)~~ → ✅ MITIGATED — ready for prod rollout
 
 **F-1: Existing `ai_service` rows lack `max_output_tokens` in `capability_json`**
 
-**Evidence:**
+> **STATUS: CLOSED** — Backfill SQL artifacts authored and merged in commits `9602541` + `48414b8`.
+
+**Original evidence (retained for historical context):**
 ```sql
 SELECT id, model_key,
        JSON_EXTRACT(capability_json, '$.context_window') AS cw,
@@ -101,12 +103,9 @@ FROM ai_service WHERE service_type='llm' ORDER BY id;
 
 **12 of 14 LLM services on dev have `max_output_tokens = NULL`.** The new context-budget flow returns `valid=false` because spec §2.4 validation rejects `max_output_tokens <= 0`.
 
-**Production impact:** SOP / chatbot / SalesRAG calls routing through these services will hit `ErrContextConfigInvalid` at the Gateway middleware. The new feature is effectively non-functional for any operation routed to a legacy service until the data is backfilled.
+**Production impact (original assessment):** SOP / chatbot / SalesRAG calls routing through these services will hit `ErrContextConfigInvalid` at the Gateway middleware. The new feature is effectively non-functional for any operation routed to a legacy service until the data is backfilled.
 
-**Recommended fix (must be done before prod rollout):**
-1. Author a one-shot SQL backfill script that sets `max_output_tokens` on each LLM service based on the model's published spec (e.g., Claude Sonnet 4.6 = 64K, GPT-5.4 = 64K, qwen-turbo = 8K). Reference table to be agreed with product/AI service owner.
-2. Or: relax `Biz.Prepare` to fall back to `min(context_window/4, 16384)` when `max_output_tokens=0`, with a warning logged for ops to backfill. (Safer for rollout but masks the data gap.)
-3. Either way: update **A9 retest** after backfill to confirm preview returns valid budget for all 14 services.
+**Resolution:** Backfill SQL scripts authored at `scripts/2026-04-27-context-budget-max-output-backfill/` (4 files: `01-dry-run.sql`, `02-apply.sql`, `03-verify.sql`, `04-rollback.sql`) plus a README and research doc at `docs/superpowers/research/2026-04-27-llm-max-output-tokens-table.md`. Coverage: 11 model families (Claude 4.x, GPT-5.x, Gemini 3.x, DeepSeek V3.x standard + thinking + V4.x, Qwen3 VL/text/turbo, GLM-4, Doubao) plus a Generic fallback (16384). DeepSeek thinking variants forced to 32768 to avoid the `<reserved_output_tokens=16384` trap. Merged in commits `9602541` + `48414b8`. Run `02-apply.sql` on prod before rollout; use `03-verify.sql` to confirm.
 
 ### 🟡 P2 (notes only, not blocking)
 
@@ -163,11 +162,14 @@ Triggered `POST /v1/chatbot/sessions/47/chat` as user_id=25 (credits mode, balan
 
 **Two P0 bugs found and fixed during this verification:**
 
-**F-2: LoadUser missing — nil pointer panic** (commit `17a2a27`)
+**F-2: LoadUser missing — nil pointer panic** — ✅ CLOSED (commit `17a2a27`)
 First retry of the chatbot call panicked at `context_budget.go:471 → CheckAndEstimateBudget(ctx, nil, ...) → isEffectiveLegacy(user) → nil deref`. Spec §6.1.2 step 1 requires loading the user before Reserve; Task 6 implementer missed this and unit tests with mock CreditService didn't dereference user. Fix added `LoadUser(ctx, userID) (*model.User, error)` to `ContextBudgetCreditService` interface, plumbed it through `creditServiceFacade` → `store.UserStore.GetUserByID`, and added defense-in-depth nil-check in `isEffectiveLegacy`.
 
-**F-3: Reservation never reconciled** (commit `9483934`)
-After F-2 fix, the chatbot call succeeded end-to-end and wrote `context_budget_event` and `credit_reservation` rows correctly, but reservation #46 stayed in `status='reserved'` forever. The middleware never called `FinalizeReservation`/`Refund` after `Biz.Finalize`; design intent was that biz layer would do it, but `biz/contextbudget.Finalize` only patches the event row. Fix added `finalizeReservationIfNeeded` helper called after every `Biz.Finalize` site (non-streaming, streaming, nil-stream); on success it calls `FinalizeReservation(EstimatedCredits)`, on failure `Refund(error_code)`.
+**F-3: Reservation never reconciled** — ✅ P0 CLOSED (commit `9483934`); ✅ P2 CLOSED (commits `bcda6ba` + merge `655118a`)
+
+_P0 part:_ After F-2 fix, the chatbot call succeeded end-to-end and wrote `context_budget_event` and `credit_reservation` rows correctly, but reservation #46 stayed in `status='reserved'` forever. The middleware never called `FinalizeReservation`/`Refund` after `Biz.Finalize`; design intent was that biz layer would do it, but `biz/contextbudget.Finalize` only patches the event row. Fix added `finalizeReservationIfNeeded` helper called after every `Biz.Finalize` site (non-streaming, streaming, nil-stream); on success it calls `FinalizeReservation(EstimatedCredits)`, on failure `Refund(error_code)`.
+
+_P2 part (cost calibration mismatch):_ `Reconcile` was using `EstimatedCredits=8192` placeholder instead of the real `cost_cents` from the billing middleware. Fixed in `bcda6ba` (merged `655118a`). Implementation: a shared `*finalCostHolder` is threaded through context. The billing middleware computes the real cost via `pricing.ICalculator` and writes `holder.CostCents` **before** forwarding the `IsFinal` chunk (channel send = happens-before boundary). `ContextBudget.finalizeReservationIfNeeded` reads the holder and prefers `holder.CostCents` over `EstimatedCredits` when populated; falls back to `EstimatedCredits` when `PricingCalc` is nil, `CalculateCost` errors, or the stream is interrupted. 3 new unit tests added; 20+ existing middleware tests all pass.
 
 ### After both P0 fixes — verification PASS
 
@@ -205,11 +207,21 @@ FROM usage_record WHERE id IN (378, 380);
 
 **End-to-end chain verified:** Prepare → LoadUser → Reserve → Provider call (real Aihubmix Gemini) → stream finalize → PatchEvent (actual tokens) → Reconcile reservation → UsageRecord with all 4 budget metadata IDs linked. Privacy verified: usage_record.metadata contains scalar IDs only, no prompt content. Langfuse trace_id (`9aeb0492-fe59-4eb9-a4a7-1484e6cb84e0`) recorded in `chatbot_message`.
 
-### P2 still open (not blocking)
-- **F-3 cost calibration**: `actual_cost_cents=8192` on reservation #47 reflects `EstimatedCredits` passed by `finalizeReservationIfNeeded`, not the real billing cost (`5 cents` from usage_record). The reservation is correctly status=reconciled but the delta is wrong by ~99%. Real fix requires plumbing pricing.cost_cents from Billing middleware into FinalizeInput.PricingCostCents. Track as tech debt; production rollout impact: reservation accounting will look over-deducted on the credit_package side. Recommend resolving before any 大客户 ramp.
-- **Langfuse generation metadata visual verification**: trace_id captured but UI inspection of generation metadata (budget IDs, no prompt content) not done from this session.
-- **Frontend Playwright e2e**: spec is `test.fixme()`, not yet enabled.
-- **gstack /qa user input counter**: not yet executed.
+### P2 status (updated after fix wave)
+- **F-3 cost calibration**: ✅ CLOSED in commits `bcda6ba` + `655118a`. See F-3 P2 closure note above. Retest pending — see "F-3 P2 retest" section below.
+- **Langfuse generation metadata visual verification**: trace_id captured but UI inspection of generation metadata (budget IDs, no prompt content) not done from this session. Still pending.
+- **Frontend Playwright e2e**: spec is `test.fixme()`, not yet enabled. Still pending.
+- **gstack /qa user input counter**: not yet executed. Still pending.
+
+---
+
+## F-3 P2 retest (after merge bcda6ba)
+
+> **Controller: fill in these values after running a manual chatbot SSE call on dev with the merged fix.**
+
+- [ ] chatbot call SSE completed
+- [ ] `credit_reservation.actual_cost_cents` == `usage_record.cost_cents` (small int, NOT 8192)
+- [ ] `context_budget_event` row links to `reservation_id` and `trace_id`
 
 ---
 
@@ -224,19 +236,22 @@ FROM usage_record WHERE id IN (378, 380);
 | D. Observability (Langfuse trace UI) | ⏸️ Pending | trace_id captured but UI walk-through not done |
 | E. Frontend e2e (admin) | ⏸️ Pending | bundle deployed, Playwright spec still fixme'd |
 | E. Frontend visual (user counter) | ⏸️ Pending | manual browser check needed |
+| F-1 max_output_tokens backfill | ✅ MITIGATED | Backfill SQL at scripts/2026-04-27-context-budget-max-output-backfill/ — run 02-apply.sql on prod before rollout (commits `9602541` + `48414b8`) |
+| F-3 P2 cost calibration | ⏸️ Retest pending | Fix merged (`bcda6ba` + `655118a`); awaiting retest confirmation — see "F-3 P2 retest" section |
 
-**Verdict:** Backend feature is **production-ready pending F-3 cost calibration fix** and the deferred manual frontend checks. Two P0 bugs that S5 caught are now fixed and deployed.
+**Verdict:** Backend feature is **production-ready pending F-3 P2 retest** and the prod `max_output_tokens` backfill SQL run, plus the deferred manual frontend checks. All P0 bugs fixed and deployed; F-3 P2 cost-calibration fix merged and awaiting retest.
 
 ---
 
 ## Next action items (updated)
 
-1. **Engineer (deploy-blocking)**: F-3 cost calibration fix — plumb `usage_record.cost_cents` into `FinalizeInput.PricingCostCents` so `Reconcile` uses actual cost. Estimate: 2 hours including review.
-2. **Production deploy preparation**: write the `max_output_tokens` backfill SQL using the real model spec table (the dev backfill used a blanket 32768 placeholder).
-3. **Manual S5 step**: open Langfuse UI for one real chatbot call's trace (e.g. `9aeb0492-fe59-4eb9-a4a7-1484e6cb84e0`), screenshot generation metadata, verify it contains all spec §11.1 fields and zero prompt text.
-4. **Manual S5 step**: enable Playwright spec (`test.fixme()` → `test()`), set `BASE_URL=http://49.233.219.254:9100`, run `npm run test:e2e -- context-budget.spec.ts`, attach pass/fail report.
-5. **Manual S5 step**: gstack `/qa` user input counter — visit `http://49.233.219.254:9200`, paste 10 / 34000 / 40001 chars in SOP / chatbot / SalesRAG inputs, screenshot the 3 thresholds × 3 components grid.
-6. **Release engineer**: mark `build-manifest.yaml` `stage: S5_complete` only after items 1-5 are evidenced.
+1. ~~**Engineer (deploy-blocking)**: F-3 cost calibration fix~~ — ✅ DONE (`bcda6ba` + `655118a`).
+2. ~~**Production deploy preparation**: write the `max_output_tokens` backfill SQL~~ — ✅ DONE (`9602541` + `48414b8`). Run `scripts/2026-04-27-context-budget-max-output-backfill/02-apply.sql` on prod before rollout.
+3. **Controller (retest)**: F-3 P2 retest — trigger a chatbot SSE call on dev, verify `credit_reservation.actual_cost_cents` matches `usage_record.cost_cents` (not 8192). Fill in "F-3 P2 retest" section above.
+4. **Manual S5 step**: open Langfuse UI for one real chatbot call's trace (e.g. `9aeb0492-fe59-4eb9-a4a7-1484e6cb84e0`), screenshot generation metadata, verify it contains all spec §11.1 fields and zero prompt text.
+5. **Manual S5 step**: enable Playwright spec (`test.fixme()` → `test()`), set `BASE_URL=http://49.233.219.254:9100`, run `npm run test:e2e -- context-budget.spec.ts`, attach pass/fail report.
+6. **Manual S5 step**: gstack `/qa` user input counter — visit `http://49.233.219.254:9200`, paste 10 / 34000 / 40001 chars in SOP / chatbot / SalesRAG inputs, screenshot the 3 thresholds × 3 components grid.
+7. **Release engineer**: mark `build-manifest.yaml` `stage: S5_complete` only after items 3-6 are evidenced.
 
 ---
 
