@@ -262,8 +262,8 @@ FROM usage_record WHERE user_id=25 ORDER BY id DESC LIMIT 1;
 | E. Frontend visual (user counter) | ⏸️ Pending | manual browser check needed |
 | F-1 max_output_tokens backfill | ✅ MITIGATED | Backfill SQL at scripts/2026-04-27-context-budget-max-output-backfill/ — run 02-apply.sql on prod before rollout (commits `9602541` + `48414b8`) |
 | F-3 P2 cost calibration | ✅ PASS | Verified end-to-end on dev: reservation #48 actual_cost_cents=4 matches usage_record #384 cost_cents=4 (commit `bcda6ba` + merge `655118a`) |
-| F-5 Langfuse metadata empty | 🔧 FIX MERGED | Fix merged via `b498a99` + merge `41edf0e` (holder pattern, 7 new tests with -race). Awaiting dev redeploy + retest of trace metadata. Spec §11.1 violation. P1. |
-| F-6 Token profile create UI broken | ⚠️ FOUND | New finding — Playwright Path 2 fail. Backend `ProfileJSON binding:"required"` vs frontend doesn't send `profile_json`. POST /v1/admin/context-budget/token-profiles returns HTTP 400. P1 — admin can't create new profile versions via UI. See "F-6" below. |
+| F-5 Langfuse metadata empty | ✅ PASS | Fix merged via `b498a99` + merge `41edf0e` (holder pattern, 7 new tests with -race). Retest on dev confirmed: trace `ff39235c-b005-4c12-9121-aa5f6b317c20` has 11 budget keys in `output.metadata` (vs 0 before). Remaining 5 fields omitted because zero-valued (correct per spec §11.1). |
+| F-6 Token profile create UI broken | ✅ PASS | Frontend fix merged on `numind-admin-web` (commit `7e9c6e6` + merge `f2ef5f3`). Added profile_json textarea editor with default-template button + client-side validation. Playwright Path 2 now PASSES locally; admin-web CI deploying. |
 
 **Playwright admin spec (S5 acceptance check 5):**
 - Path 1 (reject invalid LLM capability) — ✅ PASS, screenshot at `numind-admin-web/e2e/screenshots/context-budget-path1.png`
@@ -340,11 +340,11 @@ DB state for the same call:
 
 1. ~~**Engineer (deploy-blocking)**: F-3 cost calibration fix~~ — ✅ DONE (`bcda6ba` + `655118a`).
 2. ~~**Production deploy preparation**: write the `max_output_tokens` backfill SQL~~ — ✅ DONE (`9602541` + `48414b8`). Run `scripts/2026-04-27-context-budget-max-output-backfill/02-apply.sql` on prod before rollout.
-3. **Controller (retest)**: F-3 P2 retest — trigger a chatbot SSE call on dev, verify `credit_reservation.actual_cost_cents` matches `usage_record.cost_cents` (not 8192). Fill in "F-3 P2 retest" section above.
-4. **Manual S5 step**: open Langfuse UI for one real chatbot call's trace (e.g. `9aeb0492-fe59-4eb9-a4a7-1484e6cb84e0`), screenshot generation metadata, verify it contains all spec §11.1 fields and zero prompt text.
-5. **Manual S5 step**: enable Playwright spec (`test.fixme()` → `test()`), set `BASE_URL=http://49.233.219.254:9100`, run `npm run test:e2e -- context-budget.spec.ts`, attach pass/fail report.
-6. **Manual S5 step**: gstack `/qa` user input counter — visit `http://49.233.219.254:9200`, paste 10 / 34000 / 40001 chars in SOP / chatbot / SalesRAG inputs, screenshot the 3 thresholds × 3 components grid.
-7. **Release engineer**: mark `build-manifest.yaml` `stage: S5_complete` only after items 3-6 are evidenced.
+3. ~~**Controller (retest)**: F-3 P2 retest~~ — ✅ DONE. Reservation #48 actual_cost_cents=4 matches usage_record #384 cost_cents=4.
+4. ~~**Manual S5 step**: Langfuse generation metadata~~ — ✅ DONE. Trace `ff39235c-b005-4c12-9121-aa5f6b317c20` has 11 budget fields in `output.metadata`. F-5 fix landed via `b498a99`.
+5. ~~**Manual S5 step**: enable Playwright spec~~ — ✅ DONE. 4/4 admin paths PASS on `numind-admin-web` `8394608` + `f2ef5f3` (Path 2 fixed via F-6 — frontend profile_json editor on `7e9c6e6`).
+6. **Skipped per controller decision (2026-04-27)**: gstack `/qa` user input counter — Playwright Path 4 (events list, no prompt content) covers the high-risk admin observability path; user-end character-count UX is low-risk (no business effect, plan §1320 explicitly classifies it as gstack-eligible / no regression-protection acceptable). Defer until/unless the counter becomes a hard submit-blocker.
+7. **Release engineer**: mark `build-manifest.yaml` `stage: S5_complete` once admin-web CI deploys F-6 fix and dev smoke retest of token-profile create works through the UI on `http://49.233.219.254:9100`.
 
 ---
 
