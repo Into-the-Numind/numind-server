@@ -1007,3 +1007,141 @@ func TestContextBudgetCredits_NonStreamingProviderErrorRefunds(t *testing.T) {
 		t.Errorf("FinalizeInput.Status: got %q, want %q", fi.Status, "failed")
 	}
 }
+
+// ============================================================================
+// F-3 cost-calibration: reconciler reads actual cost from finalCostHolder
+// ============================================================================
+
+// TestContextBudgetCredits_ReconcileUsesActualCostFromBillingHolder verifies
+// that when the *finalCostHolder (injected by ContextBudgetCredits after
+// Reserve) is populated with a real cost by the inner Billing middleware,
+// FinalizeReservation is called with that real cost rather than the pre-call
+// EstimatedCredits placeholder.
+//
+// The test simulates the Billing middleware by using a spy adapter that locates
+// the holder in ctx and sets CostCents directly (bypassing the real Billing
+// middleware to keep the test focused on the ContextBudgetCredits reconciler).
+// The Billing-side population is separately verified by
+// TestBillingSetsFinalCostInHolderWhenPresent in billing_test.go.
+func TestContextBudgetCredits_ReconcileUsesActualCostFromBillingHolder(t *testing.T) {
+	renderedMsgs := []aiservice.ChatMessage{
+		{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: "cost calibration test"}},
+	}
+
+	budgetSvc := &mockContextBudgetService{
+		prepareResult: makePrepareResult(renderedMsgs, true),
+	}
+	// EstimatedCredits = 8192 (placeholder from ReservedOutputTokens).
+	// The real cost (5 cents) should come from the holder, not EstimatedCredits.
+	creditSvc := &mockCreditService{
+		checkResult: &credit.PreCheckResult{
+			SkipDeduction:    false,
+			Sufficient:       true,
+			EstimatedCredits: 8192, // this is the placeholder that was incorrectly used before
+		},
+		reserveResult: &credit.Reservation{
+			ID:              500,
+			ReservedCredits: 8192,
+			Status:          credit.StatusReserved,
+		},
+	}
+
+	deps := Deps{
+		ContextBudget: budgetSvc,
+		CreditService: creditSvc,
+		Logger:        &mockLogger{},
+		Clock:         fixedClock{t: time.Now()},
+	}
+
+	// Spy adapter: simulates what the inner Billing middleware does — finds the
+	// finalCostHolder in ctx and populates it with the real pricing-rule cost.
+	const realCostCents int64 = 5
+	adapter := Handler(func(ctx context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+		// Simulate Billing populating the holder after computing actual cost.
+		if h := finalCostHolderFromCtx(ctx); h != nil {
+			h.CostCents = realCostCents
+		}
+		return &aiservice.ChatResponse{
+			Content: "answer",
+			Usage: aiservice.TokenUsage{
+				PromptTokens:     800,
+				CompletionTokens: 50,
+				TotalTokens:      850,
+			},
+		}, nil
+	})
+
+	mw := ContextBudgetCredits(deps)
+	handler := mw(adapter)
+
+	fragment := simpleFragment("f1", "input")
+	req := chatReqWithFragments(fragment)
+	ctx := billing.WithBillingMeta(context.Background(), 20, "sop_run", nil)
+	ctx = WithUserID(ctx, 20)
+
+	_, err := handler(ctx, budgetRoute(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// FinalizeReservation must be called exactly once.
+	if creditSvc.finalizeCalls != 1 {
+		t.Errorf("FinalizeReservation calls: got %d, want 1", creditSvc.finalizeCalls)
+	}
+
+	// The actual credits passed to FinalizeReservation must be the real cost
+	// from the holder, NOT the EstimatedCredits placeholder (8192).
+	//
+	// We cannot directly inspect the actualCredits argument from the mock (the
+	// existing mockCreditService doesn't capture it), so we verify indirectly:
+	// the holder was set to realCostCents and the code path in
+	// finalizeReservationIfNeeded prefers holder.CostCents when > 0.
+	// The test therefore verifies the holder mechanism by checking the holder
+	// is accessible from the ctx that ContextBudgetCredits passes to finalize.
+	//
+	// To make the assertion direct, we add a captureActualCredits field to a
+	// local spy credit service override.
+	// Re-run with a capturing mock to get the actual argument.
+
+	var capturedActualCredits int64
+	capturingSvc := &capturingCreditService{
+		mockCreditService: mockCreditService{
+			checkResult:   creditSvc.checkResult,
+			reserveResult: creditSvc.reserveResult,
+		},
+	}
+	capturingSvc.onFinalize = func(credits int64) { capturedActualCredits = credits }
+
+	deps2 := deps
+	deps2.CreditService = capturingSvc
+
+	mw2 := ContextBudgetCredits(deps2)
+	handler2 := mw2(adapter)
+
+	ctx2 := billing.WithBillingMeta(context.Background(), 21, "sop_run", nil)
+	ctx2 = WithUserID(ctx2, 21)
+
+	_, err = handler2(ctx2, budgetRoute(), chatReqWithFragments(simpleFragment("f2", "input2")))
+	if err != nil {
+		t.Fatalf("unexpected error on second run: %v", err)
+	}
+
+	if capturedActualCredits != realCostCents {
+		t.Errorf("FinalizeReservation actualCredits = %d, want %d (real cost from holder, not EstimatedCredits=8192)",
+			capturedActualCredits, realCostCents)
+	}
+}
+
+// capturingCreditService is a local test double that extends mockCreditService
+// to capture the actualCredits argument passed to FinalizeReservation.
+type capturingCreditService struct {
+	mockCreditService
+	onFinalize func(credits int64)
+}
+
+func (c *capturingCreditService) FinalizeReservation(ctx context.Context, reservationID uint64, actualCredits int64, reason string) error {
+	if c.onFinalize != nil {
+		c.onFinalize(actualCredits)
+	}
+	return c.mockCreditService.FinalizeReservation(ctx, reservationID, actualCredits, reason)
+}

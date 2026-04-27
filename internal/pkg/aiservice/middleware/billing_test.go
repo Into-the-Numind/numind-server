@@ -15,6 +15,21 @@ import (
 )
 
 // ----------------------------------------------------------------------------
+// Mock pricing.ICalculator
+// ----------------------------------------------------------------------------
+
+// mockPricingCalc satisfies pricing.ICalculator for tests that need a
+// deterministic CalculateCost result without hitting the real DB.
+type mockPricingCalc struct {
+	costCents int64
+	err       error
+}
+
+func (m *mockPricingCalc) CalculateCost(_ context.Context, _, _, _ string, _, _ int) (int64, error) {
+	return m.costCents, m.err
+}
+
+// ----------------------------------------------------------------------------
 // Mock UsageStore
 // ----------------------------------------------------------------------------
 
@@ -1048,5 +1063,122 @@ func TestPopulateLLMUsage_TypedNilResponse_NoError_NoPanic(t *testing.T) {
 	if r.PromptTokens != 0 || r.CompletionTokens != 0 || r.TotalTokens != 0 {
 		t.Errorf("expected zero tokens on typed-nil resp with nil err, got prompt=%d completion=%d total=%d",
 			r.PromptTokens, r.CompletionTokens, r.TotalTokens)
+	}
+}
+
+// ============================================================================
+// cost-calibration plumbing: finalCostHolder population (F-3 hotfix)
+// ============================================================================
+
+// TestBillingSetsFinalCostInHolderWhenPresent verifies that when a
+// *finalCostHolder is present in ctx (injected by ContextBudgetCredits after
+// Reserve), the Billing middleware's non-streaming path calls
+// publishCostToHolder with the real pricing-rule cost and the holder is
+// populated before the handler returns.
+//
+// This is the Billing side of the F-3 cost-calibration plumbing fix.
+func TestBillingSetsFinalCostInHolderWhenPresent(t *testing.T) {
+	store := &mockUsageStore{} // no pricing rules — we're using PricingCalc
+	calc := &mockPricingCalc{costCents: 42}
+	deps := Deps{
+		UsageStore:  store,
+		PricingCalc: calc,
+		Clock:       fixedClock{t: time.Now()},
+		Logger:      &mockLogger{},
+	}
+	mw := Billing(deps)
+
+	chatResp := &aiservice.ChatResponse{
+		Content: "answer",
+		Usage: aiservice.TokenUsage{
+			PromptTokens:     1000,
+			CompletionTokens: 200,
+			TotalTokens:      1200,
+		},
+	}
+	inner := Handler(func(_ context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
+		return chatResp, nil
+	})
+	handler := mw(inner)
+
+	// Pre-inject a finalCostHolder (simulates ContextBudgetCredits step 5b).
+	holder := &finalCostHolder{}
+	ctx := WithUserID(context.Background(), 5)
+	ctx = withFinalCostHolder(ctx, holder)
+
+	_, err := handler(ctx, llmRoute(), aiservice.ChatRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The holder must be populated with the value returned by PricingCalc.
+	if holder.CostCents != 42 {
+		t.Errorf("finalCostHolder.CostCents = %d, want 42 (from mockPricingCalc)", holder.CostCents)
+	}
+}
+
+// TestBillingSetsFinalCostInHolder_StreamPath verifies that the streaming path
+// also populates the finalCostHolder before forwarding the IsFinal chunk, so
+// that the outer ContextBudgetCredits goroutine can read the real cost when it
+// processes the same IsFinal event.
+//
+// Memory ordering guarantee: publishCostToHolder runs before the channel send
+// (dst <- chunk); the ContextBudget goroutine reads after the channel receive —
+// Go memory model channel synchronisation ensures the write is visible.
+func TestBillingSetsFinalCostInHolder_StreamPath(t *testing.T) {
+	store := &mockUsageStore{}
+	calc := &mockPricingCalc{costCents: 77}
+	deps := Deps{
+		UsageStore:  store,
+		PricingCalc: calc,
+		Clock:       fixedClock{t: time.Now()},
+		Logger:      &mockLogger{},
+	}
+	mw := Billing(deps)
+
+	chunks := []aiservice.ChatChunk{
+		{Delta: "Hello", Index: 0},
+		{
+			Delta:   "",
+			Index:   1,
+			IsFinal: true,
+			Usage: &aiservice.TokenUsage{
+				PromptTokens:     500,
+				CompletionTokens: 100,
+				TotalTokens:      600,
+			},
+		},
+	}
+	handler := mw(streamHandler(chunks))
+
+	holder := &finalCostHolder{}
+	ctx := WithUserID(context.Background(), 8)
+	ctx = withFinalCostHolder(ctx, holder)
+
+	resp, err := handler(ctx, llmRoute(), aiservice.ChatRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ch, ok := resp.(<-chan aiservice.ChatChunk)
+	if !ok {
+		t.Fatalf("expected <-chan ChatChunk, got %T", resp)
+	}
+
+	// Drain the stream; channel close is the synchronisation point.
+	var gotIFinal bool
+	for c := range ch {
+		if c.IsFinal {
+			gotIFinal = true
+		}
+	}
+
+	if !gotIFinal {
+		t.Error("expected IsFinal chunk to be forwarded")
+	}
+
+	// After draining, holder must be populated (set before IsFinal was forwarded).
+	if holder.CostCents != 77 {
+		t.Errorf("finalCostHolder.CostCents = %d, want 77 (streaming path)", holder.CostCents)
 	}
 }

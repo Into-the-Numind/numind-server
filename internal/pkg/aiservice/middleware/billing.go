@@ -13,6 +13,7 @@ import (
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/pricing"
 )
 
 // Billing returns a Middleware that writes a UsageRecord for every AI service
@@ -59,6 +60,9 @@ func Billing(deps Deps) Middleware {
 
 			// Non-streaming path (existing behaviour): populate + persist synchronously.
 			populateUsage(ctx, record, record.ServiceType, resp, err)
+			// Publish actual cost to finalCostHolder so the outer
+			// ContextBudgetCredits can use the real value for reconciliation.
+			publishCostToHolder(ctx, record, deps.PricingCalc)
 			persistRecord(ctx, record, route, userID, deps)
 
 			return resp, err
@@ -102,6 +106,13 @@ func wrapStreamForBilling(
 				record.TotalTokens = chunk.Usage.TotalTokens
 				record.ReasoningTokens = chunk.Usage.ReasoningTokens
 				finalSeen = true
+				// Publish actual cost BEFORE forwarding the IsFinal chunk so
+				// that the outer ContextBudgetCredits goroutine reads a fully
+				// populated holder when it processes the same IsFinal event.
+				// Go memory model: the channel send below (dst <- chunk) is a
+				// synchronisation point — any write before the send is visible
+				// to any reader that observes the corresponding receive.
+				publishCostToHolder(ctx, record, deps.PricingCalc)
 			}
 			// Forward the chunk to the downstream consumer.
 			// If the caller's context was already cancelled, drain src to
@@ -127,6 +138,9 @@ func wrapStreamForBilling(
 				record.TotalTokens = record.PromptTokens + estimated
 				record.IsEstimated = true
 			}
+			// No final usage seen (stream interrupted / ctx cancelled / no Usage in
+			// final chunk) — holder cannot be populated with real cost, so it stays
+			// at zero and finalizeReservationIfNeeded falls back to EstimatedCredits.
 		}
 		// Persist the billing record before closing dst.
 		// Closing dst is the synchronisation point for callers that drain the
@@ -504,6 +518,38 @@ func asChatResponse(resp interface{}) (*aiservice.ChatResponse, bool) {
 func ptrFloat64(v float64) *float64 {
 	cp := v
 	return &cp
+}
+
+// publishCostToHolder computes cost_cents for the given record using calc
+// and writes the result into the *finalCostHolder stored in ctx (if any).
+// This lets the outer ContextBudgetCredits middleware read the real cost
+// before calling FinalizeReservation, replacing the EstimatedCredits
+// placeholder with the actual pricing-rule value.
+//
+// The function is intentionally best-effort:
+//   - If calc is nil, the holder is left unchanged (fallback to estimated).
+//   - If CalculateCost returns an error (no pricing rule, DB timeout), the
+//     holder is left unchanged — the caller falls back to EstimatedCredits.
+//   - If no holder is present in ctx (non-budget paths), nothing happens.
+func publishCostToHolder(ctx context.Context, record *model.UsageRecord, calc pricing.ICalculator) {
+	if calc == nil {
+		return
+	}
+	holder := finalCostHolderFromCtx(ctx)
+	if holder == nil {
+		return
+	}
+	// Only LLM paths produce token-based costs that matter for reconciliation.
+	// Non-LLM calls (OCR/ASR/embed) still go through the holder path — if the
+	// calculator returns a non-zero cost we accept it; if not, the holder stays
+	// at zero and finalizeReservationIfNeeded falls back to EstimatedCredits.
+	costCents, err := calc.CalculateCost(ctx, record.ServiceType, record.Provider, record.Model,
+		record.PromptTokens, record.CompletionTokens)
+	if err != nil {
+		// Pricing rule miss or DB error — leave holder at zero so caller falls back.
+		return
+	}
+	holder.CostCents = costCents
 }
 
 // ----------------------------------------------------------------------------
