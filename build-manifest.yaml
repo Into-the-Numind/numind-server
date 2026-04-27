@@ -2889,8 +2889,8 @@ features:
     track: "standard"
     stage: "S3"
     classification_reason: "Triage 5 条评估 — (1) 可能涉及 schema/config 扩展（token profile、compression summary/token stats） (2) admin web 可能需要新增或扩展配置 API (3) 无新外部服务强依赖，但 tokenizer/profile 机制需设计 (4) 跨 numind-server、numind-admin-web，可能涉及 numind-web-v3，影响文件数 >3 (5) 影响 credits 预扣费、LLM 上下文组装和模型能力配置，属于高风险业务路径。用户明确要求进入 Standard Track。"
-    last_updated_by: "ai-s4-wave8-merge"
-    last_updated_at: "2026-04-26T17:50:00+08:00"
+    last_updated_by: "ai-s4-wave9-merge"
+    last_updated_at: "2026-04-27T12:15:00+08:00"
     stage: "S4"
     repos:
       - numind-server
@@ -2907,9 +2907,9 @@ features:
       qa: null
     progress:
       total_tasks: 15
-      completed_tasks: 12
-      reviewed_tasks: 12
-      current_task: "Wave 9: Task 13 (admin web) + Task 14 (user web) parallel — 不同仓库"
+      completed_tasks: 14
+      reviewed_tasks: 14
+      current_task: "Wave 10: Task 15 (E2E verification + manifest) sequential"
     rollback: null
     last_verified: null
     decisions:
@@ -2937,6 +2937,7 @@ features:
       - "2026-04-26 (S4 Wave 6): Task 8 (worker) + Task 9 (SOP producer) + Task 10 (chat/salesrag producer) 三 task 并行 dispatch。Task 8: spec PASS_W_MINOR (1 P1 PatchEvent on failure + 2 P2 fixed) → code quality APPROVED_W_NITS (2 nits: gofmt + atomic.Pointer for race-free singleton fixed)。4 tests PASS。Task 9: spec PASS_W_MINOR (3 P2: attachment evidence + SopVision precise detection fixed; reasoning RoleWorking 推迟 with TODO) → code quality PASS_W_MINOR (4 nits all fixed: dead-code annotation + spy comment + step renumber + Order intent doc)。4 tests PASS。Task 10: spec CONDITIONAL PASS (1 真 P1: ChatWithSession + acquireSalesragCredits + Gateway middleware 双 Reserve regression — option B fix: 删 inline Reserve 让 middleware 独家负责；2 P2 fixed) → code quality PASS (4 nits: 3 cosmetic fixed, 1 perf double-fetch 推迟到 refactor backlog)。7 new tests PASS。三分支 merge develop (commits 70b6502, a1e9044, 62f7855)。Wave 6 完成 progress=10/15。注意 pre-existing seed bug (newCreditsUser fixture 用 BillingMode=credits + UserTier=standard + TierExpires=nil → isEffectiveLegacy=true) 导致 4 个 salesrag 测试 + 1 个 SOP 测试在 develop 早就 fail (9f5f5ca 验证)，与本 feature 无关。"
       - "2026-04-26 (S4 Wave 7): Task 11 (admin context budget API) sequential — 9 endpoints under /v1/admin/context-budget/* (token-profiles CRUD + history, policies GET/PUT, preview, events) + LLM service capability validation 在 CreateService/UpdateService/CreateServiceWithRoute 三处。spec compliance review: PASS_WITH_MINOR (3 P2: ListTokenProfiles 缺 spec §7.1 过滤+分页、ListPolicies 缺 is_active=all、Preview 用裸 DB 绕过 aiSvcBiz — 全 fixed)。code quality review: APPROVED_WITH_NITS (3 nits: ListEvents 分页风格不统一 + UpdateTokenProfile 不区分 404/500 + admin_router naming 一致性 — 全 fixed)。8 tests PASS (6 原 + 2 新 list filter + policies all)。merge develop (commit f82f940)。Wave 7 完成 progress=11/15。"
       - "2026-04-26 (S4 Wave 8): Task 12 (observability + evaluation) sequential — budgetMetadata struct 新增 9 字段 (ContextWindow/MaxOutputTokens/SafeRatio/FixedOverheadTokens/Dropped/Summarized/CriticalFragmentCount/TokenProfileFallback/CalibrationSkipped) + tracing.mergeBudgetTracingMeta (Langfuse generation metadata, spec §11.1) + billing.mergeBudgetMetadata (estimated_completion_tokens + compression_actions, spec §11.2) + docs/context-budget-observability.md (privacy contract) + 10 evaluation cases (9 spec class + RAG bonus) + evaluation_test 用 P50/P90/P99 metrics 测保守性 (Phase 1 阈值 50%/80%，S5 收紧到 5%/10% 字面 spec)。spec compliance review: PASS_WITH_MINOR (3 P2: prohibited-key 对称 + admin API doc + reservation_id 测试 — 全 fixed)。code quality review: APPROVED_WITH_NITS (2 nits: log 索引错位 + EstimatedCompletionTokens 冗余 TODO — 全 fixed)。merge develop (commit fffe861)。Side effect: chatbot_config.go 收到 11 行 benign 注释扩展 (非 Task 12 plan scope)。Wave 8 完成 progress=12/15。"
+      - "2026-04-27 (S4 Wave 9): Task 13 (admin web) + Task 14 (user web) 跨仓库并行。Task 13 (numind-admin-web): ContextBudget.vue 1966 行 4 tabs (Token Profiles / Policies / Recent Events / Preview) + 8 API client 函数 + types/ai.ts 类型 + ServiceEdit LLM capability validation + safeBudgetPreview 本地 math + 5 unit tests。spec PASS_W_MINOR (3 P2: ServiceEdit safe budget preview + service_type filter + dead code — 全 fixed)。code quality APPROVED_W_NITS (6 nits: 4 fixed import dedup/events model filter/history error state/tabs ARIA；2 deferred as-unknown-as 与 hex colors 与项目 tech debt 一致)。Implementer 两次输出截断未 commit，主控代 commit per Rule 8。merge admin-web develop (commit f5782cf)。Task 14 (numind-web-v3): inputBudget.ts helper (40000 char limit + Array.from codepoint count + 3-state) + 9 unit tests + 4 input components 集成 (StepInput / ChatComposer / ChatbotChat / InputArea)。spec PASS (2 P2 设计选择不修)。code quality APPROVED_W_NITS (4 nits: ChatbotChat mobile hint + tabular-nums + color-token + emoji 测试名 — 全 fixed)。Submit 不阻断 (spec §8.2 backend authoritative)。merge web-v3 develop (commit 23cad1e)。Wave 9 完成 progress=14/15。"
     blockers: []
     created_at: "2026-04-25T15:45:00+08:00"
     completed_at: null
