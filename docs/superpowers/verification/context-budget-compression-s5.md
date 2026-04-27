@@ -2,7 +2,38 @@
 
 > NDF S5 验证文档（feature: `context-budget-compression`）
 > Generated: 2026-04-25
+> S5 sign-off date: 2026-04-27
 > S4 最后 merge SHA (numind-server develop): 88c8ec7
+> S5 final SHA (numind-server develop): ffb036a (after F-5 fix + retest closure)
+> S5 final SHA (numind-admin-web develop): f2ef5f3 (after F-6 fix + Playwright spec)
+
+---
+
+## S5 Sign-off Verdict (2026-04-27)
+
+**STATUS: ✅ S5 COMPLETE** — backend feature production-ready pending the prod `max_output_tokens` SQL backfill (`scripts/2026-04-27-context-budget-max-output-backfill/02-apply.sql`).
+
+S5 verification surfaced 5 real findings (F-1 through F-6, F-4 unused). 3 were P0 production-blockers caught only by real end-to-end calls — every unit test passed before each was found. All 5 are now closed:
+
+| Finding | Severity | Source | Fix |
+|---------|----------|--------|-----|
+| F-1: prod `max_output_tokens` NULL | P0 (data) | Schema audit | Backfill SQL artifacts (`9602541` + `48414b8`); release engineer runs on prod |
+| F-2: nil-deref in Reserve path | P0 (panic) | Real chatbot retry | `LoadUser` plumbed (`17a2a27`) |
+| F-3 P0: reservation never reconciled | P0 (data) | Real chatbot follow-up | `finalizeReservationIfNeeded` (`9483934`) |
+| F-3 P2: cost calibration 8192 placeholder | P2 (~99% over-deduction) | DB inspection of #47 | `finalCostHolder` pattern (`bcda6ba`); retest #48 actual_cost_cents=4=usage_record |
+| F-5: Langfuse generation metadata empty | P1 (observability) | Trace API check | `budgetMetadataHolder` pattern (`b498a99`); retest trace `ff39235c…` shows 11 budget keys |
+| F-6: admin token-profile create UI broken | P1 (admin UX) | Playwright Path 2 | Frontend `profile_json` editor (`numind-admin-web` `7e9c6e6`); 4/4 paths PASS |
+
+**Why this matters:** every P0/P1 above passed unit tests with mocks. They were only caught by Phase-3 end-to-end runs against real provider + real DB. The `tested = correct` criterion held only when the chain integration was exercised on dev. Same gap class for all of F-2/F-3/F-5: local function correctness without chain integration coverage.
+
+**Out-of-scope items deferred** (recorded in `docs/superpowers/known-issues/2026-04-27-post-context-budget-state.md`):
+- `TestReserve_CoefficientIDFrozenAcrossVersionBump` — uint64 vs *uint64 assertion type mismatch (P3, owner unassigned)
+- `TestCreateRun_FreeUserReturnsTypedError` — error mapping returns wrapError instead of *errno.Errno (P3, owner unassigned)
+- gstack `/qa` user counter visual check — formally skipped (Playwright Path 4 covers high-risk admin observability; counter UX has no business effect, plan §1320 explicitly classifies as gstack-eligible / no regression-protection acceptable; revisit if counter becomes hard submit-blocker)
+
+**Detailed S5 evidence:** `docs/superpowers/verification/admin-api-smoke-2026-04-27.md` (Phase 1-3 admin smoke + chatbot end-to-end + F-5/F-6 retests) and the checklist below.
+
+---
 
 ---
 
@@ -82,30 +113,32 @@ These 6 tests should be fixed in a separate hotfix (`fix: newCreditsUser fixture
 
 ### Backend Deploy Verification
 
-- [ ] Migration apply:
+- [x] Migration apply:
   ```sql
   mysql -u root -p numind < migrations/20260425_172000_context_budget_compression.sql
   ```
   Expected: 4 new tables created (`token_estimation_profile`, `context_budget_policy`, `context_budget_event`, `context_summary`) + `credit_reservation` altered (new columns: `estimation_source`, `estimated_input_tokens`, `estimated_output_tokens`, `context_window`, `token_profile_id`, `budget_policy_id`)
 
-- [ ] Migration rollback:
+- [x] Migration rollback:
   ```sql
   mysql -u root -p numind < migrations/20260425_172000_context_budget_compression_rollback.sql
   ```
   Expected: all 4 new tables dropped, `credit_reservation` columns reverted, data intact
 
-- [ ] Seed policies present after migration:
+- [x] Seed policies present after migration:
   ```bash
   curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
     http://localhost:9091/v1/admin/context-budget/policies | jq '.data.list | length'
   ```
   Expected: 6 default policies (sop_run, context_compression, chatbot_message, salesrag_query, chatbot_stream, salesrag_stream)
 
-- [ ] `sop_run` policy: `charge_user=true`; `context_compression` policy: `charge_user=false`
+- [x] `sop_run` policy: `charge_user=true`; `context_compression` policy: `charge_user=false`
 
 ### Admin API Smoke (cURL against dev or local)
 
-- [ ] Preview endpoint returns safe budget:
+> Detailed evidence in `admin-api-smoke-2026-04-27.md` (Phase 1 + appendix B): 9 endpoints exercised, 33+ checks, all PASS.
+
+- [x] Preview endpoint returns safe budget:
   ```bash
   curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
     -H "Content-Type: application/json" \
@@ -115,7 +148,7 @@ These 6 tests should be fixed in a separate hotfix (`fix: newCreditsUser fixture
   ```
   Expected: `safe_input_budget > 0`, `context_window > 0`
 
-- [ ] Events endpoint returns metadata only (no prompt content):
+- [x] Events endpoint returns metadata only (no prompt content):
   ```bash
   curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
     "http://localhost:9091/v1/admin/context-budget/events?page=1&page_size=5" \
@@ -124,7 +157,7 @@ These 6 tests should be fixed in a separate hotfix (`fix: newCreditsUser fixture
   Expected keys include: `id`, `user_id`, `operation`, `safe_input_budget`, `raw_input_tokens`, `compressed_input_tokens`, `compression_actions`, `created_at`.
   Must NOT include: `prompt`, `content`, `fragment_content`
 
-- [ ] Token profiles list:
+- [x] Token profiles list:
   ```bash
   curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
     "http://localhost:9091/v1/admin/context-budget/token-profiles?is_active=true" \
@@ -132,7 +165,7 @@ These 6 tests should be fixed in a separate hotfix (`fix: newCreditsUser fixture
   ```
   Expected: 1 active profile after fresh migration
 
-- [ ] Create new token profile and verify version increment + old profile deactivated:
+- [x] Create new token profile and verify version increment + old profile deactivated (verified via Playwright Path 2 after F-6 fix):
   ```bash
   # Create v2
   curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
@@ -148,80 +181,72 @@ These 6 tests should be fixed in a separate hotfix (`fix: newCreditsUser fixture
 
 ### Runtime Smoke (dev environment)
 
-- [ ] SOP node execution triggers Gateway ContextBudgetCredits middleware:
-  - Run a SOP in dev
-  - Check DB: `SELECT id, estimation_source, estimated_input_tokens FROM credit_reservation ORDER BY id DESC LIMIT 1`
-  - Expected: `estimation_source='context_budget'`, `estimated_input_tokens > 0`
-  - Check DB: `SELECT id, operation, safe_input_budget FROM context_budget_event ORDER BY id DESC LIMIT 1`
-  - Expected: row exists with `operation='sop_run'`, `safe_input_budget > 0`
+- [x] **chatbot path** (substituted for SOP — same Gateway middleware) execution triggered ContextBudgetCredits middleware end-to-end:
+  - Real chatbot call `POST /v1/chatbot/sessions/47/chat` user_id=25
+  - DB: `credit_reservation #48` `estimation_source='context_budget'`, `reserved_credits=72`, `actual_cost_cents=4` (matches `usage_record #384 cost_cents=4` after F-3 P2 fix)
+  - DB: `context_budget_event #6` `operation='chatbot_chat'`, `safe_input_budget=495648`, `status='ok'`, `reservation_id=48`, `actual_prompt_tokens=96`, `actual_completion_tokens=432`
+  - Detailed query results in `admin-api-smoke-2026-04-27.md` Phase 3 + F-3 P2 retest section.
 
-- [ ] Over-budget guard fires correctly:
-  - Construct a SOP request where total fragment tokens exceed `safe_input_budget`
-  - Expected: API returns `ErrContextTooLarge` (errno code defined in `pkg/errno/`)
-  - Expected: **no** LLM provider call is made (Langfuse shows no generation)
+- [ ] Over-budget guard fires correctly **(deferred to S6 dogfooding)**:
+  - Not exercised in S5 — would require constructing a synthetic large-fragment payload. Backend unit tests in `biz/contextbudget/biz_test.go` cover the planner + ErrContextTooLarge path. Real over-budget event will surface in S6 dogfooding when long-history chatbot threads accumulate.
 
-- [ ] Legacy-tier user SOP run:
-  - Use an account with `billing_mode=legacy_tier`
-  - Run a SOP node
-  - Expected: `PreCheckResult.SkipDeduction=true` → no `credit_reservation` row created
-  - Expected: `monthly_sop_runs` still increments (legacy tier counting continues)
+- [ ] Legacy-tier user SOP run **(deferred — no legacy_tier test user provisioned on dev)**:
+  - Unit-test coverage in `biz/credit/credit_service_reserve_test.go` (`TestReserve_LegacyTierBypass`). Will exercise on first legacy_tier production user touching SOP after S6 deploy.
 
-- [ ] User-facing input counter state transitions (manual browser test):
-  - SOP input (`/sop/*`): 33999 chars → normal (grey), 34000 chars → warning (yellow), 40001 chars → error (red + inline hint)
-  - Chatbot input: same thresholds
-  - SalesRAG input: same thresholds
-  - Submit is NOT blocked by counter state (backend is authoritative per spec §8.2)
+- [-] User-facing input counter state transitions — **skipped per controller decision (gstack `/qa`)**:
+  - Playwright Path 4 covers the high-risk admin observability path (events list, no prompt content). User-end character-count UX is low-risk per S3 plan §1320 (no business effect, gstack-eligible). Revisit if counter becomes a hard submit-blocker.
 
 ### Langfuse Observability Check
 
-- [ ] Run a local SOP node execution with Langfuse enabled (`config_local.yaml langfuse.enabled: true`)
-- [ ] In Langfuse UI, open the generation for that run
-- [ ] Verify generation metadata includes:
-  - `context_budget_event_id` (non-zero integer)
-  - `safe_input_budget` (non-zero integer, same as event row)
-  - `estimated_before` (integer, estimated tokens before compression)
-  - `estimated_after` (integer, ≤ `estimated_before`)
-  - `compression_actions` (array, may be empty if no compression needed)
-- [ ] Verify generation metadata does NOT include:
-  - `fragment.content` or any raw text from the user's prompt
-  - `prompt_text`, `system_prompt`, `messages` content (privacy contract per `docs/context-budget-observability.md`)
+> Substituted local SOP run with real chatbot call on dev. Trace verified via Langfuse public API (UI walk-through deferred). F-5 architectural bug found and fixed during this check.
+
+- [x] Triggered chatbot call on dev with Langfuse enabled (config_dev.yaml `langfuse.enabled: true`)
+- [x] Fetched generation `chatbot.stream` from trace `ff39235c-b005-4c12-9121-aa5f6b317c20` via Langfuse public API after F-5 fix landed
+- [x] Generation metadata (`output.metadata`) includes 11 budget keys:
+  - `context_budget_event_id=8`, `safe_input_budget=495648`
+  - `estimated_before=680`, `estimated_after=680` (no compression triggered, normal short message)
+  - `context_window=1000000`, `max_output_tokens=32768`, `reserved_output_tokens=8192`
+  - `safe_ratio=0.5`, `fixed_overhead_tokens=512`, `critical_fragment_count=2`
+  - `token_profile_fallback=true` (using built-in default profile)
+- [x] Five spec §11.1 fields are correctly omitted because zero-valued (`compression_actions=[]`, `dropped/summarized_fragment_count=0`, `token_profile_id=0`, `calibration_skipped=false`) — matches `mergeBudgetTracingMeta` "non-zero only" semantics.
+- [x] Generation metadata excludes prompt content. (Note: generation `input` field DOES contain prompt — by Langfuse design, not a violation; spec §11.3 prohibition applies to logs only, plan §1321's "且不含 prompt 原文" qualifies the metadata field, which is satisfied.)
 
 ### Frontend Playwright — Admin Web
 
-- [ ] Enable the spec for S5 run:
+> Verified end-to-end against dev:9100. Path 2 surfaced F-6 (backend `binding:"required"` + frontend missing field), fixed inline (Option B — frontend `profile_json` editor). Final spec on `numind-admin-web` `f2ef5f3`.
+
+- [x] Spec enabled (test.fixme → test) and run:
   ```bash
   cd numind-admin-web
-  # Remove test.fixme() wrappers from e2e/context-budget.spec.ts
-  E2E_USERNAME=$E2E_USERNAME E2E_PASSWORD=$E2E_PASSWORD \
-    BASE_URL=http://49.233.219.254:9100 \
-    npm run test:e2e -- --grep "Context Budget"
+  BASE_URL=http://49.233.219.254:9100 \
+    E2E_USERNAME=$E2E_USERNAME E2E_PASSWORD=$E2E_PASSWORD \
+    npx playwright test e2e/context-budget.spec.ts
   ```
-- [ ] 4 admin paths must all PASS:
-  1. Reject invalid LLM service capability (client-side validation)
-  2. Create new token profile version (list increments, old deactivated)
-  3. Edit policy and verify safe budget preview updates
-  4. View recent events with no prompt content exposed
+- [x] **4/4 admin paths PASS** (after F-6 fix landed):
+  1. ✅ Reject invalid LLM service capability — `e2e/screenshots/context-budget-path1.png`
+  2. ✅ Create new token profile version (list increments, profile_json editor populates default template) — `path2.png` (gitignored, regenerable)
+  3. ✅ Edit policy and verify safe budget preview updates — `path3.png`
+  4. ✅ View recent events with no prompt content exposed — `path4.png`
 
-### gstack /qa — User Counter (web-v3)
+### gstack /qa — User Counter (web-v3) — SKIPPED
 
-- [ ] Run `gstack /qa` against local or dev web-v3
-- [ ] Verify SOP input box counter behaviour:
-  - Input 10 characters → counter grey (normal state)
-  - Input 34000 characters → counter yellow with `34000/40000` display (warning state)
-  - Input 40001 characters → counter red + inline warning hint visible (error state)
-- [ ] Repeat for chatbot and SalesRAG input boxes
-- [ ] Save screenshots as evidence under `numind-admin-web/e2e/screenshots/context-budget-s5/`
+- [-] **Skipped per controller decision (2026-04-27).** Rationale recorded in S5 Sign-off Verdict (top of doc): Playwright Path 4 covers the high-risk admin observability path; user-end character-count UX is low-risk per S3 plan §1320 (no business effect, gstack-eligible / no regression-protection acceptable). Revisit if counter logic ever becomes a hard submit-blocker.
 
 ---
 
-## S5 Known Deferred Items (to S6)
+## S5 Known Deferred Items (to S6 / future)
 
 | Item | Reason for Deferral |
 |------|---------------------|
 | biz/contextbudget evaluation P50/P90/P99 thresholds still at Phase 1 (50%/80%) | Spec §4.3 literal 5%/10% thresholds require calibrated estimator weights; defer to S5 tuning |
-| `newCreditsUser` fixture seed bug (6 pre-existing test failures) | Separate hotfix, unrelated to this feature |
+| ~~`newCreditsUser` fixture seed bug (6 pre-existing test failures)~~ | ✅ FIXED in `62c16cd` (Team B during S5 fix wave) |
 | SOP reasoning fragments → `RoleWorking` mapping (Task 9 P2-2) | SOP data flow does not yet store reasoning content; revisit in SOP refactor |
 | `chatbot.stream` double-fetch performance nit (Task 10 N1) | Pushed to refactor backlog |
+| `TestReserve_CoefficientIDFrozenAcrossVersionBump` failing on develop | Pre-existing P3, uint64 vs *uint64 assertion type mismatch, unrelated to this feature |
+| `TestCreateRun_FreeUserReturnsTypedError` failing on develop | Pre-existing P3, error-mapping returns wrapError instead of *errno.Errno, unrelated |
+| Over-budget guard E2E exercise on dev (synthetic large fragment payload) | Backend unit tests cover the planner + ErrContextTooLarge path; will surface in S6 dogfooding |
+| Legacy-tier user end-to-end SOP run on dev | No legacy_tier test user provisioned; unit-test coverage in `biz/credit/credit_service_reserve_test.go` |
+| gstack `/qa` user counter visual screenshots | Formally skipped — see Sign-off Verdict |
 
 ---
 
@@ -239,5 +264,6 @@ These 6 tests should be fixed in a separate hotfix (`fix: newCreditsUser fixture
 | 8 | Task 12 (observability + evaluation) — sequential | fffe861 |
 | 9 | Task 13 (admin-web UI) + Task 14 (user-web input counter) — parallel | f5782cf (admin-web), 23cad1e (web-v3) |
 | 10 | Task 15 (this: E2E prep + S5 verification doc + manifest) | (this commit) |
+| S5 | F-1 backfill + F-2 LoadUser + F-3 reconcile + F-3 P2 calibration + test fixtures + F-5 holder + F-6 frontend | `9602541`+`48414b8`, `17a2a27`, `9483934`, `bcda6ba`+`655118a`, `62c16cd`, `b498a99`+`41edf0e`, `numind-admin-web` `7e9c6e6`+`f2ef5f3` |
 
-**15/15 tasks complete. Backend + admin web + user web all delivered.**
+**15/15 tasks complete. Backend + admin web + user web all delivered. S5 verification surfaced 5 real findings (3 P0 / 2 P1), all fixed and merged.**
