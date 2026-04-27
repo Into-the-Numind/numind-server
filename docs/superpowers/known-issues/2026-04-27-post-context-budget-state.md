@@ -1,9 +1,13 @@
 # Post-Context-Budget Known Issues & Repository State
 
 > **Generated:** 2026-04-27 after S4 完成 of feature `context-budget-compression`
+> **Last updated:** 2026-04-27 post-fix wave (F-1/F-2/F-3 + test fixture items closed)
 > **Purpose:** 集中记录所有 S4 期间发现但未解决的问题（含与本 feature 无关的 pre-existing
 > bugs、其他 session 留下的工件、git stash 残留、副作用变更），以及推迟的 P2 项。
 > 下次任何人接手 develop 分支前应阅读本文档，避免重复发现这些已知项目。
+>
+> **Open item counts (as of 2026-04-27 fix wave):**
+> P0 open: 0 | P1 open: 0 | P2 open: many (deferred per §1) | P3 open: 2 (deferred, see §2)
 >
 > **维护方式：** 每个条目修复后从本文档移除，并在最下方"已关闭项"区记录关闭时间 + commit。
 > 当文档为空时可整体删除。
@@ -52,35 +56,31 @@
 
 **已在 `develop@9f5f5ca` (Wave 5 完成时的 base) 验证存在**，多个 review 通过 `git stash` round-trip 交叉验证。
 
-### 受影响测试（约 6 个）
+### ~~受影响测试（约 6 个）~~ — CLOSED by commit 62c16cd
 
-| 测试名 | 包路径 | 失败模式 |
-|--------|--------|----------|
-| `TestSopCredits_CreditsMode_ReserveThenReconcile` | `internal/numind/biz/sop` | panic in `legacyTierImpl.Reserve` |
-| `TestReserve_ExactlyExhaustedThenRetry_ReturnsInsufficientSentinel` | `internal/numind/biz/credit` | panic in `legacyTierImpl.Reserve` |
-| `TestAcquireSalesragCredits_CreditsHappyPath` | `internal/numind/biz/salesrag` | panic in `legacyTierImpl.Reserve` |
-| `TestAcquireSalesragCredits_InsufficientBalance` | `internal/numind/biz/salesrag` | 同上 |
-| `TestAcquireSalesragCredits_IdempotentReplay` | `internal/numind/biz/salesrag` | 同上 |
-| `TestFinalize_StreamErrorTriggersRefund` | `internal/numind/biz/salesrag` | 同上 |
+> **[CLOSED 2026-04-27]** commit `62c16cd` ("fix(test): correct newCreditsUser fixture and credit controller stub")
+> Resolution: `newCreditsUser` fixture 改用 `UserTierFree`（credits 用户无旧 tier），使 `HasActiveMembership=false`，消除 legacy path panic；`credit_reservation` 手写 DDL 补齐 7 个 context-budget 列；controller stub 由 panic 改为 no-op。移至 §7 archive。
 
-Task 9 reviewer 还提到 `TestCreateRun_FreeUserReturnsTypedError`（biz/sop）也 fail，但根因略不同（FreeUser 路径），需独立确认。
+| 测试名 | 包路径 | 失败模式 | 状态 |
+|--------|--------|----------|------|
+| `TestSopCredits_CreditsMode_ReserveThenReconcile` | `internal/numind/biz/sop` | panic in `legacyTierImpl.Reserve` | **CLOSED** |
+| `TestReserve_ExactlyExhaustedThenRetry_ReturnsInsufficientSentinel` | `internal/numind/biz/credit` | panic in `legacyTierImpl.Reserve` | **CLOSED** |
+| `TestAcquireSalesragCredits_CreditsHappyPath` | `internal/numind/biz/salesrag` | panic in `legacyTierImpl.Reserve` | **CLOSED** |
+| `TestAcquireSalesragCredits_InsufficientBalance` | `internal/numind/biz/salesrag` | 同上 | **CLOSED** |
+| `TestAcquireSalesragCredits_IdempotentReplay` | `internal/numind/biz/salesrag` | 同上 | **CLOSED** |
+| `TestFinalize_StreamErrorTriggersRefund` | `internal/numind/biz/salesrag` | 同上 | **CLOSED** |
 
-### 建议修复方案
-新建一个独立 hotfix branch `fix/credits-fixture-seed`：
-```go
-// 修 newCreditsUser fixture（位置：internal/numind/biz/credit/testhelpers_test.go 之类）
-func newCreditsUser(id uint) *model.User {
-    return &model.User{
-        ID:           id,
-        BillingMode:  "credits",
-        UserTier:     "free",       // ← 改为 free（credits 用户没有旧 tier）
-        TierExpires:  nil,
-        // 或者保持 UserTier=standard 但设 TierExpires=time.Now().Add(24*time.Hour)
-        //（这样 HasActiveMembership=true 但 isEffectiveLegacy 检查更细致）
-    }
-}
-```
-**预计工作量：30 分钟**，跑遍 6 个测试确认全部 PASS。
+### OPEN — P3 / deferred (2 个，暂不处理)
+
+> Deferred per user instruction 2026-04-27 — out-of-scope for context-budget-compression feature.
+> Owner: 未指派。
+
+| 测试名 | 包路径 | 失败模式 | 状态 |
+|--------|--------|----------|------|
+| `TestReserve_CoefficientIDFrozenAcrossVersionBump` | `internal/numind/biz/credit` | assertion type mismatch (uint64 vs *uint64)，pre-existing | **P3 / 暂不处理** |
+| `TestCreateRun_FreeUserReturnsTypedError` | `internal/numind/biz/sop` | error-mapping bug (返回 `*fmt.wrapError` 而非 `*errno.Errno`)，pre-existing | **P3 / 暂不处理** |
+
+这两个测试失败与 context-budget-compression 无关，根因为各自独立的类型不匹配 bug，已在 develop 分支长期存在。修复需要各自独立的 hotfix track，不在当前 sprint 范围内。
 
 ---
 
@@ -136,12 +136,14 @@ stash@{3}: On develop: parallel-session-wip: 4 files from feature/child-run-perm
 - **commit：** `813eab1` (within Task 12) → merged via `fffe861`
 - **是否回滚：** 否，注释更详细对维护反而有利。仅在 Task 12 merge commit message 中标注。
 
-### 5.2 Task 15 顺手修：`internal/numind/controller/v1/credit/credit_test.go` 加 6 行 stub
+### 5.2 Task 15 顺手修：`internal/numind/controller/v1/credit/credit_test.go` 加 6 行 stub — **CLOSED**
+
+> **[CLOSED 2026-04-27]** commit `62c16cd` ("fix(test): correct newCreditsUser fixture and credit controller stub")
+> Resolution: stub 由 `panic` 改为 no-op 实现，消除 runtime panic 风险。
+
 - **变更：** Task 4 给 `ICreditService` interface 新增了 `CheckAndEstimateBudget` + `ReserveBudget` 方法，但 controller 测试中的 `stubCreditSvc` 没更新，导致 `controller/v1/credit` 包测试 build fail。
-- **修复：** Task 15 implementer 加了 2 个 no-op panic stub 让 build 通过。
-- **commit：** `bf5aee9`
-- **是否真正修了 bug：** 让测试 build 通过，但 stub 是 panic 的 —— 任何调用该 mock 的 controller 测试都会在 runtime 触发 panic。当前 controller 测试似乎没人调这两个新方法（所以 build 修了就够），但**如果未来 controller 层加这两方法的测试，需要给 stub 加合理实现**。
-- **建议：** 跟 §2 的 newCreditsUser fixture seed bug 一起在同一个 hotfix branch 解决。
+- **原始修复：** Task 15 implementer 加了 2 个 no-op panic stub 让 build 通过（commit `bf5aee9`）。
+- **最终修复：** stub 由 panic 改为 no-op，任何调用这两个方法的 controller 测试不再 panic（commit `62c16cd`）。
 
 ---
 
@@ -150,8 +152,8 @@ stash@{3}: On develop: parallel-session-wip: 4 files from feature/child-run-perm
 按 ROI（修复成本 vs 风险/价值）排序：
 
 ### High priority（建议下一个 sprint 解决）
-1. **§2 newCreditsUser fixture seed bug** —— 影响 CI 信号，让 6 个测试持续 fail 会麻木开发者。30 分钟修复。
-2. **§5.2 controller/v1/credit stub 真实实现** —— 与 §2 一起修，避免运行时 panic 风险。15 分钟。
+1. ~~**§2 newCreditsUser fixture seed bug**~~ — **CLOSED** commit `62c16cd`
+2. ~~**§5.2 controller/v1/credit stub 真实实现**~~ — **CLOSED** commit `62c16cd`
 3. **§3 untracked files 清理** —— 部署前必做，否则 dev/qa/prod 可能误带这些文件。15 分钟。
 
 ### Medium priority（S5 阶段必做）
@@ -173,7 +175,15 @@ stash@{3}: On develop: parallel-session-wip: 4 files from feature/child-run-perm
 
 > 修复后从上面移到这里，记录关闭时间 + commit SHA。
 
-（暂无）
+### 2026-04-27 fix wave
+
+| # | 描述 | 优先级 | 关闭 commit | Resolution |
+|---|------|--------|-------------|-----------|
+| F-2 | nil-deref panic in ContextBudget Reserve path（`ContextBudgetCreditService.CheckAndEstimateBudget` 收到 nil user） | **P0** | `17a2a27` | `ContextBudgetCreditService` interface 增加 `LoadUser` 方法；`creditServiceFacade` 打通到 `store.UserStore.GetUserByID`；`doReserveBudget` 在调用 `CheckAndEstimateBudget` 前先 load user。 |
+| F-3 P0 | reservation never reconciled/refunded（stream + non-stream finalize 路径均未调 FinalizeReservation） | **P0** | `9483934` | 新增 `finalizeReservationIfNeeded` helper，挂载到全部 3 处 finalize site。 |
+| F-3 P2 | Reconcile 使用 `EstimatedCredits` 8192 占位符而非实际 `cost_cents` | **P2** | `bcda6ba` | ctx 中注入共享 `*finalCostHolder`；billing middleware 在转发 IsFinal chunk 前写入真实 cost；finalize 读 holder，未设则 fallback 到 `EstimatedCredits`。 |
+| F-1 | 生产环境 `llm_service.max_output_tokens` 为 NULL（dev 12/14 条已补，prod 未动） | **P0 → MITIGATED** | `9602541` + `48414b8` | 生产就绪 backfill 脚本已落地（`scripts/2026-04-27-context-budget-max-output-backfill/` 01~04 SQL + README）；研究文档在 `docs/superpowers/research/2026-04-27-llm-max-output-tokens-table.md`。**注：prod 实际执行由 S6 release engineer 操作，脚本已就绪，rollout 待执行（MITIGATED，非完全关闭）。** |
+| §2 / §5.2 | 6 个 pre-existing 测试失败（newCreditsUser fixture seed bug）+ controller stub panic | **P1** | `62c16cd` | `newCreditsUser` fixture 改用 `UserTierFree`；`credit_reservation` 手写 DDL 补 7 列；controller stub 由 panic 改为 no-op。 |
 
 ---
 
