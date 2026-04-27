@@ -68,6 +68,9 @@ func newCreditsSopTestDB(t *testing.T) *gorm.DB {
 	))
 
 	// Hand-roll reservation tables (TEXT for ENUMs).
+	// Includes context-budget extension columns (estimation_source, token_profile_id, etc.)
+	// added in Task 1 (feature: context-budget-compression) — kept in sync with
+	// credit_service_reserve_test.go::newCreditReserveTestDB.
 	require.NoError(t, db.Exec(`
 CREATE TABLE IF NOT EXISTS credit_reservation (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,7 +79,7 @@ CREATE TABLE IF NOT EXISTS credit_reservation (
     reference_id TEXT NOT NULL,
     operation TEXT NOT NULL,
     reserved_credits INTEGER NOT NULL,
-    coefficient_id INTEGER NOT NULL,
+    coefficient_id INTEGER,
     status TEXT NOT NULL DEFAULT 'reserved',
     actual_cost_cents INTEGER,
     delta INTEGER,
@@ -84,7 +87,14 @@ CREATE TABLE IF NOT EXISTS credit_reservation (
     idempotency_key TEXT,
     reconciled_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    estimation_source TEXT NOT NULL DEFAULT 'credit_coefficient',
+    token_profile_id INTEGER,
+    estimated_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_completion_tokens INTEGER NOT NULL DEFAULT 0,
+    provider TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    context_budget_event_id INTEGER
 );`).Error)
 	require.NoError(t, db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uk_idempotency_key ON credit_reservation(idempotency_key);`).Error)
 	require.NoError(t, db.Exec(`
@@ -141,10 +151,13 @@ func seedSopCreditsScenario(t *testing.T, db *gorm.DB,
 	}
 	require.NoError(t, db.Create(&rule).Error)
 
+	// UserTier must be "free" so HasActiveMembership()=false and isEffectiveLegacy()
+	// routes to the credits path. Standard/trial/premium with TierExpires=nil
+	// would make HasActiveMembership()=true → legacyTierImpl.Reserve panic.
 	return &model.User{
 		Model:       gorm.Model{ID: userID},
 		BillingMode: model.BillingModeCredits,
-		UserTier:    model.UserTierStandard,
+		UserTier:    model.UserTierFree,
 	}
 }
 
@@ -171,10 +184,10 @@ func buildSopBizWithCredits(t *testing.T, db *gorm.DB) *sopBiz {
 // TestComputeSopPromptChars_SumsAllSources verifies prompt-char accounting
 // covers template.Prompt + node.Prompt + history + currentInput.
 func TestComputeSopPromptChars_SumsAllSources(t *testing.T) {
-	tmpl := &model.SopTemplate{Prompt: "tmpl-prompt"}     // 11
-	node := &model.SopNode{Prompt: "node-prompt"}         // 11
+	tmpl := &model.SopTemplate{Prompt: "tmpl-prompt"}      // 11
+	node := &model.SopNode{Prompt: "node-prompt"}          // 11
 	history := []LLMMessage{{Role: "user", Content: "hi"}} // 2
-	input := "question"                                   // 8
+	input := "question"                                    // 8
 	got := computeSopPromptChars(tmpl, node, history, input)
 	assert.Equal(t, 11+11+2+8, got)
 }
@@ -190,16 +203,16 @@ func TestComputeSopPromptChars_NilSafety(t *testing.T) {
 // empty / unknown fallbacks (spec §3.2 requires best-effort, not strict).
 func TestProviderFromModelName_KnownPrefixes(t *testing.T) {
 	cases := map[string]string{
-		"qwen-turbo":              "ali-dashscope",
-		"qwen-plus":               "ali-dashscope",
-		"text-embedding-v4":       "ali-dashscope",
-		"deepseek-v3-2-251201":    "volc-ark",
-		"doubao-seed-1-6-flash":   "volc-ark",
-		"glm-4-7-251222":          "volc-ark",
-		"claude-3-5-sonnet":       "dmxapi",
-		"gemini-pro":              "dmxapi",
-		"":                        "",
-		"some-custom-model":       "",
+		"qwen-turbo":            "ali-dashscope",
+		"qwen-plus":             "ali-dashscope",
+		"text-embedding-v4":     "ali-dashscope",
+		"deepseek-v3-2-251201":  "volc-ark",
+		"doubao-seed-1-6-flash": "volc-ark",
+		"glm-4-7-251222":        "volc-ark",
+		"claude-3-5-sonnet":     "dmxapi",
+		"gemini-pro":            "dmxapi",
+		"":                      "",
+		"some-custom-model":     "",
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, credit.ProviderFromModel(in), "model=%s", in)
