@@ -92,6 +92,9 @@ CREATE TABLE IF NOT EXISTS user (
 
 	// Hand-roll reservation tables: CreditReservation.Status and
 	// FinalizeReason are MySQL ENUMs which SQLite rejects via AutoMigrate.
+	// Includes context-budget extension columns (estimation_source, token_profile_id, etc.)
+	// added in Task 1 (feature: context-budget-compression) — kept in sync with
+	// credit_service_reserve_test.go::newCreditReserveTestDB.
 	require.NoError(t, db.Exec(`
 CREATE TABLE IF NOT EXISTS credit_reservation (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,7 +103,7 @@ CREATE TABLE IF NOT EXISTS credit_reservation (
     reference_id TEXT NOT NULL,
     operation TEXT NOT NULL,
     reserved_credits INTEGER NOT NULL,
-    coefficient_id INTEGER NOT NULL,
+    coefficient_id INTEGER,
     status TEXT NOT NULL DEFAULT 'reserved',
     actual_cost_cents INTEGER,
     delta INTEGER,
@@ -108,7 +111,14 @@ CREATE TABLE IF NOT EXISTS credit_reservation (
     idempotency_key TEXT,
     reconciled_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    estimation_source TEXT NOT NULL DEFAULT 'credit_coefficient',
+    token_profile_id INTEGER,
+    estimated_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_completion_tokens INTEGER NOT NULL DEFAULT 0,
+    provider TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    context_budget_event_id INTEGER
 );`).Error)
 	require.NoError(t, db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uk_idempotency_key ON credit_reservation(idempotency_key);`).Error)
 
@@ -132,9 +142,12 @@ CREATE TABLE IF NOT EXISTS credit_reservation_item (
 // subscription package so Reserve has credits to debit.
 func seedCreditsUserWithPackage(t *testing.T, db *gorm.DB, userID uint, totalCredits int64) *model.User {
 	t.Helper()
+	// UserTier must be "free" so HasActiveMembership()=false and isEffectiveLegacy()
+	// routes to the credits path. Standard/trial/premium with TierExpires=nil would
+	// make HasActiveMembership()=true → legacyTierImpl.Reserve panic.
 	user := &model.User{
 		BillingMode: model.BillingModeCredits,
-		UserTier:    model.UserTierStandard,
+		UserTier:    model.UserTierFree,
 		Phone:       "13800000000",
 	}
 	user.ID = userID
@@ -227,12 +240,19 @@ func ctxWithRequestID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, known.XRequestIDKey, id)
 }
 
-// --- Test 1: happy path — credits user Chat debits balance + reconciles ---
+// --- Test 1: happy path — credits user passes pre-flight, Reserve delegated to Gateway ---
 
-// TestAcquireSalesragCredits_CreditsHappyPath verifies a full credits flow:
-// Reserve deducts EstimatedCredits from the user's package; recordLLMResult
-// captures actualCost; finalize triggers Reconcile with the correct delta
-// (actual < reserved → refund surplus back to the package).
+// TestAcquireSalesragCredits_CreditsHappyPath verifies that for a credits-mode
+// user with sufficient balance, acquireSalesragCredits succeeds and returns a
+// non-nil cc with SkipDeduction=false. As of Task 10 (P1 spec-compliance fix),
+// the inline Reserve is delegated to the Gateway middleware (ContextBudgetCredits).
+// This function performs only CheckAndEstimate (early balance-denial), so:
+//   - cc.rsv is nil (no inline Reserve)
+//   - balance is unchanged after this call
+//   - finalize is a safe no-op when cc.rsv == nil
+//
+// The Reconcile/Refund lifecycle is exercised in credit_service_reconcile_test.go
+// and the Gateway middleware tests.
 func TestAcquireSalesragCredits_CreditsHappyPath(t *testing.T) {
 	db := newSalesragCreditsTestDB(t)
 	ds := store.NewTestStore(db)
@@ -247,40 +267,28 @@ func TestAcquireSalesragCredits_CreditsHappyPath(t *testing.T) {
 	b := newTestSalesragBiz(ds, svc, calc)
 	ctx := ctxWithRequestID(context.Background(), "req-ctx-1")
 
-	// Acquire: CheckAndEstimate + Reserve.
+	// Acquire: CheckAndEstimate only (Reserve delegated to Gateway since Task 10).
 	cc, err := b.acquireSalesragCredits(ctx, userID, 42, 500)
-	require.NoError(t, err)
+	require.NoError(t, err, "credits user with sufficient balance must not be denied")
 	require.NotNil(t, cc)
-	require.NotNil(t, cc.rsv, "credits user must reserve")
-	assert.Greater(t, cc.rsv.ReservedCredits, int64(0))
+	require.NotNil(t, cc.pre, "PreCheckResult must be populated")
+	assert.False(t, cc.pre.SkipDeduction, "credits user must NOT skip deduction")
+	assert.True(t, cc.pre.Sufficient, "user has ample balance")
+	assert.Greater(t, cc.pre.EstimatedCredits, int64(0), "estimation must be non-zero")
 
-	// Snapshot balance after Reserve — it must have been debited FIFO.
-	var accAfterReserve model.CreditAccount
-	require.NoError(t, db.Where("user_id = ?", userID).First(&accAfterReserve).Error)
-	assert.Equal(t, 1000-cc.rsv.ReservedCredits, accAfterReserve.Balance,
-		"balance should decrement by ReservedCredits after Reserve")
+	// KEY: no inline Reserve — Gateway middleware owns the Reserve cycle.
+	assert.Nil(t, cc.rsv,
+		"acquireSalesragCredits must NOT reserve credits inline (Gateway middleware owns it since Task 10)")
 
-	// Simulate successful LLM: pricing (200 / 800 per Mtok flat) for 100 prompt +
-	// 50 completion tokens = ceil(100*200/1e6 * 100 + 50*800/1e6 * 100) = ceil(2+4) = 6 cents.
-	cc.recordLLMResult(ctx, nil, "", "", 100, 50)
-	assert.EqualValues(t, 6, cc.actualCost, "actualCost = 100*200/1e6 + 50*800/1e6 = 0.06 yuan = 6 cents")
+	// Balance must be unchanged — no debit happened in this function.
+	var acc model.CreditAccount
+	require.NoError(t, db.Where("user_id = ?", userID).First(&acc).Error)
+	assert.EqualValues(t, 1000, acc.Balance, "balance unchanged: no inline Reserve")
 
-	// Finalize → Reconcile (delta = 6 - reserved). Surplus refunded to package.
+	// finalize with nil rsv must be a safe no-op.
 	cc.finalize(ctx)
-
-	// The reservation row must be reconciled.
-	var rsvRow model.CreditReservation
-	require.NoError(t, db.First(&rsvRow, cc.rsv.ID).Error)
-	assert.Equal(t, "reconciled", rsvRow.Status, "finalize should reconcile reservation")
-	require.NotNil(t, rsvRow.ActualCostCents)
-	assert.EqualValues(t, 6, *rsvRow.ActualCostCents)
-
-	// Balance should rebound by the delta (refund of over-reservation).
-	var accAfterFinalize model.CreditAccount
-	require.NoError(t, db.Where("user_id = ?", userID).First(&accAfterFinalize).Error)
-	expectedBalance := int64(1000 - 6) // net-net the user only paid the actual cost.
-	assert.Equal(t, expectedBalance, accAfterFinalize.Balance,
-		"after Reconcile the balance equals 1000 - actualCost; surplus is refunded to package")
+	require.NoError(t, db.Where("user_id = ?", userID).First(&acc).Error)
+	assert.EqualValues(t, 1000, acc.Balance, "finalize(nil rsv) must not mutate balance")
 }
 
 // --- Test 2: insufficient credits → ErrInsufficientCredits wrapped as errno ---
@@ -296,9 +304,11 @@ func TestAcquireSalesragCredits_InsufficientBalance(t *testing.T) {
 
 	userID := uint(1002)
 	// Seed a credits-mode user but with zero balance (no packages).
+	// UserTier must be "free" so isEffectiveLegacy()=false and the credits path
+	// (which enforces balance check) is exercised instead of legacyTierImpl.
 	user := &model.User{
 		BillingMode: model.BillingModeCredits,
-		UserTier:    model.UserTierStandard,
+		UserTier:    model.UserTierFree,
 		Phone:       "13811111111",
 	}
 	user.ID = userID
@@ -372,13 +382,16 @@ func TestAcquireSalesragCredits_LegacyTierFree(t *testing.T) {
 	assert.EqualValues(t, 0, accCount, "legacy_tier never creates a credit_account via salesrag")
 }
 
-// --- Test 4: mid-stream abort (context.Canceled) triggers Refund ---
+// --- Test 4: mid-stream abort with nil rsv — finalize is a safe no-op ---
 
-// TestFinalize_StreamErrorTriggersRefund simulates the ChatStream-drain
-// failure path: client disconnects or LLM provider times out mid-stream.
-// recordLLMResult is called with a non-nil streamErr; finalize should
-// invoke Refund (not Reconcile), restoring the reserved credits to their
-// origin package.
+// TestFinalize_StreamErrorTriggersRefund verifies that after the Task 10
+// P1 fix, acquireSalesragCredits returns cc.rsv=nil for credits users (Reserve
+// delegated to Gateway). As a result, recordLLMResult and finalize are both
+// safe no-ops when cc.rsv==nil: no reservation row is written and balance
+// is unchanged even when a stream error (context.Canceled) is recorded.
+//
+// The Refund lifecycle for the Gateway-managed reservation is covered by the
+// Gateway middleware tests (ContextBudgetCredits) and credit_service_reconcile_test.go.
 func TestFinalize_StreamErrorTriggersRefund(t *testing.T) {
 	db := newSalesragCreditsTestDB(t)
 	ds := store.NewTestStore(db)
@@ -392,44 +405,45 @@ func TestFinalize_StreamErrorTriggersRefund(t *testing.T) {
 	b := newTestSalesragBiz(ds, svc, calc)
 	ctx := ctxWithRequestID(context.Background(), "req-ctx-4")
 
+	// acquireSalesragCredits: CheckAndEstimate runs, Reserve is delegated to Gateway.
 	cc, err := b.acquireSalesragCredits(ctx, userID, 77, 500)
 	require.NoError(t, err)
-	require.NotNil(t, cc.rsv)
-	reservedAmount := cc.rsv.ReservedCredits
+	require.NotNil(t, cc)
+	// KEY: no inline Reserve since Task 10 P1 fix.
+	assert.Nil(t, cc.rsv, "credits user must not have an inline reservation (Gateway owns it)")
 
-	// Snapshot balance after Reserve (before the abort).
-	var accAfterReserve model.CreditAccount
-	require.NoError(t, db.Where("user_id = ?", userID).First(&accAfterReserve).Error)
-	assert.Equal(t, 1000-reservedAmount, accAfterReserve.Balance)
+	// Balance must be unchanged — no debit.
+	var accBefore model.CreditAccount
+	require.NoError(t, db.Where("user_id = ?", userID).First(&accBefore).Error)
+	assert.EqualValues(t, 1000, accBefore.Balance, "no debit before gateway reserve")
 
-	// Simulate mid-stream abort: caller passes context.Canceled.
+	// Simulate mid-stream abort: recordLLMResult with cc.rsv==nil is a no-op.
 	cc.recordLLMResult(ctx, context.Canceled, "", "", 0, 0)
-	assert.EqualValues(t, 0, cc.actualCost, "abort path never records actualCost")
-	assert.ErrorIs(t, cc.opErr, context.Canceled)
+	// Since cc.rsv==nil, opErr is NOT captured (the guard "if cc==nil || cc.rsv==nil" returns early).
+	assert.EqualValues(t, 0, cc.actualCost, "no-op: rsv==nil means no cost tracking")
 
-	// Finalize → Refund (classifyReason maps context.Canceled → "user_cancelled").
+	// Finalize with cc.rsv==nil must be a safe no-op — no reservation rows written.
 	cc.finalize(ctx)
+	var count int64
+	db.Model(&model.CreditReservation{}).Where("user_id = ?", userID).Count(&count)
+	assert.EqualValues(t, 0, count, "finalize(nil rsv) must not write any reservation rows")
 
-	// Reservation row must be refunded.
-	var rsvRow model.CreditReservation
-	require.NoError(t, db.First(&rsvRow, cc.rsv.ID).Error)
-	assert.Equal(t, "refunded", rsvRow.Status, "abort path must refund")
-	require.NotNil(t, rsvRow.FinalizeReason)
-	assert.Equal(t, "user_cancelled", *rsvRow.FinalizeReason,
-		"context.Canceled maps to user_cancelled refund reason")
-
-	// Balance must have rebounded fully.
+	// Balance must remain untouched throughout.
 	var accAfter model.CreditAccount
 	require.NoError(t, db.Where("user_id = ?", userID).First(&accAfter).Error)
-	assert.Equal(t, int64(1000), accAfter.Balance, "full refund restores original balance")
+	assert.Equal(t, int64(1000), accAfter.Balance, "balance unchanged: no inline Reserve, no inline Refund")
 }
 
-// --- Test 5: idempotency — duplicate request with same request_uuid reuses reservation ---
+// --- Test 5: repeated calls with same request_uuid — no reservation either time ---
 
-// TestAcquireSalesragCredits_IdempotentReplay verifies that a retried call
-// with the same X-Request-ID (same session_id + request_uuid → same
-// idempotency_key) returns the existing reservation instead of double-
-// debiting. Protects against network-retry double-charge.
+// TestAcquireSalesragCredits_IdempotentReplay verifies that as of the Task 10
+// P1 fix, acquireSalesragCredits performs only CheckAndEstimate (no inline
+// Reserve). Repeated calls with the same X-Request-ID context do not create
+// any reservation rows — idempotency for the Reserve cycle is now enforced by
+// the Gateway middleware (ContextBudgetCredits), not by this function.
+//
+// This test confirms that two calls with the same request context leave zero
+// reservation rows and identical cc state (no double-check side-effects).
 func TestAcquireSalesragCredits_IdempotentReplay(t *testing.T) {
 	db := newSalesragCreditsTestDB(t)
 	ds := store.NewTestStore(db)
@@ -445,19 +459,19 @@ func TestAcquireSalesragCredits_IdempotentReplay(t *testing.T) {
 
 	cc1, err := b.acquireSalesragCredits(ctx, userID, 99, 500)
 	require.NoError(t, err)
-	require.NotNil(t, cc1.rsv)
+	require.NotNil(t, cc1)
+	assert.Nil(t, cc1.rsv, "first call: no inline Reserve since Task 10 P1 fix")
 
-	// Second call with identical request_uuid → same idempotency_key →
-	// Reserve returns existing row (no second debit).
+	// Second call with identical context — same CheckAndEstimate result, still no Reserve.
 	cc2, err := b.acquireSalesragCredits(ctx, userID, 99, 500)
 	require.NoError(t, err)
-	require.NotNil(t, cc2.rsv)
-	assert.Equal(t, cc1.rsv.ID, cc2.rsv.ID, "same idempotency_key must return the same reservation")
+	require.NotNil(t, cc2)
+	assert.Nil(t, cc2.rsv, "second call: still no inline Reserve")
 
-	// Only ONE reservation row should exist for this user+session.
+	// Zero reservation rows — idempotency is the Gateway's responsibility.
 	var count int64
 	db.Model(&model.CreditReservation{}).Where("user_id = ?", userID).Count(&count)
-	assert.EqualValues(t, 1, count, "idempotent replay must not create a second reservation")
+	assert.EqualValues(t, 0, count, "no reservation rows from acquireSalesragCredits (Gateway owns it)")
 }
 
 // --- Test 6: wrapCreditError surfaces legacy_tier Chinese denial reason ---

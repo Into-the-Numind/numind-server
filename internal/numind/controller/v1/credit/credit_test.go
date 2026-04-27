@@ -58,11 +58,22 @@ func (s *stubCreditSvc) FinalizeReservation(_ context.Context, _ *creditbiz.Rese
 func (s *stubCreditSvc) GetBalance(_ context.Context, _ *model.User) (*creditbiz.BalanceBreakdown, error) {
 	return s.balance, s.balanceErr
 }
+
+// CheckAndEstimateBudget: budget-aware variant. Default mock returns a
+// PreCheckResult with sufficient credits + zero estimate so tests that
+// don't exercise context-budget paths don't crash if this method is called.
 func (s *stubCreditSvc) CheckAndEstimateBudget(_ context.Context, _ *model.User, _ creditbiz.BudgetPrecheckInput) (*creditbiz.PreCheckResult, error) {
-	panic("not used in tests")
+	return &creditbiz.PreCheckResult{
+		SkipDeduction:    false,
+		Sufficient:       true,
+		EstimatedCredits: 0,
+	}, nil
 }
+
+// ReserveBudget: returns (nil, nil) — nil reservation signals the legacy/skip
+// path; safe no-op for any test that does not exercise context-budget reservation.
 func (s *stubCreditSvc) ReserveBudget(_ context.Context, _ *model.User, _ creditbiz.BudgetReservationInput) (*creditbiz.Reservation, error) {
-	panic("not used in tests")
+	return nil, nil
 }
 
 // stubPromptEstimator always returns a fixed (chars, model, provider).
@@ -185,7 +196,7 @@ func TestEstimate_CreditsMode_SOP_ReturnsAggregate(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 
 	var env struct {
-		Code int                  `json:"code"`
+		Code int                    `json:"code"`
 		Data creditctl.EstimateResp `json:"data"`
 	}
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
@@ -233,7 +244,7 @@ func TestEstimate_Legacy_SkipDeduction(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 
 	var env struct {
-		Code int                  `json:"code"`
+		Code int                    `json:"code"`
 		Data creditctl.EstimateResp `json:"data"`
 	}
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
@@ -280,7 +291,7 @@ func TestEstimate_InsufficientCredits_Returns200(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 
 	var env struct {
-		Code int                  `json:"code"`
+		Code int                    `json:"code"`
 		Data creditctl.EstimateResp `json:"data"`
 	}
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
@@ -344,7 +355,7 @@ func TestListPackages_Basic(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 
 	var env struct {
-		Code int                       `json:"code"`
+		Code int                        `json:"code"`
 		Data creditctl.ListPackagesResp `json:"data"`
 	}
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
@@ -372,7 +383,7 @@ func TestListPackages_TypeFilter(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 
 	var env struct {
-		Code int                       `json:"code"`
+		Code int                        `json:"code"`
 		Data creditctl.ListPackagesResp `json:"data"`
 	}
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
