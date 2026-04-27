@@ -175,6 +175,38 @@ type FinalizeInput struct {
 // usage_record.metadata.
 type ctxKeyBudgetMetadata struct{}
 
+// ----------------------------------------------------------------------------
+// finalCostHolder — shared mutable cost handoff (Option B)
+// ----------------------------------------------------------------------------
+
+// finalCostHolder is a pointer-sized mutable struct injected into ctx by
+// ContextBudgetCredits (after Reserve). The inner Billing middleware writes
+// CostCents after computing the actual cost from the pricing rule so that
+// ContextBudgetCredits's finalizeReservationIfNeeded can pass the real value
+// to FinalizeReservation instead of the EstimatedCredits placeholder.
+//
+// Context is immutable-by-copy; sharing a *finalCostHolder pointer through
+// context.WithValue is the standard Go pattern for mutable cross-middleware
+// state without breaking context semantics.
+type finalCostHolder struct {
+	CostCents int64
+}
+
+// ctxKeyFinalCostHolder is the context key for *finalCostHolder.
+type ctxKeyFinalCostHolder struct{}
+
+// withFinalCostHolder injects a *finalCostHolder pointer into ctx.
+func withFinalCostHolder(ctx context.Context, h *finalCostHolder) context.Context {
+	return context.WithValue(ctx, ctxKeyFinalCostHolder{}, h)
+}
+
+// finalCostHolderFromCtx extracts the *finalCostHolder from ctx.
+// Returns nil if the holder was not injected (e.g. legacy paths without budget).
+func finalCostHolderFromCtx(ctx context.Context) *finalCostHolder {
+	h, _ := ctx.Value(ctxKeyFinalCostHolder{}).(*finalCostHolder)
+	return h
+}
+
 // budgetMetadata is the structured metadata attached to the context.
 type budgetMetadata struct {
 	EventID               uint64 `json:"event_id,omitempty"`
@@ -350,6 +382,18 @@ func ContextBudgetCredits(deps Deps) Middleware {
 			}
 
 			// ----------------------------------------------------------------
+			// Step 5b: inject finalCostHolder into ctx so the inner Billing
+			// middleware can publish the real cost_cents back to us.
+			// Only inject when a reservation exists — no reservation means no
+			// reconcile, and the holder would be unused overhead.
+			// ----------------------------------------------------------------
+			var holder *finalCostHolder
+			if reservationID > 0 {
+				holder = &finalCostHolder{}
+				ctx = withFinalCostHolder(ctx, holder)
+			}
+
+			// ----------------------------------------------------------------
 			// Step 6: inject budget metadata into ctx for Billing middleware.
 			// ----------------------------------------------------------------
 			// compression_status is "compressed" when the planner produced at
@@ -459,11 +503,17 @@ func ContextBudgetCredits(deps Deps) Middleware {
 // finalizeReservationIfNeeded calls FinalizeReservation (or Refund on error)
 // against the credit service if a reservation was created during Reserve.
 // No-op when ReservationID == 0 (legacy-tier user / ChargeUser=false / no
-// user context). Spec §6.4: actual cost calibration happens in Biz.Finalize
-// via the event's calibration_ratio; the credit reconcile here uses
-// EstimatedCredits as the actual amount, which keeps the reservation balanced
-// (delta=0) until pricing data flows end-to-end. Failures are logged warn —
-// finalize must never propagate errors to the caller.
+// user context).
+//
+// Actual cost resolution (spec §6.4):
+//   - Reads the *finalCostHolder injected by ContextBudgetCredits step 5b.
+//   - If Billing middleware populated holder.CostCents > 0 (from pricing rule +
+//     actual token counts), that value is used as actualCredits for reconcile.
+//   - Falls back to fi.EstimatedCredits when the holder is absent or zero
+//     (e.g. legacy non-streaming paths, pricing-rule miss, or error paths where
+//     Billing never computed a cost).
+//
+// Failures are logged warn — finalize must never propagate errors to the caller.
 func finalizeReservationIfNeeded(ctx context.Context, deps Deps, fi FinalizeInput) {
 	if fi.ReservationID == 0 || deps.CreditService == nil {
 		return
@@ -482,10 +532,19 @@ func finalizeReservationIfNeeded(ctx context.Context, deps Deps, fi FinalizeInpu
 		}
 		return
 	}
-	if err := deps.CreditService.FinalizeReservation(ctx, fi.ReservationID, fi.EstimatedCredits, "context_budget_reconcile"); err != nil {
+
+	// Resolve the actual cost: prefer the value set by Billing middleware via
+	// the finalCostHolder (real pricing-rule cost), fall back to the pre-call
+	// EstimatedCredits (ReservedOutputTokens placeholder) when unavailable.
+	actualCredits := fi.EstimatedCredits
+	if holder := finalCostHolderFromCtx(ctx); holder != nil && holder.CostCents > 0 {
+		actualCredits = holder.CostCents
+	}
+
+	if err := deps.CreditService.FinalizeReservation(ctx, fi.ReservationID, actualCredits, "context_budget_reconcile"); err != nil {
 		deps.warnw("ContextBudgetCredits: FinalizeReservation error",
 			"reservation_id", fi.ReservationID,
-			"actual_credits", fi.EstimatedCredits,
+			"actual_credits", actualCredits,
 			"error", err,
 		)
 	}

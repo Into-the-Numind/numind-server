@@ -24,6 +24,7 @@ import (
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+	"numind-server/internal/pkg/pricing"
 )
 
 // ----------------------------------------------------------------------------
@@ -117,6 +118,15 @@ type Deps struct {
 	// When nil ContextBudgetCredits becomes a passthrough (no credit reservation).
 	// Task 6 wires the real biz/credit binding.
 	CreditService ContextBudgetCreditService
+
+	// PricingCalc is used by the Billing middleware to compute cost_cents
+	// synchronously after the provider call. When set, Billing writes the
+	// computed cost into a *finalCostHolder in ctx so that the outer
+	// ContextBudgetCredits can pass the real value to FinalizeReservation
+	// instead of the pre-call EstimatedCredits placeholder.
+	// When nil, the cost handoff is skipped and FinalizeReservation falls
+	// back to EstimatedCredits (pre-existing behaviour).
+	PricingCalc pricing.ICalculator
 
 	// Clock is used by the Billing middleware for record timestamps.
 	// When nil RealClock is used.

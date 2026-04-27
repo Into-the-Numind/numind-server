@@ -171,6 +171,12 @@ func run() error {
 		Resolver:      reg,
 		ContextBudget: contextBudgetSvc,
 		CreditService: creditFacade,
+		// PricingCalc enables Billing middleware to compute cost_cents synchronously
+		// and write the result into the finalCostHolder so that ContextBudgetCredits
+		// passes the real value to FinalizeReservation (not the EstimatedCredits
+		// placeholder). Shares the same ICalculator instance used by biz/sop and
+		// biz/credit for consistent cost computation across all callers.
+		PricingCalc: bizLayer.Pricing(),
 	})
 	gateway.SetMiddlewareChain(aimw.AsGatewayChain(mwChain))
 
