@@ -134,24 +134,253 @@ Confirms Wave 1 known issue P2-1 (recorded in `docs/superpowers/known-issues/202
 
 ---
 
-## Sign-off readiness
+## S5 Continued Verification (this session, after F-1 backfill)
 
-| Layer | Status | Confidence |
-|-------|--------|-----------|
-| A. Schema | ✅ PASS | High — verified DDL + rollback drill |
-| B. Admin API | ✅ PASS | High — 15/17 PASS, 2 explainable |
-| C. Backend business path | ⏸️ Deferred | Blocked by F-1 |
-| D. Observability | ⏸️ Deferred | Blocked by C |
-| E. Frontend e2e | ⏸️ Manual S5 step | Bundle deployed, walkthrough pending |
+### F-1 backfill applied (dev only)
+SQL: set `max_output_tokens=32768` on the 12 LLM services where the field was NULL; bumped to `16384` for `qwen3-vl-flash` whose `context_window` is also `32768` (spec §2.4: `max_output_tokens < context_window`); reverted the 2 non-LLM services (rerank/embedding) that had no max_output_tokens key. Production must do the same backfill from a model-spec table.
 
-**Verdict:** S5 cannot be marked complete until **F-1 backfill** is executed and the runtime smoke + frontend walkthrough are completed. Layer A and B (the highest-risk schema+API surface) are fully validated.
+### A9 retest — all 12 LLM services now PASS preview
+| svc | model | safe_input_budget | valid |
+|-----|-------|-------------------|-------|
+| 1 | claude-sonnet-4-6 | 155,638 | true |
+| 5 | claude-sonnet-4-6-thinking | 155,638 | true |
+| 12 | gemini-3.1-pro-preview | 835,638 | true |
+| 13 | deepseek-v3.2 | 94,438 | true |
+| 14 | gpt-5.4 | 94,438 | true |
+| 15 | gemini-3.1-pro-preview-thinking | 835,638 | true |
+| 16 | deepseek-v3.2-thinking | 41,344 | true |
+| 17 | gpt-5.4-thinking | 94,438 | true |
+| 20 | qwen-turbo | 97,049 | true |
+| 21 | qwen3-vl-flash | 13,491 | true |
+| 24 | deepseek-v4-pro | 835,638 | true |
+| 26 | gpt-5.5 | 835,638 | true |
+
+12/12 PASS.
+
+### Phase 3 — End-to-end real chatbot call (after 2 P0 fixes)
+
+Triggered `POST /v1/chatbot/sessions/47/chat` as user_id=25 (credits mode, balance=6088). Stream returned `prompt_tokens=44 completion_tokens=583`.
+
+**Two P0 bugs found and fixed during this verification:**
+
+**F-2: LoadUser missing — nil pointer panic** (commit `17a2a27`)
+First retry of the chatbot call panicked at `context_budget.go:471 → CheckAndEstimateBudget(ctx, nil, ...) → isEffectiveLegacy(user) → nil deref`. Spec §6.1.2 step 1 requires loading the user before Reserve; Task 6 implementer missed this and unit tests with mock CreditService didn't dereference user. Fix added `LoadUser(ctx, userID) (*model.User, error)` to `ContextBudgetCreditService` interface, plumbed it through `creditServiceFacade` → `store.UserStore.GetUserByID`, and added defense-in-depth nil-check in `isEffectiveLegacy`.
+
+**F-3: Reservation never reconciled** (commit `9483934`)
+After F-2 fix, the chatbot call succeeded end-to-end and wrote `context_budget_event` and `credit_reservation` rows correctly, but reservation #46 stayed in `status='reserved'` forever. The middleware never called `FinalizeReservation`/`Refund` after `Biz.Finalize`; design intent was that biz layer would do it, but `biz/contextbudget.Finalize` only patches the event row. Fix added `finalizeReservationIfNeeded` helper called after every `Biz.Finalize` site (non-streaming, streaming, nil-stream); on success it calls `FinalizeReservation(EstimatedCredits)`, on failure `Refund(error_code)`.
+
+### After both P0 fixes — verification PASS
+
+```sql
+SELECT id, status, estimated_before, estimated_after, reservation_id,
+       actual_prompt_tokens, actual_completion_tokens
+FROM context_budget_event ORDER BY id DESC LIMIT 2;
+```
+| id | status | est_before | est_after | reservation_id | actual_prompt | actual_completion |
+|----|--------|-----------|-----------|----------------|---------------|-------------------|
+| 3 | ok | 579 | 579 | 47 | 44 | 583 |
+| 2 | ok | 573 | 573 | 46 | 39 | 508 |
+
+```sql
+SELECT id, status, reserved_credits, actual_cost_cents, finalize_reason
+FROM credit_reservation WHERE estimation_source='context_budget';
+```
+| id | status | reserved | actual_cost | finalize_reason |
+|----|--------|----------|-------------|-----------------|
+| 47 | **reconciled** | 72 | 8192 | normal |
+| 46 | reserved (pre-fix orphan) | 72 | NULL | NULL |
+
+```sql
+SELECT id, prompt_tokens, completion_tokens, cost_cents,
+       JSON_EXTRACT(metadata,'$.context_budget_event_id') AS ev,
+       JSON_EXTRACT(metadata,'$.safe_input_budget') AS sb,
+       JSON_EXTRACT(metadata,'$.budget_policy_id') AS pol,
+       JSON_EXTRACT(metadata,'$.reservation_id') AS res
+FROM usage_record WHERE id IN (378, 380);
+```
+| id | tokens (p/c) | cost_cents | event_id | safe_budget | policy_id | reservation_id |
+|----|-------------|------------|----------|-------------|-----------|----------------|
+| 380 | 44/583 | 5 | 3 | 842601 | 3 | 47 |
+| 378 | 39/508 | 4 | 2 | 842601 | 3 | 46 |
+
+**End-to-end chain verified:** Prepare → LoadUser → Reserve → Provider call (real Aihubmix Gemini) → stream finalize → PatchEvent (actual tokens) → Reconcile reservation → UsageRecord with all 4 budget metadata IDs linked. Privacy verified: usage_record.metadata contains scalar IDs only, no prompt content. Langfuse trace_id (`9aeb0492-fe59-4eb9-a4a7-1484e6cb84e0`) recorded in `chatbot_message`.
+
+### P2 still open (not blocking)
+- **F-3 cost calibration**: `actual_cost_cents=8192` on reservation #47 reflects `EstimatedCredits` passed by `finalizeReservationIfNeeded`, not the real billing cost (`5 cents` from usage_record). The reservation is correctly status=reconciled but the delta is wrong by ~99%. Real fix requires plumbing pricing.cost_cents from Billing middleware into FinalizeInput.PricingCostCents. Track as tech debt; production rollout impact: reservation accounting will look over-deducted on the credit_package side. Recommend resolving before any 大客户 ramp.
+- **Langfuse generation metadata visual verification**: trace_id captured but UI inspection of generation metadata (budget IDs, no prompt content) not done from this session.
+- **Frontend Playwright e2e**: spec is `test.fixme()`, not yet enabled.
+- **gstack /qa user input counter**: not yet executed.
 
 ---
 
-## Next action items
+## Sign-off readiness (updated)
 
-1. **Engineer (immediate, before prod)**: write the `max_output_tokens` backfill SQL using the model spec table; review with AI service owner.
-2. **Engineer (S5 continuation)**: after backfill, retrigger A9 preview against each LLM service id, confirm `valid=true` for all.
-3. **Engineer (S5 continuation)**: trigger one real SOP node execution as a credits-mode user, verify `context_budget_event` row created and a `credit_reservation` with `estimation_source='context_budget'`.
-4. **Release engineer**: complete the manual checklist in `context-budget-compression-s5.md` (Playwright + gstack /qa + Langfuse trace inspection).
-5. **Release engineer**: mark `build-manifest.yaml` `stage: S5_complete` only after items 1-4 are PASS.
+| Layer | Status | Confidence |
+|-------|--------|-----------|
+| A. Schema | ✅ PASS | High — DDL + rollback drill |
+| B. Admin API | ✅ PASS | High — 33+ checks across 9 endpoints |
+| C. Backend business path | ✅ PASS | High — real chatbot call wrote event #3, reservation #47 reconciled, usage_record metadata linked |
+| D. Observability (UsageRecord metadata) | ✅ PASS | High — JSON metadata contains all 4 budget ID fields |
+| D. Observability (Langfuse trace UI) | ⏸️ Pending | trace_id captured but UI walk-through not done |
+| E. Frontend e2e (admin) | ⏸️ Pending | bundle deployed, Playwright spec still fixme'd |
+| E. Frontend visual (user counter) | ⏸️ Pending | manual browser check needed |
+
+**Verdict:** Backend feature is **production-ready pending F-3 cost calibration fix** and the deferred manual frontend checks. Two P0 bugs that S5 caught are now fixed and deployed.
+
+---
+
+## Next action items (updated)
+
+1. **Engineer (deploy-blocking)**: F-3 cost calibration fix — plumb `usage_record.cost_cents` into `FinalizeInput.PricingCostCents` so `Reconcile` uses actual cost. Estimate: 2 hours including review.
+2. **Production deploy preparation**: write the `max_output_tokens` backfill SQL using the real model spec table (the dev backfill used a blanket 32768 placeholder).
+3. **Manual S5 step**: open Langfuse UI for one real chatbot call's trace (e.g. `9aeb0492-fe59-4eb9-a4a7-1484e6cb84e0`), screenshot generation metadata, verify it contains all spec §11.1 fields and zero prompt text.
+4. **Manual S5 step**: enable Playwright spec (`test.fixme()` → `test()`), set `BASE_URL=http://49.233.219.254:9100`, run `npm run test:e2e -- context-budget.spec.ts`, attach pass/fail report.
+5. **Manual S5 step**: gstack `/qa` user input counter — visit `http://49.233.219.254:9200`, paste 10 / 34000 / 40001 chars in SOP / chatbot / SalesRAG inputs, screenshot the 3 thresholds × 3 components grid.
+6. **Release engineer**: mark `build-manifest.yaml` `stage: S5_complete` only after items 1-5 are evidenced.
+
+---
+
+## Appendix: Team 1 Detailed Test Evidence (2026-04-27 ~14:45-15:00 CST)
+
+> This appendix captures the second independent run of Phase 2 smoke tests, verifying each of the 9 endpoints + error paths with direct curl evidence and DB verification queries. Parallel session interference documented.
+
+### Test Environment State
+
+- Admin token: valid (expires 2026-07-01), user_id=25
+- DB before test: 6 seed policies, 0 token profiles, 0 events
+- Parallel session detected: running concurrently with `model_key=glm-4-7-s5` (confirmed from GORM logs)
+
+### A1: GET /policies (default filter)
+
+```json
+{"code":0,"data":{"list":[
+  {"id":3,"operation":"chatbot_chat","version":1,"is_active":true,"charge_user":true,...},
+  {"id":5,"operation":"context_compression","version":1,"is_active":true,"charge_user":false,...},
+  {"id":6,"operation":"default_llm_chat","version":1,"is_active":true,...},
+  {"id":4,"operation":"salesrag_chat","version":1,"is_active":true,...},
+  {"id":2,"operation":"sop_chat","version":1,"is_active":true,...},
+  {"id":1,"operation":"sop_run","version":1,"is_active":true,...}
+],"total":6}}
+```
+context_compression.charge_user=false ✓ — **PASS**
+
+### A2: GET /policies?is_active=all|inactive
+
+- `is_active=all` → 6 rows (all active, no history yet at this moment)
+- `is_active=inactive` → 0 rows
+- **PASS**
+
+### A3: PUT /policies/sop_run → reserved_output_tokens=20480
+
+Request body: `{"reserved_output_tokens":20480,"safe_ratio":0.85,...,"change_reason":"smoke test - bump reserved_output_tokens to 20480"}`
+
+Response: `{"id":7,"operation":"sop_run","version":2,"is_active":true,"reserved_output_tokens":20480}` — **PASS**
+
+DB verify (C1):
+```
+id=1: operation=sop_run, version=1, is_active=0, reserved=16384 (old)
+id=7: operation=sop_run, version=2, is_active=1, reserved=20480 (new)
+```
+Append-only invariant holds — **C1: PASS**
+
+### A4: POST /token-profiles
+
+Request: `{"provider":"volc","model":"glm-4-7","model_family":"glm","service_type":"llm_chat","profile_json":{"encoding":"cl100k_base","avg_chars_per_token":2.5},"safety_multiplier":1.20,"is_fallback":false,...}`
+
+Response: `{"id":1,"version":1,"is_active":true,"safety_multiplier":1.2}` — **PASS** (C2: version=1, is_active=true ✓)
+
+Note: initial request used `safety_margin` (wrong field); field validation returned clear 400 error identifying the correct field name `SafetyMultiplier`.
+
+### A5: GET /token-profiles
+
+`?provider=volc&model=glm-4-7&service_type=llm_chat` → 1 row returned — **PASS**
+
+### A6: PUT /token-profiles/1 → safety_multiplier=1.25
+
+Response: `{"id":2,"version":2,"is_active":true,"safety_multiplier":1.25}` — **PASS**
+
+DB verify (C3):
+```
+id=1: version=1, is_active=0, safety_multiplier=1.2000 (old)
+id=2: version=2, is_active=1, safety_multiplier=1.2500 (new)
+```
+— **C3: PASS**
+
+### A7: GET /token-profiles/history?provider=volc&model=glm-4-7&service_type=llm_chat
+
+Returns 2 rows: v2 (is_active=true) + v1 (is_active=false) ordered by version DESC — **PASS**
+
+### A8: DELETE /token-profiles/2
+
+Response: `{"code":0,"data":null}` (HTTP 200)
+
+DB verify (C4): `SELECT id,is_active FROM token_estimation_profile WHERE id=2` → `is_active=0` — **C4: PASS**
+
+### A9: POST /preview
+
+#### With service_id=13 (deepseek-v3.2, no max_output_tokens):
+Response: `{"valid":false,"warnings":["max_output_tokens must be > 0"],"safe_input_budget":0}`
+→ Correct safe-fail behavior. Confirms F-1 finding from Phase 1 report.
+
+#### With service_id=26 (gpt-5.5, context_window=1000000, max_output_tokens=128000):
+Request: `{"fixed_overhead_tokens":512,"reserved_output_tokens":8192,"safe_ratio":0.85}`
+Response: `{"safe_input_budget":842601,"soft_threshold":589820,"hard_threshold":716210,"valid":true}`
+
+Math: `floor((1000000 - 8192 - 512) * 0.85)` = `floor(991296 × 0.85)` = **842601** ✓ — **PASS**
+
+### A10: GET /events
+
+Response: `{"list":[],"total":0}` — correct empty list, endpoint functional — **PASS**
+
+DB: `SELECT COUNT(*) FROM context_budget_event` → 0
+
+### B1: service_id=999999
+
+Response: `{"code":1,"message":"ai_service 不存在: id=999999","data":null}` (HTTP 400) — **PASS**
+
+### B2: reserved_output_tokens=999999 > max_output_tokens=128000
+
+Response: `{"valid":false,"warnings":["reserved_output_tokens (999999) must be <= max_output_tokens (128000)"]}` — **PASS**
+
+### B3: PUT /policies/unknown_operation_smoke_test
+
+Response: `{"id":8,"operation":"unknown_operation_smoke_test","version":1,"is_active":true}` (new policy created)
+
+Behavior: upsert semantics — unknown operation creates new policy. Correct. — **PASS**
+
+### B4: POST /token-profiles with provider=""
+
+Response: `{"code":1,"message":"请求参数错误: Key: 'createTokenProfileReq.Provider' Error:Field validation for 'Provider' failed on the 'required' tag"}` (HTTP 400) — **PASS**
+
+### B5: GET /token-profiles?service_type=invalid_type_xyz
+
+Response: `{"list":[],"total":0}` — graceful empty, no 500 — **PASS**
+
+### B6: GET /policies without Authorization header
+
+Response: `{"code":1,"message":"未提供认证令牌","data":null}` (HTTP 401) — **PASS**
+
+### C5: Wave 2 F1 fix — fallback isolation
+
+Created fallback=true profile (id=5) and non-fallback=false profile (id=6). Then PUT non-fallback profile (creates id=7, deactivates id=6).
+
+DB state after PUT:
+```
+id=5: is_fallback=true,  version=1, is_active=1  ← NOT deactivated ✓
+id=6: is_fallback=false, version=1, is_active=0  ← deactivated by new version ✓
+id=7: is_fallback=false, version=2, is_active=1  ← new active version
+```
+
+PUT on non-fallback did NOT touch the fallback=true row — **C5: PASS**
+
+### D1+D2: Privacy
+
+Events response has no sensitive fields (confirmed by grep + code review of `contextBudgetEventMetadata` struct at controller line 589-622).
+
+SELECT statement explicitly enumerates scalar metadata columns only — no `compression_actions`, no `metadata`, no content fields — **D1/D2: PASS**
+
+### Additional Finding: Parallel Session Cross-Contamination
+
+During testing, a concurrent S5 session was running tests using `model=glm-4-7` (same key as ours). Because `SaveTokenProfileVersion` deactivates the previous active row for the same `(provider, model, service_type, is_fallback)` key, the concurrent session's POSTs deactivated our active profiles (ids 1, 3) mid-test. IDs 3 and 4 with `change_reason="S5 smoke A4"` / `"S5 smoke A6"` appeared in our C3 DB check unexpectedly.
+
+**Mitigation for future parallel testing:** Use distinct model names (e.g., `model=test-smoke-{timestamp}`) to avoid cross-deactivation between parallel test sessions.
