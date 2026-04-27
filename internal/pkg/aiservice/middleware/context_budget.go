@@ -449,9 +449,45 @@ func ContextBudgetCredits(deps Deps) Middleware {
 					"error", finalErr,
 				)
 			}
+			finalizeReservationIfNeeded(ctx, deps, fi)
 
 			return resp, callErr
 		}
+	}
+}
+
+// finalizeReservationIfNeeded calls FinalizeReservation (or Refund on error)
+// against the credit service if a reservation was created during Reserve.
+// No-op when ReservationID == 0 (legacy-tier user / ChargeUser=false / no
+// user context). Spec §6.4: actual cost calibration happens in Biz.Finalize
+// via the event's calibration_ratio; the credit reconcile here uses
+// EstimatedCredits as the actual amount, which keeps the reservation balanced
+// (delta=0) until pricing data flows end-to-end. Failures are logged warn —
+// finalize must never propagate errors to the caller.
+func finalizeReservationIfNeeded(ctx context.Context, deps Deps, fi FinalizeInput) {
+	if fi.ReservationID == 0 || deps.CreditService == nil {
+		return
+	}
+	if fi.Refund {
+		reason := fi.ErrorCode
+		if reason == "" {
+			reason = "context_budget_refund"
+		}
+		if err := deps.CreditService.Refund(ctx, fi.ReservationID, reason); err != nil {
+			deps.warnw("ContextBudgetCredits: Refund error",
+				"reservation_id", fi.ReservationID,
+				"reason", reason,
+				"error", err,
+			)
+		}
+		return
+	}
+	if err := deps.CreditService.FinalizeReservation(ctx, fi.ReservationID, fi.EstimatedCredits, "context_budget_reconcile"); err != nil {
+		deps.warnw("ContextBudgetCredits: FinalizeReservation error",
+			"reservation_id", fi.ReservationID,
+			"actual_credits", fi.EstimatedCredits,
+			"error", err,
+		)
 	}
 }
 
@@ -557,6 +593,7 @@ func wrapStreamForContextBudget(
 				"error", err,
 			)
 		}
+		finalizeReservationIfNeeded(ctx, deps, fi)
 		closed := make(chan aiservice.ChatChunk)
 		close(closed)
 		return closed
@@ -573,6 +610,12 @@ func wrapStreamForContextBudget(
 					"error", err,
 				)
 			}
+			// Reconcile/Refund the credit reservation. Spec §6.4: after provider
+			// returns usage, FinalizeReservation flips reservation status from
+			// "reserved" to "reconciled" (or refunds on error). Without this,
+			// reservations stay stuck in "reserved" forever — caught by S5
+			// retest after the LoadUser fix.
+			finalizeReservationIfNeeded(ctx, deps, fi)
 		})
 	}
 
