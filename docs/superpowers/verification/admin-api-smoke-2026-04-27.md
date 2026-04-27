@@ -262,7 +262,7 @@ FROM usage_record WHERE user_id=25 ORDER BY id DESC LIMIT 1;
 | E. Frontend visual (user counter) | ⏸️ Pending | manual browser check needed |
 | F-1 max_output_tokens backfill | ✅ MITIGATED | Backfill SQL at scripts/2026-04-27-context-budget-max-output-backfill/ — run 02-apply.sql on prod before rollout (commits `9602541` + `48414b8`) |
 | F-3 P2 cost calibration | ✅ PASS | Verified end-to-end on dev: reservation #48 actual_cost_cents=4 matches usage_record #384 cost_cents=4 (commit `bcda6ba` + merge `655118a`) |
-| F-5 Langfuse metadata empty | 🔧 FIX IN FLIGHT | New finding — see "F-5" section below. User chose to fix; agent dispatched. Spec §11.1 violation. P1. |
+| F-5 Langfuse metadata empty | 🔧 FIX MERGED | Fix merged via `b498a99` + merge `41edf0e` (holder pattern, 7 new tests with -race). Awaiting dev redeploy + retest of trace metadata. Spec §11.1 violation. P1. |
 | F-6 Token profile create UI broken | ⚠️ FOUND | New finding — Playwright Path 2 fail. Backend `ProfileJSON binding:"required"` vs frontend doesn't send `profile_json`. POST /v1/admin/context-budget/token-profiles returns HTTP 400. P1 — admin can't create new profile versions via UI. See "F-6" below. |
 
 **Playwright admin spec (S5 acceptance check 5):**
@@ -305,7 +305,7 @@ DB state for the same call:
 
 **Estimated effort:** ~30-60 minutes including new integration test asserting end-to-end ctx propagation through the full chain.
 
-**Decision:** fix-now. Agent dispatched on branch `fix/langfuse-budget-metadata-holder`. Will verify retest on dev once merged.
+**Decision & resolution:** fix-now. Implementation merged via `b498a99` (branch `fix/langfuse-budget-metadata-holder`) + merge `41edf0e`. Holder is a `sync.Mutex`-guarded mutable struct injected by Tracing into ctx; `ContextBudgetCredits` writes the metadata into the holder synchronously before calling `next`, guaranteeing the close-path read in Tracing's goroutine sees it (Go memory model: the synchronous Set predates any channel send for streaming, and predates the response return for non-streaming). 7 new tests (4 holder unit + 2 chain-integration non-stream/stream + race detector clean). Backward compatible: existing `withBudgetMetadata`/`budgetMetadataFromCtx` ctx-value path retained, `mergeBudgetTracingMeta` now consults holder first then falls back. **Retest pending dev redeploy** — trigger another chatbot call, fetch trace via Langfuse API, confirm `output.metadata` contains `context_budget_event_id` + budget fields.
 
 ---
 
