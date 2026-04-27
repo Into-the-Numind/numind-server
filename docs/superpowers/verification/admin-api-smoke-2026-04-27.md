@@ -215,13 +215,37 @@ FROM usage_record WHERE id IN (378, 380);
 
 ---
 
-## F-3 P2 retest (after merge bcda6ba)
+## F-3 P2 retest (after merge bcda6ba) — ✅ PASS
 
-> **Controller: fill in these values after running a manual chatbot SSE call on dev with the merged fix.**
+Triggered `POST /v1/chatbot/sessions/47/chat` as user_id=25 after the merged fix was deployed (container started 2026-04-27T08:57:21Z, container image built from commit `48414b8`). User had to be re-topped (booster package #9 with 1000 credits) and the GORM `created_at` zero-value gotcha was sidestepped by hand-backfilling the package row's timestamp (operational-only, not a code bug).
 
-- [ ] chatbot call SSE completed
-- [ ] `credit_reservation.actual_cost_cents` == `usage_record.cost_cents` (small int, NOT 8192)
-- [ ] `context_budget_event` row links to `reservation_id` and `trace_id`
+- [x] chatbot call SSE completed — stream returned `prompt_tokens=96 completion_tokens=432 trace_id=9874d7a5-b3dc-482f-b1f1-549f2fea58ce`
+- [x] `credit_reservation.actual_cost_cents` matches `usage_record.cost_cents` — both = `4` cents (NOT 8192 placeholder)
+- [x] `context_budget_event` row #6 links to `reservation_id=48`; reservation #48 status=`reconciled`, finalize_reason=`normal`; usage_record #384 metadata has `context_budget_event_id=6` and `reservation_id=48`
+
+```sql
+-- After-fix evidence (latest 3 rows)
+SELECT id, status, reserved_credits, actual_cost_cents, finalize_reason
+FROM credit_reservation WHERE estimation_source='context_budget'
+ORDER BY id DESC LIMIT 3;
+```
+| id | status | reserved | actual_cost | finalize_reason |
+|----|--------|----------|-------------|-----------------|
+| **48** | **reconciled** | **72** | **4** | **normal** |
+| 47 | reconciled | 72 | 8192 (pre-fix placeholder) | normal |
+| 46 | reserved (pre-fix orphan) | 72 | NULL | NULL |
+
+```sql
+SELECT id, prompt_tokens, completion_tokens, cost_cents,
+       JSON_EXTRACT(metadata,'$.context_budget_event_id') AS ev,
+       JSON_EXTRACT(metadata,'$.reservation_id') AS res
+FROM usage_record WHERE user_id=25 ORDER BY id DESC LIMIT 1;
+```
+| id | tokens (p/c) | cost_cents | event_id | reservation_id |
+|----|-------------|------------|----------|----------------|
+| 384 | 96/432 | **4** | 6 | 48 |
+
+**End-to-end chain verified post-fix:** real Aihubmix Gemini call → `finalCostHolder.CostCents=4` (computed by Billing middleware, written before forwarding `IsFinal` chunk) → `finalizeReservationIfNeeded` reads holder → `Reconcile` records `actual_cost_cents=4` (real cost, not the 8192 EstimatedCredits placeholder). Cost calibration delta is now 0 cents (was ~99% over-deducted before fix).
 
 ---
 
@@ -237,9 +261,9 @@ FROM usage_record WHERE id IN (378, 380);
 | E. Frontend e2e (admin) | ⏸️ Pending | bundle deployed, Playwright spec still fixme'd |
 | E. Frontend visual (user counter) | ⏸️ Pending | manual browser check needed |
 | F-1 max_output_tokens backfill | ✅ MITIGATED | Backfill SQL at scripts/2026-04-27-context-budget-max-output-backfill/ — run 02-apply.sql on prod before rollout (commits `9602541` + `48414b8`) |
-| F-3 P2 cost calibration | ⏸️ Retest pending | Fix merged (`bcda6ba` + `655118a`); awaiting retest confirmation — see "F-3 P2 retest" section |
+| F-3 P2 cost calibration | ✅ PASS | Verified end-to-end on dev: reservation #48 actual_cost_cents=4 matches usage_record #384 cost_cents=4 (commit `bcda6ba` + merge `655118a`) |
 
-**Verdict:** Backend feature is **production-ready pending F-3 P2 retest** and the prod `max_output_tokens` backfill SQL run, plus the deferred manual frontend checks. All P0 bugs fixed and deployed; F-3 P2 cost-calibration fix merged and awaiting retest.
+**Verdict:** Backend feature is **production-ready pending the prod `max_output_tokens` backfill SQL run** and the deferred manual frontend checks (Langfuse UI walk-through, Playwright admin spec, gstack /qa user counter). All P0 bugs fixed and deployed; F-3 P2 cost-calibration fix merged and verified end-to-end on dev.
 
 ---
 
