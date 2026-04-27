@@ -2887,10 +2887,10 @@ features:
     ndf_version: "1.1"
     description: "建立通用 Context Budget & Compression 系统：按模型维护 token 估算 profile 和动态校准参数；使用 DB 中 context_window + max_output_tokens 计算安全输入预算；admin web 支持模型能力与估算配置校验；后端在 LLM 调用前完成预扣 token 估算、上下文预算、触顶智能压缩；策略必须基于通用 context fragments，不得写死 SOP stage/node/template。"
     track: "standard"
-    stage: "S5"
+    stage: "S5-done"
     classification_reason: "Triage 5 条评估 — (1) 可能涉及 schema/config 扩展（token profile、compression summary/token stats） (2) admin web 可能需要新增或扩展配置 API (3) 无新外部服务强依赖，但 tokenizer/profile 机制需设计 (4) 跨 numind-server、numind-admin-web，可能涉及 numind-web-v3，影响文件数 >3 (5) 影响 credits 预扣费、LLM 上下文组装和模型能力配置，属于高风险业务路径。用户明确要求进入 Standard Track。"
-    last_updated_by: "ai-s4-wave10-task15"
-    last_updated_at: "2026-04-25T12:30:00+08:00"
+    last_updated_by: "ai-s5-signoff-2026-04-27"
+    last_updated_at: "2026-04-27T23:30:00+08:00"
     repos:
       - numind-server
       - numind-admin-web
@@ -2910,7 +2910,7 @@ features:
       reviewed_tasks: 15
       current_task: null
     rollback: null
-    last_verified: null
+    last_verified: "2026-04-27 (S5 signoff): admin-api smoke 9 endpoints + chatbot E2E + Langfuse trace API + Playwright 4/4 paths all PASS on dev. F-1 backfill artifacts ready for prod (scripts/2026-04-27-context-budget-max-output-backfill/02-apply.sql)."
     decisions:
       - "2026-04-25: 用户确认不能依赖 cl100k_base 作为跨模型真实 token guard；预扣费必须调用前估算，官方 usage 只能用于事后校准。"
       - "2026-04-25: 用户确认 DB 已登记 context_window 和 max_output_tokens；context window 默认不 100% 放开，认可 85% safe ratio。"
