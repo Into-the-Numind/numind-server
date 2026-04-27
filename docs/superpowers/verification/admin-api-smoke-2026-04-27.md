@@ -262,8 +262,42 @@ FROM usage_record WHERE user_id=25 ORDER BY id DESC LIMIT 1;
 | E. Frontend visual (user counter) | ⏸️ Pending | manual browser check needed |
 | F-1 max_output_tokens backfill | ✅ MITIGATED | Backfill SQL at scripts/2026-04-27-context-budget-max-output-backfill/ — run 02-apply.sql on prod before rollout (commits `9602541` + `48414b8`) |
 | F-3 P2 cost calibration | ✅ PASS | Verified end-to-end on dev: reservation #48 actual_cost_cents=4 matches usage_record #384 cost_cents=4 (commit `bcda6ba` + merge `655118a`) |
+| F-5 Langfuse metadata empty | ⚠️ FOUND | New finding — see "F-5" section below. Generation `metadata={}`; budget IDs not attached. Spec §11.1 violation. P1 — does not block feature, blocks observability. |
 
-**Verdict:** Backend feature is **production-ready pending the prod `max_output_tokens` backfill SQL run** and the deferred manual frontend checks (Langfuse UI walk-through, Playwright admin spec, gstack /qa user counter). All P0 bugs fixed and deployed; F-3 P2 cost-calibration fix merged and verified end-to-end on dev.
+**Verdict:** Backend feature is **production-ready pending the prod `max_output_tokens` backfill SQL run** and the deferred manual frontend checks (Playwright admin spec, gstack /qa user counter). All P0 bugs fixed and deployed; F-3 P2 cost-calibration fix merged and verified end-to-end on dev. **One new P1 finding (F-5) on Langfuse observability — feature works but observability layer is partially broken; decision pending: fix-now vs defer-as-followup.**
+
+---
+
+## F-5: Langfuse generation metadata silently empty (NEW finding)
+
+**Discovered during S5 step:** "Langfuse 本地校验" (plan §1321) — open trace, confirm generation metadata contains `context_budget_event_id`, `safe_input_budget`, `compression_actions`.
+
+**Evidence (trace `9874d7a5-b3dc-482f-b1f1-549f2fea58ce`, fetched via Langfuse public API):**
+
+```
+chatbot.stream observation:
+  metadata: {}                ← spec §11.1 expects ~15 budget fields here
+  output.metadata: {provider, resolved_model_family, service_id, service_name, task_id, user_id}
+                              ← only AI-service fields; ZERO budget fields
+
+DB state for the same call:
+  context_budget_event #6 → reservation #48 reconciled, usage_record #384 metadata has all budget IDs
+```
+
+**Root cause (confirmed by code reading):** Middleware chain order is `Tracing → Fallback → ContextBudgetCredits → Billing → Retry → Adapter` (chain.go:5). `ContextBudgetCredits` calls `withBudgetMetadata(ctx, ...)` at context_budget.go:435 — this returns a *new* ctx, but only the inner middlewares see it. `Tracing` (outermost) closes the observation with the *original* ctx (tracing.go:104, 142), so `budgetMetadataFromCtx(ctx)` returns `ok=false` and `mergeBudgetTracingMeta` is silently no-op. The unit test `tracing_context_budget_test.go` passes because it injects `withBudgetMetadata` directly into the test ctx, never exercising the chain integration.
+
+**Why it didn't fail unit tests:** spec compliance was checked at the function level (`mergeBudgetTracingMeta` works correctly when given a populated ctx) but not at the middleware-chain integration level. Same gap class as F-2/F-3 — local correctness without end-to-end verification.
+
+**Privacy note:** generation `input` field DOES contain full prompt content (system prompt, history, user message). This is by design — Langfuse is meant for that. Spec §11.3's "no full prompt content in logs" applies to logs, not Langfuse traces. Plan §1321's "且不含 prompt 原文" is qualified to "generation metadata 包含 ...", referring to the metadata field — which is empty (so trivially excludes prompt content). No privacy violation here.
+
+**Fix shape (proposed, similar to Team A's `finalCostHolder` pattern):**
+- Tracing middleware injects an empty `*budgetMetadataHolder` into ctx before calling next.
+- `ContextBudgetCredits` writes into the holder instead of (or in addition to) ctx-replace.
+- Tracing close path reads the holder; safe because the holder is written before the IsFinal chunk is forwarded (channel send = happens-before).
+
+**Estimated effort:** ~30-60 minutes including new integration test asserting end-to-end ctx propagation through the full chain.
+
+**Decision pending:** fix-now (during this S5 wave) vs defer-as-F-5-P1-followup (record + sign off S5 partial).
 
 ---
 
