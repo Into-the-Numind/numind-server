@@ -3181,3 +3181,43 @@ features:
       - "需要先排查并修复 ServiceEdit.vue Update is_active=false 写不进 DB 的 bug（sub_issue 1）。"
     created_at: "2026-04-28T22:00:00+08:00"
     completed_at: null
+
+  - id: "prod-wechat-pubkey-config-missing"
+    ndf_version: "1.1"
+    description: "prod/qa yaml 的 wechat 段缺 wechatpay_public_key_id + wechatpay_cert_path 指向不存在的 wechatpay_cert.pem（实际应是 pub_key.pem，dev 是对的）。导致 NewWechatPayClient 不进 public-key 分支、落到 cert-mode fallback。微信商户 1722456639 已开公钥模式（dev 启动日志 + dev 端到端可用证实），所有给该 mch_id 的 callback 都带 Wechatpay-Serial: PUB_KEY_ID_*，prod cert-mode fallback 找不到此 serial → 验签失败 → 回调 500 → 重试到弃 → 订单 pending → 无积分。修复：将 prod/qa yaml 的 wechat 段补齐 (wechatpay_cert_path 改正确路径 + 加 wechatpay_public_key_id)，与 dev 对齐。"
+    track: "hotfix"
+    stage: "H1"
+    classification_reason: "Triage 5 条 — (1)(2)(3)(4) 全过；(5) **触及支付高风险业务** 字面命中。Hotfix 路径合理：根因证据链完整（dev 同 mch_id 走通的事实倒推证 prod 必败）、修复确定（dev 对应字段直接复制即可）、prod 仍在收入流失、修复就 2 行 yaml + 1 行删除。"
+    last_updated_by: "ai-h1-start"
+    last_updated_at: "2026-04-28T22:30:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/prod-wechat-pubkey-config-missing"
+    hotfix_artifacts:
+      diagnosis: |
+        Bug 2 (URL typo) 修完后 prod 启动日志：
+          payment/wechat.go:83  WechatPayClient initialised (cert mode)  mch_id: 1722456639
+        相比 dev：
+          payment/wechat.go:77  WechatPayClient initialised (public key mode)  pub_key_id: PUB_KEY_ID_0117224566392025080100292023002202
+        差别根因：wechat.go:62-67 if pubKeyID != "" && pubKeyPath != "" 才进公钥分支
+          dev yaml: pub_key.pem (存在) + PUB_KEY_ID_011722... → 公钥分支 ✓
+          prod yaml: wechatpay_cert.pem (不存在) + 无 pub_key_id → cert 分支 ✗
+        ParseNotifyRequest 验签 (wechat.go:128-143)：PUB_KEY_ID_* serial 在 cert-mode fallback 必败。
+        共享商户：dev/prod mch_id 同 + apiclient_key.pem sha256 同 + pub_key.pem sha256 同 → PUB_KEY_ID 是商户级别 ID，必须共用。
+    progress:
+      total_tasks: 1
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "修 config_prod.yaml + config_qa.yaml 的 wechat pubkey 字段，与 dev 对齐"
+    rollback: |
+      git revert merge commit；prod 热修生效前可不回滚；如热修后启动失败 → SSH prod docker exec 把 yaml 改回原状 + docker restart numind-server-prod
+    last_verified: null
+    decisions:
+      - "2026-04-28: 用户授权破例修改 config_prod.yaml；qa 同款问题一并修"
+      - "2026-04-28: 借用 dev 的 PUB_KEY_ID 是正确的——商户 1722456639 在微信后台只生成 1 个 PUB_KEY_ID，dev/prod/qa 全环境必须用同一个。这次不是借用，是 prod 漏配"
+      - "2026-04-28: 顺手清掉 use_wechatpay_public_key: \"true\" 这条 dead config（代码没读，仅注释提示意图）。删后跟 dev yaml 形状一致"
+      - "2026-04-28: 同时修 develop 上的 config_prod.yaml + 容器内 /app/config_prod.yaml — 前者保证下次 prod tag 部署不回退，后者立刻生效。两者一致避免漂移"
+    blockers: []
+    created_at: "2026-04-28T22:30:00+08:00"
+    completed_at: null
