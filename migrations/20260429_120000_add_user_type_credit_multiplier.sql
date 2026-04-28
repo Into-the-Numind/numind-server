@@ -1,9 +1,11 @@
 -- Add user_type_multiplier to credit_reservation (snapshot at reserve time)
+-- Rollback: ALTER TABLE credit_reservation DROP COLUMN user_type_multiplier;
 ALTER TABLE credit_reservation
     ADD COLUMN user_type_multiplier DECIMAL(5,2) NOT NULL DEFAULT 1.00
     COMMENT 'User-type credit burn-rate multiplier snapshotted at Reserve time. 1.00 = no discount.';
 
 -- New config table for per-user-type credit multipliers (admin-configurable)
+-- Rollback: DROP TABLE IF EXISTS credit_user_type_config;
 CREATE TABLE IF NOT EXISTS credit_user_type_config (
     user_type   VARCHAR(30)    NOT NULL PRIMARY KEY COMMENT 'trial | subscription | ...',
     credit_multiplier DECIMAL(5,2) NOT NULL DEFAULT 1.00 COMMENT 'Credits burn-rate multiplier. <1 = slower burn.',

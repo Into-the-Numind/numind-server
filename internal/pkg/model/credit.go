@@ -92,7 +92,8 @@ type CreditUserTypeConfig struct {
 	UserType         string    `gorm:"primaryKey;size:30" json:"user_type"`            // trial | subscription | ...
 	CreditMultiplier float64   `gorm:"type:decimal(5,2);not null;default:1.00" json:"credit_multiplier"` // <1 = slower burn
 	Description      string    `gorm:"size:200;not null;default:''" json:"description"`
-	IsActive         bool      `gorm:"not null;default:true" json:"is_active"`
+	// IsActive: if admin CRUD Create is ever added, apply the UpdateColumn two-step fix (see database.md §6 GORM default:true gotcha).
+	IsActive bool `gorm:"not null;default:true" json:"is_active"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }

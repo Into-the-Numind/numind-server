@@ -469,15 +469,13 @@ func (c *creditsImpl) Reserve(
 	// The multiplier is snapshotted onto the reservation row so Reconcile can
 	// apply the identical factor to actualCostCents regardless of later package
 	// state changes.
-	userTypeMultiplier, err := c.store.Credits().GetUserTypeCreditMultiplier(ctx, user.ID)
-	if err != nil {
-		// Non-fatal: fall back to 1.0 so billing is never blocked by a config lookup error.
-		userTypeMultiplier = 1.0
+	rawMultiplier, utmErr := c.store.Credits().GetUserTypeCreditMultiplier(ctx, user.ID)
+	if utmErr != nil {
+		log.Warnw("creditsImpl.Reserve: GetUserTypeCreditMultiplier failed, falling back to 1.0",
+			"user_id", user.ID, "err", utmErr)
+		rawMultiplier = 1.0
 	}
-	adjustedEstimated := int64(math.Round(float64(estimated) * userTypeMultiplier))
-	if adjustedEstimated <= 0 {
-		adjustedEstimated = 1
-	}
+	adjustedEstimated, snapshotMultiplier := applyUserTypeMultiplier(estimated, rawMultiplier)
 
 	reference := referenceFromOp(op)
 	rsvRow := &model.CreditReservation{
@@ -489,7 +487,7 @@ func (c *creditsImpl) Reserve(
 		CoefficientID:      &coefID,
 		Status:             string(StatusReserved),
 		IdempotencyKey:     idempotencyKey,
-		UserTypeMultiplier: userTypeMultiplier,
+		UserTypeMultiplier: snapshotMultiplier,
 	}
 	if idempotencyKey != nil {
 		rsvRow.ReferenceID = *idempotencyKey
@@ -646,6 +644,8 @@ func (c *creditsImpl) reconcileWithTokens(
 		// terms (both reservedCredits and adjustedActual reflect the multiplier).
 		multiplier := row.UserTypeMultiplier
 		if multiplier <= 0 {
+			// Zero snapshot means the row predates this feature (written before
+			// user_type_multiplier column existed); treat as no-discount.
 			multiplier = 1.0
 		}
 		adjustedActual := int64(math.Round(float64(actualCostCents) * multiplier))
@@ -1196,14 +1196,13 @@ func (c *creditsImpl) reserveBudgetRow(
 	}
 
 	// Apply per-user-type multiplier (same logic as Reserve).
-	userTypeMultiplier, err := c.store.Credits().GetUserTypeCreditMultiplier(ctx, user.ID)
-	if err != nil {
-		userTypeMultiplier = 1.0
+	rawMultiplier, utmErr := c.store.Credits().GetUserTypeCreditMultiplier(ctx, user.ID)
+	if utmErr != nil {
+		log.Warnw("creditsImpl.reserveBudgetRow: GetUserTypeCreditMultiplier failed, falling back to 1.0",
+			"user_id", user.ID, "err", utmErr)
+		rawMultiplier = 1.0
 	}
-	adjustedEstimated := int64(math.Round(float64(estimated) * userTypeMultiplier))
-	if adjustedEstimated <= 0 {
-		adjustedEstimated = 1
-	}
+	adjustedEstimated, snapshotMultiplier := applyUserTypeMultiplier(estimated, rawMultiplier)
 
 	reference := referenceFromOp(op)
 	rsvRow := &model.CreditReservation{
@@ -1214,7 +1213,7 @@ func (c *creditsImpl) reserveBudgetRow(
 		CoefficientID:      nil, // context_budget path never uses R2 coefficient
 		Status:             string(StatusReserved),
 		IdempotencyKey:     idempotencyKey,
-		UserTypeMultiplier: userTypeMultiplier,
+		UserTypeMultiplier: snapshotMultiplier,
 		// Context-budget extension fields (spec §3.6).
 		EstimationSource:          "context_budget",
 		EstimatedPromptTokens:     input.EstimatedPromptTokens,
@@ -1301,6 +1300,21 @@ func (c *creditsImpl) reserveBudgetRow(
 		CreatedAt:       rsvRow.CreatedAt,
 	}
 	return result, nil
+}
+
+// applyUserTypeMultiplier scales estimated credits by the given multiplier and
+// floors the result to a minimum of 1. Returns (adjusted, multiplier). The
+// multiplier is returned unchanged so callers can snapshot it on the reservation row.
+// Guarding multiplier <= 0 here means callers never need to repeat the check.
+func applyUserTypeMultiplier(estimated int64, multiplier float64) (adjusted int64, snapshotMultiplier float64) {
+	if multiplier <= 0 {
+		multiplier = 1.0
+	}
+	adj := int64(math.Round(float64(estimated) * multiplier))
+	if adj <= 0 {
+		adj = 1
+	}
+	return adj, multiplier
 }
 
 // toReservationItems maps the FIFO debit []PackageDeduction into the

@@ -381,6 +381,8 @@ func TestReserveBudget_WritesContextBudgetMetadata(t *testing.T) {
 	assert.NotEmpty(t, dbRsv.Model, "model must be persisted")
 	require.NotNil(t, dbRsv.ContextBudgetEventID)
 	assert.EqualValues(t, 42, *dbRsv.ContextBudgetEventID, "context_budget_event_id must match input")
+	// user_type_multiplier must default to 1.0 (user has subscription, no discount).
+	assert.InDelta(t, 1.0, dbRsv.UserTypeMultiplier, 0.001, "user_type_multiplier must be 1.0 for subscription user")
 }
 
 // TestCheckAndEstimateBudget_LegacyTierSkipsReserve verifies that a user with
@@ -452,4 +454,124 @@ func TestCheckAndEstimateBudget_UnknownChargedOperationFailsClosed(t *testing.T)
 	var acc model.CreditAccount
 	require.NoError(t, db.Where("user_id = ?", userID).First(&acc).Error)
 	assert.EqualValues(t, initialBalance, acc.Balance, "unknown operation must not modify user balance")
+}
+
+// --- User-type credit multiplier tests ---
+
+// TestReserve_TrialUserMultiplierApplied verifies that a user with an active trial
+// package (no subscription) has credits reserved at the configured 0.5× rate.
+// The snapshot on credit_reservation.user_type_multiplier must equal 0.5, and
+// reserved_credits must equal round(estimated * 0.5).
+func TestReserve_TrialUserMultiplierApplied(t *testing.T) {
+	db := newCreditReserveTestDB(t)
+	ds := store.NewTestStore(db)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+
+	userID := uint(800)
+	user := newCreditsUser(userID)
+	now := time.Now()
+
+	// Seed a trial package only (no subscription).
+	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+		{Type: model.CreditTypeTrial, TotalCredits: 200, RemainCredits: 200,
+			ActivatedAt: now, ExpiresAt: now.Add(72 * time.Hour)},
+	})
+
+	// Seed the trial multiplier config (0.5×).
+	require.NoError(t, db.Create(&model.CreditUserTypeConfig{
+		UserType:         "trial",
+		CreditMultiplier: 0.5,
+		Description:      "test: trial users burn at half rate",
+		IsActive:         true,
+	}).Error)
+
+	estimated := int64(100)
+	idemp := "test:trial_multiplier:800"
+	rsv, err := svc.Reserve(context.Background(), user, credit.OpSopRun, estimated, 0, &idemp)
+	require.NoError(t, err)
+	require.NotNil(t, rsv)
+
+	// Core invariant: reserved_credits = round(100 * 0.5) = 50.
+	assert.EqualValues(t, 50, rsv.ReservedCredits,
+		"trial user should have reserved_credits = round(estimated * 0.5)")
+
+	// DB snapshot must carry the multiplier so Reconcile is consistent.
+	var dbRsv model.CreditReservation
+	require.NoError(t, db.First(&dbRsv, rsv.ID).Error)
+	assert.EqualValues(t, 50, dbRsv.ReservedCredits)
+	assert.InDelta(t, 0.5, dbRsv.UserTypeMultiplier, 0.001, "snapshot multiplier must be 0.5")
+}
+
+// TestReserve_SubscriptionUserBypassesTrialMultiplier verifies that a user with
+// both an active subscription and a trial package gets multiplier 1.0 (subscription
+// takes precedence and the trial discount is suppressed).
+func TestReserve_SubscriptionUserBypassesTrialMultiplier(t *testing.T) {
+	db := newCreditReserveTestDB(t)
+	ds := store.NewTestStore(db)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+
+	userID := uint(801)
+	user := newCreditsUser(userID)
+	now := time.Now()
+
+	// User has both subscription and trial.
+	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+		{Type: model.CreditTypeSubscription, TotalCredits: 2000, RemainCredits: 2000,
+			ActivatedAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour)},
+		{Type: model.CreditTypeTrial, TotalCredits: 200, RemainCredits: 100,
+			ActivatedAt: now, ExpiresAt: now.Add(72 * time.Hour)},
+	})
+	require.NoError(t, db.Create(&model.CreditUserTypeConfig{
+		UserType: "trial", CreditMultiplier: 0.5, IsActive: true,
+	}).Error)
+
+	idemp := "test:sub_bypasses_trial:801"
+	rsv, err := svc.Reserve(context.Background(), user, credit.OpSopRun, 100, 0, &idemp)
+	require.NoError(t, err)
+
+	// Subscription takes precedence: multiplier = 1.0, reserved = 100.
+	assert.EqualValues(t, 100, rsv.ReservedCredits,
+		"subscription user must not receive trial discount")
+
+	var dbRsv model.CreditReservation
+	require.NoError(t, db.First(&dbRsv, rsv.ID).Error)
+	assert.InDelta(t, 1.0, dbRsv.UserTypeMultiplier, 0.001)
+}
+
+// TestReserve_ExpiredTrialPackageGetsNoDiscount verifies that a user whose trial
+// package has expired is treated as a normal user (multiplier = 1.0).
+func TestReserve_ExpiredTrialPackageGetsNoDiscount(t *testing.T) {
+	db := newCreditReserveTestDB(t)
+	ds := store.NewTestStore(db)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+
+	userID := uint(802)
+	user := newCreditsUser(userID)
+	now := time.Now()
+
+	// Expired trial package (status is 'expired').
+	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+		{Type: model.CreditTypeSubscription, TotalCredits: 2000, RemainCredits: 2000,
+			ActivatedAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour)},
+	})
+	// Also add an expired trial manually (status='expired', ExpiresAt in the past).
+	expiredPkg := model.CreditPackage{
+		UserID: userID, Type: model.CreditTypeTrial, TotalCredits: 200,
+		RemainCredits: 0, Status: model.CreditPackageExpired,
+		ActivatedAt: now.Add(-5 * 24 * time.Hour), ExpiresAt: now.Add(-2 * 24 * time.Hour),
+	}
+	require.NoError(t, db.Create(&expiredPkg).Error)
+	require.NoError(t, db.Create(&model.CreditUserTypeConfig{
+		UserType: "trial", CreditMultiplier: 0.5, IsActive: true,
+	}).Error)
+
+	idemp := "test:expired_trial:802"
+	rsv, err := svc.Reserve(context.Background(), user, credit.OpSopRun, 100, 0, &idemp)
+	require.NoError(t, err)
+
+	// Expired trial: no discount, multiplier = 1.0.
+	assert.EqualValues(t, 100, rsv.ReservedCredits)
+	var dbRsv model.CreditReservation
+	require.NoError(t, db.First(&dbRsv, rsv.ID).Error)
+	assert.InDelta(t, 1.0, dbRsv.UserTypeMultiplier, 0.001)
 }
