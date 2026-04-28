@@ -2522,7 +2522,7 @@ features:
     ndf_version: "1.0"
     description: "修复 pricing_rule seed drift：dev DB 通过管理端人工添加了 5 条价格规则但未回写 seed 文件，导致 QA/prod 新环境部署时 salesrag.chat / sop / chatbot 全部报 'pricing lookup: record not found' 500（与 salesrag-pricing-resolve-route 同根因，不同表现）。同时补一条 ('llm_chat','','') 全局兜底作 defensive layer"
     track: "hotfix"
-    stage: "H2-done"
+    stage: "H3-done"
     classification_reason: "纯 SQL migration，幂等 INSERT IGNORE + NOT EXISTS 子查询；(1) 不动业务代码 (2) 不新增 API (3) 不接外部服务 (4) 影响 2 文件（migration + rollback）(5) 修复方向是补齐缺失数据，无业务逻辑风险"
     last_updated_by: "ai-hotfix"
     last_updated_at: "2026-04-20T02:55:00+08:00"
@@ -2947,7 +2947,7 @@ features:
     ndf_version: "1.0"
     description: "客户管理页 ListSubUsers 后端 limit 静默截断到 100 — user 30 实际有 121 子账号 + 父自身 = 122 条，最旧 22 个（含 standard/premium 付费会员）在客户管理页消失。治本方案双修：后端删 cap + 前端循环分页"
     track: "hotfix"
-    stage: "H2-done"
+    stage: "H3-done"
     classification_reason: "双仓库改动 (numind-server controller 5 行 + numind-web-v3 view 20 行)，无 schema/无 biz/无 store 变更；线上 prod 已通过 hot patch（前端 docker cp）临时缓解，本条目跟进治本：把改动持久化进两仓库的 develop 分支，等正式发版才会进 prod 镜像（用户决定时机）"
     last_updated_by: "ai-hotfix"
     last_updated_at: "2026-04-28T13:10:00+08:00"
@@ -2995,7 +2995,7 @@ features:
     ndf_version: "1.1"
     description: "prod 环境 config_prod.yaml 完全缺失 alipay 配置段（dev/local 都有完整凭据）。子用户在加量包购买页选支付宝时，paymentBiz.CreateOrder 因 b.alipay==nil 抛出 \"支付宝未配置\"，controller 透传成 500 + 错误中文落到前端。补全 alipay 段（复用 dev yaml 的真实商户凭据，notify_url 用 prod 路径）即可。"
     track: "hotfix"
-    stage: "H2-done"
+    stage: "H3-done"
     classification_reason: "Triage 5 条 — (1) 无 schema 变更 (2) 无新增 API (3) 无新外部服务（支付宝 SDK 已集成在 biz/payment/alipay.go） (4) 仅 1 文件改动 (config_prod.yaml) (5) **触及支付高风险业务** → 字面命中第 5 条。但用户确认走 Hotfix 双轨：根因明确（缺配置）、修复确定性高、prod 收入正在流失、风险可控（复用 dev 已验证的同一商户号凭据）。"
     last_updated_by: "ai-h1-start"
     last_updated_at: "2026-04-28T17:30:00+08:00"
@@ -3029,6 +3029,10 @@ features:
       2026-04-28T16:48 dev CI 部署成功 (1m13s deploy_dev) + numind-server-dev 容器 healthy。
       Startup log: payment/alipay.go:43 'AlipayClient initialised app_id: 2021000105656380, is_production: true' — 凭据有效。
       dev curl POST /dev/api/v1/payment/alipay/notify → 500（route hit，证明路由形状对，可信用于 prod）。
+      2026-04-28T21:05 prod 通过 docker cp 把 patched yaml 写入 /app/config_prod.yaml + docker restart 验证：
+        - prod startup log: 'AlipayClient initialised app_id: 2021000105656380, is_production: true' (3 次, 在 PaymentBiz 初始化点) ✓
+        - 外部 HTTPS curl POST /api/v1/payment/alipay/notify → 500 (route hit) ✓
+      备份位置：prod 主机 /tmp/app_config_prod_baked.bak.20260428-210241（baked 原版，用于必要时回滚 docker cp 操作）。
     decisions:
       - "2026-04-28: 用户授权破例修改 config_prod.yaml（CLAUDE.md §3 默认禁止），属配置 bug 修复例外"
       - "2026-04-28: alipay 凭据来源 — 复用 config_dev.yaml 同一商户号（app_id=2021000105656380）。dev 已用此凭据真实跑过，merchant 后台无 callback URL 白名单要求（推断自 dev 历史可达）"
@@ -3036,7 +3040,8 @@ features:
       - "2026-04-28: 用户暂不上 prod，只 push dev 测试（dev 本身配置已正确，验证 booster purchase E2E flow 不退化）"
       - "2026-04-28: 实施踩坑 — Edit 工具复制 1624 字符 base64 private_key 时单字符 typo (TNez → TPez)，由 diff config_dev.yaml vs config_prod.yaml 发现并修正；二次 yaml.safe_load + len(private_key) 与 dev 完全一致 (1624) 验证。后续如再做 long-base64 字段复制，应用 sed 直接迁移而非 Edit"
     deferred:
-      - "prod 热修（β path）授权待命：SSH prod 编辑 /opt/numind/config/config_prod.yaml 把 alipay 段补进去 + docker restart numind-server-prod（30-120s BGE 重载）。本次只 push dev 验证流程，prod 部署等用户后续命令"
+      - "Tech debt: prod docker run 用 -c /app/config_prod.yaml（image baked），但同时挂了 -v /opt/numind/config:/opt/numind/config:ro 这是 dead volume mount——binary 不读它。下次 develop merge 应清理或对齐：(a) 改 docker run 启动参数为 -c /opt/numind/config/config_prod.yaml 让 volume mount 真正生效，或 (b) 删除 -v 挂载减少认知负担"
+      - "Tech debt: 当前 hot patch 是 ephemeral 的（docker rm + docker run 会丢失）。下次 prod tag v* 部署时，新 image 的 baked /app/config_prod.yaml 来自 develop branch，会自动包含本次修复——所以发版即生效，不需重做 hot patch。但发版前如果有人意外 docker rm 容器，会回到 broken 状态。"
     blockers: []
     created_at: "2026-04-28T17:30:00+08:00"
     completed_at: null
@@ -3045,7 +3050,7 @@ features:
     ndf_version: "1.1"
     description: "prod/qa 环境 wechat notify_url 路径写错（历史 typo）：/api/pay/wechat/notify，但 nginx /api/ 剥前缀 + 后端路由是 /v1/payment/wechat/notify，所以 WeChat 回调全部撞 404，订单永远 pending，已支付用户无积分。修复：notify_url 改 /api/v1/payment/wechat/notify。同款 typo 在 config_qa.yaml 一并修。"
     track: "hotfix"
-    stage: "H2-done"
+    stage: "H3-done"
     classification_reason: "Triage 5 条 — (1) 无 schema 变更 (2) 无新增 API (3) 无新外部服务 (4) 改 2 个 yaml 文件 (5) **触及支付高风险业务** → 字面命中第 5 条。但用户确认走 Hotfix：根因 100% 锁定（外部 HTTPS 实测 404 vs 200 命中差异）、修复就是一行字符串路径修正、风险极低。"
     last_updated_by: "ai-h1-start"
     last_updated_at: "2026-04-28T17:30:00+08:00"
@@ -3081,13 +3086,17 @@ features:
         POST /dev/api/pay/wechat/notify        → 404 (旧 typo path 确认不命中 ✓)
         POST /dev/api/v1/payment/alipay/notify → 500 (route hit ✓)
       证明：(a) yaml 解析正常 (b) prod 将要使用的路径形状已在 dev 验证可达 (c) 热修不会因路径打错二次踩坑
+      2026-04-28T21:05 prod 通过 docker cp 写入 /app/config_prod.yaml + docker restart 验证：
+        - 外部 HTTPS POST /api/v1/payment/wechat/notify → 500 (route hit ✓)
+        - 外部 HTTPS POST /api/pay/wechat/notify       → 404 (旧 path 已废弃 ✓)
+      意味着 WeChat 的下一笔回调会真正命中后端 fulfillOrder，订单履约 + 积分发放将正常工作。
     decisions:
       - "2026-04-28: 用户授权破例修改 config_prod.yaml；qa yaml 同款 typo 一并修复（一致性 + 避免下次 qa 也踩坑）"
       - "2026-04-28: 不补单已 paid 未发积分用户 — 用户报告 user 348 已直接 SQL 修 prod DB 完成补单；其他 7 条 pending 单子无证据真实付款，跳过补单"
       - "2026-04-28: 用户暂不上 prod，只 push dev 测试。注意：dev config_dev.yaml 路径已正确，本修复对 dev 环境运行时无影响 — dev 测试目的是验证 booster purchase E2E（Wechat 回调实际到达 + 积分发放）作为 prod 上线前的烟雾测试"
       - "2026-04-28: notify_url 改动是一条字符串修正，后端代码无需变更（wechat client 在每笔 NativePrepay 时把 notify_url 通过 SDK 透给微信，重启后新订单立即用新 URL；老 7 条 pending 单子已用错 URL 注册，即使用户现在再付也回调不来 — 但这 7 条本就属于无效订单状态，无需考虑）"
     deferred:
-      - "prod 热修（β path）授权待命：SSH prod 编辑 /opt/numind/config/config_prod.yaml 把 wechat notify_url 改为 /api/v1/payment/wechat/notify + docker restart numind-server-prod。本次只 push dev 验证流程，prod 部署等用户后续命令"
+      - "Same as prod-alipay-config-missing entry: dead volume mount tech debt + ephemeral hot patch survival under docker rm scenario"
     blockers: []
     created_at: "2026-04-28T17:30:00+08:00"
     completed_at: null
