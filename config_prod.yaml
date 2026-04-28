@@ -56,10 +56,9 @@ wechat:
     mch_cert_serial_no: "6D2DCAC8D07269DB7B19F4B644F2BDB1772B983B"
     mch_api_v3_key: "fda9ba0b25b6822789676ee6dcbc01d2"
     mch_private_key_path: "/opt/numind/config/cert/apiclient_key.pem"
-    wechatpay_cert_path: "/opt/numind/config/cert/wechatpay_cert.pem"
+    wechatpay_cert_path: "/opt/numind/config/cert/pub_key.pem"
+    wechatpay_public_key_id: "PUB_KEY_ID_0117224566392025080100292023002202"
     notify_url: "https://youshu.asia/api/v1/payment/wechat/notify"
-    # 使用微信支付公钥模式（推荐，避免证书过期问题）
-    use_wechatpay_public_key: "true"
 
 alipay:
     app_id: "2021000105656380"
