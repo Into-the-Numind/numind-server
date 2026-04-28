@@ -35,6 +35,12 @@ type CreditReservation struct {
 	Model                     string  `gorm:"size:100;not null;default:''" json:"model"`
 	ContextBudgetEventID      *uint64 `gorm:"index:idx_cr_budget_event" json:"context_budget_event_id"`
 
+	// UserTypeMultiplier is the per-user-type burn-rate multiplier snapshotted at
+	// Reserve time. Reconcile must apply the same factor to actualCostCents so
+	// the delta computation stays consistent with the original reservation.
+	// 1.00 = no discount (default for subscription / normal users).
+	UserTypeMultiplier float64 `gorm:"column:user_type_multiplier;type:decimal(5,2);not null;default:1.00" json:"user_type_multiplier"`
+
 	// Items 外键关联（应用层保证 FK 到 credit_reservation_item.reservation_id）
 	Items []CreditReservationItem `gorm:"foreignKey:ReservationID" json:"items,omitempty"`
 }

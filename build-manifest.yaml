@@ -1,6 +1,22 @@
 schema_version: "1.0"
 
 features:
+  - id: "credit-user-type-multiplier"
+    ndf_version: "1.1"
+    description: "Trial 用户积分消耗倍率：active trial 包用户以 0.5× 倍率扣积分，买了订阅后自动回归 1.0×。倍率在 Reserve 时快照到 credit_reservation.user_type_multiplier，Reconcile 用快照值计算 adjustedActual 后再算 delta，保证两阶段一致。"
+    track: "hotfix"
+    stage: "completed"
+    completed_at: "2026-04-29T00:30:00+08:00"
+    classification_reason: "Hotfix：无新 API 端点，无外部服务集成，仅 ~5 文件变更（migration + model + store + biz），不涉及支付/权限主流程。"
+    repos:
+      - numind-server
+    files_changed:
+      - migrations/20260429_120000_add_user_type_credit_multiplier.sql
+      - internal/pkg/model/credit.go
+      - internal/pkg/model/credit_reservation.go
+      - internal/numind/store/credit.go
+      - internal/numind/biz/credit/credit_service.go
+
   - id: "remove-customer-tier-filters"
     ndf_version: "1.1"
     description: "客户管理页面删除普通会员和高级会员筛选按钮，仅保留全部 / Free / Pro / 体验会员筛选；不影响列表中的会员状态展示，也不影响 action 菜单里的帮开通会员能力。"

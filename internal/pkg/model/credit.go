@@ -85,4 +85,18 @@ type CreditTransaction struct {
 	CreatedAt     time.Time `gorm:"index:idx_ct_user_created" json:"created_at"`
 }
 
+// CreditUserTypeConfig per-user-type credit burn-rate multipliers (admin-configurable).
+// The multiplier is applied at Reserve time and snapshotted onto credit_reservation.user_type_multiplier.
+// Reconcile re-applies the snapshot so delta computation is consistent with the original reservation.
+type CreditUserTypeConfig struct {
+	UserType         string    `gorm:"primaryKey;size:30" json:"user_type"`            // trial | subscription | ...
+	CreditMultiplier float64   `gorm:"type:decimal(5,2);not null;default:1.00" json:"credit_multiplier"` // <1 = slower burn
+	Description      string    `gorm:"size:200;not null;default:''" json:"description"`
+	IsActive         bool      `gorm:"not null;default:true" json:"is_active"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+func (CreditUserTypeConfig) TableName() string { return "credit_user_type_config" }
+
 func (CreditTransaction) TableName() string { return "credit_transaction" }

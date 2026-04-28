@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -21,6 +23,7 @@ type CreditStore interface {
 	ListPackagesByOrder(ctx context.Context, orderID uint64) ([]model.CreditPackage, error)
 	HasActiveSubscription(ctx context.Context, userID uint) (bool, error)
 	HasTrialPackage(ctx context.Context, userID uint) (bool, error)
+	GetUserTypeCreditMultiplier(ctx context.Context, userID uint) (float64, error)
 	CreateTransaction(ctx context.Context, tx *gorm.DB, txn *model.CreditTransaction) error
 	ListTransactionsByUser(ctx context.Context, userID uint, offset, limit int) ([]model.CreditTransaction, int64, error)
 	UpdateBalance(ctx context.Context, tx *gorm.DB, userID uint, delta int64) error
@@ -146,6 +149,49 @@ func (s *creditStore) HasTrialPackage(ctx context.Context, userID uint) (bool, e
 		Where("user_id = ? AND type = ?", userID, model.CreditTypeTrial).
 		Count(&count).Error
 	return count > 0, err
+}
+
+// GetUserTypeCreditMultiplier returns the credit burn-rate multiplier for a user.
+// Rules (evaluated in order):
+//  1. Active subscription → 1.0 (subscription users are not discounted).
+//  2. Active trial package with remaining credits → look up credit_user_type_config for 'trial'.
+//  3. All other cases → 1.0.
+//
+// Returns 1.0 on any store error so callers always get a safe default.
+func (s *creditStore) GetUserTypeCreditMultiplier(ctx context.Context, userID uint) (float64, error) {
+	hasSub, err := s.HasActiveSubscription(ctx, userID)
+	if err != nil {
+		return 1.0, fmt.Errorf("GetUserTypeCreditMultiplier: check subscription: %w", err)
+	}
+	if hasSub {
+		return 1.0, nil
+	}
+
+	var trialCount int64
+	if err := s.db.WithContext(ctx).
+		Model(&model.CreditPackage{}).
+		Where("user_id = ? AND type = ? AND status = ? AND remain_credits > 0 AND expires_at > ?",
+			userID, model.CreditTypeTrial, model.CreditPackageActive, time.Now()).
+		Count(&trialCount).Error; err != nil {
+		return 1.0, fmt.Errorf("GetUserTypeCreditMultiplier: check trial package: %w", err)
+	}
+	if trialCount == 0 {
+		return 1.0, nil
+	}
+
+	var cfg model.CreditUserTypeConfig
+	if err := s.db.WithContext(ctx).
+		Where("user_type = ? AND is_active = ?", "trial", true).
+		First(&cfg).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 1.0, nil
+		}
+		return 1.0, fmt.Errorf("GetUserTypeCreditMultiplier: load config: %w", err)
+	}
+	if cfg.CreditMultiplier <= 0 {
+		return 1.0, nil
+	}
+	return cfg.CreditMultiplier, nil
 }
 
 // CreateTransaction 创建积分流水（在事务中使用）
