@@ -3146,3 +3146,37 @@ features:
     blockers: []
     created_at: "2026-04-28T21:30:00+08:00"
     completed_at: null
+
+  - id: "ai-service-deprecated-field-cleanup"
+    ndf_version: "1.1"
+    description: "ai_service 表当前同时存在 deprecated_at 和 is_active 两个字段，语义重叠且不联动：前端 ServicesList.vue 把 deprecated_at 直接当'已删除'展示（getServiceStatus: deprecated_at→'deleted'），但路由层完全不看 deprecated_at，只看 is_active。后果：UI 显示'已删除'的服务，路由器仍可能转流量过去 → ErrContextConfigInvalid。本 feature 重构为 GORM 标准 soft-delete 模式：废弃 deprecated_at 字段；新增/复用 deleted_at 软删字段；保留 is_active 作为'临时启停'语义。前端列表查询自动 WHERE deleted_at IS NULL（GORM 默认行为），删除按钮设 deleted_at=NOW()。is_active 切换 = 暂停（管理端仍可见）；deleted = 永久删除（管理端列表不显示，但历史 usage_record/credit_reservation/Langfuse trace 的 service_id 仍能 join 到表里查名字，外键完整）。"
+    track: "standard"
+    stage: "backlog"
+    classification_reason: "Triage 5 条评估 — (1) 涉及 schema 变更（删 deprecated_at 字段或迁移到 deleted_at）(2) 涉及后端 store/biz 查询（默认过滤已删除）(3) 涉及前端管理页 UI（删除按钮语义、列表筛选）(4) 跨 numind-server + numind-admin-web 两仓 (5) 影响 ai_service 这个核心配置表，所有 LLM 调用路由依赖。Standard Track。"
+    last_updated_by: "ai-backlog-record-2026-04-28"
+    last_updated_at: "2026-04-28T22:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-admin-web
+    branches: {}
+    artifacts:
+      requirement: null
+      proposal: null
+      spec: null
+      plan: null
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: null
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-04-28: 用户选方案 B（is_active + deleted_at 软删除），不选方案 A（单一 is_active）也不选 C（hard delete）。理由：A 把'停用'和'删除'语义合并丢失'永久退场'概念；C 硬删会破坏历史 usage_record/credit_reservation 的 service_id 外键引用，月度财务对账拉不到名字。B 是 GORM 标准 soft delete 模式，零代码就能让前端自动隐藏，且历史数据完整可审计。"
+      - "2026-04-28: 用户明确说'当下只聚焦 context-budget-compression feature，本项推迟做'。当前阶段 backlog，不安排执行。"
+    sub_issues:
+      - "ServiceEdit.vue Update payload 把 is_active=false 写不进 DB。怀疑是 GORM `default:true` bool 的 Update 路径变体（项目 CLAUDE.md §6 已记录 Create 路径有此坑，Update 可能没兜底）。证据：用户在 prod admin UI 取消勾选'启用此服务'保存后，DB SELECT 仍是 is_active=1。需要排查 Update 路径，加 UpdateColumn 兜底或改用 *bool 指针字段。本 sub-issue 在主 feature 启动前必须先解决，否则换啥设计都白搭。"
+    blockers:
+      - "需要先排查并修复 ServiceEdit.vue Update is_active=false 写不进 DB 的 bug（sub_issue 1）。"
+    created_at: "2026-04-28T22:00:00+08:00"
+    completed_at: null
