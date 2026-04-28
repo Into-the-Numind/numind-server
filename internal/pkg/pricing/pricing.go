@@ -130,7 +130,11 @@ func (c *calculator) CalculateCost(ctx context.Context, serviceType, provider, m
 		return 0, nil
 	}
 
-	return int64(math.Round(costYuan * 100)), nil
+	multiplier := rule.CreditMultiplier
+	if multiplier <= 0 {
+		multiplier = 1.0
+	}
+	return int64(math.Round(costYuan * multiplier * 100)), nil
 }
 
 // calculateTieredCost looks up input/output tiers and computes the sell-price

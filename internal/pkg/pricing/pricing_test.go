@@ -635,3 +635,53 @@ func TestCalculateCost_TieredBillingMissingTiers(t *testing.T) {
 		t.Fatal("expected error for tiered rule without tiers, got nil")
 	}
 }
+
+// TestCalculateCost_CreditMultiplier verifies that CreditMultiplier scales the
+// credits charged to users independently of the raw cost_yuan computation.
+func TestCalculateCost_CreditMultiplier(t *testing.T) {
+	baseRule := func(multiplier float64) *model.PricingRule {
+		r := flatRule(1, 1.0, 2.0, 0.0, 0.0) // inputPrice=1 yuan/MTok, outputPrice=2 yuan/MTok
+		r.CreditMultiplier = multiplier
+		return r
+	}
+
+	// 10k prompt + 5k completion, multiplier=1.0 (baseline)
+	// cost = 10k/1M*1.0 + 5k/1M*2.0 = 0.01 + 0.01 = 0.02 yuan = 2 cents
+	s := &stubPricingStore{pricingRules: map[string]*model.PricingRule{
+		"llm_chat|test|model": baseRule(1.0),
+	}}
+	calc := NewCalculator(s)
+	cost, err := calc.CalculateCost(context.Background(), "llm_chat", "test", "model", 10_000, 5_000)
+	if err != nil {
+		t.Fatalf("multiplier=1.0: unexpected error %v", err)
+	}
+	if cost != 2 {
+		t.Errorf("multiplier=1.0: cost = %d, want 2", cost)
+	}
+
+	// Same tokens, multiplier=0.5 → credits charged should be 1 cent (halved).
+	s2 := &stubPricingStore{pricingRules: map[string]*model.PricingRule{
+		"llm_chat|test|model": baseRule(0.5),
+	}}
+	calc2 := NewCalculator(s2)
+	cost2, err := calc2.CalculateCost(context.Background(), "llm_chat", "test", "model", 10_000, 5_000)
+	if err != nil {
+		t.Fatalf("multiplier=0.5: unexpected error %v", err)
+	}
+	if cost2 != 1 {
+		t.Errorf("multiplier=0.5: cost = %d, want 1", cost2)
+	}
+
+	// multiplier=0 should fall back to 1.0 (guard against misconfiguration).
+	s3 := &stubPricingStore{pricingRules: map[string]*model.PricingRule{
+		"llm_chat|test|model": baseRule(0),
+	}}
+	calc3 := NewCalculator(s3)
+	cost3, err := calc3.CalculateCost(context.Background(), "llm_chat", "test", "model", 10_000, 5_000)
+	if err != nil {
+		t.Fatalf("multiplier=0 (fallback): unexpected error %v", err)
+	}
+	if cost3 != 2 {
+		t.Errorf("multiplier=0 (fallback): cost = %d, want 2 (should behave as 1.0)", cost3)
+	}
+}

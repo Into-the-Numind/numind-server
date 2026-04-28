@@ -218,6 +218,7 @@ type AdminPricingRuleItem struct {
 	SellOutputPricePerMTok float64   `json:"sell_output_price_per_mtok"`
 	SellPricePerCall       float64   `json:"sell_price_per_call"`
 	SellPricePerGB         float64   `json:"sell_price_per_gb"`
+	CreditMultiplier       float64   `json:"credit_multiplier"`
 	IsActive               bool      `json:"is_active"`
 	CreatedAt              time.Time `json:"created_at"`
 	UpdatedAt              time.Time `json:"updated_at"`
@@ -232,19 +233,20 @@ type AdminListPricingRulesResponse struct {
 
 // AdminCreatePricingRuleRequest 创建定价规则请求
 type AdminCreatePricingRuleRequest struct {
-	ServiceType            string  `json:"service_type" binding:"required"`
-	Provider               string  `json:"provider" binding:"required"`
-	Model                  string  `json:"model"`
-	BillingMode            string  `json:"billing_mode"` // flat | tiered_token
-	InputPricePerMTok      float64 `json:"input_price_per_mtok"`
-	OutputPricePerMTok     float64 `json:"output_price_per_mtok"`
-	PricePerCall           float64 `json:"price_per_call"`
-	PricePerGB             float64 `json:"price_per_gb"`
-	SellInputPricePerMTok  float64 `json:"sell_input_price_per_mtok"`
-	SellOutputPricePerMTok float64 `json:"sell_output_price_per_mtok"`
-	SellPricePerCall       float64 `json:"sell_price_per_call"`
-	SellPricePerGB         float64 `json:"sell_price_per_gb"`
-	IsActive               *bool   `json:"is_active"`
+	ServiceType            string   `json:"service_type" binding:"required"`
+	Provider               string   `json:"provider" binding:"required"`
+	Model                  string   `json:"model"`
+	BillingMode            string   `json:"billing_mode"` // flat | tiered_token
+	InputPricePerMTok      float64  `json:"input_price_per_mtok"`
+	OutputPricePerMTok     float64  `json:"output_price_per_mtok"`
+	PricePerCall           float64  `json:"price_per_call"`
+	PricePerGB             float64  `json:"price_per_gb"`
+	SellInputPricePerMTok  float64  `json:"sell_input_price_per_mtok"`
+	SellOutputPricePerMTok float64  `json:"sell_output_price_per_mtok"`
+	SellPricePerCall       float64  `json:"sell_price_per_call"`
+	SellPricePerGB         float64  `json:"sell_price_per_gb"`
+	CreditMultiplier       *float64 `json:"credit_multiplier"`
+	IsActive               *bool    `json:"is_active"`
 }
 
 // AdminUpdatePricingRuleRequest 更新定价规则请求
@@ -261,6 +263,7 @@ type AdminUpdatePricingRuleRequest struct {
 	SellOutputPricePerMTok *float64 `json:"sell_output_price_per_mtok"`
 	SellPricePerCall       *float64 `json:"sell_price_per_call"`
 	SellPricePerGB         *float64 `json:"sell_price_per_gb"`
+	CreditMultiplier       *float64 `json:"credit_multiplier"`
 	IsActive               *bool    `json:"is_active"`
 }
 

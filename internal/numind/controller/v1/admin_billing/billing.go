@@ -242,6 +242,7 @@ func (ctrl *AdminBillingController) ListPricingRules(c *gin.Context) {
 			SellOutputPricePerMTok: r.SellOutputPricePerMTok,
 			SellPricePerCall:       r.SellPricePerCall,
 			SellPricePerGB:         r.SellPricePerGB,
+			CreditMultiplier:       r.CreditMultiplier,
 			IsActive:               r.IsActive,
 			CreatedAt:              r.CreatedAt,
 			UpdatedAt:              r.UpdatedAt,
@@ -292,6 +293,11 @@ func (ctrl *AdminBillingController) CreatePricingRule(c *gin.Context) {
 		SellPricePerGB:         req.SellPricePerGB,
 		IsActive:               isActive,
 	}
+	if req.CreditMultiplier != nil {
+		rule.CreditMultiplier = *req.CreditMultiplier
+	} else {
+		rule.CreditMultiplier = 1.0
+	}
 
 	if err := ctrl.ds.Billing().CreatePricingRule(c, rule); err != nil {
 		log.C(c).Errorw("Failed to create pricing rule", "error", err)
@@ -313,6 +319,7 @@ func (ctrl *AdminBillingController) CreatePricingRule(c *gin.Context) {
 		SellOutputPricePerMTok: rule.SellOutputPricePerMTok,
 		SellPricePerCall:       rule.SellPricePerCall,
 		SellPricePerGB:         rule.SellPricePerGB,
+		CreditMultiplier:       rule.CreditMultiplier,
 		IsActive:               rule.IsActive,
 		CreatedAt:              rule.CreatedAt,
 		UpdatedAt:              rule.UpdatedAt,
@@ -348,6 +355,7 @@ func (ctrl *AdminBillingController) UpdatePricingRule(c *gin.Context) {
 		SellOutputPricePerMTok: req.SellOutputPricePerMTok,
 		SellPricePerCall:       req.SellPricePerCall,
 		SellPricePerGB:         req.SellPricePerGB,
+		CreditMultiplier:       req.CreditMultiplier,
 		IsActive:               req.IsActive,
 	}
 

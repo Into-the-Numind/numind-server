@@ -138,6 +138,7 @@ type PricingRuleUpdate struct {
 	SellOutputPricePerMTok *float64
 	SellPricePerCall       *float64
 	SellPricePerGB         *float64
+	CreditMultiplier       *float64
 	IsActive               *bool
 }
 
@@ -149,7 +150,7 @@ func (u PricingRuleUpdate) IsEmpty() bool {
 		u.PricePerCall == nil && u.PricePerGB == nil &&
 		u.SellInputPricePerMTok == nil && u.SellOutputPricePerMTok == nil &&
 		u.SellPricePerCall == nil && u.SellPricePerGB == nil &&
-		u.IsActive == nil
+		u.CreditMultiplier == nil && u.IsActive == nil
 }
 
 // AnalyticsFilter 消费分析查询参数
@@ -316,8 +317,8 @@ func (s *billingStore) GetOrCreateAccount(ctx context.Context, userID uint) (*mo
 
 // GetPricingRule 获取匹配的定价规则。三级 fallback（优先级从高到低）：
 //  1. 精确匹配 (service_type, provider, model)
-//  2. provider 通配 (service_type, provider, '')
-//  3. 全局兜底 (service_type, '', '')
+//  2. provider 通配 (service_type, provider, ”)
+//  3. 全局兜底 (service_type, ”, ”)
 //
 // 全局兜底行由 migrations/seed_pricing_rules.sql 保证存在。任何未知
 // (provider, model) 都能命中全局行（保守价格 ~ ¥3/MTok input, ¥10/MTok
@@ -689,6 +690,9 @@ func (s *billingStore) UpdatePricingRule(ctx context.Context, id uint, update Pr
 	}
 	if update.SellPricePerGB != nil {
 		updates["sell_price_per_gb"] = *update.SellPricePerGB
+	}
+	if update.CreditMultiplier != nil {
+		updates["credit_multiplier"] = *update.CreditMultiplier
 	}
 	if update.IsActive != nil {
 		updates["is_active"] = *update.IsActive
