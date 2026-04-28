@@ -2904,6 +2904,7 @@ features:
       review_spec_compliance: "inline (per-task subagent reviews)"
       review_code_quality: "inline (per-task subagent reviews)"
       qa: null
+      runbook_calibration: "docs/superpowers/runbooks/context-budget-calibration.md"
     progress:
       total_tasks: 15
       completed_tasks: 15
