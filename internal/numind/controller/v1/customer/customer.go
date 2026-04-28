@@ -88,13 +88,11 @@ func (ctrl *CustomerController) ListSubUsers(c *gin.Context) {
 	}
 	user := currentUser.(*model.User)
 
-	// 获取分页参数
+	// 获取分页参数；不设上限——父账号实际可能拥有上千子账号，截断会导致客户管理页缺人
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-
-	// 限制最大limit
-	if limit > 100 {
-		limit = 100
+	if limit <= 0 {
+		limit = 20
 	}
 
 	// 获取二级客户列表

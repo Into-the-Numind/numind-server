@@ -2942,3 +2942,36 @@ features:
       - "manual S5 verification pending: Playwright e2e/context-budget.spec.ts (4 admin paths, require running dev server) + gstack /qa user counter screenshots + production-like env smoke tests — see docs/superpowers/verification/context-budget-compression-s5.md"
     created_at: "2026-04-25T15:45:00+08:00"
     completed_at: "2026-04-25T12:30:00+08:00"
+
+  - id: "customer-list-remove-limit-cap"
+    ndf_version: "1.0"
+    description: "客户管理页 ListSubUsers 后端 limit 静默截断到 100 — user 30 实际有 121 子账号 + 父自身 = 122 条，前端 fetchSubUsers(0,1000) 被 controller `if limit>100 {limit=100}` 砍掉，最旧 22 个子账号在客户管理页消失（含 standard/premium 付费会员）。删除上限"
+    track: "hotfix"
+    stage: "H3-pending-deploy"
+    classification_reason: "单仓库 controller 一处改动，无 schema/无 biz/无 store 变更，~5 行；线上正在影响客户管理（父账号管理子账号），紧急。前端 fetchSubUsers 已传 limit=1000 无需改动"
+    last_updated_by: "ai-hotfix"
+    last_updated_at: "2026-04-28T16:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/customer-list-remove-limit-cap"
+    hotfix_artifacts:
+      diagnosis: |
+        Prod DB 直查：parent_user_id=30 OR id=30 AND deleted_at IS NULL → 122 条
+        前端 numind-web-v3/src/views/CustomersView.vue:1156 调 fetchSubUsers(0, 1000)
+        后端 numind-server/internal/numind/controller/v1/customer/customer.go:96-98 静默 clamp limit→100
+        store 层 ORDER BY parent-self 置顶 + created_at DESC，被截断的是最旧 22 个（id 290-311，2026-01-11 创建，含 600504y standard / 600602g premium / 600607f standard 等付费用户）
+      review: "pending — 改动 5 行，go vet PASS, go build PASS, biz/customer 测试 PASS"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 0
+      current_task: null
+    rollback: "git revert merge commit 即可——controller 单点改动，无数据迁移"
+    last_verified: "local: go vet + go build + go test ./internal/numind/biz/customer/... PASS"
+    decisions:
+      - "2026-04-28: 用户明确要求'不要设置任何的上限'，原 cap=100 完全删除；保留 limit<=0 时回退到 default=20（query 默认值），防止 strconv.Atoi 失败导致 limit=0 全表扫"
+      - "2026-04-28: 不动前端——前端 fetchSubUsers 已显式传 limit=1000，后端删 cap 后直接生效；后续如客户量超 1000 再做服务端真正分页"
+    blockers: []
+    created_at: "2026-04-28T16:00:00+08:00"
+    completed_at: null
