@@ -39,11 +39,12 @@ func newCreditReserveTestDB(t *testing.T) *gorm.DB {
 		&model.CreditPackage{},
 		&model.CreditTransaction{},
 		&model.UsageRecord{},
+		&model.CreditUserTypeConfig{},
 	))
 
 	// Hand-roll the reservation tables so SQLite accepts the ENUM columns as TEXT.
 	// Includes context-budget extension columns (estimation_source, token_profile_id, etc.)
-	// added in Task 1 (feature: context-budget-compression).
+	// and user_type_multiplier (feature: credit-user-type-multiplier).
 	require.NoError(t, db.Exec(`
 CREATE TABLE IF NOT EXISTS credit_reservation (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,7 +68,8 @@ CREATE TABLE IF NOT EXISTS credit_reservation (
     estimated_completion_tokens INTEGER NOT NULL DEFAULT 0,
     provider TEXT NOT NULL DEFAULT '',
     model TEXT NOT NULL DEFAULT '',
-    context_budget_event_id INTEGER
+    context_budget_event_id INTEGER,
+    user_type_multiplier REAL NOT NULL DEFAULT 1.0
 );`).Error)
 	require.NoError(t, db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uk_idempotency_key ON credit_reservation(idempotency_key);`).Error)
 

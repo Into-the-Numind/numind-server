@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -464,16 +465,31 @@ func (c *creditsImpl) Reserve(
 		return nil, fmt.Errorf("creditsImpl.Reserve: ensure credit_account: %w", err)
 	}
 
+	// Apply per-user-type multiplier (e.g. trial users burn at 0.5× rate).
+	// The multiplier is snapshotted onto the reservation row so Reconcile can
+	// apply the identical factor to actualCostCents regardless of later package
+	// state changes.
+	userTypeMultiplier, err := c.store.Credits().GetUserTypeCreditMultiplier(ctx, user.ID)
+	if err != nil {
+		// Non-fatal: fall back to 1.0 so billing is never blocked by a config lookup error.
+		userTypeMultiplier = 1.0
+	}
+	adjustedEstimated := int64(math.Round(float64(estimated) * userTypeMultiplier))
+	if adjustedEstimated <= 0 {
+		adjustedEstimated = 1
+	}
+
 	reference := referenceFromOp(op)
 	rsvRow := &model.CreditReservation{
-		UserID:          user.ID,
-		ReferenceType:   reference.refType,
-		ReferenceID:     reference.refID, // filled in from idempotencyKey / "pending"
-		Operation:       string(op),
-		ReservedCredits: estimated,
-		CoefficientID:   &coefID,
-		Status:          string(StatusReserved),
-		IdempotencyKey:  idempotencyKey,
+		UserID:             user.ID,
+		ReferenceType:      reference.refType,
+		ReferenceID:        reference.refID, // filled in from idempotencyKey / "pending"
+		Operation:          string(op),
+		ReservedCredits:    adjustedEstimated,
+		CoefficientID:      &coefID,
+		Status:             string(StatusReserved),
+		IdempotencyKey:     idempotencyKey,
+		UserTypeMultiplier: userTypeMultiplier,
 	}
 	if idempotencyKey != nil {
 		rsvRow.ReferenceID = *idempotencyKey
@@ -484,7 +500,7 @@ func (c *creditsImpl) Reserve(
 	var items []PackageDeduction
 	txErr := c.store.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 1. FIFO deduction inside the outer tx — returns items for seq emission.
-		debited, err := c.biz.DeductCreditsTx(ctx, tx, user.ID, estimated, "reserve:"+string(op))
+		debited, err := c.biz.DeductCreditsTx(ctx, tx, user.ID, adjustedEstimated, "reserve:"+string(op))
 		if err != nil {
 			return err // ErrInsufficientCredits bubbles up; tx rolls back.
 		}
@@ -624,8 +640,22 @@ func (c *creditsImpl) reconcileWithTokens(
 			return fmt.Errorf("load items: %w", err)
 		}
 
+		// Apply the user-type multiplier that was snapshotted at Reserve time.
+		// actualCostCents from the billing middleware is the raw model cost; we
+		// must scale it by the same factor so delta is computed on like-for-like
+		// terms (both reservedCredits and adjustedActual reflect the multiplier).
+		multiplier := row.UserTypeMultiplier
+		if multiplier <= 0 {
+			multiplier = 1.0
+		}
+		adjustedActual := int64(math.Round(float64(actualCostCents) * multiplier))
+		if adjustedActual < 0 {
+			adjustedActual = 0
+		}
+
 		reservedCredits = row.ReservedCredits
-		delta = actualCostCents - row.ReservedCredits
+		delta = adjustedActual - row.ReservedCredits
+		actualCostCents = adjustedActual // write back so span + DB record carry the adjusted value
 		switch {
 		case delta < 0:
 			reconcileDirection = "refund"
@@ -1165,15 +1195,26 @@ func (c *creditsImpl) reserveBudgetRow(
 		return nil, fmt.Errorf("creditsImpl.reserveBudgetRow: ensure credit_account: %w", err)
 	}
 
+	// Apply per-user-type multiplier (same logic as Reserve).
+	userTypeMultiplier, err := c.store.Credits().GetUserTypeCreditMultiplier(ctx, user.ID)
+	if err != nil {
+		userTypeMultiplier = 1.0
+	}
+	adjustedEstimated := int64(math.Round(float64(estimated) * userTypeMultiplier))
+	if adjustedEstimated <= 0 {
+		adjustedEstimated = 1
+	}
+
 	reference := referenceFromOp(op)
 	rsvRow := &model.CreditReservation{
-		UserID:          user.ID,
-		ReferenceType:   reference.refType,
-		Operation:       string(op),
-		ReservedCredits: estimated,
-		CoefficientID:   nil, // context_budget path never uses R2 coefficient
-		Status:          string(StatusReserved),
-		IdempotencyKey:  idempotencyKey,
+		UserID:             user.ID,
+		ReferenceType:      reference.refType,
+		Operation:          string(op),
+		ReservedCredits:    adjustedEstimated,
+		CoefficientID:      nil, // context_budget path never uses R2 coefficient
+		Status:             string(StatusReserved),
+		IdempotencyKey:     idempotencyKey,
+		UserTypeMultiplier: userTypeMultiplier,
 		// Context-budget extension fields (spec §3.6).
 		EstimationSource:          "context_budget",
 		EstimatedPromptTokens:     input.EstimatedPromptTokens,
@@ -1196,7 +1237,7 @@ func (c *creditsImpl) reserveBudgetRow(
 
 	var items []PackageDeduction
 	txErr := c.store.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		debited, err := c.biz.DeductCreditsTx(ctx, tx, user.ID, estimated, "budget_reserve:"+string(op))
+		debited, err := c.biz.DeductCreditsTx(ctx, tx, user.ID, adjustedEstimated, "budget_reserve:"+string(op))
 		if err != nil {
 			return err
 		}
