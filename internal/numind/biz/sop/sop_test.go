@@ -12,11 +12,22 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	creditbiz "numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
+
+// zeroBalanceCreditSvc is a minimal credit.ICreditService stub for tests that
+// only need to exercise CreateRun's "free credits user with zero balance →
+// typed Credits.Insufficient error" path. All other methods panic — they're
+// not on the test's code path.
+type zeroBalanceCreditSvc struct{ creditbiz.ICreditService }
+
+func (zeroBalanceCreditSvc) GetBalance(_ context.Context, _ *model.User) (*creditbiz.BalanceBreakdown, error) {
+	return &creditbiz.BalanceBreakdown{SubRemain: 0, BoosterRemain: 0}, nil
+}
 
 // newSopTestDB creates an isolated in-memory SQLite DB for SOP biz tests.
 func newSopTestDB(t *testing.T) *gorm.DB {
@@ -130,9 +141,13 @@ func newCreateRunTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-// TestCreateRun_FreeUserReturnsTypedError verifies that a free-tier user hitting
-// CreateRun gets a typed *errno.Errno (SOP.RunDenied, HTTP 403), not a plain
-// errors.New. Regression for the bug where controller mapped biz denial to 500.
+// TestCreateRun_FreeUserReturnsTypedError verifies that a free-tier credits
+// user with zero balance hitting CreateRun gets a typed *errno.Errno
+// (Credits.Insufficient, HTTP 402), not a bare error.
+//
+// Regression for the bug where the controller mapped a bare biz denial error
+// to HTTP 500. The legacy_tier path is being deprecated; the only modern
+// production denial path for a free user is the credits zero-balance check.
 func TestCreateRun_FreeUserReturnsTypedError(t *testing.T) {
 	db := newCreateRunTestDB(t)
 
@@ -143,16 +158,16 @@ func TestCreateRun_FreeUserReturnsTypedError(t *testing.T) {
 	).Error)
 
 	ds := store.NewTestStore(db)
-	b := sop.NewSopBiz(ds, nil, nil)
+	b := sop.NewSopBiz(ds, nil, nil).WithCreditService(zeroBalanceCreditSvc{}, nil)
 
 	_, err := b.CreateRun(context.Background(), uint(1), uint(1), "any text")
-	require.Error(t, err, "free-tier user must be denied")
+	require.Error(t, err, "free credits user with zero balance must be denied")
 
 	var e *errno.Errno
 	require.True(t, errors.As(err, &e), "biz should return *errno.Errno, got %T: %v", err, err)
-	assert.Equal(t, "SOP.RunDenied", e.Code, "error code should be SOP.RunDenied")
-	assert.Equal(t, 403, e.HTTP, "HTTP status should be 403 (Forbidden), not 500")
-	assert.Contains(t, e.Message, "免费用户", "message should preserve Chinese reason for user display")
+	assert.Equal(t, "Credits.Insufficient", e.Code, "error code should be Credits.Insufficient")
+	assert.Equal(t, 402, e.HTTP, "HTTP status should be 402 (Payment Required), not 500")
+	assert.Contains(t, e.Message, "积分不足", "message should preserve Chinese reason for user display")
 }
 
 // TestCreateRun_TemplateUnauthorizedReturnsTypedError verifies that a sub-user
