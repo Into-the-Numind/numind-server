@@ -372,9 +372,9 @@ func TestCalculateCost_TieredBilling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tier 1: unexpected error %v", err)
 	}
-	// 10k/1M*1.0 + 2k/1M*4.0 = 0.01 + 0.008 = 0.018 yuan = 1.8 cents → rounds to 2.
-	if cost != 2 {
-		t.Errorf("tier 1 cost = %d, want 2", cost)
+	// sell: 10k/1M*1.5 + 2k/1M*6.0 = 0.015 + 0.012 = 0.027 yuan = 2.7 cents → rounds to 3.
+	if cost != 3 {
+		t.Errorf("tier 1 cost = %d, want 3", cost)
 	}
 
 	// Case 2: prompt in tier 2 bracket (100k tokens).
@@ -383,9 +383,9 @@ func TestCalculateCost_TieredBilling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tier 2: unexpected error %v", err)
 	}
-	// 100k/1M*2.5 + 20k/1M*10.0 = 0.25 + 0.2 = 0.45 yuan = 45 cents.
-	if cost != 45 {
-		t.Errorf("tier 2 cost = %d, want 45", cost)
+	// sell: 100k/1M*3.5 + 20k/1M*15.0 = 0.35 + 0.3 = 0.65 yuan = 65 cents.
+	if cost != 65 {
+		t.Errorf("tier 2 cost = %d, want 65", cost)
 	}
 }
 
