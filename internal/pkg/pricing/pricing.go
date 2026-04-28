@@ -133,10 +133,10 @@ func (c *calculator) CalculateCost(ctx context.Context, serviceType, provider, m
 	return int64(math.Round(costYuan * 100)), nil
 }
 
-// calculateTieredCost looks up input/output tiers and computes cost. Tiers are
-// selected by prompt-token bracket per current pricing policy. Returns a
-// business error when a rule is marked tiered but has no tiers configured
-// (data integrity issue — do NOT silently bill ¥0).
+// calculateTieredCost looks up input/output tiers and computes the sell-price
+// cost charged to users. Tiers are selected by prompt-token bracket per current
+// pricing policy. Returns a business error when a rule is marked tiered but has
+// no tiers configured (data integrity issue — do NOT silently bill ¥0).
 func (c *calculator) calculateTieredCost(ctx context.Context, ruleID uint, promptTokens, completionTokens int) (float64, error) {
 	tiers, err := c.store.GetPricingRuleTiers(ctx, ruleID)
 	if err != nil {
@@ -153,7 +153,7 @@ func (c *calculator) calculateTieredCost(ctx context.Context, ruleID uint, promp
 			}
 			if uint(promptTokens) >= tier.MinTokens &&
 				(tier.MaxTokens == nil || uint(promptTokens) <= *tier.MaxTokens) {
-				return tier.CostPerMTok
+				return tier.SellPerMTok
 			}
 		}
 		return 0
