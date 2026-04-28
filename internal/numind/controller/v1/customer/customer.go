@@ -88,13 +88,13 @@ func (ctrl *CustomerController) ListSubUsers(c *gin.Context) {
 	}
 	user := currentUser.(*model.User)
 
-	// 获取分页参数
+	// 获取分页参数；不设上限——父账号实际可能拥有上千子账号，截断会导致客户管理页缺人。
+	// 前端 numind-web-v3 CustomersView.loadSubUsers 已改循环分页（PAGE=100），双保险：
+	// 即使有客户端不分页一次拉，也由前端循环逻辑约束单次查询规模。
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-
-	// 限制最大limit
-	if limit > 100 {
-		limit = 100
+	if limit <= 0 {
+		limit = 20
 	}
 
 	// 获取二级客户列表
