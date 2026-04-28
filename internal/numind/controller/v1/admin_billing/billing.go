@@ -294,7 +294,12 @@ func (ctrl *AdminBillingController) CreatePricingRule(c *gin.Context) {
 		IsActive:               isActive,
 	}
 	if req.CreditMultiplier != nil {
-		rule.CreditMultiplier = *req.CreditMultiplier
+		m := *req.CreditMultiplier
+		if m <= 0 || math.IsNaN(m) || math.IsInf(m, 0) || m > 100 {
+			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("积分倍率必须在 0.01 到 100 之间"), nil)
+			return
+		}
+		rule.CreditMultiplier = m
 	} else {
 		rule.CreditMultiplier = 1.0
 	}
@@ -340,6 +345,14 @@ func (ctrl *AdminBillingController) UpdatePricingRule(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误"), nil)
 		return
+	}
+
+	if req.CreditMultiplier != nil {
+		m := *req.CreditMultiplier
+		if m <= 0 || math.IsNaN(m) || math.IsInf(m, 0) || m > 100 {
+			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("积分倍率必须在 0.01 到 100 之间"), nil)
+			return
+		}
 	}
 
 	update := store.PricingRuleUpdate{

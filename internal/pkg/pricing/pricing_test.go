@@ -79,6 +79,7 @@ func flatRule(id uint, inputPrice, outputPrice, sellIn, sellOut float64) *model.
 		OutputPricePerMTok:     outputPrice,
 		SellInputPricePerMTok:  sellIn,
 		SellOutputPricePerMTok: sellOut,
+		CreditMultiplier:       1.0,
 		IsActive:               true,
 		CreatedAt:              time.Now(),
 		UpdatedAt:              time.Now(),
