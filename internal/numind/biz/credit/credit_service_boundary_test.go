@@ -162,7 +162,8 @@ func TestReserve_CoefficientIDFrozenAcrossVersionBump(t *testing.T) {
 	// Reservation row STILL points at v1.ID — the frozen snapshot.
 	var row model.CreditReservation
 	require.NoError(t, db.First(&row, rsv.ID).Error)
-	assert.EqualValues(t, v1.ID, row.CoefficientID,
+	require.NotNil(t, row.CoefficientID, "in-flight reservation must have a non-nil coefficient_id")
+	assert.Equal(t, v1.ID, *row.CoefficientID,
 		"in-flight reservation must retain the original coefficient_id after version bump")
 
 	// Sanity: v1 was demoted, v2 is active.
@@ -178,7 +179,8 @@ func TestReserve_CoefficientIDFrozenAcrossVersionBump(t *testing.T) {
 	var finalRow model.CreditReservation
 	require.NoError(t, db.First(&finalRow, rsv.ID).Error)
 	assert.Equal(t, "reconciled", finalRow.Status)
-	assert.EqualValues(t, v1.ID, finalRow.CoefficientID,
+	require.NotNil(t, finalRow.CoefficientID, "reconciled reservation must have a non-nil coefficient_id")
+	assert.Equal(t, v1.ID, *finalRow.CoefficientID,
 		"coefficient_id stays frozen through Reconcile")
 }
 
