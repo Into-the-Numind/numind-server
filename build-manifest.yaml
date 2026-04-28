@@ -3105,14 +3105,14 @@ features:
     ndf_version: "1.1"
     description: "ci-cd.yaml 在 deploy_dev / deploy_qa / deploy_product 三个 job 都把 -v /opt/numind/config:/opt/numind/config:ro 整个挂进容器。但 binary 启动用 -c /app/config_prod.yaml 读 image-baked yaml，不读 mount。挂载下唯一被 wechat 代码引用的是 cert/ 子目录（mch_private_key_path / wechatpay_cert_path）。把 mount 收窄到 cert/ 子目录，避免 host 上死的 config_*.yaml 文件混淆未来调试者，也防止有人误判 host yaml 是 source of truth。"
     track: "hotfix"
-    stage: "H1"
+    stage: "H2-done"
     classification_reason: "Triage 5 条全过 — (1) 无 schema (2) 无新增 API (3) 无新外部服务 (4) 1 文件改动 (.github/workflows/ci-cd.yaml) (5) 不涉及支付/权限/业务逻辑（纯 deploy 脚本配置整理）。Hotfix 标准。"
     last_updated_by: "ai-h1-start"
     last_updated_at: "2026-04-28T21:30:00+08:00"
     repos:
       - numind-server
     branches:
-      numind-server: "fix/narrow-config-mount-to-cert-only"
+      numind-server: "merged to develop @ 6987675 (fix branch commit 6b74710)"
     hotfix_artifacts:
       diagnosis: |
         本次 prod-alipay/wechat hotfix 排查时发现：
@@ -3124,11 +3124,21 @@ features:
         结论：mount 范围过宽，应缩窄到 cert/ 子目录。
     progress:
       total_tasks: 1
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task: "ci-cd.yaml 三处 -v 路径从 /opt/numind/config 改 /opt/numind/config/cert"
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
     rollback: "git revert merge commit；如需 prod 紧急回滚 mount 设置，docker stop + docker run 时手动指定原 -v /opt/numind/config:..."
-    last_verified: null
+    last_verified: |
+      2026-04-28T21:17 dev CI 自动部署成功 + numind-server-dev healthy。
+      docker inspect 验证 mount 范围已收窄：
+        /opt/numind/config/cert -> /opt/numind/config/cert  ✓ (期望)
+        （之前的 /opt/numind/config -> /opt/numind/config 不再出现）
+      启动日志验证 wechat cert 仍可读：
+        WechatPayClient initialised (public key mode)  mch_id: 1722456639  ✓
+        AlipayClient initialised  app_id: 2021000105656380, is_production: true  ✓
+      Server listening on :9091 ✓ — 收窄不影响任何运行时行为。
+    deferred:
+      - "prod 容器需要下次 docker run 才生效（即下次 prod tag v* 部署或 docker rm + run）。当前 prod 容器仍持有原有宽 mount，但因 binary 不读 mount 下的 yaml，行为完全等价。下次发版自动一并生效。"
     decisions:
       - "2026-04-28: 用户选 A 路径（清理死 mount 而非把 mount 改成 source of truth）；理由：一人公司、yaml 改动稀疏、当前 baked-into-image 模式跟 git 紧耦合，正是单人开发想要的简单工作流"
       - "2026-04-28: 不能完全删 mount——cert/ 子目录被 wechat 代码引用，删了会导致 WechatPayClient 启动失败。窄化到 cert/ 是最小改动"
