@@ -1,10 +1,12 @@
 # Context Budget Compression — S6 Prod Rollout 执行计划
 
-> 目的：把 `develop` 分支上累积的 245 个 commit（核心是 `context-budget-compression` feature + 一批 hotfix）安全地推到 prod。
+> 目的：把 `develop` 分支上累积的 245+ 个 commit（核心是 `context-budget-compression` feature + 一批 hotfix）安全地推到 prod。
 >
 > 状态：planning（2026-04-29 制定）
-> 配套 manifest 条目：`context-budget-compression`
+> 配套 manifest 条目：`context-budget-compression`（已归档至 `build-manifest-archive.yaml`）
 > 上次 prod release：`v2.1.12`（2026-04-28 部署）
+>
+> **重要约束**：QA 环境已停用（一人公司，dev 既是开发环境也承担 prod-like 验证职责）。`release` 分支保留作为 prod tag 来源，但不再有 QA 中转层。
 
 ---
 
@@ -12,14 +14,19 @@
 
 ```
 prod 现状：v2.1.12（R2 计费机制，无 R3 schema）
-release 分支：跟 v2.1.12 同步
-develop 分支：领先 release 245 个 commit
+release 分支：跟 v2.1.12 同步（等本次 prod 发布时合 develop 进来）
+develop 分支：领先 release 245+ 个 commit
   - context-budget-compression（本次主 feature，S5-done）
   - prod-payment / prod-wechat / customer-list 等 hotfix
   - credit-multiplier-per-model（最新 feat）
 prod 数据库：缺 4 张新表 + credit_reservation 缺 6 个新字段
 prod admin UI：你已手动把 10 个活跃 LLM 服务的 max_output_tokens 设好
 prod 已知遗留：admin UI is_active 改不进 DB 的 bug（backlog 推迟）
+
+环境拓扑（一人公司）：
+  本地开发 → push develop → CI 自动部署到 dev (49.233.219.254:9091)
+  dev 同时承担 QA 验证职责（"99% OK"标准在 dev 上验证）
+  通过后：合 develop → release，打 tag v* → CI 自动部署到 prod
 ```
 
 ---
@@ -27,42 +34,36 @@ prod 已知遗留：admin UI is_active 改不进 DB 的 bug（backlog 推迟）
 ## §1 总览（阶段 + 时间线）
 
 ```
-Phase 1: Dev 加强测试 + SQL 验证          [约 1-2 天]
-  ├── 1.1 多场景 dev 测试 (chatbot/SOP/SalesRAG)
-  ├── 1.2 边界场景 (压缩触发/流中断/并发)
-  ├── 1.3 dev 跑 backfill SQL dry-run
-  └── 1.4 dev migration rollback 演练
-                ↓ Gate 1: dev 99% OK
-Phase 2: QA 部署 + 验证                    [约 1-2 天]
-  ├── 2.1 合 develop → release，处理冲突
-  ├── 2.2 QA 自动部署
-  ├── 2.3 QA migration + backfill
-  ├── 2.4 QA 全套 S5 验证
-  └── 2.5 QA 测 245 commit 里的 hotfix 核心路径
-                ↓ Gate 2: QA 全 PASS
-Phase 3: Prod 部署预案                     [约半天]
-  ├── 3.1 写 prod-deploy runbook
-  ├── 3.2 准备 prod migration / backfill 最终版 SQL
-  └── 3.3 准备回滚预案
-                ↓ Gate 3: 预案 + SQL 都准备好
-Phase 4: Prod 部署 + Canary                [部署 0.5-1h + 24h 观察]
-  ├── 4.1 选窗口（低流量 / 你方便监控）
-  ├── 4.2 prod DB 备份
-  ├── 4.3 跑 prod migration
-  ├── 4.4 跑 prod max_output_tokens backfill
-  ├── 4.5 打 v2.1.13 tag → CI 部署
-  ├── 4.6 canary 真实调用验证
-  └── 4.7 24h 观察期
-                ↓ Gate 4: canary 通过 + 24h 无异常
-Phase 5: 上线后稳定 + 调参                 [上线 2 周后]
-  └── 5.1 跑 calibration runbook (第 1 轮)
+Phase 1: Dev 加强测试 + SQL 验证 + Hotfix 复测   [约 1.5-2 天]
+  ├── 1.1 三个业务路径都真实跑通（chatbot/SOP/SalesRAG）
+  ├── 1.2 边界场景（压缩/流中断/并发/error）
+  ├── 1.3 Dev 跑 backfill SQL dry-run + apply + verify
+  ├── 1.4 Dev migration rollback 演练
+  └── 1.5 测 245 commit 里 hotfix 核心路径
+                ↓ Gate 1: dev 99% OK + 24h 软观察期
+Phase 2: Prod 部署预案                            [约半天]
+  ├── 2.1 写 prod-deploy runbook
+  ├── 2.2 准备 prod migration / backfill 最终版 SQL
+  └── 2.3 准备回滚预案
+                ↓ Gate 2: 预案 + SQL 都准备好
+Phase 3: Prod 部署 + Canary                       [部署 0.5-1h + 24h 观察]
+  ├── 3.1 选窗口（低流量 / 你方便监控）
+  ├── 3.2 prod DB 备份
+  ├── 3.3 跑 prod migration
+  ├── 3.4 跑 prod max_output_tokens backfill
+  ├── 3.5 合 develop → release，打 v2.1.13 tag → CI 部署
+  ├── 3.6 canary 真实调用验证
+  └── 3.7 24h 观察期
+                ↓ Gate 3: canary 通过 + 24h 无异常
+Phase 4: 上线后稳定 + 调参                        [上线 14 天后]
+  └── 4.1 跑 calibration runbook（第 1 轮）
 ```
 
 ---
 
-## §2 Phase 1 — Dev 加强测试 + SQL 验证
+## §2 Phase 1 — Dev 加强测试 + SQL 验证 + Hotfix 复测
 
-**目标**：把 dev 上的测试覆盖从"几个 happy path"提到"99% 场景都验证过"，且 backfill SQL 真在 dev 上跑过一次。
+**目标**：把 dev 上的测试覆盖从"几个 happy path"提到"99% 场景都验证过"，且 backfill SQL 真在 dev 上跑过一次。**dev 同时承担替代 QA 的验证职责**——意味着 prod-like 的全套验证都要在这里完成。
 
 **入场条件**：
 - ✅ S5 sign-off 已完成
@@ -100,15 +101,15 @@ S5 sign-off 时只跑了 chatbot。SOP 和 SalesRAG 也是同一套 Gateway midd
    - **不**真正打 LLM provider（Langfuse 不应该有 generation 行）
    - 改回正常值，调用恢复
 
-### 1.3 Dev 上跑 backfill SQL dry-run
+### 1.3 Dev 上跑 backfill SQL 完整演练（不只 dry-run）
 
-Team C 的 SQL 写好了从未在任何环境实际跑过。
+Team C 的 SQL 写好了从未在任何环境实际跑过。**这次完整演练 dry-run → apply → verify → rollback** 四步：
 
 - [ ] SSH 进 dev DB，跑 `01-dry-run.sql`，确认能输出"NEEDS BACKFILL"列表
 - [ ] **预期**：dev 上目前 max_output_tokens 全是 32768 占位值，所以 dry-run 应该显示**0 行需要 backfill**（因为 SQL 用 `IS NULL OR = 0` 过滤）
-- [ ] 如果想完整测试 SQL 效果，可以**先把 dev 上某个 LLM 的 max_output_tokens 临时设成 NULL**，再跑 dry-run + apply，验证 LIKE 模式能命中。完了之后恢复。
-- [ ] 跑完 `03-verify.sql`，检查输出格式
-- [ ] **测一次 rollback**：跑 `04-rollback.sql`，验证能正确把刚 apply 的字段还原
+- [ ] **完整测试 SQL 效果**：先把 dev 上某个 LLM 的 max_output_tokens 临时设成 NULL（用 `JSON_SET(capability_json, '$.max_output_tokens', NULL)`），再跑 dry-run + apply，验证 LIKE 模式能命中。完了之后用 `04-rollback.sql` 还原
+- [ ] 跑 `03-verify.sql`，检查输出格式
+- [ ] 测一次 `04-rollback.sql`：验证能正确把刚 apply 的字段还原成 NULL
 
 ### 1.4 Dev migration rollback 演练
 
@@ -120,103 +121,36 @@ Team C 的 SQL 写好了从未在任何环境实际跑过。
 - [ ] 重新跑 forward migration，确认能恢复
 - [ ] 比对数据是否完整（如果 rollback 设计良好，原数据应该不丢）
 
+### 1.5 245 commit 里 hotfix 核心路径复测
+
+不能假设其他 hotfix 自带验证就够了。**这是替代 QA 的关键步骤**——dev 上必须把每个 hotfix 影响的核心路径跑一遍：
+
+- [ ] **微信支付下单**（prod-wechat-pubkey-config-missing 影响）：在 dev 走一次 booster 购买流程，确认能跳到微信支付页（不需要真付钱，到跳转就行）
+- [ ] **支付宝下单**（prod-alipay-config-missing 影响）：同上，到跳转支付宝即可
+- [ ] **客户列表**（customer-list-remove-limit-cap 影响）：客户管理页面拉一次列表，确认能拉到 > 100 行
+- [ ] **B2B2C 父账户帮子账户开通会员**：在 admin UI 触发一次 grant-membership，确认成功 + `credit_package.grant_source='b2b_grant'` 写入
+- [ ] **credit_multiplier per-model**（feat/credit-multiplier-per-model 影响）：这是新 feat，单独验证：
+   - 在 admin UI 给某个模型设置 credit_multiplier=2.0
+   - 触发一次该模型的真实调用
+   - 确认 `usage_record.cost_cents` 是基础价 × 2
+- [ ] **窄化 cert mount**（narrow-config-mount-to-cert-only 影响）：dev 容器启动 log 里确认 wechat cert 仍能加载（之前 hotfix 已验证过，再 sanity check 一次）
+
 **Gate 1 — Phase 2 准入**：
-- ✅ 1.1-1.4 全部完成
-- ✅ 没发现新 P0/P1 bug
-- ✅ 如果发现 bug，已修复并 merge 到 develop
+- ✅ 1.1-1.5 全部完成
+- ✅ 没发现新 P0/P1 bug；如发现，已修复并 merge 到 develop
+- ✅ Dev 部署后**至少 24h 软观察期**（让代码在 dev 跑过一夜，看有没有定时任务、cron、流量低谷等场景下的异常）
 
 ---
 
-## §3 Phase 2 — QA 部署 + 验证
-
-**目标**：在 QA 环境（49.233.219.254:9093）跑一遍 release 分支构建出来的产物，验证镜像本身没问题。
-
-**入场条件**：
-- ✅ Gate 1 通过
-- ✅ develop 测试全绿，没未提交改动
-
-**任务清单**：
-
-### 2.1 合 develop → release
-
-```bash
-git checkout release
-git merge develop --no-ff -m "Release v2.1.13: context-budget-compression + hotfix bundle"
-```
-
-**风险**：245 commit 合一次，可能有冲突（虽然 develop 是单线，但 release 上可能有过 hotfix 直接合）。
-
-- [ ] 解决冲突
-- [ ] 检查 merge 后 `task lint` + `go test ./...` 仍绿
-
-### 2.2 QA 自动部署
-
-```bash
-git push origin release
-```
-- [ ] 等 CI 跑完（约 4-5 分钟）
-- [ ] 看 dockerhub 推上来的新 tag
-- [ ] SSH 进 QA 服务器，确认容器跑起来 healthy
-
-### 2.3 QA migration + backfill
-
-⚠️ **顺序敏感**：必须先 migration 再启动新代码，否则启动时可能因找不到表/字段挂掉。
-
-如果 CI 自动部署没自动跑 migration，需要手动跑：
-
-```bash
-# 备份
-ssh qa "docker exec numind-mysql-qa mysqldump -uroot -p... numind-qa > /backup/pre-r3-$(date +%Y%m%d).sql"
-
-# Migration
-ssh qa "docker exec -i numind-mysql-qa mysql -uroot -p... numind-qa < migrations/20260425_172000_context_budget_compression.sql"
-
-# Backfill (max_output_tokens)
-ssh qa "docker exec -i numind-mysql-qa mysql -uroot -p... numind-qa < scripts/2026-04-27-context-budget-max-output-backfill/02-apply.sql"
-
-# Verify
-ssh qa "docker exec -i numind-mysql-qa mysql -uroot -p... numind-qa < scripts/2026-04-27-context-budget-max-output-backfill/03-verify.sql"
-```
-
-- [ ] 重启 QA 服务器（让代码读到新 schema）
-- [ ] 确认 startup log 无错
-
-### 2.4 QA 跑全套 S5 验证
-
-复用 `docs/superpowers/verification/admin-api-smoke-2026-04-27.md` + `context-budget-compression-s5.md` 的验证清单，**逐项重跑**：
-
-- [ ] Admin API smoke（9 endpoints，33+ 检查）
-- [ ] 真实 chatbot/SOP/SalesRAG 调用，验证全链路
-- [ ] Langfuse trace metadata 验证（11 budget keys）
-- [ ] Playwright admin spec 4/4 PASS（BASE_URL 改成 QA 的 admin URL）
-- [ ] gstack /qa 用户输入计数器（可选，之前 dev 跳过了）
-
-### 2.5 测 245 commit 里 hotfix 核心路径
-
-不能假设其他 hotfix 自带验证就够了。在 QA 上至少跑一遍：
-
-- [ ] 微信支付下单（prod-wechat-pubkey-config-missing 影响）
-- [ ] 支付宝下单（prod-alipay-config-missing 影响）
-- [ ] 客户列表（customer-list-remove-limit-cap 影响）
-- [ ] B2B2C 父账户帮子账户开通会员（B2B 流程，是否被 245 commit 间接影响）
-- [ ] credit_multiplier 调整（feat/credit-multiplier-per-model 影响——这是新 feat，要单独验证）
-
-**Gate 2 — Phase 3 准入**：
-- ✅ 2.1-2.5 全部完成
-- ✅ QA 上 24h 内没出现 P0 异常告警（context_budget_event 错误率、reservation 卡住率）
-- ✅ 你主观觉得"99% 没问题"
-
----
-
-## §4 Phase 3 — Prod 部署预案
+## §3 Phase 2 — Prod 部署预案
 
 **目标**：把 prod 部署变成"按 runbook 一步步执行，无临场决策"。
 
-**入场条件**：Gate 2 通过
+**入场条件**：Gate 1 通过
 
 **任务清单**：
 
-### 3.1 写 prod-deploy runbook
+### 2.1 写 prod-deploy runbook
 
 新建 `docs/superpowers/runbooks/context-budget-prod-deploy.md`，内容：
 
@@ -226,15 +160,15 @@ ssh qa "docker exec -i numind-mysql-qa mysql -uroot -p... numind-qa < scripts/20
 - 回滚决策树（什么情况下回滚 / 什么情况下 forward fix）
 - canary 验证脚本
 
-### 3.2 准备 prod 最终版 SQL
+### 2.2 准备 prod 最终版 SQL
 
 - [ ] **prod migration**：检查 `migrations/20260425_172000_context_budget_compression.sql` 是否需要根据 prod 实际 schema（比如 user_id 类型差异）调整
 - [ ] **prod backfill**：你已经手动改过 admin UI 的 max_output_tokens。重新跑 `01-dry-run.sql` 在 prod 上看实际剩多少 NULL（理论上只剩 4 个 deprecated + 1 个 embed）。决定：
   - 选项 A：跑 backfill 一并把 deprecated 也补上（避免 admin UI is_active bug 导致 deprecated 被路由）
   - 选项 B：跳过 backfill（你已手动改完了，没必要）
-  - 推荐 A——SQL 是 idempotent 的（IS NULL OR =0 过滤），多跑一次只影响那 4 个 NULL 的 deprecated 模型，零副作用
+  - **推荐 A**——SQL 是 idempotent 的（IS NULL OR =0 过滤），多跑一次只影响那 4 个 NULL 的 deprecated 模型，零副作用
 
-### 3.3 回滚预案
+### 2.3 回滚预案
 
 - [ ] 写明：什么情况触发回滚
    - schema migration 失败
@@ -245,7 +179,7 @@ ssh qa "docker exec -i numind-mysql-qa mysql -uroot -p... numind-qa < scripts/20
    - 跑 rollback migration SQL（删 4 张新表 + 删 6 个新字段）
    - 验证 R2 路径仍可用（旧 chatbot 调用走老 coefficient 流）
 
-**Gate 3 — Phase 4 准入**：
+**Gate 2 — Phase 3 准入**：
 - ✅ runbook 写完
 - ✅ migration / backfill SQL 准备就绪
 - ✅ 回滚预案准备就绪
@@ -253,22 +187,22 @@ ssh qa "docker exec -i numind-mysql-qa mysql -uroot -p... numind-qa < scripts/20
 
 ---
 
-## §5 Phase 4 — Prod 部署 + Canary
+## §4 Phase 3 — Prod 部署 + Canary
 
 **目标**：把代码 + schema 推到 prod，验证全链路工作。
 
-**入场条件**：Gate 3 通过
+**入场条件**：Gate 2 通过
 
 **任务清单**：
 
-### 4.1 选部署窗口
+### 3.1 选部署窗口
 
 一人公司，建议：
 - 工作日上午（精力最足，便于监控）
 - 避开你已知的高流量时段（如有）
 - 留 2-3 小时连续可用时间（部署 + canary + 观察初期）
 
-### 4.2 prod DB 备份
+### 3.2 prod DB 备份
 
 ```bash
 ssh prod "docker exec numind-mysql-prod mysqldump -uroot -p... \
@@ -278,7 +212,9 @@ ssh prod "docker exec numind-mysql-prod mysqldump -uroot -p... \
 - [ ] 备份完成
 - [ ] 备份文件大小 sanity check（不为 0、不远小于上次）
 
-### 4.3 跑 prod migration
+### 3.3 跑 prod migration
+
+⚠️ **顺序敏感**：必须先 migration 再启动新代码，否则启动时会因找不到表/字段挂掉。
 
 ```bash
 ssh prod "docker exec -i numind-mysql-prod mysql -uroot -p... numind-prod \
@@ -287,22 +223,24 @@ ssh prod "docker exec -i numind-mysql-prod mysql -uroot -p... numind-prod \
 - [ ] 跑完无 error
 - [ ] 验证 4 张新表存在 + credit_reservation 有 6 个新字段
 
-### 4.4 跑 prod max_output_tokens backfill
+### 3.4 跑 prod max_output_tokens backfill
 
-按 Phase 3.2 的决策（推荐选项 A）跑 `02-apply.sql`，再跑 `03-verify.sql` 确认。
+按 Phase 2.2 的决策（推荐选项 A）跑 `02-apply.sql`，再跑 `03-verify.sql` 确认。
 
-### 4.5 打 tag → CI 部署
+### 3.5 合 release 分支 + 打 tag → CI 部署
 
 ```bash
 git checkout release
+git merge develop --no-ff -m "Release v2.1.13: context-budget-compression + hotfix bundle"
 git tag v2.1.13 -m "Release: context-budget-compression + hotfix bundle"
-git push origin v2.1.13
+git push origin release v2.1.13
 ```
+- [ ] merge 无冲突（如有冲突先在 develop 上修复）
 - [ ] 等 CI 跑完
 - [ ] SSH 进 prod 确认容器 healthy
 - [ ] 看启动 log 无 panic
 
-### 4.6 Canary 真实调用验证
+### 3.6 Canary 真实调用验证
 
 按 Phase 1.1 的三个业务路径，在 prod 各跑一次（用 admin 账号，自己当 canary 用户）：
 
@@ -316,7 +254,7 @@ git push origin v2.1.13
    ```
    预期：有 `estimation_source='context_budget' status='reconciled'` 的行
 
-### 4.7 24h 观察期
+### 3.7 24h 观察期
 
 - [ ] 第 1 / 4 / 12 / 24 小时各跑一次：
    - `SELECT status, COUNT(*) FROM credit_reservation WHERE created_at >= NOW() - INTERVAL X HOUR GROUP BY status`（看有没有 orphan reserved）
@@ -325,31 +263,31 @@ git push origin v2.1.13
 - [ ] 异常处理：
    - orphan reserved > 1%：定位原因（可能 finalize 路径有遗漏）
    - context_budget_event error 率 > 5%：可能 max_output_tokens 还有缺失，立即 SQL 补
-   - 如果 P0 风险，按 §3.3 回滚
+   - 如果 P0 风险，按 §3.3（回滚预案）回滚
 
-**Gate 4 — Phase 5 准入**：
+**Gate 3 — Phase 4 准入**：
 - ✅ Canary 全 PASS
 - ✅ 24h 观察期无 P0 异常
 - ✅ Manifest 更新 `stage: S6-done`
 
 ---
 
-## §6 Phase 5 — 稳定 + 第一次调参（2 周后）
+## §5 Phase 4 — 稳定 + 第一次调参（14 天后）
 
 **目标**：让真实流量积累 14 天，第一次调 token 估算系数。
 
-**入场条件**：Gate 4 通过 + prod 流量积累 14 天
+**入场条件**：Gate 3 通过 + prod 流量积累 14 天
 
 **任务清单**：
 
-### 5.1 跑 calibration runbook 第 1 轮
+### 4.1 跑 calibration runbook 第 1 轮
 
 按 `docs/superpowers/runbooks/context-budget-calibration.md` 执行：
 - 拉数据 → 出建议表 → 你拍板调哪几个桶 → admin API 创建新 profile 版本 → 验证 → 归档报告
 
 预期：第 1 轮调参后，多数桶 P50 应该从 1.30+（保守高估）收敛到 1.10 左右；P90 从 1.50+ 收敛到 1.25 左右。
 
-### 5.2 后续节奏
+### 4.2 后续节奏
 
 - 上线后 30 天：第 2 轮调参（应该收敛到 P50 1.05、P90 1.15 左右）
 - 上线后 60 天：第 3 轮（应达 spec §4.3 标准 P50≤5%、P90≤10%）
@@ -359,37 +297,37 @@ git push origin v2.1.13
 
 ---
 
-## §7 关键风险 + 缓解
+## §6 关键风险 + 缓解
 
 | 风险 | 概率 | 影响 | 缓解 |
 |---|---|---|---|
-| Migration 失败（SQL 错） | 低 | P0 | Phase 1.4 dev 演练 + Phase 2.3 QA 实跑 |
-| 启动失败（schema 不一致） | 低 | P0 | Phase 4.3 先 migration 再启动；备用 v2.1.12 镜像 |
+| Migration 失败（SQL 错） | 低 | P0 | Phase 1.4 dev 演练 |
+| 启动失败（schema 不一致） | 低 | P0 | Phase 3.3 先 migration 再启动；备用 v2.1.12 镜像 |
 | canary 时发现 calibration_ratio 大量 NULL | 中 | P1 | 第一次 reservation 时 token_profile_id 还没匹配上是预期的；24h 观察后再判断 |
-| 245 commit 里某个 hotfix 在 prod 表现异常 | 中 | P1 | Phase 2.5 已在 QA 验证；如发现立即灰度回滚 v2.1.12 |
+| 245 commit 里某个 hotfix 在 prod 表现异常 | 中 | P1 | Phase 1.5 已在 dev 验证；如发现立即灰度回滚 v2.1.12 |
+| **没有 QA 中转层导致漏过去** | 中 | P1 | **Phase 1 dev 验证必须严格**：23-24h 软观察期 + Phase 1.5 全 hotfix 复测 + Phase 1.2 边界场景。一人公司"99% OK"标准依赖 dev 这一关 |
 | prod admin UI is_active 改不进 DB（已知 backlog） | 高（已知） | P2 | 接受。需要 deactive 时直接 SQL 改。上 prod 后第一时间评估是否优先解决 |
 | Calibration 数据不足（流量太低） | 中 | P2 | 14 天后如果总样本 < 1000，延后调参，每周再看 |
 
 ---
 
-## §8 时间预算
+## §7 时间预算
 
 最快路径（不算等待时间）：
 
 ```
-Phase 1: 1 天工作量（密集）
-Phase 2: 0.5-1 天 + QA 24h 观察
-Phase 3: 0.5 天
-Phase 4: 1 天部署 + 24h 观察
-Phase 5: 上线 14 天后开始
+Phase 1: 1.5-2 天工作量（密集） + 24h 软观察期
+Phase 2: 0.5 天
+Phase 3: 1 天部署 + 24h 观察
+Phase 4: 上线 14 天后开始
 ```
 
-**最早 prod 上线日：2026-05-02**（4 天后），假设你今天开始干。
-**保守 prod 上线日：2026-05-05-07**（一周左右），留出 buffer。
+**最早 prod 上线日：2026-05-02**（3-4 天后），假设你今天开始干并且 dev 测试一切顺利。
+**保守 prod 上线日：2026-05-03~05**（4-6 天后），留出 buffer 给 dev 上发现的小 bug 修复。
 
 ---
 
-## §9 触发恢复
+## §8 触发恢复
 
 未来 session 想继续这个计划时，提示词：
 
@@ -413,3 +351,4 @@ Phase 5: 上线 14 天后开始
 
 *最后更新：2026-04-29*
 *状态：planning（等用户确认是否启动）*
+*重要变更（2026-04-29）：移除原 Phase 2 (QA 部署 + 验证) — 一人公司 QA 环境已停用，dev 同时承担 QA 验证职责。原 Phase 2.5 hotfix 复测合并到 Phase 1.5。*
