@@ -67,6 +67,13 @@ func runAdmin() error {
 		return err
 	}
 
+	// Task 13: validate billing.b2b_cutover_date is configured.
+	// Without this date the B2B billing report falls back to legacy_only for all
+	// months, which is incorrect once the credits-system is live.
+	if viper.GetString("billing.b2b_cutover_date") == "" {
+		log.Warnw("billing.b2b_cutover_date is not set — B2B billing report will use legacy_only source for ALL months; configure this in config.yaml once membership_event is the authoritative source")
+	}
+
 	// 设置 Gin 模式
 	gin.SetMode(viper.GetString("runmode"))
 
