@@ -129,6 +129,48 @@ features:
     created_at: "2026-04-04T15:00:00+08:00"
     completed_at: null
 
+  - id: "membership-credits-redesign"
+    ndf_version: "1.1"
+    description: "会员积分体系重构 — 从'状态机+cron'改为'时间驱动+lazy'模型。5 张新表（subscription / trial_grant / credit_cycle / user_booster_balance / membership_event）替代当前 credit_package 状态机；subscription 单行 + expires_at 后延，月度 cycle 懒创建，去 cron 化。trial+pro 叠加，自然月 anchor-restore（1/31 → 3/31 → 4/30）。Booster 永不过期（每用户单 balance），仅会员状态可用。完整覆盖前后端三仓 + 迁移脚本 + B2B 月度账单口径切换。"
+    track: "standard"
+    stage: "S0"
+    classification_reason: "Triage 5 条全触发 — (1) 5 张新表 + 迁移脚本 (2) grant/deduct/balance/B2B 账单全部重写 (3) 无外部服务但内部模型彻底改 (4) 跨 3 仓 (5) 计费核心 + B2B 账单 = 最高风险业务逻辑。Standard Track 必然。"
+    last_updated_by: "ai-s0-creation"
+    last_updated_at: "2026-04-29T22:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+      - numind-admin-web
+    branches: {}
+    artifacts:
+      requirement: "numind-server/requirements/membership-credits-redesign.md"
+      proposal: null
+      spec: null
+      plan: null
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: null
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-04-29 (设计层): trial+pro 叠加方案（业界标准），不用'顺延'方案。trial 期内购 pro 立即激活，trial 仍优先扣，trial 到期清零"
+      - "2026-04-29 (设计层): 显示状态用户端仅 3 种（free/trial/pro），trial 在期一律遮蔽 pro；父账户管理页显示双状态"
+      - "2026-04-29 (设计层): 时间用自然月，anchor-restore 算法应用层实现（Go），SQL 只接收完整时间戳；anchor 用 current_started_at"
+      - "2026-04-29 (设计层): subscription 单行覆盖更新；新增 first_started_at 字段做生命周期分析"
+      - "2026-04-29 (设计层): booster 简化为每用户 1 行 balance，多份累加无差异，仅 membership_event 留购买历史"
+      - "2026-04-29 (设计层): 不实现退款 / 不实现到期提醒 / legacy 字段保留单向只读"
+      - "2026-04-29 (设计层): 锁顺序 user_id ASC → 表名字典序；LLM 调用绝不在事务内（复用现有 Reserve/Reconcile）"
+      - "2026-04-29 (设计层): membership_event 加 idempotency_key 唯一索引防重入"
+      - "2026-04-29 (review): 双 subagent 并行 review（产品/UX 视角 + 工程/并发视角），共发现 6 个 P0 + 8 个 P1，全部纳入 S2 spec 覆盖项"
+    blockers: []
+    related_features:
+      - "credits-system (前置依赖，已上线)"
+      - "remove-tier-fields (无关联)"
+    created_at: "2026-04-29T22:00:00+08:00"
+    completed_at: null
+
   - id: "ai-service-deprecated-field-cleanup"
     ndf_version: "1.1"
     description: "ai_service 表当前同时存在 deprecated_at 和 is_active 两个字段，语义重叠且不联动：前端 ServicesList.vue 把 deprecated_at 直接当'已删除'展示（getServiceStatus: deprecated_at→'deleted'），但路由层完全不看 deprecated_at，只看 is_active。后果：UI 显示'已删除'的服务，路由器仍可能转流量过去 → ErrContextConfigInvalid。本 feature 重构为 GORM 标准 soft-delete 模式：废弃 deprecated_at 字段；新增/复用 deleted_at 软删字段；保留 is_active 作为'临时启停'语义。前端列表查询自动 WHERE deleted_at IS NULL（GORM 默认行为），删除按钮设 deleted_at=NOW()。is_active 切换 = 暂停（管理端仍可见）；deleted = 永久删除（管理端列表不显示，但历史 usage_record/credit_reservation/Langfuse trace 的 service_id 仍能 join 到表里查名字，外键完整）。"
