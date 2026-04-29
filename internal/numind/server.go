@@ -14,7 +14,6 @@ import (
 	"github.com/spf13/viper"
 
 	"numind-server/internal/numind/biz"
-	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/middleware"
 )
@@ -48,8 +47,7 @@ func startServer() error {
 		}
 	}()
 
-	// Start hourly cron for credit package lifecycle management
-	creditBiz := credit.NewCreditBiz(store.S)
+	// Start hourly cron for order expiry cleanup (credit package lifecycle cron removed in Task 16)
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
@@ -57,7 +55,6 @@ func startServer() error {
 			select {
 			case <-ticker.C:
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				creditBiz.RunCronTasks(ctx)
 				// 关闭过期未支付订单
 				if count, err := store.S.Orders().CloseExpiredOrders(ctx); err != nil {
 					log.Printf("Close expired orders error: %v", err)
