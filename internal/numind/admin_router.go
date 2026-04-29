@@ -6,6 +6,7 @@ import (
 	"numind-server/internal/numind/biz/b2b_billing"
 	bizcb "numind-server/internal/numind/biz/contextbudget"
 	"numind-server/internal/numind/biz/credit"
+	"numind-server/internal/numind/biz/membership"
 	"numind-server/internal/numind/controller/v1/admin_ai"
 	"numind-server/internal/numind/controller/v1/admin_b2b"
 	"numind-server/internal/numind/controller/v1/admin_billing"
@@ -52,6 +53,8 @@ func installAdminRouters(g *gin.Engine) error {
 	b := biz.NewBiz(store.S)
 	sopCtrl := admin_sop.NewSopController(b.Sop())
 	adminCreditCtrl := admin_credit.New(b.Credit(), store.S)
+	adminMembershipSvc := membership.NewMembershipService(store.S.DB())
+	adminCreditWithMembership := admin_credit.NewWithMembership(adminCreditCtrl, adminMembershipSvc)
 
 	// Phase 2 T2.3: coefficient CRUD. EstimationBiz is constructed ad-hoc here
 	// rather than threaded through biz.NewBiz to avoid expanding the IBiz
@@ -87,6 +90,8 @@ func installAdminRouters(g *gin.Engine) error {
 		adminGroup.PUT("/users/:id/status", userCtrl.UpdateUserStatus)
 		adminGroup.PUT("/users/:id/tier", userCtrl.UpdateUserTier)
 		adminGroup.POST("/users/:id/reset-password", userCtrl.ResetPassword)
+		// Task 12 §5.3: admin 查任意用户余额（含 booster 字段）
+		adminGroup.GET("/users/:user_id/balance", adminCreditWithMembership.GetUserBalance)
 	}
 
 	// SOP管理（复用已有的admin_sop控制器）

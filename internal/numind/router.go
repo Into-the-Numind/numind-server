@@ -223,6 +223,7 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.POST("/orders", importMw.RequireIdempotencyKey(), orderCtrl.CreateOrder)
 		authGroup.GET("/orders", orderCtrl.ListOrders)
 		authGroup.GET("/orders/:id", orderCtrl.GetOrder)
+		authGroup.GET("/orders/:id/status", orderCtrl.GetOrderStatus) // Task 12 §5.8: booster polling
 	}
 
 	// 客户管理相关
@@ -259,6 +260,8 @@ func installNumindRouters(g *gin.Engine) error {
 		// 子账户列表别名（前端 /v1/users/children，Q2 新增），复用 CustomerController.ListSubUsers
 		childListCtrl := customercontroller.NewCustomerController(b.Customers(), b.Users())
 		authGroup.GET("/users/children", childListCtrl.ListSubUsers)
+		// Task 12 §5.4: 父账户查子账户余额（不含 booster，隐私保护）
+		authGroup.GET("/users/children/:child_id/balance", creditCtrl.GetChildBalance)
 		authGroup.POST("/users/children/:child_id/grant-membership",
 			importMw.RequireIdempotencyKey(),
 			creditCtrl.GrantMembership)
