@@ -546,10 +546,14 @@ func publishCostToHolder(ctx context.Context, record *model.UsageRecord, calc pr
 	costCents, err := calc.CalculateCost(ctx, record.ServiceType, record.Provider, record.Model,
 		record.PromptTokens, record.CompletionTokens)
 	if err != nil {
-		// Pricing rule miss or DB error — leave holder at zero so caller falls back.
+		// Pricing rule miss or DB error — leave holder unset so caller falls back.
 		return
 	}
-	holder.CostCents = costCents
+	// F-7: call Set() so the holder's set flag is raised even when costCents==0.
+	// This distinguishes "Billing computed cost=0 (e.g. 0/0 pricing rule)" from
+	// "Billing never ran / pricing rule miss" — only the former should use 0,
+	// the latter should fall back to EstimatedCredits.
+	holder.Set(costCents)
 }
 
 // ----------------------------------------------------------------------------
