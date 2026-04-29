@@ -93,6 +93,12 @@ func (b *creditBiz) CanPerformAIOperation(ctx context.Context, user *model.User,
 //     This legacy "best-effort" behaviour is retained to avoid breaking
 //     existing fire-and-forget callers; new code should use DeductCreditsTx
 //     which returns ErrInsufficientCredits explicitly.
+//
+// NOTE (Task 7 / §3.5): For billing_mode=credits users the authoritative deduction
+// path is MembershipService.DeductCredits (biz/membership/cycle.go), which applies
+// the three-pool priority (trial → cycle → booster). Routing between the two paths
+// at the call site (sop.go / sales_rag.go) will be wired in Task 16 (cleanup).
+// This function remains the active path for billing_mode=legacy_tier callers.
 func (b *creditBiz) DeductCredits(ctx context.Context, userID uint, costCents int64, operation, bizRefType, bizRefID string, usageRecordID *uint64) error {
 	credits := int64(math.Round(float64(costCents)))
 	if credits <= 0 {
