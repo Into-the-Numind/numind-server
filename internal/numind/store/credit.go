@@ -24,6 +24,8 @@ type CreditStore interface {
 	HasActiveSubscription(ctx context.Context, userID uint) (bool, error)
 	HasTrialPackage(ctx context.Context, userID uint) (bool, error)
 	GetUserTypeCreditMultiplier(ctx context.Context, userID uint) (float64, error)
+	ListUserTypeConfigs(ctx context.Context) ([]model.CreditUserTypeConfig, error)
+	UpdateUserTypeConfig(ctx context.Context, userType string, updates map[string]interface{}) error
 	CreateTransaction(ctx context.Context, tx *gorm.DB, txn *model.CreditTransaction) error
 	ListTransactionsByUser(ctx context.Context, userID uint, offset, limit int) ([]model.CreditTransaction, int64, error)
 	UpdateBalance(ctx context.Context, tx *gorm.DB, userID uint, delta int64) error
@@ -192,6 +194,37 @@ func (s *creditStore) GetUserTypeCreditMultiplier(ctx context.Context, userID ui
 		return 1.0, nil
 	}
 	return cfg.CreditMultiplier, nil
+}
+
+// ListUserTypeConfigs returns all rows in credit_user_type_config, ordered by user_type.
+func (s *creditStore) ListUserTypeConfigs(ctx context.Context) ([]model.CreditUserTypeConfig, error) {
+	var rows []model.CreditUserTypeConfig
+	if err := s.db.WithContext(ctx).Order("user_type ASC").Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("ListUserTypeConfigs: %w", err)
+	}
+	return rows, nil
+}
+
+// UpdateUserTypeConfig updates the row identified by user_type with the supplied
+// fields. Uses map[string]interface{} so zero-value bools (is_active=false) write
+// correctly — see project CLAUDE.md / database.md §6 for the GORM default:true gotcha.
+// Returns gorm.ErrRecordNotFound when no row matches user_type so callers can map
+// to a 404 response.
+func (s *creditStore) UpdateUserTypeConfig(ctx context.Context, userType string, updates map[string]interface{}) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	res := s.db.WithContext(ctx).
+		Model(&model.CreditUserTypeConfig{}).
+		Where("user_type = ?", userType).
+		Updates(updates)
+	if res.Error != nil {
+		return fmt.Errorf("UpdateUserTypeConfig: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 // CreateTransaction 创建积分流水（在事务中使用）
