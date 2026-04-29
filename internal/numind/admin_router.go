@@ -120,6 +120,8 @@ func installAdminRouters(g *gin.Engine) error {
 		adminGroup.GET("/credits/users", adminCreditCtrl.ListUsers)
 		adminGroup.GET("/credits/users/:id", adminCreditCtrl.GetUserDetail)
 		adminGroup.POST("/credits/users/:id/recharge", adminCreditCtrl.Recharge)
+		adminGroup.GET("/credits/user-types", adminCreditCtrl.ListUserTypeConfigs)
+		adminGroup.PUT("/credits/user-types/:user_type", adminCreditCtrl.UpdateUserTypeConfig)
 	}
 
 	// Phase 2 T2.3: estimation-coefficient CRUD (spec §3.11 + §4.1.2)

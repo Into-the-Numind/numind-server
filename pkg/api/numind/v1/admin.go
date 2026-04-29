@@ -267,6 +267,30 @@ type AdminUpdatePricingRuleRequest struct {
 	IsActive               *bool    `json:"is_active"`
 }
 
+// ====== Credit User-Type Config ======
+
+// AdminCreditUserTypeConfigItem 用户类型积分倍率配置项
+type AdminCreditUserTypeConfigItem struct {
+	UserType         string    `json:"user_type"`
+	CreditMultiplier float64   `json:"credit_multiplier"`
+	Description      string    `json:"description"`
+	IsActive         bool      `json:"is_active"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// AdminListCreditUserTypeConfigsResponse 列表响应
+type AdminListCreditUserTypeConfigsResponse struct {
+	Items []AdminCreditUserTypeConfigItem `json:"items"`
+}
+
+// AdminUpdateCreditUserTypeConfigRequest 更新请求（部分字段可缺省）
+type AdminUpdateCreditUserTypeConfigRequest struct {
+	CreditMultiplier *float64 `json:"credit_multiplier"`
+	Description      *string  `json:"description"`
+	IsActive         *bool    `json:"is_active"`
+}
+
 // ====== Pricing Rule Tiers ======
 
 // AdminPricingRuleTierItem 分段定价项
