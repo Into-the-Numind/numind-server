@@ -62,4 +62,9 @@ var (
 	// ErrSystemMaintenance 系统维护中，暂时不可用（Phase 2/3）
 	// HTTP 503（Service Unavailable）
 	ErrSystemMaintenance = &Errno{HTTP: 503, Code: "System.Maintenance", Message: "系统维护中"}
+
+	// ErrInvalidProductType 不支持的产品类型（Phase 2 §5.10）
+	// 订单接口只接受 booster；trial/monthly/yearly 必须走 grant 路径。
+	// HTTP 400（Bad Request）
+	ErrInvalidProductType = &Errno{HTTP: 400, Code: "Order.InvalidProductType", Message: "订单接口仅支持加量包，会员请通过管理员开通"}
 )

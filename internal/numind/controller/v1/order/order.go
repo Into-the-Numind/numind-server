@@ -29,10 +29,12 @@ func New(paymentBiz paymentbiz.IPaymentBiz, ds store.IStore) *OrderController {
 }
 
 // createOrderRequest 创建订单请求体
+// Spec §5.2: Only product_type=booster is accepted; trial/monthly/yearly go via grant path.
+// Quantity specifies the number of booster units to purchase (1–10000).
 type createOrderRequest struct {
 	UserID      uint   `json:"user_id" binding:"required"`
 	ProductType string `json:"product_type" binding:"required"`
-	Months      int    `json:"months"`
+	Quantity    int    `json:"quantity" binding:"required,min=1,max=10000"`
 	PayChannel  string `json:"pay_channel" binding:"required"`
 }
 
@@ -68,7 +70,7 @@ func (ctrl *OrderController) CreateOrder(c *gin.Context) {
 		}
 	}
 
-	order, err := ctrl.paymentBiz.CreateOrder(c, payer.ID, req.UserID, req.ProductType, req.Months, req.PayChannel)
+	order, err := ctrl.paymentBiz.CreateOrder(c, payer.ID, req.UserID, req.ProductType, req.Quantity, req.PayChannel)
 	if err != nil {
 		log.C(c).Errorw("Failed to create order", "payer_id", payer.ID, "user_id", req.UserID, "err", err)
 		// 如果是已定义的 errno（如 Membership.Required / Trial.AlreadyPurchased /
