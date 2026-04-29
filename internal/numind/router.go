@@ -219,7 +219,7 @@ func installNumindRouters(g *gin.Engine) error {
 	// 订单管理（B 客户）
 	{
 		orderCtrl := ordercontroller.New(b.Payment(), store.S)
-		authGroup.POST("/orders", orderCtrl.CreateOrder)
+		authGroup.POST("/orders", importMw.RequireIdempotencyKey(), orderCtrl.CreateOrder)
 		authGroup.GET("/orders", orderCtrl.ListOrders)
 		authGroup.GET("/orders/:id", orderCtrl.GetOrder)
 	}
