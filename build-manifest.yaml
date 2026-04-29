@@ -133,10 +133,10 @@ features:
     ndf_version: "1.1"
     description: "会员积分体系重构 — 从'状态机+cron'改为'时间驱动+lazy'模型。5 张新表（subscription / trial_grant / credit_cycle / user_booster_balance / membership_event）替代当前 credit_package 状态机；subscription 单行 + expires_at 后延，月度 cycle 懒创建，去 cron 化。trial+pro 叠加，自然月 anchor-restore（1/31 → 3/31 → 4/30）。Booster 永不过期（每用户单 balance），仅会员状态可用。完整覆盖前后端三仓 + 迁移脚本 + B2B 月度账单口径切换。"
     track: "standard"
-    stage: "S0"
+    stage: "S1"
     classification_reason: "Triage 5 条全触发 — (1) 5 张新表 + 迁移脚本 (2) grant/deduct/balance/B2B 账单全部重写 (3) 无外部服务但内部模型彻底改 (4) 跨 3 仓 (5) 计费核心 + B2B 账单 = 最高风险业务逻辑。Standard Track 必然。"
-    last_updated_by: "ai-s0-creation"
-    last_updated_at: "2026-04-29T22:00:00+08:00"
+    last_updated_by: "ai-s1-proposal"
+    last_updated_at: "2026-04-29T22:30:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -144,7 +144,7 @@ features:
     branches: {}
     artifacts:
       requirement: "numind-server/requirements/membership-credits-redesign.md"
-      proposal: null
+      proposal: "numind-server/proposals/membership-credits-redesign-proposal.md"
       spec: null
       plan: null
     progress:
