@@ -16,11 +16,14 @@ import (
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/middleware"
 )
 
 func startServer() error {
 	// 这里可以初始化数据库、服务、定时任务等
 	g := gin.Default()
+	// Register maintenance mode middleware before routes (and JWT)
+	g.Use(middleware.MaintenanceMode())
 	if err := installNumindRouters(g); err != nil {
 		return fmt.Errorf("failed to install routers: %w", err)
 	}

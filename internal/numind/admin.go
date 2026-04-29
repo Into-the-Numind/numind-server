@@ -80,7 +80,7 @@ func runAdmin() error {
 	// 创建 Gin 引擎
 	g := gin.New()
 
-	mws := []gin.HandlerFunc{gin.Recovery(), mw.NoCache, mw.Cors, mw.Secure, mw.RequestID()}
+	mws := []gin.HandlerFunc{gin.Recovery(), mw.MaintenanceMode(), mw.NoCache, mw.Cors, mw.Secure, mw.RequestID()}
 	g.Use(mws...)
 
 	if err := installAdminRouters(g); err != nil {
