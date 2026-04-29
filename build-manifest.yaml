@@ -135,8 +135,8 @@ features:
     track: "standard"
     stage: "S1"
     classification_reason: "Triage 5 条全触发 — (1) 5 张新表 + 迁移脚本 (2) grant/deduct/balance/B2B 账单全部重写 (3) 无外部服务但内部模型彻底改 (4) 跨 3 仓 (5) 计费核心 + B2B 账单 = 最高风险业务逻辑。Standard Track 必然。"
-    last_updated_by: "ai-s1-decisions-locked"
-    last_updated_at: "2026-04-29T23:00:00+08:00"
+    last_updated_by: "ai-s1-review-fixes"
+    last_updated_at: "2026-04-29T23:30:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -169,6 +169,7 @@ features:
       - "2026-04-29 (S1 PRD - Q3): B2B 账单选切换日分界口径（选项 A）—— 历史账单永久锁定老口径，切换日后走新口径，跨切换日当月双口径拼接"
       - "2026-04-29 (S1 PRD - Q4): 单用户 booster 总余额不设上限"
       - "2026-04-29 (S1 PRD - Q5): 一次性全量切换，不灰度；回滚靠 rollback.sql + git revert，回滚窗口 7 天"
+      - "2026-04-29 (S1 review fixes): 第三个 subagent review 提出 5 P0 + 8 P1 + 2 P2，全部接受并修复——AC-21 拆为 a/b/c 含字段映射/去重/单位规则；AC-2/3/4 锁定 anchor=current_started_at 且 anchor_add_months 函数签名固化；新增完整错误码清单 11 条；EC-7 锁定 cycle_end 半开区间精确语义；EC-3/4/4b 校验顺序固化（先查 trial_grant 再查 sub）；§3 R6 改为'一次性切换数据漂移'风险（双写已废）；AC-16 拆 a/b 区分 idempotency 重放；新增 AC-13b 反作弊 out-of-scope 声明 + AC-13c booster 冻结期前后端兜底；§6 回滚分段决策（24h/7d/7d+ 三段 SOP）；§2 估时上调至 20-22 工作日"
     blockers: []
     related_features:
       - "credits-system (前置依赖，已上线)"

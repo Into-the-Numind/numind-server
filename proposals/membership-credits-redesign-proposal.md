@@ -44,20 +44,20 @@
 
 | 阶段 | 工作内容 | 估时 |
 |---|---|---|
-| S2 spec 设计 | 5 张表 schema、API 契约、并发与锁策略、迁移脚本框架 | 2 天 |
+| S2 spec 设计 | 5 张表 schema、API 契约、并发与锁策略、迁移脚本框架 | 2.5 天 |
 | S3 plan 拆分 | 把 spec 拆成 10-14 个原子 task | 0.5 天 |
-| S4 编码（后端） | schema migration + biz/store 重写 + payment.go 改写 + cron 移除 + 双写过渡层 | 7-8 天 |
-| S4 编码（前端 v3）| 余额接口适配 + booster 冻结提示 UI + 续费体验优化 | 2 天 |
+| S4 编码（后端） | schema migration + 5 表 model/store/biz 重写（共 9+ 文件）+ payment.go 改写 + cron 移除 + 段合并迁移 + 切换日双口径拼接 | 9-10 天 |
+| S4 编码（前端 v3）| 余额接口适配 + booster 冻结提示 UI + 购买弹窗（含 1/5/10 + 自定义输入）+ 完整支付时序 | 2.5 天 |
 | S4 编码（admin）| B2B 月度账单页改新口径 + 客户管理页双状态显示 | 1.5 天 |
-| 数据迁移 | dry-run + 段合并算法 + 双写校验 + 切换灰度 | 2 天 |
+| 数据迁移 | dry-run + 段合并算法 + 对账 SQL + 4 件套脚本（dry-run/apply/verify/rollback） | 3 天 |
 | S5 自动验收 | E2E + 浏览器 QA + 并发压测 | 1.5 天 |
-| S6/S7 部署 | dev → qa → prod 灰度 | 1 天（含等待 CI） |
+| S6/S7 部署 | dev → qa → prod 一次性切换（含 maintenance window） | 1 天（含等待 CI） |
 
-**总计估时**：约 **17-19 个工作日**（不含人工验收等待时间），按 4 周排期较稳妥。
+**总计估时**：约 **20-22 个工作日**（不含人工验收等待时间），按 4-5 周排期较稳妥。
 
 **交付时间线**：
-- 假设 5 月 6 日开工 → S4 完成约 5 月 22 日 → S5/S6/S7 完成约 5 月 30 日（prod 上线）
-- 可灰度发布：先 1 个内部账户 → 5% 用户 → 全量
+- 假设 5 月 6 日开工 → S4 完成约 5 月 25 日 → S5/S6/S7 完成约 6 月 3 日（prod 上线）
+- 部署策略：一次性全量切换（决策 Q5 锁定），含 5-10 分钟 maintenance window
 
 ---
 
@@ -87,7 +87,7 @@
 | **R3：续费 lost update** —— 父账户在两个 admin tab 同时点续费 | 改用 SQL 表达式（`UPDATE ... SET expires_at = ...`）配合幂等键，spec 层固定 |
 | **R4：长事务超时** —— 扣分事务跨 trial/cycle/booster 三表 | spec 强制约定 LLM 调用 OUT-OF-tx；锁顺序固定 user_id ASC + 表名字典序 |
 | **R5：B2B 账单口径切换** —— 历史账单与新账单口径不同 | 切换日前账单按老口径锁定，切换日后纯走 membership_event |
-| **R6：双写过渡期复杂度** —— 切换不彻底导致新老表数据不一致 | spec 设计 4 阶段过渡（双写 → 读切 → 关老写 → DROP），每阶段 1 周观察 |
+| **R6：一次性切换数据漂移** —— maintenance window 期间任何漏处理用户都会导致迁前后余额不一致 | maintenance window 内严格执行 4 件套脚本（dry-run/apply/verify/rollback）+ 每用户级对账 SQL；切换瞬间老 cron 全部摘除避免新老表互相污染 |
 | **R7：MySQL `DATE_ADD INTERVAL N MONTH` anchor 行为不可靠** | 已锁定决策：anchor-restore 算法在 Go 应用层实现，SQL 只接收完整时间戳 |
 | **R8：legacy 字段并行只读但代码读取分支没切干净** | spec 列出所有读 `user_tier` / `tier_expires` 的代码点，逐一改写为 `HasActiveSubscription` / `HasActiveTrial` |
 | **R9：父账户客户管理页 UI 双状态显示设计** | S2 spec 阶段输出 wireframe，S3 plan 阶段拆出独立 task |
@@ -119,11 +119,11 @@
 
 **US-3（C 端用户 - 加量包冻结场景）**：作为已过期会员，我需要看到我的加量包余额仍在账户里且明确标注"需要开通会员后才能使用"，以便我决定是续费还是暂时不用。
 
-**US-4（C 端用户 - 自购加量包）**：作为在期会员，我需要能在前端一次性购买 1 份或多份加量包（比如一次买 3 份 = 1800 积分），购买后立即可用。
+**US-4（C 端用户 - 自购加量包）**：作为在期会员，我需要能在前端一次性购买 1 份或多份加量包（比如一次买 3 份 = 1800 积分），购买后立即可用。完整支付时序：选份数 → 点击购买 → 微信/支付宝下单弹窗 → 用户支付 → 回调成功 → 前端 toast 成功并自动刷新余额；任何失败给行内重试 CTA + 客服指引；已支付但未到账（轮询 ≥ 30 秒未刷新）显示"订单处理中，请稍后刷新页面"。
 
-**US-5（父账户 - 开通会员）**：作为父账户，我需要在"客户管理"页面对任意子账户做"开通试用"、"开通 Pro 1-12 个月"、"续费 Pro 1-12 个月"的操作；试用项已使用过应自动置灰且提示"该账户已购买过试用包"。
+**US-5（父账户 - 开通会员）**：作为父账户，我需要在"客户管理"页面对任意子账户做"开通试用"、"开通/续费 Pro 1-12 个月"的操作；试用项已使用过应自动置灰且提示"该账户已购买过试用包"。**API 不区分 grant 与 renew**——后端根据当前 subscription 状态自动判定（已过期/无记录 → 新开通，在期 → 续费延期），前端只需传 `product_type` + `months`。
 
-**US-6（父账户 - 状态可视）**：作为父账户，我需要在客户管理列表里一眼看清每个子账户当前的完整会员状态（含试用 + Pro 叠加期）、到期日、积分余额。
+**US-6（父账户 - 状态可视）**：作为父账户，我需要在客户管理列表里一眼看清每个子账户当前的完整会员状态（含试用 + Pro 叠加期）、到期日、cycle 当月剩余积分。**Booster 余额对父账户不可见**（隐私边界：父账户负责开通会员，booster 是子账户日常自助消耗，仅子账户本人和 admin 可见）。
 
 **US-7（父账户 - B2B 月度账单）**：作为父账户，我需要在月底获得一份本月所有"开通/续费/购买加量包"动作的账单明细 + 汇总金额，按事件维度展示（哪天给哪个子账户开了什么、花了多少）。
 
@@ -133,10 +133,10 @@
 
 #### 数据正确性
 
-- [ ] **AC-1**：新建 subscription 时 `first_started_at` 与 `current_started_at` 同时被设置为 `now`；`expires_at` = `now + N 个月` 且经过 anchor-restore 算法
-- [ ] **AC-2**：在期续费时 `current_started_at` 不变、`first_started_at` 不变、`expires_at` += `N 个月`（基于原 expires_at + N，再次 anchor-restore）
-- [ ] **AC-3**：过期再开时 `current_started_at` = `now`、`first_started_at` 不变、`expires_at` = `now + N 个月`
-- [ ] **AC-4**：anchor-restore 算法测试覆盖 1/31 → 2/28 → 3/31 → 4/30 → 5/31 完整序列
+- [ ] **AC-1**：新建 subscription 时 `first_started_at` 与 `current_started_at` 同时被设置为 `now`；`expires_at` = `anchor_add_months(current_started_at, N)`
+- [ ] **AC-2**：在期续费时 `current_started_at` 不变、`first_started_at` 不变、新 `expires_at` = `anchor_add_months(current_started_at, total_months_purchased + N)`，其中 `total_months_purchased` = 当前 sub 周期内已购买月数。**关键：anchor 锚点固定为 `current_started_at`，每次重算 expires_at 都从 anchor 出发**，避免反复 AddDate 累积漂移
+- [ ] **AC-3**：过期再开时 `current_started_at` = `now`、`first_started_at` 不变、`expires_at` = `anchor_add_months(now, N)`；当前 sub 周期的 `total_months_purchased` 重置为 N
+- [ ] **AC-4**：anchor-restore 算法测试覆盖 1/31 → 2/28 → 3/31 → 4/30 → 5/31 完整序列。算法签名：`anchor_add_months(anchor_date time.Time, n int) time.Time` —— 返回的日期 day 为 `min(anchor_date.day, days_in_month(target_year, target_month))`
 - [ ] **AC-5**：trial_grant 表 UNIQUE(user_id) 强制 lifetime 单次；对已购买（任何状态）的用户重复 grant 返回 `ErrTrialAlreadyGranted`
 - [ ] **AC-6**：扣减优先级测试：trial 200 + cycle 2000 + booster 1200，扣 250 后 → trial 0 / cycle 1950 / booster 1200；继续扣 1950 → trial 0 / cycle 0 / booster 1200；继续扣 500 → trial 0 / cycle 0 / booster 700
 - [ ] **AC-7**：会员到期后扣减自动跳过 booster（即使 booster 余额 > 0，扣减返回 `ErrInsufficientCredits`）
@@ -149,21 +149,26 @@
 
 - [ ] **AC-12**：`POST /v1/users/children/:child_id/grant-membership` 支持 product_type ∈ {trial, monthly}, months ∈ [1,12]，trial 不接受 months 参数
 - [ ] **AC-13**：`POST /v1/orders` 创建 booster 订单时支持 quantity 字段（≥1，≤10000），订单总额 = `quantity × 2990`；超过 10000 返回 `ErrBoosterQuantityExceedsLimit`（决策 Q2 锁定）
-- [ ] **AC-13b**：booster 总余额无上限（决策 Q4 锁定）；deduct 后余额可任意大
+- [ ] **AC-13b**：booster 总余额无上限（决策 Q4 锁定）；deduct 后余额可任意大。**反作弊与累计上限不在本次 scope 内**，记录到 backlog 后续评估
+- [ ] **AC-13c**：用户处于"会员到期 / booster 冻结"状态时，前端购买入口禁用（按钮置灰）；后端兜底校验同 booster 使用门禁（无在期 trial/sub 则返回 `ErrNotActiveMember`）
 - [ ] **AC-14**：`GET /v1/credits/balance` 返回新结构（trial_remaining / cycle_remaining / cycle_end / booster_total / booster_usable / membership_state）
 - [ ] **AC-15**：`GET /v1/admin/b2b-billing-report?month=YYYY-MM` 改读 membership_event，返回事件级明细 + 父账户汇总
 
 #### 性能与并发
 
-- [ ] **AC-16**：父账户两个 tab 同时点续费 1 个月，最终 expires_at += 2 个月（不丢更新）；membership_event 留两条 sub_renewed
+- [ ] **AC-16a**：父账户两个 tab 同时点续费 1 个月，**两次请求携带不同 idempotency_key**（不同点击各自计算）→ 最终 expires_at += 2 个月；membership_event 留两条 sub_renewed
+- [ ] **AC-16b**：同一次点击产生的请求被网络层重发（同一 idempotency_key）→ 最终 expires_at += 1 个月；membership_event 表只有一条 sub_renewed（UNIQUE on idempotency_key 阻止第二次写入）
 - [ ] **AC-17**：用户客户端 0.5 秒内连发 5 次扣分请求，cycle 表里只有 1 行，扣减结果与单线程一致
 - [ ] **AC-18**：B2B 月度账单 SQL 在 100 万条 membership_event 下查询响应 < 500ms（依靠 (granter_user_id, occurred_at) 索引）
 
 #### 迁移与切换
 
 - [ ] **AC-19**：迁移 dry-run 输出每个用户"迁前 credit_package 总余额"和"迁后 5 表合计余额"对比表，差额必须为 0
-- [ ] **AC-20**：双写过渡期，新表与旧 credit_package 数据 1:1 对应（提供对账 SQL 验证）
+- [ ] **AC-20**：迁移 apply 后立即跑对账 SQL —— 每用户的 credit_package（迁前） vs 5 张新表（迁后）总余额、到期日、grant 来源必须 1:1 对应；任何差异立即触发 rollback
 - [ ] **AC-21**：B2B 账单采用**切换日分界口径**（决策 Q3 锁定 - 选项 A）。切换日前历史账单永久锁定（老口径，扫 credit_package），切换日及之后账单走新口径（扫 membership_event）。**跨切换日的当月**账单（即上线月）需双口径拼接生成
+- [ ] **AC-21a**：跨切换日当月账单**字段映射规则**：老口径 credit_package 行的 `grant_source/type/activated_at/total_credits × 单价` → 映射为新口径 membership_event 的 `event_type/product_type/occurred_at/amount_cents`。映射表在 spec 中固化为常量（如 `subscription package` → `sub_granted` event）
+- [ ] **AC-21b**：跨切换日当月账单**去重规则**：老口径行（切换日前 activated_at）+ 新口径行（切换日后 occurred_at），按 `(granter_user_id, child_user_id, activated_at/occurred_at, product_type)` 复合键去重；若同时出现新老口径同一笔（极端：迁移瞬间），优先采纳新口径
+- [ ] **AC-21c**：跨切换日当月账单**金额单位统一**：所有金额一律 `cents` (int64)，老口径若有 `decimal` 字段需 × 100 转 cents
 
 #### 前端
 
@@ -176,15 +181,38 @@
 
 - **EC-1**：用户在 cycle_end 那一秒发起扣分 —— 半开区间 `[cycle_start, cycle_end)` 严格判定，不会扣到下个 cycle 也不会双扣
 - **EC-2**：用户在 sub.expires_at 那一秒发起扣分 —— 事务起点固定 ts，全事务用同一个判断
-- **EC-3**：父账户给已有 trial 的子账户再次 grant trial —— 返回 `ErrTrialAlreadyGranted`，子账户状态不变
-- **EC-4**：父账户给已在期 Pro 的子账户 grant trial —— **不允许**，返回 `ErrTrialNotAllowedForActivePro`（决策 Q1，2026-04-29 锁定）
-- **EC-4b**：父账户给历史已购买过 trial（任何状态）的子账户再次 grant trial —— 返回 `ErrTrialAlreadyGranted`（trial_grant 表 UNIQUE on user_id 强制 lifetime 单次）
-- **EC-5**：父账户 grant booster 给会员已过期的子账户 —— 拒绝并返回 `ErrChildNotMember`
+- **EC-3 / EC-4 / EC-4b 校验顺序**（grant trial 路径，按下列顺序短路返回）：
+  1. **先查 trial_grant 表**：若该子账户已有任何 trial_grant 行（任何状态）→ 返回 `ErrTrialAlreadyGranted`
+  2. trial_grant 无记录 → 再查 subscription：若子账户当前有 active subscription（`expires_at > now`）→ 返回 `ErrTrialNotAllowedForActivePro`（决策 Q1）
+  3. 都通过 → 创建 trial_grant 行
+- **EC-5**：父账户 grant booster 给会员已过期/未开通的子账户 —— 拒绝并返回 `ErrChildNotMember`（subscription/trial_grant 任一在期才允许）
 - **EC-6**：用户买 12 个月 Pro，从未登录使用 —— 不会预创建任何 cycle，直到第一次扣分时才懒创建当前月 cycle
-- **EC-7**：用户 1/31 开通 Pro 1 个月，扣分时间 2/28 23:59:30 —— anchor-restore 保证 cycle_end = 2/28 23:59:30 还是 sub.expires_at？spec 阶段精确化
-- **EC-8**：迁移过程中用户发起扣分 —— 双写阶段保证新老表都被扣，读切阶段只读新表
+- **EC-7**：cycle 边界精确语义（**S1 锁定，不留到 S2**）：
+  - `cycle_end = min(anchor_add_months(current_started_at, cycle_index + 1), subscription.expires_at)`
+  - 半开区间 `[cycle_start, cycle_end)` 严格判定
+  - 例：1/31 开通 1 月 Pro，sub.expires_at = 2/28，cycle_index=0 的 cycle_end = min(2/28, 2/28) = 2/28；扣分 2/28 23:59:30 时 `now < cycle_end == false`（边界相等被排除）→ 此请求视为已过期，不再扣分
+- **EC-8**：迁移期间用户发起扣分 —— 一次性切换决策 Q5 下，迁移期处于 maintenance window（5-10 分钟），所有写请求被拒绝（503）；切换完成后用户立即走新表
 - **EC-9**：membership_event 写入失败但 subscription 写入成功 —— 同事务回滚；幂等键保证重试安全
 - **EC-10**：用户买 trial + Pro 叠加期内退出账户登录又重新登录 —— 显示状态正常切换（free → trial → trial+pro 父视角 / trial 子视角）
+- **EC-11**：用户处于 booster 冻结期，前端购买 booster 入口禁用；若用户绕过前端直接调 API → 后端返回 `ErrNotActiveMember`
+
+### 错误码清单（S2 spec 阶段写入 errno 包）
+
+| 错误码 | HTTP | 触发场景 | 引用 |
+|---|---|---|---|
+| `ErrSelfPurchaseDisabled` | 403 | C 端自购 trial/monthly Pro | 已存在 |
+| `ErrTrialAlreadyGranted` | 409 | trial_grant 表已有该 user 行 | 新增 / EC-3 |
+| `ErrTrialNotAllowedForActivePro` | 409 | grant trial 时该 user 已有 active subscription | 新增 / EC-4 / Q1 |
+| `ErrChildNotMember` | 403 | parent grant booster 给非会员子账户 | 新增 / EC-5 |
+| `ErrNotActiveMember` | 403 | C 端自购 booster 时无 active 会员（trial/sub 均无） | 新增 / EC-11 / AC-13c |
+| `ErrBoosterQuantityExceedsLimit` | 400 | booster 单笔订单 quantity > 10000 | 新增 / Q2 / AC-13 |
+| `ErrInsufficientCredits` | 402 | 三类积分合计扣减不足以覆盖请求量 | 已存在 |
+| `ErrSubscriptionNotFound` | 404 | 查询 / 操作 subscription 但无记录 | 新增（兜底） |
+| `ErrInvalidProductType` | 400 | grant 或 order 传了非法 product_type | 已存在（复用） |
+| `ErrInvalidMonths` | 400 | grant Pro 时 months ∉ [1,12] | 已存在（复用） |
+| `ErrParentChildRelation` | 403 | parent_user_id 与 child_user_id 不构成关系 | 已存在（复用） |
+
+完整错误码 + Go 常量名 + i18n 文案在 S2 spec 中固化。
 
 ### 权限规则
 
@@ -194,10 +222,11 @@
 | 自购 monthly Pro | ❌ ErrSelfPurchaseDisabled | — | — |
 | 自购 booster（含多份）| ✅ 需会员状态 | — | — |
 | Grant trial 给子账户 | — | ✅ 1 次 lifetime | ✅ 同 |
-| Grant Pro 给子账户 | — | ✅ 1-12 月 | ✅ 同 |
+| Grant Pro 给子账户（开通+续费一体）| — | ✅ 1-12 月 | ✅ 同 |
 | Grant booster 给子账户 | — | ✅ 子账户需会员 | ✅ 同 |
-| 查询自己余额 | ✅ | — | ✅ 任意用户 |
-| 查询子账户余额 | — | ✅ 仅子账户 | ✅ |
+| 查询自己完整余额（含 booster） | ✅ | — | ✅ 任意用户 |
+| 查询子账户余额（**不含 booster**） | — | ✅ 仅子账户 | — |
+| 查询子账户 booster 余额 | — | ❌ | ✅ |
 | 查询 B2B 月度账单 | — | ✅ 自己的账单 | ✅ 全部账单 |
 
 ### UI 行为规格
@@ -289,13 +318,18 @@
 
 ### 回滚方案
 
-如部署后 24 小时内发现 P0 问题：
-1. 触发 rollback.sql：从 backup 表恢复 credit_package + 删除 5 张新表的迁移行
-2. git revert 上线 commit，回滚代码
-3. 重启服务（老代码 + 老表）
-4. 老 cron 自动恢复运行
+回滚决策按时间窗口分段（事故时按此 SOP 执行，不留人为犹豫）：
 
-回滚不可超过 T+7 天（因为这期间用户产生了**新数据**仅写入新表，回滚会丢失这部分数据）。如超出窗口出现问题，只能 forward fix，不能回滚。
+| 时间窗口 | 默认决策 | 操作步骤 |
+|---|---|---|
+| **T+0 ~ T+24h** | **回滚优先** | 1. 触发 rollback.sql：从 backup 表恢复 credit_package + 删除 5 张新表的迁移行<br>2. git revert 上线 commit<br>3. 重启服务（老代码 + 老表）<br>4. 老 cron 自动恢复 |
+| **T+24h ~ T+7d** | **forward fix 优先** | 评估：是否仅代码 bug？是 → 紧急修补丁 + hotfix 上线；否（数据完整性已破坏）→ 回滚但接受 N 天数据丢失，**需运营/产品双签审批** |
+| **T+7d 之后** | **只能 forward fix** | 此时累积新数据已无法回灌老表，回滚等同删除用户付费记录；无论何种 P0 都只能向前修复 |
+
+**关键原则**：
+- 回滚一旦执行 = 丢失"切换日至回滚日"期间用户产生的新数据（订单、grant、扣减），属严重事故
+- T+24h 内回滚相对安全（用户活跃度低、影响小）；超过 24h 强烈倾向 forward fix
+- T+7 天后 backup 表归档清理，物理上无法回滚
 
 ---
 
