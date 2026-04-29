@@ -135,8 +135,8 @@ features:
     track: "standard"
     stage: "S1"
     classification_reason: "Triage 5 条全触发 — (1) 5 张新表 + 迁移脚本 (2) grant/deduct/balance/B2B 账单全部重写 (3) 无外部服务但内部模型彻底改 (4) 跨 3 仓 (5) 计费核心 + B2B 账单 = 最高风险业务逻辑。Standard Track 必然。"
-    last_updated_by: "ai-s1-proposal"
-    last_updated_at: "2026-04-29T22:30:00+08:00"
+    last_updated_by: "ai-s1-decisions-locked"
+    last_updated_at: "2026-04-29T23:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -164,6 +164,11 @@ features:
       - "2026-04-29 (设计层): 锁顺序 user_id ASC → 表名字典序；LLM 调用绝不在事务内（复用现有 Reserve/Reconcile）"
       - "2026-04-29 (设计层): membership_event 加 idempotency_key 唯一索引防重入"
       - "2026-04-29 (review): 双 subagent 并行 review（产品/UX 视角 + 工程/并发视角），共发现 6 个 P0 + 8 个 P1，全部纳入 S2 spec 覆盖项"
+      - "2026-04-29 (S1 PRD - Q1): 已在期 Pro 用户不允许再被 grant trial（ErrTrialNotAllowedForActivePro）；trial lifetime 单次由 UNIQUE(user_id) 强制"
+      - "2026-04-29 (S1 PRD - Q2): booster 单笔订单 quantity 上限 10000；前端 1/5/10 快捷按钮 + 自定义输入框；超过 10000 才报错"
+      - "2026-04-29 (S1 PRD - Q3): B2B 账单选切换日分界口径（选项 A）—— 历史账单永久锁定老口径，切换日后走新口径，跨切换日当月双口径拼接"
+      - "2026-04-29 (S1 PRD - Q4): 单用户 booster 总余额不设上限"
+      - "2026-04-29 (S1 PRD - Q5): 一次性全量切换，不灰度；回滚靠 rollback.sql + git revert，回滚窗口 7 天"
     blockers: []
     related_features:
       - "credits-system (前置依赖，已上线)"

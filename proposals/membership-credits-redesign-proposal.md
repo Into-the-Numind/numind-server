@@ -148,7 +148,8 @@
 #### 接口与契约
 
 - [ ] **AC-12**：`POST /v1/users/children/:child_id/grant-membership` 支持 product_type ∈ {trial, monthly}, months ∈ [1,12]，trial 不接受 months 参数
-- [ ] **AC-13**：`POST /v1/orders` 创建 booster 订单时支持 quantity 字段（≥1），订单总额 = `quantity × 2990`
+- [ ] **AC-13**：`POST /v1/orders` 创建 booster 订单时支持 quantity 字段（≥1，≤10000），订单总额 = `quantity × 2990`；超过 10000 返回 `ErrBoosterQuantityExceedsLimit`（决策 Q2 锁定）
+- [ ] **AC-13b**：booster 总余额无上限（决策 Q4 锁定）；deduct 后余额可任意大
 - [ ] **AC-14**：`GET /v1/credits/balance` 返回新结构（trial_remaining / cycle_remaining / cycle_end / booster_total / booster_usable / membership_state）
 - [ ] **AC-15**：`GET /v1/admin/b2b-billing-report?month=YYYY-MM` 改读 membership_event，返回事件级明细 + 父账户汇总
 
@@ -162,7 +163,7 @@
 
 - [ ] **AC-19**：迁移 dry-run 输出每个用户"迁前 credit_package 总余额"和"迁后 5 表合计余额"对比表，差额必须为 0
 - [ ] **AC-20**：双写过渡期，新表与旧 credit_package 数据 1:1 对应（提供对账 SQL 验证）
-- [ ] **AC-21**：B2B 账单切换日前后两份口径都能跑出结果（老口径锁定历史，新口径仅算切换日后）
+- [ ] **AC-21**：B2B 账单采用**切换日分界口径**（决策 Q3 锁定 - 选项 A）。切换日前历史账单永久锁定（老口径，扫 credit_package），切换日及之后账单走新口径（扫 membership_event）。**跨切换日的当月**账单（即上线月）需双口径拼接生成
 
 #### 前端
 
@@ -176,7 +177,8 @@
 - **EC-1**：用户在 cycle_end 那一秒发起扣分 —— 半开区间 `[cycle_start, cycle_end)` 严格判定，不会扣到下个 cycle 也不会双扣
 - **EC-2**：用户在 sub.expires_at 那一秒发起扣分 —— 事务起点固定 ts，全事务用同一个判断
 - **EC-3**：父账户给已有 trial 的子账户再次 grant trial —— 返回 `ErrTrialAlreadyGranted`，子账户状态不变
-- **EC-4**：父账户给已在期 Pro 的子账户 grant trial —— **是否允许？** spec 阶段决策；建议允许（trial 包独立，不冲突）
+- **EC-4**：父账户给已在期 Pro 的子账户 grant trial —— **不允许**，返回 `ErrTrialNotAllowedForActivePro`（决策 Q1，2026-04-29 锁定）
+- **EC-4b**：父账户给历史已购买过 trial（任何状态）的子账户再次 grant trial —— 返回 `ErrTrialAlreadyGranted`（trial_grant 表 UNIQUE on user_id 强制 lifetime 单次）
 - **EC-5**：父账户 grant booster 给会员已过期的子账户 —— 拒绝并返回 `ErrChildNotMember`
 - **EC-6**：用户买 12 个月 Pro，从未登录使用 —— 不会预创建任何 cycle，直到第一次扣分时才懒创建当前月 cycle
 - **EC-7**：用户 1/31 开通 Pro 1 个月，扣分时间 2/28 23:59:30 —— anchor-restore 保证 cycle_end = 2/28 23:59:30 还是 sub.expires_at？spec 阶段精确化
@@ -208,6 +210,9 @@
 - 卡片 1：当前会员状态（free/trial/pro，徽章式展示）+ 到期日
 - 卡片 2：积分余额（试用积分 + 本月积分 + 加量包积分，分别独立展示）
 - 卡片 3：购买加量包入口（仅会员可见，否则灰显并提示"开通会员后可购买"）
+  - 数量选择（决策 Q2 锁定）：横向 3 个快捷按钮 `1 份` / `5 份` / `10 份` + 自定义数字输入框（默认 1）
+  - 验证规则：必须为正整数；输入超过 10000 时输入框红框 + 行内错误"单次最多购买 10000 份"，禁用提交按钮
+  - 实时显示总价：`{quantity} × ¥29.9 = ¥{total}`
 
 **交互模式**：
 - 余额数据每页加载时拉一次，不轮询
@@ -248,19 +253,53 @@
 
 ---
 
-## §5 待客户确认的关键问题
+## §5 关键决策记录（2026-04-29 全部锁定）
 
-进入 S2 spec 之前，请确认以下决策（部分已在 S0 卡固化，此处汇总）：
+| # | 主题 | 决策 |
+|---|------|------|
+| Q1 | 已在期 Pro 用户能否再被 grant trial | **不允许**，返回 `ErrTrialNotAllowedForActivePro`；trial lifetime 单次由 trial_grant 表 UNIQUE on user_id 强制 |
+| Q2 | 单次购买 booster 上限 | 单笔订单 quantity 上限 **10000 份**；前端 1/5/10 快捷按钮 + 自定义输入框；超过 10000 才报错 |
+| Q3 | B2B 账单口径切换 | **选项 A：切换日分界**。切换日前历史账单永久锁定（旧口径扫 credit_package），切换日及之后走新口径（扫 membership_event）；跨切换日的当月账单需双口径拼接 |
+| Q4 | 单用户 booster 总余额上限 | **不设上限** |
+| Q5 | 灰度策略 | **一次性全量**，不分阶段。部署前 dev/qa 充分压测，回滚靠 rollback.sql + git revert |
 
-1. **EC-4 边界**：父账户给已在期 Pro 的子账户 grant trial 是否允许？我推荐允许（trial 独立、无害）。
-2. **AC-13 加量包多份订单**：单次最多买几份？建议 1-10（避免一次性买 100 份的极端用户）。
-3. **AC-21 切换日定义**：建议把"prod 切换日"作为账单口径分界线，切换日前 B2B 账单冻结历史结果，切换日及之后用新口径。是否同意？
-4. **booster 余额上限**：是否对单用户 booster 总余额设上限（建议 10000 积分 = 约 17 份未用）？
-5. **灰度策略**：建议 "1 个内部账户 → 5% → 全量"，每阶段观察 24 小时。是否同意？
+## §6 部署与回滚
+
+### 部署节奏（一次性全量）
+
+1. **dev 环境**：S5 验证通过后立即部署，至少 24 小时观察期
+2. **qa 环境**：dev 稳定后部署，跑 E2E + 浏览器 QA + 并发压测
+3. **prod 环境**：qa 通过 + 用户确认 → 打 tag 触发部署
+4. 部署当天**全量切换**，所有用户瞬间走新代码、新表
+5. 切换瞬间**老 cron 停止运行**（reconcileBillingMode / ActivatePending / ExpireActive 全部摘掉）
+6. 切换后 7 天保留 credit_package 表只读访问（应急对账用），7 天后视情况 DROP
+
+### 数据迁移与切换原子性
+
+切换日的执行顺序（写入 spec 阶段固化）：
+1. **T-1 天**：dev/qa 充分验证，prod 下毛玻璃公告"维护窗口"
+2. **T 时刻**（建议凌晨低峰期）：
+   - Step 1：service maintenance mode（拒绝写请求 5-10 分钟）
+   - Step 2：跑迁移脚本（4 件套：dry-run / apply / verify / rollback），把 credit_package 数据按段合并算法写入 5 张新表
+   - Step 3：跑对账 SQL（每用户迁前 vs 迁后总余额必须 0 差异）
+   - Step 4：服务重启（新代码 + 新表生效，老 cron 不再启动）
+   - Step 5：解除 maintenance mode
+3. **T+0 ~ T+7 天**：observation period，每日跑对账 SQL；任何异常立即触发 rollback
+4. **T+7 天**：DROP credit_package 表（可延后到下个 feature 处理）
+
+### 回滚方案
+
+如部署后 24 小时内发现 P0 问题：
+1. 触发 rollback.sql：从 backup 表恢复 credit_package + 删除 5 张新表的迁移行
+2. git revert 上线 commit，回滚代码
+3. 重启服务（老代码 + 老表）
+4. 老 cron 自动恢复运行
+
+回滚不可超过 T+7 天（因为这期间用户产生了**新数据**仅写入新表，回滚会丢失这部分数据）。如超出窗口出现问题，只能 forward fix，不能回滚。
 
 ---
 
-## §6 附录
+## §7 附录
 
 - 设计完整脉络：本次 session 对话记录（含两轮 ultrathink 分析、两次并行 subagent review）
 - S0 需求卡：`numind-server/requirements/membership-credits-redesign.md`
