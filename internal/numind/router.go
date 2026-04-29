@@ -3,6 +3,7 @@ package numind
 import (
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/credit"
+	"numind-server/internal/numind/biz/membership"
 	"numind-server/internal/numind/controller/v1/ali"
 	chatbotcontroller "numind-server/internal/numind/controller/v1/chatbot"
 	"numind-server/internal/numind/controller/v1/config"
@@ -11,7 +12,6 @@ import (
 	llmcontroller "numind-server/internal/numind/controller/v1/llm"
 	monitorcontroller "numind-server/internal/numind/controller/v1/monitor"
 	ordercontroller "numind-server/internal/numind/controller/v1/order"
-	"numind-server/internal/numind/controller/v1/parent_grant"
 	paymentcontroller "numind-server/internal/numind/controller/v1/payment"
 	pdfcontroller "numind-server/internal/numind/controller/v1/pdf"
 	"numind-server/internal/numind/controller/v1/salesrag"
@@ -203,14 +203,15 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/billing/records", billingCtrl.ListRecords)
 	}
 
-	// 积分查询
+	// 积分查询 + B2B2C 会员赋予（Task 10 / §5.1 + §5.7）
+	membershipSvc := membership.NewMembershipService(store.S.DB())
+	creditCtrl := creditcontroller.New(
+		b.Credit(),
+		b.CreditService(),
+		credit.NewPromptEstimator(store.S),
+		store.S,
+	).WithMembershipSvc(membershipSvc)
 	{
-		creditCtrl := creditcontroller.New(
-			b.Credit(),
-			b.CreditService(),
-			credit.NewPromptEstimator(store.S),
-			store.S,
-		)
 		authGroup.GET("/credits/balance", creditCtrl.GetBalance)
 		authGroup.POST("/credits/estimate", creditCtrl.Estimate)    // Phase 2 T2.3：运行前估算（spec §3.11 + §4.3）
 		authGroup.GET("/credits/packages", creditCtrl.ListPackages) // Phase 2 T2.3：积分包列表（spec §4.1.1）
@@ -252,13 +253,15 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.DELETE("/customers/sub-users/:user_id/features", customerCtrl.RevokeFeatures)
 	}
 
-	// B2B2C 会员赋予（Q1）：父账户为子账户开通会员，不走支付流程
+	// B2B2C 会员赋予（Q1 / Task 10）：父账户为子账户开通会员，不走支付流程
+	// creditCtrl.GrantMembership 使用新 membership.MembershipService 路径（§5.1 + §5.7）
 	{
-		parentGrantCtrl := parent_grant.New(b.Credit())
 		// 子账户列表别名（前端 /v1/users/children，Q2 新增），复用 CustomerController.ListSubUsers
 		childListCtrl := customercontroller.NewCustomerController(b.Customers(), b.Users())
 		authGroup.GET("/users/children", childListCtrl.ListSubUsers)
-		authGroup.POST("/users/children/:child_id/grant-membership", parentGrantCtrl.GrantMembership)
+		authGroup.POST("/users/children/:child_id/grant-membership",
+			importMw.RequireIdempotencyKey(),
+			creditCtrl.GrantMembership)
 	}
 
 	// 自助配置中心（B端，需要主账号 + 功能权限）

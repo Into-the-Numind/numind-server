@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	creditbiz "numind-server/internal/numind/biz/credit"
+	"numind-server/internal/numind/biz/membership"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
@@ -23,6 +24,7 @@ type CreditController struct {
 	creditSvc       creditbiz.ICreditService
 	promptEstimator creditbiz.IPromptEstimator
 	ds              store.IStore
+	membershipSvc   *membership.MembershipService
 }
 
 // New 创建积分控制器实例
@@ -35,6 +37,13 @@ func New(creditBiz creditbiz.ICreditBiz, creditSvc creditbiz.ICreditService, pro
 		promptEstimator: promptEstimator,
 		ds:              ds,
 	}
+}
+
+// WithMembershipSvc attaches a MembershipService to the controller, enabling
+// the B2B2C grant-membership endpoint (Task 10 / §5.1 + §5.7).
+func (c *CreditController) WithMembershipSvc(svc *membership.MembershipService) *CreditController {
+	c.membershipSvc = svc
+	return c
 }
 
 // GetBalance GET /v1/credits/balance — C 用户查看额度余额及分布
