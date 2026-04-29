@@ -43,7 +43,7 @@
 
 ### §1.1 设计原则与不变量
 
-以下 12 条 invariant 在 spec 全程生效，编码时（S4）每个 task 的 reviewer 必须照此清单逐条检查。
+以下 13 条 invariant 在 spec 全程生效，编码时（S4）每个 task 的 reviewer 必须照此清单逐条检查。
 
 **I-1（时间驱动而非状态机）**
 会员、cycle、trial 的"是否在期"完全由 `now` 与时间字段（`expires_at`、`cycle_end`、`trial_grant.expires_at`）的比较得出。**禁止**引入 `status` 枚举（如 active / expired / pending）作为权威状态来源。所有"状态"概念都是从时间字段派生的视图，可在应用层实时计算，但不持久化为可写字段。
@@ -102,6 +102,13 @@ S4 编码阶段所有事务都必须显式注释锁顺序；reviewer 检查这�
 **I-12（DATETIME(0) 精度 + 服务器 UTC+8）**
 所有时间字段使用 `DATETIME(0)`（秒级精度，无毫秒）。服务器统一使用 UTC+8 时区（阿里云 / 火山引擎 / 部署环境一致），避免跨时区计算 day-of-month。Go 端获取时间 `time.Now()` 返回的 `time.Time` 默认携带 Local（UTC+8）；写入 DB 前不做时区转换。
 
+**I-13（sub_granted vs sub_renewed 语义由状态机自动判定）**
+`membership_event.event_type` 中 `sub_granted` 与 `sub_renewed` 的区分语义如下：
+- `sub_granted` 当且仅当 subscription 行**新建**（首次开通）**或过期再开**（之前 expires_at <= now，本次刷新 current_started_at 重新起算）
+- `sub_renewed` 当且仅当**在期 UPDATE expires_at**（之前 expires_at > now，本次仅延长 expires_at，current_started_at 不变）
+
+两者由 `GrantOrRenewSubscription` 入口在事务内根据 `subscription` 当前状态**自动判定**写入哪个 event_type，**调用方不传 event_type 参数**——controller / API 层只表达"用户付了 N 个月"，事件类型完全由 biz 层状态机决定。这一规则保障 AC-21（B2B 账单切换日双口径拼接）能正确分类历史 vs 新事件。
+
 ---
 
 ### §1.2 受影响代码点清单
@@ -129,8 +136,8 @@ S4 编码阶段所有事务都必须显式注释锁顺序；reviewer 检查这�
 | `scripts/2026-04-29-membership-credits-migration/apply.sql` | **新增** | 实际数据搬迁，按段合并算法写入 5 张新表 |
 | `scripts/2026-04-29-membership-credits-migration/verify.sql` | **新增** | 对账 SQL：每用户迁前 credit_package 总余额 vs 迁后 5 表合计必须 0 差异 |
 | `scripts/2026-04-29-membership-credits-migration/rollback.sql` | **新增** | 从 backup 表恢复 + 删除 5 表新写入行 |
-| `internal/numind/controller/v1/credit.go`（或拆分）| **改写** | 余额查询 controller 适配新响应结构；booster 自购 controller 加 quantity 校验入口 |
-| `internal/numind/controller/v1/admin/b2b_billing.go` | **改写** | B2B 月度账单 controller 适配双口径拼接 |
+| `internal/numind/controller/v1/credit/*.go` | **改写**（目录已存在）| 余额查询 controller 适配新响应结构；booster 自购 controller 加 quantity 校验入口；按现有目录拆分（balance.go / orders.go 等），非新建目录 |
+| `internal/numind/controller/v1/admin_b2b/*.go` | **改写**（目录已存在）| B2B 月度账单 controller 适配双口径拼接；目录与 `admin/` 平级（注意：管理端 b2b 路由放 `admin_b2b/` 而非 `admin/` 子目录），改写现有文件而非新建目录 |
 | `cmd/numind/main.go` / `cmd/numind-admin/main.go` | **改写** | 移除 cron 启动代码（I-2） |
 
 #### numind-web-v3（Vue 用户端）
@@ -207,7 +214,9 @@ S4 编码阶段所有事务都必须显式注释锁顺序；reviewer 检查这�
 |---|---|---|
 | EC-1 | cycle_end 那一秒发起扣分 → 半开区间严格判定 | §3.4 ensureCurrentCycle（半开区间）+ §4.6 事务起点 ts |
 | EC-2 | sub.expires_at 那一秒发起扣分 → 事务起点固定 ts | §4.6 事务起点固定 timestamp 模式 |
-| EC-3/4/4b | grant trial 的三步校验顺序：trial_grant 表 → subscription 在期 → 创建 | §3.3 GrantTrial（校验流程）+ §5.7 错误码 |
+| EC-3 | 父账户给已有 trial（在期或历史已 grant）的子账户再次 grant trial | §3.3 GrantTrial step 2（trial_grant 表 UNIQUE 命中）+ §5.7 ErrTrialAlreadyGranted |
+| EC-4 | 父账户给已在期 Pro 的子账户 grant trial | §3.3 GrantTrial step 3（subscription 在期判定）+ §5.7 ErrTrialNotAllowedForActivePro |
+| EC-4b | 父账户给历史已购买过 trial 的子账户再 grant（即便当前已过期） | §3.3 GrantTrial step 2（trial_grant lifetime 单行）+ §5.7 ErrTrialAlreadyGranted |
 | EC-5 | parent grant booster 给非会员子账户 → `ErrChildNotMember` | §5.2 POST /v1/orders 校验 + §5.7 错误码 |
 | EC-6 | 买 12 月 Pro 从未登录使用 → 不预创建任何 cycle | §3.4 ensureCurrentCycle（懒创建）+ §2.3 credit_cycle 表 |
 | EC-7 | cycle 边界精确语义：`cycle_end = min(anchor_add_months(...), sub.expires_at)` | §3.4 ensureCurrentCycle（cycle_end 计算）+ §3.1 anchor_add_months |
@@ -242,7 +251,7 @@ S4 编码阶段所有事务都必须显式注释锁顺序；reviewer 检查这�
 
 ---
 
-> 本章到此结束。后续章节按本章列出的 12 条 invariant 设计具体方案；任何与 invariant 冲突的设计应回到 §1.1 修订并触发 spec 重审。
+> 本章到此结束。后续章节按本章列出的 13 条 invariant 设计具体方案；任何与 invariant 冲突的设计应回到 §1.1 修订并触发 spec 重审。
 
 ---
 
@@ -279,7 +288,7 @@ CREATE TABLE IF NOT EXISTS `subscription` (
   `first_started_at`         DATETIME(0)     NOT NULL,
   `current_started_at`       DATETIME(0)     NOT NULL,
   `expires_at`               DATETIME(0)     NOT NULL,
-  `total_months_purchased`   INT             NOT NULL DEFAULT 0,
+  `total_months_purchased`   INT             NOT NULL,
   `source`                   ENUM('self_purchase','b2b_grant') NOT NULL DEFAULT 'b2b_grant',
   `granter_user_id`          BIGINT UNSIGNED          DEFAULT NULL,
   `created_at`               DATETIME(0)     NOT NULL,
@@ -287,7 +296,7 @@ CREATE TABLE IF NOT EXISTS `subscription` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uniq_sub_user_id` (`user_id`),
   KEY `idx_sub_expires_at` (`expires_at`),
-  KEY `idx_sub_granter_user_id` (`granter_user_id`)
+  KEY `idx_sub_granter_expires` (`granter_user_id`, `expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
   COMMENT='用户订阅主表，每个用户单行，原地更新';
 ```
@@ -301,7 +310,7 @@ CREATE TABLE IF NOT EXISTS `subscription` (
 | `first_started_at` | DATETIME(0) | 用户**有史以来第一次**开通 Pro 的时刻，永不变动 | — | — | 否 |
 | `current_started_at` | DATETIME(0) | 当前**连续订阅段**起始时刻；过期再开时更新为新的 `now()`；在期续费时**不变** | — | — | 否 |
 | `expires_at` | DATETIME(0) | 当前订阅到期时刻；新开通时 = `anchor_add_months(current_started_at, N)`；续费时 = `anchor_add_months(current_started_at, total_months_purchased)`；**严格半开判断 `now < expires_at` 视为在期** | — | — | 否 |
-| `total_months_purchased` | INT | 在**当前 sub 周期**（即从 `current_started_at` 起的连续段）内累计已购月数；过期再开时重置为新购月数 | `>0` 不变量（应用层校验） | 0 | 否 |
+| `total_months_purchased` | INT | 在**当前 sub 周期**（即从 `current_started_at` 起的连续段）内累计已购月数；过期再开时重置为新购月数 | `>0` 不变量（应用层校验） | 无（NOT NULL 不带 DEFAULT，强制应用层显式 INSERT） | 否 |
 | `source` | ENUM | `self_purchase` 表示用户自购、`b2b_grant` 表示父账户帮开 | ENUM 二选一 | `b2b_grant` | 否 |
 | `granter_user_id` | BIGINT UNSIGNED | `source='b2b_grant'` 时记录开通该订阅的父账户 ID；`self_purchase` 时为 NULL | — | NULL | 是 |
 | `created_at` | DATETIME(0) | 行创建时刻 | 由应用层填 `now()` | — | 否 |
@@ -316,7 +325,7 @@ CREATE TABLE IF NOT EXISTS `subscription` (
 | `PRIMARY` | 主键 | `id` | 标准主键 |
 | `uniq_sub_user_id` | UNIQUE | `user_id` | lifetime 单行约束；并发新建时由该索引兜底防双行 |
 | `idx_sub_expires_at` | 普通 | `expires_at` | admin 查询"近期到期会员"批量统计；非强制每查询用 |
-| `idx_sub_granter_user_id` | 普通 | `granter_user_id` | B2B 父账户视角："这个父账户帮哪些子账户开通了 Pro" |
+| `idx_sub_granter_expires` | 普通 | `(granter_user_id, expires_at)` | B2B 父账户视角："这个父账户帮哪些子账户开通了 Pro，以及哪些尚在期"——复合索引避免父账户子账户列表查询时回表过滤 expires_at |
 
 #### 不变量
 
@@ -350,7 +359,7 @@ CREATE TABLE IF NOT EXISTS `trial_grant` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uniq_trial_user_id` (`user_id`),
   KEY `idx_trial_expires_at` (`expires_at`),
-  KEY `idx_trial_granter_user_id` (`granter_user_id`)
+  KEY `idx_trial_granter_expires` (`granter_user_id`, `expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
   COMMENT='试用包记录，每个用户 lifetime 单行';
 ```
@@ -377,7 +386,7 @@ CREATE TABLE IF NOT EXISTS `trial_grant` (
 | `PRIMARY` | 主键 | `id` | 标准主键 |
 | `uniq_trial_user_id` | UNIQUE | `user_id` | **lifetime 单次的物理强制点**——重复 grant 由该索引返回 1062 错误，应用层捕获并返回 `ErrTrialAlreadyGranted` |
 | `idx_trial_expires_at` | 普通 | `expires_at` | 用户余额查询时配合 `now < expires_at` 判断试用是否在期 |
-| `idx_trial_granter_user_id` | 普通 | `granter_user_id` | B2B 月度账单按父账户聚合 |
+| `idx_trial_granter_expires` | 普通 | `(granter_user_id, expires_at)` | B2B 月度账单按父账户聚合，并支持"父账户在期 trial 子账户"视图——复合索引避免回表 |
 
 #### 不变量
 
@@ -404,13 +413,12 @@ CREATE TABLE IF NOT EXISTS `credit_cycle` (
   `subscription_id`     BIGINT UNSIGNED NOT NULL,
   `cycle_start`         DATETIME(0)     NOT NULL,
   `cycle_end`           DATETIME(0)     NOT NULL,
-  `credits_granted`     INT             NOT NULL DEFAULT 2000,
-  `credits_remaining`   INT             NOT NULL DEFAULT 2000,
+  `credits_granted`     INT             NOT NULL DEFAULT 0,
+  `credits_remaining`   INT             NOT NULL DEFAULT 0,
   `created_at`          DATETIME(0)     NOT NULL,
   `updated_at`          DATETIME(0)     NOT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uniq_cycle_user_start` (`user_id`, `cycle_start`),
-  KEY `idx_cycle_subscription_id` (`subscription_id`),
   KEY `idx_cycle_user_end` (`user_id`, `cycle_end`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
   COMMENT='月度积分周期，懒创建';
@@ -425,8 +433,8 @@ CREATE TABLE IF NOT EXISTS `credit_cycle` (
 | `subscription_id` | BIGINT UNSIGNED | 关联到 `subscription.id`；周期挂在某个具体的 sub 行下 | — | — | 否 |
 | `cycle_start` | DATETIME(0) | 周期起始时刻；= `anchor_add_months(subscription.current_started_at, cycle_index)`；与 `user_id` 复合 UNIQUE 防并发双插 | — | — | 否 |
 | `cycle_end` | DATETIME(0) | 周期结束时刻；= `min(anchor_add_months(subscription.current_started_at, cycle_index + 1), subscription.expires_at)` | `>= cycle_start` | — | 否 |
-| `credits_granted` | INT | 本周期发放的积分总额；目前固定 2000，但保留字段为未来"不同档位月卡"留接口 | `> 0` 不变量 | 2000 | 否 |
-| `credits_remaining` | INT | 本周期剩余可用积分；扣减优先级中等（trial 之后、booster 之前） | `>= 0` 不变量 | 2000 | 否 |
+| `credits_granted` | INT | 本周期发放的积分总额；目前产品配置 = 2000，但 schema 不承担产品语义——应用层（biz/credit/）从产品配置常量显式注入 INSERT；保留字段为未来"不同档位月卡"留接口 | `> 0` 不变量（应用层校验：INSERT 时不允许 0） | 0 | 否 |
+| `credits_remaining` | INT | 本周期剩余可用积分；扣减优先级中等（trial 之后、booster 之前）；INSERT 时由应用层显式设为 = `credits_granted` | `>= 0` 不变量 | 0 | 否 |
 | `created_at` | DATETIME(0) | 懒创建时刻；与 `cycle_start` **不一定相等**——cycle_start 可以是过去时（用户 1 月开通、5 月才首次扣分时 cycle_start 仍是 5/1） | — | — | 否 |
 | `updated_at` | DATETIME(0) | 最近一次扣减时刻 | — | — | 否 |
 
@@ -440,8 +448,7 @@ CREATE TABLE IF NOT EXISTS `credit_cycle` (
 |---|---|---|---|
 | `PRIMARY` | 主键 | `id` | 标准主键 |
 | `uniq_cycle_user_start` | UNIQUE | `(user_id, cycle_start)` | **并发懒创建的物理强制点**——多端同秒首次扣分时由该索引保证只插一行；应用层走 `INSERT ... ON DUPLICATE KEY UPDATE id=id` + 重新 SELECT |
-| `idx_cycle_subscription_id` | 普通 | `subscription_id` | 订阅过期时批量作废同期所有 cycle（虽然实际只读判断，不真删数据） |
-| `idx_cycle_user_end` | 普通 | `(user_id, cycle_end)` | 用户余额查询定位"当前在期 cycle"——`WHERE user_id=? AND cycle_end > now()` |
+| `idx_cycle_user_end` | 普通 | `(user_id, cycle_end)` | 用户余额查询定位"当前在期 cycle"——`WHERE user_id=? AND cycle_end > now()`；所有读路径（含订阅过期作废判断）均通过 `(user_id, ...)` 入手，无需 `subscription_id` 单列索引 |
 
 #### 不变量
 
@@ -521,8 +528,8 @@ CREATE TABLE IF NOT EXISTS `membership_event` (
                           'booster_granted'
                         ) NOT NULL,
   `product_type`        ENUM('trial','monthly','booster') NOT NULL,
-  `months`              INT                      DEFAULT NULL,
-  `quantity`            INT                      DEFAULT NULL,
+  `months`              TINYINT UNSIGNED         DEFAULT NULL,
+  `quantity`            SMALLINT UNSIGNED        DEFAULT NULL,
   `amount_cents`        BIGINT          NOT NULL DEFAULT 0,
   `source`              ENUM('self_purchase','b2b_grant') NOT NULL,
   `granter_user_id`     BIGINT UNSIGNED          DEFAULT NULL,
@@ -546,8 +553,8 @@ CREATE TABLE IF NOT EXISTS `membership_event` (
 | `user_id` | BIGINT UNSIGNED | 事件影响的子账户用户 | — | — | 否 |
 | `event_type` | ENUM | `trial_granted` / `sub_granted` / `sub_renewed` / `booster_granted` 四类；`sub_granted` 表示"新建 subscription 行或过期再开"，`sub_renewed` 表示"在期续费延期" | — | — | 否 |
 | `product_type` | ENUM | 三选一：`trial` / `monthly` / `booster`；与 `event_type` 一一对应（trial_granted ↔ trial、sub_granted/sub_renewed ↔ monthly、booster_granted ↔ booster） | — | — | 否 |
-| `months` | INT | 仅 `monthly` 事件填写；表示本次操作"购买/续费"的月数 N | `monthly` 事件 NOT NULL；其他必须 NULL（应用层校验） | NULL | 是 |
-| `quantity` | INT | 仅 `booster` 事件填写；表示本次购买的份数 | `booster` 事件 NOT NULL；其他必须 NULL（应用层校验） | NULL | 是 |
+| `months` | TINYINT UNSIGNED | 仅 `monthly` 事件填写；表示本次操作"购买/续费"的月数 N（业务上限 12，TINYINT UNSIGNED 范围 0-255 充分覆盖） | `monthly` 事件 NOT NULL，且 `1 <= months <= 12`；其他必须 NULL（应用层校验） | NULL | 是 |
+| `quantity` | SMALLINT UNSIGNED | 仅 `booster` 事件填写；表示本次购买的份数（业务上限 10000，SMALLINT UNSIGNED 范围 0-65535 充分覆盖） | `booster` 事件 NOT NULL，且 `1 <= quantity <= 10000`；其他必须 NULL（应用层校验） | NULL | 是 |
 | `amount_cents` | BIGINT | 本事件对应的金额（cents 单位）；`b2b_grant` 仍记账（按"父账户应付金额"），月末聚合作为对公结算口径；`self_purchase` 同样记账（按用户实付） | `>= 0` 不变量 | 0 | 否 |
 | `source` | ENUM | 同 §2.1 | — | — | 否 |
 | `granter_user_id` | BIGINT UNSIGNED | `source='b2b_grant'` 时记录父账户 ID；`self_purchase` 为 NULL | — | NULL | 是 |
@@ -584,27 +591,27 @@ CREATE TABLE IF NOT EXISTS `membership_event` (
 - `(source='b2b_grant') XOR (granter_user_id IS NULL)`
 - 行写入后永不更新、永不删除（append-only）
 - `occurred_at` 单调由 server 时钟决定，乱序写入允许（旧事件后到不影响业务）
+- **应用层禁止主动写 NULL `idempotency_key`**：所有 controller/biz 入口必须保证写入时 `idempotency_key` 非空——payment 回调用支付平台订单号、grant API 用客户端 header / 请求体传入 key、批量补录场景必须显式构造合成 key（如 `"backfill-" + sha256(user_id + ":" + occurred_at + ":" + event_type)`）。NULL 仅作为 schema 兼容兜底（MySQL 多 NULL 不冲突），生产路径不应出现 NULL 行；DB 层不加 NOT NULL 约束是为应急 ops（手动补 patch）保留逃生通道
 
 ---
 
 ### §2.6 索引策略汇总
 
-#### 全部索引一览（5 表合计 14 个非主键索引 + 5 个主键）
+#### 全部索引一览（5 表合计 13 个非主键索引 + 5 个主键）
 
 | 表 | 索引名 | 类型 | 列 | 主用途 | 性能预期 |
 |---|---|---|---|---|---|
 | `subscription` | `PRIMARY` | 主键 | `id` | 主键查找 | <1ms |
 | `subscription` | `uniq_sub_user_id` | UNIQUE | `user_id` | 单用户查 sub / 防双插 | <1ms |
 | `subscription` | `idx_sub_expires_at` | 普通 | `expires_at` | 范围扫描"近 N 天到期" | 100 万行下 <50ms |
-| `subscription` | `idx_sub_granter_user_id` | 普通 | `granter_user_id` | 父账户视角列出子账户订阅 | <50ms |
+| `subscription` | `idx_sub_granter_expires` | 普通 | `(granter_user_id, expires_at)` | 父账户视角列出子账户订阅 + 在期过滤 | <50ms |
 | `trial_grant` | `PRIMARY` | 主键 | `id` | 主键查找 | <1ms |
 | `trial_grant` | `uniq_trial_user_id` | UNIQUE | `user_id` | lifetime 单次防 | <1ms |
 | `trial_grant` | `idx_trial_expires_at` | 普通 | `expires_at` | 在期 trial 统计 | <50ms |
-| `trial_grant` | `idx_trial_granter_user_id` | 普通 | `granter_user_id` | B2B 账单 trial 行 | <50ms |
+| `trial_grant` | `idx_trial_granter_expires` | 普通 | `(granter_user_id, expires_at)` | B2B 账单 trial 行 + 在期过滤 | <50ms |
 | `credit_cycle` | `PRIMARY` | 主键 | `id` | 主键查找 | <1ms |
 | `credit_cycle` | `uniq_cycle_user_start` | UNIQUE | `(user_id, cycle_start)` | 并发懒创建防双行 | <1ms |
-| `credit_cycle` | `idx_cycle_subscription_id` | 普通 | `subscription_id` | 同 sub 下 cycle 列表 | <10ms（单 sub 最多 12 行） |
-| `credit_cycle` | `idx_cycle_user_end` | 普通 | `(user_id, cycle_end)` | 当前在期 cycle 定位 | <5ms |
+| `credit_cycle` | `idx_cycle_user_end` | 普通 | `(user_id, cycle_end)` | 当前在期 cycle 定位（覆盖所有读路径，含订阅过期作废判断） | <5ms |
 | `user_booster_balance` | `PRIMARY` | 主键 | `user_id` | 单用户余额 | <1ms |
 | `user_booster_balance` | `idx_booster_updated_at` | 普通 | `updated_at` | 运营时间维度统计 | <100ms（10 万用户级） |
 | `membership_event` | `PRIMARY` | 主键 | `id` | 主键查找 | <1ms |
@@ -621,7 +628,7 @@ CREATE TABLE IF NOT EXISTS `membership_event` (
 | B2B 月度账单（核心场景）| `SELECT ... FROM membership_event WHERE granter_user_id=? AND occurred_at >= ? AND occurred_at < ?` | `idx_event_granter_occurred` | **<500ms @ 100 万事件**（AC-18） |
 | 用户事件流明细 | `SELECT ... FROM membership_event WHERE user_id=? ORDER BY occurred_at DESC LIMIT 50` | `idx_event_user_occurred` | <50ms |
 | admin 近 30 天 sub_renewed 统计 | `SELECT COUNT(*), SUM(amount_cents) FROM membership_event WHERE event_type='sub_renewed' AND occurred_at >= ?` | `idx_event_type_occurred` | <200ms |
-| 父账户客户管理列表 | `SELECT * FROM subscription WHERE granter_user_id=?` + `SELECT * FROM trial_grant WHERE granter_user_id=?` | `idx_sub_granter_user_id` / `idx_trial_granter_user_id` | <50ms |
+| 父账户客户管理列表 | `SELECT * FROM subscription WHERE granter_user_id=?` + `SELECT * FROM trial_grant WHERE granter_user_id=?` | `idx_sub_granter_expires` / `idx_trial_granter_expires` | <50ms |
 | 扣减事务（最高频）| 单用户 `subscription` / `trial_grant` / `credit_cycle` / `user_booster_balance` 各 `SELECT ... FOR UPDATE` | 4 表 PK / UNIQUE | 含锁开销 <20ms（无并发争用） |
 
 #### 索引体积估算
@@ -641,7 +648,7 @@ CREATE TABLE IF NOT EXISTS `membership_event` (
 |---|---|---|---|
 | `subscription` | 5 万 | 4 | <30 MB |
 | `trial_grant` | 3 万 | 4 | <20 MB |
-| `credit_cycle` | 50 万 | 4 | <200 MB |
+| `credit_cycle` | 50 万 | 3 | <150 MB |
 | `user_booster_balance` | 5 万 | 2 | <10 MB |
 | `membership_event` | 100 万 | 5 | <500 MB |
 
@@ -661,6 +668,8 @@ CREATE TABLE IF NOT EXISTS `membership_event` (
 | `credit_account` | **只读冻结** | 0 引用 | 0 写入 | T+7 天后 DROP |
 | `billing_account` | **只读冻结** | 0 引用 | 0 写入 | T+7 天后 DROP |
 | `legacy_tier_migration_backup_20260424` | **保留不动** | ops 应急 | 0 写入 | 不处理（4 月 24 日历史备份，与本次迁移正交） |
+| `credit_reservation` | **持续使用（非旧表）** | Reserve/Reconcile 双阶段 LLM 调用预扣的承载表（I-5），新代码继续读写 | 新代码持续写入（Reserve 创建、Reconcile 多退少补） | **不 DROP**（与本次重构正交，是扣减事务的核心基础设施） |
+| `credit_reservation_item` | **持续使用（非旧表）** | Reservation 的明细行（按 trial / cycle / booster 三段分别记录预扣额度），新代码继续读写 | 新代码持续写入 | **不 DROP**（与 `credit_reservation` 同生命周期） |
 
 > **观察期机制**：T 时刻完成迁移后，旧表保留 7 天作为应急回滚 + 客服查证窗口（决策 Q5、§6 部署节奏）。期间 `git revert` 配合 `rollback.sql` 可在 24 小时内安全回滚（详见 §6 回滚方案，本节不展开）。T+7 天后由 ops 走标准 DROP 流程。
 
@@ -829,7 +838,7 @@ func AnchorAddMonths(anchor time.Time, n int) time.Time {
    - n=4 → `2026-05-31 10:00:00`（5 月 31 天，恢复）
    - n=12 → `2027-01-31 10:00:00`
    - n=13 → `2027-02-28 10:00:00`（2027 平年）
-2. **闰年 29 日**：anchor = `2024-02-29` → n=12 → `2025-02-28`（非闰年只能取 28）→ n=24 → `2026-02-28` → n=48 → `2028-02-29`（再回到闰年仍取 28，不会"恢复"到 29，因为 anchor.Day=29 但目标 lastDay=28，取 min）。**注意**：anchor.Day=29 在闰年 anchor 是 29，但 INV-2 限制 day 不会超出 anchor.Day=29；闰年再到时返回 `2028-02-29` 是因为目标月 lastDay=29 而 min(29,29)=29。
+2. **闰年 29 日**：anchor = `2024-02-29` → n=12 → `2025-02-28`（非闰年只能取 28）→ n=24 → `2026-02-28` → n=48 → `2028-02-29`（再回到闰年时，目标月 lastDay=29，min(29,29)=29，回到 29 日）。
 3. **跨年回环**：anchor = `2026-12-15 23:59:59 UTC` → n=1 → `2027-01-15 23:59:59`；n=13 → `2028-01-15 23:59:59`
 
 ---
@@ -880,12 +889,18 @@ func (s *MembershipService) GrantOrRenewSubscription(
     err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
         txNow := time.Now().UTC()
 
-        // [1] 幂等检查：如果 membership_event 已有同 idempotency_key，返回上次结果
+        // [1] 幂等检查：如果 membership_event 已有同 idempotency_key，校验请求体一致后返回上次结果
         var existing model.MembershipEvent
         err := tx.Where("idempotency_key = ?", idempotencyKey).Take(&existing).Error
         if err == nil {
+            // Stripe 标准：同 idempotency_key 但请求体不同 → 409
+            if existing.UserID != childID ||
+                existing.ProductType != productType ||
+                existing.Months != months {
+                return errno.ErrIdempotencyKeyConflict
+            }
             result = decodeGrantResultFromEvent(&existing)
-            return nil // 幂等命中，提前返回
+            return nil // 幂等命中（请求体一致），提前返回
         }
         if !errors.Is(err, gorm.ErrRecordNotFound) {
             return fmt.Errorf("idempotency lookup: %w", err)
@@ -953,6 +968,11 @@ func (s *MembershipService) GrantOrRenewSubscription(
             }).Error; err != nil {
                 return fmt.Errorf("update sub reopen: %w", err)
             }
+            // 清理上一轮 sub 已过期的 cycle 行：保持 GetBalance 干净 + 不污染 invariant I9
+            if err := tx.Where("user_id = ? AND cycle_end <= ?", childID, txNow).
+                Delete(&model.CreditCycle{}).Error; err != nil {
+                return fmt.Errorf("cleanup stale cycles on reopen: %w", err)
+            }
         }
 
         // [3] 写 membership_event（UNIQUE on idempotency_key 兜底并发）
@@ -974,9 +994,14 @@ func (s *MembershipService) GrantOrRenewSubscription(
             PayloadJSON:    encodeGrantPayload(&sub),
         }
         if err := tx.Create(&evt).Error; err != nil {
-            // UNIQUE 冲突 → 并发同一 idempotency_key，重新 SELECT 返回既有结果
-            if isUniqueViolation(err) {
+            // UNIQUE 冲突 → 并发同一 idempotency_key，重新 SELECT 校验请求体后返回既有结果
+            if isUniqueViolation(err, "uk_membership_event_idem") {
                 _ = tx.Where("idempotency_key = ?", idempotencyKey).Take(&existing).Error
+                if existing.UserID != childID ||
+                    existing.ProductType != productType ||
+                    existing.Months != months {
+                    return errno.ErrIdempotencyKeyConflict
+                }
                 result = decodeGrantResultFromEvent(&existing)
                 return nil
             }
@@ -1049,9 +1074,13 @@ func (s *MembershipService) GrantTrial(
 
 **校验顺序硬规则（决策 Q1 锁定）**
 
-1. 先查 `trial_grant`（按 user_id），有任何记录 → `ErrTrialAlreadyGranted`
-2. 再查 `subscription`，`expires_at > txNow` → `ErrTrialNotAllowedForActivePro`
-3. 都通过 → 创建 `trial_grant` + 写 event
+> **加锁顺序按 §4.1 字典序：subscription（字典序在前）先 SELECT FOR UPDATE，trial_grant 后 SELECT FOR UPDATE。语义校验顺序保持 trial_grant 检查在前（lifetime 单次优先于 active sub 排除），即先锁后查、查序与锁序解耦。**
+
+1. 先 lock `subscription` FOR UPDATE（字典序在前；用于后续 active 判定）
+2. 再 lock `trial_grant` FOR UPDATE（lifetime 单次的物理强制点）
+3. 语义校验 #1：`trial_grant` 任何记录存在 → `ErrTrialAlreadyGranted`
+4. 语义校验 #2：`subscription` 在期（`expires_at > txNow`）→ `ErrTrialNotAllowedForActivePro`
+5. 都通过 → 创建 `trial_grant` + 写 event
 
 **核心 Go 伪代码**
 
@@ -1070,39 +1099,47 @@ func (s *MembershipService) GrantTrial(
     err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
         txNow := time.Now().UTC()
 
-        // [1] 幂等命中
+        // [1] 幂等命中（校验请求体一致：本函数请求体仅 childID，无 productType/months 变体）
         var existing model.MembershipEvent
         if err := tx.Where("idempotency_key = ?", idempotencyKey).Take(&existing).Error; err == nil {
+            // Stripe 标准：同 idempotency_key 但 user_id/event_type 不一致 → 409
+            if existing.UserID != childID || existing.EventType != "trial_granted" {
+                return errno.ErrIdempotencyKeyConflict
+            }
             result = decodeTrialResultFromEvent(&existing)
             return nil
         } else if !errors.Is(err, gorm.ErrRecordNotFound) {
             return fmt.Errorf("idempotency lookup: %w", err)
         }
 
-        // [2] 校验 #1：trial_grant 已存在 → 拒绝（lifetime 单次）
-        // 表 trial_grant 在 user_id 上有 UNIQUE 索引；用 SELECT FOR UPDATE 先读
+        // [2] 按 §4.1 字典序加锁：先 subscription（字典序在前）再 trial_grant
+        var sub model.Subscription
+        subErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+            Where("user_id = ?", childID).
+            Take(&sub).Error
+        if subErr != nil && !errors.Is(subErr, gorm.ErrRecordNotFound) {
+            return fmt.Errorf("lock sub: %w", subErr)
+        }
+
         var existingTrial model.TrialGrant
-        err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+        trialErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
             Where("user_id = ?", childID).
             Take(&existingTrial).Error
-        if err == nil {
+        if trialErr != nil && !errors.Is(trialErr, gorm.ErrRecordNotFound) {
+            return fmt.Errorf("lock trial: %w", trialErr)
+        }
+
+        // [3] 语义校验 #1：trial_grant 已存在 → 拒绝（lifetime 单次）
+        if trialErr == nil {
             return errno.ErrTrialAlreadyGranted
         }
-        if !errors.Is(err, gorm.ErrRecordNotFound) {
-            return fmt.Errorf("trial check: %w", err)
-        }
 
-        // [3] 校验 #2：当前有 active subscription → 拒绝
-        var sub model.Subscription
-        err = tx.Where("user_id = ? AND expires_at > ?", childID, txNow).Take(&sub).Error
-        if err == nil {
+        // [4] 语义校验 #2：当前有 active subscription → 拒绝
+        if subErr == nil && sub.ExpiresAt.After(txNow) {
             return errno.ErrTrialNotAllowedForActivePro
         }
-        if !errors.Is(err, gorm.ErrRecordNotFound) {
-            return fmt.Errorf("sub check: %w", err)
-        }
 
-        // [4] 创建 trial_grant
+        // [5] 创建 trial_grant
         trial := model.TrialGrant{
             UserID:         childID,
             GrantedAt:      txNow,
@@ -1112,14 +1149,14 @@ func (s *MembershipService) GrantTrial(
             GranterUserID:  &parentID,
         }
         if err := tx.Create(&trial).Error; err != nil {
-            // UNIQUE(user_id) 兜底：另一个并发已经创建
-            if isUniqueViolation(err) {
+            // 区分两类 UNIQUE 冲突：trial 已存在 vs 幂等并发兜底
+            if isUniqueViolation(err, "uniq_trial_user") {
                 return errno.ErrTrialAlreadyGranted
             }
             return fmt.Errorf("create trial: %w", err)
         }
 
-        // [5] 写 membership_event
+        // [6] 写 membership_event
         evt := model.MembershipEvent{
             IdempotencyKey: idempotencyKey,
             EventType:      "trial_granted",
@@ -1132,8 +1169,11 @@ func (s *MembershipService) GrantTrial(
             PayloadJSON:    encodeTrialPayload(&trial),
         }
         if err := tx.Create(&evt).Error; err != nil {
-            if isUniqueViolation(err) {
+            if isUniqueViolation(err, "uk_membership_event_idem") {
                 _ = tx.Where("idempotency_key = ?", idempotencyKey).Take(&existing).Error
+                if existing.UserID != childID || existing.EventType != "trial_granted" {
+                    return errno.ErrIdempotencyKeyConflict
+                }
                 result = decodeTrialResultFromEvent(&existing)
                 return nil
             }
@@ -1190,7 +1230,7 @@ func (s *MembershipService) ensureCurrentCycle(
 
 - **前置条件**：调用方已在同一事务中 lock `subscription` 行；`sub.expires_at > txNow`（否则不应进入 cycle 路径）。
 - **返回**：覆盖 `txNow` 的 `credit_cycle` 行（含 SELECT FOR UPDATE 锁），可直接 update credits_remain。
-- **错误**：DB 错误 / sub 已过期（防御性 check） → `ErrSubscriptionNotFound` 或 `ErrInsufficientCredits`。
+- **错误**：DB 错误 / sub 已过期（防御性 check） → `ErrSubscriptionExpired`（cross-ref §5.7 错误码清单需补充该 sentinel）。
 
 **核心算法（决策：ON CONFLICT DO NOTHING + 重新 SELECT FOR UPDATE）**
 
@@ -1201,6 +1241,7 @@ func (s *MembershipService) ensureCurrentCycle(
 
     // [1] 计算 cycle 索引：从 current_started_at 起，每 anchor_add_months 一段
     // 找到最小 i 使得 anchor_add_months(current_started_at, i+1) > txNow
+    // 注：cycleIndex 仅用于 Go 端推算 cycleStart/cycleEnd；不存数据库、不出现在 SQL 里
     cycleIndex := computeCycleIndex(sub.CurrentStartedAt, txNow)
 
     cycleStart := AnchorAddMonths(sub.CurrentStartedAt, cycleIndex)
@@ -1210,15 +1251,15 @@ func (s *MembershipService) ensureCurrentCycle(
         cycleEnd = sub.ExpiresAt // EC-7: cycle_end = min(anchor+i+1, sub.expires_at)
     }
 
-    // 防御：txNow 必须在 [cycleStart, cycleEnd) 内
+    // 防御：txNow 必须在 [cycleStart, cycleEnd) 内（sub 已过期 / 时间错乱兜底）
     if !txNow.Before(cycleEnd) || txNow.Before(cycleStart) {
-        return nil, errno.ErrInsufficientCredits // sub 已过期 / 时间错乱
+        return nil, errno.ErrSubscriptionExpired
     }
 
-    // [2] 尝试 SELECT FOR UPDATE 现有 cycle（按 (user_id, cycle_index) UNIQUE）
+    // [2] 尝试 SELECT FOR UPDATE 现有 cycle（按 (user_id, cycle_start) UNIQUE）
     var cycle model.CreditCycle
     err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-        Where("user_id = ? AND cycle_index = ?", userID, cycleIndex).
+        Where("user_id = ? AND cycle_start = ?", userID, cycleStart).
         Take(&cycle).Error
     if err == nil {
         return &cycle, nil
@@ -1227,24 +1268,26 @@ func (s *MembershipService) ensureCurrentCycle(
         return nil, fmt.Errorf("select cycle: %w", err)
     }
 
-    // [3] 不存在 → INSERT ... ON CONFLICT DO NOTHING
+    // [3] 不存在 → INSERT ... ON CONFLICT DO NOTHING（GORM 在 MySQL 下翻译为 INSERT IGNORE，仅对 UNIQUE 冲突生效）
     newCycle := model.CreditCycle{
         UserID:           userID,
         SubscriptionID:   sub.ID,
-        CycleIndex:       cycleIndex,
         CycleStart:       cycleStart,
         CycleEnd:         cycleEnd,
         CreditsGranted:   monthlyCreditsQuota, // 2000
         CreditsRemain:    monthlyCreditsQuota,
     }
-    err = tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&newCycle).Error
+    err = tx.Clauses(clause.OnConflict{
+        Columns:   []clause.Column{{Name: "user_id"}, {Name: "cycle_start"}},
+        DoNothing: true,
+    }).Create(&newCycle).Error
     if err != nil {
         return nil, fmt.Errorf("insert cycle: %w", err)
     }
 
     // [4] 不论 INSERT 命中还是被并发抢先，重新 SELECT FOR UPDATE 拿权威行
     err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-        Where("user_id = ? AND cycle_index = ?", userID, cycleIndex).
+        Where("user_id = ? AND cycle_start = ?", userID, cycleStart).
         Take(&cycle).Error
     if err != nil {
         return nil, fmt.Errorf("re-select cycle after upsert: %w", err)
@@ -1272,7 +1315,7 @@ func computeCycleIndex(start, now time.Time) int {
 
 **关键不变量**
 
-- INV-10: 同一 `(user_id, cycle_index)` 永远只有 1 行（DB UNIQUE 强制 + ON CONFLICT DO NOTHING）
+- INV-10: 同一 `(user_id, cycle_start)` 永远只有 1 行（DB UNIQUE `uniq_cycle_user_start` 强制 + ON CONFLICT DO NOTHING）
 - INV-11: `cycle_end <= subscription.expires_at`（cycle 不能超出 sub 期）
 - INV-12: 函数返回时 cycle 行已 `SELECT FOR UPDATE` 锁定，调用方可安全 update
 
@@ -1280,7 +1323,7 @@ func computeCycleIndex(start, now time.Time) int {
 
 1. **首次扣分懒创建**：sub 1/15 开通 3 月，txNow=1/15 14:00，无 cycle → 返回新建 cycle_index=0，cycle_start=1/15 00:00（实际为 sub.current_started_at），cycle_end=2/15，credits_remain=2000
 2. **第二月扣分**：sub 1/31 开通 3 月（expires_at=4/30），txNow=2/20 → cycle_index=1，cycle_start=AnchorAddMonths(1/31,1)=2/28，cycle_end=AnchorAddMonths(1/31,2)=3/31
-3. **并发懒创建**：两个请求同时进入 ensureCurrentCycle，cycle_index=0 行不存在，A 先 INSERT 成功 / B 触发 ON CONFLICT DO NOTHING 然后重新 SELECT FOR UPDATE 等待 A commit；最终 cycle 表恰好 1 行，A 和 B 都返回同一行
+3. **并发懒创建**：两个请求同时进入 ensureCurrentCycle，目标 cycleStart 行不存在，A 先 INSERT 成功 / B 触发 ON CONFLICT DO NOTHING 然后重新 SELECT FOR UPDATE 等待 A commit；最终 cycle 表恰好 1 行（UNIQUE on `user_id, cycle_start` 强制），A 和 B 都返回同一行
 
 ---
 
@@ -1310,11 +1353,19 @@ func (s *MembershipService) DeductCredits(
 - **返回**：`DeductDetail`（三段加总 = amount）。
 - **错误**：amount <= 0 → `ErrBind`；总余额不足 → `ErrInsufficientCredits`。
 
-**锁顺序（硬规则）**
+**锁顺序（硬规则，与 §4.1 字典序对齐）**
 
 1. 单一 user 的扣分场景：仅锁 `userID` 相关行
-2. 表内字典序：`credit_cycle` → `subscription` → `trial_grant` → `user_booster_balance`
-3. 实际执行顺序：先 SELECT FOR UPDATE `subscription`（用于判定 booster 是否冻结）→ 再 `trial_grant` → 再 `credit_cycle`（通过 ensureCurrentCycle）→ 最后 `user_booster_balance`
+2. 表内字典序：`credit_cycle` < `membership_event` < `subscription` < `trial_grant` < `user_booster_balance`
+3. **实际执行顺序（严格按字典序）**：
+   - (1) lock `credit_cycle` 通过 `ensureCurrentCycle`（含 SELECT FOR UPDATE，可能 INSERT + 重 SELECT FOR UPDATE）
+   - (2) lock `subscription` FOR UPDATE
+   - (3) lock `trial_grant` FOR UPDATE
+   - (4) lock `user_booster_balance` FOR UPDATE
+   - (5) Go 端按扣减优先级 trial → cycle → booster 计算各表扣减量
+   - (6) UPDATE 各表 `credits_remain`
+   - (7) `membership_event` 仅在 grant/renew 路径写入；扣减路径不写 event（usage_record 由上层 Reserve/Reconcile 写入）
+4. **特别说明**：`ensureCurrentCycle` 需要读 `sub.CurrentStartedAt` 计算 cycleStart——但 sub 是字典序在 cycle 之后的表。解决：(1) 第一次 lock cycle 之前用普通 SELECT 读一份 sub 快照（不加锁，仅用于推算 cycleStart）；(2) 完成 ensureCurrentCycle 后再 SELECT FOR UPDATE 锁 sub。两次读取之间 sub 不变（同事务可重复读），cycleStart 推算结果一致。
 
 **Booster 冻结逻辑（AC-7）**
 
@@ -1337,96 +1388,142 @@ func (s *MembershipService) DeductCredits(
         remaining := amount
         d := &DeductDetail{}
 
-        // ======== STEP 1: lock subscription (字典序较前；用于判定 booster 冻结) ========
+        // ========================================================
+        // 加锁顺序严格按 §4.1 字典序：cycle < subscription < trial < booster
+        // ========================================================
+
+        // ---- 预读 sub 快照（不加锁，仅用于 ensureCurrentCycle 推算 cycleStart）----
+        // 字典序硬规则不允许在 cycle 之前 lock sub；但 ensureCurrentCycle 需要 sub.CurrentStartedAt。
+        // 解决：先做不加锁 SELECT 读一份快照，在同事务可重复读保证下其值稳定；后续步骤再正式 lock sub。
+        var subSnapshot *model.Subscription
+        {
+            var s0 model.Subscription
+            if err := tx.Where("user_id = ?", userID).Take(&s0).Error; err == nil {
+                subSnapshot = &s0
+            } else if !errors.Is(err, gorm.ErrRecordNotFound) {
+                return fmt.Errorf("read sub snapshot: %w", err)
+            }
+        }
+        snapshotSubActive := subSnapshot != nil && subSnapshot.ExpiresAt.After(txNow)
+
+        // ======== STEP 1: lock credit_cycle（字典序最前；仅当 sub 在期）========
+        var cycle *model.CreditCycle
+        if snapshotSubActive {
+            c, err := s.ensureCurrentCycle(tx, userID, subSnapshot, txNow)
+            if err != nil {
+                return err
+            }
+            cycle = c
+        }
+
+        // ======== STEP 2: lock subscription FOR UPDATE ========
         var sub *model.Subscription
-        var subRow model.Subscription
-        err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-            Where("user_id = ?", userID).
-            Take(&subRow).Error
-        if err == nil {
-            sub = &subRow
-        } else if !errors.Is(err, gorm.ErrRecordNotFound) {
-            return fmt.Errorf("lock sub: %w", err)
+        {
+            var subRow model.Subscription
+            err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+                Where("user_id = ?", userID).
+                Take(&subRow).Error
+            if err == nil {
+                sub = &subRow
+            } else if !errors.Is(err, gorm.ErrRecordNotFound) {
+                return fmt.Errorf("lock sub: %w", err)
+            }
         }
         subActive := sub != nil && sub.ExpiresAt.After(txNow)
 
-        // ======== STEP 2: lock trial_grant ========
+        // ======== STEP 3: lock trial_grant FOR UPDATE ========
         var trial *model.TrialGrant
-        var trialRow model.TrialGrant
-        err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-            Where("user_id = ?", userID).
-            Take(&trialRow).Error
-        if err == nil {
-            trial = &trialRow
-        } else if !errors.Is(err, gorm.ErrRecordNotFound) {
-            return fmt.Errorf("lock trial: %w", err)
+        {
+            var trialRow model.TrialGrant
+            err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+                Where("user_id = ?", userID).
+                Take(&trialRow).Error
+            if err == nil {
+                trial = &trialRow
+            } else if !errors.Is(err, gorm.ErrRecordNotFound) {
+                return fmt.Errorf("lock trial: %w", err)
+            }
         }
         trialActive := trial != nil && trial.ExpiresAt.After(txNow) && trial.CreditsRemain > 0
 
-        // ======== STEP 3: 优先级 1 — 扣 trial ========
+        // ======== STEP 4: lock user_booster_balance FOR UPDATE（始终 lock；冻结判定在扣减步骤）========
+        var booster *model.UserBoosterBalance
+        {
+            var b0 model.UserBoosterBalance
+            err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+                Where("user_id = ?", userID).
+                Take(&b0).Error
+            if err == nil {
+                booster = &b0
+            } else if !errors.Is(err, gorm.ErrRecordNotFound) {
+                return fmt.Errorf("lock booster: %w", err)
+            }
+        }
+
+        // ========================================================
+        // STEP 5: Go 端按扣减优先级 trial → cycle → booster 计算各表扣减量
+        // ========================================================
+
+        // 优先级 1 — 扣 trial
         if trialActive && remaining > 0 {
             take := min64(remaining, trial.CreditsRemain)
             d.FromTrial = take
             remaining -= take
             trial.CreditsRemain -= take
-            if err := tx.Model(trial).
-                UpdateColumn("credits_remain", trial.CreditsRemain).Error; err != nil {
-                return fmt.Errorf("update trial: %w", err)
-            }
         }
 
-        // ======== STEP 4: 优先级 2 — 扣 cycle（仅当 sub 在期）========
-        if remaining > 0 && subActive {
-            cycle, err := s.ensureCurrentCycle(tx, userID, sub, txNow)
-            if err != nil {
-                return err
-            }
-            if cycle.CreditsRemain > 0 {
-                take := min64(remaining, cycle.CreditsRemain)
-                d.FromCycle = take
-                d.CycleIndex = cycle.CycleIndex
-                remaining -= take
-                cycle.CreditsRemain -= take
-                if err := tx.Model(cycle).
-                    UpdateColumn("credits_remain", cycle.CreditsRemain).Error; err != nil {
-                    return fmt.Errorf("update cycle: %w", err)
-                }
-            }
+        // 优先级 2 — 扣 cycle（仅当 sub 在期）
+        if remaining > 0 && subActive && cycle != nil && cycle.CreditsRemain > 0 {
+            take := min64(remaining, cycle.CreditsRemain)
+            d.FromCycle = take
+            d.CycleIndex = computeCycleIndex(sub.CurrentStartedAt, txNow) // 仅审计用，不存 DB
+            remaining -= take
+            cycle.CreditsRemain -= take
         }
 
-        // ======== STEP 5: 优先级 3 — 扣 booster（受会员状态门禁）========
+        // 优先级 3 — 扣 booster（受会员状态门禁，AC-7：会员过期时 booster 不可扣）
         active := subActive || trialActive
         if remaining > 0 {
             if !active {
-                // booster 冻结：直接判定不足
+                // booster 冻结：会员过期时不论 trial/cycle 是否有余额，booster 一律不可扣
                 d.FrozenBoosterReason = "membership_expired"
                 return errno.ErrInsufficientCredits
             }
-            var booster model.UserBoosterBalance
-            err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-                Where("user_id = ?", userID).
-                Take(&booster).Error
-            if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-                return fmt.Errorf("lock booster: %w", err)
-            }
-            if errors.Is(err, gorm.ErrRecordNotFound) || booster.CreditsRemain <= 0 {
-                return errno.ErrInsufficientCredits
-            }
-            if booster.CreditsRemain < remaining {
+            if booster == nil || booster.CreditsRemain <= 0 || booster.CreditsRemain < remaining {
                 return errno.ErrInsufficientCredits
             }
             d.FromBooster = remaining
             booster.CreditsRemain -= remaining
             remaining = 0
-            if err := tx.Model(&booster).
-                UpdateColumn("credits_remain", booster.CreditsRemain).Error; err != nil {
-                return fmt.Errorf("update booster: %w", err)
-            }
         }
 
         if remaining > 0 {
             return errno.ErrInsufficientCredits
         }
+
+        // ========================================================
+        // STEP 6: UPDATE 各表 credits_remain（仅写实际扣减过的行）
+        // ========================================================
+        if d.FromTrial > 0 {
+            if err := tx.Model(trial).
+                UpdateColumn("credits_remain", trial.CreditsRemain).Error; err != nil {
+                return fmt.Errorf("update trial: %w", err)
+            }
+        }
+        if d.FromCycle > 0 {
+            if err := tx.Model(cycle).
+                UpdateColumn("credits_remain", cycle.CreditsRemain).Error; err != nil {
+                return fmt.Errorf("update cycle: %w", err)
+            }
+        }
+        if d.FromBooster > 0 {
+            if err := tx.Model(booster).
+                UpdateColumn("credits_remain", booster.CreditsRemain).Error; err != nil {
+                return fmt.Errorf("update booster: %w", err)
+            }
+        }
+
+        // STEP 7: membership_event — 扣减路径不写 event（usage_record 由上层 Reserve/Reconcile 写入；UNIQUE 兜底由 grant/renew 路径承担）
         detail = d
         return nil
     })
@@ -1618,20 +1715,26 @@ func (s *MembershipService) GetBalance(
     }
 
     // [3] cycle_remaining + cycle_end（仅 sub 在期时计算；不创建行，仅查询）
-    if state.SubActive {
+    // 复用 state.SubExpiresAt 作为 sub.ExpiresAt 来源，避免重复查询 sub 表
+    if state.SubActive && state.SubExpiresAt != nil {
         var sub model.Subscription
         if err := s.db.WithContext(ctx).Where("user_id = ?", userID).Take(&sub).Error; err == nil {
             cycleIndex := computeCycleIndex(sub.CurrentStartedAt, now)
+            cycleStart := AnchorAddMonths(sub.CurrentStartedAt, cycleIndex)
             cycleEndRaw := AnchorAddMonths(sub.CurrentStartedAt, cycleIndex+1)
             cycleEnd := cycleEndRaw
-            if sub.ExpiresAt.Before(cycleEnd) {
-                cycleEnd = sub.ExpiresAt
+            if state.SubExpiresAt.Before(cycleEnd) {
+                cycleEnd = *state.SubExpiresAt
+            }
+            // 边界兜底：sub 已过期但 cycleEnd 仍未过期的极端时序错乱场景，跳过 cycle 视图
+            if cycleEnd.Before(now) {
+                return view, nil
             }
             view.CycleEnd = &cycleEnd
 
             var cycle model.CreditCycle
             err := s.db.WithContext(ctx).
-                Where("user_id = ? AND cycle_index = ?", userID, cycleIndex).
+                Where("user_id = ? AND cycle_start = ?", userID, cycleStart).
                 Take(&cycle).Error
             if err == nil {
                 view.CycleRemaining = cycle.CreditsRemain
@@ -1845,45 +1948,95 @@ func ReserveCredits(ctx context.Context, userID uint, estCredits int) (
 
     txNow := time.Now()
     err = db.Transaction(func(tx *gorm.DB) error {
-        // 1) 按 §4.1 锁顺序加锁：cycle < trial_grant < user_booster_balance
-        cycle, err := ensureCurrentCycle(tx, userID, txNow)
-        if err != nil { return err }
-        if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-            First(&cycle, cycle.ID).Error; err != nil { return err }
+        // 1) 加锁顺序严格按 §4.1 字典序：cycle < subscription < trial_grant < user_booster_balance
+        //    （与 §3.5 DeductCredits 的锁顺序保持一致）
 
-        var trial model.TrialGrant
-        _ = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-            Where("user_id = ? AND expires_at > ?", userID, txNow).
-            First(&trial).Error  // 可能 ErrRecordNotFound，OK
+        // 1a) 预读 sub 快照（不加锁，仅用于 ensureCurrentCycle 推算 cycleStart；§3.5 同模式）
+        var subSnapshot *model.Subscription
+        {
+            var s0 model.Subscription
+            if err := tx.Where("user_id = ?", userID).Take(&s0).Error; err == nil {
+                subSnapshot = &s0
+            } else if !errors.Is(err, gorm.ErrRecordNotFound) {
+                return err
+            }
+        }
+        snapshotSubActive := subSnapshot != nil && subSnapshot.ExpiresAt.After(txNow)
 
-        var booster model.UserBoosterBalance
-        _ = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-            Where("user_id = ?", userID).First(&booster).Error
-
-        // 2) 检查会员状态：booster 是否冻结（AC-7）
-        active := hasActiveSub(tx, userID, txNow) || trial.ID != 0
-        if !active && cycle.CreditsRemaining == 0 && trial.CreditsRemaining == 0 {
-            return errno.ErrInsufficientCredits
+        // 1b) lock credit_cycle（字典序最前；仅当 sub 在期）
+        var cycle *model.CreditCycle
+        if snapshotSubActive {
+            c, err := ensureCurrentCycle(tx, userID, subSnapshot, txNow)
+            if err != nil { return err }
+            cycle = c
         }
 
-        // 3) 按优先级 trial → cycle → booster 预扣
-        deducted := splitDeduction(estCredits, &trial, &cycle, &booster, active)
+        // 1c) lock subscription FOR UPDATE
+        var sub *model.Subscription
+        {
+            var s0 model.Subscription
+            err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+                Where("user_id = ?", userID).First(&s0).Error
+            if err == nil {
+                sub = &s0
+            } else if !errors.Is(err, gorm.ErrRecordNotFound) {
+                return err
+            }
+        }
+        subActive := sub != nil && sub.ExpiresAt.After(txNow)
+
+        // 1d) lock trial_grant FOR UPDATE
+        var trial *model.TrialGrant
+        {
+            var t0 model.TrialGrant
+            err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+                Where("user_id = ?", userID).First(&t0).Error
+            if err == nil {
+                trial = &t0
+            } else if !errors.Is(err, gorm.ErrRecordNotFound) {
+                return err
+            }
+        }
+        trialActive := trial != nil && trial.ExpiresAt.After(txNow) && trial.CreditsRemaining > 0
+
+        // 1e) lock user_booster_balance FOR UPDATE
+        var booster *model.UserBoosterBalance
+        {
+            var b0 model.UserBoosterBalance
+            err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+                Where("user_id = ?", userID).First(&b0).Error
+            if err == nil {
+                booster = &b0
+            } else if !errors.Is(err, gorm.ErrRecordNotFound) {
+                return err
+            }
+        }
+
+        // 2) 会员状态判定：booster 冻结条件（AC-7）独立成步骤
+        //    会员过期时 booster 不可扣，**不论 trial/cycle 余额是否为 0**
+        active := subActive || trialActive
+        canUseBooster := active  // 仅当 active=true 时 booster 解冻
+
+        // 3) 按优先级 trial → cycle → booster 预扣（splitDeduction 内部接受 canUseBooster 门禁）
+        deducted := splitDeduction(estCredits, trial, cycle, booster, canUseBooster)
         if deducted.Total < estCredits {
             return errno.ErrInsufficientCredits
         }
 
         // 4) 持久化更新（三表的 credits_remaining 都减去对应份额）
-        if err := persistDeduction(tx, &trial, &cycle, &booster, deducted); err != nil {
+        if err := persistDeduction(tx, trial, cycle, booster, deducted); err != nil {
             return err
         }
 
         // 5) 写 credit_reservation 行（status=reserved, est_credits, splits 字段记录三表预扣份额）
+        var cycleID uint64
+        if cycle != nil { cycleID = cycle.ID }
         res := model.CreditReservation{
             UserID:        userID,
             EstCredits:    estCredits,
             TrialDeducted: deducted.Trial,
             CycleDeducted: deducted.Cycle,
-            CycleID:       cycle.ID,
+            CycleID:       cycleID,
             BoosterDeducted: deducted.Booster,
             Status:        "reserved",
             CreatedAt:     txNow,
@@ -1997,81 +2150,41 @@ func ReconcileCredits(ctx context.Context, userID uint, reservationID uint64,
 3. 续费路径还需要写 membership_event、可能更新 first_started_at（过期再开），事务化是天然的。
 4. 配合幂等键（§4.5）实现网络重发的二次防护，方案 A 与幂等键组合最稳健。
 
-#### 4.3.3 方案 A 完整 Go 伪代码
+#### 4.3.3 方案 A 复用 §3.2 GrantOrRenewSubscription
 
-```go
-// 伪代码：续费/开通 subscription，使用 SELECT FOR UPDATE 防 lost update
-func RenewOrGrantSubscription(ctx context.Context, parentUID, childUID uint,
-                              months int, idemKey string) error {
+完整 Go 伪代码见 §3.2。本节关注**防 lost update 的关键步骤**——所有续费 / 开通 / 过期再开走同一函数，事务体最顶部 `SELECT ... FOR UPDATE` 锁 `subscription` 行（与 §4.1 字典序兼容：subscription 是该事务内字典序最大的表，无前置锁），从读取 `expires_at` 到 UPDATE 之间整个区间都在事务持锁内，并发请求被 InnoDB 串行化。
 
-    txNow := time.Now()
-    return db.Transaction(func(tx *gorm.DB) error {
+下面 ASCII 时序图展示两次并发续费如何通过 SELECT FOR UPDATE + 不同 idem_key 完成正确累加：
 
-        // 1) 幂等键预检查（详见 §4.5）
-        if existing, ok := lookupEvent(tx, idemKey); ok {
-            // 已存在同 idem_key 的事件：直接返回成功（幂等）
-            return nil
-        }
-
-        // 2) 按 §4.1 锁顺序加锁
-        if err := lockUserRows(tx, childUID, "subscription"); err != nil {
-            return err
-        }
-
-        // 3) 读 subscription 行（FOR UPDATE 已在 lockUserRows 内施加）
-        var sub model.Subscription
-        err := tx.Where("user_id = ?", childUID).First(&sub).Error
-        switch {
-        case errors.Is(err, gorm.ErrRecordNotFound):
-            // 新开通：创建 subscription，first_started_at = txNow
-            sub = model.Subscription{
-                UserID:               childUID,
-                FirstStartedAt:       txNow,
-                CurrentStartedAt:     txNow,
-                TotalMonthsPurchased: months,
-                ExpiresAt:            anchorAddMonths(txNow, months),
-            }
-            if err := tx.Create(&sub).Error; err != nil { return err }
-
-        case err != nil:
-            return err
-
-        case sub.ExpiresAt.After(txNow):
-            // 在期续费：current_started_at 不变，total_months 累加
-            sub.TotalMonthsPurchased += months
-            sub.ExpiresAt = anchorAddMonths(sub.CurrentStartedAt, sub.TotalMonthsPurchased)
-            if err := tx.Save(&sub).Error; err != nil { return err }
-
-        default:
-            // 过期再开：current_started_at = txNow，total_months 重置为 months，
-            // first_started_at 不变（保持历史首次开通日）
-            sub.CurrentStartedAt = txNow
-            sub.TotalMonthsPurchased = months
-            sub.ExpiresAt = anchorAddMonths(txNow, months)
-            if err := tx.Save(&sub).Error; err != nil { return err }
-        }
-
-        // 4) 写 membership_event（idempotency_key UNIQUE 兜底）
-        evt := model.MembershipEvent{
-            EventType:        "sub_renewed",  // 或 sub_granted（首次）
-            GranterUserID:    parentUID,
-            ChildUserID:      childUID,
-            ProductType:      "monthly",
-            Months:           months,
-            IdempotencyKey:   idemKey,
-            OccurredAt:       txNow,
-        }
-        if err := tx.Create(&evt).Error; err != nil {
-            // UNIQUE 冲突 = 重发：当作幂等成功（详见 §4.5）
-            if isUniqueViolation(err, "uk_membership_event_idem") {
-                return nil
-            }
-            return err
-        }
-        return nil
-    })
-}
 ```
+                Time
+                 │
+T1 (tab A)       │  T2 (tab B)
+─────────────────┼─────────────────
+BEGIN            │  BEGIN
+SELECT FOR UPDATE│  SELECT FOR UPDATE  ← 等待 T1 释放
+sub.expires=6/01 │
+total=3          │
+                 │
+计算 new_expires │
+ = anchor+(3+1)  │
+ = 7/01          │
+UPDATE sub SET   │
+ expires=7/01    │
+ total=4         │
+INSERT event(K1) │
+COMMIT           │
+                 │  ← 此时 T2 拿到锁，重新 SELECT 看到最新值
+                 │  sub.expires=7/01, total=4
+                 │  计算 new_expires = anchor+(4+1) = 8/01
+                 │  UPDATE sub SET expires=8/01, total=5
+                 │  INSERT event(K2) ← 不同 idem_key，UNIQUE 不冲突
+                 │  COMMIT
+```
+
+最终：父账户付了 2 次钱 → sub 累加 2 个月 → membership_event 留 2 行。**未发生 lost update**。
+
+若 T2 是 T1 的网络重发（同 idem_key），则 §3.2 [1] 幂等检查命中，直接返回 T1 结果，事务退出，不重复扣减。
 
 #### 4.3.4 验收（参见 AC-16a / AC-16b）
 
@@ -2095,28 +2208,33 @@ func RenewOrGrantSubscription(ctx context.Context, parentUID, childUID uint,
 #### 4.4.2 ensureCurrentCycle 的标准模式
 
 ```go
-// 伪代码：cycle 懒创建——ON CONFLICT DO NOTHING + 重新 SELECT FOR UPDATE
-func ensureCurrentCycle(tx *gorm.DB, userID uint, txNow time.Time) (
+// 伪代码：cycle 懒创建——GORM clause.OnConflict + 重新 SELECT FOR UPDATE
+// 与 §3.4 的 ensureCurrentCycle 实现完全一致（保持单一真相）
+func ensureCurrentCycle(tx *gorm.DB, userID uint, sub *model.Subscription, txNow time.Time) (
     *model.CreditCycle, error) {
 
     // 1) 计算当前 cycle_start / cycle_end（半开区间，见 EC-7）
-    sub, err := getActiveSub(tx, userID, txNow)
-    if err != nil { return nil, err }
-    cycleIdx := monthsBetween(sub.CurrentStartedAt, txNow)
+    cycleIdx := computeCycleIndex(sub.CurrentStartedAt, txNow)
     cycleStart := anchorAddMonths(sub.CurrentStartedAt, cycleIdx)
     cycleEnd := minTime(anchorAddMonths(sub.CurrentStartedAt, cycleIdx+1), sub.ExpiresAt)
 
-    // 2) 试 INSERT（ON DUPLICATE KEY UPDATE id=id 是 MySQL 风格的 no-op）
-    //    UNIQUE(user_id, cycle_start) 保证只有一行成功插入
-    sql := `
-        INSERT INTO credit_cycle (user_id, cycle_start, cycle_end, credits_total,
-                                  credits_remaining, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE id = id
-    `
-    if err := tx.Exec(sql, userID, cycleStart, cycleEnd, 2000, 2000, txNow).Error; err != nil {
+    // 2) 试 INSERT（GORM clause.OnConflict + DoNothing；UNIQUE(user_id, cycle_start) 保证只插一行）
+    newCycle := model.CreditCycle{
+        UserID:           userID,
+        SubscriptionID:   sub.ID,
+        CycleStart:       cycleStart,
+        CycleEnd:         cycleEnd,
+        CreditsGranted:   2000,
+        CreditsRemain:    2000,
+    }
+    if err := tx.Clauses(clause.OnConflict{
+        Columns:   []clause.Column{{Name: "user_id"}, {Name: "cycle_start"}},
+        DoNothing: true,
+    }).Create(&newCycle).Error; err != nil {
         return nil, err
     }
+    // 注：GORM 在 MySQL 下将上述 OnConflict{DoNothing:true} 翻译为 `INSERT IGNORE INTO ...`，
+    //     仅对 UNIQUE/PRIMARY KEY 冲突生效（与 ON DUPLICATE KEY UPDATE id=id 等价、且更显式）
 
     // 3) 重新 SELECT FOR UPDATE 拿到行（无论是 INSERT 还是已存在）
     var cycle model.CreditCycle
@@ -2136,10 +2254,10 @@ func ensureCurrentCycle(tx *gorm.DB, userID uint, txNow time.Time) (
 | 步骤 | R1 | R2 | DB 状态 |
 |------|----|----|---------|
 | 1 | 计算 cycleStart=2026-04-01 | 计算 cycleStart=2026-04-01 | （无 cycle 行） |
-| 2 | 发出 INSERT ... ON DUPLICATE KEY UPDATE id=id | 同时发出相同的 INSERT | InnoDB 把两个请求按到达顺序串行化 |
+| 2 | 发出 INSERT IGNORE（GORM OnConflict DoNothing 翻译） | 同时发出相同的 INSERT IGNORE | InnoDB 把两个请求按到达顺序串行化 |
 | 3 | INSERT 成功，新行 id=100，持有 row lock | 等待（被 R1 的 INSERT intent lock 阻塞） | 1 行 (id=100, user_id=42) |
 | 4 | 继续后续 SELECT FOR UPDATE id=100，重入持锁 OK | 仍等待 | 1 行 |
-| 5 | R1 在事务内继续做 deduct，最终 commit | R1 commit 释放锁，R2 INSERT 命中 UNIQUE 冲突 → 走 ON DUPLICATE KEY UPDATE id=id no-op | 1 行 |
+| 5 | R1 在事务内继续做 deduct，最终 commit | R1 commit 释放锁，R2 INSERT IGNORE 命中 UNIQUE 冲突 → no-op（不修改行） | 1 行 |
 | 6 | R1 已结束 | R2 SELECT FOR UPDATE WHERE user_id=42 AND cycle_start=2026-04-01 → 拿到 id=100 行的 X 锁 | 1 行 |
 | 7 | — | R2 在事务内继续做 deduct（基于 R1 已 commit 后的最新 credits_remaining） | 1 行 |
 | 8 | — | R2 commit | 1 行，credits_remaining 反映两次扣减 |
@@ -2149,7 +2267,7 @@ func ensureCurrentCycle(tx *gorm.DB, userID uint, txNow time.Time) (
 1. **不重复创建**：UNIQUE(user_id, cycle_start) 保证 step 5 的第二次 INSERT 不会插入新行；
 2. **不死锁**：R2 的等待属于"等同一行的 INSERT lock"，单方向等待，不形成循环；
 3. **不丢失扣减**：R2 在 step 6 拿到的是 R1 commit 后的最新 credits_remaining，扣减基于最新值进行；
-4. **乐观语义**：ON DUPLICATE KEY UPDATE id=id 是 idempotent no-op，不修改任何字段，避免误更新 credits_total。
+4. **乐观语义**：INSERT IGNORE（GORM OnConflict DoNothing）是 idempotent no-op，不修改任何字段，避免误更新 credits_granted。
 
 #### 4.4.4 边界场景
 
@@ -2429,10 +2547,11 @@ return db.Transaction(func(tx *gorm.DB) error {
 
 #### 4.6.6 review 阶段检查项
 
-- 任何 biz 函数的事务体内出现第二次 `time.Now()` 调用 → P0；
+- 事务体内**任何** time 来源不是 txNow → **P0**（包括但不限于：第二次 `time.Now()` 调用、其他时钟源 `time.Since(...)` 用于业务判定、传给辅助函数的 ts 入参不是 txNow——例如 `anchor_add_months(otherTs, n)` 而不是 `anchor_add_months(txNow, n)` 或基于 sub.CurrentStartedAt 的派生值；helper 内部读 `time.Now()` 而非接受 txNow 参数也属此项）；
 - 事务起点 `txNow` 未在事务体最顶部声明 → P1；
-- 事务外算 ts 后传入事务内使用 → P1（应改为事务内重新算 txNow）；
-- model 字段写入时直接用 `time.Now()` 而非 txNow → P0。
+- 事务外算 ts 后传入事务内使用 → P1（应改为事务内重新算 txNow，且事务外的 ts 不得参与事务内业务判定）；
+- model 字段写入时直接用 `time.Now()` 而非 txNow → P0；
+- 测量持锁时长用于 metrics（仅监控，不参与业务判定）是唯一允许的 `time.Since(txNow)` 用法（§4.6.5）。
 
 ---
 
@@ -2588,10 +2707,14 @@ curl -X POST "https://api.example.com/v1/users/children/1234/grant-membership" \
 
 ### §5.2 `POST /v1/orders`
 
-booster 加量包下单入口。trial 与 Pro **不走此接口**——它们只能通过父账户 grant（§5.1）。本端点同时支持：
+booster 加量包下单入口。trial 与 Pro **不走此接口**——它们只能通过父账户 grant（§5.1）。
 
-1. **C 端自购 booster**：`payer_id == user_id`，要求 child 当前 active member（trial 或 sub 任一在期）
-2. **父账户为子账户代购 booster**（D3 决策：API 允许但前端不暴露入口）：`payer_id != user_id`，要求 parent-child 关系成立 + child 当前 active member
+**payer 语义**：本接口**不接受 `payer_id` 字段**。付款人（payer）始终 = HTTP 请求 token 的主体（即 `current_user`）；body 中的 `user_id` 字段直接表达受益人（Beneficiary）。
+
+**自购 vs 代付**判定纯由 token 主体与 body `user_id` 关系决定（biz 层）：
+
+1. **C 端自购 booster**：`body.user_id == current_user.ID`。要求受益人当前 active member（trial 或 sub 任一在期）
+2. **父账户为子账户代购 booster**（D3 决策：API 允许但前端不暴露入口）：`body.user_id != current_user.ID`，要求 `subUser.ParentUserID == current_user.ID` 且 child 当前 active member
 
 **HTTP**：`POST /v1/orders`
 
@@ -2898,7 +3021,7 @@ B2B 月度账单：按月聚合所有父账户帮子账户开通的事件。**�
             "event_type": "sub_granted",
             "product_type": "monthly",
             "months": 3,
-            "quantity": 0,
+            "quantity": null,
             "amount_cents": 29700,
             "occurred_at": "2026-04-15T08:30:00Z",
             "source": "b2b_grant",
@@ -2910,8 +3033,8 @@ B2B 月度账单：按月聚合所有父账户帮子账户开通的事件。**�
             "child_username": "child_b",
             "event_type": "trial_granted",
             "product_type": "trial",
-            "months": 0,
-            "quantity": 0,
+            "months": null,
+            "quantity": null,
             "amount_cents": 990,
             "occurred_at": "2026-04-16T09:15:00Z",
             "source": "b2b_grant",
@@ -2935,7 +3058,10 @@ B2B 月度账单：按月聚合所有父账户帮子账户开通的事件。**�
   - `cutover_split`：`month_start < cutover_date < month_end` → 双口径拼接（§7.3）
   - `new_only`：`month_start >= cutover_date` → 全部走 membership_event 新口径（§7.6）
 - `event_type` 枚举：`trial_granted` / `sub_granted` / `sub_renewed` / `booster_granted`（B2B 报表中 booster 来自父账户代付路径）
-- `quantity` 仅 booster 事件非 0；trial/sub 事件为 0
+- `months` / `quantity` 字段语义（与 §2.5 schema 一致）：
+  - `sub_granted` / `sub_renewed`：`months` 非 NULL（1~12），`quantity` 为 `null`
+  - `booster_granted`（含老口径 booster_purchased）：`quantity` 非 NULL（≥1），`months` 为 `null`
+  - `trial_granted`：两者都为 `null`（前端展示空缺即可，不要回退到 `0`）
 
 **失败响应**：
 
@@ -2961,7 +3087,7 @@ B2B 月度账单：按月聚合所有父账户帮子账户开通的事件。**�
 
 | Go 常量名 | HTTP | 业务码 | 中文 message | i18n key | 触发场景 |
 |---|---|---|---|---|---|
-| `ErrMembershipSelfPurchaseDisabled` | 403 | `Membership.SelfPurchaseDisabled` | 请联系管理员开通会员 | `errno.membership.self_purchase_disabled` | C 端自购 trial/monthly Pro |
+| `ErrSelfPurchaseDisabled` | 403 | `Membership.SelfPurchaseDisabled` | 请联系管理员开通会员 | `errno.membership.self_purchase_disabled` | C 端自购 trial/monthly Pro |
 | `ErrTrialAlreadyGranted` | 409 | `Trial.AlreadyGranted` | 该账户已购买过试用包 | `errno.trial.already_granted` | trial_grant 表 UNIQUE on user_id 命中 / EC-3 |
 | `ErrTrialNotAllowedForActivePro` | 409 | `Trial.NotAllowedForActivePro` | 在期 Pro 用户不可再开通试用 | `errno.trial.not_allowed_for_active_pro` | grant trial 时 child 已有 active subscription / EC-4 / Q1 |
 | `ErrChildNotMember` | 403 | `Membership.ChildNotMember` | 子账户当前无在期会员 | `errno.membership.child_not_member` | 父账户代购 booster 给非会员子账户 / EC-5 |
@@ -2972,6 +3098,8 @@ B2B 月度账单：按月聚合所有父账户帮子账户开通的事件。**�
 | `ErrInvalidProductType` | 400 | `InvalidParameter` | 不支持的产品类型 | `errno.invalid_product_type` | grant/order 传非法 product_type |
 | `ErrInvalidMonths` | 400 | `InvalidParameter` | 月数必须在 1-12 之间 | `errno.invalid_months` | grant Pro 时 months ∉ [1,12] |
 | `ErrParentChildRelation` | 403 | `AuthFailure.Forbidden` | 该子账户不属于当前账户 | `errno.parent_child_relation` | parent-child 关系不成立 |
+| `ErrSubscriptionExpired` | 410 | `Subscription.Expired` | 订阅已过期 | `errno.subscription.expired` | 扣减时 `subscription.expires_at <= now`（事务内时间驱动判定，§3.4 / §3.5） |
+| `ErrIdempotencyKeyConflict` | 409 | `Idempotency.KeyConflict` | 幂等键冲突（请求体不一致） | `errno.idempotency.key_conflict` | 同 `Idempotency-Key` 但请求体（user_id / product_type / months / quantity 等）不一致；详见 §3.2 / §3.3 / §4.5 |
 
 **实现要求**：
 
@@ -2987,17 +3115,17 @@ B2B 月度账单：按月聚合所有父账户帮子账户开通的事件。**�
 
 | 端点 | 注册位置 | 变更类型 | 行数变更 |
 |---|---|---|---|
-| `POST /v1/users/children/:child_id/grant-membership` | 现有 `B2B2C 会员赋予` 块（line 256-262） | **修改 controller**：复用 `parent_grant.GrantMembership`，接受 `Idempotency-Key` header → biz 写入 `membership_event` | controller 内部改动 ~10 行；router 不变 |
-| `POST /v1/orders` | 现有 `订单管理` 块（line 220-225） | **修改 controller + biz**：新增 `quantity` 字段绑定与校验；biz 层 booster 路径写入 `booster_grant` + `membership_event` | controller +5 行，router 不变 |
-| `GET /v1/credits/balance` | 现有 `积分查询` 块（line 207-217） | **修改 controller + biz**：返回结构按 §5.3 重写 | controller ~30 行重写，router 不变 |
-| `GET /v1/users/children/:child_id/balance` | 现有 `B2B2C 会员赋予` 块附近（line 256-262） | **新增**：`authGroup.GET("/users/children/:child_id/balance", parentGrantCtrl.GetChildBalance)` | router +1 行；新增 controller 方法 ~40 行 |
+| `POST /v1/users/children/:child_id/grant-membership` | `B2B2C 会员赋予` 块（`childGroup` 内 `grant-membership` 路由处） | **修改 controller**：复用 `parent_grant.GrantMembership`，接受 `Idempotency-Key` header → biz 写入 `membership_event` | controller 内部改动 ~10 行；router 不变 |
+| `POST /v1/orders` | `订单管理` 块（`orderGroup`） | **修改 controller + biz**：新增 `quantity` 字段绑定与校验；biz 层 booster 路径写入 `booster_grant` + `membership_event` | controller +5 行，router 不变 |
+| `GET /v1/credits/balance` | `积分查询` 块（`creditsGroup` B2C 块） | **修改 controller + biz**：返回结构按 §5.3 重写 | controller ~30 行重写，router 不变 |
+| `GET /v1/users/children/:child_id/balance` | `B2B2C 会员赋予` 块附近（`childGroup`） | **新增**：`authGroup.GET("/users/children/:child_id/balance", parentGrantCtrl.GetChildBalance)` | router +1 行；新增 controller 方法 ~40 行 |
 
 **管理端 `internal/numind/admin_router.go`**：
 
 | 端点 | 注册位置 | 变更类型 | 行数变更 |
 |---|---|---|---|
-| `GET /v1/admin/users/:user_id/balance` | 现有 `积分管理` 块（line 119-125） | **新增**：`adminGroup.GET("/users/:user_id/balance", adminCreditCtrl.GetUserBalance)` | router +1 行；admin_credit controller +1 方法 ~30 行 |
-| `GET /v1/admin/b2b-billing-report` | 现有 `B2B 月度结算报表` 块（line 150-154） | **修改 biz**：`b2b_billing.go` 改读 `membership_event`，加入 cutover 双口径分支；router 不变 | biz 重写 ~200 行（含 §7 SQL）；router 不变 |
+| `GET /v1/admin/users/:user_id/balance` | `积分管理` 块（`adminCreditCtrl` 注册附近） | **新增**：`adminGroup.GET("/users/:user_id/balance", adminCreditCtrl.GetUserBalance)` | router +1 行；admin_credit controller +1 方法 ~30 行 |
+| `GET /v1/admin/b2b-billing-report` | `B2B 月度结算报表` 块（`adminB2BCtrl` 注册附近） | **修改 biz**：`b2b_billing.go` 改读 `membership_event`，加入 cutover 双口径分支；router 不变 | biz 重写 ~200 行（含 §7 SQL）；router 不变 |
 
 **总计 router 变更**：用户端 +1 行，管理端 +1 行（极小）。biz/controller 改动量集中。
 
@@ -3047,7 +3175,7 @@ B2B 月度账单：按月聚合所有父账户帮子账户开通的事件。**�
 
 迁移工作的核心约束：
 
-1. **零余额漂移**：迁前每个用户 `credit_package` 总积分 = 迁后 5 张新表合计积分（差额必须为 0，否则立即 rollback）
+1. **非负净增（恩泽性迁移）**：迁前每个用户 `credit_package` 总积分（pre_total）≤ 迁后 5 张新表合计积分（post_total）。具体策略：所有迁入在期会员**赠送本月剩余 2000 cycle 配额**（不论旧 cycle 是否已扣分），因此 post 通常 >= pre。`post < pre` 视为数据丢失，立即 rollback。**这是与传统"严格守恒"迁移的关键区别**——产品决策选择避免老用户感知到迁移期被"扣回积分"，trade-off 是单用户最多多得 2000 积分（一次性赠送）。详见 §6.2.3 Invariant 1。
 2. **零权益漂移**：迁前 `subscription package.expires_at` = 迁后 `subscription.expires_at`（精确到秒）
 3. **零 grant 历史丢失**：迁前每条 `credit_package`（活跃 + 历史）→ 迁后 `membership_event` 至少有 1 条对应事件
 4. **trial 单次性保留**：迁前用户若有任何 trial 包（任何状态），迁后 `trial_grant` 必有对应行，UNIQUE 约束生效
@@ -3483,24 +3611,29 @@ SELECT 'DRY-RUN COMPLETE — review delta report before running 02-apply.sql' AS
 
 ```sql
 -- 02-apply.sql
--- 在 START TRANSACTION 内执行所有 INSERT/UPDATE/DDL
+-- 文件结构：
+--   Step 0: backup CREATE TABLE + INSERT（事务外，DDL implicit commit 安全）
+--   Step 1~6: 单事务 INSERT/UPDATE
 -- MySQL 默认在 CLI 出错时 abort，事务自动 rollback
 
+-- ----------------------------------------------------------------------
+-- Step 0: 创建 backup 表 + 灌数据（事务之外！DDL 在 InnoDB 触发 implicit commit）
+-- ----------------------------------------------------------------------
+DROP TABLE IF EXISTS membership_redesign_backup_credit_package_20260520;
+CREATE TABLE membership_redesign_backup_credit_package_20260520 LIKE credit_package;
+INSERT INTO membership_redesign_backup_credit_package_20260520 SELECT * FROM credit_package;
+
+-- 校验 backup 行数 = 源表行数（runbook Step 3 必须验证）
+SELECT
+  (SELECT COUNT(*) FROM credit_package)                                        AS source_count,
+  (SELECT COUNT(*) FROM membership_redesign_backup_credit_package_20260520)    AS backup_count;
+-- 期望两者相等；不等则停止迁移
+
+-- ----------------------------------------------------------------------
+-- Step 1: 开启事务 + 锚定 apply_start_ts（rollback Step 6.5 apply_log 用）
+-- ----------------------------------------------------------------------
 START TRANSACTION;
-
--- ----------------------------------------------------------------------
--- Step 1: 创建 backup 表（CREATE TABLE 在事务内对 InnoDB 是 implicit commit
---         风险，因此 backup 表 CREATE 移到 START TRANSACTION 之前）
--- ----------------------------------------------------------------------
--- (实际执行时 backup 表建表 SQL 拆到 START TRANSACTION 之前；这里仅注释说明)
-
--- 文件实际结构：
--- 0. CREATE TABLE membership_redesign_backup_credit_package_20260520 LIKE credit_package;
--- 1. INSERT INTO membership_redesign_backup_credit_package_20260520 SELECT * FROM credit_package;
--- 2. (其它需备份的表同样处理)
--- 3. START TRANSACTION;
--- 4. ... 业务写入 ...
--- 5. COMMIT;
+SET @apply_start_ts = NOW(3);
 
 -- ----------------------------------------------------------------------
 -- Step 2: 段合并 → 写入 subscription
@@ -3519,7 +3652,10 @@ SELECT
   segment_start,
   segment_start,                      -- 简化为 anchor = segment_start
   segment_end,
-  GREATEST(1, TIMESTAMPDIFF(MONTH, segment_start, segment_end)),
+  -- total_months_purchased：基于段内天数向上取整到月，防 TIMESTAMPDIFF(MONTH) 整月截断
+  -- 例如 [1/15, 4/14) = 89 天 → CEIL(89/30) = 3 个月（正确）
+  -- 用 TIMESTAMPDIFF(MONTH) 会得到 2（截断）
+  GREATEST(1, CEIL(TIMESTAMPDIFF(DAY, segment_start, segment_end) / 30.0)),
   -- 取段内最后一行的 granter_user_id
   (SELECT granter_user_id FROM credit_package
    WHERE user_id = ls.user_id AND type='subscription'
@@ -3583,27 +3719,64 @@ HAVING credits_remaining > 0 OR total_purchased > 0;
 --           type=subscription  → event_type='sub_granted' (首次) / 'sub_renewed' (续费)
 --           type=booster       → event_type='booster_purchased'
 -- ----------------------------------------------------------------------
+-- 注意：months 和 quantity 是两个独立列（schema 见 §2.5）。事件类型决定哪一列有值：
+--   sub_granted/sub_renewed → months 非 NULL，quantity NULL
+--   booster_purchased       → quantity 非 NULL，months NULL
+--   trial_granted           → 两者都 NULL
 INSERT INTO membership_event
-  (user_id, granter_user_id, event_type, product_type, months_or_quantity,
+  (user_id, granter_user_id, event_type, product_type, months, quantity,
    amount_cents, occurred_at, idempotency_key, source_package_id, created_at)
+WITH numbered_subs AS (
+  SELECT
+    cp.*,
+    -- 嵌入 §6.1.2 的 segment_id 计算（与 Step 2 段合并语义保持一致）
+    -- 同段第一行 → sub_granted；同段后续行 → sub_renewed
+    ROW_NUMBER() OVER (PARTITION BY cp.user_id ORDER BY cp.activated_at) AS rn_user,
+    LAG(cp.expires_at) OVER (PARTITION BY cp.user_id ORDER BY cp.activated_at) AS prev_expires_at
+  FROM credit_package cp
+  WHERE cp.type='subscription'
+),
+sub_with_segment AS (
+  SELECT
+    *,
+    SUM(CASE
+      WHEN prev_expires_at IS NULL THEN 1
+      WHEN activated_at > prev_expires_at THEN 1
+      ELSE 0
+    END) OVER (PARTITION BY user_id ORDER BY rn_user) AS segment_id,
+    ROW_NUMBER() OVER (
+      PARTITION BY user_id, SUM(CASE
+        WHEN prev_expires_at IS NULL THEN 1
+        WHEN activated_at > prev_expires_at THEN 1
+        ELSE 0
+      END) OVER (PARTITION BY user_id ORDER BY rn_user)
+      ORDER BY activated_at
+    ) AS rn_in_segment
+  FROM numbered_subs
+)
 SELECT
   cp.user_id,
   cp.granter_user_id,
   CASE
     WHEN cp.type='trial' THEN 'trial_granted'
     WHEN cp.type='booster' THEN 'booster_purchased'
-    WHEN cp.type='subscription' AND ROW_NUMBER() OVER (
-      PARTITION BY cp.user_id ORDER BY cp.activated_at) = 1
+    WHEN cp.type='subscription' AND swseg.rn_in_segment = 1
       THEN 'sub_granted'
     WHEN cp.type='subscription' THEN 'sub_renewed'
   END AS event_type,
   cp.type AS product_type,
+  -- months：仅 subscription 事件填值，其他事件为 NULL
   CASE
     WHEN cp.type='subscription' THEN
-      GREATEST(1, TIMESTAMPDIFF(MONTH, cp.activated_at, cp.expires_at))
-    WHEN cp.type='trial' THEN 1
-    WHEN cp.type='booster' THEN cp.total_credits / 600  -- 600 = 单份 booster 积分
-  END AS months_or_quantity,
+      GREATEST(1, CEIL(TIMESTAMPDIFF(DAY, cp.activated_at, cp.expires_at) / 30.0))
+    ELSE NULL
+  END AS months,
+  -- quantity：仅 booster 事件填值，其他事件为 NULL
+  -- 用 CEIL 兜底防整除截断（dry-run 已校验 total_credits % 600 = 0）
+  CASE
+    WHEN cp.type='booster' THEN CEIL(cp.total_credits / 600.0)
+    ELSE NULL
+  END AS quantity,
   -- 金额：从订单表回查；订单不存在则置 0（grant 类）
   COALESCE((
     SELECT amount_cents FROM `order` WHERE id = cp.order_id
@@ -3614,6 +3787,8 @@ SELECT
   cp.id AS source_package_id,
   NOW(3)
 FROM credit_package cp
+LEFT JOIN sub_with_segment swseg
+  ON swseg.id = cp.id AND cp.type = 'subscription'
 ORDER BY cp.user_id, cp.activated_at;
 
 -- ----------------------------------------------------------------------
@@ -3622,6 +3797,29 @@ ORDER BY cp.user_id, cp.activated_at;
 --         迁移期不主动创建，避免迁移期产生半成品 cycle
 -- ----------------------------------------------------------------------
 -- (intentionally empty)
+
+-- ----------------------------------------------------------------------
+-- Step 6.5: 写入 apply_log（rollback 反向定位本次迁移写入行的依据）
+--         避免 04-rollback 用 created_at 范围判定（无法区分迁移行 vs 用户活动行）
+-- ----------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS membership_redesign_apply_log_20260520 (
+  table_name VARCHAR(64) NOT NULL,
+  row_id     BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (table_name, row_id)
+) ENGINE=InnoDB;
+
+INSERT INTO membership_redesign_apply_log_20260520 (table_name, row_id)
+SELECT 'subscription', id FROM subscription
+WHERE created_at >= @apply_start_ts
+UNION ALL
+SELECT 'trial_grant', id FROM trial_grant
+WHERE source_package_id IS NOT NULL
+UNION ALL
+SELECT 'user_booster_balance', id FROM user_booster_balance
+WHERE created_at >= @apply_start_ts
+UNION ALL
+SELECT 'membership_event', id FROM membership_event
+WHERE idempotency_key LIKE 'migration-20260520-%';
 
 -- ----------------------------------------------------------------------
 -- Step 7: 清理 user 表 legacy 字段（可选，决策保留只读 7 天）
@@ -3637,8 +3835,24 @@ SELECT 'APPLY COMPLETE — run 03-verify.sql IMMEDIATELY' AS status;
 
 **关键设计**：
 
-- backup 表 `CREATE TABLE` 必须放在 `START TRANSACTION` **之前**（InnoDB 在事务内执行 DDL 会触发 implicit commit，破坏事务原子性）
-- Step 5 反向重建 `membership_event` 用 `ROW_NUMBER` 区分首次 grant 和续费
+- backup 表 `CREATE TABLE` + `INSERT INTO ... SELECT` 必须放在 `START TRANSACTION` **之前**（InnoDB 在事务内执行 DDL 会触发 implicit commit，破坏事务原子性）。02-apply.sql 的真实文件结构如下（**不是注释约定，是可执行 SQL**）：
+
+  ```sql
+  -- 02-apply.sql 顶部（事务之前）
+  CREATE TABLE membership_redesign_backup_credit_package_20260520 LIKE credit_package;
+  INSERT INTO membership_redesign_backup_credit_package_20260520 SELECT * FROM credit_package;
+  -- (其它需备份的表同样的 CREATE + INSERT 对，全部位于事务外)
+
+  START TRANSACTION;
+  -- Step 2~6 业务写入
+  COMMIT;
+  ```
+
+  §6.4 maintenance window runbook Step 3 必须先确认 backup 行数 = 源表行数（独立校验），再开启事务。
+
+- Step 2 段合并：`total_months_purchased` 用 `CEIL(TIMESTAMPDIFF(DAY, segment_start, segment_end) / 30.0)` 计算，避免 MySQL `TIMESTAMPDIFF(MONTH, ...)` 整月截断（例：[1/15, 4/14) 会被算成 2 个月，应为 3）。dry-run Section D 余额对账可间接发现该计算偏差（若续费段月数被低估，post_total 中的 cycle 数量也会偏少 → 触发 delta != 0 报警）。
+- Step 5 反向重建 `membership_event`：用嵌入的 `sub_with_segment` CTE 计算每个 subscription 包在所属合并段内的位置——**段内第 1 行写 `sub_granted`，段内第 2 行起写 `sub_renewed`**。这与 §6.1.2 段合并语义一致：相邻续费同段视为续费，空档后再开通视为新 grant。
+- Step 5 booster `quantity` 用 `CEIL(cp.total_credits / 600.0)` 兜底防整除截断；dry-run 阶段（01-dry-run.sql Section X）必须额外校验 `cp.type='booster' AND cp.total_credits % 600 != 0` 命中数 = 0，命中则在 dry-run 报告中高亮要求人工排查（理论上不该出现，因为业务侧 booster 包总分必定是 600 的倍数）。
 - Step 5 的 `idempotency_key` 用 `migration-20260520-pkg-{id}` 格式，未来如果需要再次回灌不会冲突
 - Step 6 显式不创建 cycle 行，保持懒创建语义
 - 任何一步失败，整个事务回滚；MySQL CLI 默认 abort-on-error
@@ -3653,19 +3867,31 @@ SELECT 'APPLY COMPLETE — run 03-verify.sql IMMEDIATELY' AS status;
 -- 任何 invariant 违反 → 立即跑 04-rollback.sql
 
 -- ----------------------------------------------------------------------
--- Invariant 1: 迁前迁后总积分守恒
+-- Invariant 1: 迁前迁后积分**非负净增**（恩泽性迁移策略）
+--
+-- 注意：这里**不是严格的"差额=0"守恒**。本次迁移采用恩泽性策略——
+-- 所有迁入用户**赠送本月剩余 2000 配额**（不论旧 cycle 是否已扣分），
+-- 因此 post_total 通常 >= pre_total。Invariant 1 仅校验
+-- "post_total < pre_total"（净减少 = 数据丢失）；post_total >= pre_total 视为合规。
+--
+-- 产品决策（trade-off）：
+--   - 选择恩泽迁移：迁前已扣分用户感知不到迁移期被"扣回去"，避免投诉
+--   - 选择严格守恒：post 必须等于 pre，但旧月已扣 N 积分需在新表 cycle 减去 N
+--                  → 体感为"开通会员当天可用积分被打折"，运营压力高
+--   - 决策：恩泽迁移；预算成本 = 在期会员数 × 已扣均值 × 0（赠送）
+--   - 上限：单用户最多多得 2000 积分（仅 1 次，不会持续）
 -- ----------------------------------------------------------------------
-SELECT 'INVARIANT_1_BALANCE_CONSERVATION' AS check_name,
+SELECT 'INVARIANT_1_NON_NEGATIVE_NET_DELTA' AS check_name,
        COUNT(*) AS violation_count
 FROM (
   SELECT
     u.id AS user_id,
-    -- 迁前
+    -- 迁前：旧 active 包 remain 总和
     COALESCE((
       SELECT SUM(remain_credits) FROM membership_redesign_backup_credit_package_20260520
       WHERE user_id = u.id AND status='active' AND expires_at > NOW()
     ), 0) AS pre_total,
-    -- 迁后：trial.remain + (有 sub 则 2000 cycle) + booster.remain
+    -- 迁后：trial.remain + (有 sub 则赠送本月 2000 cycle) + booster.remain
     COALESCE((SELECT credits_remaining FROM trial_grant
               WHERE user_id = u.id AND expires_at > NOW()), 0)
     + CASE WHEN EXISTS (SELECT 1 FROM subscription
@@ -3676,8 +3902,9 @@ FROM (
   WHERE EXISTS (SELECT 1 FROM membership_redesign_backup_credit_package_20260520
                 WHERE user_id = u.id)
 ) calc
-WHERE pre_total != post_total;
--- 期望 violation_count = 0；非 0 → ROLLBACK
+WHERE post_total < pre_total;
+-- 期望 violation_count = 0（即不允许任何用户在迁移后净积分变少）；非 0 → ROLLBACK
+-- 允许 post_total > pre_total（本月赠送配额）
 
 -- ----------------------------------------------------------------------
 -- Invariant 2: subscription.expires_at = 旧表 active sub 段尾
@@ -3725,9 +3952,10 @@ LEFT JOIN (
 WHERE old.old_sum IS NULL OR ubb.credits_remaining != old.old_sum;
 
 -- ----------------------------------------------------------------------
--- Invariant 5: COUNT(membership_event) >= COUNT(旧 grant 记录)
+-- Invariant 5a (I5-migration-day): 迁移当天 COUNT(membership_event) >= COUNT(旧 grant 记录)
+--   仅在迁移当天 03-verify.sql 执行；守护期不能用此判定
 -- ----------------------------------------------------------------------
-SELECT 'INVARIANT_5_EVENT_COUNT_FLOOR' AS check_name,
+SELECT 'INVARIANT_5A_EVENT_COUNT_FLOOR_MIGRATION_DAY' AS check_name,
        COUNT(*) AS violation_count
 FROM (
   SELECT
@@ -3740,6 +3968,36 @@ FROM (
                 WHERE user_id = u.id)
 ) calc
 WHERE new_evt_cnt < old_pkg_cnt;
+
+-- ----------------------------------------------------------------------
+-- Invariant 5b (I5-guard-period): 守护期每日 event 增量 ≥ 当日新 grant 操作数
+--   守护期 daily-verify.sql 用此判定；窗口期 = 当天 [00:00, 24:00)
+--   新 grant 操作数：当日 subscription / trial_grant / user_booster_balance 的 INSERT
+--                   及 subscription.expires_at 的 UPDATE（续费）合计
+--   每个 grant 操作必须产生 ≥1 条 membership_event
+-- ----------------------------------------------------------------------
+SET @window_start = DATE_SUB(NOW(), INTERVAL 1 DAY);
+SET @window_end   = NOW();
+
+SELECT 'INVARIANT_5B_EVENT_DELTA_VS_GRANT_OPS_DAILY' AS check_name,
+       CASE WHEN event_delta >= grant_ops THEN 0 ELSE 1 END AS violation_count
+FROM (
+  SELECT
+    (SELECT COUNT(*) FROM membership_event
+     WHERE created_at >= @window_start AND created_at < @window_end) AS event_delta,
+    (
+      (SELECT COUNT(*) FROM subscription
+       WHERE created_at >= @window_start AND created_at < @window_end)
+      + (SELECT COUNT(*) FROM subscription
+         WHERE updated_at >= @window_start AND updated_at < @window_end
+           AND created_at < @window_start)  -- 续费 UPDATE（区分新建）
+      + (SELECT COUNT(*) FROM trial_grant
+         WHERE created_at >= @window_start AND created_at < @window_end)
+      + (SELECT COUNT(*) FROM user_booster_balance
+         WHERE updated_at >= @window_start AND updated_at < @window_end)
+    ) AS grant_ops
+) calc;
+-- 期望 violation_count = 0；非 0 表示当日有 grant 操作未产生对应 event（biz 层漏写）
 
 -- ----------------------------------------------------------------------
 -- Invariant 6: trial_grant UNIQUE on user_id（schema 级别保证，但显式校验）
@@ -3801,33 +4059,58 @@ SELECT 'VERIFY COMPLETE — all violation_count fields MUST be 0' AS status;
 -- 04-rollback.sql
 -- 仅在迁移失败或 T+24h 内事故时使用
 -- 警告：T+24h 后执行会丢失新数据（订单、grant、扣减）
+--
+-- 设计原则：rollback 必须能精确识别"本次迁移写入的行" vs "切换后用户活动写入的行"
+-- 实现方式：02-apply.sql 在 backup 表里记录所有迁移写入行的主键 ID（写入完成后回灌），
+-- 04-rollback 用反向 JOIN 删除，不依赖 created_at 范围判定，不再硬编码切换日字符串。
+--
+-- 具体落地（在 02-apply.sql Step 6 之后追加）：
+--   CREATE TABLE membership_redesign_apply_log_20260520 (
+--     table_name VARCHAR(64), row_id BIGINT, PRIMARY KEY(table_name, row_id)
+--   );
+--   INSERT INTO membership_redesign_apply_log_20260520
+--     SELECT 'subscription', id FROM subscription WHERE created_at >= @apply_start_ts
+--     UNION ALL SELECT 'trial_grant', id FROM trial_grant WHERE created_at >= @apply_start_ts
+--     UNION ALL SELECT 'user_booster_balance', id FROM user_booster_balance
+--                       WHERE created_at >= @apply_start_ts
+--     UNION ALL SELECT 'membership_event', id FROM membership_event
+--                       WHERE idempotency_key LIKE 'migration-20260520-%';
+--   （@apply_start_ts 在 02-apply.sql Step 1 START TRANSACTION 后立即 SET 为 NOW(3)）
+--
+-- rollback 通过 apply_log 反向定位被删除的行，cutover_date 不再以字符串硬编码出现。
 
 START TRANSACTION;
 
 -- ----------------------------------------------------------------------
--- Step 1: 删除新表中本次迁移写入的行
---         判定标准：source_package_id IS NOT NULL（迁移行有此字段）
---         OR idempotency_key LIKE 'migration-20260520-%'
+-- Step 1: 删除新表中本次迁移写入的行（基于 apply_log 反向 JOIN）
+--         判定标准：(table_name, id) 在 apply_log 中即为迁移写入行
 -- ----------------------------------------------------------------------
+DELETE me FROM membership_event me
+  INNER JOIN membership_redesign_apply_log_20260520 al
+    ON al.table_name = 'membership_event' AND al.row_id = me.id;
+-- 兜底（若 apply_log 缺失）：按 idempotency_key 前缀清理
 DELETE FROM membership_event
 WHERE idempotency_key LIKE 'migration-20260520-%';
 
-DELETE FROM subscription
-WHERE current_started_at <= '2026-05-20 00:00:00'  -- 切换日时间
-  AND created_at >= '2026-05-20 00:00:00'
-  AND created_at <  '2026-05-21 00:00:00';
+DELETE s FROM subscription s
+  INNER JOIN membership_redesign_apply_log_20260520 al
+    ON al.table_name = 'subscription' AND al.row_id = s.id;
 
-DELETE FROM trial_grant
-WHERE source_package_id IS NOT NULL;
+DELETE tg FROM trial_grant tg
+  INNER JOIN membership_redesign_apply_log_20260520 al
+    ON al.table_name = 'trial_grant' AND al.row_id = tg.id;
+-- 兜底
+DELETE FROM trial_grant WHERE source_package_id IS NOT NULL;
 
-DELETE FROM user_booster_balance
-WHERE created_at >= '2026-05-20 00:00:00'
-  AND created_at <  '2026-05-21 00:00:00';
+DELETE ubb FROM user_booster_balance ubb
+  INNER JOIN membership_redesign_apply_log_20260520 al
+    ON al.table_name = 'user_booster_balance' AND al.row_id = ubb.id;
 
-DELETE FROM credit_cycle
-WHERE created_at >= '2026-05-20 00:00:00';
--- credit_cycle 是切换后懒创建的；T+24h 内可能已有用户首次扣分创建了 cycle
--- rollback 时一并删除，扣减日志 (usage_record) 由 forward fix 处理
+-- credit_cycle 在 02-apply 中并未写入（懒创建在切换后），此处删除"切换日之后由懒创建产生的所有行"
+-- 用 cutover_date 配置参数化（DBA 在跑 04-rollback 时通过环境变量设置）：
+--   SET @cutover_ts = '2026-05-20 02:00:00';   -- 改为 maintenance window 起点
+DELETE FROM credit_cycle WHERE created_at >= @cutover_ts;
+-- 注意：T+24h 内此操作会删除少数用户首次扣分懒创建的 cycle；usage_record 由 forward fix 处理
 
 -- ----------------------------------------------------------------------
 -- Step 2: 从 backup 恢复 credit_package（如果迁移途中改了它）
@@ -3886,10 +4169,13 @@ COMMIT;
   Violations: 0
   Status: PASS
 
-[INVARIANT_5] Event Count Floor
+[INVARIANT_5A] Event Count Floor (Migration Day)
   Total users with events: 1247
   Violations: 0 (every user has events_count >= old_packages_count)
   Status: PASS
+
+[INVARIANT_5B] Event Delta vs Grant Ops (Guard Period — daily only, skipped on migration day)
+  Status: SKIPPED (run by daily-verify.sql in T+0~T+7d window)
 
 [INVARIANT_6] Trial Unique
   Violations: 0
@@ -3910,7 +4196,7 @@ COMMIT;
 
 #### 6.3.2 守护期定时对账
 
-T+0~T+7 天，每日凌晨跑简化版 verify（仅 invariant 1+5+8，覆盖余额守恒 + 事件历史 + 数据完整）：
+T+0~T+7 天，每日凌晨跑简化版 verify（仅 invariant 1+5b+8，覆盖余额非负净增 + 当日事件增量 ≥ grant 操作数 + 数据完整）：
 
 ```sql
 -- daily-verify.sql (cron: 0 3 * * *)
@@ -3938,7 +4224,23 @@ SELECT
 
 ### §6.4 Maintenance Window 操作步骤（详细 runbook）
 
-总耗时：5-10 分钟。建议时间：凌晨 2:00-4:00（用户活跃度最低）。
+总耗时：5-10 分钟（P50）；P95 ≤ 12 分钟；P99 ≤ 15 分钟。建议时间：凌晨 2:00-4:00（用户活跃度最低）。
+
+**时间预算与熔断阈值**（按 step 锚定，超时立即熔断 + rollback）：
+
+| Step | 操作 | P50 预算 | 熔断阈值（硬上限） | 触发熔断后动作 |
+|---|---|---|---|---|
+| 1 | 部署 maintenance mode | 30s | 90s | 跑 04-rollback、解除 maintenance、取消切换 |
+| 2 | 等流量稳定 503 | 30s | 60s | 同上 |
+| 3.1 | 跑 dry-run | 60s | 180s | 同上（dry-run 慢 = prod 表数据量超预期） |
+| 3.2 | 跑 02-apply.sql | 120s | 300s（**5 分钟**） | 触发 02-apply 内事务自动 rollback；若 SQL 仍卡 → 强制 KILL session + 04-rollback |
+| 3.3 | 跑 03-verify.sql | 60s | 180s | 任 invariant 失败 → 04-rollback |
+| 4 | 部署正常版本 | 90s | 180s | 回滚到 maintenance 镜像 + 04-rollback |
+| 5 | 解除 maintenance | 30s | 60s | 同上 |
+| 6 | smoke test | 90s | 180s | smoke 失败 → 回滚镜像 + 04-rollback |
+| **整体** | T 时刻 → 全恢复 | **~10 分钟** | **15 分钟硬熔断** | **超过 15 分钟整体熔断**：rollback 一切，恢复 maintenance 状态，公告"今日切换取消，定下次窗口" |
+
+**熔断检查点**：每个 step 完成时记录 timestamp 到飞书机器人；超过 P95 但未到熔断阈值 → 飞书告警但继续；超过熔断阈值 → 立即按上表执行 rollback 动作。
 
 #### T-1 day（迁移前一天）
 
@@ -4088,18 +4390,19 @@ curl https://prod/v1/admin/b2b-billing-report?month=2026-05 -H "Authorization: B
 
 | # | Invariant | 适用阶段 | SQL 验证 | 失败处理 |
 |---|---|---|---|---|
-| **I1** | 迁前迁后总积分守恒：每用户 SUM(旧 active 包.remain) = trial.remain + (有 sub 时 2000) + booster.remain | 迁移 | §6.2.3 Invariant 1 | 立即 rollback，停止迁移 |
+| **I1** | 迁前迁后非负净增（恩泽迁移）：每用户 post_total ≥ pre_total，其中 post = trial.remain + (有 sub 时 2000) + booster.remain，pre = SUM(旧 active 包.remain)。**不允许 post < pre**（数据丢失） | 迁移 | §6.2.3 Invariant 1 | 立即 rollback，停止迁移 |
 | **I2** | subscription.expires_at 等于旧表段尾 | 迁移 | §6.2.3 Invariant 2，容忍 1 秒舍入 | 立即 rollback |
 | **I3** | trial_grant.credits_remaining 等于旧 trial 包 remain | 迁移 | §6.2.3 Invariant 3 | 立即 rollback |
 | **I4** | user_booster_balance.credits_remaining = SUM(旧 active booster.remain) | 迁移 | §6.2.3 Invariant 4 | 立即 rollback |
-| **I5** | COUNT(membership_event) >= COUNT(旧 grant 记录) | 迁移 + 运行期 | §6.2.3 Invariant 5 | 迁移期 rollback；运行期排查 biz 是否漏写 event |
+| **I5a (migration-day)** | 迁移当天：COUNT(membership_event) >= COUNT(旧 grant 记录) | 迁移当天（03-verify.sql 一次性） | §6.2.3 Invariant 5a | 迁移期 rollback |
+| **I5b (guard-period)** | 守护期：当日 event 增量 ≥ 当日新 grant 操作数（subscription INSERT + UPDATE 续费 + trial_grant INSERT + booster UPDATE 合计） | 运行期（daily-verify.sql 滑动窗） | §6.2.3 Invariant 5b | 失败处置：按 §3.2/§3.3 漏写排查；不允许"用户没投诉就不修" |
 | **I6** | trial_grant 表 UNIQUE on user_id（DB 约束 + 业务校验） | 迁移 + 运行期 | `SELECT user_id FROM trial_grant GROUP BY user_id HAVING COUNT(*) > 1` 期望 0 行 | DB 约束保证；业务侧 ErrTrialAlreadyGranted |
 | **I7** | subscription 表每用户 UNIQUE on (user_id, status='active')（部分索引） | 迁移 + 运行期 | `SELECT user_id FROM subscription WHERE status='active' GROUP BY user_id HAVING COUNT(*) > 1` 期望 0 行 | 续费场景必须 UPDATE 而非 INSERT；biz 层加锁 |
 | **I8** | 不存在 orphan 行（所有外键 user_id 在 user 表必须存在） | 迁移 + 运行期 | §6.2.3 Invariant 8 | 迁移期 rollback；运行期人工修复或软删除 |
 | **I9** | credit_cycle 严格在 subscription 期内：cycle.cycle_start >= sub.current_started_at AND cycle.cycle_end <= sub.expires_at | 运行期 | `SELECT cc.id FROM credit_cycle cc JOIN subscription s ON s.user_id = cc.user_id WHERE cc.cycle_start < s.current_started_at OR cc.cycle_end > s.expires_at` 期望 0 行 | biz 创建 cycle 时必须 SELECT FOR UPDATE 锁 sub；查到则报 P0 |
 | **I10** | membership_event.idempotency_key UNIQUE | 运行期 | `SELECT idempotency_key FROM membership_event GROUP BY idempotency_key HAVING COUNT(*) > 1` 期望 0 行 | DB 约束保证；业务幂等中间件保证客户端不会发送重复 key |
 | **I11** | booster 冻结一致性：用户无 active sub 且无 active trial 时，扣减必须跳过 booster | 运行期 | 测试用例 + 抽查日志 | E2E 用例覆盖；biz 层加 if 判断 |
-| **I12** | 每月 cycle 行数：cycle 表中 (user_id, cycle_index) 在同一 subscription 周期内 UNIQUE | 运行期 | `SELECT user_id, cycle_index FROM credit_cycle WHERE subscription_id = X GROUP BY user_id, cycle_index HAVING COUNT(*) > 1` 期望 0 行 | DB 部分唯一索引 + ON CONFLICT DO NOTHING |
+| **I12** | 每月 cycle 行数：cycle 表中 (user_id, cycle_start) 在同一 subscription 周期内 UNIQUE | 运行期 | `SELECT user_id, cycle_start FROM credit_cycle WHERE subscription_id = X GROUP BY user_id, cycle_start HAVING COUNT(*) > 1` 期望 0 行 | DB 部分唯一索引 + ON CONFLICT DO NOTHING |
 
 #### 失败响应 SOP
 
@@ -4137,7 +4440,7 @@ curl https://prod/v1/admin/b2b-billing-report?month=2026-05 -H "Authorization: B
 2. **4 件套迁移脚本**：dry-run（只读 + 预算迁后值）、apply（单事务全量写入）、verify（8 条 invariant 立即对账）、rollback（24h 内可执行的 backup 反向恢复）
 3. **对账模板**：批量 invariant 检查 + 标准化报告格式 + 守护期定时对账
 4. **Maintenance window runbook**：T-1 day 演练、T 时刻 6 步 5-10 分钟切换、T+7 天观察
-5. **12 条 invariant**：覆盖迁移期 + 运行期，每条 SQL 验证 + 失败 SOP
+5. **13 条 invariant**（含 I5 拆分为 I5a/I5b）：覆盖迁移期 + 运行期，每条 SQL 验证 + 失败 SOP
 
 **进入 S3 前提**：本 spec §6 评审通过 + S2 reviewer 确认段合并算法正确性 + 4 件套脚本框架可工程化实现。S3 plan 阶段会把本节拆出 3-4 个独立 task：迁移脚本编写（2-3 人天）、Go 校验脚本编写（1 人天）、staging 演练（1 人天）。
 
@@ -4193,10 +4496,12 @@ curl https://prod/v1/admin/b2b-billing-report?month=2026-05 -H "Authorization: B
 
 跨切换日月份双口径 UNION 后，可能出现"同一笔 grant 两表都有"的情况（迁移脚本运行瞬间）。去重策略：
 
-**复合键定义**：`(granter_user_id, child_user_id, occurred_at_truncated_to_second, product_type, months_or_quantity)`
+**复合键定义**：`(granter_user_id, child_user_id, occurred_at_truncated_to_second, product_type, months, quantity)`
 
 - `occurred_at_truncated_to_second`：`DATE_FORMAT(occurred_at, '%Y-%m-%d %H:%i:%s')`，截断到秒避免微秒抖动
-- `months_or_quantity`：sub 取 months（恒为 1，因为老口径每月一行）；booster 取 quantity；trial 取 0
+- `months`：sub 事件取 months 列值（老口径恒为 1，因为每月一行）；booster/trial 事件该列为 NULL
+- `quantity`：booster 事件取 quantity 列值；sub/trial 事件该列为 NULL
+- 复合键比较：NULL 与 NULL 视为同值（`COALESCE(months, -1) = COALESCE(months, -1) AND COALESCE(quantity, -1) = COALESCE(quantity, -1)`），SQL 实现见 §7.3
 
 **优先级规则**：
 
@@ -4237,13 +4542,14 @@ legacy_events AS (
             WHEN 'subscription' THEN 'monthly'
             WHEN 'booster'      THEN 'booster'
         END                                                AS product_type,
+        -- months / quantity 与 §2.5 schema 保持一致（不适用时 NULL，不是 0）
         CASE cp.type
             WHEN 'subscription' THEN 1
-            ELSE 0
+            ELSE NULL
         END                                                AS months,
         CASE cp.type
             WHEN 'booster'      THEN 1
-            ELSE 0
+            ELSE NULL
         END                                                AS quantity,
         CASE cp.type
             WHEN 'trial'        THEN 990
@@ -4302,11 +4608,9 @@ deduped AS (
                 child_user_id,
                 DATE_FORMAT(occurred_at, '%Y-%m-%d %H:%i:%s'),
                 product_type,
-                CASE product_type
-                    WHEN 'monthly' THEN months
-                    WHEN 'booster' THEN quantity
-                    ELSE 0
-                END
+                -- months / quantity 各自参与去重；NULL 与 NULL 视为同值（COALESCE 兜底）
+                COALESCE(months,   -1),
+                COALESCE(quantity, -1)
             ORDER BY source_priority ASC, occurred_at ASC
         ) AS rn
     FROM unioned
@@ -4363,17 +4667,24 @@ billing:
   cutover_date: "2026-06-03T02:00:00Z"   # 一次性切换的 maintenance window 起点 UTC
 ```
 
-**优先级**：环境变量 `BILLING_CUTOVER_DATE` > yaml 配置 > 代码默认值（设 `time.Time{}` = 零值，零值表示"系统从未切换"，所有月份走纯新口径——便于全新部署不需要拼接逻辑）
+**优先级**：环境变量 `BILLING_CUTOVER_DATE` > yaml 配置（**两者必有其一，缺失则启动失败**）。
+
+**严格强制**：`cutover_date` 是必填配置项，**禁止零值/空字符串作为"系统从未切换"的隐式语义**——这种语义会让"配置漏写"和"全新部署"两种语义混淆，造成对账歧义。
+
+- **服务启动时校验**：`main.go` 启动校验若 `cfg.Billing.CutoverDate.IsZero()` 则 `log.Fatal("billing.cutover_date is required, configure in yaml or via BILLING_CUTOVER_DATE env var")` 拒绝启动
+- **admin UI**：在 `/b2b-billing` 页面顶部显式展示当前 `cutover_date`（财务可见），未配置时显示红色警示条
+- **全新部署场景**：若全新部署希望所有月份都走 `new_only`，需**显式配置** `cutover_date` 为某个早于服务上线的固定日期（推荐 `2020-01-01T00:00:00Z`），不依赖零值兜底
 
 **biz 层访问**：
 
 ```go
 type B2BBillingConfig struct {
-    CutoverDate time.Time   // 来自 viper.GetTime("billing.cutover_date")
+    CutoverDate time.Time   // 来自 viper.GetTime("billing.cutover_date")，启动时校验非零
 }
 
 func (b *b2bBillingBiz) chooseSource(monthStart, monthEnd, cutover time.Time) string {
-    if cutover.IsZero() || monthStart.After(cutover) || monthStart.Equal(cutover) {
+    // cutover 在启动期已校验非零，此处不再处理 IsZero
+    if !monthStart.Before(cutover) {
         return "new_only"
     }
     if !monthEnd.After(cutover) {
@@ -4426,6 +4737,14 @@ func (b *b2bBillingBiz) getLegacyReport(ctx context.Context, monthStart, monthEn
 | —（无） | `idempotency_key` | 老口径置 `legacy_pkg_<id>` |
 
 **永久锁定保证**：切换日之前的 credit_package 数据在迁移完成后**只读**，不会被新代码修改。只要 `credit_package` 表存在（保留 7 天后视情况 DROP），历史账单结果就完全可重现。**若切换日之前的 credit_package 表被 DROP，需要先把历史账单 dump 到独立归档表 `b2b_billing_archive` 永久保留**——此项作为部署 checklist 强制项。
+
+**Owner / S3 task**：S3 plan 阶段必须新增独立 task：「定义 `b2b_billing_archive` 表 schema + dump 脚本 + admin 报表 fallback 路径」，包含以下子项：
+
+- `b2b_billing_archive` 表 schema：列与 §7.6 `details_json` 输出一一对应，按 `(month, parent_user_id)` 复合主键
+- dump 脚本：`scripts/2026-MM-XX-archive-legacy-billing/dump.go`，遍历切换日之前所有月份，调用 `getLegacyReport` 后写入 archive 表
+- admin 报表 fallback：`b2b_billing.go::GetBillingReport` 在 `credit_package` 表已 DROP 后，对历史月份直接读 `b2b_billing_archive`（无需重算）
+- 此 task 在 T+7d 前必须完成（即 credit_package 候选 DROP 之前）
+- Owner 在 S3 plan 中显式分配（不留"待定"）
 
 ---
 
@@ -4512,30 +4831,43 @@ return &B2BBillingReport{
 
 #### §8.1.1 BalanceDTO TypeScript interface
 
-来自 §5.3 `GET /v1/credits/balance` 响应（口径与后端 `model.BalanceDTO` 1:1 对应，字段命名采用 snake_case 透传后端 JSON 不做转换）：
+来自 §5.3 `GET /v1/credits/balance` 响应（口径与后端 1:1 对应，字段命名采用 snake_case 透传后端 JSON 不做转换）。**注意 §5.3 实际响应中 `membership_state` 是嵌套对象**，前端不应该平铺；纯渲染态枚举（`'free' | 'trial' | 'pro'`）由前端 store getter `displayState` 派生（见 §8.1.2）：
 
 ```typescript
 // src/api/credits.ts
 
-export type MembershipState = 'free' | 'trial' | 'pro' | 'trial_pro_overlap'
+// 与 §5.3 nested membership_state 对象 1:1 对应
+export interface MembershipStateDTO {
+  has_active_trial: boolean
+  trial_granted_at: string | null              // ISO 8601 带时区，无 trial 时为 null
+  trial_expires_at: string | null              // ISO 8601 带时区，无 trial 时为 null
+  has_active_subscription: boolean
+  subscription_first_started_at: string | null
+  subscription_current_started_at: string | null
+  subscription_expires_at: string | null       // ISO 8601 带时区，无 sub 时为 null
+  total_months_purchased: number               // 无 sub 时为 0
+}
 
 export interface BalanceDTO {
-  // 会员状态机
-  membership_state: MembershipState
-  trial_expires_at: string | null    // ISO 8601 带时区，free 时为 null
-  pro_expires_at: string | null      // ISO 8601 带时区，free/纯 trial 时为 null
+  user_id: number
+
+  // 会员状态机（嵌套对象，§5.3 锁定）
+  membership_state: MembershipStateDTO
 
   // 试用积分（lifetime 单次 200，3 天）
   trial_remaining: number            // 当前剩余，已过期返回 0
 
   // Pro 月度 cycle 积分（懒创建）
-  cycle_remaining: number            // 当月剩余，无 cycle 时返回 0
+  cycle_remaining: number            // 当月剩余，无 active sub 时返回 0
+  cycle_start: string | null         // 当前 cycle 起点；无 cycle 则 null
   cycle_end: string | null           // ISO 8601，无 cycle 时为 null
 
   // 加量包积分（永不过期，但会员到期后冻结）
   booster_total: number              // 账上总余额（无视冻结）
   booster_usable: number             // 当前可用余额；冻结时 = 0，可用时 = booster_total
-  booster_frozen: boolean            // booster_total > 0 且 membership_state === 'free' 时为 true
+  booster_frozen: boolean            // booster_total > 0 且无 active sub/trial 时为 true
+
+  next_refill_at: string | null      // = cycle_end，下次月度刷新点；无 sub 则 null
 }
 
 export interface BalanceResponse {
@@ -4553,7 +4885,10 @@ export const getBalance = () => request.get<BalanceResponse>('/v1/credits/balanc
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { getBalance } from '@/api/credits'
-import type { BalanceDTO, MembershipState } from '@/api/credits'
+import type { BalanceDTO } from '@/api/credits'
+
+// 前端派生的纯渲染态枚举（不出现在后端响应中）
+export type DisplayState = 'free' | 'trial' | 'pro'
 
 export const useCreditsStore = defineStore('credits', () => {
   // ===== State =====
@@ -4562,20 +4897,27 @@ export const useCreditsStore = defineStore('credits', () => {
   const error = ref<string | null>(null)
 
   // ===== Getters =====
-  const isMember = computed(
-    () => balance.value?.membership_state !== 'free' && balance.value !== null
-  )
+  // 派生：has_active_trial || has_active_subscription → 是会员
+  const isMember = computed(() => {
+    const ms = balance.value?.membership_state
+    return !!ms && (ms.has_active_trial || ms.has_active_subscription)
+  })
 
-  // 三态展示用：free 显灰 / trial 与 trial_pro_overlap 都显蓝（trial 在期一律显 trial）/ pro 显金
-  const displayState = computed<'free' | 'trial' | 'pro'>(() => {
-    if (!balance.value) return 'free'
-    const s = balance.value.membership_state
-    if (s === 'free') return 'free'
-    if (s === 'trial' || s === 'trial_pro_overlap') return 'trial'
-    return 'pro'
+  // 三态展示规则（与 §3.6 GetMembershipState 显示规则一致）：
+  // trial 在期一律遮蔽 pro → 'trial'；仅 sub 在期 → 'pro'；都无 → 'free'
+  const displayState = computed<DisplayState>(() => {
+    const ms = balance.value?.membership_state
+    if (!ms) return 'free'
+    if (ms.has_active_trial) return 'trial'           // trial+pro overlap 也走这条
+    if (ms.has_active_subscription) return 'pro'
+    return 'free'
   })
 
   const isBoosterFrozen = computed(() => balance.value?.booster_frozen ?? false)
+
+  // 到期日 getter（屏蔽嵌套结构对组件层的暴露）
+  const trialExpiresAt = computed(() => balance.value?.membership_state?.trial_expires_at ?? null)
+  const proExpiresAt   = computed(() => balance.value?.membership_state?.subscription_expires_at ?? null)
 
   // ===== Actions =====
   async function fetchBalance() {
@@ -4597,7 +4939,11 @@ export const useCreditsStore = defineStore('credits', () => {
     error.value = null
   }
 
-  return { balance, loading, error, isMember, displayState, isBoosterFrozen, fetchBalance, reset }
+  return {
+    balance, loading, error,
+    isMember, displayState, isBoosterFrozen, trialExpiresAt, proExpiresAt,
+    fetchBalance, reset,
+  }
 })
 ```
 
@@ -4623,10 +4969,10 @@ export const useCreditsStore = defineStore('credits', () => {
 | displayState | 徽章颜色 | 主文案 | 副文案 |
 |---|---|---|---|
 | `free` | 灰 (token: `surface-muted`) | 免费用户 | 开通会员解锁全部功能 |
-| `trial` | 蓝 (token: `accent-info`) | 试用中 | `trial_expires_at` 到期 |
-| `pro` | 金 (token: `accent-premium`) | Pro 会员 | `pro_expires_at` 到期 |
+| `trial` | 蓝 (token: `accent-info`) | 试用中 | store getter `trialExpiresAt` 到期 |
+| `pro` | 金 (token: `accent-premium`) | Pro 会员 | store getter `proExpiresAt`（即 `subscription_expires_at`）到期 |
 
-**关键规则**：当 `membership_state === 'trial_pro_overlap'`（试用 + Pro 叠加期），子账户视角统一渲染为 `trial` 蓝色徽章，**不向子账户暴露 Pro 已开通的细节**。Pro 信息仅父账户在 `/customers` 页面可见（见 §8.3）。
+**关键规则**：当 trial 与 sub 同时在期（`has_active_trial && has_active_subscription`，叠加期），`displayState` getter 返回 `'trial'`（trial 优先遮蔽），子账户视角统一渲染为蓝色徽章，**不向子账户暴露 Pro 已开通的细节**。Pro 信息仅父账户在 `/customers` 页面可见（见 §8.3）。该规则与 §3.6 GetMembershipState 的"trial 在期一律遮蔽 pro"显示规则一致。
 
 #### §8.1.5 到期日格式化
 
@@ -4637,7 +4983,7 @@ export const useCreditsStore = defineStore('credits', () => {
 
 #### §8.1.6 Booster 冻结 UI
 
-当 `isBoosterFrozen === true`（即 `booster_total > 0` 且 `membership_state === 'free'`）：
+当 `isBoosterFrozen === true`（即 `booster_total > 0` 且 `!has_active_trial && !has_active_subscription`，等价于 `displayState === 'free'`）：
 
 - 卡片 2 第三栏「加量包」数字渲染为灰色（token: `text-muted`）
 - 数字旁加锁标 icon（自研 `IconLock`）
@@ -4686,8 +5032,8 @@ export const useCreditsStore = defineStore('credits', () => {
 
 #### §8.2.4 提交流程
 
-1. 点击「立即购买」→ 调 `POST /v1/orders`，body `{ product_type: 'booster', quantity: N }`
-2. 后端返回 `{ code_url, order_id }` → 前端展示二维码（自研 `QRCode` 组件）+ 提示「请使用微信/支付宝扫码支付」
+1. 点击「立即购买」→ 调 `POST /v1/orders`，body `{ user_id, product_type: 'booster', quantity: N, pay_channel: 'wechat' }`，header 必带 `Idempotency-Key: <uuid>`（与 §8.3.5 同样的 uuid 生成方式，每次点击生成新 key，保证网络重传幂等）
+2. 后端返回 §5.2 锁定的 `{ order_id, out_trade_no, status: 'pending', pay_params: { appid, noncestr, package, partnerid, prepayid, timestamp, sign }, ... }` → 前端用 `pay_params` 唤起微信支付（H5 / JSAPI / 小程序 SDK）；若改走支付宝，`pay_channel='alipay'` 时 `pay_params` schema 由后端按支付宝规范返回（详见 §5.2）
 3. 前端轮询 `GET /v1/orders/:order_id/status`，间隔 2 秒，最长 30 秒
 4. **成功路径**（`status === 'paid'`）：
    - 关闭弹窗
@@ -4695,10 +5041,12 @@ export const useCreditsStore = defineStore('credits', () => {
    - 调用 `creditsStore.fetchBalance()` 刷新余额
 5. **失败路径**（`status === 'failed'` / 后端返回非 0 code）：
    - 弹窗内显示行内错误 + 「重试」CTA
-   - 重试时不重新下单，重新打开弹窗让用户重新点击「立即购买」生成新订单
+   - 重试时不重新下单，重新打开弹窗让用户重新点击「立即购买」生成新订单（新 Idempotency-Key）
 6. **超时路径**（轮询 30 秒未到 `paid` 也未 `failed`）：
    - 弹窗内显示「订单处理中，请稍后刷新页面」
    - 提供「关闭」按钮，关闭后用户可手动 `fetchBalance()` 或刷新页面
+
+> **依赖标注（S3 plan 阶段补全）**：步骤 3 引用的 `GET /v1/orders/:order_id/status` 端点在 §5 范围内尚未定义。S3 plan 必须加 task：在 numind-server 补该端点，响应至少含 `{ order_id, status: 'pending'|'paid'|'failed'|'cancelled', paid_at: string|null, amount_cents }`，权限要求 = 受益人 token 或父账户 token。
 
 #### §8.2.5 4 状态
 
@@ -4715,29 +5063,37 @@ export const useCreditsStore = defineStore('credits', () => {
 
 #### §8.3.1 列表新增列「会员状态」
 
-由 §5.x 中 `GET /v1/users/children` 返回的 `ChildSummaryDTO` 字段渲染（字段在 §5 章固化）：
+由 `GET /v1/users/children` 列表端点返回的 `ChildSummaryDTO` 渲染。字段命名严格对齐 §5.4 单查端点（`GET /v1/users/children/:child_id/balance`）已锁定的 nested `membership_state` 结构：
 
 ```typescript
 interface ChildSummaryDTO {
   user_id: number
   name: string
-  has_active_trial: boolean
-  trial_expires_at: string | null
-  has_active_pro: boolean
-  pro_expires_at: string | null
-  cycle_remaining: number      // 父账户可见
-  // 注意：不返回 booster_total / booster_usable，父账户不可见
+  // 与 §5.4 单查端点 nested membership_state 结构 1:1 对齐（前端 store 共用解构逻辑）
+  membership_state: {
+    has_active_trial: boolean
+    trial_expires_at: string | null
+    has_active_subscription: boolean
+    subscription_expires_at: string | null
+  }
+  has_used_trial: boolean        // 由 trial_grant 表 EXISTS 计算（即使过期也为 true）—— 「开通会员」弹窗 trial tab 置灰判定用
+  cycle_remaining: number        // 父账户可见
+  // 注意：不返回 booster_total / booster_usable，父账户不可见（§8.3.3 隐私边界）
 }
 ```
 
+> **依赖标注（S3 plan 阶段补全）**：本 §8.3 引用的 `GET /v1/users/children` 列表端点在 §5 范围内尚未单独定义（§5 仅有 §5.4 单查端点）。S3 plan 必须加 task：在 numind-server 补 `GET /v1/users/children` 端点，响应字段以本节 `ChildSummaryDTO` 为准；`has_used_trial` 同时在 §5.4 单查响应里追加（admin 端 / GrantMembershipModal 复用同一字段）。
+
 #### §8.3.2 4 种渲染规则
+
+> 简记：`mt = membership_state.has_active_trial`，`ms = membership_state.has_active_subscription`。日期字段同样从 `membership_state.trial_expires_at` / `membership_state.subscription_expires_at` 读取。
 
 | 子账户状态 | 徽章 | 文案 |
 |---|---|---|
-| `!has_active_trial && !has_active_pro` | 灰 | 免费用户 |
-| `has_active_trial && !has_active_pro` | 蓝 | 试用中（YYYY-MM-DD 到期） |
-| `has_active_trial && has_active_pro` | 紫色双标（试用蓝 + Pro 金） | 试用中 + Pro 已开通（试用 YYYY-MM-DD / Pro YYYY-MM-DD） |
-| `!has_active_trial && has_active_pro` | 金 | Pro 会员（YYYY-MM-DD 到期） |
+| `!mt && !ms` | 灰 | 免费用户 |
+| `mt && !ms` | 蓝 | 试用中（trial_expires_at YYYY-MM-DD 到期） |
+| `mt && ms` | 紫色双标（试用蓝 + Pro 金） | 试用中 + Pro 已开通（试用 trial_expires_at / Pro subscription_expires_at） |
+| `!mt && ms` | 金 | Pro 会员（subscription_expires_at YYYY-MM-DD 到期） |
 
 日期格式化规则同 §8.5。
 
@@ -4757,11 +5113,11 @@ interface ChildSummaryDTO {
 - 顶部 tab：`体验包` / `Pro 会员`
 - **体验包 tab**：
   - 显示「赠送 200 积分，3 天有效期，¥0」
-  - 若该子账户 `has_used_trial === true`（接口返回字段，由 trial_grant 表查询）→ 整个 tab 内容置灰，显示「该账户已使用过体验包」hover 提示
+  - 若该子账户 `has_used_trial === true`（来自 `ChildSummaryDTO.has_used_trial`，由 trial_grant 表 EXISTS 查询）→ 整个 tab 内容置灰，显示「该账户已使用过体验包」hover 提示
 - **Pro tab**：
   - 月数选择：`1` ~ `12` 月（横向数字选择，复用现有 `MonthSelector` 组件）
   - 显示对应金额：`{months} × 标准单价 = ¥{total}`
-  - 在期续费提示：若 `has_active_pro === true`，文案改为「续费延期 {months} 个月，新到期日 YYYY-MM-DD」
+  - 在期续费提示：若 `membership_state.has_active_subscription === true`，文案改为「续费延期 {months} 个月，新到期日 YYYY-MM-DD」
 - 提交按钮「确认开通」
 
 #### §8.3.5 提交契约
@@ -4884,10 +5240,13 @@ admin 端新增页面，对接 `GET /v1/admin/b2b-billing-report?month=YYYY-MM`�
 
 #### §8.5.2 推荐实现
 
-二选一：
+**钉死：方案 A（dayjs + utc + timezone 插件）。** 项目已有 dayjs 依赖，无需新增。两个仓库共用相同 API 但各自封装一份 utils（保持仓库独立）：
 
-**方案 A**：dayjs + utc + timezone 插件
+- 用户端：`numind-web-v3/src/utils/datetime.ts`
+- 管理端：`numind-admin-web/src/utils/datetime.ts`
+
 ```typescript
+// src/utils/datetime.ts
 import dayjs from 'dayjs'
 import utc from 'dayjs/plugin/utc'
 import timezone from 'dayjs/plugin/timezone'
@@ -4895,24 +5254,14 @@ import timezone from 'dayjs/plugin/timezone'
 dayjs.extend(utc)
 dayjs.extend(timezone)
 
-const formatDate = (iso: string | null): string =>
+export const formatDate = (iso: string | null): string =>
   iso ? dayjs(iso).tz('Asia/Shanghai').format('YYYY-MM-DD') : '—'
 
-const formatDateTime = (iso: string | null): string =>
+export const formatDateTime = (iso: string | null): string =>
   iso ? dayjs(iso).tz('Asia/Shanghai').format('YYYY-MM-DD HH:mm') : '—'
 ```
 
-**方案 B**：原生 `Intl.DateTimeFormat`（无需额外依赖）
-```typescript
-const cn = new Intl.DateTimeFormat('zh-CN', {
-  timeZone: 'Asia/Shanghai',
-  year: 'numeric', month: '2-digit', day: '2-digit',
-})
-const formatDate = (iso: string | null): string =>
-  iso ? cn.format(new Date(iso)).replace(/\//g, '-') : '—'
-```
-
-任一前端模块选定一种即可，**不可混用**。建议放在 `src/utils/datetime.ts` 统一封装。
+> **不可使用**：原生 `Intl.DateTimeFormat`、`new Date(...).toLocaleDateString()`、moment.js。所有日期渲染必须经过 `formatDate` / `formatDateTime`，禁止在组件内部直接 import dayjs 自行格式化（避免格式漂移）。
 
 #### §8.5.3 已知坑
 
@@ -4924,7 +5273,9 @@ const formatDate = (iso: string | null): string =>
 
 ### §8.6 错误码 → i18n 文案映射
 
-§4 PRD 错误码清单的 11 条全部覆盖。两套文案：用户端友好（暴露给 C 端 / 父账户）/ admin 端技术（admin 调试用，含上下文 ID）。
+§4 PRD 错误码清单的 11 条 + §5.7 新增的 2 条 sentinel 全部覆盖。两套文案：用户端友好（暴露给 C 端 / 父账户）/ admin 端技术（admin 调试用，含上下文 ID）。
+
+> **key 命名约定**：i18n key **严格对齐 §5.7 已锁定的 Go 常量名**（如 `ErrSelfPurchaseDisabled`、`ErrSubscriptionExpired`、`ErrIdempotencyKeyConflict`）。**禁止**使用点分式命名（如 `Membership.SelfPurchaseDisabled`）作为 i18n map 的 key——后者是后端响应中可选的 `code_text` 字段，不在前端字典内做映射。
 
 #### §8.6.1 用户端友好文案（numind-web-v3）
 
@@ -4939,9 +5290,11 @@ export const userErrorMap: Record<string, string> = {
   ErrBoosterQuantityExceedsLimit: '单次最多购买 10000 份',
   ErrInsufficientCredits:         '积分不足，请联系父账户开通会员或购买加量包',
   ErrSubscriptionNotFound:        '未找到会员记录',
+  ErrSubscriptionExpired:         '会员已到期，请联系您的管理员续费',
   ErrInvalidProductType:          '请选择有效的产品类型',
   ErrInvalidMonths:               '会员月数必须在 1-12 之间',
   ErrParentChildRelation:         '账户关系无效，请联系客服',
+  ErrIdempotencyKeyConflict:      '操作冲突，请刷新页面后重试',
 }
 ```
 
@@ -4958,15 +5311,17 @@ export const adminErrorMap: Record<string, (ctx: any) => string> = {
   ErrBoosterQuantityExceedsLimit: (ctx) => `quantity=${ctx.quantity} 超过上限 10000`,
   ErrInsufficientCredits:         (ctx) => `余额不足：trial=${ctx.trial}, cycle=${ctx.cycle}, booster_usable=${ctx.booster}`,
   ErrSubscriptionNotFound:        (ctx) => `未找到 subscription，user_id=${ctx.user_id}`,
+  ErrSubscriptionExpired:         (ctx) => `subscription 已过期：user_id=${ctx.user_id}, expires_at=${ctx.expires_at}`,
   ErrInvalidProductType:          (ctx) => `非法 product_type=${ctx.product_type}`,
   ErrInvalidMonths:               (ctx) => `非法 months=${ctx.months}（合法范围 1-12）`,
   ErrParentChildRelation:         (ctx) => `parent_user_id=${ctx.parent} 与 child_user_id=${ctx.child} 无父子关系`,
+  ErrIdempotencyKeyConflict:      (ctx) => `Idempotency-Key 冲突：key=${ctx.key}，请求体与首次不一致`,
 }
 ```
 
 #### §8.6.3 调用约定
 
-axios 响应拦截器统一抓 `code !== 0`：
+axios 响应拦截器统一抓 `code !== 0`，**用 `errno` 常量名（字符串形式）作为 map key**：
 
 ```typescript
 // src/api/request.ts (新增)
@@ -4976,8 +5331,10 @@ import { userErrorMap } from '@/i18n/credits-errors'  // 用户端
 instance.interceptors.response.use(
   (resp) => {
     if (resp.data?.code && resp.data.code !== 0) {
-      const errCode = resp.data.error_code  // 后端返回
-      const friendly = userErrorMap[errCode] ?? resp.data.message ?? '操作失败'
+      // 后端响应 schema（§5 锁定）：{ code: <数值码>, message: <中文兜底>, errno: <Go常量名 string>, ... }
+      // 优先用 errno 字符串匹配字典；fallback 用后端 message 兜底
+      const errnoKey: string | undefined = resp.data.errno
+      const friendly = (errnoKey && userErrorMap[errnoKey]) ?? resp.data.message ?? '操作失败'
       // 抛给业务层 catch 显示 toast
       return Promise.reject({ ...resp, message: friendly })
     }
@@ -4987,13 +5344,20 @@ instance.interceptors.response.use(
 )
 ```
 
-**严禁**：在业务组件里硬编码错误文案。所有 11 条错误码必须走 map。
+**严禁**：在业务组件里硬编码错误文案。所有 13 条错误码（§4 PRD 11 条 + §5.7 新增 2 条）必须走 map。
 
 ---
 
 ### §8.7 旧 UI 元素移除清单
 
-切换到新会员体系后，以下旧 UI 元素必须从前端移除（一次性切换决策 Q5 不留并存期）：
+切换到新会员体系后，以下旧 UI 元素必须从前端移除（一次性切换决策 Q5 不留并存期）。
+
+> **S3 plan task 阶段必须先跑 grep 校准移除清单**：
+> ```bash
+> grep -rn 'user_tier\|monthly_sop_runs\|tier_expires\|userTier\|tierExpires\|monthlySopRuns' \
+>   numind-web-v3/src numind-admin-web/src
+> ```
+> 把实际命中点逐一登记进 S3 plan 的移除 task；本节列出的文件名是基于代码结构的初步预估，**以 grep 实际结果为准**。漏 grep 直接按列表删除的，会被 S4 review 打回。
 
 #### §8.7.1 numind-web-v3
 
@@ -5070,8 +5434,9 @@ instance.interceptors.response.use(
 | AC-06 | 2024-02-29 | 12 | 2025-02-28 | 闰年 2/29 → 次年非闰年 2/28 |
 | AC-07 | 2026-03-15 | 6 | 2026-09-15 | 月中正常 +6 月 |
 | AC-08 | 2026-12-31 | 1 | 2027-01-31 | 年跨界 |
-| AC-09 | 2026-01-01 | 0 | 2026-01-01 | n=0 边界（虽然业务不该出现，但防御性） |
-| AC-10 | 2026-08-31 | 1 | 2026-09-30 | 大小月切换 |
+| AC-09 | 2026-05-31 | 1 | 2026-06-30 | 31 日落 30 日：5/31 → 6/30（连续 31 日小月切换链 1） |
+| AC-10 | 2026-07-31 | 1 | 2026-08-31 | 31 日恢复：7/31 → 8/31（大月相邻无回退，验证 anchor 不被前一次回退污染） |
+| AC-11 | 2026-08-31 | 1 | 2026-09-30 | 大小月切换：8/31 → 9/30 |
 
 测试名：`TestAnchorAddMonths_Boundaries`（表驱动）。
 
@@ -5111,7 +5476,7 @@ instance.interceptors.response.use(
 | CYC-02 | 用户已有当月 cycle | ensureCurrentCycle | 直接返回现有 cycle，不创建 |
 | CYC-03 | 用户跨月：上月 cycle 存在但 cycle_end < now | ensureCurrentCycle | 创建下一期 cycle，`cycle_start = 上期 cycle_end`，`cycle_remaining = 2000`（新月度配额） |
 | CYC-04 | sub 已过期 | ensureCurrentCycle | 返回 `ErrSubscriptionExpired`（或同等错误），不创建 cycle |
-| CYC-05 | 跨月边界：1/31 开通，cycle_index=0 跨到 2/28 | ensureCurrentCycle (3/1) | cycle_end 受 sub.expires_at 约束（min(3/31, 2/28) = 2/28），3/1 时 sub 已过期，走 CYC-04 |
+| CYC-05 | 跨月边界：1/31 开通 1 月（cycle_start=1/31, cycle_end 受 min(2/28, sub.expires_at)=2/28 约束） | ensureCurrentCycle (3/1) | 3/1 时 sub.expires_at=2/28 已过期，走 CYC-04（返回 ErrSubscriptionExpired，不创建新 cycle） |
 
 测试名：`TestEnsureCurrentCycle_FirstTime` / `_AlreadyExists` / `_CrossMonth` / `_SubExpired` / `_CycleEndConstraint`。
 
@@ -5267,6 +5632,11 @@ func TestConcurrent_SingleUserDeduct10(t *testing.T) {
 - cycle_remaining 精确 = 2000 - 100
 - 无 goroutine 返回错误
 - 重试上限 1 次（spec 锁定）：observe metrics
+- **metric 上报基线断言**（与 §10.4.1 关键 metric 对齐）：测试结束读取 prometheus testutil 或 expvar 计数器，验证：
+  - `cycle_lazy_create_conflict_count` ≥ 9（10 并发，1 个 INSERT 落库 + 9 个 ON CONFLICT 命中）
+  - `deduct_success_count` = 10
+  - `deduct_total_count` = 10
+  - `cycle_lazy_create_conflict_rate = conflict / (conflict + insert) ≈ 90%`，但与 §10.4.1 ≤ 5% 阈值的对照口径不同（§10.4.1 是 prod 流量平均值，本测试是极端构造），需在测试注释中明确这一点
 
 #### 9.2.2 用例 2：父账户 5 并发续费同一子账户
 
@@ -5425,18 +5795,40 @@ func TestConcurrent_ExpiryBoundaryDeductVsRenew(t *testing.T) {
 
     // 最终状态可能两种合法分支：
     // 分支 A：deduct 在 expires_at 前到达 → 扣 cycle 50；renew 后 expires_at += 1m，cycle 仍存
-    // 分支 B：deduct 在 expires_at 后到达 → ErrInsufficientCredits（booster 冻结）；
-    //         随后 renew 创建新 sub period（走 NEW-02 路径），cycle 重建为 0 配额前的初始状态
+    //          预期 snapshot：cycle_remaining=50, booster_balance=600（不动），
+    //                         membership_event 含 1 条 deduct(amount=50, source=cycle) + 1 条 sub_renewed
+    // 分支 B：deduct 在 expires_at 后到达 → ErrInsufficientCredits（booster 冻结，不扣）；
+    //          随后 renew 创建新 sub period（走 NEW-02 路径），新 cycle 由下次扣分懒创建
+    //          预期 snapshot：cycle 表无新行（renew 不预创建 cycle）, booster_balance=600（不动），
+    //                         membership_event 仅 1 条 sub_granted（deduct 因失败不写 deduct 事件）
     sub := getSubByUserID(t, db, 1)
-    cyc, _ := credit.GetCurrentCycle(ctx, 1)
     bb := getBoosterByUserID(t, db, 1)
 
-    // 不变量
+    // 不变量（两分支都成立）
     assert.True(t, sub.ExpiresAt.After(time.Now()), "after both ops, sub must be active")
-    assert.Equal(t, 600, bb.Balance, "booster balance unchanged (frozen path) or unchanged (deduct hit cycle)")
-    // 全量自洽：trial+cycle+booster 总扣 ≤ 50
-    totalConsumed := computeTotalDeducted(t, db, userID=1)
-    assert.True(t, totalConsumed == 0 || totalConsumed == 50, "either deduct succeeded fully or not at all")
+
+    // 用 membership_event 累计扣减额作为分支判别（精确，避免 booster_balance 在两分支都=600 的歧义）
+    var deductSum int
+    db.Raw(`SELECT COALESCE(SUM(amount),0) FROM membership_event
+            WHERE child_user_id=? AND event_type='deduct'`, 1).Scan(&deductSum)
+
+    if deductErr == nil {
+        // 分支 A
+        assert.Equal(t, 50, deductSum, "branch A: cycle deducted exactly 50")
+        cyc, _ := credit.GetCurrentCycle(ctx, 1)
+        assert.NotNil(t, cyc, "branch A: cycle row exists")
+        assert.Equal(t, 50, cyc.CycleRemaining, "branch A: cycle remaining = 100-50")
+        assert.Equal(t, 600, bb.Balance, "branch A: booster untouched")
+    } else {
+        // 分支 B
+        assert.ErrorIs(t, deductErr, errno.ErrInsufficientCredits, "branch B: deduct must fail with ErrInsufficientCredits")
+        assert.Equal(t, 0, deductSum, "branch B: no deduct event recorded")
+        var cycCount int64
+        db.Model(&model.Cycle{}).Where("user_id=?", 1).Count(&cycCount)
+        assert.LessOrEqual(t, cycCount, int64(1), "branch B: at most the pre-existing cycle row remains")
+        assert.Equal(t, 600, bb.Balance, "branch B: booster frozen, untouched")
+    }
+    assert.NoError(t, renewErr, "renew always succeeds in both branches")
 }
 ```
 
@@ -5506,7 +5898,14 @@ mysql -h staging-host < scripts/2026-04-29-membership-credits-redesign/dry-run.s
 
 **目的**：rollback.sql 不能写完就放着——3 个月后真的要回滚时发现 schema 已飘移会出大事。
 
-**演练频率**：每月最后一个工作日，自动跑一次 rollback 演练（CI cron）。
+**演练频率**：每月 1 日凌晨 2 点，自动跑一次 rollback 演练（CI cron）。
+
+**承载位置**：`.github/workflows/rollback-drill.yml`（基于 numind-server 仓库），`schedule: cron: "0 2 1 * *"`。workflow 步骤：
+1. 起 docker-compose MySQL 容器
+2. 灌入 staging 脱敏快照
+3. 跑 apply.sql → 模拟扣分 → rollback.sql
+4. checkout 切换前 git tag 验证老代码可启动 + 跑通一次 SOP 扣分
+5. 任一步失败 → 工作群通知（webhook），并自动 attach workflow log artifact
 
 **步骤**：
 1. 在 staging：apply → 触发模拟扣分（生成新 5 表数据）→ rollback
@@ -5582,9 +5981,16 @@ docs/migration-runbook/
 3. 点击"购买加量包"卡片 CTA
 4. 弹窗中数量保留默认 = 1
 5. 点击"购买"按钮
-6. 监听网络：拦截 `POST /v1/orders` 响应（应包含 prepay_id 等支付字段）
-7. 模拟支付成功回调（直接 fetch `POST /v1/payment/wxpay/notify` with mock body 或调用专用测试 endpoint）
+6. 监听网络：拦截 `POST /v1/orders` 响应（应包含 §5.2 锁定的 `pay_params.prepayid` 等字段）
+7. 模拟支付成功回调（**实现见下方 mock 入口设计**）
 8. 等待前端轮询余额刷新（≤ 10 秒）
+
+> **mock 支付回调入口（S3 plan 阶段加 task 落地）**：
+> 直接 `POST /v1/payment/wechat/notify` 在 prod 路径会被微信签名校验拒绝，且让 E2E 持有微信生产私钥不安全。S3 plan 必须二选一：
+> - **方案 A（推荐）**：在 numind-server 增设 `POST /v1/admin/test-only/fulfill-order/:order_id`（admin token 鉴权 + 仅 dev/qa 注册，prod build 通过 `//go:build !prod` 编译标签或环境变量 gate 排除）。该端点直接调用 `biz/payment.fulfillOrder(orderID)` 跳过签名校验。
+> - **方案 B**：在 `biz/payment/fulfillOrder` 加测试钩子，当 `os.Getenv("NUMIND_E2E_BYPASS_PAY_SIG")=="1"` 时跳过微信签名校验；对应环境变量仅在 dev/qa 注入，prod 永不设置。
+>
+> 任选其一，但必须在 spec / S3 plan 里明确记录所选方案，并在 §10 部署章节核查 prod 环境无该入口/无该 env。E2E 测试代码引用统一的 `mockPayOrder(orderId)` helper，未来切方案不需要改测试。
 
 **验证点**：
 - API：`POST /v1/orders` body `{product_type:"booster", quantity:1}` → 200，total_amount_cents = 2990
@@ -5817,6 +6223,7 @@ S5 验收 Gate 必须满足：
 
 - 读取启动时的环境变量 `MAINTENANCE_MODE`
 - 对 `GET / HEAD / OPTIONS` 请求：直接放行（健康检查、监控探针、CORS 预检不能受影响）
+- **支付回调路径硬豁免**（即使是 POST 也直接放行）：`/v1/payment/wechat/notify` / `/v1/payment/alipay/notify`。理由：(1) 支付平台不会因 maintenance 暂停推送；(2) 拒绝回调会导致用户支付成功但订单未 fulfill，必须人工对账补偿；(3) `payment` 表幂等性已保证（`out_trade_no` 唯一索引），即使迁移期间收到回调也不会污染新表（fulfillOrder 落表前会检查 idempotency）；(4) 真有不一致的极端窗口期，可由 T+0 ~ T+24h 高频对账（§10.2.4）发现并补救
 - 对其它方法（`POST / PUT / PATCH / DELETE`）：直接返回 503，不进入 controller，不消耗任何 store 调用
 - 503 响应必须携带 `Retry-After: 600` header（建议值 600 秒 / 10 分钟，足够覆盖最坏情况下的迁移 + 重启窗口）
 - 响应 body 用统一格式：`{"code": 50301, "message": "系统维护中，请 5-10 分钟后重试", "data": null}`（新增错误码 `ErrSystemMaintenance` = 50301）
@@ -5831,6 +6238,7 @@ import (
     "net/http"
     "os"
     "strconv"
+    "strings"
 
     "github.com/gin-gonic/gin"
     "numind-server/internal/pkg/core"
@@ -5839,9 +6247,29 @@ import (
 
 var maintenanceEnabled = os.Getenv("MAINTENANCE_MODE") == "true"
 
+// 支付回调路径白名单：maintenance 期间也必须放行（详见 §10.1.2 行为定义）
+var paymentWebhookPrefixes = []string{
+    "/v1/payment/wechat/notify",
+    "/v1/payment/alipay/notify",
+}
+
+func isPaymentWebhook(path string) bool {
+    for _, p := range paymentWebhookPrefixes {
+        if strings.HasPrefix(path, p) {
+            return true
+        }
+    }
+    return false
+}
+
 func MaintenanceMode() gin.HandlerFunc {
     return func(c *gin.Context) {
         if !maintenanceEnabled {
+            c.Next()
+            return
+        }
+        // 支付回调硬豁免（即使 POST 也放行）
+        if isPaymentWebhook(c.Request.URL.Path) {
             c.Next()
             return
         }
@@ -5851,7 +6279,7 @@ func MaintenanceMode() gin.HandlerFunc {
             c.Next()
             return
         }
-        // 拒绝所有写请求
+        // 拒绝其余写请求
         c.Header("Retry-After", strconv.Itoa(600))
         c.AbortWithStatusJSON(
             http.StatusServiceUnavailable,
@@ -5935,9 +6363,10 @@ prod 部署不是简单的镜像替换，而是一个 5 步序列。每步都有
 | **03:00** | 部署 maintenance 版本（Step 1） | 触发 prod CD，注入 `MAINTENANCE_MODE=true` 环境变量；rolling restart 至全部 pod 切换 | pod 全部 ready；前端访问写接口返回 503 + Retry-After |
 | **03:01** | 等流量 503 稳定 | 监控 5xx 比例（写请求）应 ≥ 99%；如果有 1% 仍 2xx → 排查是否所有 pod 都生效 | 5xx 写请求比例 ≥ 99% 持续 30 秒 |
 | **03:02** | 跑迁移脚本（Step 2） | 命令：`./migrate.sh dry-run` → 检查输出 → `./migrate.sh apply` → 检查 → `./migrate.sh verify` → 检查 | 三步全部输出 0 差异；任一步差异立即触发 rollback |
-| **03:07** | 部署正常版本（Step 3） | 触发 prod CD，去掉 `MAINTENANCE_MODE` 环境变量；rolling restart | pod 全部 ready；版本号显示新版 |
-| **03:09** | 解除 maintenance（Step 4） | 确认所有实例环境变量已切换；确认老 cron 进程已停止（新代码不注册） | `ps -ef | grep cron_billing` 无残留 |
+| **03:07** | 部署正常版本（Step 3）+ 等 rolling restart 完成（Step 4） | 触发 prod CD，去掉 `MAINTENANCE_MODE` 环境变量；等待所有 pod rolling restart 完成 + 健康检查通过；同时确认老 cron 进程已停止（新代码不注册） | (1) 所有 pod 状态 = ready 且版本号显示新版（2）所有实例环境变量 diff 显示无 `MAINTENANCE_MODE`（3）`ps -ef \| grep cron_billing` 无残留 |
 | **03:10** | smoke test（Step 5） | 用预先准备的测试账号跑：(1) `GET /v1/credits/balance` (2) 父账户 `POST /v1/users/children/:id/grant-membership` (trial) (3) 子账户消费扣减 (4) 父账户 `POST /v1/orders` 买 booster | 4 个 API 全部 2xx + 数据合理 |
+
+> Step 3 与 Step 4 在 §10.1.4 表中是逻辑分步（部署 → 等待 + 校验），但实际操作上是连续动作：部署正常版本镜像后必须等到所有 pod 完成 rolling restart 且健康检查通过才算 Step 3 出口；而出口的判定本身就是 Step 4 的"确认所有实例环境变量已切换 + 老 cron 已停"。这两步在切换日 runbook 里合并执行，不再设独立时间点，避免 03:07 和 03:09 之间出现"已部署但未确认"的灰色区间。
 
 **操作员执行原则**：
 
@@ -6108,8 +6537,11 @@ T+7d 之后 credit_package 表可以 DROP，但**强烈建议作为后续独立 
 **监控 dashboard 准备**：
 
 - T-7 天：在 Grafana 建一个专用 dashboard `Membership Credits Redesign - Switch Window`，集成本节所有 metric
+- T-3 天：**打点验证脚本**——跑 `numind-server/scripts/2026-04-29-membership-credits-redesign/verify-metrics.sh`，自动构造 grant / deduct / cycle conflict 三类事件各 10 次，校验 Prometheus / Grafana 中对应 metric 计数器递增的差值与构造数量一致。脚本未通过 → dashboard panel 配置或 biz 层埋点有 bug，T+0 前必修
 - T-1 天：测试 dashboard，确认所有 panel 数据流通
 - T+0 切换日：dashboard 投屏到主操作员显示器，全程可视
+
+**与 §9.2 用例 1 的对应**：§9.2 用例 1 在单元测试层验证 `cycle_lazy_create_conflict_count` 计数器递增，本节 verify-metrics.sh 在 prod-like 部署层验证同一计数器能从应用进程上报到 Prometheus 抓取端点。两层验证缺一不可。
 
 #### §10.4.4 切换后基线观察
 

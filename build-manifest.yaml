@@ -135,8 +135,8 @@ features:
     track: "standard"
     stage: "S2"
     classification_reason: "Triage 5 条全触发 — (1) 5 张新表 + 迁移脚本 (2) grant/deduct/balance/B2B 账单全部重写 (3) 无外部服务但内部模型彻底改 (4) 跨 3 仓 (5) 计费核心 + B2B 账单 = 最高风险业务逻辑。Standard Track 必然。"
-    last_updated_by: "ai-s2-spec-written"
-    last_updated_at: "2026-04-30T00:00:00+08:00"
+    last_updated_by: "ai-s2-spec-review-fixed"
+    last_updated_at: "2026-04-30T01:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -172,6 +172,8 @@ features:
       - "2026-04-29 (S1 review fixes): 第三个 subagent review 提出 5 P0 + 8 P1 + 2 P2，全部接受并修复——AC-21 拆为 a/b/c 含字段映射/去重/单位规则；AC-2/3/4 锁定 anchor=current_started_at 且 anchor_add_months 函数签名固化；新增完整错误码清单 11 条；EC-7 锁定 cycle_end 半开区间精确语义；EC-3/4/4b 校验顺序固化（先查 trial_grant 再查 sub）；§3 R6 改为'一次性切换数据漂移'风险（双写已废）；AC-16 拆 a/b 区分 idempotency 重放；新增 AC-13b 反作弊 out-of-scope 声明 + AC-13c booster 冻结期前后端兜底；§6 回滚分段决策（24h/7d/7d+ 三段 SOP）；§2 估时上调至 20-22 工作日"
       - "2026-04-29 (S2 spec D1-D5): 5 个细节决策锁定——D1 subscription 加 total_months_purchased 列；D2 客户端 UUID via HTTP Idempotency-Key header（Stripe 风格）；D3 booster 父代购 API 允许（payer_id != user_id 复用 /v1/orders）但前端不暴露；D4 maintenance window 用 MAINTENANCE_MODE=true 部署版本拒写；D5 半开区间严格不留 1 秒宽容"
       - "2026-04-29 (S2 spec written): 拆 6 个并行 subagent 写出 6127 行 spec（10 章节）——§1 概览 + §2 数据模型（5 表 DDL）+ §3 核心算法（7 函数 Go 伪代码）+ §4 并发与事务（锁顺序 + idempotency + Reserve/Reconcile）+ §5 API 契约（6 端点 + 错误码 11 条）+ §6 迁移策略（4 件套脚本）+ §7 切换日双口径拼接 + §8 前端契约 + §9 验证策略 + §10 部署回滚。中途 §3+§4 大 agent 卡死 + 后续 §1+§2+§6 / §8+§9+§10 也卡，全部停掉拆为单章节 agent 重启完成。Self-review 修正了 §1.3 映射表的章节编号错位（6 处 §11/§7/§8 等错位标签全部改对）"
+      - "2026-04-30 (S2 spec review): 派 4 个并行 review subagent 分章节做严苛 review，发现 53 个问题（18 P0 + 21 P1 + 14 P2）。最严重问题：cycle_index vs cycle_start schema 不一致（SQL 直接报错）/ §3.5 锁顺序与 §4.1 字典序自相矛盾 / BalanceDTO 与 §5.3 后端响应字段全部不匹配 / membership_event months_or_quantity 字段名前后不一致 / §6 Invariant 1 必然失败 / §6.2.2 TIMESTAMPDIFF MONTH 截断"
+      - "2026-04-30 (S2 spec review-fixes): 派 4 个串行 fix subagent（避免并行 Edit 同文件 race），每章节修复一组问题。共修 47 条（18 P0 + 21 P1 + 8 P2，剩 6 P2 为低优纯优雅度）。spec 增至 6559 行（+432 行新增内容含错误码 ErrSubscriptionExpired/ErrIdempotencyKeyConflict 定义、Invariant I-13 / I5b、§7 cutover_date 必填启动校验、§10.1 maintenance 503 豁免支付回调、§9.1 anchor_add_months 7/31→8/31 测试 case 等）。最终验证：cycle_index in SQL = 0 / months_or_quantity = 0 / trial_pro_overlap = 0 / ErrMembershipSelfPurchaseDisabled = 0 / has_active_pro = 0 / code_url = 0 / 章节锚点 10 个完整 / 无 TODO TBD 残留"
     blockers: []
     related_features:
       - "credits-system (前置依赖，已上线)"
