@@ -1058,8 +1058,9 @@ func TestContextBudgetCredits_ReconcileUsesActualCostFromBillingHolder(t *testin
 	const realCostCents int64 = 5
 	adapter := Handler(func(ctx context.Context, _ *registry.ResolvedRoute, _ interface{}) (interface{}, error) {
 		// Simulate Billing populating the holder after computing actual cost.
+		// F-7: use Set() so the set flag is raised (including for cost=0 calls).
 		if h := finalCostHolderFromCtx(ctx); h != nil {
-			h.CostCents = realCostCents
+			h.Set(realCostCents)
 		}
 		return &aiservice.ChatResponse{
 			Content: "answer",
@@ -1094,8 +1095,8 @@ func TestContextBudgetCredits_ReconcileUsesActualCostFromBillingHolder(t *testin
 	//
 	// We cannot directly inspect the actualCredits argument from the mock (the
 	// existing mockCreditService doesn't capture it), so we verify indirectly:
-	// the holder was set to realCostCents and the code path in
-	// finalizeReservationIfNeeded prefers holder.CostCents when > 0.
+	// the holder was Set to realCostCents and the code path in
+	// finalizeReservationIfNeeded prefers holder.Get() when ok=true (F-7 fix).
 	// The test therefore verifies the holder mechanism by checking the holder
 	// is accessible from the ctx that ContextBudgetCredits passes to finalize.
 	//
