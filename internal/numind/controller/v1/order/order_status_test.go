@@ -179,6 +179,37 @@ func TestGetOrderStatus_BeneficiaryCanView(t *testing.T) {
 	assert.Equal(t, model.OrderStatusPaid, env.Data.Status)
 }
 
+// TestGetOrderStatus_ParentCanViewChildOrder verifies parent can view child's order status.
+func TestGetOrderStatus_ParentCanViewChildOrder(t *testing.T) {
+	db := newOrderStatusTestDB(t)
+	ds := store.NewTestStore(db)
+
+	parentID := uint(100)
+	childID := uint(200)
+	seedUser(t, db, parentID, nil)
+	pID := parentID
+	seedUser(t, db, childID, &pID) // child of parent
+
+	orderID := seedOrder(t, db, childID, parentID, model.OrderStatusPending)
+
+	r := newOrderStatusRouter(t, ds, makeOrderUser(parentID)) // parent token
+	req := httptest.NewRequest(http.MethodGet, "/v1/orders/"+uint64Str(orderID)+"/status", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+	var env struct {
+		Code int                          `json:"code"`
+		Data orderctl.OrderStatusResponse `json:"data"`
+	}
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
+
+	assert.Equal(t, 0, env.Code)
+	assert.Equal(t, orderID, env.Data.OrderID)
+	assert.Equal(t, model.OrderStatusPending, env.Data.Status)
+}
+
 // TestGetOrderStatus_UnrelatedUserForbidden verifies a stranger gets 403.
 func TestGetOrderStatus_UnrelatedUserForbidden(t *testing.T) {
 	db := newOrderStatusTestDB(t)
