@@ -342,8 +342,14 @@ func (b *creditBiz) RechargeWithOrderTx(ctx context.Context, tx *gorm.DB, userID
 			})
 		}
 	case model.ProductTypeBooster:
-		packages = []model.CreditPackage{
-			{
+		// months 参数在 booster 路径中语义为 quantity（购买份数），每份 600 积分。
+		// 每份独立创建一个 CreditPackage，各自有独立的 90 天到期时间（FIFO 扣减）。
+		quantity := months
+		if quantity < 1 {
+			quantity = 1
+		}
+		for i := 0; i < quantity; i++ {
+			packages = append(packages, model.CreditPackage{
 				UserID:        userID,
 				Type:          model.CreditTypeBooster,
 				TotalCredits:  600,
@@ -352,7 +358,7 @@ func (b *creditBiz) RechargeWithOrderTx(ctx context.Context, tx *gorm.DB, userID
 				ExpiresAt:     now.Add(90 * 24 * time.Hour),
 				OrderID:       &orderID,
 				Status:        model.CreditPackageActive,
-			},
+			})
 		}
 	default:
 		return fmt.Errorf("unsupported product type: %s", productType)

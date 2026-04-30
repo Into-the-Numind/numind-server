@@ -82,10 +82,22 @@ func IsInternalCaller(ctx context.Context) bool {
 	return v
 }
 
-// CreateOrder 创建支付订单
+// CreateOrder 创建支付订单。
+// months 参数：月订阅订单中表示购买月数（1-12）；booster 订单中表示购买份数（quantity），
+// 会被写入 Order.Quantity 字段，Order.Months 对 booster 订单保持 0（无业务意义）。
 func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, productType string, months int, payChannel string) (*model.Order, error) {
-	// 校验产品类型
-	amount := model.GetProductAmount(productType, months)
+	// 校验产品类型，并计算金额
+	var amount int64
+	if productType == model.ProductTypeBooster {
+		// booster 金额按份数计算，months 参数语义为 quantity
+		quantity := months
+		if quantity < 1 {
+			quantity = 1
+		}
+		amount = model.GetBoosterAmount(quantity)
+	} else {
+		amount = model.GetProductAmount(productType, months)
+	}
 	if amount <= 0 {
 		return nil, fmt.Errorf("invalid product type: %s", productType)
 	}
@@ -160,9 +172,18 @@ func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, prod
 		}
 	}
 
-	// 生成订单号
+	// 生成订单号和产品名称
 	orderNo := generateOrderNo()
-	productName := model.GetProductName(productType, months)
+	var productName string
+	if productType == model.ProductTypeBooster {
+		quantity := months
+		if quantity < 1 {
+			quantity = 1
+		}
+		productName = model.GetBoosterProductName(quantity)
+	} else {
+		productName = model.GetProductName(productType, months)
+	}
 
 	// 调用支付渠道创建预付单
 	var codeURL string
@@ -190,17 +211,29 @@ func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, prod
 	}
 
 	// 创建订单记录
+	// 对 booster 订单：Quantity = 购买份数（months 参数），Months = 0（无业务意义）
+	// 对其他订单：Months = months（购买月数），Quantity = 1（默认，无业务意义）
 	order := &model.Order{
 		OrderNo:     orderNo,
 		UserID:      userID,
 		PayerID:     payerID,
 		ProductType: productType,
-		Months:      months,
 		Amount:      amount,
 		PayChannel:  payChannel,
 		PayStatus:   model.OrderStatusPending,
 		CodeURL:     codeURL,
 		ExpiredAt:   time.Now().Add(30 * time.Minute),
+	}
+	if productType == model.ProductTypeBooster {
+		quantity := months
+		if quantity < 1 {
+			quantity = 1
+		}
+		order.Quantity = quantity
+		order.Months = 0 // 无业务意义，明确置 0 避免混淆
+	} else {
+		order.Months = months
+		order.Quantity = 1 // 默认值，非 booster 订单无业务意义
 	}
 
 	if err := b.ds.Orders().Create(ctx, order); err != nil {
@@ -279,7 +312,12 @@ func (b *paymentBiz) fulfillOrder(ctx context.Context, orderNo string, tradeNo s
 		}
 
 		// 发放积分包（使用同一个事务）
-		if err := b.creditBiz.RechargeWithOrderTx(ctx, tx, order.UserID, order.ID, order.ProductType, order.Months); err != nil {
+		// booster 订单读 order.Quantity（购买份数）；月订阅/trial 读 order.Months（购买月数）
+		monthsOrQuantity := order.Months
+		if order.ProductType == model.ProductTypeBooster {
+			monthsOrQuantity = order.Quantity
+		}
+		if err := b.creditBiz.RechargeWithOrderTx(ctx, tx, order.UserID, order.ID, order.ProductType, monthsOrQuantity); err != nil {
 			return fmt.Errorf("recharge credits: %w", err)
 		}
 
