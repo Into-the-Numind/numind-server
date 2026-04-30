@@ -20,7 +20,6 @@ import (
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/numind/biz/salesrag/port"
-	docparser "numind-server/internal/pkg/parser"
 	"numind-server/internal/numind/biz/salesrag/seed"
 	salesragservice "numind-server/internal/numind/biz/salesrag/service"
 	sopbiz "numind-server/internal/numind/biz/sop"
@@ -31,6 +30,7 @@ import (
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/log"
+	docparser "numind-server/internal/pkg/parser"
 	"numind-server/internal/pkg/pricing"
 
 	"github.com/spf13/viper"

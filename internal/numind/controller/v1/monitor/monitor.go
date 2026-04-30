@@ -742,4 +742,3 @@ func (ctrl *MonitorController) AdminUpdateUserConfig(c *gin.Context) {
 
 	core.WriteResponse(c, nil, gin.H{"message": "ok"})
 }
-

@@ -1009,9 +1009,9 @@ func TestPopulateLLMUsage_TypedNilResponse_NoPanic(t *testing.T) {
 	// Simulate Go typed-nil interface pattern:
 	//   var cr *aiservice.ChatResponse // nil
 	//   var resp interface{} = cr      // interface{} wrapping typed-nil — NOT == nil
-	var cr *aiservice.ChatResponse
-	var resp interface{} = cr
-	if resp == nil {
+	var cr *aiservice.ChatResponse //nolint:staticcheck
+	var resp interface{} = cr      //nolint:staticcheck
+	if resp == nil {               //nolint:staticcheck
 		t.Fatal("sanity: typed-nil interface should not equal nil (Go semantics)")
 	}
 

@@ -83,19 +83,19 @@ type TaskBinding struct {
 // resolvedRouteRow is the internal flat struct populated by the JOIN query in GetResolvedRoute.
 // It is not exported; callers receive ResolvedRoute (see registry.go).
 type resolvedRouteRow struct {
-	ServiceID       uint64
-	ModelKey        string
-	DisplayName     string
-	ServiceType     string
-	CapabilityJSON  model.JSONMap
-	LatencyTier     string
-	QualityTier     string
-	DeprecatedAt    *time.Time
-	IsActive        bool
-	ProviderID      uint64
-	ProviderName    string
-	ProviderBaseURL string
-	ProviderAPIKey  string
+	ServiceID        uint64
+	ModelKey         string
+	DisplayName      string
+	ServiceType      string
+	CapabilityJSON   model.JSONMap
+	LatencyTier      string
+	QualityTier      string
+	DeprecatedAt     *time.Time
+	IsActive         bool
+	ProviderID       uint64
+	ProviderName     string
+	ProviderBaseURL  string
+	ProviderAPIKey   string
 	ProviderModelID  string
 	RoutePriority    int
 	RouteIsActive    bool

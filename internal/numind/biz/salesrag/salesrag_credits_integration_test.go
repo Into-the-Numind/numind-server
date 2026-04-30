@@ -238,7 +238,7 @@ func newTestSalesragBiz(ds store.IStore, creditSvc credit.ICreditService, pc pri
 // ctxWithRequestID installs an X-Request-ID on a context so the idempotency
 // key derivation can run end-to-end.
 func ctxWithRequestID(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, known.XRequestIDKey, id)
+	return context.WithValue(ctx, known.XRequestIDKey, id) //nolint:staticcheck // SA1029: XRequestIDKey is a package-level string constant shared with middleware; changing it to a custom type requires coordinated change across multiple packages
 }
 
 // --- Test 1: happy path — credits user passes pre-flight, Reserve delegated to Gateway ---

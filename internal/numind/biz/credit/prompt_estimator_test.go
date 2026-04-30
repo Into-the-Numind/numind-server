@@ -148,7 +148,7 @@ func TestPromptEstimator_SalesragChat_SumsRecentMessages(t *testing.T) {
 	sess := &model.SalesSession{UserID: 1, Title: "x", Status: "active"}
 	require.NoError(t, db.Create(sess).Error)
 	msgs := []model.SalesMessage{
-		{SessionID: sess.ID, UserID: 1, Role: "user", Content: "你好吗"}, // 3
+		{SessionID: sess.ID, UserID: 1, Role: "user", Content: "你好吗"},      // 3
 		{SessionID: sess.ID, UserID: 1, Role: "assistant", Content: "Hi!"}, // 3
 	}
 	for i := range msgs {

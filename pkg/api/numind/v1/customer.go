@@ -26,8 +26,8 @@ type SubUserInfo struct {
 
 	// Task 20 fields: 前端 GrantMembershipModal 双状态 + trial tab graying
 	MembershipState SubUserMembershipState `json:"membership_state"`
-	HasUsedTrial    bool                   `json:"has_used_trial"`    // 是否曾用过 trial 包（任意状态）
-	CycleRemaining  int64                  `json:"cycle_remaining"`   // 订阅+trial 剩余积分（不含 booster）
+	HasUsedTrial    bool                   `json:"has_used_trial"`  // 是否曾用过 trial 包（任意状态）
+	CycleRemaining  int64                  `json:"cycle_remaining"` // 订阅+trial 剩余积分（不含 booster）
 }
 
 // ListSubUsersResponse 获取子客户列表响应
@@ -104,7 +104,7 @@ type CreateCustomerRequest struct {
 	Username string `json:"username" binding:"required" valid:"alphanum,required,stringlength(1|255)"`
 	Password string `json:"password" binding:"required" valid:"required,stringlength(6|18)"`
 	Nickname string `json:"nickname" valid:"stringlength(0|255)"`
-	Phone    string `json:"phone"`                                                          // Optional for sub-users
+	Phone    string `json:"phone"`                                                                // Optional for sub-users
 	Tier     string `json:"tier,omitempty" binding:"omitempty,oneof=free trial standard premium"` // 可选: "trial"/"standard"/"premium"，默认 free
-	Months   int    `json:"months,omitempty" binding:"omitempty,min=1,max=12"`              // 当 Tier 不为空/free 时必填, 1-12
+	Months   int    `json:"months,omitempty" binding:"omitempty,min=1,max=12"`                    // 当 Tier 不为空/free 时必填, 1-12
 }

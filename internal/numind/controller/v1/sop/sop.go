@@ -2311,7 +2311,6 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 	deepThinking := false
 	var deepThinkingPtr *bool
 	if req.DeepThinking != nil {
-		deepThinking = *req.DeepThinking
 		deepThinkingPtr = req.DeepThinking
 	}
 

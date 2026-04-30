@@ -94,10 +94,10 @@ func TestParseNotifyRequest_E2E_BypassDeniedInProd(t *testing.T) {
 	viper.Set("runmode", "release")
 
 	client := &WechatPayClient{
-		appID:        "test_app",
-		mchID:        "test_mch",
-		apiV3Key:     "test_key",
-		wechatPubKey: nil,
+		appID:          "test_app",
+		mchID:          "test_mch",
+		apiV3Key:       "test_key",
+		wechatPubKey:   nil,
 		certDownloader: nil,
 	}
 
@@ -128,10 +128,10 @@ func TestParseNotifyRequest_E2E_BypassDisabledByDefault(t *testing.T) {
 	viper.Set("runmode", "debug")
 
 	client := &WechatPayClient{
-		appID:        "test_app",
-		mchID:        "test_mch",
-		apiV3Key:     "test_key",
-		wechatPubKey: nil,
+		appID:          "test_app",
+		mchID:          "test_mch",
+		apiV3Key:       "test_key",
+		wechatPubKey:   nil,
 		certDownloader: nil,
 	}
 

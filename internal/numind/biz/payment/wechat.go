@@ -25,13 +25,13 @@ import (
 
 // WechatPayClient wraps the WeChat Pay SDK client for Native payment.
 type WechatPayClient struct {
-	client       *core.Client
-	appID        string
-	mchID        string
-	apiV3Key     string
-	notifyURL    string
-	pubKeyID     string
-	wechatPubKey *rsa.PublicKey
+	client         *core.Client
+	appID          string
+	mchID          string
+	apiV3Key       string
+	notifyURL      string
+	pubKeyID       string
+	wechatPubKey   *rsa.PublicKey
 	certDownloader *downloader.CertificateDownloader // 用于旧证书模式验签（灰度期兼容）
 }
 
@@ -52,11 +52,11 @@ func NewWechatPayClient() (*WechatPayClient, error) {
 	}
 
 	wc := &WechatPayClient{
-		appID:    appID,
-		mchID:    mchID,
-		apiV3Key: apiV3Key,
+		appID:     appID,
+		mchID:     mchID,
+		apiV3Key:  apiV3Key,
 		notifyURL: notifyURL,
-		pubKeyID: pubKeyID,
+		pubKeyID:  pubKeyID,
 	}
 
 	ctx := context.Background()

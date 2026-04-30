@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	admin_ai "numind-server/internal/numind/controller/v1/admin_ai"
 	"numind-server/internal/numind/biz/aiservice_admin"
+	admin_ai "numind-server/internal/numind/controller/v1/admin_ai"
 	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/model"
