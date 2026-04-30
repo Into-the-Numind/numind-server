@@ -64,6 +64,17 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 		return nil, err
 	}
 
+	// 批量收集 userID，一次查询拿所有子用户的会员状态（避免 N+1）
+	userIDs := make([]uint, 0, len(users))
+	for _, u := range users {
+		userIDs = append(userIDs, u.ID)
+	}
+	membershipBatch, err := c.ds.Credits().GetMembershipStateBatch(ctx, userIDs)
+	if err != nil {
+		log.C(ctx).Warnw("GetMembershipStateBatch failed, will use zero values", "err", err)
+		membershipBatch = map[uint]*store.MembershipStateRow{}
+	}
+
 	// 转换为响应格式
 	subUsers := make([]v1.SubUserInfo, 0, len(users))
 	for _, user := range users {
@@ -84,6 +95,22 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 		creditBalance, _ := c.ds.Credits().GetBalance(ctx, user.ID)
 		creditExpires, _ := c.ds.Credits().GetLatestCreditExpiry(ctx, user.ID)
 
+		// membership_state + has_used_trial + cycle_remaining（Task 20 前端依赖字段）
+		ms := membershipBatch[user.ID]
+		var membershipState v1.SubUserMembershipState
+		var hasUsedTrial bool
+		var cycleRemaining int64
+		if ms != nil {
+			membershipState = v1.SubUserMembershipState{
+				HasActiveTrial:        ms.HasActiveTrial,
+				HasActiveSubscription: ms.HasActiveSubscription,
+				TrialExpiresAt:        ms.TrialExpiresAt,
+				SubscriptionExpiresAt: ms.SubscriptionExpiresAt,
+			}
+			hasUsedTrial = ms.HasUsedTrial
+			cycleRemaining = ms.SubRemain
+		}
+
 		subUsers = append(subUsers, v1.SubUserInfo{
 			UserID:              user.ID,
 			Username:            user.Username,
@@ -98,6 +125,9 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 			RemainingSopRuns:    user.GetRemainingSOPRuns(),
 			CreditBalance:       creditBalance,
 			CreditExpires:       creditExpires,
+			MembershipState:     membershipState,
+			HasUsedTrial:        hasUsedTrial,
+			CycleRemaining:      cycleRemaining,
 		})
 	}
 

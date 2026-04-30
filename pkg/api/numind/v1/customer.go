@@ -1,5 +1,13 @@
 package v1
 
+// SubUserMembershipState 子用户会员订阅状态（Task 20 frontend dependency）
+type SubUserMembershipState struct {
+	HasActiveTrial        bool   `json:"has_active_trial"`
+	HasActiveSubscription bool   `json:"has_active_subscription"`
+	TrialExpiresAt        string `json:"trial_expires_at,omitempty"`        // YYYY-MM-DD, 无则省略
+	SubscriptionExpiresAt string `json:"subscription_expires_at,omitempty"` // YYYY-MM-DD, 无则省略
+}
+
 // SubUserInfo 子用户信息
 type SubUserInfo struct {
 	UserID              uint   `json:"user_id"`
@@ -13,8 +21,13 @@ type SubUserInfo struct {
 	MonthlySopRuns      int    `json:"monthly_sop_runs"`
 	AuthorizedTemplates int    `json:"authorized_templates"`
 	RemainingSopRuns    int    `json:"remaining_sop_runs"` // 剩余运行次数
-	CreditBalance       int64  `json:"credit_balance"`     // 额度余额
+	CreditBalance       int64  `json:"credit_balance"`     // 额度余额（total balance incl. booster）
 	CreditExpires       string `json:"credit_expires"`     // 最晚额度包到期时间
+
+	// Task 20 fields: 前端 GrantMembershipModal 双状态 + trial tab graying
+	MembershipState SubUserMembershipState `json:"membership_state"`
+	HasUsedTrial    bool                   `json:"has_used_trial"`    // 是否曾用过 trial 包（任意状态）
+	CycleRemaining  int64                  `json:"cycle_remaining"`   // 订阅+trial 剩余积分（不含 booster）
 }
 
 // ListSubUsersResponse 获取子客户列表响应
