@@ -97,20 +97,30 @@ ORDER BY user_id, first_started_at;
 -- ─────────────────────────────────────────────────────────────────────────────
 
 SELECT '=== C. Trial grant preview (earliest trial per user) ===' AS section;
+-- Original used FIRST_VALUE() OVER (...) mixed with GROUP BY user_id, which
+-- MySQL 8.0 only_full_group_by rejects (ERROR 1055). Rewritten with CTE:
+-- trial_ranked isolates the earliest row per user via ROW_NUMBER(), then
+-- trial_first filters to rn=1 — no GROUP BY needed, semantics identical.
+WITH trial_ranked AS (
+  SELECT *,
+    ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY activated_at) AS rn
+  FROM credit_package
+  WHERE type = 'trial'
+),
+trial_first AS (
+  SELECT user_id, activated_at, expires_at, remain_credits, grant_source, granter_user_id
+  FROM trial_ranked
+  WHERE rn = 1
+)
 SELECT
-  user_id,
-  MIN(activated_at)    AS granted_at,
-  MIN(expires_at)      AS expires_at,
-  -- credits_remaining = remain_credits of that earliest row
-  FIRST_VALUE(remain_credits) OVER (
-    PARTITION BY user_id ORDER BY activated_at
-  )                    AS credits_remaining,
-  MIN(grant_source)    AS source,
-  MIN(granter_user_id) AS granter_user_id
-FROM credit_package
-WHERE type = 'trial'
-GROUP BY user_id
-ORDER BY user_id;
+  tf.user_id,
+  tf.activated_at         AS granted_at,
+  tf.expires_at           AS expires_at,
+  tf.remain_credits       AS credits_remaining,
+  tf.grant_source         AS source,
+  tf.granter_user_id
+FROM trial_first tf
+ORDER BY tf.user_id;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- §D  BOOSTER AGGREGATE PREVIEW
