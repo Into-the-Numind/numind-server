@@ -212,8 +212,7 @@ features:
       - "2026-04-28: 用户选方案 B（is_active + deleted_at 软删除），不选方案 A（单一 is_active）也不选 C（hard delete）。理由：A 把'停用'和'删除'语义合并丢失'永久退场'概念；C 硬删会破坏历史 usage_record/credit_reservation 的 service_id 外键引用，月度财务对账拉不到名字。B 是 GORM 标准 soft delete 模式，零代码就能让前端自动隐藏，且历史数据完整可审计。"
       - "2026-04-28: 用户明确说'当下只聚焦 context-budget-compression feature，本项推迟做'。当前阶段 backlog，不安排执行。"
     sub_issues:
-      - "ServiceEdit.vue Update payload 把 is_active=false 写不进 DB。怀疑是 GORM `default:true` bool 的 Update 路径变体（项目 CLAUDE.md §6 已记录 Create 路径有此坑，Update 可能没兜底）。证据：用户在 prod admin UI 取消勾选'启用此服务'保存后，DB SELECT 仍是 is_active=1。需要排查 Update 路径，加 UpdateColumn 兜底或改用 *bool 指针字段。本 sub-issue 在主 feature 启动前必须先解决，否则换啥设计都白搭。"
-    blockers:
-      - "需要先排查并修复 ServiceEdit.vue Update is_active=false 写不进 DB 的 bug（sub_issue 1）。"
+      - "[RESOLVED 2026-04-30] ServiceEdit.vue Update payload is_active=false 写不进 DB 的假设。经过系统排查，Update 路径用 db.Save()（非 db.Updates(struct)）— GORM v1.30.0 的 Save() 内部显式 Select '*'，强制所有字段进 UPDATE，零值 bool 不被跳过。排查确认：前端发送 is_active=false（JSON bool）、controller 用 *bool 指针绑定（nil 判断正确）、store 层 db.Save(svc) 正确持久化。已加回归测试 TestStore_SaveService_UpdateIsActiveFalse（internal/pkg/aiservice/registry/store_test.go）防止 GORM 升级引入回归。全项目 Update 路径系统审查见 .claude/rules/database.md §6b，所有路径均安全。"
+    blockers: []
     created_at: "2026-04-28T22:00:00+08:00"
     completed_at: null
