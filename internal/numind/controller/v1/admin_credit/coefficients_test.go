@@ -116,7 +116,7 @@ func TestListCoefficients_DefaultActive(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 
 	var env struct {
-		Code int                              `json:"code"`
+		Code int                               `json:"code"`
 		Data admin_credit.ListCoefficientsResp `json:"data"`
 	}
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
@@ -151,7 +151,7 @@ func TestListCoefficients_AllFlag(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 
 	var env struct {
-		Code int                              `json:"code"`
+		Code int                               `json:"code"`
 		Data admin_credit.ListCoefficientsResp `json:"data"`
 	}
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
@@ -205,7 +205,7 @@ func TestListCoefficientHistory_ScopedAndOrdered(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 
 	var env struct {
-		Code int                       `json:"code"`
+		Code int                      `json:"code"`
 		Data admin_credit.HistoryResp `json:"data"`
 	}
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))

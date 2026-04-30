@@ -58,9 +58,9 @@ var providerSeedEntries = []providerSeedEntry{
 		cfgKeySecretKey: "ai_providers.baidu.secret_key",
 	},
 	{
-		name:              "bailian-file",
-		cfgKeyAPIKey:      "ai_providers.bailian.api_key",
-		cfgKeyBaseURL:     "ai_providers.bailian.base_url",
+		name:          "bailian-file",
+		cfgKeyAPIKey:  "ai_providers.bailian.api_key",
+		cfgKeyBaseURL: "ai_providers.bailian.base_url",
 		// workspace_id is stored in base_url as "|workspace=<id>" suffix so
 		// it survives in the DB without a schema change.  Adapters that need it
 		// (Tasks 9-11) should parse it from base_url using strings.Split("|").

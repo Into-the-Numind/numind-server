@@ -34,11 +34,11 @@ type B2BBillingReport struct {
 
 // ParentBillingRow aggregates every grant made by one parent in the month.
 type ParentBillingRow struct {
-	ParentUserID   uint           `json:"parent_user_id"`
-	ParentUsername string         `json:"parent_username"`
-	GrantsCount    int            `json:"grants_count"`
-	AmountCents    int64          `json:"amount_cents"`
-	Details        []GrantDetail  `json:"details"`
+	ParentUserID   uint          `json:"parent_user_id"`
+	ParentUsername string        `json:"parent_username"`
+	GrantsCount    int           `json:"grants_count"`
+	AmountCents    int64         `json:"amount_cents"`
+	Details        []GrantDetail `json:"details"`
 }
 
 // GrantDetail is one credit_package row rendered for UI display.

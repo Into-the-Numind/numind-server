@@ -18,9 +18,9 @@ import (
 )
 
 const (
-	MaxDocsPerKB     = 10          // 每个知识库最多 10 份文档
-	MaxFilesPerBatch = 5           // 单次最多上传 5 个文件
-	MaxFileSize      = 50 << 20    // 单文件最大 50MB
+	MaxDocsPerKB     = 10       // 每个知识库最多 10 份文档
+	MaxFilesPerBatch = 5        // 单次最多上传 5 个文件
+	MaxFileSize      = 50 << 20 // 单文件最大 50MB
 )
 
 // CreateKBReq 创建知识库请求

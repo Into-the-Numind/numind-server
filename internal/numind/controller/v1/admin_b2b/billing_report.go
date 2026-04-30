@@ -10,7 +10,8 @@ import (
 )
 
 // AdminB2BController serves the admin-side B2B monthly billing report.
-//   GET /v1/admin/b2b-billing-report?month=YYYY-MM
+//
+//	GET /v1/admin/b2b-billing-report?month=YYYY-MM
 type AdminB2BController struct {
 	biz b2b_billing.IB2BBillingBiz
 }
@@ -23,7 +24,8 @@ func New(biz b2b_billing.IB2BBillingBiz) *AdminB2BController {
 // GetBillingReport handles GET /v1/admin/b2b-billing-report.
 //
 // Query param:
-//   month — required, format YYYY-MM (e.g. "2026-04"). Validated by biz.
+//
+//	month — required, format YYYY-MM (e.g. "2026-04"). Validated by biz.
 func (ctrl *AdminB2BController) GetBillingReport(c *gin.Context) {
 	month := c.Query("month")
 	if month == "" {

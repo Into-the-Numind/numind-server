@@ -28,7 +28,6 @@ import (
 	"numind-server/internal/pkg/billing"
 	cb "numind-server/internal/pkg/contextbudget"
 	"numind-server/internal/pkg/errno"
-	"numind-server/internal/pkg/known"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
@@ -279,23 +278,6 @@ func NewSalesRAGBizWithCredits(
 		// (test fixtures) acquireSalesragCredits falls back to passing them,
 		// which hits the ('llm_chat','','') global pricing row when seeded.
 	}
-}
-
-// getRequestUUIDFromCtx extracts the X-Request-ID value the RequestID
-// middleware stores on the Gin context (and which the controller forwards
-// via `middleware.NewContextWithUserID(c.Request.Context(), ...)` so the
-// value must come from the Gin context before it is detached).
-//
-// Returns an empty string when the middleware is missing; callers that
-// build an idempotency key on top MUST gate on empty-string to avoid a
-// uniqueness-violating blank key.
-func getRequestUUIDFromCtx(ctx context.Context) string {
-	if v := ctx.Value(known.XRequestIDKey); v != nil {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
 }
 
 // wrapCreditError maps ICreditService denial errors onto the errno domain

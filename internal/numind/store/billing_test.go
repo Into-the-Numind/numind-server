@@ -91,7 +91,7 @@ func TestCreatePricingRule_IsActiveTrue(t *testing.T) {
 // id=352-363, 2026-04-20/21). The original SQL used
 // Order(gorm.Expr("CASE ... END", args...)) which GORM v2 silently drops when
 // chained with First(), leaving just `ORDER BY id LIMIT 1`. When a global
-// fallback row (provider='', model='') gets a lower id than the model-specific
+// fallback row (provider=”, model=”) gets a lower id than the model-specific
 // row — the common case, because the fallback was seeded earlier than per-model
 // aihubmix rows — GetPricingRule returned the fallback and every aihubmix call
 // billed at ¥3/¥10 instead of ¥21.60/¥108.

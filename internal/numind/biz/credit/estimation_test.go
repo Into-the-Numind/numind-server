@@ -166,7 +166,7 @@ func TestEstimateCredits_ClampsToAtLeastOne(t *testing.T) {
 
 // TestEstimateCredits_FallbackLookup verifies that when the exact
 // (provider, model, operation) is NOT seeded but the global fallback row
-// ('', '', '') IS seeded, the fallback is returned.
+// (”, ”, ”) IS seeded, the fallback is returned.
 func TestEstimateCredits_FallbackLookup(t *testing.T) {
 	db := newEstimationTestDB(t)
 	ds := store.NewTestStore(db)
@@ -327,11 +327,11 @@ func TestEstimateCredits_ManualChecksum(t *testing.T) {
 	outputPrice := 800.0
 	buffer := 0.2
 
-	promptTokens := math.Ceil(promptChars * char2tok)           // 1500
-	completionTokens := math.Ceil(promptTokens * compPrompt)    // 750
+	promptTokens := math.Ceil(promptChars * char2tok)                                // 1500
+	completionTokens := math.Ceil(promptTokens * compPrompt)                         // 750
 	costYuan := (promptTokens*inputPrice + completionTokens*outputPrice) / 1_000_000 // 0.9
-	costCentsRoundTrip := int64(math.Round(costYuan * 100))     // 90
-	expected := int64(math.Ceil(float64(costCentsRoundTrip) * (1 + buffer))) // 108
+	costCentsRoundTrip := int64(math.Round(costYuan * 100))                          // 90
+	expected := int64(math.Ceil(float64(costCentsRoundTrip) * (1 + buffer)))         // 108
 
 	assert.EqualValues(t, 108, expected,
 		"doc-header math should stay in sync with the formula")
