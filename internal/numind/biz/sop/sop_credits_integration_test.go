@@ -94,7 +94,8 @@ CREATE TABLE IF NOT EXISTS credit_reservation (
     estimated_completion_tokens INTEGER NOT NULL DEFAULT 0,
     provider TEXT NOT NULL DEFAULT '',
     model TEXT NOT NULL DEFAULT '',
-    context_budget_event_id INTEGER
+    context_budget_event_id INTEGER,
+    user_type_multiplier REAL NOT NULL DEFAULT 1.0
 );`).Error)
 	require.NoError(t, db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uk_idempotency_key ON credit_reservation(idempotency_key);`).Error)
 	require.NoError(t, db.Exec(`

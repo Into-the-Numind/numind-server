@@ -41,7 +41,8 @@ func migrateReservationSchema(t *testing.T, db *gorm.DB) {
 			estimated_completion_tokens INTEGER NOT NULL DEFAULT 0,
 			provider                    TEXT    NOT NULL DEFAULT '',
 			model                       TEXT    NOT NULL DEFAULT '',
-			context_budget_event_id     INTEGER
+			context_budget_event_id     INTEGER,
+			user_type_multiplier        REAL    NOT NULL DEFAULT 1.0
 		)`,
 		`CREATE UNIQUE INDEX uk_idempotency_key ON credit_reservation (idempotency_key)`,
 		`CREATE INDEX idx_user_status ON credit_reservation (user_id, status, created_at)`,
@@ -81,6 +82,8 @@ func TestCreditReservation_ColumnsAndTables(t *testing.T) {
 		// context-budget-compression extension columns (spec §3.6)
 		"estimation_source", "token_profile_id", "estimated_prompt_tokens",
 		"estimated_completion_tokens", "provider", "model", "context_budget_event_id",
+		// admin-credit-user-type-config: per-user-type burn-rate multiplier
+		"user_type_multiplier",
 	} {
 		assert.True(t, db.Migrator().HasColumn(&CreditReservation{}, col),
 			"credit_reservation should have column %s", col)
