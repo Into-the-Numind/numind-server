@@ -229,6 +229,71 @@ func TestRefund_WalksSeqAscAndRestoresPackages(t *testing.T) {
 	assert.EqualValues(t, 650, acc.Balance)
 }
 
+// --- F-9 regression: Refund with reason='provider_err' must succeed ---
+//
+// Verifies that Refund() accepts 'provider_err' as finalize_reason without
+// returning an error. In production this goes through MySQL ENUM; here the
+// test runs against SQLite (plain TEXT), which doesn't enforce ENUM constraints.
+// The test therefore exercises code-level correctness (no error returned, row
+// status transitions to 'refunded', finalize_reason='provider_err' stored) but
+// CANNOT reproduce the MySQL Error 1265 that triggered this bug — that can only
+// be caught by the migration test or integration tests against a live MySQL
+// instance. The comment stands as documentation of the limitation.
+func TestRefund_ProviderErr_SucceedsAndPersistsReason(t *testing.T) {
+	now := time.Now()
+	svc, ds, rsv := setupReservation(t, 450, 120, []model.CreditPackage{
+		{Type: model.CreditTypeSubscription, TotalCredits: 500, RemainCredits: 500,
+			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
+	})
+
+	// This is the exact call path that triggered F-9: context_budget.go sets
+	// fi.ErrorCode = "provider_err" → finalizeReservationIfNeeded passes it
+	// as reason to Refund() → MySQL rejects with Error 1265.
+	err := svc.Refund(context.Background(), rsv.ID, "provider_err")
+	require.NoError(t, err, "Refund with reason='provider_err' must not error (F-9 regression)")
+
+	var row model.CreditReservation
+	require.NoError(t, ds.DB().First(&row, rsv.ID).Error)
+	assert.Equal(t, "refunded", row.Status)
+	require.NotNil(t, row.FinalizeReason)
+	assert.Equal(t, "provider_err", *row.FinalizeReason,
+		"finalize_reason must be persisted as 'provider_err'")
+	require.NotNil(t, row.ReconciledAt,
+		"reconciled_at must be set on refund transition")
+
+	// Credits fully restored after refund
+	var acc model.CreditAccount
+	require.NoError(t, ds.DB().Where("user_id = ?", uint(450)).First(&acc).Error)
+	assert.EqualValues(t, 500, acc.Balance, "balance must be fully restored after refund")
+}
+
+// --- F-9 regression: Refund with context_budget_refund and nil_stream ---
+//
+// These are the other new ENUM values added by F-9 fix that also go through
+// finalizeReservationIfNeeded in context_budget.go.
+func TestRefund_ContextBudgetReasons_Succeed(t *testing.T) {
+	now := time.Now()
+
+	for _, reason := range []string{"context_budget_refund", "nil_stream"} {
+		reason := reason // capture for subtest
+		t.Run(reason, func(t *testing.T) {
+			svc, ds, rsv := setupReservation(t, 451, 80, []model.CreditPackage{
+				{Type: model.CreditTypeSubscription, TotalCredits: 500, RemainCredits: 500,
+					ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
+			})
+
+			err := svc.Refund(context.Background(), rsv.ID, reason)
+			require.NoError(t, err, "Refund with reason=%q must not error (F-9 regression)", reason)
+
+			var row model.CreditReservation
+			require.NoError(t, ds.DB().First(&row, rsv.ID).Error)
+			assert.Equal(t, "refunded", row.Status)
+			require.NotNil(t, row.FinalizeReason)
+			assert.Equal(t, reason, *row.FinalizeReason)
+		})
+	}
+}
+
 // --- Task C.4: Refund idempotency ---
 
 func TestRefund_AlreadyFinalized_ReturnsSentinel(t *testing.T) {
