@@ -55,6 +55,7 @@ features:
       - numind-web-v3
     branches:
       numind-server: "feature/sop-chatbot-visibility-scope"
+      numind-web-v3: "feature/sop-chatbot-visibility-scope"
     artifacts:
       requirement: "numind-server/requirements/sop-chatbot-visibility-scope.md"
       proposal: "numind-server/proposals/sop-chatbot-visibility-scope-proposal.md"
@@ -62,9 +63,9 @@ features:
       plan: "numind-server/docs/superpowers/plans/2026-05-13-sop-chatbot-visibility-scope-plan.md"
     progress:
       total_tasks: 23
-      completed_tasks: 16
-      reviewed_tasks: 16
-      current_task: "S4 Phase 6 done (Task 16 测试补全, 29 visibility tests PASS含 -race, spec §10.2 13/14 覆盖). 后端 100% 完成. Phase 7 next (前端: Task 17 api/visibility.ts + Task 18 SubUserMultiSelectDialog + Task 19 VisibilityScopeCard)"
+      completed_tasks: 19
+      reviewed_tasks: 19
+      current_task: "S4 Phase 7 done (Tasks 17-19 前端基础组件: api/visibility.ts + SubUserMultiSelectDialog + VisibilityScopeCard, type-check+lint PASS). Phase 8 next (编辑页接入: Task 20 SOP edit + Task 21 chatbot edit)"
     rollback: null
     last_verified: null
     decisions:
