@@ -93,7 +93,8 @@ func installAdminRouters(g *gin.Engine) error {
 		adminGroup.PUT("/users/:id/tier", userCtrl.UpdateUserTier)
 		adminGroup.POST("/users/:id/reset-password", userCtrl.ResetPassword)
 		// Task 12 §5.3: admin 查任意用户余额（含 booster 字段）
-		adminGroup.GET("/users/:user_id/balance", adminCreditWithMembership.GetUserBalance)
+		// 用 :id 而非 :user_id 以避免 gin router 报错（同一前缀 /users/ 下不允许混用路径参数名）。
+		adminGroup.GET("/users/:id/balance", adminCreditWithMembership.GetUserBalance)
 	}
 
 	// SOP管理（复用已有的admin_sop控制器）
