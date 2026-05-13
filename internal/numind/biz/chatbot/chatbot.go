@@ -182,17 +182,29 @@ func (b *chatbotBiz) UpdateChatbot(ctx context.Context, userID uint, id uint, re
 	return nil
 }
 
-// DeleteChatbot 删除智能体配置（软删除），验证所有权
+// DeleteChatbot 删除智能体配置（软删除），同事务清理可见范围授权.
+//
+// EC-6 (sop-chatbot-visibility-scope spec §9): 实体删除时清理它的所有 visibility grant
+// 记录, 避免 grant 表残留指向不存在 chatbot 的孤儿数据. 软删 grant 保留审计.
+//
+// 与 SOP 对称 (sop.go DeleteTemplate, Task 14): 同事务模式.
 func (b *chatbotBiz) DeleteChatbot(ctx context.Context, userID uint, id uint) error {
 	_, err := b.getAndCheckOwnership(ctx, userID, id)
 	if err != nil {
 		return err
 	}
 
-	if err := b.ds.ChatbotConfig().Delete(ctx, id); err != nil {
-		return fmt.Errorf("DeleteChatbot: %w", err)
-	}
-	return nil
+	return b.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// EC-6: 软删该 chatbot 的所有 visibility grant
+		if err := b.ds.ChatbotVisibilityGrant().CleanupByEntity(ctx, tx, id); err != nil {
+			return fmt.Errorf("DeleteChatbot: cleanup visibility grants: %w", err)
+		}
+		// 既有: 软删 chatbot_config (GORM 默认软删, gorm.DeletedAt)
+		if err := tx.Delete(&model.ChatbotConfig{}, id).Error; err != nil {
+			return fmt.Errorf("DeleteChatbot: delete chatbot_config: %w", err)
+		}
+		return nil
+	})
 }
 
 // UpdateStatus 更新智能体状态，验证所有权和合法状态转换
