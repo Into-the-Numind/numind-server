@@ -60,9 +60,9 @@ features:
       plan: "numind-server/docs/superpowers/plans/2026-05-13-sop-chatbot-visibility-scope-plan.md"
     progress:
       total_tasks: 23
-      completed_tasks: 7
-      reviewed_tasks: 7
-      current_task: "S4 Phase 2 done (Tasks 5-7 biz layer reviewed PASS); Phase 3 next (Task 8 SOP visibility controller)"
+      completed_tasks: 10
+      reviewed_tasks: 10
+      current_task: "S4 Phase 3 done (Tasks 8-10 controller+router reviewed PASS); Phase 4 next (Task 11 ListVisibleTemplates 加 visibility 过滤层)"
     rollback: null
     last_verified: null
     decisions:
