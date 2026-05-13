@@ -800,7 +800,7 @@ func TestUpdateSopVisibility_Smoke(t *testing.T) {
 
     err := UpdateSopVisibility(ctx, s, 1, 100, true, []uint{10})
     require.NoError(t, err)
-    restricted, ids, err := GetSopVisibility(ctx, s, 100)
+    restricted, ids, err := GetSopVisibility(ctx, s, 1, 100)  // callerID=1 (owner)
     require.NoError(t, err)
     assert.True(t, restricted)
     assert.ElementsMatch(t, []uint{10}, ids)
@@ -861,7 +861,7 @@ func TestUpdateChatbotVisibility_Smoke(t *testing.T) {
 
     err := UpdateChatbotVisibility(ctx, s, 1, 200, true, []uint{10})
     require.NoError(t, err)
-    restricted, ids, err := GetChatbotVisibility(ctx, s, 200)
+    restricted, ids, err := GetChatbotVisibility(ctx, s, 1, 200)  // callerID=1 (owner)
     require.NoError(t, err)
     assert.True(t, restricted)
     assert.ElementsMatch(t, []uint{10}, ids)
@@ -1213,21 +1213,23 @@ git commit -m "feat(visibility-scope): inject visibility filter before run-permi
 grep -n "DeleteSubUser" internal/numind/biz/customer/customer.go
 ```
 
-- [ ] **Step 2: 在 WithTx 闭包内加 2 行清理**
+- [ ] **Step 2: 在事务闭包内加 2 行清理（使用项目既有事务模式）**
 
 ```go
-return b.store.WithTx(func(tx *gorm.DB) error {
+return b.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
     // NEW: 软删 visibility grants
-    if err := b.store.SopVisibilityGrant().CleanupBySubUser(ctx, tx, subUserID); err != nil {
+    if err := b.ds.SopVisibilityGrant().CleanupBySubUser(ctx, tx, subUserID); err != nil {
         return fmt.Errorf("cleanup sop visibility: %w", err)
     }
-    if err := b.store.ChatbotVisibilityGrant().CleanupBySubUser(ctx, tx, subUserID); err != nil {
+    if err := b.ds.ChatbotVisibilityGrant().CleanupBySubUser(ctx, tx, subUserID); err != nil {
         return fmt.Errorf("cleanup chatbot visibility: %w", err)
     }
     // ... 既有: 清理 user_template_permission, user_chatbot_permission, user ...
     return nil
 })
 ```
+
+> 注：实际字段名以既有 `customer biz` 为准（如 `b.ds` 或 `b.store`），不假设。S4 grep 现有 DeleteSubUser 函数定位事务和 store 引用变量名。
 
 - [ ] **Step 3: 测试用例**
 
@@ -1272,11 +1274,11 @@ git commit -m "feat(visibility-scope): inject CleanupBySubUser × 2 into DeleteS
 grep -n "DeleteSopTemplate\|func.*Delete.*[Tt]emplate" internal/numind/biz/sop/sop.go
 ```
 
-- [ ] **Step 2: 在事务内加清理**
+- [ ] **Step 2: 在事务内加清理（使用项目既有事务模式 b.ds.DB().Transaction）**
 
 ```go
-return b.store.WithTx(func(tx *gorm.DB) error {
-    if err := b.store.SopVisibilityGrant().CleanupByEntity(ctx, tx, sopID); err != nil {
+return b.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+    if err := b.ds.SopVisibilityGrant().CleanupByEntity(ctx, tx, sopID); err != nil {
         return fmt.Errorf("cleanup visibility on sop delete: %w", err)
     }
     // ... 既有 SOP 删除逻辑 ...
@@ -1321,8 +1323,10 @@ git commit -m "feat(visibility-scope): EC-6 cleanup visibility grants on sop tem
 grep -n "DeleteChatbot\|func.*Delete.*[Cc]hatbot" internal/numind/biz/chatbot/chatbot.go
 ```
 
+在 chatbot delete biz 函数中使用项目既有事务模式 `b.ds.DB().WithContext(ctx).Transaction(...)`，闭包内加：
+
 ```go
-if err := b.store.ChatbotVisibilityGrant().CleanupByEntity(ctx, tx, chatbotID); err != nil {
+if err := b.ds.ChatbotVisibilityGrant().CleanupByEntity(ctx, tx, chatbotID); err != nil {
     return fmt.Errorf("cleanup visibility on chatbot delete: %w", err)
 }
 ```
@@ -1436,7 +1440,7 @@ Expected: 全部 PASS。
 ```bash
 task lint
 git add internal/numind/biz/sop/visibility_test.go internal/numind/biz/chatbot/visibility_test.go
-git commit -m "test(visibility-scope): 13 unit test cases (full coverage per spec §10.2)"
+git commit -m "test(visibility-scope): 14 unit test cases (13 spec §10.2 + 1 concurrent PUT)"
 ```
 
 ---
