@@ -81,7 +81,7 @@ CREATE TABLE sop_visibility_grant (
   created_at DATETIME(3) NOT NULL,
   updated_at DATETIME(3) NOT NULL,
   deleted_at DATETIME(3) NULL,
-  UNIQUE KEY idx_svg_sub_template_unique (sub_user_id, sop_template_id, deleted_at),
+  UNIQUE KEY idx_svg_sub_template_unique (sub_user_id, sop_template_id),
   KEY idx_svg_parent_sub (parent_user_id, sub_user_id),
   KEY idx_svg_template (sop_template_id),
   KEY idx_svg_deleted (deleted_at)
@@ -90,10 +90,14 @@ CREATE TABLE sop_visibility_grant (
 ```
 
 **索引设计说明**：
-- `idx_svg_sub_template_unique` (sub_user_id, sop_template_id, deleted_at)：唯一约束，但允许"软删 → 重新授予"（每个软删记录的 deleted_at 不同，satisfy uniqueness）
+- `idx_svg_sub_template_unique` (sub_user_id, sop_template_id) — **不含 deleted_at**：MySQL 对 UNIQUE 含 NULL 的列允许多 NULL 共存会破坏 I-6 不变量。改用清晰的「(sub_user_id, sop_template_id) 全局唯一」策略，配合**双路径删除模式**（见 §4.1.6 + §5.3）：
+  - `UpdateSopVisibility` 路径：物理删除（`Unscoped().Delete`）旧记录后插入新记录，无 deleted_at 冲突
+  - `DeleteSubUser` / `DeleteSopTemplate` 路径：软删除（gorm.Model 默认行为）做审计；下次再有 UpdateSopVisibility 时，物理删除会清理掉这些软删记录
 - `idx_svg_parent_sub`：清理「某子用户所有 grant」用，DeleteSubUser 路径
-- `idx_svg_template`：列表查询「某 SOP 的全部 sub_user_ids」用，GET visibility 路径
+- `idx_svg_template`：列表查询「某 SOP 的全部 sub_user_ids」用，GET visibility 路径 + EC-6 实体删除路径
 - `idx_svg_deleted`：辅助软删过滤（GORM 标准实践）
+
+**为何不用 MySQL 部分唯一索引**：MySQL 8.0 不原生支持 `UNIQUE WHERE deleted_at IS NULL`（这是 PostgreSQL 特性），生成列方案过于复杂。双路径删除模式是更简洁、运维成本更低的选择。
 
 ### 2.3 新表 `chatbot_visibility_grant`
 
@@ -106,7 +110,7 @@ CREATE TABLE chatbot_visibility_grant (
   created_at DATETIME(3) NOT NULL,
   updated_at DATETIME(3) NOT NULL,
   deleted_at DATETIME(3) NULL,
-  UNIQUE KEY idx_cvg_sub_chatbot_unique (sub_user_id, chatbot_id, deleted_at),
+  UNIQUE KEY idx_cvg_sub_chatbot_unique (sub_user_id, chatbot_id),
   KEY idx_cvg_parent_sub (parent_user_id, sub_user_id),
   KEY idx_cvg_chatbot (chatbot_id),
   KEY idx_cvg_deleted (deleted_at)
@@ -126,8 +130,8 @@ import "gorm.io/gorm"
 type SopVisibilityGrant struct {
     gorm.Model
     ParentUserID  uint `gorm:"not null;index:idx_svg_parent_sub" json:"parent_user_id"`
-    SubUserID     uint `gorm:"not null;index:idx_svg_sub_template_unique,unique;index:idx_svg_parent_sub" json:"sub_user_id"`
-    SopTemplateID uint `gorm:"not null;index:idx_svg_sub_template_unique,unique;index:idx_svg_template" json:"sop_template_id"`
+    SubUserID     uint `gorm:"not null;uniqueIndex:idx_svg_sub_template_unique;index:idx_svg_parent_sub" json:"sub_user_id"`
+    SopTemplateID uint `gorm:"not null;uniqueIndex:idx_svg_sub_template_unique;index:idx_svg_template" json:"sop_template_id"`
 
     ParentUser  *User        `gorm:"foreignKey:ParentUserID;references:ID" json:"parent_user,omitempty"`
     SubUser     *User        `gorm:"foreignKey:SubUserID;references:ID" json:"sub_user,omitempty"`
@@ -147,8 +151,8 @@ import "gorm.io/gorm"
 type ChatbotVisibilityGrant struct {
     gorm.Model
     ParentUserID uint `gorm:"not null;index:idx_cvg_parent_sub" json:"parent_user_id"`
-    SubUserID    uint `gorm:"not null;index:idx_cvg_sub_chatbot_unique,unique;index:idx_cvg_parent_sub" json:"sub_user_id"`
-    ChatbotID    uint `gorm:"not null;index:idx_cvg_sub_chatbot_unique,unique;index:idx_cvg_chatbot" json:"chatbot_id"`
+    SubUserID    uint `gorm:"not null;uniqueIndex:idx_cvg_sub_chatbot_unique;index:idx_cvg_parent_sub" json:"sub_user_id"`
+    ChatbotID    uint `gorm:"not null;uniqueIndex:idx_cvg_sub_chatbot_unique;index:idx_cvg_chatbot" json:"chatbot_id"`
 
     ParentUser *User          `gorm:"foreignKey:ParentUserID;references:ID" json:"parent_user,omitempty"`
     SubUser    *User          `gorm:"foreignKey:SubUserID;references:ID" json:"sub_user,omitempty"`
@@ -167,7 +171,7 @@ func (ChatbotVisibilityGrant) TableName() string { return "chatbot_visibility_gr
 | I-3 | grant 记录的 `parent_user_id` 必须等于该 entity 的 owner | biz 层校验，PUT 端点强制 |
 | I-4 | grant 记录的 `parent_user_id` 必须等于 sub_user 的 parent_user_id | biz 层校验，PUT 端点强制 |
 | I-5 | 软删除的 grant 记录在 visibility 判断中**不计入**白名单 | GORM `DeletedAt` 字段自动过滤 |
-| I-6 | 同一 (sub_user_id, entity_id) 在 "未软删" 状态下只能存在一行 | 唯一索引强制 |
+| I-6 | 同一 (sub_user_id, entity_id) 在表中只能存在一行（含软删）。UpdateSopVisibility 路径使用物理删除（Unscoped）避免与软删记录的唯一约束冲突；DeleteSubUser/DeleteSopTemplate 路径用软删做审计，但下次 UpdateSopVisibility 会通过 Unscoped().Delete 物理清理 | DB 唯一索引 + biz 层删除策略约定 |
 
 ---
 
@@ -239,16 +243,23 @@ func (ChatbotVisibilityGrant) TableName() string { return "chatbot_visibility_gr
 - `400 InvalidParameter.BindError` — JSON 绑定失败
 - `404 ResourceNotFound.SopTemplateNotFound`
 - `403 FailedOperation.EntityNotOwnedByCaller`
+- `403 FailedOperation.VisibilityPermissionDenied` — 子用户身份调用配置端点
 - `422 InvalidParameter.CrossParentSubUser` — sub_user_ids 中存在不属于 caller 的子用户
 - `422 InvalidParameter.SubUserNotFound` — sub_user_ids 中存在不存在的用户
 
-**幂等性**：连续相同请求得到相同状态（全删全插语义 + 唯一索引保证）。
+**幂等性**：连续相同请求得到相同状态（restricted=true 时物理删 + 重插语义保证；restricted=false 时不动 grant 表，状态稳定）。
 
 ### 3.4 GET `/v1/chatbot/:id/visibility` 与 PUT `/v1/chatbot/:id/visibility`
 
-**结构与 SOP 端点完全对称**，仅资源类型不同。错误码：
+**请求/响应字段结构与 SOP 端点完全对称**，仅资源类型不同。错误码完整清单：
+- `400 InvalidParameter.BindError`
 - `404 ResourceNotFound.ChatbotNotFound`（替代 SopTemplateNotFound）
-- 其他错误码共用
+- `403 FailedOperation.EntityNotOwnedByCaller`
+- `403 FailedOperation.VisibilityPermissionDenied`
+- `422 InvalidParameter.CrossParentSubUser`
+- `422 InvalidParameter.SubUserNotFound`
+
+**Owner 校验字段差异**：`ChatbotConfig` 没有 `CreatorUserID` 字段，所有者通过 `UserID uint`（非指针、非零）表达（见 `internal/pkg/model/chatbot.go` 第 24 行）。S4 实施时校验逻辑见 §4.1.7。
 
 ### 3.5 已有端点的行为变更
 
@@ -286,11 +297,27 @@ var (
         Message: "The entity is not owned by the caller.",
     }
 
-    // ErrCrossParentSubUser 表示父账户提交了不属于自己的子用户 ID.
+    // ErrVisibilityPermissionDenied 表示子用户尝试调用 visibility 配置端点.
+    // 与现有 ErrPermissionDenied 区分以便监控/告警单独管理.
+    ErrVisibilityPermissionDenied = &Errno{
+        HTTP: 403,
+        Code: "FailedOperation.VisibilityPermissionDenied",
+        Message: "Only parent accounts can configure visibility scope.",
+    }
+
+    // ErrCrossParentSubUser 表示父账户提交的 sub_user_id 不属于自己 (但用户存在).
     ErrCrossParentSubUser = &Errno{
         HTTP: 422,
         Code: "InvalidParameter.CrossParentSubUser",
         Message: "One or more sub_user_ids do not belong to the caller.",
+    }
+
+    // ErrSubUserNotFound 表示 sub_user_ids 中存在数据库中不存在的用户 ID.
+    // 与 ErrCrossParentSubUser 区分: 前者是 "用户不存在", 后者是 "用户存在但不属于 caller".
+    ErrSubUserNotFound = &Errno{
+        HTTP: 422,
+        Code: "InvalidParameter.SubUserNotFound",
+        Message: "One or more sub_user_ids do not exist.",
     }
 
     // ErrSopTemplateNotFound 表示 SOP 模板不存在.
@@ -309,7 +336,16 @@ var (
 )
 ```
 
-`ErrSopTemplateNotFound` / `ErrChatbotNotFound` 如果已存在于 errno 包中，**复用现有**，不重复定义（S4 实施前确认）。
+**S4 实施前确认**：上述任何错误码如果已存在于 errno 包中（如 `ErrSopTemplateNotFound`、`ErrChatbotNotFound`），**复用现有**，不重复定义。S4 implementer 必须 grep 整个 errno 包 + 手动确认，不能假设重名。
+
+**错误码对比表**：
+
+| 场景 | 错误码 | HTTP | 区分原因 |
+|------|--------|------|---------|
+| 子用户调 PUT/GET visibility | `ErrVisibilityPermissionDenied` | 403 | 与既有 `ErrPermissionDenied` 区分；新增错误码便于监控本功能滥用 |
+| 父账户 A 改 父账户 B 创建的 SOP 的 visibility | `ErrEntityNotOwnedByCaller` | 403 | 跨父账户越权访问实体 |
+| 父账户提交了存在但不属于自己的 sub_user_id | `ErrCrossParentSubUser` | 422 | 跨父账户越权选择子用户 |
+| 父账户提交了不存在的 sub_user_id | `ErrSubUserNotFound` | 422 | 数据完整性错误，与 CrossParent 区分便于前端排查 |
 
 ### 3.7 Router 注册
 
@@ -373,14 +409,17 @@ return count > 0, nil
 #### 4.1.3 `ListSubUserVisibleSopIDs`
 
 ```go
-// ListSubUserVisibleSopIDs 返回给定子用户被授权可见的 SOP ID 集合.
-// 用于列表查询的批量过滤. 父账户调用此函数无意义 (应在调用前判断).
-// 返回的 map 仅包含 visibility_restricted=true 的 SOP 中授权的 IDs;
-// visibility_restricted=false 的 SOP 不通过本函数判断 (列表过滤直接放行).
+// ListSubUserVisibleSopIDs 返回该子用户在 sop_visibility_grant 表中所有未软删的 sop_template_id 集合.
+// 返回的 set 包含: 当前 restricted=true 的 SOP 中的 grant + D3 保留语义下 restricted=false 的 SOP 的历史 grant.
+// 过滤逻辑由调用方 (§4.2.1) 结合 sop.visibility_restricted 字段判断:
+//   - sop.visibility_restricted=false → 全部子用户可见 (不查 set)
+//   - sop.visibility_restricted=true 且 sopID 不在 set → 该子用户看不到此 SOP
+//   - sop.visibility_restricted=true 且 sopID 在 set → 该子用户可见
+// 父账户调用此函数无意义 (应在调用前判断).
 func ListSubUserVisibleSopIDs(ctx context.Context, subUserID uint) (map[uint]struct{}, error)
 ```
 
-实现：单条 SQL `SELECT sop_template_id FROM sop_visibility_grant WHERE sub_user_id=? AND deleted_at IS NULL`，构建 map。
+实现：单条 SQL `SELECT sop_template_id FROM sop_visibility_grant WHERE sub_user_id=? AND deleted_at IS NULL`，构建 map。GORM 默认 scope 已自动加 `deleted_at IS NULL`。
 
 #### 4.1.4 `ListSubUserVisibleChatbotIDs` — 对称
 
@@ -396,7 +435,7 @@ func GetSopVisibility(ctx context.Context, sopID uint) (restricted bool, subUser
 
 #### 4.1.6 `UpdateSopVisibility(caller, sopID, restricted, subUserIDs)` — 用于 PUT 端点
 
-伪代码：
+伪代码（**修正版 — 锁定 D3 保留语义 + P0-2 双路径删除模式**）：
 ```
 sop := store.GetSopTemplate(sopID)
 if sop == nil { return ErrSopTemplateNotFound }
@@ -415,43 +454,107 @@ if restricted {
     }
 }
 
-// 全删全插事务 (ST2)
 return store.WithTx(func(tx) error {
-    // 1. 软删该 SOP 现有所有 grant
-    tx.Where("sop_template_id=?", sopID).Delete(&SopVisibilityGrant{})
-
-    // 2. 仅当 restricted=true 且 sub_user_ids 非空时插入新 grant
-    if restricted && len(subUserIDs) > 0 {
-        records := make([]SopVisibilityGrant, len(subUserIDs))
-        for i, uid := range subUserIDs {
-            records[i] = SopVisibilityGrant{
-                ParentUserID:  callerID,
-                SubUserID:     uid,
-                SopTemplateID: sopID,
+    if restricted {
+        // restricted=true 路径：物理删全部旧 grant（含软删）+ 插新 grant（D3 不适用，新名单覆盖旧名单）
+        // Unscoped() 关键：避免 (sub_user_id, sop_template_id) 唯一索引与残留软删记录冲突
+        if err := tx.Unscoped().Where("sop_template_id=?", sopID).Delete(&SopVisibilityGrant{}).Error; err != nil {
+            return fmt.Errorf("UpdateSopVisibility: physical delete old grants: %w", err)
+        }
+        if len(subUserIDs) > 0 {
+            records := make([]SopVisibilityGrant, len(subUserIDs))
+            for i, uid := range subUserIDs {
+                records[i] = SopVisibilityGrant{
+                    ParentUserID:  callerID,
+                    SubUserID:     uid,
+                    SopTemplateID: sopID,
+                }
+            }
+            if err := tx.Create(&records).Error; err != nil {
+                return fmt.Errorf("UpdateSopVisibility: insert new grants: %w", err)
             }
         }
-        tx.Create(&records)
     }
+    // restricted=false 路径：D3 锁定 — 不动 grant 表，仅切换短路字段
+    // 重新打开开关时, GetSopVisibility 仍能返回历史 sub_user_ids
 
-    // 3. 更新 entity 短路字段
-    tx.Model(&SopTemplate{}).Where("id=?", sopID).
-       Update("visibility_restricted", restricted)
-    return nil
+    // 更新 entity 短路字段（两路径都执行）
+    return tx.Model(&SopTemplate{}).Where("id=?", sopID).
+        Update("visibility_restricted", restricted).Error
 })
 ```
 
-**注意**: 第 3 步用 `Update("column_name", val)` 而非 `Updates(struct)`，避免 GORM `default:true` bool gotcha（database.md §6）。本字段 `default:0` 实际无此风险，但保持代码模式一致性。
+**关键语义锁定**:
 
-#### 4.1.7 `UpdateChatbotVisibility(...)` — 对称
+1. **D3 保留**: `restricted=false` 时，**不**触碰 grant 表。grant 记录保留在 active 状态，下次 `restricted=true` 时由物理删除清理掉。
 
-#### 4.1.8 `validateSubUsersBelongToCaller`
+2. **P0-2 双路径删除**: `Unscoped()` 跳过软删 scope，物理删除包括软删记录（如先前 DeleteSubUser/DeleteSopTemplate 的残留）。这与 (sub_user_id, sop_template_id) 全局唯一约束兼容。
+
+3. **GORM `default:0` 字段**: 第 3 步用 `Update("column_name", val)` 而非 `Updates(struct)`，避免 GORM `default:true` bool gotcha（database.md §6）。本字段 default:0 实际无此风险，但保持代码模式一致性。
+
+**异常情况**: GetSopVisibility 在 `restricted=false` 时也会从 grant 表读取历史 sub_user_ids，前端用于"上次已配置 N 位"提示（见 §6.3）。
+
+#### 4.1.7 `UpdateChatbotVisibility(...)` — 对称结构 + Owner 字段差异
+
+**与 §4.1.6 SopVisibility 结构对称，但 owner 校验字段不同**：
+
+| 字段差异 | SopTemplate | ChatbotConfig |
+|---------|-------------|---------------|
+| Owner 字段名 | `CreatorUserID` | `UserID` |
+| 字段类型 | `*uint`（指针，可 nil） | `uint`（非指针，非零） |
+| Owner 校验伪代码 | `if sop.CreatorUserID == nil \|\| *sop.CreatorUserID != callerID` | `if chatbot.UserID != callerID` |
+
+伪代码（仅 owner 校验段不同，其余完全对称）：
+```
+chatbot := store.GetChatbotConfig(chatbotID)
+if chatbot == nil { return ErrChatbotNotFound }
+
+caller := store.GetUser(callerID)
+if caller.ParentUserID != nil { return ErrVisibilityPermissionDenied }
+if chatbot.UserID != callerID {  // 注意: 非指针, 直接比较
+    return ErrEntityNotOwnedByCaller
+}
+// 后续 restricted 分支 + 物理删 + 插入 + 短路字段更新 与 §4.1.6 完全对称
+// 表名: ChatbotVisibilityGrant, 短路字段: chatbot.visibility_restricted
+```
+
+**⚠️ S4 implementer 注意**: 不能直接 copy-paste §4.1.6 代码到 chatbot 版本，必须替换 owner 校验为 `chatbot.UserID != callerID`。否则编译报错（CreatorUserID 字段不存在）或访问错误字段（绕过权限校验）。
+
+#### 4.1.8 `validateSubUsersBelongToCaller` — 两步校验区分两类错误
 
 ```go
-// validateSubUsersBelongToCaller 校验所有 subUserIDs 都是 caller 的直接子用户.
-// 一次 SELECT 查询: WHERE id IN (?) AND parent_user_id=?
-// 返回的 count 必须等于 len(subUserIDs), 否则返回 ErrCrossParentSubUser.
+// validateSubUsersBelongToCaller 两步校验 subUserIDs:
+//   Step 1: 全部 ID 在 user 表中存在 (不含软删) → 否则 ErrSubUserNotFound
+//   Step 2: 全部 ID 的 parent_user_id 等于 callerID → 否则 ErrCrossParentSubUser
+//
+// 两步分离, 让前端能精准展示 "用户不存在" vs "用户存在但不属于你" 两种错误.
 func validateSubUsersBelongToCaller(ctx context.Context, callerID uint, subUserIDs []uint) error
 ```
+
+伪代码：
+```
+if len(subUserIDs) == 0 { return nil }
+
+// Step 1: 全部 ID 必须存在 (不含软删)
+var existCount int64
+db.Model(&User{}).Where("id IN ?", subUserIDs).Count(&existCount)
+if existCount != int64(len(subUserIDs)) {
+    return ErrSubUserNotFound
+}
+
+// Step 2: 全部 ID 必须 parent_user_id=callerID
+var belongCount int64
+db.Model(&User{}).Where("id IN ? AND parent_user_id=?", subUserIDs, callerID).Count(&belongCount)
+if belongCount != int64(len(subUserIDs)) {
+    return ErrCrossParentSubUser
+}
+
+return nil
+```
+
+**注意**: 第 1 步使用 `db.Model(&User{}).Where(...)`，自动应用 GORM 软删除 scope（`deleted_at IS NULL`）。如果某 ID 在 user 表中是软删状态，会被 Step 1 判定为"不存在"——这是符合预期的（已删除的子用户不能被授权）。
+
+**性能**: 两次 SELECT COUNT(*) 都走 PRIMARY KEY 索引和 (id, parent_user_id) 索引，1-2ms 内完成；远比"一次 SELECT 全部行 + 应用层判断"快。
 
 ### 4.2 列表查询过滤接入
 
@@ -669,8 +772,13 @@ async function saveVisibility(sopID: number) {
 
 ### 6.5 保存流程（编辑页主保存按钮）
 
-**两阶段保存（顺序，错误隔离）**:
-```
+**两阶段保存（顺序，错误隔离 + 部分失败的明确恢复路径）**:
+```ts
+const state = reactive({
+  // ... 既有字段 ...
+  visibilityDirty: false,  // P1-2 修复: 标记 visibility 有未保存改动 / 保存失败待重试
+})
+
 async function onSave() {
   try {
     await saveTemplate()     // 既有: PUT /v1/sop/templates/:id
@@ -678,13 +786,15 @@ async function onSave() {
     toast.error("模板保存失败"); return
   }
 
-  if (state.visibilityLoaded) {
+  if (state.visibilityDirty || state.visibilityRestricted !== state.visibilityOriginalRestricted) {
     try {
       await saveVisibility(sopID)
+      state.visibilityDirty = false
     } catch (err) {
-      // 模板已保存, visibility 失败 → 警告但不回滚
-      toast.warning("模板已保存, 但可见范围更新失败: " + err.message)
-      return
+      // 模板已保存, visibility 失败 → 状态置 dirty, 阻止跳转, inline 显示错误
+      state.visibilityDirty = true
+      toast.warning("模板已保存, 但可见范围更新失败. 请检查后重试")
+      return  // 不跳转, 留在编辑页
     }
   }
 
@@ -693,7 +803,12 @@ async function onSave() {
 }
 ```
 
-**为何不合并到 single PUT**: D2 决策（API 设计独立端点）。错误隔离 + 语义清晰。
+**VisibilityScopeCard 内的错误恢复 UI**（与 P1-2 配套）:
+- 当 `state.visibilityDirty=true` 时，卡片底部显示 inline 红色错误条「可见范围未保存」+ 「重试」按钮
+- 「重试」按钮直接调用 `saveVisibility(sopID)`，成功后清除 dirty 状态
+- 用户离开页面前如果 `visibilityDirty=true`，弹出 beforeunload 确认（与现有编辑页未保存提示一致）
+
+**为何不合并到 single PUT**: D2 决策（API 设计独立端点）。错误隔离 + 语义清晰。两阶段保存 + visibilityDirty 重试入口的设计避免了"模板保存成功 / visibility 保存失败 / 用户以为全保存了"的隐性数据不一致。
 
 ### 6.6 API 层
 
@@ -1014,21 +1129,21 @@ func CleanupSopVisibilityGrantsByEntity(ctx context.Context, tx *gorm.DB, sopID 
 | `internal/pkg/model/chatbot.go` | 修改 (加 VisibilityRestricted 字段) |
 | `internal/pkg/model/sop_visibility_grant.go` | 新建 |
 | `internal/pkg/model/chatbot_visibility_grant.go` | 新建 |
-| `internal/pkg/errno/code.go` | 修改 (加 4 个错误码) |
-| `internal/numind/store/sop.go` 或 `sop_visibility_grant.go` | 修改/新建 |
-| `internal/numind/store/chatbot.go` 或 `chatbot_visibility_grant.go` | 修改/新建 |
-| `internal/numind/store/customer.go` | 修改 (加 CleanupVisibilityGrantsBySubUser) |
-| `internal/numind/biz/sop/visibility.go` | 新建 (含 8 函数) |
-| `internal/numind/biz/chatbot/visibility.go` | 新建 (对称 8 函数) |
-| `internal/numind/biz/customer/customer.go` | 修改 (DeleteSubUser 调用 cleanup) |
-| `internal/numind/biz/sop/sop.go` | 修改 (ListVisibleTemplatesWithPermission 加过滤层) |
-| `internal/numind/biz/chatbot/chatbot.go` | 修改 (ListVisibleChatbotsWithPermission 加过滤层) |
+| `internal/pkg/errno/code.go` | 修改 (加 6 个错误码: EntityNotOwnedByCaller, VisibilityPermissionDenied, CrossParentSubUser, SubUserNotFound, SopTemplateNotFound, ChatbotNotFound — 后两者复用现有则不重复) |
+| `internal/numind/store/sop_visibility_grant.go` | 新建 (Get/UpdateSopVisibility 的 store 方法 + CleanupSopVisibilityGrantsByEntity + CleanupSopVisibilityGrantsBySubUser) |
+| `internal/numind/store/chatbot_visibility_grant.go` | 新建 (对称) |
+| `internal/numind/store/customer.go` | 修改 (DeleteSubUser 事务内调用 CleanupVisibilityGrantsBySubUser) |
+| `internal/numind/biz/sop/visibility.go` | 新建 (含 IsSopVisibleToUser / ListSubUserVisibleSopIDs / GetSopVisibility / UpdateSopVisibility / validateSubUsersBelongToCaller) |
+| `internal/numind/biz/chatbot/visibility.go` | 新建 (对称 5 函数) |
+| `internal/numind/biz/customer/customer.go` | 修改 (DeleteSubUser 调用 CleanupVisibilityGrantsBySubUser) |
+| `internal/numind/biz/sop/sop.go` | 修改 (① ListVisibleTemplatesWithPermission 加 visibility 过滤层; ② DeleteSopTemplate 事务加 CleanupSopVisibilityGrantsByEntity — EC-6) |
+| `internal/numind/biz/chatbot/chatbot.go` | 修改 (① ListVisibleChatbotsWithPermission 加 visibility 过滤层; ② DeleteChatbot 事务加 CleanupChatbotVisibilityGrantsByEntity — EC-6) |
 | `internal/numind/controller/v1/sop/visibility.go` | 新建 (GetVisibility, UpdateVisibility) |
 | `internal/numind/controller/v1/chatbot/visibility.go` | 新建 (对称) |
 | `internal/numind/router.go` | 修改 (注册 4 端点) |
-| 各 `_test.go` 文件 | 新建/修改 (12 单元测试用例) |
+| 各 `_test.go` 文件 | 新建/修改 (12 单元测试用例 含 EC-6 实体删除时清理 grant 验证) |
 
-预计 ~16-18 后端文件改动。
+预计 ~17-19 后端文件改动。
 
 ### 前端 (numind-web-v3)
 | 文件 | 操作 |
