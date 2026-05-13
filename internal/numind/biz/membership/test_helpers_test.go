@@ -101,15 +101,3 @@ func migrateMembershipSchema(t *testing.T, db *gorm.DB) {
 		require.NoError(t, db.Exec(stmt).Error, "DDL: %s", stmt[:50])
 	}
 }
-
-// seedUserPair is a placeholder for future tasks that require a User table.
-// GrantTrial does not query the users table, so this is a no-op stub that
-// allows subsequent biz tasks to extend it without changing the helper signature.
-func seedUserPair(t *testing.T, db *gorm.DB, parentID, childID uint64) {
-	t.Helper()
-	// GrantTrial does not join the users table; no seeding required here.
-	// Phase 3+ tasks (GrantSubscription) that check parent-child relationships
-	// should extend this helper to insert rows into the users table.
-	_ = parentID
-	_ = childID
-}

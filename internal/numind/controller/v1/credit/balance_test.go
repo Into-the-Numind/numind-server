@@ -169,8 +169,8 @@ func TestGetChildBalance_HappyPath(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 
 	var env struct {
-		Code int                         `json:"code"`
-		Data creditctl.ChildBalanceView  `json:"data"`
+		Code int                        `json:"code"`
+		Data creditctl.ChildBalanceView `json:"data"`
 	}
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
 

@@ -7,9 +7,10 @@ import "time"
 // 这避免 1/31 + 1 month 漂移到 3/3（time.AddDate 的标准漂移行为）。
 //
 // 不变量：
-//   INV-1: AnchorAddMonths(a, 0) == a
-//   INV-2: AnchorAddMonths(a, n).Day() <= a.Day()
-//   INV-3: 时分秒纳秒与 anchor 完全一致
+//
+//	INV-1: AnchorAddMonths(a, 0) == a
+//	INV-2: AnchorAddMonths(a, n).Day() <= a.Day()
+//	INV-3: 时分秒纳秒与 anchor 完全一致
 //
 // n 必须 >= 0；n < 0 panic（编码 bug，调用方保证）。
 func AnchorAddMonths(anchor time.Time, n int) time.Time {

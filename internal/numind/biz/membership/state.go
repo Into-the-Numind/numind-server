@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"numind-server/internal/pkg/util"
 	model "numind-server/internal/pkg/model/membership"
+	"numind-server/internal/pkg/util"
 )
 
 // MembershipState is the real-time computed membership status for a user.

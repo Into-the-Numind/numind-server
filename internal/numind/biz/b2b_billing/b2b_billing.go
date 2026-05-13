@@ -30,8 +30,8 @@ import (
 	"time"
 
 	"numind-server/internal/numind/store"
-	membershipModel "numind-server/internal/pkg/model/membership"
 	"numind-server/internal/pkg/model"
+	membershipModel "numind-server/internal/pkg/model/membership"
 )
 
 // B2BBillingReport is the top-level response for a single month.
@@ -59,7 +59,7 @@ type GrantDetail struct {
 	ChildUserID   uint      `json:"child_user_id"`
 	ChildUsername string    `json:"child_username"`
 	ProductType   string    `json:"product_type"` // trial / monthly
-	Months        int       `json:"months"`        // 1 for subscription; 0 for trial
+	Months        int       `json:"months"`       // 1 for subscription; 0 for trial
 	AmountCents   int64     `json:"amount_cents"`
 	GrantedAt     time.Time `json:"granted_at"`
 }

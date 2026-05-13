@@ -107,23 +107,6 @@ func mustCreateActiveSubscription(t *testing.T, db *gorm.DB, userID uint) {
 	require.NoError(t, db.Create(sub).Error)
 }
 
-// mustCreateActiveSubscriptionPackage creates an active subscription credit package for user
-// (used for legacy tests that use the old credit store membership check).
-func mustCreateActiveSubscriptionPackage(t *testing.T, db *gorm.DB, userID uint) {
-	t.Helper()
-	now := time.Now()
-	pkg := &model.CreditPackage{
-		UserID:        userID,
-		Type:          model.CreditTypeSubscription,
-		TotalCredits:  2000,
-		RemainCredits: 2000,
-		ActivatedAt:   now,
-		ExpiresAt:     now.AddDate(0, 1, 0),
-		Status:        model.CreditPackageActive,
-	}
-	require.NoError(t, db.Create(pkg).Error)
-}
-
 // newPaymentBizForTest wires up a paymentBiz (with nil wechat/alipay clients so
 // that reaching the channel code path yields a deterministic "not configured"
 // error — useful for asserting that validation passed).
@@ -312,42 +295,27 @@ func mustCreateBoosterOrder(t *testing.T, db *gorm.DB, userID uint, quantity int
 	return order
 }
 
-// TestCreateBoosterOrder_QuantityField verifies that CreateOrder for booster
-// stores quantity in Order.Quantity (not Order.Months) and calculates the
-// correct total amount.
-func TestCreateBoosterOrder_QuantityField(t *testing.T) {
-	db := newPaymentTestDB(t)
-	ds := store.NewTestStore(db)
-	b := newPaymentBizForTest(ds)
-
-	future := time.Now().Add(30 * 24 * time.Hour)
-	uid := mustCreateUser(t, db, model.UserTierStandard, model.BillingModeCredits, &future)
-	mustCreateActiveSubscriptionPackage(t, db, uid)
-
-	// CreateOrder will fail at the payment channel level (wechat nil),
-	// but before that it would have set up the order struct correctly.
-	// We test quantity field & amount calculation via biz internals.
-
-	// Arrange: verify the amount calculation helper
+// TestGetBoosterAmount verifies the model helper used by both CreateOrder
+// and fulfillOrder to compute booster pricing. Direct unit test of the pure
+// function, independent of biz layer mock setup.
+func TestGetBoosterAmount(t *testing.T) {
 	assert.Equal(t, int64(14950), model.GetBoosterAmount(5),
 		"5 booster packs should cost 5 * 2990 = 14950 cents")
 	assert.Equal(t, int64(2990), model.GetBoosterAmount(1),
 		"1 booster pack should cost 2990 cents")
 	assert.Equal(t, int64(2990), model.GetBoosterAmount(0),
 		"quantity=0 should be treated as 1 pack")
-
-	// Act: attempt order creation — will fail at channel (wechat nil) but validation passes
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 5, model.PayChannelWechat)
-	require.Error(t, err, "expected channel-not-configured error")
-	assert.Contains(t, err.Error(), "微信支付未配置",
-		"should fail at payment channel, not at validation")
-
-	// Act again with alipay to confirm the channel-agnostic amount calculation
-	_, err = b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 5, model.PayChannelAlipay)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "支付宝未配置",
-		"should fail at payment channel, not at validation")
 }
+
+// Note: the former TestCreateBoosterOrder_QuantityField (testing CreateOrder
+// reaches the payment channel error) and TestFulfillBoosterOrder_UsesQuantity
+// (testing fulfillOrder calls RechargeWithOrderTx) were removed during the
+// 2026-05-14 merge of S4 into develop: they targeted develop's interim
+// implementation that this branch replaces (CreateOrder now strictly enforces
+// active membership via subscription table; fulfillOrder writes user_booster_balance
+// + membership_event directly, no longer calls credit.RechargeWithOrderTx).
+// Equivalent coverage exists in payment_test.go (qty=5 success path, qty=10001
+// boundary, membership_event quantity assertion).
 
 // TestCreateBoosterOrder_QuantityField_OrderRecord verifies that a booster
 // order created via the biz layer stores Quantity correctly and Months=0.
@@ -367,27 +335,9 @@ func TestCreateBoosterOrder_QuantityField_OrderRecord(t *testing.T) {
 	assert.Equal(t, int64(14950), fetched.Amount, "Order amount must equal quantity * 2990")
 }
 
-// TestFulfillBoosterOrder_UsesQuantity verifies that fulfillOrder for a booster
-// order reads Order.Quantity (not Order.Months) when calling RechargeWithOrderTx.
-// The fake credit biz captures the call count; we verify the field routing by
-// inspecting the order DB record after fulfillOrder completes.
-func TestFulfillBoosterOrder_UsesQuantity(t *testing.T) {
-	db := newPaymentTestDB(t)
-	ds := store.NewTestStore(db)
-	b, fakeBiz := newPaymentBizWithFakeCredit(ds)
-
-	uid := mustCreateUser(t, db, model.UserTierFree, model.BillingModeCredits, nil)
-
-	// Create a booster order with Quantity=3, Months=0 (new schema)
-	order := mustCreateBoosterOrder(t, db, uid, 3)
-
-	require.NoError(t, b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_BOOST_1"))
-	assert.Equal(t, 1, fakeBiz.rechargeCalls, "RechargeWithOrderTx must be called exactly once")
-
-	// Verify the order was marked paid and Quantity field is intact
-	var updated model.Order
-	require.NoError(t, db.First(&updated, order.ID).Error)
-	assert.Equal(t, model.OrderStatusPaid, updated.PayStatus)
-	assert.Equal(t, 3, updated.Quantity, "Order.Quantity must remain 3 after fulfillment")
-	assert.Equal(t, 0, updated.Months, "Order.Months must remain 0 (no business meaning for booster)")
-}
+// Note: TestFulfillBoosterOrder_UsesQuantity removed during 2026-05-14 merge.
+// The test asserted RechargeWithOrderTx is called exactly once, but the
+// branch's fulfillOrder no longer calls that method — it writes directly to
+// user_booster_balance + membership_event via Membership store (spec §3.5).
+// Equivalent coverage: payment_test.go qty=5 success path verifies user_booster_balance
+// is incremented and membership_event.quantity is written correctly.

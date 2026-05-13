@@ -14,8 +14,8 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	model "numind-server/internal/pkg/model/membership"
 	"numind-server/internal/pkg/errno"
+	model "numind-server/internal/pkg/model/membership"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────

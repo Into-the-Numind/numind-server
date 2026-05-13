@@ -13,8 +13,8 @@ import (
 	"gorm.io/gorm/logger"
 
 	"numind-server/internal/numind/store"
-	membershipModel "numind-server/internal/pkg/model/membership"
 	"numind-server/internal/pkg/model"
+	membershipModel "numind-server/internal/pkg/model/membership"
 )
 
 // --------------------------------------------------------------------------
@@ -134,15 +134,15 @@ func insertMembershipEvent(t *testing.T, db *gorm.DB, granterID, childID uint, p
 	}
 	idempotencyKey := fmt.Sprintf("test-%d-%d-%d", granterID, childID, occurredAt.UnixNano())
 	ev := &membershipModel.MembershipEvent{
-		UserID:        uint64(childID),
-		EventType:     membershipModel.EventTypeSubGranted,
-		ProductType:   productType,
-		Months:        months,
-		AmountCents:   amount,
-		Source:        membershipModel.SourceB2BGrant,
-		GranterUserID: &granterID64,
+		UserID:         uint64(childID),
+		EventType:      membershipModel.EventTypeSubGranted,
+		ProductType:    productType,
+		Months:         months,
+		AmountCents:    amount,
+		Source:         membershipModel.SourceB2BGrant,
+		GranterUserID:  &granterID64,
 		IdempotencyKey: &idempotencyKey,
-		OccurredAt:    occurredAt,
+		OccurredAt:     occurredAt,
 	}
 	require.NoError(t, db.Create(ev).Error)
 }

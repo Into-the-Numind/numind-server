@@ -249,10 +249,11 @@ func TestGetBalance_TrialUserNoBooster(t *testing.T) {
 // a cycle row exists, all DTO fields are populated with non-zero values.
 //
 // Timeline (all times are midnight UTC for determinism):
-//   subStart  = 2026-03-01 → month 0 cycle: [2026-03-01, 2026-04-01)
-//   now       = 2026-03-15 → inside month 0 cycle
-//   subExpires = 2026-06-01 (3 months from subStart)
-//   cycleStart = 2026-03-01, cycleEnd = 2026-04-01
+//
+//	subStart  = 2026-03-01 → month 0 cycle: [2026-03-01, 2026-04-01)
+//	now       = 2026-03-15 → inside month 0 cycle
+//	subExpires = 2026-06-01 (3 months from subStart)
+//	cycleStart = 2026-03-01, cycleEnd = 2026-04-01
 func TestGetBalance_DTOFieldCompleteness(t *testing.T) {
 	db := newTestDB(t)
 	svc := biz.NewMembershipService(db)

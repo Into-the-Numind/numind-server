@@ -115,12 +115,12 @@ func (c *CreditController) GrantMembership(ctx *gin.Context) {
 		}
 		eventType := scenarioToEventType(res.Scenario)
 		core.WriteResponse(ctx, nil, gin.H{
-			"child_user_id":  childID64,
-			"product_type":   "monthly",
-			"event_id":       res.EventID,
-			"event_type":     eventType,
-			"expires_at":     res.ExpiresAt,
-			"scenario":       res.Scenario,
+			"child_user_id": childID64,
+			"product_type":  "monthly",
+			"event_id":      res.EventID,
+			"event_type":    eventType,
+			"expires_at":    res.ExpiresAt,
+			"scenario":      res.Scenario,
 		})
 	}
 }

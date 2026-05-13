@@ -131,8 +131,8 @@ func TestAdminGetUserBalance_FreeUser(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 
 	var env struct {
-		Code int                          `json:"code"`
-		Data admincredit.FullBalanceView  `json:"data"`
+		Code int                         `json:"code"`
+		Data admincredit.FullBalanceView `json:"data"`
 	}
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
 
@@ -165,8 +165,8 @@ func TestAdminGetUserBalance_IncludesBooster(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 
 	var env struct {
-		Code int                          `json:"code"`
-		Data admincredit.FullBalanceView  `json:"data"`
+		Code int                         `json:"code"`
+		Data admincredit.FullBalanceView `json:"data"`
 	}
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
 

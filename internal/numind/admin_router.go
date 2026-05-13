@@ -28,8 +28,8 @@ import (
 	"numind-server/internal/pkg/aiservice/registry"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
-	importMw "numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/log"
+	importMw "numind-server/internal/pkg/middleware"
 )
 
 // installAdminRouters 注册所有管理后台业务路由

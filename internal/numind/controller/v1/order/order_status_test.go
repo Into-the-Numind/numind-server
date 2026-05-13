@@ -136,8 +136,8 @@ func TestGetOrderStatus_PayerCanView(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
 
 	var env struct {
-		Code int                           `json:"code"`
-		Data orderctl.OrderStatusResponse  `json:"data"`
+		Code int                          `json:"code"`
+		Data orderctl.OrderStatusResponse `json:"data"`
 	}
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
 
