@@ -5,9 +5,9 @@ features:
     ndf_version: "1.1"
     description: "SOP / 智能体（chatbot）可见范围权限（实体视角）。父账户在 SOP 模板或 chatbot 编辑页内联新增「可见范围」开关：默认 allow-all（全部子用户可见）；可打开「仅指定子用户可见」从弹窗勾选白名单。未在白名单的子用户在工作区列表看不到该实体；已开始的运行/历史不受影响（仅列表过滤）。后期新增子用户默认看不到受限实体（白名单语义）。范围限定 SOP + chatbot，不含销售知识库；仅 C 端父账户配置，不含管理端。"
     track: "standard"
-    stage: "S2"
+    stage: "S3"
     classification_reason: "Triage 5 条全触发 — (1) DB schema：需在 sop_template / chatbot_config 加 visibility_restricted 字段 + 新增独立白名单表 (2) 新 API：4 个新端点（PUT/GET visibility × 2 资源）+ 2 个既有端点行为变更（列表过滤注入）(3) 无外部服务 (4) 跨 numind-server + numind-web-v3 两仓约 23-27 文件 (5) 新增权限维度，与现有运行权限叠加，错误会导致子用户漏看/误看资源。Standard Track 必然。"
-    last_updated_by: "ai-s2-spec"
+    last_updated_by: "ai-s3-plan"
     last_updated_at: "2026-05-13T00:00:00+08:00"
     repos:
       - numind-server
@@ -17,12 +17,12 @@ features:
       requirement: "numind-server/requirements/sop-chatbot-visibility-scope.md"
       proposal: "numind-server/proposals/sop-chatbot-visibility-scope-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-05-13-sop-chatbot-visibility-scope-design.md"
-      plan: null
+      plan: "numind-server/docs/superpowers/plans/2026-05-13-sop-chatbot-visibility-scope-plan.md"
     progress:
-      total_tasks: 0
+      total_tasks: 23
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "S2 gate：用户审阅 spec 后进入 S3 plan"
+      current_task: "S3 review：独立 reviewer 审 plan 原子性 + 完整性"
     rollback: null
     last_verified: null
     decisions:
@@ -39,6 +39,8 @@ features:
       - "2026-05-13 (S2 ST2): PUT visibility 保存策略选全删全插（single transaction），不做 diff 增量"
       - "2026-05-13 (S2 ST3): 子用户选择弹窗提取为可复用组件 SubUserMultiSelectDialog"
       - "2026-05-13 (S2 EC-6): SOP/chatbot 删除时同事务清理 visibility grant 表（不推迟为 tech debt）"
+      - "2026-05-13 (S2 review 3 轮): Round 1 发现 4 P0 + 2 P1 + 2 P2 → 全修；Round 2 发现 1 P0-NEW + 1 P1-NEW + 1 P2-NEW（Round 1 修复中遗漏 §7.1 migration DDL 同步 + Cleanup 函数层级模糊 + visibilityDirty store 字段未声明）→ 全修；Round 3 PASS（0 P0 + 0 P1，2 P2 顺手清理）"
+      - "2026-05-13 (S2 锁定 P0-2 双路径删除): UpdateVisibility 路径用 Unscoped() 物理删（避免唯一索引含 deleted_at 的 MySQL NULL 共存问题）；DeleteSubUser/Entity 路径用软删做审计；唯一索引 (sub_user_id, entity_id) 不含 deleted_at"
     related_features:
       - "child-run-permission (已上线，共存互补，本需求是其前置 gate)"
       - "sales-agent-child-permission (已上线，作用于销售智能体运行权限，与本需求无重叠)"
