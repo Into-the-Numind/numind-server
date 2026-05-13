@@ -5,9 +5,9 @@ features:
     ndf_version: "1.1"
     description: "用户端 chatbot 对话页 (views/chatbot/ChatbotChat.vue) 左侧会话列表支持改名与置顶。改名复用现有 chatbot_session.title 字段（无 schema 变更）；置顶新增 pinned_at TIMESTAMP NULL 字段（NULL=未置顶，非NULL=置顶时间）。列表排序改为：置顶组按 pinned_at DESC，非置顶组按 updated_at DESC。交互：hover 显示「…」更多菜单，含「重命名 / 置顶 / 取消置顶 / 删除」。范围明确不含 SalesView 销售对话页与 SOP 运行历史。S1 锁定 Approach A 极简 MVP (1-1.5 d)；顺带修 ListSessions cross-chatbot perf bug。"
     track: "standard"
-    stage: "S2"
+    stage: "S3"
     classification_reason: "Triage 5 条 — (1) DB schema 变更：是（chatbot_session 加 pinned_at 字段 + 覆盖排序的复合索引）(2) 新 API：是（PUT /v1/chatbot/sessions/:id/rename + PUT /v1/chatbot/sessions/:id/pin，2 个新端点；GET sessions 列表 ORDER BY 子句更新）(3) 无外部服务 (4) 跨 numind-server + numind-web-v3 两仓约 10-11 文件 (5) 不涉及支付/权限。条件 1/2/4 不满足 Hotfix，Standard Track。"
-    last_updated_by: "ai-s2-spec"
+    last_updated_by: "ai-s3-plan"
     last_updated_at: "2026-05-13T00:00:00+08:00"
     repos:
       - numind-server
@@ -17,12 +17,12 @@ features:
       requirement: "numind-server/requirements/chatbot-session-rename-pin.md"
       proposal: "numind-server/proposals/chatbot-session-rename-pin-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-05-13-chatbot-session-rename-pin-design.md"
-      plan: null
+      plan: "numind-server/docs/superpowers/plans/2026-05-13-chatbot-session-rename-pin-plan.md"
     progress:
-      total_tasks: 0
+      total_tasks: 8
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "S2 gate — 等待用户确认设计方向 (硬门禁)"
+      current_task: "S4 Task 1: Migration + GORM model (numind-server)"
     rollback: null
     last_verified: null
     decisions:
@@ -38,7 +38,10 @@ features:
       - "2026-05-13 (S2 review Round 1): Sonnet reviewer 报告 PASS_WITH_CONCERNS — 2 P0 (ConfirmModal slot 不存在 + v-model:visible 错误) + 4 P1 (filter 标题/fetchSessions 迁移漏 sendMessage/optimistic 误称/分页参数不一致) + 3 P2 (CSS class 无样式/v-click-outside 标题误导/pinned_at 格式未明确)。AC Coverage Matrix 验证 11/11 PRD AC 全覆盖"
       - "2026-05-13 (S2 review Round 1 fixes): 2 P0 + 4 P1 + 4 P2 全修。关键修复：P0-1 改为 ChatbotChat.vue 内联 inline RenameModal 仅参考 sales/RenameSessionModal.vue 模板模式不 import（避免跨模块依赖 + MVP 不抽组件），复用 sales-modal.css 视觉一致；P1-2 store 加 currentChatbotId ref + 列出 3 处 store 内部 fetchSessions 调用迁移；P1-4 分页参数全统一为 offset/limit"
       - "2026-05-13 (S2 review Round 2): Sonnet reviewer 验证 Round 1 全部修复 ✅，0 P0 + 1 P1-NEW (Vitest 测试描述 optimistic/pessimistic 用词矛盾) + 2 P2-NEW (chatbotId watcher 缺失需 S4 新增 + sales/RenameSessionModal 复用语义需澄清)。3 条全修。最终 spec PASS 进入 S2 gate"
-    blockers: []
+      - "2026-05-13 (S2 holistic reviewer 收尾审查): VERDICT PASS — 三阶段一致性 ✅ / 所有现有代码符号验证 ✅ (ConfirmModal 无 slot 判断准确 / sales-modal.css 6 个 CSS 类全存在 / sales/RenameSessionModal.vue 实在) / Git 状态完整 / broader risks 全过关 (生产迁移零风险 / API 后向兼容 omitempty 保证 / GORM hooks 无副作用 / 并发场景 cover / observability N/A)。2 条 P1 留给 S3 plan 处理: P1-1 fetchSessions 是 breaking change 而非 optional 参数 / P1-2 TypeScript ChatbotSession interface +pinned_at 是 S3 plan T5 前置"
+      - "2026-05-13 (S3 plan written): 8 task plan (T1-T7 实施 + T8 验证策略 NDF Rule 10 强制)。后端 T1-T4 (migration/store/biz/controller+router) 先于前端 T5-T7 (types+api/store+Vitest/ChatbotChat.vue)。S2 holistic reviewer 的 2 P1 指引已写入 plan §0：fetchSessions breaking change + types 前置依赖。预估工作量 CC+gstack 3.5h / 人类 2d；含 S4 review 后 wall time 6-9h"
+      - "2026-05-13 (S3 plan review Round 1): Sonnet reviewer (NDF §3 S3 强制) 报告 PASS_WITH_CONCERNS — 0 P0 + 1 P1 + 2 P2。NDF S3 Gate 检查清单全 PASS；AC → Task 映射矩阵 11/11 全覆盖。P1: T6 → T7 间 fetchSessions 破坏性签名变更导致 type-check 中间态不一致。P2-1: PRD AC-3.4 措辞 vs spec/plan client-side filter 保留语义。P2-2: T8 是文档 task 但描述未说明实际工作。"
+      - "2026-05-13 (S3 plan review Round 1 fixes): 1 P1 + 2 P2 全修。关键修复: P1 Task 6 描述加 '任务边界清单' 明确 T6 必须同时迁移 ChatbotChat.vue 内现有 fetchSessions 旧签名调用（不含 T7 的新增 UI）保证 type-check 在 T6 commit 时已 PASS；P2-1 Task 7 加 'Client-side filter 保留语义说明' 段；P2-2 T8 加 '实施说明' 段明确工作内容是把 plan §3 内容拷贝为独立 .md 文件"
     created_at: "2026-05-13T00:00:00+08:00"
     completed_at: null
 
