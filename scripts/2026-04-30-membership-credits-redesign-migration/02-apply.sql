@@ -120,7 +120,10 @@ merged AS (
     GREATEST(1, CEIL(DATEDIFF(MAX(expires_at), MIN(activated_at)) / 30)) AS total_months_purchased,
     -- take source/granter from the most recent package in segment
     SUBSTRING_INDEX(GROUP_CONCAT(grant_source ORDER BY activated_at DESC SEPARATOR '|'), '|', 1)    AS source,
-    CAST(SUBSTRING_INDEX(GROUP_CONCAT(IFNULL(granter_user_id,'NULL') ORDER BY activated_at DESC SEPARATOR '|'), '|', 1) AS UNSIGNED) AS granter_user_id
+    -- IFNULL replaces SQL NULL with literal 0 (not string 'NULL' which would fail
+    -- CAST AS UNSIGNED with "Truncated incorrect INTEGER value: 'NULL'"); the outer
+    -- SELECT below uses NULLIF(granter_user_id, 0) to restore SQL NULL semantics.
+    CAST(SUBSTRING_INDEX(GROUP_CONCAT(IFNULL(granter_user_id, 0) ORDER BY activated_at DESC SEPARATOR '|'), '|', 1) AS UNSIGNED) AS granter_user_id
   FROM with_seg_id
   GROUP BY user_id, seg_id
 )

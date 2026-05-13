@@ -44,7 +44,7 @@ WHERE ABS(TIMESTAMPDIFF(SECOND, s.expires_at, latest.max_pkg_expires)) > 1;
 SELECT 'I3_trial_credits_remaining_matches_pkg', COUNT(*) AS violation_count
 FROM trial_grant tg
 INNER JOIN (
-  SELECT user_id, remain_credits
+  SELECT cp.user_id AS user_id, cp.remain_credits AS remain_credits
   FROM credit_package cp
   INNER JOIN (
     SELECT user_id, MIN(activated_at) AS min_at
@@ -133,14 +133,16 @@ ORDER BY applied_at;
 -- ─────────────────────────────────────────────────────────────────────────────
 
 SELECT '=== New table row counts ===' AS section;
-SELECT 'subscription'         AS tbl, COUNT(*) AS rows FROM subscription
+-- Note: `rows` is reserved in some MySQL contexts (window frame ROWS clause),
+-- using `row_count` as the column alias to be safe.
+SELECT 'subscription'         AS tbl, COUNT(*) AS row_count FROM subscription
 UNION ALL
-SELECT 'trial_grant'          AS tbl, COUNT(*) AS rows FROM trial_grant
+SELECT 'trial_grant'          AS tbl, COUNT(*) AS row_count FROM trial_grant
 UNION ALL
-SELECT 'credit_cycle'         AS tbl, COUNT(*) AS rows FROM credit_cycle
+SELECT 'credit_cycle'         AS tbl, COUNT(*) AS row_count FROM credit_cycle
 UNION ALL
-SELECT 'user_booster_balance' AS tbl, COUNT(*) AS rows FROM user_booster_balance
+SELECT 'user_booster_balance' AS tbl, COUNT(*) AS row_count FROM user_booster_balance
 UNION ALL
-SELECT 'membership_event'     AS tbl, COUNT(*) AS rows FROM membership_event;
+SELECT 'membership_event'     AS tbl, COUNT(*) AS row_count FROM membership_event;
 
 SELECT 'VERIFY COMPLETE — resolve any violation_count > 0 before releasing traffic' AS status;
