@@ -56,6 +56,10 @@ type ChatbotSession struct {
 	Title        string         `gorm:"size:200" json:"title"`
 	Status       string         `gorm:"size:20;not null;default:'active'" json:"status"`
 	MessageCount int            `gorm:"default:0" json:"message_count"`
+	// PinnedAt 置顶时间。NULL=未置顶；非 NULL 同时承担"是否置顶"标记和置顶组内排序键。
+	// 重复置顶（已置顶 session 再点击置顶）会刷新此字段为最新 NOW()，
+	// 实现"最近一次置顶操作"语义。Feature: chatbot-session-rename-pin S4 Task 1.
+	PinnedAt *time.Time `json:"pinned_at,omitempty"`
 }
 
 // TableName returns the table name for ChatbotSession.
