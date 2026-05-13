@@ -35,6 +35,10 @@ features:
       - "2026-05-13 (S1 D5): sop_template/chatbot_config 各加 visibility_restricted bool 字段做短路判断，避免无关 SOP 查询都 JOIN grant 表"
       - "2026-05-13 (S1 D6): 不引入通用 entity_type 字段。仅 SOP+chatbot 两类，通用化是过度抽象"
       - "2026-05-13 (S1 D7): 启用 GORM 软删除（与 user_template_permission 一致，便于审计撤回历史）"
+      - "2026-05-13 (S2 ST1): 列表过滤选延续 O(N) 本地过滤模式（与 child-run-permission 一致），不引入 SQL JOIN"
+      - "2026-05-13 (S2 ST2): PUT visibility 保存策略选全删全插（single transaction），不做 diff 增量"
+      - "2026-05-13 (S2 ST3): 子用户选择弹窗提取为可复用组件 SubUserMultiSelectDialog"
+      - "2026-05-13 (S2 EC-6): SOP/chatbot 删除时同事务清理 visibility grant 表（不推迟为 tech debt）"
     related_features:
       - "child-run-permission (已上线，共存互补，本需求是其前置 gate)"
       - "sales-agent-child-permission (已上线，作用于销售智能体运行权限，与本需求无重叠)"

@@ -846,10 +846,20 @@ PRD §4.2 的 22 条 AC → spec 章节映射：
 | EC-3 | visibility_restricted=true 但 grant 0 条 | §2.5 I-2 允许；列表过滤将该 SOP 对所有子用户隐藏（白名单严格） |
 | EC-4 | 提交不属于自己的 sub_user_id | §4.1.8 validateSubUsersBelongToCaller → ErrCrossParentSubUser |
 | EC-5 | 已在 run 的 SOP, 父账户取消可见 | run 已有的 run_id 不撤回，列表入口隐藏；§4.3 已说明本功能不拦截 run path |
-| EC-6 | 父账户删除 SOP / chatbot | 既有 SOP/chatbot 删除路径需在 S4 实施时检查是否调用 visibility 清理（建议加 `CleanupVisibilityGrantsByEntity`），但优先级 P1（不影响列表语义，仅 grant 表残留软删记录） |
+| EC-6 | 父账户删除 SOP / chatbot | **本 feature 内处理**（用户 2026-05-13 决策）：在既有 SOP/chatbot delete biz 中同事务调用 `CleanupSopVisibilityGrantsByEntity(tx, sopID)` / `CleanupChatbotVisibilityGrantsByEntity(tx, chatbotID)`，软删该实体的所有 grant 记录 |
 | EC-7 | 编辑未保存退出 | 与现有编辑页一致，丢弃；§6.5 保存触发 PUT，未保存不持久化 |
 
-**EC-6 显式遗留项**: S3 plan 需要决定是否在本 feature 内顺带处理"删除实体时清理 visibility 表"。建议处理（一行代码：在 SOP delete biz 中调用 `tx.Where("sop_template_id=?", id).Delete(&SopVisibilityGrant{})`）。
+**EC-6 实现细节**:
+```go
+// 新增 store 函数 (在 sop_visibility_grant.go 中)
+func CleanupSopVisibilityGrantsByEntity(ctx context.Context, tx *gorm.DB, sopID uint) error {
+    return tx.Where("sop_template_id=?", sopID).Delete(&SopVisibilityGrant{}).Error
+}
+// 对称: CleanupChatbotVisibilityGrantsByEntity
+
+// 在既有 biz/sop.DeleteSopTemplate 的事务中调用 (S4 实施定位)
+// 在既有 biz/chatbot.DeleteChatbot 的事务中调用 (S4 实施定位)
+```
 
 ---
 
@@ -932,7 +942,7 @@ PRD §4.2 的 22 条 AC → spec 章节映射：
 4. `getSubUsers()` API（`GET /v1/customers/sub-users`）返回字段含 `nickname` 和 `phone`，符合 §6.2 弹窗渲染需求
 
 ### 13.2 遗留项（S3 plan 解决）
-- **EC-6**: 实体删除时是否清理 visibility 表 → 建议处理，S3 plan 加入对应 task
+- ~~**EC-6**: 实体删除时是否清理 visibility 表~~ → **已 2026-05-13 锁定**：纳入本 feature，见 §9 EC-6 + §14 Phase 5
 - **chatbot 编辑页文件名**: S4 实施时 grep 确认
 - **store 与组件包结构最终命名**: S4 实施时按既有风格定型
 
@@ -968,9 +978,9 @@ PRD §4.2 的 22 条 AC → spec 章节映射：
 13. ListVisibleChatbotsWithPermission 加 visibility 过滤层
 14. 错误码定义集中加入
 
-**Phase 5: 后端 EC-6 清理**
-15. SOP delete biz 加 visibility 清理（如 S3 plan 决定纳入）
-16. chatbot delete biz 加 visibility 清理（如 S3 plan 决定纳入）
+**Phase 5: 后端 EC-6 清理**（用户 2026-05-13 锁定纳入）
+15. SOP delete biz 加 visibility 清理（CleanupSopVisibilityGrantsByEntity + 接入既有 DeleteSopTemplate 事务）
+16. chatbot delete biz 加 visibility 清理（对称）
 
 **Phase 6: 后端单元测试**
 17. visibility biz 单元测试（12 用例）
