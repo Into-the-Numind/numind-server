@@ -247,6 +247,36 @@ func TestListSessionsByChatbot_OnlyPinned_OrderByPinnedAtDesc(t *testing.T) {
 	assert.Equal(t, id3, sessions[2].ID, "oldest pinned_at must be last")
 }
 
+// TestListSessionsByChatbot_OnlyUnpinned_OrderByUpdatedAtDesc verifies that when all
+// sessions are unpinned (pinned_at = NULL), the ORDER BY tie-breaks to updated_at DESC.
+// 这是 plan T2 列出的第 10 个测试，覆盖纯未置顶组的排序行为（非置顶组按 updated_at 倒序）。
+func TestListSessionsByChatbot_OnlyUnpinned_OrderByUpdatedAtDesc(t *testing.T) {
+	db := newChatbotSessionTestDB(t)
+	s := NewChatbotSessionStore(db)
+	ctx := context.Background()
+
+	t1 := time.Date(2026, 5, 13, 14, 0, 0, 0, time.UTC) // 最新
+	t2 := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC) // 中间
+	t3 := time.Date(2026, 5, 13, 10, 0, 0, 0, time.UTC) // 最旧
+
+	id1 := insertChatbotSession(t, db, 4, 400, "latest", t1, nil)
+	id2 := insertChatbotSession(t, db, 4, 400, "middle", t2, nil)
+	id3 := insertChatbotSession(t, db, 4, 400, "oldest", t3, nil)
+
+	sessions, total, err := s.ListSessionsByChatbot(ctx, 4, 400, 0, 10)
+	require.NoError(t, err)
+	assert.EqualValues(t, 3, total)
+	require.Len(t, sessions, 3)
+	// 全部未置顶 → 严格按 updated_at DESC
+	assert.Equal(t, id1, sessions[0].ID, "latest updated_at must be first")
+	assert.Equal(t, id2, sessions[1].ID)
+	assert.Equal(t, id3, sessions[2].ID, "oldest updated_at must be last")
+	// 验证所有行 pinned_at 都是 NULL
+	for _, s := range sessions {
+		assert.Nil(t, s.PinnedAt, "all sessions must be unpinned in this test")
+	}
+}
+
 // TestListSessionsByChatbot_FilteredByChatbotID verifies that sessions belonging to
 // a different chatbot_id are not returned.
 func TestListSessionsByChatbot_FilteredByChatbotID(t *testing.T) {
