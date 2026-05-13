@@ -68,6 +68,11 @@ type IChatbotBiz interface {
 	DeleteSession(ctx context.Context, userID uint, sessionID uint) error
 	ListMessages(ctx context.Context, userID uint, sessionID uint, offset, limit int) ([]model.ChatbotMessage, int64, error)
 	ChatStream(ctx context.Context, userID uint, sessionID uint, message string, modelKey string, thinking bool, handler StreamHandler) error
+
+	// C端：会话管理（Task 3 — rename-pin feature）
+	RenameSession(ctx context.Context, userID, sessionID uint, title string) error
+	PinSession(ctx context.Context, userID, sessionID uint, pinned bool) (*time.Time, error)
+	ListSessionsByChatbot(ctx context.Context, userID, chatbotID uint, offset, limit int) ([]model.ChatbotSession, int64, error)
 }
 
 type chatbotBiz struct {
@@ -443,6 +448,80 @@ func (b *chatbotBiz) ListMessages(ctx context.Context, userID uint, sessionID ui
 		return nil, 0, fmt.Errorf("ListMessages: %w", err)
 	}
 	return messages, total, nil
+}
+
+// ============================================================
+// C端：会话管理（rename-pin feature）
+// ============================================================
+
+// RenameSession 重命名会话标题，验证所有权和标题合法性。
+func (b *chatbotBiz) RenameSession(ctx context.Context, userID, sessionID uint, title string) error {
+	title = strings.TrimSpace(title)
+	if len(title) == 0 {
+		return errno.ErrBind.SetMessage("标题不能为空")
+	}
+	if len(title) > 200 {
+		return errno.ErrBind.SetMessage("标题最长 200 字符")
+	}
+
+	session, err := b.ds.ChatbotSession().GetSession(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errno.ErrSessionNotFound
+		}
+		return fmt.Errorf("RenameSession: %w", err)
+	}
+	if session.UserID != userID {
+		return errno.ErrForbidden
+	}
+
+	if err := b.ds.ChatbotSession().UpdateTitle(ctx, sessionID, title); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errno.ErrSessionNotFound
+		}
+		return fmt.Errorf("RenameSession: %w", err)
+	}
+	return nil
+}
+
+// PinSession 置顶或取消置顶会话，验证所有权。
+// 返回写入的 pinnedAt 指针（pinned=true 时为当前时间，pinned=false 时为 nil）。
+// 重复置顶（EC-14）会刷新 pinned_at 为最新 NOW()。
+func (b *chatbotBiz) PinSession(ctx context.Context, userID, sessionID uint, pinned bool) (*time.Time, error) {
+	session, err := b.ds.ChatbotSession().GetSession(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errno.ErrSessionNotFound
+		}
+		return nil, fmt.Errorf("PinSession: %w", err)
+	}
+	if session.UserID != userID {
+		return nil, errno.ErrForbidden
+	}
+
+	var newPinnedAt *time.Time
+	if pinned {
+		now := time.Now()
+		newPinnedAt = &now
+	}
+
+	if err := b.ds.ChatbotSession().SetPinnedAt(ctx, sessionID, newPinnedAt); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errno.ErrSessionNotFound
+		}
+		return nil, fmt.Errorf("PinSession: %w", err)
+	}
+	return newPinnedAt, nil
+}
+
+// ListSessionsByChatbot 获取用户在指定智能体下的会话列表（分页）。
+// 排序：置顶优先，置顶组内按 pinned_at DESC，未置顶组按 updated_at DESC。
+func (b *chatbotBiz) ListSessionsByChatbot(ctx context.Context, userID, chatbotID uint, offset, limit int) ([]model.ChatbotSession, int64, error) {
+	sessions, total, err := b.ds.ChatbotSession().ListSessionsByChatbot(ctx, userID, chatbotID, offset, limit)
+	if err != nil {
+		return nil, 0, fmt.Errorf("ListSessionsByChatbot: %w", err)
+	}
+	return sessions, total, nil
 }
 
 // ============================================================

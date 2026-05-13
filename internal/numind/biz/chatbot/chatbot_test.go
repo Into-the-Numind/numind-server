@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -419,4 +420,179 @@ func TestChatbotStreamUsesChatbotChatOperation(t *testing.T) {
 	// change the operation string and break the budgetOperationMap lookup.
 	assert.Equal(t, "chatbot_chat", chatbot.ChatbotChatOperation,
 		"ChatbotChatOperation must be 'chatbot_chat' to match budgetOperationMap")
+}
+
+// ============================================================================
+// T3 helpers（rename-pin feature）
+// ============================================================================
+
+// insertChatbotSession 插入一条 chatbot_session 行，供 rename/pin 测试使用。
+func insertChatbotSession(t *testing.T, db *gorm.DB, userID, chatbotID uint, title string) uint {
+	t.Helper()
+	session := model.ChatbotSession{
+		UserID:    userID,
+		ChatbotID: chatbotID,
+		Title:     title,
+		Status:    model.ChatbotSessionStatusActive,
+	}
+	require.NoError(t, db.Create(&session).Error)
+	return session.ID
+}
+
+// ============================================================================
+// RenameSession (T3)
+// ============================================================================
+
+// TestRenameSession_TrimEmpty_ReturnsBindError 传入纯空白 title（trim 后为空）→ ErrBind。
+func TestRenameSession_TrimEmpty_ReturnsBindError(t *testing.T) {
+	db := newChatbotTestDB(t)
+	b := newChatbotBiz(db)
+
+	parent := insertUserRow(t, db, nil)
+	cbID := insertChatbotConfig(t, db, parent, "bot", model.ChatbotStatusPublished)
+	sessionID := insertChatbotSession(t, db, parent, cbID, "original title")
+
+	err := b.RenameSession(context.Background(), parent, sessionID, "   ")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errno.ErrBind),
+		"空白 title（trim 后为空）应返回 ErrBind，实际=%v", err)
+}
+
+// TestRenameSession_OverLimit_ReturnsBindError 传入 201 字节 ASCII title → ErrBind。
+func TestRenameSession_OverLimit_ReturnsBindError(t *testing.T) {
+	db := newChatbotTestDB(t)
+	b := newChatbotBiz(db)
+
+	parent := insertUserRow(t, db, nil)
+	cbID := insertChatbotConfig(t, db, parent, "bot", model.ChatbotStatusPublished)
+	sessionID := insertChatbotSession(t, db, parent, cbID, "original title")
+
+	// 201 个 ASCII 字符（len=201 字节）
+	tooLong := make([]byte, 201)
+	for i := range tooLong {
+		tooLong[i] = 'a'
+	}
+
+	err := b.RenameSession(context.Background(), parent, sessionID, string(tooLong))
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errno.ErrBind),
+		"超过 200 字节的 title 应返回 ErrBind，实际=%v", err)
+}
+
+// TestRenameSession_NotOwner_ReturnsForbidden session.UserID != userID → ErrForbidden。
+func TestRenameSession_NotOwner_ReturnsForbidden(t *testing.T) {
+	db := newChatbotTestDB(t)
+	b := newChatbotBiz(db)
+
+	owner := insertUserRow(t, db, nil)
+	other := insertUserRow(t, db, nil)
+	cbID := insertChatbotConfig(t, db, owner, "bot", model.ChatbotStatusPublished)
+	sessionID := insertChatbotSession(t, db, owner, cbID, "owner's session")
+
+	err := b.RenameSession(context.Background(), other, sessionID, "hacked title")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errno.ErrForbidden),
+		"非 session 所有者应返回 ErrForbidden，实际=%v", err)
+}
+
+// TestRenameSession_SoftDeleted_ReturnsSessionNotFound GetSession 返回 ErrRecordNotFound → ErrSessionNotFound。
+func TestRenameSession_SoftDeleted_ReturnsSessionNotFound(t *testing.T) {
+	db := newChatbotTestDB(t)
+	b := newChatbotBiz(db)
+
+	parent := insertUserRow(t, db, nil)
+	// 不插入任何 session，直接传一个不存在的 sessionID
+	err := b.RenameSession(context.Background(), parent, 99999, "new title")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, errno.ErrSessionNotFound),
+		"session 不存在时应返回 ErrSessionNotFound，实际=%v", err)
+}
+
+// ============================================================================
+// PinSession (T3)
+// ============================================================================
+
+// TestPinSession_PinFirstTime pinned=true → 返回 *time.Time 非 nil。
+func TestPinSession_PinFirstTime(t *testing.T) {
+	db := newChatbotTestDB(t)
+	b := newChatbotBiz(db)
+
+	parent := insertUserRow(t, db, nil)
+	cbID := insertChatbotConfig(t, db, parent, "bot", model.ChatbotStatusPublished)
+	sessionID := insertChatbotSession(t, db, parent, cbID, "my session")
+
+	before := time.Now().Add(-time.Second)
+	pinnedAt, err := b.PinSession(context.Background(), parent, sessionID, true)
+	require.NoError(t, err)
+	require.NotNil(t, pinnedAt, "pin=true 应返回非 nil 的 pinnedAt")
+	assert.True(t, pinnedAt.After(before),
+		"pinnedAt 应该是当前时间之后，before=%v pinnedAt=%v", before, pinnedAt)
+}
+
+// TestPinSession_Unpin pinned=false → 返回 nil，SetPinnedAt 传入 nil（取消置顶）。
+func TestPinSession_Unpin(t *testing.T) {
+	db := newChatbotTestDB(t)
+	b := newChatbotBiz(db)
+
+	parent := insertUserRow(t, db, nil)
+	cbID := insertChatbotConfig(t, db, parent, "bot", model.ChatbotStatusPublished)
+	sessionID := insertChatbotSession(t, db, parent, cbID, "my session")
+
+	// 先置顶
+	_, err := b.PinSession(context.Background(), parent, sessionID, true)
+	require.NoError(t, err)
+
+	// 再取消置顶
+	pinnedAt, err := b.PinSession(context.Background(), parent, sessionID, false)
+	require.NoError(t, err)
+	assert.Nil(t, pinnedAt, "pin=false 应返回 nil 的 pinnedAt")
+
+	// 验证 DB 中 pinned_at 确实为 NULL
+	var session model.ChatbotSession
+	require.NoError(t, db.First(&session, sessionID).Error)
+	assert.Nil(t, session.PinnedAt, "取消置顶后 DB 中 pinned_at 应为 NULL")
+}
+
+// TestPinSession_RepinRefreshesPinnedAt 先 pin 记录 t1，再 pin 返回 t2 > t1（EC-14 重复置顶刷新）。
+func TestPinSession_RepinRefreshesPinnedAt(t *testing.T) {
+	db := newChatbotTestDB(t)
+	b := newChatbotBiz(db)
+
+	parent := insertUserRow(t, db, nil)
+	cbID := insertChatbotConfig(t, db, parent, "bot", model.ChatbotStatusPublished)
+	sessionID := insertChatbotSession(t, db, parent, cbID, "my session")
+
+	// 第一次置顶
+	t1, err := b.PinSession(context.Background(), parent, sessionID, true)
+	require.NoError(t, err)
+	require.NotNil(t, t1)
+
+	// 稍等一个纳秒以确保时间戳不同（time.Now() 精度足够）
+	// 在实际中两次调用间距远超 1ns，但为保证测试稳定增加短暂间隔
+	time.Sleep(time.Millisecond)
+
+	// 第二次置顶（重复置顶，EC-14 刷新 pinnedAt）
+	t2, err := b.PinSession(context.Background(), parent, sessionID, true)
+	require.NoError(t, err)
+	require.NotNil(t, t2)
+
+	assert.True(t, t2.After(*t1),
+		"重复置顶应刷新 pinnedAt（EC-14），t1=%v t2=%v", t1, t2)
+}
+
+// TestPinSession_NotOwner_ReturnsForbidden session.UserID != userID → ErrForbidden。
+func TestPinSession_NotOwner_ReturnsForbidden(t *testing.T) {
+	db := newChatbotTestDB(t)
+	b := newChatbotBiz(db)
+
+	owner := insertUserRow(t, db, nil)
+	other := insertUserRow(t, db, nil)
+	cbID := insertChatbotConfig(t, db, owner, "bot", model.ChatbotStatusPublished)
+	sessionID := insertChatbotSession(t, db, owner, cbID, "owner's session")
+
+	pinnedAt, err := b.PinSession(context.Background(), other, sessionID, true)
+	require.Error(t, err)
+	assert.Nil(t, pinnedAt)
+	assert.True(t, errors.Is(err, errno.ErrForbidden),
+		"非 session 所有者 pin 操作应返回 ErrForbidden，实际=%v", err)
 }
