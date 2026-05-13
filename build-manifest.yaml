@@ -3,11 +3,11 @@ schema_version: "1.0"
 features:
   - id: "chatbot-session-rename-pin"
     ndf_version: "1.1"
-    description: "用户端 chatbot 对话页 (views/chatbot/ChatbotChat.vue) 左侧会话列表支持改名与置顶。改名复用现有 chatbot_session.title 字段（无 schema 变更）；置顶新增 pinned_at TIMESTAMP NULL 字段（NULL=未置顶，非NULL=置顶时间）。列表排序改为：置顶组按 pinned_at DESC，非置顶组按 updated_at DESC。交互：hover 显示「…」更多菜单，含「重命名 / 置顶 / 取消置顶 / 删除」。范围明确不含 SalesView 销售对话页与 SOP 运行历史。"
+    description: "用户端 chatbot 对话页 (views/chatbot/ChatbotChat.vue) 左侧会话列表支持改名与置顶。改名复用现有 chatbot_session.title 字段（无 schema 变更）；置顶新增 pinned_at TIMESTAMP NULL 字段（NULL=未置顶，非NULL=置顶时间）。列表排序改为：置顶组按 pinned_at DESC，非置顶组按 updated_at DESC。交互：hover 显示「…」更多菜单，含「重命名 / 置顶 / 取消置顶 / 删除」。范围明确不含 SalesView 销售对话页与 SOP 运行历史。S1 锁定 Approach A 极简 MVP (1-1.5 d)；顺带修 ListSessions cross-chatbot perf bug。"
     track: "standard"
-    stage: "S0"
+    stage: "S1"
     classification_reason: "Triage 5 条 — (1) DB schema 变更：是（chatbot_session 加 pinned_at 字段 + 覆盖排序的复合索引）(2) 新 API：是（PUT /v1/chatbot/sessions/:id/rename + PUT /v1/chatbot/sessions/:id/pin，2 个新端点；GET sessions 列表 ORDER BY 子句更新）(3) 无外部服务 (4) 跨 numind-server + numind-web-v3 两仓约 10-11 文件 (5) 不涉及支付/权限。条件 1/2/4 不满足 Hotfix，Standard Track。"
-    last_updated_by: "ai-s0"
+    last_updated_by: "ai-s1-proposal"
     last_updated_at: "2026-05-13T00:00:00+08:00"
     repos:
       - numind-server
@@ -15,20 +15,25 @@ features:
     branches: {}
     artifacts:
       requirement: "numind-server/requirements/chatbot-session-rename-pin.md"
-      proposal: null
+      proposal: "numind-server/proposals/chatbot-session-rename-pin-proposal.md"
       spec: null
       plan: null
     progress:
       total_tasks: 0
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "S0 gate — reviewer 已 PASS_WITH_CONCERNS，等待用户最终确认进入 S1"
+      current_task: "S1 gate — 等待用户/产品 owner 确认提案 §1+§4 (硬门禁：收入门禁)"
     rollback: null
     last_verified: null
     decisions:
       - "2026-05-13 (Triage): 用户原话'某个 chatbot 页面左边对话记录列表支持改名+置顶'。AI 澄清 4 关键范围：目标页 = 用户端 chatbot 对话页（不含 SalesView）；置顶规则 = 可多置顶按 pinned_at DESC；交互 = hover 显示「…」菜单；轨道 = Standard"
       - "2026-05-13 (Triage 范围锁定): 复用现有 title 字段做改名（无需新字段）；新增 pinned_at TIMESTAMP NULL 而非 pinned bool + pinned_at 双字段（避免冗余）；改名/置顶不更新 updated_at（metadata 操作不影响活跃排序，建议 S1 锁定）"
       - "2026-05-13 (S0 reviewer subagent 审查): PASS_WITH_CONCERNS — 0 P0 + 3 P1 + 2 P2。3 个 P1 已全部写入 requirement card 'S1 必决策项' 节：①置顶/排序作用域 per-chatbot vs cross-chatbot（关键，主控漏掉的视角；后端 ListSessions 当前是 cross-chatbot 混排+前端 client filter）②改名/置顶不更新 updated_at 应 S1 锁定而非 S2 ③置顶数量上限应 S1 决策。Reviewer 还肯定了 4 条主控判断正确：单字段 pinned_at 优于双字段 / 范围锁定不含 SalesView / 零 data migration 风险声明 / 与 sop-chatbot-visibility-scope 的耦合分析准确"
+      - "2026-05-13 (S1 office-hours Phase 3 前提挑战): 用户拒绝 P1 (rename+pin 是 MVP / search v2 预留) — 用户认为原意就是 rename+pin，PRD 不预留 search 未来意图；用户接受 P2 (per-chatbot scope + 顺带修 ListSessions perf bug)；用户接受 P3 (MVP 压缩到 1-1.5 天，推迟置顶硬上限/菜单组件抽离/错误码集中到 v2)"
+      - "2026-05-13 (S1 office-hours Phase 4 方案对比): 3 个 distinct approaches 评估 — A 极简 MVP (1-1.5d, Completeness 8/10) / B 健壮版即 S0 原方案 (2-2.5d, Completeness 10/10) / C 三 icon hover (1.5d, Completeness 6/10)。用户选 A — 严格落实 P3 MVP 压缩边界 + 隐藏价值是顺带修 ListSessions cross-chatbot perf bug (相当于免费搭车 bug fix)"
+      - "2026-05-13 (S1 PRD D1 锁定): per-chatbot scope + 后端 ListSessions 加 chatbot_id 可选 query param (向后兼容：缺参数保持 cross-chatbot 行为)，前端调用方主动传入启用新行为；client-side filter 在新 chatbot_id 参数下可移除但保留为 dedupe 防御"
+      - "2026-05-13 (S1 PRD D2 锁定): 改名 + 置顶 + 取消置顶均用 GORM UpdateColumn 显式列更新，绕开 updated_at 自动刷新；S6 验收时验证：操作前后查 updated_at 应相等"
+      - "2026-05-13 (S1 PRD D3 锁定): v1 不设置顶硬上限。理由：用户基数小滥用风险极低；省 ~0.5d 工作量（无 ErrPinLimitExceeded errno + 无前端边界 UI）；如未来 UI 出现真实拥挤再 v2 加硬上限 + 折叠组"
     related_features:
       - "sop-chatbot-visibility-scope (S4 in progress, 不耦合 — reviewer 已验证 ListVisibleChatbots 作用在 chatbot list 而非 session list)"
     blockers: []
