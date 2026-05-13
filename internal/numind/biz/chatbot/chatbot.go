@@ -243,35 +243,55 @@ type ChatbotVisibleItem struct {
 }
 
 // ListVisibleChatbotsWithPermission 返回可见智能体列表 + 每项的运行权限标志。
-// 父账号（ParentUserID == nil）所有项 HasPermission=true，无需查询白名单。
-// 子账号一次性查询 user_chatbot_permission 白名单（O(N) 本地匹配），不走 N+1 查询。
-// 与 HasChatbotPermission 的单条判断语义一致（父账号 bypass + 白名单匹配）。
+//
+// 两层 gate 串行 (sop-chatbot-visibility-scope spec §4.2.2):
+//   - Layer 1: visibility 过滤 (本 feature 新增) — 物理移除受限不可见的 chatbot, 子用户看不到入口
+//   - Layer 2: run-permission 标志 (既有) — 列出剩余 chatbot 但用 HasPermission 标记是否可运行
+//
+// 父账号 bypass: 不应用 visibility 过滤, 全部 HasPermission=true.
+// 子账号 visibility_restricted=false 短路放行 (不查 grant 表).
+// 与对称的 ListVisibleTemplatesWithPermission (Task 11) 语义一致.
 func (b *chatbotBiz) ListVisibleChatbotsWithPermission(ctx context.Context, user *model.User) ([]ChatbotVisibleItem, error) {
 	configs, err := b.ListVisibleChatbots(ctx, user)
 	if err != nil {
 		return nil, err
 	}
 
-	items := make([]ChatbotVisibleItem, 0, len(configs))
-
-	// 父账号：全部 true，不查白名单
+	// 父账号：全部 true，不查白名单, 也不应用 visibility
 	if user.ParentUserID == nil {
+		items := make([]ChatbotVisibleItem, 0, len(configs))
 		for _, c := range configs {
 			items = append(items, ChatbotVisibleItem{ChatbotConfig: c, HasPermission: true})
 		}
 		return items, nil
 	}
 
-	// 子账号：一次查询白名单，建 set，本地匹配
+	// Layer 1: visibility 过滤 (visibility_restricted=true 且不在 vis 白名单则物理移除)
+	visibilitySet, err := b.ds.ChatbotVisibilityGrant().ListVisibleChatbotIDsBySubUser(ctx, user.ID)
+	if err != nil {
+		return nil, fmt.Errorf("ListVisibleChatbotsWithPermission visibility: %w", err)
+	}
+	filtered := make([]model.ChatbotConfig, 0, len(configs))
+	for _, c := range configs {
+		if c.VisibilityRestricted {
+			if _, ok := visibilitySet[c.ID]; !ok {
+				continue // 短路移除: 受限且不在 visibility 白名单
+			}
+		}
+		filtered = append(filtered, c)
+	}
+
+	// Layer 2: run-permission 标志 (一次查询白名单, 本地匹配)
 	ids, err := b.ds.Customers().ListSubUserChatbotIDs(ctx, user.ID)
 	if err != nil {
-		return nil, fmt.Errorf("ListVisibleChatbotsWithPermission: %w", err)
+		return nil, fmt.Errorf("ListVisibleChatbotsWithPermission whitelist: %w", err)
 	}
 	allowed := make(map[uint]struct{}, len(ids))
 	for _, id := range ids {
 		allowed[id] = struct{}{}
 	}
-	for _, c := range configs {
+	items := make([]ChatbotVisibleItem, 0, len(filtered))
+	for _, c := range filtered {
 		_, ok := allowed[c.ID]
 		items = append(items, ChatbotVisibleItem{ChatbotConfig: c, HasPermission: ok})
 	}
