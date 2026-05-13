@@ -43,12 +43,15 @@ type FullBalanceView struct {
 	TrialExpiresAt  *time.Time `json:"trial_expires_at,omitempty"`
 }
 
-// GetUserBalance handles GET /v1/admin/users/:user_id/balance.
+// GetUserBalance handles GET /v1/admin/users/:id/balance.
 //
 // Admin token required (enforced by AdminAuthMiddleware in admin_router.go).
 // Returns FullBalanceView including booster fields.
+//
+// Note: path param is :id (not :user_id) to match the existing sibling routes
+// under /users/ (gin disallows mixing :id and :user_id at the same prefix).
 func (ctrl *AdminCreditWithMembership) GetUserBalance(c *gin.Context) {
-	idStr := c.Param("user_id")
+	idStr := c.Param("id")
 	uid, err := strconv.ParseUint(idStr, 10, 64)
 	if err != nil || uid == 0 {
 		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的用户ID: %s", idStr), nil)

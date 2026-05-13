@@ -1,6 +1,6 @@
 package admin_credit_test
 
-// balance_test.go — HTTP handler tests for GET /v1/admin/users/:user_id/balance.
+// balance_test.go — HTTP handler tests for GET /v1/admin/users/:id/balance.
 //
 // GetUserBalance only uses membershipSvc; creditBiz is not exercised here.
 // We pass nil for creditBiz in New() — only GetUserBalance is called in these tests.
@@ -105,7 +105,7 @@ func newAdminBalanceRouter(t *testing.T, ctrl *admincredit.AdminCreditWithMember
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.GET("/v1/admin/users/:user_id/balance", ctrl.GetUserBalance)
+	r.GET("/v1/admin/users/:id/balance", ctrl.GetUserBalance)
 	return r
 }
 
