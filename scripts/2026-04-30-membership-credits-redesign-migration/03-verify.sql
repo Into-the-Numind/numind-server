@@ -31,7 +31,11 @@ INNER JOIN (
   SELECT user_id, MAX(expires_at) AS max_pkg_expires
   FROM credit_package
   WHERE type = 'subscription'
-    AND status IN ('active', 'exhausted', 'expired')
+    -- 必须与 02-apply.sql Step 1 status filter 一致（含 'pending'）。
+    -- 否则两边互相掩盖：apply 漏 pending 写错 expires_at，verify 也漏 pending
+    -- 计算"应有 expires"，invariant 误报 0 violations 但数据其实是错的。
+    -- 2026-05-14 prod 上线踩过这个坑（user 406/411/418 年费被砍成月费）。
+    AND status IN ('active', 'exhausted', 'expired', 'pending')
   GROUP BY user_id
 ) latest ON latest.user_id = s.user_id
 WHERE ABS(TIMESTAMPDIFF(SECOND, s.expires_at, latest.max_pkg_expires)) > 1;

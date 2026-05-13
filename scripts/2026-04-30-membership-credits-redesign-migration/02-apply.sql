@@ -93,7 +93,11 @@ WITH ordered AS (
     LAG(expires_at) OVER (PARTITION BY user_id ORDER BY activated_at) AS prev_expires
   FROM credit_package
   WHERE type = 'subscription'
-    AND status IN ('active', 'exhausted', 'expired')
+    -- 必须含 'pending'：B2B 年度预付方案是 1 active + 11 pending 月段链，
+    -- 漏掉 pending 会让 12 月年费会员被砍成 1 月会员。
+    -- 2026-05-14 prod 上线踩过这个坑：user 406/411/418 的 expires_at 被错误设为
+    -- 当月底（只来自 active 段），而不是真实的 2027 年终。
+    AND status IN ('active', 'exhausted', 'expired', 'pending')
 ),
 with_breaks AS (
   SELECT *,
