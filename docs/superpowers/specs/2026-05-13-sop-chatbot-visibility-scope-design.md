@@ -677,7 +677,7 @@ DeleteSubUser 路径中的 `Delete(&SopVisibilityGrant{})` 会自动转为软删
 
 | # | 不变量 | 强制方式 |
 |---|--------|---------|
-| I-7 | DeleteSubUser 完成后, 该子用户在 4 张权限表（含 2 visibility + 2 run-permission）中无未软删记录 | CleanupVisibilityGrantsBySubUser + 既有清理逻辑，事务原子性保证 |
+| I-7 | DeleteSubUser 完成后, 该子用户在 4 张权限表（含 2 visibility + 2 run-permission）中无未软删记录 | CleanupBySubUser + 既有清理逻辑，事务原子性保证 |
 | I-8 | 删除失败时，整个 DeleteSubUser 事务回滚（不留半成品状态） | `store.WithTx` 事务包装 |
 
 ---
@@ -999,7 +999,7 @@ PRD §4.2 的 22 条 AC → spec 章节映射：
 | EC-3 | visibility_restricted=true 但 grant 0 条 | §2.5 I-2 允许；列表过滤将该 SOP 对所有子用户隐藏（白名单严格） |
 | EC-4 | 提交不属于自己的 sub_user_id | §4.1.8 validateSubUsersBelongToCaller → ErrCrossParentSubUser |
 | EC-5 | 已在 run 的 SOP, 父账户取消可见 | run 已有的 run_id 不撤回，列表入口隐藏；§4.3 已说明本功能不拦截 run path |
-| EC-6 | 父账户删除 SOP / chatbot | **本 feature 内处理**（用户 2026-05-13 决策）：在既有 SOP/chatbot delete biz 中同事务调用 `CleanupSopVisibilityGrantsByEntity(tx, sopID)` / `CleanupChatbotVisibilityGrantsByEntity(tx, chatbotID)`，软删该实体的所有 grant 记录 |
+| EC-6 | 父账户删除 SOP / chatbot | **本 feature 内处理**（用户 2026-05-13 决策）：在既有 SOP/chatbot delete biz 中同事务调用 `CleanupByEntity(tx, sopID)` / `CleanupByEntity(tx, chatbotID)`，软删该实体的所有 grant 记录 |
 | EC-7 | 编辑未保存退出 | 与现有编辑页一致，丢弃；§6.5 保存触发 PUT，未保存不持久化 |
 
 **EC-6 实现细节**（**store 层函数**，biz 层调用，与 §5.3 一致）：
@@ -1041,11 +1041,12 @@ func (s *sopVisibilityGrantStore) CleanupByEntity(ctx context.Context, tx *gorm.
 
 文件：`numind-server/internal/numind/biz/sop/visibility_test.go` 等。
 
-最少 12 个测试用例：
+最少 13 个测试用例：
 - 6 个场景（visibility 关闭 / 开启全选 / 开启部分选 / 开启零选 / 子用户级联清理 / 跨父账户越权配置）
 - 4 象限矩阵（visible+allowed / visible+denied / hidden+allowed / hidden+denied）— 验证 §4.2 两层 gate 串行顺序
 - 1 个并发 PUT 测试（验证 last-write-wins 不死锁）
 - 1 个幂等测试（同一 PUT 连续 2 次，第二次无副作用）
+- 1 个 EC-6 后再 grant 测试：SOP 删除（软删 grant 残留）→ 同 sopID 不可能复用（实体已删除），但同一子用户对**新建的不同 SOP**再次被 grant 时仍正常工作；以及 DeleteSubUser 软删 grant 后，**重建同 ID 用户场景**（如恢复软删用户）下 UpdateVisibility 物理删能正确清理残留——验证 I-6 在双路径删除下的不变性
 
 ### 10.3 gstack /qa 浏览器截图
 
@@ -1066,7 +1067,7 @@ func (s *sopVisibilityGrantStore) CleanupByEntity(ctx context.Context, tx *gorm.
 | R# | 风险 | 概率 | 影响 | 缓解 |
 |----|------|------|------|------|
 | R1 | 两层 gate 串行顺序错位 (run-permission 先于 visibility) | 中 | 中 (语义反转, 但子用户最终看不到; 仍可能困惑) | §4.2.1 spec 显式锁顺序; 单元测试 4 象限矩阵覆盖 |
-| R2 | 子用户级联清理失败 (4 表事务) | 低 | 高 (孤儿 grant 记录引用已删用户) | §5.3 单事务 + 幂等设计; CleanupVisibilityGrantsBySubUser 单元测试 |
+| R2 | 子用户级联清理失败 (4 表事务) | 低 | 高 (孤儿 grant 记录引用已删用户) | §5.3 单事务 + 幂等设计; CleanupBySubUser 单元测试 |
 | R3 | 列表查询性能退化 | 低 | 低 (本地 O(N) 过滤 + visibility_restricted 短路, 99% SOP 无需查 grant 表) | §4.2 短路逻辑; S5 性能验证可选 (本功能不在性能优化范围) |
 | R4 | GORM `default:true` bool gotcha | 极低 | 低 (本字段 default:0, 不触发该 gotcha) | §2.1 显式说明; database.md §6 已有文档化 pattern |
 | R5 | SubUserMultiSelectDialog 与既有 CustomersView 弹窗的耦合 | 低 | 低 (复用代码风格但不强依赖) | §6.2 独立组件设计; CustomersView 既有弹窗不动 |
@@ -1125,7 +1126,7 @@ func (s *sopVisibilityGrantStore) CleanupByEntity(ctx context.Context, tx *gorm.
 5. GetSopVisibility / GetChatbotVisibility
 6. ListSubUserVisibleSopIDs / ListSubUserVisibleChatbotIDs
 7. IsSopVisibleToUser / IsChatbotVisibleToUser
-8. CleanupVisibilityGrantsBySubUser + 接入既有 DeleteSubUser
+8. CleanupBySubUser + 接入既有 DeleteSubUser
 
 **Phase 3: 后端 controller + router**
 9. SOP visibility controller (GET/PUT)
@@ -1138,7 +1139,7 @@ func (s *sopVisibilityGrantStore) CleanupByEntity(ctx context.Context, tx *gorm.
 14. 错误码定义集中加入
 
 **Phase 5: 后端 EC-6 清理**（用户 2026-05-13 锁定纳入）
-15. SOP delete biz 加 visibility 清理（CleanupSopVisibilityGrantsByEntity + 接入既有 DeleteSopTemplate 事务）
+15. SOP delete biz 加 visibility 清理（CleanupByEntity + 接入既有 DeleteSopTemplate 事务）
 16. chatbot delete biz 加 visibility 清理（对称）
 
 **Phase 6: 后端单元测试**
@@ -1174,14 +1175,14 @@ func (s *sopVisibilityGrantStore) CleanupByEntity(ctx context.Context, tx *gorm.
 | `internal/pkg/model/sop_visibility_grant.go` | 新建 |
 | `internal/pkg/model/chatbot_visibility_grant.go` | 新建 |
 | `internal/pkg/errno/code.go` | 修改 (加 6 个错误码: EntityNotOwnedByCaller, VisibilityPermissionDenied, CrossParentSubUser, SubUserNotFound, SopTemplateNotFound, ChatbotNotFound — 后两者复用现有则不重复) |
-| `internal/numind/store/sop_visibility_grant.go` | 新建 (Get/UpdateSopVisibility 的 store 方法 + CleanupSopVisibilityGrantsByEntity + CleanupSopVisibilityGrantsBySubUser) |
+| `internal/numind/store/sop_visibility_grant.go` | 新建 (Get/UpdateSopVisibility 的 store 方法 + CleanupByEntity + CleanupSopVisibilityGrantsBySubUser) |
 | `internal/numind/store/chatbot_visibility_grant.go` | 新建 (对称) |
-| `internal/numind/store/customer.go` | 修改 (DeleteSubUser 事务内调用 CleanupVisibilityGrantsBySubUser) |
+| `internal/numind/store/customer.go` | 修改 (DeleteSubUser 事务内调用 CleanupBySubUser) |
 | `internal/numind/biz/sop/visibility.go` | 新建 (含 IsSopVisibleToUser / ListSubUserVisibleSopIDs / GetSopVisibility / UpdateSopVisibility / validateSubUsersBelongToCaller) |
 | `internal/numind/biz/chatbot/visibility.go` | 新建 (对称 5 函数) |
-| `internal/numind/biz/customer/customer.go` | 修改 (DeleteSubUser 调用 CleanupVisibilityGrantsBySubUser) |
-| `internal/numind/biz/sop/sop.go` | 修改 (① ListVisibleTemplatesWithPermission 加 visibility 过滤层; ② DeleteSopTemplate 事务加 CleanupSopVisibilityGrantsByEntity — EC-6) |
-| `internal/numind/biz/chatbot/chatbot.go` | 修改 (① ListVisibleChatbotsWithPermission 加 visibility 过滤层; ② DeleteChatbot 事务加 CleanupChatbotVisibilityGrantsByEntity — EC-6) |
+| `internal/numind/biz/customer/customer.go` | 修改 (DeleteSubUser 调用 CleanupBySubUser) |
+| `internal/numind/biz/sop/sop.go` | 修改 (① ListVisibleTemplatesWithPermission 加 visibility 过滤层; ② DeleteSopTemplate 事务加 CleanupByEntity — EC-6) |
+| `internal/numind/biz/chatbot/chatbot.go` | 修改 (① ListVisibleChatbotsWithPermission 加 visibility 过滤层; ② DeleteChatbot 事务加 CleanupByEntity — EC-6) |
 | `internal/numind/controller/v1/sop/visibility.go` | 新建 (GetVisibility, UpdateVisibility) |
 | `internal/numind/controller/v1/chatbot/visibility.go` | 新建 (对称) |
 | `internal/numind/router.go` | 修改 (注册 4 端点) |
