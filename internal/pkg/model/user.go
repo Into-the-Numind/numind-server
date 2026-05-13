@@ -56,7 +56,9 @@ const (
 
 // BillingMode 定义用户计费模式常量（credits-system feature）
 // legacy_tier: Grandfathering 老会员，按次数制（GetRemainingSOPRuns），不扣积分；
-//              老会员到期自动升级后切换到 credits 模式。
+//
+//	老会员到期自动升级后切换到 credits 模式。
+//
 // credits:     新积分制（默认）——Reserve/Reconcile 预扣对账 + FIFO 扣减。
 // 详见 spec §2.2 / §2.7。
 const (

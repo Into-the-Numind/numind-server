@@ -160,6 +160,9 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/sop/templates/:id/bookmarks", userSopc.ListBookmarksByTemplate)        // 获取模板的所有书签
 		authGroup.GET("/sop/templates/executed", userSopc.ListMyExecutedTemplates)             // 获取当前用户已执行的模板列表（按模板分组）
 		authGroup.GET("/sop/templates/:id/runs", userSopc.ListTemplateRuns)                    // 获取指定模板下的所有历史运行记录（包含完整信息）
+		// SOP 可见范围权限（sop-chatbot-visibility-scope spec §3.2/§3.3）
+		authGroup.GET("/sop/templates/:id/visibility", userSopc.GetVisibility)    // 读 SOP 可见范围配置（父账户）
+		authGroup.PUT("/sop/templates/:id/visibility", userSopc.UpdateVisibility) // 改 SOP 可见范围配置（父账户）
 
 		// 书签管理
 		authGroup.POST("/sop/bookmarks", userSopc.SaveBookmark)         // 保存节点为书签
@@ -309,6 +312,9 @@ func installNumindRouters(g *gin.Engine) error {
 		{
 			chatbotGroup.GET("/list", chatbotCtrl.List)
 			chatbotGroup.GET("/:id/check-permission", chatbotCtrl.CheckPermission) // 前端点击前权限预检（mirror SOP /check-permission）
+			// Chatbot 可见范围权限（sop-chatbot-visibility-scope spec §3.4）
+			chatbotGroup.GET("/:id/visibility", chatbotCtrl.GetVisibility)    // 读 chatbot 可见范围配置（父账户）
+			chatbotGroup.PUT("/:id/visibility", chatbotCtrl.UpdateVisibility) // 改 chatbot 可见范围配置（父账户）
 			chatbotGroup.POST("/sessions", chatbotCtrl.CreateSession)
 			chatbotGroup.GET("/sessions", chatbotCtrl.ListSessions)
 			chatbotGroup.DELETE("/sessions/:id", chatbotCtrl.DeleteSession)

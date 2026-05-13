@@ -27,17 +27,17 @@ import (
 // Accuracy contract (spec §3.11):
 //
 //   - sop_run:      Iterate SopTemplate's SopNode rows, sum len(Prompt) +
-//                   len(Description) + len(Name). This over-estimates by
-//                   a small margin (variable substitutions aren't yet
-//                   rendered) which is fine — safety_buffer_pct covers it.
+//     len(Description) + len(Name). This over-estimates by
+//     a small margin (variable substitutions aren't yet
+//     rendered) which is fine — safety_buffer_pct covers it.
 //   - sop_chat:     Use the execution context of the SopRun (reference_id
-//                   is the sop_run.id). Fall back to template sum if context
-//                   is empty.
+//     is the sop_run.id). Fall back to template sum if context
+//     is empty.
 //   - salesrag_chat: Sum message.content over the last N messages of the
-//                   session (default N=10).
+//     session (default N=10).
 //   - default:      Return 0 char count and empty model/provider. Caller
-//                   should fill in defaults and accept the reduced-accuracy
-//                   estimate.
+//     should fill in defaults and accept the reduced-accuracy
+//     estimate.
 type IPromptEstimator interface {
 	Estimate(ctx context.Context, operation, referenceID string) (
 		chars int, modelName string, provider string, err error,

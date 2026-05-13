@@ -39,11 +39,11 @@ func NewMigrationController(ds store.IStore) *MigrationController {
 // migration, used by the status endpoint to drive the admin UI's PENDING
 // state ("待迁移用户 N 人，分布：standard X / premium Y / trial Z").
 type MigrationStatsPerTier struct {
-	Trial          int64 `json:"trial"`
-	Standard       int64 `json:"standard"`
-	Premium        int64 `json:"premium"`
-	Free           int64 `json:"free"`
-	TotalInPeriod  int64 `json:"total_in_period"` // sum of trial+standard+premium in period
+	Trial         int64 `json:"trial"`
+	Standard      int64 `json:"standard"`
+	Premium       int64 `json:"premium"`
+	Free          int64 `json:"free"`
+	TotalInPeriod int64 `json:"total_in_period"` // sum of trial+standard+premium in period
 }
 
 // MigrationStatusResp is the response body of the status endpoint. Only one of

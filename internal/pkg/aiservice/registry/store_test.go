@@ -9,6 +9,8 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	"numind-server/internal/pkg/model"
 )
 
 // newStoreTestDB creates an in-memory SQLite DB with the minimal schema required
@@ -191,4 +193,47 @@ func TestStore_GetResolvedRoute_ReadsThinkingFlags(t *testing.T) {
 			assert.Equal(t, tc.expectedThinkingOnly, row2.ThinkingOnly, "GetResolvedRouteByModelKey ThinkingOnly")
 		})
 	}
+}
+
+// TestStore_SaveService_UpdateIsActiveFalse is a regression test for the GORM
+// default:true bool gotcha on the UPDATE path (see .claude/rules/database.md §6).
+//
+// GORM v2 Save() selects "*" explicitly for struct updates, meaning zero-value
+// bools are included in the UPDATE statement and NOT silently dropped in favour
+// of the DB DEFAULT. This test asserts that is_active=false persists correctly
+// after Save, so a future GORM upgrade that changes this behaviour is caught.
+//
+// Related commits: 376486c (Create path fix), 2c20398 / 9a4199d (Route/Provider Create fixes).
+func TestStore_SaveService_UpdateIsActiveFalse(t *testing.T) {
+	db := newStoreTestDB(t)
+	s := NewStore(db)
+	ctx := context.Background()
+
+	// Step 1: Create a service with is_active=true (the normal starting state).
+	svc := &model.AIService{
+		ModelKey:    "test-update-is-active",
+		DisplayName: "Test Service",
+		ServiceType: "llm",
+		IsActive:    true,
+	}
+	require.NoError(t, s.SaveService(ctx, svc))
+	require.NotZero(t, svc.ID, "service must have been assigned an ID")
+	assert.True(t, svc.IsActive, "newly created service should be active")
+
+	// Verify initial state in DB.
+	loaded, err := s.GetService(ctx, svc.ID)
+	require.NoError(t, err)
+	assert.True(t, loaded.IsActive, "DB should reflect is_active=true after Create")
+
+	// Step 2: Update is_active → false via Save (the Update path).
+	// This is exactly what UpdateService does: mutate the struct, then call SaveService.
+	loaded.IsActive = false
+	require.NoError(t, s.SaveService(ctx, loaded))
+
+	// Step 3: Re-read from DB and assert the value persisted.
+	reloaded, err := s.GetService(ctx, svc.ID)
+	require.NoError(t, err)
+	assert.False(t, reloaded.IsActive,
+		"is_active=false must persist via db.Save() even with gorm:\"default:true\" tag; "+
+			"GORM v2 Save() uses SELECT \"*\" which forces all fields into the UPDATE statement")
 }

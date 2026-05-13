@@ -18,7 +18,7 @@ type CreditReservation struct {
 	Status          string     `gorm:"type:enum('reserved','reconciled','refunded','expired');not null;default:'reserved';index:idx_user_status,priority:2;index:idx_status_created,priority:1" json:"status"`
 	ActualCostCents *int64     `json:"actual_cost_cents,omitempty"`
 	Delta           *int64     `json:"delta,omitempty"`
-	FinalizeReason  *string    `gorm:"type:enum('normal','op_failed','user_cancelled','provider_timeout','no_actual_cost','expired_by_cron','manual_refund')" json:"finalize_reason,omitempty"`
+	FinalizeReason  *string    `gorm:"type:enum('normal','op_failed','user_cancelled','provider_timeout','no_actual_cost','expired_by_cron','manual_refund','provider_err','context_budget_refund','nil_stream')" json:"finalize_reason,omitempty"`
 	IdempotencyKey  *string    `gorm:"size:64;uniqueIndex:uk_idempotency_key" json:"idempotency_key,omitempty"`
 	ReconciledAt    *time.Time `json:"reconciled_at,omitempty"`
 	CreatedAt       time.Time  `gorm:"autoCreateTime:milli;index:idx_user_status,priority:3;index:idx_status_created,priority:2" json:"created_at"`

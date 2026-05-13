@@ -36,6 +36,8 @@ type IStore interface {
 	LLMProvider() ILLMProviderStore
 	UserModelPreference() IUserModelPreferenceStore
 	Membership() membstore.IMembershipStore
+	SopVisibilityGrant() ISopVisibilityGrantStore
+	ChatbotVisibilityGrant() IChatbotVisibilityGrantStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -158,4 +160,14 @@ func (ds *datastore) UserModelPreference() IUserModelPreferenceStore {
 // Membership 返回一个实现了 IMembershipStore 接口的实例.
 func (ds *datastore) Membership() membstore.IMembershipStore {
 	return membstore.NewMembershipStore(ds.db)
+}
+
+// SopVisibilityGrant 返回一个实现了 ISopVisibilityGrantStore 接口的实例.
+func (ds *datastore) SopVisibilityGrant() ISopVisibilityGrantStore {
+	return NewSopVisibilityGrantStore(ds.db)
+}
+
+// ChatbotVisibilityGrant 返回一个实现了 IChatbotVisibilityGrantStore 接口的实例.
+func (ds *datastore) ChatbotVisibilityGrant() IChatbotVisibilityGrantStore {
+	return NewChatbotVisibilityGrantStore(ds.db)
 }

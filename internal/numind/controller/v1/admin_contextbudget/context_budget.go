@@ -373,7 +373,7 @@ type upsertPolicyReq struct {
 	FixedOverheadTokens  int     `json:"fixed_overhead_tokens"`
 	SoftThresholdRatio   float64 `json:"soft_threshold_ratio"`
 	HardThresholdRatio   float64 `json:"hard_threshold_ratio"`
-	ChargeUser           bool    `json:"charge_user"`
+	ChargeUser           *bool   `json:"charge_user"`
 	Description          string  `json:"description"`
 	ChangeReason         string  `json:"change_reason"`
 }
@@ -398,6 +398,10 @@ func (ctrl *ContextBudgetController) UpsertPolicy(c *gin.Context) {
 		core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("safe_ratio 必须在 (0, 1] 范围内"), nil)
 		return
 	}
+	if req.ChargeUser == nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("charge_user is required (must be explicitly true or false)"), nil)
+		return
+	}
 
 	// Apply defaults for optional threshold ratios.
 	softRatio := req.SoftThresholdRatio
@@ -417,7 +421,7 @@ func (ctrl *ContextBudgetController) UpsertPolicy(c *gin.Context) {
 		FixedOverheadTokens:  req.FixedOverheadTokens,
 		SoftThresholdRatio:   softRatio,
 		HardThresholdRatio:   hardRatio,
-		ChargeUser:           req.ChargeUser,
+		ChargeUser:           *req.ChargeUser,
 		Description:          req.Description,
 		ChangeReason:         req.ChangeReason,
 		UpdatedBy:            actor,

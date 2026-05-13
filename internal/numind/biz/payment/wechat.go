@@ -3,8 +3,11 @@ package payment
 import (
 	"context"
 	"crypto/rsa"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -22,13 +25,13 @@ import (
 
 // WechatPayClient wraps the WeChat Pay SDK client for Native payment.
 type WechatPayClient struct {
-	client       *core.Client
-	appID        string
-	mchID        string
-	apiV3Key     string
-	notifyURL    string
-	pubKeyID     string
-	wechatPubKey *rsa.PublicKey
+	client         *core.Client
+	appID          string
+	mchID          string
+	apiV3Key       string
+	notifyURL      string
+	pubKeyID       string
+	wechatPubKey   *rsa.PublicKey
 	certDownloader *downloader.CertificateDownloader // 用于旧证书模式验签（灰度期兼容）
 }
 
@@ -49,11 +52,11 @@ func NewWechatPayClient() (*WechatPayClient, error) {
 	}
 
 	wc := &WechatPayClient{
-		appID:    appID,
-		mchID:    mchID,
-		apiV3Key: apiV3Key,
+		appID:     appID,
+		mchID:     mchID,
+		apiV3Key:  apiV3Key,
 		notifyURL: notifyURL,
-		pubKeyID: pubKeyID,
+		pubKeyID:  pubKeyID,
 	}
 
 	ctx := context.Background()
@@ -122,7 +125,14 @@ func (w *WechatPayClient) NativePrepay(ctx context.Context, orderNo string, amou
 
 // ParseNotifyRequest verifies the WeChat Pay signature and parses the payment notification.
 // Supports both public key mode and certificate mode (for gray-release compatibility).
+// E2E bypass via NUMIND_E2E_BYPASS_PAY_SIG=1 in dev/qa environments (prod immune due to env check).
 func (w *WechatPayClient) ParseNotifyRequest(ctx context.Context, request *http.Request) (outTradeNo string, transactionID string, err error) {
+	// E2E bypass check: dev/qa only
+	if os.Getenv("NUMIND_E2E_BYPASS_PAY_SIG") == "1" && viper.GetString("runmode") != "release" {
+		log.Warnw("Wechat signature verification BYPASSED via NUMIND_E2E_BYPASS_PAY_SIG=1; this MUST never happen in prod")
+		return w.parseNotifyRequestWithoutVerify(ctx, request)
+	}
+
 	// 根据回调头部的 Wechatpay-Serial 判断用哪种验签
 	serial := request.Header.Get("Wechatpay-Serial")
 	isPubKeyMode := strings.HasPrefix(serial, "PUB_KEY_ID_")
@@ -168,4 +178,34 @@ func (w *WechatPayClient) ParseNotifyRequest(ctx context.Context, request *http.
 	}
 
 	return outTradeNo, transactionID, nil
+}
+
+// parseNotifyRequestWithoutVerify extracts outTradeNo and transactionID from request body without signature verification.
+// Used only for E2E testing when NUMIND_E2E_BYPASS_PAY_SIG=1 in dev/qa environments.
+func (w *WechatPayClient) parseNotifyRequestWithoutVerify(ctx context.Context, request *http.Request) (outTradeNo string, transactionID string, err error) {
+	body, err := io.ReadAll(request.Body)
+	if err != nil {
+		return "", "", fmt.Errorf("wechat: read request body: %w", err)
+	}
+
+	var notification struct {
+		Resource struct {
+			OriginalType string `json:"original_type"`
+			OriginalData struct {
+				OutTradeNo    string `json:"out_trade_no"`
+				TransactionID string `json:"transaction_id"`
+				TradeState    string `json:"trade_state"`
+			} `json:"original_data"`
+		} `json:"resource"`
+	}
+
+	if err = json.Unmarshal(body, &notification); err != nil {
+		return "", "", fmt.Errorf("wechat: unmarshal notification: %w", err)
+	}
+
+	if notification.Resource.OriginalData.TradeState != "SUCCESS" {
+		return "", "", fmt.Errorf("wechat: payment not successful, trade_state: %s", notification.Resource.OriginalData.TradeState)
+	}
+
+	return notification.Resource.OriginalData.OutTradeNo, notification.Resource.OriginalData.TransactionID, nil
 }

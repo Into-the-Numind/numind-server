@@ -118,7 +118,8 @@ CREATE TABLE IF NOT EXISTS credit_reservation (
     estimated_completion_tokens INTEGER NOT NULL DEFAULT 0,
     provider TEXT NOT NULL DEFAULT '',
     model TEXT NOT NULL DEFAULT '',
-    context_budget_event_id INTEGER
+    context_budget_event_id INTEGER,
+    user_type_multiplier REAL NOT NULL DEFAULT 1.0
 );`).Error)
 	require.NoError(t, db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uk_idempotency_key ON credit_reservation(idempotency_key);`).Error)
 
@@ -237,7 +238,7 @@ func newTestSalesragBiz(ds store.IStore, creditSvc credit.ICreditService, pc pri
 // ctxWithRequestID installs an X-Request-ID on a context so the idempotency
 // key derivation can run end-to-end.
 func ctxWithRequestID(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, known.XRequestIDKey, id)
+	return context.WithValue(ctx, known.XRequestIDKey, id) //nolint:staticcheck // SA1029: XRequestIDKey is a package-level string constant shared with middleware; changing it to a custom type requires coordinated change across multiple packages
 }
 
 // --- Test 1: happy path — credits user passes pre-flight, Reserve delegated to Gateway ---

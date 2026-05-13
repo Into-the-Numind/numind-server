@@ -182,23 +182,48 @@ type SopTemplateVisibleItem struct {
 }
 
 // ListVisibleTemplatesWithPermission 见接口注释。
+//
+// 两层 gate 串行 (sop-chatbot-visibility-scope spec §4.2.1):
+//   - Layer 1: visibility 过滤 (本 feature 新增) — 物理移除受限不可见的 SOP, 子用户看不到入口
+//   - Layer 2: run-permission 标志 (既有) — 列出剩余 SOP 但用 HasPermission 标记是否可运行
+//
+// Gate 顺序固化: visibility 先于 run-permission. 含义:
+//   - visibility 受限 + 在白名单: 可见, 可能可运行 (取决于 run-permission)
+//   - visibility 受限 + 不在白名单: 不可见 (移除, 不出现在列表)
+//   - visibility 不受限: 全部子用户可见, 仅 HasPermission 区分能否运行
+//
+// 父账户 bypass: 不应用 visibility 过滤, 也不查 run-permission (全部 HasPermission=true).
 func (b *sopBiz) ListVisibleTemplatesWithPermission(ctx context.Context, user *model.User, offset, limit int) ([]SopTemplateVisibleItem, int64, error) {
 	templates, total, err := b.ds.Sop().ListVisibleTemplates(offset, limit)
 	if err != nil {
 		return nil, 0, fmt.Errorf("ListVisibleTemplatesWithPermission: %w", err)
 	}
 
-	items := make([]SopTemplateVisibleItem, 0, len(templates))
-
 	// 父账号：全部 true，不查白名单
 	if user.ParentUserID == nil {
+		items := make([]SopTemplateVisibleItem, 0, len(templates))
 		for _, t := range templates {
 			items = append(items, SopTemplateVisibleItem{SopTemplate: t, HasPermission: true})
 		}
 		return items, total, nil
 	}
 
-	// 子账号：一次查询白名单，建 set，本地匹配（对齐 HasTemplatePermission 语义）
+	// Layer 1: visibility 过滤 (visibility_restricted=true 且不在白名单则物理移除)
+	visibilitySet, err := b.ds.SopVisibilityGrant().ListVisibleSopIDsBySubUser(ctx, user.ID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("ListVisibleTemplatesWithPermission visibility: %w", err)
+	}
+	filtered := make([]model.SopTemplate, 0, len(templates))
+	for _, t := range templates {
+		if t.VisibilityRestricted {
+			if _, ok := visibilitySet[t.ID]; !ok {
+				continue // 短路移除: 受限且不在 visibility 白名单
+			}
+		}
+		filtered = append(filtered, t)
+	}
+
+	// Layer 2: run-permission 标志 (一次查询白名单, 本地匹配)
 	perms, err := b.ds.Customers().ListUserTemplatePermissions(ctx, user.ID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("ListVisibleTemplatesWithPermission whitelist: %w", err)
@@ -207,19 +232,43 @@ func (b *sopBiz) ListVisibleTemplatesWithPermission(ctx context.Context, user *m
 	for _, p := range perms {
 		allowed[p.TemplateID] = struct{}{}
 	}
-	for _, t := range templates {
+	items := make([]SopTemplateVisibleItem, 0, len(filtered))
+	for _, t := range filtered {
 		_, ok := allowed[t.ID]
 		items = append(items, SopTemplateVisibleItem{SopTemplate: t, HasPermission: ok})
 	}
-	return items, total, nil
+
+	// 注: total 反映 visibility 过滤后的实际可见数量, 与 items 长度一致
+	// (而非 store 层返回的 visibility 过滤前 total). 与列表语义对齐.
+	// 局限: 当 store 层做了 offset/limit 分页时, total 仅反映当前页过滤后的数量,
+	// 不是全量可见数. 当前默认 limit=500 远超实际模板数, 此局限不构成问题; 未来若
+	// 需要小页大、精确分页 total, 应改为先查全部 visibility 白名单 + 在 store 层
+	// 做 WHERE id IN(...) 过滤 (改造代价较大, 推迟为 tech debt).
+	return items, int64(len(items)), nil
 }
 
 func (b *sopBiz) UpdateTemplate(ctx context.Context, id uint, updates map[string]interface{}) error {
 	return b.ds.Sop().UpdateTemplate(id, updates)
 }
 
+// DeleteTemplate 删除 SOP 模板, 同事务清理可见范围授权.
+//
+// EC-6 (sop-chatbot-visibility-scope spec §9): 实体删除时清理它的所有 visibility grant
+// 记录, 避免 grant 表残留指向不存在 SOP 的孤儿数据. 软删 grant 保留审计.
+//
+// 事务模式 b.ds.DB().WithContext(ctx).Transaction(...) 与项目既有惯例一致.
 func (b *sopBiz) DeleteTemplate(ctx context.Context, id uint) error {
-	return b.ds.Sop().DeleteTemplate(id)
+	return b.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// EC-6: 软删该 SOP 的所有 visibility grant
+		if err := b.ds.SopVisibilityGrant().CleanupByEntity(ctx, tx, id); err != nil {
+			return fmt.Errorf("DeleteTemplate: cleanup visibility grants: %w", err)
+		}
+		// 既有: 软删 sop_template (GORM 默认软删, gorm.Model.DeletedAt)
+		if err := tx.Delete(&model.SopTemplate{}, id).Error; err != nil {
+			return fmt.Errorf("DeleteTemplate: delete sop_template: %w", err)
+		}
+		return nil
+	})
 }
 
 // Node operations

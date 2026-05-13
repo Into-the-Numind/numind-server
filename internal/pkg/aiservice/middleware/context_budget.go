@@ -188,8 +188,30 @@ type ctxKeyBudgetMetadata struct{}
 // Context is immutable-by-copy; sharing a *finalCostHolder pointer through
 // context.WithValue is the standard Go pattern for mutable cross-middleware
 // state without breaking context semantics.
+//
+// Thread-safety: Set is called from the inner Billing middleware goroutine;
+// Get is called from the ContextBudgetCredits finalize path. The mutex makes
+// concurrent access safe (mirrors budgetMetadataHolder from F-5 fix b498a99).
 type finalCostHolder struct {
-	CostCents int64
+	mu        sync.Mutex
+	costCents int64
+	set       bool
+}
+
+// Set stores costCents and marks the holder as set. Subsequent calls overwrite.
+func (h *finalCostHolder) Set(c int64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.costCents = c
+	h.set = true
+}
+
+// Get returns the stored cost and true if Set was called at least once.
+// Returns 0 and false when the holder is empty (Set was never called).
+func (h *finalCostHolder) Get() (int64, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.costCents, h.set
 }
 
 // ctxKeyFinalCostHolder is the context key for *finalCostHolder.
@@ -582,11 +604,13 @@ func ContextBudgetCredits(deps Deps) Middleware {
 //
 // Actual cost resolution (spec §6.4):
 //   - Reads the *finalCostHolder injected by ContextBudgetCredits step 5b.
-//   - If Billing middleware populated holder.CostCents > 0 (from pricing rule +
-//     actual token counts), that value is used as actualCredits for reconcile.
-//   - Falls back to fi.EstimatedCredits when the holder is absent or zero
-//     (e.g. legacy non-streaming paths, pricing-rule miss, or error paths where
-//     Billing never computed a cost).
+//   - If Billing middleware called holder.Set(c) (from pricing rule + actual
+//     token counts), that value — including 0 — is used as actualCredits for
+//     reconcile. A 0/0 pricing rule legitimately produces cost=0 and must NOT
+//     fall back to EstimatedCredits (F-7 fix).
+//   - Falls back to fi.EstimatedCredits only when the holder is absent or Set
+//     was never called (e.g. legacy non-streaming paths, pricing-rule miss, or
+//     error paths where Billing never computed a cost).
 //
 // Failures are logged warn — finalize must never propagate errors to the caller.
 func finalizeReservationIfNeeded(ctx context.Context, deps Deps, fi FinalizeInput) {
@@ -609,11 +633,16 @@ func finalizeReservationIfNeeded(ctx context.Context, deps Deps, fi FinalizeInpu
 	}
 
 	// Resolve the actual cost: prefer the value set by Billing middleware via
-	// the finalCostHolder (real pricing-rule cost), fall back to the pre-call
-	// EstimatedCredits (ReservedOutputTokens placeholder) when unavailable.
+	// the finalCostHolder (real pricing-rule cost, including 0). Falls back to
+	// EstimatedCredits only when the holder is absent or Set was never called.
+	// F-7: use ok flag from Get() instead of CostCents > 0 so that a legitimately
+	// zero-cost call (0/0 pricing rule) is reconciled as 0 rather than falling
+	// back to the EstimatedCredits placeholder.
 	actualCredits := fi.EstimatedCredits
-	if holder := finalCostHolderFromCtx(ctx); holder != nil && holder.CostCents > 0 {
-		actualCredits = holder.CostCents
+	if holder := finalCostHolderFromCtx(ctx); holder != nil {
+		if c, ok := holder.Get(); ok {
+			actualCredits = c
+		}
 	}
 
 	if err := deps.CreditService.FinalizeReservation(ctx, fi.ReservationID, actualCredits, "context_budget_reconcile"); err != nil {

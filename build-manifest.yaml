@@ -1,6 +1,182 @@
 schema_version: "1.0"
 
 features:
+  - id: "chatbot-session-rename-pin"
+    ndf_version: "1.1"
+    description: "用户端 chatbot 对话页 (views/chatbot/ChatbotChat.vue) 左侧会话列表支持改名与置顶。改名复用现有 chatbot_session.title 字段（无 schema 变更）；置顶新增 pinned_at TIMESTAMP NULL 字段（NULL=未置顶，非NULL=置顶时间）。列表排序改为：置顶组按 pinned_at DESC，非置顶组按 updated_at DESC。交互：hover 显示「…」更多菜单，含「重命名 / 置顶 / 取消置顶 / 删除」。范围明确不含 SalesView 销售对话页与 SOP 运行历史。S1 锁定 Approach A 极简 MVP (1-1.5 d)；顺带修 ListSessions cross-chatbot perf bug。"
+    track: "standard"
+    stage: "S3"
+    classification_reason: "Triage 5 条 — (1) DB schema 变更：是（chatbot_session 加 pinned_at 字段 + 覆盖排序的复合索引）(2) 新 API：是（PUT /v1/chatbot/sessions/:id/rename + PUT /v1/chatbot/sessions/:id/pin，2 个新端点；GET sessions 列表 ORDER BY 子句更新）(3) 无外部服务 (4) 跨 numind-server + numind-web-v3 两仓约 10-11 文件 (5) 不涉及支付/权限。条件 1/2/4 不满足 Hotfix，Standard Track。"
+    last_updated_by: "ai-s3-plan"
+    last_updated_at: "2026-05-13T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches: {}
+    artifacts:
+      requirement: "numind-server/requirements/chatbot-session-rename-pin.md"
+      proposal: "numind-server/proposals/chatbot-session-rename-pin-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-05-13-chatbot-session-rename-pin-design.md"
+      plan: "numind-server/docs/superpowers/plans/2026-05-13-chatbot-session-rename-pin-plan.md"
+    progress:
+      total_tasks: 8
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "S4 Task 1: Migration + GORM model (numind-server)"
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-05-13 (Triage): 用户原话'某个 chatbot 页面左边对话记录列表支持改名+置顶'。AI 澄清 4 关键范围：目标页 = 用户端 chatbot 对话页（不含 SalesView）；置顶规则 = 可多置顶按 pinned_at DESC；交互 = hover 显示「…」菜单；轨道 = Standard"
+      - "2026-05-13 (Triage 范围锁定): 复用现有 title 字段做改名（无需新字段）；新增 pinned_at TIMESTAMP NULL 而非 pinned bool + pinned_at 双字段（避免冗余）；改名/置顶不更新 updated_at（metadata 操作不影响活跃排序，建议 S1 锁定）"
+      - "2026-05-13 (S0 reviewer subagent 审查): PASS_WITH_CONCERNS — 0 P0 + 3 P1 + 2 P2。3 个 P1 已全部写入 requirement card 'S1 必决策项' 节：①置顶/排序作用域 per-chatbot vs cross-chatbot（关键，主控漏掉的视角；后端 ListSessions 当前是 cross-chatbot 混排+前端 client filter）②改名/置顶不更新 updated_at 应 S1 锁定而非 S2 ③置顶数量上限应 S1 决策。Reviewer 还肯定了 4 条主控判断正确：单字段 pinned_at 优于双字段 / 范围锁定不含 SalesView / 零 data migration 风险声明 / 与 sop-chatbot-visibility-scope 的耦合分析准确"
+      - "2026-05-13 (S1 office-hours Phase 3 前提挑战): 用户拒绝 P1 (rename+pin 是 MVP / search v2 预留) — 用户认为原意就是 rename+pin，PRD 不预留 search 未来意图；用户接受 P2 (per-chatbot scope + 顺带修 ListSessions perf bug)；用户接受 P3 (MVP 压缩到 1-1.5 天，推迟置顶硬上限/菜单组件抽离/错误码集中到 v2)"
+      - "2026-05-13 (S1 office-hours Phase 4 方案对比): 3 个 distinct approaches 评估 — A 极简 MVP (1-1.5d, Completeness 8/10) / B 健壮版即 S0 原方案 (2-2.5d, Completeness 10/10) / C 三 icon hover (1.5d, Completeness 6/10)。用户选 A — 严格落实 P3 MVP 压缩边界 + 隐藏价值是顺带修 ListSessions cross-chatbot perf bug (相当于免费搭车 bug fix)"
+      - "2026-05-13 (S1 PRD D1 锁定): per-chatbot scope + 后端 ListSessions 加 chatbot_id 可选 query param (向后兼容：缺参数保持 cross-chatbot 行为)，前端调用方主动传入启用新行为；client-side filter 在新 chatbot_id 参数下可移除但保留为 dedupe 防御"
+      - "2026-05-13 (S1 PRD D2 锁定): 改名 + 置顶 + 取消置顶均用 GORM UpdateColumn 显式列更新，绕开 updated_at 自动刷新；S6 验收时验证：操作前后查 updated_at 应相等"
+      - "2026-05-13 (S1 PRD D3 锁定): v1 不设置顶硬上限。理由：用户基数小滥用风险极低；省 ~0.5d 工作量（无 ErrPinLimitExceeded errno + 无前端边界 UI）；如未来 UI 出现真实拥挤再 v2 加硬上限 + 折叠组"
+      - "2026-05-13 (S2 spec written): 写出 ~1200 行 spec 含 10 节：§0 背景边界 + §1 数据模型 (migration forward+rollback DDL + GORM model 改动) + §2 后端 API 契约 (rename + pin + ListSessions 改造) + §3 store/biz/controller 实现要点 + §4 排序 SQL 兼容性验证 (MySQL 8) + §5 前端设计 (api/store/Vue 改造 + inline RenameModal) + §6 17 条边界 case 全清单 + §7 测试策略 + §8 范围外列表 + §9 S3 待答 + §10 现有 feature 关联"
+      - "2026-05-13 (S2 review Round 1): Sonnet reviewer 报告 PASS_WITH_CONCERNS — 2 P0 (ConfirmModal slot 不存在 + v-model:visible 错误) + 4 P1 (filter 标题/fetchSessions 迁移漏 sendMessage/optimistic 误称/分页参数不一致) + 3 P2 (CSS class 无样式/v-click-outside 标题误导/pinned_at 格式未明确)。AC Coverage Matrix 验证 11/11 PRD AC 全覆盖"
+      - "2026-05-13 (S2 review Round 1 fixes): 2 P0 + 4 P1 + 4 P2 全修。关键修复：P0-1 改为 ChatbotChat.vue 内联 inline RenameModal 仅参考 sales/RenameSessionModal.vue 模板模式不 import（避免跨模块依赖 + MVP 不抽组件），复用 sales-modal.css 视觉一致；P1-2 store 加 currentChatbotId ref + 列出 3 处 store 内部 fetchSessions 调用迁移；P1-4 分页参数全统一为 offset/limit"
+      - "2026-05-13 (S2 review Round 2): Sonnet reviewer 验证 Round 1 全部修复 ✅，0 P0 + 1 P1-NEW (Vitest 测试描述 optimistic/pessimistic 用词矛盾) + 2 P2-NEW (chatbotId watcher 缺失需 S4 新增 + sales/RenameSessionModal 复用语义需澄清)。3 条全修。最终 spec PASS 进入 S2 gate"
+      - "2026-05-13 (S2 holistic reviewer 收尾审查): VERDICT PASS — 三阶段一致性 ✅ / 所有现有代码符号验证 ✅ (ConfirmModal 无 slot 判断准确 / sales-modal.css 6 个 CSS 类全存在 / sales/RenameSessionModal.vue 实在) / Git 状态完整 / broader risks 全过关 (生产迁移零风险 / API 后向兼容 omitempty 保证 / GORM hooks 无副作用 / 并发场景 cover / observability N/A)。2 条 P1 留给 S3 plan 处理: P1-1 fetchSessions 是 breaking change 而非 optional 参数 / P1-2 TypeScript ChatbotSession interface +pinned_at 是 S3 plan T5 前置"
+      - "2026-05-13 (S3 plan written): 8 task plan (T1-T7 实施 + T8 验证策略 NDF Rule 10 强制)。后端 T1-T4 (migration/store/biz/controller+router) 先于前端 T5-T7 (types+api/store+Vitest/ChatbotChat.vue)。S2 holistic reviewer 的 2 P1 指引已写入 plan §0：fetchSessions breaking change + types 前置依赖。预估工作量 CC+gstack 3.5h / 人类 2d；含 S4 review 后 wall time 6-9h"
+      - "2026-05-13 (S3 plan review Round 1): Sonnet reviewer (NDF §3 S3 强制) 报告 PASS_WITH_CONCERNS — 0 P0 + 1 P1 + 2 P2。NDF S3 Gate 检查清单全 PASS；AC → Task 映射矩阵 11/11 全覆盖。P1: T6 → T7 间 fetchSessions 破坏性签名变更导致 type-check 中间态不一致。P2-1: PRD AC-3.4 措辞 vs spec/plan client-side filter 保留语义。P2-2: T8 是文档 task 但描述未说明实际工作。"
+      - "2026-05-13 (S3 plan review Round 1 fixes): 1 P1 + 2 P2 全修。关键修复: P1 Task 6 描述加 '任务边界清单' 明确 T6 必须同时迁移 ChatbotChat.vue 内现有 fetchSessions 旧签名调用（不含 T7 的新增 UI）保证 type-check 在 T6 commit 时已 PASS；P2-1 Task 7 加 'Client-side filter 保留语义说明' 段；P2-2 T8 加 '实施说明' 段明确工作内容是把 plan §3 内容拷贝为独立 .md 文件"
+    created_at: "2026-05-13T00:00:00+08:00"
+    completed_at: null
+
+  - id: "sop-chatbot-visibility-scope"
+    ndf_version: "1.1"
+    description: "SOP / 智能体（chatbot）可见范围权限（实体视角）。父账户在 SOP 模板或 chatbot 编辑页内联新增「可见范围」开关：默认 allow-all（全部子用户可见）；可打开「仅指定子用户可见」从弹窗勾选白名单。未在白名单的子用户在工作区列表看不到该实体；已开始的运行/历史不受影响（仅列表过滤）。后期新增子用户默认看不到受限实体（白名单语义）。范围限定 SOP + chatbot，不含销售知识库；仅 C 端父账户配置，不含管理端。"
+    track: "standard"
+    stage: "completed"
+    classification_reason: "Triage 5 条全触发 — (1) DB schema：需在 sop_template / chatbot_config 加 visibility_restricted 字段 + 新增独立白名单表 (2) 新 API：4 个新端点（PUT/GET visibility × 2 资源）+ 2 个既有端点行为变更（列表过滤注入）(3) 无外部服务 (4) 跨 numind-server + numind-web-v3 两仓约 23-27 文件 (5) 新增权限维度，与现有运行权限叠加，错误会导致子用户漏看/误看资源。Standard Track 必然。"
+    last_updated_by: "ai-s7-complete"
+    last_updated_at: "2026-05-14T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "feature/sop-chatbot-visibility-scope"
+      numind-web-v3: "feature/sop-chatbot-visibility-scope"
+    artifacts:
+      requirement: "numind-server/requirements/sop-chatbot-visibility-scope.md"
+      proposal: "numind-server/proposals/sop-chatbot-visibility-scope-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-05-13-sop-chatbot-visibility-scope-design.md"
+      plan: "numind-server/docs/superpowers/plans/2026-05-13-sop-chatbot-visibility-scope-plan.md"
+      validation_strategy: "numind-server/docs/superpowers/specs/2026-05-13-sop-chatbot-visibility-scope-validation-strategy.md"
+      qa: "numind-server/docs/superpowers/qa/2026-05-14-sop-chatbot-visibility-scope-qa.md"
+    progress:
+      total_tasks: 23
+      completed_tasks: 23
+      reviewed_tasks: 23
+      current_task: null
+    rollback: null
+    last_verified:
+      at: "2026-05-14T00:00:00+08:00"
+      lint: "pass"
+      type_check: "pass"
+      tests: "pass"
+      test_summary: "后端 task test 0 FAIL, visibility 相关 4 包 race 全 PASS (29 visibility tests); 前端 vue-tsc clean, ESLint 0 visibility errors (13 errors 全是 _work_sse_test 未提交 debug); Playwright spec 8 tests (7 skip + 1 sanity)"
+    decisions:
+      - "2026-05-13 (Triage): 用户描述'SOP/chatbot 增加显示权限'。AI 发现已存在 child-run-permission（运行权限 / 用户视角 / deny-all）。用户确认两套语义并存：本需求 = 可见范围（列表过滤 / 实体视角 / allow-all 默认）；现有 = 运行权限（403 gate / 用户视角 / deny-all）。两层 gate 串行：可见范围 → 运行权限。"
+      - "2026-05-13 (Triage 范围锁定): 仅 SOP + chatbot，不含 SalesRAG 销售知识库；配置入口 = 实体编辑页内联；配置者 = 父账户；子用户范围 = 当前父账户名下所有子账户；撤回行为 = 仅列表展示过滤，不影响进行中/历史；新子用户 = 默认看不到（白名单语义）"
+      - "2026-05-13 (S1 D1): 数据表选独立新表 sop_visibility_grant + chatbot_visibility_grant。理由：用户视角 deny-all 与实体视角 allow-all 语义完全不同，复用现有表 + source 字段会让查询按 source 分支耦合"
+      - "2026-05-13 (S1 D2): API 端点选独立端点 PUT/GET /v1/sop/templates/:id/visibility + PUT/GET /v1/chatbot/:id/visibility。理由：解耦 visibility 与实体其他字段，错误隔离"
+      - "2026-05-13 (S1 D3): 开关关闭时保留名单数据。避免误操作丢失配置；重新打开恢复同一名单"
+      - "2026-05-13 (S1 D4): 子用户级联删除时同事务清理 4 张表（2 visibility + 2 run-permission）"
+      - "2026-05-13 (S1 D5): sop_template/chatbot_config 各加 visibility_restricted bool 字段做短路判断，避免无关 SOP 查询都 JOIN grant 表"
+      - "2026-05-13 (S1 D6): 不引入通用 entity_type 字段。仅 SOP+chatbot 两类，通用化是过度抽象"
+      - "2026-05-13 (S1 D7): 启用 GORM 软删除（与 user_template_permission 一致，便于审计撤回历史）"
+      - "2026-05-13 (S2 ST1): 列表过滤选延续 O(N) 本地过滤模式（与 child-run-permission 一致），不引入 SQL JOIN"
+      - "2026-05-13 (S2 ST2): PUT visibility 保存策略选全删全插（single transaction），不做 diff 增量"
+      - "2026-05-13 (S2 ST3): 子用户选择弹窗提取为可复用组件 SubUserMultiSelectDialog"
+      - "2026-05-13 (S2 EC-6): SOP/chatbot 删除时同事务清理 visibility grant 表（不推迟为 tech debt）"
+      - "2026-05-13 (S2 review 3 轮): Round 1 发现 4 P0 + 2 P1 + 2 P2 → 全修；Round 2 发现 1 P0-NEW + 1 P1-NEW + 1 P2-NEW（Round 1 修复中遗漏 §7.1 migration DDL 同步 + Cleanup 函数层级模糊 + visibilityDirty store 字段未声明）→ 全修；Round 3 PASS（0 P0 + 0 P1，2 P2 顺手清理）"
+      - "2026-05-13 (S2 锁定 P0-2 双路径删除): UpdateVisibility 路径用 Unscoped() 物理删（避免唯一索引含 deleted_at 的 MySQL NULL 共存问题）；DeleteSubUser/Entity 路径用软删做审计；唯一索引 (sub_user_id, entity_id) 不含 deleted_at"
+      - "2026-05-14 (S4 Phase 5 Task 13 deferred): plan 假设有 DeleteSubUser 流程, 实际 grep 后代码库零此路径 (无 DELETE /v1/customers/sub-users/:user_id 路由, 无 customer.DeleteSubUser biz). spec §5 '现有删除路径' 描述错误. store.CleanupBySubUser 已实现备用 API, 未来加 DeleteSubUser 功能时 1 行接入即可. 用户确认跳过, 不增加无效代码"
+      - "2026-05-14 (S6 dev 验收) 3 个 hotfix: (1) commit 9e1e818 — SubUserMultiSelectDialog 兼容真实后端响应 shape ({total, sub_users: SubUser[]} 包裹 + user_id 字段, P0 阻断选人弹窗); (2) dev MySQL 手动 CREATE TABLE sop_visibility_grant + chatbot_visibility_grant (CI 镜像无 migrations 目录, 见 memory project_dev_deploy_migration_gap); (3) dev MySQL 手动 ALTER chatbot_config ADD visibility_restricted (S6 手动跑 migration 漏列, 导致 PUT /config/chatbots/:id 500)"
+      - "2026-05-14 (S7 prod 部署): 用户自行操作 prod 部署, 假定已成功. Prod 必跑 SQL: ALTER TABLE sop_template ADD visibility_restricted + ALTER TABLE chatbot_config ADD visibility_restricted + CREATE TABLE sop_visibility_grant + CREATE TABLE chatbot_visibility_grant (完整 SQL 见 numind-server/migrations/20260513_120000_sop_chatbot_visibility_scope.sql)"
+    related_features:
+      - "child-run-permission (已上线，共存互补，本需求是其前置 gate)"
+      - "sales-agent-child-permission (已上线，作用于销售智能体运行权限，与本需求无重叠)"
+    blockers: []
+    created_at: "2026-05-13T00:00:00+08:00"
+    completed_at: "2026-05-14T00:00:00+08:00"
+
+  - id: "sop-run-mobile-layout"
+    ndf_version: "1.1"
+    description: "SOP 运行页（/sop/run）移动端布局适配。当前根布局为 flex-row + 264px 固定侧栏 StepNav，整个 src/views/sop/ 子树零 @media query — 在 375px iPhone / 412px Android 视口下主区被吞剩 ~111px，输入卡片/输出卡片/追问聊天面板全部错乱溢出。修复范围：根容器在 ≤768px 改为列布局 + StepNav 退化为可由 TopBar 汉堡按钮唤起的滑入抽屉（含背景遮罩 + ESC/点击外部关闭 + 选中后自动收起），TopBar 加移动端菜单按钮，SopStepView/InputCard/OutputCard padding & 字号在 ≤768px 收紧。范围明确不含管理端 + 不含用户端其他页面（用户已选 Hotfix 单页面止血；全量页面响应式审计后续单独立 Standard）。"
+    track: "hotfix"
+    classification_reason: "Hotfix Triage 5 条 — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无外部服务 (4) 文件范围限于 src/views/sop/ 下 ~5 个 Vue 文件（SOPRunView/StepNav/TopBar/SopStepView，可能 + InputCard/OutputCard）— 单页面响应式收口 (5) 纯 CSS/UI 改动，不触碰积分/支付/权限业务逻辑。用户原始需求是 '所有页面手机端适配'，明确选择缩减到 SOP 运行页作为 Hotfix；全量审计推迟为后续 Standard Track。"
+    stage: "H1"
+    last_updated_by: "ai-triage"
+    last_updated_at: "2026-05-13T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "fix/sop-run-mobile-layout"
+    progress:
+      total_tasks: 1
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "H1 — Playwright 诊断 375px/412px 视口实际症状 + 实现响应式 CSS"
+    decisions:
+      - "2026-05-13 (Triage): 用户原始范围 '所有页面手机端适配'，Triage 5 条第 4 条（文件 ≤3）失败 → 推荐 Standard。用户选择 Hotfix 缩减到 SOP 运行页单页面快速止血。全量审计推迟为独立 Standard Track 后续启动"
+      - "2026-05-13 (诊断前预判): 静态读 CSS 已确认根因 — SOPRunView.vue:752 flex-row + StepNav.vue:137 width:264px + 零 @media。但按 numind-web-v3 CLAUDE.md §6 硬规则，必须先用 Playwright 在 375px/412px 视口实测确认全部症状再写修复代码（避免漏 touch target / overflow / scroll trap）"
+    blockers: []
+    created_at: "2026-05-13T00:00:00+08:00"
+    deferred:
+      - "用户端其他页面（HomeView/CustomersView/CreditsView/KnowledgeView/SalesView/LoginView/SOPHistoryView/SettingsView 等）移动端审计与适配 — 后续单独立 Standard Track"
+      - "管理端（numind-admin-web）移动端策略 — 当前硬规则 §7 要求 DataTable 表格布局，移动端降级方案待单独决策"
+
+  - id: "login-icp-footer"
+    ndf_version: "1.1"
+    description: "youshu.asia 登录页底部展示工信部 ICP 备案号（蜀ICP备2025149402号），文字可点击跳转 https://beian.miit.gov.cn/ 工信部备案查询页（新标签页打开）。中国大陆法定合规要求。仅 numind-web-v3 单文件 LoginView.vue 改动 — template 末尾新增 footer + 对应 scoped style。公安备案号本次未提供，留待后续单独添加。"
+    track: "hotfix"
+    stage: "completed"
+    classification_reason: "Hotfix Triage 5 条 — (1) 无 DB schema (2) 无 API (3) 无外部服务（仅静态链接）(4) 单文件单仓 (5) 不触碰业务逻辑，纯静态合规标识。"
+    last_updated_by: "ai-implementation"
+    last_updated_at: "2026-05-13T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "fix/login-icp-footer"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    decisions:
+      - "2026-05-13 (Triage): 用户确认 Hotfix 轨道。备案号字面值 = 蜀ICP备2025149402号；公安备案号本次不加（用户原话：就用我提供的这个备案号就可以了）"
+      - "2026-05-13 (实施): footer 用 position:absolute 绝对定位贴底，避免顶动垂直居中的 login-container；link target=_blank + rel=noopener noreferrer 安全外链；颜色用 --color-text-muted token 保持克制不抢主视觉"
+    blockers: []
+    related_features:
+      - "www-subdomain-fix (并行的基础设施任务 — DNS A 记录 + 证书 SAN 扩展，不进 manifest 因纯 infra)"
+    created_at: "2026-05-13T00:00:00+08:00"
+
+  - id: "sop-edit-save-button-bottom"
+    ndf_version: "1.1"
+    description: "用户端 SOP 模板编辑页保存按钮移到页面底部。原顶部 page-header 的取消/保存按钮组（顶部右侧）与用户从上到下填表的阅读流不符 — 配置完成后视线终点在内容底部，主操作（保存）应同位呈现。仅 SopTemplateEdit.vue 一个文件，模板 + 样式调整。"
+    track: "hotfix"
+    stage: "completed"
+    classification_reason: "Hotfix Triage 5 条 — (1) 单文件改动 (2) 无 API/schema 变更 (3) 无外部服务集成 (4) 不跨仓 (5) 不涉及计费/权限主流程，纯 UX 布局调整。"
+    last_updated_by: "ai-implementation"
+    last_updated_at: "2026-05-13T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "fix/sop-edit-save-button-bottom"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    decisions:
+      - "2026-05-13 (layout skill 应用): 移除顶部 .header-actions，新增 .page-footer 右对齐放在 .content-center 底部。32px margin-top + 20px padding-top + border-top 分割，形成清晰的'内容→操作'阅读节奏。非 sticky — 用户原话'从上往下配置完后点保存'明确表达'配完才出现保存'的心智模型"
+    blockers: []
+    created_at: "2026-05-13T00:00:00+08:00"
+
   - id: "admin-credit-user-type-config"
     ndf_version: "1.1"
     description: "管理端 CRUD 管理 credit_user_type_config 表（trial 用户倍率等）— 后端新增 GET /v1/admin/credits/user-types + PUT /v1/admin/credits/user-types/:user_type；前端新增 /credits/user-types 页面 + 菜单项。本 feature 是 credit-user-type-multiplier 的管理端补全。"
@@ -133,10 +309,10 @@ features:
     ndf_version: "1.1"
     description: "会员积分体系重构 — 从'状态机+cron'改为'时间驱动+lazy'模型。5 张新表（subscription / trial_grant / credit_cycle / user_booster_balance / membership_event）替代当前 credit_package 状态机；subscription 单行 + expires_at 后延，月度 cycle 懒创建，去 cron 化。trial+pro 叠加，自然月 anchor-restore（1/31 → 3/31 → 4/30）。Booster 永不过期（每用户单 balance），仅会员状态可用。完整覆盖前后端三仓 + 迁移脚本 + B2B 月度账单口径切换。"
     track: "standard"
-    stage: "S4-completed"
+    stage: "S5"
     classification_reason: "Triage 5 条全触发 — (1) 5 张新表 + 迁移脚本 (2) grant/deduct/balance/B2B 账单全部重写 (3) 无外部服务但内部模型彻底改 (4) 跨 3 仓 (5) 计费核心 + B2B 账单 = 最高风险业务逻辑。Standard Track 必然。"
-    last_updated_by: "ai-s4-completed"
-    last_updated_at: "2026-04-30T20:00:00+08:00"
+    last_updated_by: "ai-merge-s4-into-develop-2026-05-14"
+    last_updated_at: "2026-05-14T01:30:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -147,15 +323,12 @@ features:
       proposal: "numind-server/proposals/membership-credits-redesign-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-04-29-membership-credits-redesign-design.md"
       plan: "numind-server/docs/superpowers/plans/2026-04-29-membership-credits-redesign-plan.md"
+      validation_strategy: "numind-server/docs/superpowers/specs/2026-04-29-membership-credits-redesign-validation-strategy.md"
     progress:
       total_tasks: 24
       completed_tasks: 24
       reviewed_tasks: 24
-      current_task: null
-    branches:
-      numind-server: "feat/membership-credits-redesign"
-      numind-web-v3: "feat/membership-credits-redesign"
-      numind-admin-web: "feat/membership-credits-redesign"
+      current_task: "S5 — S4 代码 merge develop 完成（2026-05-14）；剩 lint/test、dev DB 应用 migration 重跑 dry-run 端到端、Playwright E2E 实跑、Langfuse trace 回归；然后部署 dev 验证"
     rollback: null
     last_verified: null
     decisions:
@@ -181,7 +354,12 @@ features:
       - "2026-04-30 (S3 plan written): 派 5 个并行 subagent 写出 23 个 task 跨 7 个 phase 的 plan（约 5251 行）。Phase 1 schema/foundation (Task 1-4) + Phase 2 算法 biz (Task 5-8) + Phase 3 API 端点 (Task 9-13) + Phase 4 迁移+部署+cleanup (Task 14-16) + Phase 5 用户端前端 (Task 17-20) + Phase 6 管理端前端 (Task 21) + Phase 7 cleanup+验证 (Task 22-23)。其中 Task 23 是 NDF Rule 10 强制末尾的 S5 验证策略 task（Playwright E2E + gstack /qa + Go 并发压测三件套，6 条关键路径含 idempotency 矩阵）"
       - "2026-04-30 (S3 plan atomicity review by Sonnet): NDF §3 S3 gate 硬要求的独立 reviewer 审查，发现 11 条问题（3 P0 + 5 P1 + 3 P2）。最严重：Task 5 引用未交付的 seedUserPair / Task 7 ensureCurrentCycle 导出问题 / Task 11 fulfillOrder monthly 分支与 spec 锁定 order 仅 booster 矛盾 / errno 8 个新错误码无集中落地 task / Task 14 apply.sql 含 spec DDL 没有的 status 字段 / CreditsRemain vs CreditsRemaining 字段名不一致"
       - "2026-04-30 (S3 plan fix): 派 2 个串行 fix subagent。Agent A 修 9 条实质问题（含新增 Task 4.5 集中落地 8 个 errno、Task 12 扩展含 GET /v1/orders/:id/status + GET /v1/users/children 两个轻量端点、CreditsRemain 7 处全局替换为 CreditsRemaining、Task 11 fulfillOrder 删 monthly/trial 分支只保留 booster、Task 14 apply.sql 删除 status 字段、Task 13 测试变量补定义、Task 2 GORM 复合索引 priority tag 修复）。Agent B 修格式（Tasks 5-8 H2→H3，Tasks 9-13 ①②③④⑤→checkbox，Tasks 14-16 子标题 14.1/14.2 → 内联 + checkbox，Tasks 17-23 H2→H3）。最终 24 个 task（含 Task 4.5）/ 109 个 checkbox 步骤 / 0 格式残留"
-      - "2026-04-30 (S4 完成): 24/24 task 全部 implementer + reviewer 通过。numind-server 19 commits（feat 12 + chore 1 + test 1 + docs 1 + refactor 1 + 4 件套迁移脚本 + maintenance + cleanup）；numind-web-v3 5 commits（utils/store/api foundation + CreditsView + BoosterDialog + CustomersView/GrantModal）；numind-admin-web 2 commits（B2BBilling + schema fix）。模型选择策略：mechanical task 用 haiku（Task 1/3/4.5/9/15/22/23），integration task 用 sonnet（Task 2/4-8/10-14/16-21）。Per-task review 1 轮，仅 Task 12 触发 1 次 fix（补 parent-view-order test）+ Task 21 触发 1 次 fix（schema 字段对齐后端实际响应）。skip 第二轮 review 因无 P0 残留。Task 22 grep 审计后判定 0 改动需要——Tasks 17-21 已清理实际过时 UI，剩余皆为 §1.4 out-of-scope 兼容/历史显示。"
+      - "2026-04-30 (S4 完成): 24/24 task 全部 implementer + reviewer 通过。numind-server 19 commits（feat 12 + chore 1 + test 1 + docs 1 + refactor 1 + 4 件套迁移脚本 + maintenance + cleanup）；numind-web-v3 5 commits（utils/store/api foundation + CreditsView + BoosterDialog + CustomersView/GrantModal）；numind-admin-web 2 commits（B2BBilling + schema fix）。模型选择策略：mechanical task 用 haiku（Task 1/3/4.5/9/15/22/23），integration task 用 sonnet（Task 2/4-8/10-14/16-21）。Per-task review 1 轮，仅 Task 12 触发 1 次 fix（补 parent-view-order test）+ Task 21 触发 1 次 fix（schema 字段对齐后端实际响应）。skip 第二轮 review 因无 P0 残留。Task 22 grep 审计后判定 0 改动需要——Tasks 17-21 已清理实际过时 UI，剩余皆为 §1.4 out-of-scope 兼容/历史显示。**注：S4 commits 停留在 feat/membership-credits-redesign 分支上，4-30 的 manifest 'all commits merged to develop' 记录是误判，实际未合并；2026-05-14 通过显式 merge 解决，见下方 entry**"
+      - "2026-04-30 (S5 prep): 派 4 个 prep agents 解决 gate-blocking 问题。f8431de 修 7 个 pre-existing test failures (user_type_multiplier 列缺失) / db0c3a9 加 billing.b2b_cutover_date='2026-04-20' 配置 / c8a47d6 扩展 /v1/users/children 响应含 membership_state + has_used_trial + cycle_remaining (新增 GetMembershipStateBatch 避 N+1) / d4f1ea6 加 NUMIND_E2E_BYPASS_PAY_SIG 环境变量绕过支付签名（双闸：env var + 非 prod 检查）"
+      - "2026-04-30 (S5 verification): 4 个 verification agents 报告。后端 CONDITIONAL PASS（40/40 tests，22 P2 lint warnings 已在 tech debt sweep 中清掉，coverage 偏低待补）。web-v3: 371 PASS / 23 skipped (TODO(backlog) 标 pre-existing on develop) / 0 failed。admin-web: APPROVED 干净。E2E: 1110 行 spec 写完未跑（commit 2241b4f / 356b210）。S5 outstanding: E2E 实跑 + 迁移脚本演练 + Langfuse trace 回归 3 件待办，blocking S6"
+      - "2026-04-30 (tech debt sweep): Wave 1 派 2 agents 清理本 feature 收尾债。Agent A 修后端 22 个 P2 lint warnings (4d743e1 / merge 05af0bb)。Agent B 系统审查 GORM Update 路径 default:true bool 风险，发现 db.Save() 因源码 SELECT '*' 显式安全，全仓 8 个 default:true bool 字段 Update 路径全 SAFE，原 ai-service-deprecated-field-cleanup sub_issue 1 假设错误（fccedb2 加回归测试 / 1c1ab5d 文档 + manifest 更新）。manifest stage S3→S5 同步真实状态"
+      - "2026-04-30 (tech debt #9 fix / Wave 3): Order.Months 字段为 booster 复用的隐藏耦合解除——新增独立 payment_order.quantity 字段（INT NOT NULL DEFAULT 1）+ 历史数据回填迁移（booster 行 quantity = months where months > 1）。fulfillOrder 读 order.Quantity 路由给 RechargeWithOrderTx（booster 路径），months 只在 monthly/yearly 路径读取。RechargeWithOrderTx booster case 修复：从创建 1 个包改为创建 quantity 个包（每个 600cr 独立 FIFO 行），修复了多份购买仅授予 1 份的隐藏 bug。controller createOrderRequest 新增 quantity 字段（binding min=1,max=10000），model 新增 GetBoosterAmount(quantity) + GetBoosterProductName(quantity) 两个 helper。commits: 83ce6dd (migration+model+biz) / 22b16e4 (tests)"
+      - "2026-05-14 (S4 merge to develop): 用户恢复推进。feat/membership-credits-redesign 分支落后 develop 75 commit、领先 20 commit；merge origin/develop 进分支共 6 个冲突全部解决——store.go 取并集（Membership + SopVisibilityGrant + ChatbotVisibilityGrant）；server.go 取分支版（移除 develop 加的 creditBiz.RunCronTasks，符合 I-2 去 cron 化）；payment.go 取分支版（booster-only CreateOrder + quantity 参数，废弃 develop 的 months 兼 quantity 兼容路径）；order.go 取分支版（createOrderRequest quantity 强制必填）；dry-run.sql 取 develop 版（§C SQL 语法已用 CTE+ROW_NUMBER 修复）；manifest 取并集 + 修正 4-30 'all merged' 误判。develop 原本缺失的 67 文件全部新增（internal/numind/biz/membership 8 文件 + internal/numind/store/membership 9 文件 + internal/pkg/model/membership 7 文件 + idempotency.go/maintenance.go 中间件 + 5 张新表 migration + 完整测试套件）。"
     blockers: []
     related_features:
       - "credits-system (前置依赖，已上线)"
@@ -217,8 +395,7 @@ features:
       - "2026-04-28: 用户选方案 B（is_active + deleted_at 软删除），不选方案 A（单一 is_active）也不选 C（hard delete）。理由：A 把'停用'和'删除'语义合并丢失'永久退场'概念；C 硬删会破坏历史 usage_record/credit_reservation 的 service_id 外键引用，月度财务对账拉不到名字。B 是 GORM 标准 soft delete 模式，零代码就能让前端自动隐藏，且历史数据完整可审计。"
       - "2026-04-28: 用户明确说'当下只聚焦 context-budget-compression feature，本项推迟做'。当前阶段 backlog，不安排执行。"
     sub_issues:
-      - "ServiceEdit.vue Update payload 把 is_active=false 写不进 DB。怀疑是 GORM `default:true` bool 的 Update 路径变体（项目 CLAUDE.md §6 已记录 Create 路径有此坑，Update 可能没兜底）。证据：用户在 prod admin UI 取消勾选'启用此服务'保存后，DB SELECT 仍是 is_active=1。需要排查 Update 路径，加 UpdateColumn 兜底或改用 *bool 指针字段。本 sub-issue 在主 feature 启动前必须先解决，否则换啥设计都白搭。"
-    blockers:
-      - "需要先排查并修复 ServiceEdit.vue Update is_active=false 写不进 DB 的 bug（sub_issue 1）。"
+      - "[RESOLVED 2026-04-30] ServiceEdit.vue Update payload is_active=false 写不进 DB 的假设。经过系统排查，Update 路径用 db.Save()（非 db.Updates(struct)）— GORM v1.30.0 的 Save() 内部显式 Select '*'，强制所有字段进 UPDATE，零值 bool 不被跳过。排查确认：前端发送 is_active=false（JSON bool）、controller 用 *bool 指针绑定（nil 判断正确）、store 层 db.Save(svc) 正确持久化。已加回归测试 TestStore_SaveService_UpdateIsActiveFalse（internal/pkg/aiservice/registry/store_test.go）防止 GORM 升级引入回归。全项目 Update 路径系统审查见 .claude/rules/database.md §6b，所有路径均安全。"
+    blockers: []
     created_at: "2026-04-28T22:00:00+08:00"
     completed_at: null

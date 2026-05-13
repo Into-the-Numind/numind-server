@@ -164,3 +164,7 @@ langfuse:
 aihubmix:
   base_url: "https://aihubmix.com/v1"
   api_key: "sk-vduyVKfBuiI5p4P5B030A80938924aFe87Af360473612f68"
+
+# B2B 账单配置
+billing:
+  b2b_cutover_date: "2026-04-20"  # B2B 账单 cutover 日期：此日期前走 legacy_only，之后走 new_only。dev 设为 2026-04-20 让所有月份都走 new_only 模式以测试新代码路径。

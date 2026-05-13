@@ -17,17 +17,18 @@ const (
 
 // ChatbotConfig 智能体配置
 type ChatbotConfig struct {
-	ID              uint           `gorm:"primaryKey" json:"id"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
-	DeletedAt       gorm.DeletedAt `gorm:"index" json:"deleted_at"`
-	UserID          uint           `gorm:"not null;index:idx_cc_user_status" json:"user_id"`
-	Name            string         `gorm:"size:100;not null" json:"name"`
-	Description     string         `gorm:"size:1024" json:"description"`
-	SystemPrompt    string         `gorm:"type:longtext;not null" json:"system_prompt"`
-	Status          string         `gorm:"size:20;not null;default:'draft';index:idx_cc_user_status" json:"status"`
-	GreetingEnabled bool           `gorm:"not null;default:0" json:"greeting_enabled"`
-	GreetingMessage string         `gorm:"type:text" json:"greeting_message"`
+	ID                   uint           `gorm:"primaryKey" json:"id"`
+	CreatedAt            time.Time      `json:"created_at"`
+	UpdatedAt            time.Time      `json:"updated_at"`
+	DeletedAt            gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	UserID               uint           `gorm:"not null;index:idx_cc_user_status" json:"user_id"`
+	Name                 string         `gorm:"size:100;not null" json:"name"`
+	Description          string         `gorm:"size:1024" json:"description"`
+	SystemPrompt         string         `gorm:"type:longtext;not null" json:"system_prompt"`
+	Status               string         `gorm:"size:20;not null;default:'draft';index:idx_cc_user_status" json:"status"`
+	GreetingEnabled      bool           `gorm:"not null;default:0" json:"greeting_enabled"`
+	GreetingMessage      string         `gorm:"type:text" json:"greeting_message"`
+	VisibilityRestricted bool           `gorm:"not null;default:0" json:"visibility_restricted"` // 可见范围限制: false=全部子用户可见; true=仅 chatbot_visibility_grant 白名单子用户可见
 }
 
 // TableName returns the table name for ChatbotConfig.
@@ -62,14 +63,14 @@ func (ChatbotSession) TableName() string { return "chatbot_session" }
 
 // ChatbotMessage 对话消息（追加型，无软删除）
 type ChatbotMessage struct {
-	ID               uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
-	SessionID        uint      `gorm:"not null;index:idx_cm_session_seq" json:"session_id"`
-	UserID           uint      `gorm:"not null;index:idx_cm_user_id" json:"user_id"`
-	Role             string    `gorm:"size:20;not null" json:"role"`
-	Content          string    `gorm:"type:longtext" json:"content"`
-	Thinking         string    `gorm:"type:longtext" json:"thinking"`
-	TraceID          string    `gorm:"size:100" json:"trace_id"`
-	Seq              int       `gorm:"not null;default:0;index:idx_cm_session_seq" json:"seq"`
+	ID        uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
+	SessionID uint   `gorm:"not null;index:idx_cm_session_seq" json:"session_id"`
+	UserID    uint   `gorm:"not null;index:idx_cm_user_id" json:"user_id"`
+	Role      string `gorm:"size:20;not null" json:"role"`
+	Content   string `gorm:"type:longtext" json:"content"`
+	Thinking  string `gorm:"type:longtext" json:"thinking"`
+	TraceID   string `gorm:"size:100" json:"trace_id"`
+	Seq       int    `gorm:"not null;default:0;index:idx_cm_session_seq" json:"seq"`
 	// ModelName 记录生成 assistant 消息时实际使用的模型（Gateway 路径填充；
 	// user 消息留空）。用于审计、按模型切片分析和历史记录展示。
 	ModelName        string    `gorm:"size:100;not null;default:''" json:"model_name"`

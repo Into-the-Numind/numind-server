@@ -74,10 +74,10 @@ func (ctrl *TaskProfileController) GetTask(c *gin.Context) {
 // updateTaskReq is the request body for UpdateTask.
 type updateTaskReq struct {
 	Requirements       model.JSONMap `json:"requirements"`
-	DefaultServiceID   *uint64      `json:"default_service_id"`
-	FallbackServiceIDs []uint64     `json:"fallback_service_ids"`
-	AllowedServiceIDs  []uint64     `json:"allowed_service_ids"`
-	Reason             string       `json:"reason"`
+	DefaultServiceID   *uint64       `json:"default_service_id"`
+	FallbackServiceIDs []uint64      `json:"fallback_service_ids"`
+	AllowedServiceIDs  []uint64      `json:"allowed_service_ids"`
+	Reason             string        `json:"reason"`
 }
 
 // UpdateTask updates a task profile's requirements and/or service bindings.

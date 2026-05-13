@@ -18,13 +18,13 @@ func (CreditAccount) TableName() string { return "credit_account" }
 type CreditPackage struct {
 	ID            uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
 	UserID        uint      `gorm:"not null;index:idx_cp_user_status_expires" json:"user_id"`
-	Type          string    `gorm:"size:20;not null" json:"type"`                                    // trial / subscription / booster
-	TotalCredits  int64     `gorm:"not null" json:"total_credits"`                                   // 初始积分
-	RemainCredits int64     `gorm:"not null" json:"remain_credits"`                                  // 剩余积分
+	Type          string    `gorm:"size:20;not null" json:"type"`                                           // trial / subscription / booster
+	TotalCredits  int64     `gorm:"not null" json:"total_credits"`                                          // 初始积分
+	RemainCredits int64     `gorm:"not null" json:"remain_credits"`                                         // 剩余积分
 	ActivatedAt   time.Time `gorm:"not null;index:idx_grant_source_granter,priority:3" json:"activated_at"` // 生效时间
-	ExpiresAt     time.Time `gorm:"not null;index:idx_cp_user_status_expires" json:"expires_at"`     // 到期时间
-	OrderID       *uint64   `gorm:"index:idx_cp_order" json:"order_id"`                              // 关联支付订单（Admin 手动充值时为 nil）
-	Status        string    `gorm:"size:20;not null;index:idx_cp_user_status_expires" json:"status"` // pending / active / exhausted / expired
+	ExpiresAt     time.Time `gorm:"not null;index:idx_cp_user_status_expires" json:"expires_at"`            // 到期时间
+	OrderID       *uint64   `gorm:"index:idx_cp_order" json:"order_id"`                                     // 关联支付订单（Admin 手动充值时为 nil）
+	Status        string    `gorm:"size:20;not null;index:idx_cp_user_status_expires" json:"status"`        // pending / active / exhausted / expired
 
 	// Q1 B2B2C 会员赋予字段（spec §Q1.1）:
 	// GrantSource='b2b_grant' 表示父账户通过"帮开通"赋予（不走支付），
@@ -89,13 +89,13 @@ type CreditTransaction struct {
 // The multiplier is applied at Reserve time and snapshotted onto credit_reservation.user_type_multiplier.
 // Reconcile re-applies the snapshot so delta computation is consistent with the original reservation.
 type CreditUserTypeConfig struct {
-	UserType         string    `gorm:"primaryKey;size:30" json:"user_type"`            // trial | subscription | ...
-	CreditMultiplier float64   `gorm:"type:decimal(5,2);not null;default:1.00" json:"credit_multiplier"` // <1 = slower burn
-	Description      string    `gorm:"size:200;not null;default:''" json:"description"`
+	UserType         string  `gorm:"primaryKey;size:30" json:"user_type"`                              // trial | subscription | ...
+	CreditMultiplier float64 `gorm:"type:decimal(5,2);not null;default:1.00" json:"credit_multiplier"` // <1 = slower burn
+	Description      string  `gorm:"size:200;not null;default:''" json:"description"`
 	// IsActive: if admin CRUD Create is ever added, apply the UpdateColumn two-step fix (see database.md §6 GORM default:true gotcha).
-	IsActive bool `gorm:"not null;default:true" json:"is_active"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	IsActive  bool      `gorm:"not null;default:true" json:"is_active"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func (CreditUserTypeConfig) TableName() string { return "credit_user_type_config" }

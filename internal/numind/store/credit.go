@@ -35,6 +35,19 @@ type CreditStore interface {
 	ListAllAccountsWithBalance(ctx context.Context, offset, limit int) ([]model.CreditAccount, int64, error)
 	GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error)
 	GetLatestCreditExpiry(ctx context.Context, userID uint) (string, error)
+	// GetMembershipStateBatch batch-fetches membership state for a list of userIDs in one query.
+	// Returns a map keyed by userID.  Missing keys mean no active packages exist for that user.
+	GetMembershipStateBatch(ctx context.Context, userIDs []uint) (map[uint]*MembershipStateRow, error)
+}
+
+// MembershipStateRow aggregated membership state for one user (used by GetMembershipStateBatch).
+type MembershipStateRow struct {
+	HasActiveTrial        bool
+	HasActiveSubscription bool
+	HasUsedTrial          bool   // any trial package ever (any status)
+	TrialExpiresAt        string // RFC3339 date, empty if none
+	SubscriptionExpiresAt string // RFC3339 date, empty if none
+	SubRemain             int64  // subscription + trial remain credits (no booster)
 }
 
 type creditStore struct {
@@ -400,4 +413,74 @@ func (s *creditStore) GetLatestCreditExpiry(ctx context.Context, userID uint) (s
 		return "", err
 	}
 	return pkg.ExpiresAt.Format("2006-01-02"), nil
+}
+
+// GetMembershipStateBatch 批量获取多个用户的会员状态（一次 DB 查询），返回 map[userID]*MembershipStateRow。
+// 用于 ListSubUsers 父账号列表场景，避免 N+1 问题。
+// 对于 has_used_trial: trial 积分包（任意状态）存在即为 true。
+// 对于 sub_remain: 统计 active 的 trial+subscription 包的 remain_credits 之和（不含 booster）。
+// expires_at 取各类型 active 包中最晚到期时间。
+func (s *creditStore) GetMembershipStateBatch(ctx context.Context, userIDs []uint) (map[uint]*MembershipStateRow, error) {
+	if len(userIDs) == 0 {
+		return map[uint]*MembershipStateRow{}, nil
+	}
+
+	type pkgRow struct {
+		UserID        uint
+		Type          string
+		Status        string
+		RemainCredits int64
+		ExpiresAt     time.Time
+	}
+
+	// Fetch all packages for the given user IDs (active, exhausted, expired, pending — we need
+	// has_used_trial across all statuses for trial; for state checks we filter in Go).
+	var rows []pkgRow
+	if err := s.db.WithContext(ctx).
+		Model(&model.CreditPackage{}).
+		Select("user_id, type, status, remain_credits, expires_at").
+		Where("user_id IN ?", userIDs).
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("GetMembershipStateBatch: %w", err)
+	}
+
+	now := time.Now()
+	result := make(map[uint]*MembershipStateRow, len(userIDs))
+	for _, r := range rows {
+		m, ok := result[r.UserID]
+		if !ok {
+			m = &MembershipStateRow{}
+			result[r.UserID] = m
+		}
+
+		// has_used_trial: any trial record ever
+		if r.Type == model.CreditTypeTrial {
+			m.HasUsedTrial = true
+		}
+
+		isActive := (r.Status == model.CreditPackageActive) && r.ExpiresAt.After(now)
+
+		switch r.Type {
+		case model.CreditTypeTrial:
+			if isActive {
+				m.HasActiveTrial = true
+				if m.TrialExpiresAt == "" || r.ExpiresAt.Format("2006-01-02") > m.TrialExpiresAt {
+					m.TrialExpiresAt = r.ExpiresAt.Format("2006-01-02")
+				}
+				m.SubRemain += r.RemainCredits
+			}
+		case model.CreditTypeSubscription:
+			if isActive || r.Status == model.CreditPackagePending {
+				m.HasActiveSubscription = true
+			}
+			if isActive {
+				if m.SubscriptionExpiresAt == "" || r.ExpiresAt.Format("2006-01-02") > m.SubscriptionExpiresAt {
+					m.SubscriptionExpiresAt = r.ExpiresAt.Format("2006-01-02")
+				}
+				m.SubRemain += r.RemainCredits
+			}
+		}
+	}
+
+	return result, nil
 }

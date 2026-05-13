@@ -97,7 +97,7 @@ func TestAdminContextBudgetRoutesAreRegistered(t *testing.T) {
 		{http.MethodDelete, "/v1/admin/context-budget/token-profiles/1", ""},
 		{http.MethodGet, "/v1/admin/context-budget/token-profiles/history?provider=p&model=m&service_type=llm_chat", ""},
 		{http.MethodGet, "/v1/admin/context-budget/policies", ""},
-		{http.MethodPut, "/v1/admin/context-budget/policies/sop_run", `{"reserved_output_tokens":2048,"safe_ratio":0.85,"fixed_overhead_tokens":512,"soft_threshold_ratio":0.7,"hard_threshold_ratio":0.85}`},
+		{http.MethodPut, "/v1/admin/context-budget/policies/sop_run", `{"reserved_output_tokens":2048,"safe_ratio":0.85,"fixed_overhead_tokens":512,"soft_threshold_ratio":0.7,"hard_threshold_ratio":0.85,"charge_user":true}`},
 		{http.MethodPost, "/v1/admin/context-budget/preview", `{"service_id":999,"operation":"sop_run","fixed_overhead_tokens":512,"reserved_output_tokens":2048,"safe_ratio":0.85}`},
 		{http.MethodGet, "/v1/admin/context-budget/events", ""},
 	}
@@ -580,6 +580,81 @@ func TestAdminContextBudgetListPoliciesAllReturnsHistory(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w3.Body.Bytes(), &resp3))
 	data3 := resp3["data"].(map[string]interface{})
 	assert.Equal(t, float64(1), data3["total"], "is_active=inactive should return 1 old policy")
+}
+
+// ---------------------------------------------------------------------------
+// TestUpsertPolicy_RejectsMissingChargeUser
+// ---------------------------------------------------------------------------
+
+// TestUpsertPolicy_RejectsMissingChargeUser verifies that the UpsertPolicy
+// endpoint returns 400 when charge_user is omitted from the request body.
+// This prevents the silent zero-out (F-8) where an omitted bool field defaults
+// to false and silently disables billing for that operation.
+func TestUpsertPolicy_RejectsMissingChargeUser(t *testing.T) {
+	db := newTestDB(t)
+	r := newRouter(db)
+
+	// Body deliberately omits charge_user.
+	body := map[string]interface{}{
+		"reserved_output_tokens": 2048,
+		"safe_ratio":             0.85,
+		"fixed_overhead_tokens":  512,
+	}
+	bodyBytes, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut,
+		"/v1/admin/context-budget/policies/chatbot_chat",
+		bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code,
+		"omitting charge_user must return 400")
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	msg, _ := resp["message"].(string)
+	assert.Contains(t, msg, "charge_user",
+		"error message must mention charge_user so callers know what is missing")
+}
+
+// ---------------------------------------------------------------------------
+// TestUpsertPolicy_AcceptsExplicitFalse
+// ---------------------------------------------------------------------------
+
+// TestUpsertPolicy_AcceptsExplicitFalse verifies that the UpsertPolicy
+// endpoint succeeds when charge_user is explicitly set to false. Admins may
+// legitimately want to disable charging for a specific operation, so an
+// explicit false must be accepted (unlike an omitted field which is ambiguous).
+func TestUpsertPolicy_AcceptsExplicitFalse(t *testing.T) {
+	db := newTestDB(t)
+	r := newRouter(db)
+
+	body := map[string]interface{}{
+		"reserved_output_tokens": 2048,
+		"safe_ratio":             0.85,
+		"fixed_overhead_tokens":  512,
+		"charge_user":            false, // explicit false — must be accepted
+	}
+	bodyBytes, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut,
+		"/v1/admin/context-budget/policies/chatbot_chat",
+		bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code,
+		"explicit charge_user=false must be accepted")
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	data, ok := resp["data"].(map[string]interface{})
+	require.True(t, ok, "response data must be an object")
+	// charge_user must be persisted as false, not silently flipped to true by
+	// the GORM default:true gotcha handled in store.SavePolicyVersion.
+	chargeUser, ok := data["charge_user"].(bool)
+	assert.True(t, ok, "charge_user must be a boolean in the response")
+	assert.False(t, chargeUser,
+		"charge_user=false must be persisted and returned as false")
 }
 
 // ---------------------------------------------------------------------------

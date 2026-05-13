@@ -11,8 +11,6 @@
 package sop
 
 import (
-	"context"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -20,7 +18,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
-	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/contextbudget"
 	"numind-server/internal/pkg/model"
@@ -29,27 +26,6 @@ import (
 // ----------------------------------------------------------------------------
 // Helpers — fragment introspection
 // ----------------------------------------------------------------------------
-
-// findFragmentByID returns the fragment with the given ID, or nil.
-func findFragmentByID(frags []contextbudget.ContextFragment, id string) *contextbudget.ContextFragment {
-	for i := range frags {
-		if frags[i].ID == id {
-			return &frags[i]
-		}
-	}
-	return nil
-}
-
-// fragmentsByRole collects all fragments with the given role.
-func fragmentsByRole(frags []contextbudget.ContextFragment, role contextbudget.FragmentRole) []contextbudget.ContextFragment {
-	var out []contextbudget.ContextFragment
-	for _, f := range frags {
-		if f.Role == role {
-			out = append(out, f)
-		}
-	}
-	return out
-}
 
 // fragmentsBySource collects all fragments with the given source.
 func fragmentsBySource(frags []contextbudget.ContextFragment, src contextbudget.FragmentSource) []contextbudget.ContextFragment {
@@ -128,12 +104,6 @@ func TestSOPNodeExecutionBuildsCurrentInputAsCriticalFragment(t *testing.T) {
 // Test 2: Gateway ChatRequest carries ContextFragments
 // ----------------------------------------------------------------------------
 
-// capturedChatRequest is used by the stubbed ChatStream to record what the
-// SOP executor passes through.
-type capturedChatRequest struct {
-	req aiservice.ChatRequest
-}
-
 // TestSOPGatewayPathSendsContextFragments verifies that when executing via the
 // Gateway path (modelKey != ""), the ChatRequest fed to aiservice.ChatStream
 // contains a non-empty ContextFragments slice, and that Messages is either
@@ -195,46 +165,6 @@ func TestSOPGatewayPathSendsContextFragments(t *testing.T) {
 // ----------------------------------------------------------------------------
 // Test 3: Gateway path does NOT call creditSvc.Reserve (old R2 path)
 // ----------------------------------------------------------------------------
-
-// spyCreditService is defined here for future integration-style tests that wire
-// a complete sopBiz instance. The current TestSOPGatewayPathDoesNotDoubleReserveCredits
-// only verifies the shouldSkipDirectReserveForGateway guard directly; full e2e
-// double-reserve assertion will land when SOP biz is refactored to accept an
-// injectable ICreditService in tests.
-//
-// It records all Reserve calls; ReserveBudget records its own calls.
-type spyCreditService struct {
-	reserveCalls       int
-	reserveBudgetCalls int
-}
-
-func (s *spyCreditService) Reserve(_ context.Context, _ *model.User, _ credit.Operation, _ int64, _ uint64, _ *string) (*credit.Reservation, error) {
-	s.reserveCalls++
-	return nil, fmt.Errorf("spy: Reserve should not be called on Gateway path")
-}
-
-func (s *spyCreditService) ReserveBudget(_ context.Context, _ *model.User, _ credit.BudgetReservationInput) (*credit.Reservation, error) {
-	s.reserveBudgetCalls++
-	// Simulate successful budget reservation.
-	return &credit.Reservation{ID: 9999, Status: credit.StatusReserved}, nil
-}
-
-func (s *spyCreditService) CheckAndEstimate(_ context.Context, _ *model.User, _ credit.Operation, _ credit.EstimationInput) (*credit.PreCheckResult, error) {
-	return &credit.PreCheckResult{Sufficient: true, SkipDeduction: false, EstimatedCredits: 50, CoefficientID: 1}, nil
-}
-
-func (s *spyCreditService) CheckAndEstimateBudget(_ context.Context, _ *model.User, _ credit.BudgetPrecheckInput) (*credit.PreCheckResult, error) {
-	return &credit.PreCheckResult{Sufficient: true, SkipDeduction: false, EstimatedCredits: 50}, nil
-}
-
-func (s *spyCreditService) Reconcile(_ context.Context, _ uint64, _ int64) error { return nil }
-func (s *spyCreditService) Refund(_ context.Context, _ uint64, _ string) error   { return nil }
-func (s *spyCreditService) FinalizeReservation(_ context.Context, _ *credit.Reservation, _ *int64, _ *error) error {
-	return nil
-}
-func (s *spyCreditService) GetBalance(_ context.Context, _ *model.User) (*credit.BalanceBreakdown, error) {
-	return &credit.BalanceBreakdown{}, nil
-}
 
 // TestSOPGatewayPathDoesNotDoubleReserveCredits verifies the double-Reserve
 // guard: when modelKey != "" (Gateway path), the old direct creditSvc.Reserve

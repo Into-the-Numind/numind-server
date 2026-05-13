@@ -88,10 +88,6 @@ func (s *stubPromptEstimator) Estimate(_ context.Context, _, _ string) (int, str
 	return s.chars, s.model, s.provider, s.err
 }
 
-// stubCreditBiz implements ICreditBiz with panics for unused methods; only
-// GetBalance is called by GetBalance handler (not under test here).
-type stubCreditBiz struct{}
-
 // These helper constructors live outside the stub so tests can opt into them.
 
 // newTestDB creates an in-memory SQLite DB with only the tables the handler

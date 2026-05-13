@@ -1009,9 +1009,9 @@ func TestPopulateLLMUsage_TypedNilResponse_NoPanic(t *testing.T) {
 	// Simulate Go typed-nil interface pattern:
 	//   var cr *aiservice.ChatResponse // nil
 	//   var resp interface{} = cr      // interface{} wrapping typed-nil — NOT == nil
-	var cr *aiservice.ChatResponse
-	var resp interface{} = cr
-	if resp == nil {
+	var cr *aiservice.ChatResponse //nolint:staticcheck
+	var resp interface{} = cr      //nolint:staticcheck
+	if resp == nil {               //nolint:staticcheck
 		t.Fatal("sanity: typed-nil interface should not equal nil (Go semantics)")
 	}
 
@@ -1112,8 +1112,12 @@ func TestBillingSetsFinalCostInHolderWhenPresent(t *testing.T) {
 	}
 
 	// The holder must be populated with the value returned by PricingCalc.
-	if holder.CostCents != 42 {
-		t.Errorf("finalCostHolder.CostCents = %d, want 42 (from mockPricingCalc)", holder.CostCents)
+	gotCost, gotSet := holder.Get()
+	if !gotSet {
+		t.Error("finalCostHolder was not set (Set() was never called)")
+	}
+	if gotCost != 42 {
+		t.Errorf("finalCostHolder cost = %d, want 42 (from mockPricingCalc)", gotCost)
 	}
 }
 
@@ -1178,7 +1182,11 @@ func TestBillingSetsFinalCostInHolder_StreamPath(t *testing.T) {
 	}
 
 	// After draining, holder must be populated (set before IsFinal was forwarded).
-	if holder.CostCents != 77 {
-		t.Errorf("finalCostHolder.CostCents = %d, want 77 (streaming path)", holder.CostCents)
+	gotCost, gotSet := holder.Get()
+	if !gotSet {
+		t.Error("finalCostHolder was not set (Set() was never called) on streaming path")
+	}
+	if gotCost != 77 {
+		t.Errorf("finalCostHolder cost = %d, want 77 (streaming path)", gotCost)
 	}
 }
