@@ -470,13 +470,19 @@ func (s *creditStore) GetMembershipStateBatch(ctx context.Context, userIDs []uin
 				m.SubRemain += r.RemainCredits
 			}
 		case model.CreditTypeSubscription:
-			if isActive || r.Status == model.CreditPackagePending {
+			// B2B 年度方案在 credit_package 表里是 1 active + 11 pending 月段链。
+			// HasActiveSubscription 看 active 或 pending（用户付费在期）；
+			// SubscriptionExpiresAt 也要看 pending，否则年度会员的到期日会被
+			// 截断成 active 段当月底，前端显示 5/6 月而非真实 2027 年底。
+			// SubRemain 仍然只算 active 段（pending 段未激活不能用）。
+			isActiveOrPending := isActive || r.Status == model.CreditPackagePending
+			if isActiveOrPending {
 				m.HasActiveSubscription = true
-			}
-			if isActive {
 				if m.SubscriptionExpiresAt == "" || r.ExpiresAt.Format("2006-01-02") > m.SubscriptionExpiresAt {
 					m.SubscriptionExpiresAt = r.ExpiresAt.Format("2006-01-02")
 				}
+			}
+			if isActive {
 				m.SubRemain += r.RemainCredits
 			}
 		}
