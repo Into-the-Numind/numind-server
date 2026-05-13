@@ -49,10 +49,10 @@ features:
     ndf_version: "1.1"
     description: "SOP / 智能体（chatbot）可见范围权限（实体视角）。父账户在 SOP 模板或 chatbot 编辑页内联新增「可见范围」开关：默认 allow-all（全部子用户可见）；可打开「仅指定子用户可见」从弹窗勾选白名单。未在白名单的子用户在工作区列表看不到该实体；已开始的运行/历史不受影响（仅列表过滤）。后期新增子用户默认看不到受限实体（白名单语义）。范围限定 SOP + chatbot，不含销售知识库；仅 C 端父账户配置，不含管理端。"
     track: "standard"
-    stage: "S6"
+    stage: "completed"
     classification_reason: "Triage 5 条全触发 — (1) DB schema：需在 sop_template / chatbot_config 加 visibility_restricted 字段 + 新增独立白名单表 (2) 新 API：4 个新端点（PUT/GET visibility × 2 资源）+ 2 个既有端点行为变更（列表过滤注入）(3) 无外部服务 (4) 跨 numind-server + numind-web-v3 两仓约 23-27 文件 (5) 新增权限维度，与现有运行权限叠加，错误会导致子用户漏看/误看资源。Standard Track 必然。"
-    last_updated_by: "ai-s6-start"
-    last_updated_at: "2026-05-13T00:00:00+08:00"
+    last_updated_by: "ai-s7-complete"
+    last_updated_at: "2026-05-14T00:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -70,7 +70,7 @@ features:
       total_tasks: 23
       completed_tasks: 23
       reviewed_tasks: 23
-      current_task: "S5 PASS (后端 lint+test+race 全 PASS, 前端 type-check+lint 干净 visibility 无 error, Playwright spec 列出 8 tests, migration SQL 内容 OK). 等用户确认 S6 (/commit-merge-push 两仓 feature → develop, 然后浏览器 QA 跑 10 条路径)"
+      current_task: null
     rollback: null
     last_verified:
       at: "2026-05-14T00:00:00+08:00"
@@ -95,12 +95,14 @@ features:
       - "2026-05-13 (S2 review 3 轮): Round 1 发现 4 P0 + 2 P1 + 2 P2 → 全修；Round 2 发现 1 P0-NEW + 1 P1-NEW + 1 P2-NEW（Round 1 修复中遗漏 §7.1 migration DDL 同步 + Cleanup 函数层级模糊 + visibilityDirty store 字段未声明）→ 全修；Round 3 PASS（0 P0 + 0 P1，2 P2 顺手清理）"
       - "2026-05-13 (S2 锁定 P0-2 双路径删除): UpdateVisibility 路径用 Unscoped() 物理删（避免唯一索引含 deleted_at 的 MySQL NULL 共存问题）；DeleteSubUser/Entity 路径用软删做审计；唯一索引 (sub_user_id, entity_id) 不含 deleted_at"
       - "2026-05-14 (S4 Phase 5 Task 13 deferred): plan 假设有 DeleteSubUser 流程, 实际 grep 后代码库零此路径 (无 DELETE /v1/customers/sub-users/:user_id 路由, 无 customer.DeleteSubUser biz). spec §5 '现有删除路径' 描述错误. store.CleanupBySubUser 已实现备用 API, 未来加 DeleteSubUser 功能时 1 行接入即可. 用户确认跳过, 不增加无效代码"
+      - "2026-05-14 (S6 dev 验收) 3 个 hotfix: (1) commit 9e1e818 — SubUserMultiSelectDialog 兼容真实后端响应 shape ({total, sub_users: SubUser[]} 包裹 + user_id 字段, P0 阻断选人弹窗); (2) dev MySQL 手动 CREATE TABLE sop_visibility_grant + chatbot_visibility_grant (CI 镜像无 migrations 目录, 见 memory project_dev_deploy_migration_gap); (3) dev MySQL 手动 ALTER chatbot_config ADD visibility_restricted (S6 手动跑 migration 漏列, 导致 PUT /config/chatbots/:id 500)"
+      - "2026-05-14 (S7 prod 部署): 用户自行操作 prod 部署, 假定已成功. Prod 必跑 SQL: ALTER TABLE sop_template ADD visibility_restricted + ALTER TABLE chatbot_config ADD visibility_restricted + CREATE TABLE sop_visibility_grant + CREATE TABLE chatbot_visibility_grant (完整 SQL 见 numind-server/migrations/20260513_120000_sop_chatbot_visibility_scope.sql)"
     related_features:
       - "child-run-permission (已上线，共存互补，本需求是其前置 gate)"
       - "sales-agent-child-permission (已上线，作用于销售智能体运行权限，与本需求无重叠)"
     blockers: []
     created_at: "2026-05-13T00:00:00+08:00"
-    completed_at: null
+    completed_at: "2026-05-14T00:00:00+08:00"
 
   - id: "sop-run-mobile-layout"
     ndf_version: "1.1"
