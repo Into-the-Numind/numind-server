@@ -180,3 +180,31 @@ func TestUpdateChatbotVisibility_IdempotentReplay(t *testing.T) {
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []uint{sub}, ids)
 }
+
+// TestUpdateChatbotVisibility_TurnOnEmpty 验证 spec §2.5 I-2 不变量 (对称 SOP 版):
+// restricted=true 且 sub_user_ids=[] → 白名单严格全拒, 全部子用户都看不到.
+func TestUpdateChatbotVisibility_TurnOnEmpty(t *testing.T) {
+	db := newChatbotVisTestDB(t)
+	s := store.NewTestStore(db)
+	ctx := context.Background()
+
+	parent := insertCbUser(t, db, nil)
+	sub := insertCbUser(t, db, &parent)
+	cbID := insertCbConfig(t, db, parent)
+
+	require.NoError(t, chatbot.UpdateChatbotVisibility(ctx, s, parent, cbID, true, []uint{}))
+
+	visible, err := chatbot.IsChatbotVisibleToUser(ctx, s, sub, cbID)
+	require.NoError(t, err)
+	assert.False(t, visible, "I-2: visibility_restricted=true + grant=0 → strict deny-all for subs")
+
+	// 父账户 bypass
+	visible, err = chatbot.IsChatbotVisibleToUser(ctx, s, parent, cbID)
+	require.NoError(t, err)
+	assert.True(t, visible, "parent always visible")
+
+	restricted, ids, err := chatbot.GetChatbotVisibility(ctx, s, parent, cbID)
+	require.NoError(t, err)
+	assert.True(t, restricted)
+	assert.Empty(t, ids, "empty whitelist")
+}
