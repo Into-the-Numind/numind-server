@@ -251,8 +251,24 @@ func (b *sopBiz) UpdateTemplate(ctx context.Context, id uint, updates map[string
 	return b.ds.Sop().UpdateTemplate(id, updates)
 }
 
+// DeleteTemplate 删除 SOP 模板, 同事务清理可见范围授权.
+//
+// EC-6 (sop-chatbot-visibility-scope spec §9): 实体删除时清理它的所有 visibility grant
+// 记录, 避免 grant 表残留指向不存在 SOP 的孤儿数据. 软删 grant 保留审计.
+//
+// 事务模式 b.ds.DB().WithContext(ctx).Transaction(...) 与项目既有惯例一致.
 func (b *sopBiz) DeleteTemplate(ctx context.Context, id uint) error {
-	return b.ds.Sop().DeleteTemplate(id)
+	return b.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// EC-6: 软删该 SOP 的所有 visibility grant
+		if err := b.ds.SopVisibilityGrant().CleanupByEntity(ctx, tx, id); err != nil {
+			return fmt.Errorf("DeleteTemplate: cleanup visibility grants: %w", err)
+		}
+		// 既有: 软删 sop_template (GORM 默认软删, gorm.Model.DeletedAt)
+		if err := tx.Delete(&model.SopTemplate{}, id).Error; err != nil {
+			return fmt.Errorf("DeleteTemplate: delete sop_template: %w", err)
+		}
+		return nil
+	})
 }
 
 // Node operations
