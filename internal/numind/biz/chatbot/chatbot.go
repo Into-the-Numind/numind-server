@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/numind/store"
@@ -460,7 +461,10 @@ func (b *chatbotBiz) RenameSession(ctx context.Context, userID, sessionID uint, 
 	if len(title) == 0 {
 		return errno.ErrBind.SetMessage("标题不能为空")
 	}
-	if len(title) > 200 {
+	// 用 rune 计数与 DB 字段 VARCHAR(200) 的字符语义一致 — 否则中文输入会在 ~66 字时
+	// 提前触发上限（200 字节 / 3 字节每字 = 66 中文字）。Spec §1.1 model size:200
+	// 在 utf8mb4 下是 200 字符（≈600 bytes 最坏）。
+	if utf8.RuneCountInString(title) > 200 {
 		return errno.ErrBind.SetMessage("标题最长 200 字符")
 	}
 
