@@ -576,11 +576,14 @@ git commit -m "feat(visibility-scope): store layer (2 grant stores + IStore exte
 
 - [ ] **Step 1: 写两步校验函数**
 
+签名接收 `store.IStore` 而非裸 `*gorm.DB`，符合三层架构规则（biz 层通过 store 接口访问数据）。事务/查询通过 `s.DB()` 取出（与项目既有 biz 模式一致，如 `b.ds.DB().WithContext(ctx).Transaction(...)`）。
+
 ```go
 package customer
 
 import (
     "context"
+    "fmt"
     "github.com/numind/internal/pkg/errno"
     "github.com/numind/internal/pkg/model"
     "github.com/numind/internal/numind/store"
@@ -589,22 +592,27 @@ import (
 // ValidateSubUsersBelongToCaller 两步校验:
 //   Step 1: 全部 ID 在 user 表中存在 (不含软删) → 否则 ErrSubUserNotFound
 //   Step 2: 全部 ID 的 parent_user_id 等于 callerID → 否则 ErrCrossParentSubUser
-func ValidateSubUsersBelongToCaller(ctx context.Context, db *gorm.DB, callerID uint, subUserIDs []uint) error {
+// 接收 store.IStore (而非裸 *gorm.DB) 以符合三层架构; 单次性 COUNT 查询走 s.DB()
+// 与项目既有 biz 事务模式一致, 不污染 UserStore 接口.
+func ValidateSubUsersBelongToCaller(ctx context.Context, s store.IStore, callerID uint, subUserIDs []uint) error {
     if len(subUserIDs) == 0 {
         return nil
     }
-    // Step 1: 存在性
+    db := s.DB().WithContext(ctx)
+
+    // Step 1: 存在性 (GORM 默认 scope 自动过滤 deleted_at IS NULL)
     var existCount int64
-    if err := db.WithContext(ctx).Model(&model.User{}).
+    if err := db.Model(&model.User{}).
         Where("id IN ?", subUserIDs).Count(&existCount).Error; err != nil {
         return fmt.Errorf("ValidateSubUsersBelongToCaller: count exist: %w", err)
     }
     if existCount != int64(len(subUserIDs)) {
         return errno.ErrSubUserNotFound
     }
+
     // Step 2: 归属
     var belongCount int64
-    if err := db.WithContext(ctx).Model(&model.User{}).
+    if err := db.Model(&model.User{}).
         Where("id IN ? AND parent_user_id = ?", subUserIDs, callerID).Count(&belongCount).Error; err != nil {
         return fmt.Errorf("ValidateSubUsersBelongToCaller: count belong: %w", err)
     }
@@ -619,9 +627,9 @@ func ValidateSubUsersBelongToCaller(ctx context.Context, db *gorm.DB, callerID u
 
 ```go
 func TestValidateSubUsersBelongToCaller(t *testing.T) {
-    db := setupTestDB(t)
+    s := setupTestStore(t)  // IStore-backed test fixture
     // seed: parent=1, sub=10/11 属于 1; sub=20 属于 2; sub=999 不存在
-    seedUsers(t, db, []userSeed{
+    seedUsers(t, s.DB(), []userSeed{
         {id: 1, parentUserID: 0},
         {id: 2, parentUserID: 0},
         {id: 10, parentUserID: 1},
@@ -642,7 +650,7 @@ func TestValidateSubUsersBelongToCaller(t *testing.T) {
     }
     for _, c := range cases {
         t.Run(c.name, func(t *testing.T) {
-            err := ValidateSubUsersBelongToCaller(ctx, db, c.callerID, c.subUserIDs)
+            err := ValidateSubUsersBelongToCaller(ctx, s, c.callerID, c.subUserIDs)
             assert.ErrorIs(t, err, c.wantErr)
         })
     }
@@ -719,10 +727,21 @@ func ListSubUserVisibleSopIDs(ctx context.Context, s store.IStore, subUserID uin
 
 // GetSopVisibility 返回 SOP 的可见范围配置 (restricted, subUserIDs, error).
 // subUserIDs 始终从 grant 表返回 (D3 保留语义: restricted=false 时也返回历史名单).
-func GetSopVisibility(ctx context.Context, s store.IStore, sopID uint) (bool, []uint, error) {
+// 接收 callerID 用于 owner 校验 (业务逻辑统一在 biz 层, controller 层不重复).
+func GetSopVisibility(ctx context.Context, s store.IStore, callerID, sopID uint) (bool, []uint, error) {
     sop, err := s.Sop().GetTemplate(ctx, sopID)
     if err != nil {
         return false, nil, errno.ErrSopTemplateNotFound
+    }
+    caller, err := s.Users().GetByID(ctx, callerID)
+    if err != nil {
+        return false, nil, fmt.Errorf("GetSopVisibility: get caller: %w", err)
+    }
+    if caller.ParentUserID != nil {
+        return false, nil, errno.ErrVisibilityPermissionDenied
+    }
+    if sop.CreatorUserID == nil || *sop.CreatorUserID != callerID {
+        return false, nil, errno.ErrEntityNotOwnedByCaller
     }
     ids, err := s.SopVisibilityGrant().ListSubUserIDsBySopID(ctx, sopID)
     if err != nil {
@@ -734,6 +753,9 @@ func GetSopVisibility(ctx context.Context, s store.IStore, sopID uint) (bool, []
 // UpdateSopVisibility 更新 SOP 的可见范围配置 (D3 + 双路径删除模式).
 // 当 restricted=true 时, 全删全插 grant; restricted=false 时, 不动 grant 表.
 // 见 spec §4.1.6 完整伪代码.
+//
+// 事务模式: 使用项目既有的 b.ds.DB().WithContext(ctx).Transaction(...)
+// (IStore 接口只暴露 DB() *gorm.DB, 不存在 WithTx 包装; 见 credit/payment biz 同款用法)
 func UpdateSopVisibility(ctx context.Context, s store.IStore, callerID, sopID uint, restricted bool, subUserIDs []uint) error {
     sop, err := s.Sop().GetTemplate(ctx, sopID)
     if err != nil {
@@ -750,23 +772,21 @@ func UpdateSopVisibility(ctx context.Context, s store.IStore, callerID, sopID ui
         return errno.ErrEntityNotOwnedByCaller
     }
     if restricted {
-        if err := customer.ValidateSubUsersBelongToCaller(ctx, s.DB(), callerID, subUserIDs); err != nil {
+        if err := customer.ValidateSubUsersBelongToCaller(ctx, s, callerID, subUserIDs); err != nil {
             return err
         }
     }
-    return s.WithTx(func(tx *gorm.DB) error {
+    return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
         if restricted {
             if err := s.SopVisibilityGrant().ReplaceGrantsTx(ctx, tx, sopID, callerID, subUserIDs); err != nil {
                 return fmt.Errorf("UpdateSopVisibility: replace grants: %w", err)
             }
         }
-        return tx.WithContext(ctx).Model(&model.SopTemplate{}).Where("id=?", sopID).
+        return tx.Model(&model.SopTemplate{}).Where("id=?", sopID).
             Update("visibility_restricted", restricted).Error
     })
 }
 ```
-
-> 注：`s.DB()` 和 `s.WithTx(...)` 假设是 IStore 既有方法；若不存在，S4 implementer 需要在 store.go 加入，或直接传 db 到 biz。
 
 - [ ] **Step 2: 单元测试 7 个 case（覆盖 visibility 关闭 / 开启全选 / 开启零选 / 开启部分 / 权限校验 / 越权配置 / 短路）**
 
@@ -905,6 +925,7 @@ type updateVisibilityReq struct {
 }
 
 // GetVisibility GET /v1/sop/templates/:id/visibility
+// Controller 仅做参数绑定 + 调用 biz; owner 校验在 biz 层 (api-design.md §6).
 func (c *VisibilityController) GetVisibility(ctx *gin.Context) {
     callerID := ctx.GetUint("userID")
     sopID, err := strconv.ParseUint(ctx.Param("id"), 10, 64)
@@ -912,26 +933,7 @@ func (c *VisibilityController) GetVisibility(ctx *gin.Context) {
         core.WriteResponse(ctx, errno.ErrBind.SetMessage("invalid sop id"), nil)
         return
     }
-    // owner 校验
-    sopRow, err := c.store.Sop().GetTemplate(ctx, uint(sopID))
-    if err != nil {
-        core.WriteResponse(ctx, errno.ErrSopTemplateNotFound, nil)
-        return
-    }
-    caller, err := c.store.Users().Get(ctx, callerID)
-    if err != nil {
-        core.WriteResponse(ctx, err, nil)
-        return
-    }
-    if caller.ParentUserID != nil {
-        core.WriteResponse(ctx, errno.ErrVisibilityPermissionDenied, nil)
-        return
-    }
-    if sopRow.CreatorUserID == nil || *sopRow.CreatorUserID != callerID {
-        core.WriteResponse(ctx, errno.ErrEntityNotOwnedByCaller, nil)
-        return
-    }
-    restricted, ids, err := sop.GetSopVisibility(ctx, c.store, uint(sopID))
+    restricted, ids, err := sop.GetSopVisibility(ctx, c.store, callerID, uint(sopID))
     if err != nil {
         core.WriteResponse(ctx, err, nil)
         return
@@ -982,13 +984,13 @@ git commit -m "feat(visibility-scope): SOP visibility controller (GET + PUT)"
 
 **Spec 引用**: §3.4
 
-- [ ] **Step 1: 复制 Task 8 结构，替换字段**
+- [ ] **Step 1: 复制 Task 8 结构（thin controller），替换字段**
+
+Controller 仅做参数绑定 + 调用 biz；owner 校验在 biz 层 `GetChatbotVisibility(callerID, chatbotID)` 内部完成（与 SOP 对称），controller 不重复。
 
 关键差异（参照 Task 7）：
-- owner 校验：`chatbot.UserID != callerID`（非指针，无 nil 检查）
-- 错误码：`errno.ErrChatbotNotFound`
-- biz 函数：`chatbot.GetChatbotVisibility`, `chatbot.UpdateChatbotVisibility`
-- store 调用：`c.store.ChatbotConfig().Get(ctx, chatbotID)`
+- biz 函数：`chatbot.GetChatbotVisibility(ctx, s, callerID, chatbotID)`, `chatbot.UpdateChatbotVisibility(...)`
+- 错误码透传：`errno.ErrChatbotNotFound` / `errno.ErrEntityNotOwnedByCaller` / `errno.ErrVisibilityPermissionDenied` 由 biz 返回，controller `core.WriteResponse(ctx, err, nil)` 直接透传
 
 - [ ] **Step 2: 编译 + lint**
 
@@ -1336,7 +1338,7 @@ git commit -m "feat(visibility-scope): EC-6 cleanup visibility grants on chatbot
 
 # Phase 6：后端测试集中补全
 
-## Task 16: 13 个单元测试用例
+## Task 16: 14 个单元测试用例（含并发 PUT）
 
 **Files:**
 - Modify: `numind-server/internal/numind/biz/sop/visibility_test.go`
@@ -1344,7 +1346,7 @@ git commit -m "feat(visibility-scope): EC-6 cleanup visibility grants on chatbot
 
 **Spec 引用**: §10.2
 
-补足 Task 6/7 的冒烟测试，覆盖完整 13 个 case：
+补足 Task 6/7 的冒烟测试，覆盖完整 14 个 case（13 spec 要求 + 1 并发 PUT 补足）：
 
 - [ ] **Step 1: SOP 7 个测试**
 
@@ -1362,7 +1364,47 @@ git commit -m "feat(visibility-scope): EC-6 cleanup visibility grants on chatbot
 5: `TestUpdateChatbotVisibility_NonOwner` — chatbot.UserID 差异校验
 6: `TestUpdateChatbotVisibility_IdempotentReplay` — 同一 PUT 连续 2 次, 第二次无副作用 (P0-2 验证)
 
-- [ ] **Step 3: 4 象限矩阵测试** (Task 11/12 已加，确认通过；如缺补)
+- [ ] **Step 3: 4 象限矩阵测试** — 若 Task 11/12 测试文件存在则 `go test -run TestListVisible` 验证全通过；若不存在或某象限漏覆盖，则必须在本 task 补足（不可跳过）
+
+- [ ] **Step 3b: 并发 PUT 测试 (spec §10.2 必需)**
+
+```go
+func TestUpdateSopVisibility_ConcurrentPUT_LastWriteWins(t *testing.T) {
+    s := setupTestStore(t)
+    seedParentAndSubUsers(t, s, 1, []uint{10, 11, 12})
+    seedSopTemplate(t, s, 100, 1)
+
+    // 两 goroutine 并发 PUT 不同子用户名单, 验证不死锁 + last-write-wins
+    var wg sync.WaitGroup
+    errA, errB := error(nil), error(nil)
+    wg.Add(2)
+    go func() {
+        defer wg.Done()
+        errA = biz.UpdateSopVisibility(ctx, s, 1, 100, true, []uint{10, 11})
+    }()
+    go func() {
+        defer wg.Done()
+        errB = biz.UpdateSopVisibility(ctx, s, 1, 100, true, []uint{12})
+    }()
+
+    done := make(chan struct{})
+    go func() { wg.Wait(); close(done) }()
+    select {
+    case <-done:
+    case <-time.After(5 * time.Second):
+        t.Fatal("ConcurrentPUT 超时 — 疑似死锁")
+    }
+    require.NoError(t, errA)
+    require.NoError(t, errB)
+
+    // 最终状态必须等于某一次 PUT 的全量结果 (last-write-wins, 不应混合)
+    _, ids, err := biz.GetSopVisibility(ctx, s, 100)
+    require.NoError(t, err)
+    isA := equalSet(ids, []uint{10, 11})
+    isB := equalSet(ids, []uint{12})
+    assert.True(t, isA || isB, "final state should match one of the writes, got: %v", ids)
+}
+```
 
 - [ ] **Step 4: EC-6 后再 grant 测试**
 
@@ -1640,11 +1682,13 @@ interface Props {
   entityType: 'sop' | 'chatbot'
   disabled?: boolean
   dirty?: boolean
+  loading?: boolean  // AC-22: visibility GET 进行中显示 skeleton
 }
 
 const props = withDefaults(defineProps<Props>(), {
   disabled: false,
   dirty: false,
+  loading: false,
 })
 
 const emit = defineEmits<{
@@ -1704,7 +1748,11 @@ function onDialogConfirm(ids: number[]) {
 <template>
   <div class="visibility-card">
     <h3>可见范围</h3>
-    <div v-if="!hasSubUsers" class="empty-hint">
+    <div v-if="loading" class="skeleton">
+      <div class="skeleton-line" style="width: 60%;"></div>
+      <div class="skeleton-line" style="width: 30%;"></div>
+    </div>
+    <div v-else-if="!hasSubUsers" class="empty-hint">
       您还没有子用户。添加子用户后才能设置 {{ entityLabel }} 的可见范围。
     </div>
     <div v-else>
@@ -1888,14 +1936,35 @@ async function onRetryVisibility() {
 }
 ```
 
-- [ ] **Step 4: onMounted 调 loadVisibility**
+- [ ] **Step 4: onMounted 调 loadVisibility + loading skeleton（AC-22）**
 
 ```ts
+const visibilityLoading = ref(false)
+
 onMounted(async () => {
   await store.loadTemplate(sopID)
-  await store.loadVisibility(sopID)
+  visibilityLoading.value = true
+  try {
+    await store.loadVisibility(sopID)
+  } finally {
+    visibilityLoading.value = false
+  }
 })
 ```
+
+VisibilityScopeCard 接收 `:loading="visibilityLoading"` prop（Task 19 已含 4 状态处理 `<div v-if="loading" class="loading">加载中...</div>`，或在卡片顶部加 skeleton）：
+
+```vue
+<VisibilityScopeCard
+  v-model="visibilityValue"
+  entity-type="sop"
+  :loading="visibilityLoading"
+  :dirty="store.state.visibilityDirty"
+  @retry="onRetryVisibility"
+/>
+```
+
+> Task 19 的 VisibilityScopeCard Props 接口同步新增 `loading?: boolean`，组件内顶部加 `<div v-if="loading" class="skeleton">...</div>` 区块；Task 19 实施时一并完成。
 
 - [ ] **Step 5: type-check + lint**
 
@@ -1963,7 +2032,9 @@ const SUB_B = { username: process.env.E2E_SUB_B_USERNAME!, password: process.env
 
 test.describe('SOP 可见范围权限', () => {
   test('父账户配置 → 子用户 A 可见 / 子用户 B 不可见', async ({ page, browser }) => {
-    // Step 1: 父账户登录, 配置 SOP
+    let sopID: string  // 测试中创建/找到的 SOP ID, 后续步骤复用
+
+    // Step 1: 父账户登录, 进 SOP 编辑页配置可见范围
     await page.goto('/login')
     await page.fill('[name="username"]', PARENT.username)
     await page.fill('[name="password"]', PARENT.password)
@@ -1971,7 +2042,13 @@ test.describe('SOP 可见范围权限', () => {
     await page.waitForURL(/home|sop/)
 
     await page.goto('/sop/templates')
-    await page.click('text=测试 SOP 模板').first()  // seed 一个 SOP
+    // 点击列表第一个 SOP 进入编辑页, 从 URL 提取 sopID
+    await page.locator('[data-test="sop-template-row"]').first().click()
+    await page.waitForURL(/\/sop\/templates\/edit\/\d+/)
+    const m = page.url().match(/\/edit\/(\d+)/)
+    expect(m).toBeTruthy()
+    sopID = m![1]
+
     await page.locator('text=仅指定子用户可见').click()
     await page.locator('text=选择子用户').click()
     await page.locator(`text=${SUB_A.username}`).click()
@@ -1987,7 +2064,7 @@ test.describe('SOP 可见范围权限', () => {
     await pageA.fill('[name="password"]', SUB_A.password)
     await pageA.click('button[type="submit"]')
     await pageA.goto('/sop/templates')
-    await expect(pageA.locator('text=测试 SOP 模板')).toBeVisible()
+    await expect(pageA.locator(`[data-test="sop-template-row"][data-sop-id="${sopID}"]`)).toBeVisible()
 
     // Step 3: 子用户 B 登录, 应看不到该 SOP
     const ctxB = await browser.newContext()
@@ -1997,28 +2074,28 @@ test.describe('SOP 可见范围权限', () => {
     await pageB.fill('[name="password"]', SUB_B.password)
     await pageB.click('button[type="submit"]')
     await pageB.goto('/sop/templates')
-    await expect(pageB.locator('text=测试 SOP 模板')).not.toBeVisible()
+    await expect(pageB.locator(`[data-test="sop-template-row"][data-sop-id="${sopID}"]`)).not.toBeVisible()
 
     // Step 4: 父账户取消勾选 sub_a
-    await page.goto('/sop/templates/edit/X')
+    await page.goto(`/sop/templates/edit/${sopID}`)
     await page.locator('text=选择子用户').click()
     await page.locator(`text=${SUB_A.username}`).click() // 取消
     await page.locator('text=确认').click()
     await page.click('button:has-text("保存")')
+    await expect(page.locator('text=已保存')).toBeVisible()
 
     // Step 5: 子用户 A 重登, 看不到
     await pageA.goto('/sop/templates')
-    await expect(pageA.locator('text=测试 SOP 模板')).not.toBeVisible()
+    await expect(pageA.locator(`[data-test="sop-template-row"][data-sop-id="${sopID}"]`)).not.toBeVisible()
 
     // Step 6: D3 保留语义验证
-    await page.goto('/sop/templates/edit/X')
+    await page.goto(`/sop/templates/edit/${sopID}`)
     await page.locator('text=仅指定子用户可见').click() // 关闭
     await page.locator('text=关闭').click() // 确认对话框
     await page.click('button:has-text("保存")')
     await page.reload()
     await page.locator('text=仅指定子用户可见').click() // 重新打开
-    // 应弹出 "上次已配置 N 位"
-    await expect(page.locator('text=上次已配置')).toBeVisible()
+    await expect(page.locator('text=上次已配置')).toBeVisible()  // D3 历史名单提示
   })
 
   test('chatbot 路径 (对称)', async ({ page, browser }) => {
