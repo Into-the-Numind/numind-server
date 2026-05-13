@@ -1,6 +1,47 @@
 schema_version: "1.0"
 
 features:
+  - id: "sop-chatbot-visibility-scope"
+    ndf_version: "1.1"
+    description: "SOP / 智能体（chatbot）可见范围权限（实体视角）。父账户在 SOP 模板或 chatbot 编辑页内联新增「可见范围」开关：默认 allow-all（全部子用户可见）；可打开「仅指定子用户可见」从弹窗勾选白名单。未在白名单的子用户在工作区列表看不到该实体；已开始的运行/历史不受影响（仅列表过滤）。后期新增子用户默认看不到受限实体（白名单语义）。范围限定 SOP + chatbot，不含销售知识库；仅 C 端父账户配置，不含管理端。"
+    track: "standard"
+    stage: "S2"
+    classification_reason: "Triage 5 条全触发 — (1) DB schema：需在 sop_template / chatbot_config 加 visibility_restricted 字段 + 新增独立白名单表 (2) 新 API：4 个新端点（PUT/GET visibility × 2 资源）+ 2 个既有端点行为变更（列表过滤注入）(3) 无外部服务 (4) 跨 numind-server + numind-web-v3 两仓约 23-27 文件 (5) 新增权限维度，与现有运行权限叠加，错误会导致子用户漏看/误看资源。Standard Track 必然。"
+    last_updated_by: "ai-s2-spec"
+    last_updated_at: "2026-05-13T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches: {}
+    artifacts:
+      requirement: "numind-server/requirements/sop-chatbot-visibility-scope.md"
+      proposal: "numind-server/proposals/sop-chatbot-visibility-scope-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-05-13-sop-chatbot-visibility-scope-design.md"
+      plan: null
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "S2 gate：用户审阅 spec 后进入 S3 plan"
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-05-13 (Triage): 用户描述'SOP/chatbot 增加显示权限'。AI 发现已存在 child-run-permission（运行权限 / 用户视角 / deny-all）。用户确认两套语义并存：本需求 = 可见范围（列表过滤 / 实体视角 / allow-all 默认）；现有 = 运行权限（403 gate / 用户视角 / deny-all）。两层 gate 串行：可见范围 → 运行权限。"
+      - "2026-05-13 (Triage 范围锁定): 仅 SOP + chatbot，不含 SalesRAG 销售知识库；配置入口 = 实体编辑页内联；配置者 = 父账户；子用户范围 = 当前父账户名下所有子账户；撤回行为 = 仅列表展示过滤，不影响进行中/历史；新子用户 = 默认看不到（白名单语义）"
+      - "2026-05-13 (S1 D1): 数据表选独立新表 sop_visibility_grant + chatbot_visibility_grant。理由：用户视角 deny-all 与实体视角 allow-all 语义完全不同，复用现有表 + source 字段会让查询按 source 分支耦合"
+      - "2026-05-13 (S1 D2): API 端点选独立端点 PUT/GET /v1/sop/templates/:id/visibility + PUT/GET /v1/chatbot/:id/visibility。理由：解耦 visibility 与实体其他字段，错误隔离"
+      - "2026-05-13 (S1 D3): 开关关闭时保留名单数据。避免误操作丢失配置；重新打开恢复同一名单"
+      - "2026-05-13 (S1 D4): 子用户级联删除时同事务清理 4 张表（2 visibility + 2 run-permission）"
+      - "2026-05-13 (S1 D5): sop_template/chatbot_config 各加 visibility_restricted bool 字段做短路判断，避免无关 SOP 查询都 JOIN grant 表"
+      - "2026-05-13 (S1 D6): 不引入通用 entity_type 字段。仅 SOP+chatbot 两类，通用化是过度抽象"
+      - "2026-05-13 (S1 D7): 启用 GORM 软删除（与 user_template_permission 一致，便于审计撤回历史）"
+    related_features:
+      - "child-run-permission (已上线，共存互补，本需求是其前置 gate)"
+      - "sales-agent-child-permission (已上线，作用于销售智能体运行权限，与本需求无重叠)"
+    blockers: []
+    created_at: "2026-05-13T00:00:00+08:00"
+    completed_at: null
+
   - id: "sop-run-mobile-layout"
     ndf_version: "1.1"
     description: "SOP 运行页（/sop/run）移动端布局适配。当前根布局为 flex-row + 264px 固定侧栏 StepNav，整个 src/views/sop/ 子树零 @media query — 在 375px iPhone / 412px Android 视口下主区被吞剩 ~111px，输入卡片/输出卡片/追问聊天面板全部错乱溢出。修复范围：根容器在 ≤768px 改为列布局 + StepNav 退化为可由 TopBar 汉堡按钮唤起的滑入抽屉（含背景遮罩 + ESC/点击外部关闭 + 选中后自动收起），TopBar 加移动端菜单按钮，SopStepView/InputCard/OutputCard padding & 字号在 ≤768px 收紧。范围明确不含管理端 + 不含用户端其他页面（用户已选 Hotfix 单页面止血；全量页面响应式审计后续单独立 Standard）。"
