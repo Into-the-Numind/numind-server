@@ -62,9 +62,9 @@ features:
       plan: "numind-server/docs/superpowers/plans/2026-05-13-sop-chatbot-visibility-scope-plan.md"
     progress:
       total_tasks: 23
-      completed_tasks: 12
-      reviewed_tasks: 12
-      current_task: "S4 Phase 4 done (Tasks 11-12 list filter reviewed PASS); Phase 5 next (Tasks 13-15 级联清理接入 — DeleteSubUser + DeleteSopTemplate + DeleteChatbot EC-6)"
+      completed_tasks: 15
+      reviewed_tasks: 15
+      current_task: "S4 Phase 5 done (Tasks 14-15 EC-6 reviewed PASS; Task 13 DeleteSubUser deferred — 子用户删除流程不存在). Phase 6 next (Task 16 单元测试集中补全)"
     rollback: null
     last_verified: null
     decisions:
@@ -83,6 +83,7 @@ features:
       - "2026-05-13 (S2 EC-6): SOP/chatbot 删除时同事务清理 visibility grant 表（不推迟为 tech debt）"
       - "2026-05-13 (S2 review 3 轮): Round 1 发现 4 P0 + 2 P1 + 2 P2 → 全修；Round 2 发现 1 P0-NEW + 1 P1-NEW + 1 P2-NEW（Round 1 修复中遗漏 §7.1 migration DDL 同步 + Cleanup 函数层级模糊 + visibilityDirty store 字段未声明）→ 全修；Round 3 PASS（0 P0 + 0 P1，2 P2 顺手清理）"
       - "2026-05-13 (S2 锁定 P0-2 双路径删除): UpdateVisibility 路径用 Unscoped() 物理删（避免唯一索引含 deleted_at 的 MySQL NULL 共存问题）；DeleteSubUser/Entity 路径用软删做审计；唯一索引 (sub_user_id, entity_id) 不含 deleted_at"
+      - "2026-05-14 (S4 Phase 5 Task 13 deferred): plan 假设有 DeleteSubUser 流程, 实际 grep 后代码库零此路径 (无 DELETE /v1/customers/sub-users/:user_id 路由, 无 customer.DeleteSubUser biz). spec §5 '现有删除路径' 描述错误. store.CleanupBySubUser 已实现备用 API, 未来加 DeleteSubUser 功能时 1 行接入即可. 用户确认跳过, 不增加无效代码"
     related_features:
       - "child-run-permission (已上线，共存互补，本需求是其前置 gate)"
       - "sales-agent-child-permission (已上线，作用于销售智能体运行权限，与本需求无重叠)"
