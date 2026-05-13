@@ -33,6 +33,8 @@ type IStore interface {
 	ChatbotSession() IChatbotSessionStore
 	LLMProvider() ILLMProviderStore
 	UserModelPreference() IUserModelPreferenceStore
+	SopVisibilityGrant() ISopVisibilityGrantStore
+	ChatbotVisibilityGrant() IChatbotVisibilityGrantStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -150,4 +152,14 @@ func (ds *datastore) LLMProvider() ILLMProviderStore {
 // UserModelPreference 返回一个实现了 IUserModelPreferenceStore 接口的实例.
 func (ds *datastore) UserModelPreference() IUserModelPreferenceStore {
 	return NewUserModelPreferenceStore(ds.db)
+}
+
+// SopVisibilityGrant 返回一个实现了 ISopVisibilityGrantStore 接口的实例.
+func (ds *datastore) SopVisibilityGrant() ISopVisibilityGrantStore {
+	return NewSopVisibilityGrantStore(ds.db)
+}
+
+// ChatbotVisibilityGrant 返回一个实现了 IChatbotVisibilityGrantStore 接口的实例.
+func (ds *datastore) ChatbotVisibilityGrant() IChatbotVisibilityGrantStore {
+	return NewChatbotVisibilityGrantStore(ds.db)
 }
