@@ -291,13 +291,20 @@ func (b *paymentBiz) fulfillOrder(ctx context.Context, orderNo string, tradeNo s
 		// Write membership audit event.
 		qty := uint16(quantity) //nolint:gosec // quantity ∈ [1,10000], fits uint16
 		idempotencyKey := order.OrderNo
+		// source enum (spec §2.x) only allows 'self_purchase' / 'b2b_grant' —
+		// 旧代码写死 'payment' 触发 DB Error 1265 Data truncated。改用 granter
+		// 是否存在判断：有 granter → 父代购 → b2b_grant；没 granter → 用户自购。
+		source := membershipmodel.SourceSelfPurchase
+		if granterUserID != nil {
+			source = membershipmodel.SourceB2BGrant
+		}
 		event := &membershipmodel.MembershipEvent{
 			UserID:         uint64(order.UserID),
 			EventType:      "booster_granted",
 			ProductType:    model.ProductTypeBooster,
 			Quantity:       &qty,
 			AmountCents:    amountCents,
-			Source:         "payment",
+			Source:         source,
 			GranterUserID:  granterUserID,
 			IdempotencyKey: &idempotencyKey,
 			OccurredAt:     now,
