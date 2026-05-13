@@ -1402,7 +1402,7 @@ func TestUpdateSopVisibility_ConcurrentPUT_LastWriteWins(t *testing.T) {
     require.NoError(t, errB)
 
     // 最终状态必须等于某一次 PUT 的全量结果 (last-write-wins, 不应混合)
-    _, ids, err := biz.GetSopVisibility(ctx, s, 100)
+    _, ids, err := biz.GetSopVisibility(ctx, s, 1, 100) // callerID=1 (owner)
     require.NoError(t, err)
     isA := equalSet(ids, []uint{10, 11})
     isB := equalSet(ids, []uint{12})
