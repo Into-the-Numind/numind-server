@@ -66,9 +66,9 @@ features:
       plan: "numind-server/docs/superpowers/plans/2026-05-13-sop-chatbot-visibility-scope-plan.md"
     progress:
       total_tasks: 23
-      completed_tasks: 19
-      reviewed_tasks: 19
-      current_task: "S4 Phase 7 done (Tasks 17-19 前端基础组件: api/visibility.ts + SubUserMultiSelectDialog + VisibilityScopeCard, type-check+lint PASS). Phase 8 next (编辑页接入: Task 20 SOP edit + Task 21 chatbot edit)"
+      completed_tasks: 21
+      reviewed_tasks: 21
+      current_task: "S4 Phase 8 done (Tasks 20-21 编辑页接入: SOP + chatbot, type-check+lint PASS, 两阶段保存 + dirty 重试 + D3 保留语义). S4 编码 21/23 完成, 剩 Phase 9 验证策略 (Task 22 Playwright E2E + Task 23 S5 验证策略文档)"
     rollback: null
     last_verified: null
     decisions:
