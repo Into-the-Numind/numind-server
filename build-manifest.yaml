@@ -1,6 +1,28 @@
 schema_version: "1.0"
 
 features:
+  - id: "sop-edit-save-button-bottom"
+    ndf_version: "1.1"
+    description: "用户端 SOP 模板编辑页保存按钮移到页面底部。原顶部 page-header 的取消/保存按钮组（顶部右侧）与用户从上到下填表的阅读流不符 — 配置完成后视线终点在内容底部，主操作（保存）应同位呈现。仅 SopTemplateEdit.vue 一个文件，模板 + 样式调整。"
+    track: "hotfix"
+    stage: "completed"
+    classification_reason: "Hotfix Triage 5 条 — (1) 单文件改动 (2) 无 API/schema 变更 (3) 无外部服务集成 (4) 不跨仓 (5) 不涉及计费/权限主流程，纯 UX 布局调整。"
+    last_updated_by: "ai-implementation"
+    last_updated_at: "2026-05-13T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "fix/sop-edit-save-button-bottom"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    decisions:
+      - "2026-05-13 (layout skill 应用): 移除顶部 .header-actions，新增 .page-footer 右对齐放在 .content-center 底部。32px margin-top + 20px padding-top + border-top 分割，形成清晰的'内容→操作'阅读节奏。非 sticky — 用户原话'从上往下配置完后点保存'明确表达'配完才出现保存'的心智模型"
+    blockers: []
+    created_at: "2026-05-13T00:00:00+08:00"
+
   - id: "admin-credit-user-type-config"
     ndf_version: "1.1"
     description: "管理端 CRUD 管理 credit_user_type_config 表（trial 用户倍率等）— 后端新增 GET /v1/admin/credits/user-types + PUT /v1/admin/credits/user-types/:user_type；前端新增 /credits/user-types 页面 + 菜单项。本 feature 是 credit-user-type-multiplier 的管理端补全。"
