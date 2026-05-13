@@ -161,12 +161,16 @@ func (ctrl *ChatbotController) RenameSession(c *gin.Context) {
 		return
 	}
 
-	if err := ctrl.chatbotBiz.RenameSession(c, user.ID, id, req.Title); err != nil {
+	// 单次 trim 复用：传入 biz 校验 + 作为响应回显。biz 内部仍做防御性 trim
+	// (兜底其他调用方)，但本路径下两次 trim 结果一致 (trim 是幂等)，无副作用。
+	title := strings.TrimSpace(req.Title)
+
+	if err := ctrl.chatbotBiz.RenameSession(c, user.ID, id, title); err != nil {
 		core.WriteResponse(c, err, nil)
 		return
 	}
 
-	core.WriteResponse(c, nil, gin.H{"id": id, "title": strings.TrimSpace(req.Title)})
+	core.WriteResponse(c, nil, gin.H{"id": id, "title": title})
 }
 
 // pinSessionRequest 置顶会话请求
