@@ -1,11 +1,17 @@
 package numind
 
 import (
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/spf13/viper"
+
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/aiservice_admin"
 	"numind-server/internal/numind/biz/b2b_billing"
 	bizcb "numind-server/internal/numind/biz/contextbudget"
 	"numind-server/internal/numind/biz/credit"
+	"numind-server/internal/numind/biz/membership"
 	"numind-server/internal/numind/controller/v1/admin_ai"
 	"numind-server/internal/numind/controller/v1/admin_b2b"
 	"numind-server/internal/numind/controller/v1/admin_billing"
@@ -23,9 +29,6 @@ import (
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
-
-	"github.com/gin-gonic/gin"
-
 	importMw "numind-server/internal/pkg/middleware"
 )
 
@@ -52,6 +55,8 @@ func installAdminRouters(g *gin.Engine) error {
 	b := biz.NewBiz(store.S)
 	sopCtrl := admin_sop.NewSopController(b.Sop())
 	adminCreditCtrl := admin_credit.New(b.Credit(), store.S)
+	adminMembershipSvc := membership.NewMembershipService(store.S.DB())
+	adminCreditWithMembership := admin_credit.NewWithMembership(adminCreditCtrl, adminMembershipSvc)
 
 	// Phase 2 T2.3: coefficient CRUD. EstimationBiz is constructed ad-hoc here
 	// rather than threaded through biz.NewBiz to avoid expanding the IBiz
@@ -87,6 +92,8 @@ func installAdminRouters(g *gin.Engine) error {
 		adminGroup.PUT("/users/:id/status", userCtrl.UpdateUserStatus)
 		adminGroup.PUT("/users/:id/tier", userCtrl.UpdateUserTier)
 		adminGroup.POST("/users/:id/reset-password", userCtrl.ResetPassword)
+		// Task 12 §5.3: admin 查任意用户余额（含 booster 字段）
+		adminGroup.GET("/users/:user_id/balance", adminCreditWithMembership.GetUserBalance)
 	}
 
 	// SOP管理（复用已有的admin_sop控制器）
@@ -148,8 +155,22 @@ func installAdminRouters(g *gin.Engine) error {
 	}
 
 	// B2B 月度结算报表（Q1.4）: 父账户"帮开通"的 credit_package 按月聚合
+	// Task 13: cutover-date dispatch — chooseSource picks legacy/new/split source.
 	{
-		adminB2BCtrl := admin_b2b.New(b2b_billing.New(store.S))
+		var b2bBillingBiz b2b_billing.IB2BBillingBiz
+		cutoverStr := viper.GetString("billing.b2b_cutover_date")
+		if cutoverStr != "" {
+			if cutover, parseErr := time.Parse("2006-01-02", cutoverStr); parseErr == nil {
+				b2bBillingBiz = b2b_billing.NewWithCutover(store.S, cutover.UTC())
+				log.Infow("B2B billing cutover date set", "cutover", cutoverStr)
+			} else {
+				log.Warnw("B2B billing cutover date parse failed, falling back to legacy_only", "raw", cutoverStr, "err", parseErr)
+				b2bBillingBiz = b2b_billing.New(store.S)
+			}
+		} else {
+			b2bBillingBiz = b2b_billing.New(store.S)
+		}
+		adminB2BCtrl := admin_b2b.New(b2bBillingBiz)
 		adminGroup.GET("/b2b-billing-report", adminB2BCtrl.GetBillingReport)
 	}
 

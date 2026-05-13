@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"gorm.io/gorm"
+
+	membstore "numind-server/internal/numind/store/membership"
 )
 
 var (
@@ -33,6 +35,7 @@ type IStore interface {
 	ChatbotSession() IChatbotSessionStore
 	LLMProvider() ILLMProviderStore
 	UserModelPreference() IUserModelPreferenceStore
+	Membership() membstore.IMembershipStore
 	SopVisibilityGrant() ISopVisibilityGrantStore
 	ChatbotVisibilityGrant() IChatbotVisibilityGrantStore
 }
@@ -152,6 +155,11 @@ func (ds *datastore) LLMProvider() ILLMProviderStore {
 // UserModelPreference 返回一个实现了 IUserModelPreferenceStore 接口的实例.
 func (ds *datastore) UserModelPreference() IUserModelPreferenceStore {
 	return NewUserModelPreferenceStore(ds.db)
+}
+
+// Membership 返回一个实现了 IMembershipStore 接口的实例.
+func (ds *datastore) Membership() membstore.IMembershipStore {
+	return membstore.NewMembershipStore(ds.db)
 }
 
 // SopVisibilityGrant 返回一个实现了 ISopVisibilityGrantStore 接口的实例.

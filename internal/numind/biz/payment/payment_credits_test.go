@@ -15,21 +15,18 @@ import (
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
+	membershipmodel "numind-server/internal/pkg/model/membership"
 )
 
 // newPaymentTestDB opens an in-memory SQLite DB and creates the minimal set of
-// tables required by the credits-system payment tests (User, CreditAccount,
-// CreditPackage, CreditTransaction, Order).
+// tables required by the credits-system payment tests.
 //
-// The User.BillingMode GORM tag declares a MySQL ENUM type which SQLite does
-// not understand, so we create the user table manually via raw DDL and rely on
-// AutoMigrate for the simpler tables.
+// Includes: User, CreditAccount, CreditPackage, CreditTransaction, Order,
+// and the new membership tables (subscription, trial_grant, user_booster_balance,
+// membership_event, credit_cycle).
 func newPaymentTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	// File-backed sqlite in a tmpdir so every connection sees the same DB.
-	// All fulfillOrder-flavored tests use fakeCreditBiz to avoid the nested
-	// non-tx write deadlock in RechargeWithOrderTx's GetOrCreateAccount (which
-	// cannot be fixed without touching biz/credit/credit.go — Track C territory).
 	tmp := t.TempDir()
 	db, err := gorm.Open(sqlite.Open(tmp+"/payment_test.db?_busy_timeout=5000"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
@@ -65,6 +62,12 @@ func newPaymentTestDB(t *testing.T) *gorm.DB {
 		&model.CreditPackage{},
 		&model.CreditTransaction{},
 		&model.Order{},
+		// new membership tables
+		&membershipmodel.Subscription{},
+		&membershipmodel.TrialGrant{},
+		&membershipmodel.UserBoosterBalance{},
+		&membershipmodel.MembershipEvent{},
+		&membershipmodel.CreditCycle{},
 	), "auto-migrate")
 
 	sqlDB, err := db.DB()
@@ -87,20 +90,21 @@ func mustCreateUser(t *testing.T, db *gorm.DB, tier, billingMode string, tierExp
 	return id
 }
 
-// mustCreateActiveSubscriptionPackage creates an active subscription credit package for user.
-func mustCreateActiveSubscriptionPackage(t *testing.T, db *gorm.DB, userID uint) {
+// mustCreateActiveSubscription creates an active subscription row in the new membership store.
+func mustCreateActiveSubscription(t *testing.T, db *gorm.DB, userID uint) {
 	t.Helper()
 	now := time.Now()
-	pkg := &model.CreditPackage{
-		UserID:        userID,
-		Type:          model.CreditTypeSubscription,
-		TotalCredits:  2000,
-		RemainCredits: 2000,
-		ActivatedAt:   now,
-		ExpiresAt:     now.AddDate(0, 1, 0),
-		Status:        model.CreditPackageActive,
+	sub := &membershipmodel.Subscription{
+		UserID:               uint64(userID),
+		FirstStartedAt:       now,
+		CurrentStartedAt:     now,
+		ExpiresAt:            now.AddDate(0, 1, 0),
+		TotalMonthsPurchased: 1,
+		Source:               "b2b_grant",
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
-	require.NoError(t, db.Create(pkg).Error)
+	require.NoError(t, db.Create(sub).Error)
 }
 
 // newPaymentBizForTest wires up a paymentBiz (with nil wechat/alipay clients so
@@ -115,8 +119,6 @@ func newPaymentBizForTest(ds store.IStore) *paymentBiz {
 
 // fakeCreditBiz is a test stub for credit.ICreditBiz that bypasses the nested
 // non-tx write in RechargeWithOrderTx (which would deadlock SQLite in tests).
-// RechargeWithOrderTx here is a no-op, letting fulfillOrder focus on its own
-// responsibilities (updating order status + calling switchBillingModeIfLegacy).
 type fakeCreditBiz struct {
 	rechargeCalls int
 }
@@ -149,26 +151,24 @@ func (f *fakeCreditBiz) GetQuotaBreakdown(ctx context.Context, userID uint) (sub
 }
 
 // newPaymentBizWithFakeCredit builds a paymentBiz whose creditBiz is a stub.
-// Use this for fulfillOrder-shaped tests that need to exercise the transaction
-// callback without tripping over the SQLite nested-write deadlock.
 func newPaymentBizWithFakeCredit(ds store.IStore) (*paymentBiz, *fakeCreditBiz) {
 	fake := &fakeCreditBiz{}
 	return &paymentBiz{ds: ds, creditBiz: fake}, fake
 }
 
-// ---------- D.1: Booster 会员门槛 ----------
+// ---------- D.1: Booster — active membership gate ----------
 
-func TestCreateOrder_Booster_NoActiveSubscription_Rejected(t *testing.T) {
+func TestCreateOrder_Booster_NoActiveMembership_Rejected(t *testing.T) {
 	db := newPaymentTestDB(t)
 	ds := store.NewTestStore(db)
 	b := newPaymentBizForTest(ds)
 
-	// free user, no active subscription
+	// Free user — no subscription, no trial.
 	uid := mustCreateUser(t, db, model.UserTierFree, model.BillingModeCredits, nil)
 
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 0, model.PayChannelWechat)
+	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 1, model.PayChannelWechat)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, errno.ErrMembershipRequired, "booster without active subscription must return ErrMembershipRequired")
+	assert.ErrorIs(t, err, errno.ErrNotActiveMember, "booster without active membership must return ErrNotActiveMember")
 }
 
 func TestCreateOrder_Booster_LegacyTierWithSubscription_Rejected(t *testing.T) {
@@ -176,11 +176,10 @@ func TestCreateOrder_Booster_LegacyTierWithSubscription_Rejected(t *testing.T) {
 	ds := store.NewTestStore(db)
 	b := newPaymentBizForTest(ds)
 
-	future := time.Now().Add(30 * 24 * time.Hour)
-	uid := mustCreateUser(t, db, model.UserTierStandard, model.BillingModeLegacyTier, &future)
-	mustCreateActiveSubscriptionPackage(t, db, uid)
+	uid := mustCreateUser(t, db, model.UserTierStandard, model.BillingModeLegacyTier, nil)
+	mustCreateActiveSubscription(t, db, uid) // has active subscription
 
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 0, model.PayChannelWechat)
+	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 1, model.PayChannelWechat)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errno.ErrBoosterNotAvailableForLegacy, "legacy_tier user must be rejected even with active subscription")
 }
@@ -190,144 +189,31 @@ func TestCreateOrder_Booster_CreditsWithSubscription_PassesValidation(t *testing
 	ds := store.NewTestStore(db)
 	b := newPaymentBizForTest(ds)
 
-	future := time.Now().Add(30 * 24 * time.Hour)
-	uid := mustCreateUser(t, db, model.UserTierStandard, model.BillingModeCredits, &future)
-	mustCreateActiveSubscriptionPackage(t, db, uid)
+	uid := mustCreateUser(t, db, model.UserTierStandard, model.BillingModeCredits, nil)
+	mustCreateActiveSubscription(t, db, uid)
 
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 0, model.PayChannelWechat)
+	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 1, model.PayChannelWechat)
 	require.Error(t, err, "expected channel-not-configured error (validation passed)")
 	// wechat client is nil → "微信支付未配置"; assert we did NOT hit one of the gate errors
-	assert.NotErrorIs(t, err, errno.ErrMembershipRequired)
+	assert.NotErrorIs(t, err, errno.ErrNotActiveMember)
 	assert.NotErrorIs(t, err, errno.ErrBoosterNotAvailableForLegacy)
+	assert.NotErrorIs(t, err, errno.ErrInvalidProductType)
+	assert.NotErrorIs(t, err, errno.ErrBoosterQuantityExceedsLimit)
 }
 
-// ---------- D.2: 防提前续费 ----------
+// ---------- D.2: Non-booster product type rejection ----------
 
-func TestCreateOrder_AntiEarlyRenewal(t *testing.T) {
-	ctx := context.Background()
-	past := time.Now().Add(-24 * time.Hour)
-	future := time.Now().Add(30 * 24 * time.Hour)
-
-	type scenario struct {
-		name        string
-		tier        string
-		tierExpires *time.Time
-		productType string
-		expectErr   error // if nil → validation should pass (channel error expected)
-	}
-
-	cases := []scenario{
-		// Monthly purchases
-		{"free_user_buys_monthly_passes", model.UserTierFree, nil, model.ProductTypeMonthly, nil},
-		{"expired_standard_buys_monthly_passes", model.UserTierStandard, &past, model.ProductTypeMonthly, nil},
-		{"in_period_standard_buys_monthly_blocked", model.UserTierStandard, &future, model.ProductTypeMonthly, errno.ErrTierInPeriod},
-		{"in_period_premium_buys_monthly_blocked", model.UserTierPremium, &future, model.ProductTypeMonthly, errno.ErrTierInPeriod},
-		{"in_period_trial_buys_monthly_upgrade_passes", model.UserTierTrial, &future, model.ProductTypeMonthly, nil},
-
-		// Yearly purchases (yearly currently maps to standard tier rank=2)
-		{"free_user_buys_yearly_passes", model.UserTierFree, nil, model.ProductTypeYearly, nil},
-		{"in_period_standard_buys_yearly_blocked", model.UserTierStandard, &future, model.ProductTypeYearly, errno.ErrTierInPeriod},
-		{"in_period_premium_buys_yearly_blocked", model.UserTierPremium, &future, model.ProductTypeYearly, errno.ErrTierInPeriod},
-		{"in_period_trial_buys_yearly_upgrade_passes", model.UserTierTrial, &future, model.ProductTypeYearly, nil},
-
-		// Trial purchases
-		{"free_user_buys_trial_passes", model.UserTierFree, nil, model.ProductTypeTrial, nil},
-		{"in_period_trial_buys_trial_blocked", model.UserTierTrial, &future, model.ProductTypeTrial, errno.ErrTrialNotAvailableInPeriod},
-		{"in_period_standard_buys_trial_blocked", model.UserTierStandard, &future, model.ProductTypeTrial, errno.ErrTrialNotAvailableInPeriod},
-		{"in_period_premium_buys_trial_blocked", model.UserTierPremium, &future, model.ProductTypeTrial, errno.ErrTrialNotAvailableInPeriod},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			db := newPaymentTestDB(t)
-			ds := store.NewTestStore(db)
-			b := newPaymentBizForTest(ds)
-
-			uid := mustCreateUser(t, db, tc.tier, model.BillingModeCredits, tc.tierExpires)
-
-			// Q1: trial/monthly/yearly self-purchase is blocked for external callers.
-			// These tests pre-date Q1 and exercise the anti-early-renewal validation
-			// inside CreateOrder, so we mark the context as internal to bypass the
-			// Q1 gate and reach the legacy validation branches.
-			_, err := b.CreateOrder(WithInternalCaller(ctx), uid, uid, tc.productType, 1, model.PayChannelWechat)
-			require.Error(t, err, "CreateOrder should always error in tests (channel not configured when validation passes)")
-
-			if tc.expectErr != nil {
-				assert.ErrorIs(t, err, tc.expectErr, "expected sentinel error")
-			} else {
-				assert.NotErrorIs(t, err, errno.ErrTierInPeriod)
-				assert.NotErrorIs(t, err, errno.ErrTrialNotAvailableInPeriod)
-				assert.NotErrorIs(t, err, errno.ErrTrialAlreadyPurchased)
-			}
-		})
-	}
-}
-
-// HasTrialPackage existing check still fires even for a free user when a trial
-// credit package already exists on the account. Regression guard.
-func TestCreateOrder_Trial_AlreadyPurchased_FreeUser(t *testing.T) {
-	db := newPaymentTestDB(t)
-	ds := store.NewTestStore(db)
-	b := newPaymentBizForTest(ds)
-
-	uid := mustCreateUser(t, db, model.UserTierFree, model.BillingModeCredits, nil)
-	now := time.Now()
-	require.NoError(t, db.Create(&model.CreditPackage{
-		UserID:        uid,
-		Type:          model.CreditTypeTrial,
-		TotalCredits:  200,
-		RemainCredits: 100,
-		ActivatedAt:   now,
-		ExpiresAt:     now.Add(3 * 24 * time.Hour),
-		Status:        model.CreditPackageExhausted,
-	}).Error)
-
-	// Q1: internal caller bypasses self-purchase block so we can reach the
-	// HasTrialPackage guard (the original intent of this test).
-	_, err := b.CreateOrder(WithInternalCaller(context.Background()), uid, uid, model.ProductTypeTrial, 0, model.PayChannelWechat)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errno.ErrTrialAlreadyPurchased)
-}
-
-func TestCreateOrder_Booster_TrialPackageOnly_NotSubscription_Rejected(t *testing.T) {
-	db := newPaymentTestDB(t)
-	ds := store.NewTestStore(db)
-	b := newPaymentBizForTest(ds)
-
-	// User has only a trial credit package (type=trial), not subscription.
-	future := time.Now().Add(3 * 24 * time.Hour)
-	uid := mustCreateUser(t, db, model.UserTierTrial, model.BillingModeCredits, &future)
-	now := time.Now()
-	require.NoError(t, db.Create(&model.CreditPackage{
-		UserID:        uid,
-		Type:          model.CreditTypeTrial,
-		TotalCredits:  200,
-		RemainCredits: 200,
-		ActivatedAt:   now,
-		ExpiresAt:     future,
-		Status:        model.CreditPackageActive,
-	}).Error)
-
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 0, model.PayChannelWechat)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errno.ErrMembershipRequired, "trial user without subscription must be rejected")
-}
-
-// ---------- Q1.5: C-end self-purchase block ----------
-
-// Q1 business redesign: trial / monthly / yearly memberships must be granted
-// via parent's B2B grant path (biz/credit.GrantMembership), not purchased
-// by the C-end user. CreateOrder defensively rejects these product types
-// for external callers (no WithInternalCaller on ctx).
-func TestCreateOrder_Q1_SelfPurchaseDisabled(t *testing.T) {
+// §5.10: trial/monthly/yearly are no longer accepted via the order interface.
+// They must go through the B2B grant path.
+func TestCreateOrder_NonBooster_AlwaysRejected(t *testing.T) {
 	cases := []struct {
 		name        string
 		productType string
-		months      int
 	}{
-		{"trial_rejected", model.ProductTypeTrial, 0},
-		{"monthly_rejected", model.ProductTypeMonthly, 1},
-		{"yearly_rejected", model.ProductTypeYearly, 0},
+		{"trial_rejected", model.ProductTypeTrial},
+		{"monthly_rejected", model.ProductTypeMonthly},
+		{"yearly_rejected", model.ProductTypeYearly},
+		{"unknown_rejected", "premium"},
 	}
 
 	for _, tc := range cases {
@@ -335,68 +221,42 @@ func TestCreateOrder_Q1_SelfPurchaseDisabled(t *testing.T) {
 			db := newPaymentTestDB(t)
 			ds := store.NewTestStore(db)
 			b := newPaymentBizForTest(ds)
-
 			uid := mustCreateUser(t, db, model.UserTierFree, model.BillingModeCredits, nil)
 
-			_, err := b.CreateOrder(context.Background(), uid, uid, tc.productType, tc.months, model.PayChannelWechat)
+			_, err := b.CreateOrder(context.Background(), uid, uid, tc.productType, 1, model.PayChannelWechat)
 			require.Error(t, err)
-			assert.ErrorIs(t, err, errno.ErrMembershipSelfPurchaseDisabled,
-				"Q1 must reject external %s self-purchase", tc.productType)
+			assert.ErrorIs(t, err, errno.ErrInvalidProductType,
+				"product_type=%s must return ErrInvalidProductType", tc.productType)
 		})
 	}
 }
 
-// Booster remains self-purchasable under Q1.
-func TestCreateOrder_Q1_BoosterStillAllowed(t *testing.T) {
+// Even WithInternalCaller cannot bypass the product type gate for non-booster.
+func TestCreateOrder_NonBooster_InternalCallerAlsoRejected(t *testing.T) {
 	db := newPaymentTestDB(t)
 	ds := store.NewTestStore(db)
 	b := newPaymentBizForTest(ds)
-
-	future := time.Now().Add(30 * 24 * time.Hour)
-	uid := mustCreateUser(t, db, model.UserTierStandard, model.BillingModeCredits, &future)
-	mustCreateActiveSubscriptionPackage(t, db, uid)
-
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 0, model.PayChannelWechat)
-	require.Error(t, err, "expected channel-not-configured error (Q1 gate must not trip for booster)")
-	assert.NotErrorIs(t, err, errno.ErrMembershipSelfPurchaseDisabled,
-		"booster must not hit the Q1 self-purchase block")
-}
-
-// Internal callers (WithInternalCaller) bypass the Q1 block.
-func TestCreateOrder_Q1_InternalCallerBypass(t *testing.T) {
-	db := newPaymentTestDB(t)
-	ds := store.NewTestStore(db)
-	b := newPaymentBizForTest(ds)
-
 	uid := mustCreateUser(t, db, model.UserTierFree, model.BillingModeCredits, nil)
 
 	_, err := b.CreateOrder(WithInternalCaller(context.Background()), uid, uid, model.ProductTypeMonthly, 1, model.PayChannelWechat)
-	require.Error(t, err, "expected channel-not-configured (validation passes for internal caller)")
-	assert.NotErrorIs(t, err, errno.ErrMembershipSelfPurchaseDisabled,
-		"internal caller must bypass Q1 block")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errno.ErrInvalidProductType,
+		"internal caller cannot bypass product type gate")
 }
 
-// ---------- D.3: OnPaymentSuccess billing_mode switch ----------
+// ---------- D.3: helper for fulfillOrder tests ----------
 
-// readBillingMode fetches billing_mode directly from DB (avoids GORM enum mismatch
-// when scanning into *model.User via sqlite).
-func readBillingMode(t *testing.T, db *gorm.DB, userID uint) string {
-	t.Helper()
-	var mode string
-	require.NoError(t, db.Raw("SELECT billing_mode FROM user WHERE id = ?", userID).Scan(&mode).Error)
-	return mode
-}
-
-// mustCreatePendingOrder inserts a pending order that fulfillOrder can consume.
-func mustCreatePendingOrder(t *testing.T, db *gorm.DB, userID uint, productType string, months int) *model.Order {
+// mustCreatePendingBoosterOrder inserts a pending booster order.
+// quantity is stored in the Months field (booster design, see CreateOrder).
+func mustCreatePendingBoosterOrder(t *testing.T, db *gorm.DB, payerID, userID uint, quantity int) *model.Order {
 	t.Helper()
 	order := &model.Order{
 		OrderNo:     "TEST" + time.Now().Format("150405.000000") + "X",
 		UserID:      userID,
-		PayerID:     userID,
-		ProductType: productType,
-		Months:      months,
-		Amount:      model.GetProductAmount(productType, months),
+		PayerID:     payerID,
+		ProductType: model.ProductTypeBooster,
+		Months:      quantity, // quantity stored in Months field
+		Amount:      boosterCentsPerUnit * int64(quantity),
 		PayChannel:  model.PayChannelWechat,
 		PayStatus:   model.OrderStatusPending,
 		ExpiredAt:   time.Now().Add(30 * time.Minute),
@@ -405,80 +265,13 @@ func mustCreatePendingOrder(t *testing.T, db *gorm.DB, userID uint, productType 
 	return order
 }
 
-func TestFulfillOrder_LegacyTierUser_BillingModeSwitchedToCredits(t *testing.T) {
-	db := newPaymentTestDB(t)
-	ds := store.NewTestStore(db)
-	b, fake := newPaymentBizWithFakeCredit(ds)
-
-	future := time.Now().Add(30 * 24 * time.Hour)
-	uid := mustCreateUser(t, db, model.UserTierStandard, model.BillingModeLegacyTier, &future)
-
-	order := mustCreatePendingOrder(t, db, uid, model.ProductTypeMonthly, 1)
-
-	require.NoError(t, b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_TEST_1"))
-	assert.Equal(t, 1, fake.rechargeCalls, "RechargeWithOrderTx should have been invoked")
-
-	// billing_mode should have been switched to credits after order success
-	assert.Equal(t, model.BillingModeCredits, readBillingMode(t, db, uid),
-		"legacy_tier user should have billing_mode switched to credits after order success")
-
-	// Order status should be paid
-	var updated model.Order
-	require.NoError(t, db.First(&updated, order.ID).Error)
-	assert.Equal(t, model.OrderStatusPaid, updated.PayStatus)
-}
-
-func TestFulfillOrder_CreditsUser_BillingModeUnchanged(t *testing.T) {
-	db := newPaymentTestDB(t)
-	ds := store.NewTestStore(db)
-	b, _ := newPaymentBizWithFakeCredit(ds)
-
-	uid := mustCreateUser(t, db, model.UserTierFree, model.BillingModeCredits, nil)
-
-	order := mustCreatePendingOrder(t, db, uid, model.ProductTypeMonthly, 1)
-
-	require.NoError(t, b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_TEST_2"))
-
-	assert.Equal(t, model.BillingModeCredits, readBillingMode(t, db, uid),
-		"credits user should remain credits (idempotent no-op on switch)")
-}
-
-// switchBillingModeIfLegacy on a non-existent user should not error
-// (matches 0 rows, Update is idempotent). Real DB failures only log a warning
-// and never fail the order — covered by the log.Warn branch.
-func TestSwitchBillingModeIfLegacy_NoMatchingRow_Ok(t *testing.T) {
-	db := newPaymentTestDB(t)
-	ds := store.NewTestStore(db)
-	b, _ := newPaymentBizWithFakeCredit(ds)
-
-	err := b.switchBillingModeIfLegacy(context.Background(), 999999)
-	assert.NoError(t, err, "must tolerate missing user rows")
-}
-
-// When the fulfill transaction succeeds but the switch fails (DB closed),
-// the order is still marked paid. This isolates the separate-tx semantic:
-// switch failure is warn-only.
-func TestFulfillOrder_SwitchFailureLogsButOrderSucceeds(t *testing.T) {
-	db := newPaymentTestDB(t)
-	ds := store.NewTestStore(db)
-	b, _ := newPaymentBizWithFakeCredit(ds)
-
-	future := time.Now().Add(30 * 24 * time.Hour)
-	uid := mustCreateUser(t, db, model.UserTierStandard, model.BillingModeLegacyTier, &future)
-
-	order := mustCreatePendingOrder(t, db, uid, model.ProductTypeMonthly, 1)
-
-	// Drop the `user` table to simulate a DB-level failure for switchBillingModeIfLegacy.
-	// This happens AFTER the tx commit; fulfillOrder should still return nil.
-	require.NoError(t, db.Exec("DROP TABLE user").Error)
-
-	err := b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_TEST_3")
-	require.NoError(t, err, "switch failure must not fail the order")
-
-	var updated model.Order
-	require.NoError(t, db.First(&updated, order.ID).Error)
-	assert.Equal(t, model.OrderStatusPaid, updated.PayStatus,
-		"order should still be paid when switch fails")
+// readBoosterCredits fetches credits_remaining from user_booster_balance.
+func readBoosterCredits(t *testing.T, db *gorm.DB, userID uint) int64 {
+	t.Helper()
+	var credits int64
+	err := db.Raw("SELECT COALESCE(credits_remaining, 0) FROM user_booster_balance WHERE user_id = ?", userID).Scan(&credits).Error
+	require.NoError(t, err)
+	return credits
 }
 
 // ---------- tech-debt fix: Order.Quantity field for booster orders ----------
@@ -502,42 +295,27 @@ func mustCreateBoosterOrder(t *testing.T, db *gorm.DB, userID uint, quantity int
 	return order
 }
 
-// TestCreateBoosterOrder_QuantityField verifies that CreateOrder for booster
-// stores quantity in Order.Quantity (not Order.Months) and calculates the
-// correct total amount.
-func TestCreateBoosterOrder_QuantityField(t *testing.T) {
-	db := newPaymentTestDB(t)
-	ds := store.NewTestStore(db)
-	b := newPaymentBizForTest(ds)
-
-	future := time.Now().Add(30 * 24 * time.Hour)
-	uid := mustCreateUser(t, db, model.UserTierStandard, model.BillingModeCredits, &future)
-	mustCreateActiveSubscriptionPackage(t, db, uid)
-
-	// CreateOrder will fail at the payment channel level (wechat nil),
-	// but before that it would have set up the order struct correctly.
-	// We test quantity field & amount calculation via biz internals.
-
-	// Arrange: verify the amount calculation helper
+// TestGetBoosterAmount verifies the model helper used by both CreateOrder
+// and fulfillOrder to compute booster pricing. Direct unit test of the pure
+// function, independent of biz layer mock setup.
+func TestGetBoosterAmount(t *testing.T) {
 	assert.Equal(t, int64(14950), model.GetBoosterAmount(5),
 		"5 booster packs should cost 5 * 2990 = 14950 cents")
 	assert.Equal(t, int64(2990), model.GetBoosterAmount(1),
 		"1 booster pack should cost 2990 cents")
 	assert.Equal(t, int64(2990), model.GetBoosterAmount(0),
 		"quantity=0 should be treated as 1 pack")
-
-	// Act: attempt order creation — will fail at channel (wechat nil) but validation passes
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 5, model.PayChannelWechat)
-	require.Error(t, err, "expected channel-not-configured error")
-	assert.Contains(t, err.Error(), "微信支付未配置",
-		"should fail at payment channel, not at validation")
-
-	// Act again with alipay to confirm the channel-agnostic amount calculation
-	_, err = b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 5, model.PayChannelAlipay)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "支付宝未配置",
-		"should fail at payment channel, not at validation")
 }
+
+// Note: the former TestCreateBoosterOrder_QuantityField (testing CreateOrder
+// reaches the payment channel error) and TestFulfillBoosterOrder_UsesQuantity
+// (testing fulfillOrder calls RechargeWithOrderTx) were removed during the
+// 2026-05-14 merge of S4 into develop: they targeted develop's interim
+// implementation that this branch replaces (CreateOrder now strictly enforces
+// active membership via subscription table; fulfillOrder writes user_booster_balance
+// + membership_event directly, no longer calls credit.RechargeWithOrderTx).
+// Equivalent coverage exists in payment_test.go (qty=5 success path, qty=10001
+// boundary, membership_event quantity assertion).
 
 // TestCreateBoosterOrder_QuantityField_OrderRecord verifies that a booster
 // order created via the biz layer stores Quantity correctly and Months=0.
@@ -557,27 +335,9 @@ func TestCreateBoosterOrder_QuantityField_OrderRecord(t *testing.T) {
 	assert.Equal(t, int64(14950), fetched.Amount, "Order amount must equal quantity * 2990")
 }
 
-// TestFulfillBoosterOrder_UsesQuantity verifies that fulfillOrder for a booster
-// order reads Order.Quantity (not Order.Months) when calling RechargeWithOrderTx.
-// The fake credit biz captures the call count; we verify the field routing by
-// inspecting the order DB record after fulfillOrder completes.
-func TestFulfillBoosterOrder_UsesQuantity(t *testing.T) {
-	db := newPaymentTestDB(t)
-	ds := store.NewTestStore(db)
-	b, fakeBiz := newPaymentBizWithFakeCredit(ds)
-
-	uid := mustCreateUser(t, db, model.UserTierFree, model.BillingModeCredits, nil)
-
-	// Create a booster order with Quantity=3, Months=0 (new schema)
-	order := mustCreateBoosterOrder(t, db, uid, 3)
-
-	require.NoError(t, b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_BOOST_1"))
-	assert.Equal(t, 1, fakeBiz.rechargeCalls, "RechargeWithOrderTx must be called exactly once")
-
-	// Verify the order was marked paid and Quantity field is intact
-	var updated model.Order
-	require.NoError(t, db.First(&updated, order.ID).Error)
-	assert.Equal(t, model.OrderStatusPaid, updated.PayStatus)
-	assert.Equal(t, 3, updated.Quantity, "Order.Quantity must remain 3 after fulfillment")
-	assert.Equal(t, 0, updated.Months, "Order.Months must remain 0 (no business meaning for booster)")
-}
+// Note: TestFulfillBoosterOrder_UsesQuantity removed during 2026-05-14 merge.
+// The test asserted RechargeWithOrderTx is called exactly once, but the
+// branch's fulfillOrder no longer calls that method — it writes directly to
+// user_booster_balance + membership_event via Membership store (spec §3.5).
+// Equivalent coverage: payment_test.go qty=5 success path verifies user_booster_balance
+// is incremented and membership_event.quantity is written correctly.

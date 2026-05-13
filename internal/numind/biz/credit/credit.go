@@ -93,6 +93,12 @@ func (b *creditBiz) CanPerformAIOperation(ctx context.Context, user *model.User,
 //     This legacy "best-effort" behaviour is retained to avoid breaking
 //     existing fire-and-forget callers; new code should use DeductCreditsTx
 //     which returns ErrInsufficientCredits explicitly.
+//
+// NOTE (Task 7 / §3.5): For billing_mode=credits users the authoritative deduction
+// path is MembershipService.DeductCredits (biz/membership/cycle.go), which applies
+// the three-pool priority (trial → cycle → booster). Routing between the two paths
+// at the call site (sop.go / sales_rag.go) will be wired in Task 16 (cleanup).
+// This function remains the active path for billing_mode=legacy_tier callers.
 func (b *creditBiz) DeductCredits(ctx context.Context, userID uint, costCents int64, operation, bizRefType, bizRefID string, usageRecordID *uint64) error {
 	credits := int64(math.Round(float64(costCents)))
 	if credits <= 0 {
@@ -385,49 +391,14 @@ func (b *creditBiz) RechargeWithOrderTx(ctx context.Context, tx *gorm.DB, userID
 	return nil
 }
 
-// RunCronTasks 执行积分定时任务（激活 pending 包、过期 active 包、重算余额）
-func (b *creditBiz) RunCronTasks(ctx context.Context) error {
-	affectedUsers := make(map[uint]struct{})
-
-	// 激活到期的 pending 包
-	activatedUsers, err := b.ds.Credits().ActivatePendingPackages(ctx)
-	if err != nil {
-		log.Errorw("Failed to activate pending packages", "error", err)
-	} else {
-		for _, uid := range activatedUsers {
-			affectedUsers[uid] = struct{}{}
-		}
-		if len(activatedUsers) > 0 {
-			log.Infow("Activated pending packages", "user_count", len(activatedUsers))
-		}
-	}
-
-	// 过期超时的 active 包
-	expiredUsers, err := b.ds.Credits().ExpireActivePackages(ctx)
-	if err != nil {
-		log.Errorw("Failed to expire active packages", "error", err)
-	} else {
-		for _, uid := range expiredUsers {
-			affectedUsers[uid] = struct{}{}
-		}
-		if len(expiredUsers) > 0 {
-			log.Infow("Expired active packages", "user_count", len(expiredUsers))
-		}
-	}
-
-	// 重算受影响用户的余额
-	for uid := range affectedUsers {
-		if err := b.ds.Credits().RecalculateBalance(ctx, uid); err != nil {
-			log.Errorw("Failed to recalculate balance", "user_id", uid, "error", err)
-		}
-	}
-
-	// Phase 2 Task 2.0 wiring: Track D 的 reconcileBillingMode 兜底切换
-	// 扫 billing_mode=legacy_tier 但有 active subscription credit_package 的用户
-	// 补切到 credits（订单 webhook 路径若 switch 失败，这里兜底）
-	if err := b.reconcileBillingMode(ctx); err != nil {
-		log.Errorw("Failed to reconcile billing_mode", "error", err)
-	}
-
+// RunCronTasks is deprecated (Task 16 / Spec §10 cleanup).
+//
+// The credit_package lifecycle (ActivatePending / ExpireActive / RecalculateBalance)
+// and the billing_mode reconciliation (reconcileBillingMode) are no longer driven
+// by a time-based cron: the new membership model uses the Subscriptions /
+// TrialGrants / CreditCycles tables which are event-driven. The cron ticker in
+// server.go has been removed; this method is retained as a no-op so that
+// ICreditBiz mock implementations in tests do not require changes.
+func (b *creditBiz) RunCronTasks(_ context.Context) error {
 	return nil
 }

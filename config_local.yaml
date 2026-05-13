@@ -141,6 +141,15 @@ ai_providers:
   funasr:
     base_url: "http://localhost:10095"               # FunASR 本地服务地址
 
+# B2B 计费体系配置
+billing:
+  # Task 13: cutover date — the date (YYYY-MM-DD) from which membership_event is
+  # the authoritative B2B grant source instead of credit_package.
+  # Months before this date use legacy_only; months after use new_only;
+  # the month containing this date uses cutover_split (both sources, deduped).
+  # Leave empty ("") to fall back to legacy_only for all months (safe default).
+  b2b_cutover_date: ""  # set to "YYYY-MM-DD" once membership_event is live
+
 # Langfuse AI 可观测性配置
 langfuse:
   enabled: true
