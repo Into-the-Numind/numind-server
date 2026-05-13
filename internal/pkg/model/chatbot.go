@@ -17,17 +17,18 @@ const (
 
 // ChatbotConfig 智能体配置
 type ChatbotConfig struct {
-	ID              uint           `gorm:"primaryKey" json:"id"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
-	DeletedAt       gorm.DeletedAt `gorm:"index" json:"deleted_at"`
-	UserID          uint           `gorm:"not null;index:idx_cc_user_status" json:"user_id"`
-	Name            string         `gorm:"size:100;not null" json:"name"`
-	Description     string         `gorm:"size:1024" json:"description"`
-	SystemPrompt    string         `gorm:"type:longtext;not null" json:"system_prompt"`
-	Status          string         `gorm:"size:20;not null;default:'draft';index:idx_cc_user_status" json:"status"`
-	GreetingEnabled bool           `gorm:"not null;default:0" json:"greeting_enabled"`
-	GreetingMessage string         `gorm:"type:text" json:"greeting_message"`
+	ID                   uint           `gorm:"primaryKey" json:"id"`
+	CreatedAt            time.Time      `json:"created_at"`
+	UpdatedAt            time.Time      `json:"updated_at"`
+	DeletedAt            gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+	UserID               uint           `gorm:"not null;index:idx_cc_user_status" json:"user_id"`
+	Name                 string         `gorm:"size:100;not null" json:"name"`
+	Description          string         `gorm:"size:1024" json:"description"`
+	SystemPrompt         string         `gorm:"type:longtext;not null" json:"system_prompt"`
+	Status               string         `gorm:"size:20;not null;default:'draft';index:idx_cc_user_status" json:"status"`
+	GreetingEnabled      bool           `gorm:"not null;default:0" json:"greeting_enabled"`
+	GreetingMessage      string         `gorm:"type:text" json:"greeting_message"`
+	VisibilityRestricted bool           `gorm:"not null;default:0" json:"visibility_restricted"` // 可见范围限制: false=全部子用户可见; true=仅 chatbot_visibility_grant 白名单子用户可见
 }
 
 // TableName returns the table name for ChatbotConfig.
