@@ -91,7 +91,7 @@
 - **Task 15：DeleteChatbot 事务加 CleanupByEntity（EC-6）**
 
 ### Phase 6：后端测试（numind-server）
-- **Task 16：13 个单元测试用例**
+- **Task 16：14 个单元测试用例（13 spec §10.2 + 1 并发 PUT）**
 
 ### Phase 7：前端基础组件（numind-web-v3）
 - **Task 17：api/visibility.ts**

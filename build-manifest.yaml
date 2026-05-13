@@ -1,13 +1,46 @@
 schema_version: "1.0"
 
 features:
+  - id: "chatbot-session-rename-pin"
+    ndf_version: "1.1"
+    description: "用户端 chatbot 对话页 (views/chatbot/ChatbotChat.vue) 左侧会话列表支持改名与置顶。改名复用现有 chatbot_session.title 字段（无 schema 变更）；置顶新增 pinned_at TIMESTAMP NULL 字段（NULL=未置顶，非NULL=置顶时间）。列表排序改为：置顶组按 pinned_at DESC，非置顶组按 updated_at DESC。交互：hover 显示「…」更多菜单，含「重命名 / 置顶 / 取消置顶 / 删除」。范围明确不含 SalesView 销售对话页与 SOP 运行历史。"
+    track: "standard"
+    stage: "S0"
+    classification_reason: "Triage 5 条 — (1) DB schema 变更：是（chatbot_session 加 pinned_at 字段 + 覆盖排序的复合索引）(2) 新 API：是（PUT /v1/chatbot/sessions/:id/rename + PUT /v1/chatbot/sessions/:id/pin，2 个新端点；GET sessions 列表 ORDER BY 子句更新）(3) 无外部服务 (4) 跨 numind-server + numind-web-v3 两仓约 10-11 文件 (5) 不涉及支付/权限。条件 1/2/4 不满足 Hotfix，Standard Track。"
+    last_updated_by: "ai-s0"
+    last_updated_at: "2026-05-13T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches: {}
+    artifacts:
+      requirement: "numind-server/requirements/chatbot-session-rename-pin.md"
+      proposal: null
+      spec: null
+      plan: null
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "S0 gate — 等待用户确认继续评估，方可进入 S1 提案"
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-05-13 (Triage): 用户原话'某个 chatbot 页面左边对话记录列表支持改名+置顶'。AI 澄清 4 关键范围：目标页 = 用户端 chatbot 对话页（不含 SalesView）；置顶规则 = 可多置顶按 pinned_at DESC；交互 = hover 显示「…」菜单；轨道 = Standard"
+      - "2026-05-13 (Triage 范围锁定): 复用现有 title 字段做改名（无需新字段）；新增 pinned_at TIMESTAMP NULL 而非 pinned bool + pinned_at 双字段（避免冗余）；改名/置顶不更新 updated_at（metadata 操作不影响活跃排序，建议 S2 锁定）"
+    related_features:
+      - "sop-chatbot-visibility-scope (S3 in progress, 不耦合)"
+    blockers: []
+    created_at: "2026-05-13T00:00:00+08:00"
+    completed_at: null
+
   - id: "sop-chatbot-visibility-scope"
     ndf_version: "1.1"
     description: "SOP / 智能体（chatbot）可见范围权限（实体视角）。父账户在 SOP 模板或 chatbot 编辑页内联新增「可见范围」开关：默认 allow-all（全部子用户可见）；可打开「仅指定子用户可见」从弹窗勾选白名单。未在白名单的子用户在工作区列表看不到该实体；已开始的运行/历史不受影响（仅列表过滤）。后期新增子用户默认看不到受限实体（白名单语义）。范围限定 SOP + chatbot，不含销售知识库；仅 C 端父账户配置，不含管理端。"
     track: "standard"
-    stage: "S3"
+    stage: "S4"
     classification_reason: "Triage 5 条全触发 — (1) DB schema：需在 sop_template / chatbot_config 加 visibility_restricted 字段 + 新增独立白名单表 (2) 新 API：4 个新端点（PUT/GET visibility × 2 资源）+ 2 个既有端点行为变更（列表过滤注入）(3) 无外部服务 (4) 跨 numind-server + numind-web-v3 两仓约 23-27 文件 (5) 新增权限维度，与现有运行权限叠加，错误会导致子用户漏看/误看资源。Standard Track 必然。"
-    last_updated_by: "ai-s3-plan"
+    last_updated_by: "ai-s4-start"
     last_updated_at: "2026-05-13T00:00:00+08:00"
     repos:
       - numind-server
@@ -22,7 +55,7 @@ features:
       total_tasks: 23
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "S3 review：独立 reviewer 审 plan 原子性 + 完整性"
+      current_task: "S4 Task 1: Migration (forward + rollback)"
     rollback: null
     last_verified: null
     decisions:
@@ -73,6 +106,31 @@ features:
     deferred:
       - "用户端其他页面（HomeView/CustomersView/CreditsView/KnowledgeView/SalesView/LoginView/SOPHistoryView/SettingsView 等）移动端审计与适配 — 后续单独立 Standard Track"
       - "管理端（numind-admin-web）移动端策略 — 当前硬规则 §7 要求 DataTable 表格布局，移动端降级方案待单独决策"
+
+  - id: "login-icp-footer"
+    ndf_version: "1.1"
+    description: "youshu.asia 登录页底部展示工信部 ICP 备案号（蜀ICP备2025149402号），文字可点击跳转 https://beian.miit.gov.cn/ 工信部备案查询页（新标签页打开）。中国大陆法定合规要求。仅 numind-web-v3 单文件 LoginView.vue 改动 — template 末尾新增 footer + 对应 scoped style。公安备案号本次未提供，留待后续单独添加。"
+    track: "hotfix"
+    stage: "completed"
+    classification_reason: "Hotfix Triage 5 条 — (1) 无 DB schema (2) 无 API (3) 无外部服务（仅静态链接）(4) 单文件单仓 (5) 不触碰业务逻辑，纯静态合规标识。"
+    last_updated_by: "ai-implementation"
+    last_updated_at: "2026-05-13T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "fix/login-icp-footer"
+    progress:
+      total_tasks: 1
+      completed_tasks: 1
+      reviewed_tasks: 1
+      current_task: null
+    decisions:
+      - "2026-05-13 (Triage): 用户确认 Hotfix 轨道。备案号字面值 = 蜀ICP备2025149402号；公安备案号本次不加（用户原话：就用我提供的这个备案号就可以了）"
+      - "2026-05-13 (实施): footer 用 position:absolute 绝对定位贴底，避免顶动垂直居中的 login-container；link target=_blank + rel=noopener noreferrer 安全外链；颜色用 --color-text-muted token 保持克制不抢主视觉"
+    blockers: []
+    related_features:
+      - "www-subdomain-fix (并行的基础设施任务 — DNS A 记录 + 证书 SAN 扩展，不进 manifest 因纯 infra)"
+    created_at: "2026-05-13T00:00:00+08:00"
 
   - id: "sop-edit-save-button-bottom"
     ndf_version: "1.1"
