@@ -623,20 +623,45 @@ DELETE /v1/customers/sub-users/:user_id
     既有: 软删 user WHERE id=?
 ```
 
-### 5.3 新增函数
+### 5.3 新增函数（**store 层**，受 tx 参数控制事务边界）
+
+**层级归属规则**：所有 `Cleanup*` 函数均归属 **store 层**（在 `internal/numind/store/sop_visibility_grant.go` 和 `chatbot_visibility_grant.go` 中），接受 `*gorm.DB` tx 参数。biz 层通过 store interface 调用，保持三层架构（controller → biz → store）。store 接受 tx 参数是项目既有的 WithTx 惯用模式（与 `store.Customer().DeleteSubUserTx(tx, ...)` 等保持一致）。
 
 ```go
-// CleanupVisibilityGrantsBySubUser 在事务中清理子用户的所有 visibility grant 记录.
-// 必须在删除 user 之前调用 (虽然 FK 不强制级联, 但语义上先清子表).
+// store/sop_visibility_grant.go
+//
+// CleanupSopVisibilityGrantsBySubUser 在事务中软删子用户的所有 SOP visibility grant 记录.
+// 软删是为了保留 "该子用户曾在哪些 SOP 的可见范围内" 的审计记录.
+// 下次 UpdateSopVisibility 调用 Unscoped() 物理删时, 这些软删记录会被清理 (避免唯一索引堆积).
 // 幂等: 对不存在的 sub_user_id 无副作用.
-func CleanupVisibilityGrantsBySubUser(ctx context.Context, tx *gorm.DB, subUserID uint) error {
-    if err := tx.Where("sub_user_id=?", subUserID).Delete(&SopVisibilityGrant{}).Error; err != nil {
-        return fmt.Errorf("cleanup sop visibility: %w", err)
-    }
-    if err := tx.Where("sub_user_id=?", subUserID).Delete(&ChatbotVisibilityGrant{}).Error; err != nil {
-        return fmt.Errorf("cleanup chatbot visibility: %w", err)
-    }
-    return nil
+func (s *sopVisibilityGrantStore) CleanupBySubUser(ctx context.Context, tx *gorm.DB, subUserID uint) error {
+    return tx.Where("sub_user_id=?", subUserID).Delete(&model.SopVisibilityGrant{}).Error
+}
+```
+
+```go
+// store/chatbot_visibility_grant.go (对称)
+func (s *chatbotVisibilityGrantStore) CleanupBySubUser(ctx context.Context, tx *gorm.DB, subUserID uint) error {
+    return tx.Where("sub_user_id=?", subUserID).Delete(&model.ChatbotVisibilityGrant{}).Error
+}
+```
+
+**biz 层调用方式**（`biz/customer/customer.go` 中 DeleteSubUser 路径，与既有 cleanup 调用一致）：
+```go
+func (b *customerBiz) DeleteSubUser(ctx context.Context, callerID, subUserID uint) error {
+    return b.store.WithTx(func(tx *gorm.DB) error {
+        // NEW: 软删 visibility grant
+        if err := b.store.SopVisibilityGrant().CleanupBySubUser(ctx, tx, subUserID); err != nil {
+            return fmt.Errorf("cleanup sop visibility: %w", err)
+        }
+        if err := b.store.ChatbotVisibilityGrant().CleanupBySubUser(ctx, tx, subUserID); err != nil {
+            return fmt.Errorf("cleanup chatbot visibility: %w", err)
+        }
+        // 既有: 软删 user_template_permission
+        // 既有: 物理删 user_chatbot_permission
+        // 既有: 软删 user
+        return nil
+    })
 }
 ```
 
@@ -750,21 +775,32 @@ const state = reactive({
   // ... 既有字段 ...
   visibilityRestricted: false,
   visibilitySubUserIDs: [] as number[],
-  visibilityLoaded: false,  // 区分"未加载"和"加载后空"
+  visibilityLoaded: false,           // 区分"未加载"和"加载后空"
+  visibilityOriginalRestricted: false, // P1-2: 用于 §6.5 比较是否有改动需要保存
+  visibilityDirty: false,            // P1-2: 标记 visibility 有未保存改动或保存失败待重试
 })
 
 async function loadVisibility(sopID: number) {
   const res = await getSopVisibility(sopID)
   state.visibilityRestricted = res.data.restricted
+  state.visibilityOriginalRestricted = res.data.restricted
   state.visibilitySubUserIDs = res.data.sub_user_ids
   state.visibilityLoaded = true
+  state.visibilityDirty = false
 }
 
 async function saveVisibility(sopID: number) {
-  await putSopVisibility(sopID, {
-    restricted: state.visibilityRestricted,
-    sub_user_ids: state.visibilityRestricted ? state.visibilitySubUserIDs : undefined,
-  })
+  try {
+    await putSopVisibility(sopID, {
+      restricted: state.visibilityRestricted,
+      sub_user_ids: state.visibilityRestricted ? state.visibilitySubUserIDs : undefined,
+    })
+    state.visibilityOriginalRestricted = state.visibilityRestricted
+    state.visibilityDirty = false
+  } catch (err) {
+    state.visibilityDirty = true
+    throw err  // 让 §6.5 的 onSave 决定如何处理 UI 反馈
+  }
 }
 ```
 
@@ -866,6 +902,7 @@ ALTER TABLE chatbot_config
   COMMENT '可见范围限制: 0=全部可见; 1=白名单模式';
 
 -- 3. 新表 sop_visibility_grant
+-- 注: 唯一索引故意不含 deleted_at, 配合 biz 层 Unscoped().Delete 物理删模式 (见 §2.2 索引说明 + §4.1.6)
 CREATE TABLE IF NOT EXISTS sop_visibility_grant (
   id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   parent_user_id BIGINT UNSIGNED NOT NULL,
@@ -874,7 +911,7 @@ CREATE TABLE IF NOT EXISTS sop_visibility_grant (
   created_at DATETIME(3) NOT NULL,
   updated_at DATETIME(3) NOT NULL,
   deleted_at DATETIME(3) NULL,
-  UNIQUE KEY idx_svg_sub_template_unique (sub_user_id, sop_template_id, deleted_at),
+  UNIQUE KEY idx_svg_sub_template_unique (sub_user_id, sop_template_id),
   KEY idx_svg_parent_sub (parent_user_id, sub_user_id),
   KEY idx_svg_template (sop_template_id),
   KEY idx_svg_deleted (deleted_at)
@@ -882,6 +919,7 @@ CREATE TABLE IF NOT EXISTS sop_visibility_grant (
   COMMENT='SOP 可见范围授权（白名单）';
 
 -- 4. 新表 chatbot_visibility_grant
+-- 注: 唯一索引故意不含 deleted_at, 同 sop_visibility_grant
 CREATE TABLE IF NOT EXISTS chatbot_visibility_grant (
   id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
   parent_user_id BIGINT UNSIGNED NOT NULL,
@@ -890,7 +928,7 @@ CREATE TABLE IF NOT EXISTS chatbot_visibility_grant (
   created_at DATETIME(3) NOT NULL,
   updated_at DATETIME(3) NOT NULL,
   deleted_at DATETIME(3) NULL,
-  UNIQUE KEY idx_cvg_sub_chatbot_unique (sub_user_id, chatbot_id, deleted_at),
+  UNIQUE KEY idx_cvg_sub_chatbot_unique (sub_user_id, chatbot_id),
   KEY idx_cvg_parent_sub (parent_user_id, sub_user_id),
   KEY idx_cvg_chatbot (chatbot_id),
   KEY idx_cvg_deleted (deleted_at)
@@ -964,16 +1002,22 @@ PRD §4.2 的 22 条 AC → spec 章节映射：
 | EC-6 | 父账户删除 SOP / chatbot | **本 feature 内处理**（用户 2026-05-13 决策）：在既有 SOP/chatbot delete biz 中同事务调用 `CleanupSopVisibilityGrantsByEntity(tx, sopID)` / `CleanupChatbotVisibilityGrantsByEntity(tx, chatbotID)`，软删该实体的所有 grant 记录 |
 | EC-7 | 编辑未保存退出 | 与现有编辑页一致，丢弃；§6.5 保存触发 PUT，未保存不持久化 |
 
-**EC-6 实现细节**:
+**EC-6 实现细节**（**store 层函数**，biz 层调用，与 §5.3 一致）：
 ```go
-// 新增 store 函数 (在 sop_visibility_grant.go 中)
-func CleanupSopVisibilityGrantsByEntity(ctx context.Context, tx *gorm.DB, sopID uint) error {
-    return tx.Where("sop_template_id=?", sopID).Delete(&SopVisibilityGrant{}).Error
+// store/sop_visibility_grant.go
+func (s *sopVisibilityGrantStore) CleanupByEntity(ctx context.Context, tx *gorm.DB, sopID uint) error {
+    return tx.Where("sop_template_id=?", sopID).Delete(&model.SopVisibilityGrant{}).Error
 }
-// 对称: CleanupChatbotVisibilityGrantsByEntity
+// 对称: chatbotVisibilityGrantStore.CleanupByEntity(tx, chatbotID)
 
-// 在既有 biz/sop.DeleteSopTemplate 的事务中调用 (S4 实施定位)
-// 在既有 biz/chatbot.DeleteChatbot 的事务中调用 (S4 实施定位)
+// biz 层调用方式 (在既有 biz/sop.DeleteSopTemplate 的事务中):
+// b.store.WithTx(func(tx *gorm.DB) error {
+//     if err := b.store.SopVisibilityGrant().CleanupByEntity(ctx, tx, sopID); err != nil {
+//         return fmt.Errorf("cleanup visibility on sop delete: %w", err)
+//     }
+//     // 既有: 软删 sop_template, 等
+//     return nil
+// })
 ```
 
 ---
@@ -1040,7 +1084,7 @@ func CleanupSopVisibilityGrantsByEntity(ctx context.Context, tx *gorm.DB, sopID 
 | I-3 | grant.parent_user_id == entity.owner | §4.1.6 校验 | §10.2 (越权测试) |
 | I-4 | grant.parent_user_id == sub_user.parent_user_id | §4.1.8 校验 | §10.2 (越权测试) |
 | I-5 | 软删的 grant 不计入白名单 | GORM DeletedAt | §10.2 |
-| I-6 | (sub_user_id, entity_id, deleted_at IS NULL) 唯一 | DB 唯一索引 | §10.2 (重复授予测试) |
+| I-6 | 同一 (sub_user_id, entity_id) 在表中只能存在一行（含软删） | DB 唯一索引（不含 deleted_at）+ biz 层双路径删除约定（UpdateVisibility 用 Unscoped() 物理删，DeleteSubUser/Entity 用软删做审计） | §10.2 (重复授予/幂等 PUT/EC-6 后再 grant 测试) |
 | I-7 | DeleteSubUser 后 4 张表无未软删记录 | §5.3 + 事务 | §10.2 (级联清理) |
 | I-8 | DeleteSubUser 失败时整事务回滚 | store.WithTx | §10.2 |
 | I-9 | visibility 过滤先于 run-permission 过滤 | §4.2 顺序固化 | §10.2 (4 象限) |
