@@ -1,6 +1,32 @@
 schema_version: "1.0"
 
 features:
+  - id: "sop-run-mobile-layout"
+    ndf_version: "1.1"
+    description: "SOP 运行页（/sop/run）移动端布局适配。当前根布局为 flex-row + 264px 固定侧栏 StepNav，整个 src/views/sop/ 子树零 @media query — 在 375px iPhone / 412px Android 视口下主区被吞剩 ~111px，输入卡片/输出卡片/追问聊天面板全部错乱溢出。修复范围：根容器在 ≤768px 改为列布局 + StepNav 退化为可由 TopBar 汉堡按钮唤起的滑入抽屉（含背景遮罩 + ESC/点击外部关闭 + 选中后自动收起），TopBar 加移动端菜单按钮，SopStepView/InputCard/OutputCard padding & 字号在 ≤768px 收紧。范围明确不含管理端 + 不含用户端其他页面（用户已选 Hotfix 单页面止血；全量页面响应式审计后续单独立 Standard）。"
+    track: "hotfix"
+    classification_reason: "Hotfix Triage 5 条 — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无外部服务 (4) 文件范围限于 src/views/sop/ 下 ~5 个 Vue 文件（SOPRunView/StepNav/TopBar/SopStepView，可能 + InputCard/OutputCard）— 单页面响应式收口 (5) 纯 CSS/UI 改动，不触碰积分/支付/权限业务逻辑。用户原始需求是 '所有页面手机端适配'，明确选择缩减到 SOP 运行页作为 Hotfix；全量审计推迟为后续 Standard Track。"
+    stage: "H1"
+    last_updated_by: "ai-triage"
+    last_updated_at: "2026-05-13T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+    branches:
+      numind-web-v3: "fix/sop-run-mobile-layout"
+    progress:
+      total_tasks: 1
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "H1 — Playwright 诊断 375px/412px 视口实际症状 + 实现响应式 CSS"
+    decisions:
+      - "2026-05-13 (Triage): 用户原始范围 '所有页面手机端适配'，Triage 5 条第 4 条（文件 ≤3）失败 → 推荐 Standard。用户选择 Hotfix 缩减到 SOP 运行页单页面快速止血。全量审计推迟为独立 Standard Track 后续启动"
+      - "2026-05-13 (诊断前预判): 静态读 CSS 已确认根因 — SOPRunView.vue:752 flex-row + StepNav.vue:137 width:264px + 零 @media。但按 numind-web-v3 CLAUDE.md §6 硬规则，必须先用 Playwright 在 375px/412px 视口实测确认全部症状再写修复代码（避免漏 touch target / overflow / scroll trap）"
+    blockers: []
+    created_at: "2026-05-13T00:00:00+08:00"
+    deferred:
+      - "用户端其他页面（HomeView/CustomersView/CreditsView/KnowledgeView/SalesView/LoginView/SOPHistoryView/SettingsView 等）移动端审计与适配 — 后续单独立 Standard Track"
+      - "管理端（numind-admin-web）移动端策略 — 当前硬规则 §7 要求 DataTable 表格布局，移动端降级方案待单独决策"
+
   - id: "sop-edit-save-button-bottom"
     ndf_version: "1.1"
     description: "用户端 SOP 模板编辑页保存按钮移到页面底部。原顶部 page-header 的取消/保存按钮组（顶部右侧）与用户从上到下填表的阅读流不符 — 配置完成后视线终点在内容底部，主操作（保存）应同位呈现。仅 SopTemplateEdit.vue 一个文件，模板 + 样式调整。"
