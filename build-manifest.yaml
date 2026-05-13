@@ -5,14 +5,16 @@ features:
     ndf_version: "1.1"
     description: "用户端 chatbot 对话页 (views/chatbot/ChatbotChat.vue) 左侧会话列表支持改名与置顶。改名复用现有 chatbot_session.title 字段（无 schema 变更）；置顶新增 pinned_at TIMESTAMP NULL 字段（NULL=未置顶，非NULL=置顶时间）。列表排序改为：置顶组按 pinned_at DESC，非置顶组按 updated_at DESC。交互：hover 显示「…」更多菜单，含「重命名 / 置顶 / 取消置顶 / 删除」。范围明确不含 SalesView 销售对话页与 SOP 运行历史。S1 锁定 Approach A 极简 MVP (1-1.5 d)；顺带修 ListSessions cross-chatbot perf bug。"
     track: "standard"
-    stage: "S3"
+    stage: "S4"
     classification_reason: "Triage 5 条 — (1) DB schema 变更：是（chatbot_session 加 pinned_at 字段 + 覆盖排序的复合索引）(2) 新 API：是（PUT /v1/chatbot/sessions/:id/rename + PUT /v1/chatbot/sessions/:id/pin，2 个新端点；GET sessions 列表 ORDER BY 子句更新）(3) 无外部服务 (4) 跨 numind-server + numind-web-v3 两仓约 10-11 文件 (5) 不涉及支付/权限。条件 1/2/4 不满足 Hotfix，Standard Track。"
-    last_updated_by: "ai-s3-plan"
-    last_updated_at: "2026-05-13T00:00:00+08:00"
+    last_updated_by: "ai-s4-start"
+    last_updated_at: "2026-05-14T00:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
-    branches: {}
+    branches:
+      numind-server: "feature/chatbot-session-rename-pin"
+      numind-web-v3: "feature/chatbot-session-rename-pin"
     artifacts:
       requirement: "numind-server/requirements/chatbot-session-rename-pin.md"
       proposal: "numind-server/proposals/chatbot-session-rename-pin-proposal.md"
