@@ -62,9 +62,9 @@ features:
       plan: "numind-server/docs/superpowers/plans/2026-05-13-sop-chatbot-visibility-scope-plan.md"
     progress:
       total_tasks: 23
-      completed_tasks: 15
-      reviewed_tasks: 15
-      current_task: "S4 Phase 5 done (Tasks 14-15 EC-6 reviewed PASS; Task 13 DeleteSubUser deferred — 子用户删除流程不存在). Phase 6 next (Task 16 单元测试集中补全)"
+      completed_tasks: 16
+      reviewed_tasks: 16
+      current_task: "S4 Phase 6 done (Task 16 测试补全, 29 visibility tests PASS含 -race, spec §10.2 13/14 覆盖). 后端 100% 完成. Phase 7 next (前端: Task 17 api/visibility.ts + Task 18 SubUserMultiSelectDialog + Task 19 VisibilityScopeCard)"
     rollback: null
     last_verified: null
     decisions:
