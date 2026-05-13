@@ -22,14 +22,15 @@ features:
       total_tasks: 0
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "S0 gate — 等待用户确认继续评估，方可进入 S1 提案"
+      current_task: "S0 gate — reviewer 已 PASS_WITH_CONCERNS，等待用户最终确认进入 S1"
     rollback: null
     last_verified: null
     decisions:
       - "2026-05-13 (Triage): 用户原话'某个 chatbot 页面左边对话记录列表支持改名+置顶'。AI 澄清 4 关键范围：目标页 = 用户端 chatbot 对话页（不含 SalesView）；置顶规则 = 可多置顶按 pinned_at DESC；交互 = hover 显示「…」菜单；轨道 = Standard"
-      - "2026-05-13 (Triage 范围锁定): 复用现有 title 字段做改名（无需新字段）；新增 pinned_at TIMESTAMP NULL 而非 pinned bool + pinned_at 双字段（避免冗余）；改名/置顶不更新 updated_at（metadata 操作不影响活跃排序，建议 S2 锁定）"
+      - "2026-05-13 (Triage 范围锁定): 复用现有 title 字段做改名（无需新字段）；新增 pinned_at TIMESTAMP NULL 而非 pinned bool + pinned_at 双字段（避免冗余）；改名/置顶不更新 updated_at（metadata 操作不影响活跃排序，建议 S1 锁定）"
+      - "2026-05-13 (S0 reviewer subagent 审查): PASS_WITH_CONCERNS — 0 P0 + 3 P1 + 2 P2。3 个 P1 已全部写入 requirement card 'S1 必决策项' 节：①置顶/排序作用域 per-chatbot vs cross-chatbot（关键，主控漏掉的视角；后端 ListSessions 当前是 cross-chatbot 混排+前端 client filter）②改名/置顶不更新 updated_at 应 S1 锁定而非 S2 ③置顶数量上限应 S1 决策。Reviewer 还肯定了 4 条主控判断正确：单字段 pinned_at 优于双字段 / 范围锁定不含 SalesView / 零 data migration 风险声明 / 与 sop-chatbot-visibility-scope 的耦合分析准确"
     related_features:
-      - "sop-chatbot-visibility-scope (S3 in progress, 不耦合)"
+      - "sop-chatbot-visibility-scope (S4 in progress, 不耦合 — reviewer 已验证 ListVisibleChatbots 作用在 chatbot list 而非 session list)"
     blockers: []
     created_at: "2026-05-13T00:00:00+08:00"
     completed_at: null
