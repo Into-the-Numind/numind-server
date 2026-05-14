@@ -248,7 +248,7 @@ func (s *MembershipService) DeductCreditsTx(ctx context.Context, tx *gorm.DB, us
 		d.Items = append(d.Items, DeductItem{SourceType: DeductSourceCycle, SourceID: cycle.ID, Amount: take})
 		remaining -= take
 		cycle.CreditsRemaining -= int(take)
-		cycle.UpdatedAt = time.Now().UTC()
+		cycle.UpdatedAt = now
 		if err := s.store.CreditCycles().Update(ctx, tx, cycle); err != nil {
 			return nil, fmt.Errorf("DeductCreditsTx: update credit_cycle: %w", err)
 		}

@@ -225,3 +225,4 @@ func TestEnsureCurrentCycle_ExpiredSub(t *testing.T) {
 	require.NoError(t, err)
 	assert.ErrorIs(t, callErr, errno.ErrSubscriptionExpired)
 }
+
