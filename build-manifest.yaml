@@ -5,24 +5,35 @@ features:
     ndf_version: "1.1"
     description: "P0 线上 bug：所有 billing_mode=credits 用户运行 SOP / chatbot / salesrag 时被错误判定为 ErrInsufficientCredits，即便 cycle_remaining + booster_usable >= 估算。Root cause: creditsImpl.GetBalance 和 deductCreditsTxFull 仍读写老 credit_package 表，而 GrantOrRenewSubscription 只写新 subscription + credit_cycle 表（store/credit.go:375 注释承诺的『双写』从未实现）。MembershipService.DeductCredits 是写新表的 active path 但根本没人调用（cycle.go:97-101 自承 Task 16 未完成）。本 feature 完成 Task 16 cleanup：把 Reserve / Reconcile 切换到 MembershipService.DeductCredits，让 read+write 都用新表。"
     track: "standard"
-    stage: "S0"
+    stage: "S5"
     classification_reason: "条件 4（>3 文件：credit_service.go / credit.go / sop.go / chatbot middleware / store/credit.go / 测试）+ 条件 5（高风险扣费逆路）触发 Standard。P0 prod bug 加速。"
-    last_updated_by: "ai-triage"
+    last_updated_by: "ai-s4-complete"
     last_updated_at: "2026-05-14T00:00:00+08:00"
     repos:
       - numind-server
     branches:
       numind-server: "fix/credits-deduct-cycle-wiring"
-    artifacts: {}
+    artifacts:
+      requirement: "numind-server/requirements/credits-deduct-cycle-wiring.md"
+      proposal: "numind-server/proposals/credits-deduct-cycle-wiring-proposal.md"
+      spec: "numind-server/docs/superpowers/specs/2026-05-14-credits-deduct-cycle-wiring-design.md"
+      plan: "numind-server/docs/superpowers/plans/2026-05-14-credits-deduct-cycle-wiring-plan.md"
+      validation_strategy: "numind-server/docs/superpowers/specs/2026-05-14-credits-deduct-cycle-wiring-validation-strategy.md"
     progress:
-      total_tasks: 0
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task: "S0 — 写 requirement card"
-    rollback: null
+      total_tasks: 10
+      completed_tasks: 10
+      reviewed_tasks: 10
+      current_task: "S5 验收 — task test + dev deploy + curl L2 验证"
+    rollback: "migrations/20260514_120000_credit_reservation_item_add_source_rollback.sql (仅当无 in-flight new-path reservation)"
     last_verified: null
     decisions:
       - "2026-05-14 (Triage): 3 个独立 reviewer subagent 共识 — 注释 STALE-LIE，GetQuotaBreakdown 读 credit_package 但 grant 只写 subscription/credit_cycle。所有 SOP/chatbot/salesrag 的 pre-check 都返回 SubRemain=0，total = booster_remain（最多 600），估算>600 立即 ErrInsufficientCredits。Reserve/Reconcile 也写老表，新表 credit_cycle 永远不动。修复方向：完整切换 Reserve/Reconcile 到 MembershipService.DeductCredits（用户拍板：选项 B 不选短期止血选项 A）"
+      - "2026-05-14 (S0 review): PASS_WITH_CONCERNS, 3 P0 + 3 P1 + 1 P2 全修。关键 P0: CanPerformAIOperation 被漏（P0-1）/ refundToItems 写老表（P0-2）/ D4 item-level routing vs proportional refund 架构决策需 S1 锁定（P0-3）。"
+      - "2026-05-14 (S1 锁定 D1-D6): D2 (booster 过期→active booster→cycle→ledger) / D4 (方案 A item-level source-typed routing) 用户拍板。其余 D1/D3/D5/D6 按推荐 default。"
+      - "2026-05-14 (S2 review Round 1): PASS_WITH_CONCERNS, 3 P0 + 3 P1 + 4 P2 全修。修：T0 wiring task 补 / refundOneItem 签名修正 / DeductionResult.Items 而非新建冲突类型 / booster 单聚合行而非 per-batch FIFO / sourceID uint64 统一 / CheckAndEstimateBudget total 加 TrialRemain"
+      - "2026-05-14 (S2 holistic): PASS_WITH_CONCERNS, 0 P0 + 2 P1 + 3 P2 全修。锁顺序与 cycle.go:113-116 实现一致（alphabetical 而非 trial-first）/ BoosterMultiBatch 错测删 / CanPerformAIOperation 签名 (bool,string) 保留"
+      - "2026-05-14 (S3 review): PASS_WITH_CONCERNS, 0 P0 + 2 P1 + 3 P2 全修。T0→T6 依赖边补 / T10 验证策略分 L1/L2/L3 层"
+      - "2026-05-14 (S4 完成 10/10): T0 wiring → T1 migration → T2 types → T3 DeductCreditsTx → T4 RefundCreditsTx (D2 fallback) → T5 wrapper (T3+T5 bundled) → T6 GetBalance → T7 CanPerformAIOperation (InjectCreditBizMembershipSvc 注入模式) → T8 Reserve via DeductCreditsTx + observability log → T9 refundOneItem dispatch (D6) + STALE-LIE 注释删除 → T10 validation strategy doc。每个 task 独立可编译 + commit。T0/T3+T5/T4 个别 task 走完 per-task 两阶段 review；reviewer 抓到 1 P1 (UpdatedAt = now) + 2 P1 (T4 sub/trial dedup + subscriptionID 指针) + 多 P2 全修。T2/T6/T7/T8/T9/T10 单审查（业务逻辑非新增，主要是分支+wiring）。"
     related_features:
       - "membership-balance-read-path (S6, dev deployed) — 上一轮修了 read 显示，本 feature 修 reserve/reconcile"
       - "membership-credits-redesign (S5, plan §Task 16 cleanup) — 原 plan 规划过 cleanup 但只设计了 cron 删除和 helper 替换，未设计 reserve/reconcile 切表的具体 wiring"
