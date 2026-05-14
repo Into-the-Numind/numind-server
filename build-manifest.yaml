@@ -5,7 +5,7 @@ features:
     ndf_version: "1.1"
     description: "P0 线上 bug：所有 billing_mode=credits 用户运行 SOP / chatbot / salesrag 时被错误判定为 ErrInsufficientCredits，即便 cycle_remaining + booster_usable >= 估算。Root cause: creditsImpl.GetBalance 和 deductCreditsTxFull 仍读写老 credit_package 表，而 GrantOrRenewSubscription 只写新 subscription + credit_cycle 表（store/credit.go:375 注释承诺的『双写』从未实现）。MembershipService.DeductCredits 是写新表的 active path 但根本没人调用（cycle.go:97-101 自承 Task 16 未完成）。本 feature 完成 Task 16 cleanup：把 Reserve / Reconcile 切换到 MembershipService.DeductCredits，让 read+write 都用新表。"
     track: "standard"
-    stage: "S5"
+    stage: "S6"
     classification_reason: "条件 4（>3 文件：credit_service.go / credit.go / sop.go / chatbot middleware / store/credit.go / 测试）+ 条件 5（高风险扣费逆路）触发 Standard。P0 prod bug 加速。"
     last_updated_by: "ai-s4-complete"
     last_updated_at: "2026-05-14T00:00:00+08:00"
@@ -34,6 +34,7 @@ features:
       - "2026-05-14 (S2 holistic): PASS_WITH_CONCERNS, 0 P0 + 2 P1 + 3 P2 全修。锁顺序与 cycle.go:113-116 实现一致（alphabetical 而非 trial-first）/ BoosterMultiBatch 错测删 / CanPerformAIOperation 签名 (bool,string) 保留"
       - "2026-05-14 (S3 review): PASS_WITH_CONCERNS, 0 P0 + 2 P1 + 3 P2 全修。T0→T6 依赖边补 / T10 验证策略分 L1/L2/L3 层"
       - "2026-05-14 (S4 完成 10/10): T0 wiring → T1 migration → T2 types → T3 DeductCreditsTx → T4 RefundCreditsTx (D2 fallback) → T5 wrapper (T3+T5 bundled) → T6 GetBalance → T7 CanPerformAIOperation (InjectCreditBizMembershipSvc 注入模式) → T8 Reserve via DeductCreditsTx + observability log → T9 refundOneItem dispatch (D6) + STALE-LIE 注释删除 → T10 validation strategy doc。每个 task 独立可编译 + commit。T0/T3+T5/T4 个别 task 走完 per-task 两阶段 review；reviewer 抓到 1 P1 (UpdatedAt = now) + 2 P1 (T4 sub/trial dedup + subscriptionID 指针) + 多 P2 全修。T2/T6/T7/T8/T9/T10 单审查（业务逻辑非新增，主要是分支+wiring）。"
+      - "2026-05-14 (S5 验收 PASS): L1 task test 全包 PASS (exit 0, no FAIL)。Merge develop + push, dev CI 一次 success (无需 manual mirror pull this time)。Dev container 上来 GORM AutoMigrate 自动加好 source_type / source_id 列 (DESCRIBE credit_reservation_item 确认)。L2 curl 验证 admin (cycle=2000, billing_mode=credits): /v1/credits/estimate 返回 sub_remain=2000 (从新 credit_cycle 读，非老 credit_package), trial_remain=0 (新字段), sufficient=true。这正是 bug 修复点：原本 sub_remain=0 → total=0+0+0=0 → ErrInsufficientCredits；现在 sub_remain=2000 → sufficient=true。L3 Playwright Path 1+6 跳过（测的是 grant flow，本 feature 不动 grant）。stage S5 → S6 (dev 已部署 + 验证完毕，等用户拍板 prod tag)。"
     related_features:
       - "membership-balance-read-path (S6, dev deployed) — 上一轮修了 read 显示，本 feature 修 reserve/reconcile"
       - "membership-credits-redesign (S5, plan §Task 16 cleanup) — 原 plan 规划过 cleanup 但只设计了 cron 删除和 helper 替换，未设计 reserve/reconcile 切表的具体 wiring"
