@@ -7,7 +7,7 @@ features:
     track: "standard"
     stage: "S4"
     classification_reason: "Triage 5 条 — (1) DB schema 变更：是（chatbot_session 加 pinned_at 字段 + 覆盖排序的复合索引）(2) 新 API：是（PUT /v1/chatbot/sessions/:id/rename + PUT /v1/chatbot/sessions/:id/pin，2 个新端点；GET sessions 列表 ORDER BY 子句更新）(3) 无外部服务 (4) 跨 numind-server + numind-web-v3 两仓约 10-11 文件 (5) 不涉及支付/权限。条件 1/2/4 不满足 Hotfix，Standard Track。"
-    last_updated_by: "ai-s4-backend-done"
+    last_updated_by: "ai-s4-frontend-done"
     last_updated_at: "2026-05-14T00:00:00+08:00"
     repos:
       - numind-server
@@ -22,9 +22,9 @@ features:
       plan: "numind-server/docs/superpowers/plans/2026-05-13-chatbot-session-rename-pin-plan.md"
     progress:
       total_tasks: 8
-      completed_tasks: 4
-      reviewed_tasks: 4
-      current_task: "S4 Task 5: numind-web-v3 TypeScript types + api 层"
+      completed_tasks: 7
+      reviewed_tasks: 7
+      current_task: "S4 Task 8: S5 验证策略文档"
     rollback: null
     last_verified: null
     decisions:
