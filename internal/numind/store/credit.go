@@ -369,7 +369,19 @@ func (s *creditStore) ListAllAccountsWithBalance(ctx context.Context, offset, li
 	return accounts, total, nil
 }
 
-// GetQuotaBreakdown 获取用户额度分布（订阅 vs 加量包），只统计 active 状态的积分包
+// GetQuotaBreakdown 获取用户额度分布（订阅 vs 加量包），只统计 active 状态的积分包。
+//
+// 双 schema 兼容（membership-credits-redesign 切换日后）：
+//   - subscription/trial 仍从老 credit_package 表算（新代码的 fulfillOrder 不再
+//     写老表，但订阅/trial 还由 GrantOrRenewSubscription / GrantTrial 双写到老
+//     表保持向后兼容，且老用户的 credit_package 也仍在）
+//   - booster 优先读新表 user_booster_balance。如果新表有行（fulfillOrder 走过
+//     新代码路径），用新表余额覆盖老表算出来的 booster 字段；否则保留老表值
+//     fallback（兼容尚未走过任何新代码的历史用户）
+//
+// 为什么不直接两表叠加：迁移时把老 credit_package booster 复制到了 user_booster_balance
+// （02-apply.sql Step 3），如果叠加会重复计数（双倍）。新表是 single source of truth
+// once it exists for the user.
 func (s *creditStore) GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error) {
 	type result struct {
 		Type          string
@@ -396,6 +408,24 @@ func (s *creditStore) GetQuotaBreakdown(ctx context.Context, userID uint) (subTo
 			boosterRemain += r.RemainCredits
 		}
 	}
+
+	// Override booster fields with user_booster_balance (new schema) if exists.
+	// 新表 user_booster_balance 只有 credits_remaining 一个字段（spec §2.4：永不过期、
+	// 每用户单行），把它同时作为 total 和 remain — 前端 BoosterPurchaseCard 用
+	// booster_total>0 来判断"是否开通 booster"，user_booster_balance 存在即视为有。
+	var newBalance struct {
+		CreditsRemaining int64
+	}
+	queryErr := s.db.WithContext(ctx).
+		Table("user_booster_balance").
+		Select("credits_remaining").
+		Where("user_id = ?", userID).
+		Scan(&newBalance).Error
+	if queryErr == nil && newBalance.CreditsRemaining > 0 {
+		boosterTotal = newBalance.CreditsRemaining
+		boosterRemain = newBalance.CreditsRemaining
+	}
+
 	return
 }
 
