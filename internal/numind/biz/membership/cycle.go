@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"numind-server/internal/pkg/errno"
 	model "numind-server/internal/pkg/model/membership"
@@ -274,4 +275,120 @@ func (s *MembershipService) DeductCreditsTx(ctx context.Context, tx *gorm.DB, us
 	}
 
 	return d, nil
+}
+
+// RefundCreditsTx refunds `amount` credits back to the user, attempting the
+// original source first (per D4 item-level routing) then falling back per D2:
+//
+//	original active source → any active booster → active cycle → ledger lost
+//
+// Returns the source actually credited (refundedTo, refundedID, refundedAmount).
+// When all fallbacks fail (no active pool to receive credit), writes a
+// membership_event "refund_lost" ledger entry and returns refundedAmount=0
+// (no error — caller distinguishes via amount==0 vs err≠nil).
+//
+// Caller is responsible for tx lifecycle (open + commit/rollback).
+func (s *MembershipService) RefundCreditsTx(
+	ctx context.Context,
+	tx *gorm.DB,
+	userID uint64,
+	source DeductSource,
+	sourceID uint64,
+	amount int64,
+	now time.Time,
+) (refundedTo DeductSource, refundedID uint64, refundedAmount int64, err error) {
+	if amount <= 0 {
+		return "", 0, 0, errno.ErrInvalidParameter
+	}
+
+	// ── Step 1: Try original source if still active ─────────────────────────
+	switch source {
+	case DeductSourceTrial:
+		var trial model.TrialGrant
+		queryErr := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&trial, sourceID).Error
+		if queryErr == nil && trial.UserID == userID && trial.ExpiresAt.After(now) {
+			trial.CreditsRemaining += int(amount)
+			if updateErr := s.store.TrialGrants().Update(ctx, tx, &trial); updateErr != nil {
+				return "", 0, 0, fmt.Errorf("RefundCreditsTx: update trial: %w", updateErr)
+			}
+			return DeductSourceTrial, trial.ID, amount, nil
+		}
+
+	case DeductSourceCycle:
+		var cycle model.CreditCycle
+		queryErr := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&cycle, sourceID).Error
+		if queryErr == nil && cycle.UserID == userID && cycle.CycleEnd.After(now) {
+			cycle.CreditsRemaining += int(amount)
+			cycle.UpdatedAt = now
+			if updateErr := s.store.CreditCycles().Update(ctx, tx, &cycle); updateErr != nil {
+				return "", 0, 0, fmt.Errorf("RefundCreditsTx: update cycle: %w", updateErr)
+			}
+			return DeductSourceCycle, cycle.ID, amount, nil
+		}
+
+	case DeductSourceBooster:
+		// Booster active iff sub or trial active (INV-15). Check both.
+		sub, _ := s.store.Subscriptions().Get(ctx, userID)
+		trial, _ := s.store.TrialGrants().Get(ctx, userID)
+		subActive := sub != nil && sub.ExpiresAt.After(now)
+		trialActive := trial != nil && trial.ExpiresAt.After(now) && trial.CreditsRemaining > 0
+		if subActive || trialActive {
+			if incErr := s.store.BoosterBalances().Increment(ctx, tx, userID, amount); incErr != nil {
+				return "", 0, 0, fmt.Errorf("RefundCreditsTx: increment booster: %w", incErr)
+			}
+			return DeductSourceBooster, userID, amount, nil
+		}
+	}
+
+	// ── Step 2: Fallback chain (original source unavailable) ───────────────
+
+	// Fallback 1: any active booster (requires sub or trial active)
+	sub, _ := s.store.Subscriptions().Get(ctx, userID)
+	trial, _ := s.store.TrialGrants().Get(ctx, userID)
+	subActive := sub != nil && sub.ExpiresAt.After(now)
+	trialActive := trial != nil && trial.ExpiresAt.After(now) && trial.CreditsRemaining > 0
+	if subActive || trialActive {
+		// Booster row may not exist yet — Increment is an upsert-style op.
+		booster, _ := s.store.BoosterBalances().GetForUpdate(ctx, tx, userID)
+		if booster != nil {
+			if incErr := s.store.BoosterBalances().Increment(ctx, tx, userID, amount); incErr != nil {
+				return "", 0, 0, fmt.Errorf("RefundCreditsTx: fallback booster increment: %w", incErr)
+			}
+			return DeductSourceBooster, userID, amount, nil
+		}
+	}
+
+	// Fallback 2: active cycle (requires sub active)
+	if subActive && sub != nil {
+		cycle, _ := s.ensureCurrentCycle(ctx, tx, sub, now)
+		if cycle != nil {
+			cycle.CreditsRemaining += int(amount)
+			cycle.UpdatedAt = now
+			if updateErr := s.store.CreditCycles().Update(ctx, tx, cycle); updateErr != nil {
+				return "", 0, 0, fmt.Errorf("RefundCreditsTx: fallback cycle update: %w", updateErr)
+			}
+			return DeductSourceCycle, cycle.ID, amount, nil
+		}
+	}
+
+	// Fallback 3: ledger lost — write event, return amount=0
+	subscriptionID := uint64(0)
+	if sub != nil {
+		subscriptionID = sub.ID
+	}
+	event := &model.MembershipEvent{
+		UserID:         userID,
+		EventType:      model.EventTypeRefundLost,
+		ProductType:    string(source),
+		AmountCents:    amount, // re-purposing amount_cents to store credits amount for the lost refund
+		Source:         model.SourceB2BGrant,
+		SubscriptionID: &subscriptionID,
+		OccurredAt:     now,
+	}
+	if eventErr := s.store.Events().Create(ctx, tx, event); eventErr != nil {
+		return "", 0, 0, fmt.Errorf("RefundCreditsTx: write refund_lost event: %w", eventErr)
+	}
+	return "", 0, 0, nil
 }
