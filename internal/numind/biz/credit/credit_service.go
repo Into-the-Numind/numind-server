@@ -502,13 +502,29 @@ func (c *creditsImpl) Reserve(
 	}
 
 	var items []PackageDeduction
+	var newPathItems []membership.DeductItem // T8: populated when membershipSvc path is taken
+	usingNewPath := c.membershipSvc != nil
+	if usingNewPath {
+		log.C(ctx).Infow("reserve: credits-mode new path (DeductCreditsTx)",
+			"user_id", user.ID, "amount", adjustedEstimated, "operation", string(op))
+	}
 	txErr := c.store.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 1. FIFO deduction inside the outer tx — returns items for seq emission.
-		debited, err := c.biz.DeductCreditsTx(ctx, tx, user.ID, adjustedEstimated, "reserve:"+string(op))
-		if err != nil {
-			return err // ErrInsufficientCredits bubbles up; tx rolls back.
+		if usingNewPath {
+			// New path: MembershipService writes credit_cycle / user_booster_balance / trial_grant.
+			result, err := c.membershipSvc.DeductCreditsTx(ctx, tx, uint64(user.ID), adjustedEstimated, time.Now().UTC())
+			if err != nil {
+				return err // ErrInsufficientCredits bubbles up; tx rolls back.
+			}
+			newPathItems = result.Items
+		} else {
+			// Legacy path: writes credit_package (kept for billing_mode=legacy_tier safety net).
+			debited, err := c.biz.DeductCreditsTx(ctx, tx, user.ID, adjustedEstimated, "reserve:"+string(op))
+			if err != nil {
+				return err
+			}
+			items = debited
 		}
-		items = debited
 
 		// 2. Write the reservation row.
 		if err := tx.Create(rsvRow).Error; err != nil {
@@ -531,17 +547,37 @@ func (c *creditsImpl) Reserve(
 		}
 
 		// 3. Write reservation items in FIFO order (seq = idx+1).
-		itemRows := make([]model.CreditReservationItem, 0, len(items))
-		for i, d := range items {
-			pkgID := d.PackageID
-			itemRows = append(itemRows, model.CreditReservationItem{
-				ReservationID:    rsvRow.ID,
-				PackageID:        &pkgID,
-				Credits:          d.Credits,
-				PackageType:      d.PackageType,
-				PackageExpiresAt: d.ExpiresAt,
-				Seq:              i + 1,
-			})
+		var itemRows []model.CreditReservationItem
+		if usingNewPath {
+			// New path: items carry source_type + source_id (package_id NULL).
+			itemRows = make([]model.CreditReservationItem, 0, len(newPathItems))
+			for i, di := range newPathItems {
+				sourceType := string(di.SourceType)
+				sourceID := di.SourceID
+				// Map DeductSource → legacy PackageType column value for back-compat.
+				pkgType := mapDeductSourceToPkgType(di.SourceType)
+				itemRows = append(itemRows, model.CreditReservationItem{
+					ReservationID: rsvRow.ID,
+					SourceType:    &sourceType,
+					SourceID:      &sourceID,
+					Credits:       di.Amount,
+					PackageType:   pkgType,
+					Seq:           i + 1,
+				})
+			}
+		} else {
+			itemRows = make([]model.CreditReservationItem, 0, len(items))
+			for i, d := range items {
+				pkgID := d.PackageID
+				itemRows = append(itemRows, model.CreditReservationItem{
+					ReservationID:    rsvRow.ID,
+					PackageID:        &pkgID,
+					Credits:          d.Credits,
+					PackageType:      d.PackageType,
+					PackageExpiresAt: d.ExpiresAt,
+					Seq:              i + 1,
+				})
+			}
 		}
 		if len(itemRows) > 0 {
 			if err := tx.Create(&itemRows).Error; err != nil {
@@ -1017,6 +1053,21 @@ func (c *creditsImpl) GetBalance(ctx context.Context, user *model.User) (*Balanc
 type opReference struct {
 	refType string
 	refID   string // caller-provided at ReferenceID assembly time
+}
+
+// mapDeductSourceToPkgType maps the new DeductSource enum onto the legacy
+// credit_reservation_item.package_type column values, kept for back-compat with
+// existing analytic queries that group by package_type.
+func mapDeductSourceToPkgType(s membership.DeductSource) string {
+	switch s {
+	case membership.DeductSourceTrial:
+		return model.CreditTypeTrial
+	case membership.DeductSourceCycle:
+		return model.CreditTypeSubscription
+	case membership.DeductSourceBooster:
+		return model.CreditTypeBooster
+	}
+	return ""
 }
 
 func referenceFromOp(op Operation) opReference {
