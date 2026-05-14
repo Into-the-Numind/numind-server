@@ -138,128 +138,140 @@ func (s *MembershipService) ensureCurrentCycle(ctx context.Context, tx *gorm.DB,
 // The method opens its own transaction. Returns ErrInsufficientCredits when
 // total available credits < amount.
 func (s *MembershipService) DeductCredits(ctx context.Context, userID uint64, amount int64) (*DeductionResult, error) {
+	var deduction *DeductionResult
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		r, e := s.DeductCreditsTx(ctx, tx, userID, amount, time.Now().UTC())
+		deduction = r
+		return e
+	})
+	if err != nil {
+		return nil, err
+	}
+	return deduction, nil
+}
+
+// DeductCreditsTx performs the same deduction as DeductCredits but inside a
+// caller-managed transaction. Required when the caller (e.g. credit.Reserve)
+// needs to atomically combine the deduction with other writes (reservation
+// inserts) in one tx — MySQL doesn't support nested transactions, so we expose
+// a tx-aware variant.
+//
+// Returns DeductionResult with FromTrial/FromCycle/FromBooster aggregates AND
+// per-pool Items (SourceType + SourceID + Amount) so the caller can record
+// detailed per-source reservation_item rows for accurate refund routing.
+//
+// Caller is responsible for tx lifecycle (open + commit/rollback). This
+// function only writes; on ErrInsufficientCredits the caller must rollback.
+func (s *MembershipService) DeductCreditsTx(ctx context.Context, tx *gorm.DB, userID uint64, amount int64, now time.Time) (*DeductionResult, error) {
 	if amount <= 0 {
 		return nil, errno.ErrInvalidParameter
 	}
 
-	var deduction DeductionResult
-
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		txNow := time.Now().UTC()
-
-		// ── Pre-read subscription state (no lock; informational only) ──────────
-		sub, err := s.store.Subscriptions().Get(ctx, userID)
-		if err != nil {
-			return fmt.Errorf("DeductCredits: get subscription: %w", err)
-		}
-		subActive := sub != nil && sub.ExpiresAt.After(txNow)
-
-		// ── Pre-read trial state (no lock; informational only) ─────────────────
-		trial, err := s.store.TrialGrants().Get(ctx, userID)
-		if err != nil {
-			return fmt.Errorf("DeductCredits: get trial: %w", err)
-		}
-		trialActive := trial != nil && trial.ExpiresAt.After(txNow) && trial.CreditsRemaining > 0
-
-		// ── Lock in alphabetical table order ────────────────────────────────────
-
-		// 1. credit_cycle (if sub is active — ensureCurrentCycle acquires FOR UPDATE internally)
-		var cycle *model.CreditCycle
-		if subActive {
-			cycle, err = s.ensureCurrentCycle(ctx, tx, sub, txNow)
-			if err != nil {
-				// ensureCurrentCycle may return ErrSubscriptionExpired if the cycle
-				// boundary has been crossed between pre-read and lock acquisition.
-				// In that case treat sub as inactive for this deduction.
-				if err == errno.ErrSubscriptionExpired {
-					subActive = false
-				} else {
-					return fmt.Errorf("DeductCredits: ensureCurrentCycle: %w", err)
-				}
-			}
-		}
-
-		// 2. trial_grant FOR UPDATE
-		var trialLocked *model.TrialGrant
-		if trialActive {
-			trialLocked, err = s.store.TrialGrants().GetForUpdate(ctx, tx, userID)
-			if err != nil {
-				return fmt.Errorf("DeductCredits: lock trial_grant: %w", err)
-			}
-			// Re-validate after lock acquisition.
-			if trialLocked == nil || !trialLocked.ExpiresAt.After(txNow) || trialLocked.CreditsRemaining <= 0 {
-				trialActive = false
-				trialLocked = nil
-			}
-		}
-
-		// 3. user_booster_balance FOR UPDATE (only when sub or trial is active)
-		boosterActive := subActive || trialActive
-		var booster *model.UserBoosterBalance
-		if boosterActive {
-			booster, err = s.store.BoosterBalances().GetForUpdate(ctx, tx, userID)
-			if err != nil {
-				return fmt.Errorf("DeductCredits: lock user_booster_balance: %w", err)
-			}
-			// nil means no booster row exists → zero balance.
-		}
-
-		// ── Priority deduction ──────────────────────────────────────────────────
-		remaining := amount
-		d := &DeductionResult{}
-
-		// Pool 1: trial
-		if trialActive && trialLocked != nil && remaining > 0 {
-			take := int64(trialLocked.CreditsRemaining)
-			if take > remaining {
-				take = remaining
-			}
-			d.FromTrial = take
-			remaining -= take
-			trialLocked.CreditsRemaining -= int(take)
-			if err := s.store.TrialGrants().Update(ctx, tx, trialLocked); err != nil {
-				return fmt.Errorf("DeductCredits: update trial_grant: %w", err)
-			}
-		}
-
-		// Pool 2: cycle
-		if subActive && cycle != nil && remaining > 0 {
-			take := int64(cycle.CreditsRemaining)
-			if take > remaining {
-				take = remaining
-			}
-			d.FromCycle = take
-			remaining -= take
-			cycle.CreditsRemaining -= int(take)
-			cycle.UpdatedAt = time.Now().UTC()
-			if err := s.store.CreditCycles().Update(ctx, tx, cycle); err != nil {
-				return fmt.Errorf("DeductCredits: update credit_cycle: %w", err)
-			}
-		}
-
-		// Pool 3: booster (frozen when !subActive && !trialActive — INV-15)
-		if boosterActive && booster != nil && booster.CreditsRemaining > 0 && remaining > 0 {
-			take := booster.CreditsRemaining
-			if take > remaining {
-				take = remaining
-			}
-			d.FromBooster = take
-			remaining -= take
-			if err := s.store.BoosterBalances().Decrement(ctx, tx, userID, take); err != nil {
-				return fmt.Errorf("DeductCredits: decrement booster: %w", err)
-			}
-		}
-
-		if remaining > 0 {
-			return fmt.Errorf("%w: requested %d, shortfall %d", errno.ErrInsufficientCredits, amount, remaining)
-		}
-
-		deduction = *d
-		return nil
-	})
-
+	// ── Pre-read subscription state (no lock; informational only) ──────────
+	sub, err := s.store.Subscriptions().Get(ctx, userID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("DeductCreditsTx: get subscription: %w", err)
 	}
-	return &deduction, nil
+	subActive := sub != nil && sub.ExpiresAt.After(now)
+
+	// ── Pre-read trial state (no lock; informational only) ─────────────────
+	trial, err := s.store.TrialGrants().Get(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("DeductCreditsTx: get trial: %w", err)
+	}
+	trialActive := trial != nil && trial.ExpiresAt.After(now) && trial.CreditsRemaining > 0
+
+	// ── Lock in alphabetical table order (§4.1) ─────────────────────────────
+
+	// 1. credit_cycle (if sub active — ensureCurrentCycle acquires FOR UPDATE internally)
+	var cycle *model.CreditCycle
+	if subActive {
+		cycle, err = s.ensureCurrentCycle(ctx, tx, sub, now)
+		if err != nil {
+			if err == errno.ErrSubscriptionExpired {
+				subActive = false
+			} else {
+				return nil, fmt.Errorf("DeductCreditsTx: ensureCurrentCycle: %w", err)
+			}
+		}
+	}
+
+	// 2. trial_grant FOR UPDATE
+	var trialLocked *model.TrialGrant
+	if trialActive {
+		trialLocked, err = s.store.TrialGrants().GetForUpdate(ctx, tx, userID)
+		if err != nil {
+			return nil, fmt.Errorf("DeductCreditsTx: lock trial_grant: %w", err)
+		}
+		if trialLocked == nil || !trialLocked.ExpiresAt.After(now) || trialLocked.CreditsRemaining <= 0 {
+			trialActive = false
+			trialLocked = nil
+		}
+	}
+
+	// 3. user_booster_balance FOR UPDATE (only when sub or trial active — INV-15)
+	boosterActive := subActive || trialActive
+	var booster *model.UserBoosterBalance
+	if boosterActive {
+		booster, err = s.store.BoosterBalances().GetForUpdate(ctx, tx, userID)
+		if err != nil {
+			return nil, fmt.Errorf("DeductCreditsTx: lock user_booster_balance: %w", err)
+		}
+	}
+
+	// ── Priority deduction: trial > cycle > booster (§3.5 INV-3) ────────────
+	remaining := amount
+	d := &DeductionResult{}
+
+	// Pool 1: trial
+	if trialActive && trialLocked != nil && remaining > 0 {
+		take := int64(trialLocked.CreditsRemaining)
+		if take > remaining {
+			take = remaining
+		}
+		d.FromTrial = take
+		d.Items = append(d.Items, DeductItem{SourceType: DeductSourceTrial, SourceID: trialLocked.ID, Amount: take})
+		remaining -= take
+		trialLocked.CreditsRemaining -= int(take)
+		if err := s.store.TrialGrants().Update(ctx, tx, trialLocked); err != nil {
+			return nil, fmt.Errorf("DeductCreditsTx: update trial_grant: %w", err)
+		}
+	}
+
+	// Pool 2: cycle
+	if subActive && cycle != nil && remaining > 0 {
+		take := int64(cycle.CreditsRemaining)
+		if take > remaining {
+			take = remaining
+		}
+		d.FromCycle = take
+		d.Items = append(d.Items, DeductItem{SourceType: DeductSourceCycle, SourceID: cycle.ID, Amount: take})
+		remaining -= take
+		cycle.CreditsRemaining -= int(take)
+		cycle.UpdatedAt = time.Now().UTC()
+		if err := s.store.CreditCycles().Update(ctx, tx, cycle); err != nil {
+			return nil, fmt.Errorf("DeductCreditsTx: update credit_cycle: %w", err)
+		}
+	}
+
+	// Pool 3: booster (frozen when !subActive && !trialActive — INV-15)
+	if boosterActive && booster != nil && booster.CreditsRemaining > 0 && remaining > 0 {
+		take := booster.CreditsRemaining
+		if take > remaining {
+			take = remaining
+		}
+		d.FromBooster = take
+		// SourceID for booster = user_id (user_booster_balance PK is user_id).
+		d.Items = append(d.Items, DeductItem{SourceType: DeductSourceBooster, SourceID: userID, Amount: take})
+		remaining -= take
+		if err := s.store.BoosterBalances().Decrement(ctx, tx, userID, take); err != nil {
+			return nil, fmt.Errorf("DeductCreditsTx: decrement booster: %w", err)
+		}
+	}
+
+	if remaining > 0 {
+		return nil, fmt.Errorf("%w: requested %d, shortfall %d", errno.ErrInsufficientCredits, amount, remaining)
+	}
+
+	return d, nil
 }
