@@ -26,6 +26,26 @@ type DeductionResult struct {
 	FromCycle int64
 	// FromBooster is the number of credits deducted from the booster balance pool.
 	FromBooster int64
+	// Items describes per-pool allocation in deduction order. Populated by
+	// DeductCreditsTx (T3 onwards) so callers can write per-source
+	// credit_reservation_item rows for accurate refund routing.
+	Items []DeductItem
+}
+
+// DeductSource identifies which pool a deduction or refund targets.
+type DeductSource string
+
+const (
+	DeductSourceTrial   DeductSource = "trial"
+	DeductSourceCycle   DeductSource = "cycle"
+	DeductSourceBooster DeductSource = "booster"
+)
+
+// DeductItem records a single per-pool allocation within a DeductionResult.
+type DeductItem struct {
+	SourceType DeductSource
+	SourceID   uint64 // credit_cycle.id / user_booster_balance.user_id / trial_grant.id
+	Amount     int64
 }
 
 // ensureCurrentCycle lazily creates or fetches the credit cycle row for the
