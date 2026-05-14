@@ -6,12 +6,15 @@
 package user
 
 import (
+	"time"
+
 	"github.com/gin-gonic/gin"
 
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
+	"numind-server/internal/pkg/model"
 	"numind-server/internal/pkg/util"
 )
 
@@ -50,6 +53,25 @@ func (ctrl *UserController) GetCurrentUser(c *gin.Context) {
 	}
 
 	// 构建响应数据，包含 SOP 统计和会员等级
+	tierDisplay := userWithStats.GetActualUserTier()
+	var tierExpires interface{} = userWithStats.TierExpires
+
+	// credits 制用户：从新 membership 系统计算真实状态
+	if userWithStats.BillingMode == model.BillingModeCredits && ctrl.membershipSvc != nil {
+		now := time.Now().UTC()
+		state, err := ctrl.membershipSvc.GetMembershipState(c, uint64(userWithStats.ID), now)
+		if err != nil {
+			log.C(c).Warnw("GetMembershipState failed, falling back to user_tier", "user_id", userWithStats.ID, "err", err)
+		} else {
+			tierDisplay = state.DisplayState
+			if state.SubExpiresAt != nil {
+				tierExpires = state.SubExpiresAt
+			} else if state.TrialExpiresAt != nil {
+				tierExpires = state.TrialExpiresAt
+			}
+		}
+	}
+
 	response := gin.H{
 		"id":             userWithStats.ID,
 		"phone":          userWithStats.Phone,
@@ -59,9 +81,8 @@ func (ctrl *UserController) GetCurrentUser(c *gin.Context) {
 		"updated_at":     userWithStats.UpdatedAt,
 		"parent_user_id": userWithStats.ParentUserID,
 
-		// SOP 统计与等级信息
-		"user_tier":          userWithStats.GetActualUserTier(),
-		"tier_expires":       userWithStats.TierExpires,
+		"user_tier":          tierDisplay,
+		"tier_expires":       tierExpires,
 		"total_sop_runs":     userWithStats.TotalSopRuns,
 		"monthly_sop_runs":   userWithStats.MonthlySopRuns,
 		"remaining_sop_runs": userWithStats.GetRemainingSOPRuns(),

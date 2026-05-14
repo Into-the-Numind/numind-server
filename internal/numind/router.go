@@ -3,6 +3,7 @@ package numind
 import (
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/credit"
+	customerbiz "numind-server/internal/numind/biz/customer"
 	"numind-server/internal/numind/biz/membership"
 	"numind-server/internal/numind/controller/v1/ali"
 	chatbotcontroller "numind-server/internal/numind/controller/v1/chatbot"
@@ -206,8 +207,11 @@ func installNumindRouters(g *gin.Engine) error {
 		authGroup.GET("/billing/records", billingCtrl.ListRecords)
 	}
 
-	// 积分查询 + B2B2C 会员赋予（Task 10 / §5.1 + §5.7）
+	// 新 membership 系统（subscription/trial_grant/credit_cycle 表）
 	membershipSvc := membership.NewMembershipService(store.S.DB())
+	uc.WithMembershipSvc(membershipSvc)
+
+	// 积分查询 + B2B2C 会员赋予（Task 10 / §5.1 + §5.7）
 	creditCtrl := creditcontroller.New(
 		b.Credit(),
 		b.CreditService(),
@@ -231,7 +235,8 @@ func installNumindRouters(g *gin.Engine) error {
 
 	// 客户管理相关
 	{
-		customerCtrl := customercontroller.NewCustomerController(b.Customers(), b.Users())
+		customerBiz := customerbiz.New(store.S, customerbiz.WithMembershipSvc(membershipSvc))
+		customerCtrl := customercontroller.NewCustomerController(customerBiz, b.Users())
 		authGroup.POST("/customers", customerCtrl.Create)                                           // 创建子客户（注册）
 		authGroup.GET("/customers/check-username", customerCtrl.CheckUsername)                      // 检查用户名是否可用
 		authGroup.GET("/customers/statistics", customerCtrl.GetStatistics)                          // 获取客户统计数据
@@ -261,7 +266,10 @@ func installNumindRouters(g *gin.Engine) error {
 	// creditCtrl.GrantMembership 使用新 membership.MembershipService 路径（§5.1 + §5.7）
 	{
 		// 子账户列表别名（前端 /v1/users/children，Q2 新增），复用 CustomerController.ListSubUsers
-		childListCtrl := customercontroller.NewCustomerController(b.Customers(), b.Users())
+		// Why: b.Customers() 不注入 membershipSvc，会让 ListSubUsers 走旧 credit_package 路径
+		// 与 line 238 主路径产生数据分歧。这里复用同样的构造方式，保持读路径一致。
+		childListBiz := customerbiz.New(store.S, customerbiz.WithMembershipSvc(membershipSvc))
+		childListCtrl := customercontroller.NewCustomerController(childListBiz, b.Users())
 		authGroup.GET("/users/children", childListCtrl.ListSubUsers)
 		// Task 12 §5.4: 父账户查子账户余额（不含 booster，隐私保护）
 		authGroup.GET("/users/children/:child_id/balance", creditCtrl.GetChildBalance)

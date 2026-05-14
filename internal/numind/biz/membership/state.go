@@ -198,6 +198,77 @@ func (s *MembershipService) GetBalance(ctx context.Context, userID uint64, now t
 	return view, nil
 }
 
+// BatchMembershipState is the per-user membership state returned by GetMembershipStateBatch.
+type BatchMembershipState struct {
+	HasActiveTrial        bool
+	HasActiveSubscription bool
+	TrialExpiresAt        *string
+	SubscriptionExpiresAt *string
+	HasUsedTrial          bool
+	CycleRemaining        int64
+}
+
+// GetMembershipStateBatch computes membership state for multiple users in two
+// batch queries (subscriptions + trial_grants) instead of N individual queries.
+func (s *MembershipService) GetMembershipStateBatch(ctx context.Context, userIDs []uint64, now time.Time) (map[uint64]*BatchMembershipState, error) {
+	if len(userIDs) == 0 {
+		return map[uint64]*BatchMembershipState{}, nil
+	}
+
+	result := make(map[uint64]*BatchMembershipState, len(userIDs))
+	for _, id := range userIDs {
+		result[id] = &BatchMembershipState{}
+	}
+
+	// Batch-fetch subscriptions
+	var subs []model.Subscription
+	if err := s.db.WithContext(ctx).Where("user_id IN ?", userIDs).Find(&subs).Error; err != nil {
+		return nil, fmt.Errorf("GetMembershipStateBatch: fetch subscriptions: %w", err)
+	}
+	for i := range subs {
+		sub := &subs[i]
+		st := result[sub.UserID]
+		if st == nil {
+			continue
+		}
+		if sub.ExpiresAt.After(now) {
+			st.HasActiveSubscription = true
+			exp := sub.ExpiresAt.Format(time.RFC3339)
+			st.SubscriptionExpiresAt = &exp
+
+			// Compute cycle remaining (same logic as GetBalance)
+			cycleStart, _ := currentCycleBounds(sub, now)
+			cycle, _ := s.store.CreditCycles().GetByUserAndStart(ctx, s.db, sub.UserID, cycleStart)
+			if cycle != nil {
+				st.CycleRemaining = int64(cycle.CreditsRemaining)
+			} else {
+				st.CycleRemaining = cycleCredits // 2000 default
+			}
+		}
+	}
+
+	// Batch-fetch trial grants
+	var trials []model.TrialGrant
+	if err := s.db.WithContext(ctx).Where("user_id IN ?", userIDs).Find(&trials).Error; err != nil {
+		return nil, fmt.Errorf("GetMembershipStateBatch: fetch trials: %w", err)
+	}
+	for i := range trials {
+		trial := &trials[i]
+		st := result[trial.UserID]
+		if st == nil {
+			continue
+		}
+		st.HasUsedTrial = true
+		if trial.ExpiresAt.After(now) && trial.CreditsRemaining > 0 {
+			st.HasActiveTrial = true
+			exp := trial.ExpiresAt.Format(time.RFC3339)
+			st.TrialExpiresAt = &exp
+		}
+	}
+
+	return result, nil
+}
+
 // currentCycleBounds computes (cycleStart, cycleEnd) for the billing cycle
 // that contains now, anchored on sub.CurrentStartedAt. Uses the same algorithm
 // as ensureCurrentCycle (§3.4) but is read-only and does not require a TX.

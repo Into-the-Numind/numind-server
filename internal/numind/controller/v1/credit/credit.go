@@ -47,8 +47,6 @@ func (c *CreditController) WithMembershipSvc(svc *membership.MembershipService) 
 }
 
 // GetBalance GET /v1/credits/balance — C 用户查看额度余额及分布
-// 扩展返回字段（spec §2.11.1 + §4.5）：billing_mode / remaining_runs / monthly_limit /
-// sub_expires_at / booster_earliest_expires_at；老字段 balance/sub_*/booster_* 保留向后兼容
 func (c *CreditController) GetBalance(ctx *gin.Context) {
 	user := middleware.GetCurrentUser(ctx)
 	if user == nil {
@@ -56,40 +54,71 @@ func (c *CreditController) GetBalance(ctx *gin.Context) {
 		return
 	}
 
-	// ICreditService.GetBalance 按 billing_mode 分发
+	// credits 制用户：从新 membership 系统读取真实状态
+	if user.BillingMode == model.BillingModeCredits && c.membershipSvc != nil {
+		c.getBalanceFromMembership(ctx, user)
+		return
+	}
+
+	// legacy_tier 用户：保留旧路径
 	bb, err := c.creditSvc.GetBalance(ctx, user)
 	if err != nil {
 		core.WriteResponse(ctx, errno.ErrInternalServer, nil)
 		return
 	}
 
-	// 历史 balance 字段（向后兼容，web-v3 credits.ts 消费）
-	balance, err := c.creditBiz.GetBalance(ctx, user.ID)
-	if err != nil {
-		core.WriteResponse(ctx, errno.ErrInternalServer, nil)
-		return
-	}
-
-	// 构建响应：老字段（balance）+ 新字段（billing_mode 等）
 	resp := gin.H{
-		"balance":        balance,
-		"sub_total":      bb.SubTotal,
-		"sub_remain":     bb.SubRemain,
-		"booster_total":  bb.BoosterTotal,
-		"booster_remain": bb.BoosterRemain,
-		"billing_mode":   bb.BillingMode,
-	}
-	if bb.SubExpiresAt != nil {
-		resp["sub_expires_at"] = bb.SubExpiresAt
-	}
-	if bb.BoosterEarliestExpiresAt != nil {
-		resp["booster_earliest_expires_at"] = bb.BoosterEarliestExpiresAt
+		"billing_mode": bb.BillingMode,
 	}
 	if bb.RemainingRuns != nil {
 		resp["remaining_runs"] = *bb.RemainingRuns
 	}
 	if bb.MonthlyLimit != nil {
 		resp["monthly_limit"] = *bb.MonthlyLimit
+	}
+	core.WriteResponse(ctx, nil, resp)
+}
+
+// getBalanceFromMembership 从新 membership 系统读取 credits 制用户的余额和状态。
+func (c *CreditController) getBalanceFromMembership(ctx *gin.Context, user *model.User) {
+	now := time.Now().UTC()
+	view, err := c.membershipSvc.GetBalance(ctx, uint64(user.ID), now)
+	if err != nil {
+		log.C(ctx).Errorw("membershipSvc.GetBalance failed", "user_id", user.ID, "err", err)
+		core.WriteResponse(ctx, errno.ErrInternalServer, nil)
+		return
+	}
+
+	// 仅在订阅期内才暴露 sub_total=2000（cycleCredits）。无订阅的 credits-mode 用户
+	// 需要 sub_total=0，否则前端 CreditBalanceCard 会把他们误判为"已开通"状态。
+	subActive := view.SubExpiresAt != nil && view.SubExpiresAt.After(now)
+	var subTotal int64
+	if subActive {
+		subTotal = 2000
+	}
+
+	resp := gin.H{
+		"billing_mode":     model.BillingModeCredits,
+		"membership_state": view.MembershipState,
+		"trial_remaining":  view.TrialRemaining,
+		"cycle_remaining":  view.CycleRemaining,
+		"booster_total":    view.BoosterTotal,
+		"booster_usable":   view.BoosterUsable,
+
+		// 向后兼容旧字段：sub_remain/sub_total 映射 cycle 数据
+		"balance":        view.CycleRemaining + view.TrialRemaining + view.BoosterUsable,
+		"sub_total":      subTotal,
+		"sub_remain":     view.CycleRemaining,
+		"booster_remain": view.BoosterUsable,
+	}
+	if view.SubExpiresAt != nil {
+		resp["sub_expires_at"] = view.SubExpiresAt
+	}
+	if view.TrialExpiresAt != nil {
+		resp["trial_expires_at"] = view.TrialExpiresAt
+	}
+	if view.CycleEnd != nil {
+		resp["cycle_end"] = view.CycleEnd
 	}
 	core.WriteResponse(ctx, nil, resp)
 }

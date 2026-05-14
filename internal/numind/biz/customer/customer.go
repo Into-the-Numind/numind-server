@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"numind-server/internal/numind/biz/membership"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
@@ -47,13 +48,25 @@ type ICustomerBiz interface {
 }
 
 type customerBiz struct {
-	ds store.IStore
+	ds            store.IStore
+	membershipSvc *membership.MembershipService
 }
 
 var _ ICustomerBiz = (*customerBiz)(nil)
 
-func New(ds store.IStore) ICustomerBiz {
-	return &customerBiz{ds: ds}
+func New(ds store.IStore, opts ...func(*customerBiz)) ICustomerBiz {
+	cb := &customerBiz{ds: ds}
+	for _, opt := range opts {
+		opt(cb)
+	}
+	return cb
+}
+
+// WithMembershipSvc returns an option that injects a MembershipService.
+func WithMembershipSvc(svc *membership.MembershipService) func(*customerBiz) {
+	return func(cb *customerBiz) {
+		cb.membershipSvc = svc
+	}
 }
 
 // ListSubUsers 获取二级客户列表
@@ -64,21 +77,31 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 		return nil, err
 	}
 
-	// 批量收集 userID，一次查询拿所有子用户的会员状态（避免 N+1）
-	userIDs := make([]uint, 0, len(users))
+	now := time.Now().UTC()
+
+	// 批量收集 userID，从新 membership 系统查询会员状态
+	userIDs64 := make([]uint64, 0, len(users))
 	for _, u := range users {
-		userIDs = append(userIDs, u.ID)
+		userIDs64 = append(userIDs64, uint64(u.ID))
 	}
-	membershipBatch, err := c.ds.Credits().GetMembershipStateBatch(ctx, userIDs)
-	if err != nil {
-		log.C(ctx).Warnw("GetMembershipStateBatch failed, will use zero values", "err", err)
-		membershipBatch = map[uint]*store.MembershipStateRow{}
+
+	var msBatch map[uint64]*membership.BatchMembershipState
+	if c.membershipSvc != nil {
+		msBatch, err = c.membershipSvc.GetMembershipStateBatch(ctx, userIDs64, now)
+		if err != nil {
+			log.C(ctx).Warnw("membershipSvc.GetMembershipStateBatch failed, will use zero values", "err", err)
+			msBatch = map[uint64]*membership.BatchMembershipState{}
+		}
+	} else {
+		msBatch = map[uint64]*membership.BatchMembershipState{}
 	}
 
 	// 转换为响应格式
 	subUsers := make([]v1.SubUserInfo, 0, len(users))
 	for _, user := range users {
-		// 获取已授权的模板数量（使用GetAuthorizedTemplates并过滤active状态，与GetSubUserDetail保持一致）
+		// Why: 走 GetAuthorizedTemplates + 手动过滤 active 而非 COUNT(*) — 与 GetSubUserDetail
+		// 保持一致语义（同一个 store 方法 + 同一份 active 过滤逻辑），避免两个端点对"已授权模板"
+		// 给出不同的数字。
 		templates, _ := c.ds.Customers().GetAuthorizedTemplates(ctx, user.ID)
 		activeTemplateCount := 0
 		for _, t := range templates {
@@ -95,8 +118,7 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 		creditBalance, _ := c.ds.Credits().GetBalance(ctx, user.ID)
 		creditExpires, _ := c.ds.Credits().GetLatestCreditExpiry(ctx, user.ID)
 
-		// membership_state + has_used_trial + cycle_remaining（Task 20 前端依赖字段）
-		ms := membershipBatch[user.ID]
+		ms := msBatch[uint64(user.ID)]
 		var membershipState v1.SubUserMembershipState
 		var hasUsedTrial bool
 		var cycleRemaining int64
@@ -104,11 +126,15 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 			membershipState = v1.SubUserMembershipState{
 				HasActiveTrial:        ms.HasActiveTrial,
 				HasActiveSubscription: ms.HasActiveSubscription,
-				TrialExpiresAt:        ms.TrialExpiresAt,
-				SubscriptionExpiresAt: ms.SubscriptionExpiresAt,
+			}
+			if ms.TrialExpiresAt != nil {
+				membershipState.TrialExpiresAt = *ms.TrialExpiresAt
+			}
+			if ms.SubscriptionExpiresAt != nil {
+				membershipState.SubscriptionExpiresAt = *ms.SubscriptionExpiresAt
 			}
 			hasUsedTrial = ms.HasUsedTrial
-			cycleRemaining = ms.SubRemain
+			cycleRemaining = ms.CycleRemaining
 		}
 
 		subUsers = append(subUsers, v1.SubUserInfo{
