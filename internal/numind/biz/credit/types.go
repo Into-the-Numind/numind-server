@@ -116,8 +116,13 @@ type Reservation struct {
 }
 
 // ReservationItem FIFO 扣减单项（快照）
+//
+// Dual-path: legacy reservations have PackageID set + SourceType/SourceID nil;
+// new credits-mode reservations have PackageID nil + SourceType/SourceID set.
 type ReservationItem struct {
-	PackageID        uint64
+	PackageID        *uint64
+	SourceType       *string
+	SourceID         *uint64
 	Credits          int64
 	PackageType      string // "trial" / "subscription" / "booster"
 	PackageExpiresAt time.Time

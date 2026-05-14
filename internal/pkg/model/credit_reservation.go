@@ -51,11 +51,21 @@ func (CreditReservation) TableName() string { return "credit_reservation" }
 // CreditReservationItem FIFO 扣减明细（一个 Reservation 可能按 FIFO 扣多个 Package）
 // Seq 为 FIFO 扣减顺序号（1, 2, ...），非 INSERT 顺序。
 // 唯一索引 uk_reservation_seq 保证同一 reservation 下 seq 唯一。
-// 详见 spec §2.5 / §2.9。
+//
+// 双路径：
+//   - Legacy（billing_mode=legacy_tier）：PackageID 指向 credit_package.id；
+//     SourceType / SourceID 为 NULL。refundOneItem 走老路径。
+//   - New（billing_mode=credits）：PackageID 为 NULL；SourceType 取 cycle/booster/trial，
+//     SourceID 指向 credit_cycle.id / user_booster_balance.user_id / trial_grant.id。
+//     refundOneItem dispatch 调 MembershipService.RefundCreditsTx。
+//
+// 详见 spec §2.5 / §2.9 + credits-deduct-cycle-wiring spec §1。
 type CreditReservationItem struct {
 	ID               uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
 	ReservationID    uint64    `gorm:"not null;index:idx_reservation;uniqueIndex:uk_reservation_seq,priority:1" json:"reservation_id"`
-	PackageID        uint64    `gorm:"not null;index:idx_package,priority:1" json:"package_id"`
+	PackageID        *uint64   `gorm:"index:idx_package,priority:1" json:"package_id,omitempty"`
+	SourceType       *string   `gorm:"column:source_type;size:20;index:idx_cri_source,priority:1" json:"source_type,omitempty"`
+	SourceID         *uint64   `gorm:"column:source_id;index:idx_cri_source,priority:2" json:"source_id,omitempty"`
 	Credits          int64     `gorm:"not null" json:"credits"`
 	PackageType      string    `gorm:"size:20;not null" json:"package_type"`
 	PackageExpiresAt time.Time `gorm:"not null" json:"package_expires_at"`

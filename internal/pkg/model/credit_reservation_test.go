@@ -9,6 +9,8 @@ import (
 	"gorm.io/gorm"
 )
 
+func ptrUint64(v uint64) *uint64 { return &v }
+
 // migrateReservationSchema 为 SQLite 单元测试创建 reservation 相关两张表。
 // GORM 的 AutoMigrate 会把 struct tag 里的 `type:enum(...)` 原样写进 CREATE TABLE
 // SQL，SQLite 不支持 ENUM 类型所以会失败。这里用 raw SQL 显式建表（ENUM 退化为
@@ -51,7 +53,9 @@ func migrateReservationSchema(t *testing.T, db *gorm.DB) {
 		`CREATE TABLE credit_reservation_item (
 			id                 INTEGER PRIMARY KEY AUTOINCREMENT,
 			reservation_id     INTEGER NOT NULL,
-			package_id         INTEGER NOT NULL,
+			package_id         INTEGER,
+			source_type        TEXT,
+			source_id          INTEGER,
 			credits            INTEGER NOT NULL,
 			package_type       TEXT    NOT NULL,
 			package_expires_at DATETIME NOT NULL,
@@ -118,9 +122,9 @@ func TestCreditReservation_CreateWithItemsAndSeqUniqueness(t *testing.T) {
 		CoefficientID:   &coeffID,
 		Status:          "reserved",
 		Items: []CreditReservationItem{
-			{PackageID: 10, Credits: 50, PackageType: "trial", PackageExpiresAt: future, Seq: 1},
-			{PackageID: 20, Credits: 60, PackageType: "subscription", PackageExpiresAt: future, Seq: 2},
-			{PackageID: 30, Credits: 40, PackageType: "booster", PackageExpiresAt: future, Seq: 3},
+			{PackageID: ptrUint64(10), Credits: 50, PackageType: "trial", PackageExpiresAt: future, Seq: 1},
+			{PackageID: ptrUint64(20), Credits: 60, PackageType: "subscription", PackageExpiresAt: future, Seq: 2},
+			{PackageID: ptrUint64(30), Credits: 40, PackageType: "booster", PackageExpiresAt: future, Seq: 3},
 		},
 	}
 	require.NoError(t, db.Create(rsv).Error)
@@ -133,9 +137,12 @@ func TestCreditReservation_CreateWithItemsAndSeqUniqueness(t *testing.T) {
 	assert.Equal(t, 1, items[0].Seq)
 	assert.Equal(t, 2, items[1].Seq)
 	assert.Equal(t, 3, items[2].Seq)
-	assert.Equal(t, uint64(10), items[0].PackageID)
-	assert.Equal(t, uint64(20), items[1].PackageID)
-	assert.Equal(t, uint64(30), items[2].PackageID)
+	require.NotNil(t, items[0].PackageID)
+	require.NotNil(t, items[1].PackageID)
+	require.NotNil(t, items[2].PackageID)
+	assert.Equal(t, uint64(10), *items[0].PackageID)
+	assert.Equal(t, uint64(20), *items[1].PackageID)
+	assert.Equal(t, uint64(30), *items[2].PackageID)
 
 	// 验证 Preload 关联加载
 	var loaded CreditReservation
@@ -145,7 +152,7 @@ func TestCreditReservation_CreateWithItemsAndSeqUniqueness(t *testing.T) {
 	// 同一 reservation 插入重复 seq 必须失败（唯一索引 uk_reservation_seq）
 	dup := &CreditReservationItem{
 		ReservationID:    rsv.ID,
-		PackageID:        99,
+		PackageID:        ptrUint64(99),
 		Credits:          1,
 		PackageType:      "booster",
 		PackageExpiresAt: future,
@@ -166,7 +173,7 @@ func TestCreditReservation_CreateWithItemsAndSeqUniqueness(t *testing.T) {
 	require.NoError(t, db.Create(rsv2).Error)
 	okItem := &CreditReservationItem{
 		ReservationID:    rsv2.ID,
-		PackageID:        11,
+		PackageID:        ptrUint64(11),
 		Credits:          10,
 		PackageType:      "trial",
 		PackageExpiresAt: future,

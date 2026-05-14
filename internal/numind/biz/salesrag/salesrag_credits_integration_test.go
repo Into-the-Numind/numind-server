@@ -127,7 +127,9 @@ CREATE TABLE IF NOT EXISTS credit_reservation (
 CREATE TABLE IF NOT EXISTS credit_reservation_item (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     reservation_id INTEGER NOT NULL,
-    package_id INTEGER NOT NULL,
+    package_id INTEGER,
+    source_type TEXT,
+    source_id INTEGER,
     credits INTEGER NOT NULL,
     package_type TEXT NOT NULL,
     package_expires_at DATETIME NOT NULL,

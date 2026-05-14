@@ -533,9 +533,10 @@ func (c *creditsImpl) Reserve(
 		// 3. Write reservation items in FIFO order (seq = idx+1).
 		itemRows := make([]model.CreditReservationItem, 0, len(items))
 		for i, d := range items {
+			pkgID := d.PackageID
 			itemRows = append(itemRows, model.CreditReservationItem{
 				ReservationID:    rsvRow.ID,
-				PackageID:        d.PackageID,
+				PackageID:        &pkgID,
 				Credits:          d.Credits,
 				PackageType:      d.PackageType,
 				PackageExpiresAt: d.ExpiresAt,
@@ -1264,9 +1265,10 @@ func (c *creditsImpl) reserveBudgetRow(
 
 		itemRows := make([]model.CreditReservationItem, 0, len(items))
 		for i, d := range items {
+			pkgID := d.PackageID
 			itemRows = append(itemRows, model.CreditReservationItem{
 				ReservationID:    rsvRow.ID,
-				PackageID:        d.PackageID,
+				PackageID:        &pkgID,
 				Credits:          d.Credits,
 				PackageType:      d.PackageType,
 				PackageExpiresAt: d.ExpiresAt,
@@ -1328,8 +1330,9 @@ func applyUserTypeMultiplier(estimated int64, multiplier float64) (adjusted int6
 func toReservationItems(items []PackageDeduction) []ReservationItem {
 	out := make([]ReservationItem, 0, len(items))
 	for i, d := range items {
+		pkgID := d.PackageID
 		out = append(out, ReservationItem{
-			PackageID:        d.PackageID,
+			PackageID:        &pkgID,
 			Credits:          d.Credits,
 			PackageType:      d.PackageType,
 			PackageExpiresAt: d.ExpiresAt,
