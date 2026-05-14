@@ -149,6 +149,13 @@ type BalanceBreakdown struct {
 	BoosterRemain            int64      `json:"booster_remain"`
 	BoosterTotal             int64      `json:"booster_total"`
 	BoosterEarliestExpiresAt *time.Time `json:"booster_earliest_expires_at,omitempty"`
+	// TrialRemain is credits remaining in the trial_grant pool. Populated by
+	// credits-mode GetBalance when MembershipService is wired. Pre-fix this
+	// field was implicit in sub/booster sums; now it's its own field so the
+	// pre-check total `SubRemain + BoosterRemain + TrialRemain` reflects the
+	// real spendable balance.
+	TrialRemain    int64      `json:"trial_remain"`
+	TrialExpiresAt *time.Time `json:"trial_expires_at,omitempty"`
 
 	// legacy_tier 模式字段
 	RemainingRuns *int `json:"remaining_runs,omitempty"` // nil = premium unlimited

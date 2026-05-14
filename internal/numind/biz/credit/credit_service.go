@@ -214,7 +214,7 @@ func (s *creditService) CheckAndEstimateBudget(ctx context.Context, user *model.
 	if err != nil {
 		return nil, fmt.Errorf("CheckAndEstimateBudget: balance: %w", err)
 	}
-	total := bal.SubRemain + bal.BoosterRemain
+	total := bal.SubRemain + bal.BoosterRemain + bal.TrialRemain
 	pre := &PreCheckResult{
 		SkipDeduction:    false,
 		Sufficient:       total >= estimatedCredits,
@@ -404,7 +404,7 @@ func (c *creditsImpl) CheckAndEstimate(ctx context.Context, user *model.User, op
 	if err != nil {
 		return nil, fmt.Errorf("checkAndEstimate: estimate: %w", err)
 	}
-	total := bal.SubRemain + bal.BoosterRemain
+	total := bal.SubRemain + bal.BoosterRemain + bal.TrialRemain
 	pre := &PreCheckResult{
 		SkipDeduction:    false,
 		Sufficient:       total >= estimated,
@@ -934,11 +934,34 @@ func classifyReason(err error) string {
 	}
 }
 
-// GetBalance returns the credit_package breakdown (sub + booster). The same
-// fields are consumed by the frontend credits.ts store (spec §1.8 + §2.11.1).
-// SubExpiresAt / BoosterEarliestExpiresAt fill expiry timestamps so the front-
-// end can show "本月 MM-DD 过期" / "最早 YYYY-MM-DD 过期" badges (review P1-A fix).
+// GetBalance returns the breakdown (sub + booster + trial). credits-mode
+// users (post-cycle-wiring) go through MembershipService.GetBalance reading
+// from credit_cycle / user_booster_balance / trial_grant. Legacy fallback
+// (membershipSvc==nil) reads the old credit_package path.
+//
+// Spec §1.8 + §2.11.1 + credits-deduct-cycle-wiring §3.1.
 func (c *creditsImpl) GetBalance(ctx context.Context, user *model.User) (*BalanceBreakdown, error) {
+	// credits-mode + membership service wired → use new tables
+	if c.membershipSvc != nil {
+		view, err := c.membershipSvc.GetBalance(ctx, uint64(user.ID), time.Now().UTC())
+		if err != nil {
+			return nil, fmt.Errorf("creditsImpl.GetBalance via membership: %w", err)
+		}
+		bal := &BalanceBreakdown{
+			BillingMode:    model.BillingModeCredits,
+			SubTotal:       view.CycleRemaining, // cycle is the recurring sub pool
+			SubRemain:      view.CycleRemaining,
+			BoosterTotal:   view.BoosterUsable,
+			BoosterRemain:  view.BoosterUsable,
+			TrialRemain:    view.TrialRemaining,
+			SubExpiresAt:   view.SubExpiresAt,
+			TrialExpiresAt: view.TrialExpiresAt,
+		}
+		return bal, nil
+	}
+
+	// Legacy fallback path (kept for safety when membershipSvc not injected, e.g.
+	// in tests). Reads old credit_package + user_booster_balance via store.
 	subTotal, subRemain, boosterTotal, boosterRemain, err := c.store.Credits().GetQuotaBreakdown(ctx, user.ID)
 	if err != nil {
 		return nil, fmt.Errorf("creditsImpl.GetBalance: quota breakdown: %w", err)
