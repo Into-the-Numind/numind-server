@@ -25,6 +25,7 @@ features:
     decisions:
       - "2026-05-14 (Triage): P0 prod bug — user 427 granted 2-month sub via B2B2C but shows free/no credits. Root cause: write path (subscription table) vs read path (credit_package table) mismatch. Standard track, accelerated."
       - "2026-05-14 (S4 done): 4 tasks implemented — (1) credit.go getBalanceFromMembership 路径 with sub_total 条件性置 2000 (2) UserController+get.go 注入 membershipSvc + tierDisplay/tierExpires 覆盖 (3) customer biz functional options + GetMembershipStateBatch 在 biz/membership 新增 + 路由别名 /users/children 同等注入 membershipSvc (4) SettingsView 新增 pro→Pro 会员标签 + 拓展 expiryText 到 pro/trial。两阶段 review PASS_WITH_CONCERNS, 0 P0 + 1 P1 (alias route 漏注入 membershipSvc) + 3 P2 (sub_total hardcoded / time.Now 一致性 / WHY 注释丢失) 全修。"
+      - "2026-05-14 (S4 三方独立审计补丁): 3 个独立 reviewer subagent 同时全范围审 4 个区域（客户管理 / 开通会员 / 设置 / 加量包）。共识 P1: ListSubUsers 仍读 credit_account.GetBalance + credit_package.GetLatestCreditExpiry，对 credits-mode 子用户返回 0/空串，前端 getQuotaDisplay 的 ?? 0 短路 → UI 显示 0/—。Fix: customer.go 按 BillingMode 分支，credits-mode 用户从 msBatch 拿 CycleRemaining + SubscriptionExpiresAt 填充。一并核实 R2/R3 分歧：parent_grant/grant.go 是死代码（路由只注册 creditCtrl.GrantMembership），不影响生产。"
 
   - id: "chatbot-session-rename-pin"
     ndf_version: "1.1"
