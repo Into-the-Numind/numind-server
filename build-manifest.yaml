@@ -1,6 +1,31 @@
 schema_version: "1.0"
 
 features:
+  - id: "membership-balance-read-path"
+    ndf_version: "1.1"
+    description: "P0 线上 bug：grant-membership 写 subscription 新表，但 GET /v1/credits/balance、GET /v1/users/me、GET /v1/customers/sub-users 仍读 credit_package 旧表，导致开通会员后前端显示免费用户无额度。全面切换读路径到新 membership 系统。"
+    track: "standard"
+    stage: "S5"
+    classification_reason: "条件 4（>3 文件）+ 条件 5（会员/积分高风险逻辑）不满足 Hotfix。但为 P0 线上 bug，加速走 Standard。"
+    last_updated_by: "ai-s4-complete"
+    last_updated_at: "2026-05-14T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "fix/membership-balance-read-path"
+    artifacts: {}
+    progress:
+      total_tasks: 4
+      completed_tasks: 4
+      reviewed_tasks: 4
+      current_task: "S5 验收：部署 dev + 验证 prod 用户 427"
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-05-14 (Triage): P0 prod bug — user 427 granted 2-month sub via B2B2C but shows free/no credits. Root cause: write path (subscription table) vs read path (credit_package table) mismatch. Standard track, accelerated."
+      - "2026-05-14 (S4 done): 4 tasks implemented — (1) credit.go getBalanceFromMembership 路径 with sub_total 条件性置 2000 (2) UserController+get.go 注入 membershipSvc + tierDisplay/tierExpires 覆盖 (3) customer biz functional options + GetMembershipStateBatch 在 biz/membership 新增 + 路由别名 /users/children 同等注入 membershipSvc (4) SettingsView 新增 pro→Pro 会员标签 + 拓展 expiryText 到 pro/trial。两阶段 review PASS_WITH_CONCERNS, 0 P0 + 1 P1 (alias route 漏注入 membershipSvc) + 3 P2 (sub_total hardcoded / time.Now 一致性 / WHY 注释丢失) 全修。"
+
   - id: "chatbot-session-rename-pin"
     ndf_version: "1.1"
     description: "用户端 chatbot 对话页 (views/chatbot/ChatbotChat.vue) 左侧会话列表支持改名与置顶。改名复用现有 chatbot_session.title 字段（无 schema 变更）；置顶新增 pinned_at TIMESTAMP NULL 字段（NULL=未置顶，非NULL=置顶时间）。列表排序改为：置顶组按 pinned_at DESC，非置顶组按 updated_at DESC。交互：hover 显示「…」更多菜单，含「重命名 / 置顶 / 取消置顶 / 删除」。范围明确不含 SalesView 销售对话页与 SOP 运行历史。S1 锁定 Approach A 极简 MVP (1-1.5 d)；顺带修 ListSessions cross-chatbot perf bug。"
