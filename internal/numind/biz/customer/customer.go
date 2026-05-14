@@ -115,9 +115,6 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 			expiresStr = user.TierExpires.Format("2006-01-02")
 		}
 
-		creditBalance, _ := c.ds.Credits().GetBalance(ctx, user.ID)
-		creditExpires, _ := c.ds.Credits().GetLatestCreditExpiry(ctx, user.ID)
-
 		ms := msBatch[uint64(user.ID)]
 		var membershipState v1.SubUserMembershipState
 		var hasUsedTrial bool
@@ -135,6 +132,29 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 			}
 			hasUsedTrial = ms.HasUsedTrial
 			cycleRemaining = ms.CycleRemaining
+		}
+
+		// credit_balance / credit_expires 是给前端兜底用的快捷字段。
+		// credits-mode 用户的真实数据在 msBatch 里（新表），不能再读 credit_account /
+		// credit_package（grant 路径已经不再写这两张表，读出来是 0 / 空串）。
+		var creditBalance int64
+		var creditExpires string
+		if user.BillingMode == model.BillingModeCredits {
+			if ms != nil {
+				creditBalance = ms.CycleRemaining
+				if ms.SubscriptionExpiresAt != nil {
+					if t, err := time.Parse(time.RFC3339, *ms.SubscriptionExpiresAt); err == nil {
+						creditExpires = t.Format("2006-01-02")
+					}
+				} else if ms.TrialExpiresAt != nil {
+					if t, err := time.Parse(time.RFC3339, *ms.TrialExpiresAt); err == nil {
+						creditExpires = t.Format("2006-01-02")
+					}
+				}
+			}
+		} else {
+			creditBalance, _ = c.ds.Credits().GetBalance(ctx, user.ID)
+			creditExpires, _ = c.ds.Credits().GetLatestCreditExpiry(ctx, user.ID)
 		}
 
 		subUsers = append(subUsers, v1.SubUserInfo{
