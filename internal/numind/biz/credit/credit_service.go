@@ -1344,12 +1344,26 @@ func (c *creditsImpl) reserveBudgetRow(
 	}
 
 	var items []PackageDeduction
+	var newPathItems []membership.DeductItem
+	usingNewPath := c.membershipSvc != nil
+	if usingNewPath {
+		log.C(ctx).Infow("reserveBudgetRow: credits-mode new path (DeductCreditsTx)",
+			"user_id", user.ID, "amount", adjustedEstimated, "operation", string(op))
+	}
 	txErr := c.store.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		debited, err := c.biz.DeductCreditsTx(ctx, tx, user.ID, adjustedEstimated, "budget_reserve:"+string(op))
-		if err != nil {
-			return err
+		if usingNewPath {
+			result, err := c.membershipSvc.DeductCreditsTx(ctx, tx, uint64(user.ID), adjustedEstimated, time.Now().UTC())
+			if err != nil {
+				return err
+			}
+			newPathItems = result.Items
+		} else {
+			debited, err := c.biz.DeductCreditsTx(ctx, tx, user.ID, adjustedEstimated, "budget_reserve:"+string(op))
+			if err != nil {
+				return err
+			}
+			items = debited
 		}
-		items = debited
 
 		if err := tx.Create(rsvRow).Error; err != nil {
 			if isUniqueKeyViolation(err) && idempotencyKey != nil {
@@ -1365,7 +1379,31 @@ func (c *creditsImpl) reserveBudgetRow(
 			return fmt.Errorf("creditsImpl.reserveBudgetRow: insert credit_reservation: %w", err)
 		}
 
-		itemRows := make([]model.CreditReservationItem, 0, len(items))
+		var itemRows []model.CreditReservationItem
+		if usingNewPath {
+			itemRows = make([]model.CreditReservationItem, 0, len(newPathItems))
+			for i, di := range newPathItems {
+				sourceType := string(di.SourceType)
+				sourceID := di.SourceID
+				pkgType := mapDeductSourceToPkgType(di.SourceType)
+				itemRows = append(itemRows, model.CreditReservationItem{
+					ReservationID: rsvRow.ID,
+					SourceType:    &sourceType,
+					SourceID:      &sourceID,
+					Credits:       di.Amount,
+					PackageType:   pkgType,
+					Seq:           i + 1,
+				})
+			}
+			if len(itemRows) > 0 {
+				if err := tx.Create(&itemRows).Error; err != nil {
+					return fmt.Errorf("creditsImpl.reserveBudgetRow: insert reservation items (new path): %w", err)
+				}
+			}
+			return nil
+		}
+
+		itemRows = make([]model.CreditReservationItem, 0, len(items))
 		for i, d := range items {
 			pkgID := d.PackageID
 			itemRows = append(itemRows, model.CreditReservationItem{
