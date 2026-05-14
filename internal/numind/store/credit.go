@@ -371,17 +371,16 @@ func (s *creditStore) ListAllAccountsWithBalance(ctx context.Context, offset, li
 
 // GetQuotaBreakdown 获取用户额度分布（订阅 vs 加量包），只统计 active 状态的积分包。
 //
-// 双 schema 兼容（membership-credits-redesign 切换日后）：
-//   - subscription/trial 仍从老 credit_package 表算（新代码的 fulfillOrder 不再
-//     写老表，但订阅/trial 还由 GrantOrRenewSubscription / GrantTrial 双写到老
-//     表保持向后兼容，且老用户的 credit_package 也仍在）
-//   - booster 优先读新表 user_booster_balance。如果新表有行（fulfillOrder 走过
-//     新代码路径），用新表余额覆盖老表算出来的 booster 字段；否则保留老表值
-//     fallback（兼容尚未走过任何新代码的历史用户）
+// **本方法仅服务 billing_mode=legacy_tier 历史用户**。Credits-mode 用户的余额在
+// credit_cycle / user_booster_balance / trial_grant 表，由 MembershipService
+// 管理（见 internal/numind/biz/membership/cycle.go + state.go）。Credits-mode
+// 用户的 grant 路径（GrantOrRenewSubscription / GrantTrial）**不写 credit_package**，
+// 因此对他们该方法返回 sub=0；调用方必须按 BillingMode 分流到 MembershipService
+// .GetBalance（见 creditsImpl.GetBalance T6 实现）。
 //
-// 为什么不直接两表叠加：迁移时把老 credit_package booster 复制到了 user_booster_balance
-// （02-apply.sql Step 3），如果叠加会重复计数（双倍）。新表是 single source of truth
-// once it exists for the user.
+// Booster 字段仍兼容性地从 user_booster_balance 覆盖（老 fulfillOrder 复制过来），
+// 但这一兼容路径在 credits-deduct-cycle-wiring 后已不再被业务 Reserve/Reconcile
+// 路径直接消费。
 func (s *creditStore) GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error) {
 	type result struct {
 		Type          string

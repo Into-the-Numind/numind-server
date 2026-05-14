@@ -882,10 +882,15 @@ func (c *creditsImpl) refundToItems(
 	return nil
 }
 
-// refundOneItem refunds `amount` credits back to item.PackageID and bumps the
-// account balance accordingly. Expired packages are skipped (returns 0, nil)
-// per spec §2.4 — the caller already captured the refund in reservation state
-// so the user does not see a second refund from cron.
+// refundOneItem refunds `amount` credits back to the original pool. Dispatch
+// by item.SourceType:
+//   - SourceType IS NULL (legacy reservation) → refund to credit_package via
+//     item.PackageID (old path, unchanged).
+//   - SourceType IS NOT NULL (new path post-T8) → call MembershipService
+//     .RefundCreditsTx which routes to credit_cycle / user_booster_balance /
+//     trial_grant with D2 fallback chain.
+//
+// Spec §2.4 + credits-deduct-cycle-wiring §3.3 + INV-2.
 func (c *creditsImpl) refundOneItem(
 	ctx context.Context, tx *gorm.DB, userID uint,
 	item model.CreditReservationItem, amount int64,
@@ -893,10 +898,33 @@ func (c *creditsImpl) refundOneItem(
 	if amount <= 0 {
 		return 0, nil
 	}
+
+	// New-path dispatch (T9): item carries source_type/source_id → route to
+	// MembershipService.RefundCreditsTx for cycle/booster/trial refund.
+	if item.SourceType != nil && item.SourceID != nil && c.membershipSvc != nil {
+		_, _, refundedAmt, err := c.membershipSvc.RefundCreditsTx(
+			ctx, tx,
+			uint64(userID),
+			membership.DeductSource(*item.SourceType),
+			*item.SourceID,
+			amount,
+			time.Now().UTC(),
+		)
+		if err != nil {
+			return 0, fmt.Errorf("refundOneItem new path: %w", err)
+		}
+		return refundedAmt, nil
+	}
+
+	// Legacy dispatch: refund to credit_package via item.PackageID.
+	if item.PackageID == nil {
+		// Inconsistent row: neither source_type nor package_id set. Skip safely.
+		return 0, nil
+	}
 	var pkg model.CreditPackage
 	if err := tx.WithContext(ctx).
 		Clauses(clause.Locking{Strength: "UPDATE"}).
-		First(&pkg, item.PackageID).Error; err != nil {
+		First(&pkg, *item.PackageID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Package deleted (GDPR purge etc.) — best-effort no-op.
 			return 0, nil
