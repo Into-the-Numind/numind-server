@@ -17,9 +17,10 @@ S1 proposal `proposals/credits-deduct-cycle-wiring-proposal.md` 已锁定全部 
 **关键不变量**：
 - INV-1：Reserve 时 deduct + reservation insert 在同一 outer tx，要么全成要么全失败
 - INV-2：Reconcile 时 refund 按 item.source_type 路由（NULL=老路径写 credit_package，否则新路径写新表）
-- INV-3：D3 优先级 `trial > cycle > booster` 固化，booster 内部按 expires_at FIFO
-- INV-4：D2 Refund fallback：原 source 不可用 → 当前 active booster → 当前 active cycle → 写 ledger 不退（金额"丢失"但可追溯）
+- INV-3：D3 优先级 `trial > cycle > booster` 固化。**Booster 是 per-user 单行聚合**（`user_booster_balance` 一个 user_id 一行 `credits_remaining int64`），不存在 per-batch FIFO；所有 booster 扣减都从该单行扣。"按 expires_at FIFO"原措辞误读，已删除。
+- INV-4：D2 Refund fallback：原 source 不可用 → 当前 active `user_booster_balance` 行（如 credits_remaining 仍 > 0）→ 当前 active `credit_cycle` 行 → 写 `membership_event` ledger 不退（金额"丢失"但可追溯）
 - INV-5：Legacy_tier 用户路径完全不变（任何 `if user.BillingMode == credits` 分支都不影响 legacy 分支）
+- **INV-6（S2 reviewer P0-1 补漏）**：`creditsImpl` struct 需新增 `membershipSvc *membership.MembershipService` 字段；`NewCreditService` 签名需加 `membershipSvc` 参数；所有 caller (`router.go` 等) 同步注入
 
 ---
 
@@ -86,24 +87,32 @@ const (
 )
 ```
 
-### 2.2 DeductResult + DeductItem
+### 2.2 DeductionResult + DeductItem（在已有类型上扩展，S2 reviewer P0-3 修正）
+
+**已有类型** `cycle.go:22-29 DeductionResult{FromTrial, FromCycle, FromBooster}` 保留不变以避免破坏现有 caller。
+
+**仅新增 Items 字段**（向后兼容增量）：
 
 ```go
-// internal/numind/biz/membership/cycle.go (新增类型)
+// internal/numind/biz/membership/cycle.go — 在已有 DeductionResult 上加 Items
 
-type DeductResult struct {
-    CycleDelta   int64
-    BoosterDelta int64
-    TrialDelta   int64
-    Items        []DeductItem  // 详细分摊，按扣减顺序记录
+type DeductionResult struct {
+    FromTrial   int64       // 既有
+    FromCycle   int64       // 既有
+    FromBooster int64       // 既有
+    Items       []DeductItem // 新增 — 详细分摊，按扣减顺序记录
 }
 
 type DeductItem struct {
-    SourceType DeductSource
-    SourceID   uint64   // credit_cycle.id / user_booster_balance.id / trial_grant.id
+    SourceType DeductSource  // "trial" | "cycle" | "booster"
+    SourceID   uint64         // trial_grant.id / credit_cycle.id / user_booster_balance.user_id
     Amount     int64
 }
 ```
+
+**注**：booster `SourceID` 用 `user_id`（user_booster_balance 表的 PK 是 user_id 而非自增 id，per INV-3）。
+
+**注 #2**：S1 D1 文档把 sourceID 写成 `int64` 是 typo，统一以 `uint64` 为准（与 model 字段 `*uint64` 一致）。
 
 ### 2.3 DeductCreditsTx — tx-aware 扣减
 
@@ -116,18 +125,20 @@ type DeductItem struct {
 // Caller 责任：保证 tx 已开启且未 commit。本函数仅写不 commit。
 //
 // 失败语义：amount 超过总余额时返回 ErrInsufficientCredits，tx 应由 caller rollback。
+//
+// 锁顺序（沿用现有 cycle.go:113 实现，避免死锁）：trial_grant → credit_cycle → user_booster_balance。
 func (s *MembershipService) DeductCreditsTx(
     ctx context.Context,
     tx *gorm.DB,
     userID uint64,
     amount int64,
     now time.Time,
-) (*DeductResult, error) {
-    // 1. 读余额（trial / cycle / booster batches，FOR UPDATE 锁）
-    // 2. 按 D3 顺序分摊：trial 先扣 → 满 cycle 后扣 → booster 按 expires_at ASC 依次扣
+) (*DeductionResult, error) {
+    // 1. 按固定锁顺序读余额（FOR UPDATE）
+    // 2. 按 D3 优先级分摊：trial 先扣 → 满 cycle 后扣 → booster 单聚合行最后扣（无 per-batch）
     // 3. 余额不足整体 return ErrInsufficientCredits（不部分扣）
-    // 4. 逐池 Update（cycle/booster_balance/trial_grant），同时写 membership_event
-    // 5. 返回 DeductResult.Items 详细列表给 caller
+    // 4. 逐池 Update（trial_grant.credits_remaining / credit_cycle.credits_remaining / user_booster_balance.credits_remaining），写 membership_event
+    // 5. 返回 DeductionResult{FromTrial, FromCycle, FromBooster, Items}，Items 含 1-3 个条目（按实际扣减池数）
 }
 ```
 
@@ -154,18 +165,22 @@ func (s *MembershipService) RefundCreditsTx(
 
 ### 2.5 Wrapper: 老 DeductCredits 保持向后兼容
 
+老签名 `DeductCredits(ctx, userID, amount) (*DeductionResult, error)` 不变（无 `now` 参数，无新 Items 字段）—— 改写为 wrapper，内部调 tx 版本：
+
 ```go
-// cycle.go - 老 DeductCredits 改写为 wrapper
-func (s *MembershipService) DeductCredits(ctx context.Context, userID uint64, amount int64, now time.Time) (*DeductResult, error) {
-    var result *DeductResult
+// cycle.go - 老 DeductCredits 改写为 wrapper（签名不变）
+func (s *MembershipService) DeductCredits(ctx context.Context, userID uint64, amount int64) (*DeductionResult, error) {
+    var result *DeductionResult
     err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-        r, e := s.DeductCreditsTx(ctx, tx, userID, amount, now)
+        r, e := s.DeductCreditsTx(ctx, tx, userID, amount, time.Now().UTC())
         result = r
         return e
     })
     return result, err
 }
 ```
+
+**注**：老 caller 不感知 `Items` 字段，但拿到的 `*DeductionResult` 含新字段，零破坏。
 
 ---
 
@@ -256,26 +271,35 @@ func (c *creditsImpl) Reserve(ctx context.Context, user *model.User, op Operatio
 }
 ```
 
-### 3.3 Reconcile / refundOneItem dispatch
+### 3.3 Reconcile / refundOneItem dispatch（S2 reviewer P0-2 修正）
+
+**已确认实际签名**（`credit_service.go:846`）：`refundOneItem(ctx, tx, userID uint, item CreditReservationItem, amount int64) → (int64, error)`。
+
+`item` 本身不带 UserID — userID 由 caller 从 parent reservation 传入。本 spec 沿用该签名，新代码读 `userID` 参数：
 
 ```go
-// credit_service.go:842
+// credit_service.go:846
 
-func (c *creditsImpl) refundOneItem(ctx context.Context, tx *gorm.DB, item *model.CreditReservationItem) error {
+func (c *creditsImpl) refundOneItem(ctx context.Context, tx *gorm.DB, userID uint, item model.CreditReservationItem, amount int64) (int64, error) {
     // D6 dispatch：source_type 为 nil 说明是老路径 reservation
     if item.SourceType == nil {
-        return c.refundOneItemLegacy(ctx, tx, item)  // 走老路径：写 credit_package
+        return c.refundOneItemLegacy(ctx, tx, userID, item, amount)  // 走老路径：写 credit_package
     }
     // 新路径：调 MembershipService.RefundCreditsTx
-    _, _, _, err := c.membershipSvc.RefundCreditsTx(
+    refundedTo, refundedID, refundedAmt, err := c.membershipSvc.RefundCreditsTx(
         ctx, tx,
-        item.UserID,  // 注意：item 模型可能没有 UserID，需要从 reservation 拿
+        uint64(userID),
         membership.DeductSource(*item.SourceType),
         *item.SourceID,
-        item.Amount,
+        amount,
         time.Now().UTC(),
     )
-    return err
+    if err != nil {
+        return 0, fmt.Errorf("refundOneItem new path: %w", err)
+    }
+    _ = refundedTo  // for audit logging if needed
+    _ = refundedID
+    return refundedAmt, nil
 }
 ```
 
@@ -313,17 +337,18 @@ func (b *creditBiz) CanPerformAIOperation(ctx context.Context, user *model.User,
 
 ## §4 实施顺序 (S3 plan 预览，详 plan 文件)
 
-S3 plan 会拆 9 个 task，按以下顺序：
+S3 plan 会拆 **10 个 task**（S2 reviewer P0-1 补 T0 wiring task），按以下顺序：
 
-1. **T1 — Migration + Model**：credit_reservation_item 加列
-2. **T2 — DeductSource / DeductResult 类型**：types.go
-3. **T3 — DeductCreditsTx 实现**：cycle.go 内核
+0. **T0 — creditsImpl 注入 MembershipService**（P0-1 修复）：`NewCreditService` 签名加 `membershipSvc`；`creditsImpl` struct 加字段；router.go / 测试 caller 同步注入
+1. **T1 — Migration + Model**：credit_reservation_item 加 source_type / source_id 列 + index
+2. **T2 — DeductSource enum + 扩展 DeductionResult**：types.go + 在已有 DeductionResult 加 Items 字段（不破坏旧 callers）
+3. **T3 — DeductCreditsTx 实现**：cycle.go 内核，沿用既有锁顺序
 4. **T4 — RefundCreditsTx 实现**：含 D2 fallback 链
-5. **T5 — DeductCredits wrapper + 老接口标记**：保持向后兼容
-6. **T6 — creditsImpl.GetBalance 改造**：read path
-7. **T7 — CanPerformAIOperation 改造**：SOP/salesrag 早期 guard
-8. **T8 — creditsImpl.Reserve 改造**：tx 内 deduct + item insert
-9. **T9 — refundOneItem dispatch + STALE-LIE 注释修正 + S5 validation strategy doc**
+5. **T5 — DeductCredits wrapper**：保持向后兼容，老签名不变
+6. **T6 — creditsImpl.GetBalance 改造 + BalanceBreakdown +TrialRemain 字段**（P2-4）：read path；BalanceBreakdown 加 TrialRemain，CheckAndEstimate/CheckAndEstimateBudget 的 total 求和都加 TrialRemain（P1-2 修复）
+7. **T7 — CanPerformAIOperation 改造**：SOP/salesrag 早期 guard，credits-mode 分支
+8. **T8 — creditsImpl.Reserve 改造**：tx 内 deduct + item insert（含 source_type/source_id）
+9. **T9 — refundOneItem dispatch + STALE-LIE 注释删除 + S5 validation strategy doc**：注释具体改法（P2-3）：删除 `store/credit.go:372-384` 整段 STALE-LIE 注释，加 1 行真实指向新路径的说明
 
 每个 task atomic（独立可编译 / 独立 commit / per-task two-stage review）。
 
