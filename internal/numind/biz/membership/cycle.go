@@ -301,18 +301,24 @@ func (s *MembershipService) RefundCreditsTx(
 		return "", 0, 0, errno.ErrInvalidParameter
 	}
 
+	// ── Pre-fetch sub/trial once (P1 fix: avoid duplicate fetches across paths) ──
+	sub, _ := s.store.Subscriptions().Get(ctx, userID)
+	trial, _ := s.store.TrialGrants().Get(ctx, userID)
+	subActive := sub != nil && sub.ExpiresAt.After(now)
+	trialActive := trial != nil && trial.ExpiresAt.After(now) && trial.CreditsRemaining > 0
+
 	// ── Step 1: Try original source if still active ─────────────────────────
 	switch source {
 	case DeductSourceTrial:
-		var trial model.TrialGrant
+		var origTrial model.TrialGrant
 		queryErr := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
-			First(&trial, sourceID).Error
-		if queryErr == nil && trial.UserID == userID && trial.ExpiresAt.After(now) {
-			trial.CreditsRemaining += int(amount)
-			if updateErr := s.store.TrialGrants().Update(ctx, tx, &trial); updateErr != nil {
+			First(&origTrial, sourceID).Error
+		if queryErr == nil && origTrial.UserID == userID && origTrial.ExpiresAt.After(now) {
+			origTrial.CreditsRemaining += int(amount)
+			if updateErr := s.store.TrialGrants().Update(ctx, tx, &origTrial); updateErr != nil {
 				return "", 0, 0, fmt.Errorf("RefundCreditsTx: update trial: %w", updateErr)
 			}
-			return DeductSourceTrial, trial.ID, amount, nil
+			return DeductSourceTrial, origTrial.ID, amount, nil
 		}
 
 	case DeductSourceCycle:
@@ -329,11 +335,7 @@ func (s *MembershipService) RefundCreditsTx(
 		}
 
 	case DeductSourceBooster:
-		// Booster active iff sub or trial active (INV-15). Check both.
-		sub, _ := s.store.Subscriptions().Get(ctx, userID)
-		trial, _ := s.store.TrialGrants().Get(ctx, userID)
-		subActive := sub != nil && sub.ExpiresAt.After(now)
-		trialActive := trial != nil && trial.ExpiresAt.After(now) && trial.CreditsRemaining > 0
+		// Booster active iff sub or trial active (INV-15).
 		if subActive || trialActive {
 			if incErr := s.store.BoosterBalances().Increment(ctx, tx, userID, amount); incErr != nil {
 				return "", 0, 0, fmt.Errorf("RefundCreditsTx: increment booster: %w", incErr)
@@ -345,12 +347,10 @@ func (s *MembershipService) RefundCreditsTx(
 	// ── Step 2: Fallback chain (original source unavailable) ───────────────
 
 	// Fallback 1: any active booster (requires sub or trial active)
-	sub, _ := s.store.Subscriptions().Get(ctx, userID)
-	trial, _ := s.store.TrialGrants().Get(ctx, userID)
-	subActive := sub != nil && sub.ExpiresAt.After(now)
-	trialActive := trial != nil && trial.ExpiresAt.After(now) && trial.CreditsRemaining > 0
 	if subActive || trialActive {
 		// Booster row may not exist yet — Increment is an upsert-style op.
+		// We require the row to already exist to mirror INV-15 strictly: only
+		// refund to booster if user already has a (frozen-or-active) booster row.
 		booster, _ := s.store.BoosterBalances().GetForUpdate(ctx, tx, userID)
 		if booster != nil {
 			if incErr := s.store.BoosterBalances().Increment(ctx, tx, userID, amount); incErr != nil {
@@ -374,17 +374,19 @@ func (s *MembershipService) RefundCreditsTx(
 	}
 
 	// Fallback 3: ledger lost — write event, return amount=0
-	subscriptionID := uint64(0)
+	// P1 fix: use nil pointer for SubscriptionID when sub is absent (FK=0 is invalid).
+	var subscriptionIDPtr *uint64
 	if sub != nil {
-		subscriptionID = sub.ID
+		id := sub.ID
+		subscriptionIDPtr = &id
 	}
 	event := &model.MembershipEvent{
 		UserID:         userID,
 		EventType:      model.EventTypeRefundLost,
 		ProductType:    string(source),
-		AmountCents:    amount, // re-purposing amount_cents to store credits amount for the lost refund
-		Source:         model.SourceB2BGrant,
-		SubscriptionID: &subscriptionID,
+		AmountCents:    amount,             // re-purposing amount_cents to store credits amount for the lost refund
+		Source:         model.SourceSystem, // P2 fix: system event, not B2B
+		SubscriptionID: subscriptionIDPtr,
 		OccurredAt:     now,
 	}
 	if eventErr := s.store.Events().Create(ctx, tx, event); eventErr != nil {

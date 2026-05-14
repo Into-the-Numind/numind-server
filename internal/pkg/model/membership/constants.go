@@ -3,6 +3,10 @@ package membership
 const (
 	SourceSelfPurchase = "self_purchase"
 	SourceB2BGrant     = "b2b_grant"
+	// SourceSystem marks events created by automatic system actions (e.g.
+	// refund_lost events from RefundCreditsTx when no active pool can accept
+	// the credits). Used to keep B2B and self-purchase audit reports clean.
+	SourceSystem = "system"
 
 	EventTypeTrialGranted   = "trial_granted"
 	EventTypeSubGranted     = "sub_granted"
