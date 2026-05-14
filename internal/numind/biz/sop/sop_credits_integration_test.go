@@ -169,7 +169,7 @@ func buildSopBizWithCredits(t *testing.T, db *gorm.DB) *sopBiz {
 	t.Helper()
 	ds := store.NewTestStore(db)
 	calc := pricing.NewCalculator(ds.Billing())
-	cs := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc)
+	cs := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, nil)
 	return &sopBiz{
 		ds:        ds,
 		creditBiz: credit.NewCreditBiz(ds),

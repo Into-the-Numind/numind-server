@@ -258,7 +258,7 @@ func TestAcquireSalesragCredits_CreditsHappyPath(t *testing.T) {
 	db := newSalesragCreditsTestDB(t)
 	ds := store.NewTestStore(db)
 	calc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, nil)
 
 	// Seed a user with 1000 credits and the fallback coef + pricing rule.
 	userID := uint(1001)
@@ -301,7 +301,7 @@ func TestAcquireSalesragCredits_InsufficientBalance(t *testing.T) {
 	db := newSalesragCreditsTestDB(t)
 	ds := store.NewTestStore(db)
 	calc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, nil)
 
 	userID := uint(1002)
 	// Seed a credits-mode user but with zero balance (no packages).
@@ -351,7 +351,7 @@ func TestAcquireSalesragCredits_LegacyTierFree(t *testing.T) {
 	db := newSalesragCreditsTestDB(t)
 	ds := store.NewTestStore(db)
 	calc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, nil)
 
 	// legacy_tier standard user well inside the monthly 20-cap.
 	userID := uint(1003)
@@ -397,7 +397,7 @@ func TestFinalize_StreamErrorTriggersRefund(t *testing.T) {
 	db := newSalesragCreditsTestDB(t)
 	ds := store.NewTestStore(db)
 	calc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, nil)
 
 	userID := uint(1004)
 	seedCreditsUserWithPackage(t, db, userID, 1000)
@@ -449,7 +449,7 @@ func TestAcquireSalesragCredits_IdempotentReplay(t *testing.T) {
 	db := newSalesragCreditsTestDB(t)
 	ds := store.NewTestStore(db)
 	calc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, nil)
 
 	userID := uint(1005)
 	seedCreditsUserWithPackage(t, db, userID, 1000)
@@ -485,7 +485,7 @@ func TestAcquireSalesragCredits_LegacyTierFreeUserBlocked(t *testing.T) {
 	db := newSalesragCreditsTestDB(t)
 	ds := store.NewTestStore(db)
 	calc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, nil)
 
 	userID := uint(1006)
 	// free tier on legacy_tier — CanRunSOP returns "免费用户...".
@@ -571,7 +571,7 @@ func TestSalesRAGChatWithSessionNoDoubleReserve(t *testing.T) {
 	db := newSalesragCreditsTestDB(t)
 	ds := store.NewTestStore(db)
 	calc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, nil)
 
 	// Seed a credits-mode user with ample balance.
 	userID := uint(2001)

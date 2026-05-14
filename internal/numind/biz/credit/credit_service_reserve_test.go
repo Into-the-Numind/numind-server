@@ -115,7 +115,7 @@ func newCreditsUser(id uint) *model.User {
 func TestReserve_HappyPath_SinglePackage(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	userID := uint(200)
 	user := newCreditsUser(userID)
@@ -164,7 +164,7 @@ func TestReserve_HappyPath_SinglePackage(t *testing.T) {
 func TestReserve_FIFOCrossPackage(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	userID := uint(201)
 	user := newCreditsUser(userID)
@@ -197,7 +197,7 @@ func TestReserve_FIFOCrossPackage(t *testing.T) {
 func TestReserve_InsufficientRollsBack(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	userID := uint(202)
 	user := newCreditsUser(userID)
@@ -227,7 +227,7 @@ func TestReserve_InsufficientRollsBack(t *testing.T) {
 func TestReserve_IdempotencyReturnsExisting(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	userID := uint(203)
 	user := newCreditsUser(userID)
@@ -262,7 +262,7 @@ func TestReserve_IdempotencyReturnsExisting(t *testing.T) {
 func TestReserve_GetBalanceCredits(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	userID := uint(204)
 	user := newCreditsUser(userID)
@@ -306,7 +306,7 @@ func newPureCreditsUser(id uint) *model.User {
 func TestCheckAndEstimateBudget_NormalizesSopNodeExecuteToSopRun(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	userID := uint(700)
 	user := newPureCreditsUser(userID)
@@ -340,7 +340,7 @@ func TestCheckAndEstimateBudget_NormalizesSopNodeExecuteToSopRun(t *testing.T) {
 func TestReserveBudget_WritesContextBudgetMetadata(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	userID := uint(701)
 	user := newPureCreditsUser(userID)
@@ -391,7 +391,7 @@ func TestReserveBudget_WritesContextBudgetMetadata(t *testing.T) {
 func TestCheckAndEstimateBudget_LegacyTierSkipsReserve(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	future := time.Now().Add(30 * 24 * time.Hour)
 	user := &model.User{
@@ -426,7 +426,7 @@ func TestCheckAndEstimateBudget_LegacyTierSkipsReserve(t *testing.T) {
 func TestCheckAndEstimateBudget_UnknownChargedOperationFailsClosed(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	userID := uint(703)
 	user := newPureCreditsUser(userID)
@@ -465,7 +465,7 @@ func TestCheckAndEstimateBudget_UnknownChargedOperationFailsClosed(t *testing.T)
 func TestReserve_TrialUserMultiplierApplied(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	userID := uint(800)
 	user := newCreditsUser(userID)
@@ -508,7 +508,7 @@ func TestReserve_TrialUserMultiplierApplied(t *testing.T) {
 func TestReserve_SubscriptionUserBypassesTrialMultiplier(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	userID := uint(801)
 	user := newCreditsUser(userID)
@@ -543,7 +543,7 @@ func TestReserve_SubscriptionUserBypassesTrialMultiplier(t *testing.T) {
 func TestReserve_ExpiredTrialPackageGetsNoDiscount(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	userID := uint(802)
 	user := newCreditsUser(userID)

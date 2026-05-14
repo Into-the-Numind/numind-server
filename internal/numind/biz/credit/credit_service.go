@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"numind-server/internal/numind/biz/membership"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
@@ -26,9 +27,10 @@ import (
 // See spec §1.2 / §1.3 / §1.4 for the dispatch rules and §1.6 for the caller
 // template.
 type creditService struct {
-	store   store.IStore
-	biz     ICreditBiz
-	pricing pricing.ICalculator
+	store         store.IStore
+	biz           ICreditBiz
+	pricing       pricing.ICalculator
+	membershipSvc *membership.MembershipService
 	// Pre-instantiated legs so each dispatch is a plain method call.
 	legacy  *legacyTierImpl
 	credits *creditsImpl
@@ -36,25 +38,28 @@ type creditService struct {
 
 // NewCreditService constructs the singleton ICreditService used throughout the
 // app. Pass the existing store.IStore, an ICreditBiz (for DeductCreditsTx +
-// quota queries), and a pricing.ICalculator (used by credits leg for R2
-// estimation). pricing may be nil — the legacy leg never touches it, so
-// legacy-only callers in tests can pass nil.
+// quota queries), a pricing.ICalculator (used by credits leg for R2
+// estimation), and a membershipSvc (used by T6+ tasks for cycle/booster/trial
+// balance reads). pricing may be nil — the legacy leg never touches it, so
+// legacy-only callers in tests can pass nil. membershipSvc may be nil — it is
+// unused until T6 tasks are implemented; legacy-only tests pass nil.
 //
 // The estimation biz is built internally from ds + pc so callers don't need
 // to know about the sub-dependency. If pc is nil, the estimation leg is also
 // nil and creditsImpl.CheckAndEstimate returns a config error rather than
 // panicking — legacy-only tests exercise this path safely.
-func NewCreditService(ds store.IStore, biz ICreditBiz, pc pricing.ICalculator) ICreditService {
+func NewCreditService(ds store.IStore, biz ICreditBiz, pc pricing.ICalculator, membershipSvc *membership.MembershipService) ICreditService {
 	var est IEstimationBiz
 	if pc != nil {
 		est = NewEstimationBiz(ds, pc)
 	}
 	return &creditService{
-		store:   ds,
-		biz:     biz,
-		pricing: pc,
-		legacy:  &legacyTierImpl{biz: biz},
-		credits: &creditsImpl{store: ds, biz: biz, pricing: pc, estimation: est},
+		store:         ds,
+		biz:           biz,
+		pricing:       pc,
+		membershipSvc: membershipSvc,
+		legacy:        &legacyTierImpl{biz: biz},
+		credits:       &creditsImpl{store: ds, biz: biz, pricing: pc, estimation: est, membershipSvc: membershipSvc},
 	}
 }
 
@@ -362,10 +367,11 @@ func (b BalanceBreakdown) Ptr() *BalanceBreakdown { return &b }
 // ---------------------------------------------------------------------------
 
 type creditsImpl struct {
-	store      store.IStore
-	biz        ICreditBiz
-	pricing    pricing.ICalculator
-	estimation IEstimationBiz // wired in NewCreditService
+	store         store.IStore
+	biz           ICreditBiz
+	pricing       pricing.ICalculator
+	estimation    IEstimationBiz                // wired in NewCreditService
+	membershipSvc *membership.MembershipService // wired in NewCreditService; used by T6+ for cycle/booster/trial reads
 }
 
 // CheckAndEstimate — credits mode. Computes R2 estimate via the estimation

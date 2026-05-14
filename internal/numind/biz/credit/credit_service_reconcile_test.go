@@ -23,7 +23,7 @@ func setupReservation(
 	t.Helper()
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	seedPackagesAndAccount(t, db, userID, packages)
 	user := newCreditsUser(userID)
@@ -186,7 +186,7 @@ func TestReconcile_AlreadyFinalized_ReturnsSentinel(t *testing.T) {
 func TestReconcile_NotFound_ReturnsSentinel(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 	err := svc.Reconcile(context.Background(), 999999, 10)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, credit.ErrReservationNotFound))

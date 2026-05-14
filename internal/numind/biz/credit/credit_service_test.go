@@ -21,7 +21,7 @@ import (
 func TestLegacyCheckAndEstimate_CanRun(t *testing.T) {
 	db := newCreditTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil /* pricing */)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil /* pricing */, nil)
 
 	future := time.Now().Add(24 * time.Hour)
 	// Within the 30-day cycle: MonthlyResetAt = just now so no auto-reset.
@@ -55,7 +55,7 @@ func TestLegacyCheckAndEstimate_CanRun(t *testing.T) {
 func TestLegacyCheckAndEstimate_CannotRun(t *testing.T) {
 	db := newCreditTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	future := time.Now().Add(24 * time.Hour)
 	user := &model.User{
@@ -84,7 +84,7 @@ func TestLegacyCheckAndEstimate_CannotRun(t *testing.T) {
 func TestLegacyCheckAndEstimate_FreeUser(t *testing.T) {
 	db := newCreditTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	user := &model.User{BillingMode: model.BillingModeLegacyTier, UserTier: model.UserTierFree}
 	user.ID = 3
@@ -100,7 +100,7 @@ func TestLegacyCheckAndEstimate_FreeUser(t *testing.T) {
 func TestLegacyReserve_Panics(t *testing.T) {
 	db := newCreditTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	user := &model.User{BillingMode: model.BillingModeLegacyTier}
 	user.ID = 4
@@ -115,7 +115,7 @@ func TestLegacyReserve_Panics(t *testing.T) {
 func TestLegacyGetBalance_ReturnsRemainingRuns(t *testing.T) {
 	db := newCreditTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	future := time.Now().Add(24 * time.Hour)
 
@@ -163,7 +163,7 @@ func TestLegacyGetBalance_ReturnsRemainingRuns(t *testing.T) {
 func TestLegacyFinalizeReservation_NilIsNoOp(t *testing.T) {
 	db := newCreditTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	var opErr error
 	var actual int64

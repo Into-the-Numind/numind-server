@@ -57,7 +57,7 @@ func TestCheckAndEstimate_FreeUser_CreditsMode_ReturnsInsufficient(t *testing.T)
 	user.ID = userID
 
 	pc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), pc)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), pc, nil)
 
 	// Act
 	pre, err := svc.CheckAndEstimate(context.Background(), user, credit.OpSopRun, credit.EstimationInput{
@@ -86,7 +86,7 @@ func TestCheckAndEstimate_FreeUser_CreditsMode_ReturnsInsufficient(t *testing.T)
 func TestReserve_ExactlyExhaustedThenRetry_ReturnsInsufficientSentinel(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	userID := uint(610)
 	user := newCreditsUser(userID)
@@ -143,7 +143,7 @@ func TestReserve_CoefficientIDFrozenAcrossVersionBump(t *testing.T) {
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
 
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	// Reserve with v1.ID snapshotted.
 	rsv, err := svc.Reserve(context.Background(), user, credit.OpSopRun, 150, v1.ID, nil)
@@ -193,7 +193,7 @@ func TestReserve_CoefficientIDFrozenAcrossVersionBump(t *testing.T) {
 func TestRefund_ToExpiredPackage_IsNoop(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	userID := uint(630)
 	user := newCreditsUser(userID)
@@ -286,7 +286,7 @@ func TestCheckAndEstimate_CreditsMode_TierExpiredStillPasses(t *testing.T) {
 	user.ID = userID
 
 	pc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), pc)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), pc, nil)
 
 	pre, err := svc.CheckAndEstimate(context.Background(), user, credit.OpSopRun, credit.EstimationInput{
 		PromptChars: 100, Model: "qwen-turbo", Provider: "ali",
@@ -306,7 +306,7 @@ func TestCheckAndEstimate_CreditsMode_TierExpiredStillPasses(t *testing.T) {
 func TestCheckAndEstimate_LegacyTierMode_TierExpired_Rejected(t *testing.T) {
 	db := newCreditTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	pastExpiry := time.Now().Add(-time.Hour)
 	user := &model.User{
@@ -337,7 +337,7 @@ func TestCheckAndEstimate_LegacyTierMode_TierExpired_Rejected(t *testing.T) {
 func TestReserve_StoreErrorReturnsErrorAndNoReservationRow(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
 
 	userID := uint(650)
 	user := newCreditsUser(userID)

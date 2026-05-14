@@ -80,7 +80,7 @@ func newCreditSvcWithLangfuseDB(t *testing.T, userID uint, balance int64) (
 	seedPricingRule(t, db, "llm_chat", "ali", "qwen-turbo", 200, 800)
 
 	pc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), pc)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), pc, nil)
 
 	user := newCreditsUser(userID)
 	return svc, ds, user
