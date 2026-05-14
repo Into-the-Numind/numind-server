@@ -710,9 +710,18 @@ func (c *creditsImpl) reconcileWithTokens(
 			refundedPackages = snapshotItemsAsMap(items, -delta)
 		case delta > 0:
 			reconcileDirection = "topup"
-			// Top-up: FIFO debit from whatever packages are active NOW.
-			if _, err := c.biz.DeductCreditsTx(ctx, tx, row.UserID, delta,
-				model.CreditTxOpPrefixReconcile+row.Operation); err != nil {
+			// Top-up: FIFO debit from whatever pools are active NOW.
+			// Credits-mode users → MembershipService.DeductCreditsTx (writes new
+			// credit_cycle / user_booster_balance / trial_grant tables).
+			// Legacy_tier users → c.biz.DeductCreditsTx (writes old credit_package).
+			var topupErr error
+			if c.membershipSvc != nil {
+				_, topupErr = c.membershipSvc.DeductCreditsTx(ctx, tx, uint64(row.UserID), delta, time.Now().UTC())
+			} else {
+				_, topupErr = c.biz.DeductCreditsTx(ctx, tx, row.UserID, delta,
+					model.CreditTxOpPrefixReconcile+row.Operation)
+			}
+			if err := topupErr; err != nil {
 				// If the user no longer has enough credits, we still reconcile
 				// (record the debt via delta) rather than blocking completion —
 				// the operation already succeeded and the user owes credits.
