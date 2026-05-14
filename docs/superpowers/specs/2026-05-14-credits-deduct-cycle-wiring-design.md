@@ -126,7 +126,10 @@ type DeductItem struct {
 //
 // 失败语义：amount 超过总余额时返回 ErrInsufficientCredits，tx 应由 caller rollback。
 //
-// 锁顺序（沿用现有 cycle.go:113 实现，避免死锁）：trial_grant → credit_cycle → user_booster_balance。
+// 锁顺序（沿用现有 cycle.go:113-116 实现，alphabetical by table name，避免死锁）：
+//   credit_cycle → subscription (read-only) → trial_grant → user_booster_balance
+// 注：锁顺序与扣减优先级（trial > cycle > booster）不一致是 intentional —
+// 锁顺序按表名字母序避免死锁；扣减顺序在持锁后按业务优先级。
 func (s *MembershipService) DeductCreditsTx(
     ctx context.Context,
     tx *gorm.DB,
@@ -305,33 +308,32 @@ func (c *creditsImpl) refundOneItem(ctx context.Context, tx *gorm.DB, userID uin
 
 ### 3.4 CanPerformAIOperation 改造（S0 reviewer P0-1）
 
-```go
-// credit.go:56
+**实际签名**（`credit.go:56`）：`(ctx, user, operation string) → (bool, string)`，**不是 error**。本 spec **保持签名不变**，只改内部分支：
 
-func (b *creditBiz) CanPerformAIOperation(ctx context.Context, user *model.User, op Operation) error {
+```go
+// credit.go:56 — 签名不变，只换内部读路径
+
+func (b *creditBiz) CanPerformAIOperation(ctx context.Context, user *model.User, operation string) (bool, string) {
     if user.BillingMode == model.BillingModeCredits && b.membershipSvc != nil {
         // credits-mode 用户：通过 MembershipService.GetBalance 判断
         view, err := b.membershipSvc.GetBalance(ctx, uint64(user.ID), time.Now().UTC())
         if err != nil {
-            return fmt.Errorf("CanPerformAIOperation: %w", err)
+            log.C(ctx).Warnw("CanPerformAIOperation: membershipSvc failed", "user_id", user.ID, "err", err)
+            return false, "余额查询失败"
         }
         total := view.TrialRemaining + view.CycleRemaining + view.BoosterUsable
         if total <= 0 {
-            return ErrInsufficientCredits
+            return false, "积分不足，请充值或购买加量包"
         }
-        return nil
+        return true, ""
     }
-    // legacy_tier 用户：保留原 credit_account.balance 读路径
-    bal, err := b.ds.Credits().GetBalance(ctx, user.ID)
-    if err != nil {
-        return fmt.Errorf("CanPerformAIOperation: legacy: %w", err)
-    }
-    if bal <= 0 {
-        return ErrInsufficientCredits
-    }
-    return nil
+    // legacy_tier 用户：保留原 credit_account.balance 读路径，行为完全不变
+    // (原代码 not touched here — 详 §5 INV-5)
+    return b.canPerformAIOperationLegacy(ctx, user, operation)
 }
 ```
+
+**调用方约定不变**：sop.go:670 / sop.go:2290 / sales_rag.go:146 等所有 caller 仍以 `(bool, string)` 解构。
 
 ---
 
@@ -347,7 +349,7 @@ S3 plan 会拆 **10 个 task**（S2 reviewer P0-1 补 T0 wiring task），按以
 5. **T5 — DeductCredits wrapper**：保持向后兼容，老签名不变
 6. **T6 — creditsImpl.GetBalance 改造 + BalanceBreakdown +TrialRemain 字段**（P2-4）：read path；BalanceBreakdown 加 TrialRemain，CheckAndEstimate/CheckAndEstimateBudget 的 total 求和都加 TrialRemain（P1-2 修复）
 7. **T7 — CanPerformAIOperation 改造**：SOP/salesrag 早期 guard，credits-mode 分支
-8. **T8 — creditsImpl.Reserve 改造**：tx 内 deduct + item insert（含 source_type/source_id）
+8. **T8 — creditsImpl.Reserve 改造**：tx 内 deduct + item insert（含 source_type/source_id）；**加 observability log**（S2 holistic P2-NEW-2）：`log.C(ctx).Infow("reserve: credits-mode new path", "user_id", user.ID, "amount", pre.EstimatedCredits)` 让 rollout 期可观测新/老路径流量比
 9. **T9 — refundOneItem dispatch + STALE-LIE 注释删除 + S5 validation strategy doc**：注释具体改法（P2-3）：删除 `store/credit.go:372-384` 整段 STALE-LIE 注释，加 1 行真实指向新路径的说明
 
 每个 task atomic（独立可编译 / 独立 commit / per-task two-stage review）。
@@ -361,7 +363,8 @@ S3 plan 会拆 **10 个 task**（S2 reviewer P0-1 补 T0 wiring task），按以
 - `TestDeductCreditsTx_TrialOnly`：trial 200 → 扣 100 → trial 100
 - `TestDeductCreditsTx_TrialOverflow`：trial 200 → 扣 300 → trial 0 + cycle -100
 - `TestDeductCreditsTx_CycleOnly`：no trial → cycle 2000 → 扣 100 → cycle 1900
-- `TestDeductCreditsTx_BoosterMultiBatch`：2 个 booster 批次按 expires_at FIFO
+- ~~`TestDeductCreditsTx_BoosterMultiBatch`~~（删除：booster 是单聚合行，INV-3）
+- `TestDeductCreditsTx_BoosterOnly`：no trial, no cycle，booster 600 → 扣 100 → user_booster_balance.credits_remaining=500
 - `TestDeductCreditsTx_Insufficient`：total < amount → ErrInsufficientCredits, no partial deduct
 - `TestRefundCreditsTx_OriginalActive`：原 source 还 active → 退回原处
 - `TestRefundCreditsTx_BoosterExpired_FallbackCycle`：D2 fallback 链
