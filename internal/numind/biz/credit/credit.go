@@ -8,6 +8,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"numind-server/internal/numind/biz/membership"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
@@ -42,12 +43,23 @@ type ICreditBiz interface {
 }
 
 type creditBiz struct {
-	ds store.IStore
+	ds            store.IStore
+	membershipSvc *membership.MembershipService // wired via WithMembershipSvc; may be nil for tests
 }
 
 // NewCreditBiz 创建积分业务逻辑实例
 func NewCreditBiz(ds store.IStore) ICreditBiz {
 	return &creditBiz{ds: ds}
+}
+
+// InjectCreditBizMembershipSvc wires a MembershipService into a creditBiz
+// instance after construction. Used by biz.NewBiz to avoid breaking the
+// existing NewCreditBiz signature. No-op if the ICreditBiz isn't a *creditBiz
+// (e.g. a test mock).
+func InjectCreditBizMembershipSvc(b ICreditBiz, svc *membership.MembershipService) {
+	if cb, ok := b.(*creditBiz); ok {
+		cb.membershipSvc = svc
+	}
 }
 
 // CanPerformAIOperation 检查用户是否可以执行 AI 操作
@@ -63,8 +75,26 @@ func (b *creditBiz) CanPerformAIOperation(ctx context.Context, user *model.User,
 		return true, ""
 	}
 
-	// credits 模式：粗粒度余额预检（hardcoded estimate vs credit_account.balance）
+	// credits 模式：粗粒度余额预检
 	estimated := GetEstimatedCredits(operation)
+
+	// credits-deduct-cycle-wiring T7: prefer MembershipService (reads
+	// credit_cycle + user_booster_balance + trial_grant) over the legacy
+	// credit_account.balance read which returns 0 for new-grant users.
+	if b.membershipSvc != nil {
+		view, err := b.membershipSvc.GetBalance(ctx, uint64(user.ID), time.Now().UTC())
+		if err != nil {
+			log.Errorw("CanPerformAIOperation: membershipSvc.GetBalance failed", "user_id", user.ID, "err", err)
+			return false, "积分余额查询失败，请稍后重试"
+		}
+		total := view.CycleRemaining + view.TrialRemaining + view.BoosterUsable
+		if total < int64(estimated) {
+			return false, "积分不足，请购买积分包或联系管理员"
+		}
+		return true, ""
+	}
+
+	// Fallback: legacy credit_account path (test-only after T0 wiring lands).
 	balance, err := b.ds.Credits().GetBalance(ctx, user.ID)
 	if err != nil {
 		log.Errorw("Failed to get credit balance", "user_id", user.ID, "error", err)

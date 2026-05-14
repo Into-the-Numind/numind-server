@@ -76,13 +76,15 @@ type biz struct {
 
 // NewBiz 创建一个 IBiz 类型的实例.
 func NewBiz(ds store.IStore) *biz {
+	// MembershipService 用于 credits-mode 用户的 cycle/booster/trial 余额读写。
+	// router.go 也会自己构造一份（包同样的 DB），两份实例无状态争用。
+	membershipSvc := membership.NewMembershipService(ds.DB())
 	creditBiz := credit.NewCreditBiz(ds)
+	// Wire membershipSvc into creditBiz so CanPerformAIOperation reads new tables.
+	credit.InjectCreditBizMembershipSvc(creditBiz, membershipSvc)
 	// pricing.NewCalculator takes a local PricingStore interface (subset of full store).
 	// ds.Billing() structurally satisfies PricingStore (per Track B design).
 	pricingCalc := pricing.NewCalculator(ds.Billing())
-	// MembershipService 用于 credits-mode 用户的 cycle/booster/trial 余额读写（T6+ 任务用到）。
-	// router.go 也会自己构造一份（包同样的 DB），两份实例无状态争用。
-	membershipSvc := membership.NewMembershipService(ds.DB())
 	creditSvc := credit.NewCreditService(ds, creditBiz, pricingCalc, membershipSvc)
 	b := &biz{
 		ds:            ds,
