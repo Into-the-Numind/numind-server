@@ -557,12 +557,13 @@ func (c *creditsImpl) Reserve(
 				// Map DeductSource → legacy PackageType column value for back-compat.
 				pkgType := mapDeductSourceToPkgType(di.SourceType)
 				itemRows = append(itemRows, model.CreditReservationItem{
-					ReservationID: rsvRow.ID,
-					SourceType:    &sourceType,
-					SourceID:      &sourceID,
-					Credits:       di.Amount,
-					PackageType:   pkgType,
-					Seq:           i + 1,
+					ReservationID:    rsvRow.ID,
+					SourceType:       &sourceType,
+					SourceID:         &sourceID,
+					Credits:          di.Amount,
+					PackageType:      pkgType,
+					PackageExpiresAt: di.ExpiresAt,
+					Seq:              i + 1,
 				})
 			}
 		} else {
@@ -1387,12 +1388,13 @@ func (c *creditsImpl) reserveBudgetRow(
 				sourceID := di.SourceID
 				pkgType := mapDeductSourceToPkgType(di.SourceType)
 				itemRows = append(itemRows, model.CreditReservationItem{
-					ReservationID: rsvRow.ID,
-					SourceType:    &sourceType,
-					SourceID:      &sourceID,
-					Credits:       di.Amount,
-					PackageType:   pkgType,
-					Seq:           i + 1,
+					ReservationID:    rsvRow.ID,
+					SourceType:       &sourceType,
+					SourceID:         &sourceID,
+					Credits:          di.Amount,
+					PackageType:      pkgType,
+					PackageExpiresAt: di.ExpiresAt,
+					Seq:              i + 1,
 				})
 			}
 			if len(itemRows) > 0 {

@@ -47,6 +47,11 @@ type DeductItem struct {
 	SourceType DeductSource
 	SourceID   uint64 // credit_cycle.id / user_booster_balance.user_id / trial_grant.id
 	Amount     int64
+	// ExpiresAt is the expiry of the deducted pool — populated for trial and
+	// cycle (real expiry) and as a far-future sentinel for booster (the
+	// per-user aggregate row has no expiry). Used by callers to populate the
+	// legacy credit_reservation_item.package_expires_at NOT NULL column.
+	ExpiresAt time.Time
 }
 
 // ensureCurrentCycle lazily creates or fetches the credit cycle row for the
@@ -231,7 +236,7 @@ func (s *MembershipService) DeductCreditsTx(ctx context.Context, tx *gorm.DB, us
 			take = remaining
 		}
 		d.FromTrial = take
-		d.Items = append(d.Items, DeductItem{SourceType: DeductSourceTrial, SourceID: trialLocked.ID, Amount: take})
+		d.Items = append(d.Items, DeductItem{SourceType: DeductSourceTrial, SourceID: trialLocked.ID, Amount: take, ExpiresAt: trialLocked.ExpiresAt})
 		remaining -= take
 		trialLocked.CreditsRemaining -= int(take)
 		if err := s.store.TrialGrants().Update(ctx, tx, trialLocked); err != nil {
@@ -246,7 +251,7 @@ func (s *MembershipService) DeductCreditsTx(ctx context.Context, tx *gorm.DB, us
 			take = remaining
 		}
 		d.FromCycle = take
-		d.Items = append(d.Items, DeductItem{SourceType: DeductSourceCycle, SourceID: cycle.ID, Amount: take})
+		d.Items = append(d.Items, DeductItem{SourceType: DeductSourceCycle, SourceID: cycle.ID, Amount: take, ExpiresAt: cycle.CycleEnd})
 		remaining -= take
 		cycle.CreditsRemaining -= int(take)
 		cycle.UpdatedAt = now
@@ -263,7 +268,10 @@ func (s *MembershipService) DeductCreditsTx(ctx context.Context, tx *gorm.DB, us
 		}
 		d.FromBooster = take
 		// SourceID for booster = user_id (user_booster_balance PK is user_id).
-		d.Items = append(d.Items, DeductItem{SourceType: DeductSourceBooster, SourceID: userID, Amount: take})
+		// Booster has no expiry (per-user aggregate row, spec §2.4) — use a
+		// far-future sentinel to satisfy NOT NULL column constraint downstream.
+		boosterSentinel := time.Date(2099, 12, 31, 23, 59, 59, 0, time.UTC)
+		d.Items = append(d.Items, DeductItem{SourceType: DeductSourceBooster, SourceID: userID, Amount: take, ExpiresAt: boosterSentinel})
 		remaining -= take
 		if err := s.store.BoosterBalances().Decrement(ctx, tx, userID, take); err != nil {
 			return nil, fmt.Errorf("DeductCreditsTx: decrement booster: %w", err)
