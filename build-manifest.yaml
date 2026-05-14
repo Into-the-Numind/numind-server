@@ -1,6 +1,34 @@
 schema_version: "1.0"
 
 features:
+  - id: "credits-deduct-cycle-wiring"
+    ndf_version: "1.1"
+    description: "P0 线上 bug：所有 billing_mode=credits 用户运行 SOP / chatbot / salesrag 时被错误判定为 ErrInsufficientCredits，即便 cycle_remaining + booster_usable >= 估算。Root cause: creditsImpl.GetBalance 和 deductCreditsTxFull 仍读写老 credit_package 表，而 GrantOrRenewSubscription 只写新 subscription + credit_cycle 表（store/credit.go:375 注释承诺的『双写』从未实现）。MembershipService.DeductCredits 是写新表的 active path 但根本没人调用（cycle.go:97-101 自承 Task 16 未完成）。本 feature 完成 Task 16 cleanup：把 Reserve / Reconcile 切换到 MembershipService.DeductCredits，让 read+write 都用新表。"
+    track: "standard"
+    stage: "S0"
+    classification_reason: "条件 4（>3 文件：credit_service.go / credit.go / sop.go / chatbot middleware / store/credit.go / 测试）+ 条件 5（高风险扣费逆路）触发 Standard。P0 prod bug 加速。"
+    last_updated_by: "ai-triage"
+    last_updated_at: "2026-05-14T00:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/credits-deduct-cycle-wiring"
+    artifacts: {}
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "S0 — 写 requirement card"
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-05-14 (Triage): 3 个独立 reviewer subagent 共识 — 注释 STALE-LIE，GetQuotaBreakdown 读 credit_package 但 grant 只写 subscription/credit_cycle。所有 SOP/chatbot/salesrag 的 pre-check 都返回 SubRemain=0，total = booster_remain（最多 600），估算>600 立即 ErrInsufficientCredits。Reserve/Reconcile 也写老表，新表 credit_cycle 永远不动。修复方向：完整切换 Reserve/Reconcile 到 MembershipService.DeductCredits（用户拍板：选项 B 不选短期止血选项 A）"
+    related_features:
+      - "membership-balance-read-path (S6, dev deployed) — 上一轮修了 read 显示，本 feature 修 reserve/reconcile"
+      - "membership-credits-redesign (S5, plan §Task 16 cleanup) — 原 plan 规划过 cleanup 但只设计了 cron 删除和 helper 替换，未设计 reserve/reconcile 切表的具体 wiring"
+    created_at: "2026-05-14T00:00:00+08:00"
+    completed_at: null
+
   - id: "membership-balance-read-path"
     ndf_version: "1.1"
     description: "P0 线上 bug：grant-membership 写 subscription 新表，但 GET /v1/credits/balance、GET /v1/users/me、GET /v1/customers/sub-users 仍读 credit_package 旧表，导致开通会员后前端显示免费用户无额度。全面切换读路径到新 membership 系统。"
