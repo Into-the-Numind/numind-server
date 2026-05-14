@@ -7,7 +7,7 @@ features:
     track: "standard"
     stage: "S4"
     classification_reason: "Triage 5 条 — (1) DB schema 变更：是（chatbot_session 加 pinned_at 字段 + 覆盖排序的复合索引）(2) 新 API：是（PUT /v1/chatbot/sessions/:id/rename + PUT /v1/chatbot/sessions/:id/pin，2 个新端点；GET sessions 列表 ORDER BY 子句更新）(3) 无外部服务 (4) 跨 numind-server + numind-web-v3 两仓约 10-11 文件 (5) 不涉及支付/权限。条件 1/2/4 不满足 Hotfix，Standard Track。"
-    last_updated_by: "ai-s4-frontend-done"
+    last_updated_by: "ai-s4-complete"
     last_updated_at: "2026-05-14T00:00:00+08:00"
     repos:
       - numind-server
@@ -22,9 +22,9 @@ features:
       plan: "numind-server/docs/superpowers/plans/2026-05-13-chatbot-session-rename-pin-plan.md"
     progress:
       total_tasks: 8
-      completed_tasks: 7
-      reviewed_tasks: 7
-      current_task: "S4 Task 8: S5 验证策略文档"
+      completed_tasks: 8
+      reviewed_tasks: 8
+      current_task: "S5 验收 — 本地执行 validation-strategy.md 中的 10 条用户路径"
     rollback: null
     last_verified: null
     decisions:
@@ -44,6 +44,14 @@ features:
       - "2026-05-13 (S3 plan written): 8 task plan (T1-T7 实施 + T8 验证策略 NDF Rule 10 强制)。后端 T1-T4 (migration/store/biz/controller+router) 先于前端 T5-T7 (types+api/store+Vitest/ChatbotChat.vue)。S2 holistic reviewer 的 2 P1 指引已写入 plan §0：fetchSessions breaking change + types 前置依赖。预估工作量 CC+gstack 3.5h / 人类 2d；含 S4 review 后 wall time 6-9h"
       - "2026-05-13 (S3 plan review Round 1): Sonnet reviewer (NDF §3 S3 强制) 报告 PASS_WITH_CONCERNS — 0 P0 + 1 P1 + 2 P2。NDF S3 Gate 检查清单全 PASS；AC → Task 映射矩阵 11/11 全覆盖。P1: T6 → T7 间 fetchSessions 破坏性签名变更导致 type-check 中间态不一致。P2-1: PRD AC-3.4 措辞 vs spec/plan client-side filter 保留语义。P2-2: T8 是文档 task 但描述未说明实际工作。"
       - "2026-05-13 (S3 plan review Round 1 fixes): 1 P1 + 2 P2 全修。关键修复: P1 Task 6 描述加 '任务边界清单' 明确 T6 必须同时迁移 ChatbotChat.vue 内现有 fetchSessions 旧签名调用（不含 T7 的新增 UI）保证 type-check 在 T6 commit 时已 PASS；P2-1 Task 7 加 'Client-side filter 保留语义说明' 段；P2-2 T8 加 '实施说明' 段明确工作内容是把 plan §3 内容拷贝为独立 .md 文件"
+      - "2026-05-14 (S4 Backend Phase T1-T4 done): 后端 4 task 全部按 plan 实施 + 每 task NDF Rule 6 两阶段 review (spec compliance + code quality) PASS。8 个 feature 分支 commits: T1 (migration + GORM model +PinnedAt) / T2 (store 3 方法 + 10 unit tests, P1 补 OnlyUnpinned 测试) / T3 (biz 3 方法 + 8 unit tests, P2 utf8 rune 计数 fix) / T4 (controller 2 端点 + ListSessions chatbot_id 改造 + router 注册, P2 trim 复用). 全部 push 到 origin/feature/chatbot-session-rename-pin (numind-server)"
+      - "2026-05-14 (S4 Frontend Phase T5-T7 done): 前端 3 task 全部完成 + 两阶段 review PASS。6 个 commits: T5 (types ChatbotSession +pinned_at + api 3 函数, P1 JSDoc 注释 fix) / T6 (Pinia store currentChatbotId + fetchSessions 破坏性签名 + 3 处内部调用迁移 + ChatbotChat.vue 内 fetchSessions 调用迁移 + renameSession + togglePin + sortSessionsLocally + 8 Vitest tests, P1 != null vs !! 修正 + cleanup 重置 currentChatbotId) / T7 (ChatbotChat.vue chatbotId watcher + hover「⋯」menu + inline RenameModal 复用 sales-modal.css + 删除按钮迁入菜单 + 置顶视觉左边框 + 📌 指示器, P1 rename/pin 失败用 useNotificationsStore toast). 全部 push 到 origin/feature/chatbot-session-rename-pin (numind-web-v3)"
+      - "2026-05-14 (S4 Task 8 validation strategy doc): plan §3 内容物质化为独立 .md 文件 numind-server/docs/superpowers/specs/2026-05-13-chatbot-session-rename-pin-validation-strategy.md (NDF Rule 10 强制末尾 task). 含 3 要素: 验证方式 (Playwright E2E + 后端 Go test + 前端 Vitest 三件套) / 5 条理由 (含为什么不选 gstack /qa) / 10 条关键用户路径 (含 D2 updated_at 不变量验证 + EC-14 重复置顶刷新双重验证). Reviewer Round 1 PASS_WITH_CONCERNS, 1 P1 (§4 Playwright 覆盖列表漏 #2 空白校验) 已修"
+      - "2026-05-14 (S4 完成): 8/8 task 实施 + reviewed PASS, 共 15 commits (8 主 + 7 fix). NDF S4 gate 全过: task lint exit 0, go test PASS, npm lint exit 0, npm type-check exit 0, npm test:unit 380/403 PASS (23 skipped), 2 阶段 review × 8 task 全 PASS. progress 8/8. stage S4 → 准备进 S5."
+    related_features:
+      - "sop-chatbot-visibility-scope (S7 已上线, 不耦合)"
+      - "membership-credits-redesign (S5 in flight, 不耦合)"
+    blockers: []
     created_at: "2026-05-13T00:00:00+08:00"
     completed_at: null
 
