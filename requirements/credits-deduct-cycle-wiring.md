@@ -26,7 +26,7 @@
 | Reconcile（对账退/补） | `reconcileWithTokens` → `DeductCreditsTx` / `refundToItems` 写 `credit_package` | 同上，分摊回原扣减池 |
 | **真正写新表的 path** | `MembershipService.DeductCredits` 写 `credit_cycle` + `user_booster_balance` | 已实现但**没有任何 caller**（`cycle.go:97-101` 自承 Task 16 未完成） |
 
-**Smoking gun：** `store/credit.go:375-379` 注释承诺 "subscription/trial 还由 GrantOrRenewSubscription / GrantTrial 双写到老表保持向后兼容"。三方 reviewer grep 验证：**这两个函数完全不写 credit_package**。注释 STALE-LIE，承诺的双写从未实现。
+**Smoking gun：** `store/credit.go:372-384` 注释承诺 "subscription/trial 还由 GrantOrRenewSubscription / GrantTrial 双写到老表保持向后兼容"。三方 reviewer grep 验证：**这两个函数完全不写 credit_package**。注释 STALE-LIE，承诺的双写从未实现。
 
 **生产影响：** 任何通过新 grant 路径（`POST /v1/users/children/:id/grant-membership`）开通会员的 credits-mode 用户，都不能跑 SOP / chatbot / salesrag。dev 上的 admin 账号也复现（cycle 2000 但 Reserve 时 SubRemain=0）。Wendy（prod user 427）就算上线 read-path fix 也会立刻撞这个 bug。
 
@@ -55,15 +55,21 @@
 ### In Scope
 
 1. **`creditsImpl.GetBalance`**（`internal/numind/biz/credit/credit_service.go:934`）：credits-mode 用户改读 `MembershipService.GetBalance`（返回 trial_remaining + cycle_remaining + booster_usable）；legacy 路径不变。
-2. **`creditsImpl.Reserve`**（`credit_service.go:444`）：credits-mode 用户改调用 `MembershipService.DeductCredits` 扣减 estimated_credits（按 trial > cycle > booster 优先级，FIFO booster by expires_at），同时仍写 `credit_reservation` 行（记录关联的扣减分摊：从哪个池子各扣了多少）；legacy 路径不变。
-3. **`creditsImpl.Reconcile`** / `reconcileWithTokens`（`credit_service.go:670`）：基于 reservation 的扣减分摊，多退少补 — 退到原扣减池（trial/cycle/booster 对应的表）；补则继续 `MembershipService.DeductCredits`；legacy 路径不变。
-4. **`creditsImpl.CheckAndEstimate` / `CheckAndEstimateBudget`**（`credit_service.go:166, 385`）：read path 跟随 GetBalance 自动修。
-5. **`store/credit.go:375-379` STALE-LIE 注释**：用真实双系统说明替换（或全删）。
-6. **`credit_reservation` schema**：新增 `cycle_delta`、`booster_delta`、`trial_delta` 字段（int64）记录从各池扣了多少。需 migration。
-7. **测试覆盖**：
-   - Unit test 覆盖 `creditsImpl.Reserve` 各 billing_mode 分支
-   - Unit test 覆盖 Reconcile 多退少补对 cycle / booster 的分摊
-   - Integration test：admin (cycle=2000, booster=0) 跑 SOP → Reserve 应从 cycle 扣 estimated；Reconcile 后 cycle.credits_remaining 反映实际 token 量
+2. **`ICreditBiz.CanPerformAIOperation`**（`internal/numind/biz/credit/credit.go:56-78`）：credits-mode 用户走 `MembershipService.GetBalance` 判断池子余额，不再读 `credit_account.balance`。**S0 reviewer P0-1 补漏**：此函数被 sop.go:670 / sop.go:2290 / sales_rag.go:146/722/807/902/1059 多处调用，是 SOP 早期 guard + chat / salesrag 直检入口。原 card 漏掉这条路径。
+3. **`creditsImpl.Reserve`**（`credit_service.go:444`）：credits-mode 用户改调用 `MembershipService.DeductCreditsTx`（**新增 tx-aware 变体，见 D1**）扣减 estimated_credits，FIFO 优先级见 D3；同时写 `credit_reservation` 行 + 必要的 source-typed item 行（schema 见 D4）；legacy 路径不变。
+4. **`creditsImpl.Reconcile`** / `reconcileWithTokens`（`credit_service.go:670`）：基于 reservation 分摊多退少补 — 退到原扣减池；补则继续 `DeductCreditsTx`；legacy 路径不变。
+5. **`refundToItems` / `refundOneItem`**（`credit_service.go:842-889`）：**S0 reviewer P0-2 补漏**：当前实现 `tx.First(&pkg, item.PackageID)` 读 `credit_package` 再 `tx.Save`，credits-mode 用户需替换为按 item 类型（cycle/booster/trial）路由到对应新表的 +回操作。该函数需重写，不只是 schema 变更。
+6. **`creditsImpl.CheckAndEstimate` / `CheckAndEstimateBudget`**（`credit_service.go:166, 385`）：read path 跟随 GetBalance 自动修。
+7. **`store/credit.go:372-384` STALE-LIE 注释**：用真实双系统说明替换（或全删）。
+8. **`credit_reservation` + `credit_reservation_item` schema**：**S0 reviewer P0-3 升级**：新增字段方案在 D4 决策；最低限度需要让 item 行能区分 source pool（credit_cycle / user_booster_balance / trial_grant）而不是 credit_package FK。需 migration。
+9. **`MembershipService` 扩展 tx-aware deduct + refund 接口**：当前 `DeductCredits` 自开 tx（cycle.go:127），需新增 `DeductCreditsTx(ctx, tx, ...)` 和 `RefundCreditsTx(ctx, tx, source, amount)` 让 Reserve/Reconcile 在外层 tx 内调用。**S0 reviewer P1-1**。
+10. **测试覆盖**：
+    - Unit test 覆盖 `creditsImpl.Reserve` 各 billing_mode 分支
+    - Unit test 覆盖 Reconcile 多退少补对 cycle / booster / trial 的分摊
+    - Unit test 覆盖 `CanPerformAIOperation` credits-mode 分支
+    - Integration test：admin (cycle=2000, booster=0) 跑 SOP → Reserve 应从 cycle 扣 estimated；Reconcile 后 cycle.credits_remaining 反映实际 token 量
+    - Integration test：E2E_Booster_Child（trial 200 + booster 600，sub=0）跑 SOP，按 trial → booster FIFO 扣，trial 耗尽后切 booster — **DB state 准备文档化（S0 reviewer P2-1）：trial_grant.expires_at > now AND trial_grant.credits_remaining > 0；user_booster_balance.credits_remaining > 0；subscription 表无行**
+    - Regression：legacy_tier 用户跑 SOP 行为不变
 
 ### Out of Scope（明确不做）
 
@@ -77,10 +83,14 @@
 
 ### 范围中关键的"模糊地带"，S1 需要锁定
 
-- **D1：Reserve 失败回滚语义** — 当 cycle/booster 都不够（甚至加起来不够 estimated）时，Reserve 必须保持原子性（要么全扣要么不扣）。MembershipService.DeductCredits 的当前事务边界是否覆盖？需要 S1 验证。
+- **D1：Reserve 事务边界 — Tx-aware deduct/refund 必须** — **S0 reviewer P1-1 升级为 near-certain blocker**：`MembershipService.DeductCredits`（cycle.go:127）自开 tx，`creditsImpl.Reserve`（credit_service.go:499）也开 tx，MySQL 不支持真正的 nested tx（GORM `.Transaction()` 不默认用 savepoint）。S1 必须锁定：在 `MembershipService` 暴露 `DeductCreditsTx(ctx, tx *gorm.DB, ...)` 和 `RefundCreditsTx(ctx, tx, ...)` 变体，让 Reserve 在自己的 outer tx 内调用。这是结构性 refactor 而非 spec 决策。
 - **D2：Reconcile 时 booster 已过期怎么办** — 反对账要把 cycle 扣的退回 cycle 没问题；但如果当时从某个 booster 批次扣了 100，Reconcile 时该 booster 批次已 expires_at 过去，钱退到哪里？提议：退到当前 active booster 池；如果 booster 池为空就退到 cycle；如果都空就丢失（写 ledger 但不退）。S1 决策。
 - **D3：trial → cycle → booster 优先级是否固化** — 当前 spec 说 trial 优先，但实际 trial.credits_remaining 用完后应该自动转到 cycle？S1 锁定。
-- **D4：`credit_reservation` 表是否要新增 source 列** — 当前表只记总数，不记从哪扣的。如果不加，Reconcile 时怎么知道退回哪里？提议加 `cycle_delta` / `booster_delta` / `trial_delta` 字段。S1 锁定 schema。
+- **D4：`credit_reservation` + `credit_reservation_item` 架构选择** — **S0 reviewer P0-3 升级**：原 card 提议只在 parent row 加 `cycle_delta` / `booster_delta` / `trial_delta`，但 `credit_reservation_item.package_id` 当前 FK 到 `credit_package`，refund 时按 item 路由。两个互斥选项需 S1 锁定：
+  - **方案 A**：让 item 变成 source-typed 行（新增 `source_type` enum + `source_id` 通用 FK，不再硬绑 credit_package）。refund 仍走 per-item routing。改动大但更"对"。
+  - **方案 B**：仅在 parent row 加三个 delta 字段，废弃 item 路由（item 表保留只读用于 old-path reservations）。Refund 时按比例分摊回三个池子。改动小但精度差。
+- **D5：`HasActiveMembership()` 实现审计** — **S0 reviewer P1-2**：`isEffectiveLegacy` 路由用 `user.HasActiveMembership()`（credit_service.go:78）。需 S1 验证此 helper 是否读 user model 字段（user_tier / tier_expires）还是新表（subscription）。如果读旧字段，credits-mode 用户能正确走 credits 分支，但需文档化。
+- **D6：In-flight 老 reservation 兼容** — **S0 reviewer P2-2**：本 feature 上线时，可能存在已 reserved 但未 reconcile 的老路径 reservation 行（item.package_id → credit_package）。Reconcile 实现必须分支：if items.source_type IS NULL → 走老 refund 路径（写 credit_package）；else → 走新路径（写 cycle / booster / trial）。Migration 后老行的 source_type 默认 NULL。S1 锁定 dispatch 规则。
 
 ---
 
@@ -108,10 +118,12 @@
 
 ## S1 决策清单（必须在进 S2 之前锁定）
 
-- D1：Reserve 事务边界——单 tx 包住 MembershipService.DeductCredits 调用 + credit_reservation insert 吗？
-- D2：Reconcile 时若 booster 批次已过期，退款 fallback 顺序是什么？
-- D3：扣减优先级是否锁定 trial → cycle → booster FIFO，还是配置化？
-- D4：`credit_reservation` 是否新增 cycle_delta / booster_delta / trial_delta，还是只用 source enum？
+- **D1：Tx-aware deduct/refund 接口设计**（P1-1 升级）— `MembershipService` 暴露什么 tx 变体？签名？
+- **D2：Reconcile 时 booster 已过期 fallback 顺序**
+- **D3：扣减优先级（trial → cycle → booster）固化 vs 配置化**
+- **D4：item-level source-typed routing (方案 A) vs parent-level proportional refund (方案 B)**（P0-3）
+- **D5：`HasActiveMembership()` 实现审计 + 文档化**（P1-2）
+- **D6：In-flight 老 reservation 的 dispatch 规则**（P2-2）
 
 ---
 
