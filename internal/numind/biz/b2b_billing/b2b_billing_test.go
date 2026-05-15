@@ -13,7 +13,6 @@ import (
 	"gorm.io/gorm/logger"
 
 	"numind-server/internal/numind/store"
-	"numind-server/internal/pkg/model"
 	membershipModel "numind-server/internal/pkg/model/membership"
 )
 
@@ -52,7 +51,24 @@ func newB2BTestDB(t *testing.T) *gorm.DB {
             last_login      DATETIME
         )`).Error)
 
-	require.NoError(t, db.AutoMigrate(&model.CreditPackage{}))
+	// T11: CreditPackage removed — table dropped, archived to legacy_credit_package_archive_20260515.
+	// Create the archive table for getLegacyEvents (now a real implementation reading this table).
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS legacy_credit_package_archive_20260515 (
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id         INTEGER NOT NULL,
+		type            TEXT NOT NULL,
+		total_credits   INTEGER NOT NULL DEFAULT 0,
+		remain_credits  INTEGER NOT NULL DEFAULT 0,
+		status          TEXT NOT NULL DEFAULT 'active',
+		grant_source    TEXT,
+		granter_user_id INTEGER,
+		activated_at    DATETIME,
+		expires_at      DATETIME,
+		created_at      DATETIME,
+		updated_at      DATETIME,
+		archived_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		archive_reason  TEXT NOT NULL DEFAULT 't11_drop_credit_package_20260515'
+	)`).Error)
 	// membership_event: use raw DDL instead of AutoMigrate to avoid SQLite
 	// incompatibility with `gorm:"type:datetime(0)"` — SQLite stores datetimes
 	// as TEXT but AutoMigrate emits `datetime(0)` which prevents GORM from

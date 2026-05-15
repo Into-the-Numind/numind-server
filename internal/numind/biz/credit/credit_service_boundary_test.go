@@ -45,9 +45,9 @@ func TestCheckAndEstimate_FreeUser_CreditsMode_ReturnsInsufficient(t *testing.T)
 	ds := store.NewTestStore(db)
 
 	userID := uint(600)
-	// credit_account exists (balance 0), no credit_package rows.
+	// T11: credit_account exists (no balance field post-T11), no credit_package rows.
 	require.NoError(t, db.Create(&model.CreditAccount{
-		UserID: userID, Balance: 0, Status: "active",
+		UserID: userID, Status: "active",
 	}).Error)
 	seedCoefficient(t, db, "ali", "qwen-turbo", "sop_run", 1.5, 0.5, 0.2, 1, true)
 	seedPricingRule(t, db, "llm_chat", "ali", "qwen-turbo", 200, 800)
@@ -93,7 +93,7 @@ func TestReserve_ExactlyExhaustedThenRetry_ReturnsInsufficientSentinel(t *testin
 	userID := uint(610)
 	user := newCreditsUser(userID)
 	now := time.Now()
-	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+	seedPackagesAndAccount(t, db, userID, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 100, RemainCredits: 100,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -142,7 +142,7 @@ func TestReserve_CoefficientIDFrozenAcrossVersionBump(t *testing.T) {
 	userID := uint(620)
 	user := newCreditsUser(userID)
 	now := time.Now()
-	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+	seedPackagesAndAccount(t, db, userID, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 1000, RemainCredits: 1000,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -219,7 +219,7 @@ func TestCheckAndEstimate_CreditsMode_TierExpiredStillPasses(t *testing.T) {
 
 	userID := uint(640)
 	now := time.Now()
-	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+	seedPackagesAndAccount(t, db, userID, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 500, RemainCredits: 500,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -292,7 +292,7 @@ func TestReserve_StoreErrorReturnsErrorAndNoReservationRow(t *testing.T) {
 	userID := uint(650)
 	user := newCreditsUser(userID)
 	now := time.Now()
-	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+	seedPackagesAndAccount(t, db, userID, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 1000, RemainCredits: 1000,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})

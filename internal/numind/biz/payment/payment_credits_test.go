@@ -57,9 +57,9 @@ func newPaymentTestDB(t *testing.T) *gorm.DB {
             last_login      DATETIME
         )`).Error)
 
+	// T11: CreditPackage removed — table dropped, archived to legacy_credit_package_archive_20260515.
 	require.NoError(t, db.AutoMigrate(
 		&model.CreditAccount{},
-		&model.CreditPackage{},
 		&model.CreditTransaction{},
 		&model.Order{},
 		// new membership tables

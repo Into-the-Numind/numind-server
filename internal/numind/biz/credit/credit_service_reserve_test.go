@@ -41,9 +41,9 @@ func newCreditReserveTestDB(t *testing.T) *gorm.DB {
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	// AutoMigrate the tables that have no MySQL-specific types.
+	// T11: CreditPackage removed — credit_package table was archived and dropped.
 	require.NoError(t, db.AutoMigrate(
 		&model.CreditAccount{},
-		&model.CreditPackage{},
 		&model.CreditTransaction{},
 		&model.UsageRecord{},
 		&model.CreditUserTypeConfig{},
@@ -191,7 +191,7 @@ func TestReserve_HappyPath_SinglePackage(t *testing.T) {
 	userID := uint(200)
 	user := newCreditsUser(userID)
 	now := time.Now()
-	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+	seedPackagesAndAccount(t, db, userID, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 1000, RemainCredits: 1000,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -243,7 +243,7 @@ func TestReserve_FIFOCrossPackage(t *testing.T) {
 	userID := uint(201)
 	user := newCreditsUser(userID)
 	now := time.Now()
-	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+	seedPackagesAndAccount(t, db, userID, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 50, RemainCredits: 50,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 		{Type: model.CreditTypeBooster, TotalCredits: 600, RemainCredits: 600,
@@ -276,7 +276,7 @@ func TestReserve_InsufficientRollsBack(t *testing.T) {
 	userID := uint(202)
 	user := newCreditsUser(userID)
 	now := time.Now()
-	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+	seedPackagesAndAccount(t, db, userID, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 50, RemainCredits: 50,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -309,7 +309,7 @@ func TestReserve_IdempotencyReturnsExisting(t *testing.T) {
 	userID := uint(203)
 	user := newCreditsUser(userID)
 	now := time.Now()
-	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+	seedPackagesAndAccount(t, db, userID, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 1000, RemainCredits: 1000,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -346,7 +346,7 @@ func TestReserve_GetBalanceCredits(t *testing.T) {
 	userID := uint(204)
 	user := newCreditsUser(userID)
 	now := time.Now()
-	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+	seedPackagesAndAccount(t, db, userID, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 2000, RemainCredits: 1800,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 		{Type: model.CreditTypeBooster, TotalCredits: 600, RemainCredits: 300,
@@ -393,7 +393,7 @@ func TestCheckAndEstimateBudget_NormalizesSopNodeExecuteToSopRun(t *testing.T) {
 	userID := uint(700)
 	user := newPureCreditsUser(userID)
 	now := time.Now()
-	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+	seedPackagesAndAccount(t, db, userID, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 2000, RemainCredits: 2000,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -427,7 +427,7 @@ func TestReserveBudget_WritesContextBudgetMetadata(t *testing.T) {
 	userID := uint(701)
 	user := newPureCreditsUser(userID)
 	now := time.Now()
-	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+	seedPackagesAndAccount(t, db, userID, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 2000, RemainCredits: 2000,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -513,7 +513,7 @@ func TestCheckAndEstimateBudget_UnknownChargedOperationFailsClosed(t *testing.T)
 	userID := uint(703)
 	user := newPureCreditsUser(userID)
 	now := time.Now()
-	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+	seedPackagesAndAccount(t, db, userID, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 2000, RemainCredits: 2000,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -556,7 +556,7 @@ func TestReserve_TrialUserMultiplierApplied(t *testing.T) {
 	now := time.Now()
 
 	// Seed a trial package only (no subscription).
-	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+	seedPackagesAndAccount(t, db, userID, []seedPackage{
 		{Type: model.CreditTypeTrial, TotalCredits: 200, RemainCredits: 200,
 			ActivatedAt: now, ExpiresAt: now.Add(72 * time.Hour)},
 	})
@@ -602,7 +602,7 @@ func TestReserve_SubscriptionUserBypassesTrialMultiplier(t *testing.T) {
 	// mirrors both into the new tables (subscription + credit_cycle, trial_grant).
 	// T6: the legacy "T4 INSERT INTO subscription" duplicate from this test was
 	// removed — seedPackagesAndAccount now handles the subscription-table mirror.
-	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+	seedPackagesAndAccount(t, db, userID, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 2000, RemainCredits: 2000,
 			ActivatedAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour)},
 		{Type: model.CreditTypeTrial, TotalCredits: 200, RemainCredits: 100,
@@ -636,18 +636,18 @@ func TestReserve_ExpiredTrialPackageGetsNoDiscount(t *testing.T) {
 	user := newCreditsUser(userID)
 	now := time.Now()
 
-	// Expired trial package (status is 'expired').
-	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+	// Subscription user with a subscription package.
+	seedPackagesAndAccount(t, db, userID, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 2000, RemainCredits: 2000,
 			ActivatedAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour)},
 	})
-	// Also add an expired trial manually (status='expired', ExpiresAt in the past).
-	expiredPkg := model.CreditPackage{
-		UserID: userID, Type: model.CreditTypeTrial, TotalCredits: 200,
-		RemainCredits: 0, Status: model.CreditPackageExpired,
-		ActivatedAt: now.Add(-5 * 24 * time.Hour), ExpiresAt: now.Add(-2 * 24 * time.Hour),
-	}
-	require.NoError(t, db.Create(&expiredPkg).Error)
+	// T11: credit_package table is dropped. Seed an expired trial_grant directly
+	// (credits_remaining=0 + expires_at in the past) to simulate the "expired trial" state.
+	// GetUserTypeCreditMultiplier now reads trial_grant.credits_remaining > 0 AND expires_at > now.
+	require.NoError(t, db.Exec(
+		`INSERT INTO trial_grant (user_id, granted_at, expires_at, credits_remaining, source, created_at) VALUES (?, ?, ?, 0, 'b2b_grant', ?)`,
+		userID, now.Add(-5*24*time.Hour), now.Add(-2*24*time.Hour), now,
+	).Error, "seed expired trial_grant")
 	require.NoError(t, db.Create(&model.CreditUserTypeConfig{
 		UserType: "trial", CreditMultiplier: 0.5, IsActive: true,
 	}).Error)

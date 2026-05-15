@@ -56,12 +56,12 @@ func newRechargeTestDB(t *testing.T) *gorm.DB {
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
-	// Legacy credit tables (required by store.NewTestStore / GetOrCreateAccount).
+	// Credit tables (required by store.NewTestStore / GetOrCreateAccount).
+	// T11: CreditPackage removed from AutoMigrate — credit_package table was dropped.
 	require.NoError(t, db.AutoMigrate(
 		&model.CreditAccount{},
-		&model.CreditPackage{},
 		&model.CreditTransaction{},
-	), "auto-migrate legacy tables")
+	), "auto-migrate credit tables")
 
 	// New membership tables required by BoosterBalances.Increment and Events.Create.
 	require.NoError(t, db.AutoMigrate(
@@ -148,13 +148,13 @@ func TestRechargeWithOrderTx_Yearly_ReturnsUnsupportedProductType(t *testing.T) 
 
 // ─────────────────────────────────────────────────────────────────────────────
 // T5 booster path: must write user_booster_balance + membership_event.
-// Must NOT write credit_package (the old table).
+// T11: credit_package table has been dropped — invariant now holds structurally.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// TestRechargeWithOrderTx_Booster_WritesNewTablesOnly verifies the T5 post-condition:
+// TestRechargeWithOrderTx_Booster_WritesNewTablesOnly verifies the T5/T11 post-condition:
 //   - user_booster_balance.credits_remaining = quantity × 600 (upsert)
 //   - membership_event row written with event_type='booster_granted'
-//   - credit_package table: 0 new rows (the old INSERT path is gone)
+//   - T11: credit_package table dropped; assertion removed (structurally guaranteed)
 func TestRechargeWithOrderTx_Booster_WritesNewTablesOnly(t *testing.T) {
 	db := newRechargeTestDB(t)
 	ds := store.NewTestStore(db)
@@ -203,11 +203,9 @@ func TestRechargeWithOrderTx_Booster_WritesNewTablesOnly(t *testing.T) {
 	assert.Equal(t, model.ProductTypeBooster, evt.ProductType)
 	assert.Equal(t, "self_purchase", evt.Source)
 
-	// Verify credit_package table has 0 rows — the old INSERT path is gone (T5 invariant).
-	var cpCount int64
-	db.Model(&model.CreditPackage{}).Where("user_id = ?", userID).Count(&cpCount)
-	assert.Equal(t, int64(0), cpCount,
-		"credit_package must have 0 rows after T5 — booster no longer writes old table")
+	// T11: credit_package table has been dropped. The T5 invariant (0 rows in
+	// credit_package after booster purchase) is now guaranteed structurally — the
+	// table doesn't exist. Assertion removed to avoid querying the dropped table.
 }
 
 // TestRechargeWithOrderTx_Booster_QuantityFloor verifies that quantity<1 is

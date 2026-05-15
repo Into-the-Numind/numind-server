@@ -21,7 +21,7 @@ import (
 // T6: switched to newCreditServiceWithMembership so MembershipService is wired
 // (legacy creditBiz.DeductCreditsTx fallback no longer exists).
 func setupReservation(
-	t *testing.T, userID uint, reserveCredits int64, packages []model.CreditPackage,
+	t *testing.T, userID uint, reserveCredits int64, packages []seedPackage,
 ) (credit.ICreditService, store.IStore, *credit.Reservation) {
 	t.Helper()
 	db := newCreditReserveTestDB(t)
@@ -40,7 +40,7 @@ func setupReservation(
 
 func TestReconcile_ActualLessThanReserved_RefundsDelta(t *testing.T) {
 	now := time.Now()
-	svc, ds, rsv := setupReservation(t, 300, 180, []model.CreditPackage{
+	svc, ds, rsv := setupReservation(t, 300, 180, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 1000, RemainCredits: 1000,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -75,7 +75,7 @@ func TestReconcile_ActualLessThanReserved_RefundsDelta(t *testing.T) {
 
 func TestReconcile_ActualGreaterThanReserved_TopsUp(t *testing.T) {
 	now := time.Now()
-	svc, ds, rsv := setupReservation(t, 301, 100, []model.CreditPackage{
+	svc, ds, rsv := setupReservation(t, 301, 100, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 1000, RemainCredits: 1000,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -111,7 +111,7 @@ func TestReconcile_Topup_Insufficient_WritesDebtLedger(t *testing.T) {
 	now := time.Now()
 	// Seed a package with only 105 credits (barely enough to reserve 100,
 	// but not enough for the subsequent top-up of +30 → 130 actual).
-	svc, ds, rsv := setupReservation(t, 310, 100, []model.CreditPackage{
+	svc, ds, rsv := setupReservation(t, 310, 100, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 105, RemainCredits: 105,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -144,7 +144,7 @@ func TestReconcile_Topup_Insufficient_WritesDebtLedger(t *testing.T) {
 
 func TestReconcile_ActualEqualsReserved_Noop(t *testing.T) {
 	now := time.Now()
-	svc, ds, rsv := setupReservation(t, 302, 100, []model.CreditPackage{
+	svc, ds, rsv := setupReservation(t, 302, 100, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 1000, RemainCredits: 1000,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -170,7 +170,7 @@ func TestReconcile_ActualEqualsReserved_Noop(t *testing.T) {
 
 func TestReconcile_AlreadyFinalized_ReturnsSentinel(t *testing.T) {
 	now := time.Now()
-	svc, _, rsv := setupReservation(t, 303, 100, []model.CreditPackage{
+	svc, _, rsv := setupReservation(t, 303, 100, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 500, RemainCredits: 500,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -199,7 +199,7 @@ func TestReconcile_NotFound_ReturnsSentinel(t *testing.T) {
 func TestRefund_WalksSeqAscAndRestoresPackages(t *testing.T) {
 	now := time.Now()
 	// Reserve 150 across two packages: sub(50) → booster(100)
-	svc, ds, rsv := setupReservation(t, 400, 150, []model.CreditPackage{
+	svc, ds, rsv := setupReservation(t, 400, 150, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 50, RemainCredits: 50,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 		{Type: model.CreditTypeBooster, TotalCredits: 600, RemainCredits: 600,
@@ -244,7 +244,7 @@ func TestRefund_WalksSeqAscAndRestoresPackages(t *testing.T) {
 // instance. The comment stands as documentation of the limitation.
 func TestRefund_ProviderErr_SucceedsAndPersistsReason(t *testing.T) {
 	now := time.Now()
-	svc, ds, rsv := setupReservation(t, 450, 120, []model.CreditPackage{
+	svc, ds, rsv := setupReservation(t, 450, 120, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 500, RemainCredits: 500,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -264,10 +264,13 @@ func TestRefund_ProviderErr_SucceedsAndPersistsReason(t *testing.T) {
 	require.NotNil(t, row.ReconciledAt,
 		"reconciled_at must be set on refund transition")
 
-	// Credits fully restored after refund
-	var acc model.CreditAccount
-	require.NoError(t, ds.DB().Where("user_id = ?", uint(450)).First(&acc).Error)
-	assert.EqualValues(t, 500, acc.Balance, "balance must be fully restored after refund")
+	// T11: credit_account.balance dropped — verify via credit_cycle.credits_remaining.
+	// Credits fully restored after refund.
+	var cycleRemain int64
+	require.NoError(t, ds.DB().Raw(
+		`SELECT credits_remaining FROM credit_cycle WHERE user_id = ?`, uint(450),
+	).Scan(&cycleRemain).Error)
+	assert.EqualValues(t, 500, cycleRemain, "balance must be fully restored after refund")
 }
 
 // --- F-9 regression: Refund with context_budget_refund and nil_stream ---
@@ -280,7 +283,7 @@ func TestRefund_ContextBudgetReasons_Succeed(t *testing.T) {
 	for _, reason := range []string{"context_budget_refund", "nil_stream"} {
 		reason := reason // capture for subtest
 		t.Run(reason, func(t *testing.T) {
-			svc, ds, rsv := setupReservation(t, 451, 80, []model.CreditPackage{
+			svc, ds, rsv := setupReservation(t, 451, 80, []seedPackage{
 				{Type: model.CreditTypeSubscription, TotalCredits: 500, RemainCredits: 500,
 					ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 			})
@@ -301,7 +304,7 @@ func TestRefund_ContextBudgetReasons_Succeed(t *testing.T) {
 
 func TestRefund_AlreadyFinalized_ReturnsSentinel(t *testing.T) {
 	now := time.Now()
-	svc, _, rsv := setupReservation(t, 401, 80, []model.CreditPackage{
+	svc, _, rsv := setupReservation(t, 401, 80, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 500, RemainCredits: 500,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -315,7 +318,7 @@ func TestRefund_AlreadyFinalized_ReturnsSentinel(t *testing.T) {
 
 func TestFinalizeReservation_OpErrTriggersRefund(t *testing.T) {
 	now := time.Now()
-	svc, ds, rsv := setupReservation(t, 500, 120, []model.CreditPackage{
+	svc, ds, rsv := setupReservation(t, 500, 120, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 500, RemainCredits: 500,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -333,7 +336,7 @@ func TestFinalizeReservation_OpErrTriggersRefund(t *testing.T) {
 
 func TestFinalizeReservation_ContextCancelled_UserCancelled(t *testing.T) {
 	now := time.Now()
-	svc, ds, rsv := setupReservation(t, 501, 120, []model.CreditPackage{
+	svc, ds, rsv := setupReservation(t, 501, 120, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 500, RemainCredits: 500,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -350,7 +353,7 @@ func TestFinalizeReservation_ContextCancelled_UserCancelled(t *testing.T) {
 
 func TestFinalizeReservation_DeadlineExceeded_ProviderTimeout(t *testing.T) {
 	now := time.Now()
-	svc, ds, rsv := setupReservation(t, 502, 120, []model.CreditPackage{
+	svc, ds, rsv := setupReservation(t, 502, 120, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 500, RemainCredits: 500,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -367,7 +370,7 @@ func TestFinalizeReservation_DeadlineExceeded_ProviderTimeout(t *testing.T) {
 
 func TestFinalizeReservation_NilActualCost_RefundsNoActualCost(t *testing.T) {
 	now := time.Now()
-	svc, ds, rsv := setupReservation(t, 503, 120, []model.CreditPackage{
+	svc, ds, rsv := setupReservation(t, 503, 120, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 500, RemainCredits: 500,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -385,7 +388,7 @@ func TestFinalizeReservation_NilActualCost_RefundsNoActualCost(t *testing.T) {
 
 func TestFinalizeReservation_ZeroActualCost_RefundsNoActualCost(t *testing.T) {
 	now := time.Now()
-	svc, ds, rsv := setupReservation(t, 504, 120, []model.CreditPackage{
+	svc, ds, rsv := setupReservation(t, 504, 120, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 500, RemainCredits: 500,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
@@ -403,7 +406,7 @@ func TestFinalizeReservation_ZeroActualCost_RefundsNoActualCost(t *testing.T) {
 
 func TestFinalizeReservation_HappyPath_Reconciles(t *testing.T) {
 	now := time.Now()
-	svc, ds, rsv := setupReservation(t, 505, 120, []model.CreditPackage{
+	svc, ds, rsv := setupReservation(t, 505, 120, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 500, RemainCredits: 500,
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})

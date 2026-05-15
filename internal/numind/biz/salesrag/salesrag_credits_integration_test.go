@@ -63,9 +63,9 @@ func newSalesragCreditsTestDB(t *testing.T) *gorm.DB {
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	// Auto-migrate tables that don't use MySQL-specific ENUM types.
+	// T11: CreditPackage removed — table dropped, archived to legacy_credit_package_archive_20260515.
 	require.NoError(t, db.AutoMigrate(
 		&model.CreditAccount{},
-		&model.CreditPackage{},
 		&model.CreditTransaction{},
 		&model.UsageRecord{},
 		&model.CreditEstimationCoefficient{},
@@ -223,21 +223,13 @@ func seedCreditsUserWithPackage(t *testing.T, db *gorm.DB, userID uint, totalCre
 	user.ID = userID
 	require.NoError(t, db.Create(user).Error)
 
-	acc := &model.CreditAccount{UserID: userID, Balance: totalCredits, Status: "active"}
+	// T11: CreditAccount.Balance dropped; credit_package table archived.
+	// Account creation no longer needs/has Balance field.
+	acc := &model.CreditAccount{UserID: userID, Status: "active"}
 	require.NoError(t, db.Create(acc).Error)
 
 	now := time.Now()
-	pkg := &model.CreditPackage{
-		UserID:        userID,
-		Type:          model.CreditTypeSubscription,
-		TotalCredits:  totalCredits,
-		RemainCredits: totalCredits,
-		Status:        model.CreditPackageActive,
-		ActivatedAt:   now,
-		ExpiresAt:     now.Add(30 * 24 * time.Hour),
-	}
-	require.NoError(t, db.Create(pkg).Error)
-
+	// T11: no credit_package row — membership tables are the authoritative source.
 	// T6: mirror into membership tables so MembershipService.DeductCreditsTx
 	// (the new authoritative deduction path) can debit the balance.
 	sub := membershipmodel.Subscription{
@@ -367,15 +359,20 @@ func TestAcquireSalesragCredits_CreditsHappyPath(t *testing.T) {
 	assert.Nil(t, cc.rsv,
 		"acquireSalesragCredits must NOT reserve credits inline (Gateway middleware owns it since Task 10)")
 
-	// Balance must be unchanged — no debit happened in this function.
-	var acc model.CreditAccount
-	require.NoError(t, db.Where("user_id = ?", userID).First(&acc).Error)
-	assert.EqualValues(t, 1000, acc.Balance, "balance unchanged: no inline Reserve")
+	// T11: credit_account.balance dropped — verify via credit_cycle.credits_remaining instead.
+	// Balance in credit_cycle must be unchanged — no debit happened in this function.
+	var cycleRemain int64
+	require.NoError(t, db.Raw(
+		`SELECT credits_remaining FROM credit_cycle WHERE user_id = ?`, userID,
+	).Scan(&cycleRemain).Error)
+	assert.EqualValues(t, 1000, cycleRemain, "cycle balance unchanged: no inline Reserve")
 
 	// finalize with nil rsv must be a safe no-op.
 	cc.finalize(ctx)
-	require.NoError(t, db.Where("user_id = ?", userID).First(&acc).Error)
-	assert.EqualValues(t, 1000, acc.Balance, "finalize(nil rsv) must not mutate balance")
+	require.NoError(t, db.Raw(
+		`SELECT credits_remaining FROM credit_cycle WHERE user_id = ?`, userID,
+	).Scan(&cycleRemain).Error)
+	assert.EqualValues(t, 1000, cycleRemain, "finalize(nil rsv) must not mutate balance")
 }
 
 // --- Test 2: insufficient credits → ErrInsufficientCredits wrapped as errno ---
@@ -400,7 +397,8 @@ func TestAcquireSalesragCredits_InsufficientBalance(t *testing.T) {
 	}
 	user.ID = userID
 	require.NoError(t, db.Create(user).Error)
-	require.NoError(t, db.Create(&model.CreditAccount{UserID: userID, Balance: 0, Status: "active"}).Error)
+	// T11: CreditAccount.Balance dropped; no-balance user has no credit_cycle row.
+	require.NoError(t, db.Create(&model.CreditAccount{UserID: userID, Status: "active"}).Error)
 	seedSalesragCoefficient(t, db)
 
 	b := newTestSalesragBiz(ds, svc, calc)
@@ -499,10 +497,13 @@ func TestFinalize_StreamErrorTriggersRefund(t *testing.T) {
 	// KEY: no inline Reserve since Task 10 P1 fix.
 	assert.Nil(t, cc.rsv, "credits user must not have an inline reservation (Gateway owns it)")
 
+	// T11: credit_account.balance dropped — verify via credit_cycle.credits_remaining.
 	// Balance must be unchanged — no debit.
-	var accBefore model.CreditAccount
-	require.NoError(t, db.Where("user_id = ?", userID).First(&accBefore).Error)
-	assert.EqualValues(t, 1000, accBefore.Balance, "no debit before gateway reserve")
+	var cycleRemainBefore int64
+	require.NoError(t, db.Raw(
+		`SELECT credits_remaining FROM credit_cycle WHERE user_id = ?`, userID,
+	).Scan(&cycleRemainBefore).Error)
+	assert.EqualValues(t, 1000, cycleRemainBefore, "no debit before gateway reserve")
 
 	// Simulate mid-stream abort: recordLLMResult with cc.rsv==nil is a no-op.
 	cc.recordLLMResult(ctx, context.Canceled, "", "", 0, 0)
@@ -515,10 +516,13 @@ func TestFinalize_StreamErrorTriggersRefund(t *testing.T) {
 	db.Model(&model.CreditReservation{}).Where("user_id = ?", userID).Count(&count)
 	assert.EqualValues(t, 0, count, "finalize(nil rsv) must not write any reservation rows")
 
+	// T11: credit_account.balance dropped — verify via credit_cycle.credits_remaining.
 	// Balance must remain untouched throughout.
-	var accAfter model.CreditAccount
-	require.NoError(t, db.Where("user_id = ?", userID).First(&accAfter).Error)
-	assert.Equal(t, int64(1000), accAfter.Balance, "balance unchanged: no inline Reserve, no inline Refund")
+	var cycleRemainAfter int64
+	require.NoError(t, db.Raw(
+		`SELECT credits_remaining FROM credit_cycle WHERE user_id = ?`, userID,
+	).Scan(&cycleRemainAfter).Error)
+	assert.EqualValues(t, 1000, cycleRemainAfter, "balance unchanged: no inline Reserve, no inline Refund")
 }
 
 // --- Test 5: repeated calls with same request_uuid — no reservation either time ---

@@ -107,8 +107,8 @@ func newTestDB(t *testing.T) *gorm.DB {
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
+	// T11: CreditPackage removed — table dropped, archived to legacy_credit_package_archive_20260515.
 	require.NoError(t, db.AutoMigrate(
-		&model.CreditPackage{},
 		&model.SopTemplate{},
 		&model.SopNode{},
 	))
