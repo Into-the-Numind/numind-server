@@ -6,31 +6,13 @@ on:
       - main
       - develop
       - release
-      - admin-develop
-      - admin-release
     tags:
       - 'v*'
       - 'admin-v*'
     paths-ignore:
       - '**.md'
       - 'docs/**'
-      # - 'scripts/**'  <-- 移除此行，确保脚本修改能触发构建（如 semantic_server.py）
-      # 允许修改CI/CD配置时触发构建
-      # - '.github/**'
-  
-  pull_request:
-    branches:
-      - main
-      - develop
-      - release
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      # - 'scripts/**' <-- 移除此行，确保脚本修改能触发构建
-      # 允许修改CI/CD配置时触发构建
-      # - '.github/**'
-  
-  # 手动触发，支持刷新缓存
+
   workflow_dispatch:
     inputs:
       refresh_cache:
@@ -48,43 +30,80 @@ env:
   DOCKERHUB_USERNAME: pmtmyaggy
   DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
   IMAGE_NAME: pmtmyaggy/numind-server
-  SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-  DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
   DEV_HOST: ${{ secrets.DEV_HOST }}
   QA_HOST: ${{ secrets.QA_HOST }}
   PROD_HOST: ${{ secrets.PROD_HOST }}
 
 jobs:
-  # 代码质量检查 - 在 PR 时触发
-  check:
+  # 变更检测（跳过无关构建，节省 CI 时间）
+  detect_changes:
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-      - run: go mod download
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-      - run: go build ./cmd/numind
-      - run: go test ./...
-
-  # Docker 镜像构建 - 在特定分支或 tag 时触发
-  image_build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    if: |
-      github.ref == 'refs/heads/develop' ||
-      github.ref == 'refs/heads/release' ||
-      startsWith(github.ref, 'refs/tags/v')
+    outputs:
+      server: ${{ steps.result.outputs.server }}
+      admin: ${{ steps.result.outputs.admin }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        if: github.event_name != 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/')
+        uses: dorny/paths-filter@v3
+        id: filter
         with:
-          fetch-depth: 0
+          filters: |
+            server:
+              - 'cmd/numind/**'
+              - 'Dockerfile'
+              - 'scripts/**'
+              - 'internal/**'
+              - 'go.mod'
+              - 'go.sum'
+              - 'config_*.yaml'
+            admin:
+              - 'cmd/numind-admin/**'
+              - 'Dockerfile.admin'
+              - 'internal/**'
+              - 'go.mod'
+              - 'go.sum'
+
+      - name: Resolve build decisions
+        id: result
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "server=true" >> $GITHUB_OUTPUT
+            echo "admin=true" >> $GITHUB_OUTPUT
+            echo "::notice::🔨 Tag/手动触发，构建全部镜像"
+          else
+            echo "server=${{ steps.filter.outputs.server }}" >> $GITHUB_OUTPUT
+            echo "admin=${{ steps.filter.outputs.admin }}" >> $GITHUB_OUTPUT
+            echo "::notice::📂 server=${{ steps.filter.outputs.server }}, admin=${{ steps.filter.outputs.admin }}"
+          fi
+
+  # Docker 镜像构建
+  image_build:
+    needs: detect_changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+    if: |
+      needs.detect_changes.outputs.server == 'true' &&
+      (github.ref == 'refs/heads/develop' ||
+       github.ref == 'refs/heads/release' ||
+       startsWith(github.ref, 'refs/tags/v'))
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: false
+
+      - name: Compile check
+        run: go build ./cmd/numind && go build ./cmd/numind-admin
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -98,10 +117,8 @@ jobs:
       - name: Calculate Metadata
         id: meta
         run: |
-          # 获取短 SHA（前7位）
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
 
-          # 根据分支或tag确定环境参数和镜像标签
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             BUILD_ENV="prod"
             IMAGE_TAG="${{ github.ref_name }}"
@@ -117,14 +134,12 @@ jobs:
           else
             BUILD_ENV="dev"
             IMAGE_TAG="dev"
-            echo "::notice::🚀 触发方式: 分支 (dev)"
           fi
 
           echo "build_env=$BUILD_ENV" >> $GITHUB_OUTPUT
           echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
           echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
 
-          # 生成 tags 列表（添加 SHA 标签确保唯一性）
           TAGS="${{ env.IMAGE_NAME }}:$IMAGE_TAG"
           TAGS="$TAGS,${{ env.IMAGE_NAME }}:$IMAGE_TAG-$SHORT_SHA"
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
@@ -132,46 +147,29 @@ jobs:
           fi
           echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
-          echo "::notice::📦 镜像标签: $IMAGE_TAG, $IMAGE_TAG-$SHORT_SHA"
-
-      # =====================================================
-      # 分层缓存策略（优化构建速度 + 确保代码最新）
-      # =====================================================
-      # 缓存层级：
-      # 1. 基础依赖层（go mod download）：基于 go.mod 哈希
-      # 2. 构建层（源代码）：基于分支 + 最近成功构建
-      # 3. 确保最新：每次提交触发新构建，不使用过期缓存
-      # =====================================================
-      
       - name: Set up Docker cache
         id: cache-vars
         run: |
-          # 检查是否需要刷新缓存或跳过缓存
           REFRESH_CACHE="${{ github.event.inputs.refresh_cache }}"
           SKIP_CACHE="${{ github.event.inputs.skip_cache }}"
-          
+
           if [ "$SKIP_CACHE" = "true" ]; then
             echo "skip_cache=true" >> $GITHUB_OUTPUT
             echo "no_cache=true" >> $GITHUB_OUTPUT
             echo "::notice::⏭️  跳过缓存（完全重新构建）"
             exit 0
           fi
-          
-          # 生成缓存键（按分支隔离 + 依赖文件哈希）
+
           BRANCH="${{ github.ref_name }}"
           GO_MOD_HASH=$(md5sum go.mod | cut -d' ' -f1 | cut -c1-8)
-          
-          # 如果需要刷新缓存，添加时间戳使缓存键变化
+
           if [ "$REFRESH_CACHE" = "true" ]; then
             TIMESTAMP=$(date +%Y%m%d-%H%M%S)
             CACHE_SCOPE="${BRANCH}_${GO_MOD_HASH}_${TIMESTAMP}"
-            echo "::notice::🔄 刷新缓存，新缓存键: ${CACHE_SCOPE}"
           else
-            # 缓存作用域：分支名_依赖哈希
             CACHE_SCOPE="${BRANCH}_${GO_MOD_HASH}"
-            echo "::notice::🔄 使用缓存: ${CACHE_SCOPE}"
           fi
-          
+
           echo "cache_scope=${CACHE_SCOPE}" >> $GITHUB_OUTPUT
           echo "go_mod_hash=${GO_MOD_HASH}" >> $GITHUB_OUTPUT
           echo "skip_cache=false" >> $GITHUB_OUTPUT
@@ -186,27 +184,18 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
             ENV=${{ steps.meta.outputs.build_env }}
-          # 添加 git SHA 作为标签，确保每次构建都是唯一的
           labels: |
             git.commit=${{ github.sha }}
             git.branch=${{ github.ref_name }}
-          # 根据输入决定是否使用缓存
           no-cache: ${{ steps.cache-vars.outputs.no_cache == 'true' }}
-          # 分层缓存策略
           cache-from: |
             type=gha,scope=${{ steps.cache-vars.outputs.cache_scope }}
             type=gha,scope=${{ github.ref_name }}
             type=gha,scope=master
           cache-to: |
             type=gha,scope=${{ steps.cache-vars.outputs.cache_scope }},mode=min
-          # mode=min: 只缓存最终层，大大减少配额使用
-          # 每次 go.mod 变化时，缓存键变化，触发完整重建
 
-      - name: Clean up old Docker images
-        run: |
-          echo "✅ Docker 镜像构建和推送完成"
-
-  # 开发环境部署 - 只在 develop 分支触发
+  # 开发环境部署
   deploy_dev:
     needs: [image_build]
     runs-on: ubuntu-latest
@@ -214,9 +203,6 @@ jobs:
     if: github.ref == 'refs/heads/develop'
     environment: development
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
       - name: Deploy to Development Server
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -226,104 +212,19 @@ jobs:
           port: 22
           command_timeout: 10m
           script: |
-            # 设置环境变量
-            export GITHUB_ACTOR="${{ github.actor }}"
-            EXPECTED_SHA="${{ github.sha }}"
-            SHORT_SHA=$(echo "$EXPECTED_SHA" | cut -c1-7)
-            # image_build 同时推送 develop（floating）和 develop-<short_sha>（pinned）两个 tag。
-            # 部署阶段优先拉 pinned tag，保证唯一确定来源，避免 mirror 未同步 develop 的 race。
-            PINNED_TAG="develop-$SHORT_SHA"
-            PINNED_REF="pmtmyaggy/numind-server:$PINNED_TAG"
+            set -e
 
-            # 登录到Docker Hub
-            echo "🔐 登录到Docker Hub..."
-            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin
+            IMAGE="pmtmyaggy/numind-server:develop-${{ needs.image_build.outputs.short_sha }}"
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin || true
 
-            # 验证登录状态
-            echo "✅ Docker登录状态验证:"
-            docker system info | grep -A 5 "Registry" || echo "无法获取Registry信息"
-
-            # 【关键修复】强制删除旧镜像（develop + pinned），避免缓存问题
-            echo "🗑️  删除旧镜像（如果存在）..."
-            docker rmi -f pmtmyaggy/numind-server:develop 2>/dev/null || echo "floating tag 不存在"
-            docker rmi -f "$PINNED_REF" 2>/dev/null || echo "pinned tag 不存在"
-
-            # 拉取 pinned tag（带最多 3 次重试，应对 registry mirror 同步延迟）
-            echo "📦 拉取 pinned 镜像 $PINNED_REF ..."
-            PULL_OK=0
-            for attempt in 1 2 3; do
-              if docker pull "$PINNED_REF"; then
-                PULL_OK=1
-                break
-              fi
-              echo "⚠️  第 $attempt 次 pull 失败，10s 后重试..."
-              sleep 10
-            done
-            if [ "$PULL_OK" -ne 1 ]; then
-              echo "❌ pinned tag $PINNED_TAG 3 次 pull 失败；回退 develop floating tag"
-              docker pull pmtmyaggy/numind-server:develop
-              PINNED_REF="pmtmyaggy/numind-server:develop"
-            fi
-
-            # 把 pinned tag 重新打成 :develop，让下游 docker run ... :develop 取到正确版本
-            docker tag "$PINNED_REF" pmtmyaggy/numind-server:develop
-
-            # 验证镜像拉取成功（包含 digest 确保是最新的）
-            echo "🔍 验证镜像信息（包含内容哈希）..."
-            docker images --digests pmtmyaggy/numind-server:develop --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Digest}}\t{{.CreatedAt}}\t{{.Size}}"
-
-            # 记录镜像构建标签
-            echo "📝 镜像标签信息:"
-            docker inspect pmtmyaggy/numind-server:develop --format='{{json .Config.Labels}}' | jq -r 'to_entries[] | select(.key | startswith("git")) | "\(.key)=\(.value)"' || echo "无法获取 Git 标签"
-
-            # 验证镜像的 Git SHA 是否匹配当前提交（pinned tag 应该天然匹配）
-            IMAGE_SHA=$(docker inspect pmtmyaggy/numind-server:develop --format='{{index .Config.Labels "git.commit"}}' 2>/dev/null || echo "")
-
-            if [ -n "$IMAGE_SHA" ] && [ "$IMAGE_SHA" = "$EXPECTED_SHA" ]; then
-              echo "✅ 镜像 SHA 验证通过: $IMAGE_SHA"
-            elif [ -n "$IMAGE_SHA" ]; then
-              echo "❌ 镜像 SHA 不匹配，即使用了 pinned tag！"
-              echo "   期望: $EXPECTED_SHA"
-              echo "   实际: $IMAGE_SHA"
-              echo "   Docker Hub 可能严重滞后或 image_build job 未完成 push，部署终止"
-              exit 1
-            else
-              echo "⚠️  警告: 无法获取镜像的 Git SHA 标签"
-              echo "   这可能是旧版本镜像，建议检查镜像构建日志"
-            fi
-
-            # 清理 dangling (<none>) 镜像，避免磁盘膨胀
-            echo "🧹 清理悬空镜像..."
+            docker pull "$IMAGE" \
+              || { echo "⚠️ Pull retry 1/2 (15s)..."; sleep 15; docker pull "$IMAGE"; } \
+              || { echo "⚠️ Pull retry 2/2 (30s)..."; sleep 30; docker pull "$IMAGE"; }
             docker image prune -f || true
-            
-            # ============================================
-            # 【WeCom 数据清理】阶段 3: 自动清理数据库表
-            # ============================================
-            echo "🗑️  清理 WeCom 数据库表（如存在）..."
-            docker exec -i numind-mysql-dev mysql -uroot -p"${{ secrets.DEV_MYSQL_PASSWORD }}" numind-dev -e "
-              SET FOREIGN_KEY_CHECKS = 0;
-              DROP TABLE IF EXISTS wecom_bind_codes;
-              DROP TABLE IF EXISTS wecom_cursors;
-              DROP TABLE IF EXISTS wecom_messages;
-              DROP TABLE IF EXISTS wecom_users;
-              SET FOREIGN_KEY_CHECKS = 1;
-              SELECT 'WeCom tables cleanup completed' as status;
-            " 2>/dev/null || echo "⚠️  MySQL 未运行或表不存在，跳过清理"
-            
-            # 检查并停止运行中的容器
-            if docker ps -q -f name=numind-server-dev | grep -q .; then
-              echo "Container numind-server-dev is running, stopping it..."
-              docker stop numind-server-dev
-            fi
-            
-            # 检查并删除存在的容器
-            if docker ps -aq -f name=numind-server-dev | grep -q .; then
-              echo "Container numind-server-dev exists, removing it..."
-              docker rm numind-server-dev
-            fi
-            
-            # 创建必要的网络和目录
-            echo "Creating necessary network and directories..."
+
+            docker stop numind-server-dev 2>/dev/null || true
+            docker rm numind-server-dev 2>/dev/null || true
+
             docker network create numind-network 2>/dev/null || true
             sudo mkdir -p /opt/numind/dev/image/upload/{avatars,card,book}
             sudo mkdir -p /opt/numind/config/cert
@@ -331,20 +232,7 @@ jobs:
             sudo chown -R 1001:1001 /opt/numind/config || true
             sudo chmod -R 775 /opt/numind/dev
             sudo chmod -R 755 /opt/numind/config
-            
-            # 检查证书文件是否存在
-            if [ ! -f "/opt/numind/config/cert/apiclient_key.pem" ]; then
-              echo "Warning: 微信支付私钥文件不存在: /opt/numind/config/cert/apiclient_key.pem"
-              echo "请确保证书文件已正确放置到服务器上"
-            fi
-            
-            if [ ! -f "/opt/numind/config/cert/wechatpay_cert.pem" ]; then
-              echo "Warning: 微信支付证书文件不存在: /opt/numind/config/cert/wechatpay_cert.pem"
-              echo "请确保证书文件已正确放置到服务器上"
-            fi
-            
-            # 启动新容器
-            echo "Starting new container..."
+
             docker run -d \
               --name numind-server-dev \
               --network numind-network \
@@ -359,52 +247,19 @@ jobs:
               --log-opt max-size=10m \
               --log-opt max-file=3 \
               --restart always \
-              pmtmyaggy/numind-server:develop
-            
-            # 等待容器启动
-            echo "Waiting for container to start..."
-            sleep 15
-            
-            # 检查容器状态
-            if docker ps -q -f name=numind-server-dev | grep -q .; then
-              echo "Container started successfully!"
-              
-                          # 等待容器启动并检查一次健康状态
-            echo "Waiting for container to start and checking health..."
-            sleep 10
-            
-            # 检查容器是否正在运行
-            if docker ps -q -f name=numind-server-dev | grep -q .; then
-              echo "Container is running, checking health endpoint..."
-              
-              # 尝试访问健康端点
-              if curl -f http://localhost:9091/healthz > /dev/null 2>&1; then
-                echo "Health check passed! Deployment completed successfully!"
-                echo "Container status:"
-                docker ps -f name=numind-server-dev --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-                echo ""
-                echo "=== Recent startup logs (including DEBUG) ==="
-                docker logs --tail 50 numind-server-dev | grep -E "\[DEBUG\]|ERROR|FATAL|panic" || docker logs --tail 50 numind-server-dev
-                echo "============================================="
-              else
-                echo "Warning: Health endpoint not responding, but container is running"
-                echo "Container logs:"
-                docker logs --tail 50 numind-server-dev || true
-                echo "Container status:"
-                docker ps -f name=numind-server-dev --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-              fi
+              "$IMAGE"
+
+            sleep 20
+            if curl -sf http://localhost:9091/healthz > /dev/null 2>&1; then
+              echo "✅ Dev 部署完成"
+              docker ps -f name=numind-server-dev --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
             else
-              echo "Error: Container failed to start"
-              docker logs numind-server-dev || true
-              exit 1
-            fi
-            else
-              echo "Error: Container failed to start"
-              docker logs numind-server-dev || true
+              echo "❌ 健康检查失败"
+              docker logs --tail 30 numind-server-dev || true
               exit 1
             fi
 
-  # QA 环境部署 - 只在 release 分支触发
+  # QA 环境部署
   deploy_qa:
     needs: [image_build]
     runs-on: ubuntu-latest
@@ -412,9 +267,6 @@ jobs:
     if: github.ref == 'refs/heads/release'
     environment: qa
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
       - name: Deploy to QA Environment
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -423,57 +275,19 @@ jobs:
           password: ${{ secrets.DEV_SERVER_PASSWORD }}
           command_timeout: 10m
           script: |
-            # 设置环境变量
-            export GITHUB_ACTOR="${{ github.actor }}"
+            set -e
 
-            # 登录到Docker Hub
-            echo "🔐 登录到Docker Hub..."
-            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin
-            
-            # 验证登录状态
-            echo "✅ Docker登录状态验证:"
-            docker system info | grep -A 5 "Registry" || echo "无法获取Registry信息"
-            
-            # 拉取最新镜像
-            echo "📦 拉取最新镜像..."
-            docker pull pmtmyaggy/numind-server:release
-            
-            # 验证镜像拉取成功
-            echo "🔍 验证镜像信息..."
-            docker images pmtmyaggy/numind-server:release --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}\t{{.Size}}"
+            IMAGE="pmtmyaggy/numind-server:release-${{ needs.image_build.outputs.short_sha }}"
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin || true
 
-            # 清理 dangling (<none>) 镜像，避免磁盘膨胀
-            echo "Pruning dangling images..."
+            docker pull "$IMAGE" \
+              || { echo "⚠️ Pull retry 1/2 (15s)..."; sleep 15; docker pull "$IMAGE"; } \
+              || { echo "⚠️ Pull retry 2/2 (30s)..."; sleep 30; docker pull "$IMAGE"; }
             docker image prune -f || true
-            
-            # ============================================
-            # 【WeCom 数据清理】阶段 3: 自动清理数据库表
-            # ============================================
-            echo "🗑️  Cleaning up WeCom database tables (if exist)..."
-            docker exec -i numind-mysql-dev mysql -uroot -p"${{ secrets.DEV_MYSQL_PASSWORD }}" numind-qa -e "
-              SET FOREIGN_KEY_CHECKS = 0;
-              DROP TABLE IF EXISTS wecom_bind_codes;
-              DROP TABLE IF EXISTS wecom_cursors;
-              DROP TABLE IF EXISTS wecom_messages;
-              DROP TABLE IF EXISTS wecom_users;
-              SET FOREIGN_KEY_CHECKS = 1;
-              SELECT 'WeCom tables cleanup completed' as status;
-            " 2>/dev/null || echo "⚠️  MySQL not running or tables do not exist, skipping cleanup"
-            
-            # 检查并停止运行中的容器
-            if docker ps -q -f name=numind-server-qa | grep -q .; then
-              echo "Container numind-server-qa is running, stopping it..."
-              docker stop numind-server-qa
-            fi
-            
-            # 检查并删除存在的容器
-            if docker ps -aq -f name=numind-server-qa | grep -q .; then
-              echo "Container numind-server-qa exists, removing it..."
-              docker rm numind-server-qa
-            fi
-            
-            # 创建必要的网络和目录
-            echo "Creating necessary network and directories..."
+
+            docker stop numind-server-qa 2>/dev/null || true
+            docker rm numind-server-qa 2>/dev/null || true
+
             docker network create numind-network 2>/dev/null || true
             sudo mkdir -p /opt/numind/qa/image/upload/{avatars,card,book}
             sudo mkdir -p /opt/numind/config/cert
@@ -481,20 +295,7 @@ jobs:
             sudo chown -R 1001:1001 /opt/numind/config || true
             sudo chmod -R 775 /opt/numind/qa
             sudo chmod -R 755 /opt/numind/config
-            
-            # 检查证书文件是否存在
-            if [ ! -f "/opt/numind/config/cert/apiclient_key.pem" ]; then
-              echo "Warning: 微信支付私钥文件不存在: /opt/numind/config/cert/apiclient_key.pem"
-              echo "请确保证书文件已正确放置到服务器上"
-            fi
-            
-            if [ ! -f "/opt/numind/config/cert/wechatpay_cert.pem" ]; then
-              echo "Warning: 微信支付证书文件不存在: /opt/numind/config/cert/wechatpay_cert.pem"
-              echo "请确保证书文件已正确放置到服务器上"
-            fi
-            
-            # 启动新容器
-            echo "Starting new container..."
+
             docker run -d \
               --name numind-server-qa \
               --network numind-network \
@@ -509,50 +310,19 @@ jobs:
               --log-opt max-size=10m \
               --log-opt max-file=3 \
               --restart always \
-              pmtmyaggy/numind-server:release
-            
-            # 等待容器启动
-            echo "Waiting for container to start..."
-            sleep 15
-            
-            # 检查容器状态
-            if docker ps -q -f name=numind-server-qa | grep -q .; then
-              echo "Container started successfully!"
-              
-                          # 等待容器启动并检查一次健康状态
-            echo "Waiting for container to start and checking health..."
-            sleep 10
-            
-            # 检查容器是否正在运行
-            if docker ps -q -f name=numind-server-qa | grep -q .; then
-              echo "Container is running, checking health endpoint..."
-              
-              # 尝试访问健康端点
-              if curl -f http://localhost:9093/healthz > /dev/null 2>&1; then
-                echo "Health check passed! QA deployment completed successfully!"
-                echo "Container status:"
-                docker ps -f name=numind-server-qa --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-              else
-                echo "Warning: Health endpoint not responding, but container is running"
-                echo "Container logs:"
-                docker logs --tail 10 numind-server-qa || true
-                echo "Container status:"
-                docker ps -f name=numind-server-qa --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-              fi
+              "$IMAGE"
+
+            sleep 20
+            if curl -sf http://localhost:9093/healthz > /dev/null 2>&1; then
+              echo "✅ QA 部署完成"
+              docker ps -f name=numind-server-qa --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
             else
-              echo "Error: Container failed to start"
-              docker logs numind-server-qa || true
-              exit 1
-            fi
-            else
-              echo "Error: Container failed to start"
-              docker logs numind-server-qa || true
+              echo "❌ 健康检查失败"
+              docker logs --tail 30 numind-server-qa || true
               exit 1
             fi
 
-
-
-  # 生产环境部署 - 只通过版本 tag 触发
+  # 生产环境部署
   deploy_product:
     needs: [image_build]
     runs-on: ubuntu-latest
@@ -560,9 +330,6 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     environment: production
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
       - name: Deploy to Production Environment
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -571,131 +338,88 @@ jobs:
           password: ${{ secrets.PROD_SERVER_PASSWORD }}
           command_timeout: 10m
           script: |
-            # 设置环境变量
-            export GITHUB_ACTOR="${{ github.actor }}"
+            set -e
 
-            # 登录到Docker Hub
-            echo "🔐 登录到Docker Hub..."
-            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin
-            
-            # 验证登录状态
-            echo "✅ Docker登录状态验证:"
-            docker system info | grep -A 5 "Registry" || echo "无法获取Registry信息"
-            
-            # 确定镜像标签（现在只通过 tag 触发）
             IMAGE_TAG="${{ github.ref_name }}"
-            echo "🚀 通过 TAG 触发部署: $IMAGE_TAG"
-            echo "📦 拉取镜像: pmtmyaggy/numind-server:$IMAGE_TAG"
-            
-            # 拉取最新镜像
-            docker pull pmtmyaggy/numind-server:$IMAGE_TAG
-            
-            # 验证镜像拉取成功
-            echo "🔍 验证镜像信息:"
-            docker images pmtmyaggy/numind-server:$IMAGE_TAG --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}\t{{.Size}}"
+            NEW_IMAGE="pmtmyaggy/numind-server:$IMAGE_TAG"
 
-            # 清理 dangling (<none>) 镜像，避免磁盘膨胀
-            echo "Pruning dangling images..."
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin || true
+
+            OLD_IMAGE=$(docker inspect --format='{{.Config.Image}}' numind-server-prod 2>/dev/null || echo "")
+
+            docker pull "$NEW_IMAGE" \
+              || { echo "⚠️ Pull retry 1/2 (15s)..."; sleep 15; docker pull "$NEW_IMAGE"; } \
+              || { echo "⚠️ Pull retry 2/2 (30s)..."; sleep 30; docker pull "$NEW_IMAGE"; }
             docker image prune -f || true
-            
-            # 检查并停止运行中的容器
-            if docker ps -q -f name=numind-server-prod | grep -q .; then
-              echo "Container numind-server-prod is running, stopping it..."
-              docker stop numind-server-prod
-            fi
-            
-            # 检查并删除存在的容器
-            if docker ps -aq -f name=numind-server-prod | grep -q .; then
-              echo "Container numind-server-prod exists, removing it..."
-              docker rm numind-server-prod
-            fi
-            
-            # 创建必要的目录并设置权限（确保容器内 UID 1001 可写）
-            echo "Creating necessary directories..."
+
+            docker network create numind-network 2>/dev/null || true
             sudo mkdir -p /opt/numind/prod/image/upload/{avatars,card,book}
             sudo mkdir -p /opt/numind/config/cert
             sudo chown -R 1001:1001 /opt/numind/prod || true
             sudo chown -R 1001:1001 /opt/numind/config || true
             sudo chmod -R 775 /opt/numind/prod
             sudo chmod -R 755 /opt/numind/config
-            
-            # 检查证书文件是否存在
-            if [ ! -f "/opt/numind/config/cert/apiclient_key.pem" ]; then
-              echo "Warning: 微信支付私钥文件不存在: /opt/numind/config/cert/apiclient_key.pem"
-              echo "请确保证书文件已正确放置到服务器上"
-            fi
-            
-            if [ ! -f "/opt/numind/config/cert/wechatpay_cert.pem" ]; then
-              echo "Warning: 微信支付证书文件不存在: /opt/numind/config/cert/wechatpay_cert.pem"
-              echo "请确保证书文件已正确放置到服务器上"
-            fi
-            
-            # 启动新容器
-            echo "Starting new container..."
-            docker network create numind-network 2>/dev/null || true
-            docker run -d \
-              --name numind-server-prod \
-              --network numind-network \
-              -p 9095:9091 \
-              -p 9096:9092 \
-              -e APP_ENV=prod \
-              -v /opt/numind/prod:/opt/numind/prod \
-              -v /opt/numind/config/cert:/opt/numind/config/cert:ro \
-              -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
-              -v /opt/numind/model/model_cache:/app/model_cache \
-              --log-driver json-file \
-              --log-opt max-size=20m \
-              --log-opt max-file=5 \
-              --restart always \
-              pmtmyaggy/numind-server:$IMAGE_TAG
-            
-            # 等待容器启动
-            echo "Waiting for container to start..."
-            sleep 15
-            
-            # 检查容器状态
-            if docker ps -q -f name=numind-server-prod | grep -q .; then
-              echo "Container started successfully!"
-              
-              # 等待容器启动并检查一次健康状态
-              echo "Waiting for container to start and checking health..."
-              sleep 10
-              
-              # 检查容器是否正在运行
-              if docker ps -q -f name=numind-server-prod | grep -q .; then
-                echo "Container is running, checking health endpoint..."
-                
-                # 尝试访问健康端点
-                if curl -f http://localhost:9095/healthz > /dev/null 2>&1; then
-                  echo "Health check passed! Production deployment completed successfully!"
-                  echo "Container status:"
-                  docker ps -f name=numind-server-prod --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-                else
-                  echo "Warning: Health endpoint not responding, but container is running"
-                  echo "Container logs:"
-                  docker logs --tail 10 numind-server-prod || true
-                  echo "Container status:"
-                  docker ps -f name=numind-server-prod --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-                fi
-              else
-                echo "Error: Container failed to start"
-                docker logs numind-server-prod || true
-                exit 1
-              fi
+
+            run_container() {
+              docker run -d \
+                --name numind-server-prod \
+                --network numind-network \
+                -p 9095:9091 \
+                -p 9096:9092 \
+                -e APP_ENV=prod \
+                -v /opt/numind/prod:/opt/numind/prod \
+                -v /opt/numind/config/cert:/opt/numind/config/cert:ro \
+                -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
+                -v /opt/numind/model/model_cache:/app/model_cache \
+                --log-driver json-file \
+                --log-opt max-size=20m \
+                --log-opt max-file=5 \
+                --restart always \
+                "$1"
+            }
+
+            docker stop numind-server-prod 2>/dev/null || true
+            docker rm numind-server-prod 2>/dev/null || true
+
+            run_container "$NEW_IMAGE"
+
+            sleep 20
+            if curl -sf http://localhost:9095/healthz > /dev/null 2>&1; then
+              echo "✅ Prod 部署完成 ($NEW_IMAGE)"
+              docker ps -f name=numind-server-prod --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
             else
-              echo "Error: Container failed to start"
-              docker logs numind-server-prod || true
+              echo "❌ 健康检查失败"
+              docker logs --tail 30 numind-server-prod || true
+
+              if [ -n "$OLD_IMAGE" ]; then
+                echo "🔄 回滚到 $OLD_IMAGE..."
+                docker stop numind-server-prod 2>/dev/null || true
+                docker rm numind-server-prod 2>/dev/null || true
+                run_container "$OLD_IMAGE"
+
+                sleep 20
+                if curl -sf http://localhost:9095/healthz > /dev/null 2>&1; then
+                  echo "⚠️ 回滚成功，旧版本已恢复运行"
+                else
+                  echo "❌ 回滚也失败了"
+                fi
+              fi
               exit 1
             fi
 
-  # 后台管理系统 Docker 镜像构建（多阶段构建，在 Docker 内编译）
+  # 后台管理系统 Docker 镜像构建
   admin_image_build:
+    needs: detect_changes
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      image_tag: ${{ steps.admin-meta.outputs.image_tag }}
+      short_sha: ${{ steps.admin-meta.outputs.short_sha }}
     if: |
-      github.ref == 'refs/heads/develop' ||
-      github.ref == 'refs/heads/release' ||
-      startsWith(github.ref, 'refs/tags/admin-v')
+      needs.detect_changes.outputs.admin == 'true' &&
+      (github.ref == 'refs/heads/develop' ||
+       github.ref == 'refs/heads/release' ||
+       startsWith(github.ref, 'refs/tags/admin-v'))
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -712,6 +436,8 @@ jobs:
       - name: Calculate Admin Metadata
         id: admin-meta
         run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             BUILD_ENV="prod"
             IMAGE_TAG="${{ github.ref_name }}"
@@ -727,13 +453,14 @@ jobs:
           else
             BUILD_ENV="dev"
             IMAGE_TAG="admin-dev"
-            echo "::notice::🚀 Admin 触发方式: 分支 ($IMAGE_TAG)"
           fi
 
           echo "build_env=$BUILD_ENV" >> $GITHUB_OUTPUT
           echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
 
           TAGS="pmtmyaggy/numind-admin:$IMAGE_TAG"
+          TAGS="$TAGS,pmtmyaggy/numind-admin:$IMAGE_TAG-$SHORT_SHA"
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAGS="$TAGS,pmtmyaggy/numind-admin:latest"
           fi
@@ -759,9 +486,6 @@ jobs:
     if: github.ref == 'refs/heads/develop'
     environment: admin-development
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
       - name: Deploy Admin to Development Server
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -771,34 +495,17 @@ jobs:
           port: 22
           command_timeout: 10m
           script: |
-            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin
-            
-            # 拉取新镜像
-            docker pull pmtmyaggy/numind-admin:admin-develop
-            
-            # 获取新镜像的 ID
-            NEW_IMAGE_ID=$(docker images --format "{{.ID}}" pmtmyaggy/numind-admin:admin-develop | head -n 1)
-            echo "新镜像 ID: $NEW_IMAGE_ID"
-            
-            # 清理相同 tag 的旧镜像（保留新镜像）
-            echo "清理相同 tag 的旧镜像..."
-            docker images pmtmyaggy/numind-admin:admin-develop --format "{{.ID}}" | while read image_id; do
-              if [ "$image_id" != "$NEW_IMAGE_ID" ]; then
-                echo "删除旧镜像: $image_id"
-                docker rmi $image_id || true
-              fi
-            done
-            
-            # 清理 dangling 镜像
-            docker image prune -f || true
-            
-            if docker ps -q -f name=numind-admin-server-dev | grep -q .; then
-              docker stop numind-admin-server-dev
-            fi
+            set -e
 
-            if docker ps -aq -f name=numind-admin-server-dev | grep -q .; then
-              docker rm numind-admin-server-dev
-            fi
+            IMAGE="pmtmyaggy/numind-admin:admin-develop-${{ needs.admin_image_build.outputs.short_sha }}"
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin || true
+            docker pull "$IMAGE" \
+              || { echo "⚠️ Pull retry 1/2 (15s)..."; sleep 15; docker pull "$IMAGE"; } \
+              || { echo "⚠️ Pull retry 2/2 (30s)..."; sleep 30; docker pull "$IMAGE"; }
+            docker image prune -f || true
+
+            docker stop numind-admin-server-dev 2>/dev/null || true
+            docker rm numind-admin-server-dev 2>/dev/null || true
 
             docker network create numind-network 2>/dev/null || true
 
@@ -810,13 +517,13 @@ jobs:
               --log-opt max-size=10m \
               --log-opt max-file=3 \
               --restart always \
-              pmtmyaggy/numind-admin:admin-develop
-            
+              "$IMAGE"
+
             sleep 10
-            if curl -f http://localhost:9099/healthz > /dev/null 2>&1; then
-              echo "Admin deployment completed successfully!"
+            if curl -sf http://localhost:9099/healthz > /dev/null 2>&1; then
+              echo "✅ Admin Dev 部署完成"
             else
-              echo "Warning: Health endpoint not responding"
+              echo "⚠️ 健康检查未通过"
               docker logs --tail 10 numind-admin-server-dev || true
             fi
 
@@ -828,9 +535,6 @@ jobs:
     if: github.ref == 'refs/heads/release'
     environment: admin-qa
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
       - name: Deploy Admin to QA Environment
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -839,34 +543,17 @@ jobs:
           password: ${{ secrets.DEV_SERVER_PASSWORD }}
           command_timeout: 10m
           script: |
-            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin
-            
-            # 拉取新镜像
-            docker pull pmtmyaggy/numind-admin:admin-release
-            
-            # 获取新镜像的 ID
-            NEW_IMAGE_ID=$(docker images --format "{{.ID}}" pmtmyaggy/numind-admin:admin-release | head -n 1)
-            echo "新镜像 ID: $NEW_IMAGE_ID"
-            
-            # 清理相同 tag 的旧镜像（保留新镜像）
-            echo "清理相同 tag 的旧镜像..."
-            docker images pmtmyaggy/numind-admin:admin-release --format "{{.ID}}" | while read image_id; do
-              if [ "$image_id" != "$NEW_IMAGE_ID" ]; then
-                echo "删除旧镜像: $image_id"
-                docker rmi $image_id || true
-              fi
-            done
-            
-            # 清理 dangling 镜像
-            docker image prune -f || true
-            
-            if docker ps -q -f name=numind-admin-server-qa | grep -q .; then
-              docker stop numind-admin-server-qa
-            fi
+            set -e
 
-            if docker ps -aq -f name=numind-admin-server-qa | grep -q .; then
-              docker rm numind-admin-server-qa
-            fi
+            IMAGE="pmtmyaggy/numind-admin:admin-release-${{ needs.admin_image_build.outputs.short_sha }}"
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin || true
+            docker pull "$IMAGE" \
+              || { echo "⚠️ Pull retry 1/2 (15s)..."; sleep 15; docker pull "$IMAGE"; } \
+              || { echo "⚠️ Pull retry 2/2 (30s)..."; sleep 30; docker pull "$IMAGE"; }
+            docker image prune -f || true
+
+            docker stop numind-admin-server-qa 2>/dev/null || true
+            docker rm numind-admin-server-qa 2>/dev/null || true
 
             docker network create numind-network 2>/dev/null || true
 
@@ -878,13 +565,13 @@ jobs:
               --log-opt max-size=10m \
               --log-opt max-file=3 \
               --restart always \
-              pmtmyaggy/numind-admin:admin-release
-            
+              "$IMAGE"
+
             sleep 10
-            if curl -f http://localhost:9103/healthz > /dev/null 2>&1; then
-              echo "Admin QA deployment completed successfully!"
+            if curl -sf http://localhost:9103/healthz > /dev/null 2>&1; then
+              echo "✅ Admin QA 部署完成"
             else
-              echo "Warning: Health endpoint not responding"
+              echo "⚠️ 健康检查未通过"
               docker logs --tail 10 numind-admin-server-qa || true
             fi
 
@@ -896,9 +583,6 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/admin-v')
     environment: admin-production
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
       - name: Deploy Admin to Production Environment
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -907,52 +591,58 @@ jobs:
           password: ${{ secrets.PROD_SERVER_PASSWORD }}
           command_timeout: 10m
           script: |
-            IMAGE_TAG="${{ github.ref_name }}"
-            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin
-            
-            # 拉取新镜像
-            docker pull pmtmyaggy/numind-admin:$IMAGE_TAG
-            
-            # 获取新镜像的 ID
-            NEW_IMAGE_ID=$(docker images --format "{{.ID}}" pmtmyaggy/numind-admin:$IMAGE_TAG | head -n 1)
-            echo "新镜像 ID: $NEW_IMAGE_ID"
-            
-            # 清理相同 tag 的旧镜像（保留新镜像）
-            echo "清理相同 tag 的旧镜像..."
-            docker images pmtmyaggy/numind-admin:$IMAGE_TAG --format "{{.ID}}" | while read image_id; do
-              if [ "$image_id" != "$NEW_IMAGE_ID" ]; then
-                echo "删除旧镜像: $image_id"
-                docker rmi $image_id || true
-              fi
-            done
-            
-            # 清理 dangling 镜像
-            docker image prune -f || true
-            
-            if docker ps -q -f name=numind-admin-server-prod | grep -q .; then
-              docker stop numind-admin-server-prod
-            fi
+            set -e
 
-            if docker ps -aq -f name=numind-admin-server-prod | grep -q .; then
-              docker rm numind-admin-server-prod
-            fi
+            IMAGE_TAG="${{ github.ref_name }}"
+            NEW_IMAGE="pmtmyaggy/numind-admin:$IMAGE_TAG"
+
+            echo "${{ env.DOCKERHUB_PASSWORD }}" | docker login -u pmtmyaggy --password-stdin || true
+
+            OLD_IMAGE=$(docker inspect --format='{{.Config.Image}}' numind-admin-server-prod 2>/dev/null || echo "")
+
+            docker pull "$NEW_IMAGE" \
+              || { echo "⚠️ Pull retry 1/2 (15s)..."; sleep 15; docker pull "$NEW_IMAGE"; } \
+              || { echo "⚠️ Pull retry 2/2 (30s)..."; sleep 30; docker pull "$NEW_IMAGE"; }
+            docker image prune -f || true
 
             docker network create numind-network 2>/dev/null || true
 
-            docker run -d \
-              --name numind-admin-server-prod \
-              --network numind-network \
-              -p 9104:9099 \
-              -e APP_ENV=prod \
-              --log-opt max-size=10m \
-              --log-opt max-file=3 \
-              --restart always \
-              pmtmyaggy/numind-admin:$IMAGE_TAG
-            
+            run_admin() {
+              docker run -d \
+                --name numind-admin-server-prod \
+                --network numind-network \
+                -p 9104:9099 \
+                -e APP_ENV=prod \
+                --log-opt max-size=10m \
+                --log-opt max-file=3 \
+                --restart always \
+                "$1"
+            }
+
+            docker stop numind-admin-server-prod 2>/dev/null || true
+            docker rm numind-admin-server-prod 2>/dev/null || true
+
+            run_admin "$NEW_IMAGE"
+
             sleep 10
-            if curl -f http://localhost:9104/healthz > /dev/null 2>&1; then
-              echo "Admin production deployment completed successfully!"
+            if curl -sf http://localhost:9104/healthz > /dev/null 2>&1; then
+              echo "✅ Admin Prod 部署完成 ($NEW_IMAGE)"
             else
-              echo "Warning: Health endpoint not responding"
+              echo "❌ 健康检查失败"
               docker logs --tail 10 numind-admin-server-prod || true
+
+              if [ -n "$OLD_IMAGE" ]; then
+                echo "🔄 回滚到 $OLD_IMAGE..."
+                docker stop numind-admin-server-prod 2>/dev/null || true
+                docker rm numind-admin-server-prod 2>/dev/null || true
+                run_admin "$OLD_IMAGE"
+
+                sleep 10
+                if curl -sf http://localhost:9104/healthz > /dev/null 2>&1; then
+                  echo "⚠️ 回滚成功，旧版本已恢复运行"
+                else
+                  echo "❌ 回滚也失败了"
+                fi
+              fi
+              exit 1
             fi

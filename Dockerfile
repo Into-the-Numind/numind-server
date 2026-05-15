@@ -98,8 +98,8 @@ WORKDIR /app
 # 定义构建参数，默认为dev环境
 ARG ENV=dev
 
-# 根据环境复制对应的配置文件
-COPY config_*.yaml ./
+# 只复制对应环境的配置文件（避免 prod 配置泄露到 dev 镜像）
+COPY config_${ENV}.yaml ./
 
 # 从构建阶段复制编译好的二进制文件
 COPY --from=builder /app/numind /app/numind
