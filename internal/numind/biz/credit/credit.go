@@ -34,6 +34,10 @@ type ICreditBiz interface {
 	//   - credits<=0 is a no-op (returns nil, nil)
 	DeductCreditsTx(ctx context.Context, tx *gorm.DB, userID uint, credits int64, reason string) ([]PackageDeduction, error)
 	GetBalance(ctx context.Context, userID uint) (int64, error)
+	// RechargeWithOrderTx accepts ONLY productType="booster" since T5.
+	// Other product types return ErrUnsupportedProductType.
+	// Note: this function is dead code on the live HTTP path — fulfillOrder in
+	// payment.go writes new tables directly. Kept for interface stability.
 	RechargeWithOrderTx(ctx context.Context, tx *gorm.DB, userID uint, orderID uint64, productType string, months int) error
 	// GrantMembership is the B2B2C grant path (spec Q1): parent user
 	// grants membership to a child user without going through payment.

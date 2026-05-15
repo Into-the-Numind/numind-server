@@ -47,7 +47,10 @@ type IPaymentBiz interface {
 }
 
 type paymentBiz struct {
-	ds        store.IStore
+	ds store.IStore
+	// TODO(T11): creditBiz field is currently unused — paymentBiz writes membership
+	// tables directly via Membership() store. Remove when ICreditBiz interface is
+	// pruned in T11.
 	creditBiz credit.ICreditBiz
 	wechat    *WechatPayClient
 	alipay    *AlipayClient

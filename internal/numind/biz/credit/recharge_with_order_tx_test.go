@@ -77,6 +77,20 @@ func newRechargeTestDB(t *testing.T) *gorm.DB {
 // ErrUnsupportedProductType (production-unreachable; guards future callers).
 // ─────────────────────────────────────────────────────────────────────────────
 
+// assertNoMembershipWrites verifies that RechargeWithOrderTx made no writes to
+// user_booster_balance or membership_event for the given userID. Used by the
+// defensive-error tests to confirm the error path returns BEFORE any side
+// effects — even though the outer tx would roll back on error, the assertion
+// guards against future refactors that might write before the type check.
+func assertNoMembershipWrites(t *testing.T, db *gorm.DB, userID uint) {
+	t.Helper()
+	var ubbCount, eventCount int64
+	require.NoError(t, db.Raw("SELECT COUNT(*) FROM user_booster_balance WHERE user_id = ?", userID).Scan(&ubbCount).Error)
+	assert.Equal(t, int64(0), ubbCount, "no user_booster_balance writes on defensive error")
+	require.NoError(t, db.Raw("SELECT COUNT(*) FROM membership_event WHERE user_id = ?", userID).Scan(&eventCount).Error)
+	assert.Equal(t, int64(0), eventCount, "no membership_event writes on defensive error")
+}
+
 // TestRechargeWithOrderTx_Trial_ReturnsUnsupportedProductType verifies that
 // passing productType="trial" returns ErrUnsupportedProductType.
 // Trial memberships must go through the B2B grant path (spec §5.10).
@@ -86,12 +100,14 @@ func TestRechargeWithOrderTx_Trial_ReturnsUnsupportedProductType(t *testing.T) {
 	biz := credit.NewCreditBiz(ds)
 	ctx := context.Background()
 
+	const userID = uint(1)
 	err := db.Transaction(func(tx *gorm.DB) error {
-		return biz.RechargeWithOrderTx(ctx, tx, 1, 42, model.ProductTypeTrial, 0)
+		return biz.RechargeWithOrderTx(ctx, tx, userID, 42, model.ProductTypeTrial, 0)
 	})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, credit.ErrUnsupportedProductType,
 		"productType=trial must return ErrUnsupportedProductType — use B2B grant path instead")
+	assertNoMembershipWrites(t, db, userID)
 }
 
 // TestRechargeWithOrderTx_Monthly_ReturnsUnsupportedProductType verifies that
@@ -102,12 +118,14 @@ func TestRechargeWithOrderTx_Monthly_ReturnsUnsupportedProductType(t *testing.T)
 	biz := credit.NewCreditBiz(ds)
 	ctx := context.Background()
 
+	const userID = uint(1)
 	err := db.Transaction(func(tx *gorm.DB) error {
-		return biz.RechargeWithOrderTx(ctx, tx, 1, 43, model.ProductTypeMonthly, 1)
+		return biz.RechargeWithOrderTx(ctx, tx, userID, 43, model.ProductTypeMonthly, 1)
 	})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, credit.ErrUnsupportedProductType,
 		"productType=monthly must return ErrUnsupportedProductType — use B2B grant path instead")
+	assertNoMembershipWrites(t, db, userID)
 }
 
 // TestRechargeWithOrderTx_Yearly_ReturnsUnsupportedProductType verifies that
@@ -118,12 +136,14 @@ func TestRechargeWithOrderTx_Yearly_ReturnsUnsupportedProductType(t *testing.T) 
 	biz := credit.NewCreditBiz(ds)
 	ctx := context.Background()
 
+	const userID = uint(1)
 	err := db.Transaction(func(tx *gorm.DB) error {
-		return biz.RechargeWithOrderTx(ctx, tx, 1, 44, model.ProductTypeYearly, 12)
+		return biz.RechargeWithOrderTx(ctx, tx, userID, 44, model.ProductTypeYearly, 12)
 	})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, credit.ErrUnsupportedProductType,
 		"productType=yearly must return ErrUnsupportedProductType — use B2B grant path instead")
+	assertNoMembershipWrites(t, db, userID)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
