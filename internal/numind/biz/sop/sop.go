@@ -393,7 +393,7 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 		} else if bal.SubRemain+bal.BoosterRemain <= 0 {
 			log.C(ctx).Warnw("Credits pre-check: zero balance",
 				"user_id", userID, "sub_remain", bal.SubRemain, "booster_remain", bal.BoosterRemain)
-			return nil, errno.ErrInsufficientCredits.SetMessage("积分不足，请购买积分包或联系管理员")
+			return nil, errno.ErrInsufficientCredits.SetMessage("积分不足，请充值积分")
 		} else {
 			log.C(ctx).Infow("Credits user balance pre-check passed",
 				"user_id", userID, "total_remain", bal.SubRemain+bal.BoosterRemain)
