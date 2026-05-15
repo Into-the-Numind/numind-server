@@ -463,15 +463,15 @@ features:
     track: "standard"
     stage: "S4"
     classification_reason: "Triage 5 条全触发 — (1) 5 张新表 + 迁移脚本 (2) grant/deduct/balance/B2B 账单全部重写 (3) 无外部服务但内部模型彻底改 (4) 跨 3 仓 (5) 计费核心 + B2B 账单 = 最高风险业务逻辑。Standard Track 必然。"
-    last_updated_by: "ai-t1-completed-2026-05-15"
-    last_updated_at: "2026-05-15T22:00:00+08:00"
-    stage: "S4"
+    last_updated_by: "ai-t2-completed-2026-05-15"
+    last_updated_at: "2026-05-15T20:30:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
       - numind-admin-web
     branches:
-      numind-server: "feature/credits-cleanup-t1-source-type (worktree-isolated, commits 3f9ee4f + f56d00b)"
+      numind-server: "T1 merged 226df5a + T2b merged 9b25696 to develop; feature branches retained for reference"
+      numind-admin-web: "T2a merged cecb043 to develop (CI 25917381492 success)"
     artifacts:
       requirement: "numind-server/requirements/membership-credits-redesign.md"
       proposal: "numind-server/proposals/membership-credits-redesign-proposal.md"
@@ -483,9 +483,9 @@ features:
       validation_strategy: "numind-server/docs/superpowers/specs/2026-04-29-membership-credits-redesign-validation-strategy.md"
     progress:
       total_tasks: 36
-      completed_tasks: 25
-      reviewed_tasks: 25
-      current_task: "T2a (删 admin Recharge FE) implementer 启动中；T1 已部署 dev + 主动触发验证完美通过 (source_type='cycle' 新行确认)，用户拍板 C 模式跳过 24h 监控直接进 T2"
+      completed_tasks: 27
+      reviewed_tasks: 27
+      current_task: "T2a + T2b 完成 (admin Recharge FE + BE 全删，-263 行净)；merged develop on both repos；待 push numind-server develop 触发 CI → 进 T3 (parent_grant dead-code package 删除)"
     rollback: null
     last_verified: null
     decisions:
@@ -522,6 +522,9 @@ features:
       - "2026-05-15 (HTML 讲解图 + 用户 GO): docs/credits-refactor-explainer.html 8 节单页可视化（TL;DR / 现状图 / 3 真实案例 / 根因 SVG / 12 任务路线图 / 风险防护 / reviewer 共识 / 工作量）。用户 GO，进 S3 plan extension 阶段，等 Sonnet 原子性 reviewer + 人类共审后进 S4。"
       - "2026-05-15 (S3 Sonnet plan reviewer APPROVE_WITH_FIXES): 3 P0 (T4 漏切 HasActiveSubscription/HasTrialPackage 两 guard reader / 依赖图 T1→T10 错误箭头 / T9 删 getLegacyEvents 破坏历史报表) + 7 P1 + 3 P2，全部修复到 plan extension v2。修复细节：T4 scope 扩 + 切两个 guard 到读 subscription/trial_grant、依赖图删 T1→T10、T9 保留 getLegacyEvents 作 read-only 历史路径、T2 拆 T2a (FE 先) + T2b (BE 后)、T7 SQL join payment_order、T8 rollback partial recovery、T11 完整 rollback SQL、§4.5 主动触发验证表、T12 加 dev-environment-setup.md。"
       - "2026-05-15 (T1 完成 — worktree-isolated): T1 (加 credit_transaction.source_type/source_id 列 + 回填) 用 isolation:worktree 隔离开发。T1 implementer commit 3f9ee4f：migration forward+rollback + GORM model + 3 写入点（deductCreditsTxFull / refundOneItem / 测试），但 2 个 reviewer 找到 1 P0 + 2 P1 + 3 P2。P0：新 path MembershipService.DeductCreditsTx 完全不写 credit_transaction → T7/T8 SOT 假设崩塌。fix subagent commit f56d00b 修 6 个问题 + 扩 T1 scope：cycle.go 新增 8 个 ledger 写入点（3 deduct + 5 refund，全部 inside tx，source_type/source_id 正确），refund subscription→cycle vocabulary mapping，migration START TRANSACTION wrap + IF NOT EXISTS 幂等，2 个测试 DSN 加 per-test name。round-2 sonnet reviewer APPROVE，0 新问题，go test + task lint 全绿。等用户拍板 merge develop + 部署 dev + 主动触发验证 → 进 T2。"
+      - "2026-05-15 (T1 deploy + 主动验证 PASS): merge 226df5a → push develop → CI 25916337787 success → GORM AutoMigrate 自动加 source_type/source_id 列 + idx_ct_source 复合索引。SSH dev 跑 backfill UPDATE 196 行（booster 107 + subscription 89 + 2 debt rows NULL by design）。gstack browse 自动登录 dev → chatbot 发消息 → AI 回 'Ready.' → SQL 校验：新 credit_transaction id=201 (budget_reserve -72) + id=202 (refund +69) 都 source_type='cycle' source_id=6 package_id=0。完美闭环：新 path 写 ledger + source_type 正确填入。用户选 C 模式跳过 24h 监控期直接进 T2。"
+      - "2026-05-15 (T2a 完成 — admin Recharge FE): worktree-isolated implementer commit 837f24b → CreditUsersView.vue -125 行 (button + modal + 6 refs) + api/credits.ts -12 行 + banner.spec.ts -1 (stale mock)。2 reviewer：spec APPROVE + code quality APPROVE_WITH_FIXES (P1 stale E2E test block 在 admin-credits.spec.ts L652-735 + P2 column width 160→100px)。fix amend 1c2b123 修两个，round-2 APPROVE。merge cecb043 → push admin-web develop → CI 25917381492 success。"
+      - "2026-05-15 (T2b 完成 — admin Recharge BE): implementer commit a630aef (注意：没用 worktree isolation，直接在 main working tree 切到 feature branch 工作，process 异常但 code 正确)。删 admin_router.go POST recharge 路由 + admin_credit/credit.go Recharge handler+rechargeRequest+parseDuration + biz/credit/credit.go ICreditBiz.RechargeCredits 接口+impl + payment_credits_test.go mock stub。-125 行净。RechargeWithOrderTx (T5 处理) 完整保留。2 reviewer APPROVE_WITH_FIXES (P1 manifest 错误打包进 feature 分支 + P2 current_task 字段 stale)。简单修复：merge 9b25696 as-is + 跟一个 manifest fixup commit on develop 修正 current_task + progress + branches。"
     blockers: []
     related_features:
       - "credits-system (前置依赖，已上线)"
