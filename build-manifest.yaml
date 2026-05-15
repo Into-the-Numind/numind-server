@@ -123,9 +123,9 @@ features:
     ndf_version: "1.1"
     description: "用户端 chatbot 对话页 (views/chatbot/ChatbotChat.vue) 左侧会话列表支持改名与置顶。改名复用现有 chatbot_session.title 字段（无 schema 变更）；置顶新增 pinned_at TIMESTAMP NULL 字段（NULL=未置顶，非NULL=置顶时间）。列表排序改为：置顶组按 pinned_at DESC，非置顶组按 updated_at DESC。交互：hover 显示「…」更多菜单，含「重命名 / 置顶 / 取消置顶 / 删除」。范围明确不含 SalesView 销售对话页与 SOP 运行历史。S1 锁定 Approach A 极简 MVP (1-1.5 d)；顺带修 ListSessions cross-chatbot perf bug。"
     track: "standard"
-    stage: "S6"
+    stage: "completed"
     classification_reason: "Triage 5 条 — (1) DB schema 变更：是（chatbot_session 加 pinned_at 字段 + 覆盖排序的复合索引）(2) 新 API：是（PUT /v1/chatbot/sessions/:id/rename + PUT /v1/chatbot/sessions/:id/pin，2 个新端点；GET sessions 列表 ORDER BY 子句更新）(3) 无外部服务 (4) 跨 numind-server + numind-web-v3 两仓约 10-11 文件 (5) 不涉及支付/权限。条件 1/2/4 不满足 Hotfix，Standard Track。"
-    last_updated_by: "ai-s6-dev-deployed"
+    last_updated_by: "ai-s7-complete"
     last_updated_at: "2026-05-15T00:00:00+08:00"
     repos:
       - numind-server
@@ -143,7 +143,7 @@ features:
       total_tasks: 8
       completed_tasks: 8
       reviewed_tasks: 8
-      current_task: "S6 人工硬门禁 — 等用户在 dev 前端 (49.233.219.254:9200/chatbot/10) 确认 UI 可用后进 S7"
+      current_task: null
     rollback: null
     last_verified:
       at: "2026-05-15T00:00:00+08:00"
@@ -184,12 +184,17 @@ features:
       - "2026-05-14 (S5 Conditional PASS): 自动化测试套件全 PASS — 后端 task test (race+coverage) 0 FAIL, biz/chatbot 34.6% coverage; store 10 + biz 8 = 18 unit tests 全过 (含 D2 不变量 / EC-14 重复置顶 / SQL 排序 3-case); 前端 lint 0 errors + type-check 0 + Vitest 380/403 PASS。E2E + 手动 curl 401/403 deferred 到 S6 — 理由: config_local.yaml 实际指向 dev DB (49.233.219.254:13306), 但 dev DB 未 apply migration; visibility-scope 已 S7 上线用过同 pattern (memory project_dev_deploy_migration_gap: CI 镜像无 migrations 目录, 必须 S6 手动 SSH apply). QA 报告 numind-server/docs/superpowers/specs/2026-05-13-chatbot-session-rename-pin-qa-report.md 含 §3 deferred 理由 + S6 阻塞前置清单 + §6 风险评估 (MySQL 8 SQL 排序 / UpdateColumn 真实 MySQL 行为 / UI 渲染 / 跨 feature 冲突均 Low-Med)。S6 必跑: SSH apply migration → merge develop → CI deploy → Playwright E2E 8 条路径 + 手动 curl 2 条 + 人工 QA 截图。"
       - "2026-05-15 (S6 P0 dev DB 发现): SSH apply migration 后实测 D2 不变量在真实 MySQL 上 FAIL — chatbot_session.updated_at DDL 含 'ON UPDATE CURRENT_TIMESTAMP' (MySQL 服务端触发器). GORM UpdateColumn 只跳过 GORM-level 自动设置, 绕不开 MySQL 服务端的 ON UPDATE — 实测 UPDATE title 后 updated_at 从 2026-04-09 20:52:57 自动刷新到 NOW(). S5 SQLite in-memory unit tests 全 PASS 因 SQLite 没此语法, 这是 S2 holistic reviewer 'broader risks: UpdateColumn 真实 MySQL 行为' 风险点的实际命中. Fix commit c0c61bf: store.UpdateTitle/SetPinnedAt 从 UpdateColumn 改为 Updates(map) 含 'updated_at = gorm.Expr(\"updated_at\")' 显式 SET 同列同值, 触发 MySQL '已显式 SET' 规则跳过 ON UPDATE 触发器. dev DB raw SQL 等价模式实测验证有效."
       - "2026-05-15 (S6 dev 部署 + 端到端 curl 验证): merge feature → develop 两仓 push 成功 (numind-server commit 04a3298 / numind-web-v3 commit b6d5732). CI 两仓全 success (run 25899997071 + 25900074235). Backend container 重启 + dev backend curl 端到端 8 paths PASS: Path 1 rename happy (200) / Path 2 空白校验 (errno '标题不能为空') / Path 3-5 pin/unpin/重排 / Path 6 D2 不变量在真实 MySQL 上 PASS (updated_at 在 rename+pin+unpin 4 操作后保持原值 2026-05-14T03:55:59 — P0 fix 最强证据) / Path 8 chatbot_id query param filter 生效 / Path 9 未登录 401 / Path 10 单元测试覆盖跳过 curl; EC-14 重复置顶 pinned_at_2 > pinned_at_1 PASS (2.1s 间隔)。Playwright E2E spec 已补写 numind-web-v3/e2e/chatbot-session-rename-pin.spec.ts (mock-based 8 paths). Dev 数据已恢复 (session 52 title='会议记录沉淀' pinned_at=null updated_at=2026-05-14T03:55:59 不变)."
+      - "2026-05-15 (S6 UI 一致性 fix iteration round 1): 用户 dev 人工验收反馈 3 件事 — (1) chatbot 图标改 lucide 匹配 salesrag 但保持 chatbot 置顶视觉 (2) chatbot 三点菜单下展列表 UI 完全匹配 salesrag (3) salesrag 置顶效果改为 chatbot 一样. Implementer (commit 23514dc): Fix A chatbot 三点按钮 ⋯ → <MoreVertical> lucide / Fix B 菜单 dropdown UI 加 Edit3/Pin/PinOff/Trash2 图标 + CSS 类名重命名为 salesrag 同款 (.session-menu-btn/-container/-dropdown/-item/.danger) + CSS 规则复制 salesrag / Fix C 保持 chatbot 现有 .session-item--pinned 左 2px 边框 + 📌 emoji (用户 '保持现在置顶效果') / Fix D salesrag SessionSidebar 移植 chatbot 视觉 (加左边框 + 📌, 删 Pin v-if/MessageSquare v-else 条件渲染 改为 MessageSquare 始终)."
+      - "2026-05-15 (S6 UI fix round 2 reviewer): 1 P0 + 3 P1 — (P0) SessionSidebar .session-menu-btn 缺 aria-label / (P1) chatbot dropdown 用 v-if 无动画 vs salesrag .show class 有 opacity/transform 150ms 过渡 / (P1) 📌 emoji 位置不一致 (chatbot 在 title 右侧 vs salesrag 在 title 左侧) / (P1) 菜单项顺序不一致 (chatbot 重命名/置顶/删除 vs salesrag 置顶/重命名/删除). Fix commit 4d7945d: aria-label 加 + dropdown 改 :class show + 复制 salesrag opacity/transform CSS + 📌 移至 title 左侧 (与 salesrag 对齐) + 菜单项顺序改 置顶→重命名→删除. 两个对话页 UI 现完全一致."
+      - "2026-05-15 (S6 UI fix round 3 用户验收反馈): 用户决定删 📌 emoji 仅保留左边框. Commit 27e4f60: ChatbotChat.vue + SessionSidebar.vue 删除 session-pinned-indicator template + CSS, 仅保留 .session-item--pinned 左 2px primary 边框作为唯一置顶视觉标识. lint 0 errors + type-check exit 0 + Vitest 380 PASS 不退化."
+      - "2026-05-15 (S6 人工验收 PASS): 3 轮 UI fix iteration 后用户在 dev 49.233.219.254:9200 实际操作确认产品可用 — chatbot 和 salesrag 两对话页 UI 完全一致 (MoreVertical 三点按钮 + 图标菜单 + 150ms 动画 + 菜单顺序 置顶/重命名/删除 + 仅左 2px primary 边框作为置顶指示). 全部 11 条 PRD AC 验收通过 + D2 不变量在真实 MySQL 上确认 PASS."
+      - "2026-05-15 (S7 prod 部署完成): 用户自行操作 prod 部署完成. Prod 必跑 SQL: ALTER TABLE chatbot_session ADD COLUMN pinned_at TIMESTAMP NULL DEFAULT NULL COMMENT '置顶时间，NULL=未置顶' AFTER message_count; (完整 SQL 见 numind-server/migrations/20260513_120000_add_chatbot_session_pinned_at.sql). Feature 圆满完成 — chatbot 会话改名与置顶功能上线 prod, 跨 numind-server + numind-web-v3 两仓共 ~25 commits (S4 15 主+fix / S5 1 QA / S6 6 部署+UI fix + 3 manifest)."
     related_features:
       - "sop-chatbot-visibility-scope (S7 已上线, 不耦合)"
       - "membership-credits-redesign (S5 in flight, 不耦合)"
     blockers: []
     created_at: "2026-05-13T00:00:00+08:00"
-    completed_at: null
+    completed_at: "2026-05-15T00:00:00+08:00"
 
   - id: "sop-chatbot-visibility-scope"
     ndf_version: "1.1"
