@@ -155,7 +155,7 @@ func installAdminRouters(g *gin.Engine) error {
 	}
 
 	// B2B 月度结算报表（Q1.4）: 父账户"帮开通"的 credit_package 按月聚合
-	// Task 13: cutover-date dispatch — chooseSource picks legacy/new/split source.
+	// Task 13 / T9: cutover-date wiring retained; chooseSource always returns new_only post-T9.
 	{
 		var b2bBillingBiz b2b_billing.IB2BBillingBiz
 		cutoverStr := viper.GetString("billing.b2b_cutover_date")
@@ -164,7 +164,7 @@ func installAdminRouters(g *gin.Engine) error {
 				b2bBillingBiz = b2b_billing.NewWithCutover(store.S, cutover.UTC())
 				log.Infow("B2B billing cutover date set", "cutover", cutoverStr)
 			} else {
-				log.Warnw("B2B billing cutover date parse failed, falling back to legacy_only", "raw", cutoverStr, "err", parseErr)
+				log.Warnw("B2B billing cutover date parse failed, defaulting to new_only (T9)", "raw", cutoverStr, "err", parseErr)
 				b2bBillingBiz = b2b_billing.New(store.S)
 			}
 		} else {

@@ -34,7 +34,7 @@ import (
 type B2BBillingReport struct {
 	Month              string             `json:"month"`
 	CutoverDate        time.Time          `json:"cutover_date"`
-	Source             string             `json:"source"` // legacy_only / cutover_split / new_only
+	Source             string             `json:"source"` // always "new_only" post-T9 (legacy_only / cutover_split removed)
 	ByParent           []ParentBillingRow `json:"by_parent"`
 	TotalAmountCents   int64              `json:"total_amount_cents"`
 	TotalEventsCount   int                `json:"total_events_count"`
@@ -80,10 +80,10 @@ type b2bBillingBiz struct {
 	cutoverDate time.Time
 }
 
-// New constructs a b2bBillingBiz with the given cutover date.
-// cutoverDate is the moment from which membership_event is the authoritative source.
-// Pass time.Time{} to default to legacy_only behaviour (for backward compat in
-// tests that don't provide a cutover).
+// New constructs a b2bBillingBiz without an explicit cutover date.
+// Post-T9 (credits-cleanup): chooseSource always returns new_only regardless of
+// cutoverDate, so this constructor and NewWithCutover are functionally equivalent.
+// Retained as a separate entry point for backward compat with existing callers/tests.
 func New(ds store.IStore) IB2BBillingBiz {
 	return &b2bBillingBiz{ds: ds}
 }
