@@ -12,7 +12,7 @@
 --   4. Re-base in-period trial_grant.credits_remaining = GREATEST(200 - ledger_deducted, 0)
 --   5. Re-base in-period credit_cycle.credits_remaining = GREATEST(credits_granted - ledger_deducted, 0)
 --   6. Post-check: verify all 8 spec §6 invariants still hold
---   7. Audit log: write membership_event row with idempotency_key='t8_calibration_dev_20260515'
+--   7. Audit log: write membership_event row with idempotency_key=<@T8_KEY_PREFIX>_*
 --
 -- IMPORTANT PRECONDITIONS:
 --   * T1 (source_type column + backfill) MUST be deployed BEFORE running this.
@@ -23,15 +23,29 @@
 --
 -- Idempotency: UPDATE statements use WHERE guards (credits_remaining != computed)
 -- so re-running is safe — already-calibrated rows are skipped. The backup tables
--- use CREATE TABLE IF NOT EXISTS so re-runs won't error on the backup step.
+-- use CREATE TABLE IF NOT EXISTS + "INSERT only if backup empty" guard so re-runs
+-- never overwrite a pre-T8 snapshot with post-T8 state (see Step 1).
+--
+-- ⚠️  DDL OUTSIDE THE MAIN TRANSACTION
+--   Step 0 below extends the membership_event.event_type ENUM (and the source ENUM
+--   in fix #7). MySQL implicitly auto-commits ALL DDL statements. If subsequent
+--   steps fail and you ROLLBACK, the ENUM extensions PERSIST — they cannot be
+--   rolled back inside this script. This is safe because the changes are purely
+--   additive (existing rows unaffected), but the rollback script documents the
+--   "DBA manual verification required" handling for reverting them.
 --
 -- Prod readiness concerns (documented for future prod deployment):
 --   * Prod has ~30 expired trial rows with credits_remaining > 0 (dev has 2).
 --     The force-zero UPDATE will affect those 30 rows on prod.
---   * The membership_event idempotency_key for prod must be 't8_calibration_prod_20260515'
---     (different from dev key used here: 't8_calibration_dev_20260515').
+--   * The membership_event idempotency_key prefix MUST be changed for prod by
+--     editing the @T8_KEY_PREFIX SET statement below (dev → prod). The SET statement
+--     is the single source of truth — no other literals to change.
 --   * membership_event.event_type ENUM was extended by this migration to include
 --     'admin_calibration'. Ensure prod schema has this ENUM extended before running.
+--   * membership_event.source ENUM was extended by this migration to include
+--     'system' for system-issued (non-user, non-B2B-grant) audit rows.
+--     The B2B billing report aggregates by source='b2b_grant'; calibration rows
+--     are tagged source='system' so they do NOT pollute the B2B billing aggregation.
 --   * Run inside MAINTENANCE_MODE=true to avoid concurrent deduction races during calibration.
 --
 -- Rollback: use 20260515_120000_t8_ledger_calibration_rollback.sql
@@ -40,9 +54,33 @@
 --   * After 1 hour: partial recovery only — backup tables + idempotency_key audit row
 --     allow row-level rollback; do NOT overwrite post-T8 user deductions.
 
--- ── Step 0: Extend membership_event.event_type ENUM to include 'admin_calibration' ──
--- This allows us to write a proper audit row into the event log.
--- The ENUM extension is backward-compatible (existing rows are unaffected).
+-- ── Idempotency key prefix (CHANGE BEFORE PROD RUN) ───────────────────────────
+-- ⚠️ This is the SINGLE source of truth for the idempotency_key prefix.
+-- For dev:  SET @T8_KEY_PREFIX = 't8_calibration_dev_20260515';
+-- For prod: SET @T8_KEY_PREFIX = 't8_calibration_prod_20260515';
+-- All audit INSERTs below CONCAT() this var with their per-row suffix.
+-- The rollback script has a matching SET — keep both in sync per environment.
+SET @T8_KEY_PREFIX = 't8_calibration_dev_20260515';
+
+-- ── Step 0.5: Trial denomination pre-check ────────────────────────────────────
+-- Sanity check: confirm all credit_package(trial) rows were issued at 200 credits.
+-- The trial calibration formula in Step 4 hardcodes 200 as the initial credits
+-- (GREATEST(200 - ledger_deducted, 0)). If a future trial pkg is issued at a
+-- different value (e.g. 300), this script silently miscomputes that user's balance.
+-- Re-evaluate the Step 4 formula before continuing if this is non-zero.
+SELECT 'pre_check_trial_denomination' AS check_name,
+       COUNT(*) AS non_200_trial_pkgs
+  FROM credit_package
+ WHERE type = 'trial' AND total_credits != 200;
+-- Expected: 0. If >0, STOP and review whether the 200 literal in Step 4 is still correct.
+
+-- ── Step 0: Extend membership_event ENUMs ────────────────────────────────────
+-- (a) event_type: add 'admin_calibration' so we can write a proper audit row.
+-- (b) source:     add 'system' so calibration rows are NOT tagged 'b2b_grant'
+--                 (which would pollute the B2B billing aggregation that filters
+--                  by source='b2b_grant').
+-- Both ENUM extensions are backward-compatible (existing rows are unaffected).
+-- ⚠️ Both ALTER statements auto-commit. See header note "DDL OUTSIDE THE MAIN TRANSACTION".
 ALTER TABLE membership_event
   MODIFY COLUMN event_type ENUM(
     'trial_granted',
@@ -52,21 +90,37 @@ ALTER TABLE membership_event
     'admin_calibration'
   ) NOT NULL;
 
--- ── Step 1: Backup snapshot ───────────────────────────────────────────────────
--- Backup trial_grant current state before any modifications.
-CREATE TABLE IF NOT EXISTS trial_grant_backup_t8 LIKE trial_grant;
--- Clear previous backup if re-running (idempotent re-run support)
-DELETE FROM trial_grant_backup_t8;
-INSERT INTO trial_grant_backup_t8 SELECT * FROM trial_grant;
+ALTER TABLE membership_event
+  MODIFY COLUMN source ENUM(
+    'self_purchase',
+    'b2b_grant',
+    'system'
+  ) NOT NULL;
 
--- Backup credit_cycle current state before any modifications.
+-- ── Step 1: Backup snapshot ───────────────────────────────────────────────────
+-- Backup trial_grant + credit_cycle current state before any modifications.
+--
+-- ⚠️ RE-RUN PROTECTION: only INSERT into backup IF the backup table is currently
+-- empty. This protects against the case where T8 was already run once (backup
+-- holds the genuine pre-T8 state) and is being re-run later (current rows are
+-- POST-T8 state — re-snapshotting would overwrite the pre-T8 backup, destroying
+-- our ability to roll back). On the first run, the backup is empty, NOT EXISTS
+-- is true, INSERT proceeds. On re-runs, NOT EXISTS is false, INSERT is a no-op.
+CREATE TABLE IF NOT EXISTS trial_grant_backup_t8 LIKE trial_grant;
+INSERT INTO trial_grant_backup_t8
+SELECT * FROM trial_grant
+WHERE NOT EXISTS (SELECT 1 FROM trial_grant_backup_t8 LIMIT 1);
+
 CREATE TABLE IF NOT EXISTS credit_cycle_backup_t8 LIKE credit_cycle;
-DELETE FROM credit_cycle_backup_t8;
-INSERT INTO credit_cycle_backup_t8 SELECT * FROM credit_cycle;
+INSERT INTO credit_cycle_backup_t8
+SELECT * FROM credit_cycle
+WHERE NOT EXISTS (SELECT 1 FROM credit_cycle_backup_t8 LIMIT 1);
 
 SELECT 'BACKUP COMPLETE' AS status,
        (SELECT COUNT(*) FROM trial_grant_backup_t8) AS trial_grant_rows_backed_up,
        (SELECT COUNT(*) FROM credit_cycle_backup_t8) AS credit_cycle_rows_backed_up;
+-- Note: row counts reflect the ORIGINAL pre-T8 snapshot on first run, and are
+-- unchanged on re-runs (since the NOT EXISTS guard skipped the INSERT).
 
 -- ── Step 2: Pre-check invariants ─────────────────────────────────────────────
 -- Pre-check A: source_type must be 100% backfilled for non-debt rows (T1 precondition).
@@ -342,14 +396,17 @@ WHERE cc.cycle_end > NOW()
 -- ── Step 8: Audit log ─────────────────────────────────────────────────────────
 -- Write a single audit row per calibrated user to membership_event.
 -- event_type='admin_calibration' (enum extended in Step 0).
--- source='system' is not a valid enum value; use 'b2b_grant' as closest valid source
--- with granter_user_id=NULL to signal system operation.
--- The idempotency_key='t8_calibration_dev_20260515' makes re-runs idempotent.
+-- source='system' (enum extended in Step 0) — calibration rows are NEITHER
+-- self-purchases NOR B2B grants, so we tag them 'system' to exclude them from
+-- B2B billing aggregation (which filters by source='b2b_grant').
+-- granter_user_id=NULL because no user/admin "granted" anything; this is a
+-- ledger calibration, not a credit issuance.
+-- idempotency_key is built from @T8_KEY_PREFIX + per-row suffix; the UNIQUE
+-- constraint on idempotency_key + INSERT IGNORE makes re-runs no-op.
 --
 -- NOTE: We insert one audit row per affected user for traceability.
 -- For the expired trial users (55, 54), product_type='trial'.
 -- For cycle drift users, product_type='monthly'.
--- A summary row is also inserted (user_id=0 not valid; use affected user_id directly).
 
 INSERT IGNORE INTO membership_event
   (user_id, event_type, product_type, amount_cents, source, granter_user_id, idempotency_key, occurred_at)
@@ -359,9 +416,9 @@ SELECT
   'admin_calibration',
   'trial',
   0,
-  'b2b_grant',
+  'system',
   NULL,
-  CONCAT('t8_calibration_dev_20260515_trial_', tg.user_id),
+  CONCAT(@T8_KEY_PREFIX, '_trial_', tg.user_id),
   NOW()
 FROM trial_grant_backup_t8 tg
 WHERE tg.expires_at < NOW()
@@ -375,9 +432,9 @@ SELECT
   'admin_calibration',
   'trial',
   0,
-  'b2b_grant',
+  'system',
   NULL,
-  CONCAT('t8_calibration_dev_20260515_trial_active_', tg.user_id),
+  CONCAT(@T8_KEY_PREFIX, '_trial_active_', tg.user_id),
   NOW()
 FROM trial_grant_backup_t8 tg
 JOIN trial_grant tg_new ON tg_new.user_id = tg.user_id
@@ -392,9 +449,9 @@ SELECT
   'admin_calibration',
   'monthly',
   0,
-  'b2b_grant',
+  'system',
   NULL,
-  CONCAT('t8_calibration_dev_20260515_cycle_', cc.id),
+  CONCAT(@T8_KEY_PREFIX, '_cycle_', cc.id),
   NOW()
 FROM credit_cycle_backup_t8 cc
 JOIN credit_cycle cc_new ON cc_new.id = cc.id
@@ -404,7 +461,7 @@ WHERE cc.cycle_end > NOW()
 SELECT 'AUDIT ROWS INSERTED' AS status;
 SELECT idempotency_key, event_type, product_type, user_id, occurred_at
 FROM membership_event
-WHERE idempotency_key LIKE 't8_calibration_dev_20260515%'
+WHERE idempotency_key LIKE CONCAT(@T8_KEY_PREFIX, '%')
 ORDER BY idempotency_key;
 
 SELECT 'T8 LEDGER CALIBRATION COMPLETE' AS final_status;

@@ -146,7 +146,14 @@ All no-op (data migration only, no Go code changes):
 
 2. **Prod expired trial volume**: Prod has ~30 expired trial rows with `credits_remaining > 0` (vs 2 on dev). All will be correctly zeroed.
 
-3. **Prod idempotency_key**: Change `t8_calibration_dev_20260515` → `t8_calibration_prod_20260515` when running on prod.
+   ⚠️ **Dev coverage gap — human review required on prod**: dev exercised this migration against only 4 `trial_grant` rows and 2 active `credit_cycle` rows. Prod is at a much larger scale (~31 trial rows, ~38 cycle rows estimated from T7 ledger rebuild output). The prod runbook MUST require a human operator to:
+   - Run all four pre-check SELECTs (A/B/C/D) standalone and inspect the row counts BEFORE authorizing the UPDATE transaction.
+   - Confirm pre-check B count is in the expected ~30 range (not 300+ — would indicate a different upstream bug).
+   - Confirm pre-check D row counts are within expectations from T7's drift analysis.
+   - Confirm pre-check A (T1 backfill) is zero — non-zero means T1 is incomplete and T8 must NOT run.
+   - The forward SQL has no scale-related logic, but the small dev sample means we have not stress-tested transaction lock duration. MAINTENANCE_MODE=true is mandatory on prod.
+
+3. **Prod idempotency_key**: Change `t8_calibration_dev_20260515` → `t8_calibration_prod_20260515` by editing the single `SET @T8_KEY_PREFIX = ...` line at the top of both the forward and rollback SQL files. No other literals to change — all query-side usages use `CONCAT(@T8_KEY_PREFIX, ...)`.
 
 4. **Cycle drift on prod**: Unknown scale. Run pre-check D query standalone on prod before executing UPDATEs to understand how many cycles need calibration.
 
