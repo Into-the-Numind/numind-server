@@ -431,3 +431,74 @@ func TestDeductCreditsTx_SourceType_TrialThenCycleThenBooster(t *testing.T) {
 	assert.Equal(t, userID, result.Items[2].SourceID)
 	assert.Equal(t, int64(50), result.Items[2].Amount)
 }
+
+// TestRefundCreditsTx_SourceExpired_TriggersRefundLost verifies the
+// "refund lost" fallback in RefundCreditsTx (cycle.go:483-502): when the
+// original deduction source is expired AND there is no active booster /
+// active cycle to fall back to, the refund cannot be returned anywhere.
+//
+// Expected post-condition:
+//   - refundedAmount returned is 0 (no pool credited)
+//   - refundedTo is empty (no DeductSource matched)
+//   - the expired source row is NOT mutated (credits_remaining stays put)
+//   - a membership_event row with event_type='refund_lost' is created,
+//     ProductType='trial' (the original deduction source), Source='system'
+//   - no credit_transaction row is written (writeLedgerRefund only fires
+//     on a successful refund; the lost path emits a membership_event only)
+func TestRefundCreditsTx_SourceExpired_TriggersRefundLost(t *testing.T) {
+	db := newCycleTestDB(t)
+	svc := NewMembershipService(db)
+	ctx := context.Background()
+
+	userID := uint64(20)
+	now := time.Now().UTC()
+	// Trial that EXPIRED 24h ago — original source unavailable for refund.
+	expiredTrial := insertTrialGrant(t, db, userID, now.Add(-24*time.Hour), 0)
+	originalRemaining := expiredTrial.CreditsRemaining
+
+	// No active sub, no active trial, no booster row → all fallback paths
+	// (Step 2 / Step 3 in cycle.go:448-481) skip → refund_lost.
+
+	var refundedTo DeductSource
+	var refundedID uint64
+	var refundedAmount int64
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var e error
+		refundedTo, refundedID, refundedAmount, e = svc.RefundCreditsTx(
+			ctx, tx, userID, DeductSourceTrial, expiredTrial.ID, 30, now,
+		)
+		return e
+	})
+	require.NoError(t, err, "refund_lost path returns nil error (caller distinguishes via amount==0)")
+
+	// Return values: nothing credited.
+	assert.Equal(t, DeductSource(""), refundedTo, "refundedTo empty when refund is lost")
+	assert.Equal(t, uint64(0), refundedID, "refundedID zero when refund is lost")
+	assert.Equal(t, int64(0), refundedAmount, "refundedAmount=0 signals refund lost")
+
+	// Expired trial row must NOT be mutated.
+	var trialAfter model.TrialGrant
+	require.NoError(t, db.First(&trialAfter, expiredTrial.ID).Error)
+	assert.Equal(t, originalRemaining, trialAfter.CreditsRemaining,
+		"expired trial credits_remaining must not change on refund_lost")
+
+	// membership_event row created with event_type='refund_lost'.
+	var events []model.MembershipEvent
+	require.NoError(t, db.Where("user_id = ? AND event_type = ?", userID, model.EventTypeRefundLost).
+		Find(&events).Error)
+	require.Len(t, events, 1, "exactly one refund_lost event must be written")
+	ev := events[0]
+	assert.Equal(t, string(DeductSourceTrial), ev.ProductType,
+		"ProductType records the original DeductSource for audit")
+	assert.Equal(t, int64(30), ev.AmountCents,
+		"AmountCents repurposed to hold the lost credit amount (see RefundCreditsTx godoc)")
+	assert.Equal(t, model.SourceSystem, ev.Source,
+		"Source='system' to keep B2B / self_purchase reports clean")
+
+	// No credit_transaction row (refund ledger only writes on successful refund).
+	var txCount int64
+	require.NoError(t, db.Table("credit_transaction").
+		Where("user_id = ?", userID).Count(&txCount).Error)
+	assert.Equal(t, int64(0), txCount,
+		"writeLedgerRefund must not fire on the refund_lost path")
+}

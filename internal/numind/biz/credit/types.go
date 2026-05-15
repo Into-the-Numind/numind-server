@@ -129,14 +129,6 @@ type ReservationItem struct {
 	Seq              int // FIFO 顺序号（1, 2, ...）
 }
 
-// PackageDeduction DeductCreditsTx 返回的扣减明细
-type PackageDeduction struct {
-	PackageID   uint64
-	Credits     int64
-	PackageType string
-	ExpiresAt   time.Time
-}
-
 // BalanceBreakdown GetBalance 返回的余额视图（按 billing_mode 分发）
 // JSON 短字段名与现有 numind-web-v3/src/api/credits.ts 对齐
 type BalanceBreakdown struct {

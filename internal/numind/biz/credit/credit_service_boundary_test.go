@@ -11,8 +11,10 @@ package credit_test
 // 未覆盖的条目（在本次补测范围外）：
 //   - item 1 "未登录 → 401"：middleware 层，biz 层无法构造
 //   - item 8 "24h cron Refund"：spec 列为预期行为，但 expired_by_cron 扫描
-//     功能尚未在 biz/credit 实装（cron_billing.go 目前只做 billing_mode
-//     兜底），deferred 等该 cron 落地后再补。见 credit.go:RunCronTasks。
+//     功能尚未在 biz/credit 实装。T6 (credits-cleanup) 删除了 credit_package
+//     生命周期 cron（RunCronTasks / ActivatePendingPackages / ExpireActivePackages），
+//     新表 credit_cycle / trial_grant 改用事件驱动；cron-based refund 在新模型下
+//     已不适用。
 
 import (
 	"context"
@@ -57,7 +59,7 @@ func TestCheckAndEstimate_FreeUser_CreditsMode_ReturnsInsufficient(t *testing.T)
 	user.ID = userID
 
 	pc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), pc, nil)
+	svc := newCreditServiceWithMembership(ds, db, pc)
 
 	// Act
 	pre, err := svc.CheckAndEstimate(context.Background(), user, credit.OpSopRun, credit.EstimationInput{
@@ -86,7 +88,7 @@ func TestCheckAndEstimate_FreeUser_CreditsMode_ReturnsInsufficient(t *testing.T)
 func TestReserve_ExactlyExhaustedThenRetry_ReturnsInsufficientSentinel(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
+	svc := newCreditServiceWithMembership(ds, db, nil)
 
 	userID := uint(610)
 	user := newCreditsUser(userID)
@@ -101,10 +103,12 @@ func TestReserve_ExactlyExhaustedThenRetry_ReturnsInsufficientSentinel(t *testin
 	require.NoError(t, err)
 	require.NotNil(t, rsv1)
 
-	// Verify exhausted.
-	var acc model.CreditAccount
-	require.NoError(t, db.Where("user_id = ?", userID).First(&acc).Error)
-	require.EqualValues(t, 0, acc.Balance, "balance exactly drained")
+	// T6: balance now lives in credit_cycle.credits_remaining.
+	var cycleRemaining int64
+	require.NoError(t, db.Raw(
+		`SELECT credits_remaining FROM credit_cycle WHERE user_id = ?`, userID,
+	).Scan(&cycleRemaining).Error)
+	require.EqualValues(t, 0, cycleRemaining, "cycle credits exactly drained")
 
 	// 2nd Reserve: any amount > 0 must fail with ErrInsufficientCredits.
 	_, err = svc.Reserve(context.Background(), user, credit.OpSopRun, 1, 1, nil)
@@ -143,7 +147,7 @@ func TestReserve_CoefficientIDFrozenAcrossVersionBump(t *testing.T) {
 			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
 	})
 
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
+	svc := newCreditServiceWithMembership(ds, db, nil)
 
 	// Reserve with v1.ID snapshotted.
 	rsv, err := svc.Reserve(context.Background(), user, credit.OpSopRun, 150, v1.ID, nil)
@@ -185,73 +189,19 @@ func TestReserve_CoefficientIDFrozenAcrossVersionBump(t *testing.T) {
 }
 
 // --- §5.3 行 9 (expired pkg refund no-op) ---
-// 跨月场景归结为一个核心不变式：Refund 到已过期（status='expired'）的 pkg
-// 是 no-op（spec §2.4）。单测构造：Reserve 成功 → 手工把原 pkg 改成 expired →
-// Refund → 验证 pkg.RemainCredits 不变、reservation.status=refunded。
-// 这精确对应 §5.3 行 9："按 reserved_from_packages 精确退原 pkg；原 pkg 已过期
-// 则退还 no-op"。
-func TestRefund_ToExpiredPackage_IsNoop(t *testing.T) {
-	db := newCreditReserveTestDB(t)
-	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
-
-	userID := uint(630)
-	user := newCreditsUser(userID)
-	now := time.Now()
-	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
-		{Type: model.CreditTypeSubscription, TotalCredits: 200, RemainCredits: 200,
-			ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
-	})
-
-	rsv, err := svc.Reserve(context.Background(), user, credit.OpSopRun, 80, 1, nil)
-	require.NoError(t, err)
-	require.Len(t, rsv.Items, 1)
-	pkgID := rsv.Items[0].PackageID
-
-	// Simulate cron having expired the package between Reserve and Refund
-	// (cross-month scenario: Reserve on 4/30, pkg expires at month boundary).
-	require.NoError(t, db.Model(&model.CreditPackage{}).
-		Where("id = ?", pkgID).
-		Updates(map[string]interface{}{
-			"status":     model.CreditPackageExpired,
-			"expires_at": now.Add(-time.Hour),
-		}).Error)
-
-	// Snapshot pre-refund state for comparison.
-	var beforePkg model.CreditPackage
-	require.NoError(t, db.First(&beforePkg, pkgID).Error)
-	var beforeAcc model.CreditAccount
-	require.NoError(t, db.Where("user_id = ?", userID).First(&beforeAcc).Error)
-
-	// Act: Refund.
-	require.NoError(t, svc.Refund(context.Background(), rsv.ID, "op_failed"))
-
-	// Reservation state transitions even though pkg expired.
-	var rsvRow model.CreditReservation
-	require.NoError(t, db.First(&rsvRow, rsv.ID).Error)
-	assert.Equal(t, "refunded", rsvRow.Status)
-
-	// Package state UNCHANGED: remain_credits and status stay as-is.
-	var afterPkg model.CreditPackage
-	require.NoError(t, db.First(&afterPkg, pkgID).Error)
-	assert.EqualValues(t, beforePkg.RemainCredits, afterPkg.RemainCredits,
-		"refund to expired pkg must be no-op on remain_credits")
-	assert.Equal(t, model.CreditPackageExpired, afterPkg.Status,
-		"expired pkg status must not flip back to active")
-
-	// Account balance also UNCHANGED: no credits restored.
-	var afterAcc model.CreditAccount
-	require.NoError(t, db.Where("user_id = ?", userID).First(&afterAcc).Error)
-	assert.EqualValues(t, beforeAcc.Balance, afterAcc.Balance,
-		"account balance must not move when refund target is expired")
-
-	// And no refund transaction row was written (refundOneItem early-returns).
-	var refundCount int64
-	require.NoError(t, db.Model(&model.CreditTransaction{}).
-		Where("user_id = ? AND operation = ?", userID, "refund").
-		Count(&refundCount).Error)
-	assert.EqualValues(t, 0, refundCount, "no refund tx should be written for expired pkg")
-}
+//
+// T6 (credits-cleanup): the legacy "refund to expired credit_package is no-op"
+// invariant tested here was specific to the deleted credit_package FIFO path.
+// The new path (MembershipService.RefundCreditsTx) operates on credit_cycle /
+// user_booster_balance / trial_grant rows which have different lifecycle
+// semantics (cycle is short-lived per month, booster never expires, trial
+// expires but doesn't carry a "package" identity). Refund-to-expired-pool
+// behaviour for the new path is covered by membership/cycle_test.go via
+// RefundCreditsTx unit tests.
+//
+// The original TestRefund_ToExpiredPackage_IsNoop was deleted as part of T6 —
+// it cannot be expressed against the new tables (rsv.Items[0].PackageID is
+// always nil for new-path reservations).
 
 // --- §5.3 行 10 ---
 // 会员到期瞬间发起 SOP：credits-mode 路径下，CheckAndEstimate 的判定只看积分
@@ -286,7 +236,7 @@ func TestCheckAndEstimate_CreditsMode_TierExpiredStillPasses(t *testing.T) {
 	user.ID = userID
 
 	pc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), pc, nil)
+	svc := newCreditServiceWithMembership(ds, db, pc)
 
 	pre, err := svc.CheckAndEstimate(context.Background(), user, credit.OpSopRun, credit.EstimationInput{
 		PromptChars: 100, Model: "qwen-turbo", Provider: "ali",
@@ -306,7 +256,7 @@ func TestCheckAndEstimate_CreditsMode_TierExpiredStillPasses(t *testing.T) {
 func TestCheckAndEstimate_LegacyTierMode_TierExpired_Rejected(t *testing.T) {
 	db := newCreditTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
+	svc := newCreditServiceWithMembership(ds, db, nil)
 
 	pastExpiry := time.Now().Add(-time.Hour)
 	user := &model.User{
@@ -337,7 +287,7 @@ func TestCheckAndEstimate_LegacyTierMode_TierExpired_Rejected(t *testing.T) {
 func TestReserve_StoreErrorReturnsErrorAndNoReservationRow(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
+	svc := newCreditServiceWithMembership(ds, db, nil)
 
 	userID := uint(650)
 	user := newCreditsUser(userID)

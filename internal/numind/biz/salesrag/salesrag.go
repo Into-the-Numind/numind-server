@@ -2097,11 +2097,21 @@ func (b *salesRAGBiz) ChatWithSession(ctx context.Context, userID uint, sessionI
 	// controller's err-write path at sales_rag.go:216). That matches sop_run /
 	// sop_chat's behaviour post-integration.
 	//
-	// When creditSvc is nil (legacy wiring / tests without the new deps), this
-	// block is a no-op and the biz behaves exactly as before — the controller
-	// still invokes the old CanPerformAIOperation + DeductCredits fire-and-
-	// forget path, so prod traffic is never left un-billed even in a partial
-	// rollout.
+	// Post-T6 status (was: "controller still invokes old CanPerformAIOperation +
+	// DeductCredits fire-and-forget path" — that legacy fallback no longer
+	// exists): the controller's deductCredits() helper was removed in T6 and
+	// every call site was deleted. For this chat path, creditSvc is wired
+	// non-nil in production via DI, so credits-mode users are metered via the
+	// Reserve/Reconcile block below. Tests that pass a nil creditSvc bypass
+	// metering entirely (a no-op).
+	//
+	// Sibling SalesRAG operations (file_parse, profile_analysis, style_analysis,
+	// OCR) still call CanPerformAIOperation in the controller but no longer
+	// run any deduction — they are CURRENTLY UNMETERED for credits-mode users.
+	// This is acknowledged tech debt, not a regression: the legacy DeductCredits
+	// path also skipped credits-mode users (it only debited the legacy
+	// credit_package table). Follow-up: migrate those sub-operations to
+	// MembershipService.Reserve/Reconcile (tracked in NDF manifest).
 	//
 	// Prompt-char estimate based on user input + retrieval query + customer
 	// profile + history. The RAG-retrieved context is NOT yet known (retrieval

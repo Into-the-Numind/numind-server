@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,8 +32,10 @@ import (
 	"gorm.io/gorm/logger"
 
 	"numind-server/internal/numind/biz/credit"
+	"numind-server/internal/numind/biz/membership"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/model"
+	membershipmodel "numind-server/internal/pkg/model/membership"
 	"numind-server/internal/pkg/pricing"
 )
 
@@ -46,13 +49,17 @@ import (
 // newCreditReserveTestDB + extras for SOP template lookup.
 func newCreditsSopTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{
+	// T6: use per-test named in-memory DB with cache=shared and DO NOT cap
+	// MaxOpenConns to 1 — MembershipService.DeductCreditsTx pre-reads on the
+	// bare db inside the caller's tx; with MaxOpenConns=1 the pre-read
+	// deadlocks against the outer tx.
+	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err)
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
-	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	// AutoMigrate tables that have no MySQL ENUMs.
@@ -113,6 +120,66 @@ CREATE TABLE IF NOT EXISTS credit_reservation_item (
 );`).Error)
 	require.NoError(t, db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uk_reservation_seq ON credit_reservation_item(reservation_id, seq);`).Error)
 
+	// T6: membership tables required by MembershipService.DeductCreditsTx
+	// (the new authoritative deduction path post-T6).
+	for _, ddl := range []string{
+		`CREATE TABLE IF NOT EXISTS subscription (
+		    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+		    user_id                INTEGER NOT NULL UNIQUE,
+		    first_started_at       DATETIME NOT NULL,
+		    current_started_at     DATETIME NOT NULL,
+		    expires_at             DATETIME NOT NULL,
+		    total_months_purchased INTEGER NOT NULL,
+		    source                 TEXT NOT NULL DEFAULT 'b2b_grant',
+		    granter_user_id        INTEGER,
+		    created_at             DATETIME NOT NULL,
+		    updated_at             DATETIME NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS trial_grant (
+		    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+		    user_id           INTEGER NOT NULL UNIQUE,
+		    granted_at        DATETIME NOT NULL,
+		    expires_at        DATETIME NOT NULL,
+		    credits_remaining INTEGER NOT NULL DEFAULT 200,
+		    source            TEXT NOT NULL DEFAULT 'b2b_grant',
+		    granter_user_id   INTEGER,
+		    created_at        DATETIME NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS credit_cycle (
+		    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+		    user_id           INTEGER NOT NULL,
+		    subscription_id   INTEGER NOT NULL,
+		    cycle_start       DATETIME NOT NULL,
+		    cycle_end         DATETIME NOT NULL,
+		    credits_granted   INTEGER NOT NULL DEFAULT 0,
+		    credits_remaining INTEGER NOT NULL DEFAULT 0,
+		    created_at        DATETIME NOT NULL,
+		    updated_at        DATETIME NOT NULL,
+		    UNIQUE(user_id, cycle_start)
+		)`,
+		`CREATE TABLE IF NOT EXISTS user_booster_balance (
+		    user_id            INTEGER PRIMARY KEY,
+		    credits_remaining  INTEGER NOT NULL DEFAULT 0,
+		    updated_at         DATETIME NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS membership_event (
+		    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+		    user_id           INTEGER NOT NULL,
+		    event_type        TEXT NOT NULL,
+		    product_type      TEXT NOT NULL,
+		    months            INTEGER,
+		    quantity          INTEGER,
+		    amount_cents      INTEGER NOT NULL DEFAULT 0,
+		    source            TEXT NOT NULL,
+		    granter_user_id   INTEGER,
+		    idempotency_key   TEXT UNIQUE,
+		    subscription_id   INTEGER,
+		    occurred_at       DATETIME NOT NULL
+		)`,
+	} {
+		require.NoError(t, db.Exec(ddl).Error)
+	}
+
 	return db
 }
 
@@ -136,6 +203,25 @@ func seedSopCreditsScenario(t *testing.T, db *gorm.DB,
 		Status: model.CreditPackageActive,
 	}
 	require.NoError(t, db.Create(&pkg).Error)
+
+	// T6: mirror the seeded credit_package into the new membership tables so
+	// MembershipService.DeductCreditsTx (the new authoritative deduction path)
+	// can debit the balance. The mirror is type-specific:
+	//   - subscription → subscription + credit_cycle
+	sub := membershipmodel.Subscription{
+		UserID: uint64(userID), FirstStartedAt: now, CurrentStartedAt: now,
+		ExpiresAt: now.Add(24 * time.Hour), TotalMonthsPurchased: 1,
+		Source: membershipmodel.SourceB2BGrant, CreatedAt: now, UpdatedAt: now,
+	}
+	require.NoError(t, db.Create(&sub).Error)
+	cycle := membershipmodel.CreditCycle{
+		UserID: uint64(userID), SubscriptionID: sub.ID,
+		CycleStart: now, CycleEnd: now.Add(24 * time.Hour),
+		CreditsGranted:   int(balance), //nolint:gosec // test fixture
+		CreditsRemaining: int(balance), //nolint:gosec // test fixture
+		CreatedAt:        now, UpdatedAt: now,
+	}
+	require.NoError(t, db.Create(&cycle).Error)
 
 	// Coefficient row (R2 estimation source).
 	coef := model.CreditEstimationCoefficient{
@@ -167,11 +253,15 @@ func seedSopCreditsScenario(t *testing.T, db *gorm.DB,
 // buildSopBizWithCredits constructs the struct under test with a real
 // ICreditService + pricing calculator so helper assertions can observe the
 // full plumbing.
+//
+// T6: wires MembershipService — legacy creditBiz.DeductCreditsTx fallback was
+// removed, so credit_service Reserve/Reconcile require a non-nil membershipSvc.
 func buildSopBizWithCredits(t *testing.T, db *gorm.DB) *sopBiz {
 	t.Helper()
 	ds := store.NewTestStore(db)
 	calc := pricing.NewCalculator(ds.Billing())
-	cs := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, nil)
+	msvc := membership.NewMembershipService(db)
+	cs := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, msvc)
 	return &sopBiz{
 		ds:        ds,
 		creditBiz: credit.NewCreditBiz(ds),
@@ -316,10 +406,13 @@ func TestSopCredits_CreditsMode_ReserveThenReconcile(t *testing.T) {
 	require.NotNil(t, row.Delta)
 	assert.Less(t, *row.Delta, int64(0), "over-estimation → negative delta, refunded to package")
 
-	// 6. Account balance = balance - 90 (reserved returned to package, reconcile charged 90).
-	var acc model.CreditAccount
-	require.NoError(t, db.Where("user_id = ?", userID).First(&acc).Error)
-	assert.EqualValues(t, balance-90, acc.Balance)
+	// 6. T6: balance now lives in credit_cycle.credits_remaining. Reserved
+	// returned to cycle, reconcile charged 90 net.
+	var cycleRemaining int64
+	require.NoError(t, db.Raw(
+		`SELECT credits_remaining FROM credit_cycle WHERE user_id = ?`, userID,
+	).Scan(&cycleRemaining).Error)
+	assert.EqualValues(t, balance-90, cycleRemaining)
 }
 
 // TestSopCredits_CreditsMode_LLMErrorTriggersRefund verifies the failure
@@ -525,10 +618,12 @@ func TestSopCredits_IdempKey_DedupesRetry(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, rsv1.ID, rsv2.ID, "same idempKey must return same reservation")
 
-	// Balance only decremented once.
-	var acc model.CreditAccount
-	require.NoError(t, db.Where("user_id = ?", userID).First(&acc).Error)
-	assert.EqualValues(t, balance-pre.EstimatedCredits, acc.Balance,
+	// T6: credit_cycle.credits_remaining only decremented once.
+	var cycleRemaining int64
+	require.NoError(t, db.Raw(
+		`SELECT credits_remaining FROM credit_cycle WHERE user_id = ?`, userID,
+	).Scan(&cycleRemaining).Error)
+	assert.EqualValues(t, balance-pre.EstimatedCredits, cycleRemaining,
 		"idempotent retry must not double-debit")
 }
 

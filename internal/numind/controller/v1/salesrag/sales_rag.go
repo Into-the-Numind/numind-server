@@ -93,8 +93,10 @@ func (ctrl *SalesRAGController) Ingest(c *gin.Context) {
 		return
 	}
 
-	// 积分扣减（旧会员跳过）
-	deductCredits(c, ctrl.creditBiz, user, "file_parse", "salesrag_ingest", fmt.Sprintf("%d", docID))
+	// T6 (credits-cleanup): legacy creditBiz.DeductCredits best-effort write was
+	// removed. These sub-operations (file_parse, profile_analysis, style_analysis,
+	// ocr) still need to be migrated to the Reserve/Reconcile path; until then
+	// they are not metered for credits-mode users.
 
 	core.WriteResponse(c, nil, map[string]uint{"document_id": docID})
 }
@@ -788,8 +790,8 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 
 	log.Infow("[AnalyzeProfile] AnalyzeProfileMultiFiles completed", "profile_length", len(profile))
 
-	// 积分扣减（旧会员跳过）
-	deductCredits(c, ctrl.creditBiz, user, "profile_analysis", "salesrag_profile", fmt.Sprintf("user_%d", user.ID))
+	// T6 (credits-cleanup): legacy DeductCredits write removed; pending migration
+	// to Reserve/Reconcile path.
 
 	// 发送完成并附带完整结果
 	doneData, _ := json.Marshal(map[string]interface{}{
@@ -874,8 +876,8 @@ func (ctrl *SalesRAGController) AnalyzeProfileText(c *gin.Context) {
 
 	log.Infow("[AnalyzeProfileText] Completed", "profile_length", len(profile))
 
-	// 积分扣减（旧会员跳过）
-	deductCredits(c, ctrl.creditBiz, user, "profile_analysis", "salesrag_profile_text", fmt.Sprintf("user_%d", user.ID))
+	// T6 (credits-cleanup): legacy DeductCredits write removed; pending migration
+	// to Reserve/Reconcile path.
 
 	doneData, _ := json.Marshal(map[string]interface{}{
 		"type":    "done",
@@ -977,8 +979,8 @@ func (ctrl *SalesRAGController) AnalyzeChatStyle(c *gin.Context) {
 
 	log.Infow("[AnalyzeChatStyle] AnalyzeChatStyleStream completed", "result_length", len(result))
 
-	// 积分扣减（旧会员跳过）
-	deductCredits(c, ctrl.creditBiz, user, "style_analysis", "salesrag_style", fmt.Sprintf("user_%d", user.ID))
+	// T6 (credits-cleanup): legacy DeductCredits write removed; pending migration
+	// to Reserve/Reconcile path.
 
 	// 发送完成并附带完整结果
 	doneData, _ := json.Marshal(map[string]interface{}{
@@ -1106,8 +1108,8 @@ func (ctrl *SalesRAGController) OCR(c *gin.Context) {
 		return
 	}
 
-	// 积分扣减（旧会员跳过）
-	deductCredits(c, ctrl.creditBiz, user, "ocr", "salesrag_ocr", sessionID)
+	// T6 (credits-cleanup): legacy DeductCredits write removed; pending migration
+	// to Reserve/Reconcile path.
 
 	// 4. 返回结果
 	core.WriteResponse(c, nil, map[string]string{
@@ -1186,17 +1188,4 @@ func (ctrl *SalesRAGController) GetFeedback(c *gin.Context) {
 		"rating":  feedback.Rating,
 		"comment": feedback.Comment,
 	})
-}
-
-// deductCredits 积分扣减辅助函数（legacy_tier 跳过，失败不阻塞主流程）
-// 仅用于尚未接入 biz 层 Reserve/Reconcile 的操作（file_parse, profile_analysis, style_analysis, ocr）。
-// salesrag_chat 已由 biz 层 acquireSalesragCredits 处理，不应再调用此函数（会导致双重扣费）。
-func deductCredits(c *gin.Context, creditBiz credit.ICreditBiz, user *model.User, operation, bizRefType, bizRefID string) {
-	if user.BillingMode == model.BillingModeLegacyTier || user.HasActiveMembership() {
-		return
-	}
-	estimatedCost := credit.GetEstimatedCredits(operation)
-	if err := creditBiz.DeductCredits(c.Request.Context(), user.ID, estimatedCost, operation, bizRefType, bizRefID, nil); err != nil {
-		log.Warnw("Failed to deduct credits", "error", err, "user_id", user.ID, "operation", operation)
-	}
 }

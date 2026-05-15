@@ -13,11 +13,15 @@ import (
 )
 
 // CreditStore 积分数据存储接口
+//
+// T6 (credits-cleanup): GetActivePackagesForUpdate, UpdatePackage,
+// ActivatePendingPackages, ExpireActivePackages were deleted along with the
+// legacy creditBiz.DeductCreditsTx chain. The new path
+// (membership.MembershipService.DeductCreditsTx) reads/writes credit_cycle /
+// user_booster_balance / trial_grant directly without touching credit_package.
 type CreditStore interface {
 	GetOrCreateAccount(ctx context.Context, userID uint) (*model.CreditAccount, error)
 	GetBalance(ctx context.Context, userID uint) (int64, error)
-	GetActivePackagesForUpdate(ctx context.Context, tx *gorm.DB, userID uint) ([]model.CreditPackage, error)
-	UpdatePackage(ctx context.Context, tx *gorm.DB, pkg *model.CreditPackage) error
 	CreatePackages(ctx context.Context, packages []model.CreditPackage) error
 	ListPackagesByUser(ctx context.Context, userID uint, offset, limit int) ([]model.CreditPackage, int64, error)
 	ListPackagesByOrder(ctx context.Context, orderID uint64) ([]model.CreditPackage, error)
@@ -30,8 +34,6 @@ type CreditStore interface {
 	ListTransactionsByUser(ctx context.Context, userID uint, offset, limit int) ([]model.CreditTransaction, int64, error)
 	UpdateBalance(ctx context.Context, tx *gorm.DB, userID uint, delta int64) error
 	RecalculateBalance(ctx context.Context, userID uint) error
-	ActivatePendingPackages(ctx context.Context) ([]uint, error)
-	ExpireActivePackages(ctx context.Context) ([]uint, error)
 	ListAllAccountsWithBalance(ctx context.Context, offset, limit int) ([]model.CreditAccount, int64, error)
 	GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error)
 	GetLatestCreditExpiry(ctx context.Context, userID uint) (string, error)
@@ -94,22 +96,6 @@ func (s *creditStore) GetBalance(ctx context.Context, userID uint) (int64, error
 		return 0, err
 	}
 	return account.Balance, nil
-}
-
-// GetActivePackagesForUpdate 获取用户有效积分包并加行锁（用于扣减操作，FIFO）
-func (s *creditStore) GetActivePackagesForUpdate(ctx context.Context, tx *gorm.DB, userID uint) ([]model.CreditPackage, error) {
-	var packages []model.CreditPackage
-	err := tx.WithContext(ctx).
-		Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("user_id = ? AND status = ?", userID, model.CreditPackageActive).
-		Order("expires_at ASC").
-		Find(&packages).Error
-	return packages, err
-}
-
-// UpdatePackage 更新积分包（在事务中使用）
-func (s *creditStore) UpdatePackage(ctx context.Context, tx *gorm.DB, pkg *model.CreditPackage) error {
-	return tx.WithContext(ctx).Save(pkg).Error
 }
 
 // CreatePackages 批量创建积分包
@@ -305,78 +291,6 @@ func (s *creditStore) RecalculateBalance(ctx context.Context, userID uint) error
 		"UPDATE credit_account SET balance = (SELECT COALESCE(SUM(remain_credits), 0) FROM credit_package WHERE user_id = ? AND status = ?) WHERE user_id = ?",
 		userID, model.CreditPackageActive, userID,
 	).Error
-}
-
-// ActivatePendingPackages 激活所有到期应生效的 pending 积分包，返回涉及的用户 ID 列表
-func (s *creditStore) ActivatePendingPackages(ctx context.Context) ([]uint, error) {
-	var userIDs []uint
-	now := time.Now()
-
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 查询需要激活的积分包
-		var packages []model.CreditPackage
-		if err := tx.
-			Where("status = ? AND activated_at <= ?", model.CreditPackagePending, now).
-			Find(&packages).Error; err != nil {
-			return err
-		}
-
-		if len(packages) == 0 {
-			return nil
-		}
-
-		// 收集 ID 并批量更新状态
-		ids := make([]uint64, 0, len(packages))
-		seen := make(map[uint]struct{})
-		for _, p := range packages {
-			ids = append(ids, p.ID)
-			if _, ok := seen[p.UserID]; !ok {
-				seen[p.UserID] = struct{}{}
-				userIDs = append(userIDs, p.UserID)
-			}
-		}
-
-		return tx.Model(&model.CreditPackage{}).
-			Where("id IN ?", ids).
-			UpdateColumn("status", model.CreditPackageActive).Error
-	})
-	return userIDs, err
-}
-
-// ExpireActivePackages 过期所有已超出 expires_at 的 active 积分包，返回涉及的用户 ID 列表
-func (s *creditStore) ExpireActivePackages(ctx context.Context) ([]uint, error) {
-	var userIDs []uint
-	now := time.Now()
-
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 查询需要过期的积分包
-		var packages []model.CreditPackage
-		if err := tx.
-			Where("status = ? AND expires_at <= ?", model.CreditPackageActive, now).
-			Find(&packages).Error; err != nil {
-			return err
-		}
-
-		if len(packages) == 0 {
-			return nil
-		}
-
-		// 收集 ID 并批量更新状态
-		ids := make([]uint64, 0, len(packages))
-		seen := make(map[uint]struct{})
-		for _, p := range packages {
-			ids = append(ids, p.ID)
-			if _, ok := seen[p.UserID]; !ok {
-				seen[p.UserID] = struct{}{}
-				userIDs = append(userIDs, p.UserID)
-			}
-		}
-
-		return tx.Model(&model.CreditPackage{}).
-			Where("id IN ?", ids).
-			UpdateColumn("status", model.CreditPackageExpired).Error
-	})
-	return userIDs, err
 }
 
 // ListAllAccountsWithBalance 查询所有积分账户（管理端，按余额降序，分页）

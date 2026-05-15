@@ -19,6 +19,7 @@ package salesrag
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,12 +30,14 @@ import (
 	"gorm.io/gorm/logger"
 
 	"numind-server/internal/numind/biz/credit"
+	"numind-server/internal/numind/biz/membership"
 	"numind-server/internal/numind/biz/salesrag/domain"
 	"numind-server/internal/numind/store"
 	cb "numind-server/internal/pkg/contextbudget"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/known"
 	"numind-server/internal/pkg/model"
+	membershipmodel "numind-server/internal/pkg/model/membership"
 	"numind-server/internal/pkg/pricing"
 )
 
@@ -46,13 +49,17 @@ import (
 // helper (it's unexported), so we reconstruct the minimum set here.
 func newSalesragCreditsTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{
+	// T6: use per-test named in-memory DB with cache=shared and DO NOT cap
+	// MaxOpenConns to 1 — MembershipService.DeductCreditsTx pre-reads on the
+	// bare db inside the caller's tx, and with MaxOpenConns=1 the pre-read
+	// deadlocks against the outer tx.
+	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err)
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
-	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	// Auto-migrate tables that don't use MySQL-specific ENUM types.
@@ -138,6 +145,66 @@ CREATE TABLE IF NOT EXISTS credit_reservation_item (
 );`).Error)
 	require.NoError(t, db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uk_reservation_seq ON credit_reservation_item(reservation_id, seq);`).Error)
 
+	// T6: membership tables required by MembershipService.DeductCreditsTx
+	// (the new authoritative deduction path post-T6).
+	for _, ddl := range []string{
+		`CREATE TABLE IF NOT EXISTS subscription (
+		    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+		    user_id                INTEGER NOT NULL UNIQUE,
+		    first_started_at       DATETIME NOT NULL,
+		    current_started_at     DATETIME NOT NULL,
+		    expires_at             DATETIME NOT NULL,
+		    total_months_purchased INTEGER NOT NULL,
+		    source                 TEXT NOT NULL DEFAULT 'b2b_grant',
+		    granter_user_id        INTEGER,
+		    created_at             DATETIME NOT NULL,
+		    updated_at             DATETIME NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS trial_grant (
+		    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+		    user_id           INTEGER NOT NULL UNIQUE,
+		    granted_at        DATETIME NOT NULL,
+		    expires_at        DATETIME NOT NULL,
+		    credits_remaining INTEGER NOT NULL DEFAULT 200,
+		    source            TEXT NOT NULL DEFAULT 'b2b_grant',
+		    granter_user_id   INTEGER,
+		    created_at        DATETIME NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS credit_cycle (
+		    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+		    user_id           INTEGER NOT NULL,
+		    subscription_id   INTEGER NOT NULL,
+		    cycle_start       DATETIME NOT NULL,
+		    cycle_end         DATETIME NOT NULL,
+		    credits_granted   INTEGER NOT NULL DEFAULT 0,
+		    credits_remaining INTEGER NOT NULL DEFAULT 0,
+		    created_at        DATETIME NOT NULL,
+		    updated_at        DATETIME NOT NULL,
+		    UNIQUE(user_id, cycle_start)
+		)`,
+		`CREATE TABLE IF NOT EXISTS user_booster_balance (
+		    user_id            INTEGER PRIMARY KEY,
+		    credits_remaining  INTEGER NOT NULL DEFAULT 0,
+		    updated_at         DATETIME NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS membership_event (
+		    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+		    user_id           INTEGER NOT NULL,
+		    event_type        TEXT NOT NULL,
+		    product_type      TEXT NOT NULL,
+		    months            INTEGER,
+		    quantity          INTEGER,
+		    amount_cents      INTEGER NOT NULL DEFAULT 0,
+		    source            TEXT NOT NULL,
+		    granter_user_id   INTEGER,
+		    idempotency_key   TEXT UNIQUE,
+		    subscription_id   INTEGER,
+		    occurred_at       DATETIME NOT NULL
+		)`,
+	} {
+		require.NoError(t, db.Exec(ddl).Error)
+	}
+
 	return db
 }
 
@@ -170,6 +237,23 @@ func seedCreditsUserWithPackage(t *testing.T, db *gorm.DB, userID uint, totalCre
 		ExpiresAt:     now.Add(30 * 24 * time.Hour),
 	}
 	require.NoError(t, db.Create(pkg).Error)
+
+	// T6: mirror into membership tables so MembershipService.DeductCreditsTx
+	// (the new authoritative deduction path) can debit the balance.
+	sub := membershipmodel.Subscription{
+		UserID: uint64(userID), FirstStartedAt: now, CurrentStartedAt: now,
+		ExpiresAt: now.Add(30 * 24 * time.Hour), TotalMonthsPurchased: 1,
+		Source: membershipmodel.SourceB2BGrant, CreatedAt: now, UpdatedAt: now,
+	}
+	require.NoError(t, db.Create(&sub).Error)
+	cycle := membershipmodel.CreditCycle{
+		UserID: uint64(userID), SubscriptionID: sub.ID,
+		CycleStart: now, CycleEnd: now.Add(30 * 24 * time.Hour),
+		CreditsGranted:   int(totalCredits), //nolint:gosec // test fixture
+		CreditsRemaining: int(totalCredits), //nolint:gosec // test fixture
+		CreatedAt:        now, UpdatedAt: now,
+	}
+	require.NoError(t, db.Create(&cycle).Error)
 	return user
 }
 
@@ -260,7 +344,7 @@ func TestAcquireSalesragCredits_CreditsHappyPath(t *testing.T) {
 	db := newSalesragCreditsTestDB(t)
 	ds := store.NewTestStore(db)
 	calc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, membership.NewMembershipService(db))
 
 	// Seed a user with 1000 credits and the fallback coef + pricing rule.
 	userID := uint(1001)
@@ -303,7 +387,7 @@ func TestAcquireSalesragCredits_InsufficientBalance(t *testing.T) {
 	db := newSalesragCreditsTestDB(t)
 	ds := store.NewTestStore(db)
 	calc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, membership.NewMembershipService(db))
 
 	userID := uint(1002)
 	// Seed a credits-mode user but with zero balance (no packages).
@@ -353,7 +437,7 @@ func TestAcquireSalesragCredits_LegacyTierFree(t *testing.T) {
 	db := newSalesragCreditsTestDB(t)
 	ds := store.NewTestStore(db)
 	calc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, membership.NewMembershipService(db))
 
 	// legacy_tier standard user well inside the monthly 20-cap.
 	userID := uint(1003)
@@ -399,7 +483,7 @@ func TestFinalize_StreamErrorTriggersRefund(t *testing.T) {
 	db := newSalesragCreditsTestDB(t)
 	ds := store.NewTestStore(db)
 	calc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, membership.NewMembershipService(db))
 
 	userID := uint(1004)
 	seedCreditsUserWithPackage(t, db, userID, 1000)
@@ -451,7 +535,7 @@ func TestAcquireSalesragCredits_IdempotentReplay(t *testing.T) {
 	db := newSalesragCreditsTestDB(t)
 	ds := store.NewTestStore(db)
 	calc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, membership.NewMembershipService(db))
 
 	userID := uint(1005)
 	seedCreditsUserWithPackage(t, db, userID, 1000)
@@ -487,7 +571,7 @@ func TestAcquireSalesragCredits_LegacyTierFreeUserBlocked(t *testing.T) {
 	db := newSalesragCreditsTestDB(t)
 	ds := store.NewTestStore(db)
 	calc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, membership.NewMembershipService(db))
 
 	userID := uint(1006)
 	// free tier on legacy_tier — CanRunSOP returns "免费用户...".
@@ -573,7 +657,7 @@ func TestSalesRAGChatWithSessionNoDoubleReserve(t *testing.T) {
 	db := newSalesragCreditsTestDB(t)
 	ds := store.NewTestStore(db)
 	calc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, nil)
+	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, membership.NewMembershipService(db))
 
 	// Seed a credits-mode user with ample balance.
 	userID := uint(2001)
