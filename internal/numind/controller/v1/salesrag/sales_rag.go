@@ -9,6 +9,7 @@ import (
 
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/credit"
+	"numind-server/internal/numind/biz/errtranslate"
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
@@ -214,9 +215,21 @@ func (ctrl *SalesRAGController) ChatWithSession(c *gin.Context) {
 		})
 
 	if err != nil {
+		// 客户端断开时回调返回 write error，不写 SSE 帧也不记业务错误。
+		// 与 sop/sop.go SSE 路径保持一致。
+		if c.Request.Context().Err() != nil {
+			log.C(c).Infow("Client disconnected during salesrag chat stream", "error", err)
+			return
+		}
+
+		// 错误友好化：阻断 wrapped Go 错误链泄漏到 UI。salesrag biz 的 wrapCreditError
+		// 已经把 credit.ErrInsufficientCredits 转为 errno.ErrInsufficientCredits，
+		// errtranslate.ToErrno 走 errors.As 路径直接命中。其余非 credit 错误（DB / parser
+		// 异常）走 Error 日志 + 通用文案。
+		friendly := errtranslate.FriendlyForSSE(c, "SalesRAGChatWithSession", err)
 		errData, _ := json.Marshal(map[string]interface{}{
 			"type": "error",
-			"data": err.Error(),
+			"data": friendly,
 		})
 		fmt.Fprintf(w, "data: %s\n\n", errData)
 		w.Flush()
@@ -758,10 +771,15 @@ func (ctrl *SalesRAGController) AnalyzeProfile(c *gin.Context) {
 	})
 
 	if err != nil {
-		log.Errorw("[AnalyzeProfile] AnalyzeProfileMultiFiles error", "error", err)
+		if c.Request.Context().Err() != nil {
+			log.C(c).Infow("Client disconnected during AnalyzeProfile stream", "error", err)
+			return
+		}
+		// 错误友好化（FriendlyForSSE 内部已发 Warn/Error 结构化日志，不需要再单独 log.Errorw）
+		friendly := errtranslate.FriendlyForSSE(c, "SalesRAGAnalyzeProfile", err)
 		errData, _ := json.Marshal(map[string]interface{}{
 			"type": "error",
-			"data": err.Error(),
+			"data": friendly,
 		})
 		fmt.Fprintf(w, "data: %s\n\n", errData)
 		w.Flush()
@@ -840,10 +858,14 @@ func (ctrl *SalesRAGController) AnalyzeProfileText(c *gin.Context) {
 	})
 
 	if err != nil {
-		log.Errorw("[AnalyzeProfileText] Error", "error", err)
+		if c.Request.Context().Err() != nil {
+			log.C(c).Infow("Client disconnected during AnalyzeProfileText stream", "error", err)
+			return
+		}
+		friendly := errtranslate.FriendlyForSSE(c, "SalesRAGAnalyzeProfileText", err)
 		errData, _ := json.Marshal(map[string]interface{}{
 			"type": "error",
-			"data": err.Error(),
+			"data": friendly,
 		})
 		fmt.Fprintf(w, "data: %s\n\n", errData)
 		w.Flush()
@@ -939,10 +961,14 @@ func (ctrl *SalesRAGController) AnalyzeChatStyle(c *gin.Context) {
 	})
 
 	if err != nil {
-		log.Errorw("[AnalyzeChatStyle] AnalyzeChatStyleStream error", "error", err)
+		if c.Request.Context().Err() != nil {
+			log.C(c).Infow("Client disconnected during AnalyzeChatStyle stream", "error", err)
+			return
+		}
+		friendly := errtranslate.FriendlyForSSE(c, "SalesRAGAnalyzeChatStyle", err)
 		errData, _ := json.Marshal(map[string]interface{}{
 			"type": "error",
-			"data": err.Error(),
+			"data": friendly,
 		})
 		fmt.Fprintf(w, "data: %s\n\n", errData)
 		w.Flush()

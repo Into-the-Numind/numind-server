@@ -27,6 +27,7 @@ import (
 
 	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/biz/credit"
+	"numind-server/internal/numind/biz/errtranslate"
 	"numind-server/internal/numind/biz/llmrouter"
 	"numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/biz/volc"
@@ -866,8 +867,11 @@ func (ctrl *SopController) ExecuteNodeStream(c *gin.Context) {
 			return // 客户端断开，不需要发送错误
 		}
 
-		// 发送错误事件
-		errorMsg, _ := json.Marshal(err.Error())
+		// 错误友好化：阻断 "node execution failed: executeViaGateway: ChatStream: ContextBudgetCredits:
+		// credit: insufficient balance..." 这类 Go 调用栈泄漏到 UI。原始 err 进 zap 日志。
+		// 详见 internal/numind/biz/errtranslate/translate.go。
+		friendly := errtranslate.FriendlyForSSE(c, "SopExecuteNodeStream", err)
+		errorMsg, _ := json.Marshal(friendly)
 		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
 		mu.Lock()
 		_, _ = c.Writer.WriteString(errorData)
@@ -2261,8 +2265,9 @@ func (ctrl *SopController) EditTextStream(c *gin.Context) {
 			return // 客户端断开，不需要发送错误
 		}
 
-		// 发送错误事件
-		errorMsg, _ := json.Marshal(aiErr.Error())
+		// 错误友好化：转 errno 友好文案，原始 err 进 zap 日志（见 errtranslate）。
+		friendly := errtranslate.FriendlyForSSE(c, "SopEditAIStream", aiErr)
+		errorMsg, _ := json.Marshal(friendly)
 		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
 		_, _ = c.Writer.WriteString(errorData)
 		flusher.Flush()
@@ -2414,8 +2419,9 @@ func (ctrl *SopController) ChatAfterRunStream(c *gin.Context) {
 			log.C(c).Infow("Client disconnected during stream", "error", err)
 			return
 		}
-		// 发送错误事件
-		errorMsg, _ := json.Marshal(err.Error())
+		// 错误友好化：转 errno 友好文案，原始 err 进 zap 日志（见 errtranslate）。
+		friendly := errtranslate.FriendlyForSSE(c, "SopChatAfterRunStream", err)
+		errorMsg, _ := json.Marshal(friendly)
 		errorData := fmt.Sprintf("event: error\ndata: %s\n\n", string(errorMsg))
 		mu.Lock()
 		_, _ = c.Writer.WriteString(errorData)

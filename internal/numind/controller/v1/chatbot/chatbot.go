@@ -8,9 +8,11 @@ import (
 	"strings"
 
 	"numind-server/internal/numind/biz/chatbot"
+	"numind-server/internal/numind/biz/errtranslate"
 	"numind-server/internal/numind/biz/llmrouter"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 
@@ -348,9 +350,20 @@ func (ctrl *ChatbotController) Chat(c *gin.Context) {
 		})
 
 	if err != nil {
+		// 客户端断开时 ChatStream 回调返回写入错误。不需要再写 SSE 帧（已断），
+		// 也不需要把"客户端断线"误报为业务错误进日志。与 sop/sop.go SSE 路径保持一致。
+		if c.Request.Context().Err() != nil {
+			log.C(c).Infow("Client disconnected during chatbot stream", "error", err)
+			return
+		}
+
+		// 错误友好化：把 wrapped err 翻成 errno.Message (友好文案)，原始 err 进 zap 日志。
+		// 阻断 "ChatStream: executeViaGateway: credit: insufficient balance..." 这类 Go
+		// 调用栈泄漏到 UI。详见 internal/numind/biz/errtranslate/translate.go。
+		friendly := errtranslate.FriendlyForSSE(c, "ChatbotChat", err)
 		errData, _ := json.Marshal(map[string]interface{}{
 			"type": "error",
-			"data": err.Error(),
+			"data": friendly,
 		})
 		fmt.Fprintf(w, "data: %s\n\n", errData)
 		w.Flush()
