@@ -461,7 +461,7 @@ features:
     ndf_version: "1.1"
     description: "会员积分体系重构 — 从'状态机+cron'改为'时间驱动+lazy'模型。5 张新表（subscription / trial_grant / credit_cycle / user_booster_balance / membership_event）替代当前 credit_package 状态机；subscription 单行 + expires_at 后延，月度 cycle 懒创建，去 cron 化。trial+pro 叠加，自然月 anchor-restore（1/31 → 3/31 → 4/30）。Booster 永不过期（每用户单 balance），仅会员状态可用。完整覆盖前后端三仓 + 迁移脚本 + B2B 月度账单口径切换。【2026-05-15 reopen S5→S3：原 Task 16 cleanup 未真正落地，导致 credit_package 老表 4 个写入路径仍活、3 类数据残留。追加 plan extension T1-T12 完成 cleanup。2026-05-15 S3 gate pass，进 S4 编码 T1。】"
     track: "standard"
-    stage: "S4"
+    stage: "S5-prod-deferred"
     classification_reason: "Triage 5 条全触发 — (1) 5 张新表 + 迁移脚本 (2) grant/deduct/balance/B2B 账单全部重写 (3) 无外部服务但内部模型彻底改 (4) 跨 3 仓 (5) 计费核心 + B2B 账单 = 最高风险业务逻辑。Standard Track 必然。"
     last_updated_by: "ai-t2-completed-2026-05-15"
     last_updated_at: "2026-05-15T20:30:00+08:00"
@@ -483,9 +483,9 @@ features:
       validation_strategy: "numind-server/docs/superpowers/specs/2026-04-29-membership-credits-redesign-validation-strategy.md"
     progress:
       total_tasks: 36
-      completed_tasks: 34
-      reviewed_tasks: 34
-      current_task: "🎉 Phase B+C+D 完成 (T1-T9 + T9b)。T7-T8 dev validated (prod deferred per user 选项 D)。T9 server merged a8a8807 + T9b admin-web 634b2cc + web-v3 1c626df：b2b_billing new_only + listPackages 全删 + 死客户端清理。剩余 Phase E (T10 DROP COL credits_deducted, T11 archive + DROP TABLE credit_package) + Phase F (T12 FK + docs)。"
+      completed_tasks: 36
+      reviewed_tasks: 36
+      current_task: "🎉🎉 ALL 12 TASKS COMPLETE on dev — credit_package 表 ARCHIVED + DROPped + balance field DROPped + credits_deducted field DROPped + 3 hard FK constraints + dev-env docs。最终 commits: T11 4466192 + T12 43f080d。⏳ PROD 部署等用户拍板时机（option D)。Pre-prod checklist: T1 first → T8 idempotency key dev→prod → T11 mysqldump backup + MAINTENANCE_MODE=true。"
     rollback: null
     last_verified: null
     decisions:
