@@ -33,7 +33,6 @@ type ICreditBiz interface {
 	//   - credits<=0 is a no-op (returns nil, nil)
 	DeductCreditsTx(ctx context.Context, tx *gorm.DB, userID uint, credits int64, reason string) ([]PackageDeduction, error)
 	GetBalance(ctx context.Context, userID uint) (int64, error)
-	RechargeCredits(ctx context.Context, userID uint, packageType string, totalCredits int64, expiresAt time.Time) error
 	RechargeWithOrderTx(ctx context.Context, tx *gorm.DB, userID uint, orderID uint64, productType string, months int) error
 	// GrantMembership is the B2B2C grant path (spec Q1): parent user
 	// grants membership to a child user without going through payment.
@@ -276,39 +275,6 @@ func (b *creditBiz) GetBalance(ctx context.Context, userID uint) (int64, error) 
 // GetQuotaBreakdown 获取用户额度分布（订阅 vs 加量包）
 func (b *creditBiz) GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error) {
 	return b.ds.Credits().GetQuotaBreakdown(ctx, userID)
-}
-
-// RechargeCredits 充值积分（创建积分包并更新余额）
-func (b *creditBiz) RechargeCredits(ctx context.Context, userID uint, packageType string, totalCredits int64, expiresAt time.Time) error {
-	// 确保账户存在
-	if _, err := b.ds.Credits().GetOrCreateAccount(ctx, userID); err != nil {
-		return fmt.Errorf("ensure credit account: %w", err)
-	}
-
-	now := time.Now()
-
-	return b.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 创建积分包
-		pkg := model.CreditPackage{
-			UserID:        userID,
-			Type:          packageType,
-			TotalCredits:  totalCredits,
-			RemainCredits: totalCredits,
-			ActivatedAt:   now,
-			ExpiresAt:     expiresAt,
-			Status:        model.CreditPackageActive,
-		}
-		if err := tx.Create(&pkg).Error; err != nil {
-			return fmt.Errorf("create credit package: %w", err)
-		}
-
-		// 更新余额
-		if err := b.ds.Credits().UpdateBalance(ctx, tx, userID, totalCredits); err != nil {
-			return fmt.Errorf("update balance: %w", err)
-		}
-
-		return nil
-	})
 }
 
 // RechargeWithOrderTx 在调用方的事务中创建积分包并更新余额（支付回调用）

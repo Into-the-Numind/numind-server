@@ -135,9 +135,6 @@ func (f *fakeCreditBiz) DeductCreditsTx(ctx context.Context, tx *gorm.DB, userID
 func (f *fakeCreditBiz) GetBalance(ctx context.Context, userID uint) (int64, error) {
 	return 0, nil
 }
-func (f *fakeCreditBiz) RechargeCredits(ctx context.Context, userID uint, packageType string, totalCredits int64, expiresAt time.Time) error {
-	return nil
-}
 func (f *fakeCreditBiz) RechargeWithOrderTx(ctx context.Context, tx *gorm.DB, userID uint, orderID uint64, productType string, months int) error {
 	f.rechargeCalls++
 	return nil
