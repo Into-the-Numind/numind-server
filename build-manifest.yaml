@@ -483,9 +483,9 @@ features:
       validation_strategy: "numind-server/docs/superpowers/specs/2026-04-29-membership-credits-redesign-validation-strategy.md"
     progress:
       total_tasks: 36
-      completed_tasks: 27
-      reviewed_tasks: 27
-      current_task: "T2a + T2b 完成 (admin Recharge FE + BE 全删，-263 行净)；merged develop on both repos；待 push numind-server develop 触发 CI → 进 T3 (parent_grant dead-code package 删除)"
+      completed_tasks: 30
+      reviewed_tasks: 30
+      current_task: "T1-T5 全部 merged develop (Phase B 5/6 完成)。T5 (RechargeWithOrderTx 支付回调) merged 26a76c8，关键发现：该函数在 prod 已 100% dead (payment.go fulfillOrder 直接写新表)，T5 实为 dead-code cleanup + 加 defensive ErrUnsupportedProductType。等 dev CI batch 完成 → 进 T6 (legacy DeductCredits 链删除，Phase B 最后一个 task)。"
     rollback: null
     last_verified: null
     decisions:
