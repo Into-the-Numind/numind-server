@@ -485,7 +485,7 @@ features:
       total_tasks: 36
       completed_tasks: 25
       reviewed_tasks: 25
-      current_task: "T1 完成 (commits 3f9ee4f + f56d00b on feature/credits-cleanup-t1-source-type)；等用户拍板 merge develop + dev deploy + 主动触发验证 → 进 T2"
+      current_task: "T2a (删 admin Recharge FE) implementer 启动中；T1 已部署 dev + 主动触发验证完美通过 (source_type='cycle' 新行确认)，用户拍板 C 模式跳过 24h 监控直接进 T2"
     rollback: null
     last_verified: null
     decisions:
