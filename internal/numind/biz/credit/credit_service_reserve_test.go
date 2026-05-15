@@ -88,6 +88,22 @@ CREATE TABLE IF NOT EXISTS credit_reservation_item (
 );`).Error)
 	require.NoError(t, db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uk_reservation_seq ON credit_reservation_item(reservation_id, seq);`).Error)
 
+	// T4: add subscription table so HasActiveSubscription (now reading new table) doesn't
+	// return "no such table: subscription" when called by GetUserTypeCreditMultiplier.
+	require.NoError(t, db.Exec(`
+CREATE TABLE IF NOT EXISTS subscription (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id                INTEGER NOT NULL UNIQUE,
+    first_started_at       DATETIME NOT NULL,
+    current_started_at     DATETIME NOT NULL,
+    expires_at             DATETIME NOT NULL,
+    total_months_purchased INTEGER NOT NULL,
+    source                 TEXT NOT NULL DEFAULT 'b2b_grant',
+    granter_user_id        INTEGER,
+    created_at             DATETIME NOT NULL,
+    updated_at             DATETIME NOT NULL
+);`).Error)
+
 	return db
 }
 
@@ -516,13 +532,21 @@ func TestReserve_SubscriptionUserBypassesTrialMultiplier(t *testing.T) {
 	user := newCreditsUser(userID)
 	now := time.Now()
 
-	// User has both subscription and trial.
+	// User has both subscription and trial in credit_package (legacy read path).
 	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 2000, RemainCredits: 2000,
 			ActivatedAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour)},
 		{Type: model.CreditTypeTrial, TotalCredits: 200, RemainCredits: 100,
 			ActivatedAt: now, ExpiresAt: now.Add(72 * time.Hour)},
 	})
+	// T4: GetUserTypeCreditMultiplier now reads the new subscription table to detect
+	// active subscriptions. Seed the new table so the "subscription bypasses trial
+	// discount" invariant is correctly detected.
+	require.NoError(t, db.Exec(
+		`INSERT INTO subscription (user_id, first_started_at, current_started_at, expires_at, total_months_purchased, source, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 1, 'b2b_grant', ?, ?)`,
+		userID, now, now, now.Add(30*24*time.Hour), now, now,
+	).Error)
 	require.NoError(t, db.Create(&model.CreditUserTypeConfig{
 		UserType: "trial", CreditMultiplier: 0.5, IsActive: true,
 	}).Error)
