@@ -35,9 +35,13 @@ features:
       - "2026-05-14 (S3 review): PASS_WITH_CONCERNS, 0 P0 + 2 P1 + 3 P2 全修。T0→T6 依赖边补 / T10 验证策略分 L1/L2/L3 层"
       - "2026-05-14 (S4 完成 10/10): T0 wiring → T1 migration → T2 types → T3 DeductCreditsTx → T4 RefundCreditsTx (D2 fallback) → T5 wrapper (T3+T5 bundled) → T6 GetBalance → T7 CanPerformAIOperation (InjectCreditBizMembershipSvc 注入模式) → T8 Reserve via DeductCreditsTx + observability log → T9 refundOneItem dispatch (D6) + STALE-LIE 注释删除 → T10 validation strategy doc。每个 task 独立可编译 + commit。T0/T3+T5/T4 个别 task 走完 per-task 两阶段 review；reviewer 抓到 1 P1 (UpdatedAt = now) + 2 P1 (T4 sub/trial dedup + subscriptionID 指针) + 多 P2 全修。T2/T6/T7/T8/T9/T10 单审查（业务逻辑非新增，主要是分支+wiring）。"
       - "2026-05-14 (S5 验收 PASS): L1 task test 全包 PASS (exit 0, no FAIL)。Merge develop + push, dev CI 一次 success (无需 manual mirror pull this time)。Dev container 上来 GORM AutoMigrate 自动加好 source_type / source_id 列 (DESCRIBE credit_reservation_item 确认)。L2 curl 验证 admin (cycle=2000, billing_mode=credits): /v1/credits/estimate 返回 sub_remain=2000 (从新 credit_cycle 读，非老 credit_package), trial_remain=0 (新字段), sufficient=true。这正是 bug 修复点：原本 sub_remain=0 → total=0+0+0=0 → ErrInsufficientCredits；现在 sub_remain=2000 → sufficient=true。L3 Playwright Path 1+6 跳过（测的是 grant flow，本 feature 不动 grant）。stage S5 → S6 (dev 已部署 + 验证完毕，等用户拍板 prod tag)。"
+      - "2026-05-14 (S6 prod tag v2.1.17 + 用户实测发现 3 处 follow-up): 用户打 v2.1.17 prod tag，包含本 feature + membership-balance-read-path。用户 chatbot 实测发现 3 处漏修，均当场快速 fix：(1) commit 480f196 — creditsImpl.reserveBudgetRow (chatbot/gateway 路径) T8 只改了 Reserve 没改 reserveBudgetRow，同模式 dual-path patch (2) commit baa3159 — 新 path 的 CreditReservationItem 没填 PackageExpiresAt 列，MySQL strict mode 把 Go time.Time 零值翻译成 '0000-00-00' 报 Error 1292 (22007)。修：DeductItem 加 ExpiresAt 字段，DeductCreditsTx 各 pool 填 trial.ExpiresAt / cycle.CycleEnd / booster 2099-12-31 哨兵 (3) commit 8da9bf4 — Reconcile delta>0 top-up 仍调 c.biz.DeductCreditsTx 写老 credit_package，credits-mode 用户实际消耗超估算时差额被写 debt 台账不真扣，公司账目损失。修：加 c.membershipSvc != nil 分支走 MembershipService.DeductCreditsTx。"
+      - "2026-05-14 (Prod 数据修复): 在 prod DB 直接做了 3 件数据层修复 — (1) Wendy (user 427) 客户反馈：开通 2 次 1 月误以为是续期，实际想要 1 月。UPDATE subscription id=64 total_months=2→1, expires_at 7-14→6-14；DELETE membership_event id=130 sub_renewed 那条。父账户 B2B 月末账单从 ¥198 改成 ¥99。(2) 三方分析 user 30 (Wendy 父账户) 显示 cycle=2000 但老 credit_package=0 exhausted，根因：credits-system 切换时新 credit_cycle 是 lazy-create，sub active+无 cycle 行→代码默认返 2000，对所有 39 个 credits-mode active sub 用户系统性漂移。修：批量 INSERT 39 行 credit_cycle，按 BillingMode + credit_package 行数分支推算 credits_remaining（老用户 SUM(remain_credits) capped 2000；新流程开通 0 行 credit_package 视为新月份默认 2000）。Booster + trial 不推算（用户拍板只 cycle）。事务原子完成。"
+      - "2026-05-15 (v2.1.18 prod CI 失败 + 手动恢复 + ~5-8min outage): 打 v2.1.18 tag 携 Reconcile top-up fix。Prod CI deploy_product 阶段 Docker Hub GFW 偶发超时，但 deploy script 有 bug — docker pull 失败仍执行 docker run，把老 numind-server-prod 容器 stop 后无法启动新容器。Prod backend 中断 5-8 分钟。手动恢复：SSH prod，docker.1ms.run mirror 拉 v2.1.18 镜像，从 CI log 还原 docker run 命令重启容器。Verify: healthy + healthz 200 + 真实用户在登录使用 + DB 数据完整（37 行 credit_cycle/Wendy expires 6-14/user 30 cycle=500 包含 500 奖励）。Deploy script bug 留作未来 CI cleanup task。"
     related_features:
-      - "membership-balance-read-path (S6, dev deployed) — 上一轮修了 read 显示，本 feature 修 reserve/reconcile"
+      - "membership-balance-read-path (completed 2026-05-14) — 上一轮修了 read 显示，本 feature 修 reserve/reconcile；两者同 v2.1.17 prod tag 上线"
       - "membership-credits-redesign (S5, plan §Task 16 cleanup) — 原 plan 规划过 cleanup 但只设计了 cron 删除和 helper 替换，未设计 reserve/reconcile 切表的具体 wiring"
+      - "ui-error-friendly-mapping (H1 待启) — 本 feature 修了扣减逻辑，UI 错误友好化在独立 feature 处理"
     created_at: "2026-05-14T00:00:00+08:00"
     completed_at: "2026-05-15T00:00:00+08:00"
 
@@ -63,9 +67,10 @@ features:
     decisions:
       - "2026-05-15 (Triage): 严格按 NDF 规则应推 Standard（5 文件 + 跨 2 仓 + SOP retry 关联风险触发边界条款）。用户拍板 Hotfix 理由：单一目的修复、每文件改动模式相同（err.Error() → errno 映射）、零业务逻辑变更、零 schema、零端点。判断力上移到用户。"
       - "2026-05-15 (架构定调): B+A 双保险 — 后端 controller boundary 做权威错误码映射，前端 axios interceptor 做兜底关键词匹配。后端单点失误时前端仍能挡住裸 Go error。"
+      - "2026-05-15 (prerequisite 满足): credits-deduct-cycle-wiring v2.1.18 已 prod 上线，本 feature 可启动。"
     related_features:
       - "credits-deduct-cycle-wiring (completed 2026-05-15) — 修了 credit 扣减逻辑本身；本 feature 修 credit 错误如何呈现给用户"
-      - "membership-balance-read-path (S6 dev) — 同期 credits 体系演进 feature"
+      - "membership-balance-read-path (completed 2026-05-14) — 同期 credits 体系演进 feature"
     blockers: []
     created_at: "2026-05-15T00:00:00+08:00"
     completed_at: null
@@ -74,10 +79,10 @@ features:
     ndf_version: "1.1"
     description: "P0 线上 bug：grant-membership 写 subscription 新表，但 GET /v1/credits/balance、GET /v1/users/me、GET /v1/customers/sub-users 仍读 credit_package 旧表，导致开通会员后前端显示免费用户无额度。全面切换读路径到新 membership 系统。"
     track: "standard"
-    stage: "S6"
+    stage: "completed"
     classification_reason: "条件 4（>3 文件）+ 条件 5（会员/积分高风险逻辑）不满足 Hotfix。但为 P0 线上 bug，加速走 Standard。"
-    last_updated_by: "ai-s5-pass"
-    last_updated_at: "2026-05-14T00:00:00+08:00"
+    last_updated_by: "ai-prod-shipped"
+    last_updated_at: "2026-05-15T00:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -89,14 +94,17 @@ features:
       total_tasks: 4
       completed_tasks: 4
       reviewed_tasks: 4
-      current_task: "S6 dev 部署已完成 + 全量 QA PASS，等用户拍板 prod 部署"
+      current_task: "已上 prod via v2.1.17 (numind-server) + 53268da (numind-web-v3)"
     rollback: null
-    last_verified: null
+    last_verified:
+      at: "2026-05-14T16:29:02+00:00"
+      prod_tag: "v2.1.17"
     decisions:
       - "2026-05-14 (Triage): P0 prod bug — user 427 granted 2-month sub via B2B2C but shows free/no credits. Root cause: write path (subscription table) vs read path (credit_package table) mismatch. Standard track, accelerated."
       - "2026-05-14 (S4 done): 4 tasks implemented — (1) credit.go getBalanceFromMembership 路径 with sub_total 条件性置 2000 (2) UserController+get.go 注入 membershipSvc + tierDisplay/tierExpires 覆盖 (3) customer biz functional options + GetMembershipStateBatch 在 biz/membership 新增 + 路由别名 /users/children 同等注入 membershipSvc (4) SettingsView 新增 pro→Pro 会员标签 + 拓展 expiryText 到 pro/trial。两阶段 review PASS_WITH_CONCERNS, 0 P0 + 1 P1 (alias route 漏注入 membershipSvc) + 3 P2 (sub_total hardcoded / time.Now 一致性 / WHY 注释丢失) 全修。"
       - "2026-05-14 (S4 三方独立审计补丁): 3 个独立 reviewer subagent 同时全范围审 4 个区域（客户管理 / 开通会员 / 设置 / 加量包）。共识 P1: ListSubUsers 仍读 credit_account.GetBalance + credit_package.GetLatestCreditExpiry，对 credits-mode 子用户返回 0/空串，前端 getQuotaDisplay 的 ?? 0 短路 → UI 显示 0/—。Fix: customer.go 按 BillingMode 分支，credits-mode 用户从 msBatch 拿 CycleRemaining + SubscriptionExpiresAt 填充。一并核实 R2/R3 分歧：parent_grant/grant.go 是死代码（路由只注册 creditCtrl.GrantMembership），不影响生产。"
       - "2026-05-14 (S5 验收 PASS): task test (含 91% changed-pkg coverage) + npm test:unit 372 passed 全过。Dev CI 部署 2 次因 dev 服务器 Docker Hub 拉镜像超时失败（GFW 偶发），SSH 走 mirror.baidubce.com/c.163.com/ustc 等镜像源手动 docker pull 后 rerun PASS。Dev backend curl 烟雾测：admin (user_id=25, billing_mode=credits) 返回 membership_state='pro' / cycle_remaining=2000 / sub_expires_at=2026-05-19 / user_tier='pro' / tier_expires=2026-05-19 全部新字段就位。/v1/customers/sub-users 返回 4 种状态（pro/trial/frozen/free）credit_balance + credit_expires 全部从 msBatch 正确填充。Playwright E2E Path 1 + 6 (parent-only) 4 tests pass。Headless Chromium 截图 SettingsView 显示「Pro 会员」badge + 2026/5/19 有效期、积分 2000/2000；CustomersView 表格 admin 显示额度 2000 / 到期 2026-05-19，E2E Booster Child 显示试用中 / 到期 2026-05-17。stage S5→S6，等用户决定 prod 部署窗口。"
+      - "2026-05-14 (S6/S7 prod shipped): 用户打 prod tag v2.1.17（numind-server）+ 53268da (numind-web-v3)。Prod CI deploy 一次 success。和 credits-deduct-cycke-wiring 同期上 prod（同一组 commits 涵盖两个 feature）。real-traffic 验证：prod 用户能正常登录 + healthz 200 + 真实 SOP/chatbot 调用通过（在后续 credits-deduct-cycle-wiring 实测中观察到调用栈走到正确路径）。stage 标 completed。"
 
   - id: "chatbot-session-rename-pin"
     ndf_version: "1.1"
