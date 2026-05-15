@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"numind-server/internal/numind/biz/chatbot"
 	"numind-server/internal/numind/biz/llmrouter"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/middleware"
+	"numind-server/internal/pkg/model"
 
 	"github.com/gin-gonic/gin"
 )
@@ -98,7 +100,7 @@ func (ctrl *ChatbotController) CreateSession(c *gin.Context) {
 	core.WriteResponse(c, nil, session)
 }
 
-// ListSessions 获取用户的对话会话列表
+// ListSessions 获取用户的对话会话列表，支持可选 chatbot_id 过滤
 func (ctrl *ChatbotController) ListSessions(c *gin.Context) {
 	user := middleware.GetCurrentUser(c)
 	if user == nil {
@@ -108,13 +110,100 @@ func (ctrl *ChatbotController) ListSessions(c *gin.Context) {
 
 	offset, limit := parsePagination(c)
 
-	list, total, err := ctrl.chatbotBiz.ListSessions(c, user.ID, offset, limit)
+	var (
+		list  []model.ChatbotSession
+		total int64
+		err   error
+	)
+
+	chatbotIDStr := c.Query("chatbot_id")
+	if chatbotIDStr != "" {
+		chatbotID, parseErr := strconv.ParseUint(chatbotIDStr, 10, 64)
+		if parseErr != nil {
+			core.WriteResponse(c, errno.ErrBind.SetMessage("chatbot_id 必须为正整数"), nil)
+			return
+		}
+		list, total, err = ctrl.chatbotBiz.ListSessionsByChatbot(c, user.ID, uint(chatbotID), offset, limit)
+	} else {
+		// 向后兼容路径：保持现有 cross-chatbot 行为
+		list, total, err = ctrl.chatbotBiz.ListSessions(c, user.ID, offset, limit)
+	}
+
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
 	}
 
 	core.WriteResponse(c, nil, gin.H{"list": list, "total": total})
+}
+
+// renameSessionRequest 重命名会话请求
+type renameSessionRequest struct {
+	Title string `json:"title" binding:"required"`
+}
+
+// RenameSession 重命名对话会话
+func (ctrl *ChatbotController) RenameSession(c *gin.Context) {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	id, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	var req renameSessionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("%s", err.Error()), nil)
+		return
+	}
+
+	// 单次 trim 复用：传入 biz 校验 + 作为响应回显。biz 内部仍做防御性 trim
+	// (兜底其他调用方)，但本路径下两次 trim 结果一致 (trim 是幂等)，无副作用。
+	title := strings.TrimSpace(req.Title)
+
+	if err := ctrl.chatbotBiz.RenameSession(c, user.ID, id, title); err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{"id": id, "title": title})
+}
+
+// pinSessionRequest 置顶会话请求
+type pinSessionRequest struct {
+	Pinned *bool `json:"pinned" binding:"required"` // 必须用 *bool 指针避免 false 被 Gin 当作 zero value 跳过 required
+}
+
+// PinSession 置顶或取消置顶对话会话
+func (ctrl *ChatbotController) PinSession(c *gin.Context) {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	id, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+
+	var req pinSessionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("%s", err.Error()), nil)
+		return
+	}
+
+	pinnedAt, err := ctrl.chatbotBiz.PinSession(c, user.ID, id, *req.Pinned)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+
+	core.WriteResponse(c, nil, gin.H{"id": id, "pinned_at": pinnedAt})
 }
 
 // DeleteSession 删除对话会话

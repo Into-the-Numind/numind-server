@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"time"
+
 	"numind-server/internal/pkg/model"
 
 	"gorm.io/gorm"
@@ -14,6 +16,18 @@ type IChatbotSessionStore interface {
 	ListSessions(ctx context.Context, userID uint, offset, limit int) ([]model.ChatbotSession, int64, error)
 	DeleteSession(ctx context.Context, id uint) error
 	IncrementMessageCount(ctx context.Context, sessionID uint) error
+
+	// UpdateTitle 更新会话标题。显式 updated_at=updated_at 绕开 MySQL ON UPDATE 触发器（D2 决策）。
+	// sessionID 不存在时返回 gorm.ErrRecordNotFound。
+	UpdateTitle(ctx context.Context, sessionID uint, title string) error
+
+	// SetPinnedAt 设置或清除会话的置顶时间。显式 updated_at=updated_at 绕开 MySQL ON UPDATE 触发器（D2 决策）。
+	// pinnedAt == nil 时写入 SQL NULL（取消置顶）。sessionID 不存在时返回 gorm.ErrRecordNotFound。
+	SetPinnedAt(ctx context.Context, sessionID uint, pinnedAt *time.Time) error
+
+	// ListSessionsByChatbot 获取指定用户在指定智能体下的会话列表（分页）。
+	// 排序：置顶优先（pinned_at IS NULL ASC），置顶组内按 pinned_at DESC，未置顶组按 updated_at DESC。
+	ListSessionsByChatbot(ctx context.Context, userID, chatbotID uint, offset, limit int) ([]model.ChatbotSession, int64, error)
 
 	CreateMessage(ctx context.Context, msg *model.ChatbotMessage) error
 	ListMessages(ctx context.Context, sessionID uint, offset, limit int) ([]model.ChatbotMessage, int64, error)
@@ -75,6 +89,77 @@ func (s *chatbotSessionStore) IncrementMessageCount(ctx context.Context, session
 		Model(&model.ChatbotSession{}).
 		Where("id = ?", sessionID).
 		UpdateColumn("message_count", gorm.Expr("message_count + ?", 1)).Error
+}
+
+// UpdateTitle 更新会话标题，显式设置 updated_at=updated_at 绕开 MySQL
+// `ON UPDATE CURRENT_TIMESTAMP` 触发器，保证 D2 不变量（rename 不刷新 updated_at）。
+//
+// 注意：仅 GORM UpdateColumn 不够 —— UpdateColumn 只跳过 GORM-level 自动设置，
+// 但 chatbot_session.updated_at 列 DDL 有 ON UPDATE CURRENT_TIMESTAMP，MySQL
+// 服务端会自动刷新（dev DB 实测确认）。Updates(map) 中显式 `updated_at = updated_at`
+// (gorm.Expr) 是显式 SET 同列同值，MySQL 服务端的 ON UPDATE 触发器不会再触发。
+//
+// sessionID 不存在时返回 gorm.ErrRecordNotFound。
+func (s *chatbotSessionStore) UpdateTitle(ctx context.Context, sessionID uint, title string) error {
+	result := s.db.WithContext(ctx).
+		Model(&model.ChatbotSession{}).
+		Where("id = ?", sessionID).
+		Updates(map[string]interface{}{
+			"title":      title,
+			"updated_at": gorm.Expr("updated_at"),
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+// SetPinnedAt 设置或清除会话的置顶时间，显式设置 updated_at=updated_at 绕开 MySQL
+// ON UPDATE CURRENT_TIMESTAMP 触发器（D2 不变量，详 UpdateTitle 注释）。
+//
+// pinnedAt == nil 时写入 SQL NULL（取消置顶）。sessionID 不存在时返回 gorm.ErrRecordNotFound。
+func (s *chatbotSessionStore) SetPinnedAt(ctx context.Context, sessionID uint, pinnedAt *time.Time) error {
+	result := s.db.WithContext(ctx).
+		Model(&model.ChatbotSession{}).
+		Where("id = ?", sessionID).
+		Updates(map[string]interface{}{
+			"pinned_at":  pinnedAt,
+			"updated_at": gorm.Expr("updated_at"),
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+// ListSessionsByChatbot 获取指定用户在指定智能体下的会话列表（分页）。
+// 排序：置顶优先（pinned_at IS NULL ASC），置顶组内按 pinned_at DESC，未置顶组按 updated_at DESC。
+func (s *chatbotSessionStore) ListSessionsByChatbot(ctx context.Context, userID, chatbotID uint, offset, limit int) ([]model.ChatbotSession, int64, error) {
+	var sessions []model.ChatbotSession
+	var total int64
+
+	query := s.db.WithContext(ctx).Model(&model.ChatbotSession{}).
+		Where("user_id = ? AND chatbot_id = ?", userID, chatbotID)
+
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	if err := query.
+		Order("pinned_at IS NULL ASC, pinned_at DESC, updated_at DESC").
+		Offset(offset).
+		Limit(limit).
+		Find(&sessions).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return sessions, total, nil
 }
 
 // CreateMessage 创建消息

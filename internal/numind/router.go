@@ -328,6 +328,8 @@ func installNumindRouters(g *gin.Engine) error {
 			chatbotGroup.DELETE("/sessions/:id", chatbotCtrl.DeleteSession)
 			chatbotGroup.GET("/sessions/:id/messages", chatbotCtrl.ListMessages)
 			chatbotGroup.POST("/sessions/:id/chat", chatbotCtrl.Chat)
+			chatbotGroup.PUT("/sessions/:id/rename", chatbotCtrl.RenameSession) // 重命名会话
+			chatbotGroup.PUT("/sessions/:id/pin", chatbotCtrl.PinSession)       // 置顶/取消置顶会话
 		}
 	}
 
