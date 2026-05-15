@@ -22,32 +22,66 @@
 --   * 3075 rows UPDATE is wrapped in a transaction so a mid-run crash leaves
 --     the table cleanly at the pre-backfill state (columns added, all NULL).
 --     Re-running the UPDATE is safe because of the WHERE source_type IS NULL guard.
---   * ADD COLUMN IF NOT EXISTS (MySQL 8.0.29+) makes the DDL idempotent on re-run.
---   * ADD INDEX does not support IF NOT EXISTS in MySQL; document below how to
---     handle a duplicate-index error on re-run.
+--   * v2 fix (prod deploy 2026-05-16): MySQL does NOT support `ADD COLUMN IF NOT EXISTS`
+--     (MariaDB only). v1 attempted this syntax and errored with ERROR 1064 on prod's
+--     mysql:8.4.2 image. v2 uses information_schema pre-check + prepared statements
+--     to achieve idempotency on plain MySQL.
+--   * Note: in prod, GORM AutoMigrate runs at backend startup and adds these columns
+--     automatically once Go model declares them. The DDL here is a fallback for
+--     fresh-DB rebuilds without backend bootstrap (e.g., disaster recovery).
 
--- ── DDL: idempotent via IF NOT EXISTS (MySQL 8.0.29+) ────────────────────────
-ALTER TABLE credit_transaction
-    ADD COLUMN IF NOT EXISTS source_type VARCHAR(20) NULL COMMENT 'trial/cycle/booster; NULL = legacy path or reconcile_debt row' AFTER package_id,
-    ADD COLUMN IF NOT EXISTS source_id BIGINT UNSIGNED NULL COMMENT 'FK to credit_cycle.id / user_booster_balance.user_id / trial_grant.id depending on source_type' AFTER source_type;
+-- ── DDL: idempotent via information_schema pre-check (MySQL-compatible) ──────
+-- Add source_type column only if missing
+SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+                      WHERE table_schema = DATABASE()
+                        AND table_name = 'credit_transaction'
+                        AND column_name = 'source_type');
+SET @sql := IF(@col_exists = 0,
+               'ALTER TABLE credit_transaction ADD COLUMN source_type VARCHAR(20) NULL COMMENT ''trial/cycle/booster; NULL = legacy path or reconcile_debt row'' AFTER package_id',
+               'SELECT ''source_type already exists, skipping (idempotent)'' AS info');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
--- Note: ADD INDEX does not support IF NOT EXISTS in MySQL. If re-running this
--- migration after a partial failure, suppress the duplicate-key error with:
---   SET @idx_exists = (SELECT COUNT(*) FROM information_schema.STATISTICS
---     WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='credit_transaction'
---     AND INDEX_NAME='idx_ct_source');
--- For simplicity, re-running operators should DROP INDEX first if it exists.
-ALTER TABLE credit_transaction ADD INDEX idx_ct_source (source_type, source_id);
+-- Add source_id column only if missing
+SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+                      WHERE table_schema = DATABASE()
+                        AND table_name = 'credit_transaction'
+                        AND column_name = 'source_id');
+SET @sql := IF(@col_exists = 0,
+               'ALTER TABLE credit_transaction ADD COLUMN source_id BIGINT UNSIGNED NULL COMMENT ''FK to credit_cycle.id / user_booster_balance.user_id / trial_grant.id depending on source_type'' AFTER source_type',
+               'SELECT ''source_id already exists, skipping (idempotent)'' AS info');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- Add composite index only if missing
+SET @idx_exists := (SELECT COUNT(*) FROM information_schema.STATISTICS
+                      WHERE table_schema = DATABASE()
+                        AND table_name = 'credit_transaction'
+                        AND index_name = 'idx_ct_source');
+SET @sql := IF(@idx_exists = 0,
+               'ALTER TABLE credit_transaction ADD INDEX idx_ct_source (source_type, source_id)',
+               'SELECT ''idx_ct_source already exists, skipping (idempotent)'' AS info');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 -- ── DML: wrap in transaction for atomic backfill ──────────────────────────────
--- Idempotent: WHERE source_type IS NULL ensures only unfilled rows are updated.
--- Re-running after a partial failure is safe — already-filled rows are skipped.
+-- Idempotent (2 layers):
+--   1. WHERE source_type IS NULL ensures only unfilled rows are updated on re-run.
+--   2. Check credit_package table exists — if T11 already DROPped it, the backfill
+--      was completed earlier (T1 must run before T11), so skip gracefully.
+SET @cp_exists := (SELECT COUNT(*) FROM information_schema.TABLES
+                     WHERE table_schema = DATABASE()
+                       AND table_name = 'credit_package');
+SET @sql := IF(@cp_exists > 0,
+               'UPDATE credit_transaction ct JOIN credit_package cp ON ct.package_id = cp.id SET ct.source_type = cp.type, ct.source_id = cp.id WHERE ct.source_type IS NULL',
+               'SELECT ''credit_package already dropped (T11 ran); backfill was completed earlier — skipping (idempotent)'' AS info');
 START TRANSACTION;
-UPDATE credit_transaction ct
-JOIN credit_package cp ON ct.package_id = cp.id
-SET ct.source_type = cp.type,
-    ct.source_id   = cp.id
-WHERE ct.source_type IS NULL;
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 COMMIT;
 
 -- ── Post-check: expect 0 null rows ───────────────────────────────────────────
