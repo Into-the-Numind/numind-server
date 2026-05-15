@@ -49,25 +49,30 @@ features:
     ndf_version: "1.1"
     description: "P0 用户体验 bug：SOP 节点执行 / chatbot SSE / salesrag 出错时，UI 直接弹出完整 Go 调用栈（如 'node execution failed: executeViaGateway: ChatStream: ContextBudgetCredits: credit: insufficient balance: requested 50, available 0'）。所有 ErrInsufficientCredits / ErrSubscriptionExpired / 偶发 DB 异常都有同类泄漏。修复策略 B+A 双保险：(B 后端) 在 SOP node 执行 / chatbot SSE error frame / salesrag 三处 controller boundary 用 errors.Is 识别根因 err，转 errno 错误码 + user-facing message；技术细节进 zap 日志不进 UI。(A 前端) src/api/request.ts axios interceptor 扩展 errno code → 友好文案映射；兜底匹配 response.data.message 含 'insufficient balance' 等关键词覆盖防御。Caveat: SOP node 有 retry/fallback，转换不要破坏 retry 判断（应在 retry exhausted 后才转友好文案）。"
     track: "hotfix"
-    stage: "H1"
+    stage: "H3"
     classification_reason: "Hotfix Triage 5 条 — (1) 无 schema 变更 (2) 无新增 API 端点 (3) 无外部服务集成 (4) 跨 2 仓 ~5 文件（边界，但每文件改动模式相同：err.Error() 替换为 errno 映射）(5) 错误处理本身不涉及计费/权限逻辑，但 SOP retry 边界是关联风险点。用户拍板 Hotfix（边界判断上移）。"
-    last_updated_by: "ai-h1-triage"
-    last_updated_at: "2026-05-15T00:00:00+08:00"
+    last_updated_by: "ai-h3-merged"
+    last_updated_at: "2026-05-15T13:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
     branches:
-      numind-server: "fix/ui-error-friendly-mapping"
-      numind-web-v3: "fix/ui-error-friendly-mapping"
+      numind-server: "fix/ui-error-friendly-mapping (merged to develop via 9de03c8 — 见 decision 2026-05-15 H3)"
+      numind-web-v3: "fix/ui-error-friendly-mapping (merged to develop via f1bf8f1)"
     progress:
-      total_tasks: 0
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task: "H1 investigation — 三处 controller boundary 错误传播链 + 现有 errno 清单 + axios interceptor baseline"
+      total_tasks: 8
+      completed_tasks: 8
+      reviewed_tasks: 8
+      current_task: "等 dev CI 部署 + 人工验收"
     decisions:
       - "2026-05-15 (Triage): 严格按 NDF 规则应推 Standard（5 文件 + 跨 2 仓 + SOP retry 关联风险触发边界条款）。用户拍板 Hotfix 理由：单一目的修复、每文件改动模式相同（err.Error() → errno 映射）、零业务逻辑变更、零 schema、零端点。判断力上移到用户。"
       - "2026-05-15 (架构定调): B+A 双保险 — 后端 controller boundary 做权威错误码映射，前端 axios interceptor 做兜底关键词匹配。后端单点失误时前端仍能挡住裸 Go error。"
       - "2026-05-15 (prerequisite 满足): credits-deduct-cycle-wiring v2.1.18 已 prod 上线，本 feature 可启动。"
+      - "2026-05-15 (拍板细节): 文案统一中性（不区分 parent/child）；后端抽 helper TranslateError；zap log level=Warn（mapped）/Error（unmapped）；errno 码全部复用现有不造新。"
+      - "2026-05-15 (H1 调研): Backend 5 处 SSE 泄漏点（SOP ExecuteNodeStream / EditAIStream / ChatAfterRunStream + chatbot Chat + salesrag ChatWithSession）+ 后续 review 揪出 3 处遗漏（AnalyzeProfile / AnalyzeProfileText / AnalyzeChatStyle）。Frontend: request.ts axios interceptor 各 4xx/5xx 分支 + useSSEStream event:error + sales.ts parseSseChunk + fetchSSE。复用 errno.ErrInsufficientCredits / ErrSubscriptionExpired，零新增码。"
+      - "2026-05-15 (H1 实施): 后端创建 internal/numind/biz/errtranslate（helper + 8 单测 PASS）；3 controller 总计 9 处 SSE site 改造 + 全部加 client-disconnect 检测保护。前端创建 src/utils/errorMessage.ts（helper + 17 vitest PASS）+ 3 文件改造。Build green / 我自己 file gofmt+vet+eslint+typecheck 全通过。"
+      - "2026-05-15 (H2 两阶段 review): Spec compliance reviewer + Code quality reviewer 都 PASS_WITH_CONCERNS。共识 1 P1：缺 chatbot/salesrag client-disconnect 检测 → 修。共识 1 P1：salesrag 3 处 Analyze SSE 漏改 → 修（同一文件同模式，扩展到 9 处 SSE site）。P2：translate_test.go 双层 wrap + SetMessage 路径补测（已加 2 测）+ frontend errorMessage 缺单测（已加 17 测）。0 P0。NDF Rule 7 按"能现在修则现在修"全部修完。"
+      - "2026-05-15 (H3 合并): numind-server 因并行 session 切换 HEAD 异常，commit 9de03c8 直接落 develop 而非 fix 分支（reflog HEAD@{2} 'moving from fix/ui-error-friendly-mapping to develop' 显示非用户操作）；内容无误，已 push origin develop。numind-web-v3 fix/ui-error-friendly-mapping → develop 经 --no-ff merge f1bf8f1，已 push。两仓 develop 一并推送，CI 自动部署 dev。"
     related_features:
       - "credits-deduct-cycle-wiring (completed 2026-05-15) — 修了 credit 扣减逻辑本身；本 feature 修 credit 错误如何呈现给用户"
       - "membership-balance-read-path (completed 2026-05-14) — 同期 credits 体系演进 feature"
