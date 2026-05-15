@@ -253,6 +253,13 @@ func (s *MembershipService) replayGrantResult(ctx context.Context, evt *model.Me
 //   - ParentUserID == UserID → ErrMembershipSelfPurchaseDisabled (B2B2C constraint)
 //   - ProductType ∉ {"monthly", "yearly"} → ErrInvalidParameter
 //   - Months ∉ [1, 12] → ErrInvalidParameter
+//
+// ParentUserID == 0 is a **sentinel value** indicating "bypass self-purchase check".
+// Used by the B2B admin grant path (creditBiz.GrantMembership) where a parent
+// account legitimately self-grants — parent accounts have parent_user_id IS NULL
+// in the user table, so the request comes in with ParentUserID==ChildUserID and
+// the biz layer rewrites it to 0 before calling here, to bypass the C-end
+// self-purchase guard while still preserving the guard for all real C-end paths.
 func validateSubscriptionInput(req GrantSubscriptionRequest) error {
 	if req.ParentUserID == req.UserID {
 		return errno.ErrMembershipSelfPurchaseDisabled

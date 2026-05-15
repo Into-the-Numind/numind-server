@@ -252,6 +252,11 @@ func TestGrantMembership_Trial_Success(t *testing.T) {
 	require.NoError(t, db.Raw(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='credit_package'`).Scan(&cpCount).Error)
 	// credit_package table may not exist at all in the new schema, which is fine.
 	// If it does exist (e.g. during transition), it must have 0 rows.
+	if cpCount > 0 {
+		var rows int64
+		require.NoError(t, db.Raw("SELECT COUNT(*) FROM credit_package WHERE user_id = ?", child).Scan(&rows).Error)
+		assert.Zero(t, rows, "credit_package must not be written by T4 grant path")
+	}
 }
 
 // ---------- Trial UNIQUE protection (second grant rejected) ----------
@@ -603,6 +608,47 @@ func TestGrantMembership_SubUserSelfGrant_Rejected(t *testing.T) {
 	assert.EqualValues(t, 0, count, "no trial_grant row written for rejected sub-user self-grant")
 }
 
+// TestGrantMembership_SubUserSelfGrant_Monthly_Rejected verifies the C-end
+// self-purchase guard at the **biz layer**: a sub-user (parent_user_id != nil)
+// on billing_mode=credits cannot self-grant a monthly subscription.
+//
+// The biz-layer equivalent of errno.ErrMembershipSelfPurchaseDisabled is
+// ErrGrantForbidden — see GrantMembership.Step 2 (req.ChildUserID == req.ParentUserID
+// path). The MembershipService's deeper ErrMembershipSelfPurchaseDisabled guard is
+// also present but the biz layer rejects earlier with ErrGrantForbidden.
+// This test pins down the boundary.
+func TestGrantMembership_SubUserSelfGrant_Monthly_Rejected(t *testing.T) {
+	db := newGrantTestDB(t)
+	b := newGrantTestBiz(t, db)
+
+	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
+	// Sub-user: parent_user_id = parent, billing_mode=credits
+	child := insertGrantTestUser(t, db, model.UserTierFree, &parent, model.BillingModeCredits, nil)
+
+	err := b.GrantMembership(context.Background(), GrantMembershipReq{
+		ParentUserID: child, // caller == target, but caller is a sub-user
+		ChildUserID:  child,
+		ProductType:  model.ProductTypeMonthly,
+		Months:       1,
+		Reason:       "C-end self-purchase attempt (monthly)",
+	})
+	require.Error(t, err, "C-end sub-user must not self-grant monthly subscription")
+	assert.ErrorIs(t, err, ErrGrantForbidden,
+		"biz-layer rejection is ErrGrantForbidden (equivalent of errno.ErrMembershipSelfPurchaseDisabled)")
+
+	// No subscription written
+	var subCount int64
+	require.NoError(t, db.Raw(`SELECT COUNT(*) FROM subscription WHERE user_id = ?`, child).Scan(&subCount).Error)
+	assert.EqualValues(t, 0, subCount, "no subscription row may be written for rejected C-end self-grant")
+
+	// No action_log written either
+	var logCount int64
+	require.NoError(t, db.Raw(
+		`SELECT COUNT(*) FROM action_log WHERE user_id = ? AND action = 'grant_membership'`, child,
+	).Scan(&logCount).Error)
+	assert.EqualValues(t, 0, logCount, "no action_log row may be written for rejected C-end self-grant")
+}
+
 func TestGrantMembership_CrossParentGrant_Rejected(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
@@ -698,9 +744,19 @@ func TestGrantMembership_SelfGrant_ActiveSubscription_Rejected(t *testing.T) {
 	assert.ErrorIs(t, err, ErrGrantActiveSubscription)
 }
 
-// ---------- Idempotency replay: same operation returns success without duplicate ----------
+// ---------- Idempotency replay: guard detects existing rows on retry ----------
+// Note: GrantMembership is NOT idempotent at the biz level — it always rejects
+// duplicates (via guard readers reading subscription/trial_grant). True idempotency
+// (same network retry within window) is handled at HTTP/controller layer through
+// the Idempotency-Key middleware. These tests verify the biz-layer guard semantics.
 
-func TestGrantMembership_IdempotencyReplay_TrialSuccessOnReplay(t *testing.T) {
+// TestGrantMembership_TrialGuardDetectsExistingRow_AfterRetry verifies that a
+// second GrantMembership call for the same child is **rejected** by the trial
+// lifetime guard (HasTrialPackage reads trial_grant new table). The name reflects
+// the actual assertion: it's a guard-detection test, NOT an idempotent-success
+// test. trial_grant table maintains exactly 1 row across both calls (UNIQUE
+// constraint on user_id also acts as a backstop).
+func TestGrantMembership_TrialGuardDetectsExistingRow_AfterRetry(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
@@ -716,17 +772,13 @@ func TestGrantMembership_IdempotencyReplay_TrialSuccessOnReplay(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// At this point trial_grant exists. A second GrantMembership for the SAME child is
-	// NOT idempotent at the GrantMembership level (it returns ErrGrantTrialAlreadyPurchased).
-	// Idempotency (same network retry) is handled at the HTTP/controller layer (same request body
-	// within retry window). This test verifies the guard reader correctly detects the existing row.
+	// At this point trial_grant has exactly one row. The second call (retry
+	// simulation) must be rejected — at the biz level a second grant is a data
+	// integrity error, not silent success. Controller layer must not retry after 409.
 	var count int64
 	require.NoError(t, db.Raw(`SELECT COUNT(*) FROM trial_grant WHERE user_id = ?`, child).Scan(&count).Error)
 	assert.EqualValues(t, 1, count, "exactly one trial_grant row must exist after first call")
 
-	// Second call (retry simulation) is expected to return ErrGrantTrialAlreadyPurchased.
-	// This is the correct idempotency behavior at the biz level: second call = data integrity error,
-	// not silent success. Controller layer must not retry after 409.
 	err = b.GrantMembership(context.Background(), GrantMembershipReq{
 		ParentUserID: parent,
 		ChildUserID:  child,

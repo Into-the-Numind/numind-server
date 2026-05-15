@@ -51,6 +51,11 @@ type GrantMembershipReq struct {
 
 // GrantMembership 由父账户为子账户赋予会员（B2B2C 路径，不走支付）。
 //
+// **HTTP-path-bypass note**：本方法定义在 ICreditBiz interface，但 HTTP 路由
+// POST /v1/users/children/:child_id/grant-membership 直接调 MembershipService
+// **跳过本方法**（见 controller/v1/credit/grant_membership.go）。本方法仅为单测
+// 覆盖 orchestration 逻辑；T6+ 可选择把 controller 改路由经 biz，或废弃本方法。
+//
 // T4 重写（membership-credits-redesign cleanup）：
 //   - trial  → 调 MembershipService.GrantTrial（写 trial_grant 新表）
 //   - monthly → 调 MembershipService.GrantOrRenewSubscription（写 subscription 新表）
@@ -74,7 +79,29 @@ type GrantMembershipReq struct {
 //
 //	HasActiveSubscription 和 HasTrialPackage 现在读 subscription / trial_grant 新表，
 //	与 MembershipService 写路径对齐，确保 trial lifetime 保护不失效。
+//
+// **Atomicity 3-step ordering（round-1 review 修复）**：
+//
+//	全过程拆成 3 个原子边界，每一步可独立失败而不留半成品：
+//	 Step A (pre-grant): flip billing_mode legacy_tier→credits（自带小 tx，幂等
+//	                     — 已 credits 即 no-op；失败 = 整个请求失败，无任何副作用）
+//	 Step B (grant)    : 调 MembershipService（自带 tx，写 subscription/trial_grant
+//	                     + membership_event）。失败 = billing_mode 已切（user 无 credits
+//	                     可用但状态一致）；spec 允许此降级（用户可重试）。
+//	 Step C (audit log): 写 action_log（独立 tx）。失败时 **Warn 但不返回错误** —
+//	                     action_log 是 admin UI 审计 trail；B2B 月结报表实际读
+//	                     membership_event（已在 Step B 成功），与 action_log 失败无关。
+//	                     完全失败语义违反原子性更糟（会造成 grant 已写但报错重试）。
+//	 顺序为什么不能反：若先 Step B 再 Step A，B 成功 A 失败 → 用户拿到 grant 但
+//	                     billing_mode 仍是 legacy_tier，扣费走旧路径无法消费 cycle credits。
 func (b *creditBiz) GrantMembership(ctx context.Context, req GrantMembershipReq) error {
+	// Guard: membershipSvc 必须已通过 InjectCreditBizMembershipSvc 注入。
+	// 缺失说明 wiring 错误（NewBiz 没调注入函数 / 测试 setup 漏掉）— 直接报错
+	// 而非 nil-pointer panic。
+	if b.membershipSvc == nil {
+		return fmt.Errorf("GrantMembership: membershipSvc not wired (test/build setup issue)")
+	}
+
 	// Step 1: validate product type early (cheap)
 	if err := validateGrantProductType(req); err != nil {
 		return err
@@ -131,11 +158,26 @@ func (b *creditBiz) GrantMembership(ctx context.Context, req GrantMembershipReq)
 		}
 	}
 
-	// Step 4: dispatch to MembershipService (writes new tables, no credit_package INSERT)
 	now := time.Now()
 	granterID := uint64(req.ParentUserID)
 	childID64 := uint64(req.ChildUserID)
 
+	// Step A (pre-grant): flip billing_mode legacy_tier→credits BEFORE granting.
+	// Idempotent: WHERE billing_mode='legacy_tier' guard makes "already credits" a no-op.
+	// Safe to fail here — nothing else has been written yet, the request just fails.
+	// Reason ordering: if we flipped AFTER grant, a flip-failure would leave the user
+	// with grant rows but legacy billing_mode, breaking credit consumption.
+	if err := b.ds.DB().WithContext(ctx).
+		Model(&model.User{}).
+		Where("id = ? AND billing_mode = ?", req.ChildUserID, model.BillingModeLegacyTier).
+		Update("billing_mode", model.BillingModeCredits).Error; err != nil {
+		return fmt.Errorf("GrantMembership: switch billing_mode: %w", err)
+	}
+
+	// Step B (grant): dispatch to MembershipService (writes new tables, no credit_package INSERT).
+	// MembershipService manages its own internal tx for subscription/trial_grant/membership_event.
+	// Safe to fail here — billing_mode is already credits (consistent state, just no credits granted
+	// yet); the user may retry.
 	switch req.ProductType {
 	case model.ProductTypeTrial:
 		// MembershipService.GrantTrial performs its own transactional write to trial_grant.
@@ -172,19 +214,20 @@ func (b *creditBiz) GrantMembership(ctx context.Context, req GrantMembershipReq)
 		}
 	}
 
-	// Step 5: post-grant side effects in a single DB transaction:
-	//   a. Switch billing_mode legacy_tier → credits (MembershipService does not do this)
-	//   b. Write action_log for B2B billing report audit
-	err = b.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// a. Switch billing_mode legacy_tier → credits.
-		// Guarded by WHERE billing_mode='legacy_tier' so no-op for credits users.
-		if err := tx.Model(&model.User{}).
-			Where("id = ? AND billing_mode = ?", req.ChildUserID, model.BillingModeLegacyTier).
-			Update("billing_mode", model.BillingModeCredits).Error; err != nil {
-			return fmt.Errorf("switch billing_mode: %w", err)
-		}
-
-		// b. Write action log for B2B billing report audit.
+	// Step C (post-grant audit log): write action_log for admin UI audit trail.
+	// Trade-off (documented): action_log failure is logged Warn but does NOT fail the whole
+	// request. Rationale:
+	//   - action_log is the admin UI audit trail only. The B2B monthly billing report
+	//     (biz/b2b_billing/b2b_billing.go) reads membership_event directly (already
+	//     committed in Step B) and does NOT depend on action_log — so action_log loss
+	//     has no billing impact.
+	//   - Failing the request here would force the caller to retry, but Step B is not
+	//     idempotent at the biz level (second call returns ErrGrantTrialAlreadyPurchased
+	//     / ErrGrantActiveSubscription) — caller would see 409 on retry, masking the
+	//     real cause.
+	// Run in its own small tx for crash-safety (action_log row is atomic; either it
+	// commits fully or it doesn't appear at all).
+	if logErr := b.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		detail := map[string]interface{}{
 			"product_type": req.ProductType,
 			"months":       req.Months,
@@ -206,11 +249,16 @@ func (b *creditBiz) GrantMembership(ctx context.Context, req GrantMembershipReq)
 		if err := tx.Create(actionLog).Error; err != nil {
 			return fmt.Errorf("write action log: %w", err)
 		}
-
 		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("GrantMembership: post-grant side effects: %w", err)
+	}); logErr != nil {
+		// Degraded but recoverable: primary audit (membership_event) is intact.
+		log.Warnw("GrantMembership: action_log write failed (grant itself succeeded; "+
+			"membership_event remains as primary audit source for B2B billing reconciliation)",
+			"parent_user_id", req.ParentUserID,
+			"child_user_id", req.ChildUserID,
+			"product_type", req.ProductType,
+			"err", logErr,
+		)
 	}
 
 	log.Infow("B2B membership granted",
