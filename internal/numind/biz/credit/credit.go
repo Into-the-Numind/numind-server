@@ -12,6 +12,7 @@ import (
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
+	membershipmodel "numind-server/internal/pkg/model/membership"
 )
 
 // ICreditBiz 积分业务逻辑接口
@@ -277,116 +278,59 @@ func (b *creditBiz) GetQuotaBreakdown(ctx context.Context, userID uint) (subTota
 	return b.ds.Credits().GetQuotaBreakdown(ctx, userID)
 }
 
-// RechargeWithOrderTx 在调用方的事务中创建积分包并更新余额（支付回调用）
+// RechargeWithOrderTx is the payment-callback fulfillment hook for the booster
+// product type. It writes to new membership tables only (no credit_package INSERT):
+//
+//   - user_booster_balance: incremented by quantity×600 credits (upsert)
+//   - membership_event: append-only audit log row (idempotency_key = orderNo)
+//
+// T5 cleanup (membership-credits-redesign): the trial / monthly / yearly branches
+// that used to create credit_package rows have been deleted. Those product types
+// are exclusively handled by the B2B grant path (GrantMembership /
+// MembershipService). The payment order layer (fulfillOrder in payment.go) already
+// enforces product_type=booster via a §5.10 guard BEFORE calling this function, so
+// the defensive error below is production-unreachable — it guards against future
+// callers bypassing that guard.
+//
+// The `months` parameter for booster carries the purchased quantity (number of
+// booster packs, each 600 credits). This repurposed semantic is retained from the
+// original order-creation contract; see CreateOrder and fulfillOrder in payment.go.
 func (b *creditBiz) RechargeWithOrderTx(ctx context.Context, tx *gorm.DB, userID uint, orderID uint64, productType string, months int) error {
-	// 确保账户存在（幂等操作，不需要在事务中）
-	if _, err := b.ds.Credits().GetOrCreateAccount(ctx, userID); err != nil {
-		return fmt.Errorf("ensure credit account: %w", err)
+	// Defensive guard: only booster is supported via the payment callback.
+	// Trial/monthly/yearly go through the B2B grant path (spec §5.10).
+	if productType != model.ProductTypeBooster {
+		return fmt.Errorf("%w: got %q", ErrUnsupportedProductType, productType)
 	}
 
-	cfg := model.GetProductConfig(productType, months)
-	if cfg == nil {
-		return fmt.Errorf("unknown product type: %s", productType)
+	// months parameter repurposed as booster quantity (spec §5.2 / CreateOrder).
+	quantity := months
+	if quantity < 1 {
+		quantity = 1
+	}
+	delta := int64(quantity) * 600 // 600 credits per booster unit (spec §5.2)
+
+	// Increment booster balance (upsert — creates row if not exists).
+	if err := b.ds.Membership().BoosterBalances().Increment(ctx, tx, uint64(userID), delta); err != nil {
+		return fmt.Errorf("increment booster balance: %w", err)
 	}
 
+	// Write membership audit event (idempotency_key = order ID string).
 	now := time.Now()
-	var packages []model.CreditPackage
-
-	switch productType {
-	case model.ProductTypeTrial:
-		packages = []model.CreditPackage{
-			{
-				UserID:        userID,
-				Type:          model.CreditTypeTrial,
-				TotalCredits:  200,
-				RemainCredits: 200,
-				ActivatedAt:   now,
-				ExpiresAt:     now.Add(3 * 24 * time.Hour),
-				OrderID:       &orderID,
-				Status:        model.CreditPackageActive,
-			},
-		}
-	case model.ProductTypeMonthly:
-		m := cfg.Months
-		if m < 1 {
-			m = 1
-		}
-		for i := 0; i < m; i++ {
-			status := model.CreditPackagePending
-			if i == 0 {
-				status = model.CreditPackageActive
-			}
-			activatedAt := now.AddDate(0, i, 0)
-			expiresAt := now.AddDate(0, i+1, 0)
-			packages = append(packages, model.CreditPackage{
-				UserID:        userID,
-				Type:          model.CreditTypeSubscription,
-				TotalCredits:  2000,
-				RemainCredits: 2000,
-				ActivatedAt:   activatedAt,
-				ExpiresAt:     expiresAt,
-				OrderID:       &orderID,
-				Status:        status,
-			})
-		}
-	case model.ProductTypeYearly:
-		for i := 0; i < 12; i++ {
-			status := model.CreditPackagePending
-			if i == 0 {
-				status = model.CreditPackageActive
-			}
-			activatedAt := now.AddDate(0, i, 0)
-			expiresAt := now.AddDate(0, i+1, 0)
-			packages = append(packages, model.CreditPackage{
-				UserID:        userID,
-				Type:          model.CreditTypeSubscription,
-				TotalCredits:  2000,
-				RemainCredits: 2000,
-				ActivatedAt:   activatedAt,
-				ExpiresAt:     expiresAt,
-				OrderID:       &orderID,
-				Status:        status,
-			})
-		}
-	case model.ProductTypeBooster:
-		// months 参数在 booster 路径中语义为 quantity（购买份数），每份 600 积分。
-		// 每份独立创建一个 CreditPackage，各自有独立的 90 天到期时间（FIFO 扣减）。
-		quantity := months
-		if quantity < 1 {
-			quantity = 1
-		}
-		for i := 0; i < quantity; i++ {
-			packages = append(packages, model.CreditPackage{
-				UserID:        userID,
-				Type:          model.CreditTypeBooster,
-				TotalCredits:  600,
-				RemainCredits: 600,
-				ActivatedAt:   now,
-				ExpiresAt:     now.Add(90 * 24 * time.Hour),
-				OrderID:       &orderID,
-				Status:        model.CreditPackageActive,
-			})
-		}
-	default:
-		return fmt.Errorf("unsupported product type: %s", productType)
+	orderIDStr := fmt.Sprintf("order-%d", orderID)
+	qty := uint16(quantity)               //nolint:gosec // quantity ∈ [1,10000], fits uint16
+	amountCents := int64(quantity) * 2990 // ¥29.9 per unit (spec §5.2)
+	event := &membershipmodel.MembershipEvent{
+		UserID:         uint64(userID),
+		EventType:      membershipmodel.EventTypeBoosterGranted,
+		ProductType:    model.ProductTypeBooster,
+		Quantity:       &qty,
+		AmountCents:    amountCents,
+		Source:         membershipmodel.SourceSelfPurchase,
+		IdempotencyKey: &orderIDStr,
+		OccurredAt:     now,
 	}
-
-	// 在调用方的事务中创建积分包
-	if err := tx.Create(&packages).Error; err != nil {
-		return fmt.Errorf("create credit packages: %w", err)
-	}
-
-	// 计算立即可用的积分（仅 active 状态的包）
-	var immediateCredits int64
-	for _, pkg := range packages {
-		if pkg.Status == model.CreditPackageActive {
-			immediateCredits += pkg.TotalCredits
-		}
-	}
-
-	// 更新余额（使用同一个事务）
-	if err := b.ds.Credits().UpdateBalance(ctx, tx, userID, immediateCredits); err != nil {
-		return fmt.Errorf("update balance: %w", err)
+	if err := b.ds.Membership().Events().Create(ctx, tx, event); err != nil {
+		return fmt.Errorf("create membership event: %w", err)
 	}
 
 	return nil
