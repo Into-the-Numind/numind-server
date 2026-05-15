@@ -1,8 +1,10 @@
 // Package credit_test contains HTTP-handler level tests for the user-facing
-// credits endpoints (Estimate + ListPackages). Business rules live in biz/credit
-// and are covered by dedicated biz tests; these tests focus on the HTTP contract:
-// response envelope shape, error → status mapping, sort/filter whitelisting,
-// and the per-operation branching in Estimate.
+// credits endpoint (Estimate). Business rules live in biz/credit and are
+// covered by dedicated biz tests; these tests focus on the HTTP contract:
+// response envelope shape, error → status mapping, and the per-operation
+// branching in Estimate.
+//
+// T9: ListPackages tests removed — credit_package dead route deleted.
 package credit_test
 
 import (
@@ -12,7 +14,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -140,7 +141,7 @@ func newRouter(t *testing.T, ctrl *creditctl.CreditController, user *model.User)
 	r := gin.New()
 	r.Use(setCurrentUserMiddleware(user))
 	r.POST("/v1/credits/estimate", ctrl.Estimate)
-	r.GET("/v1/credits/packages", ctrl.ListPackages)
+	// T9: GET /v1/credits/packages route deleted
 	return r
 }
 
@@ -324,110 +325,8 @@ func TestEstimate_BindError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ListPackages tests
+// T9: ListPackages tests removed — credit_package dead route deleted.
 // ---------------------------------------------------------------------------
-
-// TestListPackages_Basic verifies the basic shape + user_id scoping.
-func TestListPackages_Basic(t *testing.T) {
-	db := newTestDB(t)
-	ds := store.NewTestStore(db)
-
-	// seed 2 packages for user 7, 1 package for user 99 (must NOT appear).
-	now := time.Now()
-	require.NoError(t, db.Create(&model.CreditPackage{UserID: 7, Type: "subscription", TotalCredits: 100, RemainCredits: 80,
-		ActivatedAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour), Status: "active"}).Error)
-	require.NoError(t, db.Create(&model.CreditPackage{UserID: 7, Type: "booster", TotalCredits: 500, RemainCredits: 500,
-		ActivatedAt: now, ExpiresAt: now.Add(90 * 24 * time.Hour), Status: "active"}).Error)
-	require.NoError(t, db.Create(&model.CreditPackage{UserID: 99, Type: "subscription", TotalCredits: 100, RemainCredits: 100,
-		ActivatedAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour), Status: "active"}).Error)
-
-	ctrl := creditctl.New(nil, &stubCreditSvc{}, &stubPromptEstimator{}, ds)
-	r := newRouter(t, ctrl, mustUser(7, model.BillingModeCredits))
-
-	req := httptest.NewRequest(http.MethodGet, "/v1/credits/packages", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
-
-	var env struct {
-		Code int                        `json:"code"`
-		Data creditctl.ListPackagesResp `json:"data"`
-	}
-	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
-
-	assert.Equal(t, int64(2), env.Data.Total, "only user 7's packages; user 99 must NOT leak")
-	assert.Len(t, env.Data.List, 2)
-}
-
-// TestListPackages_TypeFilter verifies the type filter.
-func TestListPackages_TypeFilter(t *testing.T) {
-	db := newTestDB(t)
-	ds := store.NewTestStore(db)
-	now := time.Now()
-	require.NoError(t, db.Create(&model.CreditPackage{UserID: 7, Type: "subscription", TotalCredits: 100, RemainCredits: 80,
-		ActivatedAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour), Status: "active"}).Error)
-	require.NoError(t, db.Create(&model.CreditPackage{UserID: 7, Type: "booster", TotalCredits: 500, RemainCredits: 500,
-		ActivatedAt: now, ExpiresAt: now.Add(90 * 24 * time.Hour), Status: "active"}).Error)
-
-	ctrl := creditctl.New(nil, &stubCreditSvc{}, &stubPromptEstimator{}, ds)
-	r := newRouter(t, ctrl, mustUser(7, model.BillingModeCredits))
-
-	req := httptest.NewRequest(http.MethodGet, "/v1/credits/packages?type=booster", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
-
-	var env struct {
-		Code int                        `json:"code"`
-		Data creditctl.ListPackagesResp `json:"data"`
-	}
-	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
-	assert.Equal(t, int64(1), env.Data.Total)
-	require.Len(t, env.Data.List, 1)
-	assert.Equal(t, "booster", env.Data.List[0].Type)
-}
-
-// TestListPackages_RejectsInvalidSort rejects non-whitelisted sort fields.
-func TestListPackages_RejectsInvalidSort(t *testing.T) {
-	db := newTestDB(t)
-	ds := store.NewTestStore(db)
-	ctrl := creditctl.New(nil, &stubCreditSvc{}, &stubPromptEstimator{}, ds)
-	r := newRouter(t, ctrl, mustUser(7, model.BillingModeCredits))
-
-	// Sort by a non-whitelisted column (SQL-injection guard).
-	req := httptest.NewRequest(http.MethodGet, "/v1/credits/packages?sort=remain_credits:asc", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
-
-// TestListPackages_RejectsInvalidType rejects non-whitelisted type filters.
-func TestListPackages_RejectsInvalidType(t *testing.T) {
-	db := newTestDB(t)
-	ds := store.NewTestStore(db)
-	ctrl := creditctl.New(nil, &stubCreditSvc{}, &stubPromptEstimator{}, ds)
-	r := newRouter(t, ctrl, mustUser(7, model.BillingModeCredits))
-
-	req := httptest.NewRequest(http.MethodGet, "/v1/credits/packages?type=weirdthing", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
-
-// TestListPackages_Unauthenticated returns 401.
-func TestListPackages_Unauthenticated(t *testing.T) {
-	ctrl := creditctl.New(nil, &stubCreditSvc{}, &stubPromptEstimator{}, nil)
-	r := newRouter(t, ctrl, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/v1/credits/packages", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusUnauthorized, w.Code)
-}
 
 // ---------------------------------------------------------------------------
 // test helpers

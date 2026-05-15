@@ -49,7 +49,11 @@ func (ctrl *AdminCreditController) ListUsers(c *gin.Context) {
 	})
 }
 
-// GetUserDetail GET /credits/users/:id — 查询用户积分详情（账户 + 积分包 + 流水）
+// GetUserDetail GET /credits/users/:id — 查询用户积分详情（账户 + 流水）
+//
+// T9: packages 字段已删除 —— credit_package 表正在 phase-out，admin 端不再
+// 枚举单用户的积分包。完整额度信息（cycle/booster/trial）通过
+// MembershipService.GetBalance 接口提供（前端可直接调用用户余额接口）。
 func (ctrl *AdminCreditController) GetUserDetail(c *gin.Context) {
 	log.C(c).Infow("Admin get credit user detail called")
 
@@ -69,14 +73,6 @@ func (ctrl *AdminCreditController) GetUserDetail(c *gin.Context) {
 		return
 	}
 
-	// 积分包列表（最多 50 条）
-	packages, _, err := ctrl.ds.Credits().ListPackagesByUser(c, userID, 0, 50)
-	if err != nil {
-		log.C(c).Errorw("Failed to list credit packages", "user_id", userID, "error", err)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("查询积分包失败"), nil)
-		return
-	}
-
 	// 流水记录（最多 50 条）
 	transactions, _, err := ctrl.ds.Credits().ListTransactionsByUser(c, userID, 0, 50)
 	if err != nil {
@@ -87,7 +83,6 @@ func (ctrl *AdminCreditController) GetUserDetail(c *gin.Context) {
 
 	core.WriteResponse(c, nil, gin.H{
 		"account":      account,
-		"packages":     packages,
 		"transactions": transactions,
 	})
 }

@@ -26,30 +26,4 @@ type EstimateResp struct {
 	CoefficientID         uint64                  `json:"coefficient_id"` // 前端 opaque，可忽略
 }
 
-// ListPackagesReq GET /v1/credits/packages
-type ListPackagesReq struct {
-	Page     int    `form:"page,default=1"`
-	PageSize int    `form:"page_size,default=20"`        // max 100
-	Status   string `form:"status,omitempty"`            // active/expired/revoked，空为全部
-	Type     string `form:"type,omitempty"`              // trial/subscription/booster，空为全部
-	Sort     string `form:"sort,default=expires_at:asc"` // expires_at:asc/desc, created_at:asc/desc
-}
-
-// ListPackagesResp GET /v1/credits/packages
-type ListPackagesResp struct {
-	List  []CreditPackageItem `json:"list"`
-	Total int64               `json:"total"`
-}
-
-// CreditPackageItem is a normalized view of a user's credit_package for the Packages API
-type CreditPackageItem struct {
-	ID            uint64  `json:"id"`
-	Type          string  `json:"type"`
-	TotalCredits  int64   `json:"total_credits"`
-	RemainCredits int64   `json:"remain_credits"`
-	ActivatedAt   string  `json:"activated_at"`
-	ExpiresAt     string  `json:"expires_at"`
-	Status        string  `json:"status"`
-	OrderID       *uint64 `json:"order_id,omitempty"`
-	CreatedAt     string  `json:"created_at"`
-}
+// T9: ListPackagesReq, ListPackagesResp, CreditPackageItem deleted — credit_package dead types removed.
