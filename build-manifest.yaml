@@ -5,10 +5,10 @@ features:
     ndf_version: "1.1"
     description: "P0 线上 bug：所有 billing_mode=credits 用户运行 SOP / chatbot / salesrag 时被错误判定为 ErrInsufficientCredits，即便 cycle_remaining + booster_usable >= 估算。Root cause: creditsImpl.GetBalance 和 deductCreditsTxFull 仍读写老 credit_package 表，而 GrantOrRenewSubscription 只写新 subscription + credit_cycle 表（store/credit.go:375 注释承诺的『双写』从未实现）。MembershipService.DeductCredits 是写新表的 active path 但根本没人调用（cycle.go:97-101 自承 Task 16 未完成）。本 feature 完成 Task 16 cleanup：把 Reserve / Reconcile 切换到 MembershipService.DeductCredits，让 read+write 都用新表。"
     track: "standard"
-    stage: "S6"
+    stage: "completed"
     classification_reason: "条件 4（>3 文件：credit_service.go / credit.go / sop.go / chatbot middleware / store/credit.go / 测试）+ 条件 5（高风险扣费逆路）触发 Standard。P0 prod bug 加速。"
-    last_updated_by: "ai-s4-complete"
-    last_updated_at: "2026-05-14T00:00:00+08:00"
+    last_updated_by: "ai-h1-housekeeping"
+    last_updated_at: "2026-05-15T00:00:00+08:00"
     repos:
       - numind-server
     branches:
@@ -39,6 +39,35 @@ features:
       - "membership-balance-read-path (S6, dev deployed) — 上一轮修了 read 显示，本 feature 修 reserve/reconcile"
       - "membership-credits-redesign (S5, plan §Task 16 cleanup) — 原 plan 规划过 cleanup 但只设计了 cron 删除和 helper 替换，未设计 reserve/reconcile 切表的具体 wiring"
     created_at: "2026-05-14T00:00:00+08:00"
+    completed_at: "2026-05-15T00:00:00+08:00"
+
+  - id: "ui-error-friendly-mapping"
+    ndf_version: "1.1"
+    description: "P0 用户体验 bug：SOP 节点执行 / chatbot SSE / salesrag 出错时，UI 直接弹出完整 Go 调用栈（如 'node execution failed: executeViaGateway: ChatStream: ContextBudgetCredits: credit: insufficient balance: requested 50, available 0'）。所有 ErrInsufficientCredits / ErrSubscriptionExpired / 偶发 DB 异常都有同类泄漏。修复策略 B+A 双保险：(B 后端) 在 SOP node 执行 / chatbot SSE error frame / salesrag 三处 controller boundary 用 errors.Is 识别根因 err，转 errno 错误码 + user-facing message；技术细节进 zap 日志不进 UI。(A 前端) src/api/request.ts axios interceptor 扩展 errno code → 友好文案映射；兜底匹配 response.data.message 含 'insufficient balance' 等关键词覆盖防御。Caveat: SOP node 有 retry/fallback，转换不要破坏 retry 判断（应在 retry exhausted 后才转友好文案）。"
+    track: "hotfix"
+    stage: "H1"
+    classification_reason: "Hotfix Triage 5 条 — (1) 无 schema 变更 (2) 无新增 API 端点 (3) 无外部服务集成 (4) 跨 2 仓 ~5 文件（边界，但每文件改动模式相同：err.Error() 替换为 errno 映射）(5) 错误处理本身不涉及计费/权限逻辑，但 SOP retry 边界是关联风险点。用户拍板 Hotfix（边界判断上移）。"
+    last_updated_by: "ai-h1-triage"
+    last_updated_at: "2026-05-15T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "fix/ui-error-friendly-mapping"
+      numind-web-v3: "fix/ui-error-friendly-mapping"
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "H1 investigation — 三处 controller boundary 错误传播链 + 现有 errno 清单 + axios interceptor baseline"
+    decisions:
+      - "2026-05-15 (Triage): 严格按 NDF 规则应推 Standard（5 文件 + 跨 2 仓 + SOP retry 关联风险触发边界条款）。用户拍板 Hotfix 理由：单一目的修复、每文件改动模式相同（err.Error() → errno 映射）、零业务逻辑变更、零 schema、零端点。判断力上移到用户。"
+      - "2026-05-15 (架构定调): B+A 双保险 — 后端 controller boundary 做权威错误码映射，前端 axios interceptor 做兜底关键词匹配。后端单点失误时前端仍能挡住裸 Go error。"
+    related_features:
+      - "credits-deduct-cycle-wiring (completed 2026-05-15) — 修了 credit 扣减逻辑本身；本 feature 修 credit 错误如何呈现给用户"
+      - "membership-balance-read-path (S6 dev) — 同期 credits 体系演进 feature"
+    blockers: []
+    created_at: "2026-05-15T00:00:00+08:00"
     completed_at: null
 
   - id: "membership-balance-read-path"
@@ -73,9 +102,9 @@ features:
     ndf_version: "1.1"
     description: "用户端 chatbot 对话页 (views/chatbot/ChatbotChat.vue) 左侧会话列表支持改名与置顶。改名复用现有 chatbot_session.title 字段（无 schema 变更）；置顶新增 pinned_at TIMESTAMP NULL 字段（NULL=未置顶，非NULL=置顶时间）。列表排序改为：置顶组按 pinned_at DESC，非置顶组按 updated_at DESC。交互：hover 显示「…」更多菜单，含「重命名 / 置顶 / 取消置顶 / 删除」。范围明确不含 SalesView 销售对话页与 SOP 运行历史。S1 锁定 Approach A 极简 MVP (1-1.5 d)；顺带修 ListSessions cross-chatbot perf bug。"
     track: "standard"
-    stage: "S4"
+    stage: "S5"
     classification_reason: "Triage 5 条 — (1) DB schema 变更：是（chatbot_session 加 pinned_at 字段 + 覆盖排序的复合索引）(2) 新 API：是（PUT /v1/chatbot/sessions/:id/rename + PUT /v1/chatbot/sessions/:id/pin，2 个新端点；GET sessions 列表 ORDER BY 子句更新）(3) 无外部服务 (4) 跨 numind-server + numind-web-v3 两仓约 10-11 文件 (5) 不涉及支付/权限。条件 1/2/4 不满足 Hotfix，Standard Track。"
-    last_updated_by: "ai-s4-complete"
+    last_updated_by: "ai-s5-conditional-pass"
     last_updated_at: "2026-05-14T00:00:00+08:00"
     repos:
       - numind-server
@@ -88,13 +117,24 @@ features:
       proposal: "numind-server/proposals/chatbot-session-rename-pin-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-05-13-chatbot-session-rename-pin-design.md"
       plan: "numind-server/docs/superpowers/plans/2026-05-13-chatbot-session-rename-pin-plan.md"
+      qa: "numind-server/docs/superpowers/specs/2026-05-13-chatbot-session-rename-pin-qa-report.md"
     progress:
       total_tasks: 8
       completed_tasks: 8
       reviewed_tasks: 8
-      current_task: "S5 验收 — 本地执行 validation-strategy.md 中的 10 条用户路径"
+      current_task: "S6 dev 部署 — SSH apply migration + merge develop + Playwright E2E + 手动 curl 401/403"
     rollback: null
-    last_verified: null
+    last_verified:
+      at: "2026-05-14T00:00:00+08:00"
+      backend_lint: "pass"
+      backend_test: "pass (race+coverage, biz/chatbot 34.6%)"
+      backend_unit_tests: "18/18 PASS (store 10 + biz 8)"
+      frontend_lint: "pass (0 errors, 5 pre-existing warnings)"
+      frontend_type_check: "pass"
+      frontend_vitest: "380 PASS / 23 skipped / 0 fail (含 T6 8 个 chatbot tests)"
+      e2e: "deferred to S6 — dev DB 需先 SSH apply migration"
+      manual_curl_401_403: "deferred to S6"
+      langfuse_trace: "N/A (本 feature 不涉及 LLM 调用)"
     decisions:
       - "2026-05-13 (Triage): 用户原话'某个 chatbot 页面左边对话记录列表支持改名+置顶'。AI 澄清 4 关键范围：目标页 = 用户端 chatbot 对话页（不含 SalesView）；置顶规则 = 可多置顶按 pinned_at DESC；交互 = hover 显示「…」菜单；轨道 = Standard"
       - "2026-05-13 (Triage 范围锁定): 复用现有 title 字段做改名（无需新字段）；新增 pinned_at TIMESTAMP NULL 而非 pinned bool + pinned_at 双字段（避免冗余）；改名/置顶不更新 updated_at（metadata 操作不影响活跃排序，建议 S1 锁定）"
@@ -116,6 +156,7 @@ features:
       - "2026-05-14 (S4 Frontend Phase T5-T7 done): 前端 3 task 全部完成 + 两阶段 review PASS。6 个 commits: T5 (types ChatbotSession +pinned_at + api 3 函数, P1 JSDoc 注释 fix) / T6 (Pinia store currentChatbotId + fetchSessions 破坏性签名 + 3 处内部调用迁移 + ChatbotChat.vue 内 fetchSessions 调用迁移 + renameSession + togglePin + sortSessionsLocally + 8 Vitest tests, P1 != null vs !! 修正 + cleanup 重置 currentChatbotId) / T7 (ChatbotChat.vue chatbotId watcher + hover「⋯」menu + inline RenameModal 复用 sales-modal.css + 删除按钮迁入菜单 + 置顶视觉左边框 + 📌 指示器, P1 rename/pin 失败用 useNotificationsStore toast). 全部 push 到 origin/feature/chatbot-session-rename-pin (numind-web-v3)"
       - "2026-05-14 (S4 Task 8 validation strategy doc): plan §3 内容物质化为独立 .md 文件 numind-server/docs/superpowers/specs/2026-05-13-chatbot-session-rename-pin-validation-strategy.md (NDF Rule 10 强制末尾 task). 含 3 要素: 验证方式 (Playwright E2E + 后端 Go test + 前端 Vitest 三件套) / 5 条理由 (含为什么不选 gstack /qa) / 10 条关键用户路径 (含 D2 updated_at 不变量验证 + EC-14 重复置顶刷新双重验证). Reviewer Round 1 PASS_WITH_CONCERNS, 1 P1 (§4 Playwright 覆盖列表漏 #2 空白校验) 已修"
       - "2026-05-14 (S4 完成): 8/8 task 实施 + reviewed PASS, 共 15 commits (8 主 + 7 fix). NDF S4 gate 全过: task lint exit 0, go test PASS, npm lint exit 0, npm type-check exit 0, npm test:unit 380/403 PASS (23 skipped), 2 阶段 review × 8 task 全 PASS. progress 8/8. stage S4 → 准备进 S5."
+      - "2026-05-14 (S5 Conditional PASS): 自动化测试套件全 PASS — 后端 task test (race+coverage) 0 FAIL, biz/chatbot 34.6% coverage; store 10 + biz 8 = 18 unit tests 全过 (含 D2 不变量 / EC-14 重复置顶 / SQL 排序 3-case); 前端 lint 0 errors + type-check 0 + Vitest 380/403 PASS。E2E + 手动 curl 401/403 deferred 到 S6 — 理由: config_local.yaml 实际指向 dev DB (49.233.219.254:13306), 但 dev DB 未 apply migration; visibility-scope 已 S7 上线用过同 pattern (memory project_dev_deploy_migration_gap: CI 镜像无 migrations 目录, 必须 S6 手动 SSH apply). QA 报告 numind-server/docs/superpowers/specs/2026-05-13-chatbot-session-rename-pin-qa-report.md 含 §3 deferred 理由 + S6 阻塞前置清单 + §6 风险评估 (MySQL 8 SQL 排序 / UpdateColumn 真实 MySQL 行为 / UI 渲染 / 跨 feature 冲突均 Low-Med)。S6 必跑: SSH apply migration → merge develop → CI deploy → Playwright E2E 8 条路径 + 手动 curl 2 条 + 人工 QA 截图。"
     related_features:
       - "sop-chatbot-visibility-scope (S7 已上线, 不耦合)"
       - "membership-credits-redesign (S5 in flight, 不耦合)"
