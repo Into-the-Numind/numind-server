@@ -59,9 +59,9 @@ func newCreditTestDB(t *testing.T) *gorm.DB {
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
+	// T11: CreditPackage removed from AutoMigrate — credit_package table was dropped.
 	require.NoError(t, db.AutoMigrate(
 		&model.CreditAccount{},
-		&model.CreditPackage{},
 		&model.CreditTransaction{},
 		&model.UsageRecord{},
 	), "auto-migrate")
@@ -130,49 +130,43 @@ func newCreditTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-// seedPackagesAndAccount inserts a user, credit_account and a set of active
-// credit_packages. Packages should be provided in FIFO order (earliest
-// ExpiresAt first). Total balance is the sum of remain_credits.
+// seedPackagesAndAccount inserts a user, credit_account and membership table
+// rows representing the given credit packages (trial / subscription / booster).
 //
-// T6: each credit_package row is mirrored into the matching new-tables row so
-// MembershipService.DeductCreditsTx (the new authoritative deduction path) can
-// debit equivalent amounts. The mirror rules:
+// T11 (credits-cleanup): credit_package table has been dropped. This helper no
+// longer seeds credit_package rows. It seeds the three-pool SOT directly:
+//   - CreditTypeTrial        → trial_grant
+//   - CreditTypeSubscription → subscription + credit_cycle
+//   - CreditTypeBooster      → user_booster_balance
 //
-//   - CreditTypeTrial      → trial_grant (credits_remaining=remain, expires=ExpiresAt)
-//   - CreditTypeSubscription → subscription + credit_cycle for the package's
-//     [ActivatedAt, ExpiresAt] window (credits_remaining=remain)
-//   - CreditTypeBooster    → user_booster_balance (credits_remaining=remain)
+// A CreditAccount row is still created (identity/status only; balance column dropped).
 //
-// Booster never expires in the new schema (per-user aggregate row), so booster
-// package ExpiresAt is ignored during the mirror. Tests that depended on
-// booster expiry no longer apply post-T6.
-func seedPackagesAndAccount(t *testing.T, db *gorm.DB, userID uint, pkgs []model.CreditPackage) {
+// The pkgs parameter uses model.CreditPackage as a convenient data carrier for
+// the seed values (ExpiresAt, ActivatedAt, RemainCredits, Type). The credit_package
+// table is NOT written.
+func seedPackagesAndAccount(t *testing.T, db *gorm.DB, userID uint, pkgs []seedPackage) {
 	t.Helper()
 
-	// Ensure account row exists
-	var total int64
-	for _, p := range pkgs {
-		total += p.RemainCredits
-	}
-	acc := model.CreditAccount{UserID: userID, Balance: total, Status: "active"}
+	// Ensure account row exists (balance column dropped in T11).
+	acc := model.CreditAccount{UserID: userID, Status: "active"}
 	require.NoError(t, db.Create(&acc).Error)
 
-	for i := range pkgs {
-		pkgs[i].UserID = userID
-		if pkgs[i].Status == "" {
-			pkgs[i].Status = model.CreditPackageActive
-		}
-		require.NoError(t, db.Create(&pkgs[i]).Error)
+	// Seed membership tables directly (T11: credit_package is gone).
+	if hasMembershipTables(db) {
+		mirrorPackagesToMembershipTables(t, db, userID, pkgs)
 	}
+}
 
-	// T6 mirror to new tables so MembershipService.DeductCreditsTx debits the
-	// equivalent balance. If the membership tables aren't present (older test
-	// fixture), silently skip — backwards compatibility for tests that don't
-	// reach the deduction path.
-	if !hasMembershipTables(db) {
-		return
-	}
-	mirrorPackagesToMembershipTables(t, db, userID, pkgs)
+// seedPackage is a lightweight data carrier for seeding membership tables in tests.
+// It replaces model.CreditPackage as the seed-data type after T11 dropped credit_package.
+// TotalCredits is accepted for API compatibility with existing test literals but is
+// not written to any table (the new schema doesn't have a "total" column per pool row).
+type seedPackage struct {
+	Type          string    // trial / subscription / booster  (model.CreditTypeTrial etc.)
+	TotalCredits  int64     // ignored — retained for test-literal compatibility only
+	RemainCredits int64     // credits_remaining in the pool row
+	ActivatedAt   time.Time // subscription cycle start / trial granted_at
+	ExpiresAt     time.Time // subscription expires_at / trial expires_at (ignored for booster)
 }
 
 // hasMembershipTables sniffs whether the subscription table exists. Used by
@@ -184,9 +178,8 @@ func hasMembershipTables(db *gorm.DB) bool {
 	return err == nil && n > 0
 }
 
-// mirrorPackagesToMembershipTables copies the legacy credit_package seed data
-// into the equivalent membership-tables rows so MembershipService.DeductCreditsTx
-// can debit them. The aggregation rules:
+// mirrorPackagesToMembershipTables seeds membership-table rows from seedPackage data
+// so MembershipService.DeductCreditsTx can debit them. The aggregation rules:
 //
 //   - All subscription packages collapse into one `subscription` row plus one
 //     `credit_cycle` row (windowed by the earliest ActivatedAt → latest ExpiresAt).
@@ -197,7 +190,8 @@ func hasMembershipTables(db *gorm.DB) bool {
 //     (credits_remaining = sum of booster RemainCredits).
 //
 // Aggregation matches the new-schema invariant (one row per (user, pool type)).
-func mirrorPackagesToMembershipTables(t *testing.T, db *gorm.DB, userID uint, pkgs []model.CreditPackage) {
+// T11: parameter type changed from []model.CreditPackage to []seedPackage.
+func mirrorPackagesToMembershipTables(t *testing.T, db *gorm.DB, userID uint, pkgs []seedPackage) {
 	t.Helper()
 	var (
 		subRemain, trialRemain, boosterRemain int64

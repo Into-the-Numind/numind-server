@@ -63,9 +63,9 @@ func newCreditsSopTestDB(t *testing.T) *gorm.DB {
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	// AutoMigrate tables that have no MySQL ENUMs.
+	// T11: CreditPackage removed — table dropped, archived to legacy_credit_package_archive_20260515.
 	require.NoError(t, db.AutoMigrate(
 		&model.CreditAccount{},
-		&model.CreditPackage{},
 		&model.CreditTransaction{},
 		&model.CreditEstimationCoefficient{},
 		&model.PricingRule{},
@@ -192,19 +192,14 @@ func seedSopCreditsScenario(t *testing.T, db *gorm.DB,
 ) *model.User {
 	t.Helper()
 
-	// Account + package (FIFO entry point)
+	// T11: credit_account.balance dropped; credit_package table archived.
+	// Account creation no longer needs/has Balance field.
 	now := time.Now()
-	acc := model.CreditAccount{UserID: userID, Balance: balance, Status: "active"}
+	acc := model.CreditAccount{UserID: userID, Status: "active"}
 	require.NoError(t, db.Create(&acc).Error)
-	pkg := model.CreditPackage{
-		UserID: userID, Type: model.CreditTypeSubscription,
-		TotalCredits: balance, RemainCredits: balance,
-		ActivatedAt: now, ExpiresAt: now.Add(24 * time.Hour),
-		Status: model.CreditPackageActive,
-	}
-	require.NoError(t, db.Create(&pkg).Error)
+	// T11: no credit_package row — membership tables are the authoritative source.
 
-	// T6: mirror the seeded credit_package into the new membership tables so
+	// T6: mirror into the new membership tables so
 	// MembershipService.DeductCreditsTx (the new authoritative deduction path)
 	// can debit the balance. The mirror is type-specific:
 	//   - subscription → subscription + credit_cycle
@@ -455,10 +450,13 @@ func TestSopCredits_CreditsMode_LLMErrorTriggersRefund(t *testing.T) {
 	assert.Equal(t, "op_failed", *row.FinalizeReason,
 		"generic provider error classifies to op_failed")
 
-	// Full refund → balance back to original.
-	var acc model.CreditAccount
-	require.NoError(t, db.Where("user_id = ?", userID).First(&acc).Error)
-	assert.EqualValues(t, balance, acc.Balance,
+	// T11: credit_account.balance dropped — verify via credit_cycle.credits_remaining.
+	// Full refund → cycle balance back to original.
+	var cycleRemain int64
+	require.NoError(t, db.Raw(
+		`SELECT credits_remaining FROM credit_cycle WHERE user_id = ?`, userID,
+	).Scan(&cycleRemain).Error)
+	assert.EqualValues(t, balance, cycleRemain,
 		"LLM-failure Refund must restore balance fully")
 }
 
@@ -516,8 +514,8 @@ func TestSopCredits_LegacyTier_BypassesReserve(t *testing.T) {
 
 	const userID = uint(9004)
 	// Do NOT seed credit_package — legacy_tier users have none.
-	// Still need account row for consistency (but it stays at 0).
-	acc := model.CreditAccount{UserID: userID, Balance: 0, Status: "active"}
+	// T11: CreditAccount.Balance dropped; account row for consistency only.
+	acc := model.CreditAccount{UserID: userID, Status: "active"}
 	require.NoError(t, db.Create(&acc).Error)
 
 	// A standard-tier legacy user with quota remaining.
@@ -553,7 +551,8 @@ func TestSopCredits_LegacyTier_QuotaExhaustedReturnsZhReason(t *testing.T) {
 	b := buildSopBizWithCredits(t, db)
 
 	const userID = uint(9005)
-	acc := model.CreditAccount{UserID: userID, Balance: 0, Status: "active"}
+	// T11: CreditAccount.Balance dropped.
+	acc := model.CreditAccount{UserID: userID, Status: "active"}
 	require.NoError(t, db.Create(&acc).Error)
 
 	// Standard-tier legacy user at the 20/month cap.

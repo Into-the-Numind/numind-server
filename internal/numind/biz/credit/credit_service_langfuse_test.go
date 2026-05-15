@@ -72,7 +72,7 @@ func newCreditSvcWithLangfuseDB(t *testing.T, userID uint, balance int64) (
 	))
 	ds := store.NewTestStore(db)
 
-	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+	seedPackagesAndAccount(t, db, userID, []seedPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: balance, RemainCredits: balance,
 			ActivatedAt: time.Now(), ExpiresAt: time.Now().Add(24 * time.Hour)},
 	})

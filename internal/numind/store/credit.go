@@ -19,13 +19,22 @@ import (
 // legacy creditBiz.DeductCreditsTx chain. The new path
 // (membership.MembershipService.DeductCreditsTx) reads/writes credit_cycle /
 // user_booster_balance / trial_grant directly without touching credit_package.
+//
+// T11 (credits-cleanup): credit_package table has been archived and dropped.
+// credit_account.balance column has been dropped. Methods that depended on
+// credit_package have been removed or migrated to read from new tables.
+// Removed: CreatePackages, ListPackagesByOrder, UpdateBalance, RecalculateBalance,
+// GetMembershipStateBatch (credit_package-backed version). GetBalance now always
+// returns 0 (column gone; credits-mode callers must use MembershipService.GetBalance).
+// GetQuotaBreakdown now reads from credit_cycle + user_booster_balance + trial_grant.
+// GetLatestCreditExpiry now reads from subscription + trial_grant.
+// GetUserTypeCreditMultiplier now reads from trial_grant (not credit_package).
 type CreditStore interface {
 	GetOrCreateAccount(ctx context.Context, userID uint) (*model.CreditAccount, error)
+	// GetBalance always returns 0 after T11 (credit_account.balance column dropped).
+	// Credits-mode callers must use MembershipService.GetBalance instead.
+	// Legacy-tier callers can use 0 safely (they have no credits pool).
 	GetBalance(ctx context.Context, userID uint) (int64, error)
-	CreatePackages(ctx context.Context, packages []model.CreditPackage) error
-	// T9: ListPackagesByUser deleted — credit_package reader retired; admin
-	// GetUserDetail no longer enumerates per-user packages.
-	ListPackagesByOrder(ctx context.Context, orderID uint64) ([]model.CreditPackage, error)
 	HasActiveSubscription(ctx context.Context, userID uint) (bool, error)
 	HasTrialPackage(ctx context.Context, userID uint) (bool, error)
 	GetUserTypeCreditMultiplier(ctx context.Context, userID uint) (float64, error)
@@ -33,13 +42,12 @@ type CreditStore interface {
 	UpdateUserTypeConfig(ctx context.Context, userType string, updates map[string]interface{}) error
 	CreateTransaction(ctx context.Context, tx *gorm.DB, txn *model.CreditTransaction) error
 	ListTransactionsByUser(ctx context.Context, userID uint, offset, limit int) ([]model.CreditTransaction, int64, error)
-	UpdateBalance(ctx context.Context, tx *gorm.DB, userID uint, delta int64) error
-	RecalculateBalance(ctx context.Context, userID uint) error
 	ListAllAccountsWithBalance(ctx context.Context, offset, limit int) ([]model.CreditAccount, int64, error)
 	GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error)
 	GetLatestCreditExpiry(ctx context.Context, userID uint) (string, error)
 	// GetMembershipStateBatch batch-fetches membership state for a list of userIDs in one query.
 	// Returns a map keyed by userID.  Missing keys mean no active packages exist for that user.
+	// T11: implementation now reads from subscription + trial_grant (not credit_package).
 	GetMembershipStateBatch(ctx context.Context, userIDs []uint) (map[uint]*MembershipStateRow, error)
 }
 
@@ -62,11 +70,11 @@ func newCreditStore(db *gorm.DB) CreditStore {
 }
 
 // GetOrCreateAccount 获取或创建用户积分账户（并发安全）
+// T11: Balance field removed from CreditAccount (credit_account.balance column dropped).
 func (s *creditStore) GetOrCreateAccount(ctx context.Context, userID uint) (*model.CreditAccount, error) {
 	account := model.CreditAccount{
-		UserID:  userID,
-		Balance: 0,
-		Status:  "active",
+		UserID: userID,
+		Status: "active",
 	}
 	err := s.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
@@ -85,36 +93,18 @@ func (s *creditStore) GetOrCreateAccount(ctx context.Context, userID uint) (*mod
 	return &result, nil
 }
 
-// GetBalance 获取用户积分余额（缓存值）
-// 用户未创建积分账户时返回 0（不报错）
-func (s *creditStore) GetBalance(ctx context.Context, userID uint) (int64, error) {
-	var account model.CreditAccount
-	err := s.db.WithContext(ctx).Where("user_id = ?", userID).First(&account).Error
-	if err == gorm.ErrRecordNotFound {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	return account.Balance, nil
-}
-
-// CreatePackages 批量创建积分包
-func (s *creditStore) CreatePackages(ctx context.Context, packages []model.CreditPackage) error {
-	if len(packages) == 0 {
-		return nil
-	}
-	return s.db.WithContext(ctx).Create(&packages).Error
+// GetBalance always returns 0 after T11.
+//
+// T11 (credits-cleanup): credit_account.balance column has been dropped.
+// The three-pool SOT (credit_cycle + user_booster_balance + trial_grant) is the
+// authoritative balance for credits-mode users — use MembershipService.GetBalance instead.
+// Legacy-tier users have no credits pool, so 0 is correct for them.
+func (s *creditStore) GetBalance(_ context.Context, _ uint) (int64, error) {
+	return 0, nil
 }
 
 // T9: ListPackagesByUser deleted — credit_package reader retired.
-
-// ListPackagesByOrder 查询指定订单关联的积分包
-func (s *creditStore) ListPackagesByOrder(ctx context.Context, orderID uint64) ([]model.CreditPackage, error) {
-	var packages []model.CreditPackage
-	err := s.db.WithContext(ctx).Where("order_id = ?", orderID).Find(&packages).Error
-	return packages, err
-}
+// T11: CreatePackages and ListPackagesByOrder deleted — credit_package table dropped.
 
 // hasActiveSubscriptionInner is the shared subscription-active probe used by both
 // HasActiveSubscription (public, called by GrantMembership guard) and
@@ -160,15 +150,12 @@ func (s *creditStore) HasTrialPackage(ctx context.Context, userID uint) (bool, e
 
 // GetUserTypeCreditMultiplier returns the credit burn-rate multiplier for a user.
 // Rules (evaluated in order):
-//  1. Active subscription (new subscription table) → 1.0 (subscription users are not discounted).
-//  2. Active trial package with remaining credits → look up credit_user_type_config for 'trial'.
+//  1. Active subscription (subscription table) → 1.0 (subscription users are not discounted).
+//  2. Active trial grant with remaining credits (trial_grant table) → look up credit_user_type_config for 'trial'.
 //  3. All other cases → 1.0.
 //
-// NOTE (T4 review-round-1 DRY): Step 1 now delegates to hasActiveSubscriptionInner
-// (the shared probe). HasActiveSubscription delegates to the same helper, so both
-// public methods always agree on what "active subscription" means.
-// Step 2 still reads `credit_package` during the transition period; it will be
-// updated in T6 when legacy deduct is removed.
+// T11 (credits-cleanup): Step 2 now reads trial_grant (not credit_package which was dropped).
+// trial_grant.credits_remaining > 0 AND expires_at > now means user has active trial credits.
 //
 // Returns 1.0 on any store error so callers always get a safe default.
 func (s *creditStore) GetUserTypeCreditMultiplier(ctx context.Context, userID uint) (float64, error) {
@@ -181,13 +168,13 @@ func (s *creditStore) GetUserTypeCreditMultiplier(ctx context.Context, userID ui
 		return 1.0, nil
 	}
 
+	// Step 2: check for active trial with remaining credits in trial_grant (T11: replaces credit_package query).
 	var trialCount int64
 	if err := s.db.WithContext(ctx).
-		Model(&model.CreditPackage{}).
-		Where("user_id = ? AND type = ? AND status = ? AND remain_credits > 0 AND expires_at > ?",
-			userID, model.CreditTypeTrial, model.CreditPackageActive, time.Now()).
+		Table("trial_grant").
+		Where("user_id = ? AND credits_remaining > 0 AND expires_at > ?", userID, time.Now()).
 		Count(&trialCount).Error; err != nil {
-		return 1.0, fmt.Errorf("GetUserTypeCreditMultiplier: check trial package: %w", err)
+		return 1.0, fmt.Errorf("GetUserTypeCreditMultiplier: check trial grant: %w", err)
 	}
 	if trialCount == 0 {
 		return 1.0, nil
@@ -262,185 +249,216 @@ func (s *creditStore) ListTransactionsByUser(ctx context.Context, userID uint, o
 	return transactions, total, nil
 }
 
-// UpdateBalance 更新用户积分账户余额（delta 可正可负，在事务中使用）
-func (s *creditStore) UpdateBalance(ctx context.Context, tx *gorm.DB, userID uint, delta int64) error {
-	return tx.WithContext(ctx).
-		Model(&model.CreditAccount{}).
-		Where("user_id = ?", userID).
-		UpdateColumn("balance", gorm.Expr("balance + ?", delta)).Error
-}
+// T11 (credits-cleanup): UpdateBalance and RecalculateBalance have been deleted.
+// credit_account.balance column was dropped in migration 20260515_200000_t11.
+// The three-pool SOT (credit_cycle + user_booster_balance + trial_grant) is the
+// authoritative balance. Use MembershipService.GetBalance for credits-mode users.
 
-// RecalculateBalance 根据有效积分包重新计算并更新余额缓存
-func (s *creditStore) RecalculateBalance(ctx context.Context, userID uint) error {
-	return s.db.WithContext(ctx).Exec(
-		"UPDATE credit_account SET balance = (SELECT COALESCE(SUM(remain_credits), 0) FROM credit_package WHERE user_id = ? AND status = ?) WHERE user_id = ?",
-		userID, model.CreditPackageActive, userID,
-	).Error
-}
-
-// ListAllAccountsWithBalance 查询所有积分账户（管理端，按余额降序，分页）
+// ListAllAccountsWithBalance 查询所有积分账户（管理端，分页）。
+//
+// T11 (credits-cleanup): credit_account.balance column has been dropped.
+// Ordering is now by user_id ASC (stable order) instead of balance DESC.
+// Callers that need balance should use MembershipService.GetBalance per user.
 func (s *creditStore) ListAllAccountsWithBalance(ctx context.Context, offset, limit int) ([]model.CreditAccount, int64, error) {
 	var accounts []model.CreditAccount
 	var total int64
 
-	// 使用独立的查询实例，避免 GORM 查询对象被污染
 	countDB := s.db.WithContext(ctx).Model(&model.CreditAccount{})
 	if err := countDB.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
 	findDB := s.db.WithContext(ctx).Model(&model.CreditAccount{})
-	if err := findDB.Order("balance DESC").Offset(offset).Limit(limit).Find(&accounts).Error; err != nil {
+	if err := findDB.Order("user_id ASC").Offset(offset).Limit(limit).Find(&accounts).Error; err != nil {
 		return nil, 0, err
 	}
 	return accounts, total, nil
 }
 
-// GetQuotaBreakdown 获取用户额度分布（订阅 vs 加量包），只统计 active 状态的积分包。
+// GetQuotaBreakdown 获取用户额度分布（订阅 vs 加量包）。
 //
-// **本方法仅服务 billing_mode=legacy_tier 历史用户**。Credits-mode 用户的余额在
-// credit_cycle / user_booster_balance / trial_grant 表，由 MembershipService
-// 管理（见 internal/numind/biz/membership/cycle.go + state.go）。Credits-mode
-// 用户的 grant 路径（GrantOrRenewSubscription / GrantTrial）**不写 credit_package**，
-// 因此对他们该方法返回 sub=0；调用方必须按 BillingMode 分流到 MembershipService
-// .GetBalance（见 creditsImpl.GetBalance T6 实现）。
+// T11 (credits-cleanup): credit_package table has been dropped. This method
+// now reads directly from the three-pool SOT:
+//   - sub/trial pool → credit_cycle (active cycle) + trial_grant (active trial)
+//   - booster pool   → user_booster_balance (permanent aggregate row)
 //
-// Booster 字段仍兼容性地从 user_booster_balance 覆盖（老 fulfillOrder 复制过来），
-// 但这一兼容路径在 credits-deduct-cycle-wiring 后已不再被业务 Reserve/Reconcile
-// 路径直接消费。
+// For credits-mode users: this reflects the live membership tables.
+// For legacy_tier users: all pools return 0 (they have no credits).
 func (s *creditStore) GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error) {
-	type result struct {
-		Type          string
-		TotalCredits  int64
-		RemainCredits int64
-	}
-	var rows []result
-	err = s.db.WithContext(ctx).
-		Model(&model.CreditPackage{}).
-		Select("type, SUM(total_credits) as total_credits, SUM(remain_credits) as remain_credits").
-		Where("user_id = ? AND status = ?", userID, model.CreditPackageActive).
-		Group("type").
-		Find(&rows).Error
-	if err != nil {
+	// Sub/trial pool: read active credit_cycle for subscription users.
+	var cycleRemain int64
+	if cycleErr := s.db.WithContext(ctx).
+		Table("credit_cycle").
+		Select("COALESCE(SUM(credits_remaining), 0)").
+		Where("user_id = ? AND cycle_end > ?", userID, time.Now()).
+		Scan(&cycleRemain).Error; cycleErr != nil {
+		err = fmt.Errorf("GetQuotaBreakdown: credit_cycle: %w", cycleErr)
 		return
 	}
-	for _, r := range rows {
-		switch r.Type {
-		case model.CreditTypeSubscription, model.CreditTypeTrial:
-			subTotal += r.TotalCredits
-			subRemain += r.RemainCredits
-		case model.CreditTypeBooster:
-			boosterTotal += r.TotalCredits
-			boosterRemain += r.RemainCredits
-		}
+
+	// Sub/trial pool: read active trial_grant.
+	var trialRemain int64
+	if trialErr := s.db.WithContext(ctx).
+		Table("trial_grant").
+		Select("COALESCE(credits_remaining, 0)").
+		Where("user_id = ? AND expires_at > ?", userID, time.Now()).
+		Scan(&trialRemain).Error; trialErr != nil {
+		err = fmt.Errorf("GetQuotaBreakdown: trial_grant: %w", trialErr)
+		return
 	}
 
-	// Override booster fields with user_booster_balance (new schema) if exists.
-	// 新表 user_booster_balance 只有 credits_remaining 一个字段（spec §2.4：永不过期、
-	// 每用户单行），把它同时作为 total 和 remain — 前端 BoosterPurchaseCard 用
-	// booster_total>0 来判断"是否开通 booster"，user_booster_balance 存在即视为有。
-	var newBalance struct {
+	subTotal = cycleRemain + trialRemain
+	subRemain = subTotal
+
+	// Booster pool: user_booster_balance (永不过期、每用户单行).
+	// credits_remaining serves as both total and remain — front-end uses booster_total>0
+	// to determine if booster has ever been purchased.
+	var boosterBalance struct {
 		CreditsRemaining int64
 	}
-	queryErr := s.db.WithContext(ctx).
+	if boosterErr := s.db.WithContext(ctx).
 		Table("user_booster_balance").
 		Select("credits_remaining").
 		Where("user_id = ?", userID).
-		Scan(&newBalance).Error
-	if queryErr == nil && newBalance.CreditsRemaining > 0 {
-		boosterTotal = newBalance.CreditsRemaining
-		boosterRemain = newBalance.CreditsRemaining
+		Scan(&boosterBalance).Error; boosterErr != nil {
+		err = fmt.Errorf("GetQuotaBreakdown: user_booster_balance: %w", boosterErr)
+		return
 	}
-
+	boosterTotal = boosterBalance.CreditsRemaining
+	boosterRemain = boosterBalance.CreditsRemaining
 	return
 }
 
-// GetLatestCreditExpiry 获取用户最晚的 active 额度包到期时间
+// GetLatestCreditExpiry 获取用户最晚的有效额度到期时间。
+//
+// T11 (credits-cleanup): credit_package table has been dropped. Now reads from
+// subscription (for sub expiry) and trial_grant (for trial expiry), returning
+// whichever is latest. Returns "" if the user has no active membership.
 func (s *creditStore) GetLatestCreditExpiry(ctx context.Context, userID uint) (string, error) {
-	var pkg model.CreditPackage
-	err := s.db.WithContext(ctx).
-		Where("user_id = ? AND status IN ?", userID, []string{model.CreditPackageActive, model.CreditPackagePending}).
+	now := time.Now()
+	var latestExpiry time.Time
+
+	// Check subscription expiry.
+	var subExpiry struct{ ExpiresAt time.Time }
+	if err := s.db.WithContext(ctx).
+		Table("subscription").
+		Select("expires_at").
+		Where("user_id = ? AND expires_at > ?", userID, now).
 		Order("expires_at DESC").
-		First(&pkg).Error
-	if err == gorm.ErrRecordNotFound {
+		Limit(1).
+		Scan(&subExpiry).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", fmt.Errorf("GetLatestCreditExpiry: subscription: %w", err)
+	}
+	if !subExpiry.ExpiresAt.IsZero() && subExpiry.ExpiresAt.After(latestExpiry) {
+		latestExpiry = subExpiry.ExpiresAt
+	}
+
+	// Check trial_grant expiry.
+	var trialExpiry struct{ ExpiresAt time.Time }
+	if err := s.db.WithContext(ctx).
+		Table("trial_grant").
+		Select("expires_at").
+		Where("user_id = ? AND expires_at > ?", userID, now).
+		Limit(1).
+		Scan(&trialExpiry).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", fmt.Errorf("GetLatestCreditExpiry: trial_grant: %w", err)
+	}
+	if !trialExpiry.ExpiresAt.IsZero() && trialExpiry.ExpiresAt.After(latestExpiry) {
+		latestExpiry = trialExpiry.ExpiresAt
+	}
+
+	if latestExpiry.IsZero() {
 		return "", nil
 	}
-	if err != nil {
-		return "", err
-	}
-	return pkg.ExpiresAt.Format("2006-01-02"), nil
+	return latestExpiry.Format("2006-01-02"), nil
 }
 
-// GetMembershipStateBatch 批量获取多个用户的会员状态（一次 DB 查询），返回 map[userID]*MembershipStateRow。
+// GetMembershipStateBatch 批量获取多个用户的会员状态（两次 DB 查询），返回 map[userID]*MembershipStateRow。
 // 用于 ListSubUsers 父账号列表场景，避免 N+1 问题。
-// 对于 has_used_trial: trial 积分包（任意状态）存在即为 true。
-// 对于 sub_remain: 统计 active 的 trial+subscription 包的 remain_credits 之和（不含 booster）。
-// expires_at 取各类型 active 包中最晚到期时间。
+//
+// T11 (credits-cleanup): credit_package table has been dropped. Now reads from:
+//   - subscription table: HasActiveSubscription + SubscriptionExpiresAt + SubRemain (via credit_cycle)
+//   - trial_grant table: HasActiveTrial + HasUsedTrial + TrialExpiresAt + SubRemain
+//
+// SubRemain = active credit_cycle.credits_remaining + active trial_grant.credits_remaining.
 func (s *creditStore) GetMembershipStateBatch(ctx context.Context, userIDs []uint) (map[uint]*MembershipStateRow, error) {
 	if len(userIDs) == 0 {
 		return map[uint]*MembershipStateRow{}, nil
 	}
 
-	type pkgRow struct {
-		UserID        uint
-		Type          string
-		Status        string
-		RemainCredits int64
-		ExpiresAt     time.Time
-	}
-
-	// Fetch all packages for the given user IDs (active, exhausted, expired, pending — we need
-	// has_used_trial across all statuses for trial; for state checks we filter in Go).
-	var rows []pkgRow
-	if err := s.db.WithContext(ctx).
-		Model(&model.CreditPackage{}).
-		Select("user_id, type, status, remain_credits, expires_at").
-		Where("user_id IN ?", userIDs).
-		Find(&rows).Error; err != nil {
-		return nil, fmt.Errorf("GetMembershipStateBatch: %w", err)
-	}
-
 	now := time.Now()
 	result := make(map[uint]*MembershipStateRow, len(userIDs))
-	for _, r := range rows {
-		m, ok := result[r.UserID]
-		if !ok {
-			m = &MembershipStateRow{}
-			result[r.UserID] = m
+
+	// Initialize result map entries.
+	for _, id := range userIDs {
+		result[id] = &MembershipStateRow{}
+	}
+
+	// Query subscription table.
+	type subRow struct {
+		UserID    uint
+		ExpiresAt time.Time
+	}
+	var subRows []subRow
+	if err := s.db.WithContext(ctx).
+		Table("subscription").
+		Select("user_id, expires_at").
+		Where("user_id IN ?", userIDs).
+		Find(&subRows).Error; err != nil {
+		return nil, fmt.Errorf("GetMembershipStateBatch: subscription: %w", err)
+	}
+	for _, r := range subRows {
+		m := result[r.UserID]
+		if r.ExpiresAt.After(now) {
+			m.HasActiveSubscription = true
 		}
-
-		// has_used_trial: any trial record ever
-		if r.Type == model.CreditTypeTrial {
-			m.HasUsedTrial = true
+		exp := r.ExpiresAt.Format("2006-01-02")
+		if m.SubscriptionExpiresAt == "" || exp > m.SubscriptionExpiresAt {
+			m.SubscriptionExpiresAt = exp
 		}
+	}
 
-		isActive := (r.Status == model.CreditPackageActive) && r.ExpiresAt.After(now)
+	// Query active credit_cycles to compute SubRemain for subscription users.
+	type cycleRow struct {
+		UserID           uint
+		CreditsRemaining int64
+	}
+	var cycleRows []cycleRow
+	if err := s.db.WithContext(ctx).
+		Table("credit_cycle").
+		Select("user_id, credits_remaining").
+		Where("user_id IN ? AND cycle_end > ?", userIDs, now).
+		Find(&cycleRows).Error; err != nil {
+		return nil, fmt.Errorf("GetMembershipStateBatch: credit_cycle: %w", err)
+	}
+	for _, r := range cycleRows {
+		result[r.UserID].SubRemain += r.CreditsRemaining
+	}
 
-		switch r.Type {
-		case model.CreditTypeTrial:
-			if isActive {
-				m.HasActiveTrial = true
-				if m.TrialExpiresAt == "" || r.ExpiresAt.Format("2006-01-02") > m.TrialExpiresAt {
-					m.TrialExpiresAt = r.ExpiresAt.Format("2006-01-02")
-				}
-				m.SubRemain += r.RemainCredits
+	// Query trial_grant table.
+	type trialRow struct {
+		UserID           uint
+		ExpiresAt        time.Time
+		CreditsRemaining int64
+	}
+	var trialRows []trialRow
+	if err := s.db.WithContext(ctx).
+		Table("trial_grant").
+		Select("user_id, expires_at, credits_remaining").
+		Where("user_id IN ?", userIDs).
+		Find(&trialRows).Error; err != nil {
+		return nil, fmt.Errorf("GetMembershipStateBatch: trial_grant: %w", err)
+	}
+	for _, r := range trialRows {
+		m := result[r.UserID]
+		m.HasUsedTrial = true // any trial row means lifetime trial was used
+		if r.ExpiresAt.After(now) {
+			m.HasActiveTrial = true
+			exp := r.ExpiresAt.Format("2006-01-02")
+			if m.TrialExpiresAt == "" || exp > m.TrialExpiresAt {
+				m.TrialExpiresAt = exp
 			}
-		case model.CreditTypeSubscription:
-			// B2B 年度方案在 credit_package 表里是 1 active + 11 pending 月段链。
-			// HasActiveSubscription 看 active 或 pending（用户付费在期）；
-			// SubscriptionExpiresAt 也要看 pending，否则年度会员的到期日会被
-			// 截断成 active 段当月底，前端显示 5/6 月而非真实 2027 年底。
-			// SubRemain 仍然只算 active 段（pending 段未激活不能用）。
-			isActiveOrPending := isActive || r.Status == model.CreditPackagePending
-			if isActiveOrPending {
-				m.HasActiveSubscription = true
-				if m.SubscriptionExpiresAt == "" || r.ExpiresAt.Format("2006-01-02") > m.SubscriptionExpiresAt {
-					m.SubscriptionExpiresAt = r.ExpiresAt.Format("2006-01-02")
-				}
-			}
-			if isActive {
-				m.SubRemain += r.RemainCredits
-			}
+			m.SubRemain += r.CreditsRemaining
 		}
 	}
 

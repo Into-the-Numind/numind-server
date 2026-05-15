@@ -3,10 +3,15 @@ package model
 import "time"
 
 // CreditAccount 积分账户（1:1 用户，懒创建）
+//
+// T11 (credits-cleanup): the `balance` column has been dropped from the
+// credit_account table. GetBalance now reads from the three-pool SOT:
+// credit_cycle (subscription), user_booster_balance (booster), and
+// trial_grant (trial). The CreditAccount row is kept for identity/status
+// purposes only. See docs/legacy_credit_package_archive_README.md.
 type CreditAccount struct {
 	ID        uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
 	UserID    uint      `gorm:"not null;uniqueIndex:uk_credit_account_user" json:"user_id"`
-	Balance   int64     `gorm:"default:0" json:"balance"`               // 可用积分余额（缓存值）
 	Status    string    `gorm:"size:20;default:'active'" json:"status"` // active
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -14,50 +19,25 @@ type CreditAccount struct {
 
 func (CreditAccount) TableName() string { return "credit_account" }
 
-// CreditPackage 积分包
-type CreditPackage struct {
-	ID            uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserID        uint      `gorm:"not null;index:idx_cp_user_status_expires" json:"user_id"`
-	Type          string    `gorm:"size:20;not null" json:"type"`                                           // trial / subscription / booster
-	TotalCredits  int64     `gorm:"not null" json:"total_credits"`                                          // 初始积分
-	RemainCredits int64     `gorm:"not null" json:"remain_credits"`                                         // 剩余积分
-	ActivatedAt   time.Time `gorm:"not null;index:idx_grant_source_granter,priority:3" json:"activated_at"` // 生效时间
-	ExpiresAt     time.Time `gorm:"not null;index:idx_cp_user_status_expires" json:"expires_at"`            // 到期时间
-	OrderID       *uint64   `gorm:"index:idx_cp_order" json:"order_id"`                                     // 关联支付订单（Admin 手动充值时为 nil）
-	Status        string    `gorm:"size:20;not null;index:idx_cp_user_status_expires" json:"status"`        // pending / active / exhausted / expired
+// T11 (credits-cleanup): CreditPackage struct has been deleted.
+// The credit_package table was archived to legacy_credit_package_archive_20260515
+// on 2026-05-15 and then dropped. Historical data is preserved for 7 years
+// per accounting retention policy. See:
+//   - migrations/20260515_200000_t11_archive_credit_package.sql
+//   - docs/legacy_credit_package_archive_README.md
 
-	// Q1 B2B2C 会员赋予字段（spec §Q1.1）:
-	// GrantSource='b2b_grant' 表示父账户通过"帮开通"赋予（不走支付），
-	//             'self_purchase' 表示 C 端自购（加量包路径）。
-	// GranterUserID 在 b2b_grant 时必填，指向 parent user ID；self_purchase 为 NULL。
-	//
-	// 注: DDL 的 MySQL ENUM 约束在 migration 20260420_100000 中定义；此 GORM tag
-	// 只声明字段存在性 + 索引，避免 SQLite 测试数据库无法识别 MySQL 的 ENUM 语法。
-	GrantSource   string `gorm:"size:20;not null;default:'self_purchase';index:idx_grant_source_granter,priority:1" json:"grant_source"`
-	GranterUserID *uint  `gorm:"index:idx_grant_source_granter,priority:2" json:"granter_user_id,omitempty"`
-
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
-func (CreditPackage) TableName() string { return "credit_package" }
-
-// CreditPackage Status constants
-const (
-	CreditPackagePending   = "pending"
-	CreditPackageActive    = "active"
-	CreditPackageExhausted = "exhausted"
-	CreditPackageExpired   = "expired"
-)
-
-// CreditPackage Type constants
+// CreditPackage Type constants — retained for ledger source_type vocabulary
+// (credit_transaction.source_type values) even after credit_package is dropped.
+// These strings appear in credit_transaction rows and archive queries.
 const (
 	CreditTypeTrial        = "trial"
 	CreditTypeSubscription = "subscription"
 	CreditTypeBooster      = "booster"
 )
 
-// CreditPackage GrantSource constants (Q1 B2B2C)
+// CreditPackage GrantSource constants — retained for archive table queries
+// (legacy_credit_package_archive_20260515.grant_source) and membership_event
+// source labelling.
 const (
 	GrantSourceSelfPurchase = "self_purchase"
 	GrantSourceB2BGrant     = "b2b_grant"

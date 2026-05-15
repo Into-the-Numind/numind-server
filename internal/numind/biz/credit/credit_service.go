@@ -896,13 +896,16 @@ func (c *creditsImpl) refundToItems(
 
 // refundOneItem refunds `amount` credits back to the original pool. Dispatch
 // by item.SourceType:
-//   - SourceType IS NULL (legacy reservation) → refund to credit_package via
-//     item.PackageID (old path, unchanged).
-//   - SourceType IS NOT NULL (new path post-T8) → call MembershipService
+//   - SourceType IS NOT NULL (new path post-T1) → call MembershipService
 //     .RefundCreditsTx which routes to credit_cycle / user_booster_balance /
 //     trial_grant with D2 fallback chain.
+//   - SourceType IS NULL + PackageID IS NULL → inconsistent row, skip safely.
+//   - SourceType IS NULL + PackageID IS NOT NULL → legacy reservation from before T1.
+//     After T11 (credit_package dropped), these rows cannot be refunded to the old table.
+//     They are skipped with a no-op (package rows are in the archive table, read-only).
 //
 // Spec §2.4 + credits-deduct-cycle-wiring §3.3 + INV-2.
+// T11: legacy dispatch path removed (credit_package table dropped).
 func (c *creditsImpl) refundOneItem(
 	ctx context.Context, tx *gorm.DB, userID uint,
 	item model.CreditReservationItem, amount int64,
@@ -911,7 +914,7 @@ func (c *creditsImpl) refundOneItem(
 		return 0, nil
 	}
 
-	// New-path dispatch (T9): item carries source_type/source_id → route to
+	// New-path dispatch: item carries source_type/source_id → route to
 	// MembershipService.RefundCreditsTx for cycle/booster/trial refund.
 	if item.SourceType != nil && item.SourceID != nil && c.membershipSvc != nil {
 		_, _, refundedAmt, err := c.membershipSvc.RefundCreditsTx(
@@ -928,58 +931,12 @@ func (c *creditsImpl) refundOneItem(
 		return refundedAmt, nil
 	}
 
-	// Legacy dispatch: refund to credit_package via item.PackageID.
-	if item.PackageID == nil {
-		// Inconsistent row: neither source_type nor package_id set. Skip safely.
-		return 0, nil
-	}
-	var pkg model.CreditPackage
-	if err := tx.WithContext(ctx).
-		Clauses(clause.Locking{Strength: "UPDATE"}).
-		First(&pkg, *item.PackageID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// Package deleted (GDPR purge etc.) — best-effort no-op.
-			return 0, nil
-		}
-		return 0, fmt.Errorf("lock package: %w", err)
-	}
-	if pkg.Status == model.CreditPackageExpired {
-		// Spec §2.4: expired package → refund is a no-op.
-		return 0, nil
-	}
-	pkg.RemainCredits += amount
-	// Revive exhausted packages when refund brings them above zero.
-	if pkg.Status == model.CreditPackageExhausted && pkg.RemainCredits > 0 {
-		pkg.Status = model.CreditPackageActive
-	}
-	if err := tx.WithContext(ctx).Save(&pkg).Error; err != nil {
-		return 0, fmt.Errorf("update package remain_credits: %w", err)
-	}
-	// Write a CreditTransaction audit row (positive amount = refund).
-	// T1: populate source_type/source_id from credit_package for ledger self-containment.
-	// Fix 3: map "subscription" → "cycle" to match new-path vocabulary used by
-	// T7/T8 calibration SQL which filters on source_type='cycle'.
-	pkgType := pkg.Type
-	if pkgType == model.CreditTypeSubscription {
-		pkgType = string(membership.DeductSourceCycle)
-	}
-	pkgID := pkg.ID
-	txn := &model.CreditTransaction{
-		UserID:     userID,
-		PackageID:  pkg.ID,
-		SourceType: &pkgType,
-		SourceID:   &pkgID,
-		Amount:     amount,
-		Operation:  "refund",
-	}
-	if err := tx.WithContext(ctx).Create(txn).Error; err != nil {
-		return 0, fmt.Errorf("write refund transaction: %w", err)
-	}
-	// Bump the cached balance.
-	if err := c.store.Credits().UpdateBalance(ctx, tx, userID, amount); err != nil {
-		return 0, fmt.Errorf("update balance: %w", err)
-	}
-	return amount, nil
+	// T11: legacy dispatch (credit_package) has been removed — the table was archived
+	// and dropped. Reservations with SourceType=NULL were created before T1 (source_type
+	// back-fill, 2026-05-15). All post-T1 reservations have SourceType set. Any NULL-source
+	// reservation that reaches here is a pre-T1 legacy row; refund is a safe no-op because
+	// the underlying credit_package row no longer exists.
+	return 0, nil
 }
 
 // FinalizeReservation is the single defer-exit point. Dispatch:
@@ -1020,14 +977,16 @@ func classifyReason(err error) string {
 	}
 }
 
-// GetBalance returns the breakdown (sub + booster + trial). credits-mode
-// users (post-cycle-wiring) go through MembershipService.GetBalance reading
-// from credit_cycle / user_booster_balance / trial_grant. Legacy fallback
-// (membershipSvc==nil) reads the old credit_package path.
+// GetBalance returns the breakdown (sub + booster + trial) from the three-pool SOT.
+//
+// T11 (credits-cleanup): legacy fallback path reading credit_package has been removed
+// (table was archived and dropped). All credits-mode users go through MembershipService.
+// If MembershipService is not injected (test-only configuration), GetQuotaBreakdown
+// reads from credit_cycle + user_booster_balance + trial_grant.
 //
 // Spec §1.8 + §2.11.1 + credits-deduct-cycle-wiring §3.1.
 func (c *creditsImpl) GetBalance(ctx context.Context, user *model.User) (*BalanceBreakdown, error) {
-	// credits-mode + membership service wired → use new tables
+	// credits-mode + membership service wired → use new tables via MembershipService.
 	if c.membershipSvc != nil {
 		view, err := c.membershipSvc.GetBalance(ctx, uint64(user.ID), time.Now().UTC())
 		if err != nil {
@@ -1046,52 +1005,19 @@ func (c *creditsImpl) GetBalance(ctx context.Context, user *model.User) (*Balanc
 		return bal, nil
 	}
 
-	// Legacy fallback path (kept for safety when membershipSvc not injected, e.g.
-	// in tests). Reads old credit_package + user_booster_balance via store.
+	// Fallback for test configurations where membershipSvc is not injected.
+	// GetQuotaBreakdown now reads credit_cycle + user_booster_balance + trial_grant (T11).
 	subTotal, subRemain, boosterTotal, boosterRemain, err := c.store.Credits().GetQuotaBreakdown(ctx, user.ID)
 	if err != nil {
 		return nil, fmt.Errorf("creditsImpl.GetBalance: quota breakdown: %w", err)
 	}
-	bal := &BalanceBreakdown{
+	return &BalanceBreakdown{
 		BillingMode:   model.BillingModeCredits,
 		SubTotal:      subTotal,
 		SubRemain:     subRemain,
 		BoosterTotal:  boosterTotal,
 		BoosterRemain: boosterRemain,
-	}
-
-	// P1-A fix: query earliest-expiring active package per type to fill the
-	// expiry fields (best-effort; if query fails we log and return bal with
-	// nil expiry fields — the spec marks them optional).
-	db := c.store.DB().WithContext(ctx)
-	type expiryRow struct {
-		ExpiresAt time.Time
-	}
-	var subRow expiryRow
-	if err := db.Raw(
-		`SELECT expires_at FROM credit_package
-		 WHERE user_id = ? AND type = ? AND status = 'active' AND expires_at > NOW()
-		 ORDER BY expires_at ASC LIMIT 1`,
-		user.ID, model.CreditTypeSubscription,
-	).Scan(&subRow).Error; err != nil {
-		log.Warnw("creditsImpl.GetBalance: sub expires_at query failed", "user_id", user.ID, "err", err)
-	} else if !subRow.ExpiresAt.IsZero() {
-		t := subRow.ExpiresAt
-		bal.SubExpiresAt = &t
-	}
-	var boosterRow expiryRow
-	if err := db.Raw(
-		`SELECT expires_at FROM credit_package
-		 WHERE user_id = ? AND type = ? AND status = 'active' AND expires_at > NOW()
-		 ORDER BY expires_at ASC LIMIT 1`,
-		user.ID, model.CreditTypeBooster,
-	).Scan(&boosterRow).Error; err != nil {
-		log.Warnw("creditsImpl.GetBalance: booster expires_at query failed", "user_id", user.ID, "err", err)
-	} else if !boosterRow.ExpiresAt.IsZero() {
-		t := boosterRow.ExpiresAt
-		bal.BoosterEarliestExpiresAt = &t
-	}
-	return bal, nil
+	}, nil
 }
 
 // ---------------------------------------------------------------------------

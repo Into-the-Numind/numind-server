@@ -204,22 +204,72 @@ func (b *b2bBillingBiz) buildReport(ctx context.Context, month, source string, e
 }
 
 // --------------------------------------------------------------------------
-// getLegacyEvents: DEPRECATED stub
+// getLegacyEvents: archive table reader (T11)
 // --------------------------------------------------------------------------
 
-// getLegacyEvents is DEPRECATED after T9 cleanup.
+// getLegacyEvents queries the legacy_credit_package_archive_20260515 table for
+// B2B grant events (grant_source='b2b_grant') in the given [start, end) window.
 //
-// prod cutover_date=2026-04-20 + 0 B2B business pre-cutover → this path
-// was never triggered in production. Returning empty is correct for all
-// historical months (2026-04-20 is the first B2B data, fully in new_only).
+// T11 (credits-cleanup): credit_package was archived to this table on 2026-05-15
+// and then dropped. This function is wired to read the archive for any historical
+// month that predates the cutover_date (2026-04-20). In practice prod had 0 B2B
+// business before cutover, so this function will return empty for all pre-cutover
+// months. It is preserved for completeness and future audit tooling.
 //
-// T11 will repurpose this function to read legacy_credit_package_archive_20260515
-// for any pre-cutover data that gets archived there before credit_package is
-// dropped. Until then, this is a no-op stub kept for safe rollback.
-//
-//nolint:unused // intentional deprecated stub; T11 will wire callers to it.
-func (b *b2bBillingBiz) getLegacyEvents(_ context.Context, _, _ time.Time) ([]grantEvent, error) {
-	return []grantEvent{}, nil
+// chooseSource() always returns "new_only" post-T9, so this function is not called
+// from GetBillingReport. It remains available for:
+//   - Direct audit queries via tooling
+//   - Future reactivation of cutover_split mode if ever needed
+//   - Historical month verification scripts
+func (b *b2bBillingBiz) getLegacyEvents(ctx context.Context, start, end time.Time) ([]grantEvent, error) { //nolint:unused // preserved for historical audit tooling; not called by GetBillingReport post-T9
+	type archiveRow struct {
+		GranterUserID uint
+		UserID        uint
+		Type          string // trial / subscription
+		ActivatedAt   time.Time
+	}
+
+	var rows []archiveRow
+	if err := b.ds.DB().WithContext(ctx).
+		Table("legacy_credit_package_archive_20260515").
+		Select("granter_user_id, user_id, type, activated_at").
+		Where("grant_source = ? AND activated_at >= ? AND activated_at < ?",
+			"b2b_grant", start, end).
+		Order("activated_at ASC").
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("getLegacyEvents: query archive: %w", err)
+	}
+
+	events := make([]grantEvent, 0, len(rows))
+	for _, r := range rows {
+		if r.GranterUserID == 0 {
+			continue
+		}
+		// Reconstruct billing amounts from type (mirror of original getLegacyEvents logic).
+		var amountCents int64
+		var productType string
+		var months int
+		switch r.Type {
+		case "trial":
+			amountCents = 990 // ¥9.9
+			productType = "trial"
+		case "subscription":
+			amountCents = 9900 // ¥99/month per Q1 grant
+			productType = "monthly"
+			months = 1
+		default:
+			continue // skip booster (self_purchase only)
+		}
+		events = append(events, grantEvent{
+			granterUserID: r.GranterUserID,
+			childUserID:   r.UserID,
+			productType:   productType,
+			months:        months,
+			amountCents:   amountCents,
+			grantedAt:     r.ActivatedAt,
+		})
+	}
+	return events, nil
 }
 
 // --------------------------------------------------------------------------
