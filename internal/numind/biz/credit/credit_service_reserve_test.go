@@ -3,6 +3,7 @@ package credit_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,14 +24,20 @@ import (
 // SQLite-compatible SQL (plain TEXT columns — SQLite has no native ENUM).
 func newCreditReserveTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{
+	// T6: use a per-test named in-memory DB with cache=shared so multiple
+	// connections within a single test see the same schema, and DO NOT cap
+	// MaxOpenConns to 1 — MembershipService.DeductCreditsTx does pre-reads
+	// on s.store (using the bare db) inside the caller's transaction; capping
+	// to 1 connection deadlocks the tx (tx holds the only conn, the pre-read
+	// waits forever to grab a second).
+	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err)
 
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
-	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 
 	// AutoMigrate the tables that have no MySQL-specific types.
@@ -90,19 +97,65 @@ CREATE TABLE IF NOT EXISTS credit_reservation_item (
 
 	// T4: add subscription table so HasActiveSubscription (now reading new table) doesn't
 	// return "no such table: subscription" when called by GetUserTypeCreditMultiplier.
-	require.NoError(t, db.Exec(`
-CREATE TABLE IF NOT EXISTS subscription (
-    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id                INTEGER NOT NULL UNIQUE,
-    first_started_at       DATETIME NOT NULL,
-    current_started_at     DATETIME NOT NULL,
-    expires_at             DATETIME NOT NULL,
-    total_months_purchased INTEGER NOT NULL,
-    source                 TEXT NOT NULL DEFAULT 'b2b_grant',
-    granter_user_id        INTEGER,
-    created_at             DATETIME NOT NULL,
-    updated_at             DATETIME NOT NULL
-);`).Error)
+	// T6: extended with the full set of membership tables required by
+	// MembershipService.DeductCreditsTx (the new authoritative deduction path).
+	for _, ddl := range []string{
+		`CREATE TABLE IF NOT EXISTS subscription (
+		    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+		    user_id                INTEGER NOT NULL UNIQUE,
+		    first_started_at       DATETIME NOT NULL,
+		    current_started_at     DATETIME NOT NULL,
+		    expires_at             DATETIME NOT NULL,
+		    total_months_purchased INTEGER NOT NULL,
+		    source                 TEXT NOT NULL DEFAULT 'b2b_grant',
+		    granter_user_id        INTEGER,
+		    created_at             DATETIME NOT NULL,
+		    updated_at             DATETIME NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS trial_grant (
+		    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+		    user_id           INTEGER NOT NULL UNIQUE,
+		    granted_at        DATETIME NOT NULL,
+		    expires_at        DATETIME NOT NULL,
+		    credits_remaining INTEGER NOT NULL DEFAULT 200,
+		    source            TEXT NOT NULL DEFAULT 'b2b_grant',
+		    granter_user_id   INTEGER,
+		    created_at        DATETIME NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS credit_cycle (
+		    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+		    user_id           INTEGER NOT NULL,
+		    subscription_id   INTEGER NOT NULL,
+		    cycle_start       DATETIME NOT NULL,
+		    cycle_end         DATETIME NOT NULL,
+		    credits_granted   INTEGER NOT NULL DEFAULT 0,
+		    credits_remaining INTEGER NOT NULL DEFAULT 0,
+		    created_at        DATETIME NOT NULL,
+		    updated_at        DATETIME NOT NULL,
+		    UNIQUE(user_id, cycle_start)
+		)`,
+		`CREATE TABLE IF NOT EXISTS user_booster_balance (
+		    user_id            INTEGER PRIMARY KEY,
+		    credits_remaining  INTEGER NOT NULL DEFAULT 0,
+		    updated_at         DATETIME NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS membership_event (
+		    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+		    user_id           INTEGER NOT NULL,
+		    event_type        TEXT NOT NULL,
+		    product_type      TEXT NOT NULL,
+		    months            INTEGER,
+		    quantity          INTEGER,
+		    amount_cents      INTEGER NOT NULL DEFAULT 0,
+		    source            TEXT NOT NULL,
+		    granter_user_id   INTEGER,
+		    idempotency_key   TEXT UNIQUE,
+		    subscription_id   INTEGER,
+		    occurred_at       DATETIME NOT NULL
+		)`,
+	} {
+		require.NoError(t, db.Exec(ddl).Error)
+	}
 
 	return db
 }
@@ -133,7 +186,7 @@ func newCreditsUser(id uint) *model.User {
 func TestReserve_HappyPath_SinglePackage(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
+	svc := newCreditServiceWithMembership(ds, db, nil)
 
 	userID := uint(200)
 	user := newCreditsUser(userID)
@@ -171,10 +224,13 @@ func TestReserve_HappyPath_SinglePackage(t *testing.T) {
 	require.Len(t, items, 1)
 	assert.Equal(t, 1, items[0].Seq)
 
-	// Balance decremented
-	var acc model.CreditAccount
-	require.NoError(t, db.Where("user_id = ?", userID).First(&acc).Error)
-	assert.EqualValues(t, 820, acc.Balance) // 1000-180
+	// T6: balance now lives in credit_cycle, not credit_account.
+	// MembershipService.DeductCreditsTx decremented credit_cycle.credits_remaining.
+	var cycleRemaining int64
+	require.NoError(t, db.Raw(
+		`SELECT credits_remaining FROM credit_cycle WHERE user_id = ?`, userID,
+	).Scan(&cycleRemaining).Error)
+	assert.EqualValues(t, 820, cycleRemaining, "credit_cycle.credits_remaining = 1000 - 180")
 }
 
 // TestReserve_FIFOCrossPackage verifies Reserve spans FIFO across two
@@ -182,7 +238,7 @@ func TestReserve_HappyPath_SinglePackage(t *testing.T) {
 func TestReserve_FIFOCrossPackage(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
+	svc := newCreditServiceWithMembership(ds, db, nil)
 
 	userID := uint(201)
 	user := newCreditsUser(userID)
@@ -215,7 +271,7 @@ func TestReserve_FIFOCrossPackage(t *testing.T) {
 func TestReserve_InsufficientRollsBack(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
+	svc := newCreditServiceWithMembership(ds, db, nil)
 
 	userID := uint(202)
 	user := newCreditsUser(userID)
@@ -234,9 +290,12 @@ func TestReserve_InsufficientRollsBack(t *testing.T) {
 	require.NoError(t, db.Model(&model.CreditReservation{}).Count(&rsvCount).Error)
 	assert.EqualValues(t, 0, rsvCount)
 
-	var acc model.CreditAccount
-	require.NoError(t, db.Where("user_id = ?", userID).First(&acc).Error)
-	assert.EqualValues(t, 50, acc.Balance)
+	// T6: credit_cycle.credits_remaining unchanged (tx rolled back).
+	var cycleRemaining int64
+	require.NoError(t, db.Raw(
+		`SELECT credits_remaining FROM credit_cycle WHERE user_id = ?`, userID,
+	).Scan(&cycleRemaining).Error)
+	assert.EqualValues(t, 50, cycleRemaining)
 }
 
 // TestReserve_IdempotencyReturnsExisting verifies that a duplicate Reserve
@@ -245,7 +304,7 @@ func TestReserve_InsufficientRollsBack(t *testing.T) {
 func TestReserve_IdempotencyReturnsExisting(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
+	svc := newCreditServiceWithMembership(ds, db, nil)
 
 	userID := uint(203)
 	user := newCreditsUser(userID)
@@ -264,10 +323,12 @@ func TestReserve_IdempotencyReturnsExisting(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, rsv1.ID, rsv2.ID, "idempotency key must dedupe")
 
-	// Balance decremented once only.
-	var acc model.CreditAccount
-	require.NoError(t, db.Where("user_id = ?", userID).First(&acc).Error)
-	assert.EqualValues(t, 880, acc.Balance, "idempotent retry must not double-deduct")
+	// T6: credit_cycle.credits_remaining decremented once only.
+	var cycleRemaining int64
+	require.NoError(t, db.Raw(
+		`SELECT credits_remaining FROM credit_cycle WHERE user_id = ?`, userID,
+	).Scan(&cycleRemaining).Error)
+	assert.EqualValues(t, 880, cycleRemaining, "idempotent retry must not double-deduct")
 
 	// Only one reservation row persisted.
 	var rsvCount int64
@@ -280,7 +341,7 @@ func TestReserve_IdempotencyReturnsExisting(t *testing.T) {
 func TestReserve_GetBalanceCredits(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
+	svc := newCreditServiceWithMembership(ds, db, nil)
 
 	userID := uint(204)
 	user := newCreditsUser(userID)
@@ -295,9 +356,12 @@ func TestReserve_GetBalanceCredits(t *testing.T) {
 	bal, err := svc.GetBalance(context.Background(), user)
 	require.NoError(t, err)
 	assert.Equal(t, model.BillingModeCredits, bal.BillingMode)
-	assert.EqualValues(t, 2000, bal.SubTotal)
+	// T6: GetBalance reads from credit_cycle (Sub) and user_booster_balance
+	// (Booster). The new schema has no per-package TotalCredits column —
+	// SubTotal/BoosterTotal == credits_remaining (no separate cap concept).
+	assert.EqualValues(t, 1800, bal.SubTotal)
 	assert.EqualValues(t, 1800, bal.SubRemain)
-	assert.EqualValues(t, 600, bal.BoosterTotal)
+	assert.EqualValues(t, 300, bal.BoosterTotal)
 	assert.EqualValues(t, 300, bal.BoosterRemain)
 	assert.Nil(t, bal.RemainingRuns, "credits mode must not set RemainingRuns")
 }
@@ -324,7 +388,7 @@ func newPureCreditsUser(id uint) *model.User {
 func TestCheckAndEstimateBudget_NormalizesSopNodeExecuteToSopRun(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
+	svc := newCreditServiceWithMembership(ds, db, nil)
 
 	userID := uint(700)
 	user := newPureCreditsUser(userID)
@@ -358,7 +422,7 @@ func TestCheckAndEstimateBudget_NormalizesSopNodeExecuteToSopRun(t *testing.T) {
 func TestReserveBudget_WritesContextBudgetMetadata(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
+	svc := newCreditServiceWithMembership(ds, db, nil)
 
 	userID := uint(701)
 	user := newPureCreditsUser(userID)
@@ -409,7 +473,7 @@ func TestReserveBudget_WritesContextBudgetMetadata(t *testing.T) {
 func TestCheckAndEstimateBudget_LegacyTierSkipsReserve(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
+	svc := newCreditServiceWithMembership(ds, db, nil)
 
 	future := time.Now().Add(30 * 24 * time.Hour)
 	user := &model.User{
@@ -444,7 +508,7 @@ func TestCheckAndEstimateBudget_LegacyTierSkipsReserve(t *testing.T) {
 func TestCheckAndEstimateBudget_UnknownChargedOperationFailsClosed(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
+	svc := newCreditServiceWithMembership(ds, db, nil)
 
 	userID := uint(703)
 	user := newPureCreditsUser(userID)
@@ -468,10 +532,12 @@ func TestCheckAndEstimateBudget_UnknownChargedOperationFailsClosed(t *testing.T)
 	require.True(t, errors.Is(err, credit.ErrUnknownBudgetOperation),
 		"expected ErrUnknownBudgetOperation, got %v", err)
 
-	// User balance must not have changed.
-	var acc model.CreditAccount
-	require.NoError(t, db.Where("user_id = ?", userID).First(&acc).Error)
-	assert.EqualValues(t, initialBalance, acc.Balance, "unknown operation must not modify user balance")
+	// T6: credit_cycle.credits_remaining must not have changed.
+	var cycleRemaining int64
+	require.NoError(t, db.Raw(
+		`SELECT credits_remaining FROM credit_cycle WHERE user_id = ?`, userID,
+	).Scan(&cycleRemaining).Error)
+	assert.EqualValues(t, initialBalance, cycleRemaining, "unknown operation must not modify cycle balance")
 }
 
 // --- User-type credit multiplier tests ---
@@ -483,7 +549,7 @@ func TestCheckAndEstimateBudget_UnknownChargedOperationFailsClosed(t *testing.T)
 func TestReserve_TrialUserMultiplierApplied(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
+	svc := newCreditServiceWithMembership(ds, db, nil)
 
 	userID := uint(800)
 	user := newCreditsUser(userID)
@@ -526,27 +592,22 @@ func TestReserve_TrialUserMultiplierApplied(t *testing.T) {
 func TestReserve_SubscriptionUserBypassesTrialMultiplier(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
+	svc := newCreditServiceWithMembership(ds, db, nil)
 
 	userID := uint(801)
 	user := newCreditsUser(userID)
 	now := time.Now()
 
-	// User has both subscription and trial in credit_package (legacy read path).
+	// User has both subscription and trial in credit_package; the helper
+	// mirrors both into the new tables (subscription + credit_cycle, trial_grant).
+	// T6: the legacy "T4 INSERT INTO subscription" duplicate from this test was
+	// removed — seedPackagesAndAccount now handles the subscription-table mirror.
 	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
 		{Type: model.CreditTypeSubscription, TotalCredits: 2000, RemainCredits: 2000,
 			ActivatedAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour)},
 		{Type: model.CreditTypeTrial, TotalCredits: 200, RemainCredits: 100,
 			ActivatedAt: now, ExpiresAt: now.Add(72 * time.Hour)},
 	})
-	// T4: GetUserTypeCreditMultiplier now reads the new subscription table to detect
-	// active subscriptions. Seed the new table so the "subscription bypasses trial
-	// discount" invariant is correctly detected.
-	require.NoError(t, db.Exec(
-		`INSERT INTO subscription (user_id, first_started_at, current_started_at, expires_at, total_months_purchased, source, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 1, 'b2b_grant', ?, ?)`,
-		userID, now, now, now.Add(30*24*time.Hour), now, now,
-	).Error)
 	require.NoError(t, db.Create(&model.CreditUserTypeConfig{
 		UserType: "trial", CreditMultiplier: 0.5, IsActive: true,
 	}).Error)
@@ -569,7 +630,7 @@ func TestReserve_SubscriptionUserBypassesTrialMultiplier(t *testing.T) {
 func TestReserve_ExpiredTrialPackageGetsNoDiscount(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
+	svc := newCreditServiceWithMembership(ds, db, nil)
 
 	userID := uint(802)
 	user := newCreditsUser(userID)

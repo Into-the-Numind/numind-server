@@ -17,13 +17,16 @@ import (
 // setupReservation is a test helper that runs Reserve inside a fresh test DB
 // and returns the seeded user, the reservation, and the store for subsequent
 // Reconcile/Refund calls.
+//
+// T6: switched to newCreditServiceWithMembership so MembershipService is wired
+// (legacy creditBiz.DeductCreditsTx fallback no longer exists).
 func setupReservation(
 	t *testing.T, userID uint, reserveCredits int64, packages []model.CreditPackage,
 ) (credit.ICreditService, store.IStore, *credit.Reservation) {
 	t.Helper()
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
+	svc := newCreditServiceWithMembership(ds, db, nil)
 
 	seedPackagesAndAccount(t, db, userID, packages)
 	user := newCreditsUser(userID)
@@ -58,15 +61,14 @@ func TestReconcile_ActualLessThanReserved_RefundsDelta(t *testing.T) {
 	assert.Equal(t, "normal", *row.FinalizeReason)
 	require.NotNil(t, row.ReconciledAt)
 
-	// Package balance bumped back up by 30
-	var pkg model.CreditPackage
-	require.NoError(t, ds.DB().Where("user_id = ?", uint(300)).First(&pkg).Error)
-	assert.EqualValues(t, 850, pkg.RemainCredits) // 1000-180+30
-
-	// Account balance also bumped back up by 30
-	var acc model.CreditAccount
-	require.NoError(t, ds.DB().Where("user_id = ?", uint(300)).First(&acc).Error)
-	assert.EqualValues(t, 850, acc.Balance)
+	// T6: balance now lives in credit_cycle, not credit_account. Refund to
+	// the cycle pool (via MembershipService.RefundCreditsTx) bumps remaining
+	// back up by 30 (= reserved 180 − refund 30 → net debit 150).
+	var cycleRemaining int64
+	require.NoError(t, ds.DB().Raw(
+		`SELECT credits_remaining FROM credit_cycle WHERE user_id = ?`, uint(300),
+	).Scan(&cycleRemaining).Error)
+	assert.EqualValues(t, 850, cycleRemaining, "1000 − 180 + 30 refund")
 }
 
 // --- Task C.4: Reconcile top-up path (actual > reserved) ---
@@ -88,14 +90,12 @@ func TestReconcile_ActualGreaterThanReserved_TopsUp(t *testing.T) {
 	require.NotNil(t, row.Delta)
 	assert.EqualValues(t, 30, *row.Delta)
 
-	// Package remaining after Reserve(100) + top-up(30) = 1000-130 = 870
-	var pkg model.CreditPackage
-	require.NoError(t, ds.DB().Where("user_id = ?", uint(301)).First(&pkg).Error)
-	assert.EqualValues(t, 870, pkg.RemainCredits)
-
-	var acc model.CreditAccount
-	require.NoError(t, ds.DB().Where("user_id = ?", uint(301)).First(&acc).Error)
-	assert.EqualValues(t, 870, acc.Balance)
+	// T6: credit_cycle.credits_remaining after Reserve(100) + top-up(30) = 1000-130 = 870.
+	var cycleRemaining int64
+	require.NoError(t, ds.DB().Raw(
+		`SELECT credits_remaining FROM credit_cycle WHERE user_id = ?`, uint(301),
+	).Scan(&cycleRemaining).Error)
+	assert.EqualValues(t, 870, cycleRemaining)
 }
 
 // --- AI-6: Reconcile top-up with insufficient balance writes debt ledger ---
@@ -158,10 +158,12 @@ func TestReconcile_ActualEqualsReserved_Noop(t *testing.T) {
 	require.NotNil(t, row.Delta)
 	assert.EqualValues(t, 0, *row.Delta)
 
-	// Package remains at Reserve-debit level: 1000-100 = 900
-	var pkg model.CreditPackage
-	require.NoError(t, ds.DB().Where("user_id = ?", uint(302)).First(&pkg).Error)
-	assert.EqualValues(t, 900, pkg.RemainCredits)
+	// T6: credit_cycle.credits_remaining stays at Reserve-debit level: 1000-100 = 900.
+	var cycleRemaining int64
+	require.NoError(t, ds.DB().Raw(
+		`SELECT credits_remaining FROM credit_cycle WHERE user_id = ?`, uint(302),
+	).Scan(&cycleRemaining).Error)
+	assert.EqualValues(t, 900, cycleRemaining)
 }
 
 // --- Task C.4: Reconcile idempotency (terminal → ErrAlreadyFinalized) ---
@@ -186,7 +188,7 @@ func TestReconcile_AlreadyFinalized_ReturnsSentinel(t *testing.T) {
 func TestReconcile_NotFound_ReturnsSentinel(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), nil, nil)
+	svc := newCreditServiceWithMembership(ds, db, nil)
 	err := svc.Reconcile(context.Background(), 999999, 10)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, credit.ErrReservationNotFound))
@@ -214,19 +216,20 @@ func TestRefund_WalksSeqAscAndRestoresPackages(t *testing.T) {
 	require.NotNil(t, row.FinalizeReason)
 	assert.Equal(t, "op_failed", *row.FinalizeReason)
 
-	// Each package restored: sub 50→0(after Reserve)→50(after Refund); booster 600→500(after Reserve)→600(after Refund)
-	var pkgs []model.CreditPackage
-	require.NoError(t, ds.DB().Where("user_id = ?", uint(400)).Order("expires_at ASC").Find(&pkgs).Error)
-	require.Len(t, pkgs, 2)
-	assert.EqualValues(t, 50, pkgs[0].RemainCredits)
-	// Status should be revived from exhausted → active after refund
-	assert.Equal(t, model.CreditPackageActive, pkgs[0].Status)
-	assert.EqualValues(t, 600, pkgs[1].RemainCredits)
+	// T6: refunds went to the new pools (cycle + booster) via
+	// MembershipService.RefundCreditsTx. Restored sub 50→0→50 (cycle) and
+	// booster 600→500→600.
+	var cycleRemaining int64
+	require.NoError(t, ds.DB().Raw(
+		`SELECT credits_remaining FROM credit_cycle WHERE user_id = ?`, uint(400),
+	).Scan(&cycleRemaining).Error)
+	assert.EqualValues(t, 50, cycleRemaining)
 
-	// Balance fully restored
-	var acc model.CreditAccount
-	require.NoError(t, ds.DB().Where("user_id = ?", uint(400)).First(&acc).Error)
-	assert.EqualValues(t, 650, acc.Balance)
+	var boosterRemaining int64
+	require.NoError(t, ds.DB().Raw(
+		`SELECT credits_remaining FROM user_booster_balance WHERE user_id = ?`, uint(400),
+	).Scan(&boosterRemaining).Error)
+	assert.EqualValues(t, 600, boosterRemaining)
 }
 
 // --- F-9 regression: Refund with reason='provider_err' must succeed ---
