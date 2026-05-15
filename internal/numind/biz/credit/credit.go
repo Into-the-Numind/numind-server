@@ -89,7 +89,7 @@ func (b *creditBiz) CanPerformAIOperation(ctx context.Context, user *model.User,
 		}
 		total := view.CycleRemaining + view.TrialRemaining + view.BoosterUsable
 		if total < int64(estimated) {
-			return false, "积分不足，请购买积分包或联系管理员"
+			return false, "积分不足，请充值积分"
 		}
 		return true, ""
 	}
@@ -102,7 +102,7 @@ func (b *creditBiz) CanPerformAIOperation(ctx context.Context, user *model.User,
 	}
 
 	if balance < estimated {
-		return false, "积分不足，请购买积分包或联系管理员"
+		return false, "积分不足，请充值积分"
 	}
 
 	return true, ""
