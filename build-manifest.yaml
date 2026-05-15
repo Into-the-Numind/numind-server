@@ -459,28 +459,33 @@ features:
 
   - id: "membership-credits-redesign"
     ndf_version: "1.1"
-    description: "会员积分体系重构 — 从'状态机+cron'改为'时间驱动+lazy'模型。5 张新表（subscription / trial_grant / credit_cycle / user_booster_balance / membership_event）替代当前 credit_package 状态机；subscription 单行 + expires_at 后延，月度 cycle 懒创建，去 cron 化。trial+pro 叠加，自然月 anchor-restore（1/31 → 3/31 → 4/30）。Booster 永不过期（每用户单 balance），仅会员状态可用。完整覆盖前后端三仓 + 迁移脚本 + B2B 月度账单口径切换。"
+    description: "会员积分体系重构 — 从'状态机+cron'改为'时间驱动+lazy'模型。5 张新表（subscription / trial_grant / credit_cycle / user_booster_balance / membership_event）替代当前 credit_package 状态机；subscription 单行 + expires_at 后延，月度 cycle 懒创建，去 cron 化。trial+pro 叠加，自然月 anchor-restore（1/31 → 3/31 → 4/30）。Booster 永不过期（每用户单 balance），仅会员状态可用。完整覆盖前后端三仓 + 迁移脚本 + B2B 月度账单口径切换。【2026-05-15 reopen S5→S3：原 Task 16 cleanup 未真正落地，导致 credit_package 老表 4 个写入路径仍活、3 类数据残留。追加 plan extension T1-T12 完成 cleanup。2026-05-15 S3 gate pass，进 S4 编码 T1。】"
     track: "standard"
-    stage: "S5"
+    stage: "S4"
     classification_reason: "Triage 5 条全触发 — (1) 5 张新表 + 迁移脚本 (2) grant/deduct/balance/B2B 账单全部重写 (3) 无外部服务但内部模型彻底改 (4) 跨 3 仓 (5) 计费核心 + B2B 账单 = 最高风险业务逻辑。Standard Track 必然。"
-    last_updated_by: "ai-merge-s4-into-develop-2026-05-14"
-    last_updated_at: "2026-05-14T01:30:00+08:00"
+    last_updated_by: "ai-s3-gate-passed-2026-05-15"
+    last_updated_at: "2026-05-15T20:00:00+08:00"
+    stage: "S4"
     repos:
       - numind-server
       - numind-web-v3
       - numind-admin-web
-    branches: {}
+    branches:
+      numind-server: "feature/credits-cleanup-t1-source-type"
     artifacts:
       requirement: "numind-server/requirements/membership-credits-redesign.md"
       proposal: "numind-server/proposals/membership-credits-redesign-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-04-29-membership-credits-redesign-design.md"
       plan: "numind-server/docs/superpowers/plans/2026-04-29-membership-credits-redesign-plan.md"
+      plan_extension: "numind-server/docs/superpowers/plans/2026-05-15-membership-credits-redesign-cleanup-plan.md"
+      audit: "numind-server/docs/credits-system-data-consistency-audit.md"
+      html_explainer: "numind-server/docs/credits-refactor-explainer.html"
       validation_strategy: "numind-server/docs/superpowers/specs/2026-04-29-membership-credits-redesign-validation-strategy.md"
     progress:
-      total_tasks: 24
+      total_tasks: 36
       completed_tasks: 24
       reviewed_tasks: 24
-      current_task: "S5 — S4 代码 merge develop 完成（2026-05-14）；剩 lint/test、dev DB 应用 migration 重跑 dry-run 端到端、Playwright E2E 实跑、Langfuse trace 回归；然后部署 dev 验证"
+      current_task: "S4 — T1 (credit_transaction.source_type 加列 + 回填) implementer 启动中"
     rollback: null
     last_verified: null
     decisions:
@@ -512,10 +517,14 @@ features:
       - "2026-04-30 (tech debt sweep): Wave 1 派 2 agents 清理本 feature 收尾债。Agent A 修后端 22 个 P2 lint warnings (4d743e1 / merge 05af0bb)。Agent B 系统审查 GORM Update 路径 default:true bool 风险，发现 db.Save() 因源码 SELECT '*' 显式安全，全仓 8 个 default:true bool 字段 Update 路径全 SAFE，原 ai-service-deprecated-field-cleanup sub_issue 1 假设错误（fccedb2 加回归测试 / 1c1ab5d 文档 + manifest 更新）。manifest stage S3→S5 同步真实状态"
       - "2026-04-30 (tech debt #9 fix / Wave 3): Order.Months 字段为 booster 复用的隐藏耦合解除——新增独立 payment_order.quantity 字段（INT NOT NULL DEFAULT 1）+ 历史数据回填迁移（booster 行 quantity = months where months > 1）。fulfillOrder 读 order.Quantity 路由给 RechargeWithOrderTx（booster 路径），months 只在 monthly/yearly 路径读取。RechargeWithOrderTx booster case 修复：从创建 1 个包改为创建 quantity 个包（每个 600cr 独立 FIFO 行），修复了多份购买仅授予 1 份的隐藏 bug。controller createOrderRequest 新增 quantity 字段（binding min=1,max=10000），model 新增 GetBoosterAmount(quantity) + GetBoosterProductName(quantity) 两个 helper。commits: 83ce6dd (migration+model+biz) / 22b16e4 (tests)"
       - "2026-05-14 (S4 merge to develop): 用户恢复推进。feat/membership-credits-redesign 分支落后 develop 75 commit、领先 20 commit；merge origin/develop 进分支共 6 个冲突全部解决——store.go 取并集（Membership + SopVisibilityGrant + ChatbotVisibilityGrant）；server.go 取分支版（移除 develop 加的 creditBiz.RunCronTasks，符合 I-2 去 cron 化）；payment.go 取分支版（booster-only CreateOrder + quantity 参数，废弃 develop 的 months 兼 quantity 兼容路径）；order.go 取分支版（createOrderRequest quantity 强制必填）；dry-run.sql 取 develop 版（§C SQL 语法已用 CTE+ROW_NUMBER 修复）；manifest 取并集 + 修正 4-30 'all merged' 误判。develop 原本缺失的 67 文件全部新增（internal/numind/biz/membership 8 文件 + internal/numind/store/membership 9 文件 + internal/pkg/model/membership 7 文件 + idempotency.go/maintenance.go 中间件 + 5 张新表 migration + 完整测试套件）。"
+      - "2026-05-15 (reopen S5→S3 cleanup extension): 用户 prod 直查 16 表后发现 Task 16 cleanup 未真正落地——credit_package 4 个 INSERT 入口（RechargeCredits/RechargeWithOrderTx/GrantMembership/legacy DeductCredits）仍主动写老表，新 MembershipService 不写老 credit_account.balance，新支付路径只写 ubb 不写 credit_package(booster)；结果 write 老表 + read 新表 = 必然残留。归类的 6 个数据问题深调后发现 3 类性质：(1) ubb vs credit_package(booster) = 设计意图（ubb 是 SOT，新支付路径绕过老表），user 1 6000 是 5/14 self_purchase ¥299 = 10 booster 合法、user 30/348 同模式 (2) credit_account.balance vs Σpackages = 过期清理 gap（user 388/392 4/26 trial 200 → 4/29 过期未衰减字段，但 GetBalance 走 expires_at 体验正确） (3) trial_grant 33 vs credit_package(trial) 32 = 设计意图（user 432 5/15 当天新路径开 trial 只写新表） (4) usage_record.credits_deducted 死字段（表保留，仅 1 列）。原 credits-system-data-consistency feature 取消并入本 feature 作为 plan extension。"
+      - "2026-05-15 (V1→V2 plan extension): V1 方案 5 task 经 3 独立 sonnet reviewer REJECT 9 P0（缺 source_type / 颗粒度粗 / b2b_billing 前置漏 / 校准目标错位 / FE 未删 / parent_grant 描述误导 / user 1 不能盲处理 / 删 ubb 冲突 spec §2.4 / DROP 不可逆 rollback 缺失）。V2 拆 12 task：T1 加 credit_transaction.source_type 前置 / T2-T6 拆 4 个写入路径每个原子 / T7-T8 数据校准 / T9 b2b_billing 前置 / T10 DROP COLUMN credits_deducted / T11 archive+DROP credit_package + balance 字段 / T12 加 FK 收尾。详细 plan：plans/2026-05-15-membership-credits-redesign-cleanup-plan.md。"
+      - "2026-05-15 (HTML 讲解图 + 用户 GO): docs/credits-refactor-explainer.html 8 节单页可视化（TL;DR / 现状图 / 3 真实案例 / 根因 SVG / 12 任务路线图 / 风险防护 / reviewer 共识 / 工作量）。用户 GO，进 S3 plan extension 阶段，等 Sonnet 原子性 reviewer + 人类共审后进 S4。"
     blockers: []
     related_features:
       - "credits-system (前置依赖，已上线)"
-      - "remove-tier-fields (无关联)"
+      - "credits-deduct-cycle-wiring (completed 2026-05-15 v2.1.19) — 补丁式切了 Reserve/Reconcile 读路径；本 feature plan extension 切余下 4 个写入路径并 DROP credit_package"
+      - "credits-system-data-consistency (cancelled 2026-05-15, merged into this feature) — S0 audit 调研产出物保留作 plan extension 的现状基础"
     created_at: "2026-04-29T22:00:00+08:00"
     completed_at: null
 
@@ -584,4 +593,46 @@ features:
       - "ai-service-admin-complete (completed) — 提供了 pricing_rule 管理端 CRUD 能力，售价字段在 UI 可编辑，本 feature 让该能力真正影响扣费"
     blockers: []
     created_at: "2026-05-15T00:00:00+08:00"
+    completed_at: null
+
+  - id: "credits-system-data-consistency"
+    ndf_version: "1.1"
+    description: "[CANCELLED — merged into membership-credits-redesign as plan extension T1-T12] credits-system 数据模型一致性重构 — 用户与 prod 直查发现 3 类问题：(P0) 缓存表 drift：user_booster_balance vs Σcredit_package(booster) 4 行 3 漂（user 1: 6000 幽灵）/ credit_account.balance vs Σpackages 6 用户漂 / trial_grant vs credit_package(trial) 33 vs 32 行；(P1) 同份数据存两次：trial_grant ↔ credit_package(trial) / ubb ↔ Σbooster / ca.balance ↔ Σactive / usage_record.credits_deducted (SUM=0 死字段) ↔ credit_transaction.amount；(P2) subscription/credit_cycle/credit_package 三角语义不清 + 硬 FK 仅 1 条。根因：membership-credits-redesign 的 Task 16 cleanup 未真正执行（仅 credits-deduct-cycle-wiring 补丁式切了 Reserve/Reconcile，老表 4 个 INSERT 路径未清理）→ write 老表 + read 新表 = 必然 drift。"
+    track: "standard"
+    stage: "cancelled"
+    classification_reason: "待 audit §8 的 D1-D7 决策后定 track（D7a 单 tracker → Standard；D7b 多独立 → 混合 Hotfix+Standard；D7c 并入 membership-credits-redesign → 取消本条）"
+    last_updated_by: "ai-s0-audit-2026-05-15"
+    last_updated_at: "2026-05-15T16:00:00+08:00"
+    repos:
+      - numind-server
+    branches: {}
+    artifacts:
+      requirement: "numind-server/requirements/credits-system-data-consistency.md"
+      audit: "numind-server/docs/credits-system-data-consistency-audit.md"
+      proposal: null
+      spec: null
+      plan: null
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "S0 — 等待人类阅读 audit doc + 回答 D1-D7 决策清单"
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-05-15 (S0 触发): 用户给出 prod 直查证据（16 表清单 + 6 类问题），要求重构数据模型。"
+      - "2026-05-15 (路径对齐): 用户拍板 — 先做 S0 现状报告（不预设修复），先修数据后改结构，待 audit 后再 Triage 归类。"
+      - "2026-05-15 (S0 现状调研完成): (a) Explore subagent 给出 credit_package / credit_account / trial_grant / user_booster_balance / credits_deducted 字段全部读写 caller map (b) SSH prod v2.1.19 重跑 5 类 drift 查询确认现状未变 (c) 产出 audit doc 9 节 + 8 类待决策清单 + 推荐 D7 三选项。"
+      - "2026-05-15 (关键诊断锁定): credit_package 4 个 INSERT 入口（RechargeCredits/RechargeWithOrderTx/GrantMembership/deductCreditsTxFull UpdatePackage）+ 状态机 cron 仍跑；trial_grant / user_booster_balance 不在 helper.go AutoMigrate 列表（独立 migration）；usage_record.credits_deducted 死字段证实（grep 无 reader + prod SUM=0/3274 行）。"
+      - "2026-05-15 (V1 方案 5 task 经 3 个独立 sonnet reviewer 全部 REJECT): 共识 9 个 P0 — credit_transaction 缺 source_type / T17 颗粒度过粗 / b2b_billing.go 切表前置漏 / T19 校准目标错位 / admin Recharge FE 未删 / parent_grant 描述误导 / user 1 6000 不能盲处理 / 删 ubb 与 spec §2.4 冲突 / DROP 不可逆 rollback 缺失。"
+      - "2026-05-15 (prod 深调反转 3 个判断): (1) user 1 = admin 实验账户，5/14 self_purchase ¥299 = 10 booster × 600 = 6000 合法，新支付路径只写 ubb 不写 credit_package — 不是幽灵 (2) user 30/348 同模式 self_purchase 合法 (3) user 388/392 是 trial 4/29 过期但 3 张表余额字段未衰减 — 过期清理 gap，不是写入分裂。订正 audit doc §3 措辞：3 类残留 + 1 类设计意图，非全是 drift。"
+      - "2026-05-15 (HTML 讲解图产出 + 用户 GO): credits-refactor-explainer.html 8 节单页可视化，用户 GO。本 feature 取消并入 membership-credits-redesign 作为 plan extension T1-T12。"
+    related_features:
+      - "membership-credits-redesign (S5→S3 reopened 2026-05-15) — 设计 5 张新表取代 credit_package 状态机；Task 16 cleanup 未真正落地是本 feature 根因。本 feature 取消并入，T1-T12 作为该 feature 的 plan extension"
+      - "credits-deduct-cycle-wiring (completed 2026-05-15 v2.1.19) — 补丁式切了 Reserve/Reconcile 读路径，但老表写入路径完全没动"
+    blockers: []
+    created_at: "2026-05-15T16:00:00+08:00"
+    cancelled_at: "2026-05-15T19:00:00+08:00"
+    cancelled_reason: "本 feature 是 membership-credits-redesign Task 16 未完成的债。开新 feature 修上一个 feature 的债会让账本越来越乱。改为 plan extension 合并归一处。"
+    merged_into: "membership-credits-redesign"
     completed_at: null
