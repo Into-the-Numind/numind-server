@@ -176,8 +176,9 @@ SELECT 'pre_check_D_active_cycle_drift' AS check_name,
 FROM credit_cycle cc
 LEFT JOIN credit_transaction ct
   ON ct.user_id = cc.user_id
-  AND ct.source_id = cc.id
   AND ct.source_type = 'cycle'
+  AND ct.created_at >= cc.cycle_start
+  AND ct.created_at <  cc.cycle_end
 WHERE cc.cycle_end > NOW()
 GROUP BY cc.id, cc.user_id, cc.credits_granted, cc.credits_remaining, cc.cycle_end
 HAVING cc.credits_remaining != GREATEST(cc.credits_granted + COALESCE(SUM(ct.amount), 0), 0);
@@ -228,16 +229,26 @@ WHERE tg.expires_at >= NOW()
 -- Including refunds gives the true running balance: granted - deducted + refunded.
 -- On dev: affects cycle_id=4 (user 62): 2000+0=2000 (was 1949, +51 fix — pre-T1 drift)
 --         cycle_id=6 (user 25): 2000-72+69=1997 (already correct — no change needed)
+-- v2 fix (prod-clone dry-run 2026-05-16): use user_id + time-window JOIN.
+-- v1 used `ct.source_id = cc2.id` which broke on backfilled rows: T1 backfilled
+-- source_id = credit_package.id (not credit_cycle.id), causing coincidental ID
+-- collisions and wrong calibration values. Prod-clone validation found 18
+-- I11 violations with v1 SQL on 2547 backfilled subscription/cycle rows.
+-- v2 joins by user_id + cycle window (cycle_start ≤ tx.created_at < cycle_end)
+-- which works correctly for both backfilled and post-T1 rows.
 UPDATE credit_cycle cc
 LEFT JOIN (
-  SELECT ct.user_id,
-         ct.source_id AS cycle_id,
+  SELECT cc2.user_id,
+         cc2.id AS cycle_id,
          GREATEST(cc2.credits_granted + COALESCE(SUM(ct.amount), 0), 0) AS computed_remaining
-    FROM credit_transaction ct
-    JOIN credit_cycle cc2 ON cc2.id = ct.source_id AND cc2.user_id = ct.user_id
-   WHERE ct.source_type = 'cycle'
-     AND cc2.cycle_end > NOW()
-   GROUP BY ct.user_id, ct.source_id, cc2.credits_granted
+    FROM credit_cycle cc2
+    LEFT JOIN credit_transaction ct
+      ON ct.source_type = 'cycle'
+     AND ct.user_id = cc2.user_id
+     AND ct.created_at >= cc2.cycle_start
+     AND ct.created_at <  cc2.cycle_end
+   WHERE cc2.cycle_end > NOW()
+   GROUP BY cc2.user_id, cc2.id, cc2.credits_granted
 ) calc ON calc.user_id = cc.user_id AND calc.cycle_id = cc.id
 -- LEFT JOIN handles cycles with NO ledger rows at all (user 62: 0 transactions → computed = credits_granted)
 SET cc.credits_remaining = CASE
@@ -381,13 +392,16 @@ WHERE tg.expires_at >= NOW()
 SELECT 'T8_I11_active_cycle_ledger_convergence' AS check_name, COUNT(*) AS violation_count
 FROM credit_cycle cc
 LEFT JOIN (
-  SELECT ct.user_id, ct.source_id AS cycle_id,
+  SELECT cc2.user_id, cc2.id AS cycle_id,
          GREATEST(cc2.credits_granted + COALESCE(SUM(ct.amount), 0), 0) AS computed
-  FROM credit_transaction ct
-  JOIN credit_cycle cc2 ON cc2.id = ct.source_id AND cc2.user_id = ct.user_id
-  WHERE ct.source_type = 'cycle'
-    AND cc2.cycle_end > NOW()
-  GROUP BY ct.user_id, ct.source_id, cc2.credits_granted
+  FROM credit_cycle cc2
+  LEFT JOIN credit_transaction ct
+    ON ct.source_type = 'cycle'
+   AND ct.user_id = cc2.user_id
+   AND ct.created_at >= cc2.cycle_start
+   AND ct.created_at <  cc2.cycle_end
+  WHERE cc2.cycle_end > NOW()
+  GROUP BY cc2.user_id, cc2.id, cc2.credits_granted
 ) calc ON calc.user_id = cc.user_id AND calc.cycle_id = cc.id
 WHERE cc.cycle_end > NOW()
   AND cc.credits_remaining != COALESCE(calc.computed, cc.credits_granted);

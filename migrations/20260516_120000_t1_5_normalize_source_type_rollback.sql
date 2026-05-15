@@ -1,0 +1,13 @@
+-- T1.5 rollback: NOT PROVIDED.
+--
+-- Rationale: Reverting source_type='cycle' → 'subscription' would re-introduce
+-- the vocabulary drift bug that T1.5 fixes. Both 'cycle' and 'subscription'
+-- are valid values per T12 CHECK constraint (which intentionally allows both
+-- for forward + backward compatibility), so leaving the column as 'cycle' even
+-- after a hypothetical rollback is the safe choice.
+--
+-- If you truly need to undo this migration (you won't), you can manually run:
+--   UPDATE credit_transaction SET source_type='subscription'
+--    WHERE source_type='cycle' AND created_at < '<T1.5_deploy_timestamp>';
+-- But this would only revert pre-T1.5-deploy rows, and the time threshold
+-- depends on when T1.5 ran.

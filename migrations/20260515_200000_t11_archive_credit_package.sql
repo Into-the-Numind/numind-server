@@ -82,9 +82,21 @@ DROP TABLE IF EXISTS `credit_package`;
 -- Step 5: DROP credit_account.balance column (IRREVERSIBLE)
 -- GetBalance now reads from credit_cycle + user_booster_balance + trial_grant (three-pool SOT).
 -- NOTE: user_booster_balance is NOT dropped (it remains the booster SOT per spec §2.4).
--- IF EXISTS → idempotent (MySQL 8.0.4+): safe to re-run after column is gone.
+-- v2 fix (prod-clone dry-run 2026-05-16): MySQL 8.4 does NOT support `DROP COLUMN
+-- IF EXISTS` syntax (that's MariaDB; plain MySQL doesn't have it). v1 had this
+-- and failed with ERROR 1064 on prod-clone with mysql:8.4.2. Now uses pre-check
+-- guard via information_schema + prepared statement for idempotency on re-run.
 -- ============================================================
-ALTER TABLE `credit_account` DROP COLUMN IF EXISTS `balance`;
+SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+                      WHERE table_schema = DATABASE()
+                        AND table_name = 'credit_account'
+                        AND column_name = 'balance');
+SET @sql := IF(@col_exists > 0,
+               'ALTER TABLE `credit_account` DROP COLUMN `balance`',
+               'SELECT ''balance column already dropped, skipping (idempotent)'' AS info');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 -- ============================================================
 -- Post-run verification
