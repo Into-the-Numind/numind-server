@@ -149,7 +149,7 @@ ENV GOGC=50
 ENV GOMEMLIMIT=16GiB
 
 # 健康检查
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
     CMD curl -f http://localhost:9091/healthz || exit 1
 
 # 启动应用

@@ -249,18 +249,18 @@ jobs:
               --restart always \
               "$IMAGE"
 
-            echo "⏳ 等待服务就绪..."
+            echo "⏳ 等待服务就绪 (最多 6 分钟)..."
             READY=false
-            for i in $(seq 1 30); do
+            for i in $(seq 1 72); do
               curl -sf http://localhost:9091/healthz > /dev/null 2>&1 && { READY=true; break; }
-              sleep 3
+              sleep 5
             done
 
             if [ "$READY" = true ]; then
               echo "✅ Dev 部署完成"
               docker ps -f name=numind-server-dev --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
             else
-              echo "❌ 健康检查超时 (90s)"
+              echo "❌ 健康检查超时 (6min)"
               docker logs --tail 30 numind-server-dev || true
               exit 1
             fi
@@ -318,18 +318,18 @@ jobs:
               --restart always \
               "$IMAGE"
 
-            echo "⏳ 等待服务就绪..."
+            echo "⏳ 等待服务就绪 (最多 6 分钟)..."
             READY=false
-            for i in $(seq 1 30); do
+            for i in $(seq 1 72); do
               curl -sf http://localhost:9093/healthz > /dev/null 2>&1 && { READY=true; break; }
-              sleep 3
+              sleep 5
             done
 
             if [ "$READY" = true ]; then
               echo "✅ QA 部署完成"
               docker ps -f name=numind-server-qa --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
             else
-              echo "❌ 健康检查超时 (90s)"
+              echo "❌ 健康检查超时 (6min)"
               docker logs --tail 30 numind-server-qa || true
               exit 1
             fi
@@ -395,18 +395,18 @@ jobs:
 
             run_container "$NEW_IMAGE"
 
-            echo "⏳ 等待服务就绪..."
+            echo "⏳ 等待服务就绪 (最多 6 分钟)..."
             READY=false
-            for i in $(seq 1 30); do
+            for i in $(seq 1 72); do
               curl -sf http://localhost:9095/healthz > /dev/null 2>&1 && { READY=true; break; }
-              sleep 3
+              sleep 5
             done
 
             if [ "$READY" = true ]; then
               echo "✅ Prod 部署完成 ($NEW_IMAGE)"
               docker ps -f name=numind-server-prod --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
             else
-              echo "❌ 健康检查超时 (90s)"
+              echo "❌ 健康检查超时 (6min)"
               docker logs --tail 30 numind-server-prod || true
 
               if [ -n "$OLD_IMAGE" ]; then
@@ -416,9 +416,9 @@ jobs:
                 run_container "$OLD_IMAGE"
 
                 READY=false
-                for i in $(seq 1 30); do
+                for i in $(seq 1 72); do
                   curl -sf http://localhost:9095/healthz > /dev/null 2>&1 && { READY=true; break; }
-                  sleep 3
+                  sleep 5
                 done
 
                 if [ "$READY" = true ]; then
