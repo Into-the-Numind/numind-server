@@ -110,10 +110,10 @@ features:
     ndf_version: "1.1"
     description: "用户端 chatbot 对话页 (views/chatbot/ChatbotChat.vue) 左侧会话列表支持改名与置顶。改名复用现有 chatbot_session.title 字段（无 schema 变更）；置顶新增 pinned_at TIMESTAMP NULL 字段（NULL=未置顶，非NULL=置顶时间）。列表排序改为：置顶组按 pinned_at DESC，非置顶组按 updated_at DESC。交互：hover 显示「…」更多菜单，含「重命名 / 置顶 / 取消置顶 / 删除」。范围明确不含 SalesView 销售对话页与 SOP 运行历史。S1 锁定 Approach A 极简 MVP (1-1.5 d)；顺带修 ListSessions cross-chatbot perf bug。"
     track: "standard"
-    stage: "S5"
+    stage: "S6"
     classification_reason: "Triage 5 条 — (1) DB schema 变更：是（chatbot_session 加 pinned_at 字段 + 覆盖排序的复合索引）(2) 新 API：是（PUT /v1/chatbot/sessions/:id/rename + PUT /v1/chatbot/sessions/:id/pin，2 个新端点；GET sessions 列表 ORDER BY 子句更新）(3) 无外部服务 (4) 跨 numind-server + numind-web-v3 两仓约 10-11 文件 (5) 不涉及支付/权限。条件 1/2/4 不满足 Hotfix，Standard Track。"
-    last_updated_by: "ai-s5-conditional-pass"
-    last_updated_at: "2026-05-14T00:00:00+08:00"
+    last_updated_by: "ai-s6-dev-deployed"
+    last_updated_at: "2026-05-15T00:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -130,18 +130,22 @@ features:
       total_tasks: 8
       completed_tasks: 8
       reviewed_tasks: 8
-      current_task: "S6 dev 部署 — SSH apply migration + merge develop + Playwright E2E + 手动 curl 401/403"
+      current_task: "S6 人工硬门禁 — 等用户在 dev 前端 (49.233.219.254:9200/chatbot/10) 确认 UI 可用后进 S7"
     rollback: null
     last_verified:
-      at: "2026-05-14T00:00:00+08:00"
+      at: "2026-05-15T00:00:00+08:00"
       backend_lint: "pass"
       backend_test: "pass (race+coverage, biz/chatbot 34.6%)"
       backend_unit_tests: "18/18 PASS (store 10 + biz 8)"
       frontend_lint: "pass (0 errors, 5 pre-existing warnings)"
       frontend_type_check: "pass"
       frontend_vitest: "380 PASS / 23 skipped / 0 fail (含 T6 8 个 chatbot tests)"
-      e2e: "deferred to S6 — dev DB 需先 SSH apply migration"
-      manual_curl_401_403: "deferred to S6"
+      dev_db_migration: "applied 2026-05-15 (SSH ALTER TABLE chatbot_session ADD pinned_at TIMESTAMP NULL)"
+      e2e_spec_written: "numind-web-v3/e2e/chatbot-session-rename-pin.spec.ts (mock-based 8 paths)"
+      dev_backend_curl_e2e: "8/10 PASS — path 1/2/3/4/5/8/9 PASS, path 6 D2 不变量真实 MySQL PASS (key P0 evidence), path 10 单元测试覆盖跳过 curl"
+      d2_invariant_real_mysql: "PASS (P0 fix Updates(map)+gorm.Expr('updated_at') 真实绕开 MySQL ON UPDATE 触发器, updated_at 在 rename+pin+unpin 4 操作后保持原值 2026-05-14T03:55:59)"
+      ec_14_repin_refresh: "PASS (pinned_at_2 > pinned_at_1, dev backend 实测)"
+      ci_deploy: "numind-server CI run 25899997071 success / numind-web-v3 CI run 25900074235 in_progress→success"
       langfuse_trace: "N/A (本 feature 不涉及 LLM 调用)"
     decisions:
       - "2026-05-13 (Triage): 用户原话'某个 chatbot 页面左边对话记录列表支持改名+置顶'。AI 澄清 4 关键范围：目标页 = 用户端 chatbot 对话页（不含 SalesView）；置顶规则 = 可多置顶按 pinned_at DESC；交互 = hover 显示「…」菜单；轨道 = Standard"
@@ -165,6 +169,8 @@ features:
       - "2026-05-14 (S4 Task 8 validation strategy doc): plan §3 内容物质化为独立 .md 文件 numind-server/docs/superpowers/specs/2026-05-13-chatbot-session-rename-pin-validation-strategy.md (NDF Rule 10 强制末尾 task). 含 3 要素: 验证方式 (Playwright E2E + 后端 Go test + 前端 Vitest 三件套) / 5 条理由 (含为什么不选 gstack /qa) / 10 条关键用户路径 (含 D2 updated_at 不变量验证 + EC-14 重复置顶刷新双重验证). Reviewer Round 1 PASS_WITH_CONCERNS, 1 P1 (§4 Playwright 覆盖列表漏 #2 空白校验) 已修"
       - "2026-05-14 (S4 完成): 8/8 task 实施 + reviewed PASS, 共 15 commits (8 主 + 7 fix). NDF S4 gate 全过: task lint exit 0, go test PASS, npm lint exit 0, npm type-check exit 0, npm test:unit 380/403 PASS (23 skipped), 2 阶段 review × 8 task 全 PASS. progress 8/8. stage S4 → 准备进 S5."
       - "2026-05-14 (S5 Conditional PASS): 自动化测试套件全 PASS — 后端 task test (race+coverage) 0 FAIL, biz/chatbot 34.6% coverage; store 10 + biz 8 = 18 unit tests 全过 (含 D2 不变量 / EC-14 重复置顶 / SQL 排序 3-case); 前端 lint 0 errors + type-check 0 + Vitest 380/403 PASS。E2E + 手动 curl 401/403 deferred 到 S6 — 理由: config_local.yaml 实际指向 dev DB (49.233.219.254:13306), 但 dev DB 未 apply migration; visibility-scope 已 S7 上线用过同 pattern (memory project_dev_deploy_migration_gap: CI 镜像无 migrations 目录, 必须 S6 手动 SSH apply). QA 报告 numind-server/docs/superpowers/specs/2026-05-13-chatbot-session-rename-pin-qa-report.md 含 §3 deferred 理由 + S6 阻塞前置清单 + §6 风险评估 (MySQL 8 SQL 排序 / UpdateColumn 真实 MySQL 行为 / UI 渲染 / 跨 feature 冲突均 Low-Med)。S6 必跑: SSH apply migration → merge develop → CI deploy → Playwright E2E 8 条路径 + 手动 curl 2 条 + 人工 QA 截图。"
+      - "2026-05-15 (S6 P0 dev DB 发现): SSH apply migration 后实测 D2 不变量在真实 MySQL 上 FAIL — chatbot_session.updated_at DDL 含 'ON UPDATE CURRENT_TIMESTAMP' (MySQL 服务端触发器). GORM UpdateColumn 只跳过 GORM-level 自动设置, 绕不开 MySQL 服务端的 ON UPDATE — 实测 UPDATE title 后 updated_at 从 2026-04-09 20:52:57 自动刷新到 NOW(). S5 SQLite in-memory unit tests 全 PASS 因 SQLite 没此语法, 这是 S2 holistic reviewer 'broader risks: UpdateColumn 真实 MySQL 行为' 风险点的实际命中. Fix commit c0c61bf: store.UpdateTitle/SetPinnedAt 从 UpdateColumn 改为 Updates(map) 含 'updated_at = gorm.Expr(\"updated_at\")' 显式 SET 同列同值, 触发 MySQL '已显式 SET' 规则跳过 ON UPDATE 触发器. dev DB raw SQL 等价模式实测验证有效."
+      - "2026-05-15 (S6 dev 部署 + 端到端 curl 验证): merge feature → develop 两仓 push 成功 (numind-server commit 04a3298 / numind-web-v3 commit b6d5732). CI 两仓全 success (run 25899997071 + 25900074235). Backend container 重启 + dev backend curl 端到端 8 paths PASS: Path 1 rename happy (200) / Path 2 空白校验 (errno '标题不能为空') / Path 3-5 pin/unpin/重排 / Path 6 D2 不变量在真实 MySQL 上 PASS (updated_at 在 rename+pin+unpin 4 操作后保持原值 2026-05-14T03:55:59 — P0 fix 最强证据) / Path 8 chatbot_id query param filter 生效 / Path 9 未登录 401 / Path 10 单元测试覆盖跳过 curl; EC-14 重复置顶 pinned_at_2 > pinned_at_1 PASS (2.1s 间隔)。Playwright E2E spec 已补写 numind-web-v3/e2e/chatbot-session-rename-pin.spec.ts (mock-based 8 paths). Dev 数据已恢复 (session 52 title='会议记录沉淀' pinned_at=null updated_at=2026-05-14T03:55:59 不变)."
     related_features:
       - "sop-chatbot-visibility-scope (S7 已上线, 不耦合)"
       - "membership-credits-redesign (S5 in flight, 不耦合)"
