@@ -406,14 +406,20 @@ SET tg.credits_remaining = calc.computed_remaining
 WHERE tg.expires_at >= NOW()
   AND tg.credits_remaining != calc.computed_remaining;
 
--- 4. credit_cycle 在期校准（同 ledger 算法）
+-- 4. credit_cycle 在期校准（同 ledger 算法 — NET 公式，含 refund）
+-- ⚠️ 公式说明：必须用 NET sum (credits_granted + SUM(all amounts))，不能用 deduction-only
+-- (credits_granted - SUM(-amount WHERE amount<0))。后者会丢失 Reconcile 写入的退款行
+-- (positive amount rows, source_type='cycle')，导致 refund 后的 cycle 被错误下调。
+-- 已在 dev 上踩过坑：v1 草稿用 deduction-only 把 cycle_id=6 错误地从 1997 改成 1928。
 UPDATE credit_cycle cc
 JOIN (
-  SELECT user_id, cycle_id,
-         GREATEST(credits_granted - COALESCE(SUM(-amount), 0), 0) AS computed
-    FROM credit_transaction
-   WHERE source_type='cycle' AND amount < 0
-   GROUP BY user_id, cycle_id
+  SELECT ct.user_id, ct.source_id AS cycle_id,
+         GREATEST(cc2.credits_granted + COALESCE(SUM(ct.amount), 0), 0) AS computed
+    FROM credit_transaction ct
+    JOIN credit_cycle cc2 ON cc2.id = ct.source_id AND cc2.user_id = ct.user_id
+   WHERE ct.source_type='cycle'
+     AND cc2.cycle_end > NOW()
+   GROUP BY ct.user_id, ct.source_id, cc2.credits_granted
 ) calc ON calc.user_id = cc.user_id AND calc.cycle_id = cc.id
 SET cc.credits_remaining = calc.computed
 WHERE cc.cycle_end > NOW()
