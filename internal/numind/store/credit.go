@@ -23,7 +23,8 @@ type CreditStore interface {
 	GetOrCreateAccount(ctx context.Context, userID uint) (*model.CreditAccount, error)
 	GetBalance(ctx context.Context, userID uint) (int64, error)
 	CreatePackages(ctx context.Context, packages []model.CreditPackage) error
-	ListPackagesByUser(ctx context.Context, userID uint, offset, limit int) ([]model.CreditPackage, int64, error)
+	// T9: ListPackagesByUser deleted — credit_package reader retired; admin
+	// GetUserDetail no longer enumerates per-user packages.
 	ListPackagesByOrder(ctx context.Context, orderID uint64) ([]model.CreditPackage, error)
 	HasActiveSubscription(ctx context.Context, userID uint) (bool, error)
 	HasTrialPackage(ctx context.Context, userID uint) (bool, error)
@@ -106,23 +107,7 @@ func (s *creditStore) CreatePackages(ctx context.Context, packages []model.Credi
 	return s.db.WithContext(ctx).Create(&packages).Error
 }
 
-// ListPackagesByUser 查询用户积分包列表（分页）
-func (s *creditStore) ListPackagesByUser(ctx context.Context, userID uint, offset, limit int) ([]model.CreditPackage, int64, error) {
-	var packages []model.CreditPackage
-	var total int64
-
-	// 使用独立的查询实例，避免 GORM 查询对象被污染
-	countDB := s.db.WithContext(ctx).Model(&model.CreditPackage{}).Where("user_id = ?", userID)
-	if err := countDB.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	findDB := s.db.WithContext(ctx).Where("user_id = ?", userID)
-	if err := findDB.Order("created_at DESC").Offset(offset).Limit(limit).Find(&packages).Error; err != nil {
-		return nil, 0, err
-	}
-	return packages, total, nil
-}
+// T9: ListPackagesByUser deleted — credit_package reader retired.
 
 // ListPackagesByOrder 查询指定订单关联的积分包
 func (s *creditStore) ListPackagesByOrder(ctx context.Context, orderID uint64) ([]model.CreditPackage, error) {

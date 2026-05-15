@@ -1,18 +1,14 @@
 // Package b2b_billing implements the B2B monthly billing report for the
 // credits-system Q1 B2B2C grant path.
 //
-// # Cutover-date three-mode dispatch
+// # Source strategy (T9 simplification)
 //
-// Billing has two audit trails for B2B grants:
-//   - Legacy: credit_package rows (grant_source='b2b_grant'), keyed by activated_at
-//   - New:    membership_event rows (source='b2b_grant'), keyed by occurred_at
+// After T9 cleanup, billing always uses new_only mode — reading from
+// membership_event rows (source='b2b_grant'), keyed by occurred_at.
 //
-// chooseSource(monthStart, monthEnd, cutover) selects one of three strategies:
-//
-//	legacy_only    — entire month precedes cutover date   → scan credit_package only
-//	new_only       — entire month is at/after cutover     → scan membership_event only
-//	cutover_split  — cutover falls inside the month       → scan both, dedupe by
-//	                 composite key (new wins on conflict)
+// The legacy credit_package read path (getLegacyEvents) is kept as a
+// deprecated stub for historical context. T11 will repurpose it to read
+// the legacy_credit_package_archive_20260515 table for pre-cutover history.
 //
 // # Amount attribution
 //
@@ -38,7 +34,7 @@ import (
 type B2BBillingReport struct {
 	Month              string             `json:"month"`
 	CutoverDate        time.Time          `json:"cutover_date"`
-	Source             string             `json:"source"` // legacy_only / cutover_split / new_only
+	Source             string             `json:"source"` // always "new_only" post-T9 (legacy_only / cutover_split removed)
 	ByParent           []ParentBillingRow `json:"by_parent"`
 	TotalAmountCents   int64              `json:"total_amount_cents"`
 	TotalEventsCount   int                `json:"total_events_count"`
@@ -64,7 +60,7 @@ type GrantDetail struct {
 	GrantedAt     time.Time `json:"granted_at"`
 }
 
-// grantEvent is the internal normalised representation used by all three modes.
+// grantEvent is the internal normalised representation for billing events.
 type grantEvent struct {
 	granterUserID uint
 	childUserID   uint
@@ -72,10 +68,6 @@ type grantEvent struct {
 	months        int
 	amountCents   int64
 	grantedAt     time.Time
-	// dedupeKey components (for cutover_split mode)
-	dedupeKey string
-	// source for conflict resolution in cutover_split: "legacy" or "new"
-	dataSource string
 }
 
 // IB2BBillingBiz is the business interface.
@@ -88,10 +80,10 @@ type b2bBillingBiz struct {
 	cutoverDate time.Time
 }
 
-// New constructs a b2bBillingBiz with the given cutover date.
-// cutoverDate is the moment from which membership_event is the authoritative source.
-// Pass time.Time{} to default to legacy_only behaviour (for backward compat in
-// tests that don't provide a cutover).
+// New constructs a b2bBillingBiz without an explicit cutover date.
+// Post-T9 (credits-cleanup): chooseSource always returns new_only regardless of
+// cutoverDate, so this constructor and NewWithCutover are functionally equivalent.
+// Retained as a separate entry point for backward compat with existing callers/tests.
 func New(ds store.IStore) IB2BBillingBiz {
 	return &b2bBillingBiz{ds: ds}
 }
@@ -104,27 +96,14 @@ func NewWithCutover(ds store.IStore, cutover time.Time) IB2BBillingBiz {
 // monthRegex enforces strict YYYY-MM format (zero-padded month).
 var monthRegex = regexp.MustCompile(`^(\d{4})-(0[1-9]|1[0-2])$`)
 
-// chooseSource returns the strategy name for the given month window vs cutover.
+// chooseSource always returns "new_only" after T9 cleanup.
 //
-//	legacy_only   — monthStart >= cutover is NOT true AND monthEnd <= cutover
-//	new_only      — monthStart >= cutover
-//	cutover_split — cutover falls strictly inside (monthStart, monthEnd)
-//
-// Zero cutover (time.Time{}) always returns "legacy_only".
-func chooseSource(monthStart, monthEnd, cutover time.Time) string {
-	if cutover.IsZero() {
-		return "legacy_only"
-	}
-	// ms >= cutover → entire month is in new territory
-	if !monthStart.Before(cutover) {
-		return "new_only"
-	}
-	// me <= cutover → entire month is in legacy territory
-	if !monthEnd.After(cutover) {
-		return "legacy_only"
-	}
-	// cutover falls strictly inside [ms, me)
-	return "cutover_split"
+// T9 (credits-cleanup): the legacy_only and cutover_split branches have been
+// removed. Prod cutover_date=2026-04-20 + 0 B2B business pre-cutover means
+// all relevant months are in new_only territory. The unused parameters
+// (monthStart, monthEnd, cutover) are retained to keep callers unchanged.
+func chooseSource(_, _, _ time.Time) string {
+	return "new_only"
 }
 
 // GetBillingReport assembles the monthly B2B grant report using the appropriate
@@ -135,17 +114,10 @@ func (b *b2bBillingBiz) GetBillingReport(ctx context.Context, month string) (*B2
 		return nil, err
 	}
 
+	// T9: chooseSource always returns new_only; legacy/cutover_split branches removed.
 	source := chooseSource(start, end, b.cutoverDate)
 
-	var events []grantEvent
-	switch source {
-	case "legacy_only":
-		events, err = b.getLegacyEvents(ctx, start, end)
-	case "new_only":
-		events, err = b.getNewEvents(ctx, start, end)
-	case "cutover_split":
-		events, err = b.getCutoverSplitEvents(ctx, start, end, b.cutoverDate)
-	}
+	events, err := b.getNewEvents(ctx, start, end)
 	if err != nil {
 		return nil, fmt.Errorf("GetBillingReport month=%s source=%s: %w", month, source, err)
 	}
@@ -232,60 +204,22 @@ func (b *b2bBillingBiz) buildReport(ctx context.Context, month, source string, e
 }
 
 // --------------------------------------------------------------------------
-// getLegacyEvents: credit_package source
+// getLegacyEvents: DEPRECATED stub
 // --------------------------------------------------------------------------
 
-// getLegacyEvents queries credit_package rows where grant_source='b2b_grant'
-// and activated_at falls in [start, end).
-func (b *b2bBillingBiz) getLegacyEvents(ctx context.Context, start, end time.Time) ([]grantEvent, error) {
-	var pkgs []model.CreditPackage
-	if err := b.ds.DB().WithContext(ctx).
-		Where("grant_source = ? AND activated_at >= ? AND activated_at < ?",
-			model.GrantSourceB2BGrant, start, end).
-		Order("activated_at ASC").
-		Find(&pkgs).Error; err != nil {
-		return nil, fmt.Errorf("getLegacyEvents: query packages: %w", err)
-	}
-
-	events := make([]grantEvent, 0, len(pkgs))
-	for _, p := range pkgs {
-		if p.GranterUserID == nil {
-			continue // integrity issue; skip
-		}
-		amount := amountForPackage(p.Type)
-		productType := productTypeForPackage(p.Type)
-		months := 0
-		if p.Type == model.CreditTypeSubscription {
-			months = 1
-		}
-		events = append(events, grantEvent{
-			granterUserID: *p.GranterUserID,
-			childUserID:   p.UserID,
-			productType:   productType,
-			months:        months,
-			amountCents:   amount,
-			grantedAt:     p.ActivatedAt,
-			dataSource:    "legacy",
-			dedupeKey:     legacyDedupeKey(p),
-		})
-	}
-	return events, nil
-}
-
-// legacyDedupeKey builds the composite deduplication key for a credit_package row.
-func legacyDedupeKey(p model.CreditPackage) string {
-	// truncate to-second precision to match membership_event composite key
-	ts := p.ActivatedAt.UTC().Truncate(time.Second).Unix()
-	months := -1
-	if p.Type == model.CreditTypeSubscription {
-		months = 1
-	}
-	// key: granter|child|ts|productType|months|quantity(-1 means N/A)
-	granterID := uint64(0)
-	if p.GranterUserID != nil {
-		granterID = uint64(*p.GranterUserID)
-	}
-	return fmt.Sprintf("%d|%d|%d|%s|%d|-1", granterID, p.UserID, ts, productTypeForPackage(p.Type), months)
+// getLegacyEvents is DEPRECATED after T9 cleanup.
+//
+// prod cutover_date=2026-04-20 + 0 B2B business pre-cutover → this path
+// was never triggered in production. Returning empty is correct for all
+// historical months (2026-04-20 is the first B2B data, fully in new_only).
+//
+// T11 will repurpose this function to read legacy_credit_package_archive_20260515
+// for any pre-cutover data that gets archived there before credit_package is
+// dropped. Until then, this is a no-op stub kept for safe rollback.
+//
+//nolint:unused // intentional deprecated stub; T11 will wire callers to it.
+func (b *b2bBillingBiz) getLegacyEvents(_ context.Context, _, _ time.Time) ([]grantEvent, error) {
+	return []grantEvent{}, nil
 }
 
 // --------------------------------------------------------------------------
@@ -320,82 +254,9 @@ func (b *b2bBillingBiz) getNewEvents(ctx context.Context, start, end time.Time) 
 			months:        months,
 			amountCents:   ev.AmountCents,
 			grantedAt:     ev.OccurredAt,
-			dataSource:    "new",
-			dedupeKey:     newEventDedupeKey(ev),
 		})
 	}
 	return events, nil
-}
-
-// newEventDedupeKey builds the composite deduplication key for a MembershipEvent row.
-func newEventDedupeKey(ev membershipModel.MembershipEvent) string {
-	ts := ev.OccurredAt.UTC().Truncate(time.Second).Unix()
-	months := -1
-	if ev.Months != nil {
-		months = int(*ev.Months)
-	}
-	quantity := -1
-	if ev.Quantity != nil {
-		quantity = int(*ev.Quantity)
-	}
-	granterID := uint64(0)
-	if ev.GranterUserID != nil {
-		granterID = *ev.GranterUserID
-	}
-	return fmt.Sprintf("%d|%d|%d|%s|%d|%d", granterID, ev.UserID, ts, ev.ProductType, months, quantity)
-}
-
-// --------------------------------------------------------------------------
-// getCutoverSplitEvents: merge both sources, new wins on conflict
-// --------------------------------------------------------------------------
-
-// getCutoverSplitEvents queries both credit_package (for [start, cutover)) and
-// membership_event (for [cutover, end)), then deduplicates by composite key
-// with "new" winning over "legacy" on conflict.
-func (b *b2bBillingBiz) getCutoverSplitEvents(ctx context.Context, start, end, cutover time.Time) ([]grantEvent, error) {
-	// Legacy events: occurred before cutover
-	legacyEvents, err := b.getLegacyEvents(ctx, start, cutover)
-	if err != nil {
-		return nil, fmt.Errorf("getCutoverSplitEvents: legacy leg: %w", err)
-	}
-
-	// New events: occurred from cutover onward
-	newEvents, err := b.getNewEvents(ctx, cutover, end)
-	if err != nil {
-		return nil, fmt.Errorf("getCutoverSplitEvents: new leg: %w", err)
-	}
-
-	// Merge with deduplication: build a map keyed by dedupeKey.
-	// Insert legacy first, then new overwrites on conflict.
-	eventMap := make(map[string]grantEvent, len(legacyEvents)+len(newEvents))
-	// Track insertion order for stable output.
-	var keys []string
-
-	for _, e := range legacyEvents {
-		if _, exists := eventMap[e.dedupeKey]; !exists {
-			keys = append(keys, e.dedupeKey)
-		}
-		eventMap[e.dedupeKey] = e
-	}
-	for _, e := range newEvents {
-		if _, exists := eventMap[e.dedupeKey]; !exists {
-			// new key not seen in legacy
-			keys = append(keys, e.dedupeKey)
-		}
-		// new always overwrites legacy on same key
-		eventMap[e.dedupeKey] = e
-	}
-
-	// Reconstruct ordered slice.
-	merged := make([]grantEvent, 0, len(keys))
-	for _, k := range keys {
-		merged = append(merged, eventMap[k])
-	}
-	// Sort by grantedAt for deterministic output.
-	sort.Slice(merged, func(i, j int) bool {
-		return merged[i].grantedAt.Before(merged[j].grantedAt)
-	})
-	return merged, nil
 }
 
 // --------------------------------------------------------------------------
@@ -413,32 +274,4 @@ func parseMonth(month string) (time.Time, time.Time, error) {
 	start := time.Date(y, time.Month(mo), 1, 0, 0, 0, 0, time.UTC)
 	end := start.AddDate(0, 1, 0)
 	return start, end, nil
-}
-
-// amountForPackage mirrors GetProductAmount pricing at the per-package level.
-// trial → 990 (¥9.9 one-off)
-// subscription → 9900 (¥99 per month; each package = 1 month under Q1 grant)
-// booster → 0 (self_purchase only; never reaches this path but defensive)
-func amountForPackage(pkgType string) int64 {
-	switch pkgType {
-	case model.CreditTypeTrial:
-		return 990
-	case model.CreditTypeSubscription:
-		return 9900
-	default:
-		return 0
-	}
-}
-
-// productTypeForPackage maps credit_package.type to the logical product label
-// shown in the admin UI.
-func productTypeForPackage(pkgType string) string {
-	switch pkgType {
-	case model.CreditTypeTrial:
-		return model.ProductTypeTrial
-	case model.CreditTypeSubscription:
-		return model.ProductTypeMonthly
-	default:
-		return pkgType
-	}
 }

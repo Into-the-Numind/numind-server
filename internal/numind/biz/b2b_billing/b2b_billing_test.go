@@ -91,37 +91,6 @@ func insertB2BUser(t *testing.T, db *gorm.DB, username string) uint {
 	return id
 }
 
-func insertGrantPackage(t *testing.T, db *gorm.DB, childID uint, pkgType string, granter uint, activatedAt time.Time) {
-	t.Helper()
-	pkg := &model.CreditPackage{
-		UserID:        childID,
-		Type:          pkgType,
-		TotalCredits:  200,
-		RemainCredits: 200,
-		ActivatedAt:   activatedAt,
-		ExpiresAt:     activatedAt.Add(30 * 24 * time.Hour),
-		Status:        model.CreditPackageActive,
-		GrantSource:   model.GrantSourceB2BGrant,
-		GranterUserID: &granter,
-	}
-	require.NoError(t, db.Create(pkg).Error)
-}
-
-func insertSelfPurchasePackage(t *testing.T, db *gorm.DB, userID uint, pkgType string, activatedAt time.Time) {
-	t.Helper()
-	pkg := &model.CreditPackage{
-		UserID:        userID,
-		Type:          pkgType,
-		TotalCredits:  600,
-		RemainCredits: 600,
-		ActivatedAt:   activatedAt,
-		ExpiresAt:     activatedAt.Add(90 * 24 * time.Hour),
-		Status:        model.CreditPackageActive,
-		GrantSource:   model.GrantSourceSelfPurchase,
-	}
-	require.NoError(t, db.Create(pkg).Error)
-}
-
 func insertMembershipEvent(t *testing.T, db *gorm.DB, granterID, childID uint, productType string, months *uint8, occurredAt time.Time) {
 	t.Helper()
 	granterID64 := uint64(granterID)
@@ -148,86 +117,62 @@ func insertMembershipEvent(t *testing.T, db *gorm.DB, granterID, childID uint, p
 }
 
 // --------------------------------------------------------------------------
-// chooseSource unit tests — 5 cases covering all three modes
+// chooseSource unit tests — T9: always new_only
 // --------------------------------------------------------------------------
 
 func TestChooseSource(t *testing.T) {
+	// T9 cleanup: chooseSource always returns new_only regardless of input.
 	cutover := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
 
 	cases := []struct {
 		name       string
 		monthStart time.Time
 		monthEnd   time.Time
-		want       string
+		cutoverArg time.Time
 	}{
 		{
-			name:       "entirely before cutover → legacy_only",
+			name:       "entirely before cutover → new_only (T9 simplified)",
 			monthStart: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
 			monthEnd:   time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
-			want:       "legacy_only",
-		},
-		{
-			name:       "month end exactly on cutover → legacy_only",
-			monthStart: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
-			monthEnd:   time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC), // me == cutover: !me.After(cutover)
-			want:       "legacy_only",
-		},
-		{
-			name:       "month starts exactly on cutover → new_only",
-			monthStart: time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC), // ms == cutover: !ms.Before(cutover)
-			monthEnd:   time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC),
-			want:       "new_only",
+			cutoverArg: cutover,
 		},
 		{
 			name:       "entirely after cutover → new_only",
 			monthStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
 			monthEnd:   time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
-			want:       "new_only",
+			cutoverArg: cutover,
 		},
 		{
-			name:       "cutover inside month → cutover_split",
+			name:       "zero cutover → new_only (T9 simplified)",
 			monthStart: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
 			monthEnd:   time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
-			want:       "cutover_split",
-		},
-		{
-			name:       "zero cutover → legacy_only",
-			monthStart: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
-			monthEnd:   time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
-			want:       "legacy_only",
+			cutoverArg: time.Time{},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var cutoverArg time.Time
-			if tc.want != "legacy_only" || tc.name != "zero cutover → legacy_only" {
-				cutoverArg = cutover
-			}
-			if tc.name == "zero cutover → legacy_only" {
-				cutoverArg = time.Time{}
-			}
-			got := chooseSource(tc.monthStart, tc.monthEnd, cutoverArg)
-			assert.Equal(t, tc.want, got)
+			got := chooseSource(tc.monthStart, tc.monthEnd, tc.cutoverArg)
+			assert.Equal(t, "new_only", got, "T9: chooseSource always returns new_only")
 		})
 	}
 }
 
 // --------------------------------------------------------------------------
-// Legacy-only mode (backward-compat tests, matches original test suite)
+// Basic report tests (all use new_only / membership_event source after T9)
 // --------------------------------------------------------------------------
 
 func TestGetBillingReport_Empty(t *testing.T) {
 	db := newB2BTestDB(t)
 	ds := store.NewTestStore(db)
-	biz := New(ds) // zero cutover → legacy_only
+	biz := New(ds) // T9: always new_only regardless of cutover
 
 	report, err := biz.GetBillingReport(context.Background(), "2026-04")
 	require.NoError(t, err)
 	assert.Equal(t, "2026-04", report.Month)
 	assert.Empty(t, report.ByParent)
 	assert.EqualValues(t, 0, report.TotalAmountCents)
-	assert.Equal(t, "legacy_only", report.Source)
+	assert.Equal(t, "new_only", report.Source)
 }
 
 func TestGetBillingReport_OneParentTwoChildren(t *testing.T) {
@@ -241,12 +186,14 @@ func TestGetBillingReport_OneParentTwoChildren(t *testing.T) {
 
 	apr10 := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
 	apr15 := time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC)
+	months := uint8(1)
 
-	insertGrantPackage(t, db, childA, model.CreditTypeTrial, parent, apr10)
-	insertGrantPackage(t, db, childB, model.CreditTypeSubscription, parent, apr15)
-	// packages outside April — should NOT count
-	insertGrantPackage(t, db, childB, model.CreditTypeSubscription, parent, time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC))
-	insertGrantPackage(t, db, childB, model.CreditTypeSubscription, parent, time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
+	// T9: all reads go to membership_event, not credit_package
+	insertMembershipEvent(t, db, parent, childA, membershipModel.ProductTypeTrial, nil, apr10)
+	insertMembershipEvent(t, db, parent, childB, membershipModel.ProductTypeMonthly, &months, apr15)
+	// events outside April — should NOT count
+	insertMembershipEvent(t, db, parent, childB, membershipModel.ProductTypeMonthly, &months, time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC))
+	insertMembershipEvent(t, db, parent, childB, membershipModel.ProductTypeMonthly, &months, time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
 
 	report, err := biz.GetBillingReport(context.Background(), "2026-04")
 	require.NoError(t, err)
@@ -272,8 +219,20 @@ func TestGetBillingReport_ExcludesSelfPurchase(t *testing.T) {
 
 	apr10 := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
 
-	insertGrantPackage(t, db, child, model.CreditTypeTrial, parent, apr10)
-	insertSelfPurchasePackage(t, db, child, model.CreditTypeBooster, apr10)
+	// T9: B2B grant via membership_event; self-purchase event (no granter) excluded
+	insertMembershipEvent(t, db, parent, child, membershipModel.ProductTypeTrial, nil, apr10)
+	// self_purchase event: no granter — getNewEvents skips rows with nil GranterUserID
+	selfEv := &membershipModel.MembershipEvent{
+		UserID:      uint64(child),
+		EventType:   membershipModel.EventTypeSubGranted,
+		ProductType: membershipModel.ProductTypeMonthly,
+		AmountCents: 9900,
+		Source:      membershipModel.SourceSelfPurchase,
+		OccurredAt:  apr10,
+	}
+	selfKey := "self-purchase-excl-test"
+	selfEv.IdempotencyKey = &selfKey
+	require.NoError(t, db.Create(selfEv).Error)
 
 	report, err := biz.GetBillingReport(context.Background(), "2026-04")
 	require.NoError(t, err)
@@ -293,10 +252,12 @@ func TestGetBillingReport_MultipleParents(t *testing.T) {
 	child2 := insertB2BUser(t, db, "bob")
 
 	apr10 := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
+	months := uint8(1)
 
-	insertGrantPackage(t, db, child1, model.CreditTypeSubscription, parent1, apr10)
-	insertGrantPackage(t, db, child1, model.CreditTypeSubscription, parent1, apr10)
-	insertGrantPackage(t, db, child2, model.CreditTypeTrial, parent2, apr10)
+	// T9: all via membership_event
+	insertMembershipEvent(t, db, parent1, child1, membershipModel.ProductTypeMonthly, &months, apr10)
+	insertMembershipEvent(t, db, parent1, child1, membershipModel.ProductTypeMonthly, &months, apr10.Add(time.Second)) // distinct key
+	insertMembershipEvent(t, db, parent2, child2, membershipModel.ProductTypeTrial, nil, apr10)
 
 	report, err := biz.GetBillingReport(context.Background(), "2026-04")
 	require.NoError(t, err)
@@ -324,7 +285,7 @@ func TestGetBillingReport_InvalidMonth(t *testing.T) {
 	}
 }
 
-func TestGetBillingReport_BoundaryActivatedAt(t *testing.T) {
+func TestGetBillingReport_BoundaryOccurredAt(t *testing.T) {
 	db := newB2BTestDB(t)
 	ds := store.NewTestStore(db)
 	biz := New(ds)
@@ -333,17 +294,18 @@ func TestGetBillingReport_BoundaryActivatedAt(t *testing.T) {
 	child := insertB2BUser(t, db, "c")
 
 	aprStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
-	aprEnd := time.Date(2026, 4, 30, 23, 59, 59, 999_000_000, time.UTC)
+	aprEnd := time.Date(2026, 4, 30, 23, 59, 59, 0, time.UTC) // within April
 	mayStart := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 
-	insertGrantPackage(t, db, child, model.CreditTypeTrial, parent, aprStart)
-	insertGrantPackage(t, db, child, model.CreditTypeTrial, parent, aprEnd)
-	insertGrantPackage(t, db, child, model.CreditTypeTrial, parent, mayStart)
+	// T9: boundary test via membership_event occurred_at
+	insertMembershipEvent(t, db, parent, child, membershipModel.ProductTypeTrial, nil, aprStart)
+	insertMembershipEvent(t, db, parent, child, membershipModel.ProductTypeTrial, nil, aprEnd)
+	insertMembershipEvent(t, db, parent, child, membershipModel.ProductTypeTrial, nil, mayStart)
 
 	report, err := biz.GetBillingReport(context.Background(), "2026-04")
 	require.NoError(t, err)
 	require.Len(t, report.ByParent, 1)
-	assert.Equal(t, 2, report.ByParent[0].GrantsCount, "only April boundary packages count")
+	assert.Equal(t, 2, report.ByParent[0].GrantsCount, "only April boundary events count")
 }
 
 // --------------------------------------------------------------------------
@@ -390,92 +352,33 @@ func TestGetBillingReport_NewOnly_MembershipEvents(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// Cutover-split mode tests
+// T9 note: cutover_split mode removed — all months now use new_only.
+// The following tests were the cutover_split tests; they now verify that
+// even months spanning the former cutover boundary use new_only correctly.
 // --------------------------------------------------------------------------
 
-func TestGetBillingReport_CutoverSplit_BothSources(t *testing.T) {
+func TestGetBillingReport_FormerCutoverMonth_UsesNewOnly(t *testing.T) {
 	db := newB2BTestDB(t)
 	ds := store.NewTestStore(db)
 
-	// cutover = May 15 → May report is cutover_split
+	// T9: even with a cutover date set, chooseSource always returns new_only.
 	cutover := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
 	biz := NewWithCutover(ds, cutover)
 
 	parent := insertB2BUser(t, db, "split_corp")
 	child := insertB2BUser(t, db, "split_emp")
 
-	// Legacy event: May 5 (before cutover) → in credit_package
-	may5 := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
-	insertGrantPackage(t, db, child, model.CreditTypeTrial, parent, may5)
-
-	// New event: May 20 (after cutover) → in membership_event
+	// Only membership_event rows are read, regardless of cutover.
 	may20 := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
 	months := uint8(1)
 	insertMembershipEvent(t, db, parent, child, membershipModel.ProductTypeMonthly, &months, may20)
 
 	report, err := biz.GetBillingReport(context.Background(), "2026-05")
 	require.NoError(t, err)
-	assert.Equal(t, "cutover_split", report.Source)
+	assert.Equal(t, "new_only", report.Source, "T9: cutover_split removed; always new_only")
 	require.Len(t, report.ByParent, 1)
-	row := report.ByParent[0]
-	assert.Equal(t, 2, row.GrantsCount, "1 legacy + 1 new")
-	// trial=990, monthly=9900 → total 10890
-	assert.EqualValues(t, 10890, row.AmountCents)
-	assert.EqualValues(t, 10890, report.TotalAmountCents)
-	assert.Equal(t, 2, report.TotalEventsCount)
-}
-
-func TestGetBillingReport_CutoverSplit_DedupeNewWins(t *testing.T) {
-	db := newB2BTestDB(t)
-	ds := store.NewTestStore(db)
-
-	// cutover = May 15 → May report is cutover_split
-	cutover := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
-	biz := NewWithCutover(ds, cutover)
-
-	parent := insertB2BUser(t, db, "dedup_corp")
-	child := insertB2BUser(t, db, "dedup_emp")
-
-	// An event at exactly the cutover second: put in legacy (credit_package)
-	// AND a corresponding new (membership_event). The new one should win.
-	// For same deduplication key we need same: granter, child, ts, productType, months, quantity.
-	// Here we test distinct timestamps before/after — no same-key conflict.
-	// Real dedup scenario: legacy row at cutover-1s, new row at same time (impossible
-	// in practice). We test the dedup by inserting legacy at may10 and new at may10 same second.
-	may10 := time.Date(2026, 5, 10, 12, 0, 0, 0, time.UTC)
-
-	// Insert legacy package at may10 with trial (amount 990)
-	insertGrantPackage(t, db, child, model.CreditTypeTrial, parent, may10)
-
-	// Insert new event at may10 same second with trial — same dedupeKey → new should win
-	// (in new event, amountCents comes from membership_event itself)
-	granterID64 := uint64(parent)
-	idKey := "dedup-test-key-unique"
-	ev := &membershipModel.MembershipEvent{
-		UserID:         uint64(child),
-		EventType:      membershipModel.EventTypeTrialGranted,
-		ProductType:    membershipModel.ProductTypeTrial,
-		AmountCents:    990,
-		Source:         membershipModel.SourceB2BGrant,
-		GranterUserID:  &granterID64,
-		IdempotencyKey: &idKey,
-		OccurredAt:     may10, // same timestamp as legacy
-	}
-	require.NoError(t, db.Create(ev).Error)
-
-	// For this test: legacy interval = [may1, cutover=[may15)
-	//                new interval    = [may15, jun1)
-	// may10 < may15 → legacy leg picks it up; may10 NOT in new leg [may15, jun1)
-	// → No deduplication conflict in this case; both events are distinct (different legs)
-	// We just verify the report shows 1 event (legacy) + report is correct.
-	report, err := biz.GetBillingReport(context.Background(), "2026-05")
-	require.NoError(t, err)
-	assert.Equal(t, "cutover_split", report.Source)
-	require.Len(t, report.ByParent, 1)
-	// Only the legacy event (may10 < cutover) is counted.
-	// The membership_event at may10 is NOT in [may15, jun1) so not picked by new leg.
 	assert.Equal(t, 1, report.ByParent[0].GrantsCount)
-	assert.EqualValues(t, 990, report.TotalAmountCents)
+	assert.EqualValues(t, 9900, report.TotalAmountCents)
 }
 
 func TestGetBillingReport_NewMetadataFields(t *testing.T) {

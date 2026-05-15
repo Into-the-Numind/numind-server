@@ -3,7 +3,6 @@ package credit
 import (
 	"errors"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -29,7 +28,8 @@ type CreditController struct {
 
 // New 创建积分控制器实例
 // Phase 2 Task 2.0: creditSvc 引入，GetBalance 改走 ICreditService.GetBalance
-// Phase 2 Task 2.3: 追加 promptEstimator + ds 用于 Estimate / ListPackages handler
+// Phase 2 Task 2.3: 追加 promptEstimator + ds 用于 Estimate handler
+// T9: ListPackages handler deleted; ds 字段保留供 Estimate 使用
 func New(creditBiz creditbiz.ICreditBiz, creditSvc creditbiz.ICreditService, promptEstimator creditbiz.IPromptEstimator, ds store.IStore) *CreditController {
 	return &CreditController{
 		creditBiz:       creditBiz,
@@ -231,160 +231,4 @@ func runeCountMany(ss ...string) int {
 	return n
 }
 
-// ListPackages GET /v1/credits/packages — C 用户查看自己的 credit_package 列表
-// 契约（spec §4.1.1）：分页 + filter（status/type）+ sort（expires_at / created_at）
-// 安全：必须按 user_id 过滤，不得跨用户
-func (c *CreditController) ListPackages(ctx *gin.Context) {
-	user := middleware.GetCurrentUser(ctx)
-	if user == nil {
-		core.WriteResponse(ctx, errno.ErrTokenInvalid, nil)
-		return
-	}
-
-	var req ListPackagesReq
-	if err := ctx.ShouldBindQuery(&req); err != nil {
-		core.WriteResponse(ctx, errno.ErrBind.SetMessage("%s", err.Error()), nil)
-		return
-	}
-	if req.Page < 1 {
-		req.Page = 1
-	}
-	if req.PageSize < 1 {
-		req.PageSize = 20
-	}
-	if req.PageSize > 100 {
-		req.PageSize = 100
-	}
-
-	// 排序字段白名单（防注入）
-	orderClause, err := parsePackageSort(req.Sort)
-	if err != nil {
-		core.WriteResponse(ctx, errno.ErrInvalidParameter.SetMessage("%s", err.Error()), nil)
-		return
-	}
-
-	// 类型/状态白名单（防注入）
-	if req.Type != "" && !isValidPackageType(req.Type) {
-		core.WriteResponse(ctx, errno.ErrInvalidParameter.SetMessage("invalid type filter: %s", req.Type), nil)
-		return
-	}
-	if req.Status != "" && !isValidPackageStatus(req.Status) {
-		core.WriteResponse(ctx, errno.ErrInvalidParameter.SetMessage("invalid status filter: %s", req.Status), nil)
-		return
-	}
-
-	offset := (req.Page - 1) * req.PageSize
-	limit := req.PageSize
-
-	// 显式 WHERE user_id = :current_user_id（安全基线）
-	db := c.ds.DB().WithContext(ctx).Model(&model.CreditPackage{}).Where("user_id = ?", user.ID)
-	if req.Status != "" {
-		db = db.Where("status = ?", req.Status)
-	}
-	if req.Type != "" {
-		db = db.Where("type = ?", req.Type)
-	}
-
-	// count（独立查询对象避免 GORM 状态污染）
-	var total int64
-	countDB := c.ds.DB().WithContext(ctx).Model(&model.CreditPackage{}).Where("user_id = ?", user.ID)
-	if req.Status != "" {
-		countDB = countDB.Where("status = ?", req.Status)
-	}
-	if req.Type != "" {
-		countDB = countDB.Where("type = ?", req.Type)
-	}
-	if err := countDB.Count(&total).Error; err != nil {
-		log.C(ctx).Errorw("count packages failed", "user_id", user.ID, "err", err)
-		core.WriteResponse(ctx, errno.ErrInternalServer, nil)
-		return
-	}
-
-	// list
-	var packages []model.CreditPackage
-	if err := db.Order(orderClause).Offset(offset).Limit(limit).Find(&packages).Error; err != nil {
-		log.C(ctx).Errorw("list packages failed", "user_id", user.ID, "err", err)
-		core.WriteResponse(ctx, errno.ErrInternalServer, nil)
-		return
-	}
-
-	// 规范化为 CreditPackageItem
-	items := make([]CreditPackageItem, 0, len(packages))
-	for i := range packages {
-		items = append(items, toCreditPackageItem(&packages[i]))
-	}
-
-	core.WriteResponse(ctx, nil, ListPackagesResp{List: items, Total: total})
-}
-
-// parsePackageSort parses a "field:direction" sort spec into a safe ORDER BY clause.
-// Whitelist to avoid SQL injection: only expires_at / created_at, only asc / desc.
-func parsePackageSort(sort string) (string, error) {
-	if sort == "" {
-		return "expires_at ASC", nil
-	}
-	parts := strings.SplitN(sort, ":", 2)
-	field := parts[0]
-	dir := "asc"
-	if len(parts) == 2 {
-		dir = strings.ToLower(parts[1])
-	}
-	allowedFields := map[string]bool{
-		"expires_at": true,
-		"created_at": true,
-	}
-	allowedDirs := map[string]string{
-		"asc":  "ASC",
-		"desc": "DESC",
-	}
-	if !allowedFields[field] {
-		return "", &badSortError{msg: "sort field must be one of: expires_at, created_at"}
-	}
-	sqlDir, ok := allowedDirs[dir]
-	if !ok {
-		return "", &badSortError{msg: "sort direction must be asc or desc"}
-	}
-	return field + " " + sqlDir, nil
-}
-
-type badSortError struct{ msg string }
-
-func (e *badSortError) Error() string { return e.msg }
-
-// isValidPackageType returns true for allowed credit_package.type values.
-func isValidPackageType(t string) bool {
-	switch t {
-	case model.CreditTypeTrial, model.CreditTypeSubscription, model.CreditTypeBooster:
-		return true
-	}
-	return false
-}
-
-// isValidPackageStatus returns true for user-facing status filter values.
-// Spec §4.1.1 lists active/expired/revoked; we support the existing status
-// constants plus "revoked" as an alias for exhausted (prod has no 'revoked' state,
-// but frontend contract names it that way).
-func isValidPackageStatus(s string) bool {
-	switch s {
-	case model.CreditPackageActive, model.CreditPackageExpired,
-		model.CreditPackageExhausted, model.CreditPackagePending, "revoked":
-		return true
-	}
-	return false
-}
-
-// toCreditPackageItem maps the DB row into the wire-level item. Time fields use
-// RFC3339 so the frontend TypeScript contract stays single-string.
-func toCreditPackageItem(p *model.CreditPackage) CreditPackageItem {
-	return CreditPackageItem{
-		ID:            p.ID,
-		Type:          p.Type,
-		TotalCredits:  p.TotalCredits,
-		RemainCredits: p.RemainCredits,
-		ActivatedAt:   p.ActivatedAt.Format(time.RFC3339),
-		ExpiresAt:     p.ExpiresAt.Format(time.RFC3339),
-		Status:        p.Status,
-		OrderID:       p.OrderID,
-		CreatedAt:     p.CreatedAt.Format(time.RFC3339),
-	}
-}
+// T9: ListPackages (GET /v1/credits/packages) deleted — credit_package dead route removed.
