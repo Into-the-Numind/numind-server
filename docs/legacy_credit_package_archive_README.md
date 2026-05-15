@@ -93,3 +93,53 @@ to be restored from a pre-migration `mysqldump`.
 
 Do NOT drop this table without explicit authorization — it is the only complete record
 of historical credit package state before the three-pool redesign.
+
+## Query Examples
+
+### B2B 月结历史回溯
+
+按月聚合每个父账号 (granter) 发放的积分包数量与额度。`?` 占位符替换为月度区间端点
+（如 `'2026-03-01'` 与 `'2026-04-01'`）。
+
+```sql
+SELECT user_id, COUNT(*) AS grants, SUM(total_credits) AS total_credits
+FROM legacy_credit_package_archive_20260515
+WHERE grant_source = 'b2b_grant'
+  AND activated_at BETWEEN ? AND ?
+GROUP BY user_id;
+```
+
+### 财务对账 by order_id
+
+支付订单与积分包的核对。
+
+```sql
+SELECT *
+FROM legacy_credit_package_archive_20260515
+WHERE order_id IS NOT NULL
+ORDER BY created_at;
+```
+
+### 单用户积分包历史
+
+排查某个用户的历史积分包全量记录（含 trial / subscription / booster）。
+
+```sql
+SELECT *
+FROM legacy_credit_package_archive_20260515
+WHERE user_id = ?
+ORDER BY created_at;
+```
+
+## Retention Policy
+
+归档表保留 7 年，对齐中国会计法对会计凭证的最低保管年限要求。DBA 在 **2033-05-15**
+之前不可删除此表。如需提前清理，需财务部门书面授权。
+
+## Cross-references
+
+- T9 `getLegacyEvents` stub now reads this table — see
+  `internal/numind/biz/b2b_billing/b2b_billing.go::getLegacyEvents`
+- T11 forward migration: `migrations/20260515_200000_t11_archive_credit_package.sql`
+- T11 rollback migration: `migrations/20260515_200000_t11_archive_credit_package_rollback.sql`
+- Cleanup plan: `docs/superpowers/plans/2026-05-15-membership-credits-redesign-cleanup-plan.md`

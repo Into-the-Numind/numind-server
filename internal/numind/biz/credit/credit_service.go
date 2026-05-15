@@ -916,7 +916,14 @@ func (c *creditsImpl) refundOneItem(
 
 	// New-path dispatch: item carries source_type/source_id → route to
 	// MembershipService.RefundCreditsTx for cycle/booster/trial refund.
-	if item.SourceType != nil && item.SourceID != nil && c.membershipSvc != nil {
+	if item.SourceType != nil && item.SourceID != nil {
+		// Fail-loud guard: if MembershipService is not wired, a silent return
+		// here would lose the user's credits permanently. Surfacing this as an
+		// error allows the outer transaction to roll back, and the reservation
+		// stays alive for a later retry once the service is wired (T6 wiring bug).
+		if c.membershipSvc == nil {
+			return 0, fmt.Errorf("refundOneItem: membershipSvc is nil but SourceType=%v (T6 wiring bug)", *item.SourceType)
+		}
 		_, _, refundedAmt, err := c.membershipSvc.RefundCreditsTx(
 			ctx, tx,
 			uint64(userID),

@@ -221,6 +221,11 @@ func (b *b2bBillingBiz) buildReport(ctx context.Context, month, source string, e
 //   - Direct audit queries via tooling
 //   - Future reactivation of cutover_split mode if ever needed
 //   - Historical month verification scripts
+//
+// TODO(T+future): Reactivate this code path when cutover_split mode is needed for
+// backward-history queries (i.e. when chooseSource() returns "cutover_split"). At
+// that point, wire it into GetBillingReport alongside getNewEvents and remove the
+// linter suppression on the function signature below.
 func (b *b2bBillingBiz) getLegacyEvents(ctx context.Context, start, end time.Time) ([]grantEvent, error) { //nolint:unused // preserved for historical audit tooling; not called by GetBillingReport post-T9
 	type archiveRow struct {
 		GranterUserID uint

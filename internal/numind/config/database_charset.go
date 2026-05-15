@@ -46,7 +46,8 @@ func DefaultDatabaseCharsetConfig() *DatabaseCharsetConfig {
 			"chatbot_session",
 			"chatbot_message",
 			"credit_account",
-			"credit_package",
+			// credit_package removed in T11 (2026-05-15): archived to
+			// legacy_credit_package_archive_20260515 and dropped.
 			"credit_reservation",
 			"pricing_rule",
 			"usage_record",

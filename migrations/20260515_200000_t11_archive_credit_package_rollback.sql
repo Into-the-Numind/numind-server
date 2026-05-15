@@ -18,34 +18,39 @@
 --   - mysqldump backup at /tmp/t11_backup.sql should be available for balance recovery
 
 -- ============================================================
--- Step 1: Recreate credit_package table with original schema
+-- Step 1: Recreate credit_package table from archive schema
 -- ============================================================
--- Using the original DDL from migrations/add_credits_system.sql +
--- migrations/20260420_100000_add_grant_fields_to_credit_package.sql
-CREATE TABLE IF NOT EXISTS `credit_package` (
-  `id`              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `user_id`         INT UNSIGNED    NOT NULL,
-  `type`            VARCHAR(20)     NOT NULL,
-  `total_credits`   BIGINT          NOT NULL,
-  `remain_credits`  BIGINT          NOT NULL,
-  `activated_at`    DATETIME(3)     NOT NULL,
-  `expires_at`      DATETIME(3)     NOT NULL,
-  `order_id`        BIGINT UNSIGNED DEFAULT NULL,
-  `status`          VARCHAR(20)     NOT NULL,
-  -- Q1 B2B2C grant fields (from migration 20260420_100000)
-  `grant_source`    VARCHAR(20)     NOT NULL DEFAULT 'self_purchase',
-  `granter_user_id` INT UNSIGNED    DEFAULT NULL,
-  `created_at`      DATETIME(3)     DEFAULT NULL,
-  `updated_at`      DATETIME(3)     DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  KEY `idx_cp_user_status_expires` (`user_id`, `status`, `expires_at`),
-  KEY `idx_cp_order` (`order_id`),
-  KEY `idx_grant_source_granter` (`grant_source`, `granter_user_id`, `activated_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- Use CREATE TABLE ... LIKE to guarantee zero type drift vs the archive
+-- (source of truth). Then strip the archive-only audit columns and indexes,
+-- and add back the AUTO_INCREMENT + original credit_package indexes.
+--
+-- This approach eliminates the type-mismatch class of bug (user_id width,
+-- total_credits/remain_credits width, grant_source nullability, etc.) that
+-- inevitably occurs if the explicit CREATE TABLE diverges from archive DDL.
+CREATE TABLE IF NOT EXISTS `credit_package` LIKE `legacy_credit_package_archive_20260515`;
+
+-- Drop archive-only audit columns + index (these don't belong on the live table).
+ALTER TABLE `credit_package` DROP COLUMN `archived_at`;
+ALTER TABLE `credit_package` DROP COLUMN `archive_reason`;
+ALTER TABLE `credit_package` DROP INDEX `idx_archive_user_type`;
+ALTER TABLE `credit_package` DROP INDEX `idx_archive_grant_source`;
+ALTER TABLE `credit_package` DROP INDEX `idx_archive_created_at`;
+
+-- Restore AUTO_INCREMENT on the primary key (archive table does not auto-increment).
+ALTER TABLE `credit_package` MODIFY COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT;
+
+-- Restore the original credit_package indexes (matching the pre-T11 DDL from
+-- migrations/add_credits_system.sql + migrations/20260420_100000_add_grant_fields_to_credit_package.sql).
+ALTER TABLE `credit_package`
+  ADD KEY `idx_cp_user_status_expires` (`user_id`, `status`, `expires_at`),
+  ADD KEY `idx_cp_order` (`order_id`),
+  ADD KEY `idx_grant_source_granter` (`grant_source`, `granter_user_id`, `activated_at`);
 
 -- ============================================================
 -- Step 2: Restore data from archive table
 -- ============================================================
+-- Recreated table schema matches the archive's column types exactly (via
+-- CREATE TABLE LIKE above), so a column-aligned INSERT ... SELECT is safe.
 INSERT INTO `credit_package` (
   `id`, `user_id`, `type`, `total_credits`, `remain_credits`, `status`,
   `grant_source`, `granter_user_id`, `order_id`,
@@ -53,7 +58,7 @@ INSERT INTO `credit_package` (
 )
 SELECT
   `id`, `user_id`, `type`, `total_credits`, `remain_credits`, `status`,
-  COALESCE(`grant_source`, 'self_purchase'), `granter_user_id`, `order_id`,
+  `grant_source`, `granter_user_id`, `order_id`,
   `activated_at`, `expires_at`, `created_at`, `updated_at`
 FROM `legacy_credit_package_archive_20260515`;
 

@@ -24,8 +24,10 @@ import (
 // credit_account.balance column has been dropped. Methods that depended on
 // credit_package have been removed or migrated to read from new tables.
 // Removed: CreatePackages, ListPackagesByOrder, UpdateBalance, RecalculateBalance,
-// GetMembershipStateBatch (credit_package-backed version). GetBalance now always
-// returns 0 (column gone; credits-mode callers must use MembershipService.GetBalance).
+// GetMembershipStateBatch (store layer, never wired up post-T11 — production code
+// uses biz/membership/state.go::MembershipService.GetMembershipStateBatch instead).
+// GetBalance now always returns 0 (column gone; credits-mode callers must use
+// MembershipService.GetBalance).
 // GetQuotaBreakdown now reads from credit_cycle + user_booster_balance + trial_grant.
 // GetLatestCreditExpiry now reads from subscription + trial_grant.
 // GetUserTypeCreditMultiplier now reads from trial_grant (not credit_package).
@@ -45,20 +47,6 @@ type CreditStore interface {
 	ListAllAccountsWithBalance(ctx context.Context, offset, limit int) ([]model.CreditAccount, int64, error)
 	GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error)
 	GetLatestCreditExpiry(ctx context.Context, userID uint) (string, error)
-	// GetMembershipStateBatch batch-fetches membership state for a list of userIDs in one query.
-	// Returns a map keyed by userID.  Missing keys mean no active packages exist for that user.
-	// T11: implementation now reads from subscription + trial_grant (not credit_package).
-	GetMembershipStateBatch(ctx context.Context, userIDs []uint) (map[uint]*MembershipStateRow, error)
-}
-
-// MembershipStateRow aggregated membership state for one user (used by GetMembershipStateBatch).
-type MembershipStateRow struct {
-	HasActiveTrial        bool
-	HasActiveSubscription bool
-	HasUsedTrial          bool   // any trial package ever (any status)
-	TrialExpiresAt        string // RFC3339 date, empty if none
-	SubscriptionExpiresAt string // RFC3339 date, empty if none
-	SubRemain             int64  // subscription + trial remain credits (no booster)
 }
 
 type creditStore struct {
@@ -339,6 +327,8 @@ func (s *creditStore) GetLatestCreditExpiry(ctx context.Context, userID uint) (s
 	var latestExpiry time.Time
 
 	// Check subscription expiry.
+	// Scan() never returns ErrRecordNotFound (it returns zero rows affected),
+	// so a simple err check suffices — the gorm.ErrRecordNotFound guard was dead code.
 	var subExpiry struct{ ExpiresAt time.Time }
 	if err := s.db.WithContext(ctx).
 		Table("subscription").
@@ -346,7 +336,7 @@ func (s *creditStore) GetLatestCreditExpiry(ctx context.Context, userID uint) (s
 		Where("user_id = ? AND expires_at > ?", userID, now).
 		Order("expires_at DESC").
 		Limit(1).
-		Scan(&subExpiry).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		Scan(&subExpiry).Error; err != nil {
 		return "", fmt.Errorf("GetLatestCreditExpiry: subscription: %w", err)
 	}
 	if !subExpiry.ExpiresAt.IsZero() && subExpiry.ExpiresAt.After(latestExpiry) {
@@ -360,7 +350,7 @@ func (s *creditStore) GetLatestCreditExpiry(ctx context.Context, userID uint) (s
 		Select("expires_at").
 		Where("user_id = ? AND expires_at > ?", userID, now).
 		Limit(1).
-		Scan(&trialExpiry).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		Scan(&trialExpiry).Error; err != nil {
 		return "", fmt.Errorf("GetLatestCreditExpiry: trial_grant: %w", err)
 	}
 	if !trialExpiry.ExpiresAt.IsZero() && trialExpiry.ExpiresAt.After(latestExpiry) {
@@ -373,94 +363,8 @@ func (s *creditStore) GetLatestCreditExpiry(ctx context.Context, userID uint) (s
 	return latestExpiry.Format("2006-01-02"), nil
 }
 
-// GetMembershipStateBatch 批量获取多个用户的会员状态（两次 DB 查询），返回 map[userID]*MembershipStateRow。
-// 用于 ListSubUsers 父账号列表场景，避免 N+1 问题。
-//
-// T11 (credits-cleanup): credit_package table has been dropped. Now reads from:
-//   - subscription table: HasActiveSubscription + SubscriptionExpiresAt + SubRemain (via credit_cycle)
-//   - trial_grant table: HasActiveTrial + HasUsedTrial + TrialExpiresAt + SubRemain
-//
-// SubRemain = active credit_cycle.credits_remaining + active trial_grant.credits_remaining.
-func (s *creditStore) GetMembershipStateBatch(ctx context.Context, userIDs []uint) (map[uint]*MembershipStateRow, error) {
-	if len(userIDs) == 0 {
-		return map[uint]*MembershipStateRow{}, nil
-	}
-
-	now := time.Now()
-	result := make(map[uint]*MembershipStateRow, len(userIDs))
-
-	// Initialize result map entries.
-	for _, id := range userIDs {
-		result[id] = &MembershipStateRow{}
-	}
-
-	// Query subscription table.
-	type subRow struct {
-		UserID    uint
-		ExpiresAt time.Time
-	}
-	var subRows []subRow
-	if err := s.db.WithContext(ctx).
-		Table("subscription").
-		Select("user_id, expires_at").
-		Where("user_id IN ?", userIDs).
-		Find(&subRows).Error; err != nil {
-		return nil, fmt.Errorf("GetMembershipStateBatch: subscription: %w", err)
-	}
-	for _, r := range subRows {
-		m := result[r.UserID]
-		if r.ExpiresAt.After(now) {
-			m.HasActiveSubscription = true
-		}
-		exp := r.ExpiresAt.Format("2006-01-02")
-		if m.SubscriptionExpiresAt == "" || exp > m.SubscriptionExpiresAt {
-			m.SubscriptionExpiresAt = exp
-		}
-	}
-
-	// Query active credit_cycles to compute SubRemain for subscription users.
-	type cycleRow struct {
-		UserID           uint
-		CreditsRemaining int64
-	}
-	var cycleRows []cycleRow
-	if err := s.db.WithContext(ctx).
-		Table("credit_cycle").
-		Select("user_id, credits_remaining").
-		Where("user_id IN ? AND cycle_end > ?", userIDs, now).
-		Find(&cycleRows).Error; err != nil {
-		return nil, fmt.Errorf("GetMembershipStateBatch: credit_cycle: %w", err)
-	}
-	for _, r := range cycleRows {
-		result[r.UserID].SubRemain += r.CreditsRemaining
-	}
-
-	// Query trial_grant table.
-	type trialRow struct {
-		UserID           uint
-		ExpiresAt        time.Time
-		CreditsRemaining int64
-	}
-	var trialRows []trialRow
-	if err := s.db.WithContext(ctx).
-		Table("trial_grant").
-		Select("user_id, expires_at, credits_remaining").
-		Where("user_id IN ?", userIDs).
-		Find(&trialRows).Error; err != nil {
-		return nil, fmt.Errorf("GetMembershipStateBatch: trial_grant: %w", err)
-	}
-	for _, r := range trialRows {
-		m := result[r.UserID]
-		m.HasUsedTrial = true // any trial row means lifetime trial was used
-		if r.ExpiresAt.After(now) {
-			m.HasActiveTrial = true
-			exp := r.ExpiresAt.Format("2006-01-02")
-			if m.TrialExpiresAt == "" || exp > m.TrialExpiresAt {
-				m.TrialExpiresAt = exp
-			}
-			m.SubRemain += r.CreditsRemaining
-		}
-	}
-
-	return result, nil
-}
+// T11 (credits-cleanup): the previous store-layer GetMembershipStateBatch and its
+// MembershipStateRow DTO have been removed. They were a leftover from the
+// credit_package era. Production code uses biz/membership/state.go::
+// MembershipService.GetMembershipStateBatch instead (called from biz/customer/customer.go).
+// No tests, callers, or routes referenced the store-layer version.

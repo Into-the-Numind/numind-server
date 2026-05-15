@@ -43,7 +43,10 @@ CREATE TABLE IF NOT EXISTS `legacy_credit_package_archive_20260515` (
 -- ============================================================
 -- Step 2: Copy all rows from credit_package to archive table
 -- ============================================================
-INSERT INTO `legacy_credit_package_archive_20260515` (
+-- INSERT IGNORE → idempotent: re-running the migration after partial completion
+-- (e.g. archive table already populated) skips duplicate primary keys instead of
+-- aborting. Safe because (id) is PK and rows are immutable once archived.
+INSERT IGNORE INTO `legacy_credit_package_archive_20260515` (
   `id`, `user_id`, `type`, `total_credits`, `remain_credits`, `status`,
   `grant_source`, `granter_user_id`, `order_id`,
   `activated_at`, `expires_at`, `created_at`, `updated_at`,
@@ -70,15 +73,18 @@ SELECT
 -- ============================================================
 -- Step 4: DROP credit_package table (IRREVERSIBLE)
 -- Only execute after verifying archive_count == source_count above.
+-- IF EXISTS → idempotent: re-running the migration after the table is already
+-- dropped is a no-op instead of an error.
 -- ============================================================
-DROP TABLE `credit_package`;
+DROP TABLE IF EXISTS `credit_package`;
 
 -- ============================================================
 -- Step 5: DROP credit_account.balance column (IRREVERSIBLE)
 -- GetBalance now reads from credit_cycle + user_booster_balance + trial_grant (three-pool SOT).
 -- NOTE: user_booster_balance is NOT dropped (it remains the booster SOT per spec §2.4).
+-- IF EXISTS → idempotent (MySQL 8.0.4+): safe to re-run after column is gone.
 -- ============================================================
-ALTER TABLE `credit_account` DROP COLUMN `balance`;
+ALTER TABLE `credit_account` DROP COLUMN IF EXISTS `balance`;
 
 -- ============================================================
 -- Post-run verification
