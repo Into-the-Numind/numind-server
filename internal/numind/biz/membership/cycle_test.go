@@ -5,6 +5,7 @@ package membership
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,7 +29,7 @@ func newCycleTestDB(t *testing.T) *gorm.DB {
 	// connections within this test share the same SQLite in-memory database.
 	// With plain ":memory:", each pooled connection gets its own empty schema;
 	// with a named shared URI, all connections see the same tables and data.
-	dsn := "file:" + t.Name() + "?mode=memory&cache=shared"
+	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
@@ -87,6 +88,20 @@ func newCycleTestDB(t *testing.T) *gorm.DB {
 			idempotency_key   TEXT UNIQUE,
 			subscription_id   INTEGER,
 			occurred_at       DATETIME NOT NULL
+		)`,
+		// credit_transaction is required by DeductCreditsTx (T1 ledger writes).
+		`CREATE TABLE IF NOT EXISTS credit_transaction (
+			id               INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id          INTEGER NOT NULL,
+			package_id       INTEGER NOT NULL DEFAULT 0,
+			source_type      TEXT,
+			source_id        INTEGER,
+			amount           INTEGER NOT NULL,
+			operation        TEXT NOT NULL DEFAULT '',
+			usage_record_id  INTEGER,
+			biz_ref_type     TEXT NOT NULL DEFAULT '',
+			biz_ref_id       TEXT NOT NULL DEFAULT '',
+			created_at       DATETIME NOT NULL
 		)`,
 	}
 	for _, stmt := range ddl {
@@ -284,7 +299,7 @@ func TestDeductCreditsTx_SourceType_Trial(t *testing.T) {
 	var result *DeductionResult
 	err := db.Transaction(func(tx *gorm.DB) error {
 		var e error
-		result, e = svc.DeductCreditsTx(ctx, tx, userID, 50, now)
+		result, e = svc.DeductCreditsTx(ctx, tx, userID, 50, "test:trial_only", now)
 		return e
 	})
 	require.NoError(t, err)
@@ -318,7 +333,7 @@ func TestDeductCreditsTx_SourceType_Cycle(t *testing.T) {
 	var result *DeductionResult
 	err := db.Transaction(func(tx *gorm.DB) error {
 		var e error
-		result, e = svc.DeductCreditsTx(ctx, tx, userID, 100, txNow)
+		result, e = svc.DeductCreditsTx(ctx, tx, userID, 100, "test:cycle_only", txNow)
 		return e
 	})
 	require.NoError(t, err)
@@ -351,7 +366,7 @@ func TestDeductCreditsTx_SourceType_Booster(t *testing.T) {
 	var result *DeductionResult
 	err := db.Transaction(func(tx *gorm.DB) error {
 		var e error
-		result, e = svc.DeductCreditsTx(ctx, tx, userID, 50, now)
+		result, e = svc.DeductCreditsTx(ctx, tx, userID, 50, "test:trial_then_booster", now)
 		return e
 	})
 	require.NoError(t, err)
@@ -393,7 +408,7 @@ func TestDeductCreditsTx_SourceType_TrialThenCycleThenBooster(t *testing.T) {
 	var result *DeductionResult
 	err := db.Transaction(func(tx *gorm.DB) error {
 		var e error
-		result, e = svc.DeductCreditsTx(ctx, tx, userID, 2100, start.Add(time.Hour))
+		result, e = svc.DeductCreditsTx(ctx, tx, userID, 2100, "test:all_three_pools", start.Add(time.Hour))
 		return e
 	})
 	require.NoError(t, err)

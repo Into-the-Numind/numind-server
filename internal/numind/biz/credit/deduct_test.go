@@ -103,6 +103,20 @@ func newDeductDB(t *testing.T) *gorm.DB {
 			subscription_id   INTEGER,
 			occurred_at       DATETIME NOT NULL
 		)`,
+		// T1 ledger: credit_transaction rows written by DeductCreditsTx / RefundCreditsTx.
+		`CREATE TABLE IF NOT EXISTS credit_transaction (
+			id                INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id           INTEGER NOT NULL,
+			package_id        INTEGER NOT NULL DEFAULT 0,
+			source_type       TEXT,
+			source_id         INTEGER,
+			amount            INTEGER NOT NULL,
+			operation         TEXT NOT NULL,
+			usage_record_id   INTEGER,
+			biz_ref_type      TEXT,
+			biz_ref_id        TEXT,
+			created_at        DATETIME NOT NULL
+		)`,
 	}
 	for _, stmt := range ddl {
 		require.NoError(t, db.Exec(stmt).Error)

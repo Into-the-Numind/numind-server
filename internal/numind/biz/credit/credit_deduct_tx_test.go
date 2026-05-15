@@ -3,6 +3,7 @@ package credit_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,12 +24,13 @@ import (
 // unused by DeductCredits / DeductCreditsTx).
 func newCreditTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	// file::memory:?cache=shared keeps all connections inside the GORM pool
-	// sharing the same SQLite schema. With plain ":memory:" each pooled
-	// connection gets its own empty DB — AutoMigrate on conn #1 is invisible
-	// to conn #2, which is why credits_store.GetOrCreateAccount sometimes
-	// sees "no such table: credit_account" even though AutoMigrate succeeded.
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{
+	// Use a per-test unique named in-memory DB so that parallel tests do not share
+	// schema state. The file: URI with mode=memory&cache=shared ensures all
+	// connections within a single test see the same tables (unlike plain ":memory:"
+	// where each pooled connection gets its own empty DB). ReplaceAll("/", "_")
+	// guards against subtest names containing slashes breaking the SQLite URI.
+	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err, "open sqlite in-memory DB")

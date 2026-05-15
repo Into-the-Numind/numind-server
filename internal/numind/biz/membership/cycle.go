@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"numind-server/internal/pkg/errno"
+	creditmodel "numind-server/internal/pkg/model"
 	model "numind-server/internal/pkg/model/membership"
 	"numind-server/internal/pkg/util"
 )
@@ -146,7 +147,7 @@ func (s *MembershipService) ensureCurrentCycle(ctx context.Context, tx *gorm.DB,
 func (s *MembershipService) DeductCredits(ctx context.Context, userID uint64, amount int64) (*DeductionResult, error) {
 	var deduction *DeductionResult
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		r, e := s.DeductCreditsTx(ctx, tx, userID, amount, time.Now().UTC())
+		r, e := s.DeductCreditsTx(ctx, tx, userID, amount, "deduct", time.Now().UTC())
 		deduction = r
 		return e
 	})
@@ -162,13 +163,28 @@ func (s *MembershipService) DeductCredits(ctx context.Context, userID uint64, am
 // inserts) in one tx — MySQL doesn't support nested transactions, so we expose
 // a tx-aware variant.
 //
+// The operation parameter is recorded in credit_transaction.operation for each
+// pool deduction row written by this function. Callers should pass a meaningful
+// operation string (e.g. "reserve:sop_run", "reconcile:sop_run") so the ledger
+// is useful for T7/T8 calibration and ops audits.
+//
 // Returns DeductionResult with FromTrial/FromCycle/FromBooster aggregates AND
 // per-pool Items (SourceType + SourceID + Amount) so the caller can record
 // detailed per-source reservation_item rows for accurate refund routing.
 //
+// LEDGER CONTRACT (T1): For every pool deduction, this function writes a
+// credit_transaction row with:
+//   - amount = -take (negative = debit)
+//   - source_type = "trial" | "cycle" | "booster"
+//   - source_id  = trial_grant.id | credit_cycle.id | userID (booster PK)
+//   - package_id = 0 (new path has no credit_package)
+//
+// This makes credit_transaction self-contained for post-T11 forensics and
+// T7/T8 calibration without joining the (eventually dropped) credit_package.
+//
 // Caller is responsible for tx lifecycle (open + commit/rollback). This
 // function only writes; on ErrInsufficientCredits the caller must rollback.
-func (s *MembershipService) DeductCreditsTx(ctx context.Context, tx *gorm.DB, userID uint64, amount int64, now time.Time) (*DeductionResult, error) {
+func (s *MembershipService) DeductCreditsTx(ctx context.Context, tx *gorm.DB, userID uint64, amount int64, operation string, now time.Time) (*DeductionResult, error) {
 	if amount <= 0 {
 		return nil, errno.ErrInvalidParameter
 	}
@@ -242,6 +258,21 @@ func (s *MembershipService) DeductCreditsTx(ctx context.Context, tx *gorm.DB, us
 		if err := s.store.TrialGrants().Update(ctx, tx, trialLocked); err != nil {
 			return nil, fmt.Errorf("DeductCreditsTx: update trial_grant: %w", err)
 		}
+		// T1 ledger: write credit_transaction row for trial pool debit.
+		sourceType := string(DeductSourceTrial)
+		sourceID := trialLocked.ID
+		ct := &creditmodel.CreditTransaction{
+			UserID:     uint(userID),
+			PackageID:  0, // new-path: no credit_package
+			SourceType: &sourceType,
+			SourceID:   &sourceID,
+			Amount:     -take,
+			Operation:  operation,
+			CreatedAt:  time.Now(),
+		}
+		if err := tx.WithContext(ctx).Create(ct).Error; err != nil {
+			return nil, fmt.Errorf("DeductCreditsTx: write trial credit_transaction: %w", err)
+		}
 	}
 
 	// Pool 2: cycle
@@ -257,6 +288,21 @@ func (s *MembershipService) DeductCreditsTx(ctx context.Context, tx *gorm.DB, us
 		cycle.UpdatedAt = now
 		if err := s.store.CreditCycles().Update(ctx, tx, cycle); err != nil {
 			return nil, fmt.Errorf("DeductCreditsTx: update credit_cycle: %w", err)
+		}
+		// T1 ledger: write credit_transaction row for cycle pool debit.
+		sourceType := string(DeductSourceCycle)
+		sourceID := cycle.ID
+		ct := &creditmodel.CreditTransaction{
+			UserID:     uint(userID),
+			PackageID:  0, // new-path: no credit_package
+			SourceType: &sourceType,
+			SourceID:   &sourceID,
+			Amount:     -take,
+			Operation:  operation,
+			CreatedAt:  time.Now(),
+		}
+		if err := tx.WithContext(ctx).Create(ct).Error; err != nil {
+			return nil, fmt.Errorf("DeductCreditsTx: write cycle credit_transaction: %w", err)
 		}
 	}
 
@@ -276,6 +322,22 @@ func (s *MembershipService) DeductCreditsTx(ctx context.Context, tx *gorm.DB, us
 		if err := s.store.BoosterBalances().Decrement(ctx, tx, userID, take); err != nil {
 			return nil, fmt.Errorf("DeductCreditsTx: decrement booster: %w", err)
 		}
+		// T1 ledger: write credit_transaction row for booster pool debit.
+		// SourceID = userID (user_booster_balance PK).
+		sourceType := string(DeductSourceBooster)
+		sourceID := userID
+		ct := &creditmodel.CreditTransaction{
+			UserID:     uint(userID),
+			PackageID:  0, // new-path: no credit_package
+			SourceType: &sourceType,
+			SourceID:   &sourceID,
+			Amount:     -take,
+			Operation:  operation,
+			CreatedAt:  time.Now(),
+		}
+		if err := tx.WithContext(ctx).Create(ct).Error; err != nil {
+			return nil, fmt.Errorf("DeductCreditsTx: write booster credit_transaction: %w", err)
+		}
 	}
 
 	if remaining > 0 {
@@ -294,6 +356,10 @@ func (s *MembershipService) DeductCreditsTx(ctx context.Context, tx *gorm.DB, us
 // When all fallbacks fail (no active pool to receive credit), writes a
 // membership_event "refund_lost" ledger entry and returns refundedAmount=0
 // (no error — caller distinguishes via amount==0 vs err≠nil).
+//
+// LEDGER CONTRACT (T1): For every successful refund (amount > 0), this function
+// writes a positive credit_transaction row with the original source_type/source_id
+// from the deduction, making the ledger self-contained for post-T11 forensics.
 //
 // Caller is responsible for tx lifecycle (open + commit/rollback).
 func (s *MembershipService) RefundCreditsTx(
@@ -315,6 +381,24 @@ func (s *MembershipService) RefundCreditsTx(
 	subActive := sub != nil && sub.ExpiresAt.After(now)
 	trialActive := trial != nil && trial.ExpiresAt.After(now) && trial.CreditsRemaining > 0
 
+	// writeLedgerRefund writes a positive credit_transaction row for the refund.
+	// actualSource and actualSourceID may differ from the original (source, sourceID)
+	// when a fallback pool received the credit — we record the actual destination.
+	writeLedgerRefund := func(actualSource DeductSource, actualSourceID uint64) error {
+		st := string(actualSource)
+		sid := actualSourceID
+		ct := &creditmodel.CreditTransaction{
+			UserID:     uint(userID),
+			PackageID:  0, // new-path: no credit_package
+			SourceType: &st,
+			SourceID:   &sid,
+			Amount:     amount, // positive = refund
+			Operation:  "refund",
+			CreatedAt:  time.Now(),
+		}
+		return tx.WithContext(ctx).Create(ct).Error
+	}
+
 	// ── Step 1: Try original source if still active ─────────────────────────
 	switch source {
 	case DeductSourceTrial:
@@ -325,6 +409,9 @@ func (s *MembershipService) RefundCreditsTx(
 			origTrial.CreditsRemaining += int(amount)
 			if updateErr := s.store.TrialGrants().Update(ctx, tx, &origTrial); updateErr != nil {
 				return "", 0, 0, fmt.Errorf("RefundCreditsTx: update trial: %w", updateErr)
+			}
+			if ledgerErr := writeLedgerRefund(DeductSourceTrial, origTrial.ID); ledgerErr != nil {
+				return "", 0, 0, fmt.Errorf("RefundCreditsTx: write trial refund ledger: %w", ledgerErr)
 			}
 			return DeductSourceTrial, origTrial.ID, amount, nil
 		}
@@ -339,6 +426,9 @@ func (s *MembershipService) RefundCreditsTx(
 			if updateErr := s.store.CreditCycles().Update(ctx, tx, &cycle); updateErr != nil {
 				return "", 0, 0, fmt.Errorf("RefundCreditsTx: update cycle: %w", updateErr)
 			}
+			if ledgerErr := writeLedgerRefund(DeductSourceCycle, cycle.ID); ledgerErr != nil {
+				return "", 0, 0, fmt.Errorf("RefundCreditsTx: write cycle refund ledger: %w", ledgerErr)
+			}
 			return DeductSourceCycle, cycle.ID, amount, nil
 		}
 
@@ -347,6 +437,9 @@ func (s *MembershipService) RefundCreditsTx(
 		if subActive || trialActive {
 			if incErr := s.store.BoosterBalances().Increment(ctx, tx, userID, amount); incErr != nil {
 				return "", 0, 0, fmt.Errorf("RefundCreditsTx: increment booster: %w", incErr)
+			}
+			if ledgerErr := writeLedgerRefund(DeductSourceBooster, userID); ledgerErr != nil {
+				return "", 0, 0, fmt.Errorf("RefundCreditsTx: write booster refund ledger: %w", ledgerErr)
 			}
 			return DeductSourceBooster, userID, amount, nil
 		}
@@ -364,6 +457,9 @@ func (s *MembershipService) RefundCreditsTx(
 			if incErr := s.store.BoosterBalances().Increment(ctx, tx, userID, amount); incErr != nil {
 				return "", 0, 0, fmt.Errorf("RefundCreditsTx: fallback booster increment: %w", incErr)
 			}
+			if ledgerErr := writeLedgerRefund(DeductSourceBooster, userID); ledgerErr != nil {
+				return "", 0, 0, fmt.Errorf("RefundCreditsTx: write fallback booster refund ledger: %w", ledgerErr)
+			}
 			return DeductSourceBooster, userID, amount, nil
 		}
 	}
@@ -376,6 +472,9 @@ func (s *MembershipService) RefundCreditsTx(
 			cycle.UpdatedAt = now
 			if updateErr := s.store.CreditCycles().Update(ctx, tx, cycle); updateErr != nil {
 				return "", 0, 0, fmt.Errorf("RefundCreditsTx: fallback cycle update: %w", updateErr)
+			}
+			if ledgerErr := writeLedgerRefund(DeductSourceCycle, cycle.ID); ledgerErr != nil {
+				return "", 0, 0, fmt.Errorf("RefundCreditsTx: write fallback cycle refund ledger: %w", ledgerErr)
 			}
 			return DeductSourceCycle, cycle.ID, amount, nil
 		}
