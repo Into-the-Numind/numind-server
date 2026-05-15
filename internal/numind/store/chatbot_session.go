@@ -17,11 +17,11 @@ type IChatbotSessionStore interface {
 	DeleteSession(ctx context.Context, id uint) error
 	IncrementMessageCount(ctx context.Context, sessionID uint) error
 
-	// UpdateTitle 更新会话标题。使用 UpdateColumn 绕开 updated_at 自动刷新（D2 决策）。
+	// UpdateTitle 更新会话标题。显式 updated_at=updated_at 绕开 MySQL ON UPDATE 触发器（D2 决策）。
 	// sessionID 不存在时返回 gorm.ErrRecordNotFound。
 	UpdateTitle(ctx context.Context, sessionID uint, title string) error
 
-	// SetPinnedAt 设置或清除会话的置顶时间。使用 UpdateColumn 绕开 updated_at 自动刷新（D2 决策）。
+	// SetPinnedAt 设置或清除会话的置顶时间。显式 updated_at=updated_at 绕开 MySQL ON UPDATE 触发器（D2 决策）。
 	// pinnedAt == nil 时写入 SQL NULL（取消置顶）。sessionID 不存在时返回 gorm.ErrRecordNotFound。
 	SetPinnedAt(ctx context.Context, sessionID uint, pinnedAt *time.Time) error
 
@@ -91,13 +91,23 @@ func (s *chatbotSessionStore) IncrementMessageCount(ctx context.Context, session
 		UpdateColumn("message_count", gorm.Expr("message_count + ?", 1)).Error
 }
 
-// UpdateTitle 更新会话标题，使用 UpdateColumn 绕开 updated_at 自动刷新（D2 决策）。
+// UpdateTitle 更新会话标题，显式设置 updated_at=updated_at 绕开 MySQL
+// `ON UPDATE CURRENT_TIMESTAMP` 触发器，保证 D2 不变量（rename 不刷新 updated_at）。
+//
+// 注意：仅 GORM UpdateColumn 不够 —— UpdateColumn 只跳过 GORM-level 自动设置，
+// 但 chatbot_session.updated_at 列 DDL 有 ON UPDATE CURRENT_TIMESTAMP，MySQL
+// 服务端会自动刷新（dev DB 实测确认）。Updates(map) 中显式 `updated_at = updated_at`
+// (gorm.Expr) 是显式 SET 同列同值，MySQL 服务端的 ON UPDATE 触发器不会再触发。
+//
 // sessionID 不存在时返回 gorm.ErrRecordNotFound。
 func (s *chatbotSessionStore) UpdateTitle(ctx context.Context, sessionID uint, title string) error {
 	result := s.db.WithContext(ctx).
 		Model(&model.ChatbotSession{}).
 		Where("id = ?", sessionID).
-		UpdateColumn("title", title)
+		Updates(map[string]interface{}{
+			"title":      title,
+			"updated_at": gorm.Expr("updated_at"),
+		})
 	if result.Error != nil {
 		return result.Error
 	}
@@ -107,13 +117,18 @@ func (s *chatbotSessionStore) UpdateTitle(ctx context.Context, sessionID uint, t
 	return nil
 }
 
-// SetPinnedAt 设置或清除会话的置顶时间，使用 UpdateColumn 绕开 updated_at 自动刷新（D2 决策）。
+// SetPinnedAt 设置或清除会话的置顶时间，显式设置 updated_at=updated_at 绕开 MySQL
+// ON UPDATE CURRENT_TIMESTAMP 触发器（D2 不变量，详 UpdateTitle 注释）。
+//
 // pinnedAt == nil 时写入 SQL NULL（取消置顶）。sessionID 不存在时返回 gorm.ErrRecordNotFound。
 func (s *chatbotSessionStore) SetPinnedAt(ctx context.Context, sessionID uint, pinnedAt *time.Time) error {
 	result := s.db.WithContext(ctx).
 		Model(&model.ChatbotSession{}).
 		Where("id = ?", sessionID).
-		UpdateColumn("pinned_at", pinnedAt)
+		Updates(map[string]interface{}{
+			"pinned_at":  pinnedAt,
+			"updated_at": gorm.Expr("updated_at"),
+		})
 	if result.Error != nil {
 		return result.Error
 	}
