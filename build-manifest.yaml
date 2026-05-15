@@ -551,3 +551,33 @@ features:
     blockers: []
     created_at: "2026-04-28T22:00:00+08:00"
     completed_at: null
+
+  - id: "pricing-charge-cost-split"
+    ndf_version: "1.1"
+    description: "把积分扣减从按成本价改为按售价计算。当前 pricing.CalculateCost 在 flat 模式用成本字段（InputPricePerMTok / OutputPricePerMTok），tiered 模式却用售价字段（tier.SellPerMTok），两条路径行为不一致；同时 CreditMultiplier 被乘进 CalculateCost 污染了 UsageRecord.CostCents 成本统计列。本 feature 重构 pricing 包成对外暴露 CalculateCost（纯成本，含 cost 字段、不乘 multiplier）+ CalculateCharge（向用户收费，含 sell 字段、乘 CreditMultiplier）两个方法，credit_service/sop biz 切换到 CalculateCharge，recorder.computeRevenue 收编进 pricing 包变薄壳。当前 seed 数据 cost == sell 且 multiplier == 1.0，部署后行为零变化，但消除 latent bug。"
+    track: "standard"
+    stage: "S0"
+    classification_reason: "条件 4（影响 6-8 文件：pricing.go / pricing_test / recorder.go / recorder_test / credit_service.go / sop.go ×2 路径 / 可能含 chatbot biz / mock 文件）+ 条件 5（积分扣减核心路径，影响每笔订单营收，与 credits-deduct-cycle-wiring P0 同敏感度）触发 Standard。"
+    last_updated_by: "ai-s0-requirement-card"
+    last_updated_at: "2026-05-15T00:00:00+08:00"
+    repos:
+      - numind-server
+    branches: {}
+    artifacts:
+      requirement: "numind-server/requirements/pricing-charge-cost-split.md"
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "等待 S0 gate 人类确认进入 S1"
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-05-15 (Triage): 5 条标准评估 — 条件 1/2/3 满足（无 schema/无新端点/无外部集成），条件 4 不满足（>3 文件），条件 5 触发（核心扣费路径影响营收）。用户确认 Standard 轨道。"
+      - "2026-05-15 (S0 关键假设预登记，待 S2 spec 锁定): (1) pricing.ICalculator 同时保留 CalculateCost（成本，不乘 CreditMultiplier）+ 新增 CalculateCharge（售价，乘 CreditMultiplier）；(2) CreditMultiplier 仅作用于 CalculateCharge，从 CalculateCost 移除以修正 UsageRecord.CostCents 历史污染；(3) UserTypeMultiplier 位置不动；(4) recorder.computeRevenue / calculateTieredRevenue 删除，改调 pricing.CalculateCharge；(5) 调用点切换清单 S1 调研阶段补全（已知 credit_service.go:192 / sop.go:936 / sop.go:1693，可能含 chatbot biz）；(6) 向后兼容：seed cost == sell + multiplier == 1.0 → 部署后行为字节级一致，S5 额外构造 cost ≠ sell 用例验证新路径。"
+    related_features:
+      - "credits-deduct-cycle-wiring (completed 2026-05-14) — 修了 Reserve/Reconcile 切新表，未触及 pricing 字段层面 cost/sell 语义"
+      - "ai-service-admin-complete (completed) — 提供了 pricing_rule 管理端 CRUD 能力，售价字段在 UI 可编辑，本 feature 让该能力真正影响扣费"
+    blockers: []
+    created_at: "2026-05-15T00:00:00+08:00"
+    completed_at: null
