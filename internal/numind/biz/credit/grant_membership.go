@@ -9,6 +9,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"numind-server/internal/numind/biz/membership"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
@@ -50,9 +51,17 @@ type GrantMembershipReq struct {
 
 // GrantMembership 由父账户为子账户赋予会员（B2B2C 路径，不走支付）。
 //
+// T4 重写（membership-credits-redesign cleanup）：
+//   - trial  → 调 MembershipService.GrantTrial（写 trial_grant 新表）
+//   - monthly → 调 MembershipService.GrantOrRenewSubscription（写 subscription 新表）
+//   - 不再写 credit_package（INSERT 路径已切走）
+//   - 不再调 UpdateBalance（credit_account.balance 将在 T11 废弃）
+//   - 保留 billing_mode legacy_tier→credits 切换（MembershipService 不做此操作）
+//   - 保留 action_log 写入（B2B 月结审计需要）
+//
 // 与 RechargeWithOrderTx 的差异:
 //   - 不关联 Order (OrderID 保持 NULL)
-//   - credit_package.grant_source='b2b_grant', granter_user_id=ParentUserID
+//   - grant_source='b2b_grant', granter_user_id=ParentUserID
 //   - 记录 action_log 以供 B2B 月度结算报表审计
 //
 // 校验链:
@@ -61,7 +70,10 @@ type GrantMembershipReq struct {
 //  3. trial 防重复（lifetime 单次）；monthly 防重复开通在期订阅（spec §3.9 防提前续费）
 //  4. billing_mode legacy_tier → credits 切换（同 RechargeWithOrderTx 触发条件）
 //
-// 所有写操作在同一 transaction 中完成，失败自动 rollback。
+// Guard reader 切换（T4 atomicity）：
+//
+//	HasActiveSubscription 和 HasTrialPackage 现在读 subscription / trial_grant 新表，
+//	与 MembershipService 写路径对齐，确保 trial lifetime 保护不失效。
 func (b *creditBiz) GrantMembership(ctx context.Context, req GrantMembershipReq) error {
 	// Step 1: validate product type early (cheap)
 	if err := validateGrantProductType(req); err != nil {
@@ -91,7 +103,7 @@ func (b *creditBiz) GrantMembership(ctx context.Context, req GrantMembershipReq)
 		}
 	}
 
-	// Step 3: anti-duplicate checks (mirror payment.CreateOrder Trial/Monthly guards)
+	// Step 3: anti-duplicate checks (guard readers now read new tables — T4 atomicity)
 	switch req.ProductType {
 	case model.ProductTypeTrial:
 		// Spec §3.9: trial not available in-period — if child has an active subscription, reject.
@@ -119,62 +131,75 @@ func (b *creditBiz) GrantMembership(ctx context.Context, req GrantMembershipReq)
 		}
 	}
 
-	// Step 4: ensure credit account exists (outside tx — GetOrCreateAccount uses its own connection)
-	if _, err := b.ds.Credits().GetOrCreateAccount(ctx, req.ChildUserID); err != nil {
-		return fmt.Errorf("GrantMembership: ensure credit account: %w", err)
-	}
-
-	// Step 5: build packages + run in a single transaction (create packages, bump balance, switch billing_mode, log audit)
+	// Step 4: dispatch to MembershipService (writes new tables, no credit_package INSERT)
 	now := time.Now()
-	packages, err := buildGrantPackages(req, now)
-	if err != nil {
-		return err
+	granterID := uint64(req.ParentUserID)
+	childID64 := uint64(req.ChildUserID)
+
+	switch req.ProductType {
+	case model.ProductTypeTrial:
+		// MembershipService.GrantTrial performs its own transactional write to trial_grant.
+		// No idempotency key is passed here — the calling layer (controller) is expected
+		// to be idempotent at the HTTP level. If req carries an idempotency key in future,
+		// wire it here.
+		_, err := b.membershipSvc.GrantTrial(ctx, membership.GrantTrialRequest{
+			UserID:        childID64,
+			GranterUserID: &granterID,
+			Now:           now,
+		})
+		if err != nil {
+			return fmt.Errorf("GrantMembership: trial: %w", err)
+		}
+
+	case model.ProductTypeMonthly:
+		// For self-grant (ParentUserID == ChildUserID), pass parentForValidation=0 to bypass
+		// ErrMembershipSelfPurchaseDisabled (which guards against C-end self-purchase, not
+		// B2B admin self-grant). See GrantOrRenewSubscription.validateSubscriptionInput.
+		parentForValidation := uint64(req.ParentUserID)
+		if req.ParentUserID == req.ChildUserID {
+			parentForValidation = 0 // bypass self-purchase check for parent self-grant
+		}
+		_, err := b.membershipSvc.GrantOrRenewSubscription(ctx, membership.GrantSubscriptionRequest{
+			ParentUserID:  parentForValidation,
+			UserID:        childID64,
+			ProductType:   "monthly",
+			Months:        req.Months,
+			GranterUserID: &granterID,
+			Now:           now,
+		})
+		if err != nil {
+			return fmt.Errorf("GrantMembership: subscription: %w", err)
+		}
 	}
 
+	// Step 5: post-grant side effects in a single DB transaction:
+	//   a. Switch billing_mode legacy_tier → credits (MembershipService does not do this)
+	//   b. Write action_log for B2B billing report audit
 	err = b.ds.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Insert packages
-		if err := tx.Create(&packages).Error; err != nil {
-			return fmt.Errorf("create credit packages: %w", err)
-		}
-
-		// Sum immediately-active credits for balance bump
-		var immediate int64
-		for _, p := range packages {
-			if p.Status == model.CreditPackageActive {
-				immediate += p.TotalCredits
-			}
-		}
-		if immediate > 0 {
-			if err := b.ds.Credits().UpdateBalance(ctx, tx, req.ChildUserID, immediate); err != nil {
-				return fmt.Errorf("update balance: %w", err)
-			}
-		}
-
-		// Switch billing_mode legacy_tier → credits (same trigger as RechargeWithOrderTx path,
-		// spec §3.8). Guarded by WHERE billing_mode='legacy_tier' so no-op for credits users.
+		// a. Switch billing_mode legacy_tier → credits.
+		// Guarded by WHERE billing_mode='legacy_tier' so no-op for credits users.
 		if err := tx.Model(&model.User{}).
 			Where("id = ? AND billing_mode = ?", req.ChildUserID, model.BillingModeLegacyTier).
 			Update("billing_mode", model.BillingModeCredits).Error; err != nil {
 			return fmt.Errorf("switch billing_mode: %w", err)
 		}
 
-		// Write action log for B2B billing report audit
+		// b. Write action log for B2B billing report audit.
 		detail := map[string]interface{}{
 			"product_type": req.ProductType,
 			"months":       req.Months,
 			"reason":       req.Reason,
-			"package_ids":  collectPackageIDs(packages),
 		}
 		detailJSON, err := json.Marshal(detail)
 		if err != nil {
 			return fmt.Errorf("marshal action log detail: %w", err)
 		}
-		childID := req.ChildUserID
+		childIDPtr := req.ChildUserID
 		actionLog := &model.ActionLogM{
 			UserID:    req.ParentUserID,
 			Action:    "grant_membership",
 			Target:    "user",
-			TargetID:  &childID,
+			TargetID:  &childIDPtr,
 			Detail:    string(detailJSON),
 			CreatedAt: now,
 		}
@@ -185,7 +210,7 @@ func (b *creditBiz) GrantMembership(ctx context.Context, req GrantMembershipReq)
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("GrantMembership: %w", err)
+		return fmt.Errorf("GrantMembership: post-grant side effects: %w", err)
 	}
 
 	log.Infow("B2B membership granted",
@@ -213,60 +238,4 @@ func validateGrantProductType(req GrantMembershipReq) error {
 	default:
 		return fmt.Errorf("%w: got %q (allowed: trial, monthly)", ErrGrantInvalidProductType, req.ProductType)
 	}
-}
-
-// buildGrantPackages constructs the credit_package rows for a grant request.
-// Mirrors the trial / monthly branches of RechargeWithOrderTx but stamps
-// GrantSource='b2b_grant' + GranterUserID and leaves OrderID nil.
-func buildGrantPackages(req GrantMembershipReq, now time.Time) ([]model.CreditPackage, error) {
-	granter := req.ParentUserID
-
-	switch req.ProductType {
-	case model.ProductTypeTrial:
-		return []model.CreditPackage{
-			{
-				UserID:        req.ChildUserID,
-				Type:          model.CreditTypeTrial,
-				TotalCredits:  200,
-				RemainCredits: 200,
-				ActivatedAt:   now,
-				ExpiresAt:     now.Add(3 * 24 * time.Hour),
-				Status:        model.CreditPackageActive,
-				GrantSource:   model.GrantSourceB2BGrant,
-				GranterUserID: &granter,
-			},
-		}, nil
-	case model.ProductTypeMonthly:
-		m := req.Months
-		pkgs := make([]model.CreditPackage, 0, m)
-		for i := 0; i < m; i++ {
-			status := model.CreditPackagePending
-			if i == 0 {
-				status = model.CreditPackageActive
-			}
-			pkgs = append(pkgs, model.CreditPackage{
-				UserID:        req.ChildUserID,
-				Type:          model.CreditTypeSubscription,
-				TotalCredits:  2000,
-				RemainCredits: 2000,
-				ActivatedAt:   now.AddDate(0, i, 0),
-				ExpiresAt:     now.AddDate(0, i+1, 0),
-				Status:        status,
-				GrantSource:   model.GrantSourceB2BGrant,
-				GranterUserID: &granter,
-			})
-		}
-		return pkgs, nil
-	default:
-		// validateGrantProductType already covers this — defensive.
-		return nil, fmt.Errorf("GrantMembership: unreachable product_type %q", req.ProductType)
-	}
-}
-
-func collectPackageIDs(pkgs []model.CreditPackage) []uint64 {
-	ids := make([]uint64, 0, len(pkgs))
-	for _, p := range pkgs {
-		ids = append(ids, p.ID)
-	}
-	return ids
 }

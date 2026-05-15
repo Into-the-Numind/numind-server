@@ -145,40 +145,56 @@ func (s *creditStore) ListPackagesByOrder(ctx context.Context, orderID uint64) (
 	return packages, err
 }
 
-// HasActiveSubscription 检查用户是否有有效的订阅积分包（active 或 pending）
+// HasActiveSubscription 检查用户是否有未过期的订阅。
+// T4 重写：改为读 subscription 新表（而非旧 credit_package 表），
+// 与 MembershipService.GrantTrial 的写路径对齐，确保 trial lifetime
+// 保护在 GrantMembership 中仍然有效。
+// 使用 Go time.Now() 而非 SQL NOW()，兼容 MySQL 和 SQLite（测试环境）。
 func (s *creditStore) HasActiveSubscription(ctx context.Context, userID uint) (bool, error) {
 	var count int64
 	err := s.db.WithContext(ctx).
-		Model(&model.CreditPackage{}).
-		Where("user_id = ? AND type = ? AND status IN ?", userID, model.CreditTypeSubscription,
-			[]string{model.CreditPackageActive, model.CreditPackagePending}).
+		Table("subscription").
+		Where("user_id = ? AND expires_at > ?", userID, time.Now()).
 		Count(&count).Error
 	return count > 0, err
 }
 
-// HasTrialPackage 检查用户是否有体验积分包（不限状态）
+// HasTrialPackage 检查用户是否曾经拥有过 trial grant（lifetime 唯一性检测）。
+// T4 重写：改为读 trial_grant 新表（而非旧 credit_package 表），
+// 确保 GrantMembership 的 trial 防重复保护在写新表路径下仍然有效。
+// trial_grant 表每个 user_id UNIQUE，有行即代表 lifetime 已用。
 func (s *creditStore) HasTrialPackage(ctx context.Context, userID uint) (bool, error) {
 	var count int64
 	err := s.db.WithContext(ctx).
-		Model(&model.CreditPackage{}).
-		Where("user_id = ? AND type = ?", userID, model.CreditTypeTrial).
+		Table("trial_grant").
+		Where("user_id = ?", userID).
 		Count(&count).Error
 	return count > 0, err
 }
 
 // GetUserTypeCreditMultiplier returns the credit burn-rate multiplier for a user.
 // Rules (evaluated in order):
-//  1. Active subscription → 1.0 (subscription users are not discounted).
+//  1. Active subscription (new subscription table) → 1.0 (subscription users are not discounted).
 //  2. Active trial package with remaining credits → look up credit_user_type_config for 'trial'.
 //  3. All other cases → 1.0.
 //
+// NOTE (T4): Step 1 now reads the new `subscription` table directly (instead of delegating to
+// HasActiveSubscription, which also reads `subscription`). Step 2 still reads `credit_package`
+// during the transition period; it will be updated in T6 when legacy deduct is removed.
+//
 // Returns 1.0 on any store error so callers always get a safe default.
 func (s *creditStore) GetUserTypeCreditMultiplier(ctx context.Context, userID uint) (float64, error) {
-	hasSub, err := s.HasActiveSubscription(ctx, userID)
-	if err != nil {
+	// Step 1: check for active subscription in the new table.
+	// Reads subscription table directly (avoids shared HasActiveSubscription call site
+	// which would make this sensitive to T4 guard-reader changes).
+	var subCount int64
+	if err := s.db.WithContext(ctx).
+		Table("subscription").
+		Where("user_id = ? AND expires_at > ?", userID, time.Now()).
+		Count(&subCount).Error; err != nil {
 		return 1.0, fmt.Errorf("GetUserTypeCreditMultiplier: check subscription: %w", err)
 	}
-	if hasSub {
+	if subCount > 0 {
 		return 1.0, nil
 	}
 
