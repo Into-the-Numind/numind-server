@@ -483,9 +483,9 @@ features:
       validation_strategy: "numind-server/docs/superpowers/specs/2026-04-29-membership-credits-redesign-validation-strategy.md"
     progress:
       total_tasks: 36
-      completed_tasks: 31
-      reviewed_tasks: 31
-      current_task: "🎉 Phase B 完成 (T1-T6 all merged develop) — credit_package 表 ZERO production writers！T6 merged 5695066 含 +885/-1065 大型清理 + 1 new test (RefundCreditsTx_SourceExpired_TriggersRefundLost)。等用户拍板进 Phase C (T7-T8 数据校准 — 涉及 prod DB SQL operations，风险面不同于 Phase B 代码 refactor)。"
+      completed_tasks: 34
+      reviewed_tasks: 34
+      current_task: "🎉 Phase B+C+D 完成 (T1-T9 + T9b)。T7-T8 dev validated (prod deferred per user 选项 D)。T9 server merged a8a8807 + T9b admin-web 634b2cc + web-v3 1c626df：b2b_billing new_only + listPackages 全删 + 死客户端清理。剩余 Phase E (T10 DROP COL credits_deducted, T11 archive + DROP TABLE credit_package) + Phase F (T12 FK + docs)。"
     rollback: null
     last_verified: null
     decisions:
