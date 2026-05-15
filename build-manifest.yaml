@@ -49,10 +49,10 @@ features:
     ndf_version: "1.1"
     description: "P0 用户体验 bug：SOP 节点执行 / chatbot SSE / salesrag 出错时，UI 直接弹出完整 Go 调用栈（如 'node execution failed: executeViaGateway: ChatStream: ContextBudgetCredits: credit: insufficient balance: requested 50, available 0'）。所有 ErrInsufficientCredits / ErrSubscriptionExpired / 偶发 DB 异常都有同类泄漏。修复策略 B+A 双保险：(B 后端) 在 SOP node 执行 / chatbot SSE error frame / salesrag 三处 controller boundary 用 errors.Is 识别根因 err，转 errno 错误码 + user-facing message；技术细节进 zap 日志不进 UI。(A 前端) src/api/request.ts axios interceptor 扩展 errno code → 友好文案映射；兜底匹配 response.data.message 含 'insufficient balance' 等关键词覆盖防御。Caveat: SOP node 有 retry/fallback，转换不要破坏 retry 判断（应在 retry exhausted 后才转友好文案）。"
     track: "hotfix"
-    stage: "H3"
+    stage: "completed"
     classification_reason: "Hotfix Triage 5 条 — (1) 无 schema 变更 (2) 无新增 API 端点 (3) 无外部服务集成 (4) 跨 2 仓 ~5 文件（边界，但每文件改动模式相同：err.Error() 替换为 errno 映射）(5) 错误处理本身不涉及计费/权限逻辑，但 SOP retry 边界是关联风险点。用户拍板 Hotfix（边界判断上移）。"
-    last_updated_by: "ai-h3-merged"
-    last_updated_at: "2026-05-15T13:00:00+08:00"
+    last_updated_by: "ai-prod-shipped"
+    last_updated_at: "2026-05-15T15:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -63,7 +63,7 @@ features:
       total_tasks: 8
       completed_tasks: 8
       reviewed_tasks: 8
-      current_task: "等 dev CI 部署 + 人工验收"
+      current_task: "已上 prod via numind-server v2.1.19 + numind-web-v3 v1.0.20"
     decisions:
       - "2026-05-15 (Triage): 严格按 NDF 规则应推 Standard（5 文件 + 跨 2 仓 + SOP retry 关联风险触发边界条款）。用户拍板 Hotfix 理由：单一目的修复、每文件改动模式相同（err.Error() → errno 映射）、零业务逻辑变更、零 schema、零端点。判断力上移到用户。"
       - "2026-05-15 (架构定调): B+A 双保险 — 后端 controller boundary 做权威错误码映射，前端 axios interceptor 做兜底关键词匹配。后端单点失误时前端仍能挡住裸 Go error。"
@@ -76,12 +76,17 @@ features:
       - "2026-05-15 (H3 toast polish 跟随): 用户 dev 验收时反馈红色 ✕ error toast + 长文案 '请购买积分包或联系管理员' 像系统崩溃。产出 _work_toast_showcase.html 4 方案对比，用户选 B。后端 3 处硬编码 → '积分不足，请充值积分'（commit c7a3f95，fix/credit-toast-wording）；前端 SOPRunView.vue:440 notifications.error → notifications.warning + 去 '创建 run 失败：' 前缀（commit 5e5af03，fix/credit-toast-wording）。两仓 push 一并触发 dev CI 重部署。"
       - "2026-05-15 (H3 P0 强制登出 bug): 用户 dev 验收时报：积分不足用户在 salesrag 发消息会被立即重定向到登录页（强制登出，无提示）。Root cause: src/api/sales.ts:490 fetchSSE 的 `if (401 || 403) clearAuth + redirect` blanket 处理 — 后端 salesrag 控制器对积分不足返回 errno.ErrForbidden.SetMessage(reason) = HTTP 403，被 fetchSSE 误判为 token 失效。axios interceptor (request.ts:250) 早有正确的细粒度判断（仅当 isTokenMissing 或 isTokenError 时才登出），fetchSSE 是 copy-paste 但漏了细粒度逻辑。同模式 bug 在 SOP useSSEStream 不存在（402/403 仅 dispatch event）。Fix: fetchSSE 拆 401 (always logout) vs 403 (nuanced: parse body → 检查 token vs 业务，业务 403 抛友好 error 同时派发 insufficient-credits 事件)，逻辑与 axios interceptor 对齐。commit ed4b0c0 fix/salesrag-403-no-logout 已 merge develop 7963772 + push。"
       - "2026-05-15 (H3 chat error 统一 toast): 用户反馈 chatbot 把 SSE 'error' 事件渲染成左对齐红色内联气泡（ChatbotChat.vue .stream-error，视觉上像 AI 回复消息），与 SOP/创建 run 失败的 toast 模式不统一。salesrag ChatArea.vue 有同样的 .stream-error pattern。Fix: stores/chatbot.ts + stores/sales.ts 在 SSE 'error' case 和 catch 块均改为调 notifications.warning() (橙色 ⚠ toast, 4s 自动消失) + 移除两个 view 的 .stream-error 渲染块和 CSS。streamError ref 保留作内部清理标志（sales.ts:482 preservedError 跨 resetStreamState 的 2026-04-19 incident 逻辑依赖它）。commit 7808669 fix/chat-error-toast-unify merge develop fc3063f + push。"
+      - "2026-05-15 (Prod shipped): 用户打 prod tag — numind-server v2.1.19（commit 319ecc7，含本 feature + CI fail-fast + polling health check 等改进）+ numind-web-v3 v1.0.20（commit d0e6876，含本 feature 所有前端改动 + 5 条 H3 follow-up：toast wording / chat-error-toast-unify / salesrag-403-no-logout / sub-user-multi-select / .dockerignore + _work_* gitignore）。Prod CI deploy success，两仓容器 healthy。stage H3 → completed。"
     related_features:
       - "credits-deduct-cycle-wiring (completed 2026-05-15) — 修了 credit 扣减逻辑本身；本 feature 修 credit 错误如何呈现给用户"
       - "membership-balance-read-path (completed 2026-05-14) — 同期 credits 体系演进 feature"
     blockers: []
     created_at: "2026-05-15T00:00:00+08:00"
-    completed_at: null
+    completed_at: "2026-05-15T15:00:00+08:00"
+    last_verified:
+      at: "2026-05-15T15:00:00+08:00"
+      numind_server_tag: "v2.1.19"
+      numind_web_v3_tag: "v1.0.20"
 
   - id: "membership-balance-read-path"
     ndf_version: "1.1"
