@@ -73,6 +73,7 @@ features:
       - "2026-05-15 (H1 实施): 后端创建 internal/numind/biz/errtranslate（helper + 8 单测 PASS）；3 controller 总计 9 处 SSE site 改造 + 全部加 client-disconnect 检测保护。前端创建 src/utils/errorMessage.ts（helper + 17 vitest PASS）+ 3 文件改造。Build green / 我自己 file gofmt+vet+eslint+typecheck 全通过。"
       - "2026-05-15 (H2 两阶段 review): Spec compliance reviewer + Code quality reviewer 都 PASS_WITH_CONCERNS。共识 1 P1：缺 chatbot/salesrag client-disconnect 检测 → 修。共识 1 P1：salesrag 3 处 Analyze SSE 漏改 → 修（同一文件同模式，扩展到 9 处 SSE site）。P2：translate_test.go 双层 wrap + SetMessage 路径补测（已加 2 测）+ frontend errorMessage 缺单测（已加 17 测）。0 P0。NDF Rule 7 按"能现在修则现在修"全部修完。"
       - "2026-05-15 (H3 合并): numind-server 因并行 session 切换 HEAD 异常，commit 9de03c8 直接落 develop 而非 fix 分支（reflog HEAD@{2} 'moving from fix/ui-error-friendly-mapping to develop' 显示非用户操作）；内容无误，已 push origin develop。numind-web-v3 fix/ui-error-friendly-mapping → develop 经 --no-ff merge f1bf8f1，已 push。两仓 develop 一并推送，CI 自动部署 dev。"
+      - "2026-05-15 (H3 toast polish 跟随): 用户 dev 验收时反馈红色 ✕ error toast + 长文案 '请购买积分包或联系管理员' 像系统崩溃。产出 _work_toast_showcase.html 4 方案对比，用户选 B。后端 3 处硬编码 → '积分不足，请充值积分'（commit c7a3f95，fix/credit-toast-wording）；前端 SOPRunView.vue:440 notifications.error → notifications.warning + 去 '创建 run 失败：' 前缀（commit 5e5af03，fix/credit-toast-wording）。两仓 push 一并触发 dev CI 重部署。"
     related_features:
       - "credits-deduct-cycle-wiring (completed 2026-05-15) — 修了 credit 扣减逻辑本身；本 feature 修 credit 错误如何呈现给用户"
       - "membership-balance-read-path (completed 2026-05-14) — 同期 credits 体系演进 feature"
