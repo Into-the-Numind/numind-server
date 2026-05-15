@@ -2,13 +2,54 @@
 
 ---
 
-## 1. 技术栈声明
+## 1. 计费体系（Credits System — 现状）
+
+> 本节为 2026-05-16 T1-T12 cleanup 完成后的最新状态。credit_package 表已归档，勿参考旧文档。
+
+### 真相源（SOT）5 张表
+
+| 表 | 说明 |
+|----|------|
+| `subscription` | 用户订阅记录（B2B grant 或自购），单行覆盖 N 月 |
+| `credit_cycle` | 月度积分周期，懒创建（第一次扣减时按需生成），含 `credits_granted` / `credits_remaining` |
+| `trial_grant` | 体验包，每用户唯一（UNIQUE per user_id），3 天 200 积分 |
+| `user_booster_balance` | 加量包余额，聚合余额（每次自购 +600，按 FIFO 扣减）|
+| `membership_event` | 所有会员相关事件审计日志（grant / booster_granted / admin_calibration 等）|
+
+### 扣减流程（Reserve/Reconcile 两阶段）
+
+1. **Reserve**：LLM 调用前按 R2 估算预扣，写 `credit_reservation` + `credit_reservation_item`
+2. **Reconcile**：LLM 调用完成后按实际 token 用量对账，写 `credit_transaction`（含 `source_type` 区分三池）
+
+`credit_transaction.source_type` 枚举：`trial` / `subscription` / `cycle` / `booster`（NULL = 遗留行或 debt 行）
+
+### 余额查询
+
+`MembershipService.GetBalance()` 三池实时聚合，不依赖任何缓存字段：
+- trial_grant（expires_at 判断在期）
+- credit_cycle（cycle_end 判断当月）
+- user_booster_balance
+
+### 历史归档
+
+`credit_package` 表（原老 SOT）于 2026-05-16 T11 归档至 `legacy_credit_package_archive_20260515`（保留 7 年）。
+查询说明见 `docs/legacy_credit_package_archive_README.md`。
+
+### B2B2C
+
+父账户（`parent_user_id=null`）通过 `POST /v1/users/children/:child_id/grant-membership` 帮子账户开通。
+`membership_event.grant_source='b2b_grant'` + `granter_user_id=<parent>` 记账。
+月末 `GET /v1/admin/b2b-billing-report?month=YYYY-MM` 按父账户聚合（走 `membership_event`，不再读 `credit_package`）。
+
+---
+
+## 2. 技术栈声明
 
 Go 1.24 | Gin | GORM | MySQL 8.0 | Redis | JWT | Viper | Zap
 
 ---
 
-## 2. 架构分层规则
+## 3. 架构分层规则
 
 三层架构，**单向依赖**：controller → biz → store，不可反向调用。
 
@@ -22,7 +63,7 @@ Go 1.24 | Gin | GORM | MySQL 8.0 | Redis | JWT | Viper | Zap
 
 ---
 
-## 3. 编码规范
+## 4. 编码规范
 
 - 错误处理：使用 `fmt.Errorf("xxx: %w", err)` 链式包装，保留错误链
 - 导出函数必须带注释，以函数名开头（Go doc 规范）
@@ -34,7 +75,7 @@ Go 1.24 | Gin | GORM | MySQL 8.0 | Redis | JWT | Viper | Zap
 
 ---
 
-## 4. 开发命令
+## 5. 开发命令
 
 ```bash
 task dev            # 开发模式运行
@@ -48,7 +89,7 @@ task deps           # 安装/整理 Go 依赖
 
 ---
 
-## 5. 项目结构速查
+## 6. 项目结构速查
 
 ```
 cmd/numind/                     # 主服务入口
