@@ -9,6 +9,15 @@ var (
 	// ErrInsufficientCredits 余额不足（预扣或扣减时判定）
 	ErrInsufficientCredits = errors.New("credit: insufficient balance")
 
+	// ErrUnsupportedProductType is returned by RechargeWithOrderTx when
+	// productType is not "booster". Trial/monthly/yearly memberships are
+	// exclusively granted via the B2B grant path (GrantMembership /
+	// MembershipService.GrantTrial / GrantOrRenewSubscription). The payment
+	// callback (fulfillOrder) enforces this at the order level before calling
+	// RechargeWithOrderTx, so in production this error is unreachable — it
+	// exists only as a defensive guard (T5 cleanup, spec §5.10).
+	ErrUnsupportedProductType = errors.New("credit: product type not supported by payment callback — only booster is accepted")
+
 	// ErrAlreadyFinalized Reservation 已是终态（reconciled/refunded/expired），再次 Reconcile/Refund 返回此错误
 	// 调用方应 errors.Is 判断后忽略（幂等性保证）
 	ErrAlreadyFinalized = errors.New("credit: reservation already finalized")
