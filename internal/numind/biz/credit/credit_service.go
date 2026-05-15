@@ -24,12 +24,18 @@ import (
 // errno.ErrInsufficientCredits return into this package's credit.ErrInsufficientCredits
 // sentinel so callers (and tests) can errors.Is-check a single package-local error.
 // Other error types pass through unchanged.
+//
+// We intentionally drop the wrapped membership errno here: keeping it produced
+// log lines like "insufficient credits: insufficient credits" (the two layers
+// carry the same semantic message). Callers that need richer context wrap with
+// their own format string (see e.g. credit_service.go:240/315/442 which append
+// the shortfall amounts).
 func translateMembershipInsufficient(err error) error {
 	if err == nil {
 		return nil
 	}
 	if errors.Is(err, errno.ErrInsufficientCredits) {
-		return fmt.Errorf("%w: %v", ErrInsufficientCredits, err)
+		return fmt.Errorf("%w", ErrInsufficientCredits)
 	}
 	return err
 }

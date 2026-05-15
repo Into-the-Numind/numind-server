@@ -29,6 +29,9 @@ type ICreditBiz interface {
 	// Other product types return ErrUnsupportedProductType.
 	// Note: this function is dead code on the live HTTP path — fulfillOrder in
 	// payment.go writes new tables directly. Kept for interface stability.
+	// TODO(T11): drop this method from ICreditBiz once the credits-cleanup
+	// arc lands and no callers remain (verified by `grep RechargeWithOrderTx`
+	// — only test files exercise it post-T5).
 	RechargeWithOrderTx(ctx context.Context, tx *gorm.DB, userID uint, orderID uint64, productType string, months int) error
 	// GrantMembership is the B2B2C grant path (spec Q1): parent user
 	// grants membership to a child user without going through payment.
