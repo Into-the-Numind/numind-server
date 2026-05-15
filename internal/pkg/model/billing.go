@@ -15,15 +15,14 @@ type UsageRecord struct {
 	TotalTokens           int    `gorm:"default:0" json:"total_tokens"`
 	ReasoningTokens       int    `gorm:"default:0" json:"reasoning_tokens"`
 	EstimatedPromptTokens int    `gorm:"default:0" json:"estimated_prompt_tokens"`
-	BytesUploaded         int64  `gorm:"default:0" json:"bytes_uploaded"`   // COS 上传字节数
-	ItemCount             int    `gorm:"default:0" json:"item_count"`       // 向量操作条数 / Rerank 文档数
-	CostCents             int64  `gorm:"default:0" json:"cost_cents"`       // 预估成本（分）
-	RevenueCents          int64  `gorm:"default:0" json:"revenue_cents"`    // 客户计费金额（分）
-	CreditsDeducted       int64  `gorm:"default:0" json:"credits_deducted"` // 本次操作扣减的积分数
-	BizRefType            string `gorm:"size:50" json:"biz_ref_type"`       // 关联业务对象类型: sop_run, sales_session 等
-	BizRefID              uint   `gorm:"default:0" json:"biz_ref_id"`       // 关联业务对象 ID
-	IsFallback            bool   `gorm:"default:false" json:"is_fallback"`  // 是否为降级调用
-	Metadata              string `gorm:"type:json" json:"metadata"`         // 额外上下文 JSON
+	BytesUploaded         int64  `gorm:"default:0" json:"bytes_uploaded"`  // COS 上传字节数
+	ItemCount             int    `gorm:"default:0" json:"item_count"`      // 向量操作条数 / Rerank 文档数
+	CostCents             int64  `gorm:"default:0" json:"cost_cents"`      // 预估成本（分）
+	RevenueCents          int64  `gorm:"default:0" json:"revenue_cents"`   // 客户计费金额（分）
+	BizRefType            string `gorm:"size:50" json:"biz_ref_type"`      // 关联业务对象类型: sop_run, sales_session 等
+	BizRefID              uint   `gorm:"default:0" json:"biz_ref_id"`      // 关联业务对象 ID
+	IsFallback            bool   `gorm:"default:false" json:"is_fallback"` // 是否为降级调用
+	Metadata              string `gorm:"type:json" json:"metadata"`        // 额外上下文 JSON
 
 	// AI Service Manager 扩展字段（nullable；历史数据保持 null）
 	// TaskID links to task_profile.task_id; null = legacy data or non-AI call.
