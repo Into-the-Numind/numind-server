@@ -24,7 +24,12 @@ import (
 
 func newCycleTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+	// Use file-based in-memory URI with a unique name per test so that all
+	// connections within this test share the same SQLite in-memory database.
+	// With plain ":memory:", each pooled connection gets its own empty schema;
+	// with a named shared URI, all connections see the same tables and data.
+	dsn := "file:" + t.Name() + "?mode=memory&cache=shared"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err)
@@ -226,3 +231,188 @@ func TestEnsureCurrentCycle_ExpiredSub(t *testing.T) {
 	assert.ErrorIs(t, callErr, errno.ErrSubscriptionExpired)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// T1: DeductCreditsTx source_type population tests
+//
+// These tests verify that DeductionResult.Items carry the correct SourceType
+// and SourceID for each pool, which callers use to populate
+// credit_transaction.source_type / credit_transaction.source_id (T1 migration).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// insertTrialGrant directly inserts a trial_grant row and returns it.
+func insertTrialGrant(t *testing.T, db *gorm.DB, userID uint64, expiresAt time.Time, creditsRemaining int) *model.TrialGrant {
+	t.Helper()
+	now := time.Now().UTC()
+	tg := &model.TrialGrant{
+		UserID:           userID,
+		GrantedAt:        now,
+		ExpiresAt:        expiresAt,
+		CreditsRemaining: creditsRemaining,
+		Source:           model.SourceB2BGrant,
+		CreatedAt:        now,
+	}
+	require.NoError(t, db.Create(tg).Error)
+	return tg
+}
+
+// insertBoosterBalance inserts a user_booster_balance row and returns it.
+func insertBoosterBalance(t *testing.T, db *gorm.DB, userID uint64, credits int64) *model.UserBoosterBalance {
+	t.Helper()
+	ubb := &model.UserBoosterBalance{
+		UserID:           userID,
+		CreditsRemaining: credits,
+		UpdatedAt:        time.Now().UTC(),
+	}
+	require.NoError(t, db.Create(ubb).Error)
+	return ubb
+}
+
+// TestDeductCreditsTx_SourceType_Trial verifies that a deduction from the trial
+// pool produces a DeductItem with SourceType="trial" and SourceID=trial_grant.id.
+// This SourceType value is used by callers to populate credit_transaction.source_type.
+func TestDeductCreditsTx_SourceType_Trial(t *testing.T) {
+	db := newCycleTestDB(t)
+	svc := NewMembershipService(db)
+	ctx := context.Background()
+
+	userID := uint64(10)
+	now := time.Now().UTC()
+	futureExpiry := now.Add(72 * time.Hour)
+
+	tg := insertTrialGrant(t, db, userID, futureExpiry, 200)
+
+	var result *DeductionResult
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var e error
+		result, e = svc.DeductCreditsTx(ctx, tx, userID, 50, now)
+		return e
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Equal(t, int64(50), result.FromTrial)
+	assert.Equal(t, int64(0), result.FromCycle)
+	assert.Equal(t, int64(0), result.FromBooster)
+	require.Len(t, result.Items, 1, "one DeductItem for trial pool")
+
+	item := result.Items[0]
+	assert.Equal(t, DeductSourceTrial, item.SourceType, "SourceType must be 'trial'")
+	assert.Equal(t, tg.ID, item.SourceID, "SourceID must be trial_grant.id")
+	assert.Equal(t, int64(50), item.Amount)
+}
+
+// TestDeductCreditsTx_SourceType_Cycle verifies that a deduction from the cycle
+// pool produces a DeductItem with SourceType="cycle" and SourceID=credit_cycle.id.
+func TestDeductCreditsTx_SourceType_Cycle(t *testing.T) {
+	db := newCycleTestDB(t)
+	svc := NewMembershipService(db)
+	ctx := context.Background()
+
+	userID := uint64(11)
+	start := time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC)
+	expires := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
+	insertSub(t, db, userID, start, expires, 3)
+
+	txNow := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
+
+	var result *DeductionResult
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var e error
+		result, e = svc.DeductCreditsTx(ctx, tx, userID, 100, txNow)
+		return e
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Equal(t, int64(0), result.FromTrial)
+	assert.Equal(t, int64(100), result.FromCycle)
+	assert.Equal(t, int64(0), result.FromBooster)
+	require.Len(t, result.Items, 1, "one DeductItem for cycle pool")
+
+	item := result.Items[0]
+	assert.Equal(t, DeductSourceCycle, item.SourceType, "SourceType must be 'cycle'")
+	assert.NotZero(t, item.SourceID, "SourceID must be credit_cycle.id (non-zero)")
+}
+
+// TestDeductCreditsTx_SourceType_Booster verifies that a deduction from the
+// booster pool (after trial is exhausted) produces a DeductItem with
+// SourceType="booster" and SourceID=userID (user_booster_balance.user_id).
+func TestDeductCreditsTx_SourceType_Booster(t *testing.T) {
+	db := newCycleTestDB(t)
+	svc := NewMembershipService(db)
+	ctx := context.Background()
+
+	userID := uint64(12)
+	now := time.Now().UTC()
+	// Trial with only 10 credits → deduct 50 → overflows into booster.
+	tg := insertTrialGrant(t, db, userID, now.Add(72*time.Hour), 10)
+	insertBoosterBalance(t, db, userID, 600)
+
+	var result *DeductionResult
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var e error
+		result, e = svc.DeductCreditsTx(ctx, tx, userID, 50, now)
+		return e
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Equal(t, int64(10), result.FromTrial, "all 10 trial credits consumed first")
+	assert.Equal(t, int64(40), result.FromBooster, "remaining 40 from booster")
+	require.Len(t, result.Items, 2, "two DeductItems: trial + booster")
+
+	trialItem := result.Items[0]
+	assert.Equal(t, DeductSourceTrial, trialItem.SourceType, "first item SourceType='trial'")
+	assert.Equal(t, tg.ID, trialItem.SourceID, "first item SourceID=trial_grant.id")
+
+	boosterItem := result.Items[1]
+	assert.Equal(t, DeductSourceBooster, boosterItem.SourceType, "second item SourceType='booster'")
+	assert.Equal(t, userID, boosterItem.SourceID, "booster SourceID=userID (user_booster_balance PK)")
+}
+
+// TestDeductCreditsTx_SourceType_TrialThenCycleThenBooster verifies the full
+// three-pool priority ordering (trial → cycle → booster) with SourceType
+// correctly set on each DeductItem. This is the critical path for ensuring
+// credit_transaction.source_type correctly identifies each pool.
+func TestDeductCreditsTx_SourceType_TrialThenCycleThenBooster(t *testing.T) {
+	db := newCycleTestDB(t)
+	svc := NewMembershipService(db)
+	ctx := context.Background()
+
+	userID := uint64(13)
+	// Subscription: 3 months starting today
+	start := time.Now().UTC().Truncate(time.Second)
+	expires := start.AddDate(0, 3, 0)
+	insertSub(t, db, userID, start, expires, 3)
+	// Trial: 50 credits remaining
+	tg := insertTrialGrant(t, db, userID, start.Add(72*time.Hour), 50)
+	// Booster: 600 credits
+	insertBoosterBalance(t, db, userID, 600)
+
+	// Deduct 2100: 50 trial + 2000 cycle + 50 booster
+	var result *DeductionResult
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var e error
+		result, e = svc.DeductCreditsTx(ctx, tx, userID, 2100, start.Add(time.Hour))
+		return e
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Equal(t, int64(50), result.FromTrial)
+	assert.Equal(t, int64(2000), result.FromCycle)
+	assert.Equal(t, int64(50), result.FromBooster)
+	require.Len(t, result.Items, 3, "three DeductItems: trial, cycle, booster")
+
+	assert.Equal(t, DeductSourceTrial, result.Items[0].SourceType)
+	assert.Equal(t, tg.ID, result.Items[0].SourceID)
+	assert.Equal(t, int64(50), result.Items[0].Amount)
+
+	assert.Equal(t, DeductSourceCycle, result.Items[1].SourceType)
+	assert.NotZero(t, result.Items[1].SourceID)
+	assert.Equal(t, int64(2000), result.Items[1].Amount)
+
+	assert.Equal(t, DeductSourceBooster, result.Items[2].SourceType)
+	assert.Equal(t, userID, result.Items[2].SourceID)
+	assert.Equal(t, int64(50), result.Items[2].Amount)
+}

@@ -954,11 +954,16 @@ func (c *creditsImpl) refundOneItem(
 		return 0, fmt.Errorf("update package remain_credits: %w", err)
 	}
 	// Write a CreditTransaction audit row (positive amount = refund).
+	// T1: populate source_type/source_id from credit_package for ledger self-containment.
+	pkgType := pkg.Type
+	pkgID := pkg.ID
 	txn := &model.CreditTransaction{
-		UserID:    userID,
-		PackageID: pkg.ID,
-		Amount:    amount,
-		Operation: "refund",
+		UserID:     userID,
+		PackageID:  pkg.ID,
+		SourceType: &pkgType,
+		SourceID:   &pkgID,
+		Amount:     amount,
+		Operation:  "refund",
 	}
 	if err := tx.WithContext(ctx).Create(txn).Error; err != nil {
 		return 0, fmt.Errorf("write refund transaction: %w", err)

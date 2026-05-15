@@ -74,9 +74,20 @@ const (
 
 // CreditTransaction 积分流水
 type CreditTransaction struct {
-	ID            uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserID        uint      `gorm:"not null;index:idx_ct_user_created" json:"user_id"`
-	PackageID     uint64    `gorm:"not null;index:idx_ct_package" json:"package_id"`
+	ID        uint64 `gorm:"primaryKey;autoIncrement" json:"id"`
+	UserID    uint   `gorm:"not null;index:idx_ct_user_created" json:"user_id"`
+	PackageID uint64 `gorm:"not null;index:idx_ct_package" json:"package_id"`
+	// SourceType identifies which pool this deduction targets.
+	// Values: "trial" (trial_grant), "cycle" (credit_cycle), "booster" (user_booster_balance).
+	// NULL for legacy credit_package rows and reconcile_debt entries (package_id=0).
+	// Added by migration 20260515_100000 (T1).
+	SourceType *string `gorm:"column:source_type;size:20;default:null;index:idx_ct_source,priority:1" json:"source_type,omitempty"`
+	// SourceID is the PK of the pool row identified by SourceType:
+	//   trial   → trial_grant.id
+	//   cycle   → credit_cycle.id
+	//   booster → user_booster_balance.user_id (the table PK)
+	// NULL when SourceType is NULL.
+	SourceID      *uint64   `gorm:"column:source_id;default:null;index:idx_ct_source,priority:2" json:"source_id,omitempty"`
 	Amount        int64     `gorm:"not null" json:"amount"` // 负数=扣减，正数=退还
 	Operation     string    `gorm:"size:100;not null" json:"operation"`
 	UsageRecordID *uint64   `json:"usage_record_id"`
