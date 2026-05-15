@@ -3,6 +3,7 @@ package credit_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,12 +24,13 @@ import (
 // unused by DeductCredits / DeductCreditsTx).
 func newCreditTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	// file::memory:?cache=shared keeps all connections inside the GORM pool
-	// sharing the same SQLite schema. With plain ":memory:" each pooled
-	// connection gets its own empty DB — AutoMigrate on conn #1 is invisible
-	// to conn #2, which is why credits_store.GetOrCreateAccount sometimes
-	// sees "no such table: credit_account" even though AutoMigrate succeeded.
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{
+	// Use a per-test unique named in-memory DB so that parallel tests do not share
+	// schema state. The file: URI with mode=memory&cache=shared ensures all
+	// connections within a single test see the same tables (unlike plain ":memory:"
+	// where each pooled connection gets its own empty DB). ReplaceAll("/", "_")
+	// guards against subtest names containing slashes breaking the SQLite URI.
+	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err, "open sqlite in-memory DB")
@@ -243,4 +245,184 @@ func TestDeductCredits_Zero(t *testing.T) {
 	var accounts []model.CreditAccount
 	require.NoError(t, db.Find(&accounts).Error)
 	assert.Empty(t, accounts, "zero-credit deduction must not create an account")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// T1: source_type / source_id population tests (credit_deduct_tx_test.go)
+//
+// These tests verify that the legacy deductCreditsTxFull path writes
+// credit_transaction rows with source_type and source_id populated from the
+// corresponding credit_package row (T1 migration requirement).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestDeductCreditsTx_SourceType_TrialPackage verifies that deducting from a
+// trial-type credit_package produces a CreditTransaction with source_type="trial"
+// and source_id=package.id.
+func TestDeductCreditsTx_SourceType_TrialPackage(t *testing.T) {
+	db := newCreditTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := credit.NewCreditBiz(ds)
+
+	now := time.Now()
+	userID := uint(200)
+	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+		{
+			Type:          model.CreditTypeTrial,
+			TotalCredits:  200,
+			RemainCredits: 200,
+			ActivatedAt:   now,
+			ExpiresAt:     now.Add(72 * time.Hour),
+		},
+	})
+
+	var deductions []credit.PackageDeduction
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var e error
+		deductions, e = biz.DeductCreditsTx(context.Background(), tx, userID, 50, "reserve:sop_run")
+		return e
+	})
+	require.NoError(t, err)
+	require.Len(t, deductions, 1)
+
+	// Verify CreditTransaction row has source_type and source_id set.
+	var txns []model.CreditTransaction
+	require.NoError(t, db.Where("user_id = ?", userID).Find(&txns).Error)
+	require.Len(t, txns, 1, "one credit_transaction row written")
+
+	txn := txns[0]
+	assert.EqualValues(t, -50, txn.Amount)
+	require.NotNil(t, txn.SourceType, "source_type must be set (T1 requirement)")
+	assert.Equal(t, model.CreditTypeTrial, *txn.SourceType, "source_type='trial' for trial package")
+	require.NotNil(t, txn.SourceID, "source_id must be set (T1 requirement)")
+	assert.Equal(t, deductions[0].PackageID, *txn.SourceID, "source_id=credit_package.id")
+}
+
+// TestDeductCreditsTx_SourceType_SubscriptionPackage verifies source_type="subscription"
+// for subscription-type credit_package deductions.
+func TestDeductCreditsTx_SourceType_SubscriptionPackage(t *testing.T) {
+	db := newCreditTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := credit.NewCreditBiz(ds)
+
+	now := time.Now()
+	userID := uint(201)
+	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+		{
+			Type:          model.CreditTypeSubscription,
+			TotalCredits:  2000,
+			RemainCredits: 2000,
+			ActivatedAt:   now,
+			ExpiresAt:     now.Add(30 * 24 * time.Hour),
+		},
+	})
+
+	var deductions []credit.PackageDeduction
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var e error
+		deductions, e = biz.DeductCreditsTx(context.Background(), tx, userID, 100, "reserve:sop_run")
+		return e
+	})
+	require.NoError(t, err)
+	require.Len(t, deductions, 1)
+
+	var txns []model.CreditTransaction
+	require.NoError(t, db.Where("user_id = ?", userID).Find(&txns).Error)
+	require.Len(t, txns, 1)
+
+	require.NotNil(t, txns[0].SourceType)
+	assert.Equal(t, model.CreditTypeSubscription, *txns[0].SourceType, "source_type='subscription'")
+	require.NotNil(t, txns[0].SourceID)
+	assert.Equal(t, deductions[0].PackageID, *txns[0].SourceID)
+}
+
+// TestDeductCreditsTx_SourceType_BoosterPackage verifies source_type="booster"
+// for booster-type credit_package deductions.
+func TestDeductCreditsTx_SourceType_BoosterPackage(t *testing.T) {
+	db := newCreditTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := credit.NewCreditBiz(ds)
+
+	now := time.Now()
+	userID := uint(202)
+	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+		{
+			Type:          model.CreditTypeBooster,
+			TotalCredits:  600,
+			RemainCredits: 600,
+			ActivatedAt:   now,
+			ExpiresAt:     now.Add(90 * 24 * time.Hour),
+		},
+	})
+
+	var deductions []credit.PackageDeduction
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var e error
+		deductions, e = biz.DeductCreditsTx(context.Background(), tx, userID, 150, "reserve:sop_run")
+		return e
+	})
+	require.NoError(t, err)
+	require.Len(t, deductions, 1)
+
+	var txns []model.CreditTransaction
+	require.NoError(t, db.Where("user_id = ?", userID).Find(&txns).Error)
+	require.Len(t, txns, 1)
+
+	require.NotNil(t, txns[0].SourceType)
+	assert.Equal(t, model.CreditTypeBooster, *txns[0].SourceType, "source_type='booster'")
+	require.NotNil(t, txns[0].SourceID)
+	assert.Equal(t, deductions[0].PackageID, *txns[0].SourceID)
+}
+
+// TestDeductCreditsTx_SourceType_FIFOMultiPackage verifies that when a deduction
+// spans multiple packages, each CreditTransaction row carries the correct
+// source_type and source_id from its own package.
+func TestDeductCreditsTx_SourceType_FIFOMultiPackage(t *testing.T) {
+	db := newCreditTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := credit.NewCreditBiz(ds)
+
+	now := time.Now()
+	userID := uint(203)
+	seedPackagesAndAccount(t, db, userID, []model.CreditPackage{
+		// FIFO: trial expires first, then booster
+		{
+			Type:          model.CreditTypeTrial,
+			TotalCredits:  50,
+			RemainCredits: 50,
+			ActivatedAt:   now,
+			ExpiresAt:     now.Add(24 * time.Hour),
+		},
+		{
+			Type:          model.CreditTypeBooster,
+			TotalCredits:  600,
+			RemainCredits: 600,
+			ActivatedAt:   now,
+			ExpiresAt:     now.Add(90 * 24 * time.Hour),
+		},
+	})
+
+	var deductions []credit.PackageDeduction
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var e error
+		deductions, e = biz.DeductCreditsTx(context.Background(), tx, userID, 150, "reserve:sop_run")
+		return e
+	})
+	require.NoError(t, err)
+	require.Len(t, deductions, 2, "spans two packages")
+
+	var txns []model.CreditTransaction
+	require.NoError(t, db.Where("user_id = ?", userID).Order("id ASC").Find(&txns).Error)
+	require.Len(t, txns, 2, "one credit_transaction per package debited")
+
+	// First txn: trial package
+	require.NotNil(t, txns[0].SourceType)
+	assert.Equal(t, model.CreditTypeTrial, *txns[0].SourceType)
+	require.NotNil(t, txns[0].SourceID)
+	assert.Equal(t, deductions[0].PackageID, *txns[0].SourceID)
+
+	// Second txn: booster package
+	require.NotNil(t, txns[1].SourceType)
+	assert.Equal(t, model.CreditTypeBooster, *txns[1].SourceType)
+	require.NotNil(t, txns[1].SourceID)
+	assert.Equal(t, deductions[1].PackageID, *txns[1].SourceID)
 }

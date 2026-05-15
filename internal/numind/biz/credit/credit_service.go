@@ -512,7 +512,8 @@ func (c *creditsImpl) Reserve(
 		// 1. FIFO deduction inside the outer tx — returns items for seq emission.
 		if usingNewPath {
 			// New path: MembershipService writes credit_cycle / user_booster_balance / trial_grant.
-			result, err := c.membershipSvc.DeductCreditsTx(ctx, tx, uint64(user.ID), adjustedEstimated, time.Now().UTC())
+			// Also writes credit_transaction rows (T1 ledger contract) with operation="reserve:<op>".
+			result, err := c.membershipSvc.DeductCreditsTx(ctx, tx, uint64(user.ID), adjustedEstimated, "reserve:"+string(op), time.Now().UTC())
 			if err != nil {
 				return err // ErrInsufficientCredits bubbles up; tx rolls back.
 			}
@@ -716,7 +717,9 @@ func (c *creditsImpl) reconcileWithTokens(
 			// Legacy_tier users → c.biz.DeductCreditsTx (writes old credit_package).
 			var topupErr error
 			if c.membershipSvc != nil {
-				_, topupErr = c.membershipSvc.DeductCreditsTx(ctx, tx, uint64(row.UserID), delta, time.Now().UTC())
+				// Also writes credit_transaction rows (T1 ledger) with operation="reconcile:<op>".
+				_, topupErr = c.membershipSvc.DeductCreditsTx(ctx, tx, uint64(row.UserID), delta,
+					model.CreditTxOpPrefixReconcile+row.Operation, time.Now().UTC())
 			} else {
 				_, topupErr = c.biz.DeductCreditsTx(ctx, tx, row.UserID, delta,
 					model.CreditTxOpPrefixReconcile+row.Operation)
@@ -954,11 +957,21 @@ func (c *creditsImpl) refundOneItem(
 		return 0, fmt.Errorf("update package remain_credits: %w", err)
 	}
 	// Write a CreditTransaction audit row (positive amount = refund).
+	// T1: populate source_type/source_id from credit_package for ledger self-containment.
+	// Fix 3: map "subscription" → "cycle" to match new-path vocabulary used by
+	// T7/T8 calibration SQL which filters on source_type='cycle'.
+	pkgType := pkg.Type
+	if pkgType == model.CreditTypeSubscription {
+		pkgType = string(membership.DeductSourceCycle)
+	}
+	pkgID := pkg.ID
 	txn := &model.CreditTransaction{
-		UserID:    userID,
-		PackageID: pkg.ID,
-		Amount:    amount,
-		Operation: "refund",
+		UserID:     userID,
+		PackageID:  pkg.ID,
+		SourceType: &pkgType,
+		SourceID:   &pkgID,
+		Amount:     amount,
+		Operation:  "refund",
 	}
 	if err := tx.WithContext(ctx).Create(txn).Error; err != nil {
 		return 0, fmt.Errorf("write refund transaction: %w", err)
@@ -1362,7 +1375,8 @@ func (c *creditsImpl) reserveBudgetRow(
 	}
 	txErr := c.store.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if usingNewPath {
-			result, err := c.membershipSvc.DeductCreditsTx(ctx, tx, uint64(user.ID), adjustedEstimated, time.Now().UTC())
+			// Also writes credit_transaction rows (T1 ledger) with operation="budget_reserve:<op>".
+			result, err := c.membershipSvc.DeductCreditsTx(ctx, tx, uint64(user.ID), adjustedEstimated, "budget_reserve:"+string(op), time.Now().UTC())
 			if err != nil {
 				return err
 			}

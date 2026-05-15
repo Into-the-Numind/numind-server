@@ -207,10 +207,15 @@ func (b *creditBiz) deductCreditsTxFull(
 			return nil, fmt.Errorf("update package %d: %w", pkg.ID, err)
 		}
 
-		// 创建流水记录
+		// 创建流水记录（T1: 同时填 source_type=credit_package.Type, source_id=credit_package.ID
+		// 保证 credit_package DROP 后历史 ledger 仍可区分 trial/cycle/booster 来源）
+		pkgType := pkg.Type
+		pkgID := pkg.ID
 		txn := &model.CreditTransaction{
 			UserID:        userID,
 			PackageID:     pkg.ID,
+			SourceType:    &pkgType,
+			SourceID:      &pkgID,
 			Amount:        -deduct,
 			Operation:     operation,
 			UsageRecordID: usageRecordID,
