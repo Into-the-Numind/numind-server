@@ -93,6 +93,18 @@ type UsageStore interface {
 	GetPricingRule(ctx context.Context, serviceType, provider, modelName string) (*model.PricingRule, error)
 }
 
+// CompletionEstimator returns a historical per-(provider, model) completion-token
+// estimate used to replace the conservative max_tokens default in
+// ContextBudgetCredits.doReserveBudget. Implementations MUST return hasData=false
+// when no usable historical data exists so the caller can fall back to the
+// policy default (ReservedOutputTokens).
+//
+// The concrete implementation lives in internal/numind/biz/credit; this
+// interface is here so the middleware package has no cross-package dependency.
+type CompletionEstimator interface {
+	Estimate(ctx context.Context, provider, model string) (tokens int, hasData bool)
+}
+
 // Deps carries the injected dependencies required by the standard middleware set.
 // Zero values are safe: if Langfuse or UsageStore is nil the corresponding
 // middleware degrades gracefully (Tracing skips SDK calls; Billing logs only).
@@ -118,6 +130,14 @@ type Deps struct {
 	// When nil ContextBudgetCredits becomes a passthrough (no credit reservation).
 	// Task 6 wires the real biz/credit binding.
 	CreditService ContextBudgetCreditService
+
+	// CompletionEstimator provides a per-model historical completion-token
+	// estimate that replaces the conservative policy.ReservedOutputTokens
+	// (= max_tokens worst case) inside ContextBudgetCredits.doReserveBudget.
+	// When nil, or when Estimate() returns hasData=false, the middleware
+	// falls back to ReservedOutputTokens — preserves pre-existing behaviour
+	// and the zero-regression guarantee for cold-start models.
+	CompletionEstimator CompletionEstimator
 
 	// PricingCalc is used by the Billing middleware to compute cost_cents
 	// synchronously after the provider call. When set, Billing writes the
