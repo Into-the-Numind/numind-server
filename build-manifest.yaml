@@ -1,6 +1,33 @@
 schema_version: "1.0"
 
 features:
+  - id: "credits-gateway-completion-estimate"
+    ndf_version: "1.1"
+    description: "Per-model 估算准确度修复：gateway 路径（context_budget middleware）目前把 EstimatedCompletionTokens 硬编码成 ReservedOutputTokens = policy max_tokens (16384 / 8192) 作为 worst case，导致 chatbot 2.49x、sop_run 1.77x 过预扣。代码已有 TODO(S7) at context_budget.go:303 marker。本 feature 新建 helper 从 usage_record 按 (provider, model) 聚合 30d 历史 completion_tokens (mean × 1.2 safety, 或 p90)，5-min in-memory cache。No data → fallback to current ReservedOutputTokens (零回归)。修复后 path 1 (主力, prod 700+/7d calls) 的 per-model 估算才真正按模型变化。Path 2 coefficient 表 v4 不动。"
+    track: "hotfix"
+    stage: "H1"
+    classification_reason: "Hotfix Triage — (1) 无 schema (2) 无新端点 (3) 无外部集成 (4) 4-5 文件（helper + middleware patch + tests）(5) 计费精度路径，但 fallback 退路保证零回归。原 Route A bug 假设不成立（H1 调研推翻），重新定义为 context_budget completion estimate 替换。"
+    last_updated_by: "ai-h1-kickoff"
+    last_updated_at: "2026-05-16T15:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/credits-gateway-completion-estimate"
+    progress:
+      total_tasks: 5
+      completed_tasks: 5
+      reviewed_tasks: 5
+      current_task: "H3 commit + merge + deploy"
+    decisions:
+      - "2026-05-16 (Triage v1): 原命名 credits-coef-runtime-modelkey，假设 sop.go:821 用静态 node.ModelName 是 bug。用户拍板 Hotfix。"
+      - "2026-05-16 (Prerequisite): credits-system data audit 完成。usage_record 7d 数据确认 prod 真实 active model = 7 个 LLM key；ai_service 注册表 11 个 LLM 中 4 个 deprecated；sop_node 表当前只有 3 个 active template × 12 nodes。"
+      - "2026-05-16 (H1 调研推翻 v1 假设): sop.go:821 这段只在 modelKey=='' 时执行，物理调用也用 node.ModelName，已对齐。真正问题在 gateway 路径 context_budget middleware: CoefficientID=nil (credit_service.go:1277)，per-model 价格已通过 pricing_rule 生效，但 EstimatedCompletionTokens 硬编码 = ReservedOutputTokens = max_tokens (worst case)，导致 chatbot 2.49x / sop_run 1.77x 过估。代码有 TODO(S7) at context_budget.go:303。"
+      - "2026-05-16 (Triage v2 — feature 重命名): credits-gateway-completion-estimate。范围聚焦：新建 historical-avg helper + middleware patch + 5-min cache + fallback。用户拍板维持 Hotfix Track（推荐理由：影响面大但修复机械、单仓、零回归路径）。Path 2 coef 表 v4 不动。"
+      - "2026-05-16 (H1 实施完成): 5 文件改动。NEW: internal/numind/biz/credit/completion_estimate.go (helper + singleflight dedupe + DB-error skip-cache) + completion_estimate_test.go (9 单测含 race detector)。MOD: internal/pkg/aiservice/middleware/chain.go (新增 CompletionEstimator interface + Deps field)；context_budget.go (新增 effectiveCompletionTokens helper, 替换 budgetMetadata + precheckIn 两处 EstimatedCompletionTokens 用同一 completionTokens 值)；internal/numind/numind.go (wire 生产 estimator via credit.NewCompletionEstimator(store.S.DB()))。build + vet + 测试全 PASS。"
+      - "2026-05-16 (H2 两阶段 Sonnet review): Spec compliance + Code quality 双 reviewer 均返回 PASS_WITH_CONCERNS。Spec: 0 P0 / 0 P1 / 2 P2 (TODO(S7) 注释过期 + line 758 placeholder 注释强化)。Code: 0 P0 / 2 P1 (thundering herd 缺 dedupe + DB error 错误缓存) / 4 P2 (race test 缺失 + TTL expiry test 缺失 + NUL 分隔符未注释 + namespace 对齐确认)。NDF Rule 7 全部就地修：P1.1 加 singleflight.Group 去重并发 loader；P1.2 重构 queryDB 返回 queryResult{err}，DB error 路径跳过缓存 + warn log；P2 加 race test + NUL 注释 + TODO 更新；TTL expiry test 跳过（cache-hit test 已间接覆盖，需注入 config 改动较大）。9/9 单测含 -race PASS。"
+    created_at: "2026-05-16T15:00:00+08:00"
+    completed_at: null
+
   - id: "credits-deduct-cycle-wiring"
     ndf_version: "1.1"
     description: "P0 线上 bug：所有 billing_mode=credits 用户运行 SOP / chatbot / salesrag 时被错误判定为 ErrInsufficientCredits，即便 cycle_remaining + booster_usable >= 估算。Root cause: creditsImpl.GetBalance 和 deductCreditsTxFull 仍读写老 credit_package 表，而 GrantOrRenewSubscription 只写新 subscription + credit_cycle 表（store/credit.go:375 注释承诺的『双写』从未实现）。MembershipService.DeductCredits 是写新表的 active path 但根本没人调用（cycle.go:97-101 自承 Task 16 未完成）。本 feature 完成 Task 16 cleanup：把 Reserve / Reconcile 切换到 MembershipService.DeductCredits，让 read+write 都用新表。"

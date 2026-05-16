@@ -297,11 +297,12 @@ type budgetMetadata struct {
 	SafeInputBudget       int    `json:"safe_input_budget,omitempty"`
 	EstimatedPromptBefore int    `json:"estimated_prompt_tokens_before,omitempty"`
 	EstimatedPromptAfter  int    `json:"estimated_prompt_tokens_after,omitempty"`
-	// EstimatedCompletionTokens mirrors ReservedOutputTokens today (both equal to
-	// policy.ReservedOutputTokens). They are kept as separate fields because
-	// spec §11.2 contracts on `estimated_completion_tokens` while older docs use
-	// `reserved_output_tokens`. TODO(S7): decouple when actual completion
-	// estimate becomes available from biz layer.
+	// EstimatedCompletionTokens is the per-(provider, model) historical-average
+	// completion-token estimate produced by Deps.CompletionEstimator (see
+	// effectiveCompletionTokens). Falls back to policy.ReservedOutputTokens
+	// when no historical data exists. Spec §11.2 contracts on this field name;
+	// `reserved_output_tokens` (below) still carries the policy worst-case
+	// bound for trace/observability comparison.
 	EstimatedCompletionTokens int    `json:"estimated_completion_tokens,omitempty"`
 	CompressionStatus         string `json:"compression_status,omitempty"`
 	// CompressionActions holds the list of non-keep action types applied by the planner.
@@ -455,9 +456,14 @@ func ContextBudgetCredits(deps Deps) Middleware {
 			// ----------------------------------------------------------------
 			// Step 5 (optional): credit precheck + Reserve.
 			// ----------------------------------------------------------------
+			// Compute the per-(provider, model) historical completion-token
+			// estimate ONCE so both the credit precheck (doReserveBudget) and
+			// the budgetMetadata trace field below see the same value. Falls
+			// back to ReservedOutputTokens when the estimator returns no data.
+			completionTokens := effectiveCompletionTokens(ctx, deps, route, result.Policy.ReservedOutputTokens)
 			var reservationID uint64
 			if result.Policy.ChargeUser && deps.CreditService != nil && userID != 0 {
-				reservationID, err = doReserveBudget(ctx, deps, result, userID, route)
+				reservationID, err = doReserveBudget(ctx, deps, result, userID, route, completionTokens)
 				if err != nil {
 					// Insufficient credits or reserve error — don't call provider.
 					return nil, fmt.Errorf("ContextBudgetCredits: %w", err)
@@ -521,7 +527,7 @@ func ContextBudgetCredits(deps Deps) Middleware {
 				SafeInputBudget:           result.SafeInputBudget,
 				EstimatedPromptBefore:     result.EstimatedBefore,
 				EstimatedPromptAfter:      result.EstimatedAfter,
-				EstimatedCompletionTokens: result.Policy.ReservedOutputTokens,
+				EstimatedCompletionTokens: completionTokens,
 				CompressionStatus:         compressionStatus,
 				CompressionActions:        compressionActions,
 				ReservedOutputTokens:      result.Policy.ReservedOutputTokens,
@@ -654,20 +660,52 @@ func finalizeReservationIfNeeded(ctx context.Context, deps Deps, fi FinalizeInpu
 	}
 }
 
+// effectiveCompletionTokens returns the per-(provider, model) historical
+// completion-token estimate from deps.CompletionEstimator, falling back to
+// policy.ReservedOutputTokens when:
+//   - no estimator is wired (nil)
+//   - route metadata is missing
+//   - the estimator has insufficient historical samples
+//   - the historical estimate exceeds the policy worst-case bound
+//
+// Centralising the fallback contract here keeps the budgetMetadata trace
+// field (spec §11.2) and the credit precheck input (doReserveBudget) using
+// the same value, so observability matches what was actually reserved.
+func effectiveCompletionTokens(ctx context.Context, deps Deps, route *registry.ResolvedRoute, reservedOutputTokens int) int {
+	if deps.CompletionEstimator == nil || route == nil || route.Provider.Name == "" || route.ServiceKey == "" {
+		return reservedOutputTokens
+	}
+	tokens, hasData := deps.CompletionEstimator.Estimate(ctx, route.Provider.Name, route.ServiceKey)
+	if !hasData || tokens <= 0 {
+		return reservedOutputTokens
+	}
+	// Never exceed the policy worst-case: if historical mean × safety > max,
+	// the model is hitting its output cap and ReservedOutputTokens is the
+	// correct ceiling anyway.
+	if tokens > reservedOutputTokens {
+		return reservedOutputTokens
+	}
+	return tokens
+}
+
 // doReserveBudget performs the credit precheck and reserves the budget.
 // Returns the reservationID (0 if no reservation was created).
+//
+// completionTokens is the value computed by effectiveCompletionTokens (caller
+// passes it in so the same value can be mirrored into budgetMetadata).
 func doReserveBudget(
 	ctx context.Context,
 	deps Deps,
 	result *PrepareResult,
 	userID uint,
 	route *registry.ResolvedRoute,
+	completionTokens int,
 ) (uint64, error) {
 	precheckIn := credit.BudgetPrecheckInput{
 		UserID:                    userID,
 		Operation:                 result.NormalizedOp,
 		EstimatedPromptTokens:     result.EstimatedAfter,
-		EstimatedCompletionTokens: result.Policy.ReservedOutputTokens,
+		EstimatedCompletionTokens: completionTokens,
 		Provider:                  route.Provider.Name,
 		Model:                     route.ServiceKey,
 		TokenProfileID:            result.TokenProfileID,

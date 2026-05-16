@@ -171,6 +171,12 @@ func run() error {
 		Resolver:      reg,
 		ContextBudget: contextBudgetSvc,
 		CreditService: creditFacade,
+		// CompletionEstimator replaces the hardcoded policy.ReservedOutputTokens
+		// (= max_tokens worst case) inside ContextBudgetCredits.doReserveBudget
+		// with a per-(provider, model) 30d historical average. Fallback path is
+		// preserved (estimator returns hasData=false → ReservedOutputTokens), so
+		// cold-start models and outages cannot regress reservation accuracy.
+		CompletionEstimator: credit.NewCompletionEstimator(store.S.DB()),
 		// PricingCalc enables Billing middleware to compute cost_cents synchronously
 		// and write the result into the finalCostHolder so that ContextBudgetCredits
 		// passes the real value to FinalizeReservation (not the EstimatedCredits
