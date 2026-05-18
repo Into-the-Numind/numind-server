@@ -85,7 +85,7 @@ type PreCheckResult struct {
 	EstimatedCredits int64            // 预估消耗积分
 	CoefficientID    uint64           // 外键 credit_estimation_coefficient.id
 	Balance          BalanceBreakdown // 当前余额快照
-	Reason           string           // legacy_tier 次数不足时填入 CanRunSOP 返回的中文原因
+	Reason           string           // 可选：拒绝时填入的中文原因（用于前端展示）
 }
 
 // Reservation 预扣记录

@@ -281,8 +281,8 @@ func NewSalesRAGBizWithCredits(
 }
 
 // wrapCreditError maps ICreditService denial errors onto the errno domain
-// error HTTP 402 (Credits.Insufficient). legacy_tier users carry the Chinese
-// `Reason` string from CanRunSOP; credits users get a default zh message.
+// error HTTP 402 (Credits.Insufficient). If `pre.Reason` is set the Chinese
+// rejection text is surfaced; otherwise a default zh message is used.
 // Non-credit errors bubble through unchanged so the caller sees the original
 // failure (DB error, coefficient missing, etc.).
 func (b *salesRAGBiz) wrapCreditError(err error, pre *credit.PreCheckResult) error {
@@ -331,11 +331,8 @@ type salesragCreditContext struct {
 // inline Reserve for credits users — the Gateway middleware owns the Reserve,
 // Reconcile, and Refund lifecycle for that path.
 //
-// Legacy-tier users are unaffected: SkipDeduction=true means no Reserve
-// happens either way, but CheckAndEstimate still runs CanRunSOP() gating.
-//
-// The caller still calls `defer cc.finalize(ctx)` — for legacy and test paths
-// where cc.rsv is nil, finalize is a safe no-op.
+// The caller still calls `defer cc.finalize(ctx)` — for test paths where
+// cc.rsv is nil, finalize is a safe no-op.
 func (b *salesRAGBiz) acquireSalesragCredits(
 	ctx context.Context, userID uint, _ uint, promptChars int,
 ) (*salesragCreditContext, error) {

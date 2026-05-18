@@ -54,7 +54,6 @@ func TestCheckAndEstimate_FreeUser_CreditsMode_ReturnsInsufficient(t *testing.T)
 
 	user := &model.User{
 		BillingMode: model.BillingModeCredits,
-		UserTier:    model.UserTierFree,
 	}
 	user.ID = userID
 
@@ -230,7 +229,6 @@ func TestCheckAndEstimate_CreditsMode_TierExpiredStillPasses(t *testing.T) {
 	pastExpiry := now.Add(-time.Hour)
 	user := &model.User{
 		BillingMode: model.BillingModeCredits,
-		UserTier:    model.UserTierStandard,
 		TierExpires: &pastExpiry,
 	}
 	user.ID = userID
