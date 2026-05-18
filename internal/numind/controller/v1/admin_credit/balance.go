@@ -37,10 +37,13 @@ type FullBalanceView struct {
 	TrialRemaining  int64      `json:"trial_remaining"`
 	CycleRemaining  int64      `json:"cycle_remaining"`
 	CycleEnd        *time.Time `json:"cycle_end,omitempty"`
-	BoosterTotal    int64      `json:"booster_total"`
-	BoosterUsable   int64      `json:"booster_usable"`
-	SubExpiresAt    *time.Time `json:"sub_expires_at,omitempty"`
-	TrialExpiresAt  *time.Time `json:"trial_expires_at,omitempty"`
+	// BoosterTotal: field name is "Total" but value is credits_remaining
+	// (raw aggregate balance — see BalanceView.BoosterTotal in biz/membership/state.go).
+	// Not a cumulative purchased total; render as single number, not as denominator.
+	BoosterTotal   int64      `json:"booster_total"`
+	BoosterUsable  int64      `json:"booster_usable"`
+	SubExpiresAt   *time.Time `json:"sub_expires_at,omitempty"`
+	TrialExpiresAt *time.Time `json:"trial_expires_at,omitempty"`
 }
 
 // GetUserBalance handles GET /v1/admin/users/:id/balance.

@@ -50,8 +50,15 @@ type BalanceView struct {
 	CycleRemaining int64
 	// CycleEnd is the end of the current billing cycle; nil when no sub is active.
 	CycleEnd *time.Time
-	// BoosterTotal is the raw credits_remaining from the user_booster_balance row.
-	// Zero when no booster row exists.
+	// BoosterTotal — NAMING WARNING (kept for backward compat with JSON tag
+	// `booster_total` consumed by both web-v3 and admin frontends): the value is
+	// the **raw credits_remaining** from user_booster_balance, NOT a cumulative
+	// purchased total. Booster credits are an aggregate balance (each +600 buy
+	// is added to credits_remaining; deductions decrement it), so there is no
+	// separate "purchased total" concept to expose. The frontend renders this
+	// as a single-number "剩余 N 积分" — do NOT treat it as a denominator. Zero
+	// when no booster row exists. See store.userBoosterBalanceStore for the SOT
+	// schema and Decrement/Increment semantics.
 	BoosterTotal int64
 	// BoosterUsable is the usable portion of the booster balance.
 	// When BoosterFrozen (INV-19), BoosterUsable = 0; otherwise BoosterUsable = BoosterTotal.
