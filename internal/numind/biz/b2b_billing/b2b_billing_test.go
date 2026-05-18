@@ -39,11 +39,6 @@ func newB2BTestDB(t *testing.T) *gorm.DB {
             avatar_url      TEXT,
             parent_user_id  INTEGER,
             total_sop_runs  INTEGER DEFAULT 0,
-            monthly_sop_runs INTEGER DEFAULT 0,
-            monthly_reset_at DATETIME,
-            user_tier       TEXT DEFAULT 'free',
-            tier_expires    DATETIME,
-            billing_mode    TEXT NOT NULL DEFAULT 'credits',
             username        TEXT,
             password        TEXT,
             is_admin        INTEGER DEFAULT 0,
@@ -98,7 +93,7 @@ func newB2BTestDB(t *testing.T) *gorm.DB {
 func insertB2BUser(t *testing.T, db *gorm.DB, username string) uint {
 	t.Helper()
 	res := db.Exec(
-		`INSERT INTO user (created_at, updated_at, username, user_tier, billing_mode) VALUES (?, ?, ?, 'free', 'credits')`,
+		`INSERT INTO user (created_at, updated_at, username) VALUES (?, ?, ?)`,
 		time.Now(), time.Now(), username,
 	)
 	require.NoError(t, res.Error)

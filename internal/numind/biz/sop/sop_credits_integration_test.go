@@ -6,10 +6,10 @@
 // Scope: these tests drive the credit-side plumbing with the exact
 // Operation + idempotency-key + EstimationInput values that the new sop.go
 // passes to ICreditService, and assert on the resulting DB state
-// (credit_reservation row, status transitions, items, account balance,
-// user.monthly_sop_runs for legacy_tier). End-to-end coverage of the LLM
-// call itself is deferred to Playwright (Phase 2.5) since SopExecutor is a
-// concrete struct that requires the full aiservice Gateway.
+// (credit_reservation row, status transitions, items, account balance).
+// End-to-end coverage of the LLM call itself is deferred to Playwright
+// (Phase 2.5) since SopExecutor is a concrete struct that requires the full
+// aiservice Gateway.
 //
 // In-memory SQLite is used throughout (see newCreditsSopTestDB). ENUM-typed
 // columns (credit_reservation.status / finalize_reason) are hand-rolled as
@@ -235,11 +235,10 @@ func seedSopCreditsScenario(t *testing.T, db *gorm.DB,
 	}
 	require.NoError(t, db.Create(&rule).Error)
 
-	// Post legacy-deprecation (T1) the dispatch is gone; every user routes
-	// through creditsImpl regardless of UserTier.
+	// Post legacy-deprecation (T1+T4) the dispatch is gone; every user routes
+	// through creditsImpl.
 	return &model.User{
-		Model:       gorm.Model{ID: userID},
-		BillingMode: model.BillingModeCredits,
+		Model: gorm.Model{ID: userID},
 	}
 }
 

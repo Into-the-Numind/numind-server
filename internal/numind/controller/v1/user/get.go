@@ -61,8 +61,7 @@ func (ctrl *UserController) GetCurrentUser(c *gin.Context) {
 		"updated_at":     userWithStats.UpdatedAt,
 		"parent_user_id": userWithStats.ParentUserID,
 
-		"total_sop_runs":   userWithStats.TotalSopRuns,
-		"monthly_sop_runs": userWithStats.MonthlySopRuns,
+		"total_sop_runs": userWithStats.TotalSopRuns,
 	}
 
 	// credits-mode membership 状态：附加订阅/试用到期时间供前端展示。

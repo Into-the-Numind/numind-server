@@ -31,7 +31,7 @@ func TestCreateOrder_Booster_SelfPurchase_ActiveMember(t *testing.T) {
 	ds := store.NewTestStore(db)
 	b := newPaymentBizForTest(ds)
 
-	uid := mustCreateUser(t, db, "standard", model.BillingModeCredits, nil)
+	uid := mustCreateUser(t, db)
 	mustCreateActiveSubscription(t, db, uid)
 
 	// qty=3, expected amount = 3 × 2990 = 8970 cents. Validation passes; channel fails.
@@ -56,8 +56,8 @@ func TestCreateOrder_Booster_ParentProxyPurchase(t *testing.T) {
 	ds := store.NewTestStore(db)
 	b := newPaymentBizForTest(ds)
 
-	parentID := mustCreateUser(t, db, "standard", model.BillingModeCredits, nil)
-	childID := mustCreateUser(t, db, "standard", model.BillingModeCredits, nil)
+	parentID := mustCreateUser(t, db)
+	childID := mustCreateUser(t, db)
 	mustCreateActiveSubscription(t, db, childID)
 
 	// payer=parent, beneficiary=child, qty=1, amount=2990
@@ -80,7 +80,7 @@ func TestCreateOrder_Booster_QuantityExceeds10000(t *testing.T) {
 	db := newPaymentTestDB(t)
 	ds := store.NewTestStore(db)
 	b := newPaymentBizForTest(ds)
-	uid := mustCreateUser(t, db, "standard", model.BillingModeCredits, nil)
+	uid := mustCreateUser(t, db)
 
 	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 10001, model.PayChannelWechat)
 	require.Error(t, err)
@@ -92,7 +92,7 @@ func TestCreateOrder_Booster_QuantityZero_Rejected(t *testing.T) {
 	db := newPaymentTestDB(t)
 	ds := store.NewTestStore(db)
 	b := newPaymentBizForTest(ds)
-	uid := mustCreateUser(t, db, "free", model.BillingModeCredits, nil)
+	uid := mustCreateUser(t, db)
 
 	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 0, model.PayChannelWechat)
 	require.Error(t, err)
@@ -104,7 +104,7 @@ func TestCreateOrder_Booster_QuantityBoundary10000_NotLimit(t *testing.T) {
 	db := newPaymentTestDB(t)
 	ds := store.NewTestStore(db)
 	b := newPaymentBizForTest(ds)
-	uid := mustCreateUser(t, db, "free", model.BillingModeCredits, nil)
+	uid := mustCreateUser(t, db)
 
 	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 10000, model.PayChannelWechat)
 	require.Error(t, err)
@@ -120,7 +120,7 @@ func TestCreateOrder_Booster_NonMember_Rejected(t *testing.T) {
 	ds := store.NewTestStore(db)
 	b := newPaymentBizForTest(ds)
 
-	uid := mustCreateUser(t, db, "free", model.BillingModeCredits, nil)
+	uid := mustCreateUser(t, db)
 
 	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 1, model.PayChannelWechat)
 	require.Error(t, err)
@@ -133,7 +133,7 @@ func TestCreateOrder_Booster_ActiveTrialMember_Passes(t *testing.T) {
 	ds := store.NewTestStore(db)
 	b := newPaymentBizForTest(ds)
 
-	uid := mustCreateUser(t, db, "trial", model.BillingModeCredits, nil)
+	uid := mustCreateUser(t, db)
 
 	now := time.Now()
 	tg := membershipmodel.TrialGrant{
@@ -158,7 +158,7 @@ func TestCreateOrder_TrialProductType_Rejected(t *testing.T) {
 	db := newPaymentTestDB(t)
 	ds := store.NewTestStore(db)
 	b := newPaymentBizForTest(ds)
-	uid := mustCreateUser(t, db, "free", model.BillingModeCredits, nil)
+	uid := mustCreateUser(t, db)
 
 	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeTrial, 1, model.PayChannelWechat)
 	require.Error(t, err)
@@ -169,7 +169,7 @@ func TestCreateOrder_MonthlyProductType_Rejected(t *testing.T) {
 	db := newPaymentTestDB(t)
 	ds := store.NewTestStore(db)
 	b := newPaymentBizForTest(ds)
-	uid := mustCreateUser(t, db, "free", model.BillingModeCredits, nil)
+	uid := mustCreateUser(t, db)
 
 	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeMonthly, 1, model.PayChannelWechat)
 	require.Error(t, err)
@@ -184,7 +184,7 @@ func TestFulfillOrder_BoosterPath(t *testing.T) {
 	ds := store.NewTestStore(db)
 	b, _ := newPaymentBizWithFakeCredit(ds)
 
-	uid := mustCreateUser(t, db, "standard", model.BillingModeCredits, nil)
+	uid := mustCreateUser(t, db)
 
 	const qty = 5
 	order := mustCreatePendingBoosterOrder(t, db, uid, uid, qty)
@@ -222,7 +222,7 @@ func TestFulfillOrder_BoosterPath_Idempotent(t *testing.T) {
 	ds := store.NewTestStore(db)
 	b, _ := newPaymentBizWithFakeCredit(ds)
 
-	uid := mustCreateUser(t, db, "standard", model.BillingModeCredits, nil)
+	uid := mustCreateUser(t, db)
 	order := mustCreatePendingBoosterOrder(t, db, uid, uid, 2)
 
 	require.NoError(t, b.fulfillOrder(context.Background(), order.OrderNo, "TRADE_IDEM_A"))
@@ -239,7 +239,7 @@ func TestFulfillOrder_NonBoosterProductType_Rejected(t *testing.T) {
 	ds := store.NewTestStore(db)
 	b, _ := newPaymentBizWithFakeCredit(ds)
 
-	uid := mustCreateUser(t, db, "free", model.BillingModeCredits, nil)
+	uid := mustCreateUser(t, db)
 
 	// Insert a legacy pending order with product_type=monthly (dirty row).
 	legacyOrder := &model.Order{

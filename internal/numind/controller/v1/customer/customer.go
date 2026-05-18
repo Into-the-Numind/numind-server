@@ -560,46 +560,6 @@ func (ctrl *CustomerController) Create(c *gin.Context) {
 	})
 }
 
-// UpdateSubUserTier 升级子用户会员等级
-func (ctrl *CustomerController) UpdateSubUserTier(c *gin.Context) {
-	log.C(c).Infow("Update sub user tier called")
-
-	// 从token获取当前用户
-	currentUser, exists := c.Get("current_user")
-	if !exists {
-		core.WriteResponse(c, errno.ErrUnauthorized.SetMessage("未找到用户信息"), nil)
-		return
-	}
-	user := currentUser.(*model.User)
-
-	// 获取sub_user_id参数
-	subUserID, err := strconv.ParseUint(c.Param("user_id"), 10, 32)
-	if err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的用户ID"), nil)
-		return
-	}
-
-	// 绑定请求body
-	var req v1.UpdateTierRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
-		return
-	}
-
-	// 执行升级
-	err = ctrl.customerBiz.UpdateSubUserTier(c, user.ID, uint(subUserID), &req)
-	if err != nil {
-		log.C(c).Errorw("Failed to update sub user tier",
-			"parent_user_id", user.ID, "sub_user_id", subUserID, "tier", req.Tier, "months", req.Months, "err", err)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
-		return
-	}
-
-	core.WriteResponse(c, nil, gin.H{
-		"message": "升级成功",
-	})
-}
-
 // ListSubUserFeatures 获取子用户的功能权限列表
 func (ctrl *CustomerController) ListSubUserFeatures(c *gin.Context) {
 	currentUser, exists := c.Get("current_user")

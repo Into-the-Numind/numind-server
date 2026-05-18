@@ -388,64 +388,20 @@ func (b *userBiz) CreateCustomer(ctx context.Context, parentUserID uint, r *v1.C
 		return errno.ErrUserAlreadyExist
 	}
 
-	// 3. 校验可选的会员等级参数
-	// T3 起所有用户均为 credits 计费模式；UserTier 字段保留至 T4 schema DROP。
-	tier := r.Tier
-	if tier == "" {
-		tier = "free"
-	}
-	if tier != "free" && tier != "trial" && tier != "standard" && tier != "premium" {
-		return errno.ErrInvalidParameter.SetMessage("无效的会员等级: %s", tier)
-	}
-	if tier != "free" && tier != "trial" && (r.Months < 1 || r.Months > 12) {
-		return errno.ErrInvalidParameter.SetMessage("开通时长需在 1-12 个月之间")
-	}
-
-	// 4. 数据构造
+	// 3. 数据构造（credits-only 体系：不再设置 user_tier / tier_expires）
 	user := model.User{
 		Username:     r.Username,
 		Password:     r.Password,
 		Nickname:     r.Nickname,
 		Phone:        r.Phone,
-		UserTier:     "free",
 		ParentUserID: &parentUserID,
 		Status:       1,
 	}
 
-	// 如果指定了付费等级，设置 UserTier、TierExpires 和会员月周期起点
-	now := time.Now()
-	var tierExpires time.Time
-	if tier != "free" {
-		user.UserTier = tier
-		if tier == "trial" {
-			tierExpires = now.AddDate(0, 0, 3)
-		} else {
-			tierExpires = now.AddDate(0, 0, r.Months*30)
-		}
-		user.TierExpires = &tierExpires
-		user.MonthlyResetAt = &now
-	}
-
-	// 5. 入库 + 授权（事务）
+	// 4. 入库 + 授权（事务）
 	return b.ds.DB().Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&user).Error; err != nil {
 			return err
-		}
-
-		// 如果指定了付费等级，记录等级变更日志
-		if tier != "free" {
-			changeLog := model.TierChangeLog{
-				ParentUserID:   parentUserID,
-				SubUserID:      user.ID,
-				OldTier:        "free",
-				NewTier:        tier,
-				Months:         r.Months,
-				OldTierExpires: nil,
-				NewTierExpires: tierExpires,
-			}
-			if err := tx.Create(&changeLog).Error; err != nil {
-				return fmt.Errorf("记录等级变更日志失败: %w", err)
-			}
 		}
 
 		// 继承父账户的所有SOP模板权限（单条SQL批量插入）

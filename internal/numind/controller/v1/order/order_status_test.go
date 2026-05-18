@@ -33,11 +33,10 @@ func newOrderStatusTestDB(t *testing.T) *gorm.DB {
 	})
 	require.NoError(t, err)
 
-	// model.User.TableName() == "user".
+	// model.User.TableName() == "user". Post-T4: legacy_tier columns dropped.
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS "user" (
 		id             INTEGER PRIMARY KEY AUTOINCREMENT,
 		username       TEXT    NOT NULL DEFAULT '',
-		billing_mode   TEXT    NOT NULL DEFAULT 'credits',
 		parent_user_id INTEGER,
 		created_at     DATETIME,
 		updated_at     DATETIME,
@@ -57,11 +56,11 @@ func newOrderStatusTestDB(t *testing.T) *gorm.DB {
 func seedUser(t *testing.T, db *gorm.DB, id uint, parentID *uint) {
 	t.Helper()
 	if parentID == nil {
-		require.NoError(t, db.Exec(`INSERT INTO "user" (id, billing_mode, created_at, updated_at)
-			VALUES (?, 'credits', datetime('now'), datetime('now'))`, id).Error)
+		require.NoError(t, db.Exec(`INSERT INTO "user" (id, created_at, updated_at)
+			VALUES (?, datetime('now'), datetime('now'))`, id).Error)
 	} else {
-		require.NoError(t, db.Exec(`INSERT INTO "user" (id, billing_mode, parent_user_id, created_at, updated_at)
-			VALUES (?, 'credits', ?, datetime('now'), datetime('now'))`, id, *parentID).Error)
+		require.NoError(t, db.Exec(`INSERT INTO "user" (id, parent_user_id, created_at, updated_at)
+			VALUES (?, ?, datetime('now'), datetime('now'))`, id, *parentID).Error)
 	}
 }
 

@@ -57,27 +57,23 @@ type AdminListUsersRequest struct {
 	Offset int    `form:"offset"`
 	Limit  int    `form:"limit"`
 	Search string `form:"search"` // 搜索关键字（用户名/昵称/手机号）
-	Tier   string `form:"tier"`   // 按等级过滤
 	Status *int   `form:"status"` // 按状态过滤
 }
 
 // AdminUserItem 管理员视角的用户信息
 type AdminUserItem struct {
-	ID             uint       `json:"id"`
-	Username       string     `json:"username"`
-	Nickname       string     `json:"nickname"`
-	Phone          string     `json:"phone"`
-	AvatarURL      string     `json:"avatar_url"`
-	IsAdmin        bool       `json:"is_admin"`
-	UserTier       string     `json:"user_tier"`
-	TierExpires    *time.Time `json:"tier_expires"`
-	Status         int        `json:"status"`
-	TotalSopRuns   int        `json:"total_sop_runs"`
-	MonthlySopRuns int        `json:"monthly_sop_runs"`
-	ParentUserID   *uint      `json:"parent_user_id"`
-	LastLogin      *time.Time `json:"last_login"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ID           uint       `json:"id"`
+	Username     string     `json:"username"`
+	Nickname     string     `json:"nickname"`
+	Phone        string     `json:"phone"`
+	AvatarURL    string     `json:"avatar_url"`
+	IsAdmin      bool       `json:"is_admin"`
+	Status       int        `json:"status"`
+	TotalSopRuns int        `json:"total_sop_runs"`
+	ParentUserID *uint      `json:"parent_user_id"`
+	LastLogin    *time.Time `json:"last_login"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 // AdminListUsersResponse 管理员用户列表响应
@@ -96,12 +92,6 @@ type AdminUpdateUserRequest struct {
 // AdminUpdateUserStatusRequest 管理员更新用户状态请求
 type AdminUpdateUserStatusRequest struct {
 	Status int `json:"status" binding:"oneof=0 1"`
-}
-
-// AdminUpdateUserTierRequest 管理员更新用户等级请求
-type AdminUpdateUserTierRequest struct {
-	Tier   string `json:"tier" binding:"required,oneof=free trial standard premium"`
-	Months int    `json:"months" binding:"omitempty,min=1,max=12"`
 }
 
 // AdminResetPasswordRequest 管理员重置密码请求

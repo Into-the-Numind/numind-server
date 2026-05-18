@@ -19,18 +19,7 @@ type User struct {
 	Parent       *User `gorm:"foreignKey:ParentUserID;references:ID" json:"parent,omitempty"`
 
 	// SOP运行统计字段
-	TotalSopRuns   int        `gorm:"default:0;index" json:"total_sop_runs"` // 总SOP运行次数
-	MonthlySopRuns int        `gorm:"default:0" json:"monthly_sop_runs"`     // 当月SOP运行次数
-	MonthlyResetAt *time.Time `gorm:"index" json:"monthly_reset_at"`         // 上次月度重置时间
-
-	// 用户等级字段（控制SOP运行权限）
-	UserTier    string     `gorm:"size:20;default:'free';index" json:"user_tier"` // 用户等级：free, trial, standard, premium
-	TierExpires *time.Time `gorm:"index" json:"tier_expires"`                     // 等级到期时间
-
-	// 计费模式字段（credits-system feature）
-	// credits = 新积分制（预扣 / 对账 / 退款机制）
-	// 详见 spec §2.2
-	BillingMode string `gorm:"column:billing_mode;type:enum('legacy_tier','credits');not null;default:'credits';index:idx_user_billing_mode,priority:1" json:"billing_mode"`
+	TotalSopRuns int `gorm:"default:0;index" json:"total_sop_runs"` // 总SOP运行次数（累计统计）
 
 	// 管理员相关字段
 	Username  string     `gorm:"size:50;uniqueIndex" json:"username,omitempty"`
@@ -43,13 +32,6 @@ type User struct {
 func (User) TableName() string {
 	return "user"
 }
-
-// BillingMode 定义用户计费模式常量（credits-system feature）
-// credits: 积分制（默认）——Reserve/Reconcile 预扣对账 + FIFO 扣减。
-// 详见 spec §2.2。
-const (
-	BillingModeCredits = "credits"
-)
 
 // TierChangeLog 等级变更日志
 type TierChangeLog struct {

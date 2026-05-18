@@ -38,10 +38,10 @@ func newBalanceTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 
 	// User table (minimal columns needed). model.User.TableName() returns "user".
+	// Post-T4: legacy_tier / billing_mode columns dropped.
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS "user" (
 		id              INTEGER PRIMARY KEY AUTOINCREMENT,
 		username        TEXT    NOT NULL DEFAULT '',
-		billing_mode    TEXT    NOT NULL DEFAULT 'credits',
 		parent_user_id  INTEGER,
 		created_at      DATETIME,
 		updated_at      DATETIME,
@@ -120,11 +120,11 @@ func newBalanceTestDB(t *testing.T) *gorm.DB {
 func insertUser(t *testing.T, db *gorm.DB, id uint, parentID *uint) {
 	t.Helper()
 	if parentID == nil {
-		require.NoError(t, db.Exec(`INSERT INTO "user" (id, billing_mode, created_at, updated_at)
-			VALUES (?, 'credits', datetime('now'), datetime('now'))`, id).Error)
+		require.NoError(t, db.Exec(`INSERT INTO "user" (id, created_at, updated_at)
+			VALUES (?, datetime('now'), datetime('now'))`, id).Error)
 	} else {
-		require.NoError(t, db.Exec(`INSERT INTO "user" (id, billing_mode, parent_user_id, created_at, updated_at)
-			VALUES (?, 'credits', ?, datetime('now'), datetime('now'))`, id, *parentID).Error)
+		require.NoError(t, db.Exec(`INSERT INTO "user" (id, parent_user_id, created_at, updated_at)
+			VALUES (?, ?, datetime('now'), datetime('now'))`, id, *parentID).Error)
 	}
 }
 
@@ -160,7 +160,7 @@ func TestGetChildBalance_HappyPath(t *testing.T) {
 	insertUser(t, db, childID, &parentID)
 
 	ctrl := newBalanceController(ds, svc)
-	r := newChildBalanceRouter(t, ctrl, mustUser(parentID, model.BillingModeCredits))
+	r := newChildBalanceRouter(t, ctrl, mustUser(parentID, "credits"))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/users/children/101/balance", nil)
 	w := httptest.NewRecorder()
@@ -197,7 +197,7 @@ func TestGetChildBalance_WithActiveTrial(t *testing.T) {
 		childID, expiresAt.UTC().Format("2006-01-02 15:04:05")).Error)
 
 	ctrl := newBalanceController(ds, svc)
-	r := newChildBalanceRouter(t, ctrl, mustUser(parentID, model.BillingModeCredits))
+	r := newChildBalanceRouter(t, ctrl, mustUser(parentID, "credits"))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/users/children/202/balance", nil)
 	w := httptest.NewRecorder()
@@ -232,7 +232,7 @@ func TestGetChildBalance_ForbiddenWhenNotChild(t *testing.T) {
 
 	// Parent 3 tries to query child 303 (child of parent 4) — must be forbidden.
 	ctrl := newBalanceController(ds, svc)
-	r := newChildBalanceRouter(t, ctrl, mustUser(parentID, model.BillingModeCredits))
+	r := newChildBalanceRouter(t, ctrl, mustUser(parentID, "credits"))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/users/children/303/balance", nil)
 	w := httptest.NewRecorder()
@@ -264,7 +264,7 @@ func TestGetChildBalance_InvalidChildID(t *testing.T) {
 	svc := membership.NewMembershipService(db)
 
 	ctrl := newBalanceController(ds, svc)
-	r := newChildBalanceRouter(t, ctrl, mustUser(1, model.BillingModeCredits))
+	r := newChildBalanceRouter(t, ctrl, mustUser(1, "credits"))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/users/children/notanumber/balance", nil)
 	w := httptest.NewRecorder()
