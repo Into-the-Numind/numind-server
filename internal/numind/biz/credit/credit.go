@@ -33,9 +33,6 @@ type ICreditBiz interface {
 	// arc lands and no callers remain (verified by `grep RechargeWithOrderTx`
 	// — only test files exercise it post-T5).
 	RechargeWithOrderTx(ctx context.Context, tx *gorm.DB, userID uint, orderID uint64, productType string, months int) error
-	// GrantMembership is the B2B2C grant path (spec Q1): parent user
-	// grants membership to a child user without going through payment.
-	GrantMembership(ctx context.Context, req GrantMembershipReq) error
 	GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error)
 }
 
