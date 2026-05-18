@@ -70,7 +70,12 @@ func (ctrl *OrderController) CreateOrder(c *gin.Context) {
 		}
 	}
 
-	order, err := ctrl.paymentBiz.CreateOrder(c, payer.ID, req.UserID, req.ProductType, req.Quantity, req.PayChannel)
+	// Extract idempotency key injected by RequireIdempotencyKey middleware.
+	// Empty string means no header was sent (middleware enforces presence for
+	// POST, so this is defensive — internal callers may bypass the middleware).
+	idempotencyKey := c.GetString("idempotency_key")
+
+	order, err := ctrl.paymentBiz.CreateOrder(c, payer.ID, req.UserID, req.ProductType, req.Quantity, req.PayChannel, idempotencyKey)
 	if err != nil {
 		log.C(c).Errorw("Failed to create order", "payer_id", payer.ID, "user_id", req.UserID, "err", err)
 		// 如果是已定义的 errno（如 Membership.Required / Trial.AlreadyPurchased /

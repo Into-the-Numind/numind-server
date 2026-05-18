@@ -35,7 +35,7 @@ func TestCreateOrder_Booster_SelfPurchase_ActiveMember(t *testing.T) {
 	mustCreateActiveSubscription(t, db, uid)
 
 	// qty=3, expected amount = 3 × 2990 = 8970 cents. Validation passes; channel fails.
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 3, model.PayChannelWechat)
+	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 3, model.PayChannelWechat, "")
 	require.Error(t, err, "expected channel-not-configured error, not validation error")
 	assert.NotErrorIs(t, err, errno.ErrNotActiveMember)
 	assert.NotErrorIs(t, err, errno.ErrBoosterQuantityExceedsLimit)
@@ -61,7 +61,7 @@ func TestCreateOrder_Booster_ParentProxyPurchase(t *testing.T) {
 	mustCreateActiveSubscription(t, db, childID)
 
 	// payer=parent, beneficiary=child, qty=1, amount=2990
-	_, err := b.CreateOrder(context.Background(), parentID, childID, model.ProductTypeBooster, 1, model.PayChannelWechat)
+	_, err := b.CreateOrder(context.Background(), parentID, childID, model.ProductTypeBooster, 1, model.PayChannelWechat, "")
 	require.Error(t, err, "expected channel-not-configured error")
 	assert.NotErrorIs(t, err, errno.ErrNotActiveMember)
 	assert.NotErrorIs(t, err, errno.ErrInvalidProductType)
@@ -82,7 +82,7 @@ func TestCreateOrder_Booster_QuantityExceeds10000(t *testing.T) {
 	b := newPaymentBizForTest(ds)
 	uid := mustCreateUser(t, db)
 
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 10001, model.PayChannelWechat)
+	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 10001, model.PayChannelWechat, "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errno.ErrBoosterQuantityExceedsLimit, "qty=10001 must exceed limit")
 }
@@ -94,7 +94,7 @@ func TestCreateOrder_Booster_QuantityZero_Rejected(t *testing.T) {
 	b := newPaymentBizForTest(ds)
 	uid := mustCreateUser(t, db)
 
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 0, model.PayChannelWechat)
+	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 0, model.PayChannelWechat, "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errno.ErrBoosterQuantityExceedsLimit, "qty=0 must be rejected")
 }
@@ -106,7 +106,7 @@ func TestCreateOrder_Booster_QuantityBoundary10000_NotLimit(t *testing.T) {
 	b := newPaymentBizForTest(ds)
 	uid := mustCreateUser(t, db)
 
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 10000, model.PayChannelWechat)
+	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 10000, model.PayChannelWechat, "")
 	require.Error(t, err)
 	// qty gate passes; next gate is ErrNotActiveMember (no subscription).
 	assert.NotErrorIs(t, err, errno.ErrBoosterQuantityExceedsLimit, "qty=10000 must not exceed limit")
@@ -122,7 +122,7 @@ func TestCreateOrder_Booster_NonMember_Rejected(t *testing.T) {
 
 	uid := mustCreateUser(t, db)
 
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 1, model.PayChannelWechat)
+	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 1, model.PayChannelWechat, "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errno.ErrNotActiveMember)
 }
@@ -146,7 +146,7 @@ func TestCreateOrder_Booster_ActiveTrialMember_Passes(t *testing.T) {
 	}
 	require.NoError(t, db.Create(&tg).Error)
 
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 1, model.PayChannelWechat)
+	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 1, model.PayChannelWechat, "")
 	require.Error(t, err, "expected channel-not-configured error")
 	assert.NotErrorIs(t, err, errno.ErrNotActiveMember, "active trial must pass membership gate")
 	assert.Contains(t, err.Error(), "未配置")
@@ -160,7 +160,7 @@ func TestCreateOrder_TrialProductType_Rejected(t *testing.T) {
 	b := newPaymentBizForTest(ds)
 	uid := mustCreateUser(t, db)
 
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeTrial, 1, model.PayChannelWechat)
+	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeTrial, 1, model.PayChannelWechat, "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errno.ErrInvalidProductType, "trial must return ErrInvalidProductType")
 }
@@ -171,7 +171,7 @@ func TestCreateOrder_MonthlyProductType_Rejected(t *testing.T) {
 	b := newPaymentBizForTest(ds)
 	uid := mustCreateUser(t, db)
 
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeMonthly, 1, model.PayChannelWechat)
+	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeMonthly, 1, model.PayChannelWechat, "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errno.ErrInvalidProductType, "monthly must return ErrInvalidProductType")
 }

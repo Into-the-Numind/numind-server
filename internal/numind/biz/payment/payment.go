@@ -2,8 +2,10 @@ package payment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -18,6 +20,12 @@ import (
 
 	"github.com/google/uuid"
 )
+
+// idempotencyKeyIndexName is the UNIQUE-index identifier on
+// payment_order.idempotency_key. Used by recoverIdempotentInsert to detect
+// the race where two concurrent requests with the same Idempotency-Key
+// both pass the pre-check and one of the INSERTs hits the unique constraint.
+const idempotencyKeyIndexName = "uniq_order_idempotency_key"
 
 const (
 	// boosterCreditsPerUnit is the number of credits granted per booster unit purchased.
@@ -38,7 +46,13 @@ type IPaymentBiz interface {
 	// CreateOrder creates a payment order. Only product_type=booster is accepted;
 	// trial/monthly/yearly memberships are granted via the B2B grant path.
 	// quantity specifies the number of booster units (1–10000).
-	CreateOrder(ctx context.Context, payerID, userID uint, productType string, quantity int, payChannel string) (*model.Order, error)
+	//
+	// idempotencyKey carries the value of the Idempotency-Key header from
+	// POST /v1/orders. When non-empty, a prior order with the same key is
+	// returned as-is (idempotent retry); a concurrent insert that loses the
+	// race recovers by re-querying. Empty key disables dedup (used by internal
+	// callers + legacy tests).
+	CreateOrder(ctx context.Context, payerID, userID uint, productType string, quantity int, payChannel string, idempotencyKey string) (*model.Order, error)
 	HandleWechatNotify(ctx context.Context, request *http.Request) error
 	HandleAlipayNotify(ctx context.Context, request *http.Request) error
 	GetOrder(ctx context.Context, orderID uint64) (*model.Order, error)
@@ -107,7 +121,17 @@ func IsInternalCaller(ctx context.Context) bool {
 // are granted exclusively through the B2B grant path (POST /v1/users/children/:id/grant-membership).
 // quantity specifies the number of booster units to purchase (1–10000).
 // payer = token subject; userID = beneficiary (self-purchase when equal).
-func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, productType string, quantity int, payChannel string) (*model.Order, error) {
+//
+// Audit P2#10: idempotencyKey, when non-empty, dedups double-submit retries.
+//  1. Pre-check: if an order with the same key already exists, return it
+//     immediately (no new payment-channel call, no new row).
+//  2. New row is persisted with the key set; the UNIQUE constraint on
+//     payment_order.idempotency_key (migration 20260518_125529) backs the
+//     dedup invariant against concurrent inserts that both pass the pre-check.
+//  3. Race recovery: if Create() fails with a unique-violation on the
+//     idempotency-key index, re-query and return the row inserted by the
+//     racing request — equivalent to (1) but resolved post-hoc.
+func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, productType string, quantity int, payChannel string, idempotencyKey string) (*model.Order, error) {
 	// §5.10: Only booster is accepted via the order interface. trial/monthly/yearly
 	// must go through the grant path. Reject everything else.
 	if productType != model.ProductTypeBooster {
@@ -117,6 +141,17 @@ func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, prod
 	// §5.2: quantity ∈ [1, 10000].
 	if quantity < 1 || quantity > boosterMaxQuantity {
 		return nil, errno.ErrBoosterQuantityExceedsLimit
+	}
+
+	// P2#10 pre-check: same Idempotency-Key → return existing order.
+	// FindByIdempotencyKey short-circuits on empty key, so this is a no-op
+	// for internal callers that don't pass through a header.
+	if existing, err := b.ds.Orders().FindByIdempotencyKey(ctx, idempotencyKey); err != nil {
+		return nil, fmt.Errorf("idempotency pre-check: %w", err)
+	} else if existing != nil {
+		log.Infow("CreateOrder idempotent replay",
+			"order_no", existing.OrderNo, "idempotency_key", idempotencyKey)
+		return existing, nil
 	}
 
 	// §5.2: Beneficiary must have an active membership (subscription or trial).
@@ -163,26 +198,71 @@ func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, prod
 		return nil, fmt.Errorf("unsupported pay channel: %s", payChannel)
 	}
 
+	// Pointerize the idempotency key so empty maps to NULL (not the empty
+	// string) in the database — preserves "multiple NULLs allowed under
+	// UNIQUE index" semantics for callers without a header.
+	var idemKeyPtr *string
+	if idempotencyKey != "" {
+		k := idempotencyKey
+		idemKeyPtr = &k
+	}
+
 	// Persist order. Quantity is stored in the Months field (booster never uses
 	// months; this avoids a schema migration for the payment_order table).
 	order := &model.Order{
-		OrderNo:     orderNo,
-		UserID:      userID,
-		PayerID:     payerID,
-		ProductType: productType,
-		Months:      quantity, // repurposed: stores booster quantity for fulfillOrder
-		Amount:      amount,
-		PayChannel:  payChannel,
-		PayStatus:   model.OrderStatusPending,
-		CodeURL:     codeURL,
-		ExpiredAt:   time.Now().Add(30 * time.Minute),
+		OrderNo:        orderNo,
+		UserID:         userID,
+		PayerID:        payerID,
+		ProductType:    productType,
+		Months:         quantity, // repurposed: stores booster quantity for fulfillOrder
+		Amount:         amount,
+		PayChannel:     payChannel,
+		PayStatus:      model.OrderStatusPending,
+		CodeURL:        codeURL,
+		ExpiredAt:      time.Now().Add(30 * time.Minute),
+		IdempotencyKey: idemKeyPtr,
 	}
 
 	if err := b.ds.Orders().Create(ctx, order); err != nil {
+		// P2#10 race recovery: a concurrent request with the same key beat
+		// us to the insert. The pre-check missed because both reads happened
+		// before either insert committed. Re-query — the racing request's
+		// row is now committed — and return it.
+		if idempotencyKey != "" && isIdempotencyKeyConflict(err) {
+			existing, qerr := b.ds.Orders().FindByIdempotencyKey(ctx, idempotencyKey)
+			if qerr != nil {
+				return nil, fmt.Errorf("idempotency race recovery query: %w (original: %v)", qerr, err)
+			}
+			if existing != nil {
+				log.Infow("CreateOrder idempotent race recovered",
+					"order_no", existing.OrderNo, "idempotency_key", idempotencyKey)
+				return existing, nil
+			}
+			// Constraint fired but row not found — should be impossible.
+			// Fall through with the original error for visibility.
+		}
 		return nil, fmt.Errorf("create order: %w", err)
 	}
 
 	return order, nil
+}
+
+// isIdempotencyKeyConflict reports whether err is a UNIQUE-constraint
+// violation on the idempotency_key index. Handles MySQL (error 1062 /
+// "Duplicate entry") and GORM v2's ErrDuplicatedKey wrapper used by the
+// SQLite test driver.
+func isIdempotencyKeyConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return strings.Contains(err.Error(), idempotencyKeyIndexName)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "1062") && !strings.Contains(msg, "Duplicate entry") {
+		return false
+	}
+	return strings.Contains(msg, idempotencyKeyIndexName)
 }
 
 // HandleWechatNotify 处理微信支付回调通知
