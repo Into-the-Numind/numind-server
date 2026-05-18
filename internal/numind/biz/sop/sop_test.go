@@ -30,12 +30,24 @@ func (zeroBalanceCreditSvc) GetBalance(_ context.Context, _ *model.User) (*credi
 }
 
 // newSopTestDB creates an isolated in-memory SQLite DB for SOP biz tests.
+// model.User has MySQL ENUM columns SQLite rejects, so user table is hand-rolled.
+// sop-salesrag-parent-scope Task 4: CreateTemplateByUser 现在读 user 表做 parent
+// invariant assertion, 所以 user 表必须存在.
 func newSopTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err, "open sqlite in-memory DB")
+
+	require.NoError(t, db.Exec(`
+		CREATE TABLE user (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at      DATETIME,
+			updated_at      DATETIME,
+			deleted_at      DATETIME,
+			parent_user_id  INTEGER NULL
+		)`).Error, "create user table")
 
 	require.NoError(t, db.AutoMigrate(
 		&model.SopTemplate{},
@@ -45,6 +57,21 @@ func newSopTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	return db
+}
+
+// seedSopTestUser 创建一个 user 用于 sop biz 测试.
+// parentID=nil 创建父账户 (ParentUserID IS NULL).
+// parentID!=nil 创建子账户.
+func seedSopTestUser(t *testing.T, db *gorm.DB, id uint, parentID *uint) {
+	t.Helper()
+	var pv interface{}
+	if parentID != nil {
+		pv = *parentID
+	}
+	require.NoError(t, db.Exec(
+		`INSERT INTO user (id, parent_user_id, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now'))`,
+		id, pv,
+	).Error)
 }
 
 // TestCreateTemplateByUser_TrailingChatFalse verifies that a template created
@@ -58,6 +85,10 @@ func TestCreateTemplateByUser_TrailingChatFalse(t *testing.T) {
 
 	// nil executor and creditBiz are safe: CreateTemplateByUser does not use them.
 	b := sop.NewSopBiz(ds, nil, nil)
+
+	// sop-salesrag-parent-scope Task 4: CreateTemplateByUser 现在 assert ParentUserID==nil,
+	// 必须 seed 一个父账户 (id=1) 才能通过断言.
+	seedSopTestUser(t, db, 1, nil)
 
 	falseVal := false
 	req := &sop.CreateTemplateByUserReq{
@@ -87,6 +118,9 @@ func TestCreateTemplateByUser_TrailingChatDefaultsToTrue(t *testing.T) {
 
 	b := sop.NewSopBiz(ds, nil, nil)
 
+	// Task 4: 必须 seed parent user
+	seedSopTestUser(t, db, 2, nil)
+
 	req := &sop.CreateTemplateByUserReq{
 		Name:                "test-default",
 		TrailingChatEnabled: nil, // omitted → should default to true
@@ -95,6 +129,77 @@ func TestCreateTemplateByUser_TrailingChatDefaultsToTrue(t *testing.T) {
 	tmpl, err := b.CreateTemplateByUser(context.Background(), uint(2), req)
 	require.NoError(t, err)
 	assert.True(t, tmpl.TrailingChatEnabled, "omitted trailing_chat_enabled should default to true")
+}
+
+// =============================================================================
+// sop-salesrag-parent-scope Task 4 + Task 5 测试 (spec §6.2)
+// =============================================================================
+
+// TestCreateTemplateByUser_ParentSucceeds verifies that a parent account
+// successfully creates a template, and CreatorUserID = parent.ID (spec D1).
+func TestCreateTemplateByUser_ParentSucceeds(t *testing.T) {
+	db := newSopTestDB(t)
+	ds := store.NewTestStore(db)
+	b := sop.NewSopBiz(ds, nil, nil)
+
+	parentID := uint(30)
+	seedSopTestUser(t, db, parentID, nil) // parent (ParentUserID nil)
+
+	req := &sop.CreateTemplateByUserReq{Name: "parent-test", Description: "by parent"}
+	tmpl, err := b.CreateTemplateByUser(context.Background(), parentID, req)
+	require.NoError(t, err)
+	require.NotNil(t, tmpl)
+	require.NotNil(t, tmpl.CreatorUserID)
+	assert.Equal(t, parentID, *tmpl.CreatorUserID, "spec D1: creator_user_id 必须 = parent.ID")
+}
+
+// TestCreateTemplateByUser_SubUserRejected verifies that a sub-user is rejected
+// with ErrForbidden (spec D8 defense-in-depth assertion).
+func TestCreateTemplateByUser_SubUserRejected(t *testing.T) {
+	db := newSopTestDB(t)
+	ds := store.NewTestStore(db)
+	b := sop.NewSopBiz(ds, nil, nil)
+
+	parentID := uint(30)
+	subID := uint(100)
+	seedSopTestUser(t, db, parentID, nil)    // parent
+	seedSopTestUser(t, db, subID, &parentID) // sub of 30
+
+	req := &sop.CreateTemplateByUserReq{Name: "sub-attempt", Description: "should fail"}
+	_, err := b.CreateTemplateByUser(context.Background(), subID, req)
+	require.Error(t, err, "spec D8: 子用户调用必须被拒")
+
+	// 验证 err chain 含 ErrForbidden
+	var ee *errno.Errno
+	if errors.As(err, &ee) {
+		assert.Equal(t, errno.ErrForbidden.Code, ee.Code, "应是 ErrForbidden")
+	}
+}
+
+// TestCreateTemplate_AdminSucceeds verifies that admin path with adminUserID
+// successfully creates a template with creator_user_id = adminUserID (spec D6).
+func TestCreateTemplate_AdminSucceeds(t *testing.T) {
+	db := newSopTestDB(t)
+	ds := store.NewTestStore(db)
+	b := sop.NewSopBiz(ds, nil, nil)
+
+	adminID := uint(1)
+	tmpl, err := b.CreateTemplate(context.Background(), adminID, "admin-test", "by admin", "prompt-text")
+	require.NoError(t, err)
+	require.NotNil(t, tmpl)
+	require.NotNil(t, tmpl.CreatorUserID)
+	assert.Equal(t, adminID, *tmpl.CreatorUserID, "spec D6: admin 路径 creator_user_id = adminUserID")
+}
+
+// TestCreateTemplate_RequiresAdminUserID verifies that adminUserID=0 is rejected
+// (spec D6 强制非零).
+func TestCreateTemplate_RequiresAdminUserID(t *testing.T) {
+	db := newSopTestDB(t)
+	ds := store.NewTestStore(db)
+	b := sop.NewSopBiz(ds, nil, nil)
+
+	_, err := b.CreateTemplate(context.Background(), 0, "no-admin", "should fail", "prompt")
+	require.Error(t, err, "spec D6: adminUserID=0 必须报错")
 }
 
 // newCreateRunTestDB sets up an in-memory SQLite with the hand-rolled user
