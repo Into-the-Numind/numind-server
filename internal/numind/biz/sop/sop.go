@@ -365,38 +365,26 @@ func (b *sopBiz) CreateRun(ctx context.Context, templateID, userID uint, text st
 		return nil, fmt.Errorf("获取用户信息失败: %w", err)
 	}
 
-	// 有效 legacy 会员（含 billing_mode=credits 但会员仍在期的过渡用户）：
-	// 基于用户等级和月度次数限制检查。
-	// 纯 credits 用户：跳过此检查，权限由 ExecuteNode 中的 creditSvc.CheckAndEstimate 控制。
-	if user.HasActiveMembership() {
-		canRun, reason := user.CanRunSOP()
-		if !canRun {
-			log.C(ctx).Warnw("User cannot run SOP",
-				"user_id", userID,
-				"user_tier", user.UserTier,
-				"monthly_sop_runs", user.MonthlySopRuns,
-				"reason", reason)
-			return nil, errno.ErrSOPRunDenied.SetMessage("%s", reason)
-		}
-		log.C(ctx).Infow("Legacy user SOP permission check passed",
-			"user_id", userID,
-			"user_tier", user.GetActualUserTier(),
-			"billing_mode", user.BillingMode,
-			"remaining_runs", user.GetRemainingSOPRuns())
-	} else if b.creditSvc != nil {
-		// credits 用户：粗粒度余额预检，避免零余额时创建 orphan pending run
-		// （精确检查由 ExecuteNode 中的 creditSvc.CheckAndEstimate 负责）
+	// credits 用户：粗粒度余额预检，避免零余额时创建 orphan pending run
+	// （精确检查由 ExecuteNode 中的 creditSvc.CheckAndEstimate 负责）
+	// 三池都计入：trial_grant + credit_cycle + user_booster_balance。
+	if b.creditSvc != nil {
 		bal, balErr := b.creditSvc.GetBalance(ctx, user)
 		if balErr != nil {
 			log.C(ctx).Warnw("Credits pre-check: failed to get balance, allowing run creation",
 				"user_id", userID, "err", balErr)
-		} else if bal.SubRemain+bal.BoosterRemain <= 0 {
-			log.C(ctx).Warnw("Credits pre-check: zero balance",
-				"user_id", userID, "sub_remain", bal.SubRemain, "booster_remain", bal.BoosterRemain)
-			return nil, errno.ErrInsufficientCredits.SetMessage("积分不足，请充值积分")
 		} else {
+			totalRemain := bal.SubRemain + bal.BoosterRemain + bal.TrialRemain
+			if totalRemain <= 0 {
+				log.C(ctx).Warnw("Credits pre-check: zero balance",
+					"user_id", userID,
+					"sub_remain", bal.SubRemain,
+					"booster_remain", bal.BoosterRemain,
+					"trial_remain", bal.TrialRemain)
+				return nil, errno.ErrInsufficientCredits.SetMessage("积分不足，请充值积分")
+			}
 			log.C(ctx).Infow("Credits user balance pre-check passed",
-				"user_id", userID, "total_remain", bal.SubRemain+bal.BoosterRemain)
+				"user_id", userID, "total_remain", totalRemain)
 		}
 	}
 

@@ -84,24 +84,17 @@ func NewCreditService(ds store.IStore, biz ICreditBiz, pc pricing.ICalculator, m
 	}
 }
 
-// isEffectiveLegacy returns true if the user should be treated as a legacy
-// tier member regardless of their billing_mode field. This enables a smooth
-// transition: users with an active legacy membership (tier not free, not
-// expired) are served by the legacy path even if billing_mode is still
-// "credits" (e.g. migration not yet run). Once their membership expires,
-// they naturally fall through to the credits path.
+// isEffectiveLegacy returns true ONLY when billing_mode is explicitly
+// legacy_tier. The previous HasActiveMembership() fallthrough caused
+// credits-mode users with a non-expired user_tier (legacy field) to be
+// incorrectly routed to the legacy path, bypassing trial_grant / credit_cycle
+// / user_booster_balance entirely. Per product directive, legacy is fully
+// deprecated and credits-mode users must always read the three-pool SOT.
 func isEffectiveLegacy(user *model.User) bool {
-	// Defense-in-depth: nil user → treat as non-legacy. Middleware callers
-	// must load the user before calling (spec §6.1.2 step 1), but we don't
-	// want a nil-deref to crash the whole request if someone forgets — S5
-	// verification caught exactly that bug in ContextBudgetCredits.
 	if user == nil {
 		return false
 	}
-	if user.BillingMode == model.BillingModeLegacyTier {
-		return true
-	}
-	return user.HasActiveMembership()
+	return user.BillingMode == model.BillingModeLegacyTier
 }
 
 // CheckAndEstimate dispatches to legacy or credits leg. Users with an active
