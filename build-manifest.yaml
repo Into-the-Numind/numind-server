@@ -5,29 +5,38 @@ features:
     ndf_version: "1.1"
     description: "P0 prod bug：设置页「我的积分」三个连锁问题。Root cause: 2026-05-16 Audit P2#4/#5 cleanup 删除了 /v1/credits/balance 的旧字段（balance/sub_total/sub_remain/booster_remain），后端注释自承『frontend reads were already migrated』，但实际 SettingsView 路径未迁移。具体症状：(1) CreditBalanceCard.vue:14 会员积分行用 balance?.sub_total > 0 判定 → 永不渲染 (2) 加量包行 booster_remain（已删）显示为 0、booster_total（语义已变 = remaining）作分母 → 用户看到 0/580 这种诡异显示 (3) BoosterPurchaseCard.vue:86-92 同样依赖 sub_total → Pro 会员卡片显示禁用『请联系管理员开通』，无法购买加量包 (4) SettingsView.vue 进度条计算依赖 userStore.quotaSubTotal/quotaSubRemain/quotaBoosterTotal（值永远 0）+ tierLabel/expiryText 也读已删字段。修复：前端 3 文件改用新字段 trial_remaining/cycle_remaining/booster_total(语义=剩余)/booster_usable/membership_state；删除「额度使用率」进度条 section（三池叠加的进度条无意义）；加量包改单数字『剩余 N 积分』显示，移除假分母；后端 state.go BoosterTotal 字段注释加强标明语义=remaining 不是 total。"
     track: "hotfix"
-    stage: "H2"
+    stage: "H3-dev-validated"
     classification_reason: "Hotfix Triage 5 条 — (1) 无 schema 变更 (2) 无新端点（已存在 GET /v1/credits/balance 字段语义校准）(3) 无外部服务集成 (4) 跨两仓但每仓 ≤3 文件（web-v3: CreditBalanceCard + BoosterPurchaseCard + SettingsView，server: state.go 注释）(5) 涉及计费展示但不动扣减逻辑，零回归风险。条件 1-5 全部命中 Hotfix Track。"
-    last_updated_by: "ai-h1-research"
-    last_updated_at: "2026-05-19T00:00:00+08:00"
+    last_updated_by: "ai-h3-dev-validated"
+    last_updated_at: "2026-05-19T01:00:00+08:00"
     repos:
       - numind-web-v3
       - numind-server
     branches:
-      numind-web-v3: "fix/settings-credits-display"
-      numind-server: "fix/booster-total-comment"
+      numind-web-v3: "fix/settings-credits-display (merged to develop via 5fe579b)"
+      numind-server: "fix/booster-total-comment (merged to develop via 32c1f76)"
     worktree:
       numind-web-v3: "/private/tmp/wt-settings-credits-display"
       numind-server: "/private/tmp/wt-booster-total-comment"
     progress:
       total_tasks: 4
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task: "H2 — 改 3 个 vue 文件 + state.go 注释 + lint/typecheck"
+      completed_tasks: 4
+      reviewed_tasks: 4
+      current_task: "H3 dev 已验证，等用户决定 prod tag 时机"
     decisions:
       - "2026-05-19 (H1 调研): 三个症状根因汇聚到同一处 —— 2026-05-16 Audit P2#4/#5 cleanup 删了 balance/sub_total/sub_remain/booster_remain 四个旧字段，CreditsView 已迁移到 BalanceDTO 新字段，但 SettingsView 路径漏迁；同时后端 BoosterTotal 字段名误导（赋值是 booster.CreditsRemaining，语义是 remaining 不是 total），加重展示错位。扣减机制本身 (cycle.go FIFO + Reserve/Reconcile) 实测代码完全正确，用户感知到的『扣分异常』是展示 bug 的次生现象。"
       - "2026-05-19 (产品决策 - 用户拍板): (1) 加量包改单数字『剩余 N 积分』，不再用分子/分母（加量包是聚合余额无『条数』概念）(2) 删除「额度使用率」进度条 section（试用+月订+加量包三池叠加无法用单一进度条表达）(3) 部署节奏：先 dev 验证 → 再 prod tag。"
       - "2026-05-19 (技术决策 - AI 自决): 后端只加注释不重命名 BoosterTotal 字段（重命名会再次破坏前端，已学到 Audit cleanup 教训）；前端用 store 的 displayState 而非 userInfo.tier 判定会员状态（credits-only 模式后 tier 字段不可靠）；user store quota* 死字段保留不删（删除属 scope creep，且永远为 0 无害）。"
+      - "2026-05-19 (H2 两阶段 Sonnet review): Spec compliance PASS_WITH_CONCERNS (0 P0 / 2 P1 / 4 P2) + Code quality FAIL (1 P0 单测失败 / 2 P1 / 5 P2)。NDF Rule 7 全部就地修：P0 测试用旧字段 mock，更新为 BalanceDTO 新字段 (membership_state='pro'/'trial')；加量包断言从『350』改为『400』（新单数字版）。P1 修：formatMonthEnd/formatDate NaN bug (new Date('invalid') 不抛异常，加 isNaN 检查)；BoosterPurchaseCard JSDoc 矩阵和实际渲染对齐 (free/trial 灰态无 CTA，与代码一致)。P2 修：credits.ts totalRemain getter 改用新字段；SettingsView 注释更新；state.go 注释引用改用 store 名而非行号；admin_credit/balance.go FullBalanceView.BoosterTotal 加同语义注释。trial 用户能否购买加量包的 spec 不一致问题（CLAUDE.md §1 说允许，BoosterPurchaseCard 当前禁用）暂保持现行 prod 行为，单独 spawn task 处理 spec 对齐。"
+      - "2026-05-19 (H2 review 后绿: 前端 npm run lint 0 errors / npm run type-check 0 errors / npx vitest 15 passed 2 skipped — pre-existing TODO；后端 task lint 通过 / go test biz/membership biz/credit controller/admin_credit 3 packages ok)"
+      - "2026-05-19 (H3 commit+merge+push): web-v3 commit 111f298 → merge --no-ff develop 5fe579b → push origin develop (CI run 26047816231 PASS in 2m4s); server commit 072fcf0 → merge --no-ff develop 32c1f76 → push origin develop (CI run 26047814736 PASS in 7m9s)。两仓 CI 一次性 success，无 Docker Hub GFW 异常。"
+      - "2026-05-19 (H3 dev 验证 PASS): admin/admin123456 登录 $DEV_API_URL，GET /v1/credits/balance 返回 cycle_remaining=1978, booster_total=6000, booster_usable=6000, membership_state='pro', sub_expires_at='2026-06-07' — 后端 BalanceDTO 字段就位。Playwright headless Chromium 访问 $DEV_SITE_URL/settings 截图：(1) 会员积分 1978 + 6月底 过期，显示正常 (2) 加量包『6000 积分』单数字（不再是 0/N 分式）(3) BoosterPurchaseCard data-state='credits' / 不含 is-disabled / 显示『立即购买』绿色 CTA — Pro 会员可购买。Console 0 错误。三个用户报告的 bug 全部 fixed。"
     blockers: []
+    follow_ups:
+      - "trial 购买加量包 spec 对齐（CLAUDE.md §1 说允许 vs BoosterPurchaseCard 禁用）— 需产品决策 + 同步修代码或文档"
+      - "credits store balance ref 类型从 QuotaBreakdown 升级为 BalanceDTO，消除多处 `as unknown as Record<string, unknown>` cast"
+      - "CreditBalanceCard / BoosterPurchaseCard 4 状态处理（loading skeleton + error retry），当前依赖父组件提示"
+      - "user store quota* 死字段 + fetchCreditBalance 死方法清理（永远为 0，scope creep 推迟）"
     created_at: "2026-05-19T00:00:00+08:00"
 
   - id: "sop-salesrag-parent-scope"
