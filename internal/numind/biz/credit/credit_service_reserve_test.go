@@ -165,9 +165,7 @@ CREATE TABLE IF NOT EXISTS credit_reservation_item (
 // dispatch is gone — every user routes through creditsImpl regardless of
 // the UserTier value.
 func newCreditsUser(id uint) *model.User {
-	u := &model.User{
-		BillingMode: model.BillingModeCredits,
-	}
+	u := &model.User{}
 	u.ID = id
 	return u
 }
@@ -349,7 +347,7 @@ func TestReserve_GetBalanceCredits(t *testing.T) {
 
 	bal, err := svc.GetBalance(context.Background(), user)
 	require.NoError(t, err)
-	assert.Equal(t, model.BillingModeCredits, bal.BillingMode)
+	assert.Equal(t, "credits", bal.BillingMode)
 	// T6: GetBalance reads from credit_cycle (Sub) and user_booster_balance
 	// (Booster). The new schema has no per-package TotalCredits column —
 	// SubTotal/BoosterTotal == credits_remaining (no separate cap concept).
@@ -366,9 +364,7 @@ func TestReserve_GetBalanceCredits(t *testing.T) {
 // helper is retained as a stable fixture for CheckAndEstimateBudget /
 // ReserveBudget tests.
 func newPureCreditsUser(id uint) *model.User {
-	u := &model.User{
-		BillingMode: model.BillingModeCredits,
-	}
+	u := &model.User{}
 	u.ID = id
 	return u
 }

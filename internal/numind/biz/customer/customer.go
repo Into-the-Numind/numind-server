@@ -29,9 +29,6 @@ type ICustomerBiz interface {
 	// 运行统计
 	GetCustomerStatistics(ctx context.Context, userID uint) (*v1.CustomerStatisticsResponse, error)
 
-	// 等级管理
-	UpdateSubUserTier(ctx context.Context, parentUserID, subUserID uint, req *v1.UpdateTierRequest) error
-
 	// 功能权限管理
 	CheckFeaturePermission(ctx context.Context, userID uint, featureKey string) (bool, error)
 	GrantFeatures(ctx context.Context, parentUserID, subUserID uint, featureKeys []string) error
@@ -110,11 +107,6 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 			}
 		}
 
-		expiresStr := ""
-		if user.TierExpires != nil {
-			expiresStr = user.TierExpires.Format("2006-01-02")
-		}
-
 		ms := msBatch[uint64(user.ID)]
 		var membershipState v1.SubUserMembershipState
 		var hasUsedTrial bool
@@ -135,26 +127,20 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 		}
 
 		// credit_balance / credit_expires 是给前端兜底用的快捷字段。
-		// credits-mode 用户的真实数据在 msBatch 里（新表），不能再读 credit_account /
-		// credit_package（grant 路径已经不再写这两张表，读出来是 0 / 空串）。
+		// credits-only 体系下所有用户的真实数据都在 msBatch 里（新表）。
 		var creditBalance int64
 		var creditExpires string
-		if user.BillingMode == model.BillingModeCredits {
-			if ms != nil {
-				creditBalance = ms.CycleRemaining
-				if ms.SubscriptionExpiresAt != nil {
-					if t, err := time.Parse(time.RFC3339, *ms.SubscriptionExpiresAt); err == nil {
-						creditExpires = t.Format("2006-01-02")
-					}
-				} else if ms.TrialExpiresAt != nil {
-					if t, err := time.Parse(time.RFC3339, *ms.TrialExpiresAt); err == nil {
-						creditExpires = t.Format("2006-01-02")
-					}
+		if ms != nil {
+			creditBalance = ms.CycleRemaining
+			if ms.SubscriptionExpiresAt != nil {
+				if t, err := time.Parse(time.RFC3339, *ms.SubscriptionExpiresAt); err == nil {
+					creditExpires = t.Format("2006-01-02")
+				}
+			} else if ms.TrialExpiresAt != nil {
+				if t, err := time.Parse(time.RFC3339, *ms.TrialExpiresAt); err == nil {
+					creditExpires = t.Format("2006-01-02")
 				}
 			}
-		} else {
-			creditBalance, _ = c.ds.Credits().GetBalance(ctx, user.ID)
-			creditExpires, _ = c.ds.Credits().GetLatestCreditExpiry(ctx, user.ID)
 		}
 
 		subUsers = append(subUsers, v1.SubUserInfo{
@@ -164,10 +150,7 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 			Phone:               user.Phone,
 			Avatar:              user.AvatarURL,
 			TotalSopRuns:        user.TotalSopRuns,
-			MonthlySopRuns:      user.MonthlySopRuns,
 			AuthorizedTemplates: activeTemplateCount,
-			UserTier:            user.UserTier,
-			TierExpires:         expiresStr,
 			CreditBalance:       creditBalance,
 			CreditExpires:       creditExpires,
 			MembershipState:     membershipState,
@@ -211,20 +194,12 @@ func (c *customerBiz) GetSubUserDetail(ctx context.Context, parentUserID, subUse
 		})
 	}
 
-	expiresStr := ""
-	if user.TierExpires != nil {
-		expiresStr = user.TierExpires.Format("2006-01-02")
-	}
-
 	return &v1.SubUserDetailResponse{
 		UserID:                   user.ID,
 		Nickname:                 user.Nickname,
 		Phone:                    user.Phone,
 		Avatar:                   user.AvatarURL,
-		UserTier:                 user.UserTier,
-		TierExpires:              expiresStr,
 		TotalSopRuns:             user.TotalSopRuns,
-		MonthlySopRuns:           user.MonthlySopRuns,
 		AuthorizedTemplatesCount: len(templateList),
 		AuthorizedTemplates:      templateList,
 	}, nil
@@ -232,7 +207,7 @@ func (c *customerBiz) GetSubUserDetail(ctx context.Context, parentUserID, subUse
 
 // GetCustomerStatistics 获取客户统计数据
 func (c *customerBiz) GetCustomerStatistics(ctx context.Context, userID uint) (*v1.CustomerStatisticsResponse, error) {
-	// 获取用户信息
+	// 获取用户信息（用于累计 SOP 运行次数）
 	user, err := c.ds.Users().GetByID(ctx, userID)
 	if err != nil {
 		log.C(ctx).Errorw("Failed to get user", "user_id", userID, "err", err)
@@ -253,18 +228,11 @@ func (c *customerBiz) GetCustomerStatistics(ctx context.Context, userID uint) (*
 		return nil, err
 	}
 
-	expiresStr := ""
-	if user.TierExpires != nil {
-		expiresStr = user.TierExpires.Format("2006-01-02")
-	}
-
 	return &v1.CustomerStatisticsResponse{
 		TotalSubUsers:  totalSubUsers,
 		ActiveSubUsers: activeSubUsers,
 		TotalTemplates: int64(len(templates)),
 		TotalSopRuns:   int64(user.TotalSopRuns),
-		UserTier:       user.UserTier,
-		TierExpires:    expiresStr,
 	}, nil
 }
 
@@ -349,64 +317,6 @@ func (c *customerBiz) RevokeTemplates(ctx context.Context, parentUserID, subUser
 // CheckTemplatePermission 检查子客户是否有模板权限
 func (c *customerBiz) CheckTemplatePermission(ctx context.Context, userID, templateID uint) (bool, error) {
 	return c.ds.Customers().HasTemplatePermission(ctx, userID, templateID)
-}
-
-// UpdateSubUserTier 升级子用户会员等级
-func (c *customerBiz) UpdateSubUserTier(ctx context.Context, parentUserID, subUserID uint, req *v1.UpdateTierRequest) error {
-	// 1. 验证所属关系
-	user, err := c.ds.Customers().GetSubUser(ctx, parentUserID, subUserID)
-	if err != nil {
-		log.C(ctx).Errorw("Failed to verify sub user ownership", "parent_user_id", parentUserID, "sub_user_id", subUserID, "err", err)
-		return fmt.Errorf("子用户不存在或不属于当前用户")
-	}
-
-	// 2. 获取当前等级（直接取 user_tier 字段；T3 起所有用户均为 credits 计费）
-	currentTier := user.UserTier
-
-	// 3. 校验只能升级不能降级
-	if model.TierRank(req.Tier) <= model.TierRank(currentTier) {
-		return fmt.Errorf("只能升级等级，不能降级（当前: %s, 目标: %s）", currentTier, req.Tier)
-	}
-
-	// 4. 计算到期时间
-	now := time.Now()
-	var newExpires time.Time
-	if req.Tier == "trial" {
-		// 体验会员固定 3 天
-		newExpires = now.AddDate(0, 0, 3)
-	} else {
-		// 非 trial 等级必须指定有效的开通时长
-		if req.Months < 1 || req.Months > 12 {
-			return fmt.Errorf("开通时长需在 1-12 个月之间")
-		}
-		newExpires = now.AddDate(0, 0, req.Months*30)
-	}
-
-	// 5. 在事务中更新等级并写入变更日志
-	changeLog := &model.TierChangeLog{
-		ParentUserID:   parentUserID,
-		SubUserID:      subUserID,
-		OldTier:        currentTier,
-		NewTier:        req.Tier,
-		Months:         req.Months,
-		OldTierExpires: user.TierExpires,
-		NewTierExpires: newExpires,
-	}
-	if err := c.ds.Customers().UpdateSubUserTierWithLog(ctx, subUserID, req.Tier, newExpires, changeLog); err != nil {
-		log.C(ctx).Errorw("Failed to update sub user tier", "sub_user_id", subUserID, "err", err)
-		return fmt.Errorf("更新等级失败: %w", err)
-	}
-
-	log.C(ctx).Infow("Sub user tier upgraded",
-		"parent_user_id", parentUserID,
-		"sub_user_id", subUserID,
-		"old_tier", currentTier,
-		"new_tier", req.Tier,
-		"months", req.Months,
-		"new_expires", newExpires.Format("2006-01-02"),
-	)
-
-	return nil
 }
 
 // CheckFeaturePermission 检查用户是否有功能权限

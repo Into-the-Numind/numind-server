@@ -71,9 +71,8 @@ func newSalesragCreditsTestDB(t *testing.T) *gorm.DB {
 		&model.CreditEstimationCoefficient{},
 		&model.PricingRule{},
 	))
-	// Hand-roll user: model.User has MySQL ENUM columns (billing_mode,
-	// user_tier) that SQLite's AutoMigrate can't parse. Mirror every column
-	// the model exposes so GORM First(&User) unmarshals cleanly.
+	// Hand-roll user: keep DDL aligned with model.User post-T4 (legacy_tier
+	// columns DROP'd in the schema migration).
 	require.NoError(t, db.Exec(`
 CREATE TABLE IF NOT EXISTS user (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,11 +84,6 @@ CREATE TABLE IF NOT EXISTS user (
     avatar_url       TEXT,
     parent_user_id   INTEGER,
     total_sop_runs   INTEGER DEFAULT 0,
-    monthly_sop_runs INTEGER DEFAULT 0,
-    monthly_reset_at DATETIME,
-    user_tier        TEXT DEFAULT 'free',
-    tier_expires     DATETIME,
-    billing_mode     TEXT NOT NULL DEFAULT 'credits',
     username         TEXT,
     password         TEXT,
     is_admin         INTEGER DEFAULT 0,
@@ -213,8 +207,7 @@ CREATE TABLE IF NOT EXISTS credit_reservation_item (
 func seedCreditsUserWithPackage(t *testing.T, db *gorm.DB, userID uint, totalCredits int64) *model.User {
 	t.Helper()
 	user := &model.User{
-		BillingMode: model.BillingModeCredits,
-		Phone:       "13800000000",
+		Phone: "13800000000",
 	}
 	user.ID = userID
 	require.NoError(t, db.Create(user).Error)
@@ -365,8 +358,7 @@ func TestAcquireSalesragCredits_InsufficientBalance(t *testing.T) {
 	userID := uint(1002)
 	// Seed a credits-mode user but with zero balance (no packages).
 	user := &model.User{
-		BillingMode: model.BillingModeCredits,
-		Phone:       "13811111111",
+		Phone: "13811111111",
 	}
 	user.ID = userID
 	require.NoError(t, db.Create(user).Error)

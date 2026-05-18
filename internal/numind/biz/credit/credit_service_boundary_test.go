@@ -52,9 +52,7 @@ func TestCheckAndEstimate_FreeUser_CreditsMode_ReturnsInsufficient(t *testing.T)
 	seedCoefficient(t, db, "ali", "qwen-turbo", "sop_run", 1.5, 0.5, 0.2, 1, true)
 	seedPricingRule(t, db, "llm_chat", "ali", "qwen-turbo", 200, 800)
 
-	user := &model.User{
-		BillingMode: model.BillingModeCredits,
-	}
+	user := &model.User{}
 	user.ID = userID
 
 	pc := pricing.NewCalculator(ds.Billing())
@@ -72,7 +70,7 @@ func TestCheckAndEstimate_FreeUser_CreditsMode_ReturnsInsufficient(t *testing.T)
 	require.NotNil(t, pre)
 	assert.False(t, pre.Sufficient, "free user balance=0 must be insufficient")
 	assert.False(t, pre.SkipDeduction, "credits mode must NOT skip deduction")
-	assert.Equal(t, model.BillingModeCredits, pre.Balance.BillingMode)
+	assert.Equal(t, "credits", pre.Balance.BillingMode)
 	assert.EqualValues(t, 0, pre.Balance.SubRemain)
 	assert.EqualValues(t, 0, pre.Balance.SubTotal)
 	assert.EqualValues(t, 0, pre.Balance.BoosterRemain)
@@ -225,12 +223,8 @@ func TestCheckAndEstimate_CreditsMode_TierExpiredStillPasses(t *testing.T) {
 	seedCoefficient(t, db, "ali", "qwen-turbo", "sop_run", 1.5, 0.5, 0.2, 1, true)
 	seedPricingRule(t, db, "llm_chat", "ali", "qwen-turbo", 200, 800)
 
-	// User with expired tier BUT billing_mode=credits (新用户路径).
-	pastExpiry := now.Add(-time.Hour)
-	user := &model.User{
-		BillingMode: model.BillingModeCredits,
-		TierExpires: &pastExpiry,
-	}
+	// User has 500 credits — credits-only billing path (legacy_tier removed in T4).
+	user := &model.User{}
 	user.ID = userID
 
 	pc := pricing.NewCalculator(ds.Billing())
@@ -244,7 +238,7 @@ func TestCheckAndEstimate_CreditsMode_TierExpiredStillPasses(t *testing.T) {
 	assert.True(t, pre.Sufficient,
 		"credits mode with 500 balance must be Sufficient regardless of tier")
 	assert.False(t, pre.SkipDeduction, "credits mode must not skip deduction")
-	assert.Equal(t, model.BillingModeCredits, pre.Balance.BillingMode)
+	assert.Equal(t, "credits", pre.Balance.BillingMode)
 	assert.EqualValues(t, 500, pre.Balance.SubRemain)
 }
 

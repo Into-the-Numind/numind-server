@@ -36,9 +36,7 @@ func newChatbotVisTestDB(t *testing.T) *gorm.DB {
 			deleted_at      DATETIME,
 			username        TEXT,
 			nickname        TEXT,
-			parent_user_id  INTEGER,
-			billing_mode    TEXT NOT NULL DEFAULT 'credits',
-			user_tier       TEXT DEFAULT 'free'
+			parent_user_id  INTEGER
 		)`).Error)
 
 	require.NoError(t, db.AutoMigrate(

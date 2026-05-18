@@ -15,10 +15,7 @@ type SubUserInfo struct {
 	Nickname            string `json:"nickname"`
 	Phone               string `json:"phone"`
 	Avatar              string `json:"avatar"`
-	UserTier            string `json:"user_tier"`
-	TierExpires         string `json:"tier_expires"`
 	TotalSopRuns        int    `json:"total_sop_runs"`
-	MonthlySopRuns      int    `json:"monthly_sop_runs"`
 	AuthorizedTemplates int    `json:"authorized_templates"`
 	CreditBalance       int64  `json:"credit_balance"` // 额度余额（total balance incl. booster）
 	CreditExpires       string `json:"credit_expires"` // 最晚额度包到期时间
@@ -37,14 +34,11 @@ type ListSubUsersResponse struct {
 
 // SubUserDetailResponse 获取子客户详情响应
 type SubUserDetailResponse struct {
-	UserID         uint   `json:"user_id"`
-	Nickname       string `json:"nickname"`
-	Phone          string `json:"phone"`
-	Avatar         string `json:"avatar"`
-	UserTier       string `json:"user_tier"`
-	TierExpires    string `json:"tier_expires"`
-	TotalSopRuns   int    `json:"total_sop_runs"`
-	MonthlySopRuns int    `json:"monthly_sop_runs"`
+	UserID       uint   `json:"user_id"`
+	Nickname     string `json:"nickname"`
+	Phone        string `json:"phone"`
+	Avatar       string `json:"avatar"`
+	TotalSopRuns int    `json:"total_sop_runs"`
 
 	AuthorizedTemplatesCount int            `json:"authorized_templates_count"`
 	AuthorizedTemplates      []TemplateInfo `json:"authorized_templates"`
@@ -85,15 +79,6 @@ type CustomerStatisticsResponse struct {
 	ActiveSubUsers int64 `json:"active_sub_users"`
 	TotalTemplates int64 `json:"total_templates"`
 	TotalSopRuns   int64 `json:"total_sop_runs"`
-	// 用户等级相关字段（用于侧边栏运行次数卡片）
-	UserTier    string `json:"user_tier"`
-	TierExpires string `json:"tier_expires"`
-}
-
-// UpdateTierRequest 升级子用户会员等级请求
-type UpdateTierRequest struct {
-	Tier   string `json:"tier" binding:"required,oneof=trial standard premium"`
-	Months int    `json:"months" binding:"omitempty,min=1,max=12"` // trial 不需要传 months，固定3天
 }
 
 // CreateCustomerRequest 创建子客户的请求参数
@@ -101,7 +86,5 @@ type CreateCustomerRequest struct {
 	Username string `json:"username" binding:"required" valid:"alphanum,required,stringlength(1|255)"`
 	Password string `json:"password" binding:"required" valid:"required,stringlength(6|18)"`
 	Nickname string `json:"nickname" valid:"stringlength(0|255)"`
-	Phone    string `json:"phone"`                                                                // Optional for sub-users
-	Tier     string `json:"tier,omitempty" binding:"omitempty,oneof=free trial standard premium"` // 可选: "trial"/"standard"/"premium"，默认 free
-	Months   int    `json:"months,omitempty" binding:"omitempty,min=1,max=12"`                    // 当 Tier 不为空/free 时必填, 1-12
+	Phone    string `json:"phone"` // Optional for sub-users
 }

@@ -30,36 +30,14 @@ func (ctrl *AdminDashboardController) GetStats(c *gin.Context) {
 
 	db := ctrl.ds.DB()
 
-	// 用户总数及等级分布（合并为一条 SQL）
-	type tierCount struct {
-		Tier  string `gorm:"column:tier"`
-		Count int64  `gorm:"column:cnt"`
-	}
-	var tierCounts []tierCount
-	if err := db.Model(&model.User{}).
-		Select("COALESCE(NULLIF(user_tier, ''), 'free') as tier, COUNT(*) as cnt").
-		Group("tier").
-		Scan(&tierCounts).Error; err != nil {
-		log.C(c).Errorw("Failed to query user tier breakdown", "error", err)
+	// 用户总数（legacy_tier 体系已废止：tier 维度细分字段保留为 0，前端兜底显示）
+	var totalUsers int64
+	if err := db.Model(&model.User{}).Count(&totalUsers).Error; err != nil {
+		log.C(c).Errorw("Failed to count users", "error", err)
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("查询失败，请稍后重试"), nil)
 		return
 	}
-
-	var totalUsers int64
 	var tierBreakdown v1.TierBreakdown
-	for _, tc := range tierCounts {
-		totalUsers += tc.Count
-		switch tc.Tier {
-		case "free":
-			tierBreakdown.Free = tc.Count
-		case "trial":
-			tierBreakdown.Trial = tc.Count
-		case "standard":
-			tierBreakdown.Standard = tc.Count
-		case "premium":
-			tierBreakdown.Premium = tc.Count
-		}
-	}
 
 	// SOP运行总数
 	var totalRuns int64

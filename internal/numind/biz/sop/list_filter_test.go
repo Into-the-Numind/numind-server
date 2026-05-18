@@ -35,9 +35,7 @@ func newListFilterTestDB(t *testing.T) *gorm.DB {
 			updated_at      DATETIME,
 			deleted_at      DATETIME,
 			username        TEXT,
-			parent_user_id  INTEGER,
-			billing_mode    TEXT NOT NULL DEFAULT 'credits',
-			user_tier       TEXT DEFAULT 'free'
+			parent_user_id  INTEGER
 		)`).Error)
 
 	require.NoError(t, db.AutoMigrate(

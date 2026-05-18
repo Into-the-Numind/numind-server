@@ -33,7 +33,7 @@ func newPaymentTestDB(t *testing.T) *gorm.DB {
 	})
 	require.NoError(t, err, "open sqlite file DB")
 
-	// Hand-rolled user table (sqlite can't parse MySQL enum syntax).
+	// Hand-rolled user table (post-T4: no legacy_tier columns).
 	require.NoError(t, db.Exec(`
         CREATE TABLE user (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,11 +45,6 @@ func newPaymentTestDB(t *testing.T) *gorm.DB {
             avatar_url      TEXT,
             parent_user_id  INTEGER,
             total_sop_runs  INTEGER DEFAULT 0,
-            monthly_sop_runs INTEGER DEFAULT 0,
-            monthly_reset_at DATETIME,
-            user_tier       TEXT DEFAULT 'free',
-            tier_expires    DATETIME,
-            billing_mode    TEXT NOT NULL DEFAULT 'credits',
             username        TEXT,
             password        TEXT,
             is_admin        INTEGER DEFAULT 0,
@@ -76,12 +71,13 @@ func newPaymentTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-// mustCreateUser inserts a user with given tier / billing_mode and returns the ID.
-func mustCreateUser(t *testing.T, db *gorm.DB, tier, billingMode string, tierExpires *time.Time) uint {
+// mustCreateUser inserts a bare user row and returns the ID.
+// Post-T4 (legacy_tier deprecated): no tier / billing_mode / monthly columns.
+func mustCreateUser(t *testing.T, db *gorm.DB) uint {
 	t.Helper()
 	res := db.Exec(
-		`INSERT INTO user (created_at, updated_at, user_tier, tier_expires, billing_mode, monthly_sop_runs) VALUES (?, ?, ?, ?, ?, 0)`,
-		time.Now(), time.Now(), tier, tierExpires, billingMode,
+		`INSERT INTO user (created_at, updated_at) VALUES (?, ?)`,
+		time.Now(), time.Now(),
 	)
 	require.NoError(t, res.Error)
 	require.Equal(t, int64(1), res.RowsAffected)
@@ -154,7 +150,7 @@ func TestCreateOrder_Booster_NoActiveMembership_Rejected(t *testing.T) {
 	b := newPaymentBizForTest(ds)
 
 	// Free user — no subscription, no trial.
-	uid := mustCreateUser(t, db, "free", model.BillingModeCredits, nil)
+	uid := mustCreateUser(t, db)
 
 	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 1, model.PayChannelWechat)
 	require.Error(t, err)
@@ -169,7 +165,7 @@ func TestCreateOrder_Booster_CreditsWithSubscription_PassesValidation(t *testing
 	ds := store.NewTestStore(db)
 	b := newPaymentBizForTest(ds)
 
-	uid := mustCreateUser(t, db, "standard", model.BillingModeCredits, nil)
+	uid := mustCreateUser(t, db)
 	mustCreateActiveSubscription(t, db, uid)
 
 	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 1, model.PayChannelWechat)
@@ -200,7 +196,7 @@ func TestCreateOrder_NonBooster_AlwaysRejected(t *testing.T) {
 			db := newPaymentTestDB(t)
 			ds := store.NewTestStore(db)
 			b := newPaymentBizForTest(ds)
-			uid := mustCreateUser(t, db, "free", model.BillingModeCredits, nil)
+			uid := mustCreateUser(t, db)
 
 			_, err := b.CreateOrder(context.Background(), uid, uid, tc.productType, 1, model.PayChannelWechat)
 			require.Error(t, err)
@@ -215,7 +211,7 @@ func TestCreateOrder_NonBooster_InternalCallerAlsoRejected(t *testing.T) {
 	db := newPaymentTestDB(t)
 	ds := store.NewTestStore(db)
 	b := newPaymentBizForTest(ds)
-	uid := mustCreateUser(t, db, "free", model.BillingModeCredits, nil)
+	uid := mustCreateUser(t, db)
 
 	_, err := b.CreateOrder(WithInternalCaller(context.Background()), uid, uid, model.ProductTypeMonthly, 1, model.PayChannelWechat)
 	require.Error(t, err)

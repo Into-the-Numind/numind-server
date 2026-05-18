@@ -98,8 +98,7 @@ func TestCreateTemplateByUser_TrailingChatDefaultsToTrue(t *testing.T) {
 }
 
 // newCreateRunTestDB sets up an in-memory SQLite with the hand-rolled user
-// table (MySQL ENUM on billing_mode can't AutoMigrate on SQLite — same pattern
-// as biz/credit/grant_membership_test.go) plus AutoMigrate for non-ENUM models.
+// table (legacy_tier columns dropped post-T4) plus AutoMigrate for non-ENUM models.
 func newCreateRunTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
@@ -121,11 +120,6 @@ func newCreateRunTestDB(t *testing.T) *gorm.DB {
 			avatar_url      TEXT,
 			parent_user_id  INTEGER,
 			total_sop_runs  INTEGER DEFAULT 0,
-			monthly_sop_runs INTEGER DEFAULT 0,
-			monthly_reset_at DATETIME,
-			user_tier       TEXT DEFAULT 'free',
-			tier_expires    DATETIME,
-			billing_mode    TEXT NOT NULL DEFAULT 'credits',
 			username        TEXT,
 			password        TEXT,
 			is_admin        INTEGER DEFAULT 0,
@@ -152,8 +146,8 @@ func TestCreateRun_FreeUserReturnsTypedError(t *testing.T) {
 	db := newCreateRunTestDB(t)
 
 	require.NoError(t, db.Exec(
-		`INSERT INTO user (id, created_at, updated_at, user_tier, billing_mode, monthly_sop_runs)
-		 VALUES (1, ?, ?, 'free', 'credits', 0)`,
+		`INSERT INTO user (id, created_at, updated_at)
+		 VALUES (1, ?, ?)`,
 		time.Now(), time.Now(),
 	).Error)
 
@@ -177,19 +171,18 @@ func TestCreateRun_FreeUserReturnsTypedError(t *testing.T) {
 func TestCreateRun_TemplateUnauthorizedReturnsTypedError(t *testing.T) {
 	db := newCreateRunTestDB(t)
 
-	future := time.Now().Add(24 * time.Hour)
 	// Parent (id=1): primary customer, passes HasTemplatePermission fast path,
 	// exists here only so the sub-user's parent_user_id FK is satisfiable logically.
 	require.NoError(t, db.Exec(
-		`INSERT INTO user (id, created_at, updated_at, user_tier, tier_expires, billing_mode)
-		 VALUES (1, ?, ?, 'premium', ?, 'credits')`,
-		time.Now(), time.Now(), future,
+		`INSERT INTO user (id, created_at, updated_at)
+		 VALUES (1, ?, ?)`,
+		time.Now(), time.Now(),
 	).Error)
-	// Sub-user (id=2): premium so credits gating passes → we reach the template check.
+	// Sub-user (id=2): credits-only billing → we reach the template check.
 	require.NoError(t, db.Exec(
-		`INSERT INTO user (id, created_at, updated_at, parent_user_id, user_tier, tier_expires, billing_mode)
-		 VALUES (2, ?, ?, 1, 'premium', ?, 'credits')`,
-		time.Now(), time.Now(), future,
+		`INSERT INTO user (id, created_at, updated_at, parent_user_id)
+		 VALUES (2, ?, ?, 1)`,
+		time.Now(), time.Now(),
 	).Error)
 
 	// Grant sub-user permission ONLY for template 99 — requesting template 1

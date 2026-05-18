@@ -40,7 +40,7 @@ func makeUser(id uint, parentID *uint) *model.User {
 }
 
 // newChatbotTestDB 建立运行时守卫测试用的 in-memory SQLite，包含：
-//   - user（hand-rolled，MySQL enum billing_mode 无法 AutoMigrate）
+//   - user（hand-rolled，post-T4 legacy_tier 列已 DROP）
 //   - chatbot_config / chatbot_session / chatbot_message（ChatbotConfig 有
 //     gorm.DeletedAt，可用 AutoMigrate）
 //   - user_chatbot_permission（hand-rolled，无 gorm.Model 嵌入，字段定义在
@@ -66,9 +66,7 @@ func newChatbotTestDB(t *testing.T) *gorm.DB {
             deleted_at      DATETIME,
             nickname        TEXT,
             username        TEXT,
-            parent_user_id  INTEGER,
-            billing_mode    TEXT NOT NULL DEFAULT 'credits',
-            user_tier       TEXT DEFAULT 'free'
+            parent_user_id  INTEGER
         )`).Error)
 
 	require.NoError(t, db.Exec(`

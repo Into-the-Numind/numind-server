@@ -86,7 +86,7 @@ func (c *CreditController) getBalanceFromMembership(ctx *gin.Context, user *mode
 	}
 
 	resp := gin.H{
-		"billing_mode":     model.BillingModeCredits,
+		"billing_mode":     "credits",
 		"membership_state": view.MembershipState,
 		"trial_remaining":  view.TrialRemaining,
 		"cycle_remaining":  view.CycleRemaining,

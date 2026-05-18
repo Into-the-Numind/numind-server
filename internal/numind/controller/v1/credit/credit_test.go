@@ -117,8 +117,10 @@ func newTestDB(t *testing.T) *gorm.DB {
 
 // mustUser returns a User with current_user installed; handler reads
 // c.Get("current_user").
-func mustUser(id uint, billingMode string) *model.User {
-	u := &model.User{BillingMode: billingMode}
+// Post-T4: billingMode parameter retained for caller symmetry but ignored
+// (User.BillingMode field removed; everyone is credits-only).
+func mustUser(id uint, _ string) *model.User {
+	u := &model.User{}
 	u.ID = id
 	return u
 }
@@ -171,7 +173,7 @@ func TestEstimate_CreditsMode_SOP_ReturnsAggregate(t *testing.T) {
 			EstimatedCredits: 600,
 			CoefficientID:    42,
 			Balance: creditbiz.BalanceBreakdown{
-				BillingMode: model.BillingModeCredits,
+				BillingMode: "credits",
 				SubRemain:   1000, SubTotal: 1000,
 			},
 		},
@@ -179,7 +181,7 @@ func TestEstimate_CreditsMode_SOP_ReturnsAggregate(t *testing.T) {
 	pe := &stubPromptEstimator{chars: 300, model: "qwen-turbo", provider: "ali"}
 
 	ctrl := creditctl.New(nil, svc, pe, ds)
-	r := newRouter(t, ctrl, mustUser(7, model.BillingModeCredits))
+	r := newRouter(t, ctrl, mustUser(7, "credits"))
 
 	body, _ := json.Marshal(map[string]string{
 		"operation":    "sop_run",
@@ -221,7 +223,7 @@ func TestEstimate_InsufficientCredits_Returns200(t *testing.T) {
 		Sufficient:       false,
 		EstimatedCredits: 500,
 		Balance: creditbiz.BalanceBreakdown{
-			BillingMode: model.BillingModeCredits,
+			BillingMode: "credits",
 			SubRemain:   100,
 		},
 	}
@@ -232,7 +234,7 @@ func TestEstimate_InsufficientCredits_Returns200(t *testing.T) {
 	pe := &stubPromptEstimator{chars: 100, model: "qwen-turbo", provider: "ali"}
 
 	ctrl := creditctl.New(nil, svc, pe, ds)
-	r := newRouter(t, ctrl, mustUser(7, model.BillingModeCredits))
+	r := newRouter(t, ctrl, mustUser(7, "credits"))
 
 	body, _ := json.Marshal(map[string]string{
 		"operation":    "salesrag_chat",
@@ -272,7 +274,7 @@ func TestEstimate_Unauthenticated(t *testing.T) {
 // TestEstimate_BindError returns 400 InvalidParameter.BindError.
 func TestEstimate_BindError(t *testing.T) {
 	ctrl := creditctl.New(nil, &stubCreditSvc{}, &stubPromptEstimator{}, nil)
-	r := newRouter(t, ctrl, mustUser(1, model.BillingModeCredits))
+	r := newRouter(t, ctrl, mustUser(1, "credits"))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/credits/estimate", bytes.NewReader([]byte("{not-json}")))
 	req.Header.Set("Content-Type", "application/json")

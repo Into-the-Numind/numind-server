@@ -28,13 +28,6 @@ type ICustomerStore interface {
 
 	// 统计相关
 	GetCustomerStatistics(ctx context.Context, userID uint) (totalSubUsers, activeSubUsers int64, err error)
-	GetUsersNeedMonthlyReset(ctx context.Context) ([]model.User, error)
-
-	// 运行次数更新
-	ResetMonthlySopRuns(ctx context.Context, userID uint) error
-
-	// 等级管理
-	UpdateSubUserTierWithLog(ctx context.Context, subUserID uint, tier string, tierExpires time.Time, changeLog *model.TierChangeLog) error
 
 	// 模板批量授权（B端发布SOP时使用）
 	GrantTemplateToAllSubUsers(ctx context.Context, parentUserID uint, templateID uint) error
@@ -273,34 +266,14 @@ func (c *customerStore) GetCustomerStatistics(ctx context.Context, userID uint) 
 		return 0, 0, err
 	}
 
-	// 获取本月活跃的二级客户数(monthly_sop_runs > 0)
+	// Post-T4: monthly_sop_runs column dropped; "active" is now simply
+	// "has any total_sop_runs", since the cumulative analytic counter survived
+	// the legacy_tier deprecation.
 	err = c.db.WithContext(ctx).Model(&model.User{}).
-		Where("parent_user_id = ? AND monthly_sop_runs > 0", userID).
+		Where("parent_user_id = ? AND total_sop_runs > 0", userID).
 		Count(&activeSubUsers).Error
 
 	return totalSubUsers, activeSubUsers, err
-}
-
-// GetUsersNeedMonthlyReset 获取需要月度重置的用户（30天会员月周期）
-func (c *customerStore) GetUsersNeedMonthlyReset(ctx context.Context) ([]model.User, error) {
-	var users []model.User
-
-	// 查找 monthly_reset_at 为空 或 距上次重置已超过30天的用户
-	threshold := time.Now().AddDate(0, 0, -30)
-	err := c.db.WithContext(ctx).
-		Where("monthly_reset_at IS NULL OR monthly_reset_at < ?", threshold).
-		Find(&users).Error
-
-	return users, err
-}
-
-// ResetMonthlySopRuns 重置用户的月度运行次数
-func (c *customerStore) ResetMonthlySopRuns(ctx context.Context, userID uint) error {
-	now := time.Now()
-	return c.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).Updates(map[string]interface{}{
-		"monthly_sop_runs": 0,
-		"monthly_reset_at": now,
-	}).Error
 }
 
 // HasFeaturePermission 检查用户是否有功能权限
@@ -404,27 +377,6 @@ func (c *customerStore) GrantTemplateToAllSubUsers(ctx context.Context, parentUs
 				return fmt.Errorf("GrantTemplateToAllSubUsers: grant to user %d: %w", u.ID, err)
 			}
 		}
-		return nil
-	})
-}
-
-// UpdateSubUserTierWithLog 在事务中更新子用户等级并写入变更日志
-func (c *customerStore) UpdateSubUserTierWithLog(ctx context.Context, subUserID uint, tier string, tierExpires time.Time, changeLog *model.TierChangeLog) error {
-	return c.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		now := time.Now()
-		if err := tx.Model(&model.User{}).Where("id = ?", subUserID).Updates(map[string]interface{}{
-			"user_tier":        tier,
-			"tier_expires":     tierExpires,
-			"monthly_sop_runs": 0,
-			"monthly_reset_at": now,
-		}).Error; err != nil {
-			return fmt.Errorf("failed to update user tier: %w", err)
-		}
-
-		if err := tx.Create(changeLog).Error; err != nil {
-			return fmt.Errorf("failed to create tier change log: %w", err)
-		}
-
 		return nil
 	})
 }

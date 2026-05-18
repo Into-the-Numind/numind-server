@@ -39,7 +39,6 @@ func (ctrl *AdminUserController) ListUsers(c *gin.Context) {
 		limit = 100
 	}
 	search := c.Query("search")
-	tier := c.Query("tier")
 	statusStr := c.Query("status")
 
 	query := ctrl.ds.DB().Model(&model.User{})
@@ -48,11 +47,6 @@ func (ctrl *AdminUserController) ListUsers(c *gin.Context) {
 	if search != "" {
 		query = query.Where("username LIKE ? OR nickname LIKE ? OR phone LIKE ?",
 			"%"+search+"%", "%"+search+"%", "%"+search+"%")
-	}
-
-	// 按等级过滤
-	if tier != "" {
-		query = query.Where("user_tier = ?", tier)
 	}
 
 	// 按状态过滤
@@ -83,21 +77,18 @@ func (ctrl *AdminUserController) ListUsers(c *gin.Context) {
 	items := make([]v1.AdminUserItem, 0, len(users))
 	for _, u := range users {
 		items = append(items, v1.AdminUserItem{
-			ID:             u.ID,
-			Username:       u.Username,
-			Nickname:       u.Nickname,
-			Phone:          u.Phone,
-			AvatarURL:      u.AvatarURL,
-			IsAdmin:        u.IsAdmin,
-			UserTier:       u.UserTier,
-			TierExpires:    u.TierExpires,
-			Status:         u.Status,
-			TotalSopRuns:   u.TotalSopRuns,
-			MonthlySopRuns: u.MonthlySopRuns,
-			ParentUserID:   u.ParentUserID,
-			LastLogin:      u.LastLogin,
-			CreatedAt:      u.CreatedAt,
-			UpdatedAt:      u.UpdatedAt,
+			ID:           u.ID,
+			Username:     u.Username,
+			Nickname:     u.Nickname,
+			Phone:        u.Phone,
+			AvatarURL:    u.AvatarURL,
+			IsAdmin:      u.IsAdmin,
+			Status:       u.Status,
+			TotalSopRuns: u.TotalSopRuns,
+			ParentUserID: u.ParentUserID,
+			LastLogin:    u.LastLogin,
+			CreatedAt:    u.CreatedAt,
+			UpdatedAt:    u.UpdatedAt,
 		})
 	}
 
@@ -132,21 +123,18 @@ func (ctrl *AdminUserController) GetUser(c *gin.Context) {
 	}
 
 	item := v1.AdminUserItem{
-		ID:             user.ID,
-		Username:       user.Username,
-		Nickname:       user.Nickname,
-		Phone:          user.Phone,
-		AvatarURL:      user.AvatarURL,
-		IsAdmin:        user.IsAdmin,
-		UserTier:       user.UserTier,
-		TierExpires:    user.TierExpires,
-		Status:         user.Status,
-		TotalSopRuns:   user.TotalSopRuns,
-		MonthlySopRuns: user.MonthlySopRuns,
-		ParentUserID:   user.ParentUserID,
-		LastLogin:      user.LastLogin,
-		CreatedAt:      user.CreatedAt,
-		UpdatedAt:      user.UpdatedAt,
+		ID:           user.ID,
+		Username:     user.Username,
+		Nickname:     user.Nickname,
+		Phone:        user.Phone,
+		AvatarURL:    user.AvatarURL,
+		IsAdmin:      user.IsAdmin,
+		Status:       user.Status,
+		TotalSopRuns: user.TotalSopRuns,
+		ParentUserID: user.ParentUserID,
+		LastLogin:    user.LastLogin,
+		CreatedAt:    user.CreatedAt,
+		UpdatedAt:    user.UpdatedAt,
 	}
 
 	core.WriteResponse(c, nil, item)

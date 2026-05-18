@@ -299,6 +299,7 @@ func newSharedSQLiteVisDB(t *testing.T) *gorm.DB {
 
 // createVisUserTable 创建 visibility 测试用的 user 表 (raw SQL, 避免 MySQL enum 不兼容 SQLite).
 // 与 newVisibilityTestDB / newSharedSQLiteVisDB 共用.
+// Post-T4: legacy_tier / billing_mode columns dropped.
 func createVisUserTable(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	require.NoError(t, db.Exec(`
@@ -309,9 +310,7 @@ func createVisUserTable(t *testing.T, db *gorm.DB) {
 			deleted_at      DATETIME,
 			username        TEXT,
 			nickname        TEXT,
-			parent_user_id  INTEGER,
-			billing_mode    TEXT NOT NULL DEFAULT 'credits',
-			user_tier       TEXT DEFAULT 'free'
+			parent_user_id  INTEGER
 		)`).Error)
 }
 

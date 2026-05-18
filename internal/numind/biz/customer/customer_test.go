@@ -23,8 +23,8 @@ import (
 // 测试目标：父子校验 + chatbot 归属校验 + 委托 store 的幂等 grant/revoke。
 //
 // 测试 DB：纯 SQLite 最小 schema，映射 user + user_chatbot_permission +
-//          chatbot_config 三张核心表；避免使用 AutoMigrate（User 的
-//          billing_mode 是 MySQL enum，SQLite 不兼容）。
+//          chatbot_config 三张核心表；hand-roll user 是为了对齐 model.User
+//          剔除 legacy_tier 列后的真实结构 (post-T4)。
 // ============================================================================
 
 // newBizTestDB 创建 biz 层 chatbot 权限测试所需的 SQLite DB。
@@ -44,9 +44,7 @@ func newBizTestDB(t *testing.T) *gorm.DB {
             deleted_at      DATETIME,
             nickname        TEXT,
             username        TEXT,
-            parent_user_id  INTEGER,
-            billing_mode    TEXT NOT NULL DEFAULT 'credits',
-            user_tier       TEXT DEFAULT 'free'
+            parent_user_id  INTEGER
         )`).Error)
 
 	require.NoError(t, db.Exec(`

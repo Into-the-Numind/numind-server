@@ -31,9 +31,7 @@ func newCustomerTestDB(t *testing.T) *gorm.DB {
             deleted_at      DATETIME,
             nickname        TEXT,
             username        TEXT,
-            parent_user_id  INTEGER,
-            billing_mode    TEXT NOT NULL DEFAULT 'credits',
-            user_tier       TEXT DEFAULT 'free'
+            parent_user_id  INTEGER
         )`).Error)
 
 	sqlDB, err := db.DB()
@@ -46,9 +44,8 @@ func newCustomerTestDB(t *testing.T) *gorm.DB {
 // Revoke 等权限测试创建 SQLite DB，包含 user + user_template_permission +
 // user_chatbot_permission 三张表的最小 schema。
 //
-// 不用 AutoMigrate：User 的 billing_mode 字段是 MySQL enum 类型，SQLite 无法
-// 直接 AutoMigrate；UserTemplatePermission 嵌入 gorm.Model 也需要 deleted_at
-// 列以验证软删除语义。显式 DDL 最稳妥。
+// 不用 AutoMigrate：UserTemplatePermission 嵌入 gorm.Model 需要 deleted_at
+// 列以验证软删除语义。显式 DDL 最稳妥。Post-T4: legacy_tier 列已 DROP。
 func newPermissionTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	tmp := t.TempDir()
@@ -65,9 +62,7 @@ func newPermissionTestDB(t *testing.T) *gorm.DB {
             deleted_at      DATETIME,
             nickname        TEXT,
             username        TEXT,
-            parent_user_id  INTEGER,
-            billing_mode    TEXT NOT NULL DEFAULT 'credits',
-            user_tier       TEXT DEFAULT 'free'
+            parent_user_id  INTEGER
         )`).Error)
 
 	// UserTemplatePermission —— 嵌入 gorm.Model（id/created_at/updated_at/deleted_at）

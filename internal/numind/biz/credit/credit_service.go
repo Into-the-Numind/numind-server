@@ -860,7 +860,7 @@ func (c *creditsImpl) GetBalance(ctx context.Context, user *model.User) (*Balanc
 			return nil, fmt.Errorf("creditsImpl.GetBalance via membership: %w", err)
 		}
 		bal := &BalanceBreakdown{
-			BillingMode:    model.BillingModeCredits,
+			BillingMode:    "credits",
 			SubTotal:       view.CycleRemaining, // cycle is the recurring sub pool
 			SubRemain:      view.CycleRemaining,
 			BoosterTotal:   view.BoosterUsable,
@@ -879,7 +879,7 @@ func (c *creditsImpl) GetBalance(ctx context.Context, user *model.User) (*Balanc
 		return nil, fmt.Errorf("creditsImpl.GetBalance: quota breakdown: %w", err)
 	}
 	return &BalanceBreakdown{
-		BillingMode:   model.BillingModeCredits,
+		BillingMode:   "credits",
 		SubTotal:      subTotal,
 		SubRemain:     subRemain,
 		BoosterTotal:  boosterTotal,
