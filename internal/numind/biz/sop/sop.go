@@ -777,7 +777,7 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 	ctx = langfuse.WithTrace(ctx, traceID)
 
 	// ===== Phase 2 Task 2.1: Reserve → LLM → Reconcile 控制流 =====
-	// 在 LLM 调用前：CheckAndEstimate + Reserve（legacy_tier 自动跳过，SkipDeduction=true）
+	// 在 LLM 调用前：CheckAndEstimate + Reserve（post-T1: legacy_tier 已下线，SkipDeduction 恒为 false）
 	// defer FinalizeReservation 在函数返回时对账：
 	//   - actualCost 非零 → Reconcile（delta 回补/退还）
 	//   - opErr 非空    → Refund（分类 user_cancelled / provider_timeout / op_failed）
@@ -813,13 +813,13 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 			if err != nil {
 				return wrapCreditError(err, pre)
 			}
-			if !pre.SkipDeduction {
-				idempKey := fmt.Sprintf("sop_run:%d:%d", runID, nodeID)
-				rsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSopRun,
-					pre.EstimatedCredits, pre.CoefficientID, &idempKey)
-				if err != nil {
-					return err // ErrInsufficientCredits race 等
-				}
+			// Audit P2#1 cleanup: SkipDeduction is always false post legacy-deprecation (T1).
+			// The previous `if !pre.SkipDeduction { ... }` wrapper was dead code; inlined.
+			idempKey := fmt.Sprintf("sop_run:%d:%d", runID, nodeID)
+			rsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSopRun,
+				pre.EstimatedCredits, pre.CoefficientID, &idempKey)
+			if err != nil {
+				return err // ErrInsufficientCredits race 等
 			}
 		}
 	}
@@ -1557,13 +1557,13 @@ func (b *sopBiz) ChatAfterRunStream(ctx context.Context, runID uint, conversatio
 			if err != nil {
 				return wrapCreditError(err, pre)
 			}
-			if !pre.SkipDeduction {
-				idempKey := fmt.Sprintf("sop_chat:%d:%d", runID, userMsg.Seq)
-				chatRsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSopChat,
-					pre.EstimatedCredits, pre.CoefficientID, &idempKey)
-				if err != nil {
-					return err
-				}
+			// Audit P2#1 cleanup: SkipDeduction is always false post legacy-deprecation (T1).
+			// The previous `if !pre.SkipDeduction { ... }` wrapper was dead code; inlined.
+			idempKey := fmt.Sprintf("sop_chat:%d:%d", runID, userMsg.Seq)
+			chatRsv, err = b.creditSvc.Reserve(ctx, user, credit.OpSopChat,
+				pre.EstimatedCredits, pre.CoefficientID, &idempKey)
+			if err != nil {
+				return err
 			}
 		}
 	}

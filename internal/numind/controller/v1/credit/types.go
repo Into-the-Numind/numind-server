@@ -20,7 +20,7 @@ type EstimateResp struct {
 	FirstNodeEstimate     *int64                  `json:"first_node_estimate,omitempty"`
 	NodeCount             *int                    `json:"node_count,omitempty"`
 	Sufficient            bool                    `json:"sufficient"`
-	SkipDeduction         bool                    `json:"skip_deduction"` // legacy_tier=true
+	SkipDeduction         bool                    `json:"skip_deduction"` // currently always false post legacy-deprecation; reserved for future use cases
 	Reason                string                  `json:"reason,omitempty"`
 	Balance               credit.BalanceBreakdown `json:"balance"`
 	CoefficientID         uint64                  `json:"coefficient_id"` // 前端 opaque，可忽略
