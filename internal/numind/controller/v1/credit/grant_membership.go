@@ -72,6 +72,28 @@ func (c *CreditController) GrantMembership(ctx *gin.Context) {
 
 	parentID := uint64(parent.ID)
 
+	// 5.5. P0 audit fix: verify caller is parent of child_id.
+	// child_id == caller.ID is allowed (self-grant by parent account).
+	// Without this check, any authenticated user could grant trial/subscription
+	// to any other user by guessing IDs.
+	if uint(childID64) != parent.ID {
+		// Caller is granting to another user; verify parent-child relationship.
+		childUser, err := c.ds.Users().GetByID(ctx, uint(childID64))
+		if err != nil {
+			log.C(ctx).Warnw("Grant membership: child user lookup failed",
+				"caller_id", parent.ID, "child_id", childID64, "err", err)
+			core.WriteResponse(ctx, errno.ErrUserNotFound, nil)
+			return
+		}
+		if childUser.ParentUserID == nil || *childUser.ParentUserID != parent.ID {
+			log.C(ctx).Warnw("Grant membership: caller is not parent of child",
+				"caller_id", parent.ID, "child_id", childID64,
+				"child_parent_id", childUser.ParentUserID)
+			core.WriteResponse(ctx, errno.ErrForbidden.SetMessage("无权为该用户开通会员"), nil)
+			return
+		}
+	}
+
 	// 6. Dispatch by product type.
 	switch req.ProductType {
 	case "trial":

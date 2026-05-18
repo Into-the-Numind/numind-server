@@ -129,9 +129,6 @@ func (f *fakeCreditBiz) RechargeWithOrderTx(ctx context.Context, tx *gorm.DB, us
 	f.rechargeCalls++
 	return nil
 }
-func (f *fakeCreditBiz) GrantMembership(ctx context.Context, req credit.GrantMembershipReq) error {
-	return nil
-}
 func (f *fakeCreditBiz) GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error) {
 	return 0, 0, 0, 0, nil
 }

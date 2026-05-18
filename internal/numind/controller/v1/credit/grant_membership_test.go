@@ -24,6 +24,7 @@ import (
 
 	"numind-server/internal/numind/biz/membership"
 	creditctl "numind-server/internal/numind/controller/v1/credit"
+	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 )
@@ -96,6 +97,24 @@ func newMembershipTestDB(t *testing.T) *gorm.DB {
 			subscription_id   INTEGER,
 			occurred_at       DATETIME NOT NULL
 		)`,
+		// user table required by the P0 audit fix (controller verifies parent-child
+		// relationship via store.Users().GetByID before dispatching the grant).
+		`CREATE TABLE IF NOT EXISTS user (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at      DATETIME,
+			updated_at      DATETIME,
+			deleted_at      DATETIME,
+			phone           TEXT,
+			nickname        TEXT,
+			avatar_url      TEXT,
+			parent_user_id  INTEGER,
+			total_sop_runs  INTEGER DEFAULT 0,
+			username        TEXT,
+			password        TEXT,
+			is_admin        INTEGER DEFAULT 0,
+			status          INTEGER DEFAULT 0,
+			last_login      DATETIME
+		)`,
 	}
 	for _, stmt := range ddl {
 		require.NoError(t, db.Exec(stmt).Error)
@@ -127,12 +146,44 @@ func newGrantRouter(t *testing.T, ctrl *creditctl.CreditController, user *model.
 	return r
 }
 
-// makeGrantCtrl builds a CreditController wired to the given membership service.
-// The credit/creditSvc/promptEstimator fields are nil because GrantMembership
-// only touches membershipSvc.
-func makeGrantCtrl(svc *membership.MembershipService) *creditctl.CreditController {
-	return creditctl.New(nil, &stubCreditSvc{}, &stubPromptEstimator{}, nil).
+// makeGrantCtrl builds a CreditController wired to the given membership service
+// and a real test-backed store. The credit/creditSvc/promptEstimator fields
+// only need the store; ds is required for the P0-1 parent-child auth check.
+func makeGrantCtrl(db *gorm.DB, svc *membership.MembershipService) *creditctl.CreditController {
+	ds := store.NewTestStore(db)
+	return creditctl.New(nil, &stubCreditSvc{}, &stubPromptEstimator{}, ds).
 		WithMembershipSvc(svc)
+}
+
+// seedChildUser inserts a child user with parent_user_id = parentID. Tests must
+// call this for every (parentID, childID) pair where parentID != childID so the
+// P0-1 auth check in the controller can verify the relationship.
+func seedChildUser(t *testing.T, db *gorm.DB, parentID, childID uint) {
+	t.Helper()
+	now := time.Now().UTC()
+	pid := parentID
+	require.NoError(t, db.Create(&model.User{
+		Model: gorm.Model{
+			ID:        childID,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		ParentUserID: &pid,
+	}).Error)
+}
+
+// seedParentUser inserts a parent (root) user with parent_user_id = NULL. Used
+// by self-grant tests where the caller is granting to their own ID.
+func seedParentUser(t *testing.T, db *gorm.DB, id uint) {
+	t.Helper()
+	now := time.Now().UTC()
+	require.NoError(t, db.Create(&model.User{
+		Model: gorm.Model{
+			ID:        id,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	}).Error)
 }
 
 // makeUser returns a parent User with ID parentID.
@@ -176,8 +227,9 @@ func uint64ToStr(n uint64) string {
 // HTTP 200 with event_type="trial_granted" and an expires_at 3 days out.
 func TestGrantMembership_Trial_HappyPath(t *testing.T) {
 	db := newMembershipTestDB(t)
+	seedChildUser(t, db, 1, 101)
 	svc := membership.NewMembershipService(db)
-	ctrl := makeGrantCtrl(svc)
+	ctrl := makeGrantCtrl(db, svc)
 	r := newGrantRouter(t, ctrl, makeUser(1), "idem-trial-001")
 
 	w := postGrant(t, r, 101, map[string]interface{}{
@@ -215,8 +267,9 @@ func TestGrantMembership_Trial_HappyPath(t *testing.T) {
 // returns HTTP 200 with event_type="sub_granted" (scenario=new).
 func TestGrantMembership_Monthly_NewSubscription(t *testing.T) {
 	db := newMembershipTestDB(t)
+	seedChildUser(t, db, 1, 202)
 	svc := membership.NewMembershipService(db)
-	ctrl := makeGrantCtrl(svc)
+	ctrl := makeGrantCtrl(db, svc)
 	r := newGrantRouter(t, ctrl, makeUser(1), "idem-monthly-001")
 
 	w := postGrant(t, r, 202, map[string]interface{}{
@@ -252,6 +305,7 @@ func TestGrantMembership_Monthly_NewSubscription(t *testing.T) {
 // subscription is still active) returns event_type="sub_renewed".
 func TestGrantMembership_Monthly_Renewal(t *testing.T) {
 	db := newMembershipTestDB(t)
+	seedChildUser(t, db, 1, 303)
 	svc := membership.NewMembershipService(db)
 	ctx := context.Background()
 
@@ -264,7 +318,7 @@ func TestGrantMembership_Monthly_Renewal(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	ctrl := makeGrantCtrl(svc)
+	ctrl := makeGrantCtrl(db, svc)
 	r := newGrantRouter(t, ctrl, makeUser(1), "idem-renew-001")
 
 	// Second grant (scenario=renew, same child still has active sub).
@@ -297,7 +351,9 @@ func TestGrantMembership_Monthly_Renewal(t *testing.T) {
 // months > 0 with product_type=trial is rejected (trial has fixed 3-day duration).
 func TestGrantMembership_Trial_MonthsNonZero_Returns400(t *testing.T) {
 	db := newMembershipTestDB(t)
-	ctrl := makeGrantCtrl(membership.NewMembershipService(db))
+	// No seedChildUser needed — request fails at JSON binding/validation before
+	// the parent-child auth check is reached.
+	ctrl := makeGrantCtrl(db, membership.NewMembershipService(db))
 	r := newGrantRouter(t, ctrl, makeUser(1), "idem-val-001")
 
 	w := postGrant(t, r, 101, map[string]interface{}{
@@ -312,7 +368,7 @@ func TestGrantMembership_Trial_MonthsNonZero_Returns400(t *testing.T) {
 // is rejected for product_type=monthly.
 func TestGrantMembership_Monthly_MonthsZero_Returns400(t *testing.T) {
 	db := newMembershipTestDB(t)
-	ctrl := makeGrantCtrl(membership.NewMembershipService(db))
+	ctrl := makeGrantCtrl(db, membership.NewMembershipService(db))
 	r := newGrantRouter(t, ctrl, makeUser(1), "idem-val-002")
 
 	w := postGrant(t, r, 202, map[string]interface{}{
@@ -327,7 +383,7 @@ func TestGrantMembership_Monthly_MonthsZero_Returns400(t *testing.T) {
 // is rejected (binding:"max=12" + controller check).
 func TestGrantMembership_Monthly_Months13_Returns400(t *testing.T) {
 	db := newMembershipTestDB(t)
-	ctrl := makeGrantCtrl(membership.NewMembershipService(db))
+	ctrl := makeGrantCtrl(db, membership.NewMembershipService(db))
 	r := newGrantRouter(t, ctrl, makeUser(1), "idem-val-003")
 
 	w := postGrant(t, r, 202, map[string]interface{}{
@@ -346,16 +402,17 @@ func TestGrantMembership_Monthly_Months13_Returns400(t *testing.T) {
 // grant for the same child returns HTTP 409 ErrTrialAlreadyGranted.
 func TestGrantMembership_Trial_Duplicate_Returns409(t *testing.T) {
 	db := newMembershipTestDB(t)
+	seedChildUser(t, db, 1, 404)
 	svc := membership.NewMembershipService(db)
 
 	// First grant succeeds.
-	ctrl1 := makeGrantCtrl(svc)
+	ctrl1 := makeGrantCtrl(db, svc)
 	r1 := newGrantRouter(t, ctrl1, makeUser(1), "idem-dup-001")
 	w1 := postGrant(t, r1, 404, map[string]interface{}{"product_type": "trial"})
 	require.Equal(t, http.StatusOK, w1.Code, "first grant must succeed: %s", w1.Body.String())
 
 	// Second grant — different idempotency key, same child → AlreadyGranted.
-	ctrl2 := makeGrantCtrl(svc)
+	ctrl2 := makeGrantCtrl(db, svc)
 	r2 := newGrantRouter(t, ctrl2, makeUser(1), "idem-dup-002")
 	w2 := postGrant(t, r2, 404, map[string]interface{}{"product_type": "trial"})
 	assert.Equal(t, http.StatusConflict, w2.Code, "body: %s", w2.Body.String())
@@ -369,19 +426,20 @@ func TestGrantMembership_Trial_Duplicate_Returns409(t *testing.T) {
 // when the same Idempotency-Key is repeated with the same child and body.
 func TestGrantMembership_Idempotency_Replay(t *testing.T) {
 	db := newMembershipTestDB(t)
+	seedChildUser(t, db, 1, 505)
 	svc := membership.NewMembershipService(db)
 
 	idemKey := "idem-replay-001"
 	childID := uint64(505)
 
 	// First call.
-	ctrl1 := makeGrantCtrl(svc)
+	ctrl1 := makeGrantCtrl(db, svc)
 	r1 := newGrantRouter(t, ctrl1, makeUser(1), idemKey)
 	w1 := postGrant(t, r1, childID, map[string]interface{}{"product_type": "trial"})
 	require.Equal(t, http.StatusOK, w1.Code, "first call: %s", w1.Body.String())
 
 	// Replay — same key, same child — must return 200 with same data.
-	ctrl2 := makeGrantCtrl(svc)
+	ctrl2 := makeGrantCtrl(db, svc)
 	r2 := newGrantRouter(t, ctrl2, makeUser(1), idemKey)
 	w2 := postGrant(t, r2, childID, map[string]interface{}{"product_type": "trial"})
 	assert.Equal(t, http.StatusOK, w2.Code, "replay: %s", w2.Body.String())
@@ -402,18 +460,20 @@ func TestGrantMembership_Idempotency_Replay(t *testing.T) {
 // same Idempotency-Key for a different child returns HTTP 409 ErrIdempotencyKeyConflict.
 func TestGrantMembership_Idempotency_Conflict_Returns409(t *testing.T) {
 	db := newMembershipTestDB(t)
+	seedChildUser(t, db, 1, 601)
+	seedChildUser(t, db, 1, 602)
 	svc := membership.NewMembershipService(db)
 
 	idemKey := "idem-conflict-001"
 
 	// First call for child 601.
-	ctrl1 := makeGrantCtrl(svc)
+	ctrl1 := makeGrantCtrl(db, svc)
 	r1 := newGrantRouter(t, ctrl1, makeUser(1), idemKey)
 	w1 := postGrant(t, r1, 601, map[string]interface{}{"product_type": "trial"})
 	require.Equal(t, http.StatusOK, w1.Code, "first call: %s", w1.Body.String())
 
 	// Same key, different child 602 → conflict.
-	ctrl2 := makeGrantCtrl(svc)
+	ctrl2 := makeGrantCtrl(db, svc)
 	r2 := newGrantRouter(t, ctrl2, makeUser(1), idemKey)
 	w2 := postGrant(t, r2, 602, map[string]interface{}{"product_type": "trial"})
 	assert.Equal(t, http.StatusConflict, w2.Code, "body: %s", w2.Body.String())
@@ -427,7 +487,9 @@ func TestGrantMembership_Idempotency_Conflict_Returns409(t *testing.T) {
 // grant a monthly subscription to themselves is rejected (§B2B2C constraint).
 func TestGrantMembership_SelfPurchase_Returns403(t *testing.T) {
 	db := newMembershipTestDB(t)
-	ctrl := makeGrantCtrl(membership.NewMembershipService(db))
+	// Self-grant (parent==child) bypasses the parent-child auth check by design;
+	// rejection comes from MembershipService.ErrMembershipSelfPurchaseDisabled.
+	ctrl := makeGrantCtrl(db, membership.NewMembershipService(db))
 	// parent ID = 700; child ID = 700 (same) → ErrMembershipSelfPurchaseDisabled.
 	r := newGrantRouter(t, ctrl, makeUser(700), "idem-self-001")
 
@@ -447,11 +509,64 @@ func TestGrantMembership_SelfPurchase_Returns403(t *testing.T) {
 // context results in HTTP 401.
 func TestGrantMembership_Unauthenticated_Returns401(t *testing.T) {
 	db := newMembershipTestDB(t)
-	ctrl := makeGrantCtrl(membership.NewMembershipService(db))
+	ctrl := makeGrantCtrl(db, membership.NewMembershipService(db))
 	r := newGrantRouter(t, ctrl, nil, "idem-unauth-001")
 
 	w := postGrant(t, r, 101, map[string]interface{}{"product_type": "trial"})
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+// ---------------------------------------------------------------------------
+// P0-1 audit: parent-child relationship enforcement (auth bypass fix)
+// ---------------------------------------------------------------------------
+
+// TestGrantMembership_P0_NotParentOfChild_Returns403 verifies the P0-1 fix:
+// an authenticated user who is NOT the parent of child_id must be rejected
+// with HTTP 403, even if they hold a valid token.
+//
+// Before the fix, any authenticated user could grant a trial/subscription to
+// any other user by guessing IDs. The store-backed parent-child check now
+// blocks this.
+func TestGrantMembership_P0_NotParentOfChild_Returns403(t *testing.T) {
+	db := newMembershipTestDB(t)
+	// Caller=1 is NOT the parent of child=999 (child's parent_user_id=42).
+	otherParent := uint(42)
+	now := time.Now().UTC()
+	require.NoError(t, db.Create(&model.User{
+		Model:        gorm.Model{ID: 999, CreatedAt: now, UpdatedAt: now},
+		ParentUserID: &otherParent,
+	}).Error)
+
+	ctrl := makeGrantCtrl(db, membership.NewMembershipService(db))
+	r := newGrantRouter(t, ctrl, makeUser(1), "idem-p0-not-parent")
+
+	w := postGrant(t, r, 999, map[string]interface{}{"product_type": "trial"})
+	assert.Equal(t, http.StatusForbidden, w.Code, "non-parent grant must be 403, body: %s", w.Body.String())
+}
+
+// TestGrantMembership_P0_ChildNotFound_Returns404 verifies that granting to a
+// non-existent child user returns HTTP 404, not 500 (no panic on lookup miss).
+func TestGrantMembership_P0_ChildNotFound_Returns404(t *testing.T) {
+	db := newMembershipTestDB(t)
+	ctrl := makeGrantCtrl(db, membership.NewMembershipService(db))
+	r := newGrantRouter(t, ctrl, makeUser(1), "idem-p0-missing")
+
+	w := postGrant(t, r, 88888, map[string]interface{}{"product_type": "trial"})
+	assert.Equal(t, http.StatusNotFound, w.Code, "missing child must be 404, body: %s", w.Body.String())
+}
+
+// TestGrantMembership_P0_ChildIsRootUser_Returns403 verifies that a caller
+// cannot grant to a root user (parent_user_id IS NULL) that is not themselves.
+func TestGrantMembership_P0_ChildIsRootUser_Returns403(t *testing.T) {
+	db := newMembershipTestDB(t)
+	// child 777 is a root user (parent_user_id = NULL) — caller 1 is not them.
+	seedParentUser(t, db, 777)
+
+	ctrl := makeGrantCtrl(db, membership.NewMembershipService(db))
+	r := newGrantRouter(t, ctrl, makeUser(1), "idem-p0-root-child")
+
+	w := postGrant(t, r, 777, map[string]interface{}{"product_type": "trial"})
+	assert.Equal(t, http.StatusForbidden, w.Code, "grant to unrelated root user must be 403, body: %s", w.Body.String())
 }
 
 // ensure middleware package is imported (used via middleware.GetCurrentUser indirectly).
