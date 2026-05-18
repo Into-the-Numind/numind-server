@@ -10,11 +10,13 @@
 -- 注: 本仓库 migration 由人工 SSH 跑 (CI 不跑, 见 memory dev_deploy_migration_gap)
 
 CREATE TABLE IF NOT EXISTS sales_agent_owner (
-  parent_user_id INT UNSIGNED NOT NULL PRIMARY KEY,
+  parent_user_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   CONSTRAINT fk_sao_parent FOREIGN KEY (parent_user_id) REFERENCES user(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   COMMENT='销售智能体父账户归属表（owner tag）';
+-- 注: parent_user_id 用 BIGINT UNSIGNED 匹配 user.id 的实际 schema (BIGINT UNSIGNED auto_increment).
+-- spec D3 原本写 INT UNSIGNED 是基于错误假设 (以为 gorm.Model.ID uint → INT), 实际 prod/dev DB 都是 BIGINT.
 
 INSERT IGNORE INTO sales_agent_owner (parent_user_id, created_at)
   VALUES (30, NOW(3));

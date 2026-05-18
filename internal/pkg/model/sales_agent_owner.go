@@ -11,7 +11,9 @@ import "time"
 // 写入仅在 migration 或手工 SQL (无 admin UI); 撤销走 hard DELETE。
 // FK 到 user(id) ON DELETE CASCADE 保证父账户被删时无残留。
 type SalesAgentOwner struct {
-	ParentUserID uint      `gorm:"primaryKey;type:int unsigned" json:"parent_user_id"`
+	// ParentUserID 类型必须是 BIGINT UNSIGNED 匹配 user.id (gorm.Model.ID 在 MySQL 上映射为
+	// BIGINT UNSIGNED auto_increment). FK 约束要求两边类型完全一致, 否则 ERROR 3780.
+	ParentUserID uint      `gorm:"primaryKey;type:bigint unsigned" json:"parent_user_id"`
 	CreatedAt    time.Time `gorm:"type:datetime(3)" json:"created_at"`
 }
 
