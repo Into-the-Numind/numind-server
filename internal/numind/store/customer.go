@@ -33,7 +33,9 @@ type ICustomerStore interface {
 	GrantTemplateToAllSubUsers(ctx context.Context, parentUserID uint, templateID uint) error
 
 	// 功能权限管理
-	HasFeaturePermission(ctx context.Context, userID uint, featureKey string) (bool, error)
+	// CheckSubUserFeatureGrant 纯查询：仅检查子用户在 user_feature_permission 表中是否有记录。
+	// dispatch 逻辑（父账户 bypass / featureKey 分流）在 biz 层处理（spec D2）。
+	CheckSubUserFeatureGrant(ctx context.Context, subUserID uint, featureKey string) (bool, error)
 	GrantFeatures(ctx context.Context, parentUserID, subUserID uint, featureKeys []string) error
 	RevokeFeatures(ctx context.Context, parentUserID, subUserID uint, featureKeys []string) error
 	ListUserFeatures(ctx context.Context, subUserID uint) ([]string, error)
@@ -276,30 +278,17 @@ func (c *customerStore) GetCustomerStatistics(ctx context.Context, userID uint) 
 	return totalSubUsers, activeSubUsers, err
 }
 
-// HasFeaturePermission 检查用户是否有功能权限
-// 功能权限采用显式授权模式：主用户始终有权限，子用户必须被明确授权才有权限
-func (c *customerStore) HasFeaturePermission(ctx context.Context, userID uint, featureKey string) (bool, error) {
-	// 先查询用户信息
-	var user model.User
-	if err := c.db.WithContext(ctx).First(&user, userID).Error; err != nil {
-		return false, err
-	}
-
-	// 如果是直接客户(parent_user_id为NULL),有所有功能权限
-	if user.ParentUserID == nil {
-		return true, nil
-	}
-
-	// 子用户必须有明确的功能授权记录才允许
+// CheckSubUserFeatureGrant 检查子用户是否被授权指定 feature。
+// 纯查询：不读 user 表，不做 dispatch。调用方（biz 层）负责父账户判断和分流。
+// spec D2: dispatch 逻辑上移至 biz 层，store 层只剩原子查询。
+func (c *customerStore) CheckSubUserFeatureGrant(ctx context.Context, subUserID uint, featureKey string) (bool, error) {
 	var count int64
 	err := c.db.WithContext(ctx).Model(&model.UserFeaturePermission{}).
-		Where("sub_user_id = ? AND feature_key = ?", userID, featureKey).
+		Where("sub_user_id = ? AND feature_key = ?", subUserID, featureKey).
 		Count(&count).Error
-
 	if err != nil {
 		return false, err
 	}
-
 	return count > 0, nil
 }
 

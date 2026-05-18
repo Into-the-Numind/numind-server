@@ -160,6 +160,11 @@ func run() error {
 
 	// Build ContextBudgetCreditService adapter wrapping the ICreditService.
 	bizLayer := biz.NewBiz(store.S)
+
+	// 注入 middleware 功能权限检查函数，避免 middleware → biz → salesrag → middleware 循环依赖。
+	// biz.B 在 NewBiz 内已初始化，此处安全引用。
+	mw.CheckFeaturePermissionFunc = biz.B.Customers().CheckFeaturePermission
+
 	creditFacade := &creditServiceFacade{
 		svc:       bizLayer.CreditService(),
 		userStore: store.S.Users(),

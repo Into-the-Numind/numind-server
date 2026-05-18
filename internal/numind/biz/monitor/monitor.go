@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	customerbiz "numind-server/internal/numind/biz/customer"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/billing"
 	"numind-server/internal/pkg/errno"
@@ -60,9 +61,10 @@ type IMonitorBiz interface {
 
 // MonitorBiz implements IMonitorBiz
 type MonitorBiz struct {
-	store     store.IStore
-	cooldown  *CooldownManager
-	scheduler *MonitorScheduler
+	store        store.IStore
+	cooldown     *CooldownManager
+	scheduler    *MonitorScheduler
+	customersBiz customerbiz.ICustomerBiz // 注入 biz 层 feature 权限检查（spec D2）
 }
 
 // Compile-time interface check
@@ -71,8 +73,9 @@ var _ IMonitorBiz = (*MonitorBiz)(nil)
 // NewMonitorBiz 创建 MonitorBiz 实例
 func NewMonitorBiz(s store.IStore, cooldown *CooldownManager) *MonitorBiz {
 	return &MonitorBiz{
-		store:    s,
-		cooldown: cooldown,
+		store:        s,
+		cooldown:     cooldown,
+		customersBiz: customerbiz.New(s),
 	}
 }
 
@@ -143,7 +146,7 @@ func (mb *MonitorBiz) GetStats(ctx context.Context, userID uint) (*store.Monitor
 // 子用户需要显式授权 content_monitor 才有权限。
 // 此端点注册在 FeaturePermission 中间件之外，因此需要在 biz 层自行校验。
 func (mb *MonitorBiz) CheckPermission(ctx context.Context, userID uint) (bool, error) {
-	has, err := mb.store.Customers().HasFeaturePermission(ctx, userID, model.FeatureKeyContentMonitor)
+	has, err := mb.customersBiz.CheckFeaturePermission(ctx, userID, model.FeatureKeyContentMonitor)
 	if err != nil {
 		return false, fmt.Errorf("CheckPermission: %w", err)
 	}

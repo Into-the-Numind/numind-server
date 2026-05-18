@@ -426,3 +426,98 @@ func TestListSubUserChatbotIDs_EmptyAndPopulated(t *testing.T) {
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []uint{1, 2, 3}, ids)
 }
+
+// ============================================================================
+// CheckSubUserFeatureGrant store 层单测 (spec D2 — store 纯查询)
+// ============================================================================
+
+// newSubUserFeaturePermTestDB 创建含 user + user_feature_permission 的 SQLite DB，
+// 用于 CheckSubUserFeatureGrant 单测。
+func newSubUserFeaturePermTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	tmp := t.TempDir()
+	db, err := gorm.Open(sqlite.Open(tmp+"/sub_user_feat_test.db?_busy_timeout=5000"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, db.Exec(`
+        CREATE TABLE user (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at      DATETIME,
+            updated_at      DATETIME,
+            deleted_at      DATETIME,
+            nickname        TEXT,
+            username        TEXT,
+            parent_user_id  INTEGER
+        )`).Error)
+
+	require.NoError(t, db.Exec(`
+        CREATE TABLE user_feature_permission (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at     DATETIME,
+            updated_at     DATETIME,
+            deleted_at     DATETIME,
+            parent_user_id INTEGER NOT NULL,
+            sub_user_id    INTEGER NOT NULL,
+            feature_key    TEXT NOT NULL,
+            UNIQUE (sub_user_id, feature_key)
+        )`).Error)
+
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	return db
+}
+
+// TestCheckSubUserFeatureGrant_True 子用户有对应 feature 行 → true。
+func TestCheckSubUserFeatureGrant_True(t *testing.T) {
+	db := newSubUserFeaturePermTestDB(t)
+	cs := NewCustomerStore(db)
+	ctx := context.Background()
+
+	parent := insertUserForPerm(t, db, nil)
+	child := insertUserForPerm(t, db, &parent)
+
+	// 直接写入授权行
+	require.NoError(t, cs.GrantFeatures(ctx, parent, child, []string{model.FeatureKeySalesAgent}))
+
+	ok, err := cs.CheckSubUserFeatureGrant(ctx, child, model.FeatureKeySalesAgent)
+	require.NoError(t, err)
+	assert.True(t, ok, "有授权行时应返回 true")
+}
+
+// TestCheckSubUserFeatureGrant_False 子用户无对应 feature 行 → false。
+func TestCheckSubUserFeatureGrant_False(t *testing.T) {
+	db := newSubUserFeaturePermTestDB(t)
+	cs := NewCustomerStore(db)
+	ctx := context.Background()
+
+	parent := insertUserForPerm(t, db, nil)
+	child := insertUserForPerm(t, db, &parent)
+
+	ok, err := cs.CheckSubUserFeatureGrant(ctx, child, model.FeatureKeySalesAgent)
+	require.NoError(t, err)
+	assert.False(t, ok, "无授权行时应返回 false")
+}
+
+// TestCheckSubUserFeatureGrant_FeatureKeyDoesNotMix 不同 feature_key 不混淆。
+func TestCheckSubUserFeatureGrant_FeatureKeyDoesNotMix(t *testing.T) {
+	db := newSubUserFeaturePermTestDB(t)
+	cs := NewCustomerStore(db)
+	ctx := context.Background()
+
+	parent := insertUserForPerm(t, db, nil)
+	child := insertUserForPerm(t, db, &parent)
+
+	// 只授权 content_monitor
+	require.NoError(t, cs.GrantFeatures(ctx, parent, child, []string{model.FeatureKeyContentMonitor}))
+
+	ok, err := cs.CheckSubUserFeatureGrant(ctx, child, model.FeatureKeyContentMonitor)
+	require.NoError(t, err)
+	assert.True(t, ok, "已授权的 content_monitor 应 true")
+
+	ok, err = cs.CheckSubUserFeatureGrant(ctx, child, model.FeatureKeySalesAgent)
+	require.NoError(t, err)
+	assert.False(t, ok, "未授权的 sales_agent 不应被 content_monitor 混淆")
+}
