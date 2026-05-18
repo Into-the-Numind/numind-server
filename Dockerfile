@@ -27,7 +27,7 @@ WORKDIR /app
 
 # 第 1 层：复制依赖文件并下载（缓存层）
 COPY go.mod go.sum ./
-ENV GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=https://goproxy.cn,direct
 RUN go mod download
 
 # 第 2 层：复制源码并编译（非缓存层，每次重新构建）
