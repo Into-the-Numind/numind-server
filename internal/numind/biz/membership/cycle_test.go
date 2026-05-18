@@ -495,10 +495,28 @@ func TestRefundCreditsTx_SourceExpired_TriggersRefundLost(t *testing.T) {
 	assert.Equal(t, model.SourceSystem, ev.Source,
 		"Source='system' to keep B2B / self_purchase reports clean")
 
-	// No credit_transaction row (refund ledger only writes on successful refund).
-	var txCount int64
+	// P2#11: refund_lost path also writes a zero-amount credit_transaction row
+	// so the audit invariant SUM(credit_transaction)==net flow per user holds.
+	// The lost amount is recorded on membership_event above; the credit_transaction
+	// exists for ledger completeness with operation='refund_lost' and amount=0.
+	type lostRow struct {
+		Amount     int64
+		Operation  string
+		SourceType *string
+		SourceID   *uint64
+	}
+	var rows []lostRow
 	require.NoError(t, db.Table("credit_transaction").
-		Where("user_id = ?", userID).Count(&txCount).Error)
-	assert.Equal(t, int64(0), txCount,
-		"writeLedgerRefund must not fire on the refund_lost path")
+		Select("amount, operation, source_type, source_id").
+		Where("user_id = ?", userID).Scan(&rows).Error)
+	require.Len(t, rows, 1, "exactly one refund_lost credit_transaction must be written (P2#11)")
+	got := rows[0]
+	assert.Equal(t, int64(0), got.Amount,
+		"refund_lost ledger row has amount=0 so balance sums are unaffected")
+	assert.Equal(t, "refund_lost", got.Operation,
+		"refund_lost ledger row uses operation='refund_lost' for reconciliation joins")
+	require.NotNil(t, got.SourceType, "SourceType must reference the original source")
+	assert.Equal(t, string(DeductSourceTrial), *got.SourceType)
+	require.NotNil(t, got.SourceID, "SourceID must reference the original reservation source")
+	assert.Equal(t, expiredTrial.ID, *got.SourceID)
 }
