@@ -161,15 +161,10 @@ CREATE TABLE IF NOT EXISTS credit_reservation_item (
 }
 
 // newCreditsUser returns a credits-mode user with no membership constraints
-// (the default for Reserve path tests).
-//
-// UserTier must be "free" (not standard/trial/premium) so that
-// HasActiveMembership() returns false and isEffectiveLegacy() routes the user
-// to the creditsImpl path instead of the legacy path. Setting UserTier=standard
-// with TierExpires=nil causes GetActualUserTier() to return "standard" (nil
-// expiry is treated as unexpired), which makes HasActiveMembership()=true and
-// isEffectiveLegacy()=true — routing credits-mode inputs into legacyTierImpl
-// which panics by design.
+// (the default for Reserve path tests). Post legacy-deprecation (T1) the
+// dispatch is gone — every user routes through creditsImpl regardless of
+// the UserTier value — but the tests still default to UserTierFree for
+// schema parity with legacy fixtures.
 func newCreditsUser(id uint) *model.User {
 	u := &model.User{
 		BillingMode: model.BillingModeCredits,
@@ -368,9 +363,9 @@ func TestReserve_GetBalanceCredits(t *testing.T) {
 
 // --- Task 4: Budget-aware credit reservation API ---
 
-// newPureCreditsUser returns a user whose billing_mode=credits and UserTier=free,
-// so HasActiveMembership()=false and isEffectiveLegacy()=false. This ensures the
-// credits path (not the legacy path) is taken by CheckAndEstimateBudget /
+// newPureCreditsUser returns a user whose billing_mode=credits and UserTier=free.
+// Post legacy-deprecation (T1) there is no longer a legacy dispatch path; this
+// helper is retained as a stable fixture for CheckAndEstimateBudget /
 // ReserveBudget tests.
 func newPureCreditsUser(id uint) *model.User {
 	u := &model.User{
@@ -465,40 +460,6 @@ func TestReserveBudget_WritesContextBudgetMetadata(t *testing.T) {
 	assert.EqualValues(t, 42, *dbRsv.ContextBudgetEventID, "context_budget_event_id must match input")
 	// user_type_multiplier must default to 1.0 (user has subscription, no discount).
 	assert.InDelta(t, 1.0, dbRsv.UserTypeMultiplier, 0.001, "user_type_multiplier must be 1.0 for subscription user")
-}
-
-// TestCheckAndEstimateBudget_LegacyTierSkipsReserve verifies that a user with
-// BillingMode=legacy_tier and an active membership receives SkipDeduction=true
-// and no credit_reservation row is created. Spec §6.1.1 + §1.3 contract.
-func TestCheckAndEstimateBudget_LegacyTierSkipsReserve(t *testing.T) {
-	db := newCreditReserveTestDB(t)
-	ds := store.NewTestStore(db)
-	svc := newCreditServiceWithMembership(ds, db, nil)
-
-	future := time.Now().Add(30 * 24 * time.Hour)
-	user := &model.User{
-		BillingMode: model.BillingModeLegacyTier,
-		UserTier:    model.UserTierStandard,
-		TierExpires: &future,
-	}
-	user.ID = 702
-
-	result, err := svc.CheckAndEstimateBudget(context.Background(), user, credit.BudgetPrecheckInput{
-		UserID:                    702,
-		Operation:                 "sop_node_execute",
-		EstimatedPromptTokens:     500,
-		EstimatedCompletionTokens: 100,
-		Provider:                  "volc",
-		Model:                     "glm-4-7-251222",
-	})
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	assert.True(t, result.SkipDeduction, "legacy_tier user must have SkipDeduction=true")
-
-	// No reservation row should have been created.
-	var count int64
-	require.NoError(t, db.Model(&model.CreditReservation{}).Where("user_id = ?", uint(702)).Count(&count).Error)
-	assert.EqualValues(t, 0, count, "CheckAndEstimateBudget must NOT create a reservation for legacy_tier")
 }
 
 // TestCheckAndEstimateBudget_UnknownChargedOperationFailsClosed verifies that

@@ -37,7 +37,6 @@ func emitCreditEstimateSpan(
 		"prompt_chars": in.PromptChars,
 		"model":        in.Model,
 		"provider":     in.Provider,
-		"billing_mode": user.BillingMode,
 	}
 	output := map[string]interface{}{}
 	if pre != nil {
@@ -178,15 +177,14 @@ func emitCreditRefundSpan(
 }
 
 // updateTraceMetadataForCredits augments the existing SOP / SalesRAG trace
-// root with billing-mode + balance snapshot per spec §5.1.5. Called from the
-// top of CheckAndEstimate so the trace has the context before any span fires.
-func updateTraceMetadataForCredits(ctx context.Context, user *model.User, balance BalanceBreakdown) {
+// root with the balance snapshot per spec §5.1.5. Called from the top of
+// CheckAndEstimate so the trace has the context before any span fires.
+func updateTraceMetadataForCredits(ctx context.Context, _ *model.User, balance BalanceBreakdown) {
 	tc := langfuse.FromContext(ctx)
 	if tc == nil {
 		return
 	}
 	metadata := map[string]string{
-		"billing_mode":            user.BillingMode,
 		"deducted_from":           classifyDeductedFrom(balance),
 		"credit_balance_at_start": strconv.FormatInt(balance.SubRemain+balance.BoosterRemain, 10),
 	}
@@ -198,11 +196,8 @@ func updateTraceMetadataForCredits(ctx context.Context, user *model.User, balanc
 //	"subscription"  — sub-only credits available
 //	"booster"       — booster-only credits available
 //	"mixed"         — both pools have credits
-//	"none(legacy)"  — legacy_tier mode (no credit pools)
+//	"empty"         — no credits in either pool
 func classifyDeductedFrom(balance BalanceBreakdown) string {
-	if balance.BillingMode == model.BillingModeLegacyTier {
-		return "none(legacy)"
-	}
 	hasSub := balance.SubRemain > 0
 	hasBooster := balance.BoosterRemain > 0
 	switch {
