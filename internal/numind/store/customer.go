@@ -31,7 +31,6 @@ type ICustomerStore interface {
 	GetUsersNeedMonthlyReset(ctx context.Context) ([]model.User, error)
 
 	// 运行次数更新
-	IncrementSopRunCount(ctx context.Context, userID uint) error
 	ResetMonthlySopRuns(ctx context.Context, userID uint) error
 
 	// 等级管理
@@ -293,42 +292,6 @@ func (c *customerStore) GetUsersNeedMonthlyReset(ctx context.Context) ([]model.U
 		Find(&users).Error
 
 	return users, err
-}
-
-// IncrementSopRunCount 增加用户的SOP运行次数
-func (c *customerStore) IncrementSopRunCount(ctx context.Context, userID uint) error {
-	// 先查询用户
-	var user model.User
-	if err := c.db.WithContext(ctx).First(&user, userID).Error; err != nil {
-		return err
-	}
-
-	now := time.Now()
-	needReset := false
-
-	if user.MonthlyResetAt == nil {
-		needReset = true
-	} else {
-		// 检查是否已过30天会员月周期（与 IsInNewSOPMonth 统一）
-		lastReset := *user.MonthlyResetAt
-		if now.After(lastReset.AddDate(0, 0, 30)) {
-			needReset = true
-		}
-	}
-
-	// 更新统计
-	updates := map[string]interface{}{
-		"total_sop_runs": gorm.Expr("total_sop_runs + ?", 1),
-	}
-
-	if needReset {
-		updates["monthly_sop_runs"] = 1
-		updates["monthly_reset_at"] = now
-	} else {
-		updates["monthly_sop_runs"] = gorm.Expr("monthly_sop_runs + ?", 1)
-	}
-
-	return c.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", userID).Updates(updates).Error
 }
 
 // ResetMonthlySopRuns 重置用户的月度运行次数

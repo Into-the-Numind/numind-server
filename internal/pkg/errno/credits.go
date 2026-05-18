@@ -12,9 +12,6 @@ var (
 	// HTTP 403（用户已认证但权限不够）
 	ErrMembershipRequired = &Errno{HTTP: 403, Code: "Membership.Required", Message: "需要会员资格才能购买加量包"}
 
-	// ErrBoosterNotAvailableForLegacy 老会员制（legacy_tier）不支持加量包（P4a 决策）
-	ErrBoosterNotAvailableForLegacy = &Errno{HTTP: 403, Code: "Booster.LegacyTierNotAllowed", Message: "老会员制暂不支持加量包，到期升级后可购"}
-
 	// ErrCoefficientConcurrent 系数并发更新冲突 retry 耗尽
 	ErrCoefficientConcurrent = &Errno{HTTP: 503, Code: "Coefficient.Concurrent", Message: "系数更新繁忙，请稍后重试"}
 

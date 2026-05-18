@@ -40,7 +40,6 @@ func TestCreateOrder_Booster_SelfPurchase_ActiveMember(t *testing.T) {
 	assert.NotErrorIs(t, err, errno.ErrNotActiveMember)
 	assert.NotErrorIs(t, err, errno.ErrBoosterQuantityExceedsLimit)
 	assert.NotErrorIs(t, err, errno.ErrInvalidProductType)
-	assert.NotErrorIs(t, err, errno.ErrBoosterNotAvailableForLegacy)
 	assert.Contains(t, err.Error(), "未配置", "must fail at channel layer not validation")
 }
 

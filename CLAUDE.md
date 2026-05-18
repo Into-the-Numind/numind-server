@@ -41,6 +41,8 @@
 `membership_event.grant_source='b2b_grant'` + `granter_user_id=<parent>` 记账。
 月末 `GET /v1/admin/b2b-billing-report?month=YYYY-MM` 按父账户聚合（走 `membership_event`，不再读 `credit_package`）。
 
+> Note: `legacy_tier` billing mode removed in 2026-05 (legacy-system-deprecation feature). All users are now `credits` mode. Historical commits before v2.1.23 may reference the old dual-mode system (`user_tier` / `monthly_sop_runs` counters), and column-level cleanup happens in T4 schema DROP.
+
 ---
 
 ## 2. 技术栈声明

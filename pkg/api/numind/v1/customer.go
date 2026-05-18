@@ -20,9 +20,8 @@ type SubUserInfo struct {
 	TotalSopRuns        int    `json:"total_sop_runs"`
 	MonthlySopRuns      int    `json:"monthly_sop_runs"`
 	AuthorizedTemplates int    `json:"authorized_templates"`
-	RemainingSopRuns    int    `json:"remaining_sop_runs"` // 剩余运行次数
-	CreditBalance       int64  `json:"credit_balance"`     // 额度余额（total balance incl. booster）
-	CreditExpires       string `json:"credit_expires"`     // 最晚额度包到期时间
+	CreditBalance       int64  `json:"credit_balance"` // 额度余额（total balance incl. booster）
+	CreditExpires       string `json:"credit_expires"` // 最晚额度包到期时间
 
 	// Task 20 fields: 前端 GrantMembershipModal 双状态 + trial tab graying
 	MembershipState SubUserMembershipState `json:"membership_state"`
@@ -48,7 +47,6 @@ type SubUserDetailResponse struct {
 	MonthlySopRuns int    `json:"monthly_sop_runs"`
 
 	AuthorizedTemplatesCount int            `json:"authorized_templates_count"`
-	RemainingSopRuns         int            `json:"remaining_sop_runs"`
 	AuthorizedTemplates      []TemplateInfo `json:"authorized_templates"`
 }
 
@@ -88,9 +86,8 @@ type CustomerStatisticsResponse struct {
 	TotalTemplates int64 `json:"total_templates"`
 	TotalSopRuns   int64 `json:"total_sop_runs"`
 	// 用户等级相关字段（用于侧边栏运行次数卡片）
-	UserTier         string `json:"user_tier"`
-	TierExpires      string `json:"tier_expires"`
-	RemainingSopRuns int    `json:"remaining_sop_runs"`
+	UserTier    string `json:"user_tier"`
+	TierExpires string `json:"tier_expires"`
 }
 
 // UpdateTierRequest 升级子用户会员等级请求

@@ -127,27 +127,9 @@ curl -s -X POST "$DEV_API_URL/v1/orders" \
 
 **预期：** `{"code":"Membership.Required", ...}` 或等价 403
 
-### Path 4：legacy_tier 老会员 SOP 零扣减
+### Path 4：~~legacy_tier 老会员 SOP 零扣减~~ (removed 2026-05)
 
-**步骤：**
-1. Admin DB/UI 把测试账号改为：`user_tier='standard'`, `tier_expires=future`, `billing_mode='legacy_tier'`
-2. 登录 Settings 页
-
-**预期：**
-- `CreditBalanceCard` legacy_tier 模式：**"本月已用 X/20"**（不是积分）
-- `BoosterPurchaseCard` 灰态 + "老会员制暂不支持加量包"
-
-3. 进 SOP 详情页
-
-**预期：**
-- **`SopEstimateBar` 不渲染**（legacy_tier skip_deduction 守卫）
-- 启动按钮保留现有行为
-
-4. 跑 SOP
-
-**预期：**
-- 执行成功，**无** `credit_reservation` 新记录
-- `monthly_sop_runs` 从 X → X+1（数据库查看）
+> Removed as of 2026-05 (legacy-system-deprecation feature). `legacy_tier` billing mode no longer exists; all users follow the credits-only path (Paths 1-3).
 
 ### Path 5：SalesRAG Chat 扣减（prod 漏洞修复验证）
 

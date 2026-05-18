@@ -19,7 +19,6 @@ import (
 	"numind-server/internal/numind/controller/v1/admin_credit"
 	"numind-server/internal/numind/controller/v1/admin_dashboard"
 	"numind-server/internal/numind/controller/v1/admin_login"
-	"numind-server/internal/numind/controller/v1/admin_migration"
 	"numind-server/internal/numind/controller/v1/admin_order"
 	"numind-server/internal/numind/controller/v1/admin_sop"
 	"numind-server/internal/numind/controller/v1/admin_user"
@@ -90,7 +89,6 @@ func installAdminRouters(g *gin.Engine) error {
 		adminGroup.GET("/users/:id", userCtrl.GetUser)
 		adminGroup.PUT("/users/:id", userCtrl.UpdateUser)
 		adminGroup.PUT("/users/:id/status", userCtrl.UpdateUserStatus)
-		adminGroup.PUT("/users/:id/tier", userCtrl.UpdateUserTier)
 		adminGroup.POST("/users/:id/reset-password", userCtrl.ResetPassword)
 		// Task 12 §5.3: admin 查任意用户余额（含 booster 字段）
 		// 用 :id 而非 :user_id 以避免 gin router 报错（同一前缀 /users/ 下不允许混用路径参数名）。
@@ -138,13 +136,6 @@ func installAdminRouters(g *gin.Engine) error {
 		adminGroup.POST("/estimation-coefficients", coefficientCtrl.CreateCoefficient)
 		adminGroup.PUT("/estimation-coefficients/:id", coefficientCtrl.UpdateCoefficient)
 		adminGroup.DELETE("/estimation-coefficients/:id", coefficientCtrl.DeleteCoefficient)
-	}
-
-	// Phase 2 T2.3: billing-mode-init migration (spec §4.4.3, one-shot)
-	{
-		migrationCtrl := admin_migration.NewMigrationController(store.S)
-		adminGroup.GET("/migrations/billing-mode-init/status", migrationCtrl.GetInitStatus)
-		adminGroup.POST("/migrations/billing-mode-init", migrationCtrl.InitBillingMode)
 	}
 
 	// 订单管理

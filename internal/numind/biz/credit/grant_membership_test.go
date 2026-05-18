@@ -485,30 +485,9 @@ func TestGrantMembership_ActiveSubscriptionBlocksTrial(t *testing.T) {
 	assert.ErrorIs(t, err, ErrGrantActiveSubscription)
 }
 
-// ---------- GrantMembership: billing_mode switch legacy→credits ----------
-
-func TestGrantMembership_SwitchesBillingModeLegacyToCredits(t *testing.T) {
-	db := newGrantTestDB(t)
-	b := newGrantTestBiz(t, db)
-
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
-	// Child starts in legacy_tier mode
-	pastExpires := time.Now().Add(-24 * time.Hour)
-	child := insertGrantTestUser(t, db, model.UserTierStandard, &parent, model.BillingModeLegacyTier, &pastExpires)
-
-	err := b.GrantMembership(context.Background(), GrantMembershipReq{
-		ParentUserID: parent,
-		ChildUserID:  child,
-		ProductType:  model.ProductTypeMonthly,
-		Months:       1,
-	})
-	require.NoError(t, err)
-
-	// billing_mode must be 'credits' now
-	var bm string
-	require.NoError(t, db.Raw(`SELECT billing_mode FROM user WHERE id = ?`, child).Scan(&bm).Error)
-	assert.Equal(t, model.BillingModeCredits, bm, "grant should switch legacy_tier → credits")
-}
+// ---------- GrantMembership: billing_mode switch ----------
+// TestGrantMembership_SwitchesBillingModeLegacyToCredits removed 2026-05
+// (legacy-system-deprecation T2.7): Step A billing_mode flip no longer exists.
 
 // ---------- GrantMembership: ProductType validation ----------
 
@@ -671,25 +650,8 @@ func TestGrantMembership_CrossParentGrant_Rejected(t *testing.T) {
 }
 
 // ---------- Self-Grant: billing_mode switch ----------
-
-func TestGrantMembership_SelfGrant_BillingModeSwitch(t *testing.T) {
-	db := newGrantTestDB(t)
-	b := newGrantTestBiz(t, db)
-
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeLegacyTier, nil)
-
-	err := b.GrantMembership(context.Background(), GrantMembershipReq{
-		ParentUserID: parent,
-		ChildUserID:  parent,
-		ProductType:  model.ProductTypeTrial,
-		Reason:       "legacy→credits switch on self-grant",
-	})
-	require.NoError(t, err)
-
-	var bm string
-	require.NoError(t, db.Raw("SELECT billing_mode FROM user WHERE id = ?", parent).Scan(&bm).Error)
-	assert.Equal(t, model.BillingModeCredits, bm, "billing_mode must switch legacy_tier → credits")
-}
+// TestGrantMembership_SelfGrant_BillingModeSwitch removed 2026-05
+// (legacy-system-deprecation T2.7): Step A billing_mode flip no longer exists.
 
 // ---------- Self-Grant: 防重复 ----------
 

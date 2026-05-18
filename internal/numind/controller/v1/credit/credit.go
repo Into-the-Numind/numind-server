@@ -47,6 +47,10 @@ func (c *CreditController) WithMembershipSvc(svc *membership.MembershipService) 
 }
 
 // GetBalance GET /v1/credits/balance — C 用户查看额度余额及分布
+//
+// credits-only billing (legacy_tier removed 2026-05): all users go through
+// the new membership service. If membershipSvc is not wired we fail loud
+// rather than fall back to the deleted legacy path.
 func (c *CreditController) GetBalance(ctx *gin.Context) {
 	user := middleware.GetCurrentUser(ctx)
 	if user == nil {
@@ -54,29 +58,13 @@ func (c *CreditController) GetBalance(ctx *gin.Context) {
 		return
 	}
 
-	// credits 制用户：从新 membership 系统读取真实状态
-	if user.BillingMode == model.BillingModeCredits && c.membershipSvc != nil {
-		c.getBalanceFromMembership(ctx, user)
-		return
-	}
-
-	// legacy_tier 用户：保留旧路径
-	bb, err := c.creditSvc.GetBalance(ctx, user)
-	if err != nil {
+	if c.membershipSvc == nil {
+		log.C(ctx).Errorw("GetBalance called but membershipSvc not wired", "user_id", user.ID)
 		core.WriteResponse(ctx, errno.ErrInternalServer, nil)
 		return
 	}
 
-	resp := gin.H{
-		"billing_mode": bb.BillingMode,
-	}
-	if bb.RemainingRuns != nil {
-		resp["remaining_runs"] = *bb.RemainingRuns
-	}
-	if bb.MonthlyLimit != nil {
-		resp["monthly_limit"] = *bb.MonthlyLimit
-	}
-	core.WriteResponse(ctx, nil, resp)
+	c.getBalanceFromMembership(ctx, user)
 }
 
 // getBalanceFromMembership 从新 membership 系统读取 credits 制用户的余额和状态。
