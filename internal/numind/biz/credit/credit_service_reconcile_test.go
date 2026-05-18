@@ -98,16 +98,21 @@ func TestReconcile_ActualGreaterThanReserved_TopsUp(t *testing.T) {
 	assert.EqualValues(t, 870, cycleRemaining)
 }
 
-// --- AI-6: Reconcile top-up with insufficient balance writes debt ledger ---
+// --- Audit P1-2 (post-2026-05): Reconcile top-up with insufficient balance
+// absorbs cost (no-debt policy) — replaces the prior "writes debt ledger" test.
 
-// TestReconcile_Topup_Insufficient_WritesDebtLedger verifies that when
+// TestReconcile_Topup_Insufficient_AbsorbedByPlatform verifies that when
 // Reconcile top-up runs into ErrInsufficientCredits, the service:
 //  1. Does NOT fail the reservation (business already succeeded).
-//  2. Writes a CreditTransaction row with operation='reconcile_debt:<op>'
-//     and amount=delta (spec §5.3).
-//  3. Keeps the reservation state=reconciled so ops can audit the debt
-//     via `WHERE operation LIKE 'reconcile_debt:%'`.
-func TestReconcile_Topup_Insufficient_WritesDebtLedger(t *testing.T) {
+//  2. Does NOT write a positive-amount "reconcile_debt:<op>" credit_transaction
+//     (the old, never-collected IOU is retired).
+//  3. Writes an audit-only credit_transaction with amount=0 and
+//     operation="reserve_underestimate_absorbed" so ops can monitor
+//     underestimation without polluting ledger sums.
+//  4. Finalizes the reservation as status=reconciled with finalize_reason=normal.
+//
+// Policy choice: A (no-debt absorb). See audit doc and Reconcile comment.
+func TestReconcile_Topup_Insufficient_AbsorbedByPlatform(t *testing.T) {
 	now := time.Now()
 	// Seed a package with only 105 credits (barely enough to reserve 100,
 	// but not enough for the subsequent top-up of +30 → 130 actual).
@@ -118,26 +123,33 @@ func TestReconcile_Topup_Insufficient_WritesDebtLedger(t *testing.T) {
 
 	// After Reserve(100): package 105→5 remain, account 105→5. Now Reconcile
 	// with actual=130 → delta=+30, but only 5 left → ErrInsufficientCredits
-	// inside DeductCreditsTx → debt path.
+	// inside DeductCreditsTx → platform-absorb path.
 	err := svc.Reconcile(context.Background(), rsv.ID, 130)
-	require.NoError(t, err, "debt path should NOT fail reconcile; business already succeeded")
+	require.NoError(t, err, "absorb path should NOT fail reconcile; business already succeeded")
 
-	// Reservation transitioned to reconciled (not blocked by debt).
+	// Reservation transitioned to reconciled (not blocked).
 	var row model.CreditReservation
 	require.NoError(t, ds.DB().First(&row, rsv.ID).Error)
 	assert.Equal(t, "reconciled", row.Status, "reservation must still finalize")
 	require.NotNil(t, row.Delta)
-	assert.EqualValues(t, 30, *row.Delta)
+	assert.EqualValues(t, 30, *row.Delta, "delta still records the underestimate amount")
 
-	// Debt row written with operation prefix + amount=delta + biz ref to rsv.
+	// No reconcile_debt row anywhere — old policy retired.
 	var debts []model.CreditTransaction
 	require.NoError(t, ds.DB().
 		Where("user_id = ? AND operation LIKE ?", uint(310), model.CreditTxOpPrefixReconcileDebt+"%").
 		Find(&debts).Error)
-	require.Len(t, debts, 1, "exactly one reconcile_debt row expected")
-	assert.EqualValues(t, 30, debts[0].Amount, "amount should equal unpaid delta")
-	assert.Equal(t, model.CreditTxOpPrefixReconcileDebt+string(credit.OpSopRun), debts[0].Operation)
-	assert.Equal(t, "reservation", debts[0].BizRefType)
+	require.Len(t, debts, 0, "no reconcile_debt:<op> rows under no-debt absorb policy")
+
+	// Audit-only absorb row written with amount=0 + reservation biz ref.
+	var absorbs []model.CreditTransaction
+	require.NoError(t, ds.DB().
+		Where("user_id = ? AND operation = ?", uint(310), "reserve_underestimate_absorbed").
+		Find(&absorbs).Error)
+	require.Len(t, absorbs, 1, "exactly one reserve_underestimate_absorbed audit row expected")
+	assert.EqualValues(t, 0, absorbs[0].Amount, "audit row amount must be 0 (ledger-neutral)")
+	assert.Equal(t, "reserve_underestimate_absorbed", absorbs[0].Operation)
+	assert.Equal(t, "reservation", absorbs[0].BizRefType)
 }
 
 // --- Task C.4: Reconcile exact-match path (delta=0, no-op on balances) ---
