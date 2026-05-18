@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 
 	"gorm.io/gorm"
 
@@ -35,7 +36,7 @@ func (s *salesAgentOwnerStore) Exists(ctx context.Context, parentUserID uint) (b
 		Where("parent_user_id = ?", parentUserID).
 		Count(&count).Error
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("SalesAgentOwners.Exists: %w", err)
 	}
 	return count > 0, nil
 }
