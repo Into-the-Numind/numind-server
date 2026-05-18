@@ -5,10 +5,10 @@ features:
     ndf_version: "1.1"
     description: "Per-model 估算准确度修复：gateway 路径（context_budget middleware）目前把 EstimatedCompletionTokens 硬编码成 ReservedOutputTokens = policy max_tokens (16384 / 8192) 作为 worst case，导致 chatbot 2.49x、sop_run 1.77x 过预扣。代码已有 TODO(S7) at context_budget.go:303 marker。本 feature 新建 helper 从 usage_record 按 (provider, model) 聚合 30d 历史 completion_tokens (mean × 1.2 safety, 或 p90)，5-min in-memory cache。No data → fallback to current ReservedOutputTokens (零回归)。修复后 path 1 (主力, prod 700+/7d calls) 的 per-model 估算才真正按模型变化。Path 2 coefficient 表 v4 不动。"
     track: "hotfix"
-    stage: "H3-dev-validated"
+    stage: "completed"
     classification_reason: "Hotfix Triage — (1) 无 schema (2) 无新端点 (3) 无外部集成 (4) 4-5 文件（helper + middleware patch + tests）(5) 计费精度路径，但 fallback 退路保证零回归。原 Route A bug 假设不成立（H1 调研推翻），重新定义为 context_budget completion estimate 替换。"
-    last_updated_by: "ai-h1-kickoff"
-    last_updated_at: "2026-05-16T15:00:00+08:00"
+    last_updated_by: "ai-prod-shipped"
+    last_updated_at: "2026-05-18T10:00:00+08:00"
     repos:
       - numind-server
     branches:
@@ -17,7 +17,7 @@ features:
       total_tasks: 5
       completed_tasks: 5
       reviewed_tasks: 5
-      current_task: "H3 dev 验证完成 ✅ (id=1665 ect 2136 vs id=1664 ect 16384, 同模型同 prompt) — prod tag 待用户决定"
+      current_task: "已上 prod via v2.1.21 + 后续 v2.1.22 仍含本 helper。Prod 2 天观察：92 gateway reservations，deepseek-v4-pro 总比 1.018 几乎完美，1 debt row（top-up 兜底吸收 36/37 under-reserve）。"
     decisions:
       - "2026-05-16 (Triage v1): 原命名 credits-coef-runtime-modelkey，假设 sop.go:821 用静态 node.ModelName 是 bug。用户拍板 Hotfix。"
       - "2026-05-16 (Prerequisite): credits-system data audit 完成。usage_record 7d 数据确认 prod 真实 active model = 7 个 LLM key；ai_service 注册表 11 个 LLM 中 4 个 deprecated；sop_node 表当前只有 3 个 active template × 12 nodes。"
@@ -27,8 +27,10 @@ features:
       - "2026-05-16 (H2 两阶段 Sonnet review): Spec compliance + Code quality 双 reviewer 均返回 PASS_WITH_CONCERNS。Spec: 0 P0 / 0 P1 / 2 P2 (TODO(S7) 注释过期 + line 758 placeholder 注释强化)。Code: 0 P0 / 2 P1 (thundering herd 缺 dedupe + DB error 错误缓存) / 4 P2 (race test 缺失 + TTL expiry test 缺失 + NUL 分隔符未注释 + namespace 对齐确认)。NDF Rule 7 全部就地修：P1.1 加 singleflight.Group 去重并发 loader；P1.2 重构 queryDB 返回 queryResult{err}，DB error 路径跳过缓存 + warn log；P2 加 race test + NUL 注释 + TODO 更新；TTL expiry test 跳过（cache-hit test 已间接覆盖，需注入 config 改动较大）。9/9 单测含 -race PASS。"
       - "2026-05-16 (H3 commit + merge + push): commit 5299e56 在 fix/credits-gateway-completion-estimate，--no-ff merge 到 develop 得 3046919，push origin develop。CI run 25956011946 image_build success 但 deploy_dev 阶段 Docker Hub GFW 超时失败（同 v2.1.18 prod incident 模式）。手动恢复：SSH dev 用 docker.1ms.run mirror 拉 develop-3046919 镜像 retag 后从 CI ci-cd.yaml line 236-250 的 docker run 命令重新启动 numind-server-dev 容器。healthz green，container Up 在 develop-3046919。Dev outage 0min（CI failure 时老容器未被 stop，状态保留）。Deploy script GFW 失败兜底待 CI cleanup task 修复。"
       - "2026-05-16 (H3 dev 验证 — smoke test 命中预测): 用 admin token POST /v1/sop/runs?template_id=4 创建 run 2331，然后 POST /v1/sop/runs/2331/nodes/10/execute?model_key=deepseek-v4-pro 触发 gateway path。Stream 正常返回。检查 credit_reservation 表对比：id=1664 (pre-deploy 01:26): estimated_completion_tokens=16384, reserved_credits=12。id=1665 (post-deploy 15:44, 同 provider/model=dmxapi/deepseek-v4-pro): estimated_completion_tokens=2136, reserved_credits=2。2136 = ceil(1780 × 1.2) 精确等于预测值（1780 = usage_record 30d 历史均值, 1.2 = SafetyMultiplier）。reserved_credits 同 prompt 大小下降 6x。Helper 全链路 wiring 正确：CompletionEstimator → effectiveCompletionTokens → budgetMetadata + precheckIn 双站点 → 真实 DB 写入。Prod tag 待用户决定。"
+      - "2026-05-16 (Prod tag v2.1.21 push + CI infra bug + 验证): git tag v2.1.21 → push origin v2.1.21 (16:09 CST)。CI deploy_product job 报 failure 但仅是 appleboy/ssh-action command_timeout 早于脚本 6-min healthcheck loop —— docker run 已成功执行 container 860c91f345fd at 16:09:21，docker inspect 显示 image=v2.1.21 + healthy + 真实用户请求处理中（healthz 持续 200 + SOP template list 调用 from user 326）。同 v2.1.18 一类 CI infra bug 不同模式（v2.1.18 是 Docker Hub pull GFW，本次是 SSH session timeout），都需独立 CI cleanup hotfix 修。Prod 验证 post-deploy reservation id=1667/1668 (deepseek-v3.2-thinking, 17:02-17:06): estimated_completion_tokens=2161 (= ceil(1800 × 1.2)) 精确等于 helper 预测值。"
+      - "2026-05-18 (Prod 2 天观察 — 完成闭环): v2.1.21 跑 36h 后被 v2.1.22 (trial-grant fix, 不动 helper) 替换。Helper 仍在 v2.1.22 binary 中生效。统计 92 个 gateway reservation since deploy: deepseek-v4-pro 62 笔 ect ~2141 总比 1.018 (近乎完美) / deepseek-v3.2-thinking 18 笔 ect ~2152 总比 0.661 (长尾欠估，17 top-ups) / claude-sonnet-4-6-thinking 3 笔 ect 4437 总比 0.963 / claude-opus-4-7 7 笔 fallback 16384 (样本<30) / gemini-3.1-pro-preview 2 笔 fallback 8192 (样本<30)。零回归 fallback 契约工作正确。2 天累计 debt rows = 1 (37 top-ups 中 36 静默成功)。Spec §5.3 兜底吸收 under-reserve 长尾。"
     created_at: "2026-05-16T15:00:00+08:00"
-    completed_at: null
+    completed_at: "2026-05-18T10:00:00+08:00"
 
   - id: "credits-deduct-cycle-wiring"
     ndf_version: "1.1"
