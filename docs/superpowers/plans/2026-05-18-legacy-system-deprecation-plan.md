@@ -4,7 +4,7 @@
 
 **Goal:** Remove the `legacy_tier` billing system entirely from numind-server / numind-web-v3 / numind-admin-web codebases, leaving credits three-pool SOT (trial_grant + credit_cycle + user_booster_balance) as the only billing path. Schema cleanup (DROP 5 columns) is the final step after ≥1 week prod soak per sub-task.
 
-**Architecture:** Pure deletion refactor. No new components introduced. Each sub-task removes one slice (T1 core dispatch / T2 边界 + admin + frontend / T3 user model + tests / T4 schema). Each sub-task ships independently and gets prod soak before the next one starts.
+**Architecture:** Pure deletion refactor. No new components introduced. Each sub-task removes one slice (T1 core dispatch / T2 边界 + admin + frontend / T3 user model + tests / T4 schema). All 4 sub-tasks execute in a single all-in-1-day session — prod 0 users on legacy path means T1-T3 are dead-code deletions with `git revert` as fast rollback; T4 schema DROP retains backup + dry-run ceremony.
 
 **Tech Stack:** Go 1.21 + GORM + Gin (numind-server), Vue 3 + TypeScript + Pinia (numind-web-v3 + numind-admin-web), MySQL 8
 
@@ -442,12 +442,12 @@ Expected: CI deploys to prod. healthz green. Update manifest:
 - progress.completed_tasks: 1
 - decisions: add "2026-MM-DD (T1 prod tag $NEXT_TAG): …"
 
-### T1 → T2 Gate: ≥1 week prod soak
+### T1 → T2 Gate: smoke verify (~10-15min)
 
-Wait at least 7 days before starting T2. Monitor:
-- 246 prod users healthy on credits path
-- No new bug reports referencing "积分不足" / settings 0 display
-- `grep "isEffectiveLegacy" /var/log/numind-server-prod.log` returns 0 (sanity, function no longer exists)
+1. `curl -s https://youshu.asia/healthz` → "healthy"
+2. `curl -s -H "Authorization: Bearer $TOKEN" https://youshu.asia/v1/credits/balance` → response without `billing_mode` / `sub_total` / `sub_remain` / `booster_remain` / `balance` fields
+3. SSH prod: `docker logs --since 5m numind-server-prod 2>&1 | grep -i "panic\|error.*credit" | head -20` → no critical errors
+4. Proceed to T2 once green
 
 ---
 
@@ -906,9 +906,14 @@ Tags choose next patch from `git tag --sort=-v:refname | head -1`. server first,
 
 Use the same `dockerproxy.net` manual recovery procedure from the hotfix runbook if `deploy_product` fails with Docker Hub timeout.
 
-### T2 → T3 Gate: ≥1 week prod soak
+### T2 → T3 Gate: smoke verify (~15-30min)
 
-Wait 7 days. Monitor admin daily ops (子用户管理 / 客户统计 / Booster 充值) for issues.
+1. Admin login → CustomerList → 子用户列表（确认 remaining_runs 字段消失但页面正常渲染）
+2. Admin login → CreditUsersView（确认 legacy banner 不再出现）
+3. User login → 设置页（确认 trial/cycle/booster 三池正常显示）
+4. User → 触发一次 SOP 运行（确认 credit 扣减成功，不再有"积分不足"误报）
+5. Admin → MigrationsView 路由（确认 404）
+6. Proceed to T3 once green
 
 ---
 
@@ -1061,9 +1066,12 @@ git tag -a v2.1.25 -m "T3: legacy deprecation - user model cleanup"
 git push origin v2.1.25
 ```
 
-### T3 → T4 Gate: ≥3 days prod soak
+### T3 → T4 Gate: smoke verify (~10min)
 
-T3 is internal cleanup with no runtime behavior change. 3-day soak sufficient.
+T3 is internal cleanup, no runtime behavior change. Verify:
+1. `curl -s https://youshu.asia/healthz` → "healthy"
+2. SSH prod docker logs no `nil pointer` / `undefined` errors
+3. Proceed to T4 prep (backup + dry-run) once green
 
 ---
 

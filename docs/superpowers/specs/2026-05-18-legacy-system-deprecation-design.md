@@ -345,15 +345,15 @@ RENAME TABLE `legacy_tier_change_log` TO `tier_change_log`;
 
 ### §8.1 部署顺序（每 task）
 
-每 task 一个独立的 prod tag：
+每 task 一个独立的 prod tag。原 plan 多日 soak buffer 在 2026-05-18 用户决策后压缩为 smoke 验证窗口——理由：prod 0 用户在 legacy 路径，T1-T3 都是死代码删除，回滚成本仅 git revert + 重 tag；T4 schema DROP 仍保留 backup + dry-run 仪式。
 
 ```
 Task 1 → server v2.1.x (next patch)
-  ↓ prod soak ≥1 week (smoke + Playwright + 用户报障监控)
-Task 2 → server v2.1.y + web-v3 v1.0.z + admin-web v0.0.w (同期或滞后 1 天)
-  ↓ prod soak ≥1 week
+  ↓ smoke verify (curl + log scan, ~10-15min)
+Task 2 → server v2.1.y + web-v3 v1.0.z + admin-web 同期
+  ↓ smoke verify (admin/user 关键流, ~15-30min)
 Task 3 → server v2.1.a
-  ↓ prod soak ≥3 days (仅 user model + tests，运行时不变)
+  ↓ smoke verify (~10min, 内部 cleanup 无运行时变化)
 Task 4 → server v2.1.b + DB migration
   ↓ prod 执行前 5min 预警 + admin 同步通告
 ```
