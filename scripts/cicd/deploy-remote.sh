@@ -94,7 +94,8 @@ docker rm "$CONTAINER" 2>/dev/null || true
 start_container "$IMAGE"
 
 MAX_TRIES=72; SLEEP_INT=5
-[ "$TARGET" = "admin" ] && { MAX_TRIES=15; SLEEP_INT=2; }
+# admin server needs ~60s startup for DB seeding/config sync — give it 3 min
+[ "$TARGET" = "admin" ] && { MAX_TRIES=36; SLEEP_INT=5; }
 
 echo "Waiting for health check (up to $((MAX_TRIES * SLEEP_INT))s)..."
 READY=false
