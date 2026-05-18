@@ -1,6 +1,42 @@
 schema_version: "1.0"
 
 features:
+  - id: "sop-salesrag-parent-scope"
+    ndf_version: "1.1"
+    description: "多租户 owner tag 补齐：SOP 列表 SQL 缺少父账户过滤（store/sop.go:142 只过滤 status+publish_status，无 creator_user_id）+ 销售智能体没有 owner tag（customer.HasFeaturePermission 对 parent_user_id IS NULL 硬 bypass），导致 prod 4 个实体跨父账户全局可见。修复：(1) SOP list SQL 加 owner 过滤，归属 = 父账户 + 该父账户全部子账户的 creator_user_id 集合 (2) UPDATE sop_template SET creator_user_id=30 WHERE id IN (1,2) (3) 新建 sales_agent_owner(parent_user_id PK) 小表作为销售智能体 owner tag (4) HasFeaturePermission 在 featureKey=='sales_agent' 分支移除父账户硬 bypass 改查 sales_agent_owner，其他 feature_key 保持现状 (5) INSERT sales_agent_owner VALUES(30)。无 admin UI，无授权 API，纯系统 SQL 过滤。语义选择 C（严格父账户隔离，留 option B 平台公共模板未来口）。架构选 Option A（sales_agent_owner 小表，1 天 ~7 文件 numind-server），未选 Option B（custom_agent 通用表 + 前端新类别，3-4 天 13-15 文件跨两仓），YAGNI 友好，未来真有 N>1 自定义智能体时升级路径明确。"
+    track: "standard"
+    stage: "S1"
+    classification_reason: "Triage 5 条 — (1) DB schema：新建 sales_agent_owner 小表 + sop_template.creator_user_id 加索引 (2) 无新 API（admin UI 已剔出范围）(3) 无外部服务 (4) 仅 numind-server ~7 文件 (5) 跨父账户数据可见性 = 高风险权限逻辑。条件 5 单独触发 Standard Track。"
+    last_updated_by: "ai-s1-proposal-written"
+    last_updated_at: "2026-05-18T20:30:00+08:00"
+    repos:
+      - numind-server
+    branches: {}
+    artifacts:
+      requirement: "numind-server/requirements/sop-salesrag-parent-scope.md"
+      proposal: "numind-server/proposals/sop-salesrag-parent-scope-proposal.md"
+    progress:
+      total_tasks: 0
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: null
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-05-18 (Triage 调研): prod 实测确认 (a) sop_template 4 行：id=1,2 creator_user_id=NULL 已发布；id=3 草稿归 30；id=4 已发布归 30 (b) chatbot_config 列表按 user_id 过滤正常工作（admin 看不到 user 30 的 chatbot），SOP 列表无此过滤是 bug (c) user_feature_permission 48 行 sales_agent 子账户授权（parent=30 或 1），数据形态不变 (d) parent_user 仅 2 个：admin(1) + user_moxiaopai(30)"
+      - "2026-05-18 (Triage 语义选择): 用户在 A/B/C 三选项中选 C — 严格父账户隔离 + 留扩展口。当前实现 A 语义（每个 SOP/feature 严格归属某个父账户），不引入 is_official 字段；代码结构留口，未来若要 option B（平台公共模板）只需局部 ALTER + 单点修改 list 查询"
+      - "2026-05-18 (Triage 边界确认): 范围不含 chatbot_config 父账户隔离（已工作正常）+ 不含用户端工作区 UI 重设计 + 不含 SOP 跨父账户转移功能（S1 决定是否纳入）+ 不含 option B 平台公共模板实现"
+      - "2026-05-18 (用户补充关键事实): admin (id=1) 创建的所有数据都是 demo（含 chatbot_config id=8 + parent=1 的 user_feature_permission 记录），本需求不需要保证 admin 使用体验，admin 登录可空工作区。非 admin 数据 = user 30 自创 + 硬编码挂 user 30 名下 = 生产数据，user 30 及全部子用户的访问行为修复前后必须完全一致（硬约束，S5/S6 验收必查）。同时解掉 S1 两个待探索 case：admin 看到什么 / chatbot id=8 怎么处理"
+      - "2026-05-18 (用户架构纠偏 — 关键): 用户拒绝 admin 管理层（'如果是这一层的话就没必要了'）+ 明确销售智能体应该是 owner tag 模式而非 feature permission 模式（'你需要给销售智能体打上一个标签'）。架构重画：销售智能体的 owner 落点 = user.has_sales_agent BOOLEAN 字段（销售智能体不是被创建的资源，是平台内置能力，tag 挂在父账户身上语义最自然）。HasFeaturePermission 改为查 has_sales_agent 字段，移除 parent_user_id IS NULL 硬 bypass。彻底剔除 parent_feature_permission 表 + admin UI + admin API 概念。多租户原则锁定：哪个父账户创建/拥有，只有该父账户及其子用户可见，纯 SQL 过滤无人工管理层。numind-admin-web 仓库不再涉及。"
+      - "2026-05-18 (S1 office-hours grep 发现): user_feature_permission 表代码里有 3 个 feature_key：sales_agent / content_monitor / self_service_config。后两个 prod DB 0 行子账户授权但代码同样走 HasFeaturePermission 父账户 bypass。用户明确：content_monitor + self_service_config 是系统级平台功能（content_monitor 未来要废弃），与'租户拥有的资源'概念不同——本需求不动它们，父账户 bypass 保留。HasFeaturePermission 改造仅在 featureKey=='sales_agent' 分支生效。"
+      - "2026-05-18 (S1 office-hours 用户复述平台历史 — 关键产品语境): 起点是 3 个硬编码内置功能（2 SOP + 1 销售智能体），后来加 self-service config 让客户自助搭建，分 2 类资源（SOP / chatbot），3 个内置功能被回头分类——2 SOP 入 SOP 资源池，销售智能体入 chatbot 资源池。销售智能体外观是 chatbot 卡片，但物理上独立存储（独立 sales_message/sales_session/路由/知识库机制）。统一规则：不管 SOP 还是 chatbot（含特殊 chatbot），谁创建/拥有，仅其和子账户可见。规则统一，仅 owner 字段落点不同。"
+      - "2026-05-18 (S1 office-hours Phase 4 架构选型): 用户提出 Option B（建 custom_agent 通用表 + 新前端类别'自定义智能体'，3-4 天 13-15 文件）vs AI 提的 Option A（建 sales_agent_owner 小表，1 天 ~7 文件 仅 numind-server）。决定性问题：3-6 个月内是否有第 2、3 个同类'自定义智能体'计划。用户拍板 A（YAGNI 友好选择，先止血再说，未来真有 N>1 时升级 B 成本不高）。落地变更：销售智能体 owner tag 落点从 user.has_sales_agent BOOLEAN 列改为新建 sales_agent_owner(parent_user_id PK) 独立小表——理由是未来若新增同类'特殊智能体卡片'，独立表更易扩展，user 表不会被 N 个 boolean 列污染。"
+    related_features:
+      - "sop-chatbot-visibility-scope (2026-05-14 上线，子用户级可见性 = Layer 1，本需求 = Layer 0 在其之上)"
+      - "child-run-permission (2026-04-20 上线，子用户运行授权 = Layer 2)"
+    blockers: []
+    created_at: "2026-05-18T19:00:00+08:00"
+
   - id: "credits-gateway-completion-estimate"
     ndf_version: "1.1"
     description: "Per-model 估算准确度修复：gateway 路径（context_budget middleware）目前把 EstimatedCompletionTokens 硬编码成 ReservedOutputTokens = policy max_tokens (16384 / 8192) 作为 worst case，导致 chatbot 2.49x、sop_run 1.77x 过预扣。代码已有 TODO(S7) at context_budget.go:303 marker。本 feature 新建 helper 从 usage_record 按 (provider, model) 聚合 30d 历史 completion_tokens (mean × 1.2 safety, 或 p90)，5-min in-memory cache。No data → fallback to current ReservedOutputTokens (零回归)。修复后 path 1 (主力, prod 700+/7d calls) 的 per-model 估算才真正按模型变化。Path 2 coefficient 表 v4 不动。"
@@ -705,10 +741,10 @@ features:
     ndf_version: "1.1"
     description: "把 legacy_tier 计费体系（基于 user.user_tier + monthly_sop_runs 次数制）从代码、数据、API 响应、前端展示、测试中全量移除。新制 credits（trial_grant + credit_cycle + user_booster_balance 三池 SOT）成为唯一计费体系。S1 audit 后范围扩大：60+ 处代码 + 5 列 user 表 DROP + 2 admin 端整页删 + 5 doc 文件 + 2 migration SQL 收敛。Prod 数据审计显示 246 用户全 credits+free，legacy 代码路径全部死路径，删除主要是工程清理。"
     track: "standard"
-    stage: "S4"
+    stage: "completed"
     classification_reason: "Standard Triage — (1) **是** schema 变更（DROP 5 列 + 历史数据 0 行需 UPDATE）(2) 否 新端点 (3) 否 外部集成 (4) **>3** 文件（60+ 处）(5) **是** 高风险（credit 扣减分发 + SOP 权限 + payment + grant flow）。5 条违反 3 条，边界默认 Standard，用户已确认。"
-    last_updated_by: "ai-s4-execution"
-    last_updated_at: "2026-05-18T21:00:00+08:00"
+    last_updated_by: "ai-s5-acceptance"
+    last_updated_at: "2026-05-18T23:00:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -721,9 +757,9 @@ features:
       plan: "numind-server/docs/superpowers/plans/2026-05-18-legacy-system-deprecation-plan.md"
     progress:
       total_tasks: 4
-      completed_tasks: 0
-      reviewed_tasks: 0
-      current_task: "S3 — plan 完成，等客户拍板执行方式（subagent-driven 推荐 vs inline）后进 S4"
+      completed_tasks: 4
+      reviewed_tasks: 4
+      current_task: "All 4 tasks prod live. Schema DROP executed on prod DB. legacy_tier_change_log audit table retained for 1-year retention. Spec §11 12 acceptance criteria PASS."
     rollback: null
     last_verified: null
     decisions:
@@ -743,8 +779,14 @@ features:
       - "2026-05-18 (S3 plan 完成): 4 task × ~8 sub-task 颗粒度的 step-by-step 计划，每 step 含 exact code + 命令 + 期望输出。Pre-flight audit + Final acceptance 章节闭环。Self-review 修正 1 处：T4.5 误把 TotalSopRuns 列入 DROP 列表，已纠正（spec §5 只列 5 字段，TotalSopRuns 是累计分析字段保留）。"
       - "2026-05-18 (S3→S4 节奏重审 + gate PASS): 用户质疑 4 周时间线。重审：prod 0 用户在 legacy 路径，T1-T3 全是死代码删除，原 1 周 soak buffer 风险评估偏保守。用户拍板 1 天 all-in 节奏。Plan 各 task gate 改为 smoke verify (10-30min)；spec §8.1 同步更新；T4 仍保留 backup + dry-run 仪式（唯一不可逆步骤）。"
       - "2026-05-18 (S4 执行方式): subagent-driven —— 每 task 派独立 subagent 编辑代码，主会话负责 review + commit + tag + deploy + smoke verify + manifest 更新。T4 schema DROP 由主会话自己跑（不可逆操作需精细控制）。"
+      - "2026-05-18 (S4 prod 流程纠偏): 用户中途指正 — T1 直接 push tag 跳过 dev 验证违反 CLAUDE.md §5 部署规范。T2/T3/T4 改为标准 dev-first 流程：push develop → 等 CI deploy dev → smoke verify dev → 通过后 tag prod。T1 已 prod 但 dev 事后补验证通过 healthy。"
+      - "2026-05-18 (T1 完成 v2.1.23): isEffectiveLegacy + legacyTierImpl + 5 个 dispatch site 删除。net -572 行。Subagent 还顺手清理 sop_credits_integration_test.go 中 2 个 legacy_tier 测试 + salesrag 类似测试 + numind.go/context_budget.go 中 stale doc 引用。prod healthz green。"
+      - "2026-05-18 (T2 完成 v2.1.24/v1.0.23/v1.4.3): 3 仓并发 subagent 编码。Server 21 文件 -814 行（含 admin_migration controller 整删、IncrementSopRunCount 删、admin_user UpdateUserTier endpoint 整删、payment + grant_membership flip step 删、CLAUDE.md inline 改写）；web-v3 11 文件 +68/-205 行（CreditBalanceCard legacy template 删、BoosterPurchaseCard legacy 分支删、stores/credits.ts billingMode computed 删）；admin-web 12 文件 +32/-862 行（MigrationsView.vue + migrations.ts API 整删、UsersView 等级列删、CreditUsersView banner 删）。Subagent 抓到 plan 2 处名称错误（RemainingSopRuns/ErrBoosterNotAvailableForLegacy）就地修正。dev 三仓验证通过后 tag 推 prod 三仓，三 CI 成功，prod 容器替换 ~3min 中断。"
+      - "2026-05-18 (T3 完成 v2.1.25): User model 5 个方法 + UserTier* 4 个常量 + BillingModeLegacyTier 常量删除；user_billing_mode_test.go 整删；其它 test 文件 legacy 用例删/双制改 credits-only。Subagent 还顺手清理 T2 漏发现的 customer.go UpdateSubUserTier / user.go CreateCustomer / admin_user/dashboard / store/customer 中 6+ 处 legacy 字段访问，全部 task test PASS。dev verify + prod tag healthy。"
+      - "2026-05-18 (T4 完成 v2.1.26 + Schema DROP on prod): T4 subagent 写 forward + rollback SQL；删 User 5 struct 字段 + BillingModeCredits 常量。Subagent 自动补全 T2/T3 遗漏：biz/customer/customer.go 整段 100 行 dead code 删、biz/user CreateCustomer 简化、controller/v1/customer UpdateSubUserTier handler + route 删、admin_dashboard SELECT user_tier 改、store/customer ResetMonthlySopRuns + GetUsersNeedMonthlyReset + UpdateSubUserTierWithLog 删，DTO admin/customer 整段缩简，2448 test PASS。prod backup 325MB at /root/backups/numind-prod-pre-t4-20260518T110049Z.sql。Dev DB 3-step dry-run（forward → rollback → forward）全通过，binary 在 schema 变更前后均 healthy。Tag v2.1.26 → prod CI deploy v2.1.26 binary → 直接执行 ALTER TABLE user DROP COLUMN (5 列) + RENAME tier_change_log TO legacy_tier_change_log on prod DB → ALL 5 LEGACY COLUMNS GONE + healthz green。"
+      - "2026-05-18 (S5 验收 PASS): spec §11 12 条 acceptance criteria 全通过：(AC1) server 仅 1 contracts.go:12 历史注释残留预期保留；(AC2) User 字段 0 真引用（PricingRule.BillingMode / TierChangeLog.OldTierExpires 等是不同概念）；(AC3) web-v3 0 hits；(AC4) admin-web 0 hits；(AC5) go build PASS；(AC6) prod DESCRIBE user 缺 5 列。Feature 完整端到端 ~2 小时 vs 原 plan 估 4 周。"
     related_features:
       - "credits-trial-grant-bypass-fix (completed 2026-05-18, v2.1.22/v1.0.22) — 本 feature 是该 hotfix 的工程化后续，移除 hotfix 临时保留的 19 处 legacy 残留。"
       - "membership-credits-redesign (S5→S3 reopened) — 三池 SOT 设计的母 feature，本 feature 是其 cleanup 收尾。"
     created_at: "2026-05-18T17:00:00+08:00"
-    completed_at: null
+    completed_at: "2026-05-18T23:00:00+08:00"
