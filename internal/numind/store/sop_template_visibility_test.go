@@ -99,17 +99,31 @@ func TestListVisibleTemplates_FilterByOwner(t *testing.T) {
 	parentB := uint(31)
 
 	// Seed: parentA(30) 2 published + parentB(31) 1 published + parentA 1 draft + 1 NULL
-	db.Create(&model.SopTemplate{Name: "A1", CreatorUserID: &parentA, Status: "active", PublishStatus: "published"})
-	db.Create(&model.SopTemplate{Name: "A2", CreatorUserID: &parentA, Status: "active", PublishStatus: "published"})
-	db.Create(&model.SopTemplate{Name: "B1", CreatorUserID: &parentB, Status: "active", PublishStatus: "published"})
-	db.Create(&model.SopTemplate{Name: "AD", CreatorUserID: &parentA, Status: "active", PublishStatus: "draft"})
-	db.Create(&model.SopTemplate{Name: "NULL", CreatorUserID: nil, Status: "active", PublishStatus: "published"})
+	require.NoError(t, db.Create(&model.SopTemplate{Name: "A1", CreatorUserID: &parentA, Status: "active", PublishStatus: "published"}).Error)
+	require.NoError(t, db.Create(&model.SopTemplate{Name: "A2", CreatorUserID: &parentA, Status: "active", PublishStatus: "published"}).Error)
+	require.NoError(t, db.Create(&model.SopTemplate{Name: "B1", CreatorUserID: &parentB, Status: "active", PublishStatus: "published"}).Error)
+	require.NoError(t, db.Create(&model.SopTemplate{Name: "AD", CreatorUserID: &parentA, Status: "active", PublishStatus: "draft"}).Error)
+	require.NoError(t, db.Create(&model.SopTemplate{Name: "NULL", CreatorUserID: nil, Status: "active", PublishStatus: "published"}).Error)
 
 	// Query parentA: 仅 2 行（active+published 属于 parentA）
-	items, total, err := s.ListVisibleTemplates(ctx, parentA, 0, 100)
+	itemsA, totalA, err := s.ListVisibleTemplates(ctx, parentA, 0, 100)
 	require.NoError(t, err)
-	require.Equal(t, int64(2), total)
-	require.Len(t, items, 2)
+	require.Equal(t, int64(2), totalA)
+	require.Len(t, itemsA, 2)
+	for _, tpl := range itemsA {
+		require.NotNil(t, tpl.CreatorUserID)
+		require.Equal(t, parentA, *tpl.CreatorUserID, "parentA 视角不应出现非 parentA 的模板")
+	}
+
+	// Query parentB: 期望 1 行，且不含 parentA 的任何模板（多租户对称隔离）
+	itemsB, totalB, err := s.ListVisibleTemplates(ctx, parentB, 0, 100)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), totalB)
+	require.Len(t, itemsB, 1)
+	for _, tpl := range itemsB {
+		require.NotNil(t, tpl.CreatorUserID)
+		require.Equal(t, parentB, *tpl.CreatorUserID, "parentB 视角不应泄露 parentA 的模板")
+	}
 }
 
 // TestListVisibleTemplates_DefensiveNullFilter 验证防御性 IS NOT NULL 过滤：
@@ -118,7 +132,7 @@ func TestListVisibleTemplates_DefensiveNullFilter(t *testing.T) {
 	s, db := setupSopStoreTest(t)
 	ctx := context.Background()
 
-	db.Create(&model.SopTemplate{Name: "NULL", CreatorUserID: nil, Status: "active", PublishStatus: "published"})
+	require.NoError(t, db.Create(&model.SopTemplate{Name: "NULL", CreatorUserID: nil, Status: "active", PublishStatus: "published"}).Error)
 
 	items, total, err := s.ListVisibleTemplates(ctx, 30, 0, 100)
 	require.NoError(t, err)
