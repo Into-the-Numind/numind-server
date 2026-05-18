@@ -703,12 +703,12 @@ features:
 
   - id: "legacy-system-deprecation"
     ndf_version: "1.1"
-    description: "把 legacy_tier 计费体系（基于 user.user_tier + monthly_sop_runs 次数制）从代码、数据、API 响应、前端展示、测试中全量移除。新制 credits（trial_grant + credit_cycle + user_booster_balance 三池 SOT）成为唯一计费体系。范围 19 处代码位置 + user 表 5 列 DROP migration + 前后端响应字段同步删除 + 测试改造。前置 hotfix credits-trial-grant-bypass-fix 已止损 prod，本 feature 是工程化清理。"
+    description: "把 legacy_tier 计费体系（基于 user.user_tier + monthly_sop_runs 次数制）从代码、数据、API 响应、前端展示、测试中全量移除。新制 credits（trial_grant + credit_cycle + user_booster_balance 三池 SOT）成为唯一计费体系。S1 audit 后范围扩大：60+ 处代码 + 5 列 user 表 DROP + 2 admin 端整页删 + 5 doc 文件 + 2 migration SQL 收敛。Prod 数据审计显示 246 用户全 credits+free，legacy 代码路径全部死路径，删除主要是工程清理。"
     track: "standard"
-    stage: "S0"
-    classification_reason: "Standard Triage — (1) **是** schema 变更（DROP 4-5 列 + 数据 UPDATE）(2) 否 新端点 (3) 否 外部集成 (4) **>3** 文件（≥19 处）(5) **是** 高风险（credit 扣减分发 + SOP 权限 + payment + grant flow）。5 条违反 3 条，边界默认 Standard，用户已确认。"
-    last_updated_by: "ai-s0-kickoff"
-    last_updated_at: "2026-05-18T17:00:00+08:00"
+    stage: "S1"
+    classification_reason: "Standard Triage — (1) **是** schema 变更（DROP 5 列 + 历史数据 0 行需 UPDATE）(2) 否 新端点 (3) 否 外部集成 (4) **>3** 文件（60+ 处）(5) **是** 高风险（credit 扣减分发 + SOP 权限 + payment + grant flow）。5 条违反 3 条，边界默认 Standard，用户已确认。"
+    last_updated_by: "ai-s1-proposal"
+    last_updated_at: "2026-05-18T18:30:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -716,20 +716,25 @@ features:
     branches: {}
     artifacts:
       requirement: "numind-server/requirements/legacy-system-deprecation.md"
-      proposal: null
+      proposal: "numind-server/proposals/legacy-system-deprecation-proposal.md"
       spec: null
       plan: null
     progress:
       total_tasks: 4
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "S0 — requirement card 完成，等用户确认进 S1"
+      current_task: "S1 — proposal-prd 完成，等客户确认进 S2 技术设计"
     rollback: null
     last_verified: null
     decisions:
       - "2026-05-18 (S0 Triage): 5 条标准违反 3 条 → Standard，用户拍板确认。"
       - "2026-05-18 (S0 scope 拍板): (1) user 表字段策略：清数据 + 最终 DROP user_tier/tier_expires/monthly_sop_runs/monthly_reset_at/billing_mode 列 (2) API 字段：直接删 remaining_runs / monthly_limit，同步前端 (3) 测试：删 legacy 专用，双制测试改 credits-only (4) PR：分 3-4 个 sub-task 递次提交"
-      - "2026-05-18 (sub-task 初稿): Task 1 Core dispatch 清理 / Task 2 边界 caller 清理 / Task 3 前端清理 / Task 4 Schema DROP migration（间隔 ≥1 周 prod 验证后执行）。S3 plan 锁顺序和依赖。"
+      - "2026-05-18 (S0→S1 gate PASS): 用户确认 S0 推进 S1。"
+      - "2026-05-18 (S1 prod audit): 直查 prod DB — 246 用户全 billing_mode=credits + user_tier=free，0 用户在 legacy 路径。含义：所有 19 处（实际 60+ 处）legacy 代码路径都是死代码，删除风险大幅低于初估，且不涉及数据迁移（仅 DROP 列）。"
+      - "2026-05-18 (S1 二次 audit 漏发现): 比 S0 列的 19 处多发现：admin_migration controller 整套 / admin_user/user.go:273-293 tier 编辑 / store/customer.go IncrementSopRunCount / admin-web UsersView 等级列 + CreditUsersView banner + MigrationsView 整页 / 2 个 migration SQL ENUM 收敛。Sub-task 拆分维持 4 task，但每个范围扩大。"
+      - "2026-05-18 (S1 sub-task 锁定): Task 1 后端核心 dispatch（biz/credit + biz/sop 收尾）/ Task 2 边界 caller + admin + 前端 / Task 3 User model + tests / Task 4 Schema DROP（间隔 ≥1 周 prod soak）。每 task 单 tag 部署。"
+      - "2026-05-18 (S1 风险与缓解): user_tier DROP 不可逆 → Task 4 单独 + 完整 rollback SQL + DB backup；admin migration controller 删除后无法手工切 mode → 0 prod 用户需求，确认可删；tier_change_log 审计表 → 表保留只读，列改 legacy_ 前缀。"
+      - "2026-05-18 (S1 工作量估算): 8-10 人天，4 个 sub-task，端到端 ~4 周（含 prod soak 间隔）。"
     related_features:
       - "credits-trial-grant-bypass-fix (completed 2026-05-18, v2.1.22/v1.0.22) — 本 feature 是该 hotfix 的工程化后续，移除 hotfix 临时保留的 19 处 legacy 残留。"
       - "membership-credits-redesign (S5→S3 reopened) — 三池 SOT 设计的母 feature，本 feature 是其 cleanup 收尾。"
