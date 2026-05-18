@@ -223,6 +223,15 @@ func FeaturePermission(featureKey string) gin.HandlerFunc {
 			return
 		}
 
+		// nil guard: 防御 numind.go 注入未完成或 wire 顺序错乱（spec D2 Task 3 reviewer P1）。
+		// 正常启动序列 NewBiz → 注入 → setupRouter 保证 nil 不出现, 此处是 fail-fast 防御.
+		if CheckFeaturePermissionFunc == nil {
+			log.C(c).Errorw("CheckFeaturePermissionFunc not initialized — biz layer wire missing", "feature_key", featureKey)
+			core.WriteResponse(c, errno.ErrInternalServer, nil)
+			c.Abort()
+			return
+		}
+
 		hasPermission, err := CheckFeaturePermissionFunc(c, user.ID, featureKey)
 		if err != nil {
 			log.C(c).Errorw("Failed to check feature permission", "user_id", user.ID, "feature_key", featureKey, "err", err)

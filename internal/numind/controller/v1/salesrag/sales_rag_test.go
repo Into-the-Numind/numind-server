@@ -63,6 +63,9 @@ func newTestDB(t *testing.T) *gorm.DB {
 		)
 	`).Error)
 	require.NoError(t, db.AutoMigrate(&model.UserFeaturePermission{}))
+	// sop-salesrag-parent-scope Task 3: 销售智能体 owner tag 表必须存在,
+	// 即使父账户也需要 Layer 0 检查 (spec D2 移除父账户硬 bypass)
+	require.NoError(t, db.AutoMigrate(&model.SalesAgentOwner{}))
 	return db
 }
 
@@ -80,6 +83,13 @@ func seedFeatureGrant(t *testing.T, db *gorm.DB, parent, sub uint, key string) {
 	require.NoError(t, db.Create(&model.UserFeaturePermission{
 		ParentUserID: parent, SubUserID: sub, FeatureKey: key,
 	}).Error)
+}
+
+// seedSalesAgentOwner 把父账户加入销售智能体 owner 表 (sop-salesrag-parent-scope Task 3).
+// spec D2: 父账户不再硬 bypass, 必须显式存在于 sales_agent_owner 表才能访问销售智能体.
+func seedSalesAgentOwner(t *testing.T, db *gorm.DB, parentID uint) {
+	t.Helper()
+	require.NoError(t, db.Create(&model.SalesAgentOwner{ParentUserID: parentID}).Error)
 }
 
 // -----------------------------------------------------------------------------
@@ -156,10 +166,13 @@ func mustSub(id, parentID uint) *model.User {
 // tests
 // -----------------------------------------------------------------------------
 
-// T1: Parent account (ParentUserID IS NULL) → has_permission: true by biz auto-pass logic
+// T1: Parent account (ParentUserID IS NULL) with owner tag → has_permission: true
+// 语义升级 (sop-salesrag-parent-scope Task 3 spec D2):
+// 父账户**必须**在 sales_agent_owner 表中才能访问销售智能体, 不再硬 bypass.
 func TestCheckSalesPermission_Parent_True(t *testing.T) {
 	db := newTestDB(t)
-	seedUser(t, db, 1, nil) // parent
+	seedUser(t, db, 1, nil)       // parent
+	seedSalesAgentOwner(t, db, 1) // 父账户 owner tag (Layer 0 必查)
 	r := newRouter(t, testBiz(t, db), mustParent(1))
 
 	req := httptest.NewRequest(http.MethodGet, "/sales-rag/check-permission", nil)
@@ -178,13 +191,18 @@ func TestCheckSalesPermission_Parent_True(t *testing.T) {
 	assert.True(t, resp.Data.HasPermission, "parent must auto-pass")
 }
 
-// T2: Sub-user WITH sales_agent grant → has_permission: true
+// T2: Sub-user WITH sales_agent grant + parent has owner tag → has_permission: true
+// 子用户双层 AND (sop-salesrag-parent-scope Task 3 spec D2):
+//
+//	Layer 0: 父账户在 sales_agent_owner 表 ✓
+//	Layer 1: 子用户在 user_feature_permission 有 sales_agent 行 ✓
 func TestCheckSalesPermission_SubGranted_True(t *testing.T) {
 	db := newTestDB(t)
 	parentID := uint(1)
 	seedUser(t, db, 1, nil)
 	seedUser(t, db, 100, &parentID)
-	seedFeatureGrant(t, db, 1, 100, model.FeatureKeySalesAgent)
+	seedSalesAgentOwner(t, db, 1)                               // Layer 0
+	seedFeatureGrant(t, db, 1, 100, model.FeatureKeySalesAgent) // Layer 1
 
 	r := newRouter(t, testBiz(t, db), mustSub(100, 1))
 
@@ -202,13 +220,15 @@ func TestCheckSalesPermission_SubGranted_True(t *testing.T) {
 	assert.True(t, resp.Data.HasPermission, "granted sub must return true")
 }
 
-// T3: Sub-user WITHOUT grant → has_permission: false, HTTP 200 (NOT 403)
+// T3: Sub-user WITHOUT grant (parent has owner) → has_permission: false, HTTP 200 (NOT 403)
 // D1 invariant: check-permission must never return 403.
+// 父账户 owner tag 存在确保 Layer 0 通过, 由 Layer 1 缺失子用户 grant 拦截.
 func TestCheckSalesPermission_SubDenied_FalseNot403(t *testing.T) {
 	db := newTestDB(t)
 	parentID := uint(1)
 	seedUser(t, db, 1, nil)
 	seedUser(t, db, 200, &parentID) // no grant
+	seedSalesAgentOwner(t, db, 1)   // Layer 0 通过, Layer 1 是真正的拦截点
 
 	r := newRouter(t, testBiz(t, db), mustSub(200, 1))
 
