@@ -5,10 +5,10 @@ features:
     ndf_version: "1.1"
     description: "多租户 owner tag 补齐：SOP 列表 SQL 缺少父账户过滤（store/sop.go:142 只过滤 status+publish_status，无 creator_user_id）+ 销售智能体没有 owner tag（customer.HasFeaturePermission 对 parent_user_id IS NULL 硬 bypass），导致 prod 4 个实体跨父账户全局可见。修复：(1) SOP list SQL 加 owner 过滤，归属 = 父账户 + 该父账户全部子账户的 creator_user_id 集合 (2) UPDATE sop_template SET creator_user_id=30 WHERE id IN (1,2) (3) 新建 sales_agent_owner(parent_user_id PK) 小表作为销售智能体 owner tag (4) HasFeaturePermission 在 featureKey=='sales_agent' 分支移除父账户硬 bypass 改查 sales_agent_owner，其他 feature_key 保持现状 (5) INSERT sales_agent_owner VALUES(30)。无 admin UI，无授权 API，纯系统 SQL 过滤。语义选择 C（严格父账户隔离，留 option B 平台公共模板未来口）。架构选 Option A（sales_agent_owner 小表，1 天 ~7 文件 numind-server），未选 Option B（custom_agent 通用表 + 前端新类别，3-4 天 13-15 文件跨两仓），YAGNI 友好，未来真有 N>1 自定义智能体时升级路径明确。"
     track: "standard"
-    stage: "S4"
+    stage: "S5"
     classification_reason: "Triage 5 条 — (1) DB schema：新建 sales_agent_owner 小表 + sop_template.creator_user_id 加索引 (2) 无新 API（admin UI 已剔出范围）(3) 无外部服务 (4) 仅 numind-server ~12 文件（S3 plan reviewer 发现遗漏 caller + biz.B 基础设施 wiring + monitor.go caller 迁移 + customer_permission_lifecycle_test.go 11 处 caller 迁移）(5) 跨父账户数据可见性 = 高风险权限逻辑。条件 5 单独触发 Standard Track。"
-    last_updated_by: "ai-s4-complete"
-    last_updated_at: "2026-05-19T00:30:00+08:00"
+    last_updated_by: "ai-s5-qa-report"
+    last_updated_at: "2026-05-19T01:00:00+08:00"
     repos:
       - numind-server
     branches:
@@ -20,13 +20,20 @@ features:
       proposal: "numind-server/proposals/sop-salesrag-parent-scope-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-05-18-sop-salesrag-parent-scope-design.md"
       plan: "numind-server/docs/superpowers/plans/2026-05-18-sop-salesrag-parent-scope-plan.md"
+      validation_strategy: "numind-server/docs/superpowers/specs/2026-05-18-sop-salesrag-parent-scope-validation-strategy.md"
+      qa: "numind-server/docs/superpowers/qa/2026-05-19-sop-salesrag-parent-scope-qa.md"
     progress:
       total_tasks: 6
       completed_tasks: 6
       reviewed_tasks: 6
       current_task: null
     rollback: null
-    last_verified: null
+    last_verified:
+      at: "2026-05-19T01:00:00+08:00"
+      lint: "pass"
+      type_check: "n/a"
+      tests: "pass"
+      test_summary: "task test exit 0 全 PASS, 0 race detection hits. Feature-relevant: store/biz/customer/monitor/middleware/sop/admin_sop/salesrag controller 全套回归绿. 0 HasFeaturePermission grep 残留. Playwright E2E + browser /qa 按 visibility-scope 先例 deferred 到 S6 dev 部署后."
     decisions:
       - "2026-05-18 (Triage 调研): prod 实测确认 (a) sop_template 4 行：id=1,2 creator_user_id=NULL 已发布；id=3 草稿归 30；id=4 已发布归 30 (b) chatbot_config 列表按 user_id 过滤正常工作（admin 看不到 user 30 的 chatbot），SOP 列表无此过滤是 bug (c) user_feature_permission 48 行 sales_agent 子账户授权（parent=30 或 1），数据形态不变 (d) parent_user 仅 2 个：admin(1) + user_moxiaopai(30)"
       - "2026-05-18 (Triage 语义选择): 用户在 A/B/C 三选项中选 C — 严格父账户隔离 + 留扩展口。当前实现 A 语义（每个 SOP/feature 严格归属某个父账户），不引入 is_official 字段；代码结构留口，未来若要 option B（平台公共模板）只需局部 ALTER + 单点修改 list 查询"
