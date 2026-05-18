@@ -137,10 +137,19 @@ func (s *MembershipService) ensureCurrentCycle(ctx context.Context, tx *gorm.DB,
 //  2. Current billing cycle (if active subscription, via ensureCurrentCycle)
 //  3. Booster balance (if sub or trial is active — booster frozen otherwise)
 //
-// Locking order (§4.1, alphabetical by table name):
+// Lock order (must be consistent across all mutators to avoid deadlock):
+//  1. credit_cycle (via ensureCurrentCycle's SELECT FOR UPDATE)
+//  2. trial_grant (FOR UPDATE)
+//  3. user_booster_balance (FOR UPDATE)
 //
-//	credit_cycle → subscription (read-only, no lock needed at deduct time) →
-//	trial_grant → user_booster_balance
+// subscription is read-only here (already locked by GrantOrRenewSubscription).
+//
+// Sibling locks for reference:
+//   - GrantTrial:                subscription → trial_grant
+//   - GrantOrRenewSubscription:  subscription only
+//   - RefundCreditsTx:           per-target (booster/cycle/trial), no chain
+//
+// If a future mutator adds a different ordering, deadlock risk increases.
 //
 // The method opens its own transaction. Returns ErrInsufficientCredits when
 // total available credits < amount.
@@ -203,7 +212,7 @@ func (s *MembershipService) DeductCreditsTx(ctx context.Context, tx *gorm.DB, us
 	}
 	trialActive := trial != nil && trial.ExpiresAt.After(now) && trial.CreditsRemaining > 0
 
-	// ── Lock in alphabetical table order (§4.1) ─────────────────────────────
+	// ── Lock in fixed order: credit_cycle → trial_grant → user_booster_balance (§4.1) ──
 
 	// 1. credit_cycle (if sub active — ensureCurrentCycle acquires FOR UPDATE internally)
 	var cycle *model.CreditCycle
@@ -268,7 +277,7 @@ func (s *MembershipService) DeductCreditsTx(ctx context.Context, tx *gorm.DB, us
 			SourceID:   &sourceID,
 			Amount:     -take,
 			Operation:  operation,
-			CreatedAt:  time.Now(),
+			CreatedAt:  time.Now().UTC(),
 		}
 		if err := tx.WithContext(ctx).Create(ct).Error; err != nil {
 			return nil, fmt.Errorf("DeductCreditsTx: write trial credit_transaction: %w", err)
@@ -299,7 +308,7 @@ func (s *MembershipService) DeductCreditsTx(ctx context.Context, tx *gorm.DB, us
 			SourceID:   &sourceID,
 			Amount:     -take,
 			Operation:  operation,
-			CreatedAt:  time.Now(),
+			CreatedAt:  time.Now().UTC(),
 		}
 		if err := tx.WithContext(ctx).Create(ct).Error; err != nil {
 			return nil, fmt.Errorf("DeductCreditsTx: write cycle credit_transaction: %w", err)
@@ -333,7 +342,7 @@ func (s *MembershipService) DeductCreditsTx(ctx context.Context, tx *gorm.DB, us
 			SourceID:   &sourceID,
 			Amount:     -take,
 			Operation:  operation,
-			CreatedAt:  time.Now(),
+			CreatedAt:  time.Now().UTC(),
 		}
 		if err := tx.WithContext(ctx).Create(ct).Error; err != nil {
 			return nil, fmt.Errorf("DeductCreditsTx: write booster credit_transaction: %w", err)
@@ -394,7 +403,7 @@ func (s *MembershipService) RefundCreditsTx(
 			SourceID:   &sid,
 			Amount:     amount, // positive = refund
 			Operation:  "refund",
-			CreatedAt:  time.Now(),
+			CreatedAt:  time.Now().UTC(),
 		}
 		return tx.WithContext(ctx).Create(ct).Error
 	}
@@ -402,6 +411,13 @@ func (s *MembershipService) RefundCreditsTx(
 	// ── Step 1: Try original source if still active ─────────────────────────
 	switch source {
 	case DeductSourceTrial:
+		// NOTE: When the original source pool is trial and the trial has expired,
+		// the refund is routed to the fallback chain (booster → cycle). This means
+		// the user effectively gets refunded against a different pool than they
+		// were debited from. Because trial credits use a 0.5x user_type_multiplier
+		// (credit_service.go classifyDeductedFrom), this is a moneywise asymmetric
+		// refund — favorable to the user (booster/cycle credits are full-value).
+		// Acceptable per spec; flagged in audit P2#12.
 		var origTrial model.TrialGrant
 		queryErr := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
 			First(&origTrial, sourceID).Error
@@ -499,5 +515,27 @@ func (s *MembershipService) RefundCreditsTx(
 	if eventErr := s.store.Events().Create(ctx, tx, event); eventErr != nil {
 		return "", 0, 0, fmt.Errorf("RefundCreditsTx: write refund_lost event: %w", eventErr)
 	}
+
+	// P2#11: also write a zero-amount credit_transaction row so the audit
+	// invariant SUM(credit_transaction) == net flow per user holds even when
+	// the refund cannot be routed to any pool. The lost amount is recorded
+	// on the membership_event above; this row exists purely for ledger
+	// completeness and reconciliation joins. amount=0 ensures the row does
+	// not affect balance sums.
+	lostSourceType := string(source)
+	lostSourceID := sourceID
+	lostCT := &creditmodel.CreditTransaction{
+		UserID:     uint(userID),
+		PackageID:  0, // new-path: no credit_package
+		SourceType: &lostSourceType,
+		SourceID:   &lostSourceID,
+		Amount:     0, // zero so balance sums are unaffected; lost amount on membership_event
+		Operation:  "refund_lost",
+		CreatedAt:  time.Now().UTC(),
+	}
+	if ctErr := tx.WithContext(ctx).Create(lostCT).Error; ctErr != nil {
+		return "", 0, 0, fmt.Errorf("RefundCreditsTx: write refund_lost credit_transaction: %w", ctErr)
+	}
+
 	return "", 0, 0, nil
 }
