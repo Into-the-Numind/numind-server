@@ -670,3 +670,30 @@ features:
     cancelled_reason: "本 feature 是 membership-credits-redesign Task 16 未完成的债。开新 feature 修上一个 feature 的债会让账本越来越乱。改为 plan extension 合并归一处。"
     merged_into: "membership-credits-redesign"
     completed_at: null
+
+  - id: "credits-trial-grant-bypass-fix"
+    ndf_version: "1.1"
+    description: "P0 prod bug：用户 trial_grant 有 200 积分且未到期（expires_at=2026-05-19），但设置页显示 0、操作时报『积分不足』。根因两处：(后端) isEffectiveLegacy() 的 HasActiveMembership() fallback 让 billing_mode=credits 但 user_tier != free 的用户被路由到 legacy CanRunSOP 次数制路径，完全绕过 trial_grant；以及 sop.go CreateRun 的余额预检 sum 漏加 TrialRemain。(前端) CreditBalanceCard.vue 只读 sub_remain / booster_remain，从未读 trial_remaining；并且 cardState 判定不计 trial → trial-only 用户被误判 free 显示『请联系您的管理员开通会员』。"
+    track: "hotfix"
+    stage: "H3"
+    classification_reason: "Hotfix Triage — (1) 无 schema (2) 无新端点 (3) 无外部集成 (4) 3 文件改动（credit_service.go 删 fallback / sop.go 删二次拦截+补 TrialRemain / CreditBalanceCard.vue 加 trial 行+修 cardState）(5) 产品方向已明：legacy 全废弃 credits 唯一。用户拍板快车道直接 prod 止损。"
+    last_updated_by: "ai-hotfix-deploy"
+    last_updated_at: "2026-05-18T00:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+    branches:
+      numind-server: "fix/credits-trial-grant-bypass"
+      numind-web-v3: "fix/credits-trial-grant-bypass"
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 0
+      current_task: "H3 prod tag v2.1.22 + v1.0.22"
+    decisions:
+      - "2026-05-18 (用户拍板): legacy 体系完全废弃，trial_grant 必须在所有路径被读取。最小修复优先止损，彻底清理（删 legacyTierImpl / CanRunSOP 调用 / payment.go:142 等 19 处）留作后续 standard track。"
+      - "2026-05-18 (节奏): 直接 prod 不经 dev 验证，v2.1.22 (server) + v1.0.22 (web-v3) 同时打 tag。"
+    related_features:
+      - "membership-credits-redesign (S3 reopened) — 真正的彻底清理在这里推进，本 hotfix 是其前置止损。"
+    created_at: "2026-05-18T00:00:00+08:00"
+    completed_at: null
