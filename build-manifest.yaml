@@ -5,10 +5,10 @@ features:
     ndf_version: "1.1"
     description: "多租户 owner tag 补齐：SOP 列表 SQL 缺少父账户过滤（store/sop.go:142 只过滤 status+publish_status，无 creator_user_id）+ 销售智能体没有 owner tag（customer.HasFeaturePermission 对 parent_user_id IS NULL 硬 bypass），导致 prod 4 个实体跨父账户全局可见。修复：(1) SOP list SQL 加 owner 过滤，归属 = 父账户 + 该父账户全部子账户的 creator_user_id 集合 (2) UPDATE sop_template SET creator_user_id=30 WHERE id IN (1,2) (3) 新建 sales_agent_owner(parent_user_id PK) 小表作为销售智能体 owner tag (4) HasFeaturePermission 在 featureKey=='sales_agent' 分支移除父账户硬 bypass 改查 sales_agent_owner，其他 feature_key 保持现状 (5) INSERT sales_agent_owner VALUES(30)。无 admin UI，无授权 API，纯系统 SQL 过滤。语义选择 C（严格父账户隔离，留 option B 平台公共模板未来口）。架构选 Option A（sales_agent_owner 小表，1 天 ~7 文件 numind-server），未选 Option B（custom_agent 通用表 + 前端新类别，3-4 天 13-15 文件跨两仓），YAGNI 友好，未来真有 N>1 自定义智能体时升级路径明确。"
     track: "standard"
-    stage: "S3"
+    stage: "S4"
     classification_reason: "Triage 5 条 — (1) DB schema：新建 sales_agent_owner 小表 + sop_template.creator_user_id 加索引 (2) 无新 API（admin UI 已剔出范围）(3) 无外部服务 (4) 仅 numind-server ~12 文件（S3 plan reviewer 发现遗漏 caller + biz.B 基础设施 wiring + monitor.go caller 迁移 + customer_permission_lifecycle_test.go 11 处 caller 迁移）(5) 跨父账户数据可见性 = 高风险权限逻辑。条件 5 单独触发 Standard Track。"
-    last_updated_by: "ai-s3-plan-written"
-    last_updated_at: "2026-05-18T23:30:00+08:00"
+    last_updated_by: "ai-s4-complete"
+    last_updated_at: "2026-05-19T00:30:00+08:00"
     repos:
       - numind-server
     branches:
@@ -22,8 +22,8 @@ features:
       plan: "numind-server/docs/superpowers/plans/2026-05-18-sop-salesrag-parent-scope-plan.md"
     progress:
       total_tasks: 6
-      completed_tasks: 0
-      reviewed_tasks: 0
+      completed_tasks: 6
+      reviewed_tasks: 6
       current_task: null
     rollback: null
     last_verified: null
@@ -41,6 +41,7 @@ features:
       - "2026-05-18 (S2 reviewer subagent 发现 — 全部已修): adversarial reviewer 找出 2 P0 + 6 P1 + 2 P2 问题, 已全部吸收进 spec. P0: (1) admin CreateTemplate 路径继续制造 NULL creator_user_id (D6); (2) biz 层无 defense-in-depth assertion (D8). P1: 修 proposal §3 风险表与 D1 冲突;layer violation 顺手修;FK CASCADE + INT UNSIGNED;model 注释更新;回归测试 content_monitor/self_service_config 覆盖;dead code at sop.go:409 保留(实际是 correctness guard 不是 dead). P2: 删 updated_at;snapshot fixture S5 处理."
       - "2026-05-18 (S3 重大事故 — 多 session 并行 HEAD 切换吃掉 S0/S1/S2 工件): 主 session 在 numind-server 上工作，但其他并行 AI session（credits-audit 修复）通过 git checkout 切换 HEAD 24+ 次，把未提交的 requirement / proposal / spec 工作树文件全部吃掉。仅 plan 幸存（被 1cba35b 意外合入）+ manifest 条目（已 merge 入 develop）。memory feedback_check_head_before_commit 警告过此模式。补救：(1) 建 git worktree 在 /private/tmp/worktree-sop-salesrag-parent-scope 隔离 (2) 从对话历史重建 3 个丢失文件 (3) 修 plan 的 P0 问题 (4) 全部 commit 到 feature 分支防再丢。"
       - "2026-05-18 (S3 plan reviewer 第 1 轮发现 - 全部已修): 2 P0 + 6 P1 + 2 P2 — (P0) wrong module path github.com/aiagent-numind/...,实际是 numind-server; (P0) biz.B 全局变量不存在,middleware redirect 没目标; (P0) 漏掉 caller monitor.go:146 + customer_permission_lifecycle_test.go 11 处; (P0) sop_test.go 不存在,改用 sop_template_visibility_test.go; (P0) CreateTemplateByUserReq 无 Prompt 字段; (P0) Task 4 不可丢 TrailingChatEnabled 处理 + GORM default:true fixup; (P0) Task 5 不可丢 GrantTemplateToConfiguredSubUsers 自动授权; (P1) IStore not DataStore; (P1) test helper 名字; (P1) ListVisibleTemplates 2-axis 签名变更(ctx+ownerID); (P1) 用 middleware.GetCurrentUser helper. Task 3 加 Step 0 wire biz.B 单例 + 含 monitor.go + 测试两个文件全部迁移. 共 6 atomic task."
+      - "2026-05-19 (S4 编码完成 — 11 commit + 10 review subagent 验过): Phase 1 顺序 (Task 1 foundation + Task 6 doc), Phase 2 并行 (Task 2 sop list + Task 3 hasfeature refactor on sub-worktrees /private/tmp/wt-t2-sop-list + wt-t3-hasfeature), Phase 3 顺序 (Task 4+5 combined). 关键 deviation: Task 3 subagent 发现 plan 的 biz.B 全局会产生 import cycle (middleware→biz→salesrag→middleware), 改用 CheckFeaturePermissionFunc 函数变量 + numind.go 启动时注入模式, 配合 monitor.customersBiz 字段注入. spec-faithful, 保留 D2 意图. Task 3 + Task 4+5 implementer 都跑到 token 上限被 fix subagent 接力. Reviewer 10 个全部覆盖 spec compliance + code quality. P0 (salesrag_test/gate_test 6 处 broken) + P1 (middleware nil guard) + 3 P2 (require.NoError / cross-tenant / require.True) 全部修. Final state: 11 commit 落 feature 分支, 0 HasFeaturePermission grep 命中, task lint 0 errors, go test ./... 全 PASS (含 router_sales_gate_test 6 个 + 既有 SOP/customer/monitor/salesrag 全套回归)."
     related_features:
       - "sop-chatbot-visibility-scope (2026-05-14 上线，子用户级可见性 = Layer 1，本需求 = Layer 0 在其之上)"
       - "child-run-permission (2026-04-20 上线，子用户运行授权 = Layer 2)"
