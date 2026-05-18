@@ -154,7 +154,7 @@ func TestCreateOrder_Booster_NoActiveMembership_Rejected(t *testing.T) {
 	b := newPaymentBizForTest(ds)
 
 	// Free user — no subscription, no trial.
-	uid := mustCreateUser(t, db, model.UserTierFree, model.BillingModeCredits, nil)
+	uid := mustCreateUser(t, db, "free", model.BillingModeCredits, nil)
 
 	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 1, model.PayChannelWechat)
 	require.Error(t, err)
@@ -169,7 +169,7 @@ func TestCreateOrder_Booster_CreditsWithSubscription_PassesValidation(t *testing
 	ds := store.NewTestStore(db)
 	b := newPaymentBizForTest(ds)
 
-	uid := mustCreateUser(t, db, model.UserTierStandard, model.BillingModeCredits, nil)
+	uid := mustCreateUser(t, db, "standard", model.BillingModeCredits, nil)
 	mustCreateActiveSubscription(t, db, uid)
 
 	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 1, model.PayChannelWechat)
@@ -200,7 +200,7 @@ func TestCreateOrder_NonBooster_AlwaysRejected(t *testing.T) {
 			db := newPaymentTestDB(t)
 			ds := store.NewTestStore(db)
 			b := newPaymentBizForTest(ds)
-			uid := mustCreateUser(t, db, model.UserTierFree, model.BillingModeCredits, nil)
+			uid := mustCreateUser(t, db, "free", model.BillingModeCredits, nil)
 
 			_, err := b.CreateOrder(context.Background(), uid, uid, tc.productType, 1, model.PayChannelWechat)
 			require.Error(t, err)
@@ -215,7 +215,7 @@ func TestCreateOrder_NonBooster_InternalCallerAlsoRejected(t *testing.T) {
 	db := newPaymentTestDB(t)
 	ds := store.NewTestStore(db)
 	b := newPaymentBizForTest(ds)
-	uid := mustCreateUser(t, db, model.UserTierFree, model.BillingModeCredits, nil)
+	uid := mustCreateUser(t, db, "free", model.BillingModeCredits, nil)
 
 	_, err := b.CreateOrder(WithInternalCaller(context.Background()), uid, uid, model.ProductTypeMonthly, 1, model.PayChannelWechat)
 	require.Error(t, err)

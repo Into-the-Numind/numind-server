@@ -209,13 +209,11 @@ CREATE TABLE IF NOT EXISTS credit_reservation_item (
 }
 
 // seedCreditsUserWithPackage inserts a credits-mode user plus one active
-// subscription package so Reserve has credits to debit. UserTier=free is the
-// post legacy-deprecation (T1) default for credits-only fixtures.
+// subscription package so Reserve has credits to debit.
 func seedCreditsUserWithPackage(t *testing.T, db *gorm.DB, userID uint, totalCredits int64) *model.User {
 	t.Helper()
 	user := &model.User{
 		BillingMode: model.BillingModeCredits,
-		UserTier:    model.UserTierFree,
 		Phone:       "13800000000",
 	}
 	user.ID = userID
@@ -366,10 +364,8 @@ func TestAcquireSalesragCredits_InsufficientBalance(t *testing.T) {
 
 	userID := uint(1002)
 	// Seed a credits-mode user but with zero balance (no packages).
-	// UserTier=free is the post legacy-deprecation (T1) default fixture.
 	user := &model.User{
 		BillingMode: model.BillingModeCredits,
-		UserTier:    model.UserTierFree,
 		Phone:       "13811111111",
 	}
 	user.ID = userID

@@ -163,12 +163,10 @@ CREATE TABLE IF NOT EXISTS credit_reservation_item (
 // newCreditsUser returns a credits-mode user with no membership constraints
 // (the default for Reserve path tests). Post legacy-deprecation (T1) the
 // dispatch is gone — every user routes through creditsImpl regardless of
-// the UserTier value — but the tests still default to UserTierFree for
-// schema parity with legacy fixtures.
+// the UserTier value.
 func newCreditsUser(id uint) *model.User {
 	u := &model.User{
 		BillingMode: model.BillingModeCredits,
-		UserTier:    model.UserTierFree,
 	}
 	u.ID = id
 	return u
@@ -363,14 +361,13 @@ func TestReserve_GetBalanceCredits(t *testing.T) {
 
 // --- Task 4: Budget-aware credit reservation API ---
 
-// newPureCreditsUser returns a user whose billing_mode=credits and UserTier=free.
-// Post legacy-deprecation (T1) there is no longer a legacy dispatch path; this
+// newPureCreditsUser returns a user whose billing_mode=credits. Post
+// legacy-deprecation (T1) there is no longer a legacy dispatch path; this
 // helper is retained as a stable fixture for CheckAndEstimateBudget /
 // ReserveBudget tests.
 func newPureCreditsUser(id uint) *model.User {
 	u := &model.User{
 		BillingMode: model.BillingModeCredits,
-		UserTier:    model.UserTierFree, // no active membership → not effective-legacy
 	}
 	u.ID = id
 	return u

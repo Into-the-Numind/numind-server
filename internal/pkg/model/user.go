@@ -1,7 +1,6 @@
 package model
 
 import (
-	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -29,9 +28,8 @@ type User struct {
 	TierExpires *time.Time `gorm:"index" json:"tier_expires"`                     // 等级到期时间
 
 	// 计费模式字段（credits-system feature）
-	// legacy_tier = Grandfathering 老会员（按次数制，不扣积分）
-	// credits     = 新积分制（默认；预扣 / 对账 / 退款机制）
-	// 详见 spec §2.2 / §2.7 (Option E Grandfathering)
+	// credits = 新积分制（预扣 / 对账 / 退款机制）
+	// 详见 spec §2.2
 	BillingMode string `gorm:"column:billing_mode;type:enum('legacy_tier','credits');not null;default:'credits';index:idx_user_billing_mode,priority:1" json:"billing_mode"`
 
 	// 管理员相关字段
@@ -46,172 +44,12 @@ func (User) TableName() string {
 	return "user"
 }
 
-// UserTier 定义用户等级常量（控制SOP运行权限）
-const (
-	UserTierFree     = "free"     // 免费用户：不可运行SOP
-	UserTierTrial    = "trial"    // 体验会员：3天10次SOP（¥9.9）
-	UserTierStandard = "standard" // 普通会员：每月20次SOP
-	UserTierPremium  = "premium"  // 高级会员：无限次SOP
-)
-
 // BillingMode 定义用户计费模式常量（credits-system feature）
-// legacy_tier: Grandfathering 老会员，按次数制（GetRemainingSOPRuns），不扣积分；
-//
-//	老会员到期自动升级后切换到 credits 模式。
-//
-// credits:     新积分制（默认）——Reserve/Reconcile 预扣对账 + FIFO 扣减。
-// 详见 spec §2.2 / §2.7。
+// credits: 积分制（默认）——Reserve/Reconcile 预扣对账 + FIFO 扣减。
+// 详见 spec §2.2。
 const (
-	BillingModeLegacyTier = "legacy_tier"
-	BillingModeCredits    = "credits"
+	BillingModeCredits = "credits"
 )
-
-// TrialUserSOPLimit 体验会员SOP运行次数上限
-const TrialUserSOPLimit = 10
-
-// TrialDurationDays 体验会员固定时长（天）
-const TrialDurationDays = 3
-
-// StandardUserMonthlySOPLimit 普通会员每月SOP运行次数上限
-const StandardUserMonthlySOPLimit = 20
-
-// ============================================================================
-// SOP 运行权限相关方法（用户等级控制）
-// ============================================================================
-
-// GetActualUserTier 获取实际的用户等级（考虑过期自动降级）
-// 如果会员已过期，返回 UserTierFree
-func (u *User) GetActualUserTier() string {
-	// 如果是免费用户，直接返回
-	if u.UserTier == "" || u.UserTier == UserTierFree {
-		return UserTierFree
-	}
-
-	// 检查是否过期
-	if u.TierExpires != nil && u.TierExpires.Before(time.Now()) {
-		return UserTierFree // 已过期，降级为免费用户
-	}
-
-	return u.UserTier
-}
-
-// HasActiveMembership 判断用户是否仍在旧会员有效期内。
-// 过渡期用：旧会员走旧逻辑，新用户走积分逻辑。
-// trial 用户即使 10 次用完，只要 3 天未到期，仍视为旧会员。
-func (u *User) HasActiveMembership() bool {
-	return u.GetActualUserTier() != UserTierFree
-}
-
-// CanRunSOP 检查用户是否可以运行SOP
-// 返回值：是否可运行，不可运行时的原因
-func (u *User) CanRunSOP() (bool, string) {
-	actualTier := u.GetActualUserTier()
-
-	switch actualTier {
-	case UserTierFree:
-		return false, "免费用户无法运行SOP，请升级为会员"
-
-	case UserTierTrial:
-		// 检查是否过期
-		if u.TierExpires != nil && u.TierExpires.Before(time.Now()) {
-			return false, "体验会员已过期，请升级为正式会员"
-		}
-		// 检查运行次数限制（体验会员使用 MonthlySopRuns 记录，3天内不会重置）
-		if u.MonthlySopRuns >= TrialUserSOPLimit {
-			return false, fmt.Sprintf("体验会员运行次数已达上限（%d次），请升级为正式会员", TrialUserSOPLimit)
-		}
-		return true, ""
-
-	case UserTierStandard:
-		// 检查是否过期
-		if u.TierExpires != nil && u.TierExpires.Before(time.Now()) {
-			return false, "会员已过期，请续费"
-		}
-		// 检查是否需要重置月度次数（跨自然月）
-		if u.IsInNewSOPMonth() {
-			// 需要重置，说明本月还未使用过，可以运行
-			return true, ""
-		}
-		// 检查月度运行次数限制
-		if u.MonthlySopRuns >= StandardUserMonthlySOPLimit {
-			return false, fmt.Sprintf("本月运行次数已达上限（%d次），请升级为高级会员或等待下月重置", StandardUserMonthlySOPLimit)
-		}
-		return true, ""
-
-	case UserTierPremium:
-		// 检查是否过期
-		if u.TierExpires != nil && u.TierExpires.Before(time.Now()) {
-			return false, "会员已过期，请续费"
-		}
-		return true, ""
-
-	default:
-		return false, "未知用户等级"
-	}
-}
-
-// GetRemainingSOPRuns 获取用户剩余可运行SOP次数
-// 返回值：剩余次数（-1 表示无限次，0 表示无法运行）
-func (u *User) GetRemainingSOPRuns() int {
-	actualTier := u.GetActualUserTier()
-
-	switch actualTier {
-	case UserTierFree:
-		return 0
-
-	case UserTierTrial:
-		// 检查是否已过期
-		if u.TierExpires != nil && u.TierExpires.Before(time.Now()) {
-			return 0
-		}
-		remaining := TrialUserSOPLimit - u.MonthlySopRuns
-		if remaining < 0 {
-			return 0
-		}
-		return remaining
-
-	case UserTierStandard:
-		// 检查是否已过期
-		if u.TierExpires != nil && u.TierExpires.Before(time.Now()) {
-			return 0
-		}
-		// 如果跨月了，返回满额次数（IncrementSopRunCount 会自动重置）
-		if u.IsInNewSOPMonth() {
-			return StandardUserMonthlySOPLimit
-		}
-		// 计算剩余次数
-		remaining := StandardUserMonthlySOPLimit - u.MonthlySopRuns
-		if remaining < 0 {
-			return 0
-		}
-		return remaining
-
-	case UserTierPremium:
-		// 检查是否已过期
-		if u.TierExpires != nil && u.TierExpires.Before(time.Now()) {
-			return 0
-		}
-		return -1 // 无限次
-
-	default:
-		return 0
-	}
-}
-
-// IsInNewSOPMonth 检查是否已进入新的30天周期（需要重置月度SOP运行次数）
-// 周期从用户成为会员那天开始计算，每30天重置一次
-func (u *User) IsInNewSOPMonth() bool {
-	if u.MonthlyResetAt == nil {
-		// 从未重置过，需要重置
-		return true
-	}
-
-	now := time.Now()
-	lastReset := *u.MonthlyResetAt
-
-	// 检查是否已过30天周期
-	return now.After(lastReset.AddDate(0, 0, 30))
-}
 
 // TierChangeLog 等级变更日志
 type TierChangeLog struct {
@@ -234,31 +72,13 @@ func (TierChangeLog) TableName() string {
 // free=0, trial=1, standard=2, premium=3
 func TierRank(tier string) int {
 	switch tier {
-	case UserTierTrial:
+	case "trial":
 		return 1
-	case UserTierStandard:
+	case "standard":
 		return 2
-	case UserTierPremium:
+	case "premium":
 		return 3
 	default:
 		return 0
-	}
-}
-
-// GetUserTierDisplayName 获取用户等级的显示名称
-func (u *User) GetUserTierDisplayName() string {
-	actualTier := u.GetActualUserTier()
-
-	switch actualTier {
-	case UserTierFree:
-		return "免费用户"
-	case UserTierTrial:
-		return "体验会员"
-	case UserTierStandard:
-		return "普通会员"
-	case UserTierPremium:
-		return "高级会员"
-	default:
-		return "免费用户"
 	}
 }

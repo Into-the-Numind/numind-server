@@ -166,7 +166,7 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 			TotalSopRuns:        user.TotalSopRuns,
 			MonthlySopRuns:      user.MonthlySopRuns,
 			AuthorizedTemplates: activeTemplateCount,
-			UserTier:            user.GetActualUserTier(),
+			UserTier:            user.UserTier,
 			TierExpires:         expiresStr,
 			CreditBalance:       creditBalance,
 			CreditExpires:       creditExpires,
@@ -221,7 +221,7 @@ func (c *customerBiz) GetSubUserDetail(ctx context.Context, parentUserID, subUse
 		Nickname:                 user.Nickname,
 		Phone:                    user.Phone,
 		Avatar:                   user.AvatarURL,
-		UserTier:                 user.GetActualUserTier(),
+		UserTier:                 user.UserTier,
 		TierExpires:              expiresStr,
 		TotalSopRuns:             user.TotalSopRuns,
 		MonthlySopRuns:           user.MonthlySopRuns,
@@ -263,7 +263,7 @@ func (c *customerBiz) GetCustomerStatistics(ctx context.Context, userID uint) (*
 		ActiveSubUsers: activeSubUsers,
 		TotalTemplates: int64(len(templates)),
 		TotalSopRuns:   int64(user.TotalSopRuns),
-		UserTier:       user.GetActualUserTier(),
+		UserTier:       user.UserTier,
 		TierExpires:    expiresStr,
 	}, nil
 }
@@ -360,8 +360,8 @@ func (c *customerBiz) UpdateSubUserTier(ctx context.Context, parentUserID, subUs
 		return fmt.Errorf("子用户不存在或不属于当前用户")
 	}
 
-	// 2. 获取当前实际等级
-	currentTier := user.GetActualUserTier()
+	// 2. 获取当前等级（直接取 user_tier 字段；T3 起所有用户均为 credits 计费）
+	currentTier := user.UserTier
 
 	// 3. 校验只能升级不能降级
 	if model.TierRank(req.Tier) <= model.TierRank(currentTier) {
@@ -371,9 +371,9 @@ func (c *customerBiz) UpdateSubUserTier(ctx context.Context, parentUserID, subUs
 	// 4. 计算到期时间
 	now := time.Now()
 	var newExpires time.Time
-	if req.Tier == model.UserTierTrial {
-		// 体验会员固定3天
-		newExpires = now.AddDate(0, 0, model.TrialDurationDays)
+	if req.Tier == "trial" {
+		// 体验会员固定 3 天
+		newExpires = now.AddDate(0, 0, 3)
 	} else {
 		// 非 trial 等级必须指定有效的开通时长
 		if req.Months < 1 || req.Months > 12 {

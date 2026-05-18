@@ -2119,7 +2119,7 @@ func computeSopChatPromptChars(history []LLMMessage) int {
 }
 
 // wrapCreditError 将 credit 层返回的业务错误翻译为 errno 可承载的 HTTP 响应。
-// 重点是 legacy_tier 次数不足时把 CanRunSOP 的中文原因回传给前端（spec §3.6）。
+// 若 pre.Reason 非空（credit 层拒绝原因），则将其作为消息回传给前端（spec §3.6）。
 func wrapCreditError(err error, pre *credit.PreCheckResult) error {
 	if err == nil {
 		return nil

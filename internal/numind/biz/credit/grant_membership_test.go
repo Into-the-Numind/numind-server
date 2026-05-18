@@ -169,10 +169,10 @@ func TestGrantMembership_ChildNotBelongingToParent_Rejected(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parentA := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
-	parentB := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
+	parentA := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
+	parentB := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
 	// childOfB belongs to parentB, not parentA
-	childOfB := insertGrantTestUser(t, db, model.UserTierFree, &parentB, model.BillingModeCredits, nil)
+	childOfB := insertGrantTestUser(t, db, "free", &parentB, model.BillingModeCredits, nil)
 
 	err := b.GrantMembership(context.Background(), GrantMembershipReq{
 		ParentUserID: parentA,
@@ -187,7 +187,7 @@ func TestGrantMembership_ChildNotExists_Rejected(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
 
 	err := b.GrantMembership(context.Background(), GrantMembershipReq{
 		ParentUserID: parent,
@@ -204,8 +204,8 @@ func TestGrantMembership_Trial_Success(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
-	child := insertGrantTestUser(t, db, model.UserTierFree, &parent, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
+	child := insertGrantTestUser(t, db, "free", &parent, model.BillingModeCredits, nil)
 
 	err := b.GrantMembership(context.Background(), GrantMembershipReq{
 		ParentUserID: parent,
@@ -265,8 +265,8 @@ func TestGrantMembership_TrialLifetimeUnique_SecondGrantRejected(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
-	child := insertGrantTestUser(t, db, model.UserTierFree, &parent, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
+	child := insertGrantTestUser(t, db, "free", &parent, model.BillingModeCredits, nil)
 
 	// First grant: must succeed
 	err := b.GrantMembership(context.Background(), GrantMembershipReq{
@@ -297,8 +297,8 @@ func TestGrantMembership_ChildAlreadyHasTrial_TrialRejected(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
-	child := insertGrantTestUser(t, db, model.UserTierFree, &parent, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
+	child := insertGrantTestUser(t, db, "free", &parent, model.BillingModeCredits, nil)
 
 	// Seed trial_grant row directly (simulates exhausted trial from previous session)
 	now := time.Now()
@@ -323,8 +323,8 @@ func TestGrantMembership_Monthly_OneMonth_CreatesSubscription(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
-	child := insertGrantTestUser(t, db, model.UserTierFree, &parent, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
+	child := insertGrantTestUser(t, db, "free", &parent, model.BillingModeCredits, nil)
 
 	err := b.GrantMembership(context.Background(), GrantMembershipReq{
 		ParentUserID: parent,
@@ -370,8 +370,8 @@ func TestGrantMembership_Monthly_TwelveMonths_CreatesSubscription(t *testing.T) 
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
-	child := insertGrantTestUser(t, db, model.UserTierFree, &parent, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
+	child := insertGrantTestUser(t, db, "free", &parent, model.BillingModeCredits, nil)
 
 	err := b.GrantMembership(context.Background(), GrantMembershipReq{
 		ParentUserID: parent,
@@ -394,8 +394,8 @@ func TestGrantMembership_Monthly_InvalidMonths_Rejected(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
-	child := insertGrantTestUser(t, db, model.UserTierFree, &parent, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
+	child := insertGrantTestUser(t, db, "free", &parent, model.BillingModeCredits, nil)
 
 	for _, months := range []int{0, -1, 13, 999} {
 		err := b.GrantMembership(context.Background(), GrantMembershipReq{
@@ -415,8 +415,8 @@ func TestGrantMembership_ChildAlreadyHasActiveSubscription_Rejected(t *testing.T
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
-	child := insertGrantTestUser(t, db, model.UserTierFree, &parent, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
+	child := insertGrantTestUser(t, db, "free", &parent, model.BillingModeCredits, nil)
 
 	// Seed subscription in the NEW table (not credit_package)
 	now := time.Now()
@@ -440,8 +440,8 @@ func TestGrantMembership_ExpiredSubscription_AllowsNewGrant(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
-	child := insertGrantTestUser(t, db, model.UserTierFree, &parent, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
+	child := insertGrantTestUser(t, db, "free", &parent, model.BillingModeCredits, nil)
 
 	// Seed an EXPIRED subscription in the NEW table
 	now := time.Now()
@@ -465,8 +465,8 @@ func TestGrantMembership_ActiveSubscriptionBlocksTrial(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
-	child := insertGrantTestUser(t, db, model.UserTierFree, &parent, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
+	child := insertGrantTestUser(t, db, "free", &parent, model.BillingModeCredits, nil)
 
 	// Seed active subscription (blocks trial per spec §3.9)
 	now := time.Now()
@@ -495,8 +495,8 @@ func TestGrantMembership_UnsupportedProductType_Rejected(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
-	child := insertGrantTestUser(t, db, model.UserTierFree, &parent, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
+	child := insertGrantTestUser(t, db, "free", &parent, model.BillingModeCredits, nil)
 
 	// yearly is not supported by grant (reserved for future); booster is self_purchase only
 	for _, pt := range []string{model.ProductTypeYearly, model.ProductTypeBooster, "garbage"} {
@@ -517,7 +517,7 @@ func TestGrantMembership_SelfGrant_Trial_Success(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
 
 	err := b.GrantMembership(context.Background(), GrantMembershipReq{
 		ParentUserID: parent,
@@ -544,7 +544,7 @@ func TestGrantMembership_SelfGrant_Monthly_Success(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
 
 	err := b.GrantMembership(context.Background(), GrantMembershipReq{
 		ParentUserID: parent,
@@ -569,8 +569,8 @@ func TestGrantMembership_SubUserSelfGrant_Rejected(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
-	child := insertGrantTestUser(t, db, model.UserTierFree, &parent, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
+	child := insertGrantTestUser(t, db, "free", &parent, model.BillingModeCredits, nil)
 
 	err := b.GrantMembership(context.Background(), GrantMembershipReq{
 		ParentUserID: child,
@@ -600,9 +600,9 @@ func TestGrantMembership_SubUserSelfGrant_Monthly_Rejected(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
 	// Sub-user: parent_user_id = parent, billing_mode=credits
-	child := insertGrantTestUser(t, db, model.UserTierFree, &parent, model.BillingModeCredits, nil)
+	child := insertGrantTestUser(t, db, "free", &parent, model.BillingModeCredits, nil)
 
 	err := b.GrantMembership(context.Background(), GrantMembershipReq{
 		ParentUserID: child, // caller == target, but caller is a sub-user
@@ -632,8 +632,8 @@ func TestGrantMembership_CrossParentGrant_Rejected(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parentA := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
-	parentB := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
+	parentA := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
+	parentB := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
 
 	err := b.GrantMembership(context.Background(), GrantMembershipReq{
 		ParentUserID: parentA,
@@ -659,7 +659,7 @@ func TestGrantMembership_SelfGrant_TrialAlreadyPurchased_Rejected(t *testing.T) 
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
 
 	// Seed trial_grant row (expired, but lifetime check still applies)
 	require.NoError(t, db.Exec(
@@ -685,7 +685,7 @@ func TestGrantMembership_SelfGrant_ActiveSubscription_Rejected(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
 
 	// Seed active subscription in the new table
 	now := time.Now()
@@ -722,8 +722,8 @@ func TestGrantMembership_TrialGuardDetectsExistingRow_AfterRetry(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
-	child := insertGrantTestUser(t, db, model.UserTierFree, &parent, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
+	child := insertGrantTestUser(t, db, "free", &parent, model.BillingModeCredits, nil)
 
 	// First call: trial granted
 	err := b.GrantMembership(context.Background(), GrantMembershipReq{
@@ -755,8 +755,8 @@ func TestGrantMembership_IdempotencyReplay_SubscriptionRenewal(t *testing.T) {
 	db := newGrantTestDB(t)
 	b := newGrantTestBiz(t, db)
 
-	parent := insertGrantTestUser(t, db, model.UserTierFree, nil, model.BillingModeCredits, nil)
-	child := insertGrantTestUser(t, db, model.UserTierFree, &parent, model.BillingModeCredits, nil)
+	parent := insertGrantTestUser(t, db, "free", nil, model.BillingModeCredits, nil)
+	child := insertGrantTestUser(t, db, "free", &parent, model.BillingModeCredits, nil)
 
 	// First call: subscription granted
 	err := b.GrantMembership(context.Background(), GrantMembershipReq{

@@ -209,48 +209,6 @@ func TestEstimate_CreditsMode_SOP_ReturnsAggregate(t *testing.T) {
 	assert.Equal(t, int64(600), *env.Data.FirstNodeEstimate, "stub always returns 600; first-node call also hits stub")
 }
 
-// TestEstimate_Legacy_SkipDeduction verifies legacy_tier returns skip_deduction=true
-// and does NOT invoke the sop node query (node_count defaults to 1).
-func TestEstimate_Legacy_SkipDeduction(t *testing.T) {
-	db := newTestDB(t)
-	ds := store.NewTestStore(db)
-
-	svc := &stubCreditSvc{
-		checkResult: &creditbiz.PreCheckResult{
-			SkipDeduction: true,
-			Sufficient:    true,
-			Balance: creditbiz.BalanceBreakdown{
-				BillingMode: model.BillingModeLegacyTier,
-			},
-		},
-	}
-	pe := &stubPromptEstimator{chars: 0}
-
-	ctrl := creditctl.New(nil, svc, pe, ds)
-	r := newRouter(t, ctrl, mustUser(7, model.BillingModeLegacyTier))
-
-	body, _ := json.Marshal(map[string]string{
-		"operation":    "sop_run",
-		"reference_id": "1",
-	})
-	req := httptest.NewRequest(http.MethodPost, "/v1/credits/estimate", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
-
-	var env struct {
-		Code int                    `json:"code"`
-		Data creditctl.EstimateResp `json:"data"`
-	}
-	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
-
-	assert.True(t, env.Data.SkipDeduction)
-	require.NotNil(t, env.Data.NodeCount)
-	assert.Equal(t, 1, *env.Data.NodeCount, "legacy should default to 1 (no node lookup)")
-}
-
 // TestEstimate_InsufficientCredits_Returns200 verifies ErrInsufficientCredits
 // is surfaced as HTTP 200 with sufficient=false so the frontend interceptor
 // can distinguish "estimate shortfall" from "other errors".

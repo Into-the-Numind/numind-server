@@ -185,7 +185,7 @@ func TestCreateRun_TemplateUnauthorizedReturnsTypedError(t *testing.T) {
 		 VALUES (1, ?, ?, 'premium', ?, 'credits')`,
 		time.Now(), time.Now(), future,
 	).Error)
-	// Sub-user (id=2): premium so CanRunSOP passes → we reach the template check.
+	// Sub-user (id=2): premium so credits gating passes → we reach the template check.
 	require.NoError(t, db.Exec(
 		`INSERT INTO user (id, created_at, updated_at, parent_user_id, user_tier, tier_expires, billing_mode)
 		 VALUES (2, ?, ?, 1, 'premium', ?, 'credits')`,

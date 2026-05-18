@@ -235,13 +235,11 @@ func seedSopCreditsScenario(t *testing.T, db *gorm.DB,
 	}
 	require.NoError(t, db.Create(&rule).Error)
 
-	// UserTier must be "free" so HasActiveMembership()=false and isEffectiveLegacy()
-	// routes to the credits path. Standard/trial/premium with TierExpires=nil
-	// would make HasActiveMembership()=true → legacyTierImpl.Reserve panic.
+	// Post legacy-deprecation (T1) the dispatch is gone; every user routes
+	// through creditsImpl regardless of UserTier.
 	return &model.User{
 		Model:       gorm.Model{ID: userID},
 		BillingMode: model.BillingModeCredits,
-		UserTier:    model.UserTierFree,
 	}
 }
 
