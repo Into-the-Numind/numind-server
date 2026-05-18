@@ -499,8 +499,13 @@ func (c *creditsImpl) Reserve(
 //     the refund exhausts the delta before walking all items, stop early.
 //   - delta > 0 (actual > reserved): top-up |delta| credits via
 //     DeductCreditsTx (FIFO) so any new packages that activated since Reserve
-//     are eligible. A short-balance here is recorded as a
-//     credit_transaction.operation=reconcile_debt entry per spec §5.3.
+//     are eligible. If the user's balance is now insufficient for the top-up,
+//     the platform absorbs the cost (audit P1-2, no-debt policy): an audit-
+//     only credit_transaction with amount=0 and
+//     operation="reserve_underestimate_absorbed" is written for ops monitoring,
+//     and the reservation finalizes as status=reconciled normally. The
+//     previous "reconcile_debt:<op>" positive-amount IOU has been retired
+//     because it was never collected and confused ledger sums.
 //   - delta == 0: no balance movement.
 //
 // In all paths the reservation transitions reserved → reconciled with
@@ -525,7 +530,7 @@ func (c *creditsImpl) reconcileWithTokens(
 		reservedCredits    int64
 		delta              int64
 		reconcileDirection string
-		hasDebt            bool // P1-2: set true when top-up ran into ErrInsufficientCredits
+		hasDebt            bool // P1-2 (post-2026-05 audit): set true when top-up insufficient → platform absorbs cost. Surfaces on Langfuse span for ops monitoring.
 		refundedPackages   []map[string]interface{}
 	)
 	txErr := c.store.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -584,34 +589,67 @@ func (c *creditsImpl) reconcileWithTokens(
 				model.CreditTxOpPrefixReconcile+row.Operation, time.Now().UTC())
 			topupErr = translateMembershipInsufficient(topupErr)
 			if err := topupErr; err != nil {
-				// If the user no longer has enough credits, we still reconcile
-				// (record the debt via delta) rather than blocking completion —
-				// the operation already succeeded and the user owes credits.
+				// Non-insufficient errors (DB, lock, etc.) propagate and abort
+				// the reconcile transaction so caller can retry.
 				if !errors.Is(err, ErrInsufficientCredits) {
 					return err
 				}
-				// ErrInsufficientCredits → log + continue + 写 debt 台账（spec §5.3）。
-				// CreditTransaction 以 amount=delta（正，表示欠多少）+
-				// operation="reconcile_debt:<op>" 记录，供 ops 事后按
-				// `WHERE operation LIKE 'reconcile_debt:%'` 审计与追收。
-				// hasDebt=true 同时上报 Langfuse span。
+				// P1-2 (post-2026-05 audit, policy A — no-debt absorb):
+				// When top-up exceeds the user's remaining balance, the platform
+				// absorbs the cost rather than writing a positive-amount
+				// "reconcile_debt:<op>" credit_transaction that future Reserves
+				// never subtract (an invisible, never-collected IOU).
+				//
+				// Old behavior (removed): Amount=+delta credit_transaction with
+				//   operation="reconcile_debt:<op>" — misleading because it
+				//   inflated ledger sums while no real debt was ever recovered.
+				//
+				// New behavior:
+				//   1. Audit-only credit_transaction (Amount=0,
+				//      operation="reserve_underestimate_absorbed") so ops can
+				//      monitor underestimation via
+				//      `WHERE operation = 'reserve_underestimate_absorbed'`
+				//      without polluting ledger sums.
+				//   2. hasDebt=true is still surfaced on the Langfuse span
+				//      (semantically: "absorbed by platform") so pricing /
+				//      coefficient tuning has signal.
+				//   3. Reservation finalizes normally (finalize_reason='normal',
+				//      retained for ENUM compatibility — see migration
+				//      20260507_120000_finalize_reason_enum_extension.sql).
+				//      The absorption is identified by the audit
+				//      credit_transaction row, not the reservation column.
 				hasDebt = true
-				debtRow := &model.CreditTransaction{
+				absorbRow := &model.CreditTransaction{
 					UserID:     row.UserID,
-					PackageID:  0, // 无具体 package（扣不到任何包才进这条分支）
-					Amount:     delta,
-					Operation:  model.CreditTxOpPrefixReconcileDebt + row.Operation,
+					PackageID:  0, // no specific package — absorbed by platform.
+					Amount:     0, // audit-only; preserves ledger sum invariant.
+					Operation:  "reserve_underestimate_absorbed",
 					BizRefType: "reservation",
 					BizRefID:   strconv.FormatUint(reservationID, 10),
 					CreatedAt:  time.Now(),
 				}
-				if derr := c.store.Credits().CreateTransaction(ctx, tx, debtRow); derr != nil {
-					// 台账失败不阻塞对账（span has_debt=true 已是兜底），但记 error log。
-					log.Errorw("Reconcile debt ledger write failed",
-						"reservation_id", reservationID, "delta", delta, "err", derr)
+				if derr := c.store.Credits().CreateTransaction(ctx, tx, absorbRow); derr != nil {
+					// Audit-row failure does not block reconcile (span hasDebt=true
+					// is the secondary signal), but log loudly.
+					log.Errorw("Reconcile absorb audit row write failed",
+						"reservation_id", reservationID,
+						"actual_cost_cents", actualCostCents,
+						"reserved_credits", row.ReservedCredits,
+						"shortfall", delta,
+						"user_id", row.UserID,
+						"operation", row.Operation,
+						"err", derr)
 				}
-				log.Warnw("Reconcile top-up insufficient — recorded as debt",
-					"reservation_id", reservationID, "delta", delta, "err", err)
+				log.Warnw("Reconcile top-up insufficient — platform absorbed cost",
+					"reservation_id", reservationID,
+					"user_id", row.UserID,
+					"operation", row.Operation,
+					"reserved_credits", row.ReservedCredits,
+					"actual_cost_cents", actualCostCents,
+					"shortfall", delta,
+					"err", err)
+				// Continue: do NOT propagate err; reservation will finalize as
+				// status=reconciled with delta=delta (the underestimate amount).
 			}
 		default:
 			reconcileDirection = "noop"
@@ -848,42 +886,34 @@ func classifyReason(err error) string {
 //
 // T11 (credits-cleanup): legacy fallback path reading credit_package has been removed
 // (table was archived and dropped). All credits-mode users go through MembershipService.
-// If MembershipService is not injected (test-only configuration), GetQuotaBreakdown
-// reads from credit_cycle + user_booster_balance + trial_grant.
+// MembershipService is required — if nil, GetBalance returns a wiring error
+// rather than silently returning a TrialRemain-less legacy-shaped breakdown
+// (audit P2#3, 2026-05).
 //
 // Spec §1.8 + §2.11.1 + credits-deduct-cycle-wiring §3.1.
 func (c *creditsImpl) GetBalance(ctx context.Context, user *model.User) (*BalanceBreakdown, error) {
-	// credits-mode + membership service wired → use new tables via MembershipService.
-	if c.membershipSvc != nil {
-		view, err := c.membershipSvc.GetBalance(ctx, uint64(user.ID), time.Now().UTC())
-		if err != nil {
-			return nil, fmt.Errorf("creditsImpl.GetBalance via membership: %w", err)
-		}
-		bal := &BalanceBreakdown{
-			BillingMode:    "credits",
-			SubTotal:       view.CycleRemaining, // cycle is the recurring sub pool
-			SubRemain:      view.CycleRemaining,
-			BoosterTotal:   view.BoosterUsable,
-			BoosterRemain:  view.BoosterUsable,
-			TrialRemain:    view.TrialRemaining,
-			SubExpiresAt:   view.SubExpiresAt,
-			TrialExpiresAt: view.TrialExpiresAt,
-		}
-		return bal, nil
+	// Audit P2#3: previously this method silently fell back to
+	// store.Credits().GetQuotaBreakdown when membershipSvc was nil, returning a
+	// BalanceBreakdown without TrialRemain populated. That fallback existed for
+	// test convenience but masked misuse in production (precheck sums would
+	// understate spendable balance and incorrectly reject ops). The fallback
+	// is now removed; misuse fails fast.
+	if c.membershipSvc == nil {
+		return nil, fmt.Errorf("creditsImpl.GetBalance: membershipSvc is nil — must be wired via NewCreditService")
 	}
-
-	// Fallback for test configurations where membershipSvc is not injected.
-	// GetQuotaBreakdown now reads credit_cycle + user_booster_balance + trial_grant (T11).
-	subTotal, subRemain, boosterTotal, boosterRemain, err := c.store.Credits().GetQuotaBreakdown(ctx, user.ID)
+	view, err := c.membershipSvc.GetBalance(ctx, uint64(user.ID), time.Now().UTC())
 	if err != nil {
-		return nil, fmt.Errorf("creditsImpl.GetBalance: quota breakdown: %w", err)
+		return nil, fmt.Errorf("creditsImpl.GetBalance via membership: %w", err)
 	}
 	return &BalanceBreakdown{
-		BillingMode:   "credits",
-		SubTotal:      subTotal,
-		SubRemain:     subRemain,
-		BoosterTotal:  boosterTotal,
-		BoosterRemain: boosterRemain,
+		BillingMode:    "credits",
+		SubTotal:       view.CycleRemaining, // cycle is the recurring sub pool
+		SubRemain:      view.CycleRemaining,
+		BoosterTotal:   view.BoosterUsable,
+		BoosterRemain:  view.BoosterUsable,
+		TrialRemain:    view.TrialRemaining,
+		SubExpiresAt:   view.SubExpiresAt,
+		TrialExpiresAt: view.TrialExpiresAt,
 	}, nil
 }
 
