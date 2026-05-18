@@ -168,7 +168,6 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 			AuthorizedTemplates: activeTemplateCount,
 			UserTier:            user.GetActualUserTier(),
 			TierExpires:         expiresStr,
-			RemainingSopRuns:    user.GetRemainingSOPRuns(),
 			CreditBalance:       creditBalance,
 			CreditExpires:       creditExpires,
 			MembershipState:     membershipState,
@@ -227,7 +226,6 @@ func (c *customerBiz) GetSubUserDetail(ctx context.Context, parentUserID, subUse
 		TotalSopRuns:             user.TotalSopRuns,
 		MonthlySopRuns:           user.MonthlySopRuns,
 		AuthorizedTemplatesCount: len(templateList),
-		RemainingSopRuns:         user.GetRemainingSOPRuns(),
 		AuthorizedTemplates:      templateList,
 	}, nil
 }
@@ -261,13 +259,12 @@ func (c *customerBiz) GetCustomerStatistics(ctx context.Context, userID uint) (*
 	}
 
 	return &v1.CustomerStatisticsResponse{
-		TotalSubUsers:    totalSubUsers,
-		ActiveSubUsers:   activeSubUsers,
-		TotalTemplates:   int64(len(templates)),
-		TotalSopRuns:     int64(user.TotalSopRuns),
-		UserTier:         user.GetActualUserTier(),
-		TierExpires:      expiresStr,
-		RemainingSopRuns: user.GetRemainingSOPRuns(),
+		TotalSubUsers:  totalSubUsers,
+		ActiveSubUsers: activeSubUsers,
+		TotalTemplates: int64(len(templates)),
+		TotalSopRuns:   int64(user.TotalSopRuns),
+		UserTier:       user.GetActualUserTier(),
+		TierExpires:    expiresStr,
 	}, nil
 }
 

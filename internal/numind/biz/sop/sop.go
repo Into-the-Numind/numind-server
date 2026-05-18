@@ -126,8 +126,7 @@ func NewSopBiz(ds store.IStore, executor *SopExecutor, creditBiz credit.ICreditB
 
 // WithCreditService 注入 Phase 2 Task 2.1 的 credits 控制流依赖。
 //
-// 返回值仍是 *sopBiz（通过 ISopBiz 接口暴露）以支持链式调用。传 nil 会保留
-// 旧路径（runNode/runChat 会跳过 Reserve 并通过 IncrementSopRunCount 记录运行）。
+// 返回值仍是 *sopBiz（通过 ISopBiz 接口暴露）以支持链式调用。
 //
 // 典型调用（见 biz.go）：
 //
@@ -941,16 +940,9 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 		// usage 为空或 tokens 全 0：actualCost=0 → defer 走 Refund("no_actual_cost")
 	}
 
-	// 节点执行成功后，检查是否需要计入运行次数（首次成功运行节点时计入）
-	// 条件：run.Counted = false 表示此run尚未计入运行次数
+	// 节点执行成功后，标记此run已计入（防止后续节点重复处理 Counted 翻转）
 	if !run.Counted {
-		log.C(ctx).Infow("First successful node execution, incrementing run count", "run_id", runID, "user_id", run.UserID)
-		// 更新运行次数统计
-		if err := b.ds.Customers().IncrementSopRunCount(ctx, run.UserID); err != nil {
-			log.C(ctx).Errorw("Failed to increment sop run count", "user_id", run.UserID, "err", err)
-			// 不阻断流程,仅记录日志
-		}
-		// 标记此run已计入运行次数，防止后续节点重复计数
+		log.C(ctx).Infow("First successful node execution, marking run as counted", "run_id", runID, "user_id", run.UserID)
 		_ = b.ds.Sop().UpdateRun(runID, map[string]interface{}{
 			"counted": true,
 		})

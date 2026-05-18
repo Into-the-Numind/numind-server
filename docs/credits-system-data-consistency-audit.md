@@ -5,6 +5,8 @@
 **Prod 版本**：numind-server v2.1.19
 **目的**：在决定 NDF 路径（单 tracker feature vs 多独立 feature）前，把 credits-system 当前的真实数据模型语义、新老表共存现状、6 个具体问题摸清楚。**本文档不含修复方案**，仅作为决策输入。
 
+> **Note**: As of 2026-05 (legacy-system-deprecation feature), `legacy_tier` billing mode no longer exists. The audit findings below are historical and may reference code paths that have been removed in T1-T4 of the legacy-deprecation feature.
+
 ---
 
 ## §1 背景

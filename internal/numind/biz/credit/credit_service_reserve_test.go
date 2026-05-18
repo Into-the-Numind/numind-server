@@ -332,7 +332,8 @@ func TestReserve_IdempotencyReturnsExisting(t *testing.T) {
 }
 
 // TestReserve_GetBalanceCredits verifies that credits-mode GetBalance returns
-// the package-based breakdown (sub + booster, no RemainingRuns).
+// the package-based breakdown (sub + booster). Post legacy-deprecation (2026-05)
+// the BalanceBreakdown has no RemainingRuns/MonthlyLimit fields.
 func TestReserve_GetBalanceCredits(t *testing.T) {
 	db := newCreditReserveTestDB(t)
 	ds := store.NewTestStore(db)
@@ -358,7 +359,6 @@ func TestReserve_GetBalanceCredits(t *testing.T) {
 	assert.EqualValues(t, 1800, bal.SubRemain)
 	assert.EqualValues(t, 300, bal.BoosterTotal)
 	assert.EqualValues(t, 300, bal.BoosterRemain)
-	assert.Nil(t, bal.RemainingRuns, "credits mode must not set RemainingRuns")
 }
 
 // --- Task 4: Budget-aware credit reservation API ---

@@ -148,8 +148,4 @@ type BalanceBreakdown struct {
 	// real spendable balance.
 	TrialRemain    int64      `json:"trial_remain"`
 	TrialExpiresAt *time.Time `json:"trial_expires_at,omitempty"`
-
-	// legacy_tier 模式字段
-	RemainingRuns *int `json:"remaining_runs,omitempty"` // nil = premium unlimited
-	MonthlyLimit  *int `json:"monthly_limit,omitempty"`
 }

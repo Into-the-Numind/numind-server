@@ -134,15 +134,6 @@ func (b *paymentBiz) CreateOrder(ctx context.Context, payerID, userID uint, prod
 		return nil, errno.ErrNotActiveMember
 	}
 
-	// P4a decision: legacy_tier users are not supported for booster purchases.
-	beneficiary, err := b.ds.Users().GetByID(ctx, userID)
-	if err != nil {
-		return nil, fmt.Errorf("get beneficiary: %w", err)
-	}
-	if beneficiary.BillingMode == model.BillingModeLegacyTier {
-		return nil, errno.ErrBoosterNotAvailableForLegacy
-	}
-
 	// Compute total amount: quantity × ¥29.9 per unit.
 	amount := boosterCentsPerUnit * int64(quantity)
 	productName := fmt.Sprintf("有数AI工作台-加量包 × %d", quantity)

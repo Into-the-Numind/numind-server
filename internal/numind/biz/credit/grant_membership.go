@@ -61,7 +61,6 @@ type GrantMembershipReq struct {
 //   - monthly → 调 MembershipService.GrantOrRenewSubscription（写 subscription 新表）
 //   - 不再写 credit_package（INSERT 路径已切走）
 //   - 不再调 UpdateBalance（credit_account.balance 将在 T11 废弃）
-//   - 保留 billing_mode legacy_tier→credits 切换（MembershipService 不做此操作）
 //   - 保留 action_log 写入（B2B 月结审计需要）
 //
 // 与 RechargeWithOrderTx 的差异:
@@ -73,27 +72,20 @@ type GrantMembershipReq struct {
 //  1. ChildUser 存在且 ChildUser.ParentUserID == ParentUserID（防越权）
 //  2. ProductType 支持性 (trial / monthly)；monthly 要求 months ∈ [1,12]
 //  3. trial 防重复（lifetime 单次）；monthly 防重复开通在期订阅（spec §3.9 防提前续费）
-//  4. billing_mode legacy_tier → credits 切换（同 RechargeWithOrderTx 触发条件）
 //
 // Guard reader 切换（T4 atomicity）：
 //
 //	HasActiveSubscription 和 HasTrialPackage 现在读 subscription / trial_grant 新表，
 //	与 MembershipService 写路径对齐，确保 trial lifetime 保护不失效。
 //
-// **Atomicity 3-step ordering（round-1 review 修复）**：
+// **Atomicity 2-step ordering** (legacy-deprecation 2026-05: removed billing_mode flip Step A)：
 //
-//	全过程拆成 3 个原子边界，每一步可独立失败而不留半成品：
-//	 Step A (pre-grant): flip billing_mode legacy_tier→credits（自带小 tx，幂等
-//	                     — 已 credits 即 no-op；失败 = 整个请求失败，无任何副作用）
-//	 Step B (grant)    : 调 MembershipService（自带 tx，写 subscription/trial_grant
-//	                     + membership_event）。失败 = billing_mode 已切（user 无 credits
-//	                     可用但状态一致）；spec 允许此降级（用户可重试）。
-//	 Step C (audit log): 写 action_log（独立 tx）。失败时 **Warn 但不返回错误** —
-//	                     action_log 是 admin UI 审计 trail；B2B 月结报表实际读
-//	                     membership_event（已在 Step B 成功），与 action_log 失败无关。
-//	                     完全失败语义违反原子性更糟（会造成 grant 已写但报错重试）。
-//	 顺序为什么不能反：若先 Step B 再 Step A，B 成功 A 失败 → 用户拿到 grant 但
-//	                     billing_mode 仍是 legacy_tier，扣费走旧路径无法消费 cycle credits。
+//	Step B (grant)    : 调 MembershipService（自带 tx，写 subscription/trial_grant
+//	                    + membership_event）。
+//	Step C (audit log): 写 action_log（独立 tx）。失败时 **Warn 但不返回错误** —
+//	                    action_log 是 admin UI 审计 trail；B2B 月结报表实际读
+//	                    membership_event（已在 Step B 成功），与 action_log 失败无关。
+//	                    完全失败语义违反原子性更糟（会造成 grant 已写但报错重试）。
 func (b *creditBiz) GrantMembership(ctx context.Context, req GrantMembershipReq) error {
 	// Guard: membershipSvc 必须已通过 InjectCreditBizMembershipSvc 注入。
 	// 缺失说明 wiring 错误（NewBiz 没调注入函数 / 测试 setup 漏掉）— 直接报错
@@ -162,22 +154,9 @@ func (b *creditBiz) GrantMembership(ctx context.Context, req GrantMembershipReq)
 	granterID := uint64(req.ParentUserID)
 	childID64 := uint64(req.ChildUserID)
 
-	// Step A (pre-grant): flip billing_mode legacy_tier→credits BEFORE granting.
-	// Idempotent: WHERE billing_mode='legacy_tier' guard makes "already credits" a no-op.
-	// Safe to fail here — nothing else has been written yet, the request just fails.
-	// Reason ordering: if we flipped AFTER grant, a flip-failure would leave the user
-	// with grant rows but legacy billing_mode, breaking credit consumption.
-	if err := b.ds.DB().WithContext(ctx).
-		Model(&model.User{}).
-		Where("id = ? AND billing_mode = ?", req.ChildUserID, model.BillingModeLegacyTier).
-		Update("billing_mode", model.BillingModeCredits).Error; err != nil {
-		return fmt.Errorf("GrantMembership: switch billing_mode: %w", err)
-	}
-
 	// Step B (grant): dispatch to MembershipService (writes new tables, no credit_package INSERT).
 	// MembershipService manages its own internal tx for subscription/trial_grant/membership_event.
-	// Safe to fail here — billing_mode is already credits (consistent state, just no credits granted
-	// yet); the user may retry.
+	// Failure leaves no half-state — MembershipService is internally atomic.
 	switch req.ProductType {
 	case model.ProductTypeTrial:
 		// MembershipService.GrantTrial performs its own transactional write to trial_grant.

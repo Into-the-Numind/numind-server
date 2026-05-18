@@ -161,18 +161,8 @@ func TestCreateOrder_Booster_NoActiveMembership_Rejected(t *testing.T) {
 	assert.ErrorIs(t, err, errno.ErrNotActiveMember, "booster without active membership must return ErrNotActiveMember")
 }
 
-func TestCreateOrder_Booster_LegacyTierWithSubscription_Rejected(t *testing.T) {
-	db := newPaymentTestDB(t)
-	ds := store.NewTestStore(db)
-	b := newPaymentBizForTest(ds)
-
-	uid := mustCreateUser(t, db, model.UserTierStandard, model.BillingModeLegacyTier, nil)
-	mustCreateActiveSubscription(t, db, uid) // has active subscription
-
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 1, model.PayChannelWechat)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errno.ErrBoosterNotAvailableForLegacy, "legacy_tier user must be rejected even with active subscription")
-}
+// TestCreateOrder_Booster_LegacyTierWithSubscription_Rejected removed 2026-05:
+// legacy_tier billing mode no longer exists (legacy-system-deprecation T2.6).
 
 func TestCreateOrder_Booster_CreditsWithSubscription_PassesValidation(t *testing.T) {
 	db := newPaymentTestDB(t)
@@ -186,7 +176,6 @@ func TestCreateOrder_Booster_CreditsWithSubscription_PassesValidation(t *testing
 	require.Error(t, err, "expected channel-not-configured error (validation passed)")
 	// wechat client is nil → "微信支付未配置"; assert we did NOT hit one of the gate errors
 	assert.NotErrorIs(t, err, errno.ErrNotActiveMember)
-	assert.NotErrorIs(t, err, errno.ErrBoosterNotAvailableForLegacy)
 	assert.NotErrorIs(t, err, errno.ErrInvalidProductType)
 	assert.NotErrorIs(t, err, errno.ErrBoosterQuantityExceedsLimit)
 }

@@ -5,7 +5,6 @@ import (
 	"math"
 	"math/big"
 	"strconv"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -238,69 +237,6 @@ func (ctrl *AdminUserController) UpdateUserStatus(c *gin.Context) {
 
 	adminUser := middleware.GetCurrentUser(c)
 	log.C(c).Infow("Admin updated user status", "admin_id", adminUser.ID, "target_user_id", id, "new_status", req.Status)
-
-	core.WriteResponse(c, nil, nil)
-}
-
-// UpdateUserTier 更新用户等级
-func (ctrl *AdminUserController) UpdateUserTier(c *gin.Context) {
-	log.C(c).Infow("Admin update user tier called")
-
-	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
-	if err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("无效的用户ID"), nil)
-		return
-	}
-
-	var req v1.AdminUpdateUserTierRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误"), nil)
-		return
-	}
-
-	var user model.User
-	if err := ctrl.ds.DB().First(&user, id).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			core.WriteResponse(c, errno.ErrPageNotFound.SetMessage("用户不存在"), nil)
-			return
-		}
-		log.C(c).Errorw("Failed to get user for tier update", "error", err, "user_id", id)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("操作失败，请稍后重试"), nil)
-		return
-	}
-
-	updates := map[string]interface{}{
-		"user_tier": req.Tier,
-	}
-
-	now := time.Now()
-	if req.Tier == model.UserTierFree {
-		updates["tier_expires"] = nil
-	} else if req.Tier == model.UserTierTrial {
-		// 体验会员固定3天
-		expires := now.AddDate(0, 0, model.TrialDurationDays)
-		updates["tier_expires"] = expires
-		updates["monthly_sop_runs"] = 0
-		updates["monthly_reset_at"] = now
-	} else {
-		if req.Months < 1 {
-			core.WriteResponse(c, errno.ErrInvalidParameter.SetMessage("付费等级需指定时长（1-12个月）"), nil)
-			return
-		}
-		expires := now.AddDate(0, 0, req.Months*30)
-		updates["tier_expires"] = expires
-		updates["monthly_sop_runs"] = 0
-		updates["monthly_reset_at"] = now
-	}
-
-	if err := ctrl.ds.DB().Model(&user).Updates(updates).Error; err != nil {
-		log.C(c).Errorw("Failed to update user tier", "error", err, "user_id", id)
-		core.WriteResponse(c, errno.InternalServerError.SetMessage("操作失败，请稍后重试"), nil)
-		return
-	}
-
-	adminUser := middleware.GetCurrentUser(c)
-	log.C(c).Infow("Admin updated user tier", "admin_id", adminUser.ID, "target_user_id", id, "new_tier", req.Tier, "months", req.Months)
 
 	core.WriteResponse(c, nil, nil)
 }
