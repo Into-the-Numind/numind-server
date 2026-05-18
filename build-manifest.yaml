@@ -788,5 +788,49 @@ features:
     related_features:
       - "credits-trial-grant-bypass-fix (completed 2026-05-18, v2.1.22/v1.0.22) — 本 feature 是该 hotfix 的工程化后续，移除 hotfix 临时保留的 19 处 legacy 残留。"
       - "membership-credits-redesign (S5→S3 reopened) — 三池 SOT 设计的母 feature，本 feature 是其 cleanup 收尾。"
+      - "credits-system-audit-hotfix (completed 2026-05-18, v2.1.27/v1.0.24/v1.4.4) — 紧随其后的全链路审计 hotfix，发现并修复 2 个独立既存 P0 (auth bypass + reservation leak) + 2 P1 + 13 P2 项。"
     created_at: "2026-05-18T17:00:00+08:00"
     completed_at: "2026-05-18T23:00:00+08:00"
+
+  - id: "credits-system-audit-hotfix"
+    ndf_version: "1.1"
+    description: "legacy-system-deprecation 完成后用户要求全链路审计验证。5 维度审计（A 残留扫描 + B 5 大执行流 + C 8 项漏洞检查 + D 跨仓 contract + E live 验证）发现 2 个独立既存 P0 + 2 P1 + 13 P2。1 个 hotfix 全包修复：(1) P0-1 grant_membership 授权绕过（任意用户能给任意用户开会员烧 trial 配额 + 把账记到 caller 头上）→ 加 GetSubUser parent-child 校验 (2) P0-2 reservation 泄漏（server 崩溃 mid-LLM 用户积分永久丢失）→ 新增 ReservationSweeper 每 5min 扫 status='reserved' 超 1h 的行调 Refund(expired_by_cron) (3) P1-1 lock-order 注释订正 + P1-2 cap reservation no-debt 吸收策略 (4) 13 P2 含 dead code 清理、停滞响应字段移除、admin-web stale TS 字段、e2e legacy_tier 残留、order idempotency_key 持久化、cycle.go timezone UTC 统一等。7 个 subagent 并行编码（agent teams 模式），主会话 review + 集成。1 个 prod-only bug 被 dev-first 流程兜底捕获（sweeper 注册到 server.go 死代码而非 numind.go 真入口，dev verify 时发现并修复）。"
+    track: "hotfix"
+    stage: "completed"
+    classification_reason: "Hotfix Triage — 5 标准其实违反 4 条（多文件 + 高风险扣费/支付/grant/权限），但用户拍板 1 个 hotfix tag 全包推进，按 hotfix 节奏（subagent-driven 并行 + 单次 dev-first 验证）实施。"
+    last_updated_by: "ai-final-deploy"
+    last_updated_at: "2026-05-18T22:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+      - numind-admin-web
+    branches:
+      numind-server: |
+        merged from 7 audit fix branches (fix/audit-p0-1-grant-auth, fix/audit-p0-2-reservation-sweeper,
+        fix/audit-p1-2-cap-reservation, fix/audit-p1-p2-cycle-ledger-tz, fix/audit-p2-backend-cleanup,
+        fix/audit-p2-order-idempotency) + 1 dev-verify fix commit (1cba35b)
+      numind-web-v3: "fix/audit-p2-web-v3-e2e-cleanup"
+      numind-admin-web: "fix/audit-p2-admin-user-interface"
+    artifacts:
+      audit: "numind-server/docs/superpowers/specs/2026-05-18-credits-system-audit.md"
+    progress:
+      total_tasks: 17
+      completed_tasks: 17
+      reviewed_tasks: 17
+      current_task: "All 17 audit findings deployed to prod via v2.1.27 + v1.0.24 + v1.4.4. ReservationSweeper confirmed running on prod (log line 21:48:13). Idempotency-Key column auto-migrated to payment_order."
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-05-18 (Audit 触发): legacy-system-deprecation v2.1.26 上线后用户要求全链路审计验证。"
+      - "2026-05-18 (Audit 设计 + 执行): 5 维度审计 4 个并行 subagent，30min 出 16-finding 报告 docs/superpowers/specs/2026-05-18-credits-system-audit.md。揭示 2 个 hotfix-feature 之外的既存 P0 漏洞。"
+      - "2026-05-18 (P1-2 策略 A): cap reservation 选 no-debt 平台吸收方案——当 Reconcile actual>reserved 且余额不足时不写隐性 IOU，改为 audit-only 0 amount credit_transaction，平台承担 over-estimate 成本。"
+      - "2026-05-18 (Agent teams 7 个并行): 用户拍板调度 7 个 subagent 按 file-scope 并行（A1 grant_membership / A2 sweeper / A3 credit_service Reconcile / A4 cycle.go / A5 backend cleanup / A6 payment idempotency / A7 frontends），主会话 review+集成+部署。每 agent 强制 task test + task lint。"
+      - "2026-05-18 (Worktree 救场): 多个 agent 报告 cwd 在并行操作中漂移；A1/A3/A4/A5 改用 /private/tmp/worktree-* 隔离 worktree 完成 commit-atomic。8 个 commit 在各自 branch 完整保留。"
+      - "2026-05-18 (集成 0 conflict): 6 个 server branch 顺序 merge 全无 conflict。Agent 3 已重命名 TestReconcile_Topup_Insufficient_WritesDebtLedger 为 _AbsorbedByPlatform 解决我先前担心的测试冲突。完整 go build + task lint + task test PASS。"
+      - "2026-05-18 (Dev verify 救场): push develop 后 dev container 健康但 sweeper started log 没出现。深查发现 Agent 2 把 sweeper 注册到 server.go 而 server.go 是 dead code，真入口是 numind.go。补 commit 1cba35b 移到正确位置。如果没 dev-first 验证直接 tag prod，P0-2 修复就完全无效。"
+      - "2026-05-18 (Prod 全 PASS): server v2.1.27 + web-v3 v1.0.24 + admin-web v1.4.4 三 CI 端到端无 GFW 失败一气上线。Prod sweeper started log @21:48:13 确认运行。GORM AutoMigrate 自动给 payment_order 加上 idempotency_key UNIQUE 列。"
+    related_features:
+      - "legacy-system-deprecation (completed 2026-05-18 v2.1.26) — 触发本次审计的母 feature"
+      - "credits-trial-grant-bypass-fix (completed 2026-05-18 v2.1.22) — 上一个 hotfix；本审计揭示其遗留死代码"
+    created_at: "2026-05-18T22:00:00+08:00"
+    completed_at: "2026-05-18T22:00:00+08:00"
