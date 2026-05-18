@@ -906,8 +906,8 @@ spec D2."
 修改前关键行：
 ```go
 template := &model.SopTemplate{
-    Name: req.Name, Description: req.Description, Prompt: req.Prompt,
-    CreatorUserID: &userID,  // ❌ 可能存子用户 id
+    Name: req.Name, Description: req.Description,  // 注: 实际 CreateTemplateByUserReq 没有 Prompt 字段
+    CreatorUserID: &userID,  // ❌ 可能存子用户 id (sub_user.ID 而非 parent.ID)
     ...
 }
 ```
@@ -1098,9 +1098,9 @@ func (ctrl *SopController) CreateTemplate(c *gin.Context) {
     log.C(c).Infow("Create SOP template called")
 
     // 从 admin token middleware 设置的 context 中取 admin user.id (spec D6)
-    // 用 middleware.GetCurrentUser helper（若存在; grep 验证）避免重复 type assert
-    adminUser, ok := middleware.GetCurrentUser(c)
-    if !ok || adminUser == nil {
+    // middleware.GetCurrentUser(c) 实际签名是单返回值 *model.User (中间件源码 line 203-210)
+    adminUser := middleware.GetCurrentUser(c)
+    if adminUser == nil {
         core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("admin context missing"), nil)
         return
     }
