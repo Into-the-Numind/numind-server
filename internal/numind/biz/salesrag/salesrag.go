@@ -353,10 +353,8 @@ func (b *salesRAGBiz) acquireSalesragCredits(
 		return &salesragCreditContext{biz: b, pre: pre}, b.wrapCreditError(err, pre)
 	}
 	cc := &salesragCreditContext{biz: b, pre: pre}
-	if pre.SkipDeduction {
-		// legacy_tier path: no Reserve, defer-finalize is a no-op.
-		return cc, nil
-	}
+	// Audit P2#1 cleanup: SkipDeduction is always false post legacy-deprecation (T1).
+	// The previous `if pre.SkipDeduction { return cc, nil }` early-return was dead code; removed.
 	// credits-mode path: Reserve is delegated to the Gateway middleware
 	// (ContextBudgetCredits → doReserveBudget) which fires when
 	// ContextFragments is non-empty (always the case since Task 10).
