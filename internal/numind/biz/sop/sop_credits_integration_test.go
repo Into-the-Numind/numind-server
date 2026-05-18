@@ -500,84 +500,6 @@ func TestSopCredits_CreditsMode_ContextCanceledClassified(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// Integration: legacy_tier user bypasses Reserve entirely
-// ----------------------------------------------------------------------------
-
-// TestSopCredits_LegacyTier_BypassesReserve verifies spec §3.6: a user on
-// billing_mode=legacy_tier gets SkipDeduction=true, no credit_reservation
-// row is written, and the caller can still proceed to run the SOP.
-// (MonthlySopRuns increment is handled by ExecuteNodeStream's existing
-// IncrementSopRunCount call after successful node run.)
-func TestSopCredits_LegacyTier_BypassesReserve(t *testing.T) {
-	db := newCreditsSopTestDB(t)
-	b := buildSopBizWithCredits(t, db)
-
-	const userID = uint(9004)
-	// Do NOT seed credit_package — legacy_tier users have none.
-	// T11: CreditAccount.Balance dropped; account row for consistency only.
-	acc := model.CreditAccount{UserID: userID, Status: "active"}
-	require.NoError(t, db.Create(&acc).Error)
-
-	// A standard-tier legacy user with quota remaining.
-	user := &model.User{
-		Model:          gorm.Model{ID: userID},
-		BillingMode:    model.BillingModeLegacyTier,
-		UserTier:       model.UserTierStandard,
-		MonthlySopRuns: 5,
-		TierExpires:    ptrTime(time.Now().Add(24 * time.Hour)),
-	}
-
-	pre, err := b.creditSvc.CheckAndEstimate(context.Background(), user, credit.OpSopRun, credit.EstimationInput{
-		PromptChars: 1000, Model: "qwen-turbo", Provider: "ali",
-	})
-	require.NoError(t, err)
-	require.NotNil(t, pre)
-	assert.True(t, pre.SkipDeduction, "legacy_tier must skip Reserve")
-	assert.True(t, pre.Sufficient, "user still within 20/month cap")
-
-	// Caller loop (runNode) must not call Reserve when SkipDeduction=true.
-	// Assert that no credit_reservation row exists — i.e., the guard works.
-	var rsvCount int64
-	require.NoError(t, db.Model(&model.CreditReservation{}).Count(&rsvCount).Error)
-	assert.EqualValues(t, 0, rsvCount, "legacy_tier must not write reservations")
-}
-
-// TestSopCredits_LegacyTier_QuotaExhaustedReturnsZhReason verifies that when
-// a legacy user hits the monthly cap, CheckAndEstimate returns
-// ErrInsufficientCredits wrapping the zh reason from user.CanRunSOP().
-// wrapCreditError then surfaces that reason through errno.
-func TestSopCredits_LegacyTier_QuotaExhaustedReturnsZhReason(t *testing.T) {
-	db := newCreditsSopTestDB(t)
-	b := buildSopBizWithCredits(t, db)
-
-	const userID = uint(9005)
-	// T11: CreditAccount.Balance dropped.
-	acc := model.CreditAccount{UserID: userID, Status: "active"}
-	require.NoError(t, db.Create(&acc).Error)
-
-	// Standard-tier legacy user at the 20/month cap.
-	user := &model.User{
-		Model:          gorm.Model{ID: userID},
-		BillingMode:    model.BillingModeLegacyTier,
-		UserTier:       model.UserTierStandard,
-		MonthlySopRuns: model.StandardUserMonthlySOPLimit,
-		TierExpires:    ptrTime(time.Now().Add(24 * time.Hour)),
-		MonthlyResetAt: ptrTime(time.Now()), // prevent auto-reset via IsInNewSOPMonth
-	}
-
-	pre, err := b.creditSvc.CheckAndEstimate(context.Background(), user, credit.OpSopRun, credit.EstimationInput{
-		PromptChars: 500, Model: "qwen-turbo", Provider: "ali",
-	})
-	require.Error(t, err)
-	require.True(t, errors.Is(err, credit.ErrInsufficientCredits))
-	require.NotNil(t, pre)
-	assert.NotEmpty(t, pre.Reason)
-	// wrapCreditError → errno.ErrInsufficientCredits.SetMessage(pre.Reason)
-	wrapped := wrapCreditError(err, pre)
-	assert.Contains(t, wrapped.Error(), pre.Reason)
-}
-
-// ----------------------------------------------------------------------------
 // Integration: idempotency key contract per spec §3.2
 // ----------------------------------------------------------------------------
 
@@ -625,6 +547,3 @@ func TestSopCredits_IdempKey_DedupesRetry(t *testing.T) {
 	assert.EqualValues(t, balance-pre.EstimatedCredits, cycleRemaining,
 		"idempotent retry must not double-debit")
 }
-
-// ptrTime is a tiny helper so tests can inline *time.Time values.
-func ptrTime(t time.Time) *time.Time { return &t }

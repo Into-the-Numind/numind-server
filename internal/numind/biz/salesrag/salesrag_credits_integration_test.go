@@ -209,12 +209,10 @@ CREATE TABLE IF NOT EXISTS credit_reservation_item (
 }
 
 // seedCreditsUserWithPackage inserts a credits-mode user plus one active
-// subscription package so Reserve has credits to debit.
+// subscription package so Reserve has credits to debit. UserTier=free is the
+// post legacy-deprecation (T1) default for credits-only fixtures.
 func seedCreditsUserWithPackage(t *testing.T, db *gorm.DB, userID uint, totalCredits int64) *model.User {
 	t.Helper()
-	// UserTier must be "free" so HasActiveMembership()=false and isEffectiveLegacy()
-	// routes to the credits path. Standard/trial/premium with TierExpires=nil would
-	// make HasActiveMembership()=true → legacyTierImpl.Reserve panic.
 	user := &model.User{
 		BillingMode: model.BillingModeCredits,
 		UserTier:    model.UserTierFree,
@@ -246,26 +244,6 @@ func seedCreditsUserWithPackage(t *testing.T, db *gorm.DB, userID uint, totalCre
 		CreatedAt:        now, UpdatedAt: now,
 	}
 	require.NoError(t, db.Create(&cycle).Error)
-	return user
-}
-
-// seedLegacyTierUser inserts a legacy_tier user with the requested actual
-// tier. Free users get no MonthlyResetAt so CanRunSOP() returns its default
-// "free tier cannot run" denial.
-func seedLegacyTierUser(t *testing.T, db *gorm.DB, userID uint, tier string) *model.User {
-	t.Helper()
-	future := time.Now().Add(24 * time.Hour)
-	resetAt := time.Now().Add(-time.Hour)
-	user := &model.User{
-		BillingMode:    model.BillingModeLegacyTier,
-		UserTier:       tier,
-		TierExpires:    &future,
-		MonthlyResetAt: &resetAt,
-		MonthlySopRuns: 0,
-		Phone:          "13900000000",
-	}
-	user.ID = userID
-	require.NoError(t, db.Create(user).Error)
 	return user
 }
 
@@ -388,8 +366,7 @@ func TestAcquireSalesragCredits_InsufficientBalance(t *testing.T) {
 
 	userID := uint(1002)
 	// Seed a credits-mode user but with zero balance (no packages).
-	// UserTier must be "free" so isEffectiveLegacy()=false and the credits path
-	// (which enforces balance check) is exercised instead of legacyTierImpl.
+	// UserTier=free is the post legacy-deprecation (T1) default fixture.
 	user := &model.User{
 		BillingMode: model.BillingModeCredits,
 		UserTier:    model.UserTierFree,
@@ -423,48 +400,6 @@ func TestAcquireSalesragCredits_InsufficientBalance(t *testing.T) {
 	// should have no active reservation.
 	require.NotNil(t, cc)
 	assert.Nil(t, cc.rsv)
-}
-
-// --- Test 3: P4e=A — legacy_tier SalesRAG is FREE (SkipDeduction=true) ---
-
-// TestAcquireSalesragCredits_LegacyTierFree confirms grandfathering option A:
-// legacy_tier users with an active membership get SalesRAG for free. No
-// CheckAndEstimate denial, no Reserve, defer-finalize is a no-op. This is
-// the decision P4e=A captured in docs/credits-system-plan.md.
-func TestAcquireSalesragCredits_LegacyTierFree(t *testing.T) {
-	db := newSalesragCreditsTestDB(t)
-	ds := store.NewTestStore(db)
-	calc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, membership.NewMembershipService(db))
-
-	// legacy_tier standard user well inside the monthly 20-cap.
-	userID := uint(1003)
-	seedLegacyTierUser(t, db, userID, model.UserTierStandard)
-	seedSalesragCoefficient(t, db)
-
-	b := newTestSalesragBiz(ds, svc, calc)
-	ctx := ctxWithRequestID(context.Background(), "req-ctx-3")
-
-	cc, err := b.acquireSalesragCredits(ctx, userID, 42, 500)
-	require.NoError(t, err, "legacy_tier standard user must NOT be denied (P4e=A)")
-	require.NotNil(t, cc)
-	// No reservation row — SkipDeduction=true means we never called Reserve.
-	assert.Nil(t, cc.rsv, "legacy_tier MUST NOT reserve credits (P4e=A free)")
-	require.NotNil(t, cc.pre)
-	assert.True(t, cc.pre.SkipDeduction, "legacy_tier dispatches to legacy impl → SkipDeduction=true")
-
-	// recordLLMResult + finalize must be safe no-ops on legacy_tier.
-	cc.recordLLMResult(ctx, nil, "volc", "deepseek-v3", 100, 50)
-	cc.finalize(ctx)
-
-	var count int64
-	db.Model(&model.CreditReservation{}).Where("user_id = ?", userID).Count(&count)
-	assert.EqualValues(t, 0, count, "legacy_tier leaves zero reservation rows")
-
-	// And the user's credit_account / credit_package are untouched (none exist).
-	var accCount int64
-	db.Model(&model.CreditAccount{}).Where("user_id = ?", userID).Count(&accCount)
-	assert.EqualValues(t, 0, accCount, "legacy_tier never creates a credit_account via salesrag")
 }
 
 // --- Test 4: mid-stream abort with nil rsv — finalize is a safe no-op ---
@@ -565,39 +500,6 @@ func TestAcquireSalesragCredits_IdempotentReplay(t *testing.T) {
 	assert.EqualValues(t, 0, count, "no reservation rows from acquireSalesragCredits (Gateway owns it)")
 }
 
-// --- Test 6: wrapCreditError surfaces legacy_tier Chinese denial reason ---
-
-// TestAcquireSalesragCredits_LegacyTierFreeUserBlocked exercises P4e=A's
-// escape hatch: a legacy_tier user whose tier is free (no membership)
-// still fails CanRunSOP because the user has no subscription. The error
-// must surface the Chinese denial reason embedded in PreCheckResult.Reason.
-func TestAcquireSalesragCredits_LegacyTierFreeUserBlocked(t *testing.T) {
-	db := newSalesragCreditsTestDB(t)
-	ds := store.NewTestStore(db)
-	calc := pricing.NewCalculator(ds.Billing())
-	svc := credit.NewCreditService(ds, credit.NewCreditBiz(ds), calc, membership.NewMembershipService(db))
-
-	userID := uint(1006)
-	// free tier on legacy_tier — CanRunSOP returns "免费用户...".
-	seedLegacyTierUser(t, db, userID, model.UserTierFree)
-	seedSalesragCoefficient(t, db)
-
-	b := newTestSalesragBiz(ds, svc, calc)
-	ctx := ctxWithRequestID(context.Background(), "req-ctx-6")
-
-	cc, err := b.acquireSalesragCredits(ctx, userID, 1, 200)
-	require.Error(t, err)
-	// wrapped into errno.ErrInsufficientCredits with the zh message in Message.
-	var wrapped *errno.Errno
-	require.True(t, errors.As(err, &wrapped), "error must unwrap to *errno.Errno, got %T: %v", err, err)
-	assert.Equal(t, errno.ErrInsufficientCredits.Code, wrapped.Code)
-	assert.Contains(t, wrapped.Message, "免费用户",
-		"errno message must carry CanRunSOP's zh denial reason")
-	require.NotNil(t, cc)
-	assert.True(t, cc.pre.SkipDeduction, "legacy_tier even when denied keeps SkipDeduction=true")
-	assert.Nil(t, cc.rsv, "no reservation written on denial")
-}
-
 // ============================================================================
 // Task 10: SalesRAG Fragment Contract
 // ============================================================================
@@ -691,17 +593,6 @@ func TestSalesRAGChatWithSessionNoDoubleReserve(t *testing.T) {
 	cc.finalize(ctx)
 	db.Model(&model.CreditReservation{}).Where("user_id = ?", userID).Count(&count)
 	assert.EqualValues(t, 0, count, "finalize with nil rsv must not write any DB rows")
-
-	// Legacy-tier users are unaffected: SkipDeduction=true means no Reserve
-	// either way, but CheckAndEstimate still runs the CanRunSOP gate.
-	legacyUserID := uint(2002)
-	seedLegacyTierUser(t, db, legacyUserID, model.UserTierStandard)
-
-	ccLegacy, errLegacy := b.acquireSalesragCredits(ctx, legacyUserID, 456, 200)
-	require.NoError(t, errLegacy, "legacy_tier standard user must pass CanRunSOP gate")
-	require.NotNil(t, ccLegacy)
-	assert.Nil(t, ccLegacy.rsv, "legacy_tier: no reservation (SkipDeduction path, unchanged)")
-	assert.True(t, ccLegacy.pre.SkipDeduction, "legacy_tier SkipDeduction must still be true")
 }
 
 // TestSalesRAGProfileAndChatStyleUseFragments verifies that the fragment helper
