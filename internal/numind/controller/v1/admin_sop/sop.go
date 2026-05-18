@@ -9,6 +9,7 @@ import (
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 	v1 "numind-server/pkg/api/numind/v1"
 )
@@ -64,13 +65,20 @@ func NewSopController(sopBiz sop.ISopBiz) *SopController {
 func (ctrl *SopController) CreateTemplate(c *gin.Context) {
 	log.C(c).Infow("Create SOP template called")
 
+	// 从 admin token middleware 取 admin user.id (spec D6)
+	adminUser := middleware.GetCurrentUser(c)
+	if adminUser == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("admin context missing"), nil)
+		return
+	}
+
 	var req v1.CreateSopTemplateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		core.WriteResponse(c, errno.ErrBind.SetMessage("请求参数错误: %s", err.Error()), nil)
 		return
 	}
 
-	template, err := ctrl.sopBiz.CreateTemplate(c, req.Name, req.Description, req.Prompt)
+	template, err := ctrl.sopBiz.CreateTemplate(c, adminUser.ID, req.Name, req.Description, req.Prompt)
 	if err != nil {
 		core.WriteResponse(c, errno.InternalServerError.SetMessage("%s", err.Error()), nil)
 		return

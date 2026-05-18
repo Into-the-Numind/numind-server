@@ -27,12 +27,15 @@ import (
 // ISopBiz SOP业务逻辑接口
 type ISopBiz interface {
 	// Template operations
-	CreateTemplate(ctx context.Context, name, description, prompt string) (*model.SopTemplate, error)
+	// CreateTemplate (admin 路径) — 必须显式传入 adminUserID 作为 owner.
+	// admin 创建的 SOP 归属 admin 自己, 不会跨租户泄露给其他父账户.
+	CreateTemplate(ctx context.Context, adminUserID uint, name, description, prompt string) (*model.SopTemplate, error)
 	GetTemplate(ctx context.Context, id uint) (*model.SopTemplate, error)
 	ListTemplates(ctx context.Context, offset, limit int) ([]model.SopTemplate, int64, error)
 	// ListVisibleTemplates 列出 C 端用户可见的模板（status=active AND publish_status=published）。
 	// 仅供用户端 /v1/sop/templates；管理端和统计保持调用 ListTemplates 以看到全部状态。
-	ListVisibleTemplates(ctx context.Context, offset, limit int) ([]model.SopTemplate, int64, error)
+	// owner 解析由调用方负责（biz 层不重复解析）。
+	ListVisibleTemplates(ctx context.Context, ownerParentUserID uint, offset, limit int) ([]model.SopTemplate, int64, error)
 	// ListVisibleTemplatesWithPermission 返回 C 端可见模板 + 每项的运行权限标志，供 UI 显示锁。
 	// 父账号全 true；子账号按 user_template_permission 白名单 O(N) 本地匹配，不走 N+1 查询。
 	// 安全 gate 仍由 CheckTemplatePermission + SOP 运行端点强制，本方法仅影响 UI 可见性。
@@ -139,20 +142,25 @@ func (b *sopBiz) WithCreditService(svc credit.ICreditService, pc pricing.ICalcul
 }
 
 // Template operations
-func (b *sopBiz) CreateTemplate(ctx context.Context, name, description, prompt string) (*model.SopTemplate, error) {
+func (b *sopBiz) CreateTemplate(ctx context.Context, adminUserID uint, name, description, prompt string) (*model.SopTemplate, error) {
+	if adminUserID == 0 {
+		return nil, fmt.Errorf("CreateTemplate: adminUserID required (spec D6)")
+	}
+
 	template := &model.SopTemplate{
 		Name:          name,
 		Description:   description,
 		Prompt:        prompt,
 		Status:        model.SopNodeStatusActive,
 		PublishStatus: model.SopPublishStatusPublished, // admin 创建的模板默认对用户可见（无 publish 流程）
+		CreatorUserID: &adminUserID,                    // spec D6: admin 创建的 SOP 归属 admin 自己
 	}
 
 	if err := b.ds.Sop().CreateTemplate(template); err != nil {
 		return nil, fmt.Errorf("failed to create template: %w", err)
 	}
 
-	// 自动将新模板授权给所有已配置权限的子用户
+	// 保留原有逻辑: 自动将新模板授权给所有已配置权限的子用户
 	if err := b.ds.Customers().GrantTemplateToConfiguredSubUsers(ctx, template.ID); err != nil {
 		log.C(ctx).Warnw("Failed to auto-grant new template to sub-users", "template_id", template.ID, "err", err)
 	}
@@ -168,8 +176,8 @@ func (b *sopBiz) ListTemplates(ctx context.Context, offset, limit int) ([]model.
 	return b.ds.Sop().ListTemplates(offset, limit)
 }
 
-func (b *sopBiz) ListVisibleTemplates(ctx context.Context, offset, limit int) ([]model.SopTemplate, int64, error) {
-	return b.ds.Sop().ListVisibleTemplates(offset, limit)
+func (b *sopBiz) ListVisibleTemplates(ctx context.Context, ownerParentUserID uint, offset, limit int) ([]model.SopTemplate, int64, error) {
+	return b.ds.Sop().ListVisibleTemplates(ctx, ownerParentUserID, offset, limit)
 }
 
 // SopTemplateVisibleItem 包装 SopTemplate 并附带当前用户对该模板的运行权限。
@@ -193,7 +201,13 @@ type SopTemplateVisibleItem struct {
 //
 // 父账户 bypass: 不应用 visibility 过滤, 也不查 run-permission (全部 HasPermission=true).
 func (b *sopBiz) ListVisibleTemplatesWithPermission(ctx context.Context, user *model.User, offset, limit int) ([]SopTemplateVisibleItem, int64, error) {
-	templates, total, err := b.ds.Sop().ListVisibleTemplates(offset, limit)
+	// 解析当前用户所属父账户 id (Layer 0 过滤参数, spec §3.5)
+	ownerID := user.ID
+	if user.ParentUserID != nil {
+		ownerID = *user.ParentUserID
+	}
+
+	templates, total, err := b.ds.Sop().ListVisibleTemplates(ctx, ownerID, offset, limit)
 	if err != nil {
 		return nil, 0, fmt.Errorf("ListVisibleTemplatesWithPermission: %w", err)
 	}
@@ -2202,6 +2216,20 @@ type CreateTemplateByUserReq struct {
 
 // CreateTemplateByUser B端用户创建SOP模板
 func (b *sopBiz) CreateTemplateByUser(ctx context.Context, userID uint, req *CreateTemplateByUserReq) (*model.SopTemplate, error) {
+	// 读取调用者以获取 parent_user_id (spec D1)
+	var actor model.User
+	if err := b.ds.DB().WithContext(ctx).First(&actor, userID).Error; err != nil {
+		return nil, fmt.Errorf("CreateTemplateByUser: lookup user: %w", err)
+	}
+
+	// 防御性 assertion (spec D8): 路由层 ParentUserOnly 中间件已保证 actor 是父账户,
+	// biz 层再次断言, 即使将来 middleware 配错也不会 silent 让子用户写入.
+	if actor.ParentUserID != nil {
+		return nil, errno.ErrForbidden.SetMessage("仅父账户可创建 SOP 模板")
+	}
+
+	ownerID := actor.ID // 已 assert 是父账户
+
 	// 未显式传入时默认开启，保持与历史行为一致
 	trailingChat := true
 	if req.TrailingChatEnabled != nil {
@@ -2211,7 +2239,7 @@ func (b *sopBiz) CreateTemplateByUser(ctx context.Context, userID uint, req *Cre
 	template := &model.SopTemplate{
 		Name:                req.Name,
 		Description:         req.Description,
-		CreatorUserID:       &userID,
+		CreatorUserID:       &ownerID,
 		PublishStatus:       model.SopPublishStatusDraft,
 		Status:              "active",
 		TrailingChatEnabled: trailingChat,

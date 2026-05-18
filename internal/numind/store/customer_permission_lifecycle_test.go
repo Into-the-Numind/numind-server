@@ -517,25 +517,26 @@ func TestFeaturePermission_SalesRAG_GrantAndVerify(t *testing.T) {
 	parent := insertTestUser(t, db, nil)
 	child := insertTestUser(t, db, &parent)
 
-	// 父账号始终有权限
-	ok, err := cs.HasFeaturePermission(ctx, parent, model.FeatureKeySalesAgent)
+	// 父账号的父账户 bypass 语义已上移至 biz 层 (spec D2)。
+	// store 层 CheckSubUserFeatureGrant 纯查询：无 user_feature_permission 行 → false。
+	ok, err := cs.CheckSubUserFeatureGrant(ctx, parent, model.FeatureKeySalesAgent)
 	require.NoError(t, err)
-	assert.True(t, ok, "父账号应始终有 sales_agent 权限")
+	assert.False(t, ok, "store 层纯查询：父账号在 user_feature_permission 表无行 → false（bypass 在 biz 层）")
 
 	// 子账号初始无权限
-	ok, err = cs.HasFeaturePermission(ctx, child, model.FeatureKeySalesAgent)
+	ok, err = cs.CheckSubUserFeatureGrant(ctx, child, model.FeatureKeySalesAgent)
 	require.NoError(t, err)
 	assert.False(t, ok, "子账号初始应无 sales_agent 权限")
 
 	// Grant
 	require.NoError(t, cs.GrantFeatures(ctx, parent, child, []string{model.FeatureKeySalesAgent}))
 
-	ok, err = cs.HasFeaturePermission(ctx, child, model.FeatureKeySalesAgent)
+	ok, err = cs.CheckSubUserFeatureGrant(ctx, child, model.FeatureKeySalesAgent)
 	require.NoError(t, err)
 	assert.True(t, ok, "grant 后子账号应有 sales_agent 权限")
 
 	// 其他功能仍无权限
-	ok, err = cs.HasFeaturePermission(ctx, child, model.FeatureKeyContentMonitor)
+	ok, err = cs.CheckSubUserFeatureGrant(ctx, child, model.FeatureKeyContentMonitor)
 	require.NoError(t, err)
 	assert.False(t, ok, "未授权的 content_monitor 应 deny")
 }
@@ -554,11 +555,11 @@ func TestFeaturePermission_SalesRAG_RevokeAndVerify(t *testing.T) {
 	// Revoke sales_agent only
 	require.NoError(t, cs.RevokeFeatures(ctx, parent, child, []string{model.FeatureKeySalesAgent}))
 
-	ok, err := cs.HasFeaturePermission(ctx, child, model.FeatureKeySalesAgent)
+	ok, err := cs.CheckSubUserFeatureGrant(ctx, child, model.FeatureKeySalesAgent)
 	require.NoError(t, err)
 	assert.False(t, ok, "revoke 后 sales_agent 应 deny")
 
-	ok, err = cs.HasFeaturePermission(ctx, child, model.FeatureKeyContentMonitor)
+	ok, err = cs.CheckSubUserFeatureGrant(ctx, child, model.FeatureKeyContentMonitor)
 	require.NoError(t, err)
 	assert.True(t, ok, "content_monitor 未被 revoke，应仍 allow")
 }
@@ -575,14 +576,14 @@ func TestFeaturePermission_SalesRAG_RevokeAndReGrant(t *testing.T) {
 	require.NoError(t, cs.GrantFeatures(ctx, parent, child, []string{model.FeatureKeySalesAgent}))
 	require.NoError(t, cs.RevokeFeatures(ctx, parent, child, []string{model.FeatureKeySalesAgent}))
 
-	ok, err := cs.HasFeaturePermission(ctx, child, model.FeatureKeySalesAgent)
+	ok, err := cs.CheckSubUserFeatureGrant(ctx, child, model.FeatureKeySalesAgent)
 	require.NoError(t, err)
 	assert.False(t, ok, "revoke 后应 deny")
 
 	// Re-grant（应恢复软删除记录而非创建新行）
 	require.NoError(t, cs.GrantFeatures(ctx, parent, child, []string{model.FeatureKeySalesAgent}))
 
-	ok, err = cs.HasFeaturePermission(ctx, child, model.FeatureKeySalesAgent)
+	ok, err = cs.CheckSubUserFeatureGrant(ctx, child, model.FeatureKeySalesAgent)
 	require.NoError(t, err)
 	assert.True(t, ok, "re-grant 后应恢复 allow")
 
@@ -727,17 +728,17 @@ func TestCrossChildIsolation_FeaturePermissions(t *testing.T) {
 
 	require.NoError(t, cs.GrantFeatures(ctx, parent, childA, []string{model.FeatureKeySalesAgent}))
 
-	ok, err := cs.HasFeaturePermission(ctx, childA, model.FeatureKeySalesAgent)
+	ok, err := cs.CheckSubUserFeatureGrant(ctx, childA, model.FeatureKeySalesAgent)
 	require.NoError(t, err)
 	assert.True(t, ok, "childA 应有 sales_agent")
 
-	ok, err = cs.HasFeaturePermission(ctx, childB, model.FeatureKeySalesAgent)
+	ok, err = cs.CheckSubUserFeatureGrant(ctx, childB, model.FeatureKeySalesAgent)
 	require.NoError(t, err)
 	assert.False(t, ok, "childB 未被授权 sales_agent，应 deny")
 
 	require.NoError(t, cs.RevokeFeatures(ctx, parent, childA, []string{model.FeatureKeySalesAgent}))
 
-	ok, err = cs.HasFeaturePermission(ctx, childA, model.FeatureKeySalesAgent)
+	ok, err = cs.CheckSubUserFeatureGrant(ctx, childA, model.FeatureKeySalesAgent)
 	require.NoError(t, err)
 	assert.False(t, ok, "childA revoke 后应 deny")
 }

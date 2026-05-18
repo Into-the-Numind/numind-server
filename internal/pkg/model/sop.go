@@ -9,11 +9,15 @@ import (
 // SopTemplate SOP模板表
 type SopTemplate struct {
 	gorm.Model
-	Name                 string `gorm:"size:100;not null;index" json:"name"`
-	Description          string `gorm:"type:text" json:"description"`
-	Status               string `gorm:"size:20;default:'active';index" json:"status"`               // active, inactive
-	Prompt               string `gorm:"type:text" json:"prompt"`                                    // 预处理提示词，在执行第一个节点前发送
-	CreatorUserID        *uint  `gorm:"index:idx_st_creator" json:"creator_user_id"`                // B端创建者用户ID
+	Name        string `gorm:"size:100;not null;index" json:"name"`
+	Description string `gorm:"type:text" json:"description"`
+	Status      string `gorm:"size:20;default:'active';index" json:"status"` // active, inactive
+	Prompt      string `gorm:"type:text" json:"prompt"`                      // 预处理提示词，在执行第一个节点前发送
+	// CreatorUserID — 租户 owner 父账户 id（多租户归属，spec D1）。
+	// 2026-05-19 起语义升级：始终 = 父账户 user.id，永不为子账户 id。
+	// 在 biz.CreateTemplate (admin) / biz.CreateTemplateByUser (user) 两个写入路径中保证。
+	// nullable 为兼容历史脏数据；列表 SQL 防御性 `IS NOT NULL` 过滤 (spec D7)。
+	CreatorUserID        *uint  `gorm:"index:idx_st_creator" json:"creator_user_id"`
 	PublishStatus        string `gorm:"size:20;not null;default:'published'" json:"publish_status"` // draft | published
 	TrailingChatEnabled  bool   `gorm:"not null;default:true" json:"trailing_chat_enabled"`         // 是否在流程末尾追加 AI 聊天步骤
 	VisibilityRestricted bool   `gorm:"not null;default:0" json:"visibility_restricted"`            // 可见范围限制: false=全部子用户可见; true=仅 sop_visibility_grant 白名单子用户可见

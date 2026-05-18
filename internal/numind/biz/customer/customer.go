@@ -319,9 +319,54 @@ func (c *customerBiz) CheckTemplatePermission(ctx context.Context, userID, templ
 	return c.ds.Customers().HasTemplatePermission(ctx, userID, templateID)
 }
 
-// CheckFeaturePermission 检查用户是否有功能权限
+// CheckFeaturePermission 检查用户是否有 feature 权限。
+// Dispatch by featureKey (spec D2):
+//   - "sales_agent": 走 hasSalesAgentPermission 双层 AND，无父账户硬 bypass
+//   - 其他 (content_monitor / self_service_config / 未来): 父账户 bypass + 子用户 grant 查询
 func (c *customerBiz) CheckFeaturePermission(ctx context.Context, userID uint, featureKey string) (bool, error) {
-	return c.ds.Customers().HasFeaturePermission(ctx, userID, featureKey)
+	var user model.User
+	if err := c.ds.DB().WithContext(ctx).First(&user, userID).Error; err != nil {
+		return false, fmt.Errorf("CheckFeaturePermission: lookup user: %w", err)
+	}
+
+	if featureKey == model.FeatureKeySalesAgent {
+		return c.hasSalesAgentPermission(ctx, &user)
+	}
+
+	// 其他 feature_key 保留父账户硬 bypass (本需求不动)
+	if user.ParentUserID == nil {
+		return true, nil
+	}
+	return c.ds.Customers().CheckSubUserFeatureGrant(ctx, user.ID, featureKey)
+}
+
+// hasSalesAgentPermission 销售智能体双层 AND 检查 (spec §3.2):
+//
+//	Layer 0: 用户所属父账户必须在 sales_agent_owner 表中
+//	Layer 1: 子用户必须额外在 user_feature_permission 表中有 sales_agent 行
+//	父账户用户: 仅需 Layer 0
+func (c *customerBiz) hasSalesAgentPermission(ctx context.Context, user *model.User) (bool, error) {
+	parentID := user.ID
+	if user.ParentUserID != nil {
+		parentID = *user.ParentUserID
+	}
+
+	// Layer 0
+	ownerExists, err := c.ds.SalesAgentOwners().Exists(ctx, parentID)
+	if err != nil {
+		return false, fmt.Errorf("hasSalesAgentPermission: owner check: %w", err)
+	}
+	if !ownerExists {
+		return false, nil
+	}
+
+	// 父账户: Layer 0 已足够
+	if user.ParentUserID == nil {
+		return true, nil
+	}
+
+	// 子账户: Layer 1 必查
+	return c.ds.Customers().CheckSubUserFeatureGrant(ctx, user.ID, model.FeatureKeySalesAgent)
 }
 
 // GrantFeatures 为子用户授权功能

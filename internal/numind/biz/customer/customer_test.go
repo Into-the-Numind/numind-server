@@ -403,3 +403,247 @@ func TestBatchGrantChatbots_UnknownChatbotRejected(t *testing.T) {
 
 // 保留：确保 model 包在非 Chatbot 场景仍被 import（防止 goimports 删除）
 var _ = model.ChatbotConfig{}
+
+// ============================================================================
+// CheckFeaturePermission biz 矩阵测试 (spec §6.2 / spec D2)
+//
+// 覆盖 9 个场景：
+//   1. SalesAgent_ParentOwnerExists → true
+//   2. SalesAgent_ParentOwnerAbsent → false  (关键回归: admin 路径)
+//   3. SalesAgent_SubUserBothLayers → true
+//   4. SalesAgent_SubUserLayer1Only → false  (Layer 0 拦截)
+//   5. SalesAgent_SubUserLayer0Only → false  (Layer 1 拦截)
+//   6. ContentMonitor_ParentBypass → true    (关键回归: bypass 保留)
+//   7. SelfServiceConfig_ParentBypass → true (关键回归: bypass 保留)
+//   8. ContentMonitor_SubUserDeny → false
+//   9. UserNotFound → (false, err)
+// ============================================================================
+
+// newCheckFeaturePermTestDB 创建含 user + user_feature_permission + sales_agent_owner
+// 三张表的 SQLite DB，供 CheckFeaturePermission biz 矩阵测试使用。
+func newCheckFeaturePermTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	tmp := t.TempDir()
+	db, err := gorm.Open(sqlite.Open(tmp+"/check_feature_perm_test.db?_busy_timeout=5000"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, db.Exec(`
+        CREATE TABLE user (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at      DATETIME,
+            updated_at      DATETIME,
+            deleted_at      DATETIME,
+            nickname        TEXT,
+            username        TEXT,
+            parent_user_id  INTEGER
+        )`).Error)
+
+	require.NoError(t, db.Exec(`
+        CREATE TABLE user_feature_permission (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at     DATETIME,
+            updated_at     DATETIME,
+            deleted_at     DATETIME,
+            parent_user_id INTEGER NOT NULL,
+            sub_user_id    INTEGER NOT NULL,
+            feature_key    TEXT NOT NULL,
+            UNIQUE (sub_user_id, feature_key)
+        )`).Error)
+
+	require.NoError(t, db.Exec(`
+        CREATE TABLE sales_agent_owner (
+            parent_user_id INTEGER PRIMARY KEY,
+            created_at     DATETIME
+        )`).Error)
+
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	return db
+}
+
+// insertBizUserRaw 通过 raw SQL 插入 user 行（parentID=nil 表示父账户）。
+// 注意：AutoIncrement 管理 ID，不传入 ID。
+func insertBizUserRaw(t *testing.T, db *gorm.DB, parentID *uint) uint {
+	t.Helper()
+	now := time.Now()
+	var parentVal interface{}
+	if parentID != nil {
+		parentVal = *parentID
+	}
+	res := db.Exec(
+		`INSERT INTO user (created_at, updated_at, parent_user_id) VALUES (?, ?, ?)`,
+		now, now, parentVal,
+	)
+	require.NoError(t, res.Error)
+	var id uint
+	require.NoError(t, db.Raw("SELECT last_insert_rowid()").Scan(&id).Error)
+	return id
+}
+
+// insertSalesAgentOwner 插入父账户到 sales_agent_owner 表（Layer 0）。
+func insertSalesAgentOwner(t *testing.T, db *gorm.DB, parentUserID uint) {
+	t.Helper()
+	require.NoError(t, db.Exec(
+		`INSERT INTO sales_agent_owner (parent_user_id, created_at) VALUES (?, ?)`,
+		parentUserID, time.Now(),
+	).Error)
+}
+
+// insertSubUserFeatureGrant 直接写 user_feature_permission 行（Layer 1）。
+func insertSubUserFeatureGrant(t *testing.T, db *gorm.DB, parentID, subUserID uint, featureKey string) {
+	t.Helper()
+	now := time.Now()
+	require.NoError(t, db.Exec(
+		`INSERT INTO user_feature_permission (created_at, updated_at, parent_user_id, sub_user_id, feature_key) VALUES (?, ?, ?, ?, ?)`,
+		now, now, parentID, subUserID, featureKey,
+	).Error)
+}
+
+// setupCheckFeaturePermBiz 构造绑定指定 DB 的 customerBiz 实例。
+func setupCheckFeaturePermBiz(t *testing.T, db *gorm.DB) ICustomerBiz {
+	t.Helper()
+	ds := store.NewTestStore(db)
+	return New(ds)
+}
+
+// --- 场景 1: SalesAgent，父账户，owner 存在 → true ---
+
+func TestCheckFeaturePermission_SalesAgent_ParentOwnerExists(t *testing.T) {
+	db := newCheckFeaturePermTestDB(t)
+	biz := setupCheckFeaturePermBiz(t, db)
+	ctx := context.Background()
+
+	parent := insertBizUserRaw(t, db, nil)
+	insertSalesAgentOwner(t, db, parent)
+
+	ok, err := biz.CheckFeaturePermission(ctx, parent, model.FeatureKeySalesAgent)
+	require.NoError(t, err)
+	assert.True(t, ok, "父账户在 owner 表中 → true")
+}
+
+// --- 场景 2: SalesAgent，父账户，owner 不存在 → false (关键回归：admin 路径) ---
+
+func TestCheckFeaturePermission_SalesAgent_ParentOwnerAbsent(t *testing.T) {
+	db := newCheckFeaturePermTestDB(t)
+	biz := setupCheckFeaturePermBiz(t, db)
+	ctx := context.Background()
+
+	parent := insertBizUserRaw(t, db, nil)
+	// 不插入 sales_agent_owner 行
+
+	ok, err := biz.CheckFeaturePermission(ctx, parent, model.FeatureKeySalesAgent)
+	require.NoError(t, err)
+	assert.False(t, ok, "父账户不在 owner 表 → false（无 bypass）")
+}
+
+// --- 场景 3: SalesAgent，子账户，Layer 0 + Layer 1 都有 → true ---
+
+func TestCheckFeaturePermission_SalesAgent_SubUserBothLayers(t *testing.T) {
+	db := newCheckFeaturePermTestDB(t)
+	biz := setupCheckFeaturePermBiz(t, db)
+	ctx := context.Background()
+
+	parent := insertBizUserRaw(t, db, nil)
+	child := insertBizUserRaw(t, db, &parent)
+	insertSalesAgentOwner(t, db, parent)                                        // Layer 0
+	insertSubUserFeatureGrant(t, db, parent, child, model.FeatureKeySalesAgent) // Layer 1
+
+	ok, err := biz.CheckFeaturePermission(ctx, child, model.FeatureKeySalesAgent)
+	require.NoError(t, err)
+	assert.True(t, ok, "双层均满足 → true")
+}
+
+// --- 场景 4: SalesAgent，子账户，仅 Layer 1 有（Layer 0 无）→ false ---
+
+func TestCheckFeaturePermission_SalesAgent_SubUserLayer1Only(t *testing.T) {
+	db := newCheckFeaturePermTestDB(t)
+	biz := setupCheckFeaturePermBiz(t, db)
+	ctx := context.Background()
+
+	parent := insertBizUserRaw(t, db, nil)
+	child := insertBizUserRaw(t, db, &parent)
+	// 不插入 sales_agent_owner（Layer 0 缺失）
+	insertSubUserFeatureGrant(t, db, parent, child, model.FeatureKeySalesAgent) // Layer 1 有
+
+	ok, err := biz.CheckFeaturePermission(ctx, child, model.FeatureKeySalesAgent)
+	require.NoError(t, err)
+	assert.False(t, ok, "Layer 0 缺失 → false（AND 逻辑）")
+}
+
+// --- 场景 5: SalesAgent，子账户，仅 Layer 0 有（Layer 1 无）→ false ---
+
+func TestCheckFeaturePermission_SalesAgent_SubUserLayer0Only(t *testing.T) {
+	db := newCheckFeaturePermTestDB(t)
+	biz := setupCheckFeaturePermBiz(t, db)
+	ctx := context.Background()
+
+	parent := insertBizUserRaw(t, db, nil)
+	child := insertBizUserRaw(t, db, &parent)
+	insertSalesAgentOwner(t, db, parent) // Layer 0 有
+	// 不插入 user_feature_permission（Layer 1 缺失）
+
+	ok, err := biz.CheckFeaturePermission(ctx, child, model.FeatureKeySalesAgent)
+	require.NoError(t, err)
+	assert.False(t, ok, "Layer 1 缺失 → false（AND 逻辑）")
+}
+
+// --- 场景 6: ContentMonitor，父账户 → true（bypass 保留）---
+
+func TestCheckFeaturePermission_ContentMonitor_ParentBypass(t *testing.T) {
+	db := newCheckFeaturePermTestDB(t)
+	biz := setupCheckFeaturePermBiz(t, db)
+	ctx := context.Background()
+
+	parent := insertBizUserRaw(t, db, nil)
+	// 不插入任何权限行，验证父账户在 content_monitor 路径走硬 bypass
+
+	ok, err := biz.CheckFeaturePermission(ctx, parent, model.FeatureKeyContentMonitor)
+	require.NoError(t, err)
+	assert.True(t, ok, "content_monitor 父账户应硬 bypass → true")
+}
+
+// --- 场景 7: SelfServiceConfig，父账户 → true（bypass 保留）---
+
+func TestCheckFeaturePermission_SelfServiceConfig_ParentBypass(t *testing.T) {
+	db := newCheckFeaturePermTestDB(t)
+	biz := setupCheckFeaturePermBiz(t, db)
+	ctx := context.Background()
+
+	parent := insertBizUserRaw(t, db, nil)
+	// 不插入任何权限行，验证父账户在 self_service_config 路径走硬 bypass
+
+	ok, err := biz.CheckFeaturePermission(ctx, parent, model.FeatureKeySelfServiceConfig)
+	require.NoError(t, err)
+	assert.True(t, ok, "self_service_config 父账户应硬 bypass → true")
+}
+
+// --- 场景 8: ContentMonitor，子账户，无授权行 → false ---
+
+func TestCheckFeaturePermission_ContentMonitor_SubUserDeny(t *testing.T) {
+	db := newCheckFeaturePermTestDB(t)
+	biz := setupCheckFeaturePermBiz(t, db)
+	ctx := context.Background()
+
+	parent := insertBizUserRaw(t, db, nil)
+	child := insertBizUserRaw(t, db, &parent)
+	// 不给 child 授权 content_monitor
+
+	ok, err := biz.CheckFeaturePermission(ctx, child, model.FeatureKeyContentMonitor)
+	require.NoError(t, err)
+	assert.False(t, ok, "子账户无 content_monitor 授权 → false")
+}
+
+// --- 场景 9: 用户不存在 → (false, err) ---
+
+func TestCheckFeaturePermission_UserNotFound(t *testing.T) {
+	db := newCheckFeaturePermTestDB(t)
+	biz := setupCheckFeaturePermBiz(t, db)
+	ctx := context.Background()
+
+	ok, err := biz.CheckFeaturePermission(ctx, 99999, model.FeatureKeySalesAgent)
+	assert.Error(t, err, "用户不存在时应返回错误")
+	assert.False(t, ok)
+}

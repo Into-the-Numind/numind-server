@@ -16,9 +16,10 @@ type ISopStore interface {
 	CreateTemplate(template *model.SopTemplate) error
 	GetTemplate(id uint) (*model.SopTemplate, error)
 	ListTemplates(offset, limit int) ([]model.SopTemplate, int64, error)
-	// ListVisibleTemplates 列出 C 端用户可见的模板（active + published，DB 层过滤）。
-	// 用于 /v1/sop/templates 用户端列表，不要用于管理端或统计——后者需要所有模板（含 draft/inactive）。
-	ListVisibleTemplates(offset, limit int) ([]model.SopTemplate, int64, error)
+	// ListVisibleTemplates 列出指定父账户租户下 C 端用户可见的模板.
+	// 多租户隔离 (spec D1): WHERE creator_user_id = ownerParentUserID.
+	// 防御性 (spec D7): 列表永不返回 creator_user_id IS NULL 行.
+	ListVisibleTemplates(ctx context.Context, ownerParentUserID uint, offset, limit int) ([]model.SopTemplate, int64, error)
 	UpdateTemplate(id uint, updates map[string]interface{}) error
 	DeleteTemplate(id uint) error
 
@@ -136,15 +137,17 @@ func (s *sopStore) ListTemplates(offset, limit int) ([]model.SopTemplate, int64,
 	return templates, total, nil
 }
 
-// ListVisibleTemplates 列出 C 端用户可见的模板：status=active AND publish_status=published。
-// GORM 的软删除语义（deleted_at IS NULL）由 Model(&SopTemplate{}) 自动附加，Count 和 Find 保持一致，
-// total 字段语义 = 全部可见模板总数（与 Find 的过滤范围相同），分页不会把已发布记录挤出首页。
-func (s *sopStore) ListVisibleTemplates(offset, limit int) ([]model.SopTemplate, int64, error) {
+// ListVisibleTemplates 列出指定父账户租户下 C 端用户可见的模板.
+// 多租户隔离 (spec D1): WHERE creator_user_id = ownerParentUserID.
+// 防御性 (spec D7): 同时过滤 creator_user_id IS NOT NULL，避免历史 NULL 行泄露给任何租户.
+// GORM 软删除语义（deleted_at IS NULL）由 Model(&SopTemplate{}) 自动附加.
+func (s *sopStore) ListVisibleTemplates(ctx context.Context, ownerParentUserID uint, offset, limit int) ([]model.SopTemplate, int64, error) {
 	var templates []model.SopTemplate
 	var total int64
 
-	// status="active" 与现有 Controller 过滤字面量保持一致；模型未导出模板级 status 常量，沿用业务约定。
-	query := s.db.Model(&model.SopTemplate{}).
+	query := s.db.WithContext(ctx).Model(&model.SopTemplate{}).
+		Where("creator_user_id = ?", ownerParentUserID).
+		Where("creator_user_id IS NOT NULL"). // 防御性 (spec D7)
 		Where("status = ?", "active").
 		Where("publish_status = ?", model.SopPublishStatusPublished)
 

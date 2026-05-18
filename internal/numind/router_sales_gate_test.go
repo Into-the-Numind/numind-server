@@ -18,6 +18,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	customerbiz "numind-server/internal/numind/biz/customer"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
@@ -56,7 +57,18 @@ func newGateTestDB(t *testing.T) *gorm.DB {
 	`).Error)
 
 	require.NoError(t, db.AutoMigrate(&model.UserFeaturePermission{}))
+	// sop-salesrag-parent-scope Task 3: 销售智能体 owner tag 表必须存在,
+	// 即使父账户也需要 Layer 0 检查 (spec D2 移除父账户硬 bypass)
+	require.NoError(t, db.AutoMigrate(&model.SalesAgentOwner{}))
 	return db
+}
+
+// seedSalesAgentOwner 把父账户加入销售智能体 owner 表
+// (sop-salesrag-parent-scope Task 3). spec D2: 父账户不再硬 bypass,
+// 必须显式存在于 sales_agent_owner 表才能访问销售智能体.
+func seedSalesAgentOwner(t *testing.T, db *gorm.DB, parentID uint) {
+	t.Helper()
+	require.NoError(t, db.Create(&model.SalesAgentOwner{ParentUserID: parentID}).Error)
 }
 
 // seedUser inserts a user with the given parentUserID (nil = parent account).
@@ -88,6 +100,18 @@ func installStoreS(t *testing.T, db *gorm.DB) {
 	previous := store.S
 	store.S = store.NewTestDataStore(db)
 	t.Cleanup(func() { store.S = previous })
+}
+
+// installCheckFeaturePermissionFunc 注入 middleware.CheckFeaturePermissionFunc
+// (sop-salesrag-parent-scope Task 3): 镜像 numind.go run() 中的 wiring,
+// 因为测试不走 run() 启动序列, 必须显式注入函数指针, 否则 middleware nil
+// guard 会触发 500.
+func installCheckFeaturePermissionFunc(t *testing.T) {
+	t.Helper()
+	previous := middleware.CheckFeaturePermissionFunc
+	cb := customerbiz.New(store.S)
+	middleware.CheckFeaturePermissionFunc = cb.CheckFeaturePermission
+	t.Cleanup(func() { middleware.CheckFeaturePermissionFunc = previous })
 }
 
 // setCurrentUserMW mounts a fabricated *model.User onto the gin context at
@@ -149,9 +173,11 @@ func mustUser(id uint, parentID *uint) *model.User {
 func TestGate_SubNoGrant_DocumentsListBlocked(t *testing.T) {
 	db := newGateTestDB(t)
 	installStoreS(t, db)
+	installCheckFeaturePermissionFunc(t)
 	parentID := uint(1)
 	seedUser(t, db, 1, nil)         // parent
 	seedUser(t, db, 100, &parentID) // sub, no grant
+	seedSalesAgentOwner(t, db, 1)   // parent has owner tag, so Layer 1 (sub grant) is the real blocker
 
 	r := newMiniRouter(t, mustUser(100, &parentID))
 	req := httptest.NewRequest(http.MethodGet, "/v1/sales-rag/documents", nil)
@@ -176,9 +202,11 @@ func TestGate_SubNoGrant_DocumentsListBlocked(t *testing.T) {
 func TestGate_SubNoGrant_ChatBlocked(t *testing.T) {
 	db := newGateTestDB(t)
 	installStoreS(t, db)
+	installCheckFeaturePermissionFunc(t)
 	parentID := uint(1)
 	seedUser(t, db, 1, nil)
 	seedUser(t, db, 100, &parentID)
+	seedSalesAgentOwner(t, db, 1)
 
 	r := newMiniRouter(t, mustUser(100, &parentID))
 	req := httptest.NewRequest(http.MethodPost, "/v1/sales-rag/sessions/1/chat", nil)
@@ -198,9 +226,11 @@ func TestGate_SubNoGrant_ChatBlocked(t *testing.T) {
 func TestGate_SubNoGrant_OCRBlocked(t *testing.T) {
 	db := newGateTestDB(t)
 	installStoreS(t, db)
+	installCheckFeaturePermissionFunc(t)
 	parentID := uint(1)
 	seedUser(t, db, 1, nil)
 	seedUser(t, db, 100, &parentID)
+	seedSalesAgentOwner(t, db, 1)
 
 	r := newMiniRouter(t, mustUser(100, &parentID))
 	req := httptest.NewRequest(http.MethodPost, "/v1/sales-rag/ocr", nil)
@@ -221,9 +251,11 @@ func TestGate_SubNoGrant_OCRBlocked(t *testing.T) {
 func TestGate_SubNoGrant_CheckPermissionNotGated(t *testing.T) {
 	db := newGateTestDB(t)
 	installStoreS(t, db)
+	installCheckFeaturePermissionFunc(t)
 	parentID := uint(1)
 	seedUser(t, db, 1, nil)
 	seedUser(t, db, 100, &parentID)
+	seedSalesAgentOwner(t, db, 1)
 
 	r := newMiniRouter(t, mustUser(100, &parentID))
 	req := httptest.NewRequest(http.MethodGet, "/v1/sales-rag/check-permission", nil)
@@ -238,12 +270,15 @@ func TestGate_SubNoGrant_CheckPermissionNotGated(t *testing.T) {
 	assert.Equal(t, 0, resp.Code, "check-permission handler runs, business code=0")
 }
 
-// TestGate_Parent_PassesThrough validates that a parent account (ParentUserID=nil)
-// is automatically let through the FeaturePermission gate.
+// TestGate_Parent_PassesThrough validates that a parent account with owner tag
+// passes through the FeaturePermission gate (sop-salesrag-parent-scope Task 3:
+// spec D2 — 父账户必须在 sales_agent_owner 表中, 不再硬 bypass).
 func TestGate_Parent_PassesThrough(t *testing.T) {
 	db := newGateTestDB(t)
 	installStoreS(t, db)
-	seedUser(t, db, 1, nil) // parent
+	installCheckFeaturePermissionFunc(t)
+	seedUser(t, db, 1, nil)       // parent
+	seedSalesAgentOwner(t, db, 1) // parent owner tag (Layer 0 必查)
 
 	r := newMiniRouter(t, mustUser(1, nil))
 	req := httptest.NewRequest(http.MethodGet, "/v1/sales-rag/documents", nil)
@@ -263,9 +298,11 @@ func TestGate_Parent_PassesThrough(t *testing.T) {
 func TestGate_SubGranted_PassesThrough(t *testing.T) {
 	db := newGateTestDB(t)
 	installStoreS(t, db)
+	installCheckFeaturePermissionFunc(t)
 	parentID := uint(1)
 	seedUser(t, db, 1, nil)
 	seedUser(t, db, 100, &parentID)
+	seedSalesAgentOwner(t, db, 1)
 	seedGrant(t, db, 1, 100, model.FeatureKeySalesAgent)
 
 	r := newMiniRouter(t, mustUser(100, &parentID))

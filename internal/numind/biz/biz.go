@@ -37,6 +37,10 @@ import (
 	"github.com/spf13/viper"
 )
 
+// B 是 biz 层全局单例，镜像 store.S 模式。middleware/cron 等 wire 不便注入的代码路径
+// 可通过此变量调 biz 函数。在 NewBiz 时初始化，不应被外部直接重置。
+var B IBiz
+
 // IBiz 定义了 Biz 层需要实现的方法.
 type IBiz interface {
 	Users() user.UserBiz
@@ -248,6 +252,10 @@ func NewBiz(ds store.IStore) *biz {
 			log.Infow("Opinion track seeded", "slug", slug, "doc_id", docID)
 		}
 	}()
+
+	// 设置全局单例，供 middleware/cron 等无法注入 biz 的代码路径使用。
+	// 确保 store.S 已在 numind.go 中完成初始化后才调用 NewBiz。
+	B = b
 
 	return b
 }
