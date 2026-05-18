@@ -40,35 +40,27 @@ func translateMembershipInsufficient(err error) error {
 	return err
 }
 
-// creditService is the ICreditService implementation that dispatches by
-// user.BillingMode into one of the two internal strategies:
-//   - legacyTierImpl  (BillingMode == legacy_tier)
-//   - creditsImpl     (BillingMode == credits, default)
-//
-// See spec §1.2 / §1.3 / §1.4 for the dispatch rules and §1.6 for the caller
-// template.
+// creditService is the ICreditService implementation. Post legacy-deprecation
+// (T1), the dispatch is gone — all flows route directly to creditsImpl.
+// The struct remains so the interface boundary (and span/metadata wiring) stays
+// stable across future strategy additions.
 type creditService struct {
 	store         store.IStore
 	biz           ICreditBiz
 	pricing       pricing.ICalculator
 	membershipSvc *membership.MembershipService
-	// Pre-instantiated legs so each dispatch is a plain method call.
-	legacy  *legacyTierImpl
+	// Pre-instantiated leg so each dispatch is a plain method call.
 	credits *creditsImpl
 }
 
 // NewCreditService constructs the singleton ICreditService used throughout the
-// app. Pass the existing store.IStore, an ICreditBiz (for DeductCreditsTx +
-// quota queries), a pricing.ICalculator (used by credits leg for R2
-// estimation), and a membershipSvc (used by T6+ tasks for cycle/booster/trial
-// balance reads). pricing may be nil — the legacy leg never touches it, so
-// legacy-only callers in tests can pass nil. membershipSvc may be nil — it is
-// unused until T6 tasks are implemented; legacy-only tests pass nil.
+// app. Pass the existing store.IStore, an ICreditBiz (for quota queries), a
+// pricing.ICalculator (used by credits leg for R2 estimation), and a
+// membershipSvc (used for cycle/booster/trial balance reads).
 //
-// The estimation biz is built internally from ds + pc so callers don't need
-// to know about the sub-dependency. If pc is nil, the estimation leg is also
-// nil and creditsImpl.CheckAndEstimate returns a config error rather than
-// panicking — legacy-only tests exercise this path safely.
+// The estimation biz is built internally from ds + pc so callers don't need to
+// know about the sub-dependency. If pc is nil, the estimation leg is also nil
+// and creditsImpl.CheckAndEstimate returns a config error rather than panicking.
 func NewCreditService(ds store.IStore, biz ICreditBiz, pc pricing.ICalculator, membershipSvc *membership.MembershipService) ICreditService {
 	var est IEstimationBiz
 	if pc != nil {
@@ -79,40 +71,19 @@ func NewCreditService(ds store.IStore, biz ICreditBiz, pc pricing.ICalculator, m
 		biz:           biz,
 		pricing:       pc,
 		membershipSvc: membershipSvc,
-		legacy:        &legacyTierImpl{biz: biz},
 		credits:       &creditsImpl{store: ds, biz: biz, pricing: pc, estimation: est, membershipSvc: membershipSvc},
 	}
 }
 
-// isEffectiveLegacy returns true ONLY when billing_mode is explicitly
-// legacy_tier. The previous HasActiveMembership() fallthrough caused
-// credits-mode users with a non-expired user_tier (legacy field) to be
-// incorrectly routed to the legacy path, bypassing trial_grant / credit_cycle
-// / user_booster_balance entirely. Per product directive, legacy is fully
-// deprecated and credits-mode users must always read the three-pool SOT.
-func isEffectiveLegacy(user *model.User) bool {
-	if user == nil {
-		return false
-	}
-	return user.BillingMode == model.BillingModeLegacyTier
-}
-
-// CheckAndEstimate dispatches to legacy or credits leg. Users with an active
-// legacy membership are always routed to the legacy leg for a smooth transition,
-// regardless of the billing_mode field value.
+// CheckAndEstimate routes the R2 char-based precheck to the credits leg.
+// Post legacy-deprecation (T1) there is no longer a billing-mode dispatch.
 func (s *creditService) CheckAndEstimate(ctx context.Context, user *model.User, op Operation, in EstimationInput) (*PreCheckResult, error) {
-	if isEffectiveLegacy(user) {
-		return s.legacy.CheckAndEstimate(ctx, user, op, in)
-	}
 	return s.credits.CheckAndEstimate(ctx, user, op, in)
 }
 
-// Reserve dispatches by billing mode. legacy_tier MUST be guarded by the
-// caller via SkipDeduction — reaching legacy.Reserve panics by design.
+// Reserve creates a credit_reservation via the credits leg. Post
+// legacy-deprecation (T1) all users route through this path.
 func (s *creditService) Reserve(ctx context.Context, user *model.User, op Operation, estimated int64, coefID uint64, idempotencyKey *string) (*Reservation, error) {
-	if isEffectiveLegacy(user) {
-		return s.legacy.Reserve(ctx, user, op, estimated, coefID, idempotencyKey)
-	}
 	return s.credits.Reserve(ctx, user, op, estimated, coefID, idempotencyKey)
 }
 
@@ -139,13 +110,9 @@ func (s *creditService) FinalizeReservation(ctx context.Context, rsv *Reservatio
 	return s.credits.FinalizeReservation(ctx, rsv, actualCostCents, opErr)
 }
 
-// GetBalance dispatches by effective billing mode. legacy_tier returns
-// RemainingRuns/MonthlyLimit snapshot; credits returns the credit_package
-// FIFO breakdown.
+// GetBalance returns the three-pool (sub + booster + trial) credits breakdown.
+// Post legacy-deprecation (T1) the billing-mode dispatch is removed.
 func (s *creditService) GetBalance(ctx context.Context, user *model.User) (*BalanceBreakdown, error) {
-	if isEffectiveLegacy(user) {
-		return s.legacy.GetBalance(ctx, user)
-	}
 	return s.credits.GetBalance(ctx, user)
 }
 
@@ -172,14 +139,13 @@ var budgetOperationMap = map[string]Operation{
 }
 
 // CheckAndEstimateBudget is the budget-aware precheck entry point. It
-// normalises the raw operation via budgetOperationMap, then dispatches:
-//   - legacy-tier users → SkipDeduction=true, no estimation performed.
-//   - credits users → computes EstimatedCredits from token counts (flat
-//     estimate: tokens × a fixed rate, falling back to GetEstimatedCredits
-//     if pricing.ICalculator is nil in tests).
-//   - unknown operation + user billing context → ErrUnknownBudgetOperation
-//     (fail-closed: never silently charge a default operation).
+// normalises the raw operation via budgetOperationMap, then estimates
+// EstimatedCredits from token counts (flat estimate: tokens × a fixed rate,
+// falling back to GetEstimatedCredits if pricing.ICalculator is nil in tests).
+// An unknown operation surfaces ErrUnknownBudgetOperation — fail-closed so we
+// never silently charge a default operation.
 //
+// Post legacy-deprecation (T1) the billing-mode dispatch is removed.
 // This is a parallel API to CheckAndEstimate; the R2 char-based path is
 // preserved unchanged.
 func (s *creditService) CheckAndEstimateBudget(ctx context.Context, user *model.User, input BudgetPrecheckInput) (*PreCheckResult, error) {
@@ -190,22 +156,8 @@ func (s *creditService) CheckAndEstimateBudget(ctx context.Context, user *model.
 		return nil, fmt.Errorf("%w: operation=%q", ErrUnknownBudgetOperation, input.Operation)
 	}
 
-	// Step 2: legacy-tier dispatch — preserve existing contract, no estimation.
-	// legacyTierImpl.CheckAndEstimate ignores EstimationInput entirely; gating
-	// is based on user.UserTier and user.CanRunSOP(). The PromptChars value
-	// here is unused and intentionally left as the token estimate to avoid an
-	// extra unit conversion.
-	if isEffectiveLegacy(user) {
-		return s.legacy.CheckAndEstimate(ctx, user, op, EstimationInput{
-			PromptChars: input.EstimatedPromptTokens, // EstimationInput is ignored by legacyTierImpl — it gates on user.CanRunSOP() only
-			Model:       input.Model,
-			Provider:    input.Provider,
-		})
-	}
-
-	// Step 3: credits mode — estimate from token counts.
-	// Compute estimated credits: if pricing calculator available, use it;
-	// otherwise fall back to the flat table (test / local path).
+	// Step 2: estimate from token counts. If pricing calculator available, use
+	// it; otherwise fall back to the flat table (test / local path).
 	var estimatedCredits int64
 	if s.pricing != nil {
 		costCents, err := s.pricing.CalculateCost(ctx, "llm_chat", input.Provider, input.Model,
@@ -223,7 +175,7 @@ func (s *creditService) CheckAndEstimateBudget(ctx context.Context, user *model.
 		estimatedCredits = GetEstimatedCredits(string(op))
 	}
 
-	// Step 4: check balance.
+	// Step 3: check balance.
 	bal, err := s.credits.GetBalance(ctx, user)
 	if err != nil {
 		return nil, fmt.Errorf("CheckAndEstimateBudget: balance: %w", err)
@@ -243,7 +195,6 @@ func (s *creditService) CheckAndEstimateBudget(ctx context.Context, user *model.
 
 // ReserveBudget creates a credit_reservation with estimation_source='context_budget',
 // coefficient_id=NULL, and the token-profile/event metadata from the input.
-// Legacy-tier users (SkipDeduction path) are a safe no-op: returns (nil, nil).
 // Spec §6.1.2.
 func (s *creditService) ReserveBudget(ctx context.Context, user *model.User, input BudgetReservationInput) (*Reservation, error) {
 	// Precheck first to validate operation + check balance.
@@ -252,7 +203,9 @@ func (s *creditService) ReserveBudget(ctx context.Context, user *model.User, inp
 		return nil, fmt.Errorf("ReserveBudget: precheck: %w", err)
 	}
 
-	// Legacy-tier: skip deduction entirely.
+	// Defensive: if a future precheck path ever sets SkipDeduction, honor it
+	// by returning (nil, nil). Post legacy-deprecation (T1) this branch is
+	// unreachable on the current callgraph.
 	if pre.SkipDeduction {
 		return nil, nil
 	}
@@ -281,92 +234,6 @@ func (s *creditService) ReserveBudget(ctx context.Context, user *model.User, inp
 	}
 	return s.credits.reserveBudgetRow(ctx, user, op, estimated, input, idempKey)
 }
-
-// ---------------------------------------------------------------------------
-// legacyTierImpl — Grandfathering Option E (spec §1.3 / §3.6)
-//
-// Behaviour:
-//   - CheckAndEstimate → SkipDeduction=true always; Sufficient derived from
-//     user.CanRunSOP(); on !canRun wraps ErrInsufficientCredits with Reason
-//   - Reserve / Reconcile / Refund → panic("unreachable: legacy_tier must be
-//     guarded by SkipDeduction")
-//   - GetBalance → user.GetRemainingSOPRuns() + MonthlyLimit, no credit_package
-// ---------------------------------------------------------------------------
-
-type legacyTierImpl struct {
-	biz ICreditBiz // unused for now but kept for symmetry with creditsImpl
-}
-
-// CheckAndEstimate for legacy tier: delegate to user.CanRunSOP() and translate
-// its Chinese denial message into PreCheckResult.Reason so the caller can
-// surface the same text the user sees today.
-func (l *legacyTierImpl) CheckAndEstimate(_ context.Context, user *model.User, _ Operation, _ EstimationInput) (*PreCheckResult, error) {
-	canRun, reason := user.CanRunSOP()
-	pre := &PreCheckResult{
-		SkipDeduction: true,
-		Balance:       l.buildLegacyBalance(user),
-	}
-	if !canRun {
-		pre.Sufficient = false
-		pre.Reason = reason
-		// Wrap ErrInsufficientCredits so callers can use errors.Is to
-		// classify, and log/trace retain the zh reason.
-		return pre, fmt.Errorf("%w: %s", ErrInsufficientCredits, reason)
-	}
-	pre.Sufficient = true
-	return pre, nil
-}
-
-// Reserve must never be reached on legacy_tier. Callers gate via
-// pre.SkipDeduction; any code that misses this is a bug and should blow up
-// loudly at dev time rather than silently debit nothing.
-func (l *legacyTierImpl) Reserve(_ context.Context, _ *model.User, _ Operation, _ int64, _ uint64, _ *string) (*Reservation, error) {
-	panic("unreachable: legacy_tier must be guarded by SkipDeduction")
-}
-
-func (l *legacyTierImpl) GetBalance(_ context.Context, user *model.User) (*BalanceBreakdown, error) {
-	return l.buildLegacyBalance(user).Ptr(), nil
-}
-
-// buildLegacyBalance computes the RemainingRuns/MonthlyLimit snapshot WITHOUT
-// touching credit_package. Premium users receive nil/nil (unlimited, no cap).
-// Trial users receive their 10-cap; standard users receive the 20/month cap.
-func (l *legacyTierImpl) buildLegacyBalance(user *model.User) BalanceBreakdown {
-	remaining := user.GetRemainingSOPRuns() // -1 = unlimited (premium)
-	actualTier := user.GetActualUserTier()
-
-	bal := BalanceBreakdown{BillingMode: model.BillingModeLegacyTier}
-	switch actualTier {
-	case model.UserTierPremium:
-		// Unlimited: both RemainingRuns and MonthlyLimit are nil.
-		// (Spec §1.8: "nil = premium unlimited")
-		return bal
-	case model.UserTierStandard:
-		limit := model.StandardUserMonthlySOPLimit
-		bal.MonthlyLimit = &limit
-		if remaining >= 0 {
-			bal.RemainingRuns = &remaining
-		}
-		return bal
-	case model.UserTierTrial:
-		limit := model.TrialUserSOPLimit
-		bal.MonthlyLimit = &limit
-		if remaining >= 0 {
-			bal.RemainingRuns = &remaining
-		}
-		return bal
-	default: // free
-		zero := 0
-		bal.RemainingRuns = &zero
-		zeroLimit := 0
-		bal.MonthlyLimit = &zeroLimit
-		return bal
-	}
-}
-
-// Ptr returns a pointer copy of the BalanceBreakdown so callers that require
-// *BalanceBreakdown don't need to take the address of a stack value.
-func (b BalanceBreakdown) Ptr() *BalanceBreakdown { return &b }
 
 // ---------------------------------------------------------------------------
 // creditsImpl — new-system credits mode (spec §1.4).

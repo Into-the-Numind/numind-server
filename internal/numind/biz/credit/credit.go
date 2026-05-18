@@ -60,48 +60,29 @@ func InjectCreditBizMembershipSvc(b ICreditBiz, svc *membership.MembershipServic
 }
 
 // CanPerformAIOperation 检查用户是否可以执行 AI 操作
-// legacy_tier 走旧逻辑（CanRunSOP + 次数制），credits 走积分余额预检。
-// 注意：这是 controller 层的粗检，biz 层的 CheckAndEstimate 才是权威检查。
+// 走 credits 模式：MembershipService 读 credit_cycle + user_booster_balance +
+// trial_grant 三池，粗粒度余额预检。注意：这是 controller 层的粗检，biz 层的
+// CheckAndEstimate 才是权威检查。
+//
+// Post legacy-deprecation (T1) the legacy_tier branch and the fallback
+// credit_account.GetBalance path are gone; membershipSvc is always wired in
+// production via biz.NewBiz, so a nil here is a wiring bug.
 func (b *creditBiz) CanPerformAIOperation(ctx context.Context, user *model.User, operation string) (bool, string) {
-	if isEffectiveLegacy(user) {
-		// legacy 会员（含 billing_mode=credits 但会员仍在期的过渡用户）：
-		// SOP 走 CanRunSOP（次数 + 过期检查），非 SOP 不限制
-		if IsSopOperation(operation) {
-			return user.CanRunSOP()
-		}
-		return true, ""
+	if b.membershipSvc == nil {
+		log.Errorw("CanPerformAIOperation: membershipSvc not wired", "user_id", user.ID)
+		return false, "积分系统初始化错误，请联系管理员"
 	}
 
-	// credits 模式：粗粒度余额预检
 	estimated := GetEstimatedCredits(operation)
-
-	// credits-deduct-cycle-wiring T7: prefer MembershipService (reads
-	// credit_cycle + user_booster_balance + trial_grant) over the legacy
-	// credit_account.balance read which returns 0 for new-grant users.
-	if b.membershipSvc != nil {
-		view, err := b.membershipSvc.GetBalance(ctx, uint64(user.ID), time.Now().UTC())
-		if err != nil {
-			log.Errorw("CanPerformAIOperation: membershipSvc.GetBalance failed", "user_id", user.ID, "err", err)
-			return false, "积分余额查询失败，请稍后重试"
-		}
-		total := view.CycleRemaining + view.TrialRemaining + view.BoosterUsable
-		if total < int64(estimated) {
-			return false, "积分不足，请充值积分"
-		}
-		return true, ""
-	}
-
-	// Fallback: legacy credit_account path (test-only after T0 wiring lands).
-	balance, err := b.ds.Credits().GetBalance(ctx, user.ID)
+	view, err := b.membershipSvc.GetBalance(ctx, uint64(user.ID), time.Now().UTC())
 	if err != nil {
-		log.Errorw("Failed to get credit balance", "user_id", user.ID, "error", err)
+		log.Errorw("CanPerformAIOperation: membershipSvc.GetBalance failed", "user_id", user.ID, "err", err)
 		return false, "积分余额查询失败，请稍后重试"
 	}
-
-	if balance < estimated {
+	total := view.CycleRemaining + view.TrialRemaining + view.BoosterUsable
+	if total < int64(estimated) {
 		return false, "积分不足，请充值积分"
 	}
-
 	return true, ""
 }
 

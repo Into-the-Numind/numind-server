@@ -123,13 +123,15 @@ func TestLangfuse_CheckAndEstimate_EmitsCreditEstimateSpan(t *testing.T) {
 	require.NotNil(t, span, "credit-estimate span must be emitted; got events: %+v", events)
 
 	// Input schema (spec §5.1.1)
+	// billing_mode dropped post legacy-deprecation (T1) — only credits path remains.
 	input, ok := span.Input.(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, "sop_run", input["operation"])
 	assert.Equal(t, 1000, input["prompt_chars"])
 	assert.Equal(t, "qwen-turbo", input["model"])
 	assert.Equal(t, "ali", input["provider"])
-	assert.Equal(t, model.BillingModeCredits, input["billing_mode"])
+	assert.NotContains(t, input, "billing_mode",
+		"billing_mode field removed post legacy-deprecation (T1)")
 
 	// Output schema
 	output, ok := span.Output.(map[string]interface{})
@@ -281,8 +283,8 @@ func TestLangfuse_Refund_EmitsRefundSpan(t *testing.T) {
 }
 
 // TestLangfuse_TraceMetadata_AppendedAtCheckAndEstimate verifies that
-// CheckAndEstimate emits a trace-create event carrying billing_mode /
-// deducted_from / credit_balance_at_start per spec §5.1.5.
+// CheckAndEstimate emits a trace-create event carrying deducted_from /
+// credit_balance_at_start per spec §5.1.5 (billing_mode dropped in T1).
 func TestLangfuse_TraceMetadata_AppendedAtCheckAndEstimate(t *testing.T) {
 	traceID := "trace-metadata-test"
 	getEvents, cleanup := langfuseCapture(t, traceID)
@@ -312,7 +314,8 @@ func TestLangfuse_TraceMetadata_AppendedAtCheckAndEstimate(t *testing.T) {
 		}
 	}
 	require.NotNil(t, foundMeta, "trace-create with credits metadata must be emitted; events=%+v", events)
-	assert.Equal(t, model.BillingModeCredits, foundMeta.Metadata["billing_mode"])
+	assert.NotContains(t, foundMeta.Metadata, "billing_mode",
+		"billing_mode dropped from trace metadata post legacy-deprecation (T1)")
 	assert.Equal(t, "subscription", foundMeta.Metadata["deducted_from"],
 		"only sub packages seeded → deducted_from=subscription")
 	assert.Equal(t, "1500", foundMeta.Metadata["credit_balance_at_start"])

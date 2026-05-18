@@ -351,10 +351,9 @@ type creditServiceFacade struct {
 }
 
 // LoadUser resolves a *model.User by primary key. Required by spec §6.1.2 step 1
-// so that CheckAndEstimateBudget / ReserveBudget can dispatch credits-vs-legacy
-// via isEffectiveLegacy(user). Discovered as a P0 panic during S5 verification:
-// the middleware previously passed nil here and tripped a nil-deref inside
-// credit.isEffectiveLegacy on the very first real chatbot call.
+// so that CheckAndEstimateBudget / ReserveBudget always have a user struct
+// to thread through credit operations. Historical note: P0 nil-deref bug
+// during S5 verification when middleware passed nil into credits.
 func (f *creditServiceFacade) LoadUser(ctx context.Context, userID uint) (*model.User, error) {
 	if f.userStore == nil {
 		return nil, fmt.Errorf("creditServiceFacade.LoadUser: userStore not configured")

@@ -250,34 +250,6 @@ func TestCheckAndEstimate_CreditsMode_TierExpiredStillPasses(t *testing.T) {
 	assert.EqualValues(t, 500, pre.Balance.SubRemain)
 }
 
-// Companion: same user but billing_mode=legacy_tier → rejected by CanRunSOP
-// (tier expired → GetActualUserTier()=free → "免费用户" reason). This completes
-// the "会员到期瞬间发起 SOP" scenario by verifying the opposite mode path.
-func TestCheckAndEstimate_LegacyTierMode_TierExpired_Rejected(t *testing.T) {
-	db := newCreditTestDB(t)
-	ds := store.NewTestStore(db)
-	svc := newCreditServiceWithMembership(ds, db, nil)
-
-	pastExpiry := time.Now().Add(-time.Hour)
-	user := &model.User{
-		BillingMode: model.BillingModeLegacyTier,
-		UserTier:    model.UserTierStandard,
-		TierExpires: &pastExpiry,
-	}
-	user.ID = 641
-
-	pre, err := svc.CheckAndEstimate(context.Background(), user, credit.OpSopRun, credit.EstimationInput{})
-	require.Error(t, err)
-	require.True(t, errors.Is(err, credit.ErrInsufficientCredits),
-		"legacy_tier user with expired tier must be rejected, got %v", err)
-	require.NotNil(t, pre)
-	assert.True(t, pre.SkipDeduction)
-	assert.False(t, pre.Sufficient)
-	// GetActualUserTier() returns free when expired → CanRunSOP returns free-denial reason.
-	assert.Contains(t, pre.Reason, "免费用户",
-		"expired legacy_tier user falls back to free-tier denial reason; got %q", pre.Reason)
-}
-
 // --- §5.3 行 11 ---
 // MySQL 连接池耗尽：Reserve 失败后 biz 层必须不留下任何 reservation 行、
 // 余额不变。单测用"提前关闭 DB 连接"制造 store-level 错误，验证 biz 对失败
