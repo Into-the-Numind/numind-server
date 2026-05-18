@@ -152,7 +152,7 @@ func TestCreateOrder_Booster_NoActiveMembership_Rejected(t *testing.T) {
 	// Free user — no subscription, no trial.
 	uid := mustCreateUser(t, db)
 
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 1, model.PayChannelWechat)
+	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 1, model.PayChannelWechat, "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errno.ErrNotActiveMember, "booster without active membership must return ErrNotActiveMember")
 }
@@ -168,7 +168,7 @@ func TestCreateOrder_Booster_CreditsWithSubscription_PassesValidation(t *testing
 	uid := mustCreateUser(t, db)
 	mustCreateActiveSubscription(t, db, uid)
 
-	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 1, model.PayChannelWechat)
+	_, err := b.CreateOrder(context.Background(), uid, uid, model.ProductTypeBooster, 1, model.PayChannelWechat, "")
 	require.Error(t, err, "expected channel-not-configured error (validation passed)")
 	// wechat client is nil → "微信支付未配置"; assert we did NOT hit one of the gate errors
 	assert.NotErrorIs(t, err, errno.ErrNotActiveMember)
@@ -198,7 +198,7 @@ func TestCreateOrder_NonBooster_AlwaysRejected(t *testing.T) {
 			b := newPaymentBizForTest(ds)
 			uid := mustCreateUser(t, db)
 
-			_, err := b.CreateOrder(context.Background(), uid, uid, tc.productType, 1, model.PayChannelWechat)
+			_, err := b.CreateOrder(context.Background(), uid, uid, tc.productType, 1, model.PayChannelWechat, "")
 			require.Error(t, err)
 			assert.ErrorIs(t, err, errno.ErrInvalidProductType,
 				"product_type=%s must return ErrInvalidProductType", tc.productType)
@@ -213,7 +213,7 @@ func TestCreateOrder_NonBooster_InternalCallerAlsoRejected(t *testing.T) {
 	b := newPaymentBizForTest(ds)
 	uid := mustCreateUser(t, db)
 
-	_, err := b.CreateOrder(WithInternalCaller(context.Background()), uid, uid, model.ProductTypeMonthly, 1, model.PayChannelWechat)
+	_, err := b.CreateOrder(WithInternalCaller(context.Background()), uid, uid, model.ProductTypeMonthly, 1, model.PayChannelWechat, "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errno.ErrInvalidProductType,
 		"internal caller cannot bypass product type gate")

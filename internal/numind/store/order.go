@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -14,6 +16,11 @@ type OrderStore interface {
 	Create(ctx context.Context, order *model.Order) error
 	GetByID(ctx context.Context, id uint64) (*model.Order, error)
 	GetByOrderNo(ctx context.Context, orderNo string) (*model.Order, error)
+	// FindByIdempotencyKey returns the order with the given Idempotency-Key,
+	// or (nil, nil) when no row matches. An empty key short-circuits to
+	// (nil, nil) so callers can pass through the middleware-set value without
+	// a separate nil check. Used by CreateOrder to dedup double-submit retries.
+	FindByIdempotencyKey(ctx context.Context, key string) (*model.Order, error)
 	UpdateStatus(ctx context.Context, id uint64, status string, updates map[string]interface{}) error
 	ListByPayer(ctx context.Context, payerID uint, offset, limit int) ([]model.Order, int64, error)
 	ListByUser(ctx context.Context, userID uint, offset, limit int) ([]model.Order, int64, error)
@@ -48,6 +55,25 @@ func (s *orderStore) GetByOrderNo(ctx context.Context, orderNo string) (*model.O
 	var order model.Order
 	if err := s.db.WithContext(ctx).Where("order_no = ?", orderNo).First(&order).Error; err != nil {
 		return nil, err
+	}
+	return &order, nil
+}
+
+// FindByIdempotencyKey returns the order with the given Idempotency-Key,
+// or (nil, nil) when no row matches. Empty key short-circuits to (nil, nil)
+// so callers can pass through the middleware-set value without a separate
+// nil check. Used by CreateOrder to dedup double-submit retries.
+func (s *orderStore) FindByIdempotencyKey(ctx context.Context, key string) (*model.Order, error) {
+	if key == "" {
+		return nil, nil
+	}
+	var order model.Order
+	err := s.db.WithContext(ctx).Where("idempotency_key = ?", key).First(&order).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("FindByIdempotencyKey: %w", err)
 	}
 	return &order, nil
 }

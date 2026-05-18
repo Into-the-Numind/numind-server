@@ -27,8 +27,14 @@ type Order struct {
 	CodeURL     string     `gorm:"type:text" json:"code_url"`
 	PaidAt      *time.Time `json:"paid_at"`
 	ExpiredAt   time.Time  `gorm:"not null" json:"expired_at"`
-	CreatedAt   time.Time  `gorm:"index:idx_order_payer" json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	// IdempotencyKey is the value of the Idempotency-Key header on POST /v1/orders.
+	// Persisted so a double-submitted retry with the same key returns the existing
+	// pending order instead of creating a stranded duplicate. Pointer + uniqueIndex
+	// allow historical rows to be NULL (MySQL's unique-index treats multiple NULLs
+	// as distinct, so back-fill is unnecessary).
+	IdempotencyKey *string   `gorm:"column:idempotency_key;size:64;uniqueIndex:uniq_order_idempotency_key" json:"idempotency_key,omitempty"`
+	CreatedAt      time.Time `gorm:"index:idx_order_payer" json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 func (Order) TableName() string { return "payment_order" }
