@@ -169,11 +169,10 @@ func TestCreateTemplateByUser_SubUserRejected(t *testing.T) {
 	_, err := b.CreateTemplateByUser(context.Background(), subID, req)
 	require.Error(t, err, "spec D8: 子用户调用必须被拒")
 
-	// 验证 err chain 含 ErrForbidden
+	// 验证 err chain 含 ErrForbidden — require.True 强制断言类型 (P2 review fix)
 	var ee *errno.Errno
-	if errors.As(err, &ee) {
-		assert.Equal(t, errno.ErrForbidden.Code, ee.Code, "应是 ErrForbidden")
-	}
+	require.True(t, errors.As(err, &ee), "err 应是 *errno.Errno chain")
+	assert.Equal(t, errno.ErrForbidden.Code, ee.Code, "应是 ErrForbidden")
 }
 
 // TestCreateTemplate_AdminSucceeds verifies that admin path with adminUserID
