@@ -180,7 +180,6 @@ func (b *userBiz) GetCurrentUserWithStats(ctx context.Context, userID uint) (*mo
 		return nil, err
 	}
 
-	// 直接从user结构体中获取book_num和book_all_num，这些字段在创建、状态变更、删除时已经实时更新
 	return user, nil
 }
 
