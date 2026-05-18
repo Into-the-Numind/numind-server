@@ -695,7 +695,43 @@ features:
     decisions:
       - "2026-05-18 (用户拍板): legacy 体系完全废弃，trial_grant 必须在所有路径被读取。最小修复优先止损，彻底清理（删 legacyTierImpl / CanRunSOP 调用 / payment.go:142 等 19 处）留作后续 standard track。"
       - "2026-05-18 (节奏): 直接 prod 不经 dev 验证，v2.1.22 (server) + v1.0.22 (web-v3) 同时打 tag。"
+      - "2026-05-18 (Prod deploy 异常 + 手动恢复): CI deploy_product 阶段 docker.io 直连 + Tencent mirror DNS + 1ms.run mirror 均超时；set -e 让脚本在 pull 失败后退出，老 v2.1.21 容器未被 stop（无 outage 风险）。手动恢复：SSH prod 用 dockerproxy.net mirror 拉到镜像 retag 后 stop+rm 老容器并启新 v2.1.22 容器，healthz 185s 内 green。后端实际中断约 3 分钟（container swap 期）。GitHub Actions UI 上 deploy_product job 仍显示 failure。"
     related_features:
-      - "membership-credits-redesign (S3 reopened) — 真正的彻底清理在这里推进，本 hotfix 是其前置止损。"
+      - "legacy-system-deprecation (S0 开启 2026-05-18) — 后续 Standard track，把 hotfix 留下的 19 处隐患逐个清理。"
     created_at: "2026-05-18T00:00:00+08:00"
+    completed_at: "2026-05-18T16:50:00+08:00"
+
+  - id: "legacy-system-deprecation"
+    ndf_version: "1.1"
+    description: "把 legacy_tier 计费体系（基于 user.user_tier + monthly_sop_runs 次数制）从代码、数据、API 响应、前端展示、测试中全量移除。新制 credits（trial_grant + credit_cycle + user_booster_balance 三池 SOT）成为唯一计费体系。范围 19 处代码位置 + user 表 5 列 DROP migration + 前后端响应字段同步删除 + 测试改造。前置 hotfix credits-trial-grant-bypass-fix 已止损 prod，本 feature 是工程化清理。"
+    track: "standard"
+    stage: "S0"
+    classification_reason: "Standard Triage — (1) **是** schema 变更（DROP 4-5 列 + 数据 UPDATE）(2) 否 新端点 (3) 否 外部集成 (4) **>3** 文件（≥19 处）(5) **是** 高风险（credit 扣减分发 + SOP 权限 + payment + grant flow）。5 条违反 3 条，边界默认 Standard，用户已确认。"
+    last_updated_by: "ai-s0-kickoff"
+    last_updated_at: "2026-05-18T17:00:00+08:00"
+    repos:
+      - numind-server
+      - numind-web-v3
+      - numind-admin-web
+    branches: {}
+    artifacts:
+      requirement: "numind-server/requirements/legacy-system-deprecation.md"
+      proposal: null
+      spec: null
+      plan: null
+    progress:
+      total_tasks: 4
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "S0 — requirement card 完成，等用户确认进 S1"
+    rollback: null
+    last_verified: null
+    decisions:
+      - "2026-05-18 (S0 Triage): 5 条标准违反 3 条 → Standard，用户拍板确认。"
+      - "2026-05-18 (S0 scope 拍板): (1) user 表字段策略：清数据 + 最终 DROP user_tier/tier_expires/monthly_sop_runs/monthly_reset_at/billing_mode 列 (2) API 字段：直接删 remaining_runs / monthly_limit，同步前端 (3) 测试：删 legacy 专用，双制测试改 credits-only (4) PR：分 3-4 个 sub-task 递次提交"
+      - "2026-05-18 (sub-task 初稿): Task 1 Core dispatch 清理 / Task 2 边界 caller 清理 / Task 3 前端清理 / Task 4 Schema DROP migration（间隔 ≥1 周 prod 验证后执行）。S3 plan 锁顺序和依赖。"
+    related_features:
+      - "credits-trial-grant-bypass-fix (completed 2026-05-18, v2.1.22/v1.0.22) — 本 feature 是该 hotfix 的工程化后续，移除 hotfix 临时保留的 19 处 legacy 残留。"
+      - "membership-credits-redesign (S5→S3 reopened) — 三池 SOT 设计的母 feature，本 feature 是其 cleanup 收尾。"
+    created_at: "2026-05-18T17:00:00+08:00"
     completed_at: null
