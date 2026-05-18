@@ -1,6 +1,35 @@
 schema_version: "1.0"
 
 features:
+  - id: "settings-credits-display-broken"
+    ndf_version: "1.1"
+    description: "P0 prod bug：设置页「我的积分」三个连锁问题。Root cause: 2026-05-16 Audit P2#4/#5 cleanup 删除了 /v1/credits/balance 的旧字段（balance/sub_total/sub_remain/booster_remain），后端注释自承『frontend reads were already migrated』，但实际 SettingsView 路径未迁移。具体症状：(1) CreditBalanceCard.vue:14 会员积分行用 balance?.sub_total > 0 判定 → 永不渲染 (2) 加量包行 booster_remain（已删）显示为 0、booster_total（语义已变 = remaining）作分母 → 用户看到 0/580 这种诡异显示 (3) BoosterPurchaseCard.vue:86-92 同样依赖 sub_total → Pro 会员卡片显示禁用『请联系管理员开通』，无法购买加量包 (4) SettingsView.vue 进度条计算依赖 userStore.quotaSubTotal/quotaSubRemain/quotaBoosterTotal（值永远 0）+ tierLabel/expiryText 也读已删字段。修复：前端 3 文件改用新字段 trial_remaining/cycle_remaining/booster_total(语义=剩余)/booster_usable/membership_state；删除「额度使用率」进度条 section（三池叠加的进度条无意义）；加量包改单数字『剩余 N 积分』显示，移除假分母；后端 state.go BoosterTotal 字段注释加强标明语义=remaining 不是 total。"
+    track: "hotfix"
+    stage: "H2"
+    classification_reason: "Hotfix Triage 5 条 — (1) 无 schema 变更 (2) 无新端点（已存在 GET /v1/credits/balance 字段语义校准）(3) 无外部服务集成 (4) 跨两仓但每仓 ≤3 文件（web-v3: CreditBalanceCard + BoosterPurchaseCard + SettingsView，server: state.go 注释）(5) 涉及计费展示但不动扣减逻辑，零回归风险。条件 1-5 全部命中 Hotfix Track。"
+    last_updated_by: "ai-h1-research"
+    last_updated_at: "2026-05-19T00:00:00+08:00"
+    repos:
+      - numind-web-v3
+      - numind-server
+    branches:
+      numind-web-v3: "fix/settings-credits-display"
+      numind-server: "fix/booster-total-comment"
+    worktree:
+      numind-web-v3: "/private/tmp/wt-settings-credits-display"
+      numind-server: "/private/tmp/wt-booster-total-comment"
+    progress:
+      total_tasks: 4
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "H2 — 改 3 个 vue 文件 + state.go 注释 + lint/typecheck"
+    decisions:
+      - "2026-05-19 (H1 调研): 三个症状根因汇聚到同一处 —— 2026-05-16 Audit P2#4/#5 cleanup 删了 balance/sub_total/sub_remain/booster_remain 四个旧字段，CreditsView 已迁移到 BalanceDTO 新字段，但 SettingsView 路径漏迁；同时后端 BoosterTotal 字段名误导（赋值是 booster.CreditsRemaining，语义是 remaining 不是 total），加重展示错位。扣减机制本身 (cycle.go FIFO + Reserve/Reconcile) 实测代码完全正确，用户感知到的『扣分异常』是展示 bug 的次生现象。"
+      - "2026-05-19 (产品决策 - 用户拍板): (1) 加量包改单数字『剩余 N 积分』，不再用分子/分母（加量包是聚合余额无『条数』概念）(2) 删除「额度使用率」进度条 section（试用+月订+加量包三池叠加无法用单一进度条表达）(3) 部署节奏：先 dev 验证 → 再 prod tag。"
+      - "2026-05-19 (技术决策 - AI 自决): 后端只加注释不重命名 BoosterTotal 字段（重命名会再次破坏前端，已学到 Audit cleanup 教训）；前端用 store 的 displayState 而非 userInfo.tier 判定会员状态（credits-only 模式后 tier 字段不可靠）；user store quota* 死字段保留不删（删除属 scope creep，且永远为 0 无害）。"
+    blockers: []
+    created_at: "2026-05-19T00:00:00+08:00"
+
   - id: "sop-salesrag-parent-scope"
     ndf_version: "1.1"
     description: "多租户 owner tag 补齐：SOP 列表 SQL 缺少父账户过滤（store/sop.go:142 只过滤 status+publish_status，无 creator_user_id）+ 销售智能体没有 owner tag（customer.HasFeaturePermission 对 parent_user_id IS NULL 硬 bypass），导致 prod 4 个实体跨父账户全局可见。修复：(1) SOP list SQL 加 owner 过滤，归属 = 父账户 + 该父账户全部子账户的 creator_user_id 集合 (2) UPDATE sop_template SET creator_user_id=30 WHERE id IN (1,2) (3) 新建 sales_agent_owner(parent_user_id PK) 小表作为销售智能体 owner tag (4) HasFeaturePermission 在 featureKey=='sales_agent' 分支移除父账户硬 bypass 改查 sales_agent_owner，其他 feature_key 保持现状 (5) INSERT sales_agent_owner VALUES(30)。无 admin UI，无授权 API，纯系统 SQL 过滤。语义选择 C（严格父账户隔离，留 option B 平台公共模板未来口）。架构选 Option A（sales_agent_owner 小表，1 天 ~7 文件 numind-server），未选 Option B（custom_agent 通用表 + 前端新类别，3-4 天 13-15 文件跨两仓），YAGNI 友好，未来真有 N>1 自定义智能体时升级路径明确。"
