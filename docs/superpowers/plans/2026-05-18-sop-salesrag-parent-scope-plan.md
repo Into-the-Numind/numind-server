@@ -27,15 +27,19 @@
 | 路径 | 改动内容 |
 |---|---|
 | `internal/pkg/model/sop.go` | SopTemplate.CreatorUserID 字段注释升级反映租户 owner 语义（D5）|
-| `internal/numind/store/store.go` | DataStore interface 加 `SalesAgentOwners()` + 工厂注册 |
-| `internal/numind/store/sop.go` | `ListVisibleTemplates` 签名加 `ownerParentUserID uint` + SQL 加 owner 过滤 + IS NOT NULL 防御（D7）|
+| `internal/numind/store/store.go` | IStore interface 加 `SalesAgentOwners()` + 工厂注册 |
+| `internal/numind/store/sop.go` | `ListVisibleTemplates` 签名加 `ctx context.Context, ownerParentUserID uint`（2-axis 变更）+ SQL 加 owner 过滤 + IS NOT NULL 防御（D7）|
 | `internal/numind/store/customer.go` | 删除 `HasFeaturePermission`；新增 `CheckSubUserFeatureGrant(ctx, subUserID, featureKey)` 纯查询（D2）|
-| `internal/numind/biz/sop/sop.go` | (a) `ListVisibleTemplates(WithPermission)` 改 owner 参数 (b) `CreateTemplateByUser` 加 ParentUserOnly assertion + parent resolution (D1+D8) (c) `CreateTemplate` 加 `adminUserID` 参数（D6）|
+| `internal/numind/biz/biz.go` | 新增包级 `var B IBiz` 全局变量 + 在 `NewBiz` 初始化时设置（D2 wiring 前置）|
+| `internal/numind/biz/sop/sop.go` | (a) `ListVisibleTemplates(WithPermission)` 改 owner 参数 (b) `CreateTemplateByUser` 加 ParentUserOnly assertion + 仅改 CreatorUserID 一行，保留 TrailingChatEnabled / GORM default:true fixup / log 等所有现有逻辑（D1+D8）(c) `CreateTemplate` 加 `adminUserID` 参数，保留 GrantTemplateToConfiguredSubUsers 自动授权（D6）|
 | `internal/numind/biz/customer/customer.go` | `CheckFeaturePermission` 改为 dispatch + 新增 `hasSalesAgentPermission` helper（D2）|
-| `internal/numind/controller/v1/admin_sop/sop.go` | `CreateTemplate` 调用传入 adminUserID（从 context "current_user" 取）|
-| `internal/pkg/middleware/middleware.go` | `FeaturePermission` 改调 `biz.Customers().CheckFeaturePermission`（修 layer violation）|
-| `internal/numind/store/sop_test.go` | 新增 3 个 ListVisibleTemplates 测试 |
+| `internal/numind/biz/monitor/monitor.go` | line 146 `mb.store.Customers().HasFeaturePermission(...)` 改调 `biz.B.Customers().CheckFeaturePermission(...)`（caller 迁移）|
+| `internal/numind/controller/v1/admin_sop/sop.go` | `CreateTemplate` 调用传入 adminUserID（从 `middleware.GetCurrentUser(c)` helper 取）|
+| `internal/pkg/middleware/middleware.go` | `FeaturePermission` 改调 `biz.B.Customers().CheckFeaturePermission`（修 layer violation）|
+| `internal/numind/numind.go` | wire 中调 `biz.NewBiz(ds)` 时同步赋值 `biz.B`（确保 store.S 已初始化后）|
+| `internal/numind/store/sop_template_visibility_test.go`（沿用现有 visibility 测试文件，避免新建 sop_test.go）| 新增 3 个 ListVisibleTemplates 测试 |
 | `internal/numind/store/customer_test.go` | `HasFeaturePermission` 测试迁移到 `CheckSubUserFeatureGrant` |
+| `internal/numind/store/customer_permission_lifecycle_test.go` | 11 处 `HasFeaturePermission` 调用全部迁移到 `CheckSubUserFeatureGrant`（或必要时通过 biz）|
 | `internal/numind/biz/customer/customer_test.go` | 加 9 个 CheckFeaturePermission 矩阵测试 |
 | `internal/numind/biz/sop/sop_test.go` | 加 7 个 SOP biz 测试（list + create 路径）|
 
@@ -72,7 +76,7 @@
 - Create: `numind-server/internal/numind/store/sales_agent_owner.go`
 - Create: `numind-server/internal/numind/store/sales_agent_owner_test.go`
 - Modify: `numind-server/internal/pkg/model/sop.go`（仅注释升级 line 16 的 `CreatorUserID`）
-- Modify: `numind-server/internal/numind/store/store.go`（DataStore interface 加方法 + 工厂注册）
+- Modify: `numind-server/internal/numind/store/store.go`（IStore interface 加方法 + 工厂注册）
 
 **Spec 引用**: §2.1, §2.2, §3.1, §7.1, §8.2
 
@@ -174,7 +178,7 @@ import (
 
     "gorm.io/gorm"
 
-    "github.com/aiagent-numind/numind-server/internal/pkg/model"
+    "numind-server/internal/pkg/model"
 )
 
 // ISalesAgentOwnerStore 销售智能体归属表数据访问接口
@@ -212,7 +216,7 @@ func (s *salesAgentOwnerStore) Exists(ctx context.Context, parentUserID uint) (b
 
 ⚠️ 检查正确的 module 路径前缀（grep 现有 store 文件的 import path 确认）。
 
-- [ ] **Step 6: 注册 DataStore interface + 工厂**
+- [ ] **Step 6: 注册 IStore interface + 工厂**
 
 `internal/numind/store/store.go`：
 
@@ -245,7 +249,7 @@ import (
     "gorm.io/driver/sqlite"
     "gorm.io/gorm"
 
-    "github.com/aiagent-numind/numind-server/internal/pkg/model"
+    "numind-server/internal/pkg/model"
 )
 
 func setupSalesAgentOwnerStoreTest(t *testing.T) (ISalesAgentOwnerStore, *gorm.DB) {
@@ -336,9 +340,11 @@ git commit -m "feat(parent-scope): add sales_agent_owner table + model + store
 **Files:**
 - Modify: `numind-server/internal/numind/store/sop.go`（ISopStore interface + 实现）
 - Modify: `numind-server/internal/numind/biz/sop/sop.go`（ISopBiz interface + 2 个 caller）
-- Modify: `numind-server/internal/numind/store/sop_test.go`（更新原 ListVisibleTemplates 测试 + 加 3 个新测试）
+- Modify: `numind-server/internal/numind/store/sop_template_visibility_test.go`（沿用现有 visibility 测试文件，避免新建；更新原 ListVisibleTemplates 测试 + 加 3 个新测试）
 
 **Spec 引用**: §3.4, §3.5, §4.1, §5.2 (AC6-AC9), §5.4 (B4, B5)
+
+**关键 2-axis 签名变更**: store 层 `ListVisibleTemplates` 当前签名 `(offset, limit int)`，**没有 ctx**。本 task 同时加 `ctx context.Context` 和 `ownerParentUserID uint` 两个参数。Caller 必须同时传 ctx。
 
 **关键不变量**：本 task 必须一次性 atomic commit，否则中间态系统无法编译。所有 store 和 biz 的 caller 必须同步修改。
 
@@ -442,11 +448,11 @@ grep -rn "ListVisibleTemplates\b" internal/ --include='*.go' | grep -v _test.go 
 
 - [ ] **Step 6: 更新现有 ListVisibleTemplates 测试**
 
-`internal/numind/store/sop_test.go`：找到所有 `ListVisibleTemplates(...)` 调用，加上 `ownerParentUserID` 参数。
+grep 仓库 `_test.go` 找所有 `ListVisibleTemplates(...)` 调用（store 层 + biz 层都有可能），加上 `ctx` 和 `ownerParentUserID` 参数。
 
 - [ ] **Step 7: 加 3 个新的 store 测试**
 
-文件 `internal/numind/store/sop_test.go` 末尾追加：
+文件 `internal/numind/store/sop_template_visibility_test.go` 末尾追加（沿用现有 visibility 测试文件 — `sop_test.go` 不存在，避免新建）：
 
 ```go
 func TestListVisibleTemplates_FilterByOwner(t *testing.T) {
@@ -492,7 +498,9 @@ func TestListVisibleTemplates_EmptyForNonExistentParent(t *testing.T) {
 }
 ```
 
-⚠️ 如果 `setupSopStoreTest` 不存在，新建之，沿用 `customer_test.go` 的 sqlite 模式 + AutoMigrate SopTemplate。
+⚠️ `setupSopStoreTest` helper 不存在。在 `sop_template_visibility_test.go` 复用现有 setup（grep 该文件确认 helper 名字），或新建 `setupSopStoreTestDB(t) (ISopStore, *gorm.DB)` helper，沿用 `customer_test.go:21-30` 的 sqlite 初始化 + AutoMigrate(&model.SopTemplate{}) 模式。
+
+⚠️ 测试用 `db.Create(&model.SopTemplate{...})` 不能直接设 `gorm.Model.ID`，因为 gorm.Model 内嵌 ID 字段会被 AutoIncrement 覆盖。如需固定 ID，用 INSERT raw SQL 或 `db.Exec("INSERT INTO ...")`。
 
 - [ ] **Step 8: 跑测试**
 
@@ -510,7 +518,7 @@ task lint
 
 ```bash
 git add internal/numind/store/sop.go internal/numind/biz/sop/sop.go \
-        internal/numind/store/sop_test.go
+        internal/numind/store/sop_template_visibility_test.go
 git commit -m "feat(parent-scope): add owner filter to SOP list query
 
 SopStore.ListVisibleTemplates 加 ownerParentUserID 参数, SQL WHERE
@@ -526,15 +534,39 @@ owner 传入, 与 chatbot ListPublishedByOwner 模式对齐 (spec D1)."
 ## Task 3: store 拆纯查询 + biz dispatch + middleware redirect
 
 **Files:**
+- Modify: `numind-server/internal/numind/biz/biz.go`（新增包级 `var B IBiz` 全局变量 + NewBiz 时赋值）
+- Modify: `numind-server/internal/numind/numind.go`（wire 时确保 store.NewStore → biz.NewBiz 顺序正确）
 - Modify: `numind-server/internal/numind/store/customer.go`（删 HasFeaturePermission，加 CheckSubUserFeatureGrant）
 - Modify: `numind-server/internal/numind/biz/customer/customer.go`（CheckFeaturePermission 改 dispatch + 加 hasSalesAgentPermission helper）
-- Modify: `numind-server/internal/pkg/middleware/middleware.go`（FeaturePermission 改调 biz）
+- Modify: `numind-server/internal/numind/biz/monitor/monitor.go`（line 146 caller 迁移：`mb.store.Customers().HasFeaturePermission(...)` → `biz.B.Customers().CheckFeaturePermission(...)`）
+- Modify: `numind-server/internal/pkg/middleware/middleware.go`（FeaturePermission 改调 biz.B）
 - Modify: `numind-server/internal/numind/store/customer_test.go`（迁移到 CheckSubUserFeatureGrant）
+- Modify: `numind-server/internal/numind/store/customer_permission_lifecycle_test.go`（11 处 `HasFeaturePermission` 调用迁移到 `CheckSubUserFeatureGrant`，或调 biz.CheckFeaturePermission 视测试语义）
 - Modify: `numind-server/internal/numind/biz/customer/customer_test.go`（加 9 个矩阵测试）
 
 **Spec 引用**: §3.2, §3.3, §5.2 (AC10-AC12), §5.4 (B1-B3, B8), §6.2
 
 **关键不变量**：本 task 必须一次性 atomic commit。中间态会让 middleware 调不存在的方法。
+
+**Step 0 (biz.B singleton wiring) 必须先于其他 step 完成**，否则 Step 3 middleware redirect 无目标可调。
+
+- [ ] **Step 0: 新增 `biz.B` 全局单例 wiring（D2 前置基础设施）**
+
+`internal/numind/biz/biz.go` 加：
+
+```go
+// B 是 biz 层全局单例,镜像 store.S 模式. middleware/cron 等 wire 不便注入的代码路径
+// 可通过此变量调 biz 函数. 在 NewBiz 时初始化, 不应被外部直接重置.
+var B IBiz
+
+// NewBiz 已有签名不变，函数体末尾追加：
+//   B = newBizInstance
+// 确保 store.S 已 init 后再调 biz.NewBiz.
+```
+
+`internal/numind/numind.go` 验证 wire 顺序：`store.NewStore(...)` 先于 `biz.NewBiz(...)` 调用（如本就如此，本 step 仅做断言性 grep 确认）。
+
+grep `biz\.B\b` 全仓库验证当前未占用此名字，避免冲突。
 
 - [ ] **Step 1: 删除 store.HasFeaturePermission 加新方法**
 
@@ -631,13 +663,35 @@ hasPermission, err := store.S.Customers().HasFeaturePermission(c, user.ID, featu
 hasPermission, err := biz.B.Customers().CheckFeaturePermission(c, user.ID, featureKey)
 ```
 
-确认 `biz.B` 全局变量存在（grep `biz.B\.\|biz\.B =` 验证）；如不存在，参考其他 middleware 引用 biz 层的方式接入。
+`biz.B` 已在 Step 0 创建。如 Step 0 漏做导致 `biz.B == nil` 运行时 panic，回到 Step 0 修。
 
-- [ ] **Step 4: 迁移 store 测试**
+**同 step 同步迁移其他 caller**（搜过完整 caller 清单）：
 
-`internal/numind/store/customer_test.go`：
+- `internal/numind/biz/monitor/monitor.go:146` 改：
+  ```go
+  // 原: has, err := mb.store.Customers().HasFeaturePermission(ctx, userID, model.FeatureKeyContentMonitor)
+  // 新: has, err := biz.B.Customers().CheckFeaturePermission(ctx, userID, model.FeatureKeyContentMonitor)
+  ```
+  注意：原代码用 `mb.store.Customers()` 直调 store 跳过 biz 也是 layer violation，本次顺手统一修。
 
-1. 找所有 `HasFeaturePermission(...)` 调用，删除该 test 函数或迁移成 `CheckSubUserFeatureGrant(...)` 调用
+- grep 兜底验证：
+  ```bash
+  grep -rn "HasFeaturePermission" internal/ --include='*.go'
+  ```
+  期望命中仅在被删除的接口定义处 + 已迁移的测试文件。任何 production 代码命中 = 漏改。
+
+- [ ] **Step 4: 迁移 store 测试（两个测试文件，~14 处调用）**
+
+迁移两个文件中所有的 `HasFeaturePermission` 调用：
+
+1. `internal/numind/store/customer_test.go` — 历史测试（~3 处）
+2. `internal/numind/store/customer_permission_lifecycle_test.go` — **11 处 `HasFeaturePermission` 调用必须全部迁移**（grep `cs.HasFeaturePermission\|store.Customers().HasFeaturePermission` 确认 11 处都改）
+
+每处的语义判断：
+- 如果测试在断言"父账户 bypass"行为 → 该测试转换为 biz 层测试（在 customer biz_test 写）；或者重写为构造 user 后调 `biz.CheckFeaturePermission`
+- 如果测试在断言"子账户 grant 表行存在"行为 → 直接改为 `CheckSubUserFeatureGrant(subUserID, featureKey)` 等价签名（注意：不再传 userID + 自动读 user 表，调用方必须先知道是子账户 ID）
+
+新增的核心 store 测试（在 customer_test.go 末尾）：
 2. 现存测试改为：
 
 ```go
@@ -703,7 +757,8 @@ func setupCheckFeaturePermissionTest(t *testing.T) (Customers, *gorm.DB) {
 
 func TestCheckFeaturePermission_SalesAgent_ParentOwnerExists(t *testing.T) {
     biz, db := setupCheckFeaturePermissionTest(t)
-    db.Create(&model.User{Model: gorm.Model{ID: 30}})  // parent
+    // 注: model.User 内嵌 gorm.Model，AutoIncrement ID 会覆盖手设 ID，用 raw INSERT 固定 ID:
+db.Exec("INSERT INTO user (id, parent_user_id, created_at, updated_at) VALUES (30, NULL, datetime('now'), datetime('now'))")  // parent
     db.Create(&model.SalesAgentOwner{ParentUserID: 30})
 
     has, err := biz.CheckFeaturePermission(context.Background(), 30, "sales_agent")
@@ -713,7 +768,7 @@ func TestCheckFeaturePermission_SalesAgent_ParentOwnerExists(t *testing.T) {
 
 func TestCheckFeaturePermission_SalesAgent_ParentOwnerAbsent(t *testing.T) {
     biz, db := setupCheckFeaturePermissionTest(t)
-    db.Create(&model.User{Model: gorm.Model{ID: 1}})  // admin parent
+    db.Exec("INSERT INTO user (id, parent_user_id, created_at, updated_at) VALUES (1, NULL, datetime('now'), datetime('now'))")  // admin parent
     // NOT inserted into sales_agent_owner
 
     has, err := biz.CheckFeaturePermission(context.Background(), 1, "sales_agent")
@@ -723,9 +778,9 @@ func TestCheckFeaturePermission_SalesAgent_ParentOwnerAbsent(t *testing.T) {
 
 func TestCheckFeaturePermission_SalesAgent_SubUserBothLayers(t *testing.T) {
     biz, db := setupCheckFeaturePermissionTest(t)
-    parent := uint(30)
-    db.Create(&model.User{Model: gorm.Model{ID: 30}})
-    db.Create(&model.User{Model: gorm.Model{ID: 100}, ParentUserID: &parent})
+    // 注: model.User 内嵌 gorm.Model，AutoIncrement ID 会覆盖手设 ID，用 raw INSERT 固定 ID:
+    db.Exec("INSERT INTO user (id, parent_user_id, created_at, updated_at) VALUES (30, NULL, datetime('now'), datetime('now'))")
+    db.Exec("INSERT INTO user (id, parent_user_id, created_at, updated_at) VALUES (100, 30, datetime('now'), datetime('now'))")
     db.Create(&model.SalesAgentOwner{ParentUserID: 30})
     db.Create(&model.UserFeaturePermission{ParentUserID: 30, SubUserID: 100, FeatureKey: "sales_agent"})
 
@@ -736,9 +791,9 @@ func TestCheckFeaturePermission_SalesAgent_SubUserBothLayers(t *testing.T) {
 
 func TestCheckFeaturePermission_SalesAgent_SubUserLayer1Only(t *testing.T) {
     biz, db := setupCheckFeaturePermissionTest(t)
-    parent := uint(30)
-    db.Create(&model.User{Model: gorm.Model{ID: 30}})
-    db.Create(&model.User{Model: gorm.Model{ID: 100}, ParentUserID: &parent})
+    // 注: model.User 内嵌 gorm.Model，AutoIncrement ID 会覆盖手设 ID，用 raw INSERT 固定 ID:
+    db.Exec("INSERT INTO user (id, parent_user_id, created_at, updated_at) VALUES (30, NULL, datetime('now'), datetime('now'))")
+    db.Exec("INSERT INTO user (id, parent_user_id, created_at, updated_at) VALUES (100, 30, datetime('now'), datetime('now'))")
     // NOT inserted into sales_agent_owner
     db.Create(&model.UserFeaturePermission{ParentUserID: 30, SubUserID: 100, FeatureKey: "sales_agent"})
 
@@ -749,9 +804,9 @@ func TestCheckFeaturePermission_SalesAgent_SubUserLayer1Only(t *testing.T) {
 
 func TestCheckFeaturePermission_SalesAgent_SubUserLayer0Only(t *testing.T) {
     biz, db := setupCheckFeaturePermissionTest(t)
-    parent := uint(30)
-    db.Create(&model.User{Model: gorm.Model{ID: 30}})
-    db.Create(&model.User{Model: gorm.Model{ID: 100}, ParentUserID: &parent})
+    // 注: model.User 内嵌 gorm.Model，AutoIncrement ID 会覆盖手设 ID，用 raw INSERT 固定 ID:
+    db.Exec("INSERT INTO user (id, parent_user_id, created_at, updated_at) VALUES (30, NULL, datetime('now'), datetime('now'))")
+    db.Exec("INSERT INTO user (id, parent_user_id, created_at, updated_at) VALUES (100, 30, datetime('now'), datetime('now'))")
     db.Create(&model.SalesAgentOwner{ParentUserID: 30})
     // NOT inserted into user_feature_permission
 
@@ -764,7 +819,7 @@ func TestCheckFeaturePermission_SalesAgent_SubUserLayer0Only(t *testing.T) {
 
 func TestCheckFeaturePermission_ContentMonitor_ParentBypass(t *testing.T) {
     biz, db := setupCheckFeaturePermissionTest(t)
-    db.Create(&model.User{Model: gorm.Model{ID: 1}})  // admin parent
+    db.Exec("INSERT INTO user (id, parent_user_id, created_at, updated_at) VALUES (1, NULL, datetime('now'), datetime('now'))")  // admin parent
 
     has, err := biz.CheckFeaturePermission(context.Background(), 1, "content_monitor")
     require.NoError(t, err)
@@ -773,7 +828,7 @@ func TestCheckFeaturePermission_ContentMonitor_ParentBypass(t *testing.T) {
 
 func TestCheckFeaturePermission_SelfServiceConfig_ParentBypass(t *testing.T) {
     biz, db := setupCheckFeaturePermissionTest(t)
-    db.Create(&model.User{Model: gorm.Model{ID: 1}})
+    db.Exec("INSERT INTO user (id, parent_user_id, created_at, updated_at) VALUES (1, NULL, datetime('now'), datetime('now'))")
 
     has, err := biz.CheckFeaturePermission(context.Background(), 1, "self_service_config")
     require.NoError(t, err)
@@ -782,9 +837,9 @@ func TestCheckFeaturePermission_SelfServiceConfig_ParentBypass(t *testing.T) {
 
 func TestCheckFeaturePermission_ContentMonitor_SubUserDeny(t *testing.T) {
     biz, db := setupCheckFeaturePermissionTest(t)
-    parent := uint(30)
-    db.Create(&model.User{Model: gorm.Model{ID: 30}})
-    db.Create(&model.User{Model: gorm.Model{ID: 100}, ParentUserID: &parent})
+    // 注: model.User 内嵌 gorm.Model，AutoIncrement ID 会覆盖手设 ID，用 raw INSERT 固定 ID:
+    db.Exec("INSERT INTO user (id, parent_user_id, created_at, updated_at) VALUES (30, NULL, datetime('now'), datetime('now'))")
+    db.Exec("INSERT INTO user (id, parent_user_id, created_at, updated_at) VALUES (100, 30, datetime('now'), datetime('now'))")
 
     has, err := biz.CheckFeaturePermission(context.Background(), 100, "content_monitor")
     require.NoError(t, err)
@@ -872,53 +927,85 @@ func (b *sopBiz) CreateTemplateByUser(ctx context.Context, userID uint, req *Cre
         return nil, errno.ErrForbidden.SetMessage("仅父账户可创建 SOP 模板")
     }
 
+    // 未显式传入时默认开启，保持与历史行为一致（原有逻辑保留不动）
+    trailingChat := true
+    if req.TrailingChatEnabled != nil {
+        trailingChat = *req.TrailingChatEnabled
+    }
+
     ownerID := actor.ID  // 已 assert 是父账户
 
     template := &model.SopTemplate{
-        Name: req.Name,
-        Description: req.Description,
-        Prompt: req.Prompt,
-        CreatorUserID: &ownerID,  // ✅ 始终是父账户 id
-        // 其他字段照旧
+        Name:                req.Name,
+        Description:         req.Description,
+        CreatorUserID:       &ownerID,  // ✅ 始终是父账户 id (本次唯一改动行: 原为 &userID)
+        PublishStatus:       model.SopPublishStatusDraft,
+        Status:              "active",
+        TrailingChatEnabled: trailingChat,
     }
 
-    // ... 后续持久化逻辑保持不变
+    if err := b.ds.Sop().CreateTemplate(template); err != nil {
+        return nil, fmt.Errorf("CreateTemplateByUser: %w", err)
+    }
+
+    // GORM default:true bool fixup (database.md §6) — 保留不动
+    if !trailingChat && template.TrailingChatEnabled {
+        if err := b.ds.DB().WithContext(ctx).Model(template).UpdateColumn("trailing_chat_enabled", false).Error; err != nil {
+            return nil, fmt.Errorf("CreateTemplateByUser: fixup trailing_chat_enabled: %w", err)
+        }
+        template.TrailingChatEnabled = false
+    }
+
+    log.C(ctx).Infow("B-end user created SOP template", "user_id", userID, "template_id", template.ID, "name", req.Name)
+    return template, nil
 }
 ```
 
-⚠️ 确认 `errno.ErrForbidden` 存在；若不存在，沿用现有禁止类错误（grep `errno.Err.*权限\|Forbidden` 找现成）。
+**关键约束**：
+- `CreateTemplateByUserReq` 当前**没有** `Prompt` 字段（只有 Name / Description / TrailingChatEnabled），spec/plan 写法保持一致，不引入新字段。
+- 本 task **唯一新增**: function 头部读 actor + assert + 把 `CreatorUserID: &userID` 改为 `CreatorUserID: &ownerID`（在已 assert 父账户的前提下两者同值，但显式声明 invariant）。
+- 现有 `TrailingChatEnabled` handling + GORM `default:true` fixup（参见 `.claude/rules/database.md §6`）+ log 调用**完全保留**。
+
+⚠️ 确认 `errno.ErrForbidden` 存在（middleware.go:231 已用过 `errno.ErrForbidden.SetMessage`，已确认存在）。
 
 - [ ] **Step 2: 加单测**
 
 `internal/numind/biz/sop/sop_test.go` 末尾：
 
 ```go
+// setupSopBizTest helper（若不存在则新建，沿用 customer_test.go:21-30 sqlite 模式）：
+// func setupSopBizTest(t *testing.T) (sop.ISopBiz, *gorm.DB) {
+//     tmp := t.TempDir()
+//     db, _ := gorm.Open(sqlite.Open(tmp+"/biz_sop_test.db?_busy_timeout=5000"), &gorm.Config{})
+//     db.AutoMigrate(&model.User{}, &model.SopTemplate{})
+//     ds := store.NewDataStoreForTest(db)  // 若已有此 helper; 否则手工构造
+//     return sop.NewSopBiz(ds, nil, nil), db
+// }
+
 func TestCreateTemplateByUser_ParentSucceeds(t *testing.T) {
-    biz, db := setupSopBizTest(t)  // 沿用既有 helper
+    biz, db := setupSopBizTest(t)
     ctx := context.Background()
 
-    parentID := uint(30)
-    db.Create(&model.User{Model: gorm.Model{ID: parentID}})  // ParentUserID nil
+    // 注: gorm.Model embeds AutoIncrement ID, 用 raw INSERT 固定 ID
+    db.Exec("INSERT INTO user (id, parent_user_id, created_at, updated_at) VALUES (30, NULL, datetime('now'), datetime('now'))")
 
-    req := &CreateTemplateByUserReq{Name: "test", Description: "desc", Prompt: "p"}
-    tpl, err := biz.CreateTemplateByUser(ctx, parentID, req)
+    req := &sop.CreateTemplateByUserReq{Name: "test", Description: "desc"}  // 注: 无 Prompt 字段
+    tpl, err := biz.CreateTemplateByUser(ctx, 30, req)
     require.NoError(t, err)
     require.NotNil(t, tpl)
     require.NotNil(t, tpl.CreatorUserID)
-    require.Equal(t, parentID, *tpl.CreatorUserID, "creator_user_id 必须 = parent.ID")
+    require.Equal(t, uint(30), *tpl.CreatorUserID, "creator_user_id 必须 = parent.ID")
 }
 
 func TestCreateTemplateByUser_SubUserRejected(t *testing.T) {
     biz, db := setupSopBizTest(t)
     ctx := context.Background()
 
-    parentID := uint(30)
-    subID := uint(100)
-    db.Create(&model.User{Model: gorm.Model{ID: parentID}})
-    db.Create(&model.User{Model: gorm.Model{ID: subID}, ParentUserID: &parentID})
+    db.Exec("INSERT INTO user (id, parent_user_id, created_at, updated_at) VALUES (30, NULL, datetime('now'), datetime('now'))")
+    db.Exec("INSERT INTO user (id, parent_user_id, created_at, updated_at) VALUES (100, 30, datetime('now'), datetime('now'))")
 
-    req := &CreateTemplateByUserReq{Name: "test", Description: "desc", Prompt: "p"}
-    _, err := biz.CreateTemplateByUser(ctx, subID, req)
+    req := &sop.CreateTemplateByUserReq{Name: "test", Description: "desc"}
+    _, err := biz.CreateTemplateByUser(ctx, 100, req)
     require.Error(t, err, "子用户调用必须被拒")
     // 可选: assert errno.ErrForbidden chain
 }
@@ -966,7 +1053,8 @@ in-depth). CreatorUserID 始终存父账户 id, 不再存子用户 id (spec D1).
 CreateTemplate(ctx context.Context, adminUserID uint, name, description, prompt string) (*model.SopTemplate, error)
 ```
 
-实现：
+实现（**关键约束：保留所有现有逻辑** —— Status / PublishStatus 默认值 + GrantTemplateToConfiguredSubUsers 自动授权）：
+
 ```go
 func (b *sopBiz) CreateTemplate(ctx context.Context, adminUserID uint, name, description, prompt string) (*model.SopTemplate, error) {
     if adminUserID == 0 {
@@ -974,19 +1062,32 @@ func (b *sopBiz) CreateTemplate(ctx context.Context, adminUserID uint, name, des
     }
 
     template := &model.SopTemplate{
-        Name: name,
-        Description: description,
-        Prompt: prompt,
-        CreatorUserID: &adminUserID,  // 始终非 nil (spec D6)
+        Name:          name,
+        Description:   description,
+        Prompt:        prompt,
+        Status:        model.SopNodeStatusActive,                  // 保留原有逻辑
+        PublishStatus: model.SopPublishStatusPublished,             // 保留原有: admin 创建默认发布
+        CreatorUserID: &adminUserID,                                // 新增此行 (spec D6)
     }
     if err := b.ds.Sop().CreateTemplate(template); err != nil {
-        return nil, fmt.Errorf("CreateTemplate: %w", err)
+        return nil, fmt.Errorf("failed to create template: %w", err)
     }
+
+    // 保留原有逻辑: 自动授权给所有已配置权限的子用户
+    if err := b.ds.Customers().GrantTemplateToConfiguredSubUsers(ctx, template.ID); err != nil {
+        log.C(ctx).Warnw("Failed to auto-grant new template to sub-users", "template_id", template.ID, "err", err)
+    }
+
     return template, nil
 }
 ```
 
-⚠️ 检查原 `b.ds.Sop().CreateTemplate(template)` 是否仍然适用；如果原代码有 PublishStatus 默认值等设置，保留。
+**本 task 唯一新增**:
+1. signature 加 `adminUserID uint` 参数
+2. function 头部 `if adminUserID == 0 { return error }`
+3. template struct 加 `CreatorUserID: &adminUserID,` 一行
+
+**保留**: Status / PublishStatus 默认值 + GrantTemplateToConfiguredSubUsers 自动授权 + log + error wrapping。
 
 - [ ] **Step 2: 更新 admin controller 调用**
 
@@ -997,14 +1098,10 @@ func (ctrl *SopController) CreateTemplate(c *gin.Context) {
     log.C(c).Infow("Create SOP template called")
 
     // 从 admin token middleware 设置的 context 中取 admin user.id (spec D6)
-    userVal, exists := c.Get("current_user")
-    if !exists {
-        core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("admin context missing"), nil)
-        return
-    }
-    adminUser, ok := userVal.(*model.User)
+    // 用 middleware.GetCurrentUser helper（若存在; grep 验证）避免重复 type assert
+    adminUser, ok := middleware.GetCurrentUser(c)
     if !ok || adminUser == nil {
-        core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("admin user 类型错误"), nil)
+        core.WriteResponse(c, errno.ErrTokenInvalid.SetMessage("admin context missing"), nil)
         return
     }
 
@@ -1032,7 +1129,7 @@ func (ctrl *SopController) CreateTemplate(c *gin.Context) {
 
 ```go
 func TestCreateTemplate_AdminSucceeds(t *testing.T) {
-    biz, _ := setupSopBizTest(t)
+    biz, _ := setupSopBizTest(t)  // 沿用 Task 4 的 helper
     ctx := context.Background()
 
     adminID := uint(1)
@@ -1050,6 +1147,8 @@ func TestCreateTemplate_RequiresAdminUserID(t *testing.T) {
     require.Error(t, err, "adminUserID=0 必须报错")
 }
 ```
+
+⚠️ 这两个测试假设 `b.ds.Customers().GrantTemplateToConfiguredSubUsers(ctx, ...)` 在测试 fake datastore 中要么 mock 要么 graceful no-op（参考 biz/sop/sop_test.go 现有测试看 fake/mock 模式）。
 
 - [ ] **Step 4: 跑测试 + lint + 全仓库 build 检查**
 
