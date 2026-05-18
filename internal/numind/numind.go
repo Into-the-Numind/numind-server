@@ -245,6 +245,16 @@ func run() error {
 		}
 	}()
 
+	// Reservation sweeper: protects against credit loss on server crash mid-Reserve.
+	// Audit P0-2 — see docs/superpowers/specs/2026-05-18-credits-system-audit.md.
+	// Reserve deducts credits immediately; defer FinalizeReservation handles
+	// Reconcile/Refund. If the server dies between those two steps, the
+	// credit_reservation row stays status='reserved' forever and the user's
+	// credits are silently lost. The sweeper finds rows older than the stale
+	// threshold and refunds them via the existing audit-trail path.
+	sweeper := credit.NewReservationSweeper(store.S, bizLayer.CreditService(), credit.DefaultReservationSweeperConfig())
+	go sweeper.Run(context.Background())
+
 	// 创建并运行 HTTPS 服务器
 	//httpssrv := startSecureServer(g)
 
