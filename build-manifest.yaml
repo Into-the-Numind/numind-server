@@ -705,10 +705,10 @@ features:
     ndf_version: "1.1"
     description: "把 legacy_tier 计费体系（基于 user.user_tier + monthly_sop_runs 次数制）从代码、数据、API 响应、前端展示、测试中全量移除。新制 credits（trial_grant + credit_cycle + user_booster_balance 三池 SOT）成为唯一计费体系。S1 audit 后范围扩大：60+ 处代码 + 5 列 user 表 DROP + 2 admin 端整页删 + 5 doc 文件 + 2 migration SQL 收敛。Prod 数据审计显示 246 用户全 credits+free，legacy 代码路径全部死路径，删除主要是工程清理。"
     track: "standard"
-    stage: "S2"
+    stage: "S3"
     classification_reason: "Standard Triage — (1) **是** schema 变更（DROP 5 列 + 历史数据 0 行需 UPDATE）(2) 否 新端点 (3) 否 外部集成 (4) **>3** 文件（60+ 处）(5) **是** 高风险（credit 扣减分发 + SOP 权限 + payment + grant flow）。5 条违反 3 条，边界默认 Standard，用户已确认。"
-    last_updated_by: "ai-s2-spec"
-    last_updated_at: "2026-05-18T19:30:00+08:00"
+    last_updated_by: "ai-s3-plan"
+    last_updated_at: "2026-05-18T20:30:00+08:00"
     repos:
       - numind-server
       - numind-web-v3
@@ -718,12 +718,12 @@ features:
       requirement: "numind-server/requirements/legacy-system-deprecation.md"
       proposal: "numind-server/proposals/legacy-system-deprecation-proposal.md"
       spec: "numind-server/docs/superpowers/specs/2026-05-18-legacy-system-deprecation-design.md"
-      plan: null
+      plan: "numind-server/docs/superpowers/plans/2026-05-18-legacy-system-deprecation-plan.md"
     progress:
       total_tasks: 4
       completed_tasks: 0
       reviewed_tasks: 0
-      current_task: "S2 — spec 完成，等客户审阅后进 S3 实施规划"
+      current_task: "S3 — plan 完成，等客户拍板执行方式（subagent-driven 推荐 vs inline）后进 S4"
     rollback: null
     last_verified: null
     decisions:
@@ -738,6 +738,9 @@ features:
       - "2026-05-18 (S1→S2 gate PASS): 用户确认 S1 提案，推进 S2 技术设计。"
       - "2026-05-18 (S2 brainstorming 8 项技术决策全部用户采纳): (1) API 字段 omitempty 移除 (2) admin_migration controller 整删 (3) IncrementSopRunCount 删调用方+删方法体 (4) tier_change_log 改名 legacy_ 前缀停止写入 (5) 老 billing_mode migration SQL 保留不动 (6) doc 文件 inline 改写留锚点 (7) server 先 → 前端两仓 ≥1 天后 (8) Schema DROP 提供完整 rollback SQL + prod backup 双保险。"
       - "2026-05-18 (S2 spec 完成): 12 节 spec 含架构 before/after、API 契约 diff、DB DDL、4 task 详细范围、测试矩阵、跨仓部署松耦合设计、风险登记、12 项验收标准。3 项未决问题留 S3 plan 阶段消化。"
+      - "2026-05-18 (S2→S3 gate PASS): 用户确认 S2 spec，推进 S3 plan。"
+      - "2026-05-18 (S3 open questions 解决): (a) admin_user UpdateUserTier endpoint 整删（grep 确认唯一调用方是 admin-web updateUserTierApi）(b) legacy_tier_change_log 保留 1 年再评估 (c) CLAUDE.md 改写归 T2.10 顺手做。"
+      - "2026-05-18 (S3 plan 完成): 4 task × ~8 sub-task 颗粒度的 step-by-step 计划，每 step 含 exact code + 命令 + 期望输出。Pre-flight audit + Final acceptance 章节闭环。Self-review 修正 1 处：T4.5 误把 TotalSopRuns 列入 DROP 列表，已纠正（spec §5 只列 5 字段，TotalSopRuns 是累计分析字段保留）。"
     related_features:
       - "credits-trial-grant-bypass-fix (completed 2026-05-18, v2.1.22/v1.0.22) — 本 feature 是该 hotfix 的工程化后续，移除 hotfix 临时保留的 19 处 legacy 残留。"
       - "membership-credits-redesign (S5→S3 reopened) — 三池 SOT 设计的母 feature，本 feature 是其 cleanup 收尾。"
