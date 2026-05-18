@@ -854,3 +854,35 @@ features:
       - "credits-trial-grant-bypass-fix (completed 2026-05-18 v2.1.22) — 上一个 hotfix；本审计揭示其遗留死代码"
     created_at: "2026-05-18T22:00:00+08:00"
     completed_at: "2026-05-18T22:00:00+08:00"
+
+  - id: "salesrag-embed-dim-2048"
+    ndf_version: "1.1"
+    description: "P0 Prod hotfix：用户在配置中心上传 PDF 到知识库报失败。Root cause: 2026-04-16 commit 1c68d90 + migration 20260416_000001_ai_service_manager.sql 把 SalesRAG embedding 从 b.Ali().QianwenEmbedding（硬编码 2048 维）迁到 Gateway profile 路由，DB 把 task_profile.salesrag.embed.requirements.dimension + ai_service.text-embedding-v4.capability_json.dimension 都种成 1024（qwen text-embedding-v4 默认），但 prod DashVector collection sales_rag_prod 是 2048 维（早于迁移创建）。profile/capability.go dimension 精确匹配 → DashScope 默认输出 1024 → 写入 2048 collection 报 Dimension mismatch Expected 2048 received 1024。Bug 冷冻 2 个月（最后成功上传 2026-03-17，迁移 2026-04-16，2 个月零成功上传），用户 2026-05-19 00:27 触发暴露。修复 Option A（用户拍板）：保留所有现有 90 份 COMPLETED 文档 + 537 个 chunk 的 2048 维向量数据，把代码维度切回 2048。"
+    track: "hotfix"
+    stage: "H2"
+    classification_reason: "Hotfix Triage — (1) 无 schema 改动（只改 DB 数据 + 1 行代码常量）(2) 无新端点 (3) 无外部集成 (4) 3 文件改动 + 1 migration（biz.go + profile/constants.go + 新 migration）(5) 计费/权限低风险，向量库路径，profile/capability 精确匹配保证错配会显式报错而非静默错乱。零回归（Dimension=2048 反走 ali.go:183 显式 dimension 参数 path，text-embedding-v4 原生支持 2048）。"
+    last_updated_by: "ai-h2-implementation"
+    last_updated_at: "2026-05-19T02:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "fix/salesrag-embed-dim-2048"
+    worktree:
+      numind-server: ".claude/worktrees/salesrag-embed-dim-2048"
+    progress:
+      total_tasks: 3
+      completed_tasks: 3
+      reviewed_tasks: 3
+      current_task: "Reviewer Sonnet subagent PASS_WITH_CONCERNS (0 P0 / 1 P1 / 1 P2)；P1 task_profile.description 文本同步已就地修。待 commit + merge develop + push + dev 部署后跑 migration + 用户复测上传。"
+    decisions:
+      - "2026-05-19 (Triage): prod bug id=112 user_id=1 (admin) 上传 PDF 失败，error_msg = 'vector storage failed: ... Expected 2048 received 1024'。time-to-root-cause 约 15 分钟（SSH prod query error_msg → grep profile.SalesragEmbed → 比对 task_profile DB 与 collection schema）。"
+      - "2026-05-19 (用户产品决策 Option A): 现有 90 份 COMPLETED docs 中 76 份属于 user_moxiaopai(30) + 11 个 B2B 子账户的真实客户数据，决定保留所有 2048 维向量，把代码切回 2048。备选 Option B（重建 collection 1024 + backfill 537 chunk）和 Option C（重建 + 让客户重传）被否。"
+      - "2026-05-19 (H2 实施): 3 处改动 — (1) biz.go:121 EmbedRequest 加 Dimension: 2048 + 注释说明锁定原因 (2) profile/constants.go:21 注释 dimension=1024→2048 (3) 新 migration 20260519_010000 同步 task_profile.requirements.dimension + task_profile.description + ai_service.capability_json.dimension 全部 1024→2048。task lint + go test ./internal/numind/biz/... + go test ./internal/pkg/aiservice/... 全 PASS。"
+      - "2026-05-19 (H2 Reviewer Sonnet PASS_WITH_CONCERNS): 0 P0 / 1 P1（migration 漏更新 task_profile.description 文本，会误导未来排障）/ 1 P2（未来加第二个 embedding service 时 migration 不覆盖，暂无风险）。P1 就地修复 — migration UPDATE 加 description SET 子句。SalesragEmbed grep 整库唯一调用点 = biz.go:121，无遗漏路径。"
+    related_features:
+      - "ai-service-manager (2026-04-16 上线，migration 20260416_000001) — 引入此 bug 的迁移"
+      - "salesrag-aiservice-migration Task 10b (commit 1c68d90, 2026-04-16) — 把 QianwenEmbedding 调用切到 Gateway profile"
+    rollback: null
+    last_verified: null
+    blockers: []
+    created_at: "2026-05-19T01:30:00+08:00"

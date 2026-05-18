@@ -117,9 +117,13 @@ func NewBiz(ds store.IStore) *biz {
 	// Define Embedder via AI Gateway (profile.SalesragEmbed).
 	// Context arriving here from pipeline.worker() already carries
 	// aismw.WithUserID + aiservice.WithSkipLegacyBilling.
+	// Dimension=2048 is fixed by the existing DashVector collection
+	// `sales_rag_prod` schema; must match task_profile.requirements.dimension
+	// and ai_service.capability_json.dimension for the routed service.
 	embedder := func(ctx context.Context, text string) ([]float32, error) {
 		resp, err := aiservice.Embed(ctx, profile.SalesragEmbed, aiservice.EmbedRequest{
-			Texts: []string{text},
+			Texts:     []string{text},
+			Dimension: 2048,
 		})
 		if err != nil {
 			return nil, err

@@ -18,7 +18,8 @@ const (
 	SalesragChat = "salesrag.chat"
 	// SalesragRerank is the SalesRAG document re-ranking task (LLM / rerank capability).
 	SalesragRerank = "salesrag.rerank"
-	// SalesragEmbed is the SalesRAG text embedding task (LLM / embedding, dimension=1024).
+	// SalesragEmbed is the SalesRAG text embedding task (LLM / embedding, dimension=2048).
+	// Dimension is locked to 2048 by the prod DashVector collection `sales_rag_prod`.
 	SalesragEmbed = "salesrag.embed"
 	// SalesragTagging is the SalesRAG entity tagging task (LLM, json_mode required).
 	SalesragTagging = "salesrag.tagging"
