@@ -1,6 +1,30 @@
 schema_version: "1.0"
 
 features:
+  - id: "drop-billing-account-dead-table"
+    ndf_version: "1.1"
+    description: "Tech-debt cleanup：DROP 已废弃的 billing_account 表 + 残留死代码。背景：2026-04-30 会员积分体系重构后，billing_account（钱包式账户：balance_cents/total_consumed_cents/total_recharged_cents/status）被新 5 表 SOT（subscription/credit_cycle/trial_grant/user_booster_balance/membership_event）+ usage_record.cost_cents/revenue_cents 完全替代。设计文档 docs/superpowers/specs/2026-04-29-membership-credits-redesign-design.md §669 明确：billing_account 标记『只读冻结 | 0 引用 | 0 写入 | T+7 天后 DROP』，但 DROP migration 一直未写。当前状态：grep 全仓库 (numind-server/web-v3/admin-web) 零业务调用，唯一残留是 store/billing.go:296 GetOrCreateAccount（无 caller）+ helper.go:260 AutoMigrate + database_charset.go:54 字符集列表 + model/billing.go BillingAccount struct。dev/qa/prod 三库实测均 0 行（无数据丢失）。本次工作：(1) 写 migration 双文件 DROP + rollback (2) 删 BillingAccount struct 和 store 死方法 (3) AutoMigrate 移除 (4) database_charset 列表移除 (5) dev/qa/prod 顺序执行 DROP。"
+    track: "hotfix"
+    stage: "H1"
+    classification_reason: "Hotfix Triage 5 条 — (1) schema 变更但仅 DROP 单个 dead 表（不改业务表结构）(2) 无新端点 (3) 无外部服务 (4) 单仓 numind-server ~4 文件 (5) 表已 0 引用 0 写入，DROP 风险等同删除注释。条件 1-5 全部命中 Hotfix Track。"
+    last_updated_by: "ai-h1-triage"
+    last_updated_at: "2026-05-19T12:00:00+08:00"
+    repos:
+      - numind-server
+    branches:
+      numind-server: "chore/drop-billing-account-table (待创建)"
+    progress:
+      total_tasks: 1
+      completed_tasks: 0
+      reviewed_tasks: 0
+      current_task: "H2 实施中：migration + 代码清理 + 三库 DROP（合并为单一原子 task）"
+    decisions:
+      - "2026-05-19 (H1 Triage): grep 三仓零业务引用确认（仅 model/store/helper/charset 配置 4 处死代码 + 1 处 add_billing_tables.sql migration）。dev/qa/prod 三库 billing_account COUNT(*) = 0 / nonzero_rows = NULL，无数据丢失风险。Hotfix track 合理，跳过 brainstorming/spec/plan 重型流程。"
+    blockers: []
+    follow_ups:
+      - "credit_account 表本身保留（identity/status 标记，仍被 Reserve 路径每次写入）；只清理其 balance 列已 T11 完成。若未来要彻底废除 credit_account，需先迁移 status 字段语义到其他位置。"
+    created_at: "2026-05-19T12:00:00+08:00"
+
   - id: "settings-credits-display-broken"
     ndf_version: "1.1"
     description: "P0 prod bug：设置页「我的积分」三个连锁问题。Root cause: 2026-05-16 Audit P2#4/#5 cleanup 删除了 /v1/credits/balance 的旧字段（balance/sub_total/sub_remain/booster_remain），后端注释自承『frontend reads were already migrated』，但实际 SettingsView 路径未迁移。具体症状：(1) CreditBalanceCard.vue:14 会员积分行用 balance?.sub_total > 0 判定 → 永不渲染 (2) 加量包行 booster_remain（已删）显示为 0、booster_total（语义已变 = remaining）作分母 → 用户看到 0/580 这种诡异显示 (3) BoosterPurchaseCard.vue:86-92 同样依赖 sub_total → Pro 会员卡片显示禁用『请联系管理员开通』，无法购买加量包 (4) SettingsView.vue 进度条计算依赖 userStore.quotaSubTotal/quotaSubRemain/quotaBoosterTotal（值永远 0）+ tierLabel/expiryText 也读已删字段。修复：前端 3 文件改用新字段 trial_remaining/cycle_remaining/booster_total(语义=剩余)/booster_usable/membership_state；删除「额度使用率」进度条 section（三池叠加的进度条无意义）；加量包改单数字『剩余 N 积分』显示，移除假分母；后端 state.go BoosterTotal 字段注释加强标明语义=remaining 不是 total。"
