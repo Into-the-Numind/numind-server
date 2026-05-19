@@ -1,5 +1,40 @@
 schema_version: '2.0'
 features:
+- id: agent-mode-phase0-verification
+  ndf_version: '2.0'
+  description: 'Agent 模式（SOP/Chatbot 并行的第三模态）整体分解为 14 个连续 Standard feature，本 feature 为 #1/14。Phase 0 前置验证：在写一行业务代码前验证 4 个关键技术假设。产出 5 个验证物（V1-V5）：V1 腾讯云 dev 服务器 KVM 可用性 + Daytona OSS Docker Compose 跑通；V2 Eino + aiservice 整合 demo（独立 cmd 二进制，确保 Langfuse trace + billing + 路由降级三件套不丢）；V3 8 个 P0 Bash validator 原型 + 20 攻击向量测试；V4 Coze Studio / Eino 源码深读笔记（≥3000 字）；V5 沙箱方案最终决策 ADR（Daytona / Docker pool / CubeSandbox 提前 三选一）。不出业务代码，不动 DB schema，不动 prod 部署。完成后 13 个后续 feature 才能进 S0 Triage。架构蓝本：docs/agent-mode/architecture-v1.md §11 Roadmap W1-W2。'
+  track: standard
+  stage: S0
+  classification_reason: 'Triage 5 条 — (1) 无 DB schema 变更（Phase 0 不动表）(2) 无新 API 端点（demo 不暴露 HTTP）(3) 引入新外部服务 Daytona + Eino 框架（首次验证，需 S0-S2 选型 + S3 plan + S5 验证 + S6 决策固化）(4) 影响文件数 >3（5 个产出物各对应 1-N 文件）(5) 无支付/权限高风险逻辑。条件 3+4 触发 Standard Track，且本 feature 需要严肃方案对比（V5 沙箱 ADR）+ 多产出物原子性 review，Hotfix 三阶段无法承载。'
+  last_updated_by: ai-s0-reviewer-pass
+  last_updated_at: '2026-05-20T02:00:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: feature/agent-mode-phase0-verification
+  worktree:
+    numind-server: /private/tmp/wt-agent-mode-phase0-verification-numind-server
+  artifacts:
+    requirement: numind-server/requirements/agent-mode-phase0-verification.md
+    architecture_blueprint: docs/agent-mode/architecture-v1.md
+  progress:
+    total_tasks: 5
+    completed_tasks: 0
+    reviewed_tasks: 0
+    current_task: 'S0 complete: requirement card 写完 + 独立 Sonnet reviewer pass（1 P1 + 3 P2 已修）。等待用户确认进 S1。'
+  decisions:
+  - '2026-05-20 (Triage 决策): 用户确认 agent-mode 整体分解为 14 个连续 Standard feature（非单一巨型 feature），本 feature 是 #1/14；architecture-v1.md 作长期蓝本，每个子 feature 的 S0-S3 artifact 从蓝本对应章节抽取。'
+  decisions_archived: .ndf/decisions/agent-mode-phase0-verification/
+  related_features:
+  - 'agent-mode-runtime-skeleton (#2/14，待 Phase 0 完成后启动)'
+  - 'agent-mode-tool-registry (#3/14)'
+  - 'agent-mode-sandbox-integration (#4/14，依赖本 feature V5 ADR)'
+  - 'agent-mode-permission-pipeline (#6/14，继承本 feature V3 Bash validator)'
+  blockers: []
+  follow_ups:
+  - 'V2 失败 → 立项 follow-up feature 评估 Eino vs 自研最小 Runtime'
+  - 'V1 失败 → V5 触发备选路径决策（Docker pool 或 CubeSandbox 提前到 v1）'
+  created_at: '2026-05-20T01:46:22+08:00'
 - id: drop-billing-account-dead-table
   ndf_version: '1.1'
   description: Tech-debt cleanup：DROP 已废弃的 billing_account 表 + 残留死代码。背景：2026-04-30 会员积分体系重构后，billing_account（钱包式账户：balance_cents/total_consumed_cents/total_recharged_cents/status）被新 5 表 SOT（subscription/credit_cycle/trial_grant/user_booster_balance/membership_event）+
