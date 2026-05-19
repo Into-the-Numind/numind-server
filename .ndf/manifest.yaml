@@ -1,5 +1,39 @@
 schema_version: '2.0'
 features:
+- id: agent-mode-runtime-skeleton
+  ndf_version: '2.0'
+  description: 'Agent 模式 14-feature 分解 #2/14。把 Phase 0 V2 demo 中的 adapter 模式工程化为 Agent Runtime 主路径代码。范围：(M1) agent_run + agent_message DB 表 (M2) agent_run store CRUD (M3) AgentRunner biz 包装 Eino ReAct（升级到 ToolCallingChatModel.WithTools()）(M4) 12 Terminal + 7 Continue 状态机 (M5) AbortController 三层（queryCtx/batchCtx/toolCtx）(M6) Withhold recovery 两条 chain（PTL + max_output_tokens）(M7) 最小 Tool interface（完整版 38 字段在 #3）(M8) mock Eino + mock 工具的 5 步 ReAct 单测。Out of scope：Tool Registry 完整版 / 沙箱集成 / 权限 / 记忆 / Narration / API 端点 / prod 部署。架构蓝本：docs/agent-mode/architecture-v1.md §4.1。'
+  track: standard
+  stage: S0
+  classification_reason: 'Triage 5 条 — (1) DB schema 变更：是（agent_run + agent_message 两张新表）(2) 无新 API 端点（#2 仅 biz 层）(3) 无新外部服务（Eino 已在 go.mod 自 #1）(4) 影响文件数 >3（migration + 2 model + 1 store + 5 biz + N test）(5) 非高风险（不动支付/权限）。条件 1+4 触发 Standard，且 19-state 枚举 / AbortController 派生 / Withhold chain 编排都需严肃设计 + 跨 feature 接口契约稳定性极高，Hotfix 无法承载。'
+  last_updated_by: ai-s0-requirement-card-written
+  last_updated_at: '2026-05-20T03:20:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: feature/agent-mode-runtime-skeleton
+  worktree:
+    numind-server: /private/tmp/wt-agent-mode-runtime-skeleton-numind-server
+  artifacts:
+    requirement: numind-server/requirements/agent-mode-runtime-skeleton.md
+    architecture_blueprint: docs/agent-mode/architecture-v1.md
+  progress:
+    total_tasks: 8
+    completed_tasks: 0
+    reviewed_tasks: 0
+    current_task: 'S0 requirement card 写完，待独立 Sonnet reviewer 审。8 个 module M1-M8 分解。'
+  decisions:
+  - '2026-05-20 (沿用 #1 决策): 14-feature 分解；Eino v0.8.13 sticking；adapter 模式沿用 Phase 0 V2 demo；ToolCallingChatModel 升级（解决 Phase 0 DONE_WITH_CONCERNS）。'
+  - '2026-05-20 (autopilot 协议): 沿用 [[feedback_agent_mode_autopilot]] 自主推进；feature 完成至 dev 部署后停止，不影响 prod。'
+  decisions_archived: .ndf/decisions/agent-mode-runtime-skeleton/
+  related_features:
+  - 'agent-mode-phase0-verification (#1/14, 已完成 develop merge)'
+  - 'agent-mode-tool-registry (#3/14, 依赖本 feature 的 Tool interface 骨架)'
+  - 'agent-mode-sandbox-integration (#4/14, 依赖本 feature 的 AgentRunner hook)'
+  blockers: []
+  follow_ups:
+  - 'API endpoints / controller 在后续 feature 中接入'
+  created_at: '2026-05-20T03:20:00+08:00'
 - id: agent-mode-phase0-verification
   ndf_version: '2.0'
   description: 'Agent 模式（SOP/Chatbot 并行的第三模态）整体分解为 14 个连续 Standard feature，本 feature 为 #1/14。Phase 0 前置验证：在写一行业务代码前验证 4 个关键技术假设。产出 5 个验证物（V1-V5）：V1 腾讯云 dev 服务器 KVM 可用性 + Daytona OSS Docker Compose 跑通；V2 Eino + aiservice 整合 demo（独立 cmd 二进制，确保 Langfuse trace + billing + 路由降级三件套不丢）；V3 8 个 P0 Bash validator 原型 + 20 攻击向量测试；V4 Coze Studio / Eino 源码深读笔记（≥3000 字）；V5 沙箱方案最终决策 ADR（Daytona / Docker pool / CubeSandbox 提前 三选一）。不出业务代码，不动 DB schema，不动 prod 部署。完成后 13 个后续 feature 才能进 S0 Triage。架构蓝本：docs/agent-mode/architecture-v1.md §11 Roadmap W1-W2。'
