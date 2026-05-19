@@ -1,3 +1,25 @@
+# ============================================================
+# ⚠️ DEPRECATED — 2026-05-19
+# ============================================================
+# 此 workflow 已通过 GitHub Settings → Actions → "Disable workflow" 禁用，
+# 保留文件仅作为"切回老链路"的应急备援。日常部署走新链路。
+#
+# 新链路：Mac (rsync) → 构建机(成都) → TCR(广州) → 部署机
+# 触发方式（手动）：
+#   在仓库根目录 cd 进去后：
+#     /deploy-dev server     # numind-server dev
+#     /deploy-dev admin      # numind-admin dev
+#     /deploy-prod server    # 需 HEAD 在 v* tag
+#     /deploy-prod admin     # 需 HEAD 在 admin-v* tag
+#
+# 要重新启用本 workflow：
+#   1. GitHub UI: Settings → Actions → "Enable workflow"
+#   2. 确认 DOCKERHUB_PASSWORD / DEV_HOST 等 Secrets 仍有效
+#   3. push develop / 打 tag 触发
+#
+# 详情：根目录 CLAUDE.md §5
+# ============================================================
+
 name: Numind CI/CD
 
 on:
