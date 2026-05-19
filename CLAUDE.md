@@ -113,3 +113,20 @@ internal/service/               # 外部服务调用（AI、向量数据库等�
 migrations/                     # 数据库迁移 SQL
 config_*.yaml                   # 环境配置（local/dev/qa/prod）
 ```
+
+---
+
+## 7. 部署命令（新链路，2026-05-19 起）
+
+| 命令 | 干什么 |
+|------|--------|
+| `/deploy-dev server` | 当前代码 → dev 后端 API（端口 9091）|
+| `/deploy-dev admin` | 当前代码 → dev 管理后端（端口 9099）|
+| `/deploy-prod server` | 需 `v*` git tag → prod 后端 API |
+| `/deploy-prod admin` | 需 `admin-v*` git tag → prod 管理后端 |
+
+底层 `scripts/cicd/release.sh`（Mac 端）→ rsync 到构建机（成都）→ docker build → push TCR（广州）→ SSH 部署机替换容器。部署后自动清理旧镜像。prod 健康检查失败自动 rollback。
+
+老链路（GH Actions + DockerHub）**已禁用，yaml 保留作 fallback**，详见 `.github/workflows/ci-cd.yaml` 顶部注释。
+
+完整流程见根目录 `CLAUDE.md §5`。
