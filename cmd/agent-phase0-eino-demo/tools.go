@@ -30,7 +30,10 @@ func (t *currentDateTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 	}, nil
 }
 
-// InvokableRun executes the tool. Arguments are ignored (no parameters needed).
-func (t *currentDateTool) InvokableRun(_ context.Context, _ string, _ ...tool.Option) (string, error) {
-	return time.Now().UTC().Format("2006-01-02"), nil
+// InvokableRun executes the tool, wrapped in a Langfuse span (spec §3.6).
+// Arguments are ignored (no parameters needed).
+func (t *currentDateTool) InvokableRun(ctx context.Context, _ string, _ ...tool.Option) (string, error) {
+	return instrumentedToolCall(ctx, "get_current_date", func() (string, error) {
+		return time.Now().UTC().Format("2006-01-02"), nil
+	})
 }

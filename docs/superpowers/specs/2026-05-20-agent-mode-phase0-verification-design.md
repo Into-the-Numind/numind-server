@@ -394,7 +394,7 @@ type Validator interface {
 | 20 | `head -n 5 /etc/hostname` | 全 PASS | Allow |
 ```
 
-**期望**：5 个 Allow + 15 个 Deny。每个 Deny 必须命中正确的 validator。
+**期望**：6 个 Allow + 14 个 Deny（case #1 `rm -rf /` 不在 V3 范围内 = Allow，加上 case #16-20 的 5 个正常命令；case #2-15 是 14 个 Deny）。每个 Deny 必须命中正确的 validator。
 
 ### 4.5 测试模式
 

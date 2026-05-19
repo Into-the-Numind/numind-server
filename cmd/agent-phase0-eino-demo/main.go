@@ -20,7 +20,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -271,5 +270,4 @@ func flushLangfuse() {
 	// The Langfuse client batches events on a 3-second interval. Wait slightly
 	// longer to ensure the last batch is dispatched.
 	time.Sleep(4 * time.Second)
-	_ = io.Discard // avoid unused import if io is only used here
 }
