@@ -1,0 +1,27 @@
+schema_version: '2.0'
+features:
+- id: admin-credit-user-type-config
+  ndf_version: '1.1'
+  description: 管理端 CRUD 管理 credit_user_type_config 表（trial 用户倍率等）— 后端新增 GET /v1/admin/credits/user-types + PUT /v1/admin/credits/user-types/:user_type；前端新增 /credits/user-types 页面 + 菜单项。本 feature 是 credit-user-type-multiplier
+    的管理端补全。
+  track: hotfix
+  stage: completed
+  classification_reason: Hotfix Triage 5 条 — (1) DB schema 已存在（上 feature 建好的）(2) 仅新增 admin 端点，不改业务路由 (3) 无外部服务集成 (4) 跨两仓但每仓 ~3 文件 (5) 不涉及支付/权限主流程，仅运营配置 CRUD。与 Task A (pricing_rule.credit_multiplier) 同性质同工作量。
+  last_updated_by: ai-implementation
+  last_updated_at: '2026-04-29T01:00:00+08:00'
+  repos:
+  - numind-server
+  - numind-admin-web
+  branches:
+    numind-server: feat/admin-credit-user-type-config
+  progress:
+    total_tasks: 1
+    completed_tasks: 1
+    reviewed_tasks: 1
+    current_task: null
+  decisions:
+  - '2026-04-29 (Plan review): 采用 Path B — store 方法放 credit.go，controller 放 admin_credit/，URL /credits/user-types，菜单近 credits'
+  - '2026-04-29 (Plan review): 校验范围 (0, 100]（mirror pricing_rule），不是 [0.01, 10]'
+  - '2026-04-29 (Plan review): 用 map[string]interface{} 做 Updates 避开 GORM default:true gotcha；显式 RowsAffected==0 → 404'
+  blockers: []
+  created_at: '2026-04-29T01:00:00+08:00'

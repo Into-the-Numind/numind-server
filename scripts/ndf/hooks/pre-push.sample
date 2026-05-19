@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# NDF v2 pre-push hook: 阻止 feature/* | fix/* | micro/* 推 GitHub
+#
+# 安装位置: <repo>/.git/hooks/pre-push (chmod +x)
+# 由 ndf-install-hooks.sh 自动安装到 3 个仓库
+#
+# 绕过方式（仅紧急情况）:
+#   git push --no-verify
+#
+# 正常完成 feature 的方式:
+#   ndf-done    # 它会通过 develop 间接 push，不触发此 hook
+
+REMOTE_NAME="$1"
+REMOTE_URL="$2"
+
+# 只拦截推 origin（自托管 remote 等不拦）
+if [[ "$REMOTE_NAME" != "origin" ]]; then
+  exit 0
+fi
+
+# stdin 格式: <local_ref> <local_sha> <remote_ref> <remote_sha>\n ...
+BLOCKED=""
+while IFS=' ' read -r LOCAL_REF LOCAL_SHA REMOTE_REF REMOTE_SHA; do
+  # 提取本地 branch 名
+  case "$LOCAL_REF" in
+    refs/heads/*)
+      BRANCH="${LOCAL_REF#refs/heads/}"
+      ;;
+    *)
+      # 不是普通 branch（可能是 tag），放行
+      continue
+      ;;
+  esac
+
+  # 删除分支操作（local_sha 全 0）放行
+  if [[ "$LOCAL_SHA" == "0000000000000000000000000000000000000000" ]]; then
+    continue
+  fi
+
+  # 拦截规则
+  case "$BRANCH" in
+    feature/*|fix/*|micro/*)
+      BLOCKED+="  - $BRANCH\n"
+      ;;
+  esac
+done
+
+if [[ -n "$BLOCKED" ]]; then
+  cat >&2 <<EOF
+❌ NDF v2: 本地分支禁止推 GitHub
+
+被拦的分支:
+$(printf "%b" "$BLOCKED")
+
+正确做法:
+  → 完成时跑 ndf-done 走标准流程（merge develop + push develop + 清理）
+
+紧急情况绕过（仅当真的需要）:
+  → git push --no-verify
+
+理由: 一人公司不需要远端 feature 分支，本地完成后 merge develop 即可。
+EOF
+  exit 1
+fi
+
+exit 0

@@ -1,0 +1,43 @@
+schema_version: '2.0'
+features:
+- id: credits-system-data-consistency
+  ndf_version: '1.1'
+  description: '[CANCELLED — merged into membership-credits-redesign as plan extension T1-T12] credits-system 数据模型一致性重构 — 用户与 prod 直查发现 3 类问题：(P0) 缓存表 drift：user_booster_balance vs Σcredit_package(booster)
+    4 行 3 漂（user 1: 6000 幽灵）/ credit_account.balance vs Σpackages 6 用户漂 / trial_grant vs credit_package(trial) 33 vs 32 行；(P1) 同份数据存两次：trial_grant ↔ credit_package(trial) / ubb ↔ Σbooster / ca.balance ↔
+    Σactive / usage_record.credits_deducted (SUM=0 死字段) ↔ credit_transaction.amount；(P2) subscription/credit_cycle/credit_package 三角语义不清 + 硬 FK 仅 1 条。根因：membership-credits-redesign 的 Task 16 cleanup 未真正执行（仅
+    credits-deduct-cycle-wiring 补丁式切了 Reserve/Reconcile，老表 4 个 INSERT 路径未清理）→ write 老表 + read 新表 = 必然 drift。'
+  track: standard
+  stage: cancelled
+  classification_reason: 待 audit §8 的 D1-D7 决策后定 track（D7a 单 tracker → Standard；D7b 多独立 → 混合 Hotfix+Standard；D7c 并入 membership-credits-redesign → 取消本条）
+  last_updated_by: ai-s0-audit-2026-05-15
+  last_updated_at: '2026-05-15T16:00:00+08:00'
+  repos:
+  - numind-server
+  branches: {}
+  artifacts:
+    requirement: numind-server/requirements/credits-system-data-consistency.md
+    audit: numind-server/docs/credits-system-data-consistency-audit.md
+    proposal: null
+    spec: null
+    plan: null
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+    current_task: S0 — 等待人类阅读 audit doc + 回答 D1-D7 决策清单
+  rollback: null
+  last_verified: null
+  decisions:
+  - '2026-05-15 (S0 触发): 用户给出 prod 直查证据（16 表清单 + 6 类问题），要求重构数据模型。'
+  - '2026-05-15 (路径对齐): 用户拍板 — 先做 S0 现状报告（不预设修复），先修数据后改结构，待 audit 后再 Triage 归类。'
+  - '2026-05-15 (HTML 讲解图产出 + 用户 GO): credits-refactor-explainer.html 8 节单页可视化，用户 GO。本 feature 取消并入 membership-credits-redesign 作为 plan extension T1-T12。'
+  decisions_archived: .ndf/decisions/credits-system-data-consistency/
+  related_features:
+  - membership-credits-redesign (S5→S3 reopened 2026-05-15) — 设计 5 张新表取代 credit_package 状态机；Task 16 cleanup 未真正落地是本 feature 根因。本 feature 取消并入，T1-T12 作为该 feature 的 plan extension
+  - credits-deduct-cycle-wiring (completed 2026-05-15 v2.1.19) — 补丁式切了 Reserve/Reconcile 读路径，但老表写入路径完全没动
+  blockers: []
+  created_at: '2026-05-15T16:00:00+08:00'
+  cancelled_at: '2026-05-15T19:00:00+08:00'
+  cancelled_reason: 本 feature 是 membership-credits-redesign Task 16 未完成的债。开新 feature 修上一个 feature 的债会让账本越来越乱。改为 plan extension 合并归一处。
+  merged_into: membership-credits-redesign
+  completed_at: null
