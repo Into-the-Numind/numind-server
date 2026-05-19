@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"numind-server/internal/pkg/model"
 )
@@ -22,8 +21,6 @@ type BillingStore interface {
 	ListUsageByUser(ctx context.Context, userID uint, offset, limit int) ([]model.UsageRecord, int64, error)
 	// GetUserConsumption 获取用户在指定时间范围内的总消费（分）
 	GetUserConsumption(ctx context.Context, userID uint, from, to time.Time) (int64, error)
-	// GetOrCreateAccount 获取或创建用户计费账户
-	GetOrCreateAccount(ctx context.Context, userID uint) (*model.BillingAccount, error)
 	// GetPricingRule 获取匹配的定价规则
 	GetPricingRule(ctx context.Context, serviceType, provider, modelName string) (*model.PricingRule, error)
 	// GetPricingRuleTiers 获取指定定价规则的分段配置
@@ -290,29 +287,6 @@ func (s *billingStore) GetUserConsumption(ctx context.Context, userID uint, from
 		Select("COALESCE(SUM(cost_cents), 0)").
 		Scan(&total).Error
 	return total, err
-}
-
-// GetOrCreateAccount 获取或创建用户计费账户（并发安全）
-func (s *billingStore) GetOrCreateAccount(ctx context.Context, userID uint) (*model.BillingAccount, error) {
-	account := model.BillingAccount{
-		UserID: userID,
-		Status: "active",
-	}
-	err := s.db.WithContext(ctx).
-		Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "user_id"}},
-			DoNothing: true,
-		}).
-		Create(&account).Error
-	if err != nil {
-		return nil, err
-	}
-
-	var result model.BillingAccount
-	if err := s.db.WithContext(ctx).Where("user_id = ?", userID).First(&result).Error; err != nil {
-		return nil, err
-	}
-	return &result, nil
 }
 
 // GetPricingRule 获取匹配的定价规则。三级 fallback（优先级从高到低）：
