@@ -89,6 +89,22 @@ start_container() {
     "$img"
 }
 
+# Keep only the image of the currently-running container; remove all older
+# images of the same repository. Safe to call after a successful deploy or
+# successful rollback (it inspects the live container's image id).
+cleanup_old_images() {
+  local repo="${IMAGE%:*}"
+  local running_id
+  running_id=$(docker inspect "$CONTAINER" --format='{{.Image}}' 2>/dev/null) || return 0
+  echo "Cleaning up old images for ${repo} (keep only currently-running)..."
+  docker images "$repo" --format '{{.ID}} {{.Repository}}:{{.Tag}}' | while read -r short_id tag; do
+    if [[ "$running_id" != *"$short_id"* ]]; then
+      docker rmi -f "$tag" >/dev/null 2>&1 || true
+    fi
+  done
+  docker image prune -f >/dev/null 2>&1 || true
+}
+
 docker stop "$CONTAINER" 2>/dev/null || true
 docker rm "$CONTAINER" 2>/dev/null || true
 start_container "$IMAGE"
@@ -109,6 +125,7 @@ done
 if [ "$READY" = true ]; then
   echo "✅ Deploy success: $CONTAINER is healthy"
   docker ps -f "name=^${CONTAINER}\$" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+  cleanup_old_images || true
   exit 0
 fi
 
@@ -123,6 +140,7 @@ if [ "$ENV" = "prod" ] && [ -n "$OLD_IMAGE" ]; then
   for i in $(seq 1 "$MAX_TRIES"); do
     if curl -sf "$HEALTH_URL" >/dev/null 2>&1; then
       echo "⚠️  Rollback success: $OLD_IMAGE restored"
+      cleanup_old_images || true
       exit 1
     fi
     sleep "$SLEEP_INT"
