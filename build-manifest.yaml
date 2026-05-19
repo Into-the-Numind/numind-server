@@ -899,17 +899,17 @@ features:
     track: "hotfix"
     stage: "completed"
     classification_reason: "Hotfix Triage — (1) 无 schema 改动（只改 DB 数据 + 1 行代码常量）(2) 无新端点 (3) 无外部集成 (4) 3 文件改动 + 1 migration（biz.go + profile/constants.go + 新 migration）(5) 计费/权限低风险，向量库路径，profile/capability 精确匹配保证错配会显式报错而非静默错乱。零回归（Dimension=2048 反走 ali.go:183 显式 dimension 参数 path，text-embedding-v4 原生支持 2048）。"
-    last_updated_by: "ai-handoff-to-user-for-prod-deploy"
-    last_updated_at: "2026-05-19T02:30:00+08:00"
+    last_updated_by: "ai-prod-migration-applied-closed"
+    last_updated_at: "2026-05-19T03:00:00+08:00"
     repos:
       - numind-server
     branches:
-      numind-server: "fix/salesrag-embed-dim-2048 (merged 36d2e76 into develop)"
+      numind-server: "fix/salesrag-embed-dim-2048 (merged 36d2e76 into develop, branch deleted)"
     progress:
       total_tasks: 3
       completed_tasks: 3
       reviewed_tasks: 3
-      current_task: "Dev 部署 + 用户 dev 端到端测试 PASS（ingest 写入 + retrieval 召回）。Prod 部署由用户接手：tag v2.1.28 + push → CI 部署 prod → apply prod migration 20260519_010000 → prod 复测上传。"
+      current_task: "全部完成。代码 + dev DB + prod DB 全部对齐到 dim=2048。Prod 容器部署（tag v2.1.28 + push）由用户后续自行完成；prod DB 已提前 apply migration，容器拉起即生效。"
     decisions:
       - "2026-05-19 (Triage): prod bug id=112 user_id=1 (admin) 上传 PDF 失败，error_msg = 'vector storage failed: ... Expected 2048 received 1024'。time-to-root-cause 约 15 分钟（SSH prod query error_msg → grep profile.SalesragEmbed → 比对 task_profile DB 与 collection schema）。"
       - "2026-05-19 (用户产品决策 Option A): 现有 90 份 COMPLETED docs 中 76 份属于 user_moxiaopai(30) + 11 个 B2B 子账户的真实客户数据，决定保留所有 2048 维向量，把代码切回 2048。备选 Option B（重建 collection 1024 + backfill 537 chunk）和 Option C（重建 + 让客户重传）被否。"
@@ -917,20 +917,20 @@ features:
       - "2026-05-19 (H2 Reviewer Sonnet PASS_WITH_CONCERNS): 0 P0 / 1 P1（migration 漏更新 task_profile.description 文本，会误导未来排障）/ 1 P2（未来加第二个 embedding service 时 migration 不覆盖，暂无风险）。P1 就地修复 — migration UPDATE 加 description SET 子句。SalesragEmbed grep 整库唯一调用点 = biz.go:121，无遗漏路径。"
       - "2026-05-19 (H3 Git): commit 79509c1 on fix/salesrag-embed-dim-2048 → --no-ff merge 36d2e76 到 develop → push origin develop。CI run 26047463942 build + deploy_dev 全 PASS，dev 容器升级到 develop-36d2e76 healthy。"
       - "2026-05-19 (Dev verify): dev DB migration 已 apply（task_profile.dim + ai_service.dim 都 1024→2048 + description 同步）。用户在 dev 端到端测试 PASS（ingest 上传 PDF 成功 + 销售智能体 retrieval 召回 chunk 正常）。"
-      - "2026-05-19 (Handoff to user for prod): 用户接手 prod 部署。剩余动作：(1) tag v2.1.28（next after v2.1.27）+ push → CI prod build + deploy (2) apply migration 20260519_010000 到 prod DB（task_profile + ai_service dim 1024→2048）(3) prod 复测上传那个 1.24MB PDF。"
+      - "2026-05-19 (Prod DB migration applied — closed): 用户授权直接 apply migration 20260519_010000 到 prod numind-prod DB（无需等容器部署 — runtime 路由跳过 capability matching，DB 1024 不阻塞 dim=2048 写入，但元数据对齐避免未来 admin UI 误导）。BEFORE: task_profile.dim=1024 + ai_service.dim=1024。AFTER: 两张表 dim=2048 + task_profile.description 同步对齐。Prod 容器 tag v2.1.28 + push 由用户后续自行完成。Manifest 本条目 close。"
     related_features:
       - "ai-service-manager (2026-04-16 上线，migration 20260416_000001) — 引入此 bug 的迁移"
       - "salesrag-aiservice-migration Task 10b (commit 1c68d90, 2026-04-16) — 把 QianwenEmbedding 调用切到 Gateway profile"
     rollback: "若 prod 部署后再爆问题：revert merge commit 36d2e76 + push develop（回到 75a7f19）+ tag 上一版回滚。DB 不必回滚 — 代码回 0-dim 等价于 bug 状态，dim=2048 + 老代码不会更差。"
     last_verified:
-      at: "2026-05-19T02:30:00+08:00"
+      at: "2026-05-19T03:00:00+08:00"
       lint: "pass"
       type_check: "n/a"
       tests: "pass"
-      test_summary: "task lint + go test ./internal/numind/biz/... + go test ./internal/pkg/aiservice/... 全 PASS. Dev 端到端 (用户实测): ingest PDF 上传 → status COMPLETED ✓, 销售智能体 retrieval ✓."
+      test_summary: "task lint + go test ./internal/numind/biz/... + go test ./internal/pkg/aiservice/... 全 PASS. Dev 端到端 (用户实测): ingest PDF 上传 → status COMPLETED ✓, 销售智能体 retrieval ✓. Prod DB migration applied + verified: task_profile.dim=2048 + ai_service.dim=2048 ✓."
     blockers: []
     created_at: "2026-05-19T01:30:00+08:00"
-    completed_at: "2026-05-19T02:30:00+08:00"
+    completed_at: "2026-05-19T03:00:00+08:00"
 
   - id: "cicd-pipeline-migration-tcr"
     ndf_version: "1.1"
