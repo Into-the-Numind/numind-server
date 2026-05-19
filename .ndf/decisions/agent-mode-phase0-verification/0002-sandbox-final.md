@@ -25,7 +25,7 @@ ADR-0001（Task 4）通过 SSH 实测确认：dev 服务器 `49.233.219.254` 是
 | 维度 | 评估 |
 |------|------|
 | Pros | 自托管 / 完全自控 / 安全边界清晰（VM 级隔离）/ OSS 零授权费 |
-| Cons | 依赖嵌套 KVM；Tencent Cloud 标准 CVM 不支持；Daytona OSS 无现成 docker-compose，需手工组装多组件 |
+| Cons | 依赖嵌套 KVM；Tencent Cloud 标准 CVM 不支持；Daytona OSS 无现成 docker-compose，需手工组装多组件（**A1-2b 附加发现，独立于 KVM 缺失**） |
 | 实测结果 | ADR-0001 Findings — **Rejected**：`/dev/kvm` 不存在，KVM = NO |
 | V2 升级路径 | 采购 Tencent CPM 裸金属实例，或申请 nested-virt VM type，届时重评 |
 
@@ -56,6 +56,28 @@ ADR-0001（Task 4）通过 SSH 实测确认：dev 服务器 `49.233.219.254` 是
 
 ---
 
+### Option D — Daytona Cloud API（托管服务，**已否决**）
+
+| 维度 | 评估 |
+|------|------|
+| Pros | 规避 OSS 自托管复杂度（解决 A1-2b 问题）；workspace 预置，运维零负担；保留 Daytona 接口生态（未来切自托管时 API 兼容） |
+| Cons | 引入外部服务依赖（与 #4 "完全自控"原则冲突）；每 workspace 按时计费，Phase 0 验证成本不可控（agent 任务并发量未知）；数据出境合规需评估（学员数据 + 工具调用结果） |
+
+**结论**：外部服务依赖 + 数据合规未评估 + Phase 0 成本不可控 → 拒。但**保留为 V1 ADR Open Question Q1 的备选**：若未来 Tencent CPM 申请失败且 Docker pool 出现严重逃逸事件，可作紧急 SaaS 兜底。
+
+---
+
+### Option E — E2B（专为 AI agent 设计的沙箱 SaaS，**已否决**）
+
+| 维度 | 评估 |
+|------|------|
+| Pros | 专为 AI agent 设计，API 简洁；冷启动 < 200ms；workspace 复用机制成熟；社区活跃 |
+| Cons | 商业 SaaS，按调用计费（每秒级 CPU/RAM 计价）；数据出境（E2B 是美国公司，learner 数据 + 商业逻辑出境涉合规审查）；与项目"自托管可控"原则冲突；定价结构对长任务不友好 |
+
+**结论**：合规风险 + 商业 SaaS 模式与项目自托管原则不符 → 拒。同 Option D，保留作紧急兜底备选。
+
+---
+
 ## Decision
 
 **选定 Option B — Docker pool。**
@@ -83,8 +105,14 @@ architecture-v1.md Decision #5 默认选 Daytona OSS 作为 v1 沙箱。**本 AD
 
 ### 影响 #6 permission-pipeline
 
-- 8 个 P0 Bash validator（应用层检查）不变
-- 额外需要为 Docker 容器配置 seccomp profile，**拓展 #6 的实现范围**（需在 #6 S2 设计中覆盖）
+- 8 个 P0 Bash validator（应用层检查）不变 — 与运行时沙箱无关
+- **新增 Docker runtime 安全加固为 #6 范围**（#6 S2 设计阶段必须覆盖；作为 #6 manifest 中独立 task 追踪）：
+  - **seccomp profile**：方向是"Docker default profile + 追加 deny 规则"（白名单 + 黑名单混合策略）。具体禁用 syscall 清单（如 `ptrace` / `mount` / `unshare` / `keyctl` / `bpf` / `pivot_root` 等）在 #6 S2 spec 中列出
+  - **AppArmor profile**：Phase 0 用 Docker 默认 `docker-default` AppArmor profile；feature #6 S2 评估是否需要自定义 profile（如限制特定路径写入）
+  - **无 root 容器**：`USER 1000:1000` + `--user 1000:1000` 强制非 root 启动
+  - **Capabilities drop**：`--cap-drop=ALL --cap-add=NET_BIND_SERVICE`（仅按需开 net bind）
+  - **no-new-privileges**：`--security-opt=no-new-privileges` 防止 setuid 提权
+  - 上述清单在 #6 S0 requirement card 中作为 acceptance criteria，S2 spec 中给出 Docker run-time 命令模板
 
 ### 不影响范围
 
