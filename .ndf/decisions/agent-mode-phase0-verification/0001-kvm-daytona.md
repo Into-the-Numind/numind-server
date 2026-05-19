@@ -59,10 +59,13 @@ Attempting to deploy Daytona OSS on a server without `/dev/kvm` would result in 
 installation (workspace provisioning would fail at the VM creation step). No deployment attempt
 was made to avoid polluting the dev server with a non-functional Daytona installation.
 
-Additionally, Daytona OSS does not publish a ready-to-use `docker-compose.yml` for single-node
+#### A1-2b: 附加发现 — Daytona OSS 部署复杂度（独立于 KVM 的发现）
+
+Daytona OSS does not publish a ready-to-use `docker-compose.yml` for single-node
 self-hosted deployment in its public GitHub release assets — deployment would require manual
-configuration of multiple components (server, registry, runner). This adds operational complexity
-beyond the scope of Phase 0 verification.
+configuration of multiple components (server, registry, runner). 这是 **独立于 KVM 缺失** 的额外阻碍：
+即使将来 KVM 可用，OSS 自托管路径的运维成本仍然非零。**对 V5 ADR 的暗示**：若未来选 Daytona，
+应优先 Daytona Cloud API（托管）而非 OSS 自托管。
 
 ### A1-3: Workspace Creation
 
@@ -122,7 +125,43 @@ infrastructure and the isolation requirements for Phase 0 are modest.
 
 ---
 
+## Open Questions
+
+1. **腾讯云嵌套 KVM 升级路径**：
+   - Tencent CPM（Cloud Physical Machine 裸金属）：暴露 `/dev/kvm`，可装 Daytona OSS。需调研：申请流程、起价（粗估 ¥3-5k/月）、最小可用规格、是否支持按量计费
+   - Tencent CVM 启用嵌套虚拟化：标准 CVM 不支持，是否有特殊 VM type 可申请？需通过工单咨询
+   - 决策时机：v2 阶段（M5+，feature #14 e2e-rollout 之后）若需强 VM 隔离再评估
+
+2. **Daytona OSS 在非 CVM 环境的可用性**：
+   - 自建机房裸金属服务器：理论上 KVM 直通可用，但需运维投入
+   - 其他云（AWS / Azure / GCP）的 nested KVM 支持现状：已有公开资料表明 AWS bare metal / Azure nested virt 支持成熟，可作未来多云方案备选
+   - 决策时机：跨云迁移或自建数据中心时
+
+3. **附加发现 — Daytona OSS 部署复杂度**（独立于 KVM 的发现）：
+   - Daytona OSS 不发布 ready-to-use docker-compose.yml；需手工配 server + registry + runner 多组件
+   - 即使将来 KVM 可用，部署 Daytona OSS 自托管的运维成本仍然非零
+   - 若选 Daytona，应优先考虑 Daytona Cloud API（托管版）而非 OSS 自托管
+
+### Revisit Conditions
+
+本 ADR 决策路径（Daytona 不可行）在以下条件触发时**必须重评**：
+
+- ✅ 申请到支持嵌套 KVM 的 Tencent CVM type / CPM 裸金属
+- ✅ 自购 / 迁移到自建机房或支持 nested KVM 的云
+- ✅ Daytona Cloud API 价格降到可接受区间（粗估 < ¥0.10 / workspace-hour）
+- ✅ CubeSandbox（架构蓝本 §4.6 v2 升级目标）发布 v1.0 stable release
+- ❌ 即使 Docker-pool 出现容器逃逸事件，也不应"回头选 Daytona"，应紧急切 E2B / 其他 SaaS
+
+### Override Note for V5 ADR
+
+> 本 V1 ADR 记录"为什么 Daytona OSS Phase 0 不可行"，但不直接声明"覆盖蓝本决策 #5"。
+> 正式覆盖声明在 `0002-sandbox-final.md`（V5 ADR）顶部，本 ADR 是其输入证据。
+
+---
+
 ## Appendix: Full SSH Output
+
+> **Note on screenshots**：spec §2.3 模板要求 `screenshots/` 附件；本 ADR 用下方完整 SSH 文本输出代替 GUI 截图（实测过程是命令行 SSH，无 GUI 界面可截）。`.ndf/decisions/agent-mode-phase0-verification/screenshots/` 目录未创建（无文件归档需要）。
 
 ```
 # SSH connectivity
