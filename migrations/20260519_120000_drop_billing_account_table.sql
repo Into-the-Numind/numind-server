@@ -1,0 +1,27 @@
+-- DROP billing_account table — dead since 2026-04-30 membership-credits redesign.
+--
+-- Background:
+--   The billing_account table was the original "wallet in RMB cents" account
+--   model (balance_cents / total_consumed_cents / total_recharged_cents).
+--   The 2026-04-30 redesign moved balance accounting to the 5-table SOT
+--   (subscription / credit_cycle / trial_grant / user_booster_balance /
+--   membership_event) and per-call ledger to usage_record.cost_cents /
+--   revenue_cents. billing_account has had zero readers and zero writers in
+--   business code ever since. Design doc:
+--     docs/superpowers/specs/2026-04-29-membership-credits-redesign-design.md §669
+--   explicitly marked it "只读冻结 | 0 引用 | 0 写入 | T+7 天后 DROP", but
+--   the DROP migration was never written.
+--
+-- Pre-conditions verified before executing this migration:
+--   1. grep across numind-server, numind-web-v3, numind-admin-web: zero
+--      business references (only model/store/AutoMigrate/charset config
+--      dead-code residues, all removed in the same PR as this migration).
+--   2. dev / qa / prod databases: SELECT COUNT(*) FROM billing_account = 0
+--      and SUM(balance_cents|total_consumed_cents|total_recharged_cents) = 0
+--      verified before drop.
+--   3. mysqldump backup of billing_account taken before prod execution:
+--        mysqldump --single-transaction <db> billing_account > /root/backups/billing_account_pre_drop_<date>.sql
+--      (per CLAUDE.md operational practice — even for zero-row tables, dump
+--      the empty schema so rollback is mechanical.)
+
+DROP TABLE IF EXISTS `billing_account`;

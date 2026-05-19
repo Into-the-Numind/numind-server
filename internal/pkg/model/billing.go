@@ -55,23 +55,6 @@ func (UsageRecord) TableName() string {
 	return "usage_record"
 }
 
-// BillingAccount 用户计费账户
-type BillingAccount struct {
-	ID                  uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserID              uint      `gorm:"not null;uniqueIndex" json:"user_id"`
-	BalanceCents        int64     `gorm:"default:0" json:"balance_cents"`         // 当前余额（分）
-	TotalConsumedCents  int64     `gorm:"default:0" json:"total_consumed_cents"`  // 累计消费（分）
-	TotalRechargedCents int64     `gorm:"default:0" json:"total_recharged_cents"` // 累计充值（分）
-	Status              string    `gorm:"size:20;default:'active'" json:"status"` // active, suspended, frozen
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
-}
-
-// TableName 指定表名
-func (BillingAccount) TableName() string {
-	return "billing_account"
-}
-
 // PricingRule 定价规则表
 type PricingRule struct {
 	ID                     uint      `gorm:"primaryKey;autoIncrement" json:"id"`

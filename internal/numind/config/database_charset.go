@@ -51,7 +51,6 @@ func DefaultDatabaseCharsetConfig() *DatabaseCharsetConfig {
 			"credit_reservation",
 			"pricing_rule",
 			"usage_record",
-			"billing_account",
 			"ai_service",
 			"ai_service_route",
 			"language_styles",

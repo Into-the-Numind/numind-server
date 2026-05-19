@@ -256,8 +256,10 @@ func autoMigrate(db *gorm.DB) error {
 	// T11: CreditPackage removed from AutoMigrate — credit_package table was
 	// archived to legacy_credit_package_archive_20260515 and dropped.
 	// CreditAccount.Balance column also dropped (migration 20260515_200000_t11).
+	// 2026-05-19: BillingAccount removed — billing_account table dropped via
+	// migration 20260519_120000_drop_billing_account_table.
 	log.Infow("Migrating billing tables...")
-	if err := db.AutoMigrate(&model.UsageRecord{}, &model.BillingAccount{}, &model.PricingRule{}, &model.CreditAccount{}, &model.CreditTransaction{}, &model.Order{}); err != nil {
+	if err := db.AutoMigrate(&model.UsageRecord{}, &model.PricingRule{}, &model.CreditAccount{}, &model.CreditTransaction{}, &model.Order{}); err != nil {
 		return fmt.Errorf("failed to migrate billing tables: %v", err)
 	}
 
