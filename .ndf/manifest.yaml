@@ -4,10 +4,10 @@ features:
   ndf_version: '2.0'
   description: 'Agent 模式（SOP/Chatbot 并行的第三模态）整体分解为 14 个连续 Standard feature，本 feature 为 #1/14。Phase 0 前置验证：在写一行业务代码前验证 4 个关键技术假设。产出 5 个验证物（V1-V5）：V1 腾讯云 dev 服务器 KVM 可用性 + Daytona OSS Docker Compose 跑通；V2 Eino + aiservice 整合 demo（独立 cmd 二进制，确保 Langfuse trace + billing + 路由降级三件套不丢）；V3 8 个 P0 Bash validator 原型 + 20 攻击向量测试；V4 Coze Studio / Eino 源码深读笔记（≥3000 字）；V5 沙箱方案最终决策 ADR（Daytona / Docker pool / CubeSandbox 提前 三选一）。不出业务代码，不动 DB schema，不动 prod 部署。完成后 13 个后续 feature 才能进 S0 Triage。架构蓝本：docs/agent-mode/architecture-v1.md §11 Roadmap W1-W2。'
   track: standard
-  stage: S4
+  stage: S5
   classification_reason: 'Triage 5 条 — (1) 无 DB schema 变更（Phase 0 不动表）(2) 无新 API 端点（demo 不暴露 HTTP）(3) 引入新外部服务 Daytona + Eino 框架（首次验证，需 S0-S2 选型 + S3 plan + S5 验证 + S6 决策固化）(4) 影响文件数 >3（5 个产出物各对应 1-N 文件）(5) 无支付/权限高风险逻辑。条件 3+4 触发 Standard Track，且本 feature 需要严肃方案对比（V5 沙箱 ADR）+ 多产出物原子性 review，Hotfix 三阶段无法承载。'
-  last_updated_by: ai-s3-reviewer-pass-entering-s4
-  last_updated_at: '2026-05-20T02:40:00+08:00'
+  last_updated_by: ai-s4-all-tasks-reviewed-entering-s5
+  last_updated_at: '2026-05-20T03:00:00+08:00'
   repos:
   - numind-server
   branches:
@@ -22,11 +22,16 @@ features:
     architecture_blueprint: docs/agent-mode/architecture-v1.md
   progress:
     total_tasks: 5
-    completed_tasks: 0
-    reviewed_tasks: 0
-    current_task: 'S3 complete: plan + S5 验证策略写完 + reviewer pass（2 P1 + 4 P2 已修）。进入 S4 编码，Tier 3 并行 dispatch 4 路（Task 1+2+3+4），Task 5 串行等 Task 4。'
+    completed_tasks: 5
+    reviewed_tasks: 5
+    current_task: 'S4 complete: V1-V5 全部实施 + 7 路 reviewer 审完（V1 PASS+1P1, V2 spec-comp PASS+1P1+1P2 / V2 code-qual PASS_NO_FIXES, V3 spec-comp PASS+3P2 / V3 code-qual PASS+3P2, V4 PASS_NO_FIXES, V5 PASS+1P1+2P2）。所有 P0/P1 已修 + 部分 P2 已修。进入 S5 验收。'
   decisions:
   - '2026-05-20 (Triage 决策): 用户确认 agent-mode 整体分解为 14 个连续 Standard feature（非单一巨型 feature），本 feature 是 #1/14；architecture-v1.md 作长期蓝本，每个子 feature 的 S0-S3 artifact 从蓝本对应章节抽取。'
+  - '2026-05-20 (V1 实测 → A1=NO): Tencent Cloud 标准 CVM 不暴露嵌套 KVM (/dev/kvm 不存在, vmx/svm flags 0)，Daytona OSS 无法 Phase 0 部署。详见 ADR-0001。'
+  - '2026-05-20 (V5 决策 → 沙箱选 Docker pool，覆盖蓝本决策 #5): Option B Docker pool 胜出（V1 KVM 缺失 + V2 升级路径明确 + 应用层加固可行）。Option A Daytona OSS / C CubeSandbox 因 KVM 依赖被否决；Option D Daytona Cloud / E E2B 因外部服务+合规风险被否决，保留作紧急兜底备选。详见 ADR-0002。'
+  - '2026-05-20 (V2 实测 → A2=YES with caveats): Eino v0.8.13 通过 adapter 模式包装 aiservice.Chat() 3-arg 成功，Langfuse trace + billing + 路由降级三件套保持。Eino API 与 spec 原 §3.5 假设有差异（react.Config→AgentConfig / Run→Generate），已记录到 demo README；ChatModel deprecated 但仍可工作，feature #2 升级到 ToolCallingChatModel.WithTools()。'
+  - '2026-05-20 (V3 实测 → A3=YES): 8 个 P0 Bash validator 全部 Go 实现，20 攻击向量矩阵 100% 命中，98.8% 覆盖率，85 单测全过。code-quality + spec-compliance 双 reviewer PASS_WITH_MINOR_FIXES（P2 acceptable）。'
+  - '2026-05-20 (V4 实测 → A4=YES): Eino + Coze Studio 深读笔记 30073 字符 + 7 段代码引用 + 3 必答问题完整答；Q3 决策"部分借鉴 Coze"（借鉴 InvokableTool 封装 / InferTool 自动 schema / ToolsNode 并发；不借鉴按请求实例化 / 全局单例 IoC）。reviewer PASS_NO_FIXES。'
   decisions_archived: .ndf/decisions/agent-mode-phase0-verification/
   related_features:
   - 'agent-mode-runtime-skeleton (#2/14，待 Phase 0 完成后启动)'
