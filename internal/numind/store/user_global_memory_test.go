@@ -112,13 +112,15 @@ func TestStore_UserGlobalMemory_Upsert_Concurrent100(t *testing.T) {
 	wg.Wait()
 
 	// 允许部分 SQLITE_BUSY 错误（WAL 并发上限），但最终行数必须为 1
+	// P1-2 强化：busy_timeout=5000ms 应让 ≥50% 请求重试成功，验证 WAL 配置真有效
 	var successCount int
 	for _, err := range errs {
 		if err == nil {
 			successCount++
 		}
 	}
-	assert.Greater(t, successCount, 0, "at least some upserts must succeed")
+	assert.Greater(t, successCount, 50,
+		"P1-2: ≥50/100 upserts must succeed with WAL+busy_timeout=5000; got %d (if much lower, WAL config broken)", successCount)
 
 	items, err := s.ListByUserKind(ctx, 42, "fact", 50)
 	require.NoError(t, err)

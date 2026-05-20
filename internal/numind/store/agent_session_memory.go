@@ -52,6 +52,17 @@ func (s *agentSessionMemoryStore) Create(ctx context.Context, m *model.AgentSess
 	return nil
 }
 
+// allowedListOrderBy whitelist 防 SQL injection（P1-1 修复）。
+// 仅允许 ListByUserAgent 业务真实需要的几种排序；新增需求时显式扩展此 map。
+var allowedListOrderBy = map[string]bool{
+	"recency_at desc": true,
+	"recency_at asc":  true,
+	"score desc":      true,
+	"score asc":       true,
+	"created_at desc": true,
+	"created_at asc":  true,
+}
+
 // ListByUserAgent 按 (user_id, agent_definition_id) 列举记忆。
 func (s *agentSessionMemoryStore) ListByUserAgent(ctx context.Context, userID uint, agentDefID uint64, opts ListOpts) ([]model.AgentSessionMemory, error) {
 	limit := opts.Limit
@@ -61,6 +72,10 @@ func (s *agentSessionMemoryStore) ListByUserAgent(ctx context.Context, userID ui
 	orderBy := opts.OrderBy
 	if orderBy == "" {
 		orderBy = "recency_at desc"
+	}
+	// P1-1 防 SQL injection：白名单校验
+	if !allowedListOrderBy[orderBy] {
+		return nil, fmt.Errorf("agentSessionMemoryStore.ListByUserAgent: invalid OrderBy %q (allowed: recency_at|score|created_at + asc|desc)", orderBy)
 	}
 
 	q := s.db.WithContext(ctx).
