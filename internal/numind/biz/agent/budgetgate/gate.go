@@ -1,4 +1,12 @@
-package budget
+// Package budgetgate is a thin wire-layer adapter that connects the
+// budget package (no dependency on biz/agent) to *agent.RunHooks.
+// Placed under biz/agent/budgetgate to import biz/agent without forming
+// the circular dependency `agent ← budget ← agent` that would happen if
+// it lived in biz/budget directly.
+//
+// Decision rationale: budget package owns the 4-dim tracking + admin_test
+// pool logic; budgetgate just wraps agent hooks around it.
+package budgetgate
 
 import (
 	"context"
@@ -8,6 +16,7 @@ import (
 	"gorm.io/datatypes"
 
 	"numind-server/internal/numind/biz/agent"
+	"numind-server/internal/numind/biz/budget"
 	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/pkg/log"
 )
@@ -20,8 +29,8 @@ import (
 //	adminConsumer — admin_test pool (credit_service.ReserveAgentTest 透传给这里)
 //	runStore      — write terminal_metadata when CanProceed=exceeded
 type BudgetGate struct {
-	tracker       BudgetTracker
-	adminConsumer AdminTestConsumer
+	tracker       budget.BudgetTracker
+	adminConsumer budget.AdminTestConsumer
 	runStore      IBudgetRunStore
 }
 
@@ -33,15 +42,15 @@ type IBudgetRunStore interface {
 
 // NewBudgetGate constructs a BudgetGate. All deps may be nil — wrapper will no-op
 // gracefully (CanProceed always false, writeTerminalMetadata skip).
-func NewBudgetGate(t BudgetTracker, a AdminTestConsumer, rs IBudgetRunStore) *BudgetGate {
+func NewBudgetGate(t budget.BudgetTracker, a budget.AdminTestConsumer, rs IBudgetRunStore) *BudgetGate {
 	return &BudgetGate{tracker: t, adminConsumer: a, runStore: rs}
 }
 
 // Tracker exposes the BudgetTracker for runner.Run integration (Start/Close).
-func (g *BudgetGate) Tracker() BudgetTracker { return g.tracker }
+func (g *BudgetGate) Tracker() budget.BudgetTracker { return g.tracker }
 
 // AdminConsumer exposes the AdminTestConsumer for credit_service injection.
-func (g *BudgetGate) AdminConsumer() AdminTestConsumer { return g.adminConsumer }
+func (g *BudgetGate) AdminConsumer() budget.AdminTestConsumer { return g.adminConsumer }
 
 // WrapHooks decorates base hooks with budget checks.
 //
@@ -97,7 +106,7 @@ func (g *BudgetGate) WrapHooks(base *agent.RunHooks) *agent.RunHooks {
 	}
 }
 
-func (g *BudgetGate) writeTerminalMetadata(ctx context.Context, runID uint64, dim Dimension, detail map[string]any) {
+func (g *BudgetGate) writeTerminalMetadata(ctx context.Context, runID uint64, dim budget.Dimension, detail map[string]any) {
 	if g.runStore == nil {
 		return
 	}

@@ -314,3 +314,39 @@ func TestWrap_ConcurrentInvocation_RaceSafe(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestWrapHooks_PreservesNarrationFields verifies that NarrationProvider and
+// NarrationRunID set on the base hooks survive through permission.WrapHooks.
+// #12 agent-mode-billing-integration P1-2 fix — without this, the budget
+// wrapper (when chained `permission(budget(sandbox))`) would lose narration
+// fields at the outermost layer.
+func TestWrapHooks_PreservesNarrationFields(t *testing.T) {
+	reg := agent.NewHookActionRegistry()
+	base := &agent.RunHooks{
+		Registry:       reg,
+		NarrationRunID: 42424242,
+		// NarrationProvider intentionally nil — verifying RunID copy is sufficient
+		// (Provider is *narration.Provider, same field-copy logic).
+	}
+	gate := NewPermissionGate()
+	defer gate.Close()
+	wrapped := WrapHooks(base, gate)
+	if wrapped.NarrationRunID != 42424242 {
+		t.Errorf("NarrationRunID lost: want 42424242 got %d", wrapped.NarrationRunID)
+	}
+	if wrapped.Registry != reg {
+		t.Error("Registry lost through wrap")
+	}
+}
+
+func TestWrapHooks_PreservesNarrationFields_NilBase(t *testing.T) {
+	gate := NewPermissionGate()
+	defer gate.Close()
+	wrapped := WrapHooks(nil, gate)
+	if wrapped.NarrationRunID != 0 {
+		t.Errorf("nil base should yield RunID=0, got %d", wrapped.NarrationRunID)
+	}
+	if wrapped.NarrationProvider != nil {
+		t.Error("nil base should yield NarrationProvider nil")
+	}
+}

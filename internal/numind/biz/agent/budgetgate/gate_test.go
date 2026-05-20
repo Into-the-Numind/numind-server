@@ -1,4 +1,4 @@
-package budget
+package budgetgate
 
 import (
 	"testing"
@@ -7,10 +7,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"numind-server/internal/numind/biz/agent"
+	"numind-server/internal/numind/biz/budget"
 )
 
 func TestNewBudgetGate(t *testing.T) {
-	tr := NewTracker(nil)
+	tr := budget.NewTracker(nil)
 	g := NewBudgetGate(tr, nil, nil)
 	assert.NotNil(t, g)
 	assert.Equal(t, tr, g.Tracker())
@@ -18,7 +19,7 @@ func TestNewBudgetGate(t *testing.T) {
 }
 
 func TestBudgetGate_WrapHooks_NilBase(t *testing.T) {
-	g := NewBudgetGate(NewTracker(nil), nil, nil)
+	g := NewBudgetGate(budget.NewTracker(nil), nil, nil)
 	wrapped := g.WrapHooks(nil)
 	require.NotNil(t, wrapped)
 	require.NotNil(t, wrapped.PreToolCall)

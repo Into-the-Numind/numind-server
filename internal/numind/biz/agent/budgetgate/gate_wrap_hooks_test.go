@@ -1,4 +1,4 @@
-package budget
+package budgetgate
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	"gorm.io/datatypes"
 
 	"numind-server/internal/numind/biz/agent"
+	"numind-server/internal/numind/biz/budget"
 )
 
 // mockTool implements einotool.BaseTool for tests.
@@ -45,8 +46,8 @@ func (m *mockRunStore) UpdateTerminalMetadata(ctx context.Context, id uint64, me
 }
 
 func TestWrapHooks_PreToolCall_AllowForwardsToBase(t *testing.T) {
-	tr := NewTracker(nil)
-	tr.Start(context.Background(), 1, 1, DefaultLimits())
+	tr := budget.NewTracker(nil)
+	tr.Start(context.Background(), 1, 1, budget.DefaultLimits())
 	defer tr.Close(1)
 
 	var baseCalled atomic.Bool
@@ -67,9 +68,9 @@ func TestWrapHooks_PreToolCall_AllowForwardsToBase(t *testing.T) {
 }
 
 func TestWrapHooks_PreToolCall_ExceededShortCircuits(t *testing.T) {
-	tr := NewTracker(nil)
+	tr := budget.NewTracker(nil)
 	// Limits with MaxTurns=1 → CanProceed exceeded after 1 RecordStep
-	tr.Start(context.Background(), 1, 1, Limits{MaxTurns: 1, MaxCredits: 1000, MaxWallTime: time.Hour, MaxDailyCredits: 10000})
+	tr.Start(context.Background(), 1, 1, budget.Limits{MaxTurns: 1, MaxCredits: 1000, MaxWallTime: time.Hour, MaxDailyCredits: 10000})
 	defer tr.Close(1)
 	tr.RecordStep(context.Background(), 1)
 
@@ -103,7 +104,7 @@ func TestWrapHooks_PreToolCall_ExceededShortCircuits(t *testing.T) {
 }
 
 func TestWrapHooks_PreToolCall_RunIDZeroFailOpen(t *testing.T) {
-	tr := NewTracker(nil)
+	tr := budget.NewTracker(nil)
 	var baseCalled atomic.Bool
 	base := &agent.RunHooks{
 		PreToolCall: func(ctx context.Context, t einotool.BaseTool, input string) (agent.HookAction, error) {
@@ -122,8 +123,8 @@ func TestWrapHooks_PreToolCall_RunIDZeroFailOpen(t *testing.T) {
 }
 
 func TestWrapHooks_PostToolCall_ForwardsToBaseFirst(t *testing.T) {
-	tr := NewTracker(nil)
-	tr.Start(context.Background(), 1, 1, DefaultLimits())
+	tr := budget.NewTracker(nil)
+	tr.Start(context.Background(), 1, 1, budget.DefaultLimits())
 	defer tr.Close(1)
 
 	callOrder := []string{}
@@ -150,7 +151,7 @@ func TestWrapHooks_PostToolCall_ForwardsToBaseFirst(t *testing.T) {
 }
 
 func TestWrapHooks_PostToolCall_NilBase(t *testing.T) {
-	g := NewBudgetGate(NewTracker(nil), nil, nil)
+	g := NewBudgetGate(budget.NewTracker(nil), nil, nil)
 	wrapped := g.WrapHooks(nil)
 	action, err := wrapped.PostToolCall(context.Background(), &mockTool{name: "t"}, "", nil)
 	require.NoError(t, err)
@@ -163,15 +164,15 @@ func TestWrapHooks_PreservesRegistryAndNarration(t *testing.T) {
 		Registry:       reg,
 		NarrationRunID: 999,
 	}
-	g := NewBudgetGate(NewTracker(nil), nil, nil)
+	g := NewBudgetGate(budget.NewTracker(nil), nil, nil)
 	wrapped := g.WrapHooks(base)
 	assert.Same(t, reg, wrapped.Registry, "Registry preserved")
 	assert.Equal(t, uint64(999), wrapped.NarrationRunID, "NarrationRunID preserved")
 }
 
 func TestWrapHooks_PostToolCall_RunStoreNil_NoCrash(t *testing.T) {
-	tr := NewTracker(nil)
-	tr.Start(context.Background(), 1, 1, Limits{MaxTurns: 1, MaxCredits: 1000, MaxWallTime: time.Hour, MaxDailyCredits: 10000})
+	tr := budget.NewTracker(nil)
+	tr.Start(context.Background(), 1, 1, budget.Limits{MaxTurns: 1, MaxCredits: 1000, MaxWallTime: time.Hour, MaxDailyCredits: 10000})
 	defer tr.Close(1)
 	tr.RecordStep(context.Background(), 1)
 
@@ -186,8 +187,8 @@ func TestWrapHooks_PostToolCall_RunStoreNil_NoCrash(t *testing.T) {
 }
 
 func TestWrapHooks_ConcurrentPre(t *testing.T) {
-	tr := NewTracker(nil)
-	tr.Start(context.Background(), 1, 1, DefaultLimits())
+	tr := budget.NewTracker(nil)
+	tr.Start(context.Background(), 1, 1, budget.DefaultLimits())
 	defer tr.Close(1)
 	base := &agent.RunHooks{Registry: agent.NewHookActionRegistry()}
 	g := NewBudgetGate(tr, nil, nil)
