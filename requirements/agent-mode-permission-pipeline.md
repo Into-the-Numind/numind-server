@@ -289,7 +289,7 @@ S6 ndf-done 准入门槛：
 - [ ] **`HookActionToLoopEvent` 加 case**
 - [ ] **AgentRunner `WithPermissionGate` option**
 - [ ] **RunResult `PermissionDenial *PermissionDenialDetail` 字段**（nil when TerminalReason != TerminalPermissionDenied）
-- [ ] **biz/agent.RunHooks chain 合并** — permission HooksWrapper 接受 sandbox base hooks，PreToolCall 顺序：sandbox → permission；deny 立即短路返回 HookActionPermissionDeny
+- [ ] **biz/agent.RunHooks chain 合并** — permission HooksWrapper 接受 sandbox base hooks，PreToolCall 顺序：**permission → sandbox**（S0 P0 reviewer fix；避免容器白启动）；permission deny 立即短路返回 HookActionPermissionDeny，不调 base.PreToolCall
 - [ ] **biz.go wire**：PermissionGate 注入 AgentRunner（与 SandboxHookManager 兼容）
 - [ ] 单元测试：validators 子包每个 validator ≥3 case（allow/deny/passthrough/边界）
 - [ ] 单元测试：PermissionPipeline.Check 多 validator chain 顺序正确（前 passthrough 后 deny → 取后者；任何 allow → 提前终止）
