@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"errors"
+	"numind-server/internal/numind/biz/narration"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -253,4 +255,161 @@ func TestAdapter_RegistryNil_doesNotPanic(t *testing.T) {
 	require.NotPanics(t, func() {
 		_, _ = eino.InvokableRun(context.Background(), `{}`)
 	})
+}
+
+// ── #8 narration emit fixtures (spec §10.5) ────────────────────────────────
+
+const narrationFixtureYAML = `
+tools:
+  fake_narration_tool:
+    verb: "正在执行"
+    detail_template: "命令"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "命令执行完成"
+    error_template: "命令执行中断，{{ .reason_friendly }}"
+    rejected_template: "这个命令被规则拦截了"
+defaults:
+  verb: "正在处理"
+  detail_template: "操作"
+  use_template: "{{ .verb }}"
+  result_template: "操作完成"
+  error_template: "操作失败，{{ .reason_friendly }}"
+  rejected_template: "操作被规则拦截"
+`
+
+// helper: build a Provider + subscribe to its channel.
+// Returns the provider, the channel, and a cleanup func.
+func setupNarration(t *testing.T, runID uint64) (*narration.Provider, <-chan narration.Event, func()) {
+	t.Helper()
+	prov, err := narration.NewProvider(narration.Config{
+		YAMLBytes:  []byte(narrationFixtureYAML),
+		BufferSize: 16,
+	})
+	require.NoError(t, err)
+	ch, cleanup := prov.Subscribe(runID)
+	return prov, ch, cleanup
+}
+
+// drainEvents waits up to timeout and collects all events available; returns slice.
+func drainEvents(ch <-chan narration.Event, timeout time.Duration) []narration.Event {
+	var out []narration.Event
+	deadline := time.After(timeout)
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				return out
+			}
+			out = append(out, ev)
+		case <-deadline:
+			return out
+		}
+	}
+}
+
+func TestAdapter_NarrationEmits_UseResult(t *testing.T) {
+	ft := &fakeFullTool{name: "fake_narration_tool", out: []byte(`{"ok":true}`)}
+	rec := newHookRecorder()
+	prov, ch, cleanup := setupNarration(t, 1001)
+	defer cleanup()
+
+	hooks := rec.asRunHooks()
+	hooks.NarrationProvider = prov
+	hooks.NarrationRunID = 1001
+
+	eino := adaptFullToEinoTool(ft, hooks)
+	_, err := eino.InvokableRun(context.Background(), `{}`)
+	require.NoError(t, err)
+
+	evs := drainEvents(ch, 100*time.Millisecond)
+	require.Len(t, evs, 2, "expected exactly 2 narration events (use + result)")
+	assert.Equal(t, narration.StateUse, evs[0].State)
+	assert.Equal(t, narration.StateResult, evs[1].State)
+	assert.Contains(t, evs[0].Message, "正在执行")
+	assert.Equal(t, "命令执行完成", evs[1].Message)
+}
+
+func TestAdapter_NarrationEmits_UseError(t *testing.T) {
+	ft := &fakeFullTool{name: "fake_narration_tool", err: errors.New("super secret stack trace abc123")}
+	rec := newHookRecorder()
+	prov, ch, cleanup := setupNarration(t, 1002)
+	defer cleanup()
+
+	hooks := rec.asRunHooks()
+	hooks.NarrationProvider = prov
+	hooks.NarrationRunID = 1002
+
+	eino := adaptFullToEinoTool(ft, hooks)
+	_, err := eino.InvokableRun(context.Background(), `{}`)
+	require.Error(t, err)
+
+	evs := drainEvents(ch, 100*time.Millisecond)
+	require.Len(t, evs, 2, "expected exactly 2 narration events (use + error)")
+	assert.Equal(t, narration.StateUse, evs[0].State)
+	assert.Equal(t, narration.StateError, evs[1].State)
+	// Security contract: raw error text MUST NOT leak.
+	for _, leak := range []string{"super", "secret", "stack", "abc123"} {
+		assert.NotContains(t, evs[1].Message, leak,
+			"narration error message leaked raw err substring %q", leak)
+	}
+}
+
+func TestAdapter_NarrationEmits_Rejected_NoUseEmitted(t *testing.T) {
+	ft := &fakeFullTool{name: "fake_narration_tool", out: []byte(`unused`)}
+	rec := newHookRecorder()
+	rec.preAction = HookActionStop // short-circuit before Execute
+	prov, ch, cleanup := setupNarration(t, 1003)
+	defer cleanup()
+
+	hooks := rec.asRunHooks()
+	hooks.NarrationProvider = prov
+	hooks.NarrationRunID = 1003
+
+	eino := adaptFullToEinoTool(ft, hooks)
+	_, err := eino.InvokableRun(context.Background(), `{}`)
+	require.Error(t, err)
+
+	evs := drainEvents(ch, 100*time.Millisecond)
+	require.Len(t, evs, 1, "expected exactly 1 narration event (rejected only); no use/result/error")
+	assert.Equal(t, narration.StateRejected, evs[0].State)
+	assert.Equal(t, "这个命令被规则拦截了", evs[0].Message)
+}
+
+func TestAdapter_NarrationEmits_PostErrUpgradesToError(t *testing.T) {
+	// execErr=nil, postErr!=nil → effectiveErr=postErr → emit StateError (not Result).
+	// Verifies S1-D15 / S1 P0-1 effectiveErr branching in narration.
+	ft := &fakeFullTool{name: "fake_narration_tool", out: []byte(`{"ok":true}`)} // succeeds
+	rec := newHookRecorder()
+	rec.postErr = errors.New("sandbox teardown failed")
+	prov, ch, cleanup := setupNarration(t, 1004)
+	defer cleanup()
+
+	hooks := rec.asRunHooks()
+	hooks.NarrationProvider = prov
+	hooks.NarrationRunID = 1004
+
+	eino := adaptFullToEinoTool(ft, hooks)
+	_, err := eino.InvokableRun(context.Background(), `{}`)
+	require.Error(t, err, "caller should see PostToolCall-wrapped error")
+
+	evs := drainEvents(ch, 100*time.Millisecond)
+	require.Len(t, evs, 2, "expected use + error (NOT use + result)")
+	assert.Equal(t, narration.StateUse, evs[0].State)
+	assert.Equal(t, narration.StateError, evs[1].State,
+		"PostToolCall error with execErr=nil must drive narration to StateError, not StateResult")
+}
+
+func TestAdapter_NoNarrationProvider_LegacyBehaviorPreserved(t *testing.T) {
+	// Sanity: when NarrationProvider is nil, adapter behaves exactly as
+	// pre-#8 (no panic, no events, hooks fire as before).
+	ft := &fakeFullTool{name: "fake_narration_tool", out: []byte(`{"ok":true}`)}
+	rec := newHookRecorder()
+	hooks := rec.asRunHooks() // NarrationProvider is nil
+
+	eino := adaptFullToEinoTool(ft, hooks)
+	out, err := eino.InvokableRun(context.Background(), `{}`)
+	require.NoError(t, err)
+	assert.Equal(t, `{"ok":true}`, out)
+	assert.Equal(t, int64(1), rec.preCalls.Load(), "PreToolCall should fire once")
+	assert.Equal(t, int64(1), rec.postCalls.Load(), "PostToolCall should fire once")
 }

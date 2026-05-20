@@ -1,0 +1,78 @@
+# tool-display.yaml — Narration templates for built-in agent tools.
+#
+# Schema (see internal/numind/biz/narration/display.go::YAMLConfig):
+#   tools.<tool_name>.{verb, detail_template, use_template, result_template,
+#                      error_template, rejected_template}
+#   defaults.{...}  (fallback when tool not in tools map)
+#
+# Template engine: Go text/template with missingkey=zero (S2-D1) so absent
+# input fields render as empty string (not the literal "<no value>").
+# Available funcs: truncate, default. text/template builtins (len/eq/etc) also.
+# Template data accessible:
+#   {{ .verb }}, {{ .detail }}                — pre-computed from this entry
+#   {{ .input.<field> }}                       — observable input (per FullTool.BackfillObservableInput)
+#   {{ .result.<field> }}                      — tool execution output
+#   {{ .reason_friendly }}                     — error_translate.ClassifyError output
+#
+# Empty template values ("") mean "no message for this state" and the
+# Translator falls through to LLMFallback for that one slot.
+#
+# Tool keys must match the FullTool.Name() return values; mismatched keys hit
+# the defaults block (warn logged at boot per S1-D10).
+
+tools:
+  bash_exec:
+    verb: "正在执行"
+    detail_template: "命令"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "命令执行完成"
+    error_template: "命令执行中断，{{ .reason_friendly }}"
+    rejected_template: "命令被规则拦截"
+
+  document_generate:
+    verb: "正在生成"
+    detail_template: "{{ default \"文档\" .input.format }}"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "文档已生成"
+    error_template: "生成中断，{{ .reason_friendly }}"
+    rejected_template: "文档生成被规则拦截"
+
+  image_gen:
+    verb: "正在生成"
+    detail_template: "图片"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "图片已生成"
+    error_template: "图片生成中断，{{ .reason_friendly }}"
+    rejected_template: "图片生成被规则拦截"
+
+  kb_search:
+    verb: "正在搜索"
+    detail_template: "知识库"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "已查到相关内容"
+    error_template: "搜索中断，{{ .reason_friendly }}"
+    rejected_template: "知识库搜索被规则拦截"
+
+  learner_data_query:
+    verb: "正在查询"
+    detail_template: "你的学习数据"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "已查到学习数据"
+    error_template: "查询中断，{{ .reason_friendly }}"
+    rejected_template: "数据查询被规则拦截"
+
+  get_current_date:
+    verb: "正在获取"
+    detail_template: "当前日期"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "已获取当前日期"
+    error_template: "获取日期中断，{{ .reason_friendly }}"
+    rejected_template: "日期获取被规则拦截"
+
+defaults:
+  verb: "正在处理"
+  detail_template: "操作"
+  use_template: "{{ .verb }}{{ if .detail }} {{ .detail }}{{ end }}"
+  result_template: "操作完成"
+  error_template: "操作失败，{{ .reason_friendly }}"
+  rejected_template: "操作被规则拦截"

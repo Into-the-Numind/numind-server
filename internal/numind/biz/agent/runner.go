@@ -16,6 +16,7 @@ import (
 	"gorm.io/gorm"
 
 	"numind-server/internal/numind/biz/compact"
+	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/numind/biz/skill"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
@@ -62,14 +63,15 @@ type AgentRunner interface {
 }
 
 type agentRunner struct {
-	runStore        store.IAgentRunStore
-	registry        AgentToolRegistry
-	cancels         map[uint64]context.CancelFunc
-	mu              sync.Mutex
-	defaultHooks    *RunHooks                   // #4 sandbox-integration: wired by biz.go via WithDefaultHooks
-	skillStore      store.IAgentDefinitionStore // #11 skill-system: wired by biz.go via WithSkillStore; may be nil
-	compactProvider compact.CompactProvider     // #9 compact: wired by biz.go via WithCompactProvider; may be nil
-	compactConfig   compact.Config              // #9 compact: defaults to compact.DefaultConfig() in NewAgentRunner
+	runStore          store.IAgentRunStore
+	registry          AgentToolRegistry
+	cancels           map[uint64]context.CancelFunc
+	mu                sync.Mutex
+	defaultHooks      *RunHooks                   // #4 sandbox-integration: wired by biz.go via WithDefaultHooks
+	skillStore        store.IAgentDefinitionStore // #5 skill-system: wired by biz.go via WithSkillStore; may be nil
+	compactProvider   compact.CompactProvider     // #9 compact: wired by biz.go via WithCompactProvider; may be nil
+	compactConfig     compact.Config              // #9 compact: defaults to compact.DefaultConfig() in NewAgentRunner
+	narrationProvider *narration.Provider         // #8 narration-layer: wired by biz.go via WithNarrationProvider; may be nil
 }
 
 var _ AgentRunner = (*agentRunner)(nil)
@@ -88,7 +90,7 @@ func WithDefaultHooks(h *RunHooks) RunnerOption {
 }
 
 // WithSkillStore installs an IAgentDefinitionStore to enable Skill lookup in Run().
-// #11 skill-system wires this so runner.Run can call GetByIDIncludeInactive when
+// #5 skill-system wires this so runner.Run can call GetByIDIncludeInactive when
 // RunRequest.AgentDefinitionID > 0. When nil (default), skill lookup is skipped
 // and SkillVersion=0 is returned (fall through / #2 mock behaviour preserved).
 func WithSkillStore(s store.IAgentDefinitionStore) RunnerOption {
@@ -114,6 +116,17 @@ func WithCompactProvider(p compact.CompactProvider) RunnerOption {
 func WithCompactConfig(cfg compact.Config) RunnerOption {
 	return func(r *agentRunner) {
 		r.compactConfig = cfg
+	}
+}
+
+// WithNarrationProvider installs a *narration.Provider to enable learner-facing
+// narration event emission. When set, runner.Run attaches the provider to the
+// per-Run RunHooks (so the adapter can emit at Pre/PostToolCall sites) AND
+// defers Provider.CloseRun to release per-runID channel/counter resources.
+// When nil (default), no narration events emit. #8 agent-mode-narration-layer.
+func WithNarrationProvider(p *narration.Provider) RunnerOption {
+	return func(r *agentRunner) {
+		r.narrationProvider = p
 	}
 }
 
@@ -150,6 +163,14 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	}
 	if err := r.runStore.Create(ctx, run); err != nil {
 		return nil, fmt.Errorf("AgentRunner.Run: %w", err)
+	}
+
+	// 1.1. #8 narration-layer: register CloseRun defer IMMEDIATELY after run.ID
+	// is materialised, BEFORE any potentially-panicking init (react.NewAgent,
+	// skill lookup, etc.). Per S1-D20 / S1 P1-4 fix, late registration would
+	// leak the per-runID streamer channel on panic.
+	if r.narrationProvider != nil {
+		defer r.narrationProvider.CloseRun(run.ID)
 	}
 
 	// 1.5. #4 sandbox-integration: 注入 runID 到 ctx，供 SandboxHook /
@@ -222,6 +243,15 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// between runs, or by passing fresh hooks per call. Single-Run sessions are unaffected.
 	if effectiveHooks != nil && effectiveHooks.Registry == nil {
 		effectiveHooks.Registry = NewHookActionRegistry()
+	}
+
+	// #8 narration-layer: attach Provider + RunID to effectiveHooks AFTER the
+	// Registry auto-inject (S2-D3). The adapter reads both fields per-emit.
+	// Attachment is conditional on effectiveHooks != nil because a truly
+	// hook-less Run has no adapter to emit from anyway.
+	if effectiveHooks != nil && r.narrationProvider != nil {
+		effectiveHooks.NarrationProvider = r.narrationProvider
+		effectiveHooks.NarrationRunID = run.ID
 	}
 
 	var einoTools []einotool.BaseTool

@@ -146,7 +146,7 @@ func TestHookActionRegistry_ConcurrentRecord_raceSafe(t *testing.T) {
 	}
 }
 
-// ── M9: HookActionPermissionDeny tests ────────────────────────────────────────
+// ── M9 (#6 permission-pipeline): HookActionPermissionDeny tests ─────────────
 
 func TestHookActionRegistry_RecordPermissionDeny(t *testing.T) {
 	r := NewHookActionRegistry()
@@ -176,5 +176,20 @@ func TestHookActionValues_DistinctAndAtomicSafe(t *testing.T) {
 	}
 	if int32(HookActionPermissionDeny) != 3 {
 		t.Errorf("HookActionPermissionDeny != 3")
+	}
+}
+
+// ── M8 (#8 narration-layer): NarrationProvider field default ────────────────
+
+func TestRunHooks_DefaultNarrationFields_Nil(t *testing.T) {
+	// #8 agent-mode-narration-layer adds NarrationProvider + NarrationRunID
+	// fields to RunHooks. The zero-value must remain nil/0 so that legacy
+	// callers (no narration wiring) continue to work without changes.
+	h := &RunHooks{}
+	if h.NarrationProvider != nil {
+		t.Errorf("default NarrationProvider must be nil; got %v", h.NarrationProvider)
+	}
+	if h.NarrationRunID != 0 {
+		t.Errorf("default NarrationRunID must be 0; got %d", h.NarrationRunID)
 	}
 }

@@ -57,6 +57,74 @@ features:
   - 'agent-mode-e2e-rollout (#14/14, 依赖本 feature CompactProvider interface 接真实 aiservice + helper 函数 wire 到 ReAct loop)'
   blockers: []
   created_at: '2026-05-21T01:30:00+08:00'
+- id: agent-mode-narration-layer
+  ndf_version: '2.0'
+  description: 'Agent 模式 14-feature 分解 #8/14。落地蓝本 §4.7 Narration 层（学员可见叙述核心）：新增 biz/narration 子包（event/display/translator/streamer/provider/error_translate 6 文件） + configs/tool-display.yaml（6 个内置工具 use/result/error/rejected 模板） + RunHooks 增 NarrationProvider 字段（无需破坏 #4 PreToolCall/PostToolCall 签名） + adapter_full_to_eino.go 在 Pre/Post 调用点串入 narration.Emit + AgentRunner.WithNarrationProvider option + biz.go wire narration.NewProvider 注入 runner。NarrationEvent.State 6 值（queued/use/progress/result/error/rejected）声明全；v1 主动 emit 4 值（use/result/error/rejected）。Out of scope: 持久化 DB 表 / 真实 LLM fallback (#14) / SSE/WebSocket 学员端 (#11) / 管理端 narration 模板编辑器 (#10) / queued+progress emitter (#13/#14) / per-tenant 模板覆盖 (#10) / 学员端 UI (#11) / 蓝本 §4.7.2 LLM 双输出协议 (#14) / 蓝本 §4.7.5 multi-failure cascading (#14) / prod 部署。术语翻译：蓝本 tenant_id → Numind parent_user_id（v1 全平台模板，#10 加 per-parent override）。'
+  track: standard
+  stage: S5
+  classification_reason: 'Standard Triage 5 条 — (1) DB schema 变更：否（v1 内存 streamer，无新表，不动 migration） (2) 新 API 端点：否（biz Subscribe API 仅供 #11 消费，本 feature 不引入 HTTP） (3) 无新外部服务集成（aiservice LLM fallback 接口预留但 v1 stub） (4) 影响文件数 >3（biz/narration 6 新文件 + tool-display.yaml + hooks.go + adapter_full_to_eino.go + runner.go + biz/biz.go + N test ≥ 15 文件） (5) 高风险业务逻辑：否（narration 是 side-channel，不影响 terminal reason / state machine / billing / permission）。条件 4 单条触发 Standard（虽然非高风险，但跨 6 个新文件 + 3 个修改 + 多组件协调需要严肃 review 流程）。'
+  last_updated_by: ai-s0-reviewer-applied
+  last_updated_at: '2026-05-21T16:00:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: feature/agent-mode-narration-layer
+  worktree:
+    numind-server: /private/tmp/wt-agent-mode-narration-layer-numind-server
+  artifacts:
+    requirement: numind-server/requirements/agent-mode-narration-layer.md
+    proposal: numind-server/proposals/agent-mode-narration-layer-proposal.md
+    spec: numind-server/docs/superpowers/specs/2026-05-21-agent-mode-narration-layer-design.md
+    plan: numind-server/docs/superpowers/plans/2026-05-21-agent-mode-narration-layer-plan.md
+    qa: numind-server/docs/superpowers/qa/2026-05-21-agent-mode-narration-layer-s5-acceptance.md
+    architecture_blueprint: docs/agent-mode/architecture-v1.md
+  progress:
+    total_tasks: 12
+    completed_tasks: 12
+    reviewed_tasks: 12
+    current_task: 'S5 ACCEPTED — 全部 12 个 M task 完成 + 累计 P0/P1 全修 + biz/narration 92.4% 覆盖 + biz/agent 80.1% (adapter InvokableRun 79.2%→96.7%) + go vet 干净 + go test -race 全 PASS + 0 prod 影响（config_prod.yaml/migrations/credit_* 零改动）。进入 S6 ndf-done merge。'
+  decisions:
+  - '2026-05-21 (s0-1): HookAction→narration state 映射 v1 单一规则（S0 P1 fix）— 任何 PreToolCall 非 Continue HookAction emit StateRejected（不区分 Stop vs BlockingStop vs 未来 permission_denied）；#6 落地时通过 reason 字段细化，本 feature API 留 Reason string 默认空字符串占位。'
+  - '2026-05-21 (s0-2): use 事件时序契约（S0 P1 fix）— adapter PreToolCall 返回 Continue 后 + Execute 前发 use；PreToolCall 非 Continue 直接发 rejected，不发 use（与集成测试 fixture 一致）。'
+  - '2026-05-21 (s0-3): NarrationEvent.State 枚举值全 6 个（S0 P2 fix）— queued/use/progress/result/error/rejected；v1 emitter 主动发 4（use/result/error/rejected），queued+progress 为未来 #13/#14 预留。'
+  - '2026-05-21 (s0-4): Provider singleton + per-runID streamer registry（S0 D1）— 镜像 HookActionRegistry 模式，process-singleton 通过 WithNarrationProvider 注入 runner。'
+  - '2026-05-21 (s0-5): per-Run channel buffer cap 256 + drop-oldest（S0 D2）— 满时丢最早事件 + zap warn log（run_id + tool_call_id）；rationale: 256 ≥ 5× p95 turns-per-Run 估算 + 内存 ~64KB/run 上限。'
+  - '2026-05-21 (s0-6): tool-display.yaml 路径 configs/（S0 D3）— ops-visible，复用 config loader；测试用 in-memory yaml fixture 不依赖文件系统。'
+  - '2026-05-21 (s0-7): Provider.Emit API string-keyed dispatch（S0 D4）— 取 (ctx, toolName string, state State, payload EmitPayload)，不持 FullTool 引用，避免 narration → agent 包循环依赖；yaml 优先 → LLM fallback；FullTool 8 narration 方法 v1 不调用，留作 future hook。'
+  - '2026-05-21 (s1-1): result/error emit AFTER PostToolCall 基于 effectiveErr 分支（S1 P0-1 fix）— effectiveErr = execErr, if execErr == nil && postErr != nil then effectiveErr = wrap(postErr)；narration 反映 CALLER 观察到的错误状态，避免 PostToolCall 错误时显示"成功"误导学员。'
+  - '2026-05-21 (s1-2): Provider.nextCallID 使用 sync.Map.LoadOrStore 范式（S1 P0-2 fix）— 禁止 Load→nil-check→Store 的 TOCTOU 模式；并发 InvokableRun 调用通过 race detector 验证。'
+  - '2026-05-21 (s1-3): runChannel Send/Close race 安全契约（S1 P1-1 fix）— send: closed.Load 检查 + defer recover() 双层防御；close: CompareAndSwap 幂等；并发 Send+Close 由 go test -race 验证（不靠 coverage %）。'
+  - '2026-05-21 (s1-4): context.Canceled 映射为中性 "操作被中断"（S1 P1-2 fix）— v1 无法区分用户取消 vs runtime 取消（ctx.Err 返回同一 value）；#6 落地结构化 cancellationSource 时再细化。'
+  - '2026-05-21 (s1-5): NewProvider 启动期解析所有模板（S1 P1-3 fix）— template.Parse 在 init 执行，模板语法错误 fail-fast；runtime Execute 只会遇到执行 panic（ADR-4 defer recover() 兜底）。'
+  - '2026-05-21 (s1-6): defer narrationProvider.CloseRun 注册时机（S1 P1-4 fix）— 紧接 runStore.Create 返回后 + react.NewAgent / skill lookup 等 panic-prone 代码之前；防止 panic 导致 runChannel 泄漏。'
+  - '2026-05-21 (s1-7): 蓝本 §4.7.2 LLM 双输出协议 v1 不实装（S1 D17 / S1 P2-5 fix）— 采用 adapter-driven post-hoc template rendering 替代；#14 ReAct loop 真实落地后通过 EmitPayload.OverrideMessage 字段（v1 预留）扩展支持 LLM-supplied narration。'
+  - '2026-05-21 (s1-8): 5 错误分类 + 中文 friendlyReason 字符串锁定（S1 D11 / S0 Q1 resolve）— context_canceled "操作被中断" / deadline_exceeded "超过时间限制" / permission_denied "这个操作没有权限" / sandbox_killed "运行环境被回收" / generic "稍后再试一下"。'
+  - '2026-05-21 (s1-9): yaml 缺失 key warn-and-fallback 到 defaults block（S1 D10 / S0 Q2 resolve）— forward-compat #14 admin-defined MCP tools；strict_yaml: true 预留 future flag。'
+  - '2026-05-21 (s1-10): LLMFallback 接口契约 — 实现必须内部处理错误返回安全默认值（S1 D12 / S1 P2-4 fix）— 永远不向 Translator 传错；#14 aiservice.Chat 集成遵循此契约。'
+  - '2026-05-21 (s2-1): 移除 templateFuncs 中的 "len"（S2 P0-2 fix）— text/template 内置已有 len；重复注册会 panic "function len already defined" 导致 NewProvider 启动崩溃。'
+  - '2026-05-21 (s2-2): 每个 template.New(...) 必须链式 .Option("missingkey=zero")（S2 D1 / S2 P0-3 fix）— 默认 missingkey=default 会让 {{ .input.missing }} 渲染成字面字符串 <no value>；missingkey=zero 让缺失 key 返回空字符串，default 模板函数正常工作。'
+  - '2026-05-21 (s2-3): buildTemplateData 在 translator.go 不在 display.go（S2 P0-1 clarification）— M3 owns display.go / M5 owns translator.go；spec §3.1 明确归属避免实现期混淆。'
+  - '2026-05-21 (s2-4): Subscribe(dead-runID) 返回新 open channel（S2 D2 / S2 P1-1 fix）— lazy-create 语义，永不收事件；#11 可在 follow-up minor 加 IsRunActive 显式检查；v1 不实装 tombstone。'
+  - '2026-05-21 (s2-5): runner.Run narration 字段 attachment 必须在 Registry auto-inject 之后（S2 D3 / S2 P1-2 fix）— 保持"所有 RunHooks 字段在第一次工具调用前就绪"不变量。'
+  - '2026-05-21 (s2-6): translator.go imports 添加 time（S2 P1-3 fix）— nowFunc = time.Now 需要。'
+  - '2026-05-21 (s2-7): agentToolNames 验证为 best-effort（S2 D4 / S2 P2-3）— 启动期 lazy load 未跑则报 0 missing，不阻塞 boot；运维 runbook 注明 narration 落到 defaults 时检查 registry timing。'
+  - '2026-05-21 (s2-8): configs/tool-display.yaml 路径硬编码相对 CWD（S2 D5 / S2 P2-3）— numind-server 启动 CWD 一致为 repo 根（deploy 脚本约定 + 现有 config_dev.yaml 模式）；#10 可加可配置路径。'
+  - '2026-05-21 (s3-1): R-S4-1 yaml CWD 风险 mitigation 改为 M4 disk-load fixture（S3 P0-1 fix）— TestNewRendererFromPath_RepoRootYAML 用 ../../../configs/tool-display.yaml 三级回 repo 根，证明 prod yaml 文件可装载；M11 不加 biz_test.go 调 NewBiz（无用扩面测试 + 隐藏 CWD 耦合）。'
+  - '2026-05-21 (s3-2): state.go [N]TerminalReason 合并冲突 protocol（S3 P1-1 fix）— S6 merge 后第一件事跑 go vet ./internal/numind/biz/agent/...，#6/#9 各自加 reason 时数组 size 需手工对齐；#8 本身不动 state.go。'
+  - '2026-05-21 (s3-3): M11 不加 biz_test.go 调用 NewBiz（S3 P1-2 fix）— boot 验证通过 M4 disk fixture；reviewer 不应建议加。'
+  - '2026-05-21 (s3-4): plan §1 M-numbering 是 manifest current_task tracking 权威（S3 P2-1 fix）— spec §12 是预览；如有冲突以 plan 为准。'
+  - '2026-05-21 (s3-5): M9 adapter coverage baseline 在 dispatch 前记录（S3 P2-3 fix）— 主 session 跑 go test -coverprofile 把 % 记入 manifest current_task；reviewer B 对比落差 >2pp 标 P1。'
+  - '2026-05-21 (s3-6): M5 dispatch 前必须 git log 验证 Wave A 全 4 commits 完成（S3 P2-5 fix）— 防止串型 wave 提前启动遇到 missing dep。'
+  related_features:
+  - 'agent-mode-runtime-skeleton (#2/14, 已 develop merged — RunHooks + adapter PreToolCall/PostToolCall hook 点输入)'
+  - 'agent-mode-tool-registry (#3/14, 已 develop merged — FullTool 8 narration 方法 + NarrationMessage struct + BaseTool 默认值输入)'
+  - 'agent-mode-skill-system (#5/14, 已 develop merged — biz.go wire 模式 + HookActionRegistry race-safe 模式输入)'
+  - 'agent-mode-permission-pipeline (#6/14, 并行进行中 — 落地后通过 Reason 字段细化 StateRejected 原因，本 feature 留扩展点)'
+  - 'agent-mode-configurator-ux (#10/14, 依赖本 feature tool-display.yaml schema 做管理端 per-parent override CRUD UI)'
+  - 'agent-mode-student-ux (#11/14, 依赖本 feature Provider.Subscribe 做 SSE/WebSocket 推送 + UI 渲染)'
+  - 'agent-mode-e2e-rollout (#14/14, 依赖本 feature LLMFallback 接口落地真实 aiservice.Chat 调用 + 真实 ReAct loop 触发 queued+progress emitter)'
+  blockers: []
+  created_at: '2026-05-21T15:00:00+08:00'
 - id: agent-mode-permission-pipeline
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #6/14。落地蓝本 §4.4 Permission Pipeline（安全核心）：建 agent_permission_config + agent_permission_decision_log 两表 + biz/permission 子包（PermissionGate / PermissionPipeline / 7 Validator 实现 / 异步审计写入）+ HookAction 加第 4 枚举 HookActionPermissionDeny=3 + TerminalReason 加第 13 个 permission_denied + LoopEvent 加 LoopEventPermissionDenied + AgentRunner.WithPermissionGate option + HooksWrapper 合并 sandbox + permission（顺序 permission → sandbox）+ RunResult.PermissionDenial 字段。Out of scope: 管理端 UI (#10) / 学员端 UI (#11) / classifier 真实 LLM (#14) / sandbox override 真实路径 (#13) / 23 bash validators 全扩展 / safety check L3 拆出 (#13) / 试聊配额检查 (#12) / prod 部署。术语翻译：蓝本 tenant_id → Numind parent_user_id（B2B2C 与 #5 一致）。DecisionReason canonical：§4.4.5。'
