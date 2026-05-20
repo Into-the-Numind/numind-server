@@ -18,8 +18,11 @@ type User struct {
 	ParentUserID *uint `gorm:"type:int unsigned;index" json:"parent_user_id,omitempty"` // 上级客户ID,NULL表示直接客户
 	Parent       *User `gorm:"foreignKey:ParentUserID;references:ID" json:"parent,omitempty"`
 
-	// SOP运行统计字段
-	TotalSopRuns int `gorm:"default:0;index" json:"total_sop_runs"` // 总SOP运行次数（累计统计）
+	// TotalSopRuns: ⚠️ DEPRECATED — T2 deprecation (2026-05-18) 删了 increment 函数后此字段不再累计。
+	// DB 中的值是 2026-05-18 前的历史快照，不能作为"当前 SOP 运行次数"使用。
+	// 准确数据请直接 COUNT sop_run 表（见 store/customer.go GetSubUserRunCounts）。
+	// 字段保留是为了向后兼容（admin_user 等 controller 仍在 marshal 它），不要新代码读这个字段。
+	TotalSopRuns int `gorm:"default:0;index" json:"total_sop_runs"`
 
 	// 管理员相关字段
 	Username  string     `gorm:"size:50;uniqueIndex" json:"username,omitempty"`
