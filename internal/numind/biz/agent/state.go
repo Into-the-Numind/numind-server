@@ -1,7 +1,7 @@
 // Package agent 提供 Agent Runtime 的状态机和核心 biz 组件。
 package agent
 
-// TerminalReason 是 agent_run 终止时写入 agent_run.state_reason 的字符串值（共 12 个）。
+// TerminalReason 是 agent_run 终止时写入 agent_run.state_reason 的字符串值（共 13 个）。
 type TerminalReason string
 
 const (
@@ -68,6 +68,7 @@ const (
 	LoopEventCollapseDrainRetry            // → ContinueCollapseDrainRetry
 	LoopEventMaxOutputEscalate             // → ContinueMaxOutputEscalate (17)
 	LoopEventPermissionDenied              // → TerminalPermissionDenied (18) — NEW (#6 agent-mode-permission-pipeline)
+	LoopEventErrorMaxBudget                // → TerminalErrorMaxBudget (19) — NEW (#12 agent-mode-billing-integration) — BudgetTracker 4 维任一超限
 )
 
 // LoopState 是 Runtime 单 run 内存中状态。
@@ -166,6 +167,10 @@ func (s *LoopState) Transition(event LoopEvent) (TerminalReason, ContinueReason,
 	case LoopEventPermissionDenied:
 		s.TerminalReason = TerminalPermissionDenied
 		return TerminalPermissionDenied, "", true
+
+	case LoopEventErrorMaxBudget:
+		s.TerminalReason = TerminalErrorMaxBudget
+		return TerminalErrorMaxBudget, "", true
 
 	case LoopEventHookActionBlocking:
 		s.ContinueReason = ContinueStopHookBlocking

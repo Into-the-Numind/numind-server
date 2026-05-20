@@ -16,14 +16,15 @@ const (
 	HookActionContinue       HookAction = iota // 0 — continue normally
 	HookActionStop                             // 1 — trigger TerminalHookStopped
 	HookActionBlockingStop                     // 2 — trigger TerminalStopHookPrevented
-	HookActionPermissionDeny                   // 3 — trigger TerminalPermissionDenied (#6 agent-mode-permission-pipeline)
+	HookActionPermissionDeny                   // 3 — TerminalPermissionDenied (#6 agent-mode-permission-pipeline)
+	HookActionBudgetExceeded                   // 4 — TerminalErrorMaxBudget (#12 agent-mode-billing-integration)
 )
 
 // HookActionRegistry is a thread-safe recorder of the last HookAction emitted during a Run.
 // adapter PreToolCall + PostToolCall both call Record; runner.Run reads LastAction at the end
 // to propagate Stop/BlockingStop/PermissionDeny into the correct TerminalReason via state.Transition.
 type HookActionRegistry struct {
-	last atomic.Int32 // 0=Continue 1=Stop 2=BlockingStop 3=PermissionDeny
+	last atomic.Int32 // 0=Continue 1=Stop 2=BlockingStop 3=PermissionDeny 4=BudgetExceeded
 }
 
 // NewHookActionRegistry creates a registry with zero value (HookActionContinue).
@@ -73,6 +74,8 @@ func HookActionToLoopEvent(action HookAction) LoopEvent {
 		return LoopEventHookActionBlockStop
 	case HookActionPermissionDeny:
 		return LoopEventPermissionDenied
+	case HookActionBudgetExceeded:
+		return LoopEventErrorMaxBudget
 	default:
 		// HookActionContinue does not map to an event
 		return LoopEventInvalid

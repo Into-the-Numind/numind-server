@@ -225,6 +225,25 @@ func TestTerminalReason_Count13(t *testing.T) {
 	var _ = [13]TerminalReason{} // sanity
 }
 
+// ── M12 (#12 agent-mode-billing-integration): LoopEventErrorMaxBudget transition ──
+
+func TestTransition_ErrorMaxBudget(t *testing.T) {
+	s := &LoopState{}
+	term, cont, isTerminal := s.Transition(LoopEventErrorMaxBudget)
+	if !isTerminal {
+		t.Errorf("expected isTerminal true")
+	}
+	if term != TerminalErrorMaxBudget {
+		t.Errorf("term = %q, want %q", term, TerminalErrorMaxBudget)
+	}
+	if cont != "" {
+		t.Errorf("cont = %q, want empty", cont)
+	}
+	if s.TerminalReason != TerminalErrorMaxBudget {
+		t.Errorf("s.TerminalReason = %q, want %q", s.TerminalReason, TerminalErrorMaxBudget)
+	}
+}
+
 func TestAllReasonsReachable(t *testing.T) {
 	// Map of all expected terminal and continue reasons and how to reach them
 	type testCase struct {
