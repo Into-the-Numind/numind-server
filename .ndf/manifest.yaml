@@ -4,10 +4,10 @@ features:
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #10/14。落地蓝本 §5 配置者 UX 全部范围（admin-web 前端）：侧边栏 + 路由（/admin/agents 列表 / 创建 / 详情 / 编辑 / 高级 / 监控）+ Pinia store + axios wrappers（9 个 /v1/agent/skills/* 端点） + AgentList DataTable + 3 创建路径（模板 / 从零 / 派生） + TemplateGallery + AgentBuilder 12 题问卷（严格按蓝本 §5.3 canonical：Q1 名字 / Q2 头像 / Q3 描述 / Q4 欢迎 / Q5 starters / Q6 任务类型多选 / Q7 材料类型多选 / Q8 积分滑块 / Q9 网络搜索 / Q10 话题 / Q11 越界 / Q12 风格） + AgentDetail 3 Tab（配置 / 历史 / 数据占位） + AgentHistoryTab 回滚 + AgentAdvancedEdit Markdown editor + 工具开关 + AfterSaveModal 试聊弹窗（v1 toast 占位） + AdvancedToggleConfirmModal + AgentMonitoring（v1 UI 骨架空状态，不调后端避免 404） + AdminSidebar 加 "AI 助手" 菜单。全部走自研组件（DataTable / ConfirmModal / AppInput / AppSelect / AppButton），0 外部 UI 框架引入。Out of scope: 学员端 UI (#11) / 试聊真实流程 (#12) / Langfuse trace 真实跳转 (#14) / 强制取消 agent_run 后端 (#14) / 监控真实数据源 (#14) / per-tenant narration 模板编辑器 / 响应式 mobile / i18n / 后端 API 改动 / prod 部署。术语翻译：蓝本 "顶部导航" → admin-web AdminSidebar 左侧菜单。'
   track: standard
-  stage: S1
+  stage: S2
   classification_reason: 'Standard Triage 5 条 — (1) DB schema 变更：否（不动后端） (2) 新 API 端点：否（消费 #5 已落地 9 端点） (3) 无新外部服务集成 (4) 影响文件数 >3（新增 ~12 Vue 组件 + 9 axios wrappers + 1 store + 1 types 文件 + router 修改 + sidebar 修改 + N 单测/E2E ≥ 25 文件） (5) 高风险业务逻辑：否（UI 层；销毁性操作走 ConfirmModal；不动支付/会员/权限）。条件 4 单条触发 Standard——跨多个新组件 + 多状态管理 + 表单验证规则多需要严肃 spec/plan review。'
-  last_updated_by: ai-s1-reviewer-applied
-  last_updated_at: '2026-05-21T04:15:00+08:00'
+  last_updated_by: ai-s2-reviewer-applied
+  last_updated_at: '2026-05-21T04:45:00+08:00'
   repos:
   - numind-admin-web
   branches:
@@ -24,8 +24,15 @@ features:
     total_tasks: 0
     completed_tasks: 0
     reviewed_tasks: 0
-    current_task: 'S1 proposal + PRD 已写并通过 reviewer（PASS_WITH_CONDITIONS - 3 P0 + 6 P1 + 6 P2 + Nits 全修）。S1 决议详见 decisions s1-1 .. s1-9。进入 S2 写 spec（数据契约 / UI 契约 / 测试契约）。'
+    current_task: 'S2 spec 已写并通过 reviewer（PASS_WITH_CONDITIONS - 4 P0 + 6 P1 + 6 P2 + Nits 全修）。S2 决议详见 decisions s2-1 .. s2-7。进入 S3 写 task plan（M1-M13 atomic 任务 + Wave 分组 + 文件归属表 + S5 验证策略 + follow-up issues）。'
   decisions:
+  - '2026-05-21 (s2-1): QuestionnaireAnswers 类型 union 不允许 ""（P0-1 修复）— 后端 omitempty 序列化可能让历史快照字段为空；定义 normalizeQuestionnaire() helper 在 store.fetchOne/fetchHistory 时把 "" / null / 无效 enum 值统一 → undefined，避免表单 v-model 绑无效空串。'
+  - '2026-05-21 (s2-2): Q11 默认值仅 NEW-create 时注入（P0-2 修复）— 不在 EditMode 覆盖 backend value；防止"编辑现有 agent 时 Q11 字段被强制注入默认字符串"的 round-trip bug。initialFormState() docstring 说明此意图。'
+  - '2026-05-21 (s2-3): 子账户 403 检测用 HTTP status 而非 code 字符串（P0-3 修复）— 核查 core.WriteResponse：response.body.code 永远 0/1，errno 的字符串 Code 不暴露。前端 catch 用 (e as AxiosError).response?.status === 403。常量定义在 src/constants/agentErrno.ts 用 HTTP code（HTTP_CHILD_ACCOUNT_FORBIDDEN=403 等）。'
+  - '2026-05-21 (s2-4): store action 重命名 patch → update（P0-4 修复）— 避免与 request.ts patch helper 冲突 + 避免与 Pinia 内置 $patch 方法混淆。'
+  - '2026-05-21 (s2-5): custom_skill_body 编辑 v1 不支持（§13/§20 critical 发现）— 后端 PatchRequest 无 custom_skill_body 字段（verified controller line 50-62 + service.go Patch 函数）。v1 高级模式：仅切换 + 工具开关 PATCH + 只读展示当前 generated/custom body。完整 body 编辑由 backend follow-up agent-mode-skill-system-advanced-mode-edit micro 解锁，前端跟进 micro。S3 plan 必须创建 follow-up issue 文件。'
+  - '2026-05-21 (s2-6): ToolFlags 类型收紧（P2 fix）— interface ToolFlags { code_sandbox?: boolean; media?: boolean; dangerous?: boolean; [k]: boolean|undefined } 而非 Record<string,boolean>，编辑器获得 autocomplete + 未来扩展 key 仍兼容。'
+  - '2026-05-21 (s2-7): QuestionnaireForm readonly 传播契约具体化（P1-2 fix）— 所有子控件（AppInput/textarea/AvatarPicker/ChipInput/CheckboxGroup/CreditSlider/radio）必须接受并实装 readonly prop；HistoryViewModal 利用此渲染过去版本。'
   - '2026-05-21 (s1-1): 路由前缀勘误（P0-1 修复）— S0 写的 /admin/agents 错；admin-web router 无 /admin/ 前缀（验证：现有 /users /templates /billing 等），S1 校正为 /agents /agent-monitoring，所有视图归 AdminLayout 下 children。S0 §2.1 条目即为本错，以 S1 §1.2 为准。'
   - '2026-05-21 (s1-2): credit_cap_per_session / daily_credit_cap / source_template_id TypeScript 类型 = number | null | undefined（P0-2 修复）— 后端是 *uint pointer，null=不限，需要前端显式传 null（JSON.stringify 保留 null 剥 undefined）。store create() 调用必须显式传 null 而非 undefined。'
   - '2026-05-21 (s1-3): v1 列表删除 include_inactive toggle（P0-3 修复）— 后端 PATCH 不接受 is_active 字段，DELETE 后无重新上架功能；toggle 暴露下架行会形成"看得到但操作不了"的死 UX。v1 列表只显示 active；后续如机构反馈再加 reactivate 端点 + toggle。'
