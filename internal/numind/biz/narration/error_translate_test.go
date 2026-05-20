@@ -59,20 +59,38 @@ func TestClassifyError_NeverLeaksRawErrText(t *testing.T) {
 	}
 }
 
-func TestClassifyError_PriorityOrder(t *testing.T) {
-	// When an error wraps multiple sentinels, the FIRST match in
-	// ClassifyError's switch wins (canceled > deadline > permission > sandbox > generic).
-	// Construct a synthetic wrapped chain to verify.
-	type wrapBoth struct{ a, b error }
-	// Not possible to wrap two unrelated sentinels cleanly with %w, so we test
-	// the explicit precedence: a wrapped Canceled inside a wrapper that ALSO
-	// satisfies Is for DeadlineExceeded would be ambiguous. errors.Is uses depth-
-	// first traversal, so wrapping order matters. Verify Canceled wins over
-	// generic when both are present (the standard case in real cancel paths).
-	inner := context.Canceled
-	wrapped := fmt.Errorf("user pressed cancel: %w", inner)
-	cat, _ := ClassifyError(wrapped)
+// multiErr lets us wrap two unrelated sentinels (via Unwrap []error, Go 1.20+)
+// to actually exercise the priority order in ClassifyError's switch.
+type multiErr struct{ errs []error }
+
+func (m *multiErr) Error() string   { return "multi" }
+func (m *multiErr) Unwrap() []error { return m.errs }
+
+func TestClassifyError_PriorityOrder_CanceledBeatsPermission(t *testing.T) {
+	// Construct an error that satisfies BOTH errors.Is(context.Canceled) AND
+	// errors.Is(ErrPermissionDenied). ClassifyError's switch checks Canceled
+	// FIRST, so it must win.
+	multi := &multiErr{errs: []error{context.Canceled, ErrPermissionDenied}}
+	cat, _ := ClassifyError(multi)
 	if cat != ErrCatContextCanceled {
-		t.Errorf("expected ErrCatContextCanceled for wrapped Canceled, got %q", cat)
+		t.Errorf("expected ErrCatContextCanceled (canceled-first priority), got %q", cat)
+	}
+}
+
+func TestClassifyError_PriorityOrder_DeadlineBeatsSandbox(t *testing.T) {
+	multi := &multiErr{errs: []error{context.DeadlineExceeded, ErrSandboxKilled}}
+	cat, _ := ClassifyError(multi)
+	if cat != ErrCatDeadlineExceeded {
+		t.Errorf("expected ErrCatDeadlineExceeded (deadline-before-sandbox), got %q", cat)
+	}
+}
+
+func TestClassifyError_LeakGuard_SentinelWrapMessage(t *testing.T) {
+	// Strengthen the raw-leak test by also asserting that ANY wrap text around
+	// a sentinel does not appear in the friendly reason.
+	wrapped := fmt.Errorf("user input leaked %w", ErrPermissionDenied)
+	_, reason := ClassifyError(wrapped)
+	if strings.Contains(reason, "leaked") || strings.Contains(reason, "user input") {
+		t.Errorf("friendly reason leaked wrap text: %q", reason)
 	}
 }

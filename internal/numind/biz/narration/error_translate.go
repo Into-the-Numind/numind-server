@@ -41,6 +41,12 @@ var (
 // friendlyReason is the ONLY text the error_template will ever see — err.Error()
 // raw text is never rendered to learners (security-critical contract; tested).
 //
+// Nil contract: ClassifyError(nil) returns (ErrCatGeneric, generic-reason).
+// Callers SHOULD gate on err != nil before calling, but the nil path is defined
+// so adapter goroutines never panic on a defensive ClassifyError invocation
+// where the path's err is statically known to be non-nil but TypeScript-style
+// strictness can't prove it.
+//
 // Classification order (first match wins):
 //  1. errors.Is(err, context.Canceled)         → context_canceled
 //  2. errors.Is(err, context.DeadlineExceeded) → deadline_exceeded
