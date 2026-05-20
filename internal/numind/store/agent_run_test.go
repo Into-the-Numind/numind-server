@@ -30,17 +30,19 @@ func newTestAgentRunStore(t *testing.T) IAgentRunStore {
 
 	require.NoError(t, db.Exec(`
 		CREATE TABLE IF NOT EXISTS agent_run (
-			id             INTEGER PRIMARY KEY AUTOINCREMENT,
-			user_id        INTEGER NOT NULL,
-			session_id     TEXT    NOT NULL DEFAULT '',
-			status         TEXT    NOT NULL DEFAULT 'running',
-			state_reason   TEXT    NOT NULL DEFAULT '',
-			messages       TEXT    NOT NULL DEFAULT '[]',
-			reservation_id INTEGER,
-			started_at     DATETIME NOT NULL,
-			ended_at       DATETIME,
-			created_at     DATETIME,
-			updated_at     DATETIME
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id         INTEGER NOT NULL,
+			session_id      TEXT    NOT NULL DEFAULT '',
+			status          TEXT    NOT NULL DEFAULT 'running',
+			state_reason    TEXT    NOT NULL DEFAULT '',
+			messages        TEXT    NOT NULL DEFAULT '[]',
+			reservation_id  INTEGER,
+			started_at      DATETIME NOT NULL,
+			ended_at        DATETIME,
+			compact_state   TEXT,
+			compact_summary TEXT,
+			created_at      DATETIME,
+			updated_at      DATETIME
 		)`).Error)
 
 	sqlDB, err := db.DB()
