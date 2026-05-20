@@ -901,3 +901,54 @@ S4 编码时按上述顺序，每个 task 完成后双 reviewer。
 ---
 
 **S2 完结。S3 拆 task 并制定 S5 验收策略。**
+
+---
+
+## §S5-strategy 验证策略（NDF 规则 10 要求，M8 task 落地）
+
+**选择**：**仅后端 TDD**（Go 单测 + 集成测试），不走 Playwright / gstack `/qa`。
+
+### 为什么 TDD-only 是对的
+
+- **零前端 UI 改动**：#9 范围 100% 在 numind-server，无 Vue 组件 / 无 HTML / 无 CSS。学员端会话恢复 UI 由 #11 落地。
+- **零新 HTTP 端点**：#9 不引入 controller / router 注册。compact 暴露为 Go 库 + AgentRunner helper；HTTP API 由 #11 学员端 + #14 ReAct 集成时落地。
+- **测试覆盖完整**：48+ 单测覆盖 happy path + 边界 + race，跨 6 个 _test.go 文件持久化在代码库。
+- **gstack `/qa` 无价值**：是一次性浏览器 QA，无持久化测试代码 → 对 Go 库无意义（commit 即留回归保护）。
+- **Playwright E2E 不适用**：需要 HTTP 端点；#9 没有。
+
+### S5 验收清单（10 项）
+
+每项 S5 必须通过：
+
+1. `go test -race ./internal/numind/biz/compact/...` PASS（biz/compact 整包 7 .go + 7 _test.go）
+2. `go test -race ./internal/numind/biz/agent/...` PASS（含 #2 既有 + #9 新增 runner_compact_test.go）
+3. `go test -race ./internal/numind/store/...` PASS（agent_run_test.go DDL 已扩展）
+4. `go test -race ./internal/pkg/model/...` PASS（新增 agent_run_test.go）
+5. `go vet ./...` exit 0
+6. `task lint` PASS（golangci-lint）
+7. biz/compact **整包覆盖率 ≥ 80%**（实际目前 97.8%）— `go test -cover ./internal/numind/biz/compact/...`
+8. biz/agent **覆盖率不下降**（目前 80.9%，与 develop 基线对照）— `go test -cover ./internal/numind/biz/agent/...`
+9. `go build ./...` PASS（M7 wire 不引入编译错误）
+10. **审计**：`grep -n "config_prod.yaml" *.diff` 应零差异（0 prod 影响硬规则）
+
+### 回归保护诚实声明
+
+- biz/compact 7 个 _test.go = **永久回归保护**（任何 #14 / #11 改动破坏现有契约都会触发测试失败）
+- runner_compact_test.go = 同上
+- AutoMigrate dev 自检（agent_run 新 2 列）= **一次性验证**（user `/deploy-dev server` 后手工 SSH MySQL 跑 `ALTER` SQL 或验证 GORM AutoMigrate 自动同步）— 不留持久化测试代码，由 #11/#14 单测捕获 schema 不匹配
+
+### 不在 S5 范围（移交 #11 / #14 后续）
+
+- 真实 LLM compact 端到端测试（#14 接 aiservice.Chat-backed provider 后做）
+- 学员端 UI 会话恢复流程（#11 落地）
+- 跨设备 session sync（v2）
+- L3 session archive（v2）
+- 真实文件 / Skill / MCP delta 重注入（#11/#14 落地 AttachmentReinjector）
+
+### S5 acceptance 文档位置
+
+`numind-server/docs/superpowers/qa/2026-05-21-agent-mode-compact-s5-acceptance.md` — S5 阶段（S6 ndf-done 前）由主 session 写，含上 10 项实际执行结果 + 累计 P0/P1/P2 reviewer 统计。
+
+---
+
+**M8 完结。S4 完成。进入 S5 验收。**
