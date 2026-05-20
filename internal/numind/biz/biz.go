@@ -18,6 +18,7 @@ import (
 	"numind-server/internal/numind/biz/llmrouter"
 	"numind-server/internal/numind/biz/membership"
 	"numind-server/internal/numind/biz/monitor"
+	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/numind/biz/payment"
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/numind/biz/salesrag/adapter"
@@ -242,11 +243,31 @@ func NewBiz(ds store.IStore) *biz {
 		"pool_min", sandboxConfig.PoolMin,
 		"image_tag", sandboxConfig.ImageTag)
 
+	// #8 narration-layer: build singleton Provider from configs/tool-display.yaml.
+	// S4 amendment to spec S2-D5: NewBiz signature is func(IStore) *biz with no
+	// error return, so narration init failure cannot propagate as a hard boot
+	// error. Use graceful degrade — log.Errorw + leave narrationProv nil.
+	// agent.WithNarrationProvider(nil) is a documented no-op (legacy behavior),
+	// so server boots without narration. Operator notices via log and fixes yaml.
+	narrationToolNames := agentToolNames(agentToolRegistry)
+	narrationProv, narrErr := narration.NewProvider(narration.Config{
+		YAMLPath:   "configs/tool-display.yaml",
+		BufferSize: 256,
+		ToolNames:  narrationToolNames,
+	})
+	if narrErr != nil {
+		log.Errorw("narration provider init failed; narration disabled for this process",
+			"error", narrErr,
+			"yaml_path", "configs/tool-display.yaml")
+		narrationProv = nil
+	}
+
 	b.agentRunner = agent.NewAgentRunner(
 		ds.AgentRuns(),
 		agentToolRegistry,
 		agent.WithDefaultHooks(sandboxHookManager.AsRunHooks()),
 		agent.WithSkillStore(ds.AgentDefinitions()), // #5 skill-system
+		agent.WithNarrationProvider(narrationProv),  // #8 narration-layer (nil if init failed)
 	)
 
 	// 初始化知识库服务
@@ -394,3 +415,19 @@ type sandboxZapLogger struct{}
 
 func (sandboxZapLogger) Warnw(msg string, kv ...interface{}) { log.Warnw(msg, kv...) }
 func (sandboxZapLogger) Infow(msg string, kv ...interface{}) { log.Infow(msg, kv...) }
+
+// agentToolNames extracts FullTool names from the registry for narration's
+// boot-time yaml-key validation (#8). Best-effort: if the registry has not
+// loaded tools yet (lazy load timing), returns an empty slice and narration
+// skips the missing-key warn — acceptable per S2-D4.
+func agentToolNames(reg agent.AgentToolRegistry) []string {
+	if reg == nil {
+		return nil
+	}
+	tools := reg.ListAllTools()
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
+		names = append(names, t.Name())
+	}
+	return names
+}
