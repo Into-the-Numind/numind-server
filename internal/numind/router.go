@@ -5,6 +5,8 @@ import (
 	"numind-server/internal/numind/biz/credit"
 	customerbiz "numind-server/internal/numind/biz/customer"
 	"numind-server/internal/numind/biz/membership"
+	skillbiz "numind-server/internal/numind/biz/skill"
+	agentcontroller "numind-server/internal/numind/controller/v1/agent"
 	"numind-server/internal/numind/controller/v1/ali"
 	chatbotcontroller "numind-server/internal/numind/controller/v1/chatbot"
 	"numind-server/internal/numind/controller/v1/config"
@@ -376,6 +378,27 @@ func installNumindRouters(g *gin.Engine) error {
 		monitorGroup.POST("/xhs/qr/complete/:qr_id", monitorCtrl.CompleteXhsQR)
 		monitorGroup.GET("/xhs/bind-status", monitorCtrl.GetXhsBindStatus)
 		monitorGroup.POST("/xhs/unbind", monitorCtrl.UnbindXhs)
+	}
+
+	// Agent 技能系统（#5/14 agent-mode-skill-system）
+	// 全部走 AuthMiddleware（authGroup），父账户专属（子账户在 biz 层返回 403）。
+	{
+		skillCtrl := agentcontroller.NewSkillController(skillbiz.NewService(store.S))
+		agentGroup := authGroup.Group("/agent")
+		{
+			skills := agentGroup.Group("/skills")
+			{
+				skills.POST("", skillCtrl.Create)
+				skills.GET("", skillCtrl.List)
+				skills.GET("/:id", skillCtrl.Get)
+				skills.PATCH("/:id", skillCtrl.Patch)
+				skills.DELETE("/:id", skillCtrl.Delete)
+				skills.GET("/:id/history", skillCtrl.ListHistory)
+				skills.POST("/:id/restore/:version", skillCtrl.Restore)
+				skills.POST("/:id/advanced-toggle", skillCtrl.AdvancedToggle)
+			}
+			agentGroup.GET("/skill-templates", skillCtrl.ListTemplates)
+		}
 	}
 
 	// 支付回调（无需鉴权）

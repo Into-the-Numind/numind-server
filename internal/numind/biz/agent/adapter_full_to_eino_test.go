@@ -184,3 +184,73 @@ func TestAdaptFullToEinoTool_Hooks_PostErrShadowedByExecErr(t *testing.T) {
 	require.Error(t, err)
 	assert.EqualError(t, err, "exec boom", "execErr takes priority over postErr")
 }
+
+// ── M10: Registry recording tests ────────────────────────────────────────────
+
+// asRunHooksWithRegistry returns a *RunHooks wired to the given registry.
+func (h *hookRecorder) asRunHooksWithRegistry(reg *HookActionRegistry) *RunHooks {
+	rh := h.asRunHooks()
+	rh.Registry = reg
+	return rh
+}
+
+func TestAdapter_PreToolCallStop_recordsToRegistry(t *testing.T) {
+	ft := &fakeFullTool{name: "x", out: []byte(`ok`)}
+	rec := newHookRecorder()
+	rec.preAction = HookActionStop
+	reg := NewHookActionRegistry()
+	eino := adaptFullToEinoTool(ft, rec.asRunHooksWithRegistry(reg))
+
+	_, err := eino.InvokableRun(context.Background(), `{}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stopped by hook")
+	assert.Equal(t, HookActionStop, reg.LastAction(), "Stop should be recorded in registry")
+}
+
+func TestAdapter_PreToolCallContinue_doesNotRecord(t *testing.T) {
+	ft := &fakeFullTool{name: "x", out: []byte(`ok`)}
+	rec := newHookRecorder()
+	rec.preAction = HookActionContinue // default
+	reg := NewHookActionRegistry()
+	eino := adaptFullToEinoTool(ft, rec.asRunHooksWithRegistry(reg))
+
+	_, err := eino.InvokableRun(context.Background(), `{}`)
+	require.NoError(t, err)
+	assert.Equal(t, HookActionContinue, reg.LastAction(), "Continue should leave registry at default")
+}
+
+func TestAdapter_PostToolCallStop_recordsToRegistry(t *testing.T) {
+	ft := &fakeFullTool{name: "x", out: []byte(`ok`)}
+	rec := newHookRecorder()
+	rec.postAction = HookActionStop
+	reg := NewHookActionRegistry()
+	eino := adaptFullToEinoTool(ft, rec.asRunHooksWithRegistry(reg))
+
+	_, _ = eino.InvokableRun(context.Background(), `{}`)
+	assert.Equal(t, HookActionStop, reg.LastAction(), "PostToolCall Stop should be recorded in registry")
+}
+
+func TestAdapter_PostToolCallContinue_doesNotRecord(t *testing.T) {
+	ft := &fakeFullTool{name: "x", out: []byte(`ok`)}
+	rec := newHookRecorder()
+	rec.postAction = HookActionContinue // default
+	reg := NewHookActionRegistry()
+	eino := adaptFullToEinoTool(ft, rec.asRunHooksWithRegistry(reg))
+
+	_, err := eino.InvokableRun(context.Background(), `{}`)
+	require.NoError(t, err)
+	assert.Equal(t, HookActionContinue, reg.LastAction(), "Continue should leave registry at default")
+}
+
+func TestAdapter_RegistryNil_doesNotPanic(t *testing.T) {
+	ft := &fakeFullTool{name: "x", out: []byte(`ok`)}
+	rec := newHookRecorder()
+	rec.preAction = HookActionStop
+	// Registry is nil — must not panic
+	hooks := rec.asRunHooks() // Registry field is nil
+	eino := adaptFullToEinoTool(ft, hooks)
+
+	require.NotPanics(t, func() {
+		_, _ = eino.InvokableRun(context.Background(), `{}`)
+	})
+}

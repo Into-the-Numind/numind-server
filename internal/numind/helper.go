@@ -281,6 +281,17 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate agent_sandbox_session: %v", err)
 	}
 
+	// Agent skill 系统三表（agent-mode-skill-system #5）
+	if err := db.AutoMigrate(&model.AgentDefinition{}); err != nil {
+		return fmt.Errorf("failed to migrate agent_definition: %v", err)
+	}
+	if err := db.AutoMigrate(&model.AgentDefinitionHistory{}); err != nil {
+		return fmt.Errorf("failed to migrate agent_definition_history: %v", err)
+	}
+	if err := db.AutoMigrate(&model.SkillTemplate{}); err != nil {
+		return fmt.Errorf("failed to migrate skill_template: %v", err)
+	}
+
 	log.Infow("All database schema migration completed")
 
 	// 3. 迁移后验证字符集

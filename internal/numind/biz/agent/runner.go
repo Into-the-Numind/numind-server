@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -11,8 +12,11 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/flow/agent/react"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 
+	"numind-server/internal/numind/biz/skill"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
@@ -26,6 +30,13 @@ type RunRequest struct {
 	Input     string
 	ToolNames []string
 	Hooks     *RunHooks
+	// AgentDefinitionID 为 0 时 fall through（使用 #2 mock 行为，不注入 Skill）。
+	// 非 0 时 runner.Run 通过 skillStore.GetByIDIncludeInactive 装载 agent 定义，
+	// 并按 advanced_mode 选 GeneratedSkillBody 或 CustomSkillBody 组装 SystemPrompt。
+	AgentDefinitionID uint64
+	// SystemPrompt 由 runner.Run 内部填充（skill lookup 后注入），调用方无需手动赋值。
+	// 若 AgentDefinitionID=0，则保持为空字符串（fall through）。
+	SystemPrompt string
 }
 
 // RunResult 是 AgentRunner.Run 的输出。
@@ -35,6 +46,8 @@ type RunResult struct {
 	FinalOutput    string
 	StepCount      int
 	Duration       time.Duration
+	// SkillVersion 是本次 Run 装载的 agent_definition.version；0 表示未注入 Skill（fall through）。
+	SkillVersion int
 }
 
 // AgentRunner 是 Agent 运行时主接口（蓝本 §4.1.9）。
@@ -48,7 +61,8 @@ type agentRunner struct {
 	registry     AgentToolRegistry
 	cancels      map[uint64]context.CancelFunc
 	mu           sync.Mutex
-	defaultHooks *RunHooks // #4 sandbox-integration: wired by biz.go via WithDefaultHooks
+	defaultHooks *RunHooks                   // #4 sandbox-integration: wired by biz.go via WithDefaultHooks
+	skillStore   store.IAgentDefinitionStore // #11 skill-system: wired by biz.go via WithSkillStore; may be nil
 }
 
 var _ AgentRunner = (*agentRunner)(nil)
@@ -63,6 +77,16 @@ type RunnerOption func(*agentRunner)
 func WithDefaultHooks(h *RunHooks) RunnerOption {
 	return func(r *agentRunner) {
 		r.defaultHooks = h
+	}
+}
+
+// WithSkillStore installs an IAgentDefinitionStore to enable Skill lookup in Run().
+// #11 skill-system wires this so runner.Run can call GetByIDIncludeInactive when
+// RunRequest.AgentDefinitionID > 0. When nil (default), skill lookup is skipped
+// and SkillVersion=0 is returned (fall through / #2 mock behaviour preserved).
+func WithSkillStore(s store.IAgentDefinitionStore) RunnerOption {
+	return func(r *agentRunner) {
+		r.skillStore = s
 	}
 }
 
@@ -124,13 +148,45 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	defer r.unregisterCancel(run.ID)
 	defer queryCancel()
 
-	// 4. 从 registry 装配 Eino 工具列表
+	// 4. #5 skill-system: 装载 agent_definition 并组装 SystemPrompt（若指定了 AgentDefinitionID）。
+	var skillVer int
+	if req.AgentDefinitionID > 0 && r.skillStore != nil {
+		ad, err := r.skillStore.GetByIDIncludeInactive(ctx, req.AgentDefinitionID)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, errno.ErrSkillNotFound
+			}
+			return nil, fmt.Errorf("AgentRunner.Run skill lookup: %w", err)
+		}
+		if ad.ParentUserID != req.UserID {
+			// 不暴露存在性：跨用户访问当作 NotFound 返回
+			return nil, errno.ErrSkillNotFound
+		}
+		body := ad.GeneratedSkillBody
+		if ad.AdvancedMode {
+			body = ad.CustomSkillBody
+		}
+		req.SystemPrompt = skill.PlatformBasePrompt + body + skill.PlatformSafetyFooter
+		skillVer = int(ad.Version)
+	}
+
+	// 5. 从 registry 装配 Eino 工具列表
 	// #4 sandbox-integration: 选 effectiveHooks — RunRequest.Hooks 优先，
 	// 否则 r.defaultHooks（biz.go wire SandboxHookManager.AsRunHooks()）。
 	effectiveHooks := req.Hooks
 	if effectiveHooks == nil {
 		effectiveHooks = r.defaultHooks
 	}
+
+	// Auto-inject Registry if hooks exist but caller didn't provide one.
+	// Caller-provided Registry is kept as-is (caller controls its lifecycle).
+	// Cross-Run stale risk for pool-shared *RunHooks (e.g. SandboxHookManager.AsRunHooks
+	// stored in r.defaultHooks): mitigated by future caller using Registry.Reset()
+	// between runs, or by passing fresh hooks per call. Single-Run sessions are unaffected.
+	if effectiveHooks != nil && effectiveHooks.Registry == nil {
+		effectiveHooks.Registry = NewHookActionRegistry()
+	}
+
 	var einoTools []einotool.BaseTool
 	if r.registry != nil {
 		for _, name := range req.ToolNames {
@@ -140,10 +196,11 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		}
 	}
 
-	// 5. 构造 adapter + Eino ReAct Agent
+	// 6. 构造 adapter + Eino ReAct Agent
 	einoAdapter := &aiserviceAdapter{
-		modelName: "qwen-turbo",
-		taskID:    fmt.Sprintf("agent-runner-%d", run.ID),
+		modelName:    "qwen-turbo",
+		taskID:       fmt.Sprintf("agent-runner-%d", run.ID),
+		systemPrompt: req.SystemPrompt, // #5 skill-system: injected by skill lookup above
 	}
 	// P2-1 fix: Eino react.NewAgent requires at least one tool; if registry is nil or
 	// ToolNames is empty/all-unresolved, einoTools is nil → react.NewAgent returns an
@@ -172,7 +229,19 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// 6. 简化状态机：写终止 messages + UpdateState
 	// #2 仅返回"成功创建 run"状态，真实 LLM 调用 + state.Transition 由 Task 8 集成测试覆盖
 	st := &LoopState{}
-	st.TerminalReason = TerminalCompleted
+	st.TerminalReason = TerminalCompleted // default
+
+	// If a hook recorded a non-Continue action, propagate it through state.Transition
+	// to produce the correct TerminalReason (replacing the hardcoded TerminalCompleted default).
+	if effectiveHooks != nil && effectiveHooks.Registry != nil {
+		if last := effectiveHooks.Registry.LastAction(); last != HookActionContinue {
+			if ev := HookActionToLoopEvent(last); ev != LoopEventInvalid {
+				if term, _, isTerminal := st.Transition(ev); isTerminal {
+					st.TerminalReason = term
+				}
+			}
+		}
+	}
 
 	finalMessages, _ := json.Marshal([]map[string]any{
 		{"role": "user", "content": req.Input},
@@ -193,6 +262,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		FinalOutput:    fmt.Sprintf("[#2 skeleton] received input '%s'", req.Input),
 		StepCount:      st.StepCount,
 		Duration:       time.Since(startTime),
+		SkillVersion:   skillVer,
 	}, nil
 }
 

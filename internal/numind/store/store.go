@@ -43,6 +43,8 @@ type IStore interface {
 	ToolDefinitions() IToolDefinitionStore
 	ToolFactoryRegistries() IToolFactoryRegistryStore
 	AgentSandboxSessions() IAgentSandboxSessionStore
+	AgentDefinitions() IAgentDefinitionStore
+	SkillTemplates() ISkillTemplateStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -200,4 +202,14 @@ func (ds *datastore) ToolFactoryRegistries() IToolFactoryRegistryStore {
 // AgentSandboxSessions 返回一个实现了 IAgentSandboxSessionStore 接口的实例（#4 sandbox-integration）。
 func (ds *datastore) AgentSandboxSessions() IAgentSandboxSessionStore {
 	return newAgentSandboxSessionStore(ds.db)
+}
+
+// AgentDefinitions 返回一个实现了 IAgentDefinitionStore 接口的实例。
+func (ds *datastore) AgentDefinitions() IAgentDefinitionStore {
+	return newAgentDefinitionStore(ds.db)
+}
+
+// SkillTemplates 返回一个实现了 ISkillTemplateStore 接口的实例。
+func (ds *datastore) SkillTemplates() ISkillTemplateStore {
+	return newSkillTemplateStore(ds.db)
 }

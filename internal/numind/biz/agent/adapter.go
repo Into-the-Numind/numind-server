@@ -18,9 +18,10 @@ import (
 // tools is immutable after construction; WithTools returns a new instance (defensive copy),
 // making this safe for concurrent use across goroutines.
 type aiserviceAdapter struct {
-	modelName string
-	taskID    string
-	tools     []*schema.ToolInfo // immutable after construction
+	modelName    string
+	taskID       string
+	tools        []*schema.ToolInfo // immutable after construction
+	systemPrompt string             // #5 skill-system: injected by runner.Run; prepended as messages[0] when set
 }
 
 // Compile-time assertion: aiserviceAdapter must satisfy model.ToolCallingChatModel.
@@ -42,9 +43,10 @@ func (a *aiserviceAdapter) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCa
 	cloned := make([]*schema.ToolInfo, len(tools))
 	copy(cloned, tools)
 	return &aiserviceAdapter{
-		modelName: a.modelName,
-		taskID:    a.taskID,
-		tools:     cloned,
+		modelName:    a.modelName,
+		taskID:       a.taskID,
+		tools:        cloned,
+		systemPrompt: a.systemPrompt,
 	}, nil
 }
 
@@ -74,7 +76,16 @@ func (a *aiserviceAdapter) Stream(ctx context.Context, in []*schema.Message, opt
 // convertToAiserviceRequest converts Eino []*schema.Message to aiservice.ChatRequest,
 // including any tool schemas bound to this adapter instance.
 func (a *aiserviceAdapter) convertToAiserviceRequest(in []*schema.Message) aiservice.ChatRequest {
-	msgs := make([]aiservice.ChatMessage, 0, len(in))
+	msgs := make([]aiservice.ChatMessage, 0, len(in)+1)
+	// #5 skill-system: prepend systemPrompt as messages[0] when set by runner.Run.
+	// If caller already passed a system message in `in`, the runner-injected prompt
+	// still goes first (LLM treats first system message as authoritative).
+	if a.systemPrompt != "" {
+		msgs = append(msgs, aiservice.ChatMessage{
+			Role:    aiservice.MessageRoleSystem,
+			Content: aiservice.MessageContent{Text: a.systemPrompt},
+		})
+	}
 	for _, m := range in {
 		msgs = append(msgs, aiservice.ChatMessage{
 			Role:    convertRole(m.Role),
