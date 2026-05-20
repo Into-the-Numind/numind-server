@@ -19,6 +19,11 @@ type IAgentRunStore interface {
 	UpdateState(ctx context.Context, id uint64, status, stateReason string, endedAt *time.Time) error
 	WriteTurn(ctx context.Context, id uint64, messages json.RawMessage) error // turn 级整体覆写
 	ListBySession(ctx context.Context, sessionID string, offset, limit int) ([]model.AgentRun, int64, error)
+	// UpdateTerminalMetadata 写入 terminal_metadata JSON 字段。
+	// 用途：#12 BudgetGate.writeTerminalMetadata 写 budget_dimension 等元数据，
+	// #13 compliance 后续追加 compliance_block_reason 等。
+	// RowsAffected==0 时报错（认为 id 不存在）。
+	UpdateTerminalMetadata(ctx context.Context, id uint64, metadata datatypes.JSON) error
 }
 
 type agentRunStore struct {
@@ -73,6 +78,23 @@ func (s *agentRunStore) WriteTurn(ctx context.Context, id uint64, messages json.
 	}
 	if result.RowsAffected == 0 {
 		return fmt.Errorf("agentRunStore.WriteTurn: no row matched id=%d", id)
+	}
+	return nil
+}
+
+// UpdateTerminalMetadata 写入 terminal_metadata JSON 字段。
+// 用途：#12 BudgetGate.writeTerminalMetadata 写 budget_dimension 等元数据，
+// #13 compliance 后续追加 compliance_block_reason 等。
+// RowsAffected==0 时报错（认为 id 不存在）。
+func (s *agentRunStore) UpdateTerminalMetadata(ctx context.Context, id uint64, metadata datatypes.JSON) error {
+	result := s.db.WithContext(ctx).Model(&model.AgentRun{}).
+		Where("id = ?", id).
+		Update("terminal_metadata", metadata)
+	if result.Error != nil {
+		return fmt.Errorf("agentRunStore.UpdateTerminalMetadata(id=%d): %w", id, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("agentRunStore.UpdateTerminalMetadata: no row matched id=%d", id)
 	}
 	return nil
 }

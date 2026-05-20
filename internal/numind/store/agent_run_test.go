@@ -39,10 +39,11 @@ func newTestAgentRunStore(t *testing.T) IAgentRunStore {
 			reservation_id  INTEGER,
 			started_at      DATETIME NOT NULL,
 			ended_at        DATETIME,
-			compact_state   TEXT,
-			compact_summary TEXT,
-			created_at      DATETIME,
-			updated_at      DATETIME
+			compact_state     TEXT,
+			compact_summary   TEXT,
+			terminal_metadata TEXT,
+			created_at        DATETIME,
+			updated_at        DATETIME
 		)`).Error)
 
 	sqlDB, err := db.DB()
@@ -147,6 +148,62 @@ func TestAgentRunStore_ConcurrentWriteTurn(t *testing.T) {
 	// last-write-wins，final messages 非空且为其中之一（无 corruption）
 	bothMatch := string(got.Messages) != ""
 	assert.True(t, bothMatch, "final messages must be non-empty and one of writers")
+}
+
+func TestAgentRunStore_UpdateTerminalMetadata(t *testing.T) {
+	s := newTestAgentRunStore(t)
+	ctx := context.Background()
+
+	run := &model.AgentRun{
+		UserID:      1,
+		SessionID:   "sess-1",
+		Status:      "terminated",
+		StateReason: "error_max_budget",
+		Messages:    datatypes.JSON([]byte("[]")),
+		StartedAt:   time.Now(),
+	}
+	require.NoError(t, s.Create(ctx, run))
+	require.NotZero(t, run.ID)
+
+	meta := datatypes.JSON([]byte(`{"budget_dimension":"max_turns","used":51,"limit":50}`))
+	require.NoError(t, s.UpdateTerminalMetadata(ctx, run.ID, meta))
+
+	got, err := s.Get(ctx, run.ID)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(meta), string(got.TerminalMetadata))
+}
+
+func TestAgentRunStore_UpdateTerminalMetadata_NonExistentID(t *testing.T) {
+	s := newTestAgentRunStore(t)
+	err := s.UpdateTerminalMetadata(context.Background(), 999999, datatypes.JSON([]byte(`{}`)))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no row matched")
+}
+
+func TestAgentRunStore_UpdateTerminalMetadata_BudgetExceededShape(t *testing.T) {
+	s := newTestAgentRunStore(t)
+	ctx := context.Background()
+
+	run := &model.AgentRun{
+		UserID:      2,
+		SessionID:   "sess-budget",
+		Status:      "terminated",
+		StateReason: "error_max_budget",
+		Messages:    datatypes.JSON([]byte("[]")),
+		StartedAt:   time.Now(),
+	}
+	require.NoError(t, s.Create(ctx, run))
+
+	detailJSON := []byte(`{"budget_dimension":"max_credits","used":820,"limit":800}`)
+	require.NoError(t, s.UpdateTerminalMetadata(ctx, run.ID, datatypes.JSON(detailJSON)))
+
+	got, err := s.Get(ctx, run.ID)
+	require.NoError(t, err)
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(got.TerminalMetadata, &parsed))
+	assert.Equal(t, "max_credits", parsed["budget_dimension"])
+	assert.Equal(t, float64(820), parsed["used"])
+	assert.Equal(t, float64(800), parsed["limit"])
 }
 
 func TestAgentRunStore_ListBySession(t *testing.T) {
