@@ -4,7 +4,7 @@ features:
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #8/14。落地蓝本 §4.7 Narration 层（学员可见叙述核心）：新增 biz/narration 子包（event/display/translator/streamer/provider/error_translate 6 文件） + configs/tool-display.yaml（6 个内置工具 use/result/error/rejected 模板） + RunHooks 增 NarrationProvider 字段（无需破坏 #4 PreToolCall/PostToolCall 签名） + adapter_full_to_eino.go 在 Pre/Post 调用点串入 narration.Emit + AgentRunner.WithNarrationProvider option + biz.go wire narration.NewProvider 注入 runner。NarrationEvent.State 6 值（queued/use/progress/result/error/rejected）声明全；v1 主动 emit 4 值（use/result/error/rejected）。Out of scope: 持久化 DB 表 / 真实 LLM fallback (#14) / SSE/WebSocket 学员端 (#11) / 管理端 narration 模板编辑器 (#10) / queued+progress emitter (#13/#14) / per-tenant 模板覆盖 (#10) / 学员端 UI (#11) / 蓝本 §4.7.2 LLM 双输出协议 (#14) / 蓝本 §4.7.5 multi-failure cascading (#14) / prod 部署。术语翻译：蓝本 tenant_id → Numind parent_user_id（v1 全平台模板，#10 加 per-parent override）。'
   track: standard
-  stage: S3
+  stage: S4
   classification_reason: 'Standard Triage 5 条 — (1) DB schema 变更：否（v1 内存 streamer，无新表，不动 migration） (2) 新 API 端点：否（biz Subscribe API 仅供 #11 消费，本 feature 不引入 HTTP） (3) 无新外部服务集成（aiservice LLM fallback 接口预留但 v1 stub） (4) 影响文件数 >3（biz/narration 6 新文件 + tool-display.yaml + hooks.go + adapter_full_to_eino.go + runner.go + biz/biz.go + N test ≥ 15 文件） (5) 高风险业务逻辑：否（narration 是 side-channel，不影响 terminal reason / state machine / billing / permission）。条件 4 单条触发 Standard（虽然非高风险，但跨 6 个新文件 + 3 个修改 + 多组件协调需要严肃 review 流程）。'
   last_updated_by: ai-s0-reviewer-applied
   last_updated_at: '2026-05-21T16:00:00+08:00'
@@ -18,12 +18,13 @@ features:
     requirement: numind-server/requirements/agent-mode-narration-layer.md
     proposal: numind-server/proposals/agent-mode-narration-layer-proposal.md
     spec: numind-server/docs/superpowers/specs/2026-05-21-agent-mode-narration-layer-design.md
+    plan: numind-server/docs/superpowers/plans/2026-05-21-agent-mode-narration-layer-plan.md
     architecture_blueprint: docs/agent-mode/architecture-v1.md
   progress:
-    total_tasks: 0
+    total_tasks: 12
     completed_tasks: 0
     reviewed_tasks: 0
-    current_task: 'S2 PASS_WITH_CONDITIONS: 3 P0（template "len" 注册 panic / missingkey=zero / buildTemplateData 文件归属）+ 3 P1（Subscribe dead-runID 语义 / runner attachment 顺序 / translator time import）+ 5 P2（icon 测试 / runner 测试模式 / ToolNames 时机 / N11 cascading-failure NIS / S2-D 决策编号）全修。进入 S3 task plan。'
+    current_task: 'S3 PASS_WITH_CONDITIONS: 1 P0（R-S4-1 broken biz_test.go path 替换为 M4 disk-load fixture）+ 2 P1（state.go [N]TerminalReason 合并冲突 protocol / M11 不加 NewBiz 测试）+ 5 P2（plan numbering 权威性 / M9 baseline 记录 / M5 sync gate verification / 其他）全修。进入 S4 wave 实现。'
   decisions:
   - '2026-05-21 (s0-1): HookAction→narration state 映射 v1 单一规则（S0 P1 fix）— 任何 PreToolCall 非 Continue HookAction emit StateRejected（不区分 Stop vs BlockingStop vs 未来 permission_denied）；#6 落地时通过 reason 字段细化，本 feature API 留 Reason string 默认空字符串占位。'
   - '2026-05-21 (s0-2): use 事件时序契约（S0 P1 fix）— adapter PreToolCall 返回 Continue 后 + Execute 前发 use；PreToolCall 非 Continue 直接发 rejected，不发 use（与集成测试 fixture 一致）。'
@@ -50,6 +51,12 @@ features:
   - '2026-05-21 (s2-6): translator.go imports 添加 time（S2 P1-3 fix）— nowFunc = time.Now 需要。'
   - '2026-05-21 (s2-7): agentToolNames 验证为 best-effort（S2 D4 / S2 P2-3）— 启动期 lazy load 未跑则报 0 missing，不阻塞 boot；运维 runbook 注明 narration 落到 defaults 时检查 registry timing。'
   - '2026-05-21 (s2-8): configs/tool-display.yaml 路径硬编码相对 CWD（S2 D5 / S2 P2-3）— numind-server 启动 CWD 一致为 repo 根（deploy 脚本约定 + 现有 config_dev.yaml 模式）；#10 可加可配置路径。'
+  - '2026-05-21 (s3-1): R-S4-1 yaml CWD 风险 mitigation 改为 M4 disk-load fixture（S3 P0-1 fix）— TestNewRendererFromPath_RepoRootYAML 用 ../../../configs/tool-display.yaml 三级回 repo 根，证明 prod yaml 文件可装载；M11 不加 biz_test.go 调 NewBiz（无用扩面测试 + 隐藏 CWD 耦合）。'
+  - '2026-05-21 (s3-2): state.go [N]TerminalReason 合并冲突 protocol（S3 P1-1 fix）— S6 merge 后第一件事跑 go vet ./internal/numind/biz/agent/...，#6/#9 各自加 reason 时数组 size 需手工对齐；#8 本身不动 state.go。'
+  - '2026-05-21 (s3-3): M11 不加 biz_test.go 调用 NewBiz（S3 P1-2 fix）— boot 验证通过 M4 disk fixture；reviewer 不应建议加。'
+  - '2026-05-21 (s3-4): plan §1 M-numbering 是 manifest current_task tracking 权威（S3 P2-1 fix）— spec §12 是预览；如有冲突以 plan 为准。'
+  - '2026-05-21 (s3-5): M9 adapter coverage baseline 在 dispatch 前记录（S3 P2-3 fix）— 主 session 跑 go test -coverprofile 把 % 记入 manifest current_task；reviewer B 对比落差 >2pp 标 P1。'
+  - '2026-05-21 (s3-6): M5 dispatch 前必须 git log 验证 Wave A 全 4 commits 完成（S3 P2-5 fix）— 防止串型 wave 提前启动遇到 missing dep。'
   related_features:
   - 'agent-mode-runtime-skeleton (#2/14, 已 develop merged — RunHooks + adapter PreToolCall/PostToolCall hook 点输入)'
   - 'agent-mode-tool-registry (#3/14, 已 develop merged — FullTool 8 narration 方法 + NarrationMessage struct + BaseTool 默认值输入)'
