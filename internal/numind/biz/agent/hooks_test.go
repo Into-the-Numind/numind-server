@@ -145,3 +145,36 @@ func TestHookActionRegistry_ConcurrentRecord_raceSafe(t *testing.T) {
 		t.Errorf("unexpected LastAction after concurrent writes: %v", got)
 	}
 }
+
+// ── M9: HookActionPermissionDeny tests ────────────────────────────────────────
+
+func TestHookActionRegistry_RecordPermissionDeny(t *testing.T) {
+	r := NewHookActionRegistry()
+	r.Record(HookActionPermissionDeny)
+	if r.LastAction() != HookActionPermissionDeny {
+		t.Errorf("LastAction = %d, want %d", r.LastAction(), HookActionPermissionDeny)
+	}
+}
+
+func TestHookActionToLoopEvent_PermissionDeny(t *testing.T) {
+	ev := HookActionToLoopEvent(HookActionPermissionDeny)
+	if ev != LoopEventPermissionDenied {
+		t.Errorf("HookActionToLoopEvent(PermissionDeny) = %d, want %d", ev, LoopEventPermissionDenied)
+	}
+}
+
+func TestHookActionValues_DistinctAndAtomicSafe(t *testing.T) {
+	// 验证 0/1/2/3 是 atomic.Int32 合法区间
+	set := map[HookAction]bool{
+		HookActionContinue:       true,
+		HookActionStop:           true,
+		HookActionBlockingStop:   true,
+		HookActionPermissionDeny: true,
+	}
+	if len(set) != 4 {
+		t.Errorf("HookAction values not distinct: %v", set)
+	}
+	if int32(HookActionPermissionDeny) != 3 {
+		t.Errorf("HookActionPermissionDeny != 3")
+	}
+}

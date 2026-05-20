@@ -17,6 +17,7 @@ const (
 	TerminalMaxTurns          TerminalReason = "max_turns"
 	TerminalErrorMaxBudget    TerminalReason = "error_max_budget"
 	TerminalErrorMaxRetries   TerminalReason = "error_max_retries"
+	TerminalPermissionDenied  TerminalReason = "permission_denied" // 13 — NEW (#6 agent-mode-permission-pipeline)
 )
 
 // ContinueReason 是 loop 继续时记录的字符串值（共 7 个），便于 Langfuse trace 调试。
@@ -32,11 +33,12 @@ const (
 	ContinueTokenBudgetContinue  ContinueReason = "token_budget_continue"
 )
 
-// 编译期不变量：长度必须 12 + 7
-var _ = [12]TerminalReason{
+// 编译期不变量：长度必须 13 + 7
+var _ = [13]TerminalReason{
 	TerminalCompleted, TerminalBlockingLimit, TerminalImageError, TerminalModelError,
 	TerminalAbortedStreaming, TerminalPromptTooLong, TerminalStopHookPrevented, TerminalAbortedTools,
 	TerminalHookStopped, TerminalMaxTurns, TerminalErrorMaxBudget, TerminalErrorMaxRetries,
+	TerminalPermissionDenied,
 }
 var _ = [7]ContinueReason{
 	ContinueNextTurn, ContinueCollapseDrainRetry, ContinueReactiveCompactRetry,
@@ -64,7 +66,8 @@ const (
 	LoopEventHookActionBlocking            // → ContinueStopHookBlocking
 	LoopEventTokenBudgetContinue           // → ContinueTokenBudgetContinue
 	LoopEventCollapseDrainRetry            // → ContinueCollapseDrainRetry
-	LoopEventMaxOutputEscalate             // → ContinueMaxOutputEscalate
+	LoopEventMaxOutputEscalate             // → ContinueMaxOutputEscalate (17)
+	LoopEventPermissionDenied              // → TerminalPermissionDenied (18) — NEW (#6 agent-mode-permission-pipeline)
 )
 
 // LoopState 是 Runtime 单 run 内存中状态。
@@ -159,6 +162,10 @@ func (s *LoopState) Transition(event LoopEvent) (TerminalReason, ContinueReason,
 	case LoopEventHookActionBlockStop:
 		s.TerminalReason = TerminalStopHookPrevented
 		return TerminalStopHookPrevented, "", true
+
+	case LoopEventPermissionDenied:
+		s.TerminalReason = TerminalPermissionDenied
+		return TerminalPermissionDenied, "", true
 
 	case LoopEventHookActionBlocking:
 		s.ContinueReason = ContinueStopHookBlocking
