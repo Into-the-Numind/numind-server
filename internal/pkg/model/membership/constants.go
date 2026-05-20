@@ -22,3 +22,34 @@ const (
 	ProductTypeMonthly = "monthly"
 	ProductTypeBooster = "booster"
 )
+
+// Pricing constants for B2B billing report and grant amount attribution.
+//
+// Source of truth for the moxiaopai→parent settlement amounts. Used by:
+//   - biz/membership/subscription.go to write membership_event.amount_cents on grant
+//   - biz/b2b_billing to derive monthly settlement amounts (does not read
+//     amount_cents directly; recomputes from product_type + months for safety
+//     against historical data bugs).
+//
+// Pricing tiers (confirmed by product owner 2026-05-20):
+//   - 1 month grant     = ¥99   (9900 fen)
+//   - N month grant     = N × ¥99  (2 ≤ N ≤ 11)
+//   - 12 month grant    = ¥949 (94900 fen)  — annual discount, NOT 12 × ¥99
+//   - Trial grant       = ¥9.9  (990 fen)
+//   - Booster           = excluded from settlement (self-purchase by user)
+const (
+	MonthlyPriceCents = 9900  // ¥99 per month
+	AnnualPriceCents  = 94900 // ¥949 for a single 12-month batch grant
+	TrialPriceCents   = 990   // ¥9.9 per trial grant
+)
+
+// PriceForMonths returns the settlement amount in cents for a subscription
+// grant of the given month count. Centralised here so both the grant write
+// path (subscription.go) and the billing read path (b2b_billing.go) stay
+// consistent.
+func PriceForMonths(months int) int64 {
+	if months == 12 {
+		return AnnualPriceCents
+	}
+	return int64(months) * MonthlyPriceCents
+}

@@ -11,8 +11,11 @@ import (
 	"numind-server/internal/pkg/util"
 )
 
-// monthlyPriceCents is the standard monthly subscription price: ¥99/月, spec §5.7.
-const monthlyPriceCents = 9900
+// Pricing constants live in model/membership/constants.go
+// (model.MonthlyPriceCents, model.AnnualPriceCents, model.PriceForMonths)
+// so the grant write path and the b2b_billing read path share a single
+// source of truth. The previous package-private `monthlyPriceCents = 9900`
+// was removed in the b2b-billing-rules-rewrite hotfix (2026-05-20).
 
 // GrantSubscriptionRequest carries the parameters for opening or renewing a
 // subscription grant (B2B2C path).
@@ -184,7 +187,7 @@ func (s *MembershipService) GrantOrRenewSubscription(ctx context.Context, req Gr
 			EventType:      eventType,
 			ProductType:    model.ProductTypeMonthly,
 			Months:         &months_uint8,
-			AmountCents:    int64(months) * monthlyPriceCents,
+			AmountCents:    model.PriceForMonths(months),
 			Source:         model.SourceB2BGrant,
 			GranterUserID:  req.GranterUserID,
 			IdempotencyKey: req.IdempotencyKey,

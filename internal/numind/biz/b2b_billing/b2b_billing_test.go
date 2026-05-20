@@ -46,8 +46,8 @@ func newB2BTestDB(t *testing.T) *gorm.DB {
             last_login      DATETIME
         )`).Error)
 
-	// T11: CreditPackage removed — table dropped, archived to legacy_credit_package_archive_20260515.
-	// Create the archive table for getLegacyEvents (now a real implementation reading this table).
+	// Legacy archive table — preserved for getLegacyEvents historical tooling
+	// (not called by GetBillingReport post-T9).
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS legacy_credit_package_archive_20260515 (
 		id              INTEGER PRIMARY KEY AUTOINCREMENT,
 		user_id         INTEGER NOT NULL,
@@ -64,10 +64,8 @@ func newB2BTestDB(t *testing.T) *gorm.DB {
 		archived_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		archive_reason  TEXT NOT NULL DEFAULT 't11_drop_credit_package_20260515'
 	)`).Error)
-	// membership_event: use raw DDL instead of AutoMigrate to avoid SQLite
-	// incompatibility with `gorm:"type:datetime(0)"` — SQLite stores datetimes
-	// as TEXT but AutoMigrate emits `datetime(0)` which prevents GORM from
-	// scanning the column back into time.Time via go-sqlite3's string scanner.
+
+	// membership_event: raw DDL (SQLite incompatibility with `datetime(0)`).
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS membership_event (
 		id                INTEGER PRIMARY KEY AUTOINCREMENT,
 		user_id           INTEGER NOT NULL,
@@ -83,6 +81,32 @@ func newB2BTestDB(t *testing.T) *gorm.DB {
 		occurred_at       DATETIME NOT NULL
 	)`).Error)
 	require.NoError(t, db.Exec(`CREATE INDEX IF NOT EXISTS idx_event_granter_occurred ON membership_event (granter_user_id, occurred_at)`).Error)
+
+	// subscription: the new primary input for Rule A + Rule B (b2b-billing-rules-rewrite hotfix).
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS subscription (
+		id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id                  INTEGER NOT NULL UNIQUE,
+		first_started_at         DATETIME NOT NULL,
+		current_started_at       DATETIME NOT NULL,
+		expires_at               DATETIME NOT NULL,
+		total_months_purchased   INTEGER NOT NULL,
+		source                   TEXT NOT NULL,
+		granter_user_id          INTEGER,
+		created_at               DATETIME NOT NULL,
+		updated_at               DATETIME NOT NULL
+	)`).Error)
+
+	// trial_grant: input for the trial billing path.
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS trial_grant (
+		id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id             INTEGER NOT NULL UNIQUE,
+		granted_at          DATETIME NOT NULL,
+		expires_at          DATETIME NOT NULL,
+		credits_remaining   INTEGER NOT NULL DEFAULT 200,
+		source              TEXT NOT NULL,
+		granter_user_id     INTEGER,
+		created_at          DATETIME NOT NULL
+	)`).Error)
 
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
@@ -102,81 +126,199 @@ func insertB2BUser(t *testing.T, db *gorm.DB, username string) uint {
 	return id
 }
 
-func insertMembershipEvent(t *testing.T, db *gorm.DB, granterID, childID uint, productType string, months *uint8, occurredAt time.Time) {
+// insertSubGrant inserts a complete b2b subscription grant: subscription row
+// + matching sub_granted membership_event with a UUID-like idempotency key.
+//
+// Use this for "real" first-time grants (Rule A scenarios). The amount_cents
+// stored on the event is whatever the caller passes — the new b2b_billing code
+// recomputes amounts from product_type + months, so this value only affects
+// legacy code paths (not the active report).
+func insertSubGrant(t *testing.T, db *gorm.DB, granterID, childID uint, months int, grantedAt time.Time) {
 	t.Helper()
 	granterID64 := uint64(granterID)
-	amount := int64(0)
-	switch productType {
-	case membershipModel.ProductTypeTrial:
-		amount = 990
-	case membershipModel.ProductTypeMonthly:
-		amount = 9900
-	}
-	idempotencyKey := fmt.Sprintf("test-%d-%d-%d", granterID, childID, occurredAt.UnixNano())
+	expiresAt := grantedAt.AddDate(0, months, 0)
+
+	// subscription row
+	res := db.Exec(
+		`INSERT INTO subscription (user_id, first_started_at, current_started_at, expires_at,
+			total_months_purchased, source, granter_user_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		childID, grantedAt, grantedAt, expiresAt, months,
+		membershipModel.SourceB2BGrant, granterID64, grantedAt, grantedAt,
+	)
+	require.NoError(t, res.Error)
+
+	// sub_granted event
+	monthsU8 := uint8(months)
+	key := fmt.Sprintf("uuid-real-%d-%d-%d", granterID, childID, grantedAt.UnixNano())
 	ev := &membershipModel.MembershipEvent{
 		UserID:         uint64(childID),
 		EventType:      membershipModel.EventTypeSubGranted,
-		ProductType:    productType,
-		Months:         months,
-		AmountCents:    amount,
+		ProductType:    membershipModel.ProductTypeMonthly,
+		Months:         &monthsU8,
+		AmountCents:    membershipModel.PriceForMonths(months),
 		Source:         membershipModel.SourceB2BGrant,
 		GranterUserID:  &granterID64,
-		IdempotencyKey: &idempotencyKey,
+		IdempotencyKey: &key,
+		OccurredAt:     grantedAt,
+	}
+	require.NoError(t, db.Create(ev).Error)
+}
+
+// insertSubRenewal inserts a sub_renewed event AND bumps subscription state.
+// Use this to simulate a parent topping up an existing user's subscription.
+func insertSubRenewal(t *testing.T, db *gorm.DB, granterID, childID uint, monthsAdded int, occurredAt time.Time) {
+	t.Helper()
+	granterID64 := uint64(granterID)
+
+	// Bump subscription.total_months_purchased + updated_at.
+	// Tests don't assert on subscription.expires_at, so we skip the
+	// expires_at recomputation here to keep the helper portable across
+	// SQLite/MySQL date arithmetic differences.
+	res := db.Exec(
+		`UPDATE subscription
+		 SET total_months_purchased = total_months_purchased + ?,
+		     updated_at = ?
+		 WHERE user_id = ?`,
+		monthsAdded, occurredAt, childID,
+	)
+	require.NoError(t, res.Error)
+
+	// sub_renewed event
+	monthsU8 := uint8(monthsAdded)
+	key := fmt.Sprintf("uuid-renew-%d-%d-%d", granterID, childID, occurredAt.UnixNano())
+	ev := &membershipModel.MembershipEvent{
+		UserID:         uint64(childID),
+		EventType:      membershipModel.EventTypeSubRenewed,
+		ProductType:    membershipModel.ProductTypeMonthly,
+		Months:         &monthsU8,
+		AmountCents:    membershipModel.PriceForMonths(monthsAdded),
+		Source:         membershipModel.SourceB2BGrant,
+		GranterUserID:  &granterID64,
+		IdempotencyKey: &key,
 		OccurredAt:     occurredAt,
 	}
 	require.NoError(t, db.Create(ev).Error)
 }
 
+// insertMigrationPlaceholderEvent inserts a sub_renewed (or sub_granted) event
+// with the `migration-*` idempotency_key prefix that was used by the 4-30
+// credit_package → membership_event migration script. These rows MUST be
+// excluded from settlement billing.
+func insertMigrationPlaceholderEvent(t *testing.T, db *gorm.DB, granterID, childID uint, months int, occurredAt time.Time, eventType string, migrationSeq int) {
+	t.Helper()
+	granterID64 := uint64(granterID)
+	monthsU8 := uint8(months)
+	key := fmt.Sprintf("migration-20260430-cp-%d", migrationSeq)
+	ev := &membershipModel.MembershipEvent{
+		UserID:         uint64(childID),
+		EventType:      eventType,
+		ProductType:    membershipModel.ProductTypeMonthly,
+		Months:         &monthsU8,
+		AmountCents:    0, // migration rows historically wrote 0
+		Source:         membershipModel.SourceB2BGrant,
+		GranterUserID:  &granterID64,
+		IdempotencyKey: &key,
+		OccurredAt:     occurredAt,
+	}
+	require.NoError(t, db.Create(ev).Error)
+}
+
+// insertTrialGrantRow inserts a trial_grant row + matching trial_granted event.
+func insertTrialGrantRow(t *testing.T, db *gorm.DB, granterID, childID uint, grantedAt time.Time) {
+	t.Helper()
+	granterID64 := uint64(granterID)
+	expiresAt := grantedAt.AddDate(0, 0, 3)
+
+	res := db.Exec(
+		`INSERT INTO trial_grant (user_id, granted_at, expires_at, credits_remaining, source, granter_user_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		childID, grantedAt, expiresAt, 200, membershipModel.SourceB2BGrant, granterID64, grantedAt,
+	)
+	require.NoError(t, res.Error)
+
+	// trial_granted event (informational; new b2b_billing reads trial_grant table, not this event)
+	key := fmt.Sprintf("uuid-trial-%d-%d-%d", granterID, childID, grantedAt.UnixNano())
+	ev := &membershipModel.MembershipEvent{
+		UserID:         uint64(childID),
+		EventType:      membershipModel.EventTypeTrialGranted,
+		ProductType:    membershipModel.ProductTypeTrial,
+		AmountCents:    0,
+		Source:         membershipModel.SourceB2BGrant,
+		GranterUserID:  &granterID64,
+		IdempotencyKey: &key,
+		OccurredAt:     grantedAt,
+	}
+	require.NoError(t, db.Create(ev).Error)
+}
+
+// manuallyOverrideSubTotal simulates an operator manually adjusting
+// subscription.total_months_purchased (e.g., the sandy case where the customer
+// reported a mistake and the operator reduced 14 → 1 in the DB).
+func manuallyOverrideSubTotal(t *testing.T, db *gorm.DB, childID uint, newTotal int, at time.Time) {
+	t.Helper()
+	res := db.Exec(
+		`UPDATE subscription SET total_months_purchased = ?, updated_at = ? WHERE user_id = ?`,
+		newTotal, at, childID,
+	)
+	require.NoError(t, res.Error)
+}
+
 // --------------------------------------------------------------------------
-// chooseSource unit tests — T9: always new_only
+// chooseSource unit tests — always new_only post-T9
 // --------------------------------------------------------------------------
 
 func TestChooseSource(t *testing.T) {
-	// T9 cleanup: chooseSource always returns new_only regardless of input.
 	cutover := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
 
 	cases := []struct {
-		name       string
-		monthStart time.Time
-		monthEnd   time.Time
-		cutoverArg time.Time
+		name string
+		s    time.Time
+		e    time.Time
+		c    time.Time
 	}{
-		{
-			name:       "entirely before cutover → new_only (T9 simplified)",
-			monthStart: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
-			monthEnd:   time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
-			cutoverArg: cutover,
-		},
-		{
-			name:       "entirely after cutover → new_only",
-			monthStart: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
-			monthEnd:   time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
-			cutoverArg: cutover,
-		},
-		{
-			name:       "zero cutover → new_only (T9 simplified)",
-			monthStart: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
-			monthEnd:   time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
-			cutoverArg: time.Time{},
-		},
+		{"before cutover", time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), cutover},
+		{"after cutover", time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), cutover},
+		{"zero cutover", time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC), time.Time{}},
 	}
-
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := chooseSource(tc.monthStart, tc.monthEnd, tc.cutoverArg)
-			assert.Equal(t, "new_only", got, "T9: chooseSource always returns new_only")
+			assert.Equal(t, "new_only", chooseSource(tc.s, tc.e, tc.c))
 		})
 	}
 }
 
 // --------------------------------------------------------------------------
-// Basic report tests (all use new_only / membership_event source after T9)
+// PriceForMonths sanity (delegates to model constant; assert pricing tiers)
+// --------------------------------------------------------------------------
+
+func TestPriceForMonths_Tiers(t *testing.T) {
+	cases := []struct {
+		months int
+		want   int64
+	}{
+		{1, 9900},    // ¥99
+		{2, 19800},   // 2 × ¥99
+		{6, 59400},   // 6 × ¥99
+		{11, 108900}, // 11 × ¥99
+		{12, 94900},  // ¥949 annual discount
+		{0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("months=%d", tc.months), func(t *testing.T) {
+			assert.EqualValues(t, tc.want, membershipModel.PriceForMonths(tc.months))
+		})
+	}
+}
+
+// --------------------------------------------------------------------------
+// Empty / validation cases
 // --------------------------------------------------------------------------
 
 func TestGetBillingReport_Empty(t *testing.T) {
 	db := newB2BTestDB(t)
 	ds := store.NewTestStore(db)
-	biz := New(ds) // T9: always new_only regardless of cutover
+	biz := New(ds)
 
 	report, err := biz.GetBillingReport(context.Background(), "2026-04")
 	require.NoError(t, err)
@@ -186,228 +328,389 @@ func TestGetBillingReport_Empty(t *testing.T) {
 	assert.Equal(t, "new_only", report.Source)
 }
 
-func TestGetBillingReport_OneParentTwoChildren(t *testing.T) {
-	db := newB2BTestDB(t)
-	ds := store.NewTestStore(db)
-	biz := New(ds)
-
-	parent := insertB2BUser(t, db, "parent1")
-	childA := insertB2BUser(t, db, "child_a")
-	childB := insertB2BUser(t, db, "child_b")
-
-	apr10 := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
-	apr15 := time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC)
-	months := uint8(1)
-
-	// T9: all reads go to membership_event, not credit_package
-	insertMembershipEvent(t, db, parent, childA, membershipModel.ProductTypeTrial, nil, apr10)
-	insertMembershipEvent(t, db, parent, childB, membershipModel.ProductTypeMonthly, &months, apr15)
-	// events outside April — should NOT count
-	insertMembershipEvent(t, db, parent, childB, membershipModel.ProductTypeMonthly, &months, time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC))
-	insertMembershipEvent(t, db, parent, childB, membershipModel.ProductTypeMonthly, &months, time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC))
-
-	report, err := biz.GetBillingReport(context.Background(), "2026-04")
-	require.NoError(t, err)
-	assert.Equal(t, "2026-04", report.Month)
-	require.Len(t, report.ByParent, 1, "one parent")
-
-	row := report.ByParent[0]
-	assert.Equal(t, parent, row.ParentUserID)
-	assert.Equal(t, "parent1", row.ParentUsername)
-	assert.Equal(t, 2, row.GrantsCount, "trial + 1 monthly = 2 grants in April")
-	assert.EqualValues(t, 10890, row.AmountCents)
-	assert.Len(t, row.Details, 2)
-	assert.EqualValues(t, 10890, report.TotalAmountCents)
-}
-
-func TestGetBillingReport_ExcludesSelfPurchase(t *testing.T) {
-	db := newB2BTestDB(t)
-	ds := store.NewTestStore(db)
-	biz := New(ds)
-
-	parent := insertB2BUser(t, db, "parent1")
-	child := insertB2BUser(t, db, "child1")
-
-	apr10 := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
-
-	// T9: B2B grant via membership_event; self-purchase event (no granter) excluded
-	insertMembershipEvent(t, db, parent, child, membershipModel.ProductTypeTrial, nil, apr10)
-	// self_purchase event: no granter — getNewEvents skips rows with nil GranterUserID
-	selfEv := &membershipModel.MembershipEvent{
-		UserID:      uint64(child),
-		EventType:   membershipModel.EventTypeSubGranted,
-		ProductType: membershipModel.ProductTypeMonthly,
-		AmountCents: 9900,
-		Source:      membershipModel.SourceSelfPurchase,
-		OccurredAt:  apr10,
-	}
-	selfKey := "self-purchase-excl-test"
-	selfEv.IdempotencyKey = &selfKey
-	require.NoError(t, db.Create(selfEv).Error)
-
-	report, err := biz.GetBillingReport(context.Background(), "2026-04")
-	require.NoError(t, err)
-	require.Len(t, report.ByParent, 1)
-	assert.Equal(t, 1, report.ByParent[0].GrantsCount, "only B2B grants count")
-	assert.EqualValues(t, 990, report.ByParent[0].AmountCents)
-}
-
-func TestGetBillingReport_MultipleParents(t *testing.T) {
-	db := newB2BTestDB(t)
-	ds := store.NewTestStore(db)
-	biz := New(ds)
-
-	parent1 := insertB2BUser(t, db, "alpha_corp")
-	parent2 := insertB2BUser(t, db, "beta_corp")
-	child1 := insertB2BUser(t, db, "alice")
-	child2 := insertB2BUser(t, db, "bob")
-
-	apr10 := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
-	months := uint8(1)
-
-	// T9: all via membership_event
-	insertMembershipEvent(t, db, parent1, child1, membershipModel.ProductTypeMonthly, &months, apr10)
-	insertMembershipEvent(t, db, parent1, child1, membershipModel.ProductTypeMonthly, &months, apr10.Add(time.Second)) // distinct key
-	insertMembershipEvent(t, db, parent2, child2, membershipModel.ProductTypeTrial, nil, apr10)
-
-	report, err := biz.GetBillingReport(context.Background(), "2026-04")
-	require.NoError(t, err)
-	require.Len(t, report.ByParent, 2)
-
-	byName := map[string]ParentBillingRow{}
-	for _, r := range report.ByParent {
-		byName[r.ParentUsername] = r
-	}
-	assert.Equal(t, 2, byName["alpha_corp"].GrantsCount)
-	assert.EqualValues(t, 19800, byName["alpha_corp"].AmountCents)
-	assert.Equal(t, 1, byName["beta_corp"].GrantsCount)
-	assert.EqualValues(t, 990, byName["beta_corp"].AmountCents)
-	assert.EqualValues(t, 20790, report.TotalAmountCents)
-}
-
 func TestGetBillingReport_InvalidMonth(t *testing.T) {
 	db := newB2BTestDB(t)
 	ds := store.NewTestStore(db)
 	biz := New(ds)
-
 	for _, bad := range []string{"", "2026", "2026-4", "2026-13", "2026/04", "garbage"} {
 		_, err := biz.GetBillingReport(context.Background(), bad)
 		require.Error(t, err, "month=%q should be rejected", bad)
 	}
 }
 
-func TestGetBillingReport_BoundaryOccurredAt(t *testing.T) {
+// --------------------------------------------------------------------------
+// Rule A: first-month subscriber
+// --------------------------------------------------------------------------
+
+func TestRuleA_NewMonthlySubscriber(t *testing.T) {
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+
+	parent := insertB2BUser(t, db, "user_moxiaopai")
+	emma := insertB2BUser(t, db, "100Emma")
+
+	may6 := time.Date(2026, 5, 6, 11, 43, 44, 0, time.UTC)
+	insertSubGrant(t, db, parent, emma, 1, may6)
+
+	r, err := biz.GetBillingReport(context.Background(), "2026-05")
+	require.NoError(t, err)
+	require.Len(t, r.ByParent, 1)
+	assert.Equal(t, 1, r.ByParent[0].GrantsCount)
+	assert.EqualValues(t, 9900, r.ByParent[0].AmountCents, "1 month × ¥99")
+}
+
+func TestRuleA_NewAnnualSubscriber_HuiHui(t *testing.T) {
+	// Real-world: 卉卉 (user 418) opened annual on 2026-05-11.
+	// Migration created 1 sub_granted + 11 future sub_renewed placeholder events.
+	// Expectation: May report shows ¥949 (one row) for her annual, NOT 12×¥99=¥1188,
+	// and the 11 future placeholders do NOT contribute to any month's report.
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+
+	parent := insertB2BUser(t, db, "user_moxiaopai")
+	huihui := insertB2BUser(t, db, "100celine")
+
+	may11 := time.Date(2026, 5, 11, 10, 25, 55, 0, time.UTC)
+
+	// subscription says: 12-month annual
+	res := db.Exec(`INSERT INTO subscription (user_id, first_started_at, current_started_at,
+		expires_at, total_months_purchased, source, granter_user_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		huihui, may11, may11, may11.AddDate(1, 0, 0), 12,
+		membershipModel.SourceB2BGrant, uint64(parent), may11, may11)
+	require.NoError(t, res.Error)
+
+	// All 12 events are migration placeholders (real prod state for 卉卉)
+	insertMigrationPlaceholderEvent(t, db, parent, huihui, 1, may11, membershipModel.EventTypeSubGranted, 109)
+	for i, monthOffset := range []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11} {
+		insertMigrationPlaceholderEvent(t, db, parent, huihui, 1, may11.AddDate(0, monthOffset, 0), membershipModel.EventTypeSubRenewed, 110+i)
+	}
+
+	// May: should bill ¥949 (annual price, NOT 12 × ¥99)
+	r, err := biz.GetBillingReport(context.Background(), "2026-05")
+	require.NoError(t, err)
+	require.Len(t, r.ByParent, 1)
+	assert.Equal(t, 1, r.ByParent[0].GrantsCount, "single grant detail row")
+	assert.EqualValues(t, 94900, r.ByParent[0].AmountCents, "annual = ¥949 NOT 12 × ¥99")
+	assert.Equal(t, 12, r.ByParent[0].Details[0].Months, "shows 12 months in detail")
+
+	// June: should bill ¥0 (future placeholder rows ignored)
+	r, err = biz.GetBillingReport(context.Background(), "2026-06")
+	require.NoError(t, err)
+	assert.Empty(t, r.ByParent, "June must NOT bill the annual placeholder")
+	assert.EqualValues(t, 0, r.TotalAmountCents)
+
+	// March 2027: also future placeholder month — should bill ¥0
+	r, err = biz.GetBillingReport(context.Background(), "2027-03")
+	require.NoError(t, err)
+	assert.Empty(t, r.ByParent, "Mar 2027 must NOT bill the placeholder")
+}
+
+func TestRuleA_SandyManualOverride(t *testing.T) {
+	// Real-world: sandy (user 435) opened annual + 2 monthly grants on 5-18 (14 months total),
+	// but operator reduced subscription.total_months_purchased to 1 due to customer error report.
+	// Expectation: report uses subscription.total = 1 → ¥99, ignoring the 3 events' 14-month sum.
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+
+	parent := insertB2BUser(t, db, "user_moxiaopai")
+	sandy := insertB2BUser(t, db, "100sandy")
+
+	may18 := time.Date(2026, 5, 18, 11, 9, 4, 0, time.UTC)
+	// Insert as if she got annual + 2 monthly tops
+	insertSubGrant(t, db, parent, sandy, 12, may18)
+	insertSubRenewal(t, db, parent, sandy, 1, may18.Add(time.Minute*1))
+	insertSubRenewal(t, db, parent, sandy, 1, may18.Add(time.Minute*1+time.Second*14))
+	// Operator override: total back to 1
+	manuallyOverrideSubTotal(t, db, sandy, 1, may18.Add(time.Hour))
+
+	r, err := biz.GetBillingReport(context.Background(), "2026-05")
+	require.NoError(t, err)
+	require.Len(t, r.ByParent, 1)
+	assert.Equal(t, 1, r.ByParent[0].GrantsCount, "manual override collapses to one row")
+	assert.EqualValues(t, 9900, r.ByParent[0].AmountCents, "subscription.total=1 wins; ¥99 not ¥1147")
+}
+
+func TestRuleA_MixedMonthlyPlusAnnualSameMonth(t *testing.T) {
+	// Hypothetical: parent grants 1 month, then 12-month annual in same month.
+	// Expectation: per-event detail (sum matches total), so 2 detail rows: ¥99 + ¥949.
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+
+	parent := insertB2BUser(t, db, "user_moxiaopai")
+	user := insertB2BUser(t, db, "mixed_user")
+
+	may1 := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	may2 := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
+
+	insertSubGrant(t, db, parent, user, 1, may1)
+	insertSubRenewal(t, db, parent, user, 12, may2)
+
+	r, err := biz.GetBillingReport(context.Background(), "2026-05")
+	require.NoError(t, err)
+	require.Len(t, r.ByParent, 1)
+	assert.Equal(t, 2, r.ByParent[0].GrantsCount, "two detail rows")
+	assert.EqualValues(t, 9900+94900, r.ByParent[0].AmountCents, "¥99 + ¥949 = ¥1048 (annual pricing applied per-event)")
+}
+
+// --------------------------------------------------------------------------
+// Rule B: cross-month renewal
+// --------------------------------------------------------------------------
+
+func TestRuleB_CrossMonthRenewal(t *testing.T) {
+	// User granted 1 month on Apr 15, then renewed 2 months on May 10.
+	// Expectation: April report = ¥99, May report = ¥198 (2-month renewal).
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+
+	parent := insertB2BUser(t, db, "user_moxiaopai")
+	user := insertB2BUser(t, db, "cross_month_user")
+
+	apr15 := time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC)
+	may10 := time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC)
+
+	insertSubGrant(t, db, parent, user, 1, apr15)
+	insertSubRenewal(t, db, parent, user, 2, may10)
+
+	// April: Rule A fires → ¥99
+	r, err := biz.GetBillingReport(context.Background(), "2026-04")
+	require.NoError(t, err)
+	require.Len(t, r.ByParent, 1)
+	assert.EqualValues(t, 9900, r.ByParent[0].AmountCents)
+
+	// May: Rule B fires → ¥198
+	r, err = biz.GetBillingReport(context.Background(), "2026-05")
+	require.NoError(t, err)
+	require.Len(t, r.ByParent, 1)
+	assert.EqualValues(t, 19800, r.ByParent[0].AmountCents)
+	assert.Equal(t, 2, r.ByParent[0].Details[0].Months)
+}
+
+func TestRuleB_OldAnnualUserNoActivityInMonth(t *testing.T) {
+	// Real-world: 郭奕儿/刘丽 — annual granted April 29/30, then 4-30 migration script
+	// generated future sub_renewed placeholders for May-March next year.
+	// Expectation: ZERO billing in May for these users (placeholders ignored,
+	// no real activity in May).
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+
+	parent := insertB2BUser(t, db, "user_moxiaopai")
+	guo := insertB2BUser(t, db, "100guo")
+
+	apr29 := time.Date(2026, 4, 29, 19, 5, 1, 0, time.UTC)
+
+	// Subscription: granted in April
+	res := db.Exec(`INSERT INTO subscription (user_id, first_started_at, current_started_at,
+		expires_at, total_months_purchased, source, granter_user_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		guo, apr29, apr29, apr29.AddDate(1, 0, 0), 12,
+		membershipModel.SourceB2BGrant, uint64(parent), apr29, apr29.Add(time.Hour))
+	require.NoError(t, res.Error)
+
+	// Migration placeholder events: April sub_granted + 11 future sub_renewed
+	insertMigrationPlaceholderEvent(t, db, parent, guo, 1, apr29, membershipModel.EventTypeSubGranted, 72)
+	insertMigrationPlaceholderEvent(t, db, parent, guo, 1, apr29.AddDate(0, 1, 0), membershipModel.EventTypeSubRenewed, 73)
+	insertMigrationPlaceholderEvent(t, db, parent, guo, 1, apr29.AddDate(0, 2, 0), membershipModel.EventTypeSubRenewed, 74)
+
+	// April: Rule A → ¥949 (annual)
+	r, err := biz.GetBillingReport(context.Background(), "2026-04")
+	require.NoError(t, err)
+	require.Len(t, r.ByParent, 1)
+	assert.EqualValues(t, 94900, r.ByParent[0].AmountCents, "April annual = ¥949")
+
+	// May: Rule A doesn't fire (first_started_at = April); Rule B checked
+	// (updated_at IS in May from a separate touch — but no real events)
+	// → should be 0.
+	// Bump updated_at to May to test Rule B path:
+	require.NoError(t, db.Exec(
+		`UPDATE subscription SET updated_at = ? WHERE user_id = ?`,
+		time.Date(2026, 5, 13, 20, 31, 45, 0, time.UTC), guo).Error)
+
+	r, err = biz.GetBillingReport(context.Background(), "2026-05")
+	require.NoError(t, err)
+	assert.Empty(t, r.ByParent, "May: no real events, placeholders ignored → ¥0")
+}
+
+func TestRuleB_AdminCalibrationOnlyNoRealRenewal(t *testing.T) {
+	// User granted in April. In May, admin_calibration touches subscription
+	// (e.g., to fix balance). No real sub_renewed event.
+	// Expectation: May report = ¥0 for this user.
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+
+	parent := insertB2BUser(t, db, "user_moxiaopai")
+	user := insertB2BUser(t, db, "admincal_user")
+
+	apr15 := time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC)
+	may15 := time.Date(2026, 5, 15, 10, 0, 0, 0, time.UTC)
+
+	insertSubGrant(t, db, parent, user, 1, apr15)
+	// Bump updated_at into May, but no sub_renewed event written
+	require.NoError(t, db.Exec(`UPDATE subscription SET updated_at = ? WHERE user_id = ?`, may15, user).Error)
+
+	r, err := biz.GetBillingReport(context.Background(), "2026-05")
+	require.NoError(t, err)
+	assert.Empty(t, r.ByParent, "admin calibration without real grant must not bill")
+}
+
+// --------------------------------------------------------------------------
+// Trial path
+// --------------------------------------------------------------------------
+
+func TestTrial_BilledFromTrialGrantTable(t *testing.T) {
+	db := newB2BTestDB(t)
+	ds := store.NewTestStore(db)
+	biz := New(ds)
+
+	parent := insertB2BUser(t, db, "user_moxiaopai")
+	user := insertB2BUser(t, db, "trial_user")
+
+	may10 := time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC)
+	insertTrialGrantRow(t, db, parent, user, may10)
+
+	r, err := biz.GetBillingReport(context.Background(), "2026-05")
+	require.NoError(t, err)
+	require.Len(t, r.ByParent, 1)
+	assert.Equal(t, 1, r.ByParent[0].GrantsCount)
+	assert.EqualValues(t, 990, r.ByParent[0].AmountCents, "trial = ¥9.9")
+	assert.Equal(t, membershipModel.ProductTypeTrial, r.ByParent[0].Details[0].ProductType)
+}
+
+func TestTrial_ExcludedFromOtherMonth(t *testing.T) {
 	db := newB2BTestDB(t)
 	ds := store.NewTestStore(db)
 	biz := New(ds)
 
 	parent := insertB2BUser(t, db, "p")
-	child := insertB2BUser(t, db, "c")
+	user := insertB2BUser(t, db, "u")
 
-	aprStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
-	aprEnd := time.Date(2026, 4, 30, 23, 59, 59, 0, time.UTC) // within April
-	mayStart := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	may10 := time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC)
+	insertTrialGrantRow(t, db, parent, user, may10)
 
-	// T9: boundary test via membership_event occurred_at
-	insertMembershipEvent(t, db, parent, child, membershipModel.ProductTypeTrial, nil, aprStart)
-	insertMembershipEvent(t, db, parent, child, membershipModel.ProductTypeTrial, nil, aprEnd)
-	insertMembershipEvent(t, db, parent, child, membershipModel.ProductTypeTrial, nil, mayStart)
-
-	report, err := biz.GetBillingReport(context.Background(), "2026-04")
+	r, err := biz.GetBillingReport(context.Background(), "2026-04")
 	require.NoError(t, err)
-	require.Len(t, report.ByParent, 1)
-	assert.Equal(t, 2, report.ByParent[0].GrantsCount, "only April boundary events count")
+	assert.Empty(t, r.ByParent)
 }
 
 // --------------------------------------------------------------------------
-// New-only mode tests
+// Mixed scenario integration
 // --------------------------------------------------------------------------
 
-func TestGetBillingReport_NewOnly_MembershipEvents(t *testing.T) {
+func TestIntegrationMay2026_ProdLikeShape(t *testing.T) {
+	// Simulates a slice of prod May 2026 state:
+	//   - 5 new monthly users (Rule A monthly)
+	//   - 1 new annual user (卉卉 pattern, Rule A annual)
+	//   - 1 sandy-like user (Rule A with manual override)
+	//   - 1 trial user
+	//   - 1 prior-month user with no May activity (郭奕儿 pattern → ¥0)
+	// Expected: parent total = 5 × ¥99 + ¥949 + ¥99 + ¥9.9 = 1543.9 = 154390 cents
 	db := newB2BTestDB(t)
 	ds := store.NewTestStore(db)
+	biz := New(ds)
 
-	// cutover = May 1 → June report is new_only
-	cutover := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
-	biz := NewWithCutover(ds, cutover)
+	parent := insertB2BUser(t, db, "user_moxiaopai")
+	may := time.Date(2026, 5, 5, 10, 0, 0, 0, time.UTC)
 
-	parent := insertB2BUser(t, db, "corp_a")
-	child := insertB2BUser(t, db, "emp_a")
-
-	months := uint8(1)
-	jun10 := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
-	insertMembershipEvent(t, db, parent, child, membershipModel.ProductTypeMonthly, &months, jun10)
-	// self_purchase event (no granter) — should be excluded
-	selfEv := &membershipModel.MembershipEvent{
-		UserID:      uint64(child),
-		EventType:   membershipModel.EventTypeSubGranted,
-		ProductType: membershipModel.ProductTypeMonthly,
-		Months:      &months,
-		AmountCents: 9900,
-		Source:      membershipModel.SourceSelfPurchase,
-		OccurredAt:  jun10,
+	// 5 monthly users
+	for i := 0; i < 5; i++ {
+		u := insertB2BUser(t, db, fmt.Sprintf("monthly_%d", i))
+		insertSubGrant(t, db, parent, u, 1, may.Add(time.Duration(i)*time.Hour))
 	}
-	selfKey := "self-purchase-key"
-	selfEv.IdempotencyKey = &selfKey
-	require.NoError(t, db.Create(selfEv).Error)
 
-	report, err := biz.GetBillingReport(context.Background(), "2026-06")
+	// 1 annual user — migration-style data (1 real-looking sub_granted, with migration key, plus future placeholders)
+	huihui := insertB2BUser(t, db, "100celine")
+	may11 := time.Date(2026, 5, 11, 10, 0, 0, 0, time.UTC)
+	res := db.Exec(`INSERT INTO subscription (user_id, first_started_at, current_started_at,
+		expires_at, total_months_purchased, source, granter_user_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		huihui, may11, may11, may11.AddDate(1, 0, 0), 12,
+		membershipModel.SourceB2BGrant, uint64(parent), may11, may11)
+	require.NoError(t, res.Error)
+	insertMigrationPlaceholderEvent(t, db, parent, huihui, 1, may11, membershipModel.EventTypeSubGranted, 109)
+	for i := 0; i < 11; i++ {
+		insertMigrationPlaceholderEvent(t, db, parent, huihui, 1, may11.AddDate(0, i+1, 0), membershipModel.EventTypeSubRenewed, 110+i)
+	}
+
+	// sandy
+	sandy := insertB2BUser(t, db, "100sandy")
+	may18 := time.Date(2026, 5, 18, 11, 9, 0, 0, time.UTC)
+	insertSubGrant(t, db, parent, sandy, 12, may18)
+	insertSubRenewal(t, db, parent, sandy, 1, may18.Add(time.Minute))
+	insertSubRenewal(t, db, parent, sandy, 1, may18.Add(time.Minute*2))
+	manuallyOverrideSubTotal(t, db, sandy, 1, may18.Add(time.Hour))
+
+	// trial user
+	trialU := insertB2BUser(t, db, "trial_x")
+	insertTrialGrantRow(t, db, parent, trialU, may.Add(time.Hour*5))
+
+	// prior-month annual user (郭奕儿)
+	guo := insertB2BUser(t, db, "100guo")
+	apr29 := time.Date(2026, 4, 29, 19, 5, 1, 0, time.UTC)
+	res = db.Exec(`INSERT INTO subscription (user_id, first_started_at, current_started_at,
+		expires_at, total_months_purchased, source, granter_user_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		guo, apr29, apr29, apr29.AddDate(1, 0, 0), 12,
+		membershipModel.SourceB2BGrant, uint64(parent), apr29, apr29)
+	require.NoError(t, res.Error)
+	insertMigrationPlaceholderEvent(t, db, parent, guo, 1, apr29, membershipModel.EventTypeSubGranted, 72)
+	insertMigrationPlaceholderEvent(t, db, parent, guo, 1, apr29.AddDate(0, 1, 0), membershipModel.EventTypeSubRenewed, 73)
+
+	r, err := biz.GetBillingReport(context.Background(), "2026-05")
 	require.NoError(t, err)
-	assert.Equal(t, "new_only", report.Source)
-	require.Len(t, report.ByParent, 1)
-	assert.Equal(t, 1, report.ByParent[0].GrantsCount)
-	assert.EqualValues(t, 9900, report.ByParent[0].AmountCents)
-	assert.EqualValues(t, 9900, report.TotalAmountCents)
-	assert.Equal(t, 1, report.TotalEventsCount)
-	assert.Equal(t, 1, report.ActiveParentsCount)
+	require.Len(t, r.ByParent, 1)
+
+	expectedCents := int64(5*9900 + 94900 + 9900 + 990)
+	assert.EqualValues(t, expectedCents, r.ByParent[0].AmountCents,
+		"5 monthly + 1 annual + 1 sandy-override-monthly + 1 trial = ¥1543.90")
 }
 
 // --------------------------------------------------------------------------
-// T9 note: cutover_split mode removed — all months now use new_only.
-// The following tests were the cutover_split tests; they now verify that
-// even months spanning the former cutover boundary use new_only correctly.
+// Edge: boundaries on month start/end
 // --------------------------------------------------------------------------
 
-func TestGetBillingReport_FormerCutoverMonth_UsesNewOnly(t *testing.T) {
+func TestBoundary_FirstSecondOfMonth(t *testing.T) {
 	db := newB2BTestDB(t)
 	ds := store.NewTestStore(db)
+	biz := New(ds)
 
-	// T9: even with a cutover date set, chooseSource always returns new_only.
-	cutover := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
-	biz := NewWithCutover(ds, cutover)
+	parent := insertB2BUser(t, db, "p")
+	user := insertB2BUser(t, db, "u")
 
-	parent := insertB2BUser(t, db, "split_corp")
-	child := insertB2BUser(t, db, "split_emp")
+	// first_started_at = exactly May 1 00:00:00 → should belong to May report
+	may1 := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	insertSubGrant(t, db, parent, user, 1, may1)
 
-	// Only membership_event rows are read, regardless of cutover.
-	may20 := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
-	months := uint8(1)
-	insertMembershipEvent(t, db, parent, child, membershipModel.ProductTypeMonthly, &months, may20)
-
-	report, err := biz.GetBillingReport(context.Background(), "2026-05")
+	r, err := biz.GetBillingReport(context.Background(), "2026-05")
 	require.NoError(t, err)
-	assert.Equal(t, "new_only", report.Source, "T9: cutover_split removed; always new_only")
-	require.Len(t, report.ByParent, 1)
-	assert.Equal(t, 1, report.ByParent[0].GrantsCount)
-	assert.EqualValues(t, 9900, report.TotalAmountCents)
+	require.Len(t, r.ByParent, 1)
+	assert.EqualValues(t, 9900, r.ByParent[0].AmountCents)
+
+	// And NOT to April report
+	r, err = biz.GetBillingReport(context.Background(), "2026-04")
+	require.NoError(t, err)
+	assert.Empty(t, r.ByParent)
 }
 
-func TestGetBillingReport_NewMetadataFields(t *testing.T) {
+func TestBoundary_LastSecondOfMonth(t *testing.T) {
 	db := newB2BTestDB(t)
 	ds := store.NewTestStore(db)
-	cutover := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
-	biz := NewWithCutover(ds, cutover)
+	biz := New(ds)
 
-	// cutover = Mar 1 → April report is new_only
-	parent := insertB2BUser(t, db, "meta_corp")
-	child := insertB2BUser(t, db, "meta_emp")
-	months := uint8(1)
-	insertMembershipEvent(t, db, parent, child, membershipModel.ProductTypeMonthly, &months, time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC))
+	parent := insertB2BUser(t, db, "p")
+	user := insertB2BUser(t, db, "u")
 
-	report, err := biz.GetBillingReport(context.Background(), "2026-04")
+	// first_started_at = May 31 23:59:59 → still in May
+	mayEnd := time.Date(2026, 5, 31, 23, 59, 59, 0, time.UTC)
+	insertSubGrant(t, db, parent, user, 1, mayEnd)
+
+	r, err := biz.GetBillingReport(context.Background(), "2026-05")
 	require.NoError(t, err)
-	assert.Equal(t, "new_only", report.Source)
-	assert.False(t, report.CutoverDate.IsZero(), "cutover_date must be present in response")
-	assert.Equal(t, 1, report.TotalEventsCount)
-	assert.Equal(t, 1, report.ActiveParentsCount)
+	require.Len(t, r.ByParent, 1)
 }
