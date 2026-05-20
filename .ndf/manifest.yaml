@@ -4,10 +4,10 @@ features:
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #2/14。把 Phase 0 V2 demo 中的 adapter 模式工程化为 Agent Runtime 主路径代码。范围：(M1) agent_run + agent_message DB 表 (M2) agent_run store CRUD (M3) AgentRunner biz 包装 Eino ReAct（升级到 ToolCallingChatModel.WithTools()）(M4) 12 Terminal + 7 Continue 状态机 (M5) AbortController 三层（queryCtx/batchCtx/toolCtx）(M6) Withhold recovery 两条 chain（PTL + max_output_tokens）(M7) 最小 Tool interface（完整版 38 字段在 #3）(M8) mock Eino + mock 工具的 5 步 ReAct 单测。Out of scope：Tool Registry 完整版 / 沙箱集成 / 权限 / 记忆 / Narration / API 端点 / prod 部署。架构蓝本：docs/agent-mode/architecture-v1.md §4.1。'
   track: standard
-  stage: S0
-  classification_reason: 'Triage 5 条 — (1) DB schema 变更：是（agent_run + agent_message 两张新表）(2) 无新 API 端点（#2 仅 biz 层）(3) 无新外部服务（Eino 已在 go.mod 自 #1）(4) 影响文件数 >3（migration + 2 model + 1 store + 5 biz + N test）(5) 非高风险（不动支付/权限）。条件 1+4 触发 Standard，且 19-state 枚举 / AbortController 派生 / Withhold chain 编排都需严肃设计 + 跨 feature 接口契约稳定性极高，Hotfix 无法承载。'
-  last_updated_by: ai-s0-requirement-card-written
-  last_updated_at: '2026-05-20T03:20:00+08:00'
+  stage: S4
+  classification_reason: 'Triage 5 条 — (1) DB schema 变更：是（agent_run 单表，agent_message 删除）(2) 无新 API 端点（#2 仅 biz 层）(3) 无新外部服务（Eino 已在 go.mod 自 #1）(4) 影响文件数 >3（migration + 1 model + 1 store + 8 biz + N test）(5) 非高风险（不动支付/权限）。条件 1+4 触发 Standard。'
+  last_updated_by: ai-s3-reviewer-pass-entering-s4
+  last_updated_at: '2026-05-20T04:00:00+08:00'
   repos:
   - numind-server
   branches:
@@ -16,12 +16,15 @@ features:
     numind-server: /private/tmp/wt-agent-mode-runtime-skeleton-numind-server
   artifacts:
     requirement: numind-server/requirements/agent-mode-runtime-skeleton.md
+    proposal: numind-server/proposals/agent-mode-runtime-skeleton-proposal.md
+    spec: numind-server/docs/superpowers/specs/2026-05-20-agent-mode-runtime-skeleton-design.md
+    plan: numind-server/docs/superpowers/plans/2026-05-20-agent-mode-runtime-skeleton-plan.md
     architecture_blueprint: docs/agent-mode/architecture-v1.md
   progress:
-    total_tasks: 8
+    total_tasks: 9
     completed_tasks: 0
     reviewed_tasks: 0
-    current_task: 'S0 requirement card 写完，待独立 Sonnet reviewer 审。8 个 module M1-M8 分解。'
+    current_task: 'S3 plan + 验证策略写完 + reviewer pass（2 P0 + 1 P1 + 4 P2 已修；Task 7 拆为 7a + 7b）。进入 S4 编码：Phase 1 四路并行 Tier 3 → Phase 2 双并行 → Phase 3 串行 → Phase 4 集成测试。'
   decisions:
   - '2026-05-20 (沿用 #1 决策): 14-feature 分解；Eino v0.8.13 sticking；adapter 模式沿用 Phase 0 V2 demo；ToolCallingChatModel 升级（解决 Phase 0 DONE_WITH_CONCERNS）。'
   - '2026-05-20 (autopilot 协议): 沿用 [[feedback_agent_mode_autopilot]] 自主推进；feature 完成至 dev 部署后停止，不影响 prod。'
