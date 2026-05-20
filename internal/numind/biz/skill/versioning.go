@@ -68,6 +68,9 @@ func ComputeChangesSummary(prev, curr *model.AgentDefinition, restoreSourceVersi
 	if prev.Description != curr.Description {
 		changes = append(changes, "Q3（描述）")
 	}
+	if prev.IconURL != curr.IconURL {
+		changes = append(changes, "Q2（头像）")
+	}
 	if prev.WelcomeMessage != curr.WelcomeMessage {
 		changes = append(changes, "Q4（欢迎语）")
 	}
