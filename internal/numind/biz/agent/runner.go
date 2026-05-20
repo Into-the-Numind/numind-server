@@ -14,6 +14,7 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
+	"numind-server/internal/numind/biz/compact"
 	"numind-server/internal/numind/biz/skill"
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/errno"
@@ -57,12 +58,14 @@ type AgentRunner interface {
 }
 
 type agentRunner struct {
-	runStore     store.IAgentRunStore
-	registry     AgentToolRegistry
-	cancels      map[uint64]context.CancelFunc
-	mu           sync.Mutex
-	defaultHooks *RunHooks                   // #4 sandbox-integration: wired by biz.go via WithDefaultHooks
-	skillStore   store.IAgentDefinitionStore // #11 skill-system: wired by biz.go via WithSkillStore; may be nil
+	runStore        store.IAgentRunStore
+	registry        AgentToolRegistry
+	cancels         map[uint64]context.CancelFunc
+	mu              sync.Mutex
+	defaultHooks    *RunHooks                   // #4 sandbox-integration: wired by biz.go via WithDefaultHooks
+	skillStore      store.IAgentDefinitionStore // #11 skill-system: wired by biz.go via WithSkillStore; may be nil
+	compactProvider compact.CompactProvider     // #9 compact: wired by biz.go via WithCompactProvider; may be nil
+	compactConfig   compact.Config              // #9 compact: defaults to compact.DefaultConfig() in NewAgentRunner
 }
 
 var _ AgentRunner = (*agentRunner)(nil)
@@ -90,12 +93,33 @@ func WithSkillStore(s store.IAgentDefinitionStore) RunnerOption {
 	}
 }
 
+// WithCompactProvider sets the CompactProvider used by PTL / pre-LLM compact
+// helpers. #14 wires a real aiservice.Chat-backed provider; v1 uses
+// compact.MockCompactProvider so helpers stay testable in #9 isolation.
+// When nil, helpers no-op (tryPreLLMCompact returns input unchanged;
+// handlePTLError step 2 returns a terminal error).
+func WithCompactProvider(p compact.CompactProvider) RunnerOption {
+	return func(r *agentRunner) {
+		r.compactProvider = p
+	}
+}
+
+// WithCompactConfig overrides the qwen-plus defaults set by NewAgentRunner.
+// Use this when tuning AutoCompactThreshold / MaxConsecutiveAutoCompactFailures
+// for a different model.
+func WithCompactConfig(cfg compact.Config) RunnerOption {
+	return func(r *agentRunner) {
+		r.compactConfig = cfg
+	}
+}
+
 // NewAgentRunner 工厂。
 func NewAgentRunner(runStore store.IAgentRunStore, registry AgentToolRegistry, opts ...RunnerOption) AgentRunner {
 	r := &agentRunner{
-		runStore: runStore,
-		registry: registry,
-		cancels:  make(map[uint64]context.CancelFunc),
+		runStore:      runStore,
+		registry:      registry,
+		cancels:       make(map[uint64]context.CancelFunc),
+		compactConfig: compact.DefaultConfig(), // #9 compact: qwen-plus default; overridable via WithCompactConfig
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -289,4 +313,121 @@ func (r *agentRunner) unregisterCancel(runID uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.cancels, runID)
+}
+
+// #9 compact helpers — wired in by biz.go via WithCompactProvider/WithCompactConfig.
+//
+// These helpers are intentionally NOT called from Run() in #9. #2 mock Run()
+// remains unchanged. #14 ReAct loop will wire the helpers into the real
+// agent.Generate fail/retry chain.
+//
+// Concurrency: caller is responsible for ensuring *LoopState is not shared
+// across goroutines. Within a single Run() the loop is single-threaded; across
+// independent Run() invocations each has its own LoopState.
+
+// tryPreLLMCompact estimates total tokens across `messages`. When the estimate
+// exceeds the configured AutoCompactThreshold, it triggers ReactiveCompact and
+// returns (summary || collapsed) as the new message slice. Returns the input
+// unchanged with didCompact=false when the threshold is not hit, when the
+// CompactProvider is nil, or when ReactiveCompact fails (err is propagated).
+//
+// Uses ReactiveCompact's finalMessages (the actually-fed slice) for the
+// CollapseDrain so the summary and the trailing tail describe the same scope
+// (S2 reviewer P1 fix).
+func (r *agentRunner) tryPreLLMCompact(ctx context.Context, messages []compact.Message) ([]compact.Message, bool, error) {
+	if r.compactProvider == nil {
+		return messages, false, nil
+	}
+	text := ""
+	for _, m := range messages {
+		text += m.Content + "\n"
+	}
+	tokens := compact.EstimateTokens(text)
+	if tokens < r.compactConfig.AutoCompactThreshold {
+		return messages, false, nil
+	}
+	result, finalMessages, err := compact.ReactiveCompact(ctx, r.compactProvider, messages, r.compactConfig)
+	if err != nil {
+		return messages, false, err
+	}
+	collapsed := compact.CollapseDrain(finalMessages, r.compactConfig.PTLCollapseKeepTurns)
+	summary := compact.Message{
+		Role:          "system",
+		Content:       result.Summary,
+		IsCompactMark: true,
+	}
+	return append([]compact.Message{summary}, collapsed...), true, nil
+}
+
+// handlePTLError consumes one st.Transition(LoopEventLLMErrPTL). Returns the
+// ContinueReason that the state machine produced plus the new messages slice
+// the caller should send to the next LLM attempt; or, when the state machine
+// terminated the run, isTerminal=true and the TerminalReason.
+//
+// The caller MUST NOT call st.Transition again on the returned ContinueReason —
+// the helper has already advanced PTLRetries. Calling Transition twice would
+// double-count and trip MaxPTLRetries early (S1 reviewer P1 fix).
+//
+// Step 1 (PTLRetries=1) → CollapseDrain only (no LLM call).
+// Step 2 (PTLRetries=2) → ReactiveCompact (real LLM call via provider) and
+// then CollapseDrain on the actually-fed message set (S2 reviewer P1 fix).
+// Step 3+ (PTLRetries>2) → TerminalPromptTooLong.
+func (r *agentRunner) handlePTLError(
+	ctx context.Context, st *LoopState, messages []compact.Message,
+) (cont ContinueReason, newMessages []compact.Message, isTerminal bool, terminal TerminalReason, err error) {
+	term, c, isTerm := st.Transition(LoopEventLLMErrPTL)
+	if isTerm {
+		return "", nil, true, term, nil
+	}
+	switch c {
+	case ContinueCollapseDrainRetry:
+		collapsed := compact.CollapseDrain(messages, r.compactConfig.PTLCollapseKeepTurns)
+		return c, collapsed, false, "", nil
+	case ContinueReactiveCompactRetry:
+		if r.compactProvider == nil {
+			return "", nil, true, TerminalPromptTooLong, fmt.Errorf("handlePTLError: nil compactProvider, cannot reactive_compact")
+		}
+		result, finalMessages, rerr := compact.ReactiveCompact(ctx, r.compactProvider, messages, r.compactConfig)
+		if rerr != nil {
+			return "", nil, true, TerminalPromptTooLong, rerr
+		}
+		summary := compact.Message{
+			Role:          "system",
+			Content:       result.Summary,
+			IsCompactMark: true,
+		}
+		collapsed := compact.CollapseDrain(finalMessages, r.compactConfig.PTLCollapseKeepTurns)
+		return c, append([]compact.Message{summary}, collapsed...), false, "", nil
+	default:
+		return "", nil, true, TerminalModelError, fmt.Errorf("handlePTLError: unexpected continue reason %s", c)
+	}
+}
+
+// handleMaxOutputError consumes one st.Transition(LoopEventLLMErrMaxOutput).
+// Returns the ContinueReason plus the max_tokens the caller should use on the
+// next attempt, or isTerminal=true with TerminalErrorMaxBudget once the
+// recovery budget is exhausted.
+//
+// Same no-double-counting rule as handlePTLError (S1 reviewer P1 fix).
+//
+// Escalate stage (MaxOutputRetries=1) → EscalatedMaxTokens (65536).
+// Recovery stage (MaxOutputRetries=2) → currentMaxTokens preserved; the LLM
+// should be allowed to exhaust its budget (S1 reviewer P2 fix — recovery does
+// not call EscalateMaxTokens).
+// Beyond limit (MaxOutputRetries>2) → TerminalErrorMaxBudget.
+func (r *agentRunner) handleMaxOutputError(
+	ctx context.Context, st *LoopState, currentMaxTokens int,
+) (cont ContinueReason, newMaxTokens int, isTerminal bool, terminal TerminalReason) {
+	term, c, isTerm := st.Transition(LoopEventLLMErrMaxOutput)
+	if isTerm {
+		return "", 0, true, term
+	}
+	switch c {
+	case ContinueMaxOutputEscalate:
+		return c, compact.EscalateMaxTokens(currentMaxTokens), false, ""
+	case ContinueMaxOutputRecovery:
+		return c, currentMaxTokens, false, ""
+	default:
+		return "", 0, true, TerminalModelError
+	}
 }
