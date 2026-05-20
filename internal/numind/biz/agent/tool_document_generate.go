@@ -1,11 +1,24 @@
 package agent
 
+// document_generate 在 #3 是 **partial stub**（与 image_gen / bash_exec 同等处理）。
+//
+// 原因：aiservice.Chat 内部通过 `taskID` 在 `ai_service_task` 表查路由 + 计费规则。
+// `agent.document_generate` 是新 taskID，**未注册到 profile.allTaskIDsList**，
+// **未在 migrations/seed_pricing_rules.sql 配 qwen-long 计费规则**。
+// 直接调 aiservice.Chat 在运行时会触发 Gateway.ResolveTask error。
+//
+// 完整实现路径（feature #12 agent-mode-billing-integration 时落地）：
+//   1. profile/constants.go 新增 `AgentDocumentGenerate = "agent.document_generate"` + 加 allTaskIDsList
+//   2. seed_pricing_rules.sql INSERT qwen-long 计费规则行
+//   3. dev 数据库手工跑 SQL（[[project_dev_deploy_migration_gap]]）
+//   4. 移除本文件的 stub 标记，恢复真实 aiservice.Chat 调用（保留下面的 wiring 模板代码）
+//
+// 当前 stub 状态：FullTool 接口完整，Execute 返回明确错误，便于 LLM 不调用此工具。
+
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-
-	"numind-server/internal/pkg/aiservice"
+	"errors"
 )
 
 type documentGenerateTool struct {
@@ -22,37 +35,27 @@ var _ FullTool = (*documentGenerateTool)(nil)
 
 func (t *documentGenerateTool) Name() string { return "document_generate" }
 func (t *documentGenerateTool) Description() string {
-	return "Generate a long-form document based on the prompt. Returns markdown text."
+	return "[stub] Generate a long-form document. Requires aiservice task registration (planned for #12 billing-integration)."
 }
 func (t *documentGenerateTool) UserFacingName() string  { return "文档生成" }
 func (t *documentGenerateTool) NarrationVerb() string   { return "生成" }
 func (t *documentGenerateTool) IsReadOnly() bool        { return false }
 func (t *documentGenerateTool) MaxResultSizeChars() int { return 50000 }
 
-func (t *documentGenerateTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
+// IsEnabled 默认 false — 与 image_gen / bash_exec 同等处理；
+// 待 #12 注册 taskID 后改回默认 true 或受新 cfg 字段控制。
+func (t *documentGenerateTool) IsEnabled(_ ToolConfig) bool { return false }
+
+func (t *documentGenerateTool) Execute(_ context.Context, input ToolInput) (ToolResult, error) {
+	// 即使 IsEnabled=false 防护被绕过，Execute 也返回明确 error。
 	var in documentGenerateInput
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, err
 	}
 	if in.Prompt == "" {
-		return nil, fmt.Errorf("document_generate: prompt is required")
+		return nil, errors.New("document_generate: prompt is required")
 	}
-	req := aiservice.ChatRequest{
-		Messages: []aiservice.ChatMessage{
-			{
-				Role:    aiservice.MessageRoleSystem,
-				Content: aiservice.MessageContent{Text: "You are a professional document writer. Output markdown."},
-			},
-			{
-				Role:    aiservice.MessageRoleUser,
-				Content: aiservice.MessageContent{Text: in.Prompt},
-			},
-		},
-	}
-	resp, err := aiservice.Chat(ctx, "agent-tool-document-generate", req)
-	if err != nil {
-		return nil, err
-	}
-	out, _ := json.Marshal(map[string]string{"content": resp.Content})
-	return ToolResult(out), nil
+	return nil, errors.New("document_generate: aiservice task 'agent.document_generate' not registered " +
+		"(blocked on #12 agent-mode-billing-integration adding profile.AgentDocumentGenerate + " +
+		"seed_pricing_rules.sql qwen-long pricing row)")
 }

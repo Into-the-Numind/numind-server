@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 )
 
-// BaseTool 提供 FullTool 36 方法中 28 个非必需方法的默认实现。
+// BaseTool 提供 FullTool 36 方法中 **31** 个非必需方法的默认实现（36 - 5 必须重写 = 31）。
 // 工具 impl 嵌入 BaseTool 后只需重写 5 个必须方法：
 //
 //	Name / Description / UserFacingName / NarrationVerb / Execute

@@ -56,3 +56,31 @@ func TestDocumentGenerateTool_Execute_InputUnmarshal(t *testing.T) {
 		t.Errorf("unexpected format: %s", parsed.Format)
 	}
 }
+
+// TestDocumentGenerateTool_StubBehavior asserts the #3 stub contract:
+// Execute returns clear stub error even with valid input; IsEnabled gated.
+func TestDocumentGenerateTool_StubBehavior(t *testing.T) {
+	tool := &documentGenerateTool{}
+	// Stub: IsEnabled false regardless of ToolConfig (until #12 registers taskID)
+	if tool.IsEnabled(ToolConfig{}) {
+		t.Error("stub document_generate must be IsEnabled=false by default")
+	}
+	// Execute with valid prompt: still errors with registration message
+	raw, _ := json.Marshal(documentGenerateInput{Prompt: "Hello"})
+	_, err := tool.Execute(context.Background(), ToolInput(raw))
+	if err == nil {
+		t.Fatal("expected stub error from Execute")
+	}
+	if !contains(err.Error(), "not registered") {
+		t.Errorf("error should mention task not registered, got: %v", err)
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

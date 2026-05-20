@@ -49,6 +49,10 @@ func TestLearnerDataQueryTool_Execute_SanitizedOutput(t *testing.T) {
 	if out["username"] != "alice123" {
 		t.Errorf("expected username 'alice123', got %v", out["username"])
 	}
+	// Numeric field: JSON decodes int → float64 in interface{}
+	if v, ok := out["total_sop_runs"].(float64); !ok || v != 5 {
+		t.Errorf("expected total_sop_runs=5 (float64), got %v (type %T)", out["total_sop_runs"], out["total_sop_runs"])
+	}
 
 	// Assert sensitive fields are absent
 	for _, sensitive := range []string{"password", "phone", "is_admin"} {
