@@ -1,5 +1,35 @@
 schema_version: '2.0'
 features:
+- id: b2b-billing-rules-rewrite
+  ndf_version: '2.0'
+  description: 'B2B 月度结算报表逻辑重写 + 年付定价修复 + admin sidebar 404 修复。当前 GET /v1/admin/b2b-billing-report 直接累加 membership_event.amount_cents，导致 3 个问题：(a) 4-30 migration 拆出的未来日期 sub_renewed 占位行会重复计费 (b) 年付存的是 12×9900=¥1188 但实际价 ¥949 (c) doubling 期间 amount=0 会漏算。新规则改为：规则 A 看 subscription.first_started_at 落在目标月就按 total_months_purchased × 单价；规则 B 兜底跨月续费（first_started_at < 月头 + updated_at 在月内 + 非 migration- 前缀事件）。Trial 单独路径走 trial_grant.granted_at。Booster 不计结算。同时修 AdminSidebar.vue 路径 /admin/b2b-billing → /b2b-billing。'
+  track: hotfix
+  stage: H1
+  classification_reason: 'Hotfix Triage 5 条 — (1) 无 DB schema 变更 (2) 无新 API 端点（修改现有 /v1/admin/b2b-billing-report）(3) 无外部服务 (4) 4 文件（b2b_billing.go + subscription.go + b2b_billing_test.go + AdminSidebar.vue），刚好超 ≤3 上限 (5) B2B 对账边界财务风险，但报表只读、人工 review 才出账单。条件 4+5 边界，用户拍板 Hotfix；强制 H2 后两阶段 reviewer 不简化 + H3 用 prod 5 月真实数据手算对比。'
+  last_updated_by: ai-h1-card-written
+  last_updated_at: '2026-05-20T18:00:00+08:00'
+  repos:
+  - numind-server
+  - numind-admin-web
+  branches:
+    numind-server: fix/b2b-billing-rules-rewrite
+    numind-admin-web: fix/b2b-billing-rules-rewrite
+  worktree:
+    numind-server: /private/tmp/wt-b2b-billing-rules-rewrite-numind-server
+    numind-admin-web: /private/tmp/wt-b2b-billing-rules-rewrite-numind-admin-web
+  artifacts:
+    requirement: numind-server/requirements/b2b-billing-rules-rewrite.md
+  progress:
+    total_tasks: 4
+    completed_tasks: 0
+    reviewed_tasks: 0
+    current_task: 'H1 完成（需求卡 + manifest）；进入 H2：4 文件编码 + 测试'
+  decisions:
+  - '2026-05-20: 走 hotfix（4 文件边界 + 边界财务风险，用户决策）；强制 reviewer 不简化 + prod 数据手算验证'
+  - '2026-05-20: 报表完全不读 amount_cents，全部由 product_type + months 推导单价；历史 amount=0 数据无需回填'
+  - '2026-05-20: 跨月续费用 idempotency_key NOT LIKE migration-% 区分真实 vs 迁移占位；该信号在 prod 数据上 100% 准确'
+  blockers: []
+  created_at: '2026-05-20T17:50:00+08:00'
 - id: agent-mode-sandbox-integration
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #4/14。把 #1 Phase 0 V5 ADR 决策的 Docker pool 沙箱真实落地：建 sandbox_session 审计表 + biz/sandbox 子包（pool manager / docker_client / config / security / network）+ 应用层安全加固清单（V5 ADR Q2：seccomp+AppArmor+no-root+cap-drop+no-new-priv+read-only+tmpfs+resource limits）+ 网络白名单（v1 None，Allowlist stub）+ bash_exec 真实实现（含 Phase 0 V3 8 P0 Bash validator 复用到 bashvalidator 子包）+ image_gen 真实实现（aiservice.ImageGenerate 入口，provider 未注册时友好错误）+ RunHooks 工厂（PreToolCall/PostToolCall 注入 sandbox session 生命周期）+ adapter 层 hook 调用点（方案 A，runner.go 签名不变）。Out of scope: prod 部署 / 权限 pipeline（#6）/ tenant 隔离（#13）/ tool 输入二次校验（#6）/ 沙箱镜像精装包（pandas/ffmpeg follow-up）/ 网络 Allowlist 真实落地（#14）/ CubeSandbox 升级（v2）/ 容器逃逸渗透测试（生产化前）/ wanx2.1/wan2.2 endpoint 注册到 aiservice DB Registry（follow-up）。阻塞 #5/#6/#11/#13。'
