@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -338,11 +339,14 @@ func (r *agentRunner) tryPreLLMCompact(ctx context.Context, messages []compact.M
 	if r.compactProvider == nil {
 		return messages, false, nil
 	}
-	text := ""
+	// Use strings.Builder to avoid O(n²) allocation — compact triggers exactly
+	// when the message list is large, so naive += would be the worst case.
+	var sb strings.Builder
 	for _, m := range messages {
-		text += m.Content + "\n"
+		sb.WriteString(m.Content)
+		sb.WriteByte('\n')
 	}
-	tokens := compact.EstimateTokens(text)
+	tokens := compact.EstimateTokens(sb.String())
 	if tokens < r.compactConfig.AutoCompactThreshold {
 		return messages, false, nil
 	}

@@ -165,9 +165,10 @@ func TestRunner_HandlePTLError_NoDoubleCounting(t *testing.T) {
 	// Calling helper once must advance PTLRetries by exactly 1, not 2.
 	r := newCompactTestRunner(&compact.MockCompactProvider{PlaceholderSummary: "s"}, compact.DefaultConfig())
 	st := &LoopState{}
-	_, _, _, _, err := r.handlePTLError(context.Background(), st, nil)
+	cont, _, _, _, err := r.handlePTLError(context.Background(), st, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, st.PTLRetries, "exactly one Transition consumed per helper call")
+	assert.Equal(t, ContinueCollapseDrainRetry, cont, "Step 1 → ContinueCollapseDrainRetry")
 }
 
 func TestRunner_HandleMaxOutputError_Escalate(t *testing.T) {
