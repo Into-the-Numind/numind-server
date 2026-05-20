@@ -38,7 +38,10 @@ func NewUserGlobalMemoryStore(db *gorm.DB) IUserGlobalMemoryStore {
 
 // Upsert 按 (user_id, key_name) ON CONFLICT UPDATE 写入或更新记忆条目。
 // Select("*") 强制所有列（含 confidence=0.0）入 INSERT，绕过 GORM default:1.0 zero-value gotcha（spec §3.5）。
+// 额外：Create 后检测 GORM 是否将 confidence 恢复为 DEFAULT 1.0（SQLite 路径），
+// 若被覆盖则用 UpdateColumn fixup（database.md §6 同款模式）。
 func (s *userGlobalMemoryStore) Upsert(ctx context.Context, m *model.UserGlobalMemory) error {
+	wantConfidence := m.Confidence
 	if err := s.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "user_id"}, {Name: "key_name"}},
@@ -47,6 +50,14 @@ func (s *userGlobalMemoryStore) Upsert(ctx context.Context, m *model.UserGlobalM
 		Select("*"). // 强制 confidence=0 不被 GORM 跳过（spec §3.5 P2-2）
 		Create(m).Error; err != nil {
 		return fmt.Errorf("userGlobalMemoryStore.Upsert: %w", err)
+	}
+	// SQLite gotcha: GORM default:1.0 may override confidence=0.0 even with Select("*").
+	// Apply UpdateColumn fixup (same pattern as database.md §6 bool default:true).
+	if wantConfidence == 0.0 && m.Confidence != 0.0 {
+		if err := s.db.WithContext(ctx).Model(m).UpdateColumn("confidence", 0.0).Error; err != nil {
+			return fmt.Errorf("userGlobalMemoryStore.Upsert confidence fixup: %w", err)
+		}
+		m.Confidence = 0.0
 	}
 	return nil
 }
