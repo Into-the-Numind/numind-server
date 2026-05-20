@@ -2,34 +2,38 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"testing"
+
+	"numind-server/internal/numind/biz/sandbox"
 )
 
-func TestImageGenTool_Execute_ReturnsError(t *testing.T) {
-	tool := &imageGenTool{}
-	_, err := tool.Execute(context.Background(), nil)
-	if err == nil {
-		t.Error("image_gen stub should return an error")
+func TestImageGenTool_Name(t *testing.T) {
+	if got := (&imageGenTool{}).Name(); got != "image_gen" {
+		t.Errorf("Name = %q; want image_gen", got)
 	}
 }
 
-func TestImageGenTool_IsEnabled_FalseWhenDisabled(t *testing.T) {
+func TestImageGenTool_UserFacingName(t *testing.T) {
+	if got := (&imageGenTool{}).UserFacingName(); got != "图像生成" {
+		t.Errorf("UserFacingName = %q; want 图像生成", got)
+	}
+}
+
+func TestImageGenTool_IsEnabled(t *testing.T) {
 	tool := &imageGenTool{}
 	if tool.IsEnabled(ToolConfig{EnableImageGen: false}) {
-		t.Error("image_gen should be disabled when EnableImageGen=false")
+		t.Error("disabled when EnableImageGen=false")
 	}
-}
-
-func TestImageGenTool_IsEnabled_TrueWhenEnabled(t *testing.T) {
-	tool := &imageGenTool{}
 	if !tool.IsEnabled(ToolConfig{EnableImageGen: true}) {
-		t.Error("image_gen should be enabled when EnableImageGen=true")
+		t.Error("enabled when EnableImageGen=true")
 	}
 }
 
-func TestImageGenTool_Name(t *testing.T) {
+func TestImageGenTool_Execute_ReturnsProviderNotConfigured(t *testing.T) {
 	tool := &imageGenTool{}
-	if tool.Name() != "image_gen" {
-		t.Errorf("unexpected name: %s", tool.Name())
+	_, err := tool.Execute(context.Background(), []byte(`{"prompt":"a cat"}`))
+	if !errors.Is(err, sandbox.ErrImageGenProviderNotConfigured) {
+		t.Errorf("err = %v; want ErrImageGenProviderNotConfigured", err)
 	}
 }
