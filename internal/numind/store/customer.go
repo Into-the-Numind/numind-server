@@ -268,11 +268,11 @@ func (c *customerStore) GetCustomerStatistics(ctx context.Context, userID uint) 
 		return 0, 0, err
 	}
 
-	// Post-T4: monthly_sop_runs column dropped; "active" is now simply
-	// "has any total_sop_runs", since the cumulative analytic counter survived
-	// the legacy_tier deprecation.
+	// "Active" = 最近 30 天内有登录行为的子用户（按 last_login 时间戳判断）。
+	// last_login 由用户/管理员登录流程写入（biz/user/user.go + admin_login）。
+	activeCutoff := time.Now().AddDate(0, 0, -30)
 	err = c.db.WithContext(ctx).Model(&model.User{}).
-		Where("parent_user_id = ? AND total_sop_runs > 0", userID).
+		Where("parent_user_id = ? AND last_login > ?", userID, activeCutoff).
 		Count(&activeSubUsers).Error
 
 	return totalSubUsers, activeSubUsers, err
