@@ -91,6 +91,8 @@ CREATE TABLE IF NOT EXISTS tool_factory_registry (
 
 **#3 范围**：仅建表 + read-only store 接口；启动时由 Registry 自动 seed 一行 `(factory_id='platform-builtin', source_type='platform', ...)`；写入路径 #10 才加。
 
+**#3 为何不能延后到 #10 才建表**（reviewer P2-4）：#10 configurator-ux 需要管理端列举"哪些工厂在线 / 启动加载了多少工具"做 dashboard；如果 #3 不建表则 #10 必须同时实现 DDL+CRUD，违反"每 feature 范围聚焦"原则。#3 现在建 DDL + 启动 seed 一次，#10 只需加 CRUD，迁移代价最小。
+
 ### 2.3 Migration 文件
 
 - Forward：`migrations/20260521_120000_create_tool_definition_and_factory_registry.sql`
@@ -215,8 +217,8 @@ import (
 )
 
 // FullTool 是 #3 引入的完整 Tool 接口，蓝本 §4.2.3。
-// 共 36 方法，分 8 组：基础元数据 / 行为标志 / 来源标记 / 加载策略 /
-// 输出控制 / 输入处理 / 权限控制 / 结果序列化 / Narration 层。
+// 共 36 方法，分 **9 组**：基础元数据 / 行为标志 / 来源标记 / 加载策略 /
+// 输出控制 / 输入处理 / 权限控制 / 执行+结果序列化 / Narration 层。
 type FullTool interface {
     // ── 基础元数据（6） ──
     Name() string
@@ -318,6 +320,15 @@ type NarrationMessage struct {
 ```
 
 ### 4.3 BaseTool 嵌入结构（提供默认值，让 mock / impl 只覆盖必需字段）
+
+> **Import alias 约定**（reviewer P2-1）：`agent.BaseTool`（struct） 与 Eino `tool.BaseTool`（interface）同名不同包；同时 import 时用 alias：
+> ```go
+> import (
+>     einotool "github.com/cloudwego/eino/components/tool"
+> )
+> // 然后 einoTools []einotool.BaseTool 区分 agent.BaseTool struct
+> ```
+> 在工具实现文件（tool_kb_search.go 等）通常只需 `agent` 包内自己的 BaseTool，无冲突；冲突主要在 `runner.go` / adapter 文件中。
 
 ```go
 // BaseTool 提供 FullTool 36 方法中约 28 个非必需方法的默认实现。
@@ -579,26 +590,35 @@ func (r *agentToolRegistry) LoadAll(ctx context.Context) error {
             return fmt.Errorf("LoadAll(%s): %w", f.FactoryID(), err)
         }
 
-        // 1. seed tool_definition
-        for i, m := range metadata {
-            def := mdToModel(m) // helper
-            if err := r.defStore.Upsert(ctx, def); err != nil {
-                // log warn but continue
-                continue
-            }
-            // 2. in-mem 索引
-            r.tools[tools[i].Name()] = tools[i]
+        // 长度 assert：tools 与 metadata 必须一一对应（reviewer P2-2）
+        if len(tools) != len(metadata) {
+            return fmt.Errorf("LoadAll(%s): tools/metadata length mismatch %d != %d",
+                f.FactoryID(), len(tools), len(metadata))
         }
 
-        // 3. update tool_factory_registry
+        // 1. seed tool_definition + 同时建 in-mem index（按 metadata.ToolName 索引，不依赖位置）
+        for i, m := range metadata {
+            if m.ToolName != tools[i].Name() {
+                return fmt.Errorf("LoadAll(%s): metadata[%d].ToolName=%q != tools[%d].Name()=%q",
+                    f.FactoryID(), i, m.ToolName, i, tools[i].Name())
+            }
+            def := mdToModel(m)
+            if err := r.defStore.Upsert(ctx, def); err != nil {
+                continue // log warn but skip this tool
+            }
+            r.tools[m.ToolName] = tools[i]
+        }
+
+        // 2. update tool_factory_registry（合并 Upsert + UpdateLoadStats 为一次写，reviewer P2-3）
+        now := time.Now()
         _ = r.facStore.Upsert(ctx, &model.ToolFactoryRegistryRow{
             FactoryID:        f.FactoryID(),
             SourceType:       f.Source(),
             DisplayName:      f.DisplayName(),
             IsEnabled:        true,
             LoadedToolsCount: len(tools),
+            LastLoadedAt:     &now,
         })
-        _ = r.facStore.UpdateLoadStats(ctx, f.FactoryID(), len(tools), time.Now())
     }
     return nil
 }
@@ -680,7 +700,10 @@ func (t *kbSearchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
     if err := json.Unmarshal(input, &in); err != nil {
         return nil, err
     }
-    verdict, err := t.rag.Retrieve(ctx, in.Query, in.DocIDs) // 真实方法签名
+    // 注意：SalesRAGBiz.Retrieve 内部用 middleware.UserIDFromCtx(ctx) 读 userID
+    // → AgentRunner.Run 必须先用 middleware.SetUserIDInCtx(ctx, req.UserID) 注入
+    // （见 §8.2 runner 改造）；否则 Retrieve 返回 "user_id not found in context"
+    verdict, err := t.rag.Retrieve(ctx, in.Query, in.DocIDs)
     if err != nil {
         return nil, err
     }
@@ -688,6 +711,8 @@ func (t *kbSearchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
     return ToolResult(out), nil
 }
 ```
+
+**关键约束（runner 必须实现）**：AgentRunner.Run 在调用任何 tool.Execute 前**必须**用 gin middleware 的 helper 把 `req.UserID` 注入 ctx，确保 SalesRAGBiz / 其他下游通过 `middleware.UserIDFromCtx(ctx)` 能取到。具体注入位置见 §8.2 修订。
 
 ### 7.2 learner_data_query
 
@@ -822,7 +847,7 @@ type RunRequest struct {
 }
 ```
 
-### 8.2 runner.go 内部装配（替换 #2 简化代码）
+### 8.2 runner.go 内部装配（替换 #2 简化代码 + userID ctx 注入）
 
 ```go
 // agentRunner 加 registry 字段
@@ -843,6 +868,11 @@ func NewAgentRunner(runStore store.IAgentRunStore, registry AgentToolRegistry) A
 
 func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
     // ... existing Create DB / trace / abort ctx ...
+
+    // userID 注入 ctx（SalesRAGBiz.Retrieve 等下游通过 middleware.UserIDFromCtx(ctx) 读）
+    ctx = middleware.SetUserIDInCtx(ctx, req.UserID)
+    queryCtx, queryCancel := DeriveQueryCtx(ctx) // 派生 abort ctx，沿用 userID
+    // ... 现有 cancel registry / defer 不变 ...
 
     // 装配工具：按 ToolNames 从 Registry 查
     var einoTools []tool.BaseTool
@@ -890,7 +920,9 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 }
 ```
 
-### 8.3 biz.go 接入
+### 8.3 biz.go 接入（**注意：同时修改 #2 引入的现有 NewAgentRunner 调用**）
+
+biz.go 当前在 line 103 附近有 `agent.NewAgentRunner(ds.AgentRuns())` 单参数调用（来自 #2）。**M7 实施时必须同步把这行改为两参数**，否则编译失败。
 
 ```go
 // biz struct 加 registry 字段
@@ -901,12 +933,15 @@ type biz struct {
 }
 
 // NewBiz 末尾：salesRAGService / ds 都已初始化后
+// **顺序敏感**：salesRAGService 必须在本行之前已初始化（实际 biz.go 中 ~line 110 salesRAGService 已就绪）
 registry := agent.NewAgentToolRegistry(ds.ToolDefinitions(), ds.ToolFactoryRegistries())
 _ = registry.RegisterFactory(agent.NewPlatformToolFactory(b.salesRAGService, ds))
 if err := registry.LoadAll(context.Background()); err != nil {
     log.Warnw("AgentToolRegistry.LoadAll failed at startup", "error", err)
 }
 b.agentToolRegistry = registry
+// ⚠️ 修改 #2 已有的 `b.agentRunner = agent.NewAgentRunner(ds.AgentRuns())`
+//    改为 `b.agentRunner = agent.NewAgentRunner(ds.AgentRuns(), registry)`
 b.agentRunner = agent.NewAgentRunner(ds.AgentRuns(), registry)
 ```
 
