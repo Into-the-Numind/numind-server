@@ -55,6 +55,7 @@ G8. **Zero prod impact**: feature flag-free (always on once wired), but adapter 
 - N8. **Per-tenant narration overrides**: only platform-level `tool-display.yaml` in v1. Tenant overrides land with #10.
 - N9. **Manager-end (admin) HTTP endpoints**: no `admin_router.go` changes.
 - N10. **Prod deploy**: this feature is dev-only; no `git tag`, no `/deploy-prod` invocation, no `config_prod.yaml` change.
+- N11. **Multi-failure cascading**: blueprint §4.7.5 describes consecutive-2-same-tool-fail active warning + 3-fail circuit-breaker (主动告知 / 熔断). v1 emits per-call error narration but does NOT track cross-call failure counts or trigger active warning messages. This belongs to #14 (real ReAct loop with multi-turn failure tracking) since it requires loop-level state, not adapter-level state.
 
 ---
 
