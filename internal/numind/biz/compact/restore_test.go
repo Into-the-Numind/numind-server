@@ -146,6 +146,25 @@ func TestRestore_EmptyMessages(t *testing.T) {
 	assert.Empty(t, got.Messages)
 }
 
+func TestRestore_AllMessagesCleanedButHasSummary(t *testing.T) {
+	// All input messages are orphan thinking → cleansed to empty;
+	// but compact_summary is non-empty so output has exactly 1 system message.
+	msgs := []Message{
+		{Role: "thinking", Content: "lost reasoning"},
+		{Role: "thinking", Content: "more lost reasoning"},
+	}
+	run := &model.AgentRun{
+		ID:             1,
+		Messages:       mustMessages(t, msgs),
+		CompactSummary: "preserved summary",
+	}
+	got, err := Restore(context.Background(), run, &NullAttachmentReinjector{})
+	require.NoError(t, err)
+	require.Equal(t, 1, len(got.Messages))
+	assert.True(t, got.Messages[0].IsCompactMark)
+	assert.Equal(t, "preserved summary", got.Messages[0].Content)
+}
+
 func TestRestore_MalformedMessagesJSON(t *testing.T) {
 	run := &model.AgentRun{ID: 1, Messages: datatypes.JSON(`{not valid json`)}
 	_, err := Restore(context.Background(), run, &NullAttachmentReinjector{})

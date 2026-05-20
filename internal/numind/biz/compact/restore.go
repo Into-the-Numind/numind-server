@@ -80,11 +80,8 @@ func cleanseMessages(msgs []Message) []Message {
 
 	out := make([]Message, 0, len(msgs))
 	for _, m := range msgs {
-		// (2) orphan thinking
-		if m.Role == "thinking" {
-			continue
-		}
-		// (1) dangling tool_use detection (assistant)
+		// (1) dangling tool_use detection (assistant with tool_calls but no
+		// matching tool_result and no content)
 		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
 			var calls []struct {
 				ID string `json:"id"`
@@ -101,7 +98,11 @@ func cleanseMessages(msgs []Message) []Message {
 				continue
 			}
 		}
-		// (3) empty assistant
+		// (2) orphan thinking (v1 never persists thinking across sessions)
+		if m.Role == "thinking" {
+			continue
+		}
+		// (3) empty assistant (no content, no tool_calls)
 		if m.Role == "assistant" && m.Content == "" && len(m.ToolCalls) == 0 {
 			continue
 		}

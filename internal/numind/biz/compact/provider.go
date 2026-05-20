@@ -1,6 +1,9 @@
 package compact
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 // CompactProvider is the LLM compaction abstraction.
 // v1 ships MockCompactProvider returning a fixed placeholder; #14 ReAct loop
@@ -12,6 +15,10 @@ type CompactProvider interface {
 // MockCompactProvider is the v1 placeholder implementation. It returns
 // PlaceholderSummary and (optionally) replays FailureSequence to simulate
 // transient provider errors for tests.
+//
+// Not safe for concurrent use — callCount is plain int with no mutex/atomic.
+// Tests must create a fresh MockCompactProvider per case. #14 wires a real
+// (concurrent-safe) provider; this type is for unit tests only.
 type MockCompactProvider struct {
 	PlaceholderSummary string
 	// FailureSequence[i] != nil → Compact's (i+1)-th call returns that error.
@@ -57,10 +64,12 @@ func EstimateTokens(text string) int {
 
 // joinMessages concatenates message contents for token estimation.
 // Only used internally — exposed Messages slice retains structure.
+// Uses strings.Builder to avoid O(N²) string concatenation allocations.
 func joinMessages(msgs []Message) string {
-	var s string
+	var b strings.Builder
 	for _, m := range msgs {
-		s += m.Content + "\n"
+		b.WriteString(m.Content)
+		b.WriteByte('\n')
 	}
-	return s
+	return b.String()
 }
