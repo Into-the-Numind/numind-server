@@ -71,7 +71,7 @@ func NewRendererFromBytes(data []byte) (*Renderer, error) {
 		return nil, fmt.Errorf("unmarshal yaml: %w", err)
 	}
 	if cfg.Defaults == (ToolTemplates{}) {
-		return nil, fmt.Errorf("defaults block required")
+		return nil, fmt.Errorf("defaults block required (block must contain at least one non-empty template)")
 	}
 
 	defaults, err := compileTemplates("defaults", cfg.Defaults)
@@ -132,6 +132,7 @@ func compileTemplates(key string, src ToolTemplates) (*compiledTemplates, error)
 // ValidateToolNames returns the names that exist in the registered tool set
 // but have no entry in yaml. Per S1-D10, missing names use defaults fallback;
 // this is observability for boot, not a fatal check.
+// Returned slice is sorted for deterministic boot-log output and test assertions.
 func (r *Renderer) ValidateToolNames(names []string) (missing []string) {
 	for _, n := range names {
 		if _, ok := r.tools[n]; !ok {
@@ -184,7 +185,14 @@ func (r *Renderer) Render(req renderRequest) (verb, detail, message string) {
 }
 
 // renderTemplate executes a single template with defer-recover safety.
-// Returns "" if tmpl is nil OR execution fails (caller distinguishes via context).
+// Returns "" if tmpl is nil OR execution fails OR a panic was recovered.
+//
+// NOTE (S4 amendment to spec §3): spec proposed a `(out string, ok bool)`
+// signature to let the caller distinguish "no template configured" from
+// "execution panicked." However spec §5 translator only checks
+// `if message == "" { fallback... }`, never the bool. The two-value return
+// is dead weight; collapsed to single value. If a future caller (e.g. a
+// metrics layer in #11) needs the distinction, restore the bool then.
 func renderTemplate(tmpl *template.Template, data any) (out string) {
 	if tmpl == nil {
 		return ""
@@ -202,10 +210,18 @@ func renderTemplate(tmpl *template.Template, data any) (out string) {
 }
 
 // templateFuncs is the FuncMap registered on all templates.
+//
 // NOTE (S2 P0-2 fix): `len` is a text/template BUILTIN — re-registering panics
 // "function len already defined". Keep this map free of any builtin name.
 // Builtins available without registration: and, call, html, index, slice, js,
 // len, not, or, print, printf, println, urlquery, eq, ne, lt, le, gt, ge.
+//
+// NOTE (S2 P1 amendment): `default`'s val parameter is `any`, NOT `string` as
+// loosely sketched in spec §3. With missingkey=zero on a map[string]any, the
+// lookup returns nil (zero value of `any`), not "". A `string`-typed parameter
+// would fail type assertion at template execution. The `any`-typed parameter
+// safely coerces nil/empty-string/non-string values to the fallback, matching
+// the intuitive `default "fallback" .input.maybe_missing` template idiom.
 func templateFuncs() template.FuncMap {
 	return template.FuncMap{
 		"truncate": func(n int, s string) string {
@@ -215,8 +231,6 @@ func templateFuncs() template.FuncMap {
 			return s[:n] + "..."
 		},
 		"default": func(fallback string, val any) string {
-			// missingkey=zero on map[string]any returns nil, not "".
-			// Coerce nil + empty + non-string-empty to the fallback.
 			if val == nil {
 				return fallback
 			}

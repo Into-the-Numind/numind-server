@@ -14,6 +14,9 @@
 #   {{ .result.<field> }}                      — tool execution output
 #   {{ .reason_friendly }}                     — error_translate.ClassifyError output
 #
+# Empty template values ("") mean "no message for this state" and the
+# Translator falls through to LLMFallback for that one slot.
+#
 # Tool keys must match the FullTool.Name() return values; mismatched keys hit
 # the defaults block (warn logged at boot per S1-D10).
 
@@ -24,7 +27,7 @@ tools:
     use_template: "{{ .verb }} {{ .detail }}"
     result_template: "命令执行完成"
     error_template: "命令执行中断，{{ .reason_friendly }}"
-    rejected_template: "这个命令被规则拦截了"
+    rejected_template: "命令被规则拦截"
 
   document_generate:
     verb: "正在生成"
@@ -63,7 +66,7 @@ tools:
     detail_template: "当前日期"
     use_template: "{{ .verb }} {{ .detail }}"
     result_template: "已获取当前日期"
-    error_template: "获取日期失败，{{ .reason_friendly }}"
+    error_template: "获取日期中断，{{ .reason_friendly }}"
     rejected_template: "日期获取被规则拦截"
 
 defaults:

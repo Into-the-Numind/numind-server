@@ -3,6 +3,7 @@ package narration
 import (
 	"strings"
 	"testing"
+	"text/template"
 )
 
 const minimalValidYAML = `
@@ -189,35 +190,23 @@ defaults:
 }
 
 func Test_Render_TemplatePanic_ReturnsEmpty(t *testing.T) {
-	// Construct a template that succeeds at parse but panics at execute.
-	// text/template rarely panics on Execute; it returns errors. So this test
-	// asserts that the defer-recover path is in place even if hard to trigger.
-	src := `
-tools:
-  bash_exec:
-    verb: v
-    use_template: "{{ . | printf \"%d\" }}"
-    result_template: ok
-    error_template: bad
-    rejected_template: rej
-defaults:
-  verb: dv
-  use_template: "{{ .verb }}"
-  result_template: ok
-  error_template: bad
-  rejected_template: rej
-`
-	r := mustRenderer(t, src)
-	// Pass a map where printf %d on a map will produce a Go-style ERROR string
-	// (text/template absorbs it as Execute error) — assert no panic, msg == "".
-	_, _, msg := r.Render(renderRequest{
-		ToolName: "bash_exec",
-		State:    StateUse,
-		Input:    map[string]any{},
-		Result:   map[string]any{},
-	})
-	// Either empty or non-empty is acceptable; the contract is "no panic".
-	_ = msg
+	// To actually exercise the defer-recover path, we need a template that
+	// PANICS at execute time (not just returns an error). text/template panics
+	// when a registered FuncMap function panics during Execute. We can't
+	// register a FuncMap on a yaml-loaded template, so we build a custom
+	// template directly and exercise renderTemplate at the helper level.
+	tmpl := template.Must(
+		template.New("boom").
+			Funcs(template.FuncMap{
+				"boom": func() string { panic("intentional panic for test") },
+			}).
+			Option("missingkey=zero").
+			Parse(`{{ boom }}`),
+	)
+	out := renderTemplate(tmpl, nil)
+	if out != "" {
+		t.Errorf("expected empty out on panic recovery, got %q", out)
+	}
 }
 
 func Test_ValidateToolNames_ReportsMissing(t *testing.T) {
