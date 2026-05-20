@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/pkg/model"
 )
 
@@ -311,4 +312,58 @@ func TestRunner_RunResult_SkillVersion_zeroWhenFallThrough(t *testing.T) {
 	result, err := runner.Run(context.Background(), RunRequest{UserID: 1, Input: "x"})
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.SkillVersion)
+}
+
+// ── #8 narration-layer integration ──────────────────────────────────────────
+
+// runnerNarrationYAML — minimal yaml for runner-level narration fixture.
+const runnerNarrationYAML = `
+tools: {}
+defaults:
+  verb: "正在处理"
+  use_template: "{{ .verb }}"
+  result_template: "处理完成"
+  error_template: "失败"
+  rejected_template: "拦截"
+`
+
+func TestRunner_WithNarrationProvider_AttachesAndDefersCloseRun(t *testing.T) {
+	// Spec §10.6: real Provider; verify channel-close after Run completes
+	// (proof CloseRun defer fired). Do NOT replace with a mock Provider that
+	// captures CloseRun separately — the real-channel-close path is the
+	// integration contract being verified.
+	prov, err := narration.NewProvider(narration.Config{
+		YAMLBytes:  []byte(runnerNarrationYAML),
+		BufferSize: 8,
+	})
+	require.NoError(t, err)
+
+	runner := NewAgentRunner(newMockStore(), nil, WithNarrationProvider(prov))
+
+	// Subscribe BEFORE Run to avoid racing the lazy channel creation.
+	// mockAgentRunStore assigns IDs starting at 1.
+	ch, cleanup := prov.Subscribe(1)
+	defer cleanup()
+
+	_, runErr := runner.Run(context.Background(), RunRequest{UserID: 1, SessionID: "test", Input: "hello"})
+	// runErr is acceptable here (mock runner with no tools / no LLM); we care
+	// only about the CloseRun side-effect.
+	_ = runErr
+
+	// After Run completes, the per-runID channel MUST be closed (CloseRun
+	// defer fired). recv on closed channel returns immediately with ok=false.
+	select {
+	case _, ok := <-ch:
+		require.False(t, ok, "channel should be closed after Run completes (CloseRun defer fired)")
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("channel did not close within 100ms — CloseRun defer not fired")
+	}
+}
+
+func TestRunner_WithoutNarrationProvider_NoOp(t *testing.T) {
+	// Sanity: when narration is not wired, Run completes normally
+	// (no panic from defer, no nil-deref).
+	runner := NewAgentRunner(newMockStore(), nil)
+	_, runErr := runner.Run(context.Background(), RunRequest{UserID: 1, SessionID: "test", Input: "hello"})
+	_ = runErr
 }
