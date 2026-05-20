@@ -17,7 +17,7 @@ type SkillTemplate struct {
 	CategoryTags         datatypes.JSON `json:"category_tags"`
 	QuestionnaireAnswers datatypes.JSON `gorm:"not null" json:"questionnaire_answers"`
 	DefaultToolFlags     datatypes.JSON `json:"default_tool_flags"`
-	DisplayOrder         int            `gorm:"not null;default:100" json:"display_order"`
+	DisplayOrder         int            `gorm:"not null;default:100;index:idx_st_active_order,priority:2" json:"display_order"`
 	IsActive             bool           `gorm:"type:tinyint(1);not null;default:1;index:idx_st_active_order,priority:1" json:"is_active"`
 	CreatedAt            time.Time      `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoCreateTime" json:"created_at"`
 	UpdatedAt            time.Time      `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoUpdateTime" json:"updated_at"`
