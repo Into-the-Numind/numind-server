@@ -2,9 +2,45 @@ package credit
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"numind-server/internal/pkg/model"
 )
+
+// AdminTestConsumer is the credit-package-local interface for the admin_test
+// pool used by Agent Builder "试聊" path (#12 agent-mode-billing-integration).
+//
+// **Decoupling**: defined in credit/ to break the import cycle credit → budget
+// → agent → salesrag → credit. The actual implementation lives in biz/budget
+// (budget.adminTestConsumer); the biz.go wire layer adapts it to satisfy this
+// interface (Status return-type conversion).
+//
+// Implementations MUST return ErrAdminTestExhausted (or the global
+// errno.ErrAdminTestExhausted) when the pool is empty — Reserve treats it as
+// the terminal "no more试聊配额" signal and refuses to fall back to正式三池.
+type AdminTestConsumer interface {
+	Consume(ctx context.Context, parentUserID uint, amount int64) (txID uint64, err error)
+	Refund(ctx context.Context, parentUserID uint, txID uint64, refundAmount int64) error
+	Status(ctx context.Context, parentUserID uint, now time.Time) (*AdminTestStatus, error)
+}
+
+// AdminTestStatus is the credit-local view of the parent's current-month
+// admin_test grant. Mirrors budget.AdminTestStatus 1:1 by field — adapter
+// converts between the two at the wire-layer boundary.
+type AdminTestStatus struct {
+	Granted      int64
+	Used         int64
+	Remaining    int64
+	PeriodStart  time.Time
+	PeriodEnd    time.Time
+	DaysToExpire int
+}
+
+// ErrAdminTestExhausted is the credit-local sentinel mirroring
+// budget.ErrAdminTestExhausted. Adapter at wire layer may pass through either —
+// callers should compare via errors.Is.
+var ErrAdminTestExhausted = errors.New("admin_test pool exhausted for parent user this month")
 
 // ICreditService 是所有 AI 消耗点的统一 credits 计费入口
 // Singleton，由 wire.go 注入；底层直接调用 creditsImpl（三池 SOT：trial_grant +
@@ -64,4 +100,15 @@ type ICreditService interface {
 	// coefficient_id=NULL, and the token-profile/event metadata from BudgetReservationInput.
 	// Spec §6.1.2.
 	ReserveBudget(ctx context.Context, user *model.User, input BudgetReservationInput) (*Reservation, error)
+
+	// ReserveAgentTest is the Agent Builder "试聊" path prededuct (#12 agent-mode-billing-integration).
+	// Reads from the parent user's admin_test pool (credit_admin_test_grant) — does NOT
+	// fallback to trial/subscription/booster三池. Returns errno.ErrAdminTestExhausted on empty pool.
+	// parentUser must be a parent account (ParentUserID == nil); enforcement is caller-side.
+	ReserveAgentTest(ctx context.Context, parentUser *model.User, estimated int64, idempotencyKey *string) (*Reservation, error)
+
+	// ReconcileAgentTest reconciles an agent_test reservation against actual cost (#12).
+	// refund>0 → AdminTestConsumer.Refund; refund<0 → top up via Consume; both atomic.
+	// Returns error if reservation is not agent_test or already reconciled.
+	ReconcileAgentTest(ctx context.Context, reservationID uint64, actualCostCents int64) error
 }
