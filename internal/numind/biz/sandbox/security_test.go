@@ -1,0 +1,106 @@
+package sandbox
+
+import (
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestResolveSeccompPath_WritesFileAndReturnsAbsPath(t *testing.T) {
+	resetSeccompPathForTesting()
+	path, err := ResolveSeccompPath()
+	if err != nil {
+		t.Fatalf("ResolveSeccompPath err = %v", err)
+	}
+	if path == "" {
+		t.Fatal("ResolveSeccompPath returned empty path")
+	}
+	if !strings.Contains(path, "numind-sandbox-seccomp.json") {
+		t.Errorf("path = %q; should contain numind-sandbox-seccomp.json", path)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read written file err = %v", err)
+	}
+	if !strings.Contains(string(b), "SCMP_ACT_ALLOW") {
+		t.Errorf("written profile missing SCMP_ACT_ALLOW default action")
+	}
+	if !strings.Contains(string(b), "ptrace") {
+		t.Errorf("written profile missing ptrace deny entry")
+	}
+}
+
+func TestResolveSeccompPath_SyncOnce(t *testing.T) {
+	resetSeccompPathForTesting()
+	p1, err := ResolveSeccompPath()
+	if err != nil {
+		t.Fatalf("first call err = %v", err)
+	}
+	p2, err := ResolveSeccompPath()
+	if err != nil {
+		t.Fatalf("second call err = %v", err)
+	}
+	if p1 != p2 {
+		t.Errorf("sync.Once should yield identical path: p1=%s p2=%s", p1, p2)
+	}
+}
+
+func TestBuildSpawnConfig_FromDefaults_PassesChecklist(t *testing.T) {
+	resetSeccompPathForTesting()
+	seccomp, err := ResolveSeccompPath()
+	if err != nil {
+		t.Fatalf("seccomp path err = %v", err)
+	}
+	sc := BuildSpawnConfig(DefaultSandboxConfig, seccomp)
+	missing := ValidateSecurityChecklist(sc)
+	if len(missing) > 0 {
+		t.Errorf("DefaultSandboxConfig should pass checklist; missing=%v", missing)
+	}
+	// Specific assertions
+	if sc.User != "1000:1000" {
+		t.Errorf("User = %q; want 1000:1000", sc.User)
+	}
+	if !sc.ReadOnly {
+		t.Errorf("ReadOnly = false; want true")
+	}
+	if !sliceContains(sc.CapDrop, "ALL") {
+		t.Errorf("CapDrop = %v; want [ALL]", sc.CapDrop)
+	}
+	if !sliceContains(sc.CapAdd, "NET_BIND_SERVICE") {
+		t.Errorf("CapAdd = %v; want [NET_BIND_SERVICE]", sc.CapAdd)
+	}
+	if sc.Memory != "512m" {
+		t.Errorf("Memory = %q; want 512m", sc.Memory)
+	}
+	if sc.PIDsLimit != 64 {
+		t.Errorf("PIDsLimit = %d; want 64", sc.PIDsLimit)
+	}
+}
+
+func TestValidateSecurityChecklist_MissingSeccomp(t *testing.T) {
+	sc := BuildSpawnConfig(DefaultSandboxConfig, "") // empty seccomp path → security opt omitted
+	missing := ValidateSecurityChecklist(sc)
+	if !sliceContains(missing, "seccomp profile") {
+		t.Errorf("expected 'seccomp profile' in missing list; got %v", missing)
+	}
+}
+
+func TestValidateSecurityChecklist_AllMissingWhenEmpty(t *testing.T) {
+	sc := SpawnConfig{} // empty SpawnConfig
+	missing := ValidateSecurityChecklist(sc)
+	if len(missing) < 9 {
+		t.Errorf("empty SpawnConfig should yield 9+ missing items; got %d: %v", len(missing), missing)
+	}
+}
+
+func TestValidateSecurityChecklist_RootUserFlagged(t *testing.T) {
+	cfg := DefaultSandboxConfig
+	cfg.UserSpec = "root"
+	resetSeccompPathForTesting()
+	seccomp, _ := ResolveSeccompPath()
+	sc := BuildSpawnConfig(cfg, seccomp)
+	missing := ValidateSecurityChecklist(sc)
+	if !sliceContains(missing, "non-root user") {
+		t.Errorf("UserSpec=root should be flagged; got missing=%v", missing)
+	}
+}

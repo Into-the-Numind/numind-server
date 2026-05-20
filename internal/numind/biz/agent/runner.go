@@ -44,21 +44,39 @@ type AgentRunner interface {
 }
 
 type agentRunner struct {
-	runStore store.IAgentRunStore
-	registry AgentToolRegistry
-	cancels  map[uint64]context.CancelFunc
-	mu       sync.Mutex
+	runStore     store.IAgentRunStore
+	registry     AgentToolRegistry
+	cancels      map[uint64]context.CancelFunc
+	mu           sync.Mutex
+	defaultHooks *RunHooks // #4 sandbox-integration: wired by biz.go via WithDefaultHooks
 }
 
 var _ AgentRunner = (*agentRunner)(nil)
 
+// RunnerOption configures an agentRunner at construction (functional options).
+type RunnerOption func(*agentRunner)
+
+// WithDefaultHooks installs a *RunHooks to use when RunRequest.Hooks is nil.
+// #4 sandbox-integration wires sandboxHookManager.AsRunHooks() this way so
+// every Run gets sandbox lifecycle hooks by default — callers that want to
+// override pass their own RunRequest.Hooks.
+func WithDefaultHooks(h *RunHooks) RunnerOption {
+	return func(r *agentRunner) {
+		r.defaultHooks = h
+	}
+}
+
 // NewAgentRunner 工厂。
-func NewAgentRunner(runStore store.IAgentRunStore, registry AgentToolRegistry) AgentRunner {
-	return &agentRunner{
+func NewAgentRunner(runStore store.IAgentRunStore, registry AgentToolRegistry, opts ...RunnerOption) AgentRunner {
+	r := &agentRunner{
 		runStore: runStore,
 		registry: registry,
 		cancels:  make(map[uint64]context.CancelFunc),
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // Run 主流程（spec §4.4）。
@@ -82,6 +100,11 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		return nil, fmt.Errorf("AgentRunner.Run: %w", err)
 	}
 
+	// 1.5. #4 sandbox-integration: 注入 runID 到 ctx，供 SandboxHook /
+	// bash_exec.Execute 通过 RunIDFromContext / sandboxSessionForCurrentCall
+	// 找到对应的 sandbox session。
+	ctx = WithRunID(ctx, run.ID)
+
 	// 2. Langfuse trace
 	traceID := langfuse.TraceID()
 	langfuse.CreateTrace(traceID, "agent-runtime-run",
@@ -102,11 +125,17 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	defer queryCancel()
 
 	// 4. 从 registry 装配 Eino 工具列表
+	// #4 sandbox-integration: 选 effectiveHooks — RunRequest.Hooks 优先，
+	// 否则 r.defaultHooks（biz.go wire SandboxHookManager.AsRunHooks()）。
+	effectiveHooks := req.Hooks
+	if effectiveHooks == nil {
+		effectiveHooks = r.defaultHooks
+	}
 	var einoTools []einotool.BaseTool
 	if r.registry != nil {
 		for _, name := range req.ToolNames {
 			if ft, ok := r.registry.GetTool(name); ok {
-				einoTools = append(einoTools, adaptFullToEinoTool(ft))
+				einoTools = append(einoTools, adaptFullToEinoTool(ft, effectiveHooks))
 			}
 		}
 	}

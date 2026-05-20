@@ -24,6 +24,7 @@ import (
 	"numind-server/internal/numind/biz/salesrag/port"
 	"numind-server/internal/numind/biz/salesrag/seed"
 	salesragservice "numind-server/internal/numind/biz/salesrag/service"
+	"numind-server/internal/numind/biz/sandbox"
 	sopbiz "numind-server/internal/numind/biz/sop"
 	"numind-server/internal/numind/biz/user"
 	"numind-server/internal/numind/biz/volc"
@@ -216,7 +217,7 @@ func NewBiz(ds store.IStore) *biz {
 	salesragRegistry := registry.New(b.ds.DB())
 	b.salesRAGService = salesrag.NewSalesRAGBizWithCredits(b.ds, pipeline, salesRAGSvc, b.Volc(), b.Ali(), salesSessionStore, parser, creditSvc, pricingCalc, salesragRegistry)
 
-	// 初始化 Agent Tool Registry + AgentRunner（agent-mode #2 + #3）
+	// 初始化 Agent Tool Registry + AgentRunner（agent-mode #2 + #3 + #4）
 	// 顺序敏感：必须在 salesRAGService 之后（PlatformToolFactory 依赖 salesRAGService）
 	agentToolRegistry := agent.NewAgentToolRegistry(ds.ToolDefinitions(), ds.ToolFactoryRegistries())
 	if err := agentToolRegistry.RegisterFactory(agent.NewPlatformToolFactory(b.salesRAGService, ds)); err != nil {
@@ -226,7 +227,26 @@ func NewBiz(ds store.IStore) *biz {
 		log.Warnw("AgentToolRegistry.LoadAll failed", "error", err)
 	}
 	b.agentToolRegistry = agentToolRegistry
-	b.agentRunner = agent.NewAgentRunner(ds.AgentRuns(), agentToolRegistry)
+
+	// #4 sandbox-integration: SandboxConfig from viper + DockerClient + Pool +
+	// SandboxHookManager wire. Default backend (no `sandbox:` config section)
+	// is BackendDisabled → Pool is a no-op disabledPool → prod safe.
+	sandboxLogger := &sandboxZapLogger{}
+	sandboxConfig := sandbox.LoadFromViper(viper.GetViper())
+	dockerClient := sandbox.NewDockerCLIClient(sandboxLogger)
+	sandboxPool := sandbox.NewPool(sandboxConfig, dockerClient, sandboxLogger)
+	sandboxHookManager := agent.NewSandboxHookManager(sandboxPool, ds.AgentSandboxSessions())
+	agent.SetDefaultHookManager(sandboxHookManager)
+	log.Infow("sandbox pool initialized",
+		"backend", string(sandboxConfig.Backend),
+		"pool_min", sandboxConfig.PoolMin,
+		"image_tag", sandboxConfig.ImageTag)
+
+	b.agentRunner = agent.NewAgentRunner(
+		ds.AgentRuns(),
+		agentToolRegistry,
+		agent.WithDefaultHooks(sandboxHookManager.AsRunHooks()),
+	)
 
 	// 初始化知识库服务
 	b.kbService = kbbiz.NewKnowledgeBaseBiz(ds, b.salesRAGService)
@@ -366,3 +386,10 @@ func (b *biz) AgentTools() agent.AgentToolRegistry {
 func (b *biz) LLMRouter() *llmrouter.Router {
 	return b.llmRouterSvc
 }
+
+// sandboxZapLogger adapts the numind log package to sandbox.Logger interface.
+// Defined in this file (not in pkg/log) to keep sandbox decoupled from zap.
+type sandboxZapLogger struct{}
+
+func (sandboxZapLogger) Warnw(msg string, kv ...interface{}) { log.Warnw(msg, kv...) }
+func (sandboxZapLogger) Infow(msg string, kv ...interface{}) { log.Infow(msg, kv...) }

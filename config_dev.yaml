@@ -179,3 +179,25 @@ aihubmix:
 # B2B 账单配置
 billing:
   b2b_cutover_date: "2026-04-20"  # B2B 账单 cutover 日期：此日期前走 legacy_only，之后走 new_only。dev 设为 2026-04-20 让所有月份都走 new_only 模式以测试新代码路径。
+
+# Agent 沙箱配置（#4 sandbox-integration）
+# backend: disabled = no-op pool（prod 默认，相当于 #3 stub 行为）
+# backend: docker   = 真实 Docker pool（仅 dev，需要容器内有 docker CLI + /var/run/docker.sock bind mount）
+sandbox:
+  backend: docker
+  pool_min: 5
+  pool_max_wait_ms: 30000
+  image_tag: python:3.11-slim
+  memory_limit_mb: 512
+  cpu_quota: 1.0
+  pids_limit: 64
+  timeout_seconds: 30
+  session_timeout_seconds: 300
+  network_policy: none
+  workdir_size_mb: 512
+  read_only_rootfs: true
+  user_spec: "1000:1000"
+  capabilities:
+    - NET_BIND_SERVICE
+  apparmor_profile: docker-default
+  seccomp_profile: seccomp.json

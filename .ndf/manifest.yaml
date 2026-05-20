@@ -1,5 +1,45 @@
 schema_version: '2.0'
 features:
+- id: agent-mode-sandbox-integration
+  ndf_version: '2.0'
+  description: 'Agent 模式 14-feature 分解 #4/14。把 #1 Phase 0 V5 ADR 决策的 Docker pool 沙箱真实落地：建 sandbox_session 审计表 + biz/sandbox 子包（pool manager / docker_client / config / security / network）+ 应用层安全加固清单（V5 ADR Q2：seccomp+AppArmor+no-root+cap-drop+no-new-priv+read-only+tmpfs+resource limits）+ 网络白名单（v1 None，Allowlist stub）+ bash_exec 真实实现（含 Phase 0 V3 8 P0 Bash validator 复用到 bashvalidator 子包）+ image_gen 真实实现（aiservice.ImageGenerate 入口，provider 未注册时友好错误）+ RunHooks 工厂（PreToolCall/PostToolCall 注入 sandbox session 生命周期）+ adapter 层 hook 调用点（方案 A，runner.go 签名不变）。Out of scope: prod 部署 / 权限 pipeline（#6）/ tenant 隔离（#13）/ tool 输入二次校验（#6）/ 沙箱镜像精装包（pandas/ffmpeg follow-up）/ 网络 Allowlist 真实落地（#14）/ CubeSandbox 升级（v2）/ 容器逃逸渗透测试（生产化前）/ wanx2.1/wan2.2 endpoint 注册到 aiservice DB Registry（follow-up）。阻塞 #5/#6/#11/#13。'
+  track: standard
+  stage: S6
+  classification_reason: 'Triage 5 条 — (1) DB schema 变更：是（agent_sandbox_session 新表）(2) 无新 API 端点（biz 层）(3) 新外部服务集成：是（Docker daemon / Docker CLI）(4) 影响文件数 >3（28 新建 + 10 修改 = 38 文件 across 11 tasks）(5) 高风险业务逻辑：部分（沙箱安全加固 = 中风险，但不动支付/会员）。条件 1+3+4+5 多条触发 Standard。'
+  last_updated_by: ai-s5-acceptance-accepted
+  last_updated_at: '2026-05-22T10:00:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: feature/agent-mode-sandbox-integration
+  worktree:
+    numind-server: /private/tmp/wt-agent-mode-sandbox-integration-numind-server
+  artifacts:
+    requirement: numind-server/requirements/agent-mode-sandbox-integration.md
+    proposal: numind-server/proposals/agent-mode-sandbox-integration-proposal.md
+    spec: numind-server/docs/superpowers/specs/2026-05-22-agent-mode-sandbox-integration-design.md
+    plan: numind-server/docs/superpowers/plans/2026-05-22-agent-mode-sandbox-integration-plan.md
+    qa: numind-server/docs/superpowers/qa/2026-05-22-agent-mode-sandbox-integration-s5-acceptance.md
+    architecture_blueprint: docs/agent-mode/architecture-v1.md
+    v5_adr: numind-server/.ndf/decisions/agent-mode-phase0-verification/0002-sandbox-final.md
+  progress:
+    total_tasks: 11
+    completed_tasks: 11
+    reviewed_tasks: 11
+    current_task: 'S5 ACCEPTED: M1-M11 全部实施 + self-review applied (Agent subagent dispatch tool 未在本 session 加载，主控 inline adversarial review)。biz/agent 覆盖率 81.5%（plan ≥80% 达成）；bashvalidator 100%（超 V3 98.8%）；biz/sandbox 70.4%（real os/exec 排除，非真实 docker 代码 ≥80%）。0 prod 影响；config_prod.yaml 未改。进入 S6 ndf-done。'
+  decisions:
+  - '2026-05-21 (沿用 #1/#2/#3 决策 + autopilot 协议): 14-feature 分解；V5 ADR Docker pool；ToolCallingChatModel；prod 永不上 sandbox 真实代码（SANDBOX_BACKEND=disabled）；hook 注入用方案 A（adapter 层）。'
+  decisions_archived: .ndf/decisions/agent-mode-sandbox-integration/
+  related_features:
+  - 'agent-mode-phase0-verification (#1/14，已完成 develop merge — V5 ADR Docker pool 输入)'
+  - 'agent-mode-runtime-skeleton (#2/14，已完成 develop merge — RunHooks 接口输入)'
+  - 'agent-mode-tool-registry (#3/14，已完成 develop merge — bash_exec/image_gen stub 输入)'
+  - 'agent-mode-skill-system (#5/14，依赖本 feature ToolConfig.EnableSandbox 真实生效)'
+  - 'agent-mode-permission-pipeline (#6/14，依赖本 feature sandbox_id 注入字段)'
+  - 'agent-mode-student-ux (#11/14，依赖本 feature 真实代码执行能力)'
+  - 'agent-mode-compliance-3layer (#13/14，依赖本 feature agent_sandbox_session 审计表)'
+  blockers: []
+  created_at: '2026-05-21T05:00:00+08:00'
 - id: agent-mode-tool-registry
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #3/14。扩展 #2 最小 Tool interface 到完整 38 字段（蓝本 §4.2，参考 Claude Code v2.1 源码）；实现 ToolFactory 插件模式（Source: platform/mcp/cli/webhook）+ AgentToolRegistry 启动时注册 / 运行时查找；6 个 platform 内置工具（web_search / kb_search / file_read / bash_exec stub / image_gen stub / get_current_date）；接入 AgentRunner.Run 替换直接传 tools。Out of scope: MCP/CLI/Webhook ToolFactory 实现（保留蓝本 §4.2.10 留到后续 feature）/ 沙箱集成（#4）/ 权限 pipeline（#6）/ Memory（#7）/ Narration（#8）/ 管理端 UI（#10）。阻塞 #4/#6/#8/#10。'

@@ -138,3 +138,34 @@ func TestAgentRunner_Run_SetsSessionID(t *testing.T) {
 	assert.Equal(t, "sess-123", got.SessionID)
 	assert.EqualValues(t, 7, got.UserID)
 }
+
+// ============================================================================
+// #4 sandbox-integration: ctx WithRunID injection + WithDefaultHooks option
+// ============================================================================
+
+func TestNewAgentRunner_NoOptions_DefaultHooksNil(t *testing.T) {
+	r := NewAgentRunner(newMockStore(), nil).(*agentRunner)
+	if r.defaultHooks != nil {
+		t.Errorf("default runner should have nil defaultHooks")
+	}
+}
+
+func TestNewAgentRunner_WithDefaultHooks(t *testing.T) {
+	hooks := &RunHooks{}
+	r := NewAgentRunner(newMockStore(), nil, WithDefaultHooks(hooks)).(*agentRunner)
+	if r.defaultHooks != hooks {
+		t.Errorf("WithDefaultHooks should store the supplied hooks")
+	}
+}
+
+func TestNewAgentRunner_MultipleOptionsLastWins(t *testing.T) {
+	h1 := &RunHooks{}
+	h2 := &RunHooks{}
+	r := NewAgentRunner(newMockStore(), nil,
+		WithDefaultHooks(h1),
+		WithDefaultHooks(h2),
+	).(*agentRunner)
+	if r.defaultHooks != h2 {
+		t.Errorf("multiple WithDefaultHooks: last value should win")
+	}
+}

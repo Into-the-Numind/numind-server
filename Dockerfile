@@ -55,6 +55,18 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
+# (agent-mode-sandbox-integration #4) docker CLI for the DooD pattern.
+# WITH_DOCKER_CLI=true is passed by the dev build script; prod default
+# (WITH_DOCKER_CLI=false) does NOT install docker-cli, keeping the
+# attack surface minimal. Even with the CLI installed, the runtime
+# behavior depends on sandbox.backend in config — disabled by default.
+ARG WITH_DOCKER_CLI=false
+RUN if [ "$WITH_DOCKER_CLI" = "true" ]; then \
+        apt-get update && \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker.io && \
+        rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # 安装 Python 依赖 - 第一层：基础核心库 (变化频率低，体积大)
 # 强制使用 CPU 版本以减小镜像体积
 RUN pip3 install --no-cache-dir --upgrade pip && \
