@@ -1,1 +1,15 @@
-{"version":"ndf-v2","active_feature":null,"active":null}
+{
+  "version": "ndf-v2",
+  "active_feature": "agent-mode-billing-integration",
+  "active": {
+    "feature_id": "agent-mode-billing-integration",
+    "track": "standard",
+    "slug": "agent-mode-billing-integration",
+    "branch": "feature/agent-mode-billing-integration",
+    "worktree": "/private/tmp/wt-agent-mode-billing-integration-numind-server",
+    "repos": [
+      "numind-server"
+    ],
+    "stage": "S4"
+  }
+}

@@ -1317,3 +1317,16 @@ features:
   rollback: 若新链路失败需切回老链路：(1) GitHub Web UI Enable 3 个 ci-cd workflow (2) 确认 GitHub Secrets DOCKERHUB_PASSWORD 等仍有效 (3) push develop 触发老链路。yaml 文件已保留，老链路 fallback 路径完整。
   created_at: '2026-05-18T19:00:00+08:00'
   completed_at: '2026-05-19T14:30:00+08:00'
+- id: agent-mode-billing-integration
+  track: standard
+  stage: S4
+  description: 'Agent 模式 14-feature 分解 #12/14。落地蓝本 §4.1-§4.6 计费集成：biz/budget 子包 + AdminTest 配额机制 + Reserve/Reconcile 两阶段扣减 + BudgetTracker 4 维限流 + credit_service 集成。'
+  repos:
+    numind-server: feature/agent-mode-billing-integration
+  worktrees:
+    numind-server: /private/tmp/wt-agent-mode-billing-integration-numind-server
+  progress:
+    completed_tasks: 0
+    reviewed_tasks: 0
+    current_task: 'M3: biz/budget base types + 4-dim enum + tests'
+  created_at: '2026-05-21T00:00:00+08:00'
