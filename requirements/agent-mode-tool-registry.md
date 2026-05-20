@@ -22,12 +22,12 @@
 
 | # | 模块 | 产出物 |
 |---|------|--------|
-| M1 | **DB 表**：`agent_tool` + `agent_tool_factory`（tool registry 持久化）| migration 双文件 + GORM model |
+| M1 | **DB 表**：`agent_tool` + `agent_tool_factory`（tool registry 持久化）| migration 双文件 + GORM model。**#3 范围说明**：`agent_tool_factory` 表为 #10 configurator-ux 管理端 CRUD 预埋，#3 仅建 DDL + read-only store（无写入路径）。`agent_tool` 表 #3 由 PlatformToolFactory 启动时 seed 6 行（INSERT IGNORE） |
 | M2 | **Store**：`IAgentToolStore` + `IAgentToolFactoryStore` | store impl + 单测 |
-| M3 | **完整 Tool interface（38 字段）** | 替换 #2 最小 interface，含 IsDestructive / InterruptBehavior / Prompt / BackfillObservableInput 等（蓝本 §4.2）；向后兼容（#2 旧 Tool 用 adapter wrap） |
+| M3 | **完整 Tool interface（以蓝本 §4.2.3 为准；当前计数 ~36 方法）** | 替换 #2 最小 interface，含 Name/Aliases/Description/Prompt/InputSchema/IsEnabled/IsConcurrencySafe/IsReadOnly/IsDestructive/InterruptBehavior/IsMCP/IsCLI/MCPInfo/CLIInfo/MaxResultSizeChars/BackfillObservableInput/ValidateInput/InputsEquivalent/CheckPermissions/Execute/MapToolResultToBlock/UserFacingName/GetActivityDescription/RenderToolUseMessage/RenderToolResultMessage/RenderToolErrorMessage/ShouldShowResultInNarration/NarrationVerb/NarrationDetail 等（蓝本 §4.2.3）；**精确字段集合在 S2 spec 时按蓝本逐字定稿**。向后兼容路径：#2 现有 `Tool` interface 重命名为 `agent.MinimalTool`，新 `agent.FullTool` 提供 `BaseTool` 嵌入结构体含默认值实现（#2 现有 mock 工具补 default 后无破坏） |
 | M4 | **ToolFactory 插件模式** | `ToolFactory` interface（Source / LoadTools / Watch）；实现 `PlatformToolFactory`（内置工具，从代码加载） |
 | M5 | **Tool Registry biz**：`AgentToolRegistry` | 启动时调 LoadTools 注册 + 运行时按 toolName 查找；线程安全 |
-| M6 | **6 个 platform 内置工具实现** | web_search / kb_search / file_read / bash_exec（stub，#4 sandbox 接） / image_gen（stub）/ get_current_date（沿用 #1 V2 demo）|
+| M6 | **6 个 platform 内置工具实现（与蓝本 §4.2.4 v1 工具池对齐）** | (1) `kb_search` — 复用 `internal/numind/biz/salesrag` SalesRAGSearch（蓝本 v1 第一优先）；(2) `learner_data_query` — 学员档案读（read-only，#7 memory 集成时扩展）；(3) `document_generate` — DocumentGenerate（用现有 aiservice 调 Qwen-Long）；(4) `image_gen` — 调 wanx2.1-t2i-turbo / wan2.2-t2i-flash（aiservice 已有调用入口）；(5) `bash_exec` stub — 蓝本 PythonSandbox/ShellSandbox 接口预留，#4 sandbox-integration 时实装；(6) `get_current_date` — #1 Phase 0 V2 demo 沿用作过渡（标记 `IsDestructive=false / IsReadOnly=true / Source="platform"`）。**不做** `web_search`（蓝本 §4.2.4 红线：GeneralWebBrowse 禁止任意外部 URL 访问）；**不做** `file_read` 通用版（蓝本只有 PDFParse/ExcelReadWrite 细分，#3 不实现，留 follow-up）|
 | M7 | **AgentRunner 集成**：Run 接入 ToolRegistry | runner.go 用 registry.GetTool(name) 替换 直接传 tools；hook 点接入 sandbox（hook injection 在 #4） |
 | M8 | **Unit + Integration tests** | 38 字段完整测试 + 6 工具单测 + registry 注册/查找测试 |
 
@@ -49,7 +49,7 @@
 
 ## 业务目标
 
-1. **#4 sandbox-integration 启动条件**：需要 IsDestructive / SandboxRequired 等 Tool 元信息
+1. **#4 sandbox-integration 启动条件**：需要 IsDestructive / IsEnabled(cfg) 等 Tool 元信息（**沙箱可用性**走蓝本 §4.2.3 `IsEnabled(AgentConfig)` 模式，**不引入** `SandboxRequired` 独立字段；判定逻辑：`IsCLI || (IsDestructive && cfg.EnableSandbox)`）
 2. **#6 permission-pipeline 启动条件**：需要 IsReadOnly / InterruptBehavior
 3. **#8 narration-layer 启动条件**：需要 Prompt / BackfillObservableInput
 4. **#10 configurator-ux 启动条件**：需要 ToolFactory 抽象（管理端 CRUD tool 元信息）
