@@ -1383,3 +1383,17 @@ features:
   rollback: 若新链路失败需切回老链路：(1) GitHub Web UI Enable 3 个 ci-cd workflow (2) 确认 GitHub Secrets DOCKERHUB_PASSWORD 等仍有效 (3) push develop 触发老链路。yaml 文件已保留，老链路 fallback 路径完整。
   created_at: '2026-05-18T19:00:00+08:00'
   completed_at: '2026-05-19T14:30:00+08:00'
+- id: agent-mode-billing-integration
+  track: standard
+  stage: S6
+  description: 'Agent 模式 14-feature 分解 #12/14。落地蓝本 §4.1.8 失控保护 4 维 BudgetTracker + §4.3.8 试聊配额 credit_admin_test_grant + §6.6 学员积分透明 GET /v1/credits/balance.admin_test_pool + credit_transaction.source_type CHECK ALTER 加 admin_test 枚举（#5 defer）+ agent_run.terminal_metadata ALTER ADD COLUMN + LoopEventErrorMaxBudget / HookActionBudgetExceeded=4 / credit.ReserveAgentTest+ReconcileAgentTest+AdminTestPool 字段 + biz/budget 子包（tracker/dimensions/r2_estimator/admin/types/errno）+ biz/agent/budgetgate 子包（解耦 import cycle）+ permission.WrapHooks 顺手 narration 透传补丁。'
+  repos:
+    numind-server: feature/agent-mode-billing-integration
+  worktrees:
+    numind-server: /private/tmp/wt-agent-mode-billing-integration-numind-server
+  progress:
+    total_tasks: 13
+    completed_tasks: 13
+    reviewed_tasks: 13
+    current_task: 'S5 ACCEPTED + S6 merging develop. 13 tasks (M1-M12 + S5 doc); biz/budget 92.1% + budgetgate 94.4% coverage; 12 packages -race PASS; 0 prod impact. 2 import cycles resolved in S4.'
+  created_at: '2026-05-21T00:00:00+08:00'

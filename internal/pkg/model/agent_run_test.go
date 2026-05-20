@@ -32,8 +32,9 @@ func newAgentRunTestDB(t *testing.T) *gorm.DB {
 			user_id         INTEGER NOT NULL,
 			session_id      TEXT    NOT NULL DEFAULT '',
 			status          TEXT    NOT NULL DEFAULT 'running',
-			state_reason    TEXT    NOT NULL DEFAULT '',
-			messages        TEXT    NOT NULL DEFAULT '[]',
+			state_reason      TEXT    NOT NULL DEFAULT '',
+			terminal_metadata TEXT,
+			messages          TEXT    NOT NULL DEFAULT '[]',
 			reservation_id  INTEGER,
 			started_at      DATETIME NOT NULL,
 			ended_at        DATETIME,
@@ -125,10 +126,30 @@ func TestAgentRun_CompactSummaryNullable(t *testing.T) {
 func TestAgentRun_NoDefaultTrueBoolFields(t *testing.T) {
 	// AgentRun fields (per #9 spec audit):
 	// - ID uint64 / UserID uint / SessionID string / Status string (default:'running' — not bool)
-	// - StateReason string / Messages datatypes.JSON / ReservationID *uint64
+	// - StateReason string / TerminalMetadata datatypes.JSON / Messages datatypes.JSON / ReservationID *uint64
 	// - StartedAt time.Time / EndedAt *time.Time
 	// - CompactState datatypes.JSON / CompactSummary string (#9 — no bool)
 	// - CreatedAt time.Time / UpdatedAt time.Time
 	// No bool field exists → no `default:true` gotcha (database.md §6) risk.
 	t.Log("AgentRun audit: zero bool fields, zero default:true gotcha risk")
+}
+
+func TestAgentRun_TerminalMetadata_JSONRoundtrip(t *testing.T) {
+	db := newAgentRunTestDB(t)
+
+	metadata := datatypes.JSON([]byte(`{"budget_dimension":"max_turns","used":51,"limit":50}`))
+	run := &AgentRun{
+		UserID:           1,
+		SessionID:        "sess-1",
+		Status:           "terminated",
+		StateReason:      "error_max_budget",
+		TerminalMetadata: metadata,
+		Messages:         datatypes.JSON([]byte("[]")),
+		StartedAt:        time.Now(),
+	}
+	require.NoError(t, db.Create(run).Error)
+
+	var got AgentRun
+	require.NoError(t, db.First(&got, run.ID).Error)
+	assert.JSONEq(t, string(metadata), string(got.TerminalMetadata))
 }

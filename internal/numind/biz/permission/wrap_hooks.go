@@ -7,6 +7,7 @@ import (
 	einotool "github.com/cloudwego/eino/components/tool"
 
 	"numind-server/internal/numind/biz/agent"
+	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/middleware"
 )
@@ -84,8 +85,28 @@ func WrapHooks(base *agent.RunHooks, gate *PermissionGate) *agent.RunHooks {
 			}
 			return agent.HookActionContinue, nil
 		},
-		Registry: registryFromBase(base),
+		Registry:          registryFromBase(base),
+		NarrationProvider: narrationProviderFromBase(base),
+		NarrationRunID:    narrationRunIDFromBase(base),
 	}
+}
+
+// narrationProviderFromBase preserves base.NarrationProvider through the
+// permission wrapper so downstream (e.g. budget wrapper, sandbox base, adapter)
+// can still emit narration events. #12 agent-mode-billing-integration P1-2 fix.
+func narrationProviderFromBase(base *agent.RunHooks) *narration.Provider {
+	if base == nil {
+		return nil
+	}
+	return base.NarrationProvider
+}
+
+// narrationRunIDFromBase preserves base.NarrationRunID through the permission wrapper.
+func narrationRunIDFromBase(base *agent.RunHooks) uint64 {
+	if base == nil {
+		return 0
+	}
+	return base.NarrationRunID
 }
 
 func forwardPre(ctx context.Context, base *agent.RunHooks, t einotool.BaseTool, input string) (agent.HookAction, error) {

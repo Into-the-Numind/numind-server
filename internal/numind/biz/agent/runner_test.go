@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/datatypes"
 
 	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/pkg/model"
@@ -68,6 +69,17 @@ func (m *mockAgentRunStore) WriteTurn(_ context.Context, id uint64, messages jso
 
 func (m *mockAgentRunStore) ListBySession(_ context.Context, _ string, _, _ int) ([]model.AgentRun, int64, error) {
 	return nil, 0, nil
+}
+
+// UpdateTerminalMetadata — #12 agent-mode-billing-integration mock impl
+func (m *mockAgentRunStore) UpdateTerminalMetadata(_ context.Context, id uint64, metadata datatypes.JSON) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if r, ok := m.runs[id]; ok {
+		r.TerminalMetadata = metadata
+		return nil
+	}
+	return errors.New("not found")
 }
 
 // ---

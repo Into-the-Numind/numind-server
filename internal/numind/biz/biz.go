@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"numind-server/internal/numind/biz/agent"
+	"numind-server/internal/numind/biz/agent/budgetgate"
 	"numind-server/internal/numind/biz/ali"
+	"numind-server/internal/numind/biz/budget"
 	chatbotbiz "numind-server/internal/numind/biz/chatbot"
 	"numind-server/internal/numind/biz/compact"
 	"numind-server/internal/numind/biz/config"
@@ -263,7 +265,30 @@ func NewBiz(ds store.IStore) *biz {
 			permvalidators.NewClassifierPlaceholder(),
 		),
 	)
-	wrappedHooks := permission.WrapHooks(sandboxHookManager.AsRunHooks(), b.permissionGate)
+	// #12 agent-mode-billing-integration: budget tracker + admin_test consumer
+	// + BudgetGate hooks 嵌套到 permission 之下，sandbox 之上。
+	// Hook chain order: permission(outer) → budget(middle) → sandbox(base)
+	//
+	// PreToolCall 顺序 permission → budget → sandbox：
+	//   - permission 在前：deny 时不暴露预算内部状态（与 #6 P0 reviewer fix 一致）
+	//   - budget 在中：permission allow 后再 check 预算
+	//   - sandbox 在后：启动容器是最重的副作用，前两层 deny 都不会浪费
+	//
+	// PostToolCall 自然逆序（外层调内层，内层先返回）：
+	//   sandbox 关容器 → budget RecordUsage（拿真实 tokens）→ permission 透传
+	budgetTracker := budget.NewTracker(nil) // v1: nil IBudgetStore — daily aggregate 仅 in-process; TODO(#14) Redis
+	budgetAdminConsumer := budget.NewAdminTestConsumer(ds)
+	budgetGate := budgetgate.NewBudgetGate(budgetTracker, budgetAdminConsumer, ds.AgentRuns())
+
+	budgetWrappedHooks := budgetGate.WrapHooks(sandboxHookManager.AsRunHooks())
+	wrappedHooks := permission.WrapHooks(budgetWrappedHooks, b.permissionGate)
+
+	// SetAdminTestConsumer 通过 adapter 把 budget.AdminTestConsumer 转 credit.AdminTestConsumer
+	// （两个 interface 字段类型签名相同，但 Status 返回类型不同；adapter 做字段转换）。
+	b.creditService.(interface {
+		SetAdminTestConsumer(credit.AdminTestConsumer)
+	}).
+		SetAdminTestConsumer(&budgetToCreditAdapter{inner: budgetAdminConsumer})
 
 	// #8 narration-layer: build singleton Provider from configs/tool-display.yaml.
 	// S4 amendment to spec S2-D5: NewBiz signature is func(IStore) *biz with no
@@ -303,6 +328,7 @@ func NewBiz(ds store.IStore) *biz {
 		// WithCompactConfig omitted — DefaultConfig (qwen-plus) applies.
 		agent.WithNarrationProvider(narrationProv), // #8 narration-layer (nil if init failed)
 		agent.WithMemoryProvider(memoryProvider),   // #7 memory-system
+		agent.WithBudgetTracker(budgetTracker),     // #12 agent-mode-billing-integration
 	)
 
 	// 初始化知识库服务
@@ -480,4 +506,39 @@ func agentToolNames(reg agent.AgentToolRegistry) []string {
 		names = append(names, t.Name())
 	}
 	return names
+}
+
+// budgetToCreditAdapter adapts budget.AdminTestConsumer to credit.AdminTestConsumer.
+// Required because the import-cycle decoupling (M10 decision) keeps Consume/Refund
+// method signatures identical but uses two separate AdminTestStatus types (one in
+// each package). This adapter does field-by-field conversion at the boundary.
+// #12 agent-mode-billing-integration.
+type budgetToCreditAdapter struct {
+	inner budget.AdminTestConsumer
+}
+
+func (a *budgetToCreditAdapter) Consume(ctx context.Context, parentUserID uint, amount int64) (uint64, error) {
+	return a.inner.Consume(ctx, parentUserID, amount)
+}
+
+func (a *budgetToCreditAdapter) Refund(ctx context.Context, parentUserID uint, txID uint64, refundAmount int64) error {
+	return a.inner.Refund(ctx, parentUserID, txID, refundAmount)
+}
+
+func (a *budgetToCreditAdapter) Status(ctx context.Context, parentUserID uint, now time.Time) (*credit.AdminTestStatus, error) {
+	bs, err := a.inner.Status(ctx, parentUserID, now)
+	if err != nil {
+		return nil, err
+	}
+	if bs == nil {
+		return nil, nil
+	}
+	return &credit.AdminTestStatus{
+		Granted:      bs.Granted,
+		Used:         bs.Used,
+		Remaining:    bs.Remaining,
+		PeriodStart:  bs.PeriodStart,
+		PeriodEnd:    bs.PeriodEnd,
+		DaysToExpire: bs.DaysToExpire,
+	}, nil
 }

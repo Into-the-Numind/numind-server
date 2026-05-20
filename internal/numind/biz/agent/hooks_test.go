@@ -179,6 +179,29 @@ func TestHookActionValues_DistinctAndAtomicSafe(t *testing.T) {
 	}
 }
 
+// ── M12 (#12 agent-mode-billing-integration): HookActionBudgetExceeded tests ──
+
+func TestHookAction_BudgetExceededValue(t *testing.T) {
+	if HookActionBudgetExceeded != HookAction(4) {
+		t.Errorf("HookActionBudgetExceeded = %d, want 4", HookActionBudgetExceeded)
+	}
+}
+
+func TestHookActionToLoopEvent_BudgetExceeded(t *testing.T) {
+	got := HookActionToLoopEvent(HookActionBudgetExceeded)
+	if got != LoopEventErrorMaxBudget {
+		t.Errorf("HookActionToLoopEvent(BudgetExceeded) = %d, want LoopEventErrorMaxBudget", got)
+	}
+}
+
+func TestHookActionRegistry_BudgetExceeded(t *testing.T) {
+	r := NewHookActionRegistry()
+	r.Record(HookActionBudgetExceeded)
+	if r.LastAction() != HookActionBudgetExceeded {
+		t.Errorf("LastAction = %d, want %d (HookActionBudgetExceeded)", r.LastAction(), HookActionBudgetExceeded)
+	}
+}
+
 // ── M8 (#8 narration-layer): NarrationProvider field default ────────────────
 
 func TestRunHooks_DefaultNarrationFields_Nil(t *testing.T) {

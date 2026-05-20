@@ -15,6 +15,7 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
+	"numind-server/internal/numind/biz/budget"
 	"numind-server/internal/numind/biz/compact"
 	"numind-server/internal/numind/biz/memory"
 	"numind-server/internal/numind/biz/narration"
@@ -77,6 +78,7 @@ type agentRunner struct {
 	compactConfig     compact.Config              // #9 compact: defaults to compact.DefaultConfig() in NewAgentRunner
 	narrationProvider *narration.Provider         // #8 narration-layer: wired by biz.go via WithNarrationProvider; may be nil
 	memoryProvider    memory.MemoryProvider       // #7 memory-system: wired by biz.go via WithMemoryProvider; may be nil
+	budgetTracker     budget.BudgetTracker        // #12 agent-mode-billing-integration: wired by biz.go via WithBudgetTracker; may be nil
 }
 
 var _ AgentRunner = (*agentRunner)(nil)
@@ -141,6 +143,17 @@ func WithNarrationProvider(p *narration.Provider) RunnerOption {
 func WithMemoryProvider(p memory.MemoryProvider) RunnerOption {
 	return func(r *agentRunner) {
 		r.memoryProvider = p
+	}
+}
+
+// WithBudgetTracker installs a budget.BudgetTracker for 4-dim Run-level budget
+// enforcement. When set, runner.Run calls tracker.Start/Close per Run; the
+// BudgetGate (wired separately via WithDefaultHooks) reads the same tracker
+// in PreToolCall hook to enforce limits.
+// When nil (default), no budget enforcement happens. #12 agent-mode-billing-integration.
+func WithBudgetTracker(t budget.BudgetTracker) RunnerOption {
+	return func(r *agentRunner) {
+		r.budgetTracker = t
 	}
 }
 
@@ -218,15 +231,18 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	defer queryCancel()
 
 	// 4. #5 skill-system: 装载 agent_definition 并组装 SystemPrompt（若指定了 AgentDefinitionID）。
+	// #12 agent-mode-billing-integration: ad 在 if 块外可见，供下方 budget tracker 读取 limits（reviewer S3-P0-1 fix）。
 	var skillVer int
 	var body string
+	var ad *model.AgentDefinition
 	if req.AgentDefinitionID > 0 && r.skillStore != nil {
-		ad, err := r.skillStore.GetByIDIncludeInactive(ctx, req.AgentDefinitionID)
-		if err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
+		var skillErr error
+		ad, skillErr = r.skillStore.GetByIDIncludeInactive(ctx, req.AgentDefinitionID)
+		if skillErr != nil {
+			if errors.Is(skillErr, gorm.ErrRecordNotFound) {
 				return nil, errno.ErrSkillNotFound
 			}
-			return nil, fmt.Errorf("AgentRunner.Run skill lookup: %w", err)
+			return nil, fmt.Errorf("AgentRunner.Run skill lookup: %w", skillErr)
 		}
 		if ad.ParentUserID != req.UserID {
 			// 不暴露存在性：跨用户访问当作 NotFound 返回
@@ -243,6 +259,14 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		// #7 memory-system: 注入 agent_definition_id 到 ctx，供 memory_write 工具读取。
 		// 注：sessionID 通过 SystemPromptBlock 参数传递，不入 ctx（P2-3 决议）。
 		ctx = middleware.NewContextWithAgentDefinitionID(ctx, req.AgentDefinitionID)
+	}
+
+	// 4.1. #12 agent-mode-billing-integration: BudgetTracker 4 维 Start/Close per Run。
+	// LimitsFromAgentDef(ad) 是 nil-safe，ad 为 nil 时走 DefaultLimits。
+	if r.budgetTracker != nil {
+		limits := budget.LimitsFromAgentDef(ad)
+		r.budgetTracker.Start(ctx, run.ID, req.UserID, limits)
+		defer r.budgetTracker.Close(run.ID)
 	}
 
 	// #7 memory-system: 装配 memory.SystemBlock 段位

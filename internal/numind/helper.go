@@ -263,6 +263,11 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate billing tables: %v", err)
 	}
 
+	// Agent 模式 #12 配置者试聊配额表（agent-mode-billing-integration）
+	if err := db.AutoMigrate(&model.CreditAdminTestGrant{}); err != nil {
+		return fmt.Errorf("failed to migrate credit_admin_test_grant: %v", err)
+	}
+
 	// Agent runtime 表（Phase 0 agent-mode #2）
 	if err := db.AutoMigrate(&model.AgentRun{}); err != nil {
 		return fmt.Errorf("failed to migrate agent_run: %v", err)
