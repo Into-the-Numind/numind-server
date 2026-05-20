@@ -11,6 +11,7 @@ import (
 	"numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/ali"
 	chatbotbiz "numind-server/internal/numind/biz/chatbot"
+	"numind-server/internal/numind/biz/compact"
 	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/numind/biz/credit"
 	customerbiz "numind-server/internal/numind/biz/customer"
@@ -247,6 +248,15 @@ func NewBiz(ds store.IStore) *biz {
 		agentToolRegistry,
 		agent.WithDefaultHooks(sandboxHookManager.AsRunHooks()),
 		agent.WithSkillStore(ds.AgentDefinitions()), // #5 skill-system
+		// #9 compact: wire MockCompactProvider for v1; #14 replaces with
+		// an aiservice.Chat-backed real provider so PTL recovery and
+		// pre-LLM compact actually call the LLM. PlaceholderSummary text
+		// only surfaces in dev/test when compact triggers — never in prod.
+		// TODO(#14): replace MockCompactProvider with real CompactProvider.
+		agent.WithCompactProvider(&compact.MockCompactProvider{
+			PlaceholderSummary: "[v1 placeholder summary — real LLM compact in #14]",
+		}),
+		// WithCompactConfig omitted — DefaultConfig (qwen-plus) applies.
 	)
 
 	// 初始化知识库服务
