@@ -92,6 +92,30 @@ func (c *captureL2Store) DeleteByUser(_ context.Context, userID uint) error {
 	return nil
 }
 
+// captureL1StoreErr records DeleteByUser calls and returns err.
+type captureL1StoreErr struct {
+	emptyL1Store
+	deletedUsers []uint
+	err          error
+}
+
+func (c *captureL1StoreErr) DeleteByUser(_ context.Context, userID uint) error {
+	c.deletedUsers = append(c.deletedUsers, userID)
+	return c.err
+}
+
+// captureL2StoreErr records DeleteByUser calls and returns err.
+type captureL2StoreErr struct {
+	emptyL2Store
+	deletedUsers []uint
+	err          error
+}
+
+func (c *captureL2StoreErr) DeleteByUser(_ context.Context, userID uint) error {
+	c.deletedUsers = append(c.deletedUsers, userID)
+	return c.err
+}
+
 // singleItemL1Store returns a fixed list of AgentSessionMemory rows.
 type singleItemL1Store struct {
 	emptyL1Store
@@ -312,6 +336,33 @@ func TestProvider_Clear_BothLayers(t *testing.T) {
 	assert.Equal(t, []uint{42}, cl2.deletedUsers, "L2 DeleteByUser should be called with userID=42")
 }
 
+// TestProvider_Clear_L1Error_L2StillCalled (P2-1 reviewer follow-up) verifies that
+// Clear attempts L2 deletion even when L1 fails, returning L1 error.
+func TestProvider_Clear_L1Error_L2StillCalled(t *testing.T) {
+	failingL1 := &captureL1StoreErr{err: errors.New("L1 deletion failed")}
+	cl2 := &captureL2Store{}
+	p := NewProvider(failingL1, cl2)
+	ctx := context.Background()
+
+	err := p.Clear(ctx, 42)
+	assert.Error(t, err, "Clear should return L1 error")
+	assert.Equal(t, []uint{42}, failingL1.deletedUsers, "L1 attempted")
+	assert.Equal(t, []uint{42}, cl2.deletedUsers, "L2 still called even after L1 error")
+}
+
+// TestProvider_Clear_L2Error verifies Clear surfaces L2 error when L1 succeeds.
+func TestProvider_Clear_L2Error(t *testing.T) {
+	cl1 := &captureL1Store{}
+	failingL2 := &captureL2StoreErr{err: errors.New("L2 deletion failed")}
+	p := NewProvider(cl1, failingL2)
+	ctx := context.Background()
+
+	err := p.Clear(ctx, 42)
+	assert.Error(t, err, "Clear should return L2 error")
+	assert.Equal(t, []uint{42}, cl1.deletedUsers, "L1 deleted successfully")
+	assert.Equal(t, []uint{42}, failingL2.deletedUsers, "L2 attempted")
+}
+
 // ---------------------------------------------------------------------------
 // No-op stub tests
 // ---------------------------------------------------------------------------
@@ -340,6 +391,15 @@ func TestProvider_SyncTurn_NoOp(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Prefetch tests
 // ---------------------------------------------------------------------------
+
+// TestProvider_Prefetch_UserZero (P2-2 reviewer follow-up) verifies early return.
+func TestProvider_Prefetch_UserZero(t *testing.T) {
+	p := NewProvider(&emptyL1Store{}, &emptyL2Store{})
+	ctx := context.Background()
+	items, err := p.Prefetch(ctx, 0, 100, "query")
+	require.NoError(t, err)
+	assert.Empty(t, items, "userID=0 should early-return empty")
+}
 
 // TestProvider_Prefetch_NonEmpty verifies that Prefetch returns items from Retriever
 // when both stores have data.
