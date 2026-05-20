@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 
 	"github.com/cloudwego/eino/components/tool"
+
+	"numind-server/internal/numind/biz/narration"
 )
 
 // HookAction is the return value enum from RunHooks, determining how the state machine transitions.
@@ -49,6 +51,16 @@ type RunHooks struct {
 	PreToolCall  func(ctx context.Context, t tool.BaseTool, input string) (HookAction, error)
 	PostToolCall func(ctx context.Context, t tool.BaseTool, output string, err error) (HookAction, error)
 	Registry     *HookActionRegistry // M10: receives Record() calls from adapter; runner reads LastAction()
+
+	// NarrationProvider is the shared narration singleton; runner.Run attaches it
+	// per-Run from r.narrationProvider. nil = legacy adapter behavior (no narration
+	// events emitted). #8 agent-mode-narration-layer.
+	NarrationProvider *narration.Provider
+
+	// NarrationRunID is the per-Run identifier (= agent_run.ID); runner.Run sets
+	// this so the adapter can route narration events to the correct stream.
+	// Zero is invalid; only set when NarrationProvider is non-nil.
+	NarrationRunID uint64
 }
 
 // HookActionToLoopEvent maps a HookAction to a state machine LoopEvent.
