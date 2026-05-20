@@ -4,7 +4,7 @@ features:
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #9/14。落地蓝本 §4.8 Compact（含会话恢复，对话延续核心）：agent_run 表 ALTER 加 compact_state JSON + compact_summary LONGTEXT 两列（不新建表）+ biz/compact 子包（threshold qwen-plus 适配 / prompt BASE_COMPACT_PROMPT 9 节 + NO_TOOLS_PREAMBLE / provider interface + MockCompactProvider + token estimation / ptl_chain CollapseDrain + ReactiveCompact + headDropRetry / max_output_chain EscalateMaxTokens / restore 3 道清洗 + 恢复 narration + FirstTurnNoTools 标志 / attachments interface + NullAttachmentReinjector）+ AgentRunner.WithCompactProvider + WithCompactConfig RunnerOption + 3 个 runner helper（tryPreLLMCompact / handlePTLError / handleMaxOutputError）。不改 #2 state.go 状态机（PTL/MaxOutput LoopEvent 已就绪）。不改 #2 mock 主流程，#14 ReAct loop 真实集成时 wire helper。Out of scope: 真实 LLM compact 调用 (#14) / 真实文件/Skill/MCP 重注入 (#11/#14) / 学员端会话恢复 UI (#11) / L3 session archive (v2) / 管理端阈值配置 CRUD (#10) / trySessionMemoryCompaction 优化 / 熔断器真实拦截 (#14) / prod 部署。术语翻译：蓝本 anthropic 200k → qwen-plus 128k 阈值映射。'
   track: standard
-  stage: S3
+  stage: S5
   classification_reason: 'Standard Triage 5 条 — (1) DB schema 变更：是（agent_run 表 ALTER 加 2 列）(2) 新 API 端点：否（v1 不引入 HTTP；恢复 API 由 #11 落地）(3) 无新外部服务集成 (4) 影响文件数 >3（migration 双文件 + agent_run model + 7 biz/compact files + runner.go + biz.go wire + N test ≥ 15 文件）(5) 高风险业务逻辑：否（compact 是只增不减的恢复机制；mock provider v1 不调外部 API；不动支付/会员/权限）。条件 1+4 多条触发 Standard。'
   last_updated_by: ai-s4-complete
   last_updated_at: '2026-05-21T05:00:00+08:00'
