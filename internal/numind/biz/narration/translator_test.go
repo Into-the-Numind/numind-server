@@ -79,14 +79,28 @@ func TestTranslator_YamlHit_Error_UsesReasonFriendly(t *testing.T) {
 }
 
 func TestTranslator_YamlHit_Error_NoRawErrText(t *testing.T) {
+	// Run multiple opaque errors with varied content; assert the full Error()
+	// string is NEVER a substring of the rendered message.
 	tr := mkTranslator(t, minimalValidYAML, nil)
-	ev := tr.Translate(context.Background(), EmitPayload{
-		RunID: 4,
-		Err:   errors.New("super secret stack trace abc123"),
-	}, "bash_exec", StateError)
-	for _, leak := range []string{"super", "secret", "stack", "abc123"} {
-		if strings.Contains(ev.Message, leak) {
-			t.Errorf("error message leaked %q from raw err: %q", leak, ev.Message)
+	rawErrs := []error{
+		errors.New("super secret stack trace abc123"),
+		errors.New("/etc/passwd not readable"),
+		errors.New("BEARER eyJhbGciOiJIUzI1NiIs..."),
+		errors.New("internal db error: connection refused 10.0.0.1:5432"),
+	}
+	for _, raw := range rawErrs {
+		ev := tr.Translate(context.Background(), EmitPayload{
+			RunID: 4,
+			Err:   raw,
+		}, "bash_exec", StateError)
+		if strings.Contains(ev.Message, raw.Error()) {
+			t.Errorf("error message leaked full raw err %q in: %q", raw.Error(), ev.Message)
+		}
+		// Also check individual non-trivial substrings from the raw err.
+		for _, leak := range strings.Fields(raw.Error()) {
+			if len(leak) >= 5 && strings.Contains(ev.Message, leak) {
+				t.Errorf("error message leaked substring %q from raw err %q: %q", leak, raw.Error(), ev.Message)
+			}
 		}
 	}
 }

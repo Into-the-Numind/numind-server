@@ -26,7 +26,10 @@ func (stubLLMFallback) Render(_ context.Context, toolName string, state State, _
 		return "执行出错", toolName
 	case StateRejected:
 		return "操作被拦截", toolName
-	default: // StateProgress and any future
+	default:
+		// StateProgress hits this branch (no dedicated case to flag as TODO
+		// for #13 sandbox push that will emit real progress narration).
+		// Any future State value also lands here as the safe default.
 		return "处理中", toolName
 	}
 }
@@ -57,15 +60,33 @@ func (t *Translator) Translate(ctx context.Context, payload EmitPayload, toolNam
 	data := buildTemplateData(payload, reasonFriendly)
 
 	// 3. Try yaml renderer (handles tool→defaults fallback internally).
+	// Defensive comma-ok assertions: buildTemplateData always returns non-nil
+	// map[string]any for "input" and "result", but future refactors that change
+	// buildTemplateData's contract would silently corrupt narration. The
+	// comma-ok form falls back to empty maps rather than panicking.
+	inputMap, _ := data["input"].(map[string]any)
+	if inputMap == nil {
+		inputMap = map[string]any{}
+	}
+	resultMap, _ := data["result"].(map[string]any)
+	if resultMap == nil {
+		resultMap = map[string]any{}
+	}
 	verb, detail, message := t.renderer.Render(renderRequest{
 		ToolName:       toolName,
 		State:          state,
-		Input:          data["input"].(map[string]any),
-		Result:         data["result"].(map[string]any),
+		Input:          inputMap,
+		Result:         resultMap,
 		ReasonFriendly: reasonFriendly,
 	})
 
 	// 4. If renderer produced empty for the chosen state, fall back to LLM stub.
+	// S2 P1 amendment to spec §5: spec used `verb + " " + detail` unconditionally,
+	// but that produces a trailing space when detail is empty. Guarded form below
+	// drops the space and yields cleaner output (e.g., "正在执行" instead of
+	// "正在执行 "). Stub always returns non-empty detail in v1, so behavior is
+	// identical to spec in practice; difference only matters for future fallback
+	// impls that may return empty detail.
 	if message == "" {
 		verb, detail = t.fallback.Render(ctx, toolName, state, payload)
 		message = verb

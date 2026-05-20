@@ -18,10 +18,11 @@ type Provider struct {
 }
 
 // Config drives NewProvider construction.
+// YAMLPath takes priority over YAMLBytes — if both are set, YAMLBytes is ignored.
 type Config struct {
-	YAMLPath    string      // if non-empty, NewProvider loads from disk
-	YAMLBytes   []byte      // alternative for tests; ignored if YAMLPath is set
-	BufferSize  int         // per-Run channel cap; 0 → defaultBufferSize
+	YAMLPath    string      // if non-empty, NewProvider loads from disk (priority over YAMLBytes)
+	YAMLBytes   []byte      // alternative for tests; IGNORED if YAMLPath is non-empty
+	BufferSize  int         // per-Run channel cap; 0 → defaultBufferSize (256)
 	LLMFallback LLMFallback // nil → stubLLMFallback
 	ToolNames   []string    // optional; if non-nil, NewProvider warns on missing yaml keys
 }
@@ -77,6 +78,13 @@ func (p *Provider) Subscribe(runID uint64) (<-chan Event, func()) {
 
 // CloseRun re-exports streamer for runner.Run defer (S1-D20).
 // Also deletes the per-runID callSeq counter to bound memory.
+//
+// Caller contract: no concurrent Emit() calls for the same runID may fire
+// AFTER CloseRun returns. If they do (e.g., a late-firing goroutine), the
+// next Emit will lazy-create a fresh runChannel and counter starting at 1 —
+// functionally inert (subscriber already disconnected) but consumes memory.
+// runner.Run defer placement (S1-D20) ensures the contract is held for the
+// normal lifecycle.
 func (p *Provider) CloseRun(runID uint64) {
 	p.streamer.CloseRun(runID)
 	p.callSeq.Delete(runID)
@@ -85,8 +93,19 @@ func (p *Provider) CloseRun(runID uint64) {
 // nextCallID returns "<runID>-<seq>" with seq monotonically incrementing per runID.
 // MUST use sync.Map.LoadOrStore (S1-D18 / S1 P0-2 fix) to avoid TOCTOU race
 // under concurrent InvokableRun calls within the same Run.
+//
+// fmt.Sprintf allocation is acceptable at narration event frequency
+// (~5-10 events per Run × low Run concurrency); if narration ever wires into
+// inner sub-agent loops, revisit with strconv.AppendUint to a pooled buffer.
 func (p *Provider) nextCallID(runID uint64) string {
 	v, _ := p.callSeq.LoadOrStore(runID, &atomic.Int64{})
-	seq := v.(*atomic.Int64).Add(1)
+	counter, ok := v.(*atomic.Int64)
+	if !ok {
+		// Hard invariant: callSeq only stores *atomic.Int64. If this fires,
+		// something has clobbered the sync.Map values (rogue test helper,
+		// refactor regression). Panic with a clear message to aid diagnosis.
+		panic(fmt.Sprintf("narration: callSeq type invariant violated for runID=%d: %T", runID, v))
+	}
+	seq := counter.Add(1)
 	return fmt.Sprintf("%d-%d", runID, seq)
 }

@@ -1,6 +1,7 @@
 package narration
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -20,14 +21,14 @@ func mkEvent(runID uint64, callID string) Event {
 func TestMemStreamer_SendThenSubscribe_DeliversInOrder(t *testing.T) {
 	s := newMemStreamer(10)
 	for i := 0; i < 3; i++ {
-		s.Send(mkEvent(1, "1-"+string(rune('0'+i))))
+		s.Send(mkEvent(1, fmt.Sprintf("1-%d", i)))
 	}
 	ch, cleanup := s.Subscribe(1)
 	defer cleanup()
 	for i := 0; i < 3; i++ {
 		select {
 		case ev := <-ch:
-			want := "1-" + string(rune('0'+i))
+			want := fmt.Sprintf("1-%d", i)
 			if ev.ToolCallID != want {
 				t.Errorf("event %d: want ToolCallID %q, got %q", i, want, ev.ToolCallID)
 			}
@@ -42,12 +43,12 @@ func TestMemStreamer_SubscribeThenSend_DeliversInOrder(t *testing.T) {
 	ch, cleanup := s.Subscribe(2)
 	defer cleanup()
 	for i := 0; i < 3; i++ {
-		s.Send(mkEvent(2, "2-"+string(rune('0'+i))))
+		s.Send(mkEvent(2, fmt.Sprintf("2-%d", i)))
 	}
 	for i := 0; i < 3; i++ {
 		select {
 		case ev := <-ch:
-			want := "2-" + string(rune('0'+i))
+			want := fmt.Sprintf("2-%d", i)
 			if ev.ToolCallID != want {
 				t.Errorf("event %d: want %q, got %q", i, want, ev.ToolCallID)
 			}
@@ -142,7 +143,7 @@ func TestMemStreamer_SubscribeUnknownRun_LazyCreates(t *testing.T) {
 func TestMemStreamer_RunChannelClose_Idempotent(t *testing.T) {
 	rc := &runChannel{ch: make(chan Event, 1)}
 	rc.close()
-	rc.close() // CAS guard makes this a no-op
+	rc.close() // mutex+closed-bool guard makes this a no-op
 }
 
 func TestMemStreamer_SubscribeAfterCloseRun_GetsNewOpenChan(t *testing.T) {

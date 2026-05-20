@@ -77,7 +77,7 @@ func TestProvider_Emit_CustomToolCallID(t *testing.T) {
 	}
 }
 
-func TestProvider_NextCallID_Monotonic_SameRun(t *testing.T) {
+func TestProvider_NextCallID_Monotonic(t *testing.T) {
 	p := mustProvider(t, minimalValidYAML)
 	seen := make(map[string]bool)
 	for i := 0; i < 100; i++ {
@@ -153,7 +153,7 @@ func TestProvider_CloseRun_CleansCounter(t *testing.T) {
 	}
 }
 
-func TestProvider_NilFallback_DefaultsToStub(t *testing.T) {
+func TestProvider_NilFallback_UsesStub(t *testing.T) {
 	// When yaml has no entry for the tool AND no defaults message, stub kicks in.
 	src := `
 tools: {}

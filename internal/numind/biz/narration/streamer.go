@@ -74,7 +74,9 @@ func (s *memStreamer) Subscribe(runID uint64) (<-chan Event, func()) {
 // CloseRun is idempotent across multiple invocations (rc.close holds the
 // write lock and short-circuits if already closed). Deletes the entry from
 // the runs map BEFORE closing the channel; any racing getOrCreate after
-// delete-but-before-close creates a benign new orphan channel that GC reclaims.
+// delete-but-before-close creates a benign new orphan channel. The orphan
+// holds no goroutines and is GC-eligible once all subscribers release the
+// returned channel reference.
 func (s *memStreamer) CloseRun(runID uint64) {
 	s.mu.Lock()
 	rc, ok := s.runs[runID]
