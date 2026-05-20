@@ -4,10 +4,10 @@ features:
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #9/14。落地蓝本 §4.8 Compact（含会话恢复，对话延续核心）：agent_run 表 ALTER 加 compact_state JSON + compact_summary LONGTEXT 两列（不新建表）+ biz/compact 子包（threshold qwen-plus 适配 / prompt BASE_COMPACT_PROMPT 9 节 + NO_TOOLS_PREAMBLE / provider interface + MockCompactProvider + token estimation / ptl_chain CollapseDrain + ReactiveCompact + headDropRetry / max_output_chain EscalateMaxTokens / restore 3 道清洗 + 恢复 narration + FirstTurnNoTools 标志 / attachments interface + NullAttachmentReinjector）+ AgentRunner.WithCompactProvider + WithCompactConfig RunnerOption + 3 个 runner helper（tryPreLLMCompact / handlePTLError / handleMaxOutputError）。不改 #2 state.go 状态机（PTL/MaxOutput LoopEvent 已就绪）。不改 #2 mock 主流程，#14 ReAct loop 真实集成时 wire helper。Out of scope: 真实 LLM compact 调用 (#14) / 真实文件/Skill/MCP 重注入 (#11/#14) / 学员端会话恢复 UI (#11) / L3 session archive (v2) / 管理端阈值配置 CRUD (#10) / trySessionMemoryCompaction 优化 / 熔断器真实拦截 (#14) / prod 部署。术语翻译：蓝本 anthropic 200k → qwen-plus 128k 阈值映射。'
   track: standard
-  stage: S1
+  stage: S2
   classification_reason: 'Standard Triage 5 条 — (1) DB schema 变更：是（agent_run 表 ALTER 加 2 列）(2) 新 API 端点：否（v1 不引入 HTTP；恢复 API 由 #11 落地）(3) 无新外部服务集成 (4) 影响文件数 >3（migration 双文件 + agent_run model + 7 biz/compact files + runner.go + biz.go wire + N test ≥ 15 文件）(5) 高风险业务逻辑：否（compact 是只增不减的恢复机制；mock provider v1 不调外部 API；不动支付/会员/权限）。条件 1+4 多条触发 Standard。'
-  last_updated_by: ai-s1-reviewer-applied
-  last_updated_at: '2026-05-21T02:00:00+08:00'
+  last_updated_by: ai-s2-reviewer-applied
+  last_updated_at: '2026-05-21T02:30:00+08:00'
   repos:
   - numind-server
   branches:
@@ -17,12 +17,13 @@ features:
   artifacts:
     requirement: numind-server/requirements/agent-mode-compact.md
     proposal: numind-server/proposals/agent-mode-compact-proposal.md
+    spec: numind-server/docs/superpowers/specs/2026-05-21-agent-mode-compact-design.md
     architecture_blueprint: docs/agent-mode/architecture-v1.md
   progress:
     total_tasks: 0
     completed_tasks: 0
     reviewed_tasks: 0
-    current_task: 'S1 PASS_WITH_CONDITIONS: P1 handlePTLError 不返回原 LoopEvent 防双重计数 + Restore 注入 AttachmentReinjector / P2 headDropRetry 文件引用保护 + LONGTEXT 升级 + handleMaxOutputError recovery 阶段不再升级 全修。进入 S2 spec。'
+    current_task: 'S2 PASS_WITH_CONDITIONS: P1 ReactiveCompact 返回 finalMessages + EstimateTokens 覆盖 CJK 扩展区 / P2 cleanseMessages 部分悬空 v1 限制文档化 + headDropRetry 遇保护 turn 即停止推进 + biz.go wire #14 TODO 注释 全修。进入 S3 plan。'
   decisions:
   - '2026-05-21 (s0-1): CollapseDrain 语义明确为"仅剥离最近 4 轮外的 tool_result，不动 user/assistant 文本"（蓝本 §4.1.6 Step 1）；与"按消息组整组 drop"（蓝本 §4.8.5 head-drop）分开 — CollapseDrain 是 outer PTL Step 1，headDropRetry 是 inner reactive_compact 失败后兜底循环。S0 reviewer P1 fix。'
   - '2026-05-21 (s0-2): PTL 双层计数器命名 — outer PTLRetries（state.go MaxPTLRetries=2）vs inner innerDropAttempts（ptl_chain.go maxRetries=3），不同变量名避免混淆。S0 reviewer P1 fix。'
@@ -36,6 +37,11 @@ features:
   - '2026-05-21 (s1-3): compact_summary 列改 LONGTEXT（S1 reviewer P2 fix）— 9 节摘要含 verbatim 用户消息易超 64KB；LONGTEXT 上限 4GB，存储开销与 TEXT 一致。'
   - '2026-05-21 (s1-4): headDropRetry 保留规则补"含用户文件引用的消息组不被 drop"（S1 reviewer P2 fix）— 蓝本 §4.8.5 明确，CollapseDrain 已有，headDropRetry 漏。'
   - '2026-05-21 (s1-5): handleMaxOutputError recovery 阶段不再调 EscalateMaxTokens（S1 reviewer P2 fix）— EscalatedMaxTokens=65536 已达上限；recovery 仅保持 currentMaxTokens 等待 LLM 完整输出，与 escalate 阶段语义不同。'
+  - '2026-05-21 (s2-1): ReactiveCompact 返回 (result, finalMessages, err)（S2 reviewer P1 fix）— 内部 headDrop 截断后 caller 必须用 finalMessages 做 CollapseDrain，避免 summary 配完整 collapsed 导致上下文语义不一致。tryPreLLMCompact / handlePTLError 同步更新。'
+  - '2026-05-21 (s2-2): EstimateTokens 公式覆盖 CJK 扩展区（S2 reviewer P1 fix）— ASCII <=0x7F ×0.25 / 非 ASCII ×1.5；覆盖 CJK Ext-A/Ext-B / 日文假名 / 韩文，避免日韩混合内容低估 token → AutoCompactThreshold 误触发。'
+  - '2026-05-21 (s2-3): cleanseMessages 部分悬空 tool_use v1 已知限制文档化（S2 reviewer P2 fix）— 多 tool_calls 部分有 result 部分悬空 → 整条保留；v2 改细粒度过滤。'
+  - '2026-05-21 (s2-4): headDropRetry 遇保护 turn 即停止推进（S2 reviewer P2 fix）— 不"穿插式 drop"，保留时间连续性；更激进 drop 由 caller 提高 dropPercent 重试。'
+  - '2026-05-21 (s2-5): biz.go wire 加 TODO(#14) 注释（S2 reviewer P2 fix）— 标记 MockCompactProvider 替换点，#14 session 不遗漏。'
   related_features:
   - 'agent-mode-runtime-skeleton (#2/14, 已 develop merged — LoopState / PTL+MaxOutput LoopEvent 状态机骨架输入)'
   - 'agent-mode-memory-system (#7/14, 并行进行中 — runner.go SystemPrompt 装配区与 #9 helper 函数潜在 merge 冲突)'
