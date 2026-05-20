@@ -1,3 +1,7 @@
+-- Migration: create agent_session_memory table
+-- Feature: agent-mode-memory-system (#7/14)
+-- Rollback: 20260521_120000_create_agent_session_memory_rollback.sql
+
 CREATE TABLE IF NOT EXISTS agent_session_memory (
   id                         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   user_id                    INT UNSIGNED NOT NULL                   COMMENT 'FK 到 user.id；与 #5 parent_user_id 类型对齐',

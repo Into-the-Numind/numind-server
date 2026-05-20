@@ -1,3 +1,7 @@
+-- Migration: create user_global_memory table
+-- Feature: agent-mode-memory-system (#7/14)
+-- Rollback: 20260521_120100_create_user_global_memory_rollback.sql
+
 CREATE TABLE IF NOT EXISTS user_global_memory (
   id                         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   user_id                    INT UNSIGNED NOT NULL                   COMMENT 'FK 到 user.id',

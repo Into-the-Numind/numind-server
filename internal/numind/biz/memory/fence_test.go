@@ -102,6 +102,22 @@ func TestFenceInjection_ClosingTag(t *testing.T) {
 	assert.Contains(t, got, "&lt;/memory-context&gt;")
 }
 
+// TestFenceInjection_Ampersand verifies the third class of escape boundary
+// from S0 §3 verification clause: raw `&` in stored content must surface as
+// `&amp;` after EscapeForStorage and survive into RenderMemoryBlock output.
+func TestFenceInjection_Ampersand(t *testing.T) {
+	f := NewFenceRenderer()
+	dangerous := "a&b plus &amp; literal"
+	escaped := EscapeForStorage(dangerous)
+
+	l1 := []MemoryItem{l1Item(KindFact, escaped)}
+	got := f.RenderMemoryBlock(l1, nil)
+
+	assert.Contains(t, got, "a&amp;b plus &amp;amp; literal",
+		"& must be escaped to &amp; in rendered block")
+	assert.NotContains(t, got, "a&b plus", "raw & must not appear in rendered block")
+}
+
 // TestEscapeUnescapeRoundtrip verifies that EscapeForStorage + UnescapeForToolResponse
 // is a lossless round-trip for typical content including HTML special characters.
 func TestEscapeUnescapeRoundtrip(t *testing.T) {

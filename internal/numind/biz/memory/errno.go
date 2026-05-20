@@ -2,7 +2,7 @@ package memory
 
 import "numind-server/internal/pkg/errno"
 
-// Memory 子系统错误码（agent-mode-memory-system #7/14）
+// Memory subsystem error codes (agent-mode-memory-system #7/14).
 var (
 	// ErrMemoryKindInvalid is returned when the requested MemoryKind is not in
 	// the allowed enum (see MemoryKind.Valid).
