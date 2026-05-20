@@ -52,6 +52,10 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 			return "", fmt.Errorf("PreToolCall: %w", err)
 		}
 		if action != HookActionContinue {
+			// M10: record the stopping action to registry so runner.Run can propagate TerminalReason
+			if a.hooks.Registry != nil {
+				a.hooks.Registry.Record(action)
+			}
 			return "", fmt.Errorf("tool execution stopped by hook: action=%d", action)
 		}
 	}
@@ -66,7 +70,12 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 	// PostToolCall always fires (cleanup semantic). Errors from PostToolCall
 	// are logged + only surface to the caller when no execErr already exists.
 	if a.hooks != nil && a.hooks.PostToolCall != nil {
-		if _, postErr := a.hooks.PostToolCall(ctx, a, output, execErr); postErr != nil {
+		postAction, postErr := a.hooks.PostToolCall(ctx, a, output, execErr)
+		// M10: record non-Continue actions to registry so runner.Run can propagate TerminalReason
+		if a.hooks.Registry != nil && postAction != HookActionContinue {
+			a.hooks.Registry.Record(postAction)
+		}
+		if postErr != nil {
 			log.Warnw("PostToolCall failed",
 				"tool", a.ft.Name(),
 				"post_err", postErr,

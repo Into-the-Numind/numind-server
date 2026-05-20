@@ -169,3 +169,72 @@ func TestNewAgentRunner_MultipleOptionsLastWins(t *testing.T) {
 		t.Errorf("multiple WithDefaultHooks: last value should win")
 	}
 }
+
+// ── M10: Registry auto-inject + TerminalReason propagation tests ──────────────
+
+func TestRunner_Run_autoInjectsRegistry(t *testing.T) {
+	// Supply hooks without a Registry; Run() must auto-inject one.
+	hooks := &RunHooks{} // Registry intentionally nil before Run
+	assert.Nil(t, hooks.Registry, "before Run, Registry should be nil")
+
+	runner := NewAgentRunner(newMockStore(), nil, WithDefaultHooks(hooks))
+	result, err := runner.Run(context.Background(), RunRequest{
+		UserID: 1,
+		Input:  "test",
+	})
+	require.NoError(t, err)
+	assert.NotZero(t, result.AgentRunID)
+	// Run() must have auto-injected a non-nil Registry into effectiveHooks.
+	// Because effectiveHooks == hooks (req.Hooks is nil, so defaultHooks is used),
+	// the injection is visible through the same pointer.
+	assert.NotNil(t, hooks.Registry, "Run() should auto-inject Registry when nil")
+}
+
+func TestRunner_Run_preservesProvidedRegistry(t *testing.T) {
+	// Caller provides their own Registry — Run() must not overwrite it.
+	providedReg := NewHookActionRegistry()
+	providedReg.Record(HookActionStop) // mark it so we can detect identity
+
+	hooks := &RunHooks{
+		Registry: providedReg,
+	}
+	runner := NewAgentRunner(newMockStore(), nil)
+	result, err := runner.Run(context.Background(), RunRequest{
+		UserID: 1,
+		Input:  "test",
+		Hooks:  hooks,
+	})
+	require.NoError(t, err)
+	assert.NotZero(t, result.AgentRunID)
+	// The provided registry must still be the same object (not replaced).
+	assert.Same(t, providedReg, hooks.Registry, "caller-provided Registry must not be overwritten")
+}
+
+func TestRunner_Run_RegistryStopPropagatesToTerminalReason(t *testing.T) {
+	// Pre-record HookActionStop before Run executes; Run() should read it and
+	// produce TerminalHookStopped instead of TerminalCompleted.
+	reg := NewHookActionRegistry()
+	hooks := &RunHooks{
+		Registry: reg,
+		// PreToolCall fires during InvokableRun (tool execution), which doesn't happen
+		// in the #2 skeleton. Instead we pre-seed the registry before Run().
+	}
+	// Pre-seed: simulate that a hook recorded Stop during a prior tool call.
+	reg.Record(HookActionStop)
+
+	store := newMockStore()
+	runner := NewAgentRunner(store, nil)
+	result, err := runner.Run(context.Background(), RunRequest{
+		UserID: 1,
+		Input:  "test",
+		Hooks:  hooks,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, TerminalHookStopped, result.TerminalReason,
+		"Registry.Record(HookActionStop) before Run should produce TerminalHookStopped")
+
+	// Verify DB was written with the correct reason.
+	got, err := store.Get(context.Background(), result.AgentRunID)
+	require.NoError(t, err)
+	assert.Equal(t, string(TerminalHookStopped), got.StateReason)
+}

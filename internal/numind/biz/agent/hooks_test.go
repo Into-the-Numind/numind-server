@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/cloudwego/eino/components/tool"
@@ -85,5 +86,62 @@ func TestRunHooks_PostToolCall_BlockingStop(t *testing.T) {
 	}
 	if action != HookActionBlockingStop {
 		t.Errorf("got %v, want HookActionBlockingStop", action)
+	}
+}
+
+// ── M10: HookActionRegistry tests ──────────────────────────────────────────
+
+func TestHookActionRegistry_RecordLastAction(t *testing.T) {
+	r := NewHookActionRegistry()
+	// Default is Continue
+	if got := r.LastAction(); got != HookActionContinue {
+		t.Errorf("default: got %v, want HookActionContinue", got)
+	}
+	r.Record(HookActionStop)
+	if got := r.LastAction(); got != HookActionStop {
+		t.Errorf("after Record(Stop): got %v, want HookActionStop", got)
+	}
+	r.Record(HookActionBlockingStop)
+	if got := r.LastAction(); got != HookActionBlockingStop {
+		t.Errorf("after Record(BlockingStop): got %v, want HookActionBlockingStop", got)
+	}
+}
+
+func TestHookActionRegistry_RecordOverwrites(t *testing.T) {
+	r := NewHookActionRegistry()
+	r.Record(HookActionStop)
+	r.Record(HookActionBlockingStop)
+	if got := r.LastAction(); got != HookActionBlockingStop {
+		t.Errorf("second Record should overwrite: got %v, want HookActionBlockingStop", got)
+	}
+}
+
+func TestHookActionRegistry_Reset(t *testing.T) {
+	r := NewHookActionRegistry()
+	r.Record(HookActionStop)
+	r.Reset()
+	if got := r.LastAction(); got != HookActionContinue {
+		t.Errorf("after Reset: got %v, want HookActionContinue", got)
+	}
+}
+
+func TestHookActionRegistry_ConcurrentRecord_raceSafe(t *testing.T) {
+	r := NewHookActionRegistry()
+	const goroutines = 100
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		action := HookAction(i % 3) // cycles through 0, 1, 2
+		go func(a HookAction) {
+			defer wg.Done()
+			r.Record(a)
+			_ = r.LastAction()
+		}(action)
+	}
+	wg.Wait()
+	// After all goroutines, LastAction must be a valid HookAction value.
+	got := r.LastAction()
+	if got < HookActionContinue || got > HookActionBlockingStop {
+		t.Errorf("unexpected LastAction after concurrent writes: %v", got)
 	}
 }

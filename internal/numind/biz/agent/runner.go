@@ -131,6 +131,13 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	if effectiveHooks == nil {
 		effectiveHooks = r.defaultHooks
 	}
+
+	// M10: auto-inject Registry if hooks exist but Registry was not provided by caller.
+	// This ensures adapter Record() calls are always wired without requiring callers to know about Registry.
+	if effectiveHooks != nil && effectiveHooks.Registry == nil {
+		effectiveHooks.Registry = NewHookActionRegistry()
+	}
+
 	var einoTools []einotool.BaseTool
 	if r.registry != nil {
 		for _, name := range req.ToolNames {
@@ -172,7 +179,19 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// 6. 简化状态机：写终止 messages + UpdateState
 	// #2 仅返回"成功创建 run"状态，真实 LLM 调用 + state.Transition 由 Task 8 集成测试覆盖
 	st := &LoopState{}
-	st.TerminalReason = TerminalCompleted
+	st.TerminalReason = TerminalCompleted // default
+
+	// M10: if a hook recorded a non-Continue action, propagate it through state.Transition
+	// to produce the correct TerminalReason (replacing the hardcoded TerminalCompleted default).
+	if effectiveHooks != nil && effectiveHooks.Registry != nil {
+		if last := effectiveHooks.Registry.LastAction(); last != HookActionContinue {
+			if ev := HookActionToLoopEvent(last); ev != LoopEventInvalid {
+				if term, _, isTerminal := st.Transition(ev); isTerminal {
+					st.TerminalReason = term
+				}
+			}
+		}
+	}
 
 	finalMessages, _ := json.Marshal([]map[string]any{
 		{"role": "user", "content": req.Input},
