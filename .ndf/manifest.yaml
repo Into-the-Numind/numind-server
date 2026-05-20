@@ -4,10 +4,10 @@ features:
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #3/14。扩展 #2 最小 Tool interface 到完整 38 字段（蓝本 §4.2，参考 Claude Code v2.1 源码）；实现 ToolFactory 插件模式（Source: platform/mcp/cli/webhook）+ AgentToolRegistry 启动时注册 / 运行时查找；6 个 platform 内置工具（web_search / kb_search / file_read / bash_exec stub / image_gen stub / get_current_date）；接入 AgentRunner.Run 替换直接传 tools。Out of scope: MCP/CLI/Webhook ToolFactory 实现（保留蓝本 §4.2.10 留到后续 feature）/ 沙箱集成（#4）/ 权限 pipeline（#6）/ Memory（#7）/ Narration（#8）/ 管理端 UI（#10）。阻塞 #4/#6/#8/#10。'
   track: standard
-  stage: S0
-  classification_reason: 'Triage — (1) DB schema：是（agent_tool + agent_tool_factory 两表）(2) 无新 API (3) 无新外部服务 (4) 影响文件 >3 (5) 非高风险。条件 1+4 触发 Standard。'
-  last_updated_by: ai-s0-requirement-card-written
-  last_updated_at: '2026-05-20T05:30:00+08:00'
+  stage: S4
+  classification_reason: 'Triage — (1) DB schema：是（tool_definition + tool_factory_registry 两表）(2) 无新 API (3) 无新外部服务 (4) 影响文件 >3 (5) 非高风险。条件 1+4 触发 Standard。'
+  last_updated_by: ai-s3-reviewer-pass-entering-s4
+  last_updated_at: '2026-05-21T01:00:00+08:00'
   repos:
   - numind-server
   branches:
@@ -16,12 +16,15 @@ features:
     numind-server: /private/tmp/wt-agent-mode-tool-registry-numind-server
   artifacts:
     requirement: numind-server/requirements/agent-mode-tool-registry.md
+    proposal: numind-server/proposals/agent-mode-tool-registry-proposal.md
+    spec: numind-server/docs/superpowers/specs/2026-05-21-agent-mode-tool-registry-design.md
+    plan: numind-server/docs/superpowers/plans/2026-05-21-agent-mode-tool-registry-plan.md
     architecture_blueprint: docs/agent-mode/architecture-v1.md
   progress:
     total_tasks: 8
     completed_tasks: 0
     reviewed_tasks: 0
-    current_task: 'S0 requirement card 写完，待 reviewer 审。8 module M1-M8。'
+    current_task: 'S3 plan + reviewer PASS（2 P0 + 4 P1 + 8 P2 across S0/S1/S2/S3 已修）。进入 S4：Phase 1 四路 Tier 3 并行（Task 1 M1 + Task 2 M3 + Task 3 M4 interface only + Task 4 M6 6 tools）。'
   decisions:
   - '2026-05-20 (沿用 #1/#2 决策 + autopilot 协议): 14-feature 分解；Eino v0.8.13；Phase 0 V5 ADR Docker pool；ToolCallingChatModel；dev 部署后停 prod。'
   decisions_archived: .ndf/decisions/agent-mode-tool-registry/
