@@ -18,6 +18,7 @@ import (
 	kbbiz "numind-server/internal/numind/biz/knowledgebase"
 	"numind-server/internal/numind/biz/llmrouter"
 	"numind-server/internal/numind/biz/membership"
+	"numind-server/internal/numind/biz/memory"
 	"numind-server/internal/numind/biz/monitor"
 	"numind-server/internal/numind/biz/payment"
 	"numind-server/internal/numind/biz/permission"
@@ -263,6 +264,9 @@ func NewBiz(ds store.IStore) *biz {
 	)
 	wrappedHooks := permission.WrapHooks(sandboxHookManager.AsRunHooks(), b.permissionGate)
 
+	// #7 memory-system: construct MemoryProvider backed by L1 + L2 stores.
+	memoryProvider := memory.NewProvider(ds.AgentSessionMemories(), ds.UserGlobalMemories())
+
 	b.agentRunner = agent.NewAgentRunner(
 		ds.AgentRuns(),
 		agentToolRegistry,
@@ -277,6 +281,7 @@ func NewBiz(ds store.IStore) *biz {
 			PlaceholderSummary: "[v1 placeholder summary — real LLM compact in #14]",
 		}),
 		// WithCompactConfig omitted — DefaultConfig (qwen-plus) applies.
+		agent.WithMemoryProvider(memoryProvider), // #7 memory-system
 	)
 
 	// 初始化知识库服务
