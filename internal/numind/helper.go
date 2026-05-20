@@ -276,6 +276,11 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate tool_factory_registry: %v", err)
 	}
 
+	// Agent sandbox session 表（agent-mode-sandbox-integration #4）
+	if err := db.AutoMigrate(&model.AgentSandboxSession{}); err != nil {
+		return fmt.Errorf("failed to migrate agent_sandbox_session: %v", err)
+	}
+
 	log.Infow("All database schema migration completed")
 
 	// 3. 迁移后验证字符集
