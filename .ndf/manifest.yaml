@@ -1,5 +1,46 @@
 schema_version: '2.0'
 features:
+- id: agent-mode-configurator-ux
+  ndf_version: '2.0'
+  description: 'Agent 模式 14-feature 分解 #10/14。落地蓝本 §5 配置者 UX 全部范围（admin-web 前端）：侧边栏 + 路由（/admin/agents 列表 / 创建 / 详情 / 编辑 / 高级 / 监控）+ Pinia store + axios wrappers（9 个 /v1/agent/skills/* 端点） + AgentList DataTable + 3 创建路径（模板 / 从零 / 派生） + TemplateGallery + AgentBuilder 12 题问卷（严格按蓝本 §5.3 canonical：Q1 名字 / Q2 头像 / Q3 描述 / Q4 欢迎 / Q5 starters / Q6 任务类型多选 / Q7 材料类型多选 / Q8 积分滑块 / Q9 网络搜索 / Q10 话题 / Q11 越界 / Q12 风格） + AgentDetail 3 Tab（配置 / 历史 / 数据占位） + AgentHistoryTab 回滚 + AgentAdvancedEdit Markdown editor + 工具开关 + AfterSaveModal 试聊弹窗（v1 toast 占位） + AdvancedToggleConfirmModal + AgentMonitoring（v1 UI 骨架空状态，不调后端避免 404） + AdminSidebar 加 "AI 助手" 菜单。全部走自研组件（DataTable / ConfirmModal / AppInput / AppSelect / AppButton），0 外部 UI 框架引入。Out of scope: 学员端 UI (#11) / 试聊真实流程 (#12) / Langfuse trace 真实跳转 (#14) / 强制取消 agent_run 后端 (#14) / 监控真实数据源 (#14) / per-tenant narration 模板编辑器 / 响应式 mobile / i18n / 后端 API 改动 / prod 部署。术语翻译：蓝本 "顶部导航" → admin-web AdminSidebar 左侧菜单。'
+  track: standard
+  stage: S0
+  classification_reason: 'Standard Triage 5 条 — (1) DB schema 变更：否（不动后端） (2) 新 API 端点：否（消费 #5 已落地 9 端点） (3) 无新外部服务集成 (4) 影响文件数 >3（新增 ~12 Vue 组件 + 9 axios wrappers + 1 store + 1 types 文件 + router 修改 + sidebar 修改 + N 单测/E2E ≥ 25 文件） (5) 高风险业务逻辑：否（UI 层；销毁性操作走 ConfirmModal；不动支付/会员/权限）。条件 4 单条触发 Standard——跨多个新组件 + 多状态管理 + 表单验证规则多需要严肃 spec/plan review。'
+  last_updated_by: ai-s0-reviewer-applied
+  last_updated_at: '2026-05-21T03:50:00+08:00'
+  repos:
+  - numind-admin-web
+  branches:
+    numind-admin-web: feature/agent-mode-configurator-ux
+  worktree:
+    numind-admin-web: /private/tmp/wt-agent-mode-configurator-ux-numind-admin-web
+  artifacts:
+    requirement: numind-server/requirements/agent-mode-configurator-ux.md
+    proposal: numind-server/proposals/agent-mode-configurator-ux-proposal.md
+    spec: numind-server/docs/superpowers/specs/2026-05-21-agent-mode-configurator-ux-design.md
+    plan: numind-server/docs/superpowers/plans/2026-05-21-agent-mode-configurator-ux-plan.md
+    architecture_blueprint: docs/agent-mode/architecture-v1.md
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+    current_task: 'S0 requirement card 已写并通过 reviewer（PASS_WITH_CONDITIONS - 2 P0 + 4 P1 + 4 P2 全修）。进入 S1 写 proposal + PRD（含路由树 / 组件树 / API 对接 / 数据流）。'
+  decisions:
+  - '2026-05-21 (s0-1): 搜索框 v1 纯客户端 filter 当前页内 list（P0-1 修复）— 后端 GET /v1/agent/skills 无 ?name= 参数；不引入服务端搜索；page_size=50 + 单父账户 Agent 通常 ≤20 时体验可接受。如未来 Agent 数 >50 → 后续 micro 加 backend ?name=。'
+  - '2026-05-21 (s0-2): 监控后台 v1 zero-backend-dep（P0-2 修复）— 不调任何 API（避免 404）；直接渲染 empty-state "监控功能即将上线 · v1 不联机"；30s 刷新逻辑就位但 fetcher 返回空数组并加 TODO(#14) 标记；DataTable 列定义就位作骨架但 v1 永远空数组。真实数据源由 #14 落地。'
+  - '2026-05-21 (s0-3): 高级模式不展示平台固定段（P1-4 修复）— 经核查 #5 skill_builder.go Build() 函数：generated_skill_body 仅含用户内容段；PlatformBasePrompt + PlatformSafetyFooter 是 runtime 拼接的独立 const，不在 body 内。UI 不需要 marker 解析或只读块渲染。后续如需 system prompt 全文预览 → 独立 micro feature。'
+  - '2026-05-21 (s0-4): Q11 默认值 (P1-2 修复) = "这个问题有点超出我的能力范围，你可以去问老师或者换个方式描述一下～"（蓝本 §5.3 line 3334 默认值）— 创建新 Agent 时预填，不让 textarea 空白。'
+  - '2026-05-21 (s0-5): Q5 starters 模板预填范围 (P1-1 修复)— 模板派生时 starters / questionnaire_answers / tool_flags / credit_cap 全部预填，不仅 questionnaire_answers。'
+  - '2026-05-21 (s0-6): Q6 "其他（填写）" 自由文本 (P2-1)— UI 渲染为 chip 内联 input；提交时该自由文本作为 array 第 6 项（如 q6:["analyze_data","<自由文本>"]）；后端 taskTypeDisplay default 透传到 SKILL.md。不引入 OTHER enum。'
+  - '2026-05-21 (s0-7): lint baseline (P2 follow-up) — S2 记录当前 npm run lint 精确警告/错误 count，S5 验收要求"warning ≤ baseline, error == 0"。'
+  related_features:
+  - 'agent-mode-skill-system (#5/14, 已 develop merged commit e05498b6 — 9 个 /v1/agent/skills/* 端点 + AgentDefinition/AgentDefinitionHistory/SkillTemplate 三表 + skill_builder + versioning + 10 内置模板 seed)'
+  - 'agent-mode-tool-registry (#3/14, 已 develop merged — tool_flags 协议元数据来源)'
+  - 'agent-mode-student-ux (#11/14, 部分依赖本 feature — 至少能创建 Agent 学员端才有内容；Builder UI 不阻塞 #11 启动)'
+  - 'agent-mode-billing-integration (#12/14, 试聊真实流程依赖 #12 admin_test source_type 落地)'
+  - 'agent-mode-e2e-rollout (#14/14, Langfuse trace 跳转 / agent_run 强制取消 / 监控真实数据源 依赖 #14)'
+  blockers: []
+  created_at: '2026-05-21T03:45:42+08:00'
 - id: agent-mode-compact
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #9/14。落地蓝本 §4.8 Compact（含会话恢复，对话延续核心）：agent_run 表 ALTER 加 compact_state JSON + compact_summary LONGTEXT 两列（不新建表）+ biz/compact 子包（threshold qwen-plus 适配 / prompt BASE_COMPACT_PROMPT 9 节 + NO_TOOLS_PREAMBLE / provider interface + MockCompactProvider + token estimation / ptl_chain CollapseDrain + ReactiveCompact + headDropRetry / max_output_chain EscalateMaxTokens / restore 3 道清洗 + 恢复 narration + FirstTurnNoTools 标志 / attachments interface + NullAttachmentReinjector）+ AgentRunner.WithCompactProvider + WithCompactConfig RunnerOption + 3 个 runner helper（tryPreLLMCompact / handlePTLError / handleMaxOutputError）。不改 #2 state.go 状态机（PTL/MaxOutput LoopEvent 已就绪）。不改 #2 mock 主流程，#14 ReAct loop 真实集成时 wire helper。Out of scope: 真实 LLM compact 调用 (#14) / 真实文件/Skill/MCP 重注入 (#11/#14) / 学员端会话恢复 UI (#11) / L3 session archive (v2) / 管理端阈值配置 CRUD (#10) / trySessionMemoryCompaction 优化 / 熔断器真实拦截 (#14) / prod 部署。术语翻译：蓝本 anthropic 200k → qwen-plus 128k 阈值映射。'
