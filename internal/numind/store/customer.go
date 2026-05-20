@@ -276,14 +276,19 @@ func (c *customerStore) GetCustomerStatistics(ctx context.Context, userID uint) 
 		return 0, 0, 0, 0, err
 	}
 
-	// 活跃 = 登录 ∪ SOP run ∪ chatbot session ∪ agent run 任一在 30 天内
+	// 活跃 = 登录 ∪ SOP run ∪ chatbot session ∪ agent run 任一在 30 天内。
+	// sop_run / chatbot_session 用软删除（gorm.Model / DeletedAt 字段），raw EXISTS
+	// 绕过了 GORM scope，必须显式加 deleted_at IS NULL；agent_run 没软删除字段。
+	// chatbot_session 用 updated_at（长持续会话每条消息会 autoUpdateTime 刷新，
+	// created_at 会漏掉 >30d 前开始但仍在用的会话）；sop_run/agent_run 是一次性执行
+	// 记录，created_at 即活动时间。
 	activeCutoff := time.Now().AddDate(0, 0, -30)
 	if err = c.db.WithContext(ctx).Model(&model.User{}).
 		Where("parent_user_id = ?", userID).
 		Where(`(
 			last_login > ?
-			OR EXISTS (SELECT 1 FROM sop_run WHERE sop_run.user_id = user.id AND sop_run.created_at > ?)
-			OR EXISTS (SELECT 1 FROM chatbot_session WHERE chatbot_session.user_id = user.id AND chatbot_session.updated_at > ?)
+			OR EXISTS (SELECT 1 FROM sop_run WHERE sop_run.user_id = user.id AND sop_run.created_at > ? AND sop_run.deleted_at IS NULL)
+			OR EXISTS (SELECT 1 FROM chatbot_session WHERE chatbot_session.user_id = user.id AND chatbot_session.updated_at > ? AND chatbot_session.deleted_at IS NULL)
 			OR EXISTS (SELECT 1 FROM agent_run WHERE agent_run.user_id = user.id AND agent_run.created_at > ?)
 		)`, activeCutoff, activeCutoff, activeCutoff, activeCutoff).
 		Count(&activeSubUsers).Error; err != nil {
@@ -354,8 +359,11 @@ func (c *customerStore) GetSubUserRunCounts(ctx context.Context, subUserIDs []ui
 		UserID uint
 		Cnt    int
 	}
+	// 用 Model(&Struct{}) 而非 Table("name")，让 GORM 自动应用软删除 scope
+	// （sop_run / chatbot_session 都软删除，参考 model/sop.go SopRun 嵌入 gorm.Model
+	// 和 model/chatbot.go ChatbotSession 的 DeletedAt 字段）。
 	var sopRows []row
-	if err := c.db.WithContext(ctx).Table("sop_run").
+	if err := c.db.WithContext(ctx).Model(&model.SopRun{}).
 		Select("user_id, COUNT(*) AS cnt").
 		Where("user_id IN ?", subUserIDs).
 		Group("user_id").
@@ -366,7 +374,7 @@ func (c *customerStore) GetSubUserRunCounts(ctx context.Context, subUserIDs []ui
 		result[r.UserID] += r.Cnt
 	}
 	var chatRows []row
-	if err := c.db.WithContext(ctx).Table("chatbot_session").
+	if err := c.db.WithContext(ctx).Model(&model.ChatbotSession{}).
 		Select("user_id, COUNT(*) AS cnt").
 		Where("user_id IN ?", subUserIDs).
 		Group("user_id").
