@@ -1,5 +1,45 @@
 schema_version: '2.0'
 features:
+- id: agent-mode-narration-layer
+  ndf_version: '2.0'
+  description: 'Agent 模式 14-feature 分解 #8/14。落地蓝本 §4.7 Narration 层（学员可见叙述核心）：新增 biz/narration 子包（event/display/translator/streamer/provider/error_translate 6 文件） + configs/tool-display.yaml（6 个内置工具 use/result/error/rejected 模板） + RunHooks 增 NarrationProvider 字段（无需破坏 #4 PreToolCall/PostToolCall 签名） + adapter_full_to_eino.go 在 Pre/Post 调用点串入 narration.Emit + AgentRunner.WithNarrationProvider option + biz.go wire narration.NewProvider 注入 runner。NarrationEvent.State 6 值（queued/use/progress/result/error/rejected）声明全；v1 主动 emit 4 值（use/result/error/rejected）。Out of scope: 持久化 DB 表 / 真实 LLM fallback (#14) / SSE/WebSocket 学员端 (#11) / 管理端 narration 模板编辑器 (#10) / queued+progress emitter (#13/#14) / per-tenant 模板覆盖 (#10) / 学员端 UI (#11) / prod 部署。术语翻译：蓝本 tenant_id → Numind parent_user_id（v1 全平台模板，#10 加 per-parent override）。'
+  track: standard
+  stage: S0
+  classification_reason: 'Standard Triage 5 条 — (1) DB schema 变更：否（v1 内存 streamer，无新表，不动 migration） (2) 新 API 端点：否（biz Subscribe API 仅供 #11 消费，本 feature 不引入 HTTP） (3) 无新外部服务集成（aiservice LLM fallback 接口预留但 v1 stub） (4) 影响文件数 >3（biz/narration 6 新文件 + tool-display.yaml + hooks.go + adapter_full_to_eino.go + runner.go + biz/biz.go + N test ≥ 15 文件） (5) 高风险业务逻辑：否（narration 是 side-channel，不影响 terminal reason / state machine / billing / permission）。条件 4 单条触发 Standard（虽然非高风险，但跨 6 个新文件 + 3 个修改 + 多组件协调需要严肃 review 流程）。'
+  last_updated_by: ai-s0-reviewer-applied
+  last_updated_at: '2026-05-21T16:00:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: feature/agent-mode-narration-layer
+  worktree:
+    numind-server: /private/tmp/wt-agent-mode-narration-layer-numind-server
+  artifacts:
+    requirement: numind-server/requirements/agent-mode-narration-layer.md
+    architecture_blueprint: docs/agent-mode/architecture-v1.md
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+    current_task: 'S0 PASS_WITH_CONDITIONS: P1 HookAction→state mapping + use timing 全修；4 P2 全修（4-of-6 enum 标注 / Q1+Q5 decided constraints / yaml-key 匹配 Name() / Q5 移入 D4）。进入 S1 proposal。'
+  decisions:
+  - '2026-05-21 (s0-1): HookAction→narration state 映射 v1 单一规则（S0 P1 fix）— 任何 PreToolCall 非 Continue HookAction emit StateRejected（不区分 Stop vs BlockingStop vs 未来 permission_denied）；#6 落地时通过 reason 字段细化，本 feature API 留 Reason string 默认空字符串占位。'
+  - '2026-05-21 (s0-2): use 事件时序契约（S0 P1 fix）— adapter PreToolCall 返回 Continue 后 + Execute 前发 use；PreToolCall 非 Continue 直接发 rejected，不发 use（与集成测试 fixture 一致）。'
+  - '2026-05-21 (s0-3): NarrationEvent.State 枚举值全 6 个（S0 P2 fix）— queued/use/progress/result/error/rejected；v1 emitter 主动发 4（use/result/error/rejected），queued+progress 为未来 #13/#14 预留。'
+  - '2026-05-21 (s0-4): Provider singleton + per-runID streamer registry（S0 D1）— 镜像 HookActionRegistry 模式，process-singleton 通过 WithNarrationProvider 注入 runner。'
+  - '2026-05-21 (s0-5): per-Run channel buffer cap 256 + drop-oldest（S0 D2）— 满时丢最早事件 + zap warn log（run_id + tool_call_id）；rationale: 256 ≥ 5× p95 turns-per-Run 估算 + 内存 ~64KB/run 上限。'
+  - '2026-05-21 (s0-6): tool-display.yaml 路径 configs/（S0 D3）— ops-visible，复用 config loader；测试用 in-memory yaml fixture 不依赖文件系统。'
+  - '2026-05-21 (s0-7): Provider.Emit API string-keyed dispatch（S0 D4）— 取 (ctx, toolName string, state State, payload EmitPayload)，不持 FullTool 引用，避免 narration → agent 包循环依赖；yaml 优先 → LLM fallback；FullTool 8 narration 方法 v1 不调用，留作 future hook。'
+  related_features:
+  - 'agent-mode-runtime-skeleton (#2/14, 已 develop merged — RunHooks + adapter PreToolCall/PostToolCall hook 点输入)'
+  - 'agent-mode-tool-registry (#3/14, 已 develop merged — FullTool 8 narration 方法 + NarrationMessage struct + BaseTool 默认值输入)'
+  - 'agent-mode-skill-system (#5/14, 已 develop merged — biz.go wire 模式 + HookActionRegistry race-safe 模式输入)'
+  - 'agent-mode-permission-pipeline (#6/14, 并行进行中 — 落地后通过 Reason 字段细化 StateRejected 原因，本 feature 留扩展点)'
+  - 'agent-mode-configurator-ux (#10/14, 依赖本 feature tool-display.yaml schema 做管理端 per-parent override CRUD UI)'
+  - 'agent-mode-student-ux (#11/14, 依赖本 feature Provider.Subscribe 做 SSE/WebSocket 推送 + UI 渲染)'
+  - 'agent-mode-e2e-rollout (#14/14, 依赖本 feature LLMFallback 接口落地真实 aiservice.Chat 调用 + 真实 ReAct loop 触发 queued+progress emitter)'
+  blockers: []
+  created_at: '2026-05-21T15:00:00+08:00'
 - id: agent-mode-permission-pipeline
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #6/14。落地蓝本 §4.4 Permission Pipeline（安全核心）：建 agent_permission_config + agent_permission_decision_log 两表 + biz/permission 子包（PermissionGate / PermissionPipeline / 7 Validator 实现 / 异步审计写入）+ HookAction 加第 4 枚举 HookActionPermissionDeny=3 + TerminalReason 加第 13 个 permission_denied + LoopEvent 加 LoopEventPermissionDenied + AgentRunner.WithPermissionGate option + HooksWrapper 合并 sandbox + permission（顺序 permission → sandbox）+ RunResult.PermissionDenial 字段。Out of scope: 管理端 UI (#10) / 学员端 UI (#11) / classifier 真实 LLM (#14) / sandbox override 真实路径 (#13) / 23 bash validators 全扩展 / safety check L3 拆出 (#13) / 试聊配额检查 (#12) / prod 部署。术语翻译：蓝本 tenant_id → Numind parent_user_id（B2B2C 与 #5 一致）。DecisionReason canonical：§4.4.5。'
