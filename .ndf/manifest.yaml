@@ -4,10 +4,10 @@ features:
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #5/14。落地蓝本 §4.3 Skill 系统（灵活性核心）：建 agent_definition + agent_definition_history + skill_template 三表 + biz/skill 子包（skill_builder 把 §5.3 12 题问卷答案 → SKILL.md 自动组装 / versioning 历史版本永久保留 + 一键回滚 / templates 10 个内置模板 seed） + 8 个用户端 API 端点（首次为 agent-mode 引入 HTTP，全部 user_token 鉴权） + AgentRunner.Run 接入 Skill body 注入 + Hook 信号传播改造（adapter ctx-bound atomic.Int32 + runner 终止 reason 真实派发 hook_stopped/stop_hook_prevented）。Out of scope: 管理端 UI (#10) / 学员端 UI (#11) / 权限 pipeline (#6) / Memory (#7) / Narration (#8) / Compact (#9) / 试聊配额完整流程 (#12) / 跨机构脱敏共享 v2 / 真实 LLM ReAct loop (#14) / 独立 Stop Hook (#14) / prod 部署。术语翻译：蓝本 tenant_id → Numind parent_user_id。Q 编号 canonical：§5.3。'
   track: standard
-  stage: S1
+  stage: S2
   classification_reason: 'Standard Triage 5 条 — (1) DB schema 变更：是（3 张新表 agent_definition + agent_definition_history + skill_template）(2) 新 API 端点：是（9 个用户端 端点含 DELETE，首次为 agent-mode 引入 HTTP）(3) 无新外部服务集成 (4) 影响文件数 >3（model + store + 5 biz subpackage 文件 + 9 controller + router + runner + adapter + N test = ≥ 22 文件）(5) 非高风险业务逻辑（不动支付/会员/权限核心）。条件 1+2+4 多条触发 Standard。'
-  last_updated_by: ai-s1-proposal-reviewer-approved
-  last_updated_at: '2026-05-22T23:00:00+08:00'
+  last_updated_by: ai-s2-spec-reviewer-approved
+  last_updated_at: '2026-05-22T23:30:00+08:00'
   repos:
   - numind-server
   branches:
@@ -17,12 +17,13 @@ features:
   artifacts:
     requirement: numind-server/requirements/agent-mode-skill-system.md
     proposal: numind-server/proposals/agent-mode-skill-system-proposal.md
+    spec: numind-server/docs/superpowers/specs/2026-05-22-agent-mode-skill-system-design.md
     architecture_blueprint: docs/agent-mode/architecture-v1.md
   progress:
     total_tasks: 0
     completed_tasks: 0
     reviewed_tasks: 0
-    current_task: 'S1 reviewer 通过（3 P0 + 5 P1 + 4 P2 + 3 复审新发现全修）；6 用户故事 + 9 API 端点 PRD + 错误码表 + Hook hooks-bound 方案定案；进入 S2 spec'
+    current_task: 'S2 reviewer 通过（4 P0 + 2 P1 + 5 P2 + 复审 1 P1-A + 3 新 P2 全修）；DB schema 完整 + biz/skill 子包架构 + Service 持有 IStore + Runner WithSkillStore option + HookActionRegistry 注入路径明确；进入 S3 task plan'
   decisions:
   - '2026-05-22 (sd0-1): 蓝本 DDL tenant_id 在 Numind 实现中映射为 parent_user_id (INT UNSIGNED NOT NULL，与 user.id 类型对齐)；用户级隔离基于 B2B2C 父账户模型。'
   - '2026-05-22 (sd0-2): Hook 信号传播改造采用 hooks-bound 方案（RunHooks.Registry *HookActionRegistry + atomic.Int32）；不要求真实 LLM ReAct loop。'
