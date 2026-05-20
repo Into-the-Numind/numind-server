@@ -4,10 +4,10 @@ features:
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #4/14。把 #1 Phase 0 V5 ADR 决策的 Docker pool 沙箱真实落地：建 sandbox_session 审计表 + biz/sandbox 子包（pool manager / docker_client / config / security / network）+ 应用层安全加固清单（V5 ADR Q2：seccomp+AppArmor+no-root+cap-drop+no-new-priv+read-only+tmpfs+resource limits）+ 网络白名单（v1 None，Allowlist stub）+ bash_exec 真实实现（含 Phase 0 V3 8 P0 Bash validator 复用到 bashvalidator 子包）+ image_gen 真实实现（aiservice.ImageGenerate 入口，provider 未注册时友好错误）+ RunHooks 工厂（PreToolCall/PostToolCall 注入 sandbox session 生命周期）+ adapter 层 hook 调用点（方案 A，runner.go 签名不变）。Out of scope: prod 部署 / 权限 pipeline（#6）/ tenant 隔离（#13）/ tool 输入二次校验（#6）/ 沙箱镜像精装包（pandas/ffmpeg follow-up）/ 网络 Allowlist 真实落地（#14）/ CubeSandbox 升级（v2）/ 容器逃逸渗透测试（生产化前）/ wanx2.1/wan2.2 endpoint 注册到 aiservice DB Registry（follow-up）。阻塞 #5/#6/#11/#13。'
   track: standard
-  stage: S1
-  classification_reason: 'Triage 5 条 — (1) DB schema 变更：是（agent_sandbox_session 新表）(2) 无新 API 端点（biz 层）(3) 新外部服务集成：是（Docker daemon / Docker CLI）(4) 影响文件数 >3（migration + 1 model + 1 store + sandbox 子包 6 文件 + bashvalidator 子包 + 工具升级 + adapter 升级 + hooks 工厂 + biz wire + 测试 = 20+ 文件）(5) 高风险业务逻辑：部分（沙箱安全加固 = 中风险，但不动支付/会员）。条件 1+3+4+5 多条触发 Standard。'
-  last_updated_by: ai-s1-proposal-prd
-  last_updated_at: '2026-05-21T05:30:00+08:00'
+  stage: S2
+  classification_reason: 'Triage 5 条 — (1) DB schema 变更：是（agent_sandbox_session 新表）(2) 无新 API 端点（biz 层）(3) 新外部服务集成：是（Docker daemon / Docker CLI）(4) 影响文件数 >3（migration + 1 model + 1 store + sandbox 子包 9 文件含 seccomp.json/errors.go + bashvalidator 子包 + 工具升级 + adapter 升级 + sandbox_ctx + factory_sandbox_hooks + biz wire + 测试 = 25+ 文件）(5) 高风险业务逻辑：部分（沙箱安全加固 = 中风险，但不动支付/会员）。条件 1+3+4+5 多条触发 Standard。'
+  last_updated_by: ai-s2-spec
+  last_updated_at: '2026-05-22T06:00:00+08:00'
   repos:
   - numind-server
   branches:
@@ -17,13 +17,14 @@ features:
   artifacts:
     requirement: numind-server/requirements/agent-mode-sandbox-integration.md
     proposal: numind-server/proposals/agent-mode-sandbox-integration-proposal.md
+    spec: numind-server/docs/superpowers/specs/2026-05-22-agent-mode-sandbox-integration-design.md
     architecture_blueprint: docs/agent-mode/architecture-v1.md
     v5_adr: numind-server/.ndf/decisions/agent-mode-phase0-verification/0002-sandbox-final.md
   progress:
     total_tasks: 0
     completed_tasks: 0
     reviewed_tasks: 0
-    current_task: 'S1 proposal + PRD 完成（自评 P0/P1 已修：runID via ctx / adapter 签名 / image_gen scope 不膨胀）。进 S2 spec。'
+    current_task: 'S2 spec 完成 (10 决策 D1-D10 + V5 ADR Q1-Q4 落地 + hook 注入设计修订：hook 做 infra / Execute 做 business 职责切分，避免双重 Borrow；NewSandboxHookManager 暴露 SandboxSessionFor 给 bash_exec.Execute 查找)。进 S3 plan。'
   decisions:
   - '2026-05-21 (沿用 #1/#2/#3 决策 + autopilot 协议): 14-feature 分解；V5 ADR Docker pool；ToolCallingChatModel；prod 永不上 sandbox 真实代码（SANDBOX_BACKEND=disabled）；hook 注入用方案 A（adapter 层）。'
   decisions_archived: .ndf/decisions/agent-mode-sandbox-integration/
