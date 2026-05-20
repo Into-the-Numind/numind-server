@@ -4,10 +4,10 @@ features:
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #10/14。落地蓝本 §5 配置者 UX 全部范围（admin-web 前端）：侧边栏 + 路由（/admin/agents 列表 / 创建 / 详情 / 编辑 / 高级 / 监控）+ Pinia store + axios wrappers（9 个 /v1/agent/skills/* 端点） + AgentList DataTable + 3 创建路径（模板 / 从零 / 派生） + TemplateGallery + AgentBuilder 12 题问卷（严格按蓝本 §5.3 canonical：Q1 名字 / Q2 头像 / Q3 描述 / Q4 欢迎 / Q5 starters / Q6 任务类型多选 / Q7 材料类型多选 / Q8 积分滑块 / Q9 网络搜索 / Q10 话题 / Q11 越界 / Q12 风格） + AgentDetail 3 Tab（配置 / 历史 / 数据占位） + AgentHistoryTab 回滚 + AgentAdvancedEdit Markdown editor + 工具开关 + AfterSaveModal 试聊弹窗（v1 toast 占位） + AdvancedToggleConfirmModal + AgentMonitoring（v1 UI 骨架空状态，不调后端避免 404） + AdminSidebar 加 "AI 助手" 菜单。全部走自研组件（DataTable / ConfirmModal / AppInput / AppSelect / AppButton），0 外部 UI 框架引入。Out of scope: 学员端 UI (#11) / 试聊真实流程 (#12) / Langfuse trace 真实跳转 (#14) / 强制取消 agent_run 后端 (#14) / 监控真实数据源 (#14) / per-tenant narration 模板编辑器 / 响应式 mobile / i18n / 后端 API 改动 / prod 部署。术语翻译：蓝本 "顶部导航" → admin-web AdminSidebar 左侧菜单。'
   track: standard
-  stage: S0
+  stage: S1
   classification_reason: 'Standard Triage 5 条 — (1) DB schema 变更：否（不动后端） (2) 新 API 端点：否（消费 #5 已落地 9 端点） (3) 无新外部服务集成 (4) 影响文件数 >3（新增 ~12 Vue 组件 + 9 axios wrappers + 1 store + 1 types 文件 + router 修改 + sidebar 修改 + N 单测/E2E ≥ 25 文件） (5) 高风险业务逻辑：否（UI 层；销毁性操作走 ConfirmModal；不动支付/会员/权限）。条件 4 单条触发 Standard——跨多个新组件 + 多状态管理 + 表单验证规则多需要严肃 spec/plan review。'
-  last_updated_by: ai-s0-reviewer-applied
-  last_updated_at: '2026-05-21T03:50:00+08:00'
+  last_updated_by: ai-s1-reviewer-applied
+  last_updated_at: '2026-05-21T04:15:00+08:00'
   repos:
   - numind-admin-web
   branches:
@@ -24,8 +24,18 @@ features:
     total_tasks: 0
     completed_tasks: 0
     reviewed_tasks: 0
-    current_task: 'S0 requirement card 已写并通过 reviewer（PASS_WITH_CONDITIONS - 2 P0 + 4 P1 + 4 P2 全修）。进入 S1 写 proposal + PRD（含路由树 / 组件树 / API 对接 / 数据流）。'
+    current_task: 'S1 proposal + PRD 已写并通过 reviewer（PASS_WITH_CONDITIONS - 3 P0 + 6 P1 + 6 P2 + Nits 全修）。S1 决议详见 decisions s1-1 .. s1-9。进入 S2 写 spec（数据契约 / UI 契约 / 测试契约）。'
   decisions:
+  - '2026-05-21 (s1-1): 路由前缀勘误（P0-1 修复）— S0 写的 /admin/agents 错；admin-web router 无 /admin/ 前缀（验证：现有 /users /templates /billing 等），S1 校正为 /agents /agent-monitoring，所有视图归 AdminLayout 下 children。S0 §2.1 条目即为本错，以 S1 §1.2 为准。'
+  - '2026-05-21 (s1-2): credit_cap_per_session / daily_credit_cap / source_template_id TypeScript 类型 = number | null | undefined（P0-2 修复）— 后端是 *uint pointer，null=不限，需要前端显式传 null（JSON.stringify 保留 null 剥 undefined）。store create() 调用必须显式传 null 而非 undefined。'
+  - '2026-05-21 (s1-3): v1 列表删除 include_inactive toggle（P0-3 修复）— 后端 PATCH 不接受 is_active 字段，DELETE 后无重新上架功能；toggle 暴露下架行会形成"看得到但操作不了"的死 UX。v1 列表只显示 active；后续如机构反馈再加 reactivate 端点 + toggle。'
+  - '2026-05-21 (s1-4): Builder 单按钮 [保存]（决策 2 锁定）— 蓝本 §4.3.1 原则 3 verbatim："不设 Draft/Live 双态"。蓝本 §5.3 line 3214 双按钮描述与原则矛盾，以原则为准。v2 兼容：未来后端加 draft column → ~30 行修改 + 第二按钮，不需要 refactor。'
+  - '2026-05-21 (s1-5): /agents/:id/edit 单路由内部分支（决策 3 + Nit fix）— 路由 view 根据 agent.advanced_mode 渲染 <AgentBuilder> 或 <AgentAdvancedEdit> 子组件；URL 稳定（用户分享/收藏不会因切高级失效）。Edit 模式发完整 payload 走 PATCH（不计算 diff，后端 PATCH 接受全 optional）。'
+  - '2026-05-21 (s1-6): 派生重名不需冲突检测（决策 4 + P2-7 fix）— 已验证后端 model.AgentDefinition.Name `size:50;not null` 无 uniqueIndex，可自由重名。前端 - 副本 后缀即可，无需 -副本 2 -副本 3 collision avoidance。'
+  - '2026-05-21 (s1-7): 监控后台 NoticeBanner（决策 6 + P1-3 修复）— 页面顶部加 banner "ℹ️ 实时监控功能即将上线（v1 不联机）。当前页面是 UI 预览。"，区分 "v1 not connected" vs "no active sessions" 两种空状态的 UX 信号。底层 fetcher 仍 hardcoded 空数组 + 0 HTTP 调用 + TODO(#14) 标记。'
+  - '2026-05-21 (s1-8): 12 题表单 state 用单 reactive({})（决策 7 + P1-6 修复）— Vue 3 Proxy reactive 已细粒度追踪，12 题 ~30 字段无 re-render storm；dirty 检查用 JSON.stringify O(N) <1ms；reset 用 Object.assign 保留 reactive proxy。'
+  - '2026-05-21 (s1-9): Builder + AdvancedEdit 路由离开守卫（决策 8 + P1-5 修复）— onBeforeRouteLeave + beforeunload 双重；ConfirmModal "您有未保存的更改，确认离开？" [继续编辑] [放弃更改]；cmd+W / 关浏览器走原生 e.returnValue 提示。'
+  - '2026-05-21 (s1-10): M5 拆 M5a (sidebar) + M5b (router shells + 6 stub view files)（P1-4 修复 — Wave 5 ownership 明确）— M5b 必须创建 stub Vue 文件（空 script + template）让 lazy import 类型检查不报错；M7-M12 在 Wave 5 替换 stub。Wave 4 = M5a + M5b + M6 并行；Wave 5 = M7 + M8 + M11 + M12 并行；Wave 6 = M9 串行；Wave 7 = M10 串行。'
   - '2026-05-21 (s0-1): 搜索框 v1 纯客户端 filter 当前页内 list（P0-1 修复）— 后端 GET /v1/agent/skills 无 ?name= 参数；不引入服务端搜索；page_size=50 + 单父账户 Agent 通常 ≤20 时体验可接受。如未来 Agent 数 >50 → 后续 micro 加 backend ?name=。'
   - '2026-05-21 (s0-2): 监控后台 v1 zero-backend-dep（P0-2 修复）— 不调任何 API（避免 404）；直接渲染 empty-state "监控功能即将上线 · v1 不联机"；30s 刷新逻辑就位但 fetcher 返回空数组并加 TODO(#14) 标记；DataTable 列定义就位作骨架但 v1 永远空数组。真实数据源由 #14 落地。'
   - '2026-05-21 (s0-3): 高级模式不展示平台固定段（P1-4 修复）— 经核查 #5 skill_builder.go Build() 函数：generated_skill_body 仅含用户内容段；PlatformBasePrompt + PlatformSafetyFooter 是 runtime 拼接的独立 const，不在 body 内。UI 不需要 marker 解析或只读块渲染。后续如需 system prompt 全文预览 → 独立 micro feature。'
