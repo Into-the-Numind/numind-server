@@ -265,7 +265,7 @@ func TestRetrieveL2_TopKPerKind(t *testing.T) {
 
 	const (
 		userID      uint = 7
-		topKPerKind      = 3
+		topKPerKind int  = 3
 	)
 
 	// Seed 5 fact entries and 5 preference entries.

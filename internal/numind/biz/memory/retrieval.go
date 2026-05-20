@@ -41,13 +41,12 @@ type Retriever interface {
 }
 
 // retrieverImpl is the v1 implementation of Retriever.
-// bm25 and vector are v2 swap points; embedder is v1 mockEmbedder.
-// v1 inline logic (SQL LIKE + recency boost) is used directly in RetrieveL1 —
-// per P2-6 decision, these are not exposed as separate named struct impls.
+// embedder is v1 mockEmbedder; BM25Searcher / VectorStore interfaces
+// exist as v2 swap points (interface declarations remain for spec §4.5
+// alignment) but are not held as fields — v1 inline logic (SQL LIKE +
+// recency boost) is used directly in RetrieveL1 per P2-6 decision.
 type retrieverImpl struct {
-	bm25     BM25Searcher // v2 swap point
-	vector   VectorStore  // v2 swap point
-	embedder Embedder     // v1 mockEmbedder
+	embedder Embedder // v1 mockEmbedder
 }
 
 // NewRetriever constructs a v1 Retriever using mockEmbedder and nil bm25/vector
