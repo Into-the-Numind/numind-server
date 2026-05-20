@@ -17,14 +17,14 @@ architecture-v1.md §4.1 设计了完整的 Agent Runtime（Query Loop + 12 Term
 
 | # | 模块 | 产出物 |
 |---|------|--------|
-| M1 | **DB 表**：`agent_run` + `agent_message`（runtime 状态持久化） | `migrations/YYYYMMDD_*_agent_runtime_schema.sql` 双文件（forward + rollback）；`internal/pkg/model/agent_run.go` + `agent_message.go` GORM model |
-| M2 | **Store 层**：`IAgentRunStore` + 实现 | `internal/numind/store/agent_run.go` + `_test.go`；含 Create / Get / UpdateState / AppendMessage / ListBySession 方法 |
-| M3 | **Runtime Core**：`AgentRunner` biz（包装 Eino ReAct） | `internal/numind/biz/agent/runner.go`；接受 `RunRequest`，调度 Eino，写 agent_run；与 Phase 0 V2 adapter 模式一致 |
-| M4 | **状态机**：12 Terminal reasons + 7 Continue reasons | `internal/numind/biz/agent/state.go`（枚举常量 + state transitions 函数） |
+| M1 | **DB 表**：`agent_run` + `agent_message`（runtime 状态持久化） | `migrations/YYYYMMDD_HHMMSS_create_agent_runtime_schema.sql` (forward) + `migrations/YYYYMMDD_HHMMSS_create_agent_runtime_schema_rollback.sql` (rollback)（**双文件约定**，沿用 numind-server 已有 timestamped migrations 命名模式）；`internal/pkg/model/agent_run.go` + `agent_message.go` GORM model；schema 详细参见 `architecture-v1.md §8 数据模型`（agent_run 含 user_id / status / state_reason / messages JSON / started_at / ended_at；agent_message 含 run_id FK / role / content / token_usage / tool_calls JSON） |
+| M2 | **Store 层**：`IAgentRunStore` + 实现 | `internal/numind/store/agent_run.go` + `_test.go`；含 Create / Get / UpdateState / **WriteTurn / ListBySession** 方法。**关键不变量**（架构蓝本 §4.1.3）：agent_run.messages 是 JSON 列，**Runtime turn 级整体覆写**（`WriteTurn`），**禁止 tool 级 incremental UPDATE / append**；P0-1 race condition 防护就是基于这个不变量 |
+| M3 | **Runtime Core**：`AgentRunner` biz（包装 Eino ReAct）+ **`RunHooks` 接口预留**（**关键**，#4 sandbox 依赖此接口） | `internal/numind/biz/agent/runner.go`；接受 `RunRequest`，调度 Eino，写 agent_run；与 Phase 0 V2 adapter 模式一致。**额外定义 `RunHooks` struct**（含 `PreToolCall(ctx, tool, input) error` / `PostToolCall(ctx, tool, output, err) error` 两个 func 字段），#4 通过注入 hooks 接入 Docker pool 沙箱，**不需要改 AgentRunner 签名**——这是后续 11 个 feature 共享的稳定契约。参见 `architecture-v1.md §4.1.9` 完整 `AgentRuntime` / `LoopState` / `RunHooks` Go interface 签名 |
+| M4 | **状态机**：**12 个 Terminal reasons** + **7 个 Continue reasons**（共 19 枚举） | `internal/numind/biz/agent/state.go`。**完整枚举常量名**（参见 `architecture-v1.md §4.1.5`）：<br/>**12 Terminal**：`completed` / `blocking_limit` / `image_error` / `model_error` / `aborted_streaming` / `prompt_too_long` / `stop_hook_prevented` / `aborted_tools` / `hook_stopped` / `max_turns` / `error_max_budget` / `error_max_retries`<br/>**7 Continue**：`next_turn` / `collapse_drain_retry` / `reactive_compact_retry` / `max_output_escalate` / `max_output_recovery` / `stop_hook_blocking` / `token_budget_continue`<br/>**字符串值与枚举常量名一致**（DB CHECK constraint 校验），后续 #3-#14 feature 依赖这些常量字符串作跨 feature 契约——禁止自创名称 |
 | M5 | **AbortController 三层** | `internal/numind/biz/agent/abort.go`（queryCtx / batchCtx / toolCtx 派生 + cancel 传播） |
 | M6 | **Withhold recovery**（PTL chain + max_output_tokens chain） | `internal/numind/biz/agent/withhold.go`（两条独立 recovery chain） |
 | M7 | **Mock Tool 接口**（**仅 interface，无具体工具**） | `internal/numind/biz/agent/tool.go`（最小 Tool interface — 字段是 Name/Description/Run；38 字段完整版在 #3） |
-| M8 | **Unit tests**（mock Eino + mock tool） | `runner_test.go` / `state_test.go` / `abort_test.go` / `withhold_test.go`；mock 工具 5 步 ReAct 循环正常终止；各 Terminal/Continue case 全覆盖 |
+| M8 | **Unit + Integration tests**（mock Eino + mock tool） | `runner_test.go` / `state_test.go` / `abort_test.go` / `withhold_test.go` / `runner_integration_test.go`；mock 工具 5 步 ReAct 循环正常终止；**19 个 Terminal/Continue case 各自独立 test**；**必须用 `-race` 标志**（AbortController + goroutine 场景必备；`task test` 已含 -race -cover）；测试进 CI 主回归套件（与 Phase 0 demo 单测不同） |
 
 ### 不在范围（Out of Scope）
 
