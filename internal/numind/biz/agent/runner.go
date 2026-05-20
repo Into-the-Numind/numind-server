@@ -14,6 +14,7 @@ import (
 
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/langfuse"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
 
@@ -108,7 +109,9 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	})
 	if err != nil {
 		endedAt := time.Now()
-		_ = r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalModelError), &endedAt)
+		if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalModelError), &endedAt); uerr != nil {
+			log.Warnw("AgentRunner.Run UpdateState failed on NewAgent error", "agent_run_id", run.ID, "error", uerr)
+		}
 		return nil, fmt.Errorf("AgentRunner.Run NewAgent: %w", err)
 	}
 	_ = einoAgent // #2 不在 runner 内执行完整 loop，留给 Task 8 集成测试
@@ -122,10 +125,14 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		{"role": "user", "content": req.Input},
 		{"role": "assistant", "content": fmt.Sprintf("[#2 skeleton] received input '%s'", req.Input)},
 	})
-	_ = r.runStore.WriteTurn(ctx, run.ID, json.RawMessage(finalMessages))
+	if err := r.runStore.WriteTurn(ctx, run.ID, json.RawMessage(finalMessages)); err != nil {
+		log.Warnw("AgentRunner.Run WriteTurn failed", "agent_run_id", run.ID, "error", err)
+	}
 
 	endedAt := time.Now()
-	_ = r.runStore.UpdateState(ctx, run.ID, "terminated", string(st.TerminalReason), &endedAt)
+	if err := r.runStore.UpdateState(ctx, run.ID, "terminated", string(st.TerminalReason), &endedAt); err != nil {
+		log.Warnw("AgentRunner.Run UpdateState failed", "agent_run_id", run.ID, "error", err)
+	}
 
 	return &RunResult{
 		AgentRunID:     run.ID,
