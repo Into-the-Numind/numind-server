@@ -93,6 +93,17 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 		msBatch = map[uint64]*membership.BatchMembershipState{}
 	}
 
+	// 累计运行 = SOP run + chatbot session（不再读 user.TotalSopRuns，已 stale，参 [[project_total_sop_runs_frozen]]）
+	subUserIDs := make([]uint, len(users))
+	for i, u := range users {
+		subUserIDs[i] = u.ID
+	}
+	runCounts, err := c.ds.Customers().GetSubUserRunCounts(ctx, subUserIDs)
+	if err != nil {
+		log.C(ctx).Warnw("GetSubUserRunCounts failed, falling back to zero", "err", err)
+		runCounts = map[uint]int{}
+	}
+
 	// 转换为响应格式
 	subUsers := make([]v1.SubUserInfo, 0, len(users))
 	for _, user := range users {
@@ -149,7 +160,7 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 			Nickname:            user.Nickname,
 			Phone:               user.Phone,
 			Avatar:              user.AvatarURL,
-			TotalSopRuns:        user.TotalSopRuns,
+			TotalSopRuns:        runCounts[user.ID],
 			AuthorizedTemplates: activeTemplateCount,
 			CreditBalance:       creditBalance,
 			CreditExpires:       creditExpires,
@@ -194,45 +205,39 @@ func (c *customerBiz) GetSubUserDetail(ctx context.Context, parentUserID, subUse
 		})
 	}
 
+	// 累计运行 = SOP run + chatbot session 实时计数（不读 stale user.TotalSopRuns）
+	runCounts, err := c.ds.Customers().GetSubUserRunCounts(ctx, []uint{user.ID})
+	if err != nil {
+		log.C(ctx).Warnw("GetSubUserRunCounts failed for detail, falling back to zero", "sub_user_id", user.ID, "err", err)
+		runCounts = map[uint]int{}
+	}
+
 	return &v1.SubUserDetailResponse{
 		UserID:                   user.ID,
 		Nickname:                 user.Nickname,
 		Phone:                    user.Phone,
 		Avatar:                   user.AvatarURL,
-		TotalSopRuns:             user.TotalSopRuns,
+		TotalSopRuns:             runCounts[user.ID],
 		AuthorizedTemplatesCount: len(templateList),
 		AuthorizedTemplates:      templateList,
 	}, nil
 }
 
-// GetCustomerStatistics 获取客户统计数据
+// GetCustomerStatistics 获取客户统计数据。
+// 全部聚合走 store 一次性查询，本函数只做日志 + DTO 转换。
+// （旧版同时读 user.TotalSopRuns + ListTemplates(0, 1000) 的逻辑已废弃，参 [[project_total_sop_runs_frozen]]）
 func (c *customerBiz) GetCustomerStatistics(ctx context.Context, userID uint) (*v1.CustomerStatisticsResponse, error) {
-	// 获取用户信息（用于累计 SOP 运行次数）
-	user, err := c.ds.Users().GetByID(ctx, userID)
-	if err != nil {
-		log.C(ctx).Errorw("Failed to get user", "user_id", userID, "err", err)
-		return nil, err
-	}
-
-	// 获取二级客户统计
-	totalSubUsers, activeSubUsers, err := c.ds.Customers().GetCustomerStatistics(ctx, userID)
+	totalSubUsers, activeSubUsers, totalTemplates, totalRuns, err := c.ds.Customers().GetCustomerStatistics(ctx, userID)
 	if err != nil {
 		log.C(ctx).Errorw("Failed to get customer statistics", "user_id", userID, "err", err)
-		return nil, err
-	}
-
-	// 获取总模板数
-	templates, _, err := c.ds.Sop().ListTemplates(0, 1000) // 获取所有模板
-	if err != nil {
-		log.C(ctx).Errorw("Failed to list templates", "err", err)
 		return nil, err
 	}
 
 	return &v1.CustomerStatisticsResponse{
 		TotalSubUsers:  totalSubUsers,
 		ActiveSubUsers: activeSubUsers,
-		TotalTemplates: int64(len(templates)),
-		TotalSopRuns:   int64(user.TotalSopRuns),
+		TotalTemplates: totalTemplates,
+		TotalSopRuns:   totalRuns,
 	}, nil
 }
 
