@@ -278,10 +278,11 @@ func (c *customerStore) GetCustomerStatistics(ctx context.Context, userID uint) 
 
 	// 活跃 = 登录 ∪ SOP run ∪ chatbot session ∪ agent run 任一在 30 天内。
 	// sop_run / chatbot_session 用软删除（gorm.Model / DeletedAt 字段），raw EXISTS
-	// 绕过了 GORM scope，必须显式加 deleted_at IS NULL；agent_run 没软删除字段。
-	// chatbot_session 用 updated_at（长持续会话每条消息会 autoUpdateTime 刷新，
-	// created_at 会漏掉 >30d 前开始但仍在用的会话）；sop_run/agent_run 是一次性执行
-	// 记录，created_at 即活动时间。
+	// 绕过了 GORM scope，必须显式加 deleted_at IS NULL。chatbot_session 用 updated_at
+	// （长持续会话每条消息会 autoUpdateTime 刷新，created_at 会漏掉 >30d 前开始但仍在
+	// 用的会话）；sop_run 是一次性执行记录，created_at 即活动时间。
+	// agent_run 引用已从此 query 移除——本 hotfix 分支不含 agent-mode 表，引用未存在的
+	// 表会让整个 query 报 "Table doesn't exist"。agent-mode 完整发版时再加回来。
 	activeCutoff := time.Now().AddDate(0, 0, -30)
 	if err = c.db.WithContext(ctx).Model(&model.User{}).
 		Where("parent_user_id = ?", userID).
@@ -289,8 +290,7 @@ func (c *customerStore) GetCustomerStatistics(ctx context.Context, userID uint) 
 			last_login > ?
 			OR EXISTS (SELECT 1 FROM sop_run WHERE sop_run.user_id = user.id AND sop_run.created_at > ? AND sop_run.deleted_at IS NULL)
 			OR EXISTS (SELECT 1 FROM chatbot_session WHERE chatbot_session.user_id = user.id AND chatbot_session.updated_at > ? AND chatbot_session.deleted_at IS NULL)
-			OR EXISTS (SELECT 1 FROM agent_run WHERE agent_run.user_id = user.id AND agent_run.created_at > ?)
-		)`, activeCutoff, activeCutoff, activeCutoff, activeCutoff).
+		)`, activeCutoff, activeCutoff, activeCutoff).
 		Count(&activeSubUsers).Error; err != nil {
 		return 0, 0, 0, 0, err
 	}
