@@ -18,8 +18,11 @@ type AgentRun struct {
 	ReservationID *uint64        `json:"reservation_id,omitempty"`
 	StartedAt     time.Time      `gorm:"type:datetime(3);not null;index:idx_ar_user_started;index:idx_ar_status_started" json:"started_at"`
 	EndedAt       *time.Time     `gorm:"type:datetime(3)" json:"ended_at,omitempty"`
-	CreatedAt     time.Time      `gorm:"type:datetime(3);autoCreateTime" json:"created_at"`
-	UpdatedAt     time.Time      `gorm:"type:datetime(3);autoUpdateTime" json:"updated_at"`
+	// #9 compact: tracks compaction state per run and stores latest summary for resume.
+	CompactState   datatypes.JSON `gorm:"type:json" json:"compact_state,omitempty"`
+	CompactSummary string         `gorm:"type:longtext" json:"compact_summary,omitempty"`
+	CreatedAt      time.Time      `gorm:"type:datetime(3);autoCreateTime" json:"created_at"`
+	UpdatedAt      time.Time      `gorm:"type:datetime(3);autoUpdateTime" json:"updated_at"`
 }
 
 func (AgentRun) TableName() string { return "agent_run" }
