@@ -65,10 +65,18 @@ fi
 
 START=$(date +%s)
 
+# agent-mode-sandbox-integration #4: only dev image installs docker CLI
+# (DooD pattern for sandbox). prod stays minimal.
+WITH_DOCKER_CLI=false
+if [ "$ENV" = "dev" ]; then
+  WITH_DOCKER_CLI=true
+fi
+
 docker build \
   --tag "$IMG_ROLLING" \
   --tag "$IMG_SHA" \
   --build-arg "ENV=$ENV" \
+  --build-arg "WITH_DOCKER_CLI=$WITH_DOCKER_CLI" \
   --label "git.commit=$GIT_SHA" \
   --label "build.env=$ENV" \
   --label "build.at=$(date -Iseconds)" \

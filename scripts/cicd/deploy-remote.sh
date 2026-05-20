@@ -22,6 +22,13 @@ case "$TARGET" in
              -v /opt/numind/config/cert:/opt/numind/config/cert:ro \
              -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
              -v /opt/numind/model/model_cache:/app/model_cache"
+    # agent-mode-sandbox-integration #4: dev mounts host /var/run/docker.sock so
+    # the server container can drive the host docker daemon (DooD). prod does NOT
+    # mount it — sandbox.backend stays disabled in prod and no docker access is
+    # available to the binary.
+    if [ "$ENV" = "dev" ]; then
+      VOLUMES="$VOLUMES -v /var/run/docker.sock:/var/run/docker.sock"
+    fi
     HEALTH_PATH="/healthz"
     LOG_MAX_SIZE="10m"; LOG_MAX_FILE="3"
     [ "$ENV" = "prod" ] && { LOG_MAX_SIZE="20m"; LOG_MAX_FILE="5"; }
