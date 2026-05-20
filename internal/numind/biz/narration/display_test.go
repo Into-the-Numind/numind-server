@@ -228,6 +228,143 @@ func Test_ValidateToolNames_AllPresent(t *testing.T) {
 	}
 }
 
+func Test_NewRendererFromPath_FileMissing_Errors(t *testing.T) {
+	_, err := NewRendererFromPath("/nonexistent/path/does/not/exist.yaml")
+	if err == nil {
+		t.Fatal("expected file-read error, got nil")
+	}
+	if !strings.Contains(err.Error(), "read yaml") {
+		t.Errorf("error should mention 'read yaml', got: %v", err)
+	}
+}
+
+func Test_CompileTemplates_AllSlotsBlank_NoError(t *testing.T) {
+	// All-empty slot strings are valid (yield nil *template.Template).
+	// Renderer.Render with nil template returns "".
+	src := `
+tools:
+  bash_exec:
+    verb: v
+    detail_template: ""
+    use_template: ""
+    result_template: ""
+    error_template: ""
+    rejected_template: ""
+defaults:
+  verb: dv
+  use_template: "{{ .verb }}"
+  result_template: ok
+  error_template: bad
+  rejected_template: rej
+`
+	r := mustRenderer(t, src)
+	_, _, msg := r.Render(renderRequest{
+		ToolName: "bash_exec",
+		State:    StateUse,
+		Input:    map[string]any{},
+		Result:   map[string]any{},
+	})
+	if msg != "" {
+		t.Errorf("expected empty msg from all-blank templates, got %q", msg)
+	}
+}
+
+func Test_TemplateFuncs_Truncate(t *testing.T) {
+	// Exercise the truncate func directly via a template.
+	src := `
+tools:
+  bash_exec:
+    verb: v
+    use_template: "{{ truncate 5 .input.long }}"
+    result_template: "{{ truncate 100 .input.long }}"
+    error_template: bad
+    rejected_template: rej
+defaults:
+  verb: dv
+  use_template: "{{ .verb }}"
+  result_template: ok
+  error_template: bad
+  rejected_template: rej
+`
+	r := mustRenderer(t, src)
+	_, _, msg := r.Render(renderRequest{
+		ToolName: "bash_exec",
+		State:    StateUse,
+		Input:    map[string]any{"long": "abcdefghij"}, // 10 chars
+		Result:   map[string]any{},
+	})
+	if msg != "abcde..." {
+		t.Errorf("truncate 5: want 'abcde...', got %q", msg)
+	}
+
+	_, _, msg2 := r.Render(renderRequest{
+		ToolName: "bash_exec",
+		State:    StateResult,
+		Input:    map[string]any{"long": "short"},
+		Result:   map[string]any{},
+	})
+	if msg2 != "short" {
+		t.Errorf("truncate 100 on short input: want 'short', got %q", msg2)
+	}
+}
+
+func Test_TemplateFuncs_Default_NonEmptyStringPassesThrough(t *testing.T) {
+	src := `
+tools:
+  bash_exec:
+    verb: v
+    use_template: "{{ default \"fallback\" .input.present }}"
+    result_template: ok
+    error_template: bad
+    rejected_template: rej
+defaults:
+  verb: dv
+  use_template: "{{ .verb }}"
+  result_template: ok
+  error_template: bad
+  rejected_template: rej
+`
+	r := mustRenderer(t, src)
+	_, _, msg := r.Render(renderRequest{
+		ToolName: "bash_exec",
+		State:    StateUse,
+		Input:    map[string]any{"present": "actual_value"},
+		Result:   map[string]any{},
+	})
+	if msg != "actual_value" {
+		t.Errorf("default should pass through non-empty val: want 'actual_value', got %q", msg)
+	}
+}
+
+func Test_TemplateFuncs_Default_NonStringValSprintfd(t *testing.T) {
+	// Non-string val (e.g., int from JSON unmarshal) coerced via Sprintf.
+	src := `
+tools:
+  bash_exec:
+    verb: v
+    use_template: "{{ default \"fallback\" .input.num }}"
+    result_template: ok
+    error_template: bad
+    rejected_template: rej
+defaults:
+  verb: dv
+  use_template: "{{ .verb }}"
+  result_template: ok
+  error_template: bad
+  rejected_template: rej
+`
+	r := mustRenderer(t, src)
+	_, _, msg := r.Render(renderRequest{
+		ToolName: "bash_exec",
+		State:    StateUse,
+		Input:    map[string]any{"num": 42},
+		Result:   map[string]any{},
+	})
+	if msg != "42" {
+		t.Errorf("default with int val: want '42', got %q", msg)
+	}
+}
+
 // MANDATORY (S3 P0-1 fix): disk-load smoke test against the production yaml file.
 // Validates that the file ships shippable, all 6 built-in tools have entries,
 // and all templates parse without error.
