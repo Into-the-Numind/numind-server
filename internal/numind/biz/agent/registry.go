@@ -9,6 +9,7 @@ import (
 	"gorm.io/datatypes"
 
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
 
@@ -76,7 +77,12 @@ func (r *agentToolRegistry) LoadAll(ctx context.Context) error {
 			}
 			def := metadataToModel(m)
 			if err := r.defStore.Upsert(ctx, def); err != nil {
-				// Log-worthy but non-fatal: proceed with in-memory registration.
+				// Non-fatal but operationally important: log so DB sync failures are observable.
+				// Tool stays out of in-mem registry → GetTool will return false until next LoadAll.
+				log.Warnw("AgentToolRegistry.LoadAll: defStore.Upsert failed",
+					"factory_id", f.FactoryID(),
+					"tool_name", m.ToolName,
+					"error", err)
 				continue
 			}
 			r.tools[m.ToolName] = tools[i]

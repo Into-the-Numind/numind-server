@@ -119,6 +119,7 @@ func (b *realBizOnlyCustomers) KnowledgeBase() kbbiz.IKnowledgeBaseBiz { return 
 func (b *realBizOnlyCustomers) Chatbot() chatbotbiz.IChatbotBiz        { return nil }
 func (b *realBizOnlyCustomers) LLMRouter() *llmrouter.Router           { return nil }
 func (b *realBizOnlyCustomers) Agents() agent.AgentRunner              { return nil }
+func (b *realBizOnlyCustomers) AgentTools() agent.AgentToolRegistry    { return nil }
 
 // compile-time guard: this test struct must satisfy biz.IBiz or tests fail here.
 var _ biz.IBiz = (*realBizOnlyCustomers)(nil)

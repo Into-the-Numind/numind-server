@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cloudwego/eino/components/tool"
+	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/flow/agent/react"
 	"gorm.io/datatypes"
@@ -15,6 +15,7 @@ import (
 	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 )
 
@@ -23,7 +24,7 @@ type RunRequest struct {
 	UserID    uint
 	SessionID string
 	Input     string
-	Tools     []tool.BaseTool
+	ToolNames []string
 	Hooks     *RunHooks
 }
 
@@ -44,6 +45,7 @@ type AgentRunner interface {
 
 type agentRunner struct {
 	runStore store.IAgentRunStore
+	registry AgentToolRegistry
 	cancels  map[uint64]context.CancelFunc
 	mu       sync.Mutex
 }
@@ -51,9 +53,10 @@ type agentRunner struct {
 var _ AgentRunner = (*agentRunner)(nil)
 
 // NewAgentRunner 工厂。
-func NewAgentRunner(runStore store.IAgentRunStore) AgentRunner {
+func NewAgentRunner(runStore store.IAgentRunStore, registry AgentToolRegistry) AgentRunner {
 	return &agentRunner{
 		runStore: runStore,
+		registry: registry,
 		cancels:  make(map[uint64]context.CancelFunc),
 	}
 }
@@ -63,6 +66,9 @@ func NewAgentRunner(runStore store.IAgentRunStore) AgentRunner {
 // LLM 调用 / Eino agent.Generate 真实集成靠 Task 8 集成测试覆盖。
 func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, error) {
 	startTime := time.Now()
+
+	// 0. 注入 userID 到 context，供工具（如 kbSearchTool）读取。
+	ctx = middleware.NewContextWithUserID(ctx, req.UserID)
 
 	// 1. 创建 DB 行
 	run := &model.AgentRun{
@@ -95,7 +101,17 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	defer r.unregisterCancel(run.ID)
 	defer queryCancel()
 
-	// 4. 构造 adapter + Eino ReAct Agent
+	// 4. 从 registry 装配 Eino 工具列表
+	var einoTools []einotool.BaseTool
+	if r.registry != nil {
+		for _, name := range req.ToolNames {
+			if ft, ok := r.registry.GetTool(name); ok {
+				einoTools = append(einoTools, adaptFullToEinoTool(ft))
+			}
+		}
+	}
+
+	// 5. 构造 adapter + Eino ReAct Agent
 	einoAdapter := &aiserviceAdapter{
 		modelName: "qwen-turbo",
 		taskID:    fmt.Sprintf("agent-runner-%d", run.ID),
@@ -103,7 +119,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	einoAgent, err := react.NewAgent(queryCtx, &react.AgentConfig{
 		ToolCallingModel: einoAdapter,
 		ToolsConfig: compose.ToolsNodeConfig{
-			Tools: req.Tools,
+			Tools: einoTools,
 		},
 		MaxStep: 30,
 	})
@@ -116,7 +132,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	}
 	_ = einoAgent // #2 不在 runner 内执行完整 loop，留给 Task 8 集成测试
 
-	// 5. 简化状态机：写终止 messages + UpdateState
+	// 6. 简化状态机：写终止 messages + UpdateState
 	// #2 仅返回"成功创建 run"状态，真实 LLM 调用 + state.Transition 由 Task 8 集成测试覆盖
 	st := &LoopState{}
 	st.TerminalReason = TerminalCompleted

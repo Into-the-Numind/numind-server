@@ -60,6 +60,7 @@ type IBiz interface {
 	Chatbot() chatbotbiz.IChatbotBiz        // 智能体服务
 	LLMRouter() *llmrouter.Router           // LLM 路由服务
 	Agents() agent.AgentRunner              // Agent Runtime（agent-mode #2）
+	AgentTools() agent.AgentToolRegistry    // Agent Tool Registry（agent-mode #3）
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -67,18 +68,19 @@ var _ IBiz = (*biz)(nil)
 
 // biz 是 IBiz 的一个具体实现.
 type biz struct {
-	ds              store.IStore
-	sopService      sopbiz.ISopBiz
-	salesRAGService salesrag.SalesRAGBiz
-	credit          credit.ICreditBiz
-	creditService   credit.ICreditService
-	pricing         pricing.ICalculator
-	payment         payment.IPaymentBiz
-	monitorService  monitor.IMonitorBiz
-	kbService       kbbiz.IKnowledgeBaseBiz
-	chatbotService  chatbotbiz.IChatbotBiz
-	llmRouterSvc    *llmrouter.Router
-	agentRunner     agent.AgentRunner
+	ds                store.IStore
+	sopService        sopbiz.ISopBiz
+	salesRAGService   salesrag.SalesRAGBiz
+	credit            credit.ICreditBiz
+	creditService     credit.ICreditService
+	pricing           pricing.ICalculator
+	payment           payment.IPaymentBiz
+	monitorService    monitor.IMonitorBiz
+	kbService         kbbiz.IKnowledgeBaseBiz
+	chatbotService    chatbotbiz.IChatbotBiz
+	llmRouterSvc      *llmrouter.Router
+	agentRunner       agent.AgentRunner
+	agentToolRegistry agent.AgentToolRegistry
 }
 
 // NewBiz 创建一个 IBiz 类型的实例.
@@ -100,7 +102,7 @@ func NewBiz(ds store.IStore) *biz {
 		pricing:       pricingCalc,
 		payment:       payment.NewPaymentBiz(ds, creditBiz),
 		llmRouterSvc:  llmrouter.New(ds),
-		agentRunner:   agent.NewAgentRunner(ds.AgentRuns()),
+		// agentRunner / agentToolRegistry initialized after salesRAGService (line ~215)
 	}
 
 	// 创建 ConfigReader，用于从 Redis → MySQL → Viper 读取配置
@@ -213,6 +215,18 @@ func NewBiz(ds store.IStore) *biz {
 	// fix/salesrag-pricing-resolve-route — see build-manifest.yaml.
 	salesragRegistry := registry.New(b.ds.DB())
 	b.salesRAGService = salesrag.NewSalesRAGBizWithCredits(b.ds, pipeline, salesRAGSvc, b.Volc(), b.Ali(), salesSessionStore, parser, creditSvc, pricingCalc, salesragRegistry)
+
+	// 初始化 Agent Tool Registry + AgentRunner（agent-mode #2 + #3）
+	// 顺序敏感：必须在 salesRAGService 之后（PlatformToolFactory 依赖 salesRAGService）
+	agentToolRegistry := agent.NewAgentToolRegistry(ds.ToolDefinitions(), ds.ToolFactoryRegistries())
+	if err := agentToolRegistry.RegisterFactory(agent.NewPlatformToolFactory(b.salesRAGService, ds)); err != nil {
+		log.Warnw("AgentToolRegistry.RegisterFactory failed", "error", err)
+	}
+	if err := agentToolRegistry.LoadAll(context.Background()); err != nil {
+		log.Warnw("AgentToolRegistry.LoadAll failed", "error", err)
+	}
+	b.agentToolRegistry = agentToolRegistry
+	b.agentRunner = agent.NewAgentRunner(ds.AgentRuns(), agentToolRegistry)
 
 	// 初始化知识库服务
 	b.kbService = kbbiz.NewKnowledgeBaseBiz(ds, b.salesRAGService)
@@ -341,6 +355,11 @@ func (b *biz) Chatbot() chatbotbiz.IChatbotBiz {
 // Agents 返回 Agent Runtime 实例（agent-mode #2 runtime-skeleton）。
 func (b *biz) Agents() agent.AgentRunner {
 	return b.agentRunner
+}
+
+// AgentTools 返回 Agent Tool Registry 实例（agent-mode #3 tool-registry）。
+func (b *biz) AgentTools() agent.AgentToolRegistry {
+	return b.agentToolRegistry
 }
 
 // LLMRouter 返回 LLM 路由服务实例.
