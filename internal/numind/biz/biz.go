@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/ali"
 	chatbotbiz "numind-server/internal/numind/biz/chatbot"
 	"numind-server/internal/numind/biz/config"
@@ -58,6 +59,7 @@ type IBiz interface {
 	KnowledgeBase() kbbiz.IKnowledgeBaseBiz // 知识库服务
 	Chatbot() chatbotbiz.IChatbotBiz        // 智能体服务
 	LLMRouter() *llmrouter.Router           // LLM 路由服务
+	Agents() agent.AgentRunner              // Agent Runtime（agent-mode #2）
 }
 
 // 确保 biz 实现了 IBiz 接口.
@@ -76,6 +78,7 @@ type biz struct {
 	kbService       kbbiz.IKnowledgeBaseBiz
 	chatbotService  chatbotbiz.IChatbotBiz
 	llmRouterSvc    *llmrouter.Router
+	agentRunner     agent.AgentRunner
 }
 
 // NewBiz 创建一个 IBiz 类型的实例.
@@ -97,6 +100,7 @@ func NewBiz(ds store.IStore) *biz {
 		pricing:       pricingCalc,
 		payment:       payment.NewPaymentBiz(ds, creditBiz),
 		llmRouterSvc:  llmrouter.New(ds),
+		agentRunner:   agent.NewAgentRunner(ds.AgentRuns()),
 	}
 
 	// 创建 ConfigReader，用于从 Redis → MySQL → Viper 读取配置
@@ -332,6 +336,11 @@ func (b *biz) KnowledgeBase() kbbiz.IKnowledgeBaseBiz {
 // Chatbot 返回智能体服务实例.
 func (b *biz) Chatbot() chatbotbiz.IChatbotBiz {
 	return b.chatbotService
+}
+
+// Agents 返回 Agent Runtime 实例（agent-mode #2 runtime-skeleton）。
+func (b *biz) Agents() agent.AgentRunner {
+	return b.agentRunner
 }
 
 // LLMRouter 返回 LLM 路由服务实例.

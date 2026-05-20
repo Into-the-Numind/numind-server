@@ -150,10 +150,17 @@ func convertToolInfos(infos []*schema.ToolInfo) []aiservice.Tool {
 		if info.ParamsOneOf != nil {
 			if js, err := info.ParamsOneOf.ToJSONSchema(); err == nil && js != nil {
 				// Serialise through a map so aiservice receives plain map[string]interface{}.
-				t.Function.Parameters = map[string]interface{}{
+				params := map[string]interface{}{
 					"type":       "object",
 					"properties": js.Properties,
 				}
+				// required is needed by OpenAI-compatible strict function-calling mode
+				// (Task 7a reviewer N1): without it the model can omit mandatory params
+				// and the backend returns 400 instead of being pre-blocked by the LLM.
+				if len(js.Required) > 0 {
+					params["required"] = js.Required
+				}
+				t.Function.Parameters = params
 			}
 		}
 		tools = append(tools, t)
