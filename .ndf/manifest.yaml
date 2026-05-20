@@ -6,8 +6,8 @@ features:
   track: standard
   stage: S3
   classification_reason: 'Standard Triage 5 条 — (1) DB schema 变更：是（agent_run 表 ALTER 加 2 列）(2) 新 API 端点：否（v1 不引入 HTTP；恢复 API 由 #11 落地）(3) 无新外部服务集成 (4) 影响文件数 >3（migration 双文件 + agent_run model + 7 biz/compact files + runner.go + biz.go wire + N test ≥ 15 文件）(5) 高风险业务逻辑：否（compact 是只增不减的恢复机制；mock provider v1 不调外部 API；不动支付/会员/权限）。条件 1+4 多条触发 Standard。'
-  last_updated_by: ai-s3-reviewer-applied
-  last_updated_at: '2026-05-21T03:00:00+08:00'
+  last_updated_by: ai-s4-complete
+  last_updated_at: '2026-05-21T05:00:00+08:00'
   repos:
   - numind-server
   branches:
@@ -22,9 +22,9 @@ features:
     architecture_blueprint: docs/agent-mode/architecture-v1.md
   progress:
     total_tasks: 8
-    completed_tasks: 0
-    reviewed_tasks: 0
-    current_task: 'S3 PASS_WITH_CONDITIONS: P1 biz.go 路径唯一化 (internal/numind/biz/biz.go) + M7 验收加 agent 包测试 gate / P2 race-safety 测试独立 LoopState 注释 + 覆盖率三处数字统一 + Wave 4/5 ndf-check-disjoint 补完整参数 全修。进入 S4 编码。'
+    completed_tasks: 8
+    reviewed_tasks: 8
+    current_task: 'S4 完成：M1-M8 全部完成 + reviewer P0/P1/P2 全修。M1 migration / M2 model + DDL 同步 / M3 types+threshold+prompt / M4 provider+ptl_chain+max_output_chain / M5 restore+attachments / M6 runner.go 集成 + 15 helper 单测 / M7 biz.go wire MockCompactProvider / M8 S5 验证策略文档。biz/compact 覆盖率 97.8%；biz/agent 覆盖率 80.9% 不下降。进入 S5 验收。'
   decisions:
   - '2026-05-21 (s0-1): CollapseDrain 语义明确为"仅剥离最近 4 轮外的 tool_result，不动 user/assistant 文本"（蓝本 §4.1.6 Step 1）；与"按消息组整组 drop"（蓝本 §4.8.5 head-drop）分开 — CollapseDrain 是 outer PTL Step 1，headDropRetry 是 inner reactive_compact 失败后兜底循环。S0 reviewer P1 fix。'
   - '2026-05-21 (s0-2): PTL 双层计数器命名 — outer PTLRetries（state.go MaxPTLRetries=2）vs inner innerDropAttempts（ptl_chain.go maxRetries=3），不同变量名避免混淆。S0 reviewer P1 fix。'
