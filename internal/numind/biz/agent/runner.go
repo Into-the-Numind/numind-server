@@ -288,7 +288,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	einoAdapter := &aiserviceAdapter{
 		modelName:    "qwen-turbo",
 		taskID:       fmt.Sprintf("agent-runner-%d", run.ID),
-		systemPrompt: req.SystemPrompt, // #5 skill-system: injected by skill lookup above
+		systemPrompt: req.SystemPrompt, // #7 memory-system: assembled by Step 4 6-segment formula (PlatformBase + tenantRules + body + disclaimer + memory + tools + Footer)
 	}
 	// P2-1 fix: Eino react.NewAgent requires at least one tool; if registry is nil or
 	// ToolNames is empty/all-unresolved, einoTools is nil → react.NewAgent returns an
