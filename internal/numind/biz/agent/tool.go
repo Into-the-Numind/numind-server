@@ -8,21 +8,23 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-// Tool 是 agent-mode runtime 的最小工具 interface（feature #2）。
-// feature #3 tool-registry 将扩展到 38 字段的完整版（IsDestructive / Permission / Prompt / etc.）。
-type Tool interface {
+// MinimalTool 是 agent-mode runtime 的最小工具 interface（feature #2 引入，#3 重命名）。
+// 新代码应使用 FullTool（#3 引入的 36 方法完整接口）。
+// MinimalTool 保留用于向后兼容 #2 现有 mock/测试；可通过 WrapMinimal 升级为 FullTool。
+type MinimalTool interface {
 	Name() string
 	Description() string
 	Run(ctx context.Context, input json.RawMessage) (json.RawMessage, error)
 }
 
-// einoToolAdapter 把内部 Tool 适配为 Eino 的 tool.InvokableTool。
+// einoToolAdapter 把内部 MinimalTool 适配为 Eino 的 tool.InvokableTool。
+// Task 6 将改造为接受 FullTool。
 type einoToolAdapter struct {
-	impl Tool
+	impl MinimalTool
 }
 
-// AdaptTool 把内部 Tool 包装为 Eino tool.InvokableTool。
-func AdaptTool(t Tool) tool.InvokableTool {
+// AdaptTool 把内部 MinimalTool 包装为 Eino tool.InvokableTool。
+func AdaptTool(t MinimalTool) tool.InvokableTool {
 	return &einoToolAdapter{impl: t}
 }
 

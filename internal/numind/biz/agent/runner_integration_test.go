@@ -16,7 +16,7 @@ import (
 // TestRunnerIntegration_FullHappyPath: Run 完整流程 — mock store — DB 写入验证。
 func TestRunnerIntegration_FullHappyPath(t *testing.T) {
 	store := newMockStore()
-	runner := NewAgentRunner(store)
+	runner := NewAgentRunner(store, nil)
 
 	result, err := runner.Run(context.Background(), RunRequest{
 		UserID:    42,
@@ -92,7 +92,7 @@ func TestRunnerIntegration_PTLEscalationToTerminal(t *testing.T) {
 // TestRunnerIntegration_AbortViaContext: 父 ctx cancel 透传到 runner，不 panic，2s 内返回。
 func TestRunnerIntegration_AbortViaContext(t *testing.T) {
 	store := newMockStore()
-	runner := NewAgentRunner(store)
+	runner := NewAgentRunner(store, nil)
 	parentCtx, parentCancel := context.WithCancel(context.Background())
 
 	done := make(chan *RunResult, 1)
@@ -122,7 +122,7 @@ func TestRunnerIntegration_AbortViaContext(t *testing.T) {
 // TestRunnerIntegration_ConcurrentRuns: 20 个并发 Run，每个结果独立，race detector 干净。
 func TestRunnerIntegration_ConcurrentRuns(t *testing.T) {
 	store := newMockStore()
-	runner := NewAgentRunner(store)
+	runner := NewAgentRunner(store, nil)
 
 	var wg sync.WaitGroup
 	results := make([]*RunResult, 20)

@@ -40,6 +40,8 @@ type IStore interface {
 	ChatbotVisibilityGrant() IChatbotVisibilityGrantStore
 	SalesAgentOwners() ISalesAgentOwnerStore
 	AgentRuns() IAgentRunStore
+	ToolDefinitions() IToolDefinitionStore
+	ToolFactoryRegistries() IToolFactoryRegistryStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -182,4 +184,14 @@ func (ds *datastore) SalesAgentOwners() ISalesAgentOwnerStore {
 // AgentRuns 返回一个实现了 IAgentRunStore 接口的实例.
 func (ds *datastore) AgentRuns() IAgentRunStore {
 	return newAgentRunStore(ds.db)
+}
+
+// ToolDefinitions 返回一个实现了 IToolDefinitionStore 接口的实例.
+func (ds *datastore) ToolDefinitions() IToolDefinitionStore {
+	return newToolDefinitionStore(ds.db)
+}
+
+// ToolFactoryRegistries 返回一个实现了 IToolFactoryRegistryStore 接口的实例.
+func (ds *datastore) ToolFactoryRegistries() IToolFactoryRegistryStore {
+	return newToolFactoryRegistryStore(ds.db)
 }

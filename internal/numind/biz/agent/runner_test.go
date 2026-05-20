@@ -73,7 +73,7 @@ func (m *mockAgentRunStore) ListBySession(_ context.Context, _ string, _, _ int)
 
 func TestAgentRunner_Run_Basic(t *testing.T) {
 	store := newMockStore()
-	runner := NewAgentRunner(store)
+	runner := NewAgentRunner(store, nil)
 	result, err := runner.Run(context.Background(), RunRequest{
 		UserID: 1,
 		Input:  "hello",
@@ -92,14 +92,14 @@ func TestAgentRunner_Run_Basic(t *testing.T) {
 }
 
 func TestAgentRunner_Cancel_NotFound(t *testing.T) {
-	runner := NewAgentRunner(newMockStore())
+	runner := NewAgentRunner(newMockStore(), nil)
 	if runner.Cancel(99999) {
 		t.Error("Cancel for non-existent runID should return false")
 	}
 }
 
 func TestAgentRunner_Cancel_AfterRun(t *testing.T) {
-	runner := NewAgentRunner(newMockStore())
+	runner := NewAgentRunner(newMockStore(), nil)
 	result, err := runner.Run(context.Background(), RunRequest{UserID: 1, Input: "x"})
 	require.NoError(t, err)
 	// Run 完成后 unregisterCancel 会清空 registry，Cancel 应返回 false
@@ -110,7 +110,7 @@ func TestAgentRunner_Cancel_AfterRun(t *testing.T) {
 
 // 并发 Cancel 测试 race detector 干净。
 func TestAgentRunner_ConcurrentCancel(t *testing.T) {
-	r := NewAgentRunner(newMockStore()).(*agentRunner)
+	r := NewAgentRunner(newMockStore(), nil).(*agentRunner)
 	var wg sync.WaitGroup
 	for i := uint64(1); i <= 50; i++ {
 		wg.Add(1)
@@ -126,7 +126,7 @@ func TestAgentRunner_ConcurrentCancel(t *testing.T) {
 
 func TestAgentRunner_Run_SetsSessionID(t *testing.T) {
 	store := newMockStore()
-	runner := NewAgentRunner(store)
+	runner := NewAgentRunner(store, nil)
 	result, err := runner.Run(context.Background(), RunRequest{
 		UserID:    7,
 		SessionID: "sess-123",

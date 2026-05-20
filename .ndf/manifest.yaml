@@ -1,5 +1,42 @@
 schema_version: '2.0'
 features:
+- id: agent-mode-tool-registry
+  ndf_version: '2.0'
+  description: 'Agent 模式 14-feature 分解 #3/14。扩展 #2 最小 Tool interface 到完整 38 字段（蓝本 §4.2，参考 Claude Code v2.1 源码）；实现 ToolFactory 插件模式（Source: platform/mcp/cli/webhook）+ AgentToolRegistry 启动时注册 / 运行时查找；6 个 platform 内置工具（web_search / kb_search / file_read / bash_exec stub / image_gen stub / get_current_date）；接入 AgentRunner.Run 替换直接传 tools。Out of scope: MCP/CLI/Webhook ToolFactory 实现（保留蓝本 §4.2.10 留到后续 feature）/ 沙箱集成（#4）/ 权限 pipeline（#6）/ Memory（#7）/ Narration（#8）/ 管理端 UI（#10）。阻塞 #4/#6/#8/#10。'
+  track: standard
+  stage: S6
+  classification_reason: 'Triage — (1) DB schema：是（tool_definition + tool_factory_registry 两表）(2) 无新 API (3) 无新外部服务 (4) 影响文件 >3 (5) 非高风险。条件 1+4 触发 Standard。'
+  last_updated_by: ai-s5-acceptance-passed-entering-s6
+  last_updated_at: '2026-05-21T03:00:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: feature/agent-mode-tool-registry
+  worktree:
+    numind-server: /private/tmp/wt-agent-mode-tool-registry-numind-server
+  artifacts:
+    requirement: numind-server/requirements/agent-mode-tool-registry.md
+    proposal: numind-server/proposals/agent-mode-tool-registry-proposal.md
+    spec: numind-server/docs/superpowers/specs/2026-05-21-agent-mode-tool-registry-design.md
+    plan: numind-server/docs/superpowers/plans/2026-05-21-agent-mode-tool-registry-plan.md
+    qa: numind-server/docs/superpowers/qa/2026-05-21-agent-mode-tool-registry-s5-acceptance.md
+    architecture_blueprint: docs/agent-mode/architecture-v1.md
+  progress:
+    total_tasks: 8
+    completed_tasks: 8
+    reviewed_tasks: 8
+    current_task: 'S5 ACCEPTED: M1-M8 全部实施 + reviewer 全 PASS（累计 2 P0 + 4 P1 + 16 P2 已修；document_generate stub 等保留为 #12 落地）。biz/agent 覆盖率 76.4%。进入 S6 ndf-done。'
+  decisions:
+  - '2026-05-20 (沿用 #1/#2 决策 + autopilot 协议): 14-feature 分解；Eino v0.8.13；Phase 0 V5 ADR Docker pool；ToolCallingChatModel；dev 部署后停 prod。'
+  decisions_archived: .ndf/decisions/agent-mode-tool-registry/
+  related_features:
+  - 'agent-mode-runtime-skeleton (#2/14, 已完成 develop merge)'
+  - 'agent-mode-sandbox-integration (#4/14, 依赖本 feature Tool 38 字段)'
+  - 'agent-mode-permission-pipeline (#6/14, 依赖 IsReadOnly / InterruptBehavior)'
+  - 'agent-mode-narration-layer (#8/14, 依赖 Prompt / BackfillObservableInput)'
+  - 'agent-mode-configurator-ux (#10/14, 依赖 ToolFactory 抽象)'
+  blockers: []
+  created_at: '2026-05-20T05:30:00+08:00'
 - id: agent-mode-runtime-skeleton
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #2/14。把 Phase 0 V2 demo 中的 adapter 模式工程化为 Agent Runtime 主路径代码。范围：(M1) agent_run + agent_message DB 表 (M2) agent_run store CRUD (M3) AgentRunner biz 包装 Eino ReAct（升级到 ToolCallingChatModel.WithTools()）(M4) 12 Terminal + 7 Continue 状态机 (M5) AbortController 三层（queryCtx/batchCtx/toolCtx）(M6) Withhold recovery 两条 chain（PTL + max_output_tokens）(M7) 最小 Tool interface（完整版 38 字段在 #3）(M8) mock Eino + mock 工具的 5 步 ReAct 单测。Out of scope：Tool Registry 完整版 / 沙箱集成 / 权限 / 记忆 / Narration / API 端点 / prod 部署。架构蓝本：docs/agent-mode/architecture-v1.md §4.1。'
