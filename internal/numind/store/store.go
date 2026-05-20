@@ -46,6 +46,8 @@ type IStore interface {
 	AgentDefinitions() IAgentDefinitionStore
 	SkillTemplates() ISkillTemplateStore
 	AgentPermissions() IAgentPermissionStore
+	AgentSessionMemories() IAgentSessionMemoryStore // #7 memory-system L1 短期记忆
+	UserGlobalMemories() IUserGlobalMemoryStore     // #7 memory-system L2 长期记忆 Notepad
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -218,4 +220,14 @@ func (ds *datastore) SkillTemplates() ISkillTemplateStore {
 // AgentPermissions 返回一个实现了 IAgentPermissionStore 接口的实例（#6 permission-pipeline）。
 func (ds *datastore) AgentPermissions() IAgentPermissionStore {
 	return newAgentPermissionStore(ds.db)
+}
+
+// AgentSessionMemories 返回一个实现了 IAgentSessionMemoryStore 接口的实例（#7 memory-system）。
+func (ds *datastore) AgentSessionMemories() IAgentSessionMemoryStore {
+	return NewAgentSessionMemoryStore(ds.db)
+}
+
+// UserGlobalMemories 返回一个实现了 IUserGlobalMemoryStore 接口的实例（#7 memory-system）。
+func (ds *datastore) UserGlobalMemories() IUserGlobalMemoryStore {
+	return NewUserGlobalMemoryStore(ds.db)
 }

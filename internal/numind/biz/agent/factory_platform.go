@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 
+	"numind-server/internal/numind/biz/memory"
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/numind/store"
 )
@@ -24,13 +25,17 @@ func (f *platformToolFactory) FactoryID() string   { return "platform-builtin" }
 func (f *platformToolFactory) Source() string      { return "platform" }
 func (f *platformToolFactory) DisplayName() string { return "平台内置工具" }
 
-// LoadTools instantiates all 6 platform built-in FullTool instances together
+// LoadTools instantiates all platform built-in FullTool instances together
 // with their ToolMetadata for tool_definition upsert.
 //
 // Nil-safety: f.rag / f.ds may be nil in unit-test contexts (TestPlatformToolFactory_LoadTools
 // passes nil to verify the tool list / metadata wiring without spinning up real biz/store).
 // Tools constructed with nil deps will panic only if Execute is called; LoadTools itself
 // must never panic.
+//
+// When f.ds is non-nil, two additional memory tools (memory_write, memory_read) are
+// appended, bringing the total to 8 tools. The nil guard ensures the existing
+// nil-ds unit test (6 tools) continues to pass unchanged.
 func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMetadata, error) {
 	var usersGetter userByIDGetter
 	if f.ds != nil {
@@ -51,6 +56,19 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		{ToolName: "image_gen", DisplayName: "图像生成", Description: "[stub] Generate images.", Source: "platform", Category: "多媒体", RequiresSandbox: true},
 		{ToolName: "bash_exec", DisplayName: "代码执行", Description: "[stub] Execute shell.", Source: "platform", Category: "代码", RiskLevel: "dangerous", RequiresSandbox: true},
 		{ToolName: "get_current_date", DisplayName: "当前日期", Description: "Return today's date.", Source: "platform", Category: "查询"},
+	}
+	// Append memory tools only when a real store is available (nil guard preserves
+	// the nil-ds unit test that expects exactly 6 tools).
+	if f.ds != nil {
+		np := memory.NewNotepad(f.ds.UserGlobalMemories())
+		tools = append(tools,
+			NewMemoryWriteTool(np),
+			NewMemoryReadTool(np),
+		)
+		metadata = append(metadata,
+			ToolMetadata{ToolName: "memory_write", DisplayName: "记忆写入", Description: "Write a long-term memory entry for the learner.", Source: "platform", Category: "记忆", RiskLevel: "moderate"},
+			ToolMetadata{ToolName: "memory_read", DisplayName: "记忆读取", Description: "Read learner's long-term memory by key or kind.", Source: "platform", Category: "记忆"},
+		)
 	}
 	return tools, metadata, nil
 }

@@ -285,6 +285,11 @@ func autoMigrate(db *gorm.DB) error {
 	if err := db.AutoMigrate(&model.AgentDefinition{}); err != nil {
 		return fmt.Errorf("failed to migrate agent_definition: %v", err)
 	}
+
+	// Agent memory system 两表（agent-mode-memory-system #7）
+	if err := db.AutoMigrate(&model.AgentSessionMemory{}, &model.UserGlobalMemory{}); err != nil {
+		return fmt.Errorf("failed to migrate agent memory tables: %v", err)
+	}
 	if err := db.AutoMigrate(&model.AgentDefinitionHistory{}); err != nil {
 		return fmt.Errorf("failed to migrate agent_definition_history: %v", err)
 	}

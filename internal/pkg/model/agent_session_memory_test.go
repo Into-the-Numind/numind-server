@@ -54,13 +54,13 @@ func TestAgentSessionMemory_Create_ScoreZero(t *testing.T) {
 	require.NoError(t, db.WithContext(context.Background()).Create(m).Error)
 	require.NotZero(t, m.ID)
 
-	// 步骤 3：检测 gotcha 是否触发 — SQLite 路径下 DB DEFAULT 覆盖 Score
+	// 步骤 3：显式验证 GORM gotcha 真的触发了（P1-1：避免 SQLite 行为变化时静默通过）
 	// 生产 MySQL 路径：store 层用 Select("*").Create() 直接规避，不需要此 fixup
-	if m.Score != wantScore {
-		// UpdateColumn fixup 两步法（database.md §6 同款模式）
-		require.NoError(t, db.Model(m).UpdateColumn("score", wantScore).Error)
-		m.Score = wantScore
-	}
+	assert.NotEqual(t, wantScore, m.Score,
+		"GORM gotcha expected: Score should have been overwritten by default:1.0 (if assertion fails, GORM/SQLite no longer triggers gotcha — revisit fixup design)")
+	// UpdateColumn fixup 两步法（database.md §6 同款模式）
+	require.NoError(t, db.Model(m).UpdateColumn("score", wantScore).Error)
+	m.Score = wantScore
 
 	assert.Equal(t, 0.0, m.Score, "struct.Score should be 0.0 after fixup")
 

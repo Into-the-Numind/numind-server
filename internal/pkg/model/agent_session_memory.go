@@ -13,7 +13,7 @@ type AgentSessionMemory struct {
 	Content                 string     `gorm:"type:text;not null" json:"content"`
 	Embedding               []byte     `gorm:"type:longblob" json:"-"`
 	Score                   float64    `gorm:"not null;default:1.0" json:"score"`
-	SourceType              string     `gorm:"size:20;not null;default:agent" json:"source_type"`
+	SourceType              string     `gorm:"size:20;not null;default:'agent'" json:"source_type"`
 	SourceAgentDefinitionID *uint64    `gorm:"column:source_agent_definition_id" json:"source_agent_definition_id,omitempty"`
 	RecencyAt               time.Time  `gorm:"not null;index:idx_asm_recency,priority:3" json:"recency_at"`
 	ExpiresAt               *time.Time `gorm:"column:expires_at" json:"expires_at,omitempty"`
