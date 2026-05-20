@@ -31,8 +31,9 @@
 | `internal/numind/biz/agent/base_tool.go` | BaseTool struct + 28 个默认方法实现 |
 | `internal/numind/biz/agent/minimal_to_full.go` | MinimalToFullAdapter (#2 兼容) |
 | `internal/numind/biz/agent/factory.go` | ToolFactory interface + ToolMetadata + ToolDiff |
-| `internal/numind/biz/agent/factory_platform.go` | PlatformToolFactory impl |
-| `internal/numind/biz/agent/factory_platform_test.go` | Factory LoadTools 测试 |
+| `internal/numind/biz/agent/factory_test.go` | ToolFactory interface 编译期断言 + mock factory test |
+| `internal/numind/biz/agent/factory_platform.go` | PlatformToolFactory impl（**Task 7 写入**，不在 Phase 1 Tier 3 范围） |
+| `internal/numind/biz/agent/factory_platform_test.go` | Factory LoadTools 测试（**Task 7 写入**） |
 | `internal/numind/biz/agent/registry.go` | AgentToolRegistry interface + agentToolRegistry impl |
 | `internal/numind/biz/agent/registry_test.go` | Registry race detector + LoadAll integration |
 | `internal/numind/biz/agent/tool_kb_search.go` | kb_search FullTool |
@@ -94,7 +95,7 @@
 |-------|---------|
 | Agent A (Task 1) | `migrations/20260521_120000_*.sql,migrations/20260521_120000_*_rollback.sql,internal/pkg/model/tool_definition.go,internal/pkg/model/tool_factory_registry.go,internal/numind/helper.go` |
 | Agent B (Task 2) | `internal/numind/biz/agent/tool_full.go,internal/numind/biz/agent/tool_full_test.go,internal/numind/biz/agent/base_tool.go,internal/numind/biz/agent/minimal_to_full.go,internal/numind/biz/agent/tool.go` (rename) |
-| Agent C (Task 3) | `internal/numind/biz/agent/factory.go,internal/numind/biz/agent/factory_platform.go,internal/numind/biz/agent/factory_platform_test.go` |
+| Agent C (Task 3) | `internal/numind/biz/agent/factory.go,internal/numind/biz/agent/factory_test.go` （**仅 interface + mock test**；`factory_platform.go/_test.go` 由 Task 7 独占写入） |
 | Agent D (Task 4) | `internal/numind/biz/agent/tool_kb_search.go,*_test.go,internal/numind/biz/agent/tool_learner_data_query.go,*_test.go,internal/numind/biz/agent/tool_document_generate.go,*_test.go,internal/numind/biz/agent/tool_image_gen.go,*_test.go,internal/numind/biz/agent/tool_bash_exec.go,*_test.go,internal/numind/biz/agent/tool_get_current_date.go,*_test.go` |
 
 **ndf-check-disjoint 命令**（逗号分隔，每组用引号包裹）：
@@ -103,13 +104,20 @@
 bash /Users/zhiyuchen/Documents/10_跃迁有数/有数AI工作台/莫小派/Codes/numind-server/scripts/ndf/ndf-check-disjoint.sh \
   "migrations/20260521_120000_create_tool_definition_and_factory_registry.sql,migrations/20260521_120000_create_tool_definition_and_factory_registry_rollback.sql,internal/pkg/model/tool_definition.go,internal/pkg/model/tool_factory_registry.go,internal/numind/helper.go" \
   "internal/numind/biz/agent/tool_full.go,internal/numind/biz/agent/tool_full_test.go,internal/numind/biz/agent/base_tool.go,internal/numind/biz/agent/minimal_to_full.go,internal/numind/biz/agent/tool.go" \
-  "internal/numind/biz/agent/factory.go,internal/numind/biz/agent/factory_platform.go,internal/numind/biz/agent/factory_platform_test.go" \
+  "internal/numind/biz/agent/factory.go,internal/numind/biz/agent/factory_test.go" \
   "internal/numind/biz/agent/tool_kb_search.go,internal/numind/biz/agent/tool_kb_search_test.go,internal/numind/biz/agent/tool_learner_data_query.go,internal/numind/biz/agent/tool_learner_data_query_test.go,internal/numind/biz/agent/tool_document_generate.go,internal/numind/biz/agent/tool_document_generate_test.go,internal/numind/biz/agent/tool_image_gen.go,internal/numind/biz/agent/tool_image_gen_test.go,internal/numind/biz/agent/tool_bash_exec.go,internal/numind/biz/agent/tool_bash_exec_test.go,internal/numind/biz/agent/tool_get_current_date.go,internal/numind/biz/agent/tool_get_current_date_test.go"
 ```
 
 预期 exit 0。
 
-> **Agent B / D 编译顺序依赖**：Agent D 的 6 工具 import `agent.FullTool` / `agent.BaseTool`（Agent B 产物）。**实际上文件物理 disjoint 没问题**（不同文件），但 Agent D 写完后单测要等 Agent B commit 才能 `go test`。Tier 3 的"disjoint write"约束仅限**文件物理不重叠**，编译时序由 main session 在 commit 验证阶段处理（D 测试在 B 之后跑）。
+> **Agent B / D 编译顺序依赖**：Agent D 的 6 工具 import `agent.FullTool` / `agent.BaseTool`（Agent B 产物）。**文件物理 disjoint 通过 ndf-check-disjoint 验证（exit 0）**，但 Agent D 的 `go test` 要等 Agent B commit 才能编译。
+>
+> **主 session 责任**（**不要让 Agent D 自己判断**）：
+> 1. 4 路 implementer 并行 dispatch 后，等所有 implementer 都 commit
+> 2. 主 session 显式跑 `git -C worktree log --oneline -10` 确认 B 的 commit 存在
+> 3. 主 session 显式跑 `go test ./internal/numind/biz/agent/...`（**只跑一次，验所有 task 整合后是否编译 + 测试通过**）
+> 4. 若编译失败，按 commit 顺序定位（先 cherry-pick 验证 B 单独是否过）
+> 5. 各 task reviewer 在此之后 dispatch
 
 ### Phase 2 串行
 
@@ -160,9 +168,15 @@ Task 8 最后。
 
 按 spec §3 实施。GORM OnConflict 用法在 numind-server 现有代码 grep 一下作参考。**race detector 测试**：Upsert 并发同 tool_name → last-write-wins。
 
-### Task 6：M5 AgentToolRegistry
+### Task 6：M5 AgentToolRegistry + Eino adapter
 
 按 spec §6 实施。包含 P2-2 长度 assert + P2-3 单次 Upsert。race detector 测试：50 goroutine 并发 GetTool + 1 goroutine LoadAll。
+
+**Task 6 文件归属**（Phase 2 串行，不与其他 task 并行）：
+- `internal/numind/biz/agent/registry.go` + `registry_test.go`
+- `internal/numind/biz/agent/adapter_full_to_eino.go` + `_test.go`（FullTool → Eino tool.InvokableTool 适配，runner.go 装配工具时使用）
+
+Task 6 依赖 Task 2 (FullTool interface) + Task 3 (ToolFactory interface) + Task 5 (Stores) 均 commit 后才能编译。
 
 ### Task 7：M7 Runner + biz.go 接入 + factory_platform.go 完整版
 
