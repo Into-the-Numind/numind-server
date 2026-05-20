@@ -4,10 +4,10 @@ features:
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #6/14。落地蓝本 §4.4 Permission Pipeline（安全核心）：建 agent_permission_config + agent_permission_decision_log 两表 + biz/permission 子包（PermissionGate / PermissionPipeline / 7 Validator 实现 / 异步审计写入）+ HookAction 加第 4 枚举 HookActionPermissionDeny=3 + TerminalReason 加第 13 个 permission_denied + LoopEvent 加 LoopEventPermissionDenied + AgentRunner.WithPermissionGate option + HooksWrapper 合并 sandbox + permission（顺序 permission → sandbox）+ RunResult.PermissionDenial 字段。Out of scope: 管理端 UI (#10) / 学员端 UI (#11) / classifier 真实 LLM (#14) / sandbox override 真实路径 (#13) / 23 bash validators 全扩展 / safety check L3 拆出 (#13) / 试聊配额检查 (#12) / prod 部署。术语翻译：蓝本 tenant_id → Numind parent_user_id（B2B2C 与 #5 一致）。DecisionReason canonical：§4.4.5。'
   track: standard
-  stage: S2
+  stage: S3
   classification_reason: 'Standard Triage 5 条 — (1) DB schema 变更：是（2 张新表 agent_permission_config + agent_permission_decision_log）(2) 新 API 端点：否（本 feature 不引入 HTTP，audit 查询/规则 CRUD 在 #10 落地）(3) 无新外部服务集成 (4) 影响文件数 >3（migration + 2 model + store + 8 biz files + 7 validators + runner.go + hooks.go + state.go + biz.go + N test ≥ 25 文件）(5) 高风险业务逻辑：是（权限拦截 = 高风险，但只增不减；新 deny 路径添加不破坏现有 12 个 terminal reason）。条件 1+4+5 多条触发 Standard。'
-  last_updated_by: ai-s1-reviewer-applied
-  last_updated_at: '2026-05-21T11:00:00+08:00'
+  last_updated_by: ai-s2-reviewer-applied
+  last_updated_at: '2026-05-21T12:00:00+08:00'
   repos:
   - numind-server
   branches:
@@ -17,12 +17,13 @@ features:
   artifacts:
     requirement: numind-server/requirements/agent-mode-permission-pipeline.md
     proposal: numind-server/proposals/agent-mode-permission-pipeline-proposal.md
+    spec: numind-server/docs/superpowers/specs/2026-05-21-agent-mode-permission-pipeline-design.md
     architecture_blueprint: docs/agent-mode/architecture-v1.md
   progress:
     total_tasks: 0
     completed_tasks: 0
     reviewed_tasks: 0
-    current_task: 'S1 PASS_WITH_CONDITIONS: P0/P1/P2 全修。进入 S2 技术 spec。'
+    current_task: 'S2 PASS_WITH_CONDITIONS: P0/P1/部分 P2 全修；包架构敲定。进入 S3 task plan。'
   decisions:
   - '2026-05-21 (s0-1): Hook chain 顺序 permission → sandbox（P0 reviewer fix）— 避免 deny 时白启动容器；wrapper PreToolCall 内 permission.Check 先；deny 短路不调 base；allow 透传 base 启动容器。'
   - '2026-05-21 (s0-2): tool_input_digest 用 SHA-256 完整 64 hex（P1 reviewer fix）— 用途单一（对账匹配），防 PII 是副作用。'
@@ -37,6 +38,11 @@ features:
   - '2026-05-21 (s1-6): PermissionResult.Suggestions []PermissionUpdate + Pending *PendingClassifierCheck 字段占位（S1 P2 fix）— v1 永远 nil/zero-length；#10/#14 落地。'
   - '2026-05-21 (s1-7): agent_permission_decision_log.created_at DEFAULT CURRENT_TIMESTAMP（S1 P2 fix）— config 表用 GORM auto fields。'
   - '2026-05-21 (s1-8): UserSessionRule v1 仅查 IsDestructive（S1 P2 fix）— 不查 session authorization；扩展 #11/#14。'
+  - '2026-05-21 (s2-1): 包架构敲定（S2 P1 fix）— PermissionDenialDetail / sink ctx key / fullToolMap ctx key / agentDef ctx key 全在 biz/agent；biz/permission 单向依赖 biz/agent；不引入 RunResult.PermissionDenial any。'
+  - '2026-05-21 (s2-2): 取消 runner.WithPermissionGate option（S2 §6 修订）— wrapper 持有 gate；runner 完全不感知；biz.go wire 只用 WithDefaultHooks(wrapped)。'
+  - '2026-05-21 (s2-3): bashvalidator.Validate reason 格式 “<ID>: ...”，validator_id 取首个冒号前；spec firstColonField 实现完整给出（S2 P0 fix）。'
+  - '2026-05-21 (s2-4): TenantAdminRule regex 无缓存（S2 P2 tech debt）— v1 接受；优化项后续。'
+  - '2026-05-21 (s2-5): gate.Close-race trade-off 文档化（S2 P1 fix）— in-flight Check 审计条目允许丢失；运行时不丢失。'
   related_features:
   - 'agent-mode-runtime-skeleton (#2/14, 已 develop merged — RunHooks / HookAction / TerminalReason 12 输入)'
   - 'agent-mode-tool-registry (#3/14, 已 develop merged — FullTool 38 字段含 IsReadOnly/IsDestructive 输入)'
