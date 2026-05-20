@@ -27,7 +27,10 @@ type ICustomerStore interface {
 	GetAuthorizedTemplates(ctx context.Context, userID uint) ([]model.SopTemplate, error)
 
 	// 统计相关
-	GetCustomerStatistics(ctx context.Context, userID uint) (totalSubUsers, activeSubUsers int64, err error)
+	GetCustomerStatistics(ctx context.Context, userID uint) (totalSubUsers, activeSubUsers, totalTemplates, totalRuns int64, err error)
+	// GetSubUserRunCounts 批量返回每个子用户的 SOP run + chatbot session 累计计数。
+	// 用于子用户列表的"累计运行"列。返回 map[user_id]总计数。
+	GetSubUserRunCounts(ctx context.Context, subUserIDs []uint) (map[uint]int, error)
 
 	// 模板批量授权（B端发布SOP时使用）
 	GrantTemplateToAllSubUsers(ctx context.Context, parentUserID uint, templateID uint) error
@@ -257,25 +260,123 @@ func (c *customerStore) GetAuthorizedTemplates(ctx context.Context, userID uint)
 	return templates, err
 }
 
-// GetCustomerStatistics 获取客户统计数据
-func (c *customerStore) GetCustomerStatistics(ctx context.Context, userID uint) (totalSubUsers, activeSubUsers int64, err error) {
-	// 获取二级客户总数
-	err = c.db.WithContext(ctx).Model(&model.User{}).
+// GetCustomerStatistics 获取客户统计数据。返回 4 个聚合数：
+//   - totalSubUsers: 子用户总数
+//   - activeSubUsers: 最近 30 天有登录/SOP run/chatbot session/agent run 活动的子用户数
+//   - totalTemplates: 父账号拥有的 SOP 模板 + chatbot + sales_agent (binary) 总数，每类 cap 10000
+//   - totalRuns: 所有子用户 SOP run + chatbot session 总数
+//
+// 注意：不使用 user.total_sop_runs 字段——它自 T2 deprecation (2026-05-18) 后停止累计，
+// 是 stale snapshot。运行数全部从 sop_run / chatbot_session 表 COUNT。
+func (c *customerStore) GetCustomerStatistics(ctx context.Context, userID uint) (totalSubUsers, activeSubUsers, totalTemplates, totalRuns int64, err error) {
+	// 子用户总数
+	if err = c.db.WithContext(ctx).Model(&model.User{}).
 		Where("parent_user_id = ?", userID).
-		Count(&totalSubUsers).Error
-
-	if err != nil {
-		return 0, 0, err
+		Count(&totalSubUsers).Error; err != nil {
+		return 0, 0, 0, 0, err
 	}
 
-	// "Active" = 最近 30 天内有登录行为的子用户（按 last_login 时间戳判断）。
-	// last_login 由用户/管理员登录流程写入（biz/user/user.go + admin_login）。
+	// 活跃 = 登录 ∪ SOP run ∪ chatbot session ∪ agent run 任一在 30 天内
 	activeCutoff := time.Now().AddDate(0, 0, -30)
-	err = c.db.WithContext(ctx).Model(&model.User{}).
-		Where("parent_user_id = ? AND last_login > ?", userID, activeCutoff).
-		Count(&activeSubUsers).Error
+	if err = c.db.WithContext(ctx).Model(&model.User{}).
+		Where("parent_user_id = ?", userID).
+		Where(`(
+			last_login > ?
+			OR EXISTS (SELECT 1 FROM sop_run WHERE sop_run.user_id = user.id AND sop_run.created_at > ?)
+			OR EXISTS (SELECT 1 FROM chatbot_session WHERE chatbot_session.user_id = user.id AND chatbot_session.updated_at > ?)
+			OR EXISTS (SELECT 1 FROM agent_run WHERE agent_run.user_id = user.id AND agent_run.created_at > ?)
+		)`, activeCutoff, activeCutoff, activeCutoff, activeCutoff).
+		Count(&activeSubUsers).Error; err != nil {
+		return 0, 0, 0, 0, err
+	}
 
-	return totalSubUsers, activeSubUsers, err
+	// 全部模板 = SOP + chatbot + sales_agent_owner（按父账号隔离，每类 cap tplCap）
+	const tplCap int64 = 10000
+	var sopCount, chatbotCount, salesAgentCount int64
+	if err = c.db.WithContext(ctx).Model(&model.SopTemplate{}).
+		Where("creator_user_id = ?", userID).
+		Count(&sopCount).Error; err != nil {
+		return 0, 0, 0, 0, err
+	}
+	if sopCount > tplCap {
+		sopCount = tplCap
+	}
+	if err = c.db.WithContext(ctx).Model(&model.ChatbotConfig{}).
+		Where("user_id = ?", userID).
+		Count(&chatbotCount).Error; err != nil {
+		return 0, 0, 0, 0, err
+	}
+	if chatbotCount > tplCap {
+		chatbotCount = tplCap
+	}
+	// sales_agent_owner 是父账号"是否拥有销售智能体"的 0/1 标记
+	if err = c.db.WithContext(ctx).Model(&model.SalesAgentOwner{}).
+		Where("parent_user_id = ?", userID).
+		Count(&salesAgentCount).Error; err != nil {
+		return 0, 0, 0, 0, err
+	}
+	totalTemplates = sopCount + chatbotCount + salesAgentCount
+
+	// 总运行 = 所有子用户的 sop_run + chatbot_session 计数
+	if totalSubUsers == 0 {
+		return totalSubUsers, activeSubUsers, totalTemplates, 0, nil
+	}
+	var subUserIDs []uint
+	if err = c.db.WithContext(ctx).Model(&model.User{}).
+		Where("parent_user_id = ?", userID).
+		Pluck("id", &subUserIDs).Error; err != nil {
+		return 0, 0, 0, 0, err
+	}
+	var sopRunCount, chatSessCount int64
+	if err = c.db.WithContext(ctx).Model(&model.SopRun{}).
+		Where("user_id IN ?", subUserIDs).
+		Count(&sopRunCount).Error; err != nil {
+		return 0, 0, 0, 0, err
+	}
+	if err = c.db.WithContext(ctx).Model(&model.ChatbotSession{}).
+		Where("user_id IN ?", subUserIDs).
+		Count(&chatSessCount).Error; err != nil {
+		return 0, 0, 0, 0, err
+	}
+	totalRuns = sopRunCount + chatSessCount
+
+	return totalSubUsers, activeSubUsers, totalTemplates, totalRuns, nil
+}
+
+// GetSubUserRunCounts 批量按 user_id 聚合 sop_run + chatbot_session 计数。
+// 仅返回有 run 的 user_id；调用方需对零计数兜底。
+func (c *customerStore) GetSubUserRunCounts(ctx context.Context, subUserIDs []uint) (map[uint]int, error) {
+	result := make(map[uint]int, len(subUserIDs))
+	if len(subUserIDs) == 0 {
+		return result, nil
+	}
+	type row struct {
+		UserID uint
+		Cnt    int
+	}
+	var sopRows []row
+	if err := c.db.WithContext(ctx).Table("sop_run").
+		Select("user_id, COUNT(*) AS cnt").
+		Where("user_id IN ?", subUserIDs).
+		Group("user_id").
+		Find(&sopRows).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range sopRows {
+		result[r.UserID] += r.Cnt
+	}
+	var chatRows []row
+	if err := c.db.WithContext(ctx).Table("chatbot_session").
+		Select("user_id, COUNT(*) AS cnt").
+		Where("user_id IN ?", subUserIDs).
+		Group("user_id").
+		Find(&chatRows).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range chatRows {
+		result[r.UserID] += r.Cnt
+	}
+	return result, nil
 }
 
 // CheckSubUserFeatureGrant 检查子用户是否被授权指定 feature。
