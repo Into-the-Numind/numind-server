@@ -140,7 +140,7 @@ func (s *agentDefinitionStore) SoftDeleteTx(ctx context.Context, tx *gorm.DB, id
 		return fmt.Errorf("agentDefinitionStore.SoftDeleteTx(id=%d): %w", id, result.Error)
 	}
 	if result.RowsAffected == 0 {
-		return errno.ErrSkillNotFound.SetMessage(fmt.Sprintf("SoftDeleteTx: no row matched id=%d", id))
+		return errno.ErrSkillNotFound.SetMessage("SoftDeleteTx: no row matched id=%d", id)
 	}
 	return nil
 }
