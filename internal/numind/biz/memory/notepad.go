@@ -99,11 +99,8 @@ func (n *notepadImpl) Write(ctx context.Context, userID uint, kind MemoryKind, k
 func (n *notepadImpl) Read(ctx context.Context, userID uint, key string) (*MemoryItem, error) {
 	row, err := n.store.GetByUserKey(ctx, userID, key)
 	if err != nil {
+		// errors.Is 穿透 %w 包装；store 即使 wrap 了 gorm.ErrRecordNotFound 也能命中（P1-1：删除重复 isNotFound 检测）
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		// store wraps the error; unwrap to check underlying cause
-		if isNotFound(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("notepad.Read: %w", err)
@@ -148,9 +145,4 @@ func rowToL2Item(row *model.UserGlobalMemory) MemoryItem {
 		KeyName:    row.KeyName,
 		Confidence: row.Confidence,
 	}
-}
-
-// isNotFound checks whether an error (possibly wrapped) is gorm.ErrRecordNotFound.
-func isNotFound(err error) bool {
-	return errors.Is(err, gorm.ErrRecordNotFound)
 }

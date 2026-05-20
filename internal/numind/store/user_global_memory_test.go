@@ -80,6 +80,32 @@ func TestStore_UserGlobalMemory_Upsert_KindUpdate(t *testing.T) {
 	assert.Equal(t, "val-updated", got.Value)
 }
 
+// ─── Upsert confidence=0 fixup ────────────────────────────────────────────────
+
+// TestStore_UserGlobalMemory_Upsert_ConfidenceZero 验证 P2-2 决策：confidence=0.0
+// 是合法低置信度，必须持久化为 0.0（不被 GORM default:1.0 gotcha 覆盖为 1.0）。
+// 该测试是 store 层 P1-2 回归保护（reviewer 提醒：biz 层集成测试不够独立）。
+func TestStore_UserGlobalMemory_Upsert_ConfidenceZero(t *testing.T) {
+	s := newTestUGMStore(t)
+	ctx := context.Background()
+
+	m := &model.UserGlobalMemory{
+		UserID:     7,
+		Kind:       "fact",
+		KeyName:    "low_confidence_key",
+		Value:      "uncertain fact",
+		Confidence: 0.0, // 显式低置信度（agent 极不确定）
+		SourceType: "agent_tool",
+	}
+	require.NoError(t, s.Upsert(ctx, m))
+
+	got, err := s.GetByUserKey(ctx, 7, "low_confidence_key")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, 0.0, got.Confidence,
+		"P2-2: confidence=0.0 must persist as 0.0 (Upsert fixup handles SQLite default:1.0 gotcha)")
+}
+
 // ─── Upsert 并发 100 goroutine ────────────────────────────────────────────────
 
 // TestStore_UserGlobalMemory_Upsert_Concurrent100 验证 100 goroutine 同 (user, key) Upsert 后只有 1 行。
