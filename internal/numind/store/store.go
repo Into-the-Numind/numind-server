@@ -45,6 +45,7 @@ type IStore interface {
 	AgentSandboxSessions() IAgentSandboxSessionStore
 	AgentDefinitions() IAgentDefinitionStore
 	SkillTemplates() ISkillTemplateStore
+	AgentPermissions() IAgentPermissionStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -212,4 +213,9 @@ func (ds *datastore) AgentDefinitions() IAgentDefinitionStore {
 // SkillTemplates 返回一个实现了 ISkillTemplateStore 接口的实例。
 func (ds *datastore) SkillTemplates() ISkillTemplateStore {
 	return newSkillTemplateStore(ds.db)
+}
+
+// AgentPermissions 返回一个实现了 IAgentPermissionStore 接口的实例（#6 permission-pipeline）。
+func (ds *datastore) AgentPermissions() IAgentPermissionStore {
+	return newAgentPermissionStore(ds.db)
 }
