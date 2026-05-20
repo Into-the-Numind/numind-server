@@ -36,7 +36,9 @@ Agent 模式底座 14-feature 分解的 **#5/14** —— Skill 系统是 Agent �
 
 ## 2. 业务范围
 
-> **关键术语翻译（P0-1 修复）**：蓝本 DDL 用 `tenant_id BIGINT`，Numind 当前数据模型**不存在** `tenant_id` 字段（无独立 tenant 概念）。本 feature 一律将 tenant 等价物映射为 `user.parent_user_id`（B2B2C 模型中的父账户 ID）。Skill 隶属"机构" = `parent_user_id` 指向某父账户。`agent_definition.parent_user_id BIGINT UNSIGNED NOT NULL`，平台预置内容放独立 `skill_template` 表（见下文 P2-3 修复）。
+> **关键术语翻译（P0-1 修复）**：蓝本 DDL 用 `tenant_id BIGINT`，Numind 当前数据模型**不存在** `tenant_id` 字段（无独立 tenant 概念）。本 feature 一律将 tenant 等价物映射为 `user.parent_user_id`（B2B2C 模型中的父账户 ID）。Skill 隶属"机构" = `parent_user_id` 指向某父账户。
+>
+> **字段类型与现有 user 表对齐**：`user.id` 是 `INT UNSIGNED`（GORM `uint`），`user.parent_user_id` 是 `*uint`（nullable，nil=父账户自身）。因此 `agent_definition.parent_user_id INT UNSIGNED NOT NULL`（agent 必属于某个父账户，不能为 NULL）。平台预置内容放独立 `skill_template` 表（见下文 P2-3 修复）。
 
 > **问卷 Q 编号 canonical（P0-3 修复）**：蓝本 §4.3.3/§4.3.4 与 §5.3 的 Q 编号不一致；以 **§5.3 为 canonical source of truth**。本 feature 实装的 12 题映射严格按下表（reconciled）：
 
@@ -60,7 +62,7 @@ Agent 模式底座 14-feature 分解的 **#5/14** —— Skill 系统是 Agent �
 ### In scope
 
 1. **DB 层**
-   - `agent_definition` 表 — `parent_user_id BIGINT UNSIGNED NOT NULL`（不是蓝本 `tenant_id`）+ name + description + icon_url + welcome_message + starters JSON + questionnaire_answers JSON + generated_skill_body TEXT + advanced_mode TINYINT + custom_skill_body TEXT + tool_flags JSON + credit_cap_per_session + daily_credit_cap + version + is_active + source_template_id + created_by + created_at + updated_at
+   - `agent_definition` 表 — `parent_user_id INT UNSIGNED NOT NULL`（与 user.id / user.parent_user_id 类型对齐，不是蓝本 `tenant_id` 也不是 BIGINT）+ name + description + icon_url + welcome_message + starters JSON + questionnaire_answers JSON + generated_skill_body TEXT + advanced_mode TINYINT + custom_skill_body TEXT + tool_flags JSON + credit_cap_per_session + daily_credit_cap + version + is_active + source_template_id + created_by + created_at + updated_at
    - `agent_definition_history` 表 — append-only snapshot（agent_id + version + snapshot JSON）
    - `skill_template` 表 — 平台预置模板独立存储（避免与用户 agent 同表混淆；DB 层无 parent_user_id 字段，CRUD 端点不暴露删除）
    - GORM model + AutoMigrate（注册到 `internal/numind/helper.go`） + migration SQL（双文件 含 _rollback.sql）
