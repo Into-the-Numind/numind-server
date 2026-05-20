@@ -4,10 +4,12 @@ features:
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #10/14。落地蓝本 §5 配置者 UX 全部范围（admin-web 前端）：侧边栏 + 路由（/admin/agents 列表 / 创建 / 详情 / 编辑 / 高级 / 监控）+ Pinia store + axios wrappers（9 个 /v1/agent/skills/* 端点） + AgentList DataTable + 3 创建路径（模板 / 从零 / 派生） + TemplateGallery + AgentBuilder 12 题问卷（严格按蓝本 §5.3 canonical：Q1 名字 / Q2 头像 / Q3 描述 / Q4 欢迎 / Q5 starters / Q6 任务类型多选 / Q7 材料类型多选 / Q8 积分滑块 / Q9 网络搜索 / Q10 话题 / Q11 越界 / Q12 风格） + AgentDetail 3 Tab（配置 / 历史 / 数据占位） + AgentHistoryTab 回滚 + AgentAdvancedEdit Markdown editor + 工具开关 + AfterSaveModal 试聊弹窗（v1 toast 占位） + AdvancedToggleConfirmModal + AgentMonitoring（v1 UI 骨架空状态，不调后端避免 404） + AdminSidebar 加 "AI 助手" 菜单。全部走自研组件（DataTable / ConfirmModal / AppInput / AppSelect / AppButton），0 外部 UI 框架引入。Out of scope: 学员端 UI (#11) / 试聊真实流程 (#12) / Langfuse trace 真实跳转 (#14) / 强制取消 agent_run 后端 (#14) / 监控真实数据源 (#14) / per-tenant narration 模板编辑器 / 响应式 mobile / i18n / 后端 API 改动 / prod 部署。术语翻译：蓝本 "顶部导航" → admin-web AdminSidebar 左侧菜单。'
   track: standard
-  stage: S3
-  classification_reason: 'Standard Triage 5 条 — (1) DB schema 变更：否（不动后端） (2) 新 API 端点：否（消费 #5 已落地 9 端点） (3) 无新外部服务集成 (4) 影响文件数 >3（新增 ~12 Vue 组件 + 9 axios wrappers + 1 store + 1 types 文件 + router 修改 + sidebar 修改 + N 单测/E2E ≥ 25 文件） (5) 高风险业务逻辑：否（UI 层；销毁性操作走 ConfirmModal；不动支付/会员/权限）。条件 4 单条触发 Standard——跨多个新组件 + 多状态管理 + 表单验证规则多需要严肃 spec/plan review。'
-  last_updated_by: ai-s3-reviewer-applied
-  last_updated_at: '2026-05-21T05:00:00+08:00'
+  stage: completed
+  merged_commit: fdebd7b
+  completed_at: '2026-05-21T05:15:00+08:00'
+  classification_reason: 'Standard Triage 5 条 — (1) DB schema 变更：否（不动后端） (2) 新 API 端点：否（消费 #5 已落地 9 端点） (3) 无新外部服务集成 (4) 影响文件数 >3（新增 ~45 文件：1 types + 9 axios + 1 store + 12 view/component + 7 子组件 + 14 单测 + 4 e2e + 3 numind-server docs） (5) 高风险业务逻辑：否（UI 层；销毁性操作走 ConfirmModal；不动支付/会员/权限）。条件 4 单条触发 Standard。'
+  last_updated_by: ai-s6-merged
+  last_updated_at: '2026-05-21T05:15:00+08:00'
   repos:
   - numind-admin-web
   branches:
@@ -21,14 +23,10 @@ features:
     plan: numind-server/docs/superpowers/plans/2026-05-21-agent-mode-configurator-ux-plan.md
     architecture_blueprint: docs/agent-mode/architecture-v1.md
   progress:
-    total_tasks: 0
-    completed_tasks: 0
-    reviewed_tasks: 0
-    current_task: 'S3 plan 已写并通过 reviewer（PASS_WITH_CONDITIONS - 2 P0 + 3 P1 + 6 P2 + Nits 全修）。S3 决议详见 decisions s3-1 .. s3-4。S5 验证策略：Playwright E2E + vitest 单测 + manual visual QA + lint/type-check 静态门。进入 S4 编码（M1-M13b 共 14 atomic tasks 跨 8 Waves）。'
-  progress:
     total_tasks: 14
-    completed_tasks: 0
-    reviewed_tasks: 0
+    completed_tasks: 14
+    reviewed_tasks: 14
+    current_task: 'S6 ndf-done — admin-web develop merged commit fdebd7b。14 S4 tasks 全完成（M1+M2 71bc7e5 / M3 92456c7 / M4 0e56f0f / M5a+M5b d4194c1 / M6 f303251 / M7 4f1ea84 / M8 9374187 / M9a 3cc2f7e / M9b 822f806 / M10 5d450d5 / M11 2d28236 / M12 fe16f3d / M13a b4c7e5d）+ M13b b644dbb1 在 numind-server develop。S5 验收：232/232 单测 PASS / type-check exit 0 / lint 0 errors 2 baseline warnings / 4 e2e specs ready / 0 prod 改动。'
   decisions:
   - '2026-05-21 (s3-1): ndf-check-disjoint 必须用逗号分隔（P0-1 修复）— 验证脚本只识别 tr ",", 不识别空格；空格分隔会被当成"一个文件名"导致 false PASS。S3 plan 全部 ndf-check-disjoint 命令改为 comma-separated；已实测 3 个 Wave 命令 exit 0 通过。'
   - '2026-05-21 (s3-2): M13 拆 M13a admin-web e2e + M13b numind-server 文档（P0-2 修复）— 跨 worktree 写不能放同 task；M13a 在 admin-web 主 feature worktree commit；M13b 在 cux-server-docs temp worktree commit develop。主 session 不 dispatch subagent for M13b（直接写）。'
