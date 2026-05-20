@@ -6,6 +6,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
 
@@ -139,7 +140,7 @@ func (s *agentDefinitionStore) SoftDeleteTx(ctx context.Context, tx *gorm.DB, id
 		return fmt.Errorf("agentDefinitionStore.SoftDeleteTx(id=%d): %w", id, result.Error)
 	}
 	if result.RowsAffected == 0 {
-		return fmt.Errorf("agentDefinitionStore.SoftDeleteTx: no row matched id=%d", id)
+		return errno.ErrSkillNotFound.SetMessage(fmt.Sprintf("SoftDeleteTx: no row matched id=%d", id))
 	}
 	return nil
 }

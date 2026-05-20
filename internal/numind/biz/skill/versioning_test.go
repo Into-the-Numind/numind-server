@@ -139,6 +139,14 @@ func TestComputeChangesSummary_nameDescriptionChange(t *testing.T) {
 	assert.Contains(t, got, "Q3（描述）")
 }
 
+func TestComputeChangesSummary_iconURLChange(t *testing.T) {
+	prev := &model.AgentDefinition{Name: "助手", IconURL: "old.png", IsActive: true}
+	curr := &model.AgentDefinition{Name: "助手", IconURL: "new.png", IsActive: true}
+
+	got := ComputeChangesSummary(prev, curr, 0)
+	assert.Contains(t, got, "Q2（头像）")
+}
+
 func TestComputeChangesSummary_noChange(t *testing.T) {
 	qa := QuestionnaireAnswers{Q6: []string{"analyze_data"}, Q7: []string{"text"}, Q12: "friendly"}
 	raw, _ := json.Marshal(qa)

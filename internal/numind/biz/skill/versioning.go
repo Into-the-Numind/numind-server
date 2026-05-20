@@ -101,6 +101,9 @@ func jsonEqual(a, b datatypes.JSON) bool {
 
 // diffQuestionnaire parses both QuestionnaireAnswers JSON blobs and returns a
 // list of human-readable Q-label strings for fields that changed.
+// diffQuestionnaire returns Q-number labels for each field whose value differs.
+// Parse errors are intentionally ignored — malformed legacy snapshots fall back
+// to zero-value comparison rather than blocking the changes summary.
 func diffQuestionnaire(a, b datatypes.JSON) []string {
 	var qa, qb QuestionnaireAnswers
 	_ = json.Unmarshal(a, &qa)
