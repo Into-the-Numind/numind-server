@@ -268,6 +268,14 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate agent_run: %v", err)
 	}
 
+	// Agent tool registry 表（agent-mode-tool-registry #3）
+	if err := db.AutoMigrate(&model.ToolDefinition{}); err != nil {
+		return fmt.Errorf("failed to migrate tool_definition: %v", err)
+	}
+	if err := db.AutoMigrate(&model.ToolFactoryRegistryRow{}); err != nil {
+		return fmt.Errorf("failed to migrate tool_factory_registry: %v", err)
+	}
+
 	log.Infow("All database schema migration completed")
 
 	// 3. 迁移后验证字符集
