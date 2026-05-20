@@ -246,6 +246,7 @@ func NewBiz(ds store.IStore) *biz {
 		ds.AgentRuns(),
 		agentToolRegistry,
 		agent.WithDefaultHooks(sandboxHookManager.AsRunHooks()),
+		agent.WithSkillStore(ds.AgentDefinitions()), // #5 skill-system
 	)
 
 	// 初始化知识库服务
