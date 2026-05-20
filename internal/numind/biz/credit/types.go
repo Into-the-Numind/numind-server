@@ -152,4 +152,17 @@ type BalanceBreakdown struct {
 	// real spendable balance.
 	TrialRemain    int64      `json:"trial_remain"`
 	TrialExpiresAt *time.Time `json:"trial_expires_at,omitempty"`
+
+	// AdminTestPool 是 Agent 模式 #12 引入的父账户独立测试配额展示字段。
+	// 父账户（ParentUserID == nil）非 nil；子账户 nil（JSON omitempty 时整字段消失）。
+	AdminTestPool *AdminTestPoolView `json:"admin_test_pool,omitempty"`
+}
+
+// AdminTestPoolView 是 GetBalance 返回的 admin_test 配额 JSON 视图（#12）。
+type AdminTestPoolView struct {
+	Granted      int64  `json:"granted"`
+	Used         int64  `json:"used"`
+	Remaining    int64  `json:"remaining"`
+	PeriodEnd    string `json:"period_end"` // "YYYY-MM-DD"
+	DaysToExpire int    `json:"days_to_expire"`
 }

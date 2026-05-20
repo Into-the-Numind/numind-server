@@ -51,6 +51,11 @@ type creditService struct {
 	membershipSvc *membership.MembershipService
 	// Pre-instantiated leg so each dispatch is a plain method call.
 	credits *creditsImpl
+
+	// adminConsumer is the credit-local interface. biz.go wire layer constructs
+	// a budget.AdminTestConsumer + adapter struct that satisfies credit.AdminTestConsumer.
+	// nil until SetAdminTestConsumer is called — ReserveAgentTest then fails fast.
+	adminConsumer AdminTestConsumer // #12 agent-mode-billing-integration
 }
 
 // NewCreditService constructs the singleton ICreditService used throughout the
@@ -112,8 +117,131 @@ func (s *creditService) FinalizeReservation(ctx context.Context, rsv *Reservatio
 
 // GetBalance returns the three-pool (sub + booster + trial) credits breakdown.
 // Post legacy-deprecation (T1) the billing-mode dispatch is removed.
+//
+// #12 agent-mode-billing-integration: appends AdminTestPool field for parent
+// accounts (User.ParentUserID == nil). Sub-accounts get nil (JSON omitempty
+// elides the field). Fetch failure logs warn and proceeds with nil.
 func (s *creditService) GetBalance(ctx context.Context, user *model.User) (*BalanceBreakdown, error) {
-	return s.credits.GetBalance(ctx, user)
+	bal, err := s.credits.GetBalance(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	if isParentAccount(user) && s.adminConsumer != nil {
+		status, err := s.adminConsumer.Status(ctx, user.ID, time.Now().UTC())
+		if err != nil {
+			log.Warnw("GetBalance: admin_test status fetch failed", "user_id", user.ID, "error", err)
+		} else if status != nil {
+			bal.AdminTestPool = &AdminTestPoolView{
+				Granted:      status.Granted,
+				Used:         status.Used,
+				Remaining:    status.Remaining,
+				PeriodEnd:    status.PeriodEnd.Format("2006-01-02"),
+				DaysToExpire: status.DaysToExpire,
+			}
+		}
+	}
+	return bal, nil
+}
+
+// SetAdminTestConsumer injects the credit-local AdminTestConsumer dependency (#12).
+// Setter pattern chosen instead of constructor param to avoid breaking 4 existing
+// NewCreditService callers; biz.go wire layer constructs a budget-side impl + adapter.
+func (s *creditService) SetAdminTestConsumer(c AdminTestConsumer) {
+	s.adminConsumer = c
+}
+
+// isParentAccount returns true when user is a "parent" (B2B 父账户) in the B2B2C model.
+// v1 rule: User.ParentUserID == nil means top-level account (independent or parent).
+// #14 may refine with explicit role / B2B grant flag.
+func isParentAccount(u *model.User) bool {
+	return u != nil && u.ParentUserID == nil
+}
+
+// ReserveAgentTest implements ICreditService — see contracts.go for contract.
+func (s *creditService) ReserveAgentTest(ctx context.Context, parentUser *model.User, estimated int64, idempotencyKey *string) (*Reservation, error) {
+	if s.adminConsumer == nil {
+		return nil, fmt.Errorf("ReserveAgentTest: admin consumer not wired")
+	}
+	if parentUser == nil {
+		return nil, fmt.Errorf("ReserveAgentTest: parent user is nil")
+	}
+	if estimated <= 0 {
+		return nil, fmt.Errorf("ReserveAgentTest: estimated must be > 0, got %d", estimated)
+	}
+	txID, err := s.adminConsumer.Consume(ctx, parentUser.ID, estimated)
+	if err != nil {
+		// 桥接：credit.ErrAdminTestExhausted (local sentinel) 或 errno.ErrAdminTestExhausted
+		// 或 budget.ErrAdminTestExhausted（通过 adapter 透传）都映射为 errno errno.
+		if errors.Is(err, ErrAdminTestExhausted) || errors.Is(err, errno.ErrAdminTestExhausted) {
+			return nil, errno.ErrAdminTestExhausted
+		}
+		return nil, fmt.Errorf("ReserveAgentTest: consume: %w", err)
+	}
+	rsv := &model.CreditReservation{
+		UserID:           parentUser.ID,
+		Operation:        "agent_test",
+		ReferenceType:    "agent_test",
+		ReferenceID:      fmt.Sprintf("admin_test_tx:%d", txID),
+		ReservedCredits:  estimated,
+		EstimationSource: "agent_test",
+		Status:           "reserved",
+	}
+	if idempotencyKey != nil {
+		rsv.IdempotencyKey = idempotencyKey
+	}
+	if err := s.store.DB().WithContext(ctx).Create(rsv).Error; err != nil {
+		return nil, fmt.Errorf("ReserveAgentTest: create reservation: %w", err)
+	}
+	return &Reservation{
+		ID:              rsv.ID,
+		UserID:          parentUser.ID,
+		ReferenceType:   "agent_test",
+		ReferenceID:     rsv.ReferenceID,
+		Operation:       "agent_test",
+		ReservedCredits: estimated,
+		Status:          StatusReserved,
+		CreatedAt:       rsv.CreatedAt,
+	}, nil
+}
+
+// ReconcileAgentTest implements ICreditService — see contracts.go for contract.
+func (s *creditService) ReconcileAgentTest(ctx context.Context, reservationID uint64, actualCostCents int64) error {
+	if s.adminConsumer == nil {
+		return fmt.Errorf("ReconcileAgentTest: admin consumer not wired")
+	}
+	var rsv model.CreditReservation
+	if err := s.store.DB().WithContext(ctx).First(&rsv, reservationID).Error; err != nil {
+		return fmt.Errorf("ReconcileAgentTest: fetch reservation %d: %w", reservationID, err)
+	}
+	if rsv.Operation != "agent_test" {
+		return fmt.Errorf("ReconcileAgentTest: reservation %d is not agent_test (got %s)", reservationID, rsv.Operation)
+	}
+	if rsv.Status != "reserved" {
+		return fmt.Errorf("ReconcileAgentTest: reservation %d already %s", reservationID, rsv.Status)
+	}
+	var origTxID uint64
+	if _, err := fmt.Sscanf(rsv.ReferenceID, "admin_test_tx:%d", &origTxID); err != nil {
+		return fmt.Errorf("ReconcileAgentTest: parse ref ID %q: %w", rsv.ReferenceID, err)
+	}
+	refund := rsv.ReservedCredits - actualCostCents
+	if refund > 0 {
+		if err := s.adminConsumer.Refund(ctx, rsv.UserID, origTxID, refund); err != nil {
+			return fmt.Errorf("ReconcileAgentTest: refund: %w", err)
+		}
+	} else if refund < 0 {
+		topup := -refund
+		if _, err := s.adminConsumer.Consume(ctx, rsv.UserID, topup); err != nil {
+			return fmt.Errorf("ReconcileAgentTest: topup: %w", err)
+		}
+	}
+	now := time.Now().UTC()
+	delta := actualCostCents - rsv.ReservedCredits
+	return s.store.DB().WithContext(ctx).Model(&rsv).Updates(map[string]any{
+		"status":            "reconciled",
+		"actual_cost_cents": actualCostCents,
+		"delta":             delta,
+		"reconciled_at":     now,
+	}).Error
 }
 
 // budgetOperationMap normalises raw billing operation strings (as they appear

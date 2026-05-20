@@ -64,4 +64,8 @@ var (
 	// 订单接口只接受 booster；trial/monthly/yearly 必须走 grant 路径。
 	// HTTP 400（Bad Request）
 	ErrInvalidProductType = &Errno{HTTP: 400, Code: "Order.InvalidProductType", Message: "订单接口仅支持加量包，会员请通过管理员开通"}
+
+	// ErrAdminTestExhausted 配置者试聊本月独立测试配额已用完（#12 agent-mode-billing-integration）
+	// HTTP 429（Too Many Requests）— 不允许 fallback 到正式积分
+	ErrAdminTestExhausted = &Errno{HTTP: 429, Code: "Credits.AdminTestExhausted", Message: "本月测试配额已用完，请等待下月刷新"}
 )
