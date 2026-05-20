@@ -263,6 +263,11 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate billing tables: %v", err)
 	}
 
+	// Agent runtime 表（Phase 0 agent-mode #2）
+	if err := db.AutoMigrate(&model.AgentRun{}); err != nil {
+		return fmt.Errorf("failed to migrate agent_run: %v", err)
+	}
+
 	log.Infow("All database schema migration completed")
 
 	// 3. 迁移后验证字符集

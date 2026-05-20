@@ -39,6 +39,7 @@ type IStore interface {
 	SopVisibilityGrant() ISopVisibilityGrantStore
 	ChatbotVisibilityGrant() IChatbotVisibilityGrantStore
 	SalesAgentOwners() ISalesAgentOwnerStore
+	AgentRuns() IAgentRunStore
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -176,4 +177,9 @@ func (ds *datastore) ChatbotVisibilityGrant() IChatbotVisibilityGrantStore {
 // SalesAgentOwners 返回一个实现了 ISalesAgentOwnerStore 接口的实例
 func (ds *datastore) SalesAgentOwners() ISalesAgentOwnerStore {
 	return NewSalesAgentOwnerStore(ds.db)
+}
+
+// AgentRuns 返回一个实现了 IAgentRunStore 接口的实例.
+func (ds *datastore) AgentRuns() IAgentRunStore {
+	return newAgentRunStore(ds.db)
 }

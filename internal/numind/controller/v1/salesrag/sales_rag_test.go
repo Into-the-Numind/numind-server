@@ -18,6 +18,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"numind-server/internal/numind/biz"
+	"numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/ali"
 	chatbotbiz "numind-server/internal/numind/biz/chatbot"
 	"numind-server/internal/numind/biz/config"
@@ -117,6 +118,7 @@ func (b *realBizOnlyCustomers) Monitor() monitor.IMonitorBiz           { return 
 func (b *realBizOnlyCustomers) KnowledgeBase() kbbiz.IKnowledgeBaseBiz { return nil }
 func (b *realBizOnlyCustomers) Chatbot() chatbotbiz.IChatbotBiz        { return nil }
 func (b *realBizOnlyCustomers) LLMRouter() *llmrouter.Router           { return nil }
+func (b *realBizOnlyCustomers) Agents() agent.AgentRunner              { return nil }
 
 // compile-time guard: this test struct must satisfy biz.IBiz or tests fail here.
 var _ biz.IBiz = (*realBizOnlyCustomers)(nil)
