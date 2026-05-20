@@ -1,5 +1,43 @@
 schema_version: '2.0'
 features:
+- id: agent-mode-permission-pipeline
+  ndf_version: '2.0'
+  description: 'Agent 模式 14-feature 分解 #6/14。落地蓝本 §4.4 Permission Pipeline（安全核心）：建 agent_permission_config + agent_permission_decision_log 两表 + biz/permission 子包（PermissionGate / PermissionPipeline / 7 Validator 实现 / 异步审计写入）+ HookAction 加第 4 枚举 HookActionPermissionDeny=3 + TerminalReason 加第 13 个 permission_denied + LoopEvent 加 LoopEventPermissionDenied + AgentRunner.WithPermissionGate option + HooksWrapper 合并 sandbox + permission（顺序 permission → sandbox）+ RunResult.PermissionDenial 字段。Out of scope: 管理端 UI (#10) / 学员端 UI (#11) / classifier 真实 LLM (#14) / sandbox override 真实路径 (#13) / 23 bash validators 全扩展 / safety check L3 拆出 (#13) / 试聊配额检查 (#12) / prod 部署。术语翻译：蓝本 tenant_id → Numind parent_user_id（B2B2C 与 #5 一致）。DecisionReason canonical：§4.4.5。'
+  track: standard
+  stage: S0
+  classification_reason: 'Standard Triage 5 条 — (1) DB schema 变更：是（2 张新表 agent_permission_config + agent_permission_decision_log）(2) 新 API 端点：否（本 feature 不引入 HTTP，audit 查询/规则 CRUD 在 #10 落地）(3) 无新外部服务集成 (4) 影响文件数 >3（migration + 2 model + store + 8 biz files + 7 validators + runner.go + hooks.go + state.go + biz.go + N test ≥ 25 文件）(5) 高风险业务逻辑：是（权限拦截 = 高风险，但只增不减；新 deny 路径添加不破坏现有 12 个 terminal reason）。条件 1+4+5 多条触发 Standard。'
+  last_updated_by: ai-s0-reviewer-applied
+  last_updated_at: '2026-05-21T10:00:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: feature/agent-mode-permission-pipeline
+  worktree:
+    numind-server: /private/tmp/wt-agent-mode-permission-pipeline-numind-server
+  artifacts:
+    requirement: numind-server/requirements/agent-mode-permission-pipeline.md
+    architecture_blueprint: docs/agent-mode/architecture-v1.md
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+    current_task: 'S0 PASS_WITH_CONDITIONS: P0/P1/P2 全修。进入 S1 proposal/PRD。'
+  decisions:
+  - '2026-05-21 (s0-1): Hook chain 顺序 permission → sandbox（P0 reviewer fix）— 避免 deny 时白启动容器；wrapper PreToolCall 内 permission.Check 先；deny 短路不调 base；allow 透传 base 启动容器。'
+  - '2026-05-21 (s0-2): tool_input_digest 用 SHA-256 完整 64 hex（P1 reviewer fix）— 用途单一（对账匹配），防 PII 是副作用。'
+  - '2026-05-21 (s0-3): UpdatedInput v1 透传 framework 必须就绪（P1 reviewer fix）— 即使 v1 所有 validator nil；#13 SandboxOverride 落地时无需改 wrapper。'
+  - '2026-05-21 (s0-4): SafetyCheckValidator 推迟 #13；DecisionReason 表保留 safetyCheck 枚举但 v1 不主动 emit（reviewer P2 fix）。'
+  - '2026-05-21 (s0-5): 23 个 Bash validator 全扩展推迟 backlog；v1 沿用 #1 V3 落地 8 个 P0 包装为 PlatformHardRule。'
+  related_features:
+  - 'agent-mode-runtime-skeleton (#2/14, 已 develop merged — RunHooks / HookAction / TerminalReason 12 输入)'
+  - 'agent-mode-tool-registry (#3/14, 已 develop merged — FullTool 38 字段含 IsReadOnly/IsDestructive 输入)'
+  - 'agent-mode-sandbox-integration (#4/14, 已 develop merged — SandboxHookManager / bashvalidator 8 P0 输入)'
+  - 'agent-mode-skill-system (#5/14, 已 develop merged — agent_definition.tool_flags / HookActionRegistry race-safe 输入)'
+  - 'agent-mode-configurator-ux (#10/14, 依赖本 feature agent_permission_config 表做管理端 CRUD UI)'
+  - 'agent-mode-student-ux (#11/14, 依赖本 feature deny/ask 决策结果做学员端 UI 友好提示)'
+  - 'agent-mode-compliance-3layer (#13/14, 依赖本 feature L1/L2/L3 拆出与 SafetyCheckValidator 独立化)'
+  blockers: []
+  created_at: '2026-05-21T08:00:00+08:00'
 - id: agent-mode-skill-system
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #5/14。落地蓝本 §4.3 Skill 系统（灵活性核心）：建 agent_definition + agent_definition_history + skill_template 三表 + biz/skill 子包（skill_builder 把 §5.3 12 题问卷答案 → SKILL.md 自动组装 / versioning 历史版本永久保留 + 一键回滚 / templates 10 个内置模板 seed） + 8 个用户端 API 端点（首次为 agent-mode 引入 HTTP，全部 user_token 鉴权） + AgentRunner.Run 接入 Skill body 注入 + Hook 信号传播改造（adapter ctx-bound atomic.Int32 + runner 终止 reason 真实派发 hook_stopped/stop_hook_prevented）。Out of scope: 管理端 UI (#10) / 学员端 UI (#11) / 权限 pipeline (#6) / Memory (#7) / Narration (#8) / Compact (#9) / 试聊配额完整流程 (#12) / 跨机构脱敏共享 v2 / 真实 LLM ReAct loop (#14) / 独立 Stop Hook (#14) / prod 部署。术语翻译：蓝本 tenant_id → Numind parent_user_id。Q 编号 canonical：§5.3。'
