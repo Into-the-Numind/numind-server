@@ -238,3 +238,77 @@ func TestRunner_Run_RegistryStopPropagatesToTerminalReason(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, string(TerminalHookStopped), got.StateReason)
 }
+
+// ---------------------------------------------------------------------------
+// M11 (#5 skill-system) — Runner Skill 注入测试
+// ---------------------------------------------------------------------------
+
+// mockSkillStore is an inline mock of store.IAgentDefinitionStore for M11 tests.
+// Only GetByIDIncludeInactive is used in runner.Run; other methods stub to nil.
+type mockSkillStore struct {
+	fixed *model.AgentDefinition
+	err   error
+}
+
+func (m *mockSkillStore) Create(_ context.Context, _ *model.AgentDefinition) error { return nil }
+func (m *mockSkillStore) CreateTx(_ context.Context, _ interface{}, _ *model.AgentDefinition) error {
+	return nil
+}
+func (m *mockSkillStore) GetByID(_ context.Context, _ uint64) (*model.AgentDefinition, error) {
+	return nil, nil
+}
+func (m *mockSkillStore) GetByIDIncludeInactive(_ context.Context, id uint64) (*model.AgentDefinition, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	if m.fixed == nil {
+		return nil, errors.New("not found")
+	}
+	return m.fixed, nil
+}
+func (m *mockSkillStore) ListByParent(_ context.Context, _ uint, _ bool, _, _ int) ([]model.AgentDefinition, int64, error) {
+	return nil, 0, nil
+}
+func (m *mockSkillStore) Update(_ context.Context, _ *model.AgentDefinition) error { return nil }
+func (m *mockSkillStore) SoftDelete(_ context.Context, _ uint64) error             { return nil }
+func (m *mockSkillStore) WriteHistory(_ context.Context, _ *model.AgentDefinitionHistory) error {
+	return nil
+}
+func (m *mockSkillStore) ListHistory(_ context.Context, _ uint64) ([]model.AgentDefinitionHistory, error) {
+	return nil, nil
+}
+func (m *mockSkillStore) GetHistoryByVersion(_ context.Context, _ uint64, _ uint) (*model.AgentDefinitionHistory, error) {
+	return nil, nil
+}
+func (m *mockSkillStore) MaxVersion(_ context.Context, _ uint64) (uint, error) { return 0, nil }
+
+func TestRunner_AgentDefinitionID0_fallThroughMock(t *testing.T) {
+	runner := NewAgentRunner(newMockStore(), nil)
+	result, err := runner.Run(context.Background(), RunRequest{
+		UserID:            1,
+		Input:             "test",
+		AgentDefinitionID: 0, // explicit fall through
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, result.SkillVersion, "fall through should yield SkillVersion=0")
+}
+
+func TestRunner_AgentDefinitionID_skillStoreNil_fallsThrough(t *testing.T) {
+	// Even with AgentDefinitionID > 0, if WithSkillStore was not wired,
+	// runner.Run must not panic and fall through to mock behaviour.
+	runner := NewAgentRunner(newMockStore(), nil) // no WithSkillStore
+	result, err := runner.Run(context.Background(), RunRequest{
+		UserID:            1,
+		Input:             "test",
+		AgentDefinitionID: 42, // ignored because skillStore is nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, result.SkillVersion)
+}
+
+func TestRunner_RunResult_SkillVersion_zeroWhenFallThrough(t *testing.T) {
+	runner := NewAgentRunner(newMockStore(), nil)
+	result, err := runner.Run(context.Background(), RunRequest{UserID: 1, Input: "x"})
+	require.NoError(t, err)
+	assert.Equal(t, 0, result.SkillVersion)
+}
