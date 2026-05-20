@@ -292,6 +292,14 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate skill_template: %v", err)
 	}
 
+	// Agent permission pipeline 两表（agent-mode-permission-pipeline #6）
+	if err := db.AutoMigrate(&model.AgentPermissionConfig{}); err != nil {
+		return fmt.Errorf("failed to migrate agent_permission_config: %v", err)
+	}
+	if err := db.AutoMigrate(&model.AgentPermissionDecisionLog{}); err != nil {
+		return fmt.Errorf("failed to migrate agent_permission_decision_log: %v", err)
+	}
+
 	log.Infow("All database schema migration completed")
 
 	// 3. 迁移后验证字符集

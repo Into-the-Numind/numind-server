@@ -11,16 +11,17 @@ import (
 type HookAction int
 
 const (
-	HookActionContinue     HookAction = iota // 0 — continue normally
-	HookActionStop                           // 1 — trigger TerminalHookStopped
-	HookActionBlockingStop                   // 2 — trigger TerminalStopHookPrevented
+	HookActionContinue       HookAction = iota // 0 — continue normally
+	HookActionStop                             // 1 — trigger TerminalHookStopped
+	HookActionBlockingStop                     // 2 — trigger TerminalStopHookPrevented
+	HookActionPermissionDeny                   // 3 — trigger TerminalPermissionDenied (#6 agent-mode-permission-pipeline)
 )
 
 // HookActionRegistry is a thread-safe recorder of the last HookAction emitted during a Run.
 // adapter PreToolCall + PostToolCall both call Record; runner.Run reads LastAction at the end
-// to propagate Stop/BlockingStop into the correct TerminalReason via state.Transition.
+// to propagate Stop/BlockingStop/PermissionDeny into the correct TerminalReason via state.Transition.
 type HookActionRegistry struct {
-	last atomic.Int32 // 0=Continue 1=Stop 2=BlockingStop
+	last atomic.Int32 // 0=Continue 1=Stop 2=BlockingStop 3=PermissionDeny
 }
 
 // NewHookActionRegistry creates a registry with zero value (HookActionContinue).
@@ -58,6 +59,8 @@ func HookActionToLoopEvent(action HookAction) LoopEvent {
 		return LoopEventHookActionStop
 	case HookActionBlockingStop:
 		return LoopEventHookActionBlockStop
+	case HookActionPermissionDeny:
+		return LoopEventPermissionDenied
 	default:
 		// HookActionContinue does not map to an event
 		return LoopEventInvalid

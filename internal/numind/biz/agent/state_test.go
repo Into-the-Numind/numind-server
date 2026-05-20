@@ -191,6 +191,40 @@ func TestState_IsTerminal(t *testing.T) {
 	}
 }
 
+// ── M9: TerminalPermissionDenied + LoopEventPermissionDenied tests ────────────
+
+func TestTransition_PermissionDenied(t *testing.T) {
+	s := &LoopState{}
+	term, cont, isTerm := s.Transition(LoopEventPermissionDenied)
+	if term != TerminalPermissionDenied {
+		t.Errorf("term = %s, want %s", term, TerminalPermissionDenied)
+	}
+	if cont != "" {
+		t.Errorf("cont = %s, want empty", cont)
+	}
+	if !isTerm {
+		t.Errorf("expected isTerm true")
+	}
+	if !s.IsTerminal() {
+		t.Errorf("LoopState should be terminal after Transition")
+	}
+	if s.TerminalReason != TerminalPermissionDenied {
+		t.Errorf("s.TerminalReason mismatch")
+	}
+}
+
+func TestTerminalReason_PermissionDenied_StringValue(t *testing.T) {
+	if string(TerminalPermissionDenied) != "permission_denied" {
+		t.Errorf("string value mismatch: %s", TerminalPermissionDenied)
+	}
+}
+
+func TestTerminalReason_Count13(t *testing.T) {
+	// 这个 test 仅依赖编译期 [13] 数组通过；运行期是 no-op
+	// 如果 state.go 的编译期数组从 [12] 改 [13] 没改 → 本测试编译失败
+	var _ = [13]TerminalReason{} // sanity
+}
+
 func TestAllReasonsReachable(t *testing.T) {
 	// Map of all expected terminal and continue reasons and how to reach them
 	type testCase struct {

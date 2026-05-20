@@ -19,6 +19,8 @@ import (
 	"numind-server/internal/numind/biz/membership"
 	"numind-server/internal/numind/biz/monitor"
 	"numind-server/internal/numind/biz/payment"
+	"numind-server/internal/numind/biz/permission"
+	permvalidators "numind-server/internal/numind/biz/permission/validators"
 	"numind-server/internal/numind/biz/salesrag"
 	"numind-server/internal/numind/biz/salesrag/adapter"
 	"numind-server/internal/numind/biz/salesrag/port"
@@ -82,6 +84,7 @@ type biz struct {
 	llmRouterSvc      *llmrouter.Router
 	agentRunner       agent.AgentRunner
 	agentToolRegistry agent.AgentToolRegistry
+	permissionGate    *permission.PermissionGate // #6 agent-mode-permission-pipeline
 }
 
 // NewBiz 创建一个 IBiz 类型的实例.
@@ -242,10 +245,27 @@ func NewBiz(ds store.IStore) *biz {
 		"pool_min", sandboxConfig.PoolMin,
 		"image_tag", sandboxConfig.ImageTag)
 
+	// #6 agent-mode-permission-pipeline: PermissionGate + 7 Validators + WrapHooks
+	// 顺序：permission → sandbox（避免 deny 时白启容器；S0 P0 reviewer fix）
+	b.permissionGate = permission.NewPermissionGate(
+		permission.WithStore(ds.AgentPermissions()),
+		permission.WithSkillStore(ds.AgentDefinitions()),
+		permission.WithValidators(
+			permvalidators.NewPlatformHardRule(),
+			permvalidators.NewSandboxOverride(),
+			permvalidators.NewTenantAdminRule(ds.AgentPermissions()),
+			permvalidators.NewWorkingDir(""),
+			permvalidators.NewToolFlag(ds.AgentDefinitions()),
+			permvalidators.NewUserSessionRule(),
+			permvalidators.NewClassifierPlaceholder(),
+		),
+	)
+	wrappedHooks := permission.WrapHooks(sandboxHookManager.AsRunHooks(), b.permissionGate)
+
 	b.agentRunner = agent.NewAgentRunner(
 		ds.AgentRuns(),
 		agentToolRegistry,
-		agent.WithDefaultHooks(sandboxHookManager.AsRunHooks()),
+		agent.WithDefaultHooks(wrappedHooks),        // #6: permission → sandbox chain
 		agent.WithSkillStore(ds.AgentDefinitions()), // #5 skill-system
 	)
 
@@ -381,6 +401,21 @@ func (b *biz) Agents() agent.AgentRunner {
 // AgentTools 返回 Agent Tool Registry 实例（agent-mode #3 tool-registry）。
 func (b *biz) AgentTools() agent.AgentToolRegistry {
 	return b.agentToolRegistry
+}
+
+// PermissionGate 返回 Permission 网关实例（agent-mode #6 permission-pipeline）。
+// 暴露用于 shutdown sequence（main.go 调 ClosePermissionGate）+ 测试 introspect。
+func (b *biz) PermissionGate() *permission.PermissionGate {
+	return b.permissionGate
+}
+
+// ClosePermissionGate 优雅停止 permission audit goroutine（5s 内 drain）。
+// main.go shutdown sequence 应在 server.Shutdown 后调；如未调，进程退出时 drainer
+// goroutine 随之退出（无泄漏，仅丢失 in-flight 审计；trade-off 已文档化）。
+func (b *biz) ClosePermissionGate() {
+	if b.permissionGate != nil {
+		b.permissionGate.Close()
+	}
 }
 
 // LLMRouter 返回 LLM 路由服务实例.
