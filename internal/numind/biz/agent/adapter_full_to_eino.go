@@ -51,11 +51,11 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 		if err != nil {
 			return "", fmt.Errorf("PreToolCall: %w", err)
 		}
+		// Record every action (including Continue) so a later Continue clears a prior Stop.
+		if a.hooks.Registry != nil {
+			a.hooks.Registry.Record(action)
+		}
 		if action != HookActionContinue {
-			// M10: record the stopping action to registry so runner.Run can propagate TerminalReason
-			if a.hooks.Registry != nil {
-				a.hooks.Registry.Record(action)
-			}
 			return "", fmt.Errorf("tool execution stopped by hook: action=%d", action)
 		}
 	}
@@ -71,8 +71,8 @@ func (a *fullToolEinoAdapter) InvokableRun(ctx context.Context, args string, _ .
 	// are logged + only surface to the caller when no execErr already exists.
 	if a.hooks != nil && a.hooks.PostToolCall != nil {
 		postAction, postErr := a.hooks.PostToolCall(ctx, a, output, execErr)
-		// M10: record non-Continue actions to registry so runner.Run can propagate TerminalReason
-		if a.hooks.Registry != nil && postAction != HookActionContinue {
+		// Record every action so a later Continue clears a prior Stop.
+		if a.hooks.Registry != nil {
 			a.hooks.Registry.Record(postAction)
 		}
 		if postErr != nil {

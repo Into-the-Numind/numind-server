@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS agent_definition (
   credit_cap_per_session   INT UNSIGNED NULL                      COMMENT 'Q8: 每次任务积分上限 200-2000，NULL=不限',
   daily_credit_cap         INT UNSIGNED NULL                      COMMENT '每日累计积分上限，NULL=不限',
   version                  INT UNSIGNED NOT NULL DEFAULT 1        COMMENT '当前版本号；每次更新+1',
-  is_active                TINYINT(1) NOT NULL DEFAULT 1          COMMENT '软删除：0=已下架',
+  is_active                TINYINT(1) NOT NULL DEFAULT 1          COMMENT '软删除：0=已下架 / GORM default:true Create fix required in M2 model (database.md §6)',
   source_template_id       BIGINT UNSIGNED NULL                   COMMENT '软引用 skill_template.id；无 FK',
   created_by               INT UNSIGNED NOT NULL                  COMMENT 'JWT.userID 创建者；同 parent_user_id 但保留供审计',
   created_at               DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

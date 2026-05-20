@@ -132,8 +132,11 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		effectiveHooks = r.defaultHooks
 	}
 
-	// M10: auto-inject Registry if hooks exist but Registry was not provided by caller.
-	// This ensures adapter Record() calls are always wired without requiring callers to know about Registry.
+	// Auto-inject Registry if hooks exist but caller didn't provide one.
+	// Caller-provided Registry is kept as-is (caller controls its lifecycle).
+	// Cross-Run stale risk for pool-shared *RunHooks (e.g. SandboxHookManager.AsRunHooks
+	// stored in r.defaultHooks): mitigated by future caller using Registry.Reset()
+	// between runs, or by passing fresh hooks per call. Single-Run sessions are unaffected.
 	if effectiveHooks != nil && effectiveHooks.Registry == nil {
 		effectiveHooks.Registry = NewHookActionRegistry()
 	}
@@ -181,7 +184,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	st := &LoopState{}
 	st.TerminalReason = TerminalCompleted // default
 
-	// M10: if a hook recorded a non-Continue action, propagate it through state.Transition
+	// If a hook recorded a non-Continue action, propagate it through state.Transition
 	// to produce the correct TerminalReason (replacing the hardcoded TerminalCompleted default).
 	if effectiveHooks != nil && effectiveHooks.Registry != nil {
 		if last := effectiveHooks.Registry.LastAction(); last != HookActionContinue {

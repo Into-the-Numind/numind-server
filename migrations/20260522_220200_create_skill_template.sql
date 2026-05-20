@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS skill_template (
   questionnaire_answers    JSON NOT NULL                          COMMENT '完整 12 题预填',
   default_tool_flags       JSON NULL,
   display_order            INT NOT NULL DEFAULT 100,
-  is_active                TINYINT(1) NOT NULL DEFAULT 1,
+  is_active                TINYINT(1) NOT NULL DEFAULT 1,         -- GORM default:true Create fix required in M2 model (database.md §6)
   created_at               DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at               DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
