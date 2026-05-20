@@ -116,6 +116,14 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		modelName: "qwen-turbo",
 		taskID:    fmt.Sprintf("agent-runner-%d", run.ID),
 	}
+	// P2-1 fix: Eino react.NewAgent requires at least one tool; if registry is nil or
+	// ToolNames is empty/all-unresolved, einoTools is nil → react.NewAgent returns an
+	// error and Run() exits cleanly (status=terminated, reason=model_error).
+	// Real ReAct loop integration (#3+ follow-up) should validate ToolNames upfront.
+	if len(einoTools) == 0 {
+		log.Warnw("AgentRunner.Run: no tools resolved from registry; skipping Eino agent construction",
+			"agent_run_id", run.ID, "requested_tools", req.ToolNames)
+	}
 	einoAgent, err := react.NewAgent(queryCtx, &react.AgentConfig{
 		ToolCallingModel: einoAdapter,
 		ToolsConfig: compose.ToolsNodeConfig{
