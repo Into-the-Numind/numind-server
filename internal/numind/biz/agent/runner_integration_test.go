@@ -193,6 +193,7 @@ func TestRunnerIntegration_HookActionsMapping(t *testing.T) {
 	}{
 		{HookActionStop, LoopEventHookActionStop, TerminalHookStopped},
 		{HookActionBlockingStop, LoopEventHookActionBlockStop, TerminalStopHookPrevented},
+		{HookActionPermissionDeny, LoopEventPermissionDenied, TerminalPermissionDenied}, // #6
 	}
 	for _, c := range cases {
 		event := HookActionToLoopEvent(c.action)
@@ -203,4 +204,54 @@ func TestRunnerIntegration_HookActionsMapping(t *testing.T) {
 		assert.True(t, isTerm, "action %v should terminate", c.action)
 		assert.Equal(t, c.wantTerminal, term)
 	}
+}
+
+// ── M11: Permission deny propagation (runner-level) ───────────────────────────
+
+// TestRunnerIntegration_PermissionDeny_TerminalReason verifies that when a hook
+// records HookActionPermissionDeny on the Registry, runner.Run propagates it to
+// TerminalPermissionDenied via state.Transition (no actual wrapper / sink involved).
+func TestRunnerIntegration_PermissionDeny_TerminalReason(t *testing.T) {
+	reg := NewHookActionRegistry()
+	reg.Record(HookActionPermissionDeny)
+
+	hooks := &RunHooks{Registry: reg}
+	runner := NewAgentRunner(newMockStore(), nil, WithDefaultHooks(hooks))
+
+	result, err := runner.Run(context.Background(), RunRequest{UserID: 1, Input: "x"})
+	require.NoError(t, err)
+	assert.Equal(t, TerminalPermissionDenied, result.TerminalReason,
+		"HookActionPermissionDeny in Registry should propagate to TerminalPermissionDenied")
+	// PermissionDenial is nil because no wrapper invoked the sink (skeleton hooks unused).
+	assert.Nil(t, result.PermissionDenial,
+		"PermissionDenial expected nil when sink unused")
+}
+
+// TestRunnerIntegration_DefaultRun_NoPermissionDenial verifies that a Run with
+// no hook denial keeps PermissionDenial as nil (backward compat / regression).
+func TestRunnerIntegration_DefaultRun_NoPermissionDenial(t *testing.T) {
+	runner := NewAgentRunner(newMockStore(), nil)
+	result, err := runner.Run(context.Background(), RunRequest{UserID: 1, Input: "x"})
+	require.NoError(t, err)
+	assert.Equal(t, TerminalCompleted, result.TerminalReason)
+	assert.Nil(t, result.PermissionDenial)
+}
+
+// TestRunnerIntegration_PermissionDenial_Field verifies that RunResult struct
+// has the PermissionDenial field properly typed and nil-by-default.
+//
+// End-to-end "wrapper deny → sink → RunResult.PermissionDenial filled" path is
+// covered by biz/permission/wrap_hooks_test.go because the #2 skeleton does
+// not actually invoke PreToolCall hooks (only state.Transition based on
+// Registry.LastAction). Once real ReAct loop lands (#14), this gap closes
+// automatically.
+func TestRunnerIntegration_PermissionDenial_Field(t *testing.T) {
+	runner := NewAgentRunner(newMockStore(), nil)
+	result, err := runner.Run(context.Background(), RunRequest{UserID: 1, Input: "x"})
+	require.NoError(t, err)
+	// PermissionDenial 默认 nil；omitempty 标签验证由 JSON 序列化测试覆盖
+	assert.Nil(t, result.PermissionDenial)
+
+	// 验证字段类型正确（compile-time check）
+	var _ *PermissionDenialDetail = result.PermissionDenial
 }

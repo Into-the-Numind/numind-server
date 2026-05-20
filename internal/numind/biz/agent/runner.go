@@ -48,6 +48,9 @@ type RunResult struct {
 	Duration       time.Duration
 	// SkillVersion 是本次 Run 装载的 agent_definition.version；0 表示未注入 Skill（fall through）。
 	SkillVersion int
+	// PermissionDenial 在 TerminalReason == TerminalPermissionDenied 时填充（#6 permission-pipeline）；
+	// JSON omitempty 兼容旧消费者（nil 时不序列化）。
+	PermissionDenial *PermissionDenialDetail `json:"permission_denial,omitempty"`
 }
 
 // AgentRunner 是 Agent 运行时主接口（蓝本 §4.1.9）。
@@ -129,6 +132,12 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// 找到对应的 sandbox session。
 	ctx = WithRunID(ctx, run.ID)
 
+	// 1.6. #6 permission-pipeline: 创建 per-Run permission denial sink + 注入 ctx。
+	// wrapper.PreToolCall deny 时通过此 sink 把 detail 回传给 runner 填 RunResult。
+	// buffered size=1 + non-blocking send，避免 wrapper 阻塞；每 Run 独立实例避免 cross-run race。
+	permDenialSink := make(chan *PermissionDenialDetail, 1)
+	ctx = WithPermissionSink(ctx, permDenialSink)
+
 	// 2. Langfuse trace
 	traceID := langfuse.TraceID()
 	langfuse.CreateTrace(traceID, "agent-runtime-run",
@@ -168,6 +177,9 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		}
 		req.SystemPrompt = skill.PlatformBasePrompt + body + skill.PlatformSafetyFooter
 		skillVer = int(ad.Version)
+		// #6 permission-pipeline: 注入 agent_definition_id + parent_user_id 到 ctx，
+		// 供 ToolFlag / TenantAdminRule validator 读取。
+		ctx = WithAgentDefCtx(ctx, req.AgentDefinitionID, ad.ParentUserID)
 	}
 
 	// 5. 从 registry 装配 Eino 工具列表
@@ -188,13 +200,18 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	}
 
 	var einoTools []einotool.BaseTool
+	toolMap := make(map[string]FullTool)
 	if r.registry != nil {
 		for _, name := range req.ToolNames {
 			if ft, ok := r.registry.GetTool(name); ok {
 				einoTools = append(einoTools, adaptFullToEinoTool(ft, effectiveHooks))
+				toolMap[name] = ft
 			}
 		}
 	}
+	// #6 permission-pipeline: stash FullTool map into ctx，
+	// 供 WrapHooks.buildRequest 反查每个工具的 FullTool 实例（取 IsDestructive 等元数据）。
+	ctx = WithFullToolMap(ctx, toolMap)
 
 	// 6. 构造 adapter + Eino ReAct Agent
 	einoAdapter := &aiserviceAdapter{
@@ -256,13 +273,21 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		log.Warnw("AgentRunner.Run UpdateState failed", "agent_run_id", run.ID, "error", err)
 	}
 
+	// #6 permission-pipeline: 末尾非阻塞收 sink，填 RunResult.PermissionDenial。
+	var permDetail *PermissionDenialDetail
+	select {
+	case permDetail = <-permDenialSink:
+	default:
+	}
+
 	return &RunResult{
-		AgentRunID:     run.ID,
-		TerminalReason: st.TerminalReason,
-		FinalOutput:    fmt.Sprintf("[#2 skeleton] received input '%s'", req.Input),
-		StepCount:      st.StepCount,
-		Duration:       time.Since(startTime),
-		SkillVersion:   skillVer,
+		AgentRunID:       run.ID,
+		TerminalReason:   st.TerminalReason,
+		FinalOutput:      fmt.Sprintf("[#2 skeleton] received input '%s'", req.Input),
+		StepCount:        st.StepCount,
+		Duration:         time.Since(startTime),
+		SkillVersion:     skillVer,
+		PermissionDenial: permDetail,
 	}, nil
 }
 
