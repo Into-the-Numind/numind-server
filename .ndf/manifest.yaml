@@ -1,5 +1,42 @@
 schema_version: '2.0'
 features:
+- id: agent-mode-compact
+  ndf_version: '2.0'
+  description: 'Agent 模式 14-feature 分解 #9/14。落地蓝本 §4.8 Compact（含会话恢复，对话延续核心）：agent_run 表 ALTER 加 compact_state JSON + compact_summary TEXT 两列（不新建表）+ biz/compact 子包（threshold qwen-plus 适配 / prompt BASE_COMPACT_PROMPT 9 节 + NO_TOOLS_PREAMBLE / provider interface + MockCompactProvider + token estimation / ptl_chain CollapseDrain + ReactiveCompact + headDropRetry / max_output_chain EscalateMaxTokens / restore 3 道清洗 + 恢复 narration + FirstTurnNoTools 标志 / attachments interface + NullAttachmentReinjector）+ AgentRunner.WithCompactProvider + WithCompactConfig RunnerOption + 3 个 runner helper（tryPreLLMCompact / handlePTLError / handleMaxOutputError）。不改 #2 state.go 状态机（PTL/MaxOutput LoopEvent 已就绪）。不改 #2 mock 主流程，#14 ReAct loop 真实集成时 wire helper。Out of scope: 真实 LLM compact 调用 (#14) / 真实文件/Skill/MCP 重注入 (#11/#14) / 学员端会话恢复 UI (#11) / L3 session archive (v2) / 管理端阈值配置 CRUD (#10) / trySessionMemoryCompaction 优化 / 熔断器真实拦截 (#14) / prod 部署。术语翻译：蓝本 anthropic 200k → qwen-plus 128k 阈值映射。'
+  track: standard
+  stage: S0
+  classification_reason: 'Standard Triage 5 条 — (1) DB schema 变更：是（agent_run 表 ALTER 加 2 列）(2) 新 API 端点：否（v1 不引入 HTTP；恢复 API 由 #11 落地）(3) 无新外部服务集成 (4) 影响文件数 >3（migration 双文件 + agent_run model + 7 biz/compact files + runner.go + biz.go wire + N test ≥ 15 文件）(5) 高风险业务逻辑：否（compact 是只增不减的恢复机制；mock provider v1 不调外部 API；不动支付/会员/权限）。条件 1+4 多条触发 Standard。'
+  last_updated_by: ai-s0-reviewer-applied
+  last_updated_at: '2026-05-21T01:30:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: feature/agent-mode-compact
+  worktree:
+    numind-server: /private/tmp/wt-agent-mode-compact-numind-server
+  artifacts:
+    requirement: numind-server/requirements/agent-mode-compact.md
+    architecture_blueprint: docs/agent-mode/architecture-v1.md
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+    current_task: 'S0 PASS_WITH_CONDITIONS: P1 CollapseDrain 语义 + PTL 双层计数器 / P2 DoD 补充 已修。进入 S1 proposal。'
+  decisions:
+  - '2026-05-21 (s0-1): CollapseDrain 语义明确为"仅剥离最近 4 轮外的 tool_result，不动 user/assistant 文本"（蓝本 §4.1.6 Step 1）；与"按消息组整组 drop"（蓝本 §4.8.5 head-drop）分开 — CollapseDrain 是 outer PTL Step 1，headDropRetry 是 inner reactive_compact 失败后兜底循环。S0 reviewer P1 fix。'
+  - '2026-05-21 (s0-2): PTL 双层计数器命名 — outer PTLRetries（state.go MaxPTLRetries=2）vs inner innerDropAttempts（ptl_chain.go maxRetries=3），不同变量名避免混淆。S0 reviewer P1 fix。'
+  - '2026-05-21 (s0-3): FirstTurnNoTools 标志只在 RestoredSession 结构体提供 bool 占位（v1）；真实的 LLM 调用强制由 #11/#14 实施 — restore.go v1 不调 LLM。S0 reviewer P2 fix。'
+  - '2026-05-21 (s0-4): agent_run 表 ALTER 加列方案（非新表）— 蓝本 §4.8.6 数据归属："compact_state 与 messages 同生命周期"，挂在 agent_run 行；不引入 agent_run_compact_event 审计表（mile 事件由 #14 在 langfuse 记）。'
+  - '2026-05-21 (s0-5): MockCompactProvider v1 不调 aiservice.Chat — 仅返回固定占位 summary；真实 LLM 调用由 #14 ReAct loop 集成；interface 设计完整不动。'
+  - '2026-05-21 (s0-6): AttachmentReinjector v1 仅 interface + NullAttachmentReinjector 实现 — 真实文件/Skill/MCP delta 注入由 #11（学员端）/#14（真实 ReAct）落地。'
+  - '2026-05-21 (s0-7): credit_transaction.source_type CHECK constraint 零修改 — compact 走现有 subscription/cycle/booster；MockCompactProvider v1 不发起 LLM 调用 → 不写 credit_transaction。'
+  related_features:
+  - 'agent-mode-runtime-skeleton (#2/14, 已 develop merged — LoopState / PTL+MaxOutput LoopEvent 状态机骨架输入)'
+  - 'agent-mode-memory-system (#7/14, 并行进行中 — runner.go SystemPrompt 装配区与 #9 helper 函数潜在 merge 冲突)'
+  - 'agent-mode-student-ux (#11/14, 依赖本 feature CompactSummary + restore 做学员端会话恢复 UI)'
+  - 'agent-mode-e2e-rollout (#14/14, 依赖本 feature CompactProvider interface 接真实 aiservice + helper 函数 wire 到 ReAct loop)'
+  blockers: []
+  created_at: '2026-05-21T01:30:00+08:00'
 - id: agent-mode-permission-pipeline
   ndf_version: '2.0'
   description: 'Agent 模式 14-feature 分解 #6/14。落地蓝本 §4.4 Permission Pipeline（安全核心）：建 agent_permission_config + agent_permission_decision_log 两表 + biz/permission 子包（PermissionGate / PermissionPipeline / 7 Validator 实现 / 异步审计写入）+ HookAction 加第 4 枚举 HookActionPermissionDeny=3 + TerminalReason 加第 13 个 permission_denied + LoopEvent 加 LoopEventPermissionDenied + AgentRunner.WithPermissionGate option + HooksWrapper 合并 sandbox + permission（顺序 permission → sandbox）+ RunResult.PermissionDenial 字段。Out of scope: 管理端 UI (#10) / 学员端 UI (#11) / classifier 真实 LLM (#14) / sandbox override 真实路径 (#13) / 23 bash validators 全扩展 / safety check L3 拆出 (#13) / 试聊配额检查 (#12) / prod 部署。术语翻译：蓝本 tenant_id → Numind parent_user_id（B2B2C 与 #5 一致）。DecisionReason canonical：§4.4.5。'
