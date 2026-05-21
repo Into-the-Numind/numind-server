@@ -1482,8 +1482,8 @@ features:
 - id: agent-mode-compliance-3layer
   ndf_version: '2.0'
   track: standard
-  stage: S0
-  description: 'Agent 模式 14-feature 分解 #13/14。落地蓝本 §7 安全与合规三层（L0 平台硬规则常量 / L1 父账户 compliance_rule 表运营规则 / L2 复用 #5 agent_definition.questionnaire_answers Q10/Q11）+ Prompt Injection 防护（input fence + 关键词启发式 + mock LLM classifier）+ 输出 fence tag 检测 + Data scope GORM Before-Query hook（agent-mode 6 张表 opt-in，v1 fail-open log warn）+ compliance_audit_log 异步写入 + 规则 LRU 缓存 + ComplianceGate interface 4 方法（SystemPromptBlock / CheckUserInput / CheckLLMOutput / CheckToolCall）+ compliance.WrapHooks 装饰器（PreToolCall chain: compliance → permission → sandbox）+ runner.go:275 step [2] tenantHardRulesPlaceholder 装配。Out of scope: 真实 qwen-turbo L3 输出过滤 (#14) / 管理端 compliance_rule CRUD UI (#14) / 学员端合规提示 UI (#11/#14) / SQL-AST 静态分析 (v2) / 90 天热 1 年冷归档 cron (#14) / 真实 LLM injection classifier (#14) / prod 部署。'
+  stage: S1
+  description: 'Agent 模式 14-feature 分解 #13/14。落地蓝本 §7 安全与合规三层（L0 平台硬规则常量 / L1 父账户 compliance_rule 表运营规则 / L2 复用 #5 agent_definition.questionnaire_answers Q10/Q11）+ Prompt Injection 防护（input fence + 关键词启发式 14+ 项 + mock LLM classifier）+ 输出 fence tag 检测 + Data scope GORM Before-Query hook（agent-mode 6 张表 opt-in，v1 fail-open log warn）+ compliance_audit_log 异步写入（buffered cap=1000 + Start/Stop flush-on-shutdown + drop count atomic 监控）+ 规则 TTL cache（per-parent_user_id cap=500，TTL 5min，lazy LRU 兜底淘汰）+ ComplianceGate interface 4 方法（SystemPromptBlock / CheckUserInput / CheckLLMOutput / CheckToolCall）+ compliancegate.WrapHooks 装饰器（PreToolCall chain: compliance → permission → sandbox；biz/agent/compliancegate 子包解耦 import cycle）+ runner.go:275 step [2] tenantHardRulesPlaceholder 装配。Out of scope: 真实 qwen-turbo L3 输出过滤 (#14) / 管理端 compliance_rule CRUD UI (#14) / 学员端合规提示 UI (#11/#14) / SQL-AST 静态分析 (v2) / 90 天热 1 年冷归档 cron (#14) / 真实 LLM injection classifier (#14) / prod 部署。'
   repos:
   - numind-server
   branches:
@@ -1492,12 +1492,20 @@ features:
     numind-server: /private/tmp/wt-agent-mode-compliance-3layer-numind-server
   artifacts:
     requirement: numind-server/requirements/agent-mode-compliance-3layer.md
+    proposal: numind-server/proposals/agent-mode-compliance-3layer-proposal.md
     architecture_blueprint: docs/agent-mode/architecture-v1.md
+  decisions:
+  - '2026-05-21 (s0-1): rule_id 不加 FK 决策 — compliance_audit_log.rule_id 引用 compliance_rule.id 但不加 FK constraint；理由：审计行必须在 rule 软删/硬删后继续可读（事件历史不可篡改）'
+  - '2026-05-21 (s0-2): biz/agent/compliancegate 子包解耦 — 沿用 #12 budgetgate 模式；compliance.WrapHooks 需要 import biz/agent，biz/agent.NewAgentRunner 需要 import compliance → import cycle；解耦：interface + 实现留 biz/compliance，装饰器抽到 biz/agent/compliancegate'
+  - '2026-05-21 (s0-3): scope_validator v1 fail-open + 6 项白名单 — runtime GORM hook 适用面广可能误伤合法系统查询；v1 走 log warn 不阻断；预先枚举 AutoMigrate / admin list / cron / compliance_self 6 项已知合法跨 parent 查询 + WithSkipScope ctx 机制'
+  - '2026-05-21 (s1-1): fence tag 命名 vs 蓝本差异锁定 — 蓝本 <platform_rules> / <tenant_rules>，本 feature 改为 <platform_hard_rules> / <tenant_hard_rules>；理由：_hard 后缀强调强度差异 + 避免与 v2 <tenant_soft_rules> 命名冲突；S2/S3/S4 全统一'
+  - '2026-05-21 (s1-2): audit logger 生命周期 — NewAuditLogger 不自动启动；biz.Init 显式 Start()，biz.Shutdown 调 Stop(ctx) 触发 drain flush-on-shutdown；consumer 用 context.Background() 不被 caller ctx cancel；drop count atomic.Uint64'
+  - '2026-05-21 (s1-3): TTLCache 不是 LRU — 命名 TTLCache（不是 LRUCache），cap=500，lazy LRU 仅在容量满兜底；典型 B2B ≤100 父账户'
   progress:
     total_tasks: 0
     completed_tasks: 0
     reviewed_tasks: 0
-    current_task: 'S0 草案完成（requirement card 写好）。下一步：dispatch S0 reviewer。'
+    current_task: 'S1 proposal + PRD 完成，第二轮 reviewer PASS（P1-1/P1-2 + 5 P2 全 CLOSED）。下一步：S2 spec。'
   related_features:
   - 'agent-mode-runtime-skeleton (#2/14, merged 45770bb5 — LoopState / RunHooks 接口)'
   - 'agent-mode-sandbox-integration (#4/14, merged 8c883533 — SandboxHook + ctx 注入)'
