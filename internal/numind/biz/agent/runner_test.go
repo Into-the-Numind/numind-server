@@ -109,6 +109,36 @@ func (m *mockAgentRunStore) MergeTerminalMetadata(_ context.Context, _ uint64, _
 	return nil
 }
 
+// UpdatePendingQuestion — T4 ask_user_question yield protocol mock impl
+func (m *mockAgentRunStore) UpdatePendingQuestion(_ context.Context, id uint64, payloadJSON []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if r, ok := m.runs[id]; ok {
+		r.StateReason = "waiting_for_user_choice"
+		r.PendingQuestionJSON = payloadJSON
+		return nil
+	}
+	return errors.New("not found")
+}
+
+// ClearPendingQuestion — T4 answer endpoint mock impl
+func (m *mockAgentRunStore) ClearPendingQuestion(_ context.Context, id uint64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if r, ok := m.runs[id]; ok {
+		r.StateReason = "running"
+		r.PendingQuestionJSON = nil
+		r.PendingQuestionAt = nil
+		return nil
+	}
+	return errors.New("not found")
+}
+
+// AppendUserMessage — T4 answer endpoint mock impl
+func (m *mockAgentRunStore) AppendUserMessage(_ context.Context, _ uint64, _ string) error {
+	return nil
+}
+
 // ---
 
 func TestAgentRunner_Run_Basic(t *testing.T) {

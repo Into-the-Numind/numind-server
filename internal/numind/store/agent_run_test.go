@@ -222,3 +222,128 @@ func TestAgentRunStore_ListBySession(t *testing.T) {
 	assert.Equal(t, int64(5), total)
 	assert.Len(t, runs, 5)
 }
+
+// ---------------------------------------------------------------------------
+// newTestAgentRunStoreFull creates a test store with the T4 columns included.
+// ---------------------------------------------------------------------------
+
+func newTestAgentRunStoreFull(t *testing.T) IAgentRunStore {
+	t.Helper()
+	tmp := t.TempDir()
+	dsn := tmp + "/agent_run_full_test.db?_busy_timeout=5000&_journal_mode=WAL"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, db.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_run (
+			id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id                   INTEGER NOT NULL,
+			session_id                TEXT    NOT NULL DEFAULT '',
+			status                    TEXT    NOT NULL DEFAULT 'running',
+			state_reason              TEXT    NOT NULL DEFAULT '',
+			messages                  TEXT    NOT NULL DEFAULT '[]',
+			reservation_id            INTEGER,
+			started_at                DATETIME NOT NULL,
+			ended_at                  DATETIME,
+			compact_state             TEXT,
+			compact_summary           TEXT,
+			terminal_metadata         TEXT,
+			cancellation_requested_at DATETIME,
+			agent_definition_id       INTEGER,
+			pending_question_json     TEXT,
+			pending_question_at       DATETIME,
+			created_at                DATETIME,
+			updated_at                DATETIME
+		)`).Error)
+
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	return newAgentRunStore(db)
+}
+
+func TestAgentRunStore_UpdatePendingQuestion(t *testing.T) {
+	s := newTestAgentRunStoreFull(t)
+	ctx := context.Background()
+	run := &model.AgentRun{UserID: 1, Status: "running", Messages: datatypes.JSON(`[]`), StartedAt: time.Now()}
+	require.NoError(t, s.Create(ctx, run))
+
+	payload := []byte(`{"question":"Which region?","options":[{"key":"a","label":"北"},{"key":"b","label":"南"}]}`)
+	require.NoError(t, s.UpdatePendingQuestion(ctx, run.ID, payload))
+
+	got, err := s.Get(ctx, run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "waiting_for_user_choice", got.StateReason)
+	require.NotNil(t, got.PendingQuestionAt)
+	assert.Contains(t, string(got.PendingQuestionJSON), "Which region?")
+}
+
+func TestAgentRunStore_UpdatePendingQuestion_NotFound(t *testing.T) {
+	s := newTestAgentRunStoreFull(t)
+	err := s.UpdatePendingQuestion(context.Background(), 9999, []byte(`{}`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "9999")
+}
+
+func TestAgentRunStore_ClearPendingQuestion(t *testing.T) {
+	s := newTestAgentRunStoreFull(t)
+	ctx := context.Background()
+	run := &model.AgentRun{UserID: 1, Status: "terminated", Messages: datatypes.JSON(`[]`), StartedAt: time.Now()}
+	require.NoError(t, s.Create(ctx, run))
+
+	// First set a pending question.
+	payload := []byte(`{"question":"Q?","options":[{"key":"a","label":"A"},{"key":"b","label":"B"}]}`)
+	require.NoError(t, s.UpdatePendingQuestion(ctx, run.ID, payload))
+
+	// Then clear it.
+	require.NoError(t, s.ClearPendingQuestion(ctx, run.ID))
+
+	got, err := s.Get(ctx, run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "running", got.StateReason)
+	// pending_question_at should be nil; pending_question_json should be empty/null.
+	assert.Nil(t, got.PendingQuestionAt)
+}
+
+func TestAgentRunStore_ClearPendingQuestion_NotFound(t *testing.T) {
+	s := newTestAgentRunStoreFull(t)
+	err := s.ClearPendingQuestion(context.Background(), 9999)
+	require.Error(t, err)
+}
+
+func TestAgentRunStore_AppendUserMessage(t *testing.T) {
+	s := newTestAgentRunStoreFull(t)
+	ctx := context.Background()
+	run := &model.AgentRun{UserID: 1, Status: "running", Messages: datatypes.JSON(`[]`), StartedAt: time.Now()}
+	require.NoError(t, s.Create(ctx, run))
+
+	require.NoError(t, s.AppendUserMessage(ctx, run.ID, "hello world"))
+
+	got, err := s.Get(ctx, run.ID)
+	require.NoError(t, err)
+	assert.Contains(t, string(got.Messages), "hello world")
+	assert.Contains(t, string(got.Messages), `"role":"user"`)
+}
+
+func TestAgentRunStore_AppendUserMessage_MultipleAppends(t *testing.T) {
+	s := newTestAgentRunStoreFull(t)
+	ctx := context.Background()
+	run := &model.AgentRun{UserID: 1, Status: "running", Messages: datatypes.JSON(`[]`), StartedAt: time.Now()}
+	require.NoError(t, s.Create(ctx, run))
+
+	require.NoError(t, s.AppendUserMessage(ctx, run.ID, "first"))
+	require.NoError(t, s.AppendUserMessage(ctx, run.ID, "second"))
+
+	got, err := s.Get(ctx, run.ID)
+	require.NoError(t, err)
+	assert.Contains(t, string(got.Messages), "first")
+	assert.Contains(t, string(got.Messages), "second")
+}
+
+func TestAgentRunStore_AppendUserMessage_NotFound(t *testing.T) {
+	s := newTestAgentRunStoreFull(t)
+	err := s.AppendUserMessage(context.Background(), 9999, "msg")
+	require.Error(t, err)
+}

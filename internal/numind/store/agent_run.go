@@ -41,6 +41,17 @@ type IAgentRunStore interface {
 	// RowsAffected==0 returns error.
 	// Used by WriteFeedback v1 (#14 follow-up ALPHA).
 	MergeTerminalMetadata(ctx context.Context, id uint64, patch map[string]interface{}) error
+	// UpdatePendingQuestion writes the ask_user_question payload JSON to
+	// agent_run.pending_question_json and sets pending_question_at = NOW() and
+	// state_reason = "waiting_for_user_choice". Called by runner.go yield handler (T4).
+	UpdatePendingQuestion(ctx context.Context, id uint64, payloadJSON []byte) error
+	// ClearPendingQuestion nulls out pending_question_json / pending_question_at
+	// and resets state_reason to "running". Called by Answer biz method (T4).
+	ClearPendingQuestion(ctx context.Context, id uint64) error
+	// AppendUserMessage appends a user-role message JSON object to agent_run.messages.
+	// The message is appended as {"role":"user","content":<content>}.
+	// RowsAffected==0 returns error. Used by Answer biz method (T4).
+	AppendUserMessage(ctx context.Context, id uint64, content string) error
 }
 
 type agentRunStore struct {
@@ -215,6 +226,83 @@ func (s *agentRunStore) MergeTerminalMetadata(ctx context.Context, id uint64, pa
 	}
 	if result.RowsAffected == 0 {
 		return fmt.Errorf("agentRunStore.MergeTerminalMetadata: no row matched id=%d", id)
+	}
+	return nil
+}
+
+// UpdatePendingQuestion stores the ask_user_question yield payload.
+// Sets pending_question_json, pending_question_at, and state_reason.
+func (s *agentRunStore) UpdatePendingQuestion(ctx context.Context, id uint64, payloadJSON []byte) error {
+	now := time.Now()
+	result := s.db.WithContext(ctx).Model(&model.AgentRun{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"pending_question_json": datatypes.JSON(payloadJSON),
+			"pending_question_at":   now,
+			"state_reason":          "waiting_for_user_choice",
+		})
+	if result.Error != nil {
+		return fmt.Errorf("agentRunStore.UpdatePendingQuestion(id=%d): %w", id, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("agentRunStore.UpdatePendingQuestion: no row matched id=%d", id)
+	}
+	return nil
+}
+
+// ClearPendingQuestion nulls out the pending_question fields and resets state_reason to "running".
+func (s *agentRunStore) ClearPendingQuestion(ctx context.Context, id uint64) error {
+	result := s.db.WithContext(ctx).Model(&model.AgentRun{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"pending_question_json": nil,
+			"pending_question_at":   nil,
+			"state_reason":          "running",
+		})
+	if result.Error != nil {
+		return fmt.Errorf("agentRunStore.ClearPendingQuestion(id=%d): %w", id, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("agentRunStore.ClearPendingQuestion: no row matched id=%d", id)
+	}
+	return nil
+}
+
+// AppendUserMessage appends a {"role":"user","content":<content>} entry to agent_run.messages.
+// The existing messages array is read, the new entry appended, and the result written back.
+func (s *agentRunStore) AppendUserMessage(ctx context.Context, id uint64, content string) error {
+	var run model.AgentRun
+	if err := s.db.WithContext(ctx).Select("messages").First(&run, id).Error; err != nil {
+		return fmt.Errorf("agentRunStore.AppendUserMessage get(id=%d): %w", id, err)
+	}
+
+	// Unmarshal current messages.
+	var msgs []json.RawMessage
+	if len(run.Messages) > 0 && string(run.Messages) != "null" {
+		if err := json.Unmarshal(run.Messages, &msgs); err != nil {
+			msgs = nil // start fresh on parse error
+		}
+	}
+
+	// Build new user message entry.
+	newMsg, err := json.Marshal(map[string]string{"role": "user", "content": content})
+	if err != nil {
+		return fmt.Errorf("agentRunStore.AppendUserMessage marshal(id=%d): %w", id, err)
+	}
+	msgs = append(msgs, json.RawMessage(newMsg))
+
+	b, err := json.Marshal(msgs)
+	if err != nil {
+		return fmt.Errorf("agentRunStore.AppendUserMessage marshal array(id=%d): %w", id, err)
+	}
+	result := s.db.WithContext(ctx).Model(&model.AgentRun{}).
+		Where("id = ?", id).
+		Update("messages", datatypes.JSON(b))
+	if result.Error != nil {
+		return fmt.Errorf("agentRunStore.AppendUserMessage update(id=%d): %w", id, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("agentRunStore.AppendUserMessage: no row matched id=%d", id)
 	}
 	return nil
 }

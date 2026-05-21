@@ -514,8 +514,11 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 				break
 			}
 			// 2. Persist pending_question_json to agent_run.
-			// TODO(T4): wire to actual store method UpdatePendingQuestion once
-			// agent_run.pending_question_json column + IAgentRunStore method are added.
+			if pErr := r.runStore.UpdatePendingQuestion(attemptCtx, run.ID, payloadJSON); pErr != nil {
+				log.Warnw("AgentRunner.Run yield UpdatePendingQuestion failed",
+					"agent_run_id", run.ID, "error", pErr)
+				// Non-fatal: continue to drive state machine to waiting_for_user_choice.
+			}
 			log.Infow("AgentRunner.Run yield: ask_user_question paused run",
 				"agent_run_id", run.ID,
 				"payload_len", len(payloadJSON),

@@ -27,9 +27,15 @@ type AgentRun struct {
 	CancellationRequestedAt *time.Time `gorm:"column:cancellation_requested_at" json:"cancellation_requested_at,omitempty"`
 	// AgentDefinitionID is the join key to agent_definition.id; non-zero for runs
 	// created after #14 deploys. Nullable for historical rows (#14 Phase C C4).
-	AgentDefinitionID uint64    `gorm:"column:agent_definition_id;index:idx_ar_agent_def_id" json:"agent_definition_id,omitempty"`
-	CreatedAt         time.Time `gorm:"type:datetime(3);autoCreateTime" json:"created_at"`
-	UpdatedAt         time.Time `gorm:"type:datetime(3);autoUpdateTime" json:"updated_at"`
+	AgentDefinitionID uint64 `gorm:"column:agent_definition_id;index:idx_ar_agent_def_id" json:"agent_definition_id,omitempty"`
+	// PendingQuestionJSON stores the ask_user_question YieldPayload JSON when
+	// state_reason = "waiting_for_user_choice". Null otherwise.
+	// Added T4 agent-mode-p0-tools (2026-05-22). AutoMigrate adds this column on startup.
+	PendingQuestionJSON datatypes.JSON `gorm:"type:json;column:pending_question_json" json:"pending_question_json,omitempty"`
+	// PendingQuestionAt records when the question was enqueued (for SLA / timeout tracking).
+	PendingQuestionAt *time.Time `gorm:"column:pending_question_at" json:"pending_question_at,omitempty"`
+	CreatedAt         time.Time  `gorm:"type:datetime(3);autoCreateTime" json:"created_at"`
+	UpdatedAt         time.Time  `gorm:"type:datetime(3);autoUpdateTime" json:"updated_at"`
 }
 
 func (AgentRun) TableName() string { return "agent_run" }

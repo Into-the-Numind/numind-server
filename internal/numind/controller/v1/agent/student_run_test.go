@@ -32,6 +32,8 @@ type stubStudentRunSvc struct {
 	cancelErr    error
 	extendResp   *model.AgentRun
 	extendErr    error
+	answerResp   *agentbiz.AnswerResponse
+	answerErr    error
 }
 
 func (s *stubStudentRunSvc) Estimate(_ context.Context, _ uint, _ agentbiz.EstimateRunRequest) (*agentbiz.EstimateResponse, error) {
@@ -46,6 +48,9 @@ func (s *stubStudentRunSvc) PollNarration(_ context.Context, _ uint, _ uint64, _
 func (s *stubStudentRunSvc) Cancel(_ context.Context, _ uint, _ uint64) error { return s.cancelErr }
 func (s *stubStudentRunSvc) ExtendBudget(_ context.Context, _ uint, _ uint64, _ agentbiz.ExtendBudgetRequest) (*model.AgentRun, error) {
 	return s.extendResp, s.extendErr
+}
+func (s *stubStudentRunSvc) Answer(_ context.Context, _ uint, _ uint64, _ agentbiz.AnswerRequest) (*agentbiz.AnswerResponse, error) {
+	return s.answerResp, s.answerErr
 }
 
 type stubAttachSvc struct {
@@ -102,6 +107,7 @@ type studentRunIface interface {
 	PollNarration(context.Context, uint, uint64, time.Time) ([]*narration.Event, error)
 	Cancel(context.Context, uint, uint64) error
 	ExtendBudget(context.Context, uint, uint64, agentbiz.ExtendBudgetRequest) (*model.AgentRun, error)
+	Answer(context.Context, uint, uint64, agentbiz.AnswerRequest) (*agentbiz.AnswerResponse, error)
 }
 
 type uploadIface interface {
@@ -125,6 +131,28 @@ func (h *testController) Estimate(c *gin.Context) {
 	resp, err := h.runSvc.Estimate(c.Request.Context(), user.ID, req)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"code": 0, "data": resp})
+}
+
+func (h *testController) Answer(c *gin.Context) {
+	var user model.User
+	user.ID = 42
+	runIDStr := c.Param("id")
+	runID, ok := parseUint64(runIDStr)
+	if !ok || runID == 0 {
+		c.JSON(400, gin.H{"code": 400, "message": "invalid run id"})
+		return
+	}
+	var req agentbiz.AnswerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"code": 400, "message": err.Error()})
+		return
+	}
+	resp, err := h.runSvc.Answer(c.Request.Context(), user.ID, runID, req)
+	if err != nil {
+		c.JSON(500, gin.H{"code": 500, "message": err.Error()})
 		return
 	}
 	c.JSON(200, gin.H{"code": 0, "data": resp})
@@ -251,6 +279,79 @@ func TestMustParseRunID_InvalidInput(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for invalid id, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Answer handler tests
+// ---------------------------------------------------------------------------
+
+func TestAnswerHandler_Returns200(t *testing.T) {
+	stub := &stubStudentRunSvc{
+		answerResp: &agentbiz.AnswerResponse{RunID: 99, Status: "resumed"},
+	}
+	ctrl := &testController{runSvc: stub}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/v1/agent-runs/:id/answer", ctrl.Answer)
+
+	body, _ := json.Marshal(map[string]any{
+		"selected": []string{"a"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/agent-runs/99/answer", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	data := resp["data"].(map[string]any)
+	if data["status"] != "resumed" {
+		t.Errorf("expected status=resumed, got %v", data["status"])
+	}
+}
+
+func TestAnswerHandler_InvalidRunID(t *testing.T) {
+	stub := &stubStudentRunSvc{}
+	ctrl := &testController{runSvc: stub}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/v1/agent-runs/:id/answer", ctrl.Answer)
+
+	body, _ := json.Marshal(map[string]any{"selected": []string{"a"}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/agent-runs/abc/answer", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for non-numeric id, got %d", w.Code)
+	}
+}
+
+func TestAnswerHandler_MissingBody(t *testing.T) {
+	stub := &stubStudentRunSvc{}
+	ctrl := &testController{runSvc: stub}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/v1/agent-runs/:id/answer", ctrl.Answer)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/agent-runs/1/answer", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// ShouldBindJSON with binding:"required" should reject empty selected.
+	if w.Code == http.StatusOK {
+		t.Errorf("expected non-200 for missing selected field, got 200")
 	}
 }
 
