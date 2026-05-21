@@ -1,5 +1,43 @@
 schema_version: '2.0'
 features:
+- id: agent-mode-p0-tools
+  ndf_version: '3.0'
+  description: 'agent-mode 14-feature 后基线扩展 — 给 agent runtime 加 4 个 P0 工具拉齐与 Claude Code / Coze 等成熟产品能力门槛：(1) web_search 实时网络搜索（provider 选型 S2 决，候选 Tavily/Serper/Bing），处理时效性强的查询；(2) web_fetch 把 URL 内容转 Markdown 喂给 LLM，处理链接型任务；(3) ask_user_question 结构化多选反问，首个真正 yield turn 的工具，state machine 增加 TerminalWaitingForUserChoice + LoopEventAskUserPaused，新 endpoint POST /v1/agent/sessions/:run_id/answer 接受答案 inject 重启 loop；(4) file_read 按 file_id 读学员上传 PDF/图/docx/txt（与 kb_search RAG 检索不同），PDF 复用 qwen-long via aiservice / 图复用阿里 OCR / docx 用 unioffice，前置依赖 S2 判定文件上传基础设施是否存在（无则拆 sub-feature）。所有工具必经 aiservice 入口 + Langfuse trace（Generation for LLM-based, Span for non-LLM）。前端 numind-web-v3 新增 QuestionPrompt.vue 组件 + 可能 AttachmentUploader.vue + SSE event tool_call_yield / run_resumed。Tool registry 通过 factory_platform.getAllBaseTools 列表追加 4 实例自动 seed 到 tool_definition。Out of scope: per-agent tool whitelist (P1 独立 feature) / web_search DB cache / file_read chunk 分页 / web_fetch JS 渲染 / 重构旧 8 工具 / prod 部署 / 修改 config_prod.yaml。'
+  track: standard
+  stage: S0
+  classification_reason: 'Standard Triage 5/5 全违反 — (1) DB schema 变更：是（agent_file 表可能新建 + agent_run 加 pending_question_json 字段，S2 锁定）(2) 新增 API 端点：是（至少 POST /v1/agent/sessions/:run_id/answer，可能 POST /v1/agent/files/upload）(3) 新外部服务集成：是（web_search provider — Tavily/Serper/Bing 等新引入第三方 API）(4) 影响文件数 >3（8+ 后端 + 2-3 前端 + 配置 + migration + 测试）(5) 高风险业务逻辑：是（state machine yield turn 改造 + BudgetTracker 在 yield 时暂停恢复 + Langfuse trace 链路连贯性）。5/5 全违反，Standard 强制，不可降级。'
+  last_updated_by: ai-s0-start
+  last_updated_at: '2026-05-22T15:30:00+08:00'
+  repos:
+  - numind-server
+  - numind-web-v3
+  branches:
+    numind-server: feature/agent-mode-p0-tools
+    numind-web-v3: feature/agent-mode-p0-tools
+  worktree:
+    numind-server: /private/tmp/wt-agent-mode-p0-tools-numind-server
+    numind-web-v3: /private/tmp/wt-agent-mode-p0-tools-numind-web-v3
+  artifacts:
+    requirement: numind-server/requirements/agent-mode-p0-tools.md
+    architecture_blueprint: docs/agent-mode/architecture-v1.md
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+    current_task: 'S0 完成：需求卡 + manifest 录入；进入 S1 写 proposal+PRD'
+  decisions: []
+  related_features:
+  - 'agent-mode-runtime-skeleton (#2/14, merged 45770bb5 — LoopState / RunHooks 接口；本 feature 用 state.go 加 LoopEventAskUserPaused + TerminalWaitingForUserChoice)'
+  - 'agent-mode-tool-registry (#3/14 — ToolFactory + PlatformToolFactory；4 新工具通过 factory_platform.getAllBaseTools 注册)'
+  - 'agent-mode-skill-system (#5/14, merged e05498b6 — agent_definition.allowed_tools；4 新工具默认进白名单)'
+  - 'agent-mode-memory-system (#7/14, merged 49c8ab67 — memory tool 先例；ask_user_question 是首个真正 yield turn 的工具)'
+  - 'agent-mode-narration-layer (#8/14, merged 124e62b4 — 4 工具都走 narration provider)'
+  - 'agent-mode-billing-integration (#12/14, merged bd988fd5 — BudgetTracker；yield-turn 时 Pause/Resume)'
+  - 'agent-mode-e2e-rollout (#14/14, merged — tool_definition seed 机制；新工具通过 migration 自动注册)'
+  - 'agent-mode-compliance-3layer (S5 ACCEPTED, S6 进行中 — compliance gate hook chain；新工具默认走同 hook chain)'
+  - 'agent-mode-configurator-relocate (S0 并发 — 占用 numind-web-v3 不同 worktree + 不同 feature 分支，无冲突预期，S3 task 拆分阶段确认文件交集)'
+  blockers: []
+  created_at: '2026-05-22T15:30:00+08:00'
 - id: sop-stepnav-bookmark-star
   ndf_version: '3.0'
   description: 'SOP 步骤导航条每个 step 右侧加 ⭐ 五角星 icon，表示该步骤是否已收藏。点亮=已收藏（filled 主色），不点亮=可收藏（outline，仅 step 有 output 时显示）。Streaming / trailing chat / 未执行步骤不渲染星。点击触发 toggle-bookmark：无书签 → 立即 saveBookmark；有书签 → ConfirmModal 确认后 removeBookmark。OutputCard 现有的"保存生成记录 / 已保存"按钮保留（用户确认），两条 toggle 路径共享 useBookmarks singleton state，状态自动同步。两个 ConfirmModal 实例（SopStepView + SOPRunView）是 Hotfix 文件数硬约束下的有意取舍，后续可抽 useBookmarkToggle composable 合并。'
