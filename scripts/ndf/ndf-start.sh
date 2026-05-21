@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# ndf-start: 启动一个新的 NDF feature
+# ndf-start (v3): 启动一个新的 NDF feature
+#
+# v3 架构（per-worktree state）：每个 worktree 自带 .ndf-active 文件，无中央 state.json。
+# 多个 feature 可以同时活跃，互不干扰。
 #
 # Usage:
-#   ndf-start <track> <name> [--repos repo1,repo2,...] [--force]
+#   ndf-start <track> <name> [--repos repo1,repo2,...]
 #
 # Tracks:
 #   micro     快速改动 (≤15 min, 不动 DB/API/biz)
@@ -12,19 +15,18 @@
 # Behavior:
 #   - 自动建 worktree 到 /private/tmp/wt-{slug}-{repo}/
 #   - 自动建 branch micro/{slug} (or fix/{slug}, feature/{slug})
-#   - 更新 .ndf/state.json active 字段
-#   - 不允许同时有 2 个 active feature（用 --force 覆盖）
+#   - 写 .ndf-active 文件到每个 worktree 根目录
+#   - 如果目标 worktree 路径已存在 → 报错退出（绝不擦未提交改动）
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NDF_REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 NDF_CODES_ROOT="$(cd "$NDF_REPO_ROOT/.." && pwd)"
-NDF_STATE_FILE="$NDF_REPO_ROOT/.ndf/state.json"
 
 usage() {
   cat <<EOF
-Usage: ndf-start <track> <name> [--repos repo1,repo2,...] [--force]
+Usage: ndf-start <track> <name> [--repos repo1,repo2,...]
 
 Tracks:
   micro     快速改动 (≤15 min, 不动 DB/API/biz)
@@ -36,7 +38,10 @@ Examples:
   ndf-start hotfix login-icp-footer --repos numind-web-v3
   ndf-start standard child-membership --repos numind-server,numind-web-v3
 
-State file: $NDF_STATE_FILE
+v3 改动：
+  - 状态分散到每个 worktree 的 .ndf-active 文件
+  - 多个 feature 可以同时活跃（不再有"互斥 active slot"）
+  - 目标 worktree 路径已存在 → 报错退出（不再 --force 擦除）
 EOF
   exit 1
 }
@@ -48,7 +53,6 @@ NAME="$2"
 shift 2
 
 REPOS=""
-FORCE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repos)
@@ -56,8 +60,10 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --force)
-      FORCE=1
-      shift
+      echo "Error: --force was removed in NDF v3." >&2
+      echo "  → v3 worktree 已存在意味着真有未完工的 work，绝不 silent 擦除。" >&2
+      echo "  → 如果你确实要丢弃，手动跑: git worktree remove --force <path> && git branch -D <branch>" >&2
+      exit 1
       ;;
     -h|--help)
       usage
@@ -109,50 +115,49 @@ if [[ -z "$REPOS" ]]; then
   fi
 fi
 
-# Init state file if missing
-if [[ ! -f "$NDF_STATE_FILE" ]]; then
-  mkdir -p "$(dirname "$NDF_STATE_FILE")"
-  echo '{"version":"ndf-v2","active_feature":null,"active":null}' > "$NDF_STATE_FILE"
-fi
+# Initial stage / review policy
+case "$TRACK" in
+  micro)    INITIAL_STAGE="M1" ;;
+  hotfix)   INITIAL_STAGE="H1" ;;
+  standard) INITIAL_STAGE="S0" ;;
+esac
 
-# Check existing active feature
-EXISTING_ACTIVE=$(jq -r '.active_feature // empty' "$NDF_STATE_FILE")
-if [[ -n "$EXISTING_ACTIVE" && $FORCE -eq 0 ]]; then
-  echo "Error: existing active feature: $EXISTING_ACTIVE" >&2
-  echo "  Either: ndf-done it first" >&2
-  echo "  Or:     ndf-start ... --force (replaces active without cleanup — only do this for parallel sessions)" >&2
-  exit 1
-fi
+case "$TRACK" in
+  micro)    REVIEW_POLICY="none" ;;
+  hotfix)   REVIEW_POLICY="single" ;;
+  standard) REVIEW_POLICY="dual-parallel" ;;
+esac
 
-# Create worktree in each repo
-WORKTREES_JSON="{"
-BRANCHES_JSON="{"
-FIRST=1
-FIRST_WT=""
-for REPO in $(echo "$REPOS" | tr ',' ' '); do
+NOW=$(date +"%Y-%m-%dT%H:%M:%S%z")
+
+# Pre-check: ensure no target worktree path exists. Fail fast — never auto-clean.
+REPO_LIST=$(echo "$REPOS" | tr ',' ' ')
+for REPO in $REPO_LIST; do
   REPO_PATH="$NDF_CODES_ROOT/$REPO"
   if [[ ! -d "$REPO_PATH/.git" ]]; then
     echo "Error: repo not found or not a git repo: $REPO_PATH" >&2
     exit 1
   fi
   WT_PATH="/private/tmp/wt-$SLUG-$REPO"
-
-  # If worktree path already exists, try clean removal
   if [[ -e "$WT_PATH" ]]; then
-    echo "⚠️  Worktree path exists: $WT_PATH — removing"
-    git -C "$REPO_PATH" worktree remove --force "$WT_PATH" 2>/dev/null || rm -rf "$WT_PATH"
+    echo "❌ Error: worktree path already exists: $WT_PATH" >&2
+    echo "  → 这通常意味着有人在那里工作过（可能未 commit！）。" >&2
+    echo "  → 排查：" >&2
+    echo "      1. cd $WT_PATH && git status         # 看是否有未提交改动" >&2
+    echo "      2. 如果干净 → git worktree remove $WT_PATH && git branch -D $BRANCH 后重试" >&2
+    echo "      3. 如果有未提交改动 → 先 commit 或 stash，再清理" >&2
+    echo "  → NDF v3 拒绝任何 silent 擦除（这就是 v2 老 --force 干的事故根因）。" >&2
+    exit 1
   fi
+done
 
-  # Create branch + worktree (reuse branch if exists)
-  if git -C "$REPO_PATH" rev-parse --verify "refs/heads/$BRANCH" >/dev/null 2>&1; then
-    echo "ℹ️  Branch $BRANCH already exists in $REPO, reusing"
-    git -C "$REPO_PATH" worktree add "$WT_PATH" "$BRANCH"
-  else
-    git -C "$REPO_PATH" worktree add "$WT_PATH" -b "$BRANCH" develop
-  fi
-
-  echo "✓ Worktree created: $WT_PATH (branch $BRANCH in $REPO)"
-
+# Build worktrees JSON parts (will be combined for each repo's .ndf-active later)
+WORKTREES_JSON="{"
+BRANCHES_JSON="{"
+FIRST=1
+FIRST_WT=""
+for REPO in $REPO_LIST; do
+  WT_PATH="/private/tmp/wt-$SLUG-$REPO"
   if [[ $FIRST -eq 0 ]]; then
     WORKTREES_JSON+=","
     BRANCHES_JSON+=","
@@ -165,23 +170,18 @@ done
 WORKTREES_JSON+="}"
 BRANCHES_JSON+="}"
 
-# Initial stage
-case "$TRACK" in
-  micro)    INITIAL_STAGE="M1" ;;
-  hotfix)   INITIAL_STAGE="H1" ;;
-  standard) INITIAL_STAGE="S0" ;;
-esac
+# REPOS JSON array
+REPOS_JSON_ARR="["
+FIRST=1
+for REPO in $REPO_LIST; do
+  if [[ $FIRST -eq 0 ]]; then REPOS_JSON_ARR+=","; fi
+  REPOS_JSON_ARR+="\"$REPO\""
+  FIRST=0
+done
+REPOS_JSON_ARR+="]"
 
-# Review policy
-case "$TRACK" in
-  micro)    REVIEW_POLICY="none" ;;
-  hotfix)   REVIEW_POLICY="single" ;;
-  standard) REVIEW_POLICY="dual-parallel" ;;
-esac
-
-# Update state.json
-NOW=$(date +"%Y-%m-%dT%H:%M:%S%z")
-NEW_STATE=$(jq -n \
+# Build the .ndf-active payload (same for every worktree of this feature)
+NDF_ACTIVE_JSON=$(jq -n \
   --arg id "$SLUG" \
   --arg track "$TRACK" \
   --arg stage "$INITIAL_STAGE" \
@@ -189,28 +189,71 @@ NEW_STATE=$(jq -n \
   --arg review_policy "$REVIEW_POLICY" \
   --argjson worktrees "$WORKTREES_JSON" \
   --argjson branches "$BRANCHES_JSON" \
+  --argjson repos "$REPOS_JSON_ARR" \
   '{
-    version: "ndf-v2",
-    active_feature: $id,
-    active: {
-      id: $id,
-      track: $track,
-      stage: $stage,
-      created_at: $created_at,
-      repos: ($worktrees | keys),
-      worktrees: $worktrees,
-      branches: $branches,
-      review_policy: $review_policy,
-      blockers: []
-    }
+    version: "ndf-v3",
+    id: $id,
+    track: $track,
+    stage: $stage,
+    created_at: $created_at,
+    repos: $repos,
+    worktrees: $worktrees,
+    branches: $branches,
+    review_policy: $review_policy,
+    blockers: []
   }')
-echo "$NEW_STATE" > "$NDF_STATE_FILE"
+
+# Now create the worktree for each repo
+for REPO in $REPO_LIST; do
+  REPO_PATH="$NDF_CODES_ROOT/$REPO"
+  WT_PATH="/private/tmp/wt-$SLUG-$REPO"
+
+  # Create branch + worktree (reuse branch if exists)
+  if git -C "$REPO_PATH" rev-parse --verify "refs/heads/$BRANCH" >/dev/null 2>&1; then
+    echo "ℹ️  Branch $BRANCH already exists in $REPO, reusing"
+    git -C "$REPO_PATH" worktree add "$WT_PATH" "$BRANCH"
+  else
+    # Try to base off origin/develop (after fetch) so we're not behind
+    git -C "$REPO_PATH" fetch origin develop >/dev/null 2>&1 || true
+    if git -C "$REPO_PATH" rev-parse --verify "refs/heads/develop" >/dev/null 2>&1; then
+      BASE_REF="develop"
+    else
+      BASE_REF="origin/develop"
+    fi
+    git -C "$REPO_PATH" worktree add "$WT_PATH" -b "$BRANCH" "$BASE_REF"
+  fi
+
+  # Write .ndf-active in this worktree's root
+  printf '%s\n' "$NDF_ACTIVE_JSON" > "$WT_PATH/.ndf-active"
+
+  # Add .ndf-active to this worktree's git exclude (per-worktree info/exclude)
+  # The repo's shared .git/info/exclude also gets it so status remains clean even if
+  # .gitignore wasn't updated yet (defensive — for repos that haven't received the .gitignore change).
+  GIT_FILE="$WT_PATH/.git"
+  if [[ -f "$GIT_FILE" ]]; then
+    WT_GITDIR=$(sed -n 's/^gitdir: //p' "$GIT_FILE")
+    if [[ -n "$WT_GITDIR" ]]; then
+      mkdir -p "$WT_GITDIR/info"
+      if [[ ! -f "$WT_GITDIR/info/exclude" ]] || ! grep -qxF '.ndf-active' "$WT_GITDIR/info/exclude" 2>/dev/null; then
+        echo '.ndf-active' >> "$WT_GITDIR/info/exclude"
+      fi
+    fi
+  fi
+  # Shared exclude (defensive — works for any worktree of this repo)
+  if [[ -d "$REPO_PATH/.git/info" ]]; then
+    if [[ ! -f "$REPO_PATH/.git/info/exclude" ]] || ! grep -qxF '.ndf-active' "$REPO_PATH/.git/info/exclude" 2>/dev/null; then
+      echo '.ndf-active' >> "$REPO_PATH/.git/info/exclude"
+    fi
+  fi
+
+  echo "✓ Worktree created: $WT_PATH (branch $BRANCH in $REPO)"
+done
 
 # Summary
 cat <<EOF
 
 ╭─────────────────────────────────────────────────────────────
-│ ✓ NDF feature 启动成功
+│ ✓ NDF v3 feature 启动成功
 │
 │   Track:     $TRACK
 │   Slug:      $SLUG
@@ -219,7 +262,10 @@ cat <<EOF
 │   Repos:     $REPOS
 │   Worktree:  $FIRST_WT
 │
+│   .ndf-active 已写入每个 worktree 根目录。
+│   多个并发 feature 互不干扰（v3 改动）。
+│
 │   下一步：cd "$FIRST_WT"
-│   完成后：ndf-done
+│   完成后：ndf-done（在 worktree 内运行）
 ╰─────────────────────────────────────────────────────────────
 EOF

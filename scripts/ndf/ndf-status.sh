@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
-# ndf-status: 显示当前 NDF 状态
+# ndf-status (v3): 扫描所有 worktree 找 .ndf-active 文件，报告每个活跃 feature
 #
 # Usage:
-#   ndf-status            # 人类可读输出
-#   ndf-status --md       # markdown 格式（截图分享用）
-#   ndf-status --json     # 原始 JSON（脚本调用）
+#   ndf-status            # 人类可读输出（表格）
+#   ndf-status --md       # markdown 格式
+#   ndf-status --json     # JSON 数组（脚本调用）
 #
-# 信息：active feature / stage / branch / worktree / HEAD 一致性 / blockers / next step
+# v3 改动：不再读中央 state.json。
+# 扫描位置：
+#   - /private/tmp/wt-*/    （ndf-start 默认创建位置）
+#   - $CODES/<repo>/.claude/worktrees/*/（备用位置）
+#   - 任何额外路径由 NDF_EXTRA_WORKTREE_DIRS 环境变量指定（冒号分隔）
+# 还会扫 git worktree list（如果某个 worktree 没 .ndf-active，标 ⚠ orphan）
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NDF_REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 NDF_CODES_ROOT="$(cd "$NDF_REPO_ROOT/.." && pwd)"
-NDF_STATE_FILE="$NDF_REPO_ROOT/.ndf/state.json"
 
 FORMAT="text"
 while [[ $# -gt 0 ]]; do
@@ -30,117 +34,196 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# State file 不存在 = 完全没用过 NDF
-if [[ ! -f "$NDF_STATE_FILE" ]]; then
-  case "$FORMAT" in
-    json) echo '{"version":"ndf-v2","active_feature":null,"active":null}' ;;
-    md)   echo "**NDF Status:** no state file (NDF v2 未初始化)" ;;
-    text) echo "NDF Status: no state file (NDF v2 未初始化)" ;;
-  esac
-  exit 0
+# 1. 收集 worktree 候选路径
+CANDIDATE_DIRS=()
+# /private/tmp/wt-*
+for d in /private/tmp/wt-*; do
+  [[ -d "$d" ]] && CANDIDATE_DIRS+=("$d")
+done
+# repo-local .claude/worktrees/*/
+for repo in numind-server numind-web-v3 numind-admin-web; do
+  if [[ -d "$NDF_CODES_ROOT/$repo/.claude/worktrees" ]]; then
+    for d in "$NDF_CODES_ROOT/$repo/.claude/worktrees"/*; do
+      [[ -d "$d" ]] && CANDIDATE_DIRS+=("$d")
+    done
+  fi
+done
+# 额外父目录（冒号分隔）— 每个目录里 glob wt-* 作为候选
+if [[ -n "${NDF_EXTRA_WORKTREE_DIRS:-}" ]]; then
+  OLD_IFS="$IFS"
+  IFS=':'
+  set -- $NDF_EXTRA_WORKTREE_DIRS
+  IFS="$OLD_IFS"
+  for parent in "$@"; do
+    [[ -d "$parent" ]] || continue
+    for d in "$parent"/wt-*; do
+      [[ -d "$d" ]] && CANDIDATE_DIRS+=("$d")
+    done
+  done
 fi
 
-# JSON 直接 dump
-if [[ "$FORMAT" == "json" ]]; then
-  cat "$NDF_STATE_FILE"
-  exit 0
-fi
-
-ACTIVE_ID=$(jq -r '.active_feature // empty' "$NDF_STATE_FILE")
-
-# 无 active feature
-if [[ -z "$ACTIVE_ID" ]]; then
-  case "$FORMAT" in
-    md)   echo "**NDF Status:** no active feature" ;;
-    text) echo "NDF Status: no active feature (可以 ndf-start 新 feature)" ;;
-  esac
-  exit 0
-fi
-
-# 有 active feature - 提取详情
-TRACK=$(jq -r '.active.track' "$NDF_STATE_FILE")
-STAGE=$(jq -r '.active.stage' "$NDF_STATE_FILE")
-CREATED=$(jq -r '.active.created_at' "$NDF_STATE_FILE")
-REVIEW_POLICY=$(jq -r '.active.review_policy' "$NDF_STATE_FILE")
-REPOS=($(jq -r '.active.repos[]' "$NDF_STATE_FILE"))
-BLOCKERS_COUNT=$(jq -r '.active.blockers | length' "$NDF_STATE_FILE")
-
-# HEAD 一致性检查
-HEAD_REPORT=""
-HEAD_OK=1
-for REPO in "${REPOS[@]}"; do
-  EXPECTED_BRANCH=$(jq -r ".active.branches[\"$REPO\"]" "$NDF_STATE_FILE")
-  WT_PATH=$(jq -r ".active.worktrees[\"$REPO\"]" "$NDF_STATE_FILE")
-  if [[ ! -d "$WT_PATH" ]]; then
-    HEAD_REPORT+="  ⚠️  $REPO: worktree 不存在 ($WT_PATH)\n"
-    HEAD_OK=0
-  else
-    ACTUAL_BRANCH=$(git -C "$WT_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
-    if [[ "$ACTUAL_BRANCH" == "$EXPECTED_BRANCH" ]]; then
-      HEAD_REPORT+="  ✓ $REPO: worktree HEAD = $EXPECTED_BRANCH\n"
-    else
-      HEAD_REPORT+="  ⚠️  $REPO: worktree HEAD = $ACTUAL_BRANCH (expected $EXPECTED_BRANCH)\n"
-      HEAD_OK=0
-    fi
+# 2. 收集所有 git worktree list 给的路径
+GIT_WT_PATHS=()
+# Canonicalize codes root for symlink comparison
+NDF_CODES_ROOT_CANONICAL=$(cd "$NDF_CODES_ROOT" 2>/dev/null && pwd -P)
+for repo in numind-server numind-web-v3 numind-admin-web; do
+  if [[ -d "$NDF_CODES_ROOT/$repo/.git" ]]; then
+    main_canonical=$(cd "$NDF_CODES_ROOT/$repo" 2>/dev/null && pwd -P)
+    while IFS= read -r line; do
+      # 跳过主 worktree（line 等于 repo 主 checkout 路径），只收集附加 worktree
+      line_canonical=$(cd "$line" 2>/dev/null && pwd -P) || line_canonical="$line"
+      if [[ "$line_canonical" != "$main_canonical" ]]; then
+        GIT_WT_PATHS+=("$line_canonical")
+      fi
+    done < <(git -C "$NDF_CODES_ROOT/$repo" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10)}')
   fi
 done
 
-# next step 建议
-NEXT_STEP=""
-case "$STAGE" in
-  M1)  NEXT_STEP="改完直接 ndf-done（merge develop + 清理）" ;;
-  H1)  NEXT_STEP="实现修复 + 加测试，完成后 H2 reviewer" ;;
-  H2)  NEXT_STEP="dispatch reviewer subagent，PASS 后 H3" ;;
-  H3)  NEXT_STEP="ndf-done（merge develop + 清理）→ 等 dev 验证 → tag prod" ;;
-  S0)  NEXT_STEP="填 requirement card 模板，确认后进 S1" ;;
-  S1)  NEXT_STEP="写 proposal+PRD（office-hours 思考），客户确认后 S2" ;;
-  S2)  NEXT_STEP="写 spec + dispatch reviewer，PASS 后 S3" ;;
-  S3)  NEXT_STEP="拆 task plan + 验证策略 + plan reviewer，PASS 后 S4" ;;
-  S4)  NEXT_STEP="逐 task TDD 实现 + 每 task 双 reviewer 并行" ;;
-  S5)  NEXT_STEP="本地跑 Playwright E2E + gstack /qa，PASS 后 S6" ;;
-  S6)  NEXT_STEP="ndf-done（merge develop + 清理）→ 等 dev 部署 → 你点几下验收" ;;
-  S7)  NEXT_STEP="打 prod tag → 等部署 → 写 Obsidian 笔记" ;;
-  *)   NEXT_STEP="（未知 stage：$STAGE）" ;;
-esac
-
-# 输出
-if [[ "$FORMAT" == "md" ]]; then
-  cat <<EOF
-## NDF Status
-
-| 字段 | 值 |
-|------|---|
-| Active feature | \`$ACTIVE_ID\` |
-| Track | $TRACK |
-| Stage | $STAGE |
-| Created | $CREATED |
-| Review policy | $REVIEW_POLICY |
-| Open blockers | $BLOCKERS_COUNT |
-
-**Worktrees / HEAD:**
-$(echo -e "$HEAD_REPORT" | sed 's/^/- /')
-
-**Next step:** $NEXT_STEP
-EOF
-else
-  cat <<EOF
-
-╭─────────────────────────────────────────────────────────────
-│ NDF Status
-│
-│   Active feature:  $ACTIVE_ID
-│   Track:           $TRACK
-│   Stage:           $STAGE
-│   Created:         $CREATED
-│   Review policy:   $REVIEW_POLICY
-│   Open blockers:   $BLOCKERS_COUNT
-│
-│   Worktrees / HEAD:
-$(printf '%b' "$HEAD_REPORT" | sed '/^$/d' | sed 's/^/│   /')
-│   Next step: $NEXT_STEP
-╰─────────────────────────────────────────────────────────────
-EOF
-  if [[ $HEAD_OK -eq 0 ]]; then
-    echo "⚠️  HEAD 不一致——并行 session 切换过分支，先解决再继续"
+# 3. 合并 + 去重 (bash 3.2 compatible — no assoc arrays).
+# 注意：macOS /var 是 /private/var 的符号链接，git 返回的 worktree 路径常常是
+# /private/var/... 而 /private/tmp/wt-* 又是 /var 的另一种写法。先 canonicalize 再去重。
+canonicalize_path() {
+  # cd + pwd -P 是 portable canonicalize（不需要 readlink -f，bsd-readlink 不支持）
+  local p="$1"
+  if [[ -d "$p" ]]; then
+    (cd "$p" 2>/dev/null && pwd -P) || printf '%s' "$p"
+  else
+    printf '%s' "$p"
   fi
+}
+
+ALL_DIRS=()
+SEEN_LIST=$'\n'
+for d in "${CANDIDATE_DIRS[@]}" "${GIT_WT_PATHS[@]}"; do
+  cd_canonical=$(canonicalize_path "$d")
+  case "$SEEN_LIST" in
+    *$'\n'"$cd_canonical"$'\n'*) continue ;;
+  esac
+  SEEN_LIST+="$cd_canonical"$'\n'
+  ALL_DIRS+=("$cd_canonical")
+done
+
+# 4. 读每个目录的 .ndf-active，分类
+declare -a FEATURE_JSON_ENTRIES   # 已绑定 feature 的 worktree
+declare -a ORPHANS                # 有 worktree 但无 .ndf-active
+
+for d in "${ALL_DIRS[@]}"; do
+  if [[ -f "$d/.ndf-active" ]]; then
+    # 验证可解析
+    if jq -e '.id' "$d/.ndf-active" >/dev/null 2>&1; then
+      ENTRY=$(jq -c --arg path "$d" '. + {worktree_path: $path}' "$d/.ndf-active")
+      FEATURE_JSON_ENTRIES+=("$ENTRY")
+    else
+      ORPHANS+=("$d (.ndf-active 文件存在但 JSON 解析失败)")
+    fi
+  else
+    ORPHANS+=("$d")
+  fi
+done
+
+# 5. 输出
+if [[ "$FORMAT" == "json" ]]; then
+  printf '{"version":"ndf-v3","features":['
+  FIRST=1
+  for e in "${FEATURE_JSON_ENTRIES[@]}"; do
+    [[ $FIRST -eq 0 ]] && printf ','
+    printf '%s' "$e"
+    FIRST=0
+  done
+  printf '],"orphans":['
+  FIRST=1
+  for o in "${ORPHANS[@]}"; do
+    [[ $FIRST -eq 0 ]] && printf ','
+    printf '%s' "$(jq -n --arg p "$o" '$p')"
+    FIRST=0
+  done
+  printf ']}\n'
+  exit 0
 fi
+
+# Human-readable
+if [[ ${#FEATURE_JSON_ENTRIES[@]} -eq 0 && ${#ORPHANS[@]} -eq 0 ]]; then
+  if [[ "$FORMAT" == "md" ]]; then
+    echo "**NDF Status (v3):** 没有发现任何活跃 feature"
+  else
+    echo "NDF Status (v3): 没有发现任何活跃 feature"
+    echo "  → 跑 ndf-start <track> <slug> 启动新 feature"
+  fi
+  exit 0
+fi
+
+# 用 jq 把每个 feature entry 输出为行
+print_feature_text() {
+  local entry="$1"
+  local id track stage repos wt_path
+  id=$(jq -r '.id' <<<"$entry")
+  track=$(jq -r '.track' <<<"$entry")
+  stage=$(jq -r '.stage' <<<"$entry")
+  repos=$(jq -r '.repos | join(",")' <<<"$entry")
+  wt_path=$(jq -r '.worktree_path' <<<"$entry")
+  # HEAD 一致性
+  local branch_expected actual_branch head_ok=1
+  branch_expected=$(jq -r ".branches[\"$(jq -r '.repos[0]' <<<"$entry")\"]" <<<"$entry")
+  actual_branch=$(git -C "$wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+  if [[ "$actual_branch" != "$branch_expected" ]]; then
+    head_ok=0
+  fi
+  if [[ $head_ok -eq 1 ]]; then
+    printf '  ✓ %-40s  %-9s  %-5s  %-30s  %s\n' "$id" "$track" "$stage" "$repos" "$wt_path"
+  else
+    printf '  ⚠ %-40s  %-9s  %-5s  %-30s  %s (HEAD=%s)\n' "$id" "$track" "$stage" "$repos" "$wt_path" "$actual_branch"
+  fi
+}
+
+if [[ "$FORMAT" == "md" ]]; then
+  echo "## NDF Status (v3)"
+  echo
+  echo "### Active features (${#FEATURE_JSON_ENTRIES[@]})"
+  echo
+  if [[ ${#FEATURE_JSON_ENTRIES[@]} -gt 0 ]]; then
+    echo "| Feature | Track | Stage | Repos | Worktree |"
+    echo "|---------|-------|-------|-------|----------|"
+    for e in "${FEATURE_JSON_ENTRIES[@]}"; do
+      id=$(jq -r '.id' <<<"$e")
+      track=$(jq -r '.track' <<<"$e")
+      stage=$(jq -r '.stage' <<<"$e")
+      repos=$(jq -r '.repos | join(",")' <<<"$e")
+      wt_path=$(jq -r '.worktree_path' <<<"$e")
+      echo "| \`$id\` | $track | $stage | $repos | \`$wt_path\` |"
+    done
+  fi
+  if [[ ${#ORPHANS[@]} -gt 0 ]]; then
+    echo
+    echo "### Orphan worktrees (${#ORPHANS[@]})"
+    echo
+    for o in "${ORPHANS[@]}"; do
+      echo "- \`$o\`"
+    done
+  fi
+  exit 0
+fi
+
+# text format
+cat <<EOF
+
+╭─ NDF Status (v3, per-worktree state)
+│
+EOF
+if [[ ${#FEATURE_JSON_ENTRIES[@]} -gt 0 ]]; then
+  echo "│ Active features (${#FEATURE_JSON_ENTRIES[@]}):"
+  echo "│"
+  for e in "${FEATURE_JSON_ENTRIES[@]}"; do
+    line=$(print_feature_text "$e")
+    echo "│$line"
+  done
+fi
+if [[ ${#ORPHANS[@]} -gt 0 ]]; then
+  echo "│"
+  echo "│ ⚠ Orphan worktrees (${#ORPHANS[@]}):"
+  for o in "${ORPHANS[@]}"; do
+    echo "│   - $o"
+  done
+  echo "│   → 这些 worktree 没有 .ndf-active 文件，可能是手动创建或迁移残留。"
+  echo "│   → 排查：cd <path> && git status；干净则 git worktree remove 清理。"
+fi
+echo "╰─"
