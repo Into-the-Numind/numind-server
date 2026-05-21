@@ -2,13 +2,18 @@ package model
 
 import "time"
 
+// ComplianceAuditLog is an append-only audit row for every compliance
+// decision (L0/L1/L2/injection/fence/scope). Written async by
+// biz/compliance/audit_logger.go. RuleID intentionally has no FK so
+// audit rows survive source rule soft/hard deletion.
+// See agent-mode-compliance-3layer feature #13/14.
 type ComplianceAuditLog struct {
 	ID                uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
 	AgentRunID        *uint64   `gorm:"index:idx_run" json:"agent_run_id,omitempty"`
 	ParentUserID      uint      `gorm:"not null;index:idx_parent_created,priority:1" json:"parent_user_id"`
-	AgentDefinitionID *uint64   `gorm:"" json:"agent_definition_id,omitempty"`
+	AgentDefinitionID *uint64   `json:"agent_definition_id,omitempty"`
 	RuleLayer         string    `gorm:"size:8;not null;index:idx_layer_decision,priority:1" json:"rule_layer"`
-	RuleID            *uint64   `gorm:"" json:"rule_id,omitempty"`
+	RuleID            *uint64   `json:"rule_id,omitempty"`
 	Decision          string    `gorm:"size:16;not null;index:idx_layer_decision,priority:2" json:"decision"`
 	TriggeredText     string    `gorm:"type:text" json:"triggered_text,omitempty"`
 	Reason            string    `gorm:"size:255" json:"reason,omitempty"`

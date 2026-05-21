@@ -2,6 +2,9 @@ package model
 
 import "time"
 
+// ComplianceRule represents an L1 (parent-user-level) compliance rule.
+// Configurable by tenant operators; admin CRUD UI lands in #14.
+// See agent-mode-compliance-3layer feature #13/14.
 type ComplianceRule struct {
 	ID           uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
 	ParentUserID uint      `gorm:"not null;index:idx_parent_active_priority,priority:1" json:"parent_user_id"`
