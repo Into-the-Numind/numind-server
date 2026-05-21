@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
 	"numind-server/internal/numind/biz/budget"
@@ -50,16 +51,20 @@ func NewStudentRunService(
 // ---------------------------------------------------------------------------
 
 // EstimateRunRequest is the payload for POST /v1/agent-runs/estimate.
+// Field names align with web-v3 src/types/agent.ts EstimateRequest contract.
 type EstimateRunRequest struct {
-	AgentDefinitionID uint64 `json:"agent_definition_id" binding:"required"`
-	Message           string `json:"message" binding:"required"`
+	AgentDefinitionID uint64 `json:"agent_skill_id" binding:"required"`
+	Message           string `json:"input_text" binding:"required"`
 }
 
 // EstimateResponse is the response for the estimate endpoint.
+// Field names + range/flag shape align with web-v3 EstimateResponse contract:
+// {min, max, is_large_task}. Min/Max are derived from the central single-value
+// estimate (±20% band); is_large_task = true when central estimate > 100 credits.
 type EstimateResponse struct {
-	EstimatedCredits int    `json:"estimated_credits"`
-	EstimatedTokens  int    `json:"estimated_tokens"`
-	Currency         string `json:"currency"` // always "credits"
+	Min         int  `json:"min"`
+	Max         int  `json:"max"`
+	IsLargeTask bool `json:"is_large_task"`
 }
 
 // Estimate returns a pre-flight cost estimate for an agent run.
@@ -112,10 +117,21 @@ func (s *StudentRunService) Estimate(ctx context.Context, userID uint, req Estim
 		estCredits = int64(*ad.CreditCapPerSession)
 	}
 
+	// Derive {min, max, is_large_task} band from central estimate (web-v3 contract).
+	// ±20% band accounts for completion-token variance in ReAct loops.
+	_ = estPromptTokens // retained for future telemetry; not exposed in response
+	min := int(float64(estCredits) * 0.8)
+	max := int(float64(estCredits) * 1.2)
+	if min < 1 {
+		min = 1
+	}
+	if max < min {
+		max = min
+	}
 	return &EstimateResponse{
-		EstimatedCredits: int(estCredits),
-		EstimatedTokens:  estPromptTokens,
-		Currency:         "credits",
+		Min:         min,
+		Max:         max,
+		IsLargeTask: estCredits > 100,
 	}, nil
 }
 
@@ -124,19 +140,23 @@ func (s *StudentRunService) Estimate(ctx context.Context, userID uint, req Estim
 // ---------------------------------------------------------------------------
 
 // CreateRunRequest is the payload for POST /v1/agent-runs.
+// Field names align with web-v3 src/types/agent.ts CreateRunRequest contract.
 type CreateRunRequest struct {
-	AgentDefinitionID uint64   `json:"agent_definition_id" binding:"required"`
+	AgentDefinitionID uint64   `json:"agent_skill_id" binding:"required"`
 	SessionID         string   `json:"session_id,omitempty"` // empty → new session
-	Message           string   `json:"message" binding:"required"`
+	Message           string   `json:"input_text" binding:"required"`
 	AttachmentURLs    []string `json:"attachment_urls,omitempty"`
 }
 
 // CreateRunResponse is returned from POST /v1/agent-runs.
+// Field names align with web-v3 src/types/agent.ts CreateRunResponse contract.
+// run_id is the real DB row id (Create pre-allocates the row synchronously so
+// the frontend can immediately poll GET /agent-runs/:id).
 type CreateRunResponse struct {
-	AgentRunID uint64    `json:"agent_run_id"`
-	SessionID  string    `json:"session_id"`
-	Status     string    `json:"status"` // always "running" on success
-	StartedAt  time.Time `json:"started_at"`
+	RunID               uint64 `json:"run_id"`
+	SessionID           string `json:"session_id"`
+	EstimatedCreditsMin int    `json:"estimated_credits_min"`
+	EstimatedCreditsMax int    `json:"estimated_credits_max"`
 }
 
 // Create starts an agent run asynchronously and returns the run_id immediately.
@@ -172,6 +192,21 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 	// Resolve tool names from ToolFlags JSON.
 	toolNames := toolNamesFromFlags(ad.ToolFlags)
 
+	// Pre-create the agent_run row synchronously so the HTTP response can
+	// return a real run_id to the frontend (which polls GET /agent-runs/:id).
+	startedAt := time.Now()
+	preRun := &model.AgentRun{
+		UserID:            userID,
+		SessionID:         sessionID,
+		AgentDefinitionID: req.AgentDefinitionID,
+		Status:            "running",
+		Messages:          datatypes.JSON([]byte("[]")),
+		StartedAt:         startedAt,
+	}
+	if err := s.runStore.Create(ctx, preRun); err != nil {
+		return nil, fmt.Errorf("StudentRunService.Create pre-create row: %w", err)
+	}
+
 	runReq := RunRequest{
 		UserID:            userID,
 		SessionID:         sessionID,
@@ -179,9 +214,8 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 		ToolNames:         toolNames,
 		AgentDefinitionID: req.AgentDefinitionID,
 		EnableMemory:      true,
+		ExistingRunID:     preRun.ID,
 	}
-
-	startedAt := time.Now()
 
 	// Async: detached context so HTTP cancel doesn't abort the run.
 	go func() {
@@ -190,21 +224,12 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 		// Result is persisted to DB by runner.Run; frontend polls via narration + GET run.
 	}()
 
-	// We return a synthetic run_id=0 here because the actual DB row is created
-	// inside runner.Run (which is async). Frontend polls /narration?since=... and
-	// GET /agent-runs/:id; for v1 the run_id is not known pre-flight.
-	//
-	// v1 pragmatic choice: return a "pending" response. The frontend can follow
-	// up with GET /agent-runs/:session_id to find the run_id after a brief poll.
-	// Full pre-run row creation would require refactoring runner.go — deferred.
-	//
-	// Note: we still return started_at and session_id which the frontend can use
-	// to track the session.
+	// Return the pre-allocated run_id immediately so the frontend can poll
+	// GET /agent-runs/:id without an extra session→run lookup.
+	// EstimatedCredits{Min,Max} are populated by callers via Estimate first.
 	return &CreateRunResponse{
-		AgentRunID: 0, // v1: async create — run_id not yet available
-		SessionID:  sessionID,
-		Status:     "running",
-		StartedAt:  startedAt,
+		RunID:     preRun.ID,
+		SessionID: sessionID,
 	}, nil
 }
 

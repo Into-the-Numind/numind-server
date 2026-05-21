@@ -15,11 +15,13 @@ import (
 
 // RunSummary is a lightweight view of model.AgentRun returned by list endpoints.
 // Full messages are omitted to keep list payloads small.
+// JSON field names align with web-v3 src/types/agent.ts AgentRun contract
+// (agent_skill_id is the learner-facing alias of the agent_definition_id column).
 type RunSummary struct {
 	ID                uint64     `json:"id"`
 	UserID            uint       `json:"user_id"`
 	SessionID         string     `json:"session_id"`
-	AgentDefinitionID uint64     `json:"agent_definition_id,omitempty"`
+	AgentDefinitionID uint64     `json:"agent_skill_id,omitempty"`
 	Status            string     `json:"status"`
 	StateReason       string     `json:"state_reason,omitempty"`
 	CompactSummary    string     `json:"compact_summary,omitempty"`

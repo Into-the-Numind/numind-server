@@ -170,11 +170,8 @@ func TestStudentRunService_Estimate_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.EstimatedCredits <= 0 {
-		t.Error("expected positive estimated_credits")
-	}
-	if resp.Currency != "credits" {
-		t.Errorf("expected currency='credits', got '%s'", resp.Currency)
+	if resp.Min <= 0 || resp.Max < resp.Min {
+		t.Errorf("expected positive min/max (max>=min), got min=%d max=%d", resp.Min, resp.Max)
 	}
 }
 

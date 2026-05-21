@@ -48,6 +48,10 @@ type RunRequest struct {
 	// EnableMemory 为 true 时调 memoryProvider.SystemPromptBlock 注入 memory-context 段。
 	// 默认 false 保持兼容（fall through）。
 	EnableMemory bool
+	// ExistingRunID 非 0 时，runner.Run 跳过 runStore.Create，加载已存在 row 继续执行。
+	// 学员侧 StudentRunService.Create 同步预建 row 后异步派发 runner 时使用，
+	// 保证 HTTP response 立即返回真实 run_id 给前端轮询。
+	ExistingRunID uint64
 }
 
 // RunResult 是 AgentRunner.Run 的输出。
@@ -193,18 +197,28 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// 0. 注入 userID 到 context，供工具（如 kbSearchTool）读取。
 	ctx = middleware.NewContextWithUserID(ctx, req.UserID)
 
-	// 1. 创建 DB 行
+	// 1. 创建 DB 行（或加载预建 row）
 	// M-A1 / M-C3a: populate AgentDefinitionID from request (non-zero for runs with a wired skill).
-	run := &model.AgentRun{
-		UserID:            req.UserID,
-		SessionID:         req.SessionID,
-		AgentDefinitionID: req.AgentDefinitionID,
-		Status:            "running",
-		Messages:          datatypes.JSON([]byte("[]")),
-		StartedAt:         startTime,
-	}
-	if err := r.runStore.Create(ctx, run); err != nil {
-		return nil, fmt.Errorf("AgentRunner.Run: %w", err)
+	// hotfix agent-mode-contract-align: 学员侧异步派发预建 row,通过 ExistingRunID 接管。
+	var run *model.AgentRun
+	if req.ExistingRunID != 0 {
+		existing, getErr := r.runStore.Get(ctx, req.ExistingRunID)
+		if getErr != nil {
+			return nil, fmt.Errorf("AgentRunner.Run load existing: %w", getErr)
+		}
+		run = existing
+	} else {
+		run = &model.AgentRun{
+			UserID:            req.UserID,
+			SessionID:         req.SessionID,
+			AgentDefinitionID: req.AgentDefinitionID,
+			Status:            "running",
+			Messages:          datatypes.JSON([]byte("[]")),
+			StartedAt:         startTime,
+		}
+		if err := r.runStore.Create(ctx, run); err != nil {
+			return nil, fmt.Errorf("AgentRunner.Run: %w", err)
+		}
 	}
 
 	// 1.1. #8 narration-layer: register CloseRun defer IMMEDIATELY after run.ID
