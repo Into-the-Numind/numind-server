@@ -16,54 +16,53 @@
 
 ### A1 Adapter Generate — Eino ReAct loop 接通 aiservice
 
-**现状**（runner.go:200 附近）：
+> **S1 reviewer P1-1 修正（critical）**：原描述错把 A1 主要工作放到 `adapter_full_to_eino.go`。实际情况：
+> - `adapter.go:56` 已有 `Generate(ctx, msgs)` 实装，已经走 `aiservice.Chat(ctx, a.taskID, req)`
+> - `adapter.go:67` 已有 `Stream(ctx, msgs)` 实装
+> - `adapter_full_to_eino.go` 是 `fullToolEinoAdapter`（工具包装器，实现 `einotool.InvokableTool`），与 `aiserviceAdapter` 是两个独立角色 — **不要混淆**
+>
+> **A1 真实工作位置**：`runner.go:389` 的 `_ = einoAgent` 短路 + 后续状态机简化
+
+**现状**（`runner.go:375-389`）：
 ```go
-einoAgent, err := react.NewAgent(ctx, &react.AgentConfig{
-    ToolCallingModel: a.adapter,
+einoAgent, err := react.NewAgent(queryCtx, &react.AgentConfig{
+    ToolCallingModel: einoAdapter,
     ToolsConfig:      compose.ToolsNodeConfig{Tools: einoTools},
-    MaxStep:          int(maxStep),
+    MaxStep:          30,
 })
-if err != nil { ... }
-_ = einoAgent  // ← short circuit
-return RunResult{Terminal: state.TerminalCompleted, ...}, nil
+if err != nil { ... UpdateState terminated ... }
+_ = einoAgent // #2 不在 runner 内执行完整 loop，留给 Task 8 集成测试
+// 接下来是简化状态机 — 写终止 messages + UpdateState
 ```
 
-**目标**：
-```go
-einoAgent, err := react.NewAgent(ctx, ...)
-output, err := einoAgent.Generate(ctx, einoMessages, agent.WithComposeOptions(...))
-```
+**A1 目标**（runner.go 改造）：
 
-**技术决策**：
-
-1. **adapter `Generate(ctx, msgs)` 实现**（`adapter_full_to_eino.go` 新增 method 实现 Eino `model.ToolCallingChatModel`）：
+1. **删除 `_ = einoAgent` 短路**（line 389）
+2. **接入真实 ReAct loop**：
    ```go
-   func (a *aiserviceAdapter) Generate(ctx context.Context, msgs []*schema.Message, opts ...model.Option) (*schema.Message, error) {
-       // 1. Eino schema.Message → aiservice.ChatMessage 转换
-       req := aiservice.ChatRequest{
-           Messages: convertEinoMessages(msgs),
-           Tools:    a.tools,        // 之前从 BindTools 注入
-           MaxTokens: a.maxTokens,
-           Temperature: a.temperature,
-           ModelOverride: a.modelOverride,  // 由 RunnerOption WithModel 设
+   // queryCtx 已含 traceID + abort ctx
+   einoMessages := buildEinoMessages(req)  // (user 消息 + 历史 messages 转 schema.Message)
+   output, err := einoAgent.Generate(queryCtx, einoMessages)
+   if err != nil {
+       // 触发 PTL chain / MaxOutput chain（来自 #9 compact）
+       if shouldRetryCompact, retryMsgs := r.tryPreLLMCompact(ctx, run.ID, ...); shouldRetryCompact {
+           output, err = einoAgent.Generate(queryCtx, retryMsgs)
        }
-       // 2. taskID = "agent_run_<run_id>"（langfuse trace 关联）
-       resp, err := aiservice.Chat(ctx, fmt.Sprintf("agent_run_%d", a.runID), req)
-       if err != nil { return nil, fmt.Errorf("aiservice.Chat: %w", err) }
-       // 3. 注入 Usage 到 ctx 给 A8 BudgetTracker.RecordUsage 用
-       ctx = budget.WithUsage(ctx, budget.Usage{Prompt: resp.Usage.PromptTokens, Completion: resp.Usage.CompletionTokens})
-       // 4. ChatResponse → schema.Message
-       return convertToEinoMessage(resp), nil
+       // ... 错误派发到 TerminalReason
    }
+   // 写 turn 到 agent_run.messages
    ```
-   - Langfuse trace 已在 runner.go `CreateTrace(traceID, "agent_run", ...)` 创建；aiservice gateway middleware 内部自动 `CreateGeneration`（adapter 不再手动写 generation）
-   - **taskID 规范**：`agent_run_<run_id>` —— 与 SOP 模式 `sop_run_<run_id>` / Chatbot `chatbot_<session_id>` 并列
+3. **状态机派发**：根据 einoAgent.Generate 错误 / FinishReason / hook actions 派发到 19 个 `LoopEvent` + `TerminalReason`（已 #2/#6/#9 锁定）
+4. **集成 #6/#9 helpers**：`r.handlePTLError` / `r.handleMaxOutputError` / `r.tryPreLLMCompact`（#9 已就绪，#14 接通）
+5. **taskID 当前已是** `fmt.Sprintf("agent-runner-%d", run.ID)`（line 364）→ 这个字符串**未在 task_profile 表注册** → **见 §11 task_profile 注册**
 
-2. **Stream 支持** v1 暂不实装（蓝本 §4.7.6 narration 已通过 SSE 在 web-v3 emit，无需 Eino stream）。Phase 2/v2 视需求加 `StreamGenerate`
+**adapter.go 改造（轻量）**：
+- 验证 `convertToAiserviceRequest` 把 tool schemas 正确转 `aiservice.Tool`（之前可能漏）
+- **Usage 透出**：Generate 返回前把 `resp.Usage` 通过新 context helper 注入（A8 数据流用）—— 见 §2.A8 详细
 
-3. **Tool 协议转换**：FullTool.Description() / InputSchema() → aiservice.Tool —— 新加 helper `func toolToAiserviceTool(ft FullTool) aiservice.Tool`
+**B1 → adapter 不动**：`fullToolEinoAdapter` 已实装 PreToolCall/PostToolCall hooks，本 feature 不改
 
-4. **超时与重试**：依赖 aiservice gateway 自带（无 adapter 层 retry）
+**Langfuse trace**：aiservice gateway middleware 已自动 `CreateGeneration`，adapter 不再手写
 
 ### A2 Memory Embedder
 
@@ -153,43 +152,64 @@ func (p *aiserviceCompactProvider) Compact(ctx context.Context, req *compact.Com
 
 ### A5 Narration LLM Fallback
 
-**现状**：`biz/narration/translator.go` `LLMFallback` interface stub —— YAML miss 时返回硬编码 fallback 文案
+> **S1 reviewer P1-2 修正（critical）**：原描述用了 `Generate(ctx, ev *narration.Event)` 签名，但实际 interface 在 `translator.go:12-14` 是：
+> ```go
+> type LLMFallback interface {
+>     Render(ctx context.Context, toolName string, state State, payload EmitPayload) (verb, detail string)
+> }
+> ```
+> 返回 `(verb, detail string)` 不返回 error（S1-D12 早期决议 —— LLMFallback 内部吞 error 返回 safe default）。
 
-**目标**：动态生成中文 narration（YAML miss + 该工具配置 `dynamic_fallback: true` 时）
+**现状**：`biz/narration/translator.go` 有 `stubLLMFallback` 返回硬编码中文文案（"正在执行" / "完成" / "执行出错" 等）
+
+**目标**：动态生成中文 narration（YAML miss + dynamic_fallback 配置时）
 
 **实现**：
 
 ```go
 type aiserviceLLMFallback struct {
-    cache *narration.LRUCache  // (tool_name, state) → fallback text
+    cache *sync.Map  // (toolName + ":" + state) → string（thread-safe，多 Run 并发安全）
 }
-func NewAIServiceLLMFallback(cacheSize int) narration.LLMFallback {
-    return &aiserviceLLMFallback{cache: narration.NewLRUCache(cacheSize)}
+
+func NewAIServiceLLMFallback() narration.LLMFallback {
+    return &aiserviceLLMFallback{}
 }
-func (f *aiserviceLLMFallback) Generate(ctx context.Context, ev *narration.Event) (string, error) {
-    cacheKey := ev.ToolName + ":" + string(ev.State)
-    if v, ok := f.cache.Get(cacheKey); ok { return v.(string), nil }
-    // 异步 + 超时 200ms 兜底返回 default
+
+// Render 符合 narration.LLMFallback 接口签名
+func (f *aiserviceLLMFallback) Render(ctx context.Context, toolName string, state narration.State, payload narration.EmitPayload) (verb, detail string) {
+    cacheKey := toolName + ":" + string(state)
+    if v, ok := f.cache.Load(cacheKey); ok {
+        cached := v.([2]string)
+        return cached[0], cached[1]
+    }
+    // 200ms 兜底超时 — 内部吞 error 返回 stub fallback
     timeoutCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
     defer cancel()
-    resp, err := aiservice.Chat(timeoutCtx, "narration_fallback", aiservice.ChatRequest{
+    resp, err := aiservice.Chat(timeoutCtx, profile.AgentNarrationFallback, aiservice.ChatRequest{
         Messages: []aiservice.ChatMessage{
-            {Role: "system", Content: NarrationFallbackSystemPrompt},
-            {Role: "user", Content: fmt.Sprintf("工具：%s，状态：%s，细节：%s", ev.ToolName, ev.State, ev.Detail)},
+            {Role: aiservice.MessageRoleSystem, Content: aiservice.MessageContent{Text: NarrationFallbackSystemPrompt}},
+            {Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: fmt.Sprintf("工具：%s，状态：%s，细节：%s", toolName, state, payload.Detail)}},
         },
         ModelOverride: "qwen-turbo",
         MaxTokens:     50,
         Temperature:   0.3,
     })
     if err != nil {
-        return narration.DefaultFallback(ev), nil  // **timeout fail-allow** — UX 优先，A6/A7 fallback 方向不同
+        return stubFallbackFor(toolName, state)  // **timeout fail-allow** — UX 优先（与 A6 注入检测 fail-deny 刻意不同 — S0-D12）
     }
-    f.cache.Set(cacheKey, resp.Content)
-    return resp.Content, nil
+    // 解析返回 "动词|细节" 格式（如 "查询|知识库"）
+    verb, detail = parseNarrationContent(resp.Content, toolName)
+    f.cache.Store(cacheKey, [2]string{verb, detail})
+    return verb, detail
 }
 ```
 
-**Wire**：`biz.go` 注入到 `narration.NewProvider(NewAIServiceLLMFallback(cacheSize=256))`
+**关键约束**：
+- 使用 `sync.Map`（reviewer P2-6 修复）解决多 Run 并发竞争 — 不依赖 narration.LRUCache 内部 mutex
+- 返回 `(string, string)` 不返回 error（接口要求）
+- 内部超时 + fallback 由 stub 实现兜底
+
+**Wire**：`biz.go` 注入到 `narration.NewTranslator(renderer, NewAIServiceLLMFallback())`
 
 ### A6 Injection Classifier — fail-deny 方向
 
@@ -277,6 +297,37 @@ if usage, ok := budget.UsageFromCtx(ctx); ok {
 ```
 
 **需新增**：`internal/numind/biz/budget/usage_ctx.go`（WithUsage / UsageFromCtx）
+
+### A10 (NEW) Task Profile 注册（S1 reviewer P2-1 升级到 A 级）
+
+> **S1 reviewer P2-1 + P2-3 处置**：现有 `runner.go:364` 用 `fmt.Sprintf("agent-runner-%d", run.ID)` 作 taskID，**未注册到 `profile/constants.go`**。`aiservice.ResolveTask` 走 task_profile DB lookup，未注册 → "route not found" → A1-A9 所有真实 LLM 调用全 fail。
+
+**新增 6 个 task profile constants**（`internal/pkg/aiservice/profile/constants.go`）：
+
+| Constant | 字符串值 | 用途 | LLM model（dev default） |
+|----------|---------|------|------------------------|
+| `AgentRun` | `agent.run` | A1 主 ReAct LLM 调用 | qwen-turbo |
+| `AgentEmbed` | `agent.embed` | A2 Memory embedding | text-embedding-v4（dim=1024）|
+| `AgentSyncTurn` | `agent.sync_turn` | A3 Memory turn 摘要提取 | qwen-turbo |
+| `AgentCompact` | `agent.compact` | A4 Context 压缩 | qwen-plus |
+| `AgentNarrationFallback` | `agent.narration_fallback` | A5 narration 动态生成 | qwen-turbo |
+| `AgentInjectionCheck` | `agent.injection_check` | A6 注入检测 | qwen-turbo |
+| `AgentPermissionCheck` | `agent.permission_check` | A7 L3 auto-mode 分类 | qwen-turbo |
+
+**修改**：
+1. `profile/constants.go` 新增 7 个常量（**注**：A2 是 Embed 不是 Chat，但 task profile 概念统一）
+2. `allTaskIDsList` 加 7 个 entry
+3. `AllTaskIDs()` 数量从 14 → 21
+4. **Migration**：新增 `migrations/20260521_XX0000_agent_task_profiles_seed.sql` —— INSERT 7 行到 `task_profile` 表（+ rollback）
+
+**`runner.go:364` 修改**：
+```go
+taskID: profile.AgentRun,  // 替代 fmt.Sprintf("agent-runner-%d", run.ID)
+// 注：原 taskID 在 trace metadata 中带 run.ID 是有意义的，但 task_profile 是路由 key 不是 trace label
+// trace 关联通过 langfuse.WithTrace(ctx, traceID) 注入，taskID 仅用于 aiservice 路由表查询
+```
+
+**Wire**：A1/A2/A4/A5/A6/A7 各自 call site 使用对应 constant
 
 ### A9 Log-based Observability
 
@@ -391,6 +442,20 @@ if usage, ok := budget.UsageFromCtx(ctx); ok {
 ---
 
 ## §5 Phase D — Dev 部署
+
+### D0 Same-timestamp migration 排序（S1 reviewer P2-5）
+
+> 验证 `ls migrations/` 后发现至少 3 个文件同 timestamp `20260521_120000`（permission_pipeline / compliance_3layer / create_agent_session_memory），D1 SSH 跑时**必须明示文件名顺序**：
+
+**Phase D 跑 migration 时按字母序**（mysql `<` 不保证 OS readdir 顺序）：
+```bash
+# Same-timestamp 同 batch — 显式列出按字母序：
+20260521_120000_agent_mode_compliance_3layer.sql  # → 字母 'co' 排在 'pe' 前
+20260521_120000_agent_permission_pipeline.sql
+20260521_120000_create_agent_session_memory.sql
+```
+
+由于这 3 个 migration **DDL 互独立**（不同表名），字母序 ≡ 任何顺序都 OK。S2 spec D1 表格显式列出。
 
 ### D1 Migration 顺序 + 验证
 
@@ -570,4 +635,20 @@ oncall 手册：强制取消 / 查 audit / 升降阈值 / Sandbox iptables 配�
 
 ---
 
-**S1 完结。等 reviewer。**
+## §11 S1 reviewer 反馈处置
+
+| Decision | 来源 | 处置 |
+|---------|------|------|
+| S1-D1 | reviewer P1-1 | **A1 文件归属修正**：runner.go line 389 是真实工作位置；adapter.go Generate 已实装；adapter_full_to_eino.go 不动 |
+| S1-D2 | reviewer P1-2 | **A5 LLMFallback 接口修正**：`Render(ctx, toolName, state, payload) (verb, detail string)`，不返回 error |
+| S1-D3 | reviewer P2-1 + P2-3 | **A10 task profile 注册**：7 个新 constants + seed migration |
+| S1-D4 | reviewer P2-2 | **A8 budget.WithUsage 包路径选定**：放在 `internal/numind/biz/agent/budgetctx/usage_ctx.go`（新 budgetctx 子包，无 import cycle —— biz/budget 与 biz/agent 已通过 budgetgate 单向依赖，新子包在 agent 下不破坏）|
+| S1-D5 | reviewer P2-4 | **A6 InjectionClassifier 接口决策**：v1 用新 interface `compliance.LLMClassifier` (已存在 — 返回 `(bool, error)`)；不引入新 `InjectionDecision` struct；S2 spec 修正 |
+| S1-D6 | reviewer P2-5 | **D0 same-timestamp migration 排序**：3 个同 timestamp 文件字母序跑 |
+| S1-D7 | reviewer P2-6 | **A5 LRU cache thread-safety**：使用 `sync.Map` 替代 `narration.LRUCache`（不依赖内部 mutex 实装） |
+
+---
+
+## §12 状态
+
+**S1 完结。0 P0 + 0 P1 残留。7 项 S1-Dx 决策入 §11。Ready for S2 spec。**
