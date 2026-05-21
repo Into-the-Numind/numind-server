@@ -266,7 +266,9 @@ func NewBiz(ds store.IStore) *biz {
 			permvalidators.NewWorkingDir(""),
 			permvalidators.NewToolFlag(ds.AgentDefinitions()),
 			permvalidators.NewUserSessionRule(),
-			permvalidators.NewClassifierPlaceholder(),
+			// #14/A7 (commit 60b67547): real L3 auto-mode LLM classifier via aiservice.Chat
+			// (qwen-turbo, 250ms timeout, fail-allow).
+			permvalidators.NewAutoModeLLMValidator(permvalidators.NewAIServiceLLMClassifier()),
 		),
 	)
 	// #12 agent-mode-billing-integration: budget tracker + admin_test consumer
@@ -298,7 +300,8 @@ func NewBiz(ds store.IStore) *biz {
 	complianceAudit := compliance.NewAuditLogger(ds.Compliance())
 	complianceAudit.Start()
 	b.complianceAudit = complianceAudit
-	complianceInjection := compliance.NewInjectionDetector(compliance.NewMockClassifier())
+	// #14/A6 (commit d66d4656): real LLM injection classifier via aiservice.Chat (qwen-turbo, 300ms timeout, fail-deny).
+	complianceInjection := compliance.NewInjectionDetector(compliance.NewAIServiceLLMClassifier())
 	b.complianceGate = compliance.NewComplianceGate(complianceAssembler, complianceTenant, complianceInjection, complianceAudit)
 
 	// scope_validator install — GORM Before-Query hook on whitelist agent-mode tables
@@ -327,6 +330,8 @@ func NewBiz(ds store.IStore) *biz {
 		YAMLPath:   "configs/tool-display.yaml",
 		BufferSize: 256,
 		ToolNames:  narrationToolNames,
+		// #14/A5 (commit 44e88acb): real LLM narration via aiservice.Chat (qwen-turbo, 200ms timeout, fail-allow).
+		LLMFallback: narration.NewAIServiceLLMFallback(),
 	})
 	if narrErr != nil {
 		log.Errorw("narration provider init failed; narration disabled for this process",
@@ -349,14 +354,8 @@ func NewBiz(ds store.IStore) *biz {
 		agentToolRegistry,
 		agent.WithDefaultHooks(wrappedHooks),        // #6: permission → sandbox chain
 		agent.WithSkillStore(ds.AgentDefinitions()), // #5 skill-system
-		// #9 compact: wire MockCompactProvider for v1; #14 replaces with
-		// an aiservice.Chat-backed real provider so PTL recovery and
-		// pre-LLM compact actually call the LLM. PlaceholderSummary text
-		// only surfaces in dev/test when compact triggers — never in prod.
-		// TODO(#14): replace MockCompactProvider with real CompactProvider.
-		agent.WithCompactProvider(&compact.MockCompactProvider{
-			PlaceholderSummary: "[v1 placeholder summary — real LLM compact in #14]",
-		}),
+		// #14/A4 (commit 5035d4b7): real LLM compact via aiservice.Chat.
+		agent.WithCompactProvider(compact.NewAIServiceCompactProvider(compact.DefaultConfig())),
 		// WithCompactConfig omitted — DefaultConfig (qwen-plus) applies.
 		agent.WithNarrationProvider(narrationProv), // #8 narration-layer (nil if init failed)
 		agent.WithMemoryProvider(memoryProvider),   // #7 memory-system
