@@ -1479,3 +1479,55 @@ features:
     reviewed_tasks: 13
     current_task: 'S5 ACCEPTED + S6 merging develop. 13 tasks (M1-M12 + S5 doc); biz/budget 92.1% + budgetgate 94.4% coverage; 12 packages -race PASS; 0 prod impact. 2 import cycles resolved in S4.'
   created_at: '2026-05-21T00:00:00+08:00'
+- id: agent-mode-compliance-3layer
+  ndf_version: '2.0'
+  track: standard
+  stage: S4
+  description: 'Agent 模式 14-feature 分解 #13/14。落地蓝本 §7 安全与合规三层（L0 平台硬规则常量 / L1 父账户 compliance_rule 表运营规则 / L2 复用 #5 agent_definition.questionnaire_answers Q10/Q11）+ Prompt Injection 防护（input fence + 关键词启发式 14+ 项 + mock LLM classifier）+ 输出 fence tag 检测 + Data scope GORM Before-Query hook（agent-mode 6 张表 opt-in，v1 fail-open log warn）+ compliance_audit_log 异步写入（buffered cap=1000 + Start/Stop flush-on-shutdown + drop count atomic 监控）+ 规则 TTL cache（per-parent_user_id cap=500，TTL 5min，lazy LRU 兜底淘汰）+ ComplianceGate interface 4 方法（SystemPromptBlock / CheckUserInput / CheckLLMOutput / CheckToolCall）+ compliancegate.WrapHooks 装饰器（PreToolCall chain: compliance → permission → sandbox；biz/agent/compliancegate 子包解耦 import cycle）+ runner.go:275 step [2] tenantHardRulesPlaceholder 装配。Out of scope: 真实 qwen-turbo L3 输出过滤 (#14) / 管理端 compliance_rule CRUD UI (#14) / 学员端合规提示 UI (#11/#14) / SQL-AST 静态分析 (v2) / 90 天热 1 年冷归档 cron (#14) / 真实 LLM injection classifier (#14) / prod 部署。'
+  repos:
+  - numind-server
+  branches:
+    numind-server: feature/agent-mode-compliance-3layer
+  worktrees:
+    numind-server: /private/tmp/wt-agent-mode-compliance-3layer-numind-server
+  artifacts:
+    requirement: numind-server/requirements/agent-mode-compliance-3layer.md
+    proposal: numind-server/proposals/agent-mode-compliance-3layer-proposal.md
+    spec: numind-server/docs/superpowers/specs/2026-05-21-agent-mode-compliance-3layer-design.md
+    plan: numind-server/docs/superpowers/plans/2026-05-21-agent-mode-compliance-3layer-plan.md
+    s5_acceptance: numind-server/docs/superpowers/qa/2026-05-21-agent-mode-compliance-3layer-s5-acceptance.md
+    architecture_blueprint: docs/agent-mode/architecture-v1.md
+  decisions:
+  - '2026-05-21 (s0-1): rule_id 不加 FK 决策 — compliance_audit_log.rule_id 引用 compliance_rule.id 但不加 FK constraint；理由：审计行必须在 rule 软删/硬删后继续可读（事件历史不可篡改）'
+  - '2026-05-21 (s0-2): biz/agent/compliancegate 子包解耦 — 沿用 #12 budgetgate 模式；compliance.WrapHooks 需要 import biz/agent，biz/agent.NewAgentRunner 需要 import compliance → import cycle；解耦：interface + 实现留 biz/compliance，装饰器抽到 biz/agent/compliancegate'
+  - '2026-05-21 (s0-3): scope_validator v1 fail-open + 6 项白名单 — runtime GORM hook 适用面广可能误伤合法系统查询；v1 走 log warn 不阻断；预先枚举 AutoMigrate / admin list / cron / compliance_self 6 项已知合法跨 parent 查询 + WithSkipScope ctx 机制'
+  - '2026-05-21 (s1-1): fence tag 命名 vs 蓝本差异锁定 — 蓝本 <platform_rules> / <tenant_rules>，本 feature 改为 <platform_hard_rules> / <tenant_hard_rules>；理由：_hard 后缀强调强度差异 + 避免与 v2 <tenant_soft_rules> 命名冲突；S2/S3/S4 全统一'
+  - '2026-05-21 (s1-2): audit logger 生命周期 — NewAuditLogger 不自动启动；biz.Init 显式 Start()，biz.Shutdown 调 Stop(ctx) 触发 drain flush-on-shutdown；consumer 用 context.Background() 不被 caller ctx cancel；drop count atomic.Uint64'
+  - '2026-05-21 (s1-3): TTLCache 不是 LRU — 命名 TTLCache（不是 LRUCache），cap=500，lazy LRU 仅在容量满兜底；典型 B2B ≤100 父账户'
+  - '2026-05-21 (s2-1): import cycle 解耦 — biz/compliance/types.go 不可 import biz/agent；ComplianceRequest.Tool 用 compliance.ToolInfo struct（Name + IsDestructive），compliancegate.buildRequest 从 agent.FullTool 转换填充'
+  - '2026-05-21 (s2-2): WithComplianceGate 放 runner.go（不放 biz.go）— 与既有 WithBudgetTracker / WithMemoryProvider 模式一致'
+  - '2026-05-21 (s2-3): WithSkipScope 落地清单锁定 — AutoMigrate 路径不需要（hook 还没装），实际只 2 处：admin SDK 跨 parent 查询 + compliance 自查询；S4 在 store/compliance.go 内部对 ListRulesByParent / WriteAuditLog 包 WithSkipScope("compliance_self")'
+  - '2026-05-21 (s2-4): TTLCache 全程 sync.Mutex Lock（不用 RWMutex）— 缓存操作快，避免 RUnlock→Lock 之间的 data race；加 EvictionCount() 可观测性'
+  - '2026-05-21 (s2-5): truncate() helper 移到 types.go 共享 — gate.go / scope_validator.go / injection_detector.go 多处用'
+  - '2026-05-21 (s2-6): 5 Wave 调度（之前 4 Wave） — Wave 2 串行 errno + types + platform_rules 作 baseline，Wave 3/4 并行 Tier 3 文件 disjoint，Wave 5 集成串行'
+  - '2026-05-21 (s3-1): WithSkipScope 升级方案 A — 单独建 internal/pkg/compliance_scope 微包共享 ctx key + WithSkipScope / SkipScopeFromCtx；理由：方案 B（store 内复制 key）因 Go context value key 用 interface{} 比对 type identity，两套 struct{} 互不识别，SkipScope 失效'
+  - '2026-05-21 (s3-2): scopeWhitelistTables 7 表（不是 6 表）— agent_run / agent_session / agent_session_memory / user_global_memory / agent_definition / compliance_rule / compliance_audit_log；S2 散文笔误，以 spec 代码为准'
+  - '2026-05-21 (s3-3): S2 §5.1 笔误修正 — req.Tool.Name 是 ToolInfo struct field，不是方法；S4 实施 copy spec 代码时去掉 ()，spec 第 1216 行也已修正'
+  progress:
+    total_tasks: 16
+    completed_tasks: 16
+    reviewed_tasks: 16
+    current_task: 'S5 ACCEPTED — 进入 S6 ndf-done。S4 全 16 tasks 完成：W5 M14 5819992c (system_prompt+gate + 16 tests) + M15 10152281 (compliancegate adapter + 8 tests) + M16 df8bb7f7 (runner step [2] + biz.go wire + helper AutoMigrate + 5 runner_compliance tests)。覆盖率 biz/compliance 99.0% / compliancegate 81.6% / compliance_scope 100%；race detector 全 PASS；13 攻击向量全覆盖；0 P0，4 P1 全修，~15 P2 关键修。pre-existing #12 controller test bug 不修（不在范围）。'
+  related_features:
+  - 'agent-mode-runtime-skeleton (#2/14, merged 45770bb5 — LoopState / RunHooks 接口)'
+  - 'agent-mode-sandbox-integration (#4/14, merged 8c883533 — SandboxHook + ctx 注入)'
+  - 'agent-mode-skill-system (#5/14, merged e05498b6 — agent_definition.questionnaire_answers Q10/Q11 L2 源数据；skill.PlatformBasePrompt / skill.PlatformSafetyFooter 常量)'
+  - 'agent-mode-permission-pipeline (#6/14, merged 65e9d144 — PermissionPipeline + 7 validator + WrapHooks 装饰器模式 + DecisionReason 11 种枚举；本 feature 在 hook chain 外层追加 compliance.WrapHooks)'
+  - 'agent-mode-memory-system (#7/14, merged 49c8ab67 — memory.SystemBlock 段位 step [4]；本 feature 填 step [2])'
+  - 'agent-mode-narration-layer (#8/14, merged 124e62b4 — narration provider 透传规约；compliance deny 走 narration error 通道)'
+  - 'agent-mode-billing-integration (#12/14, merged bd988fd5 — BudgetTracker + WrapHooks 透传顺序)'
+  - 'agent-mode-e2e-rollout (#14/14, 本 feature 阻塞 — 端到端验收 + 真实 qwen-turbo L3 接入 + 管理端 CRUD UI)'
+  blockers: []
+  created_at: '2026-05-21T11:50:00+08:00'
+  last_updated_by: ai-s0-draft
+  last_updated_at: '2026-05-21T11:50:00+08:00'
