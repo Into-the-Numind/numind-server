@@ -1,13 +1,45 @@
 schema_version: '2.0'
 features:
+- id: agent-mode-configurator-relocate
+  ndf_version: '3.0'
+  description: '修复 #10 agent-mode-configurator-ux (fdebd7b) 严重产品定位错误：把配置者 UX 从 numind-admin-web 搬到 numind-web-v3。蓝本 §5 的"配置者"实际指父账户（B 端机构主），不是 Numind 公司员工；admin-web 跟 web-v3 有独立账号体系 + 独立 JWT 鉴权，父账户根本登录不进 admin-web，#10 落地后产品链路是断的。本 feature: (1) admin-web 删 7 个 builder view (AgentList/AgentCreateChoose/TemplateGallery/AgentBuilder/AgentDetail/AgentEdit/AgentAdvancedEdit) + 11 个 components + 4 个单测 + 9 个 parent endpoint (agent.ts) + agent store + AdminSidebar "AI 助手" 菜单 + router /agents/* 路由；保留 AgentMonitoring.vue + 2 个真 admin endpoint (listAgentRunsApi/cancelAgentRunApi) + 合规规则 + AdminSidebar "Agent 监控" 菜单（Numind 员工功能）。(2) web-v3 新增 /views/config/agents/ 目录搬入 7 view + 11 component + 单测 + 新建 agentBuilder API/store + ConfigLayout 加 "AI 助手" tab + router /config/agents/* + 父账户判定路由守卫（isParentUser=true 可见，否则 redirect）。后端 API #5 9 endpoint 不动（本来就 user_token，是 admin-web 用错位置）。Out of scope: 后端 API 改 / prod 部署 / 真 e2e 跨账户 / 新功能。'
+  track: standard
+  stage: S0
+  classification_reason: 'Standard Triage 5 条 — (1) DB schema 变更：否 (2) 新 API 端点：否（#5 9 端点不动，2 个 admin 端点不动） (3) 无新外部服务集成 (4) 影响文件数 >3（admin-web 删 ~20 文件 + web-v3 加 ~20 文件 + 2 仓库 router/sidebar/layout 改动） (5) 高风险业务逻辑：是（搬迁错误会让父账户彻底用不上 Agent 配置；学员视角已有 view 不能影响）。条件 4+5 触发 Standard。'
+  last_updated_by: ai-s0-start
+  last_updated_at: '2026-05-22T14:00:00+08:00'
+  repos:
+  - numind-admin-web
+  - numind-web-v3
+  branches:
+    numind-admin-web: feature/agent-mode-configurator-relocate
+    numind-web-v3: feature/agent-mode-configurator-relocate
+  worktree:
+    numind-admin-web: /private/tmp/wt-agent-mode-configurator-relocate-numind-admin-web
+    numind-web-v3: /private/tmp/wt-agent-mode-configurator-relocate-numind-web-v3
+  artifacts:
+    requirement: numind-server/requirements/agent-mode-configurator-relocate.md
+    architecture_blueprint: docs/agent-mode/architecture-v1.md
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+    current_task: 'S0 起步：写需求卡'
+  decisions: []
+  related_features:
+  - 'agent-mode-configurator-ux (#10/14, merged fdebd7b — 本 feature 是它的位置修复)'
+  - 'agent-mode-student-ux (#11/14, merged a02a442 — web-v3 已有 /views/agent/ 学员视角 3 view，不动)'
+  - 'agent-mode-e2e-rollout (#14/14, merged e87b090e/78128f3/a15f134 — admin-web AgentMonitoring + 合规规则保留 Numind 员工功能)'
+  blockers: []
+  created_at: '2026-05-22T14:00:00+08:00'
 - id: sop-stepnav-bookmark-star
   ndf_version: '3.0'
   description: 'SOP 步骤导航条每个 step 右侧加 ⭐ 五角星 icon，表示该步骤是否已收藏。点亮=已收藏（filled 主色），不点亮=可收藏（outline，仅 step 有 output 时显示）。Streaming / trailing chat / 未执行步骤不渲染星。点击触发 toggle-bookmark：无书签 → 立即 saveBookmark；有书签 → ConfirmModal 确认后 removeBookmark。OutputCard 现有的"保存生成记录 / 已保存"按钮保留（用户确认），两条 toggle 路径共享 useBookmarks singleton state，状态自动同步。两个 ConfirmModal 实例（SopStepView + SOPRunView）是 Hotfix 文件数硬约束下的有意取舍，后续可抽 useBookmarkToggle composable 合并。'
   track: hotfix
-  stage: H1
-  classification_reason: 'Hotfix Triage 5 条全满足 — (1) 无 DB schema 变更 (2) 无新 API 端点（复用 saveBookmark/removeBookmark）(3) 无新外部服务 (4) 影响 3 文件（StepNavItem.vue / StepNav.vue / SOPRunView.vue） (5) 非支付/权限/会员高风险业务。新功能不是 bug-from-customer，Rule 11 复现测试不适用，但 H1 至少 1 个新增测试仍需满足。'
-  last_updated_by: ai-h1-start
-  last_updated_at: '2026-05-22T01:30:00+08:00'
+  stage: H2
+  classification_reason: 'Hotfix Triage 5 条全满足 — (1) 无 DB schema 变更 (2) 无新 API 端点（复用 saveBookmark/removeBookmark）(3) 无新外部服务 (4) 影响 4 文件（StepNavItem.vue / StepNav.vue / SOPRunView.vue + StepNav.spec.ts 测试） (5) 非支付/权限/会员高风险业务。新功能不是 bug-from-customer，Rule 11 复现测试不适用，但 H1 至少 1 个新增测试已满足（6 个新增书签 case）。'
+  last_updated_by: ai-h2-reviewed
+  last_updated_at: '2026-05-22T03:09:00+08:00'
   repos:
   - numind-web-v3
   branches:
@@ -16,12 +48,14 @@ features:
     numind-web-v3: /private/tmp/wt-sop-stepnav-bookmark-star-numind-web-v3
   progress:
     total_tasks: 3
-    completed_tasks: 0
-    reviewed_tasks: 0
-    current_task: 'H1: StepNavItem star slot → StepNav 算 per-item bookmarkState → SOPRunView wire toggle+confirm'
+    completed_tasks: 3
+    reviewed_tasks: 3
+    current_task: 'H2 完成。2 commits: feat star a8450a7 + reviewer P1+P2 fixes 5e351d7（StepNavItem JSDoc / 防御 console.warn / cancel 重置 message）。两阶段 reviewer (spec PASS + code-quality PASS_WITH_CONCERNS) P0=0，P1 + 应修 P2 已 inline 解决。'
   decisions:
   - 'H1-D1: OutputCard 旧的"保存生成记录"按钮保留（用户拍板），不删。两条 toggle 路径共享 useBookmarks singleton state 自动同步。'
-  - 'H1-D2: 两个 ConfirmModal 实例（SopStepView 老的 + SOPRunView 新加的）暂存，未抽公共 composable。理由：抽 useBookmarkToggle 会把文件数推到 4，触发 Hotfix 边界。Tech-debt 记录待后续 Micro 合并。'
+  - 'H1-D2: 两个 ConfirmModal 实例（SopStepView 老的 + SOPRunView 新加的）暂存，未抽公共 composable。Hotfix 文件数硬约束。Tech-debt 待后续 Micro 合并。'
+  - 'H2-D1: StepNavItem.toggle-bookmark emit 故意 payload-free（code-quality reviewer P1 CQ-EMIT-TYPE）。加 JSDoc 说明组件纯展示，nodeId 由父 StepNav 通过 v-for item.nodeId 自己解析。'
+  - 'H2-D2: P2 CQ-DRY (~55 行重复) + CQ-A11Y-TOUCH (24px < WCAG 44pt) 不在本 hotfix 修。前者文件数硬约束，后者桌面产品。tech-debt 记后续。'
   blockers: []
   created_at: '2026-05-22T01:30:00+08:00'
 - id: sop-bookmark-state-sync
