@@ -2,12 +2,12 @@ schema_version: '2.0'
 features:
 - id: sop-bookmark-state-sync
   ndf_version: '3.0'
-  description: 'SOP 运行页节点"保存生成记录"按钮在已存在书签时仍显示"保存生成记录"而非"已保存"，用户无法触发取消保存。Root cause: useBookmarks composable 在函数体内 ref()，SOPRunView 和 SopStepView 各调一次 → 两份独立 state，SOPRunView 那份 loadBookmarks 后 SopStepView 那份依然为空，hasBookmark 永远 false。useBookmarks.test.ts:200 "多实例状态独立" 测试主动锁死了这个错误行为。修复：state 提升到模块作用域成为单例，删除错误测试，新增反方向回归测试。'
+  description: 'SOP 运行页节点"保存生成记录"按钮在已存在书签时仍显示"保存生成记录"而非"已保存"，用户无法触发取消保存。Root cause: useBookmarks composable 在函数体内 ref()，SOPRunView 和 SopStepView 各调一次 → 两份独立 state，SOPRunView 那份 loadBookmarks 后 SopStepView 那份依然为空，hasBookmark 永远 false。useBookmarks.test.ts:200 "多实例状态独立" 测试主动锁死了这个错误行为。修复：state 提升到模块作用域成为单例，删除错误测试，新增反方向回归测试 + 切模板/logout 时显式 clear()。'
   track: hotfix
-  stage: H1
-  classification_reason: 'Hotfix Triage 5 条全满足 — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务集成 (4) 影响文件 2 个（useBookmarks.ts + useBookmarks.test.ts）(5) 非支付/权限/会员高风险业务。Rule 11 bug-from-user 复现测试在 H1 第一个 commit 落地。'
-  last_updated_by: ai-h1-start
-  last_updated_at: '2026-05-22T00:30:00+08:00'
+  stage: H2
+  classification_reason: 'Hotfix Triage 5 条全满足 — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务集成 (4) 影响文件 4 个（useBookmarks.ts + useBookmarks.test.ts + SOPRunView.vue + user.ts，最后 2 个为 H2 P1 reviewer 触发的 lifecycle 清理）(5) 非支付/权限/会员高风险业务。Rule 11 bug-from-user 复现测试在 H1 第一个 commit 落地。'
+  last_updated_by: ai-h2-reviewed
+  last_updated_at: '2026-05-22T00:42:00+08:00'
   repos:
   - numind-web-v3
   branches:
@@ -16,10 +16,12 @@ features:
     numind-web-v3: /private/tmp/wt-sop-bookmark-state-sync-numind-web-v3
   progress:
     total_tasks: 2
-    completed_tasks: 0
-    reviewed_tasks: 0
-    current_task: 'H1: 写失败复现测试 → 实现 singleton 修复'
-  decisions: []
+    completed_tasks: 2
+    reviewed_tasks: 2
+    current_task: 'H2 完成。3 commits: test(repro) 6140fa3 + fix(sop) singleton 3307b27 + fix(sop) lifecycle clean-up 7c7f3e2。type-check / lint / 12 unit tests 全 PASS。两阶段 reviewer PASS_WITH_CONCERNS，P1 lifecycle 清理已 inline 修复。等用户 OK 后跑 ndf-done。'
+  decisions:
+  - 'H2-D1: state hoist 到模块级 const 而非迁 Pinia store。Pinia 等价但更重；本场景 SOPRunView + SopStepView 两个 sibling 子树共享一个 read cache，模块级 ref 更轻量也符合 Vue 3 idiom。reviewer P2 标记为 tech-debt，不阻塞。'
+  - 'H2-D2: reviewer 双 P1 (cross-template-stale + logout-leak) 由 hoist 暴露的 lifecycle 缺口；本 hotfix 内修，不留后续。SOPRunView.initialize 入口 + userStore.logout 各加一行 clear()。'
   blockers: []
   created_at: '2026-05-22T00:29:50+08:00'
 - id: agent-mode-e2e-rollout
