@@ -16,10 +16,22 @@ import (
 	"gorm.io/datatypes"
 
 	"numind-server/internal/numind/biz/agent"
+	"numind-server/internal/numind/biz/agent/callctx"
 	"numind-server/internal/numind/biz/budget"
 	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/pkg/log"
 )
+
+// UsageLookupable is an interface satisfied by *agent.aiserviceAdapter (and any
+// test fake). It allows PostToolCall to pull the real LLM token Usage for the
+// current call-id without importing the concrete adapter type, avoiding a
+// circular import between budgetgate and the adapter.
+//
+// Wired in production by biz.go (M-A-wire): passes runner.go's einoAdapter
+// as the UsageLookupable to WrapHooks via WithUsageLookup option.
+type UsageLookupable interface {
+	LookupUsage(callID string) (agent.Usage, bool)
+}
 
 // BudgetGate is the top-level entry the hook layer calls into for budget enforcement.
 //
@@ -52,6 +64,20 @@ func (g *BudgetGate) Tracker() budget.BudgetTracker { return g.tracker }
 // AdminConsumer exposes the AdminTestConsumer for credit_service injection.
 func (g *BudgetGate) AdminConsumer() budget.AdminTestConsumer { return g.adminConsumer }
 
+// WrapHooksOption configures optional behaviour of WrapHooks.
+type WrapHooksOption func(*wrapHooksConfig)
+
+type wrapHooksConfig struct {
+	usageLookup UsageLookupable // nil → fall back to legacy tokensFromOutput
+}
+
+// WithUsageLookup injects a UsageLookupable (typically the aiserviceAdapter) so
+// that PostToolCall can read real LLM token counts via ctx call-id rather than
+// parsing tool-output JSON. When nil or absent the legacy fallback is used.
+func WithUsageLookup(a UsageLookupable) WrapHooksOption {
+	return func(c *wrapHooksConfig) { c.usageLookup = a }
+}
+
 // WrapHooks decorates base hooks with budget checks.
 //
 // PreToolCall order:
@@ -61,15 +87,22 @@ func (g *BudgetGate) AdminConsumer() budget.AdminTestConsumer { return g.adminCo
 //
 // PostToolCall order:
 //  1. forward to base.PostToolCall first（sandbox 关容器/写日志）
-//  2. RecordUsage（从 output 解析 token 数；v1 简化—若解析失败 noop，
-//     不阻塞 base 返回）
+//  2. RecordUsage — primary: ctx call-id + UsageLookupable (real token counts
+//     from aiservice, wired by M-A-wire via WithUsageLookup option).
+//     Fallback: legacy tokensFromOutput for backward compat with nil-adapter tests.
 //
 // 关键不变量：保留 base.Registry / NarrationProvider / NarrationRunID 透传
 // （permission.WrapHooks 也保留同样字段以确保链式无丢失，#12 M11 同步补丁）。
-func (g *BudgetGate) WrapHooks(base *agent.RunHooks) *agent.RunHooks {
+func (g *BudgetGate) WrapHooks(base *agent.RunHooks, opts ...WrapHooksOption) *agent.RunHooks {
 	if g == nil {
 		return base
 	}
+	cfg := &wrapHooksConfig{}
+	for _, o := range opts {
+		o(cfg)
+	}
+	usageLookup := cfg.usageLookup // captured by PostToolCall closure
+
 	return &agent.RunHooks{
 		PreToolCall: func(ctx context.Context, t einotool.BaseTool, input string) (agent.HookAction, error) {
 			runID := agent.RunIDFromContext(ctx)
@@ -90,12 +123,29 @@ func (g *BudgetGate) WrapHooks(base *agent.RunHooks) *agent.RunHooks {
 		PostToolCall: func(ctx context.Context, t einotool.BaseTool, output string, err error) (agent.HookAction, error) {
 			// 1. forward to base first
 			action, baseErr := forwardPost(ctx, base, t, output, err)
-			// 2. RecordUsage — v1 simplification: token count typically 0 here
-			//    (tool output ≠ LLM response). #14 will wire ctx-based tokens.
+			// 2. RecordUsage
 			runID := agent.RunIDFromContext(ctx)
 			if runID != 0 && g.tracker != nil {
-				if tokens := tokensFromOutput(output); tokens > 0 {
-					g.tracker.RecordUsage(ctx, runID, tokens)
+				// #14 A8b — primary path: read real LLM token counts via ctx call-id.
+				// usageLookup is the aiserviceAdapter; wired by biz.go M-A-wire.
+				recorded := false
+				if usageLookup != nil {
+					if callID := callctx.CallIDFromCtx(ctx); callID != "" {
+						if usage, ok := usageLookup.LookupUsage(callID); ok {
+							tokens := usage.PromptTokens + usage.CompletionTokens
+							if tokens > 0 {
+								g.tracker.RecordUsage(ctx, runID, tokens)
+							}
+							recorded = true
+						}
+					}
+				}
+				// Legacy fallback: parse {"usage":{"total_tokens":N}} from tool output.
+				// Preserved for nil-adapter callers and pre-#14 tests that inject output JSON.
+				if !recorded {
+					if tokens := tokensFromOutput(output); tokens > 0 {
+						g.tracker.RecordUsage(ctx, runID, tokens)
+					}
 				}
 			}
 			return action, baseErr
