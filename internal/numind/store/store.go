@@ -48,6 +48,7 @@ type IStore interface {
 	AgentPermissions() IAgentPermissionStore
 	AgentSessionMemories() IAgentSessionMemoryStore // #7 memory-system L1 短期记忆
 	UserGlobalMemories() IUserGlobalMemoryStore     // #7 memory-system L2 长期记忆 Notepad
+	Compliance() IComplianceStore                   // #13 agent-mode-compliance-3layer
 }
 
 // datastore 是 IStore 的一个具体实现.
@@ -230,4 +231,9 @@ func (ds *datastore) AgentSessionMemories() IAgentSessionMemoryStore {
 // UserGlobalMemories 返回一个实现了 IUserGlobalMemoryStore 接口的实例（#7 memory-system）。
 func (ds *datastore) UserGlobalMemories() IUserGlobalMemoryStore {
 	return NewUserGlobalMemoryStore(ds.db)
+}
+
+// Compliance 返回一个实现了 IComplianceStore 接口的实例（#13 agent-mode-compliance-3layer）。
+func (ds *datastore) Compliance() IComplianceStore {
+	return newCompliance(ds.db)
 }
