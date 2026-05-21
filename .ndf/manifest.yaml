@@ -1514,9 +1514,9 @@ features:
   - '2026-05-21 (s3-3): S2 §5.1 笔误修正 — req.Tool.Name 是 ToolInfo struct field，不是方法；S4 实施 copy spec 代码时去掉 ()，spec 第 1216 行也已修正'
   progress:
     total_tasks: 16
-    completed_tasks: 5
-    reviewed_tasks: 5
-    current_task: 'W2 完成：M3 3fc81e2d (errno) + M4 0f75ecfe (types/errno re-export, 6 tests PASS) + M5 b5b16d3c (platform_rules, 3 tests PASS) + polish commit (types.go DefaultOutOfScopeNarration doc comment + Has6Rules 强化为 keyword 断言)。6 reviewers 全 PASS（0 P0, 1 P1 弱断言 inline 修, 3 P2）。下一步：W3 启动 M6-M10 5 task 并行 Tier 3。'
+    completed_tasks: 10
+    reviewed_tasks: 10
+    current_task: 'W3 完成：M6 d2279e13 (store + compliance_scope 微包 + 13 tests + race PASS) + M7 c412414f (TTLCache + 9 tests + race) + M8 e01f3856 (skill_soft_rules + 6 tests) + M9 4ba86ec3 (injection_detector 22 keywords + 7 tests + spec bug 修复：classifier false 返 "" 不返 "llm_classifier") + M10 2af43219 (fence_validator 11 fence + 15 tests)。10 reviewers 全 PASS（0 P0/P1/P2 blockers）。下一步：W4 启动 M11+M12 并行（M13 后跟，依赖 M11 AuditLogger）。'
   related_features:
   - 'agent-mode-runtime-skeleton (#2/14, merged 45770bb5 — LoopState / RunHooks 接口)'
   - 'agent-mode-sandbox-integration (#4/14, merged 8c883533 — SandboxHook + ctx 注入)'
