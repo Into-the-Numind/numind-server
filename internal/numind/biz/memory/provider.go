@@ -45,11 +45,14 @@ type compositeProvider struct {
 
 // NewProvider constructs a MemoryProvider backed by the given L1 and L2 stores.
 // v1 uses NewRetriever() (SQL LIKE + recency boost) and NewFenceRenderer().
-func NewProvider(l1 store.IAgentSessionMemoryStore, l2 store.IUserGlobalMemoryStore) MemoryProvider {
+// Pass RetrieverOption (e.g. WithEmbedder) to override defaults.
+// Agent Mode #14/14 A2: biz.go wires NewProvider(l1, l2, memory.WithEmbedder(memory.NewAIServiceEmbedder()))
+// to enable real aiservice.Embed call (was mockEmbedder zero-vector).
+func NewProvider(l1 store.IAgentSessionMemoryStore, l2 store.IUserGlobalMemoryStore, retrieverOpts ...RetrieverOption) MemoryProvider {
 	return &compositeProvider{
 		l1Store:   l1,
 		l2Store:   l2,
-		retriever: NewRetriever(),
+		retriever: NewRetriever(retrieverOpts...),
 		fence:     NewFenceRenderer(),
 	}
 }

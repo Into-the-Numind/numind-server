@@ -49,12 +49,33 @@ type retrieverImpl struct {
 	embedder Embedder // v1 mockEmbedder
 }
 
+// RetrieverOption customises retrieverImpl construction.
+// Used by #14 to swap mockEmbedder for aiserviceEmbedder in biz.go wire.
+type RetrieverOption func(*retrieverImpl)
+
+// WithEmbedder overrides the default mockEmbedder.
+// biz.go calls NewRetriever(WithEmbedder(NewAIServiceEmbedder())) at startup
+// to enable real LLM-backed embedding via aiservice.Embed.
+func WithEmbedder(e Embedder) RetrieverOption {
+	return func(r *retrieverImpl) {
+		if e != nil {
+			r.embedder = e
+		}
+	}
+}
+
 // NewRetriever constructs a v1 Retriever using mockEmbedder and nil bm25/vector
 // (inline SQL LIKE + recency boost, no external search service).
-func NewRetriever() Retriever {
-	return &retrieverImpl{
+// Pass WithEmbedder to override the default mockEmbedder (e.g. for production
+// aiservice.Embed wiring — Agent Mode #14/14 A2).
+func NewRetriever(opts ...RetrieverOption) Retriever {
+	r := &retrieverImpl{
 		embedder: NewMockEmbedder(),
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // RetrieveL1 fetches alive L1 records for (userID, agentDefID), applies

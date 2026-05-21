@@ -336,7 +336,13 @@ func NewBiz(ds store.IStore) *biz {
 	}
 
 	// #7 memory-system: construct MemoryProvider backed by L1 + L2 stores.
-	memoryProvider := memory.NewProvider(ds.AgentSessionMemories(), ds.UserGlobalMemories())
+	// #14/A2: wire aiserviceEmbedder for real text-embedding-v4 calls
+	// (replaces mockEmbedder zero vectors). v1 mockEmbedder retained for unit tests.
+	memoryProvider := memory.NewProvider(
+		ds.AgentSessionMemories(),
+		ds.UserGlobalMemories(),
+		memory.WithEmbedder(memory.NewAIServiceEmbedder()),
+	)
 
 	b.agentRunner = agent.NewAgentRunner(
 		ds.AgentRuns(),
