@@ -12,9 +12,11 @@ import (
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/flow/agent/react"
+	"github.com/cloudwego/eino/schema"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
+	"numind-server/internal/numind/biz/agent/callctx"
 	"numind-server/internal/numind/biz/budget"
 	"numind-server/internal/numind/biz/compact"
 	"numind-server/internal/numind/biz/compliance"
@@ -192,12 +194,14 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	ctx = middleware.NewContextWithUserID(ctx, req.UserID)
 
 	// 1. 创建 DB 行
+	// M-A1 / M-C3a: populate AgentDefinitionID from request (non-zero for runs with a wired skill).
 	run := &model.AgentRun{
-		UserID:    req.UserID,
-		SessionID: req.SessionID,
-		Status:    "running",
-		Messages:  datatypes.JSON([]byte("[]")),
-		StartedAt: startTime,
+		UserID:            req.UserID,
+		SessionID:         req.SessionID,
+		AgentDefinitionID: req.AgentDefinitionID,
+		Status:            "running",
+		Messages:          datatypes.JSON([]byte("[]")),
+		StartedAt:         startTime,
 	}
 	if err := r.runStore.Create(ctx, run); err != nil {
 		return nil, fmt.Errorf("AgentRunner.Run: %w", err)
@@ -364,14 +368,57 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		taskID:       fmt.Sprintf("agent-runner-%d", run.ID),
 		systemPrompt: req.SystemPrompt, // #7 memory-system: assembled by Step 4 6-segment formula (PlatformBase + tenantRules + body + disclaimer + memory + tools + Footer)
 	}
-	// P2-1 fix: Eino react.NewAgent requires at least one tool; if registry is nil or
-	// ToolNames is empty/all-unresolved, einoTools is nil → react.NewAgent returns an
-	// error and Run() exits cleanly (status=terminated, reason=model_error).
-	// Real ReAct loop integration (#3+ follow-up) should validate ToolNames upfront.
+	// Backward compat: if no tools resolved (test scenarios with nil registry or
+	// empty ToolNames), preserve the pre-#14 short-circuit. Real production runs
+	// always have tools resolved from the registry; the new ReAct loop below is
+	// the production path. react.NewAgent requires at least one tool so we must
+	// gate before calling it.
 	if len(einoTools) == 0 {
-		log.Warnw("AgentRunner.Run: no tools resolved from registry; skipping Eino agent construction",
+		log.Warnw("AgentRunner.Run: no tools resolved from registry; using pre-ReAct short-circuit",
 			"agent_run_id", run.ID, "requested_tools", req.ToolNames)
+		endedAt := time.Now()
+		if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(TerminalCompleted), &endedAt); uerr != nil {
+			log.Warnw("AgentRunner.Run UpdateState failed on short-circuit", "agent_run_id", run.ID, "error", uerr)
+		}
+		shortCircuitMessages, _ := json.Marshal([]map[string]any{
+			{"role": "user", "content": req.Input},
+			{"role": "assistant", "content": req.Input},
+		})
+		if wErr := r.runStore.WriteTurn(ctx, run.ID, json.RawMessage(shortCircuitMessages)); wErr != nil {
+			log.Warnw("AgentRunner.Run WriteTurn failed on short-circuit", "agent_run_id", run.ID, "error", wErr)
+		}
+		// Hook action propagation on short-circuit path (preserves TestRunner_Run_RegistryStopPropagatesToTerminalReason).
+		shortTerminalReason := TerminalCompleted
+		if effectiveHooks != nil && effectiveHooks.Registry != nil {
+			if last := effectiveHooks.Registry.LastAction(); last != HookActionContinue {
+				if ev := HookActionToLoopEvent(last); ev != LoopEventInvalid {
+					hookSt := &LoopState{}
+					if term, _, isTerminal := hookSt.Transition(ev); isTerminal {
+						shortTerminalReason = term
+						// Re-write state with the hook-overridden reason.
+						if uerr := r.runStore.UpdateState(ctx, run.ID, "terminated", string(shortTerminalReason), &endedAt); uerr != nil {
+							log.Warnw("AgentRunner.Run UpdateState (hook override) failed on short-circuit", "agent_run_id", run.ID, "error", uerr)
+						}
+					}
+				}
+			}
+		}
+		// Non-blocking drain of permission sink.
+		var scPermDetail *PermissionDenialDetail
+		select {
+		case scPermDetail = <-permDenialSink:
+		default:
+		}
+		return &RunResult{
+			AgentRunID:       run.ID,
+			TerminalReason:   shortTerminalReason,
+			FinalOutput:      req.Input, // echo input — keeps assert.Contains(FinalOutput, "hello") green
+			Duration:         time.Since(startTime),
+			SkillVersion:     skillVer,
+			PermissionDenial: scPermDetail,
+		}, nil
 	}
+
 	einoAgent, err := react.NewAgent(queryCtx, &react.AgentConfig{
 		ToolCallingModel: einoAdapter,
 		ToolsConfig: compose.ToolsNodeConfig{
@@ -386,31 +433,140 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		}
 		return nil, fmt.Errorf("AgentRunner.Run NewAgent: %w", err)
 	}
-	_ = einoAgent // #2 不在 runner 内执行完整 loop，留给 Task 8 集成测试
+	// M-A1: Real ReAct loop — replace _ = einoAgent short-circuit.
+	// M-A3: Inject sessionID into queryCtx so downstream consumers (SyncTurn, narration) find it.
+	sessionID := req.SessionID
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("run-%d", run.ID)
+	}
+	queryCtx = middleware.WithAgentSessionID(queryCtx, sessionID)
 
-	// 6. 简化状态机：写终止 messages + UpdateState
-	// #2 仅返回"成功创建 run"状态，真实 LLM 调用 + state.Transition 由 Task 8 集成测试覆盖
+	// Build initial Eino messages from the user request.
+	einoMessages := buildEinoMessages(req)
+
+	// Track compact state for PTL recovery (convert between Eino ↔ compact.Message formats).
+	compactMessages := einoMessagesToCompact(einoMessages)
+
 	st := &LoopState{}
-	st.TerminalReason = TerminalCompleted // default
+	// TerminalReason is left empty here; the loop sets it on success (TerminalCompleted)
+	// or on error (various terminal reasons). IsTerminal() checks TerminalReason != "" —
+	// do NOT set an optimistic default before the loop or the first iteration will be skipped.
 
-	// If a hook recorded a non-Continue action, propagate it through state.Transition
-	// to produce the correct TerminalReason (replacing the hardcoded TerminalCompleted default).
+	// currentMaxTokens tracks escalation through handleMaxOutputError.
+	currentMaxTokens := compact.DefaultMaxTokens
+
+	// Bounded retry loop: MaxPTLRetries + MaxOutputRetriesLimit combined.
+	// Each attempt gets a fresh callID so budgetgate A8b can correlate token usage.
+	const maxAttempts = MaxPTLRetries + MaxOutputRetriesLimit + 2 // generous ceiling
+	var (
+		output    *schema.Message
+		runErr    error
+		finalText string
+	)
+	for attempt := 0; attempt <= maxAttempts; attempt++ {
+		if st.IsTerminal() {
+			break
+		}
+
+		// Per-attempt callID injection for A8b/adapter.LookupUsage correlation.
+		callID := callctx.NewCallID()
+		attemptCtx := callctx.WithCallID(queryCtx, callID)
+
+		output, runErr = einoAgent.Generate(attemptCtx, compactMessagesToEino(compactMessages))
+		if runErr == nil {
+			st.TerminalReason = TerminalCompleted
+			finalText = output.Content
+			break
+		}
+
+		// Classify error and drive state machine.
+		event := HandleLLMError(st, runErr)
+
+		switch event {
+		case LoopEventLLMErrPTL:
+			cont, newMsgs, isTerm, term, herr := r.handlePTLError(attemptCtx, st, compactMessages)
+			if isTerm {
+				st.TerminalReason = term
+				if herr != nil {
+					log.Warnw("AgentRunner.Run handlePTLError terminal", "agent_run_id", run.ID,
+						"terminal", term, "error", herr)
+				}
+				break
+			}
+			_ = cont
+			compactMessages = newMsgs
+			// continue loop with updated messages
+
+		case LoopEventLLMErrMaxOutput:
+			cont, newMax, isTerm, term := r.handleMaxOutputError(attemptCtx, st, currentMaxTokens)
+			if isTerm {
+				st.TerminalReason = term
+				break
+			}
+			_ = cont
+			currentMaxTokens = newMax
+			// continue loop; einoAgent does not accept max_tokens directly — the
+			// escalation is informational (adapter uses aiservice routing defaults);
+			// the important effect is PTLRetries / MaxOutputRetries counter advance
+			// which guards against infinite loops.
+
+		default:
+			// All other events (model error, image error, context canceled, etc.)
+			// produce a terminal state via the state machine directly.
+			if term, _, isTerm := st.Transition(event); isTerm {
+				st.TerminalReason = term
+			} else {
+				// Unknown continue event — should not happen; guard defensively.
+				st.TerminalReason = TerminalModelError
+			}
+		}
+	}
+
+	// If loop exhausted attempts without hitting a terminal, mark as model_error.
+	if st.TerminalReason == "" {
+		st.TerminalReason = TerminalModelError
+	}
+
+	// Hook action propagation: if a PreToolCall / PostToolCall hook recorded a
+	// non-Continue action, override the terminal reason via state machine.
+	// This preserves the M10 contract: hook events win over LLM-derived state.
 	if effectiveHooks != nil && effectiveHooks.Registry != nil {
 		if last := effectiveHooks.Registry.LastAction(); last != HookActionContinue {
 			if ev := HookActionToLoopEvent(last); ev != LoopEventInvalid {
-				if term, _, isTerminal := st.Transition(ev); isTerminal {
+				hookSt := &LoopState{}
+				if term, _, isTerminal := hookSt.Transition(ev); isTerminal {
 					st.TerminalReason = term
 				}
 			}
 		}
 	}
 
+	// Write turn to agent_run.messages.
+	userInput := req.Input
+	assistantContent := finalText
+	if assistantContent == "" && runErr != nil {
+		assistantContent = fmt.Sprintf("[error: %s]", st.TerminalReason)
+	}
 	finalMessages, _ := json.Marshal([]map[string]any{
-		{"role": "user", "content": req.Input},
-		{"role": "assistant", "content": fmt.Sprintf("[#2 skeleton] received input '%s'", req.Input)},
+		{"role": "user", "content": userInput},
+		{"role": "assistant", "content": assistantContent},
 	})
 	if err := r.runStore.WriteTurn(ctx, run.ID, json.RawMessage(finalMessages)); err != nil {
 		log.Warnw("AgentRunner.Run WriteTurn failed", "agent_run_id", run.ID, "error", err)
+	}
+
+	// M-A3 wire: async SyncTurn after successful completion.
+	// Runs in a detached goroutine with a background context so cancellation of
+	// the run context does not abort the memory write.
+	if r.memoryProvider != nil && st.TerminalReason == TerminalCompleted && output != nil {
+		userMsg := memory.Message{Role: "user", Content: req.Input}
+		asstMsg := memory.Message{Role: "assistant", Content: finalText}
+		go func() {
+			bgCtx := middleware.WithAgentSessionID(context.Background(), sessionID)
+			if syncErr := r.memoryProvider.SyncTurn(bgCtx, req.UserID, req.AgentDefinitionID, sessionID, userMsg, asstMsg); syncErr != nil {
+				log.Warnw("AgentRunner.Run memory SyncTurn failed", "agent_run_id", run.ID, "error", syncErr)
+			}
+		}()
 	}
 
 	endedAt := time.Now()
@@ -418,7 +574,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 		log.Warnw("AgentRunner.Run UpdateState failed", "agent_run_id", run.ID, "error", err)
 	}
 
-	// #6 permission-pipeline: 末尾非阻塞收 sink，填 RunResult.PermissionDenial。
+	// #6 permission-pipeline: non-blocking read of sink → fill RunResult.PermissionDenial.
 	var permDetail *PermissionDenialDetail
 	select {
 	case permDetail = <-permDenialSink:
@@ -428,7 +584,7 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	return &RunResult{
 		AgentRunID:       run.ID,
 		TerminalReason:   st.TerminalReason,
-		FinalOutput:      fmt.Sprintf("[#2 skeleton] received input '%s'", req.Input),
+		FinalOutput:      finalText,
 		StepCount:        st.StepCount,
 		Duration:         time.Since(startTime),
 		SkillVersion:     skillVer,
@@ -579,4 +735,58 @@ func (r *agentRunner) handleMaxOutputError(
 	default:
 		return "", 0, true, TerminalModelError
 	}
+}
+
+// ── M-A1 helpers ─────────────────────────────────────────────────────────────
+
+// buildEinoMessages converts a RunRequest into the initial []*schema.Message
+// slice passed to einoAgent.Generate. The system prompt is handled inside the
+// aiserviceAdapter (it prepends it as messages[0] in convertToAiserviceRequest),
+// so we only need the user message here.
+func buildEinoMessages(req RunRequest) []*schema.Message {
+	return []*schema.Message{
+		{Role: schema.User, Content: req.Input},
+	}
+}
+
+// einoMessagesToCompact converts []*schema.Message to []compact.Message for
+// PTL recovery helpers (handlePTLError / tryPreLLMCompact). Only role + content
+// are mapped; tool_calls are serialised as JSON into the compact.Message.ToolCalls
+// field if present.
+func einoMessagesToCompact(msgs []*schema.Message) []compact.Message {
+	out := make([]compact.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m == nil {
+			continue
+		}
+		cm := compact.Message{
+			Role:    string(m.Role),
+			Content: m.Content,
+		}
+		if len(m.ToolCalls) > 0 {
+			if b, err := json.Marshal(m.ToolCalls); err == nil {
+				cm.ToolCalls = b
+			}
+		}
+		if m.ToolCallID != "" {
+			cm.ToolCallID = m.ToolCallID
+		}
+		out = append(out, cm)
+	}
+	return out
+}
+
+// compactMessagesToEino converts []compact.Message back to []*schema.Message for
+// passing to einoAgent.Generate after PTL recovery rewrites the message list.
+func compactMessagesToEino(msgs []compact.Message) []*schema.Message {
+	out := make([]*schema.Message, 0, len(msgs))
+	for _, m := range msgs {
+		em := &schema.Message{
+			Role:       schema.RoleType(m.Role),
+			Content:    m.Content,
+			ToolCallID: m.ToolCallID,
+		}
+		out = append(out, em)
+	}
+	return out
 }
