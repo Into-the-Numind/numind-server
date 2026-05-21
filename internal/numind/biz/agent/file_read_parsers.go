@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
@@ -31,7 +32,7 @@ func (p *pdfParserImpl) Parse(ctx context.Context, fileURL, prompt string) (stri
 		traceID = tc.TraceID
 		parentID = tc.ParentObservationID
 		langfuse.CreateGeneration(traceID, genID,
-			langfuse.WithGenName("tool.file_read.pdf.qwen-long"),
+			langfuse.WithGenName("tool.file_read.qwen-long.parse"),
 			langfuse.WithGenParent(parentID),
 			langfuse.WithGenModel("qwen-long"),
 			langfuse.WithGenInput(map[string]any{"file_url": fileURL, "prompt": prompt}),
@@ -76,7 +77,7 @@ func (p *imageParserImpl) Parse(ctx context.Context, fileURL, _ string) (string,
 	if tc := langfuse.FromContext(ctx); tc != nil {
 		spanID = langfuse.SpanID()
 		traceID = tc.TraceID
-		langfuse.CreateSpan(traceID, spanID, "tool.file_read.image.ocr",
+		langfuse.CreateSpan(traceID, spanID, "tool.file_read.ocr",
 			langfuse.WithSpanParent(tc.ParentObservationID),
 			langfuse.WithSpanInput(map[string]any{"file_url": fileURL}),
 		)
@@ -107,7 +108,7 @@ func (p *textParserImpl) Parse(ctx context.Context, fileURL, _ string) (string, 
 	if tc := langfuse.FromContext(ctx); tc != nil {
 		spanID = langfuse.SpanID()
 		traceID = tc.TraceID
-		langfuse.CreateSpan(traceID, spanID, "tool.file_read.text.direct",
+		langfuse.CreateSpan(traceID, spanID, "tool.file_read.direct",
 			langfuse.WithSpanParent(tc.ParentObservationID),
 			langfuse.WithSpanInput(map[string]any{"file_url": fileURL}),
 		)
@@ -118,11 +119,15 @@ func (p *textParserImpl) Parse(ctx context.Context, fileURL, _ string) (string, 
 	if err != nil {
 		return "", 0, false, fmt.Errorf("build GET request: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", 0, false, fmt.Errorf("http GET: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "", 0, false, fmt.Errorf("text parser: HTTP %d", resp.StatusCode)
+	}
 
 	// Read at most fileReadMaxBytes+1 bytes so we can detect truncation.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(fileReadMaxBytes)+1))

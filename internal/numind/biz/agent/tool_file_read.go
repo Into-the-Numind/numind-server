@@ -49,7 +49,7 @@ type fileReadTool struct {
 
 // NewFileReadTool constructs a fileReadTool with injected parsers.
 // T7 (runner wiring) calls this with the production implementations.
-func NewFileReadTool(pdf, img, txt fileParser) *fileReadTool {
+func NewFileReadTool(pdf, img, txt fileParser) FullTool {
 	return &fileReadTool{
 		pdfParser:   pdf,
 		imageParser: img,
@@ -124,6 +124,7 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	if err != nil {
 		return nil, errno.ErrAIProviderError.SetMessage("file_read: HEAD request failed: %s", err.Error())
 	}
+	defer headResp.Body.Close()
 	if headResp.StatusCode >= 400 {
 		return nil, errno.ErrAIProviderError.SetMessage("file_read: HEAD returned HTTP %d", headResp.StatusCode)
 	}
@@ -156,7 +157,7 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		}
 		content, _, truncated, err = t.textParser.Parse(ctx, in.FileURL, in.Prompt)
 	default:
-		return nil, errno.ErrInvalidParameter.SetMessage(
+		return nil, errno.ErrUnsupportedFileType.SetMessage(
 			"file_read: unsupported MIME type %q (supported: application/pdf, image/*, text/plain, text/markdown)",
 			mimeType,
 		)

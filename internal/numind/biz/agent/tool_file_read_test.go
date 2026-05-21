@@ -161,8 +161,8 @@ func TestFileReadTool_Execute_UnsupportedMIME(t *testing.T) {
 	if !errors.As(err, &e) {
 		t.Fatalf("expected *errno.Errno, got %T: %v", err, err)
 	}
-	if e.Code != errno.ErrInvalidParameter.Code {
-		t.Errorf("expected ErrInvalidParameter code, got %q", e.Code)
+	if e.Code != errno.ErrUnsupportedFileType.Code {
+		t.Errorf("expected ErrUnsupportedFileType code, got %q", e.Code)
 	}
 }
 

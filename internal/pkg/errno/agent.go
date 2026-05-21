@@ -7,4 +7,8 @@ var (
 	// ErrAgentRunNotCancellable is returned when a cancel is attempted on an
 	// already-terminal agent run (completed / failed / cancelled / error).
 	ErrAgentRunNotCancellable = &Errno{HTTP: 409, Code: "FailedOperation.AgentRunNotCancellable", Message: "Agent run is already in a terminal state and cannot be cancelled."}
+
+	// ErrUnsupportedFileType is returned when file_read receives a MIME type that
+	// none of the registered parsers can handle.
+	ErrUnsupportedFileType = &Errno{HTTP: 400, Code: "InvalidParameter.UnsupportedFileType", Message: "unsupported file type"}
 )
