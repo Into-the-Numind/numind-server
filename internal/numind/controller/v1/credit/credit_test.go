@@ -77,6 +77,17 @@ func (s *stubCreditSvc) ReserveBudget(_ context.Context, _ *model.User, _ credit
 	return nil, nil
 }
 
+// ReserveAgentTest: Agent Builder 试聊 path — stub returns (nil, nil) for tests
+// that don't exercise admin_test pool reservation (#12 agent-mode-billing-integration).
+func (s *stubCreditSvc) ReserveAgentTest(_ context.Context, _ *model.User, _ int64, _ *string) (*creditbiz.Reservation, error) {
+	return nil, nil
+}
+
+// ReconcileAgentTest: stub no-op for tests that don't exercise admin_test reconciliation (#12).
+func (s *stubCreditSvc) ReconcileAgentTest(_ context.Context, _ uint64, _ int64) error {
+	return nil
+}
+
 // stubPromptEstimator always returns a fixed (chars, model, provider).
 type stubPromptEstimator struct {
 	chars    int
