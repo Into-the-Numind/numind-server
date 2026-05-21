@@ -1514,9 +1514,9 @@ features:
   - '2026-05-21 (s3-3): S2 §5.1 笔误修正 — req.Tool.Name 是 ToolInfo struct field，不是方法；S4 实施 copy spec 代码时去掉 ()，spec 第 1216 行也已修正'
   progress:
     total_tasks: 16
-    completed_tasks: 2
-    reviewed_tasks: 2
-    current_task: 'W1 完成：M1 e6f14998 (migration) + M2 1f037045 (model + tests 6/6 PASS) + polish commit (model doc comments + 移除空 gorm 标签)。reviewer 4 个全 PASS（0 P0/P1，7 P2 — 索引命名 + helper 提取 deferred S5；其余已 inline 修复）。下一步：W2 M3 errno 串行启动。'
+    completed_tasks: 5
+    reviewed_tasks: 5
+    current_task: 'W2 完成：M3 3fc81e2d (errno) + M4 0f75ecfe (types/errno re-export, 6 tests PASS) + M5 b5b16d3c (platform_rules, 3 tests PASS) + polish commit (types.go DefaultOutOfScopeNarration doc comment + Has6Rules 强化为 keyword 断言)。6 reviewers 全 PASS（0 P0, 1 P1 弱断言 inline 修, 3 P2）。下一步：W3 启动 M6-M10 5 task 并行 Tier 3。'
   related_features:
   - 'agent-mode-runtime-skeleton (#2/14, merged 45770bb5 — LoopState / RunHooks 接口)'
   - 'agent-mode-sandbox-integration (#4/14, merged 8c883533 — SandboxHook + ctx 注入)'

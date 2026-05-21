@@ -42,6 +42,8 @@ type ComplianceGate interface {
 	CheckToolCall(ctx context.Context, req ComplianceRequest) (ComplianceResult, error)
 }
 
+// DefaultOutOfScopeNarration is the default user-facing message when a
+// compliance check denies a request and the skill has no custom Q11 reply.
 const DefaultOutOfScopeNarration = "这个问题有点超出我的范围，我更擅长帮你解决学习相关事项。"
 
 // truncate 字符串截断到指定长度（用于 TriggeredText 限长 500）
