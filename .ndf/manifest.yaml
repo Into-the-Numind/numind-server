@@ -1479,3 +1479,35 @@ features:
     reviewed_tasks: 13
     current_task: 'S5 ACCEPTED + S6 merging develop. 13 tasks (M1-M12 + S5 doc); biz/budget 92.1% + budgetgate 94.4% coverage; 12 packages -race PASS; 0 prod impact. 2 import cycles resolved in S4.'
   created_at: '2026-05-21T00:00:00+08:00'
+- id: agent-mode-compliance-3layer
+  ndf_version: '2.0'
+  track: standard
+  stage: S0
+  description: 'Agent 模式 14-feature 分解 #13/14。落地蓝本 §7 安全与合规三层（L0 平台硬规则常量 / L1 父账户 compliance_rule 表运营规则 / L2 复用 #5 agent_definition.questionnaire_answers Q10/Q11）+ Prompt Injection 防护（input fence + 关键词启发式 + mock LLM classifier）+ 输出 fence tag 检测 + Data scope GORM Before-Query hook（agent-mode 6 张表 opt-in，v1 fail-open log warn）+ compliance_audit_log 异步写入 + 规则 LRU 缓存 + ComplianceGate interface 4 方法（SystemPromptBlock / CheckUserInput / CheckLLMOutput / CheckToolCall）+ compliance.WrapHooks 装饰器（PreToolCall chain: compliance → permission → sandbox）+ runner.go:275 step [2] tenantHardRulesPlaceholder 装配。Out of scope: 真实 qwen-turbo L3 输出过滤 (#14) / 管理端 compliance_rule CRUD UI (#14) / 学员端合规提示 UI (#11/#14) / SQL-AST 静态分析 (v2) / 90 天热 1 年冷归档 cron (#14) / 真实 LLM injection classifier (#14) / prod 部署。'
+  repos:
+  - numind-server
+  branches:
+    numind-server: feature/agent-mode-compliance-3layer
+  worktrees:
+    numind-server: /private/tmp/wt-agent-mode-compliance-3layer-numind-server
+  artifacts:
+    requirement: numind-server/requirements/agent-mode-compliance-3layer.md
+    architecture_blueprint: docs/agent-mode/architecture-v1.md
+  progress:
+    total_tasks: 0
+    completed_tasks: 0
+    reviewed_tasks: 0
+    current_task: 'S0 草案完成（requirement card 写好）。下一步：dispatch S0 reviewer。'
+  related_features:
+  - 'agent-mode-runtime-skeleton (#2/14, merged 45770bb5 — LoopState / RunHooks 接口)'
+  - 'agent-mode-sandbox-integration (#4/14, merged 8c883533 — SandboxHook + ctx 注入)'
+  - 'agent-mode-skill-system (#5/14, merged e05498b6 — agent_definition.questionnaire_answers Q10/Q11 L2 源数据；skill.PlatformBasePrompt / skill.PlatformSafetyFooter 常量)'
+  - 'agent-mode-permission-pipeline (#6/14, merged 65e9d144 — PermissionPipeline + 7 validator + WrapHooks 装饰器模式 + DecisionReason 11 种枚举；本 feature 在 hook chain 外层追加 compliance.WrapHooks)'
+  - 'agent-mode-memory-system (#7/14, merged 49c8ab67 — memory.SystemBlock 段位 step [4]；本 feature 填 step [2])'
+  - 'agent-mode-narration-layer (#8/14, merged 124e62b4 — narration provider 透传规约；compliance deny 走 narration error 通道)'
+  - 'agent-mode-billing-integration (#12/14, merged bd988fd5 — BudgetTracker + WrapHooks 透传顺序)'
+  - 'agent-mode-e2e-rollout (#14/14, 本 feature 阻塞 — 端到端验收 + 真实 qwen-turbo L3 接入 + 管理端 CRUD UI)'
+  blockers: []
+  created_at: '2026-05-21T11:50:00+08:00'
+  last_updated_by: ai-s0-draft
+  last_updated_at: '2026-05-21T11:50:00+08:00'
