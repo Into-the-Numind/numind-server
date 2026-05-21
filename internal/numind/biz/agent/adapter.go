@@ -3,12 +3,28 @@ package agent
 import (
 	"context"
 	"io"
+	"sync"
 
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
+	"numind-server/internal/numind/biz/agent/callctx"
 	"numind-server/internal/pkg/aiservice"
 )
+
+// chatFn is the package-level seam used by tests to mock aiservice.Chat without
+// starting a live gateway. Production code leaves this pointing at aiservice.Chat.
+var chatFn = aiservice.Chat
+
+// Usage records token consumption from a single aiservice.Chat call.
+// Stashed by Generate keyed by call-id (from callctx.CallIDFromCtx).
+// budgetgate.PostToolCall (#14/A8b) reads via LookupUsage to drive RecordUsage.
+type Usage struct {
+	PromptTokens     int
+	CompletionTokens int
+	Model            string
+	Provider         string
+}
 
 // aiserviceAdapter implements model.ToolCallingChatModel by bridging Eino's chat model
 // interface to the numind-server aiservice.Chat/ChatStream functions. It preserves
@@ -17,11 +33,22 @@ import (
 //
 // tools is immutable after construction; WithTools returns a new instance (defensive copy),
 // making this safe for concurrent use across goroutines.
+//
+// usageStore holds Usage records keyed by call-id (16 hex chars).
+// Lives on the adapter instance because (a) it is per-run state, (b) Eino
+// passes the same adapter to multiple Generate calls in one ReAct loop.
+// sync.Map chosen for concurrent Generate + LookupUsage from different goroutines.
+//
+// Note: usageStore is intentionally NOT cloned by WithTools — both old and new
+// adapter instances share the same map. This is safe because each Eino agent
+// uses one adapter instance per run; concurrent runs use distinct adapters
+// constructed at the top of Run().
 type aiserviceAdapter struct {
 	modelName    string
 	taskID       string
 	tools        []*schema.ToolInfo // immutable after construction
 	systemPrompt string             // #5 skill-system: injected by runner.Run; prepended as messages[0] when set
+	usageStore   *sync.Map          // keyed by call-id string → Usage
 }
 
 // Compile-time assertion: aiserviceAdapter must satisfy model.ToolCallingChatModel.
@@ -31,13 +58,16 @@ var _ einomodel.ToolCallingChatModel = (*aiserviceAdapter)(nil)
 // tools is nil by default; call WithTools to bind tool schemas.
 func NewAiserviceAdapter(modelName, taskID string) einomodel.ToolCallingChatModel {
 	return &aiserviceAdapter{
-		modelName: modelName,
-		taskID:    taskID,
+		modelName:  modelName,
+		taskID:     taskID,
+		usageStore: &sync.Map{},
 	}
 }
 
 // WithTools returns a new aiserviceAdapter instance with the given tools bound.
 // It does NOT modify the receiver, making it safe for concurrent use.
+// usageStore pointer is preserved (shared) so budgetgate can look up usage
+// on either the original or the tool-bound clone.
 func (a *aiserviceAdapter) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCallingChatModel, error) {
 	// Defensive copy: allocate a new slice so caller mutations don't affect this instance.
 	cloned := make([]*schema.ToolInfo, len(tools))
@@ -47,19 +77,45 @@ func (a *aiserviceAdapter) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCa
 		taskID:       a.taskID,
 		tools:        cloned,
 		systemPrompt: a.systemPrompt,
+		usageStore:   a.usageStore, // shared pointer — safe per-run isolation
 	}, nil
 }
 
 // Generate converts Eino []*schema.Message → aiservice.ChatRequest, calls aiservice.Chat,
 // and converts the result back to *schema.Message. Langfuse trace in ctx is forwarded
 // transparently through aiservice.
+// After a successful call, stashes Usage keyed by the call-id injected via callctx.
 func (a *aiserviceAdapter) Generate(ctx context.Context, in []*schema.Message, opts ...einomodel.Option) (*schema.Message, error) {
 	req := a.convertToAiserviceRequest(in)
-	resp, err := aiservice.Chat(ctx, a.taskID, req)
+	resp, err := chatFn(ctx, a.taskID, req)
 	if err != nil {
 		return nil, err
 	}
+	// Stash token usage keyed by call-id so PostToolCall (#14/A8b) can correlate.
+	// Guard nil: manually-constructed adapters in tests may omit usageStore.
+	if callID := callctx.CallIDFromCtx(ctx); callID != "" && a.usageStore != nil {
+		a.usageStore.Store(callID, Usage{
+			PromptTokens:     resp.Usage.PromptTokens,
+			CompletionTokens: resp.Usage.CompletionTokens,
+			Model:            resp.Model,
+			Provider:         resp.Provider,
+		})
+	}
 	return convertToEinoMessage(resp), nil
+}
+
+// LookupUsage returns the Usage stashed by the most recent Generate call that used
+// the given call-id. Returns (Usage{}, false) if not found or if usageStore is nil.
+func (a *aiserviceAdapter) LookupUsage(callID string) (Usage, bool) {
+	if a.usageStore == nil {
+		return Usage{}, false
+	}
+	v, ok := a.usageStore.Load(callID)
+	if !ok {
+		return Usage{}, false
+	}
+	u, ok := v.(Usage)
+	return u, ok
 }
 
 // Stream converts Eino []*schema.Message → aiservice.ChatRequest, calls aiservice.ChatStream,

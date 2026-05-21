@@ -7,11 +7,14 @@ import (
 	"github.com/spf13/viper"
 
 	"numind-server/internal/numind/biz"
+	agentbiz "numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/aiservice_admin"
 	"numind-server/internal/numind/biz/b2b_billing"
+	"numind-server/internal/numind/biz/compliance"
 	bizcb "numind-server/internal/numind/biz/contextbudget"
 	"numind-server/internal/numind/biz/credit"
 	"numind-server/internal/numind/biz/membership"
+	"numind-server/internal/numind/controller/v1/admin"
 	"numind-server/internal/numind/controller/v1/admin_ai"
 	"numind-server/internal/numind/controller/v1/admin_b2b"
 	"numind-server/internal/numind/controller/v1/admin_billing"
@@ -230,6 +233,28 @@ func installAdminRouters(g *gin.Engine) error {
 		aiGroup.PUT("/providers/:id", aiProviderCtrl.UpdateProvider)
 		aiGroup.DELETE("/providers/:id", aiProviderCtrl.DeleteProvider)
 		aiGroup.POST("/providers/:id/test-connection", aiProviderCtrl.TestProviderConnection)
+	}
+
+	// Compliance Rule Admin — M-C1a CRUD (5 endpoints)
+	{
+		complianceCache := compliance.NewTTLCache(compliance.DefaultCacheCap, compliance.DefaultCacheTTL)
+		complianceAdminSvc := compliance.NewAdminService(store.S.Compliance(), complianceCache)
+		complianceRuleCtl := admin.NewComplianceRuleController(complianceAdminSvc)
+		crGroup := adminGroup.Group("/compliance-rules")
+		crGroup.GET("", complianceRuleCtl.List)
+		crGroup.POST("", complianceRuleCtl.Create)
+		crGroup.GET("/:id", complianceRuleCtl.Get)
+		crGroup.PATCH("/:id", complianceRuleCtl.Patch)
+		crGroup.DELETE("/:id", complianceRuleCtl.Delete)
+	}
+
+	// Agent Run Admin — M-C3b force-cancel + M-C4a listing (2 endpoints)
+	{
+		agentAdminSvc := agentbiz.NewAgentAdminService(store.S.AgentRuns(), b.Agents())
+		agentRunCtl := admin.NewAgentRunController(agentAdminSvc)
+		arGroup := adminGroup.Group("/agent-runs")
+		arGroup.GET("", agentRunCtl.List)
+		arGroup.POST("/:id/cancel", agentRunCtl.Cancel)
 	}
 
 	// Context Budget Admin — token profiles, policies, preview, events (Task 11)

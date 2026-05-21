@@ -3,6 +3,7 @@ package compliance
 import (
 	"context"
 
+	"numind-server/internal/pkg/log"
 	"numind-server/internal/pkg/model"
 )
 
@@ -49,6 +50,13 @@ func (g *complianceGate) CheckUserInput(ctx context.Context, parentUserID uint, 
 		TriggeredText: truncated,
 		Reason:        "keyword: " + kw,
 	})
+	// A9 log-based observability: injection deny hit — no rule_id (injection layer has no DB rule row).
+	// Do NOT log user input or matched content (privacy).
+	log.Infow("compliance_hit",
+		"rule_type", "injection_keyword",
+		"parent_user_id", parentUserID,
+		"rule_layer", string(model.RuleLayerInjection),
+	)
 	return ComplianceResult{
 		Decision:      model.DecisionDeny,
 		RuleLayer:     model.RuleLayerInjection,
@@ -69,6 +77,13 @@ func (g *complianceGate) CheckLLMOutput(ctx context.Context, parentUserID uint, 
 			TriggeredText: truncated,
 			Reason:        "forbidden fence: " + fence,
 		})
+		// A9 log-based observability: fence deny hit — no DB rule_id (fence layer is built-in).
+		// Do NOT log output content (privacy).
+		log.Infow("compliance_hit",
+			"rule_type", "forbidden_fence",
+			"parent_user_id", parentUserID,
+			"rule_layer", string(model.RuleLayerFence),
+		)
 		return ComplianceResult{
 			Decision:      model.DecisionDeny,
 			RuleLayer:     model.RuleLayerFence,

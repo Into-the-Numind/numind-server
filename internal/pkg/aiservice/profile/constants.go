@@ -2,7 +2,7 @@
 // the Capability Matching algorithm used by the AI Gateway.
 package profile
 
-// Task ID constants for all 14 supported task profiles.
+// Task ID constants for all 21 supported task profiles (14 base + 7 agent-mode #14).
 // Business layers should reference these constants (e.g. profile.SopText) rather
 // than raw string literals to gain IDE completion and compile-time typo detection.
 const (
@@ -35,6 +35,20 @@ const (
 	MonitorTranscribe = "monitor.transcribe"
 	// OcrBaidu is the Baidu OCR high-accuracy task (OCR).
 	OcrBaidu = "ocr.baidu"
+	// AgentRun is the Agent ReAct main LLM call (#14 e2e rollout).
+	AgentRun = "agent.run"
+	// AgentEmbed is the Agent memory L1/L2 retrieval embedder (#14).
+	AgentEmbed = "agent.embed"
+	// AgentSyncTurn is the Agent memory turn summary extraction (#14).
+	AgentSyncTurn = "agent.sync_turn"
+	// AgentCompact is the Agent context compaction (#14).
+	AgentCompact = "agent.compact"
+	// AgentNarrationFallback is the Agent narration LLM dynamic generation (#14).
+	AgentNarrationFallback = "agent.narration_fallback"
+	// AgentInjectionCheck is the Agent compliance injection classifier (#14).
+	AgentInjectionCheck = "agent.injection_check"
+	// AgentPermissionCheck is the Agent permission L3 auto-mode classifier (#14).
+	AgentPermissionCheck = "agent.permission_check"
 )
 
 // allTaskIDsList is the canonical ordered list of all task IDs.
@@ -55,9 +69,16 @@ var allTaskIDsList = []string{
 	MonitorAnalyze,
 	MonitorTranscribe,
 	OcrBaidu,
+	AgentRun,
+	AgentEmbed,
+	AgentSyncTurn,
+	AgentCompact,
+	AgentNarrationFallback,
+	AgentInjectionCheck,
+	AgentPermissionCheck,
 }
 
-// AllTaskIDs returns all 14 task ID strings in a stable order.
+// AllTaskIDs returns all 21 task ID strings in a stable order.
 // Useful for validation, seeding, or iterating over all known profiles.
 // Returns a copy — callers may not modify the returned slice.
 func AllTaskIDs() []string {

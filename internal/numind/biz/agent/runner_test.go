@@ -82,6 +82,25 @@ func (m *mockAgentRunStore) UpdateTerminalMetadata(_ context.Context, id uint64,
 	return errors.New("not found")
 }
 
+// SetCancellationRequested — M-C3b admin cancel mock impl
+func (m *mockAgentRunStore) SetCancellationRequested(_ context.Context, id uint64, metadata datatypes.JSON) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.runs[id]
+	if !ok {
+		return errors.New("not found")
+	}
+	now := time.Now()
+	r.CancellationRequestedAt = &now
+	r.TerminalMetadata = metadata
+	return nil
+}
+
+// ListByParentUserIDAndStatus — M-C4a admin listing mock impl
+func (m *mockAgentRunStore) ListByParentUserIDAndStatus(_ context.Context, _ uint, _ string, _, _ int) ([]model.AgentRun, int64, error) {
+	return nil, 0, nil
+}
+
 // ---
 
 func TestAgentRunner_Run_Basic(t *testing.T) {

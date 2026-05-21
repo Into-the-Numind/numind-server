@@ -19,7 +19,13 @@ type AuditLogger struct {
 	dropCnt atomic.Uint64
 }
 
-const auditChanCap = 1000
+const (
+	auditChanCap = 1000
+	// DropCountWarnThreshold is the drop count at which a single Warn log is
+	// emitted (A9 log-based observability). Chosen to fire exactly once to
+	// avoid log spam — the check is newCount == threshold, not >=.
+	DropCountWarnThreshold uint64 = 10
+)
 
 // NewAuditLogger 构造但不启动 consumer；调用方须显式 Start()
 func NewAuditLogger(s store.IComplianceStore) *AuditLogger {
@@ -54,10 +60,17 @@ func (l *AuditLogger) Write(entry *model.ComplianceAuditLog) {
 	case l.ch <- entry:
 		// 入队成功
 	default:
-		l.dropCnt.Add(1)
+		newCount := l.dropCnt.Add(1)
 		log.Warnw("compliance audit log queue full, dropping entry",
 			"rule_layer", entry.RuleLayer, "decision", entry.Decision,
-			"drop_total", l.dropCnt.Load())
+			"drop_total", newCount)
+		// A9 log-based observability: emit exactly once when threshold is crossed
+		// (newCount == threshold, not >=, to prevent log spam on every subsequent drop).
+		if newCount == DropCountWarnThreshold {
+			log.Warnw("compliance audit drop count exceeded threshold",
+				"drop_count", newCount,
+				"threshold", DropCountWarnThreshold)
+		}
 	}
 }
 

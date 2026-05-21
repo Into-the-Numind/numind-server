@@ -116,6 +116,25 @@ config_*.yaml                   # 环境配置（local/dev/qa/prod）
 
 ---
 
+## 6b. biz/agent/* 子包说明（Agent Mode v1.0-final）
+
+- `biz/agent/`: AgentRunner + adapter (aiserviceAdapter implements Eino model.ToolCallingChatModel) + state machine 19 reason
+- `biz/agent/callctx/`: 每次 aiservice.Chat 调用的 callID ctx 注入（#14/A8a）
+- `biz/agent/budgetgate/`: BudgetTracker hook wrapper（PreToolCall → CanProceed / PostToolCall → RecordUsage）
+- `biz/agent/compliancegate/`: L0/L1 hook wrapper（CheckUserInput / CheckLLMOutput / CheckToolCall）
+- `biz/agent/bashvalidator/`: 8 个 P0 Bash 安全检查器（rm -rf, curl|bash 等）
+
+**Hook chain 顺序**（外→内，固定）：compliance → permission → budget → sandbox → narration
+
+**关键 invariants**：
+- HookAction enum 5 个值（I6）— 不新增
+- TerminalReason enum 19 个值（I2）— 不新增
+- LoopEvent enum 19 个值（I7）— 不新增
+- system prompt 6 段顺序（I3）
+- aiservice 唯一入口（I5）
+
+---
+
 ## 7. 部署命令（新链路，2026-05-19 起）
 
 | 命令 | 干什么 |

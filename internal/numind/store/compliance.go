@@ -12,6 +12,15 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
+// ListAdminOpts holds filter + pagination params for ListRulesAdmin.
+type ListAdminOpts struct {
+	ParentUserID uint
+	RuleType     string
+	IsActive     *bool // nil = all
+	Offset       int
+	Limit        int
+}
+
 // IComplianceStore defines the store interface for L1 compliance rules and
 // the append-only audit log. See agent-mode-compliance-3layer spec §3.1.
 type IComplianceStore interface {
@@ -19,6 +28,10 @@ type IComplianceStore interface {
 	// When activeOnly=true, only is_active=1 rules are returned.
 	// Results are sorted priority ASC, then created_at DESC.
 	ListRulesByParent(ctx context.Context, parentUserID uint, activeOnly bool) ([]*model.ComplianceRule, error)
+
+	// ListRulesAdmin returns rules with optional filters and pagination (M-C1a admin endpoint).
+	// Returns (rules, totalCount, error). parentUserID=0 means no filter on that column.
+	ListRulesAdmin(ctx context.Context, opts ListAdminOpts) ([]*model.ComplianceRule, int64, error)
 
 	// GetRule fetches a single compliance rule by ID.
 	// Returns errno.ErrComplianceRuleNotFound when no row matches.
@@ -45,6 +58,36 @@ type complianceStore struct{ db *gorm.DB }
 var _ IComplianceStore = (*complianceStore)(nil)
 
 func newCompliance(db *gorm.DB) IComplianceStore { return &complianceStore{db: db} }
+
+// ListRulesAdmin returns compliance rules with optional filters and pagination.
+// parentUserID=0 skips the parent_user_id filter (cross-tenant admin view).
+func (s *complianceStore) ListRulesAdmin(ctx context.Context, opts ListAdminOpts) ([]*model.ComplianceRule, int64, error) {
+	q := s.db.WithContext(ctx).Model(&model.ComplianceRule{})
+	if opts.ParentUserID != 0 {
+		q = q.Where("parent_user_id = ?", opts.ParentUserID)
+	}
+	if opts.RuleType != "" {
+		q = q.Where("rule_type = ?", opts.RuleType)
+	}
+	if opts.IsActive != nil {
+		q = q.Where("is_active = ?", *opts.IsActive)
+	}
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("complianceStore.ListRulesAdmin.Count: %w", err)
+	}
+
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	var rules []*model.ComplianceRule
+	if err := q.Order("priority ASC, created_at DESC").Offset(opts.Offset).Limit(limit).Find(&rules).Error; err != nil {
+		return nil, 0, fmt.Errorf("complianceStore.ListRulesAdmin.Find: %w", err)
+	}
+	return rules, total, nil
+}
 
 // ListRulesByParent returns rules for the given parent account.
 // ctx is wrapped with WithSkipScope("compliance_self") to prevent the

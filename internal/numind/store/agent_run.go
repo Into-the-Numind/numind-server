@@ -24,6 +24,14 @@ type IAgentRunStore interface {
 	// #13 compliance 后续追加 compliance_block_reason 等。
 	// RowsAffected==0 时报错（认为 id 不存在）。
 	UpdateTerminalMetadata(ctx context.Context, id uint64, metadata datatypes.JSON) error
+	// SetCancellationRequested marks agent_run.cancellation_requested_at = NOW()
+	// and writes terminal_metadata (merged with existing). Used by admin force-cancel (M-C3b).
+	// RowsAffected==0 means the run was not found.
+	SetCancellationRequested(ctx context.Context, id uint64, metadata datatypes.JSON) error
+	// ListByParentUserIDAndStatus returns runs whose agent_definition.parent_user_id = parentUserID
+	// and agent_run.status = status (M-C4a admin listing).
+	// parentUserID=0 skips the parent filter (global cross-tenant view).
+	ListByParentUserIDAndStatus(ctx context.Context, parentUserID uint, status string, offset, limit int) ([]model.AgentRun, int64, error)
 }
 
 type agentRunStore struct {
@@ -97,6 +105,55 @@ func (s *agentRunStore) UpdateTerminalMetadata(ctx context.Context, id uint64, m
 		return fmt.Errorf("agentRunStore.UpdateTerminalMetadata: no row matched id=%d", id)
 	}
 	return nil
+}
+
+// SetCancellationRequested sets cancellation_requested_at = NOW() and merges terminal_metadata.
+func (s *agentRunStore) SetCancellationRequested(ctx context.Context, id uint64, metadata datatypes.JSON) error {
+	updates := map[string]interface{}{
+		"cancellation_requested_at": time.Now(),
+	}
+	if metadata != nil {
+		updates["terminal_metadata"] = metadata
+	}
+	result := s.db.WithContext(ctx).Model(&model.AgentRun{}).Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		return fmt.Errorf("agentRunStore.SetCancellationRequested(id=%d): %w", id, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("agentRunStore.SetCancellationRequested: no row matched id=%d", id)
+	}
+	return nil
+}
+
+// ListByParentUserIDAndStatus joins agent_run ⋈ agent_definition on agent_definition_id
+// to filter by parent_user_id, then filters agent_run.status.
+// parentUserID=0 skips the parent filter (cross-tenant view for super-admin).
+func (s *agentRunStore) ListByParentUserIDAndStatus(ctx context.Context, parentUserID uint, status string, offset, limit int) ([]model.AgentRun, int64, error) {
+	base := s.db.WithContext(ctx).Model(&model.AgentRun{})
+	if parentUserID != 0 {
+		// LEFT JOIN: historical runs with agent_definition_id=0 have no join row.
+		// Only return runs with a matching agent_definition row for the given parent.
+		base = base.
+			Joins("JOIN agent_definition ON agent_definition.id = agent_run.agent_definition_id").
+			Where("agent_definition.parent_user_id = ?", parentUserID)
+	}
+	if status != "" {
+		base = base.Where("agent_run.status = ?", status)
+	}
+
+	var total int64
+	if err := base.Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("agentRunStore.ListByParentUserIDAndStatus.Count: %w", err)
+	}
+
+	var runs []model.AgentRun
+	if limit <= 0 {
+		limit = 20
+	}
+	if err := base.Offset(offset).Limit(limit).Order("agent_run.started_at DESC").Find(&runs).Error; err != nil {
+		return nil, 0, fmt.Errorf("agentRunStore.ListByParentUserIDAndStatus.Find: %w", err)
+	}
+	return runs, total, nil
 }
 
 func (s *agentRunStore) ListBySession(ctx context.Context, sessionID string, offset, limit int) ([]model.AgentRun, int64, error) {
