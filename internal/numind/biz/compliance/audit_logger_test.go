@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/model"
 )
 
@@ -43,6 +44,9 @@ func (f *fakeStore) UpdateRule(ctx context.Context, id uint64, u map[string]inte
 	return nil
 }
 func (f *fakeStore) SoftDeleteRule(ctx context.Context, id uint64) error { return nil }
+func (f *fakeStore) ListRulesAdmin(_ context.Context, _ store.ListAdminOpts) ([]*model.ComplianceRule, int64, error) {
+	return nil, 0, nil
+}
 
 func (f *fakeStore) count() int {
 	f.mu.Lock()

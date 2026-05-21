@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"numind-server/internal/numind/store"
 	"numind-server/internal/pkg/model"
 )
 
@@ -42,6 +43,9 @@ func (f *fakeTenantStore) UpdateRule(ctx context.Context, id uint64, u map[strin
 func (f *fakeTenantStore) SoftDeleteRule(ctx context.Context, id uint64) error { return nil }
 func (f *fakeTenantStore) WriteAuditLog(ctx context.Context, e *model.ComplianceAuditLog) error {
 	return nil
+}
+func (f *fakeTenantStore) ListRulesAdmin(_ context.Context, _ store.ListAdminOpts) ([]*model.ComplianceRule, int64, error) {
+	return nil, 0, nil
 }
 
 func TestTenantRuleProvider_GetActiveRules_CacheMiss(t *testing.T) {
