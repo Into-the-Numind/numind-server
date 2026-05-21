@@ -2,12 +2,12 @@ schema_version: '2.0'
 features:
 - id: agent-mode-e2e-rollout
   ndf_version: '2.0'
-  description: 'Agent 模式 14-feature 分解 #14/14 — 终局集成。把 13 个 feature 累计推迟的 mock → 真实 LLM/Embedder/Classifier 切换全部落地（A1-A8 共 8 个切换点：adapter Eino ReAct Generate / memory embedder / memory SyncTurn / compact provider / narration LLM fallback / injection classifier / permission L3 auto-mode classifier / PostToolCall token ctx 数据流）+ 跨 admin-web + web-v3 8 个 Playwright e2e（B1 创建 Agent / B2 学员对话 / B3 permission deny / B4 budget 超限 / B5 compliance 拦截 / B6 compact 触发 / B7 会话恢复 / B8 历史版本回滚）+ 补齐 admin-web 5 项 v1-limitations（compliance_rule CRUD UI / Langfuse trace 跳转 / agent_run 强制取消 + 后端 endpoint / 监控真实数据源 + GET /v1/admin/agent-runs?status=running / 移除 v1 不联机 banner）+ dev 部署（手工 SSH 跑 13 个 migration + /deploy-dev server/admin + /deploy-dev admin-web/web-v3 + 8 e2e smoke test in dev）+ prod 部署准备文档（不真部署）：deploy-checklist-feature-14.md / config-prod-diff.md / runbook.md / architecture-v1.md status 更新 / 根目录 CLAUDE.md 加 Agent 模式 § / numind-server/CLAUDE.md 加 biz/agent/* / Go-live checklist / CHANGELOG v2.2.0。Out of scope: 真 prod 部署 / git tag / 真改 config_prod.yaml / 跨账户 memory 共享 / Skill 模板市场 / Daytona → CubeSandbox / 真实 SQL-AST 静态分析 / 23 Bash validator 扩展 / MMR + LLM rerank / 跨实例 Daily aggregate Redis / AdminTestExpireDaemon cron / MaxTurnsPerRun 字段化 / task lint 历史债。'
+  description: 'Agent 模式 14-feature 分解 #14/14 — 终局集成 (S0-S3 complete, Phase A 进行中)。把 13 个 feature 累计推迟的 mock → 真实 LLM/Embedder/Classifier 切换全部落地（A1-A8 共 8 个切换点：adapter Eino ReAct Generate / memory embedder / memory SyncTurn / compact provider / narration LLM fallback / injection classifier / permission L3 auto-mode classifier / PostToolCall token ctx 数据流）+ 跨 admin-web + web-v3 8 个 Playwright e2e（B1 创建 Agent / B2 学员对话 / B3 permission deny / B4 budget 超限 / B5 compliance 拦截 / B6 compact 触发 / B7 会话恢复 / B8 历史版本回滚）+ 补齐 admin-web 5 项 v1-limitations（compliance_rule CRUD UI / Langfuse trace 跳转 / agent_run 强制取消 + 后端 endpoint / 监控真实数据源 + GET /v1/admin/agent-runs?status=running / 移除 v1 不联机 banner）+ dev 部署（手工 SSH 跑 13 个 migration + /deploy-dev server/admin + /deploy-dev admin-web/web-v3 + 8 e2e smoke test in dev）+ prod 部署准备文档（不真部署）：deploy-checklist-feature-14.md / config-prod-diff.md / runbook.md / architecture-v1.md status 更新 / 根目录 CLAUDE.md 加 Agent 模式 § / numind-server/CLAUDE.md 加 biz/agent/* / Go-live checklist / CHANGELOG v2.2.0。Out of scope: 真 prod 部署 / git tag / 真改 config_prod.yaml / 跨账户 memory 共享 / Skill 模板市场 / Daytona → CubeSandbox / 真实 SQL-AST 静态分析 / 23 Bash validator 扩展 / MMR + LLM rerank / 跨实例 Daily aggregate Redis / AdminTestExpireDaemon cron / MaxTurnsPerRun 字段化 / task lint 历史债。'
   track: standard
-  stage: S0
+  stage: S4
   classification_reason: 'Standard Triage 5 条全审：(1) DB schema 变更：是（Phase C C3/C4 admin endpoint 可能 ALTER agent_run.cancellation_requested_at；Phase A A3 可能在 agent_session_memory 加 sync_turn_ts，待 S2 定）(2) 新 API 端点：是（Phase C 至少 7 个新 admin endpoints — agent-runs cancel / list-running + compliance_rule CRUD 5 个）(3) 新外部服务集成：部分（aiservice 既有，但 Langfuse trace 子链补全视作集成深化）(4) 影响文件数 >>3（跨 3 仓库 30+ 文件）(5) 高风险业务逻辑：是（Phase A A7 permission L3 classifier；A8 billing PostToolCall token 数据流影响真实计费）。5 条至少 4 条违反 → Standard。'
-  last_updated_by: ai-s0-draft
-  last_updated_at: '2026-05-21T18:00:00+08:00'
+  last_updated_by: ai-s4-phase-a-wave1
+  last_updated_at: '2026-05-21T20:00:00+08:00'
   repos:
   - numind-server
   - numind-admin-web
@@ -22,13 +22,20 @@ features:
     numind-web-v3: /private/tmp/wt-agent-mode-e2e-rollout-numind-web-v3
   artifacts:
     requirement: numind-server/requirements/agent-mode-e2e-rollout.md
+    proposal: numind-server/proposals/agent-mode-e2e-rollout-proposal.md
+    spec: numind-server/docs/superpowers/specs/2026-05-21-agent-mode-e2e-rollout-design.md
+    plan: numind-server/docs/superpowers/plans/2026-05-21-agent-mode-e2e-rollout-plan.md
     architecture_blueprint: docs/agent-mode/architecture-v1.md
   progress:
-    total_tasks: 0
-    completed_tasks: 0
+    total_tasks: 38
+    completed_tasks: 3
     reviewed_tasks: 0
-    current_task: 'S0 draft — requirement card committed; 等 Sonnet reviewer 审 S0。'
-  decisions: []
+    current_task: 'S4 Phase A Wave 1 部分完成 — M-A0a + M-A0b + M-A2 已 commit (ca01ddd3 / a87e5469)；剩 M-A4/A5/A6/A7/A8a/A8b/A3/A1/A9 + Phase B-E。Session 1 结束，handoff 给 session 2。详 docs/agent-mode/session-handoff-2026-05-21-phase-a-start.md'
+  decisions:
+  - 'S0-D1..D13: 13 项 S0 reviewer 处置 (Stop Hook / Sandbox iptables / Narration N6/N11 / L1 cron 推 Out of scope; A9 log-based observability 加；B1→B2 D1 seed fixture; #10 S5 TBD 接受 S6 merge; R9 升级 等)'
+  - 'S1-D1..D7: 7 项 S1 reviewer 处置 (A1 文件归属 runner.go:389 真实位置; A5 LLMFallback Render 接口签名; A0 task profile 7 constants seed; A8 budgetctx 子包路径; A6 LLMClassifier 接口复用; D0 same-timestamp 字母序; A5 sync.Map)'
+  - 'S2 reviewer P1-1 + 4 P2: inline applied in S3 §0 errata'
+  - 'S3-D1..D7: 7 项 S3 reviewer 处置 (M-C3a 加 agent_definition_id 列; M-A3 用 l1Store.Create; Wave 2 重排序 M-A3 → M-A1; M-A1 用 HandleLLMError; M-B0c seed compliance_rule; M-C2-prod docs only; .env.production 0 改动 verify)'
   related_features:
   - 'agent-mode-runtime-skeleton (#2/14, develop merged 45770bb5 — A1 Eino ReAct loop short-circuit 来源)'
   - 'agent-mode-skill-system (#5/14, develop merged e05498b6 — Skill system prompt 装配 + B1 创建 Agent 流程依赖)'
