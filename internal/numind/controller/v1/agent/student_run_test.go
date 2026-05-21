@@ -167,9 +167,9 @@ func parseUint64(s string) (uint64, bool) {
 func TestEstimateHandler_Returns200(t *testing.T) {
 	stub := &stubStudentRunSvc{
 		estimateResp: &agentbiz.EstimateResponse{
-			EstimatedCredits: 50,
-			EstimatedTokens:  1000,
-			Currency:         "credits",
+			Min:         40,
+			Max:         60,
+			IsLargeTask: false,
 		},
 	}
 	ctrl := &testController{runSvc: stub}
@@ -179,8 +179,8 @@ func TestEstimateHandler_Returns200(t *testing.T) {
 	r.POST("/v1/agent-runs/estimate", ctrl.Estimate)
 
 	body, _ := json.Marshal(map[string]any{
-		"agent_definition_id": 1,
-		"message":             "test message",
+		"agent_skill_id": 1,
+		"input_text":     "test message",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/agent-runs/estimate", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -199,8 +199,8 @@ func TestEstimateHandler_Returns200(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected data object, got: %v", resp["data"])
 	}
-	if data["currency"] != "credits" {
-		t.Errorf("expected currency='credits', got %v", data["currency"])
+	if int(data["min"].(float64)) != 40 || int(data["max"].(float64)) != 60 {
+		t.Errorf("expected min=40 max=60, got min=%v max=%v", data["min"], data["max"])
 	}
 }
 

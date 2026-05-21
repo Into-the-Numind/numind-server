@@ -139,8 +139,8 @@ func TestStudentQueryCtrl_ListRecentSessions_OK(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	var resp map[string]interface{}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	data := resp["data"].(map[string]interface{})
-	list := data["list"].([]interface{})
+	// Frontend expects raw array (web-v3 src/api/agent.ts:32 → RecentSession[]).
+	list := resp["data"].([]interface{})
 	assert.Len(t, list, 2)
 }
 
