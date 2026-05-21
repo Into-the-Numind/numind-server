@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -149,5 +148,4 @@ func TestAuditLogger_ConcurrentWrites_RaceFree(t *testing.T) {
 	// Some may have been dropped if queue filled briefly, but total = written + drop
 	total := uint64(fs.count()) + l.DropCount()
 	assert.Equal(t, uint64(n), total)
-	_ = atomic.LoadUint64 // ensure atomic imported (silencing unused)
 }
