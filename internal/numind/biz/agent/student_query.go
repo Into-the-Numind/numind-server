@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"numind-server/internal/numind/store"
@@ -14,10 +16,13 @@ import (
 	"numind-server/internal/pkg/model"
 )
 
+// defaultCreditBudget is the fallback per-session credits budget when
+// agent_definition.credit_cap_per_session is NULL or 0.
+const defaultCreditBudget = 200
+
 // RunSummary is a lightweight view of model.AgentRun returned by list endpoints.
 // Full messages are omitted to keep list payloads small.
-// JSON field names align with web-v3 src/types/agent.ts AgentRun contract
-// (agent_skill_id is the learner-facing alias of the agent_definition_id column).
+// JSON field names align with web-v3 src/types/agent.ts AgentRun / RecentSession contract.
 type RunSummary struct {
 	ID                uint64     `json:"id"`
 	UserID            uint       `json:"user_id"`
@@ -29,6 +34,21 @@ type RunSummary struct {
 	StartedAt         time.Time  `json:"started_at"`
 	EndedAt           *time.Time `json:"ended_at,omitempty"`
 	CreatedAt         time.Time  `json:"created_at"`
+
+	// Fix 2: enriched identity fields (from agent_definition).
+	AgentName  string `json:"agent_name,omitempty"`
+	AgentEmoji string `json:"agent_emoji,omitempty"`
+
+	// Fix 2: timing / preview.
+	// LastActiveAt is ended_at if set, else updated_at, else started_at (RFC3339).
+	LastActiveAt string `json:"last_active_at,omitempty"`
+	// PreviewText is the first user-role content from messages, truncated to ~60 chars.
+	PreviewText string `json:"preview_text,omitempty"`
+
+	// Fix 1: credits fields computed on read (no DB columns added).
+	CreditsUsed           int    `json:"credits_used"`
+	CreditsBudget         int    `json:"credits_budget"`
+	CreditsThresholdState string `json:"credits_threshold_state"` // 'under_60' | 'warning_60' | 'blocked_100'
 }
 
 // frontendStatus maps backend agent_run.status + state_reason to the AgentRunStatus
@@ -59,27 +79,106 @@ func frontendStatus(status, stateReason string) string {
 	return status
 }
 
-func runToSummary(r model.AgentRun) RunSummary {
-	return RunSummary{
-		ID:                r.ID,
-		UserID:            r.UserID,
-		SessionID:         r.SessionID,
-		AgentDefinitionID: r.AgentDefinitionID,
-		Status:            frontendStatus(r.Status, r.StateReason),
-		StateReason:       r.StateReason,
-		CompactSummary:    r.CompactSummary,
-		StartedAt:         r.StartedAt,
-		EndedAt:           r.EndedAt,
-		CreatedAt:         r.CreatedAt,
+// creditsThresholdState computes the threshold state string from used/budget ratio.
+func creditsThresholdState(used, budget int) string {
+	if budget <= 0 {
+		return "under_60"
+	}
+	ratio := float64(used) / float64(budget)
+	switch {
+	case ratio >= 1.0:
+		return "blocked_100"
+	case ratio >= 0.6:
+		return "warning_60"
+	default:
+		return "under_60"
 	}
 }
 
+// runEnrichment holds the computed-on-read extra fields for a single run.
+type runEnrichment struct {
+	agentName     string
+	agentEmoji    string
+	creditsUsed   int
+	creditsBudget int
+	previewText   string
+}
+
+// runToSummary converts a model.AgentRun to a RunSummary without enrichment.
+// Call enrichSummary afterwards to populate credits / agent name / preview.
+func runToSummary(r model.AgentRun) RunSummary {
+	lastActive := r.StartedAt
+	if r.EndedAt != nil {
+		lastActive = *r.EndedAt
+	} else if !r.UpdatedAt.IsZero() {
+		lastActive = r.UpdatedAt
+	}
+
+	return RunSummary{
+		ID:                    r.ID,
+		UserID:                r.UserID,
+		SessionID:             r.SessionID,
+		AgentDefinitionID:     r.AgentDefinitionID,
+		Status:                frontendStatus(r.Status, r.StateReason),
+		StateReason:           r.StateReason,
+		CompactSummary:        r.CompactSummary,
+		StartedAt:             r.StartedAt,
+		EndedAt:               r.EndedAt,
+		CreatedAt:             r.CreatedAt,
+		LastActiveAt:          lastActive.UTC().Format(time.RFC3339),
+		PreviewText:           extractPreviewText(r.Messages),
+		CreditsThresholdState: "under_60", // will be overwritten by enrichSummary
+	}
+}
+
+// enrichSummary applies computed enrichment to an already-constructed RunSummary.
+func enrichSummary(s *RunSummary, e runEnrichment) {
+	s.AgentName = e.agentName
+	s.AgentEmoji = e.agentEmoji
+	s.CreditsUsed = e.creditsUsed
+	s.CreditsBudget = e.creditsBudget
+	s.CreditsThresholdState = creditsThresholdState(e.creditsUsed, e.creditsBudget)
+}
+
+// extractPreviewText pulls the first user-role content from the messages JSON array,
+// truncated to 60 Unicode codepoints (avoids mid-rune splits with CJK text).
+func extractPreviewText(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var turns []map[string]any
+	if err := json.Unmarshal(raw, &turns); err != nil {
+		return ""
+	}
+	for _, turn := range turns {
+		if role, _ := turn["role"].(string); role == "user" {
+			if content, ok := turn["content"].(string); ok && content != "" {
+				return truncateRunes(content, 60)
+			}
+		}
+	}
+	return ""
+}
+
+// truncateRunes truncates s to at most n Unicode codepoints.
+func truncateRunes(s string, n int) string {
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i]
+		}
+		count++
+	}
+	_ = utf8.RuneCountInString(s) // silence staticcheck
+	return s
+}
+
 // SessionSnapshot is returned by GetSessionSnapshot for resume flows.
-// Messages is the raw turn-level JSON stored in agent_run.messages.
+// Messages is the transformed frontend-shaped array (see transformMessages).
 // CompactSummary is the latest compact summary (may be empty).
 type SessionSnapshot struct {
 	Run            RunSummary  `json:"run"`
-	Messages       interface{} `json:"messages"`        // raw JSON array from agent_run
+	Messages       interface{} `json:"messages"`        // frontend-shaped AgentMessage array
 	CompactSummary string      `json:"compact_summary"` // from agent_run.compact_summary
 }
 
@@ -93,13 +192,39 @@ type FeedbackRequest struct {
 // (#14 follow-up ALPHA — 7 GET + 1 POST).
 // TODO(v2): promote feedback to a dedicated agent_run_feedback table for analytics.
 type StudentQueryService struct {
-	runStore  store.IAgentRunStore
-	userStore store.UserStore
+	runStore    store.IAgentRunStore
+	userStore   store.UserStore
+	skillStore  store.IAgentDefinitionStore // for agent_name/emoji + credit_cap_per_session
+	creditStore store.CreditStore           // for credits_used computation (SumByReservationIDs)
 }
 
 // NewStudentQueryService constructs a StudentQueryService.
-func NewStudentQueryService(runStore store.IAgentRunStore, userStore store.UserStore) *StudentQueryService {
-	return &StudentQueryService{runStore: runStore, userStore: userStore}
+// skillStore and creditStore may be nil; the service degrades gracefully
+// (credits_used=0, agent_name=”, etc.) rather than panicking.
+func NewStudentQueryService(
+	runStore store.IAgentRunStore,
+	userStore store.UserStore,
+	opts ...StudentQueryOption,
+) *StudentQueryService {
+	svc := &StudentQueryService{runStore: runStore, userStore: userStore}
+	for _, o := range opts {
+		o(svc)
+	}
+	return svc
+}
+
+// StudentQueryOption is a functional option for NewStudentQueryService.
+type StudentQueryOption func(*StudentQueryService)
+
+// WithQuerySkillStore injects an IAgentDefinitionStore so RunSummary can be
+// enriched with agent_name, agent_emoji, and credit_cap_per_session.
+func WithQuerySkillStore(s store.IAgentDefinitionStore) StudentQueryOption {
+	return func(svc *StudentQueryService) { svc.skillStore = s }
+}
+
+// WithQueryCreditStore injects a CreditStore so credits_used can be computed.
+func WithQueryCreditStore(s store.CreditStore) StudentQueryOption {
+	return func(svc *StudentQueryService) { svc.creditStore = s }
 }
 
 // ListRecentSessions returns the last N sessions for the learner, ordered by
@@ -112,7 +237,7 @@ func (s *StudentQueryService) ListRecentSessions(ctx context.Context, userID uin
 	if err != nil {
 		return nil, fmt.Errorf("StudentQueryService.ListRecentSessions: %w", err)
 	}
-	return toSummaries(runs), nil
+	return s.toEnrichedSummaries(ctx, runs)
 }
 
 // ListAllHistorySessions returns all sessions for the learner in the last 30 days.
@@ -122,7 +247,7 @@ func (s *StudentQueryService) ListAllHistorySessions(ctx context.Context, userID
 	if err != nil {
 		return nil, fmt.Errorf("StudentQueryService.ListAllHistorySessions: %w", err)
 	}
-	return toSummaries(runs), nil
+	return s.toEnrichedSummaries(ctx, runs)
 }
 
 // GetSessionSnapshot returns the full run (messages + compact_summary) for resume.
@@ -138,21 +263,19 @@ func (s *StudentQueryService) GetSessionSnapshot(ctx context.Context, userID uin
 	if run.UserID != userID {
 		return nil, errno.ErrForbidden.SetMessage("access to another user's session is not allowed")
 	}
+
+	summaries, err := s.toEnrichedSummaries(ctx, []model.AgentRun{*run})
+	if err != nil {
+		return nil, fmt.Errorf("StudentQueryService.GetSessionSnapshot enrich: %w", err)
+	}
+	runSummary := *summaries[0]
+
 	snap := &SessionSnapshot{
-		Run:            runToSummary(*run),
+		Run:            runSummary,
 		CompactSummary: run.CompactSummary,
 	}
-	// Expose raw messages JSON as interface{} so it round-trips through gin without
-	// double-encoding.
-	if len(run.Messages) > 0 {
-		var msgs interface{}
-		if err := run.Messages.UnmarshalJSON(run.Messages); err == nil {
-			snap.Messages = msgs
-		} else {
-			// Fallback: pass through as raw bytes.
-			snap.Messages = run.Messages
-		}
-	}
+	// Fix 3: transform raw messages JSON into frontend-shaped AgentMessage array.
+	snap.Messages = transformMessages(run.Messages, run.ID, run.StartedAt, run.EndedAt, run.Status, run.StateReason)
 	return snap, nil
 }
 
@@ -178,8 +301,13 @@ func (s *StudentQueryService) GetRun(ctx context.Context, userID uint, runID uin
 	if run.UserID != userID {
 		return nil, errno.ErrForbidden.SetMessage("access to another user's run is not allowed")
 	}
+
+	summaries, err := s.toEnrichedSummaries(ctx, []model.AgentRun{*run})
+	if err != nil {
+		return nil, fmt.Errorf("StudentQueryService.GetRun enrich: %w", err)
+	}
 	return &RunDetail{
-		RunSummary:  runToSummary(*run),
+		RunSummary:  *summaries[0],
 		FinalOutput: extractFinalAssistantText(run.Messages),
 	}, nil
 }
@@ -236,7 +364,173 @@ func (s *StudentQueryService) WriteFeedback(ctx context.Context, userID uint, ru
 }
 
 // ---------------------------------------------------------------------------
-// helpers
+// Enrichment helpers (Fix 1 + Fix 2)
+// ---------------------------------------------------------------------------
+
+// toEnrichedSummaries converts a slice of AgentRun rows to enriched RunSummary
+// using batch queries for agent_definitions and credit_transactions.
+func (s *StudentQueryService) toEnrichedSummaries(ctx context.Context, runs []model.AgentRun) ([]*RunSummary, error) {
+	out := make([]*RunSummary, len(runs))
+	for i, r := range runs {
+		rs := runToSummary(r)
+		out[i] = &rs
+	}
+	if len(runs) == 0 {
+		return out, nil
+	}
+
+	// --- Fix 2: batch-load agent_definitions for name/emoji/credit_cap ---
+	defMap := make(map[uint64]*model.AgentDefinition)
+	if s.skillStore != nil {
+		defIDs := make([]uint64, 0, len(runs))
+		seen := make(map[uint64]bool)
+		for _, r := range runs {
+			if r.AgentDefinitionID != 0 && !seen[r.AgentDefinitionID] {
+				defIDs = append(defIDs, r.AgentDefinitionID)
+				seen[r.AgentDefinitionID] = true
+			}
+		}
+		for _, id := range defIDs {
+			def, err := s.skillStore.GetByIDIncludeInactive(ctx, id)
+			if err == nil && def != nil {
+				defMap[id] = def
+			}
+			// silently skip missing / soft-deleted defs
+		}
+	}
+
+	// --- Fix 1: batch-load credit sums by reservation_id ---
+	creditsByReservation := make(map[uint64]int64)
+	if s.creditStore != nil {
+		rsvIDs := make([]uint64, 0, len(runs))
+		for _, r := range runs {
+			if r.ReservationID != nil && *r.ReservationID != 0 {
+				rsvIDs = append(rsvIDs, *r.ReservationID)
+			}
+		}
+		if len(rsvIDs) > 0 {
+			sums, err := s.creditStore.SumByReservationIDs(ctx, rsvIDs)
+			if err == nil {
+				creditsByReservation = sums
+			}
+			// graceful degrade: if error, leave creditsByReservation empty → credits_used=0
+		}
+	}
+
+	// Apply enrichment to each summary.
+	for i, r := range runs {
+		var creditsUsed int64
+		if r.ReservationID != nil {
+			creditsUsed = creditsByReservation[*r.ReservationID]
+		}
+
+		budget := defaultCreditBudget
+		agentName := ""
+		agentEmoji := ""
+		if def, ok := defMap[r.AgentDefinitionID]; ok {
+			if def.CreditCapPerSession != nil && *def.CreditCapPerSession > 0 {
+				budget = int(*def.CreditCapPerSession)
+			}
+			agentName = def.Name
+			// AgentDefinition doesn't have an emoji field in the model; use "" for now.
+			// TODO: add emoji/icon field to agent_definition when the model gets it.
+			_ = agentEmoji
+		}
+
+		enrichSummary(out[i], runEnrichment{
+			agentName:     agentName,
+			agentEmoji:    agentEmoji,
+			creditsUsed:   int(creditsUsed),
+			creditsBudget: budget,
+		})
+	}
+
+	return out, nil
+}
+
+// ---------------------------------------------------------------------------
+// Fix 3: SessionSnapshot.Messages transform
+// ---------------------------------------------------------------------------
+
+// agentMessage is the frontend-shaped message type.
+// Discriminated by Type: 'user' | 'assistant' | 'final_answer'.
+type agentMessage struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`               // 'user' | 'assistant' | 'final_answer'
+	Text      string `json:"text,omitempty"`     // for type='user'
+	Markdown  string `json:"markdown,omitempty"` // for type='assistant' | 'final_answer'
+	RunID     uint64 `json:"run_id,omitempty"`   // for type='final_answer'
+	Timestamp string `json:"timestamp"`          // RFC3339
+}
+
+// transformMessages converts the raw [{role,content}] turn array stored in
+// agent_run.messages into the frontend AgentMessage discriminated union:
+//   - role='user'      → {type:'user', text:content}
+//   - role='assistant' (non-last or non-terminal) → {type:'assistant', markdown:content}
+//   - role='assistant' last turn AND run is terminal-with-output → {type:'final_answer', markdown:content, run_id}
+//
+// Timestamps are all set to startedAt (pragmatic v1; frontend doesn't need precision here).
+// Returns an empty slice (not nil) when there are no turns.
+func transformMessages(raw []byte, runID uint64, startedAt time.Time, endedAt *time.Time, status, stateReason string) []agentMessage {
+	if len(raw) == 0 {
+		return []agentMessage{}
+	}
+	var turns []map[string]any
+	if err := json.Unmarshal(raw, &turns); err != nil {
+		return []agentMessage{}
+	}
+	if len(turns) == 0 {
+		return []agentMessage{}
+	}
+
+	// Determine if the run is terminal-with-output (for final_answer promotion).
+	isTerminalSuccess := status == "terminated" && stateReason == "completed"
+
+	// Find the index of the last assistant turn.
+	lastAssistantIdx := -1
+	for i := len(turns) - 1; i >= 0; i-- {
+		if role, _ := turns[i]["role"].(string); role == "assistant" {
+			lastAssistantIdx = i
+			break
+		}
+	}
+
+	ts := startedAt.UTC().Format(time.RFC3339)
+
+	msgs := make([]agentMessage, 0, len(turns))
+	for i, turn := range turns {
+		role, _ := turn["role"].(string)
+		content, _ := turn["content"].(string)
+
+		msg := agentMessage{
+			ID:        uuid.New().String(),
+			Timestamp: ts,
+		}
+
+		switch role {
+		case "user":
+			msg.Type = "user"
+			msg.Text = content
+		case "assistant":
+			if i == lastAssistantIdx && isTerminalSuccess && content != "" {
+				msg.Type = "final_answer"
+				msg.Markdown = content
+				msg.RunID = runID
+			} else {
+				msg.Type = "assistant"
+				msg.Markdown = content
+			}
+		default:
+			// Skip system / tool turns — frontend doesn't render them.
+			continue
+		}
+		msgs = append(msgs, msg)
+	}
+	return msgs
+}
+
+// ---------------------------------------------------------------------------
+// helpers (unchanged from original)
 // ---------------------------------------------------------------------------
 
 func toSummaries(runs []model.AgentRun) []*RunSummary {
