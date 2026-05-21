@@ -381,8 +381,12 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// taskID 必须是 task_profile 表里 seed 的固定 key (profile.AgentRun = "agent.run").
 	// 旧实现 fmt.Sprintf("agent-runner-%d", run.ID) 把 runID 拼进去 → registry
 	// lookup 每次都 miss → aiservice 路由失败 → terminal_reason=model_error。
+	//
+	// modelName 留空让 task_profile.agent.run.default_service_id 接管路由。硬编码
+	// "qwen-turbo" 会通过 req.ModelOverride 强制覆盖 DB 路由,管理后台改 default
+	// 也不生效;空串场景下 gateway 直接走 task_profile 的真值。
 	einoAdapter := &aiserviceAdapter{
-		modelName:    "qwen-turbo",
+		modelName:    "",
 		taskID:       profile.AgentRun,
 		systemPrompt: req.SystemPrompt, // #7 memory-system: assembled by Step 4 6-segment formula (PlatformBase + tenantRules + body + disclaimer + memory + tools + Footer)
 	}
