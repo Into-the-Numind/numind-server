@@ -43,6 +43,7 @@ require (
 	github.com/volcengine/volc-sdk-golang v1.0.235
 	github.com/wechatpay-apiv3/wechatpay-go v0.2.21
 	github.com/yanyiwu/gojieba v1.4.6
+	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/datatypes v1.2.7
 	gorm.io/driver/sqlite v1.6.0
 )
@@ -119,5 +120,4 @@ require (
 	golang.org/x/sys v0.38.0 // indirect
 	golang.org/x/text v0.31.0 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
