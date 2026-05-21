@@ -24,6 +24,7 @@ import (
 	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/numind/biz/skill"
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/log"
@@ -377,9 +378,12 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	ctx = WithFullToolMap(ctx, toolMap)
 
 	// 6. 构造 adapter + Eino ReAct Agent
+	// taskID 必须是 task_profile 表里 seed 的固定 key (profile.AgentRun = "agent.run").
+	// 旧实现 fmt.Sprintf("agent-runner-%d", run.ID) 把 runID 拼进去 → registry
+	// lookup 每次都 miss → aiservice 路由失败 → terminal_reason=model_error。
 	einoAdapter := &aiserviceAdapter{
 		modelName:    "qwen-turbo",
-		taskID:       fmt.Sprintf("agent-runner-%d", run.ID),
+		taskID:       profile.AgentRun,
 		systemPrompt: req.SystemPrompt, // #7 memory-system: assembled by Step 4 6-segment formula (PlatformBase + tenantRules + body + disclaimer + memory + tools + Footer)
 	}
 	// Backward compat: if no tools resolved (test scenarios with nil registry or
