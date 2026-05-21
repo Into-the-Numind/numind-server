@@ -22,8 +22,14 @@ type AgentRun struct {
 	// #9 compact: tracks compaction state per run and stores latest summary for resume.
 	CompactState   datatypes.JSON `gorm:"type:json" json:"compact_state,omitempty"`
 	CompactSummary string         `gorm:"type:longtext" json:"compact_summary,omitempty"`
-	CreatedAt      time.Time      `gorm:"type:datetime(3);autoCreateTime" json:"created_at"`
-	UpdatedAt      time.Time      `gorm:"type:datetime(3);autoUpdateTime" json:"updated_at"`
+	// CancellationRequestedAt is set when POST /v1/admin/agent-runs/:id/cancel
+	// fires. Nullable: nil means run was not admin-cancelled (#14 Phase C C3).
+	CancellationRequestedAt *time.Time `gorm:"column:cancellation_requested_at" json:"cancellation_requested_at,omitempty"`
+	// AgentDefinitionID is the join key to agent_definition.id; non-zero for runs
+	// created after #14 deploys. Nullable for historical rows (#14 Phase C C4).
+	AgentDefinitionID uint64    `gorm:"column:agent_definition_id;index:idx_ar_agent_def_id" json:"agent_definition_id,omitempty"`
+	CreatedAt         time.Time `gorm:"type:datetime(3);autoCreateTime" json:"created_at"`
+	UpdatedAt         time.Time `gorm:"type:datetime(3);autoUpdateTime" json:"updated_at"`
 }
 
 func (AgentRun) TableName() string { return "agent_run" }
