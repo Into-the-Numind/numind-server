@@ -129,3 +129,12 @@ langfuse:
 aihubmix:
   base_url: "https://aihubmix.com/v1"
   api_key: "sk-vduyVKfBuiI5p4P5B030A80938924aFe87Af360473612f68"
+
+# Web Search 配置（agent-mode P0 工具）
+web_search:
+  provider: tavily
+  tavily:
+    api_key: ""              # qa 通过 env var 注入
+    base_url: "https://api.tavily.com"
+    timeout_seconds: 5
+    cache_ttl_seconds: 300

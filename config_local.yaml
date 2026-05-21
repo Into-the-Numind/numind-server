@@ -168,3 +168,12 @@ aihubmix:
 # B2B 账单配置
 billing:
   b2b_cutover_date: "2026-04-20"  # B2B 账单 cutover 日期：此日期前走 legacy_only，之后走 new_only。dev 设为 2026-04-20 让所有月份都走 new_only 模式以测试新代码路径。
+
+# Web Search 配置（agent-mode P0 工具）
+web_search:
+  provider: tavily
+  tavily:
+    api_key: ""              # local 可空；通过 env var 或本地配置注入
+    base_url: "https://api.tavily.com"
+    timeout_seconds: 5
+    cache_ttl_seconds: 300

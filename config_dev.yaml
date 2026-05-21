@@ -180,6 +180,15 @@ aihubmix:
 billing:
   b2b_cutover_date: "2026-04-20"  # B2B 账单 cutover 日期：此日期前走 legacy_only，之后走 new_only。dev 设为 2026-04-20 让所有月份都走 new_only 模式以测试新代码路径。
 
+# Web Search 配置（agent-mode P0 工具）
+web_search:
+  provider: tavily
+  tavily:
+    api_key: ""              # dev 通过 env var 注入或本地配置
+    base_url: "https://api.tavily.com"
+    timeout_seconds: 5
+    cache_ttl_seconds: 300
+
 # Agent 沙箱配置（#4 sandbox-integration）
 # backend: disabled = no-op pool（prod 默认，相当于 #3 stub 行为）
 # backend: docker   = 真实 Docker pool（仅 dev，需要容器内有 docker CLI + /var/run/docker.sock bind mount）
