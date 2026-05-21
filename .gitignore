@@ -75,3 +75,6 @@ scripts/parse_eval/.pytest_cache/
 
 # Git worktrees for parallel feature development (superpowers)
 .worktrees/
+
+# NDF v3 per-worktree state file (lives in worktree root, never committed)
+.ndf-active
