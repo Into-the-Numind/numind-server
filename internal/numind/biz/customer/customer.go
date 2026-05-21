@@ -107,15 +107,30 @@ func (c *customerBiz) ListSubUsers(ctx context.Context, parentUserID uint, offse
 	// 转换为响应格式
 	subUsers := make([]v1.SubUserInfo, 0, len(users))
 	for _, user := range users {
-		// Why: 走 GetAuthorizedTemplates + 手动过滤 active 而非 COUNT(*) — 与 GetSubUserDetail
-		// 保持一致语义（同一个 store 方法 + 同一份 active 过滤逻辑），避免两个端点对"已授权模板"
-		// 给出不同的数字。
-		templates, _ := c.ds.Customers().GetAuthorizedTemplates(ctx, user.ID)
-		activeTemplateCount := 0
-		for _, t := range templates {
-			if t.Status == "active" {
-				activeTemplateCount++
-			}
+		// "已授权模板" = SOP active + chatbot active + 销售智能体 (0/1)。
+		// Why: 前端列只展示一个数字，业务含义是"该子账号可使用的全部 AI 资产数"，三类
+		// 授权（SOP / chatbot / salesrag agent）都需计入。三个 store 调用都走 COUNT
+		// 查询（不 fetch 完整记录），任一失败 warn-log + 该项归零，不阻塞整个列表。
+		sopCount, err := c.ds.Customers().CountActiveAuthorizedSopTemplates(ctx, user.ID)
+		if err != nil {
+			log.C(ctx).Warnw("CountActiveAuthorizedSopTemplates failed, falling back to 0",
+				"user_id", user.ID, "err", err)
+			sopCount = 0
+		}
+		chatbotCount, err := c.ds.Customers().CountActiveAuthorizedChatbots(ctx, user.ID)
+		if err != nil {
+			log.C(ctx).Warnw("CountActiveAuthorizedChatbots failed, falling back to 0",
+				"user_id", user.ID, "err", err)
+			chatbotCount = 0
+		}
+		activeTemplateCount := int(sopCount) + int(chatbotCount)
+		// 销售智能体是 0/1 整体授权（双层 AND），通过即 +1。
+		// user 已是 range 副本（Go 1.22+ 每轮独立作用域），直接取址安全。
+		if salesOK, salesErr := c.hasSalesAgentPermission(ctx, &user); salesErr != nil {
+			log.C(ctx).Warnw("hasSalesAgentPermission failed, treating as not granted",
+				"user_id", user.ID, "err", salesErr)
+		} else if salesOK {
+			activeTemplateCount++
 		}
 
 		ms := msBatch[uint64(user.ID)]
