@@ -25,9 +25,9 @@ features:
     architecture_blueprint: docs/agent-mode/architecture-v1.md
   progress:
     total_tasks: 9
-    completed_tasks: 0
-    reviewed_tasks: 0
-    current_task: 'S3 完成：9 task plan 跨 5 wave，含独立 T9 S5 验证策略；进入 S4 Wave 1（T1/T2/T3/T5 Tier 3 disjoint 并行 dispatch）'
+    completed_tasks: 4
+    reviewed_tasks: 4
+    current_task: 'S4 Wave 1 完成 (T1/T2/T3/T5 merged into feature/agent-mode-p0-tools at 7563fa35) — go build + tests PASS。T1 web_search (6c2d59c5 + fix 02054be8), T2 web_fetch (86d29211 + fix e77ab71d), T3 state machine yield (a057f9cf), T5 file_read (d33e56b3 + fix 56aac2d5). 全部双 reviewer PASS_WITH_CONCERNS 0 P0/P1。进入 Wave 2 T4 ask_user_question backend + answer endpoint。'
   decisions:
   - 'S1-D1: web_search provider 选 Tavily — LLM-friendly snippet 摘要 + 国际访问 OK + 价格 $5/1000 query 透明；S2 再 lock impl 细节'
   - 'S1-D2: file_read v1 不支持 docx — unioffice 重型库 + attachment.UploadService 当前不允许 docx mime；docx 后续 sub-feature 单独评估'
