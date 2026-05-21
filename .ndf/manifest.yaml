@@ -1482,7 +1482,11 @@ features:
 - id: agent-mode-compliance-3layer
   ndf_version: '2.0'
   track: standard
-  stage: S4
+  stage: completed
+  merged_commit: e8912f36
+  completed_at: '2026-05-21T15:30:00+08:00'
+  last_updated_by: ai-s6-merged
+  last_updated_at: '2026-05-21T15:30:00+08:00'
   description: 'Agent 模式 14-feature 分解 #13/14。落地蓝本 §7 安全与合规三层（L0 平台硬规则常量 / L1 父账户 compliance_rule 表运营规则 / L2 复用 #5 agent_definition.questionnaire_answers Q10/Q11）+ Prompt Injection 防护（input fence + 关键词启发式 14+ 项 + mock LLM classifier）+ 输出 fence tag 检测 + Data scope GORM Before-Query hook（agent-mode 6 张表 opt-in，v1 fail-open log warn）+ compliance_audit_log 异步写入（buffered cap=1000 + Start/Stop flush-on-shutdown + drop count atomic 监控）+ 规则 TTL cache（per-parent_user_id cap=500，TTL 5min，lazy LRU 兜底淘汰）+ ComplianceGate interface 4 方法（SystemPromptBlock / CheckUserInput / CheckLLMOutput / CheckToolCall）+ compliancegate.WrapHooks 装饰器（PreToolCall chain: compliance → permission → sandbox；biz/agent/compliancegate 子包解耦 import cycle）+ runner.go:275 step [2] tenantHardRulesPlaceholder 装配。Out of scope: 真实 qwen-turbo L3 输出过滤 (#14) / 管理端 compliance_rule CRUD UI (#14) / 学员端合规提示 UI (#11/#14) / SQL-AST 静态分析 (v2) / 90 天热 1 年冷归档 cron (#14) / 真实 LLM injection classifier (#14) / prod 部署。'
   repos:
   - numind-server
