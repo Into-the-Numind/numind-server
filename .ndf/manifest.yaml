@@ -36,7 +36,9 @@ features:
   ndf_version: '3.0'
   description: 'SOP 步骤导航条每个 step 右侧加 ⭐ 五角星 icon，表示该步骤是否已收藏。点亮=已收藏（filled 主色），不点亮=可收藏（outline，仅 step 有 output 时显示）。Streaming / trailing chat / 未执行步骤不渲染星。点击触发 toggle-bookmark：无书签 → 立即 saveBookmark；有书签 → ConfirmModal 确认后 removeBookmark。OutputCard 现有的"保存生成记录 / 已保存"按钮保留（用户确认），两条 toggle 路径共享 useBookmarks singleton state，状态自动同步。两个 ConfirmModal 实例（SopStepView + SOPRunView）是 Hotfix 文件数硬约束下的有意取舍，后续可抽 useBookmarkToggle composable 合并。'
   track: hotfix
-  stage: H2
+  stage: H3-dev-deployed
+  merged_commit: 07d4882
+  dev_image: develop-07d4882
   classification_reason: 'Hotfix Triage 5 条全满足 — (1) 无 DB schema 变更 (2) 无新 API 端点（复用 saveBookmark/removeBookmark）(3) 无新外部服务 (4) 影响 4 文件（StepNavItem.vue / StepNav.vue / SOPRunView.vue + StepNav.spec.ts 测试） (5) 非支付/权限/会员高风险业务。新功能不是 bug-from-customer，Rule 11 复现测试不适用，但 H1 至少 1 个新增测试已满足（6 个新增书签 case）。'
   last_updated_by: ai-h2-reviewed
   last_updated_at: '2026-05-22T03:09:00+08:00'
