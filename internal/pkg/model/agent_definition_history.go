@@ -15,7 +15,7 @@ type AgentDefinitionHistory struct {
 	Snapshot       datatypes.JSON `gorm:"not null" json:"snapshot"`
 	ChangesSummary string         `gorm:"size:200" json:"changes_summary"`
 	CreatedBy      uint           `gorm:"type:int unsigned;not null" json:"created_by"`
-	CreatedAt      time.Time      `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP(3);autoCreateTime;index:idx_adh_agent_created,priority:2" json:"created_at"`
+	CreatedAt      time.Time      `gorm:"type:datetime;not null;default:CURRENT_TIMESTAMP;autoCreateTime;index:idx_adh_agent_created,priority:2" json:"created_at"`
 }
 
 func (AgentDefinitionHistory) TableName() string { return "agent_definition_history" }

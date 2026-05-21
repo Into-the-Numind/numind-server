@@ -22,7 +22,7 @@ type CreditAdminTestGrant struct {
 	RemainingAmount int32      `gorm:"column:remaining_amount;->;type:int GENERATED ALWAYS AS (CAST(granted_amount AS SIGNED) - CAST(used_amount AS SIGNED)) STORED;index:idx_period_remaining,priority:2" json:"remaining_amount"`
 	PeriodStart     time.Time  `gorm:"column:period_start;type:date;not null;uniqueIndex:uq_parent_period,priority:2" json:"period_start"`
 	PeriodEnd       time.Time  `gorm:"column:period_end;type:date;not null;index:idx_period_remaining,priority:1" json:"period_end"`
-	GrantedAt       time.Time  `gorm:"column:granted_at;type:datetime;not null;default:CURRENT_TIMESTAMP(3)" json:"granted_at"`
+	GrantedAt       time.Time  `gorm:"column:granted_at;type:datetime;not null;default:CURRENT_TIMESTAMP" json:"granted_at"`
 	LastUsedAt      *time.Time `gorm:"column:last_used_at;type:datetime" json:"last_used_at,omitempty"`
 }
 
