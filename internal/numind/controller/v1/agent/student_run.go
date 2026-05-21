@@ -32,7 +32,7 @@ func NewStudentRunController(b biz.IBiz) *StudentRunController {
 	}
 }
 
-// RegisterStudentRunRoutes registers all 6 endpoints on authGroup.
+// RegisterStudentRunRoutes registers all learner-facing endpoints on authGroup.
 // Must be called AFTER all other agentcontroller route registrations to avoid
 // path conflicts with the /agent-runs prefix.
 func RegisterStudentRunRoutes(authGroup *gin.RouterGroup, b biz.IBiz) {
@@ -42,6 +42,8 @@ func RegisterStudentRunRoutes(authGroup *gin.RouterGroup, b biz.IBiz) {
 	authGroup.GET("/agent-runs/:id/narration", c.PollNarration)
 	authGroup.POST("/agent-runs/:id/cancel", c.Cancel)
 	authGroup.POST("/agent-runs/:id/extend-budget", c.ExtendBudget)
+	// T4 ask_user_question answer endpoint.
+	authGroup.POST("/agent-runs/:id/answer", c.Answer)
 	authGroup.POST("/agent-attachments", c.UploadAttachment)
 }
 
@@ -193,6 +195,35 @@ func (h *StudentRunController) UploadAttachment(c *gin.Context) {
 
 	result, err := h.attachSvc.Upload(c.Request.Context(), user.ID, file, hdr)
 	core.WriteResponse(c, err, result)
+}
+
+// ---------------------------------------------------------------------------
+// Answer — POST /v1/agent-runs/:id/answer
+// ---------------------------------------------------------------------------
+
+// Answer handles POST /v1/agent-runs/:id/answer.
+// The request body must contain {"selected": ["key1", ...], "free_text": "..."}.
+// Returns 200 {"code":0,"data":{"run_id":N,"status":"resumed"}} on success.
+func (h *StudentRunController) Answer(c *gin.Context) {
+	user := middleware.GetCurrentUser(c)
+	if user == nil {
+		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
+		return
+	}
+
+	runID, ok := mustParseRunID(c)
+	if !ok {
+		return
+	}
+
+	var req agent.AnswerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("%s", err.Error()), nil)
+		return
+	}
+
+	resp, err := h.runSvc.Answer(c.Request.Context(), user.ID, runID, req)
+	core.WriteResponse(c, err, resp)
 }
 
 // ---------------------------------------------------------------------------

@@ -99,6 +99,33 @@ func (s *lifecycleRunStore) ListByUser(_ context.Context, _ uint, _ *time.Time, 
 func (s *lifecycleRunStore) MergeTerminalMetadata(_ context.Context, _ uint64, _ map[string]interface{}) error {
 	return nil
 }
+func (s *lifecycleRunStore) UpdatePendingQuestion(_ context.Context, id uint64, payloadJSON []byte) error {
+	r, ok := s.runs[id]
+	if !ok {
+		return errors.New("not found")
+	}
+	r.StateReason = "waiting_for_user_choice"
+	_ = payloadJSON
+	return nil
+}
+func (s *lifecycleRunStore) ClearPendingQuestion(_ context.Context, id uint64) error {
+	r, ok := s.runs[id]
+	if !ok {
+		return errors.New("not found")
+	}
+	r.StateReason = "running"
+	r.PendingQuestionJSON = nil
+	r.PendingQuestionAt = nil
+	return nil
+}
+func (s *lifecycleRunStore) AppendUserMessage(_ context.Context, _ uint64, _ string) error {
+	return nil
+}
+
+// AnswerAndClear — T4 reviewer-fix atomic answer flow mock impl.
+func (s *lifecycleRunStore) AnswerAndClear(_ context.Context, _ uint64, _ string) error {
+	return nil
+}
 
 // lifecycleSkillStore implements store.IAgentDefinitionStore for lifecycle tests.
 type lifecycleSkillStore struct {

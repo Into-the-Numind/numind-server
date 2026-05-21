@@ -222,7 +222,41 @@ func TestTerminalReason_PermissionDenied_StringValue(t *testing.T) {
 func TestTerminalReason_Count13(t *testing.T) {
 	// 这个 test 仅依赖编译期 [13] 数组通过；运行期是 no-op
 	// 如果 state.go 的编译期数组从 [12] 改 [13] 没改 → 本测试编译失败
-	var _ = [13]TerminalReason{} // sanity
+	// NOTE: 数组大小更新为 14 以匹配 state.go 中的编译期不变量（T3 yield protocol）
+	var _ = [14]TerminalReason{} // sanity — must match state.go compile-time invariant
+}
+
+// ── T3 (agent-mode-p0-tools): LoopEventAskUserPaused + TerminalWaitingForUserChoice ──
+
+func TestLoopState_Transition_AskUserPaused(t *testing.T) {
+	s := &LoopState{StepCount: 3} // pre-set StepCount to verify it's NOT incremented
+	term, cont, isTerminal := s.Transition(LoopEventAskUserPaused)
+
+	if term != TerminalWaitingForUserChoice {
+		t.Errorf("term = %q, want %q", term, TerminalWaitingForUserChoice)
+	}
+	if cont != "" {
+		t.Errorf("cont = %q, want empty string", cont)
+	}
+	if !isTerminal {
+		t.Errorf("isTerminal = false, want true")
+	}
+	if !s.IsTerminal() {
+		t.Errorf("s.IsTerminal() = false after Transition(LoopEventAskUserPaused), want true")
+	}
+	if s.TerminalReason != TerminalWaitingForUserChoice {
+		t.Errorf("s.TerminalReason = %q, want %q", s.TerminalReason, TerminalWaitingForUserChoice)
+	}
+	// StepCount must NOT be incremented by a yield event (no tool turn completed).
+	if s.StepCount != 3 {
+		t.Errorf("s.StepCount = %d, want 3 (yield must not increment step count)", s.StepCount)
+	}
+}
+
+func TestTerminalWaitingForUserChoice_StringValue(t *testing.T) {
+	if string(TerminalWaitingForUserChoice) != "waiting_for_user_choice" {
+		t.Errorf("string value = %q, want %q", TerminalWaitingForUserChoice, "waiting_for_user_choice")
+	}
 }
 
 // ── M12 (#12 agent-mode-billing-integration): LoopEventErrorMaxBudget transition ──

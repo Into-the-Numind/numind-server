@@ -37,8 +37,8 @@ func TestPlatformToolFactory_LoadTools(t *testing.T) {
 	f := NewPlatformToolFactory(nil, nil)
 	tools, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	assert.Len(t, tools, 6)
-	assert.Len(t, metadata, 6)
+	assert.Len(t, tools, 10)
+	assert.Len(t, metadata, 10)
 	expected := []string{
 		"kb_search",
 		"learner_data_query",
@@ -46,6 +46,10 @@ func TestPlatformToolFactory_LoadTools(t *testing.T) {
 		"image_gen",
 		"bash_exec",
 		"get_current_date",
+		"web_search",
+		"web_fetch",
+		"ask_user_question",
+		"file_read",
 	}
 	for i, want := range expected {
 		assert.Equal(t, want, tools[i].Name(), "tool[%d]", i)
@@ -59,10 +63,10 @@ func TestPlatformToolFactory_LoadTools_WithDS_8Tools(t *testing.T) {
 	f := NewPlatformToolFactory(nil, ds)
 	tools, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	assert.Len(t, tools, 8, "non-nil ds should produce 8 tools (6 base + memory_write + memory_read)")
-	assert.Len(t, metadata, 8, "non-nil ds should produce 8 metadata entries")
+	assert.Len(t, tools, 12, "non-nil ds should produce 12 tools (10 base + memory_write + memory_read)")
+	assert.Len(t, metadata, 12, "non-nil ds should produce 12 metadata entries")
 
-	// Verify the first 6 are unchanged.
+	// Verify the first 10 are unchanged.
 	baseExpected := []string{
 		"kb_search",
 		"learner_data_query",
@@ -70,34 +74,38 @@ func TestPlatformToolFactory_LoadTools_WithDS_8Tools(t *testing.T) {
 		"image_gen",
 		"bash_exec",
 		"get_current_date",
+		"web_search",
+		"web_fetch",
+		"ask_user_question",
+		"file_read",
 	}
 	for i, want := range baseExpected {
 		assert.Equal(t, want, tools[i].Name(), "tool[%d] name", i)
 	}
 
-	// Verify memory tools are appended at indices 6 and 7.
-	assert.Equal(t, "memory_write", tools[6].Name(), "tools[6] should be memory_write")
-	assert.Equal(t, "memory_read", tools[7].Name(), "tools[7] should be memory_read")
+	// Verify memory tools are appended at indices 10 and 11.
+	assert.Equal(t, "memory_write", tools[10].Name(), "tools[10] should be memory_write")
+	assert.Equal(t, "memory_read", tools[11].Name(), "tools[11] should be memory_read")
 }
 
-func TestPlatformToolFactory_LoadTools_WithDS_Metadata8(t *testing.T) {
+func TestPlatformToolFactory_LoadTools_WithDS_Metadata12(t *testing.T) {
 	db := newFactoryTestDB(t)
 	ds := store.NewTestStore(db)
 	f := NewPlatformToolFactory(nil, ds)
 	_, metadata, err := f.LoadTools(context.Background())
 	require.NoError(t, err)
-	require.Len(t, metadata, 8)
+	require.Len(t, metadata, 12)
 
-	// memory_write metadata.
-	mw := metadata[6]
+	// memory_write metadata at index 10.
+	mw := metadata[10]
 	assert.Equal(t, "memory_write", mw.ToolName)
 	assert.Equal(t, "记忆写入", mw.DisplayName)
 	assert.Equal(t, "platform", mw.Source)
 	assert.Equal(t, "记忆", mw.Category)
 	assert.Equal(t, "moderate", mw.RiskLevel)
 
-	// memory_read metadata.
-	mr := metadata[7]
+	// memory_read metadata at index 11.
+	mr := metadata[11]
 	assert.Equal(t, "memory_read", mr.ToolName)
 	assert.Equal(t, "记忆读取", mr.DisplayName)
 	assert.Equal(t, "platform", mr.Source)
