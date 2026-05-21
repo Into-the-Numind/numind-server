@@ -47,6 +47,10 @@ type webFetchTool struct {
 
 var _ FullTool = (*webFetchTool)(nil)
 
+// NewWebFetchTool constructs a webFetchTool with production defaults (SSRF check enabled,
+// newSafeHTTPClient used on first Execute). Used by platformToolFactory (T7).
+func NewWebFetchTool() FullTool { return &webFetchTool{} }
+
 const (
 	webFetchMaxBytes = 100 * 1024 // 100 KB
 	webFetchTimeout  = 30 * time.Second

@@ -33,9 +33,13 @@ func (f *platformToolFactory) DisplayName() string { return "平台内置工具"
 // Tools constructed with nil deps will panic only if Execute is called; LoadTools itself
 // must never panic.
 //
+// Base tools (always present, ds=nil or ds!=nil): 10 tools
+//
+//	kb_search, learner_data_query, document_generate, image_gen, bash_exec,
+//	get_current_date, web_search, web_fetch, ask_user_question, file_read
+//
 // When f.ds is non-nil, two additional memory tools (memory_write, memory_read) are
-// appended, bringing the total to 8 tools. The nil guard ensures the existing
-// nil-ds unit test (6 tools) continues to pass unchanged.
+// appended, bringing the total to 12 tools.
 func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMetadata, error) {
 	var usersGetter userByIDGetter
 	if f.ds != nil {
@@ -48,6 +52,10 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		&imageGenTool{},
 		&bashExecTool{},
 		&getCurrentDateTool{},
+		NewWebSearchToolFromConfig(),
+		NewWebFetchTool(),
+		NewAskUserQuestionTool(),
+		NewFileReadTool(&pdfParserImpl{}, &imageParserImpl{}, &textParserImpl{}),
 	}
 	metadata := []ToolMetadata{
 		{ToolName: "kb_search", DisplayName: "知识库检索", Description: "Search the knowledge base.", Source: "platform", Category: "RAG"},
@@ -56,9 +64,13 @@ func (f *platformToolFactory) LoadTools(_ context.Context) ([]FullTool, []ToolMe
 		{ToolName: "image_gen", DisplayName: "图像生成", Description: "[stub] Generate images.", Source: "platform", Category: "多媒体", RequiresSandbox: true},
 		{ToolName: "bash_exec", DisplayName: "代码执行", Description: "[stub] Execute shell.", Source: "platform", Category: "代码", RiskLevel: "dangerous", RequiresSandbox: true},
 		{ToolName: "get_current_date", DisplayName: "当前日期", Description: "Return today's date.", Source: "platform", Category: "查询"},
+		{ToolName: "web_search", DisplayName: "网络搜索", Description: "Search the web for real-time information.", Source: "platform", RiskLevel: "safe", Category: "网络"},
+		{ToolName: "web_fetch", DisplayName: "网页读取", Description: "Fetch a URL and return its contents as Markdown.", Source: "platform", RiskLevel: "moderate", Category: "网络"},
+		{ToolName: "ask_user_question", DisplayName: "反问学员", Description: "Ask the user a clarifying question with structured options. Yields the run.", Source: "platform", RiskLevel: "safe", Category: "交互"},
+		{ToolName: "file_read", DisplayName: "读取文件", Description: "Read an uploaded file's contents by URL.", Source: "platform", RiskLevel: "moderate", Category: "文件"},
 	}
 	// Append memory tools only when a real store is available (nil guard preserves
-	// the nil-ds unit test that expects exactly 6 tools).
+	// the nil-ds unit test that expects exactly 10 tools).
 	if f.ds != nil {
 		np := memory.NewNotepad(f.ds.UserGlobalMemories())
 		tools = append(tools,
