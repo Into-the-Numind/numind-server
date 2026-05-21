@@ -25,6 +25,10 @@ type ICustomerStore interface {
 	HasTemplatePermission(ctx context.Context, userID, templateID uint) (bool, error)
 	ListUserTemplatePermissions(ctx context.Context, userID uint) ([]model.UserTemplatePermission, error)
 	GetAuthorizedTemplates(ctx context.Context, userID uint) ([]model.SopTemplate, error)
+	// CountActiveAuthorizedSopTemplates 返回该用户白名单内 status='active' 的 SOP 模板数量。
+	// 语义等价于 "GetAuthorizedTemplates + 过滤 Status==active 后计数"，但走 COUNT 查询
+	// 避免拉取完整记录（列表路径每个 user 一次，N+1 优化）。
+	CountActiveAuthorizedSopTemplates(ctx context.Context, userID uint) (int64, error)
 
 	// 统计相关
 	GetCustomerStatistics(ctx context.Context, userID uint) (totalSubUsers, activeSubUsers, totalTemplates, totalRuns int64, err error)
@@ -48,6 +52,9 @@ type ICustomerStore interface {
 	ListSubUserChatbotIDs(ctx context.Context, subUserID uint) ([]uint, error)
 	GrantChatbotPermissions(ctx context.Context, subUserID uint, chatbotIDs []uint) error
 	RevokeChatbotPermissions(ctx context.Context, subUserID uint, chatbotIDs []uint) error
+	// CountActiveAuthorizedChatbots 返回该用户白名单内仍可用的 chatbot 数量。
+	// 语义对称于 SOP active 模板：JOIN chatbot_config，过滤未软删除 + status=published。
+	CountActiveAuthorizedChatbots(ctx context.Context, userID uint) (int64, error)
 }
 
 type customerStore struct {
@@ -258,6 +265,25 @@ func (c *customerStore) GetAuthorizedTemplates(ctx context.Context, userID uint)
 		Find(&templates).Error
 
 	return templates, err
+}
+
+// CountActiveAuthorizedSopTemplates 返回白名单内 sop_template.status='active' 的数量。
+//
+// 与 GetAuthorizedTemplates+Status=="active" 过滤等价，但走纯 COUNT 避免列拉取——
+// 列表路径每个 user 调一次，N+1 优化。GetSubUserDetail 仍用 GetAuthorizedTemplates
+// 因为详情页需要返回模板对象列表。
+func (c *customerStore) CountActiveAuthorizedSopTemplates(ctx context.Context, userID uint) (int64, error) {
+	var n int64
+	err := c.db.WithContext(ctx).
+		Table("user_template_permission").
+		Joins("INNER JOIN sop_template ON sop_template.id = user_template_permission.template_id").
+		Where("user_template_permission.sub_user_id = ? AND user_template_permission.deleted_at IS NULL AND sop_template.status = ?",
+			userID, "active").
+		Count(&n).Error
+	if err != nil {
+		return 0, fmt.Errorf("CountActiveAuthorizedSopTemplates: %w", err)
+	}
+	return n, nil
 }
 
 // GetCustomerStatistics 获取客户统计数据。返回 4 个聚合数：
@@ -553,6 +579,33 @@ func (c *customerStore) GrantChatbotPermissions(ctx context.Context, subUserID u
 		return fmt.Errorf("GrantChatbotPermissions: insert %d rows: %w", len(rows), err)
 	}
 	return nil
+}
+
+// CountActiveAuthorizedChatbots 返回该用户白名单内仍可用的 chatbot 数量。
+//
+// 语义对称于 SOP active 计数（参考 CountActiveAuthorizedSopTemplates）：
+//   - 行存在于 user_chatbot_permission（白名单授权）
+//   - 关联 chatbot_config 未软删除（deleted_at IS NULL）
+//   - 关联 chatbot_config 已发布（status = "published"）
+//
+// 父账号通常没白名单记录 → 返回 0（与 SOP 列表路径行为对称，不引入新的不对称）。
+// 说明：user_chatbot_permission 表无软删除字段，Table() 与 Model() 在此等价；
+// 手工 deleted_at IS NULL 仅作用于 JOIN 进来的 chatbot_config。
+// 边界：如果父账号被误授予白名单行（数据异常），此处 COUNT 会非零，而
+// HasChatbotPermission 仍走父账号 bypass — 本方法仅供"已授权资产数"展示，
+// 不参与权限决策，因此不需要再补一层 parent_user_id 判断。
+func (c *customerStore) CountActiveAuthorizedChatbots(ctx context.Context, userID uint) (int64, error) {
+	var n int64
+	err := c.db.WithContext(ctx).
+		Table("user_chatbot_permission").
+		Joins("INNER JOIN chatbot_config ON chatbot_config.id = user_chatbot_permission.chatbot_id").
+		Where("user_chatbot_permission.sub_user_id = ? AND chatbot_config.deleted_at IS NULL AND chatbot_config.status = ?",
+			userID, model.ChatbotStatusPublished).
+		Count(&n).Error
+	if err != nil {
+		return 0, fmt.Errorf("CountActiveAuthorizedChatbots: %w", err)
+	}
+	return n, nil
 }
 
 // RevokeChatbotPermissions 批量撤销子账号的 chatbot 权限。
