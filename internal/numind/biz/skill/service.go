@@ -56,6 +56,10 @@ type Service interface {
 	AdvancedToggle(ctx context.Context, userID uint, id uint64) (*model.AgentDefinition, error)
 
 	ListTemplates(ctx context.Context) ([]model.SkillTemplate, error)
+
+	// AvailableForStudent returns active agents visible to a learner (child account).
+	// Returns empty slice for parent accounts. #14 follow-up student-endpoints ALPHA.
+	AvailableForStudent(ctx context.Context, learnerUserID uint) ([]*model.AgentDefinition, error)
 }
 
 type service struct {

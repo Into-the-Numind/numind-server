@@ -32,6 +32,15 @@ type IAgentRunStore interface {
 	// and agent_run.status = status (M-C4a admin listing).
 	// parentUserID=0 skips the parent filter (global cross-tenant view).
 	ListByParentUserIDAndStatus(ctx context.Context, parentUserID uint, status string, offset, limit int) ([]model.AgentRun, int64, error)
+	// ListByUser returns agent_run rows for a specific user, ordered by started_at DESC.
+	// sinceTime is optional — zero value means no time filter (returns all rows up to limit).
+	// Used by student-facing recent/history endpoints (#14 follow-up ALPHA).
+	ListByUser(ctx context.Context, userID uint, sinceTime *time.Time, limit int) ([]model.AgentRun, error)
+	// MergeTerminalMetadata merges a JSON patch into agent_run.terminal_metadata.
+	// Reads current value, merges key-by-key (shallow), writes back.
+	// RowsAffected==0 returns error.
+	// Used by WriteFeedback v1 (#14 follow-up ALPHA).
+	MergeTerminalMetadata(ctx context.Context, id uint64, patch map[string]interface{}) error
 }
 
 type agentRunStore struct {
@@ -154,6 +163,60 @@ func (s *agentRunStore) ListByParentUserIDAndStatus(ctx context.Context, parentU
 		return nil, 0, fmt.Errorf("agentRunStore.ListByParentUserIDAndStatus.Find: %w", err)
 	}
 	return runs, total, nil
+}
+
+// ListByUser returns runs for a specific user ordered by started_at DESC.
+// If sinceTime is non-nil only rows with started_at >= sinceTime are returned.
+// limit <= 0 defaults to 20.
+func (s *agentRunStore) ListByUser(ctx context.Context, userID uint, sinceTime *time.Time, limit int) ([]model.AgentRun, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	base := s.db.WithContext(ctx).Model(&model.AgentRun{}).Where("user_id = ?", userID)
+	if sinceTime != nil {
+		base = base.Where("started_at >= ?", *sinceTime)
+	}
+	var runs []model.AgentRun
+	if err := base.Order("started_at DESC").Limit(limit).Find(&runs).Error; err != nil {
+		return nil, fmt.Errorf("agentRunStore.ListByUser(userID=%d): %w", userID, err)
+	}
+	return runs, nil
+}
+
+// MergeTerminalMetadata reads the current terminal_metadata, shallow-merges patch keys into
+// it, and writes the result back. RowsAffected==0 returns an error.
+func (s *agentRunStore) MergeTerminalMetadata(ctx context.Context, id uint64, patch map[string]interface{}) error {
+	// Read current value.
+	var run model.AgentRun
+	if err := s.db.WithContext(ctx).Select("terminal_metadata").First(&run, id).Error; err != nil {
+		return fmt.Errorf("agentRunStore.MergeTerminalMetadata get(id=%d): %w", id, err)
+	}
+
+	// Merge: start from existing JSON (or empty map), overlay patch keys.
+	merged := make(map[string]interface{})
+	if len(run.TerminalMetadata) > 0 && string(run.TerminalMetadata) != "null" {
+		if err := json.Unmarshal(run.TerminalMetadata, &merged); err != nil {
+			// If existing value is not a JSON object, replace entirely.
+			merged = make(map[string]interface{})
+		}
+	}
+	for k, v := range patch {
+		merged[k] = v
+	}
+	b, err := json.Marshal(merged)
+	if err != nil {
+		return fmt.Errorf("agentRunStore.MergeTerminalMetadata marshal(id=%d): %w", id, err)
+	}
+	result := s.db.WithContext(ctx).Model(&model.AgentRun{}).
+		Where("id = ?", id).
+		Update("terminal_metadata", datatypes.JSON(b))
+	if result.Error != nil {
+		return fmt.Errorf("agentRunStore.MergeTerminalMetadata update(id=%d): %w", id, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("agentRunStore.MergeTerminalMetadata: no row matched id=%d", id)
+	}
+	return nil
 }
 
 func (s *agentRunStore) ListBySession(ctx context.Context, sessionID string, offset, limit int) ([]model.AgentRun, int64, error) {

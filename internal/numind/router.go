@@ -404,6 +404,13 @@ func installNumindRouters(g *gin.Engine) error {
 		}
 	}
 
+	// #14 follow-up ALPHA: student-facing agent endpoints (7 GET + 1 POST).
+	// Bridges web-v3 to backend; routes sit under authGroup (user_token middleware).
+	agentcontroller.RegisterStudentQueryRoutes(authGroup, skillbiz.NewService(store.S), b.StudentQuery())
+
+	// #14 BETA student-facing run lifecycle endpoints
+	agentcontroller.RegisterStudentRunRoutes(authGroup, b)
+
 	// 支付回调（无需鉴权）
 	{
 		paymentCtrl := paymentcontroller.New(b.Payment())
