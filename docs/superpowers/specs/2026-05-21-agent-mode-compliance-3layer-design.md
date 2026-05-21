@@ -1213,7 +1213,7 @@ func WrapHooks(base *agent.RunHooks, gate compliance.ComplianceGate) *agent.RunH
             if cerr != nil {
                 // fail-open：compliance 出错不阻止工具调用
                 log.Warnw("compliancegate.PreToolCall: CheckToolCall failed; fail-open",
-                    "tool", req.Tool.Name(), "error", cerr)
+                    "tool", req.Tool.Name, "error", cerr)  // ToolInfo.Name 是 struct field
                 return forwardPre(ctx, base, t, input)
             }
             if result.Decision == model.DecisionDeny {  // S2 P2-2 修复：用常量

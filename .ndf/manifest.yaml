@@ -1482,7 +1482,7 @@ features:
 - id: agent-mode-compliance-3layer
   ndf_version: '2.0'
   track: standard
-  stage: S2
+  stage: S4
   description: 'Agent 模式 14-feature 分解 #13/14。落地蓝本 §7 安全与合规三层（L0 平台硬规则常量 / L1 父账户 compliance_rule 表运营规则 / L2 复用 #5 agent_definition.questionnaire_answers Q10/Q11）+ Prompt Injection 防护（input fence + 关键词启发式 14+ 项 + mock LLM classifier）+ 输出 fence tag 检测 + Data scope GORM Before-Query hook（agent-mode 6 张表 opt-in，v1 fail-open log warn）+ compliance_audit_log 异步写入（buffered cap=1000 + Start/Stop flush-on-shutdown + drop count atomic 监控）+ 规则 TTL cache（per-parent_user_id cap=500，TTL 5min，lazy LRU 兜底淘汰）+ ComplianceGate interface 4 方法（SystemPromptBlock / CheckUserInput / CheckLLMOutput / CheckToolCall）+ compliancegate.WrapHooks 装饰器（PreToolCall chain: compliance → permission → sandbox；biz/agent/compliancegate 子包解耦 import cycle）+ runner.go:275 step [2] tenantHardRulesPlaceholder 装配。Out of scope: 真实 qwen-turbo L3 输出过滤 (#14) / 管理端 compliance_rule CRUD UI (#14) / 学员端合规提示 UI (#11/#14) / SQL-AST 静态分析 (v2) / 90 天热 1 年冷归档 cron (#14) / 真实 LLM injection classifier (#14) / prod 部署。'
   repos:
   - numind-server
@@ -1494,6 +1494,7 @@ features:
     requirement: numind-server/requirements/agent-mode-compliance-3layer.md
     proposal: numind-server/proposals/agent-mode-compliance-3layer-proposal.md
     spec: numind-server/docs/superpowers/specs/2026-05-21-agent-mode-compliance-3layer-design.md
+    plan: numind-server/docs/superpowers/plans/2026-05-21-agent-mode-compliance-3layer-plan.md
     architecture_blueprint: docs/agent-mode/architecture-v1.md
   decisions:
   - '2026-05-21 (s0-1): rule_id 不加 FK 决策 — compliance_audit_log.rule_id 引用 compliance_rule.id 但不加 FK constraint；理由：审计行必须在 rule 软删/硬删后继续可读（事件历史不可篡改）'
@@ -1508,11 +1509,14 @@ features:
   - '2026-05-21 (s2-4): TTLCache 全程 sync.Mutex Lock（不用 RWMutex）— 缓存操作快，避免 RUnlock→Lock 之间的 data race；加 EvictionCount() 可观测性'
   - '2026-05-21 (s2-5): truncate() helper 移到 types.go 共享 — gate.go / scope_validator.go / injection_detector.go 多处用'
   - '2026-05-21 (s2-6): 5 Wave 调度（之前 4 Wave） — Wave 2 串行 errno + types + platform_rules 作 baseline，Wave 3/4 并行 Tier 3 文件 disjoint，Wave 5 集成串行'
+  - '2026-05-21 (s3-1): WithSkipScope 升级方案 A — 单独建 internal/pkg/compliance_scope 微包共享 ctx key + WithSkipScope / SkipScopeFromCtx；理由：方案 B（store 内复制 key）因 Go context value key 用 interface{} 比对 type identity，两套 struct{} 互不识别，SkipScope 失效'
+  - '2026-05-21 (s3-2): scopeWhitelistTables 7 表（不是 6 表）— agent_run / agent_session / agent_session_memory / user_global_memory / agent_definition / compliance_rule / compliance_audit_log；S2 散文笔误，以 spec 代码为准'
+  - '2026-05-21 (s3-3): S2 §5.1 笔误修正 — req.Tool.Name 是 ToolInfo struct field，不是方法；S4 实施 copy spec 代码时去掉 ()，spec 第 1216 行也已修正'
   progress:
-    total_tasks: 0
+    total_tasks: 16
     completed_tasks: 0
     reviewed_tasks: 0
-    current_task: 'S2 spec 完成，第二轮 reviewer PASS（P0-1 import cycle + 4 P1 + 5 P2 全 CLOSED）。下一步：S3 plan。'
+    current_task: 'S3 plan 完成，第二轮 reviewer PASS（3 P1 + 3 P2 全 CLOSED）。下一步：S4 Wave 1 启动（M1 migration + M2 model 并行 Tier 3）。'
   related_features:
   - 'agent-mode-runtime-skeleton (#2/14, merged 45770bb5 — LoopState / RunHooks 接口)'
   - 'agent-mode-sandbox-integration (#4/14, merged 8c883533 — SandboxHook + ctx 注入)'
