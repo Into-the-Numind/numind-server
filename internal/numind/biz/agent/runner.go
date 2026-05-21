@@ -497,6 +497,15 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 			break
 		}
 
+		// 临时诊断:把 ReAct 内部 einoAgent.Generate 抛的真实 err 打出来,
+		// 帮 dev 定位 LLM 调用失败的根因 (HTTP 4xx / 5xx / API key / 路由等)。
+		// TODO: 调试完后改回 log.Debugw 或封装到 trace
+		log.Warnw("AgentRunner.Run einoAgent.Generate failed",
+			"agent_run_id", run.ID,
+			"attempt", attempt,
+			"error", runErr.Error(),
+		)
+
 		// Classify error and drive state machine.
 		event := HandleLLMError(st, runErr)
 
