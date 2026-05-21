@@ -10,10 +10,12 @@ import (
 
 	"numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/agent/budgetgate"
+	"numind-server/internal/numind/biz/agent/compliancegate"
 	"numind-server/internal/numind/biz/ali"
 	"numind-server/internal/numind/biz/budget"
 	chatbotbiz "numind-server/internal/numind/biz/chatbot"
 	"numind-server/internal/numind/biz/compact"
+	"numind-server/internal/numind/biz/compliance"
 	"numind-server/internal/numind/biz/config"
 	"numind-server/internal/numind/biz/credit"
 	customerbiz "numind-server/internal/numind/biz/customer"
@@ -90,6 +92,8 @@ type biz struct {
 	agentRunner       agent.AgentRunner
 	agentToolRegistry agent.AgentToolRegistry
 	permissionGate    *permission.PermissionGate // #6 agent-mode-permission-pipeline
+	complianceGate    compliance.ComplianceGate  // #13 agent-mode-compliance-3layer
+	complianceAudit   *compliance.AuditLogger    // #13 agent-mode-compliance-3layer (Stop on shutdown)
 }
 
 // NewBiz 创建一个 IBiz 类型的实例.
@@ -281,7 +285,29 @@ func NewBiz(ds store.IStore) *biz {
 	budgetGate := budgetgate.NewBudgetGate(budgetTracker, budgetAdminConsumer, ds.AgentRuns())
 
 	budgetWrappedHooks := budgetGate.WrapHooks(sandboxHookManager.AsRunHooks())
-	wrappedHooks := permission.WrapHooks(budgetWrappedHooks, b.permissionGate)
+	permWrappedHooks := permission.WrapHooks(budgetWrappedHooks, b.permissionGate)
+
+	// #13 agent-mode-compliance-3layer: construct 3-layer compliance gate.
+	// Hook chain order extended: sandbox → budget → permission → compliancegate (outermost)
+	// PreToolCall: compliance.CheckToolCall fires first; deny short-circuits before
+	// permission/budget/sandbox. Rationale: L0 content violations should not leak
+	// internal permission/budget state.
+	complianceCache := compliance.NewTTLCache(compliance.DefaultCacheCap, compliance.DefaultCacheTTL)
+	complianceTenant := compliance.NewTenantRuleProvider(ds.Compliance(), complianceCache)
+	complianceAssembler := compliance.NewSystemPromptAssembler(complianceTenant)
+	complianceAudit := compliance.NewAuditLogger(ds.Compliance())
+	complianceAudit.Start()
+	b.complianceAudit = complianceAudit
+	complianceInjection := compliance.NewInjectionDetector(compliance.NewMockClassifier())
+	b.complianceGate = compliance.NewComplianceGate(complianceAssembler, complianceTenant, complianceInjection, complianceAudit)
+
+	// scope_validator install — GORM Before-Query hook on whitelist agent-mode tables
+	complianceScope := compliance.NewScopeValidator(complianceAudit)
+	if err := complianceScope.Install(ds.DB()); err != nil {
+		log.Warnw("compliance.ScopeValidator.Install failed; scope monitoring disabled", "error", err)
+	}
+
+	wrappedHooks := compliancegate.WrapHooks(permWrappedHooks, b.complianceGate)
 
 	// SetAdminTestConsumer 通过 adapter 把 budget.AdminTestConsumer 转 credit.AdminTestConsumer
 	// （两个 interface 字段类型签名相同，但 Status 返回类型不同；adapter 做字段转换）。
@@ -329,6 +355,7 @@ func NewBiz(ds store.IStore) *biz {
 		agent.WithNarrationProvider(narrationProv), // #8 narration-layer (nil if init failed)
 		agent.WithMemoryProvider(memoryProvider),   // #7 memory-system
 		agent.WithBudgetTracker(budgetTracker),     // #12 agent-mode-billing-integration
+		agent.WithComplianceGate(b.complianceGate), // #13 agent-mode-compliance-3layer
 	)
 
 	// 初始化知识库服务
@@ -477,6 +504,19 @@ func (b *biz) PermissionGate() *permission.PermissionGate {
 func (b *biz) ClosePermissionGate() {
 	if b.permissionGate != nil {
 		b.permissionGate.Close()
+	}
+}
+
+// CloseComplianceAudit 优雅停止 compliance audit logger consumer goroutine。
+// 与 ClosePermissionGate 配对调用；进程退出时若未调，consumer 随进程结束（无内存
+// 泄漏，仅丢失 in-flight 审计 entries —— 与 #6 同模式 trade-off）。
+// #13 agent-mode-compliance-3layer.
+func (b *biz) CloseComplianceAudit(ctx context.Context) {
+	if b.complianceAudit != nil {
+		if err := b.complianceAudit.Stop(ctx); err != nil {
+			log.Warnw("compliance audit logger stop timed out",
+				"error", err, "drop_count", b.complianceAudit.DropCount())
+		}
 	}
 }
 

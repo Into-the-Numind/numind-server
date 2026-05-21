@@ -310,6 +310,11 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate agent_permission_decision_log: %v", err)
 	}
 
+	// Agent compliance 3-layer 两表（agent-mode-compliance-3layer #13）
+	if err := db.AutoMigrate(&model.ComplianceRule{}, &model.ComplianceAuditLog{}); err != nil {
+		return fmt.Errorf("failed to migrate compliance tables: %v", err)
+	}
+
 	log.Infow("All database schema migration completed")
 
 	// 3. 迁移后验证字符集

@@ -17,6 +17,7 @@ import (
 
 	"numind-server/internal/numind/biz/budget"
 	"numind-server/internal/numind/biz/compact"
+	"numind-server/internal/numind/biz/compliance"
 	"numind-server/internal/numind/biz/memory"
 	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/numind/biz/skill"
@@ -79,6 +80,7 @@ type agentRunner struct {
 	narrationProvider *narration.Provider         // #8 narration-layer: wired by biz.go via WithNarrationProvider; may be nil
 	memoryProvider    memory.MemoryProvider       // #7 memory-system: wired by biz.go via WithMemoryProvider; may be nil
 	budgetTracker     budget.BudgetTracker        // #12 agent-mode-billing-integration: wired by biz.go via WithBudgetTracker; may be nil
+	complianceGate    compliance.ComplianceGate   // #13 agent-mode-compliance-3layer: wired by biz.go via WithComplianceGate; may be nil
 }
 
 var _ AgentRunner = (*agentRunner)(nil)
@@ -154,6 +156,15 @@ func WithMemoryProvider(p memory.MemoryProvider) RunnerOption {
 func WithBudgetTracker(t budget.BudgetTracker) RunnerOption {
 	return func(r *agentRunner) {
 		r.budgetTracker = t
+	}
+}
+
+// WithComplianceGate injects a ComplianceGate implementation.
+// nil = no compliance enforcement (useful for tests).
+// #13 agent-mode-compliance-3layer.
+func WithComplianceGate(g compliance.ComplianceGate) RunnerOption {
+	return func(r *agentRunner) {
+		r.complianceGate = g
 	}
 }
 
@@ -272,10 +283,19 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	// #7 memory-system: 装配 memory.SystemBlock 段位
 	// P2-6 注释：以下 4 变量是各 feature 段位的协调占位（蓝本 §4.3.9）；
 	// 值暂为空字符串，merge conflict 时各 feature 改自己的赋值行不破坏段位顺序。
-	var tenantHardRulesPlaceholder string // PLACEHOLDER: tenant.hard_rules (#6 will fill)
-	var memoryDisclaimerBlock string      // PLACEHOLDER: memory disclaimer (#7 fills below)
-	var memorySystemBlock string          // PLACEHOLDER: memory.SystemBlock (#7 fills below)
-	var toolsSectionPlaceholder string    // PLACEHOLDER: tools_section (#14 will fill)
+	// step [2] tenant_hard_rules (filled by #13 agent-mode-compliance-3layer compliance.SystemPromptBlock)
+	var tenantHardRulesPlaceholder string
+	if r.complianceGate != nil {
+		block, err := r.complianceGate.SystemPromptBlock(ctx, ad)
+		if err != nil {
+			log.Warnw("AgentRunner.Run: complianceGate.SystemPromptBlock failed; fail-open with partial block",
+				"agent_run_id", run.ID, "error", err)
+		}
+		tenantHardRulesPlaceholder = block // even on err, block may contain L0
+	}
+	var memoryDisclaimerBlock string   // PLACEHOLDER: memory disclaimer (#7 fills below)
+	var memorySystemBlock string       // PLACEHOLDER: memory.SystemBlock (#7 fills below)
+	var toolsSectionPlaceholder string // PLACEHOLDER: tools_section (#14 will fill)
 
 	if req.EnableMemory && r.memoryProvider != nil {
 		block, err := r.memoryProvider.SystemPromptBlock(ctx, req.UserID, req.AgentDefinitionID, req.SessionID)

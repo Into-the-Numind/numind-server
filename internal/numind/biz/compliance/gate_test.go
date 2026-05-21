@@ -140,6 +140,9 @@ func TestComplianceGate_CheckLLMOutput_TenantStoreError_FailOpen(t *testing.T) {
 	res, err := g.CheckLLMOutput(context.Background(), 42, "正常输出")
 	require.NoError(t, err)
 	assert.Equal(t, model.DecisionAllow, res.Decision, "fail-open on store error")
+	// M14 reviewer P2: assert no audit on store-error fail-open (spec §4.12 point 5)
+	time.Sleep(20 * time.Millisecond) // give consumer a moment
+	assert.Equal(t, 0, fs.count(), "no audit on tenant store error fail-open")
 }
 
 func TestComplianceGate_CheckToolCall_NoMatch_Allow(t *testing.T) {
