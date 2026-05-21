@@ -17,8 +17,8 @@ type AgentSessionMemory struct {
 	SourceAgentDefinitionID *uint64    `gorm:"column:source_agent_definition_id" json:"source_agent_definition_id,omitempty"`
 	RecencyAt               time.Time  `gorm:"not null;index:idx_asm_recency,priority:3" json:"recency_at"`
 	ExpiresAt               *time.Time `gorm:"column:expires_at" json:"expires_at,omitempty"`
-	CreatedAt               time.Time  `gorm:"not null;default:CURRENT_TIMESTAMP" json:"created_at"`
-	UpdatedAt               time.Time  `gorm:"not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
+	CreatedAt               time.Time  `gorm:"not null;default:CURRENT_TIMESTAMP(3)" json:"created_at"`
+	UpdatedAt               time.Time  `gorm:"not null;default:CURRENT_TIMESTAMP(3)" json:"updated_at"`
 }
 
 func (AgentSessionMemory) TableName() string { return "agent_session_memory" }

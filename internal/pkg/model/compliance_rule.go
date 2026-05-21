@@ -12,8 +12,8 @@ type ComplianceRule struct {
 	RuleText     string    `gorm:"type:text;not null" json:"rule_text"`
 	Priority     int       `gorm:"not null;default:100;index:idx_parent_active_priority,priority:3" json:"priority"`
 	IsActive     bool      `gorm:"not null;default:true;index:idx_parent_active_priority,priority:2" json:"is_active"`
-	CreatedAt    time.Time `gorm:"not null;default:CURRENT_TIMESTAMP" json:"created_at"`
-	UpdatedAt    time.Time `gorm:"not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
+	CreatedAt    time.Time `gorm:"not null;default:CURRENT_TIMESTAMP(3)" json:"created_at"`
+	UpdatedAt    time.Time `gorm:"not null;default:CURRENT_TIMESTAMP(3)" json:"updated_at"`
 }
 
 func (ComplianceRule) TableName() string { return "compliance_rule" }

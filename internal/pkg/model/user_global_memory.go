@@ -14,8 +14,8 @@ type UserGlobalMemory struct {
 	Confidence              float64   `gorm:"not null;default:1.0" json:"confidence"`
 	SourceType              string    `gorm:"size:20;not null;default:'agent_tool'" json:"source_type"`
 	SourceAgentDefinitionID *uint64   `gorm:"column:source_agent_definition_id" json:"source_agent_definition_id,omitempty"`
-	CreatedAt               time.Time `gorm:"not null;default:CURRENT_TIMESTAMP" json:"created_at"`
-	UpdatedAt               time.Time `gorm:"not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
+	CreatedAt               time.Time `gorm:"not null;default:CURRENT_TIMESTAMP(3)" json:"created_at"`
+	UpdatedAt               time.Time `gorm:"not null;default:CURRENT_TIMESTAMP(3)" json:"updated_at"`
 }
 
 func (UserGlobalMemory) TableName() string { return "user_global_memory" }

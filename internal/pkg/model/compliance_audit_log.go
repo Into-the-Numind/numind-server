@@ -17,7 +17,7 @@ type ComplianceAuditLog struct {
 	Decision          string    `gorm:"size:16;not null;index:idx_layer_decision,priority:2" json:"decision"`
 	TriggeredText     string    `gorm:"type:text" json:"triggered_text,omitempty"`
 	Reason            string    `gorm:"size:255" json:"reason,omitempty"`
-	CreatedAt         time.Time `gorm:"not null;default:CURRENT_TIMESTAMP;index:idx_parent_created,priority:2" json:"created_at"`
+	CreatedAt         time.Time `gorm:"not null;default:CURRENT_TIMESTAMP(3);index:idx_parent_created,priority:2" json:"created_at"`
 }
 
 func (ComplianceAuditLog) TableName() string { return "compliance_audit_log" }
