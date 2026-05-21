@@ -2,9 +2,15 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"time"
 
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/aiservice/profile"
 	"numind-server/internal/pkg/log"
+	"numind-server/internal/pkg/model"
 )
 
 // MemoryProvider is the top-level interface for the two-layer memory subsystem.
@@ -116,8 +122,52 @@ func (p *compositeProvider) Prefetch(ctx context.Context, userID uint, agentDefI
 	return out, nil
 }
 
-// SyncTurn is a v1 no-op. The #9/#14 features will wire real turn-level writes here.
-func (p *compositeProvider) SyncTurn(_ context.Context, _ uint, _ uint64, _ string, _, _ Message) error {
+// SyncTurn runs an async LLM extraction over (userMsg, asstMsg) and writes
+// 0-3 extracted facts/preferences into L1 memory. Designed to never block the
+// caller — all errors are logged + swallowed.
+//
+// Agent Mode #14/A3: replaces v1 stub `return nil` with real aiservice.Chat call.
+func (p *compositeProvider) SyncTurn(ctx context.Context, userID uint, agentDefID uint64, sessionID string, userMsg, assistantMsg Message) error {
+	content := fmt.Sprintf("用户：%s\n助手：%s", userMsg.Content, assistantMsg.Content)
+	resp, err := chatFn(ctx, profile.AgentSyncTurn, aiservice.ChatRequest{
+		Messages: []aiservice.ChatMessage{
+			{Role: aiservice.MessageRoleSystem, Content: aiservice.MessageContent{Text: SyncTurnSystemPrompt}},
+			{Role: aiservice.MessageRoleUser, Content: aiservice.MessageContent{Text: content}},
+		},
+		ResponseFormat: aiservice.ResponseFormatJSONObject,
+		MaxTokens:      300,
+		Temperature:    0.2,
+	})
+	if err != nil {
+		log.Warnw("memory SyncTurn LLM call failed", "userID", userID, "agentDefID", agentDefID, "error", err)
+		return nil // silent fail
+	}
+	var result SyncTurnResult
+	if uerr := json.Unmarshal([]byte(resp.Content), &result); uerr != nil {
+		log.Warnw("memory SyncTurn JSON unmarshal failed", "userID", userID, "raw_len", len(resp.Content))
+		return nil
+	}
+	for _, item := range result.Items {
+		if item.Confidence < 0.5 {
+			continue
+		}
+		// P1-1 fix (S3 reviewer): use l1Store.Create, NOT notepad.AppendL1 (method does not exist).
+		// EscapeForStorage is a package-level function (not a FenceRenderer method).
+		escaped := EscapeForStorage(item.Content)
+		row := &model.AgentSessionMemory{
+			UserID:            userID,
+			AgentDefinitionID: agentDefID,
+			Kind:              item.Kind,
+			Content:           escaped,
+			Score:             item.Confidence,
+			SourceType:        "sync_turn",
+			RecencyAt:         time.Now(),
+		}
+		if cerr := p.l1Store.Create(ctx, row); cerr != nil {
+			log.Warnw("memory SyncTurn L1 Create failed", "error", cerr)
+			continue
+		}
+	}
 	return nil
 }
 

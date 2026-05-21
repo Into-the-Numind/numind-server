@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"numind-server/internal/numind/store"
+	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/model"
 )
 
@@ -376,8 +377,13 @@ func TestProvider_OnPreCompress_NoOp(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestProvider_SyncTurn_NoOp verifies that SyncTurn always returns nil.
+// TestProvider_SyncTurn_NoOp verifies that SyncTurn returns nil even when LLM
+// returns no extractable items (empty items list). Uses chatFn mock so the
+// test does not require a live aiservice.Gateway.
 func TestProvider_SyncTurn_NoOp(t *testing.T) {
+	withMockChat(t, func(_ context.Context, _ string, _ aiservice.ChatRequest) (*aiservice.ChatResponse, error) {
+		return &aiservice.ChatResponse{Content: `{"items":[]}`}, nil
+	})
 	p := NewProvider(&emptyL1Store{}, &emptyL2Store{})
 	ctx := context.Background()
 
