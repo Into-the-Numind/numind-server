@@ -95,48 +95,51 @@ func installNumindRouters(g *gin.Engine) error {
 		// 权限检查（供前端 UI gating；子账号未授权时返回 has_permission:false，不被 gate 拦截）
 		authGroup.GET("/sales-rag/check-permission", salesRAGc.CheckSalesPermission)
 
-		// 销售智能体/知识库（子账号须在 user_feature_permission 有 sales_agent 记录；父账号自动通过）
-		salesGroup := authGroup.Group("/sales-rag")
-		salesGroup.Use(importMw.FeaturePermission(model.FeatureKeySalesAgent))
+		// 知识库（文档管理）：所有登录用户可用，数据按 user_id 在 biz/store 层隔离。
+		// 拆分自原 salesGroup（feature: salesrag-kb-public）—— 销售智能体权限不再
+		// 控制"能否管文档"，仅控制"能否进行销售对话"。
+		salesDocGroup := authGroup.Group("/sales-rag")
+		salesDocGroup.POST("/ingest", salesRAGc.Ingest)                  // 上传并解析文档
+		salesDocGroup.GET("/documents", salesRAGc.ListDocuments)         // 获取文档列表
+		salesDocGroup.GET("/documents/:id", salesRAGc.GetDocument)       // 获取文档详情
+		salesDocGroup.GET("/documents/:id/chunks", salesRAGc.ListChunks) // 获取文档切片列表
+		salesDocGroup.PUT("/documents/:id", salesRAGc.UpdateDocument)    // 更新文档
+		salesDocGroup.DELETE("/documents/:id", salesRAGc.DeleteDocument) // 删除文档
 
-		// 文档管理
-		salesGroup.POST("/ingest", salesRAGc.Ingest)                  // 上传并解析文档
-		salesGroup.GET("/documents", salesRAGc.ListDocuments)         // 获取文档列表
-		salesGroup.GET("/documents/:id", salesRAGc.GetDocument)       // 获取文档详情
-		salesGroup.GET("/documents/:id/chunks", salesRAGc.ListChunks) // 获取文档切片列表
-		salesGroup.PUT("/documents/:id", salesRAGc.UpdateDocument)    // 更新文档
-		salesGroup.DELETE("/documents/:id", salesRAGc.DeleteDocument) // 删除文档
+		// 销售对话相关（子账号须在 user_feature_permission 有 sales_agent 记录；父账号须在 sales_agent_owner 表）
+		salesChatGroup := authGroup.Group("/sales-rag")
+		salesChatGroup.Use(importMw.FeaturePermission(model.FeatureKeySalesAgent))
 
 		// 观点库
-		salesGroup.GET("/opinion-tracks", salesRAGc.ListOpinionTracks) // 获取系统内置观点赛道列表
+		salesChatGroup.GET("/opinion-tracks", salesRAGc.ListOpinionTracks) // 获取系统内置观点赛道列表
 
 		// 会话管理
-		salesGroup.POST("/sessions", salesRAGc.CreateSession)           // 创建销售会话
-		salesGroup.GET("/sessions", salesRAGc.ListSessions)             // 获取会话列表
-		salesGroup.GET("/sessions/:id", salesRAGc.GetSession)           // 获取会话详情
-		salesGroup.PUT("/sessions/:id", salesRAGc.UpdateSession)        // 更新会话信息
-		salesGroup.DELETE("/sessions/:id", salesRAGc.DeleteSession)     // 删除会话
-		salesGroup.PUT("/sessions/:id/pin", salesRAGc.PinSession)       // 置顶会话
-		salesGroup.DELETE("/sessions/:id/pin", salesRAGc.UnpinSession)  // 取消置顶会话
-		salesGroup.PUT("/sessions/:id/rename", salesRAGc.RenameSession) // 重命名会话
+		salesChatGroup.POST("/sessions", salesRAGc.CreateSession)           // 创建销售会话
+		salesChatGroup.GET("/sessions", salesRAGc.ListSessions)             // 获取会话列表
+		salesChatGroup.GET("/sessions/:id", salesRAGc.GetSession)           // 获取会话详情
+		salesChatGroup.PUT("/sessions/:id", salesRAGc.UpdateSession)        // 更新会话信息
+		salesChatGroup.DELETE("/sessions/:id", salesRAGc.DeleteSession)     // 删除会话
+		salesChatGroup.PUT("/sessions/:id/pin", salesRAGc.PinSession)       // 置顶会话
+		salesChatGroup.DELETE("/sessions/:id/pin", salesRAGc.UnpinSession)  // 取消置顶会话
+		salesChatGroup.PUT("/sessions/:id/rename", salesRAGc.RenameSession) // 重命名会话
 
 		// 消息管理
-		salesGroup.POST("/sessions/:id/chat", salesRAGc.ChatWithSession)                         // 基于会话的销售对话（SSE流式）
-		salesGroup.GET("/sessions/:id/messages", salesRAGc.ListMessages)                         // 获取会话消息列表
-		salesGroup.POST("/sessions/:id/messages/:message_id/feedback", salesRAGc.SubmitFeedback) // 提交消息反馈（点赞/点踩）
-		salesGroup.GET("/sessions/:id/messages/:message_id/feedback", salesRAGc.GetFeedback)     // 获取消息反馈
+		salesChatGroup.POST("/sessions/:id/chat", salesRAGc.ChatWithSession)                         // 基于会话的销售对话（SSE流式）
+		salesChatGroup.GET("/sessions/:id/messages", salesRAGc.ListMessages)                         // 获取会话消息列表
+		salesChatGroup.POST("/sessions/:id/messages/:message_id/feedback", salesRAGc.SubmitFeedback) // 提交消息反馈（点赞/点踩）
+		salesChatGroup.GET("/sessions/:id/messages/:message_id/feedback", salesRAGc.GetFeedback)     // 获取消息反馈
 
 		// 客户档案管理
-		salesGroup.PUT("/sessions/:id/customer-profile", salesRAGc.UpdateCustomerProfile) // 更新客户档案
-		salesGroup.GET("/sessions/:id/customer-profile", salesRAGc.GetCustomerProfile)    // 获取客户档案
-		salesGroup.POST("/analyze-profile", salesRAGc.AnalyzeProfile)                     // 解析文档生成客户档案
-		salesGroup.POST("/analyze-profile-text", salesRAGc.AnalyzeProfileText)            // 纯文本分析生成客户档案
+		salesChatGroup.PUT("/sessions/:id/customer-profile", salesRAGc.UpdateCustomerProfile) // 更新客户档案
+		salesChatGroup.GET("/sessions/:id/customer-profile", salesRAGc.GetCustomerProfile)    // 获取客户档案
+		salesChatGroup.POST("/analyze-profile", salesRAGc.AnalyzeProfile)                     // 解析文档生成客户档案
+		salesChatGroup.POST("/analyze-profile-text", salesRAGc.AnalyzeProfileText)            // 纯文本分析生成客户档案
 
 		// 聊天风格分析
-		salesGroup.POST("/analyze-chat-style", salesRAGc.AnalyzeChatStyle) // 分析聊天风格（语言指纹）
-		salesGroup.GET("/analyze-chat-style", salesRAGc.GetLanguageStyle)  // 获取已分析的聊天风格
-		salesGroup.PUT("/analyze-chat-style", salesRAGc.SaveLanguageStyle) // 保存/更新语言风格
-		salesGroup.POST("/ocr", salesRAGc.OCR)                             // OCR 识别图片
+		salesChatGroup.POST("/analyze-chat-style", salesRAGc.AnalyzeChatStyle) // 分析聊天风格（语言指纹）
+		salesChatGroup.GET("/analyze-chat-style", salesRAGc.GetLanguageStyle)  // 获取已分析的聊天风格
+		salesChatGroup.PUT("/analyze-chat-style", salesRAGc.SaveLanguageStyle) // 保存/更新语言风格
+		salesChatGroup.POST("/ocr", salesRAGc.OCR)                             // OCR 识别图片
 	}
 
 	// 阿里云百炼相关

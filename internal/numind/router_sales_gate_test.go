@@ -1,8 +1,16 @@
 // Package numind_test contains route-level integration tests that validate
-// salesGroup.Use(FeaturePermission(FeatureKeySalesAgent)) actually gates
-// run endpoints while leaving /sales-rag/check-permission open.
-// This closes the S2 Reviewer Q8 gap (middleware mounting never had Go
-// verification — only E2E coverage).
+// the salesrag route topology:
+//   - /sales-rag/check-permission is publicly accessible (no gate)
+//   - salesDocGroup (knowledge-base CRUD: /ingest, /documents/*) has NO
+//     FeaturePermission gate — all authenticated users may manage their
+//     own documents (data isolation handled by biz/store layer via user_id)
+//   - salesChatGroup (sessions, messages, chat, ocr, analyze-*) IS gated by
+//     FeaturePermission(FeatureKeySalesAgent) — only sales-agent users can
+//     run the actual sales-rag conversation features
+//
+// Originally added to close the S2 Reviewer Q8 gap (middleware mounting
+// had no Go verification — only E2E coverage). Updated for feature
+// salesrag-kb-public (2026-05-21) to reflect the doc/chat group split.
 package numind_test
 
 import (
@@ -126,8 +134,10 @@ func setCurrentUserMW(user *model.User) gin.HandlerFunc {
 }
 
 // newMiniRouter builds a minimal gin router that mirrors the sales route
-// topology under test: authGroup has check-permission OUTSIDE salesGroup,
-// and salesGroup carries the FeaturePermission middleware.
+// topology under test:
+//   - authGroup has check-permission OUTSIDE all salesGroups (no gate)
+//   - salesDocGroup (documents CRUD) has NO FeaturePermission gate
+//   - salesChatGroup (chat / ocr) carries FeaturePermission gate
 func newMiniRouter(t *testing.T, user *model.User) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -140,18 +150,22 @@ func newMiniRouter(t *testing.T, user *model.User) *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{"has_permission": true}})
 	})
 
-	// salesGroup: behind FeaturePermission gate (C1 under test)
-	salesGroup := authGroup.Group("/sales-rag")
-	salesGroup.Use(middleware.FeaturePermission(model.FeatureKeySalesAgent))
+	// salesDocGroup: knowledge-base CRUD, NO gate (feature: salesrag-kb-public)
+	salesDocGroup := authGroup.Group("/sales-rag")
 	{
-		// 3 representative run endpoints from §4 (docs / chat / ocr)
-		salesGroup.GET("/documents", func(c *gin.Context) {
+		salesDocGroup.GET("/documents", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"code": 0})
 		})
-		salesGroup.POST("/sessions/:id/chat", func(c *gin.Context) {
+	}
+
+	// salesChatGroup: behind FeaturePermission gate (C1 under test)
+	salesChatGroup := authGroup.Group("/sales-rag")
+	salesChatGroup.Use(middleware.FeaturePermission(model.FeatureKeySalesAgent))
+	{
+		salesChatGroup.POST("/sessions/:id/chat", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"code": 0})
 		})
-		salesGroup.POST("/ocr", func(c *gin.Context) {
+		salesChatGroup.POST("/ocr", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"code": 0})
 		})
 	}
@@ -168,33 +182,31 @@ func mustUser(id uint, parentID *uint) *model.User {
 // tests (H1-H6)
 // -----------------------------------------------------------------------------
 
-// TestGate_SubNoGrant_DocumentsListBlocked validates that a sub-user without
-// a grant is blocked by the FeaturePermission gate on GET /sales-rag/documents.
-func TestGate_SubNoGrant_DocumentsListBlocked(t *testing.T) {
+// TestGate_SubNoGrant_DocumentsListAllowed validates that a sub-user without
+// a sales_agent grant CAN access GET /sales-rag/documents — the knowledge-base
+// CRUD endpoints were moved off the FeaturePermission gate by feature
+// salesrag-kb-public (2026-05-21). Data isolation is enforced at the biz/store
+// layer via user_id, not at the route layer.
+func TestGate_SubNoGrant_DocumentsListAllowed(t *testing.T) {
 	db := newGateTestDB(t)
 	installStoreS(t, db)
 	installCheckFeaturePermissionFunc(t)
 	parentID := uint(1)
 	seedUser(t, db, 1, nil)         // parent
 	seedUser(t, db, 100, &parentID) // sub, no grant
-	seedSalesAgentOwner(t, db, 1)   // parent has owner tag, so Layer 1 (sub grant) is the real blocker
+	seedSalesAgentOwner(t, db, 1)   // parent owner tag is irrelevant for docs
 
 	r := newMiniRouter(t, mustUser(100, &parentID))
 	req := httptest.NewRequest(http.MethodGet, "/v1/sales-rag/documents", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	// ErrForbidden maps to HTTP 403 (not 200); both the HTTP status and the
-	// non-zero business code confirm the gate fired.
-	require.Equal(t, http.StatusForbidden, w.Code, "gate must return HTTP 403; body: %s", w.Body.String())
+	require.Equal(t, http.StatusOK, w.Code, "documents endpoint is ungated; body: %s", w.Body.String())
 	var resp struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
+		Code int `json:"code"`
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.NotEqual(t, 0, resp.Code, "gate must reject with non-zero biz code")
-	// Do NOT assert on message text ("未开通 …") — brittle if copy changes. The
-	// non-zero business code is the load-bearing signal.
+	assert.Equal(t, 0, resp.Code, "ungated handler runs, business code=0")
 }
 
 // TestGate_SubNoGrant_ChatBlocked validates that a sub-user without a grant
@@ -272,7 +284,8 @@ func TestGate_SubNoGrant_CheckPermissionNotGated(t *testing.T) {
 
 // TestGate_Parent_PassesThrough validates that a parent account with owner tag
 // passes through the FeaturePermission gate (sop-salesrag-parent-scope Task 3:
-// spec D2 — 父账户必须在 sales_agent_owner 表中, 不再硬 bypass).
+// spec D2 — 父账户必须在 sales_agent_owner 表中, 不再硬 bypass). Uses the chat
+// endpoint because /documents was moved off the gate by salesrag-kb-public.
 func TestGate_Parent_PassesThrough(t *testing.T) {
 	db := newGateTestDB(t)
 	installStoreS(t, db)
@@ -281,7 +294,7 @@ func TestGate_Parent_PassesThrough(t *testing.T) {
 	seedSalesAgentOwner(t, db, 1) // parent owner tag (Layer 0 必查)
 
 	r := newMiniRouter(t, mustUser(1, nil))
-	req := httptest.NewRequest(http.MethodGet, "/v1/sales-rag/documents", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sales-rag/sessions/1/chat", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -294,7 +307,8 @@ func TestGate_Parent_PassesThrough(t *testing.T) {
 }
 
 // TestGate_SubGranted_PassesThrough validates that a sub-user WITH a grant
-// is let through the FeaturePermission gate.
+// is let through the FeaturePermission gate. Uses the chat endpoint because
+// /documents was moved off the gate by salesrag-kb-public.
 func TestGate_SubGranted_PassesThrough(t *testing.T) {
 	db := newGateTestDB(t)
 	installStoreS(t, db)
@@ -306,7 +320,7 @@ func TestGate_SubGranted_PassesThrough(t *testing.T) {
 	seedGrant(t, db, 1, 100, model.FeatureKeySalesAgent)
 
 	r := newMiniRouter(t, mustUser(100, &parentID))
-	req := httptest.NewRequest(http.MethodGet, "/v1/sales-rag/documents", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/sales-rag/sessions/1/chat", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
