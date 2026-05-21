@@ -581,6 +581,17 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 	default:
 	}
 
+	// A9 log-based observability: structured run completion log for operator grep
+	// and Filebeat ingest (refusal rate, terminal_reason distribution, duration).
+	log.Infow("agent_run_completed",
+		"agent_run_id", run.ID,
+		"user_id", req.UserID,
+		"agent_def_id", req.AgentDefinitionID,
+		"terminal_reason", string(st.TerminalReason),
+		"duration_ms", time.Since(startTime).Milliseconds(),
+		"refusal", isRefusal(st),
+	)
+
 	return &RunResult{
 		AgentRunID:       run.ID,
 		TerminalReason:   st.TerminalReason,
@@ -615,6 +626,21 @@ func (r *agentRunner) unregisterCancel(runID uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.cancels, runID)
+}
+
+// ── M-A9 helpers ─────────────────────────────────────────────────────────────
+
+// isRefusal returns true if the terminal_reason indicates the agent declined to
+// produce a result for safety/policy reasons (compliance deny / permission deny).
+// Used by A9 log emission to track refusal rate.
+// Note: there is no separate TerminalComplianceDeny in this codebase; compliance
+// gate deny events route through TerminalPermissionDenied via the hook pipeline.
+func isRefusal(st *LoopState) bool {
+	switch st.TerminalReason {
+	case TerminalPermissionDenied:
+		return true
+	}
+	return false
 }
 
 // #9 compact helpers — wired in by biz.go via WithCompactProvider/WithCompactConfig.
