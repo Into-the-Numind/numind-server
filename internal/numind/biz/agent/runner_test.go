@@ -101,6 +101,14 @@ func (m *mockAgentRunStore) ListByParentUserIDAndStatus(_ context.Context, _ uin
 	return nil, 0, nil
 }
 
+func (m *mockAgentRunStore) ListByUser(_ context.Context, _ uint, _ *time.Time, _ int) ([]model.AgentRun, error) {
+	return nil, nil
+}
+
+func (m *mockAgentRunStore) MergeTerminalMetadata(_ context.Context, _ uint64, _ map[string]interface{}) error {
+	return nil
+}
+
 // ---
 
 func TestAgentRunner_Run_Basic(t *testing.T) {
