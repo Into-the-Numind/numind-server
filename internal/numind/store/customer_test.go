@@ -88,6 +88,29 @@ func newPermissionTestDB(t *testing.T) *gorm.DB {
             UNIQUE (sub_user_id, chatbot_id)
         )`).Error)
 
+	// chatbot_config —— 对齐 model.ChatbotConfig 最小字段（CountActiveAuthorizedChatbots 用）
+	require.NoError(t, db.Exec(`
+        CREATE TABLE chatbot_config (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at      DATETIME,
+            updated_at      DATETIME,
+            deleted_at      DATETIME,
+            user_id         INTEGER NOT NULL,
+            name            TEXT NOT NULL DEFAULT '',
+            status          TEXT NOT NULL DEFAULT 'draft'
+        )`).Error)
+
+	// sop_template —— 对齐 model.SopTemplate 最小字段（CountActiveAuthorizedSopTemplates 用）
+	require.NoError(t, db.Exec(`
+        CREATE TABLE sop_template (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at DATETIME,
+            updated_at DATETIME,
+            deleted_at DATETIME,
+            name       TEXT NOT NULL DEFAULT '',
+            status     TEXT NOT NULL DEFAULT 'draft'
+        )`).Error)
+
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
@@ -520,4 +543,119 @@ func TestCheckSubUserFeatureGrant_FeatureKeyDoesNotMix(t *testing.T) {
 	ok, err = cs.CheckSubUserFeatureGrant(ctx, child, model.FeatureKeySalesAgent)
 	require.NoError(t, err)
 	assert.False(t, ok, "未授权的 sales_agent 不应被 content_monitor 混淆")
+}
+
+// ============================================================================
+// CountActiveAuthorizedSopTemplates / CountActiveAuthorizedChatbots ——
+// "已授权模板"列三类来源（fix: 客户列表 count 漏 chatbot / salesrag）。
+// 两个 COUNT store 方法的 active 过滤语义验证。
+// ============================================================================
+
+// insertSopTemplateRaw 插入 sop_template 行；status 控制是否计入 active 计数。
+func insertSopTemplateRaw(t *testing.T, db *gorm.DB, status string) uint {
+	t.Helper()
+	now := time.Now()
+	res := db.Exec(
+		`INSERT INTO sop_template (created_at, updated_at, name, status) VALUES (?, ?, ?, ?)`,
+		now, now, "tpl", status,
+	)
+	require.NoError(t, res.Error)
+	var id uint
+	require.NoError(t, db.Raw("SELECT last_insert_rowid()").Scan(&id).Error)
+	return id
+}
+
+// insertChatbotConfigRaw 插入 chatbot_config 行；deletedAt 不为 nil 则模拟软删除。
+func insertChatbotConfigRaw(t *testing.T, db *gorm.DB, userID uint, status string, deletedAt *time.Time) uint {
+	t.Helper()
+	now := time.Now()
+	res := db.Exec(
+		`INSERT INTO chatbot_config (created_at, updated_at, deleted_at, user_id, name, status)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+		now, now, deletedAt, userID, "bot", status,
+	)
+	require.NoError(t, res.Error)
+	var id uint
+	require.NoError(t, db.Raw("SELECT last_insert_rowid()").Scan(&id).Error)
+	return id
+}
+
+func insertChatbotPermissionRaw(t *testing.T, db *gorm.DB, subUserID, chatbotID uint) {
+	t.Helper()
+	res := db.Exec(
+		`INSERT INTO user_chatbot_permission (sub_user_id, chatbot_id, created_at) VALUES (?, ?, ?)`,
+		subUserID, chatbotID, time.Now(),
+	)
+	require.NoError(t, res.Error)
+}
+
+// TestCountActiveAuthorizedSopTemplates 验证 SOP COUNT 路径等价于
+// "GetAuthorizedTemplates + filter Status=='active'"，且不抓取整条记录。
+func TestCountActiveAuthorizedSopTemplates(t *testing.T) {
+	db := newPermissionTestDB(t)
+	cs := NewCustomerStore(db)
+	ctx := context.Background()
+
+	parent := insertUserForPerm(t, db, nil)
+	child := insertUserForPerm(t, db, &parent)
+
+	// 0 行 → 0
+	n, err := cs.CountActiveAuthorizedSopTemplates(ctx, child)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, n, "无授权 → 0")
+
+	// 准备：1 个 active / 1 个 draft / 1 个 active 但软删除（permission 行软删除）
+	tplActive := insertSopTemplateRaw(t, db, "active")
+	tplDraft := insertSopTemplateRaw(t, db, "draft")
+	tplPermDeleted := insertSopTemplateRaw(t, db, "active")
+
+	insertTemplatePermissionRaw(t, db, parent, child, tplActive, nil)
+	insertTemplatePermissionRaw(t, db, parent, child, tplDraft, nil)
+	deletedAt := time.Now().Add(-time.Hour) // 明确在过去
+	insertTemplatePermissionRaw(t, db, parent, child, tplPermDeleted, &deletedAt)
+
+	n, err = cs.CountActiveAuthorizedSopTemplates(ctx, child)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, n, "仅 status=active 且 permission 未软删除应计入")
+}
+
+// TestCountActiveAuthorizedChatbots 验证 chatbot COUNT 过滤语义：仅 published 且未软删除。
+func TestCountActiveAuthorizedChatbots(t *testing.T) {
+	db := newPermissionTestDB(t)
+	cs := NewCustomerStore(db)
+	ctx := context.Background()
+
+	parent := insertUserForPerm(t, db, nil)
+	child := insertUserForPerm(t, db, &parent)
+	deletedAt := time.Now().Add(-time.Hour) // 明确在过去
+
+	// 父账号无白名单记录 → 0（与 SOP 行为对称）
+	n, err := cs.CountActiveAuthorizedChatbots(ctx, parent)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, n, "父账号默认无白名单记录 → 0")
+
+	// 子账号 0 行 → 0
+	n, err = cs.CountActiveAuthorizedChatbots(ctx, child)
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, n, "子账号无授权 → 0")
+
+	// 准备 chatbot：1 个 published / 1 个 draft / 1 个 published 但软删除
+	botPub := insertChatbotConfigRaw(t, db, parent, "published", nil)
+	botDraft := insertChatbotConfigRaw(t, db, parent, "draft", nil)
+	botDeleted := insertChatbotConfigRaw(t, db, parent, "published", &deletedAt)
+
+	insertChatbotPermissionRaw(t, db, child, botPub)
+	insertChatbotPermissionRaw(t, db, child, botDraft)
+	insertChatbotPermissionRaw(t, db, child, botDeleted)
+
+	n, err = cs.CountActiveAuthorizedChatbots(ctx, child)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, n, "仅 published 且未软删除应计入；draft / 软删除应排除")
+
+	// 再加一个 published 验证累加
+	botPub2 := insertChatbotConfigRaw(t, db, parent, "published", nil)
+	insertChatbotPermissionRaw(t, db, child, botPub2)
+	n, err = cs.CountActiveAuthorizedChatbots(ctx, child)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, n, "新增 published 应被计入")
 }
