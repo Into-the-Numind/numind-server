@@ -52,6 +52,11 @@ type IAgentRunStore interface {
 	// The message is appended as {"role":"user","content":<content>}.
 	// RowsAffected==0 returns error. Used by Answer biz method (T4).
 	AppendUserMessage(ctx context.Context, id uint64, content string) error
+	// AnswerAndClear atomically appends a user message to agent_run.messages AND
+	// clears pending_question_json / pending_question_at / state_reason in a single
+	// DB transaction. Replaces the separate AppendUserMessage + ClearPendingQuestion
+	// pair used in earlier iterations. Used by Answer biz method (T4 P2 fix).
+	AnswerAndClear(ctx context.Context, id uint64, userMessage string) error
 }
 
 type agentRunStore struct {
@@ -305,6 +310,54 @@ func (s *agentRunStore) AppendUserMessage(ctx context.Context, id uint64, conten
 		return fmt.Errorf("agentRunStore.AppendUserMessage: no row matched id=%d", id)
 	}
 	return nil
+}
+
+// AnswerAndClear atomically appends a user message and clears pending question state
+// in a single DB transaction. This avoids a TOCTOU window between AppendUserMessage
+// and ClearPendingQuestion that could leave the run in an inconsistent state on error.
+func (s *agentRunStore) AnswerAndClear(ctx context.Context, id uint64, userMessage string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Read current messages inside the transaction.
+		var run model.AgentRun
+		if err := tx.Select("id", "messages").First(&run, id).Error; err != nil {
+			return fmt.Errorf("agentRunStore.AnswerAndClear get(id=%d): %w", id, err)
+		}
+
+		// Unmarshal existing messages array.
+		var msgs []json.RawMessage
+		if len(run.Messages) > 0 && string(run.Messages) != "null" {
+			if err := json.Unmarshal(run.Messages, &msgs); err != nil {
+				msgs = nil // start fresh on parse error
+			}
+		}
+
+		// Append the new user message.
+		newMsg, err := json.Marshal(map[string]string{"role": "user", "content": userMessage})
+		if err != nil {
+			return fmt.Errorf("agentRunStore.AnswerAndClear marshal msg(id=%d): %w", id, err)
+		}
+		msgs = append(msgs, json.RawMessage(newMsg))
+
+		newMsgs, err := json.Marshal(msgs)
+		if err != nil {
+			return fmt.Errorf("agentRunStore.AnswerAndClear marshal array(id=%d): %w", id, err)
+		}
+
+		// Single UPDATE: messages + clear pending fields + reset state_reason.
+		result := tx.Model(&model.AgentRun{}).Where("id = ?", id).Updates(map[string]interface{}{
+			"messages":              datatypes.JSON(newMsgs),
+			"pending_question_json": nil,
+			"pending_question_at":   nil,
+			"state_reason":          "running",
+		})
+		if result.Error != nil {
+			return fmt.Errorf("agentRunStore.AnswerAndClear update(id=%d): %w", id, result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("agentRunStore.AnswerAndClear: no row matched id=%d", id)
+		}
+		return nil
+	})
 }
 
 func (s *agentRunStore) ListBySession(ctx context.Context, sessionID string, offset, limit int) ([]model.AgentRun, int64, error) {

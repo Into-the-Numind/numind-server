@@ -139,6 +139,11 @@ func (m *mockAgentRunStore) AppendUserMessage(_ context.Context, _ uint64, _ str
 	return nil
 }
 
+// AnswerAndClear — T4 reviewer-fix atomic answer flow mock impl
+func (m *mockAgentRunStore) AnswerAndClear(_ context.Context, _ uint64, _ string) error {
+	return nil
+}
+
 // ---
 
 func TestAgentRunner_Run_Basic(t *testing.T) {

@@ -21,13 +21,15 @@ import (
 // ---------------------------------------------------------------------------
 
 type answerRunStore struct {
-	runs               map[uint64]*model.AgentRun
-	nextID             uint64
-	appendMessageCalls []uint64
-	clearPendingCalls  []uint64
-	updatePendingCalls []uint64
-	appendMessageErr   error
-	clearPendingErr    error
+	runs                map[uint64]*model.AgentRun
+	nextID              uint64
+	appendMessageCalls  []uint64
+	clearPendingCalls   []uint64
+	updatePendingCalls  []uint64
+	answerAndClearCalls []uint64
+	appendMessageErr    error
+	clearPendingErr     error
+	answerAndClearErr   error
 }
 
 func newAnswerRunStore() *answerRunStore {
@@ -90,6 +92,10 @@ func (s *answerRunStore) AppendUserMessage(_ context.Context, id uint64, _ strin
 	s.appendMessageCalls = append(s.appendMessageCalls, id)
 	return s.appendMessageErr
 }
+func (s *answerRunStore) AnswerAndClear(_ context.Context, id uint64, _ string) error {
+	s.answerAndClearCalls = append(s.answerAndClearCalls, id)
+	return s.answerAndClearErr
+}
 
 // answerRunner is a no-op runner for Answer tests.
 type answerRunner struct{ runCalled bool }
@@ -109,7 +115,9 @@ func newAnswerService(rs *answerRunStore) *StudentRunService {
 	}
 }
 
-// seedAnswerRun seeds a run in waiting_for_user_choice state owned by userID.
+// seedAnswerRun seeds a run with the given stateReason owned by userID.
+// For runs in waiting_for_user_choice state, PendingQuestionJSON is populated
+// to satisfy the P2-1 consistency guard.
 func seedAnswerRun(rs *answerRunStore, userID uint, stateReason string) uint64 {
 	run := &model.AgentRun{
 		UserID:      userID,
@@ -118,6 +126,9 @@ func seedAnswerRun(rs *answerRunStore, userID uint, stateReason string) uint64 {
 		StateReason: stateReason,
 		Messages:    datatypes.JSON(`[]`),
 		StartedAt:   time.Now(),
+	}
+	if stateReason == string(TerminalWaitingForUserChoice) {
+		run.PendingQuestionJSON = datatypes.JSON(`{"question":"Which region?","options":[{"key":"a","label":"北"},{"key":"b","label":"南"}],"multi_select":false}`)
 	}
 	_ = rs.Create(context.Background(), run)
 	return run.ID
@@ -141,10 +152,8 @@ func TestAnswer_HappyPath(t *testing.T) {
 	assert.Equal(t, runID, resp.RunID)
 	assert.Equal(t, "resumed", resp.Status)
 
-	// AppendUserMessage must have been called.
-	assert.Contains(t, rs.appendMessageCalls, runID)
-	// ClearPendingQuestion must have been called.
-	assert.Contains(t, rs.clearPendingCalls, runID)
+	// AnswerAndClear must have been called (atomic replace for AppendUserMessage + ClearPendingQuestion).
+	assert.Contains(t, rs.answerAndClearCalls, runID)
 }
 
 func TestAnswer_CrossUserRunNotFound(t *testing.T) {
@@ -169,7 +178,7 @@ func TestAnswer_RunNotWaiting(t *testing.T) {
 	rs := newAnswerRunStore()
 	svc := newAnswerService(rs)
 	userID := uint(42)
-	// Seed a run in "completed" state.
+	// Seed a run in "completed" state (no pending JSON).
 	runID := seedAnswerRun(rs, userID, "completed")
 
 	req := AnswerRequest{Selected: []string{"a"}}
@@ -190,27 +199,60 @@ func TestAnswer_RunNotFound(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestAnswer_AppendMessageError(t *testing.T) {
+func TestAnswer_NoPendingJSON(t *testing.T) {
 	rs := newAnswerRunStore()
-	rs.appendMessageErr = errors.New("db error")
+	svc := newAnswerService(rs)
+	userID := uint(42)
+	// Manually seed a run in waiting state but WITHOUT pending_question_json
+	// to trigger the P2-1 consistency guard.
+	run := &model.AgentRun{
+		UserID:              userID,
+		SessionID:           "sess-abc",
+		Status:              "terminated",
+		StateReason:         string(TerminalWaitingForUserChoice),
+		Messages:            datatypes.JSON(`[]`),
+		PendingQuestionJSON: nil, // deliberately empty — inconsistent state
+		StartedAt:           time.Now(),
+	}
+	_ = rs.Create(context.Background(), run)
+
+	_, err := svc.Answer(context.Background(), userID, run.ID, AnswerRequest{Selected: []string{"a"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no pending question json")
+}
+
+func TestAnswer_AnswerAndClearError(t *testing.T) {
+	rs := newAnswerRunStore()
+	rs.answerAndClearErr = errors.New("db error")
 	svc := newAnswerService(rs)
 	userID := uint(42)
 	runID := seedAnswerRun(rs, userID, string(TerminalWaitingForUserChoice))
 
 	_, err := svc.Answer(context.Background(), userID, runID, AnswerRequest{Selected: []string{"a"}})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "append message")
+	assert.Contains(t, err.Error(), "atomic answer+clear")
 }
 
 func TestBuildAnswerMessage(t *testing.T) {
-	msg := buildAnswerMessage(AnswerRequest{Selected: []string{"a", "b"}, FreeText: "hello"})
+	pendingJSON := []byte(`{"question":"Which region?","options":[{"key":"a","label":"北"}],"multi_select":false}`)
+	msg := buildAnswerMessage(pendingJSON, []string{"a", "b"}, "hello")
 	assert.Contains(t, msg, "[user answered]")
+	assert.Contains(t, msg, "Which region?")
 	assert.Contains(t, msg, `["a","b"]`)
 	assert.Contains(t, msg, "hello")
 }
 
 func TestBuildAnswerMessage_NoFreeText(t *testing.T) {
-	msg := buildAnswerMessage(AnswerRequest{Selected: []string{"x"}})
+	pendingJSON := []byte(`{"question":"Pick one","options":[{"key":"x","label":"X"}],"multi_select":false}`)
+	msg := buildAnswerMessage(pendingJSON, []string{"x"}, "")
 	assert.Contains(t, msg, "[user answered]")
+	assert.Contains(t, msg, "Pick one")
 	assert.NotContains(t, msg, "Free text")
+}
+
+func TestBuildAnswerMessage_UnparsableJSON(t *testing.T) {
+	// Malformed JSON should not panic; fallback question text used.
+	msg := buildAnswerMessage([]byte(`not-json`), []string{"a"}, "")
+	assert.Contains(t, msg, "[user answered]")
+	assert.Contains(t, msg, "<unparseable question>")
 }

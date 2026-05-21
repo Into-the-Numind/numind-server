@@ -122,6 +122,11 @@ func (s *lifecycleRunStore) AppendUserMessage(_ context.Context, _ uint64, _ str
 	return nil
 }
 
+// AnswerAndClear — T4 reviewer-fix atomic answer flow mock impl.
+func (s *lifecycleRunStore) AnswerAndClear(_ context.Context, _ uint64, _ string) error {
+	return nil
+}
+
 // lifecycleSkillStore implements store.IAgentDefinitionStore for lifecycle tests.
 type lifecycleSkillStore struct {
 	defs map[uint64]*model.AgentDefinition

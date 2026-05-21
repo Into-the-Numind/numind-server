@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
@@ -54,15 +55,19 @@ func (s *StudentRunService) Answer(ctx context.Context, userID uint, runID uint6
 		)
 	}
 
-	// 3. Append user message.
-	userMsg := buildAnswerMessage(req)
-	if err := s.runStore.AppendUserMessage(ctx, runID, userMsg); err != nil {
-		return nil, fmt.Errorf("Answer: append message: %w", err)
+	// 2b. pending_question_json IS NOT NULL guard (spec §2.3c).
+	// Defends against a corrupted row where state_reason was set but the JSON
+	// is missing (partial UpdatePendingQuestion failure).
+	if len(run.PendingQuestionJSON) == 0 || string(run.PendingQuestionJSON) == "null" {
+		return nil, errno.ErrInvalidInput.SetMessage(
+			"answer: no pending question json (data inconsistent)",
+		)
 	}
 
-	// 4. Clear pending question state.
-	if err := s.runStore.ClearPendingQuestion(ctx, runID); err != nil {
-		return nil, fmt.Errorf("Answer: clear pending question: %w", err)
+	// 3. Atomic answer: append user message + clear pending question in one tx.
+	userMsg := buildAnswerMessage(run.PendingQuestionJSON, req.Selected, req.FreeText)
+	if err := s.runStore.AnswerAndClear(ctx, runID, userMsg); err != nil {
+		return nil, fmt.Errorf("Answer: atomic answer+clear: %w", err)
 	}
 
 	// 5. Langfuse span for resume observability.
@@ -72,7 +77,7 @@ func (s *StudentRunService) Answer(ctx context.Context, userID uint, runID uint6
 	// where they could be GC'd or mutated after the HTTP handler returns).
 	agentDefID := run.AgentDefinitionID
 	sessionID := run.SessionID
-	toolFlags := resolveToolFlags(s, context.Background(), agentDefID)
+	toolFlags := resolveToolFlags(context.Background(), s, agentDefID)
 
 	// 6. Restart runner in a detached goroutine (detached ctx, same as Create).
 	go func() {
@@ -96,31 +101,45 @@ func (s *StudentRunService) Answer(ctx context.Context, userID uint, runID uint6
 }
 
 // buildAnswerMessage formats the user's answer into a human-readable string
-// to be appended as a user message in the conversation history.
-func buildAnswerMessage(req AnswerRequest) string {
-	selectedJSON, _ := json.Marshal(req.Selected)
+// to be appended as a user message in the conversation history. Includes the
+// original question (parsed from pendingJSON) per spec §2.3d so the LLM sees
+// the full Q&A context on resume.
+func buildAnswerMessage(pendingJSON []byte, selected []string, freeText string) string {
+	var payload YieldPayload
+	if err := json.Unmarshal(pendingJSON, &payload); err != nil {
+		// Fallback: don't block answer even if JSON parsing fails.
+		payload.Question = "<unparseable question>"
+	}
+	selectedJSON, _ := json.Marshal(selected)
 	var sb strings.Builder
-	sb.WriteString("[user answered]\nSelected: ")
+	sb.WriteString("[user answered]\nQuestion: ")
+	sb.WriteString(payload.Question)
+	sb.WriteString("\nSelected: ")
 	sb.Write(selectedJSON)
-	if req.FreeText != "" {
+	if freeText != "" {
 		sb.WriteString("\nFree text: ")
-		sb.WriteString(req.FreeText)
+		sb.WriteString(freeText)
 	}
 	return sb.String()
 }
 
 // emitAnswerSpan records a Langfuse span for the answer resume event.
-// Gracefully no-ops if langfuse is not active in ctx.
+// Gracefully no-ops if langfuse is not active in ctx. Includes wait_duration_ms
+// (time since pending_question_at) per spec §6.2.
 func emitAnswerSpan(ctx context.Context, run *model.AgentRun, req AnswerRequest) {
 	if tc := langfuse.FromContext(ctx); tc != nil {
 		spanID := langfuse.SpanID()
+		spanInput := map[string]any{
+			"run_id":    run.ID,
+			"selected":  req.Selected,
+			"free_text": req.FreeText,
+		}
+		if run.PendingQuestionAt != nil {
+			spanInput["wait_duration_ms"] = time.Since(*run.PendingQuestionAt).Milliseconds()
+		}
 		langfuse.CreateSpan(tc.TraceID, spanID, "tool.ask_user_question.resume",
 			langfuse.WithSpanParent(tc.ParentObservationID),
-			langfuse.WithSpanInput(map[string]any{
-				"run_id":    run.ID,
-				"selected":  req.Selected,
-				"free_text": req.FreeText,
-			}),
+			langfuse.WithSpanInput(spanInput),
 		)
 		langfuse.EndSpan(tc.TraceID, spanID)
 	}
@@ -128,7 +147,8 @@ func emitAnswerSpan(ctx context.Context, run *model.AgentRun, req AnswerRequest)
 
 // resolveToolFlags looks up the agent definition's ToolFlags JSON for the
 // given agentDefID. Returns nil on any failure — toolNamesFromFlags handles nil gracefully.
-func resolveToolFlags(s *StudentRunService, ctx context.Context, agentDefID uint64) []byte {
+// ctx is the first parameter per Go idiom (T4 reviewer fix).
+func resolveToolFlags(ctx context.Context, s *StudentRunService, agentDefID uint64) []byte {
 	if agentDefID == 0 || s.skillStore == nil {
 		return nil
 	}
