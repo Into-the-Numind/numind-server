@@ -75,6 +75,7 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		return nil, err
 	}
 
+	fetchStart := time.Now()
 	var spanID string
 	if tc := langfuse.FromContext(ctx); tc != nil {
 		spanID = langfuse.SpanID()
@@ -82,7 +83,6 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 			langfuse.WithSpanParent(tc.ParentObservationID),
 			langfuse.WithSpanInput(in),
 		)
-		defer langfuse.EndSpan(tc.TraceID, spanID)
 	}
 
 	client := t.httpClient
@@ -95,6 +95,11 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 
 	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, targetURL, nil)
 	if err != nil {
+		if spanID != "" {
+			if tc := langfuse.FromContext(ctx); tc != nil {
+				langfuse.EndSpan(tc.TraceID, spanID, langfuse.WithSpanError(err.Error()))
+			}
+		}
 		return nil, errno.ErrInvalidInput.SetMessage("web_fetch: build request: %s", err.Error())
 	}
 	req.Header.Set("User-Agent", "Numind-Agent/1.0 (+https://youshu.asia)")
@@ -102,6 +107,11 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 
 	resp, err := client.Do(req)
 	if err != nil {
+		if spanID != "" {
+			if tc := langfuse.FromContext(ctx); tc != nil {
+				langfuse.EndSpan(tc.TraceID, spanID, langfuse.WithSpanError(err.Error()))
+			}
+		}
 		if errors.Is(err, context.DeadlineExceeded) || isTimeoutError(err) {
 			return nil, errno.ErrTimeout.SetMessage("web_fetch: timeout after %s", webFetchTimeout)
 		}
@@ -110,17 +120,46 @@ func (t *webFetchTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
+		if spanID != "" {
+			if tc := langfuse.FromContext(ctx); tc != nil {
+				langfuse.EndSpan(tc.TraceID, spanID, langfuse.WithSpanOutput(map[string]any{
+					"url":         targetURL,
+					"status_code": resp.StatusCode,
+					"latency_ms":  time.Since(fetchStart).Milliseconds(),
+				}), langfuse.WithSpanError(fmt.Sprintf("HTTP %d", resp.StatusCode)))
+			}
+		}
 		return nil, errno.ErrExternalAPI.SetMessage("web_fetch: HTTP %d from %s", resp.StatusCode, targetURL)
 	}
 
 	// Read body with cap to detect truncation.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(webFetchMaxBytes+1)))
 	if err != nil {
+		if spanID != "" {
+			if tc := langfuse.FromContext(ctx); tc != nil {
+				langfuse.EndSpan(tc.TraceID, spanID, langfuse.WithSpanError(err.Error()))
+			}
+		}
 		return nil, errno.ErrExternalAPI.SetMessage("web_fetch: read body: %s", err.Error())
 	}
 	truncated := len(body) > webFetchMaxBytes
 	if truncated {
 		body = body[:webFetchMaxBytes]
+	}
+
+	// Close span with full §6.2 metadata: url, status_code, content_length,
+	// mime_type, latency_ms, truncated.
+	if spanID != "" {
+		if tc := langfuse.FromContext(ctx); tc != nil {
+			langfuse.EndSpan(tc.TraceID, spanID, langfuse.WithSpanOutput(map[string]any{
+				"url":            targetURL,
+				"status_code":    resp.StatusCode,
+				"content_length": len(body),
+				"mime_type":      resp.Header.Get("Content-Type"),
+				"latency_ms":     time.Since(fetchStart).Milliseconds(),
+				"truncated":      truncated,
+			}))
+		}
 	}
 
 	title, contentMD := convertHTMLToMarkdown(body)
@@ -242,14 +281,22 @@ func newSafeHTTPClient() *http.Client {
 					return nil, fmt.Errorf("web_fetch dial: no IPs for %s", host)
 				}
 
-				// Pick the first IP and re-check safety.
-				ip := ips[0]
-				if err := checkIPSafe(ip, host); err != nil {
-					return nil, fmt.Errorf("web_fetch dial: %w", err)
+				// Check ALL resolved IPs; pick the first safe one to dial.
+				// Checking only ips[0] would allow bypassing SSRF guards when a
+				// host resolves to both a safe and a disallowed address.
+				var safeIP net.IP
+				for _, ip := range ips {
+					if err := checkIPSafe(ip, host); err == nil {
+						safeIP = ip
+						break // first safe IP wins
+					}
+				}
+				if safeIP == nil {
+					return nil, fmt.Errorf("web_fetch dial: all resolved IPs disallowed for %s", host)
 				}
 
 				d := net.Dialer{Timeout: 10 * time.Second}
-				return d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+				return d.DialContext(ctx, network, net.JoinHostPort(safeIP.String(), port))
 			},
 			MaxIdleConns:          10,
 			IdleConnTimeout:       30 * time.Second,

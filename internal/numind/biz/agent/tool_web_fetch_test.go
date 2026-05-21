@@ -84,7 +84,7 @@ func TestWebFetch_HappyPath(t *testing.T) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, `<html><head><title>Hello World</title></head><body><h1>World</h1><p>Hello from test.</p></body></html>`)
 	}))
-	defer srv.Close()
+	t.Cleanup(func() { srv.Close() })
 
 	tool := newTestWebFetchTool(srv)
 	out, err := execWebFetch(t, tool, srv.URL, "")
@@ -244,7 +244,7 @@ func TestValidateFetchURL_UnsupportedSchemes(t *testing.T) {
 	schemes := []string{
 		"ftp://example.com",
 		"file:///etc/passwd",
-		"javascript:alert(1)", // no "://" so prepend fires → https://javascript:alert(1) → scheme=https, host=javascript — will DNS fail, not scheme error
+		"javascript:alert(1)", // no "://" → prepend fires → https://javascript:alert(1) → host="javascript" → DNS fail
 	}
 	for _, s := range schemes {
 		_, err := validateFetchURL(s, false)
@@ -263,7 +263,7 @@ func TestWebFetch_LargeBody(t *testing.T) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = io.WriteString(w, bigBody)
 	}))
-	defer srv.Close()
+	t.Cleanup(func() { srv.Close() })
 
 	tool := newTestWebFetchTool(srv)
 	out, err := execWebFetch(t, tool, srv.URL, "")
@@ -291,7 +291,7 @@ func TestWebFetch_ExactCapBody(t *testing.T) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = io.WriteString(w, exactBody)
 	}))
-	defer srv.Close()
+	t.Cleanup(func() { srv.Close() })
 
 	tool := newTestWebFetchTool(srv)
 	out, err := execWebFetch(t, tool, srv.URL, "")
@@ -309,7 +309,7 @@ func TestWebFetch_HTTP404(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	}))
-	defer srv.Close()
+	t.Cleanup(func() { srv.Close() })
 
 	tool := newTestWebFetchTool(srv)
 	_, err := execWebFetch(t, tool, srv.URL+"/not-found", "")
@@ -328,7 +328,7 @@ func TestWebFetch_HTTP500(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}))
-	defer srv.Close()
+	t.Cleanup(func() { srv.Close() })
 
 	tool := newTestWebFetchTool(srv)
 	_, err := execWebFetch(t, tool, srv.URL, "")
@@ -473,7 +473,7 @@ func TestWebFetch_UserAgentHeader(t *testing.T) {
 		gotUA = r.Header.Get("User-Agent")
 		fmt.Fprint(w, `<html><body>ok</body></html>`)
 	}))
-	defer srv.Close()
+	t.Cleanup(func() { srv.Close() })
 
 	tool := newTestWebFetchTool(srv)
 	_, err := execWebFetch(t, tool, srv.URL, "")
