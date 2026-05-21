@@ -1,23 +1,24 @@
 // Package agent 提供 Agent Runtime 的状态机和核心 biz 组件。
 package agent
 
-// TerminalReason 是 agent_run 终止时写入 agent_run.state_reason 的字符串值（共 13 个）。
+// TerminalReason 是 agent_run 终止时写入 agent_run.state_reason 的字符串值（共 14 个）。
 type TerminalReason string
 
 const (
-	TerminalCompleted         TerminalReason = "completed"
-	TerminalBlockingLimit     TerminalReason = "blocking_limit"
-	TerminalImageError        TerminalReason = "image_error"
-	TerminalModelError        TerminalReason = "model_error"
-	TerminalAbortedStreaming  TerminalReason = "aborted_streaming"
-	TerminalPromptTooLong     TerminalReason = "prompt_too_long"
-	TerminalStopHookPrevented TerminalReason = "stop_hook_prevented"
-	TerminalAbortedTools      TerminalReason = "aborted_tools"
-	TerminalHookStopped       TerminalReason = "hook_stopped"
-	TerminalMaxTurns          TerminalReason = "max_turns"
-	TerminalErrorMaxBudget    TerminalReason = "error_max_budget"
-	TerminalErrorMaxRetries   TerminalReason = "error_max_retries"
-	TerminalPermissionDenied  TerminalReason = "permission_denied" // 13 — NEW (#6 agent-mode-permission-pipeline)
+	TerminalCompleted            TerminalReason = "completed"
+	TerminalBlockingLimit        TerminalReason = "blocking_limit"
+	TerminalImageError           TerminalReason = "image_error"
+	TerminalModelError           TerminalReason = "model_error"
+	TerminalAbortedStreaming     TerminalReason = "aborted_streaming"
+	TerminalPromptTooLong        TerminalReason = "prompt_too_long"
+	TerminalStopHookPrevented    TerminalReason = "stop_hook_prevented"
+	TerminalAbortedTools         TerminalReason = "aborted_tools"
+	TerminalHookStopped          TerminalReason = "hook_stopped"
+	TerminalMaxTurns             TerminalReason = "max_turns"
+	TerminalErrorMaxBudget       TerminalReason = "error_max_budget"
+	TerminalErrorMaxRetries      TerminalReason = "error_max_retries"
+	TerminalPermissionDenied     TerminalReason = "permission_denied"       // 13 — NEW (#6 agent-mode-permission-pipeline)
+	TerminalWaitingForUserChoice TerminalReason = "waiting_for_user_choice" // 14 — NEW (T3 agent-mode-p0-tools yield protocol)
 )
 
 // ContinueReason 是 loop 继续时记录的字符串值（共 7 个），便于 Langfuse trace 调试。
@@ -33,16 +34,41 @@ const (
 	ContinueTokenBudgetContinue  ContinueReason = "token_budget_continue"
 )
 
-// 编译期不变量：长度必须 13 + 7
-var _ = [13]TerminalReason{
+// 编译期不变量：长度必须 14 + 7
+var _ = [14]TerminalReason{
 	TerminalCompleted, TerminalBlockingLimit, TerminalImageError, TerminalModelError,
 	TerminalAbortedStreaming, TerminalPromptTooLong, TerminalStopHookPrevented, TerminalAbortedTools,
 	TerminalHookStopped, TerminalMaxTurns, TerminalErrorMaxBudget, TerminalErrorMaxRetries,
-	TerminalPermissionDenied,
+	TerminalPermissionDenied, TerminalWaitingForUserChoice,
 }
 var _ = [7]ContinueReason{
 	ContinueNextTurn, ContinueCollapseDrainRetry, ContinueReactiveCompactRetry,
 	ContinueMaxOutputEscalate, ContinueMaxOutputRecovery, ContinueStopHookBlocking, ContinueTokenBudgetContinue,
+}
+
+// Compile-time invariant: LoopEvent iota must reach 20 (0=Invalid, 1..19 are defined events).
+// If you add a new event, increment the array size.
+var _ = [20]LoopEvent{
+	LoopEventInvalid,
+	LoopEventLLMOKWithToolCall,
+	LoopEventLLMOKNoToolCall,
+	LoopEventLLMErrPTL,
+	LoopEventLLMErrMaxOutput,
+	LoopEventLLMErrModel,
+	LoopEventLLMErrImage,
+	LoopEventToolErr,
+	LoopEventCtxCanceled,
+	LoopEventMaxStepsReached,
+	LoopEventBlockingLimitHit,
+	LoopEventMaxRetriesReached,
+	LoopEventHookActionStop,
+	LoopEventHookActionBlockStop,
+	LoopEventHookActionBlocking,
+	LoopEventTokenBudgetContinue,
+	LoopEventCollapseDrainRetry,
+	LoopEventMaxOutputEscalate,
+	LoopEventPermissionDenied,
+	LoopEventErrorMaxBudget,
 }
 
 // LoopEvent 是状态机的输入事件枚举。
@@ -69,6 +95,7 @@ const (
 	LoopEventMaxOutputEscalate             // → ContinueMaxOutputEscalate (17)
 	LoopEventPermissionDenied              // → TerminalPermissionDenied (18) — NEW (#6 agent-mode-permission-pipeline)
 	LoopEventErrorMaxBudget                // → TerminalErrorMaxBudget (19) — NEW (#12 agent-mode-billing-integration) — BudgetTracker 4 维任一超限
+	LoopEventAskUserPaused                 // → TerminalWaitingForUserChoice (20) — NEW (T3 agent-mode-p0-tools yield protocol)
 )
 
 // LoopState 是 Runtime 单 run 内存中状态。
@@ -187,6 +214,12 @@ func (s *LoopState) Transition(event LoopEvent) (TerminalReason, ContinueReason,
 	case LoopEventMaxOutputEscalate:
 		s.ContinueReason = ContinueMaxOutputEscalate
 		return "", ContinueMaxOutputEscalate, false
+
+	case LoopEventAskUserPaused:
+		// ask_user_question tool yielded — run is suspended waiting for the user to answer.
+		// StepCount is NOT incremented: the run hasn't completed a tool turn yet.
+		s.TerminalReason = TerminalWaitingForUserChoice
+		return TerminalWaitingForUserChoice, "", true
 
 	default:
 		// Unknown event treated as model error

@@ -501,6 +501,59 @@ func (r *agentRunner) Run(ctx context.Context, req RunRequest) (*RunResult, erro
 			break
 		}
 
+		// T3 yield protocol: ask_user_question tool returns yieldError to pause the run.
+		// Must be checked BEFORE HandleLLMError so the sentinel is not misclassified.
+		var yieldErr *yieldError
+		if errors.As(runErr, &yieldErr) {
+			// 1. Serialize payload to JSON.
+			payloadJSON, mErr := json.Marshal(yieldErr.Payload)
+			if mErr != nil {
+				log.Errorw("AgentRunner.Run yield handler: marshal payload failed",
+					"agent_run_id", run.ID, "error", mErr)
+				st.TerminalReason = TerminalModelError
+				break
+			}
+			// 2. Persist pending_question_json to agent_run.
+			// TODO(T4): wire to actual store method UpdatePendingQuestion once
+			// agent_run.pending_question_json column + IAgentRunStore method are added.
+			log.Infow("AgentRunner.Run yield: ask_user_question paused run",
+				"agent_run_id", run.ID,
+				"payload_len", len(payloadJSON),
+			)
+			// 3. Langfuse Span for observability.
+			if tc := langfuse.FromContext(attemptCtx); tc != nil {
+				spanID := langfuse.SpanID()
+				langfuse.CreateSpan(tc.TraceID, spanID, "tool.ask_user_question.yield",
+					langfuse.WithSpanParent(tc.ParentObservationID),
+					langfuse.WithSpanInput(yieldErr.Payload),
+				)
+				langfuse.EndSpan(tc.TraceID, spanID)
+			}
+			// 4. BudgetTracker pause — wall-clock budget naturally stops accruing
+			// once the run exits the loop (budgetTracker.Close is deferred).
+			// TODO(T7): wire Pause/Resume on BudgetTracker when answer endpoint
+			// resumes the run, to correctly account for yield-suspended time.
+			// 5. Drive state machine to waiting_for_user_choice terminal.
+			terminal, _, isTerminal := st.Transition(LoopEventAskUserPaused)
+			if isTerminal {
+				// Return immediately — caller reads TerminalReason == waiting_for_user_choice
+				// and knows the run is suspended, not failed.
+				endedAt := time.Now()
+				if uErr := r.runStore.UpdateState(attemptCtx, run.ID, "terminated", string(terminal), &endedAt); uErr != nil {
+					log.Warnw("AgentRunner.Run yield UpdateState failed", "agent_run_id", run.ID, "error", uErr)
+				}
+				return &RunResult{
+					AgentRunID:     run.ID,
+					TerminalReason: terminal,
+					FinalOutput:    "",
+					StepCount:      st.StepCount,
+				}, nil
+			}
+			// Should not reach here (LoopEventAskUserPaused always terminates).
+			st.TerminalReason = TerminalModelError
+			break
+		}
+
 		// 临时诊断:把 ReAct 内部 einoAgent.Generate 抛的真实 err 打出来,
 		// 帮 dev 定位 LLM 调用失败的根因 (HTTP 4xx / 5xx / API key / 路由等)。
 		// TODO: 调试完后改回 log.Debugw 或封装到 trace
