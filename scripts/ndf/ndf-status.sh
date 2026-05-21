@@ -16,7 +16,16 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NDF_REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# Resolve repo root via git --git-common-dir so this works from worktrees too.
+if _gc=$(git -C "$SCRIPT_DIR" rev-parse --git-common-dir 2>/dev/null); then
+  if [[ "$_gc" = /* ]]; then
+    NDF_REPO_ROOT="$(cd "$_gc/.." && pwd)"
+  else
+    NDF_REPO_ROOT="$(cd "$SCRIPT_DIR/$_gc/.." && pwd)"
+  fi
+else
+  NDF_REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+fi
 NDF_CODES_ROOT="$(cd "$NDF_REPO_ROOT/.." && pwd)"
 
 FORMAT="text"
