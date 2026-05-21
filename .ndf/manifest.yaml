@@ -1,5 +1,29 @@
 schema_version: '2.0'
 features:
+- id: sop-stepnav-bookmark-star
+  ndf_version: '3.0'
+  description: 'SOP 步骤导航条每个 step 右侧加 ⭐ 五角星 icon，表示该步骤是否已收藏。点亮=已收藏（filled 主色），不点亮=可收藏（outline，仅 step 有 output 时显示）。Streaming / trailing chat / 未执行步骤不渲染星。点击触发 toggle-bookmark：无书签 → 立即 saveBookmark；有书签 → ConfirmModal 确认后 removeBookmark。OutputCard 现有的"保存生成记录 / 已保存"按钮保留（用户确认），两条 toggle 路径共享 useBookmarks singleton state，状态自动同步。两个 ConfirmModal 实例（SopStepView + SOPRunView）是 Hotfix 文件数硬约束下的有意取舍，后续可抽 useBookmarkToggle composable 合并。'
+  track: hotfix
+  stage: H1
+  classification_reason: 'Hotfix Triage 5 条全满足 — (1) 无 DB schema 变更 (2) 无新 API 端点（复用 saveBookmark/removeBookmark）(3) 无新外部服务 (4) 影响 3 文件（StepNavItem.vue / StepNav.vue / SOPRunView.vue） (5) 非支付/权限/会员高风险业务。新功能不是 bug-from-customer，Rule 11 复现测试不适用，但 H1 至少 1 个新增测试仍需满足。'
+  last_updated_by: ai-h1-start
+  last_updated_at: '2026-05-22T01:30:00+08:00'
+  repos:
+  - numind-web-v3
+  branches:
+    numind-web-v3: fix/sop-stepnav-bookmark-star
+  worktree:
+    numind-web-v3: /private/tmp/wt-sop-stepnav-bookmark-star-numind-web-v3
+  progress:
+    total_tasks: 3
+    completed_tasks: 0
+    reviewed_tasks: 0
+    current_task: 'H1: StepNavItem star slot → StepNav 算 per-item bookmarkState → SOPRunView wire toggle+confirm'
+  decisions:
+  - 'H1-D1: OutputCard 旧的"保存生成记录"按钮保留（用户拍板），不删。两条 toggle 路径共享 useBookmarks singleton state 自动同步。'
+  - 'H1-D2: 两个 ConfirmModal 实例（SopStepView 老的 + SOPRunView 新加的）暂存，未抽公共 composable。理由：抽 useBookmarkToggle 会把文件数推到 4，触发 Hotfix 边界。Tech-debt 记录待后续 Micro 合并。'
+  blockers: []
+  created_at: '2026-05-22T01:30:00+08:00'
 - id: sop-bookmark-state-sync
   ndf_version: '3.0'
   description: 'SOP 运行页节点"保存生成记录"按钮在已存在书签时仍显示"保存生成记录"而非"已保存"，用户无法触发取消保存。Root cause: useBookmarks composable 在函数体内 ref()，SOPRunView 和 SopStepView 各调一次 → 两份独立 state，SOPRunView 那份 loadBookmarks 后 SopStepView 那份依然为空，hasBookmark 永远 false。useBookmarks.test.ts:200 "多实例状态独立" 测试主动锁死了这个错误行为。修复：state 提升到模块作用域成为单例，删除错误测试，新增反方向回归测试 + 切模板/logout 时显式 clear()。'
