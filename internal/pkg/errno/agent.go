@@ -19,4 +19,8 @@ var (
 	// ErrTimeout is returned when a tool operation exceeds its deadline
 	// (e.g. web_fetch 30s, web_search 5s).
 	ErrTimeout = &Errno{HTTP: 504, Code: "FailedOperation.ToolTimeout", Message: "tool operation timed out"}
+
+	// ErrUnsupportedFileType is returned when file_read receives a MIME type that
+	// none of the registered parsers can handle.
+	ErrUnsupportedFileType = &Errno{HTTP: 400, Code: "InvalidParameter.UnsupportedFileType", Message: "unsupported file type"}
 )
