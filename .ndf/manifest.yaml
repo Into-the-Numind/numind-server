@@ -25,9 +25,9 @@ features:
     architecture_blueprint: docs/agent-mode/architecture-v1.md
   progress:
     total_tasks: 9
-    completed_tasks: 4
-    reviewed_tasks: 4
-    current_task: 'S4 Wave 1 完成 (T1/T2/T3/T5 merged into feature/agent-mode-p0-tools at 7563fa35) — go build + tests PASS。T1 web_search (6c2d59c5 + fix 02054be8), T2 web_fetch (86d29211 + fix e77ab71d), T3 state machine yield (a057f9cf), T5 file_read (d33e56b3 + fix 56aac2d5). 全部双 reviewer PASS_WITH_CONCERNS 0 P0/P1。进入 Wave 2 T4 ask_user_question backend + answer endpoint。'
+    completed_tasks: 9
+    reviewed_tasks: 8
+    current_task: 'S4 全部完成 9/9：T1 web_search (02054be8) / T2 web_fetch (e77ab71d) / T3 yield protocol (a057f9cf) / T4 ask_user_question + answer endpoint (b3e3f3c0 + fix 78f468e1) / T5 file_read (56aac2d5) / T6 frontend QuestionPrompt (077f264 on web-v3) / T7 factory_platform wire 10+12 (e3ea62b4) / T8 docs + T9 validation strategy (60053a58)。所有 reviewer 0 P0/P1。T6 frontend reviewer 未跑（3 vitest multi-select 测试 setup 问题为已知 P2 follow-up，非组件 bug）。进入 S5 本地验收 + S6 ndf-done。'
   decisions:
   - 'S1-D1: web_search provider 选 Tavily — LLM-friendly snippet 摘要 + 国际访问 OK + 价格 $5/1000 query 透明；S2 再 lock impl 细节'
   - 'S1-D2: file_read v1 不支持 docx — unioffice 重型库 + attachment.UploadService 当前不允许 docx mime；docx 后续 sub-feature 单独评估'
