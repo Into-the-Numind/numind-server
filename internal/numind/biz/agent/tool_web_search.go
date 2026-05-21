@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/viper"
 
 	"numind-server/internal/pkg/aiservice"
+	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/langfuse"
 )
 
@@ -52,7 +53,8 @@ var _ FullTool = (*webSearchTool)(nil)
 
 // NewWebSearchTool constructs a webSearchTool.
 // ttlSeconds comes from viper("web_search.tavily.cache_ttl_seconds"); 0 → 300 s default.
-func NewWebSearchTool(ttlSeconds int) *webSearchTool {
+// P2-1: returns FullTool interface (not *webSearchTool) to keep callers decoupled.
+func NewWebSearchTool(ttlSeconds int) FullTool {
 	if ttlSeconds <= 0 {
 		ttlSeconds = 300
 	}
@@ -63,7 +65,8 @@ func NewWebSearchTool(ttlSeconds int) *webSearchTool {
 }
 
 // NewWebSearchToolFromConfig reads the TTL from viper and calls NewWebSearchTool.
-func NewWebSearchToolFromConfig() *webSearchTool {
+// P2-1: returns FullTool interface.
+func NewWebSearchToolFromConfig() FullTool {
 	ttl := viper.GetInt("web_search.tavily.cache_ttl_seconds")
 	return NewWebSearchTool(ttl)
 }
@@ -82,23 +85,29 @@ func (t *webSearchTool) AlwaysLoad() bool            { return true }
 
 // Execute validates input, checks cache, calls Tavily via aiservice, and caches the result.
 func (t *webSearchTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
+	start := time.Now()
+
 	var in webSearchInput
 	if err := json.Unmarshal(input, &in); err != nil {
-		return nil, fmt.Errorf("web_search: invalid input: %w", err)
+		// P1-2: JSON unmarshal failure → errno.ErrBind
+		return nil, errno.ErrBind.SetMessage("web_search: invalid input: %v", err)
 	}
 	if in.Query == "" {
 		return nil, fmt.Errorf("web_search: query is empty")
 	}
-	if in.MaxResults <= 0 || in.MaxResults > 10 {
-		in.MaxResults = 5
+	// P1-1: out-of-range max_results returns ErrInvalidParameter, not clamp.
+	if in.MaxResults < 1 || in.MaxResults > 10 {
+		return nil, errno.ErrInvalidParameter.SetMessage("web_search: max_results 必须在 1-10 之间")
 	}
 
 	key := webSearchCacheKey(in)
 
 	// Langfuse Span — tool layer is responsible for tracing; aiservice layer is not.
 	var (
-		spanID  string
-		traceID string
+		spanID   string
+		traceID  string
+		cacheHit bool
+		nResults int
 	)
 	if tc := langfuse.FromContext(ctx); tc != nil {
 		traceID = tc.TraceID
@@ -107,13 +116,24 @@ func (t *webSearchTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 			langfuse.WithSpanParent(tc.ParentObservationID),
 			langfuse.WithSpanInput(in),
 		)
+		// P1-3: emit output metadata (provider/query/results_count/cache_hit/latency_ms) on EndSpan.
 		defer func() {
-			langfuse.EndSpan(traceID, spanID)
+			langfuse.EndSpan(traceID, spanID,
+				langfuse.WithSpanOutput(map[string]any{
+					"provider":      "tavily",
+					"query":         in.Query,
+					"results_count": nResults,
+					"cache_hit":     cacheHit,
+					"latency_ms":    time.Since(start).Milliseconds(),
+				}),
+			)
 		}()
 	}
 
 	// Cache check.
 	if cached, ok := t.cacheGet(key); ok {
+		cacheHit = true
+		nResults = len(cached.Results)
 		out, _ := json.Marshal(webSearchOutput{
 			Results:  cached.Results,
 			CacheHit: true,
@@ -129,10 +149,15 @@ func (t *webSearchTool) Execute(ctx context.Context, input ToolInput) (ToolResul
 		AllowedDomains: in.AllowedDomains,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("web_search: provider error: %w", err)
+		// P1-2: wrap provider errors with errno.ErrAIProviderError.
+		return nil, errno.ErrAIProviderError.SetMessage("web_search: provider error: %v", err)
 	}
 
+	nResults = len(resp.Results)
+
 	// Cache the fresh result.
+	// Note: cachePut uses a full-eviction strategy (drop all at cap=1000).
+	// Thundering herd on cache miss is accepted: Tavily calls are idempotent.
 	t.cachePut(key, resp)
 
 	out, _ := json.Marshal(webSearchOutput{

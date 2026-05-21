@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+
+	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/httpclient"
 )
 
 // WebSearchRequest is the input to WebSearch (provider-agnostic).
@@ -37,13 +40,15 @@ type WebSearchResponse struct {
 }
 
 // WebSearch is the unified entry point for web search. v1 routes to Tavily.
-// Business callers (tool_web_search) are responsible for cache logic.
+// Business callers (tool_web_search) are responsible for cache logic and
+// max_results validation; this layer enforces a belt-and-suspenders guard only.
 func WebSearch(ctx context.Context, req WebSearchRequest) (*WebSearchResponse, error) {
 	if req.Query == "" {
 		return nil, fmt.Errorf("aiservice.WebSearch: query is empty")
 	}
-	if req.MaxResults <= 0 || req.MaxResults > 10 {
-		req.MaxResults = 5
+	// P1-1: callers should validate before reaching here; return error rather than clamp.
+	if req.MaxResults < 1 || req.MaxResults > 10 {
+		return nil, errno.ErrInvalidParameter.SetMessage("web_search: max_results 必须在 1-10 之间")
 	}
 	return callTavily(ctx, req)
 }
@@ -68,6 +73,22 @@ type tavilyResultItem struct {
 type tavilyResponse struct {
 	Results []tavilyResultItem `json:"results"`
 }
+
+// tavilyHTTPClient is the package-level shared client used by callTavily.
+// P2-2: use httpclient.NewClient for connection pooling and configurable timeout,
+// instead of http.DefaultClient which has no timeout and uses the default transport.
+var tavilyHTTPClient = httpclient.NewClient(&httpclient.Config{
+	Timeout:               10 * time.Second,
+	ConnectTimeout:        5 * time.Second,
+	ResponseHeaderTimeout: 10 * time.Second,
+	TLSHandshakeTimeout:   5 * time.Second,
+	IdleConnTimeout:       90 * time.Second,
+	MaxIdleConns:          10,
+	MaxIdleConnsPerHost:   5,
+	MaxRetries:            0, // Tavily search calls are not retried (idempotent but costly)
+	EnableCompression:     true,
+	UserAgent:             "numind-server/1.0 (web_search)",
+})
 
 // callTavily makes a single HTTP POST to the Tavily search endpoint.
 // API key and base URL are read from viper at call time (config hot-reload friendly).
@@ -96,33 +117,41 @@ func callTavily(ctx context.Context, req WebSearchRequest) (*WebSearchResponse, 
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("callTavily: marshal request: %w", err)
+		// P1-2: marshal failure → errno.ErrBind
+		return nil, errno.ErrBind.SetMessage("callTavily: marshal request: %v", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost, baseURL+"/search", bytes.NewReader(body))
+	// P2-2: use httpclient.Client.Do instead of http.DefaultClient.
+	// No retries: Tavily search calls are idempotent but costly; callers retry at a higher level.
+	httpReq := &httpclient.Request{
+		Method:      http.MethodPost,
+		URL:         baseURL + "/search",
+		Headers:     map[string]string{"Content-Type": "application/json"},
+		Body:        bytes.NewReader(body),
+		Context:     callCtx,
+		RetryPolicy: &httpclient.RetryPolicy{MaxRetries: 0},
+	}
+	httpResp, err := tavilyHTTPClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("callTavily: build request: %w", err)
+		// P1-2: network/timeout errors → errno.ErrAIProviderError
+		return nil, errno.ErrAIProviderError.SetMessage("callTavily: http: %v", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
+	defer httpResp.Body.Close()
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	respBytes, err := io.ReadAll(httpResp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("callTavily: http: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("callTavily: read body: %w", err)
+		return nil, errno.ErrAIProviderError.SetMessage("callTavily: read body: %v", err)
 	}
 
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("callTavily: status %d: %s", resp.StatusCode, string(respBytes))
+	if httpResp.StatusCode >= 400 {
+		// P1-2: HTTP 4xx/5xx → errno.ErrAIProviderError (message includes status code).
+		return nil, errno.ErrAIProviderError.SetMessage("callTavily: status %d: %s", httpResp.StatusCode, string(respBytes))
 	}
 
 	var tavilyResp tavilyResponse
 	if err := json.Unmarshal(respBytes, &tavilyResp); err != nil {
-		return nil, fmt.Errorf("callTavily: decode response: %w", err)
+		// P1-2: JSON decode failure → errno.ErrBind
+		return nil, errno.ErrBind.SetMessage("callTavily: decode response: %v", err)
 	}
 
 	results := make([]WebSearchResult, 0, len(tavilyResp.Results))

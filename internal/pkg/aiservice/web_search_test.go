@@ -3,6 +3,7 @@ package aiservice
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+
+	"numind-server/internal/pkg/errno"
 )
 
 // tavilyFixtureResponse returns a minimal Tavily-compatible JSON response.
@@ -89,28 +92,28 @@ func TestWebSearch_EmptyQuery(t *testing.T) {
 	}
 }
 
-func TestWebSearch_MaxResultsClamped(t *testing.T) {
-	var capturedMaxResults int
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body tavilyRequest
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		capturedMaxResults = body.MaxResults
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"results":[]}`))
-	}))
-	defer srv.Close()
-
-	cleanup := setupViperForTest(srv.URL)
-	defer cleanup()
-
-	// max_results=11 should be clamped to 5 by WebSearch before callTavily
-	_, err := WebSearch(context.Background(), WebSearchRequest{Query: "test", MaxResults: 11})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+// TestWebSearch_MaxResultsOutOfRange replaces the old MaxResultsClamped test.
+// P1-1: out-of-range max_results must return ErrInvalidParameter, not silently clamp.
+func TestWebSearch_MaxResultsOutOfRange(t *testing.T) {
+	cases := []struct {
+		name       string
+		maxResults int
+	}{
+		{"zero", 0},
+		{"negative", -1},
+		{"above max", 11},
+		{"way above", 100},
 	}
-	if capturedMaxResults != 5 {
-		t.Errorf("expected clamped max_results=5, got %d", capturedMaxResults)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := WebSearch(context.Background(), WebSearchRequest{Query: "test", MaxResults: tc.maxResults})
+			if err == nil {
+				t.Fatalf("max_results=%d: expected error, got nil", tc.maxResults)
+			}
+			if !errors.Is(err, errno.ErrInvalidParameter) {
+				t.Errorf("max_results=%d: expected ErrInvalidParameter, got: %v", tc.maxResults, err)
+			}
+		})
 	}
 }
 
@@ -124,12 +127,36 @@ func TestWebSearch_HTTP500(t *testing.T) {
 	cleanup := setupViperForTest(srv.URL)
 	defer cleanup()
 
-	_, err := WebSearch(context.Background(), WebSearchRequest{Query: "test"})
+	_, err := WebSearch(context.Background(), WebSearchRequest{Query: "test", MaxResults: 5})
 	if err == nil {
 		t.Fatal("expected error for HTTP 500")
 	}
 	if !strings.Contains(err.Error(), "500") {
 		t.Errorf("expected status 500 in error, got: %v", err)
+	}
+}
+
+// TestWebSearch_HTTP429 verifies that a 429 Too Many Requests from Tavily
+// is surfaced as ErrAIProviderError (P2-3).
+func TestWebSearch_HTTP429(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"rate limit exceeded"}`))
+	}))
+	defer srv.Close()
+
+	cleanup := setupViperForTest(srv.URL)
+	defer cleanup()
+
+	_, err := WebSearch(context.Background(), WebSearchRequest{Query: "test", MaxResults: 5})
+	if err == nil {
+		t.Fatal("expected error for HTTP 429")
+	}
+	if !strings.Contains(err.Error(), "429") {
+		t.Errorf("expected status 429 in error message, got: %v", err)
+	}
+	if !errors.Is(err, errno.ErrAIProviderError) {
+		t.Errorf("expected ErrAIProviderError for 429, got: %v", err)
 	}
 }
 
@@ -146,14 +173,14 @@ func TestWebSearch_Timeout(t *testing.T) {
 	viper.Set("web_search.tavily.api_key", "test-key")
 	viper.Set("web_search.tavily.base_url", srv.URL)
 	viper.Set("web_search.tavily.timeout_seconds", 1)
-	defer func() {
+	t.Cleanup(func() {
 		viper.Set("web_search.tavily.api_key", "")
 		viper.Set("web_search.tavily.base_url", "")
 		viper.Set("web_search.tavily.timeout_seconds", 0)
-	}()
+	})
 
 	ctx := context.Background()
-	_, err := WebSearch(ctx, WebSearchRequest{Query: "timeout test"})
+	_, err := WebSearch(ctx, WebSearchRequest{Query: "timeout test", MaxResults: 5})
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}

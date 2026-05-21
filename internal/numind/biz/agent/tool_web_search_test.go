@@ -130,37 +130,29 @@ func TestWebSearchTool_EmptyQuery(t *testing.T) {
 	}
 }
 
-func TestWebSearchTool_MaxResultsClamped(t *testing.T) {
-	type body struct {
-		MaxResults int `json:"max_results"`
+// TestWebSearchTool_MaxResultsOutOfRange replaces the old MaxResultsClamped test.
+// P1-1: out-of-range max_results must return an error, not silently clamp.
+func TestWebSearchTool_MaxResultsOutOfRange(t *testing.T) {
+	cases := []struct {
+		name       string
+		maxResults int
+	}{
+		{"zero", 0},
+		{"negative", -1},
+		{"above max", 11},
 	}
-	var capturedMaxResults int
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var b body
-		_ = json.NewDecoder(r.Body).Decode(&b)
-		capturedMaxResults = b.MaxResults
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"results":[]}`))
-	}))
-	defer srv.Close()
-	viper.Set("web_search.tavily.api_key", "k")
-	viper.Set("web_search.tavily.base_url", srv.URL)
-	viper.Set("web_search.tavily.timeout_seconds", 5)
-	defer func() {
-		viper.Set("web_search.tavily.api_key", "")
-		viper.Set("web_search.tavily.base_url", "")
-		viper.Set("web_search.tavily.timeout_seconds", 0)
-	}()
-
-	tool := NewWebSearchTool(300)
-	input, _ := json.Marshal(webSearchInput{Query: "test", MaxResults: 11})
-	_, err := tool.Execute(context.Background(), ToolInput(input))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if capturedMaxResults != 5 {
-		t.Errorf("expected clamped max_results=5, got %d", capturedMaxResults)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tool := NewWebSearchTool(300)
+			input, _ := json.Marshal(webSearchInput{Query: "test", MaxResults: tc.maxResults})
+			_, err := tool.Execute(context.Background(), ToolInput(input))
+			if err == nil {
+				t.Fatalf("max_results=%d: expected error, got nil", tc.maxResults)
+			}
+			if !strings.Contains(err.Error(), "max_results") {
+				t.Errorf("max_results=%d: expected 'max_results' in error, got: %v", tc.maxResults, err)
+			}
+		})
 	}
 }
 
