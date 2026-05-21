@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"numind-server/internal/numind/biz/agent"
 	bizagent "numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/skill"
 	"numind-server/internal/pkg/core"
@@ -89,7 +90,11 @@ func (h *StudentQueryController) ListRecentSessions(c *gin.Context) {
 		core.WriteResponse(c, err, nil)
 		return
 	}
-	core.WriteResponse(c, nil, gin.H{"list": sessions})
+	// Frontend expects raw array (web-v3 src/api/agent.ts:32 → RecentSession[]).
+	if sessions == nil {
+		sessions = []*agent.RunSummary{}
+	}
+	core.WriteResponse(c, nil, sessions)
 }
 
 // ListAllHistorySessions handles GET /v1/agent-sessions/history.
@@ -105,7 +110,11 @@ func (h *StudentQueryController) ListAllHistorySessions(c *gin.Context) {
 		core.WriteResponse(c, err, nil)
 		return
 	}
-	core.WriteResponse(c, nil, gin.H{"list": sessions})
+	// Frontend expects raw array (web-v3 src/api/agent.ts:41 → RecentSession[]).
+	if sessions == nil {
+		sessions = []*agent.RunSummary{}
+	}
+	core.WriteResponse(c, nil, sessions)
 }
 
 // GetSessionSnapshot handles GET /v1/sessions/:id/snapshot.

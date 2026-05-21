@@ -12,6 +12,7 @@ import (
 	"numind-server/internal/numind/biz"
 	"numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/attachment"
+	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/middleware"
@@ -116,7 +117,11 @@ func (h *StudentRunController) PollNarration(c *gin.Context) {
 	}
 
 	events, err := h.runSvc.PollNarration(c.Request.Context(), user.ID, runID, since)
-	core.WriteResponse(c, err, gin.H{"events": events})
+	// Frontend expects raw array NarrationEvent[] (web-v3 src/api/agent.ts:81).
+	if events == nil {
+		events = []*narration.Event{}
+	}
+	core.WriteResponse(c, err, events)
 }
 
 // ---------------------------------------------------------------------------
