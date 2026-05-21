@@ -2,12 +2,12 @@ schema_version: '2.0'
 features:
 - id: agent-mode-p0-tools
   ndf_version: '3.0'
-  description: 'agent-mode 14-feature 后基线扩展 — 给 agent runtime 加 4 个 P0 工具拉齐与 Claude Code / Coze 等成熟产品能力门槛：(1) web_search 实时网络搜索（provider 选型 S2 决，候选 Tavily/Serper/Bing），处理时效性强的查询；(2) web_fetch 把 URL 内容转 Markdown 喂给 LLM，处理链接型任务；(3) ask_user_question 结构化多选反问，首个真正 yield turn 的工具，state machine 增加 TerminalWaitingForUserChoice + LoopEventAskUserPaused，新 endpoint POST /v1/agent/sessions/:run_id/answer 接受答案 inject 重启 loop；(4) file_read 按 file_id 读学员上传 PDF/图/docx/txt（与 kb_search RAG 检索不同），PDF 复用 qwen-long via aiservice / 图复用阿里 OCR / docx 用 unioffice，前置依赖 S2 判定文件上传基础设施是否存在（无则拆 sub-feature）。所有工具必经 aiservice 入口 + Langfuse trace（Generation for LLM-based, Span for non-LLM）。前端 numind-web-v3 新增 QuestionPrompt.vue 组件 + 可能 AttachmentUploader.vue + SSE event tool_call_yield / run_resumed。Tool registry 通过 factory_platform.getAllBaseTools 列表追加 4 实例自动 seed 到 tool_definition。Out of scope: per-agent tool whitelist (P1 独立 feature) / web_search DB cache / file_read chunk 分页 / web_fetch JS 渲染 / 重构旧 8 工具 / prod 部署 / 修改 config_prod.yaml。'
+  description: 'agent-mode 14-feature 后基线扩展 — 给 agent runtime 加 4 个 P0 工具拉齐与 Claude Code / Coze 等成熟产品能力门槛：(1) web_search 实时网络搜索（S1 决：Tavily），处理时效性强的查询；(2) web_fetch 把 URL 内容转 Markdown 喂给 LLM，处理链接型任务；(3) ask_user_question 结构化多选反问，首个真正 yield turn 的工具，state machine 增加 TerminalWaitingForUserChoice + LoopEventAskUserPaused，新 endpoint POST /v1/agent/sessions/:run_id/answer 接受答案 inject 重启 loop；(4) file_read 按 file_id 读学员上传 PDF/图/text/markdown（S1 决：v1 不支持 docx，attachment 现已不允许 docx mime），PDF 复用 qwen-long via aiservice / 图复用阿里 OCR / 文本直读。S1 关键发现 attachment.UploadService 已存在 (POST /v1/agent-attachments → Tencent COS)，直接复用不拆 sub-feature。所有工具必经 aiservice 入口 + Langfuse trace（Generation for LLM-based, Span for non-LLM）。前端 numind-web-v3 新增 QuestionPrompt.vue 组件 + AgentChatView SSE handler（AttachmentUploader 已有 #11 提供）。Tool registry 通过 factory_platform.getAllBaseTools 列表追加 4 实例自动 seed 到 tool_definition。Out of scope: per-agent tool whitelist (P1 独立 feature) / web_search DB cache / file_read chunk 分页 / web_fetch JS 渲染 / docx 解析 / 重构旧 8 工具 / prod 部署 / 修改 config_prod.yaml。'
   track: standard
-  stage: S0
-  classification_reason: 'Standard Triage 5/5 全违反 — (1) DB schema 变更：是（agent_file 表可能新建 + agent_run 加 pending_question_json 字段，S2 锁定）(2) 新增 API 端点：是（至少 POST /v1/agent/sessions/:run_id/answer，可能 POST /v1/agent/files/upload）(3) 新外部服务集成：是（web_search provider — Tavily/Serper/Bing 等新引入第三方 API）(4) 影响文件数 >3（8+ 后端 + 2-3 前端 + 配置 + migration + 测试）(5) 高风险业务逻辑：是（state machine yield turn 改造 + BudgetTracker 在 yield 时暂停恢复 + Langfuse trace 链路连贯性）。5/5 全违反，Standard 强制，不可降级。'
-  last_updated_by: ai-s0-start
-  last_updated_at: '2026-05-22T15:30:00+08:00'
+  stage: S1
+  classification_reason: 'Standard Triage 5/5 全违反 — (1) DB schema 变更：是（agent_run 加 pending_question_json 字段 + langfuse_trace_id 沿用现有）(2) 新增 API 端点：是（POST /v1/agent/sessions/:run_id/answer，file 上传 endpoint 已复用 attachment.UploadService 无需新增）(3) 新外部服务集成：是（Tavily search API S1 决定 + qwen-long PDF parser 已在 aiservice）(4) 影响文件数 >3（4 个 tool + state.go + runner.go + 配置 + migration + tool_definition seed + 2 前端组件 + e2e）(5) 高风险业务逻辑：是（state machine yield turn 改造 + BudgetTracker Pause/Resume 在 yield 时正确 + Langfuse trace 链路连贯）。5/5 全违反，Standard 强制。'
+  last_updated_by: ai-s1-proposal
+  last_updated_at: '2026-05-22T16:00:00+08:00'
   repos:
   - numind-server
   - numind-web-v3
@@ -19,13 +19,22 @@ features:
     numind-web-v3: /private/tmp/wt-agent-mode-p0-tools-numind-web-v3
   artifacts:
     requirement: numind-server/requirements/agent-mode-p0-tools.md
+    proposal: numind-server/proposals/agent-mode-p0-tools-proposal.md
     architecture_blueprint: docs/agent-mode/architecture-v1.md
   progress:
     total_tasks: 0
     completed_tasks: 0
     reviewed_tasks: 0
-    current_task: 'S0 完成：需求卡 + manifest 录入；进入 S1 写 proposal+PRD'
-  decisions: []
+    current_task: 'S1 完成：proposal 含 7 决策 D1-D7 + 7 user stories 28 AC + 9 风险；进入 S2 写技术 spec'
+  decisions:
+  - 'S1-D1: web_search provider 选 Tavily — LLM-friendly snippet 摘要 + 国际访问 OK + 价格 $5/1000 query 透明；S2 再 lock impl 细节'
+  - 'S1-D2: file_read v1 不支持 docx — unioffice 重型库 + attachment.UploadService 当前不允许 docx mime；docx 后续 sub-feature 单独评估'
+  - 'S1-D3: ask_user_question yield-resume timeout 设为无限 v1 — 简化逻辑；watchdog cleanup 留 P1'
+  - 'S1-D4: 跨子账户 file 可见策略选 user 严格（user_id-strict）— file_read.file_url 校验 user_id 匹配；避免父账户视角 LLM 误读子账户隐私'
+  - 'S1-D5: web_search cache 介质用 in-memory TTL 5min — 避免新依赖 Redis；后续可平迁'
+  - 'S1-D6: 4 工具默认勾选 — agent_definition.allowed_tools 默认包含 4 工具；降低父账户配置成本'
+  - 'S1-D7: ask_user_question 不计 credit — yield 无 LLM 调用，仅 SSE 推送 + DB 行 update'
+  - 'S1-D8 (新发现): 复用 attachment.UploadService POST /v1/agent-attachments — file 上传基础设施已存在，不拆 sub-feature；file_read 直接读 attachment URL（Tencent COS 公开）'
   related_features:
   - 'agent-mode-runtime-skeleton (#2/14, merged 45770bb5 — LoopState / RunHooks 接口；本 feature 用 state.go 加 LoopEventAskUserPaused + TerminalWaitingForUserChoice)'
   - 'agent-mode-tool-registry (#3/14 — ToolFactory + PlatformToolFactory；4 新工具通过 factory_platform.getAllBaseTools 注册)'
