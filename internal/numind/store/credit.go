@@ -44,6 +44,11 @@ type CreditStore interface {
 	UpdateUserTypeConfig(ctx context.Context, userType string, updates map[string]interface{}) error
 	CreateTransaction(ctx context.Context, tx *gorm.DB, txn *model.CreditTransaction) error
 	ListTransactionsByUser(ctx context.Context, userID uint, offset, limit int) ([]model.CreditTransaction, int64, error)
+	// SumByReservationIDs sums credit_transaction.amount (negated to positive = spent)
+	// for each reservation ID in the input slice. Returns a map[reservationID]→totalSpent.
+	// Used by student-facing agent run list endpoints to compute credits_used per run.
+	// Missing IDs (no transactions yet) return 0 — not an error.
+	SumByReservationIDs(ctx context.Context, reservationIDs []uint64) (map[uint64]int64, error)
 	ListAllAccountsWithBalance(ctx context.Context, offset, limit int) ([]model.CreditAccount, int64, error)
 	GetQuotaBreakdown(ctx context.Context, userID uint) (subTotal, subRemain, boosterTotal, boosterRemain int64, err error)
 	GetLatestCreditExpiry(ctx context.Context, userID uint) (string, error)
@@ -235,6 +240,49 @@ func (s *creditStore) ListTransactionsByUser(ctx context.Context, userID uint, o
 		return nil, 0, err
 	}
 	return transactions, total, nil
+}
+
+// SumByReservationIDs returns the total credits spent (sum of negative amounts, negated)
+// for a batch of reservation IDs. Each reservation is referenced in credit_transaction as
+// biz_ref_type='reservation', biz_ref_id=<id string>.
+// Missing IDs (no rows yet) map to 0 — not an error. Debit rows have negative amount;
+// we negate so the result is a positive "credits_used" count.
+func (s *creditStore) SumByReservationIDs(ctx context.Context, reservationIDs []uint64) (map[uint64]int64, error) {
+	result := make(map[uint64]int64, len(reservationIDs))
+	if len(reservationIDs) == 0 {
+		return result, nil
+	}
+	// Convert IDs to strings for biz_ref_id comparison (model stores biz_ref_id as VARCHAR).
+	strIDs := make([]string, len(reservationIDs))
+	for i, id := range reservationIDs {
+		strIDs[i] = fmt.Sprintf("%d", id)
+	}
+	type row struct {
+		BizRefID string `gorm:"column:biz_ref_id"`
+		Total    int64  `gorm:"column:total"`
+	}
+	var rows []row
+	if err := s.db.WithContext(ctx).
+		Model(&model.CreditTransaction{}).
+		Select("biz_ref_id, SUM(amount) AS total").
+		Where("biz_ref_type = ? AND biz_ref_id IN ?", "reservation", strIDs).
+		Group("biz_ref_id").
+		Scan(&rows).Error; err != nil {
+		return nil, fmt.Errorf("creditStore.SumByReservationIDs: %w", err)
+	}
+	for _, r := range rows {
+		var id uint64
+		if _, err := fmt.Sscanf(r.BizRefID, "%d", &id); err != nil {
+			continue
+		}
+		// amount values are negative (deductions); negate to get positive spent count.
+		total := -r.Total
+		if total < 0 {
+			total = 0
+		}
+		result[id] = total
+	}
+	return result, nil
 }
 
 // T11 (credits-cleanup): UpdateBalance and RecalculateBalance have been deleted.

@@ -419,7 +419,14 @@ func NewBiz(ds store.IStore) *biz {
 	}()
 
 	// #14 follow-up ALPHA: student-facing agent query service.
-	b.studentQuerySvc = agent.NewStudentQueryService(ds.AgentRuns(), ds.Users())
+	// WithSkillStore → agent_name/emoji/credit_cap enrichment.
+	// WithCreditStore → credits_used computation via SumByReservationIDs.
+	b.studentQuerySvc = agent.NewStudentQueryService(
+		ds.AgentRuns(),
+		ds.Users(),
+		agent.WithQuerySkillStore(ds.AgentDefinitions()),
+		agent.WithQueryCreditStore(ds.Credits()),
+	)
 
 	// #14 BETA: student-facing run lifecycle service.
 	narrationBuf := agent.NewNarrationBuffer(256, 30*time.Minute)
