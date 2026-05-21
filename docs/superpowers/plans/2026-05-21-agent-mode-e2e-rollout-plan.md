@@ -16,7 +16,8 @@
 | S2 reviewer P2-1 | 新增 M-A8a task：定义 `callctx.WithCallID` / `callctx.CallIDFromCtx` + `adapter.LookupUsage(callID) (budgetctx.Usage, bool)` |
 | S2 reviewer P2-2 | A1 task 改用 `agent.HandleLLMError(state, err)` → `r.handlePTLError` / `r.handleMaxOutputError`（已存在 line 524/567）|
 | S2 reviewer P2-3 | B fixture task 显式列出 commit 到 **两个 repo** 的 path |
-| S2 reviewer P2-4 | C3 task 加 GORM model field `CancellationRequestedAt *time.Time`；C4 task 加 store join 策略：用 `agent_run` 已有的 `AgentDefinitionID`（实际存在 — runner.go RunRequest.AgentDefID 写入 store），join 到 `agent_definition` 拿 `parent_user_id` 过滤 |
+| S2 reviewer P2-4 | C3 task 加 GORM model field `CancellationRequestedAt *time.Time`；C4 store join 策略**修正**（S3 reviewer P1-1）：`agent_run` 当前**无** `agent_definition_id` 列。M-C3a migration 同时加 `agent_definition_id BIGINT NULL INDEX`；runner.go 创建 run 时写此字段（一行加 `AgentDefinitionID: req.AgentDefID` 到 `&model.AgentRun{...}`），M-C4a join 安全 |
+| S3 reviewer P2-5 | M-B0c **新增**：seed `compliance_rule` 行（`parent_user_id=$E2E_PARENT_USER_ID, rule_type=forbid_phrase, pattern="竞品X"`）供 M-B5 用 |
 
 ---
 
@@ -28,9 +29,9 @@
 |------|------|------|-------|------|
 | M-A0a | numind-server | `internal/pkg/aiservice/profile/constants.go` | +30 | 1 test (count==21) |
 | M-A0b | numind-server | `migrations/20260521_180000_agent_task_profiles_seed.sql` + rollback | +50 | DB seed verify |
-| M-A1 | numind-server | `runner.go:389-490` 重写 ReAct loop + 4 helper | +200 | 7 tests in `runner_e2e_loop_test.go` |
+| M-A1 | numind-server | `runner.go:389-490` 重写 ReAct loop + 4 helper（**重要**：用 `agent.HandleLLMError(state, err)` → `r.handlePTLError` / `r.handleMaxOutputError` 现有 helper（line 524/567）— 禁止直接调 `compact.IsPTLError`/`compact.IsMaxOutputError`（§0 errata P2-2）；同时 `run := &model.AgentRun{... AgentDefinitionID: req.AgentDefID, ...}` 写入新字段（C-P1-1 修复）| +200 | 7 tests in `runner_e2e_loop_test.go` |
 | M-A2 | numind-server | `memory/embedder.go` 加 aiserviceEmbedder + `memory/retrieval.go` 加 RetrieverOption | +80 | 2 tests |
-| M-A3 | numind-server | `memory/provider.go` SyncTurn 真实实装 + `memory/sync_prompt.go` + `pkg/middleware/agent_session_ctx.go` | +180 | 5 tests |
+| M-A3 | numind-server | `memory/provider.go` SyncTurn 真实实装 + `memory/sync_prompt.go` + `pkg/middleware/agent_session_ctx.go`（**重要**：SyncTurn 内用 `p.l1Store.Create(ctx, &model.AgentSessionMemory{...})` — **不用** `p.notepad.AppendL1`（§0 errata P1-1）| +180 | 5 tests |
 | M-A4 | numind-server | `compact/aiservice_provider.go` + `biz.go` wire | +100 | 3 tests |
 | M-A5 | numind-server | `narration/aiservice_fallback.go` + `biz.go` wire | +130 | 4 tests |
 | M-A6 | numind-server | `compliance/injection_detector.go` 加 aiserviceLLMClassifier + `biz.go` wire | +90 | 4 tests |
@@ -44,7 +45,8 @@
 | Task | 仓库 | 文件 | 测试 |
 |------|------|------|------|
 | M-B0a | numind-server | `migrations/20260521_190000_seed_e2e_test_agent.sql` + rollback | dev only |
-| M-B0b | numind-admin-web + numind-web-v3 | `e2e/fixtures/test-agent-id.json`（**两个 repo 各一份**）| — |
+| M-B0b | numind-admin-web + numind-web-v3 | `e2e/fixtures/test-agent-id.json`（**两个 repo 各一份**：`numind-admin-web/e2e/fixtures/` + `numind-web-v3/e2e/fixtures/`，内容相同）| — |
+| M-B0c | numind-server | `migrations/20260521_190100_seed_e2e_compliance_rule.sql`（dev only）— seed forbid_phrase pattern="竞品X" for $E2E_PARENT_USER_ID（M-B5 用）| dev only |
 | M-B1 | numind-admin-web | `e2e/admin-create-agent.spec.ts` | 1 spec |
 | M-B2 | numind-web-v3 | `e2e/student-dialog-happy.spec.ts` | 1 spec |
 | M-B3 | numind-web-v3 | `e2e/student-permission-deny.spec.ts` | 1 spec |
@@ -60,11 +62,12 @@
 |------|------|------|-------|------|
 | M-C1a | numind-server | `controller/v1/admin/compliance_rule.go` + `biz/compliance/admin_service.go` + admin_router.go register | +250 | 5 endpoint tests |
 | M-C1b | numind-admin-web | `api/complianceRule.ts` + `stores/complianceRule.ts` + 3 views | +400 | unit + e2e |
-| M-C2 | numind-admin-web | `views/agent/AgentMonitoring.vue` Langfuse trace link + `.env.development` | +40 | manual |
-| M-C3a | numind-server | `migrations/20260521_200000_agent_run_admin_cancel.sql` + rollback + model field `CancellationRequestedAt *time.Time` + GORM tag | +50 | model test |
+| M-C2 | numind-admin-web | `views/agent/AgentMonitoring.vue` Langfuse trace link + `.env.development`（dev 实际 URL）| +40 | manual |
+| M-C2-prod | docs only | `docs/agent-mode/config-prod-diff.md` 记录 prod `VITE_LANGFUSE_URL` 应配的值（E2 文档，**不真改 `.env.production`** — 由 user 手动落 prod）| — | — |
+| M-C3a | numind-server | `migrations/20260521_200000_agent_run_admin_cancel.sql` 加 **两列**（`cancellation_requested_at DATETIME NULL` + `agent_definition_id BIGINT NULL` + INDEX idx_ar_agent_def_id）+ rollback + 2 个 model field（`CancellationRequestedAt *time.Time` + `AgentDefinitionID uint64`）+ GORM tag | +70 | model test 含 2 字段 |
 | M-C3b | numind-server | `controller/v1/admin/agent_run.go` cancel endpoint + `biz/agent/admin_cancel.go` + admin_router register | +180 | 3 endpoint tests |
 | M-C3c | numind-admin-web | `AgentMonitoring.vue` action 加 [强制取消] + ConfirmModal | +60 | unit |
-| M-C4a | numind-server | store `ListByParentUserIDAndStatus` (join `agent_run` ⋈ `agent_definition` ON agent_definition_id) + biz `ListRunsByStatus` + admin endpoint | +150 | 3 endpoint tests |
+| M-C4a | numind-server | store `ListByParentUserIDAndStatus` (join `agent_run` ⋈ `agent_definition` ON `agent_run.agent_definition_id = agent_definition.id` — **此列由 M-C3a migration 新加**) + biz `ListRunsByStatus` + admin endpoint | +150 | 3 endpoint tests |
 | M-C4b | numind-admin-web | `AgentMonitoring.vue` 替换假数据 fetcher + 30s 轮询 (useIntervalFn) | +80 | unit |
 | M-C5 | numind-admin-web | `AgentMonitoring.vue` 删 NoticeBanner + import + 测试 snapshot 更新 | +5/-15 | unit |
 
@@ -117,17 +120,17 @@ Expected: exit 0
 
 ### Wave 2（Phase A 串行 — 单 implementer）
 
-| Task | 理由 |
-|------|------|
-| M-A6 | biz.go wire 与 Wave 1 wire 冲突，串行 |
-| M-A7 | 需 grep #6 permission validators 找 placeholder |
-| M-A8a | 新 callctx pkg + 改 adapter.go usageStore |
-| M-A8b | budgetgate gate.go 改 PostToolCall — 依赖 M-A8a |
-| M-A3 | provider.go SyncTurn — 依赖 A1 ctx 注入（runner.go）|
-| M-A1 | runner.go 大改 — 最后做（依赖前面所有 wire） |
-| M-A9 | 3 处 log 调用，串行 |
+| 顺序 | Task | 理由 |
+|------|------|------|
+| 1 | M-A3 | **先做** — `pkg/middleware/agent_session_ctx.go` 是 M-A1 ctx 注入的前提（S3 reviewer P2-2 修正）|
+| 2 | M-A6 | biz.go wire 与 Wave 1 wire 冲突，串行 |
+| 3 | M-A7 | 需 grep #6 permission validators 找 placeholder |
+| 4 | M-A8a | 新 callctx pkg + 改 adapter.go usageStore |
+| 5 | M-A8b | budgetgate gate.go 改 PostToolCall — 依赖 M-A8a |
+| 6 | M-A1 | runner.go 大改 — **最后做**（依赖 M-A3 middleware pkg + M-A8a callctx + 所有 wire）|
+| 7 | M-A9 | 3 处 log 调用，串行 |
 
-**理由**：A1 是 runner.go 主大改，其他 wire 完后做。A8a/A8b 串行依赖。A3 依赖 A1 的 sessionID ctx 注入。
+**理由**（S3 reviewer P2-2 修正）：M-A3 创建 `pkg/middleware/agent_session_ctx.go`，M-A1 在 runner.go 内 import 此 pkg 注入 SessionID。先 M-A3 后 M-A1 才编译过。
 
 ### Wave 3（Phase B 并行 — 同仓库分组）
 
@@ -224,6 +227,7 @@ D1 → D2 → D3 → D4，每步都依赖前一步
 - [ ] 0 prod 影响（git diff config_prod.yaml 空 / 不打 tag / 不调 /deploy-prod）
 - [ ] 累计 P0 = 0；P1 全修
 - [ ] 3 仓库 S6 manual merge 完成
+- [ ] `.env.production` 0 改动（grep 检查 `VITE_LANGFUSE_URL=<prod URL>` 占位符 = 0 命中）
 
 ---
 
@@ -251,6 +255,20 @@ D1 → D2 → D3 → D4，每步都依赖前一步
 
 ---
 
-## §8 状态
+## §8 S3 reviewer 反馈处置
 
-**S3 完结。等 reviewer。**
+| Decision | 来源 | 处置 |
+|---------|------|------|
+| S3-D1 | reviewer P1-1 | M-C3a migration 同时加 `agent_definition_id` 列；M-A1 在 runner.go 写入此字段；M-C4a join 安全 |
+| S3-D2 | reviewer P2-1 | M-A3 task row 加 "用 l1Store.Create" 强调 |
+| S3-D3 | reviewer P2-2 | Wave 2 重排序：M-A3 → M-A6 → M-A7 → M-A8a → M-A8b → M-A1 → M-A9（先 middleware pkg 后 runner.go 重写）|
+| S3-D4 | reviewer P2-3 | M-A1 task row 加 "用 HandleLLMError + handlePTLError/handleMaxOutputError" 强调 |
+| S3-D5 | reviewer P2-4 | Migration §4 表 placeholder timestamp 已部分修正；S4 实施 D1 task 时实操按 `ls migrations/` 真实顺序 |
+| S3-D6 | reviewer P2-5 | M-B0c 新增：seed compliance_rule for B5 |
+| S3-D7 | reviewer P2-6 | M-C2-prod task 新增（仅 docs，不真改 `.env.production`）+ Done Criteria 加 grep 验证 |
+
+---
+
+## §9 状态
+
+**S3 完结（含 reviewer 7 项 fixes）。0 P0 + 0 P1 残留。35 → 38 个 M-task（加 M-B0c / M-C2-prod / 显式 ordering 调整）。Ready for S4。**
