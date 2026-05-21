@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -30,13 +31,41 @@ type RunSummary struct {
 	CreatedAt         time.Time  `json:"created_at"`
 }
 
+// frontendStatus maps backend agent_run.status + state_reason to the AgentRunStatus
+// enum the web-v3 frontend expects: 'pending' | 'running' | 'completed' | 'timeout'
+// | 'failed' | 'cancelled' | 'budget_exhausted'.
+//
+// Backend stores "running" while a run is active and "terminated" once it finishes;
+// state_reason (TerminalReason) carries the granular outcome. The frontend never
+// learned the "terminated" status, so we collapse it here at the response boundary.
+func frontendStatus(status, stateReason string) string {
+	switch status {
+	case "running", "pending":
+		return status
+	case "terminated":
+		switch stateReason {
+		case "completed":
+			return "completed"
+		case "error_max_budget":
+			return "budget_exhausted"
+		case "max_turns":
+			return "timeout"
+		case "cancelled", "aborted_streaming", "aborted_tools":
+			return "cancelled"
+		default:
+			return "failed"
+		}
+	}
+	return status
+}
+
 func runToSummary(r model.AgentRun) RunSummary {
 	return RunSummary{
 		ID:                r.ID,
 		UserID:            r.UserID,
 		SessionID:         r.SessionID,
 		AgentDefinitionID: r.AgentDefinitionID,
-		Status:            r.Status,
+		Status:            frontendStatus(r.Status, r.StateReason),
 		StateReason:       r.StateReason,
 		CompactSummary:    r.CompactSummary,
 		StartedAt:         r.StartedAt,
@@ -127,9 +156,18 @@ func (s *StudentQueryService) GetSessionSnapshot(ctx context.Context, userID uin
 	return snap, nil
 }
 
+// RunDetail is the GET /v1/agent-runs/:id response. RunSummary fields are
+// included so the frontend can read the same shape as list endpoints, plus
+// `final_output` (extracted assistant text from the last turn) for the chat UI
+// to render once the run completes.
+type RunDetail struct {
+	RunSummary
+	FinalOutput string `json:"final_output,omitempty"`
+}
+
 // GetRun returns a single run, ownership-checked.
 // Returns errno.ErrForbidden if the run belongs to a different user.
-func (s *StudentQueryService) GetRun(ctx context.Context, userID uint, runID uint64) (*model.AgentRun, error) {
+func (s *StudentQueryService) GetRun(ctx context.Context, userID uint, runID uint64) (*RunDetail, error) {
 	run, err := s.runStore.Get(ctx, runID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) || isNotFoundErr(err) {
@@ -140,7 +178,31 @@ func (s *StudentQueryService) GetRun(ctx context.Context, userID uint, runID uin
 	if run.UserID != userID {
 		return nil, errno.ErrForbidden.SetMessage("access to another user's run is not allowed")
 	}
-	return run, nil
+	return &RunDetail{
+		RunSummary:  runToSummary(*run),
+		FinalOutput: extractFinalAssistantText(run.Messages),
+	}, nil
+}
+
+// extractFinalAssistantText pulls the last assistant message content out of
+// agent_run.messages (a JSON array of {role,content} turns). Returns "" if
+// nothing useful is present (still-running run, error before WriteTurn, etc.).
+func extractFinalAssistantText(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var turns []map[string]any
+	if err := json.Unmarshal(raw, &turns); err != nil {
+		return ""
+	}
+	for i := len(turns) - 1; i >= 0; i-- {
+		if role, _ := turns[i]["role"].(string); role == "assistant" {
+			if content, ok := turns[i]["content"].(string); ok {
+				return content
+			}
+		}
+	}
+	return ""
 }
 
 // WriteFeedback appends a learner's 👍/👎 + optional text to
