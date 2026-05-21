@@ -82,17 +82,24 @@
 | A6 | Injection classifier | mock 永远返回 false（#13）| `aiservice.Chat` qwen-turbo classifier（异步、超时 fallback 到关键词命中即拒）| `internal/numind/biz/compliance/injection_detector.go` |
 | A7 | Permission L3 auto-mode classifier | mock（#6）| `aiservice.Chat` qwen-turbo classifier（异步、超时 fallback warn-allow）| `internal/numind/biz/permission/validators/`（L3 auto-mode validator）|
 | A8 | PostToolCall tokens 数据流 | aiservice adapter 未写 ctx token（#12 §6 #1）| adapter 在 PostToolCall 注入 ctx token usage → BudgetTracker.RecordUsage 拿到真实数 | `internal/numind/biz/agent/adapter_full_to_eino.go` + `biz/budget/tracker.go` |
+| A9 | Log-based 合规/审计可观测性 | AuditLogger drop count 仅靠测试断言（#13 §10）；LLM 拒答率无观测 | 加 `log.Warnw` + 自加结构化字段（drop_count / refusal_count）→ 用现有 zap log + 后期 Filebeat / Loki 抓取（v1 不引 Prometheus）| `internal/numind/biz/compliance/audit_logger.go` + `runner.go` final answer 后埋点 |
+
+> **设计注解（来自 S0 reviewer P2-1 / P2-4）**：
+> - **A3 ctx 注入**：runner.go Run() 需在 step [4] 之后注入 `CtxKeySessionID`（per #7 §10 P2-3 决议），由 #14 自加 — `SyncTurn(ctx, ...)` 才能拿到 sessionID
+> - **A6 vs A7 fallback 方向刻意不对称**：A6 注入检测 timeout → fail-deny（安全优先）；A7 权限检测 timeout → fail-allow 兜底（用户体验优先）。**S2 不要统一化**
 
 **Phase A 验收**：
-- 所有 8 个切换点单测 + 集成测 PASS（用 mock aiservice for test）
+- 所有 9 个切换点单测 + 集成测 PASS（用 mock aiservice for test）
 - biz/agent 整包覆盖率不下降（≥ 80%）
 - biz/compact / biz/memory / biz/narration / biz/compliance / biz/permission 各包覆盖率不下降
 - `go test -race ./...` 全 PASS
-- A1-A8 全部在 dev 环境用真实 dev qwen-turbo + dev billing 跑通（不真扣用户积分；single dev test user）
+- A1-A9 全部在 dev 环境用真实 dev qwen-turbo + dev billing 跑通（不真扣用户积分；single dev test user）
 
 #### Phase B：Playwright E2E 端到端（admin-web + web-v3）
 
 > **关键约束**：分布式 e2e — admin-web spec 在 admin-web 跑（端口 5174），web-v3 spec 在 web-v3 跑（端口 5173）。共用 `e2e/helpers/auth.setup.ts` 复用登录态。凭据走环境变量 `$E2E_USERNAME` / `$E2E_PASSWORD`（管理员=父账户）+ `$E2E_STUDENT_USERNAME` / `$E2E_STUDENT_PASSWORD`（学员=子账户）。子账户凭据可能未在 `.claude/settings.local.json` 配置 → 启动 Phase B 前向用户确认。
+>
+> **B1 → B2 状态共享（来自 S0 reviewer P1-4 修复）**：B1 admin-web spec 创建一个测试 Agent 后，**通过 backend API 把 agent_definition_id 写到一个共享 fixture 文件** `e2e/fixtures/test-agent-id.json`（admin-web e2e teardown 时清理 + web-v3 e2e setup 时读取）；或者更简单：**S3 plan 决定**用 D1 migration 阶段预 seed 一个固定 `test-agent-e2e` Agent（fixture-style），B1 验证创建路径走另一个临时 Agent，B2 用 seed Agent。S2 spec 选定其一并明示。
 
 8 个核心流程：
 
@@ -151,7 +158,7 @@
 | E1 | `docs/agent-mode/deploy-checklist-feature-14.md` | 13 + 1 个 feature migration 顺序 + rollback 顺序 + 数据校验 SQL（含每个表 row count assert）|
 | E2 | `docs/agent-mode/config-prod-diff.md` | config_prod.yaml 应增加的字段（aiservice route 配置 / sandbox backend / compliance defaults / langfuse prod keys）—— **写文档不真改 config_prod.yaml** |
 | E3 | `docs/agent-mode/runbook.md` | oncall 操作手册：如何强制取消 agent / 如何查 compliance audit / 如何升降 budget 阈值 / Langfuse trace 查询 |
-| E4 | `docs/agent-mode/architecture-v1.md` 更新 | §11 实施路线图 标注 14-feature 全部 v1 落地日期；版本号 → v1.0-final |
+| E4 | `docs/agent-mode/architecture-v1.md` 更新 | 在 §11 实施路线图**末尾追加新 §16 "v1.0 Landing Record"**（**不覆盖原 §11 前瞻性路线图内容** — 来自 S0 reviewer P2-5）：14 features 完成日期表 + 各 feature merged_commit 索引 + v1 范围界定。版本号 → v1.0-final |
 | E5 | `CLAUDE.md` 加 Agent 模式 § | 与 SOP / Chatbot 并列第 3 模态 |
 | E6 | `numind-server/CLAUDE.md` 加 biz/agent/* 子包说明 | adapter / runner / hooks / 5 个 gate 子包（permission/budget/sandbox/narration/compliance）|
 | E7 | Go-live checklist | 用户手动 prod 部署 step-by-step（含 git tag + /deploy-prod + smoke test 节点）|
@@ -181,6 +188,14 @@
 | `AdminTestExpireDaemon` cron 调度（#12 §6 #3）| v1 lazy-create 满足；cron 推 v2 |
 | `MaxTurnsPerRun` 字段引入 agent_definition（#12 §6 #4）| v1 走 DefaultLimits.MaxTurns=50；字段化推 v2 |
 | `task lint` 历史债清理（3 个 pre-existing issue）| 由独立 micro 处理（在 commit `0f75ecfe` 等多个 S5 doc 说明）|
+| **独立 Stop Hook** —— query loop 完成时新 hook 点（#5 §6 标 #14）| 设计上可走新方法 `OnLLMResponse(ctx) HookAction`（不破 I6 enum 值不变），但实际价值小：5 层 hook（compliance/permission/budget/sandbox/narration）已覆盖主要安全/审计点，stop hook 仅多一处审计埋点；v1 不实装，v2 视监控数据决定 |
+| **Sandbox 网络 Allowlist 真实落地** —— #4 §"关键 follow-ups" #8 标 #14 iptables | 这是 **devops/sysadmin 层** 工作，不是 #14 代码 scope；当前 Daytona 用 Docker 默认 bridge 网络隔离 + sandbox 内不 mount 主机 fs 已足够 v1 安全等级；prod 上线后 ops 单独配 iptables rules（写到 runbook E3）|
+| **Narration N6 queued emitter** —— #8 §7 N6 | narration 当前是 goroutine-safe `Send()` + `RWMutex`，并发量足够 v1（单 Agent 单学员）；高并发场景下加 ring buffer 是 v2 优化 |
+| **Narration N11 multi-failure cascading active warning** —— #8 §7 N11 | 当 ≥3 tool call 连续 fail 时主动 banner 提醒学员 — 是 UX 改善而非可用性必需；v1 学员能看到每次 error narration 已 sufficient；v2 加 trend detection |
+| **L1 Memory 90 天 TTL cron 清理** —— #7 §9 标 #14 / 运维 | DB 层 cleanup job，本质 devops；v1 L1 表有 `expires_at` 字段写入但无 cron 跑；prod 落地后 ops 加 K8s CronJob 或 systemd timer（写到 runbook E3）|
+| **L1 Memory 行数硬上限 GC** —— #7 §9 标 #14 | 与 L1 TTL 同类；v2 加 |
+| **AuditLogger drop count 全量 Prometheus/Grafana 接入** —— #13 §10 标 #14 | v1 走 A9 log-based observability（zap log + 结构化字段）；prod 接 Filebeat → Loki / ElasticSearch 是 v2 infra 工作 |
+| **LLM 拒答率 Prometheus 监控** —— #13 §10 标 #14 | 同上；v1 走 log-based |
 
 ---
 
@@ -215,10 +230,11 @@
 
 | 指标 | 目标 | 验证 |
 |------|------|------|
-| 8 个 mock 切换点真实接通 | A1-A8 全完成 | runner.go 无 `_ = einoAgent` short-circuit；biz/memory 无 mockEmbedder；biz.go wire 无 MockCompactProvider |
+| 9 个 mock 切换点真实接通 | A1-A9 全完成 | runner.go 无 `_ = einoAgent` short-circuit；biz/memory 无 mockEmbedder；biz.go wire 无 MockCompactProvider |
 | `go test -race ./...` 全 PASS | 30+ 包 | 无 FAIL / 无 data race |
 | biz/agent 覆盖率 | ≥ 80%（不下降）| `go test -cover ./internal/numind/biz/agent/` |
 | 8 个 Playwright e2e | 全 PASS in dev | spec 文件 commit + dev 验收截图 |
+| **Langfuse dev trace 完整性** | dev 至少 1 个 trace 含 ≥ 1 generation 含 `model=qwen-turbo` + ≥ 1 span（tool call）| Langfuse 后台手动 verify + Phase D D4 smoke test |
 | 0 prod 影响 | config_prod.yaml 零 diff / 不打 tag / 不调 `/deploy-prod` | git diff verification + commit log 检查 |
 
 ### 业务指标（v1 最终态）
@@ -244,7 +260,7 @@
 | R6 | Langfuse trace 不完整（child span 失联）| 中 | 中 | 在 A1 adapter Generate 用 `langfuse.WithTrace(ctx, traceID)` 注入 + 每个 generation `WithGenParent`；写专门集成测验证 trace 树形态 |
 | R7 | Compact 真实压缩后恢复出错（cleanseMessages 边界）| 中 | 中 | A4 + B7 联动测；e2e B7 必须验证 50+ 轮对话 compact 后正确恢复 |
 | R8 | 子账户 e2e 凭据未配置 | 高 | 低 | Phase B 启动前 confirm 用户在 `.claude/settings.local.json` 配 `E2E_STUDENT_USERNAME` / `E2E_STUDENT_PASSWORD`；如未配置 → BLOCKED_NEEDS_USER |
-| R9 | dev DB 中存在 stale Agent 数据导致 e2e 不稳定 | 中 | 低 | Playwright spec 用 setup hook 创建独立 test Agent，teardown 标记 inactive |
+| R9 | dev DB 中存在 stale Agent / migration drift 导致 e2e 不稳定 + D1 migration 失败 | 中 | 中（升级 from 低）| Playwright spec 用 setup hook 创建独立 test Agent，teardown 标记 inactive；D1 跑前每个 migration 用 `SELECT * FROM information_schema.columns WHERE table_name=... AND column_name=...` 验证表/列状态，决定 skip 还是 apply；先在本地 SQLite simulate 完整链 |
 
 ---
 
@@ -309,6 +325,7 @@ NDF v2 §4.2 Hotfix vs Standard 5 条标准全审：
 - [x] dev qwen-turbo / 真实 LLM provider 已配 dev key（不会因 quota 报错）— Phase A 真实测试前提
 - [ ] `$E2E_STUDENT_USERNAME` / `$E2E_STUDENT_PASSWORD` 子账户 e2e 凭据已配 — **Phase B 启动前 confirm**
 - [ ] dev 环境 Langfuse 后台 URL 可访问（给 Phase C C2 跳转用）— **Phase D D1 时 verify**
+- [ ] **#10 configurator-ux S5 acceptance doc 验证地位**（来自 S0 reviewer P1-3）—— `2026-05-21-agent-mode-configurator-ux-s5-acceptance.md` 当前 "Overall verdict: TBD"；feature 已 S6 merge commit `fdebd7b` 代表 de facto 接受；**#14 假定 #10 = ACCEPTED**（S6 merge 是 acceptance signal），但 S2 spec 时如发现 Phase C 改动影响 #10 已有功能且没有 baseline acceptance evidence，需提请用户回填 #10 S5
 
 ---
 
@@ -320,9 +337,31 @@ NDF v2 §4.2 Hotfix vs Standard 5 条标准全审：
 
 ---
 
-## 12. 不变量
+## 12.5 决策记录（S0 reviewer 反馈处置）
+
+| Decision | 来源 | 处置 |
+|---------|------|------|
+| S0-D1 | reviewer P0-1 | **独立 Stop Hook 推到 Out of scope** —— 5 层 hook 已覆盖主要安全点；v1 不实装；I6 invariant 维持 5 个 enum 值不变 |
+| S0-D2 | reviewer P0-2(a) | **Sandbox 网络 Allowlist 推到 Out of scope** —— devops/iptables 工作不是代码 scope；写到 runbook E3 让 ops 配 |
+| S0-D3 | reviewer P0-2(b) | **Narration N6 queued emitter 推到 Out of scope** —— RWMutex 已 race-safe；v2 优化 |
+| S0-D4 | reviewer P0-2(c) | **Narration N11 multi-failure cascading 推到 Out of scope** —— UX 改善非必需 |
+| S0-D5 | reviewer P1-1 | **L1 Memory TTL/GC cron 推到 Out of scope** —— devops cron job 非代码 scope |
+| S0-D6 | reviewer P1-2 | **AuditLogger drop / LLM 拒答率 — v1 走 log-based observability（A9 新增）**；full Prometheus 推 v2 |
+| S0-D7 | reviewer P1-3 | **#10 S5 doc TBD 接受**：S6 merge `fdebd7b` 作 de facto acceptance；§10 assumption 已记录 |
+| S0-D8 | reviewer P1-4 | **B1→B2 状态共享方案 S2 决定**：fixture-share via `e2e/fixtures/test-agent-id.json` 或 D1 seed test-agent；§2 Phase B 已加 note |
+| S0-D9 | reviewer P2-1 | **A3 ctx 注入 CtxKeySessionID 明示** —— §2 Phase A A3 已加设计注解 |
+| S0-D10 | reviewer P2-2 | **R9 升级到 中 impact** —— §5 已升级 + 加 dry-run 步骤 |
+| S0-D11 | reviewer P2-3 | **Langfuse trace 完整性 加进工程指标** —— §4 已加 |
+| S0-D12 | reviewer P2-4 | **A6 vs A7 fallback 方向刻意不对称** —— §2 Phase A 已加设计注解 |
+| S0-D13 | reviewer P2-5 | **architecture-v1.md 更新方式：追加 §16 不覆盖 §11** —— §2 Phase E E4 已修正 |
+
+---
+
+## 13. 不变量
 
 #14 必须保持的不变量（前 13 feature 累计建立）：
+
+> **§13 编号说明**：原 S0 把不变量节叫 §12，reviewer 反馈处置节加在原 §12 之前作 §12.5，本节顺移为 §13。后续 §"S0 完结" 视同 §14。
 
 | # | 不变量 | 由谁 owner | #14 必须不破坏 |
 |---|--------|-----------|--------------|
@@ -331,7 +370,7 @@ NDF v2 §4.2 Hotfix vs Standard 5 条标准全审：
 | I3 | system prompt 6 段装配顺序（PlatformBase / tenant_hard_rules / body / disclaimer / memory / tools_placeholder / SafetyFooter）| #5 + #6 + #7 + #13 锁定 | 仅可填 `toolsSectionPlaceholder`（#7 P2-3 决议） |
 | I4 | Hook chain 顺序（外→内）：compliance → permission → budget → sandbox | #13 + #12 + #6 + #4 锁定 | 不重排序 |
 | I5 | aiservice 唯一入口 | #2 + .claude/rules/ai-service.md | 所有新 LLM 调用走 aiservice |
-| I6 | HookAction enum 5 个值 | #2 + #6 + #5 + #12 锁定 | 不新增 enum 值 |
+| I6 | HookAction enum 5 个值 | #2 + #6 + #5 + #12 锁定 | 不新增 enum 值（独立 Stop Hook 推到 v2 — 见 Out of scope）|
 | I7 | LoopEvent enum 19 个值 | #2 + #6 + #9 + #12 锁定 | 不新增 |
 | I8 | controller 零业务逻辑 | CLAUDE.md 硬规则 | Phase C 新 controllers 仅参数绑定 |
 | I9 | GORM `default:true` bool Create gotcha | `.claude/rules/database.md` §6 | Phase A/C 新 model 用 wantActive pattern |
@@ -339,4 +378,6 @@ NDF v2 §4.2 Hotfix vs Standard 5 条标准全审：
 
 ---
 
-**S0 完结。等 reviewer。**
+## 14. 状态
+
+**S0 完结（含 reviewer 反馈处置）。0 P0 + 0 P1 残留。13 项 S0-Dx 决策入 §12.5 record。Ready for S1 proposal。**
