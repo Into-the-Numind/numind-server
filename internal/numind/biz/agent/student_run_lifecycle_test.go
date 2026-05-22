@@ -10,6 +10,7 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 
+	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/pkg/errno"
 	"numind-server/internal/pkg/model"
 )
@@ -189,7 +190,7 @@ func TestStudentRunService_Estimate_HappyPath(t *testing.T) {
 		IsActive:     true,
 	}
 
-	svc := NewStudentRunService(nil, nil, skillStore, nil, nil)
+	svc := NewStudentRunService(nil, nil, skillStore, nil, nil, nil)
 	resp, err := svc.Estimate(context.Background(), userID, EstimateRunRequest{
 		AgentDefinitionID: adID,
 		Message:           "Hello agent",
@@ -211,7 +212,7 @@ func TestStudentRunService_Estimate_WrongOwner(t *testing.T) {
 		IsActive:     true,
 	}
 
-	svc := NewStudentRunService(nil, nil, skillStore, nil, nil)
+	svc := NewStudentRunService(nil, nil, skillStore, nil, nil, nil)
 	_, err := svc.Estimate(context.Background(), uint(10), EstimateRunRequest{
 		AgentDefinitionID: adID,
 		Message:           "test",
@@ -238,7 +239,7 @@ func TestStudentRunService_Cancel_HappyPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := NewStudentRunService(runner, runStore, nil, nil, nil)
+	svc := NewStudentRunService(runner, runStore, nil, nil, nil, nil)
 	if err := svc.Cancel(context.Background(), userID, run.ID); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -256,7 +257,7 @@ func TestStudentRunService_Cancel_WrongOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := NewStudentRunService(runner, runStore, nil, nil, nil)
+	svc := NewStudentRunService(runner, runStore, nil, nil, nil, nil)
 	err := svc.Cancel(context.Background(), uint(1), run.ID)
 	if err == nil {
 		t.Fatal("expected error for wrong owner")
@@ -276,7 +277,7 @@ func TestStudentRunService_Cancel_AlreadyTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := NewStudentRunService(runner, runStore, nil, nil, nil)
+	svc := NewStudentRunService(runner, runStore, nil, nil, nil, nil)
 	err := svc.Cancel(context.Background(), userID, run.ID)
 	if err == nil {
 		t.Fatal("expected error for terminal run")
@@ -298,7 +299,7 @@ func TestStudentRunService_ExtendBudget_HappyPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := NewStudentRunService(nil, runStore, nil, nil, nil)
+	svc := NewStudentRunService(nil, runStore, nil, nil, nil, nil)
 	updated, err := svc.ExtendBudget(context.Background(), userID, run.ID, ExtendBudgetRequest{AddCredits: 100})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -316,7 +317,7 @@ func TestStudentRunService_ExtendBudget_NotTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := NewStudentRunService(nil, runStore, nil, nil, nil)
+	svc := NewStudentRunService(nil, runStore, nil, nil, nil, nil)
 	_, err := svc.ExtendBudget(context.Background(), userID, run.ID, ExtendBudgetRequest{AddCredits: 100})
 	if err == nil {
 		t.Fatal("expected error for non-terminal run")
@@ -330,12 +331,108 @@ func TestStudentRunService_ExtendBudget_WrongOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := NewStudentRunService(nil, runStore, nil, nil, nil)
+	svc := NewStudentRunService(nil, runStore, nil, nil, nil, nil)
 	_, err := svc.ExtendBudget(context.Background(), uint(1), run.ID, ExtendBudgetRequest{AddCredits: 100})
 	if err == nil {
 		t.Fatal("expected ownership error")
 	}
 	if !errors.Is(err, errno.ErrAgentRunNotFound) {
 		t.Errorf("expected ErrAgentRunNotFound, got %v", err)
+	}
+}
+
+// TestStudentRunService_forwardNarration_BridgeProviderToBuffer is the
+// regression for the hotfix narration-buffer-bridge. Before the fix,
+// Provider.Emit pushed events to an in-memory channel that nobody read,
+// the parallel NarrationBuffer (which PollNarration queries) stayed empty
+// forever, and the learner UI showed no tool-call narration despite tools
+// actually firing. This test seeds a real Provider, spawns the forwarder
+// goroutine the way Create does, emits a few events on the provider's
+// behalf, then verifies the buffer surfaces them via QuerySince.
+func TestStudentRunService_forwardNarration_BridgeProviderToBuffer(t *testing.T) {
+	// Minimal YAML covering the two tools this test emits for. A real provider
+	// is needed end-to-end (the goroutine subscribes on a real channel).
+	yaml := []byte(`tools:
+  web_search:
+    verb: "正在搜索"
+    detail_template: "网络"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "搜索完成"
+    error_template: "搜索失败"
+    rejected_template: "搜索被拦截"
+defaults:
+  verb: "正在执行"
+  detail_template: "{{ .ToolName }}"
+  use_template: "{{ .verb }}"
+  result_template: "执行完成"
+  error_template: "执行失败"
+  rejected_template: "执行被拦截"
+`)
+	prov, err := narration.NewProvider(narration.Config{
+		YAMLBytes:  yaml,
+		BufferSize: 8,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+
+	buf := NewNarrationBuffer(16, 5*time.Minute)
+	svc := NewStudentRunService(nil, nil, nil, nil, prov, buf)
+
+	runID := uint64(4242)
+	done := make(chan struct{})
+	go func() {
+		svc.forwardNarration(runID)
+		close(done)
+	}()
+
+	// Emit two events on the provider; the forwarder should AppendEvent both
+	// into the buffer.
+	prov.Emit(context.Background(), runID, "web_search", narration.StateUse, narration.EmitPayload{})
+	prov.Emit(context.Background(), runID, "web_search", narration.StateResult, narration.EmitPayload{})
+
+	// Give the forwarder a moment to drain the channel. The events are
+	// already in the channel buffer (sized 8 in this test), so the goroutine
+	// scheduler is the only thing we are racing against.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	var got []*narration.Event
+	for time.Now().Before(deadline) {
+		got = buf.QuerySince(runID, time.Time{})
+		if len(got) >= 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("buffer.QuerySince: got %d events, want 2 (forwarder did not drain channel)", len(got))
+	}
+	if got[0].State != narration.StateUse {
+		t.Errorf("first event State: got %v, want StateUse", got[0].State)
+	}
+	if got[1].State != narration.StateResult {
+		t.Errorf("second event State: got %v, want StateResult", got[1].State)
+	}
+
+	// Closing the run unblocks the forwarder so the goroutine exits cleanly.
+	prov.CloseRun(runID)
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("forwarder did not exit after CloseRun (channel close did not propagate)")
+	}
+}
+
+// TestStudentRunService_forwardNarration_NilProviderIsNoop guards the
+// graceful-degrade path: if Provider init failed earlier (yaml missing),
+// the service still functions, the bridge just becomes a no-op.
+func TestStudentRunService_forwardNarration_NilProviderIsNoop(t *testing.T) {
+	buf := NewNarrationBuffer(16, time.Minute)
+	svc := NewStudentRunService(nil, nil, nil, nil, nil, buf)
+	// Must return immediately — no goroutine to block on. If forwardNarration
+	// blocked, this test would hang.
+	svc.forwardNarration(1)
+	if got := buf.QuerySince(1, time.Time{}); len(got) != 0 {
+		t.Errorf("buffer should be empty when provider is nil; got %d events", len(got))
 	}
 }

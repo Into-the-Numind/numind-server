@@ -22,27 +22,57 @@ import (
 // StudentRunService handles learner-facing agent run lifecycle operations.
 // Spec: #14 follow-up BETA — 6 run lifecycle endpoints.
 type StudentRunService struct {
-	runner       AgentRunner
-	runStore     store.IAgentRunStore
-	skillStore   store.IAgentDefinitionStore
-	pricingCalc  pricing.ICalculator
-	narrationBuf *NarrationBuffer
+	runner        AgentRunner
+	runStore      store.IAgentRunStore
+	skillStore    store.IAgentDefinitionStore
+	pricingCalc   pricing.ICalculator
+	narrationProv *narration.Provider
+	narrationBuf  *NarrationBuffer
 }
 
 // NewStudentRunService constructs a StudentRunService.
+//
+// narrationProv + narrationBuf must be wired together: the service forwards
+// every event emitted by the Provider (per agent_run.id) into the Buffer,
+// which is what PollNarration reads. Either side nil disables the forwarder
+// — narration_provider init can fail gracefully (yaml missing) and the
+// service still functions, just without learner-visible tool-call narration.
 func NewStudentRunService(
 	runner AgentRunner,
 	runStore store.IAgentRunStore,
 	skillStore store.IAgentDefinitionStore,
 	pricingCalc pricing.ICalculator,
+	narrationProv *narration.Provider,
 	narrationBuf *NarrationBuffer,
 ) *StudentRunService {
 	return &StudentRunService{
-		runner:       runner,
-		runStore:     runStore,
-		skillStore:   skillStore,
-		pricingCalc:  pricingCalc,
-		narrationBuf: narrationBuf,
+		runner:        runner,
+		runStore:      runStore,
+		skillStore:    skillStore,
+		pricingCalc:   pricingCalc,
+		narrationProv: narrationProv,
+		narrationBuf:  narrationBuf,
+	}
+}
+
+// forwardNarration drains the narration provider's per-runID channel into the
+// poll-friendly NarrationBuffer. Without this bridge, Provider.Emit puts
+// events into an in-memory channel that nobody reads from, and PollNarration
+// (which queries the Buffer) returns [] — exactly the symptom that the
+// learner-facing UI surfaced as "no narration visible despite tools running".
+//
+// Lifecycle: spawned per Create call, exits when runner.Run finishes and
+// runner.go's defer runs provider.CloseRun(runID), which closes the channel.
+// Safe to call when narrationProv or narrationBuf is nil (graceful degrade).
+func (s *StudentRunService) forwardNarration(runID uint64) {
+	if s.narrationProv == nil || s.narrationBuf == nil {
+		return
+	}
+	ch, cleanup := s.narrationProv.Subscribe(runID)
+	defer cleanup()
+	for ev := range ch {
+		evCopy := ev // pin the loop var; AppendEvent stores by pointer
+		s.narrationBuf.AppendEvent(runID, &evCopy)
 	}
 }
 
@@ -216,6 +246,16 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 		EnableMemory:      true,
 		ExistingRunID:     preRun.ID,
 	}
+
+	// Bridge narration events: Provider.Emit pushes events to an in-memory
+	// channel keyed by runID; PollNarration reads from the queryable Buffer.
+	// Without this forwarder the two halves never connect and the learner UI
+	// gets [] forever despite the tools actually running. Spawn BEFORE the
+	// runner goroutine so the Subscribe registration is in place when the
+	// first PreToolCall fires its StateUse emit; memStreamer.Subscribe is
+	// lazy-create-safe, so even a slight delay would not lose events, but
+	// ordering is still cheaper to reason about this way.
+	go s.forwardNarration(preRun.ID)
 
 	// Async: detached context so HTTP cancel doesn't abort the run.
 	go func() {
