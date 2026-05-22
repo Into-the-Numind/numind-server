@@ -479,3 +479,101 @@ func TestWebFetch_UserAgentHeader(t *testing.T) {
 		t.Errorf("User-Agent = %q; want to contain 'Numind-Agent'", gotUA)
 	}
 }
+
+// ─── Attachment-URL rejection tests (bug-from-customer 2026-05-22) ─────────────
+//
+// LLM was observed calling web_fetch with the same COS attachment URL after
+// already reading it via file_read. Bare GET on the private bucket → HTTP 403
+// → terminal_reason=model_error. web_fetch must reject these URLs UPFRONT
+// with an error string that routes the LLM to file_read on the next turn.
+
+func TestIsAgentAttachmentURL(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{
+			"cos-attachment-pdf",
+			"https://numind-dev-1.cos.ap-chengdu.myqcloud.com/agent-attachments/1/x.pdf",
+			true,
+		},
+		{
+			"cos-attachment-with-encoded-chinese",
+			"https://numind-dev-1.cos.ap-chengdu.myqcloud.com/agent-attachments/1/%E5%88%9B-x.pdf",
+			true,
+		},
+		{
+			"cos-card-not-attachment",
+			"https://numind-dev-1.cos.ap-chengdu.myqcloud.com/cards/123/img.webp",
+			false,
+		},
+		{
+			"non-cos-public-cdn-attachment-path",
+			"https://cdn.example.com/agent-attachments/1/x.pdf",
+			false,
+		},
+		{
+			"non-cos-public-page",
+			"https://news.ycombinator.com/",
+			false,
+		},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isAgentAttachmentURL(tc.url); got != tc.want {
+				t.Errorf("isAgentAttachmentURL(%q) = %v; want %v", tc.url, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWebFetch_RejectsAgentAttachmentURL is the primary regression guard. The
+// LLM must see an error that names file_read explicitly so its next turn
+// routes correctly.
+func TestWebFetch_RejectsAgentAttachmentURL(t *testing.T) {
+	tool := &webFetchTool{skipSSRFCheck: true}
+	cosURL := "https://numind-dev-1334169463.cos.ap-chengdu.myqcloud.com/agent-attachments/1/1779-report.pdf"
+
+	in, _ := json.Marshal(webFetchInput{URL: cosURL})
+	_, err := tool.Execute(context.Background(), ToolInput(in))
+	if err == nil {
+		t.Fatal("expected error rejecting agent-attachment URL")
+	}
+	var e *errno.Errno
+	if !errors.As(err, &e) {
+		t.Fatalf("expected *errno.Errno, got %T: %v", err, err)
+	}
+	if e.Code != errno.ErrInvalidInput.Code {
+		t.Errorf("expected ErrInvalidInput; got code %q", e.Code)
+	}
+
+	// Critical: the error message must name file_read AND file_url so the
+	// LLM's next turn can self-correct. Without these tokens the LLM may
+	// just retry the same web_fetch and burn budget.
+	for _, must := range []string{"file_read", "file_url", "attachment"} {
+		if !strings.Contains(e.Message, must) {
+			t.Errorf("error message should contain %q for LLM self-correction; got %q", must, e.Message)
+		}
+	}
+}
+
+// TestWebFetch_AcceptsPublicURLAfterGuard ensures the new guard does not break
+// the normal web_fetch path for legitimate public URLs.
+func TestWebFetch_AcceptsPublicURLAfterGuard(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><head><title>Hello</title></head><body><p>Public page</p></body></html>`))
+	}))
+	t.Cleanup(func() { srv.Close() })
+
+	tool := newTestWebFetchTool(srv)
+	out, err := execWebFetch(t, tool, srv.URL, "")
+	if err != nil {
+		t.Fatalf("unexpected error on public URL: %v", err)
+	}
+	if out.Title != "Hello" {
+		t.Errorf("expected title 'Hello'; got %q", out.Title)
+	}
+}
