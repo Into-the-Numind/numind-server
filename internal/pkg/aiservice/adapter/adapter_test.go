@@ -1039,6 +1039,115 @@ func TestBuildOAIMessages_TableDriven(t *testing.T) {
 			},
 		},
 		{
+			// Hotfix aiservice-tool-message-roundtrip: regression test for the
+			// DMXAPI HTTP 400 "missing field tool_call_id" symptom. Before the
+			// fix, oaiMessage had no ToolCallID field and any role=tool message
+			// posted by the ReAct loop landed in the wire body without the id,
+			// terminating runs with model_error before the user saw any tool
+			// output. This case proves buildOAIMessage propagates the field.
+			name: "role=tool propagates ToolCallID",
+			input: []aiservice.ChatMessage{
+				{
+					Role:       aiservice.MessageRoleTool,
+					Content:    aiservice.MessageContent{Text: `{"result":"sunny"}`},
+					ToolCallID: "call_abc123",
+				},
+			},
+			wantLen: 1,
+			check: func(t *testing.T, out []oaiMessage) {
+				t.Helper()
+				if out[0].Role != "tool" {
+					t.Errorf("role = %q; want tool", out[0].Role)
+				}
+				if out[0].ToolCallID != "call_abc123" {
+					t.Errorf("ToolCallID = %q; want call_abc123 (root cause: DMXAPI rejects missing field)", out[0].ToolCallID)
+				}
+				if out[0].Content != `{"result":"sunny"}` {
+					t.Errorf("content = %v; want JSON tool result", out[0].Content)
+				}
+			},
+		},
+		{
+			// Companion to ToolCallID: when the assistant turn in the prior
+			// round requested a tool call, Eino reposts that message verbatim
+			// alongside the tool result so the provider can correlate. The
+			// tool_calls array on the assistant message must survive the
+			// aiservice → OAI translation.
+			name: "role=assistant propagates ToolCalls array",
+			input: []aiservice.ChatMessage{
+				{
+					Role:    aiservice.MessageRoleAssistant,
+					Content: aiservice.MessageContent{Text: ""},
+					ToolCalls: []aiservice.ToolCall{
+						{
+							ID:   "call_abc123",
+							Type: "function",
+							Function: aiservice.ToolCallFunction{
+								Name:      "web_search",
+								Arguments: `{"query":"weather"}`,
+							},
+						},
+					},
+				},
+			},
+			wantLen: 1,
+			check: func(t *testing.T, out []oaiMessage) {
+				t.Helper()
+				if len(out[0].ToolCalls) != 1 {
+					t.Fatalf("ToolCalls count = %d; want 1", len(out[0].ToolCalls))
+				}
+				tc := out[0].ToolCalls[0]
+				if tc.ID != "call_abc123" {
+					t.Errorf("ToolCalls[0].ID = %q; want call_abc123", tc.ID)
+				}
+				if tc.Type != "function" {
+					t.Errorf("ToolCalls[0].Type = %q; want function", tc.Type)
+				}
+				if tc.Function.Name != "web_search" {
+					t.Errorf("ToolCalls[0].Function.Name = %q; want web_search", tc.Function.Name)
+				}
+				if tc.Function.Arguments != `{"query":"weather"}` {
+					t.Errorf("ToolCalls[0].Function.Arguments = %q; want JSON args", tc.Function.Arguments)
+				}
+			},
+		},
+		{
+			// Backward-compat guard: pre-Agent-mode callers (SOP / chatbot)
+			// never set ToolCallID or ToolCalls. omitempty must keep the wire
+			// shape identical so the marshaled body stays byte-for-byte the
+			// same as before this hotfix.
+			name: "non-tool message omits tool_call_id and tool_calls when empty",
+			input: []aiservice.ChatMessage{
+				{
+					Role:    aiservice.MessageRoleUser,
+					Content: aiservice.MessageContent{Text: "plain question"},
+				},
+			},
+			wantLen: 1,
+			check: func(t *testing.T, out []oaiMessage) {
+				t.Helper()
+				if out[0].ToolCallID != "" {
+					t.Errorf("ToolCallID should be empty for non-tool role; got %q", out[0].ToolCallID)
+				}
+				if out[0].ToolCalls != nil {
+					t.Errorf("ToolCalls should be nil for assistant without tool_calls; got %+v", out[0].ToolCalls)
+				}
+				// Marshal-time verification: omitempty must drop both fields
+				// from the JSON wire format.
+				body, err := json.Marshal(out[0])
+				if err != nil {
+					t.Fatalf("json.Marshal: %v", err)
+				}
+				bodyStr := string(body)
+				if strings.Contains(bodyStr, "tool_call_id") {
+					t.Errorf("marshaled body contains tool_call_id; want field dropped via omitempty: %s", bodyStr)
+				}
+				if strings.Contains(bodyStr, "tool_calls") {
+					t.Errorf("marshaled body contains tool_calls; want field dropped via omitempty: %s", bodyStr)
+				}
+			},
+		},
+		{
 			name: "unknown MessagePartType is skipped",
 			input: []aiservice.ChatMessage{
 				{

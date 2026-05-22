@@ -117,9 +117,20 @@ type FileServiceAdapter interface {
 // ----------------------------------------------------------------------------
 
 // oaiMessage is the OpenAI-compatible chat message wire format.
+//
+// ToolCallID is required by upstream OpenAI-compatible APIs (DMXAPI / Ali /
+// Volc) when Role=="tool" — these messages report a tool-execution result back
+// to the model and must carry the original assistant.tool_calls[N].id, or the
+// provider returns HTTP 400 ("missing field tool_call_id"). ToolCalls is the
+// assistant-side request for function invocations (mirror of ChatResponse.ToolCalls
+// from the prior turn). Both honor json:omitempty so legacy (non-Agent) callers
+// marshal byte-for-byte the same wire shape as before the Agent-mode roundtrip
+// landed.
 type oaiMessage struct {
-	Role    string      `json:"role"`
-	Content interface{} `json:"content"` // string OR []oaiContentPart for vision
+	Role       string        `json:"role"`
+	Content    interface{}   `json:"content"` // string OR []oaiContentPart for vision
+	ToolCallID string        `json:"tool_call_id,omitempty"`
+	ToolCalls  []oaiToolCall `json:"tool_calls,omitempty"`
 }
 
 // oaiContentPart is a single part in a multipart (vision) message.
@@ -331,9 +342,31 @@ func buildOAIMessages(msgs []aiservice.ChatMessage) []oaiMessage {
 	return out
 }
 
-// buildOAIMessage converts a single aiservice.ChatMessage.
+// buildOAIMessage converts a single aiservice.ChatMessage to the
+// OpenAI-compatible wire shape.
+//
+// Tool-roundtrip propagation: role=tool requires ToolCallID; role=assistant
+// echoing tool_calls from the prior LLM response requires ToolCalls. Both flow
+// through unchanged when present; absent → omitempty drops them so legacy
+// callers see the pre-Agent-mode byte-for-byte wire format.
 func buildOAIMessage(m aiservice.ChatMessage) oaiMessage {
-	role := string(m.Role)
+	out := oaiMessage{Role: string(m.Role)}
+	if m.ToolCallID != "" {
+		out.ToolCallID = m.ToolCallID
+	}
+	if len(m.ToolCalls) > 0 {
+		out.ToolCalls = make([]oaiToolCall, 0, len(m.ToolCalls))
+		for _, tc := range m.ToolCalls {
+			out.ToolCalls = append(out.ToolCalls, oaiToolCall{
+				ID:   tc.ID,
+				Type: tc.Type,
+				Function: oaiToolCallFunction{
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				},
+			})
+		}
+	}
 	// If there are multipart content parts, build a vision message.
 	if len(m.Content.Parts) > 0 {
 		parts := make([]oaiContentPart, 0, len(m.Content.Parts))
@@ -350,10 +383,12 @@ func buildOAIMessage(m aiservice.ChatMessage) oaiMessage {
 				}
 			}
 		}
-		return oaiMessage{Role: role, Content: parts}
+		out.Content = parts
+		return out
 	}
 	// Plain text message.
-	return oaiMessage{Role: role, Content: m.Content.Text}
+	out.Content = m.Content.Text
+	return out
 }
 
 // buildOAITools converts aiservice.Tool slice to the OpenAI-compatible wire
