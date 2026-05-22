@@ -55,6 +55,7 @@ func (v *VolcAdapter) Chat(ctx context.Context, route *registry.ResolvedRoute, r
 		Temperature:    req.Temperature,
 		Stream:         false,
 		ResponseFormat: translateResponseFormat(req.ResponseFormat),
+		Tools:          buildOAITools(req.Tools),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("volc.Chat: marshal: %w", err)
@@ -88,6 +89,7 @@ func (v *VolcAdapter) Chat(ctx context.Context, route *registry.ResolvedRoute, r
 	return &aiservice.ChatResponse{
 		Content:          oaiResp.Choices[0].Message.Content,
 		ReasoningContent: oaiResp.Choices[0].Message.ReasoningContent,
+		ToolCalls:        extractToolCalls(oaiResp.Choices[0].Message.ToolCalls),
 		FinishReason:     oaiResp.Choices[0].FinishReason,
 		Usage:            usage,
 		Model:            oaiResp.Model,
@@ -108,6 +110,7 @@ func (v *VolcAdapter) ChatStream(ctx context.Context, route *registry.ResolvedRo
 			IncludeUsage: true,
 		},
 		ResponseFormat: translateResponseFormat(req.ResponseFormat),
+		Tools:          buildOAITools(req.Tools),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("volc.ChatStream: marshal: %w", err)

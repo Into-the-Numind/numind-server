@@ -84,6 +84,7 @@ func (a *AliAdapter) Chat(ctx context.Context, route *registry.ResolvedRoute, re
 		Temperature:    req.Temperature,
 		Stream:         false,
 		ResponseFormat: translateResponseFormat(req.ResponseFormat),
+		Tools:          buildOAITools(req.Tools),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("ali.Chat: marshal: %w", err)
@@ -117,6 +118,7 @@ func (a *AliAdapter) Chat(ctx context.Context, route *registry.ResolvedRoute, re
 	return &aiservice.ChatResponse{
 		Content:          oaiResp.Choices[0].Message.Content,
 		ReasoningContent: oaiResp.Choices[0].Message.ReasoningContent,
+		ToolCalls:        extractToolCalls(oaiResp.Choices[0].Message.ToolCalls),
 		FinishReason:     oaiResp.Choices[0].FinishReason,
 		Usage:            usage,
 		Model:            oaiResp.Model,
@@ -138,6 +140,7 @@ func (a *AliAdapter) ChatStream(ctx context.Context, route *registry.ResolvedRou
 			IncludeUsage: true,
 		},
 		ResponseFormat: translateResponseFormat(req.ResponseFormat),
+		Tools:          buildOAITools(req.Tools),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("ali.ChatStream: marshal: %w", err)
