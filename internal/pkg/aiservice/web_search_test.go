@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/viper"
 
+	"numind-server/internal/numind/config"
 	"numind-server/internal/pkg/errno"
 )
 
@@ -160,24 +161,24 @@ func TestWebSearch_HTTP429(t *testing.T) {
 	}
 }
 
-// TestWebSearch_EnvVarBinding asserts that the viper env-binding setup in
-// internal/numind/helper.go (AutomaticEnv + SetEnvPrefix("NUMIND") +
-// SetEnvKeyReplacer(".","_")) correctly maps the nested config key
-// "web_search.tavily.api_key" to the env var NUMIND_WEB_SEARCH_TAVILY_API_KEY.
+// TestWebSearch_EnvVarBinding asserts that config.SetupViperEnvBindings (called
+// from internal/numind/helper.go::initConfig at process start) correctly maps
+// the nested config key "web_search.tavily.api_key" to the env var
+// NUMIND_WEB_SEARCH_TAVILY_API_KEY.
 //
 // Regression guard: on 2026-05-22, the dev deployment was missing the Tavily
 // api_key because config_dev.yaml had api_key:"" and the deploy pipeline did
-// not inject any env var. The fix is operational (inject env var via
-// deploy-remote.sh secrets file), but the contract this test pins is that the
-// existing viper init flow already supports env-var override — no Go code
-// change is required for the binding itself. If anyone removes AutomaticEnv,
-// changes EnvPrefix, or drops the dot-to-underscore replacer, this test fails
-// and reminds them that operations rely on this mapping.
+// not inject any env var. The operational fix injects the env var via
+// deploy-remote.sh secrets file; this test pins the Go-side binding contract
+// that operations rely on.
+//
+// The test calls the SAME function that helper.go calls, so removing
+// AutomaticEnv / SetEnvPrefix / SetEnvKeyReplacer from
+// config.SetupViperEnvBindings will break BOTH the production env-var pathway
+// AND this test — exactly the regression coupling we want.
 func TestWebSearch_EnvVarBinding(t *testing.T) {
 	v := viper.New()
-	v.AutomaticEnv()
-	v.SetEnvPrefix("NUMIND")
-	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	config.SetupViperEnvBindings(v)
 
 	t.Setenv("NUMIND_WEB_SEARCH_TAVILY_API_KEY", "from-env-tk-test-123")
 

@@ -107,6 +107,12 @@ if [ "$TARGET" = "server" ]; then
   sudo chown -R 1001:1001 /opt/numind/config || true
   sudo chmod -R 775 "/opt/numind/${ENV}"
   sudo chmod -R 755 /opt/numind/config
+  # Re-secure secrets file after the recursive chmod above. Mode 600 is
+  # owner-only read/write; docker daemon runs as root and bypasses ACLs, so
+  # --env-file still works regardless of ownership.
+  if [ -f "/opt/numind/${ENV}/secrets.env" ]; then
+    sudo chmod 600 "/opt/numind/${ENV}/secrets.env"
+  fi
 fi
 
 start_container() {
