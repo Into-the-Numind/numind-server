@@ -116,6 +116,14 @@ ARG ENV=dev
 # 只复制对应环境的配置文件（避免 prod 配置泄露到 dev 镜像）
 COPY config_${ENV}.yaml ./
 
+# 复制 configs/ 目录（含 tool-display.yaml 等运行时配置）。
+# 必须在 runtime stage 显式 COPY：builder stage 的 `COPY . .` 只让构建期能读，
+# binary 运行时按 cwd 加载 `configs/tool-display.yaml`。
+# 历史教训（2026-05-22）：narration provider 加载这个 yaml，缺失则整个 narration
+# 子系统在 biz.Init 阶段 silently disabled（agent.WithNarrationProvider(nil)），
+# 学员侧看不到「正在调用 web_search」之类工具调用进度。
+COPY configs /app/configs
+
 # 从构建阶段复制编译好的二进制文件
 COPY --from=builder /app/numind /app/numind
 COPY scripts /app/scripts
