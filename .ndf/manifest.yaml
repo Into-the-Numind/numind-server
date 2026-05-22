@@ -97,8 +97,8 @@ features:
   track: hotfix
   stage: H3-pending-deploy
   classification_reason: 'Hotfix Triage 5 条全满足 — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务集成（Tavily 在 agent-mode-p0-tools T1 02054be8 已集成） (4) 影响 5 文件（envbinding.go 新建 / helper.go 1-line 改 / web_search_test.go 改测试 / deploy-remote.sh 改 + chmod 600 / .gitignore），超 ≤3 是因为 P1 reviewer 反馈要求 binding 抽 helper（refactor 收益 > 文件数惩罚） (5) 非支付/权限/会员高风险业务，但生产前必须验证 prod 不会回归（prod 无 secrets.env → ENV_FILE_FLAG 空 → docker run 不挂 --env-file → 老行为）。非 customer bug，Rule 11 复现测试不严格适用；regression 测试 (TestWebSearch_EnvVarBinding) 仍然作为 contract guard 落地。'
-  last_updated_by: ai-h2-reviewed-twice
-  last_updated_at: '2026-05-22T17:50:00+08:00'
+  last_updated_by: ai-h2-reviewer-pass-2nd-round
+  last_updated_at: '2026-05-22T18:10:00+08:00'
   repos:
   - numind-server
   branches:
@@ -108,8 +108,8 @@ features:
   progress:
     total_tasks: 2
     completed_tasks: 2
-    reviewed_tasks: 1
-    current_task: 'H2 完成。2 commits: 初次 fix 2add1c6f + reviewer P1/P2 修复 6c36e5c6（抽 config.SetupViperEnvBindings 共享 binding contract + secrets.env chmod 600 + .gitignore）。第一轮 reviewer: spec FAIL (P1 #6 test 用 viper.New 不 guard global / P1 #9 manifest 缺条目) + code-quality PASS (2 P2 已修)。P1#6 + P2 已 inline 修，等第二轮并行 reviewer 确认 PASS。'
+    reviewed_tasks: 2
+    current_task: 'H2 完成 + 两阶段 reviewer 二轮 PASS（spec + code-quality 都零 P0/P1）。2 commits: 2add1c6f 初次 + 6c36e5c6 P1/P2 修复。等用户提供 Tavily API key → SSH dev 部署机写 /opt/numind/dev/secrets.env → /deploy-dev server → 在 dev 让 agent 实测 web_search 工具调用真实 Tavily。'
   decisions:
   - 'H2-D1: 抽 viper binding setup 到 internal/numind/config/envbinding.go::SetupViperEnvBindings，helper.go 和 web_search_test.go 都调用同一函数。理由：reviewer P1 #6 指出 test 用 viper.New() 隔离实例不能 guard helper.go 全局 viper 契约；抽 helper 后 test 和 production 共享同一 binding 调用，删除任一 viper 调用同时破坏两边。代价：超出 Hotfix ≤3 文件限制（5 文件），但 contract enforcement 收益 > 文件数惩罚，已记录到 classification_reason。'
   - 'H2-D2: secrets.env 注入用 docker --env-file 而非 -e 显式注入。理由：未来其他 secrets（OCR key、其他 provider 等）只要加到 secrets.env 即生效，不需要改 deploy-remote.sh。等价于通用机制。'
