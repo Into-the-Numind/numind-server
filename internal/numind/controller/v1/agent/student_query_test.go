@@ -157,10 +157,12 @@ func TestStudentQueryCtrl_GetSessionSnapshot_Forbidden(t *testing.T) {
 	user.ID = 20
 	r := setupRouter(t, db, user)
 
-	runID := seedCtrlRun(t, db, 30, "snap-sess")
+	// Hotfix session-snapshot-uuid-contract: URL takes session_id (string) now,
+	// not run.id (uint64). Seed with "snap-sess" and query that same string.
+	_ = seedCtrlRun(t, db, 30, "snap-sess")
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/sessions/%d/snapshot", runID), nil)
+	req := httptest.NewRequest(http.MethodGet, "/sessions/snap-sess/snapshot", nil)
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusForbidden, w.Code)

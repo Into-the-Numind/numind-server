@@ -200,10 +200,12 @@ func TestListRecentSessions_FiltersByUser(t *testing.T) {
 func TestGetSessionSnapshot_Forbidden_OtherUser(t *testing.T) {
 	svc, db := newSQService(t)
 
-	runID := seedRun(t, db, 111, "sess-owner", "completed")
+	// Hotfix session-snapshot-uuid-contract: lookup is by session_id (string),
+	// no longer by run.id (uint64). Seed and query with the session_id string.
+	_ = seedRun(t, db, 111, "sess-owner", "completed")
 
 	// User 999 tries to read user 111's session snapshot — must be forbidden.
-	_, err := svc.GetSessionSnapshot(context.Background(), 999, runID)
+	_, err := svc.GetSessionSnapshot(context.Background(), 999, "sess-owner")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errno.ErrForbidden)
 }
@@ -513,7 +515,7 @@ func TestStudentQuery_SessionSnapshot_MessageTransform(t *testing.T) {
 	}
 	require.NoError(t, db.Create(run).Error)
 
-	snap, err := svc.GetSessionSnapshot(context.Background(), 11, run.ID)
+	snap, err := svc.GetSessionSnapshot(context.Background(), 11, run.SessionID)
 	require.NoError(t, err)
 
 	// Messages must be []agentMessage, not raw JSON.
@@ -553,7 +555,7 @@ func TestStudentQuery_SessionSnapshot_AssistantMidTurnNotFinalAnswer(t *testing.
 	}
 	require.NoError(t, db.Create(run).Error)
 
-	snap, err := svc.GetSessionSnapshot(context.Background(), 22, run.ID)
+	snap, err := svc.GetSessionSnapshot(context.Background(), 22, run.SessionID)
 	require.NoError(t, err)
 	rawMsgs, ok := snap.Messages.([]agentMessage)
 	require.True(t, ok)
@@ -563,4 +565,51 @@ func TestStudentQuery_SessionSnapshot_AssistantMidTurnNotFinalAnswer(t *testing.
 	assert.Equal(t, "assistant", rawMsgs[1].Type)
 	// Last assistant turn must be 'final_answer' (completed run).
 	assert.Equal(t, "final_answer", rawMsgs[3].Type)
+}
+
+// TestGetSessionSnapshot_UUIDSessionID is the regression for the hotfix
+// session-snapshot-uuid-contract. Before the fix, the controller parsed :id
+// as uint64 and the biz layer looked up by run.id; the frontend (which has
+// always sent agent_run.session_id, a varchar UUID) hit
+// `invalid id: <uuid>` 400 on every history click. This test seeds a row
+// with a UUID-shaped session_id, queries via that string, and asserts the
+// snapshot returns the expected run.
+func TestGetSessionSnapshot_UUIDSessionID(t *testing.T) {
+	svc, db := newSQServiceFull(t)
+
+	msgs, _ := json.Marshal([]map[string]string{
+		{"role": "user", "content": "hi"},
+		{"role": "assistant", "content": "hello"},
+	})
+	uuid := "5502952a-1732-453d-936b-0cb4c675cdd5" // real shape from dev incident
+	run := &model.AgentRun{
+		UserID:      77,
+		SessionID:   uuid,
+		Status:      "terminated",
+		StateReason: "completed",
+		Messages:    msgs,
+		StartedAt:   time.Now(),
+	}
+	require.NoError(t, db.Create(run).Error)
+
+	snap, err := svc.GetSessionSnapshot(context.Background(), 77, uuid)
+	require.NoError(t, err, "UUID session_id must round-trip through GetSessionSnapshot")
+	require.NotNil(t, snap)
+	rawMsgs, ok := snap.Messages.([]agentMessage)
+	require.True(t, ok)
+	require.Len(t, rawMsgs, 2)
+	assert.Equal(t, run.ID, snap.Run.ID, "snapshot must surface the underlying run.id")
+	assert.Equal(t, uuid, snap.Run.SessionID, "snapshot must echo the session_id used to look up")
+}
+
+// TestGetSessionSnapshot_NotFound covers the case where the session_id is
+// well-formed but no run exists for it. Before the fix this could not even
+// be exercised because the controller short-circuited at 400 on UUIDs;
+// after the fix the biz layer is reachable and must return ErrAgentRunNotFound.
+func TestGetSessionSnapshot_NotFound(t *testing.T) {
+	svc, _ := newSQServiceFull(t)
+
+	_, err := svc.GetSessionSnapshot(context.Background(), 88, "does-not-exist-uuid")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errno.ErrAgentRunNotFound)
 }

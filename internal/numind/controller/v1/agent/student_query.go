@@ -119,17 +119,26 @@ func (h *StudentQueryController) ListAllHistorySessions(c *gin.Context) {
 
 // GetSessionSnapshot handles GET /v1/sessions/:id/snapshot.
 // Returns messages + compact_summary for the learner's resume flow.
+//
+// :id here is agent_run.session_id (UUID string varchar(64)), NOT the
+// numeric agent_run.id PK. Reusing mustParseID historically returned
+// 400 "invalid id: <uuid>" for every learner click on a session-history
+// row because strconv.ParseUint rejected the UUID. The URL contract was
+// always a UUID; the controller just spoke a different language. Lightly
+// validate non-empty + length-bounded so pathological inputs get a clean
+// 400 instead of hitting the store with a runaway parameter.
 func (h *StudentQueryController) GetSessionSnapshot(c *gin.Context) {
 	user := middleware.GetCurrentUser(c)
 	if user == nil {
 		core.WriteResponse(c, errno.ErrTokenInvalid, nil)
 		return
 	}
-	id, ok := mustParseID(c)
-	if !ok {
+	sessionID := c.Param("id")
+	if sessionID == "" || len(sessionID) > 64 {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("invalid session id: %q", sessionID), nil)
 		return
 	}
-	snap, err := h.querySvc.GetSessionSnapshot(c.Request.Context(), user.ID, id)
+	snap, err := h.querySvc.GetSessionSnapshot(c.Request.Context(), user.ID, sessionID)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return
