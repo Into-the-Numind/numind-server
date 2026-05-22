@@ -155,6 +155,39 @@ type oaiChatRequest struct {
 	// Avoid "none"/"minimal" unless the provider is verified to accept them
 	// (Gemini 3.1 Pro rejects both). Empty string = do not send the field.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// Tools advertises function-calling tools available to the model. Omitted
+	// (via omitempty) when no tools bound — preserves the pre-Agent-mode wire
+	// shape for SOP/chatbot callers that do not use function calling.
+	Tools []oaiTool `json:"tools,omitempty"`
+}
+
+// oaiTool is the OpenAI-compatible function-calling tool advertisement.
+type oaiTool struct {
+	Type     string          `json:"type"` // always "function"
+	Function oaiToolFunction `json:"function"`
+}
+
+// oaiToolFunction describes one tool the model may invoke.
+type oaiToolFunction struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description,omitempty"`
+	Parameters  map[string]interface{} `json:"parameters,omitempty"`
+}
+
+// oaiToolCall is one tool invocation the model emitted in its response.
+type oaiToolCall struct {
+	// ID is the provider-assigned identifier used by the caller when submitting
+	// the tool result back as a follow-up message.
+	ID       string              `json:"id"`
+	Type     string              `json:"type"` // always "function"
+	Function oaiToolCallFunction `json:"function"`
+}
+
+// oaiToolCallFunction holds the function name and JSON-encoded arguments string
+// emitted by the model.
+type oaiToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // oaiStreamOptions instructs the provider to include usage in the final chunk.
@@ -196,6 +229,10 @@ type oaiChatResponse struct {
 		Message struct {
 			Content          string `json:"content"`
 			ReasoningContent string `json:"reasoning_content"`
+			// ToolCalls is non-nil when the model requested function calls instead of
+			// (or in addition to) plain text. Adapter forwards these to the caller via
+			// aiservice.ChatResponse.ToolCalls for Agent-mode ReAct loops.
+			ToolCalls []oaiToolCall `json:"tool_calls,omitempty"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -317,4 +354,49 @@ func buildOAIMessage(m aiservice.ChatMessage) oaiMessage {
 	}
 	// Plain text message.
 	return oaiMessage{Role: role, Content: m.Content.Text}
+}
+
+// buildOAITools converts aiservice.Tool slice to the OpenAI-compatible wire
+// shape. Returns nil for empty input so the request marshals omit `tools`
+// entirely (preserves pre-Agent-mode wire shape for SOP/chatbot callers).
+//
+// Each aiservice.Tool already carries the function name, description, and a
+// JSON Schema parameters map; this is a straight structural mapping.
+func buildOAITools(tools []aiservice.Tool) []oaiTool {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]oaiTool, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, oaiTool{
+			Type: "function",
+			Function: oaiToolFunction{
+				Name:        t.Function.Name,
+				Description: t.Function.Description,
+				Parameters:  t.Function.Parameters,
+			},
+		})
+	}
+	return out
+}
+
+// extractToolCalls converts the wire-level oaiToolCall slice returned by the
+// provider into aiservice.ToolCall. Returns nil for empty input so the
+// ChatResponse omits the field on plain-text responses.
+func extractToolCalls(calls []oaiToolCall) []aiservice.ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]aiservice.ToolCall, 0, len(calls))
+	for _, c := range calls {
+		out = append(out, aiservice.ToolCall{
+			ID:   c.ID,
+			Type: c.Type,
+			Function: aiservice.ToolCallFunction{
+				Name:      c.Function.Name,
+				Arguments: c.Function.Arguments,
+			},
+		})
+	}
+	return out
 }

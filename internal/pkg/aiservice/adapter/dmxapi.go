@@ -107,6 +107,7 @@ func (d *DMXAPIAdapter) buildOAIRequest(
 		Temperature:    req.Temperature,
 		Stream:         stream,
 		ResponseFormat: translateResponseFormat(req.ResponseFormat),
+		Tools:          buildOAITools(req.Tools),
 	}
 	if stream {
 		oaiReq.StreamOptions = &oaiStreamOptions{IncludeUsage: true}
@@ -183,6 +184,7 @@ func (d *DMXAPIAdapter) Chat(ctx context.Context, route *registry.ResolvedRoute,
 	return &aiservice.ChatResponse{
 		Content:          oaiResp.Choices[0].Message.Content,
 		ReasoningContent: oaiResp.Choices[0].Message.ReasoningContent,
+		ToolCalls:        extractToolCalls(oaiResp.Choices[0].Message.ToolCalls),
 		FinishReason:     oaiResp.Choices[0].FinishReason,
 		Usage:            usage,
 		Model:            oaiResp.Model,

@@ -40,15 +40,17 @@ func writeChatJSON(w http.ResponseWriter, content, model string, promptToks, com
 		Model: model,
 		Choices: []struct {
 			Message struct {
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"`
+				Content          string        `json:"content"`
+				ReasoningContent string        `json:"reasoning_content"`
+				ToolCalls        []oaiToolCall `json:"tool_calls,omitempty"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		}{
 			{
 				Message: struct {
-					Content          string `json:"content"`
-					ReasoningContent string `json:"reasoning_content"`
+					Content          string        `json:"content"`
+					ReasoningContent string        `json:"reasoning_content"`
+					ToolCalls        []oaiToolCall `json:"tool_calls,omitempty"`
 				}{Content: content},
 				FinishReason: "stop",
 			},
@@ -1175,5 +1177,282 @@ func TestOAIChatRequest_ReasoningEffortOmitempty(t *testing.T) {
 	}
 	if !bytes.Contains(b, []byte(`"max_completion_tokens":1024`)) {
 		t.Errorf("set max_completion_tokens should appear; got: %s", b)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Tool forwarding (regression for the Agent-mode "no tools to LLM" gap, 2026-05-22)
+// ----------------------------------------------------------------------------
+//
+// Until this fix, aiservice.ChatRequest.Tools was a declared but un-wired
+// field: the three OpenAI-compatible adapters (ali / volc / dmxapi) marshaled
+// the request without including `tools`, so any caller that bound function-
+// calling schemas (notably the Agent-mode Eino ReAct runner) silently shipped
+// a request that omitted the tools entirely. LLMs then responded "I cannot
+// search the internet" because they were never told they had web_search etc.
+//
+// These tests pin three invariants per adapter:
+//
+//  1. When req.Tools is non-empty, the marshaled JSON body MUST include the
+//     `tools` array with each function's name + JSON-schema parameters.
+//  2. When req.Tools is empty, the `tools` key MUST be omitted entirely (the
+//     omitempty tag preserves pre-Agent-mode wire shape for SOP / chatbot).
+//  3. When the provider responds with tool_calls, the adapter MUST surface
+//     them on ChatResponse.ToolCalls so the Eino bridge can drive the next
+//     ReAct step.
+
+// captureBody is a writeChatJSON variant that copies the request body into the
+// pointer before responding, so a test can inspect what the adapter sent.
+func captureBody(t *testing.T, captured *[]byte) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read body", http.StatusBadRequest)
+			return
+		}
+		*captured = body
+		writeChatJSON(w, "ok", "test-model", 1, 1)
+	}
+}
+
+// writeChatJSONWithToolCalls returns a provider-style response where the
+// assistant emits one tool_call instead of plain text. Used to exercise the
+// extractToolCalls path.
+func writeChatJSONWithToolCalls(w http.ResponseWriter, callID, name, args, model string) {
+	resp := oaiChatResponse{
+		ID:    "chatcmpl-test",
+		Model: model,
+		Choices: []struct {
+			Message struct {
+				Content          string        `json:"content"`
+				ReasoningContent string        `json:"reasoning_content"`
+				ToolCalls        []oaiToolCall `json:"tool_calls,omitempty"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		}{
+			{
+				Message: struct {
+					Content          string        `json:"content"`
+					ReasoningContent string        `json:"reasoning_content"`
+					ToolCalls        []oaiToolCall `json:"tool_calls,omitempty"`
+				}{
+					ToolCalls: []oaiToolCall{
+						{
+							ID:       callID,
+							Type:     "function",
+							Function: oaiToolCallFunction{Name: name, Arguments: args},
+						},
+					},
+				},
+				FinishReason: "tool_calls",
+			},
+		},
+		Usage: &oaiUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// sampleTools is a representative slice mirroring what the Agent runner binds:
+// one tool with name + description + a minimal JSON Schema parameters map.
+func sampleTools() []aiservice.Tool {
+	return []aiservice.Tool{
+		{
+			Type: "function",
+			Function: aiservice.ToolFunction{
+				Name:        "web_search",
+				Description: "Search the web for recent news",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"query": map[string]interface{}{"type": "string"},
+					},
+					"required": []string{"query"},
+				},
+			},
+		},
+	}
+}
+
+// assertToolsForwarded checks that a captured request body contains the tools
+// array and the expected function name + a parameters object. Provider-level
+// JSON ordering differences are tolerated by substring checks.
+func assertToolsForwarded(t *testing.T, captured []byte, fnName string) {
+	t.Helper()
+	if !bytes.Contains(captured, []byte(`"tools":`)) {
+		t.Fatalf("tools key missing from wire body: %s", captured)
+	}
+	if !bytes.Contains(captured, []byte(`"name":"`+fnName+`"`)) {
+		t.Fatalf("function name %q missing from wire body: %s", fnName, captured)
+	}
+	if !bytes.Contains(captured, []byte(`"parameters":`)) {
+		t.Fatalf("parameters object missing from wire body: %s", captured)
+	}
+}
+
+// assertNoTools checks the opposite — request body has no tools key at all.
+func assertNoTools(t *testing.T, captured []byte) {
+	t.Helper()
+	if bytes.Contains(captured, []byte(`"tools"`)) {
+		t.Fatalf("tools key should be omitted when req.Tools is empty; got: %s", captured)
+	}
+}
+
+func TestAliAdapter_Chat_ForwardsTools(t *testing.T) {
+	var captured []byte
+	srv := httptest.NewServer(captureBody(t, &captured))
+	defer srv.Close()
+
+	a := NewAliAdapter()
+	route := mockRoute(srv.URL, "test-key", "qwen-turbo")
+	_, err := a.Chat(context.Background(), route, aiservice.ChatRequest{
+		Messages: sampleMessages(),
+		Tools:    sampleTools(),
+	})
+	if err != nil {
+		t.Fatalf("Chat: unexpected error: %v", err)
+	}
+	assertToolsForwarded(t, captured, "web_search")
+}
+
+func TestVolcAdapter_Chat_ForwardsTools(t *testing.T) {
+	var captured []byte
+	srv := httptest.NewServer(captureBody(t, &captured))
+	defer srv.Close()
+
+	v := NewVolcAdapter()
+	route := mockRoute(srv.URL, "test-key", "deepseek-v3")
+	_, err := v.Chat(context.Background(), route, aiservice.ChatRequest{
+		Messages: sampleMessages(),
+		Tools:    sampleTools(),
+	})
+	if err != nil {
+		t.Fatalf("Chat: unexpected error: %v", err)
+	}
+	assertToolsForwarded(t, captured, "web_search")
+}
+
+func TestDMXAPIAdapter_Chat_ForwardsTools(t *testing.T) {
+	var captured []byte
+	srv := httptest.NewServer(captureBody(t, &captured))
+	defer srv.Close()
+
+	d := NewDMXAPIAdapter()
+	route := mockRoute(srv.URL, "test-key", "qwen-turbo-latest")
+	_, err := d.Chat(context.Background(), route, aiservice.ChatRequest{
+		Messages: sampleMessages(),
+		Tools:    sampleTools(),
+	})
+	if err != nil {
+		t.Fatalf("Chat: unexpected error: %v", err)
+	}
+	assertToolsForwarded(t, captured, "web_search")
+}
+
+func TestAliAdapter_Chat_EmptyToolsOmitted(t *testing.T) {
+	var captured []byte
+	srv := httptest.NewServer(captureBody(t, &captured))
+	defer srv.Close()
+
+	a := NewAliAdapter()
+	route := mockRoute(srv.URL, "test-key", "qwen-turbo")
+	_, err := a.Chat(context.Background(), route, aiservice.ChatRequest{
+		Messages: sampleMessages(),
+	})
+	if err != nil {
+		t.Fatalf("Chat: unexpected error: %v", err)
+	}
+	assertNoTools(t, captured)
+}
+
+func TestAliAdapter_Chat_ExtractsToolCalls(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatJSONWithToolCalls(w, "call-001", "web_search", `{"query":"AI news"}`, "qwen-turbo")
+	}))
+	defer srv.Close()
+
+	a := NewAliAdapter()
+	route := mockRoute(srv.URL, "test-key", "qwen-turbo")
+	resp, err := a.Chat(context.Background(), route, aiservice.ChatRequest{
+		Messages: sampleMessages(),
+		Tools:    sampleTools(),
+	})
+	if err != nil {
+		t.Fatalf("Chat: unexpected error: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("ToolCalls length = %d; want 1", len(resp.ToolCalls))
+	}
+	tc := resp.ToolCalls[0]
+	if tc.ID != "call-001" {
+		t.Errorf("ToolCall.ID = %q; want call-001", tc.ID)
+	}
+	if tc.Function.Name != "web_search" {
+		t.Errorf("ToolCall.Function.Name = %q; want web_search", tc.Function.Name)
+	}
+	if tc.Function.Arguments != `{"query":"AI news"}` {
+		t.Errorf("ToolCall.Function.Arguments = %q; want %q", tc.Function.Arguments, `{"query":"AI news"}`)
+	}
+	if resp.FinishReason != "tool_calls" {
+		t.Errorf("FinishReason = %q; want tool_calls", resp.FinishReason)
+	}
+}
+
+func TestVolcAdapter_Chat_ExtractsToolCalls(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatJSONWithToolCalls(w, "call-volc-1", "kb_search", `{"query":"GORM index"}`, "deepseek-v3")
+	}))
+	defer srv.Close()
+
+	v := NewVolcAdapter()
+	route := mockRoute(srv.URL, "test-key", "deepseek-v3")
+	resp, err := v.Chat(context.Background(), route, aiservice.ChatRequest{
+		Messages: sampleMessages(),
+		Tools:    sampleTools(),
+	})
+	if err != nil {
+		t.Fatalf("Chat: unexpected error: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].Function.Name != "kb_search" {
+		t.Fatalf("ToolCalls not surfaced: %+v", resp.ToolCalls)
+	}
+}
+
+func TestDMXAPIAdapter_Chat_ExtractsToolCalls(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatJSONWithToolCalls(w, "call-dmx-1", "image_gen", `{"prompt":"a cat"}`, "qwen-turbo-latest")
+	}))
+	defer srv.Close()
+
+	d := NewDMXAPIAdapter()
+	route := mockRoute(srv.URL, "test-key", "qwen-turbo-latest")
+	resp, err := d.Chat(context.Background(), route, aiservice.ChatRequest{
+		Messages: sampleMessages(),
+		Tools:    sampleTools(),
+	})
+	if err != nil {
+		t.Fatalf("Chat: unexpected error: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].Function.Name != "image_gen" {
+		t.Fatalf("ToolCalls not surfaced: %+v", resp.ToolCalls)
+	}
+}
+
+func TestBuildOAITools_EmptyReturnsNil(t *testing.T) {
+	if got := buildOAITools(nil); got != nil {
+		t.Errorf("buildOAITools(nil) = %v; want nil", got)
+	}
+	if got := buildOAITools([]aiservice.Tool{}); got != nil {
+		t.Errorf("buildOAITools([]) = %v; want nil", got)
+	}
+}
+
+func TestExtractToolCalls_EmptyReturnsNil(t *testing.T) {
+	if got := extractToolCalls(nil); got != nil {
+		t.Errorf("extractToolCalls(nil) = %v; want nil", got)
+	}
+	if got := extractToolCalls([]oaiToolCall{}); got != nil {
+		t.Errorf("extractToolCalls([]) = %v; want nil", got)
 	}
 }
