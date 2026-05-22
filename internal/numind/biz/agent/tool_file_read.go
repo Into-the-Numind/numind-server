@@ -46,13 +46,16 @@ type fileReadTool struct {
 	textParser  fileParser // text/plain, text/markdown
 	// headFn is the HTTP HEAD function; swapped in tests to avoid network calls.
 	headFn func(url string) (*http.Response, error)
-	// presignFn signs a COS object key for transient anonymous fetch. The COS
-	// bucket is private — without a presigned URL, every downstream HEAD/GET
-	// (HEAD here, qwen-long server fetch, OCR fetch, text http.Get) returns
-	// 403, surfacing as "model_error" with no actionable state_reason.
-	// Swapped to a stub in tests to avoid touching COS. nil = bypass (any
-	// non-COS URL flows through unchanged).
-	presignFn func(ctx context.Context, objectKey string, expirySeconds int64) (string, error)
+	// presignFn signs a COS object key for transient anonymous fetch, BOUND TO
+	// AN HTTP METHOD. Tencent COS signs (method, URI, expiry, …) — a URL signed
+	// for GET will get 403 if requested with HEAD. file_read therefore signs
+	// twice per execution: once for HEAD (the probe) and once for GET (the
+	// downstream parser fetch — qwen-long server-side fetch, OCR fetch, text
+	// http.Get all issue GET).
+	//
+	// Swapped to a stub in tests. nil = bypass (any non-COS URL flows through
+	// unchanged).
+	presignFn func(ctx context.Context, method, objectKey string, expirySeconds int64) (string, error)
 }
 
 // NewFileReadTool constructs a fileReadTool with injected parsers.
@@ -63,7 +66,7 @@ func NewFileReadTool(pdf, img, txt fileParser) FullTool {
 		imageParser: img,
 		textParser:  txt,
 		headFn:      http.Head,
-		presignFn:   util.GenerateSignedURL,
+		presignFn:   util.GenerateSignedURLForMethod,
 	}
 }
 
@@ -145,22 +148,27 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 		defer func() { langfuse.EndSpan(traceID, spanID) }()
 	}
 
-	// Translate private COS URLs into time-bounded presigned URLs so that the
-	// HEAD here AND every downstream fetch (qwen-long, OCR, text http.Get) can
-	// authenticate with an opaque signature. The customer-facing canonical URL
-	// (in.FileURL) is preserved for filename / output, but fetchURL is what
-	// actually hits the wire. Non-COS URLs short-circuit (admin-pasted public
-	// links must keep working).
-	fetchURL := in.FileURL
+	// Translate private COS URLs into time-bounded presigned URLs. TWO signed
+	// URLs are minted: one for HEAD (the cheap probe used here) and one for
+	// GET (downstream fetch by qwen-long, OCR, text http.Get). Tencent COS
+	// signing is METHOD-BOUND — a GET URL hit with HEAD returns 403
+	// "SignatureDoesNotMatch". The customer-facing canonical URL (in.FileURL)
+	// is preserved for filename / output. Non-COS URLs short-circuit (admin-
+	// pasted public links must keep working with a single URL pass-through).
+	headURL := in.FileURL
+	fetchURL := in.FileURL // for parsers (GET-style downstream fetch)
 	if objectKey, ok := extractCOSObjectKey(in.FileURL); ok && t.presignFn != nil {
-		// 1h validity is comfortably longer than any single tool call. The
-		// agent re-presigns on every Execute, so cached-URL expiry is not a
-		// concern even for long-running sessions that re-read the same file.
-		signed, signErr := t.presignFn(ctx, objectKey, 3600)
+		// 1h validity is comfortably longer than any single tool call.
+		signedHead, signErr := t.presignFn(ctx, http.MethodHead, objectKey, 3600)
 		if signErr != nil {
-			return nil, errno.ErrAIProviderError.SetMessage("file_read: presign COS URL: %s", signErr.Error())
+			return nil, errno.ErrAIProviderError.SetMessage("file_read: presign COS URL (HEAD): %s", signErr.Error())
 		}
-		fetchURL = signed
+		signedGet, signErr := t.presignFn(ctx, http.MethodGet, objectKey, 3600)
+		if signErr != nil {
+			return nil, errno.ErrAIProviderError.SetMessage("file_read: presign COS URL (GET): %s", signErr.Error())
+		}
+		headURL = signedHead
+		fetchURL = signedGet
 	}
 
 	// HEAD the file to detect content type and byte size without downloading.
@@ -168,7 +176,7 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	if headFn == nil {
 		headFn = http.Head
 	}
-	headResp, err := headFn(fetchURL)
+	headResp, err := headFn(headURL)
 	if err != nil {
 		return nil, errno.ErrAIProviderError.SetMessage("file_read: HEAD request failed: %s", err.Error())
 	}
@@ -184,9 +192,9 @@ func (t *fileReadTool) Execute(ctx context.Context, input ToolInput) (ToolResult
 	byteSize := int(headResp.ContentLength)
 
 	// Dispatch to the appropriate parser by MIME type.
-	// Parsers receive fetchURL (presigned) — they each issue their own
+	// Parsers receive fetchURL (GET-signed) — they each issue their own
 	// downstream fetch (qwen-long server-side fetch / OCR fetch / text GET)
-	// and would 403 against bare private COS URLs.
+	// and would 403 against bare private COS URLs OR HEAD-signed URLs.
 	var content string
 	var pageCount int
 	var truncated bool

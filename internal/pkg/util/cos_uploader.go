@@ -119,9 +119,36 @@ func IsCOSEnabled() bool {
 	return c != nil && c.enabled && c.client != nil
 }
 
-// GenerateSignedURL returns a temporary signed URL for reading the object.
-// expirySeconds: validity duration in seconds (e.g., 600 for 10 minutes)
+// GenerateSignedURL returns a temporary signed URL for GET-reading the object.
+//
+// expirySeconds: validity duration in seconds (e.g., 600 for 10 minutes).
+//
+// Method-bound signing reminder: Tencent COS signed URLs bind the HTTP method
+// at sign time. A URL signed for GET CANNOT be used with HEAD (HEAD will get
+// HTTP 403 "SignatureDoesNotMatch"). If you need a HEAD URL, call
+// GenerateSignedURLForMethod with http.MethodHead.
+//
+// Backwards-compatible thin wrapper around GenerateSignedURLForMethod(GET).
 func GenerateSignedURL(ctx context.Context, objectKey string, expirySeconds int64) (string, error) {
+	return GenerateSignedURLForMethod(ctx, http.MethodGet, objectKey, expirySeconds)
+}
+
+// GenerateSignedURLForMethod returns a temporary signed URL bound to the given
+// HTTP method. The returned URL will reject any request whose method differs
+// from the signing method with HTTP 403 ("SignatureDoesNotMatch") — this is
+// COS's contract, not a bug in this helper.
+//
+// Typical methods:
+//   - http.MethodGet  — for fetching object content (used by qwen-long, OCR,
+//     and text fetcher inside file_read parsers)
+//   - http.MethodHead — for cheap content-type / size probing without
+//     downloading the body
+//   - http.MethodPut  — for uploads (not used here; uploads go through Put)
+//
+// Callers must sign separately for each method they intend to issue. See
+// file_read.Execute for the canonical two-call pattern (HEAD for probe + GET
+// for parser fetch).
+func GenerateSignedURLForMethod(ctx context.Context, method, objectKey string, expirySeconds int64) (string, error) {
 	cosClient, err := getCOSClient()
 	if err != nil {
 		return "", err
@@ -129,18 +156,20 @@ func GenerateSignedURL(ctx context.Context, objectKey string, expirySeconds int6
 	if !cosClient.enabled || cosClient.client == nil {
 		return "", fmt.Errorf("cos not enabled")
 	}
+	if method == "" {
+		method = http.MethodGet
+	}
 	objectKey = strings.TrimPrefix(objectKey, "/")
 	objectKey = path.Clean(objectKey)
 
-	// SDK provides presigned URL generation
-	// method GET for read
-	u, err := cosClient.client.Object.GetPresignedURL(ctx, http.MethodGet, objectKey, viper.GetString("cos.secret_id"), viper.GetString("cos.secret_key"), timeDurationSeconds(expirySeconds), nil)
+	// SDK signs (method, URI, expiry, …) — the method IS part of the signature.
+	u, err := cosClient.client.Object.GetPresignedURL(ctx, method, objectKey, viper.GetString("cos.secret_id"), viper.GetString("cos.secret_key"), timeDurationSeconds(expirySeconds), nil)
 	if err != nil {
-		log.Errorw("COS generate signed URL failed", "key", objectKey, "error", err)
+		log.Errorw("COS generate signed URL failed", "key", objectKey, "method", method, "error", err)
 		return "", err
 	}
 	signed := u.String()
-	log.Debugw("COS signed URL generated", "key", objectKey, "expiresIn", expirySeconds)
+	log.Debugw("COS signed URL generated", "key", objectKey, "method", method, "expiresIn", expirySeconds)
 	return signed, nil
 }
 
