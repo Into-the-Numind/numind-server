@@ -69,6 +69,61 @@ tools:
     error_template: "获取日期中断，{{ .reason_friendly }}"
     rejected_template: "日期获取被规则拦截"
 
+  # 2026-05-22: 补齐 6 个之前走 defaults block 的工具，让学员看到具体的工具
+  # 名称而不是泛化的「正在处理 操作」。所有 detail 保持 static（不读 .input）
+  # 以免某些工具未 BackfillObservableInput 导致空字符串渲染。
+
+  web_search:
+    verb: "正在搜索"
+    detail_template: "网络"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "已获取搜索结果"
+    error_template: "搜索中断，{{ .reason_friendly }}"
+    rejected_template: "网络搜索被规则拦截"
+
+  web_fetch:
+    verb: "正在抓取"
+    detail_template: "网页内容"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "已读取网页"
+    error_template: "抓取中断，{{ .reason_friendly }}"
+    rejected_template: "网页抓取被规则拦截"
+
+  file_read:
+    verb: "正在读取"
+    detail_template: "文件"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "已读取文件"
+    error_template: "读取中断，{{ .reason_friendly }}"
+    rejected_template: "文件读取被规则拦截"
+
+  memory_read:
+    verb: "正在回忆"
+    detail_template: "你的偏好"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "已读取记忆"
+    error_template: "回忆中断，{{ .reason_friendly }}"
+    rejected_template: "记忆读取被规则拦截"
+
+  memory_write:
+    verb: "正在记下"
+    detail_template: "你的偏好"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "已写入记忆"
+    error_template: "记录中断，{{ .reason_friendly }}"
+    rejected_template: "记忆写入被规则拦截"
+
+  # ask_user_question 是 yield 式工具：narration 会 emit StateUse 然后
+  # tool_call_yield 事件被前端转成 question_prompt 消息分支处理。这里给
+  # 一个兜底文案，避免极少数情况下 yield 之外的状态走 defaults。
+  ask_user_question:
+    verb: "等你回答"
+    detail_template: "一个问题"
+    use_template: "{{ .verb }} {{ .detail }}"
+    result_template: "已收到你的回答"
+    error_template: "问题处理中断，{{ .reason_friendly }}"
+    rejected_template: "提问被规则拦截"
+
 defaults:
   verb: "正在处理"
   detail_template: "操作"
