@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -434,5 +435,96 @@ func TestStudentRunService_forwardNarration_NilProviderIsNoop(t *testing.T) {
 	svc.forwardNarration(1)
 	if got := buf.QuerySince(1, time.Time{}); len(got) != 0 {
 		t.Errorf("buffer should be empty when provider is nil; got %d events", len(got))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildAgentInput tests (bug-from-customer 2026-05-22)
+//
+// Reproduce: customer uploaded a file via UI, LLM replied "you didn't upload
+// anything". Root cause was three-layer schema mismatch (frontend sent
+// attachment_ids, backend expected attachment_urls); plus the input format
+// "[attachments: <JSON>]" was too implicit — LLM ignored it.
+//
+// These tests guard the new explicit Chinese instruction. If anyone changes
+// the prompt and drops "file_read" or the Chinese hint marker, the LLM will
+// silently regress to "no upload" replies and these tests will catch it.
+// ---------------------------------------------------------------------------
+
+func TestBuildAgentInput_NoAttachments(t *testing.T) {
+	got := buildAgentInput("hello agent", nil)
+	if got != "hello agent" {
+		t.Errorf("expected bare message unchanged; got %q", got)
+	}
+	got2 := buildAgentInput("hello", []string{})
+	if got2 != "hello" {
+		t.Errorf("empty slice should be treated same as nil; got %q", got2)
+	}
+	got3 := buildAgentInput("", nil)
+	if got3 != "" {
+		t.Errorf("empty message + nil should return empty string; got %q", got3)
+	}
+}
+
+func TestBuildAgentInput_WithAttachments_ContainsExplicitHint(t *testing.T) {
+	urls := []string{
+		"https://cos.example/agent-attachments/1/aa-report.pdf",
+		"https://cos.example/agent-attachments/1/bb-chart.jpg",
+	}
+	got := buildAgentInput("请分析这些文件", urls)
+
+	// Critical assertions — if any of these fails, LLM may not see the hint.
+	wantSubstrings := []string{
+		"请分析这些文件",    // user message preserved
+		"【系统提示】",     // explicit hint marker — LLM-recognizable
+		"请立即调用",      // unconditional imperative (NOT "如需…") — review P1 lock
+		"file_read",  // tool name the LLM must invoke
+		"file_url",   // tool parameter name
+		"然后再回答用户的问题", // makes the tool call a prerequisite, not optional
+		urls[0],      // first URL must be in output
+		urls[1],      // second URL must be in output
+	}
+	for _, s := range wantSubstrings {
+		if !strings.Contains(got, s) {
+			t.Errorf("buildAgentInput output missing %q\nFull output:\n%s", s, got)
+		}
+	}
+
+	// Both URLs must be on their own line (bulleted) — LLM parses lists well.
+	for _, u := range urls {
+		if !strings.Contains(got, "- "+u) {
+			t.Errorf("URL %q should be on its own bulleted line; got:\n%s", u, got)
+		}
+	}
+
+	// Position lock: the hint MUST appear AFTER the user message. Hoisting it
+	// to the top would break the ack-then-act priming and weak models may
+	// re-anchor on the system instruction and ignore the user request.
+	hintIdx := strings.Index(got, "【系统提示】")
+	msgIdx := strings.Index(got, "请分析这些文件")
+	if hintIdx < 0 || msgIdx < 0 {
+		t.Fatalf("missing required marker(s); msgIdx=%d hintIdx=%d", msgIdx, hintIdx)
+	}
+	if hintIdx <= msgIdx {
+		t.Errorf("hint must come AFTER user message; got msgIdx=%d hintIdx=%d (full output below)\n%s", msgIdx, hintIdx, got)
+	}
+
+	// Reject the soft "如需查看" phrasing — this is the regression that caused
+	// the original customer bug (LLM saw the conditional and skipped the call).
+	if strings.Contains(got, "如需查看") {
+		t.Errorf("output must NOT use conditional 如需查看 phrasing (use 请立即调用 instead); got:\n%s", got)
+	}
+}
+
+func TestBuildAgentInput_SingleAttachment(t *testing.T) {
+	got := buildAgentInput("看看这个", []string{"https://cos.example/agent-attachments/1/x.txt"})
+	if !strings.Contains(got, "看看这个") {
+		t.Errorf("user message must be preserved; got %q", got)
+	}
+	if !strings.Contains(got, "file_read") {
+		t.Errorf("output must mention file_read tool; got %q", got)
+	}
+	if !strings.Contains(got, "https://cos.example/agent-attachments/1/x.txt") {
+		t.Errorf("output must contain the URL; got %q", got)
 	}
 }
