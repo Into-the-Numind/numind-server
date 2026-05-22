@@ -94,6 +94,30 @@ do_build() {
     "cd $BUILD_REPO_PATH && GIT_SHA='${EFFECTIVE_SHA}' GIT_TAG='${GIT_TAG}' bash scripts/cicd/build-and-push.sh '$ENV' '$TARGET'"
 }
 
+# Keep last 72h of build cache and unused images. Build server is shared across 3 repos
+# (numind-server / numind-web-v3 / numind-admin-web); without this, cache + unused images
+# accumulate until disk fills.
+do_cleanup_build_cache() {
+  echo
+  echo "--- [2.5/3] cleanup build cache on build server (keep last 72h) ---"
+  local start=$(date +%s)
+  if ! ssh $SSH_OPTS "$SSH_TARGET" '
+    set -e
+    echo "Before cleanup:"
+    docker system df
+    echo
+    echo "Pruning builder cache (--filter until=72h)..."
+    docker builder prune -af --filter "until=72h"    echo
+    echo "Pruning unused images (--filter until=72h)..."
+    docker image prune -af --filter "until=72h"    echo
+    echo "After cleanup:"
+    docker system df
+  '; then
+    echo "⚠️  cleanup failed (non-fatal, continuing deploy)"
+  fi
+  echo "cleanup took $(($(date +%s) - start))s"
+}
+
 do_deploy() {
   echo
   echo "--- [3/3] deploy to $ENV ---"
@@ -102,8 +126,8 @@ do_deploy() {
 }
 
 case "$MODE" in
-  full)         do_rsync; do_build; do_deploy ;;
-  --build-only) do_rsync; do_build ;;
+  full)         do_rsync; do_build; do_cleanup_build_cache; do_deploy ;;
+  --build-only) do_rsync; do_build; do_cleanup_build_cache ;;
   --deploy-only) do_deploy ;;
   *) echo "ERROR: unknown mode $MODE" >&2; exit 1 ;;
 esac
