@@ -376,21 +376,90 @@ func (s *StudentRunService) verifyRunOwnership(ctx context.Context, userID uint,
 	return nil
 }
 
-// toolNamesFromFlags converts agent_definition.ToolFlags (JSON {"tool_name": true})
-// to a []string of enabled tool names. Returns nil if ToolFlags is empty.
+// safeToolBaseline 是所有 Agent 默认启用的无害工具集，配置者无需显式勾选。
+// configurator 通过 tool_flags 仅控制 3 个风险类别（code_sandbox/media/dangerous）
+// 是否启用，不影响这个 baseline。
+//
+// 等未来 UX 增加 "individual tool 单工具开关" 时，可以让 tool_flags 显式传
+// {"web_search": false} 等覆盖 baseline；当前 frontend (AgentAdvancedEdit.vue)
+// 只有 3 个 category 开关，所以 baseline 永远启用。
+var safeToolBaseline = []string{
+	"kb_search",          // RAG 检索
+	"learner_data_query", // 学员档案（read-only）
+	"memory_read",        // 长期记忆读
+	"memory_write",       // 长期记忆写
+	"get_current_date",   // 当前时间
+	"ask_user_question",  // 反问学员
+	"web_search",         // 网络搜索（Tavily）
+	"web_fetch",          // URL → Markdown
+	"file_read",          // PDF/图/文本
+}
+
+// categoryToTools 把 frontend AgentAdvancedEdit.vue 的 3 个 risk-category 开关
+// 展开为受限工具（这些工具默认 OFF，必须通过 category 显式启用）。
+//
+//	code_sandbox → bash_exec      (RequiresSandbox=true)
+//	media        → image_gen      (Category="多媒体")
+//	dangerous    → bash_exec      (RiskLevel="dangerous" 别名)
+var categoryToTools = map[string][]string{
+	"code_sandbox": {"bash_exec"},
+	"media":        {"image_gen"},
+	"dangerous":    {"bash_exec"}, // alias of code_sandbox for now
+}
+
+// toolNamesFromFlags resolves agent_definition.ToolFlags JSON to []string of
+// enabled tool names that AgentRunner can look up in the registry.
+//
+// Frontend stores `tool_flags` as `{category_name: bool}` over 3 risk gates
+// (code_sandbox, media, dangerous — see AgentAdvancedEdit.vue), NOT as raw
+// tool names. This function:
+//  1. Always includes safeToolBaseline (kb_search, web_search, memory_*, ...).
+//  2. Expands enabled categories into their tool sets via categoryToTools.
+//  3. Honors any direct tool-name keys not in categoryToTools (future-proofs
+//     for when frontend gains per-tool toggles); explicit false disables.
+//
+// Returns nil only if json unmarshal fails. Empty/missing ToolFlags returns
+// just the safe baseline so Agents are never useless ReAct short-circuits.
 func toolNamesFromFlags(toolFlagsJSON []byte) []string {
-	if len(toolFlagsJSON) == 0 {
-		return nil
+	// Start with safe baseline always-on.
+	enabled := make(map[string]bool, len(safeToolBaseline)+3)
+	for _, name := range safeToolBaseline {
+		enabled[name] = true
 	}
+
+	if len(toolFlagsJSON) == 0 {
+		return mapKeysWhereTrue(enabled)
+	}
+
 	var flags map[string]bool
 	if err := json.Unmarshal(toolFlagsJSON, &flags); err != nil {
-		return nil
+		// Malformed JSON: fall back to safe baseline. Logging happens at the
+		// caller (runner.go) once the result reaches the registry resolver.
+		return mapKeysWhereTrue(enabled)
 	}
-	var names []string
-	for name, enabled := range flags {
-		if enabled {
-			names = append(names, name)
+
+	for key, on := range flags {
+		if tools, isCategory := categoryToTools[key]; isCategory {
+			// Category toggle: expand to tool set.
+			for _, t := range tools {
+				enabled[t] = on
+			}
+			continue
+		}
+		// Direct tool name (future: per-tool toggles in UI); explicit false
+		// disables a baseline tool.
+		enabled[key] = on
+	}
+
+	return mapKeysWhereTrue(enabled)
+}
+
+func mapKeysWhereTrue(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for name, on := range m {
+		if on {
+			out = append(out, name)
 		}
 	}
-	return names
+	return out
 }
