@@ -1112,10 +1112,48 @@ func TestBuildOAIMessages_TableDriven(t *testing.T) {
 			},
 		},
 		{
+			// Hotfix aiservice-reasoning-content-roundtrip: regression test for
+			// DMXAPI HTTP 400 "The reasoning_content in the thinking mode must
+			// be passed back to the API". When the prior assistant turn carried
+			// reasoning_content (thinking-mode model output), the next request
+			// must echo that field back on the assistant message; otherwise the
+			// provider rejects the request. This case proves buildOAIMessage
+			// propagates ReasoningContent into the wire body.
+			name: "role=assistant propagates ReasoningContent",
+			input: []aiservice.ChatMessage{
+				{
+					Role:             aiservice.MessageRoleAssistant,
+					Content:          aiservice.MessageContent{Text: "I'll search the web"},
+					ReasoningContent: "User wants AI news. I should call web_search with a relevant query.",
+					ToolCalls: []aiservice.ToolCall{
+						{ID: "call_x", Type: "function", Function: aiservice.ToolCallFunction{Name: "web_search", Arguments: `{"q":"ai"}`}},
+					},
+				},
+			},
+			wantLen: 1,
+			check: func(t *testing.T, out []oaiMessage) {
+				t.Helper()
+				if out[0].ReasoningContent != "User wants AI news. I should call web_search with a relevant query." {
+					t.Errorf("ReasoningContent = %q; want the thinking chain (root cause: DMXAPI 400 when missing)", out[0].ReasoningContent)
+				}
+				body, err := json.Marshal(out[0])
+				if err != nil {
+					t.Fatalf("json.Marshal: %v", err)
+				}
+				bodyStr := string(body)
+				if !strings.Contains(bodyStr, "reasoning_content") {
+					t.Errorf("marshaled body missing reasoning_content: %s", bodyStr)
+				}
+				if !strings.Contains(bodyStr, "tool_calls") {
+					t.Errorf("marshaled body missing tool_calls (must coexist with reasoning_content): %s", bodyStr)
+				}
+			},
+		},
+		{
 			// Backward-compat guard: pre-Agent-mode callers (SOP / chatbot)
-			// never set ToolCallID or ToolCalls. omitempty must keep the wire
-			// shape identical so the marshaled body stays byte-for-byte the
-			// same as before this hotfix.
+			// never set ToolCallID, ToolCalls, or ReasoningContent. omitempty
+			// must keep the wire shape identical so the marshaled body stays
+			// byte-for-byte the same as before this hotfix.
 			name: "non-tool message omits tool_call_id and tool_calls when empty",
 			input: []aiservice.ChatMessage{
 				{
@@ -1132,8 +1170,11 @@ func TestBuildOAIMessages_TableDriven(t *testing.T) {
 				if out[0].ToolCalls != nil {
 					t.Errorf("ToolCalls should be nil for assistant without tool_calls; got %+v", out[0].ToolCalls)
 				}
-				// Marshal-time verification: omitempty must drop both fields
-				// from the JSON wire format.
+				if out[0].ReasoningContent != "" {
+					t.Errorf("ReasoningContent should be empty for non-thinking message; got %q", out[0].ReasoningContent)
+				}
+				// Marshal-time verification: omitempty must drop all three
+				// Agent-only fields from the JSON wire format.
 				body, err := json.Marshal(out[0])
 				if err != nil {
 					t.Fatalf("json.Marshal: %v", err)
@@ -1144,6 +1185,9 @@ func TestBuildOAIMessages_TableDriven(t *testing.T) {
 				}
 				if strings.Contains(bodyStr, "tool_calls") {
 					t.Errorf("marshaled body contains tool_calls; want field dropped via omitempty: %s", bodyStr)
+				}
+				if strings.Contains(bodyStr, "reasoning_content") {
+					t.Errorf("marshaled body contains reasoning_content; want field dropped via omitempty: %s", bodyStr)
 				}
 			},
 		},

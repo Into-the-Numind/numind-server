@@ -169,6 +169,14 @@ func (a *aiserviceAdapter) convertToAiserviceRequest(in []*schema.Message) aiser
 				})
 			}
 		}
+		// Thinking-mode passthrough: DMXAPI deepseek-v4-pro and AiHubMix
+		// reasoning models require reasoning_content from prior assistant turns
+		// to be echoed back. Without this the provider returns HTTP 400
+		// ("The reasoning_content in the thinking mode must be passed back").
+		// Empty string on non-thinking models is harmless (omitempty drops it).
+		if m.ReasoningContent != "" {
+			am.ReasoningContent = m.ReasoningContent
+		}
 		msgs = append(msgs, am)
 	}
 
@@ -200,11 +208,17 @@ func convertRole(r schema.RoleType) aiservice.MessageRole {
 }
 
 // convertToEinoMessage converts aiservice.ChatResponse to *schema.Message, including
-// any tool calls requested by the model.
+// any tool calls requested by the model and the thinking-mode reasoning content
+// when the provider returned it.
+//
+// ReasoningContent must survive the response→schema.Message hop so the ReAct
+// loop can echo it back on the next request (thinking-mode providers like
+// DMXAPI deepseek-v4-pro require this; see ChatMessage.ReasoningContent docs).
 func convertToEinoMessage(resp *aiservice.ChatResponse) *schema.Message {
 	msg := &schema.Message{
-		Role:    schema.Assistant,
-		Content: resp.Content,
+		Role:             schema.Assistant,
+		Content:          resp.Content,
+		ReasoningContent: resp.ReasoningContent,
 	}
 	if len(resp.ToolCalls) > 0 {
 		msg.ToolCalls = make([]schema.ToolCall, 0, len(resp.ToolCalls))

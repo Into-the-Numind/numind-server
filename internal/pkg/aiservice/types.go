@@ -109,6 +109,13 @@ type ChatMessage struct {
 	// ToolCalls is the assistant's requested tool invocations (role=assistant).
 	// Empty / nil on any other role.
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	// ReasoningContent is the thinking-mode chain-of-thought from the previous
+	// assistant turn. For thinking-capable providers (DMXAPI deepseek-v4-pro,
+	// AiHubMix o1/o3 / gpt-5), the API requires reasoning_content to be echoed
+	// back in subsequent turns; otherwise the provider returns HTTP 400
+	// ("The reasoning_content in the thinking mode must be passed back").
+	// Empty for non-thinking models or non-assistant roles.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 // TokenUsage reports the token consumption of a Chat call.

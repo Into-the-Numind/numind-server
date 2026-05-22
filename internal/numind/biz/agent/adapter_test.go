@@ -236,6 +236,52 @@ func TestConvertToAiserviceRequest_PropagatesToolCalls(t *testing.T) {
 	}
 }
 
+// TestConvertToAiserviceRequest_PropagatesReasoningContent is the Eino-side
+// regression for the hotfix aiservice-reasoning-content-roundtrip. Before the
+// fix, schema.Message.ReasoningContent was silently dropped when converting to
+// aiservice.ChatMessage, so the next ReAct turn's request did not echo the
+// thinking trace back to the provider. DMXAPI (deepseek-v4-pro intrinsic
+// thinking) then rejected the request with HTTP 400 "The reasoning_content in
+// the thinking mode must be passed back".
+func TestConvertToAiserviceRequest_PropagatesReasoningContent(t *testing.T) {
+	a := &aiserviceAdapter{modelName: "", taskID: "agent.run"}
+	req := a.convertToAiserviceRequest([]*schema.Message{
+		{
+			Role:             schema.Assistant,
+			Content:          "I will search the web",
+			ReasoningContent: "User asked for news; I should call web_search.",
+		},
+	})
+	if len(req.Messages) != 1 {
+		t.Fatalf("messages: got %d, want 1", len(req.Messages))
+	}
+	if req.Messages[0].ReasoningContent != "User asked for news; I should call web_search." {
+		t.Errorf("ReasoningContent: got %q, want the thinking trace (root cause: DMXAPI 400 on missing field)", req.Messages[0].ReasoningContent)
+	}
+}
+
+// TestConvertToEinoMessage_PreservesReasoningContent is the response-side
+// companion: when the LLM returns reasoning_content, the schema.Message we
+// hand back to Eino must carry it so the next iteration's request can echo
+// it. Without this propagation step, ChatMessage.ReasoningContent would
+// always be empty on the next turn even with Layer A / Layer C fixes.
+func TestConvertToEinoMessage_PreservesReasoningContent(t *testing.T) {
+	resp := &aiservice.ChatResponse{
+		Content:          "I'll search now",
+		ReasoningContent: "Plan: call web_search with query='AI news today'",
+	}
+	msg := convertToEinoMessage(resp)
+	if msg == nil {
+		t.Fatal("convertToEinoMessage returned nil")
+	}
+	if msg.ReasoningContent != "Plan: call web_search with query='AI news today'" {
+		t.Errorf("schema.Message.ReasoningContent: got %q, want the thinking trace", msg.ReasoningContent)
+	}
+	if msg.Content != "I'll search now" {
+		t.Errorf("Content: got %q, want 'I'll search now'", msg.Content)
+	}
+}
+
 // TestConvertRole verifies all role mappings.
 func TestConvertRole(t *testing.T) {
 	cases := []struct {
