@@ -112,6 +112,48 @@ func marshalJSON(v any) (datatypes.JSON, error) {
 // Create 创建新的 AgentDefinition。
 // 跨表事务：skillStore.CreateTx + WriteHistorySnapshot 原子执行。
 // IsActive 默认 true；version = 1。
+//
+// tool_flags 默认值规则（当 req.ToolFlags 为 nil/empty 时）：
+// 当前 5 步问卷未含 "工具选择" step，frontend 不会发送 tool_flags。
+// 没有 tool_flags 会让 runner.go 走 pre-ReAct short-circuit（不调 LLM, 0 积分），
+// 学员看到 echo + 前端 'failed' 文案。为避免每个新 Agent 都是哑炮，
+// 这里根据 questionnaire_answers 智能 derive 一个合理默认集：
+//   - 永远开：基础工具 (kb_search/learner_data_query/memory_*/get_current_date/ask_user_question)
+//   - q9='allow_search' 开：web_search + web_fetch
+//   - q7 含 'text'/'csv'/'image' 开：file_read
+//   - 危险类（bash_exec/image_gen/document_generate）保持 OFF
+//
+// 等 #15+ frontend questionnaire 加 "工具选择" step 后可放弃本默认。
+func deriveDefaultToolFlags(qa QuestionnaireAnswers) map[string]bool {
+	hasMaterial := func(t string) bool {
+		for _, v := range qa.Q7 {
+			if v == t {
+				return true
+			}
+		}
+		return false
+	}
+	allowSearch := qa.Q9 == "allow_search"
+	return map[string]bool{
+		// 永远开 — 基础读取 / 记忆 / 反问 / 时间
+		"kb_search":          true,
+		"learner_data_query": true,
+		"memory_read":        true,
+		"memory_write":       true,
+		"get_current_date":   true,
+		"ask_user_question":  true,
+		// q9 driven
+		"web_search": allowSearch,
+		"web_fetch":  allowSearch,
+		// q7 driven — 学员可能上传的材料类型
+		"file_read": hasMaterial("text") || hasMaterial("csv") || hasMaterial("image"),
+		// 危险 / stub 类默认 OFF
+		"bash_exec":         false,
+		"image_gen":         false,
+		"document_generate": false,
+	}
+}
+
 func (s *service) Create(ctx context.Context, userID uint, req CreateRequest) (*model.AgentDefinition, error) {
 	if err := s.requireParentAccount(ctx, userID); err != nil {
 		return nil, err
@@ -124,6 +166,11 @@ func (s *service) Create(ctx context.Context, userID uint, req CreateRequest) (*
 	startersJSON, err := marshalJSON(req.Starters)
 	if err != nil {
 		return nil, fmt.Errorf("Create marshal starters: %w", err)
+	}
+	// Fill default tool_flags when frontend doesn't supply (5-step questionnaire
+	// lacks a tool-selection step — see deriveDefaultToolFlags doc above).
+	if len(req.ToolFlags) == 0 {
+		req.ToolFlags = deriveDefaultToolFlags(req.QuestionnaireAnswers)
 	}
 	toolFlagsJSON, err := marshalJSON(req.ToolFlags)
 	if err != nil {

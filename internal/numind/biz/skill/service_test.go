@@ -141,6 +141,89 @@ func TestService_Create_writesHistoryV1(t *testing.T) {
 	assert.Contains(t, string(hist.Snapshot), "测试 Agent")
 }
 
+// TestService_Create_emptyToolFlags_derivesDefault: when frontend doesn't
+// supply tool_flags (5-step questionnaire lacks a tool-selection step),
+// the service must derive a sensible default from questionnaire_answers,
+// otherwise runner.go short-circuits with 0 tools and learners see "failed".
+func TestService_Create_emptyToolFlags_derivesDefault(t *testing.T) {
+	svc, db := newTestService(t)
+	parentID := seedParentUserID(db)
+
+	req := minCreateReq()
+	req.ToolFlags = nil // simulate frontend without tool step
+	req.QuestionnaireAnswers.Q9 = "allow_search"
+	req.QuestionnaireAnswers.Q7 = []string{"text", "csv"}
+
+	ad, err := svc.Create(context.Background(), parentID, req)
+	require.NoError(t, err)
+
+	var flags map[string]bool
+	require.NoError(t, json.Unmarshal(ad.ToolFlags, &flags))
+	// Always-on basics
+	assert.True(t, flags["kb_search"], "kb_search default on")
+	assert.True(t, flags["learner_data_query"], "learner_data_query default on")
+	assert.True(t, flags["memory_read"], "memory_read default on")
+	assert.True(t, flags["memory_write"], "memory_write default on")
+	assert.True(t, flags["get_current_date"], "get_current_date default on")
+	assert.True(t, flags["ask_user_question"], "ask_user_question default on")
+	// q9=allow_search → web tools on
+	assert.True(t, flags["web_search"], "web_search on when q9=allow_search")
+	assert.True(t, flags["web_fetch"], "web_fetch on when q9=allow_search")
+	// q7 has text/csv → file_read on
+	assert.True(t, flags["file_read"], "file_read on when q7 has materials")
+	// Dangerous default off
+	assert.False(t, flags["bash_exec"], "bash_exec default off")
+	assert.False(t, flags["image_gen"], "image_gen default off")
+	assert.False(t, flags["document_generate"], "document_generate default off")
+}
+
+// TestService_Create_emptyToolFlags_noSearch: q9=no_web_search keeps web_*
+// off; user-supplied tool_flags wins over the derived default.
+func TestService_Create_emptyToolFlags_noSearch(t *testing.T) {
+	svc, db := newTestService(t)
+	parentID := seedParentUserID(db)
+
+	req := minCreateReq()
+	req.ToolFlags = nil
+	req.QuestionnaireAnswers.Q9 = "no_web_search"
+	// q7 must be non-empty (validation). Use a material type that doesn't
+	// trigger file_read default-on.
+	req.QuestionnaireAnswers.Q7 = []string{"voice"}
+
+	ad, err := svc.Create(context.Background(), parentID, req)
+	require.NoError(t, err)
+
+	var flags map[string]bool
+	require.NoError(t, json.Unmarshal(ad.ToolFlags, &flags))
+	assert.False(t, flags["web_search"], "web_search off when q9=no_web_search")
+	assert.False(t, flags["web_fetch"], "web_fetch off when q9=no_web_search")
+	assert.False(t, flags["file_read"], "file_read off when q7 has only voice (no text/csv/image)")
+	// Basics still on
+	assert.True(t, flags["kb_search"])
+	assert.True(t, flags["memory_read"])
+}
+
+func TestService_Create_userSuppliedToolFlags_winsOverDefault(t *testing.T) {
+	svc, db := newTestService(t)
+	parentID := seedParentUserID(db)
+
+	req := minCreateReq()
+	// User explicitly disables kb_search even though q9=allow_search would default-on.
+	req.ToolFlags = map[string]bool{"kb_search": false, "web_search": true}
+	req.QuestionnaireAnswers.Q9 = "allow_search"
+
+	ad, err := svc.Create(context.Background(), parentID, req)
+	require.NoError(t, err)
+
+	var flags map[string]bool
+	require.NoError(t, json.Unmarshal(ad.ToolFlags, &flags))
+	assert.False(t, flags["kb_search"], "user explicit false wins")
+	assert.True(t, flags["web_search"])
+	// Basics NOT auto-added since user supplied non-empty map
+	_, hasMemoryRead := flags["memory_read"]
+	assert.False(t, hasMemoryRead, "user-supplied map is authoritative; default not merged in")
+}
+
 // ---------------------------------------------------------------------------
 // Get
 // ---------------------------------------------------------------------------
