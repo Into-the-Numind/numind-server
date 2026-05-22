@@ -42,6 +42,8 @@ func newAgentRunTestDB(t *testing.T) *gorm.DB {
 			compact_summary TEXT,
 			cancellation_requested_at DATETIME,
 			agent_definition_id INTEGER,
+			pending_question_json TEXT,
+			pending_question_at   DATETIME,
 			created_at      DATETIME,
 			updated_at      DATETIME
 		)`).Error)

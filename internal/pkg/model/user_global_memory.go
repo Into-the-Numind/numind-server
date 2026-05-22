@@ -19,3 +19,23 @@ type UserGlobalMemory struct {
 }
 
 func (UserGlobalMemory) TableName() string { return "user_global_memory" }
+
+// SQLiteCreateUserGlobalMemoryDDL is a SQLite-compatible CREATE TABLE statement
+// for unit tests. The production model uses gorm tag `default:CURRENT_TIMESTAMP(3)`
+// for millisecond precision on MySQL, which SQLite parser rejects with
+// `near "(": syntax error`. Tests that need an in-memory SQLite UserGlobalMemory
+// table should call db.Exec(SQLiteCreateUserGlobalMemoryDDL) instead of AutoMigrate.
+const SQLiteCreateUserGlobalMemoryDDL = `
+CREATE TABLE IF NOT EXISTS user_global_memory (
+	id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id                    INTEGER NOT NULL,
+	kind                       TEXT    NOT NULL,
+	key_name                   TEXT    NOT NULL,
+	value                      TEXT    NOT NULL,
+	confidence                 REAL    NOT NULL DEFAULT 1.0,
+	source_type                TEXT    NOT NULL DEFAULT 'agent_tool',
+	source_agent_definition_id INTEGER,
+	created_at                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	UNIQUE (user_id, key_name)
+)`

@@ -17,6 +17,10 @@ import (
 
 // newTestDB creates a file-backed SQLite DB with WAL mode and AutoMigrates the given models.
 // File DB (not :memory:) ensures cross-goroutine isolation when -race is on.
+//
+// For models that use `gorm:"default:CURRENT_TIMESTAMP(3)"` (MySQL ms precision)
+// — which SQLite rejects — pass nil and use db.Exec(model.SQLiteCreate*DDL)
+// instead. Two such models in this codebase: UserGlobalMemory + AgentSessionMemory.
 func newTestDB(t *testing.T, models ...interface{}) *gorm.DB {
 	t.Helper()
 	tmp := t.TempDir()
@@ -25,7 +29,21 @@ func newTestDB(t *testing.T, models ...interface{}) *gorm.DB {
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(models...))
+	// Intercept models that need SQLite-compat raw DDL; AutoMigrate the rest.
+	var passthrough []interface{}
+	for _, m := range models {
+		switch m.(type) {
+		case *model.UserGlobalMemory:
+			require.NoError(t, db.Exec(model.SQLiteCreateUserGlobalMemoryDDL).Error)
+		case *model.AgentSessionMemory:
+			require.NoError(t, db.Exec(model.SQLiteCreateAgentSessionMemoryDDL).Error)
+		default:
+			passthrough = append(passthrough, m)
+		}
+	}
+	if len(passthrough) > 0 {
+		require.NoError(t, db.AutoMigrate(passthrough...))
+	}
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
@@ -33,6 +51,7 @@ func newTestDB(t *testing.T, models ...interface{}) *gorm.DB {
 }
 
 // newTestNotepad returns a fresh Notepad backed by an in-process SQLite DB.
+// newTestDB intercepts UserGlobalMemory and uses raw DDL for SQLite compat.
 func newTestNotepad(t *testing.T) Notepad {
 	t.Helper()
 	db := newTestDB(t, &model.UserGlobalMemory{})

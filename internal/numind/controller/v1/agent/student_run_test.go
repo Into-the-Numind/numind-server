@@ -265,12 +265,10 @@ func TestMustParseRunID_InvalidInput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.POST("/runs/:id/cancel", func(c *gin.Context) {
-		_, ok := mustParseRunID(c)
-		if ok {
+		if _, ok := mustParseRunID(c); ok {
 			c.Status(200)
-		} else {
-			// mustParseRunID already wrote a 400 response
 		}
+		// else branch: mustParseRunID already wrote a 400 response
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/runs/abc/cancel", nil)

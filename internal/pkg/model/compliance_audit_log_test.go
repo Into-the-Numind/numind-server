@@ -16,7 +16,7 @@ func TestComplianceAuditLog_TableName(t *testing.T) {
 func TestComplianceAuditLog_AutoMigrate(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&ComplianceAuditLog{}))
+	require.NoError(t, db.Exec(SQLiteCreateComplianceAuditLogDDL).Error)
 
 	// Verify the table exists with the right columns
 	var tableInfo []map[string]interface{}
@@ -29,7 +29,7 @@ func TestComplianceAuditLog_AutoMigrate(t *testing.T) {
 func TestComplianceAuditLog_NullableFields(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&ComplianceAuditLog{}))
+	require.NoError(t, db.Exec(SQLiteCreateComplianceAuditLogDDL).Error)
 
 	// Insert with all nullable *uint64 fields set to nil
 	entry := &ComplianceAuditLog{

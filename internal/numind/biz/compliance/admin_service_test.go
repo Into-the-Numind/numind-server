@@ -27,7 +27,8 @@ func newComplianceTestDB(t *testing.T) *gorm.DB {
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.ComplianceRule{}))
+	// SQLite-compat raw DDL: ComplianceRule uses CURRENT_TIMESTAMP(3) for MySQL ms precision.
+	require.NoError(t, db.Exec(model.SQLiteCreateComplianceRuleDDL).Error)
 	t.Cleanup(func() {
 		sqlDB, _ := db.DB()
 		if sqlDB != nil {

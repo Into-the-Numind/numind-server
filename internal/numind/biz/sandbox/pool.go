@@ -233,9 +233,7 @@ func (p *agentSandboxPool) spawnWorker() {
 		case <-p.closeCh:
 			return
 		case <-p.spawnReq:
-			if p.spawnOne() {
-				// keep going
-			}
+			_ = p.spawnOne() // keep going regardless of result
 		}
 	}
 }

@@ -51,6 +51,8 @@ func newARTestDB(t *testing.T) *gorm.DB {
 			compact_summary            TEXT,
 			cancellation_requested_at  DATETIME,
 			agent_definition_id        INTEGER NOT NULL DEFAULT 0,
+			pending_question_json      TEXT,
+			pending_question_at        DATETIME,
 			created_at                 DATETIME,
 			updated_at                 DATETIME
 		)`).Error)

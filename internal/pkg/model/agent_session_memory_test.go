@@ -14,12 +14,13 @@ func TestAgentSessionMemory_TableName(t *testing.T) {
 	assert.Equal(t, "agent_session_memory", AgentSessionMemory{}.TableName())
 }
 
-// TestAgentSessionMemory_AutoMigrate 验证 AutoMigrate 能创建 agent_session_memory 表。
-func TestAgentSessionMemory_AutoMigrate(t *testing.T) {
+// TestAgentSessionMemory_CreateTable 验证 SQLiteCreateAgentSessionMemoryDDL 能创建表。
+// Note: AutoMigrate can't be used in SQLite tests due to `default:CURRENT_TIMESTAMP(3)`.
+func TestAgentSessionMemory_CreateTable(t *testing.T) {
 	db := newTestDB(t)
-	require.NoError(t, db.AutoMigrate(&AgentSessionMemory{}))
+	require.NoError(t, db.Exec(SQLiteCreateAgentSessionMemoryDDL).Error)
 	assert.True(t, db.Migrator().HasTable(&AgentSessionMemory{}),
-		"table agent_session_memory should exist after AutoMigrate")
+		"table agent_session_memory should exist after creating via raw DDL")
 }
 
 // TestAgentSessionMemory_Create_ScoreZero 验证 GORM default:1.0 zero-value gotcha
@@ -34,7 +35,7 @@ func TestAgentSessionMemory_AutoMigrate(t *testing.T) {
 //     可直接避免此 gotcha；SQLite 单测中需用 UpdateColumn fixup 验证。
 func TestAgentSessionMemory_Create_ScoreZero(t *testing.T) {
 	db := newTestDB(t)
-	require.NoError(t, db.AutoMigrate(&AgentSessionMemory{}))
+	require.NoError(t, db.Exec(SQLiteCreateAgentSessionMemoryDDL).Error)
 
 	now := time.Now()
 	m := &AgentSessionMemory{
@@ -73,7 +74,7 @@ func TestAgentSessionMemory_Create_ScoreZero(t *testing.T) {
 // TestAgentSessionMemory_Create_ScoreNonZero 验证 Score=0.75 正常写入（对照测试）。
 func TestAgentSessionMemory_Create_ScoreNonZero(t *testing.T) {
 	db := newTestDB(t)
-	require.NoError(t, db.AutoMigrate(&AgentSessionMemory{}))
+	require.NoError(t, db.Exec(SQLiteCreateAgentSessionMemoryDDL).Error)
 
 	now := time.Now()
 	m := &AgentSessionMemory{
@@ -97,7 +98,7 @@ func TestAgentSessionMemory_Create_ScoreNonZero(t *testing.T) {
 // SourceAgentDefinitionID=nil / Embedding=nil 写入后仍为 NULL。
 func TestAgentSessionMemory_Create_NullableFields(t *testing.T) {
 	db := newTestDB(t)
-	require.NoError(t, db.AutoMigrate(&AgentSessionMemory{}))
+	require.NoError(t, db.Exec(SQLiteCreateAgentSessionMemoryDDL).Error)
 
 	now := time.Now()
 	m := &AgentSessionMemory{
