@@ -26,8 +26,16 @@ case "$TARGET" in
     # the server container can drive the host docker daemon (DooD). prod does NOT
     # mount it — sandbox.backend stays disabled in prod and no docker access is
     # available to the binary.
+    EXTRA_RUN_FLAGS=""
     if [ "$ENV" = "dev" ]; then
       VOLUMES="$VOLUMES -v /var/run/docker.sock:/var/run/docker.sock"
+      # The container runs as uid 1001(numind); /var/run/docker.sock is root:docker
+      # on the host. Resolve the host docker group gid and pass it via --group-add
+      # so the container user can read/write the socket. Without this the binary
+      # logs `permission denied while trying to connect to the Docker daemon` and
+      # sandbox.Pool spawns fail.
+      DOCKER_GID=$(getent group docker 2>/dev/null | cut -d: -f3)
+      [ -n "$DOCKER_GID" ] && EXTRA_RUN_FLAGS="--group-add $DOCKER_GID"
     fi
     HEALTH_PATH="/healthz"
     LOG_MAX_SIZE="10m"; LOG_MAX_FILE="3"
@@ -89,6 +97,7 @@ start_container() {
     $PORTS \
     -e "APP_ENV=${ENV}" \
     $VOLUMES \
+    $EXTRA_RUN_FLAGS \
     --log-driver json-file \
     --log-opt "max-size=${LOG_MAX_SIZE}" \
     --log-opt "max-file=${LOG_MAX_FILE}" \
