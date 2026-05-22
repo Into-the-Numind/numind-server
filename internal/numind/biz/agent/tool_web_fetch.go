@@ -391,7 +391,6 @@ func removeHTMLBlock(s, tag string) string {
 		if end < 0 {
 			// Unclosed tag — remove from open to EOF.
 			s = s[:start]
-			lower = lower[:start]
 			break
 		}
 		absEnd := start + end + len(closeTag)

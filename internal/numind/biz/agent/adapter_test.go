@@ -3,18 +3,19 @@ package agent
 import (
 	"testing"
 
-	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
 	"numind-server/internal/pkg/aiservice"
 )
 
-// TestAdapterImplementsToolCallingChatModel verifies both compile-time and runtime interface satisfaction.
+// TestAdapterImplementsToolCallingChatModel pins the runtime backing type. The
+// compile-time guarantee comes from NewAiserviceAdapter's return type; this
+// asserts the concrete impl is *aiserviceAdapter so refactors that swap the
+// concrete type are flagged here.
 func TestAdapterImplementsToolCallingChatModel(t *testing.T) {
 	a := NewAiserviceAdapter("glm-4-7-251222", "agent.task")
-	// Runtime type assertion
-	if _, ok := a.(einomodel.ToolCallingChatModel); !ok {
-		t.Error("aiserviceAdapter does not implement model.ToolCallingChatModel at runtime")
+	if _, ok := a.(*aiserviceAdapter); !ok {
+		t.Errorf("expected *aiserviceAdapter, got %T", a)
 	}
 }
 

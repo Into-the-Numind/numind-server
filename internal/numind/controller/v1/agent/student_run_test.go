@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,7 +12,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	agentbiz "numind-server/internal/numind/biz/agent"
-	"numind-server/internal/numind/biz/attachment"
 	"numind-server/internal/numind/biz/narration"
 	"numind-server/internal/pkg/model"
 )
@@ -53,54 +51,9 @@ func (s *stubStudentRunSvc) Answer(_ context.Context, _ uint, _ uint64, _ agentb
 	return s.answerResp, s.answerErr
 }
 
-type stubAttachSvc struct {
-	result *attachment.UploadResult
-	err    error
-}
-
-func (s *stubAttachSvc) Upload(_ context.Context, _ uint, _ multipart.File, _ *multipart.FileHeader) (*attachment.UploadResult, error) {
-	return s.result, s.err
-}
-
-// ---------------------------------------------------------------------------
-// Test helper: build a minimal gin.Context with a fake user.
-// ---------------------------------------------------------------------------
-
-func testContext(method, path string, body []byte) (*gin.Context, *httptest.ResponseRecorder) {
-	gin.SetMode(gin.TestMode)
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(method, path, bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	c, _ := gin.CreateTestContext(w)
-	c.Request = req
-
-	// Inject a fake user (same pattern as middleware.GetCurrentUser).
-	u := &model.User{Username: "test_user"}
-	u.ID = 42
-	c.Set("current_user", u)
-	return c, w
-}
-
-// directController creates a StudentRunController that uses stub services
-// directly (bypassing IBiz), enabling unit testing without a full biz wire.
-func directController(runSvc *stubStudentRunSvc, attachSvc *stubAttachSvc) *StudentRunController {
-	return &StudentRunController{
-		runSvc:    newStudentRunServiceAdapter(runSvc),
-		attachSvc: newUploadServiceAdapter(attachSvc),
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Adapter shims: wrap stubs behind the concrete service types.
-// Because StudentRunService and UploadService are concrete structs (not
-// interfaces), we exercise the full controller by injecting them via field
-// assignment rather than building a full biz stack.
-// ---------------------------------------------------------------------------
-
-// newStudentRunServiceAdapter builds a *agentbiz.StudentRunService that
-// delegates to the stub via a thin functional wrapper.
-// For controller unit tests we use the stub types directly via the interface
-// defined below — this avoids the complexity of constructing a full service.
+// studentRunIface is the trimmed surface used by testController (the controller
+// under test only exercises run-service paths; attachment uploads are covered by
+// dedicated upload-service tests, not from this controller's seam).
 type studentRunIface interface {
 	Estimate(context.Context, uint, agentbiz.EstimateRunRequest) (*agentbiz.EstimateResponse, error)
 	Create(context.Context, uint, agentbiz.CreateRunRequest) (*agentbiz.CreateRunResponse, error)
@@ -110,14 +63,8 @@ type studentRunIface interface {
 	Answer(context.Context, uint, uint64, agentbiz.AnswerRequest) (*agentbiz.AnswerResponse, error)
 }
 
-type uploadIface interface {
-	Upload(context.Context, uint, multipart.File, *multipart.FileHeader) (*attachment.UploadResult, error)
-}
-
-// testController holds interfaces for unit tests.
 type testController struct {
-	runSvc    studentRunIface
-	attachSvc uploadIface
+	runSvc studentRunIface
 }
 
 func (h *testController) Estimate(c *gin.Context) {
@@ -351,14 +298,4 @@ func TestAnswerHandler_MissingBody(t *testing.T) {
 	if w.Code == http.StatusOK {
 		t.Errorf("expected non-200 for missing selected field, got 200")
 	}
-}
-
-// Shim: return nil concrete types for the embedded field approach.
-// These are used to satisfy the concrete type fields.
-func newStudentRunServiceAdapter(_ *stubStudentRunSvc) *agentbiz.StudentRunService {
-	return nil // nil is acceptable in tests that don't call the concrete methods
-}
-
-func newUploadServiceAdapter(_ *stubAttachSvc) *attachment.UploadService {
-	return nil
 }

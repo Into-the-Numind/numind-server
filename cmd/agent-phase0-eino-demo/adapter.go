@@ -27,7 +27,10 @@ type AiserviceAdapter struct {
 }
 
 // Compile-time assertion: AiserviceAdapter must satisfy model.ChatModel.
-var _ einomodel.ChatModel = (*AiserviceAdapter)(nil)
+// Phase 0 demo intentionally targets the deprecated ChatModel interface to verify
+// backward-compat (Eino v0.8.13 still accepts it in react.AgentConfig.Model);
+// the production adapter lives in internal/numind/biz/agent and uses ToolCallingChatModel.
+var _ einomodel.ChatModel = (*AiserviceAdapter)(nil) //nolint:staticcheck // SA1019 intentional, see comment above
 
 // BindTools satisfies the deprecated model.ChatModel interface. For this demo the tools are
 // declared in react.AgentConfig.ToolsConfig — the ChatModel itself does not need to manage them.
