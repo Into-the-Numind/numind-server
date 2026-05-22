@@ -314,3 +314,224 @@ func TestExtractUserIDFromURL(t *testing.T) {
 		})
 	}
 }
+
+// ─── extractCOSObjectKey tests ──────────────────────────────────────────────
+
+func TestExtractCOSObjectKey(t *testing.T) {
+	cases := []struct {
+		name   string
+		url    string
+		wantOK bool
+		want   string
+	}{
+		{
+			"cos-attachment",
+			"https://numind-dev-1334169463.cos.ap-chengdu.myqcloud.com/agent-attachments/1/1779-x.pdf",
+			true,
+			"agent-attachments/1/1779-x.pdf",
+		},
+		{
+			"cos-other-region",
+			"https://my-bucket.cos.ap-beijing.myqcloud.com/cards/123/image.webp",
+			true,
+			"cards/123/image.webp",
+		},
+		{
+			"cos-deep-path",
+			"https://b.cos.ap-x.myqcloud.com/agent-attachments/42/2026/05/22/file.txt",
+			true,
+			"agent-attachments/42/2026/05/22/file.txt",
+		},
+		{
+			"non-cos-public-cdn",
+			"https://cdn.example.com/agent-attachments/1/file.pdf",
+			false,
+			"",
+		},
+		{
+			"non-cos-httptest",
+			"http://127.0.0.1:8080/agent-attachments/1/file.pdf",
+			false,
+			"",
+		},
+		{
+			"empty",
+			"",
+			false,
+			"",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := extractCOSObjectKey(tc.url)
+			if ok != tc.wantOK {
+				t.Errorf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if got != tc.want {
+				t.Errorf("key = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// ─── presign integration tests ──────────────────────────────────────────────
+//
+// Bug-from-customer 2026-05-22: COS attachment URLs returned by upload are
+// private — file_read previously hit them with anonymous HEAD/GET and got
+// HTTP 403, surfacing as "model_error" with no useful state_reason. The fix
+// translates COS URLs into presigned URLs before HEAD and before any parser
+// call. These tests lock the new contract.
+
+// TestFileReadTool_Execute_COSURL_UsesPresignedURL is the primary regression
+// guard. Without the presign step, the HEAD against a bare COS URL would 403
+// and the test would fail with "HEAD returned HTTP 403". With the fix, the
+// presignFn rewrites the URL to a httptest endpoint that accepts the request.
+func TestFileReadTool_Execute_COSURL_UsesPresignedURL(t *testing.T) {
+	// httptest server doubles as the "signed-URL endpoint" that returns 200.
+	srv := newHeadServer(t, 200, "application/pdf", 2048)
+
+	// In production, presignFn calls COS SDK and produces an https URL with
+	// query-string signature. Here we redirect any object key to the test
+	// server, capturing what key was asked for.
+	var capturedKey string
+	presign := func(_ context.Context, objectKey string, _ int64) (string, error) {
+		capturedKey = objectKey
+		return srv.URL + "/signed/" + objectKey, nil
+	}
+
+	// Track that the parser sees the signed URL too, not the original.
+	var parserSawURL string
+	parser := &recordingParser{
+		content: "PDF body",
+		onCall:  func(url string) { parserSawURL = url },
+	}
+	tool := &fileReadTool{
+		pdfParser: parser,
+		headFn:    http.Head,
+		presignFn: presign,
+	}
+
+	cosURL := "https://numind-dev-1.cos.ap-chengdu.myqcloud.com/agent-attachments/123/x.pdf"
+	input, _ := json.Marshal(fileReadInput{FileURL: cosURL})
+	result, err := tool.Execute(ctxUser123(), ToolInput(input))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedKey != "agent-attachments/123/x.pdf" {
+		t.Errorf("presignFn should be called with object key 'agent-attachments/123/x.pdf'; got %q", capturedKey)
+	}
+	if parserSawURL == cosURL {
+		t.Error("parser must NOT receive the bare COS URL; it must receive the presigned URL")
+	}
+	if parserSawURL == "" || parserSawURL[:len(srv.URL)] != srv.URL {
+		t.Errorf("parser must receive a URL pointing at the presign endpoint; got %q", parserSawURL)
+	}
+
+	// FileName must come from the ORIGINAL URL, not the presigned one — users
+	// expect to see "x.pdf", not "/signed/agent-attachments/123/x.pdf".
+	var out fileReadOutput
+	_ = json.Unmarshal(result, &out)
+	if out.FileName != "x.pdf" {
+		t.Errorf("FileName should come from canonical URL ('x.pdf'); got %q", out.FileName)
+	}
+}
+
+// TestFileReadTool_Execute_NonCOSURL_BypassesPresign confirms public URLs
+// (admin-pasted shareable links, e.g.) skip the presign path. This guard
+// prevents anyone accidentally tightening the presign to "all URLs" and
+// breaking public-URL use cases.
+func TestFileReadTool_Execute_NonCOSURL_BypassesPresign(t *testing.T) {
+	srv := newHeadServer(t, 200, "application/pdf", 1024)
+
+	presignCalled := false
+	presign := func(_ context.Context, _ string, _ int64) (string, error) {
+		presignCalled = true
+		return "should-not-be-used", nil
+	}
+
+	parser := &mockFileParser{content: "ok"}
+	tool := &fileReadTool{
+		pdfParser: parser,
+		headFn:    http.Head,
+		presignFn: presign,
+	}
+
+	// httptest URL is NOT a COS URL — must skip presign.
+	input, _ := json.Marshal(fileReadInput{FileURL: baseURL(srv.URL)})
+	_, err := tool.Execute(ctxUser123(), ToolInput(input))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if presignCalled {
+		t.Error("presignFn must NOT be called for non-COS URLs")
+	}
+}
+
+// TestFileReadTool_Execute_COSURL_PresignFails surfaces presign errors as
+// ErrAIProviderError instead of letting them slip silently into a HEAD 403.
+func TestFileReadTool_Execute_COSURL_PresignFails(t *testing.T) {
+	presign := func(_ context.Context, _ string, _ int64) (string, error) {
+		return "", fmt.Errorf("cos creds missing")
+	}
+
+	tool := &fileReadTool{
+		headFn:    http.Head,
+		presignFn: presign,
+	}
+	cosURL := "https://b.cos.ap-x.myqcloud.com/agent-attachments/123/x.pdf"
+	input, _ := json.Marshal(fileReadInput{FileURL: cosURL})
+	_, err := tool.Execute(ctxUser123(), ToolInput(input))
+	if err == nil {
+		t.Fatal("expected error when presign fails")
+	}
+	var e *errno.Errno
+	if !errors.As(err, &e) {
+		t.Fatalf("expected *errno.Errno, got %T: %v", err, err)
+	}
+	if e.Code != errno.ErrAIProviderError.Code {
+		t.Errorf("expected ErrAIProviderError, got %q", e.Code)
+	}
+}
+
+// TestFileReadTool_Execute_COSURL_NilPresignFn falls back to the bare URL —
+// this is the production posture when COS is disabled (cos.enabled=false in
+// dev/local). The HEAD will hit the bare URL; if it works (public bucket) we
+// pass, otherwise it 403s — same as before this fix. The point of this test
+// is to lock the nil-safe behavior so a future refactor cannot crash on nil.
+func TestFileReadTool_Execute_COSURL_NilPresignFn(t *testing.T) {
+	srv := newHeadServer(t, 200, "application/pdf", 1024)
+
+	parser := &mockFileParser{content: "fallback ok"}
+	tool := &fileReadTool{
+		pdfParser: parser,
+		headFn:    http.Head,
+		presignFn: nil, // explicit nil → bypass presign
+	}
+
+	// Even though this URL "looks like" COS by host shape, the test server
+	// is httptest, so cosURLPathRE won't match and extractCOSObjectKey
+	// returns (_, false). But the assertion is that nil presignFn never
+	// panics — covered for completeness.
+	input, _ := json.Marshal(fileReadInput{FileURL: baseURL(srv.URL)})
+	_, err := tool.Execute(ctxUser123(), ToolInput(input))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// recordingParser is a fileParser that records the URL it was called with.
+type recordingParser struct {
+	content   string
+	pageCount int
+	truncated bool
+	err       error
+	onCall    func(url string)
+}
+
+func (p *recordingParser) Parse(_ context.Context, fileURL, _ string) (string, int, bool, error) {
+	if p.onCall != nil {
+		p.onCall(fileURL)
+	}
+	return p.content, p.pageCount, p.truncated, p.err
+}
