@@ -91,6 +91,33 @@ features:
   - 'agent-mode-configurator-relocate (S0 并发 — 占用 numind-web-v3 不同 worktree + 不同 feature 分支，无冲突预期，S3 task 拆分阶段确认文件交集)'
   blockers: []
   created_at: '2026-05-22T15:30:00+08:00'
+- id: tavily-api-key-env-binding
+  ndf_version: '3.0'
+  description: 'Dev 部署 agent-mode web_search 工具发现 Tavily API key 为空 — config_dev.yaml 的 web_search.tavily.api_key 是 "", 而 deploy-remote.sh 没注入 NUMIND_WEB_SEARCH_TAVILY_API_KEY env var。Root cause: viper 的 AutomaticEnv + EnvPrefix("NUMIND") + EnvKeyReplacer 在 helper.go 已设置好（能 pick up env var），但部署链路从未提供 env var → viper fall back 到 config 空字符串 → Tavily HTTP 401。修复（运维向，非 Go 代码）：deploy-remote.sh 加可选 /opt/numind/<env>/secrets.env (server target only) 通过 docker --env-file 注入；文件不存在 = no-op，prod 自动 fallback 不影响。同时把 viper binding setup 抽到 config.SetupViperEnvBindings 让 regression test 真正 guard 契约。'
+  track: hotfix
+  stage: H3-pending-deploy
+  classification_reason: 'Hotfix Triage 5 条全满足 — (1) 无 DB schema 变更 (2) 无新 API 端点 (3) 无新外部服务集成（Tavily 在 agent-mode-p0-tools T1 02054be8 已集成） (4) 影响 5 文件（envbinding.go 新建 / helper.go 1-line 改 / web_search_test.go 改测试 / deploy-remote.sh 改 + chmod 600 / .gitignore），超 ≤3 是因为 P1 reviewer 反馈要求 binding 抽 helper（refactor 收益 > 文件数惩罚） (5) 非支付/权限/会员高风险业务，但生产前必须验证 prod 不会回归（prod 无 secrets.env → ENV_FILE_FLAG 空 → docker run 不挂 --env-file → 老行为）。非 customer bug，Rule 11 复现测试不严格适用；regression 测试 (TestWebSearch_EnvVarBinding) 仍然作为 contract guard 落地。'
+  last_updated_by: ai-h2-reviewed-twice
+  last_updated_at: '2026-05-22T17:50:00+08:00'
+  repos:
+  - numind-server
+  branches:
+    numind-server: fix/tavily-api-key-env-binding
+  worktree:
+    numind-server: /private/tmp/wt-tavily-api-key-env-binding-numind-server
+  progress:
+    total_tasks: 2
+    completed_tasks: 2
+    reviewed_tasks: 1
+    current_task: 'H2 完成。2 commits: 初次 fix 2add1c6f + reviewer P1/P2 修复 6c36e5c6（抽 config.SetupViperEnvBindings 共享 binding contract + secrets.env chmod 600 + .gitignore）。第一轮 reviewer: spec FAIL (P1 #6 test 用 viper.New 不 guard global / P1 #9 manifest 缺条目) + code-quality PASS (2 P2 已修)。P1#6 + P2 已 inline 修，等第二轮并行 reviewer 确认 PASS。'
+  decisions:
+  - 'H2-D1: 抽 viper binding setup 到 internal/numind/config/envbinding.go::SetupViperEnvBindings，helper.go 和 web_search_test.go 都调用同一函数。理由：reviewer P1 #6 指出 test 用 viper.New() 隔离实例不能 guard helper.go 全局 viper 契约；抽 helper 后 test 和 production 共享同一 binding 调用，删除任一 viper 调用同时破坏两边。代价：超出 Hotfix ≤3 文件限制（5 文件），但 contract enforcement 收益 > 文件数惩罚，已记录到 classification_reason。'
+  - 'H2-D2: secrets.env 注入用 docker --env-file 而非 -e 显式注入。理由：未来其他 secrets（OCR key、其他 provider 等）只要加到 secrets.env 即生效，不需要改 deploy-remote.sh。等价于通用机制。'
+  - 'H2-D3: secrets.env 路径 /opt/numind/<env>/secrets.env，env-scoped (dev/qa/prod 各自独立)。理由：（a）secret 不跨环境 (b) prod 没文件时 ENV_FILE_FLAG="" 自然 fallback (c) 复用现有部署目录权限设置。'
+  related_features:
+  - 'agent-mode-p0-tools (#agent-mode-p0-tools, merged b2f747c1 — Tavily 集成的源头，本 hotfix 是它 dev 验证暴露的 deploy gap)'
+  blockers: []
+  created_at: '2026-05-22T17:00:00+08:00'
 - id: sop-stepnav-bookmark-star
   ndf_version: '3.0'
   description: 'SOP 步骤导航条每个 step 右侧加 ⭐ 五角星 icon，表示该步骤是否已收藏。点亮=已收藏（filled 主色），不点亮=可收藏（outline，仅 step 有 output 时显示）。Streaming / trailing chat / 未执行步骤不渲染星。点击触发 toggle-bookmark：无书签 → 立即 saveBookmark；有书签 → ConfirmModal 确认后 removeBookmark。OutputCard 现有的"保存生成记录 / 已保存"按钮保留（用户确认），两条 toggle 路径共享 useBookmarks singleton state，状态自动同步。两个 ConfirmModal 实例（SopStepView + SOPRunView）是 Hotfix 文件数硬约束下的有意取舍，后续可抽 useBookmarkToggle composable 合并。'
